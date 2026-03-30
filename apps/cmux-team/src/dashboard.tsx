@@ -1,0 +1,572 @@
+/**
+ * TUI Dashboard — ink フルスクリーンダッシュボード
+ *
+ * top のようなフルスクリーン表示。ターミナルサイズにレスポンシブ。
+ * 上部: ヘッダー（ステータス・PID・uptime）
+ * 中部: Master / Conductors / Tasks パネル
+ * 下部: journal / log タブ切り替え（残りスペースを全て使う）
+ */
+import { useEffect, useState } from 'react'
+import { Box, render, Text, useInput, useStdout } from 'ink'
+import stringWidth from 'string-width'
+
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
+import type { DaemonState } from './daemon'
+
+type ActiveTab = 'journal' | 'log'
+
+interface DashboardProps {
+  getState: () => DaemonState
+  version?: string
+  onReload?: () => void
+  onQuit?: () => void
+}
+
+function useTerminalSize() {
+  const { stdout } = useStdout()
+  const [size, setSize] = useState({
+    columns: stdout?.columns ?? 80,
+    rows: stdout?.rows ?? 24,
+  })
+
+  useEffect(() => {
+    const handler = () => {
+      setSize({
+        columns: stdout?.columns ?? 80,
+        rows: stdout?.rows ?? 24,
+      })
+    }
+    stdout?.on('resize', handler)
+    return () => {
+      stdout?.off('resize', handler)
+    }
+  }, [stdout])
+
+  return size
+}
+
+function useLogTail(projectRoot: string, lineCount: number) {
+  const [lines, setLines] = useState<string[]>([])
+
+  useEffect(() => {
+    const logFile = join(projectRoot, '.team/logs/manager.log')
+    const read = async () => {
+      try {
+        const content = await readFile(logFile, 'utf-8')
+        const all = content.trim().split('\n').filter(Boolean)
+        setLines(all.slice(-lineCount))
+      } catch {
+        setLines([])
+      }
+    }
+    read()
+    const interval = setInterval(read, 2000)
+    return () => clearInterval(interval)
+  }, [projectRoot, lineCount])
+
+  return lines
+}
+
+// --- ジャーナルエントリ ---
+export interface JournalEntry {
+  time: string // HH:MM
+  icon: string // [+], [▶], [✓]
+  taskId: string
+  message: string
+  color: string
+}
+
+function useJournalEntries(projectRoot: string): JournalEntry[] {
+  const [entries, setEntries] = useState<JournalEntry[]>([])
+
+  useEffect(() => {
+    const logFile = join(projectRoot, '.team/logs/manager.log')
+    const read = async () => {
+      try {
+        const content = await readFile(logFile, 'utf-8')
+        const lines = content.trim().split('\n').filter(Boolean)
+        const result: JournalEntry[] = []
+
+        for (const line of lines) {
+          const match = line.match(/^\[([^\]]+)\]\s+(\S+)\s*(.*)/)
+          if (!match) continue
+          const ts = match[1] ?? ''
+          const event = match[2] ?? ''
+          const detail = match[3] ?? ''
+          const time = utcToLocal(ts) // HH:MM:SS（ローカル時刻）
+
+          if (event === 'task_received') {
+            const taskId = detail.match(/task_id=(\S+)/)?.[1] ?? '?'
+            const title = detail.match(/title=(.+?)(?:\s+\w+=|$)/)?.[1] ?? ''
+            result.push({ time, icon: '[+]', taskId, message: title, color: 'cyan' })
+          } else if (event === 'conductor_started') {
+            const taskId = detail.match(/task_id=(\S+)/)?.[1] ?? '?'
+            const title = detail.match(/title=(.+?)(?:\s+\w+=|$)/)?.[1] ?? ''
+            result.push({
+              time,
+              icon: '[▶]',
+              taskId,
+              message: title || `${detail.match(/conductor_id=(\S+)/)?.[1] ?? ''} started`,
+              color: 'yellow',
+            })
+          } else if (event === 'task_completed') {
+            const taskId = detail.match(/task_id=(\S+)/)?.[1] ?? '?'
+            const title = detail.match(/title=(.+?)(?:\s+\w+=|$)/)?.[1] ?? ''
+            const summary = detail.match(/journal_summary=(.+)/)?.[1] ?? ''
+            result.push({ time, icon: '[✓]', taskId, message: summary || title || detail, color: 'green' })
+          }
+        }
+
+        setEntries(result)
+      } catch {
+        setEntries([])
+      }
+    }
+    read()
+    const interval = setInterval(read, 2000)
+    return () => clearInterval(interval)
+  }, [projectRoot])
+
+  return entries
+}
+
+function _formatUptime(startMs: number): string {
+  const sec = Math.floor((Date.now() - startMs) / 1000)
+  if (sec < 60) return `${sec}s`
+  if (sec < 3600) return `${Math.floor(sec / 60)}m${sec % 60}s`
+  return `${Math.floor(sec / 3600)}h${Math.floor((sec % 3600) / 60)}m`
+}
+
+function utcToLocal(isoTimestamp: string): string {
+  return new Date(isoTimestamp).toLocaleTimeString('ja-JP', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
+export function truncate(text: string, maxLen: number): string {
+  if (maxLen <= 0) return ''
+  const w = stringWidth(text)
+  if (w <= maxLen) return text
+  if (maxLen <= 1) return '…'
+  // 表示幅ベースで切り詰め
+  let width = 0
+  let i = 0
+  for (const char of text) {
+    const cw = stringWidth(char)
+    if (width + cw > maxLen - 1) break
+    width += cw
+    i += char.length
+  }
+  return `${text.slice(0, i)}…`
+}
+
+function formatElapsed(isoDate: string): string {
+  const sec = Math.floor((Date.now() - new Date(isoDate).getTime()) / 1000)
+  if (sec < 60) return `${sec}s`
+  if (sec < 3600) return `${Math.floor(sec / 60)}m${sec % 60}s`
+  return `${Math.floor(sec / 3600)}h${Math.floor((sec % 3600) / 60)}m`
+}
+
+// --- ヘッダーバー ---
+function Header({ state, cols }: { state: DaemonState; cols: number }) {
+  const status = state.running ? 'RUNNING' : 'STOPPED'
+  const statusColor = state.running ? 'green' : 'red'
+  const runningCount = [...state.conductors.values()].filter((c) => c.status === 'running').length
+
+  // 各セグメントの幅を概算し、cols に収まらない場合は右から省略
+  // 最低限: " cmux-team  STATUS  conductors N/M  tasks N open" ≒ 50文字
+  const showPid = cols >= 65
+  const showPoll = cols >= 75
+  const showReady = cols >= 85 && state.pendingTasks > 0
+
+  return (
+    <Box width={cols}>
+      <Text bold color="cyan">
+        {' '}
+        cmux-team{' '}
+      </Text>
+      <Text> </Text>
+      <Text bold color={statusColor}>
+        {status}
+      </Text>
+      {showPid && (
+        <>
+          <Text> PID </Text>
+          <Text bold>{process.pid}</Text>
+        </>
+      )}
+      {showPoll && (
+        <>
+          <Text> poll </Text>
+          <Text>{state.pollInterval / 1000}s</Text>
+        </>
+      )}
+      <Text> conductors </Text>
+      <Text bold color="yellow">
+        {runningCount}
+      </Text>
+      <Text>/{state.maxConductors}</Text>
+      <Text> tasks </Text>
+      <Text bold>{state.openTasks}</Text>
+      <Text> open</Text>
+      {showReady && (
+        <>
+          <Text> </Text>
+          <Text bold color="green">
+            {state.pendingTasks}
+          </Text>
+          <Text> ready</Text>
+        </>
+      )}
+    </Box>
+  )
+}
+
+// --- セパレーター ---
+function Sep({ cols, label }: { cols: number; label: string }) {
+  const line = '─'.repeat(Math.max(0, cols - label.length - 3))
+  return (
+    <Box>
+      <Text dimColor>
+        ─{' '}
+        <Text bold dimColor={false}>
+          {label}
+        </Text>{' '}
+        {line}
+      </Text>
+    </Box>
+  )
+}
+
+// --- Master セクション ---
+function MasterSection({ state }: { state: DaemonState }) {
+  if (state.masterSurface) {
+    return (
+      <Box paddingLeft={1}>
+        <Text color="green">● </Text>
+        <Text>[{state.masterSurface.replace('surface:', '')}]</Text>
+      </Box>
+    )
+  }
+  return (
+    <Box paddingLeft={1}>
+      <Text color="red">○ not spawned</Text>
+    </Box>
+  )
+}
+
+// --- Conductor セクション ---
+export function ConductorsSection({ state, cols }: { state: DaemonState; cols: number }) {
+  const conductors = [...state.conductors.values()]
+  if (conductors.length === 0) {
+    return (
+      <Box paddingLeft={1}>
+        <Text dimColor>idle — waiting for tasks</Text>
+      </Box>
+    )
+  }
+  return (
+    <>
+      {conductors.map((c) => {
+        const isIdle = c.status === 'idle'
+        const isDone = c.status === 'done'
+        const elapsed = formatElapsed(c.startedAt)
+        const agents = c.agents || []
+        return (
+          <Box key={c.conductorId} flexDirection="column">
+            <Box paddingLeft={1}>
+              <Text color={isIdle ? 'gray' : isDone ? 'gray' : 'yellow'}>{isIdle ? '○' : isDone ? '✓' : '●'}</Text>
+              <Text> </Text>
+              <Text color={isIdle || isDone ? 'gray' : undefined}>[{c.surface.replace('surface:', '')}]</Text>
+              {isIdle ? (
+                <Text dimColor> idle</Text>
+              ) : (
+                (() => {
+                  const icon = isIdle ? '○' : isDone ? '✓' : '●'
+                  const surfaceText = `[${c.surface.replace('surface:', '')}]`
+                  const taskIdText = ` #${(c.taskId ?? '').padStart(3, '0')}`
+                  const elapsedText = ` ${elapsed}`
+                  const fixedPart = `${icon} ${surfaceText}${taskIdText} ${elapsedText}`
+                  const fixedWidth = 1 + stringWidth(fixedPart) // 1 = paddingLeft
+                  const maxTitle = cols - fixedWidth
+                  return (
+                    <>
+                      <Text bold={!isDone} color={isDone ? 'gray' : undefined}>
+                        {taskIdText}
+                      </Text>
+                      {c.taskTitle && <Text color={isDone ? 'gray' : 'white'}> {truncate(c.taskTitle, maxTitle)}</Text>}
+                      <Text dimColor>{elapsedText}</Text>
+                    </>
+                  )
+                })()
+              )}
+            </Box>
+            {agents.map((a, i) => {
+              const roleIcons: Record<string, string> = {
+                impl: '⚙',
+                implementer: '⚙',
+                docs: '📝',
+                dockeeper: '📝',
+                reviewer: '🔍',
+                review: '🔍',
+                researcher: '🔬',
+                research: '🔬',
+                tester: '🧪',
+                test: '🧪',
+                architect: '📐',
+                design: '📐',
+              }
+              const icon = roleIcons[a.role ?? ''] ?? '🔧'
+              const label = a.taskTitle ?? a.role ?? ''
+              return (
+                <Box key={a.surface} paddingLeft={3}>
+                  <Text dimColor>{i === agents.length - 1 ? '└─ ' : '├─ '}</Text>
+                  <Text color="cyan">[{a.surface.replace('surface:', '')}]</Text>
+                  <Text>
+                    {' '}
+                    {icon} {label}
+                  </Text>
+                </Box>
+              )
+            })}
+          </Box>
+        )
+      })}
+    </>
+  )
+}
+
+// --- タスクセクション ---
+export function TasksSection({ state, cols }: { state: DaemonState; cols: number }) {
+  if (state.taskList.length === 0) {
+    return (
+      <Box paddingLeft={1}>
+        <Text dimColor>no tasks</Text>
+      </Box>
+    )
+  }
+
+  const assignedTaskIds = new Set([...state.conductors.values()].map((c) => c.taskId))
+
+  return (
+    <>
+      {state.taskList.map((task) => {
+        const assigned = assignedTaskIds.has(task.id)
+        const isClosed = task.status === 'closed'
+        const _isDraft = !assigned && task.status === 'draft'
+        const color = assigned ? 'green' : task.status === 'ready' ? 'yellow' : isClosed ? '#aaaaaa' : undefined
+        const title = task.title
+        const timeInfo =
+          isClosed && task.closedAt
+            ? ` ${utcToLocal(task.closedAt).slice(0, 5)}`
+            : !isClosed && task.createdAt
+              ? ` ${formatElapsed(task.createdAt)}`
+              : ''
+        const label = assigned ? 'running' : task.status
+        const icon = isClosed ? '○' : '●'
+        const taskId = task.id.padStart(3, '0')
+        // 固定部分の実際の表示幅を計測: " ● 016 [label] " + timeInfo
+        const fixedPart = `${icon} ${taskId} [${label}] `
+        const fixedWidth = 1 + stringWidth(fixedPart) + stringWidth(timeInfo) // 1 = paddingLeft
+        const maxTitle = cols - fixedWidth
+        return (
+          <Box key={task.id} paddingLeft={1}>
+            <Text color={color}>{isClosed ? '○' : '●'}</Text>
+            <Text> </Text>
+            <Text color={color} bold={!isClosed}>
+              {task.id.padStart(3, '0')}
+            </Text>
+            <Text color={color}>
+              {' '}
+              [{label}] {truncate(title, maxTitle)}
+            </Text>
+            {timeInfo && <Text color={color}>{timeInfo}</Text>}
+          </Box>
+        )
+      })}
+    </>
+  )
+}
+
+// --- ログセクション ---
+export function formatLogLine(
+  line: string,
+  cols: number,
+): { time: string; event: string; detail: string; color: string } {
+  const match = line.match(/^\[([^\]]+)\]\s+(\S+)\s*(.*)/)
+  if (!match) return { time: '', event: '', detail: line.slice(0, cols - 2), color: 'white' }
+  const ts = match[1] ?? ''
+  const event = match[2] ?? ''
+  const detail = match[3] ?? ''
+  const time = utcToLocal(ts)
+  const isError = event === 'error'
+  const isComplete = event.includes('completed')
+  const color = isError ? 'red' : isComplete ? 'green' : 'white'
+  const maxDetail = Math.max(0, cols - 1 - stringWidth(`${time} ${event} `)) // 1 = paddingLeft
+  return { time, event, detail: truncate(detail, maxDetail), color }
+}
+
+export function LogSection({ lines, cols }: { lines: string[]; cols: number }) {
+  if (lines.length === 0) {
+    return (
+      <Box paddingLeft={1}>
+        <Text dimColor>no log entries</Text>
+      </Box>
+    )
+  }
+  return (
+    <Box flexDirection="column">
+      {lines.map((line, i) => {
+        const { time, event, detail, color } = formatLogLine(line, cols)
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: ログ行は動的で安定IDがない
+          <Box key={i} paddingLeft={1}>
+            <Text>
+              <Text dimColor>{time}</Text> <Text color={color}>{event}</Text> <Text>{detail}</Text>
+            </Text>
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
+// --- ジャーナルセクション ---
+export function JournalSection({ entries, cols }: { entries: JournalEntry[]; cols: number }) {
+  if (entries.length === 0) {
+    return (
+      <Box paddingLeft={1}>
+        <Text dimColor>no journal entries</Text>
+      </Box>
+    )
+  }
+  return (
+    <Box flexDirection="column">
+      {entries.map((entry, i) => {
+        const fixedPart = `${entry.time} ${entry.icon} #${entry.taskId.padStart(3, '0')} `
+        const maxMsg = Math.max(0, cols - 1 - stringWidth(fixedPart)) // 1 = paddingLeft
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: ログエントリは動的で安定IDがない
+          <Box key={i} paddingLeft={1}>
+            <Text>
+              <Text dimColor>{entry.time}</Text> <Text color={entry.color}>{entry.icon}</Text>{' '}
+              <Text bold>#{entry.taskId.padStart(3, '0')}</Text> <Text>{truncate(entry.message, maxMsg)}</Text>
+            </Text>
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
+// --- メインダッシュボード ---
+function Dashboard({ getState, version, onReload, onQuit }: DashboardProps) {
+  const [state, setState] = useState(getState())
+  const [activeTab, setActiveTab] = useState<ActiveTab>('journal')
+  const { columns: cols, rows } = useTerminalSize()
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setState({ ...getState() })
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [getState])
+
+  useInput((input, key) => {
+    if (input === '1') setActiveTab('journal')
+    if (input === '2') setActiveTab('log')
+    if (key.tab) setActiveTab((prev) => (prev === 'journal' ? 'log' : 'journal'))
+    if (input === 'r' && onReload) onReload()
+    if (input === 'q' && onQuit) onQuit()
+  })
+
+  // レイアウト計算
+  // header=1, sep=1, master=1, sep=1, conductor=max(1,N+agents), sep=1, tasks=max(1,M), sep=1, keyhint=1
+  const conductorLines = [...state.conductors.values()].reduce((sum, c) => sum + 1 + (c.agents?.length ?? 0), 0)
+  const conductorCount = Math.max(1, conductorLines)
+  const tasksCount = Math.max(1, state.taskList.length)
+  const fixedLines = 1 + 1 + 1 + 1 + conductorCount + 1 + tasksCount + 1 + 1
+  const contentLines = Math.max(1, rows - fixedLines)
+  const logTail = useLogTail(state.projectRoot, contentLines)
+  const journalEntries = useJournalEntries(state.projectRoot)
+  const visibleJournal = journalEntries.slice(-contentLines)
+
+  const tabLabel = activeTab === 'journal' ? 'Journal' : 'Log'
+
+  return (
+    <Box flexDirection="column" width={cols} height={rows}>
+      <Header state={state} cols={cols} />
+      <Sep cols={cols} label="Master" />
+      <MasterSection state={state} />
+      <Sep cols={cols} label={`Conductors ${state.conductors.size}/${state.maxConductors}`} />
+      <ConductorsSection state={state} cols={cols} />
+      <Sep cols={cols} label="Tasks" />
+      <TasksSection state={state} cols={cols} />
+      <Sep cols={cols} label={tabLabel} />
+      <Box flexDirection="column" height={contentLines} overflow="hidden">
+        {activeTab === 'journal' ? (
+          <JournalSection entries={visibleJournal} cols={cols} />
+        ) : (
+          <LogSection lines={logTail} cols={cols} />
+        )}
+      </Box>
+      <Box justifyContent="space-between" width={cols}>
+        <Box>
+          <Text
+            backgroundColor={activeTab === 'journal' ? 'white' : 'gray'}
+            color={activeTab === 'journal' ? 'black' : 'white'}
+            bold
+          >
+            {' '}
+            1{' '}
+          </Text>
+          <Text>journal </Text>
+          <Text
+            backgroundColor={activeTab === 'log' ? 'white' : 'gray'}
+            color={activeTab === 'log' ? 'black' : 'white'}
+            bold
+          >
+            {' '}
+            2{' '}
+          </Text>
+          <Text>log </Text>
+          <Text backgroundColor="gray" color="white" bold>
+            {' '}
+            r{' '}
+          </Text>
+          <Text>reload </Text>
+          <Text backgroundColor="gray" color="white" bold>
+            {' '}
+            q{' '}
+          </Text>
+          <Text>quit</Text>
+        </Box>
+        {version && <Text dimColor>v{version}</Text>}
+      </Box>
+    </Box>
+  )
+}
+
+let inkInstance: ReturnType<typeof render> | null = null
+
+export function unmountDashboard(): void {
+  if (inkInstance) {
+    inkInstance.unmount()
+    inkInstance.cleanup()
+    inkInstance = null
+  }
+}
+
+export function startDashboard(
+  getState: () => DaemonState,
+  opts?: { version?: string; onReload?: () => void; onQuit?: () => void },
+): void {
+  inkInstance = render(
+    <Dashboard getState={getState} version={opts?.version} onReload={opts?.onReload} onQuit={opts?.onQuit} />,
+  )
+}

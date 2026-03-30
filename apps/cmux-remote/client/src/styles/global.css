@@ -1,0 +1,34 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background-color: #1a1a2e;
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* Safe area padding for iPhone notch / Dynamic Island */
+body {
+  padding-top: env(safe-area-inset-top);
+}
+
+#root {
+  height: 100%;
+}
+
+/* Prevent pull-to-refresh */
+body {
+  overscroll-behavior: none;
+}

@@ -1,0 +1,98 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.4.9/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git"
+	},
+	"files": {
+		"ignoreUnknown": false,
+		"includes": [
+			"**/*.js",
+			"**/*.jsx",
+			"**/*.ts",
+			"**/*.mts",
+			"**/*.tsx",
+			"**/*.json",
+			"!**/gen",
+			"!**/*.gen.ts",
+			"!**/node_modules",
+			"!**/dist",
+			"!**/.next"
+		]
+	},
+	"formatter": {
+		"enabled": true,
+		"formatWithErrors": false,
+		"attributePosition": "auto",
+		"indentStyle": "space",
+		"indentWidth": 2,
+		"lineWidth": 120,
+		"lineEnding": "lf"
+	},
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": {
+					"level": "on",
+					"options": {
+						"groups": [
+							{
+								"type": false,
+								"source": [
+									"react*",
+									"react/**"
+								]
+							},
+							{
+								"type": false,
+								"source": ":PACKAGE:"
+							},
+							":BLANK_LINE:",
+							{
+								"type": false,
+								"source": "./lib/**"
+							},
+							{
+								"type": false,
+								"source": ":PATH:"
+							},
+							":BLANK_LINE:",
+							{
+								"type": false
+							},
+							":BLANK_LINE:",
+							{
+								"type": true
+							}
+						]
+					}
+				}
+			}
+		}
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true,
+			"correctness": {
+				"noUndeclaredVariables": "error",
+				"noUnusedVariables": "error",
+				"noUnusedImports": "error",
+				"useExhaustiveDependencies": "error"
+			},
+			"suspicious": {
+				"noExplicitAny": "warn"
+			},
+			"style": {
+				"noNonNullAssertion": "warn"
+			}
+		}
+	},
+	"javascript": {
+		"globals": ["google", "Bun"],
+		"formatter": {
+			"quoteStyle": "single",
+			"semicolons": "asNeeded"
+		}
+	}
+}

@@ -1,0 +1,36 @@
+{
+  "name": "yui-plugins",
+  "description": "cmux ターミナルマルチプレクサ向け Claude Code プラグイン集",
+  "owner": {
+    "name": "tanaka-yui"
+  },
+  "plugins": [
+    {
+      "name": "cmux-fork",
+      "description": "Claude Code の会話を新しい cmux ペインにフォーク（ブランチ）するプラグイン",
+      "source": "./apps/cmux-fork",
+      "version": "1.0.0",
+      "license": "MIT",
+      "category": "terminal",
+      "tags": ["cmux", "fork", "conversation"]
+    },
+    {
+      "name": "cmux-using",
+      "description": "cmux ターミナル操作スキル。ペイン分割、サブエージェント起動・監視・結果回収、コマンド送信、スクリーン読み取り。",
+      "source": "./apps/cmux-using",
+      "version": "1.0.0",
+      "license": "MIT",
+      "category": "terminal",
+      "tags": ["cmux", "skill", "sub-agent", "terminal"]
+    },
+    {
+      "name": "cmux-team",
+      "description": "Claude Code + cmux によるマルチエージェント開発オーケストレーション。並列サブエージェントをターミナルペインで可視化。",
+      "source": "./apps/cmux-team",
+      "version": "1.0.0",
+      "license": "MIT",
+      "category": "development",
+      "tags": ["cmux", "multi-agent", "orchestration", "team"]
+    }
+  ]
+}
