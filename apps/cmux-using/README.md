@@ -56,7 +56,7 @@ npx skills add tanaka-yui/cmux-using
 ### 方法3: 手動（レガシー）
 
 ```bash
-git clone https://github.com/tanaka-yui/claude-plugins/cmux-using.git
+git clone https://github.com/tanaka-yui/yui-cc-plugins/cmux-using.git
 cd cmux-using
 bash install.sh
 ```

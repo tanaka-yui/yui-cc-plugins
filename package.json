@@ -1,5 +1,5 @@
 {
-  "name": "@tanaka-yui/claude-plugins",
+  "name": "@tanaka-yui/yui-cc-plugins",
   "private": true,
   "scripts": {
     "check": "turbo run check",

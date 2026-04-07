@@ -1,5 +1,5 @@
 {
-  "name": "yui-plugins",
+  "name": "yui-cc-plugins",
   "description": "cmux ターミナルマルチプレクサ向け Claude Code プラグイン集",
   "owner": {
     "name": "tanaka-yui"
@@ -12,7 +12,11 @@
       "version": "1.0.0",
       "license": "MIT",
       "category": "terminal",
-      "tags": ["cmux", "fork", "conversation"]
+      "tags": [
+        "cmux",
+        "fork",
+        "conversation"
+      ]
     },
     {
       "name": "cmux-using",
@@ -21,7 +25,12 @@
       "version": "1.0.0",
       "license": "MIT",
       "category": "terminal",
-      "tags": ["cmux", "skill", "sub-agent", "terminal"]
+      "tags": [
+        "cmux",
+        "skill",
+        "sub-agent",
+        "terminal"
+      ]
     },
     {
       "name": "cmux-team",
@@ -30,7 +39,12 @@
       "version": "1.0.0",
       "license": "MIT",
       "category": "development",
-      "tags": ["cmux", "multi-agent", "orchestration", "team"]
+      "tags": [
+        "cmux",
+        "multi-agent",
+        "orchestration",
+        "team"
+      ]
     }
   ]
 }

@@ -6,7 +6,7 @@
     "name": "tanaka-yui"
   },
   "license": "MIT",
-  "repository": "https://github.com/tanaka-yui/claude-plugins/apps/cmux-using",
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/cmux-using",
   "hooks": {
     "SessionStart": [
       {

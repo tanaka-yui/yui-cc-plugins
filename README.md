@@ -1,4 +1,4 @@
-# yui-plugins
+# yui-cc-plugins
 
 cmux ターミナルマルチプレクサ向けツール集。
 
@@ -6,10 +6,10 @@ cmux ターミナルマルチプレクサ向けツール集。
 
 ```bash
 # マーケットプレイスを登録して個別インストール
-/plugin marketplace add tanaka-yui/claude-plugins
-/plugin install cmux-fork@yui-plugins
-/plugin install cmux-using@yui-plugins
-/plugin install cmux-team@yui-plugins
+/plugin marketplace add tanaka-yui/yui-cc-plugins
+/plugin install cmux-fork@yui-cc-plugins
+/plugin install cmux-using@yui-cc-plugins
+/plugin install cmux-team@yui-cc-plugins
 
 # または一括インストール
 bash install.sh

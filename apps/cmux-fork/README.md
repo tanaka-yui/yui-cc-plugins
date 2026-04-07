@@ -37,7 +37,7 @@ claude /plugin install tanaka-yui/cfork
 ### 方法 2: スクリプトインストール
 
 ```bash
-git clone https://github.com/tanaka-yui/claude-plugins/cfork.git
+git clone https://github.com/tanaka-yui/yui-cc-plugins/cfork.git
 cd cfork
 bash install.sh
 ```
