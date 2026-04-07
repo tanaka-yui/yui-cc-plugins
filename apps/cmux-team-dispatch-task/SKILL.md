@@ -484,6 +484,135 @@ Written by the child session when status becomes `done`:
 
 ---
 
+## superpowers Execution Handoff Integration
+
+This skill integrates with `superpowers:writing-plans` as a **third execution option** in the
+Execution Handoff. When a plan is complete, `writing-plans` presents execution choices. This
+skill adds the parallel option:
+
+```
+writing-plans Execution Handoff:
+
+  "Plan complete. Three execution options:"
+
+  1. Subagent-Driven (recommended)  → superpowers:subagent-driven-development
+     Sequential, one subagent per task, two-stage review after each
+
+  2. Inline Execution               → superpowers:executing-plans
+     Batch execution in this session with checkpoints
+
+  3. Parallel (cmux split)          → cmux-team-dispatch-task split mode  ← THIS SKILL
+     Each task in its own cmux split pane + git worktree, all run concurrently
+```
+
+### When to Suggest Parallel (cmux split)
+
+| Option | Best for |
+|--------|----------|
+| Subagent-Driven | Tasks with dependencies, review-heavy workflows, cost-conscious execution |
+| Inline Execution | Simple plans, interactive execution, single-session preference |
+| **Parallel (cmux)** | **3+ independent tasks, speed priority, visual overview of all sessions** |
+
+### Flow When Parallel Is Chosen
+
+When the user selects option 3:
+
+1. **Skip Steps 1-4** of this skill (tasks already defined in the plan, mode is `superpowers`)
+2. **Parse the plan file** to extract independent tasks with descriptions
+3. **Choose split layout** (Step 5 is pre-selected as split mode)
+4. **Launch all tasks** using the convenience script:
+
+   ```bash
+   bash <this-skill-dir>/scripts/launch-session-splits.sh \
+     --mode superpowers \
+     --tasks-file /tmp/plan-tasks.json
+   ```
+
+   The tasks JSON file format:
+   ```json
+   [
+     {"slug": "login-ui", "prompt": "Task description...", "agent": "frontend-coding"},
+     {"slug": "auth-api", "prompt": "Task description...", "agent": "backend-coding"},
+     {"slug": "test-coverage", "prompt": "Task description..."}
+   ]
+   ```
+
+   Alternatively, pass tasks inline:
+   ```bash
+   bash <this-skill-dir>/scripts/launch-session-splits.sh \
+     --mode superpowers \
+     --tasks '[{"slug":"login-ui","prompt":"...","agent":"frontend-coding"}]'
+   ```
+
+5. **Monitor** using Step 7 (signal-based monitoring + status file polling)
+6. **Complete** using Step 8 (collect results, merge or preserve worktrees)
+
+### Building the Tasks JSON from a Plan
+
+When parsing a `superpowers:writing-plans` plan file:
+
+1. Each `### Task N: <name>` heading becomes a task entry
+2. The task slug is derived from the heading (lowercase, hyphens, max 30 chars)
+3. The prompt includes:
+   - The full task text (all steps under that heading)
+   - A reference to the plan file for context
+   - The status protocol instructions (same as Step 6)
+4. The agent is determined by keyword matching (same as Step 3)
+
+### Example
+
+Given a plan with 3 independent tasks:
+
+```
+# Feature Implementation Plan
+
+### Task 1: Login Page UI
+(React component implementation...)
+
+### Task 2: Auth API Endpoint
+(Express route + middleware...)
+
+### Task 3: Integration Tests
+(E2E test suite...)
+```
+
+The orchestrator:
+
+```bash
+# 1. Parse plan into tasks JSON
+cat > /tmp/plan-tasks.json << 'EOF'
+[
+  {"slug": "login-page-ui", "prompt": "Implement Task 1 from the plan...", "agent": "frontend-coding"},
+  {"slug": "auth-api-endpoint", "prompt": "Implement Task 2 from the plan...", "agent": "backend-coding"},
+  {"slug": "integration-tests", "prompt": "Implement Task 3 from the plan..."}
+]
+EOF
+
+# 2. Launch all tasks in split panes
+RESULT=$(bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh \
+  --mode superpowers \
+  --tasks-file /tmp/plan-tasks.json)
+
+# 3. Monitor completion
+for slug in login-page-ui auth-api-endpoint integration-tests; do
+  cmux wait-for "${slug}-done" --timeout 1800
+done
+
+# 4. Collect results and merge
+```
+
+### Differences from Standalone Usage
+
+| Aspect | Standalone (Steps 1-8) | superpowers Integration |
+|--------|----------------------|------------------------|
+| Task source | User input or CLI args | Parsed from plan file |
+| Planning mode | User chooses (plan/superpowers) | Always `superpowers` |
+| Layout mode | User chooses (workspace/split) | Always `split` |
+| Steps used | All (1-8) | Steps 5-8 only (1-4 pre-determined) |
+| Agent routing | Keyword matching | Keyword matching (same logic) |
+
+---
+
 ## Constraints
 
 - **Concurrent sessions**: Limited by system resources; 3-5 sessions recommended

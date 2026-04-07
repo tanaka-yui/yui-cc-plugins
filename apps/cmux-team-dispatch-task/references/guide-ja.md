@@ -420,6 +420,157 @@ cmux close-workspace --workspace <workspace-id>
 
 ---
 
+## superpowers 統合（Execution Handoff 第3選択肢）
+
+### 概要
+
+`superpowers:writing-plans` でプランが完成すると、Execution Handoff として実行方法の選択肢が提示されます。
+本スキルは **第3選択肢「Parallel (cmux split)」** として統合されます。
+
+```
+プラン完成後の実行選択肢:
+
+1. Subagent-Driven (推奨)   → superpowers:subagent-driven-development
+   逐次実行、タスクごとに subagent、2段階レビュー
+
+2. Inline Execution          → superpowers:executing-plans
+   同一セッションでバッチ実行、チェックポイントあり
+
+3. Parallel (cmux split)     → cmux-team-dispatch-task split モード  ← NEW
+   各タスクを cmux split ペインで並列実行、独立した worktree
+```
+
+### 使い分け基準
+
+| 選択肢 | 向いているケース |
+|--------|-----------------|
+| Subagent-Driven | タスク間に依存あり、レビュー重視、コスト節約 |
+| Inline Execution | シンプルなプラン、対話的実行、単一セッション希望 |
+| **Parallel (cmux)** | **独立タスク3個以上、速度重視、全セッションを画面で一望** |
+
+### フロー
+
+```
+┌─────────────────────────────────────────────────┐
+│  superpowers:writing-plans でプラン完成           │
+│  → Execution Handoff: "3. Parallel (cmux split)" │
+└──────────────┬──────────────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────────────┐
+│  プランファイルからタスクを抽出                     │
+│  → tasks.json を構築                              │
+│    [{"slug":"...", "prompt":"...", "agent":"..."}] │
+└──────────────┬──────────────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────────────┐
+│  launch-session-splits.sh を実行                  │
+│  → cmux split ペインで各タスクを並列起動            │
+└──────────────┬──────────────────────────────────┘
+               │
+               ▼
+┌──────────┬──────────┐
+│          │ task-1   │  superpowers モードで実行
+│  親      ├──────────┤
+│(監視)    │ task-2   │  各ペインが独立した worktree
+│          ├──────────┤
+│          │ task-3   │  TDD 等のスキルが自然に発動
+└──────────┴──────────┘
+               │
+               ▼
+┌─────────────────────────────────────────────────┐
+│  親セッションが監視（Step 7）→ 完了処理（Step 8）  │
+│  → シグナル待機 → 結果収集 → マージ/クリーンアップ  │
+└─────────────────────────────────────────────────┘
+```
+
+### 便利スクリプト: launch-session-splits.sh
+
+プランのタスクを一括で split ペインに起動するラッパースクリプトです。
+
+```bash
+# タスク JSON をファイルで渡す場合
+bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh \
+  --mode superpowers \
+  --tasks-file /tmp/plan-tasks.json
+
+# タスク JSON をインラインで渡す場合
+bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh \
+  --mode superpowers \
+  --tasks '[{"slug":"login-ui","prompt":"Implement login page...","agent":"frontend-coding"},{"slug":"auth-api","prompt":"Add auth endpoint...","agent":"backend-coding"}]'
+
+# 全タスクの完了を待機する場合
+bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh \
+  --mode superpowers \
+  --tasks-file /tmp/plan-tasks.json \
+  --wait --wait-timeout 3600
+```
+
+#### タスク JSON フォーマット
+
+```json
+[
+  {
+    "slug": "login-page-ui",
+    "prompt": "Implement Task 1 from the plan: Login page UI component...",
+    "agent": "frontend-coding"
+  },
+  {
+    "slug": "auth-api-endpoint",
+    "prompt": "Implement Task 2 from the plan: Authentication API...",
+    "agent": "backend-coding"
+  },
+  {
+    "slug": "integration-tests",
+    "prompt": "Implement Task 3 from the plan: E2E test suite..."
+  }
+]
+```
+
+| フィールド | 必須 | 説明 |
+|-----------|------|------|
+| `slug` | Yes | タスクの短い識別子（小文字、ハイフン、最大30文字） |
+| `prompt` | Yes | 子セッションに渡すプロンプト全文 |
+| `agent` | No | `.claude/agents/` のエージェント名。省略で汎用モード |
+
+#### 出力 JSON
+
+```json
+{
+  "parent_workspace": "workspace:1",
+  "parent_surface": "surface:1",
+  "task_count": 3,
+  "tasks": [
+    {"slug": "login-page-ui", "surface_id": "surface:5", "signal_name": "login-page-ui-done", ...},
+    {"slug": "auth-api-endpoint", "surface_id": "surface:7", "signal_name": "auth-api-endpoint-done", ...},
+    {"slug": "integration-tests", "surface_id": "surface:9", "signal_name": "integration-tests-done", ...}
+  ]
+}
+```
+
+### プランファイルからタスク JSON を構築する
+
+`superpowers:writing-plans` のプランファイルは `### Task N: <name>` の形式です。
+各 Task ヘッダーを1つのタスクとして抽出し、tasks.json を構築します:
+
+1. `### Task N: <name>` → slug を生成（小文字、スペースをハイフンに、最大30文字）
+2. ヘッダーから次のヘッダーまでの全テキスト → prompt に設定
+3. キーワードマッチングで agent を決定（Step 3 と同じロジック）
+4. ステータスプロトコル指示をプロンプトに追記
+
+### 通常の cmux-team-dispatch-task との違い
+
+| 項目 | 通常（Step 1-8） | superpowers 統合 |
+|------|----------------|-----------------|
+| タスクの入力元 | ユーザー入力または CLI 引数 | プランファイルから抽出 |
+| 計画モード | ユーザーが選択（plan/superpowers） | 常に `superpowers` |
+| レイアウトモード | ユーザーが選択（workspace/split） | 常に `split` |
+| 使用ステップ | 全て（1-8） | Step 5-8 のみ（1-4 は事前決定） |
+| Agent ルーティング | キーワードマッチング | 同じロジック |
+
+---
+
 ## 制約事項
 
 - **cmux 必須**: `/Applications/cmux.app/` にインストールされている必要があります
