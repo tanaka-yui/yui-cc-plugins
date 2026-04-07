@@ -16,6 +16,7 @@ echo ""
 claude plugin install cmux-fork@yui-cc-plugins
 claude plugin install cmux-using@yui-cc-plugins
 claude plugin install cmux-team@yui-cc-plugins
+claude plugin install cmux-team-dispatch-task@yui-cc-plugins
 echo ""
 
 green "すべてのプラグインのインストールが完了しました。"

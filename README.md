@@ -10,6 +10,7 @@ cmux ターミナルマルチプレクサ向けツール集。
 /plugin install cmux-fork@yui-cc-plugins
 /plugin install cmux-using@yui-cc-plugins
 /plugin install cmux-team@yui-cc-plugins
+/plugin install cmux-team-dispatch-task@yui-cc-plugins
 
 # または一括インストール
 bash install.sh
@@ -26,6 +27,7 @@ bash install.sh
 | cmux-fork | 会話を新しい cmux ペインにフォーク | [README](apps/cmux-fork/README.md) |
 | cmux-using | cmux 操作スキル（サブエージェント起動・監視） | [README](apps/cmux-using/README.md) |
 | cmux-team | マルチエージェント開発オーケストレーション | [README](apps/cmux-team/README.md) |
+| cmux-team-dispatch-task | 並列タスクディスパッチ（worktree 分離） | [SKILL](apps/cmux-team-dispatch-task/SKILL.md) |
 
 ### Apps
 

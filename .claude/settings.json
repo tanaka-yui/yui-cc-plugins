@@ -1,3 +1,7 @@
 {
-  "plansDirectory": ".claude/plans"
+  "plansDirectory": ".claude/plans",
+  "effortLevel": "high",
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  }
 }
