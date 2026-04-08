@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/zsh
 # .dispatch/*/status.json をポーリングし、状態変化を stdout に出力する。
 # 全タスクが terminal 状態（done/error）に到達したら cmux send で親に通知して終了。
 #
@@ -16,6 +16,7 @@
 # Exit:   全タスク完了時に exit 0
 
 set -euo pipefail
+setopt NULL_GLOB 2>/dev/null || true
 
 CMUX="/Applications/cmux.app/Contents/Resources/bin/cmux"
 
@@ -93,7 +94,7 @@ done
 
 # --- ポーリングループ ---
 
-declare -A PREV_STATUS
+typeset -A PREV_STATUS
 
 while true; do
   ALL_TERMINAL=true
@@ -104,23 +105,23 @@ while true; do
   for f in "$DISPATCH_DIR"/*/status.json; do
     [[ -f "$f" ]] || continue
     slug=$(basename "$(dirname "$f")")
-    status=$(jq -r '.status' "$f" 2>/dev/null || echo "unknown")
+    task_status=$(jq -r '.status' "$f" 2>/dev/null || echo "unknown")
 
     TASK_COUNT=$((TASK_COUNT + 1))
 
     # 状態変化を検出
     prev="${PREV_STATUS[$slug]:-}"
-    if [[ "$prev" != "$status" ]]; then
+    if [[ "$prev" != "$task_status" ]]; then
       if [[ -n "$prev" ]]; then
-        echo "[$(ts)] $slug: $prev -> $status"
+        echo "[$(ts)] $slug: $prev -> $task_status"
       else
-        echo "[$(ts)] $slug: $status"
+        echo "[$(ts)] $slug: $task_status"
       fi
-      PREV_STATUS[$slug]="$status"
+      PREV_STATUS[$slug]="$task_status"
     fi
 
     # terminal 状態のカウント
-    case "$status" in
+    case "$task_status" in
       done)  DONE_COUNT=$((DONE_COUNT + 1)) ;;
       error) ERROR_COUNT=$((ERROR_COUNT + 1)) ;;
       *)     ALL_TERMINAL=false ;;

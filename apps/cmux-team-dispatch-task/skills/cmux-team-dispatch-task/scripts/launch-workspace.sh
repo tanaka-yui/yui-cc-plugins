@@ -8,7 +8,6 @@
 #   --cwd <path>                       Working directory (skips worktree creation)
 #   --mode plan|superpowers            Claude launch mode (default: plan)
 #   --status-dir <path>                Directory for writing status files
-#   --agent-hint <agent-name>          Recommended agent from .claude/agents/
 #   --layout workspace|split           Layout mode (default: workspace)
 #   --split-from <surface-id>          Surface to split from (required for split mode)
 #   --split-direction right|down       Split direction (default: right)
@@ -40,7 +39,6 @@ log() {
 CWD=""
 MODE="plan"
 STATUS_DIR=""
-AGENT_HINT=""
 LAYOUT="workspace"
 SPLIT_FROM=""
 SPLIT_DIRECTION="right"
@@ -68,15 +66,10 @@ while [[ $# -gt 0 ]]; do
       STATUS_DIR="$2"
       shift 2
       ;;
-    --agent-hint)
-      [[ $# -lt 2 ]] && die "--agent-hint requires an agent name"
-      AGENT_HINT="$2"
-      shift 2
-      ;;
     --layout)
-      [[ $# -lt 2 ]] && die "--layout requires workspace or split"
+      [[ $# -lt 2 ]] && die "--layout requires workspace, split, or claude-teams"
       LAYOUT="$2"
-      [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "split" ]] || die "--layout must be 'workspace' or 'split'"
+      [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "split" || "$LAYOUT" == "claude-teams" ]] || die "--layout must be 'workspace', 'split', or 'claude-teams'"
       shift 2
       ;;
     --split-from)
@@ -130,6 +123,8 @@ if [[ "$LAYOUT" == "split" ]]; then
   [[ -z "$SPLIT_FROM" ]] && die "--split-from is required when --layout is split"
 fi
 
+# claude-teams mode uses workspace-like creation (no split requirements)
+
 # --- Validation ---
 
 [[ -x "$CMUX" ]] || die "cmux is not installed at $CMUX"
@@ -177,9 +172,9 @@ WORKSPACE_ID=""
 SURFACE_ID=""
 TITLE=""
 
-if [[ "$LAYOUT" == "workspace" ]]; then
-  # --- Workspace Mode: Create new cmux workspace ---
-  log "cmux" "creating workspace with cwd=$CWD"
+if [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
+  # --- Workspace Mode / Claude Teams Mode: Create new cmux workspace ---
+  log "cmux" "creating workspace with cwd=$CWD (layout: $LAYOUT)"
   WORKSPACE_OUTPUT=$("$CMUX" new-workspace --cwd "$CWD" 2>/dev/null) || die "failed to create cmux workspace"
   WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1)
   [[ -z "$WORKSPACE_ID" ]] && die "failed to parse workspace ID from output: $WORKSPACE_OUTPUT"
@@ -215,32 +210,26 @@ elif [[ "$LAYOUT" == "split" ]]; then
 
   # Wait for shell to be ready to accept input
   log "cmux" "waiting for shell to initialize in $SURFACE_ID"
-  WAIT_MAX=30
+  WAIT_MAX=10
   WAIT_ELAPSED=0
   while [[ $WAIT_ELAPSED -lt $WAIT_MAX ]]; do
     PANE_CONTENT=$("$CMUX" read-screen --surface "$SURFACE_ID" 2>/dev/null || true)
     # Check for common shell prompt indicators ($ % ❯ > #)
     if echo "$PANE_CONTENT" | grep -qE '[\$%#❯>]\s*$'; then
-      log "cmux" "shell ready after ${WAIT_ELAPSED}s"
+      log "cmux" "shell ready after ${WAIT_ELAPSED}x0.2s"
       break
     fi
-    sleep 1
+    sleep 0.2
     WAIT_ELAPSED=$((WAIT_ELAPSED + 1))
   done
   if [[ $WAIT_ELAPSED -ge $WAIT_MAX ]]; then
-    log "cmux" "warning: shell readiness detection timed out after ${WAIT_MAX}s, proceeding anyway"
+    log "cmux" "warning: shell readiness detection timed out, proceeding anyway"
   fi
 fi
 
-# --- Step 3: Build full prompt with agent hint ---
+# --- Step 3: Build full prompt ---
 
 FULL_PROMPT="$PROMPT"
-if [[ -n "$AGENT_HINT" ]]; then
-  FULL_PROMPT="$PROMPT
-
-Follow the agent guidelines in .claude/agents/${AGENT_HINT}.md for this task."
-  log "agent" "hint appended: $AGENT_HINT"
-fi
 
 # --- Step 4: Write prompt to file ---
 # Writing to a file avoids all shell escaping issues when passing complex
@@ -254,7 +243,14 @@ log "prompt" "wrote prompt to $PROMPT_FILE"
 # The command references the prompt file instead of embedding the prompt text.
 # This keeps the shell command simple and free of special characters.
 
-if [[ "$MODE" == "superpowers" ]]; then
+if [[ "$LAYOUT" == "claude-teams" ]]; then
+  # claude-teams mode: use cmux claude-teams to enable Agent Teams (tmux shim + env vars)
+  if [[ "$MODE" == "superpowers" ]]; then
+    CLAUDE_CMD="$CMUX claude-teams --dangerously-skip-permissions 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+  else
+    CLAUDE_CMD="$CMUX claude-teams --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+  fi
+elif [[ "$MODE" == "superpowers" ]]; then
   CLAUDE_CMD="claude --dangerously-skip-permissions 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
 else
   CLAUDE_CMD="claude --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
@@ -336,6 +332,7 @@ if [[ "$LAYOUT" == "split" ]]; then
   "$CMUX" send --surface "$SURFACE_ID" \
     "cd '$CWD' && $RUNNER_CMD\n" 2>/dev/null || die "failed to send cd+runner command"
 else
+  # workspace and claude-teams modes: cwd is already set by new-workspace
   "$CMUX" send --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" \
     "$RUNNER_CMD\n" 2>/dev/null || die "failed to send runner command"
 fi
@@ -352,7 +349,6 @@ if [[ -n "$STATUS_DIR" ]]; then
     --arg title "$TITLE" \
     --arg mode "$MODE" \
     --arg layout "$LAYOUT" \
-    --arg agent "$AGENT_HINT" \
     --arg msg "Claude session launched in $MODE mode ($LAYOUT layout)" \
     '{
       status: $status,
@@ -361,7 +357,6 @@ if [[ -n "$STATUS_DIR" ]]; then
       title: $title,
       mode: $mode,
       layout: $layout,
-      agent_hint: (if $agent == "" then null else $agent end),
       message: $msg,
       timestamp: (now | todate)
     }' > "$STATUS_DIR/status.json"
@@ -384,7 +379,6 @@ jq -n \
   --arg split_from "$SPLIT_FROM" \
   --arg split_direction "$SPLIT_DIRECTION" \
   --arg status_dir "$STATUS_DIR" \
-  --arg agent_hint "$AGENT_HINT" \
   --arg prompt_file "$PROMPT_FILE" \
   --arg runner_file "$RUNNER_FILE" \
   --arg signal_name "$SIGNAL_NAME" \
@@ -400,7 +394,6 @@ jq -n \
     split_from: (if $split_from == "" then null else $split_from end),
     split_direction: (if $split_direction == "" then null else $split_direction end),
     status_dir: (if $status_dir == "" then null else $status_dir end),
-    agent_hint: (if $agent_hint == "" then null else $agent_hint end),
     prompt_file: $prompt_file,
     runner_file: $runner_file,
     signal_name: $signal_name,

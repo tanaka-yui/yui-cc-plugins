@@ -4,26 +4,36 @@ description: >
   Orchestrate parallel execution of multiple tasks via cmux workspaces.
   Each task gets its own git worktree + Claude Code session. The parent
   session acts as orchestrator, monitoring all child sessions. Dynamically
-  discovers available agent types from .claude/agents/ and routes tasks
-  to matching agents. Supports two layout modes: workspace (separate sidebar entries)
-  and split (panes within current workspace). Use when: "parallel execution",
-  "team dispatch", "run these at once", "run these in parallel",
-  "dispatch tasks", "execute these simultaneously", or when 2+ independent
-  tasks need concurrent execution. Always use this skill instead of manually
-  creating multiple cmux workspaces when orchestrating team work.
-argument-hint: "<task1>, <task2>, ... or empty (interactive input)"
+  discovers available agent types from .claude/agents/ and passes the list
+  to child sessions, which select the appropriate agent themselves.
+  Supports three layout modes: split (panes within current
+  workspace), workspace (separate sidebar entries), and claude-teams (native
+  Agent Teams via cmux claude-teams). Dispatches immediately without parent-side
+  planning — each child handles its own brainstorming/planning in parallel.
+  Use when: "parallel execution", "team dispatch", "run these at once",
+  "run these in parallel", "dispatch tasks", "execute these simultaneously",
+  or when 2+ independent tasks need concurrent execution.
+argument-hint: "<task1>, <task2>, ... [--layout workspace|claude-teams] [--no-grid]"
 ---
 
 # Team Dispatch
 
 Orchestrate parallel task execution across multiple Claude Code sessions. Each task runs
 in its own isolated git worktree while the parent session coordinates everything.
+Dispatches immediately — no parent-side planning. Each child session handles its own
+brainstorming and planning in parallel.
 
 For the Japanese reference guide, see `references/guide-ja.md`.
 
 ---
 
-## Step 1: Collect Tasks
+## Step 1: Parse and Prepare
+
+This single step handles task collection, agent routing, and layout selection.
+**No routing confirmation, no planning mode selection, no layout question** — minimize
+parent-side overhead and dispatch as fast as possible.
+
+### 1a. Collect Tasks
 
 If `$ARGUMENTS` is empty or not provided, ask the user what tasks to run:
 
@@ -39,107 +49,83 @@ If `$ARGUMENTS` is provided, parse the input into a task list:
 - Split on commas or newlines
 - Paths ending in `.md` inside `.claude/plans/` are recognized as plan file references
 - Each task gets a short slug name derived from its description (lowercase, hyphens, max 30 chars)
+- Parse flags from the end of arguments:
+  - `--layout workspace` or `--layout claude-teams`: override default split layout
+  - `--no-grid`: skip grid layout reorganization in split mode
 
-**Output of this step:** A numbered task list with slugs and descriptions.
+### 1b. Discover Available Agents (automatic)
 
----
-
-## Step 2: Discover Available Agents
-
-Scan the `.claude/agents/` directory to find all agent definitions:
+Scan `.claude/agents/` to find available agent definitions:
 
 ```bash
 ls .claude/agents/*.md 2>/dev/null
 ```
 
-For each `.md` file found, read the YAML frontmatter to extract `name` and `description`.
-Build a lookup table of available agent types. Example:
+For each `.md` file, read YAML frontmatter to extract `name` and `description`.
 
-| Agent Name      | Source File                         | Description (excerpt)              |
-| --------------- | ----------------------------------- | ---------------------------------- |
-| frontend-coding | `.claude/agents/frontend-coding.md` | React, UI, renderer process...     |
-| backend-coding  | `.claude/agents/backend-coding.md`  | Node.js, API, IPC, main process... |
+Build a reference list of all discovered agents (name + description). This list will be
+embedded in each child task's prompt so that **each child session decides which agent
+to follow** based on its own task content. The parent does NOT assign agents to tasks.
 
-If `.claude/agents/` is empty or doesn't exist, all tasks route to general-purpose (no agent hint).
+If `.claude/agents/` is empty or doesn't exist, omit the available agents block from prompts.
 
----
+### 1c. Select Brainstorming Tasks
 
-## Step 3: Route Tasks to Agents
+Present the task list and ask the user which tasks should use the brainstorming skill:
 
-For each task, determine the best matching agent:
+> Tasks to dispatch:
+>
+> 1. login-page-ui
+> 2. auth-api-endpoint
+> 3. test-coverage
+>
+> Available agents: backend-coding, frontend-coding
+> (Each child session will select the appropriate agent)
+>
+> Which tasks should use the brainstorming skill before planning?
+> Select task numbers, "all", or "none".
 
-1. **Explicit tag override**: If the task contains `[frontend]`, `[backend]`, or any `[agent-name]` tag, use that agent directly.
-2. **Plan file reference**: If the task references a `.claude/plans/*.md` file, read the plan content and match keywords against agent descriptions.
-3. **Keyword matching**: Compare task description against each agent's `description` field.
-   - Frontend signals: React, component, UI, CSS, page, renderer, Tailwind, styling
-   - Backend signals: API, endpoint, IPC, database, service, handler, main process
-4. **No match**: Leave as general-purpose (no agent hint).
+This is the **only user interaction** before dispatch. Based on the selection:
 
-Present the routing summary to the user for confirmation:
+- **Selected tasks** → launched with `--mode superpowers` + MANDATORY EXECUTION SEQUENCE directive
+- **Non-selected tasks** → launched with `--mode plan` (Claude built-in `/plan` mode)
 
-```
-Tasks to dispatch:
+### 1d. Determine Layout
 
-1. login-page-ui -> Agent: frontend-coding, Mode: TBD
-2. auth-api-endpoint -> Agent: backend-coding, Mode: TBD
-3. test-coverage -> Agent: general-purpose, Mode: TBD
+Default: `split` mode. Override via `--layout workspace` or `--layout claude-teams` in arguments.
 
-Does this routing look correct?
-```
-
----
-
-## Step 4: Choose Planning Mode
-
-Ask the user which planning mode to use for each session (or all sessions):
-
-**Option A: superpowers mode**
-
-- If the `superpowers` plugin is installed, each child session will first invoke `superpowers:brainstorming` to explore context and design the approach, then transition to `superpowers:writing-plans` for structured planning before execution.
-- Claude is launched without `/plan` prefix so superpowers skills trigger naturally.
-
-**Option B: plan mode**
-
-- Each child session uses Claude's built-in `/plan` mode.
-- Claude launches with `/plan` prefix.
-
-The user can choose one mode for all tasks or pick per-task.
-
----
-
-## Step 5: Choose Layout Mode
-
-Ask the user which layout to use for the child sessions:
-
-**Option A: workspace mode (default)**
-
-- Each task creates a separate cmux workspace (separate sidebar entry).
-- Workspaces appear as entries in the left sidebar of cmux.
-- Best for long-running or complex tasks that need full screen space.
-- Easier to individually monitor.
-
-**Option B: split mode**
-
-- All tasks are split panes within the CURRENT workspace.
-- After all panes are created, automatically reorganized into a grid layout (parent included).
-- Best for quick tasks or when visual overview of all sessions is desired.
-- Recommended for 2-6 tasks (more may make panes too small).
-- Use `--no-grid` with `launch-session-splits.sh` to preserve the old linear layout.
+| Mode | Description | Recommended for |
+|------|-------------|-----------------|
+| `split` (default) | Split panes within current workspace, auto-grid layout | 2-6 tasks, visual overview |
+| `workspace` | Each task in a separate cmux workspace (sidebar entry) | Long-running, 7+ tasks |
+| `claude-teams` | Single orchestrator via `cmux claude-teams` + Agent Teams | Native notifications, sidebar metadata |
 
 ```
-workspace mode:              split mode (auto-grid):
-+----------+ +----------+   +----------+----------+
-| ws: t-1  | | ws: t-2  |   | Parent   | Child 1  |
-|          | |          |   +----------+----------+
-|          | |          |   | Child 2  | Child 3  |
-|          | |          |   +----------+----------+
-|          | |          |   (4 surfaces -> 2x2 grid)
-+----------+ +----------+
+split mode:                  workspace mode:              claude-teams mode:
++----------+----------+     +----------+ +----------+    +----------+----------+
+| Parent   | Child 1  |     | ws: t-1  | | ws: t-2  |   | Orchest. | Team-1   |
++----------+----------+     |          | |          |   +----------+----------+
+| Child 2  | Child 3  |     +----------+ +----------+   | Team-2   | Team-3   |
++----------+----------+                                  +----------+----------+
+(auto-grid)                  (separate tabs)              (native Agent Teams)
+```
+
+### 1e. Display Summary and Proceed
+
+Print an informational summary (NOT a confirmation prompt) and proceed to launch immediately:
+
+```
+Dispatching 3 tasks (split mode):
+  1. login-page-ui      [brainstorming]
+  2. auth-api-endpoint   [plan]
+  3. test-coverage       [brainstorming]
+Available agents: backend-coding, frontend-coding
+Launching...
 ```
 
 ---
 
-## Step 6: Launch Sessions
+## Step 2: Launch Sessions
 
 ### Prompt File Approach
 
@@ -154,34 +140,63 @@ directory (worktree). Instead of sending `claude ...` directly to the terminal, 
 `bash .cmux-team-dispatch-task-run.sh`, which:
 
 1. Updates `status.json` to `"executing"` using absolute paths
-2. Runs the `claude` command interactively
+2. Runs the `claude` command interactively (or `cmux claude-teams` for claude-teams layout)
 3. After Claude exits (for any reason), writes `"done"` or `"error"` to `status.json`
 4. Signals completion via `cmux wait-for --signal <slug>-done`
 5. Optionally notifies the parent workspace via `cmux notify`
-
-This ensures that status reporting and completion signaling happen reliably, regardless
-of whether the child Claude session follows the in-prompt status instructions.
 
 The signal name for each task is `<task-slug>-done`, returned in the `signal_name` field
 of the launch script's output JSON.
 
 ### Building the Task Prompt
 
-For each task, construct the full prompt text that will be written to the file:
+For each task, construct the full prompt text. **Order matters** — put behavioral directives
+first, then the task content:
 
-1. **The task description** itself
-2. **superpowers mode only — brainstorming directive** (append when `--mode superpowers`):
+1. **Brainstorming directive** (for tasks selected in Step 1c, prepend):
 
 ```
-IMPORTANT: You are running in superpowers mode.
-Before writing an implementation plan, you MUST first invoke /brainstorming to:
-- Explore the project context and understand the codebase
-- Design your approach with trade-offs considered
-After brainstorming completes, it will naturally transition to writing-plans for the implementation plan.
-Do NOT skip brainstorming and jump directly to writing-plans.
+=== MANDATORY EXECUTION SEQUENCE ===
+You are running in superpowers mode with a STRICT execution sequence.
+You MUST follow these phases IN ORDER. Skipping any phase is a critical error.
+
+PHASE 1 — BRAINSTORMING (required, do this FIRST):
+  Invoke /brainstorming immediately. Do NOT read any files, do NOT make any plans,
+  do NOT write any code before completing brainstorming.
+  /brainstorming will:
+  - Explore the project context and understand the codebase
+  - Design your approach with trade-offs considered
+  - Naturally transition to PHASE 2 when complete
+
+PHASE 2 — PLANNING (automatic transition from brainstorming):
+  After brainstorming completes, you will be in writing-plans mode.
+  Write a structured implementation plan.
+
+PHASE 3 — EXECUTION:
+  After the plan is approved, execute it.
+
+VIOLATION: If you start writing code or making changes without completing
+Phase 1 (brainstorming) and Phase 2 (planning), you are operating incorrectly.
+Stop and invoke /brainstorming.
+=== END MANDATORY EXECUTION SEQUENCE ===
 ```
 
-3. **Status protocol instructions** (append to every prompt):
+2. **Available Agents block** (if agents were discovered in Step 1b):
+
+```
+=== AVAILABLE AGENTS ===
+The following agent definitions are available in .claude/agents/.
+Read the one that best matches your task and follow its guidelines.
+If none are relevant, proceed without an agent.
+
+- backend-coding (.claude/agents/backend-coding.md): <description from frontmatter>
+- frontend-coding (.claude/agents/frontend-coding.md): <description from frontmatter>
+=== END AVAILABLE AGENTS ===
+```
+
+3. **The task description** itself
+
+4. **Status protocol instructions** (append to every prompt):
 
 ```
 IMPORTANT: Status reporting protocol.
@@ -209,40 +224,38 @@ If you encounter a blocking error, run:
 
 Replace `<project-root>` with the actual project root path and `<task-slug>` with the task's slug.
 
-### Launch Command: Workspace Mode
+### Launch: Split Mode (default)
+
+For split mode, use `launch-session-splits.sh` or manual split chaining:
 
 ```bash
-# Create status directory
-mkdir -p .dispatch/<task-slug>
+# Create status directories
+for slug in <task-slugs>; do
+  mkdir -p .dispatch/$slug
+done
 
-# Launch (prompt is written to file by the script automatically)
-bash <this-skill-dir>/scripts/launch-workspace.sh \
-  --mode <plan|superpowers> \
-  --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  --agent-hint <agent-name-or-empty> \
-  --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
-  --parent-notify-surface "$CMUX_SURFACE_ID" \
-  <task-slug> \
-  "$TASK_PROMPT"
+# Build tasks JSON (set mode per task based on brainstorming selection)
+# Note: agent selection is NOT done here — it's embedded in each task's prompt text
+cat > /tmp/dispatch-tasks.json << 'EOF'
+[
+  {"slug": "login-page-ui", "prompt": "<full prompt with available agents block>", "mode": "superpowers"},
+  {"slug": "auth-api-endpoint", "prompt": "<full prompt with available agents block>", "mode": "plan"},
+  ...
+]
+EOF
+
+# Launch all splits (or manually chain launch-workspace.sh calls)
 ```
 
-The `<this-skill-dir>` resolves to the directory containing this SKILL.md file.
-
-### Launch Sequence: Split Mode
-
-When split mode is chosen:
+Manual split chaining:
 
 1. **Detect current workspace and surface IDs:**
-
    ```bash
    cmux identify
    ```
+   Parse to get `PARENT_WS` and `PARENT_SF`. Use `CMUX_WORKSPACE_ID`/`CMUX_SURFACE_ID` env vars if set.
 
-   Parse the output to get `PARENT_WS` (workspace ID) and `PARENT_SF` (surface ID).
-   If `CMUX_WORKSPACE_ID` and `CMUX_SURFACE_ID` environment variables are set, use those.
-
-2. **Launch the FIRST task** (split right from parent):
-
+2. **Launch FIRST task** (split right from parent):
    ```bash
    mkdir -p .dispatch/<task-1-slug>
 
@@ -253,18 +266,15 @@ When split mode is chosen:
      --split-from "$PARENT_SF" \
      --split-direction right \
      --status-dir "$(pwd)/.dispatch/<task-1-slug>" \
-     --agent-hint <agent-name> \
      --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
      --parent-notify-surface "$CMUX_SURFACE_ID" \
      <task-1-slug> \
      "$TASK_1_PROMPT")
 
-   # Capture the new surface ID for chaining
    PREV_SURFACE=$(echo "$RESULT" | jq -r '.surface_id')
    ```
 
 3. **Launch SUBSEQUENT tasks** (split down from previous child):
-
    ```bash
    mkdir -p .dispatch/<task-N-slug>
 
@@ -275,7 +285,6 @@ When split mode is chosen:
      --split-from "$PREV_SURFACE" \
      --split-direction down \
      --status-dir "$(pwd)/.dispatch/<task-N-slug>" \
-     --agent-hint <agent-name> \
      --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
      --parent-notify-surface "$CMUX_SURFACE_ID" \
      <task-N-slug> \
@@ -284,27 +293,107 @@ When split mode is chosen:
    PREV_SURFACE=$(echo "$RESULT" | jq -r '.surface_id')
    ```
 
-4. **Report all launched sessions** to the user:
-
+4. **Report launched sessions:**
    ```
    All sessions launched:
-
-   1. login-page-ui      | surface:5  | frontend-coding | plan mode
-   2. auth-api-endpoint   | surface:7  | backend-coding  | plan mode
-   3. test-coverage       | surface:9  | general         | superpowers
-
+     1. login-page-ui      | surface:5  | superpowers
+     2. auth-api-endpoint   | surface:7  | plan
+     3. test-coverage       | surface:9  | superpowers
+   Available agents: backend-coding, frontend-coding
    Layout: split (panes in current workspace)
-   Status directory: .dispatch/
    ```
+
+### Launch: Workspace Mode
+
+```bash
+mkdir -p .dispatch/<task-slug>
+
+bash <this-skill-dir>/scripts/launch-workspace.sh \
+  --mode <plan|superpowers> \
+  --status-dir "$(pwd)/.dispatch/<task-slug>" \
+  --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
+  --parent-notify-surface "$CMUX_SURFACE_ID" \
+  <task-slug> \
+  "$TASK_PROMPT"
+```
+
+### Launch: Claude Teams Mode
+
+Claude Teams mode uses a fundamentally different architecture. Instead of N independent
+Claude sessions, launch ONE orchestrator session via `cmux claude-teams` that uses
+Claude's Agent Teams feature (TeamCreate + Agent tool) to dispatch teammates.
+
+```bash
+# Create status directories for all tasks
+for slug in <task-slugs>; do
+  mkdir -p .dispatch/$slug
+done
+
+# Build the orchestrator prompt containing ALL tasks
+# (see "Claude Teams Orchestrator Prompt" section below)
+
+# Launch single orchestrator session
+bash <this-skill-dir>/scripts/launch-workspace.sh \
+  --mode <plan|superpowers> \
+  --layout claude-teams \
+  --status-dir "$(pwd)/.dispatch" \
+  --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
+  --parent-notify-surface "$CMUX_SURFACE_ID" \
+  team-dispatch \
+  "$ORCHESTRATOR_PROMPT"
+```
+
+#### Claude Teams Orchestrator Prompt
+
+The orchestrator prompt instructs the single Claude session to create a team and dispatch:
+
+```
+You are a team orchestrator. Dispatch the following tasks to teammates in parallel.
+
+AVAILABLE AGENTS:
+- backend-coding (.claude/agents/backend-coding.md): <description>
+- frontend-coding (.claude/agents/frontend-coding.md): <description>
+Each teammate should read the agent definition that best matches their task and follow its guidelines.
+
+TASKS:
+1. [slug: <slug>] [mode: <plan|brainstorming>]
+   <task description>
+2. [slug: <slug>] [mode: <plan|brainstorming>]
+   <task description>
+...
+
+INSTRUCTIONS:
+1. Create a team with TeamCreate (team_name: "dispatch")
+2. For each task, spawn an Agent teammate:
+   - Use isolation: "worktree" for git isolation
+   - Include the AVAILABLE AGENTS block in each teammate's prompt so they can select the right agent
+   - For tasks with [mode: brainstorming], include the MANDATORY EXECUTION SEQUENCE in the prompt
+   - For tasks with [mode: plan], tell the teammate to use /plan mode
+   - Include the status protocol instructions in each teammate's prompt
+   - Run all Agent calls in a SINGLE message to maximize parallelism
+3. Monitor via TaskList and SendMessage
+4. When all tasks complete, collect results and write to .dispatch/<slug>/result.md
+5. Report completion:
+   echo '{"status":"done","message":"All tasks completed","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/status.json
+
+IMPORTANT: Launch ALL teammates in parallel (single message with multiple Agent tool calls).
+Do NOT launch them sequentially.
+
+STATUS PROTOCOL (for each teammate):
+<same status protocol as other modes, adapted for teammates>
+```
+
+Teammates spawned by the orchestrator appear as native cmux split panes with sidebar
+metadata and notifications, thanks to the `cmux claude-teams` tmux shim.
 
 ---
 
-## Step 7: Monitor Sessions
+## Step 3: Monitor and Complete
 
 ### Notification-based Monitoring (Primary)
 
 Each child session sends a `[dispatch]` message to the parent terminal when the Claude
-process exits. The message appears as user input in the parent session:
+process exits:
 
 ```
 [dispatch] task "<slug>" finished (status: done|error)
@@ -317,7 +406,7 @@ process exits. The message appears as user input in the parent session:
    bash <this-skill-dir>/scripts/monitor-dispatch.sh \
      --parent-surface "$CMUX_SURFACE_ID" \
      --parent-workspace "$CMUX_WORKSPACE_ID" \
-     --layout <split|workspace> \
+     --layout <split|workspace|claude-teams> \
      --interval 10 \
      "$(pwd)/.dispatch"
    ```
@@ -332,59 +421,35 @@ process exits. The message appears as user input in the parent session:
 1. Read `.dispatch/<slug>/status.json` to get the full status and message.
 2. If status is `"done"`, also read `.dispatch/<slug>/result.md` if it exists.
 3. Report the task result to the user.
-4. Count completed tasks against the total. If all tasks are done, proceed to Step 8.
+4. Count completed tasks against the total. If all tasks are done, proceed to Completion.
 5. If some tasks remain, tell the user how many are left and end your turn again.
 
 **When you receive a `[dispatch-monitor]` message:**
 
 This is the all-done notification from the background monitor. All tasks have reached
-a terminal state. Proceed to Step 8.
-
-**Example flow:**
-
-```
-User: [dispatch] task "login-page-ui" finished (status: done)
-
-Claude: タスク "login-page-ui" が完了しました。
-  結果: ログインフォームコンポーネントを実装。
-  残り 2/3 タスク。完了通知を待ちます。
-
-User: [dispatch] task "auth-api" finished (status: done)
-
-Claude: タスク "auth-api" が完了しました。
-  結果: /api/auth エンドポイントと JWT ミドルウェアを追加。
-  残り 1/3 タスク。完了通知を待ちます。
-
-User: [dispatch] task "test-coverage" finished (status: error)
-
-Claude: タスク "test-coverage" でエラーが発生しました。
-  エラー: Claude session exited with code 1.
-  全 3 タスクが完了。Step 8 に進みます。
-```
+a terminal state. Proceed to Completion.
 
 ### Polling Status Files (Manual Check)
 
-If the user asks about progress, or if you need to check status between notifications:
+If the user asks about progress:
 
 ```bash
 for f in .dispatch/*/status.json; do
   task_name=$(dirname "$f" | xargs basename)
-  status=$(jq -r '.status' "$f" 2>/dev/null || echo "unknown")
+  task_status=$(jq -r '.status' "$f" 2>/dev/null || echo "unknown")
   message=$(jq -r '.message' "$f" 2>/dev/null || echo "")
-  echo "$task_name: $status - $message"
+  echo "$task_name: $task_status - $message"
 done
 ```
 
 ### Reading Session Screens (on demand)
 
 For workspace mode:
-
 ```bash
 cmux read-screen --workspace <workspace-id> --scrollback
 ```
 
 For split mode:
-
 ```bash
 cmux read-screen --workspace <parent-ws> --surface <child-surface-id> --scrollback
 ```
@@ -395,11 +460,9 @@ cmux read-screen --workspace <parent-ws> --surface <child-surface-id> --scrollba
 - **Long silence**: If no notifications arrive for an extended time, poll status files or read screens.
 - **User request**: The user can ask to check on any specific session at any time.
 
----
+### Completion
 
-## Step 8: Completion
-
-When all tasks reach `"status": "done"` (detected via `cmux wait-for` signals or status file polling):
+When all tasks reach a terminal status (`"done"` or `"error"`):
 
 1. **Collect results**: Read all `.dispatch/<task-slug>/result.md` files.
 
@@ -410,10 +473,10 @@ When all tasks reach `"status": "done"` (detected via `cmux wait-for` signals or
 
    ## Task Results
 
-   ### 1. login-page-ui (frontend-coding)
+   ### 1. login-page-ui [brainstorming]
    <contents of .dispatch/login-page-ui/result.md>
 
-   ### 2. auth-api-endpoint (backend-coding)
+   ### 2. auth-api-endpoint [plan]
    <contents of .dispatch/auth-api-endpoint/result.md>
 
    ## Worktree Branches
@@ -466,7 +529,6 @@ Present the user with two options:
    rm -rf .dispatch/
    ```
 2. Display cleanup instructions to the user:
-
    ```
    Worktrees are preserved for manual review. To clean up later:
 
@@ -536,8 +598,7 @@ Written by the child session when status becomes `done`:
 ## superpowers Execution Handoff Integration
 
 This skill integrates with `superpowers:writing-plans` as a **third execution option** in the
-Execution Handoff. When a plan is complete, `writing-plans` presents execution choices. This
-skill adds the parallel option:
+Execution Handoff. When a plan is complete, `writing-plans` presents execution choices:
 
 ```
 writing-plans Execution Handoff:
@@ -566,35 +627,12 @@ writing-plans Execution Handoff:
 
 When the user selects option 3:
 
-1. **Skip Steps 1-4** of this skill (tasks already defined in the plan, mode is `superpowers`)
+1. **Skip Step 1a** of this skill (tasks already defined in the plan)
 2. **Parse the plan file** to extract independent tasks with descriptions
-3. **Choose split layout** (Step 5 is pre-selected as split mode)
-4. **Launch all tasks** using the convenience script:
-
-   ```bash
-   bash <this-skill-dir>/scripts/launch-session-splits.sh \
-     --mode superpowers \
-     --tasks-file /tmp/plan-tasks.json
-   ```
-
-   The tasks JSON file format:
-   ```json
-   [
-     {"slug": "login-ui", "prompt": "Task description...", "agent": "frontend-coding"},
-     {"slug": "auth-api", "prompt": "Task description...", "agent": "backend-coding"},
-     {"slug": "test-coverage", "prompt": "Task description..."}
-   ]
-   ```
-
-   Alternatively, pass tasks inline:
-   ```bash
-   bash <this-skill-dir>/scripts/launch-session-splits.sh \
-     --mode superpowers \
-     --tasks '[{"slug":"login-ui","prompt":"...","agent":"frontend-coding"}]'
-   ```
-
-5. **Monitor** using Step 7 (signal-based monitoring + status file polling)
-6. **Complete** using Step 8 (collect results, merge or preserve worktrees)
+3. **Ask brainstorming selection** (Step 1c) — since tasks come from a superpowers plan, default to "none" (brainstorming was already done by the planner)
+4. **Choose layout** (pre-selected as split mode, or claude-teams via argument)
+5. **Launch all tasks** using launch commands from Step 2
+6. **Monitor** using Step 3
 
 ### Building the Tasks JSON from a Plan
 
@@ -605,72 +643,17 @@ When parsing a `superpowers:writing-plans` plan file:
 3. The prompt includes:
    - The full task text (all steps under that heading)
    - A reference to the plan file for context
-   - The status protocol instructions (same as Step 6)
-4. The agent is determined by keyword matching (same as Step 3)
-
-### Example
-
-Given a plan with 3 independent tasks:
-
-```
-# Feature Implementation Plan
-
-### Task 1: Login Page UI
-(React component implementation...)
-
-### Task 2: Auth API Endpoint
-(Express route + middleware...)
-
-### Task 3: Integration Tests
-(E2E test suite...)
-```
-
-The orchestrator:
-
-```bash
-# 1. Parse plan into tasks JSON
-cat > /tmp/plan-tasks.json << 'EOF'
-[
-  {"slug": "login-page-ui", "prompt": "Implement Task 1 from the plan...", "agent": "frontend-coding"},
-  {"slug": "auth-api-endpoint", "prompt": "Implement Task 2 from the plan...", "agent": "backend-coding"},
-  {"slug": "integration-tests", "prompt": "Implement Task 3 from the plan..."}
-]
-EOF
-
-# 2. Launch all tasks in split panes
-RESULT=$(bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh \
-  --mode superpowers \
-  --tasks-file /tmp/plan-tasks.json)
-
-# 3. Launch background monitor
-bash <this-skill-dir>/scripts/monitor-dispatch.sh \
-  --parent-surface "$CMUX_SURFACE_ID" \
-  --parent-workspace "$CMUX_WORKSPACE_ID" \
-  --layout split \
-  "$(pwd)/.dispatch"
-# Run with run_in_background. Child sessions send [dispatch] messages
-# to this terminal on completion. See Step 7.
-
-# 4. Collect results and merge (after all [dispatch] messages received)
-```
-
-### Differences from Standalone Usage
-
-| Aspect | Standalone (Steps 1-8) | superpowers Integration |
-|--------|----------------------|------------------------|
-| Task source | User input or CLI args | Parsed from plan file |
-| Planning mode | User chooses (plan/superpowers) | Always `superpowers` (brainstorming already done) |
-| Layout mode | User chooses (workspace/split) | Always `split` |
-| Steps used | All (1-8) | Steps 5-8 only (1-4 pre-determined) |
-| Agent routing | Keyword matching | Keyword matching (same logic) |
+   - The available agents block (same as Step 2)
+   - The status protocol instructions (same as Step 2)
 
 ---
 
 ## Constraints
 
 - **Concurrent sessions**: Limited by system resources; 3-5 sessions recommended
-- **Split mode limit**: Split mode auto-reorganizes into a grid layout. 2-6 tasks work well; 7+ may still make panes small (use workspace mode instead). Use `--no-grid` to preserve linear layout.
+- **Split mode limit**: Split mode auto-reorganizes into a grid layout. 2-6 tasks work well; 7+ may make panes small (use workspace mode). Use `--no-grid` to preserve linear layout.
 - **Worktree conflicts**: Two tasks must NOT modify the same files. If they might, run sequentially.
 - **cmux required**: Requires cmux at `/Applications/cmux.app/`
-- **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` when the child Claude session exits. In-prompt status instructions remain best-effort for mid-execution updates.
+- **claude-teams requires cmux claude-teams**: The `cmux claude-teams` command sets up the tmux shim and `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` environment variable.
+- **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` when the child Claude session exits.
 - **Runner script**: The `.cmux-team-dispatch-task-run.sh` file is created in each worktree. It's cleaned up along with the worktree.

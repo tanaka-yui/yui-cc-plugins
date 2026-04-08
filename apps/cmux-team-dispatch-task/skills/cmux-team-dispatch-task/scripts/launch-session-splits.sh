@@ -16,15 +16,14 @@
 #
 # Tasks JSON format:
 #   [
-#     {"slug": "task-name", "prompt": "Full task description...", "agent": "agent-name"},
-#     {"slug": "other-task", "prompt": "Another task...", "agent": ""},
+#     {"slug": "task-name", "prompt": "Full task description..."},
+#     {"slug": "other-task", "prompt": "Another task..."},
 #     ...
 #   ]
 #
 # Each task object:
 #   - slug (required):   Short identifier (lowercase, hyphens, max 30 chars)
 #   - prompt (required): Full prompt text for the child Claude session
-#   - agent (optional):  Agent hint from .claude/agents/ (omit for general-purpose)
 #
 # Output: JSON to stdout with parent/task details
 # Debug:  Logs to stderr
@@ -149,8 +148,6 @@ SIGNAL_NAMES=()
 for i in $(seq 0 $((TASK_COUNT - 1))); do
   SLUG=$(echo "$TASKS_JSON" | jq -r ".[$i].slug")
   PROMPT=$(echo "$TASKS_JSON" | jq -r ".[$i].prompt")
-  AGENT=$(echo "$TASKS_JSON" | jq -r ".[$i].agent // empty")
-
   [[ -n "$SLUG" && "$SLUG" != "null" ]] || die "task $i is missing 'slug' field"
   [[ -n "$PROMPT" && "$PROMPT" != "null" ]] || die "task $i ($SLUG) is missing 'prompt' field"
 
@@ -179,10 +176,6 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     --parent-notify-workspace "$PARENT_WS"
     --parent-notify-surface "$PARENT_SF"
   )
-
-  if [[ -n "$AGENT" ]]; then
-    LAUNCH_ARGS+=(--agent-hint "$AGENT")
-  fi
 
   LAUNCH_ARGS+=("$SLUG" "$PROMPT")
 
