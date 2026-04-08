@@ -212,6 +212,24 @@ elif [[ "$LAYOUT" == "split" ]]; then
   # Rename the tab for the new split pane
   "$CMUX" rename-tab --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" "$TITLE" 2>/dev/null || \
     log "cmux" "warning: failed to rename tab (non-fatal)"
+
+  # Wait for shell to be ready to accept input
+  log "cmux" "waiting for shell to initialize in $SURFACE_ID"
+  WAIT_MAX=15
+  WAIT_ELAPSED=0
+  while [[ $WAIT_ELAPSED -lt $WAIT_MAX ]]; do
+    PANE_CONTENT=$("$CMUX" read --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" 2>/dev/null || true)
+    # Check for common shell prompt indicators ($ % ❯ > #)
+    if echo "$PANE_CONTENT" | grep -qE '[\$%#❯>]\s*$'; then
+      log "cmux" "shell ready after ${WAIT_ELAPSED}s"
+      break
+    fi
+    sleep 0.5
+    WAIT_ELAPSED=$((WAIT_ELAPSED + 1))
+  done
+  if [[ $WAIT_ELAPSED -ge $WAIT_MAX ]]; then
+    log "cmux" "warning: shell readiness detection timed out after ${WAIT_MAX}s, proceeding anyway"
+  fi
 fi
 
 # --- Step 3: Build full prompt with agent hint ---
