@@ -176,7 +176,14 @@ IMPORTANT: Status reporting protocol.
 When you finish planning and begin execution, run:
   echo '{"status":"executing","message":"<brief description>","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
 
-When all work is complete, run:
+When all work is complete:
+1. Stage and commit ALL changes before reporting done:
+  git add -A
+  git commit -m "<task-slug>: <concise summary of changes>"
+  If there are multiple logical units of work, create separate commits for each.
+  Do NOT skip this step — uncommitted changes will be lost when the worktree is cleaned up.
+
+2. Then report completion:
   echo '{"status":"done","message":"<summary of changes>","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
 And write a result summary to <project-root>/.dispatch/<task-slug>/result.md with sections:
   # <Task Name>
