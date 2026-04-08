@@ -215,16 +215,16 @@ elif [[ "$LAYOUT" == "split" ]]; then
 
   # Wait for shell to be ready to accept input
   log "cmux" "waiting for shell to initialize in $SURFACE_ID"
-  WAIT_MAX=15
+  WAIT_MAX=30
   WAIT_ELAPSED=0
   while [[ $WAIT_ELAPSED -lt $WAIT_MAX ]]; do
-    PANE_CONTENT=$("$CMUX" read --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" 2>/dev/null || true)
+    PANE_CONTENT=$("$CMUX" read-screen --surface "$SURFACE_ID" 2>/dev/null || true)
     # Check for common shell prompt indicators ($ % ❯ > #)
     if echo "$PANE_CONTENT" | grep -qE '[\$%#❯>]\s*$'; then
       log "cmux" "shell ready after ${WAIT_ELAPSED}s"
       break
     fi
-    sleep 0.5
+    sleep 1
     WAIT_ELAPSED=$((WAIT_ELAPSED + 1))
   done
   if [[ $WAIT_ELAPSED -ge $WAIT_MAX ]]; then
@@ -255,9 +255,9 @@ log "prompt" "wrote prompt to $PROMPT_FILE"
 # This keeps the shell command simple and free of special characters.
 
 if [[ "$MODE" == "superpowers" ]]; then
-  CLAUDE_CMD="claude 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+  CLAUDE_CMD="claude --dangerously-skip-permissions 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
 else
-  CLAUDE_CMD="claude '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+  CLAUDE_CMD="claude --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
 fi
 
 # --- Step 5.5: Generate runner script ---
@@ -316,18 +316,14 @@ RUNNER_CMD="bash $RUNNER_SCRIPT_NAME"
 
 if [[ "$LAYOUT" == "split" ]]; then
   # In split mode, cd into the worktree first, then launch the runner.
-  # Combining with && avoids timing issues between separate sends.
-  "$CMUX" send --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" \
-    "cd '$CWD' && $RUNNER_CMD" 2>/dev/null || die "failed to send cd+runner command"
+  # Trailing \n acts as Enter key in cmux send.
+  "$CMUX" send --surface "$SURFACE_ID" \
+    "cd '$CWD' && $RUNNER_CMD\n" 2>/dev/null || die "failed to send cd+runner command"
 else
   "$CMUX" send --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" \
-    "$RUNNER_CMD" 2>/dev/null || die "failed to send runner command"
+    "$RUNNER_CMD\n" 2>/dev/null || die "failed to send runner command"
 fi
-
-# --- Step 7: Send Enter key ---
-
-"$CMUX" send-key --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" "Enter" 2>/dev/null || die "failed to send Enter key"
-log "cmux" "Enter key sent"
+log "cmux" "command sent"
 
 # --- Step 8: Write status file (if --status-dir specified) ---
 
