@@ -5,7 +5,7 @@ description: >
   Each task gets its own git worktree + Claude Code session. The parent
   session acts as orchestrator, monitoring all child sessions. Dynamically
   discovers available agent types from .claude/agents/ and routes tasks
-  to matching agents. Supports two layout modes: workspace (separate tabs)
+  to matching agents. Supports two layout modes: workspace (separate sidebar entries)
   and split (panes within current workspace). Use when: "parallel execution",
   "team dispatch", "run these at once", "run these in parallel",
   "dispatch tasks", "execute these simultaneously", or when 2+ independent
@@ -113,8 +113,8 @@ Ask the user which layout to use for the child sessions:
 
 **Option A: workspace mode (default)**
 
-- Each task creates a separate cmux workspace (separate tab).
-- Workspaces appear as independent windows/tabs in cmux.
+- Each task creates a separate cmux workspace (separate sidebar entry).
+- Workspaces appear as entries in the left sidebar of cmux.
 - Best for long-running or complex tasks that need full screen space.
 - Easier to individually monitor.
 
