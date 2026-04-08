@@ -7,7 +7,7 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 
 - **並列実行**: 2つ以上の独立タスクを同時にディスパッチ
 - **git worktree 隔離**: 各タスクが独立したブランチ (`feat/<task-slug>`) で作業し、メインブランチを保護
-- **Agent ルーティング**: `.claude/agents/` から利用可能なエージェントを動的にスキャンし、タスクに最適なエージェントを自動割り当て
+- **Agent 自動発見**: `.claude/agents/` から利用可能なエージェントを動的にスキャンし、一覧を子セッションに伝達。各子セッションが自身のタスクに最適なエージェントを選択
 - **ステータス監視**: `.dispatch/` ディレクトリを介したファイルベースのステータス通信とシグナルによるリアルタイム進捗追跡
 - **superpowers 連携**: Execution Handoff の第3選択肢「Parallel (cmux split)」として統合
 - **プロンプトファイル経由**: シェルエスケープの問題を回避するため、プロンプトはファイル経由で子セッションに渡される
@@ -16,8 +16,34 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 
 | モード | 説明 | 推奨ケース |
 |--------|------|-----------|
-| **workspace** | タスクごとに独立した cmux workspace を作成 | 長時間タスク、5個以上のタスク、画面スペースが必要な作業 |
-| **split** | 現在の workspace 内でペイン分割（自動グリッド整列） | 短時間タスク、2〜6個のタスク、全体を一望したい場合 |
+| **split** (デフォルト) | 現在の workspace 内でペイン分割（自動グリッド整列） | 2〜6個のタスク、全体を一望したい場合 |
+| **workspace** | タスクごとに独立した cmux workspace を作成 | 長時間タスク、7個以上のタスク |
+| **claude-teams** | `cmux claude-teams` で Agent Teams を使用 | ネイティブ通知、サイドバーメタデータ |
+
+```
+split mode:                  workspace mode:              claude-teams mode:
++----------+----------+     +----------+ +----------+    +----------+----------+
+| Parent   | Child 1  |     | ws: t-1  | | ws: t-2  |   | Orchest. | Team-1   |
++----------+----------+     |          | |          |   +----------+----------+
+| Child 2  | Child 3  |     +----------+ +----------+   | Team-2   | Team-3   |
++----------+----------+                                  +----------+----------+
+(auto-grid)                  (separate tabs)              (native Agent Teams)
+```
+
+### Split モード（デフォルト）
+
+同一 workspace 内でペインを分割。全タスク起動後、自動的にグリッドレイアウトに整列される。
+
+```
+┌──────────┬──────────┐
+│  親      │ task-1   │
+│(orchest.)│          │
+├──────────┼──────────┤
+│ task-2   │ task-3   │
+│          │          │
+└──────────┴──────────┘
+  (4サーフェス → 2×2 グリッド、自動整列)
+```
 
 ### Workspace モード
 
@@ -32,26 +58,23 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 ┌──────────┐ ┌──────────┐ ┌──────────┐
 │ workspace │ │ workspace │ │ workspace │
 │  task-1   │ │  task-2   │ │  task-3   │
-│           │ │           │ │           │
-│ worktree: │ │ worktree: │ │ worktree: │
-│ feat/     │ │ feat/     │ │ feat/     │
-│ task-1    │ │ task-2    │ │ task-3    │
+│ worktree  │ │ worktree  │ │ worktree  │
 └──────────┘ └──────────┘ └──────────┘
 ```
 
-### Split モード
+### Claude Teams モード
 
-同一 workspace 内でペインを分割。全タスク起動後、自動的にグリッドレイアウトに整列される。
+`cmux claude-teams` を使い、1つの orchestrator が Agent Teams で teammate を生成。
 
 ```
 ┌──────────┬──────────┐
-│  親      │ task-1   │
-│(orchest.)│          │
+│ Orchest. │ Team-1   │
+│          │          │
 ├──────────┼──────────┤
-│ task-2   │ task-3   │
+│ Team-2   │ Team-3   │
 │          │          │
 └──────────┴──────────┘
-  (4サーフェス → 2×2 グリッド、自動整列)
+  (native Agent Teams, サイドバー通知あり)
 ```
 
 ## 前提条件
@@ -93,20 +116,18 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 ### 混合指定
 
 ```
-/cmux-team-dispatch-task .claude/plans/notification.md, テストカバレッジを改善 [backend]
+/cmux-team-dispatch-task .claude/plans/notification.md, テストカバレッジを改善
 ```
 
-プランファイルとインラインタスクを混在可能。`[frontend]`, `[backend]` 等のタグで Agent を明示的に指定できます。
+プランファイルとインラインタスクを混在させることもできます。
 
-## Agent ルーティング
+## Agent 発見と委譲
 
-`.claude/agents/` ディレクトリをスキャンし、各 `.md` ファイルの frontmatter（`name`, `description`）を読み取って自動マッチング。
+`.claude/agents/` ディレクトリをスキャンし、各 `.md` ファイルの frontmatter（`name`, `description`）を読み取って利用可能な Agent 一覧を構築します。
 
-**ルーティング優先順位:**
+この一覧は各子セッションのプロンプトに埋め込まれ、**各子セッションが自身のタスクに最適な Agent を選択**します。親セッションは Agent の割り当てを行いません。
 
-1. **明示的タグ**: `[frontend]`, `[backend]` 等がタスクに含まれていれば、そのまま使用
-2. **キーワードマッチング**: タスクの説明文と Agent の `description` を照合
-3. **汎用**: マッチしない場合は Agent ヒントなし（汎用モード）
+`.claude/agents/` が空またはディレクトリが存在しない場合、Agent ブロックは省略されます。
 
 ## ステータスプロトコル
 
@@ -143,10 +164,12 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 
 ## 制約事項
 
-- **cmux 必須**: cmux がインストールされている必要があります
-- **同時セッション数**: 通常 3〜5 セッションが推奨
-- **split モード制限**: 2〜6 タスクが推奨。7 以上は workspace モードを使用してください
+- **cmux 必須**: `/Applications/cmux.app/` にインストールされている必要があります
+- **claude-teams モード**: `cmux claude-teams` コマンドが必要
+- **同時セッション数**: 3〜5 セッションが推奨
+- **split モード制限**: 2〜6 タスクが推奨。7 以上は workspace モードを使用。`--no-grid` でリニアレイアウトを維持可能
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません。競合の可能性がある場合は順次実行にしてください
+- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新、`cmux wait-for --signal` の発火、`cmux send` による親ターミナルへの通知を保証
 
 ## 詳細ガイド
 

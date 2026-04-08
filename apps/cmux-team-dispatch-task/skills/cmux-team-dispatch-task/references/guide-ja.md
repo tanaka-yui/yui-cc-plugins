@@ -263,11 +263,12 @@ stop and invoke /brainstorming.
 
 ```
 1. MANDATORY EXECUTION SEQUENCE（brainstorming タスクのみ）
-2. タスク説明
-3. ステータスプロトコル指示
+2. AVAILABLE AGENTS ブロック（Agent が発見された場合）
+3. タスク説明
+4. ステータスプロトコル指示
 ```
 
-ブレスト指示がタスク説明より先に来るため、子セッションが最初にブレストを実行します。
+ブレスト指示と Agent 情報がタスク説明より先に来るため、子セッションが最初にブレストを実行し、適切な Agent を選択できます。
 
 ### なぜファイル経由なのか
 
