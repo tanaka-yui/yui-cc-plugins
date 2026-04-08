@@ -11,6 +11,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `skills/cmux-team-dispatch-task/references/guide-ja.md` | 日本語リファレンスガイド |
 | `skills/cmux-team-dispatch-task/scripts/launch-workspace.sh` | ワークスペース/スプリット起動スクリプト |
 | `skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh` | 複数セッション一括起動ラッパー（superpowers 連携用） |
+| `skills/cmux-team-dispatch-task/scripts/cmux-grid.sh` | split モード用グリッドレイアウト整列スクリプト |
 | `.claude-plugin/plugin.json` | Plugin マニフェスト |
 | `README.md` | 人間向けガイド |
 | `CLAUDE.md` | この開発ガイド |

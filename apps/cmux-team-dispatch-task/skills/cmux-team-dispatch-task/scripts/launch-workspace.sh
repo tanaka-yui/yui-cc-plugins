@@ -306,6 +306,22 @@ if [[ -n "\$NOTIFY_WS" ]]; then
     --body "Exit code: \$CLAUDE_EXIT" \\
     --workspace "\$NOTIFY_WS" 2>/dev/null || true
 fi
+
+# --- 親ターミナルにテキスト通知を送信 ---
+NOTIFY_SF="${NOTIFY_SURFACE}"
+LAYOUT_MODE="${LAYOUT}"
+STATUS_LABEL="done"
+if [[ \$CLAUDE_EXIT -ne 0 ]]; then
+  STATUS_LABEL="error"
+fi
+
+if [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
+  "\$CMUX" send --surface "\$NOTIFY_SF" \\
+    "[dispatch] task \"${WORKSPACE_NAME}\" finished (status: \$STATUS_LABEL)\\n" 2>/dev/null || true
+elif [[ -n "\$NOTIFY_WS" ]]; then
+  "\$CMUX" send --workspace "\$NOTIFY_WS" \\
+    "[dispatch] task \"${WORKSPACE_NAME}\" finished (status: \$STATUS_LABEL)\\n" 2>/dev/null || true
+fi
 EOF
 chmod +x "$RUNNER_FILE"
 log "runner" "generated $RUNNER_FILE"

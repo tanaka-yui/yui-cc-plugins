@@ -11,6 +11,7 @@
 #   --tasks-file <path>             Tasks as JSON file path
 #   --wait                          Wait for all tasks to complete before exiting
 #   --wait-timeout <seconds>        Timeout per task for --wait (default: 1800)
+#   --no-grid                       Skip grid layout reorganization after launch
 #   --help                          Show this help message
 #
 # Tasks JSON format:
@@ -57,6 +58,7 @@ TASKS_JSON=""
 TASKS_FILE=""
 WAIT=false
 WAIT_TIMEOUT=1800
+GRID=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -87,6 +89,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -lt 2 ]] && die "--wait-timeout requires a number"
       WAIT_TIMEOUT="$2"
       shift 2
+      ;;
+    --no-grid)
+      GRID=false
+      shift
       ;;
     *)
       die "unknown option: $1. Use --help for usage."
@@ -204,16 +210,39 @@ OUTPUT=$(jq -n \
   --arg parent_workspace "$PARENT_WS" \
   --arg parent_surface "$PARENT_SF" \
   --argjson tasks "$RESULTS" \
+  --argjson grid_layout "$GRID_APPLIED" \
   '{
     parent_workspace: $parent_workspace,
     parent_surface: $parent_surface,
     task_count: ($tasks | length),
+    grid_layout: $grid_layout,
     tasks: $tasks
   }')
 
 echo "$OUTPUT"
 
 log "done" "all $TASK_COUNT tasks launched in split panes"
+
+# --- Grid Layout Reorganization ---
+
+GRID_APPLIED=false
+
+if [[ "$GRID" == true && "$TASK_COUNT" -ge 2 ]]; then
+  GRID_SCRIPT="$SCRIPT_DIR/cmux-grid.sh"
+  if [[ -f "$GRID_SCRIPT" ]]; then
+    log "grid" "reorganizing $((TASK_COUNT + 1)) surfaces into grid layout"
+    # 起動直後のペイン描画を待つ
+    sleep 0.5
+    if bash "$GRID_SCRIPT" --workspace "$PARENT_WS" 2>&1 | while IFS= read -r line; do log "grid" "$line"; done; then
+      GRID_APPLIED=true
+      log "grid" "grid layout applied"
+    else
+      log "grid" "warning: grid layout failed (non-fatal, panes remain in linear layout)"
+    fi
+  else
+    log "grid" "warning: cmux-grid.sh not found at $GRID_SCRIPT, skipping grid layout"
+  fi
+fi
 
 # --- Optional: Wait for Completion ---
 

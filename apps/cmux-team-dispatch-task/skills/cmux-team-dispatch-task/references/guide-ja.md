@@ -77,15 +77,17 @@
 ### split モード
 
 同一 workspace 内でペインを分割し、全タスクを一覧表示します。
+全タスク起動後、自動的にグリッドレイアウトに整列されます。
 
 ```
 ┌──────────┬──────────┐
-│          │ task-1   │  ← cmux new-split right
-│  親      ├──────────┤
-│(orchest.)│ task-2   │  ← cmux new-split down
-│          ├──────────┤
-│          │ task-3   │  ← cmux new-split down
+│  親      │ task-1   │
+│(orchest.)│          │
+├──────────┼──────────┤
+│ task-2   │ task-3   │
+│          │          │
 └──────────┴──────────┘
+  (4サーフェス → 2×2 グリッド、自動整列)
 ```
 
 ### 各レイヤーの役割
@@ -104,14 +106,15 @@
 | モード | 説明 | 推奨ケース |
 |--------|------|-----------|
 | **workspace** | タスクごとに独立した cmux workspace を作成 | 長時間タスク、5個以上のタスク、画面スペースが必要な作業 |
-| **split** | 現在の workspace 内でペイン分割 | 短時間タスク、2〜4個のタスク、全体を一望したい場合 |
+| **split** | 現在の workspace 内でペイン分割（自動グリッド整列） | 短時間タスク、2〜6個のタスク、全体を一望したい場合 |
 
 ### split モードの動作
 
 1. 最初の子タスク: 親ペインの右側に分割 (`cmux new-split right`)
 2. 以降の子タスク: 前の子ペインの下に分割 (`cmux new-split down`)
-3. 各ペインは独立した git worktree + Claude Code セッション
-4. 親ペイン（左カラム）はオーケストレータとして監視を継続
+3. 全タスク起動後、`cmux-grid.sh` が自動実行され、親を含む全サーフェスをグリッドに整列
+4. 各ペインは独立した git worktree + Claude Code セッション
+5. `--no-grid` で従来のリニアレイアウトを維持可能
 
 ### split モードでの起動チェーン
 
@@ -122,6 +125,13 @@
 ```
 
 各起動スクリプトの JSON 出力から `surface_id` を取得し、次の `--split-from` に渡します。
+
+全起動完了後、`cmux-grid.sh` が自動実行され、全サーフェスをグリッドに整列:
+
+```
+3 タスク + 親 = 4 サーフェス → 2×2 グリッド
+5 タスク + 親 = 6 サーフェス → 3×2 グリッド
+```
 
 ---
 
@@ -162,8 +172,8 @@ API, endpoint, IPC, database, service, handler, main process, NeDB, authenticati
 ### superpowers モード
 
 - `superpowers` プラグインがインストールされている場合に使用可能
-- `superpowers:writing-plans` で構造化されたプランを作成
-- 計画 → レビュー → 実行のフルワークフロー
+- まず `superpowers:brainstorming` でコンテキスト探索・設計を行い、その後 `superpowers:writing-plans` に遷移して構造化されたプランを作成
+- ブレインストーミング → 計画 → レビュー → 実行のフルワークフロー
 
 ### plan モード
 
@@ -211,6 +221,7 @@ JSON（`{`, `"`, `$` 等の特殊文字を含む）をシェルコマンドに�
 3. Claude 終了後（理由を問わず）、`status.json` を `"done"` または `"error"` に更新
 4. `cmux wait-for --signal <slug>-done` で完了をシグナル
 5. オプションで `cmux notify` で親 workspace に通知
+6. `cmux send` で親ターミナルにテキスト通知を送信（親 Claude のユーザー入力として配信）
 
 これにより、Claude がプロンプト内のステータス報告指示に従わなくても、
 完了が必ず報告されます。
@@ -278,27 +289,38 @@ JSON（`{`, `"`, `$` 等の特殊文字を含む）をシェルコマンドに�
 
 親オーケストレータは以下の方法で進捗を確認:
 
-1. **シグナルベースの待機（推奨）**:
-   ```bash
-   # 単一タスクの完了を待機
-   cmux wait-for <task-slug>-done --timeout 1800
-
-   # 全タスクの完了を待機（順次）
-   for slug in task-1 task-2 task-3; do
-     echo "Waiting for $slug..."
-     cmux wait-for "${slug}-done" --timeout 1800
-     echo "$slug completed"
-   done
+1. **通知ベースの監視（推奨）**:
+   各子セッションの Claude プロセスが終了すると、ランナースクリプトが
+   `cmux send` で親ターミナルに直接テキストメッセージを送信します:
    ```
-   シグナルは Claude セッション終了時に発火します。成功/エラーの区別は
-   `status.json` を読んで判定してください。
+   [dispatch] task "<slug>" finished (status: done|error)
+   ```
+   このメッセージは親 Claude のユーザー入力として表示されるため、
+   親セッションは自動的にタスク完了を検知して処理を進めます。
 
-2. **ステータスファイルのポーリング（フォールバック）**:
+   **動作の流れ:**
+   - タスク起動後、バックグラウンドモニターを起動してターンを終了
+   - 子タスクが完了すると `[dispatch]` メッセージが届く
+   - 親 Claude がメッセージを受信し、`status.json` を確認
+   - 全タスク完了後、Step 8 の完了処理に進む
+
+2. **バックグラウンドモニター（補助）**:
+   `monitor-dispatch.sh` をバックグラウンドで起動し、ステータスファイルの
+   変化を監視します。全タスク完了時に `[dispatch-monitor]` メッセージで通知:
+   ```bash
+   bash <this-skill-dir>/scripts/monitor-dispatch.sh \
+     --parent-surface "$CMUX_SURFACE_ID" \
+     --parent-workspace "$CMUX_WORKSPACE_ID" \
+     --layout <split|workspace> \
+     "$(pwd)/.dispatch"
+   ```
+
+3. **ステータスファイルのポーリング（手動確認）**:
    ```bash
    cat .dispatch/*/status.json
    ```
 
-3. **画面の直接読み取り**:
+4. **画面の直接読み取り**:
    - workspace モード: `cmux read-screen --workspace <workspace-id> --scrollback`
    - split モード: `cmux read-screen --workspace <parent-ws> --surface <child-surface-id> --scrollback`
 
@@ -471,11 +493,11 @@ cmux close-workspace --workspace <workspace-id>
                │
                ▼
 ┌──────────┬──────────┐
-│          │ task-1   │  superpowers モードで実行
-│  親      ├──────────┤
-│(監視)    │ task-2   │  各ペインが独立した worktree
-│          ├──────────┤
-│          │ task-3   │  TDD 等のスキルが自然に発動
+│  親      │ task-1   │  superpowers モードで実行
+│(監視)    │          │
+├──────────┼──────────┤  自動グリッド整列
+│ task-2   │ task-3   │  各ペインが独立した worktree
+│          │          │  TDD 等のスキルが自然に発動
 └──────────┴──────────┘
                │
                ▼
@@ -505,6 +527,12 @@ bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh \
   --mode superpowers \
   --tasks-file /tmp/plan-tasks.json \
   --wait --wait-timeout 3600
+
+# グリッドレイアウトを無効にする場合（リニアレイアウトを維持）
+bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh \
+  --mode superpowers \
+  --tasks-file /tmp/plan-tasks.json \
+  --no-grid
 ```
 
 #### タスク JSON フォーマット
@@ -564,7 +592,7 @@ bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh \
 | 項目 | 通常（Step 1-8） | superpowers 統合 |
 |------|----------------|-----------------|
 | タスクの入力元 | ユーザー入力または CLI 引数 | プランファイルから抽出 |
-| 計画モード | ユーザーが選択（plan/superpowers） | 常に `superpowers` |
+| 計画モード | ユーザーが選択（plan/superpowers） | 常に `superpowers`（brainstorming 完了済み） |
 | レイアウトモード | ユーザーが選択（workspace/split） | 常に `split` |
 | 使用ステップ | 全て（1-8） | Step 5-8 のみ（1-4 は事前決定） |
 | Agent ルーティング | キーワードマッチング | 同じロジック |
@@ -575,7 +603,7 @@ bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh \
 
 - **cmux 必須**: `/Applications/cmux.app/` にインストールされている必要があります
 - **同時セッション数**: システムリソースに依存しますが、通常 3〜5 セッションが推奨
-- **split モード制限**: 2〜4 タスクが推奨。5 以上はペインが小さくなりすぎるため workspace モードを使用してください
+- **split モード制限**: 自動グリッド整列により均等なペインサイズを実現。2〜6 タスクが推奨。7 以上はペインが小さくなるため workspace モードを使用してください。`--no-grid` でリニアレイアウトに戻せます
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません。競合の可能性がある場合は順次実行にしてください
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新と `cmux wait-for --signal <slug>-done` の発火を保証します。プロンプト内のステータス指示は実行中の中間更新用（ベストエフォート）です
 - **ランナースクリプト**: `.cmux-team-dispatch-task-run.sh` は各 worktree に生成されます。worktree 削除時に自動的にクリーンアップされます

@@ -95,7 +95,7 @@ Ask the user which planning mode to use for each session (or all sessions):
 
 **Option A: superpowers mode**
 
-- If the `superpowers` plugin is installed, each child session will use `superpowers:writing-plans` for structured planning before execution.
+- If the `superpowers` plugin is installed, each child session will first invoke `superpowers:brainstorming` to explore context and design the approach, then transition to `superpowers:writing-plans` for structured planning before execution.
 - Claude is launched without `/plan` prefix so superpowers skills trigger naturally.
 
 **Option B: plan mode**
@@ -121,19 +121,20 @@ Ask the user which layout to use for the child sessions:
 **Option B: split mode**
 
 - All tasks are split panes within the CURRENT workspace.
-- Parent occupies the left column; children stack vertically on the right.
+- After all panes are created, automatically reorganized into a grid layout (parent included).
 - Best for quick tasks or when visual overview of all sessions is desired.
-- Recommended for 2-4 tasks (more will make panes too small).
+- Recommended for 2-6 tasks (more may make panes too small).
+- Use `--no-grid` with `launch-session-splits.sh` to preserve the old linear layout.
 
 ```
-workspace mode:              split mode:
+workspace mode:              split mode (auto-grid):
 +----------+ +----------+   +----------+----------+
-| ws: t-1  | | ws: t-2  |   |          | Child 1  |
-|          | |          |   |  Parent  +----------+
-|          | |          |   |(orchest.)| Child 2  |
-|          | |          |   |          +----------+
-|          | |          |   |          | Child 3  |
-+----------+ +----------+   +----------+----------+
+| ws: t-1  | | ws: t-2  |   | Parent   | Child 1  |
+|          | |          |   +----------+----------+
+|          | |          |   | Child 2  | Child 3  |
+|          | |          |   +----------+----------+
+|          | |          |   (4 surfaces -> 2x2 grid)
++----------+ +----------+
 ```
 
 ---
@@ -169,7 +170,18 @@ of the launch script's output JSON.
 For each task, construct the full prompt text that will be written to the file:
 
 1. **The task description** itself
-2. **Status protocol instructions** (append to every prompt):
+2. **superpowers mode only — brainstorming directive** (append when `--mode superpowers`):
+
+```
+IMPORTANT: You are running in superpowers mode.
+Before writing an implementation plan, you MUST first invoke /brainstorming to:
+- Explore the project context and understand the codebase
+- Design your approach with trade-offs considered
+After brainstorming completes, it will naturally transition to writing-plans for the implementation plan.
+Do NOT skip brainstorming and jump directly to writing-plans.
+```
+
+3. **Status protocol instructions** (append to every prompt):
 
 ```
 IMPORTANT: Status reporting protocol.
@@ -289,29 +301,70 @@ When split mode is chosen:
 
 ## Step 7: Monitor Sessions
 
-### Signal-based Monitoring (Primary)
+### Notification-based Monitoring (Primary)
 
-Each child session emits a `cmux wait-for` signal when the Claude process exits.
-Use this for reliable completion detection:
+Each child session sends a `[dispatch]` message to the parent terminal when the Claude
+process exits. The message appears as user input in the parent session:
 
-```bash
-# Wait for a single task to complete
-cmux wait-for <task-slug>-done --timeout 1800
-
-# Wait for all tasks sequentially
-for slug in task-1 task-2 task-3; do
-  echo "Waiting for $slug..."
-  cmux wait-for "${slug}-done" --timeout 1800
-  echo "$slug completed"
-done
+```
+[dispatch] task "<slug>" finished (status: done|error)
 ```
 
-The signal fires when the Claude session exits. It does not distinguish between
-success and error -- read `status.json` to determine the actual outcome.
+**After launching all tasks:**
 
-### Polling Status Files (Fallback)
+1. Launch the background monitor script:
+   ```bash
+   bash <this-skill-dir>/scripts/monitor-dispatch.sh \
+     --parent-surface "$CMUX_SURFACE_ID" \
+     --parent-workspace "$CMUX_WORKSPACE_ID" \
+     --layout <split|workspace> \
+     --interval 10 \
+     "$(pwd)/.dispatch"
+   ```
+   Run this command with `run_in_background` so it does not block your turn.
 
-Periodically check all status files:
+2. Report the launch summary to the user (task count, slugs, surfaces).
+3. Tell the user: "N タスクを監視中。完了通知を待ちます。"
+4. **End your turn.** Do not block waiting.
+
+**When you receive a `[dispatch] task "X" finished` message:**
+
+1. Read `.dispatch/<slug>/status.json` to get the full status and message.
+2. If status is `"done"`, also read `.dispatch/<slug>/result.md` if it exists.
+3. Report the task result to the user.
+4. Count completed tasks against the total. If all tasks are done, proceed to Step 8.
+5. If some tasks remain, tell the user how many are left and end your turn again.
+
+**When you receive a `[dispatch-monitor]` message:**
+
+This is the all-done notification from the background monitor. All tasks have reached
+a terminal state. Proceed to Step 8.
+
+**Example flow:**
+
+```
+User: [dispatch] task "login-page-ui" finished (status: done)
+
+Claude: タスク "login-page-ui" が完了しました。
+  結果: ログインフォームコンポーネントを実装。
+  残り 2/3 タスク。完了通知を待ちます。
+
+User: [dispatch] task "auth-api" finished (status: done)
+
+Claude: タスク "auth-api" が完了しました。
+  結果: /api/auth エンドポイントと JWT ミドルウェアを追加。
+  残り 1/3 タスク。完了通知を待ちます。
+
+User: [dispatch] task "test-coverage" finished (status: error)
+
+Claude: タスク "test-coverage" でエラーが発生しました。
+  エラー: Claude session exited with code 1.
+  全 3 タスクが完了。Step 8 に進みます。
+```
+
+### Polling Status Files (Manual Check)
+
+If the user asks about progress, or if you need to check status between notifications:
 
 ```bash
 for f in .dispatch/*/status.json; do
@@ -336,21 +389,10 @@ For split mode:
 cmux read-screen --workspace <parent-ws> --surface <child-surface-id> --scrollback
 ```
 
-### Progress Reporting
-
-Report progress at natural checkpoints:
-
-```
-Task Progress:
-  done       login-page-ui (frontend-coding): Implemented login form component
-  executing  auth-api-endpoint (backend-coding): Writing authentication middleware
-  planning   test-coverage (general): Analyzing coverage gaps
-```
-
 ### When to Intervene
 
-- **Status "error"**: Read the error message and session screen. Retry, provide context, or escalate.
-- **Stale status**: If a session hasn't updated for a long time, read its screen to check for issues.
+- **Status "error"**: Read the error message and session screen. Offer to retry or escalate.
+- **Long silence**: If no notifications arrive for an extended time, poll status files or read screens.
 - **User request**: The user can ask to check on any specific session at any time.
 
 ---
@@ -600,12 +642,16 @@ RESULT=$(bash .claude/skills/cmux-team-dispatch-task/scripts/launch-session-spli
   --mode superpowers \
   --tasks-file /tmp/plan-tasks.json)
 
-# 3. Monitor completion
-for slug in login-page-ui auth-api-endpoint integration-tests; do
-  cmux wait-for "${slug}-done" --timeout 1800
-done
+# 3. Launch background monitor
+bash <this-skill-dir>/scripts/monitor-dispatch.sh \
+  --parent-surface "$CMUX_SURFACE_ID" \
+  --parent-workspace "$CMUX_WORKSPACE_ID" \
+  --layout split \
+  "$(pwd)/.dispatch"
+# Run with run_in_background. Child sessions send [dispatch] messages
+# to this terminal on completion. See Step 7.
 
-# 4. Collect results and merge
+# 4. Collect results and merge (after all [dispatch] messages received)
 ```
 
 ### Differences from Standalone Usage
@@ -613,7 +659,7 @@ done
 | Aspect | Standalone (Steps 1-8) | superpowers Integration |
 |--------|----------------------|------------------------|
 | Task source | User input or CLI args | Parsed from plan file |
-| Planning mode | User chooses (plan/superpowers) | Always `superpowers` |
+| Planning mode | User chooses (plan/superpowers) | Always `superpowers` (brainstorming already done) |
 | Layout mode | User chooses (workspace/split) | Always `split` |
 | Steps used | All (1-8) | Steps 5-8 only (1-4 pre-determined) |
 | Agent routing | Keyword matching | Keyword matching (same logic) |
@@ -623,8 +669,8 @@ done
 ## Constraints
 
 - **Concurrent sessions**: Limited by system resources; 3-5 sessions recommended
-- **Split mode limit**: 2-4 tasks work well; more makes panes too small (use workspace mode instead)
+- **Split mode limit**: Split mode auto-reorganizes into a grid layout. 2-6 tasks work well; 7+ may still make panes small (use workspace mode instead). Use `--no-grid` to preserve linear layout.
 - **Worktree conflicts**: Two tasks must NOT modify the same files. If they might, run sequentially.
 - **cmux required**: Requires cmux at `/Applications/cmux.app/`
-- **Completion signals are reliable**: The runner script wrapper guarantees that `status.json` is updated and `cmux wait-for --signal <slug>-done` fires when the child Claude session exits. In-prompt status instructions remain best-effort for mid-execution updates.
+- **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` when the child Claude session exits. In-prompt status instructions remain best-effort for mid-execution updates.
 - **Runner script**: The `.cmux-team-dispatch-task-run.sh` file is created in each worktree. It's cleaned up along with the worktree.
