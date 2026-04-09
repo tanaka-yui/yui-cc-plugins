@@ -211,7 +211,7 @@ If none are relevant, proceed without an agent.
 
 | 選択 | 起動モード | 動作 |
 |------|-----------|------|
-| brainstorming あり | `--mode superpowers` | `/brainstorming` → `/writing-plans` → 実行 |
+| brainstorming あり | `--mode superpowers` | `superpowers:brainstorming` → `superpowers:writing-plans` → 実行 |
 | brainstorming なし | `--mode plan` | Claude 組み込み `/plan` モード → 実行 |
 
 ### brainstorming タスクのプロンプト
@@ -221,8 +221,9 @@ brainstorming が選択されたタスクには、以下の強制指示がプロ
 ```
 === MANDATORY EXECUTION SEQUENCE ===
 PHASE 1 — BRAINSTORMING (required, do this FIRST):
-  Invoke /brainstorming immediately. Do NOT read any files, do NOT make any plans,
-  do NOT write any code before completing brainstorming.
+  Use the Skill tool to invoke "superpowers:brainstorming" immediately.
+  Do NOT read any files, do NOT make any plans, do NOT write any code before
+  completing brainstorming.
 
 PHASE 2 — PLANNING (automatic transition from brainstorming):
   After brainstorming completes, write a structured implementation plan.
@@ -231,7 +232,7 @@ PHASE 3 — EXECUTION:
   After the plan is approved, execute it.
 
 VIOLATION: If you start writing code without completing Phase 1 and Phase 2,
-stop and invoke /brainstorming.
+stop and use the Skill tool to invoke "superpowers:brainstorming".
 === END MANDATORY EXECUTION SEQUENCE ===
 ```
 

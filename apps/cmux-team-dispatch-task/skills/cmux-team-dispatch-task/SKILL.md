@@ -94,11 +94,11 @@ This is the **only user interaction** before dispatch. Based on the selection:
 
 Default: `split` mode. Override via `--layout workspace` or `--layout claude-teams` in arguments.
 
-| Mode | Description | Recommended for |
-|------|-------------|-----------------|
-| `split` (default) | Split panes within current workspace, auto-grid layout | 2-6 tasks, visual overview |
-| `workspace` | Each task in a separate cmux workspace (sidebar entry) | Long-running, 7+ tasks |
-| `claude-teams` | Single orchestrator via `cmux claude-teams` + Agent Teams | Native notifications, sidebar metadata |
+| Mode              | Description                                               | Recommended for                        |
+| ----------------- | --------------------------------------------------------- | -------------------------------------- |
+| `split` (default) | Split panes within current workspace, auto-grid layout    | 2-6 tasks, visual overview             |
+| `workspace`       | Each task in a separate cmux workspace (sidebar entry)    | Long-running, 7+ tasks                 |
+| `claude-teams`    | Single orchestrator via `cmux claude-teams` + Agent Teams | Native notifications, sidebar metadata |
 
 ```
 split mode:                  workspace mode:              claude-teams mode:
@@ -161,9 +161,10 @@ You are running in superpowers mode with a STRICT execution sequence.
 You MUST follow these phases IN ORDER. Skipping any phase is a critical error.
 
 PHASE 1 — BRAINSTORMING (required, do this FIRST):
-  Invoke /brainstorming immediately. Do NOT read any files, do NOT make any plans,
-  do NOT write any code before completing brainstorming.
-  /brainstorming will:
+  Use the Skill tool to invoke "superpowers:brainstorming" immediately.
+  Do NOT read any files, do NOT make any plans, do NOT write any code before
+  completing brainstorming.
+  The brainstorming skill will:
   - Explore the project context and understand the codebase
   - Design your approach with trade-offs considered
   - Naturally transition to PHASE 2 when complete
@@ -177,7 +178,7 @@ PHASE 3 — EXECUTION:
 
 VIOLATION: If you start writing code or making changes without completing
 Phase 1 (brainstorming) and Phase 2 (planning), you are operating incorrectly.
-Stop and invoke /brainstorming.
+Stop and use the Skill tool to invoke "superpowers:brainstorming".
 === END MANDATORY EXECUTION SEQUENCE ===
 ```
 
@@ -250,12 +251,15 @@ EOF
 Manual split chaining:
 
 1. **Detect current workspace and surface IDs:**
+
    ```bash
    cmux identify
    ```
+
    Parse to get `PARENT_WS` and `PARENT_SF`. Use `CMUX_WORKSPACE_ID`/`CMUX_SURFACE_ID` env vars if set.
 
 2. **Launch FIRST task** (split right from parent):
+
    ```bash
    mkdir -p .dispatch/<task-1-slug>
 
@@ -275,6 +279,7 @@ Manual split chaining:
    ```
 
 3. **Launch SUBSEQUENT tasks** (split down from previous child):
+
    ```bash
    mkdir -p .dispatch/<task-N-slug>
 
@@ -402,6 +407,7 @@ process exits:
 **After launching all tasks:**
 
 1. Launch the background monitor script:
+
    ```bash
    zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
      --parent-surface "$CMUX_SURFACE_ID" \
@@ -411,6 +417,7 @@ process exits:
      --debug \
      "$(pwd)/.dispatch"
    ```
+
    Run this command with `run_in_background` so it does not block your turn.
 
 2. Report the launch summary to the user (task count, slugs, surfaces).
@@ -446,11 +453,13 @@ done
 ### Reading Session Screens (on demand)
 
 For workspace mode:
+
 ```bash
 cmux read-screen --workspace <workspace-id> --scrollback
 ```
 
 For split mode:
+
 ```bash
 cmux read-screen --workspace <parent-ws> --surface <child-surface-id> --scrollback
 ```
@@ -530,6 +539,7 @@ Present the user with two options:
    rm -rf .dispatch/
    ```
 2. Display cleanup instructions to the user:
+
    ```
    Worktrees are preserved for manual review. To clean up later:
 
@@ -618,10 +628,10 @@ writing-plans Execution Handoff:
 
 ### When to Suggest Parallel (cmux split)
 
-| Option | Best for |
-|--------|----------|
-| Subagent-Driven | Tasks with dependencies, review-heavy workflows, cost-conscious execution |
-| Inline Execution | Simple plans, interactive execution, single-session preference |
+| Option              | Best for                                                                  |
+| ------------------- | ------------------------------------------------------------------------- |
+| Subagent-Driven     | Tasks with dependencies, review-heavy workflows, cost-conscious execution |
+| Inline Execution    | Simple plans, interactive execution, single-session preference            |
 | **Parallel (cmux)** | **3+ independent tasks, speed priority, visual overview of all sessions** |
 
 ### Flow When Parallel Is Chosen
