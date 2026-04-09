@@ -240,9 +240,9 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 ## split モードの動作
 
-1. 最初の子タスク: 親ペインの右側に分割 (`cmux new-split right`)
-2. 以降の子タスク: 前の子ペインの下に分割 (`cmux new-split down`)
-3. 全タスク起動後、`cmux-grid.sh` が自動実行され、親を含む全サーフェスをグリッドに整列
+1. 最初の子タスク: 親ペインの右側に分割 (`launch-workspace.sh --split-direction right`)
+2. 以降の子タスク: 前の子ペインの下に分割 (`launch-workspace.sh --split-direction down`)
+3. 全タスク起動後、自動グリッド整列が実行される
 4. 各ペインは独立した git worktree + Claude Code セッション
 5. `--no-grid` で従来のリニアレイアウトを維持可能
 
@@ -289,12 +289,11 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 1. `status.json` を `"executing"` に更新（絶対パス使用）
 2. `claude` コマンドをインタラクティブに実行（claude-teams モードでは `cmux claude-teams` を使用）
-   - superpowers モード: `--dangerously-skip-permissions` を**使用しない**（`AskUserQuestion` がバイパスされ brainstorming の対話フローが壊れるため）。ツール許可は env の `permissions.defaultMode: bypassPermissions` に依存
-   - plan モード: `--dangerously-skip-permissions` を使用
 3. Claude 終了後、`status.json` を `"done"` または `"error"` に更新
 4. `cmux wait-for --signal <slug>-done` で完了をシグナル
 5. `cmux notify` で親 workspace に通知
-6. `cmux send` で親ターミナルにテキスト通知を送信
+
+シグナル名は `<task-slug>-done` で、起動スクリプトの出力 JSON の `signal_name` フィールドで返されます。
 
 ---
 
@@ -322,9 +321,42 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 | `done` | 全作業完了 | ランナースクリプト / 子セッション |
 | `error` | エラー / 異常終了 | ランナースクリプト / 子セッション |
 
+### 子セッションのステータス報告手順
+
+子セッションは以下の手順でステータスを報告します:
+
+1. **計画開始 → 実行開始時**: `status.json` を `"executing"` に更新
+2. **全作業完了時**:
+   1. 変更を必ずコミットしてから完了報告する:
+      ```bash
+      git add -A
+      git commit -m "<task-slug>: <変更の簡潔なサマリー>"
+      ```
+      論理的に独立した変更単位がある場合は、それぞれ別のコミットを作成する。
+      **このステップを省略しないこと** — 未コミットの変更は worktree クリーンアップ時に失われます。
+   2. `status.json` を `"done"` に更新
+   3. `result.md` に成果物サマリーを書き出す
+3. **ブロッキングエラー発生時**: `status.json` を `"error"` に更新
+
 ### result.md
 
 タスク完了時に子セッションが `.dispatch/<task-slug>/result.md` に書き出す成果物サマリー。
+
+```markdown
+# <タスク名>
+
+## Changes Made
+
+- 変更したファイルと内容の一覧
+
+## Test Results
+
+- テストの合否サマリー
+
+## Commits
+
+- <hash> <コミットメッセージ>
+```
 
 ---
 
@@ -352,16 +384,50 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
      --debug \
      "$(pwd)/.dispatch"
    ```
-   `--debug` フラグでシェルトレース (`set -x`) を有効化できる。
-
 3. **ステータスファイルのポーリング（手動確認）**:
    ```bash
-   cat .dispatch/*/status.json
+   for f in .dispatch/*/status.json; do
+     task_name=$(dirname "$f" | xargs basename)
+     task_status=$(jq -r '.status' "$f" 2>/dev/null || echo "unknown")
+     message=$(jq -r '.message' "$f" 2>/dev/null || echo "")
+     echo "$task_name: $task_status - $message"
+   done
    ```
 
 4. **画面の直接読み取り**:
    - workspace モード: `cmux read-screen --workspace <workspace-id> --scrollback`
    - split モード: `cmux read-screen --workspace <parent-ws> --surface <child-surface-id> --scrollback`
+
+### 介入のタイミング
+
+- **ステータスが "error"**: エラーメッセージとセッション画面を確認し、リトライまたはエスカレーションを提案
+- **長時間応答なし**: 通知が長時間来ない場合、ステータスファイルのポーリングや画面の直接読み取りで確認
+- **ユーザーリクエスト**: ユーザーはいつでも特定のセッションの確認を依頼可能
+
+### 完了レポート
+
+全タスクが終了ステータス（`"done"` または `"error"`）に到達すると、統合レポートを生成:
+
+```
+# Team Dispatch Report
+
+## Task Results
+
+### 1. login-page-ui [brainstorming]
+<.dispatch/login-page-ui/result.md の内容>
+
+### 2. auth-api-endpoint [plan]
+<.dispatch/auth-api-endpoint/result.md の内容>
+
+## Worktree Branches
+- feat/login-page-ui
+- feat/auth-api-endpoint
+
+## Next Steps
+- Review and merge branches
+- Run full test suite across all changes
+- Clean up worktrees when done
+```
 
 ### マージとクリーンアップ
 
@@ -376,20 +442,48 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
      git merge "feat/$slug" --no-edit || echo "CONFLICT in feat/$slug"
    done
    ```
-3. マージ完了後、全クリーンアップを実行:
+3. コンフリクトが発生した場合、ユーザーの解決を支援
+4. マージ完了後、全クリーンアップを実行:
    ```bash
+   # worktree を削除
    for slug in <task-slugs>; do
      git worktree remove ".worktrees/$slug" --force 2>/dev/null
+   done
+   # フィーチャーブランチを削除
+   for slug in <task-slugs>; do
      git branch -D "feat/$slug" 2>/dev/null
    done
+   # dispatch ディレクトリを削除
    rm -rf .dispatch/
+   # worktrees ディレクトリが空なら削除
    rmdir .worktrees 2>/dev/null
    ```
+5. マージ結果を `git log --oneline` で表示
 
 **マージしない場合:**
 
-1. `.dispatch/` ディレクトリのみ削除
-2. 手動クリーンアップのコマンドを表示
+1. `.dispatch/` ディレクトリのみ削除:
+   ```bash
+   rm -rf .dispatch/
+   ```
+2. 手動クリーンアップのコマンドを表示:
+   ```
+   Worktrees are preserved for manual review. To clean up later:
+
+   # worktree 一覧表示
+   git worktree list
+
+   # 個別の worktree とブランチを削除
+   git worktree remove .worktrees/<task-slug>
+   git branch -D feat/<task-slug>
+
+   # 一括削除
+   for slug in <task-slugs>; do
+     git worktree remove ".worktrees/$slug" --force
+     git branch -D "feat/$slug"
+   done
+   rmdir .worktrees 2>/dev/null
+   ```
 
 ---
 
@@ -409,27 +503,6 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 2. brainstorming 選択（プランから来た場合、brainstorming 完了済みなのでデフォルト「なし」）
 3. レイアウト選択（デフォルト split、引数で override）
 4. 起動・監視・完了
-
----
-
-## トラブルシューティング
-
-### セッションが応答しない場合
-
-1. `cmux read-screen` で画面を確認
-2. Claude がプロンプト待ちの場合は `cmux send` でコマンドを送信
-3. セッションがクラッシュしている場合は workspace を閉じて再起動
-
-### ステータスファイルが更新されない場合
-
-1. ランナースクリプトが正しく生成されたか確認
-2. `cmux read-screen` で直接画面を確認
-3. Claude がまだ実行中の場合はシグナル未発火は正常
-
-### worktree 作成に失敗する場合
-
-- ブランチ `feat/<task-slug>` が既に存在する場合、自動的にチェックアウトを試みます
-- 既存の worktree と衝突する場合は `git worktree list` で確認し、不要なものを削除してください
 
 ---
 
