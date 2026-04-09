@@ -50,7 +50,7 @@
       "name": "cmux-team-dispatch-task",
       "description": "cmux ワークスペースによる並列タスクディスパッチ。タスクごとに git worktree + Claude Code セッションを起動し、親セッションがオーケストレーション。",
       "source": "./apps/cmux-team-dispatch-task",
-      "version": "1.0.6",
+      "version": "1.0.7",
       "license": "MIT",
       "category": "development",
       "tags": [
