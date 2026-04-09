@@ -169,7 +169,7 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 - **同時セッション数**: 3〜5 セッションが推奨
 - **split モード制限**: 2〜6 タスクが推奨。7 以上は workspace モードを使用。`--no-grid` でリニアレイアウトを維持可能
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません。競合の可能性がある場合は順次実行にしてください
-- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新、`cmux wait-for --signal` の発火、`cmux send` による親ターミナルへの通知を保証
+- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新、`cmux wait-for --signal` の発火、`cmux send` による親ターミナルへの通知を保証。加えて `monitor-dispatch.sh` も個別タスク完了時に `[dispatch]` 通知を親に送信
 
 ## 詳細ガイド
 

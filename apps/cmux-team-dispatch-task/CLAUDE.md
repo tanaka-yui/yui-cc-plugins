@@ -24,7 +24,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 
 ## SKILL.md の編集ルール
 
-- **8ステップワークフローの構造を維持する**（Collect → Discover → Route → Plan → Layout → Launch → Monitor → Completion）
+- **3ステップワークフローの構造を維持する**（Parse & Prepare [1a-1e] → Launch Sessions → Monitor & Complete）
 - `<this-skill-dir>` はスキルランタイムで SKILL.md の所在ディレクトリに解決される — パスはこのプレースホルダーを基準にする
 - **ステータスプロトコル**（status.json / result.md）の仕様変更時は guide-ja.md も同期する
 - **スクリプトのオプション追加**時は SKILL.md 内の使用例とスクリプト本体の `usage()` を同期する

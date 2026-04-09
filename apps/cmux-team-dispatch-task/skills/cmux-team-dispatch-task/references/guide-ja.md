@@ -288,6 +288,8 @@ stop and invoke /brainstorming.
 
 1. `status.json` を `"executing"` に更新（絶対パス使用）
 2. `claude` コマンドをインタラクティブに実行（claude-teams モードでは `cmux claude-teams` を使用）
+   - superpowers モード: `--dangerously-skip-permissions` を**使用しない**（`AskUserQuestion` がバイパスされ brainstorming の対話フローが壊れるため）。ツール許可は env の `permissions.defaultMode: bypassPermissions` に依存
+   - plan モード: `--dangerously-skip-permissions` を使用
 3. Claude 終了後、`status.json` を `"done"` または `"error"` に更新
 4. `cmux wait-for --signal <slug>-done` で完了をシグナル
 5. `cmux notify` で親 workspace に通知
@@ -337,7 +339,19 @@ stop and invoke /brainstorming.
    親 Claude が自動的にタスク完了を検知します。
 
 2. **バックグラウンドモニター（補助）**:
-   `monitor-dispatch.sh` がステータスファイルの変化を監視し、全タスク完了時に通知。
+   `monitor-dispatch.sh` がステータスファイルの変化を監視。
+   個別タスクが完了/エラーになるたびに `[dispatch] task "<slug>" finished` を親に送信し、
+   全タスク完了時には `[dispatch-monitor]` 通知を送信。
+   ```bash
+   zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
+     --parent-surface "$CMUX_SURFACE_ID" \
+     --parent-workspace "$CMUX_WORKSPACE_ID" \
+     --layout <split|workspace|claude-teams> \
+     --interval 10 \
+     --debug \
+     "$(pwd)/.dispatch"
+   ```
+   `--debug` フラグでシェルトレース (`set -x`) を有効化できる。
 
 3. **ステータスファイルのポーリング（手動確認）**:
    ```bash

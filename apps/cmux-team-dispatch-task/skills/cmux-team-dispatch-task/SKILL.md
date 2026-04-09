@@ -403,11 +403,12 @@ process exits:
 
 1. Launch the background monitor script:
    ```bash
-   bash <this-skill-dir>/scripts/monitor-dispatch.sh \
+   zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
      --parent-surface "$CMUX_SURFACE_ID" \
      --parent-workspace "$CMUX_WORKSPACE_ID" \
      --layout <split|workspace|claude-teams> \
      --interval 10 \
+     --debug \
      "$(pwd)/.dispatch"
    ```
    Run this command with `run_in_background` so it does not block your turn.

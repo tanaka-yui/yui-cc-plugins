@@ -10,6 +10,7 @@
 #   --parent-workspace <id>    親ワークスペース ID（workspace モード用）
 #   --layout split|workspace   レイアウトモード（default: split）
 #   --interval <seconds>       ポーリング間隔（default: 10）
+#   --debug                    シェルトレース有効化 (set -x)
 #   --help                     ヘルプ表示
 #
 # Output: 状態変化を "[HH:MM:SS] slug: old_status -> new_status" 形式で stdout に出力
@@ -52,9 +53,14 @@ PARENT_WORKSPACE=""
 LAYOUT="split"
 INTERVAL=10
 DISPATCH_DIR=""
+DEBUG=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --debug)
+      DEBUG=true
+      shift
+      ;;
     --parent-surface)
       [[ $# -lt 2 ]] && die "--parent-surface requires a surface ID"
       PARENT_SURFACE="$2"
@@ -92,6 +98,10 @@ done
 [[ -n "$DISPATCH_DIR" ]] || die "dispatch directory is required"
 [[ -d "$DISPATCH_DIR" ]] || die "dispatch directory does not exist: $DISPATCH_DIR"
 
+if $DEBUG; then
+  set -x
+fi
+
 # --- ポーリングループ ---
 
 typeset -A PREV_STATUS
@@ -118,6 +128,12 @@ while true; do
         echo "[$(ts)] $slug: $task_status"
       fi
       PREV_STATUS[$slug]="$task_status"
+
+      # terminal 状態に遷移した場合、親に個別通知
+      if [[ "$task_status" == "done" || "$task_status" == "error" ]]; then
+        message=$(jq -r '.message' "$f" 2>/dev/null || echo "")
+        send_to_parent "[dispatch] task \"$slug\" finished (status: $task_status) - $message"
+      fi
     fi
 
     # terminal 状態のカウント
