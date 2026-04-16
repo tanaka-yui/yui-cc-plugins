@@ -29,9 +29,9 @@ For the Japanese reference guide, see `references/guide-ja.md`.
 
 ## Step 1: Parse and Prepare
 
-This single step handles task collection, agent routing, and layout selection.
-**No routing confirmation, no planning mode selection, no layout question** — minimize
-parent-side overhead and dispatch as fast as possible.
+This single step handles task collection, agent routing, layout selection, and integration
+strategy. Three user interactions before dispatch: brainstorming selection (1c), layout
+mode selection (1d), and integration strategy selection (1e).
 
 ### 1a. Collect Tasks
 
@@ -85,14 +85,21 @@ Present the task list and ask the user which tasks should use the brainstorming 
 > Which tasks should use the brainstorming skill before planning?
 > Select task numbers, "all", or "none".
 
-This is the **only user interaction** before dispatch. Based on the selection:
+Based on the selection:
 
 - **Selected tasks** → launched with `--mode superpowers` + MANDATORY EXECUTION SEQUENCE directive
 - **Non-selected tasks** → launched with `--mode plan` (Claude built-in `/plan` mode)
 
-### 1d. Determine Layout
+### 1d. Select Layout Mode
 
-Default: `split` mode. Override via `--layout workspace` or `--layout claude-teams` in arguments.
+If `--layout` was specified in arguments, use that value and skip this question.
+Otherwise, ask the user which layout mode to use:
+
+> Which layout mode should be used for this dispatch?
+>
+> 1. **split** (default) — Panes within current workspace, auto-grid layout (2-6 tasks recommended)
+> 2. **workspace** — Each task in a separate cmux workspace sidebar entry (long-running, 7+ tasks)
+> 3. **claude-teams** — Native Agent Teams via cmux claude-teams (sidebar notifications)
 
 | Mode              | Description                                               | Recommended for                        |
 | ----------------- | --------------------------------------------------------- | -------------------------------------- |
@@ -110,16 +117,31 @@ split mode:                  workspace mode:              claude-teams mode:
 (auto-grid)                  (separate tabs)              (native Agent Teams)
 ```
 
-### 1e. Display Summary and Proceed
+### 1e. Select Integration Strategy
+
+Ask the user how completed tasks should be integrated:
+
+> How should completed tasks be integrated?
+>
+> 1. **PR per task** — Each child task pushes its branch and creates a GitHub PR when done. Parent monitors PR status.
+> 2. **Wait and merge** (default) — Parent waits for all tasks to finish, then merges worktree branches locally.
+
+Based on the selection:
+
+- **PR per task** → child prompts include push + `gh pr create` instructions in the status protocol
+- **Wait and merge** → current behavior (local merge after all tasks complete)
+
+### 1f. Display Summary and Proceed
 
 Print an informational summary (NOT a confirmation prompt) and proceed to launch immediately:
 
 ```
-Dispatching 3 tasks (split mode):
+Dispatching 3 tasks (workspace mode, PR per task):
   1. login-page-ui      [brainstorming]
   2. auth-api-endpoint   [plan]
   3. test-coverage       [brainstorming]
 Available agents: backend-coding, frontend-coding
+Integration: PR per task
 Launching...
 ```
 
@@ -199,6 +221,8 @@ If none are relevant, proceed without an agent.
 
 4. **Status protocol instructions** (append to every prompt):
 
+**When integration strategy is "Wait and merge"** (default):
+
 ```
 IMPORTANT: Status reporting protocol.
 When you finish planning and begin execution, run:
@@ -217,6 +241,46 @@ And write a result summary to <project-root>/.dispatch/<task-slug>/result.md wit
   # <Task Name>
   ## Changes Made
   ## Test Results
+  ## Commits
+
+If you encounter a blocking error, run:
+  echo '{"status":"error","message":"<error description>","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
+```
+
+**When integration strategy is "PR per task"**:
+
+```
+IMPORTANT: Status reporting protocol.
+When you finish planning and begin execution, run:
+  echo '{"status":"executing","message":"<brief description>","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
+
+When all work is complete:
+1. Stage and commit ALL changes before reporting done:
+  git add -A
+  git commit -m "<task-slug>: <concise summary of changes>"
+  If there are multiple logical units of work, create separate commits for each.
+  Do NOT skip this step — uncommitted changes will be lost when the worktree is cleaned up.
+
+2. Push the branch to remote and create a Pull Request:
+  git push -u origin feat/<task-slug>
+  gh pr create --title "<task-slug>: <concise summary>" --body "## Summary
+  <description of changes>
+
+  ## Changes Made
+  <list of files changed>
+
+  ## Test Results
+  <test pass/fail summary>"
+
+3. Then report completion (include PR URL in message):
+  PR_URL=$(gh pr view --json url -q '.url')
+  echo '{"status":"done","message":"<summary of changes>","pr_url":"'"$PR_URL"'","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
+And write a result summary to <project-root>/.dispatch/<task-slug>/result.md with sections:
+  # <Task Name>
+  ## Changes Made
+  ## Test Results
+  ## Pull Request
+  - <PR URL>
   ## Commits
 
 If you encounter a blocking error, run:
@@ -478,6 +542,8 @@ When all tasks reach a terminal status (`"done"` or `"error"`):
 
 2. **Generate consolidated report**:
 
+   **When integration strategy is "Wait and merge":**
+
    ```
    # Team Dispatch Report
 
@@ -499,9 +565,35 @@ When all tasks reach a terminal status (`"done"` or `"error"`):
    - Clean up worktrees when done
    ```
 
-3. **Ask the user whether to merge**:
+   **When integration strategy is "PR per task":**
 
-### Merge and Cleanup
+   ```
+   # Team Dispatch Report
+
+   ## Task Results
+
+   ### 1. login-page-ui [brainstorming]
+   <contents of .dispatch/login-page-ui/result.md>
+   PR: <PR URL from status.json>
+
+   ### 2. auth-api-endpoint [plan]
+   <contents of .dispatch/auth-api-endpoint/result.md>
+   PR: <PR URL from status.json>
+
+   ## Pull Requests
+   - login-page-ui: <PR URL>
+   - auth-api-endpoint: <PR URL>
+
+   ## Next Steps
+   - Review and merge PRs on GitHub
+   - Clean up worktrees when done
+   ```
+
+3. **Proceed to integration based on strategy selected in Step 1e**:
+
+### Integration and Cleanup
+
+#### When integration strategy is "Wait and merge"
 
 Present the user with two options:
 
@@ -558,6 +650,41 @@ Present the user with two options:
    rmdir .worktrees 2>/dev/null
    ```
 
+#### When integration strategy is "PR per task"
+
+PRs are already created by each child session. Present the user with:
+
+1. **List all PR URLs** extracted from `.dispatch/<slug>/status.json` (`pr_url` field) and `result.md`
+2. **Check PR status**:
+   ```bash
+   for slug in <task-slugs>; do
+     pr_url=$(jq -r '.pr_url // empty' ".dispatch/$slug/status.json" 2>/dev/null)
+     if [[ -n "$pr_url" ]]; then
+       pr_state=$(gh pr view "$pr_url" --json state -q '.state' 2>/dev/null || echo "unknown")
+       echo "$slug: $pr_state - $pr_url"
+     else
+       echo "$slug: no PR created"
+     fi
+   done
+   ```
+3. **Ask the user whether to clean up worktrees**:
+
+   **Option A: Clean up now** (if PRs are merged or user confirms)
+   ```bash
+   for slug in <task-slugs>; do
+     git worktree remove ".worktrees/$slug" --force 2>/dev/null
+     git branch -D "feat/$slug" 2>/dev/null
+   done
+   rm -rf .dispatch/
+   rmdir .worktrees 2>/dev/null
+   ```
+
+   **Option B: Keep worktrees** for further review
+   ```bash
+   rm -rf .dispatch/
+   ```
+   Display manual cleanup instructions (same as "Wait and merge" Option B).
+
 ---
 
 ## Status Protocol Reference
@@ -572,9 +699,13 @@ Child sessions communicate with the orchestrator via `.dispatch/<task-slug>/`:
   "workspace_id": "workspace:N",
   "surface_id": "surface:N",
   "message": "Human-readable status description",
+  "pr_url": "https://github.com/owner/repo/pull/123",
   "timestamp": "2026-04-07T16:00:00Z"
 }
 ```
+
+The `pr_url` field is only present when integration strategy is "PR per task" and the child
+session has successfully created a PR. It is written at status `done`.
 
 | Status      | Meaning                                              | Written By                    |
 | ----------- | ---------------------------------------------------- | ----------------------------- |
@@ -588,6 +719,8 @@ Child sessions communicate with the orchestrator via `.dispatch/<task-slug>/`:
 
 Written by the child session when status becomes `done`:
 
+**Wait and merge:**
+
 ```markdown
 # <Task Name>
 
@@ -598,6 +731,28 @@ Written by the child session when status becomes `done`:
 ## Test Results
 
 - Test pass/fail summary
+
+## Commits
+
+- <hash> <commit message>
+```
+
+**PR per task:**
+
+```markdown
+# <Task Name>
+
+## Changes Made
+
+- List of files changed and what was done
+
+## Test Results
+
+- Test pass/fail summary
+
+## Pull Request
+
+- <PR URL>
 
 ## Commits
 
@@ -641,9 +796,10 @@ When the user selects option 3:
 1. **Skip Step 1a** of this skill (tasks already defined in the plan)
 2. **Parse the plan file** to extract independent tasks with descriptions
 3. **Ask brainstorming selection** (Step 1c) — since tasks come from a superpowers plan, default to "none" (brainstorming was already done by the planner)
-4. **Choose layout** (pre-selected as split mode, or claude-teams via argument)
-5. **Launch all tasks** using launch commands from Step 2
-6. **Monitor** using Step 3
+4. **Ask layout mode** (Step 1d) — pre-selected as split mode, or claude-teams via argument; still ask if no `--layout` flag
+5. **Ask integration strategy** (Step 1e) — ask PR per task or Wait and merge
+6. **Launch all tasks** using launch commands from Step 2
+7. **Monitor** using Step 3
 
 ### Building the Tasks JSON from a Plan
 

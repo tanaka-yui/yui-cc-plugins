@@ -15,7 +15,8 @@
 - `.claude/agents/` ディレクトリを動的にスキャンし、利用可能な Agent タイプを自動発見
 - 利用可能な Agent 一覧を子セッションに伝達し、各子セッションが最適な Agent を選択
 - タスクごとに brainstorming スキルの使用を選択可能
-- **3つのレイアウトモード**: split（ペイン分割）、workspace（別タブ）、claude-teams（Agent Teams）
+- **3つのレイアウトモード**: split（ペイン分割）、workspace（別タブ）、claude-teams（Agent Teams）— ディスパッチ前に選択
+- **2つの統合戦略**: PR per task（子タスクごとに PR 作成）、Wait and merge（全タスク完了後にローカルマージ）
 - `.dispatch/` ディレクトリを介したステータス通信で進捗を追跡
 - プロンプトはファイル経由で渡すため、シェルエスケープの問題なし
 
@@ -69,23 +70,30 @@
 
 ### Step 1: Parse and Prepare
 
-タスク収集、Agent ルーティング、レイアウト決定を1ステップで実行。
-**ルーティング確認なし、プランニングモード選択なし、レイアウト質問なし。**
+タスク収集、Agent ルーティング、レイアウト決定、統合戦略決定を1ステップで実行。
+ディスパッチ前に3つのユーザーインタラクション: brainstorming 選択、レイアウト選択、統合戦略選択。
 
-1. タスクを `$ARGUMENTS` から解析（なければ1回だけ質問）
-2. `.claude/agents/` をスキャンして利用可能な Agent 一覧を収集
-3. レイアウトをデフォルト split に設定（引数で override 可能）
-4. **brainstorming タスク選択**: 唯一のユーザーインタラクション
+1. **(1a)** タスクを `$ARGUMENTS` から解析（なければ1回だけ質問）
+2. **(1b)** `.claude/agents/` をスキャンして利用可能な Agent 一覧を収集
+3. **(1c)** **brainstorming タスク選択**:
    - 各タスクについて brainstorming スキルを使うか選択
    - 選択されたタスク → superpowers モード + MANDATORY EXECUTION SEQUENCE
    - 非選択タスク → plan モード
-5. 情報表示のみで即座にディスパッチ:
+4. **(1d)** **レイアウトモード選択**（`--layout` フラグ指定時はスキップ）:
+   - **split** (デフォルト) — 現在の workspace 内でペイン分割（2〜6タスク推奨）
+   - **workspace** — タスクごとに独立した cmux workspace（長時間タスク、7個以上）
+   - **claude-teams** — `cmux claude-teams` で Agent Teams を使用（サイドバー通知）
+5. **(1e)** **統合戦略選択**:
+   - **PR per task** — 各子タスクがブランチを push して GitHub PR を作成。親は PR を監視
+   - **Wait and merge** (デフォルト) — 全タスク完了後に親がローカルマージ
+6. **(1f)** 情報表示のみで即座にディスパッチ:
    ```
-   Dispatching 3 tasks (split mode):
+   Dispatching 3 tasks (workspace mode, PR per task):
      1. login-page-ui      [brainstorming]
      2. auth-api-endpoint   [plan]
      3. test-coverage       [brainstorming]
    Available agents: backend-coding, frontend-coding
+   Integration: PR per task
    Launching...
    ```
 
@@ -326,7 +334,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 子セッションは以下の手順でステータスを報告します:
 
 1. **計画開始 → 実行開始時**: `status.json` を `"executing"` に更新
-2. **全作業完了時**:
+2. **全作業完了時（Wait and merge）**:
    1. 変更を必ずコミットしてから完了報告する:
       ```bash
       git add -A
@@ -336,7 +344,16 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
       **このステップを省略しないこと** — 未コミットの変更は worktree クリーンアップ時に失われます。
    2. `status.json` を `"done"` に更新
    3. `result.md` に成果物サマリーを書き出す
-3. **ブロッキングエラー発生時**: `status.json` を `"error"` に更新
+3. **全作業完了時（PR per task）**:
+   1. 変更をコミット（上記と同様）
+   2. ブランチを push して PR を作成:
+      ```bash
+      git push -u origin feat/<task-slug>
+      gh pr create --title "<task-slug>: <サマリー>" --body "<変更の説明>"
+      ```
+   3. `status.json` を `"done"` に更新（`pr_url` フィールドに PR URL を含める）
+   4. `result.md` に成果物サマリーを書き出す（`## Pull Request` セクションに PR URL を記載）
+4. **ブロッキングエラー発生時**: `status.json` を `"error"` に更新
 
 ### result.md
 
@@ -429,7 +446,11 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 - Clean up worktrees when done
 ```
 
-### マージとクリーンアップ
+### 統合とクリーンアップ
+
+Step 1e で選択した統合戦略に応じて動作が異なります。
+
+#### Wait and merge の場合
 
 全タスク完了後、ユーザーにマージするか確認します:
 
@@ -484,6 +505,38 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
    done
    rmdir .worktrees 2>/dev/null
    ```
+
+#### PR per task の場合
+
+各子セッションが完了時に PR を作成済み。完了レポートに PR URL を含めて表示:
+
+1. **PR 一覧と状態の表示**:
+   ```bash
+   for slug in <task-slugs>; do
+     pr_url=$(jq -r '.pr_url // empty' ".dispatch/$slug/status.json" 2>/dev/null)
+     if [[ -n "$pr_url" ]]; then
+       pr_state=$(gh pr view "$pr_url" --json state -q '.state' 2>/dev/null || echo "unknown")
+       echo "$slug: $pr_state - $pr_url"
+     else
+       echo "$slug: PR 未作成"
+     fi
+   done
+   ```
+
+2. **worktree のクリーンアップ確認**:
+
+   **クリーンアップする場合:**
+   ```bash
+   for slug in <task-slugs>; do
+     git worktree remove ".worktrees/$slug" --force 2>/dev/null
+     git branch -D "feat/$slug" 2>/dev/null
+   done
+   rm -rf .dispatch/
+   rmdir .worktrees 2>/dev/null
+   ```
+
+   **worktree を保持する場合:**
+   `.dispatch/` のみ削除し、手動クリーンアップのコマンドを表示（Wait and merge の「マージしない場合」と同様）。
 
 ---
 
