@@ -315,9 +315,20 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
   "workspace_id": "workspace:3",
   "surface_id": "surface:5",
   "message": "Claude session launched in plan mode (workspace layout)",
+  "pr_url": "https://github.com/owner/repo/pull/123",
+  "cleanup_preference": {
+    "delete_worktree": true,
+    "close_surface": true
+  },
   "timestamp": "2026-04-07T16:00:00Z"
 }
 ```
+
+- `pr_url` は PR per task 戦略で PR 作成済みの場合のみ `done` で付与。
+- `cleanup_preference` は子セッションが `done` 時に埋める。親は Integration and Cleanup で
+  タスクごとにこれを読み、`delete_worktree=true` なら `git worktree remove`、
+  `close_surface=true` ならレイアウトに応じて `cmux close-surface` または
+  `cmux close-workspace` を実行する。欠落時は親が `read -rp` で直接確認する。
 
 ### ステータス一覧
 
@@ -342,8 +353,16 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
       ```
       論理的に独立した変更単位がある場合は、それぞれ別のコミットを作成する。
       **このステップを省略しないこと** — 未コミットの変更は worktree クリーンアップ時に失われます。
-   2. `status.json` を `"done"` に更新
-   3. `result.md` に成果物サマリーを書き出す
+   2. **クリーンアップ意思確認** (`AskUserQuestion` を子セッション内で実行):
+      - Q1「この worktree (`.worktrees/<task-slug>`) を完了後に削除しますか?」 → Yes / No
+      - Q2「このセッションのペイン/ワークスペースを閉じますか?」 → Yes / No
+
+      回答は真偽値 (Yes=true, No=false) として次ステップの `cleanup_preference` に埋める。
+   3. `status.json` を `"done"` に更新（`cleanup_preference` を含める）:
+      ```json
+      {"status":"done","message":"...","cleanup_preference":{"delete_worktree":true,"close_surface":false},"timestamp":"..."}
+      ```
+   4. `result.md` に成果物サマリーを書き出す
 3. **全作業完了時（PR per task）**:
    1. 変更をコミット（上記と同様）
    2. ブランチを push して PR を作成:
@@ -351,9 +370,15 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
       git push -u origin feat/<task-slug>
       gh pr create --title "<task-slug>: <サマリー>" --body "<変更の説明>"
       ```
-   3. `status.json` を `"done"` に更新（`pr_url` フィールドに PR URL を含める）
-   4. `result.md` に成果物サマリーを書き出す（`## Pull Request` セクションに PR URL を記載）
+   3. **クリーンアップ意思確認** (`AskUserQuestion` を子セッション内で実行):
+      - Q1「PR 作成済み — この worktree を削除しますか?（リモートブランチと PR は GitHub に残ります）」
+      - Q2「このセッションのペイン/ワークスペースを閉じますか?」
+   4. `status.json` を `"done"` に更新（`pr_url` と `cleanup_preference` を含める）
+   5. `result.md` に成果物サマリーを書き出す（`## Pull Request` セクションに PR URL を記載）
 4. **ブロッキングエラー発生時**: `status.json` を `"error"` に更新
+
+> `cleanup_preference` が欠落した `status.json`（エラー終了や未対応セッション）では、親が
+> 最後に per-task で `read -rp` でユーザーに直接確認します（fallback）。
 
 ### result.md
 
@@ -423,7 +448,10 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 ### 完了レポート
 
-全タスクが終了ステータス（`"done"` または `"error"`）に到達すると、統合レポートを生成:
+全タスクが終了ステータス（`"done"` または `"error"`）に到達すると、統合レポートを生成。
+統合戦略（Step 1e で選択）によってテンプレートが異なる。
+
+**Wait and merge の場合:**
 
 ```
 # Team Dispatch Report
@@ -446,6 +474,30 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 - Clean up worktrees when done
 ```
 
+**PR per task の場合:**
+
+```
+# Team Dispatch Report
+
+## Task Results
+
+### 1. login-page-ui [brainstorming]
+<.dispatch/login-page-ui/result.md の内容>
+PR: <PR URL from status.json>
+
+### 2. auth-api-endpoint [plan]
+<.dispatch/auth-api-endpoint/result.md の内容>
+PR: <PR URL from status.json>
+
+## Pull Requests
+- login-page-ui: <PR URL>
+- auth-api-endpoint: <PR URL>
+
+## Next Steps
+- Review and merge PRs on GitHub
+- Clean up worktrees when done
+```
+
 ### 統合とクリーンアップ
 
 Step 1e で選択した統合戦略に応じて動作が異なります。
@@ -464,21 +516,8 @@ Step 1e で選択した統合戦略に応じて動作が異なります。
    done
    ```
 3. コンフリクトが発生した場合、ユーザーの解決を支援
-4. マージ完了後、全クリーンアップを実行:
-   ```bash
-   # worktree を削除
-   for slug in <task-slugs>; do
-     git worktree remove ".worktrees/$slug" --force 2>/dev/null
-   done
-   # フィーチャーブランチを削除
-   for slug in <task-slugs>; do
-     git branch -D "feat/$slug" 2>/dev/null
-   done
-   # dispatch ディレクトリを削除
-   rm -rf .dispatch/
-   # worktrees ディレクトリが空なら削除
-   rmdir .worktrees 2>/dev/null
-   ```
+4. マージ完了後、**タスク単位のクリーンアップ**（後述「Per-task クリーンアップ」節）を実行。
+   一括削除ではなく、各子セッションが `cleanup_preference` に書き込んだ意思に従う。
 5. マージ結果を `git log --oneline` で表示
 
 **マージしない場合:**
@@ -523,20 +562,69 @@ Step 1e で選択した統合戦略に応じて動作が異なります。
    done
    ```
 
-2. **worktree のクリーンアップ確認**:
+2. **タスク単位のクリーンアップ**（後述「Per-task クリーンアップ」節）を実行。
+   子セッションが PR 作成直後に `AskUserQuestion` で捕捉した `cleanup_preference` を
+   タスクごとに適用する。一括 yes/no の選択は不要。
 
-   **クリーンアップする場合:**
-   ```bash
-   for slug in <task-slugs>; do
-     git worktree remove ".worktrees/$slug" --force 2>/dev/null
-     git branch -D "feat/$slug" 2>/dev/null
-   done
-   rm -rf .dispatch/
-   rmdir .worktrees 2>/dev/null
-   ```
+   全タスクで「保持」を選んだ場合は `rm -rf .dispatch/` のみで、worktree は残る。
+   手動で後から削除するコマンドは「Wait and merge の『マージしない場合』」と同じ。
 
-   **worktree を保持する場合:**
-   `.dispatch/` のみ削除し、手動クリーンアップのコマンドを表示（Wait and merge の「マージしない場合」と同様）。
+---
+
+### Per-task クリーンアップ（両戦略共通）
+
+子セッションが `status.json.cleanup_preference` に書き込んだ意思に従って、親がタスク単位で
+クローズ／削除を実行する。`$LAYOUT_MODE` は Step 1d で選んだレイアウト名
+（`split` / `workspace` / `claude-teams`）。
+
+```bash
+for slug in <task-slugs>; do
+  pref_file=".dispatch/$slug/status.json"
+  delete=$(jq -r '.cleanup_preference.delete_worktree // empty' "$pref_file")
+  close=$(jq -r '.cleanup_preference.close_surface // empty' "$pref_file")
+  workspace_id=$(jq -r '.workspace_id // empty' "$pref_file")
+  surface_id=$(jq -r '.surface_id // empty' "$pref_file")
+
+  # preference が欠落していれば親が直接確認（fallback）
+  if [[ -z "$delete" ]]; then
+    read -rp "Delete worktree .worktrees/$slug? [y/N] " ans
+    [[ "$ans" =~ ^[Yy] ]] && delete=true || delete=false
+  fi
+  if [[ -z "$close" ]]; then
+    read -rp "Close pane/workspace for $slug? [y/N] " ans
+    [[ "$ans" =~ ^[Yy] ]] && close=true || close=false
+  fi
+
+  # 1) pane / workspace を先に閉じる
+  if [[ "$close" == "true" ]]; then
+    case "$LAYOUT_MODE" in
+      split)                  cmux close-surface   --surface   "$surface_id"   ;;
+      workspace|claude-teams) cmux close-workspace --workspace "$workspace_id" ;;
+    esac
+  fi
+
+  # 2) worktree とブランチを削除
+  if [[ "$delete" == "true" ]]; then
+    git worktree remove ".worktrees/$slug" --force 2>/dev/null
+    git branch -D "feat/$slug" 2>/dev/null
+  fi
+done
+
+# 3) 最終整理
+rm -rf .dispatch/
+rmdir .worktrees 2>/dev/null
+```
+
+#### モード別の閉鎖対象
+
+| `$LAYOUT_MODE`  | `close_surface=true` で閉じる対象 | 使用する cmux コマンド                    |
+|-----------------|----------------------------------|-------------------------------------------|
+| `split`         | 子のペイン（子の `surface_id`）   | `cmux close-surface --surface <id>`       |
+| `workspace`     | 子のワークスペース                 | `cmux close-workspace --workspace <id>`   |
+| `claude-teams`  | team が紐づくワークスペース         | `cmux close-workspace --workspace <id>`   |
+
+> 先に pane/workspace を閉じてから worktree を削除する順序は意図的。閉鎖により worktree を
+> 開いている shell が終了するため、`git worktree remove` が確実に成功する。
 
 ---
 

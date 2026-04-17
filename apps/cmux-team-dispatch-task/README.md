@@ -8,6 +8,8 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 - **並列実行**: 2つ以上の独立タスクを同時にディスパッチ
 - **git worktree 隔離**: 各タスクが独立したブランチ (`feat/<task-slug>`) で作業し、メインブランチを保護
 - **Agent 自動発見**: `.claude/agents/` から利用可能なエージェントを動的にスキャンし、一覧を子セッションに伝達。各子セッションが自身のタスクに最適なエージェントを選択
+- **brainstorming タスク選択**: タスクごとに superpowers モード（brainstorming + writing-plans）か plan モードかを選択可能
+- **統合戦略の選択**: `PR per task`（各子タスクが push + `gh pr create`）または `Wait and merge`（全完了後に親でローカルマージ、デフォルト）
 - **ステータス監視**: `.dispatch/` ディレクトリを介したファイルベースのステータス通信とシグナルによるリアルタイム進捗追跡
 - **superpowers 連携**: Execution Handoff の第3選択肢「Parallel (cmux split)」として統合
 - **プロンプトファイル経由**: シェルエスケープの問題を回避するため、プロンプトはファイル経由で子セッションに渡される
@@ -142,6 +144,11 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 | `error` | エラー / 異常終了 |
 
 完了時には `.dispatch/<task-slug>/result.md` に成果物サマリーが出力される。
+
+`status.json` には以下の付加フィールドも含まれる:
+
+- `pr_url`: PR per task 戦略で子セッションが PR を作成した場合、`done` 時に付与される
+- `cleanup_preference`: 子セッションが `done` 時に書き込む `{ delete_worktree, close_surface }` の真偽値。親は per-task でこの意思に従ってワークスペース/ペインの閉鎖と worktree 削除を実行する（欠落時は親が対話確認）
 
 ## superpowers 統合
 

@@ -7,10 +7,11 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 
 | ファイル | 役割 |
 |---------|------|
-| `skills/cmux-team-dispatch-task/SKILL.md` | メインスキル定義（8ステップワークフロー） |
+| `skills/cmux-team-dispatch-task/SKILL.md` | メインスキル定義（3ステップワークフロー） |
 | `skills/cmux-team-dispatch-task/references/guide-ja.md` | 日本語リファレンスガイド |
 | `skills/cmux-team-dispatch-task/scripts/launch-workspace.sh` | ワークスペース/スプリット起動スクリプト |
 | `skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh` | 複数セッション一括起動ラッパー（superpowers 連携用） |
+| `skills/cmux-team-dispatch-task/scripts/monitor-dispatch.sh` | 完了通知の監視スクリプト（子 → 親通知＋全完了検知） |
 | `skills/cmux-team-dispatch-task/scripts/cmux-grid.sh` | split モード用グリッドレイアウト整列スクリプト |
 | `.claude-plugin/plugin.json` | Plugin マニフェスト |
 | `README.md` | 人間向けガイド |
@@ -24,7 +25,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 
 ## SKILL.md の編集ルール
 
-- **3ステップワークフローの構造を維持する**（Parse & Prepare [1a-1e] → Launch Sessions → Monitor & Complete）
+- **3ステップワークフローの構造を維持する**（Parse & Prepare [1a-1f] → Launch Sessions → Monitor & Complete）
 - `<this-skill-dir>` はスキルランタイムで SKILL.md の所在ディレクトリに解決される — パスはこのプレースホルダーを基準にする
 - **ステータスプロトコル**（status.json / result.md）の仕様変更時は guide-ja.md も同期する
 - **スクリプトのオプション追加**時は SKILL.md 内の使用例とスクリプト本体の `usage()` を同期する
@@ -45,8 +46,9 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 
 1. `launch-workspace.sh --help` の出力と SKILL.md の使用例を突き合わせて整合性を確認
 2. `launch-session-splits.sh --help` の出力と SKILL.md・guide-ja.md の使用例を突き合わせて整合性を確認
-3. ステータスプロトコル（status.json スキーマ）が SKILL.md と guide-ja.md で一致しているか確認
-4. superpowers 連携セクション（Step 6 の Execution Handoff）が superpowers プラグインの最新仕様と整合しているか確認
+3. `monitor-dispatch.sh --help` の出力と SKILL.md Step 3 の使用例を突き合わせて整合性を確認
+4. ステータスプロトコル（status.json スキーマ、`pr_url` / `cleanup_preference` を含む）が SKILL.md と guide-ja.md で一致しているか確認
+5. superpowers 連携セクション（"superpowers Execution Handoff Integration"）が superpowers プラグインの最新仕様と整合しているか確認
 
 ## テスト方法
 
