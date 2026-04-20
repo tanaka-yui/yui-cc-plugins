@@ -35,7 +35,7 @@ log() {
   echo "[$1] $2" >&2
 }
 
-# シェル起動検知と config 学習
+# シェル起動検知と config 学習（split mode のみで使用）
 # shellcheck source=./terminal-wait.sh
 source "$SCRIPT_DIR/terminal-wait.sh"
 
@@ -171,71 +171,17 @@ else
   CWD="$WORKTREE_PATH"
 fi
 
-# --- Step 2: Create cmux workspace OR split pane ---
-
-WORKSPACE_ID=""
-SURFACE_ID=""
-TITLE=""
-
-if [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
-  # --- Workspace Mode / Claude Teams Mode: Create new cmux workspace ---
-  log "cmux" "creating workspace with cwd=$CWD (layout: $LAYOUT)"
-  WORKSPACE_OUTPUT=$("$CMUX" new-workspace --cwd "$CWD" 2>/dev/null) || die "failed to create cmux workspace"
-  WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1)
-  [[ -z "$WORKSPACE_ID" ]] && die "failed to parse workspace ID from output: $WORKSPACE_OUTPUT"
-  log "cmux" "created $WORKSPACE_ID"
-
-  # Rename workspace
-  TITLE="[$REPO_NAME] $WORKSPACE_NAME"
-  "$CMUX" rename-workspace --workspace "$WORKSPACE_ID" "$TITLE" 2>/dev/null || die "failed to rename workspace"
-  log "cmux" "renamed to: $TITLE"
-
-  # Get surface ID
-  SURFACE_OUTPUT=$("$CMUX" list-pane-surfaces --workspace "$WORKSPACE_ID" 2>/dev/null) || die "failed to list pane surfaces"
-  SURFACE_ID=$(echo "$SURFACE_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
-  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from output: $SURFACE_OUTPUT"
-  log "cmux" "surface: $SURFACE_ID"
-
-elif [[ "$LAYOUT" == "split" ]]; then
-  # --- Split Mode: Create new pane in existing workspace ---
-  WORKSPACE_ID="$PARENT_WORKSPACE"
-  TITLE="$WORKSPACE_NAME"
-
-  log "cmux" "splitting $SPLIT_DIRECTION from $SPLIT_FROM in $WORKSPACE_ID"
-  SPLIT_OUTPUT=$("$CMUX" new-split "$SPLIT_DIRECTION" \
-    --workspace "$WORKSPACE_ID" \
-    --surface "$SPLIT_FROM" 2>/dev/null) || die "failed to create split pane"
-  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
-  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
-  log "cmux" "new split surface: $SURFACE_ID"
-
-  # Rename the tab for the new split pane
-  "$CMUX" rename-tab --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" "$TITLE" 2>/dev/null || \
-    log "cmux" "warning: failed to rename tab (non-fatal)"
-
-  wait_for_shell "$SURFACE_ID" || true
-fi
-
-# --- Step 2.5: Wait for shell readiness (workspace / claude-teams modes) ---
-if [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
-  wait_for_shell "$SURFACE_ID" || true
-fi
-
-# --- Step 3: Build full prompt ---
+# --- Step 2: Write prompt file ---
+# Writing to a file avoids all shell escaping issues when passing complex
+# prompt text (JSON, quotes, special chars) through cmux send / --command.
 
 FULL_PROMPT="$PROMPT"
-
-# --- Step 4: Write prompt to file ---
-# Writing to a file avoids all shell escaping issues when passing complex
-# prompt text (JSON, quotes, special chars) through cmux send.
-
 PROMPT_FILE="$CWD/.cmux-team-dispatch-task-prompt.md"
 printf '%s\n' "$FULL_PROMPT" > "$PROMPT_FILE"
 log "prompt" "wrote prompt to $PROMPT_FILE"
 
-# --- Step 5: Build Claude command ---
+# --- Step 3: Build Claude command ---
 # The command references the prompt file instead of embedding the prompt text.
-# This keeps the shell command simple and free of special characters.
 
 if [[ "$LAYOUT" == "claude-teams" ]]; then
   # claude-teams mode: use cmux claude-teams to enable Agent Teams (tmux shim + env vars)
@@ -249,37 +195,49 @@ if [[ "$LAYOUT" == "claude-teams" ]]; then
     CLAUDE_CMD="$CMUX claude-teams --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
   fi
 elif [[ "$MODE" == "superpowers" ]]; then
-  # superpowers mode: --dangerously-skip-permissions を使わない
-  # --dangerously-skip-permissions は AskUserQuestion もバイパスしてしまうため、
-  # ブレストの対話フローが機能しない。env の permissions.defaultMode: bypassPermissions は
-  # ツール許可をバイパスしつつ AskUserQuestion を対話的に保つのでそちらに依存する
   CLAUDE_CMD="claude 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
 else
   CLAUDE_CMD="claude --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
 fi
 
-# --- Step 5.5: Generate runner script ---
-# The runner script wraps the claude command to guarantee:
-# 1. status.json is updated to "executing" before Claude starts
-# 2. status.json is updated to "done"/"error" after Claude exits
-# 3. cmux wait-for signal is sent for parent to detect completion
-# 4. Optional cmux notification to parent workspace
+# --- Step 4: Generate runner script ---
+# The runner is written BEFORE the workspace is created so it can be launched
+# directly via `cmux new-workspace --command "bash <runner>"`. That removes
+# the race between shell readiness detection and `cmux send`, which was
+# unreliable on environments where the new workspace surface is not a plain
+# terminal at creation time.
+#
+# The runner resolves its own workspace/surface IDs at runtime (env vars first,
+# `cmux identify` as fallback) so we don't need them baked in at generation.
 
 RUNNER_FILE="$CWD/$RUNNER_SCRIPT_NAME"
 cat > "$RUNNER_FILE" <<EOF
 #!/bin/bash
 set -uo pipefail
 
-CMUX="/Applications/cmux.app/Contents/Resources/bin/cmux"
+CMUX="${CMUX}"
 STATUS_DIR="${STATUS_DIR}"
 SLUG="${WORKSPACE_NAME}"
+
+# Resolve the workspace / surface IDs we are running inside.
+# cmux normally exports CMUX_WORKSPACE_ID and CMUX_SURFACE_ID into spawned shells;
+# if they are missing, fall back to \`cmux identify\`.
+WORKSPACE_ID="\${CMUX_WORKSPACE_ID:-}"
+SURFACE_ID="\${CMUX_SURFACE_ID:-}"
+if [[ -z "\$WORKSPACE_ID" || -z "\$SURFACE_ID" ]]; then
+  _IDENT=\$("\$CMUX" identify 2>/dev/null || true)
+  if [[ -n "\$_IDENT" ]]; then
+    [[ -z "\$WORKSPACE_ID" ]] && WORKSPACE_ID=\$(echo "\$_IDENT" | jq -r '.caller.workspace_ref // empty' 2>/dev/null || echo "")
+    [[ -z "\$SURFACE_ID" ]]   && SURFACE_ID=\$(echo "\$_IDENT"   | jq -r '.caller.surface_ref // empty'   2>/dev/null || echo "")
+  fi
+fi
 
 write_status() {
   local status="\$1"
   local message="\$2"
   if [[ -n "\$STATUS_DIR" ]]; then
     mkdir -p "\$STATUS_DIR"
-    jq -n --arg s "\$status" --arg m "\$message" --arg ws "${WORKSPACE_ID}" --arg sf "${SURFACE_ID}" \\
+    jq -n --arg s "\$status" --arg m "\$message" --arg ws "\$WORKSPACE_ID" --arg sf "\$SURFACE_ID" \\
       '{status:\$s, message:\$m, workspace_id:\$ws, surface_id:\$sf, timestamp:(now|todate)}' \\
       > "\$STATUS_DIR/status.json"
   fi
@@ -324,45 +282,101 @@ EOF
 chmod +x "$RUNNER_FILE"
 log "runner" "generated $RUNNER_FILE"
 
-# --- Step 6: Send runner command ---
+# --- Step 5: Create cmux workspace OR split pane ---
 
-RUNNER_CMD="bash $RUNNER_SCRIPT_NAME"
+WORKSPACE_ID=""
+SURFACE_ID=""
+TITLE=""
 
-if [[ "$LAYOUT" == "split" ]]; then
-  # In split mode, cd into the worktree first, then launch the runner.
-  # Trailing \n acts as Enter key in cmux send.
+if [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
+  # --- Workspace Mode / Claude Teams Mode ---
+  # Use `--command` so the runner starts the instant the workspace shell is ready.
+  # This is strictly better than creating the workspace and then sending the
+  # runner via `cmux send`: on some environments the new surface is not a
+  # terminal at creation time, which previously caused dropped commands.
+  log "cmux" "creating workspace with cwd=$CWD (layout: $LAYOUT), auto-launching runner via --command"
+  WORKSPACE_OUTPUT=$("$CMUX" new-workspace --cwd "$CWD" --command "bash $RUNNER_SCRIPT_NAME" 2>/dev/null) \
+    || die "failed to create cmux workspace"
+  WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1)
+  [[ -z "$WORKSPACE_ID" ]] && die "failed to parse workspace ID from output: $WORKSPACE_OUTPUT"
+  log "cmux" "created $WORKSPACE_ID"
+
+  # Rename workspace
+  TITLE="[$REPO_NAME] $WORKSPACE_NAME"
+  "$CMUX" rename-workspace --workspace "$WORKSPACE_ID" "$TITLE" 2>/dev/null || die "failed to rename workspace"
+  log "cmux" "renamed to: $TITLE"
+
+  # Get surface ID (for initial status payload; the runner resolves its own at runtime)
+  SURFACE_OUTPUT=$("$CMUX" list-pane-surfaces --workspace "$WORKSPACE_ID" 2>/dev/null) || die "failed to list pane surfaces"
+  SURFACE_ID=$(echo "$SURFACE_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
+  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from output: $SURFACE_OUTPUT"
+  log "cmux" "surface: $SURFACE_ID"
+
+elif [[ "$LAYOUT" == "split" ]]; then
+  # --- Split Mode: Create new pane in existing workspace ---
+  # `cmux new-split` does not support --command, so we fall back to the
+  # send-after-create approach with shell readiness detection.
+  WORKSPACE_ID="$PARENT_WORKSPACE"
+  TITLE="$WORKSPACE_NAME"
+
+  log "cmux" "splitting $SPLIT_DIRECTION from $SPLIT_FROM in $WORKSPACE_ID"
+  SPLIT_OUTPUT=$("$CMUX" new-split "$SPLIT_DIRECTION" \
+    --workspace "$WORKSPACE_ID" \
+    --surface "$SPLIT_FROM" 2>/dev/null) || die "failed to create split pane"
+  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
+  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
+  log "cmux" "new split surface: $SURFACE_ID"
+
+  # Rename the tab for the new split pane
+  "$CMUX" rename-tab --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" "$TITLE" 2>/dev/null || \
+    log "cmux" "warning: failed to rename tab (non-fatal)"
+
+  wait_for_shell "$SURFACE_ID" || true
+
+  # Launch the runner via send (split mode only).
+  RUNNER_CMD="bash $RUNNER_SCRIPT_NAME"
   "$CMUX" send --surface "$SURFACE_ID" \
     "cd '$CWD' && $RUNNER_CMD\n" 2>/dev/null || die "failed to send cd+runner command"
-else
-  # workspace and claude-teams modes: cwd is already set by new-workspace
-  "$CMUX" send --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" \
-    "$RUNNER_CMD\n" 2>/dev/null || die "failed to send runner command"
+  log "cmux" "split runner command sent"
 fi
-log "cmux" "command sent"
 
-# --- Step 8: Write status file (if --status-dir specified) ---
+# --- Step 6: Write initial "launched" status ---
+# Race protection: the runner is already running in workspace/claude-teams mode,
+# so it may have already written "executing"/"done"/"error" to status.json.
+# Do not regress from those to "launched".
 
 if [[ -n "$STATUS_DIR" ]]; then
   mkdir -p "$STATUS_DIR"
-  jq -n \
-    --arg status "launched" \
-    --arg ws "$WORKSPACE_ID" \
-    --arg sf "$SURFACE_ID" \
-    --arg title "$TITLE" \
-    --arg mode "$MODE" \
-    --arg layout "$LAYOUT" \
-    --arg msg "Claude session launched in $MODE mode ($LAYOUT layout)" \
-    '{
-      status: $status,
-      workspace_id: $ws,
-      surface_id: $sf,
-      title: $title,
-      mode: $mode,
-      layout: $layout,
-      message: $msg,
-      timestamp: (now | todate)
-    }' > "$STATUS_DIR/status.json"
-  log "status" "wrote $STATUS_DIR/status.json"
+  existing_status=""
+  if [[ -f "$STATUS_DIR/status.json" ]]; then
+    existing_status=$(jq -r '.status // ""' "$STATUS_DIR/status.json" 2>/dev/null || echo "")
+  fi
+  case "$existing_status" in
+    executing|done|error)
+      log "status" "runner already at '$existing_status'; not overwriting with 'launched'"
+      ;;
+    *)
+      jq -n \
+        --arg status "launched" \
+        --arg ws "$WORKSPACE_ID" \
+        --arg sf "$SURFACE_ID" \
+        --arg title "$TITLE" \
+        --arg mode "$MODE" \
+        --arg layout "$LAYOUT" \
+        --arg msg "Claude session launched in $MODE mode ($LAYOUT layout)" \
+        '{
+          status: $status,
+          workspace_id: $ws,
+          surface_id: $sf,
+          title: $title,
+          mode: $mode,
+          layout: $layout,
+          message: $msg,
+          timestamp: (now | todate)
+        }' > "$STATUS_DIR/status.json"
+      log "status" "wrote $STATUS_DIR/status.json"
+      ;;
+  esac
 fi
 
 # --- Output JSON ---
