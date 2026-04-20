@@ -50,7 +50,8 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 1. `launch-workspace.sh --help` の出力と SKILL.md の使用例を突き合わせて整合性を確認
 2. `launch-session-splits.sh --help` の出力と SKILL.md・guide-ja.md の使用例を突き合わせて整合性を確認
 3. `monitor-dispatch.sh --help` の出力と SKILL.md Step 3 の使用例を突き合わせて整合性を確認
-4. ステータスプロトコル（status.json スキーマ、`pr_url` / `cleanup_preference` を含む）が SKILL.md と guide-ja.md で一致しているか確認
+4. ステータスプロトコル（status.json スキーマ、`pr_url` を含む）が SKILL.md と guide-ja.md で一致しているか確認
+   - クリーンアップは親セッション側で全タスク完了後にまとめて 3 問（workspace / worktree / branch）聞く方式。`status.json` には保存しない
 5. superpowers 連携セクション（"superpowers Execution Handoff Integration"）が superpowers プラグインの最新仕様と整合しているか確認
 6. `terminal-wait.sh` の config スキーマ（`shell_ready_ms.baseline_ms` / `samples` / `updated_at`）が guide-ja.md の説明と一致しているか確認
 

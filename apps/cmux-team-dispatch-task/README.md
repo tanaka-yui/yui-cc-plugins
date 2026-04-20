@@ -149,7 +149,11 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 `status.json` には以下の付加フィールドも含まれる:
 
 - `pr_url`: PR per task 戦略で子セッションが PR を作成した場合、`done` 時に付与される
-- `cleanup_preference`: 子セッションが `done` 時に書き込む `{ delete_worktree, close_surface }` の真偽値。親は per-task でこの意思に従ってワークスペース/ペインの閉鎖と worktree 削除を実行する（欠落時は親が対話確認）
+
+クリーンアップ意思は `status.json` には記録されない。親セッションがディスパッチ完了時に
+`AskUserQuestion` で「ワークスペース閉鎖 / worktree 削除 / ブランチ削除」の 3 問をまとめて聞き、
+回答を全タスクに適用する。子セッションは質問も削除も行わない（子が自分の worktree を掴んだまま
+親が削除を試みて失敗するのを防ぐため）。
 
 ## superpowers 統合
 
