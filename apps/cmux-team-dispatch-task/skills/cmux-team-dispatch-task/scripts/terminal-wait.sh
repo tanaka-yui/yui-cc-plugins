@@ -16,7 +16,7 @@ TERMINAL_WAIT_GLOBAL_CONFIG="$HOME/.claude/cmux-team-dispatch-task/config.json"
 TERMINAL_WAIT_EMA_ALPHA_NUM=3   # EMA α = 0.3（×10 で整数演算）
 TERMINAL_WAIT_EMA_ALPHA_DEN=10
 TERMINAL_WAIT_SAMPLES_MAX=5
-TERMINAL_WAIT_DEFAULT_MS=10000  # baseline 未設定時の最大待機
+TERMINAL_WAIT_DEFAULT_MS=30000  # baseline 未設定時の最大待機
 TERMINAL_WAIT_POLL_MS=100       # ポーリング間隔
 TERMINAL_WAIT_SAFETY_MULT=3     # baseline の何倍を最大待機にするか
 
@@ -114,18 +114,41 @@ wait_for_shell() {
   local i=0
   local elapsed_ms=0
   local pane_content=""
+  local read_rc=0
+  local stderr_file
+  stderr_file=$(mktemp -t terminal-wait.XXXXXX) || stderr_file="/tmp/terminal-wait.$$"
+  local logged_non_terminal=0
   while [[ $i -lt $iters ]]; do
-    pane_content=$("$CMUX" read-screen --surface "$surface_id" 2>/dev/null || true)
-    if echo "$pane_content" | grep -qE '[\$%#❯>]\s*$'; then
-      elapsed_ms=$((i * TERMINAL_WAIT_POLL_MS))
-      log "terminal-wait" "shell ready after ${elapsed_ms}ms"
-      save_sample_ms "$elapsed_ms"
-      return 0
+    # stdout と exit code を分けて取得することで
+    # "Surface is not a terminal" (workspace 初期化中の一時エラー) と
+    # "shell is up but has not printed a prompt yet" を区別する。
+    pane_content=$("$CMUX" read-screen --surface "$surface_id" 2>"$stderr_file")
+    read_rc=$?
+
+    if [[ $read_rc -eq 0 ]]; then
+      # surface が terminal として読み取り可能な状態。プロンプト末尾を確認。
+      if echo "$pane_content" | grep -qE '[\$%#❯>]\s*$'; then
+        elapsed_ms=$((i * TERMINAL_WAIT_POLL_MS))
+        log "terminal-wait" "shell ready after ${elapsed_ms}ms"
+        save_sample_ms "$elapsed_ms"
+        rm -f "$stderr_file"
+        return 0
+      fi
+    else
+      # まだ terminal ではない（例: "Surface is not a terminal"）。
+      # 初回だけ可視化しつつポーリング継続。
+      if [[ $logged_non_terminal -eq 0 ]]; then
+        local err_msg
+        err_msg=$(tr '\n' ' ' <"$stderr_file" 2>/dev/null | sed 's/[[:space:]]*$//')
+        log "terminal-wait" "surface not yet a terminal: ${err_msg:-(no stderr)}; continuing to poll"
+        logged_non_terminal=1
+      fi
     fi
     sleep "$poll_sec"
     i=$((i + 1))
   done
 
+  rm -f "$stderr_file"
   log "terminal-wait" "warning: shell readiness detection timed out after ${max_wait_ms}ms (proceeding)"
   return 1
 }
