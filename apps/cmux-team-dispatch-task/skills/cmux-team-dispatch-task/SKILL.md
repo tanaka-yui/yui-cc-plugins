@@ -235,20 +235,8 @@ When all work is complete:
   If there are multiple logical units of work, create separate commits for each.
   Do NOT skip this step — uncommitted changes will be lost when the worktree is cleaned up.
 
-2. Capture cleanup preferences before reporting done.
-  Use the Skill tool to invoke "AskUserQuestion" with exactly these two questions,
-  in this order, asked in THIS child session:
-    Q1 header="Worktree"
-       question="Delete this worktree (.worktrees/<task-slug>) after completion?
-                 Commits remain on branch feat/<task-slug>."
-       options: "Yes, delete" / "No, keep"
-    Q2 header="Pane/Workspace"
-       question="Close this session's pane/workspace after completion?"
-       options: "Yes, close" / "No, keep open"
-  Record the answers as booleans (Yes=true, No=false) for the next step.
-
-3. Then report completion, embedding the captured preferences:
-  echo '{"status":"done","message":"<summary of changes>","cleanup_preference":{"delete_worktree":<bool>,"close_surface":<bool>},"timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
+2. Then report completion. Do NOT ask cleanup questions here — the parent asks once at the end of dispatch.
+  echo '{"status":"done","message":"<summary of changes>","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
 And write a result summary to <project-root>/.dispatch/<task-slug>/result.md with sections:
   # <Task Name>
   ## Changes Made
@@ -284,22 +272,9 @@ When all work is complete:
   ## Test Results
   <test pass/fail summary>"
 
-3. Capture cleanup preferences before reporting done.
-  The PR is now on GitHub (the remote branch stays even if you delete the local worktree).
-  Use the Skill tool to invoke "AskUserQuestion" with exactly these two questions,
-  in this order, asked in THIS child session:
-    Q1 header="Worktree"
-       question="PR created — delete this worktree (.worktrees/<task-slug>) now?
-                 Remote branch feat/<task-slug> and the PR remain on GitHub."
-       options: "Yes, delete" / "No, keep"
-    Q2 header="Pane/Workspace"
-       question="Close this session's pane/workspace after completion?"
-       options: "Yes, close" / "No, keep open"
-  Record the answers as booleans (Yes=true, No=false) for the next step.
-
-4. Then report completion (include PR URL and cleanup preferences):
+3. Then report completion (include PR URL). Do NOT ask cleanup questions here — the parent asks once at the end of dispatch. The PR is on GitHub, so the remote branch remains even if the local worktree is later deleted.
   PR_URL=$(gh pr view --json url -q '.url')
-  echo '{"status":"done","message":"<summary of changes>","pr_url":"'"$PR_URL"'","cleanup_preference":{"delete_worktree":<bool>,"close_surface":<bool>},"timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
+  echo '{"status":"done","message":"<summary of changes>","pr_url":"'"$PR_URL"'","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
 And write a result summary to <project-root>/.dispatch/<task-slug>/result.md with sections:
   # <Task Name>
   ## Changes Made
@@ -632,10 +607,9 @@ Present the user with two options:
    done
    ```
 3. If merge conflicts occur, help the user resolve them
-4. After successful merge, apply per-task cleanup preferences
-   (see "Per-task cleanup from preferences" below). This replaces the previous blanket
-   worktree removal — each task is cleaned up according to what the child session
-   captured from the user.
+4. After successful merge, run the end-of-dispatch cleanup prompts
+   (see "Cleanup prompts (parent-side, end of dispatch)" below). The parent asks
+   once for workspace/worktree/branch deletion and applies the choice to all tasks.
 5. Show merge results with `git log --oneline`
 
 **Option B: Do not merge**
@@ -681,77 +655,88 @@ PRs are already created by each child session. Present the user with:
      fi
    done
    ```
-3. **Apply per-task cleanup preferences** (see "Per-task cleanup from preferences" below).
-   Each child session captured the user's cleanup intent in its own
-   `status.json` → `cleanup_preference`. The parent applies those per task; no blanket
-   "clean up all / keep all" decision is needed.
+3. **Run the end-of-dispatch cleanup prompts** (see "Cleanup prompts (parent-side, end of dispatch)" below).
+   The parent asks once for workspace/worktree/branch deletion and applies the choice
+   to all tasks.
 
    If the user prefers to defer all cleanup (e.g., PRs still need review), they can
-   choose "No, keep" in the child sessions, or the parent can skip the per-task loop
-   entirely and just run `rm -rf .dispatch/`. Display the manual cleanup instructions
-   from "Wait and merge" Option B when worktrees are intentionally kept.
+   answer "No" to each prompt — the parent will then just run `rm -rf .dispatch/`.
+   Display the manual cleanup instructions from "Wait and merge" Option B when
+   worktrees are intentionally kept.
 
 ---
 
-### Per-task cleanup from preferences
+### Cleanup prompts (parent-side, end of dispatch)
 
-Shared by both integration strategies. Run after the strategy-specific steps above
-(merge for "Wait and merge", PR state check for "PR per task"). `$LAYOUT_MODE` is
-whichever layout was selected in Step 1d (`split`, `workspace`, or `claude-teams`).
+Shared by both integration strategies. Run **in the parent session** after the
+strategy-specific steps above (merge for "Wait and merge", PR state check for
+"PR per task"). Child sessions never ask these questions themselves and never
+delete worktrees/branches — all destructive cleanup happens here, once, after
+every child has reported `status: done`.
+
+`$LAYOUT_MODE` is whichever layout was selected in Step 1d (`split`,
+`workspace`, or `claude-teams`).
+
+Ask the user three questions (in this order) via `AskUserQuestion`, then apply
+each answer to all tasks:
+
+```
+Q1 header="Pane/Workspace"
+   question="Close all child panes/workspaces now?"
+   options: "Yes, close all" / "No, keep open"
+Q2 header="Worktree"
+   question="Remove all task worktrees (.worktrees/<slug>)?"
+   options: "Yes, remove all" / "No, keep"
+Q3 header="Branch"
+   question="Delete all feature branches (feat/<slug>)?"
+   options: "Yes, delete all" / "No, keep"
+```
+
+Record answers as booleans `close_all` / `remove_wt_all` / `delete_br_all`, then:
 
 ```bash
-# For each task, read the child's captured preferences from status.json and act.
 for slug in <task-slugs>; do
-  pref_file=".dispatch/$slug/status.json"
-  delete=$(jq -r '.cleanup_preference.delete_worktree // empty' "$pref_file")
-  close=$(jq -r '.cleanup_preference.close_surface // empty' "$pref_file")
-  workspace_id=$(jq -r '.workspace_id // empty' "$pref_file")
-  surface_id=$(jq -r '.surface_id // empty' "$pref_file")
-
-  # Fallback: preferences missing → ask the user once, per task.
-  if [[ -z "$delete" ]]; then
-    read -rp "Delete worktree .worktrees/$slug? [y/N] " ans
-    [[ "$ans" =~ ^[Yy] ]] && delete=true || delete=false
-  fi
-  if [[ -z "$close" ]]; then
-    read -rp "Close pane/workspace for $slug? [y/N] " ans
-    [[ "$ans" =~ ^[Yy] ]] && close=true || close=false
-  fi
+  status_file=".dispatch/$slug/status.json"
+  workspace_id=$(jq -r '.workspace_id // empty' "$status_file")
+  surface_id=$(jq -r '.surface_id // empty' "$status_file")
 
   # 1) Close pane/workspace (child process has already exited by status=done).
   #    Pick the cmux command based on the layout mode selected in Step 1d.
-  if [[ "$close" == "true" ]]; then
+  if [[ "$close_all" == "true" ]]; then
     case "$LAYOUT_MODE" in
       split)
-        cmux close-surface --surface "$surface_id"
+        [[ -n "$surface_id" ]] && cmux close-surface --surface "$surface_id"
         ;;
       workspace|claude-teams)
-        cmux close-workspace --workspace "$workspace_id"
+        [[ -n "$workspace_id" ]] && cmux close-workspace --workspace "$workspace_id"
         ;;
     esac
   fi
 
-  # 2) Remove the worktree and its feature branch.
-  if [[ "$delete" == "true" ]]; then
-    git worktree remove ".worktrees/$slug" --force 2>/dev/null
-    git branch -D "feat/$slug" 2>/dev/null
-  fi
+  # 2) Remove the worktree.
+  [[ "$remove_wt_all" == "true" ]] && git worktree remove ".worktrees/$slug" --force 2>/dev/null
+
+  # 3) Delete the feature branch.
+  [[ "$delete_br_all" == "true" ]] && git branch -D "feat/$slug" 2>/dev/null
 done
 
-# 3) Final housekeeping (after all tasks processed).
+# 4) Final housekeeping (always run — clears dispatch state regardless of answers).
 rm -rf .dispatch/
 rmdir .worktrees 2>/dev/null
 ```
 
 Notes:
 
-- The close-before-remove order is intentional: closing the pane/workspace first
-  terminates any lingering shell that might hold the worktree open, making
-  `git worktree remove` cleaner.
-- If `close_surface=true` but the `workspace_id` / `surface_id` is empty (unusual),
-  skip the close step and continue with worktree removal.
+- The close → worktree → branch order is intentional: closing the pane/workspace
+  first terminates any lingering shell that might hold the worktree open, making
+  `git worktree remove` cleaner. Branch removal must come after worktree removal.
+- If `close_all=true` but `workspace_id` / `surface_id` is empty (unusual), skip
+  the close step for that task and continue with worktree/branch removal.
 - In `claude-teams` mode, closing the workspace that hosts the team effectively
   retires that team from the current cmux session.
+- Child sessions do NOT run cleanup prompts and do NOT execute any deletion —
+  doing so from inside a child caused the parent to fail `git worktree remove`
+  on a still-held worktree. All cleanup is centralized in this parent-side flow.
 
 ---
 
@@ -768,10 +753,6 @@ Child sessions communicate with the orchestrator via `.dispatch/<task-slug>/`:
   "surface_id": "surface:N",
   "message": "Human-readable status description",
   "pr_url": "https://github.com/owner/repo/pull/123",
-  "cleanup_preference": {
-    "delete_worktree": true,
-    "close_surface": true
-  },
   "timestamp": "2026-04-07T16:00:00Z"
 }
 ```
@@ -779,11 +760,9 @@ Child sessions communicate with the orchestrator via `.dispatch/<task-slug>/`:
 The `pr_url` field is only present when integration strategy is "PR per task" and the child
 session has successfully created a PR. It is written at status `done`.
 
-The `cleanup_preference` object is written by the **child session itself** at status `done`,
-capturing the answers the user gave in-session to the two cleanup questions (see "Capture
-cleanup preferences" step in the status protocol). The parent reads these during Integration
-and Cleanup and executes the actions per task. If the field is absent (e.g., child errored or
-skipped the prompt), the parent falls back to asking the user directly for that task.
+Cleanup decisions are NOT stored in `status.json`. The parent asks once at the end
+of dispatch (see "Cleanup prompts (parent-side, end of dispatch)") and applies the
+user's answers to every task — child sessions do not ask or record cleanup intent.
 
 | Status      | Meaning                                              | Written By                    |
 | ----------- | ---------------------------------------------------- | ----------------------------- |
