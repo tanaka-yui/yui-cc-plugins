@@ -264,6 +264,51 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 ---
 
+## ターミナル起動待機の自動学習
+
+子セッションのシェルが初期化される前に `cmux send` でコマンドを投入すると `sh` が失敗することがあります。これを避けるため、`launch-workspace.sh` はすべてのレイアウトモード（workspace / split / claude-teams）でシェルプロンプトを検知してから実際のコマンドを送信します。検知にかかった実時間は config に記録され、次回以降の最大待機時間を適応的に決定します。
+
+### 実装
+
+- ヘルパー: `scripts/terminal-wait.sh`（`launch-workspace.sh` が source する）
+- 検知方法: `cmux read-screen` の出力末尾を `[\$%#❯>]\s*$` でマッチ、100ms 間隔ポーリング
+- 最大待機時間: `max(baseline_ms × 3, 10000ms)`。baseline 未設定時は 10 秒
+- 学習則: 新サンプル `s` に対して EMA `baseline = 0.3·s + 0.7·baseline` を更新
+
+### Config 保存場所と優先順位
+
+1. **プロジェクト値**（手動配置、読み取り専用扱い）: `<project>/.dispatch/config.json`
+2. **グローバル値**（自動生成・更新）: `~/.claude/cmux-team-dispatch-task/config.json`
+
+プロジェクト値が存在すればそれを baseline として使用し、無ければグローバル値を使います。書き込み（学習結果の保存）は常にグローバル側に対して行われます。
+
+### Config スキーマ
+
+```json
+{
+  "shell_ready_ms": {
+    "baseline_ms": 1200,
+    "samples": [800, 1100, 1400, 1200, 1300],
+    "updated_at": "2026-04-20T11:20:00Z"
+  }
+}
+```
+
+- `baseline_ms`: 次回の最大待機時間計算に使う基準値（ミリ秒）
+- `samples`: 直近 5 件のリングバッファ（デバッグ用）
+- `updated_at`: 最終更新 UTC ISO8601
+
+### トラブルシュート
+
+| 症状 | 対処 |
+|------|------|
+| 初回起動で `sh: command not found` が出る | `max_wait=10000ms` でも足りないほど遅い環境。プロジェクト config で `baseline_ms` を大きく（例: 5000）設定する |
+| 特定プロジェクトだけ恒常的に遅い | `<project>/.dispatch/config.json` に手動で上書き値を置く |
+| 学習値をリセットしたい | `rm ~/.claude/cmux-team-dispatch-task/config.json` |
+| config 壊れた疑い | `jq . ~/.claude/cmux-team-dispatch-task/config.json` で検証、壊れていれば削除 |
+
+---
+
 ## プロンプトの受け渡し
 
 子セッションへのプロンプトは **`.cmux-team-dispatch-task-prompt.md` ファイル経由** で渡されます。

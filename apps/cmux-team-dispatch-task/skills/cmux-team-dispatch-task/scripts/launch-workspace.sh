@@ -22,6 +22,7 @@ set -euo pipefail
 
 CMUX="/Applications/cmux.app/Contents/Resources/bin/cmux"
 RUNNER_SCRIPT_NAME=".cmux-team-dispatch-task-run.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Helpers ---
 
@@ -33,6 +34,10 @@ die() {
 log() {
   echo "[$1] $2" >&2
 }
+
+# シェル起動検知と config 学習
+# shellcheck source=./terminal-wait.sh
+source "$SCRIPT_DIR/terminal-wait.sh"
 
 # --- Argument Parsing ---
 
@@ -208,23 +213,12 @@ elif [[ "$LAYOUT" == "split" ]]; then
   "$CMUX" rename-tab --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" "$TITLE" 2>/dev/null || \
     log "cmux" "warning: failed to rename tab (non-fatal)"
 
-  # Wait for shell to be ready to accept input
-  log "cmux" "waiting for shell to initialize in $SURFACE_ID"
-  WAIT_MAX=10
-  WAIT_ELAPSED=0
-  while [[ $WAIT_ELAPSED -lt $WAIT_MAX ]]; do
-    PANE_CONTENT=$("$CMUX" read-screen --surface "$SURFACE_ID" 2>/dev/null || true)
-    # Check for common shell prompt indicators ($ % ❯ > #)
-    if echo "$PANE_CONTENT" | grep -qE '[\$%#❯>]\s*$'; then
-      log "cmux" "shell ready after ${WAIT_ELAPSED}x0.2s"
-      break
-    fi
-    sleep 0.2
-    WAIT_ELAPSED=$((WAIT_ELAPSED + 1))
-  done
-  if [[ $WAIT_ELAPSED -ge $WAIT_MAX ]]; then
-    log "cmux" "warning: shell readiness detection timed out, proceeding anyway"
-  fi
+  wait_for_shell "$SURFACE_ID" || true
+fi
+
+# --- Step 2.5: Wait for shell readiness (workspace / claude-teams modes) ---
+if [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
+  wait_for_shell "$SURFACE_ID" || true
 fi
 
 # --- Step 3: Build full prompt ---
