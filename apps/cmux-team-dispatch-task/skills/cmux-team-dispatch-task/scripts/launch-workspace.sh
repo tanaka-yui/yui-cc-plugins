@@ -190,14 +190,14 @@ if [[ "$LAYOUT" == "claude-teams" ]]; then
     # --dangerously-skip-permissions は AskUserQuestion もバイパスしてしまうため、
     # ブレストの対話フローが機能しない。env の permissions.defaultMode: bypassPermissions は
     # ツール許可をバイパスしつつ AskUserQuestion を対話的に保つのでそちらに依存する
-    CLAUDE_CMD="$CMUX claude-teams --model sonnet 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+    CLAUDE_CMD="$CMUX claude-teams 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
   else
-    CLAUDE_CMD="$CMUX claude-teams --model sonnet --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+    CLAUDE_CMD="$CMUX claude-teams --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
   fi
 elif [[ "$MODE" == "superpowers" ]]; then
-  CLAUDE_CMD="claude --model sonnet 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+  CLAUDE_CMD="claude 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
 else
-  CLAUDE_CMD="claude --model sonnet --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+  CLAUDE_CMD="claude --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
 fi
 
 # --- Step 4: Generate runner script ---
