@@ -14,6 +14,11 @@
 #   --parent-workspace <ws-id>         Parent workspace ID (required for split mode)
 #   --parent-notify-workspace <ws-id>  Workspace to notify on completion
 #   --parent-notify-surface <sf-id>    Surface to notify on completion
+#   --runner <name>                    Runner name to look up in
+#                                      ~/.claude/cmux-team-dispatch-task/runners.json.
+#                                      Resolves to {command, engine, use_zsh} which control
+#                                      the launch command for the child session.
+#                                      Default: hardcoded {claude, engine=claude, use_zsh=false}.
 #
 # Output: JSON to stdout with workspace/pane details
 # Debug:  Logs to stderr
@@ -23,6 +28,7 @@ set -euo pipefail
 CMUX="/Applications/cmux.app/Contents/Resources/bin/cmux"
 RUNNER_SCRIPT_NAME=".cmux-team-dispatch-task-run.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNNERS_CONFIG_PATH="${RUNNERS_CONFIG_PATH:-$HOME/.claude/cmux-team-dispatch-task/runners.json}"
 
 # --- Helpers ---
 
@@ -50,6 +56,7 @@ SPLIT_DIRECTION="right"
 PARENT_WORKSPACE=""
 NOTIFY_WORKSPACE=""
 NOTIFY_SURFACE=""
+RUNNER_NAME=""
 WORKSPACE_NAME=""
 PROMPT=""
 
@@ -103,6 +110,11 @@ while [[ $# -gt 0 ]]; do
       NOTIFY_SURFACE="$2"
       shift 2
       ;;
+    --runner)
+      [[ $# -lt 2 ]] && die "--runner requires a runner name"
+      RUNNER_NAME="$2"
+      shift 2
+      ;;
     *)
       if [[ -z "$WORKSPACE_NAME" ]]; then
         WORKSPACE_NAME="$1"
@@ -135,6 +147,34 @@ fi
 [[ -x "$CMUX" ]] || die "cmux is not installed at $CMUX"
 command -v git &>/dev/null || die "git is not installed"
 command -v jq &>/dev/null || die "jq is not installed (required for JSON output)"
+
+# --- Resolve runner ---
+# When --runner is specified, look up the runner in runners.json and extract
+# {command, engine, use_zsh}. When unset, fall back to hardcoded claude defaults
+# so the script remains usable standalone (without runners.json being present).
+
+RUNNER_COMMAND="claude"
+RUNNER_ENGINE="claude"
+RUNNER_USE_ZSH="false"
+
+if [[ -n "$RUNNER_NAME" ]]; then
+  [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH (required when --runner is specified)"
+  RUNNER_JSON=$(jq --arg n "$RUNNER_NAME" '.runners[]? | select(.name == $n)' "$RUNNERS_CONFIG_PATH" 2>/dev/null) \
+    || die "failed to parse runners.json at $RUNNERS_CONFIG_PATH"
+  [[ -n "$RUNNER_JSON" ]] || die "runner '$RUNNER_NAME' not found in $RUNNERS_CONFIG_PATH"
+
+  RUNNER_COMMAND=$(echo "$RUNNER_JSON" | jq -r '.command // empty')
+  RUNNER_ENGINE=$(echo "$RUNNER_JSON" | jq -r '.engine // "claude"')
+  RUNNER_USE_ZSH=$(echo "$RUNNER_JSON" | jq -r '.use_zsh // false | tostring')
+
+  [[ -n "$RUNNER_COMMAND" ]] || die "runner '$RUNNER_NAME' is missing 'command' field"
+  [[ "$RUNNER_ENGINE" == "claude" || "$RUNNER_ENGINE" == "codex" ]] \
+    || die "runner '$RUNNER_NAME' has invalid engine '$RUNNER_ENGINE' (must be 'claude' or 'codex')"
+  [[ "$RUNNER_USE_ZSH" == "true" || "$RUNNER_USE_ZSH" == "false" ]] \
+    || die "runner '$RUNNER_NAME' has invalid use_zsh '$RUNNER_USE_ZSH' (must be true or false)"
+fi
+
+log "runner" "name=${RUNNER_NAME:-<default>} command=$RUNNER_COMMAND engine=$RUNNER_ENGINE use_zsh=$RUNNER_USE_ZSH"
 
 # Resolve git repo info
 REPO_ROOT=""
@@ -180,24 +220,51 @@ PROMPT_FILE="$CWD/.cmux-team-dispatch-task-prompt.md"
 printf '%s\n' "$FULL_PROMPT" > "$PROMPT_FILE"
 log "prompt" "wrote prompt to $PROMPT_FILE"
 
-# --- Step 3: Build Claude command ---
-# The command references the prompt file instead of embedding the prompt text.
+# --- Step 3: Build runner command ---
+# Build the launch command per (engine × MODE) and optionally wrap with `zsh -ic`
+# so that user-defined functions in ~/.zshrc (e.g. ccenec, ccgpt) are resolved.
+#
+# claude-teams layout uses `cmux claude-teams` (claude-only) and ignores --runner.
+
+PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
 
 if [[ "$LAYOUT" == "claude-teams" ]]; then
-  # claude-teams mode: use cmux claude-teams to enable Agent Teams (tmux shim + env vars)
+  # claude-teams mode: --runner is ignored; claude-teams only supports claude.
   if [[ "$MODE" == "superpowers" ]]; then
     # superpowers mode: --dangerously-skip-permissions を使わない
     # --dangerously-skip-permissions は AskUserQuestion もバイパスしてしまうため、
     # ブレストの対話フローが機能しない。env の permissions.defaultMode: bypassPermissions は
     # ツール許可をバイパスしつつ AskUserQuestion を対話的に保つのでそちらに依存する
-    CLAUDE_CMD="$CMUX claude-teams 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+    CLAUDE_CMD="$CMUX claude-teams '$PROMPT_TEXT'"
   else
-    CLAUDE_CMD="$CMUX claude-teams --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+    CLAUDE_CMD="$CMUX claude-teams --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
   fi
-elif [[ "$MODE" == "superpowers" ]]; then
-  CLAUDE_CMD="claude 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
 else
-  CLAUDE_CMD="claude --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'"
+  # engine × mode で起動コマンドを構築
+  if [[ "$RUNNER_ENGINE" == "codex" ]]; then
+    if [[ "$MODE" == "superpowers" ]]; then
+      # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
+      CORE_CMD="$RUNNER_COMMAND '\$superpowers:brainstorming $PROMPT_TEXT'"
+    else
+      # codex plan: claude の --dangerously-skip-permissions に相当するのは
+      # --dangerously-bypass-approvals-and-sandbox。/plan slash command は codex でも有効
+      CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '/plan $PROMPT_TEXT'"
+    fi
+  else
+    # claude engine (default)
+    if [[ "$MODE" == "superpowers" ]]; then
+      CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
+    else
+      CORE_CMD="$RUNNER_COMMAND --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
+    fi
+  fi
+
+  # use_zsh: true → zsh -ic で .zshrc を読み込ませてユーザー定義関数 (ccenec 等) を解決
+  if [[ "$RUNNER_USE_ZSH" == "true" ]]; then
+    CLAUDE_CMD="zsh -ic \"$CORE_CMD\""
+  else
+    CLAUDE_CMD="$CORE_CMD"
+  fi
 fi
 
 # --- Step 4: Generate runner script ---
@@ -401,6 +468,10 @@ jq -n \
   --arg prompt_file "$PROMPT_FILE" \
   --arg runner_file "$RUNNER_FILE" \
   --arg signal_name "$SIGNAL_NAME" \
+  --arg runner_name "$RUNNER_NAME" \
+  --arg runner_command "$RUNNER_COMMAND" \
+  --arg runner_engine "$RUNNER_ENGINE" \
+  --arg runner_use_zsh "$RUNNER_USE_ZSH" \
   '{
     workspace_id: $workspace_id,
     surface_id: $surface_id,
@@ -416,5 +487,11 @@ jq -n \
     prompt_file: $prompt_file,
     runner_file: $runner_file,
     signal_name: $signal_name,
+    runner: {
+      name: (if $runner_name == "" then null else $runner_name end),
+      command: $runner_command,
+      engine: $runner_engine,
+      use_zsh: ($runner_use_zsh == "true")
+    },
     prompt_sent: true
   }'

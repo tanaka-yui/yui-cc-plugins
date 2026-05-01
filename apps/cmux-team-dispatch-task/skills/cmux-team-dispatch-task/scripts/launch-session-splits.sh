@@ -16,14 +16,19 @@
 #
 # Tasks JSON format:
 #   [
-#     {"slug": "task-name", "prompt": "Full task description..."},
-#     {"slug": "other-task", "prompt": "Another task..."},
+#     {"slug": "task-name", "prompt": "Full task description...", "runner": "claude"},
+#     {"slug": "other-task", "prompt": "Another task...", "runner": "ccenec"},
 #     ...
 #   ]
 #
 # Each task object:
 #   - slug (required):   Short identifier (lowercase, hyphens, max 30 chars)
 #   - prompt (required): Full prompt text for the child Claude session
+#   - runner (optional): Runner name registered in
+#                        ~/.claude/cmux-team-dispatch-task/runners.json. Controls
+#                        which runtime the child session uses (claude / codex /
+#                        zsh function). Omit to use the script default
+#                        (hardcoded claude).
 #
 # Output: JSON to stdout with parent/task details
 # Debug:  Logs to stderr
@@ -148,6 +153,7 @@ SIGNAL_NAMES=()
 for i in $(seq 0 $((TASK_COUNT - 1))); do
   SLUG=$(echo "$TASKS_JSON" | jq -r ".[$i].slug")
   PROMPT=$(echo "$TASKS_JSON" | jq -r ".[$i].prompt")
+  RUNNER=$(echo "$TASKS_JSON" | jq -r ".[$i].runner // \"\"")
   [[ -n "$SLUG" && "$SLUG" != "null" ]] || die "task $i is missing 'slug' field"
   [[ -n "$PROMPT" && "$PROMPT" != "null" ]] || die "task $i ($SLUG) is missing 'prompt' field"
 
@@ -163,7 +169,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   STATUS_DIR="$PROJECT_ROOT/.dispatch/$SLUG"
   mkdir -p "$STATUS_DIR"
 
-  log "launch" "task $((i+1))/$TASK_COUNT: $SLUG (split $SPLIT_DIR from $SPLIT_FROM)"
+  log "launch" "task $((i+1))/$TASK_COUNT: $SLUG (split $SPLIT_DIR from $SPLIT_FROM, runner=${RUNNER:-<default>})"
 
   # Build launch-workspace.sh arguments
   LAUNCH_ARGS=(
@@ -176,6 +182,11 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     --parent-notify-workspace "$PARENT_WS"
     --parent-notify-surface "$PARENT_SF"
   )
+
+  # Pass per-task runner override if specified
+  if [[ -n "$RUNNER" ]]; then
+    LAUNCH_ARGS+=(--runner "$RUNNER")
+  fi
 
   LAUNCH_ARGS+=("$SLUG" "$PROMPT")
 

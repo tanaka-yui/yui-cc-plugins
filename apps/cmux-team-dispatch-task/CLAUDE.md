@@ -15,6 +15,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `skills/cmux-team-dispatch-task/scripts/cmux-grid.sh` | split モード用グリッドレイアウト整列スクリプト |
 | `skills/cmux-team-dispatch-task/scripts/terminal-wait.sh` | シェル起動検知と `shell_ready_ms` 学習を行う共通ヘルパー（source 専用） |
 | `~/.claude/cmux-team-dispatch-task/config.json` | グローバル学習値（自動生成）。`shell_ready_ms.baseline_ms` を EMA で更新 |
+| `~/.claude/cmux-team-dispatch-task/runners.json` | 子セッション runtime 一覧（初回セットアップで生成）。SKILL.md Step 1f で読込 |
 | `<project>/.dispatch/config.json` | プロジェクト固有の上書き（手動配置）。存在時はグローバルより優先 |
 | `.claude-plugin/plugin.json` | Plugin マニフェスト |
 | `README.md` | 人間向けガイド |
@@ -60,6 +61,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 7. Display Format Conventions（Template A/B/C）が SKILL.md / guide-ja.md / 子セッションプロンプト埋め込みの `PROGRESS REPORTING FORMAT` の3か所で完全一致しているか確認（カラム数・順序・幅・Mode 略称）
 8. モデル選択フロー（MANDATORY MODEL SELECTION SEQUENCE）が SKILL.md / guide-ja.md で同じ選択肢（opus 1m / sonnet / codex）と挙動を記述しているか確認
 9. `cmux send` で親に通知する箇所すべてに `cmux send-key return` がペアで発行されているか確認（runner / monitor 両方）
+10. `runners.json` のスキーマ（`default` / `runners[].name|command|engine|use_zsh`）が SKILL.md Step 1f / guide-ja.md「子セッション runner 設定」/ `launch-workspace.sh` の `--runner` 解決ロジックの3か所で一致しているか確認。特に `engine × MODE` の起動コマンド対応表（claude/codex × plan/superpowers の4通り）が SKILL.md と guide-ja.md で同一か検証
 
 ## テスト方法
 

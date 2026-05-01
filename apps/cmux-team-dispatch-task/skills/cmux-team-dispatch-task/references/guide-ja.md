@@ -74,7 +74,7 @@
 子セッション一覧、進捗報告、最終サマリーは **必ず** 以下の Box drawing 表で出力する。
 ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細は SKILL.md の "Display Format Conventions" を参照。
 
-### Template A — 起動前タスク一覧（Step 1f / セッション起動報告）
+### Template A — 起動前タスク一覧（Step 1g / セッション起動報告）
 
 ```
 ┌────┬──────────────────────────┬──────────┬────────────┬──────────────┐
@@ -117,8 +117,8 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 
 ### Step 1: Parse and Prepare
 
-タスク収集、Agent ルーティング、レイアウト決定、統合戦略決定を1ステップで実行。
-ディスパッチ前に3つのユーザーインタラクション: brainstorming 選択、レイアウト選択、統合戦略選択。
+タスク収集、Agent ルーティング、レイアウト決定、統合戦略決定、子 runner 設定を1ステップで実行。
+ディスパッチ前に最大4つのユーザーインタラクション: brainstorming 選択、レイアウト選択、統合戦略選択、子 runner 選択（`runners.json` 初回セットアップ含む）。
 
 1. **(1a)** タスクを `$ARGUMENTS` から解析（なければ1回だけ質問）
 2. **(1b)** `.claude/agents/` をスキャンして利用可能な Agent 一覧を収集
@@ -133,7 +133,11 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 5. **(1e)** **統合戦略選択**:
    - **PR per task** — 各子タスクがブランチを push して GitHub PR を作成。親は PR を監視
    - **Wait and merge** (デフォルト) — 全タスク完了後に親がローカルマージ
-6. **(1f)** Template A（Display Format Conventions）で情報表示し、即座にディスパッチ:
+6. **(1f)** **子セッション runner 選択**（詳細は「子セッション runner 設定（runners.json）」セクション）:
+   - `runners.json` 不在 → 初回セットアップで生成
+   - runners 1 件 → 自動でその runner を全タスクに適用（切替確認スキップ）
+   - runners 2 件以上 → 切替確認 → タスクごとに選択 or デフォルト適用
+7. **(1g)** Template A（Display Format Conventions）で情報表示し、即座にディスパッチ:
    ```
    Dispatching 3 tasks (workspace mode, PR per task):
 
@@ -385,6 +389,80 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 ### プロンプトファイルの場所
 
 各 worktree のルートディレクトリ: `<worktree>/.cmux-team-dispatch-task-prompt.md`
+
+---
+
+## 子セッション runner 設定（runners.json）
+
+親セッションは常に親の `claude` を使い、子セッションは `runners.json` で定義されたいずれかの runtime（`claude` の別アカウント、`codex` バイナリ、`.zshrc` の zsh 関数など）で起動できます。SKILL.md の Step 1f で配置・選択されます。
+
+### 配置場所
+
+- `~/.claude/cmux-team-dispatch-task/runners.json`
+- 環境変数 `RUNNERS_CONFIG_PATH` で上書き可能（テスト用）
+
+### スキーマ（最小）
+
+```json
+{
+  "default": "claude",
+  "runners": [
+    { "name": "claude",  "command": "claude",  "engine": "claude", "use_zsh": false },
+    { "name": "ccenec",  "command": "ccenec",  "engine": "claude", "use_zsh": true  },
+    { "name": "codex",   "command": "codex",   "engine": "codex",  "use_zsh": false }
+  ]
+}
+```
+
+| フィールド | 意味 |
+|----------|------|
+| `default` | 切替確認で「No」を選んだとき／runner 1 件のときに全タスクへ適用される runner 名 |
+| `runners[].name` | AskUserQuestion の選択肢ラベル兼一意 ID |
+| `runners[].command` | 実際に実行するコマンド／関数名 |
+| `runners[].engine` | `claude` または `codex`。MODE 別の起動引数組み立てを切替（下表参照） |
+| `runners[].use_zsh` | `true` で `zsh -ic "<command> '<prompt>'"` で wrap し `.zshrc` の関数を解決 |
+
+### engine × MODE 起動コマンド対応表
+
+固定プロンプトテキスト: `Read and follow the task in .cmux-team-dispatch-task-prompt.md`
+
+| engine | MODE        | 組み立てコマンド |
+|--------|-------------|----------------|
+| claude | plan        | `<command> --dangerously-skip-permissions '/plan <PROMPT>'` |
+| claude | superpowers | `<command> '<PROMPT>'` |
+| codex  | plan        | `<command> --dangerously-bypass-approvals-and-sandbox '/plan <PROMPT>'` |
+| codex  | superpowers | `<command> '$superpowers:brainstorming <PROMPT>'` |
+
+`use_zsh: true` の場合は上記全体を `zsh -ic "..."` で wrap。
+
+`claude-teams` レイアウトは runner 設定を無視し常に `cmux claude-teams`（親の claude アカウント）で起動します。
+
+### 初回セットアップ
+
+`runners.json` が存在しない状態で SKILL を発動すると、Step 1f で初回セットアップが起動します:
+
+1. AskUserQuestion で **starter テンプレ（claude のみ）** か **カスタム** を選択
+2. starter テンプレ選択時は claude のみが書き出されます
+3. カスタム選択時は AskUserQuestion ループで `name / command / engine / use_zsh` を 1 件ずつ収集、最後に「もう 1 件追加？」を繰り返し確認
+4. 完了後、`~/.claude/cmux-team-dispatch-task/` ディレクトリが無ければ作成され、runners.json が書き出されます
+
+### タスクごとの runner 切替
+
+- runners が **1 件**: 切替確認は出ず自動でその runner を全タスクに割当
+- runners が **2 件以上**: 「子セッションごとにランタイム/モデルを切り替えますか？」を確認
+  - **No**: `default` runner を全タスクに割当
+  - **Yes**: タスクごとに AskUserQuestion で選択
+
+選ばれた runner 名は `launch-session-splits.sh` の入力 JSON 各タスクに optional `"runner": "<name>"` として渡され、`launch-workspace.sh --runner <name>` に伝播します。
+
+### 既存 Phase B モデル選択との関係
+
+子セッション内で実装フェーズ前に行う Phase B モデル選択（opus 1m / sonnet / codex）とは**レイヤーが異なる**:
+
+- **Step 1f (本セクション)**: 子セッションを *どの runtime で起動するか* を親が決める（起動時）
+- **Phase B**: 起動済みの子 claude セッションが *どのモデルで実装フェーズに入るか* を決める（起動後）
+
+`engine: codex` で子を起動した場合、Phase B の codex 選択肢は意味を失います（既に codex で動いているため）。
 
 ---
 

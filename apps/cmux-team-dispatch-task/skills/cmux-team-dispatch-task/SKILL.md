@@ -38,7 +38,7 @@ Rules:
 - Status values are limited to: `launched`, `executing`, `done`, `error`.
 - Embed Template B verbatim into child session prompts so children also report progress in the same shape.
 
-### Template A — Pre-launch task list (Step 1f)
+### Template A — Pre-launch task list (Step 1g)
 
 ```
 ┌────┬──────────────────────────┬──────────┬────────────┬──────────────┐
@@ -80,9 +80,10 @@ Mode column abbreviation: `superpwr` = superpowers (brainstorming), `plan` = bui
 
 ## Step 1: Parse and Prepare
 
-This single step handles task collection, agent routing, layout selection, and integration
-strategy. Three user interactions before dispatch: brainstorming selection (1c), layout
-mode selection (1d), and integration strategy selection (1e).
+This single step handles task collection, agent routing, layout selection, integration
+strategy, and runtime selection. Up to four user interactions before dispatch:
+brainstorming selection (1c), layout mode selection (1d), integration strategy
+selection (1e), and child runner selection (1f).
 
 ### 1a. Collect Tasks
 
@@ -182,7 +183,98 @@ Based on the selection:
 - **PR per task** → child prompts include push + `gh pr create` instructions in the status protocol
 - **Wait and merge** → current behavior (local merge after all tasks complete)
 
-### 1f. Display Summary and Proceed
+### 1f. Configure Child Runner
+
+Decide which runtime each child session should launch with (e.g. parent-account `claude`,
+a different account via a zsh function such as `ccenec`, or `codex`). Resolution order:
+
+1. **Check `~/.claude/cmux-team-dispatch-task/runners.json`**
+   - If the file does NOT exist, run **First-run setup** (see below) before continuing
+2. **Read `runners[]`**:
+   - If exactly **1** runner is registered → silently assign that runner to all tasks
+     and skip the switch question. Continue to Step 1g.
+   - If **2 or more** runners are registered → ask the user via AskUserQuestion:
+     > 子セッションごとにランタイム/モデルを切り替えますか？ (default: No, 全タスクに既定 runner を適用)
+   - **No** → assign the `default` runner from `runners.json` to all tasks
+   - **Yes** → for each task, ask which runner to use via AskUserQuestion. The options
+     are the entries in `runners[]` (label = `name`, description = `command (engine)`).
+3. Each task receives a `runner` field (the chosen `name` string), which Step 2 passes
+   through `launch-session-splits.sh` and on to `launch-workspace.sh --runner <name>`.
+
+**runners.json schema (minimal):**
+
+```json
+{
+  "default": "claude",
+  "runners": [
+    { "name": "claude",  "command": "claude",  "engine": "claude", "use_zsh": false },
+    { "name": "ccenec",  "command": "ccenec",  "engine": "claude", "use_zsh": true  },
+    { "name": "codex",   "command": "codex",   "engine": "codex",  "use_zsh": false }
+  ]
+}
+```
+
+Field meanings:
+
+- `name`: unique identifier shown in AskUserQuestion options
+- `command`: the executable / zsh function to invoke
+- `engine`: `claude` or `codex` — controls flag composition (see table below)
+- `use_zsh`: `true` wraps the command in `zsh -ic "..."` so functions defined in
+  `~/.zshrc` are resolved (required for runners like `ccenec`)
+
+**engine × MODE invocation table** (executed by `launch-workspace.sh`):
+
+| engine | MODE        | Composed command                                                                                          |
+|--------|-------------|-----------------------------------------------------------------------------------------------------------|
+| claude | plan        | `<command> --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
+| claude | superpowers | `<command> 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'`                              |
+| codex  | plan        | `<command> --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
+| codex  | superpowers | `<command> '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
+
+When `use_zsh: true`, the entire composed command is wrapped: `zsh -ic "<composed>"`.
+
+The `claude-teams` layout ignores runner configuration (always uses `cmux claude-teams` /
+the parent claude account).
+
+**First-run setup** (when `runners.json` does not exist):
+
+1. Show the user via AskUserQuestion:
+   > runners.json が見つかりません。初回セットアップを行います。
+   >
+   > 1. **starter テンプレ (claude のみ)** — シンプル開始、後から手動で追加可能
+   > 2. **カスタム** — runner を 1 件ずつ対話で登録 (claude / codex / zsh 関数 等)
+
+2. **starter テンプレを選んだ場合**: write the file with a single `claude` runner
+   (using the schema above) and continue:
+
+   ```json
+   {
+     "default": "claude",
+     "runners": [
+       { "name": "claude", "command": "claude", "engine": "claude", "use_zsh": false }
+     ]
+   }
+   ```
+
+3. **カスタムを選んだ場合**: enter an AskUserQuestion loop. For each runner, collect
+   four fields (one AskUserQuestion call per runner is ideal — use the question text
+   format below; collect all answers, then ask whether to add another):
+
+   - **name** (free text, e.g. `ccenec`) — unique identifier
+   - **command** (free text, e.g. `ccenec` or `codex` or `claude`) — what to invoke
+   - **engine** (choice: `claude` / `codex`)
+   - **use_zsh** (choice: `true` / `false`)
+
+   After each runner is added, ask: 「もう 1 件追加しますか？」 (Yes → loop; No → finish).
+
+4. After at least one runner is registered, also ask which runner is the `default`
+   (used when the user picks "No" at the switch question, or implicitly when only
+   1 runner exists). If only one runner was added, it becomes `default` automatically.
+
+5. Write the assembled object to `~/.claude/cmux-team-dispatch-task/runners.json`
+   (create the directory if missing). Then continue to the runner selection logic above.
+
+### 1g. Display Summary and Proceed
 
 Print an informational summary using **Template A** (see "Display Format Conventions" above) and proceed to launch immediately. Do NOT free-form the layout.
 
@@ -1039,8 +1131,9 @@ When the user selects option 3:
 3. **Ask brainstorming selection** (Step 1c) — since tasks come from a superpowers plan, default to "none" (brainstorming was already done by the planner)
 4. **Ask layout mode** (Step 1d) — defaults to workspace; ask only if no `--layout` flag was passed
 5. **Ask integration strategy** (Step 1e) — ask PR per task or Wait and merge
-6. **Launch all tasks** using launch commands from Step 2
-7. **Monitor** using Step 3
+6. **Configure child runner** (Step 1f) — bootstrap `runners.json` if missing, then assign runners per task
+7. **Launch all tasks** using launch commands from Step 2
+8. **Monitor** using Step 3
 
 ### Building the Tasks JSON from a Plan
 
@@ -1066,3 +1159,4 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` followed by `cmux send-key return` when the child Claude session exits. The trailing `send-key return` is required so messages don't sit in the parent claude TUI's input box waiting for a manual Enter press.
 - **Runner script**: The `.cmux-team-dispatch-task-run.sh` file is created in each worktree. It's cleaned up along with the worktree.
 - **Codex execution model (Phase B option 3)**: The "codex" choice in the model selection sequence requires `cmux codex install-hooks` to have been run once on the machine (this sets `~/.codex/config.toml` to `external_migration = true` and installs SessionStart / Stop / UserPromptSubmit hooks). With those installed, running `codex` inside a freshly split cmux pane resumes the parent claude session without any extra arguments.
+- **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. When a child is launched with `engine: codex`, Phase B's "codex" option is redundant and should be skipped (the child already runs in codex). The runners.json registry lives at `~/.claude/cmux-team-dispatch-task/runners.json` and is bootstrapped on first run via AskUserQuestion.
