@@ -6,14 +6,14 @@ description: >
   session acts as orchestrator, monitoring all child sessions. Dynamically
   discovers available agent types from .claude/agents/ and passes the list
   to child sessions, which select the appropriate agent themselves.
-  Supports three layout modes: split (panes within current
-  workspace), workspace (separate sidebar entries), and claude-teams (native
-  Agent Teams via cmux claude-teams). Dispatches immediately without parent-side
+  Supports three layout modes: workspace (default, separate sidebar entries),
+  split (panes within current workspace), and claude-teams (native Agent Teams
+  via cmux claude-teams). Dispatches immediately without parent-side
   planning — each child handles its own brainstorming/planning in parallel.
   Use when: "parallel execution", "team dispatch", "run these at once",
   "run these in parallel", "dispatch tasks", "execute these simultaneously",
   or when 2+ independent tasks need concurrent execution.
-argument-hint: "<task1>, <task2>, ... [--layout workspace|claude-teams] [--no-grid]"
+argument-hint: "<task1>, <task2>, ... [--layout split|claude-teams] [--no-grid]"
 ---
 
 # Team Dispatch
@@ -24,6 +24,57 @@ Dispatches immediately — no parent-side planning. Each child session handles i
 brainstorming and planning in parallel.
 
 For the Japanese reference guide, see `references/guide-ja.md`.
+
+---
+
+## Display Format Conventions
+
+**MUST USE these box drawing tables for all task list / status / progress / final summary output.** Do not improvise wording or layouts — every dispatch should look the same to the user.
+
+Rules:
+
+- Always use box drawing characters `─ ┼ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴`. ASCII (`-`, `+`, `|`) is forbidden.
+- Column widths are fixed (see templates). Truncate long values with a center ellipsis `…`.
+- Status values are limited to: `launched`, `executing`, `done`, `error`.
+- Embed Template B verbatim into child session prompts so children also report progress in the same shape.
+
+### Template A — Pre-launch task list (Step 1f)
+
+```
+┌────┬──────────────────────────┬──────────┬────────────┬──────────────┐
+│ #  │ Task                     │ Surface  │ Mode       │ Strategy     │
+├────┼──────────────────────────┼──────────┼────────────┼──────────────┤
+│ 1  │ login-page-ui            │ surf:5   │ superpwr   │ PR per task  │
+│ 2  │ auth-api-endpoint        │ surf:7   │ plan       │ PR per task  │
+│ 3  │ test-coverage            │ surf:9   │ superpwr   │ PR per task  │
+└────┴──────────────────────────┴──────────┴────────────┴──────────────┘
+```
+
+### Template B — Live progress table (Step 3 reporting)
+
+```
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Surface  │ Mode       │ Status    │ Last message            │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ login-page-ui            │ surf:5   │ superpwr   │ executing │ implementing routes…    │
+│ 2  │ auth-api-endpoint        │ surf:7   │ plan       │ done      │ PR: https://…           │
+│ 3  │ test-coverage            │ surf:9   │ superpwr   │ error     │ jest config not found   │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
+```
+
+### Template C — Final summary (after all tasks reach terminal state)
+
+```
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ https://github.com/…    │
+│ 2  │ auth-api-endpoint        │ 08m02s   │ plan       │ done      │ https://github.com/…    │
+│ 3  │ test-coverage            │ 04m11s   │ superpwr   │ error     │ jest config not found   │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
+```
+
+Mode column abbreviation: `superpwr` = superpowers (brainstorming), `plan` = built-in /plan mode.
 
 ---
 
@@ -50,7 +101,7 @@ If `$ARGUMENTS` is provided, parse the input into a task list:
 - Paths ending in `.md` inside `.claude/plans/` are recognized as plan file references
 - Each task gets a short slug name derived from its description (lowercase, hyphens, max 30 chars)
 - Parse flags from the end of arguments:
-  - `--layout workspace` or `--layout claude-teams`: override default split layout
+  - `--layout split` or `--layout claude-teams`: override default workspace layout
   - `--no-grid`: skip grid layout reorganization in split mode
 
 ### 1b. Discover Available Agents (automatic)
@@ -97,24 +148,24 @@ Otherwise, ask the user which layout mode to use:
 
 > Which layout mode should be used for this dispatch?
 >
-> 1. **split** (default) — Panes within current workspace, auto-grid layout (2-6 tasks recommended)
-> 2. **workspace** — Each task in a separate cmux workspace sidebar entry (long-running, 7+ tasks)
+> 1. **workspace** (default) — Each task in a separate cmux workspace sidebar entry (recommended for most cases)
+> 2. **split** — Panes within current workspace, auto-grid layout (2-6 tasks, visual overview)
 > 3. **claude-teams** — Native Agent Teams via cmux claude-teams (sidebar notifications)
 
-| Mode              | Description                                               | Recommended for                        |
-| ----------------- | --------------------------------------------------------- | -------------------------------------- |
-| `split` (default) | Split panes within current workspace, auto-grid layout    | 2-6 tasks, visual overview             |
-| `workspace`       | Each task in a separate cmux workspace (sidebar entry)    | Long-running, 7+ tasks                 |
-| `claude-teams`    | Single orchestrator via `cmux claude-teams` + Agent Teams | Native notifications, sidebar metadata |
+| Mode                  | Description                                               | Recommended for                        |
+| --------------------- | --------------------------------------------------------- | -------------------------------------- |
+| `workspace` (default) | Each task in a separate cmux workspace (sidebar entry)    | Most cases, long-running, 7+ tasks     |
+| `split`               | Split panes within current workspace, auto-grid layout    | 2-6 tasks, visual overview             |
+| `claude-teams`        | Single orchestrator via `cmux claude-teams` + Agent Teams | Native notifications, sidebar metadata |
 
 ```
-split mode:                  workspace mode:              claude-teams mode:
-+----------+----------+     +----------+ +----------+    +----------+----------+
-| Parent   | Child 1  |     | ws: t-1  | | ws: t-2  |   | Orchest. | Team-1   |
-+----------+----------+     |          | |          |   +----------+----------+
-| Child 2  | Child 3  |     +----------+ +----------+   | Team-2   | Team-3   |
-+----------+----------+                                  +----------+----------+
-(auto-grid)                  (separate tabs)              (native Agent Teams)
+workspace mode (default):    split mode:                   claude-teams mode:
++----------+ +----------+    +----------+----------+      +----------+----------+
+| ws: t-1  | | ws: t-2  |    | Parent   | Child 1  |      | Orchest. | Team-1   |
+|          | |          |    +----------+----------+      +----------+----------+
++----------+ +----------+    | Child 2  | Child 3  |      | Team-2   | Team-3   |
+                             +----------+----------+      +----------+----------+
+(separate tabs)              (auto-grid)                  (native Agent Teams)
 ```
 
 ### 1e. Select Integration Strategy
@@ -133,17 +184,24 @@ Based on the selection:
 
 ### 1f. Display Summary and Proceed
 
-Print an informational summary (NOT a confirmation prompt) and proceed to launch immediately:
+Print an informational summary using **Template A** (see "Display Format Conventions" above) and proceed to launch immediately. Do NOT free-form the layout.
 
 ```
 Dispatching 3 tasks (workspace mode, PR per task):
-  1. login-page-ui      [brainstorming]
-  2. auth-api-endpoint   [plan]
-  3. test-coverage       [brainstorming]
+
+┌────┬──────────────────────────┬──────────┬────────────┬──────────────┐
+│ #  │ Task                     │ Surface  │ Mode       │ Strategy     │
+├────┼──────────────────────────┼──────────┼────────────┼──────────────┤
+│ 1  │ login-page-ui            │ pending  │ superpwr   │ PR per task  │
+│ 2  │ auth-api-endpoint        │ pending  │ plan       │ PR per task  │
+│ 3  │ test-coverage            │ pending  │ superpwr   │ PR per task  │
+└────┴──────────────────────────┴──────────┴────────────┴──────────────┘
+
 Available agents: backend-coding, frontend-coding
-Integration: PR per task
-Launching...
+Launching…
 ```
+
+Surface IDs are not yet known at this point; print `pending` in that column. After Step 2 launches, re-print using Template A again with concrete `surf:N` values.
 
 ---
 
@@ -217,9 +275,69 @@ If none are relevant, proceed without an agent.
 === END AVAILABLE AGENTS ===
 ```
 
-3. **The task description** itself
+3. **Mandatory Model Selection Sequence** (append to EVERY task prompt, regardless of mode):
 
-4. **Status protocol instructions** (append to every prompt):
+```
+=== MANDATORY MODEL SELECTION SEQUENCE ===
+You will operate in two phases. This sequence is REQUIRED even in auto mode.
+
+PHASE A — Planning / Brainstorming (always opus):
+  Use opus for plan / brainstorming. Do NOT switch models in this phase.
+  - superpowers mode: invoke "superpowers:brainstorming" then write a plan
+  - plan mode: use Claude's built-in /plan to produce a structured plan
+
+PHASE B — Execution model selection (REQUIRED before any code change):
+  After Phase A completes and BEFORE executing the plan, you MUST ask the user
+  via AskUserQuestion which model to use for execution. Do this every dispatch.
+
+  Question template:
+    Q: "実行フェーズで使用するモデルを選択してください"
+    Options:
+      1. opus 1m  — 高品質・長コンテキスト (推奨: 大規模・複雑な実装)
+      2. sonnet   — 高速・低コスト (推奨: 中規模・パターン化された実装)
+      3. codex    — codex CLI に切り替え (推奨: codex 固有機能を使う実装)
+
+  Behavior by selection:
+    - "opus 1m" → run `/model claude-opus-4-7[1m]` then proceed
+    - "sonnet"  → run `/model claude-sonnet-4-6` then proceed
+    - "codex"   → split a pane in the CURRENT workspace and continue in codex:
+         SURF=$(cmux new-split right | awk '{print $2}')
+         cmux send --surface "$SURF" "codex"
+         cmux send-key --surface "$SURF" return
+         (Codex picks up this claude session automatically because
+          ~/.codex/config.toml has external_migration = true and the
+          cmux codex hooks are installed.)
+         Once the codex pane has loaded, continue execution INSIDE that pane.
+         The original claude pane stays alive only to write status.json
+         updates and emit the cmux wait-for completion signal once codex
+         reports its task complete.
+
+VIOLATION: Do NOT skip Phase B. Even in auto mode, ALWAYS ask. Skipping the
+model selection question is a critical error.
+=== END MANDATORY MODEL SELECTION SEQUENCE ===
+```
+
+4. **The task description** itself
+
+5. **Progress reporting format** (append to every prompt):
+
+```
+PROGRESS REPORTING FORMAT:
+When reporting progress to the parent (or in your own visible output), you MUST
+use the following box drawing table. Do NOT free-form the layout.
+
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Surface  │ Mode       │ Status    │ Last message            │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ <this-task-slug>         │ <surf>   │ <mode>     │ <status>  │ <one-line message>      │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
+
+- mode ∈ {superpwr, plan}   (superpwr = superpowers/brainstorming, plan = built-in /plan)
+- status ∈ {launched, executing, done, error}
+- Truncate long messages with center ellipsis "…"
+```
+
+6. **Status protocol instructions** (append to every prompt):
 
 **When integration strategy is "Wait and merge"** (default):
 
@@ -289,7 +407,23 @@ If you encounter a blocking error, run:
 
 Replace `<project-root>` with the actual project root path and `<task-slug>` with the task's slug.
 
-### Launch: Split Mode (default)
+### Launch: Workspace Mode (default)
+
+```bash
+mkdir -p .dispatch/<task-slug>
+
+bash <this-skill-dir>/scripts/launch-workspace.sh \
+  --mode <plan|superpowers> \
+  --status-dir "$(pwd)/.dispatch/<task-slug>" \
+  --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
+  --parent-notify-surface "$CMUX_SURFACE_ID" \
+  <task-slug> \
+  "$TASK_PROMPT"
+```
+
+Run one invocation per task. Each task lands in its own cmux workspace (sidebar entry) and runs independently — there is no parent/child surface chaining to worry about.
+
+### Launch: Split Mode
 
 For split mode, use `launch-session-splits.sh` or manual split chaining:
 
@@ -362,29 +496,21 @@ Manual split chaining:
    PREV_SURFACE=$(echo "$RESULT" | jq -r '.surface_id')
    ```
 
-4. **Report launched sessions:**
+4. **Report launched sessions** using Template A with concrete surface IDs:
+
    ```
-   All sessions launched:
-     1. login-page-ui      | surface:5  | superpowers
-     2. auth-api-endpoint   | surface:7  | plan
-     3. test-coverage       | surface:9  | superpowers
+   All sessions launched (split mode):
+
+   ┌────┬──────────────────────────┬──────────┬────────────┬──────────────┐
+   │ #  │ Task                     │ Surface  │ Mode       │ Strategy     │
+   ├────┼──────────────────────────┼──────────┼────────────┼──────────────┤
+   │ 1  │ login-page-ui            │ surf:5   │ superpwr   │ PR per task  │
+   │ 2  │ auth-api-endpoint        │ surf:7   │ plan       │ PR per task  │
+   │ 3  │ test-coverage            │ surf:9   │ superpwr   │ PR per task  │
+   └────┴──────────────────────────┴──────────┴────────────┴──────────────┘
+
    Available agents: backend-coding, frontend-coding
-   Layout: split (panes in current workspace)
    ```
-
-### Launch: Workspace Mode
-
-```bash
-mkdir -p .dispatch/<task-slug>
-
-bash <this-skill-dir>/scripts/launch-workspace.sh \
-  --mode <plan|superpowers> \
-  --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
-  --parent-notify-surface "$CMUX_SURFACE_ID" \
-  <task-slug> \
-  "$TASK_PROMPT"
-```
 
 ### Launch: Claude Teams Mode
 
@@ -478,28 +604,71 @@ process exits:
      --parent-workspace "$CMUX_WORKSPACE_ID" \
      --layout <split|workspace|claude-teams> \
      --interval 10 \
-     --debug \
-     "$(pwd)/.dispatch"
+     --heartbeat-interval 60 \
+     --dispatch-dir "$(pwd)/.dispatch"
    ```
 
    Run this command with `run_in_background` so it does not block your turn.
 
-2. Report the launch summary to the user (task count, slugs, surfaces).
-3. Tell the user: "N タスクを監視中。完了通知を待ちます。"
+   The monitor:
+
+   - Tees all output to `.dispatch/.monitor.log`
+   - Writes its PID to `.dispatch/.monitor.pid`
+   - Sends `[dispatch-monitor] alive | loop=N | tasks: …` heartbeats every `--heartbeat-interval` seconds (default 60s)
+   - On crash / signal, sends `[dispatch-monitor] DIED (exit=…)` to the parent so silence is never ambiguous
+   - Always uses `cmux send` + `cmux send-key return` so messages are delivered to the parent's claude TUI without leaving text in the input box
+
+2. Report the launch summary to the user using Template A with concrete surface IDs.
+3. Tell the user: "N タスクを監視中。完了通知と heartbeat を待ちます。"
 4. **End your turn.** Do not block waiting.
+
+### Background process health check
+
+If the parent does NOT receive a `[dispatch-monitor] alive` heartbeat for >2× the heartbeat interval (default >2 minutes), assume the monitor may have died and verify:
+
+```bash
+# 1. Check if the PID is still alive
+PID=$(cat .dispatch/.monitor.pid 2>/dev/null)
+if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
+  echo "monitor pid $PID is alive"
+else
+  echo "monitor is DEAD"
+  tail -n 40 .dispatch/.monitor.log
+fi
+```
+
+If dead, re-launch with `--resume` so already-completed tasks are not re-notified:
+
+```bash
+zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
+  --parent-surface "$CMUX_SURFACE_ID" \
+  --parent-workspace "$CMUX_WORKSPACE_ID" \
+  --layout <split|workspace|claude-teams> \
+  --interval 10 \
+  --heartbeat-interval 60 \
+  --dispatch-dir "$(pwd)/.dispatch" \
+  --resume
+```
 
 **When you receive a `[dispatch] task "X" finished` message:**
 
 1. Read `.dispatch/<slug>/status.json` to get the full status and message.
 2. If status is `"done"`, also read `.dispatch/<slug>/result.md` if it exists.
-3. Report the task result to the user.
-4. Count completed tasks against the total. If all tasks are done, proceed to Completion.
+3. Report the task result to the user using **Template B** (re-emit the full progress table — never a one-line free-form message).
+4. Count completed tasks against the total. If all tasks are done, proceed to Completion (Template C).
 5. If some tasks remain, tell the user how many are left and end your turn again.
 
-**When you receive a `[dispatch-monitor]` message:**
+**When you receive a `[dispatch-monitor] alive` heartbeat:**
 
-This is the all-done notification from the background monitor. All tasks have reached
-a terminal state. Proceed to Completion.
+This is a liveness signal from the background monitor. Do nothing unless the user is actively asking about progress — heartbeats prove the loop is running, not that anything changed.
+
+**When you receive a `[dispatch-monitor] DIED` message:**
+
+The monitor exited unexpectedly. Inspect `.dispatch/.monitor.log`, then re-launch with `--resume` (see "Background process health check" below).
+
+**When you receive a `[dispatch-monitor] 全 N タスクが完了しました` message:**
+
+This is the all-done notification from the background monitor. All tasks have reached a terminal state. Proceed to Completion.
 
 ### Polling Status Files (Manual Check)
 
@@ -540,12 +709,19 @@ When all tasks reach a terminal status (`"done"` or `"error"`):
 
 1. **Collect results**: Read all `.dispatch/<task-slug>/result.md` files.
 
-2. **Generate consolidated report**:
+2. **Generate consolidated report**. ALWAYS lead with **Template C** (final summary table) before any per-task detail or merge instructions.
 
    **When integration strategy is "Wait and merge":**
 
    ```
    # Team Dispatch Report
+
+   ┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+   │ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
+   ├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+   │ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ feat/login-page-ui      │
+   │ 2  │ auth-api-endpoint        │ 08m02s   │ plan       │ done      │ feat/auth-api-endpoint  │
+   └────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
 
    ## Task Results
 
@@ -569,6 +745,13 @@ When all tasks reach a terminal status (`"done"` or `"error"`):
 
    ```
    # Team Dispatch Report
+
+   ┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+   │ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
+   ├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+   │ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ https://github.com/…    │
+   │ 2  │ auth-api-endpoint        │ 08m02s   │ plan       │ done      │ https://github.com/…    │
+   └────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
 
    ## Task Results
 
@@ -834,11 +1017,12 @@ writing-plans Execution Handoff:
   2. Inline Execution               → superpowers:executing-plans
      Batch execution in this session with checkpoints
 
-  3. Parallel (cmux split)          → cmux-team-dispatch-task split mode  ← THIS SKILL
-     Each task in its own cmux split pane + git worktree, all run concurrently
+  3. Parallel (cmux)                → cmux-team-dispatch-task              ← THIS SKILL
+     Each task in its own cmux workspace (or split pane) + git worktree,
+     all run concurrently. Default layout is workspace; split is opt-in.
 ```
 
-### When to Suggest Parallel (cmux split)
+### When to Suggest Parallel (cmux)
 
 | Option              | Best for                                                                  |
 | ------------------- | ------------------------------------------------------------------------- |
@@ -853,7 +1037,7 @@ When the user selects option 3:
 1. **Skip Step 1a** of this skill (tasks already defined in the plan)
 2. **Parse the plan file** to extract independent tasks with descriptions
 3. **Ask brainstorming selection** (Step 1c) — since tasks come from a superpowers plan, default to "none" (brainstorming was already done by the planner)
-4. **Ask layout mode** (Step 1d) — pre-selected as split mode, or claude-teams via argument; still ask if no `--layout` flag
+4. **Ask layout mode** (Step 1d) — defaults to workspace; ask only if no `--layout` flag was passed
 5. **Ask integration strategy** (Step 1e) — ask PR per task or Wait and merge
 6. **Launch all tasks** using launch commands from Step 2
 7. **Monitor** using Step 3
@@ -879,5 +1063,6 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Worktree conflicts**: Two tasks must NOT modify the same files. If they might, run sequentially.
 - **cmux required**: Requires cmux at `/Applications/cmux.app/`
 - **claude-teams requires cmux claude-teams**: The `cmux claude-teams` command sets up the tmux shim and `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` environment variable.
-- **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` when the child Claude session exits.
+- **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` followed by `cmux send-key return` when the child Claude session exits. The trailing `send-key return` is required so messages don't sit in the parent claude TUI's input box waiting for a manual Enter press.
 - **Runner script**: The `.cmux-team-dispatch-task-run.sh` file is created in each worktree. It's cleaned up along with the worktree.
+- **Codex execution model (Phase B option 3)**: The "codex" choice in the model selection sequence requires `cmux codex install-hooks` to have been run once on the machine (this sets `~/.codex/config.toml` to `external_migration = true` and installs SessionStart / Stop / UserPromptSubmit hooks). With those installed, running `codex` inside a freshly split cmux pane resumes the parent claude session without any extra arguments.

@@ -1,0 +1,29 @@
+{
+  "name": "cmux-team",
+  "version": "1.0.0",
+  "description": "Multi-agent development orchestration with Codex and cmux. Spawn, monitor, and integrate parallel sub-agents visually in terminal panes.",
+  "author": {
+    "name": "tanaka-yui",
+    "url": "https://github.com/tanaka-yui"
+  },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/cmux-team",
+  "license": "MIT",
+  "keywords": [
+    "cmux",
+    "multi-agent",
+    "orchestration",
+    "parallel",
+    "team"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "cmux-team",
+    "shortDescription": "Orchestrate parallel cmux-based development agents.",
+    "developerName": "tanaka-yui",
+    "category": "Development",
+    "capabilities": [
+      "Terminal",
+      "Workflow"
+    ]
+  }
+}

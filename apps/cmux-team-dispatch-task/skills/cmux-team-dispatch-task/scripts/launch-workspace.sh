@@ -271,12 +271,15 @@ if [[ \$CLAUDE_EXIT -ne 0 ]]; then
   STATUS_LABEL="error"
 fi
 
+# cmux send だけでは親が claude TUI の場合 input box にテキストが残って Enter が
+# 押されないため、必ず send-key return を続けて発行する。
+NOTIFY_MSG="[dispatch] task \"${WORKSPACE_NAME}\" finished (status: \$STATUS_LABEL)"
 if [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
-  "\$CMUX" send --surface "\$NOTIFY_SF" \\
-    "[dispatch] task \"${WORKSPACE_NAME}\" finished (status: \$STATUS_LABEL)\\n" 2>/dev/null || true
+  "\$CMUX" send --surface "\$NOTIFY_SF" "\$NOTIFY_MSG" 2>/dev/null || true
+  "\$CMUX" send-key --surface "\$NOTIFY_SF" return 2>/dev/null || true
 elif [[ -n "\$NOTIFY_WS" ]]; then
-  "\$CMUX" send --workspace "\$NOTIFY_WS" \\
-    "[dispatch] task \"${WORKSPACE_NAME}\" finished (status: \$STATUS_LABEL)\\n" 2>/dev/null || true
+  "\$CMUX" send --workspace "\$NOTIFY_WS" "\$NOTIFY_MSG" 2>/dev/null || true
+  "\$CMUX" send-key --workspace "\$NOTIFY_WS" return 2>/dev/null || true
 fi
 EOF
 chmod +x "$RUNNER_FILE"

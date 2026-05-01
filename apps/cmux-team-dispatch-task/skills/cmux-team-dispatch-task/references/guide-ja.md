@@ -15,7 +15,10 @@
 - `.claude/agents/` ディレクトリを動的にスキャンし、利用可能な Agent タイプを自動発見
 - 利用可能な Agent 一覧を子セッションに伝達し、各子セッションが最適な Agent を選択
 - タスクごとに brainstorming スキルの使用を選択可能
-- **3つのレイアウトモード**: split（ペイン分割）、workspace（別タブ）、claude-teams（Agent Teams）— ディスパッチ前に選択
+- **3つのレイアウトモード**: workspace（デフォルト・別タブ）、split（ペイン分割）、claude-teams（Agent Teams）— ディスパッチ前に選択
+- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を opus で実行後、実行フェーズに入る前に必ず opus 1m / sonnet / codex を選ばせる
+- **統一表示フォーマット**: 子セッション一覧・進捗・最終サマリーは Box drawing 表（Template A/B/C）で常に同じレイアウト
+- **堅牢なバックグラウンド監視**: `monitor-dispatch.sh` が heartbeat / 死亡通知 / `--resume` をサポート。`cmux send` の後に必ず `cmux send-key return` を発行して親 TUI に確実に届ける
 - **2つの統合戦略**: PR per task（子タスクごとに PR 作成）、Wait and merge（全タスク完了後にローカルマージ）
 - `.dispatch/` ディレクトリを介したステータス通信で進捗を追跡
 - プロンプトはファイル経由で渡すため、シェルエスケープの問題なし
@@ -57,12 +60,56 @@
 ### レイアウトモードの指定
 
 ```
-/cmux-team-dispatch-task タスクA, タスクB --layout workspace
+/cmux-team-dispatch-task タスクA, タスクB --layout split
 /cmux-team-dispatch-task タスクA, タスクB --layout claude-teams
 /cmux-team-dispatch-task タスクA, タスクB --no-grid
 ```
 
-デフォルトは `split` モードです。
+デフォルトは `workspace` モードです（split を使う場合は明示的に指定）。
+
+---
+
+## 表示フォーマット規約（Display Format Conventions）
+
+子セッション一覧、進捗報告、最終サマリーは **必ず** 以下の Box drawing 表で出力する。
+ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細は SKILL.md の "Display Format Conventions" を参照。
+
+### Template A — 起動前タスク一覧（Step 1f / セッション起動報告）
+
+```
+┌────┬──────────────────────────┬──────────┬────────────┬──────────────┐
+│ #  │ Task                     │ Surface  │ Mode       │ Strategy     │
+├────┼──────────────────────────┼──────────┼────────────┼──────────────┤
+│ 1  │ login-page-ui            │ surf:5   │ superpwr   │ PR per task  │
+└────┴──────────────────────────┴──────────┴────────────┴──────────────┘
+```
+
+### Template B — 実行中の進捗報告（Step 3 完了通知受信時に再描画）
+
+```
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Surface  │ Mode       │ Status    │ Last message            │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ login-page-ui            │ surf:5   │ superpwr   │ executing │ implementing routes…    │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
+```
+
+### Template C — 最終サマリー（全タスク terminal 状態到達時）
+
+```
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ https://github.com/…    │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
+```
+
+ルール:
+
+- カラム幅は固定。長すぎる文字列は中央 `…` で省略
+- Mode 列: `superpwr` = superpowers/brainstorming、`plan` = 組み込み /plan
+- Status 列: `launched` / `executing` / `done` / `error` のみ
+- 子セッション側にも Template B が `PROGRESS REPORTING FORMAT` として埋め込まれ、同じ表で進捗を返す
 
 ---
 
@@ -80,22 +127,29 @@
    - 選択されたタスク → superpowers モード + MANDATORY EXECUTION SEQUENCE
    - 非選択タスク → plan モード
 4. **(1d)** **レイアウトモード選択**（`--layout` フラグ指定時はスキップ）:
-   - **split** (デフォルト) — 現在の workspace 内でペイン分割（2〜6タスク推奨）
-   - **workspace** — タスクごとに独立した cmux workspace（長時間タスク、7個以上）
+   - **workspace** (デフォルト) — タスクごとに独立した cmux workspace（推奨・長時間タスク・7個以上にも対応）
+   - **split** — 現在の workspace 内でペイン分割（2〜6タスク・全体一望）
    - **claude-teams** — `cmux claude-teams` で Agent Teams を使用（サイドバー通知）
 5. **(1e)** **統合戦略選択**:
    - **PR per task** — 各子タスクがブランチを push して GitHub PR を作成。親は PR を監視
    - **Wait and merge** (デフォルト) — 全タスク完了後に親がローカルマージ
-6. **(1f)** 情報表示のみで即座にディスパッチ:
+6. **(1f)** Template A（Display Format Conventions）で情報表示し、即座にディスパッチ:
    ```
    Dispatching 3 tasks (workspace mode, PR per task):
-     1. login-page-ui      [brainstorming]
-     2. auth-api-endpoint   [plan]
-     3. test-coverage       [brainstorming]
+
+   ┌────┬──────────────────────────┬──────────┬────────────┬──────────────┐
+   │ #  │ Task                     │ Surface  │ Mode       │ Strategy     │
+   ├────┼──────────────────────────┼──────────┼────────────┼──────────────┤
+   │ 1  │ login-page-ui            │ pending  │ superpwr   │ PR per task  │
+   │ 2  │ auth-api-endpoint        │ pending  │ plan       │ PR per task  │
+   │ 3  │ test-coverage            │ pending  │ superpwr   │ PR per task  │
+   └────┴──────────────────────────┴──────────┴────────────┴──────────────┘
+
    Available agents: backend-coding, frontend-coding
-   Integration: PR per task
-   Launching...
+   Launching…
    ```
+
+   Mode 略称: `superpwr` = superpowers/brainstorming、`plan` = 組み込み /plan モード。
 
 ### Step 2: Launch Sessions
 
@@ -113,8 +167,8 @@
 
 | モード | 説明 | 推奨ケース |
 |--------|------|-----------|
-| **split** (デフォルト) | 現在の workspace 内でペイン分割（自動グリッド整列） | 2〜6個のタスク、全体を一望したい場合 |
-| **workspace** | タスクごとに独立した cmux workspace を作成 | 長時間タスク、7個以上のタスク |
+| **workspace** (デフォルト) | タスクごとに独立した cmux workspace を作成 | 大半のケース、長時間タスク、7個以上 |
+| **split** | 現在の workspace 内でペイン分割（自動グリッド整列） | 2〜6個のタスク、全体を一望したい場合 |
 | **claude-teams** | `cmux claude-teams` で Agent Teams を使用 | ネイティブ通知/サイドバー連携 |
 
 ### split モード
@@ -345,6 +399,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 3. Claude 終了後、`status.json` を `"done"` または `"error"` に更新
 4. `cmux wait-for --signal <slug>-done` で完了をシグナル
 5. `cmux notify` で親 workspace に通知
+6. `cmux send` でテキスト通知 → 続けて `cmux send-key --surface <id> return` を発行（親が claude TUI の場合に input box でテキストが滞留するのを防ぐため、送信と Enter は必ずペアで実行する）
 
 シグナル名は `<task-slug>-done` で、起動スクリプトの出力 JSON の `signal_name` フィールドで返されます。
 
@@ -449,15 +504,28 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 2. **バックグラウンドモニター（補助）**:
    `monitor-dispatch.sh` がステータスファイルの変化を監視。
    個別タスクが完了/エラーになるたびに `[dispatch] task "<slug>" finished` を親に送信し、
-   全タスク完了時には `[dispatch-monitor]` 通知を送信。
+   `--heartbeat-interval` 秒（デフォルト60秒）ごとに `[dispatch-monitor] alive | loop=N | tasks: …` を送信、
+   全タスク完了時には `[dispatch-monitor] 全 N タスクが完了しました` を送信、
+   異常終了時には `[dispatch-monitor] DIED` を親に送信する。
+   stdout は `.dispatch/.monitor.log` に tee され、PID は `.dispatch/.monitor.pid` に書き出される。
    ```bash
    zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
      --parent-surface "$CMUX_SURFACE_ID" \
      --parent-workspace "$CMUX_WORKSPACE_ID" \
      --layout <split|workspace|claude-teams> \
      --interval 10 \
-     --debug \
-     "$(pwd)/.dispatch"
+     --heartbeat-interval 60 \
+     --dispatch-dir "$(pwd)/.dispatch"
+   ```
+
+   モニターが死亡した場合は `--resume` で再起動できる（既に done/error のタスクは再通知されない）:
+   ```bash
+   PID=$(cat .dispatch/.monitor.pid)
+   kill -0 "$PID" 2>/dev/null || zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
+     --parent-workspace "$CMUX_WORKSPACE_ID" \
+     --layout workspace \
+     --dispatch-dir "$(pwd)/.dispatch" \
+     --resume
    ```
 3. **ステータスファイルのポーリング（手動確認）**:
    ```bash
@@ -484,10 +552,19 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 全タスクが終了ステータス（`"done"` または `"error"`）に到達すると、統合レポートを生成。
 統合戦略（Step 1e で選択）によってテンプレートが異なる。
 
+レポートは必ず Template C（Display Format Conventions）の表で始める。
+
 **Wait and merge の場合:**
 
 ```
 # Team Dispatch Report
+
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ feat/login-page-ui      │
+│ 2  │ auth-api-endpoint        │ 08m02s   │ plan       │ done      │ feat/auth-api-endpoint  │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
 
 ## Task Results
 
@@ -511,6 +588,13 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 ```
 # Team Dispatch Report
+
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ https://github.com/…    │
+│ 2  │ auth-api-endpoint        │ 08m02s   │ plan       │ done      │ https://github.com/…    │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
 
 ## Task Results
 
@@ -674,15 +758,52 @@ rmdir .worktrees 2>/dev/null
 ```
 1. Subagent-Driven (推奨)   → superpowers:subagent-driven-development
 2. Inline Execution          → superpowers:executing-plans
-3. Parallel (cmux split)     → cmux-team-dispatch-task  ← THIS SKILL
+3. Parallel (cmux)           → cmux-team-dispatch-task  ← THIS SKILL
 ```
 
 ### フロー
 
 1. プランファイルからタスクを抽出
 2. brainstorming 選択（プランから来た場合、brainstorming 完了済みなのでデフォルト「なし」）
-3. レイアウト選択（デフォルト split、引数で override）
+3. レイアウト選択（デフォルト workspace、引数で override）
 4. 起動・監視・完了
+
+---
+
+## 子セッションのモデル選択フロー（必須）
+
+子セッションのプロンプトには `MANDATORY MODEL SELECTION SEQUENCE` が必ず含まれており、以下の二段階で動作する:
+
+### Phase A: Plan / Brainstorming（常に opus）
+
+- superpowers モード: `superpowers:brainstorming` → `superpowers:writing-plans`
+- plan モード: 組み込み `/plan`
+- このフェーズでは **モデル切り替えを禁止** する。常に opus を使う。
+
+### Phase B: 実装フェーズのモデル選択（auto mode でも必須）
+
+Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` で以下を聞く:
+
+| 選択肢 | 動作 |
+|--------|------|
+| **opus 1m** | 高品質・長コンテキスト（推奨: 大規模・複雑な実装）。`/model claude-opus-4-7[1m]` で切り替えて実行を継続 |
+| **sonnet** | 高速・低コスト（推奨: 中規模・パターン化された実装）。`/model claude-sonnet-4-6` で切り替えて実行を継続 |
+| **codex** | codex CLI に乗り換え。同じ workspace で右に split し、新ペインで `codex` を起動。`~/.codex/config.toml` の `external_migration = true` と `cmux codex install-hooks` で claude セッションが自動的に引き継がれる |
+
+codex 選択時のコマンド例:
+
+```bash
+SURF=$(cmux new-split right | awk '{print $2}')
+cmux send --surface "$SURF" "codex"
+cmux send-key --surface "$SURF" return
+# 以降は新ペインの codex で実装を継続。元の claude ペインは
+# status.json の更新と cmux wait-for シグナル発火だけ担当する。
+```
+
+### 前提条件
+
+- codex オプションを使う場合、事前に `cmux codex install-hooks` をマシンで一度実行しておく必要がある
+- これにより `~/.codex/hooks.json` に SessionStart / Stop / UserPromptSubmit hooks が入り、`config.toml` に `[features] codex_hooks = true` / `external_migration = true` が追加される
 
 ---
 
@@ -693,4 +814,5 @@ rmdir .worktrees 2>/dev/null
 - **同時セッション数**: 3〜5 セッションが推奨
 - **split モード制限**: 2〜6 タスクが推奨。7 以上は workspace モードを使用
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません
-- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証
+- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。`cmux send` の後は必ず `cmux send-key return` を発行し、親 claude TUI の input box に滞留しないようにしている
+- **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）

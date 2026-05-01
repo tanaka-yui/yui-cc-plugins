@@ -1,0 +1,56 @@
+{
+  "name": "yui-cc-plugins",
+  "interface": {
+    "displayName": "Yui CC Plugins"
+  },
+  "plugins": [
+    {
+      "name": "cmux-fork",
+      "source": {
+        "source": "local",
+        "path": "./apps/cmux-fork"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Terminal"
+    },
+    {
+      "name": "cmux-using",
+      "source": {
+        "source": "local",
+        "path": "./apps/cmux-using"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Terminal"
+    },
+    {
+      "name": "cmux-team",
+      "source": {
+        "source": "local",
+        "path": "./apps/cmux-team"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Development"
+    },
+    {
+      "name": "cmux-team-dispatch-task",
+      "source": {
+        "source": "local",
+        "path": "./apps/cmux-team-dispatch-task"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Development"
+    }
+  ]
+}

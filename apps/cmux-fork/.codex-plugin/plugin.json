@@ -1,0 +1,25 @@
+{
+  "name": "cmux-fork",
+  "version": "1.0.0",
+  "description": "Fork the current coding session into a new cmux pane.",
+  "author": {
+    "name": "tanaka-yui",
+    "url": "https://github.com/tanaka-yui"
+  },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/cmux-fork",
+  "license": "MIT",
+  "keywords": [
+    "cmux",
+    "fork",
+    "conversation"
+  ],
+  "interface": {
+    "displayName": "cmux-fork",
+    "shortDescription": "Fork Codex work into a new cmux pane.",
+    "developerName": "tanaka-yui",
+    "category": "Terminal",
+    "capabilities": [
+      "Terminal"
+    ]
+  }
+}

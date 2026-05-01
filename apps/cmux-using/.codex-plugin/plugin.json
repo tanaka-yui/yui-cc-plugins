@@ -1,0 +1,41 @@
+{
+  "name": "cmux-using",
+  "version": "1.0.0",
+  "description": "Skill for operating cmux terminal multiplexer. Pane splitting, sub-agent spawning, monitoring, result collection, command sending, screen reading, and notifications.",
+  "author": {
+    "name": "tanaka-yui",
+    "url": "https://github.com/tanaka-yui"
+  },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/cmux-using",
+  "license": "MIT",
+  "keywords": [
+    "cmux",
+    "skill",
+    "sub-agent",
+    "terminal"
+  ],
+  "skills": "./skills/",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -n \"$CMUX_SURFACE_ID\" ]; then REF=$(cmux identify | jq -r '.caller.surface_ref'); NUM=$(echo \"$REF\" | cut -d: -f2); cmux rename-tab --surface \"$REF\" \"[$NUM] Codex\"; fi"
+          }
+        ]
+      }
+    ]
+  },
+  "interface": {
+    "displayName": "cmux-using",
+    "shortDescription": "Operate cmux panes, sessions, and visible sub-agents.",
+    "developerName": "tanaka-yui",
+    "category": "Terminal",
+    "capabilities": [
+      "Terminal",
+      "Workflow"
+    ]
+  }
+}
