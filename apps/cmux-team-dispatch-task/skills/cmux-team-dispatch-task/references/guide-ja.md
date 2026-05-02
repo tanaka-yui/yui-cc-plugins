@@ -16,7 +16,7 @@
 - 利用可能な Agent 一覧を子セッションに伝達し、各子セッションが最適な Agent を選択
 - タスクごとに brainstorming スキルの使用を選択可能
 - **3つのレイアウトモード**: workspace（デフォルト・別タブ）、split（ペイン分割）、claude-teams（Agent Teams）— ディスパッチ前に選択
-- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を opus で実行後、実行フェーズに入る前に必ず opus 1m / sonnet / codex を選ばせる
+- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を opus で実行後、実行フェーズに入る前に必ず `opus 1m` / `sonnet` を選ばせる（`runners.json` に `engine: codex` runner がある場合のみ `codex` も追加）。同一 model なら現セッション継続、異なる model なら LAYOUT に応じて子 workspace / split を spawn し元 surface は monitor 化
 - **統一表示フォーマット**: 子セッション一覧・進捗・最終サマリーは Box drawing 表（Template A/B/C）で常に同じレイアウト
 - **堅牢なバックグラウンド監視**: `monitor-dispatch.sh` が heartbeat / 死亡通知 / `--resume` をサポート。`cmux send` の後に必ず `cmux send-key return` を発行して親 TUI に確実に届ける
 - **2つの統合戦略**: PR per task（子タスクごとに PR 作成）、Wait and merge（全タスク完了後にローカルマージ）
@@ -407,9 +407,9 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 {
   "default": "claude",
   "runners": [
-    { "name": "claude",  "command": "claude",  "engine": "claude", "use_zsh": false },
-    { "name": "ccenec",  "command": "ccenec",  "engine": "claude", "use_zsh": true  },
-    { "name": "codex",   "command": "codex",   "engine": "codex",  "use_zsh": false }
+    { "name": "claude",  "command": "claude",  "engine": "claude" },
+    { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
+    { "name": "codex",   "command": "codex",   "engine": "codex"  }
   ]
 }
 ```
@@ -420,7 +420,6 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 | `runners[].name` | AskUserQuestion の選択肢ラベル兼一意 ID |
 | `runners[].command` | 実際に実行するコマンド／関数名 |
 | `runners[].engine` | `claude` または `codex`。MODE 別の起動引数組み立てを切替（下表参照） |
-| `runners[].use_zsh` | `true` で `zsh -ic "<command> '<prompt>'"` で wrap し `.zshrc` の関数を解決 |
 
 ### engine × MODE 起動コマンド対応表
 
@@ -433,7 +432,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 | codex  | plan        | `<command> --dangerously-bypass-approvals-and-sandbox '/plan <PROMPT>'` |
 | codex  | superpowers | `<command> '$superpowers:brainstorming <PROMPT>'` |
 
-`use_zsh: true` の場合は上記全体を `zsh -ic "..."` で wrap。
+上記全体は常に `zsh -ic "..."` で wrap され、`~/.zshrc` のユーザー定義関数（`ccenec` 等）と env（proxy 認証 / PATH 等）が子セッションで読み込まれます。
 
 `claude-teams` レイアウトは runner 設定を無視し常に `cmux claude-teams`（親の claude アカウント）で起動します。
 
@@ -443,7 +442,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 1. AskUserQuestion で **starter テンプレ（claude のみ）** か **カスタム** を選択
 2. starter テンプレ選択時は claude のみが書き出されます
-3. カスタム選択時は AskUserQuestion ループで `name / command / engine / use_zsh` を 1 件ずつ収集、最後に「もう 1 件追加？」を繰り返し確認
+3. カスタム選択時は AskUserQuestion ループで `name / command / engine` を 1 件ずつ収集、最後に「もう 1 件追加？」を繰り返し確認
 4. 完了後、`~/.claude/cmux-team-dispatch-task/` ディレクトリが無ければ作成され、runners.json が書き出されます
 
 ### タスクごとの runner 切替
@@ -457,12 +456,12 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 ### 既存 Phase B モデル選択との関係
 
-子セッション内で実装フェーズ前に行う Phase B モデル選択（opus 1m / sonnet / codex）とは**レイヤーが異なる**:
+子セッション内で実装フェーズ前に行う Phase B モデル選択（`opus 1m` / `sonnet` / 条件付き `codex`）とは**レイヤーが異なる**:
 
 - **Step 1f (本セクション)**: 子セッションを *どの runtime で起動するか* を親が決める（起動時）
 - **Phase B**: 起動済みの子 claude セッションが *どのモデルで実装フェーズに入るか* を決める（起動後）
 
-`engine: codex` で子を起動した場合、Phase B の codex 選択肢は意味を失います（既に codex で動いているため）。
+なお Phase B の `codex` 選択肢は `runners.json` に `engine: codex` runner が登録されている場合にのみ表示される。`engine: codex` で子を起動した場合、Phase B の codex 選択肢は意味を失います（既に codex で動いているため）。
 
 ---
 
@@ -862,25 +861,34 @@ rmdir .worktrees 2>/dev/null
 
 Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` で以下を聞く:
 
-| 選択肢 | 動作 |
-|--------|------|
-| **opus 1m** | 高品質・長コンテキスト（推奨: 大規模・複雑な実装）。`/model claude-opus-4-7[1m]` で切り替えて実行を継続 |
-| **sonnet** | 高速・低コスト（推奨: 中規模・パターン化された実装）。`/model claude-sonnet-4-6` で切り替えて実行を継続 |
-| **codex** | codex CLI に乗り換え。同じ workspace で右に split し、新ペインで `codex` を起動。`~/.codex/config.toml` の `external_migration = true` と `cmux codex install-hooks` で claude セッションが自動的に引き継がれる |
+| 選択肢 | 表示条件 | 動作 |
+|--------|---------|------|
+| **opus 1m** | 常時 | Phase A と **同一 model** 扱い。`/model claude-opus-4-7[1m]` で切り替え、**現セッションで実装続行** |
+| **sonnet** | 常時 | **異なる model**。`LAYOUT` に応じて子 workspace / split を spawn し、`claude --model claude-sonnet-4-6 'Read and execute the plan at <plan-path>'` で起動。元 surface は monitor として存続 |
+| **codex** | `runners.json` に `engine: codex` の runner が **1 件以上ある時のみ** | **異なる model**。子 surface を spawn し、`runners.json` の codex runner の `command` で `<command> 'Read and execute the plan at <plan-path>'` 起動。`external_migration` により親 claude セッションも自動的に引き継がれる |
 
-codex 選択時のコマンド例:
+「異なる model」が選ばれた場合の spawn 手順:
 
 ```bash
-SURF=$(cmux new-split right | awk '{print $2}')
-cmux send --surface "$SURF" "codex"
-cmux send-key --surface "$SURF" return
-# 以降は新ペインの codex で実装を継続。元の claude ペインは
-# status.json の更新と cmux wait-for シグナル発火だけ担当する。
+# LAYOUT=workspace の場合
+cmux new-workspace --cwd "$PWD" --command "$LAUNCH_CMD"
+
+# LAYOUT=split の場合
+IDENT=$(cmux identify)
+WS=$(echo "$IDENT" | jq -r '.caller.workspace_ref')
+SF=$(echo "$IDENT" | jq -r '.caller.surface_ref')
+NEW=$(cmux new-split right --workspace "$WS" --surface "$SF" \
+      | grep -oE 'surface:[0-9]+' | head -1)
+cmux send --surface "$NEW" "$LAUNCH_CMD"
+cmux send-key --surface "$NEW" return
 ```
+
+元の surface は **monitor** として存続し、新 surface 完了後に `status.json` を更新して `cmux wait-for --signal <slug>-done` を発火する（自身では計画を実行しない）。
 
 ### 前提条件
 
-- codex オプションを使う場合、事前に `cmux codex install-hooks` をマシンで一度実行しておく必要がある
+- codex オプションを使う場合、`runners.json` に `engine: "codex"` の runner を 1 件以上登録しておく必要がある (Step 1f の初回セットアップで追加可能)
+- 加えて `cmux codex install-hooks` をマシンで一度実行しておく必要がある
 - これにより `~/.codex/hooks.json` に SessionStart / Stop / UserPromptSubmit hooks が入り、`config.toml` に `[features] codex_hooks = true` / `external_migration = true` が追加される
 
 ---

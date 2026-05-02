@@ -207,9 +207,9 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
 {
   "default": "claude",
   "runners": [
-    { "name": "claude",  "command": "claude",  "engine": "claude", "use_zsh": false },
-    { "name": "ccenec",  "command": "ccenec",  "engine": "claude", "use_zsh": true  },
-    { "name": "codex",   "command": "codex",   "engine": "codex",  "use_zsh": false }
+    { "name": "claude",  "command": "claude",  "engine": "claude" },
+    { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
+    { "name": "codex",   "command": "codex",   "engine": "codex"  }
   ]
 }
 ```
@@ -219,8 +219,6 @@ Field meanings:
 - `name`: unique identifier shown in AskUserQuestion options
 - `command`: the executable / zsh function to invoke
 - `engine`: `claude` or `codex` — controls flag composition (see table below)
-- `use_zsh`: `true` wraps the command in `zsh -ic "..."` so functions defined in
-  `~/.zshrc` are resolved (required for runners like `ccenec`)
 
 **engine × MODE invocation table** (executed by `launch-workspace.sh`):
 
@@ -231,7 +229,8 @@ Field meanings:
 | codex  | plan        | `<command> --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
 | codex  | superpowers | `<command> '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
 
-When `use_zsh: true`, the entire composed command is wrapped: `zsh -ic "<composed>"`.
+The composed command is always wrapped: `zsh -ic "<composed>"` so that `~/.zshrc`
+functions (e.g. `ccenec`) and env (proxy auth, PATH) are loaded for the child session.
 
 The `claude-teams` layout ignores runner configuration (always uses `cmux claude-teams` /
 the parent claude account).
@@ -251,19 +250,18 @@ the parent claude account).
    {
      "default": "claude",
      "runners": [
-       { "name": "claude", "command": "claude", "engine": "claude", "use_zsh": false }
+       { "name": "claude", "command": "claude", "engine": "claude" }
      ]
    }
    ```
 
 3. **カスタムを選んだ場合**: enter an AskUserQuestion loop. For each runner, collect
-   four fields (one AskUserQuestion call per runner is ideal — use the question text
+   three fields (one AskUserQuestion call per runner is ideal — use the question text
    format below; collect all answers, then ask whether to add another):
 
    - **name** (free text, e.g. `ccenec`) — unique identifier
    - **command** (free text, e.g. `ccenec` or `codex` or `claude`) — what to invoke
    - **engine** (choice: `claude` / `codex`)
-   - **use_zsh** (choice: `true` / `false`)
 
    After each runner is added, ask: 「もう 1 件追加しますか？」 (Yes → loop; No → finish).
 
@@ -367,16 +365,23 @@ If none are relevant, proceed without an agent.
 === END AVAILABLE AGENTS ===
 ```
 
-3. **Mandatory Model Selection Sequence** (append to EVERY task prompt, regardless of mode):
+3. **Mandatory Model Selection Sequence** (append to EVERY task prompt, regardless of mode).
+
+   This block contains placeholders the parent fills before sending: `{{LAYOUT}}`,
+   `{{CODEX_OPTION_LINE}}`, `{{CODEX_BEHAVIOR_BLOCK}}`. See the placeholder rules
+   immediately below this template.
 
 ```
 === MANDATORY MODEL SELECTION SEQUENCE ===
 You will operate in two phases. This sequence is REQUIRED even in auto mode.
 
+LAYOUT: {{LAYOUT}}                 # workspace or split — used by Phase B spawn
+
 PHASE A — Planning / Brainstorming (always opus):
   Use opus for plan / brainstorming. Do NOT switch models in this phase.
   - superpowers mode: invoke "superpowers:brainstorming" then write a plan
   - plan mode: use Claude's built-in /plan to produce a structured plan
+  Remember the path of the plan file you wrote — Phase B may hand it off.
 
 PHASE B — Execution model selection (REQUIRED before any code change):
   After Phase A completes and BEFORE executing the plan, you MUST ask the user
@@ -387,27 +392,76 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     Options:
       1. opus 1m  — 高品質・長コンテキスト (推奨: 大規模・複雑な実装)
       2. sonnet   — 高速・低コスト (推奨: 中規模・パターン化された実装)
-      3. codex    — codex CLI に切り替え (推奨: codex 固有機能を使う実装)
+{{CODEX_OPTION_LINE}}
 
   Behavior by selection:
-    - "opus 1m" → run `/model claude-opus-4-7[1m]` then proceed
-    - "sonnet"  → run `/model claude-sonnet-4-6` then proceed
-    - "codex"   → split a pane in the CURRENT workspace and continue in codex:
-         SURF=$(cmux new-split right | awk '{print $2}')
-         cmux send --surface "$SURF" "codex"
-         cmux send-key --surface "$SURF" return
-         (Codex picks up this claude session automatically because
-          ~/.codex/config.toml has external_migration = true and the
-          cmux codex hooks are installed.)
-         Once the codex pane has loaded, continue execution INSIDE that pane.
-         The original claude pane stays alive only to write status.json
-         updates and emit the cmux wait-for completion signal once codex
-         reports its task complete.
+
+    [SAME MODEL] "opus 1m" → run `/model claude-opus-4-7[1m]` and continue execution
+      in THIS session. Proceed to implement the plan you wrote in Phase A.
+
+    [DIFFERENT MODEL] "sonnet" → spawn a new surface and become a monitor.
+      Build the launch command (replace <PLAN_FILE_PATH> with the path of the plan
+      file you wrote in Phase A):
+        LAUNCH_CMD="claude --model claude-sonnet-4-6 'Read and execute the plan at <PLAN_FILE_PATH>'"
+      Then run the spawn procedure below.
+
+{{CODEX_BEHAVIOR_BLOCK}}
+
+  Spawn procedure (run when DIFFERENT MODEL is selected):
+    - LAYOUT=workspace:
+        cmux new-workspace --cwd "$PWD" --command "$LAUNCH_CMD"
+    - LAYOUT=split:
+        IDENT=$(cmux identify)
+        WS=$(echo "$IDENT" | jq -r '.caller.workspace_ref')
+        SF=$(echo "$IDENT" | jq -r '.caller.surface_ref')
+        NEW=$(cmux new-split right --workspace "$WS" --surface "$SF" \
+              | grep -oE 'surface:[0-9]+' | head -1)
+        # wait for the new shell, then send the launch command
+        cmux send --surface "$NEW" "$LAUNCH_CMD"
+        cmux send-key --surface "$NEW" return
+
+  Monitor mode (after spawn):
+    - Stay alive in THIS surface
+    - Write status.json updates as the new surface reports progress
+    - Emit the cmux wait-for completion signal once the new surface finishes
+    - Do NOT execute the plan yourself in monitor mode
 
 VIOLATION: Do NOT skip Phase B. Even in auto mode, ALWAYS ask. Skipping the
 model selection question is a critical error.
 === END MANDATORY MODEL SELECTION SEQUENCE ===
 ```
+
+**Placeholder rules** (executed by the parent when constructing each child's prompt):
+
+- `{{LAYOUT}}` → `workspace` or `split` (the value passed to `launch-workspace.sh --layout`).
+  For `claude-teams` layout, this whole MODEL SELECTION block can be omitted because
+  Phase B does not apply (the orchestrator drives the teammates).
+
+- Read `~/.claude/cmux-team-dispatch-task/runners.json` and check whether any runner
+  has `engine: "codex"`:
+
+  ```bash
+  CODEX_CMD=$(jq -r '[.runners[] | select(.engine == "codex")] | .[0].command // empty' \
+    ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
+  ```
+
+  - **codex runner present** (`CODEX_CMD` non-empty):
+    - `{{CODEX_OPTION_LINE}}` → `      3. codex    — codex CLI に切り替え (推奨: codex 固有機能を使う実装)`
+    - `{{CODEX_BEHAVIOR_BLOCK}}` →
+      ```
+          [DIFFERENT MODEL] "codex" → spawn a new surface and become a monitor.
+            Build the launch command (replace <PLAN_FILE_PATH> with the path of the
+            plan file you wrote in Phase A):
+              LAUNCH_CMD="<CODEX_CMD> 'Read and execute the plan at <PLAN_FILE_PATH>'"
+            Then run the spawn procedure below. (codex also inherits the claude
+            session via external_migration when the cmux codex hooks are installed.)
+      ```
+      where `<CODEX_CMD>` is the literal `command` value from the first codex runner
+      in `runners.json`.
+
+  - **codex runner absent** (`CODEX_CMD` empty):
+    - `{{CODEX_OPTION_LINE}}` → empty string (so the option list shows only `1.` and `2.`)
+    - `{{CODEX_BEHAVIOR_BLOCK}}` → empty string
 
 4. **The task description** itself
 
@@ -1158,5 +1212,6 @@ When parsing a `superpowers:writing-plans` plan file:
 - **claude-teams requires cmux claude-teams**: The `cmux claude-teams` command sets up the tmux shim and `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` environment variable.
 - **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` followed by `cmux send-key return` when the child Claude session exits. The trailing `send-key return` is required so messages don't sit in the parent claude TUI's input box waiting for a manual Enter press.
 - **Runner script**: The `.cmux-team-dispatch-task-run.sh` file is created in each worktree. It's cleaned up along with the worktree.
-- **Codex execution model (Phase B option 3)**: The "codex" choice in the model selection sequence requires `cmux codex install-hooks` to have been run once on the machine (this sets `~/.codex/config.toml` to `external_migration = true` and installs SessionStart / Stop / UserPromptSubmit hooks). With those installed, running `codex` inside a freshly split cmux pane resumes the parent claude session without any extra arguments.
+- **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. The `command` of the first such runner is used for the spawn launch. `cmux codex install-hooks` is also required so that `external_migration = true` is set and codex picks up the parent claude session automatically.
+- **Same-model vs different-model in Phase B**: Phase A is always opus, so "opus 1m" counts as the same model and stays in the current session via `/model claude-opus-4-7[1m]`. Any other choice (sonnet / codex) is treated as a different model and triggers a spawn: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The original surface stays alive as a monitor (writes status.json, emits the wait-for completion signal). The plan file path written in Phase A is embedded in the new surface's launch prompt so context is handed off cleanly.
 - **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. When a child is launched with `engine: codex`, Phase B's "codex" option is redundant and should be skipped (the child already runs in codex). The runners.json registry lives at `~/.claude/cmux-team-dispatch-task/runners.json` and is bootstrapped on first run via AskUserQuestion.

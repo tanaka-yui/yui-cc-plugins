@@ -16,9 +16,11 @@
 #   --parent-notify-surface <sf-id>    Surface to notify on completion
 #   --runner <name>                    Runner name to look up in
 #                                      ~/.claude/cmux-team-dispatch-task/runners.json.
-#                                      Resolves to {command, engine, use_zsh} which control
+#                                      Resolves to {command, engine} which control
 #                                      the launch command for the child session.
-#                                      Default: hardcoded {claude, engine=claude, use_zsh=false}.
+#                                      The composed command is always wrapped in `zsh -ic "..."`
+#                                      so functions and env vars from ~/.zshrc are loaded.
+#                                      Default: hardcoded {claude, engine=claude}.
 #
 # Output: JSON to stdout with workspace/pane details
 # Debug:  Logs to stderr
@@ -150,12 +152,11 @@ command -v jq &>/dev/null || die "jq is not installed (required for JSON output)
 
 # --- Resolve runner ---
 # When --runner is specified, look up the runner in runners.json and extract
-# {command, engine, use_zsh}. When unset, fall back to hardcoded claude defaults
+# {command, engine}. When unset, fall back to hardcoded claude defaults
 # so the script remains usable standalone (without runners.json being present).
 
 RUNNER_COMMAND="claude"
 RUNNER_ENGINE="claude"
-RUNNER_USE_ZSH="false"
 
 if [[ -n "$RUNNER_NAME" ]]; then
   [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH (required when --runner is specified)"
@@ -165,16 +166,13 @@ if [[ -n "$RUNNER_NAME" ]]; then
 
   RUNNER_COMMAND=$(echo "$RUNNER_JSON" | jq -r '.command // empty')
   RUNNER_ENGINE=$(echo "$RUNNER_JSON" | jq -r '.engine // "claude"')
-  RUNNER_USE_ZSH=$(echo "$RUNNER_JSON" | jq -r '.use_zsh // false | tostring')
 
   [[ -n "$RUNNER_COMMAND" ]] || die "runner '$RUNNER_NAME' is missing 'command' field"
   [[ "$RUNNER_ENGINE" == "claude" || "$RUNNER_ENGINE" == "codex" ]] \
     || die "runner '$RUNNER_NAME' has invalid engine '$RUNNER_ENGINE' (must be 'claude' or 'codex')"
-  [[ "$RUNNER_USE_ZSH" == "true" || "$RUNNER_USE_ZSH" == "false" ]] \
-    || die "runner '$RUNNER_NAME' has invalid use_zsh '$RUNNER_USE_ZSH' (must be true or false)"
 fi
 
-log "runner" "name=${RUNNER_NAME:-<default>} command=$RUNNER_COMMAND engine=$RUNNER_ENGINE use_zsh=$RUNNER_USE_ZSH"
+log "runner" "name=${RUNNER_NAME:-<default>} command=$RUNNER_COMMAND engine=$RUNNER_ENGINE"
 
 # Resolve git repo info
 REPO_ROOT=""
@@ -221,8 +219,9 @@ printf '%s\n' "$FULL_PROMPT" > "$PROMPT_FILE"
 log "prompt" "wrote prompt to $PROMPT_FILE"
 
 # --- Step 3: Build runner command ---
-# Build the launch command per (engine × MODE) and optionally wrap with `zsh -ic`
-# so that user-defined functions in ~/.zshrc (e.g. ccenec, ccgpt) are resolved.
+# Build the launch command per (engine × MODE) and wrap with `zsh -ic` so that
+# user-defined functions and env vars from ~/.zshrc (e.g. ccenec, ccgpt, proxy
+# auth) are always resolved.
 #
 # claude-teams layout uses `cmux claude-teams` (claude-only) and ignores --runner.
 
@@ -259,12 +258,8 @@ else
     fi
   fi
 
-  # use_zsh: true → zsh -ic で .zshrc を読み込ませてユーザー定義関数 (ccenec 等) を解決
-  if [[ "$RUNNER_USE_ZSH" == "true" ]]; then
-    CLAUDE_CMD="zsh -ic \"$CORE_CMD\""
-  else
-    CLAUDE_CMD="$CORE_CMD"
-  fi
+  # 常に zsh -ic で .zshrc を読み込ませてユーザー定義関数 (ccenec 等) と env (proxy 認証 等) を解決
+  CLAUDE_CMD="zsh -ic \"$CORE_CMD\""
 fi
 
 # --- Step 4: Generate runner script ---
@@ -471,7 +466,6 @@ jq -n \
   --arg runner_name "$RUNNER_NAME" \
   --arg runner_command "$RUNNER_COMMAND" \
   --arg runner_engine "$RUNNER_ENGINE" \
-  --arg runner_use_zsh "$RUNNER_USE_ZSH" \
   '{
     workspace_id: $workspace_id,
     surface_id: $surface_id,
@@ -490,8 +484,7 @@ jq -n \
     runner: {
       name: (if $runner_name == "" then null else $runner_name end),
       command: $runner_command,
-      engine: $runner_engine,
-      use_zsh: ($runner_use_zsh == "true")
+      engine: $runner_engine
     },
     prompt_sent: true
   }'

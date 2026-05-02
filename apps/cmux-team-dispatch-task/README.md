@@ -155,6 +155,24 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 回答を全タスクに適用する。子セッションは質問も削除も行わない（子が自分の worktree を掴んだまま
 親が削除を試みて失敗するのを防ぐため）。
 
+## モデル選択フロー (Phase B)
+
+各子セッションは Phase A (計画 / brainstorming) 完了後、**実装フェーズで使うモデル**を `AskUserQuestion` で必ず聞きます。Phase A は常に opus で動作するため、選んだ model が opus と同一かどうかで動作が分岐します。
+
+| 選択肢 | 表示条件 | 動作 |
+|--------|---------|------|
+| **opus 1m** | 常時 | Phase A と **同一 model**。`/model claude-opus-4-7[1m]` で切替後、**現セッションで実装続行** |
+| **sonnet** | 常時 | **異なる model**。レイアウトに応じて子 workspace / split を spawn し、`claude --model claude-sonnet-4-6 'Read and execute the plan at <path>'` で起動 |
+| **codex** | `~/.claude/cmux-team-dispatch-task/runners.json` に `engine: codex` runner がある時のみ | **異なる model**。子 surface を spawn し runners.json の codex runner で起動。`external_migration` により親 claude セッションを引き継ぐ |
+
+「異なる model」が選ばれた場合の挙動:
+
+- `LAYOUT == workspace` → `cmux new-workspace --cwd ... --command "<launch>"` で子 workspace を作成
+- `LAYOUT == split` → 同 workspace 内で `cmux new-split right` し新ペインで起動
+- 元の surface は **monitor として存続** し、新 surface の完了を待って `status.json` を更新・`cmux wait-for --signal <slug>-done` を発火
+
+codex オプションを使う場合は事前に `cmux codex install-hooks` の実行が必要です。
+
 ## superpowers 統合
 
 `superpowers:writing-plans` でプランが完成すると、Execution Handoff として実行方法の選択肢が提示される。本スキルは **第3選択肢「Parallel (cmux split)」** として統合:
