@@ -1,0 +1,20 @@
+{
+  "name": "dev-up",
+  "version": "1.0.0",
+  "description": "Worktree-isolated dev stack lifecycle. Reserve a port slot, generate .env.dispatch, and run docker-compose stacks and/or direct commands (go, vite, etc.) with health checks and clean teardown.",
+  "author": {
+    "name": "tanaka-yui",
+    "url": "https://github.com/tanaka-yui"
+  },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/dev-up",
+  "license": "MIT",
+  "keywords": [
+    "docker",
+    "compose",
+    "worktree",
+    "cmux",
+    "vite",
+    "go"
+  ],
+  "skills": "./skills/"
+}
