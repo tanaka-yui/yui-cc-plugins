@@ -11,6 +11,8 @@ cmux ターミナルマルチプレクサ向けツール集。
 /plugin install cmux-using@yui-cc-plugins
 /plugin install cmux-team@yui-cc-plugins
 /plugin install cmux-team-dispatch-task@yui-cc-plugins
+/plugin install dev-up@yui-cc-plugins
+/plugin install e2e-test@yui-cc-plugins
 
 # または一括インストール
 bash install.sh
@@ -28,6 +30,8 @@ bash install.sh
 | cmux-using | cmux 操作スキル（サブエージェント起動・監視） | [README](apps/cmux-using/README.md) |
 | cmux-team | マルチエージェント開発オーケストレーション | [README](apps/cmux-team/README.md) |
 | cmux-team-dispatch-task | 並列タスクディスパッチ（worktree 分離） | [SKILL](apps/cmux-team-dispatch-task/SKILL.md) |
+| dev-up | worktree 分離された dev stack ライフサイクル（compose + 直接コマンド） | [README](apps/dev-up/README.md) |
+| e2e-test | agent-browser ベースの E2E テスト（dev-up と連携） | [README](apps/e2e-test/README.md) |
 
 ### Apps
 
