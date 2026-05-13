@@ -69,7 +69,8 @@ while IFS= read -r SVC; do
 
   case "$TYPE" in
     docker-compose)
-      mapfile -t COMPOSE_FILES < <(yq -r ".services[$SVC_INDEX].files[]" "$CONFIG_FILE")
+      COMPOSE_FILES=()
+      while IFS= read -r f; do COMPOSE_FILES+=("$f"); done < <(yq -r ".services[$SVC_INDEX].files[]" "$CONFIG_FILE")
       COMPOSE_F_ARGS=()
       for f in "${COMPOSE_FILES[@]}"; do COMPOSE_F_ARGS+=(-f "$f"); done
       docker compose "${COMPOSE_F_ARGS[@]}" --env-file "$ENV_FILE" -p "$PROJECT-$SLOT" up -d --wait
