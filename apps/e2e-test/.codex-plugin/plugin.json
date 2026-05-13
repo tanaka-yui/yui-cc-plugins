@@ -1,0 +1,17 @@
+{
+  "name": "e2e-test",
+  "version": "1.0.0",
+  "description": "agent-browser based E2E tests.",
+  "author": { "name": "tanaka-yui", "url": "https://github.com/tanaka-yui" },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/e2e-test",
+  "license": "MIT",
+  "keywords": ["e2e", "browser"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "e2e-test",
+    "shortDescription": "agent-browser E2E for worktree-isolated stacks.",
+    "developerName": "tanaka-yui",
+    "category": "Development",
+    "capabilities": ["Terminal", "Workflow"]
+  }
+}

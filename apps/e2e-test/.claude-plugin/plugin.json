@@ -1,0 +1,13 @@
+{
+  "name": "e2e-test",
+  "version": "1.0.0",
+  "description": "agent-browser based E2E tests against worktree-isolated stacks brought up by dev-up.",
+  "author": {
+    "name": "tanaka-yui",
+    "url": "https://github.com/tanaka-yui"
+  },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/e2e-test",
+  "license": "MIT",
+  "keywords": ["e2e", "browser", "agent-browser"],
+  "skills": "./skills/"
+}
