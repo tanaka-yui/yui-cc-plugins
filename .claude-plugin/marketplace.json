@@ -60,6 +60,35 @@
         "parallel",
         "worktree"
       ]
+    },
+    {
+      "name": "dev-up",
+      "description": "Worktree-isolated dev stack lifecycle. Reserve a port slot, generate .env.dispatch, and run docker-compose stacks and/or direct commands (go, vite, etc.) with health checks and clean teardown.",
+      "source": "./apps/dev-up",
+      "version": "1.0.0",
+      "license": "MIT",
+      "category": "development",
+      "tags": [
+        "docker",
+        "compose",
+        "worktree",
+        "cmux",
+        "vite",
+        "go"
+      ]
+    },
+    {
+      "name": "e2e-test",
+      "description": "agent-browser based E2E tests against worktree-isolated stacks brought up by dev-up.",
+      "source": "./apps/e2e-test",
+      "version": "1.0.0",
+      "license": "MIT",
+      "category": "development",
+      "tags": [
+        "e2e",
+        "browser",
+        "agent-browser"
+      ]
     }
   ]
 }
