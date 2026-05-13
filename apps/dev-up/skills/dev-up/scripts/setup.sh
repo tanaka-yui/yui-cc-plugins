@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GUIDE="$SCRIPT_DIR/../../references/setup-guide.md"
+GUIDE="$SCRIPT_DIR/../../../references/setup-guide.md"
 
 if [[ ! -f "$GUIDE" ]]; then
   echo "ERROR: setup guide not found at $GUIDE" >&2
