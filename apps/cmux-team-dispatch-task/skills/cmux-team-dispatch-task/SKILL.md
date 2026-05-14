@@ -226,8 +226,15 @@ Field meanings:
 |--------|-------------|-----------------------------------------------------------------------------------------------------------|
 | claude | plan        | `<command> --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
 | claude | superpowers | `<command> 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'`                              |
+| claude | execute     | `<command> [--model <X>] [--dangerously-skip-permissions] 'Read and execute the plan at <plan-file>'`     |
 | codex  | plan        | `<command> --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
 | codex  | superpowers | `<command> '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
+| codex  | execute     | `<command> --dangerously-bypass-approvals-and-sandbox 'Read and execute the plan at <plan-file>'`         |
+
+`execute` モードは Phase B (実装フェーズ) で別 surface に実装を移譲するときに使う。
+`--plan-file <path>` で計画ファイルパスを指定し、`.cmux-team-dispatch-task-prompt.md`
+は書き換えない (Phase A のものを温存)。claude engine では `--model` と
+`--skip-permissions` を追加可能 (sonnet など auto mode が効かないモデル用)。
 
 The composed command is always wrapped: `zsh -ic "<composed>"` so that `~/.zshrc`
 functions (e.g. `ccenec`) and env (proxy auth, PATH) are loaded for the child session.
@@ -315,8 +322,17 @@ directory (worktree). Instead of sending `claude ...` directly to the terminal, 
 4. Signals completion via `cmux wait-for --signal <slug>-done`
 5. Optionally notifies the parent workspace via `cmux notify`
 
+**Deferred completion (`--defer-status`)**: When the launch script is invoked with
+`--defer-status` (always done by `launch-session-splits.sh` for Child sessions), the
+runner wrapper inserts a check before step 3: if `<STATUS_DIR>/.deferred` exists at
+claude-exit time, steps 3–5 are skipped. This lets a Child that has spawned a Phase B
+grandchild bow out without overwriting the grandchild's `status.json` update. The
+grandchild (launched via `launch-workspace.sh --mode execute`) has its own runner
+wrapper that owns the final `done`/`error` transition.
+
 The signal name for each task is `<task-slug>-done`, returned in the `signal_name` field
-of the launch script's output JSON.
+of the launch script's output JSON. For Phase B grandchildren spawned via `--mode execute`,
+the signal name is `<task-slug>-exec-done` (or whatever workspace name was passed).
 
 ### Building the Task Prompt
 
@@ -399,32 +415,46 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     [SAME MODEL] "opus 1m" → run `/model claude-opus-4-7[1m]` and continue execution
       in THIS session. Proceed to implement the plan you wrote in Phase A.
 
-    [DIFFERENT MODEL] "sonnet" → spawn a new surface and become a monitor.
-      Build the launch command (replace <PLAN_FILE_PATH> with the path of the plan
-      file you wrote in Phase A):
-        LAUNCH_CMD="claude --model claude-sonnet-4-6 'Read and execute the plan at <PLAN_FILE_PATH>'"
-      Then run the spawn procedure below.
+    [DIFFERENT MODEL] "sonnet" → spawn the implementation via launch-workspace.sh.
+      Identify the inputs you already have:
+        - <PLAN_FILE_PATH>     = the plan file you wrote in Phase A
+        - <EXISTING_STATUS_DIR>= the existing .dispatch/<task-slug> directory (this Child's status dir)
+        - <SKILL_DIR>          = the directory containing THIS SKILL.md
+        - <LAYOUT>             = the original layout (workspace or split)
+      Build and run:
+        zsh <SKILL_DIR>/scripts/launch-workspace.sh \
+          --cwd "$PWD" \
+          --mode execute \
+          --plan-file <PLAN_FILE_PATH> \
+          --model claude-sonnet-4-6 \
+          --skip-permissions \
+          --status-dir "<EXISTING_STATUS_DIR>" \
+          --layout <LAYOUT> \
+          --parent-notify-workspace <PARENT_WORKSPACE_ID> \
+          [--parent-notify-surface <PARENT_SURFACE_ID>] \
+          [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split layout のみ
+          <task-slug>-exec
+      この一回の呼び出しが:
+        - 既存 worktree を再利用 (新 worktree/branch は作らない)
+        - <LAYOUT> 種別に応じた新 surface を作成
+        - 新 surface で `claude --model claude-sonnet-4-6 --dangerously-skip-permissions
+          'Read and execute the plan at <PLAN_FILE_PATH>'` を起動
+        - その claude を runner script でラップし、exit 時に status.json を done/error に
+          遷移させ、`cmux wait-for --signal <task-slug>-exec-done` を発火、親に
+          `[dispatch] task ... finished` を送信
+      その後、移譲シグナルを書いてから本セッションを exit する:
+        touch "<EXISTING_STATUS_DIR>/.deferred"
+        # THIS session can now exit cleanly — the new surface owns completion notification.
 
 {{CODEX_BEHAVIOR_BLOCK}}
 
-  Spawn procedure (run when DIFFERENT MODEL is selected):
-    - LAYOUT=workspace:
-        cmux new-workspace --cwd "$PWD" --command "$LAUNCH_CMD"
-    - LAYOUT=split:
-        IDENT=$(cmux identify)
-        WS=$(echo "$IDENT" | jq -r '.caller.workspace_ref')
-        SF=$(echo "$IDENT" | jq -r '.caller.surface_ref')
-        NEW=$(cmux new-split right --workspace "$WS" --surface "$SF" \
-              | grep -oE 'surface:[0-9]+' | head -1)
-        # wait for the new shell, then send the launch command
-        cmux send --surface "$NEW" "$LAUNCH_CMD"
-        cmux send-key --surface "$NEW" return
-
-  Monitor mode (after spawn):
-    - Stay alive in THIS surface
-    - Write status.json updates as the new surface reports progress
-    - Emit the cmux wait-for completion signal once the new surface finishes
-    - Do NOT execute the plan yourself in monitor mode
+  Notes on the deferred completion mechanism:
+    - Child session (THIS surface) was launched with `--defer-status`, so its
+      runner wrapper checks for `<STATUS_DIR>/.deferred` at exit. When the file
+      exists, the wrapper skips status.json update, parent notification, and
+      `cmux wait-for` emission — letting the grandchild's wrapper own those.
+    - When SAME MODEL ("opus 1m") is chosen, do NOT create `.deferred`. The
+      Child completes implementation in-session and its wrapper writes done as usual.
 
 VIOLATION: Do NOT skip Phase B. Even in auto mode, ALWAYS ask. Skipping the
 model selection question is a critical error.
@@ -443,21 +473,37 @@ model selection question is a critical error.
   ```bash
   CODEX_CMD=$(jq -r '[.runners[] | select(.engine == "codex")] | .[0].command // empty' \
     ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
+  CODEX_RUNNER_NAME=$(jq -r '[.runners[] | select(.engine == "codex")] | .[0].name // empty' \
+    ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
   ```
 
   - **codex runner present** (`CODEX_CMD` non-empty):
     - `{{CODEX_OPTION_LINE}}` → `      3. codex    — codex CLI に切り替え (推奨: codex 固有機能を使う実装)`
     - `{{CODEX_BEHAVIOR_BLOCK}}` →
       ```
-          [DIFFERENT MODEL] "codex" → spawn a new surface and become a monitor.
-            Build the launch command (replace <PLAN_FILE_PATH> with the path of the
-            plan file you wrote in Phase A):
-              LAUNCH_CMD="<CODEX_CMD> 'Read and execute the plan at <PLAN_FILE_PATH>'"
-            Then run the spawn procedure below. (codex also inherits the claude
-            session via external_migration when the cmux codex hooks are installed.)
+          [DIFFERENT MODEL] "codex" → spawn the implementation via launch-workspace.sh.
+            Build and run (same shape as the sonnet branch above, but with the codex runner):
+              zsh <SKILL_DIR>/scripts/launch-workspace.sh \
+                --cwd "$PWD" \
+                --mode execute \
+                --plan-file <PLAN_FILE_PATH> \
+                --runner <CODEX_RUNNER_NAME> \
+                --status-dir "<EXISTING_STATUS_DIR>" \
+                --layout <LAYOUT> \
+                --parent-notify-workspace <PARENT_WORKSPACE_ID> \
+                [--parent-notify-surface <PARENT_SURFACE_ID>] \
+                [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split layout のみ
+                <task-slug>-exec
+            Then write the deferred sentinel and exit:
+              touch "<EXISTING_STATUS_DIR>/.deferred"
+            The runner wrapper around codex will emit `<task-slug>-exec-done`,
+            update status.json, and notify the parent. (codex also inherits the
+            claude session via external_migration when the cmux codex hooks are
+            installed.)
       ```
-      where `<CODEX_CMD>` is the literal `command` value from the first codex runner
-      in `runners.json`.
+      where `<CODEX_RUNNER_NAME>` is the `name` field of the first codex runner in
+      `runners.json` (the SKILL pre-computes this from the same jq query that
+      produces `CODEX_CMD`).
 
   - **codex runner absent** (`CODEX_CMD` empty):
     - `{{CODEX_OPTION_LINE}}` → empty string (so the option list shows only `1.` and `2.`)
@@ -1213,5 +1259,5 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` followed by `cmux send-key return` when the child Claude session exits. The trailing `send-key return` is required so messages don't sit in the parent claude TUI's input box waiting for a manual Enter press.
 - **Runner script**: The `.cmux-team-dispatch-task-run.sh` file is created in each worktree. It's cleaned up along with the worktree.
 - **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. The `command` of the first such runner is used for the spawn launch. `cmux codex install-hooks` is also required so that `external_migration = true` is set and codex picks up the parent claude session automatically.
-- **Same-model vs different-model in Phase B**: Phase A is always opus, so "opus 1m" counts as the same model and stays in the current session via `/model claude-opus-4-7[1m]`. Any other choice (sonnet / codex) is treated as a different model and triggers a spawn: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The original surface stays alive as a monitor (writes status.json, emits the wait-for completion signal). The plan file path written in Phase A is embedded in the new surface's launch prompt so context is handed off cleanly.
+- **Same-model vs different-model in Phase B**: Phase A is always opus, so "opus 1m" counts as the same model and stays in the current session via `/model claude-opus-4-7[1m]`. Any other choice (sonnet / codex) is treated as a different model and triggers a spawn via `launch-workspace.sh --mode execute`: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten).
 - **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. When a child is launched with `engine: codex`, Phase B's "codex" option is redundant and should be skipped (the child already runs in codex). The runners.json registry lives at `~/.claude/cmux-team-dispatch-task/runners.json` and is bootstrapped on first run via AskUserQuestion.

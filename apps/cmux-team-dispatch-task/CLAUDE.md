@@ -72,11 +72,13 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 7. Display Format Conventions（Template A/B/C）が SKILL.md / guide-ja.md / 子セッションプロンプト埋め込みの `PROGRESS REPORTING FORMAT` の3か所で完全一致しているか確認（カラム数・順序・幅・Mode 略称）
 8. モデル選択フロー（MANDATORY MODEL SELECTION SEQUENCE）が **SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイル**で完全一致しているか確認:
    - 同一 model (opus 1m) は **現セッション継続** (`/model claude-opus-4-7[1m]`)
-   - 異なる model (sonnet / codex) は **LAYOUT に応じて子 workspace / split を spawn** し、元 surface は monitor として存続 (status.json 更新 + `cmux wait-for` シグナル)
+   - 異なる model (sonnet / codex) は **`launch-workspace.sh --mode execute` 経由で別 surface を spawn**。孫 surface の runner wrapper が status.json / `cmux wait-for` シグナル / 親通知を担当。Child は `.deferred` を作って exit (runner は `--defer-status` 付きで起動されており `.deferred` を検知して上書きをスキップ)
+   - sonnet は **`--skip-permissions` 必須** (auto mode が効かないため permission prompt でハング防止)
    - **codex 選択肢は `runners.json` に `engine: codex` の runner があるときのみ表示**（無い場合は option から除外）
-   - 計画の受け渡しは新 surface の launch prompt に **計画ファイルパスを埋め込む**
+   - 計画の受け渡しは `--plan-file <path>` で行う (`.cmux-team-dispatch-task-prompt.md` は書き換えず Phase A のものを温存)
 9. `cmux send` で親に通知する箇所すべてに `cmux send-key return` がペアで発行されているか確認（runner / monitor 両方）
-10. `runners.json` のスキーマ（`default` / `runners[].name|command|engine`）が SKILL.md Step 1f / guide-ja.md「子セッション runner 設定」/ `launch-workspace.sh` の `--runner` 解決ロジックの3か所で一致しているか確認。特に `engine × MODE` の起動コマンド対応表（claude/codex × plan/superpowers の4通り）が SKILL.md と guide-ja.md で同一か検証。なお composed command は常に `zsh -ic "..."` で wrap される（`.zshrc` の関数 / env を読み込むため）
+10. `runners.json` のスキーマ（`default` / `runners[].name|command|engine`）が SKILL.md Step 1f / guide-ja.md「子セッション runner 設定」/ `launch-workspace.sh` の `--runner` 解決ロジックの3か所で一致しているか確認。特に `engine × MODE` の起動コマンド対応表（claude/codex × plan/superpowers/execute の6通り）が SKILL.md と guide-ja.md で同一か検証。なお composed command は常に `zsh -ic "..."` で wrap される（`.zshrc` の関数 / env を読み込むため）
+11. `launch-workspace.sh` の execute モード関連フラグ（`--mode execute` / `--plan-file` / `--model` / `--skip-permissions` / `--defer-status`）が SKILL.md / guide-ja.md / README.md の Phase B 説明と一致しているか確認。Child 側 (launch-session-splits.sh) が `--defer-status` を必ず付けて起動していること、孫側 (Phase B spawn) が `--mode execute` + `--plan-file` で起動していることを検証
 
 ## テスト方法
 
@@ -103,10 +105,13 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 8. **モデル選択（動的表示）**: 子セッションが Phase A 完了後に AskUserQuestion を必ず出すこと。`runners.json` に `engine: codex` runner が無い場合は **opus 1m / sonnet の 2 択**、ある場合は **3 択 (opus 1m / sonnet / codex)** になること
 9. **同一 model (opus 1m)**: 選択時に `/model claude-opus-4-7[1m]` が実行され、同 surface 内で実装が継続されること
 10. **異なる model (sonnet)**:
-    - `LAYOUT=workspace` → 新 workspace が立ち上がり、`claude --model claude-sonnet-4-6 'Read and execute the plan at <path>'` で起動すること
-    - `LAYOUT=split` → 同 workspace 内に新 split が右に追加され、上記と同じプロンプトで起動すること
-    - 元 surface が monitor として残り、`status.json` 更新と `cmux wait-for --signal <slug>-done` を発火すること
-11. **異なる model (codex)**: `runners.json` の codex runner で新 surface が起動し、`external_migration` により親 claude session を引き継ぎつつプロンプトを実行すること（`cmux codex install-hooks` が前提）
+    - Child セッションが `launch-workspace.sh --mode execute --plan-file <path> --model claude-sonnet-4-6 --skip-permissions ...` を呼ぶこと
+    - `LAYOUT=workspace` → 新 workspace が立ち上がり、`claude --model claude-sonnet-4-6 --dangerously-skip-permissions 'Read and execute the plan at <path>'` が runner script (`bash .cmux-team-dispatch-task-run.sh`) でラップされて起動すること
+    - `LAYOUT=split` → 同 workspace 内に新 split が右に追加され、上記と同じ runner-wrapped コマンドで起動すること
+    - Child が `<STATUS_DIR>/.deferred` を touch して exit すること
+    - Child の runner wrapper が `.deferred` を検知し、`status.json` を上書きせず exit すること
+    - 孫の runner wrapper が完了時に `status.json` を `done` に遷移させ、`cmux wait-for --signal <slug>-exec-done` 発火、親に `[dispatch] task "<slug>-exec" finished (status: done)` を送ること
+11. **異なる model (codex)**: Child が `launch-workspace.sh --mode execute --runner <codex-runner> ...` を呼び、`runners.json` の codex runner で新 surface が起動。`--dangerously-bypass-approvals-and-sandbox` 付きで実行し、`external_migration` により親 claude session を引き継ぐこと（`cmux codex install-hooks` が前提）。完了通知フローは sonnet と同じ
 12. **monitor heartbeat**: `monitor-dispatch.sh` から60秒おきに `[dispatch-monitor] alive | loop=N | ...` が親に届くこと
 13. **Enter 自動押下**: 親が claude TUI でも、完了通知が input box に残らず自動で読み取られること（`cmux send` の後に `cmux send-key return` が発行される）
 14. **死亡検知**: monitor を `kill` した直後に `[dispatch-monitor] DIED ...` メッセージが親に届くこと

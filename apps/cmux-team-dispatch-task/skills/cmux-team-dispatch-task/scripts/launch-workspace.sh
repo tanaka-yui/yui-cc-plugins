@@ -6,7 +6,22 @@
 #
 # Options:
 #   --cwd <path>                       Working directory (skips worktree creation)
-#   --mode plan|superpowers            Claude launch mode (default: plan)
+#   --mode plan|superpowers|execute    Claude launch mode (default: plan).
+#                                      execute = Phase B 実行モード。計画ファイルを
+#                                      inner prompt として渡し、.cmux-team-dispatch-task-prompt.md
+#                                      を書き込まない。--plan-file が必須
+#   --plan-file <path>                 Plan file path (required when --mode execute).
+#                                      inner prompt が
+#                                      "Read and execute the plan at <path>" になる
+#   --model <model>                    Model flag passed to claude as --model <X>
+#                                      (例: claude-sonnet-4-6)。claude engine のみ対応
+#   --skip-permissions                 claude に --dangerously-skip-permissions を
+#                                      追加 (sonnet の auto mode 不在対策)。
+#                                      claude engine のみ対応
+#   --defer-status                     runner wrapper が exit 時に <STATUS_DIR>/.deferred
+#                                      が存在する場合 status.json 更新 / 親通知 /
+#                                      cmux wait-for 発火をスキップ。Phase B で別 surface に
+#                                      実行を移譲する Child セッション側で常に指定する
 #   --status-dir <path>                Directory for writing status files
 #   --layout workspace|split           Layout mode (default: workspace)
 #   --split-from <surface-id>          Surface to split from (required for split mode)
@@ -61,6 +76,10 @@ NOTIFY_SURFACE=""
 RUNNER_NAME=""
 WORKSPACE_NAME=""
 PROMPT=""
+PLAN_FILE=""
+MODEL=""
+SKIP_PERMISSIONS=0
+DEFER_STATUS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -70,10 +89,29 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --mode)
-      [[ $# -lt 2 ]] && die "--mode requires plan or superpowers"
+      [[ $# -lt 2 ]] && die "--mode requires plan, superpowers, or execute"
       MODE="$2"
-      [[ "$MODE" == "plan" || "$MODE" == "superpowers" ]] || die "--mode must be 'plan' or 'superpowers'"
+      [[ "$MODE" == "plan" || "$MODE" == "superpowers" || "$MODE" == "execute" ]] \
+        || die "--mode must be 'plan', 'superpowers', or 'execute'"
       shift 2
+      ;;
+    --plan-file)
+      [[ $# -lt 2 ]] && die "--plan-file requires a path argument"
+      PLAN_FILE="$2"
+      shift 2
+      ;;
+    --model)
+      [[ $# -lt 2 ]] && die "--model requires a model name"
+      MODEL="$2"
+      shift 2
+      ;;
+    --skip-permissions)
+      SKIP_PERMISSIONS=1
+      shift
+      ;;
+    --defer-status)
+      DEFER_STATUS=1
+      shift
       ;;
     --status-dir)
       [[ $# -lt 2 ]] && die "--status-dir requires a path argument"
@@ -131,7 +169,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$WORKSPACE_NAME" ]] && die "workspace name is required. Usage: $0 [options] <workspace-name> <prompt...>"
-[[ -z "$PROMPT" ]] && die "prompt is required. Usage: $0 [options] <workspace-name> <prompt...>"
+
+# execute mode は --plan-file が必須で PROMPT は不要 (inner prompt が plan-file 由来)
+if [[ "$MODE" == "execute" ]]; then
+  [[ -n "$PLAN_FILE" ]] || die "--plan-file is required when --mode is execute"
+else
+  [[ -z "$PROMPT" ]] && die "prompt is required. Usage: $0 [options] <workspace-name> <prompt...>"
+fi
+
+# --model / --skip-permissions は claude engine 向けの拡張。codex engine では別フラグ体系のため無視
+if [[ -n "$MODEL" && "$MODE" != "execute" ]]; then
+  log "warn" "--model is only meaningful with --mode execute; ignoring for mode=$MODE"
+fi
 
 # Validate workspace name: only allow safe characters for path/branch usage
 [[ "$WORKSPACE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid workspace name '$WORKSPACE_NAME': use only [A-Za-z0-9._-]"
@@ -212,11 +261,18 @@ fi
 # --- Step 2: Write prompt file ---
 # Writing to a file avoids all shell escaping issues when passing complex
 # prompt text (JSON, quotes, special chars) through cmux send / --command.
+#
+# execute mode は計画ファイル (--plan-file) を直接 inner prompt に埋め込むため、
+# Phase A の .cmux-team-dispatch-task-prompt.md は上書きせず温存する。
 
-FULL_PROMPT="$PROMPT"
 PROMPT_FILE="$CWD/.cmux-team-dispatch-task-prompt.md"
-printf '%s\n' "$FULL_PROMPT" > "$PROMPT_FILE"
-log "prompt" "wrote prompt to $PROMPT_FILE"
+if [[ "$MODE" == "execute" ]]; then
+  log "prompt" "execute mode: not writing prompt file (using --plan-file: $PLAN_FILE)"
+else
+  FULL_PROMPT="$PROMPT"
+  printf '%s\n' "$FULL_PROMPT" > "$PROMPT_FILE"
+  log "prompt" "wrote prompt to $PROMPT_FILE"
+fi
 
 # --- Step 3: Build runner command ---
 # Build the launch command per (engine × MODE) and wrap with `zsh -ic` so that
@@ -225,11 +281,31 @@ log "prompt" "wrote prompt to $PROMPT_FILE"
 #
 # claude-teams layout uses `cmux claude-teams` (claude-only) and ignores --runner.
 
-PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
+# execute モードでは計画ファイルを直接 inner prompt に埋め込む
+if [[ "$MODE" == "execute" ]]; then
+  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE"
+else
+  PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
+fi
+
+# claude engine の execute モード向け追加フラグ (--model / --dangerously-skip-permissions)
+# 順序: <command> [--model X] [--dangerously-skip-permissions] '<inner prompt>'
+CLAUDE_EXTRA_FLAGS=""
+if [[ -n "$MODEL" ]]; then
+  CLAUDE_EXTRA_FLAGS="--model $MODEL"
+fi
+if [[ $SKIP_PERMISSIONS -eq 1 ]]; then
+  if [[ -n "$CLAUDE_EXTRA_FLAGS" ]]; then
+    CLAUDE_EXTRA_FLAGS="$CLAUDE_EXTRA_FLAGS --dangerously-skip-permissions"
+  else
+    CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
+  fi
+fi
 
 if [[ "$LAYOUT" == "claude-teams" ]]; then
   # claude-teams mode: --runner is ignored; claude-teams only supports claude.
-  if [[ "$MODE" == "superpowers" ]]; then
+  # execute mode for claude-teams reuses superpowers branch (no --dangerously-skip-permissions)
+  if [[ "$MODE" == "superpowers" || "$MODE" == "execute" ]]; then
     # superpowers mode: --dangerously-skip-permissions を使わない
     # --dangerously-skip-permissions は AskUserQuestion もバイパスしてしまうため、
     # ブレストの対話フローが機能しない。env の permissions.defaultMode: bypassPermissions は
@@ -241,7 +317,11 @@ if [[ "$LAYOUT" == "claude-teams" ]]; then
 else
   # engine × mode で起動コマンドを構築
   if [[ "$RUNNER_ENGINE" == "codex" ]]; then
-    if [[ "$MODE" == "superpowers" ]]; then
+    if [[ "$MODE" == "execute" ]]; then
+      # codex execute: plan モードと同じく bypass フラグを付与
+      # (codex に --model は不要 — codex runner が独自に処理)
+      CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+    elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
       CORE_CMD="$RUNNER_COMMAND '\$superpowers:brainstorming $PROMPT_TEXT'"
     else
@@ -251,7 +331,14 @@ else
     fi
   else
     # claude engine (default)
-    if [[ "$MODE" == "superpowers" ]]; then
+    if [[ "$MODE" == "execute" ]]; then
+      # claude execute: --model / --dangerously-skip-permissions を inner prompt の直前にインジェクト
+      if [[ -n "$CLAUDE_EXTRA_FLAGS" ]]; then
+        CORE_CMD="$RUNNER_COMMAND $CLAUDE_EXTRA_FLAGS '$PROMPT_TEXT'"
+      else
+        CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
+      fi
+    elif [[ "$MODE" == "superpowers" ]]; then
       CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
     else
       CORE_CMD="$RUNNER_COMMAND --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
@@ -280,6 +367,7 @@ set -uo pipefail
 CMUX="${CMUX}"
 STATUS_DIR="${STATUS_DIR}"
 SLUG="${WORKSPACE_NAME}"
+DEFER_STATUS="${DEFER_STATUS}"
 
 # Resolve the workspace / surface IDs we are running inside.
 # cmux normally exports CMUX_WORKSPACE_ID and CMUX_SURFACE_ID into spawned shells;
@@ -309,6 +397,15 @@ write_status "executing" "Claude session starting"
 
 ${CLAUDE_CMD}
 CLAUDE_EXIT=\$?
+
+# defer-status: Phase B で別 surface (孫セッション) に実行を移譲した場合、
+# Child セッション側の runner wrapper はここで status.json を上書きせず exit する。
+# 孫セッションの runner wrapper が status を上書きするのでそちらに任せる。
+# Child 側 Claude は exit 前に "<STATUS_DIR>/.deferred" を touch することで意思表示する。
+if [[ "\$DEFER_STATUS" == "1" && -n "\$STATUS_DIR" && -f "\$STATUS_DIR/.deferred" ]]; then
+  echo "[runner] status update deferred (.deferred sentinel found at \$STATUS_DIR/.deferred)" >&2
+  exit 0
+fi
 
 if [[ \$CLAUDE_EXIT -eq 0 ]]; then
   write_status "done" "Claude session completed (exit 0)"

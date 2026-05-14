@@ -172,6 +172,9 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   log "launch" "task $((i+1))/$TASK_COUNT: $SLUG (split $SPLIT_DIR from $SPLIT_FROM, runner=${RUNNER:-<default>})"
 
   # Build launch-workspace.sh arguments
+  # --defer-status: Phase B で別 surface に実行を移譲する可能性があるため、Child の runner
+  # wrapper には常に defer 能力を持たせる。実際に defer するかは Child が
+  # <STATUS_DIR>/.deferred を touch するかで実行時に決まる
   LAUNCH_ARGS=(
     --mode "$MODE"
     --layout split
@@ -181,6 +184,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     --status-dir "$STATUS_DIR"
     --parent-notify-workspace "$PARENT_WS"
     --parent-notify-surface "$PARENT_SF"
+    --defer-status
   )
 
   # Pass per-task runner override if specified

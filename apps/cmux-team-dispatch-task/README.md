@@ -162,14 +162,15 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 | 選択肢 | 表示条件 | 動作 |
 |--------|---------|------|
 | **opus 1m** | 常時 | Phase A と **同一 model**。`/model claude-opus-4-7[1m]` で切替後、**現セッションで実装続行** |
-| **sonnet** | 常時 | **異なる model**。レイアウトに応じて子 workspace / split を spawn し、`claude --model claude-sonnet-4-6 'Read and execute the plan at <path>'` で起動 |
-| **codex** | `~/.claude/cmux-team-dispatch-task/runners.json` に `engine: codex` runner がある時のみ | **異なる model**。子 surface を spawn し runners.json の codex runner で起動。`external_migration` により親 claude セッションを引き継ぐ |
+| **sonnet** | 常時 | **異なる model**。`launch-workspace.sh --mode execute` で子 surface を spawn し、`claude --model claude-sonnet-4-6 --dangerously-skip-permissions 'Read and execute the plan at <path>'` を runner script でラップして起動 |
+| **codex** | `~/.claude/cmux-team-dispatch-task/runners.json` に `engine: codex` runner がある時のみ | **異なる model**。`launch-workspace.sh --mode execute --runner <codex-runner>` で spawn し、codex を `--dangerously-bypass-approvals-and-sandbox` 付きで起動。`external_migration` により親 claude セッションを引き継ぐ |
 
 「異なる model」が選ばれた場合の挙動:
 
-- `LAYOUT == workspace` → `cmux new-workspace --cwd ... --command "<launch>"` で子 workspace を作成
-- `LAYOUT == split` → 同 workspace 内で `cmux new-split right` し新ペインで起動
-- 元の surface は **monitor として存続** し、新 surface の完了を待って `status.json` を更新・`cmux wait-for --signal <slug>-done` を発火
+- Child セッションが `launch-workspace.sh --mode execute --plan-file <path> [--model <X>] [--skip-permissions]` を呼び、新 surface (workspace or split) で実装を開始
+- 新 surface (孫セッション) は runner script でラップされ、完了時に `status.json` を `done`/`error` に遷移させ、親に `[dispatch] task ... finished` を送信
+- Child は spawn 完了後 `<STATUS_DIR>/.deferred` を作成して exit する (Child の runner wrapper は `--defer-status` で起動されており、`.deferred` を検知すると status 上書きをスキップして孫の通知を握り潰さない)
+- sonnet では Claude Code の auto mode (`bypassPermissions`) が効かないため、`--dangerously-skip-permissions` を付けて permission prompt によるハングを防いでいる
 
 codex オプションを使う場合は事前に `cmux codex install-hooks` の実行が必要です。
 

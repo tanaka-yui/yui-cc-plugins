@@ -16,7 +16,7 @@
 - 利用可能な Agent 一覧を子セッションに伝達し、各子セッションが最適な Agent を選択
 - タスクごとに brainstorming スキルの使用を選択可能
 - **3つのレイアウトモード**: workspace（デフォルト・別タブ）、split（ペイン分割）、claude-teams（Agent Teams）— ディスパッチ前に選択
-- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を opus で実行後、実行フェーズに入る前に必ず `opus 1m` / `sonnet` を選ばせる（`runners.json` に `engine: codex` runner がある場合のみ `codex` も追加）。同一 model なら現セッション継続、異なる model なら LAYOUT に応じて子 workspace / split を spawn し元 surface は monitor 化
+- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を opus で実行後、実行フェーズに入る前に必ず `opus 1m` / `sonnet` を選ばせる（`runners.json` に `engine: codex` runner がある場合のみ `codex` も追加）。同一 model なら現セッション継続、異なる model なら `launch-workspace.sh --mode execute` 経由で孫 surface を spawn (runner script でラップされ完了通知が確実に親に伝播)。元 Child は `.deferred` を書いて exit する
 - **統一表示フォーマット**: 子セッション一覧・進捗・最終サマリーは Box drawing 表（Template A/B/C）で常に同じレイアウト
 - **堅牢なバックグラウンド監視**: `monitor-dispatch.sh` が heartbeat / 死亡通知 / `--resume` をサポート。`cmux send` の後に必ず `cmux send-key return` を発行して親 TUI に確実に届ける
 - **2つの統合戦略**: PR per task（子タスクごとに PR 作成）、Wait and merge（全タスク完了後にローカルマージ）
@@ -423,16 +423,21 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 ### engine × MODE 起動コマンド対応表
 
-固定プロンプトテキスト: `Read and follow the task in .cmux-team-dispatch-task-prompt.md`
+固定プロンプトテキスト (plan / superpowers): `Read and follow the task in .cmux-team-dispatch-task-prompt.md`
+execute モードのプロンプトテキスト: `Read and execute the plan at <plan-file>` (`--plan-file` で指定)
 
 | engine | MODE        | 組み立てコマンド |
 |--------|-------------|----------------|
 | claude | plan        | `<command> --dangerously-skip-permissions '/plan <PROMPT>'` |
 | claude | superpowers | `<command> '<PROMPT>'` |
+| claude | execute     | `<command> [--model <X>] [--dangerously-skip-permissions] '<EXEC_PROMPT>'` |
 | codex  | plan        | `<command> --dangerously-bypass-approvals-and-sandbox '/plan <PROMPT>'` |
 | codex  | superpowers | `<command> '$superpowers:brainstorming <PROMPT>'` |
+| codex  | execute     | `<command> --dangerously-bypass-approvals-and-sandbox '<EXEC_PROMPT>'` |
 
 上記全体は常に `zsh -ic "..."` で wrap され、`~/.zshrc` のユーザー定義関数（`ccenec` 等）と env（proxy 認証 / PATH 等）が子セッションで読み込まれます。
+
+**execute モードの使い所**: Phase B (実装フェーズ) で sonnet / codex などの別モデルに切り替える場面。Child セッションが `launch-workspace.sh --mode execute --plan-file <path> [--model <X>] [--skip-permissions]` を呼び出して別 surface を spawn し、自分は `<STATUS_DIR>/.deferred` を作成して exit する。execute モードでは `.cmux-team-dispatch-task-prompt.md` を書き換えず、Phase A のものを温存する。
 
 `claude-teams` レイアウトは runner 設定を無視し常に `cmux claude-teams`（親の claude アカウント）で起動します。
 
@@ -864,26 +869,31 @@ Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` �
 | 選択肢 | 表示条件 | 動作 |
 |--------|---------|------|
 | **opus 1m** | 常時 | Phase A と **同一 model** 扱い。`/model claude-opus-4-7[1m]` で切り替え、**現セッションで実装続行** |
-| **sonnet** | 常時 | **異なる model**。`LAYOUT` に応じて子 workspace / split を spawn し、`claude --model claude-sonnet-4-6 'Read and execute the plan at <plan-path>'` で起動。元 surface は monitor として存続 |
-| **codex** | `runners.json` に `engine: codex` の runner が **1 件以上ある時のみ** | **異なる model**。子 surface を spawn し、`runners.json` の codex runner の `command` で `<command> 'Read and execute the plan at <plan-path>'` 起動。`external_migration` により親 claude セッションも自動的に引き継がれる |
+| **sonnet** | 常時 | **異なる model**。`launch-workspace.sh --mode execute` 経由で子 surface を spawn し、`claude --model claude-sonnet-4-6 --dangerously-skip-permissions 'Read and execute the plan at <plan-path>'` を runner script でラップして起動 |
+| **codex** | `runners.json` に `engine: codex` の runner が **1 件以上ある時のみ** | **異なる model**。`launch-workspace.sh --mode execute --runner <codex-runner>` 経由で spawn し、codex を `--dangerously-bypass-approvals-and-sandbox` 付きで起動。`external_migration` により親 claude セッションも自動的に引き継がれる |
 
-「異なる model」が選ばれた場合の spawn 手順:
+「異なる model」が選ばれた場合の spawn 手順 (Child セッション側の動作):
 
 ```bash
-# LAYOUT=workspace の場合
-cmux new-workspace --cwd "$PWD" --command "$LAUNCH_CMD"
+# Phase A の Child が以下を実行
+zsh <skill-dir>/scripts/launch-workspace.sh \
+  --cwd "$PWD" \
+  --mode execute \
+  --plan-file <PLAN_FILE_PATH> \
+  --model claude-sonnet-4-6 \
+  --skip-permissions \
+  --status-dir "<EXISTING_STATUS_DIR>" \
+  --layout <LAYOUT> \
+  --parent-notify-workspace <PARENT_WORKSPACE_ID> \
+  [--parent-notify-surface <PARENT_SURFACE_ID>] \
+  [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split のみ
+  <task-slug>-exec
 
-# LAYOUT=split の場合
-IDENT=$(cmux identify)
-WS=$(echo "$IDENT" | jq -r '.caller.workspace_ref')
-SF=$(echo "$IDENT" | jq -r '.caller.surface_ref')
-NEW=$(cmux new-split right --workspace "$WS" --surface "$SF" \
-      | grep -oE 'surface:[0-9]+' | head -1)
-cmux send --surface "$NEW" "$LAUNCH_CMD"
-cmux send-key --surface "$NEW" return
+# spawn 完了後、自身は移譲シグナルを書いて exit
+touch "<EXISTING_STATUS_DIR>/.deferred"
 ```
 
-元の surface は **monitor** として存続し、新 surface 完了後に `status.json` を更新して `cmux wait-for --signal <slug>-done` を発火する（自身では計画を実行しない）。
+孫セッションの runner wrapper が `status.json` を `done`/`error` に遷移させ、`cmux wait-for --signal <task-slug>-exec-done` を発火し、親に `[dispatch] task ... finished` を送る。Child は `--defer-status` 付きで起動されているため `.deferred` センチネルを検知して status 上書きをスキップする (これにより孫の通知が握り潰されない)。
 
 ### 前提条件
 
