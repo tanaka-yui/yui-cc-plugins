@@ -174,6 +174,80 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 
 codex オプションを使う場合は事前に `cmux codex install-hooks` の実行が必要です。
 
+## アカウント切り替えとセッション共有 (claude-link.sh)
+
+`runners.json` で複数の Claude アカウント (`CLAUDE_CONFIG_DIR`) を切り替えて子セッションを起動する運用を想定し、**認証 (`.claude.json`) は各アカウントに分離したまま、skills / plugins / sessions / history を `~/.claude` から共有する** ためのセットアップユーティリティ `scripts/claude-link.sh` を同梱しています。
+
+たとえば runner ごとに別アカウント（例: 個人 / 業務 / codex 専用）を切り替えると、デフォルトでは新アカウント側で `projects/` `sessions/` `history.jsonl` が空となり過去の会話を resume できません。`claude-link.sh` は対象リソースを symlink で `~/.claude` に張ることでこれを解消します。
+
+### 共有 / 分離されるリソース
+
+| 区分 | 対象 |
+|------|------|
+| **共有** (symlink) | `skills/` `plugins/` `commands/` `agents/` `CLAUDE.md` `settings.json` `config/` `keybindings.json` `projects/` `sessions/` `todos/` `history.jsonl` `tasks/` |
+| **分離** (アカウント私有) | `.claude.json` (認証) / `.claude.json.backup` / `settings.local.json` / `backups/` / `cache/` / `shell-snapshots/` / `session-env/` / `paste-cache/` / `mcp-needs-auth-cache*.json` / `policy-limits.json` / `statistics/` / `file-history/` / `debug/` / `ide/` |
+
+### 使い方
+
+```bash
+# 1. dry-run で挙動を確認
+bash apps/cmux-team-dispatch-task/scripts/claude-link.sh myaccount --dry-run
+
+# 2. 実行（既存ファイルは ~/.claude-config/myaccount/.pre-link-backup-<TS>/ にバックアップされてから symlink に置換される）
+bash apps/cmux-team-dispatch-task/scripts/claude-link.sh myaccount
+
+# オプション
+#   --base-dir DIR    アカウント config 親ディレクトリ（デフォルト: ~/.claude-config）
+#   --source DIR      共有元（デフォルト: ~/.claude の realpath）
+#   --dry-run         変更なしでプランのみ表示
+```
+
+実行後、スクリプトが標準エラーに `cc<short>()` シェル関数を出力します。これを `~/.zshrc` に貼り付けると、アカウント切替コマンドとして利用できます:
+
+```zsh
+ccmyaccount() {
+  unset ANTHROPIC_API_KEY
+  unset ANTHROPIC_BASE_URL
+  export CLAUDE_CONFIG_DIR=~/.claude-config/myaccount
+  ~/.local/bin/claude "$@"
+}
+```
+
+### `runners.json` との連携
+
+`~/.claude/cmux-team-dispatch-task/runners.json` の runner `command` に上記関数を組み込めば、その runner で起動する子セッションは別認証で動きつつ、履歴・skills・plugins を共有できます:
+
+```json
+{
+  "default": "claude-default",
+  "runners": [
+    { "name": "claude-default", "command": "claude", "engine": "claude" },
+    { "name": "claude-myaccount", "command": "ccmyaccount", "engine": "claude" }
+  ]
+}
+```
+
+子セッションの起動コマンドは常に `zsh -ic "..."` でラップされるため、`.zshrc` で定義した関数がそのまま使えます。
+
+### ロールバック
+
+リンク化を取り消したい場合は、対象アカウントディレクトリに作られたバックアップから手動で復元します:
+
+```bash
+cd ~/.claude-config/<account>
+rm skills plugins commands agents CLAUDE.md settings.json config keybindings.json \
+   projects sessions todos history.jsonl tasks 2>/dev/null
+mv .pre-link-backup-<TS>/* .
+rmdir .pre-link-backup-<TS>
+```
+
+### 注意点
+
+- 既存ファイル / ディレクトリは `~/.claude-config/<account>/.pre-link-backup-<TS>/` にバックアップされてから symlink に置換されます
+- 認証情報 (`.claude.json`) は **絶対に共有されません**。各アカウントで個別にログインしてください
+- macOS の BSD `readlink` には `-f` が無いため、スクリプトは `python3` で realpath を解決します（macOS / Linux 共通動作）
+- `--dry-run` を付ければ実行前にプランを確認できます
+
 ## superpowers 統合
 
 `superpowers:writing-plans` でプランが完成すると、Execution Handoff として実行方法の選択肢が提示される。本スキルは **第3選択肢「Parallel (cmux split)」** として統合:
