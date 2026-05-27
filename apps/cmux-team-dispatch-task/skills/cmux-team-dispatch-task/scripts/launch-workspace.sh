@@ -43,7 +43,10 @@
 set -euo pipefail
 
 CMUX="/Applications/cmux.app/Contents/Resources/bin/cmux"
-RUNNER_SCRIPT_NAME=".cmux-team-dispatch-task-run.sh"
+# RUNNER_SCRIPT_NAME は WORKSPACE_NAME parse 後に解決する (一意化のため)。
+# Phase B の grandchild は同じ worktree を再利用 (--cwd "$PWD") するため、固定名だと
+# Child の実行中 runner ファイルを上書きしてしまい bash の挙動が undefined になる。
+RUNNER_SCRIPT_NAME=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNERS_CONFIG_PATH="${RUNNERS_CONFIG_PATH:-$HOME/.claude/cmux-team-dispatch-task/runners.json}"
 
@@ -185,6 +188,12 @@ fi
 # Validate workspace name: only allow safe characters for path/branch usage
 [[ "$WORKSPACE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid workspace name '$WORKSPACE_NAME': use only [A-Za-z0-9._-]"
 
+# WORKSPACE_NAME 別に runner script ファイル名を unique 化する。
+# Phase B grandchild (--mode execute) と Child が同じ worktree を共有する状況で、
+# 旧固定名 ".cmux-team-dispatch-task-run.sh" は Child の実行中ファイルを上書きしてしまい、
+# Child bash が中途半端な byte offset から書き換え後の内容を読んで undefined 挙動になっていた。
+RUNNER_SCRIPT_NAME=".cmux-team-dispatch-task-run-${WORKSPACE_NAME}.sh"
+
 # Validate split mode requirements
 if [[ "$LAYOUT" == "split" ]]; then
   [[ -z "$PARENT_WORKSPACE" ]] && die "--parent-workspace is required when --layout is split"
@@ -281,9 +290,17 @@ fi
 #
 # claude-teams layout uses `cmux claude-teams` (claude-only) and ignores --runner.
 
-# execute モードでは計画ファイルを直接 inner prompt に埋め込む
+# execute モードでは計画ファイルを直接 inner prompt に埋め込む。
+# あわせて「完了後に必ずセッションを exit せよ」という指示を埋め込む。
+# これを入れないと grandchild Claude/Codex が PR 作成後も TUI で idle 待機してしまい、
+# runner wrapper の write_status "done" / signal 発火 / 親通知が永遠に発火しない。
 if [[ "$MODE" == "execute" ]]; then
-  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE"
+  if [[ "$RUNNER_ENGINE" == "codex" ]]; then
+    EXIT_INSTRUCTION="After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately so the wrapper script can finalize completion notification. Do not leave the session idle."
+  else
+    EXIT_INSTRUCTION="After all work is committed/pushed and the PR is created (or all changes are merged per the plan), run /exit to close this Claude session so the wrapper script can finalize completion notification. Do not leave the session idle."
+  fi
+  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${EXIT_INSTRUCTION}"
 else
   PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
 fi

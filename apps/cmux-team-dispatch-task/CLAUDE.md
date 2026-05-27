@@ -106,10 +106,11 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 9. **同一 model (opus 1m)**: 選択時に `/model claude-opus-4-7[1m]` が実行され、同 surface 内で実装が継続されること
 10. **異なる model (sonnet)**:
     - Child セッションが `launch-workspace.sh --mode execute --plan-file <path> --model claude-sonnet-4-6 --skip-permissions ...` を呼ぶこと
-    - `LAYOUT=workspace` → 新 workspace が立ち上がり、`claude --model claude-sonnet-4-6 --dangerously-skip-permissions 'Read and execute the plan at <path>'` が runner script (`bash .cmux-team-dispatch-task-run.sh`) でラップされて起動すること
+    - `LAYOUT=workspace` → 新 workspace が立ち上がり、`claude --model claude-sonnet-4-6 --dangerously-skip-permissions 'Read and execute the plan at <path>. ... run /exit ...'` が runner script (`bash .cmux-team-dispatch-task-run-<slug>-exec.sh`) でラップされて起動すること (inner prompt 末尾に `/exit` 指示が付与されること、runner ファイル名は workspace 名で unique 化されること)
     - `LAYOUT=split` → 同 workspace 内に新 split が右に追加され、上記と同じ runner-wrapped コマンドで起動すること
     - Child が `<STATUS_DIR>/.deferred` を touch して exit すること
     - Child の runner wrapper が `.deferred` を検知し、`status.json` を上書きせず exit すること
+    - 孫の Claude が PR 作成後に自動で `/exit` を発火して TUI を閉じること (これにより runner wrapper が完了処理に到達する)
     - 孫の runner wrapper が完了時に `status.json` を `done` に遷移させ、`cmux wait-for --signal <slug>-exec-done` 発火、親に `[dispatch] task "<slug>-exec" finished (status: done)` を送ること
 11. **異なる model (codex)**: Child が `launch-workspace.sh --mode execute --runner <codex-runner> ...` を呼び、`runners.json` の codex runner で新 surface が起動。`--dangerously-bypass-approvals-and-sandbox` 付きで実行し、`external_migration` により親 claude session を引き継ぐこと（`cmux codex install-hooks` が前提）。完了通知フローは sonnet と同じ
 12. **monitor heartbeat**: `monitor-dispatch.sh` から60秒おきに `[dispatch-monitor] alive | loop=N | ...` が親に届くこと

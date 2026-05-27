@@ -472,7 +472,7 @@ execute モードのプロンプトテキスト: `Read and execute the plan at <
 
 ## ランナースクリプト ラッパー
 
-起動スクリプトは各 worktree に `.cmux-team-dispatch-task-run.sh` を生成します。
+起動スクリプトは各 worktree に `.cmux-team-dispatch-task-run-<workspace-name>.sh` を生成します。ファイル名に workspace 名を含めることで、Child (`<slug>`) と Phase B grandchild (`<slug>-exec`) が同じ worktree を共有する場面でも runner ファイル同士が衝突しません (実行中のスクリプトを上書きすると bash が undefined 挙動になります)。
 
 ### ランナースクリプトが保証すること
 
