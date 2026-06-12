@@ -9,7 +9,7 @@
     "lint": "turbo run lint",
     "lint:fix": "turbo run lint:fix",
     "sort-package": "sort-package-json --check ./package.json ./apps/*/package.json ./packages/*/package.json",
-    "sort-package:fix": "sort-package-json ./package.json ./apps/*/package.json ./apps/cmux-remote/*/package.json ./packages/*/package.json"
+    "sort-package:fix": "sort-package-json ./package.json ./apps/*/package.jsonn ./packages/*/package.json"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.9",

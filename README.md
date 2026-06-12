@@ -32,23 +32,3 @@ bash install.sh
 | cmux-team-dispatch-task | 並列タスクディスパッチ（worktree 分離） | [SKILL](apps/cmux-team-dispatch-task/SKILL.md) |
 | dev-up | worktree 分離された dev stack ライフサイクル（compose + 直接コマンド） | [README](apps/dev-up/README.md) |
 | e2e-test | agent-browser ベースの E2E テスト（dev-up と連携） | [README](apps/e2e-test/README.md) |
-
-### Apps
-
-| アプリ | 概要 | 詳細 |
-|-------|------|------|
-| cmux-remote | cmux ワークスペースを iPhone PWA からリモート閲覧 | [README](apps/cmux-remote/README.md) |
-
----
-
-## cmux-remote のセットアップ
-
-```bash
-# 1. クライアントをビルド
-cd apps/cmux-remote/client && bun install && bun run build
-
-# 2. ブリッジサーバーを起動
-cd apps/cmux-remote/server && bun install && bun run start
-```
-
-`http://localhost:3456` をブラウザで開き、iPhone のホーム画面に追加（PWA）。
