@@ -1,6 +1,6 @@
 {
   "name": "token-meter",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Claude Code の hook 経由で圧縮プラグイン (rtk/caveman/headroom) の効きを観測・記録する計測機構",
   "author": {
     "name": "tanaka-yui",

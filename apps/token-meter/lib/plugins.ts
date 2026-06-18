@@ -1,5 +1,5 @@
 // 圧縮プラグインの定義と enable/disable 抽象。
-// rtk (gate ファイル) / caveman (session flag) / headroom (MCP enabled フラグ) の
+// rtk (gate ファイル) / headroom (MCP enabled フラグ) の
 // 3 プラグインを統一インタフェースで操作する。
 
 import { type ClaudeConfig, ClaudeConfigSchema } from './schemas'
@@ -98,25 +98,9 @@ export const COMPRESSION_PLUGINS: CompressionPlugin[] = [
     isEnabled: () => readGate('rtk'),
     detect: { tool: 'Bash', pattern: /^\s*rtk\s+(.+)$/ },
   },
-  {
-    name: 'caveman',
-    description: 'caveman talk 形式に出力を圧縮するスキル',
-    install: {
-      method: 'curl-sh',
-      url: 'https://raw.githubusercontent.com/JuliusBrussee/caveman/main/install.sh',
-    },
-    isInstalled: () => existsSync(join(homedir(), '.claude', 'skills', 'caveman')),
-    enable: async () => {
-      const flag = join(homedir(), '.claude', 'caveman.session.flag')
-      mkdirSync(dirname(flag), { recursive: true })
-      writeFileSync(flag, '', { mode: 0o600 })
-    },
-    disable: async () => {
-      rmSync(join(homedir(), '.claude', 'caveman.session.flag'), { force: true })
-    },
-    isEnabled: () => existsSync(join(homedir(), '.claude', 'caveman.session.flag')),
-    detect: { tool: 'mcp__caveman-shrink__compress' },
-  },
+  // 注: caveman は prompt mode (Claude 応答自体を短縮) のため token-meter の hook で観測できない。
+  // 効果分析が必要な場合は別途 /token-meter:token-report で transcript 直読みベースの推定値を見る。
+  // インストール / モード切替は caveman 本体プラグインの /caveman:* コマンドを利用すること。
   {
     name: 'headroom',
     description: 'tool 出力・履歴を圧縮する MCP サーバ',

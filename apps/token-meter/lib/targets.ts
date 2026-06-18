@@ -41,6 +41,8 @@ export const TARGETS: TargetConfig = {
       savingsField: 'tool_response.metadata.rtk_saved_tokens',
     },
   ],
+  // 注: caveman は prompt mode (Claude 応答自体を短縮) であり PostToolUse hook で観測できない。
+  // 計測したい場合は別経路 (transcript 直読み + benchmark coefficient) で行う。token-report skill 参照。
   compressionTools: [
     {
       tool: 'mcp__headroom__headroom_compress',
@@ -49,12 +51,6 @@ export const TARGETS: TargetConfig = {
       outputField: 'tool_response',
       label: 'headroom',
       extract: extractHeadroomTokens,
-    },
-    {
-      tool: 'mcp__caveman-shrink__compress',
-      inputField: 'tool_input.body',
-      outputField: 'tool_response.body',
-      label: 'caveman',
     },
   ],
   output: {

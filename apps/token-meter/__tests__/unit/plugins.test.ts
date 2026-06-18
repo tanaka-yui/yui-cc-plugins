@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 describe('plugins', () => {
-  test('COMPRESSION_PLUGINS は rtk/caveman/headroom 3 件', () => {
+  test('COMPRESSION_PLUGINS は rtk/headroom 2 件 (caveman は prompt mode で観測不可のため除外)', () => {
     const names = COMPRESSION_PLUGINS.map((p) => p.name)
-    expect(names).toEqual(['rtk', 'caveman', 'headroom'])
+    expect(names).toEqual(['rtk', 'headroom'])
   })
 
   test('commandExists は ls=true / __nope__=false', () => {
