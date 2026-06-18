@@ -1,0 +1,20 @@
+{
+  "name": "@tanaka-yui/token-meter",
+  "version": "0.1.0",
+  "description": "Claude Code の hook 経由で圧縮プラグインの効きを観測・記録する計測機構",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "check": "tsc --noEmit && biome check ./bin ./lib ./scripts ./__tests__",
+    "check:fix": "biome check --write ./bin ./lib ./scripts ./__tests__",
+    "format": "biome format ./bin ./lib ./scripts ./__tests__",
+    "format:fix": "biome format --write ./bin ./lib ./scripts ./__tests__",
+    "lint": "biome lint ./bin ./lib ./scripts ./__tests__",
+    "lint:fix": "biome lint --write ./bin ./lib ./scripts ./__tests__",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@anthropic-ai/tokenizer": "^0.0.4",
+    "zod": "^4.3.6"
+  }
+}

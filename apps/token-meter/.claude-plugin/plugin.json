@@ -1,0 +1,14 @@
+{
+  "name": "token-meter",
+  "version": "0.1.0",
+  "description": "Claude Code の hook 経由で圧縮プラグイン (rtk/caveman/headroom) の効きを観測・記録する計測機構",
+  "author": {
+    "name": "tanaka-yui",
+    "url": "https://github.com/tanaka-yui"
+  },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/token-meter",
+  "license": "MIT",
+  "keywords": ["claude-code", "hook", "token", "compression", "measurement"],
+  "skills": "./skills/",
+  "commands": "./commands/"
+}
