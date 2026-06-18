@@ -1,9 +1,10 @@
 import { writeState } from '../../lib/config'
 import { aggregate, handlePost, handlePre, handleStop } from '../../lib/handler'
 import { dailyPath } from '../../lib/logger'
+import { rtkCumPath } from '../../lib/rtk-gain'
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -119,6 +120,86 @@ describe('handler', () => {
     expect(sum.rtk.calls).toBe(1)
     expect(sum.rtk.saved).toBe(80)
     expect(sum.compression.headroom?.saved).toBe(900)
+  })
+
+  test('handlePost rtk: 初回は rtk gain snapshot を保存し saved=null', () => {
+    const { root, logsDir, statePath } = setup()
+    handlePost(
+      {
+        session_id: 's-rtk',
+        tool_name: 'Bash',
+        tool_input: { command: 'rtk ls' },
+        tool_response: { stdout: 'a\n' },
+        duration_ms: 10,
+      },
+      { logsDir, statePath, getRtkGain: () => ({ total_saved: 1000, total_commands: 10 }) },
+    )
+    const lines = readFileSync(dailyPath(logsDir, new Date()), 'utf8').trim().split('\n')
+    const rec = JSON.parse(lines[0] ?? '') as LogRecord
+    expect(rec.kind).toBe('post.rtk')
+    if (rec.kind === 'post.rtk') expect(rec.rtk_saved_tokens).toBeNull()
+    expect(existsSync(rtkCumPath(logsDir, 's-rtk'))).toBe(true)
+    rmSync(root, { recursive: true })
+  })
+
+  test('handlePost rtk: 2 回目は前回 snapshot との差を rtk_saved_tokens に入れる', () => {
+    const { root, logsDir, statePath } = setup()
+    let n = 0
+    const gain = () =>
+      n++ === 0 ? { total_saved: 1000, total_commands: 10 } : { total_saved: 1250, total_commands: 11 }
+    const opts = { logsDir, statePath, getRtkGain: gain }
+    const payload = {
+      session_id: 's-rtk',
+      tool_name: 'Bash',
+      tool_input: { command: 'rtk ls' },
+      tool_response: { stdout: 'a\n' },
+      duration_ms: 10,
+    }
+    handlePost(payload, opts)
+    handlePost(payload, opts)
+    const lines = readFileSync(dailyPath(logsDir, new Date()), 'utf8').trim().split('\n')
+    const rec2 = JSON.parse(lines[1] ?? '') as LogRecord
+    expect(rec2.kind).toBe('post.rtk')
+    if (rec2.kind === 'post.rtk') expect(rec2.rtk_saved_tokens).toBe(250)
+    rmSync(root, { recursive: true })
+  })
+
+  test('handlePost rtk: rtk gain 失敗時は saved=null', () => {
+    const { root, logsDir, statePath } = setup()
+    handlePost(
+      {
+        session_id: 's-rtk',
+        tool_name: 'Bash',
+        tool_input: { command: 'rtk ls' },
+        tool_response: { stdout: 'a\n' },
+        duration_ms: 10,
+      },
+      { logsDir, statePath, getRtkGain: () => null },
+    )
+    const lines = readFileSync(dailyPath(logsDir, new Date()), 'utf8').trim().split('\n')
+    const rec = JSON.parse(lines[0] ?? '') as LogRecord
+    if (rec.kind === 'post.rtk') expect(rec.rtk_saved_tokens).toBeNull()
+    expect(existsSync(rtkCumPath(logsDir, 's-rtk'))).toBe(false)
+    rmSync(root, { recursive: true })
+  })
+
+  test('handleStop: rtk-cum snapshot を片付ける', () => {
+    const { root, logsDir, statePath } = setup()
+    const opts = { logsDir, statePath, getRtkGain: () => ({ total_saved: 1000, total_commands: 10 }) }
+    handlePost(
+      {
+        session_id: 's-rtk',
+        tool_name: 'Bash',
+        tool_input: { command: 'rtk ls' },
+        tool_response: { stdout: 'a\n' },
+        duration_ms: 10,
+      },
+      opts,
+    )
+    expect(existsSync(rtkCumPath(logsDir, 's-rtk'))).toBe(true)
+    handleStop({ session_id: 's-rtk' }, opts)
+    expect(existsSync(rtkCumPath(logsDir, 's-rtk'))).toBe(false)
+    rmSync(root, { recursive: true })
   })
 
   test('handleStop: 集計 stop レコードを追記', () => {

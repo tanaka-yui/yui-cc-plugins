@@ -1,15 +1,19 @@
 // token-meter の中心パイプライン。pre / post / stop hook エントリから呼ばれる。
 import { readState, shouldMeasure } from './config'
 import { appendLog, readTodayRecords } from './logger'
+import { deleteRtkCum, readRtkCum, readRtkGain, rtkCumPath, writeRtkCum } from './rtk-gain'
 import { classify, getFromPayload, TARGETS } from './targets'
 import { tokenize } from './tokenizer'
 
+import type { RtkGainSnapshot } from './rtk-gain'
 import type { JsonValue, LogRecord, SessionSummary, StopPayload, ToolPayload } from './types'
 
 export type HandlerOpts = {
   logsDir: string
   statePath: string
   now?: () => Date
+  // テスト用 DI: rtk gain サブプロセスをモック差し替えする
+  getRtkGain?: () => RtkGainSnapshot | null
 }
 
 /** 現在時刻を ISO 8601 文字列で返す */
@@ -54,8 +58,14 @@ export function handlePost(payload: ToolPayload, opts: HandlerOpts): void {
 
   if (cls.kind === 'rtk') {
     const wrapper = TARGETS.rtkWrappers.find((w) => w.tool === payload.tool_name)
+    // 旧仕様: tool_response.metadata.rtk_saved_tokens を読む経路。
+    // 実 rtk は metadata を返さないため通常 undefined → null。テスト互換のため残す。
     const savedRaw = wrapper ? getFromPayload(payload, wrapper.savingsField) : undefined
-    const saved = typeof savedRaw === 'number' ? savedRaw : null
+    let saved: number | null = typeof savedRaw === 'number' ? savedRaw : null
+    // 新仕様: `rtk gain --format json` の累積カウンタを post 毎に snapshot し、前回値との差を当該 call の節約量とする。
+    if (saved === null) {
+      saved = diffRtkGain(payload.session_id, opts)
+    }
     const outputText = toText(payload.tool_response)
     appendLog(
       {
@@ -163,4 +173,22 @@ export function handleStop(payload: StopPayload, opts: HandlerOpts): void {
     },
     opts.logsDir,
   )
+  // session 終了で rtk-gain snapshot を片付ける。次セッションでベースライン汚染を防ぐ。
+  deleteRtkCum(rtkCumPath(opts.logsDir, payload.session_id))
+}
+
+/**
+ * `rtk gain --format json` の累積カウンタと、前回 snapshot の差から当該 call の節約量を返す。
+ * 初回 / counter リセット / rtk 取得失敗時は null。snapshot は今回値で更新する。
+ */
+function diffRtkGain(sessionId: string, opts: HandlerOpts): number | null {
+  const getGain = opts.getRtkGain ?? readRtkGain
+  const curr = getGain()
+  if (!curr) return null
+  const cumPath = rtkCumPath(opts.logsDir, sessionId)
+  const prev = readRtkCum(cumPath)
+  writeRtkCum(cumPath, curr)
+  if (!prev) return null
+  if (curr.total_saved < prev.total_saved) return null
+  return curr.total_saved - prev.total_saved
 }
