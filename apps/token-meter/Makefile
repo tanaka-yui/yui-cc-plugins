@@ -32,8 +32,8 @@ install-caveman: ## caveman skill をインストール
 	  curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/main/install.sh | bash
 
 .PHONY: install-headroom
-install-headroom: ## headroom MCP をインストール
-	@command -v headroom >/dev/null || pip install "headroom-ai[all]"
+install-headroom: ## headroom MCP をインストール (npm)
+	@command -v headroom >/dev/null || npm install -g headroom-ai
 	@headroom mcp install --scope user --skip-existing || true
 
 .PHONY: hook-link

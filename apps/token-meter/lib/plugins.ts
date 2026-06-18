@@ -120,7 +120,7 @@ export const COMPRESSION_PLUGINS: CompressionPlugin[] = [
   {
     name: 'headroom',
     description: 'tool 出力・履歴を圧縮する MCP サーバ',
-    install: { method: 'pip', pkg: 'headroom-ai[all]' },
+    install: { method: 'npm', pkg: 'headroom-ai' },
     isInstalled: () => commandExists('headroom'),
     enable: async () => mcpToggle('headroom', true),
     disable: async () => mcpToggle('headroom', false),
