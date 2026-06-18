@@ -59,14 +59,21 @@ describe('handler', () => {
     rmSync(root, { recursive: true })
   })
 
-  test('handlePost: MCP 圧縮 tool を post.compress として ratio 付きで記録', () => {
+  test('handlePost: MCP headroom_compress を extract 経由で原 token 数から記録', () => {
     const { root, logsDir, statePath } = setup()
+    // 実 wire 形式: tool_response = [{type:"text", text:"<JSON 文字列>"}]
+    const respJson = JSON.stringify({
+      compressed: 'shrunk',
+      original_tokens: 1000,
+      compressed_tokens: 250,
+      tokens_saved: 750,
+    })
     handlePost(
       {
         session_id: 's1',
         tool_name: 'mcp__headroom__headroom_compress',
-        tool_input: { text: 'a'.repeat(400) },
-        tool_response: { compressed: 'a'.repeat(40) },
+        tool_input: { content: 'a'.repeat(400) },
+        tool_response: [{ type: 'text', text: respJson }],
       },
       { logsDir, statePath },
     )
@@ -75,8 +82,28 @@ describe('handler', () => {
     expect(rec.kind).toBe('post.compress')
     if (rec.kind === 'post.compress') {
       expect(rec.label).toBe('headroom')
-      expect(rec.ratio).toBeLessThan(1)
+      expect(rec.input_tokens).toBe(1000)
+      expect(rec.output_tokens).toBe(250)
+      expect(rec.ratio).toBe(0.25)
     }
+    rmSync(root, { recursive: true })
+  })
+
+  test('handlePost: headroom 応答が予期せぬ shape の場合は text 経路に fallback', () => {
+    const { root, logsDir, statePath } = setup()
+    handlePost(
+      {
+        session_id: 's1',
+        tool_name: 'mcp__headroom__headroom_compress',
+        tool_input: { content: 'a'.repeat(400) },
+        tool_response: { unexpected: 'shape' },
+      },
+      { logsDir, statePath },
+    )
+    const lines = readFileSync(dailyPath(logsDir, new Date()), 'utf8').trim().split('\n')
+    const rec = JSON.parse(lines[0] ?? '') as LogRecord
+    expect(rec.kind).toBe('post.compress')
+    if (rec.kind === 'post.compress') expect(rec.label).toBe('headroom')
     rmSync(root, { recursive: true })
   })
 

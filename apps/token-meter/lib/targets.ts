@@ -1,6 +1,32 @@
 // token-meter 計測対象の設定定義と tool 分類ロジック
 import type { JsonValue, TargetConfig, ToolClassification, ToolPayload } from './types'
 
+/**
+ * headroom MCP の応答から original_tokens / compressed_tokens を直接取り出す。
+ * 実 wire 形式: tool_response = [{type: "text", text: "<JSON 文字列>"}]
+ * JSON 文字列内に { original_tokens, compressed_tokens, tokens_saved, ... } がある。
+ * 期待形式に合致しなければ null を返し、handler 側で text 経路にフォールバックさせる。
+ */
+function extractHeadroomTokens(payload: ToolPayload): { input_tokens: number; output_tokens: number } | null {
+  const resp = payload.tool_response
+  if (!Array.isArray(resp) || resp.length === 0) return null
+  const first = resp[0]
+  if (!first || typeof first !== 'object' || Array.isArray(first)) return null
+  const text = (first as Record<string, JsonValue>).text
+  if (typeof text !== 'string') return null
+  let parsed: JsonValue
+  try {
+    parsed = JSON.parse(text) as JsonValue
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const orig = parsed.original_tokens
+  const comp = parsed.compressed_tokens
+  if (typeof orig !== 'number' || typeof comp !== 'number') return null
+  return { input_tokens: orig, output_tokens: comp }
+}
+
 // デフォルト TARGETS — spec §4.1 と同一
 export const TARGETS: TargetConfig = {
   scope: {
@@ -18,9 +44,11 @@ export const TARGETS: TargetConfig = {
   compressionTools: [
     {
       tool: 'mcp__headroom__headroom_compress',
-      inputField: 'tool_input.text',
-      outputField: 'tool_response.compressed',
+      // text path fallback。実際は extract で原 token 数を直読みする (tool_response が [{type,text}] 配列で dot-path では届かないため)。
+      inputField: 'tool_input.content',
+      outputField: 'tool_response',
       label: 'headroom',
+      extract: extractHeadroomTokens,
     },
     {
       tool: 'mcp__caveman-shrink__compress',
@@ -93,7 +121,7 @@ export function classify(toolName: string, payload: ToolPayload, targets: Target
   // 圧縮ツールを検査
   for (const c of targets.compressionTools) {
     if (c.tool === toolName) {
-      return { kind: 'compression', label: c.label, inputField: c.inputField, outputField: c.outputField }
+      return { kind: 'compression', def: c }
     }
   }
 

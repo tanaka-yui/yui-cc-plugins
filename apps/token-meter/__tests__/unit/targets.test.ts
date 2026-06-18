@@ -34,8 +34,9 @@ describe('targets', () => {
     )
     expect(r.kind).toBe('compression')
     if (r.kind === 'compression') {
-      expect(r.label).toBe('headroom')
-      expect(r.inputField).toBe('tool_input.text')
+      expect(r.def.label).toBe('headroom')
+      expect(r.def.inputField).toBe('tool_input.content')
+      expect(typeof r.def.extract).toBe('function')
     }
   })
 

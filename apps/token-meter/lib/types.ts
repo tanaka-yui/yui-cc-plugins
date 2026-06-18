@@ -76,11 +76,13 @@ export type RtkWrapper = {
 }
 
 // 圧縮ツールの定義
+// extract が指定されていればそれを最優先。失敗時 / 未指定時は inputField/outputField の text 経路に fallback。
 export type CompressionToolDef = {
   tool: string
   inputField: string
   outputField: string
   label: string
+  extract?: (payload: import('./schemas').ToolPayload) => { input_tokens: number; output_tokens: number } | null
 }
 
 // 計測対象の設定
@@ -116,6 +118,6 @@ export type HookKind = 'pre' | 'post' | 'stop'
 // ツール呼び出しの分類結果
 export type ToolClassification =
   | { kind: 'rtk'; raw_command: string; wrapped_command: string }
-  | { kind: 'compression'; label: string; inputField: string; outputField: string }
+  | { kind: 'compression'; def: CompressionToolDef }
   | { kind: 'normal' }
   | { kind: 'skip' }

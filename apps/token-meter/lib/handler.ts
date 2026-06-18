@@ -84,17 +84,24 @@ export function handlePost(payload: ToolPayload, opts: HandlerOpts): void {
   }
 
   if (cls.kind === 'compression') {
-    const inText = toText(getFromPayload(payload, cls.inputField))
-    const outText = toText(getFromPayload(payload, cls.outputField))
-    const inTok = tokensOf(inText)
-    const outTok = tokensOf(outText)
+    // extract が定義されていればそれを最優先で試し、null 返却時のみ text 経路に fallback。
+    const extracted = cls.def.extract ? cls.def.extract(payload) : null
+    let inTok: number
+    let outTok: number
+    if (extracted) {
+      inTok = extracted.input_tokens
+      outTok = extracted.output_tokens
+    } else {
+      inTok = tokensOf(toText(getFromPayload(payload, cls.def.inputField)))
+      outTok = tokensOf(toText(getFromPayload(payload, cls.def.outputField)))
+    }
     appendLog(
       {
         kind: 'post.compress',
         ts,
         session: payload.session_id,
         tool: payload.tool_name,
-        label: cls.label,
+        label: cls.def.label,
         input_tokens: inTok,
         output_tokens: outTok,
         ratio: inTok === 0 ? 0 : outTok / inTok,
