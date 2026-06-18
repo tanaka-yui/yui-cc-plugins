@@ -37,3 +37,19 @@ export const StopPayloadSchema = z.object({
   transcript_path: z.string().optional(),
 })
 export type StopPayload = z.infer<typeof StopPayloadSchema>
+
+// .claude.json の MCP サーバエントリ
+const McpServerEntrySchema = z
+  .object({
+    enabled: z.boolean().optional(),
+  })
+  .passthrough()
+
+// .claude.json のトップレベル構造
+export const ClaudeConfigSchema = z
+  .object({
+    mcpServers: z.record(z.string(), McpServerEntrySchema).optional(),
+  })
+  .passthrough()
+
+export type ClaudeConfig = z.infer<typeof ClaudeConfigSchema>
