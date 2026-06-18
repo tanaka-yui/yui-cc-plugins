@@ -55,7 +55,7 @@ export function extractField(obj: JsonValue | undefined, path: string): JsonValu
 
 // ToolPayload から detectField のドット記法パスで値を取り出す
 // 先頭セグメントが tool_input / tool_response に対応する
-function getFromPayload(payload: ToolPayload, path: string): JsonValue | undefined {
+export function getFromPayload(payload: ToolPayload, path: string): JsonValue | undefined {
   const dotIndex = path.indexOf('.')
   const head = dotIndex === -1 ? path : path.slice(0, dotIndex)
   const rest = dotIndex === -1 ? '' : path.slice(dotIndex + 1)
