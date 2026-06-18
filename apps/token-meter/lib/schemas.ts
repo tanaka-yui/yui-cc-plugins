@@ -53,3 +53,27 @@ export const ClaudeConfigSchema = z
   .passthrough()
 
 export type ClaudeConfig = z.infer<typeof ClaudeConfigSchema>
+
+// settings.json の hook コマンドエントリ
+export const HookCommandSchema = z.object({
+  type: z.literal('command'),
+  command: z.string(),
+})
+
+// settings.json の hook グループ (matcher + hooks 配列)
+export const HookGroupSchema = z.object({
+  matcher: z.string().optional(),
+  hooks: z.array(HookCommandSchema),
+})
+
+// ~/.claude/settings.json のトップレベル構造
+// passthrough() で未知フィールドを保持する
+export const SettingsJsonSchema = z
+  .object({
+    hooks: z.record(z.string(), z.array(HookGroupSchema)).optional(),
+  })
+  .passthrough()
+
+export type SettingsJson = z.infer<typeof SettingsJsonSchema>
+export type HookGroup = z.infer<typeof HookGroupSchema>
+export type HookCommand = z.infer<typeof HookCommandSchema>
