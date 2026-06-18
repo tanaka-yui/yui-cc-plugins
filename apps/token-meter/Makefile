@@ -32,9 +32,12 @@ install-caveman: ## caveman skill をインストール
 	  curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/main/install.sh | bash
 
 .PHONY: install-headroom
-install-headroom: ## headroom MCP をインストール (npm)
-	@command -v headroom >/dev/null || npm install -g headroom-ai
-	@headroom mcp install --scope user --skip-existing || true
+install-headroom: ## headroom MCP をインストール (uv tool install で Python 3.13 隔離環境)
+	@command -v headroom >/dev/null || { \
+	  command -v uv >/dev/null || { echo "Error: uv が必要です (brew install uv で導入)"; exit 1; }; \
+	  uv tool install "headroom-ai[all]" --python 3.13; \
+	}
+	@headroom mcp install --agent claude || true
 
 .PHONY: hook-link
 hook-link: ## settings.json に hook を配線

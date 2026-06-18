@@ -37,14 +37,14 @@ describe('hook-post-tool-use', () => {
     }
   })
 
-  test('mcp__headroom__compress payload を post.compress レコードとして記録', async () => {
+  test('mcp__headroom__headroom_compress payload を post.compress レコードとして記録', async () => {
     const home = mkdtempSync(join(tmpdir(), 'tm-i-'))
     try {
       const { code } = await runHook(
         BIN,
         {
           session_id: 's2',
-          tool_name: 'mcp__headroom__compress',
+          tool_name: 'mcp__headroom__headroom_compress',
           tool_input: { text: 'hello world this is a long text' },
           tool_response: { compressed: 'hw long' },
         },

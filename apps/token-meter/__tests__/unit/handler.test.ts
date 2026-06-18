@@ -63,7 +63,7 @@ describe('handler', () => {
     handlePost(
       {
         session_id: 's1',
-        tool_name: 'mcp__headroom__compress',
+        tool_name: 'mcp__headroom__headroom_compress',
         tool_input: { text: 'a'.repeat(400) },
         tool_response: { compressed: 'a'.repeat(40) },
       },
@@ -105,7 +105,7 @@ describe('handler', () => {
         kind: 'post.compress',
         ts: '',
         session: 's',
-        tool: 'mcp__headroom__compress',
+        tool: 'mcp__headroom__headroom_compress',
         label: 'headroom',
         input_tokens: 1000,
         output_tokens: 100,

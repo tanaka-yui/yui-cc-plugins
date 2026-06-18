@@ -96,7 +96,6 @@ export type TargetConfig = {
 export type PluginInstallSpec =
   | { method: 'brew'; pkg: string }
   | { method: 'pip'; pkg: string }
-  | { method: 'npm'; pkg: string }
   | { method: 'curl-sh'; url: string }
 
 // 圧縮プラグインのインターフェース

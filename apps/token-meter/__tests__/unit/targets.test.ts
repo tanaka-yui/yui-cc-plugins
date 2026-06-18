@@ -26,10 +26,10 @@ describe('targets', () => {
     expect(r.kind).toBe('normal')
   })
 
-  test('classify: mcp__headroom__compress は kind=compression label=headroom', () => {
+  test('classify: mcp__headroom__headroom_compress は kind=compression label=headroom', () => {
     const r = classify(
-      'mcp__headroom__compress',
-      { session_id: 's', tool_name: 'mcp__headroom__compress', tool_input: { text: 'hi' } },
+      'mcp__headroom__headroom_compress',
+      { session_id: 's', tool_name: 'mcp__headroom__headroom_compress', tool_input: { text: 'hi' } },
       TARGETS,
     )
     expect(r.kind).toBe('compression')

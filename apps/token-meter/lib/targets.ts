@@ -17,7 +17,7 @@ export const TARGETS: TargetConfig = {
   ],
   compressionTools: [
     {
-      tool: 'mcp__headroom__compress',
+      tool: 'mcp__headroom__headroom_compress',
       inputField: 'tool_input.text',
       outputField: 'tool_response.compressed',
       label: 'headroom',
