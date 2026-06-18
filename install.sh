@@ -19,6 +19,7 @@ claude plugin install cmux-team@yui-cc-plugins
 claude plugin install cmux-team-dispatch-task@yui-cc-plugins
 claude plugin install dev-up@yui-cc-plugins
 claude plugin install e2e-test@yui-cc-plugins
+claude plugin install token-meter@yui-cc-plugins
 echo ""
 
 green "すべてのプラグインのインストールが完了しました。"
