@@ -11,10 +11,11 @@ import { dirname, join } from 'node:path'
 export type { HookGroup, SettingsJson }
 
 // token-meter が管理する hook エントリ: [イベント名, バイナリ名] のペア
+// bin/ 配下の実ファイルは .ts 拡張子付き (bun shebang で直接実行可)
 const ENTRIES: Array<[string, string]> = [
-  ['PreToolUse', 'hook-pre-tool-use'],
-  ['PostToolUse', 'hook-post-tool-use'],
-  ['Stop', 'hook-stop'],
+  ['PreToolUse', 'hook-pre-tool-use.ts'],
+  ['PostToolUse', 'hook-post-tool-use.ts'],
+  ['Stop', 'hook-stop.ts'],
 ]
 
 // binDir と hook バイナリ名から実行コマンドパスを生成する
