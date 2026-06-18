@@ -22,4 +22,9 @@ claude plugin install e2e-test@yui-cc-plugins
 claude plugin install token-meter@yui-cc-plugins
 echo ""
 
+bold "=== token-meter のセットアップ ==="
+(cd "${REPO_DIR}/apps/token-meter" && make setup)
+green "token-meter の hook 配線が完了しました"
+echo ""
+
 green "すべてのプラグインのインストールが完了しました。"

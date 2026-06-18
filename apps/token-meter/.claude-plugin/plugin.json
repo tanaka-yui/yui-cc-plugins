@@ -9,6 +9,5 @@
   "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/token-meter",
   "license": "MIT",
   "keywords": ["claude-code", "hook", "token", "compression", "measurement"],
-  "skills": "./skills/",
-  "commands": "./commands/"
+  "skills": "./skills/"
 }

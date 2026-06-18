@@ -12,12 +12,20 @@ JSONL に記録・集計するための計測機構プラグイン。
 
 ## セットアップ
 
+リポジトリのルートで:
+
 ```bash
-cd /Users/yui/Documents/workspace/tanaka-yui/yui-cc-plugins
-git pull
+bash install.sh
+```
+
+これでマーケットプレイス登録、全プラグインのインストール、token-meter の hook 配線、state.json 初期化が完了します。Claude Code を再起動してください。
+
+token-meter だけを個別にセットアップしたい場合:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
 cd apps/token-meter
 make setup
-# Claude Code を再起動
 ```
 
 `make setup` は以下を行います:
