@@ -31,4 +31,19 @@ describe('tokenizer', () => {
     expect(r.truncated).toBe(false)
     expect(r.text).toBe('short')
   })
+
+  test('truncateForTokenize は multi-byte UTF-8 でもバイト境界を守る', () => {
+    // 日本語 3-byte/char で 100k char → 300k bytes
+    const big = 'あ'.repeat(100_000)
+    const r = truncateForTokenize(big, 262_144)
+    expect(r.truncated).toBe(true)
+    expect(Buffer.byteLength(r.text, 'utf8')).toBeLessThanOrEqual(262_144)
+  })
+
+  test('truncateForTokenize は混在文字でもバイト上限を超えない', () => {
+    const mixed = `${'a'.repeat(200_000)}${'あ'.repeat(50_000)}`
+    const r = truncateForTokenize(mixed, 262_144)
+    expect(r.truncated).toBe(true)
+    expect(Buffer.byteLength(r.text, 'utf8')).toBeLessThanOrEqual(262_144)
+  })
 })

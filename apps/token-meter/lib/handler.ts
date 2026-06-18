@@ -149,6 +149,9 @@ export function aggregate(records: LogRecord[]): SessionSummary {
 export function handleStop(payload: StopPayload, opts: HandlerOpts): void {
   const state = readState(opts.statePath)
   if (!state.enabled) return
+  // 注: readTodayRecords は今日の UTC 日付の JSONL のみを読む。
+  // セッションが UTC midnight を跨ぐ場合、summary は前日分のレコードを集計対象から外す。
+  // spec §15 のオープン項目として将来対応 (今日と昨日の両方を読む形に拡張する余地)。
   const recs = readTodayRecords(opts.logsDir, payload.session_id)
   const summary = aggregate(recs)
   appendLog(

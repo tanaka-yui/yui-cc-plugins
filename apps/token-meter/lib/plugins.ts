@@ -109,7 +109,7 @@ export const COMPRESSION_PLUGINS: CompressionPlugin[] = [
     enable: async () => {
       const flag = join(homedir(), '.claude', 'caveman.session.flag')
       mkdirSync(dirname(flag), { recursive: true })
-      writeFileSync(flag, '')
+      writeFileSync(flag, '', { mode: 0o600 })
     },
     disable: async () => {
       rmSync(join(homedir(), '.claude', 'caveman.session.flag'), { force: true })

@@ -66,8 +66,4 @@ make doctor           # 健全性チェック
 
 ## コーディング規約
 
-- ドキュメント・コメント・コミットメッセージ・README: 日本語
-- コード (変数名・関数名・CLI フラグ): 英語
-- `any` / `unknown` 禁止 (narrowing 経由のみ)
-- `class` 禁止 (Error 拡張除く)
-- biome 2.4.9 (single quote, no semi, 120 col)
+ルート `CLAUDE.md` (`yui-cc-plugins/CLAUDE.md`) を参照。

@@ -1,7 +1,7 @@
 import { matchesScope, readState, shouldMeasure, writeState } from '../../lib/config'
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -24,6 +24,8 @@ describe('config', () => {
     writeState(path, s)
     expect(existsSync(path)).toBe(true)
     expect(readState(path)).toEqual(s)
+    const fileMode = statSync(path).mode & 0o777
+    expect(fileMode).toBe(0o600)
     rmSync(dir, { recursive: true })
   })
 

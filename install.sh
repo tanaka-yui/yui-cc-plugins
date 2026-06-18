@@ -23,8 +23,13 @@ claude plugin install token-meter@yui-cc-plugins
 echo ""
 
 bold "=== token-meter のセットアップ ==="
-(cd "${REPO_DIR}/apps/token-meter" && make setup)
+(cd "${REPO_DIR}/apps/token-meter" && make deps setup-hooks)
 green "token-meter の hook 配線が完了しました"
 echo ""
 
 green "すべてのプラグインのインストールが完了しました。"
+echo ""
+echo "圧縮プラグイン (rtk/caveman/headroom) のインストールは別途必要です:"
+echo "  cd apps/token-meter && make install-plugins   # brew/pipx/curl が走ります"
+echo "または:"
+echo "  cd apps/token-meter && make setup             # 完全セットアップ (上記 + hook 配線)"

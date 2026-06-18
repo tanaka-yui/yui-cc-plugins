@@ -11,15 +11,38 @@ export function approxTokens(text: string): number {
 /**
  * テキストが maxBytes を超える場合、先頭と末尾をサンプリングして返す。
  * truncated フラグで切り詰めが発生したかどうかを示す。
+ * UTF-8 マルチバイト文字 (日本語等) でも byte 境界を守る。
  */
 export function truncateForTokenize(text: string, maxBytes = 262_144): { text: string; truncated: boolean } {
-  if (Buffer.byteLength(text, 'utf8') <= maxBytes) {
+  const totalBytes = Buffer.byteLength(text, 'utf8')
+  if (totalBytes <= maxBytes) {
     return { text, truncated: false }
   }
-  const half = Math.floor(maxBytes / 2)
-  const head = text.slice(0, half)
-  const tail = text.slice(-half)
-  return { text: head + tail, truncated: true }
+  const halfBytes = Math.floor(maxBytes / 2)
+  // 先頭/末尾を byte 境界で切り出す (UTF-8 char boundary を尊重)
+  const headChars = sliceByBytes(text, halfBytes, 'head')
+  const tailChars = sliceByBytes(text, halfBytes, 'tail')
+  return { text: headChars + tailChars, truncated: true }
+}
+
+function sliceByBytes(text: string, maxBytes: number, side: 'head' | 'tail'): string {
+  let acc = 0
+  if (side === 'head') {
+    let i = 0
+    for (; i < text.length; i++) {
+      const charBytes = Buffer.byteLength(text[i] ?? '', 'utf8')
+      if (acc + charBytes > maxBytes) break
+      acc += charBytes
+    }
+    return text.slice(0, i)
+  }
+  let i = text.length
+  for (; i > 0; i--) {
+    const charBytes = Buffer.byteLength(text[i - 1] ?? '', 'utf8')
+    if (acc + charBytes > maxBytes) break
+    acc += charBytes
+  }
+  return text.slice(i)
 }
 
 /**

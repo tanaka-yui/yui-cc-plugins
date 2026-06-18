@@ -20,6 +20,13 @@ bash install.sh
 
 これでマーケットプレイス登録、全プラグインのインストール、token-meter の hook 配線、state.json 初期化が完了します。Claude Code を再起動してください。
 
+> **Note:** `bash install.sh` は hook 配線まで完了しますが、圧縮プラグイン (rtk/caveman/headroom) のインストールは opt-in です:
+> ```bash
+> cd apps/token-meter && make install-plugins   # brew/pipx/curl が走ります
+> # または完全セットアップ:
+> cd apps/token-meter && make setup
+> ```
+
 token-meter だけを個別にセットアップしたい場合:
 
 ```bash

@@ -9,7 +9,10 @@ help: ## このヘルプを表示
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
 
 .PHONY: setup
-setup: deps install-plugins hook-link state-init ## 1 コマンド完全セットアップ
+setup: deps install-plugins setup-hooks ## 完全セットアップ (brew/pipx 含む)
+
+.PHONY: setup-hooks
+setup-hooks: state-init hook-link ## hook 配線のみ (brew/pipx インストールなし)
 
 .PHONY: deps
 deps: ## 依存パッケージをインストール

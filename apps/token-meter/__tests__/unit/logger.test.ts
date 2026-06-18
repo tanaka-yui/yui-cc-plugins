@@ -1,7 +1,7 @@
 import { appendErrorLog, appendLog, dailyPath, readTodayRecords } from '../../lib/logger'
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -29,6 +29,12 @@ describe('logger', () => {
     const lines = readFileSync(path, 'utf8').trim().split('\n')
     expect(lines.length).toBe(1)
     expect(JSON.parse(lines[0] ?? '{}').kind).toBe('pre')
+    // permission regression: file is 0o600
+    const fileMode = statSync(path).mode & 0o777
+    expect(fileMode).toBe(0o600)
+    // dir is 0o700
+    const dirMode = statSync(dir).mode & 0o777
+    expect(dirMode).toBe(0o700)
     rmSync(dir, { recursive: true })
   })
 
