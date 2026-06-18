@@ -1,0 +1,29 @@
+---
+name: token-clear
+description: >
+  Use when the user invokes `/token-clear` or asks to delete old token-meter
+  JSONL logs by retention period. Confirms before destructive deletion.
+---
+
+# token-clear: 履歴削除
+
+`~/.claude/token-meter/logs/` 配下の JSONL を保持期間で削除する。
+
+## 引数仕様
+
+| 引数 | 動作 |
+|---|---|
+| `--before <N>d` | N 日以上前のファイルを削除 (例: `--before 30d`) |
+| `--all` | 全 JSONL を削除 |
+| `--dry-run` | 削除候補のみ表示 |
+
+## 実装手順
+
+1. 削除候補ファイル名から日付 (`YYYY-MM-DD.jsonl`) をパースし `--before` と比較。
+2. `--dry-run` でない限り、削除前に candidate 一覧と合計サイズを表示しユーザーに確認を求める。
+3. 確認後 `rm` で削除。
+
+## 注意
+
+- 削除は **不可逆**。必ず `--dry-run` で候補を確認してから本実行する。
+- 同名ファイルが書込中の場合 (現在日付の jsonl) はスキップして警告を出す。
