@@ -33,7 +33,7 @@ install-caveman: ## caveman skill をインストール
 
 .PHONY: install-headroom
 install-headroom: ## headroom MCP をインストール
-	@command -v headroom >/dev/null || pipx install "headroom-ai[all]"
+	@command -v headroom >/dev/null || pip install "headroom-ai[all]"
 	@headroom mcp install --scope user --skip-existing || true
 
 .PHONY: hook-link
