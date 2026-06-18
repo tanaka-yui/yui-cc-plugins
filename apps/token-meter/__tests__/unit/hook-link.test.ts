@@ -1,6 +1,9 @@
-import { addHooks, removeHooks, type SettingsJson } from '../../scripts/hook-link'
+import { addHooks, loadSettings, removeHooks, type SettingsJson } from '../../scripts/hook-link'
 
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const BIN = '/u/h/.claude/token-meter/bin'
 
@@ -30,6 +33,14 @@ describe('hook-link', () => {
       .flatMap((g) => g.hooks)
       .filter((h) => h.command.includes('hook-pre-tool-use')).length
     expect(count).toBe(1)
+  })
+
+  test('loadSettings: 不正 JSON のファイルでは {} を返す', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tm-hl-'))
+    const path = join(dir, 'settings.json')
+    writeFileSync(path, '{not json')
+    expect(loadSettings(path)).toEqual({})
+    rmSync(dir, { recursive: true })
   })
 
   test('removeHooks: token-meter エントリのみ除去', () => {

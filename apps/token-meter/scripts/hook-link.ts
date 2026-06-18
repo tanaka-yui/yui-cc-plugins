@@ -59,10 +59,14 @@ export function removeHooks(settings: SettingsJson): SettingsJson {
 // settings.json を読み込む。ファイルが存在しない場合や解析失敗時は空オブジェクトを返す
 export function loadSettings(path: string): SettingsJson {
   if (!existsSync(path)) return {}
-  const raw = readFileSync(path, 'utf8')
-  const result = SettingsJsonSchema.safeParse(JSON.parse(raw))
-  if (!result.success) return {}
-  return result.data
+  try {
+    const raw = readFileSync(path, 'utf8')
+    const result = SettingsJsonSchema.safeParse(JSON.parse(raw))
+    if (!result.success) return {}
+    return result.data
+  } catch {
+    return {}
+  }
 }
 
 // settings.json をアトミックに書き込む
