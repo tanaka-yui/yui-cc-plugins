@@ -26,8 +26,13 @@ function runChecks(): Check[] {
   } catch {
     out.push({ name: 'logs writable', ok: false, detail: '権限不足、または未作成' })
   }
-  const tk = tokenize('hello world', 'anthropic')
-  out.push({ name: 'tokenizer works', ok: tk.tokens > 0 && !tk.degraded, detail: `tokens=${tk.tokens}` })
+  try {
+    const tk = tokenize('hello world', 'anthropic')
+    out.push({ name: 'tokenizer works', ok: tk.tokens > 0 && !tk.degraded, detail: `tokens=${tk.tokens}` })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    out.push({ name: 'tokenizer works', ok: false, detail: `例外: ${msg}` })
+  }
   const settings = loadSettings(join(homedir(), '.claude', 'settings.json'))
   for (const ev of ['PreToolUse', 'PostToolUse', 'Stop']) {
     const linked = (settings.hooks?.[ev] ?? []).some((g) => g.hooks.some((h) => h.command.includes('token-meter')))
