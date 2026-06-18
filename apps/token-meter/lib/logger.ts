@@ -31,16 +31,21 @@ export function appendErrorLog(err: unknown, logsDir: string): void {
 /** 当日 JSONL から session 一致レコードのみ抽出して返す */
 export function readTodayRecords(dir: string, session: string): LogRecord[] {
   const path = dailyPath(dir, new Date())
+  let content: string
   try {
-    const content = readFileSync(path, 'utf8')
-    const out: LogRecord[] = []
-    for (const line of content.split('\n')) {
-      if (!line) continue
-      const rec = JSON.parse(line) as LogRecord
-      if (rec.session === session) out.push(rec)
-    }
-    return out
+    content = readFileSync(path, 'utf8')
   } catch {
     return []
   }
+  const out: LogRecord[] = []
+  for (const line of content.split('\n')) {
+    if (!line) continue
+    try {
+      const rec = JSON.parse(line) as LogRecord
+      if (rec.session === session) out.push(rec)
+    } catch {
+      // 壊れた行は skip して次へ
+    }
+  }
+  return out
 }

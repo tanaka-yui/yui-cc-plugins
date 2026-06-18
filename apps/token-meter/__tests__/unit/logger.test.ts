@@ -1,7 +1,7 @@
 import { appendErrorLog, appendLog, dailyPath, readTodayRecords } from '../../lib/logger'
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -50,6 +50,19 @@ describe('logger', () => {
     appendLog({ kind: 'pre', ts: '', session: 'A', tool: 'T', input_tokens: 1, input_bytes: 1 }, dir)
     appendLog({ kind: 'pre', ts: '', session: 'B', tool: 'T', input_tokens: 2, input_bytes: 2 }, dir)
     appendLog({ kind: 'pre', ts: '', session: 'A', tool: 'T', input_tokens: 3, input_bytes: 3 }, dir)
+    const recs = readTodayRecords(dir, 'A')
+    expect(recs.length).toBe(2)
+    rmSync(dir, { recursive: true })
+  })
+
+  test('readTodayRecords は壊れた JSONL 行を skip して有効行を返す', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tm-'))
+    const path = dailyPath(dir, new Date())
+    // 直接 JSONL を書く (有効 / 壊れた / 有効 の順)
+    const valid1 = JSON.stringify({ kind: 'pre', ts: '', session: 'A', tool: 'T', input_tokens: 1, input_bytes: 1 })
+    const valid2 = JSON.stringify({ kind: 'pre', ts: '', session: 'A', tool: 'T', input_tokens: 2, input_bytes: 2 })
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path, `${valid1}\n{this is broken json\n${valid2}\n`)
     const recs = readTodayRecords(dir, 'A')
     expect(recs.length).toBe(2)
     rmSync(dir, { recursive: true })
