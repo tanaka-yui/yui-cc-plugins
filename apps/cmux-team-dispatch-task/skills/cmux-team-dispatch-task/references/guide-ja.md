@@ -1079,3 +1079,5 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。`cmux send` の後は必ず `cmux send-key return` を発行し、親 claude TUI の input box に滞留しないようにしている
 - **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
+- **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。
+- **Pre-warm standby tabs**: workspace レイアウト + config `prewarm: true` (default) のとき、各タスク workspace 内に `<slug>-sonnet` (+ codex runner があれば `<slug>-codex`) の standby tab を事前起動する。standby wrapper は `<STATUS_DIR>/.assigned` が存在するときだけ exit 時に status.json を遷移させる。signal 名は `<slug>-sonnet-done` / `<slug>-codex-done`。idle codex は agmsg push を受信できないため、codex への実行指示は常に `cmux send` で注入する。
