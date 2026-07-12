@@ -6,10 +6,15 @@
 #
 # Options:
 #   --cwd <path>                       Working directory (skips worktree creation)
-#   --mode plan|superpowers|execute    Claude launch mode (default: plan).
+#   --mode plan|superpowers|execute|standby  Claude launch mode (default: plan).
 #                                      execute = Phase B 実行モード。計画ファイルを
 #                                      inner prompt として渡し、.cmux-team-dispatch-task-prompt.md
 #                                      を書き込まない。--plan-file が必須
+#                                      standby = pre-warm 待機モード。--standby-in の workspace 内に
+#                                      terminal tab を作成して待機セッションを起動する。
+#                                      --cwd 必須・prompt 省略可。wrapper は <STATUS_DIR>/.assigned が
+#                                      存在するときだけ exit 時に status.json を更新する
+#   --standby-in <workspace-id>        standby tab を作成する既存 workspace (--mode standby 時必須)
 #   --plan-file <path>                 Plan file path (required when --mode execute).
 #                                      inner prompt が
 #                                      "Read and execute the plan at <path>" になる
@@ -75,6 +80,7 @@ source "$SCRIPT_DIR/terminal-wait.sh"
 
 CWD=""
 MODE="plan"
+STANDBY_IN=""
 STATUS_DIR=""
 LAYOUT="workspace"
 SPLIT_FROM=""
@@ -102,10 +108,15 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --mode)
-      [[ $# -lt 2 ]] && die "--mode requires plan, superpowers, or execute"
+      [[ $# -lt 2 ]] && die "--mode requires plan, superpowers, execute, or standby"
       MODE="$2"
-      [[ "$MODE" == "plan" || "$MODE" == "superpowers" || "$MODE" == "execute" ]] \
-        || die "--mode must be 'plan', 'superpowers', or 'execute'"
+      [[ "$MODE" == "plan" || "$MODE" == "superpowers" || "$MODE" == "execute" || "$MODE" == "standby" ]] \
+        || die "--mode must be 'plan', 'superpowers', 'execute', or 'standby'"
+      shift 2
+      ;;
+    --standby-in)
+      [[ $# -lt 2 ]] && die "--standby-in requires a workspace ID"
+      STANDBY_IN="$2"
       shift 2
       ;;
     --plan-file)
@@ -201,14 +212,18 @@ done
 [[ -z "$WORKSPACE_NAME" ]] && die "workspace name is required. Usage: $0 [options] <workspace-name> <prompt...>"
 
 # execute mode は --plan-file が必須で PROMPT は不要 (inner prompt が plan-file 由来)
+# standby mode は --standby-in / --cwd が必須で PROMPT は省略可 (idle TUI 待機)
 if [[ "$MODE" == "execute" ]]; then
   [[ -n "$PLAN_FILE" ]] || die "--plan-file is required when --mode is execute"
+elif [[ "$MODE" == "standby" ]]; then
+  [[ -n "$STANDBY_IN" ]] || die "--standby-in is required when --mode is standby"
+  [[ -n "$CWD" ]] || die "--cwd is required when --mode is standby (reuse the task worktree)"
 else
   [[ -z "$PROMPT" ]] && die "prompt is required. Usage: $0 [options] <workspace-name> <prompt...>"
 fi
 
 # --model / --skip-permissions は claude engine 向けの拡張。codex engine では別フラグ体系のため無視
-if [[ -n "$MODEL" && "$MODE" != "execute" ]]; then
+if [[ -n "$MODEL" && "$MODE" != "execute" && "$MODE" != "standby" ]]; then
   log "warn" "--model is only meaningful with --mode execute; ignoring for mode=$MODE"
 fi
 
@@ -309,8 +324,8 @@ fi
 # Phase A の .cmux-team-dispatch-task-prompt.md は上書きせず温存する。
 
 PROMPT_FILE="$CWD/.cmux-team-dispatch-task-prompt.md"
-if [[ "$MODE" == "execute" ]]; then
-  log "prompt" "execute mode: not writing prompt file (using --plan-file: $PLAN_FILE)"
+if [[ "$MODE" == "execute" || "$MODE" == "standby" ]]; then
+  log "prompt" "$MODE mode: not writing prompt file"
 else
   FULL_PROMPT="$PROMPT"
   printf '%s\n' "$FULL_PROMPT" > "$PROMPT_FILE"
@@ -337,6 +352,11 @@ if [[ "$MODE" == "execute" ]]; then
   PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${EXIT_INSTRUCTION}"
 else
   PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
+fi
+
+if [[ "$MODE" == "standby" ]]; then
+  # standby は与えられた prompt をそのまま使う (agmsg join+待機指示など)。省略時は idle TUI
+  PROMPT_TEXT="$PROMPT"
 fi
 
 # claude engine の execute モード向け追加フラグ (--model / --dangerously-skip-permissions)
@@ -372,6 +392,14 @@ else
       # codex execute: plan モードと同じく bypass フラグを付与
       # (codex に --model は不要 — codex runner が独自に処理)
       CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+    elif [[ "$MODE" == "standby" ]]; then
+      # codex standby: prompt なしで idle 起動 (idle codex は agmsg push を受信できないため、
+      # 実行指示は message-type に関わらず cmux send で注入される)
+      if [[ -n "$PROMPT_TEXT" ]]; then
+        CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+      else
+        CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox"
+      fi
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
       CORE_CMD="$RUNNER_COMMAND '\$superpowers:brainstorming $PROMPT_TEXT'"
@@ -388,6 +416,14 @@ else
         CORE_CMD="$RUNNER_COMMAND $CLAUDE_EXTRA_FLAGS '$PROMPT_TEXT'"
       else
         CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
+      fi
+    elif [[ "$MODE" == "standby" ]]; then
+      # claude standby: --model / --skip-permissions を反映し、prompt があれば渡す
+      # (agmsg モードでは "/agmsg actas <name>" + 待機指示を初期 prompt にする)
+      if [[ -n "$PROMPT_TEXT" ]]; then
+        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS} '$PROMPT_TEXT'"
+      else
+        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}"
       fi
     elif [[ "$MODE" == "superpowers" ]]; then
       CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
@@ -410,6 +446,9 @@ fi
 # The runner resolves its own workspace/surface IDs at runtime (env vars first,
 # `cmux identify` as fallback) so we don't need them baked in at generation.
 
+STANDBY_FLAG=0
+[[ "$MODE" == "standby" ]] && STANDBY_FLAG=1
+
 RUNNER_FILE="$CWD/$RUNNER_SCRIPT_NAME"
 cat > "$RUNNER_FILE" <<EOF
 #!/bin/bash
@@ -419,6 +458,7 @@ CMUX="${CMUX}"
 STATUS_DIR="${STATUS_DIR}"
 SLUG="${WORKSPACE_NAME}"
 DEFER_STATUS="${DEFER_STATUS}"
+STANDBY="${STANDBY_FLAG}"
 MESSAGE_TYPE="${MESSAGE_TYPE}"
 AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
@@ -448,7 +488,10 @@ write_status() {
   fi
 }
 
-write_status "executing" "Claude session starting"
+# standby wrapper は起動時に status.json を書かない (同じ STATUS_DIR を Child が使用中のため)
+if [[ "\$STANDBY" != "1" ]]; then
+  write_status "executing" "Claude session starting"
+fi
 
 ${CLAUDE_CMD}
 CLAUDE_EXIT=\$?
@@ -459,6 +502,13 @@ CLAUDE_EXIT=\$?
 # Child 側 Claude は exit 前に "<STATUS_DIR>/.deferred" を touch することで意思表示する。
 if [[ "\$DEFER_STATUS" == "1" && -n "\$STATUS_DIR" && -f "\$STATUS_DIR/.deferred" ]]; then
   echo "[runner] status update deferred (.deferred sentinel found at \$STATUS_DIR/.deferred)" >&2
+  exit 0
+fi
+
+# standby: .assigned sentinel が無ければ実装を引き受けていない。status を書かずに終了する
+# (未使用 standby tab を閉じても status.json を汚さないための仕組み — .deferred の逆向き)
+if [[ "\$STANDBY" == "1" && ! -f "\$STATUS_DIR/.assigned" ]]; then
+  echo "[runner] standby exiting without assignment (no .assigned at \$STATUS_DIR)" >&2
   exit 0
 fi
 
@@ -508,7 +558,28 @@ WORKSPACE_ID=""
 SURFACE_ID=""
 TITLE=""
 
-if [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
+if [[ "$MODE" == "standby" ]]; then
+  # --- Standby Mode: 既存 workspace に terminal tab (surface) を追加 ---
+  WORKSPACE_ID="$STANDBY_IN"
+  TITLE="$WORKSPACE_NAME"
+
+  log "cmux" "creating standby tab in $STANDBY_IN"
+  SURFACE_OUTPUT=$("$CMUX" new-surface --type terminal --workspace "$STANDBY_IN" 2>/dev/null) \
+    || die "failed to create standby surface in $STANDBY_IN"
+  SURFACE_ID=$(echo "$SURFACE_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
+  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from output: $SURFACE_OUTPUT"
+  log "cmux" "standby surface: $SURFACE_ID"
+
+  "$CMUX" rename-tab --workspace "$STANDBY_IN" --surface "$SURFACE_ID" "$TITLE" 2>/dev/null || \
+    log "cmux" "warning: failed to rename tab (non-fatal)"
+
+  wait_for_shell "$SURFACE_ID" || true
+
+  "$CMUX" send --surface "$SURFACE_ID" \
+    "cd '$CWD' && bash $RUNNER_SCRIPT_NAME\n" 2>/dev/null || die "failed to send cd+runner command"
+  log "cmux" "standby runner command sent"
+
+elif [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
   # --- Workspace Mode / Claude Teams Mode ---
   # Use `--command` so the runner starts the instant the workspace shell is ready.
   # This is strictly better than creating the workspace and then sending the
@@ -565,7 +636,7 @@ fi
 # so it may have already written "executing"/"done"/"error" to status.json.
 # Do not regress from those to "launched".
 
-if [[ -n "$STATUS_DIR" ]]; then
+if [[ -n "$STATUS_DIR" && "$MODE" != "standby" ]]; then
   mkdir -p "$STATUS_DIR"
   existing_status=""
   if [[ -f "$STATUS_DIR/status.json" ]]; then
