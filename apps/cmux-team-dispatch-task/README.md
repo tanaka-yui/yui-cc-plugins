@@ -155,6 +155,20 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 回答を全タスクに適用する。子セッションは質問も削除も行わない（子が自分の worktree を掴んだまま
 親が削除を試みて失敗するのを防ぐため）。
 
+## メッセージトランスポート（message_type）
+
+子 → 親の完了通知は config の `message_type` で切り替えられる:
+
+| 値 | 通知手段 | monitor ループ |
+|----|---------|---------------|
+| `send-message`（default） | `cmux send` + `cmux send-key return` | `monitor-dispatch.sh` を起動（heartbeat / 死活監視） |
+| `agmsg` | [agmsg](https://github.com/fujibee/agmsg) `send.sh`（リアルタイム push） | 起動しない（沈黙時は status.json を手動確認） |
+
+config は `~/.claude/cmux-team-dispatch-task/config.json`（`<project>/.dispatch/config.json` が優先）。
+未設定で agmsg がインストール済みの場合、初回 dispatch 時に一度だけ質問し、回答を config に永続化する。
+agmsg モードの team 名は `dispatch-<repo-name>`、親の agent 名は `parent`。
+status.json / result.md / `cmux wait-for` signal は両モードで不変。
+
 ## モデル選択フロー (Phase B)
 
 各子セッションは Phase A (計画 / brainstorming) 完了後、**実装フェーズで使うモデル**を `AskUserQuestion` で必ず聞きます。Phase A は常に opus で動作するため、選んだ model が opus と同一かどうかで動作が分岐します。
@@ -175,6 +189,16 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 - sonnet では Claude Code の auto mode (`bypassPermissions`) が効かないため、`--dangerously-skip-permissions` を付けて permission prompt によるハングを防いでいる
 
 codex オプションを使う場合は事前に `cmux codex install-hooks` の実行が必要です。
+
+### Pre-warm standby tab（workspace レイアウト時）
+
+config `prewarm: true`（default）のとき、各タスクの workspace 内に sonnet
+（+ `runners.json` に codex runner があれば codex）の待機セッションを tab として事前起動する。
+Phase B で sonnet / codex を選ぶと、別 workspace を spawn する代わりに待機 tab へ
+実行指示を 1 メッセージ送るだけで実装が始まる（sonnet への送信は message_type 準拠、
+codex は idle 時に agmsg push を受信できないため常に `cmux send`）。
+未使用の待機 tab は閉じても status.json を汚さない（`.assigned` sentinel 方式）。
+split / claude-teams レイアウトや `prewarm: false` では従来の on-demand spawn。
 
 ## アカウント切り替えとセッション共有 (claude-link.sh)
 

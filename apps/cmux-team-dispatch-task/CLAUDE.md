@@ -14,7 +14,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `skills/cmux-team-dispatch-task/scripts/monitor-dispatch.sh` | 完了通知の監視スクリプト（子 → 親通知＋全完了検知） |
 | `skills/cmux-team-dispatch-task/scripts/cmux-grid.sh` | split モード用グリッドレイアウト整列スクリプト |
 | `skills/cmux-team-dispatch-task/scripts/terminal-wait.sh` | シェル起動検知と `shell_ready_ms` 学習を行う共通ヘルパー（source 専用） |
-| `~/.claude/cmux-team-dispatch-task/config.json` | グローバル学習値（自動生成）。`shell_ready_ms.baseline_ms` を EMA で更新 |
+| `~/.claude/cmux-team-dispatch-task/config.json` | グローバル設定（自動生成）。`shell_ready_ms.baseline_ms`（EMA 学習値）、`message_type`（通知トランスポート）、`prewarm`（standby tab 事前起動） |
 | `~/.claude/cmux-team-dispatch-task/runners.json` | 子セッション runtime 一覧（初回セットアップで生成）。SKILL.md Step 1f で読込 |
 | `<project>/.dispatch/config.json` | プロジェクト固有の上書き（手動配置）。存在時はグローバルより優先 |
 | `.claude-plugin/plugin.json` | Plugin マニフェスト |
@@ -79,6 +79,8 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 9. `cmux send` で親に通知する箇所すべてに `cmux send-key return` がペアで発行されているか確認（runner / monitor 両方）
 10. `runners.json` のスキーマ（`default` / `runners[].name|command|engine`）が SKILL.md Step 1f / guide-ja.md「子セッション runner 設定」/ `launch-workspace.sh` の `--runner` 解決ロジックの3か所で一致しているか確認。特に `engine × MODE` の起動コマンド対応表（claude/codex × plan/superpowers/execute の6通り）が SKILL.md と guide-ja.md で同一か検証。なお composed command は常に `zsh -ic "..."` で wrap される（`.zshrc` の関数 / env を読み込むため）
 11. `launch-workspace.sh` の execute モード関連フラグ（`--mode execute` / `--plan-file` / `--model` / `--skip-permissions` / `--defer-status`）が SKILL.md / guide-ja.md / README.md の Phase B 説明と一致しているか確認。Child 側 (launch-session-splits.sh) が `--defer-status` を必ず付けて起動していること、孫側 (Phase B spawn) が `--mode execute` + `--plan-file` で起動していることを検証
+12. `message_type`（`send-message` / `agmsg`）の解決フロー（Step 1g: config 優先 → agmsg インストール時のみ初回質問 → Yes/No とも永続化）が SKILL.md / guide-ja.md / README.md で一致しているか確認。agmsg モードでは monitor-dispatch.sh を起動しないこと、runner wrapper の親通知が `send.sh <team> <from> parent` に切り替わること、status.json / signal は不変であることを検証
+13. pre-warm（`--mode standby` / `--standby-in` / `.assigned` sentinel / prewarm.json スキーマ / signal 名 `<slug>-sonnet-done`）が SKILL.md / guide-ja.md / README.md で一致しているか確認。standby wrapper が起動時・未 assigned exit 時に status.json を書かないこと、codex への実行指示が message_type に関わらず `cmux send` であることを検証
 
 ## テスト方法
 
@@ -117,3 +119,7 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 13. **Enter 自動押下**: 親が claude TUI でも、完了通知が input box に残らず自動で読み取られること（`cmux send` の後に `cmux send-key return` が発行される）
 14. **死亡検知**: monitor を `kill` した直後に `[dispatch-monitor] DIED ...` メッセージが親に届くこと
 15. **`--resume`**: 既存の `.dispatch/` がある状態で monitor を `--resume` 起動 → 完了済みは skip、未完了のみ監視継続すること
+16. **message_type 解決**: config 未設定 + agmsg インストール済みで初回質問が出て、Yes/No どちらでも `~/.claude/cmux-team-dispatch-task/config.json` に永続化されること。config 設定済みなら質問が出ないこと
+17. **agmsg モード**: monitor-dispatch.sh が起動しないこと。子の完了時に agmsg push で `[dispatch] task ... finished` が親に届くこと。status.json は従来どおり遷移すること
+18. **pre-warm**: workspace レイアウトで各タスク workspace に `<slug>-sonnet` tab（codex runner があれば `<slug>-codex` tab も）が起動すること。`prewarm: false` / split レイアウトでは起動しないこと
+19. **Phase B prewarm 経路**: sonnet 選択 → `.assigned` が touch され、待機 tab に実行指示が送信され、実装完了 exit 時に standby wrapper が status.json を done にし `<slug>-sonnet-done` signal + 親通知が発火すること。opus 1m 選択 → 全 standby tab が close され status.json が汚れないこと。prewarm.json が無い場合は従来の spawn にフォールバックすること
