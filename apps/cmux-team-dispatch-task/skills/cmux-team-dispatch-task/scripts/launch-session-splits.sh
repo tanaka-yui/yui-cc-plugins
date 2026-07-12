@@ -12,6 +12,9 @@
 #   --wait                          Wait for all tasks to complete before exiting
 #   --wait-timeout <seconds>        Timeout per task for --wait (default: 1800)
 #   --no-grid                       Skip grid layout reorganization after launch
+#   --message-type <send-message|agmsg>  子の親通知トランスポート (launch-workspace.sh に伝播)
+#   --agmsg-team <team>             agmsg の team 名 (message-type=agmsg 時必須。
+#                                   --agmsg-from はタスクごとに slug が自動設定される)
 #   --help                          Show this help message
 #
 # Tasks JSON format:
@@ -63,6 +66,8 @@ TASKS_FILE=""
 WAIT=false
 WAIT_TIMEOUT=1800
 GRID=true
+MESSAGE_TYPE="send-message"
+AGMSG_TEAM=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -98,6 +103,18 @@ while [[ $# -gt 0 ]]; do
       GRID=false
       shift
       ;;
+    --message-type)
+      [[ $# -lt 2 ]] && die "--message-type requires send-message or agmsg"
+      MESSAGE_TYPE="$2"
+      [[ "$MESSAGE_TYPE" == "send-message" || "$MESSAGE_TYPE" == "agmsg" ]] \
+        || die "--message-type must be 'send-message' or 'agmsg'"
+      shift 2
+      ;;
+    --agmsg-team)
+      [[ $# -lt 2 ]] && die "--agmsg-team requires a team name"
+      AGMSG_TEAM="$2"
+      shift 2
+      ;;
     *)
       die "unknown option: $1. Use --help for usage."
       ;;
@@ -109,6 +126,10 @@ done
 [[ -x "$CMUX" ]] || die "cmux is not installed at $CMUX"
 [[ -x "$LAUNCH_SCRIPT" ]] || [[ -f "$LAUNCH_SCRIPT" ]] || die "launch-workspace.sh not found at $LAUNCH_SCRIPT"
 command -v jq &>/dev/null || die "jq is not installed (required for JSON processing)"
+
+if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
+  [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --message-type is agmsg"
+fi
 
 # Load tasks JSON
 if [[ -n "$TASKS_FILE" ]]; then
@@ -186,6 +207,11 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     --parent-notify-surface "$PARENT_SF"
     --defer-status
   )
+
+  # agmsg モード時は launch-workspace.sh にトランスポート設定を伝播 (from はタスク slug)
+  if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
+    LAUNCH_ARGS+=(--message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG")
+  fi
 
   # Pass per-task runner override if specified
   if [[ -n "$RUNNER" ]]; then
