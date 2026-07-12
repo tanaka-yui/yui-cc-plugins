@@ -72,7 +72,7 @@ log() {
   echo "[$1] $2" >&2
 }
 
-# シェル起動検知と config 学習（split mode のみで使用）
+# シェル起動検知と config 学習（split / standby mode で使用）
 # shellcheck source=./terminal-wait.sh
 source "$SCRIPT_DIR/terminal-wait.sh"
 

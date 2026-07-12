@@ -456,8 +456,6 @@ If none are relevant, proceed without an agent.
 You will operate in two phases. This sequence is REQUIRED even in auto mode.
 
 LAYOUT: {{LAYOUT}}                 # workspace or split — used by Phase B spawn
-MESSAGE_TYPE: {{MESSAGE_TYPE}}     # send-message or agmsg — used by Phase B request sending
-AGMSG_TEAM: {{AGMSG_TEAM}}         # agmsg team name (empty when MESSAGE_TYPE=send-message)
 
 PHASE A — Planning / Brainstorming (always opus):
   Use opus for plan / brainstorming. Do NOT switch models in this phase.
@@ -492,23 +490,24 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         SONNET_SURFACE=$(jq -r '.sonnet.surface_id // empty' "$PREWARM_FILE" 2>/dev/null)
 
       IF SONNET_SURFACE is non-empty (pre-warm path):
-        1. touch "<EXISTING_STATUS_DIR>/.assigned"
-           # standby wrapper に完了処理 (status.json done/error 遷移 + <slug>-sonnet-done
-           # signal + 親通知) の所有権を渡す
-        2. Send the execution request (REQUEST_TEXT):
-             Read and execute the plan at <PLAN_FILE_PATH>. After all work is
-             committed/pushed and the PR is created (or all changes are merged per
-             the plan), run /exit to close this session. Do not leave it idle.
-           - MESSAGE_TYPE=send-message:
-               cmux send --surface "$SONNET_SURFACE" "$REQUEST_TEXT"
-               cmux send-key --surface "$SONNET_SURFACE" return
-           - MESSAGE_TYPE=agmsg:
-               ~/.agents/skills/agmsg/scripts/send.sh {{AGMSG_TEAM}} <task-slug> \
-                 <task-slug>-sonnet "EXECUTE: $REQUEST_TEXT"
-        3. Close the unused codex standby tab if present:
+        1. Close the unused codex standby tab if present (BEFORE touching .assigned —
+           sonnet/codex wrappers share the same .assigned file, so closing first avoids
+           a race where the unused wrapper sees .assigned and errors out):
              CODEX_SURFACE=$(jq -r '.codex.surface_id // empty' "$PREWARM_FILE" 2>/dev/null)
              [[ -n "$CODEX_SURFACE" ]] && cmux close-surface --surface "$CODEX_SURFACE"
            # .assigned の無い standby は閉じても status.json を汚さない
+        2. touch "<EXISTING_STATUS_DIR>/.assigned"
+           # standby wrapper に完了処理 (status.json done/error 遷移 + <slug>-sonnet-done
+           # signal + 親通知) の所有権を渡す
+        3. Send the execution request via cmux send, REGARDLESS of MESSAGE_TYPE (the
+           standby session's worktree has no agmsg delivery wiring, so the execution
+           request always goes through cmux send; agmsg is used only for the wrapper's
+           own completion notification back to the parent):
+             REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is
+             committed/pushed and the PR is created (or all changes are merged per
+             the plan), run /exit to close this session. Do not leave it idle."
+             cmux send --surface "$SONNET_SURFACE" "$REQUEST_TEXT"
+             cmux send-key --surface "$SONNET_SURFACE" return
         4. touch "<EXISTING_STATUS_DIR>/.deferred" then exit THIS session.
 
       IF prewarm.json is absent (split layout / prewarm off), fall back to spawn:
@@ -565,14 +564,17 @@ model selection question is a critical error.
           [DIFFERENT MODEL] "codex" → FIRST check for a pre-warmed standby tab:
               CODEX_SURFACE=$(jq -r '.codex.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
             IF CODEX_SURFACE is non-empty:
-              1. touch "<EXISTING_STATUS_DIR>/.assigned"
-              2. Send the execution request via cmux send REGARDLESS of MESSAGE_TYPE
-                 (an idle codex session cannot receive agmsg pushes):
-                   cmux send --surface "$CODEX_SURFACE" "$REQUEST_TEXT"
-                   cmux send-key --surface "$CODEX_SURFACE" return
-              3. Close the unused sonnet standby tab:
+              1. Close the unused sonnet standby tab (BEFORE touching .assigned — see the
+                 sonnet branch above for why the ordering matters):
                    SONNET_SURFACE=$(jq -r '.sonnet.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
                    [[ -n "$SONNET_SURFACE" ]] && cmux close-surface --surface "$SONNET_SURFACE"
+              2. touch "<EXISTING_STATUS_DIR>/.assigned"
+              3. Send the execution request via cmux send, REGARDLESS of MESSAGE_TYPE
+                 (the standby session's worktree has no agmsg delivery wiring, so the
+                 execution request always goes through cmux send; agmsg is used only
+                 for the wrapper's own completion notification back to the parent):
+                   cmux send --surface "$CODEX_SURFACE" "$REQUEST_TEXT"
+                   cmux send-key --surface "$CODEX_SURFACE" return
               4. touch "<EXISTING_STATUS_DIR>/.deferred" then exit THIS session.
 
             IF prewarm.json is absent, fall back to the existing spawn flow (従来どおり):
@@ -602,9 +604,6 @@ model selection question is a critical error.
   - **codex runner absent** (`CODEX_CMD` empty):
     - `{{CODEX_OPTION_LINE}}` → empty string (so the option list shows only `1.` and `2.`)
     - `{{CODEX_BEHAVIOR_BLOCK}}` → empty string
-
-- `{{MESSAGE_TYPE}}` → Step 1g で解決した message_type (`send-message` / `agmsg`)
-- `{{AGMSG_TEAM}}` → agmsg モード時は `dispatch-<repo-name>`、send-message モード時は空文字
 
 4. **The task description** itself
 
@@ -720,10 +719,21 @@ Read `prewarm` from config (same precedence as `message_type`; default `true`):
 PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
 [[ -z "$PREWARM" ]] && PREWARM=$(jq -r '.prewarm // "true"' \
   ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
+[[ -z "$PREWARM" ]] && PREWARM=true
 ```
 
 When layout is `workspace` AND `PREWARM` is `true`, after each task's
 `launch-workspace.sh` returns (parse `workspace_id` from its output JSON):
+
+Standby sessions (sonnet and codex alike) run in a worktree with no agmsg
+delivery wiring — agmsg push delivery is configured per project path via a
+SessionStart hook, not per worktree — so Phase B's execution request to a
+standby tab is always injected via `cmux send`, regardless of `message_type`
+(see Phase B below). Both standby tabs therefore launch idle, with no initial
+prompt. `--message-type agmsg` is still passed to the launch below (and the
+standby agent still pre-joins the team) because agmsg is used for the
+wrapper's own completion notification back to the parent, not for delivering
+the execution request.
 
 1. **sonnet standby** (always):
 
@@ -738,21 +748,12 @@ When layout is `workspace` AND `PREWARM` is `true`, after each task's
      --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
      --parent-notify-surface "$CMUX_SURFACE_ID" \
      [--message-type agmsg --agmsg-team "$TEAM" --agmsg-from <task-slug>-sonnet] \
-     <task-slug>-sonnet \
-     [AGMSG_STANDBY_PROMPT])
+     <task-slug>-sonnet)
    ```
 
-   `AGMSG_STANDBY_PROMPT` is passed ONLY when `message_type` is `agmsg`
-   (send-message mode launches an idle TUI with no prompt). Before launching,
-   pre-join the standby agent: `join.sh "$TEAM" <task-slug>-sonnet claude-code "<worktree>"`.
-   The prompt text:
-
-   ```
-   /agmsg actas <task-slug>-sonnet
-   You are a standby implementation session. Wait for an agmsg message starting
-   with "EXECUTE:". When it arrives, follow its instructions (execute the plan),
-   then run /exit. Do not do anything else until that message arrives.
-   ```
+   Before launching (agmsg mode only), pre-join the standby agent so its
+   wrapper's completion notification can reach the team:
+   `join.sh "$TEAM" <task-slug>-sonnet claude-code "<worktree>"`.
 
 2. **codex standby** (only when `runners.json` has an `engine: "codex"` runner):
 
@@ -768,9 +769,6 @@ When layout is `workspace` AND `PREWARM` is `true`, after each task's
      [--message-type agmsg --agmsg-team "$TEAM" --agmsg-from <task-slug>-codex] \
      <task-slug>-codex)
    ```
-
-   No prompt in either mode: an idle codex session cannot receive agmsg pushes
-   (no Monitor), so the execution request is always injected via `cmux send`.
 
 3. **Write `.dispatch/<task-slug>/prewarm.json`** from the output JSONs:
 
@@ -1463,4 +1461,4 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Same-model vs different-model in Phase B**: Phase A is always opus, so "opus 1m" counts as the same model and stays in the current session via `/model claude-opus-4-7[1m]`. Any other choice (sonnet / codex) is treated as a different model: when a pre-warmed standby tab exists (prewarm.json), the Child hands off by sending the execution request to that tab; otherwise it triggers a spawn via `launch-workspace.sh --mode execute`: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends an `/exit` instruction so the grandchild Claude/Codex session closes its TUI after the PR is created — without this the runner wrapper never reaches `write_status "done"` and status.json gets stuck on `executing`.
 - **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. When a child is launched with `engine: codex`, Phase B's "codex" option is redundant and should be skipped (the child already runs in codex). The runners.json registry lives at `~/.claude/cmux-team-dispatch-task/runners.json` and is bootstrapped on first run via AskUserQuestion.
 - **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。
-- **Pre-warm standby tabs**: workspace レイアウト + config `prewarm: true` (default) のとき、各タスク workspace 内に `<slug>-sonnet` (+ codex runner があれば `<slug>-codex`) の standby tab を事前起動する。standby wrapper は `<STATUS_DIR>/.assigned` が存在するときだけ exit 時に status.json を遷移させる。signal 名は `<slug>-sonnet-done` / `<slug>-codex-done`。idle codex は agmsg push を受信できないため、codex への実行指示は常に `cmux send` で注入する。
+- **Pre-warm standby tabs**: workspace レイアウト + config `prewarm: true` (default) のとき、各タスク workspace 内に `<slug>-sonnet` (+ codex runner があれば `<slug>-codex`) の standby tab を事前起動する。standby wrapper は `<STATUS_DIR>/.assigned` が存在するときだけ exit 時に status.json を遷移させる。signal 名は `<slug>-sonnet-done` / `<slug>-codex-done`。standby セッション（sonnet / codex）への実行指示は message_type に関わらず常に `cmux send` で注入する（standby の worktree には agmsg delivery 配線が無いため）。agmsg は完了通知にのみ使用する。

@@ -195,8 +195,8 @@ codex オプションを使う場合は事前に `cmux codex install-hooks` の�
 config `prewarm: true`（default）のとき、各タスクの workspace 内に sonnet
 （+ `runners.json` に codex runner があれば codex）の待機セッションを tab として事前起動する。
 Phase B で sonnet / codex を選ぶと、別 workspace を spawn する代わりに待機 tab へ
-実行指示を 1 メッセージ送るだけで実装が始まる（sonnet への送信は message_type 準拠、
-codex は idle 時に agmsg push を受信できないため常に `cmux send`）。
+実行指示を 1 メッセージ送るだけで実装が始まる（実行指示は sonnet / codex とも常に `cmux send`
+— standby の worktree には agmsg 配信の配線が無いため。agmsg は完了通知に使用する）。
 未使用の待機 tab は閉じても status.json を汚さない（`.assigned` sentinel 方式）。
 split / claude-teams レイアウトや `prewarm: false` では従来の on-demand spawn。
 

@@ -190,10 +190,18 @@ config から `prewarm` を読む（`message_type` と同じ優先順位。デ�
 PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
 [[ -z "$PREWARM" ]] && PREWARM=$(jq -r '.prewarm // "true"' \
   ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
+[[ -z "$PREWARM" ]] && PREWARM=true
 ```
 
 レイアウトが `workspace` かつ `PREWARM` が `true` のとき、各タスクの `launch-workspace.sh`
 が返った後（出力 JSON から `workspace_id` を取得）:
+
+standby セッション（sonnet / codex とも）は worktree 単位に agmsg delivery 配線を持たない
+（agmsg push の配信はプロジェクトパス単位の SessionStart hook で設定されるため、worktree
+単位ではない）。そのため Phase B の実行指示送信は message_type に関わらず常に `cmux send`
+で行う（後述 Phase B 参照）。両 standby tab とも初期プロンプト無しのアイドル状態で起動する。
+`--message-type agmsg` はここでも付与し standby agent を pre-join するが、これは agmsg が
+wrapper 自身の完了通知（親への報告）にのみ使われるためで、実行指示の配信には使わない。
 
 1. **sonnet standby**（常に起動）:
 
@@ -208,20 +216,11 @@ PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
      --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
      --parent-notify-surface "$CMUX_SURFACE_ID" \
      [--message-type agmsg --agmsg-team "$TEAM" --agmsg-from <task-slug>-sonnet] \
-     <task-slug>-sonnet \
-     [AGMSG_STANDBY_PROMPT])
+     <task-slug>-sonnet)
    ```
 
-   `AGMSG_STANDBY_PROMPT` は `message_type` が `agmsg` のときのみ渡す（send-message モードでは
-   プロンプト無しのアイドル TUI を起動）。起動前に standby agent を pre-join する:
-   `join.sh "$TEAM" <task-slug>-sonnet claude-code "<worktree>"`。プロンプト本文:
-
-   ```
-   /agmsg actas <task-slug>-sonnet
-   You are a standby implementation session. Wait for an agmsg message starting
-   with "EXECUTE:". When it arrives, follow its instructions (execute the plan),
-   then run /exit. Do not do anything else until that message arrives.
-   ```
+   起動前（agmsg モードのみ）に standby agent を pre-join し、wrapper の完了通知が team に
+   届くようにする: `join.sh "$TEAM" <task-slug>-sonnet claude-code "<worktree>"`。
 
 2. **codex standby**（`runners.json` に `engine: "codex"` runner があるときのみ）:
 
@@ -237,9 +236,6 @@ PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
      [--message-type agmsg --agmsg-team "$TEAM" --agmsg-from <task-slug>-codex] \
      <task-slug>-codex)
    ```
-
-   どちらのモードでもプロンプトは渡さない — アイドル状態の codex セッションは agmsg push を
-   受信できない（Monitor がない）ため、実行指示は常に `cmux send` で注入する。
 
 3. **`.dispatch/<task-slug>/prewarm.json` を出力 JSON から生成**:
 
@@ -1000,8 +996,6 @@ done
 ## 子セッションのモデル選択フロー（必須）
 
 子セッションのプロンプトには `MANDATORY MODEL SELECTION SEQUENCE` が必ず含まれており、以下の二段階で動作する。
-プレースホルダー `{{MESSAGE_TYPE}}`（`send-message` / `agmsg`）と `{{AGMSG_TEAM}}`（agmsg モード時は
-`dispatch-<repo-name>`、send-message モード時は空文字）は親がプロンプト構築時に埋め込む。
 
 ### Phase A: Plan / Brainstorming（常に opus）
 
@@ -1023,16 +1017,16 @@ Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` �
 
 `<EXISTING_STATUS_DIR>/prewarm.json` の `.sonnet.surface_id` / `.codex.surface_id` が非空なら:
 
-1. `touch "<EXISTING_STATUS_DIR>/.assigned"` — 完了処理（status.json done/error 遷移 + `<slug>-sonnet-done` /
+1. 使わなかった方の standby tab（codex 選択時は sonnet standby、sonnet 選択時は codex standby）を
+   `cmux close-surface` で閉じる（`.assigned` を touch する **前** に行う — sonnet/codex の wrapper は
+   同じ `.assigned` を共有するため、touch 後に閉じると未使用側 wrapper が誤って status.json に
+   error を書くレースが発生する）。`.assigned` の無い standby は閉じても status.json を汚さない
+2. `touch "<EXISTING_STATUS_DIR>/.assigned"` — 完了処理（status.json done/error 遷移 + `<slug>-sonnet-done` /
    `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
-2. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ... 完了後は /exit`）を送信:
-   - **sonnet** は `{{MESSAGE_TYPE}}` に従う:
-     - `send-message`: `cmux send --surface "$SONNET_SURFACE" "$REQUEST_TEXT"` → `cmux send-key --surface "$SONNET_SURFACE" return`
-     - `agmsg`: `~/.agents/skills/agmsg/scripts/send.sh {{AGMSG_TEAM}} <task-slug> <task-slug>-sonnet "EXECUTE: $REQUEST_TEXT"`
-   - **codex** は `{{MESSAGE_TYPE}}` に関わらず常に `cmux send` + `cmux send-key return`（アイドル codex は
-     agmsg push を受信できないため）
-3. 使わなかった方の standby tab（codex 選択時は sonnet standby、sonnet 選択時は codex standby）を
-   `cmux close-surface` で閉じる。`.assigned` の無い standby は閉じても status.json を汚さない
+3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ... 完了後は /exit`）を送信:
+   sonnet / codex とも message_type に関わらず常に `cmux send --surface "$SURFACE" "$REQUEST_TEXT"` →
+   `cmux send-key --surface "$SURFACE" return`（standby の worktree には agmsg delivery 配線が
+   無いため。agmsg は wrapper の完了通知にのみ使用する）
 4. `touch "<EXISTING_STATUS_DIR>/.deferred"` してこのセッションを exit
 
 #### prewarm.json が無い場合（従来の spawn フォールバック、split レイアウト / prewarm off）
@@ -1080,4 +1074,4 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。`cmux send` の後は必ず `cmux send-key return` を発行し、親 claude TUI の input box に滞留しないようにしている
 - **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
 - **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。
-- **Pre-warm standby tabs**: workspace レイアウト + config `prewarm: true` (default) のとき、各タスク workspace 内に `<slug>-sonnet` (+ codex runner があれば `<slug>-codex`) の standby tab を事前起動する。standby wrapper は `<STATUS_DIR>/.assigned` が存在するときだけ exit 時に status.json を遷移させる。signal 名は `<slug>-sonnet-done` / `<slug>-codex-done`。idle codex は agmsg push を受信できないため、codex への実行指示は常に `cmux send` で注入する。
+- **Pre-warm standby tabs**: workspace レイアウト + config `prewarm: true` (default) のとき、各タスク workspace 内に `<slug>-sonnet` (+ codex runner があれば `<slug>-codex`) の standby tab を事前起動する。standby wrapper は `<STATUS_DIR>/.assigned` が存在するときだけ exit 時に status.json を遷移させる。signal 名は `<slug>-sonnet-done` / `<slug>-codex-done`。standby セッション（sonnet / codex）への実行指示は message_type に関わらず常に `cmux send` で注入する（standby の worktree には agmsg delivery 配線が無いため）。agmsg は完了通知にのみ使用する。

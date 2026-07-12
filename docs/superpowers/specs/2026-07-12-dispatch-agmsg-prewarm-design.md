@@ -29,6 +29,13 @@
 | アーキテクチャ | **トランスポート抽象化 + runner wrapper 維持**。exit ベースの確実な完了検知を pre-warm でも維持 |
 | agmsg spawn.sh の利用 | しない（tmux / OS terminal 前提で cmux workspace/tab 統合が失われるため） |
 
+> **方針変更（最終レビュー反映）**: agmsg の push 配信はプロジェクトパス単位の SessionStart hook
+> を前提とするため、worktree で起動する standby セッション（sonnet / codex とも）は agmsg push を
+> 受信できない。よって Phase B から standby tab への実行指示注入は message_type に関わらず
+> **常に `cmux send` + `cmux send-key return`** に統一する。agmsg は「wrapper の完了通知」と
+> 「子セッションからの進捗・質問送信」専用とし、実行指示の配信には使わない（当初案の
+> sonnet=message_type 準拠 / codex=常に cmux send という非対称な扱いを廃止）。
+
 ## 機能 1: message_type config とトランスポート抽象化
 
 ### Config スキーマ
@@ -86,16 +93,16 @@
 2. **standby wrapper**（既存 wrapper の変種）:
    - 起動コマンド: sonnet → `claude --model claude-sonnet-4-6 --dangerously-skip-permissions`、
      codex → `codex --dangerously-bypass-approvals-and-sandbox`
-   - `send-message` モード: prompt なしで起動し idle TUI で待機。実行指示は後から `cmux send` で注入
-   - `agmsg` モード: 初期 prompt に「team `dispatch-<repo>` に `<slug>-sonnet` として join し、
-     monitor mode で実装依頼メッセージを待て」を渡して起動
+   - **モード（send-message / agmsg）に関わらず prompt なしで起動し idle TUI で待機**。実行指示は
+     常に後から `cmux send` で注入する（standby の制約、下記参照）
    - **exit 時**: `<STATUS_DIR>/.assigned` sentinel が**存在するときだけ** status.json を done/error に遷移させ、
      signal を発火し親に通知。存在しなければ何も書かずに終了
      （未使用 tab を閉じても status を汚さない — 現行 `.deferred` の逆向きの仕組み）
    - signal 名は既存の `<workspace-name>-done` 規則に従い `<slug>-sonnet-done` / `<slug>-codex-done`
-   - **codex standby の制約**: agmsg では idle 状態の codex セッションは Monitor による push 受信ができない
-     （agmsg README の codex caveat）。そのため codex standby への実装依頼の注入は
-     **agmsg モードでも `cmux send` + `send-key return` で行う**。agmsg は codex → 親の完了通知
+   - **standby の制約（sonnet / codex 共通）**: agmsg の push 配信はプロジェクトパス単位の
+     SessionStart hook を前提とするため、worktree で起動する standby セッションは agmsg push を
+     受信できない。そのため standby への実装依頼の注入は **message_type に関わらず常に
+     `cmux send` + `send-key return` で行う**。agmsg は standby → 親の完了通知
      （wrapper の send.sh 呼び出し）にのみ使用する
 3. 親は起動結果を `.dispatch/<slug>/prewarm.json` に書く:
 
@@ -115,12 +122,14 @@ AskUserQuestion（opus 1m / sonnet / codex）は現行のまま維持。選択�
 - **opus 1m** → 現行どおり `/model` で現セッション継続。`prewarm.json` があれば
   不要になった standby tab を `cmux close-surface` で閉じる（`.assigned` なしで exit → status 無汚染）
 - **sonnet / codex** → `prewarm.json` を読み、該当 tab があれば:
-  1. `touch <STATUS_DIR>/.assigned`（standby wrapper に完了処理の所有権を渡す）
-  2. 実行指示を送信:
-     - `send-message`: `cmux send --surface <sf> 'Read and execute the plan at <path>. …（/exit 指示を含む）'` + `send-key return`
-     - `agmsg`（sonnet のみ）: `send.sh <team> <slug> <slug>-sonnet "EXECUTE: Read and execute the plan at <path> …（/exit 指示を含む）"`
-     - `agmsg` + codex: 上記 codex caveat のため実行指示は `cmux send` で注入（完了通知のみ agmsg）
-  3. 使わない側の standby tab（例: sonnet 選択時の codex tab）を `cmux close-surface`
+  1. 使わない側の standby tab（例: sonnet 選択時の codex tab）を `cmux close-surface`
+     （`.assigned` を touch する **前** に行う — sonnet/codex wrapper は同じ `.assigned` を
+     共有するため、touch 後に閉じると未使用側 wrapper が誤って status.json に error を書く
+     レースが起きる）
+  2. `touch <STATUS_DIR>/.assigned`（standby wrapper に完了処理の所有権を渡す）
+  3. 実行指示を送信: sonnet / codex とも message_type に関わらず常に
+     `cmux send --surface <sf> 'Read and execute the plan at <path>. …（/exit 指示を含む）'` + `send-key return`
+     （standby の worktree には agmsg delivery 配線が無いため。agmsg は完了通知にのみ使用）
   4. 従来どおり `.deferred` を touch して child は exit
 - `prewarm.json` がない場合（split / prewarm off）→ 従来の `launch-workspace.sh --mode execute` spawn にフォールバック
 
@@ -146,7 +155,7 @@ AskUserQuestion（opus 1m / sonnet / codex）は現行のまま維持。選択�
   - message_type 指定済み → 質問が出ないこと
   - agmsg モードで monitor-dispatch.sh が起動しないこと・完了通知が agmsg push で届くこと
   - workspace レイアウトで sonnet（+ codex）tab が事前起動されること
-  - Phase B sonnet 選択 → `.assigned` → 実行指示送信 → standby exit 時に status.json が done になること
+  - Phase B sonnet 選択 → 未使用側 tab close → `.assigned` → 実行指示送信（常に `cmux send`）→ standby exit 時に status.json が done になること
   - opus 1m 選択 / 非選択側 tab が close-surface され status.json が汚れないこと
   - split レイアウト / prewarm off で従来の on-demand spawn にフォールバックすること
 
