@@ -36,6 +36,12 @@
 #                                      The composed command is always wrapped in `zsh -ic "..."`
 #                                      so functions and env vars from ~/.zshrc are loaded.
 #                                      Default: hardcoded {claude, engine=claude}.
+#   --message-type <send-message|agmsg>  Parent notification transport (default: send-message).
+#                                      send-message = cmux send + send-key return (現行動作)
+#                                      agmsg = ~/.agents/skills/agmsg/scripts/send.sh で親 (agent 名
+#                                      "parent") にメッセージ送信。--agmsg-team / --agmsg-from が必須
+#   --agmsg-team <team>                agmsg の team 名 (message-type=agmsg 時必須)
+#   --agmsg-from <agent>               agmsg の送信元 agent 名 (message-type=agmsg 時必須)
 #
 # Output: JSON to stdout with workspace/pane details
 # Debug:  Logs to stderr
@@ -83,6 +89,10 @@ PLAN_FILE=""
 MODEL=""
 SKIP_PERMISSIONS=0
 DEFER_STATUS=0
+MESSAGE_TYPE="send-message"
+AGMSG_TEAM=""
+AGMSG_FROM=""
+AGMSG_SEND="$HOME/.agents/skills/agmsg/scripts/send.sh"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -158,6 +168,23 @@ while [[ $# -gt 0 ]]; do
       RUNNER_NAME="$2"
       shift 2
       ;;
+    --message-type)
+      [[ $# -lt 2 ]] && die "--message-type requires send-message or agmsg"
+      MESSAGE_TYPE="$2"
+      [[ "$MESSAGE_TYPE" == "send-message" || "$MESSAGE_TYPE" == "agmsg" ]] \
+        || die "--message-type must be 'send-message' or 'agmsg'"
+      shift 2
+      ;;
+    --agmsg-team)
+      [[ $# -lt 2 ]] && die "--agmsg-team requires a team name"
+      AGMSG_TEAM="$2"
+      shift 2
+      ;;
+    --agmsg-from)
+      [[ $# -lt 2 ]] && die "--agmsg-from requires an agent name"
+      AGMSG_FROM="$2"
+      shift 2
+      ;;
     *)
       if [[ -z "$WORKSPACE_NAME" ]]; then
         WORKSPACE_NAME="$1"
@@ -187,6 +214,13 @@ fi
 
 # Validate workspace name: only allow safe characters for path/branch usage
 [[ "$WORKSPACE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid workspace name '$WORKSPACE_NAME': use only [A-Za-z0-9._-]"
+
+# agmsg モードは team / from が必須。send.sh が無ければインストールされていない
+if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
+  [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --message-type is agmsg"
+  [[ -n "$AGMSG_FROM" ]] || die "--agmsg-from is required when --message-type is agmsg"
+  [[ -f "$AGMSG_SEND" ]] || die "agmsg is not installed (expected $AGMSG_SEND)"
+fi
 
 # WORKSPACE_NAME 別に runner script ファイル名を unique 化する。
 # Phase B grandchild (--mode execute) と Child が同じ worktree を共有する状況で、
@@ -385,6 +419,10 @@ CMUX="${CMUX}"
 STATUS_DIR="${STATUS_DIR}"
 SLUG="${WORKSPACE_NAME}"
 DEFER_STATUS="${DEFER_STATUS}"
+MESSAGE_TYPE="${MESSAGE_TYPE}"
+AGMSG_SEND="${AGMSG_SEND}"
+AGMSG_TEAM="${AGMSG_TEAM}"
+AGMSG_FROM="${AGMSG_FROM}"
 
 # Resolve the workspace / surface IDs we are running inside.
 # cmux normally exports CMUX_WORKSPACE_ID and CMUX_SURFACE_ID into spawned shells;
@@ -449,8 +487,11 @@ fi
 
 # cmux send だけでは親が claude TUI の場合 input box にテキストが残って Enter が
 # 押されないため、必ず send-key return を続けて発行する。
+# message-type=agmsg の場合は agmsg send.sh で親 (agent 名 "parent") に送る。
 NOTIFY_MSG="[dispatch] task \"${WORKSPACE_NAME}\" finished (status: \$STATUS_LABEL)"
-if [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
+if [[ "\$MESSAGE_TYPE" == "agmsg" ]]; then
+  bash "\$AGMSG_SEND" "\$AGMSG_TEAM" "\$AGMSG_FROM" parent "\$NOTIFY_MSG" 2>/dev/null || true
+elif [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
   "\$CMUX" send --surface "\$NOTIFY_SF" "\$NOTIFY_MSG" 2>/dev/null || true
   "\$CMUX" send-key --surface "\$NOTIFY_SF" return 2>/dev/null || true
 elif [[ -n "\$NOTIFY_WS" ]]; then
