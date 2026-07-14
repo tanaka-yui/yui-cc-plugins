@@ -10,11 +10,14 @@
 #                                      execute = Phase B 実行モード。計画ファイルを
 #                                      inner prompt として渡し、.cmux-team-dispatch-task-prompt.md
 #                                      を書き込まない。--plan-file が必須
-#                                      standby = pre-warm 待機モード。--standby-in の workspace 内に
-#                                      terminal tab を作成して待機セッションを起動する。
-#                                      --cwd 必須・prompt 省略可。wrapper は <STATUS_DIR>/.assigned が
-#                                      存在するときだけ exit 時に status.json を更新する
-#   --standby-in <workspace-id>        standby tab を作成する既存 workspace (--mode standby 時必須)
+#                                      standby = pre-warm 待機モード。--cwd 必須・prompt 省略可。
+#                                      配置は 2 方式: --standby-in + --standby-split-from 指定時は
+#                                      既存 workspace 内に縦分割ペイン (new-split down)、両方省略時は
+#                                      新規 workspace のメイン surface で待機セッションを起動する。
+#                                      wrapper は <STATUS_DIR>/.assigned が存在するときだけ
+#                                      exit 時に status.json を更新する
+#   --standby-in <workspace-id>        standby ペインを追加する既存 workspace (split 配置時必須)
+#   --standby-split-from <surface-id>  縦分割の分割元 surface (split 配置時必須)
 #   --plan-file <path>                 Plan file path (required when --mode execute).
 #                                      inner prompt が
 #                                      "Read and execute the plan at <path>" になる
@@ -81,6 +84,7 @@ source "$SCRIPT_DIR/terminal-wait.sh"
 CWD=""
 MODE="plan"
 STANDBY_IN=""
+STANDBY_SPLIT_FROM=""
 STATUS_DIR=""
 LAYOUT="workspace"
 SPLIT_FROM=""
@@ -117,6 +121,11 @@ while [[ $# -gt 0 ]]; do
     --standby-in)
       [[ $# -lt 2 ]] && die "--standby-in requires a workspace ID"
       STANDBY_IN="$2"
+      shift 2
+      ;;
+    --standby-split-from)
+      [[ $# -lt 2 ]] && die "--standby-split-from requires a surface ID"
+      STANDBY_SPLIT_FROM="$2"
       shift 2
       ;;
     --plan-file)
@@ -216,8 +225,13 @@ done
 if [[ "$MODE" == "execute" ]]; then
   [[ -n "$PLAN_FILE" ]] || die "--plan-file is required when --mode is execute"
 elif [[ "$MODE" == "standby" ]]; then
-  [[ -n "$STANDBY_IN" ]] || die "--standby-in is required when --mode is standby"
   [[ -n "$CWD" ]] || die "--cwd is required when --mode is standby (reuse the task worktree)"
+  # 配置は 2 方式: --standby-in + --standby-split-from = 既存 workspace 内に縦分割ペイン、
+  # 両方省略 = 新規 workspace のメイン surface で standby 起動 (agmsg モードの opus ペイン用)
+  if [[ -n "$STANDBY_IN" || -n "$STANDBY_SPLIT_FROM" ]]; then
+    [[ -n "$STANDBY_IN" ]] || die "--standby-in is required when --standby-split-from is given"
+    [[ -n "$STANDBY_SPLIT_FROM" ]] || die "--standby-split-from is required when --standby-in is given (split placement)"
+  fi
 else
   [[ -z "$PROMPT" ]] && die "prompt is required. Usage: $0 [options] <workspace-name> <prompt...>"
 fi
@@ -363,7 +377,8 @@ fi
 # 順序: <command> [--model X] [--dangerously-skip-permissions] '<inner prompt>'
 CLAUDE_EXTRA_FLAGS=""
 if [[ -n "$MODEL" ]]; then
-  CLAUDE_EXTRA_FLAGS="--model $MODEL"
+  # model 名に [1m] のような glob メタ文字が含まれても zsh -ic 内で展開されないよう quote する
+  CLAUDE_EXTRA_FLAGS="--model '$MODEL'"
 fi
 if [[ $SKIP_PERMISSIONS -eq 1 ]]; then
   if [[ -n "$CLAUDE_EXTRA_FLAGS" ]]; then
@@ -558,17 +573,18 @@ WORKSPACE_ID=""
 SURFACE_ID=""
 TITLE=""
 
-if [[ "$MODE" == "standby" ]]; then
-  # --- Standby Mode: 既存 workspace に terminal tab (surface) を追加 ---
+if [[ "$MODE" == "standby" && -n "$STANDBY_IN" ]]; then
+  # --- Standby Split Placement: 既存 workspace 内に縦分割ペインを追加 ---
   WORKSPACE_ID="$STANDBY_IN"
   TITLE="$WORKSPACE_NAME"
 
-  log "cmux" "creating standby tab in $STANDBY_IN"
-  SURFACE_OUTPUT=$("$CMUX" new-surface --type terminal --workspace "$STANDBY_IN" 2>/dev/null) \
-    || die "failed to create standby surface in $STANDBY_IN"
-  SURFACE_ID=$(echo "$SURFACE_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
-  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from output: $SURFACE_OUTPUT"
-  log "cmux" "standby surface: $SURFACE_ID"
+  log "cmux" "creating standby pane (split down from $STANDBY_SPLIT_FROM) in $STANDBY_IN"
+  SPLIT_OUTPUT=$("$CMUX" new-split down \
+    --workspace "$STANDBY_IN" \
+    --surface "$STANDBY_SPLIT_FROM" 2>/dev/null) || die "failed to create standby split pane"
+  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
+  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
+  log "cmux" "standby pane surface: $SURFACE_ID"
 
   "$CMUX" rename-tab --workspace "$STANDBY_IN" --surface "$SURFACE_ID" "$TITLE" 2>/dev/null || \
     log "cmux" "warning: failed to rename tab (non-fatal)"
