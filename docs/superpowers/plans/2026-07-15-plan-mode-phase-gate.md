@@ -142,18 +142,26 @@ if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
     log "warn" "failed to create $SETTINGS_DIR; skipping ExitPlanMode hook injection"
   else
     HOOK_ENTRY=$(jq -n --arg cmd "zsh $HOOK_SCRIPT" \
-      '{matcher: "ExitPlanMode", hooks: [{type: "command", command: $cmd}]}')
-    if [[ -f "$SETTINGS_FILE" ]]; then
+      '{matcher: "ExitPlanMode", hooks: [{type: "command", command: $cmd}]}' 2>/dev/null) || HOOK_ENTRY=""
+    if [[ -z "$HOOK_ENTRY" ]]; then
+      log "warn" "failed to compose ExitPlanMode hook entry; skipping injection"
+    elif [[ -f "$SETTINGS_FILE" ]]; then
       if MERGED=$(jq --argjson entry "$HOOK_ENTRY" \
         '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [$entry])' "$SETTINGS_FILE" 2>/dev/null); then
-        printf '%s\n' "$MERGED" > "$SETTINGS_FILE"
-        log "hook" "merged ExitPlanMode hook into $SETTINGS_FILE"
+        if printf '%s\n' "$MERGED" > "$SETTINGS_FILE" 2>/dev/null; then
+          log "hook" "merged ExitPlanMode hook into $SETTINGS_FILE"
+        else
+          log "warn" "failed to write merged $SETTINGS_FILE; skipping"
+        fi
       else
         log "warn" "failed to merge ExitPlanMode hook into $SETTINGS_FILE; skipping"
       fi
     else
-      jq -n --argjson entry "$HOOK_ENTRY" '{hooks: {PostToolUse: [$entry]}}' > "$SETTINGS_FILE"
-      log "hook" "wrote ExitPlanMode hook to $SETTINGS_FILE"
+      if jq -n --argjson entry "$HOOK_ENTRY" '{hooks: {PostToolUse: [$entry]}}' > "$SETTINGS_FILE" 2>/dev/null; then
+        log "hook" "wrote ExitPlanMode hook to $SETTINGS_FILE"
+      else
+        log "warn" "failed to write $SETTINGS_FILE; skipping"
+      fi
     fi
   fi
   # 誤コミット防止: settings.local.json を repo 共有の info/exclude に追記する。
@@ -162,7 +170,8 @@ if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
   if [[ -n "$EXCLUDE_FILE" ]]; then
     mkdir -p "$(dirname "$EXCLUDE_FILE")" 2>/dev/null || true
     grep -qxF '.claude/settings.local.json' "$EXCLUDE_FILE" 2>/dev/null \
-      || echo '.claude/settings.local.json' >> "$EXCLUDE_FILE"
+      || echo '.claude/settings.local.json' >> "$EXCLUDE_FILE" 2>/dev/null \
+      || log "warn" "failed to append to $EXCLUDE_FILE"
   else
     log "warn" "could not resolve info/exclude for $CWD; settings.local.json may appear in git status"
   fi
