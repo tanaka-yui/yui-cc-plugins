@@ -1,5 +1,7 @@
 import {
   checkSize,
+  collectGlobalOutput,
+  collectProjectOutputs,
   decideWrite,
   groupRulesByTarget,
   hasSentinel,
@@ -9,6 +11,9 @@ import {
 } from './generate.ts'
 
 import { expect, test } from 'bun:test'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 test('block 形式の codexTargets を配列で取り出す', () => {
   const input = [
@@ -88,4 +93,43 @@ test('checkSize は 32768 バイト超過で ok=false', () => {
   const big = checkSize('a'.repeat(40000))
   expect(big.ok).toBe(false)
   expect(big.bytes).toBe(40000)
+})
+
+async function makeTmp(): Promise<string> {
+  return await mkdtemp(join(tmpdir(), 'codex-bridge-'))
+}
+
+test('collectProjectOutputs は rules と root CLAUDE.md を出力に変換する', async () => {
+  const root = await makeTmp()
+  await mkdir(join(root, '.claude/rules'), { recursive: true })
+  await mkdir(join(root, 'go'), { recursive: true })
+  await writeFile(join(root, '.claude/rules/go-backend.md'), '---\ncodexTargets:\n  - go/\n---\n# Go\nbody')
+  await writeFile(join(root, '.claude/rules/orphan.md'), '# no front')
+  await writeFile(join(root, 'CLAUDE.md'), '# Project overview')
+
+  const { outputs, warnings } = await collectProjectOutputs(root)
+  const paths = outputs.map((o) => o.path)
+  expect(paths).toContain(join(root, 'go', 'AGENTS.md'))
+  expect(paths).toContain(join(root, 'AGENTS.md'))
+  const goOut = outputs.find((o) => o.path === join(root, 'go', 'AGENTS.md'))
+  expect(goOut?.content).toContain('# Go\nbody')
+  expect(warnings.some((w) => w.includes('orphan.md'))).toBe(true)
+})
+
+test('collectProjectOutputs は存在しない target を警告してスキップする', async () => {
+  const root = await makeTmp()
+  await mkdir(join(root, '.claude/rules'), { recursive: true })
+  await writeFile(join(root, '.claude/rules/x.md'), '---\ncodexTargets:\n  - missing/\n---\nX')
+  const { outputs, warnings } = await collectProjectOutputs(root)
+  expect(outputs.some((o) => o.path.includes('missing'))).toBe(false)
+  expect(warnings.some((w) => w.includes('missing/'))).toBe(true)
+})
+
+test('collectGlobalOutput は ~/.claude/CLAUDE.md を ~/.codex/AGENTS.md に変換する', async () => {
+  const home = await makeTmp()
+  await mkdir(join(home, '.claude'), { recursive: true })
+  await writeFile(join(home, '.claude/CLAUDE.md'), '必ず日本語で応答')
+  const { outputs } = await collectGlobalOutput(home)
+  expect(outputs[0]?.path).toBe(join(home, '.codex', 'AGENTS.md'))
+  expect(outputs[0]?.content).toContain('必ず日本語で応答')
 })
