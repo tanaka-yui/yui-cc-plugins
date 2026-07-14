@@ -225,6 +225,17 @@ agmsg モードでの指示配送（Phase A タスク / Phase B 実行指示 / P
 
 codex オプションを使う場合は事前に `cmux codex install-hooks` の実行が必要です。
 
+### plan モードの Phase A-R / B 遵守ゲート
+
+標準 plan モードでは ExitPlanMode 承認直後に子セッションがそのまま実装へ進み、Phase A-R /
+Phase B がスキップされることがあります。対策として `launch-workspace.sh` が plan モード +
+claude engine の worktree に `.claude/settings.local.json`（ExitPlanMode の PostToolUse
+hook、`scripts/plan-approved-hook.sh` を呼ぶ）を注入し、承認直後に「ファイル編集前に
+Phase A-R（有効時）→ Phase B を実行せよ」という指示を機械的に再注入します。あわせて子への
+プロンプトで、plan 冒頭に Phase A-R / B を必須ステップとして記載させます。hook はベスト
+エフォートで、書き込みに失敗しても dispatch は止まりません。`.claude/settings.local.json`
+は repo 共有の `info/exclude` に追記され、タスクブランチにコミットされません。
+
 ### Pre-warm standby panes(workspace レイアウト時)
 
 config `prewarm: true`(default)のとき、`prewarm-panes.sh` が各タスクの workspace 内に

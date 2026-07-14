@@ -1088,8 +1088,30 @@ done
 ### Phase A: Plan / Brainstorming（常に opus）
 
 - superpowers モード: `superpowers:brainstorming` → `superpowers:writing-plans`
-- plan モード: 組み込み `/plan`
+- plan モード: 組み込み `/plan`。提示する plan の冒頭に、実装ステップより前の必須ステップと
+  して「Step 0: Phase A-R codex レビュー（有効時）」「Step 1: Phase B 実行モデル選択
+  （AskUserQuestion）」を必ず記載する。承認された plan の実行は Phase A-R / Phase B から
+  始まり、コード変更からは始まらない
+- plan モードで plan が ExitPlanMode メッセージ内にしか存在しない場合、承認後の最初の作業
+  としてファイル（例: worktree 内 `.claude/plans/<task-slug>.md`）に保存する（Phase B の
+  `--plan-file` 受け渡しに必要）
 - このフェーズでは **モデル切り替えを禁止** する。常に opus を使う。
+
+#### plan モードの遵守ゲート（ExitPlanMode hook）
+
+標準 plan モードでは ExitPlanMode 承認直後に「プランを実行せよ」という強いシステム指示が
+入り、上記シーケンスがスキップされることがある。これを防ぐため、`launch-workspace.sh` は
+`--mode plan` かつ claude engine のときのみ、worktree の `.claude/settings.local.json` に
+PostToolUse hook（matcher: `ExitPlanMode`、command:
+`zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入する。hook は承認直後に「ファイル
+編集前に Phase A-R（有効時）→ Phase B を実行せよ」という additionalContext を機械的に
+再注入する。
+
+- ベストエフォート: settings 書き込み・マージ失敗は警告のみで dispatch を止めない
+  （プロンプト側の指示がフォールバック）。既存 settings.local.json は jq でマージし、
+  worktree 再利用時に重複注入しない
+- 誤コミット防止: `.claude/settings.local.json` は repo 共有の `info/exclude` に追記される
+- superpowers モード / codex engine / execute・standby・review モードでは注入されない
 
 ### Phase A-R — codex plan/spec レビュー（review_mode: on のときのみ）
 

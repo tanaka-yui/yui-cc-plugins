@@ -542,8 +542,17 @@ TEAM: {{TEAM}}                     # agmsg team name (empty when message_type is
 PHASE A — Planning / Brainstorming (always opus):
   Use opus for plan / brainstorming. Do NOT switch models in this phase.
   - superpowers mode: invoke "superpowers:brainstorming" then write a plan
-  - plan mode: use Claude's built-in /plan to produce a structured plan
+  - plan mode: use Claude's built-in /plan to produce a structured plan.
+    The plan you present for approval MUST list, BEFORE any implementation
+    step:
+      Step 0: Phase A-R codex review (only when the PHASE A-R block exists below)
+      Step 1: Phase B execution-model selection via AskUserQuestion
+    Executing the approved plan therefore STARTS with Phase A-R / Phase B,
+    never with a code change.
   Remember the path of the plan file you wrote — Phase B may hand it off.
+  plan mode: if the plan only exists in the ExitPlanMode message, save it to
+  a file (e.g. .claude/plans/<task-slug>.md in this worktree) as your FIRST
+  action after approval — Phase B hands the path off via --plan-file.
 
 {{REVIEW_BLOCK}}
 
@@ -630,6 +639,10 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 
 VIOLATION: Do NOT skip Phase B. Even in auto mode, ALWAYS ask. Skipping the
 model selection question is a critical error.
+PLAN-MODE TRAP: ExitPlanMode approval ("start implementing") does NOT
+override this sequence. After the plan is approved, BEFORE editing any file,
+return to this block and complete Phase A-R (if present) then Phase B. Save
+the plan to a file first if you have not already.
 === END MANDATORY MODEL SELECTION SEQUENCE ===
 ```
 
@@ -895,6 +908,22 @@ If you encounter a blocking error, run:
 
 Replace `<project-root>` with the actual project root path and `<task-slug>` with the task's slug,
 and `<team>` with the agmsg team name resolved in Step 1g (agmsg mode only).
+
+### Plan-mode Enforcement Hook (ExitPlanMode)
+
+標準 plan モードでは ExitPlanMode 承認直後に「プランを実行せよ」という強いシステム指示が
+入り、プロンプト焼き込みの MANDATORY MODEL SELECTION SEQUENCE (Phase A-R / Phase B) が
+スキップされることがある。これを防ぐため、`launch-workspace.sh` は **`--mode plan` かつ
+claude engine** のときのみ、worktree の `.claude/settings.local.json` に PostToolUse hook
+(matcher: `ExitPlanMode`, command: `zsh <this-skill-dir>/scripts/plan-approved-hook.sh`) を
+注入する。hook は承認直後に「ファイル編集前に Phase A-R (有効時) → Phase B を実行せよ」と
+いう additionalContext を機械的に再注入する。
+
+- hook はベストエフォート: settings 書き込み・マージ失敗は警告ログのみで dispatch を止めない
+  (プロンプト側の指示がフォールバック)。既存 settings.local.json は jq でマージし、
+  worktree 再利用時に重複注入しない
+- 誤コミット防止: `.claude/settings.local.json` は repo 共有の `info/exclude` に追記される
+- superpowers モード / codex engine / execute・standby・review モードでは注入されない
 
 ### Launch: Workspace Mode (default)
 

@@ -91,6 +91,11 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 15. agmsg 配送の watcher 生存チェックが SKILL.md / guide-ja.md で一致しているか確認:
     - agmsg で指示を送る 4 箇所すべて（Phase A opus タスク / Phase B sonnet / Phase B codex / Phase A-R review 依頼）で、送信直前に ready sentinel（`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）の存在を確認し、無ければ `cmux-send` に倒すこと
     - `prewarm-panes.sh` が配線失敗（`CLAUDE_DELIVERY=cmux-send`）時に opus / sonnet の初期プロンプトを `/agmsg actas` なしの「直接タイプされる」文面に出し分けること
+16. plan モードの遵守ゲート（ExitPlanMode hook）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
+    - `launch-workspace.sh` が `--mode plan` かつ claude engine のときのみ worktree の `.claude/settings.local.json` に PostToolUse hook（matcher: `ExitPlanMode`、command: `zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入すること（既存 settings は jq マージ、worktree 再利用時は重複注入なし、失敗は警告のみで dispatch 続行）
+    - `.claude/settings.local.json` が repo 共有の `info/exclude` に追記されること
+    - MANDATORY MODEL SELECTION SEQUENCE の Phase A（plan モード）に「plan 冒頭に Step 0: Phase A-R（有効時）/ Step 1: Phase B を必須ステップとして記載」「plan が ExitPlanMode メッセージ内にしか無い場合は承認後最初にファイル保存」の指示、VIOLATION 節に PLAN-MODE TRAP が含まれること
+    - `plan-approved-hook.sh` の出力が有効な JSON（`hookSpecificOutput.additionalContext`）であること
 
 ## テスト方法
 
@@ -141,3 +146,4 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 25. **status 非汚染**: レビューペインの存在・close が standby の `.assigned-*` / status.json に影響しないこと（レビューペイン spawn 直後に status.json が "launched" で上書きされないことを含む）。prewarm 無効時は最初のレビューポイントで `--mode review` のオンデマンド spawn が行われること
 26. **exec_model**: codex runner に `exec_model` 設定時、Phase B の codex 実行（`--mode execute` spawn / prewarm codex standby）が `--model <exec_model>` 付きで起動すること。レビューペインは `review_model` のまま変わらないこと。`--model` 明示時は明示値が優先されること。`exec_model` 未設定なら従来どおり codex 側デフォルトで起動すること
 27. **watcher 死亡時のフォールバック**: `delivery: "agmsg"` のタスクで宛先ペインの watcher を kill（ready sentinel が消える）した後に指示を送ると、agmsg push ではなく `cmux send` で配送されること。配線失敗（`delivery: "cmux-send"`）タスクの opus / sonnet 初期プロンプトに `/agmsg actas` が含まれず、「typed directly into this pane」の文面になること
+28. **plan モード遵守ゲート**: plan モード子セッションで ExitPlanMode 承認後、ファイル編集前に Phase A-R（有効時）→ Phase B の質問が出ること。worktree に `.claude/settings.local.json` が生成され `git status` に現れないこと。superpowers モードの worktree には hook が注入されないこと。既存の `.claude/settings.local.json` がある worktree では既存キーが保持されたままマージされること
