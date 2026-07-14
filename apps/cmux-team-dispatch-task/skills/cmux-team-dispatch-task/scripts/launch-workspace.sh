@@ -372,6 +372,48 @@ else
   log "prompt" "wrote prompt to $PROMPT_FILE"
 fi
 
+# --- Step 2b: plan モード遵守ゲート (ExitPlanMode hook 注入) ---
+# 標準 plan モードは ExitPlanMode 承認直後に「プランを実行せよ」という強い指示が入り、
+# プロンプト焼き込みの MANDATORY MODEL SELECTION SEQUENCE (Phase A-R / Phase B) が
+# スキップされることがある。承認直後に PostToolUse hook で指示を機械的に再注入する。
+# hook はベストエフォート: 失敗は警告のみで dispatch を止めない (プロンプト側指示がフォールバック)。
+if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
+  SETTINGS_DIR="$CWD/.claude"
+  SETTINGS_FILE="$SETTINGS_DIR/settings.local.json"
+  HOOK_SCRIPT="$SCRIPT_DIR/plan-approved-hook.sh"
+  if [[ -f "$SETTINGS_FILE" ]] && grep -q "plan-approved-hook.sh" "$SETTINGS_FILE" 2>/dev/null; then
+    # worktree 再利用時の重複注入を防ぐ
+    log "hook" "ExitPlanMode hook already present in $SETTINGS_FILE"
+  elif ! mkdir -p "$SETTINGS_DIR" 2>/dev/null; then
+    log "warn" "failed to create $SETTINGS_DIR; skipping ExitPlanMode hook injection"
+  else
+    HOOK_ENTRY=$(jq -n --arg cmd "zsh $HOOK_SCRIPT" \
+      '{matcher: "ExitPlanMode", hooks: [{type: "command", command: $cmd}]}')
+    if [[ -f "$SETTINGS_FILE" ]]; then
+      if MERGED=$(jq --argjson entry "$HOOK_ENTRY" \
+        '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [$entry])' "$SETTINGS_FILE" 2>/dev/null); then
+        printf '%s\n' "$MERGED" > "$SETTINGS_FILE"
+        log "hook" "merged ExitPlanMode hook into $SETTINGS_FILE"
+      else
+        log "warn" "failed to merge ExitPlanMode hook into $SETTINGS_FILE; skipping"
+      fi
+    else
+      jq -n --argjson entry "$HOOK_ENTRY" '{hooks: {PostToolUse: [$entry]}}' > "$SETTINGS_FILE"
+      log "hook" "wrote ExitPlanMode hook to $SETTINGS_FILE"
+    fi
+  fi
+  # 誤コミット防止: settings.local.json を repo 共有の info/exclude に追記する。
+  # info/exclude は worktree 間で共有されるが、このファイルは元々ローカル専用のため実害なし。
+  EXCLUDE_FILE=$(git -C "$CWD" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
+  if [[ -n "$EXCLUDE_FILE" ]]; then
+    mkdir -p "$(dirname "$EXCLUDE_FILE")" 2>/dev/null || true
+    grep -qxF '.claude/settings.local.json' "$EXCLUDE_FILE" 2>/dev/null \
+      || echo '.claude/settings.local.json' >> "$EXCLUDE_FILE"
+  else
+    log "warn" "could not resolve info/exclude for $CWD; settings.local.json may appear in git status"
+  fi
+fi
+
 # --- Step 3: Build runner command ---
 # Build the launch command per (engine × MODE) and wrap with `zsh -ic` so that
 # user-defined functions and env vars from ~/.zshrc (e.g. ccenec, ccgpt, proxy
