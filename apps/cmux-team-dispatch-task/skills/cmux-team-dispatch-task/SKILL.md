@@ -321,7 +321,15 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
 
 **Resolve review mode (`review_mode`)** — same precedence pattern as `message_type`:
 
-1. Read `review_mode` from `<project>/.dispatch/config.json`, falling back to
+1. ALWAYS resolve `REVIEW_MODEL` from runners.json first (it is needed by step 3's
+   `REVIEW_ENABLED` computation regardless of whether the question fires):
+
+   ```bash
+   REVIEW_MODEL=$(jq -r '[.runners[] | select(.engine == "codex" and .review_model != null)] | .[0].review_model // empty' \
+     ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
+   ```
+
+2. Read `review_mode` from `<project>/.dispatch/config.json`, falling back to
    `~/.claude/cmux-team-dispatch-task/config.json`:
 
    ```bash
@@ -332,13 +340,7 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
 
    If set (`"on"` / `"off"`), use it silently — do NOT ask.
 
-2. If unset, check whether a codex runner with `review_model` exists:
-
-   ```bash
-   REVIEW_MODEL=$(jq -r '[.runners[] | select(.engine == "codex" and .review_model != null)] | .[0].review_model // empty' \
-     ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
-   ```
-
+   If unset:
    - `REVIEW_MODEL` empty → treat as `off`. Do NOT write config (so the question
      fires once a review_model gets configured later).
    - `REVIEW_MODEL` non-empty → ask via AskUserQuestion:
