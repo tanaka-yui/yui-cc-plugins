@@ -88,6 +88,9 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - verdict はファイル受け渡し（`<STATUS_DIR>/review/<point>-round-<N>.md` 末尾の `VERDICT: approve|needs_work`）。依頼配送は prewarm.json の `review.delivery` で分岐（`agmsg` → send.sh + push 待ち / `cmux-send` → cmux send + 5 秒間隔・15 分タイムアウトのファイルポーリング）。タイムアウト時は同一ラウンド 1 回再依頼 → AskUserQuestion
     - prewarm 有効 + Phase A-R 有効時は 2×2 均等グリッド（左上 opus / 右上 review / 左下 sonnet / 右下 codex）、無効時は現行縦積み。review ペインは standby wrapper の status 所有権なし（`.assigned-<slug>-review` 非使用）、全レビューポイントで同一ペインを再利用し最終 approve 後に close。spawn 失敗時はレビューをスキップして Phase B へ
     - `launch-workspace.sh` の `--mode review` / `--standby-split-direction` / codex engine への `--model` 反映、`prewarm-panes.sh` の `--review-model`（`--codex-runner` 必須）と prewarm.json `review` キーが SKILL.md の使用例・スキーマと一致
+15. agmsg 配送の watcher 生存チェックが SKILL.md / guide-ja.md で一致しているか確認:
+    - agmsg で指示を送る 4 箇所すべて（Phase A opus タスク / Phase B sonnet / Phase B codex / Phase A-R review 依頼）で、送信直前に ready sentinel（`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）の存在を確認し、無ければ `cmux-send` に倒すこと
+    - `prewarm-panes.sh` が配線失敗（`CLAUDE_DELIVERY=cmux-send`）時に opus / sonnet の初期プロンプトを `/agmsg actas` なしの「直接タイプされる」文面に出し分けること
 
 ## テスト方法
 
@@ -137,3 +140,4 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 24. **review_mode 解決**: config 未設定（または `"ask"`）+ `review_model` 付き runner ありで、dispatch のたびにタスク起動前に 4 択質問（はい今回のみ / いいえ今回のみ / 常に有効 / 常に無効）が出ること。「今回のみ」では config に書き込まれず次回も質問が出ること。「常に〜」で `"on"` / `"off"` が永続化され以後質問が出ないこと。`.dispatch/config.json` の `review_mode` がグローバルより優先されること
 25. **status 非汚染**: レビューペインの存在・close が standby の `.assigned-*` / status.json に影響しないこと（レビューペイン spawn 直後に status.json が "launched" で上書きされないことを含む）。prewarm 無効時は最初のレビューポイントで `--mode review` のオンデマンド spawn が行われること
 26. **exec_model**: codex runner に `exec_model` 設定時、Phase B の codex 実行（`--mode execute` spawn / prewarm codex standby）が `--model <exec_model>` 付きで起動すること。レビューペインは `review_model` のまま変わらないこと。`--model` 明示時は明示値が優先されること。`exec_model` 未設定なら従来どおり codex 側デフォルトで起動すること
+27. **watcher 死亡時のフォールバック**: `delivery: "agmsg"` のタスクで宛先ペインの watcher を kill（ready sentinel が消える）した後に指示を送ると、agmsg push ではなく `cmux send` で配送されること。配線失敗（`delivery: "cmux-send"`）タスクの opus / sonnet 初期プロンプトに `/agmsg actas` が含まれず、「typed directly into this pane」の文面になること

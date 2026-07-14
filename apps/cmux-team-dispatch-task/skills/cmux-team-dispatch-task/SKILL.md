@@ -586,6 +586,11 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            # signal + 親通知) の所有権を渡す
         3. Send the execution request. Check `.sonnet.delivery` in prewarm.json:
              DELIVERY=$(jq -r '.sonnet.delivery // "cmux-send"' "$PREWARM_FILE")
+             # delivery=agmsg is only trustworthy while the standby's watcher is
+             # alive (ready sentinel present) — a push to a dead watcher sits
+             # unread in the inbox forever. Re-verify right before sending:
+             [[ "$DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>-sonnet" ]] \
+               && DELIVERY="cmux-send"
              REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is
              committed/pushed and the PR is created (or all changes are merged per
              the plan), run /exit to close this session. Do not leave it idle."
@@ -687,7 +692,12 @@ model selection question is a critical error.
             <EXISTING_STATUS_DIR>/review/<point>-round-<N>.md.
             The LAST line of that file MUST be exactly 'VERDICT: approve' or
             'VERDICT: needs_work'. approve = the document is ready to implement."
-      2. Send the request and wait, branching on REVIEW_DELIVERY:
+      2. Send the request and wait, branching on REVIEW_DELIVERY. Before branching,
+         re-verify agmsg liveness — "agmsg" is only trustworthy while the review
+         pane's watcher is alive (ready sentinel present); a push to a dead
+         watcher sits unread in the inbox forever:
+           [[ "$REVIEW_DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>-review" ]] \
+             && REVIEW_DELIVERY="cmux-send"
          IF "agmsg":
            Append to the request: "After writing the file, notify me:
              ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug>-review <task-slug> '[review] <point> round <N> done'"
@@ -756,6 +766,9 @@ model selection question is a critical error.
               2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-codex"
               3. Send the execution request. Check `.codex.delivery` in prewarm.json:
                    DELIVERY=$(jq -r '.codex.delivery // "cmux-send"' "<EXISTING_STATUS_DIR>/prewarm.json")
+                   # re-verify watcher liveness right before sending (see the sonnet branch)
+                   [[ "$DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>-codex" ]] \
+                     && DELIVERY="cmux-send"
                  IF DELIVERY == "agmsg":
                    ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-codex "$REQUEST_TEXT"
                    # $TEAM is the TEAM value given above — do NOT re-derive it in this session
@@ -976,14 +989,28 @@ Then dispatch the Phase A task to the opus pane:
    status.json transition from now on (it was launched with `--defer-status`,
    so a Phase B handoff can still suppress it via `.deferred`).
 3. Send the task. Check `.dispatch/<task-slug>/prewarm.json` for
-   `.opus.delivery`:
+   `.opus.delivery`. Even when it reads `"agmsg"`, verify the opus pane's watcher
+   is actually alive right before sending — a push to a dead watcher sits unread
+   in the inbox forever:
+
+   ```bash
+   OPUS_DELIVERY=$(jq -r '.opus.delivery // "cmux-send"' .dispatch/<task-slug>/prewarm.json)
+   [[ "$OPUS_DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>" ]] \
+     && OPUS_DELIVERY="cmux-send"
+   ```
+
    - `"agmsg"` →
      `~/.agents/skills/agmsg/scripts/send.sh "$TEAM" parent <task-slug> "Read and follow the task in .cmux-team-dispatch-task-prompt.md. Mode: <plan|superpowers> — for superpowers invoke the superpowers:brainstorming skill first; for plan produce a structured plan before implementing."`
      (slash commands cannot fire through agmsg push, so the mode is conveyed
      as message text, not as `/plan`.)
-   - `"cmux-send"` (wiring failed) →
+   - `"cmux-send"` (wiring failed, or watcher not ready) →
      `cmux send --surface <opus-surface> "<same text>"` followed by
      `cmux send-key --surface <opus-surface> return`.
+
+   The ready sentinel (`~/.agents/skills/agmsg/run/ready.<team>__<agent>`) is
+   created by agmsg's watch.sh while a live watcher is receiving for that role
+   and removed on exit — team/agent names here are `[A-Za-z0-9._-]` slugs, so
+   the path needs no encoding.
 
 prewarm.json schema (written by `prewarm-panes.sh`; `opus` only in agmsg mode,
 `codex` only when a codex runner exists, `review` only when `--review-model`

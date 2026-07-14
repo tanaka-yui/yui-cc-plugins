@@ -248,7 +248,10 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
 すべてのペイン（opus-1m を含む）がタスクメッセージなしのアイドル状態で起動し、Phase A の
 タスクは後から agmsg 経由で配送される。`prewarm-panes.sh` が worktree を作成し、agmsg delivery
 配線（join + `delivery.sh set`。いずれのペインが起動するより前に行う）を済ませてから opus-1m の
-standby workspace を起動し、その下に sonnet/codex を積む:
+standby workspace を起動し、その下に sonnet/codex を積む。配線に失敗したタスク
+（`delivery: "cmux-send"` フォールバック）では、opus / sonnet の初期プロンプトは
+`/agmsg actas` を含まない「指示はこのペインに直接タイプされる」という文面に切り替わる
+（不要な actas / watcher 起動と「agmsg で届く」という誤認を避けるため）:
 
 ```bash
 RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
@@ -279,14 +282,28 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
 2. `touch .dispatch/<task-slug>/.assigned-<task-slug>` — これ以降、opus standby wrapper が
    status.json 遷移の所有権を持つ（`--defer-status` 付きで起動しているため、Phase B への
    ハンドオフが必要な場合でも `.deferred` でこれを抑止できる）。
-3. タスクを送信する。`.dispatch/<task-slug>/prewarm.json` の `.opus.delivery` を確認:
+3. タスクを送信する。`.dispatch/<task-slug>/prewarm.json` の `.opus.delivery` を確認。
+   値が `"agmsg"` でも、送信直前に opus ペインの watcher が実際に生きているか
+   （ready sentinel の存在）を確認する — 死んだ watcher への push は inbox に滞留し
+   永久に読まれない:
+
+   ```bash
+   OPUS_DELIVERY=$(jq -r '.opus.delivery // "cmux-send"' .dispatch/<task-slug>/prewarm.json)
+   [[ "$OPUS_DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>" ]] \
+     && OPUS_DELIVERY="cmux-send"
+   ```
+
    - `"agmsg"` →
      `~/.agents/skills/agmsg/scripts/send.sh "$TEAM" parent <task-slug> "Read and follow the task in .cmux-team-dispatch-task-prompt.md. Mode: <plan|superpowers> — for superpowers invoke the superpowers:brainstorming skill first; for plan produce a structured plan before implementing."`
      （slash command は agmsg push 経由では発火できないため、モードは `/plan` のようなコマンド
      ではなくメッセージ本文として伝える。）
-   - `"cmux-send"`（配線失敗時） →
+   - `"cmux-send"`（配線失敗時、または watcher 不在時） →
      `cmux send --surface <opus-surface> "<同じテキスト>"` に続けて
      `cmux send-key --surface <opus-surface> return`。
+
+   ready sentinel（`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）は agmsg の watch.sh が
+   そのロールを受信中の間だけ作成するファイル。team / agent 名は `[A-Za-z0-9._-]` の slug
+   なのでパスのエンコードは不要。
 
 `prewarm-panes.sh` が書き出す prewarm.json のスキーマ（`opus` は agmsg モード時のみ、`codex` は
 codex runner が存在する場合のみ、`review` は `--review-model` が渡された場合のみ、`delivery` は
@@ -1086,7 +1103,8 @@ Phase A の成果物を専用ペインの codex（`review_model`）がレビュ�
   （反論は次ラウンドの依頼文に理由付きで返す）して再依頼
 - **依頼配送**: prewarm.json の `review.delivery` で分岐。`agmsg` → `send.sh` で送信しターンを
   終えて push 待ち / `cmux-send` → `cmux send` + verdict ファイルポーリング（5 秒間隔・15 分
-  タイムアウト）
+  タイムアウト）。`agmsg` でも各ラウンドの送信直前に ready sentinel
+  （`ready.${TEAM}__<slug>-review`）を確認し、無ければ `cmux-send` に倒す
 - **3 往復で approve が出ない** → 残指摘を要約して AskUserQuestion（このまま進む / さらに修正）
 - **タイムアウト・verdict 不正** → 同一ラウンドを 1 回だけ再依頼。それでも失敗なら
   AskUserQuestion（再依頼 / レビュー省略して Phase B へ）
@@ -1129,8 +1147,10 @@ done
    `.assigned-<task-slug>-codex`（codex 選択時） — 完了処理（status.json done/error 遷移 +
    `<slug>-sonnet-done` / `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
 3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ... 完了後は /exit`）を送信する。
-   `prewarm.json` の `.sonnet.delivery` / `.codex.delivery` を確認して分岐する:
-   - `"agmsg"`（`prewarm-panes.sh` が worktree に delivery 配線済み）→
+   `prewarm.json` の `.sonnet.delivery` / `.codex.delivery` を確認して分岐する。値が `"agmsg"`
+   でも送信直前に ready sentinel（`~/.agents/skills/agmsg/run/ready.${TEAM}__<agent>`）の存在を
+   確認し、無ければ `"cmux-send"` に倒す（死んだ watcher への push は滞留する）:
+   - `"agmsg"`（`prewarm-panes.sh` が worktree に delivery 配線済み + watcher 生存）→
      `~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-sonnet|-codex "$REQUEST_TEXT"`
      （`$TEAM` は親が Step 1g で解決した agmsg team 名をそのまま使う。子セッションは worktree
      内で動作するため、worktree の basename から team 名を再導出すると誤った値になる）
