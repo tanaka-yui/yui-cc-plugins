@@ -175,7 +175,23 @@ runner wrapper の exit 時 push(バックストップ)。idle のまま開い�
 また、ディスパッチを実行しているセッション自身は `delivery.sh set` が出力する
 `AGMSG-DIRECTIVE:` に従って watcher を起動する(SessionStart hook は次回セッションから有効)。
 
-## モデル選択フロー (Phase B)
+config にはもう一つ `review_mode` フィールドがある。Phase A-R（codex plan/spec レビュー、後述）の
+有効/無効を `"on"` / `"off"` で切り替える。未設定かつ `review_model` 付き codex runner が存在する
+場合のみ初回に質問され、回答は永続化される。プロジェクト側 `.dispatch/config.json` がグローバル
+config より優先される点は `message_type` と同じ。
+
+## モデル選択フロー (Phase A-R / Phase B)
+
+### Phase A-R — codex plan/spec レビュー（オプション）
+
+`runners.json` の codex runner に `review_model`（例: `gpt-5.6-sol`）を設定し、config の
+`review_mode` を `on` にすると、Phase A で opus が書いた plan/spec を codex が専用ペインで
+レビューする。approve が出るまで opus が修正 → 再レビューを繰り返す（各ポイント最大 3 往復。
+超過時はユーザーに「このまま進む / さらに修正」を確認）。
+
+- plan モード: plan 完成後に 1 回 / superpowers モード: spec と plan で計 2 回
+- 指摘と verdict は `.dispatch/<slug>/review/<point>-round-<N>.md`（末尾 `VERDICT:` 行）で受け渡し
+- 無効化はいつでも config の `review_mode: "off"` で可能（runners.json はそのまま残せる）
 
 各子セッションは Phase A (計画 / brainstorming) 完了後、**実装フェーズで使うモデル**を `AskUserQuestion` で必ず聞きます。Phase A は常に opus で動作するため、選んだ model が opus と同一かどうかで動作が分岐します。
 
@@ -199,9 +215,16 @@ codex オプションを使う場合は事前に `cmux codex install-hooks` の�
 ### Pre-warm standby panes(workspace レイアウト時)
 
 config `prewarm: true`(default)のとき、`prewarm-panes.sh` が各タスクの workspace 内に
-standby ペインを縦に積んで事前起動する(上: opus / 中: sonnet / 下: codex — codex は
-`runners.json` に codex runner があるときのみ)。Phase B で sonnet / codex が選ばれたら
-待機中のペインに実行指示を送るだけで済み、セッション起動を待たない。
+standby ペインを事前起動する。Phase B で sonnet / codex が選ばれたら待機中のペインに
+実行指示を送るだけで済み、セッション起動を待たない。
+
+standby ペインの配置は Phase A-R の有効/無効で分岐する:
+
+- **Phase A-R 無効**（現行どおり）: 縦積み — 上: opus / 中: sonnet / 下: codex（codex は
+  `engine: "codex"` runner 登録時のみ）
+- **Phase A-R 有効**: 2×2 均等グリッド — 左上: opus / 右上: codex レビューペイン（idle、
+  `--model <review_model>`）/ 左下: sonnet / 右下: codex。レビューペインは status.json の
+  所有権を持たず、`.assigned-<slug>-review` も使わない
 
 - send-message モード: opus は従来どおりタスクプロンプト付きで起動し、sonnet / codex のみ
   idle 起動。実行指示は `cmux send` で注入する。
