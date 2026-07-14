@@ -1101,7 +1101,7 @@ done
 
 標準 plan モードでは ExitPlanMode 承認直後に「プランを実行せよ」という強いシステム指示が
 入り、上記シーケンスがスキップされることがある。これを防ぐため、`launch-workspace.sh` は
-`--mode plan` かつ claude engine のときのみ、worktree の `.claude/settings.local.json` に
+`--mode plan` かつ claude engine、かつ非 claude-teams レイアウトのときのみ、worktree の `.claude/settings.local.json` に
 PostToolUse hook（matcher: `ExitPlanMode`、command:
 `zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入する。hook は承認直後に「ファイル
 編集前に Phase A-R（有効時）→ Phase B を実行せよ」という additionalContext を機械的に
@@ -1111,7 +1111,7 @@ PostToolUse hook（matcher: `ExitPlanMode`、command:
   （プロンプト側の指示がフォールバック）。既存 settings.local.json は jq でマージし、
   worktree 再利用時に重複注入しない
 - 誤コミット防止: `.claude/settings.local.json` は repo 共有の `info/exclude` に追記される
-- superpowers モード / codex engine / execute・standby・review モードでは注入されない
+- superpowers モード / codex engine / execute・standby・review モード / claude-teams レイアウトでは注入されない
 
 ### Phase A-R — codex plan/spec レビュー（review_mode: on のときのみ）
 

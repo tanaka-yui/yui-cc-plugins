@@ -13,7 +13,7 @@
 - **4 ファイル同時整合**: MANDATORY MODEL SELECTION SEQUENCE の改変は `SKILL.md` / `references/guide-ja.md` / `README.md` / `CLAUDE.md` を**同一コミット**で更新する（整合が崩れた状態でのコミット禁止 — `apps/cmux-team-dispatch-task/CLAUDE.md` の絶対ルール）
 - **言語**: ドキュメント・コメント・コミットメッセージは日本語、コード（変数名・関数名・フラグ）は英語
 - **hook はベストエフォート**: settings 書き込み・マージ失敗は警告ログのみで dispatch を止めない（Phase A-R spawn 失敗時と同じ思想）
-- **スコープ**: `MODE == "plan"` かつ `RUNNER_ENGINE == "claude"` のみ。superpowers / execute / standby / review モード、codex engine には注入しない
+- **スコープ**: `MODE == "plan"` かつ `RUNNER_ENGINE == "claude"` のみ。superpowers / execute / standby / review モード、codex engine には注入しない。claude-teams レイアウトも除外（子プロンプトに MANDATORY MODEL SELECTION SEQUENCE が無いため）
 - **バージョン**: `apps/cmux-team-dispatch-task/.claude-plugin/plugin.json` を 1.5.2 → **1.6.0**、ルート `.claude-plugin/marketplace.json` の同項目も同期
 - 作業ディレクトリ: リポジトリルート `/Users/yui/Documents/workspace/tanaka-yui/yui-cc-plugins`（以下、パスはすべてリポジトリルート相対）
 
@@ -131,7 +131,9 @@ fi
 # プロンプト焼き込みの MANDATORY MODEL SELECTION SEQUENCE (Phase A-R / Phase B) が
 # スキップされることがある。承認直後に PostToolUse hook で指示を機械的に再注入する。
 # hook はベストエフォート: 失敗は警告のみで dispatch を止めない (プロンプト側指示がフォールバック)。
-if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
+# claude-teams レイアウトは除外: 子プロンプトに MANDATORY MODEL SELECTION SEQUENCE が無いため
+# (Phase B はオーケストレーターが teammate を駆動するので不適用)、hook 注入は無意味かつ有害。
+if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" && "$LAYOUT" != "claude-teams" ]]; then
   SETTINGS_DIR="$CWD/.claude"
   SETTINGS_FILE="$SETTINGS_DIR/settings.local.json"
   HOOK_SCRIPT="$SCRIPT_DIR/plan-approved-hook.sh"

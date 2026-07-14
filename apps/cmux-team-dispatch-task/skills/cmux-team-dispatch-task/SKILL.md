@@ -914,7 +914,7 @@ and `<team>` with the agmsg team name resolved in Step 1g (agmsg mode only).
 標準 plan モードでは ExitPlanMode 承認直後に「プランを実行せよ」という強いシステム指示が
 入り、プロンプト焼き込みの MANDATORY MODEL SELECTION SEQUENCE (Phase A-R / Phase B) が
 スキップされることがある。これを防ぐため、`launch-workspace.sh` は **`--mode plan` かつ
-claude engine** のときのみ、worktree の `.claude/settings.local.json` に PostToolUse hook
+claude engine、かつ非 claude-teams レイアウト** のときのみ、worktree の `.claude/settings.local.json` に PostToolUse hook
 (matcher: `ExitPlanMode`, command: `zsh <this-skill-dir>/scripts/plan-approved-hook.sh`) を
 注入する。hook は承認直後に「ファイル編集前に Phase A-R (有効時) → Phase B を実行せよ」と
 いう additionalContext を機械的に再注入する。
@@ -923,7 +923,7 @@ claude engine** のときのみ、worktree の `.claude/settings.local.json` に
   (プロンプト側の指示がフォールバック)。既存 settings.local.json は jq でマージし、
   worktree 再利用時に重複注入しない
 - 誤コミット防止: `.claude/settings.local.json` は repo 共有の `info/exclude` に追記される
-- superpowers モード / codex engine / execute・standby・review モードでは注入されない
+- superpowers モード / codex engine / execute・standby・review モード / claude-teams レイアウトでは注入されない
 
 ### Launch: Workspace Mode (default)
 

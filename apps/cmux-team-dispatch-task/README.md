@@ -229,7 +229,7 @@ codex オプションを使う場合は事前に `cmux codex install-hooks` の�
 
 標準 plan モードでは ExitPlanMode 承認直後に子セッションがそのまま実装へ進み、Phase A-R /
 Phase B がスキップされることがあります。対策として `launch-workspace.sh` が plan モード +
-claude engine の worktree に `.claude/settings.local.json`（ExitPlanMode の PostToolUse
+claude engine の worktree（claude-teams レイアウトは hook 注入対象外）に `.claude/settings.local.json`（ExitPlanMode の PostToolUse
 hook、`scripts/plan-approved-hook.sh` を呼ぶ）を注入し、承認直後に「ファイル編集前に
 Phase A-R（有効時）→ Phase B を実行せよ」という指示を機械的に再注入します。あわせて子への
 プロンプトで、plan 冒頭に Phase A-R / B を必須ステップとして記載させます。hook はベスト

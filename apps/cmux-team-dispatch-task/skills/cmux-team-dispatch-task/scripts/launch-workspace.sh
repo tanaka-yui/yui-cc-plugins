@@ -377,7 +377,9 @@ fi
 # プロンプト焼き込みの MANDATORY MODEL SELECTION SEQUENCE (Phase A-R / Phase B) が
 # スキップされることがある。承認直後に PostToolUse hook で指示を機械的に再注入する。
 # hook はベストエフォート: 失敗は警告のみで dispatch を止めない (プロンプト側指示がフォールバック)。
-if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
+# claude-teams レイアウトは除外: 子プロンプトに MANDATORY MODEL SELECTION SEQUENCE が無いため
+# (Phase B はオーケストレーターが teammate を駆動するので不適用)、hook 注入は無意味かつ有害。
+if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" && "$LAYOUT" != "claude-teams" ]]; then
   SETTINGS_DIR="$CWD/.claude"
   SETTINGS_FILE="$SETTINGS_DIR/settings.local.json"
   HOOK_SCRIPT="$SCRIPT_DIR/plan-approved-hook.sh"
