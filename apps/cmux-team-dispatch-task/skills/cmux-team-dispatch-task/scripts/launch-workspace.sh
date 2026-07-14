@@ -389,16 +389,20 @@ if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" && "$LAYOUT" != "claude-
   elif ! mkdir -p "$SETTINGS_DIR" 2>/dev/null; then
     log "warn" "failed to create $SETTINGS_DIR; skipping ExitPlanMode hook injection"
   else
-    HOOK_ENTRY=$(jq -n --arg cmd "zsh $HOOK_SCRIPT" \
+    # パスをクォートして焼き込む (スキルの配置先パスに空白が含まれても壊れないように)
+    HOOK_ENTRY=$(jq -n --arg cmd "zsh '$HOOK_SCRIPT'" \
       '{matcher: "ExitPlanMode", hooks: [{type: "command", command: $cmd}]}' 2>/dev/null) || HOOK_ENTRY=""
     if [[ -z "$HOOK_ENTRY" ]]; then
       log "warn" "failed to compose ExitPlanMode hook entry; skipping injection"
     elif [[ -f "$SETTINGS_FILE" ]]; then
       if MERGED=$(jq --argjson entry "$HOOK_ENTRY" \
         '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [$entry])' "$SETTINGS_FILE" 2>/dev/null); then
-        if printf '%s\n' "$MERGED" > "$SETTINGS_FILE" 2>/dev/null; then
+        # tmp + mv のアトミック書き込み: 途中失敗で既存 settings.local.json を破壊しない
+        if printf '%s\n' "$MERGED" > "$SETTINGS_FILE.tmp" 2>/dev/null \
+          && mv "$SETTINGS_FILE.tmp" "$SETTINGS_FILE" 2>/dev/null; then
           log "hook" "merged ExitPlanMode hook into $SETTINGS_FILE"
         else
+          rm -f "$SETTINGS_FILE.tmp" 2>/dev/null || true
           log "warn" "failed to write merged $SETTINGS_FILE; skipping"
         fi
       else
@@ -412,14 +416,18 @@ if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" && "$LAYOUT" != "claude-
       fi
     fi
   fi
-  # 誤コミット防止: settings.local.json を repo 共有の info/exclude に追記する。
-  # info/exclude は worktree 間で共有されるが、このファイルは元々ローカル専用のため実害なし。
+  # 誤コミット防止: settings.local.json と plan 保存先 .claude/plans/ を repo 共有の
+  # info/exclude に追記する (plan ファイルは --plan-file のパス渡しで使う作業物であり、
+  # 子の status protocol の git add -A でタスクブランチに紛れ込ませない)。
+  # info/exclude は worktree 間で共有されるが、いずれもローカル専用のため実害なし。
   EXCLUDE_FILE=$(git -C "$CWD" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
   if [[ -n "$EXCLUDE_FILE" ]]; then
     mkdir -p "$(dirname "$EXCLUDE_FILE")" 2>/dev/null || true
-    grep -qxF '.claude/settings.local.json' "$EXCLUDE_FILE" 2>/dev/null \
-      || echo '.claude/settings.local.json' >> "$EXCLUDE_FILE" 2>/dev/null \
-      || log "warn" "failed to append to $EXCLUDE_FILE"
+    for exclude_entry in '.claude/settings.local.json' '.claude/plans/'; do
+      grep -qxF "$exclude_entry" "$EXCLUDE_FILE" 2>/dev/null \
+        || echo "$exclude_entry" >> "$EXCLUDE_FILE" 2>/dev/null \
+        || log "warn" "failed to append $exclude_entry to $EXCLUDE_FILE"
+    done
   else
     log "warn" "could not resolve info/exclude for $CWD; settings.local.json may appear in git status"
   fi

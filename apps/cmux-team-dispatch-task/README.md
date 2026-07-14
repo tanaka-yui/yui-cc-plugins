@@ -234,7 +234,10 @@ hook、`scripts/plan-approved-hook.sh` を呼ぶ）を注入し、承認直後�
 Phase A-R（有効時）→ Phase B を実行せよ」という指示を機械的に再注入します。あわせて子への
 プロンプトで、plan 冒頭に Phase A-R / B を必須ステップとして記載させます。hook はベスト
 エフォートで、書き込みに失敗しても dispatch は止まりません。`.claude/settings.local.json`
-は repo 共有の `info/exclude` に追記され、タスクブランチにコミットされません。
+と plan 保存先 `.claude/plans/` は repo 共有の `info/exclude` に追記され、タスクブランチに
+コミットされません。hook は worktree に残存するため同一 worktree を再利用する後続セッション
+（Phase B の execute 孫を含む）にも作用しますが、それらは plan モードを使わないため実害は
+ありません。
 
 ### Pre-warm standby panes(workspace レイアウト時)
 

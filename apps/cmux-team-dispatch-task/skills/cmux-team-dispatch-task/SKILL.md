@@ -549,10 +549,10 @@ PHASE A — Planning / Brainstorming (always opus):
       Step 1: Phase B execution-model selection via AskUserQuestion
     Executing the approved plan therefore STARTS with Phase A-R / Phase B,
     never with a code change.
+    If the plan only exists in the ExitPlanMode message, save it to a file
+    (e.g. .claude/plans/<task-slug>.md in this worktree) as your FIRST
+    action after approval — Phase B hands the path off via --plan-file.
   Remember the path of the plan file you wrote — Phase B may hand it off.
-  plan mode: if the plan only exists in the ExitPlanMode message, save it to
-  a file (e.g. .claude/plans/<task-slug>.md in this worktree) as your FIRST
-  action after approval — Phase B hands the path off via --plan-file.
 
 {{REVIEW_BLOCK}}
 
@@ -922,7 +922,12 @@ claude engine、かつ非 claude-teams レイアウト** のときのみ、workt
 - hook はベストエフォート: settings 書き込み・マージ失敗は警告ログのみで dispatch を止めない
   (プロンプト側の指示がフォールバック)。既存 settings.local.json は jq でマージし、
   worktree 再利用時に重複注入しない
-- 誤コミット防止: `.claude/settings.local.json` は repo 共有の `info/exclude` に追記される
+- 誤コミット防止: `.claude/settings.local.json` と plan 保存先 `.claude/plans/` は repo 共有の
+  `info/exclude` に追記される（plan ファイルは `--plan-file` のパス渡しで使う作業物であり、
+  子の `git add -A` でタスクブランチにコミットさせない）
+- hook は worktree の settings.local.json に残存するため、同一 worktree を再利用する後続
+  セッション（Phase B の execute 孫を含む）にも作用する。それらは plan モードを使わないため
+  実害はない
 - superpowers モード / codex engine / execute・standby・review モード / claude-teams レイアウトでは注入されない
 
 ### Launch: Workspace Mode (default)
