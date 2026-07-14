@@ -8,10 +8,11 @@ import {
   parseFrontmatter,
   renderAgentsFile,
   SENTINEL,
+  writeOutputs,
 } from './generate.ts'
 
 import { expect, test } from 'bun:test'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile as readFileAssert, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -132,4 +133,31 @@ test('collectGlobalOutput は ~/.claude/CLAUDE.md を ~/.codex/AGENTS.md に変�
   const { outputs } = await collectGlobalOutput(home)
   expect(outputs[0]?.path).toBe(join(home, '.codex', 'AGENTS.md'))
   expect(outputs[0]?.content).toContain('必ず日本語で応答')
+})
+
+test('writeOutputs は新規書き込みし、手書きファイルはスキップする', async () => {
+  const dir = await makeTmp()
+  const generated = renderAgentsFile(['x'], ['y'])
+  const newPath = join(dir, 'a', 'AGENTS.md')
+  const handwrittenPath = join(dir, 'AGENTS.md')
+  await writeFile(handwrittenPath, '# 手書き\n')
+
+  const report = await writeOutputs([
+    { path: newPath, content: generated },
+    { path: handwrittenPath, content: generated },
+  ])
+
+  expect(report.written).toContain(newPath)
+  expect(report.skippedHandwritten).toContain(handwrittenPath)
+  expect(await readFileAssert(newPath, 'utf8')).toBe(generated)
+  expect(await readFileAssert(handwrittenPath, 'utf8')).toBe('# 手書き\n')
+})
+
+test('writeOutputs は 32KB 超過を oversize に記録する（書き込みは行う）', async () => {
+  const dir = await makeTmp()
+  const path = join(dir, 'AGENTS.md')
+  const content = renderAgentsFile(['x'], ['a'.repeat(40000)])
+  const report = await writeOutputs([{ path, content }])
+  expect(report.oversize.some((o) => o.path === path)).toBe(true)
+  expect(await readFileAssert(path, 'utf8')).toBe(content)
 })
