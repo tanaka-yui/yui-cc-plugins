@@ -149,9 +149,12 @@ verdict はペイン出力のパースではなく**ファイル**で受け渡�
 ### send-message モード（`delivery: "cmux-send"`）
 
 - 依頼: `cmux send --surface <REVIEW_SURFACE> "<review依頼文>"` + `cmux send-key return`
-- 完了検知: codex が書き込み後に signal `<task-slug>-review-<point>-<N>-done` を発火する。
-  子は Bash で `timeout 900 cmux wait-for --signal <task-slug>-review-<point>-<N>-done` を
-  ブロッキング実行して待つ。
+- 完了検知: 子が Bash で verdict ファイル（`<point>-round-<N>.md` の VERDICT 行）を
+  ポーリングして待つ（5 秒間隔・15 分タイムアウト）。
+  注: 当初は `cmux wait-for --signal` によるブロッキング待ちを想定したが、既存コードで
+  `cmux wait-for --signal` は発火側として使われており、待ち受け挙動への依存を避けるため
+  ファイルポーリングに変更した。codex 側のプロトコルは「ファイルを書く」だけでよくなり、
+  signal 発火の指示遵守も不要になる。
 
 ## ループ制御
 
@@ -167,7 +170,7 @@ verdict はペイン出力のパースではなく**ファイル**で受け渡�
 
 | 状況 | 挙動 |
 |------|------|
-| `cmux wait-for` timeout（15 分） | レビュー打ち切り。AskUserQuestion で「再依頼 / レビュー省略して Phase B へ」 |
+| verdict ファイルのポーリング timeout（15 分） | レビュー打ち切り。AskUserQuestion で「再依頼 / レビュー省略して Phase B へ」 |
 | agmsg 着信が来ない（codex が消費しない） | 実機検証で消費されない場合は review の delivery を常に `cmux-send` に倒す（prewarm E2E 19 と同方針） |
 | verdict ファイルが無い / VERDICT 行が無い | needs_work 扱いで再依頼（1 回だけ）。それでも不正なら timeout と同じ分岐 |
 | レビューペインの spawn 失敗 | レビューをスキップして警告を出し、現行フロー（Phase B）へ進む。レビューは品質向上機能でありディスパッチ自体を止めない |
