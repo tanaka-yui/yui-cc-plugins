@@ -1,0 +1,13 @@
+{
+  "name": "codex-bridge",
+  "version": "0.1.0",
+  "description": "Claude Code の rules / CLAUDE.md を Codex が読める AGENTS.md にネスト生成する汎用プラグイン。",
+  "author": {
+    "name": "tanaka-yui",
+    "url": "https://github.com/tanaka-yui"
+  },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/codex-bridge",
+  "license": "MIT",
+  "keywords": ["claude-code", "codex", "agents-md", "rules", "bridge"],
+  "commands": "./commands/"
+}

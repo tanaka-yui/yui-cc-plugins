@@ -1,0 +1,17 @@
+{
+  "name": "@tanaka-yui/codex-bridge",
+  "version": "0.1.0",
+  "description": "Claude Code の rules / CLAUDE.md を Codex が読める AGENTS.md にネスト生成する。",
+  "type": "module",
+  "bin": {
+    "codex-bridge": "bin/codex-bridge.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit && biome check ./bin ./src",
+    "check:fix": "biome check --write ./bin ./src",
+    "format": "biome format ./bin ./src",
+    "format:fix": "biome format --write ./bin ./src",
+    "lint": "biome lint ./bin ./src",
+    "lint:fix": "biome lint --write ./bin ./src"
+  }
+}
