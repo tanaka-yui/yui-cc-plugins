@@ -572,24 +572,19 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     [SAME MODEL] "opus 1m" → run `/model claude-opus-4-7[1m]` and continue execution
       in THIS session. Proceed to implement the plan you wrote in Phase A.
 
-      If prewarm.json exists, close the UNUSED standby panes before continuing
-      (exclude .opus — in agmsg mode that is THIS session's own surface):
-        for sf in $(jq -r 'to_entries[] | select(.key != "opus") | .value.surface_id' \
-          "<EXISTING_STATUS_DIR>/prewarm.json"); do
-          cmux close-surface --surface "$sf" || true
-        done
+      Leave the pre-warmed standby panes (sonnet / codex / review) OPEN and idle —
+      do NOT close them. An unassigned standby holds no `.assigned-<name>` sentinel,
+      so it never writes status.json; keeping all four panes open is the intended
+      layout. They are torn down together only at the final all-tasks-complete cleanup.
 
     [DIFFERENT MODEL] "sonnet" → FIRST check for a pre-warmed standby pane:
         PREWARM_FILE="<EXISTING_STATUS_DIR>/prewarm.json"
         SONNET_SURFACE=$(jq -r '.sonnet.surface_id // empty' "$PREWARM_FILE" 2>/dev/null)
 
       IF SONNET_SURFACE is non-empty (pre-warm path):
-        1. Close the unused codex standby pane if present (closing it early just frees the
-           pane promptly — each standby now checks its own `.assigned-<name>` sentinel, so
-           there is no cross-pane race to avoid here):
-             CODEX_SURFACE=$(jq -r '.codex.surface_id // empty' "$PREWARM_FILE" 2>/dev/null)
-             [[ -n "$CODEX_SURFACE" ]] && cmux close-surface --surface "$CODEX_SURFACE"
-           # .assigned-<name> の無い standby は閉じても status.json を汚さない
+        1. Leave the unused standby panes (codex / opus / review) OPEN and idle — do NOT
+           close them. An unassigned standby holds no `.assigned-<name>` sentinel, so it
+           never writes status.json; keeping all four panes open is the intended layout.
         2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"
            # standby wrapper に完了処理 (status.json done/error 遷移 + <slug>-sonnet-done
            # signal + 親通知) の所有権を渡す
@@ -730,8 +725,9 @@ the plan to a file first if you have not already.
       3. Read the verdict:
            VERDICT=$(grep -oE 'VERDICT: (approve|needs_work)' "<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md" 2>/dev/null | tail -1)
          - "VERDICT: approve" → this point is done. Move to the next point; after
-           the LAST point, close the pane and proceed to Phase B:
-             cmux close-surface --surface "$REVIEW_SURFACE"
+           the LAST point, proceed to Phase B. Leave the review pane OPEN and idle —
+           do NOT close it (it is torn down with the other panes only at the final
+           all-tasks-complete cleanup).
          - "VERDICT: needs_work" → read the findings. Apply the ones you judge
            valid to the document; collect reasons for the ones you reject (they
            go into the next round's request as rebuttals). Then:
@@ -741,14 +737,15 @@ the plan to a file first if you have not already.
                  1. このまま進む — 残指摘を文書に注記して Phase B へ
                  2. さらに修正 — もう 1 往復レビューを続ける
                "このまま進む" → append the unresolved findings as a note in the
-               document, close the pane if this was the last point, and move on.
+               document and move on (leave the review pane open — do not close it).
                "さらに修正" → run one more round; on another needs_work, re-ask.
          - Verdict file missing or has no VERDICT line (timeout) → re-send the
            SAME round's request once. If it times out again, ask via AskUserQuestion:
              Q: "codex レビューが応答しません。どうしますか？"
                1. 再依頼する
                2. レビューを省略して Phase B へ進む
-             Option 2 → cmux close-surface --surface "$REVIEW_SURFACE", continue.
+             Option 2 → skip the review and continue to Phase B (leave the review
+             pane open — do not close it).
 
     VIOLATION: When this block is present, do NOT start Phase B before every
     review point reached approve or an explicit user decision was made.
@@ -771,11 +768,9 @@ the plan to a file first if you have not already.
           [DIFFERENT MODEL] "codex" → FIRST check for a pre-warmed standby pane:
               CODEX_SURFACE=$(jq -r '.codex.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
             IF CODEX_SURFACE is non-empty:
-              1. Close the unused sonnet standby pane (closing it early just frees the pane
-                 promptly — see the sonnet branch above: per-pane `.assigned-<name>` sentinels
-                 mean there is no cross-pane race to avoid):
-                   SONNET_SURFACE=$(jq -r '.sonnet.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
-                   [[ -n "$SONNET_SURFACE" ]] && cmux close-surface --surface "$SONNET_SURFACE"
+              1. Leave the unused standby panes (sonnet / opus / review) OPEN and idle — do
+                 NOT close them (see the sonnet branch above: an unassigned standby writes no
+                 status.json, and keeping all four panes open is the intended layout).
               2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-codex"
               3. Send the execution request. Check `.codex.delivery` in prewarm.json:
                    DELIVERY=$(jq -r '.codex.delivery // "cmux-send"' "<EXISTING_STATUS_DIR>/prewarm.json")
@@ -1552,7 +1547,7 @@ for slug in <task-slugs>; do
     esac
   fi
 
-  # pre-warm standby pane が残っていれば閉じる (Phase B で未使用のまま残るケース)
+  # pre-warm standby pane が残っていれば全て閉じる (常 4 ペイン維持のため Phase B 後も全 standby が残る)
   if [[ "$close_all" == "true" && -f ".dispatch/$slug/prewarm.json" ]]; then
     for sf in $(jq -r '.[].surface_id' ".dispatch/$slug/prewarm.json" 2>/dev/null); do
       cmux close-surface --surface "$sf" 2>/dev/null || true

@@ -253,6 +253,10 @@ standby ペインの配置は Phase A-R の有効/無効で分岐する:
   `--model <review_model>`）/ 左下: sonnet / 右下: codex。レビューペインは status.json の
   所有権を持たず、`.assigned-<slug>-review` も使わない
 
+**ペインは常時 4 枚を維持する**: Phase B で実装モデルを選んでも未使用の standby ペインは閉じず、
+レビューも approve 後に閉じない。全ペインは idle のまま残り（未 assigned の standby は status.json を
+汚さない）、最終の全タスク完了クリーンアップ（「Close all child panes?」）でまとめて閉じる。
+
 - send-message モード: opus は従来どおりタスクプロンプト付きで起動し、sonnet / codex のみ
   idle 起動。実行指示は `cmux send` で注入する。
 - agmsg モード: opus-1m を含む全ペインをメッセージ未指定(idle)で起動する。
