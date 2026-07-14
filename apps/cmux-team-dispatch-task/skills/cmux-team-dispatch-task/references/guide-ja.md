@@ -156,9 +156,29 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
    ~/.agents/skills/agmsg/scripts/delivery.sh set monitor claude-code "$(pwd)"
    ```
 
+   `delivery.sh set` が `AGMSG-DIRECTIVE:` 行を出力することがある — この行が起動する
+   SessionStart hook は次回以降のセッションにしか効かないため、この directive こそが
+   **現セッション**で delivery を有効化する手段である。出力にこの行があれば、タスクを
+   起動する前に必ず従うこと（指示どおり Monitor tool を呼び出す）。これを飛ばすと、
+   ディスパッチを行っているセッション自身に watcher が起動せず、このセッション中に届いた
+   push は次のセッションが始まるまで inbox に滞留したままになる。
+
    各 launch に `--message-type agmsg --agmsg-team "$TEAM" --agmsg-from <slug>` を付与し、
    worktree 作成後に子 agent を join する。子プロンプトには「親 (`parent`) へ
-   `send.sh` で直接質問・進捗報告できる」旨を追記する。
+   `send.sh` で直接質問・進捗報告できる」旨に加えて、次の**必須完了 push**のブロックを追記する:
+
+   ```
+   You can message the parent directly at any time (questions, progress):
+     ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent "<message>"
+
+   MANDATORY completion push: immediately after writing done/error to
+   status.json, send the completion notification yourself:
+     ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent \
+       "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
+   Do NOT rely on session exit for this. The runner wrapper pushes on exit as
+   a backstop, but an idle TUI session never exits — without this push the
+   parent is never notified in agmsg mode (no monitor loop is running).
+   ```
 
 8. **(1h)** Template A（Display Format Conventions）で情報表示し、即座にディスパッチ:
    ```
@@ -706,7 +726,10 @@ execute モードのプロンプトテキスト: `Read and execute the plan at <
 - `agmsg`: `monitor-dispatch.sh` を**起動しない**。完了通知は agmsg のリアルタイム push で届く
   （親が Step 1g で delivery mode `monitor` を設定済み）。長時間通知が無い場合は
   `.dispatch/*/status.json` を手動ポーリングで確認する。`[dispatch-monitor]` 系の
-  heartbeat / DIED メッセージはこのモードには存在しない
+  heartbeat / DIED メッセージはこのモードには存在しない。push は2系統から届く: 子が
+  status.json 書き込み直後に自分で送るもの（必須、Step 2 参照）と、runner wrapper が
+  セッション終了時に送るもの（バックストップ）。同じ完了通知が2回届くのは正常な挙動であり、
+  push は冪等に扱い、status.json を信頼できる情報源とすること
 
 ### 進捗確認方法
 
@@ -1100,5 +1123,5 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。`cmux send` の後は必ず `cmux send-key return` を発行し、親 claude TUI の input box に滞留しないようにしている
 - **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
-- **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。
+- **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須 push(Step 2 で子プロンプトに埋め込む)+ runner wrapper の exit 時 push(バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
 - **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から agmsg で送る。standby wrapper は `<STATUS_DIR>/.assigned` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`。Phase B の実行指示は prewarm.json の `delivery` 値で分岐する: `"agmsg"` なら `send.sh`、`"cmux-send"` (send-message モード / 配線失敗時) なら `cmux send` + `send-key return`。

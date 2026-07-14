@@ -169,6 +169,12 @@ config は `~/.claude/cmux-team-dispatch-task/config.json`（`<project>/.dispatc
 agmsg モードの team 名は `dispatch-<repo-name>`、親の agent 名は `parent`。
 status.json / result.md / `cmux wait-for` signal は両モードで不変。
 
+agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に自分で送る必須 push と、
+runner wrapper の exit 時 push(バックストップ)。idle のまま開いている TUI セッションは exit
+しないため、wrapper だけに頼ると通知されない(このため子プロンプトに必須 push が埋め込まれる)。
+また、ディスパッチを実行しているセッション自身は `delivery.sh set` が出力する
+`AGMSG-DIRECTIVE:` に従って watcher を起動する(SessionStart hook は次回セッションから有効)。
+
 ## モデル選択フロー (Phase B)
 
 各子セッションは Phase A (計画 / brainstorming) 完了後、**実装フェーズで使うモデル**を `AskUserQuestion` で必ず聞きます。Phase A は常に opus で動作するため、選んだ model が opus と同一かどうかで動作が分岐します。

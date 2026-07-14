@@ -324,6 +324,14 @@ TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
 ~/.agents/skills/agmsg/scripts/delivery.sh set monitor claude-code "$(pwd)"
 ```
 
+`delivery.sh set` may print an `AGMSG-DIRECTIVE:` line — the SessionStart
+hook it installs only takes effect for FUTURE sessions, so the directive is
+how the CURRENT session activates delivery. If the output contains such a
+line, follow it (invoke the Monitor tool exactly as instructed) BEFORE
+launching tasks. Skipping this leaves the dispatching session without a
+watcher: pushes sent during this session sit unread in the inbox until the
+next session starts.
+
 Each launch then adds `--message-type agmsg --agmsg-team "$TEAM" --agmsg-from <task-slug>`
 to `launch-workspace.sh` (or `--message-type agmsg --agmsg-team "$TEAM"` to
 `launch-session-splits.sh`, which derives `--agmsg-from` per slug). After each
@@ -338,11 +346,19 @@ this manual `join.sh` — `prewarm-panes.sh` already joins the opus agent
 (`<task-slug>`) and the standby agents (`<task-slug>-sonnet` / `-codex`) and
 wires delivery into the worktree before any pane starts.
 
-Additionally, append this line to every child prompt's status protocol section:
+Additionally, append this block to every child prompt's status protocol section:
 
 ```
 You can message the parent directly at any time (questions, progress):
   ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent "<message>"
+
+MANDATORY completion push: immediately after writing done/error to
+status.json, send the completion notification yourself:
+  ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent \
+    "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
+Do NOT rely on session exit for this. The runner wrapper pushes on exit as
+a backstop, but an idle TUI session never exits — without this push the
+parent is never notified in agmsg mode (no monitor loop is running).
 ```
 
 ### 1h. Display Summary and Proceed
@@ -977,7 +993,10 @@ metadata and notifications, thanks to the `cmux claude-teams` tmux shim.
   because the parent set delivery mode `monitor` in Step 1g. If nothing arrives
   for an extended period, poll `.dispatch/*/status.json` manually (see "Polling
   Status Files"). The `[dispatch-monitor]` heartbeat / DIED messages do not
-  exist in this mode.
+  exist in this mode. Pushes come from two sources: the child itself right
+  after writing status.json (mandatory, see Step 2) and the runner wrapper at
+  session exit (backstop). Receiving the same completion twice is normal —
+  treat pushes idempotently and trust status.json as the source of truth.
 
 Each child session sends a `[dispatch]` message to the parent terminal when the Claude
 process exits:
@@ -1479,5 +1498,5 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. The `command` of the first such runner is used for the spawn launch. `cmux codex install-hooks` is also required so that `external_migration = true` is set and codex picks up the parent claude session automatically.
 - **Same-model vs different-model in Phase B**: Phase A is always opus, so "opus 1m" counts as the same model and stays in the current session via `/model claude-opus-4-7[1m]`. Any other choice (sonnet / codex) is treated as a different model: when a pre-warmed standby pane exists (prewarm.json), the Child hands off by sending the execution request to that pane; otherwise it triggers a spawn via `launch-workspace.sh --mode execute`: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends an `/exit` instruction so the grandchild Claude/Codex session closes its TUI after the PR is created — without this the runner wrapper never reaches `write_status "done"` and status.json gets stuck on `executing`.
 - **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. When a child is launched with `engine: codex`, Phase B's "codex" option is redundant and should be skipped (the child already runs in codex). The runners.json registry lives at `~/.claude/cmux-team-dispatch-task/runners.json` and is bootstrapped on first run via AskUserQuestion.
-- **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。
+- **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須 push(Step 2 で子プロンプトに埋め込む)+ runner wrapper の exit 時 push(バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
 - **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から agmsg で送る。standby wrapper は `<STATUS_DIR>/.assigned` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`。Phase B の実行指示は prewarm.json の `delivery` 値で分岐する: `"agmsg"` なら `send.sh`、`"cmux-send"` (send-message モード / 配線失敗時) なら `cmux send` + `send-key return`。
