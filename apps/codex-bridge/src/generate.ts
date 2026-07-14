@@ -53,3 +53,13 @@ export function parseFrontmatter(content: string): { attrs: RuleAttrs; body: str
   const body = content.slice(end + 4).replace(/^\r?\n/, '')
   return { attrs: parseAttrs(raw), body }
 }
+
+export function renderAgentsFile(sources: string[], bodies: string[]): string {
+  const header = `<!-- ${SENTINEL}. DO NOT EDIT.\n     Source: ${sources.join(', ')} -->`
+  const merged = bodies.map((b) => b.trim()).join('\n\n')
+  return `${header}\n\n${merged}\n`
+}
+
+export function hasSentinel(content: string): boolean {
+  return content.includes(SENTINEL)
+}

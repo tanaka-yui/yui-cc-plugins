@@ -1,4 +1,4 @@
-import { parseFrontmatter } from './generate.ts'
+import { hasSentinel, parseFrontmatter, renderAgentsFile, SENTINEL } from './generate.ts'
 
 import { expect, test } from 'bun:test'
 
@@ -30,4 +30,18 @@ test('frontmatter が無ければ空 targets と全文 body を返す', () => {
   expect(attrs.codexTargets).toEqual([])
   expect(attrs.description).toBeNull()
   expect(body).toBe('# no front\ntext')
+})
+
+test('renderAgentsFile はセンチネルヘッダーと結合本文を出力する', () => {
+  const out = renderAgentsFile(['.claude/rules/go-backend.md', '.claude/rules/go-testing.md'], ['# A\naaa', '# B\nbbb'])
+  expect(out).toContain(SENTINEL)
+  expect(out).toContain('.claude/rules/go-backend.md, .claude/rules/go-testing.md')
+  expect(out).toContain('# A\naaa\n\n# B\nbbb')
+  expect(out.endsWith('\n')).toBe(true)
+})
+
+test('hasSentinel は生成物を true、手書きを false と判定する', () => {
+  const generated = renderAgentsFile(['x'], ['y'])
+  expect(hasSentinel(generated)).toBe(true)
+  expect(hasSentinel('# 手書きの AGENTS.md\n')).toBe(false)
 })
