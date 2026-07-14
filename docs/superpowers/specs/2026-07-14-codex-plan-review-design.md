@@ -97,8 +97,10 @@ Phase B   — 実行モデル選択（現行どおり・変更なし）
 
 - `prewarm-panes.sh` が 4 ペインを起動する。**下段 2 つ**（sonnet / codex standby）は
   現行どおり standby wrapper 付き（status.json 所有権・`.assigned-<name>` sentinel 方式は不変）。
-- **右上のレビューペイン**は standby wrapper **なし**の素の codex セッション
-  （`command` + `--model <review_model>`）で idle 起動する。status.json には一切触れない。
+- **右上のレビューペイン**は status.json の所有権を持たない素の codex セッション
+  （`command` + `--model <review_model>`）で idle 起動する。実装上は standby と同じ wrapper 機構に
+  乗るが、`.assigned-<slug>-review` を誰も touch しないため wrapper は exit 時に status.json を
+  書かない（既存の standby ガードを流用）。
 - `prewarm.json` に `review` エントリを追加する:
   `{ "review": { "surface_id": "...", "delivery": "agmsg" | "cmux-send" } }`。
   agmsg モードでは他ペインと同様、起動前に `<task-slug>-review` として配線し、
