@@ -893,9 +893,17 @@ PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
 [[ -z "$PREWARM" ]] && PREWARM=true
 ```
 
-When layout is `workspace` AND `PREWARM` is `true`, standby panes are stacked
-vertically inside each task workspace (top: opus / middle: sonnet / bottom:
-codex — codex only when `runners.json` has an `engine: "codex"` runner).
+When layout is `workspace` AND `PREWARM` is `true`, standby panes are placed
+inside each task workspace. Layout depends on Phase A-R (Step 1g `REVIEW_ENABLED`):
+
+- **Phase A-R disabled** (current behavior): vertical stack — top: opus /
+  middle: sonnet / bottom: codex (codex only when `runners.json` has an
+  `engine: "codex"` runner).
+- **Phase A-R enabled**: 2×2 even grid — top-left: opus / top-right: codex
+  review pane (idle, `--model <review_model>`) / bottom-left: sonnet /
+  bottom-right: codex. The review pane is a plain codex session with NO
+  standby-wrapper status ownership (`.assigned-<slug>-review` is never touched).
+
 Everything is delegated to `prewarm-panes.sh`; do not create panes manually.
 
 **send-message mode** — the opus session was already launched with its task
@@ -909,6 +917,7 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
   [--codex-runner <codex-runner-name>] \
+  [--review-model "$REVIEW_MODEL"] \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID"
 ```
@@ -927,10 +936,14 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
   [--codex-runner <codex-runner-name>] \
+  [--review-model "$REVIEW_MODEL"] \
   --message-type agmsg --agmsg-team "$TEAM" \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID")
 ```
+
+Pass `--review-model` only when Phase A-R is enabled (`REVIEW_ENABLED` from
+Step 1g). It requires `--codex-runner`.
 
 Since the normal task-prompt launch never runs in this mode, `prewarm-panes.sh` itself writes
 an initial `"launched"` status.json (with `workspace_id`/`surface_id` populated) right after
@@ -956,14 +969,16 @@ Then dispatch the Phase A task to the opus pane:
      `cmux send-key --surface <opus-surface> return`.
 
 prewarm.json schema (written by `prewarm-panes.sh`; `opus` only in agmsg mode,
-`codex` only when a codex runner exists; `delivery` is `"agmsg"` or
-`"cmux-send"` depending on whether delivery wiring succeeded):
+`codex` only when a codex runner exists, `review` only when `--review-model`
+was passed; `delivery` is `"agmsg"` or `"cmux-send"` depending on whether
+delivery wiring succeeded):
 
 ```json
 {
   "opus":   { "surface_id": "surface:N", "agent": "<slug>",        "delivery": "agmsg" },
   "sonnet": { "surface_id": "surface:N", "agent": "<slug>-sonnet", "delivery": "agmsg" },
-  "codex":  { "surface_id": "surface:N", "agent": "<slug>-codex",  "delivery": "cmux-send" }
+  "codex":  { "surface_id": "surface:N", "agent": "<slug>-codex",  "delivery": "cmux-send" },
+  "review": { "surface_id": "surface:N", "agent": "<slug>-review", "delivery": "cmux-send" }
 }
 ```
 
