@@ -192,6 +192,9 @@ config より優先される点は `message_type` と同じ。
 - plan モード: plan 完成後に 1 回 / superpowers モード: spec と plan で計 2 回
 - 指摘と verdict は `.dispatch/<slug>/review/<point>-round-<N>.md`（末尾 `VERDICT:` 行）で受け渡し
 - 無効化はいつでも config の `review_mode: "off"` で可能（runners.json はそのまま残せる）
+- 実行系のモデルは runner の `exec_model`（例: `gpt-5.6-terra`）で別途指定できる。Phase B の
+  codex 実行（execute / standby ペイン）にのみ適用され、レビューは `review_model` のまま。
+  未設定なら codex 側デフォルト（`~/.codex/config.toml`）が使われる
 
 各子セッションは Phase A (計画 / brainstorming) 完了後、**実装フェーズで使うモデル**を `AskUserQuestion` で必ず聞きます。Phase A は常に opus で動作するため、選んだ model が opus と同一かどうかで動作が分岐します。
 
@@ -199,7 +202,7 @@ config より優先される点は `message_type` と同じ。
 |--------|---------|------|
 | **opus 1m** | 常時 | Phase A と **同一 model**。`/model claude-opus-4-7[1m]` で切替後、**現セッションで実装続行** |
 | **sonnet** | 常時 | **異なる model**。`launch-workspace.sh --mode execute` で子 surface を spawn し、`claude --model claude-sonnet-4-6 --dangerously-skip-permissions 'Read and execute the plan at <path>'` を runner script でラップして起動 |
-| **codex** | `~/.claude/cmux-team-dispatch-task/runners.json` に `engine: codex` runner がある時のみ | **異なる model**。`launch-workspace.sh --mode execute --runner <codex-runner>` で spawn し、codex を `--dangerously-bypass-approvals-and-sandbox` 付きで起動。`external_migration` により親 claude セッションを引き継ぐ |
+| **codex** | `~/.claude/cmux-team-dispatch-task/runners.json` に `engine: codex` runner がある時のみ | **異なる model**。`launch-workspace.sh --mode execute --runner <codex-runner>` で spawn し、codex を `--dangerously-bypass-approvals-and-sandbox` 付きで起動。runner に `exec_model`（例: `gpt-5.6-terra`）があれば `--model` として適用（レビューペインの `review_model` とは独立）。`external_migration` により親 claude セッションを引き継ぐ |
 
 「異なる model」が選ばれた場合の挙動:
 

@@ -26,8 +26,11 @@
 #   --plan-file <path>                 Plan file path (required when --mode execute).
 #                                      inner prompt が
 #                                      "Read and execute the plan at <path>" になる
-#   --model <model>                    Model flag passed to claude as --model <X>
-#                                      (例: claude-sonnet-4-6)。claude engine のみ対応
+#   --model <model>                    Model flag passed as --model <X>
+#                                      (例: claude-sonnet-4-6 / gpt-5.6-sol)。claude engine は
+#                                      execute/standby、codex engine は execute/standby/review で反映。
+#                                      codex engine では未指定時に runner の exec_model に
+#                                      フォールバックする (execute/standby のみ)
 #   --skip-permissions                 claude に --dangerously-skip-permissions を
 #                                      追加 (sonnet の auto mode 不在対策)。
 #                                      claude engine のみ対応
@@ -44,7 +47,7 @@
 #   --parent-notify-surface <sf-id>    Surface to notify on completion
 #   --runner <name>                    Runner name to look up in
 #                                      ~/.claude/cmux-team-dispatch-task/runners.json.
-#                                      Resolves to {command, engine} which control
+#                                      Resolves to {command, engine, exec_model} which control
 #                                      the launch command for the child session.
 #                                      The composed command is always wrapped in `zsh -ic "..."`
 #                                      so functions and env vars from ~/.zshrc are loaded.
@@ -248,7 +251,7 @@ else
   [[ -z "$PROMPT" ]] && die "prompt is required. Usage: $0 [options] <workspace-name> <prompt...>"
 fi
 
-# --model / --skip-permissions は claude engine 向けの拡張。codex engine では別フラグ体系のため無視
+# --model は execute/standby/review 向けの拡張 (claude / codex 両 engine)。--skip-permissions は claude のみ
 if [[ -n "$MODEL" && "$MODE" != "execute" && "$MODE" != "standby" && "$MODE" != "review" ]]; then
   log "warn" "--model is only meaningful with --mode execute; ignoring for mode=$MODE"
 fi
@@ -290,6 +293,7 @@ command -v jq &>/dev/null || die "jq is not installed (required for JSON output)
 
 RUNNER_COMMAND="claude"
 RUNNER_ENGINE="claude"
+RUNNER_EXEC_MODEL=""
 
 if [[ -n "$RUNNER_NAME" ]]; then
   [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH (required when --runner is specified)"
@@ -299,10 +303,20 @@ if [[ -n "$RUNNER_NAME" ]]; then
 
   RUNNER_COMMAND=$(echo "$RUNNER_JSON" | jq -r '.command // empty')
   RUNNER_ENGINE=$(echo "$RUNNER_JSON" | jq -r '.engine // "claude"')
+  RUNNER_EXEC_MODEL=$(echo "$RUNNER_JSON" | jq -r '.exec_model // empty')
 
   [[ -n "$RUNNER_COMMAND" ]] || die "runner '$RUNNER_NAME' is missing 'command' field"
   [[ "$RUNNER_ENGINE" == "claude" || "$RUNNER_ENGINE" == "codex" ]] \
     || die "runner '$RUNNER_NAME' has invalid engine '$RUNNER_ENGINE' (must be 'claude' or 'codex')"
+fi
+
+# exec_model フォールバック: codex engine の実行系 (execute / standby) で --model 未指定のときのみ
+# runner の exec_model を適用する。review は呼び出し側が常に --model <review_model> を明示するため対象外。
+# 優先順位: 明示 --model > runner の exec_model > codex 側デフォルト (config.toml)
+if [[ "$RUNNER_ENGINE" == "codex" && -z "$MODEL" && -n "$RUNNER_EXEC_MODEL" ]] \
+  && [[ "$MODE" == "execute" || "$MODE" == "standby" ]]; then
+  MODEL="$RUNNER_EXEC_MODEL"
+  log "runner" "applying exec_model=$MODEL (codex $MODE)"
 fi
 
 log "runner" "name=${RUNNER_NAME:-<default>} command=$RUNNER_COMMAND engine=$RUNNER_ENGINE"
@@ -416,13 +430,15 @@ else
   # engine × mode で起動コマンドを構築
   if [[ "$RUNNER_ENGINE" == "codex" ]]; then
     if [[ "$MODE" == "execute" ]]; then
-      # codex execute: plan モードと同じく bypass フラグを付与
-      # (codex に --model は不要 — codex runner が独自に処理)
-      CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+      # codex execute: plan モードと同じく bypass フラグを付与。
+      # --model (明示指定 or runner の exec_model) があれば付与、無ければ codex 側デフォルト
+      CODEX_MODEL_FLAG=""
+      [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
     elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
       # codex standby/review: prompt なしで idle 起動。実行指示の配送は prewarm.json の delivery 値に
       # 従う (agmsg 配線成功時は agmsg、それ以外・send-message モードは cmux send)。
-      # review ペインは --model (review_model) を反映する
+      # review ペインは --model (review_model)、standby は exec_model フォールバックを反映する
       CODEX_MODEL_FLAG=""
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       if [[ -n "$PROMPT_TEXT" ]]; then

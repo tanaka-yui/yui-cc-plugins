@@ -572,7 +572,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
   "runners": [
     { "name": "claude",  "command": "claude",  "engine": "claude" },
     { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
-    { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol" }
+    { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra" }
   ]
 }
 ```
@@ -584,6 +584,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 | `runners[].command` | 実際に実行するコマンド／関数名 |
 | `runners[].engine` | `claude` または `codex`。MODE 別の起動引数組み立てを切替（下表参照） |
 | `runners[].review_model` | （任意、`engine: codex` の runner のみ）Phase A-R（plan/spec レビュー）でレビューペインに渡すモデル名。未設定なら Phase A-R は無効 |
+| `runners[].exec_model` | （任意、`engine: codex` の runner のみ）Phase B 実行系（execute / standby）で `--model` 未指定時にフォールバック適用されるモデル名。review ペインには適用されない。未設定なら codex 側デフォルト |
 
 ### engine × MODE 起動コマンド対応表
 
@@ -597,11 +598,11 @@ execute モードのプロンプトテキスト: `Read and execute the plan at <
 | claude | execute     | `<command> [--model <X>] [--dangerously-skip-permissions] '<EXEC_PROMPT>'` |
 | codex  | plan        | `<command> --dangerously-bypass-approvals-and-sandbox '/plan <PROMPT>'` |
 | codex  | superpowers | `<command> '$superpowers:brainstorming <PROMPT>'` |
-| codex  | execute     | `<command> --dangerously-bypass-approvals-and-sandbox '<EXEC_PROMPT>'` |
+| codex  | execute     | `<command> [--model <exec_model>] --dangerously-bypass-approvals-and-sandbox '<EXEC_PROMPT>'` |
 
 上記全体は常に `zsh -ic "..."` で wrap され、`~/.zshrc` のユーザー定義関数（`ccenec` 等）と env（proxy 認証 / PATH 等）が子セッションで読み込まれます。
 
-**execute モードの使い所**: Phase B (実装フェーズ) で sonnet / codex などの別モデルに切り替える場面。Child セッションが `launch-workspace.sh --mode execute --plan-file <path> [--model <X>] [--skip-permissions]` を呼び出して別 surface を spawn し、自分は `<STATUS_DIR>/.deferred` を作成して exit する。execute モードでは `.cmux-team-dispatch-task-prompt.md` を書き換えず、Phase A のものを温存する。
+**execute モードの使い所**: Phase B (実装フェーズ) で sonnet / codex などの別モデルに切り替える場面。Child セッションが `launch-workspace.sh --mode execute --plan-file <path> [--model <X>] [--skip-permissions]` を呼び出して別 surface を spawn し、自分は `<STATUS_DIR>/.deferred` を作成して exit する。execute モードでは `.cmux-team-dispatch-task-prompt.md` を書き換えず、Phase A のものを温存する。codex engine では `--model` 未指定時に runner の `exec_model` がフォールバック適用される（execute / standby のみ。review は常に `review_model` を明示）。
 
 `claude-teams` レイアウトは runner 設定を無視し常に `cmux claude-teams`（親の claude アカウント）で起動します。
 
@@ -614,6 +615,8 @@ execute モードのプロンプトテキスト: `Read and execute the plan at <
 3. カスタム選択時は AskUserQuestion ループで `name / command / engine` を 1 件ずつ収集、最後に「もう 1 件追加？」を繰り返し確認
    - **review_model**（自由入力、engine が `codex` のときのみ質問、例 `gpt-5.6-sol`）—
      plan/spec レビュー（Phase A-R）用モデル。空回答で省略可
+   - **exec_model**（自由入力、engine が `codex` のときのみ質問、例 `gpt-5.6-terra`）—
+     Phase B 実行系（execute / standby）用モデル。空回答で省略可（codex 側デフォルトを使用）
 4. 完了後、`~/.claude/cmux-team-dispatch-task/` ディレクトリが無ければ作成され、runners.json が書き出されます
 
 ### タスクごとの runner 切替

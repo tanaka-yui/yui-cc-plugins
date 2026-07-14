@@ -210,7 +210,7 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
   "runners": [
     { "name": "claude",  "command": "claude",  "engine": "claude" },
     { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
-    { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol" }
+    { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra" }
   ]
 }
 ```
@@ -222,6 +222,9 @@ Field meanings:
 - `engine`: `claude` or `codex` — controls flag composition (see table below)
 - `review_model` (optional, `engine: codex` の runner のみ): Phase A-R (plan/spec レビュー)
   でレビューペインに渡すモデル名。未設定なら Phase A-R は無効
+- `exec_model` (optional, `engine: codex` の runner のみ): Phase B の実行系
+  (execute / standby) で `--model` 未指定時に `launch-workspace.sh` がフォールバック適用する
+  モデル名。review ペインには適用されない。未設定なら codex 側デフォルト (config.toml)
 
 **engine × MODE invocation table** (executed by `launch-workspace.sh`):
 
@@ -232,12 +235,14 @@ Field meanings:
 | claude | execute     | `<command> [--model <X>] [--dangerously-skip-permissions] 'Read and execute the plan at <plan-file>'`     |
 | codex  | plan        | `<command> --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
 | codex  | superpowers | `<command> '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
-| codex  | execute     | `<command> --dangerously-bypass-approvals-and-sandbox 'Read and execute the plan at <plan-file>'`         |
+| codex  | execute     | `<command> [--model <exec_model>] --dangerously-bypass-approvals-and-sandbox 'Read and execute the plan at <plan-file>'` |
 
 `execute` モードは Phase B (実装フェーズ) で別 surface に実装を移譲するときに使う。
 `--plan-file <path>` で計画ファイルパスを指定し、`.cmux-team-dispatch-task-prompt.md`
 は書き換えない (Phase A のものを温存)。claude engine では `--model` と
 `--skip-permissions` を追加可能 (sonnet など auto mode が効かないモデル用)。
+codex engine では `--model` 未指定時に runner の `exec_model` がフォールバック適用される
+(execute / standby のみ。review は常に `review_model` を明示)。
 
 The composed command is always wrapped: `zsh -ic "<composed>"` so that `~/.zshrc`
 functions (e.g. `ccenec`) and env (proxy auth, PATH) are loaded for the child session.
@@ -274,6 +279,8 @@ the parent claude account).
    - **engine** (choice: `claude` / `codex`)
    - **review_model** (free text, engine が `codex` のときのみ質問, 例 `gpt-5.6-sol`) —
      plan/spec レビュー (Phase A-R) 用モデル。空回答で省略可
+   - **exec_model** (free text, engine が `codex` のときのみ質問, 例 `gpt-5.6-terra`) —
+     Phase B 実行系 (execute / standby) 用モデル。空回答で省略可 (codex 側デフォルトを使用)
 
    After each runner is added, ask: 「もう 1 件追加しますか？」 (Yes → loop; No → finish).
 
