@@ -104,6 +104,15 @@
         "compression",
         "measurement"
       ]
+    },
+    {
+      "name": "codex-bridge",
+      "description": "Claude Code の rules / CLAUDE.md を Codex が読める AGENTS.md にネスト生成する汎用プラグイン。",
+      "source": "./apps/codex-bridge",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "development",
+      "tags": ["claude-code", "codex", "agents-md", "rules", "bridge"]
     }
   ]
 }
