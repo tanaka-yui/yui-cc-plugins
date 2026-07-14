@@ -1,4 +1,12 @@
-import { groupRulesByTarget, hasSentinel, parseFrontmatter, renderAgentsFile, SENTINEL } from './generate.ts'
+import {
+  checkSize,
+  decideWrite,
+  groupRulesByTarget,
+  hasSentinel,
+  parseFrontmatter,
+  renderAgentsFile,
+  SENTINEL,
+} from './generate.ts'
 
 import { expect, test } from 'bun:test'
 
@@ -66,4 +74,18 @@ test('targets 空の rule は unmapped に入る', () => {
   const { groups, unmapped } = groupRulesByTarget([{ file: 'orphan.md', targets: [], body: 'O' }])
   expect(groups).toEqual([])
   expect(unmapped).toEqual(['orphan.md'])
+})
+
+test('存在しない/センチネル付きなら write、手書きなら skip-handwritten', () => {
+  const generated = renderAgentsFile(['x'], ['y'])
+  expect(decideWrite(null, generated).action).toBe('write')
+  expect(decideWrite(generated, generated).action).toBe('write')
+  expect(decideWrite('# 手書き\n', generated).action).toBe('skip-handwritten')
+})
+
+test('checkSize は 32768 バイト超過で ok=false', () => {
+  expect(checkSize('a'.repeat(100)).ok).toBe(true)
+  const big = checkSize('a'.repeat(40000))
+  expect(big.ok).toBe(false)
+  expect(big.bytes).toBe(40000)
 })

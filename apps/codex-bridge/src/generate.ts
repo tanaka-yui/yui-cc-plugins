@@ -95,3 +95,16 @@ export function groupRulesByTarget(rules: RuleInput[]): { groups: TargetGroup[];
   }))
   return { groups, unmapped: unmapped.sort() }
 }
+
+export type WriteDecision = { action: 'write' } | { action: 'skip-handwritten' }
+
+export function decideWrite(existing: string | null, _next: string): WriteDecision {
+  if (existing === null) return { action: 'write' }
+  if (hasSentinel(existing)) return { action: 'write' }
+  return { action: 'skip-handwritten' }
+}
+
+export function checkSize(content: string, limit: number = SIZE_LIMIT): { ok: boolean; bytes: number } {
+  const bytes = Buffer.byteLength(content, 'utf8')
+  return { ok: bytes <= limit, bytes }
+}
