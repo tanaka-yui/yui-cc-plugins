@@ -16,7 +16,10 @@
 - 利用可能な Agent 一覧を子セッションに伝達し、各子セッションが最適な Agent を選択
 - タスクごとに brainstorming スキルの使用を選択可能
 - **3つのレイアウトモード**: workspace（デフォルト・別タブ）、split（ペイン分割）、claude-teams（Agent Teams）— ディスパッチ前に選択
-- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を opus で実行後、実行フェーズに入る前に必ず `opus 1m` / `sonnet` を選ばせる（`runners.json` に `engine: codex` runner がある場合のみ `codex` も追加）。同一 model なら現セッション継続、異なる model なら `launch-workspace.sh --mode execute` 経由で孫 surface を spawn (runner script でラップされ完了通知が確実に親に伝播)。元 Child は `.deferred` を書いて exit する
+- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を opus で実行後（Phase A-R 有効時は codex レビューの approve 後）、実行フェーズに入る前に必ず `opus 1m` / `sonnet` を選ばせる（`runners.json` に `engine: codex` runner がある場合のみ `codex` も追加）。同一 model なら現セッション継続、異なる model なら `launch-workspace.sh --mode execute` 経由で孫 surface を spawn (runner script でラップされ完了通知が確実に親に伝播)。元 Child は `.deferred` を書いて exit する
+- **Phase A-R（codex plan/spec レビュー）**: `runners.json` の codex runner に `review_model` があり
+  config の `review_mode` が `on` のとき、Phase A の成果物（plan モード: plan / superpowers モード:
+  spec と plan）を専用ペインの codex がレビューする。approve まで最大 3 往復、超過時はユーザー判断
 - **統一表示フォーマット**: 子セッション一覧・進捗・最終サマリーは Box drawing 表（Template A/B/C）で常に同じレイアウト
 - **堅牢なバックグラウンド監視**: `monitor-dispatch.sh` が heartbeat / 死亡通知 / `--resume` をサポート。`cmux send` の後に必ず `cmux send-key return` を発行して親 TUI に確実に届ける
 - **2つの統合戦略**: PR per task（子タスクごとに PR 作成）、Wait and merge（全タスク完了後にローカルマージ）
@@ -213,10 +216,16 @@ PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
 [[ -z "$PREWARM" ]] && PREWARM=true
 ```
 
-レイアウトが `workspace` かつ `PREWARM` が `true` のとき、各タスク workspace 内に standby ペイン
-を縦積みで起動する（上: opus / 中: sonnet / 下: codex — codex は `runners.json` に
-`engine: "codex"` runner が登録されている場合のみ）。ペイン作成はすべて `prewarm-panes.sh` に
-委譲し、手動で作成しないこと。
+レイアウトが `workspace` かつ `PREWARM` が `true` のとき、standby ペインの配置は Phase A-R の
+有効/無効で分岐する:
+
+- **Phase A-R 無効**（現行どおり）: 縦積み — 上: opus / 中: sonnet / 下: codex（codex は
+  `engine: "codex"` runner 登録時のみ）
+- **Phase A-R 有効**: 2×2 均等グリッド — 左上: opus / 右上: codex レビューペイン（idle、
+  `--model <review_model>`）/ 左下: sonnet / 右下: codex。レビューペインは standby wrapper の
+  status 所有権を持たない素の codex セッション（`.assigned-<slug>-review` は誰も touch しない）
+
+ペイン作成はすべて `prewarm-panes.sh` に委譲し、手動で作成しないこと。
 
 **send-message モード** — opus セッションはすでにワークスペース起動時にタスクプロンプト付きで
 起動済み。その下に sonnet/codex ペインを追加する（その起動の出力 JSON から `workspace_id` /
@@ -229,6 +238,7 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
   [--codex-runner <codex-runner-name>] \
+  [--review-model "$REVIEW_MODEL"] \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID"
 ```
@@ -246,10 +256,14 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
   [--codex-runner <codex-runner-name>] \
+  [--review-model "$REVIEW_MODEL"] \
   --message-type agmsg --agmsg-team "$TEAM" \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID")
 ```
+
+`--review-model` は Phase A-R 有効時（Step 1g の `REVIEW_ENABLED`）のみ渡す。`--codex-runner` の
+指定が前提となる。
 
 通常のタスクプロンプト起動がこのモードでは走らないため、`prewarm-panes.sh` 自身がペイン作成
 直後に初期 `"launched"` status.json（`workspace_id` / `surface_id` 込み）を書き出す。これにより
@@ -274,14 +288,15 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
      `cmux send-key --surface <opus-surface> return`。
 
 `prewarm-panes.sh` が書き出す prewarm.json のスキーマ（`opus` は agmsg モード時のみ、`codex` は
-codex runner が存在する場合のみ、`delivery` は配線が成功したかどうかに応じて `"agmsg"` または
-`"cmux-send"`）:
+codex runner が存在する場合のみ、`review` は `--review-model` が渡された場合のみ、`delivery` は
+配線が成功したかどうかに応じて `"agmsg"` または `"cmux-send"`）:
 
 ```json
 {
   "opus":   { "surface_id": "surface:N", "agent": "<slug>",        "delivery": "agmsg" },
   "sonnet": { "surface_id": "surface:N", "agent": "<slug>-sonnet", "delivery": "agmsg" },
-  "codex":  { "surface_id": "surface:N", "agent": "<slug>-codex",  "delivery": "cmux-send" }
+  "codex":  { "surface_id": "surface:N", "agent": "<slug>-codex",  "delivery": "cmux-send" },
+  "review": { "surface_id": "surface:N", "agent": "<slug>-review", "delivery": "cmux-send" }
 }
 ```
 
@@ -493,12 +508,16 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 {
   "message_type": "agmsg",
   "prewarm": true,
+  "review_mode": "on",
   "shell_ready_ms": { "baseline_ms": 1200, "samples": 5, "updated_at": "..." }
 }
 ```
 
 - `message_type`: 子 → 親の通知トランスポート。`"send-message"`（default）| `"agmsg"`
 - `prewarm`: workspace レイアウト時の standby ペイン事前起動（縦積み: 上 opus / 中 sonnet / 下 codex）。agmsg モードでは opus-1m も idle 起動し Phase A タスクを agmsg で配送する。`true`（default）| `false`
+- `review_mode`: Phase A-R（codex plan/spec レビュー）の有効/無効（`"on"` / `"off"`）。未設定かつ
+  `review_model` 付き codex runner が存在する場合のみ初回質問し、Yes/No どちらもグローバル config に
+  永続化する。プロジェクト側 `.dispatch/config.json` がグローバルより優先
 
 ### トラブルシュート
 
@@ -553,7 +572,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
   "runners": [
     { "name": "claude",  "command": "claude",  "engine": "claude" },
     { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
-    { "name": "codex",   "command": "codex",   "engine": "codex"  }
+    { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol" }
   ]
 }
 ```
@@ -564,6 +583,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 | `runners[].name` | AskUserQuestion の選択肢ラベル兼一意 ID |
 | `runners[].command` | 実際に実行するコマンド／関数名 |
 | `runners[].engine` | `claude` または `codex`。MODE 別の起動引数組み立てを切替（下表参照） |
+| `runners[].review_model` | （任意、`engine: codex` の runner のみ）Phase A-R（plan/spec レビュー）でレビューペインに渡すモデル名。未設定なら Phase A-R は無効 |
 
 ### engine × MODE 起動コマンド対応表
 
@@ -592,6 +612,8 @@ execute モードのプロンプトテキスト: `Read and execute the plan at <
 1. AskUserQuestion で **starter テンプレ（claude のみ）** か **カスタム** を選択
 2. starter テンプレ選択時は claude のみが書き出されます
 3. カスタム選択時は AskUserQuestion ループで `name / command / engine` を 1 件ずつ収集、最後に「もう 1 件追加？」を繰り返し確認
+   - **review_model**（自由入力、engine が `codex` のときのみ質問、例 `gpt-5.6-sol`）—
+     plan/spec レビュー（Phase A-R）用モデル。空回答で省略可
 4. 完了後、`~/.claude/cmux-team-dispatch-task/` ディレクトリが無ければ作成され、runners.json が書き出されます
 
 ### タスクごとの runner 切替
@@ -1037,13 +1059,35 @@ done
 
 ## 子セッションのモデル選択フロー（必須）
 
-子セッションのプロンプトには `MANDATORY MODEL SELECTION SEQUENCE` が必ず含まれており、以下の二段階で動作する。
+子セッションのプロンプトには `MANDATORY MODEL SELECTION SEQUENCE` が必ず含まれており、以下の段階で動作する
+（Phase A-R は `review_mode: on` のときのみ Phase A と Phase B の間に挟まる）。
 
 ### Phase A: Plan / Brainstorming（常に opus）
 
 - superpowers モード: `superpowers:brainstorming` → `superpowers:writing-plans`
 - plan モード: 組み込み `/plan`
 - このフェーズでは **モデル切り替えを禁止** する。常に opus を使う。
+
+### Phase A-R — codex plan/spec レビュー（review_mode: on のときのみ）
+
+Phase A の成果物を専用ペインの codex（`review_model`）がレビューする。Phase B より前に必ず完了させる。
+
+- **レビューポイント**: plan モード = plan 完成後の 1 回 / superpowers モード = spec（design doc）
+  完成後と plan 完成後の 2 回
+- **ラウンドループ**（各ポイント最大 3 往復）: 依頼 → codex が
+  `<STATUS_DIR>/review/<point>-round-<N>.md` に指摘を書き、末尾に `VERDICT: approve` または
+  `VERDICT: needs_work` を記す → approve なら次へ / needs_work なら opus が妥当な指摘を反映
+  （反論は次ラウンドの依頼文に理由付きで返す）して再依頼
+- **依頼配送**: prewarm.json の `review.delivery` で分岐。`agmsg` → `send.sh` で送信しターンを
+  終えて push 待ち / `cmux-send` → `cmux send` + verdict ファイルポーリング（5 秒間隔・15 分
+  タイムアウト）
+- **3 往復で approve が出ない** → 残指摘を要約して AskUserQuestion（このまま進む / さらに修正）
+- **タイムアウト・verdict 不正** → 同一ラウンドを 1 回だけ再依頼。それでも失敗なら
+  AskUserQuestion（再依頼 / レビュー省略して Phase B へ）
+- **ペイン寿命**: 全ポイントで同一ペインを再利用（文脈保持）。最終 approve（またはユーザー判断）
+  後に `cmux close-surface` で閉じる。spawn 失敗時はレビューをスキップして Phase B へ（警告表示）
+- **prewarm 無効 / split レイアウト時**: 最初のレビューポイントで
+  `launch-workspace.sh --mode review --standby-split-direction right` によりオンデマンド spawn
 
 ### Phase B: 実装フェーズのモデル選択（auto mode でも必須）
 
