@@ -210,7 +210,7 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
   "runners": [
     { "name": "claude",  "command": "claude",  "engine": "claude" },
     { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
-    { "name": "codex",   "command": "codex",   "engine": "codex"  }
+    { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol" }
   ]
 }
 ```
@@ -220,6 +220,8 @@ Field meanings:
 - `name`: unique identifier shown in AskUserQuestion options
 - `command`: the executable / zsh function to invoke
 - `engine`: `claude` or `codex` — controls flag composition (see table below)
+- `review_model` (optional, `engine: codex` の runner のみ): Phase A-R (plan/spec レビュー)
+  でレビューペインに渡すモデル名。未設定なら Phase A-R は無効
 
 **engine × MODE invocation table** (executed by `launch-workspace.sh`):
 
@@ -270,6 +272,8 @@ the parent claude account).
    - **name** (free text, e.g. `ccenec`) — unique identifier
    - **command** (free text, e.g. `ccenec` or `codex` or `claude`) — what to invoke
    - **engine** (choice: `claude` / `codex`)
+   - **review_model** (free text, engine が `codex` のときのみ質問, 例 `gpt-5.6-sol`) —
+     plan/spec レビュー (Phase A-R) 用モデル。空回答で省略可
 
    After each runner is added, ask: 「もう 1 件追加しますか？」 (Yes → loop; No → finish).
 
@@ -314,6 +318,43 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
      jq -n --arg mt "<answer>" '{message_type: $mt}' > "$CONFIG"
    fi
    ```
+
+**Resolve review mode (`review_mode`)** — same precedence pattern as `message_type`:
+
+1. Read `review_mode` from `<project>/.dispatch/config.json`, falling back to
+   `~/.claude/cmux-team-dispatch-task/config.json`:
+
+   ```bash
+   REVIEW_MODE=$(jq -r '.review_mode // empty' .dispatch/config.json 2>/dev/null)
+   [[ -z "$REVIEW_MODE" ]] && REVIEW_MODE=$(jq -r '.review_mode // empty' \
+     ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
+   ```
+
+   If set (`"on"` / `"off"`), use it silently — do NOT ask.
+
+2. If unset, check whether a codex runner with `review_model` exists:
+
+   ```bash
+   REVIEW_MODEL=$(jq -r '[.runners[] | select(.engine == "codex" and .review_model != null)] | .[0].review_model // empty' \
+     ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
+   ```
+
+   - `REVIEW_MODEL` empty → treat as `off`. Do NOT write config (so the question
+     fires once a review_model gets configured later).
+   - `REVIEW_MODEL` non-empty → ask via AskUserQuestion:
+     > plan/spec の codex レビュー (Phase A-R) を有効にしますか？ (Phase A の成果物を codex (`<review_model>`) が approve するまでレビューします)
+     Persist BOTH answers (Yes → `"on"`, No → `"off"`) to the global config with the
+     same jq merge pattern as `message_type` above (key: `review_mode`).
+
+3. Compute the final flag used by prompt construction (Step 2) and pre-warm:
+
+   ```bash
+   # REVIEW_ENABLED: codex runner + review_model + review_mode=on の 3 条件
+   REVIEW_ENABLED=false
+   [[ -n "$CODEX_CMD" && -n "$REVIEW_MODEL" && "$REVIEW_MODE" == "on" ]] && REVIEW_ENABLED=true
+   ```
+
+   (`CODEX_CMD` / `CODEX_RUNNER_NAME` は placeholder rules 節と同じ jq クエリで得る)
 
 **When `message_type` is `agmsg`, wire the team BEFORE launching (Step 2):**
 
