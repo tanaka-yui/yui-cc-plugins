@@ -18,7 +18,8 @@
 - **3つのレイアウトモード**: workspace（デフォルト・別タブ）、split（ペイン分割）、claude-teams（Agent Teams）— ディスパッチ前に選択
 - **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を opus で実行後（Phase A-R 有効時は codex レビューの approve 後）、実行フェーズに入る前に必ず `opus 1m` / `sonnet` を選ばせる（`runners.json` に `engine: codex` runner がある場合のみ `codex` も追加）。同一 model なら現セッション継続、異なる model なら `launch-workspace.sh --mode execute` 経由で孫 surface を spawn (runner script でラップされ完了通知が確実に親に伝播)。元 Child は `.deferred` を書いて exit する
 - **Phase A-R（codex plan/spec レビュー）**: `runners.json` の codex runner に `review_model` があり
-  config の `review_mode` が `on` のとき、Phase A の成果物（plan モード: plan / superpowers モード:
+  レビューを使うことを選んだとき（dispatch 前に毎回質問。config の `review_mode: "on"` / `"off"` で
+  恒久設定も可）、Phase A の成果物（plan モード: plan / superpowers モード:
   spec と plan）を専用ペインの codex がレビューする。approve まで最大 3 往復、超過時はユーザー判断
 - **統一表示フォーマット**: 子セッション一覧・進捗・最終サマリーは Box drawing 表（Template A/B/C）で常に同じレイアウト
 - **堅牢なバックグラウンド監視**: `monitor-dispatch.sh` が heartbeat / 死亡通知 / `--resume` をサポート。`cmux send` の後に必ず `cmux send-key return` を発行して親 TUI に確実に届ける
@@ -121,7 +122,7 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 ### Step 1: Parse and Prepare
 
 タスク収集、Agent ルーティング、レイアウト決定、統合戦略決定、子 runner 設定を1ステップで実行。
-ディスパッチ前に最大5つのユーザーインタラクション: brainstorming 選択、レイアウト選択、統合戦略選択、子 runner 選択（`runners.json` 初回セットアップ含む）、メッセージトランスポート選択（初回のみ）。
+ディスパッチ前に最大6つのユーザーインタラクション: brainstorming 選択、レイアウト選択、統合戦略選択、子 runner 選択（`runners.json` 初回セットアップ含む）、メッセージトランスポート選択（初回のみ）、Phase A-R レビュー使用確認（`review_mode` が未設定/`"ask"` かつ `review_model` 付き runner 存在時は毎回）。
 
 1. **(1a)** タスクを `$ARGUMENTS` から解析（なければ1回だけ質問）
 2. **(1b)** `.claude/agents/` をスキャンして利用可能な Agent 一覧を収集
@@ -515,9 +516,11 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 - `message_type`: 子 → 親の通知トランスポート。`"send-message"`（default）| `"agmsg"`
 - `prewarm`: workspace レイアウト時の standby ペイン事前起動（縦積み: 上 opus / 中 sonnet / 下 codex）。agmsg モードでは opus-1m も idle 起動し Phase A タスクを agmsg で配送する。`true`（default）| `false`
-- `review_mode`: Phase A-R（codex plan/spec レビュー）の有効/無効（`"on"` / `"off"`）。未設定かつ
-  `review_model` 付き codex runner が存在する場合のみ初回質問し、Yes/No どちらもグローバル config に
-  永続化する。プロジェクト側 `.dispatch/config.json` がグローバルより優先
+- `review_mode`: Phase A-R（codex plan/spec レビュー）の制御（`"on"` / `"off"` / `"ask"`）。
+  `"on"` / `"off"` は質問なしで恒久適用。未設定または `"ask"` のときは、`review_model` 付き
+  codex runner が存在する場合のみ **dispatch のたびに**使うかどうかを質問する（4択:
+  はい[今回のみ] / いいえ[今回のみ] / 常に有効 / 常に無効。「常に〜」のみ `"on"` / `"off"` として
+  グローバル config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバルより優先
 
 ### トラブルシュート
 

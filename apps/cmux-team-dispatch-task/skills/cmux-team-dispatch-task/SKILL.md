@@ -81,10 +81,11 @@ Mode column abbreviation: `superpwr` = superpowers (brainstorming), `plan` = bui
 ## Step 1: Parse and Prepare
 
 This single step handles task collection, agent routing, layout selection, integration
-strategy, and runtime selection. Up to five user interactions before dispatch:
+strategy, and runtime selection. Up to six user interactions before dispatch:
 brainstorming selection (1c), layout mode selection (1d), integration strategy
-selection (1e), child runner selection (1f), and message transport selection
-(1g, first time only).
+selection (1e), child runner selection (1f), message transport selection
+(1g, first time only), and Phase A-R review opt-in (1g — every dispatch while
+`review_mode` is unset or `"ask"` and a `review_model` runner exists).
 
 ### 1a. Collect Tasks
 
@@ -345,15 +346,22 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
      ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
    ```
 
-   If set (`"on"` / `"off"`), use it silently — do NOT ask.
+   If set to `"on"` or `"off"`, use it silently — do NOT ask (permanent opt-in/out).
 
-   If unset:
-   - `REVIEW_MODEL` empty → treat as `off`. Do NOT write config (so the question
-     fires once a review_model gets configured later).
-   - `REVIEW_MODEL` non-empty → ask via AskUserQuestion:
-     > plan/spec の codex レビュー (Phase A-R) を有効にしますか？ (Phase A の成果物を codex (`<review_model>`) が approve するまでレビューします)
-     Persist BOTH answers (Yes → `"on"`, No → `"off"`) to the global config with the
-     same jq merge pattern as `message_type` above (key: `review_mode`).
+   If unset or `"ask"`:
+   - `REVIEW_MODEL` empty → treat as `off`. Do NOT ask and do NOT write config (so
+     the question starts firing once a review_model gets configured later).
+   - `REVIEW_MODEL` non-empty → ask via AskUserQuestion **on EVERY dispatch, BEFORE
+     launching any task** (this question is part of Step 1, alongside 1c-1f):
+     > plan/spec の codex レビュー (Phase A-R) を使いますか？ (Phase A の成果物を codex (`<review_model>`) が approve するまでレビューします)
+     Options:
+       1. はい (今回のみ)   → `REVIEW_MODE=on`。config には書かない
+       2. いいえ (今回のみ) → `REVIEW_MODE=off`。config には書かない
+       3. 常に有効         → `REVIEW_MODE=on`。global config に `review_mode: "on"` を永続化
+       4. 常に無効         → `REVIEW_MODE=off`。global config に `review_mode: "off"` を永続化
+     Persistence (options 3/4 only) uses the same jq merge pattern as `message_type`
+     above (key: `review_mode`). 「常に〜」を選んだ後に再び毎回質問へ戻すには、config の
+     `review_mode` を `"ask"` に書き換える (または削除する)。
 
 3. Compute the final flag used by prompt construction (Step 2) and pre-warm:
 

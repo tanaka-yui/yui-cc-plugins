@@ -175,10 +175,12 @@ runner wrapper の exit 時 push(バックストップ)。idle のまま開い�
 また、ディスパッチを実行しているセッション自身は `delivery.sh set` が出力する
 `AGMSG-DIRECTIVE:` に従って watcher を起動する(SessionStart hook は次回セッションから有効)。
 
-config にはもう一つ `review_mode` フィールドがある。Phase A-R（codex plan/spec レビュー、後述）の
-有効/無効を `"on"` / `"off"` で切り替える。未設定かつ `review_model` 付き codex runner が存在する
-場合のみ初回に質問され、回答は永続化される。プロジェクト側 `.dispatch/config.json` がグローバル
-config より優先される点は `message_type` と同じ。
+config にはもう一つ `review_mode` フィールドがある（`"on"` / `"off"` / `"ask"`）。`"on"` / `"off"`
+は Phase A-R（codex plan/spec レビュー、後述）を質問なしで恒久的に有効/無効にする。未設定または
+`"ask"` のときは、`review_model` 付き codex runner が存在する場合のみ **dispatch のたびに**レビューを
+使うか質問される（はい[今回のみ] / いいえ[今回のみ] / 常に有効 / 常に無効 — 「常に〜」を選んだときだけ
+config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバル config より優先される点は
+`message_type` と同じ。
 
 ## モデル選択フロー (Phase A-R / Phase B)
 
@@ -191,6 +193,8 @@ config より優先される点は `message_type` と同じ。
 
 - plan モード: plan 完成後に 1 回 / superpowers モード: spec と plan で計 2 回
 - 指摘と verdict は `.dispatch/<slug>/review/<point>-round-<N>.md`（末尾 `VERDICT:` 行）で受け渡し
+- 使うかどうかは dispatch のたびに質問される（「常に有効/常に無効」を選べば以後は質問なし。
+  毎回質問に戻すには config の `review_mode` を `"ask"` にするか削除する）
 - 無効化はいつでも config の `review_mode: "off"` で可能（runners.json はそのまま残せる）
 - 実行系のモデルは runner の `exec_model`（例: `gpt-5.6-terra`）で別途指定できる。Phase B の
   codex 実行（execute / standby ペイン）にのみ適用され、レビューは `review_model` のまま。
