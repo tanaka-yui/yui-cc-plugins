@@ -512,8 +512,8 @@ If none are relevant, proceed without an agent.
 3. **Mandatory Model Selection Sequence** (append to EVERY task prompt, regardless of mode).
 
    This block contains placeholders the parent fills before sending: `{{LAYOUT}}`,
-   `{{CODEX_OPTION_LINE}}`, `{{CODEX_BEHAVIOR_BLOCK}}`. See the placeholder rules
-   immediately below this template.
+   `{{CODEX_OPTION_LINE}}`, `{{CODEX_BEHAVIOR_BLOCK}}`, `{{REVIEW_BLOCK}}`. See the
+   placeholder rules immediately below this template.
 
 ```
 === MANDATORY MODEL SELECTION SEQUENCE ===
@@ -527,6 +527,8 @@ PHASE A — Planning / Brainstorming (always opus):
   - superpowers mode: invoke "superpowers:brainstorming" then write a plan
   - plan mode: use Claude's built-in /plan to produce a structured plan
   Remember the path of the plan file you wrote — Phase B may hand it off.
+
+{{REVIEW_BLOCK}}
 
 PHASE B — Execution model selection (REQUIRED before any code change):
   After Phase A completes and BEFORE executing the plan, you MUST ask the user
@@ -620,6 +622,97 @@ model selection question is a critical error.
   inside a worktree and must NOT re-derive the team name there — deriving it from the
   worktree's `basename` (as Step 1g's `TEAM=` line does for the parent) yields a wrong
   name, since the worktree directory name is `<task-slug>`, not the repo name.
+
+- `{{REVIEW_BLOCK}}` → **Phase A-R enabled のときのみ**（Step 1g の `REVIEW_ENABLED` が true）、
+  以下のブロック全体（`{{REVIEW_MODEL}}` → Step 1g の `REVIEW_MODEL`、`{{CODEX_RUNNER_NAME}}` →
+  codex runner の `name` に置換して）を焼き込む。disabled のときは空文字列:
+
+  ````
+  PHASE A-R — Plan/Spec review by codex (REQUIRED between Phase A and Phase B):
+    Review model: {{REVIEW_MODEL}} (runs in a dedicated review pane — a plain codex
+    session with NO status.json ownership; NEVER touch .assigned-<task-slug>-review)
+
+    Review points (run the round loop below at EACH point, in order):
+      - plan mode:        one point  — id "plan" (after the plan is written)
+      - superpowers mode: two points — id "spec" (after the brainstorming design doc),
+                          then id "plan" (after the implementation plan)
+
+    Setup (before the first point only):
+      mkdir -p "<EXISTING_STATUS_DIR>/review"
+      REVIEW_SURFACE=$(jq -r '.review.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
+      REVIEW_DELIVERY=$(jq -r '.review.delivery // "cmux-send"' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
+      IF REVIEW_SURFACE is empty (prewarm off / split layout), spawn the pane once:
+        RESULT=$(zsh <SKILL_DIR>/scripts/launch-workspace.sh \
+          --cwd "$PWD" --mode review \
+          --standby-in "$CMUX_WORKSPACE_ID" --standby-split-from "$CMUX_SURFACE_ID" \
+          --standby-split-direction right \
+          --runner {{CODEX_RUNNER_NAME}} --model '{{REVIEW_MODEL}}' \
+          --status-dir "<EXISTING_STATUS_DIR>" \
+          <task-slug>-review)
+        REVIEW_SURFACE=$(echo "$RESULT" | jq -r '.surface_id // empty')
+        REVIEW_DELIVERY="cmux-send"
+      IF the spawn fails: warn the user, SKIP Phase A-R entirely, and continue to
+      Phase B — review is a quality gate, not a dispatch blocker.
+      The SAME pane is reused across all points and rounds (it keeps review context).
+
+    Round loop (at point <point>, N = 1, 2, 3):
+      1. Compose the request text:
+           "Review the <point> document at <ABSOLUTE_DOC_PATH>.
+            Reference material: <related file paths — e.g. the spec path when reviewing the plan>.
+            This is round <N> (max 3)."
+         For N >= 2 append:
+           "Previous findings: <EXISTING_STATUS_DIR>/review/<point>-round-<N-1>.md.
+            The document was revised in response — check whether concerns were
+            addressed (rebuttals are inline below) and look for new issues.
+            <your rebuttals to findings you rejected, with reasons>"
+         Always append the protocol:
+           "Write your findings as markdown to
+            <EXISTING_STATUS_DIR>/review/<point>-round-<N>.md.
+            The LAST line of that file MUST be exactly 'VERDICT: approve' or
+            'VERDICT: needs_work'. approve = the document is ready to implement."
+      2. Send the request and wait, branching on REVIEW_DELIVERY:
+         IF "agmsg":
+           Append to the request: "After writing the file, notify me:
+             ~/.agents/skills/agmsg/scripts/send.sh $TEAM <task-slug>-review <task-slug> '[review] <point> round <N> done'"
+           ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-review "<request text>"
+           # $TEAM is the TEAM value given above — do NOT re-derive it
+           Then END YOUR TURN and idle-wait for the '[review]' push. When it
+           arrives, verify the verdict file exists and continue at step 3.
+         ELSE ("cmux-send"):
+           cmux send --surface "$REVIEW_SURFACE" "<request text>"
+           cmux send-key --surface "$REVIEW_SURFACE" return
+           Wait by polling the verdict file (5s interval, 15 min timeout):
+             F="<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md"
+             for i in $(seq 1 180); do
+               [[ -f "$F" ]] && grep -qE '^VERDICT: (approve|needs_work)$' "$F" && break
+               sleep 5
+             done
+      3. Read the verdict:
+           VERDICT=$(grep -oE 'VERDICT: (approve|needs_work)' "<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md" 2>/dev/null | tail -1)
+         - "VERDICT: approve" → this point is done. Move to the next point; after
+           the LAST point, close the pane and proceed to Phase B:
+             cmux close-surface --surface "$REVIEW_SURFACE"
+         - "VERDICT: needs_work" → read the findings. Apply the ones you judge
+           valid to the document; collect reasons for the ones you reject (they
+           go into the next round's request as rebuttals). Then:
+             N < 3  → run round N+1.
+             N == 3 → summarize the unresolved findings and ask via AskUserQuestion:
+               Q: "codex レビューで 3 往復しても approve が出ませんでした。残りの指摘: <要約>。どうしますか？"
+                 1. このまま進む — 残指摘を文書に注記して Phase B へ
+                 2. さらに修正 — もう 1 往復レビューを続ける
+               "このまま進む" → append the unresolved findings as a note in the
+               document, close the pane if this was the last point, and move on.
+               "さらに修正" → run one more round; on another needs_work, re-ask.
+         - Verdict file missing or has no VERDICT line (timeout) → re-send the
+           SAME round's request once. If it times out again, ask via AskUserQuestion:
+             Q: "codex レビューが応答しません。どうしますか？"
+               1. 再依頼する
+               2. レビューを省略して Phase B へ進む
+             Option 2 → cmux close-surface --surface "$REVIEW_SURFACE", continue.
+
+    VIOLATION: When this block is present, do NOT start Phase B before every
+    review point reached approve or an explicit user decision was made.
+  ````
 
 - Read `~/.claude/cmux-team-dispatch-task/runners.json` and check whether any runner
   has `engine: "codex"`:
