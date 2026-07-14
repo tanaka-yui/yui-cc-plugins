@@ -14,8 +14,8 @@
 #                                      配置は 2 方式: --standby-in + --standby-split-from 指定時は
 #                                      既存 workspace 内に縦分割ペイン (new-split down)、両方省略時は
 #                                      新規 workspace のメイン surface で待機セッションを起動する。
-#                                      wrapper は <STATUS_DIR>/.assigned が存在するときだけ
-#                                      exit 時に status.json を更新する
+#                                      wrapper は <STATUS_DIR>/.assigned-<workspace-name> が
+#                                      存在するときだけ exit 時に status.json を更新する
 #   --standby-in <workspace-id>        standby ペインを追加する既存 workspace (split 配置時必須)
 #   --standby-split-from <surface-id>  縦分割の分割元 surface (split 配置時必須)
 #   --plan-file <path>                 Plan file path (required when --mode execute).
@@ -408,8 +408,8 @@ else
       # (codex に --model は不要 — codex runner が独自に処理)
       CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
     elif [[ "$MODE" == "standby" ]]; then
-      # codex standby: prompt なしで idle 起動 (idle codex は agmsg push を受信できないため、
-      # 実行指示は message-type に関わらず cmux send で注入される)
+      # codex standby: prompt なしで idle 起動。実行指示の配送は prewarm.json の delivery 値に
+      # 従う (agmsg 配線成功時は agmsg、それ以外・send-message モードは cmux send)
       if [[ -n "$PROMPT_TEXT" ]]; then
         CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
       else
@@ -520,10 +520,12 @@ if [[ "\$DEFER_STATUS" == "1" && -n "\$STATUS_DIR" && -f "\$STATUS_DIR/.deferred
   exit 0
 fi
 
-# standby: .assigned sentinel が無ければ実装を引き受けていない。status を書かずに終了する
-# (未使用 standby tab を閉じても status.json を汚さないための仕組み — .deferred の逆向き)
-if [[ "\$STANDBY" == "1" && ! -f "\$STATUS_DIR/.assigned" ]]; then
-  echo "[runner] standby exiting without assignment (no .assigned at \$STATUS_DIR)" >&2
+# standby: .assigned-<workspace-name> sentinel が無ければ実装を引き受けていない。status を
+# 書かずに終了する (未使用 standby tab を閉じても status.json を汚さないための仕組み —
+# .deferred の逆向き)。ロール別ファイルにすることで、同じ STATUS_DIR を共有する
+# sonnet/codex 等の standby 同士が互いの割り当てを誤検知しない
+if [[ "\$STANDBY" == "1" && ! -f "\$STATUS_DIR/.assigned-\$SLUG" ]]; then
+  echo "[runner] standby exiting without assignment (no .assigned-\$SLUG at \$STATUS_DIR)" >&2
   exit 0
 fi
 

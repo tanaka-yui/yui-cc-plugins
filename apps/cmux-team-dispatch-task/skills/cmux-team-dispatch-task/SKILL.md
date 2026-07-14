@@ -477,6 +477,7 @@ If none are relevant, proceed without an agent.
 You will operate in two phases. This sequence is REQUIRED even in auto mode.
 
 LAYOUT: {{LAYOUT}}                 # workspace or split — used by Phase B spawn
+TEAM: {{TEAM}}                     # agmsg team name (empty when message_type is send-message)
 
 PHASE A — Planning / Brainstorming (always opus):
   Use opus for plan / brainstorming. Do NOT switch models in this phase.
@@ -512,13 +513,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         SONNET_SURFACE=$(jq -r '.sonnet.surface_id // empty' "$PREWARM_FILE" 2>/dev/null)
 
       IF SONNET_SURFACE is non-empty (pre-warm path):
-        1. Close the unused codex standby pane if present (BEFORE touching .assigned —
-           sonnet/codex wrappers share the same .assigned file, so closing first avoids
-           a race where the unused wrapper sees .assigned and errors out):
+        1. Close the unused codex standby pane if present (closing it early just frees the
+           pane promptly — each standby now checks its own `.assigned-<name>` sentinel, so
+           there is no cross-pane race to avoid here):
              CODEX_SURFACE=$(jq -r '.codex.surface_id // empty' "$PREWARM_FILE" 2>/dev/null)
              [[ -n "$CODEX_SURFACE" ]] && cmux close-surface --surface "$CODEX_SURFACE"
-           # .assigned の無い standby は閉じても status.json を汚さない
-        2. touch "<EXISTING_STATUS_DIR>/.assigned"
+           # .assigned-<name> の無い standby は閉じても status.json を汚さない
+        2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"
            # standby wrapper に完了処理 (status.json done/error 遷移 + <slug>-sonnet-done
            # signal + 親通知) の所有権を渡す
         3. Send the execution request. Check `.sonnet.delivery` in prewarm.json:
@@ -528,6 +529,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
              the plan), run /exit to close this session. Do not leave it idle."
            IF DELIVERY == "agmsg" (the worktree was wired by prewarm-panes.sh):
              ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-sonnet "$REQUEST_TEXT"
+             # $TEAM is the TEAM value given above — do NOT re-derive it in this session
            ELSE (send-message mode, or wiring failed):
              cmux send --surface "$SONNET_SURFACE" "$REQUEST_TEXT"
              cmux send-key --surface "$SONNET_SURFACE" return
@@ -570,6 +572,12 @@ model selection question is a critical error.
   For `claude-teams` layout, this whole MODEL SELECTION block can be omitted because
   Phase B does not apply (the orchestrator drives the teammates).
 
+- `{{TEAM}}` → the agmsg team name resolved in Step 1g (`dispatch-<repo-name>`); empty in
+  send-message mode. Phase B's `send.sh` calls use this value. The child session runs
+  inside a worktree and must NOT re-derive the team name there — deriving it from the
+  worktree's `basename` (as Step 1g's `TEAM=` line does for the parent) yields a wrong
+  name, since the worktree directory name is `<task-slug>`, not the repo name.
+
 - Read `~/.claude/cmux-team-dispatch-task/runners.json` and check whether any runner
   has `engine: "codex"`:
 
@@ -587,15 +595,17 @@ model selection question is a critical error.
           [DIFFERENT MODEL] "codex" → FIRST check for a pre-warmed standby pane:
               CODEX_SURFACE=$(jq -r '.codex.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
             IF CODEX_SURFACE is non-empty:
-              1. Close the unused sonnet standby pane (BEFORE touching .assigned — see the
-                 sonnet branch above for why the ordering matters):
+              1. Close the unused sonnet standby pane (closing it early just frees the pane
+                 promptly — see the sonnet branch above: per-pane `.assigned-<name>` sentinels
+                 mean there is no cross-pane race to avoid):
                    SONNET_SURFACE=$(jq -r '.sonnet.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
                    [[ -n "$SONNET_SURFACE" ]] && cmux close-surface --surface "$SONNET_SURFACE"
-              2. touch "<EXISTING_STATUS_DIR>/.assigned"
+              2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-codex"
               3. Send the execution request. Check `.codex.delivery` in prewarm.json:
                    DELIVERY=$(jq -r '.codex.delivery // "cmux-send"' "<EXISTING_STATUS_DIR>/prewarm.json")
                  IF DELIVERY == "agmsg":
                    ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-codex "$REQUEST_TEXT"
+                   # $TEAM is the TEAM value given above — do NOT re-derive it in this session
                  ELSE:
                    cmux send --surface "$CODEX_SURFACE" "$REQUEST_TEXT"
                    cmux send-key --surface "$CODEX_SURFACE" return
@@ -717,7 +727,8 @@ If you encounter a blocking error, run:
   echo '{"status":"error","message":"<error description>","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
 ```
 
-Replace `<project-root>` with the actual project root path and `<task-slug>` with the task's slug.
+Replace `<project-root>` with the actual project root path and `<task-slug>` with the task's slug,
+and `<team>` with the agmsg team name resolved in Step 1g (agmsg mode only).
 
 ### Launch: Workspace Mode (default)
 
@@ -785,12 +796,17 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --parent-notify-surface "$CMUX_SURFACE_ID")
 ```
 
+Since the normal task-prompt launch never runs in this mode, `prewarm-panes.sh` itself writes
+an initial `"launched"` status.json (with `workspace_id`/`surface_id` populated) right after
+creating the panes, so `.dispatch/<task-slug>/status.json` is observable immediately.
+
 Then dispatch the Phase A task to the opus pane:
 
-1. Write the full task prompt (including PROGRESS REPORTING FORMAT and the
-   MANDATORY MODEL SELECTION SEQUENCE blocks) to
+1. Write the full task prompt (including PROGRESS REPORTING FORMAT, the
+   MANDATORY MODEL SELECTION SEQUENCE, and the agmsg status-protocol block
+   from Step 2 — its MANDATORY completion push is what notifies the parent) to
    `<repo-root>/.worktrees/<task-slug>/.cmux-team-dispatch-task-prompt.md`.
-2. `touch .dispatch/<task-slug>/.assigned` — the opus standby wrapper owns
+2. `touch .dispatch/<task-slug>/.assigned-<task-slug>` — the opus standby wrapper owns
    status.json transition from now on (it was launched with `--defer-status`,
    so a Phase B handoff can still suppress it via `.deferred`).
 3. Send the task. Check `.dispatch/<task-slug>/prewarm.json` for
@@ -1499,4 +1515,4 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Same-model vs different-model in Phase B**: Phase A is always opus, so "opus 1m" counts as the same model and stays in the current session via `/model claude-opus-4-7[1m]`. Any other choice (sonnet / codex) is treated as a different model: when a pre-warmed standby pane exists (prewarm.json), the Child hands off by sending the execution request to that pane; otherwise it triggers a spawn via `launch-workspace.sh --mode execute`: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends an `/exit` instruction so the grandchild Claude/Codex session closes its TUI after the PR is created — without this the runner wrapper never reaches `write_status "done"` and status.json gets stuck on `executing`.
 - **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. When a child is launched with `engine: codex`, Phase B's "codex" option is redundant and should be skipped (the child already runs in codex). The runners.json registry lives at `~/.claude/cmux-team-dispatch-task/runners.json` and is bootstrapped on first run via AskUserQuestion.
 - **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須 push(Step 2 で子プロンプトに埋め込む)+ runner wrapper の exit 時 push(バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
-- **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から agmsg で送る。standby wrapper は `<STATUS_DIR>/.assigned` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`。Phase B の実行指示は prewarm.json の `delivery` 値で分岐する: `"agmsg"` なら `send.sh`、`"cmux-send"` (send-message モード / 配線失敗時) なら `cmux send` + `send-key return`。
+- **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から agmsg で送る。standby wrapper は `<STATUS_DIR>/.assigned-<name>` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`。Phase B の実行指示は prewarm.json の `delivery` 値で分岐する: `"agmsg"` なら `send.sh`、`"cmux-send"` (send-message モード / 配線失敗時) なら `cmux send` + `send-key return`。

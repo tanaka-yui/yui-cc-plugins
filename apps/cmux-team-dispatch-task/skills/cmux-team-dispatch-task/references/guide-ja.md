@@ -251,14 +251,19 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --parent-notify-surface "$CMUX_SURFACE_ID")
 ```
 
+通常のタスクプロンプト起動がこのモードでは走らないため、`prewarm-panes.sh` 自身がペイン作成
+直後に初期 `"launched"` status.json（`workspace_id` / `surface_id` 込み）を書き出す。これにより
+`.dispatch/<task-slug>/status.json` は即座に観測可能になる。
+
 続けて Phase A のタスクを opus ペインへ配送する:
 
-1. タスクプロンプト全体（PROGRESS REPORTING FORMAT と MANDATORY MODEL SELECTION SEQUENCE
-   ブロックを含む）を `<repo-root>/.worktrees/<task-slug>/.cmux-team-dispatch-task-prompt.md`
+1. タスクプロンプト全体（PROGRESS REPORTING FORMAT、MANDATORY MODEL SELECTION SEQUENCE、
+   および Step 2 の agmsg ステータスプロトコルブロック — その必須完了 push が親への通知を
+   担う — を含む）を `<repo-root>/.worktrees/<task-slug>/.cmux-team-dispatch-task-prompt.md`
    に書き込む。
-2. `touch .dispatch/<task-slug>/.assigned` — これ以降、opus standby wrapper が status.json
-   遷移の所有権を持つ（`--defer-status` 付きで起動しているため、Phase B へのハンドオフが
-   必要な場合でも `.deferred` でこれを抑止できる）。
+2. `touch .dispatch/<task-slug>/.assigned-<task-slug>` — これ以降、opus standby wrapper が
+   status.json 遷移の所有権を持つ（`--defer-status` 付きで起動しているため、Phase B への
+   ハンドオフが必要な場合でも `.deferred` でこれを抑止できる）。
 3. タスクを送信する。`.dispatch/<task-slug>/prewarm.json` の `.opus.delivery` を確認:
    - `"agmsg"` →
      `~/.agents/skills/agmsg/scripts/send.sh "$TEAM" parent <task-slug> "Read and follow the task in .cmux-team-dispatch-task-prompt.md. Mode: <plan|superpowers> — for superpowers invoke the superpowers:brainstorming skill first; for plan produce a structured plan before implementing."`
@@ -626,7 +631,9 @@ execute モードのプロンプトテキスト: `Read and execute the plan at <
   `~/.agents/skills/agmsg/scripts/send.sh <team> <from> parent "<msg>"` で送信される
   （`cmux notify` と `cmux wait-for --signal` は両モード共通）
 - **standby wrapper（`--mode standby`）**: 起動時に status.json を書かず、exit 時も
-  `<STATUS_DIR>/.assigned` が存在するときだけ done/error に遷移させる（`.deferred` の逆向き）。
+  `<STATUS_DIR>/.assigned-<workspace-name>` が存在するときだけ done/error に遷移させる
+  （`.deferred` の逆向き。ロール別ファイルにすることで同じ STATUS_DIR を共有する
+  sonnet/codex 等の standby 同士が互いの割り当てを誤検知しない）。
   signal 名は `<workspace-name>-done`（例: `login-page-ui-sonnet-done`）
 
 シグナル名は `<task-slug>-done` で、起動スクリプトの出力 JSON の `signal_name` フィールドで返されます。
@@ -1065,15 +1072,18 @@ done
 `<EXISTING_STATUS_DIR>/prewarm.json` の `.sonnet.surface_id` / `.codex.surface_id` が非空なら:
 
 1. 使わなかった方の standby ペイン（codex 選択時は sonnet standby、sonnet 選択時は codex standby）を
-   `cmux close-surface` で閉じる（`.assigned` を touch する **前** に行う — sonnet/codex の wrapper は
-   同じ `.assigned` を共有するため、touch 後に閉じると未使用側 wrapper が誤って status.json に
-   error を書くレースが発生する）。`.assigned` の無い standby は閉じても status.json を汚さない
-2. `touch "<EXISTING_STATUS_DIR>/.assigned"` — 完了処理（status.json done/error 遷移 + `<slug>-sonnet-done` /
-   `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
+   `cmux close-surface` で閉じる（早めに閉じるのは単にペインを即座に解放するため — standby は
+   それぞれ自分専用の `.assigned-<name>` sentinel しか見ないため、閉じる順序によるレースはもう
+   存在しない）。`.assigned-<name>` の無い standby は閉じても status.json を汚さない
+2. `touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"`（sonnet 選択時）または
+   `.assigned-<task-slug>-codex`（codex 選択時） — 完了処理（status.json done/error 遷移 +
+   `<slug>-sonnet-done` / `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
 3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ... 完了後は /exit`）を送信する。
    `prewarm.json` の `.sonnet.delivery` / `.codex.delivery` を確認して分岐する:
    - `"agmsg"`（`prewarm-panes.sh` が worktree に delivery 配線済み）→
      `~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-sonnet|-codex "$REQUEST_TEXT"`
+     （`$TEAM` は親が Step 1g で解決した agmsg team 名をそのまま使う。子セッションは worktree
+     内で動作するため、worktree の basename から team 名を再導出すると誤った値になる）
    - `"cmux-send"`（send-message モード、または配線失敗時）→
      `cmux send --surface "$SURFACE" "$REQUEST_TEXT"` に続けて
      `cmux send-key --surface "$SURFACE" return`
@@ -1124,4 +1134,4 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。`cmux send` の後は必ず `cmux send-key return` を発行し、親 claude TUI の input box に滞留しないようにしている
 - **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
 - **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須 push(Step 2 で子プロンプトに埋め込む)+ runner wrapper の exit 時 push(バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
-- **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から agmsg で送る。standby wrapper は `<STATUS_DIR>/.assigned` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`。Phase B の実行指示は prewarm.json の `delivery` 値で分岐する: `"agmsg"` なら `send.sh`、`"cmux-send"` (send-message モード / 配線失敗時) なら `cmux send` + `send-key return`。
+- **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から agmsg で送る。standby wrapper は `<STATUS_DIR>/.assigned-<name>` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`。Phase B の実行指示は prewarm.json の `delivery` 値で分岐する: `"agmsg"` なら `send.sh`、`"cmux-send"` (send-message モード / 配線失敗時) なら `cmux send` + `send-key return`。

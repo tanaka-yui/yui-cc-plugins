@@ -16,6 +16,9 @@
 #       [--codex-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>]
 #
+# 注意: --message-type agmsg を --with-opus なしで渡す組み合わせは SKILL からは使用しない
+#       (sonnet/codex 配線のみ行いたい特殊用途向け)
+#
 # 内部処理:
 #   1. worktree を create-or-reuse (agmsg 配線より先にディレクトリが必要)
 #   2. (agmsg 時) join.sh + delivery.sh set を「ペイン起動前に」実行。
@@ -199,8 +202,8 @@ if [[ $WITH_OPUS -eq 1 ]]; then
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
     --message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
     "$SLUG" "$OPUS_PROMPT") || die "failed to launch opus standby workspace"
-  WORKSPACE=$(echo "$OPUS_RESULT" | jq -r '.workspace_id')
-  OPUS_SURFACE=$(echo "$OPUS_RESULT" | jq -r '.surface_id')
+  WORKSPACE=$(echo "$OPUS_RESULT" | jq -r '.workspace_id // empty')
+  OPUS_SURFACE=$(echo "$OPUS_RESULT" | jq -r '.surface_id // empty')
   BASE_SURFACE="$OPUS_SURFACE"
   [[ -n "$WORKSPACE" && -n "$OPUS_SURFACE" ]] || die "failed to parse opus standby output"
 fi
@@ -229,7 +232,7 @@ SONNET_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
   ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
   ${AGMSG_FLAGS_SONNET[@]+"${AGMSG_FLAGS_SONNET[@]}"} \
   "$SLUG-sonnet" ${SONNET_PROMPT:+"$SONNET_PROMPT"}) || die "failed to launch sonnet standby pane"
-SONNET_SURFACE=$(echo "$SONNET_RESULT" | jq -r '.surface_id')
+SONNET_SURFACE=$(echo "$SONNET_RESULT" | jq -r '.surface_id // empty')
 [[ -n "$SONNET_SURFACE" ]] || die "failed to parse sonnet standby output"
 
 # --- Step 5: codex standby (runner 登録時のみ、sonnet の下に split 配置) ---
@@ -254,7 +257,7 @@ if [[ -n "$CODEX_RUNNER" ]]; then
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
     ${AGMSG_FLAGS_CODEX[@]+"${AGMSG_FLAGS_CODEX[@]}"} \
     "$SLUG-codex") || die "failed to launch codex standby pane"
-  CODEX_SURFACE=$(echo "$CODEX_RESULT" | jq -r '.surface_id')
+  CODEX_SURFACE=$(echo "$CODEX_RESULT" | jq -r '.surface_id // empty')
   [[ -n "$CODEX_SURFACE" ]] || die "failed to parse codex standby output"
 fi
 
@@ -273,6 +276,16 @@ PREWARM_JSON=$(jq -n \
    + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), delivery: $dx}} else {} end)')
 echo "$PREWARM_JSON" > "$STATUS_DIR/prewarm.json"
 log "prewarm" "wrote $STATUS_DIR/prewarm.json"
+
+# agmsg prewarm 経路では通常 launch が走らないため、観測用の初期 status.json をここで書く
+# (standby wrapper は .assigned-<name> が無い限り status.json を書かないので、上書きの心配はない)
+if [[ $WITH_OPUS -eq 1 && ! -f "$STATUS_DIR/status.json" ]]; then
+  jq -n --arg ws "$WORKSPACE" --arg sf "$OPUS_SURFACE" \
+    '{status: "launched", workspace_id: $ws, surface_id: $sf,
+      message: "agmsg prewarm panes launched (idle)", timestamp: (now | todate)}' \
+    > "$STATUS_DIR/status.json"
+  log "prewarm" "wrote initial launched status.json"
+fi
 
 jq -n --arg ws "$WORKSPACE" --argjson panes "$PREWARM_JSON" \
   '{workspace_id: $ws, panes: $panes}'
