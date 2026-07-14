@@ -351,12 +351,14 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
 3. Compute the final flag used by prompt construction (Step 2) and pre-warm:
 
    ```bash
-   # REVIEW_ENABLED: codex runner + review_model + review_mode=on の 3 条件
+   # REVIEW_ENABLED: review_model 付き codex runner + review_mode=on
+   # (REVIEW_MODEL は engine==codex の runner からのみ解決されるため、非空なら codex runner の存在を含意する)
    REVIEW_ENABLED=false
-   [[ -n "$CODEX_CMD" && -n "$REVIEW_MODEL" && "$REVIEW_MODE" == "on" ]] && REVIEW_ENABLED=true
+   [[ -n "$REVIEW_MODEL" && "$REVIEW_MODE" == "on" ]] && REVIEW_ENABLED=true
    ```
 
-   (`CODEX_CMD` / `CODEX_RUNNER_NAME` は placeholder rules 節と同じ jq クエリで得る)
+   (`{{REVIEW_BLOCK}}` の placeholder 埋め込み時にのみ必要な `CODEX_CMD` / `CODEX_RUNNER_NAME` は
+   placeholder rules 節と同じ jq クエリで得る — REVIEW_ENABLED の算出には使わない)
 
 **When `message_type` is `agmsg`, wire the team BEFORE launching (Step 2):**
 
@@ -550,7 +552,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
       (exclude .opus — in agmsg mode that is THIS session's own surface):
         for sf in $(jq -r 'to_entries[] | select(.key != "opus") | .value.surface_id' \
           "<EXISTING_STATUS_DIR>/prewarm.json"); do
-          cmux close-surface --surface "$sf"
+          cmux close-surface --surface "$sf" || true
         done
 
     [DIFFERENT MODEL] "sonnet" → FIRST check for a pre-warmed standby pane:
@@ -673,7 +675,7 @@ model selection question is a critical error.
       2. Send the request and wait, branching on REVIEW_DELIVERY:
          IF "agmsg":
            Append to the request: "After writing the file, notify me:
-             ~/.agents/skills/agmsg/scripts/send.sh $TEAM <task-slug>-review <task-slug> '[review] <point> round <N> done'"
+             ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug>-review <task-slug> '[review] <point> round <N> done'"
            ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-review "<request text>"
            # $TEAM is the TEAM value given above — do NOT re-derive it
            Then END YOUR TURN and idle-wait for the '[review]' push. When it

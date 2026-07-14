@@ -1107,7 +1107,7 @@ Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` �
 ```bash
 for sf in $(jq -r 'to_entries[] | select(.key != "opus") | .value.surface_id' \
   "<EXISTING_STATUS_DIR>/prewarm.json"); do
-  cmux close-surface --surface "$sf"
+  cmux close-surface --surface "$sf" || true
 done
 ```
 

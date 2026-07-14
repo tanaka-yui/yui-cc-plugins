@@ -389,12 +389,14 @@ Step 1g の agmsg 配線説明（318 行 `**When message_type is agmsg ...**` �
 3. Compute the final flag used by prompt construction (Step 2) and pre-warm:
 
    ```bash
-   # REVIEW_ENABLED: codex runner + review_model + review_mode=on の 3 条件
+   # REVIEW_ENABLED: review_model 付き codex runner + review_mode=on
+   # (REVIEW_MODEL は engine==codex の runner からのみ解決されるため、非空なら codex runner の存在を含意する)
    REVIEW_ENABLED=false
-   [[ -n "$CODEX_CMD" && -n "$REVIEW_MODEL" && "$REVIEW_MODE" == "on" ]] && REVIEW_ENABLED=true
+   [[ -n "$REVIEW_MODEL" && "$REVIEW_MODE" == "on" ]] && REVIEW_ENABLED=true
    ```
 
-   (`CODEX_CMD` / `CODEX_RUNNER_NAME` は placeholder rules 節と同じ jq クエリで得る)
+   (`{{REVIEW_BLOCK}}` の placeholder 埋め込み時にのみ必要な `CODEX_CMD` / `CODEX_RUNNER_NAME` は
+   placeholder rules 節と同じ jq クエリで得る — REVIEW_ENABLED の算出には使わない)
 ````
 
 - [ ] **Step 4: 検証**
