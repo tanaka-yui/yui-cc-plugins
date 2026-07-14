@@ -1,4 +1,4 @@
-import { hasSentinel, parseFrontmatter, renderAgentsFile, SENTINEL } from './generate.ts'
+import { groupRulesByTarget, hasSentinel, parseFrontmatter, renderAgentsFile, SENTINEL } from './generate.ts'
 
 import { expect, test } from 'bun:test'
 
@@ -44,4 +44,26 @@ test('hasSentinel は生成物を true、手書きを false と判定する', ()
   const generated = renderAgentsFile(['x'], ['y'])
   expect(hasSentinel(generated)).toBe(true)
   expect(hasSentinel('# 手書きの AGENTS.md\n')).toBe(false)
+})
+
+test('同一 target の rule を結合し、target・file 順にソートする', () => {
+  const { groups, unmapped } = groupRulesByTarget([
+    { file: 'go-testing.md', targets: ['go/'], body: 'T' },
+    { file: 'go-backend.md', targets: ['go/'], body: 'B' },
+    { file: 'proto.md', targets: ['proto/'], body: 'P' },
+  ])
+  expect(groups.map((g) => g.target)).toEqual(['go/', 'proto/'])
+  expect(groups[0]?.members.map((m) => m.file)).toEqual(['go-backend.md', 'go-testing.md'])
+  expect(unmapped).toEqual([])
+})
+
+test('複数 target を持つ rule は各 target に現れる', () => {
+  const { groups } = groupRulesByTarget([{ file: 'shared.md', targets: ['a/', 'b/'], body: 'S' }])
+  expect(groups.map((g) => g.target)).toEqual(['a/', 'b/'])
+})
+
+test('targets 空の rule は unmapped に入る', () => {
+  const { groups, unmapped } = groupRulesByTarget([{ file: 'orphan.md', targets: [], body: 'O' }])
+  expect(groups).toEqual([])
+  expect(unmapped).toEqual(['orphan.md'])
 })

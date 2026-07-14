@@ -63,3 +63,35 @@ export function renderAgentsFile(sources: string[], bodies: string[]): string {
 export function hasSentinel(content: string): boolean {
   return content.includes(SENTINEL)
 }
+
+export interface RuleInput {
+  file: string
+  targets: string[]
+  body: string
+}
+
+export interface TargetGroup {
+  target: string
+  members: { file: string; body: string }[]
+}
+
+export function groupRulesByTarget(rules: RuleInput[]): { groups: TargetGroup[]; unmapped: string[] } {
+  const byTarget = new Map<string, { file: string; body: string }[]>()
+  const unmapped: string[] = []
+  for (const rule of rules) {
+    if (rule.targets.length === 0) {
+      unmapped.push(rule.file)
+      continue
+    }
+    for (const target of rule.targets) {
+      const members = byTarget.get(target) ?? []
+      members.push({ file: rule.file, body: rule.body })
+      byTarget.set(target, members)
+    }
+  }
+  const groups: TargetGroup[] = [...byTarget.keys()].sort().map((target) => ({
+    target,
+    members: (byTarget.get(target) ?? []).sort((a, b) => a.file.localeCompare(b.file)),
+  }))
+  return { groups, unmapped: unmapped.sort() }
+}
