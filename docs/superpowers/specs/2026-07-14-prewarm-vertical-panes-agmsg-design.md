@@ -38,29 +38,49 @@ Phase A の opus セッションは常にタスクプロンプト埋め込みで
 pre-warm 一式を1回の呼び出しで決定論的に完了するラッパー(`launch-session-splits.sh` と同格)。
 
 ```
+# send-message モード (opus は通常フローで起動済み。sonnet / codex の split のみ追加)
 prewarm-panes.sh \
   --workspace <workspace-id> --base-surface <surface-id> \
   --cwd <worktree> --slug <task-slug> \
   --status-dir <dir> \
+  [--codex-runner <name>]
+
+# agmsg モード (workspace 未作成の状態で呼ぶ。opus も standby 起動し workspace はスクリプトが作成)
+prewarm-panes.sh \
+  --with-opus \
+  --cwd <worktree> --slug <task-slug> \
+  --status-dir <dir> \
   [--codex-runner <name>] \
-  [--message-type agmsg --agmsg-team <team>] \
-  [--with-opus]          # agmsg モード時のみ: opus-1m ペインも standby 起動
+  --message-type agmsg --agmsg-team <team>
 ```
+
+`--with-opus` と `--workspace`/`--base-surface` は排他。出力は作成した workspace / 各ペインの
+surface_id を含む JSON(親はここから workspace_id を得る)。
 
 内部処理:
 
-1. (agmsg 時) 各 agent の `join.sh` と、worktree への `delivery.sh set monitor <type> <worktree>`
+1. worktree を create-or-reuse する(`launch-workspace.sh` と同じ
+   `git worktree add` ロジック。agmsg 配線より先に worktree ディレクトリが必要なため)。
+2. (agmsg 時) 各 agent の `join.sh` と、worktree への `delivery.sh set monitor <type> <worktree>`
    を **ペイン起動前に** 実行する。codex は codex type での配線を試行し、失敗しても die せず
    `cmux send` フォールバックとして記録する。
-2. `launch-workspace.sh --mode standby --standby-split-from <surface>` を上→下の順に呼び、
-   縦分割ペインを作成する。
-3. `prewarm.json` を書き込む。
+3. (`--with-opus` 時) `launch-workspace.sh --mode standby --layout workspace --cwd <worktree>
+   --model 'claude-opus-4-7[1m]' --defer-status <slug>` で opus standby の workspace を作成する。
+   メイン surface が opus ペインになる。
+4. `launch-workspace.sh --mode standby --standby-in <workspace-id> --standby-split-from <surface>`
+   を上→下の順に呼び、sonnet / codex の縦分割ペインを作成する。
+5. `prewarm.json` を書き込む。
 
 ### 変更: `scripts/launch-workspace.sh`
 
-- standby モードの配置をタブ(`new-surface`)から縦分割(`new-split down`)に変更する。
-  `--standby-split-from <surface-id>` を追加し、standby モードでは必須にする。
-  タブ配置のコードパスは削除する(消費者は SKILL.md のみ)。
+standby モードの配置をタブ(`new-surface`)から次の2方式に変更する
+(タブ配置のコードパスは削除。消費者は SKILL.md / prewarm-panes.sh のみ):
+
+- **split 配置**: `--standby-in <workspace-id>` + `--standby-split-from <surface-id>`(新設)。
+  指定 surface から `cmux new-split down` でペインを作成する(sonnet / codex 用)。
+- **workspace 配置**: `--mode standby --layout workspace`。`cmux new-workspace --command <runner>`
+  で新規 workspace を作成し、メイン surface で standby セッションを起動する
+  (agmsg モードの opus ペイン用)。
 
 ## 起動フロー
 
@@ -73,10 +93,10 @@ prewarm-panes.sh \
 
 ### agmsg モード(全ペイン idle 起動)
 
-1. `launch-workspace.sh` は worktree + workspace 作成のみ行い、メイン surface に opus-1m を
-   **standby** として起動する(`--model 'claude-opus-4-7[1m]'`、初期プロンプトは
-   `/agmsg actas <slug>` + 待機指示のみ。タスクは含まない)。
-2. sonnet / codex を縦分割で standby 起動(同じく actas + 待機)。
+1. 親は `prewarm-panes.sh --with-opus ...` を呼ぶ。スクリプトが worktree 作成 → agmsg 配線 →
+   opus-1m standby workspace 作成(初期プロンプトは `/agmsg actas <slug>` + 待機指示のみ。
+   タスクは含まない)までを行う。
+2. 続けて同スクリプトが sonnet / codex を縦分割で standby 起動する(同じく actas + 待機)。
 3. 親はタスクプロンプトを従来どおり `.cmux-team-dispatch-task-prompt.md` に書き、
    `send.sh $TEAM parent <slug> "Read and follow the task in .cmux-team-dispatch-task-prompt.md ..."`
    で Phase A を開始する。モード(plan / superpowers)は slash command ではなく
