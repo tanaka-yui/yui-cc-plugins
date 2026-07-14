@@ -1,12 +1,14 @@
 #!/bin/bash
-# Pre-warm standby panes: タスク workspace に縦分割の standby ペイン群を事前起動する
-# (上: opus-1m [agmsg モードのみ] / 中: sonnet / 下: codex [runner 登録時のみ])
+# Pre-warm standby panes: タスク workspace に standby ペイン群を事前起動する
+# (--review-model 無し: 縦積み 上 opus / 中 sonnet / 下 codex。
+#  --review-model 有り: 2×2 グリッド 左上 opus / 右上 codex review / 左下 sonnet / 右下 codex)
 #
 # Usage:
 #   send-message モード (opus は通常フローで起動済み。sonnet / codex の split のみ追加):
 #     prewarm-panes.sh --workspace <ws-id> --base-surface <sf-id> \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       [--codex-runner <name>] \
+#       [--review-model <model>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>]
 #
 #   agmsg モード (workspace 未作成の状態で呼ぶ。opus も standby 起動し workspace はこのスクリプトが作成):
@@ -14,6 +16,7 @@
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       --message-type agmsg --agmsg-team <team> \
 #       [--codex-runner <name>] \
+#       [--review-model <model>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>]
 #
 # 注意: --message-type agmsg を --with-opus なしで渡す組み合わせは SKILL からは使用しない
@@ -24,8 +27,9 @@
 #   2. (agmsg 時) join.sh + delivery.sh set を「ペイン起動前に」実行。
 #      配線に失敗したペインは delivery: "cmux-send" として記録 (die しない)
 #   3. (--with-opus 時) opus-1m standby を workspace 配置で起動 (メイン surface が opus ペイン)
-#   4. sonnet / codex を new-split down で縦に積む
-#   5. <STATUS_DIR>/prewarm.json を書き込む
+#   4. sonnet / codex を split で配置 (--review-model 有りなら 2×2、無しなら縦積み)
+#   4.5 (--review-model 時) codex review ペインを opus の右に split 配置
+#   5. <STATUS_DIR>/prewarm.json を書き込む (review キーは --review-model 時のみ)
 #
 # Output: JSON to stdout: {workspace_id, panes: {opus?, sonnet, codex?}}
 # Debug:  Logs to stderr
@@ -54,6 +58,7 @@ CWD=""
 SLUG=""
 STATUS_DIR=""
 CODEX_RUNNER=""
+REVIEW_MODEL=""
 MESSAGE_TYPE="send-message"
 AGMSG_TEAM=""
 WITH_OPUS=0
@@ -80,6 +85,9 @@ while [[ $# -gt 0 ]]; do
     --codex-runner)
       [[ $# -lt 2 ]] && die "--codex-runner requires a runner name"
       CODEX_RUNNER="$2"; shift 2 ;;
+    --review-model)
+      [[ $# -lt 2 ]] && die "--review-model requires a model name"
+      REVIEW_MODEL="$2"; shift 2 ;;
     --message-type)
       [[ $# -lt 2 ]] && die "--message-type requires send-message or agmsg"
       MESSAGE_TYPE="$2"
@@ -108,6 +116,10 @@ done
 [[ -n "$SLUG" ]] || die "--slug is required"
 [[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid slug '$SLUG': use only [A-Za-z0-9._-]"
 [[ -n "$STATUS_DIR" ]] || die "--status-dir is required"
+
+if [[ -n "$REVIEW_MODEL" && -z "$CODEX_RUNNER" ]]; then
+  die "--review-model requires --codex-runner"
+fi
 
 if [[ $WITH_OPUS -eq 1 ]]; then
   # agmsg モード専用: workspace はこのスクリプトが作成する
@@ -155,6 +167,7 @@ fi
 
 CLAUDE_DELIVERY="cmux-send"
 CODEX_DELIVERY="cmux-send"
+REVIEW_DELIVERY="cmux-send"
 
 if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
   if [[ $WITH_OPUS -eq 1 ]]; then
@@ -181,6 +194,16 @@ if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
     else
       log "agmsg" "codex join failed (shim not installed?); falling back to cmux-send"
       bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-codex" claude-code "$CWD" >&2 || true
+    fi
+  fi
+
+  if [[ -n "$REVIEW_MODEL" ]]; then
+    # review ペインも codex セッション。delivery 配線 (delivery.sh set) は worktree × type 単位
+    # なので codex standby の結果を共有する。join は agent 名の登録のために別途必要
+    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-review" codex "$CWD" >&2 2>/dev/null; then
+      REVIEW_DELIVERY="$CODEX_DELIVERY"
+    else
+      log "agmsg" "review join failed (shim not installed?); falling back to cmux-send"
     fi
   fi
 fi
@@ -246,12 +269,15 @@ if [[ -n "$CODEX_RUNNER" ]]; then
   if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
     AGMSG_FLAGS_CODEX=(--message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
   fi
+  CODEX_DIRECTION_FLAGS=()
+  [[ -n "$REVIEW_MODEL" ]] && CODEX_DIRECTION_FLAGS=(--standby-split-direction right)
   log "prewarm" "launching codex standby pane for $SLUG"
   CODEX_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
     --mode standby \
     --standby-in "$WORKSPACE" \
     --standby-split-from "$SONNET_SURFACE" \
+    ${CODEX_DIRECTION_FLAGS[@]+"${CODEX_DIRECTION_FLAGS[@]}"} \
     --runner "$CODEX_RUNNER" \
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
@@ -261,6 +287,29 @@ if [[ -n "$CODEX_RUNNER" ]]; then
   [[ -n "$CODEX_SURFACE" ]] || die "failed to parse codex standby output"
 fi
 
+# --- Step 5.5: codex review ペイン (--review-model 時のみ、opus の右に split 配置) ---
+# standby と同じ wrapper だが .assigned-<slug>-review は誰も touch しない前提 —
+# close しても status.json を汚さない。初期 prompt は codex standby と同じく常に無し。
+
+REVIEW_SURFACE=""
+
+if [[ -n "$REVIEW_MODEL" ]]; then
+  log "prewarm" "launching codex review pane for $SLUG"
+  REVIEW_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
+    --cwd "$CWD" \
+    --mode review \
+    --standby-in "$WORKSPACE" \
+    --standby-split-from "$BASE_SURFACE" \
+    --standby-split-direction right \
+    --runner "$CODEX_RUNNER" \
+    --model "$REVIEW_MODEL" \
+    --status-dir "$STATUS_DIR" \
+    ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
+    "$SLUG-review") || die "failed to launch codex review pane"
+  REVIEW_SURFACE=$(echo "$REVIEW_RESULT" | jq -r '.surface_id // empty')
+  [[ -n "$REVIEW_SURFACE" ]] || die "failed to parse review pane output"
+fi
+
 # --- Step 6: prewarm.json 書き込み + 出力 ---
 
 mkdir -p "$STATUS_DIR"
@@ -268,12 +317,15 @@ PREWARM_JSON=$(jq -n \
   --arg os "$OPUS_SURFACE" \
   --arg ss "$SONNET_SURFACE" \
   --arg cs "$CODEX_SURFACE" \
+  --arg rs "$REVIEW_SURFACE" \
   --arg slug "$SLUG" \
   --arg dc "$CLAUDE_DELIVERY" \
   --arg dx "$CODEX_DELIVERY" \
+  --arg dr "$REVIEW_DELIVERY" \
   '(if $os != "" then {opus: {surface_id: $os, agent: $slug, delivery: $dc}} else {} end)
    + {sonnet: {surface_id: $ss, agent: ($slug + "-sonnet"), delivery: $dc}}
-   + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), delivery: $dx}} else {} end)')
+   + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), delivery: $dx}} else {} end)
+   + (if $rs != "" then {review: {surface_id: $rs, agent: ($slug + "-review"), delivery: $dr}} else {} end)')
 echo "$PREWARM_JSON" > "$STATUS_DIR/prewarm.json"
 log "prewarm" "wrote $STATUS_DIR/prewarm.json"
 
