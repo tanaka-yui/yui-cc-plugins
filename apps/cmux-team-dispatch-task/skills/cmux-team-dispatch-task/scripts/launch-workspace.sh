@@ -6,7 +6,7 @@
 #
 # Options:
 #   --cwd <path>                       Working directory (skips worktree creation)
-#   --mode plan|superpowers|execute|standby  Claude launch mode (default: plan).
+#   --mode plan|superpowers|execute|standby|review  Claude launch mode (default: plan).
 #                                      execute = Phase B 実行モード。計画ファイルを
 #                                      inner prompt として渡し、.cmux-team-dispatch-task-prompt.md
 #                                      を書き込まない。--plan-file が必須
@@ -16,6 +16,11 @@
 #                                      新規 workspace のメイン surface で待機セッションを起動する。
 #                                      wrapper は <STATUS_DIR>/.assigned-<workspace-name> が
 #                                      存在するときだけ exit 時に status.json を更新する
+#                                      review = Phase A-R レビューペイン用モード。挙動は standby と
+#                                      同一 (.assigned-<name> が無い限り wrapper は status.json を
+#                                      書かない) だが、レビューペインは .assigned を一切使わない
+#                                      前提のモード。codex engine では --model を反映する
+#   --standby-split-direction right|down  standby/review split 配置の分割方向 (default: down)
 #   --standby-in <workspace-id>        standby ペインを追加する既存 workspace (split 配置時必須)
 #   --standby-split-from <surface-id>  縦分割の分割元 surface (split 配置時必須)
 #   --plan-file <path>                 Plan file path (required when --mode execute).
@@ -85,6 +90,7 @@ CWD=""
 MODE="plan"
 STANDBY_IN=""
 STANDBY_SPLIT_FROM=""
+STANDBY_SPLIT_DIRECTION="down"
 STATUS_DIR=""
 LAYOUT="workspace"
 SPLIT_FROM=""
@@ -112,10 +118,10 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --mode)
-      [[ $# -lt 2 ]] && die "--mode requires plan, superpowers, execute, or standby"
+      [[ $# -lt 2 ]] && die "--mode requires plan, superpowers, execute, standby, or review"
       MODE="$2"
-      [[ "$MODE" == "plan" || "$MODE" == "superpowers" || "$MODE" == "execute" || "$MODE" == "standby" ]] \
-        || die "--mode must be 'plan', 'superpowers', 'execute', or 'standby'"
+      [[ "$MODE" == "plan" || "$MODE" == "superpowers" || "$MODE" == "execute" || "$MODE" == "standby" || "$MODE" == "review" ]] \
+        || die "--mode must be 'plan', 'superpowers', 'execute', 'standby', or 'review'"
       shift 2
       ;;
     --standby-in)
@@ -128,6 +134,12 @@ while [[ $# -gt 0 ]]; do
       STANDBY_SPLIT_FROM="$2"
       shift 2
       ;;
+    --standby-split-direction)
+      [[ $# -lt 2 ]] && die "--standby-split-direction requires right or down"
+      STANDBY_SPLIT_DIRECTION="$2"
+      [[ "$STANDBY_SPLIT_DIRECTION" == "right" || "$STANDBY_SPLIT_DIRECTION" == "down" ]] \
+        || die "--standby-split-direction must be 'right' or 'down'"
+      shift 2 ;;
     --plan-file)
       [[ $# -lt 2 ]] && die "--plan-file requires a path argument"
       PLAN_FILE="$2"
@@ -224,8 +236,8 @@ done
 # standby mode は --standby-in / --cwd が必須で PROMPT は省略可 (idle TUI 待機)
 if [[ "$MODE" == "execute" ]]; then
   [[ -n "$PLAN_FILE" ]] || die "--plan-file is required when --mode is execute"
-elif [[ "$MODE" == "standby" ]]; then
-  [[ -n "$CWD" ]] || die "--cwd is required when --mode is standby (reuse the task worktree)"
+elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
+  [[ -n "$CWD" ]] || die "--cwd is required when --mode is standby/review (reuse the task worktree)"
   # 配置は 2 方式: --standby-in + --standby-split-from = 既存 workspace 内に縦分割ペイン、
   # 両方省略 = 新規 workspace のメイン surface で standby 起動 (agmsg モードの opus ペイン用)
   if [[ -n "$STANDBY_IN" || -n "$STANDBY_SPLIT_FROM" ]]; then
@@ -237,7 +249,7 @@ else
 fi
 
 # --model / --skip-permissions は claude engine 向けの拡張。codex engine では別フラグ体系のため無視
-if [[ -n "$MODEL" && "$MODE" != "execute" && "$MODE" != "standby" ]]; then
+if [[ -n "$MODEL" && "$MODE" != "execute" && "$MODE" != "standby" && "$MODE" != "review" ]]; then
   log "warn" "--model is only meaningful with --mode execute; ignoring for mode=$MODE"
 fi
 
@@ -338,7 +350,7 @@ fi
 # Phase A の .cmux-team-dispatch-task-prompt.md は上書きせず温存する。
 
 PROMPT_FILE="$CWD/.cmux-team-dispatch-task-prompt.md"
-if [[ "$MODE" == "execute" || "$MODE" == "standby" ]]; then
+if [[ "$MODE" == "execute" || "$MODE" == "standby" || "$MODE" == "review" ]]; then
   log "prompt" "$MODE mode: not writing prompt file"
 else
   FULL_PROMPT="$PROMPT"
@@ -368,7 +380,7 @@ else
   PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
 fi
 
-if [[ "$MODE" == "standby" ]]; then
+if [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
   # standby は与えられた prompt をそのまま使う (agmsg join+待機指示など)。省略時は idle TUI
   PROMPT_TEXT="$PROMPT"
 fi
@@ -407,13 +419,16 @@ else
       # codex execute: plan モードと同じく bypass フラグを付与
       # (codex に --model は不要 — codex runner が独自に処理)
       CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
-    elif [[ "$MODE" == "standby" ]]; then
-      # codex standby: prompt なしで idle 起動。実行指示の配送は prewarm.json の delivery 値に
-      # 従う (agmsg 配線成功時は agmsg、それ以外・send-message モードは cmux send)
+    elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
+      # codex standby/review: prompt なしで idle 起動。実行指示の配送は prewarm.json の delivery 値に
+      # 従う (agmsg 配線成功時は agmsg、それ以外・send-message モードは cmux send)。
+      # review ペインは --model (review_model) を反映する
+      CODEX_MODEL_FLAG=""
+      [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       if [[ -n "$PROMPT_TEXT" ]]; then
-        CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
       else
-        CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox"
+        CORE_CMD="$RUNNER_COMMAND$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox"
       fi
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
@@ -432,8 +447,8 @@ else
       else
         CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
       fi
-    elif [[ "$MODE" == "standby" ]]; then
-      # claude standby: --model / --skip-permissions を反映し、prompt があれば渡す
+    elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
+      # claude standby/review: --model / --skip-permissions を反映し、prompt があれば渡す
       # (agmsg モードでは "/agmsg actas <name>" + 待機指示を初期 prompt にする)
       if [[ -n "$PROMPT_TEXT" ]]; then
         CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS} '$PROMPT_TEXT'"
@@ -462,7 +477,7 @@ fi
 # `cmux identify` as fallback) so we don't need them baked in at generation.
 
 STANDBY_FLAG=0
-[[ "$MODE" == "standby" ]] && STANDBY_FLAG=1
+[[ "$MODE" == "standby" || "$MODE" == "review" ]] && STANDBY_FLAG=1
 
 RUNNER_FILE="$CWD/$RUNNER_SCRIPT_NAME"
 cat > "$RUNNER_FILE" <<EOF
@@ -575,13 +590,13 @@ WORKSPACE_ID=""
 SURFACE_ID=""
 TITLE=""
 
-if [[ "$MODE" == "standby" && -n "$STANDBY_IN" ]]; then
+if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; then
   # --- Standby Split Placement: 既存 workspace 内に縦分割ペインを追加 ---
   WORKSPACE_ID="$STANDBY_IN"
   TITLE="$WORKSPACE_NAME"
 
-  log "cmux" "creating standby pane (split down from $STANDBY_SPLIT_FROM) in $STANDBY_IN"
-  SPLIT_OUTPUT=$("$CMUX" new-split down \
+  log "cmux" "creating standby pane (split $STANDBY_SPLIT_DIRECTION from $STANDBY_SPLIT_FROM) in $STANDBY_IN"
+  SPLIT_OUTPUT=$("$CMUX" new-split "$STANDBY_SPLIT_DIRECTION" \
     --workspace "$STANDBY_IN" \
     --surface "$STANDBY_SPLIT_FROM" 2>/dev/null) || die "failed to create standby split pane"
   SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
@@ -654,7 +669,7 @@ fi
 # so it may have already written "executing"/"done"/"error" to status.json.
 # Do not regress from those to "launched".
 
-if [[ -n "$STATUS_DIR" && "$MODE" != "standby" ]]; then
+if [[ -n "$STATUS_DIR" && "$MODE" != "standby" && "$MODE" != "review" ]]; then
   mkdir -p "$STATUS_DIR"
   existing_status=""
   if [[ -f "$STATUS_DIR/status.json" ]]; then
