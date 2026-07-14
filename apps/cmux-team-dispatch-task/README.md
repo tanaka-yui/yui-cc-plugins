@@ -190,14 +190,20 @@ status.json / result.md / `cmux wait-for` signal は両モードで不変。
 
 codex オプションを使う場合は事前に `cmux codex install-hooks` の実行が必要です。
 
-### Pre-warm standby tab（workspace レイアウト時）
+### Pre-warm standby panes(workspace レイアウト時)
 
-config `prewarm: true`（default）のとき、各タスクの workspace 内に sonnet
-（+ `runners.json` に codex runner があれば codex）の待機セッションを tab として事前起動する。
-Phase B で sonnet / codex を選ぶと、別 workspace を spawn する代わりに待機 tab へ
-実行指示を 1 メッセージ送るだけで実装が始まる（実行指示は sonnet / codex とも常に `cmux send`
-— standby の worktree には agmsg 配信の配線が無いため。agmsg は完了通知に使用する）。
-未使用の待機 tab は閉じても status.json を汚さない（`.assigned` sentinel 方式）。
+config `prewarm: true`(default)のとき、`prewarm-panes.sh` が各タスクの workspace 内に
+standby ペインを縦に積んで事前起動する(上: opus / 中: sonnet / 下: codex — codex は
+`runners.json` に codex runner があるときのみ)。Phase B で sonnet / codex が選ばれたら
+待機中のペインに実行指示を送るだけで済み、セッション起動を待たない。
+
+- send-message モード: opus は従来どおりタスクプロンプト付きで起動し、sonnet / codex のみ
+  idle 起動。実行指示は `cmux send` で注入する。
+- agmsg モード: opus-1m を含む全ペインをメッセージ未指定(idle)で起動する。
+  `prewarm-panes.sh` が worktree への agmsg delivery 配線(join + `delivery.sh set`)を
+  ペイン起動前に行い、Phase A の初期タスクも Phase B の実行指示も agmsg で配送する
+  (配線に失敗したペインは `cmux send` にフォールバック。prewarm.json の `delivery` 値で分岐)。
+
 split / claude-teams レイアウトや `prewarm: false` では従来の on-demand spawn。
 
 ## アカウント切り替えとセッション共有 (claude-link.sh)
