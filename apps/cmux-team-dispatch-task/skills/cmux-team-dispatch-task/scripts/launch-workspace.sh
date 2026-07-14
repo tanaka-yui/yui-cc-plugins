@@ -588,13 +588,13 @@ if [[ "$MODE" == "standby" && -n "$STANDBY_IN" ]]; then
   [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
   log "cmux" "standby pane surface: $SURFACE_ID"
 
-  "$CMUX" rename-tab --workspace "$STANDBY_IN" --surface "$SURFACE_ID" "$TITLE" 2>/dev/null || \
+  "$CMUX" rename-tab --workspace "$STANDBY_IN" --surface "$SURFACE_ID" "$TITLE" >/dev/null 2>&1 || \
     log "cmux" "warning: failed to rename tab (non-fatal)"
 
   wait_for_shell "$SURFACE_ID" || true
 
   "$CMUX" send --surface "$SURFACE_ID" \
-    "cd '$CWD' && bash $RUNNER_SCRIPT_NAME\n" 2>/dev/null || die "failed to send cd+runner command"
+    "cd '$CWD' && bash $RUNNER_SCRIPT_NAME\n" >/dev/null 2>&1 || die "failed to send cd+runner command"
   log "cmux" "standby runner command sent"
 
 elif [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
@@ -612,7 +612,7 @@ elif [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
 
   # Rename workspace
   TITLE="[$REPO_NAME] $WORKSPACE_NAME"
-  "$CMUX" rename-workspace --workspace "$WORKSPACE_ID" "$TITLE" 2>/dev/null || die "failed to rename workspace"
+  "$CMUX" rename-workspace --workspace "$WORKSPACE_ID" "$TITLE" >/dev/null 2>&1 || die "failed to rename workspace"
   log "cmux" "renamed to: $TITLE"
 
   # Get surface ID (for initial status payload; the runner resolves its own at runtime)
@@ -637,7 +637,7 @@ elif [[ "$LAYOUT" == "split" ]]; then
   log "cmux" "new split surface: $SURFACE_ID"
 
   # Rename the tab for the new split pane
-  "$CMUX" rename-tab --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" "$TITLE" 2>/dev/null || \
+  "$CMUX" rename-tab --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" "$TITLE" >/dev/null 2>&1 || \
     log "cmux" "warning: failed to rename tab (non-fatal)"
 
   wait_for_shell "$SURFACE_ID" || true
@@ -645,7 +645,7 @@ elif [[ "$LAYOUT" == "split" ]]; then
   # Launch the runner via send (split mode only).
   RUNNER_CMD="bash $RUNNER_SCRIPT_NAME"
   "$CMUX" send --surface "$SURFACE_ID" \
-    "cd '$CWD' && $RUNNER_CMD\n" 2>/dev/null || die "failed to send cd+runner command"
+    "cd '$CWD' && $RUNNER_CMD\n" >/dev/null 2>&1 || die "failed to send cd+runner command"
   log "cmux" "split runner command sent"
 fi
 
