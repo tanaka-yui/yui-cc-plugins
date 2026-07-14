@@ -1014,7 +1014,7 @@ for slug in <task-slugs>; do
     esac
   fi
 
-  # pre-warm standby ペインが残っていれば閉じる（Phase B で未使用のまま残るケース）
+  # pre-warm standby ペインが残っていれば全て閉じる（常 4 ペイン維持のため Phase B 後も全 standby が残る）
   if [[ "$close_all" == "true" && -f ".dispatch/$slug/prewarm.json" ]]; then
     for sf in $(jq -r '.[].surface_id' ".dispatch/$slug/prewarm.json" 2>/dev/null); do
       cmux close-surface --surface "$sf" 2>/dev/null || true
@@ -1109,7 +1109,8 @@ Phase A の成果物を専用ペインの codex（`review_model`）がレビュ�
 - **タイムアウト・verdict 不正** → 同一ラウンドを 1 回だけ再依頼。それでも失敗なら
   AskUserQuestion（再依頼 / レビュー省略して Phase B へ）
 - **ペイン寿命**: 全ポイントで同一ペインを再利用（文脈保持）。最終 approve（またはユーザー判断）
-  後に `cmux close-surface` で閉じる。spawn 失敗時はレビューをスキップして Phase B へ（警告表示）
+  後もレビューペインは開いたまま idle 維持し、途中で close しない（常 4 ペイン。最終の全タスク
+  完了クリーンアップで他ペインとまとめて閉じる）。spawn 失敗時はレビューをスキップして Phase B へ（警告表示）
 - **prewarm 無効 / split レイアウト時**: 最初のレビューポイントで
   `launch-workspace.sh --mode review --standby-split-direction right` によりオンデマンド spawn
 
@@ -1119,30 +1120,23 @@ Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` �
 
 | 選択肢 | 表示条件 | 動作 |
 |--------|---------|------|
-| **opus 1m** | 常時 | Phase A と **同一 model** 扱い。`/model claude-opus-4-7[1m]` で切り替え、**現セッションで実装続行**。`prewarm.json` が存在する場合、未使用の standby ペインを閉じる（`.opus` は除外。下記「opus 1m 選択時の close ループ」参照） |
+| **opus 1m** | 常時 | Phase A と **同一 model** 扱い。`/model claude-opus-4-7[1m]` で切り替え、**現セッションで実装続行**。未使用の standby ペイン（sonnet / codex / review）は閉じずに開いたまま idle 維持（常 4 ペイン。下記「opus 1m 選択時のペイン」参照） |
 | **sonnet** | 常時 | **異なる model**。まず `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute` で spawn（下記参照） |
 | **codex** | `runners.json` に `engine: codex` の runner が **1 件以上ある時のみ** | **異なる model**。sonnet と同様に `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute --runner <codex-runner>` で spawn |
 
-#### opus 1m 選択時の close ループ
+#### opus 1m 選択時のペイン
 
-`prewarm.json` が存在する場合、実装を続行する前に未使用の standby ペインを全て閉じる。
-`.opus` キーは除外する（agmsg モードではそれが自身のセッションの surface であるため）:
-
-```bash
-for sf in $(jq -r 'to_entries[] | select(.key != "opus") | .value.surface_id' \
-  "<EXISTING_STATUS_DIR>/prewarm.json"); do
-  cmux close-surface --surface "$sf" || true
-done
-```
+`prewarm.json` が存在しても、未使用の standby ペイン（sonnet / codex / review）は **閉じずに
+開いたまま idle 維持** する（常 4 ペイン）。未 assigned の standby は `.assigned-<name>` sentinel を
+持たないため status.json を汚さない。全ペインは最終の全タスク完了クリーンアップでまとめて閉じる。
 
 #### pre-warm 済み standby ペインがある場合（sonnet / codex 共通の分岐）
 
 `<EXISTING_STATUS_DIR>/prewarm.json` の `.sonnet.surface_id` / `.codex.surface_id` が非空なら:
 
-1. 使わなかった方の standby ペイン（codex 選択時は sonnet standby、sonnet 選択時は codex standby）を
-   `cmux close-surface` で閉じる（早めに閉じるのは単にペインを即座に解放するため — standby は
-   それぞれ自分専用の `.assigned-<name>` sentinel しか見ないため、閉じる順序によるレースはもう
-   存在しない）。`.assigned-<name>` の無い standby は閉じても status.json を汚さない
+1. 使わなかった方の standby ペイン（sonnet / codex / opus / review）は **閉じずに開いたまま idle
+   維持** する（常 4 ペイン）。`.assigned-<name>` の無い standby は status.json を汚さないため、開いた
+   ままでも観測に影響しない。全ペインは最終の全タスク完了クリーンアップでまとめて閉じる
 2. `touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"`（sonnet 選択時）または
    `.assigned-<task-slug>-codex`（codex 選択時） — 完了処理（status.json done/error 遷移 +
    `<slug>-sonnet-done` / `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
