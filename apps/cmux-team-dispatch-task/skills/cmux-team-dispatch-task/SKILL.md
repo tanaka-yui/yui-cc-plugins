@@ -353,7 +353,7 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
      the question starts firing once a review_model gets configured later).
    - `REVIEW_MODEL` non-empty → ask via AskUserQuestion **on EVERY dispatch, BEFORE
      launching any task** (this question is part of Step 1, alongside 1c-1f):
-     > plan/spec の codex レビュー (Phase A-R) を使いますか？ (Phase A の成果物を codex (`<review_model>`) が approve するまでレビューします)
+     > レビューモードを使いますか？ (Phase A-R: plan/spec を codex (`<review_model>`) が approve するまでレビュー / Phase B-R: 実装完了後・PR 作成前にコードレビュー)
      Options:
        1. はい (今回のみ)   → `REVIEW_MODE=on`。config には書かない
        2. いいえ (今回のみ) → `REVIEW_MODE=off`。config には書かない
@@ -529,8 +529,8 @@ If none are relevant, proceed without an agent.
 3. **Mandatory Model Selection Sequence** (append to EVERY task prompt, regardless of mode).
 
    This block contains placeholders the parent fills before sending: `{{LAYOUT}}`,
-   `{{CODEX_OPTION_LINE}}`, `{{CODEX_BEHAVIOR_BLOCK}}`, `{{REVIEW_BLOCK}}`. See the
-   placeholder rules immediately below this template.
+   `{{CODEX_OPTION_LINE}}`, `{{CODEX_BEHAVIOR_BLOCK}}`, `{{REVIEW_BLOCK}}`,
+   `{{CODE_REVIEW_BLOCK}}`. See the placeholder rules immediately below this template.
 
 ```
 === MANDATORY MODEL SELECTION SEQUENCE ===
@@ -598,13 +598,18 @@ PHASE B — Execution model selection (REQUIRED before any code change):
              REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is
              committed/pushed and the PR is created (or all changes are merged per
              the plan), run /exit to close this session. Do not leave it idle."
+             # IF the PHASE B-R block exists below, do NOT use this REQUEST_TEXT —
+             # use the extended REQUEST_TEXT defined in that block instead (it inserts
+             # the pre-PR code-review protocol).
            IF DELIVERY == "agmsg" (the worktree was wired by prewarm-panes.sh):
              ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-sonnet "$REQUEST_TEXT"
              # $TEAM is the TEAM value given above — do NOT re-derive it in this session
            ELSE (send-message mode, or wiring failed):
              cmux send --surface "$SONNET_SURFACE" "$REQUEST_TEXT"
              cmux send-key --surface "$SONNET_SURFACE" return
-        4. touch "<EXISTING_STATUS_DIR>/.deferred" then exit THIS session.
+        4. touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block exists
+           below, do NOT exit — switch to the reviewer role it defines. OTHERWISE
+           exit THIS session.
 
       IF prewarm.json is absent (split layout / prewarm off), fall back to spawn:
         (従来どおり — 以下は現行の spawn 手順そのまま)
@@ -619,10 +624,20 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           --parent-notify-workspace <PARENT_WORKSPACE_ID> \
           [--parent-notify-surface <PARENT_SURFACE_ID>] \
           [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split layout のみ
+          [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # PHASE B-R があるときのみ
           <task-slug>-exec
-        touch "<EXISTING_STATUS_DIR>/.deferred" then exit THIS session.
+        IF the PHASE B-R block exists below, BEFORE the launch above write the
+        reviewer wiring file (you are the reviewer):
+          mkdir -p "<EXISTING_STATUS_DIR>/review"
+          jq -n --arg s "$CMUX_SURFACE_ID" --arg d "<EXISTING_STATUS_DIR>/review" \
+            '{reviewer_surface: $s, review_dir: $d}' \
+            > "<EXISTING_STATUS_DIR>/review/code-review.json"
+        touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block exists below,
+        do NOT exit — switch to the reviewer role it defines. OTHERWISE exit THIS session.
 
 {{CODEX_BEHAVIOR_BLOCK}}
+
+{{CODE_REVIEW_BLOCK}}
 
   Notes on the deferred completion mechanism:
     - Child session (THIS surface) was launched with `--defer-status`, so its
@@ -751,6 +766,89 @@ the plan to a file first if you have not already.
     review point reached approve or an explicit user decision was made.
   ````
 
+- `{{CODE_REVIEW_BLOCK}}` → **Phase A-R と同一条件**（Step 1g の `REVIEW_ENABLED` が true）のときのみ、
+  以下のブロック全体を焼き込む。disabled のときは空文字列:
+
+  ````
+  PHASE B-R — Post-implementation code review (REQUIRED before the PR is created):
+    Enabled together with Phase A-R. Review point id: "code". Findings file:
+    <EXISTING_STATUS_DIR>/review/code-round-<N>.md — the LAST line MUST be exactly
+    'VERDICT: approve' or 'VERDICT: needs_work'. Max 3 rounds.
+
+    [IF "sonnet" or "codex" was chosen in Phase B — YOU become the code reviewer]
+      This adjusts the Phase B branches above:
+      a. Prewarm path only — REQUEST_TEXT: use this extended version instead
+         (fill every <...> before sending):
+           "Read and execute the plan at <PLAN_FILE_PATH>. After all changes are
+            committed and BEFORE creating the PR, you MUST get a code review
+            approval. Round N starts at 1, max 3 rounds. Each round:
+            (1) send the review request. If <TEAM> is non-empty AND the file
+                $HOME/.agents/skills/agmsg/run/ready.<TEAM>__<task-slug> exists, run:
+                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <task-slug> '<request text>'
+                otherwise run:
+                  /Applications/cmux.app/Contents/Resources/bin/cmux send --surface <REVIEWER_SURFACE> '<request text>'
+                  /Applications/cmux.app/Contents/Resources/bin/cmux send-key --surface <REVIEWER_SURFACE> return
+                where <request text> is: code review round N: review the committed
+                changes on this branch against the plan at <PLAN_FILE_PATH>; write
+                findings to <EXISTING_STATUS_DIR>/review/code-round-N.md whose LAST
+                line must be VERDICT: approve or VERDICT: needs_work. From round 2
+                append your rebuttals to the findings you rejected, with reasons.
+            (2) wait by polling <EXISTING_STATUS_DIR>/review/code-round-N.md every
+                5 seconds up to 15 minutes for a VERDICT line.
+            (3) On VERDICT: approve, create the PR and finish per the instructions
+                below. On VERDICT: needs_work, apply the findings you judge valid,
+                commit, and start round N+1. If round 3 still ends with needs_work:
+                if you can ask the user interactively (AskUserQuestion), ask whether
+                to proceed or run one more round; otherwise note the unresolved
+                findings in the PR body and proceed. If the verdict file never
+                appears, re-send the same round once; on a second timeout, ask via
+                AskUserQuestion if you can (再依頼 / レビュー省略して PR 作成);
+                otherwise skip the review and note that in the PR body.
+            After the PR is created (or all changes are merged per the plan), run
+            /exit (claude) or end the session (codex). Do not leave it idle."
+         Placeholder values: <REVIEWER_SURFACE> = your own $CMUX_SURFACE_ID (YOU are
+         the reviewer), <TEAM> = the TEAM value given above (empty in send-message
+         mode — then always use the cmux send path), <your-agent-name> =
+         <task-slug>-sonnet or <task-slug>-codex (whichever standby you dispatched to).
+      b. After touching .deferred (prewarm step 4 / spawn fallback): do NOT exit.
+         Run mkdir -p "<EXISTING_STATUS_DIR>/review", then END YOUR TURN and
+         idle-wait for the implementer's review requests (they arrive as an agmsg
+         push or as text typed into this pane). Do not poll or busy-wait.
+      c. When the round-N request arrives: review the implementation — the branch
+         commits (git log) and the full diff against the branch point (e.g.
+         git diff main...HEAD) — against the plan at <PLAN_FILE_PATH>. Judge
+         correctness, plan conformance, and obvious quality issues. Write your
+         findings as markdown to <EXISTING_STATUS_DIR>/review/code-round-<N>.md;
+         the LAST line MUST be exactly 'VERDICT: approve' or 'VERDICT: needs_work'.
+         approve = ready to become a PR. Consider the implementer's rebuttals —
+         do not blindly repeat rejected findings.
+      d. After writing needs_work → END YOUR TURN and idle-wait for the next round.
+         After writing approve → exit THIS session (.deferred is already in place,
+         so your wrapper stays silent; the implementer pane's wrapper owns status.json).
+      e. Orphan guard: if the implementer finishes without ever requesting a review,
+         you simply stay idle — that is acceptable. The parent closes all panes at
+         the final all-tasks-complete cleanup, and status.json is still owned by the
+         implementer's wrapper.
+
+    [IF "opus 1m" was chosen in Phase B — the codex review pane reviews your code]
+      After implementation is committed and BEFORE creating the PR, run the SAME
+      Round loop as PHASE A-R once more with point id "code", reusing REVIEW_SURFACE
+      and REVIEW_DELIVERY from the PHASE A-R Setup. Differences from a document round:
+        - Request text: ask for a review of the committed changes on this branch
+          (git log / git diff against the branch point) against the plan at
+          <PLAN_FILE_PATH>, findings to <EXISTING_STATUS_DIR>/review/code-round-<N>.md.
+        - Round 3 needs_work → ask via AskUserQuestion:
+            Q: "コードレビューで 3 往復しても approve が出ませんでした。残りの指摘: <要約>。どうしますか？"
+              1. このまま PR 作成 — 未解決指摘を PR 本文に注記して進む
+              2. さらに修正 — もう 1 往復続ける（再度 needs_work なら再質問）
+        - Review pane unavailable (the PHASE A-R Setup spawn failed and review was
+          skipped) → skip this code review too and proceed to the PR — review is a
+          quality gate, not a dispatch blocker.
+
+    VIOLATION: When this block is present, do NOT create the PR before the code
+    review reached approve or one of the explicit fallbacks above was taken.
+  ````
+
 - Read `~/.claude/cmux-team-dispatch-task/runners.json` and check whether any runner
   has `engine: "codex"`:
 
@@ -783,7 +881,9 @@ the plan to a file first if you have not already.
                  ELSE:
                    cmux send --surface "$CODEX_SURFACE" "$REQUEST_TEXT"
                    cmux send-key --surface "$CODEX_SURFACE" return
-              4. touch "<EXISTING_STATUS_DIR>/.deferred" then exit THIS session.
+              4. touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block
+                 exists below, do NOT exit — switch to the reviewer role it defines.
+                 OTHERWISE exit THIS session.
 
             IF prewarm.json is absent, fall back to the existing spawn flow (従来どおり):
               Build and run (same shape as the sonnet branch above, but with the codex runner):
@@ -797,9 +897,16 @@ the plan to a file first if you have not already.
                   --parent-notify-workspace <PARENT_WORKSPACE_ID> \
                   [--parent-notify-surface <PARENT_SURFACE_ID>] \
                   [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split layout のみ
+                  [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # PHASE B-R があるときのみ
                   <task-slug>-exec
-              Then write the deferred sentinel and exit:
+              IF the PHASE B-R block exists below, BEFORE the launch above write the
+              reviewer wiring file exactly as in the sonnet branch (mkdir -p the
+              review dir, then jq -n {reviewer_surface: $CMUX_SURFACE_ID,
+              review_dir: <EXISTING_STATUS_DIR>/review} > .../review/code-review.json).
+              Then write the deferred sentinel:
                 touch "<EXISTING_STATUS_DIR>/.deferred"
+              IF the PHASE B-R block exists below, do NOT exit — switch to the
+              reviewer role it defines. OTHERWISE exit.
               The runner wrapper around codex will emit `<task-slug>-exec-done`,
               update status.json, and notify the parent. (codex also inherits the
               claude session via external_migration when the cmux codex hooks are
