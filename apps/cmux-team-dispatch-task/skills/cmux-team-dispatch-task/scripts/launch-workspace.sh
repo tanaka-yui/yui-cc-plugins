@@ -38,6 +38,12 @@
 #                                      が存在する場合 status.json 更新 / 親通知 /
 #                                      cmux wait-for 発火をスキップ。Phase B で別 surface に
 #                                      実行を移譲する Child セッション側で常に指定する
+#   --review-config <path>             (--mode execute 専用) Phase B-R コードレビュー配線
+#                                      JSON ({reviewer_surface, review_dir}) のパス。指定時、
+#                                      inner prompt に「PR 作成前にレビュアー surface へ
+#                                      cmux send でレビュー依頼し、review_dir/code-round-<N>.md
+#                                      の VERDICT をポーリングして approve までループする」
+#                                      プロトコルを追記する
 #   --status-dir <path>                Directory for writing status files
 #   --layout workspace|split           Layout mode (default: workspace)
 #   --split-from <surface-id>          Surface to split from (required for split mode)
@@ -108,6 +114,7 @@ PLAN_FILE=""
 MODEL=""
 SKIP_PERMISSIONS=0
 DEFER_STATUS=0
+REVIEW_CONFIG=""
 MESSAGE_TYPE="send-message"
 AGMSG_TEAM=""
 AGMSG_FROM=""
@@ -160,6 +167,11 @@ while [[ $# -gt 0 ]]; do
     --defer-status)
       DEFER_STATUS=1
       shift
+      ;;
+    --review-config)
+      [[ $# -lt 2 ]] && die "--review-config requires a path argument"
+      REVIEW_CONFIG="$2"
+      shift 2
       ;;
     --status-dir)
       [[ $# -lt 2 ]] && die "--status-dir requires a path argument"
@@ -254,6 +266,12 @@ fi
 # --model は execute/standby/review 向けの拡張 (claude / codex 両 engine)。--skip-permissions は claude のみ
 if [[ -n "$MODEL" && "$MODE" != "execute" && "$MODE" != "standby" && "$MODE" != "review" ]]; then
   log "warn" "--model is only meaningful with --mode execute; ignoring for mode=$MODE"
+fi
+
+# --review-config は execute 専用 (Phase B-R: PR 作成前コードレビューのプロトコル注入)
+if [[ -n "$REVIEW_CONFIG" ]]; then
+  [[ "$MODE" == "execute" ]] || die "--review-config is only valid with --mode execute"
+  [[ -f "$REVIEW_CONFIG" ]] || die "review config file not found: $REVIEW_CONFIG"
 fi
 
 # Validate workspace name: only allow safe characters for path/branch usage
@@ -450,7 +468,18 @@ if [[ "$MODE" == "execute" ]]; then
   else
     EXIT_INSTRUCTION="After all work is committed/pushed and the PR is created (or all changes are merged per the plan), run /exit to close this Claude session so the wrapper script can finalize completion notification. Do not leave the session idle."
   fi
-  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${EXIT_INSTRUCTION}"
+  # Phase B-R: --review-config 指定時は PR 作成前のコードレビュープロトコルを inner prompt に注入する。
+  # 文中にクォート文字を使わないこと (inner prompt の '...' と zsh -ic の "..." を壊さないため)
+  REVIEW_INSTRUCTION=""
+  if [[ -n "$REVIEW_CONFIG" ]]; then
+    REVIEWER_SURFACE=$(jq -r '.reviewer_surface // empty' "$REVIEW_CONFIG" 2>/dev/null) \
+      || die "failed to parse review config at $REVIEW_CONFIG"
+    REVIEW_DIR=$(jq -r '.review_dir // empty' "$REVIEW_CONFIG" 2>/dev/null)
+    [[ -n "$REVIEWER_SURFACE" && -n "$REVIEW_DIR" ]] \
+      || die "review config must contain reviewer_surface and review_dir"
+    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send --surface $REVIEWER_SURFACE followed by: $CMUX send-key --surface $REVIEWER_SURFACE return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons. (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds up to 15 minutes for a VERDICT line. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. If round 3 still ends with needs_work, or the verdict file never appears after one re-send of the same round: if you can ask the user interactively via AskUserQuestion, ask whether to proceed to the PR or keep going; otherwise note the unresolved or skipped review in the PR body and proceed. "
+  fi
+  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${EXIT_INSTRUCTION}"
 else
   PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
 fi
