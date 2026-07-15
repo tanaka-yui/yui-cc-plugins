@@ -97,7 +97,8 @@ if [[ "$MODE" == "execute" ]]; then
   if [[ -n "$REVIEW_CONFIG" ]]; then
     REVIEWER_SURFACE=$(jq -r '.reviewer_surface // empty' "$REVIEW_CONFIG" 2>/dev/null) \
       || die "failed to parse review config at $REVIEW_CONFIG"
-    REVIEW_DIR=$(jq -r '.review_dir // empty' "$REVIEW_CONFIG" 2>/dev/null)
+    REVIEW_DIR=$(jq -r '.review_dir // empty' "$REVIEW_CONFIG" 2>/dev/null) \
+      || die "failed to parse review config at $REVIEW_CONFIG"
     [[ -n "$REVIEWER_SURFACE" && -n "$REVIEW_DIR" ]] \
       || die "review config must contain reviewer_surface and review_dir"
     REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send --surface $REVIEWER_SURFACE followed by: $CMUX send-key --surface $REVIEWER_SURFACE return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons. (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds up to 15 minutes for a VERDICT line. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. If round 3 still ends with needs_work, or the verdict file never appears after one re-send of the same round: if you can ask the user interactively via AskUserQuestion, ask whether to proceed to the PR or keep going; otherwise note the unresolved or skipped review in the PR body and proceed. "
