@@ -73,7 +73,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 7. Display Format Conventions（Template A/B/C）が SKILL.md / guide-ja.md / 子セッションプロンプト埋め込みの `PROGRESS REPORTING FORMAT` の3か所で完全一致しているか確認（カラム数・順序・幅・Mode 略称）
 8. モデル選択フロー（MANDATORY MODEL SELECTION SEQUENCE）が **SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイル**で完全一致しているか確認:
    - 同一 model (opus 1m) は **現セッション継続** (`/model claude-opus-4-7[1m]`)
-   - 異なる model (sonnet / codex) は **`launch-workspace.sh --mode execute` 経由で別 surface を spawn**。孫 surface の runner wrapper が status.json / `cmux wait-for` シグナル / 親通知を担当。Child は `.deferred` を作って exit (runner は `--defer-status` 付きで起動されており `.deferred` を検知して上書きをスキップ)
+   - 異なる model (sonnet / codex) は **`launch-workspace.sh --mode execute` 経由で別 surface を spawn**。孫 surface の runner wrapper が status.json / `cmux wait-for` シグナル / 親通知を担当。Child は `.deferred` を作って exit (runner は `--defer-status` 付きで起動されており `.deferred` を検知して上書きをスキップ)。Phase B-R 有効時は `.deferred` 作成後も exit せずレビュアーとして待機し、approve 後に exit
    - sonnet は **`--skip-permissions` 必須** (auto mode が効かないため permission prompt でハング防止)
    - **codex 選択肢は `runners.json` に `engine: codex` の runner があるときのみ表示**（無い場合は option から除外）
    - 計画の受け渡しは `--plan-file <path>` で行う (`.cmux-team-dispatch-task-prompt.md` は書き換えず Phase A のものを温存)
@@ -97,6 +97,13 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - hook が worktree に残存し後続セッション（Phase B の execute 孫を含む）にも作用するが、plan モードを使わないため実害なし — と 4 ファイルで文書化されていること
     - MANDATORY MODEL SELECTION SEQUENCE の Phase A（plan モード）に「plan 冒頭に Step 0: Phase A-R（有効時）/ Step 1: Phase B を必須ステップとして記載」「plan が ExitPlanMode メッセージ内にしか無い場合は承認後最初にファイル保存」の指示、VIOLATION 節に PLAN-MODE TRAP が含まれること
     - `plan-approved-hook.sh` の出力が有効な JSON（`hookSpecificOutput.additionalContext`）であること
+17. Phase B-R（実装後コードレビュー）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
+    - 有効化条件は Phase A-R と完全に同一（`REVIEW_ENABLED`。新 config キー無し）。Step 1g の質問文が「レビューモードを使いますか？（Phase A-R … / Phase B-R …）」の両フェーズ言及形であること
+    - レビュアーの割り当て: sonnet / codex 実装 → 計画 opus ペイン（Child が `.deferred` touch 後 exit せず idle 待機、approve 書き込み後に exit）/ opus 1m 実装 → codex レビューペイン（Phase A-R と同一ペイン・ポイント id `code`）/ レビューペイン利用不可（Phase A-R spawn 失敗済み）→ レビュー省略
+    - プロトコル: findings は `<STATUS_DIR>/review/code-round-<N>.md` 末尾の `VERDICT: approve|needs_work`、最大 3 往復、実装者の verdict 待ちは 5 秒間隔・15 分タイムアウトのファイルポーリング、タイムアウトは同一ラウンド 1 回再依頼 → それでも失敗なら claude 実装者は AskUserQuestion（再依頼 / レビュー省略して PR 作成）、codex 実装者はレビュー省略を PR 本文に注記して続行
+    - 3 往復 needs_work: claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、codex 実装者は PR 本文に注記して続行
+    - status.json の done/error 遷移は従来どおり実装者ペインの wrapper が所有。実装者がレビューを依頼せず終了しても Child は idle のまま残り、最終クリーンアップで閉じる（孤児ガード用の追加機構は無い）
+    - spawn 経路: Child が `<STATUS_DIR>/review/code-review.json`（`{reviewer_surface, review_dir}`）を書き、`launch-workspace.sh --mode execute --review-config <path>` で孫を起動。wrapper が composed prompt にプロトコル（依頼は常に `cmux send` + ポーリング）を追記する。`--review-config` は execute モード専用で、usage コメント / SKILL.md / guide-ja.md の使用例が一致していること
 
 ## テスト方法
 
@@ -148,3 +155,6 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 26. **exec_model**: codex runner に `exec_model` 設定時、Phase B の codex 実行（`--mode execute` spawn / prewarm codex standby）が `--model <exec_model>` 付きで起動すること。レビューペインは `review_model` のまま変わらないこと。`--model` 明示時は明示値が優先されること。`exec_model` 未設定なら従来どおり codex 側デフォルトで起動すること
 27. **watcher 死亡時のフォールバック**: `delivery: "agmsg"` のタスクで宛先ペインの watcher を kill（ready sentinel が消える）した後に指示を送ると、agmsg push ではなく `cmux send` で配送されること。配線失敗（`delivery: "cmux-send"`）タスクの opus / sonnet 初期プロンプトに `/agmsg actas` が含まれず、「typed directly into this pane」の文面になること
 28. **plan モード遵守ゲート**: plan モード子セッションで ExitPlanMode 承認後、ファイル編集前に Phase A-R（有効時）→ Phase B の質問が出ること。worktree に `.claude/settings.local.json` が生成され、settings と `.claude/plans/` 配下の plan ファイルのどちらも `git status` に現れないこと。superpowers モードの worktree には hook が注入されないこと。既存の `.claude/settings.local.json` がある worktree では既存キーが保持されたままマージされること
+29. **Phase B-R (sonnet / codex 実装)**: `review_mode: on` + sonnet（または codex）選択 → 実装者がコミット後・PR 作成前に opus Child へレビュー依頼し、Child が `review/code-round-1.md` に VERDICT を書くこと。needs_work → 実装者が修正して round 2 を依頼し**同じ opus セッション**がレビューすること。approve → PR が作成され、opus Child が exit すること。Child は `.deferred` touch 後も exit せず待機していること
+30. **Phase B-R (opus 1m 実装)**: `review_mode: on` + opus 1m 選択 → コミット後・PR 作成前にポイント id `code` の依頼が **Phase A-R と同一の codex レビューペイン**に送られること。レビューペイン spawn 失敗済みの場合はレビューが省略され PR 作成へ進むこと
+31. **Phase B-R 無効 / spawn 経路**: `review_mode: off` では Child が従来どおり `.deferred` touch 後すぐ exit し、実行指示にレビュープロトコルが含まれないこと。prewarm 無効時は `--review-config` 付き spawn で孫の inner prompt に `MANDATORY CODE REVIEW` 文が入り、`review/code-review.json` が生成されること。3 往復 needs_work → claude 実装者は AskUserQuestion が出る / codex 実装者は PR 本文に未解決指摘が注記されること
