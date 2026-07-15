@@ -147,7 +147,7 @@ runner wrapper の composed prompt として焼き込まれるため、レビュ
   - `launch-workspace.sh --review-config` の使用例
 - CLAUDE.md: メンテナンス手順に Phase B-R 整合チェック項目を追加、E2E テスト項目を追加
 - guide-ja.md / README.md: 同内容を反映
-- バージョン: `plugin.json` 1.6.2 → **1.7.0**、ルート `marketplace.json` も同期
+- バージョン: `plugin.json` 1.6.2 → **1.6.3**、ルート `marketplace.json` も同期
 
 ## テスト（E2E 観点）
 
