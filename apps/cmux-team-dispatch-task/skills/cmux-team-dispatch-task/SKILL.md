@@ -871,6 +871,9 @@ the plan to a file first if you have not already.
                  status.json, and keeping all four panes open is the intended layout).
               2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-codex"
               3. Send the execution request. Check `.codex.delivery` in prewarm.json:
+                 # IF the PHASE B-R block exists below, REQUEST_TEXT must be the
+                 # extended version defined in that block (with the pre-PR
+                 # code-review protocol) — same as the sonnet branch.
                    DELIVERY=$(jq -r '.codex.delivery // "cmux-send"' "<EXISTING_STATUS_DIR>/prewarm.json")
                    # re-verify watcher liveness right before sending (see the sonnet branch)
                    [[ "$DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>-codex" ]] \

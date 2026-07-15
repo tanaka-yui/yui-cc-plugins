@@ -358,6 +358,15 @@ placeholder rules 節の `{{REVIEW_BLOCK}}` ルール（```` で囲まれた PHA
               reviewer role it defines. OTHERWISE exit.
 ```
 
+(c) prewarm 経路 step 3（`3. Send the execution request. Check .codex.delivery ...` の行）の直後に、
+sonnet 分岐と同じ趣旨の注記を同じインデントで追加:
+
+```
+                 # IF the PHASE B-R block exists below, REQUEST_TEXT must be the
+                 # extended version defined in that block (with the pre-PR
+                 # code-review protocol) — same as the sonnet branch.
+```
+
 - [ ] **Step 6: 検証**
 
 ```bash
