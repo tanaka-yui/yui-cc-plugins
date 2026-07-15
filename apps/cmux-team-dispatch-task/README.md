@@ -201,7 +201,7 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
   codex 実行（execute / standby ペイン）にのみ適用され、レビューは `review_model` のまま。
   未設定なら codex 側デフォルト（`~/.codex/config.toml`）が使われる
 
-agmsg モードでの指示配送（Phase A タスク / Phase B 実行指示 / Phase A-R レビュー依頼）は、
+agmsg モードでの指示配送（Phase A タスク / Phase B 実行指示 / Phase A-R レビュー依頼 / Phase B-R コードレビュー依頼）は、
 送信直前に宛先ペインの watcher 生存（agmsg の ready sentinel）を確認し、死んでいれば自動的に
 `cmux send`（ペインへの直接タイプ）へフォールバックする。配線に失敗したペインの初期プロンプトも
 「指示は直接タイプされる」文面に切り替わるため、agmsg の watcher 障害でディスパッチが

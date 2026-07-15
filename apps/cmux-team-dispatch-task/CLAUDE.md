@@ -89,7 +89,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - prewarm 有効 + Phase A-R 有効時は 2×2 均等グリッド（左上 opus / 右上 review / 左下 sonnet / 右下 codex）、無効時は現行縦積み。review ペインは standby wrapper の status 所有権なし（`.assigned-<slug>-review` 非使用）、全レビューポイントで同一ペインを再利用し最終 approve 後も開いたまま idle 維持（常 4 ペイン。途中で close せず、最終の全タスク完了クリーンアップでまとめて close）。spawn 失敗時はレビューをスキップして Phase B へ
     - `launch-workspace.sh` の `--mode review` / `--standby-split-direction` / codex engine への `--model` 反映、`prewarm-panes.sh` の `--review-model`（`--codex-runner` 必須）と prewarm.json `review` キーが SKILL.md の使用例・スキーマと一致
 15. agmsg 配送の watcher 生存チェックが SKILL.md / guide-ja.md で一致しているか確認:
-    - agmsg で指示を送る 4 箇所すべて（Phase A opus タスク / Phase B sonnet / Phase B codex / Phase A-R review 依頼）で、送信直前に ready sentinel（`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）の存在を確認し、無ければ `cmux-send` に倒すこと
+    - agmsg で指示を送る 5 箇所すべて（Phase A opus タスク / Phase B sonnet / Phase B codex / Phase A-R review 依頼 / Phase B-R コードレビュー依頼（実装者 → Child））で、送信直前に ready sentinel（`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）の存在を確認し、無ければ `cmux-send` に倒すこと
     - `prewarm-panes.sh` が配線失敗（`CLAUDE_DELIVERY=cmux-send`）時に opus / sonnet の初期プロンプトを `/agmsg actas` なしの「直接タイプされる」文面に出し分けること
 16. plan モードの遵守ゲート（ExitPlanMode hook）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
     - `launch-workspace.sh` が `--mode plan` かつ claude engine、かつ claude-teams レイアウト以外のときのみ worktree の `.claude/settings.local.json` に PostToolUse hook（matcher: `ExitPlanMode`、command: `zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入すること（既存 settings は jq マージ、worktree 再利用時は重複注入なし、失敗は警告のみで dispatch 続行）
@@ -100,7 +100,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 17. Phase B-R（実装後コードレビュー）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
     - 有効化条件は Phase A-R と完全に同一（`REVIEW_ENABLED`。新 config キー無し）。Step 1g の質問文が「レビューモードを使いますか？（Phase A-R … / Phase B-R …）」の両フェーズ言及形であること
     - レビュアーの割り当て: sonnet / codex 実装 → 計画 opus ペイン（Child が `.deferred` touch 後 exit せず idle 待機、approve 書き込み後に exit）/ opus 1m 実装 → codex レビューペイン（Phase A-R と同一ペイン・ポイント id `code`）/ レビューペイン利用不可（Phase A-R spawn 失敗済み）→ レビュー省略
-    - プロトコル: findings は `<STATUS_DIR>/review/code-round-<N>.md` 末尾の `VERDICT: approve|needs_work`、最大 3 往復、実装者の verdict 待ちは 5 秒間隔・15 分タイムアウトのファイルポーリング、タイムアウトは同一ラウンド 1 回再依頼 → それでも失敗なら claude 実装者は AskUserQuestion（再依頼 / レビュー省略して PR 作成）、codex 実装者はレビュー省略を PR 本文に注記して続行
+    - プロトコル: findings は `<STATUS_DIR>/review/code-round-<N>.md` 末尾の `VERDICT: approve|needs_work`、最大 3 往復、実装者の verdict 待ちは 5 秒間隔・15 分タイムアウトのファイルポーリング（sonnet / codex 実装者。opus 1m 実装者は Phase A-R Round loop の待ち方を流用）、タイムアウトは同一ラウンド 1 回再依頼 → それでも失敗なら claude 実装者は AskUserQuestion（再依頼 / レビュー省略して PR 作成）、codex 実装者はレビュー省略を PR 本文に注記して続行
     - 3 往復 needs_work: claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、codex 実装者は PR 本文に注記して続行
     - status.json の done/error 遷移は従来どおり実装者ペインの wrapper が所有。実装者がレビューを依頼せず終了しても Child は idle のまま残り、最終クリーンアップで閉じる（孤児ガード用の追加機構は無い）
     - spawn 経路: Child が `<STATUS_DIR>/review/code-review.json`（`{reviewer_surface, review_dir}`）を書き、`launch-workspace.sh --mode execute --review-config <path>` で孫を起動。wrapper が composed prompt にプロトコル（依頼は常に `cmux send` + ポーリング）を追記する。`--review-config` は execute モード専用で、usage コメント / SKILL.md / guide-ja.md の使用例が一致していること
