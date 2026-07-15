@@ -77,8 +77,7 @@ verdict の受け渡しはファイル経由（Phase A-R と同一プロトコ�
    （agmsg。倒れたら通知なし — 実装者は verdict ファイルをポーリングで検知）
 5. needs_work → Child は turn を終えて次 round の依頼を idle 待機。
    **approve を書いたら Child は exit する**（`.deferred` 済みなので status.json は汚れない）
-6. 実装者の verdict 待ち: agmsg push（実装者側 ready sentinel が生きている場合）または
-   verdict ファイルの VERDICT 行ポーリング（5 秒間隔・15 分タイムアウト — Phase A-R と同値）
+6. 実装者の verdict 待ち: ファイルポーリングのみ（5 秒間隔・15 分タイムアウト — Phase A-R と同値。agmsg push は使わない）
 
 **opus 1m 実装:**
 
@@ -118,8 +117,8 @@ runner wrapper の composed prompt として焼き込まれるため、レビュ
   指定時、wrapper は composed prompt に Phase B-R プロトコル（宛先 surface id / verdict
   ファイルパス / round loop / PR 前レビューの義務）を追記する
 - Child は spawn 前に `<STATUS_DIR>/review/code-review.json`
-  （`{ "reviewer_surface": "...", "team": "...", "reviewer_agent": "...", "delivery": "...", "review_dir": "..." }`）
-  を書き、そのパスを `--review-config` に渡す
+  （`{ "reviewer_surface": "...", "review_dir": "..." }`）
+  を書き、そのパスを `--review-config` に渡す。spawn 経路の孫は agmsg 未配線のため、依頼は常に `cmux send` + verdict ファイルポーリングで行う（`team` / `reviewer_agent` / `delivery` キーは不要）
 - `REVIEW_ENABLED` が false のときはオプション自体を渡さない（composed prompt は現行と同一）
 
 ## エラーハンドリング
