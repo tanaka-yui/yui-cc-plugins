@@ -21,6 +21,9 @@
   レビューを使うことを選んだとき（dispatch 前に毎回質問。config の `review_mode: "on"` / `"off"` で
   恒久設定も可）、Phase A の成果物（plan モード: plan / superpowers モード:
   spec と plan）を専用ペインの codex がレビューする。approve まで最大 3 往復、超過時はユーザー判断
+- **Phase B-R（実装後コードレビュー）**: `review_mode: on` のとき、実装完了後・PR 作成前に
+  コードレビューを挟む。sonnet / codex 実装 → 計画を立てた opus ペインがレビュー、opus 1m
+  実装 → codex レビューペインがレビュー。approve が出るまで実装者が修正（最大 3 往復）
 - **統一表示フォーマット**: 子セッション一覧・進捗・最終サマリーは Box drawing 表（Template A/B/C）で常に同じレイアウト
 - **堅牢なバックグラウンド監視**: `monitor-dispatch.sh` が heartbeat / 死亡通知 / `--resume` をサポート。`cmux send` の後に必ず `cmux send-key return` を発行して親 TUI に確実に届ける
 - **2つの統合戦略**: PR per task（子タスクごとに PR 作成）、Wait and merge（全タスク完了後にローカルマージ）
@@ -533,7 +536,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 - `message_type`: 子 → 親の通知トランスポート。`"send-message"`（default）| `"agmsg"`
 - `prewarm`: workspace レイアウト時の standby ペイン事前起動（縦積み: 上 opus / 中 sonnet / 下 codex）。agmsg モードでは opus-1m も idle 起動し Phase A タスクを agmsg で配送する。`true`（default）| `false`
-- `review_mode`: Phase A-R（codex plan/spec レビュー）の制御（`"on"` / `"off"` / `"ask"`）。
+- `review_mode`: Phase A-R（codex plan/spec レビュー）と Phase B-R（実装後コードレビュー）の制御（`"on"` / `"off"` / `"ask"`）。
   `"on"` / `"off"` は質問なしで恒久適用。未設定または `"ask"` のときは、`review_model` 付き
   codex runner が存在する場合のみ **dispatch のたびに**使うかどうかを質問する（4択:
   はい[今回のみ] / いいえ[今回のみ] / 常に有効 / 常に無効。「常に〜」のみ `"on"` / `"off"` として
@@ -1083,7 +1086,8 @@ done
 ## 子セッションのモデル選択フロー（必須）
 
 子セッションのプロンプトには `MANDATORY MODEL SELECTION SEQUENCE` が必ず含まれており、以下の段階で動作する
-（Phase A-R は `review_mode: on` のときのみ Phase A と Phase B の間に挟まる）。
+（Phase A-R は `review_mode: on` のときのみ Phase A と Phase B の間に挟まり、同条件で
+Phase B-R が実装完了後・PR 作成前に挟まる）。
 
 ### Phase A: Plan / Brainstorming（常に opus）
 
@@ -1167,7 +1171,8 @@ Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` �
 2. `touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"`（sonnet 選択時）または
    `.assigned-<task-slug>-codex`（codex 選択時） — 完了処理（status.json done/error 遷移 +
    `<slug>-sonnet-done` / `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
-3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ... 完了後は /exit`）を送信する。
+3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ... 完了後は /exit`。
+   **Phase B-R 有効時は「PR 作成前にコードレビュー approve を得る」プロトコル入りの拡張版**）を送信する。
    `prewarm.json` の `.sonnet.delivery` / `.codex.delivery` を確認して分岐する。値が `"agmsg"`
    でも送信直前に ready sentinel（`~/.agents/skills/agmsg/run/ready.${TEAM}__<agent>`）の存在を
    確認し、無ければ `"cmux-send"` に倒す（死んだ watcher への push は滞留する）:
@@ -1178,7 +1183,8 @@ Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` �
    - `"cmux-send"`（send-message モード、または配線失敗時）→
      `cmux send --surface "$SURFACE" "$REQUEST_TEXT"` に続けて
      `cmux send-key --surface "$SURFACE" return`
-4. `touch "<EXISTING_STATUS_DIR>/.deferred"` してこのセッションを exit
+4. `touch "<EXISTING_STATUS_DIR>/.deferred"`。Phase B-R 有効時は exit **せず**、レビュアー
+   として idle 待機する（下記「Phase B-R」参照）。無効時はこのセッションを exit
 
 #### prewarm.json が無い場合（従来の spawn フォールバック、split レイアウト / prewarm off）
 
@@ -1197,15 +1203,50 @@ zsh <skill-dir>/scripts/launch-workspace.sh \
   --parent-notify-workspace <PARENT_WORKSPACE_ID> \
   [--parent-notify-surface <PARENT_SURFACE_ID>] \
   [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split のみ
+  [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # Phase B-R 有効時のみ
   <task-slug>-exec
 
-# spawn 完了後、自身は移譲シグナルを書いて exit
+# Phase B-R 有効時は spawn 前にレビュー配線ファイルを書いておく (Child 自身がレビュアー):
+#   mkdir -p "<EXISTING_STATUS_DIR>/review"
+#   jq -n --arg s "$CMUX_SURFACE_ID" --arg d "<EXISTING_STATUS_DIR>/review" \
+#     '{reviewer_surface: $s, review_dir: $d}' > "<EXISTING_STATUS_DIR>/review/code-review.json"
+
+# spawn 完了後、自身は移譲シグナルを書く。Phase B-R 有効時は exit せずレビュアーとして待機、
+# 無効時は exit
 touch "<EXISTING_STATUS_DIR>/.deferred"
 ```
 
 codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <codex-runner-name>` を使う（他は同じ形）。
 
 孫セッションの runner wrapper が `status.json` を `done`/`error` に遷移させ、`cmux wait-for --signal <task-slug>-exec-done` を発火し、親に `[dispatch] task ... finished` を送る。Child は `--defer-status` 付きで起動されているため `.deferred` センチネルを検知して status 上書きをスキップする (これにより孫の通知が握り潰されない)。
+
+### Phase B-R — 実装後コードレビュー（review_mode: on のときのみ）
+
+実装完了（コミット済み）後・**PR 作成前**にコードレビューを挟む。有効化条件は Phase A-R と
+完全に同一（新しい config キーは無い）。レビューポイント id は `code`、findings は
+`<STATUS_DIR>/review/code-round-<N>.md`（末尾 `VERDICT: approve` / `VERDICT: needs_work`）、
+最大 3 往復 — Phase A-R と同一プロトコル。
+
+| Phase B の選択 | レビュアー | 仕組み |
+|---------------|-----------|--------|
+| sonnet / codex | **計画を立てた opus ペイン**（Child） | Child は `.deferred` を touch した後 exit せず idle 待機。実装者が各ラウンドでレビューを依頼（agmsg watcher 生存時は `send.sh`、それ以外は `cmux send`）し、verdict ファイルをポーリング（5 秒間隔・15 分タイムアウト）で待つ。approve を書いた Child はそこで exit |
+| opus 1m | **codex レビューペイン**（Phase A-R と同一ペイン・`review_model`） | Phase A-R の Round loop をポイント id `code` でもう 1 周。依頼文が「文書」でなく「ブランチの diff + plan 参照」になる。ペインが利用不可（Phase A-R spawn 失敗済み）ならレビュー省略 |
+
+- **修正責任**: needs_work の指摘は実装者自身が修正して再依頼する（却下する指摘は反論を
+  次ラウンドの依頼文に添える）。approve 後に実装者が PR を作成する — PR は常にレビュー済みになる
+- **3 往復で approve が出ない**: 実装者が claude セッションなら AskUserQuestion
+  （このまま PR 作成 / さらに修正）。codex 実装者は対話質問ができないため、未解決指摘を
+  **PR 本文に注記して続行**する
+- **タイムアウト**: 同一ラウンドを 1 回だけ再依頼。それでも verdict が出なければレビューを
+  省略し PR 本文に注記する
+- **status.json 非汚染**: done/error 遷移の所有権は従来どおり実装者ペインの wrapper が持つ。
+  レビュアー（Child）は `.deferred` 済みのため exit しても status.json を書かない
+- **孤児ガードは不要**: 実装者がレビューを依頼せず終了しても Child は idle のまま無害に残り、
+  最終の全タスク完了クリーンアップで他ペインと一緒に閉じられる
+- **spawn 経路（prewarm 無効 / split）**: Child が `<STATUS_DIR>/review/code-review.json`
+  （`{reviewer_surface, review_dir}`）を書き、`launch-workspace.sh --mode execute --review-config <path>`
+  で起動する。wrapper が composed prompt にレビュープロトコル（依頼は常に `cmux send` +
+  ファイルポーリング）を追記する
 
 ### 前提条件
 

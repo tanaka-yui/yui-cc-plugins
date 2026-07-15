@@ -176,13 +176,14 @@ runner wrapper の exit 時 push(バックストップ)。idle のまま開い�
 `AGMSG-DIRECTIVE:` に従って watcher を起動する(SessionStart hook は次回セッションから有効)。
 
 config にはもう一つ `review_mode` フィールドがある（`"on"` / `"off"` / `"ask"`）。`"on"` / `"off"`
-は Phase A-R（codex plan/spec レビュー、後述）を質問なしで恒久的に有効/無効にする。未設定または
+は Phase A-R（codex plan/spec レビュー、後述）と Phase B-R（実装後コードレビュー、後述）を
+質問なしで恒久的に有効/無効にする。未設定または
 `"ask"` のときは、`review_model` 付き codex runner が存在する場合のみ **dispatch のたびに**レビューを
 使うか質問される（はい[今回のみ] / いいえ[今回のみ] / 常に有効 / 常に無効 — 「常に〜」を選んだときだけ
 config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバル config より優先される点は
 `message_type` と同じ。
 
-## モデル選択フロー (Phase A-R / Phase B)
+## モデル選択フロー (Phase A-R / Phase B / Phase B-R)
 
 ### Phase A-R — codex plan/spec レビュー（オプション）
 
@@ -200,7 +201,7 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
   codex 実行（execute / standby ペイン）にのみ適用され、レビューは `review_model` のまま。
   未設定なら codex 側デフォルト（`~/.codex/config.toml`）が使われる
 
-agmsg モードでの指示配送（Phase A タスク / Phase B 実行指示 / Phase A-R レビュー依頼）は、
+agmsg モードでの指示配送（Phase A タスク / Phase B 実行指示 / Phase A-R レビュー依頼 / Phase B-R コードレビュー依頼）は、
 送信直前に宛先ペインの watcher 生存（agmsg の ready sentinel）を確認し、死んでいれば自動的に
 `cmux send`（ペインへの直接タイプ）へフォールバックする。配線に失敗したペインの初期プロンプトも
 「指示は直接タイプされる」文面に切り替わるため、agmsg の watcher 障害でディスパッチが
@@ -220,10 +221,27 @@ agmsg モードでの指示配送（Phase A タスク / Phase B 実行指示 / P
 - 新 surface (孫セッション) は runner script でラップされ、完了時に `status.json` を `done`/`error` に遷移させ、親に `[dispatch] task ... finished` を送信
 - 孫の inner prompt 末尾には自動で「PR 作成後 `/exit` でセッションを閉じる」指示が付与される。これが無いと孫 Claude/Codex が PR 作成後も TUI で idle 待機してしまい、runner wrapper の完了処理に到達できず status.json が `executing` 固定になる
 - Runner script ファイル名は workspace 名を含む (`.cmux-team-dispatch-task-run-<workspace-name>.sh`)。Child と Phase B 孫が同じ worktree を共有しても runner ファイル同士が衝突しない
-- Child は spawn 完了後 `<STATUS_DIR>/.deferred` を作成して exit する (Child の runner wrapper は `--defer-status` で起動されており、`.deferred` を検知すると status 上書きをスキップして孫の通知を握り潰さない)
+- Child は spawn 完了後 `<STATUS_DIR>/.deferred` を作成して exit する (Child の runner wrapper は `--defer-status` で起動されており、`.deferred` を検知すると status 上書きをスキップして孫の通知を握り潰さない)。**Phase B-R 有効時は exit せず**、コードレビュアーとして idle 待機し、approve を書いた後に exit する
 - sonnet では Claude Code の auto mode (`bypassPermissions`) が効かないため、`--dangerously-skip-permissions` を付けて permission prompt によるハングを防いでいる
 
 codex オプションを使う場合は事前に `cmux codex install-hooks` の実行が必要です。
+
+### Phase B-R — 実装後コードレビュー（オプション）
+
+`review_mode` が `on` のとき（Phase A-R と同一条件）、実装完了後・**PR 作成前**に
+コードレビューを挟む。approve が出るまで実装者が修正 → 再依頼を繰り返すため、PR は常に
+レビュー済みになる。
+
+- レビュアーは Phase B の選択で切り替わる: **sonnet / codex 実装 → 計画を立てた opus ペイン**
+  （計画コンテキストを保持したまま「実装が計画どおりか」を見る）/ **opus 1m 実装 →
+  codex レビューペイン**（Phase A-R と同一ペイン。自己レビューのバイアスを避ける。ペイン
+  利用不可ならレビュー省略）
+- 指摘と verdict は `.dispatch/<slug>/review/code-round-<N>.md`（末尾 `VERDICT:` 行）で受け渡し。
+  最大 3 往復・verdict 待ちは 5 秒間隔・15 分タイムアウトのポーリング — Phase A-R と同一プロトコル
+- 3 往復で approve が出ない場合、claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、
+  codex 実装者は未解決指摘を PR 本文に注記して続行
+- prewarm 無効 / split レイアウトでは `launch-workspace.sh --mode execute --review-config <path>`
+  が孫の prompt にレビュープロトコルを注入する
 
 ### plan モードの Phase A-R / B 遵守ゲート
 
