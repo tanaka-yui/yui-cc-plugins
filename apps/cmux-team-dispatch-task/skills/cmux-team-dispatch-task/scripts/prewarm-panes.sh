@@ -393,11 +393,17 @@ fi
 REVIEW_SURFACE=""
 
 if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
+  AGMSG_FLAGS_REVIEW=()
   if [[ -n "$REVIEWER_RUNNER" ]]; then
     # design=codex: claude レビューペイン (A-R レビュアー兼 Phase B opus 1m 実装先の二役)
     log "prewarm" "launching claude review pane for $SLUG (reviewer runner: $REVIEWER_RUNNER)"
     REVIEW_PANE_NAME="$SLUG-opus"
     REVIEW_RUNNER_FLAGS=(--runner "$REVIEWER_RUNNER" --model "$CLAUDE_REVIEW_MODEL" --skip-permissions)
+    # opus 1m 委譲時にこのペインが status.json / 親通知の所有者になるため、
+    # 完了通知の dual-send (cmux send + agmsg inbox 記録) 用に agmsg 配線を渡す
+    if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
+      AGMSG_FLAGS_REVIEW=(--message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-opus")
+    fi
   else
     log "prewarm" "launching codex review pane for $SLUG"
     REVIEW_PANE_NAME="$SLUG-review"
@@ -412,6 +418,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     "${REVIEW_RUNNER_FLAGS[@]}" \
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
+    ${AGMSG_FLAGS_REVIEW[@]+"${AGMSG_FLAGS_REVIEW[@]}"} \
     "$REVIEW_PANE_NAME") || die "failed to launch review pane"
   REVIEW_SURFACE=$(echo "$REVIEW_RESULT" | jq -r '.surface_id // empty')
   [[ -n "$REVIEW_SURFACE" ]] || die "failed to parse review pane output"

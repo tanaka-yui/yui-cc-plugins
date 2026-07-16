@@ -722,7 +722,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     Options:
       1. opus 1m  — 高品質・長コンテキスト (推奨: 大規模・複雑な実装)
       2. sonnet   — 高速・低コスト (推奨: 中規模・パターン化された実装)
-      3. codex    — <exec_model> で実行 (推奨: 定型実装・別視点が欲しいとき)
+      3. codex    — <exec_model> で実行 (推奨: 定型実装・別視点が欲しいとき；
+         <exec_model> が未設定なら「codex 既定モデル」と記す)
 
   ALL three choices DELEGATE to a pre-warmed pane — THIS session never implements.
   Common delegation steps (X = chosen pane key in prewarm.json: "review" for
@@ -793,7 +794,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   PHASE A-R — Plan/Spec review by the counterpart engine (REQUIRED between Phase A and Phase B):
     Review model: {{REVIEW_MODEL}} (runs in a dedicated review pane — a plain review
     session (engine is the opposite of this session's) with NO status.json ownership;
-    NEVER touch .assigned-{{REVIEW_PANE_AGENT}})
+    NEVER touch .assigned-{{REVIEW_PANE_AGENT}} during review — the ONLY exception is
+    the Phase B opus 1m delegation step (design=codex), which explicitly touches it to
+    hand over implementation ownership)
 
     Review points (run the round loop below at EACH point, in order):
       - plan mode:        one point  — id "plan" (after the plan is written)
