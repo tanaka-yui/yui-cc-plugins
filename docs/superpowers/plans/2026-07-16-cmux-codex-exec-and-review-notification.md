@@ -649,7 +649,7 @@ fail=0
 : > "$SENT_LOG"
 out=$(CMUX_BIN="$TMP/bin/cmux" "$BIN"); rc=$?
 grep -q 'codex ' "$SENT_LOG" && \
-grep -qv 'codex review --uncommitted' "$SENT_LOG" && \
+! grep -q 'codex review --uncommitted' "$SENT_LOG" && \
 grep -q 'model_reasoning_effort="xhigh"' "$SENT_LOG" && \
 ! grep -q 'send.sh' "$SENT_LOG" && \
 echo "$out" | grep -q "surface=surface:31" \
