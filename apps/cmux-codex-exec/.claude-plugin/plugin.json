@@ -1,0 +1,10 @@
+{
+  "name": "cmux-codex-exec",
+  "description": "claude/superpowers の plan を対話 codex にカレントdir で実装させ、完了を親セッションが agmsg 経由で検知してレビューへ繋ぐプラグイン",
+  "version": "1.0.0",
+  "author": {
+    "name": "tanaka-yui"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/cmux-codex-exec"
+}

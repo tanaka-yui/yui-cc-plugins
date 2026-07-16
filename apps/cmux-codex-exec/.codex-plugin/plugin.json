@@ -1,0 +1,19 @@
+{
+  "name": "cmux-codex-exec",
+  "version": "1.0.0",
+  "description": "Implement a claude/superpowers plan with interactive codex in a new cmux pane; the parent session is woken via agmsg when it finishes.",
+  "author": {
+    "name": "tanaka-yui",
+    "url": "https://github.com/tanaka-yui"
+  },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/cmux-codex-exec",
+  "license": "MIT",
+  "keywords": ["cmux", "codex", "exec", "plan", "agmsg"],
+  "interface": {
+    "displayName": "cmux-codex-exec",
+    "shortDescription": "Run a plan with codex in a new cmux pane.",
+    "developerName": "tanaka-yui",
+    "category": "Terminal",
+    "capabilities": ["Terminal"]
+  }
+}
