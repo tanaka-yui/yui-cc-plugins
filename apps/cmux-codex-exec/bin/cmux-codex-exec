@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# cmux-codex-exec — plan を対話 codex にカレントdir で実装させ、完了通知を配線する。
+#
+# 新しい cmux ペインで対話 codex を起動し、plan の実装を依頼する。--team/--parent が
+# 与えられた場合、codex に「完了時に agmsg send.sh を撃つ」指示を注入する。親側の
+# 完了検知は cmux-codex-wait（短命 watcher）が担う。
+#
+# Usage: cmux-codex-exec [plan-path] [options]
+#   -d, --dir <right|down|left|up>  分割方向 (default: right)
+#   -m, --model <model>             codex モデル (default: gpt-5.6-sol)
+#   -e, --effort <effort>           reasoning effort (default: xhigh)
+#   --team <team>                   通知先 agmsg team（--parent と対で有効）
+#   --parent <agent>                通知先の親 agent 名
+#   --plan-mode <inline|path>       plan をプロンプトへ全文埋め込むかパス参照か (default: path)
+
+CMUX_BIN="${CMUX_BIN:-cmux}"
+
+if [[ -z "${CMUX_SOCKET_PATH:-}" ]]; then
+  echo "エラー: cmux 内でのみ使用可能です (CMUX_SOCKET_PATH 未設定)" >&2
+  exit 1
+fi
+
+DIR="right"; MODEL="gpt-5.6-sol"; EFFORT="xhigh"
+TEAM=""; PARENT=""; PLAN=""; PLAN_MODE="path"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d|--dir)    DIR="$2"; shift 2 ;;
+    -m|--model)  MODEL="$2"; shift 2 ;;
+    -e|--effort) EFFORT="$2"; shift 2 ;;
+    --team)      TEAM="$2"; shift 2 ;;
+    --parent)    PARENT="$2"; shift 2 ;;
+    --plan-mode) PLAN_MODE="$2"; shift 2 ;;
+    right|left|up|down) DIR="$1"; shift ;;
+    *)           PLAN="$1"; shift ;;
+  esac
+done
+
+# plan 解決: 引数優先、無ければ docs/superpowers/plans/ の最新 md
+if [[ -z "$PLAN" ]]; then
+  PLAN=$(ls -t docs/superpowers/plans/*.md 2>/dev/null | head -1 || true)
+fi
+[[ -n "$PLAN" && -f "$PLAN" ]] || { echo "エラー: plan が見つかりません (引数 or docs/superpowers/plans/*.md)" >&2; exit 1; }
+PLAN_NAME=$(basename "$PLAN")
+
+# ペイン分割し surface を得る
+S=$("$CMUX_BIN" new-split "$DIR" | awk '{print $2}')
+[[ -n "$S" ]] || { echo "エラー: ペイン分割に失敗しました" >&2; exit 1; }
+SNUM=$(printf '%s' "$S" | grep -oE '[0-9]+' | head -1)
+TOKEN="codex-exec-$SNUM"
+CODEX_AGENT="cxexec-$SNUM"
+
+# 完了通知指示（--team/--parent 両方あるときのみ注入）
+NOTIFY=""
+if [[ -n "$TEAM" && -n "$PARENT" ]]; then
+  NOTIFY="
+
+作業がすべて完了したら、最後に必ず次を1回だけ実行して完了を通知せよ:
+~/.agents/skills/agmsg/scripts/send.sh $TEAM $CODEX_AGENT $PARENT 'DONE $TOKEN: $PLAN_NAME 実装完了'"
+fi
+
+# plan 本文 or パス参照
+if [[ "$PLAN_MODE" == "inline" ]]; then
+  TASK="以下の plan をこのリポジトリに実装せよ。
+
+$(cat "$PLAN")"
+else
+  TASK="plan ファイル $PLAN を読み、このリポジトリに実装せよ。"
+fi
+
+PROMPT="$TASK$NOTIFY"
+CMD="codex --dangerously-bypass-approvals-and-sandbox -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$PROMPT'"
+
+"$CMUX_BIN" send --surface "$S" "$CMD
+"
+
+echo "surface=$S"
+echo "token=$TOKEN"
+echo "codex_agent=$CODEX_AGENT"
+echo "plan=$PLAN"
+echo "codex-exec 起動: $S (dir: $DIR / model: $MODEL / effort: $EFFORT / plan: $PLAN_NAME)"
