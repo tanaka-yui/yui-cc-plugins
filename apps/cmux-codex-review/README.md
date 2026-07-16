@@ -31,10 +31,13 @@ agmsg 確認をスキップし、通知なしの対話レビュー起動だけ�
 対話 codex にレビュープロンプトを渡して起動する（`codex review` サブコマンドは使わない）:
 
 ```bash
-codex --sandbox read-only \
+codex --sandbox workspace-write \
   -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
   '未コミットの変更をレビューし、問題点・改善点を具体的に指摘せよ。'
 ```
+
+サンドボックスは `workspace-write`。完了通知（agmsg `send.sh`）が SQLite DB へ書き込むため、
+`read-only` にすると通知が撃てなくなる。
 
 ## 前提条件
 

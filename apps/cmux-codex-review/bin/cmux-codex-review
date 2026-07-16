@@ -4,7 +4,9 @@ set -euo pipefail
 # cmux-codex-review — 新しい cmux ペインで対話 codex にコードレビューさせる。
 #
 # デフォルトは gpt-5.6-sol / reasoning effort xhigh で未コミット変更をレビュー。
-# レビューは read-only サンドボックス（--sandbox read-only）で起動し、書き込み権限を持たない。
+# サンドボックスは workspace-write。read-only にすると codex が完了通知の send.sh を
+# 実行できない（send.sh は agmsg の SQLite DB へ INSERT する＝書き込みであり、config.toml の
+# [sandbox_workspace_write] writable_roots は workspace-write モードにしか適用されないため）。
 # --team/--reviewer/--parent 指定時は、codex に「レビュー提示後に agmsg send.sh を撃つ」
 # 完了通知を注入する（親側の検知は cmux-codex-wait が担う）。cmux 内でのみ動作。
 #
@@ -80,7 +82,7 @@ fi
 # cmux send でペインへ送られ、ペインのシェルが再パースするため必須（通知配線時は
 # 'DONE ...' の単一引用符を含むので、この処理が無いとコマンドが壊れる）。
 REVIEW_INSTR_ESC=${REVIEW_INSTR//\'/\'\\\'\'}
-CMD="codex --sandbox read-only -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$REVIEW_INSTR_ESC'"
+CMD="codex --sandbox workspace-write -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$REVIEW_INSTR_ESC'"
 
 "$CMUX_BIN" send --surface "$S" "$CMD
 "

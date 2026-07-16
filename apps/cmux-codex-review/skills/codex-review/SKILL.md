@@ -78,10 +78,14 @@ codex 側でレビューが流れ始めるので、このセッションでの�
 対話 codex にレビュープロンプトを渡して起動する（`codex review` サブコマンドは使わない）:
 
 ```bash
-codex --sandbox read-only \
+codex --sandbox workspace-write \
   -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
   '未コミットの変更をレビューし、問題点・改善点を具体的に指摘せよ。'
 ```
 
 `--team/--reviewer/--parent` 指定時は、プロンプト末尾に「レビュー提示後に `send.sh` で親へ完了通知せよ」を
 注入する。親側は `bin/cmux-codex-wait` を background task で回して wake される。
+
+> **サンドボックスを `read-only` にしてはいけない**: 完了通知の `send.sh` は agmsg の SQLite DB へ
+> INSERT する（＝書き込み）。`config.toml` の `[sandbox_workspace_write] writable_roots`（agmsg の
+> db/teams/run）は **workspace-write モードにしか適用されない**ため、read-only では通知が撃てなくなる。

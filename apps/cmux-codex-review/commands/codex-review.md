@@ -23,6 +23,13 @@ fi
 
 - `agent=<parent> teams=<team,...>` が返れば PARENT / TEAM を記憶し、各 team の inbox を確認:
   `~/.agents/skills/agmsg/scripts/inbox.sh <team> <parent>`
+- **`suggest=true` が返ったら、このプロジェクトは未参加**。この出力に含まれる `teams=` / `agents=` は
+  **他プロジェクトの登録**であり、**そのまま使ってはいけない**（別 team へ誤配線すると codex の通知先と
+  watcher の待ち先がズレて、通知が永久に届かない）。ユーザーに確認する:
+  - **参加する**: `available_teams=` から選ぶか新規 team 名と、親 agent 名を尋ねて join:
+    `~/.agents/skills/agmsg/scripts/join.sh <team> <parent> claude-code "$(pwd)"`
+    join できたら、その TEAM / PARENT で Step 2 の通知配線へ進む。
+  - **参加しない**: 「agmsg 未参加のため完了通知はスキップ」と添えて通知なしで Step 2 へ。
 - `not_joined=true` / 未インストールなら「agmsg 未参加のため通知はスキップ」と添えて Step 2 へ（レビュー起動は止めない）。
 
 ### Step 2: 通知を配線するか決める

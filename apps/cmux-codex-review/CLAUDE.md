@@ -13,8 +13,21 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 
 1. agmsg を起動して受信箱を確認（非ブロッキング。未参加・未インストールならスキップ）
 2. `cmux new-split <dir>` で新ペインを分割
-3. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox read-only -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`、書き込み権限は持たない）
+3. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox workspace-write -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
 4. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親側は `bin/cmux-codex-wait` で完了を待つ
+
+## サンドボックスを read-only にしてはいけない
+
+完了通知の `send.sh` は agmsg の SQLite DB へ INSERT する（＝書き込み）。`~/.codex/config.toml` の
+`[sandbox_workspace_write] writable_roots`（agmsg の db/teams/run）は **workspace-write モードにしか
+適用されない**ため、`--sandbox read-only` にすると codex が通知を撃てず、親が永久に wake しない。
+過去に read-only へ変更して通知が壊れた実績があるので戻さないこと。
+
+## whoami の `suggest=true` に注意
+
+`suggest=true` は「このプロジェクトは未参加」を意味する。出力に含まれる `teams=` / `agents=` は
+**他プロジェクトの登録**であり、参加済みと誤読して使うと codex の通知先と watcher の待ち先がズレて
+通知が届かなくなる。コマンドの Step 1 は必ず join を確認してから配線する。
 
 ## デフォルト
 
