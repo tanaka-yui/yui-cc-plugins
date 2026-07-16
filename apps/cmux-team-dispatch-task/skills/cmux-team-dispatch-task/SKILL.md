@@ -202,6 +202,16 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
      are the entries in `runners[]` (label = `name`, description = `command (engine)`).
 3. Each task receives a `runner` field (the chosen `name` string), which Step 2 passes
    through `launch-session-splits.sh` and on to `launch-workspace.sh --runner <name>`.
+4. **Cross-engine reviewer** — `engine: codex` の runner が設計に割り当てられたタスクが
+   1 つでもある場合、claude 側レビュアー runner を決める（design=codex のレビューは
+   claude が担うため）:
+   - claude engine の runner が 0 件 → 警告し、codex 設計タスクの Phase A-R / B-R は無効
+   - 1 件 → その runner を黙って採用
+   - 2 件以上 → AskUserQuestion で毎 dispatch 選択:
+     > codex 設計タスクのレビュアー (claude 側) に使う runner を選んでください
+     options = claude engine runners (label = `name`, description = `command` + 設定済み `review_model`)
+   選ばれた runner 名を `REVIEWER_RUNNER` とし、その `review_model`（未設定なら
+   `claude-opus-4-7[1m]`）を `CLAUDE_REVIEW_MODEL` として Step 1g / Step 2 に渡す。
 
 **runners.json schema (minimal):**
 
@@ -209,9 +219,10 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
 {
   "default": "claude",
   "runners": [
-    { "name": "claude",  "command": "claude",  "engine": "claude" },
+    { "name": "claude",  "command": "claude",  "engine": "claude", "review_model": "claude-opus-4-7[1m]" },
     { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
-    { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra" }
+    { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra",
+      "plan_effort": "xhigh", "review_effort": "xhigh", "exec_effort": "high" }
   ]
 }
 ```
@@ -221,11 +232,19 @@ Field meanings:
 - `name`: unique identifier shown in AskUserQuestion options
 - `command`: the executable / zsh function to invoke
 - `engine`: `claude` or `codex` — controls flag composition (see table below)
-- `review_model` (optional, `engine: codex` の runner のみ): Phase A-R (plan/spec レビュー)
-  でレビューペインに渡すモデル名。未設定なら Phase A-R は無効
+- `review_model` (optional):
+  - `engine: codex` の runner: design=claude のタスクで Phase A-R/B-R のレビューペイン
+    (codex) に渡すモデル名。未設定ならそのタスクのレビューは無効
+  - `engine: claude` の runner: design=codex のタスクでレビュアー runner に選ばれたとき、
+    claude レビューペインに渡すモデル名。未設定時は `claude-opus-4-7[1m]` にフォールバック
 - `exec_model` (optional, `engine: codex` の runner のみ): Phase B の実行系
   (execute / standby) で `--model` 未指定時に `launch-workspace.sh` がフォールバック適用する
   モデル名。review ペインには適用されない。未設定なら codex 側デフォルト (config.toml)
+- `plan_effort` / `review_effort` / `exec_effort` (optional, `engine: codex` の runner のみ,
+  値: `minimal`|`low`|`medium`|`high`|`xhigh`): codex セッションの reasoning effort。
+  それぞれ Phase A 設計 (plan / superpowers) / レビューペイン (review) / 実行系
+  (execute / standby) に `-c model_reasoning_effort='<値>'` として注入される。
+  未設定なら `-c` フラグを付けず `~/.codex/config.toml` の既定に任せる
 
 **engine × MODE invocation table** (executed by `launch-workspace.sh`):
 
@@ -278,10 +297,14 @@ the parent claude account).
    - **name** (free text, e.g. `ccenec`) — unique identifier
    - **command** (free text, e.g. `ccenec` or `codex` or `claude`) — what to invoke
    - **engine** (choice: `claude` / `codex`)
-   - **review_model** (free text, engine が `codex` のときのみ質問, 例 `gpt-5.6-sol`) —
-     plan/spec レビュー (Phase A-R) 用モデル。空回答で省略可
+   - **review_model** (free text) — engine が `codex` のとき: Phase A-R/B-R レビュー用モデル
+     (例 `gpt-5.6-sol`)。engine が `claude` のとき: design=codex タスクのレビュアーに
+     選ばれた場合のモデル (例 `claude-opus-4-7[1m]`)。空回答で省略可
    - **exec_model** (free text, engine が `codex` のときのみ質問, 例 `gpt-5.6-terra`) —
      Phase B 実行系 (execute / standby) 用モデル。空回答で省略可 (codex 側デフォルトを使用)
+   - **plan_effort / review_effort / exec_effort** (choice: 空 / minimal / low / medium /
+     high / xhigh。engine が `codex` のときのみ質問) — 設計 / レビュー / 実行の
+     reasoning effort。空回答で省略可 (codex 側 config.toml の既定を使用)
 
    After each runner is added, ask: 「もう 1 件追加しますか？」 (Yes → loop; No → finish).
 
@@ -351,7 +374,8 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
    If unset or `"ask"`:
    - `REVIEW_MODEL` empty → treat as `off`. Do NOT ask and do NOT write config (so
      the question starts firing once a review_model gets configured later).
-   - `REVIEW_MODEL` non-empty → ask via AskUserQuestion **on EVERY dispatch, BEFORE
+   - `REVIEW_MODEL` non-empty **または** codex 設計タスクが存在し `REVIEWER_RUNNER` が
+     解決済み → ask via AskUserQuestion **on EVERY dispatch, BEFORE
      launching any task** (this question is part of Step 1, alongside 1c-1f):
      > レビューモードを使いますか？ (Phase A-R: plan/spec を codex (`<review_model>`) が approve するまでレビュー / Phase B-R: 実装完了後・PR 作成前にコードレビュー)
      Options:
@@ -366,10 +390,13 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
 3. Compute the final flag used by prompt construction (Step 2) and pre-warm:
 
    ```bash
-   # REVIEW_ENABLED: review_model 付き codex runner + review_mode=on
-   # (REVIEW_MODEL は engine==codex の runner からのみ解決されるため、非空なら codex runner の存在を含意する)
-   REVIEW_ENABLED=false
+   # REVIEW_ENABLED はタスクの設計 engine ごとに決まる (review_mode の解決は共通):
+   #   design=claude のタスク → review_model 付き codex runner が存在 (REVIEW_MODEL 非空)
+   #   design=codex のタスク  → claude engine runner が存在 (REVIEWER_RUNNER 非空)
+   REVIEW_ENABLED=false                 # design=claude タスク用
    [[ -n "$REVIEW_MODEL" && "$REVIEW_MODE" == "on" ]] && REVIEW_ENABLED=true
+   REVIEW_ENABLED_CODEX_DESIGN=false    # design=codex タスク用
+   [[ -n "$REVIEWER_RUNNER" && "$REVIEW_MODE" == "on" ]] && REVIEW_ENABLED_CODEX_DESIGN=true
    ```
 
    (`{{REVIEW_BLOCK}}` の placeholder 埋め込み時にのみ必要な `CODEX_CMD` / `CODEX_RUNNER_NAME` は
