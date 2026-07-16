@@ -253,9 +253,9 @@ Field meanings:
 | claude | plan        | `<command> --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
 | claude | superpowers | `<command> 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'`                              |
 | claude | execute     | `<command> [--model <X>] [--dangerously-skip-permissions] 'Read and execute the plan at <plan-file>'`     |
-| codex  | plan        | `<command> --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
-| codex  | superpowers | `<command> '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
-| codex  | execute     | `<command> [--model <exec_model>] --dangerously-bypass-approvals-and-sandbox 'Read and execute the plan at <plan-file>'` |
+| codex  | plan        | `<command> [-c model_reasoning_effort='<plan_effort>'] --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
+| codex  | superpowers | `<command> [-c model_reasoning_effort='<plan_effort>'] '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
+| codex  | execute     | `<command> [-c model_reasoning_effort='<exec_effort>'] [--model <exec_model>] --dangerously-bypass-approvals-and-sandbox 'Read and execute the plan at <plan-file>'` |
 
 `execute` モードは Phase B (実装フェーズ) で別 surface に実装を移譲するときに使う。
 `--plan-file <path>` で計画ファイルパスを指定し、`.cmux-team-dispatch-task-prompt.md`
@@ -263,6 +263,12 @@ Field meanings:
 `--skip-permissions` を追加可能 (sonnet など auto mode が効かないモデル用)。
 codex engine では `--model` 未指定時に runner の `exec_model` がフォールバック適用される
 (execute / standby のみ。review は常に `review_model` を明示)。
+
+codex engine の reasoning effort は明示 `--effort` > runner フィールド (plan_effort:
+plan/superpowers, review_effort: review, exec_effort: execute/standby) > 無指定
+(config.toml 既定) の優先で解決され、`-c model_reasoning_effort='<値>'` として
+`<command>` 直後に注入される。prewarm の設計 codex ペインは `--mode standby` で
+起動されるため、`prewarm-panes.sh` が `--effort <plan_effort>` を明示して渡す。
 
 The composed command is always wrapped: `zsh -ic "<composed>"` so that `~/.zshrc`
 functions (e.g. `ccenec`) and env (proxy auth, PATH) are loaded for the child session.
@@ -1119,10 +1125,18 @@ inside each task workspace. Layout depends on Phase A-R (Step 1g `REVIEW_ENABLED
 - **Phase A-R disabled** (current behavior): vertical stack — top: opus /
   middle: sonnet / bottom: codex (codex only when `runners.json` has an
   `engine: "codex"` runner).
-- **Phase A-R enabled**: 2×2 even grid — top-left: opus / top-right: codex
-  review pane (idle, `--model <review_model>`) / bottom-left: sonnet /
-  bottom-right: codex. The review pane is a plain codex session with NO
-  standby-wrapper status ownership (`.assigned-<slug>-review` is never touched).
+- **Phase A-R enabled**: 2×2 even grid。レビューペインは常に設計 engine の逆:
+  - design=claude (現行): top-left: opus / top-right: codex review pane (idle,
+    `--model <review_model>`, agent `<slug>-review`) / bottom-left: sonnet /
+    bottom-right: codex
+  - design=codex: top-left: design codex (idle, `--effort <plan_effort>`) /
+    top-right: claude review pane (idle, reviewer runner + `--model
+    <CLAUDE_REVIEW_MODEL>` + `--skip-permissions`, agent `<slug>-opus` — A-R
+    レビュアー兼 Phase B opus 1m 実装先の二役) / bottom-left: sonnet /
+    bottom-right: codex (exec_model / exec_effort)
+  どちらも review pane は standby wrapper の status 所有権なしで起動する
+  (design=codex の右上のみ、Phase B で opus 1m が選ばれたときに
+  `.assigned-<slug>-opus` が touch され実装者として status を持つ)。
 
 Everything is delegated to `prewarm-panes.sh`; do not create panes manually.
 
@@ -1138,6 +1152,8 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
   [--codex-runner <codex-runner-name>] \
   [--review-model "$REVIEW_MODEL"] \
+  [--design-runner <design-runner-name>] \
+  [--reviewer-runner <reviewer-runner-name>] \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID"
 ```
@@ -1157,13 +1173,19 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
   [--codex-runner <codex-runner-name>] \
   [--review-model "$REVIEW_MODEL"] \
+  [--design-runner <design-runner-name>] \
+  [--reviewer-runner <reviewer-runner-name>] \
   --message-type agmsg --agmsg-team "$TEAM" \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID")
 ```
 
-Pass `--review-model` only when Phase A-R is enabled (`REVIEW_ENABLED` from
-Step 1g). It requires `--codex-runner`.
+Flag selection per task:
+- design=claude: pass `--review-model "$REVIEW_MODEL"` only when Phase A-R is
+  enabled (`REVIEW_ENABLED`). It requires `--codex-runner`.
+- design=codex: ALWAYS pass `--design-runner <runner>`. Pass
+  `--reviewer-runner "$REVIEWER_RUNNER"` only when `REVIEW_ENABLED_CODEX_DESIGN`
+  is true. `--review-model` must NOT be passed (mutually exclusive).
 
 Since the normal task-prompt launch never runs in this mode, `prewarm-panes.sh` itself writes
 an initial `"launched"` status.json (with `workspace_id`/`surface_id` populated) right after
