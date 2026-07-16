@@ -31,6 +31,14 @@
 #                                      execute/standby、codex engine は execute/standby/review で反映。
 #                                      codex engine では未指定時に runner の exec_model に
 #                                      フォールバックする (execute/standby のみ)
+#   --effort <value>                   codex engine の reasoning effort
+#                                      (minimal|low|medium|high|xhigh)。
+#                                      -c model_reasoning_effort='<value>' として注入される。
+#                                      未指定時は runner の plan_effort / review_effort /
+#                                      exec_effort を MODE (plan,superpowers / review /
+#                                      execute,standby) に応じて適用。どちらも無ければ
+#                                      フラグを付けず codex 側 config.toml の既定に任せる。
+#                                      claude engine では無視 (警告のみ)
 #   --skip-permissions                 claude に --dangerously-skip-permissions を
 #                                      追加 (sonnet の auto mode 不在対策)。
 #                                      claude engine のみ対応
@@ -113,6 +121,7 @@ WORKSPACE_NAME=""
 PROMPT=""
 PLAN_FILE=""
 MODEL=""
+EFFORT=""
 SKIP_PERMISSIONS=0
 DEFER_STATUS=0
 REVIEW_CONFIG=""
@@ -161,6 +170,9 @@ while [[ $# -gt 0 ]]; do
       MODEL="$2"
       shift 2
       ;;
+    --effort)
+      [[ $# -lt 2 ]] && die "--effort requires a value"
+      EFFORT="$2"; shift 2 ;;
     --skip-permissions)
       SKIP_PERMISSIONS=1
       shift
@@ -313,6 +325,9 @@ command -v jq &>/dev/null || die "jq is not installed (required for JSON output)
 RUNNER_COMMAND="claude"
 RUNNER_ENGINE="claude"
 RUNNER_EXEC_MODEL=""
+RUNNER_PLAN_EFFORT=""
+RUNNER_REVIEW_EFFORT=""
+RUNNER_EXEC_EFFORT=""
 
 if [[ -n "$RUNNER_NAME" ]]; then
   [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH (required when --runner is specified)"
@@ -323,6 +338,9 @@ if [[ -n "$RUNNER_NAME" ]]; then
   RUNNER_COMMAND=$(echo "$RUNNER_JSON" | jq -r '.command // empty')
   RUNNER_ENGINE=$(echo "$RUNNER_JSON" | jq -r '.engine // "claude"')
   RUNNER_EXEC_MODEL=$(echo "$RUNNER_JSON" | jq -r '.exec_model // empty')
+  RUNNER_PLAN_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.plan_effort // empty')
+  RUNNER_REVIEW_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.review_effort // empty')
+  RUNNER_EXEC_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.exec_effort // empty')
 
   [[ -n "$RUNNER_COMMAND" ]] || die "runner '$RUNNER_NAME' is missing 'command' field"
   [[ "$RUNNER_ENGINE" == "claude" || "$RUNNER_ENGINE" == "codex" ]] \
@@ -336,6 +354,27 @@ if [[ "$RUNNER_ENGINE" == "codex" && -z "$MODEL" && -n "$RUNNER_EXEC_MODEL" ]] \
   && [[ "$MODE" == "execute" || "$MODE" == "standby" ]]; then
   MODEL="$RUNNER_EXEC_MODEL"
   log "runner" "applying exec_model=$MODEL (codex $MODE)"
+fi
+
+# effort 解決: codex engine のみ。優先順位: 明示 --effort > runner フィールド (MODE 対応) > 無指定
+# 無指定なら -c フラグを付けず codex 側デフォルト (config.toml) に任せる
+CODEX_EFFORT_FLAG=""
+if [[ "$RUNNER_ENGINE" == "codex" ]]; then
+  if [[ -z "$EFFORT" ]]; then
+    case "$MODE" in
+      plan|superpowers) EFFORT="$RUNNER_PLAN_EFFORT" ;;
+      review)           EFFORT="$RUNNER_REVIEW_EFFORT" ;;
+      execute|standby)  EFFORT="$RUNNER_EXEC_EFFORT" ;;
+    esac
+  fi
+  if [[ -n "$EFFORT" ]]; then
+    [[ "$EFFORT" =~ ^(minimal|low|medium|high|xhigh)$ ]] \
+      || die "invalid --effort '$EFFORT' (must be minimal|low|medium|high|xhigh)"
+    CODEX_EFFORT_FLAG=" -c model_reasoning_effort='$EFFORT'"
+    log "runner" "applying reasoning effort=$EFFORT (codex $MODE)"
+  fi
+elif [[ -n "$EFFORT" ]]; then
+  log "warn" "--effort is only meaningful with codex engine; ignoring"
 fi
 
 log "runner" "name=${RUNNER_NAME:-<default>} command=$RUNNER_COMMAND engine=$RUNNER_ENGINE"
@@ -526,7 +565,7 @@ else
       # --model (明示指定 or runner の exec_model) があれば付与、無ければ codex 側デフォルト
       CODEX_MODEL_FLAG=""
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
-      CORE_CMD="$RUNNER_COMMAND$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
     elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
       # codex standby/review: prompt なしで idle 起動。実行指示は常に cmux send で届く
       # (prewarm.json の delivery=agmsg のときは加えて agmsg inbox にも記録される)。
@@ -534,17 +573,17 @@ else
       CODEX_MODEL_FLAG=""
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       if [[ -n "$PROMPT_TEXT" ]]; then
-        CORE_CMD="$RUNNER_COMMAND$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
       else
-        CORE_CMD="$RUNNER_COMMAND$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox"
+        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox"
       fi
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
-      CORE_CMD="$RUNNER_COMMAND '\$superpowers:brainstorming $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG '\$superpowers:brainstorming $PROMPT_TEXT'"
     else
       # codex plan: claude の --dangerously-skip-permissions に相当するのは
       # --dangerously-bypass-approvals-and-sandbox。/plan slash command は codex でも有効
-      CORE_CMD="$RUNNER_COMMAND --dangerously-bypass-approvals-and-sandbox '/plan $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG --dangerously-bypass-approvals-and-sandbox '/plan $PROMPT_TEXT'"
     fi
   else
     # claude engine (default)
