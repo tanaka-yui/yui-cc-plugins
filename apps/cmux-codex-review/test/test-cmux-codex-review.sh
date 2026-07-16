@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# cmux-codex-review の回帰テスト。
+#
+# stub の cmux / codex を用意し、bin が組み立てて `cmux send` でペインへ送る文字列を
+# **ペインのシェルと同じように再パース**して、codex が実際に受け取る引数を検証する。
+# 生文字列の grep では引用符崩れを検知できないため、この再パースが要。
+#
+# 実行: bash apps/cmux-codex-review/test/test-cmux-codex-review.sh
+#
+# 守っている不変条件:
+#   D1. sandbox は workspace-write（read-only にすると完了通知の send.sh が
+#       agmsg の SQLite DB へ書き込めず、親が永久に wake しない）
+#   D2. 通知配線あり → プロンプトに send.sh と token が丸ごと届く
+#   D3. 通知配線なし → send.sh を注入しない（後方互換）
+#   D4. プロンプトは常にちょうど 1 引数として codex に渡る（引用符エスケープ）
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$SCRIPT_DIR/../bin/cmux-codex-review"
+[[ -x "$BIN" ]] || { echo "FAIL: bin が見つからない/実行不可: $BIN"; exit 2; }
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/bin"
+
+# stub cmux: new-split は surface を返し、send は送信文字列をそのまま記録
+cat > "$TMP/bin/cmux" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "new-split" ]]; then echo "OK surface:31 workspace:9"; exit 0; fi
+if [[ "$1" == "send" ]]; then printf '%s' "$4" > "$SENT_CMD"; exit 0; fi
+STUB
+chmod +x "$TMP/bin/cmux"
+
+# stub codex: 受け取った引数の数と最後の引数(prompt)を記録
+cat > "$TMP/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+echo "$#" > "$CODEX_ARGC"
+prompt=""; for a in "$@"; do prompt="$a"; done
+printf '%s' "$prompt" > "$CODEX_PROMPT"
+STUB
+chmod +x "$TMP/bin/codex"
+
+export CMUX_SOCKET_PATH=/tmp/fake.sock
+export SENT_CMD="$TMP/sent.cmd"
+fail=0
+
+# 送信された CMD をペインのシェルとして再パースし、codex が受け取る argc / prompt を得る
+reparse() { env PATH="$TMP/bin:$PATH" CODEX_ARGC="$TMP/argc" CODEX_PROMPT="$TMP/prompt" bash -c "$(cat "$SENT_CMD")"; }
+argc() { cat "$TMP/argc" 2>/dev/null || echo "?"; }
+prompt() { cat "$TMP/prompt" 2>/dev/null || echo ""; }
+
+# --- D1: sandbox は workspace-write（read-only への逆戻りを禁止） ---
+CMUX_BIN="$TMP/bin/cmux" "$BIN" >/dev/null 2>&1
+if grep -q -- '--sandbox workspace-write' "$SENT_CMD" && ! grep -q -- '--sandbox read-only' "$SENT_CMD"; then
+  echo "PASS D1: sandbox=workspace-write"
+else
+  echo "FAIL D1: sandbox が workspace-write でない → codex が完了通知の send.sh を撃てず親が wake しない"
+  grep -o -- '--sandbox [a-z-]*' "$SENT_CMD"
+  fail=1
+fi
+
+# --- D3 + D4: 通知配線なし（後方互換）。send.sh を注入せず、prompt は 1 引数 ---
+CMUX_BIN="$TMP/bin/cmux" "$BIN" >/dev/null 2>&1
+reparse
+if [[ "$(argc)" == "7" ]] && ! prompt | grep -q 'send.sh' && prompt | grep -q 'レビュー'; then
+  echo "PASS D3: 通知引数なし → send.sh 非注入、argc=7"
+else
+  echo "FAIL D3: argc=$(argc) / prompt=[$(prompt)]"
+  fail=1
+fi
+
+# --- D2 + D4: 通知配線あり。send.sh と token が丸ごと届き、prompt は 1 引数 ---
+out=$(CMUX_BIN="$TMP/bin/cmux" "$BIN" --team t --reviewer cxrev-review --parent parent 2>&1)
+reparse
+if [[ "$(argc)" == "7" ]] \
+  && prompt | grep -q "send.sh t cxrev-review parent" \
+  && prompt | grep -q "DONE codex-review-31" \
+  && printf '%s' "$out" | grep -q "token=codex-review-31"; then
+  echo "PASS D2: 通知配線 → send.sh + token が prompt に無傷で到達、argc=7"
+else
+  echo "FAIL D2: argc=$(argc) / prompt=[$(prompt)]"
+  fail=1
+fi
+
+# --- 対象切替: --base がレビュー指示に反映される ---
+CMUX_BIN="$TMP/bin/cmux" "$BIN" --base main >/dev/null 2>&1
+reparse
+if prompt | grep -q "main"; then
+  echo "PASS: --base main が prompt に反映"
+else
+  echo "FAIL: --base main が prompt に無い / prompt=[$(prompt)]"
+  fail=1
+fi
+
+# --- 入力検証: -m/-e に危険な文字を渡すと拒否される ---
+if ! CMUX_BIN="$TMP/bin/cmux" "$BIN" -e 'x";touch /tmp/PWNED_TEST;"' >/dev/null 2>&1 && [[ ! -f /tmp/PWNED_TEST ]]; then
+  echo "PASS: --effort の不正な値を拒否"
+else
+  echo "FAIL: --effort の検証が効いていない"
+  rm -f /tmp/PWNED_TEST
+  fail=1
+fi
+
+[[ $fail -eq 0 ]] && echo "--- すべて PASS ---" || echo "--- FAIL あり ---"
+exit $fail

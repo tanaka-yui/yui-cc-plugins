@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `apps/cmux-using` | Plugin (skill + commands) | bash + markdown | cmux 操作の汎用スキル |
 | `apps/cmux-team` | Plugin (skill + TypeScript daemon) | TypeScript (Bun runtime) | 4層 (Master/Manager/Conductor/Agent) オーケストレーション。daemon プロセスを持つ唯一のプラグイン |
 | `apps/cmux-team-dispatch-task` | Plugin (skill + shell scripts) | bash + zsh | git worktree 分離による並列タスクディスパッチ |
-| `apps/cmux-codex-review` | Plugin (slash command + skill) | bash | 新 cmux ペインで対話 codex (gpt-5.6-sol/xhigh) にコードレビューさせる。read-only サンドボックス。完了を agmsg 経由で親へ通知可 |
+| `apps/cmux-codex-review` | Plugin (slash command + skill) | bash | 新 cmux ペインで対話 codex (gpt-5.6-sol/xhigh) にコードレビューさせる。sandbox は workspace-write（完了通知の `send.sh` が agmsg DB へ書き込むため read-only 不可）。完了を agmsg 経由で親へ通知可 |
 | `apps/cmux-codex-exec` | Plugin (slash command + skill) | bash | plan を対話 codex にカレントdir で実装させ、完了を親が agmsg 経由で検知して cmux-codex-review へ繋ぐ |
 | `apps/cmux-remote` | App (PWA) | TypeScript (Vite client + Bun server) | cmux ワークスペースを iPhone から閲覧。`apps/cmux-remote/{client,server}` は **個別の workspace パッケージ** |
 

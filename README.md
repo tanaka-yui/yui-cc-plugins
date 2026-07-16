@@ -39,7 +39,7 @@ bash install.sh
 | cmux-using | cmux 操作スキル（サブエージェント起動・監視） | [README](apps/cmux-using/README.md) |
 | cmux-team | マルチエージェント開発オーケストレーション | [README](apps/cmux-team/README.md) |
 | cmux-team-dispatch-task | 並列タスクディスパッチ（worktree 分離） | [SKILL](apps/cmux-team-dispatch-task/SKILL.md) |
-| cmux-codex-review | 新 cmux ペインで対話 codex にコードレビューさせる（read-only・完了通知可） | [README](apps/cmux-codex-review/README.md) |
+| cmux-codex-review | 新 cmux ペインで対話 codex にコードレビューさせる（workspace-write・完了通知可） | [README](apps/cmux-codex-review/README.md) |
 | cmux-codex-exec | plan を対話 codex に実装させ、完了を親が agmsg 経由で検知してレビューへ繋ぐ | [README](apps/cmux-codex-exec/README.md) |
 | dev-up | worktree 分離された dev stack ライフサイクル（compose + 直接コマンド） | [README](apps/dev-up/README.md) |
 | e2e-test | agent-browser ベースの E2E テスト（dev-up と連携） | [README](apps/e2e-test/README.md) |

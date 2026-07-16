@@ -16,6 +16,21 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 3. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox workspace-write -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
 4. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親側は `bin/cmux-codex-wait` で完了を待つ
 
+## テスト
+
+```bash
+bash apps/cmux-codex-review/test/test-cmux-codex-review.sh
+```
+
+stub の cmux / codex を使い、bin が `cmux send` で送る文字列を**ペインのシェルと同じように再パース**して
+codex が実際に受け取る引数を検証する（生文字列の grep では引用符崩れを検知できないため）。守っている不変条件:
+
+- **D1**: sandbox が `workspace-write`（`read-only` への逆戻りを禁止 — 下記の理由）
+- **D2**: 通知配線あり → prompt に `send.sh` と token が無傷で届く
+- **D3**: 通知配線なし → `send.sh` を注入しない（後方互換）
+- **D4**: prompt は常にちょうど 1 引数として codex に渡る（`'\''` エスケープ）
+- `--base` の反映 / `-m`・`-e` の不正値拒否
+
 ## サンドボックスを read-only にしてはいけない
 
 完了通知の `send.sh` は agmsg の SQLite DB へ INSERT する（＝書き込み）。`~/.codex/config.toml` の
