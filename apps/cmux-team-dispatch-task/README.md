@@ -180,20 +180,25 @@ inbox にも記録する(dual-send)。agmsg モードの完了通知は2段構�
 `AGMSG-DIRECTIVE:` に従って watcher を起動する(SessionStart hook は次回セッションから有効)。
 
 config にはもう一つ `review_mode` フィールドがある（`"on"` / `"off"` / `"ask"`）。`"on"` / `"off"`
-は Phase A-R（codex plan/spec レビュー、後述）と Phase B-R（実装後コードレビュー、後述）を
+は Phase A-R（plan/spec クロスレビュー、後述）と Phase B-R（実装後コードレビュー、後述）を
 質問なしで恒久的に有効/無効にする。未設定または
-`"ask"` のときは、`review_model` 付き codex runner が存在する場合のみ **dispatch のたびに**レビューを
+`"ask"` のときは、`review_model` 付き codex runner が存在するか、codex 設計タスクのクロスエンジン
+レビュアーが解決済みの場合のみ **dispatch のたびに**レビューを
 使うか質問される（はい[今回のみ] / いいえ[今回のみ] / 常に有効 / 常に無効 — 「常に〜」を選んだときだけ
 config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバル config より優先される点は
 `message_type` と同じ。
 
 ## モデル選択フロー (Phase A-R / Phase B / Phase B-R)
 
-### Phase A-R — codex plan/spec レビュー（オプション）
+**クロスエンジンレビュー原則**: Phase A-R / Phase B-R のレビュアーは常に**実装者（または設計者）の
+相手方 engine**。design=claude のタスクはレビューを codex が、design=codex のタスクはレビューを
+claude が担う（詳細は下記 Phase A-R / Phase B-R 参照）。
+
+### Phase A-R — plan/spec クロスレビュー（オプション）
 
 `runners.json` の codex runner に `review_model`（例: `gpt-5.6-sol`）を設定し、config の
-`review_mode` を `on` にすると、Phase A で opus が書いた plan/spec を codex が専用ペインで
-レビューする。approve が出るまで opus が修正 → 再レビューを繰り返す（各ポイント最大 3 往復。
+`review_mode` を `on` にすると、Phase A の成果物（plan/spec）を相手方 engine の専用ペインが
+レビューする。approve が出るまで設計セッションが修正 → 再レビューを繰り返す（各ポイント最大 3 往復。
 超過時はユーザーに「このまま進む / さらに修正」を確認）。
 
 - plan モード: plan 完成後に 1 回 / superpowers モード: spec と plan で計 2 回
@@ -201,9 +206,27 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
 - 使うかどうかは dispatch のたびに質問される（「常に有効/常に無効」を選べば以後は質問なし。
   毎回質問に戻すには config の `review_mode` を `"ask"` にするか削除する）
 - 無効化はいつでも config の `review_mode: "off"` で可能（runners.json はそのまま残せる）
-- 実行系のモデルは runner の `exec_model`（例: `gpt-5.6-terra`）で別途指定できる。Phase B の
-  codex 実行（execute / standby ペイン）にのみ適用され、レビューは `review_model` のまま。
-  未設定なら codex 側デフォルト（`~/.codex/config.toml`）が使われる
+
+`runners.json` のスキーマ（レビュー / effort 関連フィールド抜粋。全フィールドは
+[リファレンスガイド](skills/cmux-team-dispatch-task/references/guide-ja.md)の
+「子セッション runner 設定（runners.json）」節を参照）:
+
+```json
+{
+  "default": "claude",
+  "runners": [
+    { "name": "claude", "command": "claude", "engine": "claude", "review_model": "claude-opus-4-7[1m]" },
+    { "name": "codex",  "command": "codex",  "engine": "codex",  "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra",
+      "plan_effort": "xhigh", "review_effort": "xhigh", "exec_effort": "high" }
+  ]
+}
+```
+
+| フィールド | 意味 |
+|----------|------|
+| `runners[].review_model` | レビューペインに渡すモデル名。`engine: codex` runner: design=claude タスクのレビューペイン用（未設定ならそのタスクのレビューは無効）。`engine: claude` runner: design=codex タスクのレビュアーに選ばれたときのモデル（未設定なら `claude-opus-4-7[1m]`） |
+| `runners[].exec_model` | （`engine: codex` の runner のみ）Phase B 実行系（execute / standby ペイン）で `--model` 未指定時にフォールバック適用。review ペインには適用されない。未設定なら codex 側デフォルト（`~/.codex/config.toml`） |
+| `runners[].plan_effort` / `review_effort` / `exec_effort` | （`engine: codex` の runner のみ。値: `minimal`\|`low`\|`medium`\|`high`\|`xhigh`）codex セッションの reasoning effort。それぞれ設計（plan/superpowers）/ レビュー / 実行（execute/standby）に `-c model_reasoning_effort='<値>'` として注入される。優先順位: **明示 `--effort` > runner フィールド > 無指定**（`~/.codex/config.toml` の既定） |
 
 agmsg モードでの指示配送（Phase A タスク / Phase B 実行指示 / Phase A-R レビュー依頼 / Phase B-R コードレビュー依頼）は
 **常に `cmux send`（ペインへの直接タイプ）+ `send-key return` で行う** — agmsg push 単独では
@@ -212,7 +235,7 @@ watcher 生存（agmsg の ready sentinel）を確認し、生きているとき
 inbox にも記録する。配線に失敗したペインの初期プロンプトは「指示は直接タイプされる」文面に
 切り替わるため、agmsg の watcher 障害でディスパッチがハングすることはない。
 
-各子セッションは Phase A (計画 / brainstorming) 完了後、**実装フェーズで使うモデル**を `AskUserQuestion` で必ず聞きます。Phase A は常に opus で動作するため、選んだ model が opus と同一かどうかで動作が分岐します。
+各子セッションは Phase A (計画 / brainstorming) 完了後、**実装フェーズで使うモデル**を `AskUserQuestion` で必ず聞きます。Phase A は**設計 runner の engine**（`opus` または codex）で動作し、選んだ model がその engine と同一かどうかで動作が分岐します。下表は **design=claude**（Phase A を opus が担当する現行どおりのタスク）の挙動です。
 
 | 選択肢 | 表示条件 | 動作 |
 |--------|---------|------|
@@ -231,16 +254,37 @@ inbox にも記録する。配線に失敗したペインの初期プロンプ�
 
 codex オプションを使う場合は事前に `cmux codex install-hooks` の実行が必要です。
 
+#### design=codex のタスク
+
+設計 runner が `engine: codex` のタスクでは Phase A をその codex セッション自身が担う
+（`--effort <plan_effort>` の reasoning effort で起動済み。セッション途中でモデルは切り替えない）。
+Phase B の 3 択（**opus 1m / sonnet / codex**）は**すべて pre-warm ペインへ委譲**し、この codex
+セッション自身は実装しない。opus 1m を選んだ場合は下記レイアウトの右上ペイン（`<slug>-opus`、
+Phase A-R レビュアーと実装先の二役）が実装する。prewarm.json が無い（prewarm off / split）場合は
+`launch-workspace.sh --mode execute` へフォールバックする。
+
 ### Phase B-R — 実装後コードレビュー（オプション）
 
 `review_mode` が `on` のとき（Phase A-R と同一条件）、実装完了後・**PR 作成前**に
 コードレビューを挟む。approve が出るまで実装者が修正 → 再依頼を繰り返すため、PR は常に
 レビュー済みになる。
 
-- レビュアーは Phase B の選択で切り替わる: **sonnet / codex 実装 → 計画を立てた opus ペイン**
-  （計画コンテキストを保持したまま「実装が計画どおりか」を見る）/ **opus 1m 実装 →
-  codex レビューペイン**（Phase A-R と同一ペイン。自己レビューのバイアスを避ける。ペイン
-  利用不可ならレビュー省略）
+- レビュアーは**常に実装者の相手方 engine**（クロスエンジン原則）。物理配置は「実装者 engine ==
+  設計 engine ならレビューペインがレビュー」「実装者 engine != 設計 engine なら設計セッション
+  自身がレビュー」で決まる。設計 engine × Phase B 選択の 6 ケース:
+
+  | 設計 engine | Phase B 選択 | 実装者 | レビュアー |
+  |------------|-------------|-------|-----------|
+  | claude | opus 1m | 現セッション（opus, in-session） | codex レビューペイン |
+  | claude | sonnet | sonnet standby | codex レビューペイン |
+  | claude | codex | codex standby | 現セッション（設計 claude） |
+  | codex | opus 1m | claude review ペイン（`<slug>-opus`） | 現セッション（設計 codex） |
+  | codex | sonnet | sonnet standby | 現セッション（設計 codex） |
+  | codex | codex | codex standby | claude review ペイン |
+
+  > design=claude + sonnet 実装のレビュアーは旧仕様では設計 opus ペインが担っていたが、
+  > クロスエンジン原則により現行は **codex レビューペイン**が担う。
+
 - 指摘と verdict は `.dispatch/<slug>/review/code-round-<N>.md`（末尾 `VERDICT:` 行）で受け渡し。
   最大 3 往復・verdict 待ちは 5 秒間隔・15 分タイムアウトのポーリング — Phase A-R と同一プロトコル
 - 3 往復で approve が出ない場合、claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、
@@ -272,9 +316,17 @@ standby ペインの配置は Phase A-R の有効/無効で分岐する:
 
 - **Phase A-R 無効**（現行どおり）: 縦積み — 上: opus / 中: sonnet / 下: codex（codex は
   `engine: "codex"` runner 登録時のみ）
-- **Phase A-R 有効**: 2×2 均等グリッド — 左上: opus / 右上: codex レビューペイン（idle、
-  `--model <review_model>`）/ 左下: sonnet / 右下: codex。レビューペインは status.json の
-  所有権を持たず、`.assigned-<slug>-review` も使わない
+- **Phase A-R 有効**: 2×2 均等グリッド。レビューペインは常に**設計 engine の逆**:
+  - **design=claude**（現行）: 左上 opus / 右上 codex レビューペイン（idle、
+    `--model <review_model>`）/ 左下 sonnet / 右下 codex
+  - **design=codex**: 左上 design codex（idle、`--effort <plan_effort>`）/ 右上 claude
+    レビューペイン（idle、reviewer runner + `--model <CLAUDE_REVIEW_MODEL>` +
+    `--skip-permissions`、agent `<slug>-opus` — Phase A-R レビュアーと Phase B opus 1m
+    実装先の二役）/ 左下 sonnet / 右下 codex（`exec_model` / `exec_effort`）
+
+  どちらもレビューペインは standby wrapper の status.json 所有権を持たずに起動する
+  （design=codex の右上ペインのみ、Phase B で opus 1m が選ばれたときに実装者として
+  status.json の所有権を持つ）
 
 **ペインは常時 4 枚を維持する**: Phase B で実装モデルを選んでも未使用の standby ペインは閉じず、
 レビューも approve 後に閉じない。全ペインは idle のまま残り（未 assigned の standby は status.json を
