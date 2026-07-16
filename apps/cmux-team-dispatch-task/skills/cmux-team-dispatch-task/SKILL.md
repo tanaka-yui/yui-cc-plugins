@@ -1347,15 +1347,21 @@ Then dispatch the Phase A task to the opus pane:
 
 prewarm.json schema (written by `prewarm-panes.sh`; `opus` only in agmsg mode,
 `codex` only when a codex runner exists, `review` only when `--review-model`
-was passed; `delivery` is `"agmsg"` or `"cmux-send"` depending on whether
-delivery wiring succeeded):
+or `--reviewer-runner` was passed; `delivery` is `"agmsg"` or `"cmux-send"`
+depending on whether delivery wiring succeeded; `engine` is `"claude"` or
+`"codex"` — `opus`'s engine follows the design runner (`claude` normally,
+`codex` when `--reviewer-runner` selects a codex-type runner), `sonnet` is
+always `claude`, `codex` is always `codex`, and `review`'s engine is the
+opposite of the design engine (`codex` review pane when design is `claude`,
+with `agent` suffix `-review`; `claude` review pane when design is `codex`,
+with `agent` suffix `-opus`)):
 
 ```json
 {
-  "opus":   { "surface_id": "surface:N", "agent": "<slug>",        "delivery": "agmsg" },
-  "sonnet": { "surface_id": "surface:N", "agent": "<slug>-sonnet", "delivery": "agmsg" },
-  "codex":  { "surface_id": "surface:N", "agent": "<slug>-codex",  "delivery": "cmux-send" },
-  "review": { "surface_id": "surface:N", "agent": "<slug>-review", "delivery": "cmux-send" }
+  "opus":   { "surface_id": "surface:N", "agent": "<slug>",        "engine": "claude", "delivery": "agmsg" },
+  "sonnet": { "surface_id": "surface:N", "agent": "<slug>-sonnet", "engine": "claude", "delivery": "agmsg" },
+  "codex":  { "surface_id": "surface:N", "agent": "<slug>-codex",  "engine": "codex",  "delivery": "cmux-send" },
+  "review": { "surface_id": "surface:N", "agent": "<slug>-review", "engine": "codex",  "delivery": "cmux-send" }
 }
 ```
 
