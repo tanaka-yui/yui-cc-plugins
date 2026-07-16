@@ -1350,7 +1350,7 @@ prewarm.json schema (written by `prewarm-panes.sh`; `opus` only in agmsg mode,
 or `--reviewer-runner` was passed; `delivery` is `"agmsg"` or `"cmux-send"`
 depending on whether delivery wiring succeeded; `engine` is `"claude"` or
 `"codex"` — `opus`'s engine follows the design runner (`claude` normally,
-`codex` when `--reviewer-runner` selects a codex-type runner), `sonnet` is
+`codex` when `--design-runner` is a codex-engine runner), `sonnet` is
 always `claude`, `codex` is always `codex`, and `review`'s engine is the
 opposite of the design engine (`codex` review pane when design is `claude`,
 with `agent` suffix `-review`; `claude` review pane when design is `codex`,
