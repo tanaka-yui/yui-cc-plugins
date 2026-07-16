@@ -768,7 +768,15 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 - テンプレートはタスクの設計 runner の engine で出し分ける:
   - design=claude → 従来どおり（PHASE A は "always opus"、PHASE B の SAME MODEL は
     `/model claude-opus-4-7[1m]`）
-  - design=codex → PHASE A / PHASE B セクションを上の「codex 設計 variant」に差し替える
+  - design=codex → PHASE A / PHASE B セクションを上の「codex 設計 variant」に差し替える。
+    `{{REVIEW_BLOCK}}` は variant の PHASE A と PHASE B の間に、`{{CODE_REVIEW_BLOCK}}` は
+    variant の PHASE B の後に、それぞれ差し替え後もそのまま注入する（挿入位置はテンプレート内の
+    `{{REVIEW_BLOCK}}` / `{{CODE_REVIEW_BLOCK}}` の元の位置を踏襲）。`{{CODEX_OPTION_LINE}}` と
+    `{{CODEX_BEHAVIOR_BLOCK}}` は design=codex では出力しない（drop して空文字列にする）—
+    variant の PHASE B が 3 択 (opus 1m / sonnet / codex) をすでに内包しており、design=claude
+    前提の `{{CODEX_BEHAVIOR_BLOCK}}`（codex 実装後に YOU がレビュアーへ転じる指示）を残すと、
+    design=codex の codex 実装ケース（正: YOU は `.deferred` touch 後に exit し、レビューは
+    右上 claude ペインが担う）と矛盾する
 - `{{REVIEW_MODEL}}` → design=claude: Step 1g の `REVIEW_MODEL` / design=codex:
   `CLAUDE_REVIEW_MODEL`
 - `{{REVIEW_RUNNER_NAME}}`（旧 `{{CODEX_RUNNER_NAME}}` を改名）→ design=claude:
