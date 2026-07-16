@@ -1,64 +1,85 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# cmux-codex-review — 新しい cmux ペインで codex のコードレビューを起動する。
+# cmux-codex-review — 新しい cmux ペインで対話 codex にコードレビューさせる。
 #
-# デフォルトは gpt-5.6-sol / reasoning effort xhigh (extra high) で未コミット変更を
-# レビューする。cmux セッション内でのみ動作する（CMUX_SOCKET_PATH が必要）。
+# デフォルトは gpt-5.6-sol / reasoning effort xhigh で未コミット変更をレビュー。
+# --team/--reviewer/--parent 指定時は、codex に「レビュー提示後に agmsg send.sh を撃つ」
+# 完了通知を注入する（親側の検知は cmux-codex-wait が担う）。cmux 内でのみ動作。
 #
-# Usage:
-#   cmux-codex-review [direction] [options] [-- <review instructions>]
-#
-# Options:
-#   -d, --dir <right|down|left|up>  分割方向 (default: right)。位置引数でも指定可
+# Usage: cmux-codex-review [direction] [options] [-- <review instructions>]
+#   -d, --dir <right|down|left|up>  分割方向 (default: right)
 #   -m, --model <model>             codex モデル (default: gpt-5.6-sol)
 #   -e, --effort <effort>           reasoning effort (default: xhigh)
-#                                   low|medium|high|xhigh|max|ultra
 #   --uncommitted                   未コミット変更をレビュー (default)
 #   --base <branch>                 base ブランチとの差分をレビュー
 #   --commit <sha>                  指定コミットの変更をレビュー
-#   --                              以降を codex review へのカスタム指示として渡す
-#
-# Examples:
-#   cmux-codex-review                       # 右に分割、gpt-5.6-sol/xhigh、未コミット
-#   cmux-codex-review down                  # 下に分割
-#   cmux-codex-review --base main           # main との差分をレビュー
-#   cmux-codex-review -- セキュリティ観点を重点的に
+#   --team <team> --reviewer <name> --parent <agent>  完了通知の配線
+#   --                              以降を追加レビュー指示として渡す
+
+CMUX_BIN="${CMUX_BIN:-cmux}"
 
 if [[ -z "${CMUX_SOCKET_PATH:-}" ]]; then
   echo "エラー: cmux 内でのみ使用可能です (CMUX_SOCKET_PATH 未設定)" >&2
   exit 1
 fi
 
-DIR="right"
-MODEL="gpt-5.6-sol"
-EFFORT="xhigh"
-TARGET_FLAG="--uncommitted"
-INSTRUCTIONS=""
+DIR="right"; MODEL="gpt-5.6-sol"; EFFORT="xhigh"
+TARGET="uncommitted"; TARGET_ARG=""
+TEAM=""; REVIEWER=""; PARENT=""; INSTRUCTIONS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -d|--dir)      DIR="$2"; shift 2 ;;
     -m|--model)    MODEL="$2"; shift 2 ;;
     -e|--effort)   EFFORT="$2"; shift 2 ;;
-    --uncommitted) TARGET_FLAG="--uncommitted"; shift ;;
-    --base)        TARGET_FLAG="--base $2"; shift 2 ;;
-    --commit)      TARGET_FLAG="--commit $2"; shift 2 ;;
+    --uncommitted) TARGET="uncommitted"; shift ;;
+    --base)        TARGET="base"; TARGET_ARG="$2"; shift 2 ;;
+    --commit)      TARGET="commit"; TARGET_ARG="$2"; shift 2 ;;
+    --team)        TEAM="$2"; shift 2 ;;
+    --reviewer)    REVIEWER="$2"; shift 2 ;;
+    --parent)      PARENT="$2"; shift 2 ;;
     --)            shift; INSTRUCTIONS="$*"; break ;;
     right|left|up|down) DIR="$1"; shift ;;
     *)             INSTRUCTIONS="${INSTRUCTIONS:+$INSTRUCTIONS }$1"; shift ;;
   esac
 done
 
-# codex review コマンドを構築（review サブコマンドは -c でモデル/effort を上書きできる）
-CMD="codex review $TARGET_FLAG -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\""
-[[ -n "$INSTRUCTIONS" ]] && CMD="$CMD '$INSTRUCTIONS'"
+# レビュー対象の説明文
+case "$TARGET" in
+  base)   TARGET_DESC="現在のブランチと $TARGET_ARG ブランチの差分" ;;
+  commit) TARGET_DESC="コミット $TARGET_ARG の変更" ;;
+  *)      TARGET_DESC="未コミットの変更 (git の staged / unstaged / untracked)" ;;
+esac
 
-# 新しいペインを分割し、そのペインで codex review を実行
-S=$(cmux new-split "$DIR" | awk '{print $2}')
+REVIEW_INSTR="$TARGET_DESC をレビューし、問題点・改善点を具体的に指摘せよ。"
+[[ -n "$INSTRUCTIONS" ]] && REVIEW_INSTR="$REVIEW_INSTR
+
+追加指示: $INSTRUCTIONS"
+
+# ペイン分割し surface を得る
+S=$("$CMUX_BIN" new-split "$DIR" | awk '{print $2}')
 [[ -n "$S" ]] || { echo "エラー: ペイン分割に失敗しました" >&2; exit 1; }
+SNUM=$(printf '%s' "$S" | grep -oE '[0-9]+' | head -1)
+TOKEN="codex-review-$SNUM"
 
-cmux send --surface "$S" "$CMD
+# 完了通知指示（--team/--reviewer/--parent すべてあるときのみ）
+if [[ -n "$TEAM" && -n "$REVIEWER" && -n "$PARENT" ]]; then
+  REVIEW_INSTR="$REVIEW_INSTR
+
+レビューの提示がすべて終わったら、最後に必ず次を1回だけ実行して完了を通知せよ:
+~/.agents/skills/agmsg/scripts/send.sh $TEAM $REVIEWER $PARENT 'DONE $TOKEN: レビュー完了'"
+fi
+
+# REVIEW_INSTR 内の単一引用符を '\'' 方式でエスケープしてから外側を単一引用符で包む。
+# cmux send でペインへ送られ、ペインのシェルが再パースするため必須（通知配線時は
+# 'DONE ...' の単一引用符を含むので、この処理が無いとコマンドが壊れる）。
+REVIEW_INSTR_ESC=${REVIEW_INSTR//\'/\'\\\'\'}
+CMD="codex --dangerously-bypass-approvals-and-sandbox -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$REVIEW_INSTR_ESC'"
+
+"$CMUX_BIN" send --surface "$S" "$CMD
 "
 
-echo "codex review 起動: $S (方向: $DIR / model: $MODEL / effort: $EFFORT / 対象: $TARGET_FLAG)"
+echo "surface=$S"
+echo "token=$TOKEN"
+echo "codex-review 起動: $S (方向: $DIR / model: $MODEL / effort: $EFFORT / 対象: $TARGET${TARGET_ARG:+ $TARGET_ARG})"
