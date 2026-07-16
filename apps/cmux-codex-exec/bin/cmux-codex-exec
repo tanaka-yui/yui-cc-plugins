@@ -70,7 +70,11 @@ else
 fi
 
 PROMPT="$TASK$NOTIFY"
-CMD="codex --dangerously-bypass-approvals-and-sandbox -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$PROMPT'"
+# PROMPT 内の単一引用符を '\'' 方式でエスケープしてから外側を単一引用符で包む。
+# cmux send でペインへ送られ、ペインのシェルが再パースするため必須。NOTIFY は
+# 'DONE ...' の単一引用符を含むので、この処理が無いとコマンドが壊れて codex に届かない。
+PROMPT_ESC=${PROMPT//\'/\'\\\'\'}
+CMD="codex --dangerously-bypass-approvals-and-sandbox -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$PROMPT_ESC'"
 
 "$CMUX_BIN" send --surface "$S" "$CMD
 "
