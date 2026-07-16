@@ -51,8 +51,11 @@
 
 ### 3. effort のコマンド反映 (launch-workspace.sh)
 
-engine=codex の組み立てコマンドに `-c model_reasoning_effort='<value>'` を注入する。
-新しい CLI フラグは追加せず、`--runner` と `--mode` から内部解決する。
+原則は `--runner` と `--mode` からの内部解決とするが、prewarm 経路の設計 codex ペインは
+`--mode standby` で idle 起動される（MODE 解決では exec_effort が当たる）ため、明示
+`--effort <value>` フラグを `launch-workspace.sh` に追加する。優先順位:
+明示 `--effort` > runner フィールド（MODE 対応表） > 無指定（config.toml 既定）。
+prewarm-panes.sh は設計 codex ペイン起動時に runner の `plan_effort` を `--effort` で明示する。
 
 | MODE | 適用フィールド |
 |------|--------------|
@@ -89,6 +92,11 @@ engine=codex の組み立てコマンドに `-c model_reasoning_effort='<value>'
 右上ペインは `--mode standby` 相当で起動する (standby wrapper 付き。`.assigned` を
 touch されない限り status.json を書かない現行セマンティクスを利用)。このペインは
 **A-R レビュアーと opus 1m 実装先の二役**を担う。
+
+design=codex 時の右上ペインの agent 名は `<slug>-opus`（A-R レビュアー兼 opus 1m
+実装先）。Phase B opus 1m 委譲時の sentinel は `.assigned-<slug>-opus`、完了 signal
+は `<slug>-opus-done`。prewarm.json のキーは役割どおり `review` を維持し、
+`agent: "<slug>-opus"` / `engine: "claude"` を記録する。
 
 **B-R レビュアーの統一ルール**: 実装者と逆 engine のペイン。逆 engine が設計 engine と
 同じなら設計ペイン (`.deferred` 後 idle)、そうでなければレビューペイン。
