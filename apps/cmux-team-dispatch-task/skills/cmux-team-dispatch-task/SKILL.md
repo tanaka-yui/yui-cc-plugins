@@ -704,6 +704,53 @@ the plan to a file first if you have not already.
 === END MANDATORY MODEL SELECTION SEQUENCE ===
 ```
 
+**codex 設計 variant**（design=codex のタスクでは PHASE A / PHASE B を以下に差し替える）:
+
+```
+PHASE A — Planning / Brainstorming (THIS codex session):
+  Produce the plan in THIS session. Do NOT switch models mid-session.
+  - superpowers mode: brainstorm, then write a plan file
+  - plan mode: use /plan; the approved plan MUST list Step 0 (Phase A-R, when the
+    block exists below) and Step 1 (Phase B selection) BEFORE any implementation
+    step, and be saved to a file (e.g. .claude/plans/<task-slug>.md) as the FIRST
+    action after approval.
+  Remember the plan file path — every Phase B choice hands it off via --plan-file.
+
+PHASE B — Execution model selection (REQUIRED before any code change):
+  After Phase A (and Phase A-R when present) completes, ask via AskUserQuestion:
+    Q: "実行フェーズで使用するモデルを選択してください"
+    Options:
+      1. opus 1m  — 高品質・長コンテキスト (推奨: 大規模・複雑な実装)
+      2. sonnet   — 高速・低コスト (推奨: 中規模・パターン化された実装)
+      3. codex    — <exec_model> で実行 (推奨: 定型実装・別視点が欲しいとき)
+
+  ALL three choices DELEGATE to a pre-warmed pane — THIS session never implements.
+  Common delegation steps (X = chosen pane key in prewarm.json: "review" for
+  opus 1m / "sonnet" / "codex"; NAME = the pane's agent name from prewarm.json):
+    1. Leave the unused standby panes OPEN and idle — do NOT close them.
+    2. touch "<EXISTING_STATUS_DIR>/.assigned-<NAME>"
+    3. Send the execution request to the pane's surface_id. Delivery is ALWAYS
+       the typed prompt (cmux send + send-key return); when the pane's delivery
+       is "agmsg" AND its ready sentinel exists, ALSO record the request in its
+       inbox first (same dual-send rules as the claude variant).
+       REQUEST_TEXT: same as the claude variant (execute the plan at
+       <PLAN_FILE_PATH>, code-review protocol block when Phase B-R is enabled,
+       exit instruction).
+    4. touch "<EXISTING_STATUS_DIR>/.deferred"
+    5. THEN follow the CODE REVIEW block below for your post-delegation role
+       (reviewer or idle).
+  Pane-specific notes:
+    [opus 1m] target = prewarm.json .review (the claude pane, agent <task-slug>-opus).
+      Its model is already <CLAUDE_REVIEW_MODEL> — do not pass /model commands.
+    [sonnet]  target = prewarm.json .sonnet (same as the claude variant sonnet branch).
+    [codex]   target = prewarm.json .codex (exec_model / exec_effort are baked in
+      at pane launch).
+  IF prewarm.json is absent (prewarm off / split layout), fall back to spawning
+  via launch-workspace.sh --mode execute exactly as the claude variant does
+  (opus 1m fallback: --model 'claude-opus-4-7[1m]' --skip-permissions with the
+  reviewer runner's command via --runner <REVIEWER_RUNNER>).
+```
+
 **Placeholder rules** (executed by the parent when constructing each child's prompt):
 
 - `{{LAYOUT}}` → `workspace` or `split` (the value passed to `launch-workspace.sh --layout`).
@@ -716,14 +763,29 @@ the plan to a file first if you have not already.
   worktree's `basename` (as Step 1g's `TEAM=` line does for the parent) yields a wrong
   name, since the worktree directory name is `<task-slug>`, not the repo name.
 
-- `{{REVIEW_BLOCK}}` → **Phase A-R enabled のときのみ**（Step 1g の `REVIEW_ENABLED` が true）、
-  以下のブロック全体（`{{REVIEW_MODEL}}` → Step 1g の `REVIEW_MODEL`、`{{CODEX_RUNNER_NAME}}` →
-  codex runner の `name` に置換して）を焼き込む。disabled のときは空文字列:
+- **設計 engine** = Step 1f でこのタスクに割り当てた runner の engine（`claude` または
+  `codex`）。以下のテンプレート出し分けはすべてこの値で決まる。
+- テンプレートはタスクの設計 runner の engine で出し分ける:
+  - design=claude → 従来どおり（PHASE A は "always opus"、PHASE B の SAME MODEL は
+    `/model claude-opus-4-7[1m]`）
+  - design=codex → PHASE A / PHASE B セクションを上の「codex 設計 variant」に差し替える
+- `{{REVIEW_MODEL}}` → design=claude: Step 1g の `REVIEW_MODEL` / design=codex:
+  `CLAUDE_REVIEW_MODEL`
+- `{{REVIEW_RUNNER_NAME}}`（旧 `{{CODEX_RUNNER_NAME}}` を改名）→ design=claude:
+  codex runner の `name` / design=codex: `REVIEWER_RUNNER`
+- `{{REVIEW_PANE_AGENT}}` → design=claude: `<task-slug>-review` / design=codex:
+  `<task-slug>-opus`
+
+- `{{REVIEW_BLOCK}}` → **Phase A-R enabled のときのみ**（design=claude タスクは Step 1g の
+  `REVIEW_ENABLED`、design=codex タスクは `REVIEW_ENABLED_CODEX_DESIGN` が true）、以下のブロック
+  全体（`{{REVIEW_MODEL}}` / `{{REVIEW_RUNNER_NAME}}` / `{{REVIEW_PANE_AGENT}}` は上の設計 engine
+  分岐で置換して）を焼き込む。disabled のときは空文字列:
 
   ````
-  PHASE A-R — Plan/Spec review by codex (REQUIRED between Phase A and Phase B):
-    Review model: {{REVIEW_MODEL}} (runs in a dedicated review pane — a plain codex
-    session with NO status.json ownership; NEVER touch .assigned-<task-slug>-review)
+  PHASE A-R — Plan/Spec review by the counterpart engine (REQUIRED between Phase A and Phase B):
+    Review model: {{REVIEW_MODEL}} (runs in a dedicated review pane — a plain review
+    session (engine is the opposite of this session's) with NO status.json ownership;
+    NEVER touch .assigned-{{REVIEW_PANE_AGENT}})
 
     Review points (run the round loop below at EACH point, in order):
       - plan mode:        one point  — id "plan" (after the plan is written)
@@ -739,9 +801,10 @@ the plan to a file first if you have not already.
           --cwd "$PWD" --mode review \
           --standby-in "$CMUX_WORKSPACE_ID" --standby-split-from "$CMUX_SURFACE_ID" \
           --standby-split-direction right \
-          --runner {{CODEX_RUNNER_NAME}} --model '{{REVIEW_MODEL}}' \
+          --runner {{REVIEW_RUNNER_NAME}} --model '{{REVIEW_MODEL}}' \
           --status-dir "<EXISTING_STATUS_DIR>" \
-          <task-slug>-review)
+          {{REVIEW_PANE_AGENT}})
+          # (when the reviewer engine is claude, append --skip-permissions to the spawn)
         REVIEW_SURFACE=$(echo "$RESULT" | jq -r '.surface_id // empty')
         REVIEW_DELIVERY="cmux-send"
       IF the spawn fails: warn the user, SKIP Phase A-R entirely, and continue to
@@ -769,10 +832,10 @@ the plan to a file first if you have not already.
          session while it idle-waits, so the wait is ALWAYS file polling too.
          When the review pane's agmsg wiring is alive (ready sentinel present),
          ALSO push the request to its inbox first as a record:
-           [[ "$REVIEW_DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>-review" ]] \
+           [[ "$REVIEW_DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__{{REVIEW_PANE_AGENT}}" ]] \
              && REVIEW_DELIVERY="cmux-send"
          IF "agmsg":
-           ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-review "<request text>"
+           ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> {{REVIEW_PANE_AGENT}} "<request text>"
            # $TEAM is the TEAM value given above — do NOT re-derive it
            Append to the request text: " (An identical copy of this request is in
            your agmsg inbox — treat both as ONE request; ignore the duplicate.)"
@@ -796,7 +859,7 @@ the plan to a file first if you have not already.
            go into the next round's request as rebuttals). Then:
              N < 3  → run round N+1.
              N == 3 → summarize the unresolved findings and ask via AskUserQuestion:
-               Q: "codex レビューで 3 往復しても approve が出ませんでした。残りの指摘: <要約>。どうしますか？"
+               Q: "レビューで 3 往復しても approve が出ませんでした。残りの指摘: <要約>。どうしますか？"
                  1. このまま進む — 残指摘を文書に注記して Phase B へ
                  2. さらに修正 — もう 1 往復レビューを続ける
                "このまま進む" → append the unresolved findings as a note in the
@@ -804,7 +867,7 @@ the plan to a file first if you have not already.
                "さらに修正" → run one more round; on another needs_work, re-ask.
          - Verdict file missing or has no VERDICT line (timeout) → re-send the
            SAME round's request once. If it times out again, ask via AskUserQuestion:
-             Q: "codex レビューが応答しません。どうしますか？"
+             Q: "レビューが応答しません。どうしますか？"
                1. 再依頼する
                2. レビューを省略して Phase B へ進む
              Option 2 → skip the review and continue to Phase B (leave the review
@@ -814,8 +877,9 @@ the plan to a file first if you have not already.
     review point reached approve or an explicit user decision was made.
   ````
 
-- `{{CODE_REVIEW_BLOCK}}` → **Phase A-R と同一条件**（Step 1g の `REVIEW_ENABLED` が true）のときのみ、
-  以下のブロック全体を焼き込む。disabled のときは空文字列:
+- `{{CODE_REVIEW_BLOCK}}` → **Phase A-R と同一条件**（design=claude タスクは `REVIEW_ENABLED`、
+  design=codex タスクは `REVIEW_ENABLED_CODEX_DESIGN` が true）のときのみ、以下のブロック全体を
+  焼き込む。disabled のときは空文字列:
 
   ````
   PHASE B-R — Post-implementation code review (REQUIRED before the PR is created):
@@ -823,8 +887,44 @@ the plan to a file first if you have not already.
     <EXISTING_STATUS_DIR>/review/code-round-<N>.md — the LAST line MUST be exactly
     'VERDICT: approve' or 'VERDICT: needs_work'. Max 3 rounds.
 
-    [IF "sonnet" or "codex" was chosen in Phase B — YOU become the code reviewer]
-      This adjusts the Phase B branches above:
+    Reviewer assignment (unified rule): the reviewer is ALWAYS the opposite engine
+    of the implementer. Physically:
+      - implementer engine == 設計 engine → the review pane reviews
+        (REVIEWER_SURFACE = prewarm.json .review.surface_id)
+      - implementer engine != 設計 engine → the DESIGN session (YOU) reviews
+        (REVIEWER_SURFACE = your own $CMUX_SURFACE_ID)
+    Concretely, by 設計 engine and Phase B choice:
+
+    [design=claude]
+      - "opus 1m" (YOU implement in-session) → the review pane reviews your code:
+        run the SAME Round loop as PHASE A-R with point id "code" — use the
+        「opus 1m — the review pane reviews」 protocol at the end of this block.
+      - "sonnet" → the review pane reviews. The sonnet standby is the implementer:
+        send it the extended REQUEST_TEXT (共通プロトコル a) with <REVIEWER_SURFACE>
+        = prewarm.json .review.surface_id. YOU (the design pane) touch .deferred and
+        then exit THIS session — you have NO reviewer role (do NOT run steps b–e).
+        (現行変更: 旧仕様では設計 opus ペインがレビューしていた。)
+      - "codex" → YOU become the code reviewer. The codex standby is the implementer:
+        send it REQUEST_TEXT (共通プロトコル a) with <REVIEWER_SURFACE> = your own
+        $CMUX_SURFACE_ID, then run steps b–e.
+
+    [design=codex]
+      - "opus 1m" / "sonnet" → YOU (the design codex session) become the code
+        reviewer. The delegated claude pane is the implementer (opus 1m → the review
+        pane, agent <task-slug>-opus / sonnet → the sonnet standby): send it
+        REQUEST_TEXT (共通プロトコル a) with <REVIEWER_SURFACE> = your own
+        $CMUX_SURFACE_ID, then run steps b–e (.deferred の後も exit せず idle 待機
+        → round ごとに findings を書く → approve 書き込み後に exit)。
+      - "codex" (standby) → the claude review pane reviews. The codex standby is the
+        implementer: send it REQUEST_TEXT (共通プロトコル a) with <REVIEWER_SURFACE>
+        = prewarm.json .review.surface_id. YOU touch .deferred and then exit THIS
+        session — no reviewer role.
+      - review pane unavailable (the PHASE A-R Setup spawn failed and review was
+        skipped) → skip this code review and proceed to the PR — review is a quality
+        gate, not a dispatch blocker.
+
+    共通プロトコル a — extended REQUEST_TEXT (the implementer drives the round loop;
+    used in every branch above where a standby / delegated pane implements):
       a. Prewarm path only — REQUEST_TEXT: use this extended version instead
          (fill every <...> before sending):
            "Read and execute the plan at <PLAN_FILE_PATH>. After all changes are
@@ -857,10 +957,15 @@ the plan to a file first if you have not already.
                 otherwise skip the review and note that in the PR body.
             After the PR is created (or all changes are merged per the plan), run
             /exit (claude) or end the session (codex). Do not leave it idle."
-         Placeholder values: <REVIEWER_SURFACE> = your own $CMUX_SURFACE_ID (YOU are
-         the reviewer), <TEAM> = the TEAM value given above (empty in send-message
-         mode — then always use the cmux send path), <your-agent-name> =
-         <task-slug>-sonnet or <task-slug>-codex (whichever standby you dispatched to).
+         Placeholder values: <REVIEWER_SURFACE> = the value fixed by the 設計 engine
+         branch above (YOU review → your own $CMUX_SURFACE_ID; the review pane reviews
+         → prewarm.json .review.surface_id), <TEAM> = the TEAM value given above (empty
+         in send-message mode — then always use the cmux send path), <your-agent-name>
+         = the implementing pane's agent name (<task-slug>-sonnet / <task-slug>-codex /
+         <task-slug>-opus, whichever Phase B choice dispatched to).
+
+    共通プロトコル b–e — YOU become the code reviewer (only in the branches above
+    that assign the reviewer role to YOU):
       b. After touching .deferred (prewarm step 4 / spawn fallback): do NOT exit.
          Run mkdir -p "<EXISTING_STATUS_DIR>/review", then END YOUR TURN and
          idle-wait for the implementer's review requests (they arrive as text
@@ -882,7 +987,7 @@ the plan to a file first if you have not already.
          the final all-tasks-complete cleanup, and status.json is still owned by the
          implementer's wrapper.
 
-    [IF "opus 1m" was chosen in Phase B — the codex review pane reviews your code]
+    [opus 1m — the review pane reviews] (design=claude "opus 1m" のみ)
       After implementation is committed and BEFORE creating the PR, run the SAME
       Round loop as PHASE A-R once more with point id "code", reusing REVIEW_SURFACE
       and REVIEW_DELIVERY from the PHASE A-R Setup. Differences from a document round:
