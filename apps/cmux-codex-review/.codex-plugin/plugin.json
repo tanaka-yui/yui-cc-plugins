@@ -1,0 +1,19 @@
+{
+  "name": "cmux-codex-review",
+  "version": "1.0.0",
+  "description": "Start a codex code review (gpt-5.6-sol / xhigh reasoning) in a new cmux pane after checking the agmsg inbox.",
+  "author": {
+    "name": "tanaka-yui",
+    "url": "https://github.com/tanaka-yui"
+  },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/cmux-codex-review",
+  "license": "MIT",
+  "keywords": ["cmux", "codex", "review", "agmsg"],
+  "interface": {
+    "displayName": "cmux-codex-review",
+    "shortDescription": "Launch a codex review in a new cmux pane.",
+    "developerName": "tanaka-yui",
+    "category": "Terminal",
+    "capabilities": ["Terminal"]
+  }
+}

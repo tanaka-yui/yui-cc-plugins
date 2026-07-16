@@ -1,0 +1,60 @@
+# cmux-codex-review
+
+agmsg の受信箱を確認したうえで、新しい cmux ペインで **codex** によるコードレビューを起動するプラグイン。
+
+モデルは **gpt-5.6-sol**、reasoning effort は **xhigh（extra high）**、対象はデフォルトで
+**未コミット変更**。実装した本人のセッションとは独立した codex プロセスに、高リーズニングで
+第三者レビューさせたいときに使う。
+
+## 使い方
+
+### スラッシュコマンド（agmsg 確認込み）
+
+```
+/codex-review              # 右に分割、gpt-5.6-sol/xhigh、未コミット変更をレビュー
+/codex-review down         # 下に分割
+/codex-review --base main  # main との差分をレビュー
+/codex-review -- セキュリティ観点を重点的に   # カスタム指示付き
+```
+
+### シェルスクリプト（直接実行、高速）
+
+agmsg 確認をスキップし、ペイン起動だけを行う:
+
+```
+!cmux-codex-review
+!cmux-codex-review down --base main
+```
+
+## 起動される codex コマンド
+
+```bash
+codex review --uncommitted -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh"
+```
+
+## 前提条件
+
+- [cmux](https://github.com/anthropics/cmux) 内で実行すること（`CMUX_SOCKET_PATH` が必要）
+- `codex` CLI がインストール済みで、`gpt-5.6-sol` / `xhigh` が使える認証済み環境であること
+- agmsg は任意（未参加・未インストールでもレビュー起動は動く）
+
+## インストール
+
+### Plugin インストール（推奨）
+
+```bash
+/plugin marketplace add tanaka-yui/yui-cc-plugins
+/plugin install cmux-codex-review@yui-cc-plugins
+```
+
+### 手動インストール
+
+```bash
+cp commands/codex-review.md ~/.claude/commands/
+cp bin/cmux-codex-review ~/.local/bin/
+chmod +x ~/.local/bin/cmux-codex-review
+```
+
+## ライセンス
+
+MIT

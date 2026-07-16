@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# cmux-codex-review — 新しい cmux ペインで codex のコードレビューを起動する。
+#
+# デフォルトは gpt-5.6-sol / reasoning effort xhigh (extra high) で未コミット変更を
+# レビューする。cmux セッション内でのみ動作する（CMUX_SOCKET_PATH が必要）。
+#
+# Usage:
+#   cmux-codex-review [direction] [options] [-- <review instructions>]
+#
+# Options:
+#   -d, --dir <right|down|left|up>  分割方向 (default: right)。位置引数でも指定可
+#   -m, --model <model>             codex モデル (default: gpt-5.6-sol)
+#   -e, --effort <effort>           reasoning effort (default: xhigh)
+#                                   low|medium|high|xhigh|max|ultra
+#   --uncommitted                   未コミット変更をレビュー (default)
+#   --base <branch>                 base ブランチとの差分をレビュー
+#   --commit <sha>                  指定コミットの変更をレビュー
+#   --                              以降を codex review へのカスタム指示として渡す
+#
+# Examples:
+#   cmux-codex-review                       # 右に分割、gpt-5.6-sol/xhigh、未コミット
+#   cmux-codex-review down                  # 下に分割
+#   cmux-codex-review --base main           # main との差分をレビュー
+#   cmux-codex-review -- セキュリティ観点を重点的に
+
+if [[ -z "${CMUX_SOCKET_PATH:-}" ]]; then
+  echo "エラー: cmux 内でのみ使用可能です (CMUX_SOCKET_PATH 未設定)" >&2
+  exit 1
+fi
+
+DIR="right"
+MODEL="gpt-5.6-sol"
+EFFORT="xhigh"
+TARGET_FLAG="--uncommitted"
+INSTRUCTIONS=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d|--dir)      DIR="$2"; shift 2 ;;
+    -m|--model)    MODEL="$2"; shift 2 ;;
+    -e|--effort)   EFFORT="$2"; shift 2 ;;
+    --uncommitted) TARGET_FLAG="--uncommitted"; shift ;;
+    --base)        TARGET_FLAG="--base $2"; shift 2 ;;
+    --commit)      TARGET_FLAG="--commit $2"; shift 2 ;;
+    --)            shift; INSTRUCTIONS="$*"; break ;;
+    right|left|up|down) DIR="$1"; shift ;;
+    *)             INSTRUCTIONS="${INSTRUCTIONS:+$INSTRUCTIONS }$1"; shift ;;
+  esac
+done
+
+# codex review コマンドを構築（review サブコマンドは -c でモデル/effort を上書きできる）
+CMD="codex review $TARGET_FLAG -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\""
+[[ -n "$INSTRUCTIONS" ]] && CMD="$CMD '$INSTRUCTIONS'"
+
+# 新しいペインを分割し、そのペインで codex review を実行
+S=$(cmux new-split "$DIR" | awk '{print $2}')
+[[ -n "$S" ]] || { echo "エラー: ペイン分割に失敗しました" >&2; exit 1; }
+
+cmux send --surface "$S" "$CMD
+"
+
+echo "codex review 起動: $S (方向: $DIR / model: $MODEL / effort: $EFFORT / 対象: $TARGET_FLAG)"

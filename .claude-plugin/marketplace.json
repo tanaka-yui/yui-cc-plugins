@@ -12,11 +12,7 @@
       "version": "1.0.0",
       "license": "MIT",
       "category": "terminal",
-      "tags": [
-        "cmux",
-        "fork",
-        "conversation"
-      ]
+      "tags": ["cmux", "fork", "conversation"]
     },
     {
       "name": "cmux-using",
@@ -25,12 +21,7 @@
       "version": "1.0.0",
       "license": "MIT",
       "category": "terminal",
-      "tags": [
-        "cmux",
-        "skill",
-        "sub-agent",
-        "terminal"
-      ]
+      "tags": ["cmux", "skill", "sub-agent", "terminal"]
     },
     {
       "name": "cmux-team",
@@ -39,12 +30,7 @@
       "version": "1.0.0",
       "license": "MIT",
       "category": "development",
-      "tags": [
-        "cmux",
-        "multi-agent",
-        "orchestration",
-        "team"
-      ]
+      "tags": ["cmux", "multi-agent", "orchestration", "team"]
     },
     {
       "name": "cmux-team-dispatch-task",
@@ -53,13 +39,7 @@
       "version": "1.6.4",
       "license": "MIT",
       "category": "development",
-      "tags": [
-        "cmux",
-        "multi-agent",
-        "dispatch",
-        "parallel",
-        "worktree"
-      ]
+      "tags": ["cmux", "multi-agent", "dispatch", "parallel", "worktree"]
     },
     {
       "name": "dev-up",
@@ -68,14 +48,7 @@
       "version": "1.0.0",
       "license": "MIT",
       "category": "development",
-      "tags": [
-        "docker",
-        "compose",
-        "worktree",
-        "cmux",
-        "vite",
-        "go"
-      ]
+      "tags": ["docker", "compose", "worktree", "cmux", "vite", "go"]
     },
     {
       "name": "e2e-test",
@@ -84,11 +57,7 @@
       "version": "1.0.0",
       "license": "MIT",
       "category": "development",
-      "tags": [
-        "e2e",
-        "browser",
-        "agent-browser"
-      ]
+      "tags": ["e2e", "browser", "agent-browser"]
     },
     {
       "name": "token-meter",
@@ -97,13 +66,7 @@
       "version": "0.3.0",
       "license": "MIT",
       "category": "observability",
-      "tags": [
-        "claude-code",
-        "hook",
-        "token",
-        "compression",
-        "measurement"
-      ]
+      "tags": ["claude-code", "hook", "token", "compression", "measurement"]
     },
     {
       "name": "codex-bridge",
@@ -113,6 +76,15 @@
       "license": "MIT",
       "category": "development",
       "tags": ["claude-code", "codex", "agents-md", "rules", "bridge"]
+    },
+    {
+      "name": "cmux-codex-review",
+      "description": "agmsg の inbox を確認したうえで、新しい cmux ペインで codex (gpt-5.6-sol / reasoning effort xhigh) によるコードレビューを起動するプラグイン。",
+      "source": "./apps/cmux-codex-review",
+      "version": "1.0.0",
+      "license": "MIT",
+      "category": "terminal",
+      "tags": ["cmux", "codex", "review", "agmsg"]
     }
   ]
 }
