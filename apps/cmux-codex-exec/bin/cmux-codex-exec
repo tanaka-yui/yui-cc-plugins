@@ -37,6 +37,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# -m/--model と -e/--effort はペイン再パースされる文字列に埋め込まれるため、安全な文字のみ許可
+[[ "$MODEL" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "エラー: --model に使用できない文字が含まれています" >&2; exit 1; }
+[[ "$EFFORT" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "エラー: --effort に使用できない文字が含まれています" >&2; exit 1; }
+
 # plan 解決: 引数優先、無ければ docs/superpowers/plans/ の最新 md
 if [[ -z "$PLAN" ]]; then
   PLAN=$(ls -t docs/superpowers/plans/*.md 2>/dev/null | head -1 || true)

@@ -43,7 +43,7 @@ codex が完了通知（send.sh）を撃てるよう、`codex_agent` を team �
 **Bash tool を `run_in_background: true` で** 次を起動する（token は Step 2 の出力値）:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --timeout 1800
+"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --timeout 3600
 ```
 
 起動したらこのターンを終える。watcher の完了通知（`<task-notification>`）で親が wake される。

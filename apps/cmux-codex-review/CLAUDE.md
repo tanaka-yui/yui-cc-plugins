@@ -13,7 +13,7 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 
 1. agmsg を起動して受信箱を確認（非ブロッキング。未参加・未インストールならスキップ）
 2. `cmux new-split <dir>` で新ペインを分割
-3. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --dangerously-bypass-approvals-and-sandbox -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
+3. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox read-only -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`、書き込み権限は持たない）
 4. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親側は `bin/cmux-codex-wait` で完了を待つ
 
 ## デフォルト

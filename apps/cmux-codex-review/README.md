@@ -31,7 +31,7 @@ agmsg 確認をスキップし、通知なしの対話レビュー起動だけ�
 対話 codex にレビュープロンプトを渡して起動する（`codex review` サブコマンドは使わない）:
 
 ```bash
-codex --dangerously-bypass-approvals-and-sandbox \
+codex --sandbox read-only \
   -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
   '未コミットの変更をレビューし、問題点・改善点を具体的に指摘せよ。'
 ```

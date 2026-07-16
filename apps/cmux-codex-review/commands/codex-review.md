@@ -32,7 +32,7 @@ fi
   # surface 確定前なので reviewer 名は起動後に join する。まず起動:
   "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" $ARGUMENTS --team <TEAM> --reviewer <REVIEWER> --parent <PARENT>
   ```
-  `<REVIEWER>` は `cxrev-<n>` 等の一意名。bin 出力の `token=`/`surface=` を記憶。
+  `<REVIEWER>` は `cxrev-review` 等の一意名。bin 出力の `token=`/`surface=` を記憶。
   起動後すぐ reviewer を join:
   `~/.agents/skills/agmsg/scripts/join.sh <TEAM> <REVIEWER> codex "$(pwd)"`
 - 未参加: 通知なしで起動（後方互換）:
