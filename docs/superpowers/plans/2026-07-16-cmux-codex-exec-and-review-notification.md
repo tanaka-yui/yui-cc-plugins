@@ -179,46 +179,59 @@ set -uo pipefail
 ROOT="/Users/yui/Documents/workspace/tanaka-yui/yui-cc-plugins"
 BIN="$ROOT/apps/cmux-codex-exec/bin/cmux-codex-exec"
 TMP=$(mktemp -d)
-# stub cmux: new-split は "OK surface:25 workspace:9" 相当、send は送信内容を記録
 mkdir -p "$TMP/bin"
+# stub cmux: new-split は surface を返す、send は送信された CMD 文字列をそのまま記録
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "new-split" ]]; then echo "OK surface:25 workspace:9"; exit 0; fi
-if [[ "$1" == "send" ]]; then printf 'SENT=[%s]\n' "$4" >> "$SENT_LOG"; exit 0; fi
+if [[ "$1" == "send" ]]; then printf '%s' "$4" > "$SENT_CMD"; exit 0; fi
 STUB
 chmod +x "$TMP/bin/cmux"
-# plan ファイル
+# stub codex: 受け取った引数の数と最後の引数(prompt)を記録
+cat > "$TMP/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+echo "$#" > "$CODEX_ARGC"
+prompt=""; for a in "$@"; do prompt="$a"; done
+printf '%s' "$prompt" > "$CODEX_PROMPT"
+STUB
+chmod +x "$TMP/bin/codex"
 mkdir -p "$TMP/repo/docs/superpowers/plans"
 echo "# サンプル plan" > "$TMP/repo/docs/superpowers/plans/2026-07-16-sample.md"
 
 fail=0
 export CMUX_SOCKET_PATH=/tmp/fake.sock
-export SENT_LOG="$TMP/sent.log"
+export SENT_CMD="$TMP/sent.cmd"
 
-# Case A: plan 自動選択 + 通知配線あり
+# Case A: plan 自動選択 + 通知配線あり。
+# ペインシェルの再パースを再現するため、送信された CMD を stub codex 付き PATH で eval し、
+# codex が受け取る引数を検証する（生文字列の grep では引用符崩れを検知できないため）。
 cd "$TMP/repo"
 out=$(CMUX_BIN="$TMP/bin/cmux" "$BIN" --team myteam --parent parent); rc=$?
-echo "$out" | grep -q "surface=surface:25" && \
+env PATH="$TMP/bin:$PATH" CODEX_ARGC="$TMP/argc" CODEX_PROMPT="$TMP/prompt" \
+  bash -c "$(cat "$SENT_CMD")"
+argc=$(cat "$TMP/argc" 2>/dev/null || echo "?"); prompt=$(cat "$TMP/prompt" 2>/dev/null || echo "")
 echo "$out" | grep -q "token=codex-exec-25" && \
 echo "$out" | grep -q "codex_agent=cxexec-25" && \
-grep -q "codex --dangerously-bypass-approvals-and-sandbox" "$SENT_LOG" && \
-grep -q 'model_reasoning_effort="xhigh"' "$SENT_LOG" && \
-grep -q "send.sh myteam cxexec-25 parent" "$SENT_LOG" && \
-grep -q "DONE codex-exec-25" "$SENT_LOG" \
-  && echo "PASS A" || { echo "FAIL A: rc=$rc"; echo "$out"; cat "$SENT_LOG"; fail=1; }
+[[ "$argc" == "6" ]] && \
+printf '%s' "$prompt" | grep -q "send.sh myteam cxexec-25 parent" && \
+printf '%s' "$prompt" | grep -q "DONE codex-exec-25" \
+  && echo "PASS A" || { echo "FAIL A: rc=$rc argc=$argc"; echo "$out"; echo "PROMPT=[$prompt]"; fail=1; }
 
 # Case B: cmux 外 → エラー
 out=$(unset CMUX_SOCKET_PATH; CMUX_BIN="$TMP/bin/cmux" "$BIN" 2>&1); rc=$?
 [[ $rc -ne 0 && "$out" == *"cmux"* ]] && echo "PASS B" || { echo "FAIL B: rc=$rc out=$out"; fail=1; }
 
 # Case C: plan 不在 → エラー
-: > "$SENT_LOG"
 cd "$TMP"; mkdir -p "$TMP/empty"; cd "$TMP/empty"
 out=$(CMUX_BIN="$TMP/bin/cmux" "$BIN" 2>&1); rc=$?
 [[ $rc -ne 0 && "$out" == *"plan"* ]] && echo "PASS C" || { echo "FAIL C: rc=$rc out=$out"; fail=1; }
 
 exit $fail
 ```
+
+> 補足（引用符エスケープ）: この Case A は「codex が prompt をちょうど 1 引数として受け取る（argc=6）」ことを
+> 検証する。NOTIFY の `'DONE ...'` は単一引用符を含むため、bin 側で `'\''` エスケープをしないと再パースで
+> 引数が割れて argc が増え、この Case が FAIL する。
 
 - [ ] **Step 2: テスト失敗を確認**
 
@@ -302,7 +315,11 @@ else
 fi
 
 PROMPT="$TASK$NOTIFY"
-CMD="codex --dangerously-bypass-approvals-and-sandbox -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$PROMPT'"
+# PROMPT 内の単一引用符を '\'' 方式でエスケープしてから外側を単一引用符で包む。
+# cmux send でペインへ送られ、ペインのシェルが再パースするため必須。NOTIFY は
+# 'DONE ...' の単一引用符を含むので、この処理が無いとコマンドが壊れて codex に届かない。
+PROMPT_ESC=${PROMPT//\'/\'\\\'\'}
+CMD="codex --dangerously-bypass-approvals-and-sandbox -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$PROMPT_ESC'"
 
 "$CMUX_BIN" send --surface "$S" "$CMD
 "
@@ -638,35 +655,45 @@ TMP=$(mktemp -d); mkdir -p "$TMP/bin"
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "new-split" ]]; then echo "OK surface:31 workspace:9"; exit 0; fi
-if [[ "$1" == "send" ]]; then printf 'SENT=[%s]\n' "$4" >> "$SENT_LOG"; exit 0; fi
+if [[ "$1" == "send" ]]; then printf '%s' "$4" > "$SENT_CMD"; exit 0; fi
 STUB
 chmod +x "$TMP/bin/cmux"
+cat > "$TMP/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+echo "$#" > "$CODEX_ARGC"
+prompt=""; for a in "$@"; do prompt="$a"; done
+printf '%s' "$prompt" > "$CODEX_PROMPT"
+STUB
+chmod +x "$TMP/bin/codex"
 export CMUX_SOCKET_PATH=/tmp/fake.sock
-export SENT_LOG="$TMP/sent.log"
+export SENT_CMD="$TMP/sent.cmd"
 fail=0
 
-# Case A: 通知なし（後方互換）→ 対話 codex のレビュープロンプト、通知コマンドなし
-: > "$SENT_LOG"
+# 送信された CMD をペインシェルとして再パースし、codex が受け取る argc / prompt を得る
+reparse() { env PATH="$TMP/bin:$PATH" CODEX_ARGC="$TMP/argc" CODEX_PROMPT="$TMP/prompt" bash -c "$(cat "$SENT_CMD")"; }
+
+# Case A: 通知なし（後方互換）→ 対話 codex、prompt に send.sh 無し、argc=6（引用符崩れ無し）
 out=$(CMUX_BIN="$TMP/bin/cmux" "$BIN"); rc=$?
-grep -q 'codex ' "$SENT_LOG" && \
-! grep -q 'codex review --uncommitted' "$SENT_LOG" && \
-grep -q 'model_reasoning_effort="xhigh"' "$SENT_LOG" && \
-! grep -q 'send.sh' "$SENT_LOG" && \
+reparse; argc=$(cat "$TMP/argc" 2>/dev/null || echo "?"); prompt=$(cat "$TMP/prompt" 2>/dev/null || echo "")
+[[ "$argc" == "6" ]] && \
+! printf '%s' "$prompt" | grep -q 'send.sh' && \
+printf '%s' "$prompt" | grep -q 'レビュー' && \
 echo "$out" | grep -q "surface=surface:31" \
-  && echo "PASS A" || { echo "FAIL A: rc=$rc"; cat "$SENT_LOG"; fail=1; }
+  && echo "PASS A" || { echo "FAIL A: rc=$rc argc=$argc"; echo "PROMPT=[$prompt]"; fail=1; }
 
-# Case B: 通知配線あり → send.sh + token を注入
-: > "$SENT_LOG"
+# Case B: 通知配線あり → prompt に send.sh + token が丸ごと入り、argc=6
 out=$(CMUX_BIN="$TMP/bin/cmux" "$BIN" --team t --reviewer cxrev-31 --parent parent); rc=$?
-grep -q "send.sh t cxrev-31 parent" "$SENT_LOG" && \
-grep -q "DONE codex-review-31" "$SENT_LOG" && \
+reparse; argc=$(cat "$TMP/argc" 2>/dev/null || echo "?"); prompt=$(cat "$TMP/prompt" 2>/dev/null || echo "")
+[[ "$argc" == "6" ]] && \
+printf '%s' "$prompt" | grep -q "send.sh t cxrev-31 parent" && \
+printf '%s' "$prompt" | grep -q "DONE codex-review-31" && \
 echo "$out" | grep -q "token=codex-review-31" \
-  && echo "PASS B" || { echo "FAIL B: rc=$rc"; cat "$SENT_LOG"; fail=1; }
+  && echo "PASS B" || { echo "FAIL B: rc=$rc argc=$argc"; echo "PROMPT=[$prompt]"; fail=1; }
 
-# Case C: --base 指定 → レビュープロンプトに main が入る
-: > "$SENT_LOG"
+# Case C: --base 指定 → prompt に main が入る
 out=$(CMUX_BIN="$TMP/bin/cmux" "$BIN" --base main); rc=$?
-grep -q "main" "$SENT_LOG" && echo "PASS C" || { echo "FAIL C"; cat "$SENT_LOG"; fail=1; }
+reparse; prompt=$(cat "$TMP/prompt" 2>/dev/null || echo "")
+printf '%s' "$prompt" | grep -q "main" && echo "PASS C" || { echo "FAIL C"; echo "PROMPT=[$prompt]"; fail=1; }
 
 exit $fail
 ```
@@ -754,7 +781,11 @@ if [[ -n "$TEAM" && -n "$REVIEWER" && -n "$PARENT" ]]; then
 ~/.agents/skills/agmsg/scripts/send.sh $TEAM $REVIEWER $PARENT 'DONE $TOKEN: レビュー完了'"
 fi
 
-CMD="codex --dangerously-bypass-approvals-and-sandbox -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$REVIEW_INSTR'"
+# REVIEW_INSTR 内の単一引用符を '\'' 方式でエスケープしてから外側を単一引用符で包む。
+# cmux send でペインへ送られ、ペインのシェルが再パースするため必須（通知配線時は
+# 'DONE ...' の単一引用符を含むので、この処理が無いとコマンドが壊れる）。
+REVIEW_INSTR_ESC=${REVIEW_INSTR//\'/\'\\\'\'}
+CMD="codex --dangerously-bypass-approvals-and-sandbox -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$REVIEW_INSTR_ESC'"
 
 "$CMUX_BIN" send --surface "$S" "$CMD
 "
