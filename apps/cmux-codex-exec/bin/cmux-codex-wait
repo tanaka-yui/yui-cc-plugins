@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# cmux-codex-wait — agmsg history を polling し、指定 token を含む完了メッセージが
+# 届いたら status=done で exit する短命 watcher。background task として起動され、
+# その exit が Claude Code の <task-notification> を発火して idle 親を wake する。
+# agmsg 常駐 monitor と違い「完了して exit する」ことが wake の要。
+#
+# Usage: cmux-codex-wait <team> <agent> <token> [--timeout <sec>] [--interval <sec>]
+
+AGMSG_HISTORY="$HOME/.agents/skills/agmsg/scripts/history.sh"
+
+TEAM="${1:-}"; AGENT="${2:-}"; TOKEN="${3:-}"
+[[ $# -ge 3 ]] && shift 3 || true
+TIMEOUT=1800
+INTERVAL=5
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --timeout)  TIMEOUT="$2"; shift 2 ;;
+    --interval) INTERVAL="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+[[ -n "$TEAM" && -n "$AGENT" && -n "$TOKEN" ]] || { echo "status=error reason=usage"; exit 2; }
+[[ -x "$AGMSG_HISTORY" ]] || { echo "status=error reason=no-agmsg"; exit 2; }
+
+elapsed=0
+while (( elapsed < TIMEOUT )); do
+  if "$AGMSG_HISTORY" "$TEAM" "$AGENT" 30 2>/dev/null | grep -qF "$TOKEN"; then
+    echo "status=done token=$TOKEN"
+    exit 0
+  fi
+  sleep "$INTERVAL"
+  elapsed=$(( elapsed + INTERVAL ))
+done
+echo "status=timeout token=$TOKEN"
+exit 3
