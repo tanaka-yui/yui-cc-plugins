@@ -6,13 +6,15 @@ description: >-
   「5.6 sol でレビュー」「extra high でレビュー」「agmsg 起動してレビュー」「別ペインでレビューを回して」等と
   言ったとき、または現在の変更を codex に第三者レビューさせたいときに必ず使う。cmux セッション内
   (CMUX_SOCKET_PATH が設定されている) が前提。単に diff を自分で読むのではなく、独立した codex プロセスに
-  高リーズニングでレビューさせたい意図があればこのスキルを起動すること。
+  高リーズニングでレビューさせたい意図があればこのスキルを起動すること。対話型で起動し、
+  完了を agmsg 経由で親へ通知できる。
 ---
 
 # codex-review
 
 現在の作業を **codex に第三者レビューさせる** ためのスキル。agmsg の受信箱を確認してから、
-新しい cmux ペインで codex を起動し、`codex review` を高リーズニングで走らせる。
+新しい cmux ペインで**対話 codex** を起動し、レビュープロンプトを渡して高リーズニングで
+走らせる。親が agmsg team 参加済みなら、レビュー完了を親へ通知する配線も行う。
 
 デフォルト設定:
 
@@ -45,7 +47,7 @@ description: >-
 
 ### 2. codex レビューを起動
 
-bin スクリプトを実行する。cmux ペインを分割し、そのペインで `codex review` を送信する。
+bin スクリプトを実行する。cmux ペインを分割し、そのペインで**対話 codex** にレビュープロンプトを送信する。
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" [引数]
@@ -59,18 +61,27 @@ bin スクリプトを実行する。cmux ペインを分割し、そのペイ�
 | `--base <branch>` | 未コミット変更ではなく base ブランチとの差分をレビュー |
 | `--commit <sha>` | 指定コミットの変更をレビュー |
 | `-m <model>` / `-e <effort>` | モデル / effort の上書き（default: gpt-5.6-sol / xhigh） |
-| `-- <指示>` | codex review へのカスタムレビュー指示 |
+| `-- <指示>` | codex へのカスタムレビュー指示 |
+| `--team <team> --reviewer <name> --parent <agent>` | レビュー完了の agmsg 通知配線 |
+
+bin は `surface=` / `token=` を出力する。通知配線時はこの `token` を
+`bin/cmux-codex-wait` に渡して完了を待つ（`/codex-review` コマンドの Step 3 参照）。
 
 ### 3. 報告
 
 bin が出力する起動サマリ（`codex review 起動: <surface> (...)`）を 1 行で伝える。
-codex 側でレビューが流れ始めるので、このセッションでのポーリングは不要。
+codex 側でレビューが流れ始めるので、このセッションでのポーリングは不要
+（通知配線時は `cmux-codex-wait` を background task で回して wake を待つ）。
 
 ## 起動される codex コマンド（参考）
 
+対話 codex にレビュープロンプトを渡して起動する（`codex review` サブコマンドは使わない）:
+
 ```bash
-codex review --uncommitted -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh"
+codex --dangerously-bypass-approvals-and-sandbox \
+  -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
+  '未コミットの変更をレビューし、問題点・改善点を具体的に指摘せよ。'
 ```
 
-`codex review` は非対話でレビューを実行するサブコマンド。`-c` でモデルと effort を
-`~/.codex/config.toml` の設定より優先して上書きする。
+`--team/--reviewer/--parent` 指定時は、プロンプト末尾に「レビュー提示後に `send.sh` で親へ完了通知せよ」を
+注入する。親側は `bin/cmux-codex-wait` を background task で回して wake される。

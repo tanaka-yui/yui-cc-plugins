@@ -19,7 +19,7 @@ agmsg の受信箱を確認したうえで、新しい cmux ペインで **codex
 
 ### シェルスクリプト（直接実行、高速）
 
-agmsg 確認をスキップし、ペイン起動だけを行う:
+agmsg 確認をスキップし、通知なしの対話レビュー起動だけを行う:
 
 ```
 !cmux-codex-review
@@ -28,8 +28,12 @@ agmsg 確認をスキップし、ペイン起動だけを行う:
 
 ## 起動される codex コマンド
 
+対話 codex にレビュープロンプトを渡して起動する（`codex review` サブコマンドは使わない）:
+
 ```bash
-codex review --uncommitted -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh"
+codex --dangerously-bypass-approvals-and-sandbox \
+  -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
+  '未コミットの変更をレビューし、問題点・改善点を具体的に指摘せよ。'
 ```
 
 ## 前提条件

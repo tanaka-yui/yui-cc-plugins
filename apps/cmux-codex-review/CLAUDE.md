@@ -13,7 +13,8 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 
 1. agmsg を起動して受信箱を確認（非ブロッキング。未参加・未インストールならスキップ）
 2. `cmux new-split <dir>` で新ペインを分割
-3. 分割先で `codex review --uncommitted -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh"` を実行
+3. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --dangerously-bypass-approvals-and-sandbox -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
+4. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親側は `bin/cmux-codex-wait` で完了を待つ
 
 ## デフォルト
 
@@ -35,3 +36,5 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
   送信するコマンドが `codex review` に固定されている点が異なる。
 - `cmux-team-dispatch-task` の review 機能は dispatch されたタスクの plan/spec を codex が approve する
   オーケストレーション文脈のもの。本プラグインは単発の手元レビュー起動に特化する。
+- `cmux-codex-exec`: 本プラグインの前段。exec が plan をカレントdirに実装し、完了後に本プラグインが
+  その未コミット変更をレビューする想定の繋ぎ。
