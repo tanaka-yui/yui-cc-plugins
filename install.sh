@@ -10,7 +10,10 @@ bold "=== yui-cc-plugins インストール ==="
 echo ""
 
 claude plugin marketplace add "${REPO_DIR}"
-green "マーケットプレイス登録完了"
+# 既に登録済みでも marketplace.json の追加分（新プラグイン）をカタログへ反映するため update する。
+# これが無いと再実行時に新プラグインが「インストール可能」として認識されない。
+claude plugin marketplace update yui-cc-plugins
+green "マーケットプレイス登録・カタログ更新完了"
 echo ""
 
 claude plugin install cmux-fork@yui-cc-plugins

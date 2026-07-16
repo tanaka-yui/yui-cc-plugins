@@ -14,6 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `apps/cmux-using` | Plugin (skill + commands) | bash + markdown | cmux 操作の汎用スキル |
 | `apps/cmux-team` | Plugin (skill + TypeScript daemon) | TypeScript (Bun runtime) | 4層 (Master/Manager/Conductor/Agent) オーケストレーション。daemon プロセスを持つ唯一のプラグイン |
 | `apps/cmux-team-dispatch-task` | Plugin (skill + shell scripts) | bash + zsh | git worktree 分離による並列タスクディスパッチ |
+| `apps/cmux-codex-review` | Plugin (slash command + skill) | bash | 新 cmux ペインで対話 codex (gpt-5.6-sol/xhigh) にコードレビューさせる。read-only サンドボックス。完了を agmsg 経由で親へ通知可 |
+| `apps/cmux-codex-exec` | Plugin (slash command + skill) | bash | plan を対話 codex にカレントdir で実装させ、完了を親が agmsg 経由で検知して cmux-codex-review へ繋ぐ |
 | `apps/cmux-remote` | App (PWA) | TypeScript (Vite client + Bun server) | cmux ワークスペースを iPhone から閲覧。`apps/cmux-remote/{client,server}` は **個別の workspace パッケージ** |
 
 `pnpm-workspace.yaml` の packages は `apps/*` と `apps/cmux-remote/*` の両方を列挙している（cmux-remote だけ二段ネスト）ため、新規パッケージを追加するときはこの両方を意識する。
@@ -69,8 +71,10 @@ cd apps/cmux-remote/server && bun test
 ### インストール / 配布
 
 ```bash
-bash install.sh    # claude plugin marketplace add でローカルパスを登録し、4プラグインを一括インストール
+bash install.sh    # marketplace add + update でローカルパスを登録・カタログ更新し、全プラグインを一括インストール
 ```
+
+**marketplace.json にプラグインを追加/更新したら `claude plugin marketplace update yui-cc-plugins` が必要**。`/reload-plugins` はインストール済みプラグインの再読込のみで、marketplace の**カタログ（インストール可能な一覧）は更新しない**ため、update しないと新プラグインが認識されない。install.sh は `marketplace add` の直後に `update` を実行するので、再実行すれば追加分も反映される。
 
 リモート利用者向けには `/plugin marketplace add tanaka-yui/yui-cc-plugins` 経由（README 参照）。
 
