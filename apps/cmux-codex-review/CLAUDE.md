@@ -6,7 +6,7 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 
 - `commands/codex-review.md` — `/codex-review` スラッシュコマンド（agmsg inbox 確認 + bin 実行）
 - `skills/codex-review/SKILL.md` — レビュー起動スキル（トリガー定義）
-- `bin/cmux-codex-review` — ペイン分割 + `codex review` 送信の本体（`!` 直接実行も可、LLM 不要で高速）
+- `bin/cmux-codex-review` — ペイン分割 + 対話 codex へのレビュープロンプト送信の本体（`!` 直接実行も可、LLM 不要で高速）
 - `.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` — Plugin マニフェスト
 
 ## 動作
@@ -33,7 +33,7 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 ## 関連プラグインとの境界
 
 - `cmux-fork` は「会話を新ペインにフォーク」する汎用分割。本プラグインは「codex にレビューさせる」専用途で、
-  送信するコマンドが `codex review` に固定されている点が異なる。
+  送信するのが対話 codex へのレビュープロンプトに固定されている点が異なる。
 - `cmux-team-dispatch-task` の review 機能は dispatch されたタスクの plan/spec を codex が approve する
   オーケストレーション文脈のもの。本プラグインは単発の手元レビュー起動に特化する。
 - `cmux-codex-exec`: 本プラグインの前段。exec が plan をカレントdirに実装し、完了後に本プラグインが
