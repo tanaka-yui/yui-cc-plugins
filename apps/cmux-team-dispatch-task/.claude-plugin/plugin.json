@@ -1,6 +1,6 @@
 {
   "name": "cmux-team-dispatch-task",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "Parallel task dispatch via cmux workspaces. Each task gets its own git worktree + Claude Code session, orchestrated by the parent session.",
   "author": {
     "name": "tanaka-yui",

@@ -213,11 +213,12 @@ fi
 OPUS_SURFACE=""
 
 if [[ $WITH_OPUS -eq 1 ]]; then
-  # actas で identity を claim してから待機する。タスク本文は含めない (後から agmsg で届く)。
-  # 配線失敗 (CLAUDE_DELIVERY=cmux-send) のときは actas/watcher が不要かつ「agmsg で届く」が
-  # 誤解の元になるためスキップし、指示がこのペインに直接タイプされることを伝える
+  # actas で identity を claim してから待機する。タスク本文は含めない (後から届く)。
+  # タスクは常に typed prompt で届く (agmsg push は idle セッションを起こせないため
+  # wake チャネルにはならない — inbox には同一コピーが記録として残るだけ)。
+  # 配線失敗 (CLAUDE_DELIVERY=cmux-send) のときは actas/watcher が不要なためスキップする
   if [[ "$CLAUDE_DELIVERY" == "agmsg" ]]; then
-    OPUS_PROMPT="/agmsg actas $SLUG then wait idle. Your task will arrive as an agmsg message. Do not start any work until a task message arrives."
+    OPUS_PROMPT="/agmsg actas $SLUG then wait idle. Your task will arrive as a prompt typed into this pane; an identical copy is also pushed to your agmsg inbox (treat both as ONE task — ignore the duplicate). Do not start any work until the task prompt arrives."
   else
     OPUS_PROMPT="Wait idle. Your task will be typed directly into this pane as a prompt. Do not start any work until it arrives."
   fi
@@ -244,7 +245,7 @@ AGMSG_FLAGS_SONNET=()
 if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
   # opus と同じ理由で delivery に応じて出し分ける (cmux-send フォールバック時は actas しない)
   if [[ "$CLAUDE_DELIVERY" == "agmsg" ]]; then
-    SONNET_PROMPT="/agmsg actas $SLUG-sonnet then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive."
+    SONNET_PROMPT="/agmsg actas $SLUG-sonnet then wait idle. Execution instructions will arrive as a prompt typed into this pane; an identical copy is also pushed to your agmsg inbox (treat both as ONE task — ignore the duplicate). Do not start any work until the instructions arrive."
   else
     SONNET_PROMPT="Wait idle. Execution instructions will be typed directly into this pane as a prompt. Do not start any work until they arrive."
   fi

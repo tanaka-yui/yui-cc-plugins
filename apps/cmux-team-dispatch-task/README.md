@@ -162,16 +162,20 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 | 値 | 通知手段 | monitor ループ |
 |----|---------|---------------|
 | `send-message`（default） | `cmux send` + `cmux send-key return` | `monitor-dispatch.sh` を起動（heartbeat / 死活監視） |
-| `agmsg` | [agmsg](https://github.com/fujibee/agmsg) `send.sh`（リアルタイム push） | 起動しない（沈黙時は status.json を手動確認） |
+| `agmsg` | `cmux send` + `send-key return`（wake）に加えて [agmsg](https://github.com/fujibee/agmsg) `send.sh` で inbox にも記録（dual-send） | 起動しない（沈黙時は status.json を手動確認） |
 
 config は `~/.claude/cmux-team-dispatch-task/config.json`（`<project>/.dispatch/config.json` が優先）。
 未設定で agmsg がインストール済みの場合、初回 dispatch 時に一度だけ質問し、回答を config に永続化する。
 agmsg モードの team 名は `dispatch-<repo-name>`、親の agent 名は `parent`。
 status.json / result.md / `cmux wait-for` signal は両モードで不変。
 
-agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に自分で送る必須 push と、
-runner wrapper の exit 時 push(バックストップ)。idle のまま開いている TUI セッションは exit
-しないため、wrapper だけに頼ると通知されない(このため子プロンプトに必須 push が埋め込まれる)。
+**agmsg push は inbox 記録専用で、idle セッションを起こせない**(watcher はバックグラウンド
+Bash として動き、その stream 出力はプロセスが終了するまで注入されない)。このため指示・完了通知の
+wake は常に `cmux send` + `send-key return` が担い、agmsg 配線が生きているときは同一文を
+inbox にも記録する(dual-send)。agmsg モードの完了通知は2段構え: 子セッションが status.json
+書き込み直後に自分で送る必須通知(send.sh + cmux send の両方)と、runner wrapper の exit 時通知
+(バックストップ。同じく両チャネル)。idle のまま開いている TUI セッションは exit
+しないため、wrapper だけに頼ると通知されない(このため子プロンプトに必須通知が埋め込まれる)。
 また、ディスパッチを実行しているセッション自身は `delivery.sh set` が出力する
 `AGMSG-DIRECTIVE:` に従って watcher を起動する(SessionStart hook は次回セッションから有効)。
 
@@ -201,11 +205,12 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
   codex 実行（execute / standby ペイン）にのみ適用され、レビューは `review_model` のまま。
   未設定なら codex 側デフォルト（`~/.codex/config.toml`）が使われる
 
-agmsg モードでの指示配送（Phase A タスク / Phase B 実行指示 / Phase A-R レビュー依頼 / Phase B-R コードレビュー依頼）は、
-送信直前に宛先ペインの watcher 生存（agmsg の ready sentinel）を確認し、死んでいれば自動的に
-`cmux send`（ペインへの直接タイプ）へフォールバックする。配線に失敗したペインの初期プロンプトも
-「指示は直接タイプされる」文面に切り替わるため、agmsg の watcher 障害でディスパッチが
-ハングすることはない。
+agmsg モードでの指示配送（Phase A タスク / Phase B 実行指示 / Phase A-R レビュー依頼 / Phase B-R コードレビュー依頼）は
+**常に `cmux send`（ペインへの直接タイプ）+ `send-key return` で行う** — agmsg push 単独では
+idle なペインは起きないため、push は配送手段ではなく inbox 記録である。送信直前に宛先ペインの
+watcher 生存（agmsg の ready sentinel）を確認し、生きているときだけ同一指示文を `send.sh` で
+inbox にも記録する。配線に失敗したペインの初期プロンプトは「指示は直接タイプされる」文面に
+切り替わるため、agmsg の watcher 障害でディスパッチがハングすることはない。
 
 各子セッションは Phase A (計画 / brainstorming) 完了後、**実装フェーズで使うモデル**を `AskUserQuestion` で必ず聞きます。Phase A は常に opus で動作するため、選んだ model が opus と同一かどうかで動作が分岐します。
 
@@ -279,8 +284,9 @@ standby ペインの配置は Phase A-R の有効/無効で分岐する:
   idle 起動。実行指示は `cmux send` で注入する。
 - agmsg モード: opus-1m を含む全ペインをメッセージ未指定(idle)で起動する。
   `prewarm-panes.sh` が worktree への agmsg delivery 配線(join + `delivery.sh set`)を
-  ペイン起動前に行い、Phase A の初期タスクも Phase B の実行指示も agmsg で配送する
-  (配線に失敗したペインは `cmux send` にフォールバック。prewarm.json の `delivery` 値で分岐)。
+  ペイン起動前に行い、Phase A の初期タスクも Phase B の実行指示も dual-send で配送する
+  (常に `cmux send` + `send-key return`。prewarm.json の `delivery` 値が `"agmsg"` かつ
+  watcher 生存時は加えて `send.sh` で inbox にも記録)。
 
 split / claude-teams レイアウトや `prewarm: false` では従来の on-demand spawn。
 

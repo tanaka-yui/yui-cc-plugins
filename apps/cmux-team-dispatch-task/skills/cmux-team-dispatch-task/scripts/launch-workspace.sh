@@ -60,8 +60,9 @@
 #                                      Default: hardcoded {claude, engine=claude}.
 #   --message-type <send-message|agmsg>  Parent notification transport (default: send-message).
 #                                      send-message = cmux send + send-key return (現行動作)
-#                                      agmsg = ~/.agents/skills/agmsg/scripts/send.sh で親 (agent 名
-#                                      "parent") にメッセージ送信。--agmsg-team / --agmsg-from が必須
+#                                      agmsg = 上記に加えて ~/.agents/skills/agmsg/scripts/send.sh で
+#                                      親 (agent 名 "parent") にも inbox 記録として送信 (cmux send は
+#                                      wake 用に常に併発)。--agmsg-team / --agmsg-from が必須
 #   --agmsg-team <team>                agmsg の team 名 (message-type=agmsg 時必須)
 #   --agmsg-from <agent>               agmsg の送信元 agent 名 (message-type=agmsg 時必須)
 #
@@ -527,8 +528,8 @@ else
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       CORE_CMD="$RUNNER_COMMAND$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
     elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
-      # codex standby/review: prompt なしで idle 起動。実行指示の配送は prewarm.json の delivery 値に
-      # 従う (agmsg 配線成功時は agmsg、それ以外・send-message モードは cmux send)。
+      # codex standby/review: prompt なしで idle 起動。実行指示は常に cmux send で届く
+      # (prewarm.json の delivery=agmsg のときは加えて agmsg inbox にも記録される)。
       # review ペインは --model (review_model)、standby は exec_model フォールバックを反映する
       CODEX_MODEL_FLAG=""
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
@@ -676,11 +677,15 @@ fi
 
 # cmux send だけでは親が claude TUI の場合 input box にテキストが残って Enter が
 # 押されないため、必ず send-key return を続けて発行する。
-# message-type=agmsg の場合は agmsg send.sh で親 (agent 名 "parent") に送る。
+# message-type=agmsg の場合は agmsg send.sh でも親 (agent 名 "parent") に送るが、
+# これは inbox 記録用。agmsg push は idle な親セッションを起こせない (watcher の
+# stream 出力はバックグラウンド Bash のバッファに溜まるだけで注入されない) ため、
+# wake は常に cmux send + send-key return で行う。
 NOTIFY_MSG="[dispatch] task \"${WORKSPACE_NAME}\" finished (status: \$STATUS_LABEL)"
 if [[ "\$MESSAGE_TYPE" == "agmsg" ]]; then
   bash "\$AGMSG_SEND" "\$AGMSG_TEAM" "\$AGMSG_FROM" parent "\$NOTIFY_MSG" 2>/dev/null || true
-elif [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
+fi
+if [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
   "\$CMUX" send --surface "\$NOTIFY_SF" "\$NOTIFY_MSG" 2>/dev/null || true
   "\$CMUX" send-key --surface "\$NOTIFY_SF" return 2>/dev/null || true
 elif [[ -n "\$NOTIFY_WS" ]]; then
