@@ -372,8 +372,10 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
    If set to `"on"` or `"off"`, use it silently — do NOT ask (permanent opt-in/out).
 
    If unset or `"ask"`:
-   - `REVIEW_MODEL` empty → treat as `off`. Do NOT ask and do NOT write config (so
-     the question starts firing once a review_model gets configured later).
+   - `REVIEW_MODEL` empty かつ `REVIEWER_RUNNER` 未解決（codex 設計タスクが無い、または
+     claude engine runner が無い）→ treat as `off`. Do NOT ask and do NOT write config
+     (so the question starts firing once a review_model or a cross-engine reviewer
+     gets configured later).
    - `REVIEW_MODEL` non-empty **または** codex 設計タスクが存在し `REVIEWER_RUNNER` が
      解決済み → ask via AskUserQuestion **on EVERY dispatch, BEFORE
      launching any task** (this question is part of Step 1, alongside 1c-1f):
