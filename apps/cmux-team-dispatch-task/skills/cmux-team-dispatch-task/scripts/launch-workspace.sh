@@ -79,7 +79,7 @@
 
 set -euo pipefail
 
-CMUX="/Applications/cmux.app/Contents/Resources/bin/cmux"
+CMUX="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
 # RUNNER_SCRIPT_NAME は WORKSPACE_NAME parse 後に解決する (一意化のため)。
 # Phase B の grandchild は同じ worktree を再利用 (--cwd "$PWD") するため、固定名だと
 # Child の実行中 runner ファイルを上書きしてしまい bash の挙動が undefined になる。
@@ -566,10 +566,9 @@ else
       CODEX_MODEL_FLAG=""
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
-    elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
-      # codex standby/review: prompt なしで idle 起動。実行指示は常に cmux send で届く
+    elif [[ "$MODE" == "standby" ]]; then
+      # codex standby: prompt なしで idle 起動。実行指示は常に cmux send で届く
       # (prewarm.json の delivery=agmsg のときは加えて agmsg inbox にも記録される)。
-      # review ペインは --model (review_model)、standby は exec_model フォールバックを反映する
       CODEX_MODEL_FLAG=""
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       if [[ -n "$PROMPT_TEXT" ]]; then
@@ -577,9 +576,17 @@ else
       else
         CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox"
       fi
+    elif [[ "$MODE" == "review" ]]; then
+      # review は workspace-write に限定し、approval prompt は抑止する。findings は
+      # worktree 外の STATUS_DIR/review/ に書かれるため、STATUS_DIR だけを追加許可する。
+      CODEX_MODEL_FLAG=""
+      [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
+      REVIEW_WRITABLE_FLAG=""
+      [[ -n "$STATUS_DIR" ]] && REVIEW_WRITABLE_FLAG=" --add-dir '$STATUS_DIR'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG '\$superpowers:brainstorming $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG --dangerously-bypass-approvals-and-sandbox '\$superpowers:brainstorming $PROMPT_TEXT'"
     else
       # codex plan: claude の --dangerously-skip-permissions に相当するのは
       # --dangerously-bypass-approvals-and-sandbox。/plan slash command は codex でも有効
