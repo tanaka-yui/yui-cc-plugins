@@ -721,8 +721,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         IF the PHASE B-R block exists below, BEFORE the launch above write the
         reviewer wiring file (you are the reviewer):
           mkdir -p "<EXISTING_STATUS_DIR>/review"
-          jq -n --arg s "$CMUX_SURFACE_ID" --arg d "<EXISTING_STATUS_DIR>/review" \
-            '{reviewer_surface: $s, review_dir: $d}' \
+          jq -n --arg s "$CMUX_SURFACE_ID" --arg w "$CMUX_WORKSPACE_ID" \
+            --arg d "<EXISTING_STATUS_DIR>/review" \
+            '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d}' \
             > "<EXISTING_STATUS_DIR>/review/code-review.json"
         touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block exists below,
         do NOT exit — switch to the reviewer role it defines. OTHERWISE exit THIS session.
@@ -916,12 +917,33 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          ALWAYS (both delivery values):
            cmux send --surface "$REVIEW_SURFACE" "<request text>"
            cmux send-key --surface "$REVIEW_SURFACE" return
-           Wait by polling the verdict file (5s interval, 15 min timeout):
+           Wait by polling the verdict file (5s interval, in 15-min chunks with
+           NO overall time limit while the reviewer pane is active — liveness is
+           judged by a screen-snapshot diff at every chunk boundary):
              F="<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md"
-             for i in $(seq 1 180); do
+             # read-screen returns live terminal content even for unfocused
+             # workspaces (empirically verified) — no refresh step is needed
+             RS() { cmux read-screen --workspace "$CMUX_WORKSPACE_ID" --surface "$REVIEW_SURFACE" 2>/dev/null; }
+             SNAP=$(RS); STALLED=0; READFAIL=0
+             while true; do
+               for i in $(seq 1 180); do   # one 15-min chunk
+                 [[ -f "$F" ]] && grep -qE '^VERDICT: (approve|needs_work)$' "$F" && break 2
+                 sleep 5
+               done
+               # a verdict written during the final sleep must win over the liveness check
                [[ -f "$F" ]] && grep -qE '^VERDICT: (approve|needs_work)$' "$F" && break
-               sleep 5
+               NEW=""; for r in 1 2 3; do NEW=$(RS); [[ -n "$NEW" ]] && break; sleep 10; done
+               if [[ -z "$NEW" ]]; then
+                 # observation failure — NOT stalled by itself; only 2 consecutive
+                 # all-failed chunk boundaries count as a vanished pane
+                 READFAIL=$((READFAIL+1)); (( READFAIL >= 2 )) && { STALLED=1; break; }; continue
+               fi
+               READFAIL=0
+               [[ "$NEW" != "$SNAP" ]] && { SNAP="$NEW"; continue; }   # reviewer still working — keep waiting
+               STALLED=1; break
              done
+           Each time a chunk boundary passes with the reviewer still active,
+           briefly report the elapsed wait to the user and keep waiting.
       3. Read the verdict:
            VERDICT=$(grep -oE 'VERDICT: (approve|needs_work)' "<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md" 2>/dev/null | tail -1)
          - "VERDICT: approve" → this point is done. Move to the next point; after
@@ -939,9 +961,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                "このまま進む" → append the unresolved findings as a note in the
                document and move on (leave the review pane open — do not close it).
                "さらに修正" → run one more round; on another needs_work, re-ask.
-         - Verdict file missing or has no VERDICT line (timeout) → re-send the
-           SAME round's request once. If it times out again, ask via AskUserQuestion:
-             Q: "レビューが応答しません。どうしますか？"
+         - The wait exited stalled (STALLED=1: no screen change over a full
+           15-min chunk, or the pane was unobservable at 2 consecutive chunk
+           boundaries) → check the verdict file one last time; if still no
+           VERDICT line, re-send the SAME round's request once (retake the
+           baseline snapshot). If the wait exits stalled again, ask via
+           AskUserQuestion:
+             Q: "レビュアーが停止しているようです（pane に変化なし）。どうしますか？"
                1. 再依頼する
                2. レビューを省略して Phase B へ進む
              Option 2 → skip the review and continue to Phase B (leave the review
@@ -1019,14 +1045,27 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 line must be VERDICT: approve or VERDICT: needs_work. From round 2
                 append your rebuttals to the findings you rejected, with reasons.
             (2) wait by polling <EXISTING_STATUS_DIR>/review/code-round-N.md every
-                5 seconds up to 15 minutes for a VERDICT line.
+                5 seconds for a VERDICT line, in 15-minute chunks with NO overall
+                time limit while the reviewer is active. Right after sending,
+                capture a baseline of the reviewer pane screen (read-screen returns
+                live content even when the target workspace is unfocused):
+                  cmux read-screen --workspace "$CMUX_WORKSPACE_ID" --surface <REVIEWER_SURFACE>
+                At each chunk boundary without a verdict: re-check the verdict
+                file once more (a verdict written during the final sleep must
+                win), then capture the screen again (on failure or empty output
+                retry up to 3 times, 10s apart) and compare with the previous
+                capture. Changed → the reviewer is still working: update the
+                snapshot and keep waiting. Unchanged → the reviewer is stalled.
+                All retries failed → observation failure, NOT stalled; only 2
+                consecutive all-failed boundaries count as stalled.
             (3) On VERDICT: approve, create the PR and finish per the instructions
                 below. On VERDICT: needs_work, apply the findings you judge valid,
                 commit, and start round N+1. If round 3 still ends with needs_work:
                 if you can ask the user interactively (AskUserQuestion), ask whether
                 to proceed or run one more round; otherwise note the unresolved
-                findings in the PR body and proceed. If the verdict file never
-                appears, re-send the same round once; on a second timeout, ask via
+                findings in the PR body and proceed. If the wait exits stalled,
+                check the verdict file one last time, then re-send the same round
+                once (retake the baseline); if it stalls again, ask via
                 AskUserQuestion if you can (再依頼 / レビュー省略して PR 作成);
                 otherwise skip the review and note that in the PR body.
             After the PR is created (or all changes are merged per the plan), run
@@ -1141,6 +1180,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
               IF the PHASE B-R block exists below, BEFORE the launch above write the
               reviewer wiring file exactly as in the sonnet branch (mkdir -p the
               review dir, then jq -n {reviewer_surface: $CMUX_SURFACE_ID,
+              reviewer_workspace: $CMUX_WORKSPACE_ID,
               review_dir: <EXISTING_STATUS_DIR>/review} > .../review/code-review.json).
               Then write the deferred sentinel:
                 touch "<EXISTING_STATUS_DIR>/.deferred"

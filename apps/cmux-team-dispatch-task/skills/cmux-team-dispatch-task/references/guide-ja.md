@@ -1221,13 +1221,20 @@ Phase A 成果物は codex レビューペイン（`review_model`）が、design
   `VERDICT: needs_work` を記す → approve なら次へ / needs_work なら設計セッションが妥当な指摘を反映
   （反論は次ラウンドの依頼文に理由付きで返す）して再依頼
 - **依頼配送**: 常に `cmux send` + `send-key return` で依頼し、verdict はファイルポーリング
-  （5 秒間隔・15 分タイムアウト）で待つ — agmsg push 単独では idle なレビューペインは起きず、
+  （5 秒間隔・15 分チャンク。レビュアーが活動している限り**上限なし**で待機。依頼直後に
+  `cmux read-screen --workspace/--surface` でレビューペイン画面の baseline を取得し、チャンク境界
+  ごとに verdict を再確認 → 画面を再取得（`read-screen` は非フォーカス workspace でも live な内容を
+  返すため refresh は不要 — 実測確認済み。失敗・空出力は 10 秒間隔で最大 3 回リトライ）して差分
+  比較。変化あり = 作業中なので snapshot を更新して待機継続、変化なし = stalled、全リトライ失敗は
+  観測失敗であり 2 回連続の境界で全失敗したときのみ stalled 扱い）で待つ —
+  agmsg push 単独では idle なレビューペインは起きず、
   返信 push も idle 待ちのこのセッションを起こせないため。prewarm.json の `review.delivery` が
   `agmsg` のとき（かつ各ラウンドの送信直前に ready sentinel `ready.${TEAM}__<review-agent>` が
   存在するとき）は、`cmux send` に先立ち同一依頼文を `send.sh` で inbox にも記録する
   （`<review-agent>` は design=claude で `<slug>-review`、design=codex で `<slug>-opus`）
 - **3 往復で approve が出ない** → 残指摘を要約して AskUserQuestion（このまま進む / さらに修正）
-- **タイムアウト・verdict 不正** → 同一ラウンドを 1 回だけ再依頼。それでも失敗なら
+- **stalled（1 チャンク画面変化なし / 2 回連続観測不能）・verdict 不正** → verdict を最終確認
+  してから同一ラウンドを 1 回だけ再依頼（baseline 取り直し）。それでも stalled なら
   AskUserQuestion（再依頼 / レビュー省略して Phase B へ）
 - **ペイン寿命**: 全ポイントで同一ペインを再利用（文脈保持）。最終 approve（またはユーザー判断）
   後もレビューペインは開いたまま idle 維持し、途中で close しない（常 4 ペイン。最終の全タスク
@@ -1315,8 +1322,8 @@ zsh <skill-dir>/scripts/launch-workspace.sh \
 # design=claude+codex / design=codex+opus 1m / design=codex+sonnet) では、設計セッション (YOU) が
 # レビュアーになるので spawn 前にレビュー配線ファイルを書いておく:
 #   mkdir -p "<EXISTING_STATUS_DIR>/review"
-#   jq -n --arg s "$CMUX_SURFACE_ID" --arg d "<EXISTING_STATUS_DIR>/review" \
-#     '{reviewer_surface: $s, review_dir: $d}' > "<EXISTING_STATUS_DIR>/review/code-review.json"
+#   jq -n --arg s "$CMUX_SURFACE_ID" --arg w "$CMUX_WORKSPACE_ID" --arg d "<EXISTING_STATUS_DIR>/review" \
+#     '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d}' > "<EXISTING_STATUS_DIR>/review/code-review.json"
 # 「実装者 engine == 設計 engine」のケース (design=claude+sonnet / design=codex+codex) は
 # レビューペインがレビュアーになるので reviewer_surface はレビューペインの surface を指す。
 
@@ -1360,8 +1367,9 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
 - **YOU がレビュアーのケース**: 設計セッション（Child）は `.deferred` を touch した後 exit せず
   idle 待機。実装者が各ラウンドでレビューを依頼（常に `cmux send` + `send-key return` でタイプ
   入力し、agmsg watcher 生存時は加えて `send.sh` で inbox にも記録）し、実装者は verdict ファイルを
-  ポーリング（5 秒間隔・15 分タイムアウト）で待つ。設計セッションは round ごとに findings を書き、
-  approve を書いた時点で exit する
+  ポーリング（5 秒間隔・15 分チャンク。レビュアー pane の read-screen 画面差分による生存確認付きで
+  活動中は上限なしに待機 — Phase A-R と同一プロトコル）で待つ。設計セッションは round ごとに
+  findings を書き、approve を書いた時点で exit する
 - **レビューペインがレビューするケース**: opus 1m 実装（design=claude）は Phase A-R の Round loop
   をポイント id `code` でもう 1 周（同一 codex レビューペイン再利用、依頼文は「文書」でなく
   「ブランチの diff + plan 参照」）。sonnet 実装（design=claude）/ codex 実装（design=codex）は
@@ -1372,16 +1380,20 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
 - **3 往復で approve が出ない**: 実装者が claude セッションなら AskUserQuestion
   （このまま PR 作成 / さらに修正）。codex 実装者は対話質問ができないため、未解決指摘を
   **PR 本文に注記して続行**する
-- **タイムアウト**: 同一ラウンドを 1 回だけ再依頼。それでも verdict が出なければレビューを
-  省略し PR 本文に注記する
+- **stalled（1 チャンク画面変化なし / 2 回連続観測不能）**: verdict を最終確認してから同一ラウンド
+  を 1 回だけ再依頼（baseline 取り直し）。それでも stalled なら claude 実装者は AskUserQuestion
+  （再依頼 / レビュー省略して PR 作成）、codex 実装者はレビューを省略し PR 本文に注記する
 - **status.json 非汚染**: done/error 遷移の所有権は従来どおり実装者ペインの wrapper が持つ。
   レビュアーが設計セッション（YOU）のケースは `.deferred` 済みのため exit しても status.json を
   書かない
 - **孤児ガードは不要**: 実装者がレビューを依頼せず終了しても設計セッションは idle のまま無害に
   残り、最終の全タスク完了クリーンアップで他ペインと一緒に閉じられる
 - **spawn 経路（prewarm 無効 / split）**: 設計セッションが `<STATUS_DIR>/review/code-review.json`
-  （`{reviewer_surface, review_dir}`。`reviewer_surface` は上表の REVIEWER_SURFACE = YOU がレビューする
-  ケースは自身の surface、レビューペインがレビューするケースはレビューペインの surface）を書き、
+  （`{reviewer_surface, reviewer_workspace, review_dir}`。`reviewer_surface` は上表の REVIEWER_SURFACE =
+  YOU がレビューするケースは自身の surface、レビューペインがレビューするケースはレビューペインの
+  surface。`reviewer_workspace` はレビュアー側の workspace — 実装孫は別 workspace に spawn される
+  ため、依頼配送（`cmux send` / `send-key`）と read-screen の生存確認はいずれもこの値を
+  `--workspace` に明示して行う）を書き、
   `launch-workspace.sh --mode execute --review-config <path>` で実装者を起動する。wrapper が
   composed prompt にレビュープロトコル（依頼は常に `cmux send` + ファイルポーリング）を追記する
 

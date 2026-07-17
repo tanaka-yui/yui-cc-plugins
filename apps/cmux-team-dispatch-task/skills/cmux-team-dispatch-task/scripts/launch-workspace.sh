@@ -47,7 +47,7 @@
 #                                      cmux wait-for 発火をスキップ。Phase B で別 surface に
 #                                      実行を移譲する Child セッション側で常に指定する
 #   --review-config <path>             (--mode execute 専用) Phase B-R コードレビュー配線
-#                                      JSON ({reviewer_surface, review_dir}) のパス。指定時、
+#                                      JSON ({reviewer_surface, reviewer_workspace, review_dir}) のパス。指定時、
 #                                      inner prompt に「PR 作成前にレビュアー surface へ
 #                                      cmux send でレビュー依頼し、review_dir/code-round-<N>.md
 #                                      の VERDICT をポーリングして approve までループする」
@@ -516,9 +516,18 @@ if [[ "$MODE" == "execute" ]]; then
       || die "failed to parse review config at $REVIEW_CONFIG"
     REVIEW_DIR=$(jq -r '.review_dir // empty' "$REVIEW_CONFIG" 2>/dev/null) \
       || die "failed to parse review config at $REVIEW_CONFIG"
+    REVIEWER_WORKSPACE=$(jq -r '.reviewer_workspace // empty' "$REVIEW_CONFIG" 2>/dev/null) \
+      || die "failed to parse review config at $REVIEW_CONFIG"
     [[ -n "$REVIEWER_SURFACE" && -n "$REVIEW_DIR" ]] \
       || die "review config must contain reviewer_surface and review_dir"
-    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send --surface $REVIEWER_SURFACE followed by: $CMUX send-key --surface $REVIEWER_SURFACE return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons. (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds up to 15 minutes for a VERDICT line. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. If round 3 still ends with needs_work, or the verdict file never appears after one re-send of the same round: if you can ask the user interactively via AskUserQuestion, ask whether to proceed to the PR or keep going; otherwise note the unresolved or skipped review in the PR body and proceed. "
+    # reviewer_workspace 欠落時 (旧スキーマ) は --workspace 指定なしにフォールバック。
+    # 実装孫は別 workspace に spawn されるため、send / send-key / read-screen のすべてに
+    # レビュアー側 workspace を明示しないと配送も生存確認も届かない
+    TARGET_FLAGS="--surface $REVIEWER_SURFACE"
+    [[ -n "$REVIEWER_WORKSPACE" ]] \
+      && TARGET_FLAGS="--workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE"
+    READ_SCREEN_CMD="$CMUX read-screen $TARGET_FLAGS"
+    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send $TARGET_FLAGS followed by: $CMUX send-key $TARGET_FLAGS return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons. (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. If round 3 still ends with needs_work, or the wait exits stalled again after one re-send of the same round with a fresh baseline: if you can ask the user interactively via AskUserQuestion, ask whether to proceed to the PR or keep going; otherwise note the unresolved or skipped review in the PR body and proceed. "
   fi
   PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${EXIT_INSTRUCTION}"
 else
