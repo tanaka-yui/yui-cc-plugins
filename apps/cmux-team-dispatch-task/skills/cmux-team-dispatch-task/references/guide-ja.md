@@ -16,7 +16,7 @@
 - 利用可能な Agent 一覧を子セッションに伝達し、各子セッションが最適な Agent を選択
 - タスクごとに brainstorming スキルの使用を選択可能
 - **3つのレイアウトモード**: workspace（デフォルト・別タブ）、split（ペイン分割）、claude-teams（Agent Teams）— ディスパッチ前に選択
-- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を実行後（Phase A-R 有効時は相手方 engine のレビューの approve 後）、実行フェーズに入る前に必ず `opus 1m` / `sonnet` を選ばせる（`runners.json` に `engine: codex` runner がある場合のみ `codex` も追加）。同一 model なら現セッション継続、異なる model なら `launch-workspace.sh --mode execute` 経由で孫 surface を spawn (runner script でラップされ完了通知が確実に親に伝播)。元 Child は `.deferred` を書いて exit する。設計 runner が `engine: codex` のタスクでは Phase A を codex セッションが担い、Phase B の 3 択（opus 1m / sonnet / codex）はすべて pre-warm ペインへ委譲する
+- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を実行後（Phase A-R 有効時は相手方 engine のレビューの approve 後）、`exec_choice` が未設定または `"ask"` なら `opus 1m` / `sonnet`（codex runner がある場合は `codex` も）を選ばせる。固定値なら質問を省略して既存の同じ実行分岐へ直行する。同一 model なら現セッション継続、異なる model なら `launch-workspace.sh --mode execute` 経由で孫 surface を spawn (runner script でラップされ完了通知が確実に親に伝播)。元 Child は `.deferred` を書いて exit する。設計 runner が `engine: codex` のタスクでは Phase A を codex セッションが担い、Phase B の 3 択（opus 1m / sonnet / codex）はすべて pre-warm ペインへ委譲する
 - **クロスエンジンレビュー**: Phase A-R / Phase B-R のレビュアーは **常に実装者の相手方 engine**。design=claude → レビューは codex、design=codex → レビューは claude が担う（下記 Phase A-R / Phase B-R 節参照）
 - **Phase A-R（plan/spec クロスレビュー）**: 設計 runner の `review_model`（codex 設計は codex runner の `review_model`、codex 設計タスクに対しては claude 側 reviewer runner）があり
   レビューを使うことを選んだとき（dispatch 前に毎回質問。config の `review_mode: "on"` / `"off"` で
@@ -574,6 +574,8 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
   "message_type": "agmsg",
   "prewarm": true,
   "review_mode": "on",
+  "design_runner": "claude",
+  "exec_choice": "sonnet",
   "shell_ready_ms": { "baseline_ms": 1200, "samples": 5, "updated_at": "..." }
 }
 ```
@@ -586,6 +588,12 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
   解決済みの場合のみ **dispatch のたびに**使うかどうかを質問する（4択:
   はい[今回のみ] / いいえ[今回のみ] / 常に有効 / 常に無効。「常に〜」のみ `"on"` / `"off"` として
   グローバル config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバルより優先
+- `design_runner`: Step 1f の設計 runner 固定値。`runners[].name` に一致すれば runner 数にかかわらず
+  switch / per-task 質問を両方省略して全タスクへ適用する。未設定または `"ask"` は従来フロー、
+  不一致値は警告して `ask` にフォールバックする
+- `exec_choice`: Phase B の実行モデル固定値。`"opus 1m"` / `"sonnet"`、または codex runner が
+  登録済みの `"codex"` で AskUserQuestion を省略し既存の同じ分岐を実行する。未設定または `"ask"`
+  は従来フロー。不正値と runner 未登録の `"codex"` は警告して `ask` にフォールバックする
 
 ### トラブルシュート
 
@@ -1229,7 +1237,8 @@ Phase A 成果物は codex レビューペイン（`review_model`）が、design
 
 ### Phase B: 実装フェーズのモデル選択（auto mode でも必須）
 
-Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` で以下を聞く。下表は **design=claude**
+Phase A 完了後、コード変更を始める前に task prompt が解決した方式に従う。`exec_choice` が未設定または
+`"ask"` なら `AskUserQuestion` で以下を聞き、固定値なら質問なしで対応する既存分岐を実行する。下表は **design=claude**
 の挙動。**design=codex** のタスクでは 3 択すべてを pre-warm ペインへ委譲し現セッションでは実装
 しない（上記「codex 設計 variant」参照）:
 
@@ -1238,6 +1247,13 @@ Phase A 完了後、コード変更を始める前に必ず `AskUserQuestion` �
 | **opus 1m** | 常時 | Phase A と **同一 model** 扱い。`/model claude-opus-4-7[1m]` で切り替え、**現セッションで実装続行**。未使用の standby ペイン（sonnet / codex / review）は閉じずに開いたまま idle 維持（常 4 ペイン。下記「opus 1m 選択時のペイン」参照） |
 | **sonnet** | 常時 | **異なる model**。まず `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute` で spawn（下記参照） |
 | **codex** | `runners.json` に `engine: codex` の runner が **1 件以上ある時のみ** | **異なる model**。sonnet と同様に `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute --runner <codex-runner>` で spawn |
+
+#### Codex の起動安全性
+
+`superpowers` / `plan` / `execute` / `standby` の Codex は approval prompt を防ぐため
+`--dangerously-bypass-approvals-and-sandbox` を使う。一方、review ペインは sandbox を完全 off にせず
+`--sandbox workspace-write`、`-c approval_policy='never'`、`--add-dir <STATUS_DIR>` を3点セットで指定する。
+これにより approval prompt を抑止しつつ、worktree 外の `<STATUS_DIR>/review/` への findings 書込みだけを許可する。
 
 #### opus 1m 選択時のペイン
 

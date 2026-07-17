@@ -188,6 +188,20 @@ config にはもう一つ `review_mode` フィールドがある（`"on"` / `"of
 config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバル config より優先される点は
 `message_type` と同じ。
 
+同じ config には、毎回の選択を固定する `design_runner` と `exec_choice` も手動で設定できます。
+プロジェクトの `.dispatch/config.json` がグローバル config より優先されます。
+
+```json
+{
+  "design_runner": "claude",
+  "exec_choice": "sonnet"
+}
+```
+
+- `design_runner`: `runners[].name` を指定すると Step 1f の switch / per-task 質問を省略し、全タスクに適用します。
+- `exec_choice`: `"opus 1m"` / `"sonnet"` / （codex runner 登録時のみ）`"codex"` を指定すると Phase B の質問を省略し、既存の同じ実行分岐へ直行します。
+- どちらも `"ask"` または未設定なら従来どおり質問します。不正値は警告して `ask` にフォールバックします。
+
 ## モデル選択フロー (Phase A-R / Phase B / Phase B-R)
 
 **クロスエンジンレビュー原則**: Phase A-R / Phase B-R のレビュアーは常に**実装者（または設計者）の
@@ -235,13 +249,19 @@ watcher 生存（agmsg の ready sentinel）を確認し、生きているとき
 inbox にも記録する。配線に失敗したペインの初期プロンプトは「指示は直接タイプされる」文面に
 切り替わるため、agmsg の watcher 障害でディスパッチがハングすることはない。
 
-各子セッションは Phase A (計画 / brainstorming) 完了後、**実装フェーズで使うモデル**を `AskUserQuestion` で必ず聞きます。Phase A は**設計 runner の engine**（`opus` または codex）で動作し、選んだ model がその engine と同一かどうかで動作が分岐します。下表は **design=claude**（Phase A を opus が担当する現行どおりのタスク）の挙動です。
+各子セッションは Phase A (計画 / brainstorming) 完了後、`exec_choice` が未設定または `"ask"` なら**実装フェーズで使うモデル**を `AskUserQuestion` で聞きます。固定値なら質問を省略し、同じ既存分岐を実行します。Phase A は**設計 runner の engine**（`opus` または codex）で動作し、選んだ model がその engine と同一かどうかで動作が分岐します。下表は **design=claude**（Phase A を opus が担当する現行どおりのタスク）の挙動です。
 
 | 選択肢 | 表示条件 | 動作 |
 |--------|---------|------|
 | **opus 1m** | 常時 | Phase A と **同一 model**。`/model claude-opus-4-7[1m]` で切替後、**現セッションで実装続行** |
 | **sonnet** | 常時 | **異なる model**。`launch-workspace.sh --mode execute` で子 surface を spawn し、`claude --model claude-sonnet-4-6 --dangerously-skip-permissions 'Read and execute the plan at <path>'` を runner script でラップして起動 |
 | **codex** | `~/.claude/cmux-team-dispatch-task/runners.json` に `engine: codex` runner がある時のみ | **異なる model**。`launch-workspace.sh --mode execute --runner <codex-runner>` で spawn し、codex を `--dangerously-bypass-approvals-and-sandbox` 付きで起動。runner に `exec_model`（例: `gpt-5.6-terra`）があれば `--model` として適用（レビューペインの `review_model` とは独立）。`external_migration` により親 claude セッションを引き継ぐ |
+
+Codex の起動方針は mode ごとに分離されています。`superpowers` / `plan` / `execute` / `standby` は
+approval prompt を防ぐため bypass を使います。一方で review ペインは sandbox を完全 off にせず、
+`--sandbox workspace-write`、`-c approval_policy='never'`、`--add-dir <STATUS_DIR>` を併用します。
+これにより approval prompt を出さず、worktree 外の `.dispatch/<slug>/review/` への findings 書込みだけを
+許可します。
 
 「異なる model」が選ばれた場合の挙動:
 

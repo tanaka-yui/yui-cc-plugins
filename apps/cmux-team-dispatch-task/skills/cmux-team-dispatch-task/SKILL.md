@@ -192,7 +192,22 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
 
 1. **Check `~/.claude/cmux-team-dispatch-task/runners.json`**
    - If the file does NOT exist, run **First-run setup** (see below) before continuing
-2. **Read `runners[]`**:
+2. **Resolve `design_runner`** from `<project>/.dispatch/config.json`, falling back to
+   `~/.claude/cmux-team-dispatch-task/config.json`:
+
+   ```bash
+   DESIGN_RUNNER=$(jq -r '.design_runner // empty' .dispatch/config.json 2>/dev/null)
+   [[ -z "$DESIGN_RUNNER" ]] && DESIGN_RUNNER=$(jq -r '.design_runner // empty' \
+     ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
+   ```
+
+   - A non-empty value other than `"ask"` that matches `runners[].name` → assign it to
+     every task and skip both the switch and per-task questions (regardless of runner count).
+   - A non-empty value that does not match → write
+     `[warn] design_runner="<value>" not found in runners.json; falling back to ask`
+     to stderr, then use the existing interactive flow below.
+   - Unset or `"ask"` → use the existing interactive flow below.
+3. **Existing interactive flow** (only when `design_runner` falls back to ask):
    - If exactly **1** runner is registered → silently assign that runner to all tasks
      and skip the switch question. Continue to Step 1g.
    - If **2 or more** runners are registered → ask the user via AskUserQuestion:
@@ -200,9 +215,9 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
    - **No** → assign the `default` runner from `runners.json` to all tasks
    - **Yes** → for each task, ask which runner to use via AskUserQuestion. The options
      are the entries in `runners[]` (label = `name`, description = `command (engine)`).
-3. Each task receives a `runner` field (the chosen `name` string), which Step 2 passes
+4. Each task receives a `runner` field (the chosen `name` string), which Step 2 passes
    through `launch-session-splits.sh` and on to `launch-workspace.sh --runner <name>`.
-4. **Cross-engine reviewer** — `engine: codex` の runner が設計に割り当てられたタスクが
+5. **Cross-engine reviewer** — `engine: codex` の runner が設計に割り当てられたタスクが
    1 つでもある場合、claude 側レビュアー runner を決める（design=codex のレビューは
    claude が担うため）:
    - claude engine の runner が 0 件 → 警告し、codex 設計タスクの Phase A-R / B-R は無効
@@ -254,8 +269,9 @@ Field meanings:
 | claude | superpowers | `<command> 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'`                              |
 | claude | execute     | `<command> [--model <X>] [--dangerously-skip-permissions] 'Read and execute the plan at <plan-file>'`     |
 | codex  | plan        | `<command> [-c model_reasoning_effort='<plan_effort>'] --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
-| codex  | superpowers | `<command> [-c model_reasoning_effort='<plan_effort>'] '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
+| codex  | superpowers | `<command> [-c model_reasoning_effort='<plan_effort>'] --dangerously-bypass-approvals-and-sandbox '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
 | codex  | execute     | `<command> [-c model_reasoning_effort='<exec_effort>'] [--model <exec_model>] --dangerously-bypass-approvals-and-sandbox 'Read and execute the plan at <plan-file>'` |
+| codex  | review      | `<command> [-c model_reasoning_effort='<review_effort>'] --model <review_model> --sandbox workspace-write -c approval_policy='never' --add-dir <STATUS_DIR>` |
 
 `execute` モードは Phase B (実装フェーズ) で別 surface に実装を移譲するときに使う。
 `--plan-file <path>` で計画ファイルパスを指定し、`.cmux-team-dispatch-task-prompt.md`
@@ -320,6 +336,18 @@ the parent claude account).
 
 5. Write the assembled object to `~/.claude/cmux-team-dispatch-task/runners.json`
    (create the directory if missing). Then continue to the runner selection logic above.
+
+The first-run setup does not ask for defaults. To fix the normal questions manually,
+add either key to config.json (project config overrides global config):
+
+```json
+{
+  "design_runner": "claude",
+  "exec_choice": "sonnet"
+}
+```
+
+Use `"ask"` or remove a key to restore the existing interactive flow.
 
 ### 1g. Resolve Message Transport
 
@@ -409,6 +437,20 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
 
    (`{{REVIEW_BLOCK}}` の placeholder 埋め込み時にのみ必要な `CODEX_CMD` / `CODEX_RUNNER_NAME` は
    placeholder rules 節と同じ jq クエリで得る — REVIEW_ENABLED の算出には使わない)
+
+**Resolve execution default (`exec_choice`)** — same precedence pattern:
+
+```bash
+EXEC_CHOICE=$(jq -r '.exec_choice // empty' .dispatch/config.json 2>/dev/null)
+[[ -z "$EXEC_CHOICE" ]] && EXEC_CHOICE=$(jq -r '.exec_choice // empty' \
+  ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
+```
+
+- Unset or `"ask"` → embed the existing AskUserQuestion Phase B block.
+- `"opus 1m"` or `"sonnet"` → embed its default-direct Phase B block.
+- `"codex"` with a registered `engine: codex` runner → embed its default-direct block.
+- Any other value → write `[warn] exec_choice="<value>" invalid (expected: opus 1m | sonnet | codex | ask); falling back to ask` to stderr.
+- `"codex"` without a registered codex runner → write `[warn] exec_choice="codex" but no codex runner registered; falling back to ask` to stderr.
 
 **When `message_type` is `agmsg`, wire the team BEFORE launching (Step 2):**
 
@@ -589,7 +631,7 @@ PHASE A — Planning / Brainstorming (always opus):
     The plan you present for approval MUST list, BEFORE any implementation
     step:
       Step 0: Phase A-R codex review (only when the PHASE A-R block exists below)
-      Step 1: Phase B execution-model selection via AskUserQuestion
+      Step 1: Phase B execution-model selection (per the block below — AskUserQuestion or default direct)
     Executing the approved plan therefore STARTS with Phase A-R / Phase B,
     never with a code change.
     If the plan only exists in the ExitPlanMode message, save it to a file
@@ -599,9 +641,11 @@ PHASE A — Planning / Brainstorming (always opus):
 
 {{REVIEW_BLOCK}}
 
+{{EXEC_DEFAULT_HINT}}
+
 PHASE B — Execution model selection (REQUIRED before any code change):
-  After Phase A completes and BEFORE executing the plan, you MUST ask the user
-  via AskUserQuestion which model to use for execution. Do this every dispatch.
+  After Phase A completes and BEFORE executing the plan, follow the Phase B flow
+  resolved in this task prompt (AskUserQuestion or default direct).
 
   Question template:
     Q: "実行フェーズで使用するモデルを選択してください"
@@ -695,8 +739,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     - When SAME MODEL ("opus 1m") is chosen, do NOT create `.deferred`. The
       Child completes implementation in-session and its wrapper writes done as usual.
 
-VIOLATION: Do NOT skip Phase B. Even in auto mode, ALWAYS ask. Skipping the
-model selection question is a critical error.
+VIOLATION: Do NOT skip Phase B. Follow the exact flow defined in this PHASE B block
+(either AskUserQuestion or the default-direct path); do not invent an execution model.
 PLAN-MODE TRAP: ExitPlanMode approval ("start implementing") does NOT
 override this sequence. After the plan is approved, BEFORE editing any file,
 return to this block and complete Phase A-R (if present) then Phase B. Save
@@ -717,7 +761,8 @@ PHASE A — Planning / Brainstorming (THIS codex session):
   Remember the plan file path — every Phase B choice hands it off via --plan-file.
 
 PHASE B — Execution model selection (REQUIRED before any code change):
-  After Phase A (and Phase A-R when present) completes, ask via AskUserQuestion:
+  After Phase A (and Phase A-R when present) completes, follow the Phase B flow
+  resolved in this task prompt (AskUserQuestion or default direct):
     Q: "実行フェーズで使用するモデルを選択してください"
     Options:
       1. opus 1m  — 高品質・長コンテキスト (推奨: 大規模・複雑な実装)
@@ -757,6 +802,24 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 - `{{LAYOUT}}` → `workspace` or `split` (the value passed to `launch-workspace.sh --layout`).
   For `claude-teams` layout, this whole MODEL SELECTION block can be omitted because
   Phase B does not apply (the orchestrator drives the teammates).
+
+- `{{EXEC_DEFAULT_HINT}}` → resolve `exec_choice` in Step 1g before constructing the
+  prompt. When it is valid, replace the entire Phase B AskUserQuestion section in both
+  the design=claude template and the design=codex variant with this block (do not leave
+  a conflicting AskUserQuestion instruction elsewhere):
+
+  ```text
+  PHASE B — Execution model default is fixed to "<default>" (skip AskUserQuestion):
+    ExitPlanMode 後は AskUserQuestion をスキップし、直ちに <default> の既存 Phase B
+    ブランチを実行してください。新しい実行経路は作らないこと。
+    - opus 1m: design=claude は `/model claude-opus-4-7[1m]` で現セッション実装、
+      design=codex は既存の review/opus pane 委譲手順を実行する。
+    - sonnet: 既存の prewarm または spawn の sonnet 委譲手順を実行する。
+    - codex: 既存の prewarm または spawn の codex 委譲手順を実行する。
+  ```
+
+  When unset, `"ask"`, or invalid, substitute an empty hint and retain the existing
+  AskUserQuestion section unchanged.
 
 - `{{TEAM}}` → the agmsg team name resolved in Step 1g (`dispatch-<repo-name>`); empty in
   send-message mode. Phase B's `send.sh` calls use this value. The child session runs
@@ -2053,7 +2116,7 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` followed by `cmux send-key return` when the child Claude session exits. The trailing `send-key return` is required so messages don't sit in the parent claude TUI's input box waiting for a manual Enter press.
 - **Runner script**: A `.cmux-team-dispatch-task-run-<workspace-name>.sh` file is created in each worktree (one per launch — Child and Phase B grandchild get different filenames since they share the worktree). They're cleaned up along with the worktree.
 - **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. The `command` of the first such runner is used for the spawn launch. `cmux codex install-hooks` is also required so that `external_migration = true` is set and codex picks up the parent claude session automatically.
-- **Same-model vs different-model in Phase B**: Phase A is always opus, so "opus 1m" counts as the same model and stays in the current session via `/model claude-opus-4-7[1m]`. Any other choice (sonnet / codex) is treated as a different model: when a pre-warmed standby pane exists (prewarm.json), the Child hands off by sending the execution request to that pane; otherwise it triggers a spawn via `launch-workspace.sh --mode execute`: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends an `/exit` instruction so the grandchild Claude/Codex session closes its TUI after the PR is created — without this the runner wrapper never reaches `write_status "done"` and status.json gets stuck on `executing`.
-- **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. When a child is launched with `engine: codex`, Phase B's "codex" option is redundant and should be skipped (the child already runs in codex). The runners.json registry lives at `~/.claude/cmux-team-dispatch-task/runners.json` and is bootstrapped on first run via AskUserQuestion.
+- **Same-model vs different-model in Phase B**: `exec_choice` controls whether Phase B asks or takes a fixed default; it never introduces a new execution path. For design=claude, "opus 1m" counts as the same model and stays in the current session via `/model claude-opus-4-7[1m]`. Any other choice (sonnet / codex) is treated as a different model: when a pre-warmed standby pane exists (prewarm.json), the Child hands off by sending the execution request to that pane; otherwise it triggers a spawn via `launch-workspace.sh --mode execute`: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends an `/exit` instruction so the grandchild Claude/Codex session closes its TUI after the PR is created — without this the runner wrapper never reaches `write_status "done"` and status.json gets stuck on `executing`.
+- **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. `design_runner` can fix the Step 1f selection for all tasks; `exec_choice` can fix Phase B. The runners.json registry remains runtime-only and is bootstrapped on first run via AskUserQuestion.
 - **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。**agmsg push は inbox 記録専用で、idle セッションを起こせない** (watcher はバックグラウンド Bash として動き、その stream 出力はプロセスが終了するまで注入されない) — したがって wake は常に `cmux send` + `send-key return` で行い、agmsg 配線が生きているときは同一文を inbox にも記録する (dual-send)。agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (send.sh + cmux send の両方。Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ。同じく両チャネル)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
 - **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを配置。Phase A-R (Step 1g `REVIEW_ENABLED`) が無効時は縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)、有効時は 2×2 均等グリッド (左上: opus / 右上: codex レビュー / 左下: sonnet / 右下: codex、prewarm.json に `review` キー)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から dual-send で送る (常に `cmux send` + `send-key return`、agmsg 配線が生きていれば加えて `send.sh` で inbox 記録)。standby wrapper は `<STATUS_DIR>/.assigned-<name>` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`。Phase B の実行指示も同じ dual-send: prewarm.json の `delivery` 値が `"agmsg"` なら `send.sh` で inbox にも記録し、どちらの値でも `cmux send` + `send-key return` を必ず発行する。

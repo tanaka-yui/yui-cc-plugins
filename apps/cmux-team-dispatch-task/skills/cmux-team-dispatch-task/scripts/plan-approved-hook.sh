@@ -15,7 +15,7 @@ cat <<'EOF'
 {
   "hookSpecificOutput": {
     "hookEventName": "PostToolUse",
-    "additionalContext": "[cmux-team-dispatch-task] The plan was just approved. STOP — do NOT edit any files yet. First: (1) save the plan to a file if not saved, (2) re-read the MANDATORY MODEL SELECTION SEQUENCE in .cmux-team-dispatch-task-prompt.md and execute Phase A-R (if the REVIEW block is present) then Phase B (model selection via AskUserQuestion) NOW."
+    "additionalContext": "[cmux-team-dispatch-task] The plan was just approved. STOP — do NOT edit any files yet. First: (1) save the plan to a file if not saved, (2) re-read the MANDATORY MODEL SELECTION SEQUENCE in .cmux-team-dispatch-task-prompt.md and execute Phase A-R (if the REVIEW block is present) then Phase B (follow the PHASE B block in the task prompt — it is either AskUserQuestion or a default-direct instruction) NOW."
   }
 }
 EOF
