@@ -449,8 +449,8 @@ EXEC_CHOICE=$(jq -r '.exec_choice // empty' .dispatch/config.json 2>/dev/null)
 - Unset or `"ask"` → embed the existing AskUserQuestion Phase B block.
 - `"opus 1m"` or `"sonnet"` → embed its default-direct Phase B block.
 - `"codex"` with a registered `engine: codex` runner → embed its default-direct block.
-- Any other value → write `[warn] exec_choice="<value>" invalid (expected: opus 1m | sonnet | codex | ask); falling back to ask` to stderr.
-- `"codex"` without a registered codex runner → write `[warn] exec_choice="codex" but no codex runner registered; falling back to ask` to stderr.
+- Any other value → write `[warn] exec_choice="<value>" invalid (expected: opus 1m | sonnet | codex | ask); falling back to ask` to stderr, then embed the existing AskUserQuestion Phase B block.
+- `"codex"` without a registered codex runner → write `[warn] exec_choice="codex" but no codex runner registered; falling back to ask` to stderr, then embed the existing AskUserQuestion Phase B block.
 
 **When `message_type` is `agmsg`, wire the team BEFORE launching (Step 2):**
 
