@@ -196,25 +196,56 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
    `~/.claude/cmux-team-dispatch-task/config.json`:
 
    ```bash
+   # 各レイヤーを個別に検証する — project の不正値が global に保存済みの「常に〜」を
+   # 遮蔽しないよう、不正値は警告してそのレイヤーだけ未設定として扱い次へフォールバック。
+   # 有効値 = runners[].name のいずれか、または "ask"（"ask" は有効値としてフォールバック停止）
+   RUNNERS_JSON=~/.claude/cmux-team-dispatch-task/runners.json
+   valid_design_runner() {
+     [[ "$1" == "ask" ]] || jq -e --arg n "$1" \
+       '.runners[] | select(.name == $n)' "$RUNNERS_JSON" >/dev/null 2>&1
+   }
    DESIGN_RUNNER=$(jq -r '.design_runner // empty' .dispatch/config.json 2>/dev/null)
-   [[ -z "$DESIGN_RUNNER" ]] && DESIGN_RUNNER=$(jq -r '.design_runner // empty' \
-     ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
+   if [[ -n "$DESIGN_RUNNER" ]] && ! valid_design_runner "$DESIGN_RUNNER"; then
+     echo "[warn] design_runner=\"$DESIGN_RUNNER\" (project) not found in runners.json; ignoring this layer" >&2
+     DESIGN_RUNNER=""
+   fi
+   if [[ -z "$DESIGN_RUNNER" ]]; then
+     DESIGN_RUNNER=$(jq -r '.design_runner // empty' \
+       ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
+     if [[ -n "$DESIGN_RUNNER" ]] && ! valid_design_runner "$DESIGN_RUNNER"; then
+       echo "[warn] design_runner=\"$DESIGN_RUNNER\" (global) not found in runners.json; ignoring this layer" >&2
+       DESIGN_RUNNER=""
+     fi
+   fi
    ```
 
-   - A non-empty value other than `"ask"` that matches `runners[].name` → assign it to
-     every task and skip both the switch and per-task questions (regardless of runner count).
-   - A non-empty value that does not match → write
-     `[warn] design_runner="<value>" not found in runners.json; falling back to ask`
-     to stderr, then use the existing interactive flow below.
-   - Unset or `"ask"` → use the existing interactive flow below.
-3. **Existing interactive flow** (only when `design_runner` falls back to ask):
+   - A value that matches `runners[].name` → assign it to every task and skip both
+     the switch and per-task questions (regardless of runner count).
+   - `"ask"` (explicit) → use the interactive flow below in its **ask form**（今回のみの
+     2 択。「常に〜」から `"ask"` に戻したユーザーへ永続化オプションを再提示しない）.
+   - Empty（両レイヤーとも未設定、または設定されていたレイヤーがすべて不正値だった）→
+     use the interactive flow below in its **unset form**（永続化オプション付き —
+     不正値のときも有効な値を選び直してそのまま保存できる）.
+3. **Interactive flow**:
    - If exactly **1** runner is registered → silently assign that runner to all tasks
-     and skip the switch question. Continue to Step 1g.
+     and skip the switch question (どちらの form でも質問・永続化なし). Continue to Step 1g.
    - If **2 or more** runners are registered → ask the user via AskUserQuestion:
-     > 子セッションごとにランタイム/モデルを切り替えますか？ (default: No, 全タスクに既定 runner を適用)
-   - **No** → assign the `default` runner from `runners.json` to all tasks
-   - **Yes** → for each task, ask which runner to use via AskUserQuestion. The options
-     are the entries in `runners[]` (label = `name`, description = `command (engine)`).
+     > 子セッションごとにランタイム/モデルを切り替えますか？ (default: いいえ, 全タスクに既定 runner を適用)
+     Options — **ask form** は 1–2 のみ、**unset form** は 1–4:
+       1. いいえ (今回のみ) → assign the `default` runner from `runners.json` to all
+          tasks。config には書かない
+       2. はい (今回のみ)   → for each task, ask which runner to use via AskUserQuestion.
+          The options are the entries in `runners[]` (label = `name`, description =
+          `command (engine)`)。config には書かない
+       3. 常に既定 runner (<default>) を使う → assign the default runner to all tasks
+          AND persist `design_runner: "<default>"` to the global config
+       4. 常に固定 runner を選ぶ → ask once more which runner to fix (options =
+          `runners[]`, label = `name`, description = `command (engine)`), assign it to
+          all tasks AND persist `design_runner: "<name>"` to the global config
+     Persistence (options 3/4 only) uses the same jq merge pattern as `message_type`
+     in Step 1g below (key: `design_runner` — writer 固有の mktemp + jq 成功時のみ mv)。「常に〜」を選んだ後の
+     戻し方は 2 通りで意味が異なる: `design_runner` を `"ask"` に書き換えると今回のみの
+     2 択（永続化オプションなし）、キーを削除すると未設定に戻り 4 択が再表示される。
 4. Each task receives a `runner` field (the chosen `name` string), which Step 2 passes
    through `launch-session-splits.sh` and on to `launch-workspace.sh --runner <name>`.
 5. **Cross-engine reviewer** — `engine: codex` の runner が設計に割り当てられたタスクが
@@ -347,7 +378,9 @@ add either key to config.json (project config overrides global config):
 }
 ```
 
-Use `"ask"` or remove a key to restore the existing interactive flow.
+To restore the interactive flow there are TWO distinct ways: set the key to `"ask"`
+(questions only — the persistence options stay hidden), or remove the key entirely
+(back to unset — the questions reappear WITH the persistence options).
 
 ### 1g. Resolve Message Transport
 
@@ -377,10 +410,18 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
    ```bash
    CONFIG=~/.claude/cmux-team-dispatch-task/config.json
    mkdir -p "$(dirname "$CONFIG")"
-   if [[ -f "$CONFIG" ]]; then
-     jq --arg mt "<answer>" '.message_type = $mt' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+   # writer 固有の一時ファイル — 共有 "$CONFIG.tmp" は並列書き込みで壊れる。
+   # jq が成功したときだけ mv（既存 config が不正 JSON だと jq が失敗する — そのまま
+   # mv すると config を 0 byte で潰すため、失敗時は tmp を消して警告し永続化を諦める）
+   if TMP=$(mktemp "$CONFIG.XXXXXX"); then
+     if { [[ -f "$CONFIG" ]] && jq --arg mt "<answer>" '.message_type = $mt' "$CONFIG" > "$TMP"; } \
+        || { [[ ! -f "$CONFIG" ]] && jq -n --arg mt "<answer>" '{message_type: $mt}' > "$TMP"; }; then
+       mv "$TMP" "$CONFIG"   # 同一ディレクトリ内 mv = atomic replace（ファイル全体の last-write-wins）
+     else
+       rm -f "$TMP"; echo "[warn] config write failed (existing config broken?); persistence skipped" >&2
+     fi
    else
-     jq -n --arg mt "<answer>" '{message_type: $mt}' > "$CONFIG"
+     echo "[warn] mktemp failed; persistence skipped" >&2
    fi
    ```
 
@@ -441,16 +482,42 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
 **Resolve execution default (`exec_choice`)** — same precedence pattern:
 
 ```bash
+# 各レイヤーを個別に検証する — project の不正値が global に保存済みの「常に〜」を遮蔽しないように。
+# 有効値 = "opus 1m" | "sonnet" | "ask" | "codex" (engine: codex runner 登録時のみ)。
+# "ask" は有効値としてフォールバックを停止する。不正値 (runner 未登録の "codex" 含む) は
+# 警告してそのレイヤーだけ未設定として次へフォールバック
+CODEX_RUNNER_COUNT=$(jq -r '[.runners[] | select(.engine == "codex")] | length' \
+  ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
+valid_exec_choice() {
+  case "$1" in
+    "opus 1m"|sonnet|ask) return 0 ;;
+    codex) (( ${CODEX_RUNNER_COUNT:-0} > 0 )) ;;
+    *) return 1 ;;
+  esac
+}
 EXEC_CHOICE=$(jq -r '.exec_choice // empty' .dispatch/config.json 2>/dev/null)
-[[ -z "$EXEC_CHOICE" ]] && EXEC_CHOICE=$(jq -r '.exec_choice // empty' \
-  ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
+if [[ -n "$EXEC_CHOICE" ]] && ! valid_exec_choice "$EXEC_CHOICE"; then
+  echo "[warn] exec_choice=\"$EXEC_CHOICE\" (project) invalid (expected: opus 1m | sonnet | codex | ask); ignoring this layer" >&2
+  EXEC_CHOICE=""
+fi
+if [[ -z "$EXEC_CHOICE" ]]; then
+  EXEC_CHOICE=$(jq -r '.exec_choice // empty' \
+    ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
+  if [[ -n "$EXEC_CHOICE" ]] && ! valid_exec_choice "$EXEC_CHOICE"; then
+    echo "[warn] exec_choice=\"$EXEC_CHOICE\" (global) invalid (expected: opus 1m | sonnet | codex | ask); ignoring this layer" >&2
+    EXEC_CHOICE=""
+  fi
+fi
 ```
 
-- Unset or `"ask"` → embed the existing AskUserQuestion Phase B block.
-- `"opus 1m"` or `"sonnet"` → embed its default-direct Phase B block.
-- `"codex"` with a registered `engine: codex` runner → embed its default-direct block.
-- Any other value → write `[warn] exec_choice="<value>" invalid (expected: opus 1m | sonnet | codex | ask); falling back to ask` to stderr, then embed the existing AskUserQuestion Phase B block.
-- `"codex"` without a registered codex runner → write `[warn] exec_choice="codex" but no codex runner registered; falling back to ask` to stderr, then embed the existing AskUserQuestion Phase B block.
+- Empty（両レイヤーとも未設定、または設定されていたレイヤーがすべて不正値だった）→ embed
+  the existing AskUserQuestion Phase B block **plus the persistence follow-up block**
+  （`{{EXEC_DEFAULT_HINT}}` の placeholder rules を参照 — 子セッションが選択直後に
+  「常に〜」を global config へ永続化できる確認質問）.
+- `"ask"` (explicit) → embed the existing AskUserQuestion Phase B block only（永続化
+  確認は出さない — 「常に〜」から `"ask"` に戻したユーザーへ再提示しない）.
+- `"opus 1m"` / `"sonnet"` / `"codex"`（レイヤー検証を通過した有効値）→ embed its
+  default-direct Phase B block.
 
 **When `message_type` is `agmsg`, wire the team BEFORE launching (Step 2):**
 
@@ -819,8 +886,47 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     - codex: 既存の prewarm または spawn の codex 委譲手順を実行する。
   ```
 
-  When unset, `"ask"`, or invalid, substitute an empty hint and retain the existing
+  When explicitly `"ask"`, substitute an empty hint and retain the existing
   AskUserQuestion section unchanged.
+
+  When **empty**（unset、または設定されていたレイヤーがすべて不正値だった場合）, retain
+  the existing AskUserQuestion section AND substitute this persistence follow-up block
+  （design=claude テンプレート・design=codex variant のどちらでも同じブロックを使う）:
+
+  ```text
+  PHASE B — Persistence follow-up (exec_choice is unset):
+    実行モデルの AskUserQuestion に回答を得た直後・実装を始める前に、もう 1 問だけ
+    AskUserQuestion で確認する:
+      Q: "実行モデル選択の今後の動作を選んでください"
+      Options:
+        1. 今回のみ — 保存しない（次回の dispatch でも選択後にこの確認が出ます）
+        2. 常にこの選択を使う — global config に exec_choice="<選んだ値>" を永続化
+        3. 常に毎回選ぶ — global config に exec_choice="ask" を永続化
+           （以後モデル質問は毎回出るが、この確認は出なくなる）
+    Persistence (options 2/3 only) writes the GLOBAL config (project config には
+    書かない)。並列の子セッションが同時に書いても壊れないよう、必ず writer 固有の
+    一時ファイル + 同一ディレクトリ内 mv (atomic replace) を使い、jq が成功したとき
+    だけ mv する（既存 config が不正 JSON だと jq が失敗する — そのまま mv すると
+    config を 0 byte で潰すため、失敗時は tmp を消して警告し永続化を諦める）:
+      CONFIG=~/.claude/cmux-team-dispatch-task/config.json
+      mkdir -p "$(dirname "$CONFIG")"
+      if TMP=$(mktemp "$CONFIG.XXXXXX"); then
+        if { [[ -f "$CONFIG" ]] && jq --arg v "<value>" '.exec_choice = $v' "$CONFIG" > "$TMP"; } \
+           || { [[ ! -f "$CONFIG" ]] && jq -n --arg v "<value>" '{exec_choice: $v}' > "$TMP"; }; then
+          mv "$TMP" "$CONFIG"
+        else
+          rm -f "$TMP"; echo "[warn] config write failed; persistence skipped" >&2
+        fi
+      else
+        echo "[warn] mktemp failed; persistence skipped" >&2
+      fi
+    <value> は "opus 1m" / "sonnet" / "codex" / "ask" のいずれか。同時書き込みは
+    ファイル全体の last-write-wins（後勝ち）で構わない。同一 dispatch 内の他タスクは
+    prompt 構築済みのため今回はこの確認が出続けるが、次回 dispatch から反映される。
+    この確認の回答は今回の Phase B 分岐には影響しない — 選んだモデルで直ちに続行する。
+    「常に〜」を選んだ後の戻し方は 2 通りで意味が異なる: exec_choice を "ask" に書き換える
+    と毎回モデル質問のみ（この確認は出ない）、キーを削除すると未設定に戻りこの確認が再表示される。
+  ```
 
 - `{{TEAM}}` → the agmsg team name resolved in Step 1g (`dispatch-<repo-name>`); empty in
   send-message mode. Phase B's `send.sh` calls use this value. The child session runs

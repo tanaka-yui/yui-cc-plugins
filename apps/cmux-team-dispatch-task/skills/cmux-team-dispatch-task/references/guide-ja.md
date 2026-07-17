@@ -589,11 +589,23 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
   はい[今回のみ] / いいえ[今回のみ] / 常に有効 / 常に無効。「常に〜」のみ `"on"` / `"off"` として
   グローバル config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバルより優先
 - `design_runner`: Step 1f の設計 runner 固定値。`runners[].name` に一致すれば runner 数にかかわらず
-  switch / per-task 質問を両方省略して全タスクへ適用する。未設定または `"ask"` は従来フロー、
-  不一致値は警告して `ask` にフォールバックする
+  switch / per-task 質問を両方省略して全タスクへ適用する。検証は **project / global のレイヤーごと**
+  に行い、不正値は警告してそのレイヤーだけ無視して次へフォールバックする（project の不正値が
+  global に保存済みの「常に〜」を遮蔽しない）。**未設定**（全レイヤー未設定または不正）は
+  switch 質問が 4 択（いいえ[今回のみ] / はい[今回のみ] / 常に既定 runner / 常に固定 runner を選ぶ）
+  になり、「常に〜」のみグローバル config に `design_runner` を永続化する（message_type と同じ
+  writer 固有 mktemp + mv の jq merge）。明示 `"ask"` は従来の 2 択のみ（永続化オプションを
+  再提示しない）。戻し方は 2 通りで意味が異なる: `"ask"` へ書き換え = 2 択のみ、キー削除 =
+  未設定に戻り 4 択が再表示
 - `exec_choice`: Phase B の実行モデル固定値。`"opus 1m"` / `"sonnet"`、または codex runner が
-  登録済みの `"codex"` で AskUserQuestion を省略し既存の同じ分岐を実行する。未設定または `"ask"`
-  は従来フロー。不正値と runner 未登録の `"codex"` は警告して `ask` にフォールバックする
+  登録済みの `"codex"` で AskUserQuestion を省略し既存の同じ分岐を実行する。検証は **project /
+  global のレイヤーごと**に行い、不正値（runner 未登録の `"codex"` 含む）は警告してそのレイヤー
+  だけ無視して次へフォールバックする。**未設定**（全レイヤー未設定または不正）はモデル選択の
+  直後に子セッションが永続化確認（今回のみ / 常にこの選択 / 常に毎回選ぶ[= `"ask"` を保存]）を
+  1 問出し、「常に〜」のみグローバル config に永続化する（writer 固有 mktemp + mv。並列 child の
+  同時書き込みはファイル全体の last-write-wins）。明示 `"ask"` はモデル質問のみで永続化確認を
+  出さない。戻し方は 2 通りで意味が異なる: `"ask"` へ書き換え = モデル質問のみ、キー削除 =
+  未設定に戻り永続化確認が再表示
 
 ### トラブルシュート
 
@@ -709,10 +721,15 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
 
 ### タスクごとの runner 切替
 
-- runners が **1 件**: 切替確認は出ず自動でその runner を全タスクに割当
-- runners が **2 件以上**: 「子セッションごとにランタイム/モデルを切り替えますか？」を確認
-  - **No**: `default` runner を全タスクに割当
-  - **Yes**: タスクごとに AskUserQuestion で選択
+- runners が **1 件**: 切替確認は出ず自動でその runner を全タスクに割当（永続化質問も出ない）
+- runners が **2 件以上**: 「子セッションごとにランタイム/モデルを切り替えますか？」を確認。
+  `design_runner` が**未設定**なら 4 択、明示 `"ask"` なら 1–2 の 2 択のみ
+  1. **いいえ (今回のみ)**: `default` runner を全タスクに割当（config には書かない）
+  2. **はい (今回のみ)**: タスクごとに AskUserQuestion で選択（config には書かない）
+  3. **常に既定 runner を使う**: `default` runner を全タスクに割当 + グローバル config に
+     `design_runner: "<default>"` を永続化
+  4. **常に固定 runner を選ぶ**: 追加の AskUserQuestion で `runners[]` から 1 つ選び、
+     全タスクに割当 + グローバル config に `design_runner: "<name>"` を永続化
 
 選ばれた runner 名は `launch-session-splits.sh` の入力 JSON 各タスクに optional `"runner": "<name>"` として渡され、`launch-workspace.sh --runner <name>` に伝播します。
 
@@ -1245,7 +1262,11 @@ Phase A 成果物は codex レビューペイン（`review_model`）が、design
 ### Phase B: 実装フェーズのモデル選択（auto mode でも必須）
 
 Phase A 完了後、コード変更を始める前に task prompt が解決した方式に従う。`exec_choice` が未設定または
-`"ask"` なら `AskUserQuestion` で以下を聞き、固定値なら質問なしで対応する既存分岐を実行する。下表は **design=claude**
+`"ask"` なら `AskUserQuestion` で以下を聞き、固定値なら質問なしで対応する既存分岐を実行する。
+**未設定**（明示 `"ask"` ではない）の場合のみ、モデル選択の回答直後に永続化確認をもう 1 問出す
+（今回のみ / 常にこの選択 [`exec_choice="<選択値>"` をグローバル config へ保存] / 常に毎回選ぶ
+[`exec_choice="ask"` を保存し以後この確認を出さない]。回答は今回の分岐に影響せず選んだモデルで
+直ちに続行。並列 child の同時書き込みは last-write-wins）。下表は **design=claude**
 の挙動。**design=codex** のタスクでは 3 択すべてを pre-warm ペインへ委譲し現セッションでは実装
 しない（上記「codex 設計 variant」参照）:
 

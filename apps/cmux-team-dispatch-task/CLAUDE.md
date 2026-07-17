@@ -15,7 +15,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `skills/cmux-team-dispatch-task/scripts/monitor-dispatch.sh` | 完了通知の監視スクリプト（子 → 親通知＋全完了検知） |
 | `skills/cmux-team-dispatch-task/scripts/cmux-grid.sh` | split モード用グリッドレイアウト整列スクリプト |
 | `skills/cmux-team-dispatch-task/scripts/terminal-wait.sh` | シェル起動検知と `shell_ready_ms` 学習を行う共通ヘルパー（source 専用） |
-| `~/.claude/cmux-team-dispatch-task/config.json` | グローバル設定（自動生成）。`shell_ready_ms.baseline_ms`（EMA 学習値）、`message_type`（通知トランスポート）、`prewarm`（standby pane 事前起動）、`design_runner` / `exec_choice`（質問の固定値） |
+| `~/.claude/cmux-team-dispatch-task/config.json` | グローバル設定（自動生成）。`shell_ready_ms.baseline_ms`（EMA 学習値）、`message_type`（通知トランスポート）、`prewarm`（standby pane 事前起動）、`design_runner` / `exec_choice`（質問の固定値。未設定時は質問の「常に〜」回答から永続化可能） |
 | `~/.claude/cmux-team-dispatch-task/runners.json` | 子セッション runtime 一覧（初回セットアップで生成）。SKILL.md Step 1f で読込 |
 | `<project>/.dispatch/config.json` | プロジェクト固有の上書き（手動配置）。存在時はグローバルより優先 |
 | `.claude-plugin/plugin.json` | Plugin マニフェスト |
@@ -118,7 +118,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - Step 1f のレビュアー runner 選択（claude runner 0 件 → 無効警告 / 1 件 → 自動 / 2 件以上 → 毎回質問）と `CLAUDE_REVIEW_MODEL` フォールバック（`claude-opus-4-7[1m]`）
     - effort の優先順位（明示 `--effort` > runner フィールド > config.toml 既定）と MODE 対応（plan_effort: plan/superpowers、review_effort: review、exec_effort: execute/standby）。prewarm の設計 codex ペインは standby 起動のため `--effort <plan_effort>` 明示
     - `prewarm-panes.sh` の `--design-runner` / `--reviewer-runner`（`--review-model` と相互排他）と prewarm.json の `engine` フィールド
-19. `design_runner` / `exec_choice` の precedence（project config → global config → ask）と警告フォールバックが SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認。`design_runner` は有効 runner 名で switch / per-task 質問を両方省略し、`exec_choice` は有効値で Phase B の AskUserQuestion を default-direct に置換することを確認
+19. `design_runner` / `exec_choice` の precedence（project config → global config → ask）と警告フォールバックが SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認。`design_runner` は有効 runner 名で switch / per-task 質問を両方省略し、`exec_choice` は有効値で Phase B の AskUserQuestion を default-direct に置換することを確認。**未設定と明示 `"ask"` の区別**も確認: 未設定（全レイヤー未設定または不正）では永続化オプション付きの質問（design_runner は switch 質問 4 択、exec_choice はモデル選択直後の永続化確認 1 問）、明示 `"ask"` では従来質問のみで永続化オプションなし（キー削除 = 未設定に戻り再表示、`"ask"` 書き換え = 非表示 — 2 つの戻し方の違いが 4 ファイルで明記されていること）。不正値の検証は **project / global のレイヤーごと**で、不正なレイヤーだけ警告して無視し次へフォールバックする（project の不正値が global の「常に〜」を遮蔽しない）こと。「常に〜」の永続化は message_type と同じ jq merge でグローバル config のみに書き込み（project config には書かない）、一時ファイルは **writer 固有の mktemp + 同一ディレクトリ mv**（共有 `$CONFIG.tmp` は並列書き込みで壊れるため禁止）であること。exec_choice の永続化確認は子セッションが書くため並列時はファイル全体の last-write-wins であること
 20. codex の engine × MODE 起動規則を確認: superpowers は bypass 付き、review は `--sandbox workspace-write` + `-c approval_policy='never'` + `--add-dir <STATUS_DIR>` の3点セットで、sandbox 完全 off を使わず findings 書込先を許可すること
 
 ## テスト方法
@@ -179,6 +179,6 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 34. **design=codex の Phase A-R**: codex が書いた plan/spec を右上 claude ペインがレビューし、`review/<point>-round-<N>.md` の VERDICT で往復すること
 35. **design=codex の Phase B**: 3 択すべてが委譲であること。opus 1m → `.assigned-<slug>-opus` touch + 右上ペインが実装 + 設計 codex ペインが B-R レビュー。sonnet → 設計 codex ペインが B-R レビュー。codex → 右下 standby が実装 + 右上 claude ペインが B-R レビュー
 36. **design=claude の sonnet B-R 変更**: sonnet 実装時のコードレビューが codex レビューペインに依頼され（設計 opus ペインではなく）、設計 opus ペインは `.deferred` 後に exit すること
-37. **design_runner default**: project config が global config より優先し、有効な runner 名では Step 1f の switch / per-task 質問が出ないこと。`"ask"` と未設定では既存の runner 数分岐を維持し、不正名は警告して質問へ戻ること
-38. **exec_choice default**: `"sonnet"` を設定すると Phase A 完了後に AskUserQuestion を出さず sonnet standby/spawn の既存手順へ進むこと。`"ask"` と未設定は従来の質問を維持し、不正値または runner 未登録の `"codex"` は警告して質問へ戻ること
+37. **design_runner default**: project config が global config より優先し、有効な runner 名では Step 1f の switch / per-task 質問が出ないこと。runner 数分岐（1件は黙って採用・質問なし）は維持しつつ、**未設定**では runner 2 件以上の switch 質問が 4 択（いいえ今回のみ / はい今回のみ / 常に既定 runner / 常に固定 runner を選ぶ）になり「常に〜」でグローバル config に永続化されること。明示 `"ask"` では従来の 2 択のみで永続化オプションが出ないこと。不正名は該当レイヤーのみ警告して無視され（project 不正 → global へフォールバック）、全レイヤー不正・未設定なら 4 択になること
+38. **exec_choice default**: `"sonnet"` を設定すると Phase A 完了後に AskUserQuestion を出さず sonnet standby/spawn の既存手順へ進むこと。**未設定**（全レイヤー未設定、または不正値・runner 未登録の `"codex"` が警告付きで無視された結果）ではモデル選択の直後に永続化確認（今回のみ / 常にこの選択 / 常に毎回選ぶ[= `"ask"` を保存]）が 1 問出て、「常に〜」でグローバル config に永続化されること（回答は今回の Phase B 分岐に影響しない。書き込みは writer 固有 mktemp + mv）。project に不正値・global に有効値がある場合は global の値が使われること。明示 `"ask"` ではモデル質問のみで永続化確認が出ないこと
 39. **codex 起動安全性**: superpowers は bypass で approval prompt を出さず、review は `--sandbox workspace-write` + `-c approval_policy='never'` + `--add-dir <STATUS_DIR>` で worktree 外の `<STATUS_DIR>/review/` に findings を書けること。`bash test/test-launch-workspace-codex.sh` の静的検査を実行すること

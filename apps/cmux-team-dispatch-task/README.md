@@ -188,8 +188,10 @@ config にはもう一つ `review_mode` フィールドがある（`"on"` / `"of
 config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバル config より優先される点は
 `message_type` と同じ。
 
-同じ config には、毎回の選択を固定する `design_runner` と `exec_choice` も手動で設定できます。
-プロジェクトの `.dispatch/config.json` がグローバル config より優先されます。
+同じ config には、毎回の選択を固定する `design_runner` と `exec_choice` も設定できます。
+手動編集に加えて、`review_mode` と同様に**質問への回答から永続化**もできます（「常に〜」を
+選んだときだけグローバル config に書き込み）。プロジェクトの `.dispatch/config.json` が
+グローバル config より優先されます。
 
 ```json
 {
@@ -199,8 +201,12 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
 ```
 
 - `design_runner`: `runners[].name` を指定すると Step 1f の switch / per-task 質問を省略し、全タスクに適用します。
+  **未設定**なら runner 2 件以上のときの switch 質問が 4 択（いいえ[今回のみ] / はい[今回のみ] /
+  常に既定 runner / 常に固定 runner を選ぶ）になり、「常に〜」で永続化されます。
 - `exec_choice`: `"opus 1m"` / `"sonnet"` / （codex runner 登録時のみ）`"codex"` を指定すると Phase B の質問を省略し、既存の同じ実行分岐へ直行します。
-- どちらも `"ask"` または未設定なら従来どおり質問します。不正値は警告して `ask` にフォールバックします。
+  **未設定**なら子セッションがモデル選択の直後に永続化確認（今回のみ / 常にこの選択 / 常に毎回選ぶ）を 1 問出し、「常に〜」で永続化されます。
+- どちらも明示 `"ask"` なら従来どおり質問のみ（永続化オプションは出ません）。「常に〜」からの戻し方は 2 通りで意味が異なります: `"ask"` へ書き換えると質問のみ、キーを削除すると未設定に戻り永続化オプションが再表示されます。
+- 不正値は project / global のレイヤーごとに検証され、不正なレイヤーだけ警告付きで無視してもう一方へフォールバックします（project の不正値が global に保存した「常に〜」を遮蔽しません）。
 
 ## モデル選択フロー (Phase A-R / Phase B / Phase B-R)
 
