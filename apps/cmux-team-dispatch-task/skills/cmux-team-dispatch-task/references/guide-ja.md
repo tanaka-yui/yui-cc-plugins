@@ -296,8 +296,13 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
 ```
 
 **タスクごとのフラグ選択**:
+- **codex 実装ペイン**: `runners.json` に codex runner が存在する時（`CODEX_RUNNER_COUNT > 0`）は
+  **レビューモードに関わらず常に** `--codex-runner <name>` を渡す。これは Phase B の実装用 codex ペイン
+  （Phase A-R 無効時は縦積みの最下段、有効時は 2×2 グリッドの右下）。`<name>` は最初の `engine: codex`
+  runner の `name`。design=claude / design=codex の両方に適用する。review OFF のときにこれを省略すると、
+  `exec_choice` の `codex` が有効なのに codex 実装オプションのペインが表示されなくなる。
 - **design=claude**: Phase A-R 有効時（Step 1g の `REVIEW_ENABLED`）のみ `--review-model "$REVIEW_MODEL"`
-  を渡す。`--codex-runner` の指定が前提となる。
+  を渡す。`--review-model` は `--codex-runner`（上のルールで codex runner 存在時は常に渡済み）が前提となる。
 - **design=codex**: `--design-runner <runner>` を **常に**渡す。`REVIEW_ENABLED_CODEX_DESIGN` が true の
   ときのみ `--reviewer-runner "$REVIEWER_RUNNER"` を渡す。`--review-model` は渡してはならない
   （`--reviewer-runner` と排他）。
@@ -1299,7 +1304,12 @@ Phase A 完了後、コード変更を始める前に task prompt が解決し�
 2. `touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"`（sonnet 選択時）または
    `.assigned-<task-slug>-codex`（codex 選択時） — 完了処理（status.json done/error 遷移 +
    `<slug>-sonnet-done` / `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
-3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ... 完了後は /exit`。
+3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ...` + exit 指示。
+   exit 指示は engine で分ける — **sonnet（claude）は「run /exit」、codex は「end this codex
+   session immediately … Do NOT run /exit」**。codex は `/exit` では終了せず、作業完了後も TUI が
+   idle のまま残ると runner wrapper（codex プロセスで block 中）が `write_status "done"` /
+   signal 発火 / 親通知に到達できず**完了通知が届かなくなる**ため、codex には必ず「セッション自体を
+   終了せよ」と伝える（spawn 経路で `launch-workspace.sh` が焼き込む EXIT_INSTRUCTION と同じ）。
    **Phase B-R 有効時は「PR 作成前にコードレビュー approve を得る」プロトコル入りの拡張版**）を送信する。
    配送は**常にタイプ入力（`cmux send`）** — agmsg push 単独では idle なペインは起きない。
    `prewarm.json` の `.sonnet.delivery` / `.codex.delivery` が `"agmsg"` のときは inbox にも

@@ -1258,6 +1258,15 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                    # re-verify watcher liveness right before sending (see the sonnet branch)
                    [[ "$DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>-codex" ]] \
                      && DELIVERY="cmux-send"
+                   # Base request. CRITICAL: for codex the exit instruction must tell it
+                   # to END THE CODEX SESSION ITSELF — do NOT say "run /exit" (that is a
+                   # claude command; codex does not act on it). Without a codex-appropriate
+                   # exit instruction the codex TUI stays idle after finishing the work, so
+                   # the runner wrapper (blocked on the codex process) never reaches
+                   # write_status "done" / signal fire / parent notify → the completion
+                   # notification never arrives. This mirrors the engine-aware EXIT_INSTRUCTION
+                   # that launch-workspace.sh bakes into the spawn (`--mode execute`) path.
+                   REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately so the wrapper script can finalize the completion notification. Do NOT run /exit and do NOT leave the session idle."
                  IF DELIVERY == "agmsg":
                    ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-codex "$REQUEST_TEXT"
                    # $TEAM is the TEAM value given above — do NOT re-derive it in this session
@@ -1506,8 +1515,16 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
 ```
 
 Flag selection per task:
+- codex implementation pane: pass `--codex-runner <name>` whenever a codex
+  runner exists in `runners.json` (`CODEX_RUNNER_COUNT > 0`), **INDEPENDENT of
+  review mode** — this is the Phase B implementation codex pane (bottom of the
+  vertical stack when Phase A-R is off, bottom-right of the 2×2 grid when on).
+  `<name>` is the `name` of the first `engine: codex` runner. Applies to BOTH
+  design=claude and design=codex tasks. Omitting it when review is off would
+  hide the codex exec option even though `exec_choice`/`codex` remains valid.
 - design=claude: pass `--review-model "$REVIEW_MODEL"` only when Phase A-R is
-  enabled (`REVIEW_ENABLED`). It requires `--codex-runner`.
+  enabled (`REVIEW_ENABLED`). It additionally requires `--codex-runner` (already
+  passed by the rule above whenever a codex runner exists).
 - design=codex: ALWAYS pass `--design-runner <runner>`. Pass
   `--reviewer-runner "$REVIEWER_RUNNER"` only when `REVIEW_ENABLED_CODEX_DESIGN`
   is true. `--review-model` must NOT be passed (mutually exclusive).

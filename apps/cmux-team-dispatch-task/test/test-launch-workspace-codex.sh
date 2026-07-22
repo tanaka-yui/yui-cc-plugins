@@ -93,6 +93,13 @@ assert_contains "$review_runner" "-c approval_policy='never'" 'T5 review approva
 assert_contains "$review_runner" "--add-dir '$TMP/status'" 'T5 review status directory writable'
 assert_not_contains "$review_runner" '--dangerously-bypass-approvals-and-sandbox' 'T5 review does not disable sandbox'
 
+# Exit instruction must be engine-aware: codex ends its own session (it does not
+# act on /exit), claude runs /exit. If the codex execute path stopped baking the
+# codex-appropriate exit instruction, the codex TUI would stay idle after the work
+# and the runner wrapper would never fire the completion notification.
+assert_contains "$execute_runner" 'end this codex session' 'T5b codex execute bakes codex session-end exit instruction'
+assert_not_contains "$execute_runner" 'run /exit' 'T5c codex execute does not tell codex to run /exit'
+
 for mode in superpowers plan execute standby review; do
   name="claude-$mode"
   if [[ "$mode" == "execute" ]]; then
@@ -102,9 +109,19 @@ for mode in superpowers plan execute standby review; do
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
       --cwd "$TMP/repo" --mode "$mode" --runner claude "$name" prompt)
   fi
-  assert_not_contains "$(jq -r '.runner_file' <<<"$output")" '--sandbox workspace-write' "T6 claude + $mode has no codex sandbox flag"
-  assert_not_contains "$(jq -r '.runner_file' <<<"$output")" '--dangerously-bypass-approvals-and-sandbox' "T6 claude + $mode has no codex bypass"
+  claude_runner_file=$(jq -r '.runner_file' <<<"$output")
+  assert_not_contains "$claude_runner_file" '--sandbox workspace-write' "T6 claude + $mode has no codex sandbox flag"
+  assert_not_contains "$claude_runner_file" '--dangerously-bypass-approvals-and-sandbox' "T6 claude + $mode has no codex bypass"
+  [[ "$mode" == "execute" ]] \
+    && assert_contains "$claude_runner_file" 'run /exit' 'T6b claude execute bakes /exit exit instruction'
 done
+
+# --- SKILL.md static check: the codex Phase B prewarm-standby block must define a
+# base REQUEST_TEXT with a codex-appropriate exit instruction (regression guard for
+# the "codex completion notification never arrives" bug). ---
+SKILL_MD="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
+assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately' \
+  'T7 SKILL.md codex prewarm block defines base REQUEST_TEXT with codex session-end exit'
 
 if command -v codex >/dev/null 2>&1 && [[ "${RUN_CODEX_DYNAMIC_TEST:-0}" == "1" ]]; then
   echo 'INFO: dynamic Codex writable-root test is enabled externally.'
