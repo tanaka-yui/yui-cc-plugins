@@ -13,6 +13,8 @@
 #   D2. 通知配線あり → プロンプトに send.sh と token が丸ごと届く
 #   D3. 通知配線なし → send.sh を注入しない（後方互換）
 #   D4. プロンプトは常にちょうど 1 引数として codex に渡る（引用符エスケープ）
+#   D5. approval policy は never（指定しないと codex が承認プロンプトで停止し、
+#       レビューが人間の accept 待ちになる）
 
 set -uo pipefail
 
@@ -60,11 +62,20 @@ else
   fail=1
 fi
 
+# --- D5: approval policy は never（承認プロンプトで停止させない） ---
+CMUX_BIN="$TMP/bin/cmux" "$BIN" >/dev/null 2>&1
+if grep -q -- '--ask-for-approval never' "$SENT_CMD"; then
+  echo "PASS D5: approval policy=never"
+else
+  echo "FAIL D5: --ask-for-approval never が無い → codex が承認プロンプトで停止する"
+  fail=1
+fi
+
 # --- D3 + D4: 通知配線なし（後方互換）。send.sh を注入せず、prompt は 1 引数 ---
 CMUX_BIN="$TMP/bin/cmux" "$BIN" >/dev/null 2>&1
 reparse
-if [[ "$(argc)" == "7" ]] && ! prompt | grep -q 'send.sh' && prompt | grep -q 'レビュー'; then
-  echo "PASS D3: 通知引数なし → send.sh 非注入、argc=7"
+if [[ "$(argc)" == "9" ]] && ! prompt | grep -q 'send.sh' && prompt | grep -q 'レビュー'; then
+  echo "PASS D3: 通知引数なし → send.sh 非注入、argc=9"
 else
   echo "FAIL D3: argc=$(argc) / prompt=[$(prompt)]"
   fail=1
@@ -73,11 +84,11 @@ fi
 # --- D2 + D4: 通知配線あり。send.sh と token が丸ごと届き、prompt は 1 引数 ---
 out=$(CMUX_BIN="$TMP/bin/cmux" "$BIN" --team t --reviewer cxrev-review --parent parent 2>&1)
 reparse
-if [[ "$(argc)" == "7" ]] \
+if [[ "$(argc)" == "9" ]] \
   && prompt | grep -q "send.sh t cxrev-review parent" \
   && prompt | grep -q "DONE codex-review-31" \
   && printf '%s' "$out" | grep -q "token=codex-review-31"; then
-  echo "PASS D2: 通知配線 → send.sh + token が prompt に無傷で到達、argc=7"
+  echo "PASS D2: 通知配線 → send.sh + token が prompt に無傷で到達、argc=9"
 else
   echo "FAIL D2: argc=$(argc) / prompt=[$(prompt)]"
   fail=1

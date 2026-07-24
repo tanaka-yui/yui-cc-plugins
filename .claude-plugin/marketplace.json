@@ -124,7 +124,7 @@
       "name": "cmux-codex-review",
       "description": "agmsg の inbox を確認したうえで、新しい cmux ペインで codex (gpt-5.6-sol / reasoning effort xhigh) によるコードレビューを起動するプラグイン。",
       "source": "./apps/cmux-codex-review",
-      "version": "1.1.1",
+      "version": "1.2.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [
@@ -138,7 +138,7 @@
       "name": "cmux-codex-exec",
       "description": "claude/superpowers の plan を対話 codex にカレントdir で実装させ、完了を親セッションが agmsg 経由で検知してレビューへ繋ぐプラグイン。",
       "source": "./apps/cmux-codex-exec",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [

@@ -7,6 +7,8 @@ set -euo pipefail
 # サンドボックスは workspace-write。read-only にすると codex が完了通知の send.sh を
 # 実行できない（send.sh は agmsg の SQLite DB へ INSERT する＝書き込みであり、config.toml の
 # [sandbox_workspace_write] writable_roots は workspace-write モードにしか適用されないため）。
+# approval policy は never。指定しないと codex がコマンド実行のたびに承認プロンプトで
+# 停止し、無人レビューが人間の accept 待ちになる（sandbox は維持したまま承認だけ止める）。
 # --team/--reviewer/--parent 指定時は、codex に「レビュー提示後に agmsg send.sh を撃つ」
 # 完了通知を注入する（親側の検知は cmux-codex-wait が担う）。cmux 内でのみ動作。
 #
@@ -82,7 +84,7 @@ fi
 # cmux send でペインへ送られ、ペインのシェルが再パースするため必須（通知配線時は
 # 'DONE ...' の単一引用符を含むので、この処理が無いとコマンドが壊れる）。
 REVIEW_INSTR_ESC=${REVIEW_INSTR//\'/\'\\\'\'}
-CMD="codex --sandbox workspace-write -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$REVIEW_INSTR_ESC'"
+CMD="codex --sandbox workspace-write --ask-for-approval never -c model=\"$MODEL\" -c model_reasoning_effort=\"$EFFORT\" '$REVIEW_INSTR_ESC'"
 
 "$CMUX_BIN" send --surface "$S" "$CMD
 "

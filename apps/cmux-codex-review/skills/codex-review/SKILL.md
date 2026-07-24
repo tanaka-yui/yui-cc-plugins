@@ -8,6 +8,7 @@ description: >-
   (CMUX_SOCKET_PATH が設定されている) が前提。単に diff を自分で読むのではなく、独立した codex プロセスに
   高リーズニングでレビューさせたい意図があればこのスキルを起動すること。対話型で起動し、
   完了を agmsg 経由で親へ通知できる。
+allowed-tools: Bash
 ---
 
 # codex-review
@@ -78,10 +79,13 @@ codex 側でレビューが流れ始めるので、このセッションでの�
 対話 codex にレビュープロンプトを渡して起動する（`codex review` サブコマンドは使わない）:
 
 ```bash
-codex --sandbox workspace-write \
+codex --sandbox workspace-write --ask-for-approval never \
   -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
   '未コミットの変更をレビューし、問題点・改善点を具体的に指摘せよ。'
 ```
+
+approval policy を `never` にするのは、無指定だと codex がコマンド実行のたびに承認プロンプトで
+停止し、レビューが人間の accept 待ちになるため（sandbox は workspace-write のまま承認だけ止める）。
 
 `--team/--reviewer/--parent` 指定時は、プロンプト末尾に「レビュー提示後に `send.sh` で親へ完了通知せよ」を
 注入する。親側は `bin/cmux-codex-wait` を background task で回して wake される。

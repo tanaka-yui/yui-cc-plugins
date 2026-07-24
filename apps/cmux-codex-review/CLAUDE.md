@@ -13,7 +13,7 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 
 1. agmsg を起動して受信箱を確認（非ブロッキング。未参加・未インストールならスキップ）
 2. `cmux new-split <dir>` で新ペインを分割
-3. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox workspace-write -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
+3. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox workspace-write --ask-for-approval never -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
 4. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親側は `bin/cmux-codex-wait` で完了を待つ
 
 ## テスト
@@ -29,6 +29,7 @@ codex が実際に受け取る引数を検証する（生文字列の grep で�
 - **D2**: 通知配線あり → prompt に `send.sh` と token が無傷で届く
 - **D3**: 通知配線なし → `send.sh` を注入しない（後方互換）
 - **D4**: prompt は常にちょうど 1 引数として codex に渡る（`'\''` エスケープ）
+- **D5**: approval policy が `never`（無指定に戻すと codex が承認プロンプトで停止し、無人レビューが accept 待ちになる）
 - `--base` の反映 / `-m`・`-e` の不正値拒否
 
 ## サンドボックスを read-only にしてはいけない
