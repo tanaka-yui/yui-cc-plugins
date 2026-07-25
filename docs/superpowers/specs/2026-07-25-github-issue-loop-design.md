@@ -2,7 +2,7 @@
 
 - 対象プラグイン: `apps/cmux-team-dispatch-task`
 - 作成日: 2026-07-25
-- 改訂: round 1 レビュー反映（2026-07-25）
+- 改訂: round 1 / round 2 レビュー反映（2026-07-25）
 - ステータス: 設計確定（実装計画は別途 `.claude/plans/github-issue-loop.md`）
 
 ## 1. 目的とスコープ
@@ -24,6 +24,7 @@
 - ループ設定の永続化（config.json への保存）— 毎ループ開始時に質問する
 - `claude-teams` / `split` レイアウトでのループ — workspace レイアウト固定
 - **同一リポジトリに対する複数ループの並行実行** — GitHub ラベルでは原子的な claim を実現できないため、リポジトリ単位で単一オーケストレータを前提とし、ローカルロックで検出して拒否する
+- **クラッシュしたループの自動再開** — 検出して安全側（人に返す）に倒す。走行中の子を引き継いで再開する機構は作らない
 - レビューペインへの `--allow-unix-socket` 付与 — 現仕様でレビューペインは cmux CLI を使わない
 
 ## 2. 設計判断のサマリ
@@ -31,15 +32,18 @@
 | 論点 | 決定 | 理由 |
 |------|------|------|
 | 駆動主体 | 親 Claude セッションが回す | 既存アーキテクチャをそのまま利用でき、新規スクリプトが最小で済む |
+| バッチ完了待ちの実行主体 | **`batch-wait.sh` を親がフォアグラウンドで反復呼び出しする** | 親が idle に落ちると誰も deadline を評価しない。hung child の timeout を確実に発火させるには、待機を親のターン内の同期処理にする必要がある |
 | 設計フェーズの無人化 | plan モード固定 + `--dangerously-skip-permissions` | superpowers の brainstorming は承認ゲートを持ち無人実行と本質的に相容れない。設計品質は Phase A-R レビューで担保する |
-| 二重防止 | GitHub ラベル 3 種（`in-progress` / `done` / `failed`）+ ローカル状態ファイル + リポジトリ単位ロック | ラベルは可視性と durable な処理済みマーク、ローカル状態はラベル操作失敗時の保険、ロックは並行ループの禁止 |
+| AskUserQuestion の除去方法 | **loop 用にレンダリングするブロックから質問分岐そのものを差し替える**（追加ブロックによる上書きではない） | 「後続の強い命令を先行する禁止文で打ち消す」方式は、命令が存在しないことの保証にならない |
+| 二重防止 | GitHub ラベル 3 種 + サーバサイド除外クエリ + ローカル状態ファイル + リポジトリ単位ロック | ラベルは durable な処理済みマーク、サーバサイド除外は exhaustion 保証、ロックは並行実行の禁止 |
+| 完了の判定 | **status = done を信用せず、cleanup 前に成果物の存在を検証する** | 既存 runner wrapper は TUI が exit 0 なら無条件に done を書く。exit 0 は PR 作成やコミットの成功を意味しない |
+| ループ状態の置き場所 | **`.dispatch-loop/`（`.dispatch/` の外）** | 非ループ dispatch の cleanup が `rm -rf .dispatch/` を無条件実行するため、同居させるとループ状態ごと消える |
 | 並列制御 | バッチ方式（N 件同時 → 全完了 → 次バッチ） | 既存の「全タスク完了検知 → 集計」フローをバッチ単位で再利用できる |
-| バッチ完了待ち | **`monitor-dispatch.sh` を使わず、親が当該バッチの slug 集合だけを status.json でポーリング** | 既存 monitor は `.dispatch/*` を全件走査するため、前バッチの残骸や非ループ dispatch が混ざると永久待機する |
-| バッチ間 cleanup | status × integration の遷移表に従って決定的に実行する（§3.7） | 「必ず片付ける」だけでは merge 失敗時と調査用保持の扱いが決まらない |
+| バッチ間 cleanup | status × integration の遷移表に従って決定的に実行する（§3.8） | 「必ず片付ける」だけでは merge 失敗時と調査用保持の扱いが決まらない |
 | integration strategy | ループ開始前に 1 回選択 | ローカルブランチを削除してよいかがこれで決まる |
 | error 時 | スキップして継続 | 大量 issue を回す目的に沿う。`dispatch/failed` ラベルで再取得されない |
 | 上限 | 最大バッチ数を設定質問に含める | フィルタ条件の誤りによる暴走を防ぐ |
-| ループ発動 | **明示 opt-in のみ**（`--loop` フラグ、または Step L0 の開始確認を通過したとき） | 通常のタスク文に issue の話題が混ざってもループへ誤分類しない |
+| ループ発動 | **`--loop` フラグが唯一の機械的 entry point**。自然言語トリガも認めるが Step L0-1 の確認を必ず通す | 通常のタスク文に issue の話題が混ざってもループへ誤分類しない |
 | ドキュメント配置 | `references/loop-mode.md` に分離 | SKILL.md は既に 130KB / 2286 行。非ループ利用者の読み込み量を増やさない |
 
 ## 3. アーキテクチャ
@@ -47,99 +51,127 @@
 ### 3.1 全体フロー
 
 ```
+[分岐] 呼び出し入力に --loop が含まれる、またはユーザーが「issue を自動で回す / ループ」を
+       明示的に要求している場合のみ Step L0 へ。それ以外は既存 Step 1a へ直行し、
+       L0 のスクリプト・質問・ロック・状態操作は一切実行しない。
+
 Step L0  プリフライト（設定質問より前。失敗ならループを開始しない）
-  L0-1  発動確認: --loop フラグが無い場合は「ループモードで開始しますか」を 1 問確認する
-          （このゲートを通らない限りループには入らない = 非ループ挙動の保護）
-  L0-2  依存検査: runners.json / gh auth status / issue が有効 / jq / cmux
-  L0-3  ロック取得: .dispatch/loop.lock に {pid, host, started_at} を書く。
-          既存ロックの pid が生存していれば「別のループが実行中」としてエラー終了
-  L0-4  stale 検査: .dispatch/ に既存の <slug>/ ディレクトリがあればエラー終了し、
-          手動整理を促す（前回ループや非ループ dispatch の残骸を混ぜないため）
-  L0-5  reconciliation: 既存 loop-state.json に status=claimed のまま残る issue があれば
-          ラベルを外して release し、状態から除去する
+  L0-1  発動確認: --loop が無い（自然言語トリガ）の場合のみ
+          「ループモードで開始しますか」を 1 問確認する
+  L0-2  依存検査: runners.json / gh auth status / issue が有効 / jq / cmux / codex(任意)
+  L0-3  ロック取得: mkdir .dispatch-loop/loop.lock.d（atomic）。
+          既存ロックがある場合は owner.json の heartbeat を見る:
+            - heartbeat が task_timeout_min の 2 倍以内 → 実行中と判断しエラー終了
+            - それより古い → stale として owner.json を上書きして取得
+  L0-4  reconciliation: loop-state.json があれば先に状態を突き合わせる（L0-5 より前）
+            - status=claimed で workspace が生存 → 中止（走行中の子がいる。人に返す）
+            - status=claimed で workspace が消滅 → release（ラベル除去 + レコード削除）
+            - status=dispatched → 中止（前回の中断。人に返す）
+  L0-5  stale 検査: .dispatch/ に <slug>/ ディレクトリが残っていればエラー終了し、
+          手動整理を促す（前回ループ／非ループ dispatch の残骸との混在を防ぐ）
   L0-6  ラベル整備: dispatch/in-progress, dispatch/done, dispatch/failed を
           gh label list で確認し、無いものだけ gh label create する（失敗は fatal）
 Step L1  ループ設定の一括質問（AskUserQuestion 最大 3 コール）
          ── ここから先、ループが終わるまで一切質問しない ──
 Step L2  バッチループ（batch = 1, 2, ...）:
-  L2-1  issue-fetch.sh --limit <concurrency> --batch <N>
-          → 候補取得 → 除外 → claim（dispatch/in-progress 付与 + status=claimed 記録）
-          → タスク JSON を出力
+  L2-1  issue-fetch.sh --state-file .dispatch-loop/loop-state.json fetch \
+          --limit <concurrency> --batch <N> [...]
           → exit 0 かつ [] なら「対象 issue なし」で Step L3 へ
           → exit 3（候補はあったが claim が 1 件も成立しなかった）なら
-            警告を出し、ループを中断して Step L3 へ（無限空回りを防ぐ）
+            警告してループを中断し Step L3 へ（無限空回りを防ぐ）
   L2-2  既存 Step 1b / Step 2 の手順でタスクプロンプトを構築
-          （plan モードのテンプレート + {{UNATTENDED_BLOCK}} を焼き込む）
-  L2-3  workspace レイアウト + pre-warm で一斉起動（既存 Step 2 をそのまま利用）
-          - 起動に成功した slug は issue-fetch.sh --mark-dispatched <n> で status=dispatched に
-          - 起動に失敗した slug は issue-fetch.sh --release <n> で claim を解放し、
-            そのバッチの待機対象から外す
-  L2-4  そのバッチで dispatched になった slug 集合だけを対象に、全件が terminal state
-          (done / error) になるまで status.json をポーリングする
-          （タスク単位タイムアウト超過は timeout として打ち切る）
+          （plan モードのテンプレート + unattended variant のレビューブロック）
+  L2-3  workspace レイアウト + pre-warm で一斉起動
+          - 起動成功 → issue-fetch.sh ... mark-dispatched --issue <n>
+          - 起動失敗 → issue-fetch.sh ... release --issue <n>（待機対象から除外）
+  L2-4  batch-wait.sh を "WAITING" が返る限りフォアグラウンドで呼び直す
+          （1 回あたり最大 540 秒。ALL_TERMINAL / TIMEOUT で終了）
+          呼び出しのたびに loop-state.json の heartbeat が更新される
   L2-5  Template B で結果報告 → loop-cleanup.sh でバッチ cleanup
   L2-6  batch++ → 最大バッチ数チェック → L2-1 へ
-Step L3  ループ全体サマリ（Template C を batch 列付きに拡張）+ .dispatch/loop.lock を解放
+Step L3  ループ全体サマリ（Template C を batch 列付きに拡張）+ ロック解放
+         ※ ループを中断する全経路（L0-4/L0-5/L0-6 の fatal、L2-1 の exit 3、
+            ユーザー中断）でも必ずロックを解放してから終了する
 ```
 
 ### 3.2 コンポーネント一覧
 
-**新規ファイル（3 点）**
+**新規ファイル（4 点）**
 
 | ファイル | 責務 | 依存 |
 |---|---|---|
-| `skills/cmux-team-dispatch-task/references/loop-mode.md` | ループ手順の SoT。L0〜L3、一括設定質問の文面、フォールバック表、ラベル遷移表、cleanup 遷移表 | なし（ドキュメント） |
-| `skills/cmux-team-dispatch-task/scripts/issue-fetch.sh` | issue の取得 / 除外 / claim / release / mark-dispatched / reconcile と `loop-state.json` の管理 | `gh`, `jq`, `git` |
-| `skills/cmux-team-dispatch-task/scripts/loop-cleanup.sh` | バッチ終了処理（pane close / worktree / branch / issue ラベル / 状態記録） | `cmux`, `gh`, `jq`, `git` |
+| `skills/cmux-team-dispatch-task/references/loop-mode.md` | ループ手順の SoT。L0〜L3、一括設定質問、ラベル遷移表、cleanup 遷移表、完了検証の契約 | なし（ドキュメント） |
+| `skills/cmux-team-dispatch-task/scripts/issue-fetch.sh` | issue の取得 / 除外 / claim / release / mark-dispatched / reconcile / finalize と `loop-state.json` とロックの管理 | `gh`, `jq`, `git` |
+| `skills/cmux-team-dispatch-task/scripts/batch-wait.sh` | バッチ内 slug 集合の terminal 待機とタイムアウト判定、heartbeat 更新 | `jq`, `cmux` |
+| `skills/cmux-team-dispatch-task/scripts/loop-cleanup.sh` | 完了検証 → WIP 保全 → pane close / worktree / branch / issue ラベル / 状態記録 | `cmux`, `gh`, `jq`, `git` |
 
 **変更ファイル**
 
 | ファイル | 変更内容 |
 |---|---|
 | `skills/cmux-team-dispatch-task/SKILL.md` | ループ発動のディスパッチポイント（約 10 行）＋ Step 1c–1g / cleanup 節への「loop モードでは `references/loop-mode.md` の一括設定で解決済み」注記。手順本体は重複させない |
-| `skills/cmux-team-dispatch-task/scripts/launch-workspace.sh` | ① codex 全経路に `--dangerously-bypass-hook-trust` を追加（要件 4）② **`--unattended` フラグを追加**し、`--mode execute` の `REVIEW_INSTRUCTION` に含まれる AskUserQuestion フォールバックを非対話版へ差し替える |
+| `skills/cmux-team-dispatch-task/scripts/launch-workspace.sh` | ① codex 全経路に `--dangerously-bypass-hook-trust` を追加（要件 4）② `--unattended` フラグを追加し、`--mode execute` の `REVIEW_INSTRUCTION` の質問分岐を非対話版に差し替える ③ runner wrapper の `write_status` が既存 status.json の `pr_url` を引き継ぐようにする（既存バグの修正） |
 | `skills/cmux-team-dispatch-task/scripts/prewarm-panes.sh` | `--unattended` フラグを追加。指定時、設計ペイン（claude opus standby）に `--skip-permissions` を付与する |
-| `skills/cmux-team-dispatch-task/references/guide-ja.md` | ループモード節の追加、engine × MODE 起動表の更新、`--unattended` の説明 |
-| `README.md` | ループモードの利用者向け説明、codex 起動フラグ表の更新、hook trust バイパスの注記 |
-| `CLAUDE.md` | メンテナンス手順に項目追加、項目 20 / 39 の更新、E2E テスト項目の追加 |
+| `skills/cmux-team-dispatch-task/references/guide-ja.md` | ループモード節、engine × MODE 起動表、`--unattended`、`pr_url` 引き継ぎ |
+| `README.md` | ループモードの利用者向け説明、codex 起動フラグ表、hook trust バイパスの注記 |
+| `CLAUDE.md` | メンテナンス手順の項目追加、項目 20 / 39 の更新、E2E テスト項目の追加 |
 | `.claude-plugin/plugin.json` / ルート `.claude-plugin/marketplace.json` | version 1.9.0 → 1.10.0 |
-| `test/test-launch-workspace-codex.sh` | hook trust バイパスと `--unattended` の静的検査を追加（claude 側の非付与 assert は全 5 モードへ拡張） |
-| `test/test-issue-fetch.sh`（新規） | 除外フィルタ・claim/release の状態遷移の検査（`gh` はスタブ化） |
-| `test/test-codex-review-sandbox.sh`（新規） | `codex sandbox` を使った動的検査（§7） |
+| `test/test-launch-workspace-codex.sh` | hook trust バイパス、`--unattended`、`pr_url` 引き継ぎの静的検査を追加 |
+| `test/test-issue-fetch.sh`（新規） | 取得クエリ生成・除外・claim/release/reconcile の検査（`gh` はスタブ化） |
+| `test/test-loop-prompt.sh`（新規） | loop 用にレンダリングしたプロンプト 2 経路に質問分岐が残らないことの検査 |
+| `test/test-codex-review-sandbox.sh`（新規） | `codex sandbox` による sandbox write root / denial / `git diff` の動的検査 |
 
-`monitor-dispatch.sh` は**変更しない**。ループモードでは使用しないため（§3.6）。
+`monitor-dispatch.sh` は**変更しない**。ループモードでは使用しない（§3.7）。
 
 ### 3.3 新規スクリプトの CLI 契約
+
+すべての呼び出しは `--state-file <path>` を先頭に置き、続いてサブコマンドと固有オプションを取る。**フロー中の記述も必ずこの完全形で書く**（round 2 finding 8）。
 
 **`issue-fetch.sh`**
 
 ```
 issue-fetch.sh --state-file <path> <subcommand> [options]
 
-subcommand:
-  fetch     候補取得 → 除外 → claim → タスク JSON 出力
-              --limit <N>            claim する上限件数（必須）
-              --batch <N>            記録するバッチ番号（必須）
-              --labels <a,b>         カンマ区切りのラベルフィルタ
-              --assignee <@me|none>  省略時はフィルタなし
-              --state <open|all>     既定 open
-              --dry-run              claim も状態更新もせず候補だけ出力
-  mark-dispatched --issue <n>   status を claimed → dispatched に更新
-  release         --issue <n>   dispatch/in-progress を外し、状態から当該 issue を除去
-  reconcile                     status=claimed のまま残る全 issue を release する
-  finalize        --issue <n> --status <done|error|timeout> [--pr-url <url>] [--message <s>]
-                                最終結果を記録する（ラベル遷移は loop-cleanup.sh が行う）
+  lock-acquire  --timeout-min <N>        .dispatch-loop/loop.lock.d を mkdir で atomic 取得
+  lock-release                            ロックを解放（冪等）
+  heartbeat                               owner.json の heartbeat を現在時刻に更新
+  reconcile                               claimed / dispatched の突き合わせ（§3.1 L0-4）
+                                          出力: {action: "ok"|"abort", reasons: [...]}
+  ensure-labels                           3 ラベルを gh label list で確認し不足分を作成
+  fetch         --limit <N> --batch <N> [--labels <a,b>] [--assignee <@me|none>]
+                [--state <open|all>] [--dry-run]
+  mark-dispatched --issue <n>
+  release         --issue <n>
+  finalize        --issue <n> --status <done|error|timeout>
+                  [--pr-url <url>] [--message <s>]
 
---state-file  .dispatch/loop-state.json のパス（必須。無ければ初期化して作る）
-
-stdout: fetch のみタスク JSON 配列（§3.4 のスキーマ）。他は無出力
+stdout: fetch のみタスク JSON 配列（§3.5）。reconcile は判定 JSON。他は無出力
 exit  : 0 = 正常（fetch の 0 件を含む）
-        1 = 致命的失敗（gh / jq 不在、認証エラー、loop-state.json 破損）
+        1 = 致命的失敗（gh / jq 不在、認証エラー、loop-state.json 破損、ロック取得失敗）
         3 = fetch で候補は存在したが claim が 1 件も成立しなかった
-stderr: [fetch] / [claim] / [release] / [warn] のログ
+stderr: [fetch] / [claim] / [release] / [lock] / [warn] のログ
 ```
 
-`fetch` は候補 0 件（exit 0 + `[]`）と claim 全滅（exit 3）を**明確に区別する**。前者はループの正常終了、後者は権限・通信の異常であり、同じ扱いにすると無限に空回りする。
+**`batch-wait.sh`**
+
+```
+batch-wait.sh --state-file <path> --batch <N> --timeout-min <N> [--max-wait-sec 540]
+
+指定バッチで status=dispatched の slug 集合を loop-state.json から引き、
+<dispatch-dir>/<slug>/status.json を 5 秒間隔でポーリングする。
+呼び出しのたびに loop-state.json の heartbeat を更新する。
+
+stdout（1 行）:
+  ALL_TERMINAL                  全 slug が done / error に到達
+  TIMEOUT <slug> [<slug>...]    deadline（claim 時刻 + timeout-min）超過の slug
+  WAITING <done>/<total>        max-wait-sec 内に決着せず（親が呼び直す）
+exit  : 0（上記いずれも）/ 1 = 致命的失敗
+
+親は stdout が WAITING の間フォアグラウンドで呼び直す。TIMEOUT が返った slug は
+親が status.json を error に書き換えたうえで cleanup へ回す。
+```
+
+`--max-wait-sec` の既定 540 は、親が使う Bash 実行の上限（600 秒）に収めるための値である。deadline 判定は呼び出しをまたいで `loop-state.json` の claim 時刻から絶対時刻で行うため、呼び直しの回数に依存しない。
 
 **`loop-cleanup.sh`**
 
@@ -147,29 +179,46 @@ stderr: [fetch] / [claim] / [release] / [warn] のログ
 loop-cleanup.sh --state-file <path> --batch <N> --integration <pr|merge>
                 [--dispatch-dir <path>] [--repo-root <path>] [--agmsg-team <team>]
 
---state-file    .dispatch/loop-state.json のパス（必須）
---batch         cleanup 対象のバッチ番号（必須。loop-state.json の batches から slug 群を引く）
---integration   pr | merge（必須）
---dispatch-dir  既定 <repo-root>/.dispatch
---repo-root     既定 git rev-parse --show-toplevel
---agmsg-team    指定時、対象 slug の agmsg agent を leave.sh で除籍する
-
-stdout: バッチ結果サマリ JSON {batch, done, error, timeout, merged, conflicted, leaked}
+stdout: {batch, done, error, timeout, merged, conflicted, unverified, leaked}
 exit  : 0 = 正常（個別の失敗は警告扱いでループを止めない）
         1 = 致命的失敗（loop-state.json 破損）
 ```
 
-`leaked` は削除に失敗した worktree / branch の一覧。`loop-state.json.leaked[]` にも追記し、Step L3 のサマリで手動整理対象として提示する。
+`unverified` は §3.8 の完了検証に落ちて `error` に降格した slug、`leaked` は削除に失敗した worktree / branch。いずれも `loop-state.json` に記録し、Step L3 のサマリで手動整理対象として提示する。
 
-いずれも「個別 issue / タスクの失敗はループを止めない」を原則とし、致命的な前提崩れのときだけ非 0 で終了する。
+### 3.4 ループ状態の置き場所とロック
 
-### 3.4 データ構造
+ループ固有の状態は **`.dispatch-loop/`** に置く。`.dispatch/` に置かない理由は、非ループ dispatch の cleanup が最後に `rm -rf .dispatch/` を無条件で実行するため、同居させるとロックと状態が丸ごと消え、通常 dispatch とループの同時実行が静かに壊れるからである。
 
-**`.dispatch/loop-state.json`**
+```
+.dispatch-loop/
+  loop-state.json          ループ状態（§3.5）
+  loop.lock.d/             ロックディレクトリ（mkdir で atomic 取得）
+    owner.json             {session_id, host, started_at, heartbeat}
+```
+
+タスクの `STATUS_DIR` は従来どおり `.dispatch/<slug>` を使う（`launch-workspace.sh` との互換のため）。
+
+**ロックの契約**
+
+| 項目 | 内容 |
+|---|---|
+| 取得 | `mkdir .dispatch-loop/loop.lock.d` の成否で判定する（check-then-write の競合を排除） |
+| owner identity | 親セッションの `$CLAUDE_CODE_SESSION_ID` + ホスト名。shell の `$$` は使わない（呼び出しごとに変わり、直後に stale と誤判定するため） |
+| 生存判定 | `owner.json.heartbeat` が `task_timeout_min` の 2 倍以内なら実行中。親は `batch-wait.sh` の各呼び出しで heartbeat を更新するので、待機中も鮮度が保たれる |
+| stale の扱い | heartbeat が古ければ owner.json を上書きして取得する（恒久ロックアウトを避ける） |
+| 解放 | Step L3 に加え、**ループを中断する全経路**（L0-4/L0-5/L0-6 の fatal、L2-1 の exit 3、ユーザー中断）で `lock-release` を呼ぶ。手順として `references/loop-mode.md` に明記する |
+
+同一マシン上の並行ループはこれで防げる。別マシンからの同時実行は検出できないため、運用上の約束とする（§11）。
+
+### 3.5 データ構造
+
+**`.dispatch-loop/loop-state.json`**
 
 ```json
 {
   "started_at": "2026-07-25T10:00:00Z",
+  "heartbeat": "2026-07-25T10:42:00Z",
   "filter": { "labels": ["enhancement"], "assignee": "@me", "state": "open" },
   "config": {
     "concurrency": 3, "max_batches": 5, "integration": "pr",
@@ -180,33 +229,25 @@ exit  : 0 = 正常（個別の失敗は警告扱いでループを止めない�
     { "n": 1, "issues": [12, 13], "started_at": "...", "finished_at": "..." }
   ],
   "issues": {
-    "12": { "slug": "issue-12-fix-login", "status": "done", "pr_url": "https://…", "batch": 1 },
-    "13": { "slug": "issue-13-add-cache", "status": "error", "message": "…", "batch": 1 }
+    "12": { "slug": "issue-12-fix-login", "status": "done", "pr_url": "https://…",
+            "batch": 1, "claimed_at": "...", "dispatched_at": "..." },
+    "13": { "slug": "issue-13-add-cache", "status": "error", "message": "…",
+            "batch": 1, "claimed_at": "...", "dispatched_at": "..." }
   },
   "leaked": []
 }
 ```
 
-`issues` のキーは issue 番号（文字列）。`status` の遷移は次のとおり:
+`status` の遷移:
 
 ```
-claimed ──(launch 成功)──> dispatched ──> done | error | timeout
-   └──(launch 失敗 / reconcile)──> レコード削除（release）
+claimed ──(launch 成功 + mark-dispatched)──> dispatched ──> done | error | timeout
+   └──(launch 失敗 / reconcile で workspace 消滅を確認)──> レコード削除（release）
 ```
 
-書き込みは常に **同一ディレクトリの一時ファイル + `mv`（atomic replace）** で行う。親セッションが単独の writer であるため排他は不要だが、途中で落ちても壊れた JSON を残さないことを保証する。
+`claimed_at` はタイムアウトの起点、`dispatched_at` は記録用。書き込みは常に **同一ディレクトリの一時ファイル + `mv`（atomic replace）** で行う。
 
-このファイルは **バッチ間 cleanup では削除しない**。ループ終了後も結果を辿れるよう残し、Step L3 では削除手順を表示するだけで自動削除はしない。
-
-**`.dispatch/loop.lock`**
-
-```json
-{ "pid": 12345, "host": "yui-mbp", "started_at": "2026-07-25T10:00:00Z" }
-```
-
-Step L0-3 で作成し、Step L3 で削除する。既存ロックがあり `kill -0 <pid>` が通る場合はループを開始しない。pid が死んでいれば stale として上書きする。
-
-**タスク JSON（`issue-fetch.sh fetch` の stdout）**
+**タスク JSON（`issue-fetch.sh ... fetch` の stdout）**
 
 ```json
 [
@@ -217,31 +258,35 @@ Step L0-3 で作成し、Step L3 で削除する。既存ロックがあり `kil
 
 `slug` は `issue-<number>-<title を lowercase・ハイフン化したもの>` を 30 文字で切り詰めた値。`[A-Za-z0-9._-]` のみを残す（`launch-workspace.sh` の workspace 名バリデーションに合わせる）。
 
-### 3.5 issue 取得と二重ディスパッチ防止
+### 3.6 issue 取得と二重ディスパッチ防止
 
 **ラベル体系（3 種）**
 
-| ラベル | 意味 | 付与タイミング | 除去タイミング |
+| ラベル | 意味 | 付与 | 除去 |
 |---|---|---|---|
 | `dispatch/in-progress` | claim 済み・作業中 | claim 時 | 完了時に `done` / `failed` へ付け替え、または release 時 |
-| `dispatch/done` | ディスパッチ完了（PR 作成済み or merge 済み） | タスク done 時 | 付けたまま残す（durable な処理済みマーク） |
-| `dispatch/failed` | 失敗・要調査 | タスク error / timeout / merge conflict 時 | 付けたまま残す |
+| `dispatch/done` | 処理済み（PR 作成済み or merge 済み） | 完了検証を通った done 時 | 付けたまま残す（durable な処理済みマーク） |
+| `dispatch/failed` | 失敗・要調査 | error / timeout / merge conflict / 完了検証落ち | 付けたまま残す |
 
-`dispatch/done` を残すことが、**PR がマージされるまで issue が open のままでも再ディスパッチされない**ことの保証になる。整合性のため、integration = `merge` で merge が成功した場合はさらに `gh issue close --reason completed` を実行する（`Closes #N` を持つ PR が存在しないため）。
+`dispatch/done` を残すことが、**PR がマージされるまで issue が open のままでも再ディスパッチされない**ことの保証になる。integration = `merge` で merge が成功した場合はさらに `gh issue close --reason completed` を実行する（`Closes #N` を持つ PR が存在しないため）。
 
-**取得クエリ**
+**取得クエリ — サーバサイド除外で exhaustion を保証する**
+
+固定倍率でローカル除外する方式は「先頭 4N 件がすべて処理済みで、その先に未処理 issue がある」場合に対象を残したまま「対象なし」と誤判定する。これを避けるため、**dispatch ラベルの除外をサーバ側の search qualifier で行う**:
 
 ```bash
-gh issue list --state "$STATE" [--label "$LABEL"] [--assignee "$ASSIGNEE"] \
-  --limit $((LIMIT * 4)) --json number,title,body,url,labels
+SEARCH="-label:dispatch/in-progress -label:dispatch/done -label:dispatch/failed"
+[[ "$ASSIGNEE" == "none" ]] && SEARCH="$SEARCH no:assignee"
+
+gh issue list --state "$STATE" [--label "$LABEL"] \
+  [--assignee @me]                # @me のときだけ --assignee を使う
+  --search "$SEARCH" \
+  --limit "$FETCH_LIMIT" --json number,title,body,url,labels
 ```
 
-取得件数に余裕（`LIMIT * 4`）を持たせ、除外後に `LIMIT` 件を確保する。
-
-**除外条件（jq で適用）**
-
-1. `dispatch/in-progress` / `dispatch/done` / `dispatch/failed` のいずれかを持つ issue
-2. `loop-state.json` の `issues` に既に登録されている番号
+- **`--assignee none` という値は `gh issue list` に存在しない。** 未割当は `--search "no:assignee"` で表現する（round 2 finding 3）。`--assignee` フラグを使うのは `@me` のときだけ
+- ローカル除外は `loop-state.json.issues` に登録済みの番号のみ（サーバ側の反映遅延と、ラベル除去に失敗した release の保険）
+- `FETCH_LIMIT` は `LIMIT * 2` から始め、ローカル除外後に `LIMIT` 件に満たず、かつサーバの返却件数が `FETCH_LIMIT` に達していた（＝まだ先がある）場合は `FETCH_LIMIT` を倍にして再取得する。最大 3 回まで。これで「候補が尽きたのか、単に取得窓が足りないのか」を区別できる
 
 **claim（着手マーク）**
 
@@ -249,82 +294,102 @@ gh issue list --state "$STATE" [--label "$LABEL"] [--assignee "$ASSIGNEE"] \
 gh issue edit "$n" --add-label dispatch/in-progress
 ```
 
-- ラベルの存在確認と作成は Step L0-6 で行う。`gh label list --json name` で列挙し、無いものだけ `gh label create` する。**`|| true` では潰さない** — 認証・権限・通信エラーを「既に存在」と誤認しないため、作成失敗はループ開始を止める
-- **claim に失敗した issue はそのバッチから除外する**（ラベルが付かないまま起動すると次バッチで再取得され、無限に同じ issue を拾い続ける）
-- claim 成功と同時に `loop-state.json.issues["<n>"] = {slug, status: "claimed", batch: N}` を書く
-- 候補が 1 件以上あったのに claim が 1 件も成立しなかった場合は exit 3 を返す（§3.3）
+- ラベルの存在確認と作成は Step L0-6（`ensure-labels`）で行う。`gh label list --json name` で列挙し、無いものだけ `gh label create` する。**`|| true` では潰さない** — 認証・権限・通信エラーを「既に存在」と誤認しないため、作成失敗はループ開始を止める
+- **claim に失敗した issue はそのバッチから除外する**
+- claim 成功と同時に `issues["<n>"] = {slug, status: "claimed", batch: N, claimed_at: now}` を書く
+- 候補が 1 件以上あったのに claim が 1 件も成立しなかった場合は exit 3 を返す
 
-**claim 後・起動前の失敗の扱い**
+**claim 後・起動前の失敗と中断の扱い**
 
 | 事象 | 対応 |
 |---|---|
-| プロンプト構築 / worktree 作成 / pane 起動が失敗 | `issue-fetch.sh release --issue <n>` でラベルを外し状態から除去。そのバッチの待機対象に含めない |
-| 親セッションが claim 後に落ちた | 次回ループの Step L0-5 reconciliation が `status=claimed` を検出して release する |
+| プロンプト構築 / worktree 作成 / pane 起動が失敗 | `release --issue <n>` でラベルを外し状態から除去。そのバッチの待機対象に含めない |
+| 親が `claimed` の状態で落ちた | 次回 Step L0-4 の `reconcile` が workspace の生存を確認し、消滅していれば release、生存していれば中止して人に返す |
+| 親が `dispatched` の状態で落ちた | 走行中の子がいる可能性が高いため `reconcile` は中止を返す。人が状況を確認する |
 | バッチの一部だけ起動成功 | 成功分のみ `mark-dispatched` して待機。失敗分は release 済みなので待機対象に含まれず、タイムアウト待ちも発生しない |
 
-**完了時のラベル更新（`loop-cleanup.sh`）**
+`reconcile` を stale 検査（L0-5）より**前**に置くのは、`.dispatch/<slug>/` の存在だけで即中止すると reconciliation が永久に走らなくなるためである（round 2 finding 4）。
 
-| タスク結果 | ラベル操作 | issue 状態 |
-|---|---|---|
-| `done`（integration = pr） | `in-progress` を外し `dispatch/done` を付与 | open のまま（PR の `Closes #N` でマージ時に閉じる） |
-| `done`（integration = merge、merge 成功） | `in-progress` を外し `dispatch/done` を付与 | `gh issue close --reason completed` |
-| `done`（integration = merge、merge conflict） | `in-progress` を外し `dispatch/failed` を付与 + コンフリクト報告コメント | open のまま |
-| `error` / `timeout` | `in-progress` を外し `dispatch/failed` を付与 + 失敗コメント | open のまま |
+### 3.7 バッチ完了待ち（`batch-wait.sh`）
 
-ラベル操作の失敗は警告のみでループを止めない（`loop-state.json` が同一ループ内の保険として機能する）。
+**`monitor-dispatch.sh` はループモードでは使用しない。** 既存 monitor は `--dispatch-dir` 配下の `*/status.json` を全件走査するため、前バッチで保持した failed ディレクトリや非ループ dispatch の痕跡が 1 件でもあると次バッチの待機が終わらない。
 
-### 3.6 バッチ待機とタイムアウト
+**待機に実行主体を与える。** 親 Claude セッションがターンを終えて idle になると deadline を評価する主体がいなくなり、まさに timeout 対象である hung child は完了通知も送らないため、誰も待機を打ち切れない。したがって待機は**親のターン内の同期処理**とする:
 
-**`monitor-dispatch.sh` はループモードでは使用しない。** 既存 monitor は `--dispatch-dir` 配下の `*/status.json` を全件走査し、1 件でも terminal でなければ完了しないため、前バッチで保持した failed ディレクトリ、cleanup に失敗した残骸、あるいは同じリポジトリで実行された非ループ dispatch の痕跡が 1 件でもあると次バッチの待機が永久に終わらない。
-
-代わりに、親セッションが **そのバッチで `dispatched` になった slug 集合だけ**を対象にポーリングする:
-
-```bash
-for slug in "${BATCH_SLUGS[@]}"; do
-  st=$(jq -r '.status // "unknown"' ".dispatch/$slug/status.json" 2>/dev/null)
-  …
-done
+```
+L2-4:
+  loop:
+    OUT=$(batch-wait.sh --state-file .dispatch-loop/loop-state.json \
+            --batch <N> --timeout-min <T> --max-wait-sec 540)
+    case "$OUT" in
+      ALL_TERMINAL) break ;;
+      TIMEOUT*)     該当 slug の status.json を error に書き換えて break ;;
+      WAITING*)     進捗を 1 行報告して loop を続ける ;;
+    esac
 ```
 
-- 完了通知（`[dispatch] task "<slug>" finished`）は runner wrapper から `cmux send` + `send-key return` で両トランスポートとも届くため、親は通知でも起こされる。ただし**待機の正となるのは status.json のポーリング**とする
-- Step L0-4 の stale 検査により、ループ開始時点で `.dispatch/<slug>/` が存在しないことは保証済み
+- `batch-wait.sh` は 5 秒間隔で対象 slug の `status.json` を読み、全件が `done` / `error` なら `ALL_TERMINAL` を返す
+- deadline は `loop-state.json` の `claimed_at` からの絶対時刻で判定するため、呼び直しの回数に依存しない
+- 呼び出しのたびに `heartbeat` を更新するので、待機中もロックの鮮度が保たれる
+- 完了通知（`[dispatch] task "<slug>" finished`）は届けば親の応答を早めるが、**待機の正はあくまで status.json のポーリング**である
 
-**タスク単位のタイムアウト**: 無人実行では応答のない子を永久に待てないため、タスクあたりの上限時間を設ける。
+**タイムアウト値**: 既定 90 分。`<project>/.dispatch/config.json` → `~/.claude/cmux-team-dispatch-task/config.json` の順で `loop.task_timeout_min` を解決する（設定質問には含めない）。
 
-- 既定値 90 分。`<project>/.dispatch/config.json` → `~/.claude/cmux-team-dispatch-task/config.json` の順で `loop.task_timeout_min` を解決する（設定質問には含めない）
-- 超過したタスクは `timeout` として扱い、`status.json` を `error` に書き換えたうえで cleanup と `dispatch/failed` 付与を行う
+### 3.8 完了検証とバッチ間 cleanup（`loop-cleanup.sh`）
 
-### 3.7 バッチ間 cleanup（`loop-cleanup.sh`）
+#### 3.8.1 完了検証（cleanup の前提）
 
-**cleanup 遷移表（これが SoT）** — バッチ内の各 slug について、結果と integration に応じて決定的に処理する。
+`launch-workspace.sh` の runner wrapper は、TUI が exit 0 で終われば無条件に `status.json` を `done` として書く。対話セッションの正常終了は commit / push / PR 作成 / merge の成功を意味しない。この `done` を根拠に `dispatch/done` を永続付与し、さらに worktree と branch を削除すると、**未完成のタスクを永久に再取得対象外にしたうえで唯一のローカル作業を消す**ことになる（round 2 finding 5）。
 
-| # | タスク結果 | integration | merge 試行 | worktree | branch `feat/<slug>` | `.dispatch/<slug>` |
+そこで cleanup は、まず成果物の存在を独立に検証する:
+
+| integration | 検証内容（すべて満たすこと） |
+|---|---|
+| `pr` | ① `git rev-list --count <base>..feat/<slug>` > 0（コミットが存在）② PR が存在する — `status.json.pr_url` があれば `gh pr view <url> --json state` が成功、無ければ `gh pr list --head "feat/<slug>" --json url` が 1 件以上返る |
+| `merge` | ① `git rev-list --count <base>..feat/<slug>` > 0 ② worktree に未コミット変更が無い（`git -C <worktree> status --porcelain` が空） |
+
+検証に落ちたタスクは **`done` から `error` へ降格**し、`unverified` として集計する。降格したタスクは §3.8.2 の表で `error` 行として扱われるため、branch も `.dispatch/<slug>` も温存され、`dispatch/failed` が付いて再取得もされない。
+
+`pr_url` は `status.json` に依存しきらない（`gh pr list --head` で独立に引ける）が、既存 wrapper が child の書いた `pr_url` を exit 時に消してしまう問題は根本原因なので、**`write_status` が既存 `status.json` の `pr_url` を引き継ぐ**ように修正する。これは非ループにも有益で、既存の JSON スキーマも変えない後方互換の修正である。
+
+#### 3.8.2 cleanup 遷移表（SoT）
+
+| # | 検証後の結果 | integration | merge 試行 | worktree | branch `feat/<slug>` | `.dispatch/<slug>` |
 |---|---|---|---|---|---|---|
 | 1 | `done` | `pr` | しない | 削除 | 削除（リモートに push 済み） | 削除 |
 | 2 | `done` | `merge` | する → 成功 | 削除 | 削除 | 削除 |
 | 3 | `done` | `merge` | する → conflict | **温存** | **温存** | **温存** |
-| 4 | `error` / `timeout` | 両方 | しない | 削除 | **温存**（作業内容は branch に残る） | **温存**（status.json / result.md を調査用に残す） |
+| 4 | `error` / `timeout` / `unverified` | 両方 | しない | **WIP 保全後に削除**（§3.8.3） | **温存** | **温存** |
 
-設計方針:
-
-- **worktree は #3 以外すべて削除する**。失敗タスクの成果物はブランチに残るため（`git log feat/<slug>` で追える）、worktree を残す必要はない。これにより `.worktrees/` が失敗数に比例して無制限に増えることを防ぐ
 - **`--keep-failed` フラグは設けない**。保持の要否は上表で一意に決まる
-- `.dispatch/<slug>` は失敗時のみ残す（status.json と result.md のみの軽量ディレクトリ）。Step L0-4 の stale 検査があるため、次回ループ開始時にユーザーが必ず気付く
+- 失敗タスクの `.dispatch/<slug>` は status.json / result.md / wip.patch のみの軽量ディレクトリ。Step L0-5 の stale 検査があるため、次回ループ開始時にユーザーが必ず気付く
 
-**実行順序**（各 slug ごと）:
+#### 3.8.3 失敗タスクの WIP 保全
 
-1. `.dispatch/<slug>/prewarm.json` の全 `surface_id` を `cmux close-surface`
-2. `.dispatch/<slug>/status.json` の `workspace_id` を `cmux close-workspace`
-3. integration = `merge` かつ結果が `done` の場合、**worktree を削除する前に** 親で `git merge "feat/<slug>" --no-edit` を試みる
-   - 成功 → 手順 4 へ進む
-   - conflict → `git merge --abort` して worktree・branch とも温存し、`dispatch/failed` を付与してこの slug の cleanup を終了（#3）
-4. 上表に従い `git worktree remove ".worktrees/<slug>" --force`
-5. 上表に従い `git branch -D "feat/<slug>"`
-6. `issue-fetch.sh finalize` 相当の記録を `loop-state.json.issues["<n>"]` に書く。手順 4/5 が失敗した場合は `loop-state.json.leaked[]` に追記する
-7. 上表に従い `rm -rf ".dispatch/<slug>"`
-8. `agmsg` モードのときは `leave.sh <team> <slug>` / `-sonnet` / `-codex` / `-review` / `-opus` を実行して team から除籍する
+error は commit 前にも起こり得るため、「作業内容は branch に残る」という保証は無条件には成立しない。worktree を `--force` 削除する前に、次の順で保全する（round 2 finding 6）:
 
-pane close を最初に行うのは既存 cleanup と同じ理由（ペインを閉じないと worktree が掴まれたまま `git worktree remove` に失敗する）。merge を worktree 削除より**前**に置いたのは、conflict 時に worktree を温存する契約と順序を整合させるためである。
+1. `git -C <worktree> add -A && git -C <worktree> commit -m "wip: <slug> (dispatch failed)"` を試みる → 成功すれば branch に残るため以降は不要
+2. 失敗（コミット対象なし等）した場合は `git -C <worktree> diff HEAD > .dispatch/<slug>/wip.patch` と `git -C <worktree> status --porcelain > .dispatch/<slug>/wip-status.txt` を保存する
+3. 1 も 2 も失敗した場合は **worktree を削除せず温存**し、`leaked[]` に記録する
+
+これにより「branch に残る」という表の記載が実際に成立する。
+
+#### 3.8.4 実行順序（各 slug ごと）
+
+1. §3.8.1 の完了検証を行い、必要なら `done` → `error` に降格する
+2. `.dispatch/<slug>/prewarm.json` の全 `surface_id` を `cmux close-surface`
+3. `.dispatch/<slug>/status.json` の `workspace_id` を `cmux close-workspace`
+4. integration = `merge` かつ検証済み `done` の場合、**worktree を削除する前に** 親で `git merge "feat/<slug>" --no-edit` を試みる
+   - 成功 → 手順 5 へ
+   - conflict → `git merge --abort` し、worktree・branch とも温存して `dispatch/failed` を付与、この slug の cleanup を終了（#3）
+5. 結果が `error` / `timeout` / `unverified` なら §3.8.3 の WIP 保全を行う
+6. 上表に従い `git worktree remove ".worktrees/<slug>" --force`
+7. 上表に従い `git branch -D "feat/<slug>"`
+8. `issue-fetch.sh ... finalize` で `loop-state.json` に最終結果を記録し、§3.6 のラベル遷移を適用する。手順 6/7 が失敗した場合は `leaked[]` に追記する
+9. 上表に従い `rm -rf ".dispatch/<slug>"`
+10. `agmsg` モードのときは `leave.sh <team> <slug>` / `-sonnet` / `-codex` / `-review` / `-opus` で team から除籍する
+
+pane close を先に行うのは既存 cleanup と同じ理由（ペインを閉じないと worktree が掴まれたまま削除に失敗する）。merge を worktree 削除より前に置いたのは、conflict 時に worktree を温存する契約と順序を整合させるためである。
 
 ## 4. 要件 2 — AskUserQuestion 全廃
 
@@ -332,92 +397,103 @@ pane close を最初に行うのは既存 cleanup と同じ理由（ペインを
 
 | # | 箇所 | 現行 | loop モードでの解決 |
 |---|---|---|---|
-| 1 | Step 1a タスク収集 | 質問 | `issue-fetch.sh fetch` の出力に置換 |
+| 1 | Step 1a タスク収集 | 質問 | `issue-fetch.sh ... fetch` の出力に置換 |
 | 2 | Step 1c brainstorming 選択 | 質問 | plan モード固定（質問なし） |
-| 3 | Step 1d layout | 質問 | workspace 固定（pre-warm / standby が workspace 前提。設定質問にも含めない） |
+| 3 | Step 1d layout | 質問 | workspace 固定（設定質問にも含めない） |
 | 4 | Step 1e integration strategy | 質問 | 設定質問コール② で 1 回 |
 | 5 | Step 1f runner switch / per-task runner | 質問 | 設定質問コール②（design runner）で 1 回。全タスク同一 runner |
-| 6 | Step 1f first-run setup（runners.json 対話生成） | 対話ループ | **プリフライト Step L0-2 で検査**し、`runners.json` 不在ならループを開始せずエラー終了 |
+| 6 | Step 1f first-run setup（runners.json 対話生成） | 対話ループ | **Step L0-2 で検査**し、`runners.json` 不在ならループを開始せずエラー終了 |
 | 7 | Step 1f cross-engine reviewer 選択 | 質問 | claude engine runner が 1 件なら自動採用、2 件以上なら設定質問コール③ で 1 回 |
 | 8 | Step 1g message_type | 初回のみ質問 | config 未設定時のみ設定質問コール③ に含める（1 回・従来どおり永続化） |
 | 9 | Step 1g review_mode | 毎 dispatch 質問 | 設定質問コール② で 1 回。ループ中は固定 |
-| 10 | 完了時 Wait-and-merge の Option A/B | 質問 | integration = `merge` なら常に merge（Option A）。conflict は §3.7 #3 の遷移で自動処理 |
-| 11 | 完了時 cleanup 3 問 | 質問 | §3.7 の cleanup 遷移表で決定的に処理 |
-| 12 | Phase A-R 3 往復 needs_work | 子が質問 | 「このまま進む」を自動選択。未解決指摘を文書末尾に注記 |
-| 13 | Phase A-R stalled | 子が質問 | 同一ラウンドの再依頼 1 回（従来どおり）→ なお stalled なら「レビュー省略して Phase B へ」を自動選択 |
-| 14 | Phase B 実行モデル選択 | 子が質問 | 設定質問コール② の exec runner を `{{EXEC_DEFAULT_HINT}}` に焼き込む（**既存の default-direct 経路をそのまま利用**） |
-| 15 | Phase B exec_choice 永続化確認 | 子が質問 | 14 により `exec_choice` が確定するため発生しない |
-| 16 | Phase B-R 3 往復 needs_work | 子が質問 | 「このまま PR 作成」を自動選択。未解決指摘を PR 本文に注記 |
-| 17 | Phase B-R stalled | 子が質問 | 「レビュー省略して PR 作成」を自動選択 |
+| 10 | 完了時 Wait-and-merge の Option A/B | 質問 | integration = `merge` なら常に merge。conflict は §3.8.2 #3 で自動処理 |
+| 11 | 完了時 cleanup 3 問 | 質問 | §3.8.2 の遷移表で決定的に処理 |
+| 12 | Phase A-R 3 往復 needs_work | 子が質問 | **ブロック本文を差し替え**、「未解決指摘を文書末尾に注記して Phase B へ進む」を固定手順にする |
+| 13 | Phase A-R stalled | 子が質問 | **ブロック本文を差し替え**、「同一ラウンドの再依頼 1 回 → なお stalled ならレビューを省略して Phase B へ」を固定手順にする |
+| 14 | Phase B 実行モデル選択 | 子が質問 | 設定質問コール② の exec runner を `{{EXEC_DEFAULT_HINT}}` に焼き込む（既存の default-direct 経路をそのまま利用） |
+| 15 | Phase B exec_choice 永続化確認 | 子が質問 | 14 により発生しない |
+| 16 | Phase B-R 3 往復 needs_work | 子が質問 | **ブロック本文を差し替え**、「未解決指摘を PR 本文に注記して PR を作成」を固定手順にする |
+| 17 | Phase B-R stalled | 子が質問 | **ブロック本文を差し替え**、「レビューを省略し、その旨を PR 本文に注記して PR を作成」を固定手順にする |
 | 18 | brainstorming / ExitPlanMode の暗黙の承認ゲート | 承認待ちで停止 | plan モード固定 + `--dangerously-skip-permissions` により承認プロンプト自体が出ない（§4.4） |
 
-### 4.2 `{{UNATTENDED_BLOCK}}`（プロンプト経路）
+### 4.2 プロンプト経路 — unattended variant のレンダリング
 
-12 / 13 / 16 / 17 は子セッションのプロンプトに焼き込まれた `{{REVIEW_BLOCK}}` / `{{CODE_REVIEW_BLOCK}}` の中にある。これらのブロック本体を書き換えるのではなく、**新しいプレースホルダ `{{UNATTENDED_BLOCK}}` を追加し、その中で AskUserQuestion 分岐だけを上書きする**方式を採る。
+12 / 13 / 16 / 17 は `{{REVIEW_BLOCK}}` / `{{CODE_REVIEW_BLOCK}}` の内部にある。round 1 時点では「禁止文を持つブロックを直前に足して上書きする」方式を採っていたが、これは 2 つの理由で誤りである（round 2 finding 1）:
+
+- 後続に残った強い命令（「AskUserQuestion で聞け」）を、先行する一般的な禁止文で打ち消す構造になり、「質問命令が存在しない」ことの保証にならない
+- 追加ブロック自身が `AskUserQuestion` という文字列を含むため、「生成物に `AskUserQuestion` が現れない」という回帰テストと自己矛盾する
+
+**修正**: ループ用には `{{REVIEW_BLOCK}}` / `{{CODE_REVIEW_BLOCK}}` の **unattended variant** をレンダリングする。両ブロック内の 4 つの質問分岐を、固定手順の記述で**置換**する。追加ブロックは設けない。
+
+置換の対応（左が現行、右が unattended variant）:
+
+| 現行の記述 | unattended variant |
+|---|---|
+| `N == 3 → … AskUserQuestion: 1. このまま進む / 2. さらに修正` | `N == 3 → append the unresolved findings as a note to the document and proceed to Phase B.` |
+| `stalled → … AskUserQuestion: 1. 再依頼する / 2. レビューを省略` | `stalled → re-send the same round once; if it stalls again, skip the review, note that in the document, and proceed to Phase B.` |
+| `Round 3 needs_work → AskUserQuestion: 1. このまま PR 作成 / 2. さらに修正` | `Round 3 needs_work → note the unresolved findings in the PR body and create the PR.` |
+| `stalled → AskUserQuestion if you can (再依頼 / レビュー省略して PR 作成)` | `stalled → re-send once; if it stalls again, skip the review, note that in the PR body, and create the PR.` |
+
+ヘッダーは次の 1 行のみを付ける（`AskUserQuestion` というリテラルを含めない）:
 
 ```text
-=== UNATTENDED MODE ===
-This session runs unattended as part of an automated issue loop.
-You MUST NOT call AskUserQuestion for any reason. Whenever a block above
-tells you to ask the user, take the fixed fallback below instead and note
-what you did in the document / PR body you produce.
-
-  - Phase A-R, round 3 still needs_work → take "このまま進む":
-      append the unresolved findings as a note to the document and continue.
-  - Phase A-R, the wait exits stalled twice → take "レビューを省略して Phase B へ進む".
-  - Phase B-R, round 3 still needs_work → take "このまま PR 作成":
-      note the unresolved findings in the PR body and continue.
-  - Phase B-R, the wait exits stalled twice → take "レビュー省略して PR 作成".
-  - Any other decision point not covered above → pick the option that lets the
-    task reach a terminal state (done / error) without user input, and record
-    the decision in result.md.
-When you delegate implementation in Phase B, propagate this constraint:
-  - pre-warm path → include the same UNATTENDED MODE text in REQUEST_TEXT.
-  - spawn fallback → pass --unattended to launch-workspace.sh --mode execute.
-=== END UNATTENDED MODE ===
+UNATTENDED: no interactive user is attached to this session. Every decision
+point below states its fixed outcome — follow it and record what you did in
+the document / PR body you produce. When you delegate implementation in
+Phase B, propagate this: pre-warm path → include this line and the fixed
+outcomes in REQUEST_TEXT; spawn fallback → pass --unattended to
+launch-workspace.sh --mode execute.
 ```
 
-- 挿入位置: `{{REVIEW_BLOCK}}` の直前
-- **非ループ時は空文字列**を代入する。したがって通常モードのプロンプトは 1 バイトも変わらない
+**非ループ時は現行のブロックをそのまま使う。** 通常モードのプロンプトは 1 バイトも変わらない。
 
-### 4.3 `launch-workspace.sh --unattended`（spawn 経路）
+### 4.3 spawn 経路 — `launch-workspace.sh --unattended`
 
-プロンプト経路だけでは要件 2 を満たせない。Phase B で `prewarm.json` が無い場合（`prewarm: false` / split レイアウト / pre-warm 失敗）、実装者は `launch-workspace.sh --mode execute` で spawn され、その inner prompt は plan file と `REVIEW_INSTRUCTION` から**新規に構築される**。元のタスクプロンプト（したがって `{{UNATTENDED_BLOCK}}`）は読まれない。現行の `REVIEW_INSTRUCTION` は round 3 / stalled 時に「可能なら AskUserQuestion で聞け」と明記しているため、この経路ではループ中に質問が発生し得る。
+プロンプト経路だけでは足りない。Phase B で `prewarm.json` が無い場合（`prewarm: false` / split レイアウト / pre-warm 失敗）、実装者は `launch-workspace.sh --mode execute` で spawn され、その inner prompt は plan file と `REVIEW_INSTRUCTION` から**新規に構築される**。元のタスクプロンプトは読まれない。現行の `REVIEW_INSTRUCTION` は round 3 / stalled 時に「可能なら AskUserQuestion で聞け」と明記している。
 
 **修正**: `launch-workspace.sh` に `--unattended` フラグを追加する。
 
 | 対象 | `--unattended` 無し（既定・現行どおり） | `--unattended` 付き |
 |---|---|---|
-| `REVIEW_INSTRUCTION` の round 3 needs_work | 「AskUserQuestion で聞け、聞けなければ PR 本文に注記して進め」 | 「PR 本文に未解決指摘を注記して進め」（質問部分を削除） |
+| `REVIEW_INSTRUCTION` の round 3 needs_work | 「AskUserQuestion で聞け、聞けなければ PR 本文に注記して進め」 | 「PR 本文に未解決指摘を注記して進め」 |
 | `REVIEW_INSTRUCTION` の stalled | 「AskUserQuestion で聞け（再依頼 / 省略）」 | 「レビューを省略し、その旨を PR 本文に注記して進め」 |
 | claude engine の execute | 呼び出し側の `--skip-permissions` に従う | `--dangerously-skip-permissions` を強制付与 |
 | codex engine の execute | 現行どおり bypass | 変更なし（既に非対話） |
 
-`--unattended` は `--mode execute` および `--mode standby` で有効とし、他のモードで指定された場合は警告して無視する。ループモードの子プロンプトは、spawn fallback を使う際に必ずこのフラグを渡すよう指示する（§4.2 の末尾 2 行）。
-
-回帰テストでは、pre-warm on/off × claude/codex × review 有無の組合せで、生成される runner script に `AskUserQuestion` の文字列が残らないことを検査する。
+`--unattended` は `--mode execute` / `--mode standby` で有効とし、他モードでは警告して無視する。
 
 ### 4.4 暗黙の承認ゲートの解消
 
-現行の既定経路（`message_type: agmsg` + `prewarm: true`）では、設計ペインは `launch-workspace.sh --mode plan` ではなく **`--mode standby`** で起動され、`--skip-permissions` が付いていない（`prewarm-panes.sh` の opus standby 起動）。タスクは後から typed prompt で届く。
+現行の既定経路（`message_type: agmsg` + `prewarm: true`）では、設計ペインは `--mode plan` ではなく **`--mode standby`** で起動され、`--skip-permissions` が付いていない。タスクは後から typed prompt で届く。
 
 そのため「plan モード固定 + skip-permissions」は次の 2 点で実現する:
 
 1. `prewarm-panes.sh` に `--unattended` フラグを追加し、指定時は設計ペイン（claude opus standby）の起動に `--skip-permissions` を渡す。sonnet standby には既に付いており、codex 系は bypass フラグで解決済み
-2. 設計ペインへ送る `TASK_TEXT` の Mode を常に `plan` にする。プロンプトファイルには plan モード用テンプレート（`{{UNATTENDED_BLOCK}}` 込み）を書き込む
+2. 設計ペインへ送る `TASK_TEXT` の Mode を常に `plan` にする。プロンプトファイルには plan モード用テンプレート（unattended variant のレビューブロック込み）を書き込む
 
-pre-warm を使わない経路（`prewarm: false`）では `launch-workspace.sh --mode plan` が使われ、これは既に `--dangerously-skip-permissions` を付与しているため追加変更は不要。
+pre-warm を使わない経路では `launch-workspace.sh --mode plan` が使われ、これは既に `--dangerously-skip-permissions` を付与しているため追加変更は不要。
+
+### 4.5 検証方法
+
+「生成物に `AskUserQuestion` というリテラルが 1 件も現れない」ことを、**2 つの経路それぞれについて別々に**検査する（round 2 finding 1）:
+
+| 経路 | 取得対象 | 検査 |
+|---|---|---|
+| (a) プロンプト経路 | worktree に書かれる `.cmux-team-dispatch-task-prompt.md` と、設計ペインへ送る `TASK_TEXT` | `AskUserQuestion` を含まない |
+| (b) spawn 経路 | `launch-workspace.sh --mode execute --unattended` が生成する `.cmux-team-dispatch-task-run-*.sh` | `AskUserQuestion` を含まない |
+
+(a) は `test/test-loop-prompt.sh`（review 有無 × design engine claude/codex のレンダリング結果を静的に検査）、(b) は `test/test-launch-workspace-codex.sh` の拡張で行う。あわせて `--unattended` を渡さない場合は現行文言が保たれることも検査する（後方互換スナップショット）。
 
 ## 5. 要件 3 — ループ開始前の一括設定質問
 
-`AskUserQuestion` は 1 コールあたり最大 4 問という制約があるため、3 コールに分割する。Step L0-1 の発動確認は、これらより前に行う独立した 1 問である。
+`AskUserQuestion` は 1 コールあたり最大 4 問という制約があるため、3 コールに分割する。Step L0-1 の発動確認は、これらより前に行う独立した 1 問である（`--loop` 指定時は出ない）。
 
 ### コール① 対象 issue
 
 | # | 質問 | 選択肢 |
 |---|---|---|
 | 1 | 対象にする issue のラベル | `gh label list` から動的生成（`dispatch/*` を除いた上位 3 件）+ 「フィルタなし」+ Other（自由入力でカンマ区切り指定可） |
-| 2 | assignee フィルタ | 自分 (`@me`) / 未アサインのみ / 指定なし |
+| 2 | assignee フィルタ | 自分 (`@me`) / 未アサインのみ（`no:assignee`）/ 指定なし |
 | 3 | 1 バッチの並列実行数 | 2 / 3 / 5 |
 | 4 | 最大バッチ数 | 3 / 5 / 10 / 無制限 |
 
@@ -458,12 +534,12 @@ codex を起動しうる全経路を精査した。`prewarm-panes.sh` と `launc
 | 2 | `launch-workspace.sh` codex × superpowers | `--dangerously-bypass-approvals-and-sandbox` | 対応済み |
 | 3 | `launch-workspace.sh` codex × execute | `--dangerously-bypass-approvals-and-sandbox` | 対応済み |
 | 4 | `launch-workspace.sh` codex × standby（pre-warm 経由） | `--dangerously-bypass-approvals-and-sandbox` | 対応済み |
-| 5 | `launch-workspace.sh` codex × review | `--sandbox workspace-write` + `-c approval_policy='never'` + `--add-dir <STATUS_DIR>` | 対応済み（§6.3 で実測検証） |
+| 5 | `launch-workspace.sh` codex × review | `--sandbox workspace-write` + `-c approval_policy='never'` + `--add-dir <STATUS_DIR>` | 対応済み（§6.3） |
 | — | **上記 5 経路すべてに共通** | **hook trust のバイパスが無い** | **未対応 — 要修正** |
 
 ### 6.2 未対応項目: codex hook trust
 
-codex 0.145.0 は、プロジェクトローカルのフック定義に対して信頼確認を行う。信頼状態は `~/.codex/config.toml` の以下の形式で永続化される:
+codex 0.145.0 は、プロジェクトローカルのフック定義に対して信頼確認を行う。信頼状態は `~/.codex/config.toml` に次の形式で永続化される:
 
 ```toml
 [hooks.state."<hooks.json の絶対パス>:<event>:<i>:<j>"]
@@ -481,7 +557,7 @@ trusted_hash = "sha256:…"
     Run enabled hooks without requiring persisted hook trust for this invocation.
 ```
 
-**修正**: `launch-workspace.sh` の codex 分岐 5 箇所すべてに `--dangerously-bypass-hook-trust` を追加する。review モードは従来の 3 点セットから 4 点セットになる。
+**修正**: `launch-workspace.sh` の codex 分岐 5 箇所すべてに `--dangerously-bypass-hook-trust` を追加する。review モードは 3 点セットから 4 点セットになる。
 
 ```
 codex × plan        : <cmd> [-c effort] --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox '/plan …'
@@ -495,31 +571,32 @@ claude engine の分岐には付与しない（claude には存在しないフ�
 
 ### 6.3 review モードの実測検証
 
-review ペインは唯一 sandbox を残す経路のため、`codex sandbox -c sandbox_mode=workspace-write --log-denials` を worktree 内で実行して挙動を確認した。
+review ペインは唯一 sandbox を残す経路のため、`codex sandbox -c sandbox_mode=workspace-write --log-denials` を worktree 内で実行して確認した。
 
 | 検証項目 | 結果 | 評価 |
 |---|---|---|
 | `git status` / `git diff main...HEAD` | 成功（denial なし） | worktree の git 実体がリポジトリ側にあってもレビューに支障なし |
-| `<STATUS_DIR>` への書き込み（`--add-dir` なしの状態） | `file-write-create` 拒否 | サンドボックスが確実に効いていることの確認。実際は `--add-dir <STATUS_DIR>` があるため findings の書き込みは成功する |
-| `approval_policy='never'` | 拒否は即エラーとして model に返る | 承認待ちにならない＝停止しない |
+| `<STATUS_DIR>` への書き込み（`--add-dir` なし） | `file-write-create` 拒否 | サンドボックスが効いていることの確認。実際は `--add-dir <STATUS_DIR>` があるため findings の書き込みは成功する |
 | ネットワークアクセス | `workspace_write` 既定で無効 | レビューペインはネットワークを必要としない |
-| `cmux` CLI | unix socket が `network-outbound` で拒否され失敗 | **現仕様でレビューペインは cmux を使わない**（findings をファイルに書くだけ）ため実害なし |
+| `cmux` CLI | unix socket が `network-outbound` で拒否され失敗 | 現仕様でレビューペインは cmux を使わない（findings をファイルに書くだけ）ため実害なし |
 
-最後の項目について `--allow-unix-socket` の追加を検討したが、必要としない機能に権限を与えることになるため**採用しない**。将来レビューペインから cmux を呼ぶ必要が生じた場合に再検討する。
+**この検証が証明する範囲について**: `codex sandbox` はモデルの tool approval を経由せず raw command を sandbox 内で直接実行するサブコマンドである。したがってここで write denial が即座に返ることは、**サンドボックスの writable root と denial の挙動**を証明するが、`approval_policy='never'` が TUI で承認待ちを起こさないことの動的証明にはならない（round 2 の補足指摘）。`approval_policy='never'` の担保は、起動コマンドの静的検査（`-c approval_policy='never'` が必ず付くこと）と codex CLI の契約（`never` = "Never ask for user approval. Execution failures are immediately returned to the model"）に依る。
 
-この検証手順は `test/test-codex-review-sandbox.sh` として自動化する（§7）。
+`--allow-unix-socket` の追加は、必要としない機能に権限を与えることになるため採用しない。
+
+この検証手順は `test/test-codex-review-sandbox.sh` として自動化する（証明範囲は上記に限定して記述する）。
 
 ### 6.4 追加検討したが採用しない項目
 
 | 項目 | 判断 |
 |---|---|
 | `-c sandbox_workspace_write.network_access=true` | レビューペインはネットワーク不要。付けない |
-| `--add-dir ~/.agents/skills/agmsg` | レビューペインは agmsg `send.sh` を呼ばない（findings はファイル受け渡し）。付けない |
+| `--add-dir ~/.agents/skills/agmsg` | レビューペインは agmsg `send.sh` を呼ばない。付けない |
 | `--allow-unix-socket ~/.local/state/cmux` | §6.3 のとおり不要 |
 
 ### 6.5 非ループ挙動への影響 — 明示的な例外
 
-「通常モードの挙動は不変」という要件 2 の後段に対し、**hook trust バイパスは意図的な例外**である。プロンプト内容は変わらないが、codex の**起動コマンドは全モードで変わる**。ここで曖昧にせず、例外として承認可能な形に整理しておく。
+「通常モードの挙動は不変」という要件 2 の後段に対し、**hook trust バイパスは意図的な例外**である。プロンプト内容は変わらないが、codex の**起動コマンドは全モードで変わる**。
 
 **なぜループ限定にしないのか**: hook trust の承認待ちは worktree ごとに新しいパスが生成される構造上、非ループの単発 dispatch でも必ず発生する。ループ限定にすると単発 dispatch の codex 経路が停止したままになり、要件 4 の「全 mode / 全 script を監査し漏れを直す」という指示に反する。
 
@@ -527,12 +604,12 @@ review ペインは唯一 sandbox を残す経路のため、`codex sandbox -c s
 
 | 観点 | 評価 |
 |---|---|
-| 何を迂回するか | このプラグインが生成した worktree 内の `.codex/hooks.json` に対する信頼確認のみ。グローバルの `~/.codex/hooks.json` も含まれるが、これはユーザー自身の設定である |
-| フックの出所 | worktree 内のフックは agmsg の `delivery.sh` が生成したもので、コマンドは `~/.agents/skills/agmsg/scripts/session-start.sh` 等の固定パス。第三者が注入する経路は、そのリポジトリに push できる権限を既に持つ場合に限られる |
+| 何を迂回するか | このプラグインが生成した worktree 内の `.codex/hooks.json` に対する信頼確認。グローバルの `~/.codex/hooks.json` も含まれるが、これはユーザー自身の設定である |
+| フックの出所 | worktree 内のフックは agmsg の `delivery.sh` が生成したもので、コマンドは `~/.agents/skills/agmsg/scripts/*.sh` の固定パス。第三者が注入する経路は、そのリポジトリに push できる権限を既に持つ場合に限られる |
 | 元々の防御力 | 承認プロンプトは毎回パスが変わるため常に「初見」として表示され、無人・半自動のディスパッチでは実質的にゲートとして機能していない（停止するだけ） |
 | 影響範囲 | `launch-workspace.sh` が起動する codex セッションのみ。ユーザーが手で叩く `codex` には影響しない |
 
-この判断は README / CLAUDE.md にも明記し、利用者が把握したうえで使えるようにする。
+この判断は README / CLAUDE.md にも明記する。
 
 ## 7. テストと検証
 
@@ -540,13 +617,14 @@ review ペインは唯一 sandbox を残す経路のため、`codex sandbox -c s
 |---|---|
 | 構文 | 変更した全シェルスクリプトに `bash -n`、`launch-workspace.sh` は `zsh -n` も実行 |
 | 既存回帰 | `bash test/test-launch-workspace-codex.sh`、`bash test/test-launch-workspace-review-config.sh` |
-| 静的検査（拡張） | `test-launch-workspace-codex.sh` に追加: ① codex 全 5 モードで `--dangerously-bypass-hook-trust` が付くこと ② **claude 全 5 モード**（plan / superpowers / execute / standby / review）で付かないこと ③ `--unattended` 付きの execute で生成 runner に `AskUserQuestion` の文字列が現れないこと ④ `--unattended` 無しでは現行文言が保たれること（後方互換スナップショット） |
-| 動的検査（新規） | `test/test-codex-review-sandbox.sh` — 一時 worktree を作り、`codex sandbox` で ⓐ `--add-dir` 付きで `STATUS_DIR/review/` に書けること ⓑ `--add-dir` 無しでは拒否され、かつ**承認待ちにならず即座に失敗する**こと ⓒ `git diff` が成功することを検査する。`codex` 不在の環境では skip する |
-| 新規ユニット | `test/test-issue-fetch.sh` — `gh` をスタブ化し、除外フィルタ / claim 失敗時の除外 / claim 全滅時の exit 3 / release / reconcile の状態遷移を検査 |
+| 静的検査（拡張） | `test-launch-workspace-codex.sh` に追加: ① codex 全 5 モードで `--dangerously-bypass-hook-trust` が付くこと ② claude 全 5 モードで付かないこと ③ codex review に `-c approval_policy='never'` が必ず付くこと ④ `--unattended` 付き execute の生成 runner に `AskUserQuestion` が現れないこと ⑤ `--unattended` 無しでは現行文言が保たれること ⑥ `write_status` が既存 `pr_url` を引き継ぐこと |
+| プロンプト検査（新規） | `test/test-loop-prompt.sh` — loop 用にレンダリングした task file / `TASK_TEXT` に `AskUserQuestion` が現れないこと、非ループでは現行ブロックが保たれること（review 有無 × design engine の各組合せ） |
+| ユニット（新規） | `test/test-issue-fetch.sh` — `gh` をスタブ化し、⒜ 生成クエリ（`no:assignee` を使うこと、`--assignee none` を渡さないこと、3 ラベルの negative qualifier が入ること）⒝ 先頭窓が全除外でも次窓に候補があれば取得できること ⒞ claim 失敗時の除外 ⒟ claim 全滅時の exit 3 ⒠ release / reconcile の状態遷移 ⒡ ロックの排他（同時 2 回取得で片方が失敗すること）を検査 |
+| 動的検査（新規） | `test/test-codex-review-sandbox.sh` — 一時 worktree で `codex sandbox` により ⓐ `--add-dir` 付きで `STATUS_DIR/review/` に書けること ⓑ `--add-dir` 無しでは拒否されること ⓒ `git diff` が成功することを検査。**`approval_policy` の挙動は本テストの証明範囲外**であることをコメントに明記。`codex` 不在の環境では skip |
 | ワークスペース全体 | ルートで `pnpm check` |
-| E2E（手動チェックリスト） | `CLAUDE.md` のテスト方法節に追加: ① 実 hook を持つ worktree で codex ペインが trust prompt を出さずに起動すること ② ループが 2 バッチ以上回り、バッチ間で worktree / workspace が確実に片付くこと ③ ループ中に一度も AskUserQuestion が出ないこと ④ 非ループ dispatch の挙動が従来どおりであること |
+| E2E（手動チェックリスト） | `CLAUDE.md` に追加: ① 実 hook を持つ worktree で codex ペインが trust prompt を出さずに起動すること ② hung child（`executing` のまま通知を送らない子）が `task_timeout_min` で timeout 扱いになり、cleanup 後に次バッチへ進むこと ③ ループが 2 バッチ以上回り、バッチ間で worktree / workspace が確実に片付くこと ④ ループ中に一度も AskUserQuestion が出ないこと ⑤ `--loop` を付けない通常 dispatch が従来どおり動き、`.dispatch-loop/` が作られないこと |
 
-hook trust の「実 TUI を起動して prompt が出ないこと」の検査は対話セッションを要するため自動化せず、E2E 手動チェックリストに置く。sandbox 側の検証は `codex sandbox` サブコマンドで非対話に実施できるため自動化する。
+hook trust の「実 TUI で prompt が出ないこと」の検査は対話セッションを要するため自動化せず、E2E 手動チェックリストに置く。同様に、ループ発動の分岐は LLM の判断であり静的テストの対象にできないため、`--loop` を唯一の機械的 entry point とする仕様（§3.1 冒頭）と E2E 項目⑤で担保する。
 
 ## 8. ドキュメント整合
 
@@ -561,10 +639,11 @@ hook trust の「実 TUI を起動して prompt が出ないこと」の検査�
 
 - engine × MODE 起動表（`--dangerously-bypass-hook-trust` の追加）
 - `launch-workspace.sh --unattended` / `prewarm-panes.sh --unattended` の仕様
-- loop モードの存在と参照先（`references/loop-mode.md`）
+- `write_status` の `pr_url` 引き継ぎ
+- loop モードの存在と参照先（`references/loop-mode.md`）、`.dispatch-loop/` の役割
 - `loop.task_timeout_min` config キー
 - hook trust バイパスが非ループにも及ぶこと（§6.5）
-- `CLAUDE.md` メンテナンス手順への新項目追加（ループモードの整合検証）と、項目 20 / 39 の更新
+- `CLAUDE.md` メンテナンス手順への新項目追加と、項目 20 / 39 の更新
 
 バージョンは機能追加のため minor バンプ: `apps/cmux-team-dispatch-task/.claude-plugin/plugin.json` を 1.9.0 → 1.10.0 とし、ルート `.claude-plugin/marketplace.json` の対応 version も同期する。
 
@@ -573,14 +652,18 @@ hook trust の「実 TUI を起動して prompt が出ないこと」の検査�
 | リスク | 軽減策 |
 |---|---|
 | 親セッションのコンテキストがバッチを重ねるほど肥大する | バッチごとの報告は Template B のみに絞り、詳細は `loop-state.json` に書いて画面に出さない。最大バッチ数の上限も安全弁として機能する |
-| ラベル付与に失敗した issue を無限に拾い続ける | claim 失敗時はそのバッチから除外し状態にも登録しない。候補があったのに claim 全滅なら exit 3 でループを中断する（§3.3） |
-| 親が claim 後に落ちて issue が回収不能になる | `status=claimed` と `dispatched` を区別し、次回ループの Step L0-5 reconciliation で claimed を release する |
-| 子セッションが応答せず永久に待つ | タスク単位タイムアウト（既定 90 分）で `timeout` 扱いにし、cleanup して次へ進む |
-| 前バッチの残骸で次バッチの待機が終わらない | `monitor-dispatch.sh` を使わず当該バッチの slug 集合のみをポーリングする（§3.6）。加えて Step L0-4 の stale 検査 |
-| `--dangerously-skip-permissions` により意図しない破壊的操作が走る | worktree 隔離は従来どおり維持される。ループは Step L0-1 の明示 opt-in を通らないと開始しない |
+| hung child を誰も打ち切らない | 待機を親のターン内の同期処理（`batch-wait.sh` の反復呼び出し）にし、deadline を `claimed_at` からの絶対時刻で判定する（§3.7） |
+| 対象 issue が残っているのに「対象なし」で終了する | dispatch ラベルの除外をサーバサイド search qualifier で行い、取得窓が足りない場合は倍化して再取得する（§3.6） |
+| 未完成タスクを `done` と誤認して worktree / branch を消す | cleanup 前に成果物を独立に検証し、落ちたものは `error` へ降格する（§3.8.1） |
+| 失敗タスクの未コミット成果物を失う | worktree 削除前に WIP コミット → patch 保存 → いずれも失敗なら worktree 温存（§3.8.3） |
+| ラベル付与に失敗した issue を無限に拾い続ける | claim 失敗時はそのバッチから除外し状態にも登録しない。候補があったのに claim 全滅なら exit 3 でループを中断する |
+| 親が claim 後に落ちて issue が回収不能になる | `claimed` / `dispatched` を区別し、Step L0-4 の reconcile で workspace の生存を確認して release または中止する |
+| ロックが取れたまま／取り合いになる | `mkdir` による atomic 取得、`heartbeat` による stale 判定、中断する全経路での明示的解放（§3.4） |
+| 通常 dispatch の `rm -rf .dispatch/` がループ状態を消す | ループ状態を `.dispatch-loop/` に分離し、Step L0-5 の stale 検査で同時実行を検出する |
+| `--dangerously-skip-permissions` による意図しない破壊的操作 | worktree 隔離は従来どおり維持される。ループは `--loop` または Step L0-1 の明示 opt-in を通らないと開始しない |
 | hook trust バイパスによるセキュリティ挙動の変化 | §6.5 に例外として明記し、README / CLAUDE.md にも記載する |
-| Wait and merge でコンフリクトが頻発しループが空回りする | conflict 時は worktree・branch を温存して `dispatch/failed` にし、次バッチへ進む。`dispatch/failed` により再取得されない |
-| worktree / branch の削除に失敗して漏れる | `loop-state.json.leaked[]` に記録し、Step L3 のサマリで手動整理対象として提示する |
+| Wait and merge のコンフリクトでループが空回りする | conflict 時は worktree・branch を温存して `dispatch/failed` にし、次バッチへ進む。ラベルにより再取得されない |
+| worktree / branch の削除に失敗して漏れる | `leaked[]` に記録し、Step L3 のサマリで手動整理対象として提示する |
 
 ## 10. 既知の未修正事項（本設計のスコープ外）
 
@@ -588,6 +671,8 @@ hook trust の「実 TUI を起動して prompt が出ないこと」の検査�
 
 ## 11. 制約
 
-- **同一リポジトリに対するループの並行実行は非サポート**。`gh issue list` と `gh issue edit --add-label` は compare-and-set ではないため、2 つのループが同時に list すると同じ issue を両方が claim し得る。GitHub API だけでは原子的な所有権を実現できないため、リポジトリ単位で単一オーケストレータを前提とし、`.dispatch/loop.lock` による**同一マシン上の**検出のみを行う。別マシンからの同時実行は検出できないため、運用上の約束とする
+- **同一リポジトリに対するループの並行実行は非サポート**。`gh issue list` と `gh issue edit --add-label` は compare-and-set ではないため、2 つのループが同時に list すると同じ issue を両方が claim し得る。GitHub API だけでは原子的な所有権を実現できないため、リポジトリ単位で単一オーケストレータを前提とし、`.dispatch-loop/loop.lock.d` による**同一マシン上の**検出のみを行う。別マシンからの同時実行は検出できないため、運用上の約束とする
+- **ループと通常 dispatch の同時実行も非サポート**。通常 dispatch の cleanup は `.dispatch/` を無条件削除するため、Step L0-5 の stale 検査でループ開始を拒否する
+- **中断したループの自動再開は行わない**。`reconcile` は走行中の子や `dispatched` 状態を検出したら中止して人に返す
 - ループは `workspace` レイアウト + `prewarm: true` を推奨構成とする。`prewarm: false` でも動作するが、Phase B は spawn fallback となるため `--unattended` の伝播が必須である（§4.3）
 - ループ中の子セッションは plan モード固定であり、brainstorming による設計探索は行わない
