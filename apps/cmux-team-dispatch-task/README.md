@@ -235,7 +235,7 @@ claude が担う（詳細は下記 Phase A-R / Phase B-R 参照）。
 {
   "default": "claude",
   "runners": [
-    { "name": "claude", "command": "claude", "engine": "claude", "review_model": "claude-opus-4-7[1m]" },
+    { "name": "claude", "command": "claude", "engine": "claude", "review_model": "opus[1m]" },
     { "name": "codex",  "command": "codex",  "engine": "codex",  "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra",
       "plan_effort": "xhigh", "review_effort": "xhigh", "exec_effort": "high" }
   ]
@@ -244,7 +244,7 @@ claude が担う（詳細は下記 Phase A-R / Phase B-R 参照）。
 
 | フィールド | 意味 |
 |----------|------|
-| `runners[].review_model` | レビューペインに渡すモデル名。`engine: codex` runner: design=claude タスクのレビューペイン用（未設定ならそのタスクのレビューは無効）。`engine: claude` runner: design=codex タスクのレビュアーに選ばれたときのモデル（未設定なら `claude-opus-4-7[1m]`） |
+| `runners[].review_model` | レビューペインに渡すモデル名。`engine: codex` runner: design=claude タスクのレビューペイン用（未設定ならそのタスクのレビューは無効）。`engine: claude` runner: design=codex タスクのレビュアーに選ばれたときのモデル（未設定なら `opus[1m]`） |
 | `runners[].exec_model` | （`engine: codex` の runner のみ）Phase B 実行系（execute / standby ペイン）で `--model` 未指定時にフォールバック適用。review ペインには適用されない。未設定なら codex 側デフォルト（`~/.codex/config.toml`） |
 | `runners[].plan_effort` / `review_effort` / `exec_effort` | （`engine: codex` の runner のみ。値: `minimal`\|`low`\|`medium`\|`high`\|`xhigh`）codex セッションの reasoning effort。それぞれ設計（plan/superpowers）/ レビュー / 実行（execute/standby）に `-c model_reasoning_effort='<値>'` として注入される。優先順位: **明示 `--effort` > runner フィールド > 無指定**（`~/.codex/config.toml` の既定） |
 
@@ -259,8 +259,8 @@ inbox にも記録する。配線に失敗したペインの初期プロンプ�
 
 | 選択肢 | 表示条件 | 動作 |
 |--------|---------|------|
-| **opus 1m** | 常時 | Phase A と **同一 model**。`/model claude-opus-4-7[1m]` で切替後、**現セッションで実装続行** |
-| **sonnet** | 常時 | **異なる model**。`launch-workspace.sh --mode execute` で子 surface を spawn し、`claude --model claude-sonnet-4-6 --dangerously-skip-permissions 'Read and execute the plan at <path>'` を runner script でラップして起動 |
+| **opus 1m** | 常時 | Phase A と **同一 model**。`/model opus[1m]` で切替後、**現セッションで実装続行** |
+| **sonnet** | 常時 | **異なる model**。`launch-workspace.sh --mode execute` で子 surface を spawn し、`claude --model sonnet --dangerously-skip-permissions 'Read and execute the plan at <path>'` を runner script でラップして起動 |
 | **codex** | `~/.claude/cmux-team-dispatch-task/runners.json` に `engine: codex` runner がある時のみ | **異なる model**。`launch-workspace.sh --mode execute --runner <codex-runner>` で spawn し、codex を `--dangerously-bypass-approvals-and-sandbox` 付きで起動。runner に `exec_model`（例: `gpt-5.6-terra`）があれば `--model` として適用（レビューペインの `review_model` とは独立）。`external_migration` により親 claude セッションを引き継ぐ |
 
 Codex の起動方針は mode ごとに分離されています。`superpowers` / `plan` / `execute` / `standby` は

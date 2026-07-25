@@ -27,7 +27,7 @@
 #                                      inner prompt が
 #                                      "Read and execute the plan at <path>" になる
 #   --model <model>                    Model flag passed as --model <X>
-#                                      (例: claude-sonnet-4-6 / gpt-5.6-sol)。claude engine は
+#                                      (例: sonnet / gpt-5.6-sol)。claude engine は
 #                                      execute/standby、codex engine は execute/standby/review で反映。
 #                                      codex engine では未指定時に runner の exec_model に
 #                                      フォールバックする (execute/standby のみ)

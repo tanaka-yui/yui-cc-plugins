@@ -148,7 +148,7 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
      - claude engine の runner が 0 件 → 警告し、codex 設計タスクの Phase A-R / B-R は無効
      - 1 件 → その runner を黙って採用
      - 2 件以上 → AskUserQuestion で毎 dispatch 選択（「codex 設計タスクのレビュアー (claude 側) に使う runner を選んでください」、選択肢 = claude engine runners、description に `command` + 設定済み `review_model`）
-     選ばれた runner 名を `REVIEWER_RUNNER`、その `review_model`（未設定なら `claude-opus-4-7[1m]`）を `CLAUDE_REVIEW_MODEL` として Step 1g / Step 2 に渡す
+     選ばれた runner 名を `REVIEWER_RUNNER`、その `review_model`（未設定なら `opus[1m]`）を `CLAUDE_REVIEW_MODEL` として Step 1g / Step 2 に渡す
 7. **(1g)** **メッセージトランスポート解決**（`message_type`、初回のみ質問）:
 
    子 → 親の通知手段を決める。`send-message`（現行の cmux send、default）/ `agmsg`
@@ -663,7 +663,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 {
   "default": "claude",
   "runners": [
-    { "name": "claude",  "command": "claude",  "engine": "claude", "review_model": "claude-opus-4-7[1m]" },
+    { "name": "claude",  "command": "claude",  "engine": "claude", "review_model": "opus[1m]" },
     { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
     { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra",
       "plan_effort": "xhigh", "review_effort": "xhigh", "exec_effort": "high" }
@@ -677,7 +677,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 | `runners[].name` | AskUserQuestion の選択肢ラベル兼一意 ID |
 | `runners[].command` | 実際に実行するコマンド／関数名 |
 | `runners[].engine` | `claude` または `codex`。MODE 別の起動引数組み立てを切替（下表参照） |
-| `runners[].review_model` | （任意）レビューペインに渡すモデル名。`engine: codex` の runner: design=claude タスクの Phase A-R/B-R レビューペイン（codex）用、未設定ならそのタスクのレビューは無効。`engine: claude` の runner: design=codex タスクのレビュアーに選ばれたとき claude レビューペインに渡すモデル名、未設定時は `claude-opus-4-7[1m]` にフォールバック |
+| `runners[].review_model` | （任意）レビューペインに渡すモデル名。`engine: codex` の runner: design=claude タスクの Phase A-R/B-R レビューペイン（codex）用、未設定ならそのタスクのレビューは無効。`engine: claude` の runner: design=codex タスクのレビュアーに選ばれたとき claude レビューペインに渡すモデル名、未設定時は `opus[1m]` にフォールバック |
 | `runners[].exec_model` | （任意、`engine: codex` の runner のみ）Phase B 実行系（execute / standby）で `--model` 未指定時にフォールバック適用されるモデル名。review ペインには適用されない。未設定なら codex 側デフォルト（config.toml） |
 | `runners[].plan_effort` / `review_effort` / `exec_effort` | （任意、`engine: codex` の runner のみ。値: `minimal`\|`low`\|`medium`\|`high`\|`xhigh`）codex セッションの reasoning effort。それぞれ Phase A 設計（plan / superpowers）/ レビューペイン（review）/ 実行系（execute / standby）に `-c model_reasoning_effort='<値>'` として注入される。未設定なら `-c` フラグを付けず `~/.codex/config.toml` の既定に任せる |
 
@@ -716,7 +716,7 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
 3. カスタム選択時は AskUserQuestion ループで `name / command / engine` を 1 件ずつ収集、最後に「もう 1 件追加？」を繰り返し確認
    - **review_model**（自由入力）— engine が `codex` のとき: Phase A-R/B-R レビュー用モデル
      （例 `gpt-5.6-sol`）。engine が `claude` のとき: design=codex タスクのレビュアーに選ばれた
-     場合のモデル（例 `claude-opus-4-7[1m]`）。空回答で省略可
+     場合のモデル（例 `opus[1m]`）。空回答で省略可
    - **exec_model**（自由入力、engine が `codex` のときのみ質問、例 `gpt-5.6-terra`）—
      Phase B 実行系（execute / standby）用モデル。空回答で省略可（codex 側デフォルトを使用）
    - **plan_effort / review_effort / exec_effort**（選択: 空 / minimal / low / medium / high /
@@ -1206,7 +1206,7 @@ Phase B-R が実装完了後・PR 作成前に挟まる）。プロンプトテ�
   sonnet → sonnet standby、codex → codex standby へ実行依頼を送り、`.deferred` を touch する。
   prewarm.json が無い（prewarm off / split）場合は claude variant と同じく `launch-workspace.sh
   --mode execute` にフォールバック（opus 1m は reviewer runner の command + `--model
-  'claude-opus-4-7[1m]'` + `--skip-permissions`）
+  'opus[1m]'` + `--skip-permissions`）
 
 #### plan モードの遵守ゲート（ExitPlanMode hook）
 
@@ -1277,7 +1277,7 @@ Phase A 完了後、コード変更を始める前に task prompt が解決し�
 
 | 選択肢 | 表示条件 | 動作 |
 |--------|---------|------|
-| **opus 1m** | 常時 | Phase A と **同一 model** 扱い。`/model claude-opus-4-7[1m]` で切り替え、**現セッションで実装続行**。未使用の standby ペイン（sonnet / codex / review）は閉じずに開いたまま idle 維持（常 4 ペイン。下記「opus 1m 選択時のペイン」参照） |
+| **opus 1m** | 常時 | Phase A と **同一 model** 扱い。`/model opus[1m]` で切り替え、**現セッションで実装続行**。未使用の standby ペイン（sonnet / codex / review）は閉じずに開いたまま idle 維持（常 4 ペイン。下記「opus 1m 選択時のペイン」参照） |
 | **sonnet** | 常時 | **異なる model**。まず `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute` で spawn（下記参照） |
 | **codex** | `runners.json` に `engine: codex` の runner が **1 件以上ある時のみ** | **異なる model**。sonnet と同様に `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute --runner <codex-runner>` で spawn |
 
@@ -1339,7 +1339,7 @@ zsh <skill-dir>/scripts/launch-workspace.sh \
   --cwd "$PWD" \
   --mode execute \
   --plan-file <PLAN_FILE_PATH> \
-  --model claude-sonnet-4-6 \
+  --model sonnet \
   --skip-permissions \
   --status-dir "<EXISTING_STATUS_DIR>" \
   --layout <LAYOUT> \

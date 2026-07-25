@@ -257,7 +257,7 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
      > codex 設計タスクのレビュアー (claude 側) に使う runner を選んでください
      options = claude engine runners (label = `name`, description = `command` + 設定済み `review_model`)
    選ばれた runner 名を `REVIEWER_RUNNER` とし、その `review_model`（未設定なら
-   `claude-opus-4-7[1m]`）を `CLAUDE_REVIEW_MODEL` として Step 1g / Step 2 に渡す。
+   `opus[1m]`）を `CLAUDE_REVIEW_MODEL` として Step 1g / Step 2 に渡す。
 
 **runners.json schema (minimal):**
 
@@ -265,7 +265,7 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
 {
   "default": "claude",
   "runners": [
-    { "name": "claude",  "command": "claude",  "engine": "claude", "review_model": "claude-opus-4-7[1m]" },
+    { "name": "claude",  "command": "claude",  "engine": "claude", "review_model": "opus[1m]" },
     { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
     { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra",
       "plan_effort": "xhigh", "review_effort": "xhigh", "exec_effort": "high" }
@@ -282,7 +282,7 @@ Field meanings:
   - `engine: codex` の runner: design=claude のタスクで Phase A-R/B-R のレビューペイン
     (codex) に渡すモデル名。未設定ならそのタスクのレビューは無効
   - `engine: claude` の runner: design=codex のタスクでレビュアー runner に選ばれたとき、
-    claude レビューペインに渡すモデル名。未設定時は `claude-opus-4-7[1m]` にフォールバック
+    claude レビューペインに渡すモデル名。未設定時は `opus[1m]` にフォールバック
 - `exec_model` (optional, `engine: codex` の runner のみ): Phase B の実行系
   (execute / standby) で `--model` 未指定時に `launch-workspace.sh` がフォールバック適用する
   モデル名。review ペインには適用されない。未設定なら codex 側デフォルト (config.toml)
@@ -352,7 +352,7 @@ the parent claude account).
    - **engine** (choice: `claude` / `codex`)
    - **review_model** (free text) — engine が `codex` のとき: Phase A-R/B-R レビュー用モデル
      (例 `gpt-5.6-sol`)。engine が `claude` のとき: design=codex タスクのレビュアーに
-     選ばれた場合のモデル (例 `claude-opus-4-7[1m]`)。空回答で省略可
+     選ばれた場合のモデル (例 `opus[1m]`)。空回答で省略可
    - **exec_model** (free text, engine が `codex` のときのみ質問, 例 `gpt-5.6-terra`) —
      Phase B 実行系 (execute / standby) 用モデル。空回答で省略可 (codex 側デフォルトを使用)
    - **plan_effort / review_effort / exec_effort** (choice: 空 / minimal / low / medium /
@@ -723,7 +723,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 
   Behavior by selection:
 
-    [SAME MODEL] "opus 1m" → run `/model claude-opus-4-7[1m]` and continue execution
+    [SAME MODEL] "opus 1m" → run `/model opus[1m]` and continue execution
       in THIS session. Proceed to implement the plan you wrote in Phase A.
 
       Leave the pre-warmed standby panes (sonnet / codex / review) OPEN and idle —
@@ -776,7 +776,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           --cwd "$PWD" \
           --mode execute \
           --plan-file <PLAN_FILE_PATH> \
-          --model claude-sonnet-4-6 \
+          --model sonnet \
           --skip-permissions \
           --status-dir "<EXISTING_STATUS_DIR>" \
           --layout <LAYOUT> \
@@ -861,7 +861,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
       at pane launch).
   IF prewarm.json is absent (prewarm off / split layout), fall back to spawning
   via launch-workspace.sh --mode execute exactly as the claude variant does
-  (opus 1m fallback: --model 'claude-opus-4-7[1m]' --skip-permissions with the
+  (opus 1m fallback: --model 'opus[1m]' --skip-permissions with the
   reviewer runner's command via --runner <REVIEWER_RUNNER>).
 ```
 
@@ -880,7 +880,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   PHASE B — Execution model default is fixed to "<default>" (skip AskUserQuestion):
     ExitPlanMode 後は AskUserQuestion をスキップし、直ちに <default> の既存 Phase B
     ブランチを実行してください。新しい実行経路は作らないこと。
-    - opus 1m: design=claude は `/model claude-opus-4-7[1m]` で現セッション実装、
+    - opus 1m: design=claude は `/model opus[1m]` で現セッション実装、
       design=codex は既存の review/opus pane 委譲手順を実行する。
     - sonnet: 既存の prewarm または spawn の sonnet 委譲手順を実行する。
     - codex: 既存の prewarm または spawn の codex 委譲手順を実行する。
@@ -938,7 +938,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   `codex`）。以下のテンプレート出し分けはすべてこの値で決まる。
 - テンプレートはタスクの設計 runner の engine で出し分ける:
   - design=claude → 従来どおり（PHASE A は "always opus"、PHASE B の SAME MODEL は
-    `/model claude-opus-4-7[1m]`）
+    `/model opus[1m]`）
   - design=codex → PHASE A / PHASE B セクションを上の「codex 設計 variant」に差し替える。
     `{{REVIEW_BLOCK}}` は variant の PHASE A と PHASE B の間に、`{{CODE_REVIEW_BLOCK}}` は
     variant の PHASE B の後に、それぞれ差し替え後もそのまま注入する（挿入位置はテンプレート内の
@@ -2279,7 +2279,7 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` followed by `cmux send-key return` when the child Claude session exits. The trailing `send-key return` is required so messages don't sit in the parent claude TUI's input box waiting for a manual Enter press.
 - **Runner script**: A `.cmux-team-dispatch-task-run-<workspace-name>.sh` file is created in each worktree (one per launch — Child and Phase B grandchild get different filenames since they share the worktree). They're cleaned up along with the worktree.
 - **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. The `command` of the first such runner is used for the spawn launch. `cmux codex install-hooks` is also required so that `external_migration = true` is set and codex picks up the parent claude session automatically.
-- **Same-model vs different-model in Phase B**: `exec_choice` controls whether Phase B asks or takes a fixed default; it never introduces a new execution path. For design=claude, "opus 1m" counts as the same model and stays in the current session via `/model claude-opus-4-7[1m]`. Any other choice (sonnet / codex) is treated as a different model: when a pre-warmed standby pane exists (prewarm.json), the Child hands off by sending the execution request to that pane; otherwise it triggers a spawn via `launch-workspace.sh --mode execute`: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends an `/exit` instruction so the grandchild Claude/Codex session closes its TUI after the PR is created — without this the runner wrapper never reaches `write_status "done"` and status.json gets stuck on `executing`.
+- **Same-model vs different-model in Phase B**: `exec_choice` controls whether Phase B asks or takes a fixed default; it never introduces a new execution path. For design=claude, "opus 1m" counts as the same model and stays in the current session via `/model opus[1m]`. Any other choice (sonnet / codex) is treated as a different model: when a pre-warmed standby pane exists (prewarm.json), the Child hands off by sending the execution request to that pane; otherwise it triggers a spawn via `launch-workspace.sh --mode execute`: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends an `/exit` instruction so the grandchild Claude/Codex session closes its TUI after the PR is created — without this the runner wrapper never reaches `write_status "done"` and status.json gets stuck on `executing`.
 - **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. `design_runner` can fix the Step 1f selection for all tasks; `exec_choice` can fix Phase B. The runners.json registry remains runtime-only and is bootstrapped on first run via AskUserQuestion.
 - **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。**agmsg push は inbox 記録専用で、idle セッションを起こせない** (watcher はバックグラウンド Bash として動き、その stream 出力はプロセスが終了するまで注入されない) — したがって wake は常に `cmux send` + `send-key return` で行い、agmsg 配線が生きているときは同一文を inbox にも記録する (dual-send)。agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (send.sh + cmux send の両方。Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ。同じく両チャネル)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
 - **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを配置。Phase A-R (Step 1g `REVIEW_ENABLED`) が無効時は縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)、有効時は 2×2 均等グリッド (左上: opus / 右上: codex レビュー / 左下: sonnet / 右下: codex、prewarm.json に `review` キー)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から dual-send で送る (常に `cmux send` + `send-key return`、agmsg 配線が生きていれば加えて `send.sh` で inbox 記録)。standby wrapper は `<STATUS_DIR>/.assigned-<name>` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`。Phase B の実行指示も同じ dual-send: prewarm.json の `delivery` 値が `"agmsg"` なら `send.sh` で inbox にも記録し、どちらの値でも `cmux send` + `send-key return` を必ず発行する。

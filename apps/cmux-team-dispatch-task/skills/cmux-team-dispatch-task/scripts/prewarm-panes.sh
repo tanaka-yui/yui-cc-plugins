@@ -43,8 +43,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGMSG_DIR="$HOME/.agents/skills/agmsg/scripts"
-OPUS_MODEL="claude-opus-4-7[1m]"
-SONNET_MODEL="claude-sonnet-4-6"
+OPUS_MODEL="opus[1m]"
+SONNET_MODEL="sonnet"
 
 die() {
   echo "Error: $1" >&2
