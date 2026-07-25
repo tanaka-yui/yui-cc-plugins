@@ -58,6 +58,10 @@
 #                                      したタスクの遅延書き込み (status 上書き / status dir の
 #                                      再生成) を防ぐ。未指定 (非ループ) では wrapper の
 #                                      挙動は従来どおり
+#   --unattended                       ループモード専用。--mode execute / standby で有効。
+#                                      inner prompt のレビュー fallback から対話質問を除去し、
+#                                      claude engine には --dangerously-skip-permissions を
+#                                      強制付与する。他モードでは警告して無視
 #   --status-dir <path>                Directory for writing status files
 #   --layout workspace|split           Layout mode (default: workspace)
 #   --split-from <surface-id>          Surface to split from (required for split mode)
@@ -132,6 +136,7 @@ SKIP_PERMISSIONS=0
 DEFER_STATUS=0
 REVIEW_CONFIG=""
 TIMEOUT_SENTINEL=""
+UNATTENDED=0
 MESSAGE_TYPE="send-message"
 AGMSG_TEAM=""
 AGMSG_FROM=""
@@ -197,6 +202,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -lt 2 ]] && die "--timeout-sentinel requires a path argument"
       TIMEOUT_SENTINEL="$2"
       shift 2
+      ;;
+    --unattended)
+      UNATTENDED=1
+      shift
       ;;
     --status-dir)
       [[ $# -lt 2 ]] && die "--status-dir requires a path argument"
@@ -517,6 +526,12 @@ fi
 #
 # claude-teams layout uses `cmux claude-teams` (claude-only) and ignores --runner.
 
+# --unattended は実行系 (execute / standby) 専用
+if [[ $UNATTENDED -eq 1 && "$MODE" != "execute" && "$MODE" != "standby" ]]; then
+  log "warn" "--unattended is only meaningful with --mode execute/standby; ignoring for mode=$MODE"
+  UNATTENDED=0
+fi
+
 # execute モードでは計画ファイルを直接 inner prompt に埋め込む。
 # あわせて「完了後に必ずセッションを exit せよ」という指示を埋め込む。
 # これを入れないと grandchild Claude/Codex が PR 作成後も TUI で idle 待機してしまい、
@@ -546,7 +561,14 @@ if [[ "$MODE" == "execute" ]]; then
     [[ -n "$REVIEWER_WORKSPACE" ]] \
       && TARGET_FLAGS="--workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE"
     READ_SCREEN_CMD="$CMUX read-screen $TARGET_FLAGS"
-    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send $TARGET_FLAGS followed by: $CMUX send-key $TARGET_FLAGS return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons. (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. If round 3 still ends with needs_work, or the wait exits stalled again after one re-send of the same round with a fresh baseline: if you can ask the user interactively via AskUserQuestion, ask whether to proceed to the PR or keep going; otherwise note the unresolved or skipped review in the PR body and proceed. "
+    # (1)(2) は対話有無で変わらない共通部分
+    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send $TARGET_FLAGS followed by: $CMUX send-key $TARGET_FLAGS return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons. (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. "
+    if [[ $UNATTENDED -eq 1 ]]; then
+      # 無人ループ: 判断を求めず固定のフォールバックを取る。文中にクォート文字を使わないこと
+      REVIEW_INSTRUCTION="${REVIEW_INSTRUCTION}If round 3 still ends with needs_work, note the unresolved findings in the PR body and proceed to the PR. If the wait exits stalled, re-check the verdict file, then re-send the same round once with a fresh baseline; if it stalls again, skip the review, note the skipped review in the PR body, and proceed to the PR. No interactive user is attached to this session, so never wait for a human decision. "
+    else
+      REVIEW_INSTRUCTION="${REVIEW_INSTRUCTION}If round 3 still ends with needs_work, or the wait exits stalled again after one re-send of the same round with a fresh baseline: if you can ask the user interactively via AskUserQuestion, ask whether to proceed to the PR or keep going; otherwise note the unresolved or skipped review in the PR body and proceed. "
+    fi
   fi
   PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${EXIT_INSTRUCTION}"
 else
@@ -564,6 +586,10 @@ CLAUDE_EXTRA_FLAGS=""
 if [[ -n "$MODEL" ]]; then
   # model 名に [1m] のような glob メタ文字が含まれても zsh -ic 内で展開されないよう quote する
   CLAUDE_EXTRA_FLAGS="--model '$MODEL'"
+fi
+# 無人ループでは permission prompt / ExitPlanMode 承認で止まらないよう強制する
+if [[ $UNATTENDED -eq 1 && "$RUNNER_ENGINE" == "claude" ]]; then
+  SKIP_PERMISSIONS=1
 fi
 if [[ $SKIP_PERMISSIONS -eq 1 ]]; then
   if [[ -n "$CLAUDE_EXTRA_FLAGS" ]]; then

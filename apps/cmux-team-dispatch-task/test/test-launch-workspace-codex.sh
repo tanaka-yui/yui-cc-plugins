@@ -149,6 +149,27 @@ plain_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" 
 plain_runner=$(jq -r '.runner_file' <<<"$plain_output")
 assert_contains "$plain_runner" 'TIMEOUT_SENTINEL=""' 'T10 未指定時は空の sentinel パス'
 
+# --- --unattended: spawn 経路の inner prompt から質問分岐を除去する ---
+cat > "$TMP/review-config.json" <<JSON
+{"reviewer_surface":"surface:9","reviewer_workspace":"workspace:3","review_dir":"$TMP/status/review"}
+JSON
+
+unattended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
+  --status-dir "$TMP/status" --review-config "$TMP/review-config.json" --unattended "unattended-exec")
+unattended_runner=$(jq -r '.runner_file' <<<"$unattended_output")
+assert_not_contains "$unattended_runner" 'AskUserQuestion' 'T12 --unattended の runner に質問分岐が無い'
+assert_contains "$unattended_runner" '--dangerously-skip-permissions' 'T12 --unattended は claude に skip-permissions を強制'
+assert_contains "$unattended_runner" 'note the unresolved findings in the PR body and proceed' \
+  'T12 --unattended は round 3 の固定フォールバックを持つ'
+
+# 後方互換: --unattended 無しでは現行文言が保たれる
+attended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
+  --status-dir "$TMP/status" --review-config "$TMP/review-config.json" "attended-exec")
+attended_runner=$(jq -r '.runner_file' <<<"$attended_output")
+assert_contains "$attended_runner" 'AskUserQuestion' 'T13 --unattended 無しでは現行の質問分岐が残る'
+
 if command -v codex >/dev/null 2>&1 && [[ "${RUN_CODEX_DYNAMIC_TEST:-0}" == "1" ]]; then
   echo 'INFO: dynamic Codex writable-root test is enabled externally.'
 else
