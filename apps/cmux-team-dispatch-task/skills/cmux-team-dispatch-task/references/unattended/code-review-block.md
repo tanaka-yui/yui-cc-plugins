@@ -1,1 +1,1 @@
-Before completion, request code review. After three rounds, record unresolved findings and proceed.
+Use `cmux send` followed by `cmux send-key return` to request each review. Capture a reviewer screen baseline, and at 15-minute boundaries compare a fresh capture; retry screen observation three times at 10-second intervals. An unchanged live pane is stalled; two consecutive all-failed observations are also stalled. Re-send the same round once after a stall, then record a skipped review and proceed if it stalls again.

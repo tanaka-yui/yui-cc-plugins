@@ -1,1 +1,1 @@
-Phase A: use the Claude design pane to produce the implementation plan. Phase B: execute the approved plan with the selected runner. Do not request interactive input; record unresolved decisions in the result.
+Phase A: use the Claude design pane to produce and commit a plan. Phase B: use the same Claude session for opus[1m], or delegate to the selected sonnet/codex execution pane. Mark the selected status owner before sending execution instructions. Do not request interactive input; record unresolved decisions in the result and end the session after completion.

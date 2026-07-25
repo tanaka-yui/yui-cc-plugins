@@ -1999,7 +1999,11 @@ Present the user with two options:
 
 1. Remove only the dispatch directory:
    ```bash
-   rm -rf .dispatch/
+   if bash <this-skill-dir>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check; then
+     rm -rf .dispatch/
+   else
+     echo "issue ループが実行中のため .dispatch/ の一括削除をスキップします" >&2
+   fi
    ```
 2. Display cleanup instructions to the user:
 
@@ -2110,8 +2114,12 @@ for slug in <task-slugs>; do
   [[ "$delete_br_all" == "true" ]] && git branch -D "feat/$slug" 2>/dev/null
 done
 
-# 4) Final housekeeping (always run — clears dispatch state regardless of answers).
-rm -rf .dispatch/
+# 4) Final housekeeping. A live issue loop owns .dispatch/, so never clear it wholesale.
+if bash <this-skill-dir>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check; then
+  rm -rf .dispatch/
+else
+  echo "issue ループが実行中のため .dispatch/ の一括削除をスキップします" >&2
+fi
 rmdir .worktrees 2>/dev/null
 ```
 
