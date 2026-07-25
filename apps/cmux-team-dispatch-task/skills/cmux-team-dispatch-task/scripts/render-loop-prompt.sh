@@ -19,6 +19,8 @@ phase=$(cat "$REF_DIR/phase-block-$DESIGN.md")
 printf 'Task slug: %s\nIssue: #%s — %s\nURL: %s\n\n%s\n\nIssue body:\n' "$SLUG" "$ISSUE" "$TITLE" "$URL" "$phase"
 cat "$BODY_FILE"
 printf '\n\nPlan hint: %s\nExecution choice: %s\nStatus directory: %s\nTimeout sentinel: %s\nTeam: %s\nLayout: %s\nParent workspace: %s\nSkill directory: %s\n' "$PLAN_HINT" "$EXEC" "$STATUS" "$SENTINEL" "$TEAM" "$LAYOUT" "$PARENT_WS" "$SKILL_DIR"
+printf '\nSTATUS PROTOCOL: immediately write %s/status.json with status=executing. On completion, write status=done or status=error and write %s/result.md. Preserve an existing pr_url. If the timeout sentinel exists, do not write status. For PR integration include Closes #%s.\n' "$STATUS" "$STATUS" "$ISSUE"
+printf 'Before delegating, inspect %s/prewarm.json, touch .assigned-<selected-pane>, send the complete request text, and touch .deferred when a child owns status. Spawn fallback must pass --unattended and --timeout-sentinel %s.\n' "$STATUS" "$SENTINEL"
 [[ -n "$PARENT_SF" ]] && printf 'Parent surface: %s\n' "$PARENT_SF"
 if [[ "$REVIEW" == on ]]; then
   [[ -n "$REVIEW_MODEL" && -n "$REVIEW_RUNNER" && -n "$REVIEW_AGENT" ]] || die "review=on requires review model, runner, and pane agent"
