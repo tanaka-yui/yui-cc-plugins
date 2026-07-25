@@ -13,7 +13,7 @@ description: >
   Use when: "parallel execution", "team dispatch", "run these at once",
   "run these in parallel", "dispatch tasks", "execute these simultaneously",
   or when 2+ independent tasks need concurrent execution.
-argument-hint: "<task1>, <task2>, ... [--layout split|claude-teams] [--no-grid]"
+argument-hint: "<task1>, <task2>, ... [--layout split|claude-teams] [--no-grid] [--loop]"
 ---
 
 # Team Dispatch
@@ -77,6 +77,12 @@ Rules:
 Mode column abbreviation: `superpwr` = superpowers (brainstorming), `plan` = built-in /plan mode.
 
 ---
+
+## Loop Mode (GitHub issue 自動ループ)
+
+`--loop` または issue を尽きるまで自動処理する明示要求でのみ発動する。発動時は [`references/loop-mode.md`](references/loop-mode.md) に従う。通常 dispatch の前と cleanup 前には `scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check` を実行し、`.dispatch-loop/loop.lock.d` が live なら開始・一括 cleanup を行わない。
+
+ループ用のプロンプトは `scripts/render-loop-prompt.sh` が `references/unattended/` の確定文面から生成する。手で組み立てない。
 
 ## Step 1: Parse and Prepare
 

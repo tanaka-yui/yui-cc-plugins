@@ -479,3 +479,6 @@ rmdir .pre-link-backup-<TS>
 ## ライセンス
 
 [MIT](LICENSE)
+# GitHub issue 自動ループ
+
+`--loop` を指定すると、GitHub issue を claim してバッチ単位で処理する。詳細は skill の `references/loop-mode.md` を参照する。ループ中は `.dispatch-loop/` のロックにより通常 dispatch を保護する。Codex runner は hook trust 確認を無人で通すため `--dangerously-bypass-hook-trust` を使用する。
