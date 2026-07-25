@@ -482,3 +482,12 @@ rmdir .pre-link-backup-<TS>
 # GitHub issue 自動ループ
 
 `--loop` を指定すると、GitHub issue を claim してバッチ単位で処理する。詳細は skill の `references/loop-mode.md` を参照する。ループ中は `.dispatch-loop/` のロックにより通常 dispatch を保護する。Codex runner は hook trust 確認を無人で通すため `--dangerously-bypass-hook-trust` を使用する。
+
+## Phase B-R 有効時の完了通知について
+
+Phase B-R（実装後コードレビュー）を有効にすると、実装ペインへ送る指示文が拡張版に差し替わります。
+この拡張版には **engine 別の終了指示**（codex は `/exit` ではなくセッション自体を終了）と
+**親への完了通知**（agmsg + `cmux send` + `send-key return`）の両方が含まれます。
+
+実装ペインは指示文しか読んでいないため、この 2 つが指示文の中に無いと、実装が完了しても
+セッションが終了せず、親に通知が届きません。カスタマイズする場合はこの 2 点を落とさないでください。

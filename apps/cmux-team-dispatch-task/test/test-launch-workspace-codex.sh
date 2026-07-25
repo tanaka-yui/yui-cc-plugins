@@ -133,6 +133,23 @@ SKILL_MD="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
 assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately' \
   'T7 SKILL.md codex prewarm block defines base REQUEST_TEXT with codex session-end exit'
 
+# --- T14/T15: Phase B-R の拡張 REQUEST_TEXT の退行ガード ---
+# Phase B-R が有効なとき、拡張 REQUEST_TEXT は codex 用 base REQUEST_TEXT を上書きする。
+# 旧仕様の末尾は engine 中立の「run /exit (claude) or end the session (codex)」1 文だったため、
+# codex への強い指示 (Do NOT run /exit / idle 残留禁止) が失われ、codex が TUI に居座って
+# runner wrapper の完了通知に到達しない事故が起きた。さらに standby ペインは task prompt を
+# 読まないので、子側の必須通知も構造的に届いていなかった。両方を固定する。
+assert_contains "$SKILL_MD" 'END THE CODEX SESSION' \
+  'T14 extended REQUEST_TEXT tells codex to end its own session'
+assert_contains "$SKILL_MD" 'do NOT run /exit (codex does not act on it) and do NOT leave' \
+  'T14 extended REQUEST_TEXT forbids /exit for codex'
+assert_not_contains "$SKILL_MD" 'or end the session (codex)' \
+  'T14 the ambiguous engine-neutral exit wording is gone'
+assert_contains "$SKILL_MD" 'MANDATORY completion notification. You received this request as typed' \
+  'T15 extended REQUEST_TEXT carries the mandatory completion notification'
+assert_contains "$SKILL_MD" '<PARENT_WORKSPACE_ID> = the parent workspace ID' \
+  'T15 extended REQUEST_TEXT documents the parent workspace placeholder'
+
 # --- pr_url 引き継ぎ / timeout sentinel ガード ---
 sentinel_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode standby --runner claude --status-dir "$TMP/status" \

@@ -1450,3 +1450,18 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
 # GitHub issue 自動ループ
 
 `--loop` は `references/loop-mode.md` の手順で GitHub issue をバッチ処理する。状態は `.dispatch-loop/`、タスク状態は `.dispatch/` に置く。`loop.task_timeout_min` と `loop.lock_lease_min` は timeout とロック lease を別に設定する。通常 dispatch は active loop lock があれば開始・一括 cleanup を拒否する。Codex 起動には全経路で `--dangerously-bypass-hook-trust` を付与する。runner wrapper は既存の `pr_url` を保持する。
+
+## Phase B-R 有効時の実行指示と完了通知
+
+Phase B-R を有効にすると、standby ペインへ送る `REQUEST_TEXT` は「共通プロトコル a」の拡張版に差し替わり、
+engine 別の base `REQUEST_TEXT` を**上書きする**。そのため拡張版は次の 2 つを必ず自分で持つ必要がある。
+
+| 要素 | 内容 |
+|------|------|
+| engine 別 exit 指示 | claude は `run /exit`、codex は `END THE CODEX SESSION ITSELF`（`/exit` は codex では効かない）。codex が TUI に idle 残留すると runner wrapper が完了処理へ到達しない |
+| 完了通知 (dual-send) | `send.sh <team> <agent> parent` + `cmux send --workspace <parent>` + `cmux send-key --workspace <parent> return`。`cmux send` + `send-key` は idle な親を起こす唯一の手段なので省略不可 |
+
+standby ペインは `cmux send` で届いた `REQUEST_TEXT` しか読んでいない（`.cmux-team-dispatch-task-prompt.md` は
+未読）。したがって「status protocol は下に書いてある」という前提は成立せず、通知手順を拡張 `REQUEST_TEXT`
+自身に書かないと子側の通知経路が丸ごと欠落する。この 2 点が同時に欠けると、実装が正常に完了しても
+親には何も届かない。回帰テストは `test/test-launch-workspace-codex.sh` の T14 / T15。

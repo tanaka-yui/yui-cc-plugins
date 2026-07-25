@@ -1180,14 +1180,41 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 once (retake the baseline); if it stalls again, ask via
                 AskUserQuestion if you can (再依頼 / レビュー省略して PR 作成);
                 otherwise skip the review and note that in the PR body.
-            After the PR is created (or all changes are merged per the plan), run
-            /exit (claude) or end the session (codex). Do not leave it idle."
+            After the PR is created (or all changes are merged per the plan), do these
+            two things IN THIS ORDER. Neither may be skipped.
+            (a) MANDATORY completion notification. You received this request as typed
+                text and never read the task prompt file, so no other status protocol
+                applies to you — these commands are the only thing that informs the
+                parent. Send both channels:
+                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> parent
+                    '[dispatch] task <task-slug> finished (status: done)'
+                  /Applications/cmux.app/Contents/Resources/bin/cmux send --workspace <PARENT_WORKSPACE_ID>
+                    '[dispatch] task <task-slug> finished (status: done)'
+                  /Applications/cmux.app/Contents/Resources/bin/cmux send-key --workspace <PARENT_WORKSPACE_ID> return
+                Skip only the send.sh line when <TEAM> is empty. The cmux send +
+                send-key return pair is never optional — it is the only channel that
+                wakes an idle parent.
+            (b) End this session so the runner wrapper can finalize. claude
+                implementers run /exit. codex implementers must END THE CODEX SESSION
+                ITSELF — do NOT run /exit (codex does not act on it) and do NOT leave
+                the session idle. A codex TUI that stays idle blocks its wrapper
+                forever, so the wrapper backstop never fires either."
          Placeholder values: <REVIEWER_SURFACE> = the value fixed by the 設計 engine
          branch above (YOU review → your own $CMUX_SURFACE_ID; the review pane reviews
          → prewarm.json .review.surface_id), <TEAM> = the TEAM value given above (empty
          in send-message mode — then always use the cmux send path), <your-agent-name>
          = the implementing pane's agent name (<task-slug>-sonnet / <task-slug>-codex /
-         <task-slug>-opus, whichever Phase B choice dispatched to).
+         <task-slug>-opus, whichever Phase B choice dispatched to),
+         <PARENT_WORKSPACE_ID> = the parent workspace ID this dispatch was launched from.
+
+         この (a)(b) は省略できない。旧仕様は末尾が「run /exit (claude) or end the session
+         (codex)」という engine 中立の 1 文で、しかも完了通知に触れていなかった。その結果:
+           - Phase B-R を有効にすると、この拡張 REQUEST_TEXT が codex 用 base REQUEST_TEXT の
+             「end this codex session immediately … Do NOT run /exit」を上書きし、
+             codex への強い指示が失われる（CLAUDE.md 項目 21 が防ごうとした退行そのもの）
+           - standby ペインは task prompt を読んでいないため「finish per the instructions
+             below」に対応する status protocol が存在せず、子側の必須通知が構造的に届かない
+         この 2 つが重なると、実装が完了しても親には何の通知も届かない。
 
     共通プロトコル b–e — YOU become the code reviewer (only in the branches above
     that assign the reviewer role to YOU):
