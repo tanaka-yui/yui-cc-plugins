@@ -70,6 +70,12 @@ require_session_id() {
   [[ -n "$SESSION_ID" ]] || die "stable session id not found; set LOOP_SESSION_ID (or CLAUDE_CODE_SESSION_ID)"
 }
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# issue タイトルから workspace 名として安全な slug を作る (最大 30 文字)。
+make_slug() {
+  local number="$1" title="$2" body
+  body=$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//')
+  printf 'issue-%s-%s' "$number" "$body" | cut -c1-30 | sed -e 's/-$//'
+}
 dir_mtime_epoch() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
 iso_to_epoch() {
   date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null || echo 0
@@ -205,6 +211,66 @@ case "$SUBCOMMAND" in
       jq -n --argjson c "$CONFIG_JSON" --argjson f "$FILTER_JSON" --arg t "$(now_iso)" '{started_at:$t,filter:$f,config:$c,issues:{},batches:[],leaked:[]}' > "$local_tmp"
     fi
     mv "$local_tmp" "$STATE_FILE"
+    ;;
+  fetch)
+    require_owner
+    command -v gh >/dev/null 2>&1 || die "gh is not installed"
+    (( LIMIT > 0 && BATCH > 0 )) || die "fetch requires positive --limit and --batch"
+    [[ -f "$STATE_FILE" ]] || die "$STATE_FILE not found; run init first"
+    local_search="-label:dispatch/in-progress -label:dispatch/done -label:dispatch/failed"
+    gh_assignee_flags=()
+    case "$ASSIGNEE" in
+      '') ;;
+      @me) gh_assignee_flags=(--assignee @me) ;;
+      none) local_search="$local_search no:assignee" ;;
+      *) gh_assignee_flags=(--assignee "$ASSIGNEE") ;;
+    esac
+    gh_label_flags=()
+    [[ -n "$LABELS" ]] && gh_label_flags=(--label "$LABELS")
+    window=$(( LIMIT * 2 )); (( window > MAX_WINDOW )) && window=$MAX_WINDOW
+    candidates='[]'
+    exhaustion_known=0
+    while :; do
+      raw=$(gh issue list --state "$ISSUE_STATE" ${gh_label_flags[@]+"${gh_label_flags[@]}"} ${gh_assignee_flags[@]+"${gh_assignee_flags[@]}"} --search "$local_search" --limit "$window" --json number,title,body,url,labels) || die "gh issue list failed"
+      returned=$(jq 'length' <<<"$raw")
+      candidates=$(jq --slurpfile state <(jq '.issues // {}' "$STATE_FILE") '[.[] | (.number | tostring) as $number | select(($state[0] | has($number)) | not)]' <<<"$raw")
+      candidate_count=$(jq 'length' <<<"$candidates")
+      if (( returned < window || candidate_count > 0 )); then exhaustion_known=1; break; fi
+      (( window >= MAX_WINDOW )) && break
+      window=$(( window * 2 )); (( window > MAX_WINDOW )) && window=$MAX_WINDOW
+      log fetch "window全除外につき拡張: --limit $window"
+    done
+    if (( exhaustion_known == 0 )); then
+      log warn "取得窓を上限 $MAX_WINDOW まで広げても候補が尽きたと確認できませんでした"
+      exit 4
+    fi
+    if [[ "$(jq 'length' <<<"$candidates")" == 0 ]]; then echo '[]'; exit 0; fi
+    if (( DRY_RUN == 1 )); then jq --argjson max "$LIMIT" '.[0:$max]' <<<"$candidates"; exit 0; fi
+    tasks='[]'
+    candidate_length=$(jq 'length' <<<"$candidates")
+    index=0
+    while (( index < candidate_length )); do
+      [[ "$(jq 'length' <<<"$tasks")" -ge "$LIMIT" ]] && break
+      number=$(jq -r ".[$index].number" <<<"$candidates")
+      title=$(jq -r ".[$index].title" <<<"$candidates")
+      index=$(( index + 1 ))
+      if ! gh issue edit "$number" --add-label dispatch/in-progress >/dev/null 2>&1; then
+        log warn "issue #$number の claim に失敗したため除外します"
+        continue
+      fi
+      slug=$(make_slug "$number" "$title")
+      if ! state_write_soft '.issues[$number] = {slug:$slug,status:"claimed",batch:$batch,claimed_at:$claimed_at}' --arg number "$number" --arg slug "$slug" --argjson batch "$BATCH" --arg claimed_at "$(now_iso)"; then
+        gh issue edit "$number" --remove-label dispatch/in-progress >/dev/null 2>&1 || die "issue #$number: state 記録と claim 補償の両方に失敗しました"
+        log warn "issue #$number の state 記録に失敗したため claim を取り消しました"
+        continue
+      fi
+      source_index=$(( index - 1 ))
+      tasks=$(jq --argjson source "$candidates" --argjson i "$source_index" --arg slug "$slug" '. + [($source[$i] + {slug:$slug})]' <<<"$tasks")
+      log claim "issue #$number -> $slug"
+    done
+    if [[ "$(jq 'length' <<<"$tasks")" == 0 ]]; then log warn "候補はありましたが claim が 1 件も成立しませんでした"; exit 3; fi
+    state_write '.batches += [{n:$batch,issues:$issues,started_at:$started_at}]' --argjson batch "$BATCH" --argjson issues "$(jq '[.[].number]' <<<"$tasks")" --arg started_at "$(now_iso)"
+    echo "$tasks"
     ;;
   *) die "unknown subcommand: $SUBCOMMAND" ;;
 esac

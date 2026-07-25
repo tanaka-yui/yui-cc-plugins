@@ -16,6 +16,9 @@ ok() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
 check() { if eval "$1"; then ok "$2"; else bad "$2"; fi; }
 run() { LOOP_SESSION_ID="${SID:-sess-a}" bash "$FETCH" --state-file "$STATE" "$@"; }
+limit_not_over_1000() {
+  awk '{ for (i = 1; i <= NF; i++) if ($i == "--limit" && $(i + 1) > 1000) bad = 1 } END { exit bad }' "$GH_LOG"
+}
 
 # L0: fresh lock-check is read-only.
 check 'SID=sess-a run lock-check' 'L0 .dispatch-loop 不在でも lock-check が成功する'
@@ -91,6 +94,82 @@ jq '.issues["99"] = {slug:"keep", status:"done", batch:1}' "$STATE" > "$STATE.t"
 SID=sess-c run init --config-json '{"concurrency":5}' --filter-json '{"state":"open"}'
 check '[[ $(jq -r ".issues | has(\"99\")" "$STATE") == "true" ]]' 'L12 再 init で issues を消さない'
 check '[[ $(jq -r ".config.concurrency" "$STATE") == "5" ]]' 'L12 再 init で config を更新する'
+
+# --- gh スタブ: 呼ばれた引数を gh.log に残し、GH_FIXTURE の中身を返す ---
+cat > "$TMP/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue list") cat "$GH_FIXTURE" ;;
+  "issue edit") exit "${GH_EDIT_EXIT:-0}" ;;
+  "label list") echo '[]' ;;
+  "label create") exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$TMP/bin/gh"
+export GH_LOG="$TMP/gh.log" GH_FIXTURE="$TMP/fixture.json"
+
+# L12 の sess-c から F/S スイートの sess-d へ ownership を明示的に引き継ぐ。
+SID=sess-c run lock-release
+SID=sess-d run lock-acquire --lease-min 30
+SID=sess-d run init --config-json '{"concurrency":2}' --filter-json '{"state":"open"}'
+
+# F1: normal fetch claims a server-side eligible issue.
+: > "$GH_LOG"
+echo '[{"number":12,"title":"Fix login redirect","body":"b","url":"https://x/12","labels":[]}]' > "$GH_FIXTURE"
+out=$(SID=sess-d run fetch --limit 2 --batch 1)
+check '[[ $(jq -r ".[0].number" <<<"$out") == 12 ]]' 'F1 候補を 1 件返す'
+check '[[ $(jq -r ".[0].slug" <<<"$out") == "issue-12-fix-login-redirect" ]]' 'F1 slug を生成する'
+check 'grep -q -- "-label:dispatch/in-progress" "$GH_LOG"' 'F1 dispatch ラベルの negative qualifier を送る'
+check 'grep -q -- "-label:dispatch/done" "$GH_LOG"' 'F1 dispatch/done も除外する'
+check '! grep -q -- "no:assignee" "$GH_LOG"' 'F1 assignee 未指定では no:assignee を付けない'
+check '[[ $(jq -r ".issues[\"12\"].status" "$STATE") == "claimed" ]]' 'F1 claim 済みとして記録する'
+
+# F2-F4: no-assignee query, exhaustion, and failed claims.
+: > "$GH_LOG"; echo '[]' > "$GH_FIXTURE"
+SID=sess-d run fetch --limit 2 --batch 2 --assignee none >/dev/null
+check 'grep -q -- "no:assignee" "$GH_LOG"' 'F2 未割当は no:assignee で表現する'
+check '! grep -q -- "--assignee none" "$GH_LOG"' 'F2 --assignee none を渡さない'
+out=$(SID=sess-d run fetch --limit 2 --batch 3)
+check '[[ "$out" == "[]" ]]' 'F3 候補ゼロは空配列'
+echo '[{"number":21,"title":"t","body":"b","url":"https://x/21","labels":[]}]' > "$GH_FIXTURE"
+set +e; GH_EDIT_EXIT=1 SID=sess-d run fetch --limit 2 --batch 4 >/dev/null 2>&1; rc=$?; set -e
+check '[[ $rc -eq 3 ]]' 'F4 claim 全滅は exit 3'
+
+# F5: full windows of only known issues are exhaustion-unknown at the safety cap.
+: > "$GH_LOG"
+jq -n '[range(1;1001) | {number:.,title:"t",body:"b",url:"https://x",labels:[]}]' > "$GH_FIXTURE"
+jq -n '[range(1;1001)] | {issues:(map({(tostring):{slug:"s",status:"done",batch:0}})|add),batches:[],leaked:[]}' > "$STATE"
+set +e; SID=sess-d run fetch --limit 2 --batch 5 >/dev/null 2>&1; rc=$?; set -e
+check '[[ $rc -eq 4 ]]' 'F5 上限まで満杯なら exit 4'
+check '[[ $(grep -c -- "--limit 1000" "$GH_LOG") -ge 1 ]]' 'F5 上限 1000 を一度は問い合わせる'
+check 'limit_not_over_1000' 'F5 --limit は 1000 を超えない'
+
+# F6: expanding the window finds a later unclaimed issue.
+cat > "$TMP/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue list")
+    lim=""; while [[ $# -gt 0 ]]; do [[ "$1" == "--limit" ]] && { lim="$2"; break; }; shift; done
+    if [[ "$lim" -le 4 ]]; then jq -n '[range(1;5)|{number:.,title:"t",body:"b",url:"https://x",labels:[]}]'
+    else jq -n '[range(1;8)|{number:.,title:"t",body:"b",url:"https://x",labels:[]}]'; fi ;;
+  "issue edit") exit "${GH_EDIT_EXIT:-0}" ;;
+  "label list") echo '[]' ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$TMP/bin/gh"
+: > "$GH_LOG"
+jq -n '[range(1;7)] | {started_at:"t",filter:{},config:{},issues:(map({(tostring):{slug:"s",status:"done",batch:0}})|add),batches:[],leaked:[]}' > "$STATE"
+out=$(SID=sess-d run fetch --limit 2 --batch 6)
+check '[[ $(jq -r "length" <<<"$out") == "1" ]]' 'F6 新候補は 1 件だけ'
+check '[[ $(jq -r ".[0].number" <<<"$out") == "7" ]]' 'F6 窓を広げて次窓の候補を拾う'
+check 'grep -q -- "--limit 8" "$GH_LOG"' 'F6 窓が倍化される'
+
+# sess-d remains the owner for Task 7.
+SID=sess-d run init --config-json '{"concurrency":2}' --filter-json '{"state":"open"}'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
