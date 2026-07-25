@@ -171,5 +171,67 @@ check 'grep -q -- "--limit 8" "$GH_LOG"' 'F6 窓が倍化される'
 # sess-d remains the owner for Task 7.
 SID=sess-d run init --config-json '{"concurrency":2}' --filter-json '{"state":"open"}'
 
+# --- S1: mark-dispatched ---
+jq -n '{issues:{"12":{slug:"issue-12-x",status:"claimed",batch:1,claimed_at:"2026-01-01T00:00:00Z"}},batches:[{n:1,issues:[12],started_at:"2026-01-01T00:00:00Z"}],leaked:[]}' > "$STATE"
+SID=sess-d run mark-dispatched --issue 12
+check '[[ $(jq -r ".issues[\"12\"].status" "$STATE") == "dispatched" ]]' 'S1 mark-dispatched が status を進める'
+
+# --- S2: release removes state only after the GitHub label transition succeeds. ---
+: > "$GH_LOG"
+SID=sess-d run release --issue 12
+check '[[ $(jq -r ".issues | has(\"12\")" "$STATE") == "false" ]]' 'S2 release がレコードを削除する'
+check 'grep -q -- "--remove-label dispatch/in-progress" "$GH_LOG"' 'S2 release がラベルを外す'
+
+# --- S3-S4b: reconcile keeps any potentially live work and only releases proven-orphan claims. ---
+jq -n '{issues:{"13":{slug:"s",status:"dispatched",batch:1}},batches:[],leaked:[]}' > "$STATE"
+out=$(SID=sess-d run reconcile)
+check '[[ $(jq -r ".action" <<<"$out") == "abort" ]]' 'S3 dispatched が残っていれば abort'
+jq -n '{issues:{"14":{slug:"gone",status:"claimed",batch:1}},batches:[],leaked:[]}' > "$STATE"
+out=$(DISPATCH_DIR="$TMP/repo/.dispatch" LOOP_REPO_ROOT="$TMP/repo" SID=sess-d run reconcile)
+check '[[ $(jq -r ".action" <<<"$out") == "ok" ]]' 'S4 痕跡の無い claimed は ok'
+check '[[ $(jq -r ".issues | has(\"14\")" "$STATE") == "false" ]]' 'S4 痕跡の無い claimed を release する'
+mkdir -p "$TMP/repo/.dispatch/alive" "$TMP/repo/.worktrees/alive"
+echo '{"sonnet":{"surface_id":"surface:99"}}' > "$TMP/repo/.dispatch/alive/prewarm.json"
+jq -n '{issues:{"15":{slug:"alive",status:"claimed",batch:1}},batches:[],leaked:[]}' > "$STATE"
+out=$(DISPATCH_DIR="$TMP/repo/.dispatch" LOOP_REPO_ROOT="$TMP/repo" CMUX_BIN=/nonexistent SID=sess-d run reconcile)
+check '[[ $(jq -r ".action" <<<"$out") == "abort" ]]' 'S4b 生存痕跡のある claimed は abort'
+check '[[ $(jq -r ".issues | has(\"15\")" "$STATE") == "true" ]]' 'S4b レコードを残す'
+rm -rf "$TMP/repo/.dispatch/alive" "$TMP/repo/.worktrees/alive"
+
+# --- S5-S6: labels and terminal state are persisted. ---
+: > "$GH_LOG"
+SID=sess-d run ensure-labels
+check '[[ $(grep -c -- "label create" "$GH_LOG") -eq 3 ]]' 'S5 3 ラベルを作成する'
+jq -n '{issues:{"15":{slug:"s",status:"dispatched",batch:1}},batches:[],leaked:[]}' > "$STATE"
+SID=sess-d run finalize --issue 15 --status done --pr-url https://x/pr/1
+check '[[ $(jq -r ".issues[\"15\"].status" "$STATE") == "done" ]]' 'S6 finalize が status を書く'
+check '[[ $(jq -r ".issues[\"15\"].pr_url" "$STATE") == "https://x/pr/1" ]]' 'S6 finalize が pr_url を書く'
+
+# --- refinement: partial failures must fail closed and leave durable state. ---
+jq -n '{issues:{"16":{slug:"release-fail",status:"claimed",batch:1}},batches:[],leaked:[]}' > "$STATE"
+set +e; GH_EDIT_EXIT=1 SID=sess-d run release --issue 16 >/dev/null 2>&1; rc=$?; set -e
+check '[[ $rc -ne 0 && $(jq -r ".issues | has(\"16\")" "$STATE") == "true" ]]' 'R1 release のラベル除去失敗は state を保持する'
+
+jq -n '{issues:{"17":{slug:"reconcile-fail",status:"claimed",batch:1}},batches:[],leaked:[]}' > "$STATE"
+set +e; out=$(GH_EDIT_EXIT=1 DISPATCH_DIR="$TMP/repo/.dispatch" LOOP_REPO_ROOT="$TMP/repo" SID=sess-d run reconcile); rc=$?; set -e
+check '[[ $rc -eq 0 && $(jq -r ".action" <<<"$out") == "abort" && $(jq -r ".issues | has(\"17\")" "$STATE") == "true" ]]' 'R2 reconcile のラベル除去失敗は abort して state を保持する'
+
+# state の atomic replace を拒否して claim 後の補償的 label removal を確認する。
+echo '[{"number":30,"title":"state failure","body":"b","url":"https://x/30","labels":[]}]' > "$GH_FIXTURE"
+: > "$GH_LOG"; chmod 500 "$TMP/repo/.dispatch-loop"
+set +e; SID=sess-d run fetch --limit 1 --batch 7 >/dev/null 2>&1; rc=$?; set -e
+chmod 700 "$TMP/repo/.dispatch-loop"
+check '[[ $rc -eq 3 && $(jq -r ".issues | has(\"30\")" "$STATE") == "false" ]]' 'R3 claim の state 書き込み失敗は記録を残さない'
+check 'grep -q -- "--remove-label dispatch/in-progress" "$GH_LOG"' 'R3 claim の state 書き込み失敗はラベルを補償的に外す'
+
+# heartbeat を更新できなければ owner 操作は停止し、state を書き換えない。
+before_state=$(cat "$STATE"); chmod 500 "$TMP/repo/.dispatch-loop/loop.lock.d"
+set +e; SID=sess-d run heartbeat >/dev/null 2>&1; rc=$?; set -e
+chmod 700 "$TMP/repo/.dispatch-loop/loop.lock.d"
+check '[[ $rc -ne 0 && $(cat "$STATE") == "$before_state" ]]' 'R4 heartbeat 更新失敗は state を触らず失敗する'
+
+# テストの終わりにロックを解放する。
+SID=sess-d run lock-release
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

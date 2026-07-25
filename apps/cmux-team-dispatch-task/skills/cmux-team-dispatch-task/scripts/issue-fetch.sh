@@ -63,6 +63,10 @@ OWNER_FILE="$LOCK_DIR/owner.json"
 TAKEOVER_MUTEX="$LOOP_DIR/loop.lock.takeover.d"
 SESSION_ID="${LOOP_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
 HOST="$(hostname -s 2>/dev/null || echo unknown)"
+# タスク状態は従来どおり .dispatch/<slug>。テストは環境変数で差し替えられる。
+DISPATCH_DIR="${DISPATCH_DIR:-$(dirname "$LOOP_DIR")/.dispatch}"
+REPO_ROOT="${LOOP_REPO_ROOT:-$(dirname "$LOOP_DIR")}"
+CMUX="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
 LOCK_INFLIGHT_GRACE_SEC=60
 TAKEOVER_MUTEX_GRACE_SEC=120
 
@@ -271,6 +275,63 @@ case "$SUBCOMMAND" in
     if [[ "$(jq 'length' <<<"$tasks")" == 0 ]]; then log warn "候補はありましたが claim が 1 件も成立しませんでした"; exit 3; fi
     state_write '.batches += [{n:$batch,issues:$issues,started_at:$started_at}]' --argjson batch "$BATCH" --argjson issues "$(jq '[.[].number]' <<<"$tasks")" --arg started_at "$(now_iso)"
     echo "$tasks"
+    ;;
+  mark-dispatched)
+    require_owner
+    [[ -n "$ISSUE_NUM" ]] || die "--issue is required"
+    state_write '.issues[$key].status = "dispatched" | .issues[$key].dispatched_at = $timestamp' --arg key "$ISSUE_NUM" --arg timestamp "$(now_iso)"
+    ;;
+  release)
+    require_owner
+    [[ -n "$ISSUE_NUM" ]] || die "--issue is required"
+    command -v gh >/dev/null 2>&1 || die "gh is not installed; state is preserved"
+    if ! gh issue edit "$ISSUE_NUM" --remove-label dispatch/in-progress >/dev/null 2>&1; then
+      die "issue #$ISSUE_NUM のラベル除去に失敗したため state は保持します"
+    fi
+    state_write 'del(.issues[$key])' --arg key "$ISSUE_NUM"
+    ;;
+  reconcile)
+    require_owner
+    [[ -f "$STATE_FILE" ]] || { jq -n '{action:"ok",reasons:[]}'; exit 0; }
+    action=ok
+    reasons='[]'
+    for number in $(jq -r '.issues | to_entries[] | select(.value.status == "dispatched") | .key' "$STATE_FILE"); do
+      action=abort
+      reasons=$(jq --arg reason "issue #$number は dispatched のままです" '. + [$reason]' <<<"$reasons")
+    done
+    for number in $(jq -r '.issues | to_entries[] | select(.value.status == "claimed") | .key' "$STATE_FILE"); do
+      slug=$(jq -r --arg key "$number" '.issues[$key].slug' "$STATE_FILE")
+      evidence=""
+      [[ -f "$DISPATCH_DIR/$slug/status.json" ]] && evidence=status.json
+      [[ -f "$DISPATCH_DIR/$slug/prewarm.json" ]] && evidence="${evidence:+$evidence, }prewarm.json"
+      [[ -d "$REPO_ROOT/.worktrees/$slug" ]] && evidence="${evidence:+$evidence, }worktree"
+      if [[ -n "$evidence" ]]; then
+        action=abort
+        reasons=$(jq --arg reason "issue #$number ($slug) は生存の痕跡があります ($evidence)" '. + [$reason]' <<<"$reasons")
+      elif ! command -v gh >/dev/null 2>&1 || ! gh issue edit "$number" --remove-label dispatch/in-progress >/dev/null 2>&1; then
+        action=abort
+        reasons=$(jq --arg reason "issue #$number ($slug) のラベル除去に失敗しました" '. + [$reason]' <<<"$reasons")
+      else
+        state_write 'del(.issues[$key])' --arg key "$number"
+        reasons=$(jq --arg reason "issue #$number ($slug) を release しました" '. + [$reason]' <<<"$reasons")
+      fi
+    done
+    jq -n --arg action "$action" --argjson reasons "$reasons" '{action:$action,reasons:$reasons}'
+    ;;
+  ensure-labels)
+    require_owner
+    command -v gh >/dev/null 2>&1 || die "gh is not installed"
+    existing=$(gh label list --limit 200 --json name 2>/dev/null) || die "gh label list failed"
+    for label in dispatch/in-progress dispatch/done dispatch/failed; do
+      if [[ "$(jq -r --arg label "$label" '[.[] | select(.name == $label)] | length' <<<"$existing")" == 0 ]]; then
+        gh label create "$label" --description "cmux-team-dispatch-task issue loop" >/dev/null 2>&1 || die "ラベル '$label' の作成に失敗しました"
+      fi
+    done
+    ;;
+  finalize)
+    require_owner
+    [[ -n "$ISSUE_NUM" && -n "$FINAL_STATUS" ]] || die "finalize requires --issue and --status"
+    state_write '.issues[$key].status = $status | (if $pr == "" then . else .issues[$key].pr_url = $pr end) | (if $message == "" then . else .issues[$key].message = $message end)' --arg key "$ISSUE_NUM" --arg status "$FINAL_STATUS" --arg pr "$PR_URL" --arg message "$MESSAGE"
     ;;
   *) die "unknown subcommand: $SUBCOMMAND" ;;
 esac
