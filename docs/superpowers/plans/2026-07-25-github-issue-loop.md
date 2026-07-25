@@ -465,10 +465,41 @@ run_prewarm
 assert_no_line_with "--mode standby --defer-status --model opus[1m]" "--skip-permissions" \
   'U2 --unattended 無しでは opus standby に付かない'
 
-# --- U3: --timeout-sentinel を全 standby へ転送する ---
-run_prewarm --unattended --timeout-sentinel "$TMP/loop/timed-out/demo"
-assert_all_lines_with "--mode standby" "--timeout-sentinel $TMP/loop/timed-out/demo" \
-  'U3 全 standby 起動に sentinel が転送される'
+# --- U3: status 所有者になり得る全ペインへ sentinel を転送する ---
+# codex standby と claude review ペイン (--mode review) も対象にするため、
+# runners.json を与えて --codex-runner / --design-runner / --reviewer-runner を通す
+cat > "$TMP/runners.json" <<'JSON'
+{
+  "default": "claude",
+  "runners": [
+    { "name": "claude", "command": "claude", "engine": "claude", "review_model": "opus[1m]" },
+    { "name": "codex",  "command": "codex",  "engine": "codex",  "review_model": "gpt-5.6-sol" }
+  ]
+}
+JSON
+
+# design=claude + codex runner + review ペイン (--review-model)
+: > "$TMP/argv.log"
+ARGV_LOG="$TMP/argv.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  bash "$TMP/scripts/prewarm-panes.sh" \
+    --with-opus --message-type agmsg --agmsg-team demo-team \
+    --cwd "$TMP/repo" --slug demo --status-dir "$TMP/status" \
+    --codex-runner codex --review-model gpt-5.6-sol \
+    --unattended --timeout-sentinel "$TMP/loop/timed-out/demo" >/dev/null
+
+SENT="--timeout-sentinel $TMP/loop/timed-out/demo"
+# status 所有者になり得るのは opus / sonnet / codex standby と review ペインの 4 つ
+for pane in 'opus[1m]' 'sonnet' '--runner codex' '--mode review'; do
+  if grep -F -- "$pane" "$TMP/argv.log" | grep -Fq -- "$SENT"; then
+    ok "U3 '$pane' の起動に sentinel が転送される"
+  else
+    bad "U3 '$pane' の起動に sentinel が転送されていない"
+  fi
+done
+# 起動そのものが 4 回行われたことも確認する（起動されていなければ上の grep は素通りする）
+[[ $(grep -c -- '--mode standby\|--mode review' "$TMP/argv.log") -ge 4 ]] \
+  && ok 'U3 status 所有者候補が 4 つ以上起動された' \
+  || bad 'U3 起動されたペインが 4 つ未満'
 
 # --- U4: --timeout-sentinel 未指定なら一切現れない ---
 run_prewarm
@@ -609,8 +640,9 @@ git commit -m "feat(cmux-team-dispatch-task): prewarm-panes.sh に --unattended 
   - `issue-fetch.sh --state-file <path> lock-acquire --lease-min <N>` → 取得成功で exit 0
   - `issue-fetch.sh --state-file <path> lock-release` → owner 一致時のみ削除
   - `issue-fetch.sh --state-file <path> heartbeat`
-  - 環境変数 `LOOP_SESSION_ID`（未設定なら `$CLAUDE_CODE_SESSION_ID`、それも無ければ `unknown`）で owner identity を決める
-  - シェル関数 `state_write` / `require_owner`（後続タスクが同ファイル内で使う）
+  - `issue-fetch.sh --state-file <path> init --config-json <json> --filter-json <json>`
+  - owner identity は `LOOP_SESSION_ID`、無ければ `CLAUDE_CODE_SESSION_ID`。**どちらも無ければ `die`**（`$$` や時刻から作ると呼び出しごとに別 owner になり、acquire 直後の heartbeat すら弾かれる）
+  - シェル関数 `state_write` / `state_write_soft` / `require_owner` / `record_orphan`（後続タスクが同ファイル内で使う）
 
 **背景（spec §3.4）:** `mkdir` による atomic 取得、stale takeover は atomic rename の勝者のみ、liveness の正本は `owner.json.heartbeat` に一本化、release は owner 一致時のみ。
 
@@ -715,8 +747,32 @@ done
 sleep 0.3; : > "$BAR"; wait
 check '[[ $(wc -l < "$TMP/winners.txt" | tr -d " ") -eq 1 ]]' 'L10 同時 stale takeover の勝者も 1 つ'
 WINNER=$(cat "$TMP/winners.txt")
+check '[[ ! -d "$TMP/repo/.dispatch-loop/loop.lock.takeover.d" ]]' 'L10 takeover mutex が解放されている'
 LOOP_SESSION_ID="$WINNER" bash "$FETCH" --state-file "$STATE" lock-release >/dev/null 2>&1
+
+# --- L11: 安定した session id が無ければ開始を拒否する ---
+set +e
+(unset LOOP_SESSION_ID CLAUDE_CODE_SESSION_ID; bash "$FETCH" --state-file "$STATE" lock-check) >/dev/null 2>&1
+rc=$?
+set -e
+check '[[ $rc -ne 0 ]]' 'L11 session id 無しでは実行を拒否する'
+
+# --- L12: init が完全なスキーマで state を作る ---
 SID=sess-c run lock-acquire --lease-min 30 >/dev/null
+rm -f "$STATE"
+SID=sess-c run init \
+  --config-json '{"concurrency":2,"max_batches":3,"integration":"pr","task_timeout_min":90,"lock_lease_min":30}' \
+  --filter-json '{"labels":["enhancement"],"assignee":"@me","state":"open"}'
+check '[[ -f "$STATE" ]]' 'L12 init が loop-state.json を作る'
+check '[[ $(jq -r ".config.concurrency" "$STATE") == "2" ]]' 'L12 config を記録する'
+check '[[ $(jq -r ".filter.assignee" "$STATE") == "@me" ]]' 'L12 filter を記録する'
+check '[[ $(jq -r ".issues | length" "$STATE") == "0" ]]' 'L12 issues を初期化する'
+check '[[ $(jq -r ".started_at" "$STATE") != "null" ]]' 'L12 started_at を記録する'
+# 既存 state があるときは issues を保持したまま設定だけ差し替える
+jq '.issues["99"] = {slug:"keep", status:"done", batch:1}' "$STATE" > "$STATE.t" && mv "$STATE.t" "$STATE"
+SID=sess-c run init --config-json '{"concurrency":5}' --filter-json '{"state":"open"}'
+check '[[ $(jq -r ".issues | has(\"99\")" "$STATE") == "true" ]]' 'L12 再 init で issues を消さない'
+check '[[ $(jq -r ".config.concurrency" "$STATE") == "5" ]]' 'L12 再 init で config を更新する'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
@@ -742,6 +798,9 @@ Create `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/issu
 #   lock-acquire --lease-min <N>  .dispatch-loop/loop.lock.d を mkdir で atomic 取得する
 #   lock-release                  自分が owner のときだけ解放する (冪等)
 #   heartbeat                     owner.json の heartbeat を現在時刻に更新する
+#   init --config-json <json> --filter-json <json>
+#                                 loop-state.json を完全なスキーマで atomic 生成する
+#                                 (既存があれば config / filter だけ差し替える)
 #   reconcile                     claimed / dispatched の突き合わせ
 #   ensure-labels                 dispatch/* ラベルを確認し不足分を作成する
 #   fetch --limit <N> --batch <N> [--labels a,b] [--assignee @me|none]
@@ -779,6 +838,8 @@ ISSUE_NUM=""
 FINAL_STATUS=""
 PR_URL=""
 MESSAGE=""
+CONFIG_JSON=""
+FILTER_JSON=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -793,6 +854,8 @@ while [[ $# -gt 0 ]]; do
     --status)     [[ $# -lt 2 ]] && die "--status requires a value"; FINAL_STATUS="$2"; shift 2 ;;
     --pr-url)     [[ $# -lt 2 ]] && die "--pr-url requires a value"; PR_URL="$2"; shift 2 ;;
     --message)    [[ $# -lt 2 ]] && die "--message requires a value"; MESSAGE="$2"; shift 2 ;;
+    --config-json) [[ $# -lt 2 ]] && die "--config-json requires JSON"; CONFIG_JSON="$2"; shift 2 ;;
+    --filter-json) [[ $# -lt 2 ]] && die "--filter-json requires JSON"; FILTER_JSON="$2"; shift 2 ;;
     --dry-run)    DRY_RUN=1; shift ;;
     -*)           die "unknown option: $1" ;;
     *)            [[ -z "$SUBCOMMAND" ]] && SUBCOMMAND="$1" || die "unexpected argument: $1"; shift ;;
@@ -815,9 +878,12 @@ abs_dir() {
 LOOP_DIR="$(abs_dir "$(dirname "$STATE_FILE")")"
 LOCK_DIR="$LOOP_DIR/loop.lock.d"
 OWNER_FILE="$LOCK_DIR/owner.json"
-# 共通の "unknown" にすると、session id を持たない別プロセスを同一 owner と誤認する。
-# 最終手段では PID と時刻から一意な値を作る。
-SESSION_ID="${LOOP_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-anon-$$-$(date -u +%s)}}"
+# owner identity は「呼び出しをまたいで安定」でなければならない。$$ や時刻から作ると
+# サブコマンドごとに別プロセス = 別 owner になり、acquire 直後の heartbeat すら弾かれる。
+# 安定 ID が得られない環境ではループを開始させない。
+SESSION_ID="${LOOP_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+[[ -n "$SESSION_ID" ]] \
+  || die "stable session id not found; set LOOP_SESSION_ID (or CLAUDE_CODE_SESSION_ID) before starting the loop"
 HOST="$(hostname -s 2>/dev/null || echo unknown)"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -844,9 +910,15 @@ lock_is_live() {
     (( dir_age <= LOCK_INFLIGHT_GRACE_SEC ))
     return
   fi
-  local hb age
+  local hb age dir_age
   hb=$(jq -r '.heartbeat // empty' "$OWNER_FILE" 2>/dev/null || echo "")
-  [[ -n "$hb" ]] || return 0   # 壊れた owner.json も in-flight 扱いで安全側に倒す
+  if [[ -z "$hb" ]]; then
+    # 破損・部分書き込みの owner.json。無条件に live を返すと永久に takeover できなく
+    # なるので、owner.json 不在と同じ有限 grace で判定する
+    dir_age=$(( $(date -u +%s) - $(dir_mtime_epoch "$LOCK_DIR") ))
+    (( dir_age <= LOCK_INFLIGHT_GRACE_SEC ))
+    return
+  fi
   age=$(( $(date -u +%s) - $(iso_to_epoch "$hb") ))
   (( age <= LEASE_MIN * 60 ))
 }
@@ -946,17 +1018,35 @@ case "$SUBCOMMAND" in
       log "lock" "another loop is running; refusing to start"
       exit 1
     fi
-    # stale: owner.json を上書きすると 2 プロセスが同時に owner になれる。
-    # ディレクトリ自体の atomic rename に成功した 1 つだけが新しいロックを作る。
-    STALE_DIR="$LOOP_DIR/loop.lock.stale.$(date -u +%Y%m%dT%H%M%SZ).$SESSION_ID"
-    if mv "$LOCK_DIR" "$STALE_DIR" 2>/dev/null; then
-      if mkdir "$LOCK_DIR" 2>/dev/null; then
-        write_owner
-        log "lock" "took over a stale lock (previous moved to $STALE_DIR)"
-        exit 0
-      fi
+    # stale takeover。rename だけで直列化しようとすると ABA 競合が残る:
+    #   A と B が stale と判定 → A が rename + mkdir + owner 公開 → B が今度は
+    #   「A の新しいロック」を自分の退避先へ rename → B も owner になる。
+    # 退避先を一意にしても世代を比較していないので閉じない。そこで takeover 全体を
+    # 別の atomic mkdir mutex で直列化し、mutex の中で staleness を再判定する。
+    TAKEOVER_MUTEX="$LOOP_DIR/loop.lock.takeover.d"
+    if ! mkdir "$TAKEOVER_MUTEX" 2>/dev/null; then
+      log "lock" "another process is already taking over the stale lock"
+      exit 1
     fi
-    log "lock" "lost the race to take over a stale lock"
+    # mutex 取得後に必ず解放する
+    trap 'rmdir "$TAKEOVER_MUTEX" 2>/dev/null || true' EXIT
+    # 直列化された状態で再判定する。先行者が既に takeover を終えていれば live に戻っている
+    if lock_is_live; then
+      log "lock" "the lock was taken over by another process while we waited"
+      exit 1
+    fi
+    if [[ -d "$LOCK_DIR" ]]; then
+      STALE_DIR="$LOOP_DIR/loop.lock.stale.$(date -u +%Y%m%dT%H%M%SZ).$SESSION_ID"
+      mv "$LOCK_DIR" "$STALE_DIR" 2>/dev/null \
+        || { log "lock" "failed to quarantine the stale lock"; exit 1; }
+      log "lock" "quarantined the stale lock to $STALE_DIR"
+    fi
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      write_owner
+      log "lock" "took over a stale lock"
+      exit 0
+    fi
+    log "lock" "failed to create a new lock after takeover"
     exit 1
     ;;
 
@@ -984,6 +1074,30 @@ case "$SUBCOMMAND" in
     exit 0
     ;;
 
+  init)
+    require_owner
+    [[ -n "$CONFIG_JSON" ]] || die "--config-json is required"
+    [[ -n "$FILTER_JSON" ]] || die "--filter-json is required"
+    jq -e . >/dev/null 2>&1 <<<"$CONFIG_JSON" || die "--config-json is not valid JSON"
+    jq -e . >/dev/null 2>&1 <<<"$FILTER_JSON" || die "--filter-json is not valid JSON"
+    tmp=$(mktemp "$STATE_FILE.XXXXXX") || die "mktemp failed"
+    if [[ -f "$STATE_FILE" ]]; then
+      # 既存ファイルがあるときは issues / batches / leaked を保持したまま設定だけ差し替える
+      jq --argjson c "$CONFIG_JSON" --argjson f "$FILTER_JSON" \
+        '.config = $c | .filter = $f
+         | .issues  = (.issues  // {}) | .batches = (.batches // [])
+         | .leaked  = (.leaked  // []) | .started_at = (.started_at // (now|todate))' \
+        "$STATE_FILE" > "$tmp" || { rm -f "$tmp"; die "failed to update $STATE_FILE"; }
+    else
+      jq -n --argjson c "$CONFIG_JSON" --argjson f "$FILTER_JSON" --arg t "$(now_iso)" \
+        '{started_at:$t, filter:$f, config:$c, issues:{}, batches:[], leaked:[]}' \
+        > "$tmp" || { rm -f "$tmp"; die "failed to create $STATE_FILE"; }
+    fi
+    mv "$tmp" "$STATE_FILE"
+    log "init" "wrote $STATE_FILE"
+    exit 0
+    ;;
+
   *)
     die "unknown subcommand: $SUBCOMMAND"
     ;;
@@ -995,7 +1109,7 @@ esac
 - [ ] **Step 4: テストが通ることを確認する**
 
 Run: `bash apps/cmux-team-dispatch-task/test/test-issue-fetch.sh`
-Expected: L1〜L7 がすべて PASS し `--- all tests passed ---`
+Expected: L0〜L12 がすべて PASS し `--- all tests passed ---`
 
 Run: `bash -n apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/issue-fetch.sh`
 Expected: 無出力
@@ -1120,10 +1234,13 @@ esac
 STUB
 chmod +x "$TMP/bin/gh"
 : > "$GH_LOG"
-jq -n '[range(1;5)] | {issues: (map({(tostring): {slug:"s", status:"done", batch:0}}) | add),
+# 1..6 を登録済みにする。窓 4 では 1..4 が全除外、窓 8 で 7 だけが新候補として残る
+jq -n '[range(1;7)] | {started_at:"t", filter:{}, config:{},
+        issues: (map({(tostring): {slug:"s", status:"done", batch:0}}) | add),
         batches: [], leaked: []}' > "$STATE"
 out=$(SID=sess-d run fetch --limit 2 --batch 6)
-check '[[ $(jq -r ".[0].number" <<<"$out") == 7 ]]' 'F6 窓を広げて次窓の候補を拾う'
+check '[[ $(jq -r "length" <<<"$out") == "1" ]]' 'F6 新候補は 1 件だけ'
+check '[[ $(jq -r ".[0].number" <<<"$out") == "7" ]]' 'F6 窓を広げて次窓の候補を拾う'
 check 'grep -q -- "--limit 8" "$GH_LOG"' 'F6 窓が倍化される'
 
 echo '{"issues":{},"batches":[],"leaked":[]}' > "$STATE"
@@ -1155,6 +1272,8 @@ make_slug() {
     command -v gh >/dev/null 2>&1 || die "gh is not installed"
     (( LIMIT > 0 )) || die "--limit must be a positive number"
     (( BATCH > 0 )) || die "--batch must be a positive number"
+    # state は init で作られている前提。無いまま進むとローカル除外の jq が落ちる
+    [[ -f "$STATE_FILE" ]] || die "$STATE_FILE not found; run the init subcommand first"
 
     # dispatch ラベルはサーバ側で除外する。ローカル除外だけだと、先頭の窓が
     # すべて処理済みで埋まったときに「対象なし」と誤判定する。
@@ -1229,8 +1348,11 @@ make_slug() {
       # 残らない = 二度と拾えなくなる。書けなければラベルを補償的に外す。
       if ! state_write_soft '.issues[$k] = {slug:$s, status:"claimed", batch:$b, claimed_at:$t}' \
              --arg k "$NUM" --arg s "$SLUG" --argjson b "$BATCH" --arg t "$(now_iso)"; then
+        # 補償に成功すれば単に次の候補へ進む。補償にも失敗した場合は
+        # 「ラベルだけが残り追跡記録が無い」= その issue を二度と拾えない状態なので、
+        # 握り潰さず fatal にして人に返す
         gh issue edit "$NUM" --remove-label dispatch/in-progress >/dev/null 2>&1 \
-          || record_orphan "$NUM" "state 書き込み失敗後のラベル除去にも失敗しました"
+          || die "issue #$NUM: state を書けず、dispatch/in-progress ラベルの除去にも失敗しました。手動でラベルを外してください"
         log "warn" "issue #$NUM の state 記録に失敗したため claim を取り消しました"
         continue
       fi
@@ -1254,7 +1376,7 @@ make_slug() {
 - [ ] **Step 4: テストが通ることを確認する**
 
 Run: `bash apps/cmux-team-dispatch-task/test/test-issue-fetch.sh`
-Expected: F1〜F5 がすべて PASS
+Expected: F1〜F6 がすべて PASS
 
 - [ ] **Step 5: コミット**
 
@@ -1349,12 +1471,13 @@ DISPATCH_DIR="${DISPATCH_DIR:-$(dirname "$LOOP_DIR")/.dispatch}"
     [[ -n "$ISSUE_NUM" ]] || die "--issue is required"
     # 順序が重要: ラベルを外せていないのに state から消すと、サーバ側では
     # dispatch/in-progress のまま除外され続け、ローカルの追跡記録も消えて
-    # その issue は二度と拾えなくなる。外せるまで record は消さない。
-    if command -v gh >/dev/null 2>&1; then
-      if ! gh issue edit "$ISSUE_NUM" --remove-label dispatch/in-progress >/dev/null 2>&1; then
-        log "warn" "issue #$ISSUE_NUM のラベル除去に失敗したため state は保持します"
-        exit 1
-      fi
+    # その issue は二度と拾えなくなる。外せたことを確認するまで record は消さない。
+    # gh が無い場合も「外せたことを確認できない」ので record を残す。
+    command -v gh >/dev/null 2>&1 \
+      || { log "warn" "gh が無いためラベル除去を確認できません。state を保持します"; exit 1; }
+    if ! gh issue edit "$ISSUE_NUM" --remove-label dispatch/in-progress >/dev/null 2>&1; then
+      log "warn" "issue #$ISSUE_NUM のラベル除去に失敗したため state は保持します"
+      exit 1
     fi
     state_write 'del(.issues[$k])' --arg k "$ISSUE_NUM"
     log "release" "issue #$ISSUE_NUM を解放しました"
@@ -1379,9 +1502,10 @@ DISPATCH_DIR="${DISPATCH_DIR:-$(dirname "$LOOP_DIR")/.dispatch}"
         ACTION="abort"
         REASONS=$(jq --arg r "issue #$n ($slug) の workspace が生存しています" '. + [$r]' <<<"$REASONS")
       else
-        # release と同じ順序規則: ラベルを外せない限り record は消さない
-        if command -v gh >/dev/null 2>&1 \
-           && ! gh issue edit "$n" --remove-label dispatch/in-progress >/dev/null 2>&1; then
+        # release と同じ順序規則: ラベル除去の成功を確認できない限り record は消さない
+        # (gh が無い場合も「確認できない」に含める)
+        if ! command -v gh >/dev/null 2>&1 \
+           || ! gh issue edit "$n" --remove-label dispatch/in-progress >/dev/null 2>&1; then
           ACTION="abort"
           REASONS=$(jq --arg r "issue #$n ($slug) のラベル除去に失敗しました (手動で外してください)" \
             '. + [$r]' <<<"$REASONS")
@@ -1521,6 +1645,47 @@ sleep 1
 run_wait 1 >/dev/null
 NEW=$(jq -r '.heartbeat' "$LOOP/loop.lock.d/owner.json")
 check '[[ "$OLD" != "$NEW" ]]' 'W5 呼び出しごとに heartbeat が更新される'
+
+# --- W6: late write の封じ込め（動的検査） ---
+# 実際に launch-workspace.sh が生成した runner wrapper を、
+# 「sentinel 作成 → タスクディレクトリ削除 → wrapper の終了処理」の順で走らせる。
+LAUNCH="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/launch-workspace.sh"
+mkdir -p "$TMP/bin" "$TMP/wt" "$DISP/slug-late"
+export PATH="$TMP/bin:$PATH"
+# cmux と claude をスタブ化（wrapper は claude を起動して即 exit 0 する）
+cat > "$TMP/bin/cmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  new-workspace) echo 'workspace:1' ;;
+  list-pane-surfaces) echo 'surface:2' ;;
+  *) : ;;
+esac
+STUB
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/claude"
+chmod +x "$TMP/bin/cmux" "$TMP/bin/claude"
+git -C "$TMP/wt" init -q 2>/dev/null || true
+
+RES=$(CMUX_BIN="$TMP/bin/cmux" bash "$LAUNCH" \
+  --cwd "$TMP/wt" --mode standby --status-dir "$DISP/slug-late" \
+  --timeout-sentinel "$LOOP/timed-out/slug-late" "slug-late")
+RUNNER=$(jq -r '.runner_file' <<<"$RES")
+
+# sentinel を作り、タスクディレクトリを消してから wrapper を走らせる
+mkdir -p "$LOOP/timed-out"; : > "$LOOP/timed-out/slug-late"
+: > "$DISP/slug-late/.assigned-slug-late"     # 通常なら status を書く条件を満たす
+rm -rf "$DISP/slug-late"
+bash "$RUNNER" >/dev/null 2>&1 || true
+check '[[ ! -d "$DISP/slug-late" ]]' 'W6 sentinel があれば status ディレクトリが復活しない'
+
+# 対照: sentinel が無ければ従来どおり status を書く（ガードが効きすぎていないことの確認）
+rm -f "$LOOP/timed-out/slug-late"
+mkdir -p "$DISP/slug-late2"
+RES2=$(CMUX_BIN="$TMP/bin/cmux" bash "$LAUNCH" \
+  --cwd "$TMP/wt" --mode standby --status-dir "$DISP/slug-late2" "slug-late2")
+RUNNER2=$(jq -r '.runner_file' <<<"$RES2")
+: > "$DISP/slug-late2/.assigned-slug-late2"
+bash "$RUNNER2" >/dev/null 2>&1 || true
+check '[[ -f "$DISP/slug-late2/status.json" ]]' 'W6 sentinel 無しでは従来どおり status を書く'
 
 bash "$FETCH" --state-file "$STATE" lock-release >/dev/null 2>&1
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
@@ -1685,7 +1850,7 @@ done
 - [ ] **Step 4: テストが通ることを確認する**
 
 Run: `bash apps/cmux-team-dispatch-task/test/test-batch-wait.sh`
-Expected: W1〜W5 が PASS
+Expected: W1〜W6 が PASS
 
 Run: `bash -n apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/batch-wait.sh`
 Expected: 無出力
@@ -1818,7 +1983,42 @@ run_cleanup pr >/dev/null
 check '[[ $(jq -r ".issues[\"6\"].status" "$STATE") == "timeout" ]]' 'C6 timeout を done へ戻さない'
 check 'git -C "$REPO" show-ref --verify -q refs/heads/feat/latewrite' 'C6 timeout の branch を温存する'
 
-# --- C3: binary の変更が --binary patch で復元検証を通る ---
+# --- C7: finalize が失敗したら破壊的処理へ進まない ---
+make_task finfail yes
+echo '{"status":"error"}' > "$DISP/finfail/status.json"
+jq -n '{issues:{"7":{slug:"finfail",status:"error",batch:1}},batches:[{n:1,issues:[7]}],leaked:[]}' > "$STATE"
+chmod 500 "$LOOP"                       # state を書き換えられなくする
+set +e; run_cleanup pr >/dev/null 2>&1; rc=$?; set -e
+chmod 700 "$LOOP"
+check '[[ $rc -ne 0 ]]' 'C7 finalize 失敗で非 0 終了する'
+check '[[ -d "$REPO/.worktrees/finfail" ]]' 'C7 finalize 失敗時は worktree を温存する'
+check 'git -C "$REPO" show-ref --verify -q refs/heads/feat/finfail' 'C7 finalize 失敗時は branch を温存する'
+check '[[ -d "$DISP/finfail" ]]' 'C7 finalize 失敗時は status ディレクトリを温存する'
+
+# --- C8: terminal ラベルを付けられなければ破壊的処理へ進まない ---
+make_task labelfail yes
+echo '{"status":"done","pr_url":"https://x/pr/8"}' > "$DISP/labelfail/status.json"
+jq -n '{issues:{"8":{slug:"labelfail",status:"done",batch:1}},batches:[{n:1,issues:[8]}],leaked:[]}' > "$STATE"
+# gh: pr view / pr list は成功、issue edit --add-label だけ失敗させる
+cat > "$TMP/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"--add-label"*) exit 1 ;;
+  *"pr view"*)     echo '{"state":"OPEN"}' ;;
+  *"pr list"*)     echo '[{"url":"https://x/pr/8"}]' ;;
+  *)               exit 0 ;;
+esac
+STUB
+chmod +x "$TMP/bin/gh"
+run_cleanup pr >/dev/null
+check '[[ -d "$REPO/.worktrees/labelfail" ]]' 'C8 terminal ラベル失敗時は worktree を温存する'
+check 'git -C "$REPO" show-ref --verify -q refs/heads/feat/labelfail' 'C8 branch を温存する'
+check '[[ -d "$DISP/labelfail" ]]' 'C8 status ディレクトリを温存する'
+check '[[ $(jq -r ".leaked | length" "$STATE") -ge 1 ]]' 'C8 leaked に記録する'
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"
+
+# --- C3: binary の変更が --binary patch で保全され、clean worktree で検証を通る ---
+# commit を強制的に失敗させ、patch 経路を必ず通す
 make_task binfile yes
 printf '\x00\x01\x02binary' > "$REPO/.worktrees/binfile/b.bin"
 git -C "$REPO/.worktrees/binfile" add b.bin
@@ -1826,9 +2026,17 @@ git -C "$REPO/.worktrees/binfile" commit -qm "add binary"
 printf '\x00\x09\x09changed' > "$REPO/.worktrees/binfile/b.bin"
 echo '{"status":"error"}' > "$DISP/binfile/status.json"
 jq -n '{issues:{"3":{slug:"binfile",status:"error",batch:1}},batches:[{n:1,issues:[3]}],leaked:[]}' > "$STATE"
-run_cleanup pr >/dev/null
-check '[[ -f "$DISP/binfile/wip.patch" ]] || git -C "$REPO" log -1 --oneline feat/binfile | grep -q wip' \
-  'C3 binary 変更が WIP コミットまたは patch として保全される'
+FAIL_GIT_COMMIT=1 run_cleanup pr >/dev/null
+check '[[ -s "$DISP/binfile/wip.patch" ]]' 'C3 binary 変更が --binary patch として保全される'
+check 'grep -q "GIT binary patch" "$DISP/binfile/wip.patch"' 'C3 patch に binary 差分が含まれる'
+check '[[ ! -d "$REPO/.worktrees/binfile" ]]' 'C3 検証を通ったので worktree を削除する'
+# 保全した patch が実際に復元可能であることを、生成元とは別の clean worktree で確認する
+VBASE=$(git -C "$REPO" rev-parse "feat/binfile")
+VTMP="$TMP/verify"; rm -rf "$VTMP"
+git -C "$REPO" worktree add --detach -q "$VTMP" "$VBASE"
+check 'git -C "$VTMP" apply --check --binary "$DISP/binfile/wip.patch"' \
+  'C3 clean worktree に patch を適用できる（絶対パスで解決される）'
+git -C "$REPO" worktree remove "$VTMP" --force >/dev/null 2>&1 || true
 
 # --- C4: merge conflict では worktree・branch とも温存される ---
 make_task conflicted yes
@@ -1971,13 +2179,17 @@ preserve_wip() {
       || { record_leak "$slug: 未追跡ファイルの archive 作成に失敗"; return 1; }
     tar tzf "$d/wip-untracked.tar.gz" >/dev/null 2>&1 \
       || { record_leak "$slug: archive が壊れています"; return 1; }
-    # 件数だけでなくエントリ名そのものを NUL-safe に照合する (spec §10 の hardening 項目)
-    if ! diff -q \
-        <(tr '\0' '\n' < "$d/wip-untracked.manifest" | grep -v '^$' | LC_ALL=C sort) \
-        <(tar tzf "$d/wip-untracked.tar.gz" | grep -v '/$' | LC_ALL=C sort) >/dev/null 2>&1; then
+    # manifest と archive のエントリ名を照合する。ファイル名に改行を含み得るため
+    # NUL 区切りのまま比較する (tr で改行へ潰すと identity を保てない)
+    tar tzf "$d/wip-untracked.tar.gz" 2>/dev/null | grep -v "/$" | tr "\n" "\0" \
+      | LC_ALL=C sort -z > "$d/.archive-entries"
+    LC_ALL=C sort -z < "$d/wip-untracked.manifest" > "$d/.manifest-entries"
+    if ! cmp -s "$d/.manifest-entries" "$d/.archive-entries"; then
+      rm -f "$d/.manifest-entries" "$d/.archive-entries"
       record_leak "$slug: manifest と archive のエントリが一致しません"
       return 1
     fi
+    rm -f "$d/.manifest-entries" "$d/.archive-entries"
   fi
   git -C "$wt" status --porcelain > "$d/wip-status.txt" 2>/dev/null \
     || { record_leak "$slug: status の保存に失敗しました"; return 1; }
@@ -2017,20 +2229,30 @@ close_panes() {
   [[ -n "$ws" ]] && "$CMUX" close-workspace --workspace "$ws" >/dev/null 2>&1 || true
 }
 
+# terminal ラベルを「先に付けてから」in-progress を外す。逆順にすると、terminal ラベルの
+# 付与に失敗した瞬間に durable marker を 1 つも持たない open issue ができ、次のループで
+# 再 dispatch される (spec §3.6 の再取得防止が破れる)。
+# 成功 0 / 失敗 1。失敗した slug は cleanup を成功扱いしない。
 apply_labels() {
-  local num="$1" result="$2" closed="$3" slug="$4"
-  command -v gh >/dev/null 2>&1 || return 0
-  gh issue edit "$num" --remove-label dispatch/in-progress >/dev/null 2>&1 || true
+  local num="$1" result="$2" closed="$3" slug="$4" terminal
+  command -v gh >/dev/null 2>&1 || { log "warn" "gh が無いためラベル遷移をスキップします"; return 1; }
+  [[ "$result" == "done" ]] && terminal="dispatch/done" || terminal="dispatch/failed"
+
+  if ! gh issue edit "$num" --add-label "$terminal" >/dev/null 2>&1; then
+    log "warn" "issue #$num への $terminal 付与に失敗しました (in-progress は外しません)"
+    return 1
+  fi
+  # terminal ラベルが付いた後なら、in-progress の除去に失敗しても再取得はされない
+  gh issue edit "$num" --remove-label dispatch/in-progress >/dev/null 2>&1 \
+    || log "warn" "issue #$num の dispatch/in-progress 除去に失敗しました (手動で外してください)"
+
   if [[ "$result" == "done" ]]; then
-    gh issue edit "$num" --add-label dispatch/done >/dev/null 2>&1 \
-      || log "warn" "issue #$num への dispatch/done 付与に失敗"
     [[ "$closed" == "yes" ]] && { gh issue close "$num" --reason completed >/dev/null 2>&1 || true; }
   else
-    gh issue edit "$num" --add-label dispatch/failed >/dev/null 2>&1 \
-      || log "warn" "issue #$num への dispatch/failed 付与に失敗"
     gh issue comment "$num" --body "cmux-team-dispatch-task のループでこの issue の処理に失敗しました (結果: $result)。詳細は .dispatch/$slug/ と branch feat/$slug を確認してください。" \
       >/dev/null 2>&1 || true
   fi
+  return 0
 }
 
 for key in $(jq -r --argjson b "$BATCH" \
@@ -2059,7 +2281,8 @@ for key in $(jq -r --argjson b "$BATCH" \
       bash "$FETCH" --state-file "$STATE_FILE" finalize --issue "$key" --status error \
         --message "merge conflict" \
         || die "issue #$key の finalize に失敗しました"
-      apply_labels "$key" "error" "no" "$slug"
+      apply_labels "$key" "error" "no" "$slug" \
+        || record_leak "$slug: conflict 後の terminal ラベル付与に失敗しました"
       N_ERROR=$((N_ERROR+1))
       continue
     fi
@@ -2084,6 +2307,15 @@ for key in $(jq -r --argjson b "$BATCH" \
       || die "issue #$key の finalize に失敗しました (state を更新できない状態で破壊的処理を続けません)"
   fi
 
+  # ラベル遷移も破壊的処理の前に行う。terminal ラベルを付けられないまま worktree や
+  # status ディレクトリを消すと、durable marker を持たない open issue が残り、
+  # 次のループで同じ issue を再び dispatch してしまう
+  if ! apply_labels "$key" "$status" "$closed" "$slug"; then
+    record_leak "$slug: terminal ラベルを付けられなかったため worktree / branch / .dispatch を温存します"
+    N_UNVERIFIED=$((N_UNVERIFIED+1))
+    continue
+  fi
+
   if [[ "$keep_wt" == "no" ]]; then
     git -C "$REPO_ROOT" worktree remove "$wt" --force >/dev/null 2>&1 \
       || record_leak "$slug: worktree の削除に失敗しました"
@@ -2092,8 +2324,6 @@ for key in $(jq -r --argjson b "$BATCH" \
         || record_leak "$slug: branch の削除に失敗しました"
     fi
   fi
-
-  apply_labels "$key" "$status" "$closed" "$slug"
 
   # 成功したタスクのディレクトリのみ削除する。失敗は調査用に残す
   [[ "$status" == "done" ]] && rm -rf "$d"
@@ -2130,17 +2360,36 @@ slug ループの先頭で heartbeat を打ち直す。`for key in ...; do` の�
 同じ理由で `batch-wait.sh` のポーリングループにも入れる。`sleep 5` の直前に追加:
 
 ```bash
-  # 待機が長引いても lock の鮮度を保つ
-  bash "$FETCH" --state-file "$STATE_FILE" heartbeat >/dev/null 2>&1 || true
+  # 待機が長引いても lock の鮮度を保つ。失敗 = 自分が owner でなくなった、なので
+  # 握り潰してはいけない。そのまま続けると新 owner の state を上書きしてしまう
+  bash "$FETCH" --state-file "$STATE_FILE" heartbeat >/dev/null 2>&1 \
+    || die "loop lock owner check failed mid-wait (taken over?)"
+```
+
+同じ理由で、`batch-wait.sh` の `state_write` は書き込み直前に owner を再検証する。
+`state_write()` の定義を次に差し替える:
+
+```bash
+state_write() {
+  local filter="$1"; shift
+  # state を触る直前に owner を再確認する。待機中に takeover されていた場合、
+  # ここで止めないと新 owner の状態を壊す
+  bash "$FETCH" --state-file "$STATE_FILE" heartbeat >/dev/null 2>&1 \
+    || die "loop lock owner check failed before a state write"
+  local tmp
+  tmp=$(mktemp "$STATE_FILE.XXXXXX") || die "mktemp failed"
+  if jq "$@" "$filter" "$STATE_FILE" > "$tmp"; then mv "$tmp" "$STATE_FILE"
+  else rm -f "$tmp"; die "failed to update $STATE_FILE"; fi
+}
 ```
 
 - [ ] **Step 4: テストが通ることを確認する**
 
 Run: `bash apps/cmux-team-dispatch-task/test/test-loop-cleanup.sh`
-Expected: C1〜C4 が PASS
+Expected: C1〜C8 が PASS
 
 Run: `bash apps/cmux-team-dispatch-task/test/test-batch-wait.sh`
-Expected: Step 3b の追加後も W1〜W5 が引き続き PASS
+Expected: Step 3b の追加後も W1〜W6 が引き続き PASS
 
 Run: `bash -n apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/loop-cleanup.sh`
 Expected: 無出力
@@ -2155,90 +2404,40 @@ git commit -m "feat(cmux-team-dispatch-task): loop-cleanup.sh を実装し完了
 
 ---
 
-### Task 10: `references/loop-mode.md`（ループ手順の SoT）
-
-**Files:**
-- Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/loop-mode.md`
-
-**Interfaces:**
-- Consumes: Task 3〜9 のスクリプト CLI
-- Produces: 親セッションが従うループ手順の SoT。`SKILL.md` からはここを参照するだけにする。
-
-- [ ] **Step 1: ファイルを作成する**
-
-Create `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/loop-mode.md`:
-
-内容は spec の以下を、親セッションが実行できる手順書として書き下す。**spec の文章をコピーするのではなく、実行手順として書く**こと。
-
-1. **発動条件**（spec §3.1 冒頭）: `--loop` が唯一の機械的 entry point。自然言語トリガの場合は Step L0-1 の確認を必ず通す。通常のタスク列挙入力は L0 に入らず既存 Step 1a へ直行する
-2. **Step L0**（read-only の probe のみ）: L0-1 発動確認 / L0-2 依存検査 / L0-3 `issue-fetch.sh ... lock-check`
-3. **Step L1**（一括設定質問、spec §5 の 3 コール分の質問文と選択肢をそのまま記載）と、末尾での `lock-acquire --lease-min <lock_lease_min>`
-4. **Step L1.5**（ロック取得後）: `reconcile` → stale 検査 → `ensure-labels`。中止時は必ず `lock-release`
-5. **Step L2**（バッチループ）: `fetch` の exit code 分岐（0+`[]` / 3 / 4）、プロンプト構築、起動、`mark-dispatched` / `release`、`batch-wait.sh` の反復呼び出し（`ALL_TERMINAL` でのみ抜ける）、Template B での報告、`loop-cleanup.sh`。
-
-   **起動コマンドは必ず次の 2 フラグを含める**（これが無いと無人化と late write 対策が効かない）:
-
-   ```bash
-   bash <this-skill-dir>/scripts/prewarm-panes.sh \
-     --with-opus --message-type agmsg --agmsg-team "$TEAM" \
-     --cwd "<repo-root>/.worktrees/<slug>" --slug "<slug>" \
-     --status-dir "<repo-root>/.dispatch/<slug>" \
-     --unattended \
-     --timeout-sentinel "<repo-root>/.dispatch-loop/timed-out/<slug>" \
-     …
-   ```
-
-   pre-warm を使わない経路（`prewarm: false`）で Phase B が spawn fallback を取る場合は、
-   子プロンプトから `launch-workspace.sh --mode execute --unattended --timeout-sentinel <同じパス>`
-   を呼ぶよう指示すること。
-6. **Step L3**: Template C（batch 列付き）でのサマリ、`leaked[]` の提示、`lock-release`、`.dispatch-loop/` を残す旨と手動削除手順
-7. **フォールバック表**（spec §4.1 の 18 行）: 各 AskUserQuestion 箇所がループでどう解決されるか
-8. **ラベル遷移表**（spec §3.6）と **cleanup 遷移表**（spec §3.8.2）
-9. **unattended の原文の所在**: 差し替え文面は自分で書き起こさず、`references/unattended/` の
-   3 ファイル（`review-block.md` / `code-review-block.md` / `phase-lines.md`）を**逐語で使う**。
-   差し替え後に `AskUserQuestion` というリテラルが 1 つも残らないことを送信前に確認する
-10. **中断時のチェックリスト**: `lock-release` を呼ぶ全経路の列挙
-
-書式は既存の `guide-ja.md` に合わせ、表とコードブロック中心・散文は最小限にする。
-
-- [ ] **Step 2: 内容の整合を確認する**
-
-Run: `grep -c "AskUserQuestion" apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/loop-mode.md`
-Expected: 「差し替え対象一覧」節の説明として現れる回数のみ（0 でなくてよい。この文書はレンダリング対象ではない）
-
-Run: `grep -n "issue-fetch.sh\|batch-wait.sh\|loop-cleanup.sh" apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/loop-mode.md`
-Expected: すべての呼び出しが `--state-file <path> <subcommand>` の完全形になっていること
-
-- [ ] **Step 3: コミット**
-
-```bash
-git add apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/loop-mode.md
-git commit -m "docs(cmux-team-dispatch-task): ループモードの手順書 references/loop-mode.md を追加"
-```
-
----
-
-### Task 11: unattended variant ブロックとドキュメント 4 ファイル同時更新
+### Task 10: unattended フラグメントとプロンプトレンダラ
 
 **Files:**
 - Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/review-block.md`
 - Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/code-review-block.md`
-- Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/phase-lines.md`
-- Modify: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md`
-- Modify: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md`
-- Modify: `apps/cmux-team-dispatch-task/README.md`
-- Modify: `apps/cmux-team-dispatch-task/CLAUDE.md`
+- Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/phase-block.md`
+- Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/render-loop-prompt.sh`
 - Test: `apps/cmux-team-dispatch-task/test/test-loop-prompt.sh`（新規）
 
 **Interfaces:**
-- Consumes: Task 10 の `references/loop-mode.md`
+- Consumes: Task 3 の `--unattended`、Task 4 の `--timeout-sentinel`
 - Produces:
-  - `references/unattended/` に、loop モードで**そのまま貼り付ける**確定済みの文面（この 3 ファイルが unattended レンダリングの実体）
-  - 親セッションがループを発動できる。通常 dispatch は active loop lock があるとき開始・cleanup を拒否する
+  - `references/unattended/*.md` — loop 用プロンプトに**そのまま連結される確定文面**（対照表や解説は一切書かない。ファイル全体が出力の一部になる）
+  - `render-loop-prompt.sh` — タスクプロンプトを**決定的に組み立てるスクリプト**
 
-**なぜファイルに置くのか:** プロンプト組み立ては LLM が行うため「レンダラの出力」を直接テストできない。そこで**置換後の文面そのものをファイルとして固定**し、テストでそのファイルに `AskUserQuestion` が 1 つも無いこと・7 つの差し替え対象をすべて覆っていることを機械的に検査する。SKILL.md はループ時にこれらを**逐語で使う**よう指示するだけにする。これにより「置換を実装しなくてもテストが通る」状態を避けられる。
+```
+render-loop-prompt.sh --slug <slug> --issue <n> --issue-title <s> --issue-url <url>
+                      --issue-body-file <path> --plan-hint <path>
+                      --exec-choice <opus 1m|sonnet|codex>
+                      --design-engine <claude|codex> --review <on|off>
+                      --status-dir <abs> --timeout-sentinel <abs>
+                      --team <name> --layout <workspace|split>
+                      --parent-workspace <id> [--parent-surface <id>]
 
-**4 ファイル同時更新について:** `CLAUDE.md` の「ドキュメント整合の絶対ルール」により、SKILL.md を変えるコミットでは guide-ja.md / README.md / CLAUDE.md も同時に更新しなければならない。したがってドキュメント同期は別タスクに分けず、このタスクに含める。
+stdout: .cmux-team-dispatch-task-prompt.md に書き込む完全なプロンプト
+exit  : 0 / 1 (必須引数の欠落)
+```
+
+**なぜスクリプトにするのか（round 2 finding 6）:** プロンプトの組み立てを LLM に任せると、
+「フラグメントを貼らなかった」「一部だけ貼った」「別の対話ブロックが残った」という回帰を
+機械的に検出できない。組み立て自体をスクリプトにすれば、**最終出力そのもの**を
+`AskUserQuestion` リテラル非存在で検査でき、spec §4.5 が求める二経路検査（(a) タスクプロンプト、
+(b) spawn 経路）のうち (a) を本当に保証できる。(b) は Task 3 の `--unattended` で生成される
+runner script を検査する。
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -2246,63 +2445,72 @@ Create `apps/cmux-team-dispatch-task/test/test-loop-prompt.sh`:
 
 ```bash
 #!/usr/bin/env bash
-# unattended variant の文面と、ループ発動点・active loop lock ガードの検査。
-#
-# このテストが証明する範囲: references/unattended/ に置かれた「loop で逐語コピーする
-# 文面」に対話質問が 1 つも残っていないこと、7 つの差し替え対象をすべて覆っていること、
-# 非ループ側の文面が SKILL.md に元のまま残っていること。
-# プロンプトの最終的な組み立ては LLM が行うため、その出力自体は静的には検査できない。
-# だからこそ「貼り付ける原文」をファイルとして固定し、そこを機械的に検査する。
+# ループ用に組み立てたタスクプロンプトに対話質問が 1 つも残らないことの検査。
+# 組み立ては render-loop-prompt.sh が決定的に行うので、最終出力そのものを検査できる。
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SK="$SCRIPT_DIR/../skills/cmux-team-dispatch-task"
-SKILL="$SK/SKILL.md"
-LOOP_REF="$SK/references/loop-mode.md"
+RENDER="$SK/scripts/render-loop-prompt.sh"
 UNATT="$SK/references/unattended"
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+echo 'issue body' > "$TMP/body.md"
 
 fail=0
 ok()  { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
-has() { if grep -Fq -- "$2" "$1"; then ok "$3"; else bad "$3 (missing: $2)"; fi; }
-hasnt() { if grep -Fq -- "$2" "$1"; then bad "$3 (unexpected: $2)"; else ok "$3"; fi; }
 
-# --- P1: unattended の文面に対話質問が 1 つも無い（要件 2 の中核） ---
-for f in "$UNATT"/review-block.md "$UNATT"/code-review-block.md "$UNATT"/phase-lines.md; do
-  [[ -f "$f" ]] || { bad "P1 $f が存在しない"; continue; }
-  hasnt "$f" 'AskUserQuestion' "P1 $(basename "$f") に AskUserQuestion が無い"
+render() {   # design-engine, review
+  bash "$RENDER" \
+    --slug issue-12-demo --issue 12 --issue-title 'Demo' --issue-url https://x/12 \
+    --issue-body-file "$TMP/body.md" --plan-hint '.claude/plans/issue-12-demo.md' \
+    --exec-choice sonnet --design-engine "$1" --review "$2" \
+    --status-dir /abs/.dispatch/issue-12-demo \
+    --timeout-sentinel /abs/.dispatch-loop/timed-out/issue-12-demo \
+    --team demo-team --layout workspace --parent-workspace workspace:1
+}
+
+# --- R1: 4 通りすべてで AskUserQuestion が出力に現れない（要件 2 の中核） ---
+for eng in claude codex; do
+  for rev in on off; do
+    out=$(render "$eng" "$rev")
+    if grep -Fq 'AskUserQuestion' <<<"$out"; then
+      bad "R1 design=$eng review=$rev の出力に AskUserQuestion が残る"
+    else
+      ok "R1 design=$eng review=$rev の出力に AskUserQuestion が無い"
+    fi
+  done
 done
 
-# --- P2: 7 つの差し替え対象をすべて覆っている ---
-has "$UNATT/review-block.md"      'round 3'            'P2-1 A-R round 3 の固定手順がある'
-has "$UNATT/review-block.md"      'stalled'            'P2-2 A-R stalled の固定手順がある'
-has "$UNATT/code-review-block.md" 'round 3'            'P2-3 B-R round 3 の固定手順がある'
-has "$UNATT/code-review-block.md" 'stalled'            'P2-4 B-R stalled の固定手順がある'
-has "$UNATT/phase-lines.md"       'PHASE A'            'P2-5 PHASE A の行が定義されている'
-has "$UNATT/phase-lines.md"       'PHASE B'            'P2-6 PHASE B の行が定義されている'
-has "$UNATT/phase-lines.md"       'EXEC_DEFAULT_HINT'  'P2-7 EXEC_DEFAULT_HINT の本文が定義されている'
-has "$UNATT/phase-lines.md"       'VIOLATION'          'P2-8 VIOLATION 行が定義されている'
+# --- R2: 必要な内容が実際に入っている（空出力で R1 を通す抜け道を塞ぐ） ---
+out=$(render claude on)
+for needle in 'PHASE A' 'PHASE B' 'PHASE A-R' 'PHASE B-R' 'UNATTENDED' \
+              'issue-12-demo' 'https://x/12' '--unattended' '--timeout-sentinel' \
+              '/abs/.dispatch-loop/timed-out/issue-12-demo' 'PROGRESS REPORTING FORMAT'; do
+  grep -Fq -- "$needle" <<<"$out" && ok "R2 出力に '$needle' がある" \
+    || bad "R2 出力に '$needle' が無い"
+done
+[[ $(wc -c <<<"$out") -gt 2000 ]] && ok 'R2 出力が十分な長さを持つ' || bad 'R2 出力が短すぎる'
 
-# --- P3: 実装者への伝播指示が入っている（spawn fallback / prewarm） ---
-has "$UNATT/code-review-block.md" '--unattended'       'P3 spawn fallback へ --unattended を渡す指示がある'
-has "$UNATT/code-review-block.md" '--timeout-sentinel' 'P3 spawn fallback へ sentinel を渡す指示がある'
+# --- R3: review=off ではレビューブロックを出さない ---
+out_off=$(render claude off)
+grep -Fq 'PHASE A-R' <<<"$out_off" && bad 'R3 review=off なのに A-R が出力される' \
+  || ok 'R3 review=off では A-R を出力しない'
 
-# --- P4: 非ループ側は元の文面のまま（後方互換） ---
-has "$SKILL" 'AskUserQuestion' 'P4 SKILL.md の通常モード文面は従来どおり質問分岐を持つ'
-has "$SKILL" 'このまま進む' 'P4 A-R の 3 往復質問が SKILL.md に残っている'
+# --- R4: exec-choice が default-direct として焼き込まれる（モデル質問を出さない） ---
+grep -Fq 'sonnet' <<<"$out" && ok 'R4 exec-choice が焼き込まれる' || bad 'R4 exec-choice が無い'
+grep -Fq '実行フェーズで使用するモデルを選択してください' <<<"$out" \
+  && bad 'R4 モデル選択の質問文が残っている' || ok 'R4 モデル選択の質問文が出ない'
 
-# --- P5: ループ発動点と lock ガード ---
-has "$SKILL" 'references/loop-mode.md'    'P5-1 SKILL.md がループ手順書を参照する'
-has "$SKILL" '--loop'                     'P5-2 SKILL.md が --loop を唯一の機械的 entry point とする'
-has "$SKILL" '.dispatch-loop/loop.lock.d' 'P5-3 SKILL.md に active loop lock ガードがある'
-# ガードは「Step 1 の前」と「rm -rf .dispatch/ の前」の 2 箇所
-[[ $(grep -c 'lock-check' "$SKILL") -ge 2 ]] \
-  && ok 'P5-4 lock-check が 2 箇所に置かれている' \
-  || bad 'P5-4 lock-check が 2 箇所に無い'
-
-# --- P6: loop-mode.md が unattended ファイルを参照している ---
-has "$LOOP_REF" 'references/unattended/' 'P6 loop-mode.md が unattended の原文を参照する'
+# --- R5: フラグメント自体にも対話質問が無い ---
+for f in "$UNATT"/review-block.md "$UNATT"/code-review-block.md "$UNATT"/phase-block.md; do
+  [[ -f "$f" ]] || { bad "R5 $f が存在しない"; continue; }
+  grep -Fq 'AskUserQuestion' "$f" && bad "R5 $(basename "$f") に AskUserQuestion が残る" \
+    || ok "R5 $(basename "$f") に AskUserQuestion が無い"
+done
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
@@ -2311,62 +2519,321 @@ exit "$fail"
 - [ ] **Step 2: テストが失敗することを確認する**
 
 Run: `bash apps/cmux-team-dispatch-task/test/test-loop-prompt.sh`
-Expected: P1・P2 が「ファイルが存在しない」で FAIL
+Expected: `No such file or directory`（`render-loop-prompt.sh` が無い）
 
-- [ ] **Step 3a: unattended の原文ファイルを作る**
+- [ ] **Step 3a: unattended フラグメントを作る**
 
-Create `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/review-block.md`:
+3 ファイルとも **出力にそのまま入る本文だけ**を書く。対照表・解説・「元の記述」の引用は
+**書かない**（書くと `AskUserQuestion` というリテラルが混入し、R5 が必ず失敗する）。
 
-現行 SKILL.md の `{{REVIEW_BLOCK}}` テンプレート全体をコピーし、質問分岐 2 箇所を置換したものを置く。
-冒頭に次の 1 行を付ける（`AskUserQuestion` というリテラルを含めない）:
+`references/unattended/phase-block.md` — PHASE A / PHASE B の本文。現行 SKILL.md の
+`MANDATORY MODEL SELECTION SEQUENCE` から次のように書き換えたもの:
+
+| 現行 SKILL.md の記述 | このファイルに書く文面 |
+|---|---|
+| `Step 1: Phase B execution-model selection (per the block below — AskUserQuestion or default direct)` | `Step 1: Phase B execution-model selection (per the fixed path defined below)` |
+| `follow the Phase B flow resolved in this task prompt (AskUserQuestion or default direct)` | `follow the fixed Phase B path defined below` |
+| PHASE B の `Question template` 節と `{{CODEX_OPTION_LINE}}` | （出力しない） |
+| `ExitPlanMode 後は AskUserQuestion をスキップし、直ちに <default> の …` | `ExitPlanMode 後は直ちに <EXEC_CHOICE> の既存 Phase B ブランチを実行してください。新しい実行経路は作らないこと。` |
+| `Follow the exact flow defined in this PHASE B block (either AskUserQuestion or the default-direct path); do not invent an execution model.` | `Follow the exact flow defined in this PHASE B block; do not invent an execution model.` |
+
+冒頭に次の 1 行を置く:
 
 ```text
-UNATTENDED: no interactive user is attached to this session. Every decision point
-below states its fixed outcome — follow it and record what you did in the document
-you produce.
+UNATTENDED: no interactive user is attached to this session. Every decision point in
+this prompt states its fixed outcome — follow it and record what you did in the
+document / PR body you produce.
 ```
 
-置換内容:
+`references/unattended/review-block.md` — 現行 `{{REVIEW_BLOCK}}` の本文で、質問分岐 2 箇所を
+次に置換したもの:
 
-| 元の記述 | 置換後 |
-|---|---|
-| `N == 3 → summarize the unresolved findings and ask via AskUserQuestion: 1. このまま進む / 2. さらに修正` | `N == 3 → append the unresolved findings as a note at the end of the document and proceed to Phase B. Do not run another round.` |
-| `The wait exited stalled (STALLED=1 …) → … ask via AskUserQuestion: 1. 再依頼する / 2. レビューを省略して Phase B へ進む` | `The wait exited stalled → re-check the verdict file once, then re-send the SAME round's request once with a fresh baseline. If it exits stalled again, skip the review, note the skipped review in the document, and proceed to Phase B.` |
+- 3 往復目も needs_work → `append the unresolved findings as a note at the end of the document and proceed to Phase B. Do not run another round.`
+- stalled → `re-check the verdict file once, then re-send the SAME round's request once with a fresh baseline. If it exits stalled again, skip the review, note the skipped review in the document, and proceed to Phase B.`
 
-Create `references/unattended/code-review-block.md`:
+`references/unattended/code-review-block.md` — 現行 `{{CODE_REVIEW_BLOCK}}` の本文で、質問分岐
+2 箇所を次に置換し、さらに spawn fallback への伝播指示を加えたもの:
 
-現行の `{{CODE_REVIEW_BLOCK}}` 全体をコピーし、質問分岐 2 箇所を置換する。加えて
-**共通プロトコル a の `REQUEST_TEXT` に、spawn fallback を使う場合の指示を明記する**:
+- 3 往復目も needs_work → `note the unresolved findings in the PR body and create the PR. Do not run another round.`
+- stalled → `re-send the same round once with a fresh baseline; if it stalls again, skip the review, note that in the PR body, and create the PR.`
+- 追記 → `If prewarm.json is absent and you fall back to spawning via launch-workspace.sh --mode execute, you MUST also pass --unattended and --timeout-sentinel <TIMEOUT_SENTINEL>.`
 
-| 元の記述 | 置換後 |
-|---|---|
-| `Round 3 needs_work → ask via AskUserQuestion: 1. このまま PR 作成 / 2. さらに修正` | `Round 3 needs_work → note the unresolved findings in the PR body and create the PR. Do not run another round.` |
-| `if you can ask the user interactively (AskUserQuestion), ask whether to proceed or run one more round; otherwise …` | `note the unresolved findings in the PR body and proceed.` |
-| `if it stalls again, ask via AskUserQuestion if you can (再依頼 / レビュー省略して PR 作成); otherwise …` | `if it stalls again, skip the review, note that in the PR body, and create the PR.` |
-| （追記） | `If prewarm.json is absent and you fall back to spawning via launch-workspace.sh --mode execute, you MUST also pass --unattended and --timeout-sentinel <the path given in this prompt>.` |
+各ファイルの `<EXEC_CHOICE>` / `<TIMEOUT_SENTINEL>` / `<PLAN_FILE_PATH>` / `<STATUS_DIR>` /
+`<TASK_SLUG>` / `<TEAM>` はレンダラが置換するプレースホルダとする。
 
-Create `references/unattended/phase-lines.md`:
+- [ ] **Step 3b: レンダラを実装する**
 
-レビューブロック以外の 5 箇所の 1 行置換を、対照表として置く。
+Create `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/render-loop-prompt.sh`:
 
-| 対象 | 元の記述 | 置換後 |
-|---|---|---|
-| PHASE A（plan モード） | `Step 1: Phase B execution-model selection (per the block below — AskUserQuestion or default direct)` | `Step 1: Phase B execution-model selection (per the fixed path defined below)` |
-| PHASE B 見出し直下 | `follow the Phase B flow resolved in this task prompt (AskUserQuestion or default direct)` | `follow the fixed Phase B path defined below` |
-| PHASE B の Question template と `{{CODEX_OPTION_LINE}}` | 質問テンプレート全体 | 出力しない（loop では `exec_choice` が必ず確定しているので `{{EXEC_DEFAULT_HINT}}` の default-direct ブロックだけを出す） |
-| `{{EXEC_DEFAULT_HINT}}` 本文 | `ExitPlanMode 後は AskUserQuestion をスキップし、直ちに <default> の既存 Phase B ブランチを実行してください。` | `ExitPlanMode 後は直ちに <default> の既存 Phase B ブランチを実行してください。新しい実行経路は作らないこと。` |
-| VIOLATION 節 | `Follow the exact flow defined in this PHASE B block (either AskUserQuestion or the default-direct path); do not invent an execution model.` | `Follow the exact flow defined in this PHASE B block; do not invent an execution model.` |
-| codex 設計 variant の PHASE B 冒頭 | `follow the Phase B flow resolved in this task prompt (AskUserQuestion or default direct)` | `follow the fixed Phase B path defined below` |
+```bash
+#!/usr/bin/env bash
+# ループモードの子セッション向けタスクプロンプトを決定的に組み立てる。
+#
+# 組み立てを LLM に任せると「フラグメントを貼り忘れた」「対話ブロックが残った」という
+# 回帰を機械的に検出できない。ここで組み立てることで、最終出力そのものを
+# test-loop-prompt.sh が検査できる。
+#
+# 出力: 完全なタスクプロンプト (stdout)。呼び出し側が worktree の
+#       .cmux-team-dispatch-task-prompt.md に書き込む。
+
+set -euo pipefail
+
+die() { echo "Error: $1" >&2; exit 1; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UNATT="$SCRIPT_DIR/../references/unattended"
+
+SLUG=""; ISSUE=""; TITLE=""; URL=""; BODY_FILE=""; PLAN_HINT=""
+EXEC_CHOICE=""; DESIGN_ENGINE="claude"; REVIEW="off"
+STATUS_DIR=""; SENTINEL=""; TEAM=""; LAYOUT="workspace"
+PARENT_WS=""; PARENT_SF=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --slug)             SLUG="$2"; shift 2 ;;
+    --issue)            ISSUE="$2"; shift 2 ;;
+    --issue-title)      TITLE="$2"; shift 2 ;;
+    --issue-url)        URL="$2"; shift 2 ;;
+    --issue-body-file)  BODY_FILE="$2"; shift 2 ;;
+    --plan-hint)        PLAN_HINT="$2"; shift 2 ;;
+    --exec-choice)      EXEC_CHOICE="$2"; shift 2 ;;
+    --design-engine)    DESIGN_ENGINE="$2"; shift 2 ;;
+    --review)           REVIEW="$2"; shift 2 ;;
+    --status-dir)       STATUS_DIR="$2"; shift 2 ;;
+    --timeout-sentinel) SENTINEL="$2"; shift 2 ;;
+    --team)             TEAM="$2"; shift 2 ;;
+    --layout)           LAYOUT="$2"; shift 2 ;;
+    --parent-workspace) PARENT_WS="$2"; shift 2 ;;
+    --parent-surface)   PARENT_SF="$2"; shift 2 ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+
+for v in SLUG ISSUE TITLE URL BODY_FILE PLAN_HINT EXEC_CHOICE STATUS_DIR SENTINEL PARENT_WS; do
+  [[ -n "${!v}" ]] || die "--${v} equivalent option is required"
+done
+[[ -f "$BODY_FILE" ]] || die "issue body file not found: $BODY_FILE"
+[[ "$REVIEW" == "on" || "$REVIEW" == "off" ]] || die "--review must be on or off"
+[[ "$DESIGN_ENGINE" == "claude" || "$DESIGN_ENGINE" == "codex" ]] \
+  || die "--design-engine must be claude or codex"
+
+# フラグメント内のプレースホルダを置換して出力する。sed ではなく bash の置換を使い、
+# 区切り文字とパスの衝突を避ける
+emit_fragment() {
+  local f="$1" content
+  [[ -f "$f" ]] || die "fragment not found: $f"
+  content=$(cat "$f")
+  content="${content//<EXEC_CHOICE>/$EXEC_CHOICE}"
+  content="${content//<TIMEOUT_SENTINEL>/$SENTINEL}"
+  content="${content//<PLAN_FILE_PATH>/$PLAN_HINT}"
+  content="${content//<STATUS_DIR>/$STATUS_DIR}"
+  content="${content//<TASK_SLUG>/$SLUG}"
+  content="${content//<TEAM>/$TEAM}"
+  content="${content//<DESIGN_ENGINE>/$DESIGN_ENGINE}"
+  content="${content//<LAYOUT>/$LAYOUT}"
+  printf '%s\n\n' "$content"
+}
+
+cat <<EOF
+=== UNATTENDED ISSUE LOOP TASK ===
+This session was dispatched by the cmux-team-dispatch-task issue loop. No interactive
+user is attached. Never wait for a human decision; every decision point below states
+its fixed outcome.
+
+Mode: plan (produce a structured plan, then implement it)
+Task slug: $SLUG
+GitHub issue: #$ISSUE $TITLE
+Issue URL: $URL
+Plan file to write: $PLAN_HINT
+=== END UNATTENDED ISSUE LOOP TASK ===
+
+EOF
+
+emit_fragment "$UNATT/phase-block.md"
+[[ "$REVIEW" == "on" ]] && emit_fragment "$UNATT/review-block.md"
+[[ "$REVIEW" == "on" ]] && emit_fragment "$UNATT/code-review-block.md"
+
+cat <<EOF
+=== TASK ===
+Resolve GitHub issue #$ISSUE ($URL).
+
+$(cat "$BODY_FILE")
+
+When you create the PR, include "Closes #$ISSUE" in the body so the issue is closed on merge.
+=== END TASK ===
+
+PROGRESS REPORTING FORMAT:
+When reporting progress to the parent (or in your own visible output), you MUST
+use the following box drawing table. Do NOT free-form the layout.
+
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Surface  │ Mode       │ Status    │ Last message            │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ $SLUG │ <surf>   │ plan       │ <status>  │ <one-line message>      │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
+
+IMPORTANT: Status reporting protocol.
+When you finish planning and begin execution, run:
+  echo '{"status":"executing","message":"<brief description>","timestamp":"'\$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > $STATUS_DIR/status.json
+
+When all work is complete, commit everything, push, create the PR, then write:
+  PR_URL=\$(gh pr view --json url -q '.url')
+  echo '{"status":"done","message":"<summary>","pr_url":"'"\$PR_URL"'","timestamp":"'\$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > $STATUS_DIR/status.json
+And write a result summary to $STATUS_DIR/result.md.
+
+If you encounter a blocking error, write status "error" with the reason to the same file.
+EOF
+```
+
+- [ ] **Step 4: テストが通ることを確認する**
+
+Run: `bash apps/cmux-team-dispatch-task/test/test-loop-prompt.sh`
+Expected: R1〜R5 がすべて PASS
+
+Run: `bash -n apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/render-loop-prompt.sh`
+Expected: 無出力
+
+- [ ] **Step 5: コミット**
+
+```bash
+git add apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/ \
+        apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/render-loop-prompt.sh \
+        apps/cmux-team-dispatch-task/test/test-loop-prompt.sh
+git commit -m "feat(cmux-team-dispatch-task): 無人ループ用プロンプトの確定文面とレンダラを追加"
+```
+
+---
+
+### Task 11: `references/loop-mode.md` とドキュメント 4 ファイル同時更新
+
+**Files:**
+- Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/loop-mode.md`
+- Modify: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md`
+- Modify: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md`
+- Modify: `apps/cmux-team-dispatch-task/README.md`
+- Modify: `apps/cmux-team-dispatch-task/CLAUDE.md`
+- Test: `apps/cmux-team-dispatch-task/test/test-loop-skill.sh`（新規）
+
+**Interfaces:**
+- Consumes: Task 5〜10 のスクリプト CLI（`render-loop-prompt.sh` を含む）
+- Produces: 親セッションがループを発動できる。通常 dispatch は active loop lock があるとき開始・cleanup を拒否する。
+
+**順序について（round 2 finding 9）:** `loop-mode.md` は `references/unattended/` と
+`render-loop-prompt.sh` を参照するため、それらを作る Task 10 の**後**に置く。逆順だと
+Task 10 完了時点で参照先が存在しない状態のコミットが残る。
+
+**4 ファイル同時更新について:** `CLAUDE.md` の「ドキュメント整合の絶対ルール」により、
+SKILL.md を変えるコミットでは guide-ja.md / README.md / CLAUDE.md も同時に更新する。
+別タスクへ遅らせてはならない。
+
+- [ ] **Step 1: 失敗するテストを書く**
+
+Create `apps/cmux-team-dispatch-task/test/test-loop-skill.sh`:
+
+```bash
+#!/usr/bin/env bash
+# ループ発動点・active loop lock ガード・非ループ側の不変性の静的検査。
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SK="$SCRIPT_DIR/../skills/cmux-team-dispatch-task"
+SKILL="$SK/SKILL.md"
+LOOP_REF="$SK/references/loop-mode.md"
+
+fail=0
+ok()  { echo "PASS: $1"; }
+bad() { echo "FAIL: $1"; fail=1; }
+has() { if grep -Fq -- "$2" "$1"; then ok "$3"; else bad "$3 (missing: $2)"; fi; }
+
+# --- S1: 発動点 ---
+has "$SKILL" 'references/loop-mode.md' 'S1 SKILL.md がループ手順書を参照する'
+has "$SKILL" '--loop'                  'S1 SKILL.md が --loop を entry point とする'
+
+# --- S2: active loop lock ガードが 2 箇所に入っている ---
+# 1 箇所目 = Step 1 の前、2 箇所目以降 = cleanup の rm -rf .dispatch/ の直前
+count=$(grep -c 'issue-fetch.sh' "$SKILL" || true)
+[[ "$count" -ge 2 ]] && ok "S2 lock ガードが $count 箇所にある" \
+  || bad "S2 lock ガードが 2 箇所未満 ($count)"
+has "$SKILL" '.dispatch-loop/loop.lock.d' 'S2 ガードがロックのパスを参照する'
+
+# --- S3: rm -rf .dispatch/ の各出現の直前 5 行以内に lock-check がある ---
+missing=0
+while IFS=: read -r ln _; do
+  from=$(( ln > 6 ? ln - 6 : 1 ))
+  sed -n "${from},${ln}p" "$SKILL" | grep -q 'lock-check' || missing=$(( missing + 1 ))
+done < <(grep -n 'rm -rf .dispatch/' "$SKILL")
+[[ "$missing" -eq 0 ]] && ok 'S3 すべての rm -rf .dispatch/ の直前に lock-check がある' \
+  || bad "S3 lock-check の無い rm -rf .dispatch/ が $missing 箇所ある"
+
+# --- S4: 非ループ側は従来どおり（後方互換） ---
+has "$SKILL" 'AskUserQuestion' 'S4 通常モードの質問分岐が SKILL.md に残っている'
+has "$SKILL" 'このまま進む'     'S4 A-R の 3 往復質問が残っている'
+
+# --- S5: loop-mode.md が新スクリプト群を完全形で参照する ---
+for needle in 'issue-fetch.sh' 'batch-wait.sh' 'loop-cleanup.sh' 'render-loop-prompt.sh' \
+              '--state-file' 'lock-acquire' 'init' 'ALL_TERMINAL' '--timeout-sentinel' '--unattended'; do
+  has "$LOOP_REF" "$needle" "S5 loop-mode.md が '$needle' に言及する"
+done
+
+[[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
+exit "$fail"
+```
+
+- [ ] **Step 2: テストが失敗することを確認する**
+
+Run: `bash apps/cmux-team-dispatch-task/test/test-loop-skill.sh`
+Expected: S1〜S3・S5 が FAIL
+
+- [ ] **Step 3a: `references/loop-mode.md` を作る**
+
+親セッションが実行できる手順書として書く（spec の文章のコピーではない）。含める内容:
+
+1. **発動条件**: `--loop` が唯一の機械的 entry point。自然言語トリガの場合は Step L0-1 の確認を必ず通す。通常のタスク列挙入力は L0 に入らず既存 Step 1a へ直行する
+2. **Step L0**（read-only probe のみ）: L0-1 発動確認 / L0-2 依存検査（`runners.json` / `gh auth status` / `jq` / `cmux`）/ L0-3 `issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check`
+3. **Step L1**（一括設定質問）: spec §5 の 3 コール分の質問文と選択肢。末尾で
+   `issue-fetch.sh --state-file … lock-acquire --lease-min <lock_lease_min>` →
+   `issue-fetch.sh --state-file … init --config-json '…' --filter-json '…'`
+4. **Step L1.5**（ロック取得後）: `reconcile`（`action: abort` なら `lock-release` して中止）→ stale 検査 → `ensure-labels`
+5. **Step L2**（バッチループ）: `fetch` の exit code 分岐（0+`[]` / 3 / 4）、
+   `render-loop-prompt.sh` でのプロンプト生成、`prewarm-panes.sh --unattended --timeout-sentinel …` での起動、
+   `mark-dispatched` / `release`、`batch-wait.sh` の反復呼び出し（`ALL_TERMINAL` でのみ抜ける）、
+   Template B での報告、`loop-cleanup.sh`
+6. **Step L3**: Template C（batch 列付き）でのサマリ、`leaked[]` の提示、`lock-release`、`.dispatch-loop/` を残す旨と手動削除手順
+7. **フォールバック表**（spec §4.1 の 18 行）
+8. **ラベル遷移表**（spec §3.6）と **cleanup 遷移表**（spec §3.8.2）
+9. **プロンプト生成は `render-loop-prompt.sh` に任せる**こと（文面を自分で書き起こさない）
+10. **中断時のチェックリスト**: `lock-release` を呼ぶ全経路の列挙
+
+L2 の起動コマンドは完全形で載せる:
+
+```bash
+bash <this-skill-dir>/scripts/render-loop-prompt.sh \
+  --slug "$SLUG" --issue "$N" --issue-title "$TITLE" --issue-url "$URL" \
+  --issue-body-file "$BODY" --plan-hint ".claude/plans/$SLUG.md" \
+  --exec-choice "$EXEC_CHOICE" --design-engine "$DESIGN_ENGINE" --review "$REVIEW" \
+  --status-dir "$REPO/.dispatch/$SLUG" \
+  --timeout-sentinel "$REPO/.dispatch-loop/timed-out/$SLUG" \
+  --team "$TEAM" --layout workspace --parent-workspace "$CMUX_WORKSPACE_ID" \
+  > "$REPO/.worktrees/$SLUG/.cmux-team-dispatch-task-prompt.md"
+
+bash <this-skill-dir>/scripts/prewarm-panes.sh \
+  --with-opus --message-type agmsg --agmsg-team "$TEAM" \
+  --cwd "$REPO/.worktrees/$SLUG" --slug "$SLUG" \
+  --status-dir "$REPO/.dispatch/$SLUG" \
+  --unattended --timeout-sentinel "$REPO/.dispatch-loop/timed-out/$SLUG" \
+  --parent-notify-workspace "$CMUX_WORKSPACE_ID"
+```
 
 - [ ] **Step 3b: `SKILL.md` を更新する**
 
-3-a. `SKILL.md` の frontmatter の `argument-hint` を更新:
+3-b-1. frontmatter の `argument-hint` を更新:
 
 ```yaml
 argument-hint: "<task1>, <task2>, ... [--layout split|claude-teams] [--no-grid] [--loop]"
 ```
 
-3-b. `## Step 1: Parse and Prepare` の**直前**に、ループのディスパッチポイントを追加:
+3-b-2. `## Step 1: Parse and Prepare` の**直前**にループ発動点を追加:
 
 ```markdown
 ---
@@ -2379,75 +2846,56 @@ argument-hint: "<task1>, <task2>, ... [--layout split|claude-teams] [--no-grid] 
 - ユーザーが「GitHub issue を自動で回す」「issue が無くなるまでループして」のように
   ループの実行そのものを明示的に要求している
 
-タスクの説明文に issue 番号や issue の話題が含まれるだけでは発動しない。上の 2 条件に当たらない
-入力は、この節を読まずに Step 1a へ直行すること（通常 dispatch の挙動は一切変わらない）。
+タスクの説明文に issue 番号や issue の話題が含まれるだけでは発動しない。上の 2 条件に
+当たらない入力は、この節を読まずに Step 1a へ直行すること（通常 dispatch の挙動は変わらない）。
 
 発動したら、以降の手順は **`references/loop-mode.md`** に従う。Step 1c〜1g の質問群と
 「Cleanup prompts」節は、ループモードでは同ファイルの一括設定質問と cleanup 遷移表で
 解決済みなので**実行しない**。
 
-## Active loop lock guard（通常 dispatch 側）
-
-ループ実行中は `.dispatch/` をループが使っている。通常 dispatch の cleanup は
-`rm -rf .dispatch/` を無条件で実行するため、ループの走行中に通常 dispatch を始めると
-タスクの `status.json` / `prewarm.json` を消してしまう。そこで **Step 1 に入る前** と
-**cleanup で `rm -rf .dispatch/` を実行する直前** の 2 箇所で次を確認する:
+**通常 dispatch を始める前の確認（ループ実行中は開始しない）:**
 
 ```bash
-LOCK_OWNER=".dispatch-loop/loop.lock.d/owner.json"
-if [[ -f "$LOCK_OWNER" ]]; then
-  bash <this-skill-dir>/scripts/issue-fetch.sh \
-    --state-file .dispatch-loop/loop-state.json lock-check || {
-      echo "issue ループが実行中です。完了を待つか、ループを停止してから実行してください。" >&2
-      # Step 1 前  → dispatch を開始しない
-      # cleanup 前 → .dispatch/ の一括削除をスキップし、当該タスクのディレクトリのみ削除する
-    }
-fi
+bash <this-skill-dir>/scripts/issue-fetch.sh \
+  --state-file .dispatch-loop/loop-state.json lock-check \
+  || { echo "issue ループが実行中です。完了を待ってから実行してください。" >&2; exit 1; }
 ```
 
-`.dispatch-loop/` が存在しない環境ではこの検査は素通りするため、ループを使わない利用者の
-挙動は変わらない。これは「通常モードの挙動は不変」に対する 2 つ目の明示的な例外である
-（1 つ目は codex の hook trust バイパス）。
+`.dispatch-loop/loop.lock.d` が無い環境ではこの検査は素通りするため、ループを使わない
+利用者の挙動は変わらない。これは「通常モードの挙動は不変」に対する 2 つ目の明示的な
+例外である（1 つ目は codex の hook trust バイパス）。
 
 ---
 ```
 
-3-c. 「Placeholder rules」節に `{{UNATTENDED_RENDER}}` の契約を追加する。`{{EXEC_DEFAULT_HINT}}` の項目の直後に挿入:
+3-b-3. **`rm -rf .dispatch/` の各出現の直前**（現行 SKILL.md では「Option B: Do not merge」節と
+「Cleanup prompts」節の Final housekeeping の 2 箇所）に、同じ検査を挿入する:
 
-```markdown
-- `{{UNATTENDED_RENDER}}` → **loop モードのときのみ有効なレンダリング規則**（通常モードでは
-  何もしない = プロンプトは 1 バイトも変わらない）。loop では、生成される task file と
-  typed `TASK_TEXT` に `AskUserQuestion` というリテラルが 1 つも残ってはならない。
-
-  **文面を自分で書き起こしてはならない。** 確定済みの原文が次の 3 ファイルにあるので、
-  該当箇所を**逐語でこれに差し替える**:
-
-  | ファイル | 差し替える対象 |
-  |---|---|
-  | `references/unattended/review-block.md` | `{{REVIEW_BLOCK}}` 全体（A-R の 2 つの質問分岐を含む） |
-  | `references/unattended/code-review-block.md` | `{{CODE_REVIEW_BLOCK}}` 全体（B-R の 2 つの質問分岐と、spawn fallback への `--unattended` / `--timeout-sentinel` 伝播指示を含む） |
-  | `references/unattended/phase-lines.md` | レビューブロック以外の 5 箇所（PHASE A の Step 1 行 / PHASE B 見出し直下 / Question template と `{{CODEX_OPTION_LINE}}` / `{{EXEC_DEFAULT_HINT}}` 本文 / VIOLATION 行 / codex 設計 variant の PHASE B 冒頭） |
-
-  差し替え後、`grep -c AskUserQuestion` が 0 であることを目視で確認してから送ること。
+```bash
+# ループ実行中は .dispatch/ をループが使っている。一括削除するとタスクの
+# status.json / prewarm.json を巻き込むため、生きたロックがあれば個別削除に切り替える
+if ! bash <this-skill-dir>/scripts/issue-fetch.sh \
+       --state-file .dispatch-loop/loop-state.json lock-check; then
+  echo "issue ループが実行中のため .dispatch/ の一括削除をスキップします" >&2
+  for slug in <task-slugs>; do rm -rf ".dispatch/$slug"; done
+else
+  rm -rf .dispatch/
+fi
 ```
 
-3-d. 該当箇所に `{{UNATTENDED_RENDER}}` プレースホルダを 1 行入れる（`{{EXEC_DEFAULT_HINT}}` の直前）。
-
-3-e. active loop lock ガードの TOCTOU について（spec §10 の hardening 項目）。この検査は
-check-only なので、「検査を通った直後にループが始まる」狭い窓が残る。窓を最小化するため、
-ガードの記述に次の 1 文を添える:
+3-b-4. 「Placeholder rules」節の `{{EXEC_DEFAULT_HINT}}` の項目の直後に、ループ時の
+プロンプト生成をレンダラに委ねる契約を追記する:
 
 ```markdown
-この検査は check-only であり、通過直後にループが開始される狭い競合窓が残る。窓を小さく
-保つため、**Step 1 に入る直前**と **`rm -rf .dispatch/` の直前**という「その直後に破壊的操作を
-行う位置」でのみ検査する（早い段階で一度だけ確認して以後信用する、という使い方をしない）。
-ループと通常 dispatch の同時実行はそもそも非サポートである（`references/loop-mode.md` 参照）。
+- **ループモードのプロンプト生成** → 文面を自分で組み立ててはならない。
+  `scripts/render-loop-prompt.sh` が `references/unattended/` の確定文面を連結して
+  完全なタスクプロンプトを stdout に出すので、その出力をそのまま
+  worktree の `.cmux-team-dispatch-task-prompt.md` に書き込む。
+  引数と使用例は `references/loop-mode.md` の Step L2 を参照。
+  通常モードのプロンプト構築はこれまでどおり本節の Placeholder rules に従う（変更なし）。
 ```
 
 - [ ] **Step 3c: 残り 3 つのドキュメントを同時に更新する**
-
-`CLAUDE.md` の「ドキュメント整合の絶対ルール」により、SKILL.md を変えるコミットでは
-残り 3 ファイルも同じコミットで揃える。**これを別タスクに遅らせてはならない。**
 
 **`references/guide-ja.md`:**
 
@@ -2455,7 +2903,8 @@ check-only なので、「検査を通った直後にループが始まる」狭
 2. `launch-workspace.sh` のオプション一覧に `--unattended` / `--timeout-sentinel <path>` を追加
 3. `prewarm-panes.sh` のオプション一覧に `--unattended` / `--timeout-sentinel <path>` を追加
 4. 「ループモード」節を新設: `references/loop-mode.md` への参照、`.dispatch-loop/` の役割、
-   `loop.task_timeout_min` / `loop.lock_lease_min`、通常 dispatch 側の active loop lock ガード
+   `loop.task_timeout_min` / `loop.lock_lease_min`、新スクリプト 4 本の役割、通常 dispatch 側の
+   active loop lock ガード
 5. status protocol の節に、runner wrapper の `write_status` が既存 `pr_url` を引き継ぐことを追記
 
 **`README.md`:**
@@ -2471,7 +2920,7 @@ check-only なので、「検査を通った直後にループが始まる」狭
 **`CLAUDE.md`:**
 
 1. 「ファイル構成」表に `issue-fetch.sh` / `batch-wait.sh` / `loop-cleanup.sh` /
-   `references/loop-mode.md` / `references/unattended/` を追加
+   `render-loop-prompt.sh` / `references/loop-mode.md` / `references/unattended/` を追加
 2. 項目 20 を次に差し替える:
 
 ```markdown
@@ -2485,21 +2934,26 @@ check-only なので、「検査を通った直後にループが始まる」狭
 ```markdown
 22. ループモード（GitHub issue 自動ループ）が SKILL.md / references/loop-mode.md / references/unattended/ / guide-ja.md / README.md / CLAUDE.md で一致しているか確認:
     - 発動は `--loop` が唯一の機械的 entry point。自然言語トリガでも Step L0-1 の確認を必ず通し、通常のタスク列挙入力は Step 1a へ直行すること
-    - ロックは `.dispatch-loop/loop.lock.d` を `mkdir` で atomic 取得。owner.json 未生成のロックは stale ではなく in-flight として扱い奪わない。stale takeover は atomic rename の勝者のみ。liveness の正本は `owner.json.heartbeat` の 1 箇所。release は owner 一致時のみ。取得は Step L1 の最終確認後（質問回答待ちを lease に含めない）
-    - `issue-fetch.sh fetch` は「候補が尽きた (exit 0 + [])」「claim 全滅 (exit 3)」「上限まで満杯で判定不能 (exit 4)」を厳密に区別する。取得クエリは dispatch 3 ラベルを negative search qualifier で除外し、未割当は `no:assignee`（`--assignee none` は存在しない値）。窓は `min(前回*2, 1000)` で拡張する
-    - claim / release は「ラベルと state の片方だけが残る」状態を作らないこと。claim 後に state を書けなければラベルを補償的に外し、release ではラベルを外せない限り state record を消さない
-    - `batch-wait.sh` の出力は `ALL_TERMINAL` / `WAITING` の 2 種類のみ。timeout の terminal 化は自身が行い、sentinel は `.dispatch-loop/timed-out/<slug>`（タスクディレクトリと一緒に消えないため late write を封じられる）。sentinel は `prewarm-panes.sh --timeout-sentinel` から**全 standby**へ、spawn fallback では `launch-workspace.sh --timeout-sentinel` へ必ず転送されること
-    - `loop-cleanup.sh` は cleanup 前に完了検証を行い、落ちた `done` を `error` に降格する。WIP 保全（`--no-verify` コミット → `--binary` patch + 未追跡 tar → 基準コミットから作った clean な一時 worktree での `git apply --check`）は fail-closed で、どれか失敗したら worktree を温存する。`finalize` は破壊的処理の**前**に行い、失敗したら中断する
-    - unattended の文面は `references/unattended/` の 3 ファイルが原文。loop ではこれを逐語で差し替え、`AskUserQuestion` を 1 つも残さないこと（`test/test-loop-prompt.sh` が検査する）
-    - 通常 dispatch 側の active loop lock ガード（Step 1 冒頭 / `rm -rf .dispatch/` 直前の 2 箇所）が入っていること。これは hook trust バイパスと並ぶ「通常挙動不変」の 2 つ目の明示的例外
+    - owner identity は `LOOP_SESSION_ID` / `CLAUDE_CODE_SESSION_ID` のみ。`$$` や時刻から作らない（サブコマンドごとに別 owner になる）。得られなければ開始を拒否する
+    - ロックは `.dispatch-loop/loop.lock.d` を `mkdir` で atomic 取得。owner.json 未生成・破損は有限 grace の in-flight として扱い奪わない。stale takeover は `loop.lock.takeover.d` mutex で直列化し、mutex 内で staleness を再判定する（rename だけでは ABA 競合が残る）。liveness の正本は `owner.json.heartbeat` の 1 箇所。release は owner 一致時のみ。取得は Step L1 の最終確認後
+    - `loop-state.json` は `init` サブコマンドが完全なスキーマ（`started_at` / `filter` / `config` / `issues` / `batches` / `leaked`）で作る。`fetch` は state 不在なら即エラー
+    - `issue-fetch.sh fetch` は「候補が尽きた (exit 0 + [])」「claim 全滅 (exit 3)」「上限まで満杯で判定不能 (exit 4)」を厳密に区別する。取得クエリは dispatch 3 ラベルを negative search qualifier で除外し、未割当は `no:assignee`。窓は `min(前回*2, 1000)` で拡張する
+    - claim / release / reconcile / apply_labels は「ラベルと state の片方だけが残る」状態を作らないこと。claim 後に state を書けなければラベルを補償的に外し（それも失敗したら fatal）、release と reconcile はラベル除去の成功を確認できない限り record を消さず、cleanup は **terminal ラベルを先に付けてから** in-progress を外す（逆順だと durable marker を持たない open issue ができ再 dispatch される）
+    - `batch-wait.sh` の出力は `ALL_TERMINAL` / `WAITING` の 2 種類のみ。timeout の terminal 化は自身が行い、sentinel は `.dispatch-loop/timed-out/<slug>`。sentinel は `prewarm-panes.sh --timeout-sentinel` から**全 status 所有者**へ、spawn fallback では `launch-workspace.sh --timeout-sentinel` へ必ず転送されること。heartbeat / owner 検証の失敗は握り潰さず fatal
+    - `loop-cleanup.sh` は cleanup 前に完了検証を行い、落ちた `done` を `error` に降格する。WIP 保全は fail-closed。`finalize` と terminal ラベル付与は破壊的処理の**前**に行い、失敗したら worktree / branch / status ディレクトリを温存する
+    - ループ用プロンプトは `scripts/render-loop-prompt.sh` が `references/unattended/` の確定文面から決定的に組み立てる。LLM が文面を書き起こさないこと。`test/test-loop-prompt.sh` が最終出力に `AskUserQuestion` が無いことを 4 通り（design engine × review 有無）で検査する
+    - 通常 dispatch 側の active loop lock ガード（Step 1 冒頭 / `rm -rf .dispatch/` の各出現の直前）が入っていること。これは hook trust バイパスと並ぶ「通常挙動不変」の 2 つ目の明示的例外
 ```
 
 5. 「テスト方法」の E2E 節に spec §7 の手動チェックリスト 7 項目を追加
 
 - [ ] **Step 4: テストが通ることを確認する**
 
-Run: `bash apps/cmux-team-dispatch-task/test/test-loop-prompt.sh`
+Run: `bash apps/cmux-team-dispatch-task/test/test-loop-skill.sh`
 Expected: `--- all tests passed ---`
+
+Run: `bash apps/cmux-team-dispatch-task/test/test-loop-prompt.sh`
+Expected: Task 10 の R1〜R5 が引き続き PASS
 
 Run: `bash apps/cmux-team-dispatch-task/test/test-launch-workspace-codex.sh`
 Expected: T7 の SKILL.md 静的検査が引き続き通ること
@@ -2508,11 +2962,11 @@ Expected: T7 の SKILL.md 静的検査が引き続き通ること
 
 ```bash
 git add apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md \
-        apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/ \
+        apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/loop-mode.md \
         apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md \
         apps/cmux-team-dispatch-task/README.md apps/cmux-team-dispatch-task/CLAUDE.md \
-        apps/cmux-team-dispatch-task/test/test-loop-prompt.sh
-git commit -m "feat(cmux-team-dispatch-task): ループ発動点・loop lock ガード・unattended 原文を追加しドキュメント 4 ファイルを同期"
+        apps/cmux-team-dispatch-task/test/test-loop-skill.sh
+git commit -m "feat(cmux-team-dispatch-task): ループ手順書と発動点・loop lock ガードを追加しドキュメント 4 ファイルを同期"
 ```
 
 ---
@@ -2705,14 +3159,18 @@ git status --short
 ```
 
 Expected: このタスクの成果物として意図した変更のみ。
-**`git add -A` は使わない** — この worktree には `.cmux-team-dispatch-task-run-*.sh` や
-`.codex/hooks.json` などディスパッチ機構が生成した未追跡ファイルが存在し、`-A` はそれらを
-巻き込む。意図した変更があれば**パスを明示して** stage する:
+**`git add -A` もディレクトリ単位の `git add <dir>` も使わない** — この worktree には
+`.cmux-team-dispatch-task-run-*.sh` や `.codex/hooks.json` などディスパッチ機構が生成した
+未追跡ファイルがあり、ディレクトリ指定でも配下の無関係な変更を巻き込む。
+
+各タスクは既にパスを明示して commit しているので、ここで残る差分は原則ゼロのはずである。
+残っていた場合は**ファイルを 1 つずつ列挙して** stage する:
 
 ```bash
-git add apps/cmux-team-dispatch-task docs/superpowers .claude-plugin/marketplace.json
-git status --short   # 想定外の未追跡ファイルが stage されていないか再確認
+git status --short          # 残差分を一覧
+git add <意図したファイルを 1 つずつ列挙>
+git status --short          # stage 内容を再確認（想定外が混ざっていないこと）
 git commit -m "<変更内容の要約>"
 ```
 
-想定外の変更が残っている場合は、コミットせず内容を確認して人に報告すること。
+意図しない変更が含まれている場合は、コミットせず内容を確認して人に報告すること。

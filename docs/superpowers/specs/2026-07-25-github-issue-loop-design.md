@@ -113,6 +113,8 @@ Step L3  ループ全体サマリ（Template C を batch 列付きに拡張）+ 
 | `skills/cmux-team-dispatch-task/references/loop-mode.md` | ループ手順の SoT。L0〜L3、一括設定質問、ラベル遷移表、cleanup 遷移表、完了検証の契約 | なし（ドキュメント） |
 | `skills/cmux-team-dispatch-task/scripts/issue-fetch.sh` | issue の取得 / 除外 / claim / release / mark-dispatched / reconcile / finalize と `loop-state.json` とロックの管理 | `gh`, `jq`, `git` |
 | `skills/cmux-team-dispatch-task/scripts/batch-wait.sh` | バッチ内 slug 集合の terminal 待機とタイムアウト判定、heartbeat 更新 | `jq`, `cmux` |
+| `skills/cmux-team-dispatch-task/scripts/render-loop-prompt.sh` | ループ用タスクプロンプトの決定的な組み立て（§4.5） | なし |
+| `skills/cmux-team-dispatch-task/references/unattended/*.md` | ループ用プロンプトに逐語で入る確定文面（3 ファイル） | なし（ドキュメント） |
 | `skills/cmux-team-dispatch-task/scripts/loop-cleanup.sh` | 完了検証 → WIP 保全 → pane close / worktree / branch / issue ラベル / 状態記録 | `cmux`, `gh`, `jq`, `git` |
 
 **変更ファイル**
@@ -144,10 +146,14 @@ Step L3  ループ全体サマリ（Template C を batch 列付きに拡張）+ 
 ```
 issue-fetch.sh --state-file <path> <subcommand> [options]
 
-  lock-check                              取得せずに active loop の有無だけを判定（Step L0-3 用）
+  lock-check                              取得せずに active loop の有無だけを判定（Step L0-3 用。
+                                          read-only でディレクトリも作らない）
   lock-acquire  --lease-min <N>           .dispatch-loop/loop.lock.d を mkdir で atomic 取得
   lock-release                            自分が owner のときだけ解放（冪等）
   heartbeat                               owner.json の heartbeat を現在時刻に更新
+  init --config-json <json> --filter-json <json>
+                                          loop-state.json を完全なスキーマで atomic 生成
+                                          （既存があれば config / filter だけ差し替える）
   reconcile                               claimed / dispatched の突き合わせ（§3.1 L1.5-1）
                                           出力: {action: "ok"|"abort", reasons: [...]}
   ensure-labels                           3 ラベルを gh label list で確認し不足分を作成
@@ -242,13 +248,14 @@ exit  : 0 = 正常（個別の失敗は警告扱いでループを止めない�
 |---|---|
 | 取得 | `mkdir .dispatch-loop/loop.lock.d` の成否で判定する（check-then-write の競合を排除） |
 | **取得タイミング** | **Step L1 の最終確認を通過した直後**。Step L0-3 は存在確認だけを行い取得はしない。設定質問への回答待ちは人間の時間であり、ここでロックを持つと heartbeat の更新空白が無制限に伸びる（round 4 finding 3） |
-| owner identity | 親セッションの `$CLAUDE_CODE_SESSION_ID` + ホスト名。shell の `$$` は使わない（呼び出しごとに変わり、直後に stale と誤判定するため） |
+| owner identity | `$LOOP_SESSION_ID`、無ければ `$CLAUDE_CODE_SESSION_ID` + ホスト名。shell の `$$` や時刻は使わない（サブコマンドごとに別プロセスなので値が変わり、acquire 直後の heartbeat すら別 owner と判定される）。**どちらも得られない環境ではループを開始しない** |
 | **liveness の正本** | **`owner.json.heartbeat` の 1 箇所のみ**。`loop-state.json` は heartbeat を持たない |
 | **heartbeat の更新契約** | `issue-fetch.sh` / `batch-wait.sh` / `loop-cleanup.sh` の**すべてのサブコマンドが、処理の冒頭で owner token を検証し heartbeat を更新する**。これにより待機中だけでなく、issue 取得・ペイン一斉起動・cleanup といった長時間処理の最中も鮮度が保たれる |
 | **lease 期間** | `task_timeout_min` とは切り離した独立の設定 `loop.lock_lease_min`（既定 30、最小 10）。タスクのタイムアウトを短く設定してもロックが誤って stale 判定されない |
 | 生存判定 | `owner.json.heartbeat` が `lock_lease_min` 以内なら実行中と判断し、取得を拒否する |
 | **owner token 検証** | `loop-state.json` を書き換えるすべての操作の前に `owner.json.session_id` が自分と一致することを確認する。一致しなければ（takeover された）その場で fatal 終了し、書き込みを行わない |
-| **stale takeover** | 既存ロックが stale と判定できた場合も、`owner.json` を上書きしてはならない。`mv .dispatch-loop/loop.lock.d .dispatch-loop/loop.lock.stale.<ts>.<session_id>` の **atomic rename に成功したプロセスだけ**が、続けて `mkdir loop.lock.d` を行って owner になる。rename に失敗した場合は他者が先行したものとして取得失敗を返す |
+| **in-flight の保護** | `loop.lock.d` は存在するが `owner.json` がまだ無い（または壊れている）状態は、`mkdir` に勝った直後の書き込み途中の可能性がある。有限 grace（60 秒）以内なら **live として扱い奪わない**。grace を過ぎたら stale とみなす（無条件に live にすると永久に takeover できなくなる） |
+| **stale takeover** | rename だけでは直列化にならない。A と B が同時に stale と判定 → A が退避＋再作成して owner になった直後に、stale 判定済みの B が **A の新しいロック**を退避してしまう ABA 競合が残る。そこで takeover 全体を別の atomic mutex `mkdir .dispatch-loop/loop.lock.takeover.d` で直列化し、**mutex を取得したプロセスが mutex 内で staleness を再判定**してから退避＋再作成する。mutex は取得者が必ず解放する |
 | 解放 | `owner.json.session_id` が自分と一致する場合のみ削除する（他 owner のロックを消さない）。一致しなければ警告して何もしない |
 | 解放の呼び出し箇所 | Step L3 に加え、**ループを中断する全経路**: L1.5-1 の abort / L1.5-2 の stale 検出 / L1.5-3 のラベル作成失敗 / L2-1 の exit 1・3・4 / L2-4 の `batch-wait.sh` exit 1 / L2-5 の `loop-cleanup.sh` exit 1 / ユーザー中断。`references/loop-mode.md` に手順として明記する |
 
@@ -388,7 +395,17 @@ gh issue edit "$n" --add-label dispatch/in-progress
 | 親が `dispatched` の状態で落ちた | 走行中の子がいる可能性が高いため `reconcile` は中止を返す。人が状況を確認する |
 | バッチの一部だけ起動成功 | 成功分のみ `mark-dispatched` して待機。失敗分は release 済みなので待機対象に含まれず、タイムアウト待ちも発生しない |
 
-`reconcile` を stale 検査（L1.5-2）より**前**に置くのは、`.dispatch/<slug>/` の存在だけで即中止すると reconciliation が永久に走らなくなるためである（round 2 finding 4）。
+`reconcile` を stale 検査（L1.5-2）より**前**に置くのは、`.dispatch/<slug>/` の存在だけで即中止すると reconciliation が永久に走らなくなるためである。
+
+**部分失敗で「ラベルと state の片方だけ」を残さない。** どちらか一方だけが残ると、その issue は
+サーバサイドの negative qualifier で永久に除外されたまま、ローカルの追跡記録も無い状態になり、
+二度と拾えなくなる。したがって:
+
+| 場面 | 規則 |
+|---|---|
+| claim（ラベル付与 → state 書き込み） | state を書けなければラベルを補償的に外す。**その除去にも失敗したら fatal** で人に返す（握り潰さない） |
+| `release` / `reconcile`（ラベル除去 → レコード削除） | ラベル除去の**成功を確認できるまでレコードを消さない**。`gh` が使えない場合も「確認できない」に含める |
+| cleanup のラベル遷移 | terminal ラベルを先に付けてから `in-progress` を外す（§3.6） |
 
 ### 3.7 バッチ完了待ち（`batch-wait.sh`）
 
@@ -528,10 +545,11 @@ tar tzf "$D/wip-untracked.tar.gz" > /dev/null              # archive の健全�
    - 成功 → 手順 5 へ
    - conflict → `git merge --abort` し、worktree・branch とも温存して `dispatch/failed` を付与、この slug の cleanup を終了（#3）
 5. 結果が `error` / `timeout` / `unverified` なら §3.8.3 の WIP 保全を行う
-6. 上表に従い `git worktree remove ".worktrees/<slug>" --force`
-7. 上表に従い `git branch -D "feat/<slug>"`
-8. `issue-fetch.sh ... finalize` で `loop-state.json` に最終結果を記録し、§3.6 のラベル遷移を適用する。手順 6/7 が失敗した場合は `leaked[]` に追記する
-9. 上表に従い `rm -rf ".dispatch/<slug>"`
+6. **`issue-fetch.sh ... finalize` で `loop-state.json` に最終結果を記録する**。失敗したらこの slug の処理を中止し、worktree・branch・`.dispatch/<slug>` をすべて温存する
+7. **§3.6 のラベル遷移を適用する**。terminal ラベル（`dispatch/done` / `dispatch/failed`）を**先に付けてから** `dispatch/in-progress` を外す。terminal ラベルの付与に失敗したらこの slug の処理を中止し、同様にすべて温存して `leaked[]` に記録する
+8. 上表に従い `git worktree remove ".worktrees/<slug>" --force`
+9. 上表に従い `git branch -D "feat/<slug>"`。手順 8/9 が失敗した場合は `leaked[]` に追記する
+10. 上表に従い `rm -rf ".dispatch/<slug>"`
 10. `agmsg` モードのときは `leave.sh <team> <slug>` / `-sonnet` / `-codex` / `-review` / `-opus` で team から除籍する
 
 pane close を先に行うのは既存 cleanup と同じ理由（ペインを閉じないと worktree が掴まれたまま削除に失敗する）。merge を worktree 削除より前に置いたのは、conflict 時に worktree を温存する契約と順序を整合させるためである。
@@ -638,10 +656,12 @@ pre-warm を使わない経路では `launch-workspace.sh --mode plan` が使わ
 
 | 経路 | 取得対象 | 検査 |
 |---|---|---|
-| (a) プロンプト経路 | worktree に書かれる `.cmux-team-dispatch-task-prompt.md` と、設計ペインへ送る `TASK_TEXT` | `AskUserQuestion` を含まない |
+| (a) プロンプト経路 | `scripts/render-loop-prompt.sh` が出力する完全なタスクプロンプト | `AskUserQuestion` を含まない |
 | (b) spawn 経路 | `launch-workspace.sh --mode execute --unattended` が生成する `.cmux-team-dispatch-task-run-*.sh` | `AskUserQuestion` を含まない |
 
-(a) は `test/test-loop-prompt.sh`（review 有無 × design engine claude/codex のレンダリング結果を静的に検査）、(b) は `test/test-launch-workspace-codex.sh` の拡張で行う。あわせて `--unattended` を渡さない場合は現行文言が保たれることも検査する（後方互換スナップショット）。
+**(a) を機械的に検査できるよう、ループ用プロンプトの組み立てはスクリプト化する。** 組み立てを LLM に任せると「確定文面を貼らなかった」「一部だけ貼った」「別の対話ブロックが残った」という回帰を検出できない。`references/unattended/` に確定文面を置き、`render-loop-prompt.sh` がそれらを連結して完全なプロンプトを stdout に出す。テストはその**最終出力**を design engine（claude / codex）× review（on / off）の 4 通りで検査する。空出力で検査を通す抜け道を塞ぐため、必要な見出し・slug・sentinel パス・出力長も同時に assert する。
+
+(b) は `test/test-launch-workspace-codex.sh` の拡張で行う。あわせて `--unattended` を渡さない場合は現行文言が保たれることも検査する（後方互換スナップショット）。
 
 ## 5. 要件 3 — ループ開始前の一括設定質問
 
