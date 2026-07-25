@@ -842,7 +842,7 @@ hook trust の「実 TUI で prompt が出ないこと」の検査は対話セ�
 | 失敗タスクの未コミット成果物を失う | worktree 削除前に WIP コミット（`--no-verify` + 一時 identity）→ `--binary` patch と未追跡ファイルの tar 保全 → 健全性確認 → いずれも失敗なら worktree 温存（§3.8.3） |
 | ラベル付与に失敗した issue を無限に拾い続ける | claim 失敗時はそのバッチから除外し状態にも登録しない。候補があったのに claim 全滅なら exit 3 でループを中断する |
 | 親が claim 後に落ちて issue が回収不能になる | `claimed` / `dispatched` を区別し、Step L1.5-1 の reconcile で workspace の生存を確認して release または中止する |
-| ロックが取れたまま／取り合いになる | `mkdir` による atomic 取得、stale takeover は atomic rename の勝者のみ、liveness の正本は `owner.json` に一本化、release は owner 一致時のみ、中断する全経路での明示的解放（§3.4） |
+| ロックが取れたまま／取り合いになる | `mkdir` による atomic 取得、stale takeover は takeover mutex の勝者のみ、liveness の正本は `owner.json` に一本化、release は owner 一致時のみ、中断する全経路での明示的解放（§3.4） |
 | 質問回答待ちや長時間処理の間に heartbeat が切れ、二重 owner になる | ロック取得を Step L1 の最終確認後に遅らせ、全サブコマンドが冒頭で heartbeat 更新と owner token 検証を行い、lease を `task_timeout_min` から独立させる（§3.4） |
 | 通常 dispatch の `rm -rf .dispatch/` がループ状態やタスク状態を消す | ループ制御状態を `.dispatch-loop/` に分離（正順）＋ 通常 dispatch 側の Step 1 冒頭と cleanup 節に active loop lock ガードを追加（逆順）。§3.4 |
 | `--dangerously-skip-permissions` による意図しない破壊的操作 | worktree 隔離は従来どおり維持される。ループは `--loop` または Step L0-1 の明示 opt-in を通らないと開始しない |

@@ -10,6 +10,22 @@
 
 **設計の SoT:** `docs/superpowers/specs/2026-07-25-github-issue-loop-design.md`。以下の本文で「spec §N」と書いたらこのファイルの該当節を指す。
 
+## レビュー経緯と実装時に扱う refinement
+
+Phase A-R は codex `gpt-5.6-sol` と spec 5 往復・plan 3 往復を行った。plan round 3 の
+blocking 6 件（`lock-check` の session ID 必須 / takeover と owner 操作の非直列化 /
+mutex の crash 回復 / `reconcile` の生死判定 / レンダラの placeholder 未解決 /
+テスト挿入位置）はすべて本文に反映済み。**ただしユーザーの判断によりレビューは
+plan round 3 で打ち止めとしたため、これらの修正自体は再レビューを受けていない。**
+
+次の refinement は non-blocking として挙がったもの。実装中に対応すること:
+
+| 項目 | 内容 |
+|---|---|
+| archive identity の厳密さ | `tar tzf` の出力は改行区切りなので、後から NUL へ変換しても改行を含むファイル名の identity は復元できない。実装時は「NUL-safe」と称さないか、NUL 対応のリスト取得手段に置き換える |
+| partial-failure テストの拡充 | claim の state 書き込み失敗（補償成功／失敗）、`release` / `reconcile` の gh 不在・ラベル除去失敗、heartbeat の更新失敗を個別に注入するテストを足すと、fail-closed 契約が実装時に固定できる |
+| spec の残存記述 | spec の §3.4 リスク表など一部に「atomic rename の勝者のみ」という takeover mutex 導入前の表現が残っている。実装時に mutex 方式へ揃える |
+
 ## Global Constraints
 
 - ドキュメント・コメント・コミットメッセージは **日本語**、コード（変数名・関数名・CLI フラグ）は **英語**。
@@ -750,12 +766,18 @@ WINNER=$(cat "$TMP/winners.txt")
 check '[[ ! -d "$TMP/repo/.dispatch-loop/loop.lock.takeover.d" ]]' 'L10 takeover mutex が解放されている'
 LOOP_SESSION_ID="$WINNER" bash "$FETCH" --state-file "$STATE" lock-release >/dev/null 2>&1
 
-# --- L11: 安定した session id が無ければ開始を拒否する ---
+# --- L11: session id を要求するのは owner 操作だけ ---
+# lock-check は通常 dispatch のガードから呼ばれる read-only probe なので、
+# CLAUDE_CODE_SESSION_ID を持たない codex セッションでも成功しなければならない
 set +e
 (unset LOOP_SESSION_ID CLAUDE_CODE_SESSION_ID; bash "$FETCH" --state-file "$STATE" lock-check) >/dev/null 2>&1
-rc=$?
+rc_check=$?
+(unset LOOP_SESSION_ID CLAUDE_CODE_SESSION_ID; bash "$FETCH" --state-file "$STATE" lock-acquire --lease-min 30) >/dev/null 2>&1
+rc_acq=$?
 set -e
-check '[[ $rc -ne 0 ]]' 'L11 session id 無しでは実行を拒否する'
+check '[[ $rc_check -eq 0 ]]' 'L11 session id 無しでも lock-check は成功する'
+check '[[ ! -d "$TMP/repo/.dispatch-loop/loop.lock.d" ]]' 'L11 lock-check は何も作らない'
+check '[[ $rc_acq -ne 0 ]]' 'L11 session id 無しの lock-acquire は拒否される'
 
 # --- L12: init が完全なスキーマで state を作る ---
 SID=sess-c run lock-acquire --lease-min 30 >/dev/null
@@ -840,6 +862,7 @@ PR_URL=""
 MESSAGE=""
 CONFIG_JSON=""
 FILTER_JSON=""
+OWNER_GENERATION=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -880,10 +903,14 @@ LOCK_DIR="$LOOP_DIR/loop.lock.d"
 OWNER_FILE="$LOCK_DIR/owner.json"
 # owner identity は「呼び出しをまたいで安定」でなければならない。$$ や時刻から作ると
 # サブコマンドごとに別プロセス = 別 owner になり、acquire 直後の heartbeat すら弾かれる。
-# 安定 ID が得られない環境ではループを開始させない。
+# ただし ID を必須にするのは owner を名乗る操作だけ。lock-check は read-only の probe で
+# あり、通常 dispatch のガードから呼ばれる。ここで ID を要求すると
+# CLAUDE_CODE_SESSION_ID を持たない codex セッションで通常 dispatch が開始不能になる。
 SESSION_ID="${LOOP_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
-[[ -n "$SESSION_ID" ]] \
-  || die "stable session id not found; set LOOP_SESSION_ID (or CLAUDE_CODE_SESSION_ID) before starting the loop"
+require_session_id() {
+  [[ -n "$SESSION_ID" ]] \
+    || die "stable session id not found; set LOOP_SESSION_ID (or CLAUDE_CODE_SESSION_ID) before starting the loop"
+}
 HOST="$(hostname -s 2>/dev/null || echo unknown)"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -927,31 +954,70 @@ dir_mtime_epoch() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
 }
 
-# owner.json は atomic replace で公開する (部分書き込みを他プロセスに見せない)
+# owner.json は atomic replace で公開する (部分書き込みを他プロセスに見せない)。
+# generation は「この lock の世代」を表す一意値。takeover のたびに変わるので、
+# 旧 owner はこれを見て自分がもう owner でないことを検出できる。
 write_owner() {
-  local tmp
+  local tmp gen
+  gen="$(now_iso)-$SESSION_ID-$RANDOM"
   tmp=$(mktemp "$LOCK_DIR/owner.json.XXXXXX") || die "mktemp failed"
-  if jq -n --arg s "$SESSION_ID" --arg h "$HOST" --arg t "$(now_iso)" \
-       '{session_id:$s, host:$h, started_at:$t, heartbeat:$t}' > "$tmp"; then
+  if jq -n --arg s "$SESSION_ID" --arg h "$HOST" --arg t "$(now_iso)" --arg g "$gen" \
+       '{session_id:$s, host:$h, started_at:$t, heartbeat:$t, generation:$g}' > "$tmp"; then
     mv "$tmp" "$OWNER_FILE"
+    OWNER_GENERATION="$gen"
   else
     rm -f "$tmp"; die "failed to write owner.json"
   fi
 }
 
-# 自分が owner でなければ何も書かずに終了する
-require_owner() {
-  [[ -f "$OWNER_FILE" ]] || die "no active loop lock at $LOCK_DIR"
-  local o
+# takeover mutex。crash 残骸で永久に詰まらないよう、mtime による有限 grace を持つ。
+# 取得できたら 0、他プロセスが保持中なら 1。
+TAKEOVER_MUTEX="$LOOP_DIR/loop.lock.takeover.d"
+TAKEOVER_MUTEX_GRACE_SEC=120
+acquire_takeover_mutex() {
+  if mkdir "$TAKEOVER_MUTEX" 2>/dev/null; then return 0; fi
+  # 既存の mutex が十分古ければ、取得プロセスが trap を実行できずに死んだ残骸とみなす。
+  # 一意名へ退避してから作り直すことで、回収も 1 プロセスだけが成功する
+  local age
+  age=$(( $(date -u +%s) - $(dir_mtime_epoch "$TAKEOVER_MUTEX") ))
+  if (( age > TAKEOVER_MUTEX_GRACE_SEC )); then
+    local quarantine="$LOOP_DIR/loop.lock.takeover.stale.$(date -u +%Y%m%dT%H%M%SZ).$$"
+    if mv "$TAKEOVER_MUTEX" "$quarantine" 2>/dev/null; then
+      rmdir "$quarantine" 2>/dev/null || rm -rf "$quarantine"
+      log "lock" "reclaimed a stale takeover mutex (age ${age}s)"
+      mkdir "$TAKEOVER_MUTEX" 2>/dev/null && return 0
+    fi
+  fi
+  return 1
+}
+
+# 自分が owner でなければ何も書かずに終了する。
+# owner.json には generation を持たせ、state を書き換える直前にも同じ値を確認する
+# （長い GitHub 操作の間に lease を超えて takeover された旧 owner が、復帰後に
+#  新 owner の state を上書きするのを防ぐ）。
+verify_owner_generation() {
+  [[ -f "$OWNER_FILE" ]] || die "loop lock disappeared (taken over?)"
+  local o g
   o=$(jq -r '.session_id // empty' "$OWNER_FILE" 2>/dev/null || echo "")
+  g=$(jq -r '.generation // empty' "$OWNER_FILE" 2>/dev/null || echo "")
   [[ "$o" == "$SESSION_ID" ]] || die "loop lock is owned by '$o', not '$SESSION_ID'"
-  # owner 確認と同時に鮮度を更新する
+  [[ -z "$OWNER_GENERATION" || "$g" == "$OWNER_GENERATION" ]] \
+    || die "loop lock generation changed ($OWNER_GENERATION -> $g); another process took over"
+  OWNER_GENERATION="$g"
+}
+
+require_owner() {
+  require_session_id
+  [[ -f "$OWNER_FILE" ]] || die "no active loop lock at $LOCK_DIR"
+  verify_owner_generation
+  # owner 確認と同時に鮮度を更新する。更新できないまま続けると、
+  # lease 切れ → takeover → 旧 owner が書き込む、という経路が開く
   local tmp
   tmp=$(mktemp "$OWNER_FILE.XXXXXX") || die "mktemp failed"
   if jq --arg t "$(now_iso)" '.heartbeat = $t' "$OWNER_FILE" > "$tmp"; then
     mv "$tmp" "$OWNER_FILE"
   else
-    rm -f "$tmp"; log "warn" "heartbeat update failed"
+    rm -f "$tmp"; die "heartbeat update failed; refusing to continue as owner"
   fi
 }
 
@@ -960,6 +1026,9 @@ require_owner() {
 state_write() {
   local filter="$1"; shift
   local tmp
+  # 書き込み直前に owner generation を再確認する。長い GitHub 操作の間に lease を
+  # 超えて takeover されていた場合、ここで止めないと新 owner の state を壊す
+  verify_owner_generation
   if [[ ! -f "$STATE_FILE" ]]; then
     tmp=$(mktemp "$STATE_FILE.XXXXXX") || die "mktemp failed"
     if jq -n '{issues:{}, batches:[], leaked:[]}' > "$tmp"; then mv "$tmp" "$STATE_FILE"
@@ -993,7 +1062,8 @@ record_orphan() {
 
 case "$SUBCOMMAND" in
   lock-check)
-    # Step L0 は read-only probe。ディレクトリを作らない
+    # Step L0 と通常 dispatch のガードから呼ばれる read-only probe。
+    # session id は不要（owner を名乗らない）。ディレクトリも作らない
     if lock_is_live; then
       log "lock" "an issue loop is already running"
       exit 1
@@ -1002,6 +1072,7 @@ case "$SUBCOMMAND" in
     ;;
 
   lock-acquire)
+    require_session_id
     (( LEASE_MIN >= 10 )) || die "--lease-min must be at least 10"
     mkdir -p "$LOOP_DIR"
     if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -1023,12 +1094,12 @@ case "$SUBCOMMAND" in
     #   「A の新しいロック」を自分の退避先へ rename → B も owner になる。
     # 退避先を一意にしても世代を比較していないので閉じない。そこで takeover 全体を
     # 別の atomic mkdir mutex で直列化し、mutex の中で staleness を再判定する。
-    TAKEOVER_MUTEX="$LOOP_DIR/loop.lock.takeover.d"
-    if ! mkdir "$TAKEOVER_MUTEX" 2>/dev/null; then
+    if ! acquire_takeover_mutex; then
       log "lock" "another process is already taking over the stale lock"
       exit 1
     fi
-    # mutex 取得後に必ず解放する
+    # mutex 取得後に必ず解放する。SIGKILL 等で trap が動かなくても、
+    # acquire_takeover_mutex の mtime grace が有限時間後に回収する
     trap 'rmdir "$TAKEOVER_MUTEX" 2>/dev/null || true' EXIT
     # 直列化された状態で再判定する。先行者が既に takeover を終えていれば live に戻っている
     if lock_is_live; then
@@ -1051,9 +1122,19 @@ case "$SUBCOMMAND" in
     ;;
 
   lock-release)
+    require_session_id
     if [[ ! -d "$LOCK_DIR" ]]; then
       exit 0
     fi
+    # owner を読んでから rm するまでの間に別プロセスが takeover すると、
+    # 旧 owner が「新 owner のロック」を消してしまう。takeover と同じ mutex の中で
+    # 確認 → 削除まで行い、この逆向きの競合も閉じる
+    if ! acquire_takeover_mutex; then
+      log "warn" "a takeover is in progress; not releasing"
+      exit 1
+    fi
+    trap 'rmdir "$TAKEOVER_MUTEX" 2>/dev/null || true' EXIT
+    if [[ ! -d "$LOCK_DIR" ]]; then exit 0; fi
     # owner.json が無いロックは「他プロセスが取得中」の可能性がある。消してはいけない
     if [[ ! -f "$OWNER_FILE" ]]; then
       log "warn" "lock has no owner.json (another process may be acquiring it); not releasing"
@@ -1138,7 +1219,17 @@ git commit -m "feat(cmux-team-dispatch-task): issue-fetch.sh にループ用ロ�
 
 - [ ] **Step 1: 失敗するテストを追加する**
 
-`test-issue-fetch.sh` の `SID=sess-c run lock-release` の直前に追加:
+**挿入位置に注意（round 3 finding 6）:** F スイートは `test-issue-fetch.sh` の
+**L12 ブロックの直後**（`check '[[ $(jq -r ".config.concurrency" "$STATE") == "5" ]]' ...` の次）
+に置く。L8 の `SID=sess-c run lock-release` の前に割り込ませると、追加ブロック自身が
+sess-c のロックを解放して sess-d で取得したまま終わるため、直後の L8 が owner 不一致で
+`set -e` により即終了し、以降のテストに到達しない。
+
+**owner の受け渡し規約（Task 5〜7 共通）:** L12 終了時点の owner は `sess-c`。F スイートは
+冒頭で sess-c を解放して sess-d を取得し、**末尾では解放せずに sess-d のまま終える**。
+続く Task 7 の S スイートは sess-d を owner として動き、テストの最後に解放する。
+
+L12 ブロックの直後に追加:
 
 ```bash
 # --- gh スタブ: 呼ばれた引数を gh.log に残し、GH_FIXTURE の中身を返す ---
@@ -1156,9 +1247,11 @@ STUB
 chmod +x "$TMP/bin/gh"
 export GH_LOG="$TMP/gh.log" GH_FIXTURE="$TMP/fixture.json"
 
-SID=sess-c run lock-release || true
+# L12 終了時点の owner は sess-c。ここで sess-d へ引き継ぎ、
+# F スイート末尾では解放せずに sess-d のまま Task 7 の S スイートへ渡す
+SID=sess-c run lock-release
 SID=sess-d run lock-acquire --lease-min 30
-echo '{"issues":{},"batches":[],"leaked":[]}' > "$STATE"
+SID=sess-d run init --config-json '{"concurrency":2}' --filter-json '{"state":"open"}'
 
 # --- F1: 通常取得 ---
 : > "$GH_LOG"
@@ -1243,7 +1336,8 @@ check '[[ $(jq -r "length" <<<"$out") == "1" ]]' 'F6 新候補は 1 件だけ'
 check '[[ $(jq -r ".[0].number" <<<"$out") == "7" ]]' 'F6 窓を広げて次窓の候補を拾う'
 check 'grep -q -- "--limit 8" "$GH_LOG"' 'F6 窓が倍化される'
 
-echo '{"issues":{},"batches":[],"leaked":[]}' > "$STATE"
+# owner は sess-d のまま残す (Task 7 の S スイートが引き継ぐ)
+SID=sess-d run init --config-json '{"concurrency":2}' --filter-json '{"state":"open"}'
 ```
 
 - [ ] **Step 2: テストが失敗することを確認する**
@@ -1405,6 +1499,10 @@ git commit -m "feat(cmux-team-dispatch-task): issue-fetch.sh に issue 取得・
 
 - [ ] **Step 1: 失敗するテストを追加する**
 
+**owner の受け渡し（Task 5〜7 共通規約）:** F スイート終了時点の owner は `sess-d`。
+S スイートはそのまま `sess-d` で動き、**末尾で解放する**。これで
+`test-issue-fetch.sh` は Task 5・6・7 のどの完了時点でも全体が通る。
+
 `test-issue-fetch.sh` の末尾（`[[ $fail -eq 0 ]]` の直前）に追加:
 
 ```bash
@@ -1425,11 +1523,22 @@ jq -n '{issues:{"13":{slug:"s",status:"dispatched",batch:1}},batches:[],leaked:[
 out=$(SID=sess-d run reconcile)
 check '[[ $(jq -r ".action" <<<"$out") == "abort" ]]' 'S3 dispatched が残っていれば abort'
 
-# --- S4: reconcile は workspace 消滅済みの claimed を release する ---
+# --- S4: reconcile は痕跡が何も無い claimed だけを release する ---
 jq -n '{issues:{"14":{slug:"gone",status:"claimed",batch:1}},batches:[],leaked:[]}' > "$STATE"
-out=$(DISPATCH_DIR="$TMP/repo/.dispatch" SID=sess-d run reconcile)
-check '[[ $(jq -r ".action" <<<"$out") == "ok" ]]' 'S4 消滅済み claimed は ok'
-check '[[ $(jq -r ".issues | has(\"14\")" "$STATE") == "false" ]]' 'S4 消滅済み claimed を release する'
+out=$(DISPATCH_DIR="$TMP/repo/.dispatch" LOOP_REPO_ROOT="$TMP/repo" SID=sess-d run reconcile)
+check '[[ $(jq -r ".action" <<<"$out") == "ok" ]]' 'S4 痕跡の無い claimed は ok'
+check '[[ $(jq -r ".issues | has(\"14\")" "$STATE") == "false" ]]' 'S4 痕跡の無い claimed を release する'
+
+# --- S4b: status.json は無いが worktree / prewarm.json が生きている claimed は abort ---
+# (pane 起動後 mark-dispatched 前に親が落ちたケース。ここで release すると二重 dispatch になる)
+mkdir -p "$TMP/repo/.dispatch/alive" "$TMP/repo/.worktrees/alive"
+echo '{"sonnet":{"surface_id":"surface:99"}}' > "$TMP/repo/.dispatch/alive/prewarm.json"
+jq -n '{issues:{"15":{slug:"alive",status:"claimed",batch:1}},batches:[],leaked:[]}' > "$STATE"
+out=$(DISPATCH_DIR="$TMP/repo/.dispatch" LOOP_REPO_ROOT="$TMP/repo" CMUX_BIN=/nonexistent \
+      SID=sess-d run reconcile)
+check '[[ $(jq -r ".action" <<<"$out") == "abort" ]]' 'S4b 生存痕跡のある claimed は abort'
+check '[[ $(jq -r ".issues | has(\"15\")" "$STATE") == "true" ]]' 'S4b レコードを残す'
+rm -rf "$TMP/repo/.dispatch/alive" "$TMP/repo/.worktrees/alive"
 
 # --- S5: ensure-labels は不足分を作る ---
 : > "$GH_LOG"
@@ -1441,6 +1550,9 @@ jq -n '{issues:{"15":{slug:"s",status:"dispatched",batch:1}},batches:[],leaked:[
 SID=sess-d run finalize --issue 15 --status done --pr-url https://x/pr/1
 check '[[ $(jq -r ".issues[\"15\"].status" "$STATE") == "done" ]]' 'S6 finalize が status を書く'
 check '[[ $(jq -r ".issues[\"15\"].pr_url" "$STATE") == "https://x/pr/1" ]]' 'S6 finalize が pr_url を書く'
+
+# テストの終わりにロックを解放する（次回実行時に stale が残らないように）
+SID=sess-d run lock-release
 ```
 
 - [ ] **Step 2: テストが失敗することを確認する**
@@ -1455,6 +1567,8 @@ Expected: `Error: unknown subcommand: mark-dispatched`
 ```bash
 # タスクの STATUS_DIR は従来どおり .dispatch/<slug>。テストから差し替えられるようにする
 DISPATCH_DIR="${DISPATCH_DIR:-$(dirname "$LOOP_DIR")/.dispatch}"
+REPO_ROOT="${LOOP_REPO_ROOT:-$(dirname "$LOOP_DIR")}"
+CMUX="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
 ```
 
 ```bash
@@ -1495,12 +1609,27 @@ DISPATCH_DIR="${DISPATCH_DIR:-$(dirname "$LOOP_DIR")/.dispatch}"
       REASONS=$(jq --arg r "issue #$n は dispatched のままです (前回のループが中断した可能性)" \
         '. + [$r]' <<<"$REASONS")
     done
-    # claimed は workspace の生存で判定する
+    # claimed は「生きている痕跡が 1 つでもあれば abort」の保守的判定にする。
+    # status.json の有無だけで判定すると、pane 起動後 mark-dispatched 前に親が落ちた
+    # ケース（workspace も worktree も生きているが status.json はまだ無い）で
+    # release してしまい、生きた子が動いたまま同じ issue が再取得される。
     for n in $(jq -r '.issues | to_entries[] | select(.value.status == "claimed") | .key' "$STATE_FILE"); do
       slug=$(jq -r --arg k "$n" '.issues[$k].slug' "$STATE_FILE")
-      if [[ -f "$DISPATCH_DIR/$slug/status.json" ]]; then
+      evidence=""
+      [[ -f "$DISPATCH_DIR/$slug/status.json" ]] && evidence="status.json"
+      [[ -f "$DISPATCH_DIR/$slug/prewarm.json" ]] && evidence="${evidence:+$evidence, }prewarm.json"
+      [[ -d "$REPO_ROOT/.worktrees/$slug" ]] && evidence="${evidence:+$evidence, }worktree"
+      # prewarm.json があれば surface の生存も cmux に問い合わせる
+      if [[ -f "$DISPATCH_DIR/$slug/prewarm.json" ]] && command -v "$CMUX" >/dev/null 2>&1; then
+        for sf in $(jq -r '.[].surface_id // empty' "$DISPATCH_DIR/$slug/prewarm.json" 2>/dev/null); do
+          "$CMUX" read-screen --surface "$sf" >/dev/null 2>&1 \
+            && { evidence="${evidence:+$evidence, }live surface $sf"; break; }
+        done
+      fi
+      if [[ -n "$evidence" ]]; then
         ACTION="abort"
-        REASONS=$(jq --arg r "issue #$n ($slug) の workspace が生存しています" '. + [$r]' <<<"$REASONS")
+        REASONS=$(jq --arg r "issue #$n ($slug) は生存の痕跡があります ($evidence)。手動で確認してください" \
+          '. + [$r]' <<<"$REASONS")
       else
         # release と同じ順序規則: ラベル除去の成功を確認できない限り record は消さない
         # (gh が無い場合も「確認できない」に含める)
@@ -1661,7 +1790,14 @@ case "$1" in
   *) : ;;
 esac
 STUB
-printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/claude"
+# claude スタブは barrier ファイルが現れるまで待つ。これにより
+# 「wrapper 起動 → assignment 観測 → sentinel 作成 → ディレクトリ削除 → 子の終了」
+# という実際の順序を再現できる
+cat > "$TMP/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+while [[ ! -f "$W6_BARRIER" ]]; do sleep 0.1; done
+exit 0
+STUB
 chmod +x "$TMP/bin/cmux" "$TMP/bin/claude"
 git -C "$TMP/wt" init -q 2>/dev/null || true
 
@@ -1670,11 +1806,17 @@ RES=$(CMUX_BIN="$TMP/bin/cmux" bash "$LAUNCH" \
   --timeout-sentinel "$LOOP/timed-out/slug-late" "slug-late")
 RUNNER=$(jq -r '.runner_file' <<<"$RES")
 
-# sentinel を作り、タスクディレクトリを消してから wrapper を走らせる
-mkdir -p "$LOOP/timed-out"; : > "$LOOP/timed-out/slug-late"
-: > "$DISP/slug-late/.assigned-slug-late"     # 通常なら status を書く条件を満たす
-rm -rf "$DISP/slug-late"
-bash "$RUNNER" >/dev/null 2>&1 || true
+# 先に assignment を置いてから wrapper を起動する。
+# こうしないと既存の .assigned ガードだけで status が書かれず、
+# sentinel ガードを実装しなくてもテストが通ってしまう
+: > "$DISP/slug-late/.assigned-slug-late"
+W6_BARRIER="$TMP/w6.barrier" bash "$RUNNER" >/dev/null 2>&1 &
+W6_PID=$!
+sleep 0.5                                   # wrapper が claude を起動するまで待つ
+mkdir -p "$LOOP/timed-out"; : > "$LOOP/timed-out/slug-late"   # batch-wait が terminal 化
+rm -rf "$DISP/slug-late"                    # cleanup がタスクディレクトリを削除
+: > "$TMP/w6.barrier"                       # 子を解放 → wrapper の終了処理が走る
+wait "$W6_PID" 2>/dev/null || true
 check '[[ ! -d "$DISP/slug-late" ]]' 'W6 sentinel があれば status ディレクトリが復活しない'
 
 # 対照: sentinel が無ければ従来どおり status を書く（ガードが効きすぎていないことの確認）
@@ -1684,7 +1826,8 @@ RES2=$(CMUX_BIN="$TMP/bin/cmux" bash "$LAUNCH" \
   --cwd "$TMP/wt" --mode standby --status-dir "$DISP/slug-late2" "slug-late2")
 RUNNER2=$(jq -r '.runner_file' <<<"$RES2")
 : > "$DISP/slug-late2/.assigned-slug-late2"
-bash "$RUNNER2" >/dev/null 2>&1 || true
+: > "$TMP/w6.barrier"
+W6_BARRIER="$TMP/w6.barrier" bash "$RUNNER2" >/dev/null 2>&1 || true
 check '[[ -f "$DISP/slug-late2/status.json" ]]' 'W6 sentinel 無しでは従来どおり status を書く'
 
 bash "$FETCH" --state-file "$STATE" lock-release >/dev/null 2>&1
@@ -2409,14 +2552,15 @@ git commit -m "feat(cmux-team-dispatch-task): loop-cleanup.sh を実装し完了
 **Files:**
 - Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/review-block.md`
 - Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/code-review-block.md`
-- Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/phase-block.md`
+- Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/phase-block-claude.md`
+- Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/unattended/phase-block-codex.md`
 - Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/render-loop-prompt.sh`
 - Test: `apps/cmux-team-dispatch-task/test/test-loop-prompt.sh`（新規）
 
 **Interfaces:**
 - Consumes: Task 3 の `--unattended`、Task 4 の `--timeout-sentinel`
 - Produces:
-  - `references/unattended/*.md` — loop 用プロンプトに**そのまま連結される確定文面**（対照表や解説は一切書かない。ファイル全体が出力の一部になる）
+  - `references/unattended/*.md` — loop 用プロンプトに**そのまま連結される確定文面**（対照表や解説は一切書かない。ファイル全体が出力の一部になる）。4 ファイル: `phase-block-claude.md` / `phase-block-codex.md` / `review-block.md` / `code-review-block.md`
   - `render-loop-prompt.sh` — タスクプロンプトを**決定的に組み立てるスクリプト**
 
 ```
@@ -2427,10 +2571,24 @@ render-loop-prompt.sh --slug <slug> --issue <n> --issue-title <s> --issue-url <u
                       --status-dir <abs> --timeout-sentinel <abs>
                       --team <name> --layout <workspace|split>
                       --parent-workspace <id> [--parent-surface <id>]
+                      --skill-dir <abs>
+                      [--review-model <m>] [--review-runner <name>] [--review-pane-agent <name>]
 
 stdout: .cmux-team-dispatch-task-prompt.md に書き込む完全なプロンプト
-exit  : 0 / 1 (必須引数の欠落)
+exit  : 0 / 1 (必須引数の欠落、または未解決 placeholder の検出)
 ```
+
+**placeholder は 1 つも残さない。** 現行の `{{REVIEW_BLOCK}}` / `{{CODE_REVIEW_BLOCK}}` には
+`{{REVIEW_MODEL}}` / `{{REVIEW_RUNNER_NAME}}` / `{{REVIEW_PANE_AGENT}}` / `<EXISTING_STATUS_DIR>` /
+`<SKILL_DIR>` / `<task-slug>` / `<REVIEWER_SURFACE>` など多数の placeholder がある。
+`--review on` のときはこれらの値も引数で受け取り、フラグメント内の対応する記号を
+すべて置換する。置換後に **`{{...}}` が残っていたらエラー終了**する（未解決のまま
+実行不能なプロンプトを送らない）。
+
+**design engine で PHASE A / PHASE B の本文が変わる。** `phase-block.md` は 1 つではなく、
+`phase-block-claude.md` と `phase-block-codex.md` の 2 ファイルに分ける。前者は現行の
+PHASE A（always opus）/ PHASE B（SAME MODEL は `/model opus[1m]`）、後者は現行 SKILL.md の
+「codex 設計 variant」（3 択とも委譲）に対応する。`--design-engine` はこの選択に使う。
 
 **なぜスクリプトにするのか（round 2 finding 6）:** プロンプトの組み立てを LLM に任せると、
 「フラグメントを貼らなかった」「一部だけ貼った」「別の対話ブロックが残った」という回帰を
@@ -2464,13 +2622,18 @@ ok()  { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
 
 render() {   # design-engine, review
+  local rev_flags=()
+  [[ "$2" == "on" ]] && rev_flags=(--review-model gpt-5.6-sol --review-runner codex \
+                                   --review-pane-agent issue-12-demo-review)
   bash "$RENDER" \
     --slug issue-12-demo --issue 12 --issue-title 'Demo' --issue-url https://x/12 \
     --issue-body-file "$TMP/body.md" --plan-hint '.claude/plans/issue-12-demo.md' \
     --exec-choice sonnet --design-engine "$1" --review "$2" \
     --status-dir /abs/.dispatch/issue-12-demo \
     --timeout-sentinel /abs/.dispatch-loop/timed-out/issue-12-demo \
-    --team demo-team --layout workspace --parent-workspace workspace:1
+    --team demo-team --layout workspace --parent-workspace workspace:1 \
+    --skill-dir /abs/skills/cmux-team-dispatch-task \
+    ${rev_flags[@]+"${rev_flags[@]}"}
 }
 
 # --- R1: 4 通りすべてで AskUserQuestion が出力に現れない（要件 2 の中核） ---
@@ -2506,11 +2669,52 @@ grep -Fq '実行フェーズで使用するモデルを選択してください'
   && bad 'R4 モデル選択の質問文が残っている' || ok 'R4 モデル選択の質問文が出ない'
 
 # --- R5: フラグメント自体にも対話質問が無い ---
-for f in "$UNATT"/review-block.md "$UNATT"/code-review-block.md "$UNATT"/phase-block.md; do
+for f in "$UNATT"/review-block.md "$UNATT"/code-review-block.md \
+         "$UNATT"/phase-block-claude.md "$UNATT"/phase-block-codex.md; do
   [[ -f "$f" ]] || { bad "R5 $f が存在しない"; continue; }
   grep -Fq 'AskUserQuestion' "$f" && bad "R5 $(basename "$f") に AskUserQuestion が残る" \
     || ok "R5 $(basename "$f") に AskUserQuestion が無い"
 done
+
+# --- R6: 未解決 placeholder が 1 つも残らない ---
+for eng in claude codex; do
+  for rev in on off; do
+    out=$(render "$eng" "$rev")
+    left=$(grep -o '{{[A-Z_]*}}' <<<"$out" | sort -u | tr '\n' ' ')
+    [[ -z "$left" ]] && ok "R6 design=$eng review=$rev に未解決 placeholder が無い" \
+      || bad "R6 design=$eng review=$rev に未解決 placeholder: $left"
+    # フラグメント側の <...> 記法も解決されていること
+    for ph in '<STATUS_DIR>' '<EXISTING_STATUS_DIR>' '<SKILL_DIR>' '<TASK_SLUG>' \
+              '<task-slug>' '<PLAN_FILE_PATH>' '<TIMEOUT_SENTINEL>' '<EXEC_CHOICE>'; do
+      grep -Fq -- "$ph" <<<"$out" && bad "R6 design=$eng review=$rev に $ph が残る" \
+        || ok "R6 design=$eng review=$rev の $ph が解決済み"
+    done
+  done
+done
+
+# --- R7: design engine ごとに PHASE 本文が変わる ---
+c_out=$(render claude on); x_out=$(render codex on)
+grep -Fq '/model opus[1m]' <<<"$c_out" && ok 'R7 design=claude は SAME MODEL 分岐を持つ' \
+  || bad 'R7 design=claude の SAME MODEL 分岐が無い'
+grep -Fq 'DELEGATE' <<<"$x_out" && ok 'R7 design=codex は 3 択とも委譲になっている' \
+  || bad 'R7 design=codex の委譲記述が無い'
+
+# --- R8: review on では review 固有の値が焼き込まれる ---
+grep -Fq 'gpt-5.6-sol' <<<"$c_out" && ok 'R8 review_model が焼き込まれる' \
+  || bad 'R8 review_model が無い'
+grep -Fq 'issue-12-demo-review' <<<"$c_out" && ok 'R8 review pane agent が焼き込まれる' \
+  || bad 'R8 review pane agent が無い'
+
+# --- R9: review on で必須引数が欠けたら失敗する ---
+set +e
+bash "$RENDER" --slug s --issue 1 --issue-title t --issue-url u \
+  --issue-body-file "$TMP/body.md" --plan-hint p --exec-choice sonnet \
+  --design-engine claude --review on --status-dir /a --timeout-sentinel /b \
+  --team t --layout workspace --parent-workspace w --skill-dir /s >/dev/null 2>&1
+rc=$?
+set -e
+check_rc() { [[ $1 -ne 0 ]] && ok "$2" || bad "$2"; }
+check_rc "$rc" 'R9 review on で review 引数が欠けたらエラーになる'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
@@ -2523,10 +2727,10 @@ Expected: `No such file or directory`（`render-loop-prompt.sh` が無い）
 
 - [ ] **Step 3a: unattended フラグメントを作る**
 
-3 ファイルとも **出力にそのまま入る本文だけ**を書く。対照表・解説・「元の記述」の引用は
+4 ファイルとも **出力にそのまま入る本文だけ**を書く。対照表・解説・「元の記述」の引用は
 **書かない**（書くと `AskUserQuestion` というリテラルが混入し、R5 が必ず失敗する）。
 
-`references/unattended/phase-block.md` — PHASE A / PHASE B の本文。現行 SKILL.md の
+`references/unattended/phase-block-claude.md` と `phase-block-codex.md` — PHASE A / PHASE B の本文を design engine 別に 2 ファイル用意する。前者は現行 SKILL.md の PHASE A（always opus）/ PHASE B（SAME MODEL は `/model opus[1m]`）、後者は「codex 設計 variant」（3 択とも委譲）に対応する。いずれも現行 SKILL.md の
 `MANDATORY MODEL SELECTION SEQUENCE` から次のように書き換えたもの:
 
 | 現行 SKILL.md の記述 | このファイルに書く文面 |
@@ -2586,39 +2790,51 @@ UNATT="$SCRIPT_DIR/../references/unattended"
 SLUG=""; ISSUE=""; TITLE=""; URL=""; BODY_FILE=""; PLAN_HINT=""
 EXEC_CHOICE=""; DESIGN_ENGINE="claude"; REVIEW="off"
 STATUS_DIR=""; SENTINEL=""; TEAM=""; LAYOUT="workspace"
-PARENT_WS=""; PARENT_SF=""
+PARENT_WS=""; PARENT_SF=""; SKILL_DIR=""
+REVIEW_MODEL=""; REVIEW_RUNNER=""; REVIEW_PANE_AGENT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --slug)             SLUG="$2"; shift 2 ;;
-    --issue)            ISSUE="$2"; shift 2 ;;
-    --issue-title)      TITLE="$2"; shift 2 ;;
-    --issue-url)        URL="$2"; shift 2 ;;
-    --issue-body-file)  BODY_FILE="$2"; shift 2 ;;
-    --plan-hint)        PLAN_HINT="$2"; shift 2 ;;
-    --exec-choice)      EXEC_CHOICE="$2"; shift 2 ;;
-    --design-engine)    DESIGN_ENGINE="$2"; shift 2 ;;
-    --review)           REVIEW="$2"; shift 2 ;;
-    --status-dir)       STATUS_DIR="$2"; shift 2 ;;
-    --timeout-sentinel) SENTINEL="$2"; shift 2 ;;
-    --team)             TEAM="$2"; shift 2 ;;
-    --layout)           LAYOUT="$2"; shift 2 ;;
-    --parent-workspace) PARENT_WS="$2"; shift 2 ;;
-    --parent-surface)   PARENT_SF="$2"; shift 2 ;;
+    --slug)              SLUG="$2"; shift 2 ;;
+    --issue)             ISSUE="$2"; shift 2 ;;
+    --issue-title)       TITLE="$2"; shift 2 ;;
+    --issue-url)         URL="$2"; shift 2 ;;
+    --issue-body-file)   BODY_FILE="$2"; shift 2 ;;
+    --plan-hint)         PLAN_HINT="$2"; shift 2 ;;
+    --exec-choice)       EXEC_CHOICE="$2"; shift 2 ;;
+    --design-engine)     DESIGN_ENGINE="$2"; shift 2 ;;
+    --review)            REVIEW="$2"; shift 2 ;;
+    --status-dir)        STATUS_DIR="$2"; shift 2 ;;
+    --timeout-sentinel)  SENTINEL="$2"; shift 2 ;;
+    --team)              TEAM="$2"; shift 2 ;;
+    --layout)            LAYOUT="$2"; shift 2 ;;
+    --parent-workspace)  PARENT_WS="$2"; shift 2 ;;
+    --parent-surface)    PARENT_SF="$2"; shift 2 ;;
+    --skill-dir)         SKILL_DIR="$2"; shift 2 ;;
+    --review-model)      REVIEW_MODEL="$2"; shift 2 ;;
+    --review-runner)     REVIEW_RUNNER="$2"; shift 2 ;;
+    --review-pane-agent) REVIEW_PANE_AGENT="$2"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
 done
 
-for v in SLUG ISSUE TITLE URL BODY_FILE PLAN_HINT EXEC_CHOICE STATUS_DIR SENTINEL PARENT_WS; do
-  [[ -n "${!v}" ]] || die "--${v} equivalent option is required"
+for v in SLUG ISSUE TITLE URL BODY_FILE PLAN_HINT EXEC_CHOICE STATUS_DIR SENTINEL PARENT_WS SKILL_DIR; do
+  [[ -n "${!v}" ]] || die "a required option for $v is missing"
 done
 [[ -f "$BODY_FILE" ]] || die "issue body file not found: $BODY_FILE"
 [[ "$REVIEW" == "on" || "$REVIEW" == "off" ]] || die "--review must be on or off"
 [[ "$DESIGN_ENGINE" == "claude" || "$DESIGN_ENGINE" == "codex" ]] \
   || die "--design-engine must be claude or codex"
+# レビューブロックには review 固有の placeholder があるので、on のときは必須にする
+if [[ "$REVIEW" == "on" ]]; then
+  for v in REVIEW_MODEL REVIEW_RUNNER REVIEW_PANE_AGENT; do
+    [[ -n "${!v}" ]] || die "--review on requires the option for $v"
+  done
+fi
 
 # フラグメント内のプレースホルダを置換して出力する。sed ではなく bash の置換を使い、
-# 区切り文字とパスの衝突を避ける
+# 区切り文字とパスの衝突を避ける。置換漏れがあれば実行不能なプロンプトになるので、
+# 出力前に必ず検出して落とす
 emit_fragment() {
   local f="$1" content
   [[ -f "$f" ]] || die "fragment not found: $f"
@@ -2627,10 +2843,22 @@ emit_fragment() {
   content="${content//<TIMEOUT_SENTINEL>/$SENTINEL}"
   content="${content//<PLAN_FILE_PATH>/$PLAN_HINT}"
   content="${content//<STATUS_DIR>/$STATUS_DIR}"
+  content="${content//<EXISTING_STATUS_DIR>/$STATUS_DIR}"
   content="${content//<TASK_SLUG>/$SLUG}"
+  content="${content//<task-slug>/$SLUG}"
   content="${content//<TEAM>/$TEAM}"
   content="${content//<DESIGN_ENGINE>/$DESIGN_ENGINE}"
   content="${content//<LAYOUT>/$LAYOUT}"
+  content="${content//<SKILL_DIR>/$SKILL_DIR}"
+  content="${content//<PARENT_WORKSPACE_ID>/$PARENT_WS}"
+  content="${content//<PARENT_SURFACE_ID>/$PARENT_SF}"
+  content="${content//\{\{REVIEW_MODEL\}\}/$REVIEW_MODEL}"
+  content="${content//\{\{REVIEW_RUNNER_NAME\}\}/$REVIEW_RUNNER}"
+  content="${content//\{\{REVIEW_PANE_AGENT\}\}/$REVIEW_PANE_AGENT}"
+  # 未解決の placeholder が残っていたら実行不能なので落とす
+  if grep -q '{{[A-Z_]*}}' <<<"$content"; then
+    die "unresolved placeholder in $(basename "$f"): $(grep -o '{{[A-Z_]*}}' <<<"$content" | sort -u | tr '\n' ' ')"
+  fi
   printf '%s\n\n' "$content"
 }
 
@@ -2649,7 +2877,7 @@ Plan file to write: $PLAN_HINT
 
 EOF
 
-emit_fragment "$UNATT/phase-block.md"
+emit_fragment "$UNATT/phase-block-$DESIGN_ENGINE.md"
 [[ "$REVIEW" == "on" ]] && emit_fragment "$UNATT/review-block.md"
 [[ "$REVIEW" == "on" ]] && emit_fragment "$UNATT/code-review-block.md"
 
@@ -2688,7 +2916,7 @@ EOF
 - [ ] **Step 4: テストが通ることを確認する**
 
 Run: `bash apps/cmux-team-dispatch-task/test/test-loop-prompt.sh`
-Expected: R1〜R5 がすべて PASS
+Expected: R1〜R9 がすべて PASS
 
 Run: `bash -n apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/render-loop-prompt.sh`
 Expected: 無出力
@@ -2757,14 +2985,17 @@ count=$(grep -c 'issue-fetch.sh' "$SKILL" || true)
   || bad "S2 lock ガードが 2 箇所未満 ($count)"
 has "$SKILL" '.dispatch-loop/loop.lock.d' 'S2 ガードがロックのパスを参照する'
 
-# --- S3: rm -rf .dispatch/ の各出現の直前 5 行以内に lock-check がある ---
+# --- S3: rm -rf .dispatch/ が無条件で実行される箇所が 1 つも無い ---
+# 各出現の直前 6 行以内に lock-check があり、かつ if ブロックの内側 (行頭に空白) であること
 missing=0
-while IFS=: read -r ln _; do
+while IFS=: read -r ln line; do
   from=$(( ln > 6 ? ln - 6 : 1 ))
   sed -n "${from},${ln}p" "$SKILL" | grep -q 'lock-check' || missing=$(( missing + 1 ))
+  # 無条件削除は行頭から始まる。条件分岐の内側ならインデントされている
+  [[ "$line" =~ ^[[:space:]] ]] || missing=$(( missing + 1 ))
 done < <(grep -n 'rm -rf .dispatch/' "$SKILL")
-[[ "$missing" -eq 0 ]] && ok 'S3 すべての rm -rf .dispatch/ の直前に lock-check がある' \
-  || bad "S3 lock-check の無い rm -rf .dispatch/ が $missing 箇所ある"
+[[ "$missing" -eq 0 ]] && ok 'S3 すべての rm -rf .dispatch/ が lock-check 付きの条件分岐内にある' \
+  || bad "S3 無条件または lock-check の無い rm -rf .dispatch/ が $missing 箇所ある"
 
 # --- S4: 非ループ側は従来どおり（後方互換） ---
 has "$SKILL" 'AskUserQuestion' 'S4 通常モードの質問分岐が SKILL.md に残っている'
@@ -2853,7 +3084,12 @@ argument-hint: "<task1>, <task2>, ... [--layout split|claude-teams] [--no-grid] 
 「Cleanup prompts」節は、ループモードでは同ファイルの一括設定質問と cleanup 遷移表で
 解決済みなので**実行しない**。
 
-**通常 dispatch を始める前の確認（ループ実行中は開始しない）:**
+---
+
+## Active loop lock guard（すべての dispatch に共通・ルーティングより前）
+
+**この検査は上のループ判定より前に、すべての起動で行う。** ループ用の節に埋めると、
+「通常入力はこの節を読まずに Step 1a へ直行する」という指示と衝突して実行されなくなる。
 
 ```bash
 bash <this-skill-dir>/scripts/issue-fetch.sh \
@@ -2868,20 +3104,25 @@ bash <this-skill-dir>/scripts/issue-fetch.sh \
 ---
 ```
 
-3-b-3. **`rm -rf .dispatch/` の各出現の直前**（現行 SKILL.md では「Option B: Do not merge」節と
-「Cleanup prompts」節の Final housekeeping の 2 箇所）に、同じ検査を挿入する:
+3-b-3. **`rm -rf .dispatch/` の各出現を、次のブロックで置換する**（追記ではなく **置換**。
+元の無条件削除を残すと、条件分岐の直後にもう一度全削除してしまう）。現行 SKILL.md では
+「Option B: Do not merge」節、「PR per task」節の deferred cleanup、「Cleanup prompts」節の
+Final housekeeping の 3 箇所:
 
 ```bash
 # ループ実行中は .dispatch/ をループが使っている。一括削除するとタスクの
 # status.json / prewarm.json を巻き込むため、生きたロックがあれば個別削除に切り替える
-if ! bash <this-skill-dir>/scripts/issue-fetch.sh \
-       --state-file .dispatch-loop/loop-state.json lock-check; then
+if bash <this-skill-dir>/scripts/issue-fetch.sh \
+     --state-file .dispatch-loop/loop-state.json lock-check; then
+  rm -rf .dispatch/
+else
   echo "issue ループが実行中のため .dispatch/ の一括削除をスキップします" >&2
   for slug in <task-slugs>; do rm -rf ".dispatch/$slug"; done
-else
-  rm -rf .dispatch/
 fi
 ```
+
+置換後、`grep -n 'rm -rf .dispatch/' SKILL.md` の各行がこの `if` ブロックの内側にあることを
+目視で確認する（無条件の `rm -rf .dispatch/` が 1 行も残っていないこと）。
 
 3-b-4. 「Placeholder rules」節の `{{EXEC_DEFAULT_HINT}}` の項目の直後に、ループ時の
 プロンプト生成をレンダラに委ねる契約を追記する:
