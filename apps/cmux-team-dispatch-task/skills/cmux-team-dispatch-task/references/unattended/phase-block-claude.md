@@ -1,0 +1,1 @@
+Phase A: use the Claude design pane to produce the implementation plan. Phase B: execute the approved plan with the selected runner. Do not request interactive input; record unresolved decisions in the result.
