@@ -11,7 +11,7 @@
 #       [--codex-runner <name>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
-#       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>]
+#       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
 #
 #   agmsg モード (workspace 未作成の状態で呼ぶ。opus も standby 起動し workspace はこのスクリプトが作成):
 #     prewarm-panes.sh --with-opus \
@@ -20,7 +20,7 @@
 #       [--codex-runner <name>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
-#       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>]
+#       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
 #
 # 注意: --message-type agmsg を --with-opus なしで渡す組み合わせは SKILL からは使用しない
 #       (sonnet/codex 配線のみ行いたい特殊用途向け)
@@ -35,6 +35,13 @@
 #   4.5 (--review-model または --reviewer-runner 時) review ペインを opus の右に split 配置。
 #       --reviewer-runner 時は claude review ペイン (`<slug>-opus`)、--review-model 時は従来どおり codex review ペイン
 #   5. <STATUS_DIR>/prewarm.json を書き込む (review キーは --review-model / --reviewer-runner 時のみ。engine フィールドを各ペインに含める)
+#   --unattended: ループモード専用。設計ペイン (claude opus standby) の起動に
+#                 --skip-permissions を付ける (無人実行で permission prompt / ExitPlanMode
+#                 承認により停止しないようにするため)。codex 系は bypass フラグで解決済み
+#   --timeout-sentinel <path>: ループモード専用。status 所有者になり得る全 standby
+#                 (opus / design codex / sonnet / codex / claude review) の launch へ
+#                 そのまま転送する。batch-wait.sh が timeout として terminal 化した後に
+#                 遅れて終了した子が status.json を上書きするのを防ぐ
 #
 # Output: JSON to stdout: {workspace_id, panes: {opus?, sonnet, codex?}}
 # Debug:  Logs to stderr
@@ -42,7 +49,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGMSG_DIR="$HOME/.agents/skills/agmsg/scripts"
+AGMSG_DIR="${AGMSG_DIR:-$HOME/.agents/skills/agmsg/scripts}"
 OPUS_MODEL="opus[1m]"
 SONNET_MODEL="sonnet"
 
@@ -74,6 +81,8 @@ REVIEWER_RUNNER=""
 DESIGN_ENGINE="claude"
 DESIGN_PLAN_EFFORT=""
 CLAUDE_REVIEW_MODEL=""
+UNATTENDED=0
+TIMEOUT_SENTINEL=""
 RUNNERS_CONFIG_PATH="${RUNNERS_CONFIG_PATH:-$HOME/.claude/cmux-team-dispatch-task/runners.json}"
 
 while [[ $# -gt 0 ]]; do
@@ -116,6 +125,11 @@ while [[ $# -gt 0 ]]; do
       AGMSG_TEAM="$2"; shift 2 ;;
     --with-opus)
       WITH_OPUS=1; shift ;;
+    --unattended)
+      UNATTENDED=1; shift ;;
+    --timeout-sentinel)
+      [[ $# -lt 2 ]] && die "--timeout-sentinel requires a path"
+      TIMEOUT_SENTINEL="$2"; shift 2 ;;
     --parent-notify-workspace)
       [[ $# -lt 2 ]] && die "--parent-notify-workspace requires a workspace ID"
       NOTIFY_WORKSPACE="$2"; shift 2 ;;
@@ -181,6 +195,12 @@ command -v git &>/dev/null || die "git is not installed"
 NOTIFY_FLAGS=()
 [[ -n "$NOTIFY_WORKSPACE" ]] && NOTIFY_FLAGS+=(--parent-notify-workspace "$NOTIFY_WORKSPACE")
 [[ -n "$NOTIFY_SURFACE" ]] && NOTIFY_FLAGS+=(--parent-notify-surface "$NOTIFY_SURFACE")
+
+# ループモードでは、status 所有者になり得る全 standby wrapper に timeout sentinel を
+# 焼き込む。ここで転送しないと prewarm 経路 (既定) では sentinel が効かず、
+# timeout 後に遅れて終了した子が status.json を上書きしてしまう
+SENTINEL_FLAGS=()
+[[ -n "$TIMEOUT_SENTINEL" ]] && SENTINEL_FLAGS=(--timeout-sentinel "$TIMEOUT_SENTINEL")
 
 # --- Step 1: worktree create-or-reuse ---
 # agmsg 配線 (settings.local.json への hook 注入) が worktree ディレクトリを必要とするため、
@@ -292,6 +312,7 @@ if [[ $WITH_OPUS -eq 1 ]]; then
       --defer-status \
       --runner "$DESIGN_RUNNER" \
       ${EFFORT_FLAGS[@]+"${EFFORT_FLAGS[@]}"} \
+      ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
       --status-dir "$STATUS_DIR" \
       ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
       --message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
@@ -307,11 +328,15 @@ if [[ $WITH_OPUS -eq 1 ]]; then
       OPUS_PROMPT="Wait idle. Your task will be typed directly into this pane as a prompt. Do not start any work until it arrives."
     fi
     log "prewarm" "launching opus standby workspace for $SLUG"
+    OPUS_UNATTENDED_FLAGS=()
+    [[ $UNATTENDED -eq 1 ]] && OPUS_UNATTENDED_FLAGS=(--skip-permissions)
     OPUS_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
       --cwd "$CWD" \
       --mode standby \
       --defer-status \
       --model "$OPUS_MODEL" \
+      ${OPUS_UNATTENDED_FLAGS[@]+"${OPUS_UNATTENDED_FLAGS[@]}"} \
+      ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
       --status-dir "$STATUS_DIR" \
       ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
       --message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
@@ -345,6 +370,7 @@ SONNET_ARGS=(
   --standby-split-from "$BASE_SURFACE"
   --model "$SONNET_MODEL"
   --skip-permissions
+  ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"}
   --status-dir "$STATUS_DIR"
 )
 SONNET_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
@@ -376,6 +402,7 @@ if [[ -n "$CODEX_RUNNER" ]]; then
     --standby-split-from "$SONNET_SURFACE" \
     ${CODEX_DIRECTION_FLAGS[@]+"${CODEX_DIRECTION_FLAGS[@]}"} \
     --runner "$CODEX_RUNNER" \
+    ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
     ${AGMSG_FLAGS_CODEX[@]+"${AGMSG_FLAGS_CODEX[@]}"} \
@@ -416,6 +443,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     --standby-split-from "$BASE_SURFACE" \
     --standby-split-direction right \
     "${REVIEW_RUNNER_FLAGS[@]}" \
+    ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
     ${AGMSG_FLAGS_REVIEW[@]+"${AGMSG_FLAGS_REVIEW[@]}"} \
