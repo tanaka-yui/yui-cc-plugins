@@ -16,4 +16,5 @@ for design in claude codex; do
 done
 out=$(run claude off)
 [[ "$out" != *'Review is enabled'* ]] || { echo 'FAIL: R3 review off'; exit 1; }
+[[ "$out" == *'STATUS PROTOCOL:'* && "$out" == *'status=executing'* && "$out" == *'status=done or status=error'* && "$out" == *'result.md'* ]] || { echo 'FAIL: R4 status protocol'; exit 1; }
 echo '--- all tests passed ---'

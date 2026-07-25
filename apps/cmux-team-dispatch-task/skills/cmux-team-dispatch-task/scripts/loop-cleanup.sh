@@ -20,14 +20,22 @@ base_branch=$(git -C "$REPO_ROOT" symbolic-ref --short HEAD 2>/dev/null || echo 
 preserve_wip() {
   local slug="$1" wt="$REPO_ROOT/.worktrees/$slug" dir="$DISPATCH_DIR/$slug"
   [[ -d "$wt" ]] || return 0; mkdir -p "$dir"
+  # commit 試行で stage される前に未追跡一覧を保存する。
+  git -C "$wt" ls-files --others --exclude-standard -z > "$dir/wip-untracked.manifest" || return 1
   git -C "$wt" add -A >/dev/null 2>&1 || true
   git -C "$wt" -c user.name=cmux-dispatch -c user.email=cmux-dispatch@localhost commit --no-verify -qm "wip: $slug (dispatch failed)" >/dev/null 2>&1 && return 0
   git -C "$wt" diff --binary HEAD > "$dir/wip.patch" || return 1
-  git -C "$wt" ls-files --others --exclude-standard -z > "$dir/wip-untracked.manifest" || return 1
   if [[ -s "$dir/wip-untracked.manifest" ]]; then
-    tar czf "$dir/wip-untracked.tar.gz" --null -T "$dir/wip-untracked.manifest" -C "$wt" || return 1
+    local archive_stage file
+    archive_stage=$(mktemp -d) || return 1
+    while IFS= read -r -d '' file; do
+      mkdir -p "$archive_stage/$(dirname "$file")" || { rm -rf "$archive_stage"; return 1; }
+      cp -p "$wt/$file" "$archive_stage/$file" || { rm -rf "$archive_stage"; return 1; }
+    done < "$dir/wip-untracked.manifest"
+    tar -czf "$dir/wip-untracked.tar.gz" -C "$archive_stage" . || { rm -rf "$archive_stage"; return 1; }
+    rm -rf "$archive_stage"
     # tar の一覧は改行区切りのため改行を含む名前の identity を NUL-safe と主張しない。
-    tar tzf "$dir/wip-untracked.tar.gz" >/dev/null || return 1
+    tar -tzf "$dir/wip-untracked.tar.gz" >/dev/null || return 1
   fi
   if [[ -s "$dir/wip.patch" ]]; then
     local base verify; base=$(git -C "$wt" rev-parse HEAD) || return 1; verify=$(mktemp -d); rmdir "$verify"
@@ -35,6 +43,7 @@ preserve_wip() {
     git -C "$verify" apply --check --binary "$dir/wip.patch" || { git -C "$REPO_ROOT" worktree remove "$verify" --force || true; return 1; }
     git -C "$REPO_ROOT" worktree remove "$verify" --force >/dev/null 2>&1 || true
   fi
+  return 0
 }
 verify_done() {
   local slug="$1" wt="$REPO_ROOT/.worktrees/$slug"
@@ -58,7 +67,8 @@ apply_labels() {
 for issue in $(jq -r --argjson batch "$BATCH" '.issues | to_entries[] | select(.value.batch == $batch) | .key' "$STATE_FILE"); do
   bash "$FETCH" --state-file "$STATE_FILE" heartbeat >/dev/null || die "loop lock owner check failed mid-cleanup"
   slug=$(jq -r --arg issue "$issue" '.issues[$issue].slug' "$STATE_FILE"); status=$(jq -r --arg issue "$issue" '.issues[$issue].status' "$STATE_FILE"); wt="$REPO_ROOT/.worktrees/$slug"; dir="$DISPATCH_DIR/$slug"
-  if [[ "$status" == done ]] && ! verify_done "$slug"; then status=error; unverified_count=$((unverified_count+1)); fi
+  keep_worktree=no
+  if [[ "$status" == done ]] && ! verify_done "$slug"; then status=error; keep_worktree=yes; unverified_count=$((unverified_count+1)); fi
   close_issue=no; conflicted=no
   if [[ "$status" == done && "$INTEGRATION" == merge ]]; then
     if git -C "$REPO_ROOT" merge "feat/$slug" --no-edit >/dev/null 2>&1; then merged_count=$((merged_count+1)); close_issue=yes; else git -C "$REPO_ROOT" merge --abort >/dev/null 2>&1 || true; status=error; conflicted_count=$((conflicted_count+1)); conflicted=yes; fi
@@ -69,6 +79,11 @@ for issue in $(jq -r --argjson batch "$BATCH" '.issues | to_entries[] | select(.
   if [[ "$conflicted" == yes ]]; then
     error_count=$((error_count+1))
     record_leak "$slug: merge conflict のため worktree と branch を温存"
+    continue
+  fi
+  if [[ "$keep_worktree" == yes ]]; then
+    error_count=$((error_count+1))
+    record_leak "$slug: completion を検証できないため worktree と branch を温存"
     continue
   fi
   case "$status" in done) done_count=$((done_count+1)); rm -rf "$dir" ;; timeout) timeout_count=$((timeout_count+1)) ;; *) error_count=$((error_count+1)) ;; esac
