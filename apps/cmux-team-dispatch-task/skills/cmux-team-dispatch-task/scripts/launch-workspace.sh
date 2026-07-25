@@ -52,6 +52,12 @@
 #                                      cmux send でレビュー依頼し、review_dir/code-round-<N>.md
 #                                      の VERDICT をポーリングして approve までループする」
 #                                      プロトコルを追記する
+#   --timeout-sentinel <path>          ループモード専用。runner wrapper が exit 時にこの
+#                                      パスの存在を確認し、あれば status.json を書かずに
+#                                      終了する。batch-wait.sh が timeout として terminal 化
+#                                      したタスクの遅延書き込み (status 上書き / status dir の
+#                                      再生成) を防ぐ。未指定 (非ループ) では wrapper の
+#                                      挙動は従来どおり
 #   --status-dir <path>                Directory for writing status files
 #   --layout workspace|split           Layout mode (default: workspace)
 #   --split-from <surface-id>          Surface to split from (required for split mode)
@@ -125,6 +131,7 @@ EFFORT=""
 SKIP_PERMISSIONS=0
 DEFER_STATUS=0
 REVIEW_CONFIG=""
+TIMEOUT_SENTINEL=""
 MESSAGE_TYPE="send-message"
 AGMSG_TEAM=""
 AGMSG_FROM=""
@@ -184,6 +191,11 @@ while [[ $# -gt 0 ]]; do
     --review-config)
       [[ $# -lt 2 ]] && die "--review-config requires a path argument"
       REVIEW_CONFIG="$2"
+      shift 2
+      ;;
+    --timeout-sentinel)
+      [[ $# -lt 2 ]] && die "--timeout-sentinel requires a path argument"
+      TIMEOUT_SENTINEL="$2"
       shift 2
       ;;
     --status-dir)
@@ -663,6 +675,7 @@ MESSAGE_TYPE="${MESSAGE_TYPE}"
 AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
 AGMSG_FROM="${AGMSG_FROM}"
+TIMEOUT_SENTINEL="${TIMEOUT_SENTINEL}"
 
 # Resolve the workspace / surface IDs we are running inside.
 # cmux normally exports CMUX_WORKSPACE_ID and CMUX_SURFACE_ID into spawned shells;
@@ -682,8 +695,16 @@ write_status() {
   local message="\$2"
   if [[ -n "\$STATUS_DIR" ]]; then
     mkdir -p "\$STATUS_DIR"
+    # 子セッションが書いた pr_url を exit 時の上書きで失わないよう引き継ぐ。
+    # PR 作成済みかどうかは完了判定の根拠になるため、消してはいけない。
+    local PREV_PR_URL=""
+    if [[ -f "\$STATUS_DIR/status.json" ]]; then
+      PREV_PR_URL=\$(jq -r '.pr_url // empty' "\$STATUS_DIR/status.json" 2>/dev/null || echo "")
+    fi
     jq -n --arg s "\$status" --arg m "\$message" --arg ws "\$WORKSPACE_ID" --arg sf "\$SURFACE_ID" \\
-      '{status:\$s, message:\$m, workspace_id:\$ws, surface_id:\$sf, timestamp:(now|todate)}' \\
+      --arg pr "\$PREV_PR_URL" \\
+      '{status:\$s, message:\$m, workspace_id:\$ws, surface_id:\$sf, timestamp:(now|todate)}
+       + (if \$pr == "" then {} else {pr_url:\$pr} end)' \\
       > "\$STATUS_DIR/status.json"
   fi
 }
@@ -695,6 +716,14 @@ fi
 
 ${CLAUDE_CMD}
 CLAUDE_EXIT=\$?
+
+# ループモード: batch-wait.sh が deadline 超過でこのタスクを terminal 化済みなら、
+# 遅れて終了した子が status.json を上書きしたり、cleanup 済みの STATUS_DIR を
+# mkdir -p で復活させたりしないよう、ここで何も書かずに終了する。
+if [[ -n "\$TIMEOUT_SENTINEL" && -f "\$TIMEOUT_SENTINEL" ]]; then
+  echo "[runner] timeout sentinel found at \$TIMEOUT_SENTINEL; skipping status update" >&2
+  exit 0
+fi
 
 # defer-status: Phase B で別 surface (孫セッション) に実行を移譲した場合、
 # Child セッション側の runner wrapper はここで status.json を上書きせず exit する。

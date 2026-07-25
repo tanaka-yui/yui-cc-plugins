@@ -133,6 +133,22 @@ SKILL_MD="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
 assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately' \
   'T7 SKILL.md codex prewarm block defines base REQUEST_TEXT with codex session-end exit'
 
+# --- pr_url 引き継ぎ / timeout sentinel ガード ---
+sentinel_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode standby --runner claude --status-dir "$TMP/status" \
+  --timeout-sentinel "$TMP/loopstate/timed-out/sentinel-task" "sentinel-task")
+sentinel_runner=$(jq -r '.runner_file' <<<"$sentinel_output")
+assert_contains "$sentinel_runner" 'TIMEOUT_SENTINEL="'"$TMP"'/loopstate/timed-out/sentinel-task"' \
+  'T10 --timeout-sentinel はパスを wrapper に焼き込む'
+assert_contains "$sentinel_runner" 'timeout sentinel found' 'T10 wrapper に sentinel ガードがある'
+assert_contains "$sentinel_runner" 'PREV_PR_URL' 'T11 write_status が既存 pr_url を読む'
+
+# sentinel を渡さない通常経路には一切現れない（非ループ挙動の不変性）
+plain_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode standby --runner claude --status-dir "$TMP/status" "plain-task")
+plain_runner=$(jq -r '.runner_file' <<<"$plain_output")
+assert_contains "$plain_runner" 'TIMEOUT_SENTINEL=""' 'T10 未指定時は空の sentinel パス'
+
 if command -v codex >/dev/null 2>&1 && [[ "${RUN_CODEX_DYNAMIC_TEST:-0}" == "1" ]]; then
   echo 'INFO: dynamic Codex writable-root test is enabled externally.'
 else
