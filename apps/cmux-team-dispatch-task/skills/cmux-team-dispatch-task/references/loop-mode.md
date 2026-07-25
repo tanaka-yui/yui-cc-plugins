@@ -26,10 +26,17 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
    - **自分 (`@me`)**: 「自分に割り当てられた issue のみ」
    - **未アサインのみ (`no:assignee`)**: 「担当者のいない issue のみ」
    - **指定なし**: 「assignee で絞り込まない」
-3. **1 バッチの並列実行数 (concurrency)**
-   - **2**: 「リソース消費を抑える」
-   - **3**: 「標準的な並列度」
-   - **5**: 「より多くを同時に処理する」
+3. **1 バッチの並列実行数 (concurrency)** — 既定は 5。先頭の選択肢を既定として提示する
+   - **5（推奨）**: 「標準の並列度」
+   - **3**: 「リソース消費を抑える」
+   - **8**: 「高スペック機で多めに処理する」
+   - **Other**: 「1〜10 の整数を自由入力する」
+
+   回答は 1〜10 の整数として検証し、範囲外・非整数ならこの質問だけを再提示する。
+   concurrency は **タスク数であってペイン数ではない**。prewarm 有効時は 1 タスクあたり
+   レビュー無効で 3 ペイン / 有効で 4 ペインが立ち、worktree も 1 タスクにつき 1 個増える
+   （concurrency=10 かつレビュー有効なら 40 ペイン + 10 worktree）。上限を 10 に固定するのは
+   この増幅を踏まえた安全弁であり、それ以上を求められても引き上げない。
 4. **最大バッチ数 (max_batches)**
    - **3**: 「短い実行で止める」
    - **5**: 「標準の上限」
@@ -102,4 +109,4 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 
 成功時だけ worktree、branch、task の `.dispatch` を削除する。merge conflict、WIP 保全失敗、terminal label 失敗、PR 未検証ではすべて温存する。merge では検証済みの issue を `gh issue close --reason completed` で閉じ、正常 cleanup 時だけ agmsg の `leave.sh` で team から除籍する。`leaked[]` と stale lock は手動確認後に削除する。
 
-exit 3/4、cleanup 失敗、ユーザー中断を含む全中断経路で `lock-release` を呼ぶ。以後のフォールバックは質問ではなく、確定済み config を用いる。設定されていない任意値だけは仕様の既定値（design=opus、exec=sonnet、review は設定値、layout=workspace）を使う。
+exit 3/4、cleanup 失敗、ユーザー中断を含む全中断経路で `lock-release` を呼ぶ。以後のフォールバックは質問ではなく、確定済み config を用いる。設定されていない任意値だけは仕様の既定値（concurrency=5、design=opus、exec=sonnet、review は設定値、layout=workspace）を使う。

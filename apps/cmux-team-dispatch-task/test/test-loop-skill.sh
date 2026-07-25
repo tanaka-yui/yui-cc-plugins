@@ -7,6 +7,16 @@ done
 for needle in 'issue-fetch.sh' 'batch-wait.sh' 'loop-cleanup.sh' 'render-loop-prompt.sh' '--state-file' 'lock-acquire' 'init' 'ALL_TERMINAL' '--timeout-sentinel' '--unattended'; do
   grep -Fq -- "$needle" "$SK/references/loop-mode.md" || { echo "FAIL: $needle"; exit 1; }
 done
+# concurrency の契約: 既定 5 / 自由入力可 / 上限 10 / 「タスク数であってペイン数ではない」注記。
+# 選択肢の並びは AskUserQuestion の先頭が既定になるため、5 が 3 より前にあることまで検査する。
+for needle in '既定は 5' '1〜10 の整数を自由入力' 'タスク数であってペイン数ではない' 'concurrency=5'; do
+  grep -Fq -- "$needle" "$SK/references/loop-mode.md" || { echo "FAIL: concurrency 契約 ($needle)"; exit 1; }
+done
+conc_section=$(sed -n '/1 バッチの並列実行数 (concurrency)/,/^### /p' "$SK/references/loop-mode.md")
+first_choice=$(grep -oE '^   - \*\*[0-9]+' <<<"$conc_section" | head -1 | grep -oE '[0-9]+')
+[[ "$first_choice" == "5" ]] || { echo "FAIL: concurrency の先頭選択肢が 5 でない (got: ${first_choice:-none})"; exit 1; }
+echo 'PASS: concurrency の既定と上限の契約'
+
 verify_dispatch_cleanup_guard() {
   local file="$1" missing=0 line text start
   # prose の inline code も含めて全出現を読む。実行コマンドだけを判定対象にする。
