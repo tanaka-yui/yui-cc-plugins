@@ -769,6 +769,21 @@ if [[ "\$STANDBY" == "1" && ! -f "\$STATUS_DIR/.assigned-\$SLUG" ]]; then
   exit 0
 fi
 
+# 外部から pane を閉じられた場合 (最終クリーンアップの cmux close-surface /
+# close-workspace)、子プロセスは signal 由来の終了コード (128+N。SIGHUP=129 /
+# SIGKILL=137 / SIGTERM=143) を返す。これはタスクの失敗ではないので、既に
+# terminal な status.json が記録済みなら error への降格と偽の完了通知を抑止する。
+# status がまだ terminal でない (executing 等) 場合は本当に途中終了なので、
+# 従来どおり error を書いて通知する。
+PREV_STATUS=""
+if [[ -n "\$STATUS_DIR" && -f "\$STATUS_DIR/status.json" ]]; then
+  PREV_STATUS=\$(jq -r '.status // empty' "\$STATUS_DIR/status.json" 2>/dev/null || echo "")
+fi
+if [[ \$CLAUDE_EXIT -ge 128 && ( "\$PREV_STATUS" == "done" || "\$PREV_STATUS" == "error" ) ]]; then
+  echo "[runner] terminated by signal (exit \$CLAUDE_EXIT) after terminal status '\$PREV_STATUS'; skipping status update and notification" >&2
+  exit 0
+fi
+
 if [[ \$CLAUDE_EXIT -eq 0 ]]; then
   write_status "done" "Claude session completed (exit 0)"
 else

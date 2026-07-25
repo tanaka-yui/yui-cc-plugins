@@ -771,6 +771,14 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
   （`.deferred` の逆向き。ロール別ファイルにすることで同じ STATUS_DIR を共有する
   sonnet/codex 等の standby 同士が互いの割り当てを誤検知しない）。
   signal 名は `<workspace-name>-done`（例: `login-page-ui-sonnet-done`）
+- **signal 終了ガード**: 最終クリーンアップで pane を閉じる（`cmux close-surface` /
+  `close-workspace`）と子プロセスは signal 由来の終了コード（128+N。SIGHUP=129 /
+  SIGKILL=137 / SIGTERM=143）を返す。このとき `status.json` が既に terminal
+  （`done` / `error`）なら wrapper は status 書き込みも親通知も行わない。
+  これにより、完了済みタスクが pane を閉じただけで `error` に降格したり、
+  偽の `[dispatch] task ... finished (status: error)` が親へ飛んだりしない。
+  まだ `executing` の pane を kill した場合は本当の中断なので従来どおり
+  `error` を書いて通知する
 
 シグナル名は `<task-slug>-done` で、起動スクリプトの出力 JSON の `signal_name` フィールドで返されます。
 
