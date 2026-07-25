@@ -60,10 +60,8 @@ Step L0  プリフライト（設定質問より前。失敗ならループを�
   L0-1  発動確認: --loop が無い（自然言語トリガ）の場合のみ
           「ループモードで開始しますか」を 1 問確認する
   L0-2  依存検査: runners.json / gh auth status / issue が有効 / jq / cmux / codex(任意)
-  L0-3  ロック取得: mkdir .dispatch-loop/loop.lock.d（atomic）。
-          既存ロックがある場合は owner.json の heartbeat を見る:
-            - heartbeat が task_timeout_min の 2 倍以内 → 実行中と判断しエラー終了
-            - それより古い → stale として owner.json を上書きして取得
+  L0-3  ロックの事前確認（取得はしない）: .dispatch-loop/loop.lock.d が存在し
+          owner.json の heartbeat が lease 内なら「別のループが実行中」としてエラー終了
   L0-4  reconciliation: loop-state.json があれば先に状態を突き合わせる（L0-5 より前）
             - status=claimed で workspace が生存 → 中止（走行中の子がいる。人に返す）
             - status=claimed で workspace が消滅 → release（ラベル除去 + レコード削除）
@@ -73,6 +71,9 @@ Step L0  プリフライト（設定質問より前。失敗ならループを�
   L0-6  ラベル整備: dispatch/in-progress, dispatch/done, dispatch/failed を
           gh label list で確認し、無いものだけ gh label create する（失敗は fatal）
 Step L1  ループ設定の一括質問（AskUserQuestion 最大 3 コール）
+  L1-末  最終確認を通過した直後に issue-fetch.sh ... lock-acquire でロックを取得する。
+           質問への回答待ちは人間の時間なので、ここより前にロックを取ると
+           heartbeat の更新空白が無制限に伸びる（§3.4）
          ── ここから先、ループが終わるまで一切質問しない ──
 Step L2  バッチループ（batch = 1, 2, ...）:
   L2-1  issue-fetch.sh --state-file .dispatch-loop/loop-state.json fetch \
@@ -117,7 +118,7 @@ Step L3  ループ全体サマリ（Template C を batch 列付きに拡張）+ 
 | ファイル | 変更内容 |
 |---|---|
 | `skills/cmux-team-dispatch-task/SKILL.md` | ① ループ発動のディスパッチポイント（約 10 行）＋ Step 1c–1g / cleanup 節への「loop モードでは `references/loop-mode.md` の一括設定で解決済み」注記 ② **Step 1 冒頭と cleanup 節に active loop lock のガードを追加**（§3.4） |
-| `skills/cmux-team-dispatch-task/scripts/launch-workspace.sh` | ① codex 全経路に `--dangerously-bypass-hook-trust` を追加（要件 4）② `--unattended` フラグを追加し、`--mode execute` の `REVIEW_INSTRUCTION` の質問分岐を非対話版に差し替える ③ runner wrapper の `write_status` が既存 status.json の `pr_url` を引き継ぐようにする（既存バグの修正） |
+| `skills/cmux-team-dispatch-task/scripts/launch-workspace.sh` | ① codex 全経路に `--dangerously-bypass-hook-trust` を追加（要件 4）② `--unattended` フラグを追加し、`--mode execute` の `REVIEW_INSTRUCTION` の質問分岐を非対話版に差し替える ③ runner wrapper の `write_status` が既存 status.json の `pr_url` を引き継ぐようにする（既存バグの修正）④ runner wrapper に `<STATUS_DIR>/.timed-out` sentinel のガードを追加（§3.7.1） |
 | `skills/cmux-team-dispatch-task/scripts/prewarm-panes.sh` | `--unattended` フラグを追加。指定時、設計ペイン（claude opus standby）に `--skip-permissions` を付与する |
 | `skills/cmux-team-dispatch-task/references/guide-ja.md` | ループモード節、engine × MODE 起動表、`--unattended`、`pr_url` 引き継ぎ |
 | `README.md` | ループモードの利用者向け説明、codex 起動フラグ表、hook trust バイパスの注記 |
@@ -141,8 +142,9 @@ Step L3  ループ全体サマリ（Template C を batch 列付きに拡張）+ 
 ```
 issue-fetch.sh --state-file <path> <subcommand> [options]
 
-  lock-acquire  --timeout-min <N>        .dispatch-loop/loop.lock.d を mkdir で atomic 取得
-  lock-release                            ロックを解放（冪等）
+  lock-check                              取得せずに active loop の有無だけを判定（Step L0-3 用）
+  lock-acquire  --lease-min <N>           .dispatch-loop/loop.lock.d を mkdir で atomic 取得
+  lock-release                            自分が owner のときだけ解放（冪等）
   heartbeat                               owner.json の heartbeat を現在時刻に更新
   reconcile                               claimed / dispatched の突き合わせ（§3.1 L0-4）
                                           出力: {action: "ok"|"abort", reasons: [...]}
@@ -163,6 +165,8 @@ exit  : 0 = 正常。fetch の 0 件は「候補が尽きた」ことが確認�
 stderr: [fetch] / [claim] / [release] / [lock] / [warn] のログ
 ```
 
+`lock-check` / `lock-acquire` を除くすべてのサブコマンドは、処理の冒頭で **owner token の検証と heartbeat の更新**を行う（§3.4）。検証に失敗した場合は何も書かずに exit 1 で終了する。
+
 `fetch` は次の 3 つを厳密に区別する。同一視するとループが対象を残したまま正常終了したり、無限に空回りしたりする。
 
 | 状況 | 返り値 |
@@ -181,6 +185,7 @@ batch-wait.sh --state-file <path> --batch <N> --timeout-min <N> [--max-wait-sec 
 呼び出しのたびに .dispatch-loop/loop.lock.d/owner.json の heartbeat を更新する。
 
 deadline（claimed_at + timeout-min）を超えた slug は、このスクリプト自身が
+  - <dispatch-dir>/<slug>/.timed-out を作成（runner wrapper の late write を封じる sentinel。§3.7.1）
   - <dispatch-dir>/<slug>/status.json を status=error / message="timeout after N min" に書き換え
   - loop-state.json の当該 issue を status=timeout に更新
 して terminal 化する。書き換えに失敗した場合は loop-state.json.leaked[] に記録し、
@@ -231,9 +236,13 @@ exit  : 0 = 正常（個別の失敗は警告扱いでループを止めない�
 | 項目 | 内容 |
 |---|---|
 | 取得 | `mkdir .dispatch-loop/loop.lock.d` の成否で判定する（check-then-write の競合を排除） |
+| **取得タイミング** | **Step L1 の最終確認を通過した直後**。Step L0-3 は存在確認だけを行い取得はしない。設定質問への回答待ちは人間の時間であり、ここでロックを持つと heartbeat の更新空白が無制限に伸びる（round 4 finding 3） |
 | owner identity | 親セッションの `$CLAUDE_CODE_SESSION_ID` + ホスト名。shell の `$$` は使わない（呼び出しごとに変わり、直後に stale と誤判定するため） |
-| **liveness の正本** | **`owner.json.heartbeat` の 1 箇所のみ**。`loop-state.json` は heartbeat を持たない。`batch-wait.sh` は毎回この owner.json を更新する |
-| 生存判定 | `owner.json.heartbeat` が `task_timeout_min` の 2 倍以内なら実行中と判断し、取得を拒否する |
+| **liveness の正本** | **`owner.json.heartbeat` の 1 箇所のみ**。`loop-state.json` は heartbeat を持たない |
+| **heartbeat の更新契約** | `issue-fetch.sh` / `batch-wait.sh` / `loop-cleanup.sh` の**すべてのサブコマンドが、処理の冒頭で owner token を検証し heartbeat を更新する**。これにより待機中だけでなく、issue 取得・ペイン一斉起動・cleanup といった長時間処理の最中も鮮度が保たれる |
+| **lease 期間** | `task_timeout_min` とは切り離した独立の設定 `loop.lock_lease_min`（既定 30、最小 10）。タスクのタイムアウトを短く設定してもロックが誤って stale 判定されない |
+| 生存判定 | `owner.json.heartbeat` が `lock_lease_min` 以内なら実行中と判断し、取得を拒否する |
+| **owner token 検証** | `loop-state.json` を書き換えるすべての操作の前に `owner.json.session_id` が自分と一致することを確認する。一致しなければ（takeover された）その場で fatal 終了し、書き込みを行わない |
 | **stale takeover** | 既存ロックが stale と判定できた場合も、`owner.json` を上書きしてはならない。`mv .dispatch-loop/loop.lock.d .dispatch-loop/loop.lock.stale.<ts>.<session_id>` の **atomic rename に成功したプロセスだけ**が、続けて `mkdir loop.lock.d` を行って owner になる。rename に失敗した場合は他者が先行したものとして取得失敗を返す |
 | 解放 | `owner.json.session_id` が自分と一致する場合のみ削除する（他 owner のロックを消さない）。一致しなければ警告して何もしない |
 | 解放の呼び出し箇所 | Step L3 に加え、**ループを中断する全経路**: L0-4 の abort / L0-5 の stale 検出 / L0-6 のラベル作成失敗 / L2-1 の exit 1・3・4 / L2-4 の `batch-wait.sh` exit 1 / L2-5 の `loop-cleanup.sh` exit 1 / ユーザー中断。`references/loop-mode.md` に手順として明記する |
@@ -264,7 +273,7 @@ exit  : 0 = 正常（個別の失敗は警告扱いでループを止めない�
   "config": {
     "concurrency": 3, "max_batches": 5, "integration": "pr",
     "design_runner": "claude", "exec_choice": "sonnet", "review_mode": "on",
-    "task_timeout_min": 90
+    "task_timeout_min": 90, "lock_lease_min": 30
   },
   "batches": [
     { "n": 1, "issues": [12, 13], "started_at": "...", "finished_at": "..." }
@@ -339,8 +348,18 @@ gh issue list --state "$STATE" [--label "$LABEL"] \
 |---|---|---|
 | 返却件数 < `FETCH_LIMIT`（サーバ側の候補が尽きた）かつ claim 可能なものが 0 件 | exhaustion 確定 | exit 0 + `[]` |
 | 返却件数 < `FETCH_LIMIT` かつ claim が 1 件以上成功 | 正常 | exit 0 + タスク JSON |
-| 返却件数 == `FETCH_LIMIT` かつローカル除外で 0 件 | 窓を倍化して再取得 | （継続） |
-| 安全上限（`FETCH_LIMIT > 1000`）に達しても返却件数 == `FETCH_LIMIT` | **exhaustion 不明** | exit 4 |
+| 返却件数 == `FETCH_LIMIT` かつローカル除外で 0 件 かつ `FETCH_LIMIT < MAX_WINDOW` | 窓を広げて再取得 | （継続） |
+| 返却件数 == `FETCH_LIMIT` かつローカル除外で 0 件 かつ `FETCH_LIMIT == MAX_WINDOW` | **exhaustion 不明** | exit 4 |
+
+窓の拡張は一意な式で定める（round 4 finding 5）:
+
+```
+MAX_WINDOW = 1000
+FETCH_LIMIT      = min(LIMIT * 2, MAX_WINDOW)
+FETCH_LIMIT_next = min(FETCH_LIMIT * 2, MAX_WINDOW)
+```
+
+これにより `--limit` に渡る値が `MAX_WINDOW` を超えることはなく、かつ打ち切り前に必ず 1000 を一度問い合わせる。exit 4 を返すのは「`--limit 1000` で問い合わせて 1000 件返り、そのすべてがローカル除外された」場合に限られる。
 
 exit 4 を受けた親は、対象を残したまま正常終了せず、警告を出してループを中断し人に返す（§3.1 L2-1）。安全上限 1000 は `gh issue list` の実用的な上限であり、これを超える規模はフィルタ条件の見直しが必要な状況である。
 
@@ -378,18 +397,34 @@ L2-4:
     OUT=$(batch-wait.sh --state-file .dispatch-loop/loop-state.json \
             --batch <N> --timeout-min <T> --max-wait-sec 540)
     case "$OUT" in
-      ALL_TERMINAL) break ;;
-      TIMEOUT*)     該当 slug の status.json を error に書き換えて break ;;
-      WAITING*)     進捗を 1 行報告して loop を続ける ;;
+      ALL_TERMINAL*) break ;;
+      WAITING*)      進捗を 1 行報告して loop を続ける ;;
+      *)             exit 1 扱い: lock-release してループを中断 ;;
     esac
 ```
 
-- `batch-wait.sh` は 5 秒間隔で対象 slug の `status.json` を読み、全件が `done` / `error` なら `ALL_TERMINAL` を返す
+- `batch-wait.sh` の出力は **`ALL_TERMINAL` と `WAITING` の 2 種類だけ**である。timeout は親に返らず、スクリプト内部で terminal 化される（§3.3）
+- terminal 集合は **`done` / `error` / `timeout`** の 3 つ。`ALL_TERMINAL` はバッチの全 slug がこのいずれかに達したことを意味する
 - deadline は `loop-state.json` の `claimed_at` からの絶対時刻で判定するため、呼び直しの回数に依存しない
-- 呼び出しのたびに `heartbeat` を更新するので、待機中もロックの鮮度が保たれる
+- 呼び出しのたびに `owner.json.heartbeat` を更新するので、待機中もロックの鮮度が保たれる
 - 完了通知（`[dispatch] task "<slug>" finished`）は届けば親の応答を早めるが、**待機の正はあくまで status.json のポーリング**である
 
 **タイムアウト値**: 既定 90 分。`<project>/.dispatch/config.json` → `~/.claude/cmux-team-dispatch-task/config.json` の順で `loop.task_timeout_min` を解決する（設定質問には含めない）。
+
+### 3.7.1 timeout 済みタスクの late write を防ぐ
+
+`batch-wait.sh` が deadline 超過を terminal 化しても、その子プロセスはまだ生きている。現行 `launch-workspace.sh` の runner wrapper は、子が終了した時点で `write_status "done"|"error"` を無条件に実行し、`write_status` 自身が `mkdir -p "$STATUS_DIR"` する。放置すると 2 つの競合が起きる（round 4 finding 2）:
+
+- cleanup が読む前に `timeout` が `done` へ戻る
+- cleanup が `.dispatch/<slug>` を削除した後に wrapper が `mkdir -p` して stale directory を復活させ、次回ループの Step L0-5 が拒否する
+
+**修正**: `.deferred` / `.assigned-<name>` と同じ sentinel パターンで構造的に塞ぐ。
+
+1. `batch-wait.sh` は terminal 化と同時に `<STATUS_DIR>/.timed-out` を作成する
+2. `launch-workspace.sh` の runner wrapper に、`.deferred` の判定と同じ位置で **`<STATUS_DIR>/.timed-out` が存在すれば status.json を書かずに exit する**ガードを追加する（`mkdir -p` も走らないため directory 復活も起きない）
+3. `loop-cleanup.sh` は **`loop-state.json` の `timeout` を authoritative** とし、後着の `status.json = done` を成功に読み替えない
+
+sentinel は非ループでは作られないため、通常 dispatch の wrapper 挙動は変わらない。あわせて Step L0-5 の stale 検査は、**空ディレクトリの `.dispatch/<slug>/` は削除して続行**してよいものとする（無害な残骸でループ開始を止めない）。
 
 ### 3.8 完了検証とバッチ間 cleanup（`loop-cleanup.sh`）
 
@@ -439,15 +474,29 @@ git -C "$WT" -c user.name="cmux-dispatch" -c user.email="cmux-dispatch@localhost
 `git diff HEAD` は**未追跡ファイルの内容を含まず**、`--binary` なしでは binary ファイルの復元情報も持たない。`status --porcelain` はファイル名を並べるだけである。したがって「commit が失敗し、新規作成ファイルだけが残っている」ケースでは、空の patch とファイル名一覧だけを保存して唯一の成果物を消すことになる（round 3 finding 5）。復元可能な形で保存する:
 
 ```bash
-git -C "$WT" diff --binary HEAD > .dispatch/<slug>/wip.patch
-git -C "$WT" ls-files --others --exclude-standard -z \
-  | tar czf .dispatch/<slug>/wip-untracked.tar.gz --null -T - -C "$WT"
-git -C "$WT" status --porcelain > .dispatch/<slug>/wip-status.txt
+D=".dispatch/<slug>"
+git -C "$WT" diff --binary HEAD > "$D/wip.patch"
+git -C "$WT" ls-files --others --exclude-standard -z > "$D/wip-untracked.manifest"
+tar czf "$D/wip-untracked.tar.gz" --null -T "$D/wip-untracked.manifest" -C "$WT"
+git -C "$WT" status --porcelain > "$D/wip-status.txt"
 ```
 
 - tracked な変更は `--binary` 付きの patch（`git apply` で復元可能）
-- 未追跡ファイルは内容ごと tar archive に保存
-- 保存後に **`git apply --check` と `tar tzf` で成果物が健全であることを確認する**
+- 未追跡ファイルは内容ごと tar archive に保存し、対象一覧を manifest としても残す
+
+**検証は clean な一時 worktree で行う。** `git apply --check` を patch の生成元である `$WT` に対して実行すると、変更が既に適用済みであるため通常 `patch does not apply` になり、検証が常に失敗する。親 worktree で実行しても HEAD が対象ブランチと一致する保証がない（round 4 finding 4）。したがって検証の文脈を次のように固定する:
+
+```bash
+BASE=$(git -C "$WT" rev-parse HEAD)          # patch の基準コミット
+TMP=$(mktemp -d)
+git worktree add --detach "$TMP" "$BASE"     # clean な検証用 worktree
+git -C "$TMP" apply --check --binary "$D/wip.patch"   # ← ここで検証
+tar tzf "$D/wip-untracked.tar.gz" > /dev/null          # archive の健全性
+# manifest の件数と archive のエントリ件数を照合する
+git worktree remove "$TMP" --force
+```
+
+`wip.patch` が空（tracked な変更が無い）場合は `apply --check` をスキップし、archive の検証だけを行う。すべての検証を通過したときに限り worktree を削除する。
 
 **手順 3 — いずれも失敗した場合**
 
@@ -714,9 +763,9 @@ review ペインは唯一 sandbox を残す経路のため、`codex sandbox -c s
 | 既存回帰 | `bash test/test-launch-workspace-codex.sh`、`bash test/test-launch-workspace-review-config.sh` |
 | 静的検査（拡張） | `test-launch-workspace-codex.sh` に追加: ① codex 全 5 モードで `--dangerously-bypass-hook-trust` が付くこと ② claude 全 5 モードで付かないこと ③ codex review に `-c approval_policy='never'` が必ず付くこと ④ `--unattended` 付き execute の生成 runner に `AskUserQuestion` が現れないこと ⑤ `--unattended` 無しでは現行文言が保たれること ⑥ `write_status` が既存 `pr_url` を引き継ぐこと |
 | プロンプト検査（新規） | `test/test-loop-prompt.sh` — loop 用にレンダリングした task file / `TASK_TEXT` に `AskUserQuestion` が現れないこと、非ループでは現行ブロックが保たれること（review 有無 × design engine の各組合せ） |
-| ユニット（新規） | `test/test-issue-fetch.sh` — `gh` をスタブ化し、⒜ 生成クエリ（`no:assignee` を使うこと、`--assignee none` を渡さないこと、3 ラベルの negative qualifier が入ること）⒝ 先頭窓が全除外でも次窓に候補があれば取得できること ⒞ **安全上限まで窓が満杯のままなら exit 4 を返し `[]` で正常終了しないこと** ⒟ claim 失敗時の除外 ⒠ claim 全滅時の exit 3 ⒡ release / reconcile の状態遷移 ⒢ ロックの排他（同時 2 回取得で片方が失敗すること）⒣ **stale takeover の排他（2 プロセスが同時に stale と判定しても owner は 1 つに定まること）** ⒤ **他 owner の `lock-release` が拒否されること** |
-| ユニット（新規） | `test/test-batch-wait.sh` — status.json をスタブ化し、⒜ 「1 件 timeout・1 件まだ実行中」の混在バッチで `ALL_TERMINAL` を返さず待機を続けること ⒝ timeout slug を自身で `error` 化し `loop-state.json` に `timeout` を記録すること ⒞ status.json の書き換えに失敗しても同一 slug で無限に留まらず `leaked[]` に記録して外すこと ⒟ `owner.json.heartbeat` が毎回更新されること |
-| ユニット（新規） | `test/test-loop-cleanup.sh` — ⒜ 完了検証に落ちた `done` が `error` に降格し worktree / branch が残ること ⒝ **commit が失敗し未追跡ファイルだけが残るケースで、内容が `wip-untracked.tar.gz` に保全されてから worktree が削除されること** ⒞ **binary ファイルの変更が `--binary` patch で復元可能なこと**（`git apply --check` が通ること）⒟ 保全が全滅した場合に worktree が温存され `leaked[]` に載ること ⒠ merge conflict 時に worktree・branch とも温存されること |
+| ユニット（新規） | `test/test-issue-fetch.sh` — `gh` をスタブ化し、⒜ 生成クエリ（`no:assignee` を使うこと、`--assignee none` を渡さないこと、3 ラベルの negative qualifier が入ること）⒝ 先頭窓が全除外でも次窓に候補があれば取得できること ⒞ **安全上限まで窓が満杯のままなら exit 4 を返し `[]` で正常終了しないこと** ⒟ claim 失敗時の除外 ⒠ claim 全滅時の exit 3 ⒡ release / reconcile の状態遷移 ⒢ ロックの排他（同時 2 回取得で片方が失敗すること）⒣ **stale takeover の排他（2 プロセスが同時に stale と判定しても owner は 1 つに定まること）** ⒤ **他 owner の `lock-release` が拒否されること** ⒥ **owner token 不一致の状態で state 変更サブコマンドを呼ぶと何も書かず exit 1 になること** ⒦ **最後に発行した `--limit` が 1000 を超えないこと、および exit 4 の前に必ず 1000 を一度問い合わせていること** |
+| ユニット（新規） | `test/test-batch-wait.sh` — status.json をスタブ化し、⒜ 「1 件 timeout・1 件まだ実行中」の混在バッチで `ALL_TERMINAL` を返さず待機を続けること ⒝ timeout slug を自身で `error` 化し `loop-state.json` に `timeout` を記録すること ⒞ status.json の書き換えに失敗しても同一 slug で無限に留まらず `leaked[]` に記録して外すこと ⒟ `owner.json.heartbeat` が毎回更新されること ⒠ **`.timed-out` sentinel が作られること、および sentinel がある状態で runner wrapper を実行しても status.json が書き換わらず `.dispatch/<slug>` が再生成されないこと**（late write の封じ込め） |
+| ユニット（新規） | `test/test-loop-cleanup.sh` — ⒜ 完了検証に落ちた `done` が `error` に降格し worktree / branch が残ること ⒝ **commit が失敗し未追跡ファイルだけが残るケースで、内容が `wip-untracked.tar.gz` に保全されてから worktree が削除されること** ⒞ **binary ファイルの変更が `--binary` patch で復元可能なこと** — 検証は **patch 生成元の dirty な worktree ではなく、基準コミットから作った clean な一時 worktree** で `git apply --check` を通すこと ⒟ 保全が全滅した場合に worktree が温存され `leaked[]` に載ること ⒠ merge conflict 時に worktree・branch とも温存されること ⒡ **`loop-state.json` の `timeout` が authoritative で、後着の `status.json = done` で成功へ戻らないこと** |
 | 動的検査（新規） | `test/test-codex-review-sandbox.sh` — 一時 worktree で `codex sandbox` により ⓐ `--add-dir` 付きで `STATUS_DIR/review/` に書けること ⓑ `--add-dir` 無しでは拒否されること ⓒ `git diff` が成功することを検査。**`approval_policy` の挙動は本テストの証明範囲外**であることをコメントに明記。`codex` 不在の環境では skip |
 | ワークスペース全体 | ルートで `pnpm check` |
 | E2E（手動チェックリスト） | `CLAUDE.md` に追加: ① 実 hook を持つ worktree で codex ペインが trust prompt を出さずに起動すること ② hung child（`executing` のまま通知を送らない子）が `task_timeout_min` で timeout 扱いになり、**同一バッチの他タスクが完了するまで待機が続いたうえで** cleanup 後に次バッチへ進むこと ③ ループが 2 バッチ以上回り、バッチ間で worktree / workspace が確実に片付くこと ④ ループ中に一度も AskUserQuestion が出ないこと ⑤ `--loop` を付けない通常 dispatch が従来どおり動き、`.dispatch-loop/` が作られないこと ⑥ **ループ実行中に通常 dispatch を開始しようとすると拒否されること（逆順の競合）** ⑦ **通常 dispatch 実行中にループを開始しようとすると L0-5 で拒否されること（正順の競合）** |
@@ -739,7 +788,7 @@ hook trust の「実 TUI で prompt が出ないこと」の検査は対話セ�
 - `write_status` の `pr_url` 引き継ぎ
 - loop モードの存在と参照先（`references/loop-mode.md`）、`.dispatch-loop/` の役割
 - 通常 dispatch 側の active loop lock ガード（Step 1 冒頭 / cleanup 節）と、それが非ループ挙動への 2 つ目の明示的例外であること
-- `loop.task_timeout_min` config キー
+- `loop.task_timeout_min` / `loop.lock_lease_min` config キー
 - hook trust バイパスが非ループにも及ぶこと（§6.5）
 - `CLAUDE.md` メンテナンス手順への新項目追加と、項目 20 / 39 の更新
 
@@ -752,12 +801,14 @@ hook trust の「実 TUI で prompt が出ないこと」の検査は対話セ�
 | 親セッションのコンテキストがバッチを重ねるほど肥大する | バッチごとの報告は Template B のみに絞り、詳細は `loop-state.json` に書いて画面に出さない。最大バッチ数の上限も安全弁として機能する |
 | hung child を誰も打ち切らない | 待機を親のターン内の同期処理（`batch-wait.sh` の反復呼び出し）にし、deadline を `claimed_at` からの絶対時刻で判定する（§3.7） |
 | 1 件の timeout で実行中タスクごと cleanup へ送る | timeout の terminal 化を `batch-wait.sh` の内部処理にし、全 slug が terminal になるまで `ALL_TERMINAL` を返さない（§3.7） |
+| timeout 済みの子が後から status.json を上書き／ディレクトリを再生成する | `.timed-out` sentinel で runner wrapper の書き込みを封じ、cleanup は `loop-state.json` の `timeout` を authoritative とする（§3.7.1） |
 | 対象 issue が残っているのに「対象なし」で終了する | dispatch ラベルの除外をサーバサイド search qualifier で行い、返却件数が窓未満になるまで拡張する。安全上限に達しても判定できなければ exit 4 で人に返す（§3.6） |
 | 未完成タスクを `done` と誤認して worktree / branch を消す | cleanup 前に成果物を独立に検証し、落ちたものは `error` へ降格する（§3.8.1） |
 | 失敗タスクの未コミット成果物を失う | worktree 削除前に WIP コミット（`--no-verify` + 一時 identity）→ `--binary` patch と未追跡ファイルの tar 保全 → 健全性確認 → いずれも失敗なら worktree 温存（§3.8.3） |
 | ラベル付与に失敗した issue を無限に拾い続ける | claim 失敗時はそのバッチから除外し状態にも登録しない。候補があったのに claim 全滅なら exit 3 でループを中断する |
 | 親が claim 後に落ちて issue が回収不能になる | `claimed` / `dispatched` を区別し、Step L0-4 の reconcile で workspace の生存を確認して release または中止する |
 | ロックが取れたまま／取り合いになる | `mkdir` による atomic 取得、stale takeover は atomic rename の勝者のみ、liveness の正本は `owner.json` に一本化、release は owner 一致時のみ、中断する全経路での明示的解放（§3.4） |
+| 質問回答待ちや長時間処理の間に heartbeat が切れ、二重 owner になる | ロック取得を Step L1 の最終確認後に遅らせ、全サブコマンドが冒頭で heartbeat 更新と owner token 検証を行い、lease を `task_timeout_min` から独立させる（§3.4） |
 | 通常 dispatch の `rm -rf .dispatch/` がループ状態やタスク状態を消す | ループ制御状態を `.dispatch-loop/` に分離（正順）＋ 通常 dispatch 側の Step 1 冒頭と cleanup 節に active loop lock ガードを追加（逆順）。§3.4 |
 | `--dangerously-skip-permissions` による意図しない破壊的操作 | worktree 隔離は従来どおり維持される。ループは `--loop` または Step L0-1 の明示 opt-in を通らないと開始しない |
 | hook trust バイパスによるセキュリティ挙動の変化 | §6.5 に例外として明記し、README / CLAUDE.md にも記載する |
