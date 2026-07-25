@@ -93,6 +93,15 @@ assert_contains "$review_runner" "-c approval_policy='never'" 'T5 review approva
 assert_contains "$review_runner" "--add-dir '$TMP/status'" 'T5 review status directory writable'
 assert_not_contains "$review_runner" '--dangerously-bypass-approvals-and-sandbox' 'T5 review does not disable sandbox'
 
+# --- hook trust: codex 0.145 は project-local .codex/hooks.json ごとに信頼を求める。
+# agmsg が worktree ごとに新しい hooks.json を生成するためパスが毎回変わり、常に未信頼と
+# 判定されて起動直後に承認待ちで停止する。approvals-and-sandbox のバイパスとは別フラグ。 ---
+assert_contains "$superpowers_runner" '--dangerously-bypass-hook-trust' 'T8 codex + superpowers hook trust bypass'
+assert_contains "$plan_runner" '--dangerously-bypass-hook-trust' 'T8 codex + plan hook trust bypass'
+assert_contains "$execute_runner" '--dangerously-bypass-hook-trust' 'T8 codex + execute hook trust bypass'
+assert_contains "$standby_runner" '--dangerously-bypass-hook-trust' 'T8 codex + standby hook trust bypass'
+assert_contains "$review_runner" '--dangerously-bypass-hook-trust' 'T8 codex + review hook trust bypass'
+
 # Exit instruction must be engine-aware: codex ends its own session (it does not
 # act on /exit), claude runs /exit. If the codex execute path stopped baking the
 # codex-appropriate exit instruction, the codex TUI would stay idle after the work
@@ -112,6 +121,7 @@ for mode in superpowers plan execute standby review; do
   claude_runner_file=$(jq -r '.runner_file' <<<"$output")
   assert_not_contains "$claude_runner_file" '--sandbox workspace-write' "T6 claude + $mode has no codex sandbox flag"
   assert_not_contains "$claude_runner_file" '--dangerously-bypass-approvals-and-sandbox' "T6 claude + $mode has no codex bypass"
+  assert_not_contains "$claude_runner_file" '--dangerously-bypass-hook-trust' "T9 claude + $mode has no codex hook trust flag"
   [[ "$mode" == "execute" ]] \
     && assert_contains "$claude_runner_file" 'run /exit' 'T6b claude execute bakes /exit exit instruction'
 done

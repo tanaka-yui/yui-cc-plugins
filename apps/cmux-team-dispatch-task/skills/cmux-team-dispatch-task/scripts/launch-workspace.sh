@@ -377,6 +377,13 @@ elif [[ -n "$EFFORT" ]]; then
   log "warn" "--effort is only meaningful with codex engine; ignoring"
 fi
 
+# codex 0.145 以降は project-local .codex/hooks.json ごとに信頼確認を行う。信頼状態は
+# hooks.json の絶対パスをキーに記録されるため、worktree ごとに新しいパスが生成される
+# このプラグインでは毎回「未信頼」となり、起動直後に承認待ちで停止する。
+# --dangerously-bypass-approvals-and-sandbox はコマンド承認と sandbox だけを無効化し、
+# hook trust には作用しないので、専用フラグを全 codex 経路に付ける。
+CODEX_HOOK_TRUST_FLAG=" --dangerously-bypass-hook-trust"
+
 log "runner" "name=${RUNNER_NAME:-<default>} command=$RUNNER_COMMAND engine=$RUNNER_ENGINE"
 
 # Resolve git repo info
@@ -574,16 +581,16 @@ else
       # --model (明示指定 or runner の exec_model) があれば付与、無ければ codex 側デフォルト
       CODEX_MODEL_FLAG=""
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
     elif [[ "$MODE" == "standby" ]]; then
       # codex standby: prompt なしで idle 起動。実行指示は常に cmux send で届く
       # (prewarm.json の delivery=agmsg のときは加えて agmsg inbox にも記録される)。
       CODEX_MODEL_FLAG=""
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       if [[ -n "$PROMPT_TEXT" ]]; then
-        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
       else
-        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --dangerously-bypass-approvals-and-sandbox"
+        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox"
       fi
     elif [[ "$MODE" == "review" ]]; then
       # review は workspace-write に限定し、approval prompt は抑止する。findings は
@@ -592,14 +599,14 @@ else
       [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       REVIEW_WRITABLE_FLAG=""
       [[ -n "$STATUS_DIR" ]] && REVIEW_WRITABLE_FLAG=" --add-dir '$STATUS_DIR'"
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG --dangerously-bypass-approvals-and-sandbox '\$superpowers:brainstorming $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '\$superpowers:brainstorming $PROMPT_TEXT'"
     else
       # codex plan: claude の --dangerously-skip-permissions に相当するのは
       # --dangerously-bypass-approvals-and-sandbox。/plan slash command は codex でも有効
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG --dangerously-bypass-approvals-and-sandbox '/plan $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '/plan $PROMPT_TEXT'"
     fi
   else
     # claude engine (default)
