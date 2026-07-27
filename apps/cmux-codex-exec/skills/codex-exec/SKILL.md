@@ -13,8 +13,9 @@ allowed-tools: Bash
 
 plan を独立した対話 codex に実装させ、完了を agmsg 経由で待って親を wake するスキル。
 
-デフォルト: モデル `gpt-5.6-sol` / effort `xhigh` / カレントdir / 分割方向 right / plan は
-`docs/superpowers/plans/` の最新（引数でパス指定可）。
+デフォルト: モデル `gpt-5.6-sol` / effort `xhigh` / カレントdir / 分割方向 right / plan は引数指定を優先し、
+無指定なら `docs/superpowers/plans/` の候補をユーザーに確認する
+（bin 単体実行時のフォールバックは従来どおり mtime 最新）。
 
 ## なぜこの構成か
 
@@ -30,10 +31,13 @@ background task として噛ませる（agmsg monitor push は idle 親を起こ
 
 ## 実行手順
 
-`/codex-exec` コマンド（`commands/codex-exec.md`）の Step 1〜5 に従う。要点:
+`/codex-exec` コマンド（`commands/codex-exec.md`）の Step 0〜5 に従う。要点:
 
-1. `whoami.sh` で親 identity（TEAM/PARENT）を解決（未参加なら join）。
-2. `bin/cmux-codex-exec $ARGUMENTS --team <TEAM> --parent <PARENT>` でペイン起動、`token`/`codex_agent` を取得。
-3. `join.sh <TEAM> <codex_agent> codex` で送信元を pre-join。
-4. `bin/cmux-codex-wait <TEAM> <PARENT> <token> --timeout 3600` を **background task** で起動して待機。
-5. wake 後、`status=done` ならレビュー可否を確認して `cmux-codex-review` へ、`status=timeout` ならペイン確認を促す。
+1. **plan を確定**: `$ARGUMENTS` に plan パスが無ければ `bin/cmux-codex-exec --list-targets` で
+   候補を列挙し、**1 件でも** AskUserQuestion でユーザーに確認する（誤った plan の実行は
+   リポジトリを書き換えるため）。0 件ならパスを尋ねる。詳細は `commands/codex-exec.md` の Step 0。
+2. `whoami.sh` で親 identity（TEAM/PARENT）を解決（未参加なら join）。
+3. `bin/cmux-codex-exec <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>` でペイン起動、`token`/`codex_agent` を取得。
+4. `join.sh <TEAM> <codex_agent> codex` で送信元を pre-join。
+5. `bin/cmux-codex-wait <TEAM> <PARENT> <token> --timeout 3600` を **background task** で起動して待機。
+6. wake 後、`status=done` ならレビュー可否を確認して `cmux-codex-review` へ、`status=timeout` ならペイン確認を促す。

@@ -7,17 +7,18 @@ claude/superpowers が作成した plan を、新しい cmux ペインで**対�
 ## 使い方
 
 ```
-/codex-exec                                   # docs/superpowers/plans/ の最新 plan を実装
+/codex-exec                                   # plan 候補を提示して確認してから実装
 /codex-exec docs/superpowers/plans/foo.md     # plan をパス指定
 /codex-exec down                              # 下に分割
 ```
 
 ## フロー
 
-1. 親の agmsg identity を解決（未参加なら join を案内）
-2. 新ペインで対話 codex が plan を実装
-3. codex 完了 → agmsg 通知 → 親の短命 watcher が exit → 親が wake
-4. 親が「レビューする?」と確認 → Yes で cmux-codex-review 起動
+1. 実装する plan を確定（無指定なら候補を提示して確認）
+2. 親の agmsg identity を解決（未参加なら join を案内）
+3. 新ペインで対話 codex が plan を実装
+4. codex 完了 → agmsg 通知 → 親の短命 watcher が exit → 親が wake
+5. 親が「レビューする?」と確認 → Yes で cmux-codex-review 起動
 
 ## 前提条件
 
@@ -31,6 +32,17 @@ claude/superpowers が作成した plan を、新しい cmux ペインで**対�
 /plugin marketplace add tanaka-yui/yui-cc-plugins
 /plugin install cmux-codex-exec@yui-cc-plugins
 ```
+
+## テスト
+
+```bash
+bash apps/cmux-codex-exec/test/test-cmux-codex-exec.sh
+```
+
+stub の cmux / codex を使い、`cmux send` が送る文字列をペインのシェルと同じように再パースして
+codex の実引数を検証する。守っている不変条件は E1（plan パスと `send.sh` が prompt へ無傷で届き、
+prompt は 1 引数）、E2（`--list-targets` は cmux 無しで plan を mtime 降順に列挙）、E3（候補ゼロでも
+空出力・終了コード 0 で終わる）。
 
 ## ライセンス
 
