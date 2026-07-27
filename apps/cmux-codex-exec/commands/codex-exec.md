@@ -51,6 +51,9 @@ Step 0 で確定した plan パスと `$ARGUMENTS`（`-d down` 等）に `--team
 "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-exec" <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>
 ```
 
+Step 0 をスキップした（＝ `$ARGUMENTS` に plan パスが既に含まれている）場合は `<PLAN>` は付けず、
+`$ARGUMENTS` のみを渡す。
+
 出力の `token=` / `codex_agent=` / `surface=` / `plan=` を記憶する。
 
 ### Step 3: 送信元 codex agent を team に pre-join
@@ -76,5 +79,6 @@ codex が完了通知（send.sh）を撃てるよう、`codex_agent` を team �
 watcher task の出力を確認する:
 
 - `status=done`: 「codex-exec 完了（plan: …）。未コミット変更を codex-review でレビューしますか?」とユーザーに確認。
-  Yes なら `/codex-review`（cmux-codex-review）を起動。
+  Yes なら対象を明示して `/codex-review --uncommitted`（cmux-codex-review）を起動する
+  （ユーザーは既に対象を回答済みのため、Step 0 で候補を再度尋ねさせない）。
 - `status=timeout`: 「codex の完了を検知できませんでした。ペイン `<surface>` を確認してください」と伝える。

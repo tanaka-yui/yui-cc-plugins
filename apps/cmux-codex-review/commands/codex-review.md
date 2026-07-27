@@ -7,14 +7,17 @@ description: "agmsg inbox を確認し、新ペインで対話 codex (gpt-5.6-so
 
 agmsg の受信箱を確認してから、新しい cmux ペインで**対話 codex** にコードレビューさせる。
 モデル **gpt-5.6-sol**、effort **xhigh**、対象はデフォルトで**未コミット変更**。
+引数無指定時は Step 0 で候補を提示してユーザーに確認する。
 親が agmsg team 参加済みなら、レビュー完了を親へ通知する配線も行う。
 
 ## 手順
 
 ### Step 0: レビュー対象を確定する
 
-`$ARGUMENTS` に `--uncommitted` / `--base` / `--commit` / `--path` のいずれかが含まれていれば
-対象は明示済み。**何も尋ねずに** Step 1 へ進む。
+`$ARGUMENTS` の `--` より前の部分に `--uncommitted` / `--base` / `--commit` / `--path` のいずれかが
+含まれていれば対象は明示済み。**`--` 以降のカスタムレビュー指示テキストは判定対象から除外する**
+（例: `-- セキュリティ観点で --path の使い方を見て` のようなフリーテキストは対象指定とみなさない）。
+**何も尋ねずに** Step 1 へ進む。
 
 含まれていなければ候補を列挙する:
 
@@ -26,7 +29,8 @@ agmsg の受信箱を確認してから、新しい cmux ペインで**対話 co
 
 - **0 行**: 「レビュー対象が検出できませんでした」と伝え、対象のパスかブランチをユーザーに尋ねる。
   回答を `--path <file>` / `--base <branch>` に変換して Step 1 へ。
-- **1 行**: そのまま採用する（確認は不要）。採用した対象は Step 4 の報告に含める。
+- **1 行**: そのまま採用する（確認は不要）。`kind=uncommitted` なら `--uncommitted`、`kind=path` なら
+  `--path <value>` に変換する。採用した対象は Step 4 の報告に含める。
 - **2 行以上**: AskUserQuestion で 1 つ選ばせる。選択肢は次の優先順で最大 4 枠:
 
 | 枠 | 内容 | 変換後の bin 引数 |
@@ -67,19 +71,21 @@ fi
 
 ### Step 2: 通知を配線するか決める
 
+`<TARGET_ARGS>` は Step 0 で確定した対象引数（`--uncommitted` / `--base <branch>` / `--commit <sha>` /
+`--path <file>...`。Step 0 をスキップした＝ユーザーが既に対象を明示していた場合は空）。
+**`$ARGUMENTS` は必ず最後に置くこと。`--` 以降はカスタムレビュー指示として吸われ、後続のフラグが解釈されなくなるため。**
+
 - 親が team 参加済み: reviewer agent を pre-join し（送信元登録）、bin に通知引数を渡す。
-  `$ARGUMENTS` に Step 0 で確定した対象引数を足して実行する。
   ```bash
   # surface 確定前なので reviewer 名は起動後に join する。まず起動:
-  "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" $ARGUMENTS --team <TEAM> --reviewer <REVIEWER> --parent <PARENT>
+  "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" <TARGET_ARGS> --team <TEAM> --reviewer <REVIEWER> --parent <PARENT> $ARGUMENTS
   ```
   `<REVIEWER>` は `cxrev-review` 等の一意名。bin 出力の `token=`/`surface=` を記憶。
   起動後すぐ reviewer を join:
   `~/.agents/skills/agmsg/scripts/join.sh <TEAM> <REVIEWER> codex "$(pwd)"`
 - 未参加: 通知なしで起動（後方互換）:
-  `$ARGUMENTS` に Step 0 で確定した対象引数を足して実行する。
   ```bash
-  "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" $ARGUMENTS
+  "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" <TARGET_ARGS> $ARGUMENTS
   ```
 
 > reviewer 名は bin 起動前に決めた固定名（例 `cxrev-review`）でよい。surface 由来 token とは別に、
