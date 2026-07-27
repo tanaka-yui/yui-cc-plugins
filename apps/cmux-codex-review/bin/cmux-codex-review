@@ -19,6 +19,7 @@ set -euo pipefail
 #   --uncommitted                   未コミット変更をレビュー (default)
 #   --base <branch>                 base ブランチとの差分をレビュー
 #   --commit <sha>                  指定コミットの変更をレビュー
+#   --path <file>                   指定ファイルの内容をレビュー (繰り返し可)
 #   --team <team> --reviewer <name> --parent <agent>  完了通知の配線
 #   --                              以降を追加レビュー指示として渡す
 
@@ -30,7 +31,8 @@ if [[ -z "${CMUX_SOCKET_PATH:-}" ]]; then
 fi
 
 DIR="right"; MODEL="gpt-5.6-sol"; EFFORT="xhigh"
-TARGET="uncommitted"; TARGET_ARG=""
+TARGET="uncommitted"; TARGET_ARG=""; PATHS_JOINED=""
+PATHS=()
 TEAM=""; REVIEWER=""; PARENT=""; INSTRUCTIONS=""
 
 while [[ $# -gt 0 ]]; do
@@ -41,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --uncommitted) TARGET="uncommitted"; shift ;;
     --base)        TARGET="base"; TARGET_ARG="$2"; shift 2 ;;
     --commit)      TARGET="commit"; TARGET_ARG="$2"; shift 2 ;;
+    --path)        TARGET="path"; PATHS+=("$2"); shift 2 ;;
     --team)        TEAM="$2"; shift 2 ;;
     --reviewer)    REVIEWER="$2"; shift 2 ;;
     --parent)      PARENT="$2"; shift 2 ;;
@@ -54,14 +57,28 @@ done
 [[ "$MODEL" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "エラー: --model に使用できない文字が含まれています" >&2; exit 1; }
 [[ "$EFFORT" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "エラー: --effort に使用できない文字が含まれています" >&2; exit 1; }
 
+# --path のファイル存在検証。ペイン分割前に行う（無効なパスでペインを撒かないため）
+if [[ "$TARGET" == "path" ]]; then
+  for p in "${PATHS[@]}"; do
+    [[ -f "$p" ]] || { echo "エラー: --path のファイルが存在しません: $p" >&2; exit 1; }
+  done
+fi
+
 # レビュー対象の説明文
 case "$TARGET" in
   base)   TARGET_DESC="現在のブランチと $TARGET_ARG ブランチの差分" ;;
   commit) TARGET_DESC="コミット $TARGET_ARG の変更" ;;
+  path)   TARGET_DESC="" ;;
   *)      TARGET_DESC="未コミットの変更 (git の staged / unstaged / untracked)" ;;
 esac
 
-REVIEW_INSTR="$TARGET_DESC をレビューし、問題点・改善点を具体的に指摘せよ。"
+if [[ "$TARGET" == "path" ]]; then
+  # 差分ではなくファイル内容そのものをレビューさせる（spec/plan は文書として妥当かを見たいため）
+  PATHS_JOINED=$(printf '%s, ' "${PATHS[@]}"); PATHS_JOINED=${PATHS_JOINED%, }
+  REVIEW_INSTR="ファイル $PATHS_JOINED を読み、内容をレビューし、問題点・改善点を具体的に指摘せよ。"
+else
+  REVIEW_INSTR="$TARGET_DESC をレビューし、問題点・改善点を具体的に指摘せよ。"
+fi
 [[ -n "$INSTRUCTIONS" ]] && REVIEW_INSTR="$REVIEW_INSTR
 
 追加指示: $INSTRUCTIONS"
@@ -91,4 +108,4 @@ CMD="codex --sandbox workspace-write --ask-for-approval never -c model=\"$MODEL\
 
 echo "surface=$S"
 echo "token=$TOKEN"
-echo "codex-review 起動: $S (方向: $DIR / model: $MODEL / effort: $EFFORT / 対象: $TARGET${TARGET_ARG:+ $TARGET_ARG})"
+echo "codex-review 起動: $S (方向: $DIR / model: $MODEL / effort: $EFFORT / 対象: $TARGET${TARGET_ARG:+ $TARGET_ARG}${PATHS_JOINED:+ $PATHS_JOINED})"

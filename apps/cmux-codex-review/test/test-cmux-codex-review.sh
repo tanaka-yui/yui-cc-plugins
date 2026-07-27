@@ -15,6 +15,8 @@
 #   D4. プロンプトは常にちょうど 1 引数として codex に渡る（引用符エスケープ）
 #   D5. approval policy は never（指定しないと codex が承認プロンプトで停止し、
 #       レビューが人間の accept 待ちになる）
+#   D6. --path はファイル全文レビュー指示になり、パスが prompt へ無傷で届く
+#   D7. 存在しない --path は非ゼロ終了し、ペインを分割しない
 
 set -uo pipefail
 
@@ -26,10 +28,13 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
 
-# stub cmux: new-split は surface を返し、send は送信文字列をそのまま記録
+# stub cmux: new-split は surface を返し（SPLIT_LOG があれば呼び出しを記録）、send は送信文字列を記録
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
-if [[ "$1" == "new-split" ]]; then echo "OK surface:31 workspace:9"; exit 0; fi
+if [[ "$1" == "new-split" ]]; then
+  echo "split" >> "${SPLIT_LOG:-/dev/null}"
+  echo "OK surface:31 workspace:9"; exit 0
+fi
 if [[ "$1" == "send" ]]; then printf '%s' "$4" > "$SENT_CMD"; exit 0; fi
 STUB
 chmod +x "$TMP/bin/cmux"
@@ -101,6 +106,31 @@ if prompt | grep -q "main"; then
   echo "PASS: --base main が prompt に反映"
 else
   echo "FAIL: --base main が prompt に無い / prompt=[$(prompt)]"
+  fail=1
+fi
+
+# --- D6: --path 指定 → ファイル全文レビュー指示になり、prompt は 1 引数 ---
+echo "spec body" > "$TMP/a-design.md"
+echo "plan body" > "$TMP/b-plan.md"
+CMUX_BIN="$TMP/bin/cmux" "$BIN" --path "$TMP/a-design.md" --path "$TMP/b-plan.md" >/dev/null 2>&1
+reparse
+if [[ "$(argc)" == "9" ]] \
+  && prompt | grep -q "$TMP/a-design.md" \
+  && prompt | grep -q "$TMP/b-plan.md" \
+  && prompt | grep -q "読み"; then
+  echo "PASS D6: --path 2 件が prompt に無傷で到達、argc=9"
+else
+  echo "FAIL D6: argc=$(argc) / prompt=[$(prompt)]"
+  fail=1
+fi
+
+# --- D7: 存在しない --path は非ゼロ終了し、ペインを分割しない ---
+rm -f "$TMP/split.log"
+if ! SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" --path "$TMP/does-not-exist.md" >/dev/null 2>&1 \
+  && [[ ! -f "$TMP/split.log" ]]; then
+  echo "PASS D7: 存在しない --path を拒否し、ペインを分割しない"
+else
+  echo "FAIL D7: 存在しないパスでペイン分割 or 正常終了した"
   fail=1
 fi
 
