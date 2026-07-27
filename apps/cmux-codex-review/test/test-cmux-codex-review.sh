@@ -17,6 +17,7 @@
 #       レビューが人間の accept 待ちになる）
 #   D6. --path はファイル全文レビュー指示になり、パスが prompt へ無傷で届く
 #   D7. 存在しない --path は非ゼロ終了し、ペインを分割しない
+#   D8. --list-targets は cmux を呼ばずに候補を TSV 出力する（cmux 外でも動く）
 
 set -uo pipefail
 
@@ -131,6 +132,26 @@ if ! SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" --path "$TMP/doe
   echo "PASS D7: 存在しない --path を拒否し、ペインを分割しない"
 else
   echo "FAIL D7: 存在しないパスでペイン分割 or 正常終了した"
+  fail=1
+fi
+
+# --- D8: --list-targets は cmux 無し・CMUX_SOCKET_PATH 無しで候補を TSV 出力する ---
+REPO="$TMP/repo"
+mkdir -p "$REPO/docs/superpowers/specs" "$REPO/docs/superpowers/plans"
+git -C "$REPO" init -q >/dev/null 2>&1
+git -C "$REPO" config user.email tester@example.com
+git -C "$REPO" config user.name tester
+echo "spec body" > "$REPO/docs/superpowers/specs/2026-01-01-a-design.md"
+git -C "$REPO" add -A >/dev/null 2>&1
+git -C "$REPO" commit -qm init >/dev/null 2>&1
+echo "plan body" > "$REPO/docs/superpowers/plans/2026-01-02-b-plan.md"
+lt=$(cd "$REPO" && env -u CMUX_SOCKET_PATH CMUX_BIN=/nonexistent/cmux "$BIN" --list-targets 2>&1)
+if printf '%s\n' "$lt" | grep -q "^target.*uncommitted" \
+  && printf '%s\n' "$lt" | grep -q "specs/2026-01-01-a-design.md.*spec / committed" \
+  && printf '%s\n' "$lt" | grep -q "plans/2026-01-02-b-plan.md.*plan / untracked"; then
+  echo "PASS D8: --list-targets が cmux 無しで候補を列挙"
+else
+  echo "FAIL D8: [$lt]"
   fail=1
 fi
 

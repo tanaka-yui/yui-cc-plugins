@@ -20,19 +20,43 @@ set -euo pipefail
 #   --base <branch>                 base ブランチとの差分をレビュー
 #   --commit <sha>                  指定コミットの変更をレビュー
 #   --path <file>                   指定ファイルの内容をレビュー (繰り返し可)
+#   --list-targets                  レビュー対象の候補を TSV で列挙して終了 (cmux 不要)
 #   --team <team> --reviewer <name> --parent <agent>  完了通知の配線
 #   --                              以降を追加レビュー指示として渡す
 
 CMUX_BIN="${CMUX_BIN:-cmux}"
 
-if [[ -z "${CMUX_SOCKET_PATH:-}" ]]; then
-  echo "エラー: cmux 内でのみ使用可能です (CMUX_SOCKET_PATH 未設定)" >&2
-  exit 1
-fi
+# 候補列挙。未コミット変更と docs/superpowers/{specs,plans} の直近 md を TSV で出す。
+# 列: target<TAB>kind<TAB>value<TAB>label
+list_targets() {
+  local n kind d f state mt
+  n=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  [[ "${n:-0}" -gt 0 ]] && printf 'target\tuncommitted\t\t未コミット変更 (%s files)\n' "$n"
+  for kind in spec plan; do
+    case "$kind" in
+      spec) d="docs/superpowers/specs" ;;
+      plan) d="docs/superpowers/plans" ;;
+    esac
+    [[ -d "$d" ]] || continue
+    for f in $(ls -t "$d"/*.md 2>/dev/null | head -3); do
+      if ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+        state="untracked"
+      elif git diff --quiet HEAD -- "$f" 2>/dev/null; then
+        state="committed"
+      else
+        state="modified"
+      fi
+      mt=$(date -r "$f" '+%m-%d %H:%M' 2>/dev/null || echo "-")
+      printf 'target\tpath\t%s\t%s / %s / %s\n' "$f" "$kind" "$state" "$mt"
+    done
+  done
+  return 0
+}
 
 DIR="right"; MODEL="gpt-5.6-sol"; EFFORT="xhigh"
 TARGET="uncommitted"; TARGET_ARG=""; PATHS_JOINED=""
 PATHS=()
+LIST_TARGETS=0
 TEAM=""; REVIEWER=""; PARENT=""; INSTRUCTIONS=""
 
 while [[ $# -gt 0 ]]; do
@@ -44,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --base)        TARGET="base"; TARGET_ARG="$2"; shift 2 ;;
     --commit)      TARGET="commit"; TARGET_ARG="$2"; shift 2 ;;
     --path)        TARGET="path"; PATHS+=("$2"); shift 2 ;;
+    --list-targets) LIST_TARGETS=1; shift ;;
     --team)        TEAM="$2"; shift 2 ;;
     --reviewer)    REVIEWER="$2"; shift 2 ;;
     --parent)      PARENT="$2"; shift 2 ;;
@@ -52,6 +77,17 @@ while [[ $# -gt 0 ]]; do
     *)             INSTRUCTIONS="${INSTRUCTIONS:+$INSTRUCTIONS }$1"; shift ;;
   esac
 done
+
+# 候補列挙モードはペイン分割しないので cmux 不要（cmux 外・テストからも呼べる）
+if [[ $LIST_TARGETS -eq 1 ]]; then
+  list_targets
+  exit 0
+fi
+
+if [[ -z "${CMUX_SOCKET_PATH:-}" ]]; then
+  echo "エラー: cmux 内でのみ使用可能です (CMUX_SOCKET_PATH 未設定)" >&2
+  exit 1
+fi
 
 # -m/--model と -e/--effort はペイン再パースされる文字列に埋め込まれるため、安全な文字のみ許可
 [[ "$MODEL" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "エラー: --model に使用できない文字が含まれています" >&2; exit 1; }
