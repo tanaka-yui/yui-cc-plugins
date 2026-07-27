@@ -14,16 +14,32 @@ set -euo pipefail
 #   --team <team>                   通知先 agmsg team（--parent と対で有効）
 #   --parent <agent>                通知先の親 agent 名
 #   --plan-mode <inline|path>       plan をプロンプトへ全文埋め込むかパス参照か (default: path)
+#   --list-targets                  plan 候補を TSV で列挙して終了 (cmux 不要)
 
 CMUX_BIN="${CMUX_BIN:-cmux}"
 
-if [[ -z "${CMUX_SOCKET_PATH:-}" ]]; then
-  echo "エラー: cmux 内でのみ使用可能です (CMUX_SOCKET_PATH 未設定)" >&2
-  exit 1
-fi
+# plan 候補の列挙。docs/superpowers/plans の直近 md を TSV で出す。
+# 列: target<TAB>kind<TAB>value<TAB>label
+list_targets() {
+  local f state mt
+  [[ -d docs/superpowers/plans ]] || return 0
+  for f in $(ls -t docs/superpowers/plans/*.md 2>/dev/null | head -3); do
+    if ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+      state="untracked"
+    elif git diff --quiet HEAD -- "$f" 2>/dev/null; then
+      state="committed"
+    else
+      state="modified"
+    fi
+    mt=$(date -r "$f" '+%m-%d %H:%M' 2>/dev/null || echo "-")
+    printf 'target\tplan\t%s\tplan / %s / %s\n' "$f" "$state" "$mt"
+  done
+  return 0
+}
 
 DIR="right"; MODEL="gpt-5.6-sol"; EFFORT="xhigh"
 TEAM=""; PARENT=""; PLAN=""; PLAN_MODE="path"
+LIST_TARGETS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -d|--dir)    DIR="$2"; shift 2 ;;
@@ -32,10 +48,22 @@ while [[ $# -gt 0 ]]; do
     --team)      TEAM="$2"; shift 2 ;;
     --parent)    PARENT="$2"; shift 2 ;;
     --plan-mode) PLAN_MODE="$2"; shift 2 ;;
+    --list-targets) LIST_TARGETS=1; shift ;;
     right|left|up|down) DIR="$1"; shift ;;
     *)           PLAN="$1"; shift ;;
   esac
 done
+
+# 候補列挙モードはペイン分割しないので cmux 不要（cmux 外・テストからも呼べる）
+if [[ $LIST_TARGETS -eq 1 ]]; then
+  list_targets
+  exit 0
+fi
+
+if [[ -z "${CMUX_SOCKET_PATH:-}" ]]; then
+  echo "エラー: cmux 内でのみ使用可能です (CMUX_SOCKET_PATH 未設定)" >&2
+  exit 1
+fi
 
 # -m/--model と -e/--effort はペイン再パースされる文字列に埋め込まれるため、安全な文字のみ許可
 [[ "$MODEL" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "エラー: --model に使用できない文字が含まれています" >&2; exit 1; }
