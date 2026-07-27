@@ -30,7 +30,7 @@ CMUX_BIN="${CMUX_BIN:-cmux}"
 # 列: target<TAB>kind<TAB>value<TAB>label
 list_targets() {
   local n kind d f state mt
-  n=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  n=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ') || n=0
   [[ "${n:-0}" -gt 0 ]] && printf 'target\tuncommitted\t\t未コミット変更 (%s files)\n' "$n"
   for kind in spec plan; do
     case "$kind" in

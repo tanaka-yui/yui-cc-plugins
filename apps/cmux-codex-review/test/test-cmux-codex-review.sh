@@ -18,6 +18,7 @@
 #   D6. --path はファイル全文レビュー指示になり、パスが prompt へ無傷で届く
 #   D7. 存在しない --path は非ゼロ終了し、ペインを分割しない
 #   D8. --list-targets は cmux を呼ばずに候補を TSV 出力する（cmux 外でも動く）
+#   D9. 候補ゼロ（git リポジトリ外）でも空出力・終了コード 0 で終わる
 
 set -uo pipefail
 
@@ -152,6 +153,18 @@ if printf '%s\n' "$lt" | grep -q "^target.*uncommitted" \
   echo "PASS D8: --list-targets が cmux 無しで候補を列挙"
 else
   echo "FAIL D8: [$lt]"
+  fail=1
+fi
+
+# --- D9: 候補ゼロ（git リポジトリ外）でも空出力・終了コード 0 で終わる ---
+NOGIT=$(mktemp -d)
+lt9=$(cd "$NOGIT" && env -u CMUX_SOCKET_PATH CMUX_BIN=/nonexistent/cmux "$BIN" --list-targets 2>&1)
+rc9=$?
+rm -rf "$NOGIT"
+if [[ $rc9 -eq 0 && -z "$lt9" ]]; then
+  echo "PASS D9: git リポジトリ外でも --list-targets が空出力・終了コード 0"
+else
+  echo "FAIL D9: rc=$rc9 / lt=[$lt9]"
   fail=1
 fi
 
