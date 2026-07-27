@@ -21,7 +21,7 @@ allowed-tools: Bash
 
 - **モデル**: `gpt-5.6-sol`
 - **reasoning effort**: `xhigh`（extra high）
-- **対象**: 未コミット変更（`--uncommitted`）
+- **対象**: 未コミット変更（`--uncommitted`）。無指定時は候補を列挙してユーザーに確認する
 - **分割方向**: `right`
 
 ## なぜこの構成か
@@ -38,6 +38,14 @@ allowed-tools: Bash
 - agmsg は任意。未参加・未インストールでもレビュー起動は止めない。
 
 ## 実行手順
+
+### 0. レビュー対象を確定する
+
+`--uncommitted` / `--base` / `--commit` / `--path` が指定されていればそのまま使う。
+無指定なら `bin/cmux-codex-review --list-targets` で候補（未コミット変更 /
+`docs/superpowers/{specs,plans}` の直近 md）を列挙し、2 件以上なら AskUserQuestion で
+ユーザーに選ばせる。1 件なら自動採用、0 件なら対象をユーザーに尋ねる。
+分岐の詳細は `/codex-review` コマンド（`commands/codex-review.md`）の Step 0 と同じ。
 
 ### 1. agmsg の inbox を確認（非ブロッキング）
 
@@ -61,6 +69,8 @@ bin スクリプトを実行する。cmux ペインを分割し、そのペイ�
 | `right` / `down` / `left` / `up` | 分割方向（default: right） |
 | `--base <branch>` | 未コミット変更ではなく base ブランチとの差分をレビュー |
 | `--commit <sha>` | 指定コミットの変更をレビュー |
+| `--path <file>` | 指定ファイルの**内容全体**をレビュー（繰り返し可。spec/plan 向け） |
+| `--list-targets` | 候補を TSV で列挙して終了（cmux 不要。Step 0 用） |
 | `-m <model>` / `-e <effort>` | モデル / effort の上書き（default: gpt-5.6-sol / xhigh） |
 | `-- <指示>` | codex へのカスタムレビュー指示 |
 | `--team <team> --reviewer <name> --parent <agent>` | レビュー完了の agmsg 通知配線 |

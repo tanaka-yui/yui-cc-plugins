@@ -11,10 +11,11 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 
 ## 動作
 
-1. agmsg を起動して受信箱を確認（非ブロッキング。未参加・未インストールならスキップ）
-2. `cmux new-split <dir>` で新ペインを分割
-3. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox workspace-write --ask-for-approval never -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
-4. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親側は `bin/cmux-codex-wait` で完了を待つ
+1. レビュー対象を確定（引数無指定なら `--list-targets` の候補をユーザーに確認）
+2. agmsg を起動して受信箱を確認（非ブロッキング。未参加・未インストールならスキップ）
+3. `cmux new-split <dir>` で新ペインを分割
+4. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox workspace-write --ask-for-approval never -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
+5. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親側は `bin/cmux-codex-wait` で完了を待つ
 
 ## テスト
 
@@ -30,6 +31,10 @@ codex が実際に受け取る引数を検証する（生文字列の grep で�
 - **D3**: 通知配線なし → `send.sh` を注入しない（後方互換）
 - **D4**: prompt は常にちょうど 1 引数として codex に渡る（`'\''` エスケープ）
 - **D5**: approval policy が `never`（無指定に戻すと codex が承認プロンプトで停止し、無人レビューが accept 待ちになる）
+- **D6**: `--path` はファイル全文レビュー指示になり、パスが prompt へ無傷で届く
+- **D7**: 存在しない `--path` は非ゼロ終了し、ペインを分割しない（無効指定でペインを撒かない）
+- **D8**: `--list-targets` は cmux を呼ばずに候補を TSV 出力する（`CMUX_SOCKET_PATH` 不要）
+- **D9**: 候補ゼロ（git リポジトリ外）でも空出力・終了コード 0 で終わる
 - `--base` の反映 / `-m`・`-e` の不正値拒否
 
 ## サンドボックスを read-only にしてはいけない
@@ -51,7 +56,7 @@ codex が実際に受け取る引数を検証する（生文字列の grep で�
 |------|-----|--------|
 | model | `gpt-5.6-sol` | `-m` / `--model` |
 | reasoning effort | `xhigh`（extra high） | `-e` / `--effort` |
-| 対象 | `--uncommitted` | `--base <branch>` / `--commit <sha>` |
+| 対象 | `--uncommitted` | `--base <branch>` / `--commit <sha>` / `--path <file>`（繰り返し可） |
 | 分割方向 | `right` | 位置引数 `down`/`left`/`up` or `-d` |
 
 ## 前提

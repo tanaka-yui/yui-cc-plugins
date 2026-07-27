@@ -11,6 +11,39 @@ agmsg の受信箱を確認してから、新しい cmux ペインで**対話 co
 
 ## 手順
 
+### Step 0: レビュー対象を確定する
+
+`$ARGUMENTS` に `--uncommitted` / `--base` / `--commit` / `--path` のいずれかが含まれていれば
+対象は明示済み。**何も尋ねずに** Step 1 へ進む。
+
+含まれていなければ候補を列挙する:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" --list-targets
+```
+
+出力は 1 行 1 候補の TSV（`target<TAB>kind<TAB>value<TAB>label`）。行数で分岐する:
+
+- **0 行**: 「レビュー対象が検出できませんでした」と伝え、対象のパスかブランチをユーザーに尋ねる。
+  回答を `--path <file>` / `--base <branch>` に変換して Step 1 へ。
+- **1 行**: そのまま採用する（確認は不要）。採用した対象は Step 4 の報告に含める。
+- **2 行以上**: AskUserQuestion で 1 つ選ばせる。選択肢は次の優先順で最大 4 枠:
+
+| 枠 | 内容 | 変換後の bin 引数 |
+|----|------|------------------|
+| 1 | 未コミット変更（`kind=uncommitted` の行があれば） | `--uncommitted` |
+| 2 | spec 最新（label が `spec /` で始まる先頭行） | `--path <spec>` |
+| 3 | plan 最新（label が `plan /` で始まる先頭行） | `--path <plan>` |
+| 4 | spec + plan をまとめて（枠 2 と 3 が両方あるときだけ） | `--path <spec> --path <plan>` |
+
+`--list-targets` は spec / plan を各 3 件まで返すが、枠に載せるのは各先頭 1 件だけ。
+残りの候補は質問文に列挙し、ユーザーが Other で指定できるようにする。
+
+multiSelect は使わない。bin の対象指定は単一種別なので「未コミット + path」の混在は作れない。
+複数ファイルのレビューは枠 4（`--path` の繰り返し）で表現する。
+
+確定した引数は Step 2 の bin 実行にそのまま渡す。
+
 ### Step 1: agmsg identity を解決し inbox を確認（非ブロッキング）
 
 ```bash
@@ -35,6 +68,7 @@ fi
 ### Step 2: 通知を配線するか決める
 
 - 親が team 参加済み: reviewer agent を pre-join し（送信元登録）、bin に通知引数を渡す。
+  `$ARGUMENTS` に Step 0 で確定した対象引数を足して実行する。
   ```bash
   # surface 確定前なので reviewer 名は起動後に join する。まず起動:
   "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" $ARGUMENTS --team <TEAM> --reviewer <REVIEWER> --parent <PARENT>
@@ -43,6 +77,7 @@ fi
   起動後すぐ reviewer を join:
   `~/.agents/skills/agmsg/scripts/join.sh <TEAM> <REVIEWER> codex "$(pwd)"`
 - 未参加: 通知なしで起動（後方互換）:
+  `$ARGUMENTS` に Step 0 で確定した対象引数を足して実行する。
   ```bash
   "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" $ARGUMENTS
   ```
@@ -64,3 +99,4 @@ fi
 ### Step 4: 報告
 
 bin の起動サマリ（surface / 方向 / model / effort / 対象）を 1 行で報告する。
+Step 0 で候補から自動採用した場合は、どの対象を選んだかも明記する。

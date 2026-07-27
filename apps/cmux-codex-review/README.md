@@ -15,7 +15,12 @@ agmsg の受信箱を確認したうえで、新しい cmux ペインで **codex
 /codex-review down         # 下に分割
 /codex-review --base main  # main との差分をレビュー
 /codex-review -- セキュリティ観点を重点的に   # カスタム指示付き
+/codex-review --path docs/superpowers/specs/x-design.md  # 指定ファイルの内容をレビュー
 ```
+
+対象を指定せずに `/codex-review` を打った場合は、未コミット変更と
+`docs/superpowers/{specs,plans}` の直近 md を候補として提示し、どれをレビューするか確認する。
+brainstorming が spec を先にコミットするフローでも、対象がズレない。
 
 ### シェルスクリプト（直接実行、高速）
 
@@ -24,6 +29,7 @@ agmsg 確認をスキップし、通知なしの対話レビュー起動だけ�
 ```
 !cmux-codex-review
 !cmux-codex-review down --base main
+!cmux-codex-review --list-targets     # 候補を TSV で列挙するだけ（cmux 外でも動く）
 ```
 
 ## 起動される codex コマンド
