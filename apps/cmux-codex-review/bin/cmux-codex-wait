@@ -6,18 +6,38 @@ set -uo pipefail
 # その exit が Claude Code の <task-notification> を発火して idle 親を wake する。
 # agmsg 常駐 monitor と違い「完了して exit する」ことが wake の要。
 #
-# Usage: cmux-codex-wait <team> <agent> <token> [--timeout <sec>] [--interval <sec>]
+# **既定では壁時計で打ち切らない**（--timeout 0）。以前は 1800s で打ち切っていたが、
+# codex のレビュー/実装がそれを超えると、まだ生きている codex を見捨てて親の待機が
+# 畳まれ、後から届く完了通知では二度と親が起きなかった。cmux-team-dispatch-task の
+# monitor-dispatch.sh と同じく「時間ではなく生存」で判断する。
+#
+# 無制限待機で孤児 watcher が残らないよう、--surface が渡されていれば定期的に
+# cmux read-screen でペインの生存を確認し、2 回連続で見つからなければ status=gone
+# で exit して親を起こす（socket の一時的な失敗で誤検知しないための 2 回連続）。
+#
+# Usage: cmux-codex-wait <team> <agent> <token> [options]
+#   --surface <id>             生存確認するペイン。消滅時は status=gone / exit 4
+#   --timeout <sec>            打ち切り秒数。0 = 無制限 (default: 0)
+#   --interval <sec>           history polling 間隔 (default: 5)
+#   --liveness-interval <sec>  ペイン生存確認の間隔 (default: 60)
+#
+# Exit: 0=done / 2=usage・agmsg 無し / 3=timeout / 4=gone
 
-AGMSG_HISTORY="$HOME/.agents/skills/agmsg/scripts/history.sh"
+AGMSG_HISTORY="${AGMSG_HISTORY:-$HOME/.agents/skills/agmsg/scripts/history.sh}"
+CMUX_BIN="${CMUX_BIN:-cmux}"
 
 TEAM="${1:-}"; AGENT="${2:-}"; TOKEN="${3:-}"
 [[ $# -ge 3 ]] && shift 3 || true
-TIMEOUT=1800
+TIMEOUT=0
 INTERVAL=5
+SURFACE=""
+LIVENESS_INTERVAL=60
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --timeout)  TIMEOUT="$2"; shift 2 ;;
-    --interval) INTERVAL="$2"; shift 2 ;;
+    --surface)           SURFACE="$2"; shift 2 ;;
+    --timeout)           TIMEOUT="$2"; shift 2 ;;
+    --interval)          INTERVAL="$2"; shift 2 ;;
+    --liveness-interval) LIVENESS_INTERVAL="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -26,13 +46,37 @@ done
 [[ -x "$AGMSG_HISTORY" ]] || { echo "status=error reason=no-agmsg"; exit 2; }
 
 elapsed=0
-while (( elapsed < TIMEOUT )); do
+since_liveness=0
+missed=0
+while :; do
   if "$AGMSG_HISTORY" "$TEAM" "$AGENT" 30 2>/dev/null | grep -qF "$TOKEN"; then
     echo "status=done token=$TOKEN"
     exit 0
   fi
   sleep "$INTERVAL"
   elapsed=$(( elapsed + INTERVAL ))
+
+  # ペイン生存確認（--surface 指定時のみ）
+  if [[ -n "$SURFACE" ]]; then
+    since_liveness=$(( since_liveness + INTERVAL ))
+    if (( since_liveness >= LIVENESS_INTERVAL )); then
+      since_liveness=0
+      if "$CMUX_BIN" read-screen --surface "$SURFACE" --lines 1 >/dev/null 2>&1; then
+        missed=0
+      else
+        missed=$(( missed + 1 ))
+        if (( missed >= 2 )); then
+          echo "status=gone token=$TOKEN surface=$SURFACE"
+          exit 4
+        fi
+      fi
+    fi
+  fi
+
+  # --timeout を明示したときだけ壁時計で打ち切る（後方互換）
+  if (( TIMEOUT > 0 )) && (( elapsed >= TIMEOUT )); then
+    break
+  fi
 done
 echo "status=timeout token=$TOKEN"
 exit 3

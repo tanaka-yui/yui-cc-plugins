@@ -69,8 +69,12 @@ codex が完了通知（send.sh）を撃てるよう、`codex_agent` を team �
 **Bash tool を `run_in_background: true` で** 次を起動する（token は Step 2 の出力値）:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --timeout 3600
+"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --surface <surface>
 ```
+
+`--timeout` は付けない（既定は無制限）。長い実装を壁時計で打ち切ると、まだ生きている
+codex を見捨てて待機が畳まれ、後から届く完了通知では二度と wake しないため。代わりに
+`--surface` を渡してペインの生存で打ち切る。
 
 起動したらこのターンを終える。watcher の完了通知（`<task-notification>`）で親が wake される。
 
@@ -81,4 +85,4 @@ watcher task の出力を確認する:
 - `status=done`: 「codex-exec 完了（plan: …）。未コミット変更を codex-review でレビューしますか?」とユーザーに確認。
   Yes なら対象を明示して `/codex-review --uncommitted`（cmux-codex-review）を起動する
   （ユーザーは既に対象を回答済みのため、Step 0 で候補を再度尋ねさせない）。
-- `status=timeout`: 「codex の完了を検知できませんでした。ペイン `<surface>` を確認してください」と伝える。
+- `status=gone`: 「実装ペイン `<surface>` が閉じられました。codex の完了は検知できていません」と伝える。

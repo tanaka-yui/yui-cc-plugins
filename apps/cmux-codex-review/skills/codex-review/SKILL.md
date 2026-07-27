@@ -75,8 +75,9 @@ bin スクリプトを実行する。cmux ペインを分割し、そのペイ�
 | `-- <指示>` | codex へのカスタムレビュー指示 |
 | `--team <team> --reviewer <name> --parent <agent>` | レビュー完了の agmsg 通知配線 |
 
-bin は `surface=` / `token=` を出力する。通知配線時はこの `token` を
-`bin/cmux-codex-wait` に渡して完了を待つ（`/codex-review` コマンドの Step 3 参照）。
+bin は `surface=` / `token=` を出力する。通知配線時はこの `token` と `surface` を
+`bin/cmux-codex-wait` に渡して完了を待つ（`--timeout` は付けない。既定は無制限で、
+打ち切りはペインの生存で判断する。`/codex-review` コマンドの Step 3 参照）。
 
 ### 3. 報告
 

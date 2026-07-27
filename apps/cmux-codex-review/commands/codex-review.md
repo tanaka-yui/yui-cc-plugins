@@ -96,11 +96,17 @@ fi
 **Bash tool を `run_in_background: true` で**:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --timeout 1800
+"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --surface <surface>
 ```
 
-起動したらターンを終える。`status=done` で wake されたら「レビュー完了」を伝える。
-`status=timeout` ならペイン `<surface>` の確認を促す。
+`--timeout` は付けない（既定は無制限）。長いレビューを壁時計で打ち切ると、まだ生きている
+codex を見捨てて待機が畳まれ、後から届く完了通知では二度と wake しないため。代わりに
+`--surface` を渡してペインの生存で打ち切る。
+
+起動したらターンを終える。wake 後は watcher task の出力で分岐する:
+
+- `status=done`: 「レビュー完了」を伝える。
+- `status=gone`: 「レビューペイン `<surface>` が閉じられました。完了は検知できていません」と伝える。
 
 ### Step 4: 報告
 

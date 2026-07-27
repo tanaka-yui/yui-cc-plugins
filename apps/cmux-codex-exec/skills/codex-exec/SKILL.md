@@ -39,5 +39,6 @@ background task として噛ませる（agmsg monitor push は idle 親を起こ
 2. `whoami.sh` で親 identity（TEAM/PARENT）を解決（未参加なら join）。
 3. `bin/cmux-codex-exec <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>` でペイン起動、`token`/`codex_agent` を取得。
 4. `join.sh <TEAM> <codex_agent> codex` で送信元を pre-join。
-5. `bin/cmux-codex-wait <TEAM> <PARENT> <token> --timeout 3600` を **background task** で起動して待機。
-6. wake 後、`status=done` ならレビュー可否を確認して `cmux-codex-review` へ、`status=timeout` ならペイン確認を促す。
+5. `bin/cmux-codex-wait <TEAM> <PARENT> <token> --surface <surface>` を **background task** で起動して待機
+   （`--timeout` は付けない。既定は無制限で、打ち切りはペインの生存で判断する）。
+6. wake 後、`status=done` ならレビュー可否を確認して `cmux-codex-review` へ、`status=gone` ならペイン確認を促す。

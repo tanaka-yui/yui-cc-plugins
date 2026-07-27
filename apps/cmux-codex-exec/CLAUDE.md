@@ -7,13 +7,22 @@ plan を対話 codex にカレントdir で実装させ、完了を親が agmsg 
 - `commands/codex-exec.md` — `/codex-exec`（identity 解決 → bin → watcher 起動 → 待機 → レビュー案内）
 - `skills/codex-exec/SKILL.md` — トリガー定義
 - `bin/cmux-codex-exec` — plan 解決 + 対話 codex 起動 + token/agent 導出 + `--list-targets`（候補列挙）
-- `bin/cmux-codex-wait` — 短命 watcher（history polling → token 検知で exit → 親 wake）
+- `bin/cmux-codex-wait` — 短命 watcher（history polling → token 検知で exit → 親 wake）。
+  `cmux-codex-review` 側と**同一内容のコピー**（回帰テストの W5 が同一性を検証する）
 
 ## 完了通知の仕組み
 
 対話 codex は exit しないので、codex 自身に完了時 `send.sh` を撃たせ、親は「token 検知で *exit* する
 短命 watcher」を background task で回す。その exit が harness の `<task-notification>` を発火し idle 親を wake する。
 agmsg 常駐 monitor push は idle 親を起こせない（実測済み）ため、この方式が必須。
+
+## watcher を壁時計で打ち切ってはいけない
+
+`cmux-codex-wait` の `--timeout` 既定は **0（無制限）**。以前は 1800s で打ち切っていたが、codex の実装が
+それを超えると、まだ生きている codex を見捨てて `status=timeout` で exit → 親が待機を畳み、**後から届く
+完了通知では二度と wake しなかった**。`cmux-team-dispatch-task` の `monitor-dispatch.sh` と同じく
+「時間ではなく生存」で判断する: `--surface <id>` を渡すと 60 秒ごとに `cmux read-screen` でペインの生存を
+確認し、2 回連続で見つからなければ `status=gone`（exit 4）で親を起こす。コマンド層は `--timeout` を渡さない。
 
 ## デフォルト
 
