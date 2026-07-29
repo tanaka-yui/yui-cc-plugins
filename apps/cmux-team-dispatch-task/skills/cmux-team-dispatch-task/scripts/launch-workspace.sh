@@ -792,8 +792,68 @@ if [[ "\$STANDBY" != "1" ]]; then
   write_status "executing" "Claude session starting"
 fi
 
+# --- status.json watcher ---
+# 子が終端 status を書いても TUI が idle のまま残ると、この wrapper は下の
+# 子プロセス待ちでブロックしたまま通知に到達しない。そこで子と並行して
+# status.json を poll し、終端遷移を検知した時点で親へ通知する。
+# 抑止条件は exit パスの所有権判定と同一。.deferred / .assigned-* は実行中に
+# 作られるため poll のたびに再評価する。
+# 通知に失敗しても marker を更新しないので、次の poll がそのまま再試行になる。
+WATCH_INTERVAL="\${CMUX_DISPATCH_WATCH_INTERVAL:-15}"
+WATCHER_PID=""
+if [[ -n "\$STATUS_DIR" ]]; then
+  (
+    while true; do
+      # 停止要求への追随を 1 秒以内にするため、待機は 1 秒刻みに分割する。
+      # まとめて sleep すると、短時間で終わる子の exit パスが最大 WATCH_INTERVAL 秒
+      # 待たされ、既存の回帰テストも同じだけ遅くなる。
+      [[ -f "\$STATUS_DIR/.stop-watcher-\$SLUG" ]] && exit 0
+      _slept=0
+      while (( _slept < WATCH_INTERVAL )); do
+        sleep 1
+        _slept=\$(( _slept + 1 ))
+        [[ -f "\$STATUS_DIR/.stop-watcher-\$SLUG" ]] && exit 0
+      done
+
+      [[ -n "\$TIMEOUT_SENTINEL" && -f "\$TIMEOUT_SENTINEL" ]] && continue
+      [[ "\$DEFER_STATUS" == "1" && -f "\$STATUS_DIR/.deferred" ]] && continue
+      [[ "\$STANDBY" == "1" && ! -f "\$STATUS_DIR/.assigned-\$SLUG" ]] && continue
+
+      # 所有権を他 pane へ渡した (.assigned → .deferred の間の窓)
+      if [[ "\$DEFER_STATUS" == "1" ]]; then
+        _foreign=0
+        for _a in "\$STATUS_DIR"/.assigned-*; do
+          [[ -e "\$_a" ]] || continue
+          [[ "\$_a" == "\$STATUS_DIR/.assigned-\$SLUG" ]] || _foreign=1
+        done
+        (( _foreign )) && continue
+      fi
+
+      [[ -f "\$STATUS_DIR/status.json" ]] || continue
+      _st=\$(jq -r '.status // empty' "\$STATUS_DIR/status.json" 2>/dev/null || echo "")
+      [[ "\$_st" == "done" || "\$_st" == "error" ]] || continue
+
+      notify_parent_once "\$_st" || continue
+      exit 0
+    done
+  ) &
+  WATCHER_PID=\$!
+fi
+
 ${CLAUDE_CMD}
 CLAUDE_EXIT=\$?
+
+# watcher を協調的に停止する。強制 kill は通知の途中で切れる可能性があるため、
+# 先に sentinel を置いて自発的な終了を最大 20 秒待ち、それでも残る場合だけ kill する。
+if [[ -n "\$WATCHER_PID" ]]; then
+  [[ -n "\$STATUS_DIR" ]] && : > "\$STATUS_DIR/.stop-watcher-\$SLUG"
+  for _i in \$(seq 1 20); do
+    kill -0 "\$WATCHER_PID" 2>/dev/null || break
+    sleep 1
+  done
+  kill "\$WATCHER_PID" 2>/dev/null || true
+  wait "\$WATCHER_PID" 2>/dev/null || true
+fi
 
 # ループモード: batch-wait.sh が deadline 超過でこのタスクを terminal 化済みなら、
 # 遅れて終了した子が status.json を上書きしたり、cleanup 済みの STATUS_DIR を
