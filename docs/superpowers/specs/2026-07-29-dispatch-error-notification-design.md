@@ -107,25 +107,45 @@ runner wrapper は `launch-workspace.sh:691-827` の heredoc で生成される�
   2. 親通知（`notify_parent()`。4.3 参照）
   3. 通知が**成功したときだけ** `$STATUS_DIR/.notified-$SLUG` に**通知した status 文字列を書き込む**
   4. レビュアー wake（4.7。親通知とは独立した state で、成否は 3 に影響しない）
-  5. watcher 自身を終了
+  5. 必要な marker が**すべて**確定したら watcher 自身を終了する（未確定のものが残る間はリトライを継続。4.7 参照）
 - **停止**: 4.3 の協調停止プロトコルによる（`kill` は最後の手段）
-- **marker のライフサイクル**: wrapper 起動時（`${CLAUDE_CMD}` 実行前）に `$STATUS_DIR/.notified-$SLUG` と `.notified-reviewer-$SLUG` を**削除**する。runner script は pane 起動ごとに 1 回だけ実行されるため pane 世代はこれで分離される。**dispatch 世代**の分離は 4.8 で別途扱う
+- **marker のライフサイクル**: wrapper 起動時（`${CLAUDE_CMD}` 実行前）に `$STATUS_DIR/.notified-$SLUG` / `.notified-reviewer-$SLUG` / `.notify-phase-$SLUG` / `.notify-phase-reviewer-$SLUG` / `.stop-watcher-$SLUG` を**削除**し、`.wrapper-$SLUG.pid` に自分の PID を書く（4.8）。runner script は pane 起動ごとに 1 回だけ実行されるため pane 世代はこれで分離される。**dispatch 世代**の分離は 4.8 で別途扱う
 
 ### 4.3 通知 claim の設計（重複通知・訂正通知・送信失敗）
 
 **参加者を 2 つに限定し、協調停止で交代する**。exit パスは watcher が自発的に終了したことを確認してから通知判断を行うため、判断時点で同時に走る参加者はいない。check-then-act のレースはこれで構造的に消える。ロックは導入しない。
 
-**協調停止プロトコル**（`kill` で in-flight の副作用を切断しないため）
+**配信 phase の永続化**（強制 `kill` を跨いで状態を引き継ぐため）
+
+bash の副作用は原子的にできないので、「分割しない単位」という約束では強制 `kill` に耐えられない（round 3 Finding 3）。そこで**副作用の前に phase をファイルへ書く**。
+
+`$STATUS_DIR/.notify-phase-$SLUG` の値と遷移:
+
+| 書く時点 | 値 | 意味 |
+|---|---|---|
+| `cmux send` の**前** | `sending:<status>` | 文面が届いたか不明 |
+| `cmux send` が 0 を返した**後**、`send-key` の前 | `sent:<status>` | 文面は届いた。Enter だけ未了 |
+| `send-key` が 0 を返した後 | （phase ファイルを削除し `.notified-$SLUG` に `<status>` を書く） | 完了 |
+
+exit パス（および再起動した watcher）は phase ファイルを読んで再開点を決める。
+
+| 読んだ値 | 再開動作 |
+|---|---|
+| なし & marker == 最終 status | 何もしない |
+| なし & marker != 最終 status | 先頭から（`sending` → `send` → `send-key`） |
+| `sending:<s>` | **先に `send-key return` を 1 回送って input box を flush** してから、文面を最初から送り直す。これにより「未達だった場合の欠落」も「既達だった場合の連結」も避けられる |
+| `sent:<s>` | `send-key return` のみ送る |
+
+**すべての `cmux` 呼び出しに timeout を付ける**（`timeout 10 cmux …`）。`cmux send` が hang したまま戻らないとリトライループに戻れないため（round 3 Finding 3 の後段）。timeout 切れは失敗として扱い、phase は据え置かれるので上表の規則で再開できる。
+
+**協調停止プロトコル**
 
 1. exit パスは `$STATUS_DIR/.stop-watcher-$SLUG` を作成する
-2. watcher は**中断可能な境界でのみ**この sentinel を確認する。境界とは「poll ループの先頭」「リトライ待機の前後」であり、`cmux send` → `send-key return` → marker 書き込みの 3 つは**分割しない 1 単位**として扱い、その途中では停止しない
-3. exit パスは watcher の終了を最大 30 秒待つ（`wait` をタイムアウト付きで行う）
-4. 30 秒経っても終了しない場合のみ `kill` + `wait` する。この状況は通知が失敗し続けている場合に限られ、そのとき marker は未更新なので exit パスが同じ遷移を再送する
+2. watcher は「poll ループの先頭」「リトライ待機の前後」「各副作用の直前」で sentinel を確認し、見つけたら**その時点の phase を残したまま**終了する
+3. exit パスは watcher の終了を最大 30 秒待つ
+4. 30 秒経っても終了しない場合のみ `kill` + `wait` する。phase ファイルが残っているので、exit パスは上表に従って正しい再開点から続行できる
 
-これにより round 2 Finding 2 の 2 つの窓が閉じる。
-
-- `cmux send` 成功／`send-key return` 前に中断 → 起きない（分割しない単位のため）。仮に強制 `kill` になった場合も、その時点では通知が 30 秒以上失敗し続けている状況であり、exit パスが `send-key return` の再送から入る（下記「部分配信」参照）
-- 配信済みだが marker 未更新で中断 → `kill` 経路でのみ起こり得るが、結果は同一遷移の重複通知であり `SKILL.md:1811-1815` が許容する範囲に収まる
+これで round 2 Finding 2 と round 3 Finding 3 の窓が閉じる。in-flight を強制中断しても、`sending` / `sent` のどちらで切れたかが永続化されているためである。
 
 `.notified-$SLUG` は空ファイルではなく、**最後に通知に成功した status 文字列**（`done` / `error`）を保持する。判定は存在チェックではなく**内容比較**とする。
 
@@ -143,7 +163,7 @@ runner wrapper は `launch-workspace.sh:691-827` の heredoc で生成される�
 
 **`notify_parent()` の成否判定**: wake に必要な `cmux send` と `send-key return` を**一組**として扱い、両方成功したときだけ 0 を返す。agmsg `send.sh` は inbox 記録専用で idle な親を起こせないため、その失敗は成否に含めない（警告ログのみ）。現行 `:817-825` はすべて `|| true` で握り潰しているので、ここは戻り値を見る形に変更する。
 
-**部分配信のリトライ**: `cmux send` が成功して `send-key return` だけ失敗した場合、**`send-key return` のみ**を再送する。文面を再送すると親の input box で連結した prompt になるためである。
+**部分配信のリトライ**: `cmux send` が成功して `send-key return` だけ失敗した場合（phase = `sent`）、**`send-key return` のみ**を再送する。文面を再送すると親の input box で連結した prompt になるためである。
 
 **送信失敗時のリトライ**: watcher は**子プロセスが生きている限り、通知に成功するまでリトライを続ける**（10 秒 → 30 秒 → 60 秒でバックオフし 60 秒で頭打ち）。有限回で諦めない理由は、本件の観測事象そのものが「子が exit しない」ケースであり、その状況では exit パスによる再試行が永久に来ないためである。停止は 4.3 の協調停止 sentinel によってのみ行う。
 
@@ -185,7 +205,8 @@ runner wrapper は `launch-workspace.sh:691-827` の heredoc で生成される�
 ### 4.6 watcher が解決するもの / しないもの
 
 - 解決する: 実装者が `error` を書いて **idle 残留**しても親に届く（H4）。agmsg モードで親に検知手段が無い問題（H5）。プロンプト指示を LLM が無視した場合の backstop（H1 / H2 の実効性）
-- 部分的に解決する: レビュアーの解放（H3 / H7）。5.2 の構造的経路で扱う
+- 解決する: レビュアーの解放（H3）。実装者が terminal `error` を書けば、プロンプト指示に従わなくても watcher が `[abort]` を送る（4.7 / 5.2）
+- **解決しない**: 実装者が `status.json` すら書かずに沈黙する場合（H7 の残り）。terminal 遷移が無いので watcher の発火条件を満たさない。Section 8 に既知の未解決パターンとして記録する
 
 **実装上の要点**: 通知処理は `notify_parent()` シェル関数に切り出し、watcher と exit パスの**両方から呼ぶ**。片方だけ更新される乖離（CLAUDE.md 項目 21 が扱った退行と同型）を構造的に防ぐため。
 
@@ -197,10 +218,13 @@ runner wrapper は `launch-workspace.sh:691-827` の heredoc で生成される�
 |---|---|---|
 | marker | `.notified-$SLUG`（内容 = 通知済み status） | `.notified-reviewer-$SLUG`（内容 = 通知済み status） |
 | 対象 | terminal status すべて（`done` / `error`） | terminal status が **`error` のときのみ** |
-| リトライ | 子が生きている限り無期限（4.3） | 10 秒間隔で最大 3 回 |
-| 失敗時 | marker を更新しない（exit パスが引き継ぐ） | marker を更新せず**警告ログのみ**。親通知の成否には影響しない |
+| リトライ | 子が生きている限り無期限（4.3） | **同じく子が生きている限り無期限**（10s / 30s / 60s バックオフ） |
+| 失敗時 | marker を更新しない（exit パスが引き継ぐ） | marker を更新せずリトライを継続。親通知の成否には影響しない |
+| phase ファイル | `.notify-phase-$SLUG` | `.notify-phase-reviewer-$SLUG`（同じ 3 値遷移） |
 
 **順序**: 親通知 →（成功可否にかかわらず）レビュアー wake。親通知が最優先である。
+
+**watcher の終了条件**: 親通知の marker と、（レビュアー wake が必要な場合は）レビュアー marker の**両方**が確定するまで watcher は終了しない。親通知だけ成功した時点で終了すると、observed failure と同じ「子が exit しない」状況ではレビュアー wake の再試行主体が居なくなり、transport が 30 秒以上落ちただけで `[abort]` が永久に失われる（round 3 Finding 5）。停止は 4.3 の協調停止 sentinel でのみ行う。
 
 **相互に妨げないこと**（round 2 Finding 6 の要求）
 
@@ -219,9 +243,14 @@ runner wrapper は `launch-workspace.sh:691-827` の heredoc で生成される�
 
 通常はディスパッチ終了時の最終 housekeeping が `.dispatch` を消すため発生しないが、クリーンアップ前に落ちた場合に残る。
 
-**対応**: 親が Step 2 で各タスクを起動する直前に、既存の `.dispatch/<task-slug>/` から `status.json` / `.assigned-*` / `.deferred` / `.notified-*` / `.stop-watcher-*` / `review/code-review.json` を削除する（`mkdir -p` の直後）。ディスパッチディレクトリのライフサイクルは既に親が一元所有しているので、責務の置き場所として自然である。
+**ファイル削除だけでは不十分**（round 3 Finding 4）: cleanup 前に落ちたなら、旧 pane と旧 watcher が**まだ生きている**可能性がある。その状態で共有ファイルだけ消して新世代を起動すると、旧 watcher が新世代の terminal status を観測して通知したり、旧子プロセスが遅れて exit して新世代の `status.json` を上書きしたりする。ディレクトリの所有権は、既に走っている参加者を止めない限り排他性を保証しない。
 
-run ID による世代管理は採らない。参加者すべてに ID を伝播させる必要があり、親が起動直前に初期化するだけで同じ保証が得られるため、過剰実装と判断した。
+**対応（2 段）**
+
+1. **生存確認**: runner wrapper は起動時に `$STATUS_DIR/.wrapper-$SLUG.pid` へ自分の PID を書き、正常終了時に削除する。親は初期化の前に既存の `.wrapper-*.pid` を走査し、`kill -0` で生きているプロセスが 1 つでもあれば**初期化も起動も行わない**。対話モードでは AskUserQuestion で「旧セッションが生存している。閉じてから再実行する / このタスクをスキップする」を問い、無人ループモードではそのタスクを error として記録してスキップする
+2. **初期化**: 生存プロセスが無いことを確認できた場合にのみ、`status.json` / `.assigned-*` / `.deferred` / `.notified-*` / `.notify-phase-*` / `.stop-watcher-*` / `.wrapper-*.pid` / `review/code-review.json` を削除して新世代を開始する
+
+run ID による世代管理は採らない。ID をすべての参加者へ伝播させても「旧参加者が生きている」問題自体は解けず、結局 1 の生存確認が必要になるためである。生存確認を入れれば ID 無しで排他性が保証できる。
 
 ## 5. プロンプト層の設計
 
@@ -279,22 +308,33 @@ run ID による世代管理は採らない。参加者すべてに ID を伝播
 
 Phase B の 3 分岐（sonnet / codex / design=codex の委譲共通手順）すべてで、手順を次の順序に統一する。
 
-1. `.assigned-<NAME>` を touch する
-2. 実行指示を送る（`cmux send` + `send-key return`。agmsg 配線が生きていれば inbox 記録も）
-3. **各コマンドの成否を確認する**。`cmux send` は成功したが `send-key return` が失敗した場合は、**`send-key return` のみ**を再送する（文面の再送は親／実装ペインの input box で prompt を連結させるため禁止）
-4. 両方成功した場合のみ `.deferred` を touch する
-5. 最終的に失敗した場合は **`.deferred` を作らず、`.assigned-<NAME>` も削除しない**。設計セッション自身が `status.json` に `error`（message は handoff 失敗の内容）を書き、親へ両チャネルで通知して停止する
+**判断の基準は「実行指示が相手に届いたか否か」だけ**とする。`cmux send` が最初の副作用なので、その成否で 2 つの場合に分かれ、どちらも曖昧さが無い。
 
-**5 で rollback しない理由**（round 2 Finding 4）: `cmux send` が成功した時点で実行指示は実装ペインの input box に載っており、agmsg 記録も残り得る。その後 Enter が何らかの経路で入れば実装が始まってしまうため、`.assigned-<NAME>` を消して所有権を戻すと「実装は進むが誰も所有していない」状態を作る。所有権を残したまま親へ error を報告すれば、
+**ケース A — `cmux send` が失敗した（何も届いていない）**
 
-- 実装ペインが結局起動しなかった場合 → 親は既に error を受け取っている
-- 実装ペインが遅れて起動して完走した場合 → その wrapper が `status.json` を `done` に上書きし、marker 差分により**訂正通知**が親へ届く（4.3）
+1. `.assigned-<NAME>` を**削除する**（rollback は安全。実装ペインは何も受け取っておらず、後から起動して所有権を主張することがあり得ない）
+2. `.deferred` は作らない
+3. 設計セッションが所有者のまま `status.json` に `error` を書き、親へ両チャネルで通知して停止する
 
-のいずれでも安全側に倒れる。重複通知は許容されるが、通知の欠落は許容されない、という本設計の一貫した優先順位に従う。
+この `error` は**タスクの終端状態として正しい**。dispatch が前に進めなかったのだから、handoff 失敗とタスク失敗が一致している。
 
-**spawn フォールバック経路**（`SKILL.md:779-802` sonnet / `:1314-1336` codex / `:868-871` design=codex）には `.assigned-*` が存在しないため、上記の 1・5 は適用しない。代わりに **`launch-workspace.sh` が終了コード 0 を返したときだけ `.deferred` を作る**。失敗時は Child が所有者のまま `error` を書いて親へ通知する。
+**ケース B — `cmux send` は成功し `send-key return` が失敗した（指示は相手の input box にある）**
 
-該当箇所は `SKILL.md:734-796`（sonnet）、`:1242-1310`（codex）、`:841-865`（design=codex の共通委譲手順）である。
+1. **handoff 失敗とは扱わない**。`send-key return` **のみ**を最大 5 回・10 秒間隔で再送する（文面の再送は input box で prompt を連結させるため禁止）
+2. 成功した時点で `.deferred` を touch して通常どおり続行する
+3. 5 回すべて失敗しても、**`.assigned-<NAME>` はそのまま残し `.deferred` を作って handoff を完了させる**。実装ペインが指示を保持している以上、所有者は実装ペインである
+4. 加えて親へ**警告メッセージ**（`[dispatch] task <slug>: 実行指示を送ったが Enter を押せなかった。実装ペインで Enter を押してください`）を送る。これは `status.json` を変更しない、単なる通知である
+
+**ケース B で `status.json` に error を書かない理由**（round 3 Finding 1・2）
+
+- 4.1 の sticky-error 規則により、いったん `error` を書くと実装ペインの wrapper は正常終了しても `done` に直せない。「遅れて完走したら訂正される」という旧版の説明は**この規則と両立しない**
+- `status.json` には writer を示す情報が無いため、`.assigned-<NAME>` を持つ実装ペインの watcher が、設計セッションの書いた handoff error を**自分の実行結果**と誤認して親へ通知し、レビュアーへ `[abort]` を送って終了してしまう。その後で実装が始まると、監視者もレビュアーも居ない状態になる
+
+ケース B を「失敗ではない」と定義することで、**handoff 失敗をタスク終端状態として表現する必要そのものが無くなる**。ケース A では所有者が設計セッションのままなので、writer の曖昧さも生じない。したがって writer provenance を `status.json` に追加する必要はない。
+
+**残る限界**: ケース B の 3 で実装ペインが結局起動しなければ、誰も終端遷移を書かない。これは Section 8 の「実装者が沈黙する場合」と同じ既知の未解決パターンであり、deadline 無しには検知できない。本設計はこれを解決したと主張しない。
+
+**spawn フォールバック経路**（`SKILL.md:740-802` sonnet / `:1275-1336` codex / `:837-871` design=codex）には `.assigned-*` が存在せず、`launch-workspace.sh` の終了コードが「起動できたか」を一意に示す。したがって **終了コード 0 のときだけ `.deferred` を作る**。非ゼロなら Child が所有者のまま `error` を書いて親へ通知する（ケース A と同型）。
 
 ## 6. ドキュメントとバージョン
 
@@ -313,7 +353,7 @@ Phase B の 3 分岐（sonnet / codex / design=codex の委譲共通手順）す
 - `SKILL.md` — 5 章の変更本体
 - `references/guide-ja.md` — status protocol / Phase B-R / runner wrapper の説明に abort プロトコルと watcher を反映
 - `README.md` — 完了通知の説明に「error でも通知される」「exit しなくても通知される」を反映
-- `CLAUDE.md` — ファイル構成表に `docs/notification-gaps.md` を追加。番号付きルールの末尾は現在 **22**（signal 終了ガード）なので、新規ルールは**項目 23** とする（error 時通知の必須化 / 終端 status の sticky 化 / watcher の存在と抑止条件 / marker の内容比較・協調停止・世代管理 / 親通知とレビュアー wake の独立性 / 通知処理を関数共有すること / Phase B の送信成否確認と rollback しない契約 / workspace 起動の `--defer-status`）
+- `CLAUDE.md` — ファイル構成表に `docs/notification-gaps.md` を追加。番号付きルールの末尾は現在 **22**（signal 終了ガード）なので、新規ルールは**項目 23** とする（error 時通知の必須化 / 終端 status の sticky 化 / watcher の存在と抑止条件 / marker の内容比較・配信 phase の永続化・協調停止・世代管理と生存確認 / 親通知とレビュアー wake の独立性と継続リトライ / 通知処理を関数共有すること / Phase B handoff のケース A・B 分岐（`cmux send` の成否だけで判定し、届いていたら失敗扱いにしない）/ workspace 起動の `--defer-status`）
 
 なお 4.4 の `--defer-status` 追加は起動フラグの変更なので、`SKILL.md` の起動例・`guide-ja.md`・`README.md`・`CLAUDE.md` 項目 11（execute モード関連フラグの整合確認）にも反映する。
 
@@ -349,7 +389,14 @@ Phase B の 3 分岐（sonnet / codex / design=codex の委譲共通手順）す
   | 8 | 旧 `status.json`（terminal）・旧 `.assigned-*`・旧 `.deferred`・旧 `code-review.json`・旧 `.notified-*` が残った directory で再実行 | 親側の初期化（4.8）後は旧状態を通知しない |
   | 9 | wrapper の正常終了・signal 終了の双方 | watcher プロセスが残留しない |
   | 10a | `code-review.json` が有効 / 存在しない / `reviewer_surface` が空 | 前者のみレビュアーへ `[abort]` が飛び、後 2 者はスキップして**親通知は成功扱い** |
-  | 10b | レビュアーへの送信のみ失敗させる | 親通知の marker は確定し、レビュアー wake の失敗は警告に留まる |
+  | 10b | レビュアーへの送信だけを一時的に失敗させ、その後復旧させる | 親通知の marker は先に確定し、watcher は終了せずリトライを続け、**復旧後にレビュアー wake が届く** |
+  | 11 | phase = `sending` で強制 `kill` → exit パスが再開 | 先に `send-key` で flush してから文面を送り直し、連結も欠落も起きない |
+  | 12 | phase = `sent` で強制 `kill` → exit パスが再開 | `send-key` のみ送られ、文面は二重送信されない |
+  | 13 | `cmux send` を hang させる | `timeout` により失敗として扱われ、リトライループへ戻る |
+  | 14a | 5.6 ケース A（`cmux send` 失敗） | `.assigned-*` が削除され `.deferred` は作られず、設計側が `error` を書いて通知する |
+  | 14b | 5.6 ケース B（`send` 成功・`send-key` 失敗が継続） | `status.json` は `error` にならず、`.assigned-*` と `.deferred` が残り、親へ警告メッセージが届く |
+  | 14c | 14b の後に実装ペインが遅れて起動し完走 | `done` が書かれ、sticky-error と矛盾しない（14b で `error` を書いていないため） |
+  | 15 | 旧 `.wrapper-*.pid` が生存プロセスを指す状態で新 dispatch を開始 | 初期化も起動も行わず、対話モードでは確認質問、無人モードでは error スキップになる |
 
 - 起動フラグの静的検査: `SKILL.md` / `guide-ja.md` / `README.md` の workspace レイアウト起動例に `--defer-status` が含まれること（4.4）。prewarm の各 branch・spawn フォールバックについても `.deferred` 作成条件が仕様どおりであること
 
@@ -363,7 +410,8 @@ Round 1 レビューを受けて、旧版で除外していた H6 と送信失�
 
 | パターン | 判断理由 |
 |---|---|
-| 実装者が沈黙したまま `status.json` すら書かない場合の検知 | terminal 遷移が存在しないため watcher も発火できない。検知には deadline が必要で、それはループモードの `batch-wait.sh`（`--timeout-min`）の責務。通常 dispatch に別のタイムアウト機構を持ち込むのは過剰実装であり、既存の「レビュアー側 15 分 stall 判定」も重複する |
+| 実装者が沈黙したまま `status.json` すら書かない場合の検知 | terminal 遷移が存在しないため watcher も発火できない。検知には deadline が必要で、それを持つのはループモードの `batch-wait.sh`（`--timeout-min`）だけである。**通常 dispatch ではこの場合、親もレビュアーも無期限に待つ**（2.2 H7 のとおり 15 分 stall 判定は実装者 → レビュアー方向にしか無く、レビュアーが実装者を待つ側には stall 検知が存在しない）。deadline の導入は本設計のスコープ外とするが、「既存判定と重複する」わけではないので、未解決の既知パターンとして `notification-gaps.md` に記録する |
+| 5.6 ケース B で `send-key` を 5 回送っても Enter が入らず、実装ペインが起動しない場合 | 上と同じ「沈黙する実装者」に帰着する。親には警告メッセージが届いているため人間が介入でき、完全な沈黙よりは検知可能性が高い |
 | `agmsg send.sh` 失敗時のリトライ | agmsg push は inbox 記録専用で idle セッションを起こせない（`SKILL.md:1803-1810`）。wake は `cmux send` が担うため、記録の失敗は警告ログに留める |
 
 ## 9. リスクと緩和
@@ -373,6 +421,8 @@ Round 1 レビューを受けて、旧版で除外していた H6 と送信失�
 | watcher が「早すぎる完了通知」を出す（子が `done` を書いた後まだ後処理中） | 現行のプロンプト指示自体が「status.json 書き込み直後に通知せよ」なので挙動は同一。`SKILL.md:1811-1815` が既に「重複通知は正常、status.json を真とする」と定めている。加えて 4.3 の marker 内容比較により、後続で status が `error` に変わった場合は**訂正通知が届く**（旧設計はこれを抑止していた） |
 | watcher プロセスの残留 | 協調停止 sentinel → 最大 30 秒待機 → `kill` + `wait`（4.3）。runner script は pane と寿命を共にするため、pane 消滅時も道連れになる。テスト 9 で検証する |
 | 通知が失敗し続ける間 watcher が生き続ける | リトライは 60 秒間隔で頭打ちにする。停止は協調停止 sentinel で確実に行え、pane 消滅時は道連れになるため、無限に残ることはない |
+| 5.6 ケース B で実装ペインが起動せず、誰も終端遷移を書かない | Section 8 の既知パターンとして記録する。親には警告メッセージが届くので、完全な沈黙より検知可能性は高い |
+| 旧世代の wrapper が生存したまま新 dispatch が始まる | 4.8 の PID 生存確認で初期化・起動ごと止める。対話モードは確認質問、無人モードは error スキップ |
 | `done` の sticky 化で、子が `done` を書いた後の失敗を見逃す | exit code ≠ 0 のときは従来どおり `error` を書く（4.1 の表）。見逃すのは「子が done を書き、かつ正常終了した」場合のみで、これは正常系である |
 | 4 ファイル整合が崩れる | `CLAUDE.md` 項目 23 として検証手順を明文化し、以後の変更で参照させる |
 | watcher が 15 秒ごとに `jq` を起動する負荷 | 1 pane あたり 4 秒に 1 回未満。既存の `monitor-dispatch.sh` は 10 秒間隔で全タスクを走査しており、それより軽い |
