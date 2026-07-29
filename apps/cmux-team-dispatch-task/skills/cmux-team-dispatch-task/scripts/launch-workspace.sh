@@ -735,6 +735,58 @@ write_status() {
   fi
 }
 
+NOTIFY_WS="${NOTIFY_WORKSPACE}"
+NOTIFY_SF="${NOTIFY_SURFACE}"
+LAYOUT_MODE="${LAYOUT}"
+NOTIFIED_FILE=""
+[[ -n "\$STATUS_DIR" ]] && NOTIFIED_FILE="\$STATUS_DIR/.notified-\$SLUG"
+
+# 親へ完了通知を送る。cmux send だけでは親が claude TUI の場合 input box に
+# テキストが残って Enter が押されないため、必ず send-key return を続けて発行する。
+# agmsg send.sh は inbox 記録専用で idle な親を起こせないため、その失敗は
+# 成否に含めない (wake は常に cmux send + send-key return が担う)。
+notify_parent() {
+  local status_label="\$1"
+  local msg="[dispatch] task \\\"\$SLUG\\\" finished (status: \$status_label)"
+
+  if [[ "\$MESSAGE_TYPE" == "agmsg" ]]; then
+    bash "\$AGMSG_SEND" "\$AGMSG_TEAM" "\$AGMSG_FROM" parent "\$msg" 2>/dev/null || \
+      echo "[runner] agmsg record failed (inbox only; wake is cmux send)" >&2
+  fi
+
+  local target_flag target_id
+  if [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
+    target_flag="--surface"; target_id="\$NOTIFY_SF"
+  elif [[ -n "\$NOTIFY_WS" ]]; then
+    target_flag="--workspace"; target_id="\$NOTIFY_WS"
+  else
+    return 1
+  fi
+
+  "\$CMUX" send "\$target_flag" "\$target_id" "\$msg" 2>/dev/null || return 1
+  "\$CMUX" send-key "\$target_flag" "\$target_id" return 2>/dev/null || return 1
+  return 0
+}
+
+# 同じ status を二度通知しない。通知に成功したときだけ marker を更新するので、
+# 失敗したら次の参加者 (watcher の次の poll、または exit パス) が再試行する。
+notify_parent_once() {
+  local status_label="\$1" prev=""
+  [[ -n "\$NOTIFIED_FILE" && -f "\$NOTIFIED_FILE" ]] && prev=\$(cat "\$NOTIFIED_FILE" 2>/dev/null || echo "")
+  [[ "\$prev" == "\$status_label" ]] && return 0
+  "\$CMUX" wait-for --signal "\$SLUG-done" 2>/dev/null || true
+  notify_parent "\$status_label" || return 1
+  [[ -n "\$NOTIFIED_FILE" ]] && printf '%s' "\$status_label" > "\$NOTIFIED_FILE"
+  return 0
+}
+
+# この pane の前回実行が残した通知 marker を消す (pane 世代の分離)。
+# runner script は pane 起動ごとに 1 回だけ実行されるため、ここで消せば足りる。
+if [[ -n "\$STATUS_DIR" ]]; then
+  rm -f "\$STATUS_DIR/.notified-\$SLUG" "\$STATUS_DIR/.notified-reviewer-\$SLUG" \
+        "\$STATUS_DIR/.stop-watcher-\$SLUG"
+fi
+
 # standby wrapper は起動時に status.json を書かない (同じ STATUS_DIR を Child が使用中のため)
 if [[ "\$STANDBY" != "1" ]]; then
   write_status "executing" "Claude session starting"
@@ -803,37 +855,14 @@ else
   FINAL_STATUS="error"
 fi
 
-"\$CMUX" wait-for --signal "${WORKSPACE_NAME}-done" 2>/dev/null || true
-
-NOTIFY_WS="${NOTIFY_WORKSPACE}"
 if [[ -n "\$NOTIFY_WS" ]]; then
-  "\$CMUX" notify --title "Done: ${WORKSPACE_NAME}" \\
+  "\$CMUX" notify --title "Done: \$SLUG" \\
     --body "Exit code: \$CLAUDE_EXIT" \\
     --workspace "\$NOTIFY_WS" 2>/dev/null || true
 fi
 
-# --- 親ターミナルにテキスト通知を送信 ---
-NOTIFY_SF="${NOTIFY_SURFACE}"
-LAYOUT_MODE="${LAYOUT}"
-STATUS_LABEL="\$FINAL_STATUS"
-
-# cmux send だけでは親が claude TUI の場合 input box にテキストが残って Enter が
-# 押されないため、必ず send-key return を続けて発行する。
-# message-type=agmsg の場合は agmsg send.sh でも親 (agent 名 "parent") に送るが、
-# これは inbox 記録用。agmsg push は idle な親セッションを起こせない (watcher の
-# stream 出力はバックグラウンド Bash のバッファに溜まるだけで注入されない) ため、
-# wake は常に cmux send + send-key return で行う。
-NOTIFY_MSG="[dispatch] task \"${WORKSPACE_NAME}\" finished (status: \$STATUS_LABEL)"
-if [[ "\$MESSAGE_TYPE" == "agmsg" ]]; then
-  bash "\$AGMSG_SEND" "\$AGMSG_TEAM" "\$AGMSG_FROM" parent "\$NOTIFY_MSG" 2>/dev/null || true
-fi
-if [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
-  "\$CMUX" send --surface "\$NOTIFY_SF" "\$NOTIFY_MSG" 2>/dev/null || true
-  "\$CMUX" send-key --surface "\$NOTIFY_SF" return 2>/dev/null || true
-elif [[ -n "\$NOTIFY_WS" ]]; then
-  "\$CMUX" send --workspace "\$NOTIFY_WS" "\$NOTIFY_MSG" 2>/dev/null || true
-  "\$CMUX" send-key --workspace "\$NOTIFY_WS" return 2>/dev/null || true
-fi
+notify_parent_once "\$FINAL_STATUS" || \\
+  echo "[runner] parent notification failed for status '\$FINAL_STATUS'" >&2
 EOF
 chmod +x "$RUNNER_FILE"
 log "runner" "generated $RUNNER_FILE"

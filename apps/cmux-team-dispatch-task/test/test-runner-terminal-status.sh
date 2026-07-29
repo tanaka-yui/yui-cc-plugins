@@ -171,5 +171,17 @@ assert_eq "$(notified_label)" 'done' 'T4 親通知が status: done になる'
 run_case exec-exit1 1 executing
 assert_eq "$(status_of)" 'error' 'T5 executing からの異常終了は error'
 
+marker_of() { cat "$STATUS_DIR/.notified-task-$1" 2>/dev/null || echo '(none)'; }
+
+# T6: 通知に成功したら marker に通知済み status が記録される
+run_case marker 0 error
+assert_eq "$(marker_of marker)" 'error' 'T6 marker に通知済み status が記録される'
+
+# T7: 通知が失敗したら marker を書かない (次の参加者が再試行できる)
+: > "$TMP/cmux-fail"
+run_case sendfail 0 error
+rm -f "$TMP/cmux-fail"
+assert_eq "$(marker_of sendfail)" '(none)' 'T7 通知失敗時は marker を書かない'
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
