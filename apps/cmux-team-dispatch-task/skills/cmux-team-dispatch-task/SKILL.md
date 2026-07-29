@@ -1180,6 +1180,32 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 once (retake the baseline); if it stalls again, ask via
                 AskUserQuestion if you can (再依頼 / レビュー省略して PR 作成);
                 otherwise skip the review and note that in the PR body.
+            *** ABORT / ESCALATION PROTOCOL — this overrides everything above ***
+            If at ANY point you decide to STOP without completing the work — a
+            blocking error, a design contradiction, a decision that the plan is
+            wrong, or simply giving up — you MUST NOT stop silently. Writing
+            <EXISTING_STATUS_DIR>/status.json is NOT a notification: that file is
+            polled by the parent only, and the reviewer waiting on you never sees
+            it. Before you stop, do ALL of the following, in this order:
+              1. Write the reason to
+                 <EXISTING_STATUS_DIR>/review/code-round-<current N>.md with the
+                 LAST line exactly 'VERDICT: needs_work'. If you never sent a
+                 review request, use N=1. This is a record for the parent — the
+                 reviewer does not poll this file.
+              2. Notify the REVIEWER over both channels. The typed cmux send +
+                 send-key return pair is the ONLY thing that actually wakes it:
+                   ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <task-slug> '[abort] <one-line reason>'
+                   /Applications/cmux.app/Contents/Resources/bin/cmux send --surface <REVIEWER_SURFACE> '[abort] <one-line reason>'
+                   /Applications/cmux.app/Contents/Resources/bin/cmux send-key --surface <REVIEWER_SURFACE> return
+                 Skip only the send.sh line when <TEAM> is empty.
+              3. Write status.json with status "error" and the reason as message.
+              4. Notify the PARENT over both channels — the same commands as (a)
+                 below, but with "status: error".
+              5. END THIS SESSION so the runner wrapper can finalize. claude
+                 implementers run /exit. codex implementers must END THE CODEX
+                 SESSION ITSELF — do NOT run /exit (codex does not act on it).
+            *** END ABORT / ESCALATION PROTOCOL ***
+
             After the PR is created (or all changes are merged per the plan), do these
             two things IN THIS ORDER. Neither may be skipped.
             (a) MANDATORY completion notification. You received this request as typed
@@ -1234,10 +1260,15 @@ PHASE B — Execution model selection (REQUIRED before any code change):
       d. After writing needs_work → END YOUR TURN and idle-wait for the next round.
          After writing approve → exit THIS session (.deferred is already in place,
          so your wrapper stays silent; the implementer pane's wrapper owns status.json).
-      e. Orphan guard: if the implementer finishes without ever requesting a review,
-         you simply stay idle — that is acceptable. The parent closes all panes at
-         the final all-tasks-complete cleanup, and status.json is still owned by the
-         implementer's wrapper.
+      e. Orphan guard: if the implementer COMPLETES its work without ever requesting
+         a review, you simply stay idle — that is acceptable. The parent closes all
+         panes at the final all-tasks-complete cleanup, and status.json is still
+         owned by the implementer's wrapper.
+         BUT if you receive an '[abort] ...' message from the implementer, do NOT
+         keep waiting. Report the abort reason to the parent over both channels
+         (~/.agents/skills/agmsg/scripts/send.sh <TEAM> <task-slug> parent '<reason>'
+          + cmux send --workspace <PARENT_WORKSPACE_ID> '<reason>' + send-key return)
+         and then exit THIS session.
 
     [opus 1m — the review pane reviews] (design=claude "opus 1m" のみ)
       After implementation is committed and BEFORE creating the PR, run the SAME
@@ -1393,6 +1424,10 @@ And write a result summary to <project-root>/.dispatch/<task-slug>/result.md wit
 
 If you encounter a blocking error, run:
   echo '{"status":"error","message":"<error description>","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
+Writing this file is NOT a notification — it is polled by the parent only. The
+completion notification below is MANDATORY on the error path exactly as much as
+on the done path. Send it immediately after writing status.json, then end this
+session.
 ```
 
 **When integration strategy is "PR per task"**:
@@ -1433,6 +1468,10 @@ And write a result summary to <project-root>/.dispatch/<task-slug>/result.md wit
 
 If you encounter a blocking error, run:
   echo '{"status":"error","message":"<error description>","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > <project-root>/.dispatch/<task-slug>/status.json
+Writing this file is NOT a notification — it is polled by the parent only. The
+completion notification below is MANDATORY on the error path exactly as much as
+on the done path. Send it immediately after writing status.json, then end this
+session.
 ```
 
 Replace `<project-root>` with the actual project root path and `<task-slug>` with the task's slug,
