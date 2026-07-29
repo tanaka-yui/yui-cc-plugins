@@ -89,19 +89,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCH="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/launch-workspace.sh"
 
 TMP=$(mktemp -d)
-# 予期しない終了でも stub を解放してから片付ける (release sentinel を全部作れば
-# 待機中の stub は自然終了し、wrapper と watcher も連鎖して終わる)
+# 起動した runner を追跡し、異常終了時も「全 stub を解放 → 各 runner を期限付きで
+# wait → それでも残るものだけ kill」の順で回収してから temp を消す。
+# temp を先に消すと、runner がこれから作る stop-watcher sentinel まで失われ、
+# wrapper と watcher が長く残り得る。
+RUNNER_PIDS=()
+CLEANED=0
 cleanup_all() {
-  local d
-  for d in "$TMP"/release-*; do :; done
-  for d in "$TMP"/ready-*; do
-    [[ -e "$d" ]] || continue
-    : > "$TMP/release-$(basename "$d" | sed 's/^ready-//')" 2>/dev/null || true
+  local code="${1:-0}" pid i
+  [[ $CLEANED -eq 1 ]] && return
+  CLEANED=1
+  # 起動済み・起動途中を問わずすべての case を解放する
+  for pid in "${!CASE_LABELS[@]}"; do : > "$TMP/release-${CASE_LABELS[$pid]}" 2>/dev/null || true; done
+  for pid in "${RUNNER_PIDS[@]}"; do
+    for i in $(seq 1 40); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
   done
-  sleep 1
   rm -rf "$TMP"
+  [[ "$code" != "0" ]] && exit "$code"
 }
-trap cleanup_all EXIT INT TERM
+declare -A CASE_LABELS=()
+trap 'cleanup_all 0' EXIT
+trap 'cleanup_all 130' INT
+trap 'cleanup_all 143' TERM
 mkdir -p "$TMP/bin" "$TMP/repo" "$TMP/zdot"
 : > "$TMP/zdot/.zshrc"   # ユーザーの .zshrc を読ませない (zsh -ic の副作用を排除)
 
@@ -565,6 +576,8 @@ run_case_bg() {
     STUB_WRITE_STATUS="${STUB_WRITE_STATUS:-}" \
     bash "$runner" >/dev/null 2>&1 &
   RUNNER_BG_PID=$!
+  RUNNER_PIDS+=("$RUNNER_BG_PID")
+  CASE_LABELS[$RUNNER_BG_PID]="$label"
   # stub が実際に起動したことを確認してから観測に入る
   # (起動失敗を「抑止できた」と誤認しないため)
   wait_for_file "$TMP/ready-$label" 15 || { echo "FAIL: stub did not start ($label)"; fail=1; }
@@ -578,6 +591,22 @@ wait_for_file() {
 wait_for_log() {
   local pattern="$1" limit="${2:-10}" i
   for i in $(seq 1 $((limit * 2))); do log_has "$pattern" && return 0; sleep 0.5; done
+  return 1
+}
+wait_for_content() {    # ファイルの内容が $2 になるのを待つ (marker は最後に書かれる)
+  local f="$1" want="$2" limit="${3:-10}" i
+  for i in $(seq 1 $((limit * 2))); do
+    [[ -f "$f" && "$(cat "$f" 2>/dev/null)" == "$want" ]] && return 0
+    sleep 0.5
+  done
+  return 1
+}
+wait_for_attempt_to() {  # 特定の宛先への送信試行が積まれるのを待つ
+  local target="$1" limit="${2:-15}" i
+  for i in $(seq 1 $((limit * 2))); do
+    grep -q "$target" "$TMP/cmux-attempts.log" 2>/dev/null && return 0
+    sleep 0.5
+  done
   return 1
 }
 wait_for_attempts() {   # 少なくとも $1 回の送信試行が積まれるのを待つ
@@ -649,7 +678,13 @@ if wait_for_attempts 2 20; then t12_retried=yes; else t12_retried=no; fi
 rm -f "$TMP/cmux-fail"                       # transport 復旧
 if wait_for_log 'status: error' 15; then t12_recovered=yes; else t12_recovered=no; fi
 t12_alive=$(stub_running && echo yes || echo no)
-t12_marker=$(cat "$STATUS_DIR/.notified-task-watcher-retry" 2>/dev/null || echo '(none)')
+# marker は send → send-key → marker の順で最後に書かれるため、log を見た直後に
+# 1 回読むと race する。期限付きで内容が確定するまで待つ。
+if wait_for_content "$STATUS_DIR/.notified-task-watcher-retry" 'error' 15; then
+  t12_marker=error
+else
+  t12_marker=$(cat "$STATUS_DIR/.notified-task-watcher-retry" 2>/dev/null || echo '(none)')
+fi
 release_case
 assert_eq "$t12_retried"   'yes'   'T12 送信失敗中も watcher が再試行を続ける'
 assert_eq "$t12_recovered" 'yes'   'T12 transport 復旧後に親通知が届く'
@@ -680,10 +715,15 @@ assert_eq "$(log_has 'status: error' && echo yes || echo no)" 'yes' \
   'T14 その後の異常終了で error の訂正通知が届く'
 
 # T15: watcher と exit の双方が同じ遷移を観測しても親通知は 1 回だけ
+#      (まず「生存中に watcher が通知した」ことを確定させてから release する。
+#       これを assertion にしないと、watcher が無くても exit パスの 1 回で PASS する)
 STUB_WRITE_STATUS=error run_case_bg watcher-once 0 executing
 unset STUB_WRITE_STATUS
-wait_for_log 'status: error' 15 || true
+if wait_for_log 'status: error' 15; then t15_watcher=yes; else t15_watcher=no; fi
+t15_alive=$(stub_running && echo yes || echo no)
 release_case
+assert_eq "$t15_watcher" 'yes' 'T15 生存中に watcher が通知している'
+assert_eq "$t15_alive"   'yes' 'T15 通知観測時に子はまだ生存している'
 assert_eq "$(log_count 'status: error')" '1' 'T15 同一遷移の親通知は 1 回だけ'
 
 # T16: 旧世代の .notified-* が残っていても、wrapper 起動時に消えて再通知される
@@ -1171,15 +1211,20 @@ seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_wor
 : > "$TMP/cmux-fail-reviewer"
 REVIEW_PRESEED=1 STUB_WRITE_STATUS=error run_case_bg rv5 0 executing
 unset REVIEW_PRESEED STUB_WRITE_STATUS
-wait_for_log 'status: error' 15 || true
-r5_marker=$(cat "$STATUS_DIR/.notified-task-rv5" 2>/dev/null || echo '(none)')
+# 親 marker が確定するまで待つ (log ではなく marker を待たないと race する)
+if wait_for_content "$STATUS_DIR/.notified-task-rv5" 'error' 20; then r5_marker=error
+else r5_marker=$(cat "$STATUS_DIR/.notified-task-rv5" 2>/dev/null || echo '(none)'); fi
+# レビュアー宛の試行が実際に行われ、かつ失敗していることを確認してから復旧させる。
+# 先に sentinel を外すと、リトライを一度も踏まないまま成功して PASS してしまう。
+if wait_for_attempt_to 'surface:77' 20; then r5_attempted=yes; else r5_attempted=no; fi
 r5_before=$(reviewer_msgs)
 rm -f "$TMP/cmux-fail-reviewer"          # transport 復旧
-if wait_for_log '\[abort\]' 15; then r5_after=yes; else r5_after=no; fi
+if wait_for_content "$STATUS_DIR/.notified-reviewer-task-rv5" 'error' 20; then r5_after=yes; else r5_after=no; fi
 release_case
-assert_eq "$r5_marker" 'error' 'R5 レビュアー送信が失敗しても親 marker は確定する'
-assert_eq "$r5_before" '0'     'R5 復旧前は [abort] が届いていない'
-assert_eq "$r5_after"  'yes'   'R5 復旧後に [abort] が届く'
+assert_eq "$r5_marker"    'error' 'R5 レビュアー送信が失敗しても親 marker は確定する'
+assert_eq "$r5_attempted" 'yes'   'R5 復旧前にレビュアー宛の送信が試行されている'
+assert_eq "$r5_before"    '0'     'R5 復旧前は [abort] が届いていない'
+assert_eq "$r5_after"     'yes'   'R5 復旧後にレビュアー marker が確定する'
 ```
 
 - [ ] **Step 2: テストを実行して失敗を確認する**
@@ -1435,13 +1480,29 @@ git commit -m "docs(cmux-team-dispatch-task): 通知欠落・無限待機パタ�
 `CLAUDE.md`「ドキュメント整合の絶対ルール」に従い、SKILL.md の変更を残り 3 ファイルへ反映する（spec 6.2）。
 
 **Files:**
+- Modify: `$SKILL_DIR/SKILL.md`（Step 0 で用語を導入する）
 - Modify: `$SKILL_DIR/references/guide-ja.md`
 - Modify: `apps/cmux-team-dispatch-task/README.md`
 - Modify: `apps/cmux-team-dispatch-task/CLAUDE.md`
 
+**共通の用語**: 4 ファイルすべてに、**バッククォートを含まない生の文字列** `status.json watcher` を最低 1 回書く。Step 6 の整合検査がこの語で判定するため、`` `status.json` watcher `` のようにバッククォートを挟んではならない。
+
 **Interfaces:**
 - Consumes: Task 1〜7 の全変更と、Task 8 が作る `docs/notification-gaps.md`（CLAUDE.md からリンクする）
 - Produces: なし
+
+- [ ] **Step 0: SKILL.md に用語を導入する**
+
+`$SKILL_DIR/SKILL.md` の Step 3「Notification-based Monitoring (Primary)」の `agmsg` を説明する箇条書き（`Notifications come from two sources:` で始まる文）を次に置き換える。
+
+```
+  Notifications come from three sources: the child itself right after writing
+  status.json (mandatory, see Step 2), the status.json watcher that the runner
+  wrapper runs alongside the child (it fires on the terminal transition even if
+  the session never exits), and the runner wrapper at session exit (backstop).
+  Receiving the same completion twice (or via several of these) is normal —
+  treat notifications idempotently and trust status.json as the source of truth.
+```
 
 - [ ] **Step 1: guide-ja.md を更新する**
 
@@ -1451,18 +1512,22 @@ git commit -m "docs(cmux-team-dispatch-task): 通知欠落・無限待機パタ�
 2. `status.json` watcher の存在・poll 間隔 15 秒・4 つの抑止条件・`.notified-<slug>` marker が通知済み status を保持すること（Task 2・3）
 3. 実装者の ABORT/ESCALATION プロトコル 5 手順と、レビュアーが `[abort]` を受けたら待機を打ち切ること（Task 4・6）
 
+2 の見出しには生の文字列 `status.json watcher` を使うこと（例: `### status.json watcher による完了通知`）。
+
 - [ ] **Step 2: README.md を更新する**
 
 完了通知を説明している節に次を追記する。
 
 ```
-完了通知は `status.json` の終端遷移で発火する。子セッションが `done` / `error` を
-書けば、セッションが終了しなくても runner wrapper の watcher が親へ通知する
-（15 秒間隔で監視）。`error` でも `done` と同じ経路で通知が飛ぶ。
+完了通知は status.json の終端遷移で発火する。runner wrapper は子セッションと並行して
+status.json watcher を走らせており、子が done / error を書けばセッションが終了しなくても
+親へ通知する（15 秒間隔で監視）。error でも done と同じ経路で通知が飛ぶ。
 
-ただし子が `status.json` を書かないまま沈黙した場合は検知できない。既知の限界は
+ただし子が status.json を書かないまま沈黙した場合は検知できない。既知の限界は
 `docs/notification-gaps.md` にまとめてある。
 ```
+
+（この文面は生の `status.json watcher` を含むので、Step 6 の検査を満たす）
 
 - [ ] **Step 3: CLAUDE.md のファイル構成表に docs を追加する**
 
@@ -1479,7 +1544,7 @@ git commit -m "docs(cmux-team-dispatch-task): 通知欠落・無限待機パタ�
 ```
 23. **error パスの通知**が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
     - runner wrapper が**子の書いた終端 status を上書きしない**こと（`PREV_STATUS` が `error` なら常に保持、`done` は正常終了時のみ保持、`done` + 非ゼロ終了は保守的に `error`）。親通知のラベルは終了コードではなく確定 status から導出すること
-    - `status.json` watcher が `${CLAUDE_CMD}` と並行して走り、15 秒間隔（`CMUX_DISPATCH_WATCH_INTERVAL` で上書き可）で終端遷移を検知して通知すること。抑止条件は exit パスと同一（timeout sentinel / `.deferred` / 未 assigned standby / **他 pane の `.assigned-*`**）で、poll のたびに再評価すること
+    - status.json watcher が子プロセスと並行して走り、15 秒間隔（`CMUX_DISPATCH_WATCH_INTERVAL` で上書き可）で終端遷移を検知して通知すること。抑止条件は exit パスと同一（timeout sentinel / `.deferred` / 未 assigned standby / **他 pane の `.assigned-*`**）で、poll のたびに再評価すること
     - 通知処理は `notify_parent()` / `notify_parent_once()` に一本化し、watcher と exit パスの**両方が同じ関数を呼ぶ**こと（片方だけ直す退行を防ぐ）。marker `.notified-<slug>` は存在の有無ではなく**通知済み status 文字列**を保持し、通知が成功したときだけ更新すること
     - 実装者の **ABORT/ESCALATION プロトコル**（findings 記録 → レビュアー通知 → status.json → 親通知 → セッション終了）が prewarm 経路（SKILL.md の共通プロトコル a）と spawn 経路（`launch-workspace.sh` の `ABORT_INSTRUCTION`）の**両方**に入っていること。`references/unattended/code-review-block.md` にも同じ手順があること
     - workspace レイアウトの Child 起動に `--defer-status` が付いていること（SKILL.md / guide-ja.md / README.md の**すべての起動例**で一致していること）
@@ -1541,7 +1606,8 @@ Expected: 終了コード **0**。Step 1〜4 で各ファイルへ `status.json 
 - [ ] **Step 8: コミットする**
 
 ```bash
-git add apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md \
+git add apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md \
+        apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md \
         apps/cmux-team-dispatch-task/README.md \
         apps/cmux-team-dispatch-task/CLAUDE.md
 git commit -m "docs(cmux-team-dispatch-task): error パス通知の変更を 4 ファイルへ同期
@@ -1626,10 +1692,15 @@ Expected: 終了コード **0**。
 
 自然言語の「timeout」や `--timeout-min` / `cmux wait-for --timeout` / `status:"timeout"` を誤検知せず、**コマンド位置の `timeout` / `gtimeout` だけ**を拾い、見つかったら**非ゼロで終わる**形にする。
 
+禁止しているのは「数値リテラル付きの bare command」ではなく、**対象 macOS に存在しない `timeout` / `gtimeout` への依存そのもの**である。絶対パス形（`/usr/bin/timeout`）や変数引数（`timeout "$SECONDS"`）も拾い、走査対象に `test/` も含める。
+
 ```bash
 # コマンド位置 = 行頭 / ; / && / || / パイプ / ( / then / do / exec の直後
-if grep -rnE '(^|[;&|(]|\bthen[[:space:]]|\bdo[[:space:]]|\bexec[[:space:]])[[:space:]]*g?timeout[[:space:]]+[0-9]' \
-     apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/; then
+# 実行名の後は空白または行末とし、絶対パス接頭辞も許容する
+RE='(^|[;&|(]|\bthen[[:space:]]|\bdo[[:space:]]|\bexec[[:space:]])[[:space:]]*(/[^[:space:]]*/)?g?timeout([[:space:]]|$)'
+if grep -rnE "$RE" \
+     apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/ \
+     apps/cmux-team-dispatch-task/test/; then
   echo "NG: timeout / gtimeout をコマンドとして使っている (対象 macOS に存在しない)"
   exit 1
 fi
@@ -1637,6 +1708,8 @@ echo "OK: timeout コマンドは未使用"
 ```
 
 Expected: `OK: timeout コマンドは未使用` と終了コード **0**。
+
+この正規表現は `timeout "$SECONDS" cmux send` / `/usr/bin/timeout 10 cmux send` / `then timeout 5 ...` / `gtimeout 3 ...` の 4 形をすべて検出し、`--timeout-min` / `cmux wait-for --timeout` / `status:"timeout"` / 日本語コメント中の「timeout」は誤検知しないことを実地で確認済み。
 
 - [ ] **Step 6: コミットする**
 
