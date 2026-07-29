@@ -160,7 +160,8 @@ cmux send-key --workspace $WS return
 ```bash
 # 単一行
 cmux send --workspace $WS "指示テキスト\n"
-cmux set-status $WS "調査中" --icon hammer  # ステータスを設定
+# このラベルはサイドバーでユーザーに表示される（Output Language 参照）
+cmux set-status $WS "調査中" --icon hammer
 
 # 複数行（send-key return で改行）
 cmux send --workspace $WS "1行目の指示"
@@ -203,6 +204,13 @@ cmux close-workspace --workspace $WS                      # ワークスペー�
 
 macOS アクセシビリティ許可が必要（システム設定 → プライバシーとセキュリティ → アクセシビリティ）。
 
+> **注意**: 下記の `"表示"` と `"ワークスペース $WS_INDEX"` はメニューバー項目 / メニュー項目の
+> ラベルの実例。**これは散文でもコメントでもなく、System Events に渡す実行時の照合キー**であり、
+> **自分の cmux アプリのメニューバーに実際に表示されている文字列**と厳密に一致させる必要がある
+> （OS/アプリのロケールに依存する）。ここでは著者環境（日本語ロケール）の実測値をそのまま示している。
+> 英語ロケール環境向けの値は `SKILL.md` を参照（ただし SKILL.md 側もプレースホルダであり、
+> 実行前に自分の環境の実際のラベルへの置き換えが必要な点は同じ）。
+
 ```bash
 # ワークスペース作成後に GUI 表示を強制する
 WS=$(cmux new-workspace --cwd $(pwd) | awk '{print $2}')
@@ -217,6 +225,7 @@ for w in data['windows']:
             print(ws['index'] + 1)")
 
 # AppleScript でメニュークリック → PTY 初期化
+# 注意: "表示" / "ワークスペース $WS_INDEX" は実際に表示されているラベルに置き換えること（上の注意参照）
 osascript -e "
 tell application \"System Events\"
     tell process \"cmux\"
@@ -266,9 +275,11 @@ screen=$(cmux read-screen --surface surface:N)
 
 ```bash
 # アプリ内通知（ペインハイライト、サイドバーバッジ。Cmd+Shift+U で移動）
+# title/body はユーザーに表示される（Output Language 参照）
 cmux notify --title "完了" --body "ビルドが成功しました"
 
 # macOS 通知センター（サウンド付き、別アプリ使用中でも表示）
+# 通知文言はユーザーに表示される（Output Language 参照）
 osascript -e 'display notification "ビルド完了" with title "Claude" sound name "Glass"'
 ```
 
@@ -277,8 +288,10 @@ osascript -e 'display notification "ビルド完了" with title "Claude" sound n
 ## ステータス・プログレス表示
 
 ```bash
-cmux set-status mykey "作業中" --icon hammer --color "#0099ff"  # サイドバーに表示
+# このラベルはサイドバーでユーザーに表示される（Output Language 参照）
+cmux set-status mykey "作業中" --icon hammer --color "#0099ff"
 cmux clear-status mykey
+# このラベルはユーザーに表示される（Output Language 参照）
 cmux set-progress 0.5 --label "ビルド中..."                     # プログレスバー（0.0〜1.0）
 cmux clear-progress
 ```

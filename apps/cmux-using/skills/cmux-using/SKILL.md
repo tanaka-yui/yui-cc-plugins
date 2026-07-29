@@ -181,7 +181,8 @@ Poll with `read-screen --workspace $WS` until the `❯` prompt appears.
 ```bash
 # Single line
 cmux send --workspace $WS "instruction text\n"
-cmux set-status $WS "investigating" --icon hammer  # set status
+# The label is shown to the user in the sidebar — write it in Japanese (see Output Language)
+cmux set-status $WS "<status label>" --icon hammer
 
 # Multi-line (use send-key return for line breaks)
 cmux send --workspace $WS "line 1 instruction"
@@ -229,6 +230,14 @@ required.
 Requires macOS Accessibility permission (System Settings → Privacy & Security →
 Accessibility).
 
+> **Note**: `"View"` and `"Workspace $WS_INDEX"` below are placeholders for the menu
+> bar item / menu item labels. They are **runtime match keys passed to System
+> Events**, not prose — they must be replaced with the **exact strings your own cmux
+> app's menu bar actually shows**, which are OS/app-locale dependent (e.g. Japanese
+> on a Japanese-locale system). Using these English placeholders verbatim on a
+> non-English-locale system will fail with `Can't get menu bar item "View"`. See
+> `references/guide-ja.md` for the Japanese-locale label values used in this project.
+
 ```bash
 # Force GUI display after creating the workspace
 WS=$(cmux new-workspace --cwd $(pwd) | awk '{print $2}')
@@ -243,6 +252,7 @@ for w in data['windows']:
             print(ws['index'] + 1)")
 
 # Click the menu via AppleScript → PTY init
+# NOTE: "View" / "Workspace $WS_INDEX" are placeholders — see the note above for the actual labels
 osascript -e "
 tell application \"System Events\"
     tell process \"cmux\"
@@ -296,10 +306,12 @@ screen=$(cmux read-screen --surface surface:N)
 
 ```bash
 # In-app notification (pane highlight, sidebar badge. Cmd+Shift+U to navigate)
-cmux notify --title "Done" --body "Build succeeded"
+# The title/body are shown to the user — write them in Japanese (see Output Language)
+cmux notify --title "<title>" --body "<body>"
 
 # macOS Notification Center (with sound, shown even while using another app)
-osascript -e 'display notification "Build complete" with title "Claude" sound name "Glass"'
+# The notification text is shown to the user — write it in Japanese (see Output Language)
+osascript -e 'display notification "<message>" with title "Claude" sound name "Glass"'
 ```
 
 When to use which: to grab attention within cmux → `cmux notify`; when the user is
@@ -308,9 +320,11 @@ in another app → `osascript`.
 ## Status & Progress Display
 
 ```bash
-cmux set-status mykey "working" --icon hammer --color "#0099ff"  # shown in the sidebar
+# The label is shown to the user in the sidebar — write it in Japanese (see Output Language)
+cmux set-status mykey "<status label>" --icon hammer --color "#0099ff"
 cmux clear-status mykey
-cmux set-progress 0.5 --label "Building..."                     # progress bar (0.0-1.0)
+# The label is shown to the user — write it in Japanese (see Output Language)
+cmux set-progress 0.5 --label "<progress label>"                # progress bar (0.0-1.0)
 cmux clear-progress
 ```
 
