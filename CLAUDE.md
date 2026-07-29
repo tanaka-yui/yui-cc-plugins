@@ -87,9 +87,70 @@ bash install.sh    # marketplace add + update でローカルパスを登録・�
 
 ## Language convention
 
+### 基本
+
 - **ドキュメント・コメント・コミットメッセージ・PR 本文**: 日本語
 - **コード（変数名・関数名・関数引数・CLI フラグ）**: 英語
-- これは全 app で一貫しており、各プラグインの CLAUDE.md にも明記されている。
+
+### Claude 向け指示文書は英語（厳格ルール）
+
+skill / command の定義ファイルは Claude が読む指示文書なので **英語で書く**。日本語訳は `*-ja.md` に分離する。
+
+| ファイル | 言語 | 日本語訳 | 訳の要否 |
+|---------|------|---------|---------|
+| `apps/*/skills/*/SKILL.md` 本文 | **英語必須** | `apps/*/skills/*/references/guide-ja.md` | **必須** |
+| `SKILL.md` の frontmatter `description` | 日本語可 | — | — （起動トリガー語のため対象外） |
+| `apps/*/**/references/<name>.md` | **英語必須** | `references/<name>-ja.md` | 任意 |
+| `references/*-ja.md` | 日本語 | 自身が訳 | — |
+| `apps/*/commands/*.md` | **英語必須** | — | 作らない（内容は SKILL.md に集約） |
+| `CLAUDE.md` / `README.md` | 日本語 | — | — |
+
+一行ルール: **`*-ja.md` 以外の Claude 向け指示文書に日本語文字を書かない。**
+
+`description` だけ日本語を許すのは、この field が skill の起動判定に使われるため。日本語で話しかけたときの発火率を落とさないよう、日本語のトリガー語を残す。
+
+`references/` 配下の訳が任意なのは補助資料だから。SKILL.md は skill の仕様そのものなので、日本語で読めない状態を許容せず訳を必須にする。
+
+### SKILL.md の `## Output Language` ブロック
+
+本文が英語でもユーザーへの表示は日本語である必要があるため、全 SKILL.md の frontmatter 直後に次を置く:
+
+```markdown
+## Output Language
+
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
+```
+
+AskUserQuestion の質問文・選択肢ラベル、進捗テーブル、最終サマリーはすべてこのブロックの対象。SKILL.md 側に日本語のリテラル文字列を置いてはならない。
+
+### `guide-ja.md` の構造
+
+SKILL.md と見出しを 1:1 対応させる。SKILL.md に対応セクションが無い独自解説は末尾にまとめる:
+
+```markdown
+# <SKILL.md の H1 の訳>
+
+## Output Language の訳
+## <H2 の訳>
+### <H3 の訳>
+
+---
+
+## 補足（SKILL.md に対応セクションなし）
+```
+
+SKILL.md を更新したら guide-ja.md も同じ commit で更新する。
+
+### 検証
+
+```bash
+pnpm check:doc-lang              # 全体
+node scripts/check-doc-lang.mjs apps/dev-up  # パス指定で絞り込み
+```
+
+`pnpm check` にも組み込まれているため、違反があると CI が落ちる。
 
 ## Plugin-specific guidance
 
