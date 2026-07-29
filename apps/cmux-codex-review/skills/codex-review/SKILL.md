@@ -11,96 +11,119 @@ description: >-
 allowed-tools: Bash
 ---
 
+## Output Language
+
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
+
 # codex-review
 
-現在の作業を **codex に第三者レビューさせる** ためのスキル。agmsg の受信箱を確認してから、
-新しい cmux ペインで**対話 codex** を起動し、レビュープロンプトを渡して高リーズニングで
-走らせる。親が agmsg team 参加済みなら、レビュー完了を親へ通知する配線も行う。
+A skill for having **codex perform a third-party review** of the current work. After
+checking the agmsg inbox, it launches an **interactive codex** in a new cmux pane,
+hands it a review prompt, and runs it at high reasoning effort. If the parent session
+has already joined the agmsg team, it also wires up a completion notification to the
+parent session.
 
-デフォルト設定:
+Default settings:
 
-- **モデル**: `gpt-5.6-sol`
-- **reasoning effort**: `xhigh`（extra high）
-- **対象**: 未コミット変更（`--uncommitted`）。無指定時は候補を列挙してユーザーに確認する
-- **分割方向**: `right`
+- **Model**: `gpt-5.6-sol`
+- **Reasoning effort**: `xhigh` (extra high)
+- **Target**: uncommitted changes (`--uncommitted`). If unspecified, candidates are
+  listed and confirmed with the user
+- **Split direction**: `right`
 
-## なぜこの構成か
+## Why this design
 
-レビューを独立した codex プロセスに委ねると、実装した本人（＝このセッション）の思い込みに
-引きずられない指摘が得られる。effort を `xhigh` まで上げるのは、レビューは実装より
-「見落としの発見」に価値があり、多少遅くても深く考えさせる方が費用対効果が高いため。
-新ペインで対話起動するのは、ユーザーが指摘を目で追いながら必要なら追質問できるようにするため。
+Delegating the review to an independent codex process yields findings that aren't
+dragged down by the assumptions of the person who implemented it (i.e., this session).
+Effort is raised to `xhigh` because review benefits more from "catching what was
+missed" than implementation does, and letting it think deeply is worth the cost even
+if it's a bit slower. It launches interactively in a new pane so the user can follow
+the findings visually and ask follow-up questions if needed.
 
-## 前提
+## Prerequisites
 
-- **cmux セッション内**であること（`CMUX_SOCKET_PATH` が必要）。cmux 外ではペイン分割できない。
-- `codex` CLI がインストール済みで PATH 上にあること。
-- agmsg は任意。未参加・未インストールでもレビュー起動は止めない。
+- Must be **inside a cmux session** (`CMUX_SOCKET_PATH` is required). Panes cannot be
+  split outside cmux.
+- The `codex` CLI must be installed and on PATH.
+- agmsg is optional. Launching the review is not blocked even if not joined or not
+  installed.
 
-## 実行手順
+## Procedure
 
-### 0. レビュー対象を確定する
+### 0. Determine the review target
 
-`--uncommitted` / `--base` / `--commit` / `--path` が指定されていればそのまま使う。
-無指定なら `bin/cmux-codex-review --list-targets` で候補（未コミット変更 /
-`docs/superpowers/{specs,plans}` の直近 md）を列挙し、2 件以上なら AskUserQuestion で
-ユーザーに選ばせる。1 件なら自動採用、0 件なら対象をユーザーに尋ねる。
-分岐の詳細は `/codex-review` コマンド（`commands/codex-review.md`）の Step 0 と同じ。
+If `--uncommitted` / `--base` / `--commit` / `--path` is specified, use it as-is.
+If unspecified, list candidates (uncommitted changes / recent md files under
+`docs/superpowers/{specs,plans}`) with `bin/cmux-codex-review --list-targets`, and if
+there are 2 or more, let the user choose via AskUserQuestion. If there is 1, adopt it
+automatically; if 0, ask the user for the target. The branching details are the same
+as Step 0 of the `/codex-review` command (`commands/codex-review.md`).
 
-### 1. agmsg の inbox を確認（非ブロッキング）
+### 1. Check the agmsg inbox (non-blocking)
 
-`~/.agents/skills/agmsg/` が無ければ、プラグインの install.sh を一度だけ実行してブートストラップする。
-その後 `whoami.sh` で identity を解決し、参加済みなら `inbox.sh` で受信箱を確認する。未参加・未インストール
-なら一言添えてスキップし、レビュー起動へ進む。詳細な分岐は `/codex-review` コマンド（`commands/codex-review.md`）
-の Step 1 と同じ。
+If `~/.agents/skills/agmsg/` does not exist, bootstrap it by running the plugin's
+install.sh once. Then resolve identity with `whoami.sh`, and if joined, check the
+inbox with `inbox.sh`. If not joined or not installed, skip with a short note and
+proceed to launching the review. The detailed branching is the same as Step 1 of the
+`/codex-review` command (`commands/codex-review.md`).
 
-### 2. codex レビューを起動
+### 2. Launch the codex review
 
-bin スクリプトを実行する。cmux ペインを分割し、そのペインで**対話 codex** にレビュープロンプトを送信する。
+Run the bin script. It splits a cmux pane and sends the review prompt to
+**interactive codex** in that pane.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" [引数]
+"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" [args]
 ```
 
-主な引数（すべて任意、詳細は bin のヘッダコメント参照）:
+Main arguments (all optional; see the bin's header comment for details):
 
-| 引数 | 意味 |
+| Argument | Meaning |
 |------|------|
-| `right` / `down` / `left` / `up` | 分割方向（default: right） |
-| `--base <branch>` | 未コミット変更ではなく base ブランチとの差分をレビュー |
-| `--commit <sha>` | 指定コミットの変更をレビュー |
-| `--path <file>` | 指定ファイルの**内容全体**をレビュー（繰り返し可。spec/plan 向け） |
-| `--list-targets` | 候補を TSV で列挙して終了（cmux 不要。Step 0 用） |
-| `-m <model>` / `-e <effort>` | モデル / effort の上書き（default: gpt-5.6-sol / xhigh） |
-| `-- <指示>` | codex へのカスタムレビュー指示 |
-| `--team <team> --reviewer <name> --parent <agent>` | レビュー完了の agmsg 通知配線 |
+| `right` / `down` / `left` / `up` | Split direction (default: right) |
+| `--base <branch>` | Review the diff against a base branch instead of uncommitted changes |
+| `--commit <sha>` | Review the changes in the specified commit |
+| `--path <file>` | Review the **full contents** of the specified file (repeatable; for spec/plan) |
+| `--list-targets` | List candidates as TSV and exit (cmux not required; for Step 0) |
+| `-m <model>` / `-e <effort>` | Override model / effort (default: gpt-5.6-sol / xhigh) |
+| `-- <instructions>` | Custom review instructions for codex |
+| `--team <team> --reviewer <name> --parent <agent>` | Wires up the agmsg completion notification |
 
-bin は `surface=` / `token=` を出力する。通知配線時はこの `token` と `surface` を
-`bin/cmux-codex-wait` に渡して完了を待つ（`--timeout` は付けない。既定は無制限で、
-打ち切りはペインの生存で判断する。`/codex-review` コマンドの Step 3 参照）。
+The bin outputs `surface=` / `token=`. When notification wiring is enabled, pass this
+`token` and `surface` to `bin/cmux-codex-wait` to wait for completion (do not attach
+`--timeout`; the default is unlimited, and termination is judged by pane liveness. See
+Step 3 of the `/codex-review` command).
 
-### 3. 報告
+### 3. Report
 
-bin が出力する起動サマリ（`codex review 起動: <surface> (...)`）を 1 行で伝える。
-codex 側でレビューが流れ始めるので、このセッションでのポーリングは不要
-（通知配線時は `cmux-codex-wait` を background task で回して wake を待つ）。
+Convey the launch summary output by the bin (`codex review launched: <surface> (...)`)
+in one line. Since the review starts flowing on the codex side, polling from this
+session is unnecessary (when notification wiring is enabled, run `cmux-codex-wait` as
+a background task and wait for the wake).
 
-## 起動される codex コマンド（参考）
+## codex command that gets launched (reference)
 
-対話 codex にレビュープロンプトを渡して起動する（`codex review` サブコマンドは使わない）:
+Launches by handing the review prompt to interactive codex (does not use the
+`codex review` subcommand):
 
 ```bash
 codex --sandbox workspace-write --ask-for-approval never \
   -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
-  '未コミットの変更をレビューし、問題点・改善点を具体的に指摘せよ。'
+  'Review the uncommitted changes and point out concrete problems and improvements.'
 ```
 
-approval policy を `never` にするのは、無指定だと codex がコマンド実行のたびに承認プロンプトで
-停止し、レビューが人間の accept 待ちになるため（sandbox は workspace-write のまま承認だけ止める）。
+The approval policy is set to `never` because, if left unspecified, codex stops at an
+approval prompt every time it runs a command, turning the review into something that
+waits on a human's accept (the sandbox stays workspace-write; only the approval is
+disabled).
 
-`--team/--reviewer/--parent` 指定時は、プロンプト末尾に「レビュー提示後に `send.sh` で親へ完了通知せよ」を
-注入する。親側は `bin/cmux-codex-wait` を background task で回して wake される。
+When `--team/--reviewer/--parent` is specified, "after presenting the review, notify
+the parent session of completion via `send.sh`" is injected at the end of the prompt.
+The parent session side is woken by running `bin/cmux-codex-wait` as a background task.
 
-> **サンドボックスを `read-only` にしてはいけない**: 完了通知の `send.sh` は agmsg の SQLite DB へ
-> INSERT する（＝書き込み）。`config.toml` の `[sandbox_workspace_write] writable_roots`（agmsg の
-> db/teams/run）は **workspace-write モードにしか適用されない**ため、read-only では通知が撃てなくなる。
+> **Do not set the sandbox to `read-only`**: the completion notification's `send.sh`
+> INSERTs into agmsg's SQLite DB (i.e., writes). `config.toml`'s
+> `[sandbox_workspace_write] writable_roots` (agmsg's db/teams/run) **only applies in
+> workspace-write mode**, so under read-only the notification can no longer be fired.
