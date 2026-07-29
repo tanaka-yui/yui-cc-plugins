@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 子セッションが `status.json` に終端状態（`done` / `error`）を書けば、セッションが終了しなくても親への通知が試みられ続けるようにし、実装者が abort したときにレビュアーも解放されるようにする。
+**Goal:** 子セッションが `status.json` に終端状態（`done` / `error`）を書けば、セッションが終了しなくても**親への通知が試みられ続ける**ようにする。あわせて実装者が停止するときの手順をプロンプトに定義し、レビュアーの解放経路を用意する（**レビュアー wake は best-effort であり、届くことは保証しない** — spec 3.1・4.6）。
 
-**Architecture:** runner wrapper（`launch-workspace.sh` が heredoc で生成する bash スクリプト）に 2 つの変更を入れる。(1) 子が書いた終端 status を wrapper が上書きしないようにする。(2) 子プロセスと並行して `status.json` を poll するバックグラウンド watcher を走らせ、終端遷移を検知したら親へ通知する。あわせて SKILL.md のプロンプト文面に ABORT/ESCALATION プロトコルを追加し、実装者が停止するときにレビュアーと親へ必ず通知が飛ぶようにする。
+**Architecture:** runner wrapper（`launch-workspace.sh` が heredoc で生成する bash スクリプト）に 2 つの変更を入れる。(1) 子が書いた終端 status を wrapper が上書きしないようにする。(2) 子プロセスと並行して `status.json` を poll するバックグラウンド watcher を走らせ、終端遷移を検知したら親へ通知する。あわせて SKILL.md のプロンプト文面に ABORT/ESCALATION プロトコルを追加し、実装者が停止するときに踏むべき手順を定義する。
 
 **Tech Stack:** bash（runner wrapper）/ zsh（`launch-workspace.sh` 本体）/ jq / markdown（SKILL.md・guide-ja.md・README.md・CLAUDE.md）
 
@@ -52,7 +52,7 @@
 | 6 | watcher からのレビュアー wake | 3・4 |
 | 7 | `--defer-status` 欠落の修正 | — |
 | 8 | `notification-gaps.md` の作成 | — |
-| 9 | 4 ファイル整合 | 1〜7 |
+| 9 | 4 ファイル整合 | 1〜8（`notification-gaps.md` へリンクするため 8 を含む） |
 | 10 | バージョン更新と最終検証 | 1〜9 |
 
 ---
@@ -509,37 +509,109 @@ T7 の直後（`[[ $fail -eq 0 ]]` の行より前）に次を挿入する。
 
 ```bash
 attempts() { wc -l < "$TMP/cmux-attempts.log" 2>/dev/null | tr -d ' ' || echo 0; }
+log_has()  { grep -q "$1" "$TMP/cmux-calls.log" 2>/dev/null; }
+log_count() { grep -c "$1" "$TMP/cmux-calls.log" 2>/dev/null || true; }
 
-# T8: 子が error を書いたまま生存し続けても、watcher が親へ通知する
-STUB_WRITE_STATUS=error STUB_SLEEP=6 run_case watcher-fires 0 executing
+# runner を非同期起動する。watcher と exit パスを区別するには、子が生存している
+# 間に通知ログを観測しなければならない (同期実行では最後の exit パスの結果しか見えない)。
+RUNNER_BG_PID=""
+run_case_bg() {
+  local label="$1" exit_code="$2" prior_status="$3"
+  STATUS_DIR="$TMP/status-$label"
+  local name="task-$label"
+
+  [[ -n "${REVIEW_PRESEED:-}" ]] || rm -rf "$STATUS_DIR"
+  rm -f "$TMP/cmux-calls.log" "$TMP/cmux-attempts.log"
+  mkdir -p "$STATUS_DIR"
+  jq -n --arg s "$prior_status" '{status:$s, message:"child-written"}' > "$STATUS_DIR/status.json"
+  touch "$STATUS_DIR/.assigned-$name"
+  [[ -n "${EXTRA_SENTINEL:-}" ]] && touch "$STATUS_DIR/$EXTRA_SENTINEL"
+
+  local output runner
+  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+    --cwd "$TMP/repo" --mode standby --runner stub --status-dir "$STATUS_DIR" \
+    --defer-status --parent-notify-workspace 'workspace:9' "$name")
+  runner=$(jq -r '.runner_file' <<<"$output")
+
+  ZDOTDIR="$TMP/zdot" STUB_EXIT_CODE="$exit_code" PATH="$TMP/bin:$PATH" \
+    CMUX_DISPATCH_WATCH_INTERVAL=1 STUB_STATUS_DIR="$STATUS_DIR" \
+    STUB_WRITE_STATUS="${STUB_WRITE_STATUS:-}" STUB_SLEEP="${STUB_SLEEP:-}" \
+    bash "$runner" >/dev/null 2>&1 &
+  RUNNER_BG_PID=$!
+}
+
+# 子がまだ生きているか
+child_alive() { kill -0 "$RUNNER_BG_PID" 2>/dev/null; }
+
+# パターンがログに現れるのを最大 <limit> 秒待つ
+wait_for_log() {
+  local pattern="$1" limit="${2:-10}" i
+  for i in $(seq 1 $((limit * 2))); do
+    log_has "$pattern" && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+# 子を止め、watcher も stop sentinel で終わらせてから回収する
+stop_case() {
+  : > "$STATUS_DIR/.stop-watcher-task-$1"
+  kill "$RUNNER_BG_PID" 2>/dev/null || true
+  wait "$RUNNER_BG_PID" 2>/dev/null || true
+  sleep 2   # orphan になった watcher が sentinel を見て終わるのを待つ
+}
+
+# T8: 子が error を書いたまま生存している間に watcher が親へ通知する
+#     (exit パスではなく watcher が発火したことを、子の生存中に観測して確定させる)
+STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg watcher-fires 0 executing
 unset STUB_WRITE_STATUS STUB_SLEEP
-assert_eq "$(notified_label)" 'error' 'T8 idle 残留中でも watcher が error を通知する'
+if wait_for_log 'status: error' 12; then t8_seen=yes; else t8_seen=no; fi
+t8_alive=$(child_alive && echo yes || echo no)
+stop_case watcher-fires
+assert_eq "$t8_seen"  'yes' 'T8 子の生存中に watcher が error を通知する'
+assert_eq "$t8_alive" 'yes' 'T8 通知を観測した時点で子はまだ生存している'
 
-# T9: .deferred があれば watcher は通知しない (実行を他 surface へ移譲済み)
-EXTRA_SENTINEL=.deferred STUB_WRITE_STATUS=error STUB_SLEEP=6 run_case watcher-deferred 0 executing
+# T9: .deferred があれば watcher は生存中に通知しない
+EXTRA_SENTINEL=.deferred STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg watcher-deferred 0 executing
 unset EXTRA_SENTINEL STUB_WRITE_STATUS STUB_SLEEP
-assert_eq "$(notified_label)" '' 'T9 .deferred があれば watcher は通知しない'
+sleep 8
+t9_seen=$(log_has 'status: ' && echo yes || echo no)
+stop_case watcher-deferred
+assert_eq "$t9_seen" 'no' 'T9 .deferred があれば watcher は通知しない'
 
-# T10: 他 pane の .assigned-* があれば watcher は通知しない (所有権を渡した)
-EXTRA_SENTINEL=.assigned-other-pane STUB_WRITE_STATUS=error STUB_SLEEP=6 run_case watcher-foreign 0 executing
+# T10: 他 pane の .assigned-* があれば watcher は生存中に通知しない
+#      (exit パスには foreign-assignment ガードが無いので、観測は生存中に限る)
+EXTRA_SENTINEL=.assigned-other-pane STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg watcher-foreign 0 executing
 unset EXTRA_SENTINEL STUB_WRITE_STATUS STUB_SLEEP
-assert_eq "$(notified_label)" '' 'T10 他 pane の .assigned-* があれば watcher は通知しない'
+sleep 8
+t10_seen=$(log_has 'status: ' && echo yes || echo no)
+stop_case watcher-foreign
+assert_eq "$t10_seen" 'no' 'T10 他 pane の .assigned-* があれば watcher は通知しない'
 
-# T11: wrapper 終了後に watcher が残らない (通知が失敗し続ける状況で確認する)
+# T11: wrapper 終了後に watcher の再試行が止まる (通知が失敗し続ける状況で確認する)
 : > "$TMP/cmux-fail"
-STUB_WRITE_STATUS=error STUB_SLEEP=4 run_case watcher-stops 0 executing
+STUB_WRITE_STATUS=error STUB_SLEEP=3 run_case_bg watcher-stops 0 executing
 unset STUB_WRITE_STATUS STUB_SLEEP
+wait "$RUNNER_BG_PID" 2>/dev/null || true
+sleep 2
 after_exit=$(attempts)
-sleep 4
+sleep 5
 rm -f "$TMP/cmux-fail"
 assert_eq "$(attempts)" "$after_exit" 'T11 wrapper 終了後に watcher の再試行が止まる'
 
-# T12: watcher が done を通知した後に子が異常終了 → 訂正の error 通知が届く
-STUB_WRITE_STATUS=done STUB_SLEEP=4 run_case watcher-correction 1 executing
+# T12: watcher が done を通知した後に子が異常終了 → error の訂正通知が続く
+#      (done が先、error が後、という順序まで確認する)
+STUB_WRITE_STATUS=done STUB_SLEEP=25 run_case_bg watcher-correction 1 executing
 unset STUB_WRITE_STATUS STUB_SLEEP
-corrections=$(grep -c 'status: error' "$TMP/cmux-calls.log" 2>/dev/null || echo 0)
-assert_eq "$([[ $corrections -ge 1 ]] && echo yes || echo no)" 'yes' \
-  'T12 done 通知後に異常終了したら error の訂正通知が届く'
+if wait_for_log 'status: done' 12; then t12_done=yes; else t12_done=no; fi
+t12_alive=$(child_alive && echo yes || echo no)
+kill "$RUNNER_BG_PID" 2>/dev/null || true   # stub を落とすと wrapper は非ゼロ終了へ進む
+wait "$RUNNER_BG_PID" 2>/dev/null || true
+sleep 2
+assert_eq "$t12_done"  'yes' 'T12 子の生存中に watcher が done を通知する'
+assert_eq "$t12_alive" 'yes' 'T12 done 通知の時点で子はまだ生存している'
+assert_eq "$(log_has 'status: error' && echo yes || echo no)" 'yes' \
+  'T12 その後の異常終了で error の訂正通知が届く'
 ```
 
 - [ ] **Step 3: テストを実行して失敗を確認する**
@@ -548,7 +620,9 @@ assert_eq "$([[ $corrections -ge 1 ]] && echo yes || echo no)" 'yes' \
 bash apps/cmux-team-dispatch-task/test/test-runner-terminal-status.sh
 ```
 
-Expected: `FAIL: T8 idle 残留中でも watcher が error を通知する (expected: error, got: )` と `FAIL: T12 ...`。T9 / T10 / T11 は watcher が存在しないので偶然 PASS するが、終了コードは 1。
+Expected: `FAIL: T8 子の生存中に watcher が error を通知する (expected: yes, got: no)` と `FAIL: T12 子の生存中に watcher が done を通知する`。T9 / T10 / T11 は watcher が存在しないので PASS するが、終了コードは 1。
+
+これらのケースは**子が生存している間**に観測するので、Task 1・2 だけ適用した状態（exit パスは正しく通知する）でも確実に落ちる。同期実行のままでは exit パスの結果しか見えず、実装前から PASS してしまう。
 
 - [ ] **Step 4: watcher を実装する**
 
@@ -557,7 +631,7 @@ Expected: `FAIL: T8 idle 残留中でも watcher が error を通知する (expe
 ```bash
 # --- status.json watcher ---
 # 子が終端 status を書いても TUI が idle のまま残ると、この wrapper は下の
-# ${CLAUDE_CMD} 待ちでブロックしたまま通知に到達しない。そこで子と並行して
+# 子プロセス待ちでブロックしたまま通知に到達しない。そこで子と並行して
 # status.json を poll し、終端遷移を検知した時点で親へ通知する。
 # 抑止条件は exit パスの所有権判定と同一。.deferred / .assigned-* は実行中に
 # 作られるため poll のたびに再評価する。
@@ -567,8 +641,16 @@ WATCHER_PID=""
 if [[ -n "\$STATUS_DIR" ]]; then
   (
     while true; do
-      sleep "\$WATCH_INTERVAL"
+      # 停止要求への追随を 1 秒以内にするため、待機は 1 秒刻みに分割する。
+      # まとめて sleep すると、短時間で終わる子の exit パスが最大 WATCH_INTERVAL 秒
+      # 待たされ、既存の回帰テストも同じだけ遅くなる。
       [[ -f "\$STATUS_DIR/.stop-watcher-\$SLUG" ]] && exit 0
+      _slept=0
+      while (( _slept < WATCH_INTERVAL )); do
+        sleep 1
+        _slept=\$(( _slept + 1 ))
+        [[ -f "\$STATUS_DIR/.stop-watcher-\$SLUG" ]] && exit 0
+      done
 
       [[ -n "\$TIMEOUT_SENTINEL" && -f "\$TIMEOUT_SENTINEL" ]] && continue
       [[ "\$DEFER_STATUS" == "1" && -f "\$STATUS_DIR/.deferred" ]] && continue
@@ -659,7 +741,7 @@ exit パスの所有権判定 (timeout sentinel / .deferred / 未 assigned stand
 
 **Interfaces:**
 - Consumes: なし（プロンプト文面のみ）
-- Produces: 実装者が停止する際に踏む 5 手順。Task 5 の spawn 経路と Task 8 の guide-ja.md がこの文面と一致している必要がある
+- Produces: 実装者が停止する際に踏む 5 手順。Task 5 の spawn 経路と Task 9 の guide-ja.md がこの文面と一致している必要がある
 
 - [ ] **Step 1: 共通プロトコル a に ABORT 節を挿入する**
 
@@ -777,25 +859,69 @@ prewarm 経路（Task 4）だけ直すと `--mode execute` の spawn 経路に�
 - Consumes: Task 4 の ABORT プロトコルの文面（同じ 5 手順を短縮形で埋め込む）
 - Produces: `launch-workspace.sh` 内のシェル変数 `ABORT_INSTRUCTION`
 
-- [ ] **Step 1: 失敗する静的検査を追加する**
+- [ ] **Step 1: 失敗する検査を追加する**
 
-`test/test-launch-workspace-codex.sh` の末尾（結果表示より前）に次を追加する。
+`test/test-launch-workspace-codex.sh` の末尾（結果表示より前）に次を追加する。ケース ID は既存と衝突しない `A1` / `A2` / `A3` を使う。
+
+**inner prompt にクォート文字が入ると壊れる**ため、文言 grep だけでなく「生成された runner を実行したとき、prompt がちょうど 1 引数として渡ること」を検証する。
 
 ```bash
-# T8: spawn 経路 (--mode execute) の inner prompt に ABORT プロトコルが含まれる
-abort_out=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-  --cwd "$TMP/repo" --mode execute --plan-file "$TMP/plan.md" --runner stub \
-  --status-dir "$TMP/status-abort" abort-check 2>/dev/null)
-abort_runner=$(jq -r '.runner_file' <<<"$abort_out")
-if grep -q 'you MUST NOT stop silently' "$abort_runner"; then
-  echo "PASS: T8 spawn 経路の inner prompt に ABORT プロトコルが含まれる"
+# argv を記録する probe runner。inner prompt が単一引数として渡るかを見る
+cat > "$TMP/bin/argv-probe" <<'PROBE'
+#!/usr/bin/env bash
+{ echo "argc=$#"; printf 'arg=%s\n' "$@"; } > "$ARGV_OUT"
+PROBE
+chmod +x "$TMP/bin/argv-probe"
+
+cat > "$TMP/runners-probe.json" <<JSON
+{
+  "default": "probe",
+  "runners": [
+    { "name": "probe", "command": "$TMP/bin/argv-probe", "engine": "claude" }
+  ]
+}
+JSON
+
+echo '# plan' > "$TMP/abort-plan.md"
+mkdir -p "$TMP/abort-status/review"
+jq -n '{reviewer_surface:"surface:55", reviewer_workspace:"workspace:5", review_dir:"'"$TMP"'/abort-status/review"}' \
+  > "$TMP/abort-status/review/code-review.json"
+
+# A1: レビュー有効の spawn 経路で inner prompt に ABORT 手順が入る
+a1_out=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --plan-file "$TMP/abort-plan.md" --runner probe \
+  --status-dir "$TMP/abort-status" --parent-notify-workspace 'workspace:9' \
+  --review-config "$TMP/abort-status/review/code-review.json" abort-with-review 2>/dev/null)
+a1_runner=$(jq -r '.runner_file' <<<"$a1_out")
+if grep -q 'ABORT PROTOCOL' "$a1_runner" && grep -q 'code-round-N.md' "$a1_runner"; then
+  echo "PASS: A1 レビュー有効の spawn 経路に ABORT 手順が入る"
 else
-  echo "FAIL: T8 spawn 経路の inner prompt に ABORT プロトコルが含まれない"
-  fail=1
+  echo "FAIL: A1 レビュー有効の spawn 経路に ABORT 手順が入らない"; fail=1
+fi
+
+# A2: inner prompt がちょうど 1 引数として渡る (クォート事故の検出)
+ARGV_OUT="$TMP/argv-a2.txt" ZDOTDIR="$TMP/zdot" PATH="$TMP/bin:$PATH" \
+  bash "$a1_runner" >/dev/null 2>&1 || true
+a2_argc=$(grep -oE 'argc=[0-9]+' "$TMP/argv-a2.txt" 2>/dev/null | head -1 | cut -d= -f2)
+if [[ "$a2_argc" == "1" ]]; then
+  echo "PASS: A2 inner prompt が単一引数として渡る"
+else
+  echo "FAIL: A2 inner prompt が単一引数でない (argc=${a2_argc:-none})"; fail=1
+fi
+
+# A3: レビュー無効 (--review-config なし) では reviewer 手順を含めない
+a3_out=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --plan-file "$TMP/abort-plan.md" --runner probe \
+  --status-dir "$TMP/abort-status2" --parent-notify-workspace 'workspace:9' abort-no-review 2>/dev/null)
+a3_runner=$(jq -r '.runner_file' <<<"$a3_out")
+if grep -q 'ABORT PROTOCOL' "$a3_runner" && ! grep -q 'code-round-N.md' "$a3_runner"; then
+  echo "PASS: A3 レビュー無効では reviewer 手順を含めない"
+else
+  echo "FAIL: A3 レビュー無効なのに reviewer 手順が入っている"; fail=1
 fi
 ```
 
-`$TMP/plan.md` が未作成ならテスト冒頭で `echo '# plan' > "$TMP/plan.md"` を追加する（既存テストに既にある場合は不要）。
+テスト冒頭に `$TMP/zdot/.zshrc` の用意（`mkdir -p "$TMP/zdot"; : > "$TMP/zdot/.zshrc"`）が無ければ追加する。
 
 - [ ] **Step 2: テストを実行して失敗を確認する**
 
@@ -803,29 +929,41 @@ fi
 bash apps/cmux-team-dispatch-task/test/test-launch-workspace-codex.sh
 ```
 
-Expected: `FAIL: T8 spawn 経路の inner prompt に ABORT プロトコルが含まれない`、終了コード 1。
+Expected: `FAIL: A1 ...` と `FAIL: A3 ...`、終了コード 1。
 
 - [ ] **Step 3: `ABORT_INSTRUCTION` を定義して埋め込む**
 
-`$SKILL_DIR/scripts/launch-workspace.sh` の `EXIT_INSTRUCTION` を組み立てている if/else（現行 `:538-543`）の**直後**に次を挿入する。
+`$SKILL_DIR/scripts/launch-workspace.sh` の `if [[ "$MODE" == "execute" ]]; then` ブロック内、`REVIEW_INSTRUCTION` の組み立てが終わった直後（`PROMPT_TEXT=` の行の直前）に次を挿入する。
+
+**クォート文字（シングル・ダブルとも）を文中に一切使ってはならない。** `PROMPT_TEXT` は `CORE_CMD` の中で `'...'` に包まれ、さらに `zsh -ic "..."` に渡されるため（`launch-workspace.sh:610-674`）、クォートが混ざると prompt が複数引数へ分割される。既存の `REVIEW_INSTRUCTION` にも同じ制約がコメントで明記されている（`:546`）。
 
 ```bash
-# 途中で停止する場合の通知手順。status.json は親がポーリングするだけのファイルで
-# あり通知ではないため、待っている全員へ明示的に送らせる。
-ABORT_INSTRUCTION="If at ANY point you decide to STOP without completing the work (a blocking error, a design contradiction, or giving up), you MUST NOT stop silently. Writing status.json is NOT a notification. Before you stop: (1) write the reason to the review findings file with the last line exactly 'VERDICT: needs_work', (2) notify the reviewer with cmux send plus cmux send-key return, (3) write status.json with status error and the reason as message, (4) notify the parent the same way with status error, (5) end this session. "
+  # 途中で停止する場合の通知手順。status.json は親がポーリングするだけのファイルで
+  # あり通知ではないため、待っている全員へ明示的に送らせる。
+  # REVIEW_INSTRUCTION と同じ制約: 文中にクォート文字を使わないこと。
+  ABORT_INSTRUCTION=""
+  if [[ -n "$STATUS_DIR" ]]; then
+    # reviewer への通知手順はレビューが有効なときだけ入れる (宛先が無いのに
+    # 通知を要求すると実装者が実行できない指示になる)
+    ABORT_REVIEW_STEP=""
+    if [[ -n "$REVIEW_CONFIG" ]]; then
+      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N.md for the current round N, using N=1 if you never sent a review request, with the LAST line being exactly VERDICT: needs_work; this is only a record because the reviewer does not poll that file. Then wake the reviewer by running: $CMUX send $TARGET_FLAGS -- the message must start with [abort] followed by a one line reason -- and then: $CMUX send-key $TARGET_FLAGS return. Next "
+    fi
+    ABORT_PARENT_STEP=""
+    if [[ -n "$NOTIFY_WORKSPACE" ]]; then
+      ABORT_PARENT_STEP="Then notify the parent by running: $CMUX send --workspace $NOTIFY_WORKSPACE -- the message must say: [dispatch] task $WORKSPACE_NAME finished (status: error) -- and then: $CMUX send-key --workspace $NOTIFY_WORKSPACE return. "
+    fi
+    ABORT_INSTRUCTION="ABORT PROTOCOL, which overrides everything above: if at any point you decide to stop without completing the work, whether from a blocking error, a design contradiction, or simply giving up, you must not stop silently. Writing the status file is not a notification because only the parent polls it. Before you stop: ${ABORT_REVIEW_STEP}write $STATUS_DIR/status.json with status set to error and the reason as the message. ${ABORT_PARENT_STEP}Finally end this session exactly as described below for the successful case. "
+  fi
 ```
 
-続いて、`PROMPT_TEXT` を組み立てている現行 `:573` を探す。
+続いて `PROMPT_TEXT` の組み立て（現行 `:573`）を次に置き換える。
 
 ```bash
-PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${EXIT_INSTRUCTION}"
+  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${ABORT_INSTRUCTION}${EXIT_INSTRUCTION}"
 ```
 
-これを次に置き換える。
-
-```bash
-PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${ABORT_INSTRUCTION}${EXIT_INSTRUCTION}"
-```
+`ABORT_INSTRUCTION` を `EXIT_INSTRUCTION` の**前**に置くのは、末尾の「end this session exactly as described below」が直後の `EXIT_INSTRUCTION`（engine 別の終了指示）を指すようにするためである。
 
 - [ ] **Step 4: 無人ループ用の確定文面を更新する**
 
@@ -878,35 +1016,90 @@ ABORT_INSTRUCTION を追加して inner prompt へ埋め込み、render-loop-pro
 
 `test/test-runner-terminal-status.sh` の T12 の直後に次を挿入する。
 
+まず cmux stub を**宛先ごとに失敗させられる**形に拡張する。stub 定義の `send|send-key)` 分岐を次に差し替える（親宛は成功しつつレビュアー宛だけ失敗させるため）。
+
 ```bash
-reviewer_msgs() { grep -c '\[abort\]' "$TMP/cmux-calls.log" 2>/dev/null || echo 0; }
-
-# T13: code-review.json があれば error 時にレビュアーへ [abort] が飛ぶ
-STATUS_DIR="$TMP/status-reviewer"; mkdir -p "$STATUS_DIR/review"
-jq -n '{reviewer_surface:"surface:77", reviewer_workspace:"workspace:7", review_dir:"x"}' \
-  > "$STATUS_DIR/review/code-review.json"
-REVIEW_PRESEED=1 STUB_WRITE_STATUS=error STUB_SLEEP=6 run_case reviewer 0 executing
-unset REVIEW_PRESEED STUB_WRITE_STATUS STUB_SLEEP
-assert_eq "$([[ $(reviewer_msgs) -ge 1 ]] && echo yes || echo no)" 'yes' \
-  'T13 code-review.json があればレビュアーへ [abort] が飛ぶ'
-
-# T14: code-review.json が無ければレビュアー通知はスキップされ、親通知は成功する
-STUB_WRITE_STATUS=error STUB_SLEEP=6 run_case no-reviewer 0 executing
-unset STUB_WRITE_STATUS STUB_SLEEP
-assert_eq "$(reviewer_msgs)"  '0'     'T14 code-review.json が無ければ [abort] は送らない'
-assert_eq "$(notified_label)" 'error' 'T14 レビュアー不在でも親通知は成功する'
-
-# T15: done では [abort] を送らない (abort は error 専用)
-STUB_WRITE_STATUS=done STUB_SLEEP=6 run_case reviewer-done 0 executing
-unset STUB_WRITE_STATUS STUB_SLEEP
-assert_eq "$(reviewer_msgs)" '0' 'T15 done では [abort] を送らない'
+  send|send-key)
+    echo "\$*" >> "$TMP/cmux-attempts.log"
+    if [[ -f "$TMP/cmux-fail" ]]; then exit 1; fi
+    if [[ -f "$TMP/cmux-fail-reviewer" && "\$*" == *"surface:77"* ]]; then exit 1; fi
+    echo "\$*" >> "$TMP/cmux-calls.log" ;;
 ```
 
-`run_case` の `rm -rf "$STATUS_DIR"` が T13 の事前作成を消してしまうので、`run_case` の `rm -rf` 行を次に変更する。
+`grep -c` は match が無いとき `0` を出力した**うえで終了コード 1 を返す**ため、`|| echo 0` を付けると `0` が 2 行出る。カウント用ヘルパーは `|| true` を使う。
 
 ```bash
-  [[ -n "${REVIEW_PRESEED:-}" ]] || rm -rf "$STATUS_DIR"
-  rm -f "$TMP/cmux-calls.log" "$TMP/cmux-attempts.log"
+# grep -c は 0 件でも 0 を出力するので、フォールバックは || true にする
+# (|| echo 0 だと 0 が 2 行出て比較が壊れる)
+reviewer_msgs() { grep -c '\[abort\]' "$TMP/cmux-calls.log" 2>/dev/null || true; }
+
+seed_review_config() {   # $1 = status dir, $2 = JSON 本体
+  mkdir -p "$1/review"
+  printf '%s' "$2" > "$1/review/code-review.json"
+}
+
+# T13: code-review.json があれば error 時にレビュアーへ [abort] が飛ぶ
+STATUS_DIR="$TMP/status-reviewer"; rm -rf "$STATUS_DIR"
+seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
+REVIEW_PRESEED=1 STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg reviewer 0 executing
+unset REVIEW_PRESEED STUB_WRITE_STATUS STUB_SLEEP
+if wait_for_log '\[abort\]' 12; then t13=yes; else t13=no; fi
+stop_case reviewer
+assert_eq "$t13" 'yes' 'T13 code-review.json があればレビュアーへ [abort] が飛ぶ'
+
+# T14: code-review.json が無ければレビュアー通知はスキップされ、親通知は成功する
+STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg no-reviewer 0 executing
+unset STUB_WRITE_STATUS STUB_SLEEP
+wait_for_log 'status: error' 12 || true
+t14_abort=$(reviewer_msgs)
+t14_parent=$(log_has 'status: error' && echo yes || echo no)
+stop_case no-reviewer
+assert_eq "$t14_abort"  '0'   'T14 code-review.json が無ければ [abort] は送らない'
+assert_eq "$t14_parent" 'yes' 'T14 レビュアー不在でも親通知は成功する'
+
+# T15: done では [abort] を送らない (abort は error 専用)
+STATUS_DIR="$TMP/status-reviewer-done"; rm -rf "$STATUS_DIR"
+seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
+REVIEW_PRESEED=1 STUB_WRITE_STATUS=done STUB_SLEEP=30 run_case_bg reviewer-done 0 executing
+unset REVIEW_PRESEED STUB_WRITE_STATUS STUB_SLEEP
+wait_for_log 'status: done' 12 || true
+t15=$(reviewer_msgs)
+stop_case reviewer-done
+assert_eq "$t15" '0' 'T15 done では [abort] を送らない'
+
+# T16: 壊れた JSON / 空 surface でも親通知は成功する (レビュアー通知はスキップ)
+for variant in broken empty; do
+  STATUS_DIR="$TMP/status-rv-$variant"; rm -rf "$STATUS_DIR"
+  if [[ "$variant" == broken ]]; then
+    seed_review_config "$STATUS_DIR" 'this is not json'
+  else
+    seed_review_config "$STATUS_DIR" '{"reviewer_surface":"","reviewer_workspace":"","review_dir":"x"}'
+  fi
+  REVIEW_PRESEED=1 STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg "rv-$variant" 0 executing
+  unset REVIEW_PRESEED STUB_WRITE_STATUS STUB_SLEEP
+  wait_for_log 'status: error' 12 || true
+  v_parent=$(log_has 'status: error' && echo yes || echo no)
+  v_abort=$(reviewer_msgs)
+  stop_case "rv-$variant"
+  assert_eq "$v_parent" 'yes' "T16 ($variant) 壊れた/空の config でも親通知は成功する"
+  assert_eq "$v_abort"  '0'   "T16 ($variant) 壊れた/空の config では [abort] を送らない"
+done
+
+# T17: レビュアー宛だけ失敗させる → 親 marker は確定し、復旧後に [abort] が届く
+STATUS_DIR="$TMP/status-rv-retry"; rm -rf "$STATUS_DIR"
+seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
+: > "$TMP/cmux-fail-reviewer"
+REVIEW_PRESEED=1 STUB_WRITE_STATUS=error STUB_SLEEP=40 run_case_bg rv-retry 0 executing
+unset REVIEW_PRESEED STUB_WRITE_STATUS STUB_SLEEP
+wait_for_log 'status: error' 12 || true
+t17_parent_marker=$(cat "$STATUS_DIR/.notified-task-rv-retry" 2>/dev/null || echo '(none)')
+t17_abort_before=$(reviewer_msgs)
+rm -f "$TMP/cmux-fail-reviewer"          # transport 復旧
+if wait_for_log '\[abort\]' 12; then t17_after=yes; else t17_after=no; fi
+stop_case rv-retry
+assert_eq "$t17_parent_marker" 'error' 'T17 レビュアー送信が失敗しても親 marker は確定する'
+assert_eq "$t17_abort_before"  '0'     'T17 復旧前は [abort] が届いていない'
+assert_eq "$t17_after"         'yes'   'T17 復旧後に [abort] が届く'
 ```
 
 - [ ] **Step 2: テストを実行して失敗を確認する**
@@ -1027,19 +1220,23 @@ best-effort の経路である。"
 `SKILL.md:809` は「Child session は `--defer-status` で起動されている」と書いているが、workspace レイアウトの起動例（`SKILL.md:1464-1474`）はこのフラグを渡していない（既定は `launch-workspace.sh:136` の `DEFER_STATUS=0`）。Child が `.deferred` を作って exit しても自分の wrapper が `status.json` を上書きしてしまう。watcher とは無関係に**現行でも存在する不整合**であり、Task 3 の foreign `.assigned-*` 抑止の前提でもある（spec 4.4）。
 
 **Files:**
-- Modify: `$SKILL_DIR/SKILL.md:1464-1474`
+- Modify: `$SKILL_DIR/SKILL.md`（`### Launch: Workspace Mode (default)` 節の起動例）
 
 **Interfaces:**
 - Consumes: なし
-- Produces: なし（起動フラグの修正のみ）
+- Produces: なし（起動フラグの修正のみ）。Task 9 が guide-ja.md / README.md の対応する起動例へ同じフラグを反映する
 
 - [ ] **Step 1: 現状を確認する**
 
+Task 4・6 で SKILL.md 前半に行が増えているため、**固定行番号ではなく構造で探す**。
+
 ```bash
-sed -n '1464,1474p' apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md
+grep -n '^### Launch: Workspace Mode' apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md
+awk '/^### Launch: Workspace Mode/,/^### Pre-warm Standby Panes/' \
+  apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md | grep -c -- '--defer-status'
 ```
 
-Expected: `--defer-status` を含まない `launch-workspace.sh` の起動例が表示される。
+Expected: 見出しの行番号が表示され、`--defer-status` の出現数は `0`。
 
 - [ ] **Step 2: 起動例にフラグを追加する**
 
@@ -1060,7 +1257,8 @@ runner wrapper が `.deferred` を見て `status.json` の上書きをスキッ�
 - [ ] **Step 3: 反映を確認する**
 
 ```bash
-sed -n '1464,1478p' apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md | grep -c -- '--defer-status'
+awk '/^### Launch: Workspace Mode/,/^### Pre-warm Standby Panes/' \
+  apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md | grep -c -- '--defer-status'
 ```
 
 Expected: `1` 以上。
@@ -1162,7 +1360,7 @@ git commit -m "docs(cmux-team-dispatch-task): 通知欠落・無限待機パタ�
 - Modify: `apps/cmux-team-dispatch-task/CLAUDE.md`
 
 **Interfaces:**
-- Consumes: Task 1〜7 の全変更
+- Consumes: Task 1〜7 の全変更と、Task 8 が作る `docs/notification-gaps.md`（CLAUDE.md からリンクする）
 - Produces: なし
 
 - [ ] **Step 1: guide-ja.md を更新する**
@@ -1204,12 +1402,37 @@ git commit -m "docs(cmux-team-dispatch-task): 通知欠落・無限待機パタ�
     - `status.json` watcher が `${CLAUDE_CMD}` と並行して走り、15 秒間隔（`CMUX_DISPATCH_WATCH_INTERVAL` で上書き可）で終端遷移を検知して通知すること。抑止条件は exit パスと同一（timeout sentinel / `.deferred` / 未 assigned standby / **他 pane の `.assigned-*`**）で、poll のたびに再評価すること
     - 通知処理は `notify_parent()` / `notify_parent_once()` に一本化し、watcher と exit パスの**両方が同じ関数を呼ぶ**こと（片方だけ直す退行を防ぐ）。marker `.notified-<slug>` は存在の有無ではなく**通知済み status 文字列**を保持し、通知が成功したときだけ更新すること
     - 実装者の **ABORT/ESCALATION プロトコル**（findings 記録 → レビュアー通知 → status.json → 親通知 → セッション終了）が prewarm 経路（SKILL.md の共通プロトコル a）と spawn 経路（`launch-workspace.sh` の `ABORT_INSTRUCTION`）の**両方**に入っていること。`references/unattended/code-review-block.md` にも同じ手順があること
-    - workspace レイアウトの Child 起動に `--defer-status` が付いていること
+    - workspace レイアウトの Child 起動に `--defer-status` が付いていること（SKILL.md / guide-ja.md / README.md の**すべての起動例**で一致していること）
     - **`timeout` / `gtimeout` を使わないこと**（対象 macOS に存在しない）
     - 回帰は `bash test/test-runner-terminal-status.sh` と `bash test/test-runner-signal-exit.sh` で検証。既知の未解決パターンは `docs/notification-gaps.md` を参照
 ```
 
-- [ ] **Step 5: 整合を目視確認する**
+- [ ] **Step 5: guide-ja.md / README.md の起動例にも `--defer-status` を反映する**
+
+Task 7 は SKILL.md の起動例だけを直している。Global Constraints の 4 ファイル整合に従い、派生ドキュメント側の `launch-workspace.sh` 起動例にも同じフラグを入れる。
+
+```bash
+# 起動例を含む箇所を洗い出す
+grep -n 'launch-workspace.sh' apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md
+grep -n 'launch-workspace.sh' apps/cmux-team-dispatch-task/README.md
+```
+
+見つかった **workspace レイアウトの Child 起動例**（`--mode plan` / `--mode superpowers` を伴うもの。`--mode execute` の孫起動例には付けない）に `--defer-status \` を追加し、「Phase B で実行を移譲したとき Child の wrapper が status.json を上書きしないために必須」である旨を添える。
+
+- [ ] **Step 6: 起動例の整合を静的に検査する**
+
+```bash
+for f in apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md \
+         apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md \
+         apps/cmux-team-dispatch-task/README.md; do
+  printf '%s: ' "$f"
+  grep -c -- '--defer-status' "$f" || true
+done
+```
+
+Expected: 3 ファイルすべてで 1 以上。0 のファイルがあれば Step 5 に戻る。
+
+- [ ] **Step 7: 整合を目視確認する**
 
 ```bash
 for f in apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md \
@@ -1223,7 +1446,7 @@ done
 
 Expected: 4 ファイルすべてで 1 以上。
 
-- [ ] **Step 6: コミットする**
+- [ ] **Step 8: コミットする**
 
 ```bash
 git add apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md \
@@ -1276,21 +1499,36 @@ Expected: `1.11.0` / `1.4.0` / `1.11.0`。
 
 - [ ] **Step 3: 全テストと型チェックを流す**
 
+失敗を握り潰さないよう、**失敗を集計して最後に非ゼロで終える**形にする。
+
 ```bash
-pnpm check
-for t in apps/cmux-team-dispatch-task/test/*.sh; do echo "=== $t ==="; bash "$t" || echo "FAILED: $t"; done
+pnpm check || { echo 'pnpm check FAILED'; exit 1; }
+
+rc=0
+for t in apps/cmux-team-dispatch-task/test/*.sh; do
+  echo "=== $t ==="
+  bash "$t" || { echo "FAILED: $t"; rc=1; }
+done
+exit "$rc"
 ```
 
-Expected: `pnpm check` が成功し、各テストが `--- all tests passed ---`。
+Expected: 終了コード **0**。ログの目視ではなく終了コードで判定すること。1 件でも落ちたら次の Step へ進まない。
 
 - [ ] **Step 4: シェルスクリプトの構文チェック**
 
 ```bash
-zsh -n apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/launch-workspace.sh
-for f in apps/cmux-team-dispatch-task/test/*.sh; do bash -n "$f" || echo "SYNTAX FAIL: $f"; done
+rc=0
+zsh -n apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/launch-workspace.sh || rc=1
+for f in apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/*.sh; do
+  bash -n "$f" 2>/dev/null || zsh -n "$f" || { echo "SYNTAX FAIL: $f"; rc=1; }
+done
+for f in apps/cmux-team-dispatch-task/test/*.sh; do
+  bash -n "$f" || { echo "SYNTAX FAIL: $f"; rc=1; }
+done
+exit "$rc"
 ```
 
-Expected: 出力なし（すべて成功）。
+Expected: 終了コード **0**。
 
 - [ ] **Step 5: `timeout` を使っていないことを確認する**
 
