@@ -7,75 +7,82 @@ description: >
   session transcript, then produces recommendations.
 ---
 
-# token-report: 効果分析レポート
+## Output Language
 
-token-meter のログ + rtk gain + transcript を横断集計して、
-「どんな処理にどのプラグインを使うと効くか」の質的レポートを生成する。
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
 
-## 引数仕様
+# token-report: Effectiveness analysis report
 
-| 引数 | 動作 |
+Aggregates token-meter logs + rtk gain + the transcript across sources to
+produce a qualitative report on which plugin is effective for which kind of
+processing.
+
+## Arguments
+
+| Argument | Behavior |
 |---|---|
-| `--since today\|1d\|7d\|30d\|all` | 集計期間。デフォルトは `7d` |
+| `--since today\|1d\|7d\|30d\|all` | Aggregation period. Defaults to `7d` |
 
-## 実装手順
+## Procedure
 
-1. 集計エンジンを呼び出す:
+1. Call the aggregation engine:
    ```bash
    bun run "$CLAUDE_PROJECT_DIR/apps/token-meter/scripts/token-report.ts" --since 7d
    ```
-   出力は単一の JSON。フィールドは次の通り:
-   - `tool_summary`: tool 別 calls / input / output / ratio (output 降順)
-   - `rtk.jsonl`: token-meter 計測の rtk savings
-   - `rtk.gain`: `rtk gain --format json` の global summary (Claude 外の rtk 使用も含む authoritative 値)
-   - `headroom`: post.compress 集計 (input_tokens - output_tokens = saved)
-   - `caveman`: prompt mode のため計測不可。transcript の assistant output_tokens × 0.65 を「常時 full モードだった場合の上限値」として推定
-   - `top_wasteful_tool_calls`: output_tokens シェア上位 5 件
-2. 上記 JSON を読み、以下の構成でレポートを書く:
+   The output is a single JSON object. Its fields are as follows:
+   - `tool_summary`: per-tool calls / input / output / ratio (sorted descending by output)
+   - `rtk.jsonl`: rtk savings measured by token-meter
+   - `rtk.gain`: the global summary from `rtk gain --format json` (an authoritative value that also includes rtk usage outside Claude)
+   - `headroom`: post.compress aggregation (input_tokens - output_tokens = saved)
+   - `caveman`: cannot be measured because it's prompt mode. Estimated as an "upper bound assuming full mode was always used" by multiplying the transcript's assistant output_tokens by 0.65
+   - `top_wasteful_tool_calls`: top 5 by output_tokens share
+2. Read the JSON above and write the report with the following structure:
 
 ```
-# Token 効果分析レポート (since=<期間>)
+# Token Effectiveness Analysis Report (since=<period>)
 
-## サマリー
-- 観測 tool 数: ...
-- 観測 plugin: rtk (saved=X), headroom (saved=Y), caveman (推定 ≤Z)
+## Summary
+- Observed tool count: ...
+- Observed plugins: rtk (saved=X), headroom (saved=Y), caveman (estimated ≤Z)
 
-## Plugin 別の効きと使いどころ
-### rtk (Bash 出力圧縮)
-- 計測: X tokens saved / Y calls
-- 効いた典型: ... ← rtk.gain や tool_summary から具体的に
-- 効かなかった典型: ...
-- 推奨: 「<こういう Bash> のときに使う」
+## Per-plugin effectiveness and use cases
+### rtk (Bash output compression)
+- Measured: X tokens saved / Y calls
+- Typical cases where it helped: ... ← be specific, drawing from rtk.gain and tool_summary
+- Typical cases where it didn't help: ...
+- Recommendation: "Use it for <this kind of Bash>"
 
-### headroom (大きな text の圧縮)
-- 計測: ...
-- 効いた典型: 入力 >5K で ratio が小さい call
-- 効かなかった典型: router:noop で返るケース (短文 / 保護パターン)
-- 推奨: ...
+### headroom (compression of large text)
+- Measured: ...
+- Typical cases where it helped: calls with input >5K and a small ratio
+- Typical cases where it didn't help: cases returning router:noop (short text / protected patterns)
+- Recommendation: ...
 
-### caveman (応答テキスト短縮)
-- 計測: 不可 (prompt mode)
-- 推定上限: ~Z tokens (transcript 集計 × 0.65 / sonnet-4 ベンチマーク)
-- 使いどころ: 長い説明応答が多い session、自由記述レポート系
-- 注意: 推定値は「常時 full モード」前提の上限値。実値は `/caveman:caveman-stats` 参照
+### caveman (response text shortening)
+- Measured: not possible (prompt mode)
+- Estimated upper bound: ~Z tokens (transcript aggregate × 0.65 / sonnet-4 benchmark)
+- Use case: sessions with many long explanatory responses, free-form report work
+- Caution: the estimate is an upper bound assuming "always-on full mode." See `/caveman:caveman-stats` for actual values
 
-## 浪費が大きい上位 tool
+## Top wasteful tools
 | tool | output_tokens | share |
 | ... | ... | ... |
-コメント: rtk / headroom で削減余地があるものは具体的に提案する。
+Comment: propose concrete reductions where rtk / headroom have room to help.
 
-## 推奨アクション
-- 「X tool の出力には rtk を当てる」「caveman を Y 系の応答で ON にする」など、
-  数字に裏打ちされた actionable な箇条書きを 3-5 個。
+## Recommended actions
+- 3-5 actionable bullet points backed by numbers, e.g. "apply rtk to X tool's
+  output" or "turn caveman ON for Y-type responses."
 ```
 
-3. ratio (output/input) が大きい tool は出力が支配的な call (Read / Edit / Bash の壁打ち)。
-   逆に StructuredOutput / Workflow / ToolSearch のように ratio が小さい場合は
-   input 課金が支配的なので圧縮プラグインの恩恵は薄い、と読み解く。
+3. A tool with a large ratio (output/input) indicates output-dominant calls (Read / Edit / Bash back-and-forth).
+   Conversely, a small ratio, as with StructuredOutput / Workflow / ToolSearch,
+   means input billing dominates, so compression plugins offer little benefit.
 
-## 注意
+## Cautions
 
-- `rtk.gain` は Claude 外の rtk 使用も合算する。`rtk.jsonl` との差を「Claude セッション外」と説明できる。
-- caveman の推定値は **上限値**。実値ではない旨を必ず明示する。
-- `transcript_path` が拾った session が今動かしている session と違うこともある。`current_mode` が null なら caveman は今使われていない。
-- 数値の出処を必ず併記する (jsonl 集計 / rtk gain / transcript 推定 のどれか)。
+- `rtk.gain` also sums rtk usage outside Claude. The difference from `rtk.jsonl` can be explained as "outside the Claude session."
+- caveman's estimate is an **upper bound**. Always make clear it is not an actual value.
+- The session picked up by `transcript_path` may differ from the session currently running. If `current_mode` is null, caveman is not currently in use.
+- Always state where each number came from (one of: jsonl aggregation / rtk gain / transcript estimate).

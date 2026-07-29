@@ -6,38 +6,44 @@ description: >
   a single tool. Provides ON/OFF control and JSONL-backed activity listing.
 ---
 
-# token-measure: 計測機構の制御
+## Output Language
 
-`~/.claude/token-meter/state.json` を編集し、token-meter の計測機構全体および
-tool 別の ON/OFF を制御するスキル。JSONL ログから観測実績を集計して
-`/token-measure list` で表示する。
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
 
-## 引数仕様
+# token-measure: Control the measurement mechanism
 
-| サブコマンド | 動作 |
+Edit `~/.claude/token-meter/state.json` to control the overall token-meter
+measurement mechanism and per-tool ON/OFF. Aggregates observed activity from
+JSONL logs and displays it with `/token-measure list`.
+
+## Arguments
+
+| Subcommand | Behavior |
 |---|---|
 | `on` | `state.enabled = true` |
 | `off` | `state.enabled = false` |
 | `on <tool>` | `state.tools[<tool>] = true` |
 | `off <tool>` | `state.tools[<tool>] = false` |
-| `reset` | `state.tools` を `{}` に戻す |
-| `reset <tool>` | `state.tools[<tool>]` を削除 |
-| `status` | `state.json` を整形ダンプ |
-| `list [--since 7d] [--sort calls\|tokens\|name] [--show-disabled] [--only-active]` | tool 別観測実績 + 現在 ON/OFF 判定 |
+| `reset` | Reset `state.tools` to `{}` |
+| `reset <tool>` | Delete `state.tools[<tool>]` |
+| `status` | Pretty-dump `state.json` |
+| `list [--since 7d] [--sort calls\|tokens\|name] [--show-disabled] [--only-active]` | Per-tool observed activity + current ON/OFF determination |
 
-## 実装手順
+## Procedure
 
-1. `STATE=$HOME/.claude/token-meter/state.json` を読み込む。存在しなければ `{"enabled":true,"tools":{},"plugins":{}}` を使う。
-2. サブコマンドに応じて Bun ワンライナーで JSON を書換える:
+1. Read `STATE=$HOME/.claude/token-meter/state.json`. If it doesn't exist, use `{"enabled":true,"tools":{},"plugins":{}}`.
+2. Rewrite the JSON with a Bun one-liner depending on the subcommand:
    ```bash
    bun -e "import { readState, writeState } from '$HOME/.claude/token-meter/lib/config.ts'; const s = readState('$STATE'); s.enabled = true; writeState('$STATE', s)"
    ```
-   (atomic write は writeState が保証する)
-3. `list` の場合は当日 JSONL から `kind` ごとに集計して表形式で出力。`--since` は `today|1d|7d|30d|all`。
-4. 出力形式は spec の §6.1 に従う box drawing (`──`).
+   (writeState guarantees an atomic write)
+3. For `list`, aggregate today's JSONL by `kind` and print it as a table. `--since` accepts `today|1d|7d|30d|all`.
+4. The output format follows spec §6.1's box drawing (`──`).
 
-## 注意
+## Cautions
 
-- state.json を直接書き換えるときは必ず `writeState` 経由 (tmpfile + rename)。手書きで JSON を上書きしない。
-- `list` の表示で各 tool の「根拠」列を必ず出す (override / scope.include / scope.exclude のどれか)。
-- スキル単体で hook を再配線したりはしない (`make hook-link` の責務)。
+- When editing state.json directly, always go through `writeState` (tmpfile + rename). Do not overwrite the JSON by hand.
+- Always show each tool's "basis" column in the `list` output (one of override / scope.include / scope.exclude).
+- Do not rewire hooks from within this skill alone (that's `make hook-link`'s responsibility).

@@ -6,33 +6,39 @@ description: >
   plugin's enable/disable mechanism behind a unified interface.
 ---
 
-# token-plugins: 圧縮 plugin の制御
+## Output Language
 
-`apps/token-meter/lib/plugins.ts` の `COMPRESSION_PLUGINS` を読み込み、
-各 plugin の `enable()` / `disable()` / `isEnabled()` / `isInstalled()` を呼び分ける。
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
 
-## 引数仕様
+# token-plugins: Control compression plugins
 
-| サブコマンド | 動作 |
+Load `COMPRESSION_PLUGINS` from `apps/token-meter/lib/plugins.ts` and dispatch
+to each plugin's `enable()` / `disable()` / `isEnabled()` / `isInstalled()`.
+
+## Arguments
+
+| Subcommand | Behavior |
 |---|---|
-| `list` | plugin 一覧 + インストール済み / 有効 / 最近 7 日の効果 |
+| `list` | Plugin list + installed / enabled / effect over the last 7 days |
 | `on <name>` | `COMPRESSION_PLUGINS.find(p => p.name === <name>).enable()` |
-| `off <name>` | 同 `disable()` |
-| `install <name>` | `make install-<name>` を呼ぶ |
-| `status <name>` | 1 plugin の詳細 (インストール先 / 設定パス / 観測実績) |
+| `off <name>` | Same as above with `disable()` |
+| `install <name>` | Calls `make install-<name>` |
+| `status <name>` | Details for a single plugin (install location / config path / observed activity) |
 
-## 実装手順
+## Procedure
 
-1. `bun -e "import { COMPRESSION_PLUGINS } from '$HOME/.claude/token-meter/lib/plugins.ts'; ..."` で plugin リストを取得。
-2. `list` は JSONL から `kind === 'post.rtk'` と `kind === 'post.compress'` を集計して saved_tokens を計算。
-3. `on` / `off` は async なので `await p.enable()` する。
-4. `install` は `cd $HOME/.claude/token-meter && make install-<name>` を実行。
+1. Get the plugin list with `bun -e "import { COMPRESSION_PLUGINS } from '$HOME/.claude/token-meter/lib/plugins.ts'; ..."`.
+2. For `list`, aggregate `kind === 'post.rtk'` and `kind === 'post.compress'` from JSONL and compute saved_tokens.
+3. `on` / `off` are async, so call `await p.enable()`.
+4. `install` runs `cd $HOME/.claude/token-meter && make install-<name>`.
 
-## 出力形式
+## Output Format
 
-spec §6.2 の表形式 (installed/enabled は ✓/✗)。
+spec §6.2's table format (installed/enabled shown as ✓/✗).
 
-## 注意
+## Cautions
 
-- plugin によっては `enable()` が `.claude.json` を書換えるため Claude Code 再起動が必要 (headroom)。`on`/`off` 実行後はその旨を表示する。
-- caveman の session flag パスは将来変わる可能性がある (spec §15)。
+- For some plugins, `enable()` rewrites `.claude.json`, requiring a Claude Code restart (headroom). Show this after running `on`/`off`.
+- caveman's session flag path may change in the future (spec §15).
