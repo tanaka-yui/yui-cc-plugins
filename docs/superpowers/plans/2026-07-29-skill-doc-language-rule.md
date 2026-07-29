@@ -731,9 +731,9 @@ node --test でユニットテストを実行する。"
 - これは全 app で一貫しており、各プラグインの CLAUDE.md にも明記されている。
 ```
 
-これを次に差し替える:
+これを次に差し替える（外側は 4 バックティックで囲んである。CLAUDE.md へ入れるのは中身だけで、この 4 バックティックの行自体は含めない）:
 
-```markdown
+````markdown
 ## Language convention
 
 ### 基本
@@ -800,7 +800,7 @@ node scripts/check-doc-lang.mjs apps/dev-up  # パス指定で絞り込み
 ```
 
 `pnpm check` にも組み込まれているため、違反があると CI が落ちる。
-```
+````
 
 - [ ] **Step 2: 表記が壊れていないことを確認する**
 
