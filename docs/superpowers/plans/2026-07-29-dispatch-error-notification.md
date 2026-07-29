@@ -89,7 +89,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCH="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/launch-workspace.sh"
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+# 予期しない終了でも stub を解放してから片付ける (release sentinel を全部作れば
+# 待機中の stub は自然終了し、wrapper と watcher も連鎖して終わる)
+cleanup_all() {
+  local d
+  for d in "$TMP"/release-*; do :; done
+  for d in "$TMP"/ready-*; do
+    [[ -e "$d" ]] || continue
+    : > "$TMP/release-$(basename "$d" | sed 's/^ready-//')" 2>/dev/null || true
+  done
+  sleep 1
+  rm -rf "$TMP"
+}
+trap cleanup_all EXIT INT TERM
 mkdir -p "$TMP/bin" "$TMP/repo" "$TMP/zdot"
 : > "$TMP/zdot/.zshrc"   # ユーザーの .zshrc を読ませない (zsh -ic の副作用を排除)
 
@@ -121,16 +133,26 @@ esac
 STUB
 chmod +x "$TMP/bin/cmux"
 
-# 終了コードを引数で決める stub runner。
-# STUB_WRITE_STATUS が指定されていれば、終了する前に status.json へその値を書き、
-# STUB_SLEEP 秒だけ生存し続ける (子が idle 残留する状況の再現)。
+# stub runner。
+# - STUB_READY:   起動したことを知らせる sentinel
+# - STUB_WRITE_STATUS: 起動直後に status.json へ書く値 (子が終端状態を書く再現)
+# - STUB_RELEASE: このファイルが現れるまで生存し続ける (子の idle 残留の再現)
+# - STUB_EXIT_CODE: release 後の終了コード
+#
+# 固定 sleep ではなく release sentinel で制御するのが要点。テスト側が wrapper を
+# kill すると、wrapper は CLAUDE_EXIT の取得も exit パスも通らない
+# (プロセス構造は bash runner → zsh -ic → stub-agent で、signal は伝播しない)。
+# stub を自然終了させることで、wrapper が必ず wait → 終了コード確定 → exit パスを通る。
 cat > "$TMP/bin/stub-agent" <<'STUB'
 #!/usr/bin/env bash
+[[ -n "${STUB_READY:-}" ]] && : > "$STUB_READY"
 if [[ -n "${STUB_WRITE_STATUS:-}" && -n "${STUB_STATUS_DIR:-}" ]]; then
   jq -n --arg s "$STUB_WRITE_STATUS" '{status:$s, message:"child-written"}' \
     > "$STUB_STATUS_DIR/status.json"
 fi
-[[ -n "${STUB_SLEEP:-}" ]] && sleep "$STUB_SLEEP"
+if [[ -n "${STUB_RELEASE:-}" ]]; then
+  while [[ ! -f "$STUB_RELEASE" ]]; do sleep 0.2; done
+fi
 exit "${STUB_EXIT_CODE:-0}"
 STUB
 chmod +x "$TMP/bin/stub-agent"
@@ -508,24 +530,28 @@ run_case() {
 T7 の直後（`[[ $fail -eq 0 ]]` の行より前）に次を挿入する。
 
 ```bash
-attempts() { wc -l < "$TMP/cmux-attempts.log" 2>/dev/null | tr -d ' ' || echo 0; }
-log_has()  { grep -q "$1" "$TMP/cmux-calls.log" 2>/dev/null; }
+attempts()  { wc -l < "$TMP/cmux-attempts.log" 2>/dev/null | tr -d ' ' || echo 0; }
+log_has()   { grep -q "$1" "$TMP/cmux-calls.log" 2>/dev/null; }
 log_count() { grep -c "$1" "$TMP/cmux-calls.log" 2>/dev/null || true; }
 
 # runner を非同期起動する。watcher と exit パスを区別するには、子が生存している
 # 間に通知ログを観測しなければならない (同期実行では最後の exit パスの結果しか見えない)。
 RUNNER_BG_PID=""
+CASE_LABEL=""
 run_case_bg() {
   local label="$1" exit_code="$2" prior_status="$3"
+  CASE_LABEL="$label"
   STATUS_DIR="$TMP/status-$label"
   local name="task-$label"
 
   [[ -n "${REVIEW_PRESEED:-}" ]] || rm -rf "$STATUS_DIR"
-  rm -f "$TMP/cmux-calls.log" "$TMP/cmux-attempts.log"
+  rm -f "$TMP/cmux-calls.log" "$TMP/cmux-attempts.log" \
+        "$TMP/ready-$label" "$TMP/release-$label"
   mkdir -p "$STATUS_DIR"
   jq -n --arg s "$prior_status" '{status:$s, message:"child-written"}' > "$STATUS_DIR/status.json"
-  touch "$STATUS_DIR/.assigned-$name"
+  [[ -n "${SKIP_ASSIGN:-}" ]] || touch "$STATUS_DIR/.assigned-$name"
   [[ -n "${EXTRA_SENTINEL:-}" ]] && touch "$STATUS_DIR/$EXTRA_SENTINEL"
+  [[ -n "${PRESEED_MARKER:-}" ]] && printf '%s' "$PRESEED_MARKER" > "$STATUS_DIR/.notified-$name"
 
   local output runner
   output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
@@ -535,83 +561,137 @@ run_case_bg() {
 
   ZDOTDIR="$TMP/zdot" STUB_EXIT_CODE="$exit_code" PATH="$TMP/bin:$PATH" \
     CMUX_DISPATCH_WATCH_INTERVAL=1 STUB_STATUS_DIR="$STATUS_DIR" \
-    STUB_WRITE_STATUS="${STUB_WRITE_STATUS:-}" STUB_SLEEP="${STUB_SLEEP:-}" \
+    STUB_READY="$TMP/ready-$label" STUB_RELEASE="$TMP/release-$label" \
+    STUB_WRITE_STATUS="${STUB_WRITE_STATUS:-}" \
     bash "$runner" >/dev/null 2>&1 &
   RUNNER_BG_PID=$!
+  # stub が実際に起動したことを確認してから観測に入る
+  # (起動失敗を「抑止できた」と誤認しないため)
+  wait_for_file "$TMP/ready-$label" 15 || { echo "FAIL: stub did not start ($label)"; fail=1; }
 }
 
-# 子がまだ生きているか
-child_alive() { kill -0 "$RUNNER_BG_PID" 2>/dev/null; }
-
-# パターンがログに現れるのを最大 <limit> 秒待つ
-wait_for_log() {
-  local pattern="$1" limit="${2:-10}" i
-  for i in $(seq 1 $((limit * 2))); do
-    log_has "$pattern" && return 0
-    sleep 0.5
-  done
+wait_for_file() {
+  local f="$1" limit="${2:-10}" i
+  for i in $(seq 1 $((limit * 2))); do [[ -f "$f" ]] && return 0; sleep 0.5; done
   return 1
 }
+wait_for_log() {
+  local pattern="$1" limit="${2:-10}" i
+  for i in $(seq 1 $((limit * 2))); do log_has "$pattern" && return 0; sleep 0.5; done
+  return 1
+}
+wait_for_attempts() {   # 少なくとも $1 回の送信試行が積まれるのを待つ
+  local want="$1" limit="${2:-15}" i
+  for i in $(seq 1 $((limit * 2))); do (( $(attempts) >= want )) && return 0; sleep 0.5; done
+  return 1
+}
+# stub がまだ待機中か (= 子が生存している)
+stub_running() { [[ -f "$TMP/ready-$CASE_LABEL" && ! -f "$TMP/release-$CASE_LABEL" ]]; }
 
-# 子を止め、watcher も stop sentinel で終わらせてから回収する
-stop_case() {
-  : > "$STATUS_DIR/.stop-watcher-task-$1"
-  kill "$RUNNER_BG_PID" 2>/dev/null || true
-  wait "$RUNNER_BG_PID" 2>/dev/null || true
-  sleep 2   # orphan になった watcher が sentinel を見て終わるのを待つ
+# stub を自然終了させ、wrapper が exit パスを通り切るまで待つ。
+# wrapper を kill してはならない — kill すると CLAUDE_EXIT も exit パスも通らない。
+release_case() {
+  : > "$TMP/release-$CASE_LABEL"
+  local i
+  for i in $(seq 1 60); do
+    kill -0 "$RUNNER_BG_PID" 2>/dev/null || { wait "$RUNNER_BG_PID" 2>/dev/null || true; return 0; }
+    sleep 0.5
+  done
+  echo "FAIL: runner did not exit after release ($CASE_LABEL)"; fail=1
+  return 1
 }
 
 # T8: 子が error を書いたまま生存している間に watcher が親へ通知する
 #     (exit パスではなく watcher が発火したことを、子の生存中に観測して確定させる)
-STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg watcher-fires 0 executing
-unset STUB_WRITE_STATUS STUB_SLEEP
-if wait_for_log 'status: error' 12; then t8_seen=yes; else t8_seen=no; fi
-t8_alive=$(child_alive && echo yes || echo no)
-stop_case watcher-fires
+STUB_WRITE_STATUS=error run_case_bg watcher-fires 0 executing
+unset STUB_WRITE_STATUS
+if wait_for_log 'status: error' 15; then t8_seen=yes; else t8_seen=no; fi
+t8_alive=$(stub_running && echo yes || echo no)
+release_case
 assert_eq "$t8_seen"  'yes' 'T8 子の生存中に watcher が error を通知する'
 assert_eq "$t8_alive" 'yes' 'T8 通知を観測した時点で子はまだ生存している'
 
 # T9: .deferred があれば watcher は生存中に通知しない
-EXTRA_SENTINEL=.deferred STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg watcher-deferred 0 executing
-unset EXTRA_SENTINEL STUB_WRITE_STATUS STUB_SLEEP
+EXTRA_SENTINEL=.deferred STUB_WRITE_STATUS=error run_case_bg watcher-deferred 0 executing
+unset EXTRA_SENTINEL STUB_WRITE_STATUS
 sleep 8
 t9_seen=$(log_has 'status: ' && echo yes || echo no)
-stop_case watcher-deferred
-assert_eq "$t9_seen" 'no' 'T9 .deferred があれば watcher は通知しない'
+t9_alive=$(stub_running && echo yes || echo no)
+release_case
+assert_eq "$t9_alive" 'yes' 'T9 観測中も子は生存している'
+assert_eq "$t9_seen"  'no'  'T9 .deferred があれば watcher は通知しない'
 
 # T10: 他 pane の .assigned-* があれば watcher は生存中に通知しない
 #      (exit パスには foreign-assignment ガードが無いので、観測は生存中に限る)
-EXTRA_SENTINEL=.assigned-other-pane STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg watcher-foreign 0 executing
-unset EXTRA_SENTINEL STUB_WRITE_STATUS STUB_SLEEP
+EXTRA_SENTINEL=.assigned-other-pane STUB_WRITE_STATUS=error run_case_bg watcher-foreign 0 executing
+unset EXTRA_SENTINEL STUB_WRITE_STATUS
 sleep 8
 t10_seen=$(log_has 'status: ' && echo yes || echo no)
-stop_case watcher-foreign
-assert_eq "$t10_seen" 'no' 'T10 他 pane の .assigned-* があれば watcher は通知しない'
+t10_alive=$(stub_running && echo yes || echo no)
+release_case
+assert_eq "$t10_alive" 'yes' 'T10 観測中も子は生存している'
+assert_eq "$t10_seen"  'no'  'T10 他 pane の .assigned-* があれば watcher は通知しない'
 
-# T11: wrapper 終了後に watcher の再試行が止まる (通知が失敗し続ける状況で確認する)
+# T11: 未 assigned の standby では watcher は通知しない
+SKIP_ASSIGN=1 STUB_WRITE_STATUS=error run_case_bg watcher-unassigned 0 executing
+unset SKIP_ASSIGN STUB_WRITE_STATUS
+sleep 8
+t11_seen=$(log_has 'status: ' && echo yes || echo no)
+release_case
+assert_eq "$t11_seen" 'no' 'T11 未 assigned standby では watcher は通知しない'
+
+# T12: 親向け送信が失敗し続けても watcher は再試行を続け、復旧後に通知が届く
+#      (spec 3.1 の中核保証。子は生存したまま transport を復旧させる)
 : > "$TMP/cmux-fail"
-STUB_WRITE_STATUS=error STUB_SLEEP=3 run_case_bg watcher-stops 0 executing
-unset STUB_WRITE_STATUS STUB_SLEEP
-wait "$RUNNER_BG_PID" 2>/dev/null || true
+STUB_WRITE_STATUS=error run_case_bg watcher-retry 0 executing
+unset STUB_WRITE_STATUS
+if wait_for_attempts 2 20; then t12_retried=yes; else t12_retried=no; fi
+rm -f "$TMP/cmux-fail"                       # transport 復旧
+if wait_for_log 'status: error' 15; then t12_recovered=yes; else t12_recovered=no; fi
+t12_alive=$(stub_running && echo yes || echo no)
+t12_marker=$(cat "$STATUS_DIR/.notified-task-watcher-retry" 2>/dev/null || echo '(none)')
+release_case
+assert_eq "$t12_retried"   'yes'   'T12 送信失敗中も watcher が再試行を続ける'
+assert_eq "$t12_recovered" 'yes'   'T12 transport 復旧後に親通知が届く'
+assert_eq "$t12_alive"     'yes'   'T12 復旧を観測した時点で子はまだ生存している'
+assert_eq "$t12_marker"    'error' 'T12 通知成功後に marker が確定する'
+
+# T13: wrapper 終了後に watcher の再試行が止まる (プロセス残留の検出)
+: > "$TMP/cmux-fail"
+STUB_WRITE_STATUS=error run_case_bg watcher-stops 0 executing
+unset STUB_WRITE_STATUS
+wait_for_attempts 2 20 || true
+release_case
 sleep 2
 after_exit=$(attempts)
-sleep 5
+sleep 6
 rm -f "$TMP/cmux-fail"
-assert_eq "$(attempts)" "$after_exit" 'T11 wrapper 終了後に watcher の再試行が止まる'
+assert_eq "$(attempts)" "$after_exit" 'T13 wrapper 終了後に watcher の再試行が止まる'
 
-# T12: watcher が done を通知した後に子が異常終了 → error の訂正通知が続く
-#      (done が先、error が後、という順序まで確認する)
-STUB_WRITE_STATUS=done STUB_SLEEP=25 run_case_bg watcher-correction 1 executing
-unset STUB_WRITE_STATUS STUB_SLEEP
-if wait_for_log 'status: done' 12; then t12_done=yes; else t12_done=no; fi
-t12_alive=$(child_alive && echo yes || echo no)
-kill "$RUNNER_BG_PID" 2>/dev/null || true   # stub を落とすと wrapper は非ゼロ終了へ進む
-wait "$RUNNER_BG_PID" 2>/dev/null || true
-sleep 2
-assert_eq "$t12_done"  'yes' 'T12 子の生存中に watcher が done を通知する'
-assert_eq "$t12_alive" 'yes' 'T12 done 通知の時点で子はまだ生存している'
+# T14: watcher が done を通知した後に子が異常終了 → error の訂正通知が続く
+STUB_WRITE_STATUS=done run_case_bg watcher-correction 1 executing
+unset STUB_WRITE_STATUS
+if wait_for_log 'status: done' 15; then t14_done=yes; else t14_done=no; fi
+t14_alive=$(stub_running && echo yes || echo no)
+release_case                                  # stub が exit 1 で自然終了 → exit パスへ
+assert_eq "$t14_done"  'yes' 'T14 子の生存中に watcher が done を通知する'
+assert_eq "$t14_alive" 'yes' 'T14 done 通知の時点で子はまだ生存している'
 assert_eq "$(log_has 'status: error' && echo yes || echo no)" 'yes' \
-  'T12 その後の異常終了で error の訂正通知が届く'
+  'T14 その後の異常終了で error の訂正通知が届く'
+
+# T15: watcher と exit の双方が同じ遷移を観測しても親通知は 1 回だけ
+STUB_WRITE_STATUS=error run_case_bg watcher-once 0 executing
+unset STUB_WRITE_STATUS
+wait_for_log 'status: error' 15 || true
+release_case
+assert_eq "$(log_count 'status: error')" '1' 'T15 同一遷移の親通知は 1 回だけ'
+
+# T16: 旧世代の .notified-* が残っていても、wrapper 起動時に消えて再通知される
+PRESEED_MARKER=error STUB_WRITE_STATUS=error run_case_bg marker-stale 0 executing
+unset PRESEED_MARKER STUB_WRITE_STATUS
+if wait_for_log 'status: error' 15; then t16=yes; else t16=no; fi
+release_case
+assert_eq "$t16" 'yes' 'T16 stale marker があっても新しい世代として通知される'
 ```
 
 - [ ] **Step 3: テストを実行して失敗を確認する**
@@ -620,7 +700,7 @@ assert_eq "$(log_has 'status: error' && echo yes || echo no)" 'yes' \
 bash apps/cmux-team-dispatch-task/test/test-runner-terminal-status.sh
 ```
 
-Expected: `FAIL: T8 子の生存中に watcher が error を通知する (expected: yes, got: no)` と `FAIL: T12 子の生存中に watcher が done を通知する`。T9 / T10 / T11 は watcher が存在しないので PASS するが、終了コードは 1。
+Expected: 少なくとも `FAIL: T8 子の生存中に watcher が error を通知する (expected: yes, got: no)`、`FAIL: T12 送信失敗中も watcher が再試行を続ける`、`FAIL: T14 子の生存中に watcher が done を通知する`、`FAIL: T16 stale marker があっても新しい世代として通知される` が出て終了コード 1。
 
 これらのケースは**子が生存している間**に観測するので、Task 1・2 だけ適用した状態（exit パスは正しく通知する）でも確実に落ちる。同期実行のままでは exit パスの結果しか見えず、実装前から PASS してしまう。
 
@@ -1014,7 +1094,7 @@ ABORT_INSTRUCTION を追加して inner prompt へ埋め込み、render-loop-pro
 
 - [ ] **Step 1: 失敗するテストを追加する**
 
-`test/test-runner-terminal-status.sh` の T12 の直後に次を挿入する。
+`test/test-runner-terminal-status.sh` の T16 の直後に次を挿入する。ケース ID は Task 3 と衝突しない `R1`〜`R5` を使う。
 
 まず cmux stub を**宛先ごとに失敗させられる**形に拡張する。stub 定義の `send|send-key)` 分岐を次に差し替える（親宛は成功しつつレビュアー宛だけ失敗させるため）。
 
@@ -1038,68 +1118,68 @@ seed_review_config() {   # $1 = status dir, $2 = JSON 本体
   printf '%s' "$2" > "$1/review/code-review.json"
 }
 
-# T13: code-review.json があれば error 時にレビュアーへ [abort] が飛ぶ
-STATUS_DIR="$TMP/status-reviewer"; rm -rf "$STATUS_DIR"
+# R1: code-review.json があれば error 時にレビュアーへ [abort] が飛ぶ
+STATUS_DIR="$TMP/status-rv1"; rm -rf "$STATUS_DIR"
 seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
-REVIEW_PRESEED=1 STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg reviewer 0 executing
-unset REVIEW_PRESEED STUB_WRITE_STATUS STUB_SLEEP
-if wait_for_log '\[abort\]' 12; then t13=yes; else t13=no; fi
-stop_case reviewer
-assert_eq "$t13" 'yes' 'T13 code-review.json があればレビュアーへ [abort] が飛ぶ'
+REVIEW_PRESEED=1 STUB_WRITE_STATUS=error run_case_bg rv1 0 executing
+unset REVIEW_PRESEED STUB_WRITE_STATUS
+if wait_for_log '\[abort\]' 15; then r1=yes; else r1=no; fi
+release_case
+assert_eq "$r1" 'yes' 'R1 code-review.json があればレビュアーへ [abort] が飛ぶ'
 
-# T14: code-review.json が無ければレビュアー通知はスキップされ、親通知は成功する
-STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg no-reviewer 0 executing
-unset STUB_WRITE_STATUS STUB_SLEEP
-wait_for_log 'status: error' 12 || true
-t14_abort=$(reviewer_msgs)
-t14_parent=$(log_has 'status: error' && echo yes || echo no)
-stop_case no-reviewer
-assert_eq "$t14_abort"  '0'   'T14 code-review.json が無ければ [abort] は送らない'
-assert_eq "$t14_parent" 'yes' 'T14 レビュアー不在でも親通知は成功する'
+# R2: code-review.json が無ければレビュアー通知はスキップされ、親通知は成功する
+STUB_WRITE_STATUS=error run_case_bg rv2 0 executing
+unset STUB_WRITE_STATUS
+wait_for_log 'status: error' 15 || true
+r2_abort=$(reviewer_msgs)
+r2_parent=$(log_has 'status: error' && echo yes || echo no)
+release_case
+assert_eq "$r2_abort"  '0'   'R2 code-review.json が無ければ [abort] は送らない'
+assert_eq "$r2_parent" 'yes' 'R2 レビュアー不在でも親通知は成功する'
 
-# T15: done では [abort] を送らない (abort は error 専用)
-STATUS_DIR="$TMP/status-reviewer-done"; rm -rf "$STATUS_DIR"
+# R3: done では [abort] を送らない (abort は error 専用)
+STATUS_DIR="$TMP/status-rv3"; rm -rf "$STATUS_DIR"
 seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
-REVIEW_PRESEED=1 STUB_WRITE_STATUS=done STUB_SLEEP=30 run_case_bg reviewer-done 0 executing
-unset REVIEW_PRESEED STUB_WRITE_STATUS STUB_SLEEP
-wait_for_log 'status: done' 12 || true
-t15=$(reviewer_msgs)
-stop_case reviewer-done
-assert_eq "$t15" '0' 'T15 done では [abort] を送らない'
+REVIEW_PRESEED=1 STUB_WRITE_STATUS=done run_case_bg rv3 0 executing
+unset REVIEW_PRESEED STUB_WRITE_STATUS
+wait_for_log 'status: done' 15 || true
+r3=$(reviewer_msgs)
+release_case
+assert_eq "$r3" '0' 'R3 done では [abort] を送らない'
 
-# T16: 壊れた JSON / 空 surface でも親通知は成功する (レビュアー通知はスキップ)
+# R4: 壊れた JSON / 空 surface でも親通知は成功する (レビュアー通知はスキップ)
 for variant in broken empty; do
-  STATUS_DIR="$TMP/status-rv-$variant"; rm -rf "$STATUS_DIR"
+  STATUS_DIR="$TMP/status-rv4-$variant"; rm -rf "$STATUS_DIR"
   if [[ "$variant" == broken ]]; then
     seed_review_config "$STATUS_DIR" 'this is not json'
   else
     seed_review_config "$STATUS_DIR" '{"reviewer_surface":"","reviewer_workspace":"","review_dir":"x"}'
   fi
-  REVIEW_PRESEED=1 STUB_WRITE_STATUS=error STUB_SLEEP=30 run_case_bg "rv-$variant" 0 executing
-  unset REVIEW_PRESEED STUB_WRITE_STATUS STUB_SLEEP
-  wait_for_log 'status: error' 12 || true
+  REVIEW_PRESEED=1 STUB_WRITE_STATUS=error run_case_bg "rv4-$variant" 0 executing
+  unset REVIEW_PRESEED STUB_WRITE_STATUS
+  wait_for_log 'status: error' 15 || true
   v_parent=$(log_has 'status: error' && echo yes || echo no)
   v_abort=$(reviewer_msgs)
-  stop_case "rv-$variant"
-  assert_eq "$v_parent" 'yes' "T16 ($variant) 壊れた/空の config でも親通知は成功する"
-  assert_eq "$v_abort"  '0'   "T16 ($variant) 壊れた/空の config では [abort] を送らない"
+  release_case
+  assert_eq "$v_parent" 'yes' "R4 ($variant) 壊れた/空の config でも親通知は成功する"
+  assert_eq "$v_abort"  '0'   "R4 ($variant) 壊れた/空の config では [abort] を送らない"
 done
 
-# T17: レビュアー宛だけ失敗させる → 親 marker は確定し、復旧後に [abort] が届く
-STATUS_DIR="$TMP/status-rv-retry"; rm -rf "$STATUS_DIR"
+# R5: レビュアー宛だけ失敗させる → 親 marker は確定し、復旧後に [abort] が届く
+STATUS_DIR="$TMP/status-rv5"; rm -rf "$STATUS_DIR"
 seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
 : > "$TMP/cmux-fail-reviewer"
-REVIEW_PRESEED=1 STUB_WRITE_STATUS=error STUB_SLEEP=40 run_case_bg rv-retry 0 executing
-unset REVIEW_PRESEED STUB_WRITE_STATUS STUB_SLEEP
-wait_for_log 'status: error' 12 || true
-t17_parent_marker=$(cat "$STATUS_DIR/.notified-task-rv-retry" 2>/dev/null || echo '(none)')
-t17_abort_before=$(reviewer_msgs)
+REVIEW_PRESEED=1 STUB_WRITE_STATUS=error run_case_bg rv5 0 executing
+unset REVIEW_PRESEED STUB_WRITE_STATUS
+wait_for_log 'status: error' 15 || true
+r5_marker=$(cat "$STATUS_DIR/.notified-task-rv5" 2>/dev/null || echo '(none)')
+r5_before=$(reviewer_msgs)
 rm -f "$TMP/cmux-fail-reviewer"          # transport 復旧
-if wait_for_log '\[abort\]' 12; then t17_after=yes; else t17_after=no; fi
-stop_case rv-retry
-assert_eq "$t17_parent_marker" 'error' 'T17 レビュアー送信が失敗しても親 marker は確定する'
-assert_eq "$t17_abort_before"  '0'     'T17 復旧前は [abort] が届いていない'
-assert_eq "$t17_after"         'yes'   'T17 復旧後に [abort] が届く'
+if wait_for_log '\[abort\]' 15; then r5_after=yes; else r5_after=no; fi
+release_case
+assert_eq "$r5_marker" 'error' 'R5 レビュアー送信が失敗しても親 marker は確定する'
+assert_eq "$r5_before" '0'     'R5 復旧前は [abort] が届いていない'
+assert_eq "$r5_after"  'yes'   'R5 復旧後に [abort] が届く'
 ```
 
 - [ ] **Step 2: テストを実行して失敗を確認する**
@@ -1108,7 +1188,7 @@ assert_eq "$t17_after"         'yes'   'T17 復旧後に [abort] が届く'
 bash apps/cmux-team-dispatch-task/test/test-runner-terminal-status.sh
 ```
 
-Expected: `FAIL: T13 code-review.json があればレビュアーへ [abort] が飛ぶ (expected: yes, got: no)`。
+Expected: `FAIL: R1 code-review.json があればレビュアーへ [abort] が飛ぶ (expected: yes, got: no)` と `FAIL: R5 復旧後に [abort] が届く`。
 
 - [ ] **Step 3: `notify_reviewer_once` を実装する**
 
@@ -1407,44 +1487,56 @@ git commit -m "docs(cmux-team-dispatch-task): 通知欠落・無限待機パタ�
     - 回帰は `bash test/test-runner-terminal-status.sh` と `bash test/test-runner-signal-exit.sh` で検証。既知の未解決パターンは `docs/notification-gaps.md` を参照
 ```
 
-- [ ] **Step 5: guide-ja.md / README.md の起動例にも `--defer-status` を反映する**
+- [ ] **Step 5: guide-ja.md / README.md に `--defer-status` の記述を追加する**
 
-Task 7 は SKILL.md の起動例だけを直している。Global Constraints の 4 ファイル整合に従い、派生ドキュメント側の `launch-workspace.sh` 起動例にも同じフラグを入れる。
+**事実確認**: `guide-ja.md` と `README.md` には workspace レイアウトの Child 起動 invocation（`launch-workspace.sh --mode plan|superpowers`）が**そもそも存在しない**。両ファイルの既存の `--defer-status` 出現（guide 2 件 / README 1 件）はすべて「Child は `--defer-status` 付きで起動される」という説明文であり、workspace 起動例の検査にはならない。
 
-```bash
-# 起動例を含む箇所を洗い出す
-grep -n 'launch-workspace.sh' apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md
-grep -n 'launch-workspace.sh' apps/cmux-team-dispatch-task/README.md
+したがってここでは invocation を足すのではなく、**仕様文を明示する**。両ファイルの Phase B / execute モードの説明箇所に、次の一文を（文言をそのまま）追記する。
+
+```
+workspace レイアウトの Child 起動にも `--defer-status` を渡す。これが無いと、Phase B で
+実行を別 surface へ移譲した Child の wrapper が、孫の書いた終端状態を上書きしてしまう。
 ```
 
-見つかった **workspace レイアウトの Child 起動例**（`--mode plan` / `--mode superpowers` を伴うもの。`--mode execute` の孫起動例には付けない）に `--defer-status \` を追加し、「Phase B で実行を移譲したとき Child の wrapper が status.json を上書きしないために必須」である旨を添える。
+- [ ] **Step 6: `--defer-status` の整合を静的に検査する**
 
-- [ ] **Step 6: 起動例の整合を静的に検査する**
+**この検査は Task 7・Step 5 の変更前には必ず失敗しなければならない**（全体件数を数えるだけでは変更前から通ってしまう）。
 
 ```bash
-for f in apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md \
-         apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md \
+rc=0
+# SKILL.md: workspace 起動例のブロック内にフラグがあること
+c=$(awk '/^### Launch: Workspace Mode/,/^### Pre-warm Standby Panes/' \
+      apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md \
+      | grep -c -- '--defer-status' || true)
+[[ "$c" -ge 1 ]] || { echo "NG: SKILL.md の workspace 起動例に --defer-status が無い"; rc=1; }
+
+# guide-ja.md / README.md: Step 5 で追記した仕様文があること
+for f in apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md \
          apps/cmux-team-dispatch-task/README.md; do
-  printf '%s: ' "$f"
-  grep -c -- '--defer-status' "$f" || true
+  grep -q 'workspace レイアウトの Child 起動にも `--defer-status`' "$f" \
+    || { echo "NG: $f に workspace Child の --defer-status 記述が無い"; rc=1; }
 done
+exit "$rc"
 ```
 
-Expected: 3 ファイルすべてで 1 以上。0 のファイルがあれば Step 5 に戻る。
+Expected: 終了コード **0**。実装前に実行すると 3 件すべて NG になることを一度確認しておくこと。
 
-- [ ] **Step 7: 整合を目視確認する**
+- [ ] **Step 7: watcher 仕様の 4 ファイル整合を検査する**
+
+`watcher` という単語は agmsg の説明で既に各ファイルに出現するため（SKILL 11 / guide 12 / README 5 / CLAUDE 6 件）、単語数では判定できない。本作業で導入する用語 `status.json watcher`（現在は 4 ファイルとも 0 件）で判定する。
 
 ```bash
+rc=0
 for f in apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md \
          apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md \
          apps/cmux-team-dispatch-task/README.md \
          apps/cmux-team-dispatch-task/CLAUDE.md; do
-  echo "=== $f ==="
-  grep -c 'watcher' "$f" || true
+  grep -q 'status.json watcher' "$f" || { echo "NG: $f に status.json watcher の記述が無い"; rc=1; }
 done
+exit "$rc"
 ```
 
-Expected: 4 ファイルすべてで 1 以上。
+Expected: 終了コード **0**。Step 1〜4 で各ファイルへ `status.json watcher` という語を使って説明を書くこと。
 
 - [ ] **Step 8: コミットする**
 
@@ -1532,12 +1624,19 @@ Expected: 終了コード **0**。
 
 - [ ] **Step 5: `timeout` を使っていないことを確認する**
 
+自然言語の「timeout」や `--timeout-min` / `cmux wait-for --timeout` / `status:"timeout"` を誤検知せず、**コマンド位置の `timeout` / `gtimeout` だけ**を拾い、見つかったら**非ゼロで終わる**形にする。
+
 ```bash
-grep -rn '\btimeout \|gtimeout' apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/ \
-  | grep -v -- '--timeout-min\|timeout sentinel\|TIMEOUT_SENTINEL\|ready-timeout' || echo "OK: timeout コマンドは未使用"
+# コマンド位置 = 行頭 / ; / && / || / パイプ / ( / then / do / exec の直後
+if grep -rnE '(^|[;&|(]|\bthen[[:space:]]|\bdo[[:space:]]|\bexec[[:space:]])[[:space:]]*g?timeout[[:space:]]+[0-9]' \
+     apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/; then
+  echo "NG: timeout / gtimeout をコマンドとして使っている (対象 macOS に存在しない)"
+  exit 1
+fi
+echo "OK: timeout コマンドは未使用"
 ```
 
-Expected: `OK: timeout コマンドは未使用`。
+Expected: `OK: timeout コマンドは未使用` と終了コード **0**。
 
 - [ ] **Step 6: コミットする**
 
