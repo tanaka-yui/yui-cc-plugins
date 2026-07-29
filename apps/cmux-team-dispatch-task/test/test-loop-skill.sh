@@ -9,10 +9,13 @@ for needle in 'issue-fetch.sh' 'batch-wait.sh' 'loop-cleanup.sh' 'render-loop-pr
 done
 # concurrency の契約: 既定 5 / 自由入力可 / 上限 10 / 「タスク数であってペイン数ではない」注記。
 # 選択肢の並びは AskUserQuestion の先頭が既定になるため、5 が 3 より前にあることまで検査する。
-for needle in '既定は 5' '1〜10 の整数を自由入力' 'タスク数であってペイン数ではない' 'concurrency=5'; do
-  grep -Fq -- "$needle" "$SK/references/loop-mode.md" || { echo "FAIL: concurrency 契約 ($needle)"; exit 1; }
+# loop-mode.md は英語ドキュメントのため needle は英語表現。改行をまたぐ表現があるため
+# 空白を単一スペースに畳んだ全文に対して照合する(reflow に強くするため)。
+loop_mode_flat=$(tr '\n' ' ' < "$SK/references/loop-mode.md" | tr -s ' ')
+for needle in 'default is 5' 'freely enter an integer from 1 to 10' 'task count, not a pane count' 'concurrency=5'; do
+  grep -Fq -- "$needle" <<<"$loop_mode_flat" || { echo "FAIL: concurrency 契約 ($needle)"; exit 1; }
 done
-conc_section=$(sed -n '/1 バッチの並列実行数 (concurrency)/,/^### /p' "$SK/references/loop-mode.md")
+conc_section=$(sed -n '/Parallel execution count per batch/,/^### /p' "$SK/references/loop-mode.md")
 first_choice=$(grep -oE '^   - \*\*[0-9]+' <<<"$conc_section" | head -1 | grep -oE '[0-9]+')
 [[ "$first_choice" == "5" ]] || { echo "FAIL: concurrency の先頭選択肢が 5 でない (got: ${first_choice:-none})"; exit 1; }
 echo 'PASS: concurrency の既定と上限の契約'
