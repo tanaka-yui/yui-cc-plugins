@@ -98,10 +98,10 @@ Step 3 of the `/codex-review` command).
 
 ### 3. Report
 
-Convey the launch summary output by the bin (`codex review launched: <surface> (...)`)
-in one line. Since the review starts flowing on the codex side, polling from this
-session is unnecessary (when notification wiring is enabled, run `cmux-codex-wait` as
-a background task and wait for the wake).
+Convey the launch summary line the bin prints (surface / direction / model / effort /
+target) in one line. Since the review starts flowing on the codex side, polling from
+this session is unnecessary (when notification wiring is enabled, run
+`cmux-codex-wait` as a background task and wait for the wake).
 
 ## codex command that gets launched (reference)
 
@@ -111,8 +111,11 @@ Launches by handing the review prompt to interactive codex (does not use the
 ```bash
 codex --sandbox workspace-write --ask-for-approval never \
   -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
-  'Review the uncommitted changes and point out concrete problems and improvements.'
+  "$REVIEW_INSTR"
 ```
+
+`REVIEW_INSTR` is assembled in `bin/cmux-codex-review` from the review target's description
+(`TARGET_DESC`) plus any custom `--` instructions; its actual text is Japanese.
 
 The approval policy is set to `never` because, if left unspecified, codex stops at an
 approval prompt every time it runs a command, turning the review into something that
