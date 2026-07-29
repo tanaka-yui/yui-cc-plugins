@@ -12,6 +12,12 @@ description: >
 argument-hint: "[setup|up|down|status|urls] [--slot-range MIN-MAX]"
 ---
 
+## Output Language
+
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
+
 # dev-up
 
 Worktree-isolated development stack lifecycle. Reads `.dev-up.yaml` and
@@ -81,9 +87,9 @@ whose worktree was deleted or whose processes are all dead.
 
 The dispatch task description should include:
 
-> 動作確認するときは Bash で `bash <skill-dir>/scripts/compose-up.sh` を実行してください。
-> 完了直前に `bash <skill-dir>/scripts/compose-down.sh` でコンテナ停止とスロット解放を行ってください。
-> URL 一覧を result.md の "## Verification URLs" セクションに転記してください。
+> When verifying the running app, run `bash <skill-dir>/scripts/compose-up.sh` via Bash.
+> Just before finishing, run `bash <skill-dir>/scripts/compose-down.sh` to stop containers and release the slot.
+> Transcribe the URL list into the "## Verification URLs" section of result.md.
 
 `cmux-team-dispatch-task` is not modified — coordination flows through the prompt only.
 
