@@ -42,6 +42,7 @@ Rules:
 - Always use box drawing characters `─ ┼ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴`. ASCII (`-`, `+`, `|`) is forbidden.
 - Column widths are fixed (see templates). Truncate long values with a center ellipsis `…`.
 - Status values are limited to: `launched`, `executing`, `done`, `error`.
+- Header rows and fixed token values are NOT translatable. Keep the column headers (`#`, `Task`, `Surface`, `Mode`, `Status`, `Last message`, `Duration`, `Strategy`, `Result / PR`) and the `Mode` / `Status` tokens exactly as written above. The "render output in Japanese" rule applies only to the free-text cells (task names, messages, results) — a translated header would insert full-width characters and break the fixed column alignment.
 - Embed Template B verbatim into child session prompts so children also report progress in the same shape.
 
 ### Template A — Pre-launch task list (Step 1h)
@@ -1287,6 +1288,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          when YOU are the reviewer). The spawn fallback already writes this file;
          this makes the prewarm path write it too.
 
+         MAINTENANCE NOTE (for SKILL.md editors — not part of the request text):
+         the line break inside the quoted old wording below is DELIBERATE.
+         test/test-launch-workspace-codex.sh T14 uses grep -F to assert that the
+         banned engine-neutral exit phrase never appears whole on any single line
+         of this file, so joining that quotation back onto one line makes T14 fail.
+         Do NOT reflow it, and do not restate the banned phrase unbroken anywhere.
+
          (a) and (b) MUST NOT be omitted. The old wording ended with a single
          engine-neutral sentence ("run /exit (claude) or end the session
          (codex)") and did not mention the completion notification at all. As a result:
@@ -1444,6 +1452,11 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 PROGRESS REPORTING FORMAT:
 When reporting progress to the parent (or in your own visible output), you MUST
 use the following box drawing table. Do NOT free-form the layout.
+The header row, the column widths, and the fixed token values are NOT translatable:
+keep the headers (# / Task / Surface / Mode / Status / Last message) and the mode /
+status tokens listed below exactly as written. The OUTPUT LANGUAGE rule applies only
+to the free-text cells (Task and Last message) — a translated header would insert
+full-width characters and break the fixed column alignment.
 
 ┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
 │ #  │ Task                     │ Surface  │ Mode       │ Status    │ Last message            │
