@@ -82,7 +82,7 @@ fi
 | 終端 status の sticky 化（4.1） | handoff 失敗時の transactional な所有権移譲 |
 | exit に依存しない親通知（4.2 / 4.3） | 配信 phase の永続化による exactly-once 配信 |
 | 所有権の二重化防止と `--defer-status` の欠落修正（4.4） | `cmux` コマンドの timeout / hang 対策 |
-| signal ガードの役割分離（4.5） | dispatch 世代の PID 排他制御 |
+| signal ガードは現行維持（4.5） | dispatch 世代の PID 排他制御 |
 | レビュアー wake（best-effort。4.6） | 沈黙する実装者の deadline 検知 |
 | プロンプト層の ABORT プロトコル（5 章） | |
 
@@ -162,16 +162,17 @@ Phase B の手順は `.assigned-<NAME>` touch → 実行指示送信 → `.defer
 
 **Phase B の手順自体は変更しない**。round 2〜4 で検討した「送信成否による所有権移譲の契約」は、`cmux send` の終了コードが配信の有無を一意に示さないため安全に定義できないことが判明した（round 4 Finding 1・2）。8 章に未解決として記録する。
 
-### 4.5 signal 終了ガードの役割分離
+### 4.5 signal 終了ガードは変更しない
 
-現行の signal ガード（`launch-workspace.sh:778-785`）は `exit>=128` かつ terminal status のとき **status 更新と通知の両方を抑止**して `exit 0` する。watcher 導入後は「子が `error` を書く → 最初の poll 前に signal 終了 → ガードが通知ごと抑止」という欠落経路が生じる。
+現行の signal ガード（`launch-workspace.sh:778-785`）は `exit>=128` かつ terminal status のとき status 更新と通知の両方を抑止して `exit 0` する。当初はこれを「status 上書き抑止のみ」に限定し、通知可否を marker 比較へ一本化する案だったが、**既存の回帰テストを壊す**ことが判明したため採用しない。
 
-そこで**「status を上書きしない」と「通知しない」を分離**する。
+`test/test-runner-signal-exit.sh` の S1（`test-runner-signal-exit.sh:97-100`）は「`done` の pane を最終クリーンアップで close したとき、status を降格せず**親通知も送らない**」ことを検証している。marker は wrapper 起動時に削除されるため（4.2）、通知可否を marker 比較だけに委ねると marker 未設定 → 通知あり、となり S1 が失敗する。
 
-- signal ガードの役割は **status の上書き抑止のみ**に限定する（4.1 の sticky 規則に吸収される）
-- 通知するか否かは **4.3 の marker 内容比較に一本化**する
+この抑止は妥当でもある。`PREV_STATUS` が terminal ということは、子が生存中に終端状態を書いたということであり、通知責任は既にその時点の書き手（子自身の必須通知、または本設計の watcher）にある。クリーンアップ時に全 pane が改めて通知すると、親は終了直前に重複通知の束を受け取ることになる。
 
-「最終クリーンアップで pane を閉じただけ（通知済み）」は marker 一致でスキップされ、「未通知のまま signal 終了」は通知される。`test-runner-signal-exit.sh` が守る「pane close 時に偽 `error` 通知を出さない」性質は、4.1 の sticky 化で status が `done` のまま保たれ marker も `done` のままなので維持される。
+**したがってガードはそのまま残す**。4.1 の sticky 化により status 降格はいずれにせよ起きなくなるので、ガードの status 抑止部分は冗長になるが無害である。
+
+残る窓（子が終端状態を書いた直後、最初の poll 前に signal 終了した場合にこの wrapper からは通知されない）は 8 章 U8 として記録する。現行と同じ挙動であり、悪化はしない。
 
 ### 4.6 レビュアー wake（best-effort）
 
@@ -279,7 +280,7 @@ terminal status が `error` のとき、watcher は親通知に加えてレビ�
   | 3c | `.deferred` あり / 未 assigned standby | watcher が発火**しない** |
   | 4 | watcher が `done` 通知後に stub が exit 1 | 最終 `error` が**訂正通知**として親へ届く |
   | 5 | stub を終了させないまま最初の数回の `send` を失敗させ、その後成功に戻す | watcher が諦めず、復旧後に通知が届く |
-  | 6 | terminal status 書き込み直後、最初の poll 前に signal 終了 | 通知が失われない |
+  | 6 | terminal status 書き込み直後、最初の poll 前に signal 終了 | 既存 S1 と同じく status は保持され通知は送られない（U8 として既知。現行と同挙動） |
   | 7 | 同一遷移を watcher と exit の双方が観測 | 通知は 1 回だけ |
   | 8 | `.notified-*` が残った status directory で再実行 | wrapper 起動時に削除され、新しく通知される |
   | 9 | wrapper の正常終了・signal 終了の双方 | watcher プロセスが残留しない |
@@ -303,6 +304,7 @@ terminal status が `error` のとき、watcher は親通知に加えてレビ�
 | U5 | `cmux` コマンドの hang | round 4 Finding 4 | 対象 macOS に `timeout` / `gtimeout` が無い。`perl -e alarm` 等の代替は可能だが、外部依存を増やす割に現行より改善しないため見送る |
 | U6 | dispatch 世代の排他（旧 wrapper 生存・stale PID 再利用） | round 4 Finding 6 | `kill -0` による PID 検査は TOCTOU と PID 再利用に耐えない。正しくは親側の排他 lock と generation token が要るが、通常は最終 cleanup が `.dispatch` を消すため発生頻度が低い |
 | U7 | agmsg `send.sh` 失敗時のリトライ | `SKILL.md:1803-1810` | agmsg push は inbox 記録専用で idle セッションを起こせない。wake は `cmux send` が担うため、記録の失敗は警告ログに留める |
+| U8 | 終端状態を書いた直後・最初の poll 前に signal 終了すると、この wrapper からは通知されない | 4.5、`launch-workspace.sh:778-785`、`test/test-runner-signal-exit.sh:97-100` | signal ガードの通知抑止は既存の回帰テストが守っている挙動。窓は最大 15 秒で、現行と同じ挙動のため悪化しない |
 
 ## 9. リスクと緩和
 
