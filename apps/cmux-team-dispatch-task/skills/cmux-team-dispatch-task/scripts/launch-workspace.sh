@@ -570,7 +570,19 @@ if [[ "$MODE" == "execute" ]]; then
       REVIEW_INSTRUCTION="${REVIEW_INSTRUCTION}If round 3 still ends with needs_work, or the wait exits stalled again after one re-send of the same round with a fresh baseline: if you can ask the user interactively via AskUserQuestion, ask whether to proceed to the PR or keep going; otherwise note the unresolved or skipped review in the PR body and proceed. "
     fi
   fi
-  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${EXIT_INSTRUCTION}"
+  ABORT_INSTRUCTION=""
+  if [[ -n "$STATUS_DIR" ]]; then
+    ABORT_REVIEW_STEP=""
+    if [[ -n "$REVIEW_CONFIG" ]]; then
+      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N.md for the current round N, using N=1 if you never sent a review request, with the LAST line being exactly VERDICT: needs_work; this is only a record because the reviewer does not poll that file. Then wake the reviewer by running: $CMUX send $TARGET_FLAGS -- the message must start with [abort] followed by a one line reason -- and then: $CMUX send-key $TARGET_FLAGS return. Next "
+    fi
+    ABORT_PARENT_STEP=""
+    if [[ -n "$NOTIFY_WORKSPACE" ]]; then
+      ABORT_PARENT_STEP="Then notify the parent by running: $CMUX send --workspace $NOTIFY_WORKSPACE -- the message must say: [dispatch] task $WORKSPACE_NAME finished (status: error) -- and then: $CMUX send-key --workspace $NOTIFY_WORKSPACE return. "
+    fi
+    ABORT_INSTRUCTION="ABORT PROTOCOL, which overrides everything above: if at any point you decide to stop without completing the work, whether from a blocking error, a design contradiction, or simply giving up, you must not stop silently. Writing the status file is not a notification because only the parent polls it. Before you stop: ${ABORT_REVIEW_STEP}write $STATUS_DIR/status.json with status set to error and the reason as the message. ${ABORT_PARENT_STEP}Finally end this session exactly as described below for the successful case. "
+  fi
+  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${ABORT_INSTRUCTION}${EXIT_INSTRUCTION}"
 else
   PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
 fi
