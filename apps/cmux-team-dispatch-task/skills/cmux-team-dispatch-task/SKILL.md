@@ -1966,7 +1966,7 @@ process exits:
    - Always uses `cmux send` + `cmux send-key return` so messages are delivered to the parent's claude TUI without leaving text in the input box
 
 2. Report the launch summary to the user using Template A with concrete surface IDs.
-3. Tell the user: "N タスクを監視中。完了通知と heartbeat を待ちます。"
+3. Tell the user: "Monitoring N tasks. Waiting for completion notifications and heartbeats."
 4. **End your turn.** Do not block waiting.
 
 ### Background process health check
@@ -2013,9 +2013,9 @@ This is a liveness signal from the background monitor. Do nothing unless the use
 
 The monitor exited unexpectedly. Inspect `.dispatch/.monitor.log`, then re-launch with `--resume` (see "Background process health check" below).
 
-**When you receive a `[dispatch-monitor] 全 N タスクが完了しました` message:**
+**When you receive a completion message that starts with `[dispatch-monitor]` and contains `(done: N, error: N)`:**
 
-This is the all-done notification from the background monitor. All tasks have reached a terminal state. Proceed to Completion.
+This is the all-done notification from the background monitor (`monitor-dispatch.sh`). Identify it by that prefix and the `(done: N, error: N)` counts rather than matching the message body verbatim — the script emits the body text in Japanese and it is not translated here. All tasks have reached a terminal state. Proceed to Completion.
 
 ### Polling Status Files (Manual Check)
 
@@ -2149,7 +2149,8 @@ Present the user with two options:
    if bash <this-skill-dir>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check; then
      rm -rf .dispatch/
    else
-     echo "issue ループが実行中のため .dispatch/ の一括削除をスキップします" >&2
+     # This message is shown to the user — write it in Japanese (see Output Language)
+     echo "<skip bulk .dispatch/ delete: issue loop is running>" >&2
    fi
    ```
 2. Display cleanup instructions to the user:
@@ -2247,7 +2248,7 @@ for slug in <task-slugs>; do
     esac
   fi
 
-  # pre-warm standby pane が残っていれば全て閉じる (常 4 ペイン維持のため Phase B 後も全 standby が残る)
+  # Close any remaining pre-warm standby panes (all standbys are still around after Phase B because the layout always keeps 4 panes)
   if [[ "$close_all" == "true" && -f ".dispatch/$slug/prewarm.json" ]]; then
     for sf in $(jq -r '.[].surface_id' ".dispatch/$slug/prewarm.json" 2>/dev/null); do
       cmux close-surface --surface "$sf" 2>/dev/null || true
@@ -2265,7 +2266,8 @@ done
 if bash <this-skill-dir>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check; then
   rm -rf .dispatch/
 else
-  echo "issue ループが実行中のため .dispatch/ の一括削除をスキップします" >&2
+  # This message is shown to the user — write it in Japanese (see Output Language)
+  echo "<skip bulk .dispatch/ delete: issue loop is running>" >&2
 fi
 rmdir .worktrees 2>/dev/null
 ```
@@ -2282,7 +2284,7 @@ Notes:
 - Child sessions do NOT run cleanup prompts and do NOT execute any deletion —
   doing so from inside a child caused the parent to fail `git worktree remove`
   on a still-held worktree. All cleanup is centralized in this parent-side flow.
-- agmsg モード時は、最終整理の際に子 agent を team から除籍する:
+- In agmsg mode, remove the child agents from the team during final cleanup:
 
   ```bash
   for slug in <task-slugs>; do
@@ -2292,7 +2294,7 @@ Notes:
   done
   ```
 
-  親 (`parent`) は repo 固定 team に残す (次回 dispatch で再利用)。
+  The parent (`parent`) stays in the repo-fixed team (reused on the next dispatch).
 
 ---
 
@@ -2443,7 +2445,7 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. The `command` of the first such runner is used for the spawn launch. `cmux codex install-hooks` is also required so that `external_migration = true` is set and codex picks up the parent claude session automatically.
 - **Same-model vs different-model in Phase B**: `exec_choice` controls whether Phase B asks or takes a fixed default; it never introduces a new execution path. For design=claude, "opus 1m" counts as the same model and stays in the current session via `/model opus[1m]`. Any other choice (sonnet / codex) is treated as a different model: when a pre-warmed standby pane exists (prewarm.json), the Child hands off by sending the execution request to that pane; otherwise it triggers a spawn via `launch-workspace.sh --mode execute`: a new workspace if `LAYOUT=workspace`, a new split if `LAYOUT=split`. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends an `/exit` instruction so the grandchild Claude/Codex session closes its TUI after the PR is created — without this the runner wrapper never reaches `write_status "done"` and status.json gets stuck on `executing`.
 - **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. `design_runner` can fix the Step 1f selection for all tasks; `exec_choice` can fix Phase B. The runners.json registry remains runtime-only and is bootstrapped on first run via AskUserQuestion.
-- **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。**agmsg push は inbox 記録専用で、idle セッションを起こせない** (watcher はバックグラウンド Bash として動き、その stream 出力はプロセスが終了するまで注入されない) — したがって wake は常に `cmux send` + `send-key return` で行い、agmsg 配線が生きているときは同一文を inbox にも記録する (dual-send)。agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (send.sh + cmux send の両方。Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ。同じく両チャネル)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
-- **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを配置。Phase A-R (Step 1g `REVIEW_ENABLED`) が無効時は縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)、有効時は 2×2 均等グリッド (左上: opus / 右上: codex レビュー / 左下: sonnet / 右下: codex、prewarm.json に `review` キー)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から dual-send で送る (常に `cmux send` + `send-key return`、agmsg 配線が生きていれば加えて `send.sh` で inbox 記録)。standby wrapper は `<STATUS_DIR>/.assigned-<name>` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`。Phase B の実行指示も同じ dual-send: prewarm.json の `delivery` 値が `"agmsg"` なら `send.sh` で inbox にも記録し、どちらの値でも `cmux send` + `send-key return` を必ず発行する。
+- **message_type**: The notification transport switches between `send-message` (default) and `agmsg` via config (`message_type`). In `agmsg` mode, `monitor-dispatch.sh` is never launched (status.json transitions are unchanged in either mode). Whether agmsg is installed is decided by the existence of `~/.agents/skills/agmsg/scripts/send.sh`. **An agmsg push is inbox-record-only and cannot wake an idle session** (its watcher runs as a background Bash whose stream output is not injected until the process exits) — so wake is always done via `cmux send` + `send-key return`, and the same text is additionally recorded in the inbox when the agmsg wiring is alive (dual-send). Completion notifications in agmsg mode have two layers: the mandatory notification the child session sends right after writing status.json (both `send.sh` and `cmux send`, embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop, also on both channels). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Also, if Step 1g's `delivery.sh set` output includes an `AGMSG-DIRECTIVE:` line, it MUST be followed so that the currently-dispatching session's own watcher gets started.
+- **Pre-warm standby panes**: When layout is `workspace` and config `prewarm: true` (default), `prewarm-panes.sh` places standby panes inside each task workspace. When Phase A-R (Step 1g `REVIEW_ENABLED`) is disabled, panes stack vertically (top: opus / middle: `<slug>-sonnet` / bottom: `<slug>-codex` — only when a codex runner is registered); when enabled, a 2×2 even grid is used (top-left: opus / top-right: codex review / bottom-left: sonnet / bottom-right: codex, with a `review` key in prewarm.json). In agmsg mode the opus-1m pane also starts idle (`--with-opus`), and delivery is wired into the worktree (join + `delivery.sh set`) before any pane starts; the Phase A task is then sent from the parent via dual-send (always `cmux send` + `send-key return`, plus an inbox record via `send.sh` when the agmsg wiring is alive). The standby wrapper only transitions status.json on exit when `<STATUS_DIR>/.assigned-<name>` exists. Signal names are `<slug>-done` for opus and `<slug>-sonnet-done` / `<slug>-codex-done` for the others. Phase B's execution request uses the same dual-send: an inbox record via `send.sh` when prewarm.json's `delivery` value is `"agmsg"`, and `cmux send` + `send-key return` are always issued regardless of that value.
 
-- **status.json watcher**: runner は終端 status を poll し、idle のままでも親通知を試みる。終端 status は sticky で、通知 marker は最後に成功した status を保存する。timeout sentinel、deferred、未 assigned standby、foreign assignment は watcher を抑止する。
+- **status.json watcher**: The runner polls for a terminal status and attempts to notify the parent even while the session stays idle. Terminal status is sticky, and the notification marker stores the last status that was successfully notified. The watcher is suppressed by a timeout sentinel, `.deferred`, an unassigned standby, or a foreign assignment.
