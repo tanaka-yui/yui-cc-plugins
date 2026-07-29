@@ -1518,13 +1518,17 @@ mkdir -p .dispatch/<task-slug>
 bash <this-skill-dir>/scripts/launch-workspace.sh \
   --mode <plan|superpowers> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
+  --defer-status \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID" \
   <task-slug> \
   "$TASK_PROMPT"
 ```
 
-Run one invocation per task. Each task lands in its own cmux workspace (sidebar entry) and runs independently — there is no parent/child surface chaining to worry about.
+Run one invocation per task. `--defer-status` is required so a Child runner skips
+status.json after Phase B transfers execution to another surface. Each task lands
+in its own cmux workspace (sidebar entry) and runs independently — there is no
+parent/child surface chaining to worry about.
 
 ### Pre-warm Standby Panes (workspace layout only)
 
