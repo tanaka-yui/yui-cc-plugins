@@ -454,15 +454,6 @@ rmdir .pre-link-backup-<TS>
 | Inline Execution | シンプルなプラン、対話的実行、単一セッション希望 |
 | **Parallel (cmux)** | **独立タスク3個以上、速度重視、全セッションを画面で一望** |
 
-## cmux-team との違い
-
-| 観点 | cmux-team-dispatch-task | cmux-team |
-|------|------------------------|-----------|
-| アーキテクチャ | スキルのみ（軽量） | 4層 + daemon（フル機能） |
-| 用途 | 独立タスクの並列実行 | 依存関係のあるチーム開発 |
-| 永続プロセス | なし | Manager daemon |
-| セットアップ | 不要 | `cmux-team start` が必要 |
-
 ## 制約事項
 
 - **cmux 必須**: `/Applications/cmux.app/` にインストールされている必要があります

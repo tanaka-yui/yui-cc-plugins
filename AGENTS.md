@@ -4,10 +4,9 @@
 
 This repository is a pnpm workspace for cmux-oriented Claude Code/Codex plugins and apps.
 
-- `apps/cmux-fork`, `apps/cmux-using`, `apps/cmux-team`, and `apps/cmux-team-dispatch-task` contain plugin packages.
+- `apps/cmux-fork`, `apps/cmux-using`, and `apps/cmux-team-dispatch-task` contain plugin packages.
 - Plugin metadata lives in `.claude-plugin/plugin.json` and, for Codex, `.codex-plugin/plugin.json`.
 - Skills live under `apps/*/skills/<skill-name>/SKILL.md`; slash command docs live under `apps/*/commands/`.
-- `apps/cmux-team/src` contains TypeScript source and colocated `*.test.ts` / `*.test.tsx` tests.
 - `apps/cmux-remote/client` and `apps/cmux-remote/server` are the PWA client and Bun bridge server.
 - `.agents/plugins/marketplace.json` is the Codex marketplace catalog.
 
@@ -28,7 +27,7 @@ Use TypeScript ESM for code packages. Biome enforces 2-space indentation, LF end
 
 ## Testing Guidelines
 
-Place tests next to source files using `*.test.ts` or `*.test.tsx`. `cmux-team` currently relies on TypeScript and Biome checks; client tests use Vitest, and server tests use Bun. Add focused tests for queueing, task dispatch, terminal/proxy behavior, or UI logic when changing those areas.
+Place tests next to source files using `*.test.ts` or `*.test.tsx`. Client tests use Vitest, and server tests use Bun. Add focused tests for queueing, task dispatch, terminal/proxy behavior, or UI logic when changing those areas.
 
 ## Commit & Pull Request Guidelines
 

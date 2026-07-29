@@ -12,7 +12,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |------|------|-------------|------|
 | `apps/cmux-fork` | Plugin (slash command) | bash | `/cfork` で会話を新 cmux ペインにフォーク |
 | `apps/cmux-using` | Plugin (skill + commands) | bash + markdown | cmux 操作の汎用スキル |
-| `apps/cmux-team` | Plugin (skill + TypeScript daemon) | TypeScript (Bun runtime) | 4層 (Master/Manager/Conductor/Agent) オーケストレーション。daemon プロセスを持つ唯一のプラグイン |
 | `apps/cmux-team-dispatch-task` | Plugin (skill + shell scripts) | bash + zsh | git worktree 分離による並列タスクディスパッチ |
 | `apps/cmux-codex-review` | Plugin (slash command + skill) | bash | 新 cmux ペインで対話 codex (gpt-5.6-sol/xhigh) にコードレビューさせる。sandbox は workspace-write（完了通知の `send.sh` が agmsg DB へ書き込むため read-only 不可）。完了を agmsg 経由で親へ通知可 |
 | `apps/cmux-codex-exec` | Plugin (slash command + skill) | bash | plan を対話 codex にカレントdir で実装させ、完了を親が agmsg 経由で検知して cmux-codex-review へ繋ぐ |
@@ -47,7 +46,7 @@ pnpm sort-package  # package.json のキーを sort（差分があると失敗�
 `turbo` がワークスペースを横断するので、ルートで `pnpm check` を叩けば全 app に伝播する。個別に走らせるときは workspace filter:
 
 ```bash
-pnpm --filter cmux-team check
+pnpm --filter @tanaka-yui/token-meter check
 pnpm --filter @yui/cmux-remote-client build
 ```
 
@@ -56,10 +55,8 @@ pnpm --filter @yui/cmux-remote-client build
 `turbo` には test タスクは登録されていない。テストはアプリ単位で直接ランナーを呼ぶ:
 
 ```bash
-# cmux-team (Bun)
-cd apps/cmux-team && bun test
-cd apps/cmux-team && bun test src/daemon.test.ts        # 単一ファイル
-cd apps/cmux-team && bun test --test-name-pattern='foo'  # パターン
+# token-meter (Bun)
+cd apps/token-meter && bun test
 
 # cmux-remote/client (Vitest)
 cd apps/cmux-remote/client && bun run test
@@ -86,7 +83,7 @@ bash install.sh    # marketplace add + update でローカルパスを登録・�
   - lint: `noUnusedImports` / `noUnusedVariables` / `noUndeclaredVariables` / `useExhaustiveDependencies` は **error**
   - 緩い: `noExplicitAny: warn`, `noNonNullAssertion: warn`
 - **Node 24.15 / pnpm 10.33** が `engines` で固定。`packageManager` フィールドも一致させる。
-- **TypeScript 6** を使うアプリでも、cmux-team や cmux-remote/server は **Bun ランタイムで実行する** (`bun run` / `bun test`)。Vitest を使うのは cmux-remote/client のみ。
+- **TypeScript 6** を使うアプリでも、cmux-remote/server は **Bun ランタイムで実行する** (`bun run` / `bun test`)。Vitest を使うのは cmux-remote/client のみ。
 
 ## Language convention
 
@@ -98,7 +95,6 @@ bash install.sh    # marketplace add + update でローカルパスを登録・�
 
 各プラグインの開発に踏み込む前に、必ず対応する CLAUDE.md を読むこと:
 
-- `apps/cmux-team/CLAUDE.md` — 4層 (Master/Manager/Conductor/Agent) アーキテクチャ。daemon, worktree 隔離、pull 型監視の設計原則
 - `apps/cmux-team-dispatch-task/CLAUDE.md` — 並列ディスパッチ、Display Format Conventions (Box drawing 表), モデル選択フロー (opus/sonnet/codex), monitor heartbeat / `--resume`
 - `apps/cmux-using/CLAUDE.md` — cmux ターミナル操作スキルの構成
 - `apps/cmux-fork/CLAUDE.md` — `/cfork` の動作と前提

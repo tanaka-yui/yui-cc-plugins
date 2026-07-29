@@ -54,7 +54,6 @@ make doctor           # 健全性チェック
 | rtk (外部) | Bash 出力圧縮 | token-meter は **観測のみ**、rtk 本体は触らない |
 | caveman (外部) | 出力 caveman 化 | 同上 |
 | headroom (外部) | tool 出力・履歴圧縮 | 同上、ON/OFF だけ `.claude.json` 経由で操作 |
-| cmux-team | マルチエージェント | 無関係。同じ hook には共存可能 |
 
 ## オープン項目 (spec §15)
 
