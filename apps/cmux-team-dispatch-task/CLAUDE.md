@@ -186,6 +186,7 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 38. **exec_choice default**: `"sonnet"` を設定すると Phase A 完了後に AskUserQuestion を出さず sonnet standby/spawn の既存手順へ進むこと。**未設定**（全レイヤー未設定、または不正値・runner 未登録の `"codex"` が警告付きで無視された結果）ではモデル選択の直後に永続化確認（今回のみ / 常にこの選択 / 常に毎回選ぶ[= `"ask"` を保存]）が 1 問出て、「常に〜」でグローバル config に永続化されること（回答は今回の Phase B 分岐に影響しない。書き込みは writer 固有 mktemp + mv）。project に不正値・global に有効値がある場合は global の値が使われること。明示 `"ask"` ではモデル質問のみで永続化確認が出ないこと
 39. **codex 起動安全性**: superpowers は bypass で approval prompt を出さず、review は `--sandbox workspace-write` + `-c approval_policy='never'` + `--add-dir <STATUS_DIR>` で worktree 外の `<STATUS_DIR>/review/` に findings を書けること。`bash test/test-launch-workspace-codex.sh` の静的検査を実行すること
 40. **pane close の誤通知**: 全タスク完了後のクリーンアップで standby / 実装ペインを閉じたとき、`[dispatch] task ... finished (status: error)` が親へ飛ばないこと、`status.json` の `done` が保持されること。`executing` 中の pane を閉じた場合は従来どおり `error` 通知が飛ぶこと。`bash test/test-runner-signal-exit.sh` の動的検査を実行すること
+41. **status.json watcher**: 終端 status は sticky とし、watcher は idle 中も親通知を試みる。marker は成功した status 内容を保存し、親通知と reviewer wake は別 marker にする。`docs/notification-gaps.md` と SKILL.md / guide-ja.md / README.md を同期すること。
 # GitHub issue 自動ループの保守
 
 `--loop` の仕様は `skills/cmux-team-dispatch-task/references/loop-mode.md` を正本とする。loop CLI、プロンプト、起動フラグを変更するときは SKILL.md、guide-ja.md、README.md、CLAUDE.md を同時に更新し、`.dispatch-loop/` の owner lock と timeout sentinel の契約を維持する。

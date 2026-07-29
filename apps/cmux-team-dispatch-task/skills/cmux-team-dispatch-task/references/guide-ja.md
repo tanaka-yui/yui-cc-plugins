@@ -1473,3 +1473,5 @@ standby ペインは `cmux send` で届いた `REQUEST_TEXT` しか読んでい�
 未読）。したがって「status protocol は下に書いてある」という前提は成立せず、通知手順を拡張 `REQUEST_TEXT`
 自身に書かないと子側の通知経路が丸ごと欠落する。この 2 点が同時に欠けると、実装が正常に完了しても
 親には何も届かない。回帰テストは `test/test-launch-workspace-codex.sh` の T14 / T15。
+
+status.json watcher は終端 `done` / `error` を監視し、セッションが idle のままでも親通知を試みる。終端 status は sticky とし、通知成功後だけ marker を更新する。
