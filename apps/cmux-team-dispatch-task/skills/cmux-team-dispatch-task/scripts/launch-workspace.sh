@@ -784,10 +784,23 @@ if [[ \$CLAUDE_EXIT -ge 128 && ( "\$PREV_STATUS" == "done" || "\$PREV_STATUS" ==
   exit 0
 fi
 
-if [[ \$CLAUDE_EXIT -eq 0 ]]; then
+# 子が書いた終端 status は上書きしない。
+# - error: 握り潰すと ABORT プロトコル (status error を書いてセッション終了) が無効化される
+# - done + 正常終了: 子が書いた変更サマリを "Claude session completed" で潰さない
+# - done + 異常終了: done 宣言後のクラッシュは保守的に error 扱いとして親に調査させる
+FINAL_STATUS=""
+if [[ "\$PREV_STATUS" == "error" ]]; then
+  FINAL_STATUS="error"
+  echo "[runner] preserving child-written terminal status 'error'" >&2
+elif [[ "\$PREV_STATUS" == "done" && \$CLAUDE_EXIT -eq 0 ]]; then
+  FINAL_STATUS="done"
+  echo "[runner] preserving child-written terminal status 'done'" >&2
+elif [[ \$CLAUDE_EXIT -eq 0 ]]; then
   write_status "done" "Claude session completed (exit 0)"
+  FINAL_STATUS="done"
 else
   write_status "error" "Claude session exited with code \$CLAUDE_EXIT"
+  FINAL_STATUS="error"
 fi
 
 "\$CMUX" wait-for --signal "${WORKSPACE_NAME}-done" 2>/dev/null || true
@@ -802,10 +815,7 @@ fi
 # --- 親ターミナルにテキスト通知を送信 ---
 NOTIFY_SF="${NOTIFY_SURFACE}"
 LAYOUT_MODE="${LAYOUT}"
-STATUS_LABEL="done"
-if [[ \$CLAUDE_EXIT -ne 0 ]]; then
-  STATUS_LABEL="error"
-fi
+STATUS_LABEL="\$FINAL_STATUS"
 
 # cmux send だけでは親が claude TUI の場合 input box にテキストが残って Enter が
 # 押されないため、必ず send-key return を続けて発行する。
