@@ -3,212 +3,237 @@ name: cmux-using
 description: "cmux ターミナル内での操作スキル。ペイン分割、サブエージェント起動・監視・結果回収、コマンド送信、画面読み取り、通知に使用。CMUX_* 環境変数が存在する場合にトリガーされる。"
 ---
 
+## Output Language
+
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
+
 # Using cmux
 
-cmux はターミナルマルチプレクサ。ペイン分割、コマンド送信、画面読み取りを CLI 経由で操作する。
-`CMUX_SOCKET_PATH` 環境変数が存在すれば cmux 内で動作している。
+cmux is a terminal multiplexer. Pane splitting, command dispatch, and screen reading
+are controlled via the CLI.
+If the `CMUX_SOCKET_PATH` environment variable is present, you are running inside cmux.
 
 ## Quick Orientation
 
 ```bash
-cmux identify                    # 自分のワークスペース・サーフェスを確認
-cmux list-workspaces             # 全ワークスペース一覧
-cmux tree                        # トポロジー表示（階層構造）
+cmux identify                    # Check your own workspace/surface
+cmux list-workspaces             # List all workspaces
+cmux tree                        # Show topology (hierarchical structure)
 ```
 
-リソースは短縮 refs で参照する: `window:1`, `workspace:2`, `pane:3`, `surface:4`。
-`--id-format uuids` で UUID 形式の出力も可能。
+Resources are referenced with short refs: `window:1`, `workspace:2`, `pane:3`, `surface:4`.
+`--id-format uuids` can also output UUID-format identifiers.
 
-> **注意**: `send` で複数行を送る場合は `send-key return` が必須。詳細は「send の改行ルール」を参照。
+> **Note**: Sending multiple lines with `send` requires `send-key return`. See
+> "Newline Rules for send" for details.
 
-## 基本操作
+## Basic Operations
 
-| 操作 | コマンド |
+| Operation | Command |
 |------|---------|
-| ペイン分割 | `cmux new-split right` (left/up/down も可) |
-| 新ワークスペース | `cmux new-workspace --cwd $(pwd)` |
-| コマンド送信 | `cmux send --surface surface:N "command\n"` |
-| キー送信 | `cmux send-key --surface surface:N return` / `ctrl+c` / `ctrl+d` |
-| 画面読み取り | `cmux read-screen --surface surface:N [--scrollback]` |
-| サーフェス/WS 終了 | `cmux close-surface` / `cmux close-workspace` |
-| 一覧表示 | `cmux list-panes` / `cmux list-pane-surfaces` |
+| Pane split | `cmux new-split right` (left/up/down also work) |
+| New workspace | `cmux new-workspace --cwd $(pwd)` |
+| Command dispatch | `cmux send --surface surface:N "command\n"` |
+| Key dispatch | `cmux send-key --surface surface:N return` / `ctrl+c` / `ctrl+d` |
+| Screen read | `cmux read-screen --surface surface:N [--scrollback]` |
+| Close surface/workspace | `cmux close-surface` / `cmux close-workspace` |
+| Listing | `cmux list-panes` / `cmux list-pane-surfaces` |
 
-## send の改行ルール
+## Newline Rules for send
 
-**これは最も重要なルールである。**
+**This is the single most important rule.**
 
-### 単一行コマンド: `\n` で OK
+### Single-line commands: `\n` works
 
 ```bash
 cmux send --surface surface:1 "echo hello\n"
 ```
 
-末尾の `\n` が Enter キーとして機能する。
+The trailing `\n` acts as the Enter key.
 
-### 複数行テキスト: `send-key return` が必須
+### Multi-line text: `send-key return` is required
 
-`\n` は改行として送信されない。各行を個別に送り、行間で `send-key return` を使う。
+`\n` is not sent as a line break. Send each line individually and use `send-key return`
+between lines.
 
 ```bash
-# ✅ 正しい方法
+# Correct approach
 cmux send --surface surface:1 "line 1"
 cmux send-key --surface surface:1 return
 cmux send --surface surface:1 "line 2"
 cmux send-key --surface surface:1 return
 
-# ❌ 間違い — \n は途中改行にならない
+# Wrong — \n mid-string does not create a line break
 cmux send --surface surface:1 "line 1\nline 2\n"
 ```
 
-**ルール**: 末尾の `\n` 1個だけは Enter として機能する。文字列の途中に `\n` を入れても改行にはならない。
+**Rule**: only a single trailing `\n` acts as Enter. Inserting `\n` in the middle of a
+string does not create a line break.
 
-## 制御キーの送信
+## Sending Control Keys
 
-プロセス中断（Ctrl+C）などの制御キーは **`send-key`** で送る。`send` では送れない。
+Control keys such as process interruption (Ctrl+C) must be sent with **`send-key`**.
+`send` cannot send them.
 
 ```bash
-# ✅ 正しい方法
+# Correct approach
 cmux send-key --surface surface:N ctrl+c
 
-# ❌ 間違い — リテラルテキストが送られるだけ
+# Wrong — sends the literal text only
 cmux send --surface surface:N "C-c"
 cmux send --surface surface:N "\x03"
-cmux send-key --surface surface:N "C-c"   # → Unknown key エラー
+cmux send-key --surface surface:N "C-c"   # → Unknown key error
 ```
 
-キー名は `ctrl+c`, `ctrl+d`, `ctrl+z`, `return`, `tab`, `escape` 等。`send-key --help` で確認可能。
+Key names include `ctrl+c`, `ctrl+d`, `ctrl+z`, `return`, `tab`, `escape`, etc. Check
+`send-key --help` for the full list.
 
-## cross-workspace 操作の注意（重要）
+## Cross-Workspace Operation Caveat (Important)
 
-別ワークスペースのサーフェスを操作する場合、**`--surface` ではなく `--workspace` を使う**。
+When operating on a surface in a different workspace, **use `--workspace`, not
+`--surface`**.
 
 ```bash
-# ✅ 正しい方法 — --workspace で指定（focused surface に自動解決）
+# Correct approach — specify --workspace (auto-resolves to the focused surface)
 cmux send --workspace workspace:N "command\n"
 cmux read-screen --workspace workspace:N
 cmux send-key --workspace workspace:N return
 
-# ❌ 間違い — --surface で他ワークスペースのサーフェスを指定
-cmux send --surface surface:S "command\n"        # → "Surface is not a terminal" エラー
-cmux read-screen --surface surface:S             # → 同上
+# Wrong — specifying a surface in another workspace via --surface
+cmux send --surface surface:S "command\n"        # → "Surface is not a terminal" error
+cmux read-screen --surface surface:S             # → same as above
 ```
 
-**理由**: `--surface` は caller と同一ワークスペース内のサーフェスのみ有効。他ワークスペースのサーフェスを指定すると CLI は "Surface is not a terminal" エラーを返す。`--workspace` はワークスペースの focused surface に自動解決され、cross-workspace でも正しく動作する。
+**Reason**: `--surface` is only valid for a surface in the same workspace as the
+caller. Specifying a surface in another workspace causes the CLI to return a
+"Surface is not a terminal" error. `--workspace` auto-resolves to the workspace's
+focused surface and works correctly across workspaces.
 
-## ペイン再利用の原則
+## Pane Reuse Principle
 
-新しいペイン/ワークスペースを作る前に、ユーザーが clear 済みの遊休ペインを探して再利用する。
+Before creating a new pane/workspace, look for an idle pane the user has already
+cleared and reuse it.
 
 ```bash
-cmux list-pane-surfaces                          # 全サーフェス一覧
-screen=$(cmux read-screen --surface surface:N)   # 各サーフェスの状態を確認
-# シェルプロンプト（$ や ❯）のみ → 遊休 → 再利用可能
+cmux list-pane-surfaces                          # List all surfaces
+screen=$(cmux read-screen --surface surface:N)   # Check each surface's state
+# Shell prompt only ($ or ❯) → idle → reusable
 ```
 
-遊休ペインがなければ通常通り `new-split` / `new-workspace` で作成する。
+If no idle pane exists, create one normally with `new-split` / `new-workspace`.
 
-## サブエージェント操作パターン
+## Sub-Agent Operation Pattern
 
-サブエージェントを起動し、タスクを委任し、結果を回収する一連の手順。
+The end-to-end procedure for launching a sub-agent, delegating a task, and collecting
+the result.
 
-### 配置方式の選択
+### Choosing a Placement Method
 
-| 方式 | 利点 | 注意 |
+| Method | Advantage | Caveat |
 |------|------|------|
-| **同一ワークスペース** (`new-split`) | PTY 遅延初期化問題を回避、`--surface` で直接操作可能 | レイアウトが崩れたら `cmux-grid` で修復 |
-| **別ワークスペース** (`new-workspace`) | `close-workspace` で一括終了、`rename-workspace` で識別しやすい | PTY 遅延初期化問題の影響あり（後述） |
+| **Same workspace** (`new-split`) | Avoids the PTY lazy-init issue; can be operated directly via `--surface` | If the layout breaks, repair it with `cmux-grid` |
+| **Separate workspace** (`new-workspace`) | Can be closed all at once with `close-workspace`; `rename-workspace` makes it easy to identify | Subject to the PTY lazy-init issue (see below) |
 
-### Step 1a: 同一ワークスペースに配置（推奨）
+### Step 1a: Place in the Same Workspace (Recommended)
 
 ```bash
 SURF=$(cmux new-split right | awk '{print $2}')
 cmux rename-tab --surface $SURF "Researcher-1"
 ```
 
-### Step 1b: 別ワークスペースに配置
+### Step 1b: Place in a Separate Workspace
 
 ```bash
 WS=$(cmux new-workspace --cwd $(pwd) | awk '{print $2}')
 cmux rename-workspace --workspace $WS "Researcher-1"
 ```
 
-> **注意**: PTY 遅延初期化問題（後述）により、ワークスペースを GUI 上で一度表示する必要がある場合がある。
+> **Note**: Due to the PTY lazy-init issue (see below), the workspace may need to be
+> displayed once in the GUI.
 
-### Step 2: Claude Code 起動
+### Step 2: Launch Claude Code
 
 ```bash
 cmux send --workspace $WS "claude --dangerously-skip-permissions\n"
 ```
 
-> `--dangerously-skip-permissions` は信頼できるタスクにのみ使うこと。
+> Use `--dangerously-skip-permissions` only for trusted tasks.
 
-### Step 3: Trust 検出 → 承認
+### Step 3: Detect Trust Prompt → Approve
 
-起動直後に Trust 確認プロンプトが表示される場合がある。`read-screen` でポーリングし、"trust" や "Yes, I trust" を検出したら承認:
+A trust confirmation prompt may appear right after launch. Poll with `read-screen`,
+and approve once you detect "trust" or "Yes, I trust":
 
 ```bash
 screen=$(cmux read-screen --workspace $WS)
-# "trust" 検出 → 承認
+# "trust" detected → approve
 cmux send-key --workspace $WS return
 ```
 
-### Step 4: 起動完了の検出
+### Step 4: Detect Launch Completion
 
-`❯` プロンプトが表示されるまで `read-screen --workspace $WS` でポーリング。
+Poll with `read-screen --workspace $WS` until the `❯` prompt appears.
 
-### Step 5: プロンプト送信
+### Step 5: Send the Prompt
 
 ```bash
-# 単一行
-cmux send --workspace $WS "指示テキスト\n"
-cmux set-status $WS "調査中" --icon hammer  # ステータスを設定
+# Single line
+cmux send --workspace $WS "instruction text\n"
+cmux set-status $WS "investigating" --icon hammer  # set status
 
-# 複数行（send-key return で改行）
-cmux send --workspace $WS "1行目の指示"
+# Multi-line (use send-key return for line breaks)
+cmux send --workspace $WS "line 1 instruction"
 cmux send-key --workspace $WS return
-cmux send --workspace $WS "2行目の指示"
+cmux send --workspace $WS "line 2 instruction"
 cmux send-key --workspace $WS return
 ```
 
-### Step 6: 完了検出
+### Step 6: Detect Completion
 
-`❯` プロンプトの再表示を `read-screen --workspace $WS` でポーリングして検出。
+Poll `read-screen --workspace $WS` to detect the `❯` prompt reappearing.
 
-### Step 7: 結果回収 & クリーンアップ
+### Step 7: Result Collection & Cleanup
 
 ```bash
-cmux clear-status $WS                                      # ステータスをクリア
-result=$(cmux read-screen --workspace $WS --scrollback)  # 全出力取得
+cmux clear-status $WS                                      # clear the status
+result=$(cmux read-screen --workspace $WS --scrollback)  # get full output
 
-# クリーンアップ: Claude 終了 → ペイン閉じ
+# Cleanup: exit Claude → close the pane
 cmux send --workspace $WS "/exit\n"
 sleep 2
-cmux close-workspace --workspace $WS                      # ワークスペースごと閉じる
+cmux close-workspace --workspace $WS                      # close the whole workspace
 ```
 
-> **重要**: `/exit` だけでは Claude プロセスが終了するだけでペイン（surface）は残る。必ず `close-workspace`（または `close-surface`）でペインも閉じること。`sleep 2` は `/exit` の処理完了を待つため。
+> **Important**: `/exit` alone only terminates the Claude process; the pane
+> (surface) is left behind. Always close the pane too with `close-workspace` (or
+> `close-surface`). The `sleep 2` waits for `/exit` to finish processing.
 
-## new-workspace の PTY 遅延初期化問題（Issue #1472）
+## PTY Lazy-Init Issue in new-workspace (Issue #1472)
 
-`cmux new-workspace` で作成したワークスペースのターミナル PTY は、**GUI 上で一度表示されるまで起動しない**。
-`select-workspace` API だけでは不十分で、GUI 描画（SwiftUI レンダリング）が必要。
+The terminal PTY of a workspace created with `cmux new-workspace` **does not start
+until it has been displayed once in the GUI**.
+The `select-workspace` API alone is not enough; GUI rendering (SwiftUI rendering) is
+required.
 
-### 症状
+### Symptoms
 
-- `cmux send --surface surface:N` → OK を返すがコマンドは実行されない（キューに留まる）
-- `cmux read-screen --surface surface:N` → `Surface is not a terminal` エラー
-- ソケット API `surface.send_text` → `queued: true` だが未配信
-- ソケット API `surface.read_text` → `Terminal surface not found`
+- `cmux send --surface surface:N` → returns OK but the command is not executed (stays queued)
+- `cmux read-screen --surface surface:N` → `Surface is not a terminal` error
+- Socket API `surface.send_text` → `queued: true` but not delivered
+- Socket API `surface.read_text` → `Terminal surface not found`
 
-### ワークアラウンド: AppleScript メニュークリック
+### Workaround: AppleScript Menu Click
 
-macOS アクセシビリティ許可が必要（システム設定 → プライバシーとセキュリティ → アクセシビリティ）。
+Requires macOS Accessibility permission (System Settings → Privacy & Security →
+Accessibility).
 
 ```bash
-# ワークスペース作成後に GUI 表示を強制する
+# Force GUI display after creating the workspace
 WS=$(cmux new-workspace --cwd $(pwd) | awk '{print $2}')
 
-# ワークスペースのインデックスを取得
+# Get the workspace index
 WS_INDEX=$(cmux tree --json | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -217,112 +242,117 @@ for w in data['windows']:
         if ws['ref'] == '$WS':
             print(ws['index'] + 1)")
 
-# AppleScript でメニュークリック → PTY 初期化
+# Click the menu via AppleScript → PTY init
 osascript -e "
 tell application \"System Events\"
     tell process \"cmux\"
-        click menu item \"ワークスペース $WS_INDEX\" of menu 1 of menu bar item \"表示\" of menu bar 1
+        click menu item \"Workspace $WS_INDEX\" of menu 1 of menu bar item \"View\" of menu bar 1
     end tell
 end tell"
 sleep 2
 
-# 元のワークスペースに戻る
-ORIG_INDEX=1  # 元のワークスペースの index+1
+# Return to the original workspace
+ORIG_INDEX=1  # index+1 of the original workspace
 osascript -e "
 tell application \"System Events\"
     tell process \"cmux\"
-        click menu item \"ワークスペース $ORIG_INDEX\" of menu 1 of menu bar item \"表示\" of menu bar 1
+        click menu item \"Workspace $ORIG_INDEX\" of menu 1 of menu bar item \"View\" of menu bar 1
     end tell
 end tell"
 ```
 
-### 注意: ソケット API のフォールバック
+### Note: Socket API Fallback
 
-ソケット API `surface.send_text` / `surface.read_text` は、ターゲット surface の PTY が未初期化の場合、**caller の surface にサイレントにフォールバックする**ことがある。レスポンスの `surface_ref` を確認して意図した surface に送信されたか必ず検証すること。
+The socket API `surface.send_text` / `surface.read_text` may **silently fall back to
+the caller's surface** when the target surface's PTY is uninitialized. Always check
+the response's `surface_ref` to verify the message was actually sent to the intended
+surface.
 
-## read-screen トラブルシューティング
+## read-screen Troubleshooting
 
-| 問題 | 対処 |
+| Problem | Fix |
 |------|------|
-| 出力が空 / 古い | `cmux refresh-surfaces` してから再読み取り |
-| 長い出力が切れる | `--scrollback` を追加 |
-| 特定行数だけ欲しい | `--lines N` で行数指定 |
-| surface が見つからない | `cmux list-pane-surfaces` で refs を再確認 |
-| `Surface is not a terminal` | PTY 遅延初期化問題。上記ワークアラウンド参照 |
+| Output is empty / stale | Run `cmux refresh-surfaces`, then re-read |
+| Long output gets truncated | Add `--scrollback` |
+| Want only a specific number of lines | Specify with `--lines N` |
+| Surface not found | Re-check refs with `cmux list-pane-surfaces` |
+| `Surface is not a terminal` | PTY lazy-init issue. See the workaround above |
 
-`read-screen` の結果がおかしい場合は `cmux refresh-surfaces` → 再読み取りの順で試す。
+If `read-screen` results look wrong, try `cmux refresh-surfaces` followed by a re-read.
 
-## ロングラン実行の監視
+## Monitoring Long-Running Processes
 
-dev server やビルドなど長時間プロセスは専用ペインに分離し、`read-screen` で定期的に監視する。
+Isolate long-running processes such as dev servers or builds in a dedicated pane, and
+monitor them periodically with `read-screen`.
 
 ```bash
 cmux new-split right              # → surface:N
 cmux send --surface surface:N "npm run dev\n"
-# ポーリングで "ready" 等のキーワードを検出
+# Poll for keywords such as "ready"
 screen=$(cmux read-screen --surface surface:N)
 ```
 
-## 通知
+## Notifications
 
 ```bash
-# アプリ内通知（ペインハイライト、サイドバーバッジ。Cmd+Shift+U で移動）
-cmux notify --title "完了" --body "ビルドが成功しました"
+# In-app notification (pane highlight, sidebar badge. Cmd+Shift+U to navigate)
+cmux notify --title "Done" --body "Build succeeded"
 
-# macOS 通知センター（サウンド付き、別アプリ使用中でも表示）
-osascript -e 'display notification "ビルド完了" with title "Claude" sound name "Glass"'
+# macOS Notification Center (with sound, shown even while using another app)
+osascript -e 'display notification "Build complete" with title "Claude" sound name "Glass"'
 ```
 
-使い分け: cmux 内で注意を引く → `cmux notify`、ユーザーが別アプリにいる → `osascript`。
+When to use which: to grab attention within cmux → `cmux notify`; when the user is
+in another app → `osascript`.
 
-## ステータス・プログレス表示
+## Status & Progress Display
 
 ```bash
-cmux set-status mykey "作業中" --icon hammer --color "#0099ff"  # サイドバーに表示
+cmux set-status mykey "working" --icon hammer --color "#0099ff"  # shown in the sidebar
 cmux clear-status mykey
-cmux set-progress 0.5 --label "ビルド中..."                     # プログレスバー（0.0〜1.0）
+cmux set-progress 0.5 --label "Building..."                     # progress bar (0.0-1.0)
 cmux clear-progress
 ```
 
-## ブラウザ
+## Browser
 
-cmux にはブラウザ自動化機能もある。詳細は `cmux browser --help` を参照。
-`cmux new-pane --type browser --url <url>` でブラウザペインを作成できる。
+cmux also has browser automation features. See `cmux browser --help` for details.
+`cmux new-pane --type browser --url <url>` creates a browser pane.
 
-## 環境変数
+## Environment Variables
 
-| 変数 | 説明 |
+| Variable | Description |
 |------|------|
-| `CMUX_SOCKET_PATH` | cmux ソケットのパス。存在すれば cmux 内で動作中 |
-| `CMUX_WORKSPACE_ID` | 現在のワークスペース ID |
-| `CMUX_SURFACE_ID` | 現在のサーフェス ID |
+| `CMUX_SOCKET_PATH` | Path to the cmux socket. If present, running inside cmux |
+| `CMUX_WORKSPACE_ID` | Current workspace ID |
+| `CMUX_SURFACE_ID` | Current surface ID |
 
-## よくあるミス
+## Common Mistakes
 
-| ミス | 正しい方法 |
+| Mistake | Correct approach |
 |------|-----------|
-| `send "line1\nline2\n"` で複数行を送る | 各行を個別に `send` し、行間で `send-key return` を使う |
-| UUID でサーフェスを指定する | 短縮 refs を使う: `surface:1`, `pane:2` |
-| 同一ワークスペースのレイアウト崩れを放置 | `cmux-grid` で整列するか、別ワークスペースに配置する |
-| `read-screen` の結果が空で諦める | `refresh-surfaces` を実行してからリトライ |
-| Trust プロンプトを見逃してハングする | 起動後に `read-screen` でポーリングして検出する |
-| `--surface` で他ワークスペースを操作 | `--workspace` を使う（cross-workspace 操作の注意 参照） |
-| `send "C-c"` や `send "\x03"` で Ctrl+C を送る | `send-key ctrl+c` を使う（制御キーの送信 参照） |
-| 遊休ペインがあるのに新しく split する | `list-pane-surfaces` + `read-screen` で遊休ペインを探して再利用する |
-| ワークスペースに名前を付けない | `rename-workspace` で用途を示す名前を付ける |
-| `/exit` だけでクリーンアップ完了と思う | `/exit` → `sleep 2` → `close-workspace` / `close-surface` でペインも閉じる |
+| Sending multiple lines with `send "line1\nline2\n"` | Send each line individually with `send`, using `send-key return` between lines |
+| Specifying a surface by UUID | Use short refs: `surface:1`, `pane:2` |
+| Leaving a broken layout in the same workspace unfixed | Align it with `cmux-grid`, or place it in a separate workspace |
+| Giving up when `read-screen` returns empty | Run `refresh-surfaces`, then retry |
+| Missing the Trust prompt and hanging | Poll with `read-screen` after launch to detect it |
+| Operating on another workspace with `--surface` | Use `--workspace` (see Cross-Workspace Operation Caveat) |
+| Sending Ctrl+C via `send "C-c"` or `send "\x03"` | Use `send-key ctrl+c` (see Sending Control Keys) |
+| Creating a new split when an idle pane already exists | Find and reuse an idle pane with `list-pane-surfaces` + `read-screen` |
+| Not naming the workspace | Give it a name indicating its purpose with `rename-workspace` |
+| Assuming `/exit` alone completes cleanup | `/exit` → `sleep 2` → close the pane too with `close-workspace` / `close-surface` |
 
-## コマンドクイックリファレンス
+## Command Quick Reference
 
-| コマンド | 説明 |
+| Command | Description |
 |---------|------|
-| `identify` / `tree` | 環境情報 / トポロジー表示 |
-| `list-workspaces` / `list-panes` / `list-pane-surfaces` | 一覧表示 |
-| `new-workspace` / `new-split <dir>` | ワークスペース・ペイン作成 |
-| `send` / `send-key` / `read-screen` | 入出力操作 |
-| `refresh-surfaces` | 画面バッファ強制更新 |
-| `close-surface` / `close-workspace` | リソース終了 |
-| `select-workspace` / `rename-workspace` / `rename-tab` | 選択・名前変更 |
-| `cmux-grid` / `cmux-grid 2x3` | ペインをグリッドレイアウトに整列 |
-| `notify` / `set-status` / `set-progress` | 通知・ステータス・進捗 |
-| `wait-for` | シグナル待機 |
+| `identify` / `tree` | Environment info / topology display |
+| `list-workspaces` / `list-panes` / `list-pane-surfaces` | Listing |
+| `new-workspace` / `new-split <dir>` | Create a workspace/pane |
+| `send` / `send-key` / `read-screen` | I/O operations |
+| `refresh-surfaces` | Force-refresh the screen buffer |
+| `close-surface` / `close-workspace` | Terminate resources |
+| `select-workspace` / `rename-workspace` / `rename-tab` | Select / rename |
+| `cmux-grid` / `cmux-grid 2x3` | Align panes into a grid layout |
+| `notify` / `set-status` / `set-progress` | Notifications, status, progress |
+| `wait-for` | Wait for a signal |
