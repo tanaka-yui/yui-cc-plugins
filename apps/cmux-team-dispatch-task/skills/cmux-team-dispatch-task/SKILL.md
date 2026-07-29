@@ -1863,11 +1863,12 @@ metadata and notifications, thanks to the `cmux claude-teams` tmux shim.
   injected while idle). If nothing arrives for an extended period, poll
   `.dispatch/*/status.json` manually (see "Polling Status Files"). The
   `[dispatch-monitor]` heartbeat / DIED messages do not exist in this mode.
-  Notifications come from two sources: the child itself right after writing
-  status.json (mandatory, see Step 2) and the runner wrapper at session exit
-  (backstop). Receiving the same completion twice (or via both channels) is
-  normal — treat notifications idempotently and trust status.json as the
-  source of truth.
+  Notifications come from three sources: the child itself right after writing
+  status.json (mandatory, see Step 2), the status.json watcher that the runner
+  wrapper runs alongside the child (it fires on the terminal transition even if
+  the session never exits), and the runner wrapper at session exit (backstop).
+  Receiving the same completion twice (or via several of these) is normal —
+  treat notifications idempotently and trust status.json as the source of truth.
 
 Each child session sends a `[dispatch]` message to the parent terminal when the Claude
 process exits:

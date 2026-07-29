@@ -1474,4 +1474,17 @@ standby ペインは `cmux send` で届いた `REQUEST_TEXT` しか読んでい�
 自身に書かないと子側の通知経路が丸ごと欠落する。この 2 点が同時に欠けると、実装が正常に完了しても
 親には何も届かない。回帰テストは `test/test-launch-workspace-codex.sh` の T14 / T15。
 
-status.json watcher は終端 `done` / `error` を監視し、セッションが idle のままでも親通知を試みる。終端 status は sticky とし、通知成功後だけ marker を更新する。
+### status.json watcher による完了通知
+
+runner wrapper は子セッションと並行して status.json watcher を走らせ、終端 `done` / `error` を
+15 秒間隔（`CMUX_DISPATCH_WATCH_INTERVAL` で変更可）で監視する。セッションが idle のままでも
+親通知を試み、timeout sentinel、`.deferred`、未 assigned standby、他 pane の `.assigned-*` は
+所有権の抑止条件として poll ごとに再評価する。`.notified-<slug>` は通知成功済みの status 文字列を
+保持し、親通知と reviewer wake の marker は分離する。
+
+子が書いた終端 status は sticky である。`error` は終了コードに関係なく message ごと保持し、
+`done` は正常終了時だけ保持する。`done` 後に非ゼロ終了した場合だけ、保守的に `error` へ訂正する。
+親通知のラベルは終了コードではなくこの確定 status から導出する。
+
+停止時は ABORT/ESCALATION の 5 手順（findings 記録、reviewer wake、error status、親通知、engine 別
+セッション終了）を必ず実行する。`[abort]` を受けたレビュアーは待機を打ち切る。workspace レイアウトの Child 起動にも `--defer-status` を渡す。これが無いと、Phase B で実行を別 surface へ移譲した Child の wrapper が、孫の書いた終端状態を上書きしてしまう。

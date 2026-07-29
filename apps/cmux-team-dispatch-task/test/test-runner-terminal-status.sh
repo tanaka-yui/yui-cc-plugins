@@ -65,6 +65,7 @@ case "\$1" in
   send|send-key)
     echo "\$*" >> "$TMP/cmux-attempts.log"
     if [[ -f "$TMP/cmux-fail" ]]; then exit 1; fi
+    if [[ -f "$TMP/cmux-fail-reviewer" && "\$*" == *"surface:77"* ]]; then exit 1; fi
     echo "\$*" >> "$TMP/cmux-calls.log" ;;
   notify) echo "\$*" >> "$TMP/cmux-calls.log" ;;
   rename-workspace|rename-tab|wait-for|identify|new-split) ;;
@@ -381,6 +382,50 @@ unset PRESEED_MARKER STUB_WRITE_STATUS
 if wait_for_log 'status: error' 15; then t16=yes; else t16=no; fi
 release_case
 assert_eq "$t16" 'yes' 'T16 stale marker があっても新しい世代として通知される'
+
+reviewer_msgs() { grep -c '\[abort\]' "$TMP/cmux-calls.log" 2>/dev/null || true; }
+seed_review_config() { mkdir -p "$1/review"; printf '%s' "$2" > "$1/review/code-review.json"; }
+
+# R1: reviewer config があれば error の watcher が reviewer を wake する。
+STATUS_DIR="$TMP/status-rv1"; rm -rf "$STATUS_DIR"
+seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
+REVIEW_PRESEED=1 STUB_WRITE_STATUS=error run_case_bg rv1 0 executing
+unset REVIEW_PRESEED STUB_WRITE_STATUS
+wait_for_log '\[abort\]' 15 && r1=yes || r1=no
+release_case
+assert_eq "$r1" 'yes' 'R1 code-review.json があればレビュアーへ [abort] が飛ぶ'
+
+# R2/R3/R4: reviewer 不在、done、壊れた/legacy config は親通知を妨げない。
+for case in none done broken legacy; do
+  STATUS_DIR="$TMP/status-rv-$case"; rm -rf "$STATUS_DIR"
+  if [[ "$case" == broken ]]; then seed_review_config "$STATUS_DIR" 'broken'; fi
+  if [[ "$case" == legacy ]]; then seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"","review_dir":"x"}'; fi
+  write=error; [[ "$case" == done ]] && write=done
+  REVIEW_PRESEED=1 STUB_WRITE_STATUS="$write" run_case_bg "rv-$case" 0 executing
+  unset REVIEW_PRESEED STUB_WRITE_STATUS
+  wait_for_log "status: $write" 15 || true
+  if [[ "$case" == legacy ]]; then
+    wait_for_log '\[abort\]' 15 || true
+    legacy_abort=$(reviewer_msgs)
+  else
+    plain_abort=$(reviewer_msgs)
+  fi
+  release_case
+done
+assert_eq "$plain_abort" '0' 'R2/R3/R4 reviewer 不在・done・壊れた config は [abort] を送らない'
+assert_eq "$legacy_abort" '1' 'R4 legacy config は workspace 無しでも [abort] を送る'
+
+# R5: reviewer の送信だけが失敗しても、復旧後に独立 marker を確定する。
+STATUS_DIR="$TMP/status-rv5"; rm -rf "$STATUS_DIR"
+seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
+: > "$TMP/cmux-fail-reviewer"
+REVIEW_PRESEED=1 STUB_WRITE_STATUS=error run_case_bg rv5 0 executing
+unset REVIEW_PRESEED STUB_WRITE_STATUS
+wait_for_attempt_to 'surface:77' 20 || true
+rm -f "$TMP/cmux-fail-reviewer"
+wait_for_content "$STATUS_DIR/.notified-reviewer-task-rv5" error 20 && r5=yes || r5=no
+release_case
+assert_eq "$r5" 'yes' 'R5 reviewer 送信は復旧後に再試行される'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

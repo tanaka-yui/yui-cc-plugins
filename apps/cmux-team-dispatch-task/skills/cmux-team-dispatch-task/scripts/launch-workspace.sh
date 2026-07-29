@@ -809,8 +809,8 @@ notify_reviewer_once() {
   local msg="[abort] task \$SLUG stopped with status error: \$reason"
   local ws_args=()
   [[ -n "\$rworkspace" ]] && ws_args=(--workspace "\$rworkspace")
-  "\$CMUX" send "\${ws_args[@]}" --surface "\$rsurface" "\$msg" 2>/dev/null || return 1
-  "\$CMUX" send-key "\${ws_args[@]}" --surface "\$rsurface" return 2>/dev/null || return 1
+  "\$CMUX" send "\${ws_args[@]+\"\${ws_args[@]}\"}" --surface "\$rsurface" "\$msg" 2>/dev/null || return 1
+  "\$CMUX" send-key "\${ws_args[@]+\"\${ws_args[@]}\"}" --surface "\$rsurface" return 2>/dev/null || return 1
   printf '%s' "\$status_label" > "\$marker"
 }
 

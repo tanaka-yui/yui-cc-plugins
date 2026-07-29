@@ -20,6 +20,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `<project>/.dispatch/config.json` | プロジェクト固有の上書き（手動配置）。存在時はグローバルより優先 |
 | `.claude-plugin/plugin.json` | Plugin マニフェスト |
 | `README.md` | 人間向けガイド |
+| `docs/notification-gaps.md` | 通知欠落・無限待機パターンの一覧（修正済み / 未解決） |
 | `CLAUDE.md` | この開発ガイド |
 | `LICENSE` | MIT ライセンス |
 
@@ -123,6 +124,13 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 21. Phase B 実装セッションの **exit 指示が engine 対応** であることを SKILL.md / guide-ja.md の**両経路**で確認: claude(opus/sonnet) は「run /exit」、codex は「end this codex session immediately … Do NOT run /exit」。(a) spawn 経路（`--mode execute`）は `launch-workspace.sh` の `EXIT_INSTRUCTION`（`RUNNER_ENGINE` で分岐）が焼き込む、(b) prewarm standby 経路は親→standby へ `cmux send` で送る `REQUEST_TEXT` に含める。codex の prewarm block（`{{CODEX_BEHAVIOR_BLOCK}}` step 3）は sonnet branch とは別 branch のため **base `REQUEST_TEXT` を独自に定義** しなければならない（未定義だと実行指示が空になり、`/exit` 誤用だと codex が TUI に idle 残留して runner wrapper が完了通知に到達しない）。**Phase B-R 有効時は「共通プロトコル a」の拡張 `REQUEST_TEXT` が base を上書きする。したがって拡張側にも (1) engine 別の exit 指示（codex は `END THE CODEX SESSION ITSELF` / `do NOT run /exit`）と (2) 完了通知（`send.sh` + `cmux send` + `send-key return` の dual-send）の両方を必ず持たせること。** 旧仕様は末尾が engine 中立の 1 文（`run /exit (claude) or end the session (codex)`）で通知にも触れていなかったため、Phase B-R を有効にした瞬間に codex 用の強い指示が失われ、実装完了後も codex が TUI に idle 残留 → wrapper の完了通知に到達せず、standby は task prompt を読まないので子側の必須通知も存在せず、**親に一切通知が届かない**という事故が実際に発生した。standby ペインが受け取るのは `cmux send` で送られた `REQUEST_TEXT` だけであり、「finish per the instructions below」に対応する status protocol は存在しない点に注意。回帰は `bash test/test-launch-workspace-codex.sh`（T5b/T5c/T6b/T7/T14/T15）で検証
 
 22. runner wrapper の **signal 終了ガード**が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認: 子プロセスの終了コードが 128 以上（signal 由来。SIGHUP=129 / SIGKILL=137 / SIGTERM=143）**かつ** `status.json` が既に terminal（`done` / `error`）のときだけ、status 書き込みと親通知の両方をスキップすること。`executing` のまま kill されたケース、および signal 以外の異常終了（exit 1 等）は従来どおり `error` を報告すること（ガードを広げすぎない）。最終クリーンアップの pane close で完了済みタスクが `error` に降格し偽通知が飛ぶ事故の再発防止であり、回帰は `bash test/test-runner-signal-exit.sh`（S1–S6、生成された runner script を実際に実行する動的テスト）で検証する
+23. **error パスの通知**が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
+    - runner wrapper が子の書いた終端 status を上書きしないこと（`PREV_STATUS` が `error` なら常に保持、`done` は正常終了時のみ保持、`done` + 非ゼロ終了は保守的に `error`）。親通知のラベルは終了コードではなく確定 status から導出すること
+    - status.json watcher が子プロセスと並行して走り、15 秒間隔（`CMUX_DISPATCH_WATCH_INTERVAL` で上書き可）で終端遷移を検知して通知すること。抑止条件は exit パスと同一（timeout sentinel / `.deferred` / 未 assigned standby / 他 pane の `.assigned-*`）で、poll のたびに再評価すること
+    - 通知処理は `notify_parent()` / `notify_parent_once()` に一本化し、watcher と exit パスの両方が同じ関数を呼ぶこと。marker `.notified-<slug>` は存在の有無ではなく通知済み status 文字列を保持し、通知が成功したときだけ更新すること
+    - 実装者の ABORT/ESCALATION プロトコル（findings 記録 → レビュアー通知 → status.json → 親通知 → セッション終了）が prewarm 経路と spawn 経路の両方に入り、unattended 文面にも同じ手順があること
+    - workspace レイアウトの Child 起動にも `--defer-status` を渡すこと。これが無いと、Phase B で実行を別 surface へ移譲した Child の wrapper が孫の書いた終端状態を上書きしてしまう
+    - `timeout` / `gtimeout` を使わず、`bash test/test-runner-terminal-status.sh` と `bash test/test-runner-signal-exit.sh` で回帰を検証し、既知の未解決パターンは `docs/notification-gaps.md` を参照すること
 
 ## テスト方法
 
@@ -186,7 +194,6 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 38. **exec_choice default**: `"sonnet"` を設定すると Phase A 完了後に AskUserQuestion を出さず sonnet standby/spawn の既存手順へ進むこと。**未設定**（全レイヤー未設定、または不正値・runner 未登録の `"codex"` が警告付きで無視された結果）ではモデル選択の直後に永続化確認（今回のみ / 常にこの選択 / 常に毎回選ぶ[= `"ask"` を保存]）が 1 問出て、「常に〜」でグローバル config に永続化されること（回答は今回の Phase B 分岐に影響しない。書き込みは writer 固有 mktemp + mv）。project に不正値・global に有効値がある場合は global の値が使われること。明示 `"ask"` ではモデル質問のみで永続化確認が出ないこと
 39. **codex 起動安全性**: superpowers は bypass で approval prompt を出さず、review は `--sandbox workspace-write` + `-c approval_policy='never'` + `--add-dir <STATUS_DIR>` で worktree 外の `<STATUS_DIR>/review/` に findings を書けること。`bash test/test-launch-workspace-codex.sh` の静的検査を実行すること
 40. **pane close の誤通知**: 全タスク完了後のクリーンアップで standby / 実装ペインを閉じたとき、`[dispatch] task ... finished (status: error)` が親へ飛ばないこと、`status.json` の `done` が保持されること。`executing` 中の pane を閉じた場合は従来どおり `error` 通知が飛ぶこと。`bash test/test-runner-signal-exit.sh` の動的検査を実行すること
-41. **status.json watcher**: 終端 status は sticky とし、watcher は idle 中も親通知を試みる。marker は成功した status 内容を保存し、親通知と reviewer wake は別 marker にする。`docs/notification-gaps.md` と SKILL.md / guide-ja.md / README.md を同期すること。
 # GitHub issue 自動ループの保守
 
 `--loop` の仕様は `skills/cmux-team-dispatch-task/references/loop-mode.md` を正本とする。loop CLI、プロンプト、起動フラグを変更するときは SKILL.md、guide-ja.md、README.md、CLAUDE.md を同時に更新し、`.dispatch-loop/` の owner lock と timeout sentinel の契約を維持する。

@@ -493,4 +493,15 @@ Phase B-R（実装後コードレビュー）を有効にすると、実装ペ�
 実装ペインは指示文しか読んでいないため、この 2 つが指示文の中に無いと、実装が完了しても
 セッションが終了せず、親に通知が届きません。カスタマイズする場合はこの 2 点を落とさないでください。
 
-status.json watcher は `done` / `error` を検知すると、セッション終了を待たずに親への通知を試みます。error 時も同じ通知経路を使います。
+完了通知は status.json の終端遷移で発火します。runner wrapper は子セッションと並行して
+status.json watcher を走らせており、子が `done` / `error` を書けばセッションが終了しなくても
+親へ通知を試みます（15 秒間隔。`CMUX_DISPATCH_WATCH_INTERVAL` で変更可）。子が書いた終端
+status は sticky で、`done` の後に非ゼロ終了したときだけ保守的に `error` へ訂正します。通知済み
+marker は成功した status 文字列を保持し、親通知と reviewer wake は別に管理します。
+
+watcher は timeout sentinel、`.deferred`、未 assigned standby、他 pane の `.assigned-*` を
+所有権の抑止条件として poll ごとに再評価します。停止時は ABORT/ESCALATION（findings 記録、
+reviewer wake、error status、親通知、セッション終了）の 5 手順を実行してください。workspace レイアウトの Child 起動にも `--defer-status` を渡す。これが無いと、Phase B で実行を別 surface へ移譲した Child の wrapper が、孫の書いた終端状態を上書きしてしまいます。
+
+ただし子が status.json を書かないまま沈黙した場合は検知できません。既知の配信上の限界と通知
+欠落パターンは [`docs/notification-gaps.md`](docs/notification-gaps.md) にまとめています。

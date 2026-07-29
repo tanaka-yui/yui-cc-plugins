@@ -187,6 +187,41 @@ attended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.jso
 attended_runner=$(jq -r '.runner_file' <<<"$attended_output")
 assert_contains "$attended_runner" 'AskUserQuestion' 'T13 --unattended 無しでは現行の質問分岐が残る'
 
+# A1/A2/A3: spawn prompt の abort 手順は review の有無に合わせ、reviewer 宛先を捏造せず、
+# inner prompt はクォート事故なく 1 引数として runner に渡される。
+cat > "$TMP/bin/argv-probe" <<'PROBE'
+#!/usr/bin/env bash
+{ echo "argc=$#"; printf 'arg=%s\n' "$@"; } > "$ARGV_OUT"
+PROBE
+chmod +x "$TMP/bin/argv-probe"
+cat > "$TMP/runners-probe.json" <<JSON
+{
+  "default": "probe",
+  "runners": [
+    { "name": "probe", "command": "$TMP/bin/argv-probe", "engine": "claude" }
+  ]
+}
+JSON
+mkdir -p "$TMP/abort-status/review" "$TMP/zdot"
+: > "$TMP/zdot/.zshrc"
+jq -n --arg d "$TMP/abort-status/review" '{reviewer_surface:"surface:55", reviewer_workspace:"workspace:5", review_dir:$d}' > "$TMP/abort-status/review/code-review.json"
+a1=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status" --parent-notify-workspace workspace:9 --review-config "$TMP/abort-status/review/code-review.json" abort-review)
+a1_runner=$(jq -r '.runner_file' <<<"$a1")
+assert_contains "$a1_runner" 'ABORT PROTOCOL' 'A1 review 有効の spawn 経路に abort 手順が入る'
+assert_contains "$a1_runner" 'code-round-N.md' 'A1 review 有効時は findings 記録先を含む'
+ARGV_OUT="$TMP/argv-a2.txt" ZDOTDIR="$TMP/zdot" PATH="$TMP/bin:$PATH" bash "$a1_runner" >/dev/null 2>&1 || true
+a2_argc=$(grep -oE 'argc=[0-9]+' "$TMP/argv-a2.txt" 2>/dev/null | head -1 | cut -d= -f2)
+if [[ "$a2_argc" == "1" ]]; then
+  echo 'PASS: A2 inner prompt が単一引数として渡る'
+else
+  echo "FAIL: A2 inner prompt が単一引数でない (argc=${a2_argc:-none})"
+  fail=1
+fi
+a3=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status-none" --parent-notify-workspace workspace:9 abort-none)
+a3_runner=$(jq -r '.runner_file' <<<"$a3")
+assert_contains "$a3_runner" 'ABORT PROTOCOL' 'A3 review 無効の spawn 経路に abort 手順が入る'
+assert_not_contains "$a3_runner" 'code-round-N.md' 'A3 review 無効では reviewer 手順を含めない'
+
 if command -v codex >/dev/null 2>&1 && [[ "${RUN_CODEX_DYNAMIC_TEST:-0}" == "1" ]]; then
   echo 'INFO: dynamic Codex writable-root test is enabled externally.'
 else
