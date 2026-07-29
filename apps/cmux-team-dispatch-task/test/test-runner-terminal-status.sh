@@ -407,13 +407,13 @@ for case in none done broken legacy; do
   if [[ "$case" == legacy ]]; then
     wait_for_log '\[abort\]' 15 || true
     legacy_abort=$(reviewer_msgs)
+    assert_eq "$legacy_abort" '1' 'R4 legacy config は workspace 無しでも [abort] を送る'
   else
     plain_abort=$(reviewer_msgs)
+    assert_eq "$plain_abort" '0' "R2/R3 $case では reviewer へ [abort] を送らない"
   fi
   release_case
 done
-assert_eq "$plain_abort" '0' 'R2/R3/R4 reviewer 不在・done・壊れた config は [abort] を送らない'
-assert_eq "$legacy_abort" '1' 'R4 legacy config は workspace 無しでも [abort] を送る'
 
 # R5: reviewer の送信だけが失敗しても、復旧後に独立 marker を確定する。
 STATUS_DIR="$TMP/status-rv5"; rm -rf "$STATUS_DIR"
