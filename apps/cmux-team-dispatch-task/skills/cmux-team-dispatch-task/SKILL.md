@@ -724,6 +724,10 @@ If none are relevant, proceed without an agent.
 === MANDATORY MODEL SELECTION SEQUENCE ===
 You will operate in two phases. This sequence is REQUIRED even in auto mode.
 
+OUTPUT LANGUAGE: all user-facing questions, option labels, tables, and progress
+reports MUST be rendered in Japanese. The templates in this prompt are written in
+English for consistency; translate them when presenting them to the user.
+
 LAYOUT: {{LAYOUT}}                 # workspace or split — used by Phase B spawn
 TEAM: {{TEAM}}                     # agmsg team name (empty when message_type is send-message)
 
@@ -751,10 +755,10 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   resolved in this task prompt (AskUserQuestion or default direct).
 
   Question template:
-    Q: "実行フェーズで使用するモデルを選択してください"
+    Q: "Select the model to use for the execution phase"
     Options:
-      1. opus 1m  — 高品質・長コンテキスト (推奨: 大規模・複雑な実装)
-      2. sonnet   — 高速・低コスト (推奨: 中規模・パターン化された実装)
+      1. opus 1m  — high quality, long context (recommended for large / complex implementations)
+      2. sonnet   — fast, low cost (recommended for medium-sized / patterned implementations)
 {{CODEX_OPTION_LINE}}
 
   Behavior by selection:
@@ -776,8 +780,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            close them. An unassigned standby holds no `.assigned-<name>` sentinel, so it
            never writes status.json; keeping all four panes open is the intended layout.
         2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"
-           # standby wrapper に完了処理 (status.json done/error 遷移 + <slug>-sonnet-done
-           # signal + 親通知) の所有権を渡す
+           # hands completion ownership (status.json done/error transition +
+           # <slug>-sonnet-done signal + parent notification) to the standby wrapper
         3. Send the execution request. Delivery is ALWAYS the typed prompt
            (`cmux send`) — an agmsg push alone never wakes an idle claude pane
            (its watcher runs as a background Bash whose stream output is not
@@ -807,7 +811,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            exit THIS session.
 
       IF prewarm.json is absent (split layout / prewarm off), fall back to spawn:
-        (従来どおり — 以下は現行の spawn 手順そのまま)
+        (unchanged — the steps below are the current spawn procedure verbatim)
         zsh <SKILL_DIR>/scripts/launch-workspace.sh \
           --cwd "$PWD" \
           --mode execute \
@@ -818,8 +822,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           --layout <LAYOUT> \
           --parent-notify-workspace <PARENT_WORKSPACE_ID> \
           [--parent-notify-surface <PARENT_SURFACE_ID>] \
-          [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split layout のみ
-          [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # PHASE B-R があるときのみ
+          [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split layout only
+          [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
           <task-slug>-exec
         IF the PHASE B-R block exists below, BEFORE the launch above write the
         reviewer wiring file (you are the reviewer):
@@ -852,7 +856,7 @@ the plan to a file first if you have not already.
 === END MANDATORY MODEL SELECTION SEQUENCE ===
 ```
 
-**codex 設計 variant**（design=codex のタスクでは PHASE A / PHASE B を以下に差し替える）:
+**codex design variant** (for design=codex tasks, replace PHASE A / PHASE B with the following):
 
 ```
 PHASE A — Planning / Brainstorming (THIS codex session):
@@ -867,12 +871,12 @@ PHASE A — Planning / Brainstorming (THIS codex session):
 PHASE B — Execution model selection (REQUIRED before any code change):
   After Phase A (and Phase A-R when present) completes, follow the Phase B flow
   resolved in this task prompt (AskUserQuestion or default direct):
-    Q: "実行フェーズで使用するモデルを選択してください"
+    Q: "Select the model to use for the execution phase"
     Options:
-      1. opus 1m  — 高品質・長コンテキスト (推奨: 大規模・複雑な実装)
-      2. sonnet   — 高速・低コスト (推奨: 中規模・パターン化された実装)
-      3. codex    — <exec_model> で実行 (推奨: 定型実装・別視点が欲しいとき；
-         <exec_model> が未設定なら「codex 既定モデル」と記す)
+      1. opus 1m  — high quality, long context (recommended for large / complex implementations)
+      2. sonnet   — fast, low cost (recommended for medium-sized / patterned implementations)
+      3. codex    — runs with <exec_model> (recommended for routine implementations, or when
+         you want a second perspective; when <exec_model> is unset, write "codex default model")
 
   ALL three choices DELEGATE to a pre-warmed pane — THIS session never implements.
   Common delegation steps (X = chosen pane key in prewarm.json: "review" for
@@ -914,36 +918,38 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 
   ```text
   PHASE B — Execution model default is fixed to "<default>" (skip AskUserQuestion):
-    ExitPlanMode 後は AskUserQuestion をスキップし、直ちに <default> の既存 Phase B
-    ブランチを実行してください。新しい実行経路は作らないこと。
-    - opus 1m: design=claude は `/model opus[1m]` で現セッション実装、
-      design=codex は既存の review/opus pane 委譲手順を実行する。
-    - sonnet: 既存の prewarm または spawn の sonnet 委譲手順を実行する。
-    - codex: 既存の prewarm または spawn の codex 委譲手順を実行する。
+    After ExitPlanMode, skip AskUserQuestion and immediately run the EXISTING Phase B
+    branch for <default>. Do NOT invent a new execution path.
+    - opus 1m: design=claude implements in THIS session via `/model opus[1m]`;
+      design=codex runs the existing review/opus pane delegation steps.
+    - sonnet: run the existing prewarm or spawn sonnet delegation steps.
+    - codex: run the existing prewarm or spawn codex delegation steps.
   ```
 
   When explicitly `"ask"`, substitute an empty hint and retain the existing
   AskUserQuestion section unchanged.
 
-  When **empty**（unset、または設定されていたレイヤーがすべて不正値だった場合）, retain
+  When **empty** (unset, or every layer that was set held an invalid value), retain
   the existing AskUserQuestion section AND substitute this persistence follow-up block
-  （design=claude テンプレート・design=codex variant のどちらでも同じブロックを使う）:
+  (the same block is used for both the design=claude template and the design=codex variant):
 
   ```text
   PHASE B — Persistence follow-up (exec_choice is unset):
-    実行モデルの AskUserQuestion に回答を得た直後・実装を始める前に、もう 1 問だけ
-    AskUserQuestion で確認する:
-      Q: "実行モデル選択の今後の動作を選んでください"
+    Immediately after getting the answer to the execution-model AskUserQuestion, and
+    BEFORE starting the implementation, ask exactly ONE more AskUserQuestion:
+      Q: "Choose how the execution-model selection should behave from now on"
       Options:
-        1. 今回のみ — 保存しない（次回の dispatch でも選択後にこの確認が出ます）
-        2. 常にこの選択を使う — global config に exec_choice="<選んだ値>" を永続化
-        3. 常に毎回選ぶ — global config に exec_choice="ask" を永続化
-           （以後モデル質問は毎回出るが、この確認は出なくなる）
-    Persistence (options 2/3 only) writes the GLOBAL config (project config には
-    書かない)。並列の子セッションが同時に書いても壊れないよう、必ず writer 固有の
-    一時ファイル + 同一ディレクトリ内 mv (atomic replace) を使い、jq が成功したとき
-    だけ mv する（既存 config が不正 JSON だと jq が失敗する — そのまま mv すると
-    config を 0 byte で潰すため、失敗時は tmp を消して警告し永続化を諦める）:
+        1. This time only — do not save (this confirmation appears again after the
+           selection on the next dispatch)
+        2. Always use this selection — persist exec_choice="<the value you chose>" to the global config
+        3. Always choose every time — persist exec_choice="ask" to the global config
+           (the model question keeps firing every time, but this confirmation stops appearing)
+    Persistence (options 2/3 only) writes the GLOBAL config (never the project config).
+    So that concurrent child sessions writing at the same time cannot corrupt it, ALWAYS
+    use a writer-specific temp file + mv within the same directory (atomic replace), and
+    mv only when jq succeeded (jq fails if the existing config is invalid JSON — mv-ing
+    anyway would zero out config, so on failure remove tmp, warn, and give up on
+    persistence):
       CONFIG=~/.claude/cmux-team-dispatch-task/config.json
       mkdir -p "$(dirname "$CONFIG")"
       if TMP=$(mktemp "$CONFIG.XXXXXX"); then
@@ -956,12 +962,16 @@ PHASE B — Execution model selection (REQUIRED before any code change):
       else
         echo "[warn] mktemp failed; persistence skipped" >&2
       fi
-    <value> は "opus 1m" / "sonnet" / "codex" / "ask" のいずれか。同時書き込みは
-    ファイル全体の last-write-wins（後勝ち）で構わない。同一 dispatch 内の他タスクは
-    prompt 構築済みのため今回はこの確認が出続けるが、次回 dispatch から反映される。
-    この確認の回答は今回の Phase B 分岐には影響しない — 選んだモデルで直ちに続行する。
-    「常に〜」を選んだ後の戻し方は 2 通りで意味が異なる: exec_choice を "ask" に書き換える
-    と毎回モデル質問のみ（この確認は出ない）、キーを削除すると未設定に戻りこの確認が再表示される。
+    <value> is one of "opus 1m" / "sonnet" / "codex" / "ask". Concurrent writes resolving
+    as whole-file last-write-wins is acceptable. The other tasks in the SAME dispatch
+    already have their prompts built, so this confirmation keeps appearing for them this
+    time; it takes effect from the next dispatch onward.
+    The answer to this confirmation does NOT affect this run's Phase B branch — continue
+    immediately with the model you chose.
+    There are 2 ways to revert after choosing "Always ...", and they differ in meaning:
+    rewriting exec_choice to "ask" leaves only the model question every time (this
+    confirmation is NOT shown), while DELETING the key returns it to unset so this
+    confirmation is shown again.
   ```
 
 - `{{TEAM}}` → the agmsg team name resolved in Step 1g (`dispatch-<repo-name>`); empty in
@@ -970,31 +980,32 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   worktree's `basename` (as Step 1g's `TEAM=` line does for the parent) yields a wrong
   name, since the worktree directory name is `<task-slug>`, not the repo name.
 
-- **設計 engine** = Step 1f でこのタスクに割り当てた runner の engine（`claude` または
-  `codex`）。以下のテンプレート出し分けはすべてこの値で決まる。
-- テンプレートはタスクの設計 runner の engine で出し分ける:
-  - design=claude → 従来どおり（PHASE A は "always opus"、PHASE B の SAME MODEL は
-    `/model opus[1m]`）
-  - design=codex → PHASE A / PHASE B セクションを上の「codex 設計 variant」に差し替える。
-    `{{REVIEW_BLOCK}}` は variant の PHASE A と PHASE B の間に、`{{CODE_REVIEW_BLOCK}}` は
-    variant の PHASE B の後に、それぞれ差し替え後もそのまま注入する（挿入位置はテンプレート内の
-    `{{REVIEW_BLOCK}}` / `{{CODE_REVIEW_BLOCK}}` の元の位置を踏襲）。`{{CODEX_OPTION_LINE}}` と
-    `{{CODEX_BEHAVIOR_BLOCK}}` は design=codex では出力しない（drop して空文字列にする）—
-    variant の PHASE B が 3 択 (opus 1m / sonnet / codex) をすでに内包しており、design=claude
-    前提の `{{CODEX_BEHAVIOR_BLOCK}}`（codex 実装後に YOU がレビュアーへ転じる指示）を残すと、
-    design=codex の codex 実装ケース（正: YOU は `.deferred` touch 後に exit し、レビューは
-    右上 claude ペインが担う）と矛盾する
-- `{{REVIEW_MODEL}}` → design=claude: Step 1g の `REVIEW_MODEL` / design=codex:
+- **Design engine** = the engine (`claude` or `codex`) of the runner assigned to this task
+  in Step 1f. Every template variation below is decided by this value.
+- Vary the template by the engine of the task's design runner:
+  - design=claude → unchanged (PHASE A is "always opus"; PHASE B's SAME MODEL is
+    `/model opus[1m]`)
+  - design=codex → replace the PHASE A / PHASE B sections with the "codex design variant"
+    above. `{{REVIEW_BLOCK}}` is still injected between the variant's PHASE A and PHASE B,
+    and `{{CODE_REVIEW_BLOCK}}` after the variant's PHASE B — i.e. keep the original
+    positions that the `{{REVIEW_BLOCK}}` / `{{CODE_REVIEW_BLOCK}}` markers occupy in the
+    template. `{{CODEX_OPTION_LINE}}` and `{{CODEX_BEHAVIOR_BLOCK}}` are NOT emitted for
+    design=codex (drop them — substitute the empty string): the variant's PHASE B already
+    contains all 3 choices (opus 1m / sonnet / codex), and keeping the design=claude-only
+    `{{CODEX_BEHAVIOR_BLOCK}}` (which tells YOU to turn into the reviewer after a codex
+    implementation) would contradict the design=codex codex-implementation case (correct:
+    YOU exit after touching `.deferred`, and the top-right claude pane does the review)
+- `{{REVIEW_MODEL}}` → design=claude: Step 1g's `REVIEW_MODEL` / design=codex:
   `CLAUDE_REVIEW_MODEL`
-- `{{REVIEW_RUNNER_NAME}}`（旧 `{{CODEX_RUNNER_NAME}}` を改名）→ design=claude:
-  codex runner の `name` / design=codex: `REVIEWER_RUNNER`
+- `{{REVIEW_RUNNER_NAME}}` (renamed from the old `{{CODEX_RUNNER_NAME}}`) → design=claude:
+  the codex runner's `name` / design=codex: `REVIEWER_RUNNER`
 - `{{REVIEW_PANE_AGENT}}` → design=claude: `<task-slug>-review` / design=codex:
   `<task-slug>-opus`
 
-- `{{REVIEW_BLOCK}}` → **Phase A-R enabled のときのみ**（design=claude タスクは Step 1g の
-  `REVIEW_ENABLED`、design=codex タスクは `REVIEW_ENABLED_CODEX_DESIGN` が true）、以下のブロック
-  全体（`{{REVIEW_MODEL}}` / `{{REVIEW_RUNNER_NAME}}` / `{{REVIEW_PANE_AGENT}}` は上の設計 engine
-  分岐で置換して）を焼き込む。disabled のときは空文字列:
+- `{{REVIEW_BLOCK}}` → **only when Phase A-R is enabled** (design=claude tasks: Step 1g's
+  `REVIEW_ENABLED`; design=codex tasks: `REVIEW_ENABLED_CODEX_DESIGN` is true), bake in the
+  WHOLE block below (substituting `{{REVIEW_MODEL}}` / `{{REVIEW_RUNNER_NAME}}` /
+  `{{REVIEW_PANE_AGENT}}` per the design-engine branching above). Empty string when disabled:
 
   ````
   PHASE A-R — Plan/Spec review by the counterpart engine (REQUIRED between Phase A and Phase B):
@@ -1097,21 +1108,21 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            go into the next round's request as rebuttals). Then:
              N < 3  → run round N+1.
              N == 3 → summarize the unresolved findings and ask via AskUserQuestion:
-               Q: "レビューで 3 往復しても approve が出ませんでした。残りの指摘: <要約>。どうしますか？"
-                 1. このまま進む — 残指摘を文書に注記して Phase B へ
-                 2. さらに修正 — もう 1 往復レビューを続ける
-               "このまま進む" → append the unresolved findings as a note in the
+               Q: "Three review rounds passed without an approve. Remaining findings: <summary>. What do you want to do?"
+                 1. Proceed as is — note the remaining findings in the document and go to Phase B
+                 2. Revise further — run one more review round
+               "Proceed as is" → append the unresolved findings as a note in the
                document and move on (leave the review pane open — do not close it).
-               "さらに修正" → run one more round; on another needs_work, re-ask.
+               "Revise further" → run one more round; on another needs_work, re-ask.
          - The wait exited stalled (STALLED=1: no screen change over a full
            15-min chunk, or the pane was unobservable at 2 consecutive chunk
            boundaries) → check the verdict file one last time; if still no
            VERDICT line, re-send the SAME round's request once (retake the
            baseline snapshot). If the wait exits stalled again, ask via
            AskUserQuestion:
-             Q: "レビュアーが停止しているようです（pane に変化なし）。どうしますか？"
-               1. 再依頼する
-               2. レビューを省略して Phase B へ進む
+             Q: "The reviewer appears to be stalled (no change in its pane). What do you want to do?"
+               1. Re-send the request
+               2. Skip the review and proceed to Phase B
              Option 2 → skip the review and continue to Phase B (leave the review
              pane open — do not close it).
 
@@ -1119,9 +1130,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     review point reached approve or an explicit user decision was made.
   ````
 
-- `{{CODE_REVIEW_BLOCK}}` → **Phase A-R と同一条件**（design=claude タスクは `REVIEW_ENABLED`、
-  design=codex タスクは `REVIEW_ENABLED_CODEX_DESIGN` が true）のときのみ、以下のブロック全体を
-  焼き込む。disabled のときは空文字列:
+- `{{CODE_REVIEW_BLOCK}}` → **only under exactly the same condition as Phase A-R**
+  (design=claude tasks: `REVIEW_ENABLED`; design=codex tasks: `REVIEW_ENABLED_CODEX_DESIGN`
+  is true), bake in the WHOLE block below. Empty string when disabled:
 
   ````
   PHASE B-R — Post-implementation code review (REQUIRED before the PR is created):
@@ -1131,41 +1142,41 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 
     Reviewer assignment (unified rule): the reviewer is ALWAYS the opposite engine
     of the implementer. Physically:
-      - implementer engine == 設計 engine → the review pane reviews
+      - implementer engine == design engine → the review pane reviews
         (REVIEWER_SURFACE = prewarm.json .review.surface_id)
-      - implementer engine != 設計 engine → the DESIGN session (YOU) reviews
+      - implementer engine != design engine → the DESIGN session (YOU) reviews
         (REVIEWER_SURFACE = your own $CMUX_SURFACE_ID)
-    Concretely, by 設計 engine and Phase B choice:
+    Concretely, by design engine and Phase B choice:
 
     [design=claude]
       - "opus 1m" (YOU implement in-session) → the review pane reviews your code:
         run the SAME Round loop as PHASE A-R with point id "code" — use the
-        「opus 1m — the review pane reviews」 protocol at the end of this block.
+        "opus 1m — the review pane reviews" protocol at the end of this block.
       - "sonnet" → the review pane reviews. The sonnet standby is the implementer:
-        send it the extended REQUEST_TEXT (共通プロトコル a) with <REVIEWER_SURFACE>
+        send it the extended REQUEST_TEXT (common protocol a) with <REVIEWER_SURFACE>
         = prewarm.json .review.surface_id. YOU (the design pane) touch .deferred and
         then exit THIS session — you have NO reviewer role (do NOT run steps b–e).
-        (現行変更: 旧仕様では設計 opus ペインがレビューしていた。)
+        (CHANGE from the previous behavior: the design opus pane used to review.)
       - "codex" → YOU become the code reviewer. The codex standby is the implementer:
-        send it REQUEST_TEXT (共通プロトコル a) with <REVIEWER_SURFACE> = your own
+        send it REQUEST_TEXT (common protocol a) with <REVIEWER_SURFACE> = your own
         $CMUX_SURFACE_ID, then run steps b–e.
 
     [design=codex]
       - "opus 1m" / "sonnet" → YOU (the design codex session) become the code
         reviewer. The delegated claude pane is the implementer (opus 1m → the review
         pane, agent <task-slug>-opus / sonnet → the sonnet standby): send it
-        REQUEST_TEXT (共通プロトコル a) with <REVIEWER_SURFACE> = your own
-        $CMUX_SURFACE_ID, then run steps b–e (.deferred の後も exit せず idle 待機
-        → round ごとに findings を書く → approve 書き込み後に exit)。
+        REQUEST_TEXT (common protocol a) with <REVIEWER_SURFACE> = your own
+        $CMUX_SURFACE_ID, then run steps b–e (do NOT exit after .deferred — idle-wait,
+        write findings each round, and exit only after writing approve).
       - "codex" (standby) → the claude review pane reviews. The codex standby is the
-        implementer: send it REQUEST_TEXT (共通プロトコル a) with <REVIEWER_SURFACE>
+        implementer: send it REQUEST_TEXT (common protocol a) with <REVIEWER_SURFACE>
         = prewarm.json .review.surface_id. YOU touch .deferred and then exit THIS
         session — no reviewer role.
       - review pane unavailable (the PHASE A-R Setup spawn failed and review was
         skipped) → skip this code review and proceed to the PR — review is a quality
         gate, not a dispatch blocker.
 
-    共通プロトコル a — extended REQUEST_TEXT (the implementer drives the round loop;
+    Common protocol a — extended REQUEST_TEXT (the implementer drives the round loop;
     used in every branch above where a standby / delegated pane implements):
       a. Prewarm path only — REQUEST_TEXT: use this extended version instead
          (fill every <...> before sending):
@@ -1208,7 +1219,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 findings in the PR body and proceed. If the wait exits stalled,
                 check the verdict file one last time, then re-send the same round
                 once (retake the baseline); if it stalls again, ask via
-                AskUserQuestion if you can (再依頼 / レビュー省略して PR 作成);
+                AskUserQuestion if you can (re-send the request / skip the review and
+                create the PR);
                 otherwise skip the review and note that in the PR body.
             *** ABORT / ESCALATION PROTOCOL — this overrides everything above ***
             If at ANY point you decide to STOP without completing the work — a
@@ -1255,7 +1267,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 ITSELF — do NOT run /exit (codex does not act on it) and do NOT leave
                 the session idle. A codex TUI that stays idle blocks its wrapper
                 forever, so the wrapper backstop never fires either."
-         Placeholder values: <REVIEWER_SURFACE> = the value fixed by the 設計 engine
+         Placeholder values: <REVIEWER_SURFACE> = the value fixed by the design engine
          branch above (YOU review → your own $CMUX_SURFACE_ID; the review pane reviews
          → prewarm.json .review.surface_id), <TEAM> = the TEAM value given above (empty
          in send-message mode — then always use the cmux send path), <your-agent-name>
@@ -1275,16 +1287,20 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          when YOU are the reviewer). The spawn fallback already writes this file;
          this makes the prewarm path write it too.
 
-         この (a)(b) は省略できない。旧仕様は末尾が「run /exit (claude) or end the session
-         (codex)」という engine 中立の 1 文で、しかも完了通知に触れていなかった。その結果:
-           - Phase B-R を有効にすると、この拡張 REQUEST_TEXT が codex 用 base REQUEST_TEXT の
-             「end this codex session immediately … Do NOT run /exit」を上書きし、
-             codex への強い指示が失われる（CLAUDE.md 項目 21 が防ごうとした退行そのもの）
-           - standby ペインは task prompt を読んでいないため「finish per the instructions
-             below」に対応する status protocol が存在せず、子側の必須通知が構造的に届かない
-         この 2 つが重なると、実装が完了しても親には何の通知も届かない。
+         (a) and (b) MUST NOT be omitted. The old wording ended with a single
+         engine-neutral sentence ("run /exit (claude) or end the session
+         (codex)") and did not mention the completion notification at all. As a result:
+           - Enabling Phase B-R made this extended REQUEST_TEXT overwrite the codex base
+             REQUEST_TEXT's "end this codex session immediately … Do NOT run /exit", so the
+             strong codex-specific instruction was LOST (exactly the regression that
+             CLAUDE.md maintenance item 21 exists to prevent)
+           - A standby pane never reads the task prompt, so no status protocol backs
+             "finish per the instructions below" — the child-side mandatory notification is
+             structurally impossible to deliver
+         When those two combine, the parent receives NO notification at all, even though the
+         implementation finished.
 
-    共通プロトコル b–e — YOU become the code reviewer (only in the branches above
+    Common protocol b–e — YOU become the code reviewer (only in the branches above
     that assign the reviewer role to YOU):
       b. After touching .deferred (prewarm step 4 / spawn fallback): do NOT exit.
          Run mkdir -p "<EXISTING_STATUS_DIR>/review", then END YOUR TURN and
@@ -1312,7 +1328,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           + cmux send --workspace <PARENT_WORKSPACE_ID> '<reason>' + send-key return)
          and then exit THIS session.
 
-    [opus 1m — the review pane reviews] (design=claude "opus 1m" のみ)
+    [opus 1m — the review pane reviews] (design=claude "opus 1m" only)
       After implementation is committed and BEFORE creating the PR, run the SAME
       Round loop as PHASE A-R once more with point id "code", reusing REVIEW_SURFACE
       and REVIEW_DELIVERY from the PHASE A-R Setup. Differences from a document round:
@@ -1320,9 +1336,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           (git log / git diff against the branch point) against the plan at
           <PLAN_FILE_PATH>, findings to <EXISTING_STATUS_DIR>/review/code-round-<N>.md.
         - Round 3 needs_work → ask via AskUserQuestion:
-            Q: "コードレビューで 3 往復しても approve が出ませんでした。残りの指摘: <要約>。どうしますか？"
-              1. このまま PR 作成 — 未解決指摘を PR 本文に注記して進む
-              2. さらに修正 — もう 1 往復続ける（再度 needs_work なら再質問）
+            Q: "Three code review rounds passed without an approve. Remaining findings: <summary>. What do you want to do?"
+              1. Create the PR as is — note the unresolved findings in the PR body and proceed
+              2. Revise further — run one more round (on another needs_work, re-ask)
         - Review pane unavailable (the PHASE A-R Setup spawn failed and review was
           skipped) → skip this code review too and proceed to the PR — review is a
           quality gate, not a dispatch blocker.
@@ -1342,7 +1358,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   ```
 
   - **codex runner present** (`CODEX_CMD` non-empty):
-    - `{{CODEX_OPTION_LINE}}` → `      3. codex    — codex CLI に切り替え (推奨: codex 固有機能を使う実装)`
+    - `{{CODEX_OPTION_LINE}}` → `      3. codex    — switch to the codex CLI (recommended for implementations that use codex-specific features)`
     - `{{CODEX_BEHAVIOR_BLOCK}}` →
       ```
           [DIFFERENT MODEL] "codex" → FIRST check for a pre-warmed standby pane:
@@ -1384,7 +1400,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                  exists below, do NOT exit — switch to the reviewer role it defines.
                  OTHERWISE exit THIS session.
 
-            IF prewarm.json is absent, fall back to the existing spawn flow (従来どおり):
+            IF prewarm.json is absent, fall back to the existing spawn flow (unchanged):
               Build and run (same shape as the sonnet branch above, but with the codex runner):
                 zsh <SKILL_DIR>/scripts/launch-workspace.sh \
                   --cwd "$PWD" \
@@ -1395,8 +1411,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                   --layout <LAYOUT> \
                   --parent-notify-workspace <PARENT_WORKSPACE_ID> \
                   [--parent-notify-surface <PARENT_SURFACE_ID>] \
-                  [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split layout のみ
-                  [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # PHASE B-R があるときのみ
+                  [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split layout only
+                  [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
                   <task-slug>-exec
               IF the PHASE B-R block exists below, BEFORE the launch above write the
               reviewer wiring file exactly as in the sonnet branch (mkdir -p the
@@ -1521,24 +1537,28 @@ and `<team>` with the agmsg team name resolved in Step 1g (agmsg mode only).
 
 ### Plan-mode Enforcement Hook (ExitPlanMode)
 
-標準 plan モードでは ExitPlanMode 承認直後に「プランを実行せよ」という強いシステム指示が
-入り、プロンプト焼き込みの MANDATORY MODEL SELECTION SEQUENCE (Phase A-R / Phase B) が
-スキップされることがある。これを防ぐため、`launch-workspace.sh` は **`--mode plan` かつ
-claude engine、かつ非 claude-teams レイアウト** のときのみ、worktree の `.claude/settings.local.json` に PostToolUse hook
-(matcher: `ExitPlanMode`, command: `zsh <this-skill-dir>/scripts/plan-approved-hook.sh`) を
-注入する。hook は承認直後に「ファイル編集前に Phase A-R (有効時) → Phase B を実行せよ」と
-いう additionalContext を機械的に再注入する。
+In standard plan mode, a strong system instruction ("execute the plan") arrives right
+after ExitPlanMode approval, which can cause the MANDATORY MODEL SELECTION SEQUENCE
+(Phase A-R / Phase B) baked into the prompt to be skipped. To prevent this,
+`launch-workspace.sh` injects a PostToolUse hook (matcher: `ExitPlanMode`, command:
+`zsh <this-skill-dir>/scripts/plan-approved-hook.sh`) into the worktree's
+`.claude/settings.local.json` — but ONLY when the mode is **`--mode plan`, the engine is
+claude, and the layout is not claude-teams**. Right after approval, the hook
+mechanically re-injects an additionalContext saying "before editing any file, run
+Phase A-R (when enabled) → Phase B".
 
-- hook はベストエフォート: settings 書き込み・マージ失敗は警告ログのみで dispatch を止めない
-  (プロンプト側の指示がフォールバック)。既存 settings.local.json は jq でマージし、
-  worktree 再利用時に重複注入しない
-- 誤コミット防止: `.claude/settings.local.json` と plan 保存先 `.claude/plans/` は repo 共有の
-  `info/exclude` に追記される（plan ファイルは `--plan-file` のパス渡しで使う作業物であり、
-  子の `git add -A` でタスクブランチにコミットさせない）
-- hook は worktree の settings.local.json に残存するため、同一 worktree を再利用する後続
-  セッション（Phase B の execute 孫を含む）にも作用する。それらは plan モードを使わないため
-  実害はない
-- superpowers モード / codex engine / execute・standby・review モード / claude-teams レイアウトでは注入されない
+- The hook is best-effort: a settings write or merge failure only logs a warning and does
+  NOT stop the dispatch (the prompt-side instruction is the fallback). An existing
+  settings.local.json is merged with jq, and a reused worktree is not injected twice
+- Accidental-commit prevention: `.claude/settings.local.json` and the plan directory
+  `.claude/plans/` are appended to the repo-shared `info/exclude` (a plan file is a work
+  artifact handed off by path via `--plan-file`, and must not be committed to the task
+  branch by the child's `git add -A`)
+- The hook stays in the worktree's settings.local.json, so it also affects later sessions
+  that reuse the same worktree (including Phase B's execute grandchild). Those do not use
+  plan mode, so there is no actual harm
+- It is NOT injected in superpowers mode / for the codex engine / in execute, standby, and
+  review modes / for the claude-teams layout
 
 ### Launch: Workspace Mode (default)
 
@@ -1577,18 +1597,19 @@ inside each task workspace. Layout depends on Phase A-R (Step 1g `REVIEW_ENABLED
 - **Phase A-R disabled** (current behavior): vertical stack — top: opus /
   middle: sonnet / bottom: codex (codex only when `runners.json` has an
   `engine: "codex"` runner).
-- **Phase A-R enabled**: 2×2 even grid。レビューペインは常に設計 engine の逆:
-  - design=claude (現行): top-left: opus / top-right: codex review pane (idle,
+- **Phase A-R enabled**: 2×2 even grid. The review pane is ALWAYS the opposite of the
+  design engine:
+  - design=claude (current): top-left: opus / top-right: codex review pane (idle,
     `--model <review_model>`, agent `<slug>-review`) / bottom-left: sonnet /
     bottom-right: codex
   - design=codex: top-left: design codex (idle, `--effort <plan_effort>`) /
     top-right: claude review pane (idle, reviewer runner + `--model
-    <CLAUDE_REVIEW_MODEL>` + `--skip-permissions`, agent `<slug>-opus` — A-R
-    レビュアー兼 Phase B opus 1m 実装先の二役) / bottom-left: sonnet /
-    bottom-right: codex (exec_model / exec_effort)
-  どちらも review pane は standby wrapper の status 所有権なしで起動する
-  (design=codex の右上のみ、Phase B で opus 1m が選ばれたときに
-  `.assigned-<slug>-opus` が touch され実装者として status を持つ)。
+    <CLAUDE_REVIEW_MODEL>` + `--skip-permissions`, agent `<slug>-opus` — it plays
+    both roles: the A-R reviewer and the Phase B opus 1m implementation target) /
+    bottom-left: sonnet / bottom-right: codex (exec_model / exec_effort)
+  In both cases the review pane starts with NO status ownership in the standby wrapper
+  (only for design=codex's top-right pane: when opus 1m is chosen in Phase B,
+  `.assigned-<slug>-opus` is touched and it owns status as the implementer).
 
 Everything is delegated to `prewarm-panes.sh`; do not create panes manually.
 
