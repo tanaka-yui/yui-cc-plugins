@@ -1233,6 +1233,18 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          <task-slug>-opus, whichever Phase B choice dispatched to),
          <PARENT_WORKSPACE_ID> = the parent workspace ID this dispatch was launched from.
 
+         Before sending this REQUEST_TEXT, write the reviewer wiring file so the
+         implementer's runner wrapper can also wake the reviewer if the implementer
+         stops without following the abort protocol:
+           mkdir -p "<EXISTING_STATUS_DIR>/review"
+           jq -n --arg s "<REVIEWER_SURFACE>" --arg w "<REVIEWER_WORKSPACE>" \
+             --arg d "<EXISTING_STATUS_DIR>/review" \
+             '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d}' \
+             > "<EXISTING_STATUS_DIR>/review/code-review.json"
+         <REVIEWER_WORKSPACE> is the reviewer pane's workspace ($CMUX_WORKSPACE_ID
+         when YOU are the reviewer). The spawn fallback already writes this file;
+         this makes the prewarm path write it too.
+
          この (a)(b) は省略できない。旧仕様は末尾が「run /exit (claude) or end the session
          (codex)」という engine 中立の 1 文で、しかも完了通知に触れていなかった。その結果:
            - Phase B-R を有効にすると、この拡張 REQUEST_TEXT が codex 用 base REQUEST_TEXT の

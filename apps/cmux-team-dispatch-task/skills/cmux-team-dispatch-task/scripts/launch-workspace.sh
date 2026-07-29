@@ -792,6 +792,28 @@ notify_parent_once() {
   return 0
 }
 
+notify_reviewer_once() {
+  local status_label="\$1"
+  [[ "\$status_label" == "error" && -n "\$STATUS_DIR" ]] || return 0
+  local cfg="\$STATUS_DIR/review/code-review.json"
+  [[ -f "\$cfg" ]] || return 0
+  local rsurface rworkspace
+  rsurface=\$(jq -r '.reviewer_surface // empty' "\$cfg" 2>/dev/null || echo "")
+  rworkspace=\$(jq -r '.reviewer_workspace // empty' "\$cfg" 2>/dev/null || echo "")
+  [[ -n "\$rsurface" ]] || return 0
+  local marker="\$STATUS_DIR/.notified-reviewer-\$SLUG" prev=""
+  [[ -f "\$marker" ]] && prev=\$(cat "\$marker" 2>/dev/null || echo "")
+  [[ "\$prev" == "\$status_label" ]] && return 0
+  local reason=""
+  [[ -f "\$STATUS_DIR/status.json" ]] && reason=\$(jq -r '.message // empty' "\$STATUS_DIR/status.json" 2>/dev/null || echo "")
+  local msg="[abort] task \$SLUG stopped with status error: \$reason"
+  local ws_args=()
+  [[ -n "\$rworkspace" ]] && ws_args=(--workspace "\$rworkspace")
+  "\$CMUX" send "\${ws_args[@]}" --surface "\$rsurface" "\$msg" 2>/dev/null || return 1
+  "\$CMUX" send-key "\${ws_args[@]}" --surface "\$rsurface" return 2>/dev/null || return 1
+  printf '%s' "\$status_label" > "\$marker"
+}
+
 # この pane の前回実行が残した通知 marker を消す (pane 世代の分離)。
 # runner script は pane 起動ごとに 1 回だけ実行されるため、ここで消せば足りる。
 if [[ -n "\$STATUS_DIR" ]]; then
@@ -846,6 +868,7 @@ if [[ -n "\$STATUS_DIR" ]]; then
       [[ "\$_st" == "done" || "\$_st" == "error" ]] || continue
 
       notify_parent_once "\$_st" || continue
+      notify_reviewer_once "\$_st" || continue
       exit 0
     done
   ) &
@@ -935,6 +958,8 @@ fi
 
 notify_parent_once "\$FINAL_STATUS" || \\
   echo "[runner] parent notification failed for status '\$FINAL_STATUS'" >&2
+notify_reviewer_once "\$FINAL_STATUS" || \\
+  echo "[runner] reviewer abort notification failed (best-effort)" >&2
 EOF
 chmod +x "$RUNNER_FILE"
 log "runner" "generated $RUNNER_FILE"
