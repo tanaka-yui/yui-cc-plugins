@@ -5,84 +5,99 @@ description: "plan を対話 codex にカレントdir で実装させ、完了�
 
 # /codex-exec
 
-claude/superpowers が作成した plan を、新しい cmux ペインで**対話 codex**（gpt-5.6-sol / xhigh）に
-実装させる。codex は完了時に agmsg で通知し、親（このセッション）は短命 watcher の完了で wake される。
+Has **interactive codex** (gpt-5.6-sol / xhigh) implement, in a new cmux pane, a plan
+that claude/superpowers created. codex notifies via agmsg on completion, and the
+parent (this session) is woken by the short-lived watcher's exit.
 
-## 手順
+## Procedure
 
-### Step 0: 実装対象の plan を確定する
+### Step 0: Determine the plan to implement
 
-`$ARGUMENTS` に plan のパス（`.md` で終わる位置引数）が含まれていれば、それを使う。
-**何も尋ねずに** Step 1 へ進む。
+If `$ARGUMENTS` contains a plan path (a positional argument ending in `.md`), use it.
+**Without asking anything**, proceed to Step 1.
 
-含まれていなければ候補を列挙する:
+If not, list candidates:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-exec" --list-targets
 ```
 
-出力は 1 行 1 候補の TSV（`target<TAB>plan<TAB><path><TAB><label>`）。行数で分岐する:
+The output is one-candidate-per-line TSV (`target<TAB>plan<TAB><path><TAB><label>`).
+Branch on the number of lines:
 
-- **0 行**: 「plan が見つかりません」と伝え、plan のパスをユーザーに尋ねる。
-- **1 行以上**: **候補が 1 件でも必ず** AskUserQuestion で確認する。選択肢は候補の上位 3 件
-  （label の `committed` / `untracked` と更新時刻を description に添える）。該当が無ければ
-  ユーザーは Other でパスを指定できる。
+- **0 lines**: tell the user no plan was found, and ask them for the plan path.
+  Respond to the user in Japanese.
+- **1 or more lines**: **even with only 1 candidate, always** confirm via
+  AskUserQuestion. Offer the top 3 candidates as options (attach the label's
+  `committed` / `untracked` and the update time to the description). If none match,
+  the user can specify a path via Other.
 
-exec は誤った plan を掴むとリポジトリを書き換えるため、review と違って 1 件でも確認を省かない。
+Unlike review, exec never skips confirmation even for a single candidate, because
+grabbing the wrong plan rewrites the repository.
 
-確定した plan パスは Step 2 の bin 実行に**明示的に**渡す（bin 側の mtime 最新フォールバックに委ねない）。
+Pass the determined plan path **explicitly** to the Step 2 bin execution (don't rely
+on the bin's own most-recent-mtime fallback).
 
-### Step 1: agmsg identity を解決
+### Step 1: Resolve agmsg identity
 
 ```bash
 ~/.agents/skills/agmsg/scripts/whoami.sh "$(pwd)" claude-code
 ```
 
-- `agent=<parent> teams=<team,...>` が返れば PARENT / TEAM を記憶。複数 team なら使う team をユーザーに確認。
-- `not_joined=true` / `suggest=true` なら、ユーザーに team 名と親 agent 名を尋ねて join:
+- If `agent=<parent> teams=<team,...>` is returned, remember PARENT / TEAM. If there
+  are multiple teams, confirm which one to use with the user.
+- If `not_joined=true` / `suggest=true`, ask the user for the team name and parent
+  agent name, then join:
   `~/.agents/skills/agmsg/scripts/join.sh <team> <parent> claude-code "$(pwd)"`
 
-### Step 2: bin を実行して codex ペインを起動
+### Step 2: Run the bin to launch the codex pane
 
-Step 0 で確定した plan パスと `$ARGUMENTS`（`-d down` 等）に `--team <TEAM> --parent <PARENT>` を
-足して実行する:
+Append `--team <TEAM> --parent <PARENT>` to the plan path determined in Step 0 and
+`$ARGUMENTS` (e.g. `-d down`), then run:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-exec" <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>
 ```
 
-Step 0 をスキップした（＝ `$ARGUMENTS` に plan パスが既に含まれている）場合は `<PLAN>` は付けず、
-`$ARGUMENTS` のみを渡す。
+If Step 0 was skipped (i.e. `$ARGUMENTS` already contains the plan path), omit
+`<PLAN>` and pass only `$ARGUMENTS`.
 
-出力の `token=` / `codex_agent=` / `surface=` / `plan=` を記憶する。
+Remember the output's `token=` / `codex_agent=` / `surface=` / `plan=`.
 
-### Step 3: 送信元 codex agent を team に pre-join
+### Step 3: Pre-join the sending codex agent to the team
 
-codex が完了通知（send.sh）を撃てるよう、`codex_agent` を team に登録する（agmsg 1.1.8 は未登録 from を拒否）:
+So codex can fire the completion notification (send.sh), register `codex_agent` with
+the team (agmsg 1.1.8 rejects an unregistered `from`):
 
 ```bash
 ~/.agents/skills/agmsg/scripts/join.sh <TEAM> <codex_agent> codex "$(pwd)"
 ```
 
-### Step 4: 短命 watcher を background task で起動して待機
+### Step 4: Launch the short-lived watcher as a background task and wait
 
-**Bash tool を `run_in_background: true` で** 次を起動する（token は Step 2 の出力値）:
+**Using the Bash tool with `run_in_background: true`**, launch the following (token
+is the value from Step 2's output):
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --surface <surface>
 ```
 
-`--timeout` は付けない（既定は無制限）。長い実装を壁時計で打ち切ると、まだ生きている
-codex を見捨てて待機が畳まれ、後から届く完了通知では二度と wake しないため。代わりに
-`--surface` を渡してペインの生存で打ち切る。
+Don't attach `--timeout` (the default is unlimited). Cutting off a long implementation
+by wall clock abandons a codex that's still alive, collapsing the wait so that a
+later-arriving completion notification never wakes it again. Instead, pass `--surface`
+so termination is judged by pane liveness.
 
-起動したらこのターンを終える。watcher の完了通知（`<task-notification>`）で親が wake される。
+Once launched, end this turn. The watcher's completion notification
+(`<task-notification>`) wakes the parent.
 
-### Step 5: wake 後の分岐
+### Step 5: Branch after waking
 
-watcher task の出力を確認する:
+Check the watcher task's output:
 
-- `status=done`: 「codex-exec 完了（plan: …）。未コミット変更を codex-review でレビューしますか?」とユーザーに確認。
-  Yes なら対象を明示して `/codex-review --uncommitted`（cmux-codex-review）を起動する
-  （ユーザーは既に対象を回答済みのため、Step 0 で候補を再度尋ねさせない）。
-- `status=gone`: 「実装ペイン `<surface>` が閉じられました。codex の完了は検知できていません」と伝える。
+- `status=done`: ask the user whether to review the uncommitted changes with
+  codex-review, noting that codex-exec has finished (including which plan). If yes,
+  launch `/codex-review --uncommitted` (cmux-codex-review) with the target stated
+  explicitly (since the user has already answered the target, don't make Step 0 ask
+  for candidates again). Respond to the user in Japanese.
+- `status=gone`: tell the user the implementation pane `<surface>` was closed and
+  codex's completion could not be detected. Respond to the user in Japanese.
