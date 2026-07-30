@@ -1,7 +1,7 @@
 {
   "name": "cmux-fork",
   "description": "Claude Code の会話を新しい cmux ペインにフォーク（ブランチ）するプラグイン",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "tanaka-yui"
   },

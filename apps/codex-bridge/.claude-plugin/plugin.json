@@ -1,6 +1,6 @@
 {
   "name": "codex-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Claude Code の rules / CLAUDE.md を Codex が読める AGENTS.md にネスト生成する汎用プラグイン。",
   "author": {
     "name": "tanaka-yui",

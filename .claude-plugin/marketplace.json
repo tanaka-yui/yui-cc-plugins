@@ -9,7 +9,7 @@
       "name": "cmux-fork",
       "description": "Claude Code の会話を新しい cmux ペインにフォーク（ブランチ）するプラグイン",
       "source": "./apps/cmux-fork",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [
@@ -22,7 +22,7 @@
       "name": "cmux-using",
       "description": "cmux ターミナル操作スキル。ペイン分割、サブエージェント起動・監視・結果回収、コマンド送信、スクリーン読み取り。",
       "source": "./apps/cmux-using",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [
@@ -36,7 +36,7 @@
       "name": "cmux-team-dispatch-task",
       "description": "cmux ワークスペースによる並列タスクディスパッチ。タスクごとに git worktree + Claude Code セッションを起動し、親セッションがオーケストレーション。",
       "source": "./apps/cmux-team-dispatch-task",
-      "version": "1.11.0",
+      "version": "1.12.0",
       "license": "MIT",
       "category": "development",
       "tags": [
@@ -51,7 +51,7 @@
       "name": "dev-up",
       "description": "Worktree-isolated dev stack lifecycle. Reserve a port slot, generate .env.dispatch, and run docker-compose stacks and/or direct commands (go, vite, etc.) with health checks and clean teardown.",
       "source": "./apps/dev-up",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "license": "MIT",
       "category": "development",
       "tags": [
@@ -67,7 +67,7 @@
       "name": "e2e-test",
       "description": "agent-browser based E2E tests against worktree-isolated stacks brought up by dev-up.",
       "source": "./apps/e2e-test",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "license": "MIT",
       "category": "development",
       "tags": [
@@ -80,7 +80,7 @@
       "name": "token-meter",
       "description": "Claude Code の hook 経由で圧縮プラグイン (rtk/headroom) の効きを観測・記録する計測機構。caveman は prompt mode で観測不可だが /token-report で transcript 推定値として併記",
       "source": "./apps/token-meter",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "license": "MIT",
       "category": "observability",
       "tags": [
@@ -95,7 +95,7 @@
       "name": "codex-bridge",
       "description": "Claude Code の rules / CLAUDE.md を Codex が読める AGENTS.md にネスト生成する汎用プラグイン。",
       "source": "./apps/codex-bridge",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "license": "MIT",
       "category": "development",
       "tags": [
@@ -110,7 +110,7 @@
       "name": "cmux-codex-review",
       "description": "agmsg の inbox を確認したうえで、新しい cmux ペインで codex (gpt-5.6-sol / reasoning effort xhigh) によるコードレビューを起動するプラグイン。",
       "source": "./apps/cmux-codex-review",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [
@@ -124,7 +124,7 @@
       "name": "cmux-codex-exec",
       "description": "claude/superpowers の plan を対話 codex にカレントdir で実装させ、完了を親セッションが agmsg 経由で検知してレビューへ繋ぐプラグイン。",
       "source": "./apps/cmux-codex-exec",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [

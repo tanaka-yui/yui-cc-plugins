@@ -1,6 +1,6 @@
 {
   "name": "e2e-test",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "agent-browser based E2E tests.",
   "author": { "name": "tanaka-yui", "url": "https://github.com/tanaka-yui" },
   "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/e2e-test",
