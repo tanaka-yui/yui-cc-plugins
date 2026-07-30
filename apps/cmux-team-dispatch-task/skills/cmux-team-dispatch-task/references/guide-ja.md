@@ -1,78 +1,8 @@
-# cmux-team-dispatch-task 利用ガイド
+# Team Dispatch
 
-## 概要
+## Output Language
 
-`cmux-team-dispatch-task` は、複数のタスクを並列で実行するオーケストレーションスキルです。
-各タスクは独立した **git worktree + Claude Code セッション** で実行され、
-親セッション（オーケストレータ）が全体を監視・統括します。
-
-**親側ではプランニング/ブレストを行わず即座にディスパッチ** — 各子セッションが
-並行して brainstorming/planning を実行します。
-
-### 主な特徴
-
-- 即座にディスパッチ — 親側のプランニングオーバーヘッドなし
-- `.claude/agents/` ディレクトリを動的にスキャンし、利用可能な Agent タイプを自動発見
-- 利用可能な Agent 一覧を子セッションに伝達し、各子セッションが最適な Agent を選択
-- タスクごとに brainstorming スキルの使用を選択可能
-- **3つのレイアウトモード**: workspace（デフォルト・別タブ）、split（ペイン分割）、claude-teams（Agent Teams）— ディスパッチ前に選択
-- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を実行後（Phase A-R 有効時は相手方 engine のレビューの approve 後）、`exec_choice` が未設定または `"ask"` なら `opus 1m` / `sonnet`（codex runner がある場合は `codex` も）を選ばせる。固定値なら質問を省略して既存の同じ実行分岐へ直行する。同一 model なら現セッション継続、異なる model なら `launch-workspace.sh --mode execute` 経由で孫 surface を spawn (runner script でラップされ完了通知が確実に親に伝播)。元 Child は `.deferred` を書いて exit する。設計 runner が `engine: codex` のタスクでは Phase A を codex セッションが担い、Phase B の 3 択（opus 1m / sonnet / codex）はすべて pre-warm ペインへ委譲する
-- **クロスエンジンレビュー**: Phase A-R / Phase B-R のレビュアーは **常に実装者の相手方 engine**。design=claude → レビューは codex、design=codex → レビューは claude が担う（下記 Phase A-R / Phase B-R 節参照）
-- **Phase A-R（plan/spec クロスレビュー）**: 設計 runner の `review_model`（codex 設計は codex runner の `review_model`、codex 設計タスクに対しては claude 側 reviewer runner）があり
-  レビューを使うことを選んだとき（dispatch 前に毎回質問。config の `review_mode: "on"` / `"off"` で
-  恒久設定も可）、Phase A の成果物（plan モード: plan / superpowers モード:
-  spec と plan）を相手方 engine の専用レビューペインがレビューする。approve まで最大 3 往復、超過時はユーザー判断
-- **Phase B-R（実装後コードレビュー）**: `review_mode: on` のとき、実装完了後・PR 作成前に
-  コードレビューを挟む。レビュアーは実装者の相手方 engine（統一規則）: 実装者 engine == 設計 engine ならレビューペイン、実装者 engine != 設計 engine なら設計セッション（YOU）がレビューする。approve が出るまで実装者が修正（最大 3 往復）
-- **統一表示フォーマット**: 子セッション一覧・進捗・最終サマリーは Box drawing 表（Template A/B/C）で常に同じレイアウト
-- **堅牢なバックグラウンド監視**: `monitor-dispatch.sh` が heartbeat / 死亡通知 / `--resume` をサポート。`cmux send` の後に必ず `cmux send-key return` を発行して親 TUI に確実に届ける
-- **2つの統合戦略**: PR per task（子タスクごとに PR 作成）、Wait and merge（全タスク完了後にローカルマージ）
-- `.dispatch/` ディレクトリを介したステータス通信で進捗を追跡
-- プロンプトはファイル経由で渡すため、シェルエスケープの問題なし
-
----
-
-## 使い方
-
-### 基本的な呼び出し
-
-```
-/cmux-team-dispatch-task ログインページUIを実装, 認証APIエンドポイントを追加
-```
-
-### 引数なし（対話モード）
-
-```
-/cmux-team-dispatch-task
-```
-
-タスクを聞かれるので、改行またはカンマ区切りで入力します。
-
-### プランファイルを指定
-
-```
-/cmux-team-dispatch-task .claude/plans/feature-a.md, .claude/plans/feature-b.md
-```
-
-`.claude/plans/` 内の `.md` ファイルはプランファイルとして自動認識されます。
-
-### 混合指定
-
-```
-/cmux-team-dispatch-task .claude/plans/notification.md, テストカバレッジを改善
-```
-
-プランファイルとインラインタスクを混在させることもできます。
-
-### レイアウトモードの指定
-
-```
-/cmux-team-dispatch-task タスクA, タスクB --layout split
-/cmux-team-dispatch-task タスクA, タスクB --layout claude-teams
-/cmux-team-dispatch-task タスクA, タスクB --no-grid
-```
-
-デフォルトは `workspace` モードです（split を使う場合は明示的に指定）。
+ユーザーへの質問・選択肢ラベル・表・進捗報告はすべて日本語で表示する。SKILL.md 本文が英語なのは記述の統一のためであり、ユーザーへの提示言語は変えない。
 
 ---
 
@@ -120,107 +50,461 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 
 ---
 
-## 3ステップフロー
+## ループモード（GitHub issue 自動ループ）
 
-### Step 1: Parse and Prepare
+`--loop` は `references/loop-mode.md` の手順で GitHub issue をバッチ処理する。状態は `.dispatch-loop/`、タスク状態は `.dispatch/` に置く。`loop.task_timeout_min` と `loop.lock_lease_min` は timeout とロック lease を別に設定する。通常 dispatch は active loop lock があれば開始・一括 cleanup を拒否する。Codex 起動には全経路で `--dangerously-bypass-hook-trust` を付与する。runner wrapper は既存の `pr_url` を保持する。
+
+---
+
+## Step 1: 解析と準備
 
 タスク収集、Agent ルーティング、レイアウト決定、統合戦略決定、子 runner 設定を1ステップで実行。
 ディスパッチ前に最大6つのユーザーインタラクション: brainstorming 選択、レイアウト選択、統合戦略選択、子 runner 選択（`runners.json` 初回セットアップ + codex 設計タスクがある場合の claude 側レビュアー runner 選択を含む）、メッセージトランスポート選択（初回のみ）、レビューモード使用確認（`review_mode` が未設定/`"ask"` かつ `review_model` 付き runner またはクロスエンジンレビュアーが解決済みのときは毎回）。
 
-1. **(1a)** タスクを `$ARGUMENTS` から解析（なければ1回だけ質問）
-2. **(1b)** `.claude/agents/` をスキャンして利用可能な Agent 一覧を収集
-3. **(1c)** **brainstorming タスク選択**:
-   - 各タスクについて brainstorming スキルを使うか選択
-   - 選択されたタスク → superpowers モード + MANDATORY EXECUTION SEQUENCE
-   - 非選択タスク → plan モード
-4. **(1d)** **レイアウトモード選択**（`--layout` フラグ指定時はスキップ）:
-   - **workspace** (デフォルト) — タスクごとに独立した cmux workspace（推奨・長時間タスク・7個以上にも対応）
-   - **split** — 現在の workspace 内でペイン分割（2〜6タスク・全体一望）
-   - **claude-teams** — `cmux claude-teams` で Agent Teams を使用（サイドバー通知）
-5. **(1e)** **統合戦略選択**:
-   - **PR per task** — 各子タスクがブランチを push して GitHub PR を作成。親は PR を監視
-   - **Wait and merge** (デフォルト) — 全タスク完了後に親がローカルマージ
-6. **(1f)** **子セッション runner 選択**（詳細は「子セッション runner 設定（runners.json）」セクション）:
-   - `runners.json` 不在 → 初回セットアップで生成
-   - runners 1 件 → 自動でその runner を全タスクに適用（切替確認スキップ）
-   - runners 2 件以上 → 切替確認 → タスクごとに選択 or デフォルト適用
-   - **クロスエンジンレビュアー解決**: `engine: codex` の runner が設計に割り当てられたタスクが 1 つでもある場合、そのレビュー（Phase A-R / B-R）を担う claude 側レビュアー runner を決める（design=codex のレビューは claude が担う）:
-     - claude engine の runner が 0 件 → 警告し、codex 設計タスクの Phase A-R / B-R は無効
-     - 1 件 → その runner を黙って採用
-     - 2 件以上 → AskUserQuestion で毎 dispatch 選択（「codex 設計タスクのレビュアー (claude 側) に使う runner を選んでください」、選択肢 = claude engine runners、description に `command` + 設定済み `review_model`）
-     選ばれた runner 名を `REVIEWER_RUNNER`、その `review_model`（未設定なら `opus[1m]`）を `CLAUDE_REVIEW_MODEL` として Step 1g / Step 2 に渡す
-7. **(1g)** **メッセージトランスポート解決**（`message_type`、初回のみ質問）:
+### 1a. タスク収集
 
-   子 → 親の通知手段を決める。`send-message`（現行の cmux send、default）/ `agmsg`
-   （[agmsg](https://github.com/fujibee/agmsg) によるエージェント間メッセージング）。
+タスクを `$ARGUMENTS` から解析（なければ1回だけ質問）
 
-   - config（`.dispatch/config.json` > `~/.claude/cmux-team-dispatch-task/config.json`）に
-     `message_type` があればそれを使い、質問しない
-   - 未設定 + agmsg インストール済み（`~/.agents/skills/agmsg/scripts/send.sh` が存在）
-     → AskUserQuestion で確認し、**Yes / No どちらの回答もグローバル config に永続化**
-   - 未設定 + agmsg 未インストール → `send-message`（config には書かない）
+### 1b. 利用可能な Agent の発見（自動）
 
-   agmsg モード時は dispatch 前に team を配線する:
+`.claude/agents/` をスキャンして利用可能な Agent 一覧を収集
 
-   ```bash
-   TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
-   ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent claude-code "$(pwd)"
-   ~/.agents/skills/agmsg/scripts/delivery.sh set monitor claude-code "$(pwd)"
-   ```
+### 1c. Brainstorming 対象タスクの選択
 
-   `delivery.sh set` が `AGMSG-DIRECTIVE:` 行を出力することがある — この行が起動する
-   SessionStart hook は次回以降のセッションにしか効かないため、この directive こそが
-   **現セッション**で delivery を有効化する手段である。出力にこの行があれば、タスクを
-   起動する前に必ず従うこと（指示どおり Monitor tool を呼び出す）。ただし watcher は
-   記録・返信用のチャネルであり wake 手段ではない: watcher の stream 出力は idle
-   セッションには注入されない（バックグラウンド Bash のバッファに溜まるだけ）ため、
-   本スキルの指示・完了通知はすべて `cmux send` のタイプ入力を併用する（dual-send）。
+**brainstorming タスク選択**:
+- 各タスクについて brainstorming スキルを使うか選択
+- 選択されたタスク → superpowers モード + MANDATORY EXECUTION SEQUENCE
+- 非選択タスク → plan モード
 
-   各 launch に `--message-type agmsg --agmsg-team "$TEAM" --agmsg-from <slug>` を付与し、
-   worktree 作成後に子 agent を join する。子プロンプトには「親 (`parent`) へ
-   `send.sh` で直接質問・進捗報告できる」旨に加えて、次の**必須完了通知**のブロックを追記する:
+### 1d. レイアウトモードの選択
 
-   ```
-   You can message the parent directly at any time (questions, progress):
-     ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent "<message>"
+**レイアウトモード選択**（`--layout` フラグ指定時はスキップ）:
+- **workspace** (デフォルト) — タスクごとに独立した cmux workspace（推奨・長時間タスク・7個以上にも対応）
+- **split** — 現在の workspace 内でペイン分割（2〜6タスク・全体一望）
+- **claude-teams** — `cmux claude-teams` で Agent Teams を使用（サイドバー通知）
 
-   MANDATORY completion notification: immediately after writing done/error to
-   status.json, notify the parent yourself over BOTH channels:
-     ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent \
-       "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
-     /Applications/cmux.app/Contents/Resources/bin/cmux send --workspace <PARENT_WORKSPACE_ID> \
-       "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
-     /Applications/cmux.app/Contents/Resources/bin/cmux send-key --workspace <PARENT_WORKSPACE_ID> return
-   The agmsg push is the inbox record only — it CANNOT wake an idle parent
-   session (a watcher's stream output sits in a background-Bash buffer and is
-   never injected while the session is idle), so the cmux send + send-key
-   return pair is REQUIRED. Do NOT rely on session exit either. The runner
-   wrapper notifies on exit as a backstop, but an idle TUI session never
-   exits — without this notification the parent is never informed in agmsg
-   mode (no monitor loop is running).
-   ```
+### 1e. 統合戦略の選択
 
-8. **(1h)** Template A（Display Format Conventions）で情報表示し、即座にディスパッチ:
-   ```
-   Dispatching 3 tasks (workspace mode, PR per task):
+**統合戦略選択**:
+- **PR per task** — 各子タスクがブランチを push して GitHub PR を作成。親は PR を監視
+- **Wait and merge** (デフォルト) — 全タスク完了後に親がローカルマージ
 
-   ┌────┬──────────────────────────┬──────────┬────────────┬──────────────┐
-   │ #  │ Task                     │ Surface  │ Mode       │ Strategy     │
-   ├────┼──────────────────────────┼──────────┼────────────┼──────────────┤
-   │ 1  │ login-page-ui            │ pending  │ superpwr   │ PR per task  │
-   │ 2  │ auth-api-endpoint        │ pending  │ plan       │ PR per task  │
-   │ 3  │ test-coverage            │ pending  │ superpwr   │ PR per task  │
-   └────┴──────────────────────────┴──────────┴────────────┴──────────────┘
+### 1f. 子セッション runner の設定
 
-   Available agents: backend-coding, frontend-coding
-   Launching…
-   ```
+**子セッション runner 選択**（詳細は「子セッション runner 設定（runners.json）」セクション。本ガイドでは「補足」に移設）:
+- `runners.json` 不在 → 初回セットアップで生成
+- runners 1 件 → 自動でその runner を全タスクに適用（切替確認スキップ）
+- runners 2 件以上 → 切替確認 → タスクごとに選択 or デフォルト適用
+- **クロスエンジンレビュアー解決**: `engine: codex` の runner が設計に割り当てられたタスクが 1 つでもある場合、そのレビュー（Phase A-R / B-R）を担う claude 側レビュアー runner を決める（design=codex のレビューは claude が担う）:
+  - claude engine の runner が 0 件 → 警告し、codex 設計タスクの Phase A-R / B-R は無効
+  - 1 件 → その runner を黙って採用
+  - 2 件以上 → AskUserQuestion で毎 dispatch 選択（「codex 設計タスクのレビュアー (claude 側) に使う runner を選んでください」、選択肢 = claude engine runners、description に `command` + 設定済み `review_model`）
+  選ばれた runner 名を `REVIEWER_RUNNER`、その `review_model`（未設定なら `opus[1m]`）を `CLAUDE_REVIEW_MODEL` として Step 1g / Step 2 に渡す
 
-   Mode 略称: `superpwr` = superpowers/brainstorming、`plan` = 組み込み /plan モード。
+### 1g. メッセージ transport の解決
 
-### Step 2: Launch Sessions
+**メッセージトランスポート解決**（`message_type`、初回のみ質問）:
+
+子 → 親の通知手段を決める。`send-message`（現行の cmux send、default）/ `agmsg`
+（[agmsg](https://github.com/fujibee/agmsg) によるエージェント間メッセージング）。
+
+- config（`.dispatch/config.json` > `~/.claude/cmux-team-dispatch-task/config.json`）に
+  `message_type` があればそれを使い、質問しない
+- 未設定 + agmsg インストール済み（`~/.agents/skills/agmsg/scripts/send.sh` が存在）
+  → AskUserQuestion で確認し、**Yes / No どちらの回答もグローバル config に永続化**
+- 未設定 + agmsg 未インストール → `send-message`（config には書かない）
+
+agmsg モード時は dispatch 前に team を配線する:
+
+```bash
+TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
+~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent claude-code "$(pwd)"
+~/.agents/skills/agmsg/scripts/delivery.sh set monitor claude-code "$(pwd)"
+```
+
+`delivery.sh set` が `AGMSG-DIRECTIVE:` 行を出力することがある — この行が起動する
+SessionStart hook は次回以降のセッションにしか効かないため、この directive こそが
+**現セッション**で delivery を有効化する手段である。出力にこの行があれば、タスクを
+起動する前に必ず従うこと（指示どおり Monitor tool を呼び出す）。ただし watcher は
+記録・返信用のチャネルであり wake 手段ではない: watcher の stream 出力は idle
+セッションには注入されない（バックグラウンド Bash のバッファに溜まるだけ）ため、
+本スキルの指示・完了通知はすべて `cmux send` のタイプ入力を併用する（dual-send）。
+
+各 launch に `--message-type agmsg --agmsg-team "$TEAM" --agmsg-from <slug>` を付与し、
+worktree 作成後に子 agent を join する。子プロンプトには「親 (`parent`) へ
+`send.sh` で直接質問・進捗報告できる」旨に加えて、次の**必須完了通知**のブロックを追記する:
+
+```
+You can message the parent directly at any time (questions, progress):
+  ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent "<message>"
+
+MANDATORY completion notification: immediately after writing done/error to
+status.json, notify the parent yourself over BOTH channels:
+  ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent \
+    "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
+  /Applications/cmux.app/Contents/Resources/bin/cmux send --workspace <PARENT_WORKSPACE_ID> \
+    "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
+  /Applications/cmux.app/Contents/Resources/bin/cmux send-key --workspace <PARENT_WORKSPACE_ID> return
+The agmsg push is the inbox record only — it CANNOT wake an idle parent
+session (a watcher's stream output sits in a background-Bash buffer and is
+never injected while the session is idle), so the cmux send + send-key
+return pair is REQUIRED. Do NOT rely on session exit either. The runner
+wrapper notifies on exit as a backstop, but an idle TUI session never
+exits — without this notification the parent is never informed in agmsg
+mode (no monitor loop is running).
+```
+
+### 1h. サマリー表示と実行
+
+Template A（Display Format Conventions）で情報表示し、即座にディスパッチ:
+```
+Dispatching 3 tasks (workspace mode, PR per task):
+
+┌────┬──────────────────────────┬──────────┬────────────┬──────────────┐
+│ #  │ Task                     │ Surface  │ Mode       │ Strategy     │
+├────┼──────────────────────────┼──────────┼────────────┼──────────────┤
+│ 1  │ login-page-ui            │ pending  │ superpwr   │ PR per task  │
+│ 2  │ auth-api-endpoint        │ pending  │ plan       │ PR per task  │
+│ 3  │ test-coverage            │ pending  │ superpwr   │ PR per task  │
+└────┴──────────────────────────┴──────────┴────────────┴──────────────┘
+
+Available agents: backend-coding, frontend-coding
+Launching…
+```
+
+Mode 略称: `superpwr` = superpowers/brainstorming、`plan` = 組み込み /plan モード。
+
+---
+
+## Step 2: セッションの起動
 
 レイアウトモードに応じてセッションを起動。
+
+### Prompt File Approach（プロンプトの受け渡し）
+
+子セッションへのプロンプトは **`.cmux-team-dispatch-task-prompt.md` ファイル経由** で渡されます。
+
+**プロンプトファイルの構成順序**:
+
+```
+1. MANDATORY EXECUTION SEQUENCE（brainstorming タスクのみ）
+2. AVAILABLE AGENTS ブロック（Agent が発見された場合）
+3. タスク説明
+4. ステータスプロトコル指示
+```
+
+ブレスト指示と Agent 情報がタスク説明より先に来るため、子セッションが最初にブレストを実行し、適切な Agent を選択できます。
+
+**なぜファイル経由なのか**: シェルエスケープの問題を完全に回避するためです。
+
+**プロンプトファイルの場所**: 各 worktree のルートディレクトリ: `<worktree>/.cmux-team-dispatch-task-prompt.md`
+
+### Runner Script Wrapper（ランナースクリプト ラッパー）
+
+起動スクリプトは各 worktree に `.cmux-team-dispatch-task-run-<workspace-name>.sh` を生成します。ファイル名に workspace 名を含めることで、Child (`<slug>`) と Phase B grandchild (`<slug>-exec`) が同じ worktree を共有する場面でも runner ファイル同士が衝突しません (実行中のスクリプトを上書きすると bash が undefined 挙動になります)。
+
+**ランナースクリプトが保証すること**:
+
+1. `status.json` を `"executing"` に更新（絶対パス使用）
+2. `claude` コマンドをインタラクティブに実行（claude-teams モードでは `cmux claude-teams` を使用）
+3. Claude 終了後、`status.json` を `"done"` または `"error"` に更新
+4. `cmux wait-for --signal <slug>-done` で完了をシグナル
+5. `cmux notify` で親 workspace に通知
+6. `cmux send` でテキスト通知 → 続けて `cmux send-key --surface <id> return` を発行（親が claude TUI の場合に input box でテキストが滞留するのを防ぐため、送信と Enter は必ずペアで実行する）
+
+- **message_type=agmsg 時**: 親へのテキスト通知は `cmux send` ペアに**加えて**
+  `~/.agents/skills/agmsg/scripts/send.sh <team> <from> parent "<msg>"` でも送信される
+  （agmsg push は inbox 記録用 — idle な親は push では起きないため、wake を担う
+  `cmux send` ペアは省略しない。`cmux notify` と `cmux wait-for --signal` は両モード共通）
+- **standby wrapper（`--mode standby`）**: 起動時に status.json を書かず、exit 時も
+  `<STATUS_DIR>/.assigned-<workspace-name>` が存在するときだけ done/error に遷移させる
+  （`.deferred` の逆向き。ロール別ファイルにすることで同じ STATUS_DIR を共有する
+  sonnet/codex 等の standby 同士が互いの割り当てを誤検知しない）。
+  signal 名は `<workspace-name>-done`（例: `login-page-ui-sonnet-done`）
+- **signal 終了ガード**: 最終クリーンアップで pane を閉じる（`cmux close-surface` /
+  `close-workspace`）と子プロセスは signal 由来の終了コード（128+N。SIGHUP=129 /
+  SIGKILL=137 / SIGTERM=143）を返す。このとき `status.json` が既に terminal
+  （`done` / `error`）なら wrapper は status 書き込みも親通知も行わない。
+  これにより、完了済みタスクが pane を閉じただけで `error` に降格したり、
+  偽の `[dispatch] task ... finished (status: error)` が親へ飛んだりしない。
+  まだ `executing` の pane を kill した場合は本当の中断なので従来どおり
+  `error` を書いて通知する
+
+シグナル名は `<task-slug>-done` で、起動スクリプトの出力 JSON の `signal_name` フィールドで返されます。
+
+### Building the Task Prompt（子セッションのモデル選択フロー（必須））
+
+子セッションのプロンプトには `MANDATORY MODEL SELECTION SEQUENCE` が必ず含まれており、以下の段階で動作する
+（Phase A-R は `review_mode: on` のときのみ Phase A と Phase B の間に挟まり、同条件で
+Phase B-R が実装完了後・PR 作成前に挟まる）。プロンプトテンプレートはタスクの**設計 engine**
+（Step 1f で割り当てた runner の engine）で出し分けられ、design=claude は従来どおり、design=codex は
+「codex 設計 variant」に差し替わる。
+
+子プロンプトの `MANDATORY MODEL SELECTION SEQUENCE` 冒頭には `OUTPUT LANGUAGE:` 指示が3行埋め込まれており、子セッションのユーザー向け出力（質問・選択肢・表・進捗報告）もすべて日本語で表示するよう指示している（本ガイド冒頭の Output Language 節と同じ方針。SKILL.md 側のテンプレート自体は英語で書かれているが、提示言語には影響しない）。
+
+**Phase A: Plan / Brainstorming（設計 engine で実行）**
+
+- superpowers モード: `superpowers:brainstorming` → `superpowers:writing-plans`
+- plan モード: 組み込み `/plan`。提示する plan の冒頭に、実装ステップより前の必須ステップと
+  して「Step 0: Phase A-R 相手方 engine レビュー（有効時）」「Step 1: Phase B 実行モデル選択
+  （AskUserQuestion）」を必ず記載する。承認された plan の実行は Phase A-R / Phase B から
+  始まり、コード変更からは始まらない
+- plan モードで plan が ExitPlanMode メッセージ内にしか存在しない場合、承認後の最初の作業
+  としてファイル（例: worktree 内 `.claude/plans/<task-slug>.md`）に保存する（Phase B の
+  `--plan-file` 受け渡しに必要）
+- このフェーズでは **モデル切り替えを禁止** する。design=claude なら常に opus、design=codex なら
+  この codex セッションのまま（`--effort <plan_effort>` の reasoning effort で起動済み）。
+
+**codex 設計 variant（design=codex のタスク）**
+
+設計 runner が `engine: codex` のタスクでは Phase A / Phase B が以下に差し替わる:
+
+- **Phase A**: この codex セッション内で plan / spec を作成する（セッション途中でモデルを
+  切り替えない）。plan モードは `/plan` を使い、承認された plan は Step 0（Phase A-R）/
+  Step 1（Phase B）を実装ステップより前に列挙してファイル保存する
+- **Phase B**: opus 1m / sonnet / codex の 3 択はすべて pre-warm ペインへ委譲する — **この codex
+  セッション自身は実装しない**。opus 1m → 右上の claude review ペイン（agent `<slug>-opus`）、
+  sonnet → sonnet standby、codex → codex standby へ実行依頼を送り、`.deferred` を touch する。
+  prewarm.json が無い（prewarm off / split）場合は claude variant と同じく `launch-workspace.sh
+  --mode execute` にフォールバック（opus 1m は reviewer runner の command + `--model
+  'opus[1m]'` + `--skip-permissions`）
+
+**Phase A-R — plan/spec クロスレビュー（review_mode: on のときのみ）**
+
+**クロスレビュー原則（宣言）**: レビュアーは常に設計セッションの**相手方 engine**。design=claude の
+Phase A 成果物は codex レビューペイン（`review_model`）が、design=codex の Phase A 成果物は claude
+レビューペイン（reviewer runner + `CLAUDE_REVIEW_MODEL`）がレビューする。Phase B より前に必ず
+完了させる。レビュアー engine が claude のときは spawn に `--skip-permissions` を付与する。
+
+- **レビューポイント**: plan モード = plan 完成後の 1 回 / superpowers モード = spec（design doc）
+  完成後と plan 完成後の 2 回
+- **ラウンドループ**（各ポイント最大 3 往復）: 依頼 → 相手方 engine のレビューペインが
+  `<STATUS_DIR>/review/<point>-round-<N>.md` に指摘を書き、末尾に `VERDICT: approve` または
+  `VERDICT: needs_work` を記す → approve なら次へ / needs_work なら設計セッションが妥当な指摘を反映
+  （反論は次ラウンドの依頼文に理由付きで返す）して再依頼
+- **依頼配送**: 常に `cmux send` + `send-key return` で依頼し、verdict はファイルポーリング
+  （5 秒間隔・15 分チャンク。レビュアーが活動している限り**上限なし**で待機。依頼直後に
+  `cmux read-screen --workspace/--surface` でレビューペイン画面の baseline を取得し、チャンク境界
+  ごとに verdict を再確認 → 画面を再取得（`read-screen` は非フォーカス workspace でも live な内容を
+  返すため refresh は不要 — 実測確認済み。失敗・空出力は 10 秒間隔で最大 3 回リトライ）して差分
+  比較。変化あり = 作業中なので snapshot を更新して待機継続、変化なし = stalled、全リトライ失敗は
+  観測失敗であり 2 回連続の境界で全失敗したときのみ stalled 扱い）で待つ —
+  agmsg push 単独では idle なレビューペインは起きず、
+  返信 push も idle 待ちのこのセッションを起こせないため。prewarm.json の `review.delivery` が
+  `agmsg` のとき（かつ各ラウンドの送信直前に ready sentinel `ready.${TEAM}__<review-agent>` が
+  存在するとき）は、`cmux send` に先立ち同一依頼文を `send.sh` で inbox にも記録する
+  （`<review-agent>` は design=claude で `<slug>-review`、design=codex で `<slug>-opus`）
+- **3 往復で approve が出ない** → 残指摘を要約して AskUserQuestion（このまま進む / さらに修正）
+- **stalled（1 チャンク画面変化なし / 2 回連続観測不能）・verdict 不正** → verdict を最終確認
+  してから同一ラウンドを 1 回だけ再依頼（baseline 取り直し）。それでも stalled なら
+  AskUserQuestion（再依頼 / レビュー省略して Phase B へ）
+- **ペイン寿命**: 全ポイントで同一ペインを再利用（文脈保持）。最終 approve（またはユーザー判断）
+  後もレビューペインは開いたまま idle 維持し、途中で close しない（常 4 ペイン。最終の全タスク
+  完了クリーンアップで他ペインとまとめて閉じる）。spawn 失敗時はレビューをスキップして Phase B へ（警告表示）
+- **prewarm 無効 / split レイアウト時**: 最初のレビューポイントで
+  `launch-workspace.sh --mode review --standby-split-direction right` によりオンデマンド spawn
+
+**Phase B: 実装フェーズのモデル選択（auto mode でも必須）**
+
+Phase A 完了後、コード変更を始める前に task prompt が解決した方式に従う。`exec_choice` が未設定または
+`"ask"` なら `AskUserQuestion` で以下を聞き、固定値なら質問なしで対応する既存分岐を実行する。
+**未設定**（明示 `"ask"` ではない）の場合のみ、モデル選択の回答直後に永続化確認をもう 1 問出す
+（今回のみ / 常にこの選択 [`exec_choice="<選択値>"` をグローバル config へ保存] / 常に毎回選ぶ
+[`exec_choice="ask"` を保存し以後この確認を出さない]。回答は今回の分岐に影響せず選んだモデルで
+直ちに続行。並列 child の同時書き込みは last-write-wins）。下表は **design=claude**
+の挙動。**design=codex** のタスクでは 3 択すべてを pre-warm ペインへ委譲し現セッションでは実装
+しない（上記「codex 設計 variant」参照）:
+
+| 選択肢 | 表示条件 | 動作 |
+|--------|---------|------|
+| **opus 1m** | 常時 | Phase A と **同一 model** 扱い。`/model opus[1m]` で切り替え、**現セッションで実装続行**。未使用の standby ペイン（sonnet / codex / review）は閉じずに開いたまま idle 維持（常 4 ペイン。下記「opus 1m 選択時のペイン」参照） |
+| **sonnet** | 常時 | **異なる model**。まず `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute` で spawn（下記参照） |
+| **codex** | `runners.json` に `engine: codex` の runner が **1 件以上ある時のみ** | **異なる model**。sonnet と同様に `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute --runner <codex-runner>` で spawn |
+
+**Codex の起動安全性**
+
+`superpowers` / `plan` / `execute` / `standby` の Codex は approval prompt を防ぐため
+`--dangerously-bypass-approvals-and-sandbox` を使う。一方、review ペインは sandbox を完全 off にせず
+`--sandbox workspace-write`、`-c approval_policy='never'`、`--add-dir <STATUS_DIR>` を3点セットで指定する。
+これにより approval prompt を抑止しつつ、worktree 外の `<STATUS_DIR>/review/` への findings 書込みだけを許可する。
+
+**opus 1m 選択時のペイン**
+
+`prewarm.json` が存在しても、未使用の standby ペイン（sonnet / codex / review）は **閉じずに
+開いたまま idle 維持** する（常 4 ペイン）。未 assigned の standby は `.assigned-<name>` sentinel を
+持たないため status.json を汚さない。全ペインは最終の全タスク完了クリーンアップでまとめて閉じる。
+
+**pre-warm 済み standby ペインがある場合（sonnet / codex 共通の分岐）**
+
+`<EXISTING_STATUS_DIR>/prewarm.json` の `.sonnet.surface_id` / `.codex.surface_id` が非空なら:
+
+1. 使わなかった方の standby ペイン（sonnet / codex / opus / review）は **閉じずに開いたまま idle
+   維持** する（常 4 ペイン）。`.assigned-<name>` の無い standby は status.json を汚さないため、開いた
+   ままでも観測に影響しない。全ペインは最終の全タスク完了クリーンアップでまとめて閉じる
+2. `touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"`（sonnet 選択時）または
+   `.assigned-<task-slug>-codex`（codex 選択時） — 完了処理（status.json done/error 遷移 +
+   `<slug>-sonnet-done` / `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
+3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ...` + exit 指示。
+   exit 指示は engine で分ける — **sonnet（claude）は「run /exit」、codex は「end this codex
+   session immediately … Do NOT run /exit」**。codex は `/exit` では終了せず、作業完了後も TUI が
+   idle のまま残ると runner wrapper（codex プロセスで block 中）が `write_status "done"` /
+   signal 発火 / 親通知に到達できず**完了通知が届かなくなる**ため、codex には必ず「セッション自体を
+   終了せよ」と伝える（spawn 経路で `launch-workspace.sh` が焼き込む EXIT_INSTRUCTION と同じ）。
+   **Phase B-R 有効時は「PR 作成前にコードレビュー approve を得る」プロトコル入りの拡張版**）を送信する。
+   配送は**常にタイプ入力（`cmux send`）** — agmsg push 単独では idle なペインは起きない。
+   `prewarm.json` の `.sonnet.delivery` / `.codex.delivery` が `"agmsg"` のときは inbox にも
+   記録する。値が `"agmsg"` でも送信直前に ready sentinel
+   （`~/.agents/skills/agmsg/run/ready.${TEAM}__<agent>`）の存在を確認し、無ければ
+   `"cmux-send"` に倒す（死んだ watcher への記録は誰にも読まれない）:
+   - `"agmsg"`（`prewarm-panes.sh` が worktree に delivery 配線済み + watcher 生存）→ まず
+     `~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-sonnet|-codex "$REQUEST_TEXT"`
+     で inbox に記録し（`$TEAM` は親が Step 1g で解決した agmsg team 名をそのまま使う。子セッションは
+     worktree 内で動作するため、worktree の basename から team 名を再導出すると誤った値になる）、
+     `$REQUEST_TEXT` の末尾に
+     ` (An identical copy of this message is in your agmsg inbox — treat both as ONE task; ignore the duplicate.)`
+     を追記する
+   - **常に**（delivery の値によらず）→
+     `cmux send --surface "$SURFACE" "$REQUEST_TEXT"` に続けて
+     `cmux send-key --surface "$SURFACE" return`
+4. `touch "<EXISTING_STATUS_DIR>/.deferred"`。Phase B-R 有効時は exit **せず**、レビュアー
+   として idle 待機する（下記「Phase B-R」参照）。無効時はこのセッションを exit
+
+**prewarm.json が無い場合（従来の spawn フォールバック、split レイアウト / prewarm off）**
+
+「異なる model」が選ばれた場合の spawn 手順 (Child セッション側の動作):
+
+```bash
+# Phase A の Child が以下を実行
+zsh <skill-dir>/scripts/launch-workspace.sh \
+  --cwd "$PWD" \
+  --mode execute \
+  --plan-file <PLAN_FILE_PATH> \
+  --model sonnet \
+  --skip-permissions \
+  --status-dir "<EXISTING_STATUS_DIR>" \
+  --layout <LAYOUT> \
+  --parent-notify-workspace <PARENT_WORKSPACE_ID> \
+  [--parent-notify-surface <PARENT_SURFACE_ID>] \
+  [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split のみ
+  [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # Phase B-R 有効時のみ
+  <task-slug>-exec
+
+# Phase B-R 有効かつ「実装者 engine != 設計 engine」のケース (下記 Phase B-R の統一規則参照。
+# design=claude+codex / design=codex+opus 1m / design=codex+sonnet) では、設計セッション (YOU) が
+# レビュアーになるので spawn 前にレビュー配線ファイルを書いておく:
+#   mkdir -p "<EXISTING_STATUS_DIR>/review"
+#   jq -n --arg s "$CMUX_SURFACE_ID" --arg w "$CMUX_WORKSPACE_ID" --arg d "<EXISTING_STATUS_DIR>/review" \
+#     '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d}' > "<EXISTING_STATUS_DIR>/review/code-review.json"
+# 「実装者 engine == 設計 engine」のケース (design=claude+sonnet / design=codex+codex) は
+# レビューペインがレビュアーになるので reviewer_surface はレビューペインの surface を指す。
+
+# spawn 完了後、自身は移譲シグナルを書く。Phase B-R 有効かつ YOU がレビュアーのケースは
+# exit せずレビュアーとして待機、それ以外は exit
+touch "<EXISTING_STATUS_DIR>/.deferred"
+```
+
+codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <codex-runner-name>` を使う（他は同じ形）。
+
+孫セッションの runner wrapper が `status.json` を `done`/`error` に遷移させ、`cmux wait-for --signal <task-slug>-exec-done` を発火し、親に `[dispatch] task ... finished` を送る。Child は `--defer-status` 付きで起動されているため `.deferred` センチネルを検知して status 上書きをスキップする (これにより孫の通知が握り潰されない)。
+
+**Phase B-R — 実装後コードレビュー（review_mode: on のときのみ）**
+
+実装完了（コミット済み）後・**PR 作成前**にコードレビューを挟む。有効化条件は Phase A-R と
+完全に同一（新しい config キーは無い）。レビューポイント id は `code`、findings は
+`<STATUS_DIR>/review/code-round-<N>.md`（末尾 `VERDICT: approve` / `VERDICT: needs_work`）、
+最大 3 往復 — Phase A-R と同一プロトコル。
+
+**レビュアー割り当て（統一規則）**: レビュアーは**常に実装者の相手方 engine**。物理配置は次で決まる:
+
+- 実装者 engine == 設計 engine → **レビューペインがレビュー**（REVIEWER_SURFACE = prewarm.json
+  `.review.surface_id`）
+- 実装者 engine != 設計 engine → **設計セッション（YOU）がレビュー**（REVIEWER_SURFACE = 自身の
+  `$CMUX_SURFACE_ID`）
+
+設計 engine × Phase B 選択の 6 ケース:
+
+| 設計 engine | Phase B 選択 | 実装者 | レビュアー | REVIEWER_SURFACE |
+|------------|-------------|-------|-----------|------------------|
+| claude | opus 1m | 現セッション（opus, in-session） | codex レビューペイン | prewarm.json `.review.surface_id` |
+| claude | sonnet | sonnet standby | codex レビューペイン | prewarm.json `.review.surface_id` |
+| claude | codex | codex standby | 現セッション（設計 claude, YOU） | 自身の `$CMUX_SURFACE_ID` |
+| codex | opus 1m | claude review ペイン（agent `<slug>-opus`） | 現セッション（設計 codex, YOU） | 自身の `$CMUX_SURFACE_ID` |
+| codex | sonnet | sonnet standby | 現セッション（設計 codex, YOU） | 自身の `$CMUX_SURFACE_ID` |
+| codex | codex | codex standby | claude review ペイン | prewarm.json `.review.surface_id` |
+
+> **現行変更**: design=claude + sonnet 実装のレビュアーは、旧仕様では**設計 opus ペイン**が担って
+> いたが、現行ではクロスエンジン原則に従い **codex レビューペイン**が担う。
+
+- **YOU がレビュアーのケース**: 設計セッション（Child）は `.deferred` を touch した後 exit せず
+  idle 待機。実装者が各ラウンドでレビューを依頼（常に `cmux send` + `send-key return` でタイプ
+  入力し、agmsg watcher 生存時は加えて `send.sh` で inbox にも記録）し、実装者は verdict ファイルを
+  ポーリング（5 秒間隔・15 分チャンク。レビュアー pane の read-screen 画面差分による生存確認付きで
+  活動中は上限なしに待機 — Phase A-R と同一プロトコル）で待つ。設計セッションは round ごとに
+  findings を書き、approve を書いた時点で exit する
+- **レビューペインがレビューするケース**: opus 1m 実装（design=claude）は Phase A-R の Round loop
+  をポイント id `code` でもう 1 周（同一 codex レビューペイン再利用、依頼文は「文書」でなく
+  「ブランチの diff + plan 参照」）。sonnet 実装（design=claude）/ codex 実装（design=codex）は
+  実装者が拡張版 REQUEST_TEXT でレビューペインへ依頼する。レビューペインが利用不可（Phase A-R
+  spawn 失敗済み）ならレビュー省略
+- **修正責任**: needs_work の指摘は実装者自身が修正して再依頼する（却下する指摘は反論を
+  次ラウンドの依頼文に添える）。approve 後に実装者が PR を作成する — PR は常にレビュー済みになる
+- **3 往復で approve が出ない**: 実装者が claude セッションなら AskUserQuestion
+  （このまま PR 作成 / さらに修正）。codex 実装者は対話質問ができないため、未解決指摘を
+  **PR 本文に注記して続行**する
+- **stalled（1 チャンク画面変化なし / 2 回連続観測不能）**: verdict を最終確認してから同一ラウンド
+  を 1 回だけ再依頼（baseline 取り直し）。それでも stalled なら claude 実装者は AskUserQuestion
+  （再依頼 / レビュー省略して PR 作成）、codex 実装者はレビューを省略し PR 本文に注記する
+- **status.json 非汚染**: done/error 遷移の所有権は従来どおり実装者ペインの wrapper が持つ。
+  レビュアーが設計セッション（YOU）のケースは `.deferred` 済みのため exit しても status.json を
+  書かない
+- **孤児ガードは不要**: 実装者がレビューを依頼せず終了しても設計セッションは idle のまま無害に
+  残り、最終の全タスク完了クリーンアップで他ペインと一緒に閉じられる
+- **spawn 経路（prewarm 無効 / split）**: 設計セッションが `<STATUS_DIR>/review/code-review.json`
+  （`{reviewer_surface, reviewer_workspace, review_dir}`。`reviewer_surface` は上表の REVIEWER_SURFACE =
+  YOU がレビューするケースは自身の surface、レビューペインがレビューするケースはレビューペインの
+  surface。`reviewer_workspace` はレビュアー側の workspace — 実装孫は別 workspace に spawn される
+  ため、依頼配送（`cmux send` / `send-key`）と read-screen の生存確認はいずれもこの値を
+  `--workspace` に明示して行う）を書き、
+  `launch-workspace.sh --mode execute --review-config <path>` で実装者を起動する。wrapper が
+  composed prompt にレビュープロトコル（依頼は常に `cmux send` + ファイルポーリング）を追記する
+
+### plan モードの遵守ゲート（ExitPlanMode hook）
+
+標準 plan モードでは ExitPlanMode 承認直後に「プランを実行せよ」という強いシステム指示が
+入り、上記シーケンスがスキップされることがある。これを防ぐため、`launch-workspace.sh` は
+`--mode plan` かつ claude engine、かつ非 claude-teams レイアウトのときのみ、worktree の `.claude/settings.local.json` に
+PostToolUse hook（matcher: `ExitPlanMode`、command:
+`zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入する。hook は承認直後に「ファイル
+編集前に Phase A-R（有効時）→ Phase B を実行せよ」という additionalContext を機械的に
+再注入する。
+
+- ベストエフォート: settings 書き込み・マージ失敗は警告のみで dispatch を止めない
+  （プロンプト側の指示がフォールバック）。既存 settings.local.json は jq でマージし、
+  worktree 再利用時に重複注入しない
+- 誤コミット防止: `.claude/settings.local.json` と plan 保存先 `.claude/plans/` は repo 共有の
+  `info/exclude` に追記される（plan ファイルは `--plan-file` のパス渡しで使う作業物であり、
+  子の `git add -A` でタスクブランチにコミットさせない）
+- hook は worktree の settings.local.json に残存するため、同一 worktree を再利用する後続
+  セッション（Phase B の execute 孫を含む）にも作用する。それらは plan モードを使わないため
+  実害はない
+- superpowers モード / codex engine / execute・standby・review モード / claude-teams レイアウトでは注入されない
+
+### Launch: workspace モード（デフォルト）
+
+各タスクが独立した cmux workspace（タブ）で実行されます。
+
+```
+┌──────────────────────────────────────────────┐
+│           親セッション（オーケストレータ）           │
+└──────┬──────────┬──────────┬─────────────────┘
+       │          │          │
+       ▼          ▼          ▼
+┌──────────┐ ┌──────────┐ ┌──────────┐
+│ workspace │ │ workspace │ │ workspace │
+│  task-1   │ │  task-2   │ │  task-3   │
+│ worktree  │ │ worktree  │ │ worktree  │
+└──────────┘ └──────────┘ └──────────┘
+```
 
 ### Pre-warm Standby Panes（workspace レイアウトのみ）
 
@@ -374,23 +658,7 @@ split / claude-teams レイアウトと `prewarm: false` はこのセクショ�
 Phase B はオンデマンドの `--mode execute` spawn にフォールバックし、agmsg モードの opus
 セッションも従来どおりプロンプト埋め込みのワークスペース起動にフォールバックする。
 
-### Step 3: Monitor and Complete
-
-通知ベースの監視 → 結果収集 → レポート生成 → マージ/クリーンアップ。
-
----
-
-## アーキテクチャ
-
-### 3つのレイアウトモード
-
-| モード | 説明 | 推奨ケース |
-|--------|------|-----------|
-| **workspace** (デフォルト) | タスクごとに独立した cmux workspace を作成 | 大半のケース、長時間タスク、7個以上 |
-| **split** | 現在の workspace 内でペイン分割（自動グリッド整列） | 2〜6個のタスク、全体を一望したい場合 |
-| **claude-teams** | `cmux claude-teams` で Agent Teams を使用 | ネイティブ通知/サイドバー連携 |
-
-### split モード
+### Launch: split モード
 
 各タスクが独立した split ペインで実行されます。
 
@@ -405,24 +673,21 @@ Phase B はオンデマンドの `--mode execute` spawn にフォールバック
   (4サーフェス → 2×2 グリッド、自動整列)
 ```
 
-### workspace モード
+1. 最初の子タスク: 親ペインの右側に分割 (`launch-workspace.sh --split-direction right`)
+2. 以降の子タスク: 前の子ペインの下に分割 (`launch-workspace.sh --split-direction down`)
+3. 全タスク起動後、自動グリッド整列が実行される
+4. 各ペインは独立した git worktree + Claude Code セッション
+5. `--no-grid` で従来のリニアレイアウトを維持可能
 
-各タスクが独立した cmux workspace（タブ）で実行されます。
+**split モードでの起動チェーン**:
 
 ```
-┌──────────────────────────────────────────────┐
-│           親セッション（オーケストレータ）           │
-└──────┬──────────┬──────────┬─────────────────┘
-       │          │          │
-       ▼          ▼          ▼
-┌──────────┐ ┌──────────┐ ┌──────────┐
-│ workspace │ │ workspace │ │ workspace │
-│  task-1   │ │  task-2   │ │  task-3   │
-│ worktree  │ │ worktree  │ │ worktree  │
-└──────────┘ └──────────┘ └──────────┘
+親 surface:1 → split right → child-1 surface:5
+                              → split down → child-2 surface:7
+                                             → split down → child-3 surface:9
 ```
 
-### claude-teams モード
+### Launch: claude-teams モード
 
 `cmux claude-teams` を使い、1つの orchestrator が Agent Teams で teammate を生成。
 各 teammate が cmux のネイティブ分割ペインとして表示されます。
@@ -444,6 +709,473 @@ Phase B はオンデマンドの `--mode execute` spawn にフォールバック
 - teammate は `isolation: "worktree"` で自動的に git worktree を取得
 - 各ペインはサイドバーにメタデータと通知が表示される
 
+#### claude-teams オーケストレータープロンプト
+
+（このセクションに対応する既存の日本語記述はありません。orchestrator プロンプトの組み立て方は SKILL.md の "Claude Teams Orchestrator Prompt" 節を参照してください。）
+
+---
+
+## Step 3: 監視と完了
+
+通知ベースの監視 → 結果収集 → レポート生成 → マージ/クリーンアップ。
+
+### 通知ベースの監視（主経路）
+
+- `send-message`: 従来どおり `monitor-dispatch.sh` を起動（heartbeat / DIED 検知 / 全完了通知）
+- `agmsg`: `monitor-dispatch.sh` を**起動しない**。完了通知はタイプ入力
+  （`cmux send` + `send-key return`）で届き、同一文が agmsg push として親の inbox にも
+  記録される。実際に idle な親セッションを起こすのはタイプ入力の方 — agmsg push 単独では
+  idle セッションは起きない（watcher の stream 出力は idle 中は注入されない）。長時間通知が
+  無い場合は `.dispatch/*/status.json` を手動ポーリングで確認する。`[dispatch-monitor]` 系の
+  heartbeat / DIED メッセージはこのモードには存在しない。通知は2系統から届く: 子が
+  status.json 書き込み直後に自分で送るもの（必須、Step 2 参照）と、runner wrapper が
+  セッション終了時に送るもの（バックストップ）。同じ完了通知が2回（あるいは両チャネルで）
+  届くのは正常な挙動であり、通知は冪等に扱い、status.json を信頼できる情報源とすること
+
+1. **通知ベースの監視（推奨）**:
+   ランナースクリプトが `cmux send` で親ターミナルにメッセージを送信:
+   ```
+   [dispatch] task "<slug>" finished (status: done|error)
+   ```
+   親 Claude が自動的にタスク完了を検知します。
+
+2. **バックグラウンドモニター（補助）**:
+   `monitor-dispatch.sh` がステータスファイルの変化を監視。
+   個別タスクが完了/エラーになるたびに `[dispatch] task "<slug>" finished` を親に送信し、
+   `--heartbeat-interval` 秒（デフォルト60秒）ごとに `[dispatch-monitor] alive | loop=N | tasks: …` を送信、
+   全タスク完了時には `[dispatch-monitor] 全 N タスクが完了しました` を送信、
+   異常終了時には `[dispatch-monitor] DIED` を親に送信する。
+   stdout は `.dispatch/.monitor.log` に tee され、PID は `.dispatch/.monitor.pid` に書き出される。
+   ```bash
+   zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
+     --parent-surface "$CMUX_SURFACE_ID" \
+     --parent-workspace "$CMUX_WORKSPACE_ID" \
+     --layout <split|workspace|claude-teams> \
+     --interval 10 \
+     --heartbeat-interval 60 \
+     --dispatch-dir "$(pwd)/.dispatch"
+   ```
+
+### バックグラウンドプロセスのヘルスチェック
+
+モニターが死亡した場合は `--resume` で再起動できる（既に done/error のタスクは再通知されない）:
+```bash
+PID=$(cat .dispatch/.monitor.pid)
+kill -0 "$PID" 2>/dev/null || zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
+  --parent-workspace "$CMUX_WORKSPACE_ID" \
+  --layout workspace \
+  --dispatch-dir "$(pwd)/.dispatch" \
+  --resume
+```
+
+### ステータスファイルのポーリング（手動確認）
+
+3. **ステータスファイルのポーリング（手動確認）**:
+   ```bash
+   for f in .dispatch/*/status.json; do
+     task_name=$(dirname "$f" | xargs basename)
+     task_status=$(jq -r '.status' "$f" 2>/dev/null || echo "unknown")
+     message=$(jq -r '.message' "$f" 2>/dev/null || echo "")
+     echo "$task_name: $task_status - $message"
+   done
+   ```
+
+### 画面の直接読み取り（オンデマンド）
+
+4. **画面の直接読み取り**:
+   - workspace モード: `cmux read-screen --workspace <workspace-id> --scrollback`
+   - split モード: `cmux read-screen --workspace <parent-ws> --surface <child-surface-id> --scrollback`
+
+### When to Intervene（介入のタイミング）
+
+- **ステータスが "error"**: エラーメッセージとセッション画面を確認し、リトライまたはエスカレーションを提案
+- **長時間応答なし**: 通知が長時間来ない場合、ステータスファイルのポーリングや画面の直接読み取りで確認
+- **ユーザーリクエスト**: ユーザーはいつでも特定のセッションの確認を依頼可能
+
+### Completion（完了レポート）
+
+全タスクが終了ステータス（`"done"` または `"error"`）に到達すると、統合レポートを生成。
+統合戦略（Step 1e で選択）によってテンプレートが異なる。
+
+レポートは必ず Template C（Display Format Conventions）の表で始める。
+
+**Wait and merge の場合:**
+
+```
+# Team Dispatch Report
+
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ feat/login-page-ui      │
+│ 2  │ auth-api-endpoint        │ 08m02s   │ plan       │ done      │ feat/auth-api-endpoint  │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
+
+## Task Results
+
+### 1. login-page-ui [brainstorming]
+<.dispatch/login-page-ui/result.md の内容>
+
+### 2. auth-api-endpoint [plan]
+<.dispatch/auth-api-endpoint/result.md の内容>
+
+## Worktree Branches
+- feat/login-page-ui
+- feat/auth-api-endpoint
+
+## Next Steps
+- Review and merge branches
+- Run full test suite across all changes
+- Clean up worktrees when done
+```
+
+**PR per task の場合:**
+
+```
+# Team Dispatch Report
+
+┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
+│ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
+├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
+│ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ https://github.com/…    │
+│ 2  │ auth-api-endpoint        │ 08m02s   │ plan       │ done      │ https://github.com/…    │
+└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
+
+## Task Results
+
+### 1. login-page-ui [brainstorming]
+<.dispatch/login-page-ui/result.md の内容>
+PR: <PR URL from status.json>
+
+### 2. auth-api-endpoint [plan]
+<.dispatch/auth-api-endpoint/result.md の内容>
+PR: <PR URL from status.json>
+
+## Pull Requests
+- login-page-ui: <PR URL>
+- auth-api-endpoint: <PR URL>
+
+## Next Steps
+- Review and merge PRs on GitHub
+- Clean up worktrees when done
+```
+
+### Integration and Cleanup（統合とクリーンアップ）
+
+Step 1e で選択した統合戦略に応じて動作が異なります。
+
+#### When integration strategy is "Wait and merge"
+
+全タスク完了後、ユーザーにマージするか確認します:
+
+**マージする場合:**
+
+1. 各 worktree の未コミット変更をコミット
+2. 現在のブランチに順次マージ:
+   ```bash
+   for slug in <task-slugs>; do
+     git merge "feat/$slug" --no-edit || echo "CONFLICT in feat/$slug"
+   done
+   ```
+3. コンフリクトが発生した場合、ユーザーの解決を支援
+4. マージ完了後、**親セッションでまとめてクリーンアップ確認**（後述「親セッションのクリーンアップ確認」節）を実行。
+   親が一度だけ「ワークスペース閉鎖 / worktree 削除 / ブランチ削除」を聞き、全タスクに適用する。
+5. マージ結果を `git log --oneline` で表示
+
+**マージしない場合:**
+
+1. `.dispatch/` ディレクトリのみ削除:
+   ```bash
+   rm -rf .dispatch/
+   ```
+2. 手動クリーンアップのコマンドを表示:
+   ```
+   Worktrees are preserved for manual review. To clean up later:
+
+   # worktree 一覧表示
+   git worktree list
+
+   # 個別の worktree とブランチを削除
+   git worktree remove .worktrees/<task-slug>
+   git branch -D feat/<task-slug>
+
+   # 一括削除
+   for slug in <task-slugs>; do
+     git worktree remove ".worktrees/$slug" --force
+     git branch -D "feat/$slug"
+   done
+   rmdir .worktrees 2>/dev/null
+   ```
+
+#### When integration strategy is "PR per task"
+
+各子セッションが完了時に PR を作成済み。完了レポートに PR URL を含めて表示:
+
+1. **PR 一覧と状態の表示**:
+   ```bash
+   for slug in <task-slugs>; do
+     pr_url=$(jq -r '.pr_url // empty' ".dispatch/$slug/status.json" 2>/dev/null)
+     if [[ -n "$pr_url" ]]; then
+       pr_state=$(gh pr view "$pr_url" --json state -q '.state' 2>/dev/null || echo "unknown")
+       echo "$slug: $pr_state - $pr_url"
+     else
+       echo "$slug: PR 未作成"
+     fi
+   done
+   ```
+
+2. **親セッションでまとめてクリーンアップ確認**（後述「親セッションのクリーンアップ確認」節）を実行。
+   親が一度だけ「ワークスペース閉鎖 / worktree 削除 / ブランチ削除」を聞き、全タスクに適用する。
+
+   すべて「保持」を選んだ場合は `rm -rf .dispatch/` のみで、worktree とブランチは残る。
+   手動で後から削除するコマンドは「Wait and merge の『マージしない場合』」と同じ。
+
+### Cleanup prompts — 親セッションのクリーンアップ確認（両戦略共通）
+
+すべての子セッションが `status: done` に到達した後、**親セッション** がまとめて 3 問聞き、
+全タスクに同じ回答を適用する。子セッションは削除も質問も行わない。
+`$LAYOUT_MODE` は Step 1d で選んだレイアウト名（`split` / `workspace` / `claude-teams`）。
+
+`AskUserQuestion` で以下の 3 問を順に聞く:
+
+```
+Q1 header="Pane/Workspace"
+   question="子セッションのペイン/ワークスペースをすべて閉じますか?"
+   options: "はい、全て閉じる" / "いいえ、開いたままにする"
+Q2 header="Worktree"
+   question="タスクの worktree (.worktrees/<slug>) をすべて削除しますか?"
+   options: "はい、全て削除" / "いいえ、残す"
+Q3 header="Branch"
+   question="feature ブランチ (feat/<slug>) をすべて削除しますか?"
+   options: "はい、全て削除" / "いいえ、残す"
+```
+
+回答を `close_all` / `remove_wt_all` / `delete_br_all` の真偽値で保持し、以下を実行:
+
+```bash
+for slug in <task-slugs>; do
+  status_file=".dispatch/$slug/status.json"
+  workspace_id=$(jq -r '.workspace_id // empty' "$status_file")
+  surface_id=$(jq -r '.surface_id // empty' "$status_file")
+
+  # 1) pane / workspace を先に閉じる
+  if [[ "$close_all" == "true" ]]; then
+    case "$LAYOUT_MODE" in
+      split)                  [[ -n "$surface_id"   ]] && cmux close-surface   --surface   "$surface_id"   ;;
+      workspace|claude-teams) [[ -n "$workspace_id" ]] && cmux close-workspace --workspace "$workspace_id" ;;
+    esac
+  fi
+
+  # pre-warm standby ペインが残っていれば全て閉じる（常 4 ペイン維持のため Phase B 後も全 standby が残る）
+  if [[ "$close_all" == "true" && -f ".dispatch/$slug/prewarm.json" ]]; then
+    for sf in $(jq -r '.[].surface_id' ".dispatch/$slug/prewarm.json" 2>/dev/null); do
+      cmux close-surface --surface "$sf" 2>/dev/null || true
+    done
+  fi
+
+  # 2) worktree を削除
+  [[ "$remove_wt_all" == "true" ]] && git worktree remove ".worktrees/$slug" --force 2>/dev/null
+
+  # 3) feature ブランチを削除
+  [[ "$delete_br_all" == "true" ]] && git branch -D "feat/$slug" 2>/dev/null
+done
+
+# 4) 最終整理（回答に関わらず常に実行）
+rm -rf .dispatch/
+rmdir .worktrees 2>/dev/null
+```
+
+> pane/workspace → worktree → ブランチの順序は意図的。先に閉鎖することで worktree を
+> 開いている shell が終了し、`git worktree remove` が確実に成功する。ブランチ削除は
+> worktree 削除後に行う必要がある。
+> 子セッション内で worktree を削除させると、親が削除を実行する時点ではまだ子プロセスが
+> worktree を掴んだままで `git worktree remove` が失敗するため、すべて親側に集約している。
+
+agmsg モード時は、最終整理の際に子 agent を team から除籍する:
+
+```bash
+for slug in <task-slugs>; do
+  ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$slug" 2>/dev/null || true
+  ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$slug-sonnet" 2>/dev/null || true
+  ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$slug-codex" 2>/dev/null || true
+done
+```
+
+親 (`parent`) は repo 固定 team に残す（次回 dispatch で再利用）。
+
+---
+
+## ステータスプロトコル
+
+### status.json
+
+```json
+{
+  "status": "launched",
+  "workspace_id": "workspace:3",
+  "surface_id": "surface:5",
+  "message": "Claude session launched in plan mode (workspace layout)",
+  "pr_url": "https://github.com/owner/repo/pull/123",
+  "timestamp": "2026-04-07T16:00:00Z"
+}
+```
+
+- `pr_url` は PR per task 戦略で PR 作成済みの場合のみ `done` で付与。
+- クリーンアップ意思は `status.json` には記録しない。親がディスパッチ完了時に
+  `AskUserQuestion` で一度だけ聞き（ワークスペース閉鎖 / worktree 削除 / ブランチ削除）、
+  その回答を全タスクに適用する。子セッションは質問も削除も行わない。
+
+### result.md
+
+タスク完了時に子セッションが `.dispatch/<task-slug>/result.md` に書き出す成果物サマリー。
+
+```markdown
+# <タスク名>
+
+## Changes Made
+
+- 変更したファイルと内容の一覧
+
+## Test Results
+
+- テストの合否サマリー
+
+## Commits
+
+- <hash> <コミットメッセージ>
+```
+
+---
+
+## superpowers 統合（Execution Handoff 第3選択肢）
+
+`superpowers:writing-plans` でプランが完成すると、Execution Handoff として3つの実行方法から選択:
+
+```
+1. Subagent-Driven (推奨)   → superpowers:subagent-driven-development
+2. Inline Execution          → superpowers:executing-plans
+3. Parallel (cmux)           → cmux-team-dispatch-task  ← THIS SKILL
+```
+
+### Parallel (cmux) を勧めるタイミング
+
+（このセクションに対応する既存の日本語記述はありません。3つの実行オプションの使い分けの目安は SKILL.md の "When to Suggest Parallel (cmux)" 節の表を参照してください。）
+
+### フロー
+
+1. プランファイルからタスクを抽出
+2. brainstorming 選択（プランから来た場合、brainstorming 完了済みなのでデフォルト「なし」）
+3. レイアウト選択（デフォルト workspace、引数で override）
+4. 起動・監視・完了
+
+### プランからタスク JSON を組み立てる
+
+（このセクションに対応する既存の日本語記述はありません。`superpowers:writing-plans` のプランファイルから `### Task N: <name>` 見出しをタスクとして抽出する手順は SKILL.md の "Building the Tasks JSON from a Plan" 節を参照してください。）
+
+---
+
+## 制約
+
+- **cmux 必須**: `/Applications/cmux.app/` にインストールされている必要があります
+- **claude-teams 必須**: claude-teams モードでは `cmux claude-teams` コマンドが必要
+- **同時セッション数**: 3〜5 セッションが推奨
+- **split モード制限**: 2〜6 タスクが推奨。7 以上は workspace モードを使用
+- **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません
+- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。`cmux send` の後は必ず `cmux send-key return` を発行し、親 claude TUI の input box に滞留しないようにしている
+- **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
+- **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。**agmsg push は inbox 記録専用で、idle セッションを起こせない** (watcher はバックグラウンド Bash として動き、その stream 出力はプロセスが終了するまで注入されない) — したがって wake は常に `cmux send` + `send-key return` で行い、agmsg 配線が生きているときは同一文を inbox にも記録する (dual-send)。agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (send.sh + cmux send の両方。Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ。同じく両チャネル)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
+- **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを配置。Phase A-R が無効時は縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)、有効時は 2×2 均等グリッドでレビューペインは常に設計 engine の逆: design=claude (`REVIEW_ENABLED`) は左上: opus / 右上: codex レビュー (`<slug>-review`) / 左下: sonnet / 右下: codex、design=codex (`REVIEW_ENABLED_CODEX_DESIGN`) は左上: design codex (`--effort <plan_effort>`) / 右上: claude レビュー (`<slug>-opus`、reviewer runner + `--model <CLAUDE_REVIEW_MODEL>` + `--skip-permissions`、A-R レビュアー兼 Phase B opus 1m 実装先の二役) / 左下: sonnet / 右下: codex。いずれも prewarm.json に `review` キー (`--review-model` または `--reviewer-runner` 時)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から dual-send で送る (常に `cmux send` + `send-key return`、agmsg 配線が生きていれば加えて `send.sh` で inbox 記録)。standby wrapper は `<STATUS_DIR>/.assigned-<name>` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`（design=codex の opus 1m 委譲時は `<slug>-opus-done`）。Phase B の実行指示も同じ dual-send: prewarm.json の `delivery` 値が `"agmsg"` なら `send.sh` で inbox にも記録し、どちらの値でも `cmux send` + `send-key return` を必ず発行する。
+
+---
+
+## 補足（SKILL.md に対応セクションなし）
+
+以下は元の `guide-ja.md` に存在していた記述のうち、SKILL.md の 45 見出しに直接対応する節が
+無いもの、または既存の別セクションへ委譲する形で本文中に短く要約されているものをそのまま
+移設したものです。内容は削除・翻訳し直さず温存しています。
+
+## 概要
+
+`cmux-team-dispatch-task` は、複数のタスクを並列で実行するオーケストレーションスキルです。
+各タスクは独立した **git worktree + Claude Code セッション** で実行され、
+親セッション（オーケストレータ）が全体を監視・統括します。
+
+**親側ではプランニング/ブレストを行わず即座にディスパッチ** — 各子セッションが
+並行して brainstorming/planning を実行します。
+
+### 主な特徴
+
+- 即座にディスパッチ — 親側のプランニングオーバーヘッドなし
+- `.claude/agents/` ディレクトリを動的にスキャンし、利用可能な Agent タイプを自動発見
+- 利用可能な Agent 一覧を子セッションに伝達し、各子セッションが最適な Agent を選択
+- タスクごとに brainstorming スキルの使用を選択可能
+- **3つのレイアウトモード**: workspace（デフォルト・別タブ）、split（ペイン分割）、claude-teams（Agent Teams）— ディスパッチ前に選択
+- **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を実行後（Phase A-R 有効時は相手方 engine のレビューの approve 後）、`exec_choice` が未設定または `"ask"` なら `opus 1m` / `sonnet`（codex runner がある場合は `codex` も）を選ばせる。固定値なら質問を省略して既存の同じ実行分岐へ直行する。同一 model なら現セッション継続、異なる model なら `launch-workspace.sh --mode execute` 経由で孫 surface を spawn (runner script でラップされ完了通知が確実に親に伝播)。元 Child は `.deferred` を書いて exit する。設計 runner が `engine: codex` のタスクでは Phase A を codex セッションが担い、Phase B の 3 択（opus 1m / sonnet / codex）はすべて pre-warm ペインへ委譲する
+- **クロスエンジンレビュー**: Phase A-R / Phase B-R のレビュアーは **常に実装者の相手方 engine**。design=claude → レビューは codex、design=codex → レビューは claude が担う（下記 Phase A-R / Phase B-R 節参照）
+- **Phase A-R（plan/spec クロスレビュー）**: 設計 runner の `review_model`（codex 設計は codex runner の `review_model`、codex 設計タスクに対しては claude 側 reviewer runner）があり
+  レビューを使うことを選んだとき（dispatch 前に毎回質問。config の `review_mode: "on"` / `"off"` で
+  恒久設定も可）、Phase A の成果物（plan モード: plan / superpowers モード:
+  spec と plan）を相手方 engine の専用レビューペインがレビューする。approve まで最大 3 往復、超過時はユーザー判断
+- **Phase B-R（実装後コードレビュー）**: `review_mode: on` のとき、実装完了後・PR 作成前に
+  コードレビューを挟む。レビュアーは実装者の相手方 engine（統一規則）: 実装者 engine == 設計 engine ならレビューペイン、実装者 engine != 設計 engine なら設計セッション（YOU）がレビューする。approve が出るまで実装者が修正（最大 3 往復）
+- **統一表示フォーマット**: 子セッション一覧・進捗・最終サマリーは Box drawing 表（Template A/B/C）で常に同じレイアウト
+- **堅牢なバックグラウンド監視**: `monitor-dispatch.sh` が heartbeat / 死亡通知 / `--resume` をサポート。`cmux send` の後に必ず `cmux send-key return` を発行して親 TUI に確実に届ける
+- **2つの統合戦略**: PR per task（子タスクごとに PR 作成）、Wait and merge（全タスク完了後にローカルマージ）
+- `.dispatch/` ディレクトリを介したステータス通信で進捗を追跡
+- プロンプトはファイル経由で渡すため、シェルエスケープの問題なし
+
+## 使い方
+
+### 基本的な呼び出し
+
+```
+/cmux-team-dispatch-task ログインページUIを実装, 認証APIエンドポイントを追加
+```
+
+### 引数なし（対話モード）
+
+```
+/cmux-team-dispatch-task
+```
+
+タスクを聞かれるので、改行またはカンマ区切りで入力します。
+
+### プランファイルを指定
+
+```
+/cmux-team-dispatch-task .claude/plans/feature-a.md, .claude/plans/feature-b.md
+```
+
+`.claude/plans/` 内の `.md` ファイルはプランファイルとして自動認識されます。
+
+### 混合指定
+
+```
+/cmux-team-dispatch-task .claude/plans/notification.md, テストカバレッジを改善
+```
+
+プランファイルとインラインタスクを混在させることもできます。
+
+### レイアウトモードの指定
+
+```
+/cmux-team-dispatch-task タスクA, タスクB --layout split
+/cmux-team-dispatch-task タスクA, タスクB --layout claude-teams
+/cmux-team-dispatch-task タスクA, タスクB --no-grid
+```
+
+デフォルトは `workspace` モードです（split を使う場合は明示的に指定）。
+
+## アーキテクチャ
+
+### 3つのレイアウトモード
+
+| モード | 説明 | 推奨ケース |
+|--------|------|-----------|
+| **workspace** (デフォルト) | タスクごとに独立した cmux workspace を作成 | 大半のケース、長時間タスク、7個以上 |
+| **split** | 現在の workspace 内でペイン分割（自動グリッド整列） | 2〜6個のタスク、全体を一望したい場合 |
+| **claude-teams** | `cmux claude-teams` で Agent Teams を使用 | ネイティブ通知/サイドバー連携 |
+
 ### 各レイヤーの役割
 
 | レイヤー | 役割 |
@@ -452,8 +1184,6 @@ Phase B はオンデマンドの `--mode execute` spawn にフォールバック
 | **子セッション/teammate** | Agent 選択、個別タスクの brainstorming・計画・実行。独立した Claude Code インスタンスとして動作 |
 | **git worktree** | ブランチ分離。各タスクは `feat/<task-slug>` ブランチで作業 |
 | **.dispatch/** | ファイルベースのステータス通信。子 → 親への進捗報告 |
-
----
 
 ## 利用可能エージェントの発見
 
@@ -481,8 +1211,6 @@ If none are relevant, proceed without an agent.
 ```
 
 `.claude/agents/` が空またはディレクトリが存在しない場合、このブロックは省略されます。
-
----
 
 ## brainstorming タスク選択
 
@@ -516,26 +1244,6 @@ VIOLATION: If you start writing code without completing Phase 1 and Phase 2,
 stop and use the Skill tool to invoke "superpowers:brainstorming".
 === END MANDATORY EXECUTION SEQUENCE ===
 ```
-
----
-
-## split モードの動作
-
-1. 最初の子タスク: 親ペインの右側に分割 (`launch-workspace.sh --split-direction right`)
-2. 以降の子タスク: 前の子ペインの下に分割 (`launch-workspace.sh --split-direction down`)
-3. 全タスク起動後、自動グリッド整列が実行される
-4. 各ペインは独立した git worktree + Claude Code セッション
-5. `--no-grid` で従来のリニアレイアウトを維持可能
-
-### split モードでの起動チェーン
-
-```
-親 surface:1 → split right → child-1 surface:5
-                              → split down → child-2 surface:7
-                                             → split down → child-3 surface:9
-```
-
----
 
 ## ターミナル起動待機の自動学習
 
@@ -620,33 +1328,6 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 | 特定プロジェクトだけ恒常的に遅い | `<project>/.dispatch/config.json` に手動で上書き値を置く |
 | 学習値をリセットしたい | `rm ~/.claude/cmux-team-dispatch-task/config.json` |
 | config 壊れた疑い | `jq . ~/.claude/cmux-team-dispatch-task/config.json` で検証、壊れていれば削除 |
-
----
-
-## プロンプトの受け渡し
-
-子セッションへのプロンプトは **`.cmux-team-dispatch-task-prompt.md` ファイル経由** で渡されます。
-
-### プロンプトファイルの構成順序
-
-```
-1. MANDATORY EXECUTION SEQUENCE（brainstorming タスクのみ）
-2. AVAILABLE AGENTS ブロック（Agent が発見された場合）
-3. タスク説明
-4. ステータスプロトコル指示
-```
-
-ブレスト指示と Agent 情報がタスク説明より先に来るため、子セッションが最初にブレストを実行し、適切な Agent を選択できます。
-
-### なぜファイル経由なのか
-
-シェルエスケープの問題を完全に回避するためです。
-
-### プロンプトファイルの場所
-
-各 worktree のルートディレクトリ: `<worktree>/.cmux-team-dispatch-task-prompt.md`
-
----
 
 ## 子セッション runner 設定（runners.json）
 
@@ -747,64 +1428,7 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
 
 なお Phase B の `codex` 選択肢は `runners.json` に `engine: codex` runner が登録されている場合にのみ表示される。`engine: codex` で子を起動した場合、Phase B の codex 選択肢は意味を失います（既に codex で動いているため）。
 
----
-
-## ランナースクリプト ラッパー
-
-起動スクリプトは各 worktree に `.cmux-team-dispatch-task-run-<workspace-name>.sh` を生成します。ファイル名に workspace 名を含めることで、Child (`<slug>`) と Phase B grandchild (`<slug>-exec`) が同じ worktree を共有する場面でも runner ファイル同士が衝突しません (実行中のスクリプトを上書きすると bash が undefined 挙動になります)。
-
-### ランナースクリプトが保証すること
-
-1. `status.json` を `"executing"` に更新（絶対パス使用）
-2. `claude` コマンドをインタラクティブに実行（claude-teams モードでは `cmux claude-teams` を使用）
-3. Claude 終了後、`status.json` を `"done"` または `"error"` に更新
-4. `cmux wait-for --signal <slug>-done` で完了をシグナル
-5. `cmux notify` で親 workspace に通知
-6. `cmux send` でテキスト通知 → 続けて `cmux send-key --surface <id> return` を発行（親が claude TUI の場合に input box でテキストが滞留するのを防ぐため、送信と Enter は必ずペアで実行する）
-
-- **message_type=agmsg 時**: 親へのテキスト通知は `cmux send` ペアに**加えて**
-  `~/.agents/skills/agmsg/scripts/send.sh <team> <from> parent "<msg>"` でも送信される
-  （agmsg push は inbox 記録用 — idle な親は push では起きないため、wake を担う
-  `cmux send` ペアは省略しない。`cmux notify` と `cmux wait-for --signal` は両モード共通）
-- **standby wrapper（`--mode standby`）**: 起動時に status.json を書かず、exit 時も
-  `<STATUS_DIR>/.assigned-<workspace-name>` が存在するときだけ done/error に遷移させる
-  （`.deferred` の逆向き。ロール別ファイルにすることで同じ STATUS_DIR を共有する
-  sonnet/codex 等の standby 同士が互いの割り当てを誤検知しない）。
-  signal 名は `<workspace-name>-done`（例: `login-page-ui-sonnet-done`）
-- **signal 終了ガード**: 最終クリーンアップで pane を閉じる（`cmux close-surface` /
-  `close-workspace`）と子プロセスは signal 由来の終了コード（128+N。SIGHUP=129 /
-  SIGKILL=137 / SIGTERM=143）を返す。このとき `status.json` が既に terminal
-  （`done` / `error`）なら wrapper は status 書き込みも親通知も行わない。
-  これにより、完了済みタスクが pane を閉じただけで `error` に降格したり、
-  偽の `[dispatch] task ... finished (status: error)` が親へ飛んだりしない。
-  まだ `executing` の pane を kill した場合は本当の中断なので従来どおり
-  `error` を書いて通知する
-
-シグナル名は `<task-slug>-done` で、起動スクリプトの出力 JSON の `signal_name` フィールドで返されます。
-
----
-
-## ステータスプロトコル
-
-### status.json
-
-```json
-{
-  "status": "launched",
-  "workspace_id": "workspace:3",
-  "surface_id": "surface:5",
-  "message": "Claude session launched in plan mode (workspace layout)",
-  "pr_url": "https://github.com/owner/repo/pull/123",
-  "timestamp": "2026-04-07T16:00:00Z"
-}
-```
-
-- `pr_url` は PR per task 戦略で PR 作成済みの場合のみ `done` で付与。
-- クリーンアップ意思は `status.json` には記録しない。親がディスパッチ完了時に
-  `AskUserQuestion` で一度だけ聞き（ワークスペース閉鎖 / worktree 削除 / ブランチ削除）、
-  その回答を全タスクに適用する。子セッションは質問も削除も行わない。
-
-### ステータス一覧
+## ステータス一覧
 
 | ステータス | 意味 | 書き込み元 |
 |-----------|------|-----------|
@@ -814,7 +1438,7 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
 | `done` | 全作業完了 | ランナースクリプト / 子セッション |
 | `error` | エラー / 異常終了 | ランナースクリプト / 子セッション |
 
-### 子セッションのステータス報告手順
+## 子セッションのステータス報告手順
 
 子セッションは以下の手順でステータスを報告します:
 
@@ -847,294 +1471,7 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
 > 削除確認はすべて親セッションが全タスク完了後にまとめて実施します（子が自分の worktree を
 > 掴んだ状態で親が削除を試みて失敗するのを防ぐため）。
 
-### result.md
-
-タスク完了時に子セッションが `.dispatch/<task-slug>/result.md` に書き出す成果物サマリー。
-
-```markdown
-# <タスク名>
-
-## Changes Made
-
-- 変更したファイルと内容の一覧
-
-## Test Results
-
-- テストの合否サマリー
-
-## Commits
-
-- <hash> <コミットメッセージ>
-```
-
----
-
-## 監視と完了
-
-### message_type による監視方式の違い
-
-- `send-message`: 従来どおり `monitor-dispatch.sh` を起動（heartbeat / DIED 検知 / 全完了通知）
-- `agmsg`: `monitor-dispatch.sh` を**起動しない**。完了通知はタイプ入力
-  （`cmux send` + `send-key return`）で届き、同一文が agmsg push として親の inbox にも
-  記録される。実際に idle な親セッションを起こすのはタイプ入力の方 — agmsg push 単独では
-  idle セッションは起きない（watcher の stream 出力は idle 中は注入されない）。長時間通知が
-  無い場合は `.dispatch/*/status.json` を手動ポーリングで確認する。`[dispatch-monitor]` 系の
-  heartbeat / DIED メッセージはこのモードには存在しない。通知は2系統から届く: 子が
-  status.json 書き込み直後に自分で送るもの（必須、Step 2 参照）と、runner wrapper が
-  セッション終了時に送るもの（バックストップ）。同じ完了通知が2回（あるいは両チャネルで）
-  届くのは正常な挙動であり、通知は冪等に扱い、status.json を信頼できる情報源とすること
-
-### 進捗確認方法
-
-1. **通知ベースの監視（推奨）**:
-   ランナースクリプトが `cmux send` で親ターミナルにメッセージを送信:
-   ```
-   [dispatch] task "<slug>" finished (status: done|error)
-   ```
-   親 Claude が自動的にタスク完了を検知します。
-
-2. **バックグラウンドモニター（補助）**:
-   `monitor-dispatch.sh` がステータスファイルの変化を監視。
-   個別タスクが完了/エラーになるたびに `[dispatch] task "<slug>" finished` を親に送信し、
-   `--heartbeat-interval` 秒（デフォルト60秒）ごとに `[dispatch-monitor] alive | loop=N | tasks: …` を送信、
-   全タスク完了時には `[dispatch-monitor] 全 N タスクが完了しました` を送信、
-   異常終了時には `[dispatch-monitor] DIED` を親に送信する。
-   stdout は `.dispatch/.monitor.log` に tee され、PID は `.dispatch/.monitor.pid` に書き出される。
-   ```bash
-   zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
-     --parent-surface "$CMUX_SURFACE_ID" \
-     --parent-workspace "$CMUX_WORKSPACE_ID" \
-     --layout <split|workspace|claude-teams> \
-     --interval 10 \
-     --heartbeat-interval 60 \
-     --dispatch-dir "$(pwd)/.dispatch"
-   ```
-
-   モニターが死亡した場合は `--resume` で再起動できる（既に done/error のタスクは再通知されない）:
-   ```bash
-   PID=$(cat .dispatch/.monitor.pid)
-   kill -0 "$PID" 2>/dev/null || zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
-     --parent-workspace "$CMUX_WORKSPACE_ID" \
-     --layout workspace \
-     --dispatch-dir "$(pwd)/.dispatch" \
-     --resume
-   ```
-3. **ステータスファイルのポーリング（手動確認）**:
-   ```bash
-   for f in .dispatch/*/status.json; do
-     task_name=$(dirname "$f" | xargs basename)
-     task_status=$(jq -r '.status' "$f" 2>/dev/null || echo "unknown")
-     message=$(jq -r '.message' "$f" 2>/dev/null || echo "")
-     echo "$task_name: $task_status - $message"
-   done
-   ```
-
-4. **画面の直接読み取り**:
-   - workspace モード: `cmux read-screen --workspace <workspace-id> --scrollback`
-   - split モード: `cmux read-screen --workspace <parent-ws> --surface <child-surface-id> --scrollback`
-
-### 介入のタイミング
-
-- **ステータスが "error"**: エラーメッセージとセッション画面を確認し、リトライまたはエスカレーションを提案
-- **長時間応答なし**: 通知が長時間来ない場合、ステータスファイルのポーリングや画面の直接読み取りで確認
-- **ユーザーリクエスト**: ユーザーはいつでも特定のセッションの確認を依頼可能
-
-### 完了レポート
-
-全タスクが終了ステータス（`"done"` または `"error"`）に到達すると、統合レポートを生成。
-統合戦略（Step 1e で選択）によってテンプレートが異なる。
-
-レポートは必ず Template C（Display Format Conventions）の表で始める。
-
-**Wait and merge の場合:**
-
-```
-# Team Dispatch Report
-
-┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
-│ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
-├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
-│ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ feat/login-page-ui      │
-│ 2  │ auth-api-endpoint        │ 08m02s   │ plan       │ done      │ feat/auth-api-endpoint  │
-└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
-
-## Task Results
-
-### 1. login-page-ui [brainstorming]
-<.dispatch/login-page-ui/result.md の内容>
-
-### 2. auth-api-endpoint [plan]
-<.dispatch/auth-api-endpoint/result.md の内容>
-
-## Worktree Branches
-- feat/login-page-ui
-- feat/auth-api-endpoint
-
-## Next Steps
-- Review and merge branches
-- Run full test suite across all changes
-- Clean up worktrees when done
-```
-
-**PR per task の場合:**
-
-```
-# Team Dispatch Report
-
-┌────┬──────────────────────────┬──────────┬────────────┬───────────┬─────────────────────────┐
-│ #  │ Task                     │ Duration │ Mode       │ Status    │ Result / PR             │
-├────┼──────────────────────────┼──────────┼────────────┼───────────┼─────────────────────────┤
-│ 1  │ login-page-ui            │ 12m34s   │ superpwr   │ done      │ https://github.com/…    │
-│ 2  │ auth-api-endpoint        │ 08m02s   │ plan       │ done      │ https://github.com/…    │
-└────┴──────────────────────────┴──────────┴────────────┴───────────┴─────────────────────────┘
-
-## Task Results
-
-### 1. login-page-ui [brainstorming]
-<.dispatch/login-page-ui/result.md の内容>
-PR: <PR URL from status.json>
-
-### 2. auth-api-endpoint [plan]
-<.dispatch/auth-api-endpoint/result.md の内容>
-PR: <PR URL from status.json>
-
-## Pull Requests
-- login-page-ui: <PR URL>
-- auth-api-endpoint: <PR URL>
-
-## Next Steps
-- Review and merge PRs on GitHub
-- Clean up worktrees when done
-```
-
-### 統合とクリーンアップ
-
-Step 1e で選択した統合戦略に応じて動作が異なります。
-
-#### Wait and merge の場合
-
-全タスク完了後、ユーザーにマージするか確認します:
-
-**マージする場合:**
-
-1. 各 worktree の未コミット変更をコミット
-2. 現在のブランチに順次マージ:
-   ```bash
-   for slug in <task-slugs>; do
-     git merge "feat/$slug" --no-edit || echo "CONFLICT in feat/$slug"
-   done
-   ```
-3. コンフリクトが発生した場合、ユーザーの解決を支援
-4. マージ完了後、**親セッションでまとめてクリーンアップ確認**（後述「親セッションのクリーンアップ確認」節）を実行。
-   親が一度だけ「ワークスペース閉鎖 / worktree 削除 / ブランチ削除」を聞き、全タスクに適用する。
-5. マージ結果を `git log --oneline` で表示
-
-**マージしない場合:**
-
-1. `.dispatch/` ディレクトリのみ削除:
-   ```bash
-   rm -rf .dispatch/
-   ```
-2. 手動クリーンアップのコマンドを表示:
-   ```
-   Worktrees are preserved for manual review. To clean up later:
-
-   # worktree 一覧表示
-   git worktree list
-
-   # 個別の worktree とブランチを削除
-   git worktree remove .worktrees/<task-slug>
-   git branch -D feat/<task-slug>
-
-   # 一括削除
-   for slug in <task-slugs>; do
-     git worktree remove ".worktrees/$slug" --force
-     git branch -D "feat/$slug"
-   done
-   rmdir .worktrees 2>/dev/null
-   ```
-
-#### PR per task の場合
-
-各子セッションが完了時に PR を作成済み。完了レポートに PR URL を含めて表示:
-
-1. **PR 一覧と状態の表示**:
-   ```bash
-   for slug in <task-slugs>; do
-     pr_url=$(jq -r '.pr_url // empty' ".dispatch/$slug/status.json" 2>/dev/null)
-     if [[ -n "$pr_url" ]]; then
-       pr_state=$(gh pr view "$pr_url" --json state -q '.state' 2>/dev/null || echo "unknown")
-       echo "$slug: $pr_state - $pr_url"
-     else
-       echo "$slug: PR 未作成"
-     fi
-   done
-   ```
-
-2. **親セッションでまとめてクリーンアップ確認**（後述「親セッションのクリーンアップ確認」節）を実行。
-   親が一度だけ「ワークスペース閉鎖 / worktree 削除 / ブランチ削除」を聞き、全タスクに適用する。
-
-   すべて「保持」を選んだ場合は `rm -rf .dispatch/` のみで、worktree とブランチは残る。
-   手動で後から削除するコマンドは「Wait and merge の『マージしない場合』」と同じ。
-
----
-
-### 親セッションのクリーンアップ確認（両戦略共通）
-
-すべての子セッションが `status: done` に到達した後、**親セッション** がまとめて 3 問聞き、
-全タスクに同じ回答を適用する。子セッションは削除も質問も行わない。
-`$LAYOUT_MODE` は Step 1d で選んだレイアウト名（`split` / `workspace` / `claude-teams`）。
-
-`AskUserQuestion` で以下の 3 問を順に聞く:
-
-```
-Q1 header="Pane/Workspace"
-   question="子セッションのペイン/ワークスペースをすべて閉じますか?"
-   options: "はい、全て閉じる" / "いいえ、開いたままにする"
-Q2 header="Worktree"
-   question="タスクの worktree (.worktrees/<slug>) をすべて削除しますか?"
-   options: "はい、全て削除" / "いいえ、残す"
-Q3 header="Branch"
-   question="feature ブランチ (feat/<slug>) をすべて削除しますか?"
-   options: "はい、全て削除" / "いいえ、残す"
-```
-
-回答を `close_all` / `remove_wt_all` / `delete_br_all` の真偽値で保持し、以下を実行:
-
-```bash
-for slug in <task-slugs>; do
-  status_file=".dispatch/$slug/status.json"
-  workspace_id=$(jq -r '.workspace_id // empty' "$status_file")
-  surface_id=$(jq -r '.surface_id // empty' "$status_file")
-
-  # 1) pane / workspace を先に閉じる
-  if [[ "$close_all" == "true" ]]; then
-    case "$LAYOUT_MODE" in
-      split)                  [[ -n "$surface_id"   ]] && cmux close-surface   --surface   "$surface_id"   ;;
-      workspace|claude-teams) [[ -n "$workspace_id" ]] && cmux close-workspace --workspace "$workspace_id" ;;
-    esac
-  fi
-
-  # pre-warm standby ペインが残っていれば全て閉じる（常 4 ペイン維持のため Phase B 後も全 standby が残る）
-  if [[ "$close_all" == "true" && -f ".dispatch/$slug/prewarm.json" ]]; then
-    for sf in $(jq -r '.[].surface_id' ".dispatch/$slug/prewarm.json" 2>/dev/null); do
-      cmux close-surface --surface "$sf" 2>/dev/null || true
-    done
-  fi
-
-  # 2) worktree を削除
-  [[ "$remove_wt_all" == "true" ]] && git worktree remove ".worktrees/$slug" --force 2>/dev/null
-
-  # 3) feature ブランチを削除
-  [[ "$delete_br_all" == "true" ]] && git branch -D "feat/$slug" 2>/dev/null
-done
-
-# 4) 最終整理（回答に関わらず常に実行）
-rm -rf .dispatch/
-rmdir .worktrees 2>/dev/null
-```
-
-#### モード別の閉鎖対象
+## モード別の閉鎖対象
 
 | `$LAYOUT_MODE`  | `close_all=true` で閉じる対象      | 使用する cmux コマンド                    |
 |-----------------|----------------------------------|-------------------------------------------|
@@ -1142,322 +1479,11 @@ rmdir .worktrees 2>/dev/null
 | `workspace`     | 子のワークスペース                 | `cmux close-workspace --workspace <id>`   |
 | `claude-teams`  | team が紐づくワークスペース         | `cmux close-workspace --workspace <id>`   |
 
-> pane/workspace → worktree → ブランチの順序は意図的。先に閉鎖することで worktree を
-> 開いている shell が終了し、`git worktree remove` が確実に成功する。ブランチ削除は
-> worktree 削除後に行う必要がある。
-> 子セッション内で worktree を削除させると、親が削除を実行する時点ではまだ子プロセスが
-> worktree を掴んだままで `git worktree remove` が失敗するため、すべて親側に集約している。
-
-agmsg モード時は、最終整理の際に子 agent を team から除籍する:
-
-```bash
-for slug in <task-slugs>; do
-  ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$slug" 2>/dev/null || true
-  ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$slug-sonnet" 2>/dev/null || true
-  ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$slug-codex" 2>/dev/null || true
-done
-```
-
-親 (`parent`) は repo 固定 team に残す（次回 dispatch で再利用）。
-
----
-
-## superpowers 統合（Execution Handoff 第3選択肢）
-
-`superpowers:writing-plans` でプランが完成すると、Execution Handoff として3つの実行方法から選択:
-
-```
-1. Subagent-Driven (推奨)   → superpowers:subagent-driven-development
-2. Inline Execution          → superpowers:executing-plans
-3. Parallel (cmux)           → cmux-team-dispatch-task  ← THIS SKILL
-```
-
-### フロー
-
-1. プランファイルからタスクを抽出
-2. brainstorming 選択（プランから来た場合、brainstorming 完了済みなのでデフォルト「なし」）
-3. レイアウト選択（デフォルト workspace、引数で override）
-4. 起動・監視・完了
-
----
-
-## 子セッションのモデル選択フロー（必須）
-
-子セッションのプロンプトには `MANDATORY MODEL SELECTION SEQUENCE` が必ず含まれており、以下の段階で動作する
-（Phase A-R は `review_mode: on` のときのみ Phase A と Phase B の間に挟まり、同条件で
-Phase B-R が実装完了後・PR 作成前に挟まる）。プロンプトテンプレートはタスクの**設計 engine**
-（Step 1f で割り当てた runner の engine）で出し分けられ、design=claude は従来どおり、design=codex は
-下記の「codex 設計 variant」に差し替わる。
-
-### Phase A: Plan / Brainstorming（設計 engine で実行）
-
-- superpowers モード: `superpowers:brainstorming` → `superpowers:writing-plans`
-- plan モード: 組み込み `/plan`。提示する plan の冒頭に、実装ステップより前の必須ステップと
-  して「Step 0: Phase A-R 相手方 engine レビュー（有効時）」「Step 1: Phase B 実行モデル選択
-  （AskUserQuestion）」を必ず記載する。承認された plan の実行は Phase A-R / Phase B から
-  始まり、コード変更からは始まらない
-- plan モードで plan が ExitPlanMode メッセージ内にしか存在しない場合、承認後の最初の作業
-  としてファイル（例: worktree 内 `.claude/plans/<task-slug>.md`）に保存する（Phase B の
-  `--plan-file` 受け渡しに必要）
-- このフェーズでは **モデル切り替えを禁止** する。design=claude なら常に opus、design=codex なら
-  この codex セッションのまま（`--effort <plan_effort>` の reasoning effort で起動済み）。
-
-#### codex 設計 variant（design=codex のタスク）
-
-設計 runner が `engine: codex` のタスクでは Phase A / Phase B が以下に差し替わる:
-
-- **Phase A**: この codex セッション内で plan / spec を作成する（セッション途中でモデルを
-  切り替えない）。plan モードは `/plan` を使い、承認された plan は Step 0（Phase A-R）/
-  Step 1（Phase B）を実装ステップより前に列挙してファイル保存する
-- **Phase B**: opus 1m / sonnet / codex の 3 択はすべて pre-warm ペインへ委譲する — **この codex
-  セッション自身は実装しない**。opus 1m → 右上の claude review ペイン（agent `<slug>-opus`）、
-  sonnet → sonnet standby、codex → codex standby へ実行依頼を送り、`.deferred` を touch する。
-  prewarm.json が無い（prewarm off / split）場合は claude variant と同じく `launch-workspace.sh
-  --mode execute` にフォールバック（opus 1m は reviewer runner の command + `--model
-  'opus[1m]'` + `--skip-permissions`）
-
-#### plan モードの遵守ゲート（ExitPlanMode hook）
-
-標準 plan モードでは ExitPlanMode 承認直後に「プランを実行せよ」という強いシステム指示が
-入り、上記シーケンスがスキップされることがある。これを防ぐため、`launch-workspace.sh` は
-`--mode plan` かつ claude engine、かつ非 claude-teams レイアウトのときのみ、worktree の `.claude/settings.local.json` に
-PostToolUse hook（matcher: `ExitPlanMode`、command:
-`zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入する。hook は承認直後に「ファイル
-編集前に Phase A-R（有効時）→ Phase B を実行せよ」という additionalContext を機械的に
-再注入する。
-
-- ベストエフォート: settings 書き込み・マージ失敗は警告のみで dispatch を止めない
-  （プロンプト側の指示がフォールバック）。既存 settings.local.json は jq でマージし、
-  worktree 再利用時に重複注入しない
-- 誤コミット防止: `.claude/settings.local.json` と plan 保存先 `.claude/plans/` は repo 共有の
-  `info/exclude` に追記される（plan ファイルは `--plan-file` のパス渡しで使う作業物であり、
-  子の `git add -A` でタスクブランチにコミットさせない）
-- hook は worktree の settings.local.json に残存するため、同一 worktree を再利用する後続
-  セッション（Phase B の execute 孫を含む）にも作用する。それらは plan モードを使わないため
-  実害はない
-- superpowers モード / codex engine / execute・standby・review モード / claude-teams レイアウトでは注入されない
-
-### Phase A-R — plan/spec クロスレビュー（review_mode: on のときのみ）
-
-**クロスレビュー原則（宣言）**: レビュアーは常に設計セッションの**相手方 engine**。design=claude の
-Phase A 成果物は codex レビューペイン（`review_model`）が、design=codex の Phase A 成果物は claude
-レビューペイン（reviewer runner + `CLAUDE_REVIEW_MODEL`）がレビューする。Phase B より前に必ず
-完了させる。レビュアー engine が claude のときは spawn に `--skip-permissions` を付与する。
-
-- **レビューポイント**: plan モード = plan 完成後の 1 回 / superpowers モード = spec（design doc）
-  完成後と plan 完成後の 2 回
-- **ラウンドループ**（各ポイント最大 3 往復）: 依頼 → 相手方 engine のレビューペインが
-  `<STATUS_DIR>/review/<point>-round-<N>.md` に指摘を書き、末尾に `VERDICT: approve` または
-  `VERDICT: needs_work` を記す → approve なら次へ / needs_work なら設計セッションが妥当な指摘を反映
-  （反論は次ラウンドの依頼文に理由付きで返す）して再依頼
-- **依頼配送**: 常に `cmux send` + `send-key return` で依頼し、verdict はファイルポーリング
-  （5 秒間隔・15 分チャンク。レビュアーが活動している限り**上限なし**で待機。依頼直後に
-  `cmux read-screen --workspace/--surface` でレビューペイン画面の baseline を取得し、チャンク境界
-  ごとに verdict を再確認 → 画面を再取得（`read-screen` は非フォーカス workspace でも live な内容を
-  返すため refresh は不要 — 実測確認済み。失敗・空出力は 10 秒間隔で最大 3 回リトライ）して差分
-  比較。変化あり = 作業中なので snapshot を更新して待機継続、変化なし = stalled、全リトライ失敗は
-  観測失敗であり 2 回連続の境界で全失敗したときのみ stalled 扱い）で待つ —
-  agmsg push 単独では idle なレビューペインは起きず、
-  返信 push も idle 待ちのこのセッションを起こせないため。prewarm.json の `review.delivery` が
-  `agmsg` のとき（かつ各ラウンドの送信直前に ready sentinel `ready.${TEAM}__<review-agent>` が
-  存在するとき）は、`cmux send` に先立ち同一依頼文を `send.sh` で inbox にも記録する
-  （`<review-agent>` は design=claude で `<slug>-review`、design=codex で `<slug>-opus`）
-- **3 往復で approve が出ない** → 残指摘を要約して AskUserQuestion（このまま進む / さらに修正）
-- **stalled（1 チャンク画面変化なし / 2 回連続観測不能）・verdict 不正** → verdict を最終確認
-  してから同一ラウンドを 1 回だけ再依頼（baseline 取り直し）。それでも stalled なら
-  AskUserQuestion（再依頼 / レビュー省略して Phase B へ）
-- **ペイン寿命**: 全ポイントで同一ペインを再利用（文脈保持）。最終 approve（またはユーザー判断）
-  後もレビューペインは開いたまま idle 維持し、途中で close しない（常 4 ペイン。最終の全タスク
-  完了クリーンアップで他ペインとまとめて閉じる）。spawn 失敗時はレビューをスキップして Phase B へ（警告表示）
-- **prewarm 無効 / split レイアウト時**: 最初のレビューポイントで
-  `launch-workspace.sh --mode review --standby-split-direction right` によりオンデマンド spawn
-
-### Phase B: 実装フェーズのモデル選択（auto mode でも必須）
-
-Phase A 完了後、コード変更を始める前に task prompt が解決した方式に従う。`exec_choice` が未設定または
-`"ask"` なら `AskUserQuestion` で以下を聞き、固定値なら質問なしで対応する既存分岐を実行する。
-**未設定**（明示 `"ask"` ではない）の場合のみ、モデル選択の回答直後に永続化確認をもう 1 問出す
-（今回のみ / 常にこの選択 [`exec_choice="<選択値>"` をグローバル config へ保存] / 常に毎回選ぶ
-[`exec_choice="ask"` を保存し以後この確認を出さない]。回答は今回の分岐に影響せず選んだモデルで
-直ちに続行。並列 child の同時書き込みは last-write-wins）。下表は **design=claude**
-の挙動。**design=codex** のタスクでは 3 択すべてを pre-warm ペインへ委譲し現セッションでは実装
-しない（上記「codex 設計 variant」参照）:
-
-| 選択肢 | 表示条件 | 動作 |
-|--------|---------|------|
-| **opus 1m** | 常時 | Phase A と **同一 model** 扱い。`/model opus[1m]` で切り替え、**現セッションで実装続行**。未使用の standby ペイン（sonnet / codex / review）は閉じずに開いたまま idle 維持（常 4 ペイン。下記「opus 1m 選択時のペイン」参照） |
-| **sonnet** | 常時 | **異なる model**。まず `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute` で spawn（下記参照） |
-| **codex** | `runners.json` に `engine: codex` の runner が **1 件以上ある時のみ** | **異なる model**。sonnet と同様に `prewarm.json` を確認し、pre-warm 済み standby ペインがあればそちらへ実行指示を送信、無ければ `launch-workspace.sh --mode execute --runner <codex-runner>` で spawn |
-
-#### Codex の起動安全性
-
-`superpowers` / `plan` / `execute` / `standby` の Codex は approval prompt を防ぐため
-`--dangerously-bypass-approvals-and-sandbox` を使う。一方、review ペインは sandbox を完全 off にせず
-`--sandbox workspace-write`、`-c approval_policy='never'`、`--add-dir <STATUS_DIR>` を3点セットで指定する。
-これにより approval prompt を抑止しつつ、worktree 外の `<STATUS_DIR>/review/` への findings 書込みだけを許可する。
-
-#### opus 1m 選択時のペイン
-
-`prewarm.json` が存在しても、未使用の standby ペイン（sonnet / codex / review）は **閉じずに
-開いたまま idle 維持** する（常 4 ペイン）。未 assigned の standby は `.assigned-<name>` sentinel を
-持たないため status.json を汚さない。全ペインは最終の全タスク完了クリーンアップでまとめて閉じる。
-
-#### pre-warm 済み standby ペインがある場合（sonnet / codex 共通の分岐）
-
-`<EXISTING_STATUS_DIR>/prewarm.json` の `.sonnet.surface_id` / `.codex.surface_id` が非空なら:
-
-1. 使わなかった方の standby ペイン（sonnet / codex / opus / review）は **閉じずに開いたまま idle
-   維持** する（常 4 ペイン）。`.assigned-<name>` の無い standby は status.json を汚さないため、開いた
-   ままでも観測に影響しない。全ペインは最終の全タスク完了クリーンアップでまとめて閉じる
-2. `touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"`（sonnet 選択時）または
-   `.assigned-<task-slug>-codex`（codex 選択時） — 完了処理（status.json done/error 遷移 +
-   `<slug>-sonnet-done` / `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
-3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ...` + exit 指示。
-   exit 指示は engine で分ける — **sonnet（claude）は「run /exit」、codex は「end this codex
-   session immediately … Do NOT run /exit」**。codex は `/exit` では終了せず、作業完了後も TUI が
-   idle のまま残ると runner wrapper（codex プロセスで block 中）が `write_status "done"` /
-   signal 発火 / 親通知に到達できず**完了通知が届かなくなる**ため、codex には必ず「セッション自体を
-   終了せよ」と伝える（spawn 経路で `launch-workspace.sh` が焼き込む EXIT_INSTRUCTION と同じ）。
-   **Phase B-R 有効時は「PR 作成前にコードレビュー approve を得る」プロトコル入りの拡張版**）を送信する。
-   配送は**常にタイプ入力（`cmux send`）** — agmsg push 単独では idle なペインは起きない。
-   `prewarm.json` の `.sonnet.delivery` / `.codex.delivery` が `"agmsg"` のときは inbox にも
-   記録する。値が `"agmsg"` でも送信直前に ready sentinel
-   （`~/.agents/skills/agmsg/run/ready.${TEAM}__<agent>`）の存在を確認し、無ければ
-   `"cmux-send"` に倒す（死んだ watcher への記録は誰にも読まれない）:
-   - `"agmsg"`（`prewarm-panes.sh` が worktree に delivery 配線済み + watcher 生存）→ まず
-     `~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-sonnet|-codex "$REQUEST_TEXT"`
-     で inbox に記録し（`$TEAM` は親が Step 1g で解決した agmsg team 名をそのまま使う。子セッションは
-     worktree 内で動作するため、worktree の basename から team 名を再導出すると誤った値になる）、
-     `$REQUEST_TEXT` の末尾に
-     ` (An identical copy of this message is in your agmsg inbox — treat both as ONE task; ignore the duplicate.)`
-     を追記する
-   - **常に**（delivery の値によらず）→
-     `cmux send --surface "$SURFACE" "$REQUEST_TEXT"` に続けて
-     `cmux send-key --surface "$SURFACE" return`
-4. `touch "<EXISTING_STATUS_DIR>/.deferred"`。Phase B-R 有効時は exit **せず**、レビュアー
-   として idle 待機する（下記「Phase B-R」参照）。無効時はこのセッションを exit
-
-#### prewarm.json が無い場合（従来の spawn フォールバック、split レイアウト / prewarm off）
-
-「異なる model」が選ばれた場合の spawn 手順 (Child セッション側の動作):
-
-```bash
-# Phase A の Child が以下を実行
-zsh <skill-dir>/scripts/launch-workspace.sh \
-  --cwd "$PWD" \
-  --mode execute \
-  --plan-file <PLAN_FILE_PATH> \
-  --model sonnet \
-  --skip-permissions \
-  --status-dir "<EXISTING_STATUS_DIR>" \
-  --layout <LAYOUT> \
-  --parent-notify-workspace <PARENT_WORKSPACE_ID> \
-  [--parent-notify-surface <PARENT_SURFACE_ID>] \
-  [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split のみ
-  [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # Phase B-R 有効時のみ
-  <task-slug>-exec
-
-# Phase B-R 有効かつ「実装者 engine != 設計 engine」のケース (下記 Phase B-R の統一規則参照。
-# design=claude+codex / design=codex+opus 1m / design=codex+sonnet) では、設計セッション (YOU) が
-# レビュアーになるので spawn 前にレビュー配線ファイルを書いておく:
-#   mkdir -p "<EXISTING_STATUS_DIR>/review"
-#   jq -n --arg s "$CMUX_SURFACE_ID" --arg w "$CMUX_WORKSPACE_ID" --arg d "<EXISTING_STATUS_DIR>/review" \
-#     '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d}' > "<EXISTING_STATUS_DIR>/review/code-review.json"
-# 「実装者 engine == 設計 engine」のケース (design=claude+sonnet / design=codex+codex) は
-# レビューペインがレビュアーになるので reviewer_surface はレビューペインの surface を指す。
-
-# spawn 完了後、自身は移譲シグナルを書く。Phase B-R 有効かつ YOU がレビュアーのケースは
-# exit せずレビュアーとして待機、それ以外は exit
-touch "<EXISTING_STATUS_DIR>/.deferred"
-```
-
-codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <codex-runner-name>` を使う（他は同じ形）。
-
-孫セッションの runner wrapper が `status.json` を `done`/`error` に遷移させ、`cmux wait-for --signal <task-slug>-exec-done` を発火し、親に `[dispatch] task ... finished` を送る。Child は `--defer-status` 付きで起動されているため `.deferred` センチネルを検知して status 上書きをスキップする (これにより孫の通知が握り潰されない)。
-
-### Phase B-R — 実装後コードレビュー（review_mode: on のときのみ）
-
-実装完了（コミット済み）後・**PR 作成前**にコードレビューを挟む。有効化条件は Phase A-R と
-完全に同一（新しい config キーは無い）。レビューポイント id は `code`、findings は
-`<STATUS_DIR>/review/code-round-<N>.md`（末尾 `VERDICT: approve` / `VERDICT: needs_work`）、
-最大 3 往復 — Phase A-R と同一プロトコル。
-
-**レビュアー割り当て（統一規則）**: レビュアーは**常に実装者の相手方 engine**。物理配置は次で決まる:
-
-- 実装者 engine == 設計 engine → **レビューペインがレビュー**（REVIEWER_SURFACE = prewarm.json
-  `.review.surface_id`）
-- 実装者 engine != 設計 engine → **設計セッション（YOU）がレビュー**（REVIEWER_SURFACE = 自身の
-  `$CMUX_SURFACE_ID`）
-
-設計 engine × Phase B 選択の 6 ケース:
-
-| 設計 engine | Phase B 選択 | 実装者 | レビュアー | REVIEWER_SURFACE |
-|------------|-------------|-------|-----------|------------------|
-| claude | opus 1m | 現セッション（opus, in-session） | codex レビューペイン | prewarm.json `.review.surface_id` |
-| claude | sonnet | sonnet standby | codex レビューペイン | prewarm.json `.review.surface_id` |
-| claude | codex | codex standby | 現セッション（設計 claude, YOU） | 自身の `$CMUX_SURFACE_ID` |
-| codex | opus 1m | claude review ペイン（agent `<slug>-opus`） | 現セッション（設計 codex, YOU） | 自身の `$CMUX_SURFACE_ID` |
-| codex | sonnet | sonnet standby | 現セッション（設計 codex, YOU） | 自身の `$CMUX_SURFACE_ID` |
-| codex | codex | codex standby | claude review ペイン | prewarm.json `.review.surface_id` |
-
-> **現行変更**: design=claude + sonnet 実装のレビュアーは、旧仕様では**設計 opus ペイン**が担って
-> いたが、現行ではクロスエンジン原則に従い **codex レビューペイン**が担う。
-
-- **YOU がレビュアーのケース**: 設計セッション（Child）は `.deferred` を touch した後 exit せず
-  idle 待機。実装者が各ラウンドでレビューを依頼（常に `cmux send` + `send-key return` でタイプ
-  入力し、agmsg watcher 生存時は加えて `send.sh` で inbox にも記録）し、実装者は verdict ファイルを
-  ポーリング（5 秒間隔・15 分チャンク。レビュアー pane の read-screen 画面差分による生存確認付きで
-  活動中は上限なしに待機 — Phase A-R と同一プロトコル）で待つ。設計セッションは round ごとに
-  findings を書き、approve を書いた時点で exit する
-- **レビューペインがレビューするケース**: opus 1m 実装（design=claude）は Phase A-R の Round loop
-  をポイント id `code` でもう 1 周（同一 codex レビューペイン再利用、依頼文は「文書」でなく
-  「ブランチの diff + plan 参照」）。sonnet 実装（design=claude）/ codex 実装（design=codex）は
-  実装者が拡張版 REQUEST_TEXT でレビューペインへ依頼する。レビューペインが利用不可（Phase A-R
-  spawn 失敗済み）ならレビュー省略
-- **修正責任**: needs_work の指摘は実装者自身が修正して再依頼する（却下する指摘は反論を
-  次ラウンドの依頼文に添える）。approve 後に実装者が PR を作成する — PR は常にレビュー済みになる
-- **3 往復で approve が出ない**: 実装者が claude セッションなら AskUserQuestion
-  （このまま PR 作成 / さらに修正）。codex 実装者は対話質問ができないため、未解決指摘を
-  **PR 本文に注記して続行**する
-- **stalled（1 チャンク画面変化なし / 2 回連続観測不能）**: verdict を最終確認してから同一ラウンド
-  を 1 回だけ再依頼（baseline 取り直し）。それでも stalled なら claude 実装者は AskUserQuestion
-  （再依頼 / レビュー省略して PR 作成）、codex 実装者はレビューを省略し PR 本文に注記する
-- **status.json 非汚染**: done/error 遷移の所有権は従来どおり実装者ペインの wrapper が持つ。
-  レビュアーが設計セッション（YOU）のケースは `.deferred` 済みのため exit しても status.json を
-  書かない
-- **孤児ガードは不要**: 実装者がレビューを依頼せず終了しても設計セッションは idle のまま無害に
-  残り、最終の全タスク完了クリーンアップで他ペインと一緒に閉じられる
-- **spawn 経路（prewarm 無効 / split）**: 設計セッションが `<STATUS_DIR>/review/code-review.json`
-  （`{reviewer_surface, reviewer_workspace, review_dir}`。`reviewer_surface` は上表の REVIEWER_SURFACE =
-  YOU がレビューするケースは自身の surface、レビューペインがレビューするケースはレビューペインの
-  surface。`reviewer_workspace` はレビュアー側の workspace — 実装孫は別 workspace に spawn される
-  ため、依頼配送（`cmux send` / `send-key`）と read-screen の生存確認はいずれもこの値を
-  `--workspace` に明示して行う）を書き、
-  `launch-workspace.sh --mode execute --review-config <path>` で実装者を起動する。wrapper が
-  composed prompt にレビュープロトコル（依頼は常に `cmux send` + ファイルポーリング）を追記する
-
-### 前提条件
+## 前提条件
 
 - codex オプションを使う場合、`runners.json` に `engine: "codex"` の runner を 1 件以上登録しておく必要がある (Step 1f の初回セットアップで追加可能)
 - 加えて `cmux codex install-hooks` をマシンで一度実行しておく必要がある
 - これにより `~/.codex/hooks.json` に SessionStart / Stop / UserPromptSubmit hooks が入り、`config.toml` に `[features] codex_hooks = true` / `external_migration = true` が追加される
-
----
-
-## 制約事項
-
-- **cmux 必須**: `/Applications/cmux.app/` にインストールされている必要があります
-- **claude-teams 必須**: claude-teams モードでは `cmux claude-teams` コマンドが必要
-- **同時セッション数**: 3〜5 セッションが推奨
-- **split モード制限**: 2〜6 タスクが推奨。7 以上は workspace モードを使用
-- **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません
-- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。`cmux send` の後は必ず `cmux send-key return` を発行し、親 claude TUI の input box に滞留しないようにしている
-- **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
-- **message_type**: 通知トランスポートは config (`message_type`) で `send-message` (default) / `agmsg` を切替。agmsg モードでは monitor-dispatch.sh を起動しない (status.json は両モードで不変)。agmsg のインストール判定は `~/.agents/skills/agmsg/scripts/send.sh` の存在。**agmsg push は inbox 記録専用で、idle セッションを起こせない** (watcher はバックグラウンド Bash として動き、その stream 出力はプロセスが終了するまで注入されない) — したがって wake は常に `cmux send` + `send-key return` で行い、agmsg 配線が生きているときは同一文を inbox にも記録する (dual-send)。agmsg モードの完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (send.sh + cmux send の両方。Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ。同じく両チャネル)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
-- **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを配置。Phase A-R が無効時は縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)、有効時は 2×2 均等グリッドでレビューペインは常に設計 engine の逆: design=claude (`REVIEW_ENABLED`) は左上: opus / 右上: codex レビュー (`<slug>-review`) / 左下: sonnet / 右下: codex、design=codex (`REVIEW_ENABLED_CODEX_DESIGN`) は左上: design codex (`--effort <plan_effort>`) / 右上: claude レビュー (`<slug>-opus`、reviewer runner + `--model <CLAUDE_REVIEW_MODEL>` + `--skip-permissions`、A-R レビュアー兼 Phase B opus 1m 実装先の二役) / 左下: sonnet / 右下: codex。いずれも prewarm.json に `review` キー (`--review-model` または `--reviewer-runner` 時)。agmsg モードでは opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から dual-send で送る (常に `cmux send` + `send-key return`、agmsg 配線が生きていれば加えて `send.sh` で inbox 記録)。standby wrapper は `<STATUS_DIR>/.assigned-<name>` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`（design=codex の opus 1m 委譲時は `<slug>-opus-done`）。Phase B の実行指示も同じ dual-send: prewarm.json の `delivery` 値が `"agmsg"` なら `send.sh` で inbox にも記録し、どちらの値でも `cmux send` + `send-key return` を必ず発行する。
-# GitHub issue 自動ループ
-
-`--loop` は `references/loop-mode.md` の手順で GitHub issue をバッチ処理する。状態は `.dispatch-loop/`、タスク状態は `.dispatch/` に置く。`loop.task_timeout_min` と `loop.lock_lease_min` は timeout とロック lease を別に設定する。通常 dispatch は active loop lock があれば開始・一括 cleanup を拒否する。Codex 起動には全経路で `--dangerously-bypass-hook-trust` を付与する。runner wrapper は既存の `pr_url` を保持する。
 
 ## Phase B-R 有効時の実行指示と完了通知
 
