@@ -1,4 +1,4 @@
-import { check, collectTargets, findJapaneseLines, stripFrontmatter } from './check-doc-lang.mjs'
+import { check, collectTargets, findJapaneseLines, OUTPUT_LANGUAGE_BLOCK, stripFrontmatter } from './check-doc-lang.mjs'
 
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -21,9 +21,13 @@ function write(root, relPath, content) {
   return full
 }
 
-// 最小構成の skill を作る。guide-ja.md も同時に置くのでルール B/C は満たす。
+// 最小構成の skill を作る。guide-ja.md と Output Language ブロックも同時に
+// 満たすので、ルール B/C/D は個別のテストでない限り発火しない。
 function makeSkill(root, app, skill, skillBody) {
-  write(root, `apps/${app}/skills/${skill}/SKILL.md`, skillBody)
+  const body = skillBody.includes(OUTPUT_LANGUAGE_BLOCK)
+    ? skillBody
+    : `${skillBody}\n## Output Language\n\n${OUTPUT_LANGUAGE_BLOCK}\n`
+  write(root, `apps/${app}/skills/${skill}/SKILL.md`, body)
   write(root, `apps/${app}/skills/${skill}/references/guide-ja.md`, '# 日本語ガイド\n')
 }
 
@@ -116,7 +120,7 @@ describe('check', () => {
 
   it('reports a SKILL.md with no guide-ja.md', () => {
     const root = makeRoot()
-    write(root, 'apps/demo/skills/demo/SKILL.md', '# Demo\n')
+    write(root, 'apps/demo/skills/demo/SKILL.md', `## Output Language\n\n${OUTPUT_LANGUAGE_BLOCK}\n\n# Demo\n`)
     const violations = check(root)
     assert.equal(violations.length, 1)
     assert.equal(violations[0].rule, 'missing-guide-ja')
@@ -125,7 +129,7 @@ describe('check', () => {
 
   it('reports a -ja.md that contains no japanese', () => {
     const root = makeRoot()
-    write(root, 'apps/demo/skills/demo/SKILL.md', '# Demo\n')
+    write(root, 'apps/demo/skills/demo/SKILL.md', `## Output Language\n\n${OUTPUT_LANGUAGE_BLOCK}\n\n# Demo\n`)
     write(root, 'apps/demo/skills/demo/references/guide-ja.md', '# Guide\n')
     const violations = check(root)
     assert.equal(violations.length, 1)
@@ -162,5 +166,34 @@ describe('check', () => {
     makeSkill(root, 'demo', 'demo', '# Demo\n\nAll english here.\n')
     write(root, 'apps/demo/commands/demo.md', '# Command\n')
     assert.deepEqual(check(root), [])
+  })
+
+  it('does not report missing-output-language when the block is present verbatim', () => {
+    const root = makeRoot()
+    write(root, 'apps/demo/skills/demo/SKILL.md', `## Output Language\n\n${OUTPUT_LANGUAGE_BLOCK}\n\n# Demo\n`)
+    write(root, 'apps/demo/skills/demo/references/guide-ja.md', '# デモ\n')
+    assert.deepEqual(check(root), [])
+  })
+
+  it('reports missing-output-language for a SKILL.md without the block', () => {
+    const root = makeRoot()
+    write(root, 'apps/demo/skills/demo/SKILL.md', '# Demo\n')
+    write(root, 'apps/demo/skills/demo/references/guide-ja.md', '# デモ\n')
+    const violations = check(root)
+    assert.equal(violations.length, 1)
+    assert.equal(violations[0].rule, 'missing-output-language')
+    assert.equal(violations[0].file, 'apps/demo/skills/demo/SKILL.md')
+  })
+})
+
+describe('CLI entry guard', () => {
+  it('does not throw on import when process.argv[1] is undefined', async () => {
+    const originalArgv1 = process.argv[1]
+    process.argv[1] = undefined
+    try {
+      await assert.doesNotReject(import(`./check-doc-lang.mjs?argv1-undefined=${Date.now()}`))
+    } finally {
+      process.argv[1] = originalArgv1
+    }
   })
 })

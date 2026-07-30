@@ -102,7 +102,7 @@ skill / command の定義ファイルは Claude が読む指示文書なので *
 | `SKILL.md` の frontmatter `description` | 日本語可 | — | — （起動トリガー語のため対象外） |
 | `apps/*/**/references/<name>.md` | **英語必須** | `references/<name>-ja.md` | 任意 |
 | `references/*-ja.md` | 日本語 | 自身が訳 | — |
-| `apps/*/commands/*.md` | **英語必須** | — | 作らない（内容は SKILL.md に集約） |
+| `apps/*/commands/*.md` | **英語必須** | — | 作らない（ユーザー提示箇所に `Respond to the user in Japanese.` を書く。後述） |
 | `CLAUDE.md` / `README.md` | 日本語 | — | — |
 
 一行ルール: **`*-ja.md` 以外の Claude 向け指示文書に日本語文字を書かない。**
@@ -124,6 +124,12 @@ not change the language presented to the user.
 ```
 
 AskUserQuestion の質問文・選択肢ラベル、進捗テーブル、最終サマリーはすべてこのブロックの対象。SKILL.md 側に日本語のリテラル文字列を置いてはならない。
+
+### `commands/*.md` の日本語指示
+
+`commands/*.md` には `## Output Language` ブロックを置かない。代わりに、ユーザーへ提示する箇所（最終報告・確認メッセージなど）の直前か、冒頭の指示部に `Respond to the user in Japanese.` の 1 行を含める（例: `apps/cmux-fork/commands/cfork.md:9`）。
+
+`commands/*.md` の訳を作らない理由は「内容が SKILL.md に集約されているから」ではない。`cmux-fork` と `codex-bridge` は skill を持たず `commands/*.md` が唯一の指示文書だが、それでも訳は作らない。`commands/*.md` は 1 コマンド = 数行〜数十行の短い実行手順であり、`Respond to the user in Japanese.` の 1 行だけで「本文は英語 / 表示は日本語」を両立できるため、SKILL.md のような逐語訳ミラーは不要と判断している。
 
 ### `guide-ja.md` の構造
 
@@ -151,6 +157,15 @@ node scripts/check-doc-lang.mjs apps/dev-up  # パス指定で絞り込み
 ```
 
 `pnpm check` にも組み込まれているため、違反があると CI が落ちる。
+
+`scripts/check-doc-lang.mjs` は次の 4 種類の違反を検出する:
+
+| ルール | 対象 | 内容 |
+|--------|------|------|
+| `japanese-in-english-doc` | `*-ja.md` 以外の対象ファイル全体 | frontmatter を除く本文に日本語文字が出現する |
+| `missing-guide-ja` | `SKILL.md` | 対応する `references/guide-ja.md` が存在しない |
+| `empty-translation` | `*-ja.md` | 日本語が 1 文字も含まれない |
+| `missing-output-language` | `SKILL.md` のみ（`references/` / `commands/` は対象外） | 上記の `## Output Language` ブロック 3 行が一字一句そのまま含まれていない |
 
 ## Plugin-specific guidance
 

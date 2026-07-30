@@ -77,6 +77,12 @@ export function isTranslation(relPath) {
   return basename(relPath).endsWith('-ja.md')
 }
 
+// SKILL.md の frontmatter 直後に置く定型文。CLAUDE.md 「Language convention」の
+// 「## Output Language ブロック」節と一字一句一致させること。
+export const OUTPUT_LANGUAGE_BLOCK = `All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.`
+
 export function check(root, filter) {
   const matches = (relPath) => !filter?.length || filter.some((f) => relPath.startsWith(f))
   const violations = []
@@ -116,13 +122,22 @@ export function check(root, filter) {
           message: 'references/guide-ja.md is required for every SKILL.md',
         })
       }
+
+      if (!text.includes(OUTPUT_LANGUAGE_BLOCK)) {
+        violations.push({
+          file: relPath,
+          line: 1,
+          rule: 'missing-output-language',
+          message: 'the "## Output Language" block is missing or does not match verbatim',
+        })
+      }
     }
   }
 
   return violations.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line)
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const root = process.cwd()
   const violations = check(root, process.argv.slice(2))
   for (const v of violations) console.error(`${v.file}:${v.line}: [${v.rule}] ${v.message}`)

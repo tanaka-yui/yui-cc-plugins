@@ -2,7 +2,7 @@
 
 First run `cmux identify` to check the current environment, and show the result.
 
-Then help the user with their operation using the quick reference below.
+Then help the user with their operation using the quick reference below. Respond to the user in Japanese.
 
 ---
 
