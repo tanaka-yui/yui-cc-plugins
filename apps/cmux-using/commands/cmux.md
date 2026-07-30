@@ -1,35 +1,36 @@
-# cmux クイックリファレンス
+# cmux quick reference
 
-まず `cmux identify` を実行して現在の環境を確認し、結果を表示してください。
+First run `cmux identify` to check the current environment, and show the result.
 
-次に、以下のクイックリファレンスを参照しながらユーザーの操作を支援してください。
+Then help the user with their operation using the quick reference below. Respond to the user in Japanese.
 
 ---
 
-## 基本操作
+## Basic Operations
 
-| 操作 | コマンド |
+| Operation | Command |
 |------|---------|
-| 環境確認 | `cmux identify` |
-| ワークスペース一覧 | `cmux list-workspaces` |
-| ペイン分割（右） | `cmux new-split right` |
-| ペイン分割（下） | `cmux new-split down` |
-| 画面読み取り | `cmux read-screen --surface surface:N` |
-| スクロールバック含む | `cmux read-screen --surface surface:N --scrollback` |
-| テキスト送信 | `cmux send --surface surface:N "text\n"` |
-| キー送信 | `cmux send-key --surface surface:N return` |
-| サーフェス閉じる | `cmux close-surface --surface surface:N` |
-| 通知 | `cmux notify --title "タイトル" --body "本文"` |
+| Check environment | `cmux identify` |
+| List workspaces | `cmux list-workspaces` |
+| Pane split (right) | `cmux new-split right` |
+| Pane split (down) | `cmux new-split down` |
+| Screen read | `cmux read-screen --surface surface:N` |
+| Including scrollback | `cmux read-screen --surface surface:N --scrollback` |
+| Send text | `cmux send --surface surface:N "text\n"` |
+| Send key | `cmux send-key --surface surface:N return` |
+| Close surface | `cmux close-surface --surface surface:N` |
+| Notification | `cmux notify --title "<title>" --body "<body>"` |
 
-## send の改行ルール（重要）
+## Newline Rules for send (important)
 
-**単一行**: `\n` 末尾で送信できる。
+**Single line**: can be sent with a trailing `\n`.
 
 ```bash
 cmux send --surface surface:N "echo hello\n"
 ```
 
-**複数行は `\n` で送れない**。`send-key return` で1行ずつ送る:
+**Multiple lines cannot be sent with `\n`**. Send each line individually with
+`send-key return`:
 
 ```bash
 cmux send --surface surface:N "echo line1"
@@ -38,31 +39,31 @@ cmux send --surface surface:N "echo line2"
 cmux send-key --surface surface:N return
 ```
 
-## サブエージェント起動の最小手順
+## Minimal Sub-Agent Launch Procedure
 
-1. **ペイン分割**: `cmux new-split right` → surface:N を取得
-2. **Claude 起動**: `cmux send --surface surface:N "claude --dangerously-skip-permissions\n"`
-3. **Trust 検出**: `cmux read-screen --surface surface:N` をポーリングし、trust プロンプトが出たら `cmux send --surface surface:N "trust\n"`
-4. **起動確認**: `read-screen` で Claude Code の起動完了（`$` や入力プロンプト `>`）を検出
-5. **プロンプト送信**: `cmux send --surface surface:N "指示内容"` + `cmux send-key --surface surface:N return`
-6. **完了待機**: `read-screen` をポーリングし完了マーカーを検出
-7. **結果回収**: `cmux read-screen --surface surface:N --scrollback`
+1. **Pane split**: `cmux new-split right` → get surface:N
+2. **Launch Claude**: `cmux send --surface surface:N "claude --dangerously-skip-permissions\n"`
+3. **Trust detection**: poll `cmux read-screen --surface surface:N`, and when the trust prompt appears, send `cmux send --surface surface:N "trust\n"`
+4. **Launch confirmation**: use `read-screen` to detect that Claude Code has finished launching (`$` or the input prompt `>`)
+5. **Send the prompt**: `cmux send --surface surface:N "<instructions>"` + `cmux send-key --surface surface:N return`
+6. **Wait for completion**: poll `read-screen` to detect the completion marker
+7. **Result collection**: `cmux read-screen --surface surface:N --scrollback`
 
-## トラブルシューティング
+## Troubleshooting
 
-| 症状 | 対処 |
+| Symptom | Fix |
 |------|------|
-| read-screen が空 | `cmux refresh-surfaces` を実行してからリトライ |
-| surface が見つからない | `cmux list-pane-surfaces` で最新の ref を確認 |
-| 複数行が化ける | `send` + `send-key return` に切り替える |
-| 操作対象を間違える | `cmux identify` で caller/focused を再確認 |
+| read-screen is empty | Run `cmux refresh-surfaces`, then retry |
+| Surface not found | Check the latest ref with `cmux list-pane-surfaces` |
+| Multi-line text gets garbled | Switch to `send` + `send-key return` |
+| Operating on the wrong target | Re-check caller/focused with `cmux identify` |
 
-## 環境変数
+## Environment Variables
 
-| 変数 | 用途 |
+| Variable | Purpose |
 |------|------|
-| `CMUX_SOCKET_PATH` | cmux ソケットパス（cmux 内で自動設定） |
-| `CMUX_WORKSPACE_ID` | 現在のワークスペース UUID |
-| `CMUX_SURFACE_ID` | 現在のサーフェス UUID |
+| `CMUX_SOCKET_PATH` | cmux socket path (auto-set inside cmux) |
+| `CMUX_WORKSPACE_ID` | Current workspace UUID |
+| `CMUX_SURFACE_ID` | Current surface UUID |
 
-詳細は cmux-using スキル（SKILL.md）を参照してください。
+See the cmux-using skill (SKILL.md) for details.

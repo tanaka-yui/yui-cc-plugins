@@ -10,6 +10,12 @@ description: >
 argument-hint: "[install|run <scenario-name>|snapshot|teardown]"
 ---
 
+## Output Language
+
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
+
 # e2e-test
 
 A thin wrapper around [agent-browser](https://www.npmjs.com/package/agent-browser)

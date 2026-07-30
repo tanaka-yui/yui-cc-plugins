@@ -1,8 +1,9 @@
-即座に以下の Bash コマンドを1回だけ実行してください。引数 $ARGUMENTS があれば分割方向に使い、なければ right をデフォルトにしてください。
+Immediately run the following Bash command exactly once. If the argument $ARGUMENTS is given, use it as the split direction; otherwise default to right.
 
 ```bash
 DIR="${ARGUMENTS:-right}" && S=$(cmux new-split "$DIR" | awk '{print $2}') && cmux send --surface "$S" "claude --continue --fork-session
 "
 ```
 
-ポーリング不要。結果を「フォーク起動: $S (方向: $DIR)」の1行で報告してください。
+No polling needed. Report the result to the user in one line stating the new surface
+($S) and the split direction ($DIR). Respond to the user in Japanese.

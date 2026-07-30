@@ -5,23 +5,26 @@ description: "Claude の rules/CLAUDE.md を Codex 用 AGENTS.md にネスト生
 
 # /codex-bridge
 
-`.claude/rules/*.md` の frontmatter `codexTargets` に従って各ディレクトリの `AGENTS.md` を生成し、
-root `CLAUDE.md` を root `AGENTS.md` に変換する。`--global` 指定時は `~/.claude/CLAUDE.md` を
-`~/.codex/AGENTS.md` に変換する（Codex を日本語応答にするため）。
+Generates each directory's `AGENTS.md` following the frontmatter `codexTargets` of
+`.claude/rules/*.md`, and converts the root `CLAUDE.md` into a root `AGENTS.md`. When
+`--global` is given, converts `~/.claude/CLAUDE.md` into `~/.codex/AGENTS.md` (so that
+Codex responds in Japanese).
 
-## 実行
+## Execution
 
-引数なし（プロジェクト生成）:
+No arguments (project generation):
 
 ```bash
 bun "${CLAUDE_PLUGIN_ROOT}/bin/codex-bridge.ts"
 ```
 
-`$ARGUMENTS` に `--global` が含まれる場合はグローバル生成:
+If `$ARGUMENTS` contains `--global`, generate globally:
 
 ```bash
 bun "${CLAUDE_PLUGIN_ROOT}/bin/codex-bridge.ts" $ARGUMENTS
 ```
 
-実行後、生成/スキップ/警告のサマリをユーザーに提示する。手書き（センチネル無し）の `AGENTS.md` は
-上書きされずスキップされる点、32KB 超過ファイルは切り捨てリスクがある点を必要に応じて伝える。
+After running, present the generated/skipped/warning summary to the user. Note, as
+needed, that a handwritten `AGENTS.md` (no sentinel) is skipped rather than
+overwritten, and that files exceeding 32KB carry a truncation risk. Respond to the
+user in Japanese.

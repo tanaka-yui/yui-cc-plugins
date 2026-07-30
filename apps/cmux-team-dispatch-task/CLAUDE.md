@@ -35,10 +35,15 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 
 **任意の 1 ファイルを更新したら必ず残り 3 ファイルも同時に更新すること。** 下の「メンテナンス手順」の各項目はこの 4 ファイル整合性の検証手順である。整合が崩れている状態で commit / PR を出してはならない。
 
+なお SKILL.md は英語、guide-ja.md は日本語で、**見出しは 1:1 対応**させる（ルート `CLAUDE.md`「Language convention」）。SKILL.md に節を足したら guide-ja.md にも対応する節を足すこと。SKILL.md に対応節が無い日本語の解説は guide-ja.md 末尾の「補足」にまとめる。
+
 ## 言語ルール
 
 - **ドキュメント・コメント**: 日本語
 - **コード（変数名・関数名・コマンド）**: 英語
+- **`SKILL.md` / `commands/*.md` / `references/*.md`**: **英語必須**。日本語訳は `references/*-ja.md` に置く。
+  詳細はルート `CLAUDE.md` の「Language convention」を参照。検証は `pnpm check:doc-lang`。
+- **例外**: `SKILL.md` frontmatter の `description` は日本語可（起動トリガー語を残すため）。
 
 ## SKILL.md の編集ルール
 
@@ -53,14 +58,14 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 
 ## 関連プラグインとの境界
 
-| 観点 | cmux-team-dispatch-task | cmux-team | cmux-using |
-|------|------------------------|-----------|-----------|
-| 対象 | 独立タスクの並列ディスパッチ | 4層マルチエージェントオーケストレーション | 汎用的な cmux 操作 |
-| 実行単位 | 独立したタスク群 | Master→Manager→Conductor→Agent | 単一操作 |
-| 隔離 | git worktree（タスクごと） | git worktree（Agent ごと） | なし |
-| 永続プロセス | なし（スキルのみ） | daemon（Manager） | なし |
+| 観点 | cmux-team-dispatch-task | cmux-using |
+|------|------------------------|-----------|
+| 対象 | 独立タスクの並列ディスパッチ | 汎用的な cmux 操作 |
+| 実行単位 | 独立したタスク群 | 単一操作 |
+| 隔離 | git worktree（タスクごと） | なし |
+| 永続プロセス | なし（スキルのみ） | なし |
 
-**重複を避ける**: cmux-team 固有の機能（4層管理、daemon）や cmux-using 固有の機能（基本 cmux 操作）を含めない。
+**重複を避ける**: cmux-using 固有の機能（基本 cmux 操作）を含めない。
 
 ## メンテナンス手順
 

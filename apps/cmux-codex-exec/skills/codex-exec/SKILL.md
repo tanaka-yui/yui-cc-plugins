@@ -9,36 +9,53 @@ description: >-
 allowed-tools: Bash
 ---
 
+## Output Language
+
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
+
 # codex-exec
 
-plan を独立した対話 codex に実装させ、完了を agmsg 経由で待って親を wake するスキル。
+A skill that has an independent interactive codex implement a plan, waits for
+completion via agmsg, and wakes the parent session.
 
-デフォルト: モデル `gpt-5.6-sol` / effort `xhigh` / カレントdir / 分割方向 right / plan は引数指定を優先し、
-無指定なら `docs/superpowers/plans/` の候補をユーザーに確認する
-（bin 単体実行時のフォールバックは従来どおり mtime 最新）。
+Default: model `gpt-5.6-sol` / effort `xhigh` / the current directory / split direction right / the
+plan is taken from the argument first, and if unspecified, candidates from
+`docs/superpowers/plans/` are confirmed with the user (the bin's standalone fallback
+remains the most recently modified file by mtime, as before).
 
-## なぜこの構成か
+## Why this design
 
-実装を独立 codex に委ねると、設計した本人（このセッション）とは別視点で plan が具現化される。
-完了検知に agmsg を使いつつ、idle 親を確実に起こすため「token 検知で exit する短命 watcher」を
-background task として噛ませる（agmsg monitor push は idle 親を起こせないことを実測済み）。
+Delegating the implementation to an independent codex lets the plan take shape from a
+perspective different from the person who designed it (this session). While using
+agmsg for completion detection, a "short-lived watcher that exits on token detection"
+is chained in as a background task to reliably wake the idle parent session (verified
+empirically that agmsg monitor push cannot wake an idle parent session).
 
-## 前提
+## Prerequisites
 
-- cmux セッション内（`CMUX_SOCKET_PATH`）。
-- `codex` CLI が PATH 上。
-- 親が agmsg team 参加済み（未参加ならコマンドが join を案内）。
+- Inside a cmux session (`CMUX_SOCKET_PATH`).
+- `codex` CLI is on PATH.
+- The parent session has already joined the agmsg team (if not joined, the command
+  guides through join).
 
-## 実行手順
+## Procedure
 
-`/codex-exec` コマンド（`commands/codex-exec.md`）の Step 0〜5 に従う。要点:
+Follow Step 0-5 of the `/codex-exec` command (`commands/codex-exec.md`). Key points:
 
-1. **plan を確定**: `$ARGUMENTS` に plan パスが無ければ `bin/cmux-codex-exec --list-targets` で
-   候補を列挙し、**1 件でも** AskUserQuestion でユーザーに確認する（誤った plan の実行は
-   リポジトリを書き換えるため）。0 件ならパスを尋ねる。詳細は `commands/codex-exec.md` の Step 0。
-2. `whoami.sh` で親 identity（TEAM/PARENT）を解決（未参加なら join）。
-3. `bin/cmux-codex-exec <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>` でペイン起動、`token`/`codex_agent` を取得。
-4. `join.sh <TEAM> <codex_agent> codex` で送信元を pre-join。
-5. `bin/cmux-codex-wait <TEAM> <PARENT> <token> --surface <surface>` を **background task** で起動して待機
-   （`--timeout` は付けない。既定は無制限で、打ち切りはペインの生存で判断する）。
-6. wake 後、`status=done` ならレビュー可否を確認して `cmux-codex-review` へ、`status=gone` ならペイン確認を促す。
+1. **Determine the plan**: if `$ARGUMENTS` has no plan path, list candidates with
+   `bin/cmux-codex-exec --list-targets` and confirm with the user via AskUserQuestion
+   **even when there is only 1 candidate** (running the wrong plan rewrites the
+   repository). If there are 0 candidates, ask for the path. See Step 0 of
+   `commands/codex-exec.md` for details.
+2. Resolve the parent session identity (TEAM/PARENT) with `whoami.sh` (join if not
+   joined).
+3. Launch the pane with `bin/cmux-codex-exec <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>`
+   and obtain `token`/`codex_agent`.
+4. Pre-join the sender with `join.sh <TEAM> <codex_agent> codex`.
+5. Launch `bin/cmux-codex-wait <TEAM> <PARENT> <token> --surface <surface>` as a
+   **background task** and wait for it (do not attach `--timeout`; the default is
+   unlimited, and termination is judged by pane liveness).
+6. After waking, if `status=done`, confirm whether review is appropriate and hand off
+   to `cmux-codex-review`; if `status=gone`, prompt the user to check the pane.

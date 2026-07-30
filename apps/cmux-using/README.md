@@ -25,11 +25,6 @@ Claude Code の組み込み `Agent` ツールは便利だが、内部で何が�
 | **通知** | `cmux notify`（アプリ内）と `osascript`（macOS通知センター）の使い分け |
 | **ステータス・プログレス表示** | サイドバーステータスとプログレスバーの制御 |
 
-## cmux-team との関係
-
-- **cmux-using**: cmux CLI の汎用操作スキル。1体のサブエージェントの起動から結果回収までをカバー
-- **cmux-team**: 複数エージェントのオーケストレーション。チーム構成・タスク分配・同期を担当。cmux-using の操作パターンを基盤として利用する
-
 ## 前提条件
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) がインストール済みであること

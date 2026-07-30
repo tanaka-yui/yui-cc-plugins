@@ -12,7 +12,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |------|------|-------------|------|
 | `apps/cmux-fork` | Plugin (slash command) | bash | `/cfork` で会話を新 cmux ペインにフォーク |
 | `apps/cmux-using` | Plugin (skill + commands) | bash + markdown | cmux 操作の汎用スキル |
-| `apps/cmux-team` | Plugin (skill + TypeScript daemon) | TypeScript (Bun runtime) | 4層 (Master/Manager/Conductor/Agent) オーケストレーション。daemon プロセスを持つ唯一のプラグイン |
 | `apps/cmux-team-dispatch-task` | Plugin (skill + shell scripts) | bash + zsh | git worktree 分離による並列タスクディスパッチ |
 | `apps/cmux-codex-review` | Plugin (slash command + skill) | bash | 新 cmux ペインで対話 codex (gpt-5.6-sol/xhigh) にコードレビューさせる。sandbox は workspace-write（完了通知の `send.sh` が agmsg DB へ書き込むため read-only 不可）。完了を agmsg 経由で親へ通知可 |
 | `apps/cmux-codex-exec` | Plugin (slash command + skill) | bash | plan を対話 codex にカレントdir で実装させ、完了を親が agmsg 経由で検知して cmux-codex-review へ繋ぐ |
@@ -47,7 +46,7 @@ pnpm sort-package  # package.json のキーを sort（差分があると失敗�
 `turbo` がワークスペースを横断するので、ルートで `pnpm check` を叩けば全 app に伝播する。個別に走らせるときは workspace filter:
 
 ```bash
-pnpm --filter cmux-team check
+pnpm --filter @tanaka-yui/token-meter check
 pnpm --filter @yui/cmux-remote-client build
 ```
 
@@ -56,10 +55,8 @@ pnpm --filter @yui/cmux-remote-client build
 `turbo` には test タスクは登録されていない。テストはアプリ単位で直接ランナーを呼ぶ:
 
 ```bash
-# cmux-team (Bun)
-cd apps/cmux-team && bun test
-cd apps/cmux-team && bun test src/daemon.test.ts        # 単一ファイル
-cd apps/cmux-team && bun test --test-name-pattern='foo'  # パターン
+# token-meter (Bun)
+cd apps/token-meter && bun test
 
 # cmux-remote/client (Vitest)
 cd apps/cmux-remote/client && bun run test
@@ -86,19 +83,94 @@ bash install.sh    # marketplace add + update でローカルパスを登録・�
   - lint: `noUnusedImports` / `noUnusedVariables` / `noUndeclaredVariables` / `useExhaustiveDependencies` は **error**
   - 緩い: `noExplicitAny: warn`, `noNonNullAssertion: warn`
 - **Node 24.15 / pnpm 10.33** が `engines` で固定。`packageManager` フィールドも一致させる。
-- **TypeScript 6** を使うアプリでも、cmux-team や cmux-remote/server は **Bun ランタイムで実行する** (`bun run` / `bun test`)。Vitest を使うのは cmux-remote/client のみ。
+- **TypeScript 6** を使うアプリでも、cmux-remote/server は **Bun ランタイムで実行する** (`bun run` / `bun test`)。Vitest を使うのは cmux-remote/client のみ。
 
 ## Language convention
 
+### 基本
+
 - **ドキュメント・コメント・コミットメッセージ・PR 本文**: 日本語
 - **コード（変数名・関数名・関数引数・CLI フラグ）**: 英語
-- これは全 app で一貫しており、各プラグインの CLAUDE.md にも明記されている。
+
+### Claude 向け指示文書は英語（厳格ルール）
+
+skill / command の定義ファイルは Claude が読む指示文書なので **英語で書く**。日本語訳は `*-ja.md` に分離する。
+
+| ファイル | 言語 | 日本語訳 | 訳の要否 |
+|---------|------|---------|---------|
+| `apps/*/skills/*/SKILL.md` 本文 | **英語必須** | `apps/*/skills/*/references/guide-ja.md` | **必須** |
+| `SKILL.md` の frontmatter `description` | 日本語可 | — | — （起動トリガー語のため対象外） |
+| `apps/*/**/references/<name>.md` | **英語必須** | `references/<name>-ja.md` | 任意 |
+| `references/*-ja.md` | 日本語 | 自身が訳 | — |
+| `apps/*/commands/*.md` | **英語必須** | — | 作らない（ユーザー提示箇所に `Respond to the user in Japanese.` を書く。後述） |
+| `CLAUDE.md` / `README.md` | 日本語 | — | — |
+
+一行ルール: **`*-ja.md` 以外の Claude 向け指示文書に日本語文字を書かない。**
+
+`description` だけ日本語を許すのは、この field が skill の起動判定に使われるため。日本語で話しかけたときの発火率を落とさないよう、日本語のトリガー語を残す。
+
+`references/` 配下の訳が任意なのは補助資料だから。SKILL.md は skill の仕様そのものなので、日本語で読めない状態を許容せず訳を必須にする。
+
+### SKILL.md の `## Output Language` ブロック
+
+本文が英語でもユーザーへの表示は日本語である必要があるため、全 SKILL.md の frontmatter 直後に次を置く:
+
+```markdown
+## Output Language
+
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
+```
+
+AskUserQuestion の質問文・選択肢ラベル、進捗テーブル、最終サマリーはすべてこのブロックの対象。SKILL.md 側に日本語のリテラル文字列を置いてはならない。
+
+### `commands/*.md` の日本語指示
+
+`commands/*.md` には `## Output Language` ブロックを置かない。代わりに、ユーザーへ提示する箇所（最終報告・確認メッセージなど）の直前か、冒頭の指示部に `Respond to the user in Japanese.` の 1 行を含める（例: `apps/cmux-fork/commands/cfork.md:9`）。
+
+`commands/*.md` の訳を作らない理由は「内容が SKILL.md に集約されているから」ではない。`cmux-fork` と `codex-bridge` は skill を持たず `commands/*.md` が唯一の指示文書だが、それでも訳は作らない。`commands/*.md` は 1 コマンド = 数行〜数十行の短い実行手順であり、`Respond to the user in Japanese.` の 1 行だけで「本文は英語 / 表示は日本語」を両立できるため、SKILL.md のような逐語訳ミラーは不要と判断している。
+
+### `guide-ja.md` の構造
+
+SKILL.md と見出しを 1:1 対応させる。SKILL.md に対応セクションが無い独自解説は末尾にまとめる:
+
+```markdown
+# <SKILL.md の H1 の訳>
+
+## Output Language の訳
+## <H2 の訳>
+### <H3 の訳>
+
+---
+
+## 補足（SKILL.md に対応セクションなし）
+```
+
+SKILL.md を更新したら guide-ja.md も同じ commit で更新する。
+
+### 検証
+
+```bash
+pnpm check:doc-lang              # 全体
+node scripts/check-doc-lang.mjs apps/dev-up  # パス指定で絞り込み
+```
+
+`pnpm check` にも組み込まれているため、違反があると CI が落ちる。
+
+`scripts/check-doc-lang.mjs` は次の 4 種類の違反を検出する:
+
+| ルール | 対象 | 内容 |
+|--------|------|------|
+| `japanese-in-english-doc` | `*-ja.md` 以外の対象ファイル全体 | frontmatter を除く本文に日本語文字が出現する |
+| `missing-guide-ja` | `SKILL.md` | 対応する `references/guide-ja.md` が存在しない |
+| `empty-translation` | `*-ja.md` | 日本語が 1 文字も含まれない |
+| `missing-output-language` | `SKILL.md` のみ（`references/` / `commands/` は対象外） | 上記の `## Output Language` ブロック 3 行が一字一句そのまま含まれていない |
 
 ## Plugin-specific guidance
 
 各プラグインの開発に踏み込む前に、必ず対応する CLAUDE.md を読むこと:
 
-- `apps/cmux-team/CLAUDE.md` — 4層 (Master/Manager/Conductor/Agent) アーキテクチャ。daemon, worktree 隔離、pull 型監視の設計原則
 - `apps/cmux-team-dispatch-task/CLAUDE.md` — 並列ディスパッチ、Display Format Conventions (Box drawing 表), モデル選択フロー (opus/sonnet/codex), monitor heartbeat / `--resume`
 - `apps/cmux-using/CLAUDE.md` — cmux ターミナル操作スキルの構成
 - `apps/cmux-fork/CLAUDE.md` — `/cfork` の動作と前提

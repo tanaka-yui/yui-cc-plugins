@@ -97,6 +97,9 @@ Node の素の ESM で実装する（依存ゼロ）。`engines.node` は 24.14 
 | A | 日本語混入 | 対象ファイルの **frontmatter を除いた本文**にひらがな / カタカナ / 漢字が出現する |
 | B | 訳の存在 | `SKILL.md` に対応する `references/guide-ja.md` が存在しない |
 | C | 訳の中身 | `*-ja.md` に日本語が 1 文字も含まれない（訳し忘れ・空ファイルの検出） |
+| D | `## Output Language` ブロックの存在（`missing-output-language`） | `apps/*/skills/*/SKILL.md` 本文に 4.2 の定型文 3 行が一字一句（改行位置含む）そのまま含まれていない。`references/` や `commands/` は対象外 |
+
+チェック D は当初の設計（A〜C）に対する事後追加。`cmux.md` の日本語指示欠落（`Respond to the user in Japanese.` の欠落）が `pnpm check` を通過してしまった原因が「`## Output Language` ブロックの存在を検証していなかったこと」だったため、最終ブランチレビューで追加した。
 
 ### 5.2 対象ファイル
 

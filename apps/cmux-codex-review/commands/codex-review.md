@@ -5,50 +5,58 @@ description: "agmsg inbox を確認し、新ペインで対話 codex (gpt-5.6-so
 
 # /codex-review
 
-agmsg の受信箱を確認してから、新しい cmux ペインで**対話 codex** にコードレビューさせる。
-モデル **gpt-5.6-sol**、effort **xhigh**、対象はデフォルトで**未コミット変更**。
-引数無指定時は Step 0 で候補を提示してユーザーに確認する。
-親が agmsg team 参加済みなら、レビュー完了を親へ通知する配線も行う。
+Checks the agmsg inbox, then has **interactive codex** perform a code review in a new
+cmux pane. Model **gpt-5.6-sol**, effort **xhigh**, target defaults to **uncommitted
+changes**. If no arguments are given, Step 0 presents candidates and confirms with the
+user. If the parent has already joined an agmsg team, this also wires up a completion
+notification back to the parent.
 
-## 手順
+## Procedure
 
-### Step 0: レビュー対象を確定する
+### Step 0: Determine the review target
 
-`$ARGUMENTS` の `--` より前の部分に `--uncommitted` / `--base` / `--commit` / `--path` のいずれかが
-含まれていれば対象は明示済み。**`--` 以降のカスタムレビュー指示テキストは判定対象から除外する**
-（例: `-- セキュリティ観点で --path の使い方を見て` のようなフリーテキストは対象指定とみなさない）。
-**何も尋ねずに** Step 1 へ進む。
+If the part of `$ARGUMENTS` before `--` contains any of `--uncommitted` / `--base` /
+`--commit` / `--path`, the target is already explicit. **Exclude the custom review
+instruction text after `--` from this check** (e.g. free text like
+`-- review the --path usage from a security angle` does not count as a target
+specification). **Without asking anything**, proceed to Step 1.
 
-含まれていなければ候補を列挙する:
+If not, list candidates:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" --list-targets
 ```
 
-出力は 1 行 1 候補の TSV（`target<TAB>kind<TAB>value<TAB>label`）。行数で分岐する:
+The output is one-candidate-per-line TSV (`target<TAB>kind<TAB>value<TAB>label`).
+Branch on the number of lines:
 
-- **0 行**: 「レビュー対象が検出できませんでした」と伝え、対象のパスかブランチをユーザーに尋ねる。
-  回答を `--path <file>` / `--base <branch>` に変換して Step 1 へ。
-- **1 行**: そのまま採用する（確認は不要）。`kind=uncommitted` なら `--uncommitted`、`kind=path` なら
-  `--path <value>` に変換する。採用した対象は Step 4 の報告に含める。
-- **2 行以上**: AskUserQuestion で 1 つ選ばせる。選択肢は次の優先順で最大 4 枠:
+- **0 lines**: tell the user no review target could be detected, and ask them for a
+  path or branch. Convert the answer to `--path <file>` / `--base <branch>` and go to
+  Step 1. Respond to the user in Japanese.
+- **1 line**: adopt it as-is (no confirmation needed). Convert `kind=uncommitted` to
+  `--uncommitted`, and `kind=path` to `--path <value>`. Include the adopted target in
+  the Step 4 report.
+- **2 or more lines**: let the user pick one via AskUserQuestion. Offer up to 4 slots
+  in this priority order:
 
-| 枠 | 内容 | 変換後の bin 引数 |
+| Slot | Content | Converted bin argument |
 |----|------|------------------|
-| 1 | 未コミット変更（`kind=uncommitted` の行があれば） | `--uncommitted` |
-| 2 | spec 最新（label が `spec /` で始まる先頭行） | `--path <spec>` |
-| 3 | plan 最新（label が `plan /` で始まる先頭行） | `--path <plan>` |
-| 4 | spec + plan をまとめて（枠 2 と 3 が両方あるときだけ） | `--path <spec> --path <plan>` |
+| 1 | Uncommitted changes (if a `kind=uncommitted` line exists) | `--uncommitted` |
+| 2 | Latest spec (first line whose label starts with `spec /`) | `--path <spec>` |
+| 3 | Latest plan (first line whose label starts with `plan /`) | `--path <plan>` |
+| 4 | Spec + plan together (only when both slots 2 and 3 exist) | `--path <spec> --path <plan>` |
 
-`--list-targets` は spec / plan を各 3 件まで返すが、枠に載せるのは各先頭 1 件だけ。
-残りの候補は質問文に列挙し、ユーザーが Other で指定できるようにする。
+`--list-targets` returns up to 3 spec / plan candidates each, but only the first of
+each is placed in a slot. List the remaining candidates in the question text so the
+user can specify them via Other.
 
-multiSelect は使わない。bin の対象指定は単一種別なので「未コミット + path」の混在は作れない。
-複数ファイルのレビューは枠 4（`--path` の繰り返し）で表現する。
+Don't use multiSelect. The bin's target specification is a single kind, so mixing
+"uncommitted + path" isn't representable. Reviewing multiple files is expressed via
+slot 4 (repeating `--path`).
 
-確定した引数は Step 2 の bin 実行にそのまま渡す。
+Pass the determined arguments as-is to the Step 2 bin execution.
 
-### Step 1: agmsg identity を解決し inbox を確認（非ブロッキング）
+### Step 1: Resolve agmsg identity and check the inbox (non-blocking)
 
 ```bash
 if [ ! -d ~/.agents/skills/agmsg ]; then
@@ -58,57 +66,72 @@ fi
 ~/.agents/skills/agmsg/scripts/whoami.sh "$(pwd)" claude-code
 ```
 
-- `agent=<parent> teams=<team,...>` が返れば PARENT / TEAM を記憶し、各 team の inbox を確認:
-  `~/.agents/skills/agmsg/scripts/inbox.sh <team> <parent>`
-- **`suggest=true` が返ったら、このプロジェクトは未参加**。この出力に含まれる `teams=` / `agents=` は
-  **他プロジェクトの登録**であり、**そのまま使ってはいけない**（別 team へ誤配線すると codex の通知先と
-  watcher の待ち先がズレて、通知が永久に届かない）。ユーザーに確認する:
-  - **参加する**: `available_teams=` から選ぶか新規 team 名と、親 agent 名を尋ねて join:
+- If `agent=<parent> teams=<team,...>` is returned, remember PARENT / TEAM and check
+  each team's inbox: `~/.agents/skills/agmsg/scripts/inbox.sh <team> <parent>`
+- **If `suggest=true` is returned, this project has not joined.** The `teams=` /
+  `agents=` in this output are **registrations from other projects** and **must not
+  be used as-is** (misrouting to the wrong team desyncs codex's notification
+  destination from the watcher's wait target, so the notification never arrives).
+  Confirm with the user:
+  - **Join**: ask for a team from `available_teams=` (or a new team name) and a parent
+    agent name, then join:
     `~/.agents/skills/agmsg/scripts/join.sh <team> <parent> claude-code "$(pwd)"`
-    join できたら、その TEAM / PARENT で Step 2 の通知配線へ進む。
-  - **参加しない**: 「agmsg 未参加のため完了通知はスキップ」と添えて通知なしで Step 2 へ。
-- `not_joined=true` / 未インストールなら「agmsg 未参加のため通知はスキップ」と添えて Step 2 へ（レビュー起動は止めない）。
+    Once joined, proceed to the Step 2 notification wiring with that TEAM / PARENT.
+  - **Don't join**: proceed to Step 2 without notification, noting that the
+    completion notification is skipped because agmsg wasn't joined. Respond to the
+    user in Japanese.
+- If `not_joined=true` or agmsg isn't installed, proceed to Step 2 (without blocking
+  the review launch), noting that the notification is skipped because agmsg wasn't
+  joined. Respond to the user in Japanese.
 
-### Step 2: 通知を配線するか決める
+### Step 2: Decide whether to wire up the notification
 
-`<TARGET_ARGS>` は Step 0 で確定した対象引数（`--uncommitted` / `--base <branch>` / `--commit <sha>` /
-`--path <file>...`。Step 0 をスキップした＝ユーザーが既に対象を明示していた場合は空）。
-**`$ARGUMENTS` は必ず最後に置くこと。`--` 以降はカスタムレビュー指示として吸われ、後続のフラグが解釈されなくなるため。**
+`<TARGET_ARGS>` is the target argument determined in Step 0 (`--uncommitted` /
+`--base <branch>` / `--commit <sha>` / `--path <file>...`; empty if Step 0 was skipped
+because the user had already specified the target explicitly).
+**Always place `$ARGUMENTS` last: everything after `--` is absorbed as custom review
+instructions, and subsequent flags stop being parsed.**
 
-- 親が team 参加済み: reviewer agent を pre-join し（送信元登録）、bin に通知引数を渡す。
+- Parent has already joined a team: pre-join the reviewer agent (register the sender),
+  and pass the notification arguments to the bin.
   ```bash
-  # surface 確定前なので reviewer 名は起動後に join する。まず起動:
+  # The reviewer name is not yet fixed to a surface, so join it after launch. Launch first:
   "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" <TARGET_ARGS> --team <TEAM> --reviewer <REVIEWER> --parent <PARENT> $ARGUMENTS
   ```
-  `<REVIEWER>` は `cxrev-review` 等の一意名。bin 出力の `token=`/`surface=` を記憶。
-  起動後すぐ reviewer を join:
+  `<REVIEWER>` is a unique name such as `cxrev-review`. Remember the bin output's
+  `token=`/`surface=`. Join the reviewer immediately after launch:
   `~/.agents/skills/agmsg/scripts/join.sh <TEAM> <REVIEWER> codex "$(pwd)"`
-- 未参加: 通知なしで起動（後方互換）:
+- Not joined: launch without notification (backward compatible):
   ```bash
   "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" <TARGET_ARGS> $ARGUMENTS
   ```
 
-> reviewer 名は bin 起動前に決めた固定名（例 `cxrev-review`）でよい。surface 由来 token とは別に、
-> reviewer agent 名は人間可読の固定名で pre-join しても send.sh は成立する。
+> The reviewer name can be a fixed name decided before launching the bin (e.g.
+> `cxrev-review`). Separately from the surface-derived token, send.sh works fine even
+> when the reviewer agent name is pre-joined under a human-readable fixed name.
 
-### Step 3: 通知配線時のみ watcher を起動して待機
+### Step 3: Only when notification is wired up, launch and wait on the watcher
 
-**Bash tool を `run_in_background: true` で**:
+**Using the Bash tool with `run_in_background: true`**:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --surface <surface>
 ```
 
-`--timeout` は付けない（既定は無制限）。長いレビューを壁時計で打ち切ると、まだ生きている
-codex を見捨てて待機が畳まれ、後から届く完了通知では二度と wake しないため。代わりに
-`--surface` を渡してペインの生存で打ち切る。
+Don't attach `--timeout` (the default is unlimited). Cutting off a long review by wall
+clock abandons a codex that's still alive, collapsing the wait so that a
+later-arriving completion notification never wakes it again. Instead, pass `--surface`
+so termination is judged by pane liveness.
 
-起動したらターンを終える。wake 後は watcher task の出力で分岐する:
+Once launched, end the turn. After waking, branch on the watcher task's output:
 
-- `status=done`: 「レビュー完了」を伝える。
-- `status=gone`: 「レビューペイン `<surface>` が閉じられました。完了は検知できていません」と伝える。
+- `status=done`: tell the user the review is complete. Respond to the user in
+  Japanese.
+- `status=gone`: tell the user the review pane `<surface>` was closed and completion
+  could not be detected. Respond to the user in Japanese.
 
-### Step 4: 報告
+### Step 4: Report
 
-bin の起動サマリ（surface / 方向 / model / effort / 対象）を 1 行で報告する。
-Step 0 で候補から自動採用した場合は、どの対象を選んだかも明記する。
+Report the bin's launch summary (surface / direction / model / effort / target) in one
+line. If Step 0 auto-adopted a candidate, also state which target was chosen. Respond
+to the user in Japanese.

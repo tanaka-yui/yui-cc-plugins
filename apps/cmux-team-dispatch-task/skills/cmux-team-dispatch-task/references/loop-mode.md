@@ -1,112 +1,146 @@
-# GitHub issue 自動ループ
+# GitHub Issue Automatic Loop
 
-`--loop` が唯一の機械的 entry point である。自然言語でループ実行を明示された場合は開始確認を行い、通常の issue 言及だけでは発動しない。ここは loop モードの実行時 SoT である。
+`--loop` is the only mechanical entry point. When loop execution is explicitly requested
+in natural language, confirm before starting; a mere mention of an issue does not trigger
+it. This document is the runtime SoT (source of truth) for loop mode.
 
-## L0: read-only 確認
+## L0: Read-only Check
 
-`gh auth status`、`jq`、cmux、runners.json を確認する。`runners.json` が無い場合は first-run setup を開始せず、エラーで終了する。開始前に次を実行する。
+Check `gh auth status`, `jq`, cmux, and `runners.json`. If `runners.json` is missing, do
+not start first-run setup — exit with an error. Run the following before starting:
 
 ```bash
 bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check
 ```
 
-ロックが生きている場合は開始しない。`--loop` 指定が無い自然言語発動だけは、ここより前に「ループを開始するか」の一問を確認する。
+Do not start if the lock is live. Only a natural-language trigger without `--loop`
+requires confirming "should the loop be started" as a single question before this step.
 
-## L1: 開始前の一括設定（3 コール）
+## L1: Batched Configuration Before Start (3 calls)
 
-この設定は `AskUserQuestion` の一回あたり最大四問という制限に合わせ、必ず次の三コールで取得する。コール③の最終確認を通過したら、設定を `loop-state.json.config` と `.filter` に保存し、ループ終了まで追加の質問はしない。
+Because `AskUserQuestion` allows at most four questions per call, this configuration must
+always be gathered across exactly the following three calls. Once call ③'s final
+confirmation passes, save the configuration to `loop-state.json`'s `config` and `filter`,
+and ask no further questions until the loop ends.
 
-### コール①: 対象 issue
+### Call ①: Target Issues
 
-1. **対象にする issue のラベル**
-   - `gh label list` から動的生成する `dispatch/*` 以外の上位三件: それぞれ「このラベルを持つ open issue だけを対象にする」
-   - **フィルタなし**: 「ラベルで絞り込まない」
-   - **Other**: 「カンマ区切りのラベルを自由入力する」
-2. **assignee フィルタ**
-   - **自分 (`@me`)**: 「自分に割り当てられた issue のみ」
-   - **未アサインのみ (`no:assignee`)**: 「担当者のいない issue のみ」
-   - **指定なし**: 「assignee で絞り込まない」
-3. **1 バッチの並列実行数 (concurrency)** — 既定は 5。先頭の選択肢を既定として提示する
-   - **5（推奨）**: 「標準の並列度」
-   - **3**: 「リソース消費を抑える」
-   - **8**: 「高スペック機で多めに処理する」
-   - **Other**: 「1〜10 の整数を自由入力する」
+1. **Label of target issues**
+   - The top three labels (excluding `dispatch/*`) dynamically generated from
+     `gh label list`: each means "target only open issues with this label"
+   - **No filter**: "do not filter by label"
+   - **Other**: "freely enter comma-separated labels"
+2. **Assignee filter**
+   - **Self (`@me`)**: "only issues assigned to me"
+   - **Unassigned only (`no:assignee`)**: "only issues with no assignee"
+   - **None**: "do not filter by assignee"
+3. **Parallel execution count per batch (`concurrency`)** — default is 5. Present the
+   first option as the default.
+   - **5 (recommended)**: "standard parallelism"
+   - **3**: "reduce resource consumption"
+   - **8**: "process more on a high-spec machine"
+   - **Other**: "freely enter an integer from 1 to 10"
 
-   回答は 1〜10 の整数として検証し、範囲外・非整数ならこの質問だけを再提示する。
-   concurrency は **タスク数であってペイン数ではない**。prewarm 有効時は 1 タスクあたり
-   レビュー無効で 3 ペイン / 有効で 4 ペインが立ち、worktree も 1 タスクにつき 1 個増える
-   （concurrency=10 かつレビュー有効なら 40 ペイン + 10 worktree）。上限を 10 に固定するのは
-   この増幅を踏まえた安全弁であり、それ以上を求められても引き上げない。
-4. **最大バッチ数 (max_batches)**
-   - **3**: 「短い実行で止める」
-   - **5**: 「標準の上限」
-   - **10**: 「長めに処理する」
-   - **無制限**: 「対象 issue がなくなるまで続ける」
+   Validate the answer as an integer from 1 to 10; if it is out of range or not an
+   integer, re-present only this question. `concurrency` is a **task count, not a pane
+   count**. When prewarm is enabled, each task spins up 3 panes (review disabled) or 4
+   panes (review enabled), and adds 1 worktree per task (`concurrency=10` with review
+   enabled means 40 panes + 10 worktrees). The upper bound of 10 is a safety valve
+   accounting for this amplification, and must not be raised even if requested.
+4. **Maximum batch count (`max_batches`)**
+   - **3**: "stop after a short run"
+   - **5**: "standard upper bound"
+   - **10**: "process longer"
+   - **Unlimited**: "continue until the target issues are exhausted"
 
-`state` は open 固定であり、質問しない。
+`state` is fixed to `open` and is not asked about.
 
-### コール②: 実行構成
+### Call ②: Execution Configuration
 
-1. **design runner（子セッションのランタイム）**
-   - `runners.json` の `runners[]` を動的に列挙する: label は `name`、説明は `command (engine)`。
-2. **exec runner（Phase B 実行モデル）**
-   - **opus 1m**: 「高い推論量で実装する」
-   - **sonnet**: 「標準の実装モデル」
-   - **codex**: 「codex engine runner が存在する場合だけ表示する」
-3. **レビュー機能（Phase A-R / Phase B-R）**
-   - **有効**: 「設計・実装のレビューを行う」
-   - **無効**: 「レビューを省略して進める」
+1. **design runner (the child session's runtime)**
+   - Dynamically enumerate `runners[]` from `runners.json`: label = `name`, description =
+     `command (engine)`.
+2. **exec runner (Phase B execution model)**
+   - **opus 1m**: "implement with high reasoning effort"
+   - **sonnet**: "standard implementation model"
+   - **codex**: "shown only when a codex engine runner exists"
+3. **Review feature (Phase A-R / Phase B-R)**
+   - **Enabled**: "review the design and implementation"
+   - **Disabled**: "skip review and proceed"
 4. **integration strategy**
-   - **PR per task**: 「issue ごとに PR を作成する」
-   - **Wait and merge**: 「検証済みの変更を待機後に merge する」
+   - **PR per task**: "create a PR per issue"
+   - **Wait and merge**: "merge after waiting for verified changes"
 
-### コール③: 補完と最終確認
+### Call ③: Supplementary Questions and Final Confirmation
 
-該当する質問だけを出し、不要なら最終確認一問だけにする。
+Ask only the applicable questions; if none apply, ask only the single final confirmation
+question.
 
-1. **通知トランスポート (`message_type`)**（config 未設定かつ agmsg が利用可能な場合）
-   - 利用可能な transport を列挙し、選択値は従来どおり global config に永続化する。
-2. **reviewer runner**（design runner が codex、claude engine runner が二件以上、かつレビュー有効の場合）
-   - claude engine の runner を動的に列挙し、「codex 設計をレビューする runner」として選ぶ。
-3. **この設定でループを開始しますか**
-   - **開始**: 「上記設定を確定して実行する」
-   - **設定をやり直す**: 「コール①へ戻る」
+1. **Notification transport (`message_type`)** (when config is unset and agmsg is
+   available)
+   - Enumerate the available transports; the chosen value is persisted to the global
+     config as usual.
+2. **reviewer runner** (when the design runner is codex, there are two or more claude
+   engine runners, and review is enabled)
+   - Dynamically enumerate claude engine runners, to be chosen as "the runner that
+     reviews the codex design."
+3. **Start the loop with this configuration?**
+   - **Start**: "confirm the above configuration and run"
+   - **Redo configuration**: "go back to call ①"
 
-## 質問箇所の決定表（§4.1）
+## Question Point Decision Table (§4.1)
 
-| # | 元の質問箇所 | loop モードでの解決方法 |
+| # | Original question point | Resolution in loop mode |
 |---:|---|---|
-| 1 | Step 1a タスク収集 | `issue-fetch.sh ... fetch` の出力で解決する。 |
-| 2 | Step 1c brainstorming 選択 | plan モード固定。 |
-| 3 | Step 1d layout | workspace 固定。 |
-| 4 | Step 1e integration strategy | コール②で事前設定する。 |
-| 5 | Step 1f runner switch / per-task runner | コール②の design runner を全 task 共通で使う。 |
-| 6 | Step 1f first-run setup（runners.json 対話生成） | L0 で検査し、無ければ開始せずエラー終了する。 |
-| 7 | Step 1f cross-engine reviewer 選択 | claude runner 一件なら自動採用、二件以上ならコール③で事前設定する。 |
-| 8 | Step 1g message_type 初回設定 | config 未設定時だけコール③で事前設定し、従来どおり永続化する。 |
-| 9 | Step 1g review_mode | コール②で事前設定し、ループ中は固定する。 |
-| 10 | 完了時 Wait-and-merge の Option A/B | integration=merge なら常に merge。conflict は cleanup 遷移表で自動処理する。 |
-| 11 | 完了時 cleanup の三問 | cleanup 遷移表で決定的に処理する。 |
-| 12 | Phase A-R の三往復 `needs_work` | 未解決指摘を文書末尾へ注記し、Phase B へ進む。 |
-| 13 | Phase A-R reviewer stalled | 同一 round を一回再依頼し、再度 stalled ならレビューを省略して Phase B へ進む。 |
-| 14 | Phase B 実行モデル選択 | コール②の exec runner を `EXEC_DEFAULT_HINT` に焼き込む。 |
-| 15 | Phase B exec_choice 永続化確認 | #14 により発生しない。 |
-| 16 | Phase B-R の三往復 `needs_work` | 未解決指摘を PR 本文へ注記し、PR を作成する。 |
-| 17 | Phase B-R reviewer stalled | レビューを省略した旨を PR 本文へ注記し、PR を作成する。 |
-| 18 | brainstorming / ExitPlanMode の暗黙の承認ゲート | plan モード固定と `--dangerously-skip-permissions` で承認プロンプトを出さない。 |
+| 1 | Step 1a task collection | Resolved by the output of `issue-fetch.sh ... fetch`. |
+| 2 | Step 1c brainstorming selection | Fixed to plan mode. |
+| 3 | Step 1d layout | Fixed to workspace. |
+| 4 | Step 1e integration strategy | Pre-configured in call ②. |
+| 5 | Step 1f runner switch / per-task runner | Use call ②'s design runner in common across all tasks. |
+| 6 | Step 1f first-run setup (interactive `runners.json` generation) | Checked at L0; if missing, exit with an error without starting. |
+| 7 | Step 1f cross-engine reviewer selection | Auto-adopted if there is one claude runner; pre-configured in call ③ if there are two or more. |
+| 8 | Step 1g message_type initial setup | Pre-configured in call ③ only when config is unset, and persisted as usual. |
+| 9 | Step 1g review_mode | Pre-configured in call ②, and fixed for the duration of the loop. |
+| 10 | Wait-and-merge Option A/B at completion | Always merge when integration=merge. Conflicts are handled automatically by the cleanup transition table. |
+| 11 | The three cleanup questions at completion | Handled deterministically by the cleanup transition table. |
+| 12 | Phase A-R's three rounds of `needs_work` | Note unresolved findings at the end of the document and proceed to Phase B. |
+| 13 | Phase A-R reviewer stalled | Re-request the same round once; if stalled again, skip review and proceed to Phase B. |
+| 14 | Phase B execution model selection | Bake call ②'s exec runner into `EXEC_DEFAULT_HINT`. |
+| 15 | Phase B exec_choice persistence confirmation | Does not occur, due to #14. |
+| 16 | Phase B-R's three rounds of `needs_work` | Note unresolved findings in the PR body and create the PR. |
+| 17 | Phase B-R reviewer stalled | Note in the PR body that review was skipped, and create the PR. |
+| 18 | Implicit approval gate of brainstorming / ExitPlanMode | No approval prompt is shown, due to the fixed plan mode and `--dangerously-skip-permissions`. |
 
-## L2: 初期化・dispatch・待機
+## L2: Initialization, Dispatch, and Waiting
 
-設定確定後、`lock-acquire --lease-min <lock_lease_min>`、`init --config-json <json> --filter-json <json>`、`reconcile`、通常 dispatch の stale 痕跡検査、`ensure-labels` の順に実行する。`reconcile` が abort なら `lock-release` して中止する。
+Once the configuration is finalized, run in order: `lock-acquire --lease-min
+<lock_lease_min>`, `init --config-json <json> --filter-json <json>`, `reconcile`, the
+stale-evidence check for normal dispatch, and `ensure-labels`. If `reconcile` aborts, run
+`lock-release` and stop.
 
-各 batch は `fetch --limit <concurrency> --batch <N>` で claim する。`fetch` の `[]`、exit 3（claim 全滅）、exit 4（exhaustion unknown）はいずれも次 batch を開始せず終了する。各 issue を `render-loop-prompt.sh` と `prewarm-panes.sh --unattended` で準備し、起動後に `mark-dispatched` する。
+Each batch is claimed with `fetch --limit <concurrency> --batch <N>`. `fetch` returning
+`[]`, exit 3 (all claims failed), or exit 4 (exhaustion unknown) all end the loop without
+starting the next batch. Prepare each issue with `render-loop-prompt.sh` and
+`prewarm-panes.sh --unattended`, and run `mark-dispatched` after launch.
 
-`batch-wait.sh --state-file <path> --batch <N> --timeout-min <task_timeout_min>` は `ALL_TERMINAL` の場合だけ完了であり、`WAITING` は再実行する。`--timeout-sentinel` がある task は後着の status を受け入れない。
+`batch-wait.sh --state-file <path> --batch <N> --timeout-min <task_timeout_min>` is
+complete only on `ALL_TERMINAL`; re-run on `WAITING`. A task with a `--timeout-sentinel`
+does not accept a late-arriving status.
 
-## L3: cleanup と終了
+## L3: Cleanup and Termination
 
-各 batch 後に `loop-cleanup.sh --state-file <path> --batch <N> --integration <pr|merge>` を実行する。ラベルは claim 時の `dispatch/in-progress` から、完了検証後の `dispatch/done`、または failed/timeout/conflict の `dispatch/failed` へ、terminal を先に付けて遷移する。
+After each batch, run `loop-cleanup.sh --state-file <path> --batch <N> --integration
+<pr|merge>`. Labels transition from `dispatch/in-progress` (at claim time) to
+`dispatch/done` (after completion verification) or `dispatch/failed` (for
+failed/timeout/conflict), adding `terminal` first.
 
-成功時だけ worktree、branch、task の `.dispatch` を削除する。merge conflict、WIP 保全失敗、terminal label 失敗、PR 未検証ではすべて温存する。merge では検証済みの issue を `gh issue close --reason completed` で閉じ、正常 cleanup 時だけ agmsg の `leave.sh` で team から除籍する。`leaked[]` と stale lock は手動確認後に削除する。
+Delete the worktree, branch, and the task's `.dispatch` only on success. Merge conflict,
+WIP preservation failure, terminal label failure, and unverified PRs are all preserved.
+On merge, close verified issues with `gh issue close --reason completed`, and only on
+normal cleanup remove the agent from the team via agmsg's `leave.sh`. `leaked[]` and
+stale locks are deleted only after manual confirmation.
 
-exit 3/4、cleanup 失敗、ユーザー中断を含む全中断経路で `lock-release` を呼ぶ。以後のフォールバックは質問ではなく、確定済み config を用いる。設定されていない任意値だけは仕様の既定値（concurrency=5、design=opus、exec=sonnet、review は設定値、layout=workspace）を使う。
+Call `lock-release` on every interruption path, including exit 3/4, cleanup failure, and
+user interruption. Subsequent fallback uses the finalized config rather than questions.
+Only values left unset use the spec's default values (concurrency=5, design=opus,
+exec=sonnet, review=the configured value, layout=workspace).

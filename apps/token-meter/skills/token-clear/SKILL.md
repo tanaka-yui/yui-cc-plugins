@@ -5,25 +5,31 @@ description: >
   JSONL logs by retention period. Confirms before destructive deletion.
 ---
 
-# token-clear: 履歴削除
+## Output Language
 
-`~/.claude/token-meter/logs/` 配下の JSONL を保持期間で削除する。
+All user-facing questions, option labels, tables, and progress reports MUST be
+rendered in Japanese. This file is written in English for consistency; it does
+not change the language presented to the user.
 
-## 引数仕様
+# token-clear: Delete log history
 
-| 引数 | 動作 |
+Delete JSONL files under `~/.claude/token-meter/logs/` by retention period.
+
+## Arguments
+
+| Argument | Behavior |
 |---|---|
-| `--before <N>d` | N 日以上前のファイルを削除 (例: `--before 30d`) |
-| `--all` | 全 JSONL を削除 |
-| `--dry-run` | 削除候補のみ表示 |
+| `--before <N>d` | Delete files older than N days (e.g. `--before 30d`) |
+| `--all` | Delete every JSONL file |
+| `--dry-run` | Only print the deletion candidates |
 
-## 実装手順
+## Procedure
 
-1. 削除候補ファイル名から日付 (`YYYY-MM-DD.jsonl`) をパースし `--before` と比較。
-2. `--dry-run` でない限り、削除前に candidate 一覧と合計サイズを表示しユーザーに確認を求める。
-3. 確認後 `rm` で削除。
+1. Parse the date (`YYYY-MM-DD.jsonl`) from each candidate filename and compare it against `--before`.
+2. Unless `--dry-run` is set, print the candidate list and their total size, then ask the user to confirm before deleting.
+3. Delete with `rm` after confirmation.
 
-## 注意
+## Cautions
 
-- 削除は **不可逆**。必ず `--dry-run` で候補を確認してから本実行する。
-- 同名ファイルが書込中の場合 (現在日付の jsonl) はスキップして警告を出す。
+- Deletion is **irreversible**. Always confirm the candidates with `--dry-run` before the real run.
+- Skip files that are currently being written (the JSONL for today's date) and emit a warning.

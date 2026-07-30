@@ -54,7 +54,6 @@ make doctor           # 健全性チェック
 | rtk (外部) | Bash 出力圧縮 | token-meter は **観測のみ**、rtk 本体は触らない |
 | caveman (外部) | 出力 caveman 化 | 同上 |
 | headroom (外部) | tool 出力・履歴圧縮 | 同上、ON/OFF だけ `.claude.json` 経由で操作 |
-| cmux-team | マルチエージェント | 無関係。同じ hook には共存可能 |
 
 ## オープン項目 (spec §15)
 
@@ -67,3 +66,11 @@ make doctor           # 健全性チェック
 ## コーディング規約
 
 ルート `CLAUDE.md` (`yui-cc-plugins/CLAUDE.md`) を参照。
+
+## 言語ルール
+
+- **ドキュメント・コメント**: 日本語
+- **コード（変数名・関数名・コマンド）**: 英語
+- **`SKILL.md` / `commands/*.md` / `references/*.md`**: **英語必須**。日本語訳は `references/*-ja.md` に置く。
+  詳細はルート `CLAUDE.md` の「Language convention」を参照。検証は `pnpm check:doc-lang`。
+- **例外**: `SKILL.md` frontmatter の `description` は日本語可（起動トリガー語を残すため）。
