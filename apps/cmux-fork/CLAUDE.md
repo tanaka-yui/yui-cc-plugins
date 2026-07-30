@@ -18,3 +18,10 @@ Claude Code の会話を新しい cmux ペインにフォークするプラグ�
 ## 前提
 
 - cmux セッション内でのみ動作（`CMUX_SOCKET_PATH` が必要）
+
+## 言語ルール
+
+- **ドキュメント・コメント**: 日本語
+- **コード（変数名・関数名・コマンド）**: 英語
+- **`SKILL.md` / `commands/*.md` / `references/*.md`**: **英語必須**。日本語訳は `references/*-ja.md` に置く。
+  詳細はルート `CLAUDE.md` の「Language convention」を参照。検証は `pnpm check:doc-lang`。

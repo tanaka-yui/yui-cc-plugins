@@ -52,3 +52,10 @@ bash apps/cmux-codex-exec/test/test-cmux-codex-exec.sh
 
 - `cmux-codex-review`: 本プラグインの後段。exec 完了後にカレントdirの未コミット変更をレビューさせる。
 - `cmux-team-dispatch-task`: worktree 隔離の複数タスク並列。こちらは単発・カレントdir・plan1本の軽量フロー。
+
+## 言語ルール
+
+- **ドキュメント・コメント**: 日本語
+- **コード（変数名・関数名・コマンド）**: 英語
+- **`SKILL.md` / `commands/*.md` / `references/*.md`**: **英語必須**。日本語訳は `references/*-ja.md` に置く。
+  詳細はルート `CLAUDE.md` の「Language convention」を参照。検証は `pnpm check:doc-lang`。

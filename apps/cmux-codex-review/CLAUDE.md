@@ -93,3 +93,10 @@ stub の agmsg history / cmux で watcher の終了条件を検証する（両�
   オーケストレーション文脈のもの。本プラグインは単発の手元レビュー起動に特化する。
 - `cmux-codex-exec`: 本プラグインの前段。exec が plan をカレントdirに実装し、完了後に本プラグインが
   その未コミット変更をレビューする想定の繋ぎ。
+
+## 言語ルール
+
+- **ドキュメント・コメント**: 日本語
+- **コード（変数名・関数名・コマンド）**: 英語
+- **`SKILL.md` / `commands/*.md` / `references/*.md`**: **英語必須**。日本語訳は `references/*-ja.md` に置く。
+  詳細はルート `CLAUDE.md` の「Language convention」を参照。検証は `pnpm check:doc-lang`。

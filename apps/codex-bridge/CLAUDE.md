@@ -22,3 +22,10 @@ pnpm --filter @tanaka-yui/codex-bridge check
 ## 関連プラグインとの境界
 
 cmux 系プラグインとは責務が独立。本プラグインは「Claude 設定 → Codex 設定」の一方向変換のみを担い、cmux トポロジや実行オーケストレーションには関与しない。
+
+## 言語ルール
+
+- **ドキュメント・コメント**: 日本語
+- **コード（変数名・関数名・コマンド）**: 英語
+- **`SKILL.md` / `commands/*.md` / `references/*.md`**: **英語必須**。日本語訳は `references/*-ja.md` に置く。
+  詳細はルート `CLAUDE.md` の「Language convention」を参照。検証は `pnpm check:doc-lang`。

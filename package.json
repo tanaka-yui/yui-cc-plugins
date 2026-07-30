@@ -2,7 +2,7 @@
   "name": "@tanaka-yui/yui-cc-plugins",
   "private": true,
   "scripts": {
-    "check": "turbo run check",
+    "check": "turbo run check && node scripts/check-doc-lang.mjs",
     "check:doc-lang": "node scripts/check-doc-lang.mjs",
     "check:fix": "turbo run check:fix",
     "format": "turbo run format",
