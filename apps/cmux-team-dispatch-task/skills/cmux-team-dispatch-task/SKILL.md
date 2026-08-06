@@ -348,6 +348,29 @@ prewarm design codex pane launches with `--mode standby`, `prewarm-panes.sh` pas
 The composed command is always wrapped: `zsh -ic "<composed>"` so that `~/.zshrc`
 functions (e.g. `ccenec`) and env (proxy auth, PATH) are loaded for the child session.
 
+Regardless of MODE, when the resolved runner engine is `claude`, the script
+injects `permissions.defaultMode: "bypassPermissions"` into the worktree's
+`.claude/settings.local.json` (merged with `jq`, atomically via `mktemp` + `mv`,
+and skipped when the key already holds that value). This is what keeps normal
+(non-loop) dispatches free of permission prompts without adding
+`--dangerously-skip-permissions` to every launch path.
+
+`AskUserQuestion` stays interactive under that mode: the permission system gates
+tool calls, while `AskUserQuestion` and `ExitPlanMode` are interactive UIs that a
+TUI session renders regardless of the permission mode. Only a non-interactive
+session needs a `PreToolUse` hook to answer them. This is why the brainstorming
+dialog of superpowers mode still works.
+
+The bypass-mode confirmation dialog is raised by both
+`--dangerously-skip-permissions` and `defaultMode: "bypassPermissions"`, and the
+`skipDangerousModePermissionPrompt` setting that suppresses it is ignored in
+project settings. Put it in the user-level `~/.claude/settings.json` instead.
+
+The codex engine is unaffected: it does not read `.claude/settings.local.json`,
+and it already avoids prompts through
+`--dangerously-bypass-approvals-and-sandbox` (or, for review panes,
+`--sandbox workspace-write` with `-c approval_policy='never'`).
+
 The `claude-teams` layout ignores runner configuration (always uses `cmux claude-teams` /
 the parent claude account).
 

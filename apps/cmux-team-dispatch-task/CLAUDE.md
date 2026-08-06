@@ -142,6 +142,16 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - 回帰は `bash test/test-launch-workspace-codex.sh` の H1〜H4（有効時に警告 / 無効時は無警告 / config 無しで無警告 / claude engine では無警告）で検証する。警告文言を変えたら `HOOK_WARN` も同時に更新すること
     - 恒久的な直し方（`~/.codex/config.toml` の `enabled = false`、repo 内では `bash scripts/codex-hook-compat.sh disable`）は README とルート `CLAUDE.md` の両方に書く。SKILL.md / guide-ja.md は対象外 — 子セッションの振る舞いを変えない `launch-workspace.sh` 内部の診断ログだから
 
+25. **permission prompt 抑止の settings 注入**が `launch-workspace.sh` / `SKILL.md` / `guide-ja.md` / `README.md` で一致しているか確認:
+    - `launch-workspace.sh` の Step 2a が `RUNNER_ENGINE == "claude"` のときだけ、MODE を問わず worktree の `.claude/settings.local.json` に `permissions.defaultMode: "bypassPermissions"` をマージすること。既に同値なら書き込まずスキップ（worktree 再利用時の二重注入なし）、失敗は警告のみで dispatch を止めないこと
+    - 書き込みは `merge_claude_settings` ヘルパー経由で、一時ファイルは**同一ディレクトリの `mktemp` + `mv`**（共有名 `$FILE.tmp` は prewarm の並列書き込みで壊れるため禁止）。同ヘルパーは plan モードの ExitPlanMode hook 注入からも使われ、両者が同じ `settings.local.json` に共存すること
+    - `info/exclude` への `.claude/settings.local.json` / `.claude/plans/` 追記が `ensure_claude_exclusions` に一本化され、plan モード限定ではなく claude engine の全 MODE で走ること
+    - codex engine には**一切注入しない**こと。codex の `--dangerously-bypass-approvals-and-sandbox` とレビューペインの `--sandbox workspace-write` + `-c approval_policy='never'` + `--add-dir <STATUS_DIR>` は不変（項目 20 / 39）
+    - loop の `UNATTENDED=1 && RUNNER_ENGINE == claude → SKIP_PERMISSIONS=1` と `prewarm-panes.sh --unattended` が不変であること
+    - `AskUserQuestion` が対話的に残る根拠（permission gate と対話 UI は別レイヤー / `--dangerously-skip-permissions` と `bypassPermissions` は公式ドキュメント上等価）と、`skipDangerousModePermissionPrompt` をユーザー設定に置く必要があることが README と guide-ja.md の両方に書かれていること
+    - `ensure_claude_exclusions` の呼び出しは `|| true` を付けること。`launch-workspace.sh` は `set -euo pipefail` で走るため、bare 呼び出しだと `info/exclude` を解決できない cwd（非 git など）で launch ごと死ぬ
+    - 回帰は `bash test/test-launch-workspace-permissions.sh` の P1〜P11（全 MODE 注入 / codex 非対象 / 既存キー保持 / 冪等 / superpowers にフラグを足さない / info/exclude 追記 / `--skip-permissions` との共存 / 非 git cwd でも launch が成功）で検証する
+
 ## テスト方法
 
 ```bash

@@ -42,6 +42,11 @@
 #   --skip-permissions                 claude に --dangerously-skip-permissions を
 #                                      追加 (sonnet の auto mode 不在対策)。
 #                                      claude engine のみ対応
+#
+#   注記: claude engine では MODE を問わず、worktree の
+#   .claude/settings.local.json に permissions.defaultMode: "bypassPermissions" を
+#   注入する (Step 2a)。--skip-permissions はそれとは別に
+#   --dangerously-skip-permissions フラグを付ける。codex engine は対象外。
 #   --defer-status                     runner wrapper が exit 時に <STATUS_DIR>/.deferred
 #                                      が存在する場合 status.json 更新 / 親通知 /
 #                                      cmux wait-for 発火をスキップ。Phase B で別 surface に
@@ -106,6 +111,65 @@ die() {
 
 log() {
   echo "[$1] $2" >&2
+}
+
+# worktree の .claude/settings.local.json に jq フィルタをマージして書き戻す。
+#   merge_claude_settings '<jq filter>' [jq の追加引数...]
+# 一時ファイルは同一ディレクトリの mktemp + mv でアトミックに置き換える
+# (共有名 "$FILE.tmp" は prewarm が同じ worktree に複数ペインを起こす場面で壊れる)。
+# 失敗はすべて警告のみ。dispatch は止めない。
+merge_claude_settings() {
+  local filter="$1"
+  shift
+  local settings_dir="$CWD/.claude"
+  local settings_file="$settings_dir/settings.local.json"
+
+  if ! mkdir -p "$settings_dir" 2>/dev/null; then
+    log "warn" "failed to create $settings_dir; skipping settings injection"
+    return 1
+  fi
+
+  local merged=""
+  if [[ -f "$settings_file" ]]; then
+    merged=$(jq "$@" "$filter" "$settings_file" 2>/dev/null) || merged=""
+  else
+    merged=$(jq -n "$@" "{} | $filter" 2>/dev/null) || merged=""
+  fi
+  if [[ -z "$merged" ]]; then
+    log "warn" "failed to merge into $settings_file; skipping"
+    return 1
+  fi
+
+  local tmp
+  tmp=$(mktemp "$settings_dir/.settings.local.json.XXXXXX" 2>/dev/null) || {
+    log "warn" "failed to create a temp file in $settings_dir; skipping"
+    return 1
+  }
+  if printf '%s\n' "$merged" > "$tmp" 2>/dev/null && mv "$tmp" "$settings_file" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  log "warn" "failed to write $settings_file; skipping"
+  return 1
+}
+
+# 誤コミット防止: settings.local.json と plan 保存先 .claude/plans/ を repo 共有の
+# info/exclude に追記する。info/exclude は worktree 間で共有されるが、いずれも
+# ローカル専用のため実害なし。
+ensure_claude_exclusions() {
+  local exclude_file entry
+  exclude_file=$(git -C "$CWD" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
+  if [[ -z "$exclude_file" ]]; then
+    log "warn" "could not resolve info/exclude for $CWD; settings.local.json may appear in git status"
+    return 1
+  fi
+  mkdir -p "$(dirname "$exclude_file")" 2>/dev/null || true
+  for entry in '.claude/settings.local.json' '.claude/plans/'; do
+    grep -qxF "$entry" "$exclude_file" 2>/dev/null \
+      || echo "$entry" >> "$exclude_file" 2>/dev/null \
+      || log "warn" "failed to append $entry to $exclude_file"
+  done
+  return 0
 }
 
 # シェル起動検知と config 学習（split / standby mode で使用）
@@ -484,64 +548,69 @@ else
   log "prompt" "wrote prompt to $PROMPT_FILE"
 fi
 
+# --- Step 2a: permission prompt 抑止 (claude engine の全 MODE) ---
+# claude の子セッションで permission prompt が出ないよう、worktree の
+# .claude/settings.local.json に permissions.defaultMode: bypassPermissions を注入する。
+#
+# 裏取り (Claude Code 公式ドキュメント + 実測):
+#   - --dangerously-skip-permissions は --permission-mode bypassPermissions と
+#     「等価なモード」で動作すると cli-reference に明記されている。両者に
+#     AskUserQuestion の扱いの差は無い
+#   - AskUserQuestion / ExitPlanMode は permission gate とは別レイヤーの対話 UI で、
+#     bypassPermissions 下でも対話 TUI では通常どおり表示される (hooks のドキュメントが
+#     「非対話モードでプロンプトなしに処理する」ために hook を要求していることが根拠)。
+#     したがって superpowers モードのブレスト対話は壊れない
+#   - settings.local.json に defaultMode を書くだけで CLI フラグ無しに permission
+#     prompt が消えることは実測済み
+#
+# bypass モード突入の確認ダイアログはフラグでも defaultMode でも出る。抑止する
+# skipDangerousModePermissionPrompt は project settings では無視されるため、
+# ユーザー設定 ~/.claude/settings.json 側に置く必要がある (README 参照)。
+#
+# codex engine は .claude/settings.local.json を読まないため対象外。codex は
+# --dangerously-bypass-approvals-and-sandbox / review ペインの
+# --sandbox workspace-write で既に prompt が出ない。
+if [[ "$RUNNER_ENGINE" == "claude" ]]; then
+  CURRENT_DEFAULT_MODE=""
+  if [[ -f "$CWD/.claude/settings.local.json" ]]; then
+    CURRENT_DEFAULT_MODE=$(jq -r '.permissions.defaultMode // ""' \
+      "$CWD/.claude/settings.local.json" 2>/dev/null || echo "")
+  fi
+  if [[ "$CURRENT_DEFAULT_MODE" == "bypassPermissions" ]]; then
+    # worktree 再利用 (prewarm standby / Phase B の execute 孫) での二重注入を防ぐ
+    log "permissions" "defaultMode is already bypassPermissions in $CWD/.claude/settings.local.json"
+  elif merge_claude_settings '.permissions.defaultMode = "bypassPermissions"'; then
+    log "permissions" "injected permissions.defaultMode=bypassPermissions into $CWD/.claude/settings.local.json"
+  fi
+  # `|| true` は必須。このスクリプトは set -euo pipefail で走るので、bare 呼び出しだと
+  # info/exclude を解決できないケース (非 git な --cwd など) で launch ごと死ぬ。
+  # ensure_claude_exclusions はベストエフォート契約 (警告のみ)。
+  ensure_claude_exclusions || true
+fi
+
 # --- Step 2b: plan モード遵守ゲート (ExitPlanMode hook 注入) ---
 # 標準 plan モードは ExitPlanMode 承認直後に「プランを実行せよ」という強い指示が入り、
 # プロンプト焼き込みの MANDATORY MODEL SELECTION SEQUENCE (Phase A-R / Phase B) が
 # スキップされることがある。承認直後に PostToolUse hook で指示を機械的に再注入する。
 # hook はベストエフォート: 失敗は警告のみで dispatch を止めない (プロンプト側指示がフォールバック)。
-# claude-teams レイアウトは除外: 子プロンプトに MANDATORY MODEL SELECTION SEQUENCE が無いため
-# (Phase B はオーケストレーターが teammate を駆動するので不適用)、hook 注入は無意味かつ有害。
-if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" && "$LAYOUT" != "claude-teams" ]]; then
-  SETTINGS_DIR="$CWD/.claude"
-  SETTINGS_FILE="$SETTINGS_DIR/settings.local.json"
+# claude-teams レイアウトは Task 2 で廃止される。hook は claude engine の plan モードに注入する。
+if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
+  SETTINGS_FILE="$CWD/.claude/settings.local.json"
   HOOK_SCRIPT="$SCRIPT_DIR/plan-approved-hook.sh"
   if [[ -f "$SETTINGS_FILE" ]] && grep -q "plan-approved-hook.sh" "$SETTINGS_FILE" 2>/dev/null; then
     # worktree 再利用時の重複注入を防ぐ
     log "hook" "ExitPlanMode hook already present in $SETTINGS_FILE"
-  elif ! mkdir -p "$SETTINGS_DIR" 2>/dev/null; then
-    log "warn" "failed to create $SETTINGS_DIR; skipping ExitPlanMode hook injection"
   else
     # パスをクォートして焼き込む (スキルの配置先パスに空白が含まれても壊れないように)
     HOOK_ENTRY=$(jq -n --arg cmd "zsh '$HOOK_SCRIPT'" \
       '{matcher: "ExitPlanMode", hooks: [{type: "command", command: $cmd}]}' 2>/dev/null) || HOOK_ENTRY=""
     if [[ -z "$HOOK_ENTRY" ]]; then
       log "warn" "failed to compose ExitPlanMode hook entry; skipping injection"
-    elif [[ -f "$SETTINGS_FILE" ]]; then
-      if MERGED=$(jq --argjson entry "$HOOK_ENTRY" \
-        '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [$entry])' "$SETTINGS_FILE" 2>/dev/null); then
-        # tmp + mv のアトミック書き込み: 途中失敗で既存 settings.local.json を破壊しない
-        if printf '%s\n' "$MERGED" > "$SETTINGS_FILE.tmp" 2>/dev/null \
-          && mv "$SETTINGS_FILE.tmp" "$SETTINGS_FILE" 2>/dev/null; then
-          log "hook" "merged ExitPlanMode hook into $SETTINGS_FILE"
-        else
-          rm -f "$SETTINGS_FILE.tmp" 2>/dev/null || true
-          log "warn" "failed to write merged $SETTINGS_FILE; skipping"
-        fi
-      else
-        log "warn" "failed to merge ExitPlanMode hook into $SETTINGS_FILE; skipping"
-      fi
-    else
-      if jq -n --argjson entry "$HOOK_ENTRY" '{hooks: {PostToolUse: [$entry]}}' > "$SETTINGS_FILE" 2>/dev/null; then
-        log "hook" "wrote ExitPlanMode hook to $SETTINGS_FILE"
-      else
-        log "warn" "failed to write $SETTINGS_FILE; skipping"
-      fi
+    elif merge_claude_settings \
+      '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [$entry])' \
+      --argjson entry "$HOOK_ENTRY"; then
+      log "hook" "merged ExitPlanMode hook into $SETTINGS_FILE"
     fi
-  fi
-  # 誤コミット防止: settings.local.json と plan 保存先 .claude/plans/ を repo 共有の
-  # info/exclude に追記する (plan ファイルは --plan-file のパス渡しで使う作業物であり、
-  # 子の status protocol の git add -A でタスクブランチに紛れ込ませない)。
-  # info/exclude は worktree 間で共有されるが、いずれもローカル専用のため実害なし。
-  EXCLUDE_FILE=$(git -C "$CWD" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
-  if [[ -n "$EXCLUDE_FILE" ]]; then
-    mkdir -p "$(dirname "$EXCLUDE_FILE")" 2>/dev/null || true
-    for exclude_entry in '.claude/settings.local.json' '.claude/plans/'; do
-      grep -qxF "$exclude_entry" "$EXCLUDE_FILE" 2>/dev/null \
-        || echo "$exclude_entry" >> "$EXCLUDE_FILE" 2>/dev/null \
-        || log "warn" "failed to append $exclude_entry to $EXCLUDE_FILE"
-    done
-  else
-    log "warn" "could not resolve info/exclude for $CWD; settings.local.json may appear in git status"
   fi
 fi
 

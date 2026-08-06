@@ -1384,6 +1384,25 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
 
 上記全体は常に `zsh -ic "..."` で wrap され、`~/.zshrc` のユーザー定義関数（`ccenec` 等）と env（proxy 認証 / PATH 等）が子セッションで読み込まれます。
 
+MODE によらず、解決された runner engine が `claude` のときは worktree の
+`.claude/settings.local.json` に `permissions.defaultMode: "bypassPermissions"` を
+注入する（`jq` でマージし、`mktemp` + `mv` でアトミックに置換。既に同値なら
+スキップ）。これが、すべての起動経路に `--dangerously-skip-permissions` を足すことなく
+通常（非 loop）ディスパッチから permission prompt を消している仕組み。
+
+このモードでも `AskUserQuestion` は対話的なまま残る。permission システムが門番をするのは
+ツール呼び出しであり、`AskUserQuestion` と `ExitPlanMode` は permission mode に関わらず
+TUI セッションが描画する対話 UI だからである。非対話セッションだけが `PreToolUse` hook で
+それらに答える必要がある。superpowers モードのブレスト対話が壊れないのはこのため。
+
+bypass モード突入の確認ダイアログは `--dangerously-skip-permissions` でも
+`defaultMode: "bypassPermissions"` でも出る。抑止する `skipDangerousModePermissionPrompt`
+は project settings では無視されるので、ユーザー設定 `~/.claude/settings.json` に置くこと。
+
+codex engine は影響を受けない。`.claude/settings.local.json` を読まないうえ、
+`--dangerously-bypass-approvals-and-sandbox`（レビューペインは
+`--sandbox workspace-write` + `-c approval_policy='never'`）で既に prompt が出ない。
+
 **execute モードの使い所**: Phase B (実装フェーズ) で sonnet / codex などの別モデルに切り替える場面。Child セッションが `launch-workspace.sh --mode execute --plan-file <path> [--model <X>] [--skip-permissions]` を呼び出して別 surface を spawn し、自分は `<STATUS_DIR>/.deferred` を作成して exit する。execute モードでは `.cmux-team-dispatch-task-prompt.md` を書き換えず、Phase A のものを温存する。codex engine では `--model` 未指定時に runner の `exec_model` がフォールバック適用される（execute / standby のみ。review は常に `review_model` を明示）。
 
 `claude-teams` レイアウトは runner 設定を無視し常に `cmux claude-teams`（親の claude アカウント）で起動します。

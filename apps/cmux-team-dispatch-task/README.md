@@ -132,6 +132,31 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 
 `.claude/agents/` が空またはディレクトリが存在しない場合、Agent ブロックは省略されます。
 
+### permission prompt の抑止
+
+claude engine の子セッションを起動するとき、`launch-workspace.sh` は MODE を問わず
+worktree の `.claude/settings.local.json` に次をマージする。
+
+```json
+{ "permissions": { "defaultMode": "bypassPermissions" } }
+```
+
+これにより通常（非 loop）ディスパッチでも permission prompt が出ない。`AskUserQuestion`
+（ブレストの対話、Phase B のモデル選択、レビュー 3 往復後の判断）は permission gate とは
+別レイヤーの対話 UI なので、対話的なまま残る。
+
+**前提**: bypass モード突入時の確認ダイアログは `--dangerously-skip-permissions` でも
+`defaultMode` でも表示される。これを抑止する `skipDangerousModePermissionPrompt` は
+project settings では無視されるため、**ユーザー設定 `~/.claude/settings.json`** に
+`"skipDangerousModePermissionPrompt": true` を置くこと。
+
+注入先は最優先スコープの `settings.local.json` なので、リポジトリ側の
+`.claude/settings.json` で `defaultMode` を別の値に上書きすることはできない。これは
+意図した挙動で、opt-out 用の config キーは用意していない。
+
+codex engine は対象外（`--dangerously-bypass-approvals-and-sandbox` と
+レビューペインの `--sandbox workspace-write` で既に prompt が出ない）。
+
 ## ステータスプロトコル
 
 各子セッションが `.dispatch/<task-slug>/status.json` にステータスを書き出す:
