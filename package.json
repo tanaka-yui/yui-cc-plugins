@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "check": "turbo run check && node scripts/check-doc-lang.mjs",
+    "check:codex-hooks": "bash scripts/codex-hook-compat.sh check",
     "check:doc-lang": "node scripts/check-doc-lang.mjs",
     "check:fix": "turbo run check:fix",
     "format": "turbo run format",

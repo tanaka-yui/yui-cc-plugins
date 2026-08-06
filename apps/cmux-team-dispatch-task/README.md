@@ -464,6 +464,27 @@ rmdir .pre-link-backup-<TS>
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新、`cmux wait-for --signal` の発火、`cmux send` による親ターミナルへの通知を保証。加えて `monitor-dispatch.sh` も個別タスク完了時に `[dispatch]` 通知を親に送信
 - **pane を閉じても誤通知しない**: 最終クリーンアップの `cmux close-surface` / `close-workspace` で子プロセスは signal 終了（終了コード 128+N）する。`status.json` が既に `done` / `error` なら wrapper は status 書き込みと親通知の両方をスキップするため、完了済みタスクが `error` に降格したり偽の `[dispatch] ... (status: error)` が飛んだりしない。まだ `executing` の pane を kill した場合は本当の中断なので従来どおり `error` を報告する
 
+## Codex hook の互換性
+
+codex ペインを起動するとき、`launch-workspace.sh` は `~/.codex/config.toml`（`CODEX_HOME` で上書き可）を読み取り専用で検査し、`claude-plugins-official` の **security-guidance** プラグインが有効なら次の警告を出します。
+
+```
+[warn] security-guidance plugin is enabled for codex; its hooks emit stdout keys codex rejects ...
+```
+
+このプラグインの hook は Claude Code の出力契約に合わせて stdout に `{"metrics": {...}}` を書きますが、codex の hook 出力スキーマは `additionalProperties: false` なので必ず拒否され、codex ペインには毎ターン `Stop hook (failed) / error: hook returned invalid stop hook JSON output` が出ます。環境変数の kill switch でも `metrics` は出るため回避できません。
+
+警告は **dispatch を止めず、設定も書き換えません**。直すには codex 側でプラグインごと無効化します。`~/.codex/config.toml` を編集するか、codex の `/hooks` TUI から無効にしてください。
+
+```toml
+[plugins."security-guidance@claude-plugins-official"]
+enabled = false
+```
+
+（このリポジトリで開発している場合は `bash scripts/codex-hook-compat.sh disable` で冪等に書き換えられます。`/hooks` TUI が同じファイルを自動保存するため、実行中の codex セッションを閉じてから走らせてください。）
+
+security-guidance は hooks しか提供していない（skill / command なし）ため、無効化して失うのは「codex では元々動かない security review」だけです。
+
 ## 詳細ガイド
 
 詳細な利用方法・トラブルシューティングについては [リファレンスガイド](skills/cmux-team-dispatch-task/references/guide-ja.md) を参照してください。

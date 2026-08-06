@@ -85,6 +85,33 @@ bash install.sh    # marketplace add + update でローカルパスを登録・�
 - **Node 24.15 / pnpm 10.33** が `engines` で固定。`packageManager` フィールドも一致させる。
 - **TypeScript 6** を使うアプリでも、cmux-remote/server は **Bun ランタイムで実行する** (`bun run` / `bun test`)。Vitest を使うのは cmux-remote/client のみ。
 
+## Codex hook 互換性
+
+`claude-plugins-official` の **security-guidance** プラグインは codex では動かない。cmux 経由で codex ペインを起動すると、ターン終了ごとに次が出る:
+
+```
+• Stop hook (failed)
+  error: hook returned invalid stop hook JSON output
+```
+
+原因は出力スキーマの不一致。codex の hook 出力スキーマ（`stop.command.output` ほか）は **`additionalProperties: false`** で、Stop の許可キーは `continue` / `decision`(`"block"` のみ) / `reason` / `stopReason` / `suppressOutput` / `systemMessage` の 6 つだけ。一方 `security_reminder_hook.py` の `emit_metrics()` は **全経路で必ず `{"metrics": {...}}` を stdout に書く**（`rewakeSummary` も付く）ため、未知キーとして拒否される。
+
+- **環境変数では回避できない**。`SECURITY_GUIDANCE_DISABLE=1` / `ENABLE_SECURITY_REMINDER=0` の kill switch 経路も `metrics` を出す。findings ゼロのターンでも必ず失敗する。
+- **非互換は Stop だけではない**。`post_tool_use`（git commit/push レビュー。codex は `if` 条件を解さないので 5 エントリ全部が発火する）と `session_start`（`{"async": true, ...}` を出力）も同じくスキーマ違反。無事なのは `user_prompt_submit` のみ。
+- security-guidance は **hooks しか提供していない**（skill / command なし）ので、codex 側で無効化して失うのは「codex では元々動かない security review」だけ。
+- このフック失敗は**セッションを終了させない**。「Stop hook (failed)」はターン終了時の表示で、以降もプロンプトは生きている。実装セッションが黙って止まる事象は別件（`apps/cmux-team-dispatch-task/docs/notification-gaps.md` の U1）。
+
+対処は codex 側でプラグインごと無効化する:
+
+```bash
+pnpm check:codex-hooks                       # 非互換なら exit 1
+bash scripts/codex-hook-compat.sh disable    # ~/.codex/config.toml を冪等に書き換え
+```
+
+`disable` は `[plugins."security-guidance@claude-plugins-official"]` の `enabled` を `false` にするだけで、セクションが無い場合は**何も追記しない**（未インストールとみなす）。codex の `/hooks` TUI も同じファイルを自動保存するため、**実行中の codex セッションを閉じてから**走らせること。
+
+`check:codex-hooks` は端末ごとのローカル設定に依存するため **`pnpm check` には組み込まない**（CI を落とさない）。代わりに `cmux-team-dispatch-task` の `launch-workspace.sh` が codex ペイン起動前に同じ判定を行い、有効なら `[warn]` を出す（設定は書き換えず dispatch も止めない）。
+
 ## Language convention
 
 ### 基本

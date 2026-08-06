@@ -222,6 +222,34 @@ a3_runner=$(jq -r '.runner_file' <<<"$a3")
 assert_contains "$a3_runner" 'ABORT PROTOCOL' 'A3 review 無効の spawn 経路に abort 手順が入る'
 assert_not_contains "$a3_runner" 'code-round-N.md' 'A3 review 無効では reviewer 手順を含めない'
 
+# H1〜H4: security-guidance (claude-plugins-official) の hook は stdout に
+# {"metrics": ...} を書くが、codex の hook 出力スキーマは additionalProperties: false
+# なので必ず "invalid ... JSON output" になる。preflight は codex engine のときだけ
+# 検出して警告し、config は書き換えず dispatch も止めない。誤警告ゼロ (未インストール
+# 環境で黙っていること) が要件なので、無効時・config 無しのケースも固定する。
+hook_warn_stderr() {
+  local home="$1" runner="$2" name="$3" out="$4"
+  CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" CODEX_HOME="$home" \
+    bash "$LAUNCH" --cwd "$TMP/repo" --mode plan --runner "$runner" --status-dir "$TMP/status" "$name" prompt \
+    >/dev/null 2>"$out"
+}
+
+HOOK_WARN='security-guidance plugin is enabled for codex'
+mkdir -p "$TMP/codex-on" "$TMP/codex-off" "$TMP/codex-none"
+printf '[plugins."security-guidance@claude-plugins-official"]\nenabled = true\n' > "$TMP/codex-on/config.toml"
+printf '[plugins."security-guidance@claude-plugins-official"]\nenabled = false\n' > "$TMP/codex-off/config.toml"
+
+hook_warn_stderr "$TMP/codex-on" codex hook-on "$TMP/h1.log"
+hook_warn_stderr "$TMP/codex-off" codex hook-off "$TMP/h2.log"
+hook_warn_stderr "$TMP/codex-none" codex hook-none "$TMP/h3.log"
+# 警告は claude engine には出さない (非互換なのは codex の hook 出力スキーマだけ)
+hook_warn_stderr "$TMP/codex-on" claude hook-claude "$TMP/h4.log"
+
+assert_contains "$TMP/h1.log" "$HOOK_WARN" 'H1 security-guidance 有効時に警告する'
+assert_not_contains "$TMP/h2.log" "$HOOK_WARN" 'H2 security-guidance 無効時は警告しない'
+assert_not_contains "$TMP/h3.log" "$HOOK_WARN" 'H3 codex config が無い環境では警告しない'
+assert_not_contains "$TMP/h4.log" "$HOOK_WARN" 'H4 claude engine では警告しない'
+
 if command -v codex >/dev/null 2>&1 && [[ "${RUN_CODEX_DYNAMIC_TEST:-0}" == "1" ]]; then
   echo 'INFO: dynamic Codex writable-root test is enabled externally.'
 else

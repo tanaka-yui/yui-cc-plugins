@@ -405,6 +405,32 @@ fi
 # hook trust には作用しないので、専用フラグを全 codex 経路に付ける。
 CODEX_HOOK_TRUST_FLAG=" --dangerously-bypass-hook-trust"
 
+# claude-plugins-official の security-guidance は Claude Code の出力契約に合わせて
+# stdout に {"metrics": ...} / rewakeSummary / async を書く。codex の hook 出力スキーマは
+# additionalProperties: false なので未知キーで必ず parse error になり、
+# "hook returned invalid stop hook JSON output" が毎ターン出る (PostToolUse /
+# SessionStart も同様)。SECURITY_GUIDANCE_DISABLE=1 の kill switch 経路も metrics を
+# 出すため環境変数では回避できず、codex 側でプラグインごと無効化するしかない。
+# ここでは検出して警告するだけで、config は書き換えず dispatch も止めない。
+warn_if_codex_incompatible_hooks() {
+  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  # config が無い / セクションが無い = 未インストールとみなし、誤警告しない
+  [[ -f "$cfg" ]] || return 0
+  awk '
+    /^[[:space:]]*\[/ {
+      in_sg = ($0 ~ /^[[:space:]]*\[plugins\."security-guidance@claude-plugins-official"\]/)
+      next
+    }
+    in_sg && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$cfg" || return 0
+  log "warn" "security-guidance plugin is enabled for codex; its hooks emit stdout keys codex rejects (Stop / PostToolUse / SessionStart report \"invalid ... JSON output\"). Set enabled = false under [plugins.\"security-guidance@claude-plugins-official\"] in $cfg"
+}
+
+if [[ "$RUNNER_ENGINE" == "codex" ]]; then
+  warn_if_codex_incompatible_hooks
+fi
+
 log "runner" "name=${RUNNER_NAME:-<default>} command=$RUNNER_COMMAND engine=$RUNNER_ENGINE"
 
 # Resolve git repo info

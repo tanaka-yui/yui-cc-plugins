@@ -136,6 +136,11 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - 実装者の ABORT/ESCALATION プロトコル（findings 記録 → レビュアー通知 → status.json → 親通知 → セッション終了）が prewarm 経路と spawn 経路の両方に入り、unattended 文面にも同じ手順があること
     - workspace レイアウトの Child 起動にも `--defer-status` を渡すこと。これが無いと、Phase B で実行を別 surface へ移譲した Child の wrapper が孫の書いた終端状態を上書きしてしまう
     - `timeout` / `gtimeout` を使わず、`bash test/test-runner-terminal-status.sh` と `bash test/test-runner-signal-exit.sh` で回帰を検証し、既知の未解決パターンは `docs/notification-gaps.md` を参照すること
+24. **codex hook 互換性の preflight** が `launch-workspace.sh` / `README.md` / ルート `CLAUDE.md`（「Codex hook 互換性」節）で一致しているか確認:
+    - `launch-workspace.sh` の `warn_if_codex_incompatible_hooks()` が `${CODEX_HOME:-$HOME/.codex}/config.toml` を **read-only** で検査し、`[plugins."security-guidance@claude-plugins-official"]` が `enabled = true` のときだけ `log "warn"` すること。**config を書き換えず、dispatch も止めない**
+    - 呼び出しは `RUNNER_ENGINE == "codex"` のときだけ。config が無い / セクションが無い場合は未インストールとみなし警告しない（誤警告ゼロが要件）
+    - 回帰は `bash test/test-launch-workspace-codex.sh` の H1〜H4（有効時に警告 / 無効時は無警告 / config 無しで無警告 / claude engine では無警告）で検証する。警告文言を変えたら `HOOK_WARN` も同時に更新すること
+    - 恒久的な直し方（`~/.codex/config.toml` の `enabled = false`、repo 内では `bash scripts/codex-hook-compat.sh disable`）は README とルート `CLAUDE.md` の両方に書く。SKILL.md / guide-ja.md は対象外 — 子セッションの振る舞いを変えない `launch-workspace.sh` 内部の診断ログだから
 
 ## テスト方法
 
