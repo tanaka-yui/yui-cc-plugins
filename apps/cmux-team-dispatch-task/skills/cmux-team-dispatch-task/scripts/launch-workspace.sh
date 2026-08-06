@@ -42,6 +42,11 @@
 #   --skip-permissions                 claude に --dangerously-skip-permissions を
 #                                      追加 (sonnet の auto mode 不在対策)。
 #                                      claude engine のみ対応
+#
+#   注記: claude engine では MODE を問わず、worktree の
+#   .claude/settings.local.json に permissions.defaultMode: "bypassPermissions" を
+#   注入する (Step 2a)。--skip-permissions はそれとは別に
+#   --dangerously-skip-permissions フラグを付ける。codex engine は対象外。
 #   --defer-status                     runner wrapper が exit 時に <STATUS_DIR>/.deferred
 #                                      が存在する場合 status.json 更新 / 親通知 /
 #                                      cmux wait-for 発火をスキップ。Phase B で別 surface に
@@ -63,10 +68,6 @@
 #                                      claude engine には --dangerously-skip-permissions を
 #                                      強制付与する。他モードでは警告して無視
 #   --status-dir <path>                Directory for writing status files
-#   --layout workspace|split           Layout mode (default: workspace)
-#   --split-from <surface-id>          Surface to split from (required for split mode)
-#   --split-direction right|down       Split direction (default: right)
-#   --parent-workspace <ws-id>         Parent workspace ID (required for split mode)
 #   --parent-notify-workspace <ws-id>  Workspace to notify on completion
 #   --parent-notify-surface <sf-id>    Surface to notify on completion
 #   --runner <name>                    Runner name to look up in
@@ -108,6 +109,65 @@ log() {
   echo "[$1] $2" >&2
 }
 
+# worktree の .claude/settings.local.json に jq フィルタをマージして書き戻す。
+#   merge_claude_settings '<jq filter>' [jq の追加引数...]
+# 一時ファイルは同一ディレクトリの mktemp + mv でアトミックに置き換える
+# (共有名 "$FILE.tmp" は prewarm が同じ worktree に複数ペインを起こす場面で壊れる)。
+# 失敗はすべて警告のみ。dispatch は止めない。
+merge_claude_settings() {
+  local filter="$1"
+  shift
+  local settings_dir="$CWD/.claude"
+  local settings_file="$settings_dir/settings.local.json"
+
+  if ! mkdir -p "$settings_dir" 2>/dev/null; then
+    log "warn" "failed to create $settings_dir; skipping settings injection"
+    return 1
+  fi
+
+  local merged=""
+  if [[ -f "$settings_file" ]]; then
+    merged=$(jq "$@" "$filter" "$settings_file" 2>/dev/null) || merged=""
+  else
+    merged=$(jq -n "$@" "{} | $filter" 2>/dev/null) || merged=""
+  fi
+  if [[ -z "$merged" ]]; then
+    log "warn" "failed to merge into $settings_file; skipping"
+    return 1
+  fi
+
+  local tmp
+  tmp=$(mktemp "$settings_dir/.settings.local.json.XXXXXX" 2>/dev/null) || {
+    log "warn" "failed to create a temp file in $settings_dir; skipping"
+    return 1
+  }
+  if printf '%s\n' "$merged" > "$tmp" 2>/dev/null && mv "$tmp" "$settings_file" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  log "warn" "failed to write $settings_file; skipping"
+  return 1
+}
+
+# 誤コミット防止: settings.local.json と plan 保存先 .claude/plans/ を repo 共有の
+# info/exclude に追記する。info/exclude は worktree 間で共有されるが、いずれも
+# ローカル専用のため実害なし。
+ensure_claude_exclusions() {
+  local exclude_file entry
+  exclude_file=$(git -C "$CWD" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
+  if [[ -z "$exclude_file" ]]; then
+    log "warn" "could not resolve info/exclude for $CWD; settings.local.json may appear in git status"
+    return 1
+  fi
+  mkdir -p "$(dirname "$exclude_file")" 2>/dev/null || true
+  for entry in '.claude/settings.local.json' '.claude/plans/'; do
+    grep -qxF "$entry" "$exclude_file" 2>/dev/null \
+      || echo "$entry" >> "$exclude_file" 2>/dev/null \
+      || log "warn" "failed to append $entry to $exclude_file"
+  done
+  return 0
+}
+
 # シェル起動検知と config 学習（split / standby mode で使用）
 # shellcheck source=./terminal-wait.sh
 source "$SCRIPT_DIR/terminal-wait.sh"
@@ -120,10 +180,6 @@ STANDBY_IN=""
 STANDBY_SPLIT_FROM=""
 STANDBY_SPLIT_DIRECTION="down"
 STATUS_DIR=""
-LAYOUT="workspace"
-SPLIT_FROM=""
-SPLIT_DIRECTION="right"
-PARENT_WORKSPACE=""
 NOTIFY_WORKSPACE=""
 NOTIFY_SURFACE=""
 RUNNER_NAME=""
@@ -212,27 +268,11 @@ while [[ $# -gt 0 ]]; do
       STATUS_DIR="$2"
       shift 2
       ;;
-    --layout)
-      [[ $# -lt 2 ]] && die "--layout requires workspace, split, or claude-teams"
-      LAYOUT="$2"
-      [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "split" || "$LAYOUT" == "claude-teams" ]] || die "--layout must be 'workspace', 'split', or 'claude-teams'"
-      shift 2
-      ;;
-    --split-from)
-      [[ $# -lt 2 ]] && die "--split-from requires a surface ID"
-      SPLIT_FROM="$2"
-      shift 2
-      ;;
-    --split-direction)
-      [[ $# -lt 2 ]] && die "--split-direction requires right or down"
-      SPLIT_DIRECTION="$2"
-      [[ "$SPLIT_DIRECTION" == "right" || "$SPLIT_DIRECTION" == "down" ]] || die "--split-direction must be 'right' or 'down'"
-      shift 2
-      ;;
-    --parent-workspace)
-      [[ $# -lt 2 ]] && die "--parent-workspace requires a workspace ID"
-      PARENT_WORKSPACE="$2"
-      shift 2
+    # v1.13.0 で削除。単に case を消すと catch-all が削除済みフラグを workspace 名として
+    # 受理してしまう (WORKSPACE_NAME の正規表現 [A-Za-z0-9._-]+ にマッチするため)。
+    # 旧 API の呼び出しには明示的なエラーを返す。
+    --layout|--split-from|--split-direction|--parent-workspace)
+      die "$1 was removed: the layout is always 'workspace'"
       ;;
     --parent-notify-workspace)
       [[ $# -lt 2 ]] && die "--parent-notify-workspace requires a workspace ID"
@@ -323,14 +363,6 @@ fi
 # 旧固定名 ".cmux-team-dispatch-task-run.sh" は Child の実行中ファイルを上書きしてしまい、
 # Child bash が中途半端な byte offset から書き換え後の内容を読んで undefined 挙動になっていた。
 RUNNER_SCRIPT_NAME=".cmux-team-dispatch-task-run-${WORKSPACE_NAME}.sh"
-
-# Validate split mode requirements
-if [[ "$LAYOUT" == "split" ]]; then
-  [[ -z "$PARENT_WORKSPACE" ]] && die "--parent-workspace is required when --layout is split"
-  [[ -z "$SPLIT_FROM" ]] && die "--split-from is required when --layout is split"
-fi
-
-# claude-teams mode uses workspace-like creation (no split requirements)
 
 # --- Validation ---
 
@@ -484,64 +516,69 @@ else
   log "prompt" "wrote prompt to $PROMPT_FILE"
 fi
 
+# --- Step 2a: permission prompt 抑止 (claude engine の全 MODE) ---
+# claude の子セッションで permission prompt が出ないよう、worktree の
+# .claude/settings.local.json に permissions.defaultMode: bypassPermissions を注入する。
+#
+# 裏取り (Claude Code 公式ドキュメント + 実測):
+#   - --dangerously-skip-permissions は --permission-mode bypassPermissions と
+#     「等価なモード」で動作すると cli-reference に明記されている。両者に
+#     AskUserQuestion の扱いの差は無い
+#   - AskUserQuestion / ExitPlanMode は permission gate とは別レイヤーの対話 UI で、
+#     bypassPermissions 下でも対話 TUI では通常どおり表示される (hooks のドキュメントが
+#     「非対話モードでプロンプトなしに処理する」ために hook を要求していることが根拠)。
+#     したがって superpowers モードのブレスト対話は壊れない
+#   - settings.local.json に defaultMode を書くだけで CLI フラグ無しに permission
+#     prompt が消えることは実測済み
+#
+# bypass モード突入の確認ダイアログはフラグでも defaultMode でも出る。抑止する
+# skipDangerousModePermissionPrompt は project settings では無視されるため、
+# ユーザー設定 ~/.claude/settings.json 側に置く必要がある (README 参照)。
+#
+# codex engine は .claude/settings.local.json を読まないため対象外。codex は
+# --dangerously-bypass-approvals-and-sandbox / review ペインの
+# --sandbox workspace-write で既に prompt が出ない。
+if [[ "$RUNNER_ENGINE" == "claude" ]]; then
+  CURRENT_DEFAULT_MODE=""
+  if [[ -f "$CWD/.claude/settings.local.json" ]]; then
+    CURRENT_DEFAULT_MODE=$(jq -r '.permissions.defaultMode // ""' \
+      "$CWD/.claude/settings.local.json" 2>/dev/null || echo "")
+  fi
+  if [[ "$CURRENT_DEFAULT_MODE" == "bypassPermissions" ]]; then
+    # worktree 再利用 (prewarm standby / Phase B の execute 孫) での二重注入を防ぐ
+    log "permissions" "defaultMode is already bypassPermissions in $CWD/.claude/settings.local.json"
+  elif merge_claude_settings '.permissions.defaultMode = "bypassPermissions"'; then
+    log "permissions" "injected permissions.defaultMode=bypassPermissions into $CWD/.claude/settings.local.json"
+  fi
+  # `|| true` は必須。このスクリプトは set -euo pipefail で走るので、bare 呼び出しだと
+  # info/exclude を解決できないケース (非 git な --cwd など) で launch ごと死ぬ。
+  # ensure_claude_exclusions はベストエフォート契約 (警告のみ)。
+  ensure_claude_exclusions || true
+fi
+
 # --- Step 2b: plan モード遵守ゲート (ExitPlanMode hook 注入) ---
 # 標準 plan モードは ExitPlanMode 承認直後に「プランを実行せよ」という強い指示が入り、
 # プロンプト焼き込みの MANDATORY MODEL SELECTION SEQUENCE (Phase A-R / Phase B) が
 # スキップされることがある。承認直後に PostToolUse hook で指示を機械的に再注入する。
 # hook はベストエフォート: 失敗は警告のみで dispatch を止めない (プロンプト側指示がフォールバック)。
-# claude-teams レイアウトは除外: 子プロンプトに MANDATORY MODEL SELECTION SEQUENCE が無いため
-# (Phase B はオーケストレーターが teammate を駆動するので不適用)、hook 注入は無意味かつ有害。
-if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" && "$LAYOUT" != "claude-teams" ]]; then
-  SETTINGS_DIR="$CWD/.claude"
-  SETTINGS_FILE="$SETTINGS_DIR/settings.local.json"
+# hook は claude engine の plan モードに注入する。
+if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
+  SETTINGS_FILE="$CWD/.claude/settings.local.json"
   HOOK_SCRIPT="$SCRIPT_DIR/plan-approved-hook.sh"
   if [[ -f "$SETTINGS_FILE" ]] && grep -q "plan-approved-hook.sh" "$SETTINGS_FILE" 2>/dev/null; then
     # worktree 再利用時の重複注入を防ぐ
     log "hook" "ExitPlanMode hook already present in $SETTINGS_FILE"
-  elif ! mkdir -p "$SETTINGS_DIR" 2>/dev/null; then
-    log "warn" "failed to create $SETTINGS_DIR; skipping ExitPlanMode hook injection"
   else
     # パスをクォートして焼き込む (スキルの配置先パスに空白が含まれても壊れないように)
     HOOK_ENTRY=$(jq -n --arg cmd "zsh '$HOOK_SCRIPT'" \
       '{matcher: "ExitPlanMode", hooks: [{type: "command", command: $cmd}]}' 2>/dev/null) || HOOK_ENTRY=""
     if [[ -z "$HOOK_ENTRY" ]]; then
       log "warn" "failed to compose ExitPlanMode hook entry; skipping injection"
-    elif [[ -f "$SETTINGS_FILE" ]]; then
-      if MERGED=$(jq --argjson entry "$HOOK_ENTRY" \
-        '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [$entry])' "$SETTINGS_FILE" 2>/dev/null); then
-        # tmp + mv のアトミック書き込み: 途中失敗で既存 settings.local.json を破壊しない
-        if printf '%s\n' "$MERGED" > "$SETTINGS_FILE.tmp" 2>/dev/null \
-          && mv "$SETTINGS_FILE.tmp" "$SETTINGS_FILE" 2>/dev/null; then
-          log "hook" "merged ExitPlanMode hook into $SETTINGS_FILE"
-        else
-          rm -f "$SETTINGS_FILE.tmp" 2>/dev/null || true
-          log "warn" "failed to write merged $SETTINGS_FILE; skipping"
-        fi
-      else
-        log "warn" "failed to merge ExitPlanMode hook into $SETTINGS_FILE; skipping"
-      fi
-    else
-      if jq -n --argjson entry "$HOOK_ENTRY" '{hooks: {PostToolUse: [$entry]}}' > "$SETTINGS_FILE" 2>/dev/null; then
-        log "hook" "wrote ExitPlanMode hook to $SETTINGS_FILE"
-      else
-        log "warn" "failed to write $SETTINGS_FILE; skipping"
-      fi
+    elif merge_claude_settings \
+      '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [$entry])' \
+      --argjson entry "$HOOK_ENTRY"; then
+      log "hook" "merged ExitPlanMode hook into $SETTINGS_FILE"
     fi
-  fi
-  # 誤コミット防止: settings.local.json と plan 保存先 .claude/plans/ を repo 共有の
-  # info/exclude に追記する (plan ファイルは --plan-file のパス渡しで使う作業物であり、
-  # 子の status protocol の git add -A でタスクブランチに紛れ込ませない)。
-  # info/exclude は worktree 間で共有されるが、いずれもローカル専用のため実害なし。
-  EXCLUDE_FILE=$(git -C "$CWD" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
-  if [[ -n "$EXCLUDE_FILE" ]]; then
-    mkdir -p "$(dirname "$EXCLUDE_FILE")" 2>/dev/null || true
-    for exclude_entry in '.claude/settings.local.json' '.claude/plans/'; do
-      grep -qxF "$exclude_entry" "$EXCLUDE_FILE" 2>/dev/null \
-        || echo "$exclude_entry" >> "$EXCLUDE_FILE" 2>/dev/null \
-        || log "warn" "failed to append $exclude_entry to $EXCLUDE_FILE"
-    done
-  else
-    log "warn" "could not resolve info/exclude for $CWD; settings.local.json may appear in git status"
   fi
 fi
 
@@ -549,8 +586,6 @@ fi
 # Build the launch command per (engine × MODE) and wrap with `zsh -ic` so that
 # user-defined functions and env vars from ~/.zshrc (e.g. ccenec, ccgpt, proxy
 # auth) are always resolved.
-#
-# claude-teams layout uses `cmux claude-teams` (claude-only) and ignores --runner.
 
 # --unattended は実行系 (execute / standby) 専用
 if [[ $UNATTENDED -eq 1 && "$MODE" != "execute" && "$MODE" != "standby" ]]; then
@@ -637,20 +672,7 @@ if [[ $SKIP_PERMISSIONS -eq 1 ]]; then
   fi
 fi
 
-if [[ "$LAYOUT" == "claude-teams" ]]; then
-  # claude-teams mode: --runner is ignored; claude-teams only supports claude.
-  # execute mode for claude-teams reuses superpowers branch (no --dangerously-skip-permissions)
-  if [[ "$MODE" == "superpowers" || "$MODE" == "execute" ]]; then
-    # superpowers mode: --dangerously-skip-permissions を使わない
-    # --dangerously-skip-permissions は AskUserQuestion もバイパスしてしまうため、
-    # ブレストの対話フローが機能しない。env の permissions.defaultMode: bypassPermissions は
-    # ツール許可をバイパスしつつ AskUserQuestion を対話的に保つのでそちらに依存する
-    CLAUDE_CMD="$CMUX claude-teams '$PROMPT_TEXT'"
-  else
-    CLAUDE_CMD="$CMUX claude-teams --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
-  fi
-else
-  # engine × mode で起動コマンドを構築
+# engine × mode で起動コマンドを構築
   if [[ "$RUNNER_ENGINE" == "codex" ]]; then
     if [[ "$MODE" == "execute" ]]; then
       # codex execute: plan モードと同じく bypass フラグを付与。
@@ -702,6 +724,10 @@ else
         CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}"
       fi
     elif [[ "$MODE" == "superpowers" ]]; then
+      # superpowers mode: 起動フラグは付けない。permission prompt の抑止は Step 2a で
+      # worktree の .claude/settings.local.json に注入する permissions.defaultMode が担う
+      # (AskUserQuestion は permission gate とは別レイヤーなので bypassPermissions 下でも
+      #  対話的に残る。詳細は Step 2a のコメント)
       CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
     else
       CORE_CMD="$RUNNER_COMMAND --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
@@ -710,7 +736,6 @@ else
 
   # 常に zsh -ic で .zshrc を読み込ませてユーザー定義関数 (ccenec 等) と env (proxy 認証 等) を解決
   CLAUDE_CMD="zsh -ic \"$CORE_CMD\""
-fi
 
 # --- Step 4: Generate runner script ---
 # The runner is written BEFORE the workspace is created so it can be launched
@@ -775,7 +800,6 @@ write_status() {
 
 NOTIFY_WS="${NOTIFY_WORKSPACE}"
 NOTIFY_SF="${NOTIFY_SURFACE}"
-LAYOUT_MODE="${LAYOUT}"
 NOTIFIED_FILE=""
 [[ -n "\$STATUS_DIR" ]] && NOTIFIED_FILE="\$STATUS_DIR/.notified-\$SLUG"
 
@@ -793,10 +817,10 @@ notify_parent() {
   fi
 
   local target_flag target_id
-  if [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
-    target_flag="--surface"; target_id="\$NOTIFY_SF"
-  elif [[ -n "\$NOTIFY_WS" ]]; then
+  if [[ -n "\$NOTIFY_WS" ]]; then
     target_flag="--workspace"; target_id="\$NOTIFY_WS"
+  elif [[ -n "\$NOTIFY_SF" ]]; then
+    target_flag="--surface"; target_id="\$NOTIFY_SF"
   else
     return 1
   fi
@@ -1018,13 +1042,13 @@ if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; th
     "cd '$CWD' && bash $RUNNER_SCRIPT_NAME\n" >/dev/null 2>&1 || die "failed to send cd+runner command"
   log "cmux" "standby runner command sent"
 
-elif [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
-  # --- Workspace Mode / Claude Teams Mode ---
+else
+  # --- Workspace Mode ---
   # Use `--command` so the runner starts the instant the workspace shell is ready.
   # This is strictly better than creating the workspace and then sending the
   # runner via `cmux send`: on some environments the new surface is not a
   # terminal at creation time, which previously caused dropped commands.
-  log "cmux" "creating workspace with cwd=$CWD (layout: $LAYOUT), auto-launching runner via --command"
+  log "cmux" "creating workspace with cwd=$CWD, auto-launching runner via --command"
   WORKSPACE_OUTPUT=$("$CMUX" new-workspace --cwd "$CWD" --command "bash $RUNNER_SCRIPT_NAME" 2>/dev/null) \
     || die "failed to create cmux workspace"
   WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1)
@@ -1042,36 +1066,10 @@ elif [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
   [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from output: $SURFACE_OUTPUT"
   log "cmux" "surface: $SURFACE_ID"
 
-elif [[ "$LAYOUT" == "split" ]]; then
-  # --- Split Mode: Create new pane in existing workspace ---
-  # `cmux new-split` does not support --command, so we fall back to the
-  # send-after-create approach with shell readiness detection.
-  WORKSPACE_ID="$PARENT_WORKSPACE"
-  TITLE="$WORKSPACE_NAME"
-
-  log "cmux" "splitting $SPLIT_DIRECTION from $SPLIT_FROM in $WORKSPACE_ID"
-  SPLIT_OUTPUT=$("$CMUX" new-split "$SPLIT_DIRECTION" \
-    --workspace "$WORKSPACE_ID" \
-    --surface "$SPLIT_FROM" 2>/dev/null) || die "failed to create split pane"
-  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
-  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
-  log "cmux" "new split surface: $SURFACE_ID"
-
-  # Rename the tab for the new split pane
-  "$CMUX" rename-tab --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" "$TITLE" >/dev/null 2>&1 || \
-    log "cmux" "warning: failed to rename tab (non-fatal)"
-
-  wait_for_shell "$SURFACE_ID" || true
-
-  # Launch the runner via send (split mode only).
-  RUNNER_CMD="bash $RUNNER_SCRIPT_NAME"
-  "$CMUX" send --surface "$SURFACE_ID" \
-    "cd '$CWD' && $RUNNER_CMD\n" >/dev/null 2>&1 || die "failed to send cd+runner command"
-  log "cmux" "split runner command sent"
 fi
 
 # --- Step 6: Write initial "launched" status ---
-# Race protection: the runner is already running in workspace/claude-teams mode,
+# Race protection: the runner is already running in workspace mode,
 # so it may have already written "executing"/"done"/"error" to status.json.
 # Do not regress from those to "launched".
 
@@ -1092,8 +1090,8 @@ if [[ -n "$STATUS_DIR" && "$MODE" != "standby" && "$MODE" != "review" ]]; then
         --arg sf "$SURFACE_ID" \
         --arg title "$TITLE" \
         --arg mode "$MODE" \
-        --arg layout "$LAYOUT" \
-        --arg msg "Claude session launched in $MODE mode ($LAYOUT layout)" \
+        --arg layout "workspace" \
+        --arg msg "Claude session launched in $MODE mode (workspace layout)" \
         '{
           status: $status,
           workspace_id: $ws,
@@ -1121,9 +1119,7 @@ jq -n \
   --arg branch "$BRANCH_NAME" \
   --arg worktree "$WORKTREE_PATH" \
   --arg mode "$MODE" \
-  --arg layout "$LAYOUT" \
-  --arg split_from "$SPLIT_FROM" \
-  --arg split_direction "$SPLIT_DIRECTION" \
+  --arg layout "workspace" \
   --arg status_dir "$STATUS_DIR" \
   --arg prompt_file "$PROMPT_FILE" \
   --arg runner_file "$RUNNER_FILE" \
@@ -1140,8 +1136,6 @@ jq -n \
     worktree_path: (if $worktree == "" then null else $worktree end),
     mode: $mode,
     layout: $layout,
-    split_from: (if $split_from == "" then null else $split_from end),
-    split_direction: (if $split_direction == "" then null else $split_direction end),
     status_dir: (if $status_dir == "" then null else $status_dir end),
     prompt_file: $prompt_file,
     runner_file: $runner_file,

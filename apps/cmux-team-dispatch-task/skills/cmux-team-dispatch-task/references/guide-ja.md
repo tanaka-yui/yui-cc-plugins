@@ -58,8 +58,8 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 
 ## Step 1: 解析と準備
 
-タスク収集、Agent ルーティング、レイアウト決定、統合戦略決定、子 runner 設定を1ステップで実行。
-ディスパッチ前に最大6つのユーザーインタラクション: brainstorming 選択、レイアウト選択、統合戦略選択、子 runner 選択（`runners.json` 初回セットアップ + codex 設計タスクがある場合の claude 側レビュアー runner 選択を含む）、メッセージトランスポート選択（初回のみ）、レビューモード使用確認（`review_mode` が未設定/`"ask"` かつ `review_model` 付き runner またはクロスエンジンレビュアーが解決済みのときは毎回）。
+タスク収集、Agent ルーティング、統合戦略決定、子 runner 設定を1ステップで実行。
+ディスパッチ前に最大5つのユーザーインタラクション: brainstorming 選択、統合戦略選択、子 runner 選択（`runners.json` 初回セットアップ + codex 設計タスクがある場合の claude 側レビュアー runner 選択を含む）、メッセージトランスポート選択（初回のみ）、レビューモード使用確認（`review_mode` が未設定/`"ask"` かつ `review_model` 付き runner またはクロスエンジンレビュアーが解決済みのときは毎回）。
 
 ### 1a. タスク収集
 
@@ -76,12 +76,9 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 - 選択されたタスク → superpowers モード + MANDATORY EXECUTION SEQUENCE
 - 非選択タスク → plan モード
 
-### 1d. レイアウトモードの選択
+### 1d. レイアウト
 
-**レイアウトモード選択**（`--layout` フラグ指定時はスキップ）:
-- **workspace** (デフォルト) — タスクごとに独立した cmux workspace（推奨・長時間タスク・7個以上にも対応）
-- **split** — 現在の workspace 内でペイン分割（2〜6タスク・全体一望）
-- **claude-teams** — `cmux claude-teams` で Agent Teams を使用（サイドバー通知）
+レイアウトは常に `workspace`。各タスクは独立した cmux workspace（サイドバー項目）で起動する。選択質問やレイアウト指定フラグはない。
 
 ### 1e. 統合戦略の選択
 
@@ -206,7 +203,7 @@ Mode 略称: `superpwr` = superpowers/brainstorming、`plan` = 組み込み /pla
 **ランナースクリプトが保証すること**:
 
 1. `status.json` を `"executing"` に更新（絶対パス使用）
-2. `claude` コマンドをインタラクティブに実行（claude-teams モードでは `cmux claude-teams` を使用）
+2. `claude` コマンドをインタラクティブに実行
 3. Claude 終了後、`status.json` を `"done"` または `"error"` に更新
 4. `cmux wait-for --signal <slug>-done` で完了をシグナル
 5. `cmux notify` で親 workspace に通知
@@ -265,7 +262,7 @@ Phase B-R が実装完了後・PR 作成前に挟まる）。プロンプトテ�
 - **Phase B**: opus 1m / sonnet / codex の 3 択はすべて pre-warm ペインへ委譲する — **この codex
   セッション自身は実装しない**。opus 1m → 右上の claude review ペイン（agent `<slug>-opus`）、
   sonnet → sonnet standby、codex → codex standby へ実行依頼を送り、`.deferred` を touch する。
-  prewarm.json が無い（prewarm off / split）場合は claude variant と同じく `launch-workspace.sh
+  prewarm.json が無い（prewarm off）場合は claude variant と同じく `launch-workspace.sh
   --mode execute` にフォールバック（opus 1m は reviewer runner の command + `--model
   'opus[1m]'` + `--skip-permissions`）
 
@@ -301,7 +298,7 @@ Phase A 成果物は codex レビューペイン（`review_model`）が、design
 - **ペイン寿命**: 全ポイントで同一ペインを再利用（文脈保持）。最終 approve（またはユーザー判断）
   後もレビューペインは開いたまま idle 維持し、途中で close しない（常 4 ペイン。最終の全タスク
   完了クリーンアップで他ペインとまとめて閉じる）。spawn 失敗時はレビューをスキップして Phase B へ（警告表示）
-- **prewarm 無効 / split レイアウト時**: 最初のレビューポイントで
+- **prewarm 無効時**: 最初のレビューポイントで
   `launch-workspace.sh --mode review --standby-split-direction right` によりオンデマンド spawn
 
 **Phase B: 実装フェーズのモデル選択（auto mode でも必須）**
@@ -369,7 +366,7 @@ Phase A 完了後、コード変更を始める前に task prompt が解決し�
 4. `touch "<EXISTING_STATUS_DIR>/.deferred"`。Phase B-R 有効時は exit **せず**、レビュアー
    として idle 待機する（下記「Phase B-R」参照）。無効時はこのセッションを exit
 
-**prewarm.json が無い場合（従来の spawn フォールバック、split レイアウト / prewarm off）**
+**prewarm.json が無い場合（従来の spawn フォールバック、prewarm off）**
 
 「異なる model」が選ばれた場合の spawn 手順 (Child セッション側の動作):
 
@@ -382,10 +379,8 @@ zsh <skill-dir>/scripts/launch-workspace.sh \
   --model sonnet \
   --skip-permissions \
   --status-dir "<EXISTING_STATUS_DIR>" \
-  --layout <LAYOUT> \
   --parent-notify-workspace <PARENT_WORKSPACE_ID> \
   [--parent-notify-surface <PARENT_SURFACE_ID>] \
-  [--split-from <SURFACE_ID> --parent-workspace <WS_ID>]  # split のみ
   [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # Phase B-R 有効時のみ
   <task-slug>-exec
 
@@ -459,7 +454,7 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
   書かない
 - **孤児ガードは不要**: 実装者がレビューを依頼せず終了しても設計セッションは idle のまま無害に
   残り、最終の全タスク完了クリーンアップで他ペインと一緒に閉じられる
-- **spawn 経路（prewarm 無効 / split）**: 設計セッションが `<STATUS_DIR>/review/code-review.json`
+- **spawn 経路（prewarm 無効）**: 設計セッションが `<STATUS_DIR>/review/code-review.json`
   （`{reviewer_surface, reviewer_workspace, review_dir}`。`reviewer_surface` は上表の REVIEWER_SURFACE =
   YOU がレビューするケースは自身の surface、レビューペインがレビューするケースはレビューペインの
   surface。`reviewer_workspace` はレビュアー側の workspace — 実装孫は別 workspace に spawn される
@@ -472,7 +467,7 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
 
 標準 plan モードでは ExitPlanMode 承認直後に「プランを実行せよ」という強いシステム指示が
 入り、上記シーケンスがスキップされることがある。これを防ぐため、`launch-workspace.sh` は
-`--mode plan` かつ claude engine、かつ非 claude-teams レイアウトのときのみ、worktree の `.claude/settings.local.json` に
+`--mode plan` かつ claude engine のときのみ、worktree の `.claude/settings.local.json` に
 PostToolUse hook（matcher: `ExitPlanMode`、command:
 `zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入する。hook は承認直後に「ファイル
 編集前に Phase A-R（有効時）→ Phase B を実行せよ」という additionalContext を機械的に
@@ -487,7 +482,7 @@ PostToolUse hook（matcher: `ExitPlanMode`、command:
 - hook は worktree の settings.local.json に残存するため、同一 worktree を再利用する後続
   セッション（Phase B の execute 孫を含む）にも作用する。それらは plan モードを使わないため
   実害はない
-- superpowers モード / codex engine / execute・standby・review モード / claude-teams レイアウトでは注入されない
+- superpowers モード / codex engine / execute・standby・review モードでは注入されない
 
 ### Launch: workspace モード（デフォルト）
 
@@ -654,66 +649,9 @@ codex runner が存在する場合のみ、`review` は `--review-model` **ま�
 （agent `<slug>-opus`・`engine: "claude"`）になる。design=claude では上記どおり `review` は
 codex（agent `<slug>-review`）。
 
-split / claude-teams レイアウトと `prewarm: false` はこのセクションを完全にスキップする —
+`prewarm: false` はこのセクションを完全にスキップする —
 Phase B はオンデマンドの `--mode execute` spawn にフォールバックし、agmsg モードの opus
 セッションも従来どおりプロンプト埋め込みのワークスペース起動にフォールバックする。
-
-### Launch: split モード
-
-各タスクが独立した split ペインで実行されます。
-
-```
-┌──────────┬──────────┐
-│  親      │ task-1   │
-│(orchest.)│          │
-├──────────┼──────────┤
-│ task-2   │ task-3   │
-│          │          │
-└──────────┴──────────┘
-  (4サーフェス → 2×2 グリッド、自動整列)
-```
-
-1. 最初の子タスク: 親ペインの右側に分割 (`launch-workspace.sh --split-direction right`)
-2. 以降の子タスク: 前の子ペインの下に分割 (`launch-workspace.sh --split-direction down`)
-3. 全タスク起動後、自動グリッド整列が実行される
-4. 各ペインは独立した git worktree + Claude Code セッション
-5. `--no-grid` で従来のリニアレイアウトを維持可能
-
-**split モードでの起動チェーン**:
-
-```
-親 surface:1 → split right → child-1 surface:5
-                              → split down → child-2 surface:7
-                                             → split down → child-3 surface:9
-```
-
-### Launch: claude-teams モード
-
-`cmux claude-teams` を使い、1つの orchestrator が Agent Teams で teammate を生成。
-各 teammate が cmux のネイティブ分割ペインとして表示されます。
-
-```
-┌──────────┬──────────┐
-│ Orchest. │ Team-1   │
-│          │          │
-├──────────┼──────────┤
-│ Team-2   │ Team-3   │
-│          │          │
-└──────────┴──────────┘
-  (native Agent Teams, サイドバー通知あり)
-```
-
-**特徴:**
-- `cmux claude-teams` が tmux shim を作成し、`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` を設定
-- Claude の Agent tool + TeamCreate で teammate を生成
-- teammate は `isolation: "worktree"` で自動的に git worktree を取得
-- 各ペインはサイドバーにメタデータと通知が表示される
-
-#### claude-teams オーケストレータープロンプト
-
-（このセクションに対応する既存の日本語記述はありません。orchestrator プロンプトの組み立て方は SKILL.md の "Claude Teams Orchestrator Prompt" 節を参照してください。）
-
----
 
 ## Step 3: 監視と完了
 
@@ -748,9 +686,7 @@ Phase B はオンデマンドの `--mode execute` spawn にフォールバック
    stdout は `.dispatch/.monitor.log` に tee され、PID は `.dispatch/.monitor.pid` に書き出される。
    ```bash
    zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
-     --parent-surface "$CMUX_SURFACE_ID" \
      --parent-workspace "$CMUX_WORKSPACE_ID" \
-     --layout <split|workspace|claude-teams> \
      --interval 10 \
      --heartbeat-interval 60 \
      --dispatch-dir "$(pwd)/.dispatch"
@@ -763,7 +699,6 @@ Phase B はオンデマンドの `--mode execute` spawn にフォールバック
 PID=$(cat .dispatch/.monitor.pid)
 kill -0 "$PID" 2>/dev/null || zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
   --parent-workspace "$CMUX_WORKSPACE_ID" \
-  --layout workspace \
   --dispatch-dir "$(pwd)/.dispatch" \
   --resume
 ```
@@ -784,7 +719,6 @@ kill -0 "$PID" 2>/dev/null || zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
 
 4. **画面の直接読み取り**:
    - workspace モード: `cmux read-screen --workspace <workspace-id> --scrollback`
-   - split モード: `cmux read-screen --workspace <parent-ws> --surface <child-surface-id> --scrollback`
 
 ### When to Intervene（介入のタイミング）
 
@@ -934,8 +868,6 @@ Step 1e で選択した統合戦略に応じて動作が異なります。
 
 すべての子セッションが `status: done` に到達した後、**親セッション** がまとめて 3 問聞き、
 全タスクに同じ回答を適用する。子セッションは削除も質問も行わない。
-`$LAYOUT_MODE` は Step 1d で選んだレイアウト名（`split` / `workspace` / `claude-teams`）。
-
 `AskUserQuestion` で以下の 3 問を順に聞く:
 
 ```
@@ -958,12 +890,9 @@ for slug in <task-slugs>; do
   workspace_id=$(jq -r '.workspace_id // empty' "$status_file")
   surface_id=$(jq -r '.surface_id // empty' "$status_file")
 
-  # 1) pane / workspace を先に閉じる
-  if [[ "$close_all" == "true" ]]; then
-    case "$LAYOUT_MODE" in
-      split)                  [[ -n "$surface_id"   ]] && cmux close-surface   --surface   "$surface_id"   ;;
-      workspace|claude-teams) [[ -n "$workspace_id" ]] && cmux close-workspace --workspace "$workspace_id" ;;
-    esac
+  # 1) タスクの workspace を先に閉じる
+  if [[ "$close_all" == "true" && -n "$workspace_id" ]]; then
+    cmux close-workspace --workspace "$workspace_id"
   fi
 
   # pre-warm standby ペインが残っていれば全て閉じる（常 4 ペイン維持のため Phase B 後も全 standby が残る）
@@ -1077,9 +1006,7 @@ done
 ## 制約
 
 - **cmux 必須**: `/Applications/cmux.app/` にインストールされている必要があります
-- **claude-teams 必須**: claude-teams モードでは `cmux claude-teams` コマンドが必要
 - **同時セッション数**: 3〜5 セッションが推奨
-- **split モード制限**: 2〜6 タスクが推奨。7 以上は workspace モードを使用
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。`cmux send` の後は必ず `cmux send-key return` を発行し、親 claude TUI の input box に滞留しないようにしている
 - **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
@@ -1109,7 +1036,7 @@ done
 - `.claude/agents/` ディレクトリを動的にスキャンし、利用可能な Agent タイプを自動発見
 - 利用可能な Agent 一覧を子セッションに伝達し、各子セッションが最適な Agent を選択
 - タスクごとに brainstorming スキルの使用を選択可能
-- **3つのレイアウトモード**: workspace（デフォルト・別タブ）、split（ペイン分割）、claude-teams（Agent Teams）— ディスパッチ前に選択
+- **レイアウト**: 常に workspace（タスクごとに別タブ）
 - **必須モデル選択フロー**: 子セッションは Plan/Brainstorming を実行後（Phase A-R 有効時は相手方 engine のレビューの approve 後）、`exec_choice` が未設定または `"ask"` なら `opus 1m` / `sonnet`（codex runner がある場合は `codex` も）を選ばせる。固定値なら質問を省略して既存の同じ実行分岐へ直行する。同一 model なら現セッション継続、異なる model なら `launch-workspace.sh --mode execute` 経由で孫 surface を spawn (runner script でラップされ完了通知が確実に親に伝播)。元 Child は `.deferred` を書いて exit する。設計 runner が `engine: codex` のタスクでは Phase A を codex セッションが担い、Phase B の 3 択（opus 1m / sonnet / codex）はすべて pre-warm ペインへ委譲する
 - **クロスエンジンレビュー**: Phase A-R / Phase B-R のレビュアーは **常に実装者の相手方 engine**。design=claude → レビューは codex、design=codex → レビューは claude が担う（下記 Phase A-R / Phase B-R 節参照）
 - **Phase A-R（plan/spec クロスレビュー）**: 設計 runner の `review_model`（codex 設計は codex runner の `review_model`、codex 設計タスクに対しては claude 側 reviewer runner）があり
@@ -1156,25 +1083,11 @@ done
 
 プランファイルとインラインタスクを混在させることもできます。
 
-### レイアウトモードの指定
-
-```
-/cmux-team-dispatch-task タスクA, タスクB --layout split
-/cmux-team-dispatch-task タスクA, タスクB --layout claude-teams
-/cmux-team-dispatch-task タスクA, タスクB --no-grid
-```
-
-デフォルトは `workspace` モードです（split を使う場合は明示的に指定）。
-
 ## アーキテクチャ
 
-### 3つのレイアウトモード
+### レイアウト
 
-| モード | 説明 | 推奨ケース |
-|--------|------|-----------|
-| **workspace** (デフォルト) | タスクごとに独立した cmux workspace を作成 | 大半のケース、長時間タスク、7個以上 |
-| **split** | 現在の workspace 内でペイン分割（自動グリッド整列） | 2〜6個のタスク、全体を一望したい場合 |
-| **claude-teams** | `cmux claude-teams` で Agent Teams を使用 | ネイティブ通知/サイドバー連携 |
+レイアウトは常に `workspace`。タスクごとに独立した cmux workspace を作成する。
 
 ### 各レイヤーの役割
 
@@ -1247,7 +1160,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 ## ターミナル起動待機の自動学習
 
-子セッションのシェルが初期化される前に `cmux send` でコマンドを投入すると `sh` が失敗することがあります。これを避けるため、`launch-workspace.sh` はすべてのレイアウトモード（workspace / split / claude-teams）でシェルプロンプトを検知してから実際のコマンドを送信します。検知にかかった実時間は config に記録され、次回以降の最大待機時間を適応的に決定します。
+子セッションのシェルが初期化される前に `cmux send` でコマンドを投入すると `sh` が失敗することがあります。これを避けるため、`launch-workspace.sh` は workspace 内の standby ペインでシェルプロンプトを検知してから実際のコマンドを送信します。検知にかかった実時間は config に記録され、次回以降の最大待機時間を適応的に決定します。
 
 ### 実装
 
@@ -1384,9 +1297,27 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
 
 上記全体は常に `zsh -ic "..."` で wrap され、`~/.zshrc` のユーザー定義関数（`ccenec` 等）と env（proxy 認証 / PATH 等）が子セッションで読み込まれます。
 
+MODE によらず、解決された runner engine が `claude` のときは worktree の
+`.claude/settings.local.json` に `permissions.defaultMode: "bypassPermissions"` を
+注入する（`jq` でマージし、`mktemp` + `mv` でアトミックに置換。既に同値なら
+スキップ）。これが、すべての起動経路に `--dangerously-skip-permissions` を足すことなく
+通常（非 loop）ディスパッチから permission prompt を消している仕組み。
+
+このモードでも `AskUserQuestion` は対話的なまま残る。permission システムが門番をするのは
+ツール呼び出しであり、`AskUserQuestion` と `ExitPlanMode` は permission mode に関わらず
+TUI セッションが描画する対話 UI だからである。非対話セッションだけが `PreToolUse` hook で
+それらに答える必要がある。superpowers モードのブレスト対話が壊れないのはこのため。
+
+bypass モード突入の確認ダイアログは `--dangerously-skip-permissions` でも
+`defaultMode: "bypassPermissions"` でも出る。抑止する `skipDangerousModePermissionPrompt`
+は project settings では無視されるので、ユーザー設定 `~/.claude/settings.json` に置くこと。
+
+codex engine は影響を受けない。`.claude/settings.local.json` を読まないうえ、
+`--dangerously-bypass-approvals-and-sandbox`（レビューペインは
+`--sandbox workspace-write` + `-c approval_policy='never'`）で既に prompt が出ない。
+
 **execute モードの使い所**: Phase B (実装フェーズ) で sonnet / codex などの別モデルに切り替える場面。Child セッションが `launch-workspace.sh --mode execute --plan-file <path> [--model <X>] [--skip-permissions]` を呼び出して別 surface を spawn し、自分は `<STATUS_DIR>/.deferred` を作成して exit する。execute モードでは `.cmux-team-dispatch-task-prompt.md` を書き換えず、Phase A のものを温存する。codex engine では `--model` 未指定時に runner の `exec_model` がフォールバック適用される（execute / standby のみ。review は常に `review_model` を明示）。
 
-`claude-teams` レイアウトは runner 設定を無視し常に `cmux claude-teams`（親の claude アカウント）で起動します。
 
 ### 初回セットアップ
 
@@ -1417,7 +1348,7 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
   4. **常に固定 runner を選ぶ**: 追加の AskUserQuestion で `runners[]` から 1 つ選び、
      全タスクに割当 + グローバル config に `design_runner: "<name>"` を永続化
 
-選ばれた runner 名は `launch-session-splits.sh` の入力 JSON 各タスクに optional `"runner": "<name>"` として渡され、`launch-workspace.sh --runner <name>` に伝播します。
+選ばれた runner 名は各タスクの起動時に `launch-workspace.sh --runner <name>` へ渡されます。
 
 ### 既存 Phase B モデル選択との関係
 
@@ -1471,13 +1402,9 @@ prewarm の設計 codex ペインは `--mode standby` で起動されるため�
 > 削除確認はすべて親セッションが全タスク完了後にまとめて実施します（子が自分の worktree を
 > 掴んだ状態で親が削除を試みて失敗するのを防ぐため）。
 
-## モード別の閉鎖対象
+## 閉鎖対象
 
-| `$LAYOUT_MODE`  | `close_all=true` で閉じる対象      | 使用する cmux コマンド                    |
-|-----------------|----------------------------------|-------------------------------------------|
-| `split`         | 子のペイン（子の `surface_id`）   | `cmux close-surface --surface <id>`       |
-| `workspace`     | 子のワークスペース                 | `cmux close-workspace --workspace <id>`   |
-| `claude-teams`  | team が紐づくワークスペース         | `cmux close-workspace --workspace <id>`   |
+`close_all=true` のとき、子の workspace を `cmux close-workspace --workspace <id>` で閉じる。
 
 ## 前提条件
 

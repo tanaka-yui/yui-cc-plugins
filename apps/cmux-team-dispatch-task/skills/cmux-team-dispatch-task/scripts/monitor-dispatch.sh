@@ -6,10 +6,7 @@
 #   monitor-dispatch.sh [options] <dispatch-dir>
 #
 # Options:
-#   --parent-surface <id>          親サーフェス ID（split モード用）
-#   --parent-workspace <id>        親ワークスペース ID（workspace モード用）
-#   --layout split|workspace|claude-teams
-#                                   レイアウトモード（default: workspace）
+#   --parent-workspace <id>        親ワークスペース ID
 #   --interval <seconds>           ポーリング間隔（default: 10）
 #   --heartbeat-interval <seconds> heartbeat 送信間隔（default: 60、0 で無効化）
 #   --dispatch-dir <path>          dispatch ディレクトリ（位置引数の代替）
@@ -52,10 +49,7 @@ ts() {
 # 発行する。失敗は silent (|| true)。
 send_to_parent() {
   local msg="$1"
-  if [[ "$LAYOUT" == "split" && -n "$PARENT_SURFACE" ]]; then
-    "$CMUX" send --surface "$PARENT_SURFACE" "$msg" 2>/dev/null || true
-    "$CMUX" send-key --surface "$PARENT_SURFACE" return 2>/dev/null || true
-  elif [[ -n "$PARENT_WORKSPACE" ]]; then
+  if [[ -n "$PARENT_WORKSPACE" ]]; then
     "$CMUX" send --workspace "$PARENT_WORKSPACE" "$msg" 2>/dev/null || true
     "$CMUX" send-key --workspace "$PARENT_WORKSPACE" return 2>/dev/null || true
   fi
@@ -69,15 +63,13 @@ on_exit() {
     [[ -f "$PID_FILE" ]] && rm -f "$PID_FILE"
     return
   fi
-  send_to_parent "[dispatch-monitor] DIED (exit=$exit_code) — re-launch: zsh $SCRIPT_PATH --layout $LAYOUT --dispatch-dir $DISPATCH_DIR --resume"
+  send_to_parent "[dispatch-monitor] DIED (exit=$exit_code) — re-launch: zsh $SCRIPT_PATH --dispatch-dir $DISPATCH_DIR --resume"
   [[ -f "$PID_FILE" ]] && rm -f "$PID_FILE"
 }
 
 # --- 引数解析 ---
 
-PARENT_SURFACE=""
 PARENT_WORKSPACE=""
-LAYOUT="workspace"
 INTERVAL=10
 HEARTBEAT_INTERVAL=60
 DISPATCH_DIR=""
@@ -90,22 +82,14 @@ while [[ $# -gt 0 ]]; do
       DEBUG=true
       shift
       ;;
-    --parent-surface)
-      [[ $# -lt 2 ]] && die "--parent-surface requires a surface ID"
-      PARENT_SURFACE="$2"
-      shift 2
-      ;;
     --parent-workspace)
       [[ $# -lt 2 ]] && die "--parent-workspace requires a workspace ID"
       PARENT_WORKSPACE="$2"
       shift 2
       ;;
-    --layout)
-      [[ $# -lt 2 ]] && die "--layout requires split, workspace, or claude-teams"
-      LAYOUT="$2"
-      [[ "$LAYOUT" == "split" || "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]] \
-        || die "--layout must be 'split', 'workspace', or 'claude-teams'"
-      shift 2
+    # v1.13.0 で削除。レイアウトは常に workspace で、通知先も常に親 workspace。
+    --layout|--parent-surface)
+      die "$1 was removed: the layout is always 'workspace' and the parent is notified by workspace"
       ;;
     --interval)
       [[ $# -lt 2 ]] && die "--interval requires a number"
@@ -162,7 +146,7 @@ trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-echo "[$(ts)] monitor started (pid=$$, layout=$LAYOUT, interval=${INTERVAL}s, heartbeat=${HEARTBEAT_INTERVAL}s, resume=$RESUME)"
+echo "[$(ts)] monitor started (pid=$$, interval=${INTERVAL}s, heartbeat=${HEARTBEAT_INTERVAL}s, resume=$RESUME)"
 
 # --- ポーリングループ ---
 
