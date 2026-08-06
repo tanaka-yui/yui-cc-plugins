@@ -68,10 +68,6 @@
 #                                      claude engine には --dangerously-skip-permissions を
 #                                      強制付与する。他モードでは警告して無視
 #   --status-dir <path>                Directory for writing status files
-#   --layout workspace|split           Layout mode (default: workspace)
-#   --split-from <surface-id>          Surface to split from (required for split mode)
-#   --split-direction right|down       Split direction (default: right)
-#   --parent-workspace <ws-id>         Parent workspace ID (required for split mode)
 #   --parent-notify-workspace <ws-id>  Workspace to notify on completion
 #   --parent-notify-surface <sf-id>    Surface to notify on completion
 #   --runner <name>                    Runner name to look up in
@@ -184,10 +180,6 @@ STANDBY_IN=""
 STANDBY_SPLIT_FROM=""
 STANDBY_SPLIT_DIRECTION="down"
 STATUS_DIR=""
-LAYOUT="workspace"
-SPLIT_FROM=""
-SPLIT_DIRECTION="right"
-PARENT_WORKSPACE=""
 NOTIFY_WORKSPACE=""
 NOTIFY_SURFACE=""
 RUNNER_NAME=""
@@ -276,27 +268,11 @@ while [[ $# -gt 0 ]]; do
       STATUS_DIR="$2"
       shift 2
       ;;
-    --layout)
-      [[ $# -lt 2 ]] && die "--layout requires workspace, split, or claude-teams"
-      LAYOUT="$2"
-      [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "split" || "$LAYOUT" == "claude-teams" ]] || die "--layout must be 'workspace', 'split', or 'claude-teams'"
-      shift 2
-      ;;
-    --split-from)
-      [[ $# -lt 2 ]] && die "--split-from requires a surface ID"
-      SPLIT_FROM="$2"
-      shift 2
-      ;;
-    --split-direction)
-      [[ $# -lt 2 ]] && die "--split-direction requires right or down"
-      SPLIT_DIRECTION="$2"
-      [[ "$SPLIT_DIRECTION" == "right" || "$SPLIT_DIRECTION" == "down" ]] || die "--split-direction must be 'right' or 'down'"
-      shift 2
-      ;;
-    --parent-workspace)
-      [[ $# -lt 2 ]] && die "--parent-workspace requires a workspace ID"
-      PARENT_WORKSPACE="$2"
-      shift 2
+    # v1.13.0 で削除。単に case を消すと catch-all が削除済みフラグを workspace 名として
+    # 受理してしまう (WORKSPACE_NAME の正規表現 [A-Za-z0-9._-]+ にマッチするため)。
+    # 旧 API の呼び出しには明示的なエラーを返す。
+    --layout|--split-from|--split-direction|--parent-workspace)
+      die "$1 was removed: the layout is always 'workspace'"
       ;;
     --parent-notify-workspace)
       [[ $# -lt 2 ]] && die "--parent-notify-workspace requires a workspace ID"
@@ -387,14 +363,6 @@ fi
 # 旧固定名 ".cmux-team-dispatch-task-run.sh" は Child の実行中ファイルを上書きしてしまい、
 # Child bash が中途半端な byte offset から書き換え後の内容を読んで undefined 挙動になっていた。
 RUNNER_SCRIPT_NAME=".cmux-team-dispatch-task-run-${WORKSPACE_NAME}.sh"
-
-# Validate split mode requirements
-if [[ "$LAYOUT" == "split" ]]; then
-  [[ -z "$PARENT_WORKSPACE" ]] && die "--parent-workspace is required when --layout is split"
-  [[ -z "$SPLIT_FROM" ]] && die "--split-from is required when --layout is split"
-fi
-
-# claude-teams mode uses workspace-like creation (no split requirements)
 
 # --- Validation ---
 
@@ -593,7 +561,7 @@ fi
 # プロンプト焼き込みの MANDATORY MODEL SELECTION SEQUENCE (Phase A-R / Phase B) が
 # スキップされることがある。承認直後に PostToolUse hook で指示を機械的に再注入する。
 # hook はベストエフォート: 失敗は警告のみで dispatch を止めない (プロンプト側指示がフォールバック)。
-# claude-teams レイアウトは Task 2 で廃止される。hook は claude engine の plan モードに注入する。
+# hook は claude engine の plan モードに注入する。
 if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
   SETTINGS_FILE="$CWD/.claude/settings.local.json"
   HOOK_SCRIPT="$SCRIPT_DIR/plan-approved-hook.sh"
@@ -618,8 +586,6 @@ fi
 # Build the launch command per (engine × MODE) and wrap with `zsh -ic` so that
 # user-defined functions and env vars from ~/.zshrc (e.g. ccenec, ccgpt, proxy
 # auth) are always resolved.
-#
-# claude-teams layout uses `cmux claude-teams` (claude-only) and ignores --runner.
 
 # --unattended は実行系 (execute / standby) 専用
 if [[ $UNATTENDED -eq 1 && "$MODE" != "execute" && "$MODE" != "standby" ]]; then
@@ -706,20 +672,7 @@ if [[ $SKIP_PERMISSIONS -eq 1 ]]; then
   fi
 fi
 
-if [[ "$LAYOUT" == "claude-teams" ]]; then
-  # claude-teams mode: --runner is ignored; claude-teams only supports claude.
-  # execute mode for claude-teams reuses superpowers branch (no --dangerously-skip-permissions)
-  if [[ "$MODE" == "superpowers" || "$MODE" == "execute" ]]; then
-    # superpowers mode: --dangerously-skip-permissions を使わない
-    # --dangerously-skip-permissions は AskUserQuestion もバイパスしてしまうため、
-    # ブレストの対話フローが機能しない。env の permissions.defaultMode: bypassPermissions は
-    # ツール許可をバイパスしつつ AskUserQuestion を対話的に保つのでそちらに依存する
-    CLAUDE_CMD="$CMUX claude-teams '$PROMPT_TEXT'"
-  else
-    CLAUDE_CMD="$CMUX claude-teams --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
-  fi
-else
-  # engine × mode で起動コマンドを構築
+# engine × mode で起動コマンドを構築
   if [[ "$RUNNER_ENGINE" == "codex" ]]; then
     if [[ "$MODE" == "execute" ]]; then
       # codex execute: plan モードと同じく bypass フラグを付与。
@@ -771,6 +724,10 @@ else
         CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}"
       fi
     elif [[ "$MODE" == "superpowers" ]]; then
+      # superpowers mode: 起動フラグは付けない。permission prompt の抑止は Step 2a で
+      # worktree の .claude/settings.local.json に注入する permissions.defaultMode が担う
+      # (AskUserQuestion は permission gate とは別レイヤーなので bypassPermissions 下でも
+      #  対話的に残る。詳細は Step 2a のコメント)
       CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
     else
       CORE_CMD="$RUNNER_COMMAND --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
@@ -779,7 +736,6 @@ else
 
   # 常に zsh -ic で .zshrc を読み込ませてユーザー定義関数 (ccenec 等) と env (proxy 認証 等) を解決
   CLAUDE_CMD="zsh -ic \"$CORE_CMD\""
-fi
 
 # --- Step 4: Generate runner script ---
 # The runner is written BEFORE the workspace is created so it can be launched
@@ -844,7 +800,6 @@ write_status() {
 
 NOTIFY_WS="${NOTIFY_WORKSPACE}"
 NOTIFY_SF="${NOTIFY_SURFACE}"
-LAYOUT_MODE="${LAYOUT}"
 NOTIFIED_FILE=""
 [[ -n "\$STATUS_DIR" ]] && NOTIFIED_FILE="\$STATUS_DIR/.notified-\$SLUG"
 
@@ -862,10 +817,10 @@ notify_parent() {
   fi
 
   local target_flag target_id
-  if [[ "\$LAYOUT_MODE" == "split" && -n "\$NOTIFY_SF" ]]; then
-    target_flag="--surface"; target_id="\$NOTIFY_SF"
-  elif [[ -n "\$NOTIFY_WS" ]]; then
+  if [[ -n "\$NOTIFY_WS" ]]; then
     target_flag="--workspace"; target_id="\$NOTIFY_WS"
+  elif [[ -n "\$NOTIFY_SF" ]]; then
+    target_flag="--surface"; target_id="\$NOTIFY_SF"
   else
     return 1
   fi
@@ -1087,13 +1042,13 @@ if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; th
     "cd '$CWD' && bash $RUNNER_SCRIPT_NAME\n" >/dev/null 2>&1 || die "failed to send cd+runner command"
   log "cmux" "standby runner command sent"
 
-elif [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
-  # --- Workspace Mode / Claude Teams Mode ---
+else
+  # --- Workspace Mode ---
   # Use `--command` so the runner starts the instant the workspace shell is ready.
   # This is strictly better than creating the workspace and then sending the
   # runner via `cmux send`: on some environments the new surface is not a
   # terminal at creation time, which previously caused dropped commands.
-  log "cmux" "creating workspace with cwd=$CWD (layout: $LAYOUT), auto-launching runner via --command"
+  log "cmux" "creating workspace with cwd=$CWD, auto-launching runner via --command"
   WORKSPACE_OUTPUT=$("$CMUX" new-workspace --cwd "$CWD" --command "bash $RUNNER_SCRIPT_NAME" 2>/dev/null) \
     || die "failed to create cmux workspace"
   WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1)
@@ -1111,36 +1066,10 @@ elif [[ "$LAYOUT" == "workspace" || "$LAYOUT" == "claude-teams" ]]; then
   [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from output: $SURFACE_OUTPUT"
   log "cmux" "surface: $SURFACE_ID"
 
-elif [[ "$LAYOUT" == "split" ]]; then
-  # --- Split Mode: Create new pane in existing workspace ---
-  # `cmux new-split` does not support --command, so we fall back to the
-  # send-after-create approach with shell readiness detection.
-  WORKSPACE_ID="$PARENT_WORKSPACE"
-  TITLE="$WORKSPACE_NAME"
-
-  log "cmux" "splitting $SPLIT_DIRECTION from $SPLIT_FROM in $WORKSPACE_ID"
-  SPLIT_OUTPUT=$("$CMUX" new-split "$SPLIT_DIRECTION" \
-    --workspace "$WORKSPACE_ID" \
-    --surface "$SPLIT_FROM" 2>/dev/null) || die "failed to create split pane"
-  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
-  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
-  log "cmux" "new split surface: $SURFACE_ID"
-
-  # Rename the tab for the new split pane
-  "$CMUX" rename-tab --workspace "$WORKSPACE_ID" --surface "$SURFACE_ID" "$TITLE" >/dev/null 2>&1 || \
-    log "cmux" "warning: failed to rename tab (non-fatal)"
-
-  wait_for_shell "$SURFACE_ID" || true
-
-  # Launch the runner via send (split mode only).
-  RUNNER_CMD="bash $RUNNER_SCRIPT_NAME"
-  "$CMUX" send --surface "$SURFACE_ID" \
-    "cd '$CWD' && $RUNNER_CMD\n" >/dev/null 2>&1 || die "failed to send cd+runner command"
-  log "cmux" "split runner command sent"
 fi
 
 # --- Step 6: Write initial "launched" status ---
-# Race protection: the runner is already running in workspace/claude-teams mode,
+# Race protection: the runner is already running in workspace mode,
 # so it may have already written "executing"/"done"/"error" to status.json.
 # Do not regress from those to "launched".
 
@@ -1161,8 +1090,8 @@ if [[ -n "$STATUS_DIR" && "$MODE" != "standby" && "$MODE" != "review" ]]; then
         --arg sf "$SURFACE_ID" \
         --arg title "$TITLE" \
         --arg mode "$MODE" \
-        --arg layout "$LAYOUT" \
-        --arg msg "Claude session launched in $MODE mode ($LAYOUT layout)" \
+        --arg layout "workspace" \
+        --arg msg "Claude session launched in $MODE mode (workspace layout)" \
         '{
           status: $status,
           workspace_id: $ws,
@@ -1190,9 +1119,7 @@ jq -n \
   --arg branch "$BRANCH_NAME" \
   --arg worktree "$WORKTREE_PATH" \
   --arg mode "$MODE" \
-  --arg layout "$LAYOUT" \
-  --arg split_from "$SPLIT_FROM" \
-  --arg split_direction "$SPLIT_DIRECTION" \
+  --arg layout "workspace" \
   --arg status_dir "$STATUS_DIR" \
   --arg prompt_file "$PROMPT_FILE" \
   --arg runner_file "$RUNNER_FILE" \
@@ -1209,8 +1136,6 @@ jq -n \
     worktree_path: (if $worktree == "" then null else $worktree end),
     mode: $mode,
     layout: $layout,
-    split_from: (if $split_from == "" then null else $split_from end),
-    split_direction: (if $split_direction == "" then null else $split_direction end),
     status_dir: (if $status_dir == "" then null else $status_dir end),
     prompt_file: $prompt_file,
     runner_file: $runner_file,

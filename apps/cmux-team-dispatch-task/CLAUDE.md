@@ -10,10 +10,8 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `skills/cmux-team-dispatch-task/SKILL.md` | メインスキル定義（3ステップワークフロー） |
 | `skills/cmux-team-dispatch-task/references/guide-ja.md` | 日本語リファレンスガイド |
 | `skills/cmux-team-dispatch-task/scripts/launch-workspace.sh` | ワークスペース/スプリット起動スクリプト |
-| `skills/cmux-team-dispatch-task/scripts/launch-session-splits.sh` | 複数セッション一括起動ラッパー（superpowers 連携用） |
 | `skills/cmux-team-dispatch-task/scripts/prewarm-panes.sh` | pre-warm standby ペイン一括起動ラッパー(縦分割 / Phase A-R 有効時は 2×2 グリッド・agmsg 配線・prewarm.json 生成) |
 | `skills/cmux-team-dispatch-task/scripts/monitor-dispatch.sh` | 完了通知の監視スクリプト（子 → 親通知＋全完了検知） |
-| `skills/cmux-team-dispatch-task/scripts/cmux-grid.sh` | split モード用グリッドレイアウト整列スクリプト |
 | `skills/cmux-team-dispatch-task/scripts/terminal-wait.sh` | シェル起動検知と `shell_ready_ms` 学習を行う共通ヘルパー（source 専用） |
 | `~/.claude/cmux-team-dispatch-task/config.json` | グローバル設定（自動生成）。`shell_ready_ms.baseline_ms`（EMA 学習値）、`message_type`（通知トランスポート）、`prewarm`（standby pane 事前起動）、`design_runner` / `exec_choice`（質問の固定値。未設定時は質問の「常に〜」回答から永続化可能） |
 | `~/.claude/cmux-team-dispatch-task/runners.json` | 子セッション runtime 一覧（初回セットアップで生成）。SKILL.md Step 1f で読込 |
@@ -53,7 +51,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 - **スクリプトのオプション追加**時は SKILL.md 内の使用例とスクリプト本体の `usage()` を同期する
 - テーブル形式・コード例を多用し、散文は最小限に
 - **Display Format Conventions（Template A/B/C）を変更したら、子セッションプロンプトに埋め込む `PROGRESS REPORTING FORMAT` のテーブルと guide-ja.md の Template も合わせて変更する**
-- **デフォルトレイアウトは workspace**。`split` を使うのは `--layout split` が明示された場合のみ
+- **レイアウトは常に workspace**。各タスクは独立した workspace で実行する
 - **モデル選択フロー（MANDATORY MODEL SELECTION SEQUENCE）の改変時** は SKILL.md / guide-ja.md / README.md / CLAUDE.md（このファイル）の **4 ファイル**を同時に更新する
 
 ## 関連プラグインとの境界
@@ -70,7 +68,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 ## メンテナンス手順
 
 1. `launch-workspace.sh --help` の出力と SKILL.md の使用例を突き合わせて整合性を確認
-2. `launch-session-splits.sh --help` の出力と SKILL.md・guide-ja.md の使用例を突き合わせて整合性を確認
+2. Child 起動に `launch-workspace.sh` を直接使うこと（`--defer-status` 必須）を SKILL.md・guide-ja.md の使用例と突き合わせて整合性を確認
 3. `monitor-dispatch.sh --help` の出力（特に `--heartbeat-interval` / `--resume` / `--dispatch-dir`）と SKILL.md Step 3 の使用例を突き合わせて整合性を確認
 4. ステータスプロトコル（status.json スキーマ、`pr_url` を含む）が SKILL.md と guide-ja.md で一致しているか確認
    - クリーンアップは親セッション側で全タスク完了後にまとめて 3 問（workspace / worktree / branch）聞く方式。`status.json` には保存しない
@@ -85,7 +83,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
    - 計画の受け渡しは `--plan-file <path>` で行う (`.cmux-team-dispatch-task-prompt.md` は書き換えず Phase A のものを温存)
 9. `cmux send` で親に通知する箇所すべてに `cmux send-key return` がペアで発行されているか確認（runner / monitor 両方）
 10. `runners.json` のスキーマ（`default` / `runners[].name|command|engine|review_model|exec_model|plan_effort|review_effort|exec_effort`）が SKILL.md Step 1f / guide-ja.md「子セッション runner 設定」/ `launch-workspace.sh` の `--runner` 解決ロジックの3か所で一致しているか確認。`review_model` は `engine: codex` の runner では design=claude タスクの Phase A-R/B-R レビューペイン（codex）用モデル、`engine: claude` の runner では design=codex タスクでレビュアー runner に選ばれたときに claude レビューペインへ渡すモデル（未設定時は `opus[1m]` にフォールバック）であることを検証。`exec_model` は codex engine の execute / standby で `--model` 未指定時のみフォールバック適用され（明示 `--model` が優先）、review ペイン（常に `review_model` を明示）には適用されないことを検証。`plan_effort` / `review_effort` / `exec_effort`（codex engine の runner のみ、値: `minimal`|`low`|`medium`|`high`|`xhigh`）は codex セッションの reasoning effort を Phase A 設計 (plan/superpowers) / レビューペイン (review) / 実行系 (execute/standby) にそれぞれ `-c model_reasoning_effort='<値>'` として注入し、明示 `--effort` > runner フィールド > `config.toml` 既定の優先順位で解決されることを検証。特に `engine × MODE` の起動コマンド対応表（claude/codex × plan/superpowers/execute の6通り、codex 側は effort 注入込み）が SKILL.md と guide-ja.md で同一か検証。なお composed command は常に `zsh -ic "..."` で wrap される（`.zshrc` の関数 / env を読み込むため）
-11. `launch-workspace.sh` の execute モード関連フラグ（`--mode execute` / `--plan-file` / `--model` / `--skip-permissions` / `--defer-status`）が SKILL.md / guide-ja.md / README.md の Phase B 説明と一致しているか確認。Child 側 (launch-session-splits.sh) が `--defer-status` を必ず付けて起動していること、孫側 (Phase B spawn) が `--mode execute` + `--plan-file` で起動していることを検証
+11. `launch-workspace.sh` の execute モード関連フラグ（`--mode execute` / `--plan-file` / `--model` / `--skip-permissions` / `--defer-status`）が SKILL.md / guide-ja.md / README.md の Phase B 説明と一致しているか確認。Child が `launch-workspace.sh` を直接呼び `--defer-status` を必ず付けて起動していること、孫側 (Phase B spawn) が `--mode execute` + `--plan-file` で起動していることを検証
 12. `message_type`（`send-message` / `agmsg`）の解決フロー（Step 1g: config 優先 → agmsg インストール時のみ初回質問 → Yes/No とも永続化）が SKILL.md / guide-ja.md / README.md で一致しているか確認。agmsg モードでは monitor-dispatch.sh を起動しないこと、runner wrapper の親通知が `cmux send` + `send-key return`（wake）に**加えて** `send.sh <team> <from> parent`（inbox 記録）を送る dual-send であること（agmsg push は idle セッションを起こせないため cmux send は省略不可）、status.json / signal は不変であることを検証。子プロンプトの status protocol に「status.json 書き込み直後の必須完了通知（send.sh + cmux send の両チャネル）」が含まれること、Step 1g に AGMSG-DIRECTIVE 遵守(ディスパッチ実行中セッションの watcher 起動。ただし watcher は記録・返信用で wake 手段ではない旨の注記付き)が記載されていることを検証
 13. pre-warm(`prewarm-panes.sh` / `--mode standby` の split・workspace 配置 / `.assigned-<name>` sentinel / prewarm.json スキーマ(`opus`・`sonnet`・`codex`・`review` + `delivery` + `engine`)/ signal 名 `<slug>-done`・`<slug>-sonnet-done`・`<slug>-codex-done`)が SKILL.md / guide-ja.md / README.md で一致しているか確認。prewarm.json の `engine` フィールドは `opus` が設計 runner の engine に追従（design=codex なら `codex`）、`sonnet` は常に `claude`、`codex` は常に `codex`、`review` は設計 engine の逆であることを検証。standby ペインは Phase A-R 無効時は縦積み(上 opus / 中 sonnet / 下 codex)、design=codex かつ Phase A-R 有効時は 2×2 グリッド（左上: design codex ペイン / 右上: claude レビューペイン `<slug>-opus`。詳細は項目 14）であること、standby wrapper が起動時・未 assigned exit 時に status.json を書かないこと、agmsg モードでは opus-1m も idle 起動し worktree への delivery 配線をペイン起動前に行うこと、Phase A / Phase B の指示送信が dual-send（常に `cmux send` + `send-key return`、prewarm.json の `delivery` 値が `agmsg` かつ watcher 生存時は加えて `send.sh` で inbox 記録）であること、Phase B の手順が「`.assigned-<name>` touch → 実行指示送信 → `.deferred` touch」の順であること、未使用側 pane は close せず開いたまま idle 維持する（常 4 ペイン）ことを検証
 14. Phase A-R（設計セッションの plan/spec を逆 engine がレビュー）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
@@ -99,7 +97,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - 同 5 箇所で、送信直前に ready sentinel（`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）の存在を確認し、生きているときだけ同一指示文を `send.sh` で inbox にも記録すること（inbox 記録時は指示文末尾に重複無視の注記を付ける）
     - `prewarm-panes.sh` が配線失敗（`CLAUDE_DELIVERY=cmux-send`）時に opus / sonnet の初期プロンプトを `/agmsg actas` なしの「直接タイプされる」文面に出し分けること。配線成功時のプロンプトも「タスクはタイプ入力で届く（inbox に同一コピーあり）」文面であり「agmsg message として届く」とは書かないこと
 16. plan モードの遵守ゲート（ExitPlanMode hook）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
-    - `launch-workspace.sh` が `--mode plan` かつ claude engine、かつ claude-teams レイアウト以外のときのみ worktree の `.claude/settings.local.json` に PostToolUse hook（matcher: `ExitPlanMode`、command: `zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入すること（既存 settings は jq マージ、worktree 再利用時は重複注入なし、失敗は警告のみで dispatch 続行）
+    - `launch-workspace.sh` が `--mode plan` かつ claude engine のときのみ worktree の `.claude/settings.local.json` に PostToolUse hook（matcher: `ExitPlanMode`、command: `zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入すること（既存 settings は jq マージ、worktree 再利用時は重複注入なし、失敗は警告のみで dispatch 続行）
     - `.claude/settings.local.json` と plan 保存先 `.claude/plans/` が repo 共有の `info/exclude` に追記されること（settings のマージ書き込みは tmp + mv のアトミック方式、hook command のスクリプトパスはクォート済み）
     - hook が worktree に残存し後続セッション（Phase B の execute 孫を含む）にも作用するが、plan モードを使わないため実害なし — と 4 ファイルで文書化されていること
     - MANDATORY MODEL SELECTION SEQUENCE の Phase A（plan モード）に「plan 冒頭に Step 0: Phase A-R（有効時）/ Step 1: Phase B を必須ステップとして記載」「plan が ExitPlanMode メッセージ内にしか無い場合は承認後最初にファイル保存」の指示、VIOLATION 節に PLAN-MODE TRAP が含まれること
@@ -152,6 +150,14 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - `ensure_claude_exclusions` の呼び出しは `|| true` を付けること。`launch-workspace.sh` は `set -euo pipefail` で走るため、bare 呼び出しだと `info/exclude` を解決できない cwd（非 git など）で launch ごと死ぬ
     - 回帰は `bash test/test-launch-workspace-permissions.sh` の P1〜P11（全 MODE 注入 / codex 非対象 / 既存キー保持 / 冪等 / superpowers にフラグを足さない / info/exclude 追記 / `--skip-permissions` との共存 / 非 git cwd でも launch が成功）で検証する
 
+26. **レイアウトの workspace 固定**が `launch-workspace.sh` / `monitor-dispatch.sh` / `SKILL.md` / `guide-ja.md` / `README.md` / `CLAUDE.md` で一致しているか確認:
+    - `launch-workspace.sh` が `--layout` / `--split-from` / `--split-direction` / `--parent-workspace` を、メッセージに `was removed` を含む明示的な die で拒否すること。composed command に `claude-teams` が現れないこと
+    - `monitor-dispatch.sh` が `--layout` / `--parent-surface` を同様に拒否し、親通知を常に `--workspace` 宛へ送ること。DIED 通知の再起動例に削除済みフラグを含めないこと
+    - SKILL.md / guide-ja.md に `{{LAYOUT}}` / `LAYOUT_MODE` / `LAYOUT=split` が残っておらず、起動例に削除済みの split 系フラグが残っていないこと。最終クリーンアップは workspace を閉じる 1 経路に統一すること
+    - stdout JSON と初期 `status.json` の `layout` が定数 `"workspace"` のまま残り、`split_from` / `split_direction` キーは出力されないこと
+    - `launch-session-splits.sh` / `cmux-grid.sh` が存在せず、README の移行注記以外の利用手順に削除済みレイアウトへの参照が残らないこと
+    - 回帰は `bash test/test-launch-workspace-layout.sh` と `bash test/test-monitor-layout.sh` で検証すること
+
 ## テスト方法
 
 ```bash
@@ -168,9 +174,8 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 ### E2E テスト（cmux セッション内で実行）
 
 1. 2つ以上の独立タスクを指定してスキルを発動
-2. **デフォルト挙動**: `--layout` フラグなしで workspace モードが選択されること
+2. **レイアウト**: 常に workspace であること
 3. workspace モード: 各タスクが別タブで起動すること
-4. split モード（`--layout split` 明示時）: 各タスクが同一ワークスペース内のペインで起動すること
 5. `.dispatch/*/status.json` が更新されること
 6. 完了シグナルが正しく発火すること
 7. **テーブル表示**: Step 1f の Template A、Step 3 の Template B、最終レポートの Template C が Box drawing 文字で出力されること（Mode 列が `superpwr` / `plan` で含まれていること）
@@ -178,8 +183,7 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 9. **同一 model (opus 1m)**: 選択時に `/model opus[1m]` が実行され、同 surface 内で実装が継続されること
 10. **異なる model (sonnet)**:
     - Child セッションが `launch-workspace.sh --mode execute --plan-file <path> --model sonnet --skip-permissions ...` を呼ぶこと
-    - `LAYOUT=workspace` → 新 workspace が立ち上がり、`claude --model sonnet --dangerously-skip-permissions 'Read and execute the plan at <path>. ... run /exit ...'` が runner script (`bash .cmux-team-dispatch-task-run-<slug>-exec.sh`) でラップされて起動すること (inner prompt 末尾に `/exit` 指示が付与されること、runner ファイル名は workspace 名で unique 化されること)
-    - `LAYOUT=split` → 同 workspace 内に新 split が右に追加され、上記と同じ runner-wrapped コマンドで起動すること
+    - 新 workspace が立ち上がり、`claude --model sonnet --dangerously-skip-permissions 'Read and execute the plan at <path>. ... run /exit ...'` が runner script (`bash .cmux-team-dispatch-task-run-<slug>-exec.sh`) でラップされて起動すること (inner prompt 末尾に `/exit` 指示が付与されること、runner ファイル名は workspace 名で unique 化されること)
     - Child が `<STATUS_DIR>/.deferred` を touch して exit すること
     - Child の runner wrapper が `.deferred` を検知し、`status.json` を上書きせず exit すること
     - 孫の Claude が PR 作成後に自動で `/exit` を発火して TUI を閉じること (これにより runner wrapper が完了処理に到達する)
@@ -191,7 +195,7 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 15. **`--resume`**: 既存の `.dispatch/` がある状態で monitor を `--resume` 起動 → 完了済みは skip、未完了のみ監視継続すること
 16. **message_type 解決**: config 未設定 + agmsg インストール済みで初回質問が出て、Yes/No どちらでも `~/.claude/cmux-team-dispatch-task/config.json` に永続化されること。config 設定済みなら質問が出ないこと
 17. **agmsg モード**: monitor-dispatch.sh が起動しないこと。子が status.json に done/error を書いた**直後**に `[dispatch] task ... finished` が `cmux send` + `send-key return` で親に届き(親が idle のままでも届くこと — これがタイプ入力を wake 手段にする理由)、同一文が agmsg push として親の inbox にも記録されること。wrapper の exit 時通知で同じ通知が重複して届くことがあるのは正常。ディスパッチ実行中の親セッションで AGMSG-DIRECTIVE により watcher が起動していること。status.json は従来どおり遷移すること
-18. **pre-warm**: workspace レイアウトで各タスク workspace が縦分割ペインになること(agmsg モード: 上 opus-1m[idle] / 中 sonnet / 下 codex、send-message モード: 上 opus[タスク実行中] / 中 sonnet / 下 codex。codex runner が無ければ縦2分割)。agmsg モードでは全ペインが idle 起動し、親からの dual-send(`.assigned-<slug>` touch 後の `cmux send` タイプ入力 + inbox 記録)で Phase A が開始されること。`prewarm: false` / split レイアウトでは起動しないこと。タスク未割り当てのまま workspace を閉じても status.json が汚れないこと
+18. **pre-warm**: 各タスク workspace が縦分割ペインになること(agmsg モード: 上 opus-1m[idle] / 中 sonnet / 下 codex、send-message モード: 上 opus[タスク実行中] / 中 sonnet / 下 codex。codex runner が無ければ縦2分割)。agmsg モードでは全ペインが idle 起動し、親からの dual-send(`.assigned-<slug>` touch 後の `cmux send` タイプ入力 + inbox 記録)で Phase A が開始されること。`prewarm: false` では起動しないこと。タスク未割り当てのまま workspace を閉じても status.json が汚れないこと
 19. **Phase B prewarm 経路**: sonnet 選択 → 未使用側 (codex) standby pane は開いたまま idle 維持され、`.assigned-<slug>-sonnet` が touch され、待機 pane へ実行指示が送信され、実装完了 exit 時に standby wrapper が status.json を done にし `<slug>-sonnet-done` signal + 親通知が発火すること。opus 1m 選択 → 未使用側 standby pane(sonnet / codex)は開いたまま status.json が汚れないこと(常 4 ペイン維持。途中で close しない)。prewarm.json が無い場合は従来の spawn にフォールバックすること。実行指示の送信は dual-send であること(常に `cmux send` + `send-key return` が発行され、`delivery` 値が `agmsg` かつ watcher 生存時は加えて `send.sh` で inbox 記録 — タイプ入力だけで idle ペインが確実に起きること)。codex 配線失敗時に `delivery: "cmux-send"` へフォールバックすること
 20. **Phase A-R 無効**: `review_model` 未設定または `review_mode: off` で、現行フローと完全一致すること（prewarm レイアウトも縦積みのまま。Phase A 直後は `exec_choice` の解決済み方式、すなわち質問または default-direct に従う）
 21. **Phase A-R 有効 + prewarm（design=claude）**: 2×2 均等グリッドで 4 ペイン起動（左上 opus / 右上 review [idle codex, `--model <review_model>`] / 左下 sonnet / 右下 codex）。prewarm.json に `review` キーがあること（design=codex の場合は項目 33 を参照）
