@@ -33,12 +33,37 @@ agmsg for completion detection, a "short-lived watcher that exits on token detec
 is chained in as a background task to reliably wake the idle parent session (verified
 empirically that agmsg monitor push cannot wake an idle parent session).
 
+Parallelism is not left to codex's discretion. The launched prompt carries a
+mandatory directive: whenever two or more pieces of work are independent, codex
+MUST fan them out with `spawn_agent` and collect them with `wait_agent`. Only
+read-only investigation and post-implementation verification are parallelized —
+file edits stay sequential in the parent agent, because this plugin runs in the
+current directory without worktree isolation and concurrent writers would
+clobber each other.
+
 ## Prerequisites
 
 - Inside a cmux session (`CMUX_SOCKET_PATH`).
 - `codex` CLI is on PATH.
 - The parent session has already joined the agmsg team (if not joined, the command
   guides through join).
+
+## Parallel execution
+
+The prompt is built with a directive that caps concurrent child agents (default
+4) and asks codex to close with a summary table of what it spawned. Available
+`agent_type` values are discovered from `.codex/agents/*.toml` in the current
+directory and listed with their descriptions; if none exist, codex is told to
+omit `agent_type`.
+
+| Argument | Meaning |
+|------|------|
+| `--no-parallel` | Do not inject the directive (identical to the previous behavior) |
+| `--agents <N>` | Concurrency cap. Integers 2-8 only; anything else exits non-zero before splitting a pane (default: 4) |
+
+When notification wiring is on, codex appends `agents=<N>` to the completion
+message, and `bin/cmux-codex-wait` echoes it back as
+`status=done token=<token> agents=<N>`.
 
 ## Procedure
 

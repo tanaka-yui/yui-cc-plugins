@@ -42,6 +42,15 @@ missed" than implementation does, and letting it think deeply is worth the cost 
 if it's a bit slower. It launches interactively in a new pane so the user can follow
 the findings visually and ask follow-up questions if needed.
 
+Parallelism is mandatory rather than discretionary. The prompt instructs codex to
+spawn one child agent per review lens (bugs/correctness, security,
+design/readability, test coverage) and to gather background that a diff alone
+cannot settle — call sites, existing conventions, change history — with
+additional child agents in parallel. The parent agent then merges the findings
+into a single deduplicated, severity-ordered review. Available `agent_type`
+values are discovered from `.codex/agents/*.toml`; if none exist, codex omits
+`agent_type`.
+
 ## Prerequisites
 
 - Must be **inside a cmux session** (`CMUX_SOCKET_PATH` is required). Panes cannot be
@@ -90,6 +99,8 @@ Main arguments (all optional; see the bin's header comment for details):
 | `-m <model>` / `-e <effort>` | Override model / effort (default: gpt-5.6-sol / xhigh) |
 | `-- <instructions>` | Custom review instructions for codex |
 | `--team <team> --reviewer <name> --parent <agent>` | Wires up the agmsg completion notification |
+| `--no-parallel` | Do not inject the parallel-execution directive |
+| `--agents <N>` | Concurrency cap for child agents. Integers 2-8 only (default: 4) |
 
 The bin outputs `surface=` / `token=`. When notification wiring is enabled, pass this
 `token` and `surface` to `bin/cmux-codex-wait` to wait for completion (do not attach

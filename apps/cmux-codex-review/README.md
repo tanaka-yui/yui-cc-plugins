@@ -16,6 +16,8 @@ agmsg の受信箱を確認したうえで、新しい cmux ペインで **codex
 /codex-review --base main  # main との差分をレビュー
 /codex-review -- セキュリティ観点を重点的に   # カスタム指示付き
 /codex-review --path docs/superpowers/specs/x-design.md  # 指定ファイルの内容をレビュー
+/codex-review --no-parallel   # 並列化させず 1 エージェントでレビュー
+/codex-review --agents 2      # 同時実行の子エージェントを 2 体までに絞る
 ```
 
 対象を指定せずに `/codex-review` を打った場合は、未コミット変更と
