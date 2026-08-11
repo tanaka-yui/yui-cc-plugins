@@ -106,10 +106,12 @@ agents edit files in this worktree at the same time.
 機構だけ差し替える。`spawn_agent` / `wait_agent` の代わりに「1 つのメッセージで複数の Task
 サブエージェントを起動する」を指示する。
 
-**加えて claude だけに必要な一文がある。** superpowers モードの子は
-brainstorming → writing-plans → **subagent-driven-development** を辿る。この SDD スキルは
-*"Never dispatch multiple implementation subagents in parallel (conflicts)"* と明示的に逐次実行を
-要求しており、無条件の「並列化せよ」はスキルと矛盾する。したがって claude 向けの文面には次を入れる。
+### superpowers への譲歩文（全 engine × 全 mode 共通）
+
+superpowers モードの子は brainstorming → writing-plans → **subagent-driven-development** を辿る。
+この SDD スキルは *"Never dispatch multiple implementation subagents in parallel (conflicts)"* と
+明示的に逐次実行を要求しており、無条件の「並列化せよ」はスキルと矛盾する。したがって次の一文を
+入れる。
 
 ```
 This applies to investigation and verification only. It never overrides a
@@ -117,6 +119,16 @@ skill that sequences implementation for you: if you are following
 superpowers subagent-driven-development, keep its one-implementer-at-a-time
 rule exactly as written.
 ```
+
+**この一文は engine で出し分けず、全 engine × 全 mode に入れる。** 理由は 2 つある。
+
+- codex も superpowers パイプラインを辿る。`launch-workspace.sh:703` の codex superpowers モードは
+  プロンプトに `$superpowers:brainstorming` を前置しており、そこから writing-plans →
+  subagent-driven-development へ繋がる。claude 限定にすると codex 側で同じ矛盾が起きる
+- execute モードの子も、渡された plan を executing-plans / subagent-driven-development で
+  実行することがある。設計モードに限定しても漏れる
+
+常に真で、入れても害がない一文なので、条件分岐を持たずに常時出力する方が安全かつ単純である。
 
 ## 系統 A: `launch-workspace.sh` の変更
 
@@ -187,7 +199,7 @@ engine は対象ペインのものを渡す（standby sonnet なら `claude`、c
 |----|---------|
 | PD1 | `--engine codex` の出力に `spawn_agent` と `wait_agent` が含まれる |
 | PD2 | `--engine claude` の出力に Task サブエージェントの指示が含まれ、`spawn_agent` は含まれない |
-| PD3 | `--engine claude --mode superpowers` の出力に subagent-driven-development の順序を上書きしない旨が含まれる |
+| PD3 | **全 engine × 全 mode** の出力に subagent-driven-development の順序を上書きしない旨が含まれる |
 | PD4 | **全 engine × 全 mode の出力に `'` `"` `` ` `` `$` `!` `\` が 1 文字も含まれない**（クォート・展開文字混入の回帰防止） |
 | PD5 | 全モードの出力にファイル編集を逐次に保つ禁止文が含まれる |
 | PD6 | `--agents 5` が出力に反映され、`--agents 1` / `9` / `abc` はエラー終了する |
