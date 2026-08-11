@@ -653,6 +653,35 @@ codex（agent `<slug>-review`）。
 Phase B はオンデマンドの `--mode execute` spawn にフォールバックし、agmsg モードの opus
 セッションも従来どおりプロンプト埋め込みのワークスペース起動にフォールバックする。
 
+## タスク内の並列実行
+
+タスク同士は既に worktree 横断で並列に走っている。この節が扱うのは **1 タスクの中**の話で、
+各子セッションに「独立した調査と検証は 1 件ずつ順にやらず、子エージェントへ分散させよ」と
+指示する。
+
+`scripts/parallel-directive.sh` がその文面の単一情報源である。
+
+```
+parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|review> [--agents <N>]
+```
+
+- codex セッションには `spawn_agent` / `wait_agent` を、claude セッションには
+  1 メッセージで複数の Task サブエージェントを起動することを指示する
+- ファイル編集は常に親エージェントで逐次に保つ。実装の順序を制御するスキル
+  （superpowers subagent-driven-development の「実装者は同時に 1 体」）は上書きしない
+- `--agents` が同時実行の上限。2〜8 の整数のみで既定は 4
+- `standby` モードは存在しない。standby ペインは実行系なので `--mode execute` を渡す
+
+注入箇所:
+
+| 対象 | 注入する側 |
+|------|-----------|
+| plan / superpowers / execute の起動プロンプト | `launch-workspace.sh`（`--no-parallel` で抑止） |
+| standby ペインへ送る Phase B 実行指示 | このスキル（スクリプト経由） |
+| Phase A-R のレビュー依頼 | このスキル（スクリプト経由） |
+| Phase B-R のレビュー依頼（prewarm 経路） | このスキル（スクリプト経由） |
+| Phase B-R のレビュー依頼（spawn 経路） | `launch-workspace.sh`（`review/code-review.json` の `reviewer_engine` から） |
+
 ## Step 3: 監視と完了
 
 通知ベースの監視 → 結果収集 → レポート生成 → マージ/クリーンアップ。
