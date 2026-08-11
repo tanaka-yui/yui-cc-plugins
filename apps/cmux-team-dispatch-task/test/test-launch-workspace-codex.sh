@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # launch-workspace.sh が Codex runner 向けに生成するコマンドの回帰テスト。
+# 並列実行ディレクティブ (PL1-PL5) もここで検証する。
 
 set -euo pipefail
 
@@ -83,6 +84,20 @@ plan_runner=$(runner_for plan)
 execute_runner=$(runner_for execute)
 standby_runner=$(runner_for standby)
 review_runner=$(runner_for review)
+
+runner_for_flags() {
+  local mode="$1"; shift
+  local name="codex-$mode-flags"
+  local output
+  if [[ "$mode" == "execute" ]]; then
+    output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --status-dir "$TMP/status" "$@" "$name")
+  else
+    output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --status-dir "$TMP/status" "$@" "$name" prompt)
+  fi
+  jq -r '.runner_file' <<<"$output"
+}
 
 assert_contains "$superpowers_runner" '--dangerously-bypass-approvals-and-sandbox' 'T1 codex + superpowers bypass'
 assert_contains "$plan_runner" '--dangerously-bypass-approvals-and-sandbox' 'T2 codex + plan bypass'
@@ -255,6 +270,53 @@ if command -v codex >/dev/null 2>&1 && [[ "${RUN_CODEX_DYNAMIC_TEST:-0}" == "1" 
 else
   echo 'SKIP: dynamic Codex writable-root test (set RUN_CODEX_DYNAMIC_TEST=1 in an authenticated Codex environment).'
 fi
+
+# --- PL1: plan / superpowers / execute の起動プロンプトにディレクティブが入る ---
+assert_contains "$plan_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex plan で並列ディレクティブが入る'
+assert_contains "$superpowers_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex superpowers で並列ディレクティブが入る'
+assert_contains "$execute_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex execute で並列ディレクティブが入る'
+assert_contains "$execute_runner" 'spawn_agent' 'PL1 codex には spawn_agent が届く'
+
+# --- PL2: --no-parallel でディレクティブが入らない ---
+np_execute=$(runner_for_flags execute --no-parallel)
+assert_not_contains "$np_execute" 'PARALLEL EXECUTION, mandatory' 'PL2 --no-parallel でディレクティブ非注入'
+
+# --- PL3: standby / review の起動プロンプトにはディレクティブを入れない ---
+# (両モードはプロンプト無し / idle 待機文のみで起動し、指示は後から cmux send で届く)
+assert_not_contains "$standby_runner" 'PARALLEL EXECUTION, mandatory' 'PL3 standby はディレクティブ非注入'
+assert_not_contains "$review_runner" 'PARALLEL EXECUTION, mandatory' 'PL3 review はディレクティブ非注入'
+
+# --- PL4: execute では EXIT_INSTRUCTION がディレクティブより後ろに来る ---
+# (exit 指示の後ろに別の指示が続くと優先順位が曖昧になる)
+pl4_line=$(grep -o 'PARALLEL EXECUTION, mandatory.*end this codex session' "$execute_runner" | head -1)
+if [[ -n "$pl4_line" ]]; then
+  echo 'PASS: PL4 exit 指示がディレクティブより後ろにある'
+else
+  echo 'FAIL: PL4 exit 指示がディレクティブより前にある、または片方が欠けている'
+  fail=1
+fi
+
+# --- PL5: --agents の不正値は非ゼロ終了する ---
+pl5_bad=0
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner codex --plan-file "$TMP/plan.md" \
+  --agents 9 codex-agents-bad >/dev/null 2>&1 && pl5_bad=1
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner codex --plan-file "$TMP/plan.md" \
+  --agents abc codex-agents-bad2 >/dev/null 2>&1 && pl5_bad=1
+if [[ $pl5_bad -eq 0 ]]; then
+  echo 'PASS: PL5 --agents の不正値を拒否する'
+else
+  echo 'FAIL: PL5 --agents の不正値が通ってしまった'
+  fail=1
+fi
+
+# --- PL6: claude engine には Task サブエージェントの文面が届く ---
+claude_exec_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" claude-parallel)
+claude_exec_runner=$(jq -r '.runner_file' <<<"$claude_exec_output")
+assert_contains "$claude_exec_runner" 'Task subagents' 'PL6 claude execute には Task サブエージェント指示が届く'
+assert_not_contains "$claude_exec_runner" 'spawn_agent' 'PL6 claude には spawn_agent が届かない'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

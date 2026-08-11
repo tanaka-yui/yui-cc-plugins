@@ -42,6 +42,8 @@
 #   --skip-permissions                 claude に --dangerously-skip-permissions を
 #                                      追加 (sonnet の auto mode 不在対策)。
 #                                      claude engine のみ対応
+#   --no-parallel                      並列実行ディレクティブを起動プロンプトへ入れない
+#   --agents <N>                       同時に走らせる子エージェントの上限 2..8 (default: 4)
 #
 #   注記: claude engine では MODE を問わず、worktree の
 #   .claude/settings.local.json に permissions.defaultMode: "bypassPermissions" を
@@ -187,6 +189,8 @@ WORKSPACE_NAME=""
 PROMPT=""
 PLAN_FILE=""
 MODEL=""
+NO_PARALLEL=0
+MAX_AGENTS=4
 EFFORT=""
 SKIP_PERMISSIONS=0
 DEFER_STATUS=0
@@ -238,6 +242,8 @@ while [[ $# -gt 0 ]]; do
       MODEL="$2"
       shift 2
       ;;
+    --no-parallel) NO_PARALLEL=1; shift ;;
+    --agents)      MAX_AGENTS="$2"; shift 2 ;;
     --effort)
       [[ $# -lt 2 ]] && die "--effort requires a value"
       EFFORT="$2"; shift 2 ;;
@@ -430,6 +436,9 @@ elif [[ -n "$EFFORT" ]]; then
   log "warn" "--effort is only meaningful with codex engine; ignoring"
 fi
 
+# --agents はプロンプトへ埋め込まれる。範囲外・非数値は cmux ペインを起動する前に弾く
+[[ "$MAX_AGENTS" =~ ^[2-8]$ ]] || die "--agents must be an integer from 2 to 8"
+
 # codex 0.145 以降は project-local .codex/hooks.json ごとに信頼確認を行う。信頼状態は
 # hooks.json の絶対パスをキーに記録されるため、worktree ごとに新しいパスが生成される
 # このプラグインでは毎回「未信頼」となり、起動直後に承認待ちで停止する。
@@ -593,6 +602,17 @@ if [[ $UNATTENDED -eq 1 && "$MODE" != "execute" && "$MODE" != "standby" ]]; then
   UNATTENDED=0
 fi
 
+# 並列実行ディレクティブ。plan / superpowers / execute の起動プロンプトにだけ連結する。
+# standby / review はプロンプト無し (idle 待機文のみ) で起動し、実際の指示は後から
+# cmux send で届くため、ここでは扱わない (SKILL.md 側が parallel-directive.sh を
+# 実行して送信テキストに含める)。
+PARALLEL_INSTRUCTION=""
+if [[ $NO_PARALLEL -eq 0 ]] \
+  && [[ "$MODE" == "plan" || "$MODE" == "superpowers" || "$MODE" == "execute" ]]; then
+  PARALLEL_INSTRUCTION=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
+    --engine "$RUNNER_ENGINE" --mode "$MODE" --agents "$MAX_AGENTS")
+fi
+
 # execute モードでは計画ファイルを直接 inner prompt に埋め込む。
 # あわせて「完了後に必ずセッションを exit せよ」という指示を埋め込む。
 # これを入れないと grandchild Claude/Codex が PR 作成後も TUI で idle 待機してしまい、
@@ -643,9 +663,9 @@ if [[ "$MODE" == "execute" ]]; then
     fi
     ABORT_INSTRUCTION="ABORT PROTOCOL, which overrides everything above: if at any point you decide to stop without completing the work, whether from a blocking error, a design contradiction, or simply giving up, you must not stop silently. Writing the status file is not a notification because only the parent polls it. Before you stop: ${ABORT_REVIEW_STEP}write $STATUS_DIR/status.json with status set to error and the reason as the message. ${ABORT_PARENT_STEP}Finally end this session exactly as described below for the successful case. "
   fi
-  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${ABORT_INSTRUCTION}${EXIT_INSTRUCTION}"
+  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${ABORT_INSTRUCTION}${PARALLEL_INSTRUCTION:+$PARALLEL_INSTRUCTION }${EXIT_INSTRUCTION}"
 else
-  PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
+  PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md${PARALLEL_INSTRUCTION:+ $PARALLEL_INSTRUCTION}"
 fi
 
 if [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
