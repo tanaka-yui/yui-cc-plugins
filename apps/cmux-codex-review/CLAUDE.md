@@ -8,6 +8,7 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 - `skills/codex-review/SKILL.md` — レビュー起動スキル（トリガー定義）
 - `bin/cmux-codex-review` — ペイン分割 + 対話 codex へのレビュープロンプト送信の本体（`!` 直接実行も可、LLM 不要で高速）
 - `bin/cmux-codex-wait` — 短命 watcher（`cmux-codex-exec` と**同一内容のコピー**。W5 が同一性を検証する）
+- `bin/codex-parallel-lib.sh` — 並列実行ディレクティブの生成（`cmux-codex-exec` と**同一内容のコピー**。W8 が同一性を検証する）
 - `.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` — Plugin マニフェスト
 
 ## 動作
@@ -37,6 +38,10 @@ codex が実際に受け取る引数を検証する（生文字列の grep で�
 - **D8**: `--list-targets` は cmux を呼ばずに候補を TSV 出力する（`CMUX_SOCKET_PATH` 不要）
 - **D9**: 候補ゼロ（git リポジトリ外）でも空出力・終了コード 0 で終わる
 - `--base` の反映 / `-m`・`-e` の不正値拒否
+- **D10-D11**: 既定でディレクティブが入り `--no-parallel` で消える（prompt は常に 1 引数）
+- **D12-D13**: `.codex/agents/*.toml` の候補列挙とフォールバック、description の `'` エスケープ
+- **D14**: 通知本文の `agents=` が並列有無で切り替わる
+- **D15**: `--agents` の不正値は非ゼロ終了し、ペインを分割しない
 
 ```bash
 bash apps/cmux-codex-review/test/test-cmux-codex-wait.sh
@@ -49,6 +54,9 @@ stub の agmsg history / cmux で watcher の終了条件を検証する（両�
 - **W3**: token 検知で `status=done` / exit 0
 - **W4**: `--timeout` を明示したときだけ従来どおり `status=timeout` / exit 3
 - **W5**: review / exec 2 プラグインの `cmux-codex-wait` が同一内容
+- **W6**: 完了メッセージの `agents=N` を `status=done` 行へ転記する
+- **W7**: `agents=` が無ければ出力は従来どおり（後方互換）
+- **W8**: review / exec 2 プラグインの `codex-parallel-lib.sh` が同一内容
 
 ## watcher を壁時計で打ち切ってはいけない
 
@@ -79,6 +87,8 @@ stub の agmsg history / cmux で watcher の終了条件を検証する（両�
 | reasoning effort | `xhigh`（extra high） | `-e` / `--effort` |
 | 対象 | `--uncommitted` | `--base <branch>` / `--commit <sha>` / `--path <file>`（繰り返し可） |
 | 分割方向 | `right` | 位置引数 `down`/`left`/`up` or `-d` |
+| 並列実行 | 有効（観点別レビュー・背景調査を `spawn_agent` で分割） | `--no-parallel` |
+| 同時実行の上限 | `4`（2〜8） | `--agents <N>` |
 
 ## 前提
 

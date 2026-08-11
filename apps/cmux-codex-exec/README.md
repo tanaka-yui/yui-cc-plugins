@@ -10,13 +10,18 @@ claude/superpowers が作成した plan を、新しい cmux ペインで**対�
 /codex-exec                                   # plan 候補を提示して確認してから実装
 /codex-exec docs/superpowers/plans/foo.md     # plan をパス指定
 /codex-exec down                              # 下に分割
+/codex-exec --no-parallel                     # 並列化させず従来どおり逐次で実装
+/codex-exec --agents 2                        # 同時実行の子エージェントを 2 体までに絞る
 ```
+
+並列実行は既定で有効で、消費トークンが逐次実行の 4〜5 倍程度に増える。タイポ修正のような小さな plan では
+`--no-parallel` か `--agents` で並列度を絞るとよい。
 
 ## フロー
 
 1. 実装する plan を確定（無指定なら候補を提示して確認）
 2. 親の agmsg identity を解決（未参加なら join を案内）
-3. 新ペインで対話 codex が plan を実装
+3. 新ペインで対話 codex が plan を実装（調査と検証は `spawn_agent` で並列化。既定 4 並列）
 4. codex 完了 → agmsg 通知 → 親の短命 watcher が exit → 親が wake
 5. 親が「レビューする?」と確認 → Yes で cmux-codex-review 起動
 

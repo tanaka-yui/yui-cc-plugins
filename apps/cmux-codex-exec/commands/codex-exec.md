@@ -95,9 +95,11 @@ Once launched, end this turn. The watcher's completion notification
 Check the watcher task's output:
 
 - `status=done`: ask the user whether to review the uncommitted changes with
-  codex-review, noting that codex-exec has finished (including which plan). If yes,
-  launch `/codex-review --uncommitted` (cmux-codex-review) with the target stated
-  explicitly (since the user has already answered the target, don't make Step 0 ask
-  for candidates again). Respond to the user in Japanese.
+  codex-review, noting that codex-exec has finished (including which plan). If the
+  output also carries `agents=<N>`, report that number as how many child agents
+  codex ran in parallel. If yes, launch `/codex-review --uncommitted`
+  (cmux-codex-review) with the target stated explicitly (since the user has
+  already answered the target, don't make Step 0 ask for candidates again).
+  Respond to the user in Japanese.
 - `status=gone`: tell the user the implementation pane `<surface>` was closed and
   codex's completion could not be detected. Respond to the user in Japanese.

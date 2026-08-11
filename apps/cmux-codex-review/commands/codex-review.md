@@ -125,8 +125,9 @@ so termination is judged by pane liveness.
 
 Once launched, end the turn. After waking, branch on the watcher task's output:
 
-- `status=done`: tell the user the review is complete. Respond to the user in
-  Japanese.
+- `status=done`: tell the user the review is complete. If the output also carries
+  `agents=<N>`, report that number as how many child agents codex ran in parallel.
+  Respond to the user in Japanese.
 - `status=gone`: tell the user the review pane `<surface>` was closed and completion
   could not be detected. Respond to the user in Japanese.
 

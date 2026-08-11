@@ -21,6 +21,9 @@ set -uo pipefail
 #   --interval <sec>           history polling 間隔 (default: 5)
 #   --liveness-interval <sec>  ペイン生存確認の間隔 (default: 60)
 #
+# 完了メッセージに agents=<N> が含まれていれば status 行に転記する（codex が spawn した
+# 子エージェント数を親セッションへ返すため）。含まれなければ従来どおりの出力になる。
+#
 # Exit: 0=done / 2=usage・agmsg 無し / 3=timeout / 4=gone
 
 AGMSG_HISTORY="${AGMSG_HISTORY:-$HOME/.agents/skills/agmsg/scripts/history.sh}"
@@ -49,8 +52,12 @@ elapsed=0
 since_liveness=0
 missed=0
 while :; do
-  if "$AGMSG_HISTORY" "$TEAM" "$AGENT" 30 2>/dev/null | grep -qF "$TOKEN"; then
-    echo "status=done token=$TOKEN"
+  # マッチ行を捕まえるのは、完了通知本文に埋め込まれた agents=N（codex が実際に spawn した
+  # 子エージェント数）を親へ渡すため。agents= が無ければ従来どおりの出力になる。
+  hit=$("$AGMSG_HISTORY" "$TEAM" "$AGENT" 30 2>/dev/null | grep -F "$TOKEN" | tail -1)
+  if [[ -n "$hit" ]]; then
+    agents=$(printf '%s' "$hit" | grep -oE 'agents=[0-9]+' | tail -1)
+    echo "status=done token=$TOKEN${agents:+ $agents}"
     exit 0
   fi
   sleep "$INTERVAL"

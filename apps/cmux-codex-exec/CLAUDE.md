@@ -9,12 +9,18 @@ plan を対話 codex にカレントdir で実装させ、完了を親が agmsg 
 - `bin/cmux-codex-exec` — plan 解決 + 対話 codex 起動 + token/agent 導出 + `--list-targets`（候補列挙）
 - `bin/cmux-codex-wait` — 短命 watcher（history polling → token 検知で exit → 親 wake）。
   `cmux-codex-review` 側と**同一内容のコピー**（回帰テストの W5 が同一性を検証する）
+- `bin/codex-parallel-lib.sh` — 並列実行ディレクティブの生成（`.codex/agents/*.toml` の検出含む）。
+  `cmux-codex-review` 側と**同一内容のコピー**（W8 が同一性を検証する）
 
 ## 完了通知の仕組み
 
 対話 codex は exit しないので、codex 自身に完了時 `send.sh` を撃たせ、親は「token 検知で *exit* する
 短命 watcher」を background task で回す。その exit が harness の `<task-notification>` を発火し idle 親を wake する。
 agmsg 常駐 monitor push は idle 親を起こせない（実測済み）ため、この方式が必須。
+
+並列実行時は codex が完了メッセージ末尾に `agents=<N>` を付け、`cmux-codex-wait` がそれを
+`status=done token=... agents=<N>` として親へ転記する。指示が守られていなければ `agents=` が
+付かないので、親側で気づける。
 
 ## watcher を壁時計で打ち切ってはいけない
 
@@ -33,6 +39,8 @@ agmsg 常駐 monitor push は idle 親を起こせない（実測済み）ため
 | plan | 位置引数。無指定ならコマンド層が `--list-targets` の候補を確認（bin 単体では mtime 最新） | 位置引数でパス指定 |
 | 分割方向 | `right` | `down`/`left`/`up` or `-d` |
 | 実行dir | カレント（worktree 隔離しない） | — |
+| 並列実行 | 有効（調査・検証を `spawn_agent` で分割） | `--no-parallel` |
+| 同時実行の上限 | `4`（2〜8） | `--agents <N>` |
 
 ## 前提
 
@@ -47,6 +55,10 @@ bash apps/cmux-codex-exec/test/test-cmux-codex-exec.sh
 - **E1**: plan パスと `send.sh` が prompt へ無傷で届き、prompt はちょうど 1 引数
 - **E2**: `--list-targets` は cmux を呼ばずに plan を mtime 降順で TSV 出力する
 - **E3**: 候補ゼロ（git リポジトリ外）でも空出力・終了コード 0 で終わる
+- **E4-E5**: 既定でディレクティブが入り `--no-parallel` で消える（prompt は常に 1 引数）
+- **E6-E7**: `.codex/agents/*.toml` の候補列挙とフォールバック、description の `'` エスケープ
+- **E8-E8b**: 通知本文の `agents=` が並列有無で切り替わる
+- **E9**: `--agents` の不正値は非ゼロ終了し、ペインを分割しない
 
 ## 関連プラグインとの境界
 

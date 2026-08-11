@@ -19,6 +19,12 @@
 #   D7. 存在しない --path は非ゼロ終了し、ペインを分割しない
 #   D8. --list-targets は cmux を呼ばずに候補を TSV 出力する（cmux 外でも動く）
 #   D9. 候補ゼロ（git リポジトリ外）でも空出力・終了コード 0 で終わる
+#   D10. 既定でプロンプトに並列実行ディレクティブが入り、prompt は 1 引数のまま
+#   D11. --no-parallel でディレクティブを一切注入しない
+#   D12. .codex/agents/*.toml があれば agent_type 候補が載り、無ければフォールバック文言になる
+#   D13. description に ' が含まれても prompt は 1 引数のまま
+#   D14. 通知配線時、send.sh の本文に agents= が入る
+#   D15. --agents の不正値は非ゼロ終了し、ペインを分割しない
 
 set -uo pipefail
 
@@ -174,6 +180,101 @@ if ! CMUX_BIN="$TMP/bin/cmux" "$BIN" -e 'x";touch /tmp/PWNED_TEST;"' >/dev/null 
 else
   echo "FAIL: --effort の検証が効いていない"
   rm -f /tmp/PWNED_TEST
+  fail=1
+fi
+
+# --- D10: 既定で並列実行ディレクティブが入り、prompt は 1 引数のまま ---
+CMUX_BIN="$TMP/bin/cmux" "$BIN" >/dev/null 2>&1
+reparse
+if [[ "$(argc)" == "9" ]] \
+  && prompt | grep -q 'spawn_agent' \
+  && prompt | grep -q 'wait_agent' \
+  && prompt | grep -q '最大 4 体'; then
+  echo "PASS D10: 既定で並列実行ディレクティブが prompt に入る、argc=9"
+else
+  echo "FAIL D10: argc=$(argc) / prompt=[$(prompt)]"
+  fail=1
+fi
+
+# --- D11: --no-parallel でディレクティブを注入しない ---
+CMUX_BIN="$TMP/bin/cmux" "$BIN" --no-parallel >/dev/null 2>&1
+reparse
+if [[ "$(argc)" == "9" ]] && ! prompt | grep -q 'spawn_agent'; then
+  echo "PASS D11: --no-parallel でディレクティブ非注入、argc=9"
+else
+  echo "FAIL D11: argc=$(argc) / prompt=[$(prompt)]"
+  fail=1
+fi
+
+# --- D12: .codex/agents/*.toml があれば agent_type 候補が載る / 無ければフォールバック文言 ---
+AGENTREPO="$TMP/agentrepo"
+mkdir -p "$AGENTREPO/.codex/agents"
+cat > "$AGENTREPO/.codex/agents/my-reviewer.toml" <<'TOML'
+description = "Reviews backend code"
+developer_instructions = """
+body
+"""
+TOML
+(cd "$AGENTREPO" && CMUX_BIN="$TMP/bin/cmux" "$BIN" >/dev/null 2>&1)
+reparse
+has_type=0
+prompt | grep -q 'my-reviewer — Reviews backend code' && has_type=1
+
+NOAGENT=$(mktemp -d)
+(cd "$NOAGENT" && CMUX_BIN="$TMP/bin/cmux" "$BIN" >/dev/null 2>&1)
+reparse
+has_fallback=0
+prompt | grep -q 'agent_type の定義が無い' && has_fallback=1
+rm -rf "$NOAGENT"
+
+if [[ $has_type -eq 1 && $has_fallback -eq 1 ]]; then
+  echo "PASS D12: agent_type 候補の列挙とフォールバック文言が切り替わる"
+else
+  echo "FAIL D12: has_type=$has_type / has_fallback=$has_fallback"
+  fail=1
+fi
+
+# --- D13: description に ' が含まれても prompt は 1 引数のまま ---
+cat > "$AGENTREPO/.codex/agents/quoter.toml" <<'TOML'
+description = "It's a quality checker"
+TOML
+(cd "$AGENTREPO" && CMUX_BIN="$TMP/bin/cmux" "$BIN" >/dev/null 2>&1)
+reparse
+if [[ "$(argc)" == "9" ]] && prompt | grep -q "It's a quality checker"; then
+  echo "PASS D13: description の ' がエスケープされ、argc=9 のまま"
+else
+  echo "FAIL D13: argc=$(argc) / prompt=[$(prompt)]"
+  fail=1
+fi
+
+# --- D14: 通知配線時、send.sh の本文に agents= が入る / --no-parallel では入らない ---
+CMUX_BIN="$TMP/bin/cmux" "$BIN" --team t --reviewer cxrev-review --parent parent >/dev/null 2>&1
+reparse
+with_agents=0
+prompt | grep -q 'レビュー完了 agents=' && prompt | grep -q 'spawn した子エージェントの総数' && with_agents=1
+
+CMUX_BIN="$TMP/bin/cmux" "$BIN" --no-parallel --team t --reviewer cxrev-review --parent parent >/dev/null 2>&1
+reparse
+without_agents=0
+prompt | grep -q 'レビュー完了' && ! prompt | grep -q 'agents=' && without_agents=1
+
+if [[ $with_agents -eq 1 && $without_agents -eq 1 ]]; then
+  echo "PASS D14: 通知本文の agents= が並列有無で切り替わる"
+else
+  echo "FAIL D14: with=$with_agents / without=$without_agents"
+  fail=1
+fi
+
+# --- D15: --agents の不正値は非ゼロ終了し、ペインを分割しない ---
+rm -f "$TMP/split.log"
+bad=0
+SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" --agents 9 >/dev/null 2>&1 && bad=1
+SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" --agents 1 >/dev/null 2>&1 && bad=1
+SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" --agents abc >/dev/null 2>&1 && bad=1
+if [[ $bad -eq 0 && ! -f "$TMP/split.log" ]]; then
+  echo "PASS D15: --agents の不正値を拒否し、ペインを分割しない"
+else
+  echo "FAIL D15: bad=$bad / split.log=$( [[ -f "$TMP/split.log" ]] && echo exists || echo none )"
   fail=1
 fi
 
