@@ -42,6 +42,8 @@
 #   --skip-permissions                 claude に --dangerously-skip-permissions を
 #                                      追加 (sonnet の auto mode 不在対策)。
 #                                      claude engine のみ対応
+#   --no-parallel                      並列実行ディレクティブを起動プロンプトへ入れない
+#   --agents <N>                       同時に走らせる子エージェントの上限 2..8 (default: 4)
 #
 #   注記: claude engine では MODE を問わず、worktree の
 #   .claude/settings.local.json に permissions.defaultMode: "bypassPermissions" を
@@ -187,6 +189,8 @@ WORKSPACE_NAME=""
 PROMPT=""
 PLAN_FILE=""
 MODEL=""
+NO_PARALLEL=0
+MAX_AGENTS=4
 EFFORT=""
 SKIP_PERMISSIONS=0
 DEFER_STATUS=0
@@ -238,6 +242,10 @@ while [[ $# -gt 0 ]]; do
       MODEL="$2"
       shift 2
       ;;
+    --no-parallel) NO_PARALLEL=1; shift ;;
+    --agents)
+      [[ $# -lt 2 ]] && die "--agents requires a value"
+      MAX_AGENTS="$2"; shift 2 ;;
     --effort)
       [[ $# -lt 2 ]] && die "--effort requires a value"
       EFFORT="$2"; shift 2 ;;
@@ -430,6 +438,9 @@ elif [[ -n "$EFFORT" ]]; then
   log "warn" "--effort is only meaningful with codex engine; ignoring"
 fi
 
+# --agents はプロンプトへ埋め込まれる。範囲外・非数値は cmux ペインを起動する前に弾く
+[[ "$MAX_AGENTS" =~ ^[2-8]$ ]] || die "--agents must be an integer from 2 to 8"
+
 # codex 0.145 以降は project-local .codex/hooks.json ごとに信頼確認を行う。信頼状態は
 # hooks.json の絶対パスをキーに記録されるため、worktree ごとに新しいパスが生成される
 # このプラグインでは毎回「未信頼」となり、起動直後に承認待ちで停止する。
@@ -593,6 +604,17 @@ if [[ $UNATTENDED -eq 1 && "$MODE" != "execute" && "$MODE" != "standby" ]]; then
   UNATTENDED=0
 fi
 
+# 並列実行ディレクティブ。plan / superpowers / execute の起動プロンプトにだけ連結する。
+# standby / review はプロンプト無し (idle 待機文のみ) で起動し、実際の指示は後から
+# cmux send で届くため、ここでは扱わない (SKILL.md 側が parallel-directive.sh を
+# 実行して送信テキストに含める)。
+PARALLEL_INSTRUCTION=""
+if [[ $NO_PARALLEL -eq 0 ]] \
+  && [[ "$MODE" == "plan" || "$MODE" == "superpowers" || "$MODE" == "execute" ]]; then
+  PARALLEL_INSTRUCTION=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
+    --engine "$RUNNER_ENGINE" --mode "$MODE" --agents "$MAX_AGENTS")
+fi
+
 # execute モードでは計画ファイルを直接 inner prompt に埋め込む。
 # あわせて「完了後に必ずセッションを exit せよ」という指示を埋め込む。
 # これを入れないと grandchild Claude/Codex が PR 作成後も TUI で idle 待機してしまい、
@@ -613,6 +635,10 @@ if [[ "$MODE" == "execute" ]]; then
       || die "failed to parse review config at $REVIEW_CONFIG"
     REVIEWER_WORKSPACE=$(jq -r '.reviewer_workspace // empty' "$REVIEW_CONFIG" 2>/dev/null) \
       || die "failed to parse review config at $REVIEW_CONFIG"
+    # レビュアーの engine。レビュアーは常に設計 engine の逆だが、その情報は親セッション
+    # にしかないので review-config 経由で受け取る。欠落 (旧スキーマ) なら注入しない。
+    REVIEWER_ENGINE=$(jq -r '.reviewer_engine // empty' "$REVIEW_CONFIG" 2>/dev/null) \
+      || die "failed to parse review config at $REVIEW_CONFIG"
     [[ -n "$REVIEWER_SURFACE" && -n "$REVIEW_DIR" ]] \
       || die "review config must contain reviewer_surface and review_dir"
     # reviewer_workspace 欠落時 (旧スキーマ) は --workspace 指定なしにフォールバック。
@@ -622,8 +648,23 @@ if [[ "$MODE" == "execute" ]]; then
     [[ -n "$REVIEWER_WORKSPACE" ]] \
       && TARGET_FLAGS="--workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE"
     READ_SCREEN_CMD="$CMUX read-screen $TARGET_FLAGS"
+    # レビュアーに観点別の並列レビューをさせる指示。--no-parallel は起動プロンプト専用の
+    # スイッチなのでここでは見ない。注入するかどうかは reviewer_engine の有無だけで決める。
+    #
+    # この文面は実装者の inner prompt の中に埋め込まれるが、宛先はレビュアー (実装者とは逆の
+    # engine) である。engine が違えば機構も違う (codex は spawn_agent / claude は Task subagent)
+    # ため、位置だけで「引用された他人宛のペイロード」と読ませると実装者が自分宛と誤読して
+    # 呼べないツールを指示される。前後に明示的な宛先マーカーを付けて境界を語彙で示す。
+    REVIEWER_PARALLEL=""
+    case "$REVIEWER_ENGINE" in
+      claude|codex)
+        REVIEWER_PARALLEL=" Also include this in the message to the reviewer, addressed to the reviewer and not to you: $(bash "$SCRIPT_DIR/parallel-directive.sh" \
+          --engine "$REVIEWER_ENGINE" --mode review --agents "$MAX_AGENTS") End of the message to the reviewer." ;;
+      "") ;;
+      *) log "warn" "review config has unknown reviewer_engine=$REVIEWER_ENGINE; skipping parallel directive" ;;
+    esac
     # (1)(2) は対話有無で変わらない共通部分
-    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send $TARGET_FLAGS followed by: $CMUX send-key $TARGET_FLAGS return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons. (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. "
+    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send $TARGET_FLAGS followed by: $CMUX send-key $TARGET_FLAGS return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons.${REVIEWER_PARALLEL} (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. "
     if [[ $UNATTENDED -eq 1 ]]; then
       # 無人ループ: 判断を求めず固定のフォールバックを取る。文中にクォート文字を使わないこと
       REVIEW_INSTRUCTION="${REVIEW_INSTRUCTION}If round 3 still ends with needs_work, note the unresolved findings in the PR body and proceed to the PR. If the wait exits stalled, re-check the verdict file, then re-send the same round once with a fresh baseline; if it stalls again, skip the review, note the skipped review in the PR body, and proceed to the PR. No interactive user is attached to this session, so never wait for a human decision. "
@@ -643,9 +684,9 @@ if [[ "$MODE" == "execute" ]]; then
     fi
     ABORT_INSTRUCTION="ABORT PROTOCOL, which overrides everything above: if at any point you decide to stop without completing the work, whether from a blocking error, a design contradiction, or simply giving up, you must not stop silently. Writing the status file is not a notification because only the parent polls it. Before you stop: ${ABORT_REVIEW_STEP}write $STATUS_DIR/status.json with status set to error and the reason as the message. ${ABORT_PARENT_STEP}Finally end this session exactly as described below for the successful case. "
   fi
-  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${ABORT_INSTRUCTION}${EXIT_INSTRUCTION}"
+  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${ABORT_INSTRUCTION}${PARALLEL_INSTRUCTION:+$PARALLEL_INSTRUCTION }${EXIT_INSTRUCTION}"
 else
-  PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md"
+  PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md${PARALLEL_INSTRUCTION:+ $PARALLEL_INSTRUCTION}"
 fi
 
 if [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then

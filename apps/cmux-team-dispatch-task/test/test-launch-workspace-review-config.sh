@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # launch-workspace.sh が --review-config 指定時に生成する REVIEW_INSTRUCTION の回帰テスト。
 # 検証項目: liveness 待機文言 / 旧 15 分タイムアウト文言の除去 / reviewer_workspace の
-# read-screen への埋め込み（欠落時フォールバック含む）/ クォート文字の混入なし。
+# read-screen への埋め込み（欠落時フォールバック含む）/ クォート文字の混入なし /
+# reviewer_engine による並列レビュー指示の埋め込み（欠落時は非注入）。
 
 set -euo pipefail
 
@@ -54,6 +55,24 @@ cat > "$TMP/status/review/code-review-legacy.json" <<JSON
 }
 JSON
 
+cat > "$TMP/status/review/code-review-codex-reviewer.json" <<JSON
+{
+  "reviewer_surface": "surface:99",
+  "reviewer_workspace": "workspace:7",
+  "reviewer_engine": "codex",
+  "review_dir": "$TMP/status/review"
+}
+JSON
+
+cat > "$TMP/status/review/code-review-claude-reviewer.json" <<JSON
+{
+  "reviewer_surface": "surface:99",
+  "reviewer_workspace": "workspace:7",
+  "reviewer_engine": "claude",
+  "review_dir": "$TMP/status/review"
+}
+JSON
+
 fail=0
 
 assert_contains() {
@@ -68,6 +87,10 @@ assert_contains() {
 
 assert_not_contains() {
   local file="$1" unexpected="$2" label="$3"
+  # ファイルが存在しないと grep は非ゼロで返るため、この確認が無いと「起動が落ちて runner
+  # ファイルが生成されなかった」ケースが全部 PASS になる (例: 空 engine で
+  # parallel-directive.sh が die → set -e で launch 中断 → runner_file が null)
+  [[ -f "$file" ]] || { echo "FAIL: $label (no such file: $file)"; fail=1; return; }
   if grep -Fq -- "$unexpected" "$file"; then
     echo "FAIL: $label (unexpected: $unexpected)"
     fail=1
@@ -79,9 +102,11 @@ assert_not_contains() {
 runner_with_config() {
   local runner="$1" config="$2" name="$3"
   local output
+  # --no-parallel で起動プロンプト側のディレクティブを止め、レビュー依頼文への
+  # 注入だけを切り分けて検査する
   output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode execute --runner "$runner" --plan-file "$TMP/plan.md" \
-    --status-dir "$TMP/status" --review-config "$config" "$name")
+    --status-dir "$TMP/status" --review-config "$config" --no-parallel "$name")
   jq -r '.runner_file' <<<"$output"
 }
 
@@ -113,6 +138,32 @@ legacy_runner=$(runner_with_config codex "$TMP/status/review/code-review-legacy.
 assert_contains "$legacy_runner" 'read-screen --surface surface:99' 'T6 legacy config falls back to surface-only read-screen'
 assert_contains "$legacy_runner" 'send --surface surface:99' 'T6 legacy config falls back to surface-only send'
 assert_not_contains "$legacy_runner" '--workspace workspace:7' 'T6 legacy config has no --workspace flag'
+
+# --- PR1: reviewer_engine ありならレビュー依頼文に review モードのディレクティブが入る ---
+codex_reviewer=$(runner_with_config claude "$TMP/status/review/code-review-codex-reviewer.json" review-cfg-codex-rev)
+assert_contains "$codex_reviewer" 'PARALLEL EXECUTION, mandatory' 'PR1 reviewer_engine=codex でディレクティブが入る'
+assert_contains "$codex_reviewer" 'spawn_agent' 'PR1 codex レビュアーには spawn_agent が届く'
+assert_contains "$codex_reviewer" 'Give each review lens its own child agent' 'PR1 review モードの文面が使われる'
+
+claude_reviewer=$(runner_with_config codex "$TMP/status/review/code-review-claude-reviewer.json" review-cfg-claude-rev)
+assert_contains "$claude_reviewer" 'Task subagents' 'PR1 claude レビュアーには Task サブエージェント指示が届く'
+assert_not_contains "$claude_reviewer" 'spawn_agent' 'PR1 claude レビュアーに spawn_agent は届かない'
+
+# --- PR2: reviewer_engine 欠落 (旧スキーマ) では注入しない ---
+assert_not_contains "$runner_file" 'PARALLEL EXECUTION, mandatory' 'PR2 reviewer_engine 欠落ではディレクティブ非注入'
+assert_not_contains "$legacy_runner" 'PARALLEL EXECUTION, mandatory' 'PR2 旧スキーマではディレクティブ非注入'
+
+# --- PR3: ディレクティブを足しても REVIEW_INSTRUCTION はクォートフリーのまま ---
+pr3_segment=$(grep -o 'MANDATORY CODE REVIEW.*in the PR body and proceed\.' "$codex_reviewer" | head -1)
+if [[ -z "$pr3_segment" ]]; then
+  echo 'FAIL: PR3 review segment not extractable'
+  fail=1
+elif [[ "$pr3_segment" == *\'* || "$pr3_segment" == *\"* || "$pr3_segment" == *\`* ]]; then
+  echo 'FAIL: PR3 review instruction contains quote characters'
+  fail=1
+else
+  echo 'PASS: PR3 review instruction is quote-free with the directive'
+fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

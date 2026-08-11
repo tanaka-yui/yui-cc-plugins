@@ -445,6 +445,26 @@ rmdir .pre-link-backup-<TS>
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新、`cmux wait-for --signal` の発火、`cmux send` による親ターミナルへの通知を保証。加えて `monitor-dispatch.sh` も個別タスク完了時に `[dispatch]` 通知を親に送信
 - **pane を閉じても誤通知しない**: 最終クリーンアップの `cmux close-surface` / `close-workspace` で子プロセスは signal 終了（終了コード 128+N）する。`status.json` が既に `done` / `error` なら wrapper は status 書き込みと親通知の両方をスキップするため、完了済みタスクが `error` に降格したり偽の `[dispatch] ... (status: error)` が飛んだりしない。まだ `executing` の pane を kill した場合は本当の中断なので従来どおり `error` を報告する
 
+## タスク内の並列実行
+
+各子セッションは、独立した調査と検証を子エージェントへ分散させるよう指示される
+（codex は `spawn_agent`、claude は Task サブエージェント）。ファイル編集は
+親エージェントで逐次のままなので、同一 worktree での書き込み競合は起きない。
+分散してよいのは**読み取り専用の検証だけ**で、auto-fix / write モード（formatter や
+linter を write フラグ付きで走らせるもの）は親エージェントで逐次に実行させる。
+
+同時に走る子エージェントの上限は既定 4。これを変える `--agents <N>`（2〜8）と、
+起動プロンプトへの指示を止める `--no-parallel` は、いずれも
+**`launch-workspace.sh` のスクリプトレベルのフラグ**である。スキルはこの 2 つを
+公開しておらず（`design_runner` / `exec_choice` / `review_mode` のような `config.json`
+キーも無い）、スキル経由のディスパッチは常に既定値で走る。値を変える現実的な手段は
+今のところ `launch-workspace.sh` を手で呼ぶことだけ。
+
+タスク自体も worktree 横断で並列に走るため、**トークン消費は「タスク数 × 子エージェント数」
+で効いてくる**。小さな変更を大量にディスパッチするときはこの掛け算がコストを押し上げる点に
+注意すること。スキル経由では抑えられないので、抑えたい場合は `launch-workspace.sh` を
+手動で `--agents 2` または `--no-parallel` 付きで呼ぶ。
+
 ## Codex hook の互換性
 
 codex ペインを起動するとき、`launch-workspace.sh` は `~/.codex/config.toml`（`CODEX_HOME` で上書き可）を読み取り専用で検査し、`claude-plugins-official` の **security-guidance** プラグインが有効なら次の警告を出します。

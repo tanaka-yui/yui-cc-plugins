@@ -787,9 +787,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
              # alive (ready sentinel present) — re-verify right before sending:
              [[ "$DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>-sonnet" ]] \
                && DELIVERY="cmux-send"
-             REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is
+             PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine claude --mode execute)
+             REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is
              committed/pushed and the PR is created (or all changes are merged per
              the plan), run /exit to close this session. Do not leave it idle."
+             # standby is an execution pane, so pass --mode execute (the script has no
+             # standby mode). The exit instruction MUST stay last.
              # IF the PHASE B-R block exists below, do NOT use this REQUEST_TEXT —
              # use the extended REQUEST_TEXT defined in that block instead (it inserts
              # the pre-PR code-review protocol).
@@ -820,9 +823,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         IF the PHASE B-R block exists below, BEFORE the launch above write the
         reviewer wiring file (you are the reviewer):
           mkdir -p "<EXISTING_STATUS_DIR>/review"
+          # reviewer_engine lets launch-workspace.sh pick the right parallel-review
+          # wording for the reviewer. It is claude here, since this session (the
+          # design=claude opus session) turns into the reviewer.
           jq -n --arg s "$CMUX_SURFACE_ID" --arg w "$CMUX_WORKSPACE_ID" \
-            --arg d "<EXISTING_STATUS_DIR>/review" \
-            '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d}' \
+            --arg d "<EXISTING_STATUS_DIR>/review" --arg e "claude" \
+            '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_engine: $e}' \
             > "<EXISTING_STATUS_DIR>/review/code-review.json"
         touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block exists below,
         do NOT exit — switch to the reviewer role it defines. OTHERWISE exit THIS session.
@@ -1042,6 +1048,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
             <EXISTING_STATUS_DIR>/review/<point>-round-<N>.md.
             The LAST line of that file MUST be exactly 'VERDICT: approve' or
             'VERDICT: needs_work'. approve = the document is ready to implement."
+      1b. Append the parallel-review directive for the review pane engine. The
+          reviewer is always the opposite engine of the design session, so pass
+          the reviewer pane engine here (codex when the design session is claude,
+          claude when the design session is codex):
+            PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review)
+            <request text>="<request text> $PARALLEL"
       2. Send the request, then wait by polling the verdict file. The request is
          ALWAYS delivered as a typed prompt (`cmux send`) — an agmsg push alone
          never wakes an idle pane, and an agmsg reply push never wakes THIS
@@ -1167,8 +1179,17 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     Common protocol a — extended REQUEST_TEXT (the implementer drives the round loop;
     used in every branch above where a standby / delegated pane implements):
       a. Prewarm path only — REQUEST_TEXT: use this extended version instead
-         (fill every <...> before sending):
-           "Read and execute the plan at <PLAN_FILE_PATH>. After all changes are
+         (compute TWO parallel-execution directives first, then fill every <...>
+         before sending. One is for the implementer's engine — claude for the
+         sonnet standby / a delegated claude pane, codex for the codex standby.
+         The other is for the reviewer, who is ALWAYS the opposite engine of the
+         implementer; it is quoted inside the review request the implementer
+         sends, and this is the ONLY thing that gives the prewarm-path reviewer a
+         parallel directive — the reviewer pane itself was launched with
+         `--mode review`, which carries none):
+           PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <implementer-engine> --mode execute)
+           REVIEW_PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review)
+           "Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are
             committed and BEFORE creating the PR, you MUST get a code review
             approval. Round N starts at 1, max 3 rounds. Each round:
             (1) send the review request. If <TEAM> is non-empty AND the file
@@ -1185,6 +1206,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 findings to <EXISTING_STATUS_DIR>/review/code-round-N.md whose LAST
                 line must be VERDICT: approve or VERDICT: needs_work. From round 2
                 append your rebuttals to the findings you rejected, with reasons.
+                Also include this in the message to the reviewer, addressed to the
+                reviewer and not to you: $REVIEW_PARALLEL End of the message to the
+                reviewer.
             (2) wait by polling <EXISTING_STATUS_DIR>/review/code-round-N.md every
                 5 seconds for a VERDICT line, in 15-minute chunks with NO overall
                 time limit while the reviewer is active. Right after sending,
@@ -1261,18 +1285,26 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          in send-message mode — then always use the cmux send path), <your-agent-name>
          = the implementing pane's agent name (<task-slug>-sonnet / <task-slug>-codex /
          <task-slug>-opus, whichever Phase B choice dispatched to),
-         <PARENT_WORKSPACE_ID> = the parent workspace ID this dispatch was launched from.
+         <PARENT_WORKSPACE_ID> = the parent workspace ID this dispatch was launched from,
+         <implementer-engine> = `claude` when the implementer is the sonnet standby or a
+         delegated claude pane (opus 1m / sonnet target in the design=codex variant),
+         `codex` when the implementer is the codex standby, <reviewer-engine> = the
+         opposite of <implementer-engine> (this is the engine of the pane at
+         <REVIEWER_SURFACE>, and it is what <REVIEWER_ENGINE> below is set to as well).
 
          Before sending this REQUEST_TEXT, write the reviewer wiring file so the
          implementer's runner wrapper can also wake the reviewer if the implementer
          stops without following the abort protocol:
            mkdir -p "<EXISTING_STATUS_DIR>/review"
            jq -n --arg s "<REVIEWER_SURFACE>" --arg w "<REVIEWER_WORKSPACE>" \
-             --arg d "<EXISTING_STATUS_DIR>/review" \
-             '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d}' \
+             --arg d "<EXISTING_STATUS_DIR>/review" --arg e "<REVIEWER_ENGINE>" \
+             '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_engine: $e}' \
              > "<EXISTING_STATUS_DIR>/review/code-review.json"
          <REVIEWER_WORKSPACE> is the reviewer pane's workspace ($CMUX_WORKSPACE_ID
-         when YOU are the reviewer). The spawn fallback already writes this file;
+         when YOU are the reviewer). <REVIEWER_ENGINE> is the design engine when YOU
+         are the reviewer, or the opposite of the design engine when the review pane
+         reviews — it lets launch-workspace.sh pick the right parallel-review wording
+         for the spawn-path reviewer. The spawn fallback already writes this file;
          this makes the prewarm path write it too.
 
          MAINTENANCE NOTE (for SKILL.md editors — not part of the request text):
@@ -1383,7 +1415,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                    # write_status "done" / signal fire / parent notify → the completion
                    # notification never arrives. This mirrors the engine-aware EXIT_INSTRUCTION
                    # that launch-workspace.sh bakes into the spawn (`--mode execute`) path.
-                   REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately so the wrapper script can finalize the completion notification. Do NOT run /exit and do NOT leave the session idle."
+                   PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine codex --mode execute)
+                   REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately so the wrapper script can finalize the completion notification. Do NOT run /exit and do NOT leave the session idle."
                  IF DELIVERY == "agmsg":
                    ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-codex "$REQUEST_TEXT"
                    # $TEAM is the TEAM value given above — do NOT re-derive it in this session
@@ -1411,7 +1444,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
               reviewer wiring file exactly as in the sonnet branch (mkdir -p the
               review dir, then jq -n {reviewer_surface: $CMUX_SURFACE_ID,
               reviewer_workspace: $CMUX_WORKSPACE_ID,
-              review_dir: <EXISTING_STATUS_DIR>/review} > .../review/code-review.json).
+              review_dir: <EXISTING_STATUS_DIR>/review, reviewer_engine: "claude"}
+              > .../review/code-review.json — reviewer_engine is claude, since this
+              session turns into the reviewer here too).
               Then write the deferred sentinel:
                 touch "<EXISTING_STATUS_DIR>/.deferred"
               IF the PHASE B-R block exists below, do NOT exit — switch to the
@@ -1735,6 +1770,47 @@ with `agent` suffix `-opus`)):
 Phase B falls back to the on-demand `--mode execute` spawn, and in agmsg mode
 the opus session falls back to the traditional prompt-embedded launch
 ("Launch: Workspace Mode" as-is).
+
+## Parallel execution inside a task
+
+Tasks already run in parallel across worktrees. This section is about the work
+*inside* one task: every child session is told to fan independent investigation
+and verification out across child agents instead of doing them one at a time.
+
+`scripts/parallel-directive.sh` is the single source of that wording:
+
+```
+parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|review> [--agents <N>]
+```
+
+- codex sessions are told to use `spawn_agent` / `wait_agent`; claude sessions are
+  told to launch several Task subagents in one message.
+- File edits always stay sequential in the parent agent, and the directive never
+  overrides a skill that sequences implementation (superpowers
+  subagent-driven-development keeps its one-implementer-at-a-time rule).
+- Only read-only verification may be fanned out. Auto-fix and write modes (a
+  formatter or linter invoked with its write flag) stay sequential in the parent
+  agent, because they mutate files and shared build caches.
+- `--agents` caps concurrency. Integers 2-8 only; the default is 4.
+- There is no `standby` mode — a standby pane is an execution pane, so pass
+  `--mode execute` for it.
+- `--agents` and `--no-parallel` are `launch-workspace.sh` flags. This skill never
+  passes them, so the defaults apply to every dispatch it launches.
+
+Where the directive is injected:
+
+| Target | Injected by |
+|--------|-------------|
+| plan / superpowers / execute launch prompt | `launch-workspace.sh` (suppress with `--no-parallel`) |
+| Phase B execution request sent to a standby pane | this skill, via the script |
+| Phase A-R review request | this skill, via the script |
+| Phase B-R review request (prewarm path) | this skill, via the script |
+| Phase B-R review request (spawn path) | `launch-workspace.sh`, from `reviewer_engine` in `review/code-review.json` |
+
+Whenever a directive computed for one engine is embedded in text addressed to a
+session running the other engine — the reviewer directive carried inside the
+implementer's prompt — mark the addressee explicitly. Position alone is not a
+boundary, and a claude session told to call `spawn_agent` has no such tool.
 
 ## Step 3: Monitor and Complete
 

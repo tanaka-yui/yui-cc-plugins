@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # launch-workspace.sh が Codex runner 向けに生成するコマンドの回帰テスト。
+# 並列実行ディレクティブ (PL1-PL10) もここで検証する。
+#   PL1-PL7 : launch-workspace.sh が生成する runner ファイルの動的検査
+#   PL8-PL10: SKILL.md 側の $PARALLEL / $REVIEW_PARALLEL 挿入位置の静的検査
 
 set -euo pipefail
 
@@ -70,6 +73,10 @@ assert_contains() {
 
 assert_not_contains() {
   local file="$1" unexpected="$2" label="$3"
+  # ファイルが存在しないと grep は非ゼロで返るため、この確認が無いと「起動が落ちて runner
+  # ファイルが生成されなかった」ケースが全部 PASS になる (negative assertion が
+  # 間違った理由で通る典型パターン)
+  [[ -f "$file" ]] || { echo "FAIL: $label (no such file: $file)"; fail=1; return; }
   if grep -Fq -- "$unexpected" "$file"; then
     echo "FAIL: $label (unexpected: $unexpected)"
     fail=1
@@ -83,6 +90,20 @@ plan_runner=$(runner_for plan)
 execute_runner=$(runner_for execute)
 standby_runner=$(runner_for standby)
 review_runner=$(runner_for review)
+
+runner_for_flags() {
+  local mode="$1"; shift
+  local name="codex-$mode-flags"
+  local output
+  if [[ "$mode" == "execute" ]]; then
+    output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --status-dir "$TMP/status" "$@" "$name")
+  else
+    output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --status-dir "$TMP/status" "$@" "$name" prompt)
+  fi
+  jq -r '.runner_file' <<<"$output"
+}
 
 assert_contains "$superpowers_runner" '--dangerously-bypass-approvals-and-sandbox' 'T1 codex + superpowers bypass'
 assert_contains "$plan_runner" '--dangerously-bypass-approvals-and-sandbox' 'T2 codex + plan bypass'
@@ -128,9 +149,12 @@ done
 
 # --- SKILL.md static check: the codex Phase B prewarm-standby block must define a
 # base REQUEST_TEXT with a codex-appropriate exit instruction (regression guard for
-# the "codex completion notification never arrives" bug). ---
+# the "codex completion notification never arrives" bug). $PARALLEL (the
+# parallel-execution directive, injected between the work instruction and the
+# session-end instruction) is now part of this same string — it must stay between
+# the two, with the session-end instruction still last. ---
 SKILL_MD="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
-assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately' \
+assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately' \
   'T7 SKILL.md codex prewarm block defines base REQUEST_TEXT with codex session-end exit'
 
 # --- T14/T15: Phase B-R の拡張 REQUEST_TEXT の退行ガード ---
@@ -255,6 +279,110 @@ if command -v codex >/dev/null 2>&1 && [[ "${RUN_CODEX_DYNAMIC_TEST:-0}" == "1" 
 else
   echo 'SKIP: dynamic Codex writable-root test (set RUN_CODEX_DYNAMIC_TEST=1 in an authenticated Codex environment).'
 fi
+
+# --- PL1: plan / superpowers / execute の起動プロンプトにディレクティブが入る ---
+assert_contains "$plan_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex plan で並列ディレクティブが入る'
+assert_contains "$superpowers_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex superpowers で並列ディレクティブが入る'
+assert_contains "$execute_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex execute で並列ディレクティブが入る'
+assert_contains "$execute_runner" 'spawn_agent' 'PL1 codex には spawn_agent が届く'
+
+# --- PL2: --no-parallel でディレクティブが入らない ---
+np_execute=$(runner_for_flags execute --no-parallel)
+assert_not_contains "$np_execute" 'PARALLEL EXECUTION, mandatory' 'PL2 --no-parallel でディレクティブ非注入'
+
+# --- PL3: standby / review の起動プロンプトにはディレクティブを入れない ---
+# (両モードはプロンプト無し / idle 待機文のみで起動し、指示は後から cmux send で届く)
+assert_not_contains "$standby_runner" 'PARALLEL EXECUTION, mandatory' 'PL3 standby はディレクティブ非注入'
+assert_not_contains "$review_runner" 'PARALLEL EXECUTION, mandatory' 'PL3 review はディレクティブ非注入'
+
+# --- PL4: execute では EXIT_INSTRUCTION がディレクティブより後ろに来る ---
+# (exit 指示の後ろに別の指示が続くと優先順位が曖昧になる)
+pl4_line=$(grep -o 'PARALLEL EXECUTION, mandatory.*end this codex session' "$execute_runner" | head -1)
+if [[ -n "$pl4_line" ]]; then
+  echo 'PASS: PL4 exit 指示がディレクティブより後ろにある'
+else
+  echo 'FAIL: PL4 exit 指示がディレクティブより前にある、または片方が欠けている'
+  fail=1
+fi
+
+# --- PL5: --agents の不正値は非ゼロ終了する ---
+# 単なる非ゼロ終了だけでは launch-workspace.sh 自身の範囲チェック (line ~442) を検証したことに
+# ならない。PARALLEL_INSTRUCTION=$(bash parallel-directive.sh ...) は set -euo pipefail 下では、
+# parallel-directive.sh 側の同じ ^[2-8]$ チェック (line 44-45) が die しても同じく exit 1 で
+# launch-workspace.sh を落とす。つまり line 442 を消しても PL5 は同じ理由で「たまたま」通って
+# しまう (PL7 で捕まえたのと同じ「間違った理由で通るテスト」の罠)。launch-workspace.sh 固有の
+# メッセージ ("--agents must be an integer from 2 to 8") が出ていること、かつ
+# parallel-directive.sh 側のメッセージ ("parallel-directive:" prefix) が出ていないことまで
+# 確認して、検証対象を line 442 に固定する。
+pl5_bad=0
+pl5_err_range="$TMP/pl5-err-range.log"
+pl5_err_nonnum="$TMP/pl5-err-nonnum.log"
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner codex --plan-file "$TMP/plan.md" \
+  --agents 9 codex-agents-bad >/dev/null 2>"$pl5_err_range" && pl5_bad=1
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner codex --plan-file "$TMP/plan.md" \
+  --agents abc codex-agents-bad2 >/dev/null 2>"$pl5_err_nonnum" && pl5_bad=1
+if [[ $pl5_bad -eq 0 ]]; then
+  echo 'PASS: PL5 --agents の不正値を拒否する'
+else
+  echo 'FAIL: PL5 --agents の不正値が通ってしまった'
+  fail=1
+fi
+assert_contains "$pl5_err_range" '--agents must be an integer from 2 to 8' \
+  'PL5 --agents 9 は launch-workspace.sh 自身の range check で拒否される'
+assert_not_contains "$pl5_err_range" 'parallel-directive:' \
+  'PL5 --agents 9 は parallel-directive.sh まで到達していない'
+assert_contains "$pl5_err_nonnum" '--agents must be an integer from 2 to 8' \
+  'PL5 --agents abc は launch-workspace.sh 自身の range check で拒否される'
+assert_not_contains "$pl5_err_nonnum" 'parallel-directive:' \
+  'PL5 --agents abc は parallel-directive.sh まで到達していない'
+
+# --- PL7: --agents が値を伴わず CLI 末尾で終わる場合も die で拒否し、pane を作らない ---
+pl7_bad=0
+pl7_err="$TMP/pl7-err.log"
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner codex --plan-file "$TMP/plan.md" \
+  codex-agents-missing --agents >/dev/null 2>"$pl7_err" && pl7_bad=1
+if [[ $pl7_bad -eq 0 ]]; then
+  echo 'PASS: PL7 --agents に値が無い呼び出しを拒否する'
+else
+  echo 'FAIL: PL7 --agents に値が無いのに通ってしまった'
+  fail=1
+fi
+assert_contains "$pl7_err" '--agents requires a value' 'PL7 die の明示的なエラーメッセージが出る'
+assert_not_contains "$pl7_err" 'creating workspace with cwd=' 'PL7 --agents 欠損時に cmux pane を作成しない'
+
+# --- PL6: claude engine には Task サブエージェントの文面が届く ---
+claude_exec_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" claude-parallel)
+claude_exec_runner=$(jq -r '.runner_file' <<<"$claude_exec_output")
+assert_contains "$claude_exec_runner" 'Task subagents' 'PL6 claude execute には Task サブエージェント指示が届く'
+assert_not_contains "$claude_exec_runner" 'spawn_agent' 'PL6 claude には spawn_agent が届かない'
+
+# --- PL8/PL9/PL10: SKILL.md の claude 側 $PARALLEL 挿入位置を静的に固定する ---
+# T7 は codex prewarm 分岐だけを pin していた。sonnet standby 分岐と「共通プロトコル a」の
+# 拡張 REQUEST_TEXT には同等の assertion が無く、$PARALLEL を落としても誰も検出できなかった。
+# 対象の文面は SKILL.md 上で折り返されているため、改行と連続空白を 1 個の空白に潰した
+# 平坦化コピーに対して「連続する 1 本の文字列」で照合する (単なる存在ではなく順序を pin する)。
+# T14 の grep -F は行区切りに依存しているので、平坦化コピーは新規 assertion 専用に使う。
+SKILL_MD_FLAT="$TMP/skill-md-flat.txt"
+tr '\n' ' ' < "$SKILL_MD" | tr -s ' ' > "$SKILL_MD_FLAT"
+
+assert_contains "$SKILL_MD_FLAT" \
+  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine claude --mode execute) REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), run /exit to close this session.' \
+  'PL8 SKILL.md sonnet standby 分岐は $PARALLEL を作業指示と exit 指示の間に保つ'
+
+assert_contains "$SKILL_MD_FLAT" \
+  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <implementer-engine> --mode execute) REVIEW_PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review) "Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are committed and BEFORE creating the PR, you MUST get a code review approval.' \
+  'PL9 SKILL.md 共通プロトコル a は実装者用とレビュアー用の 2 本を先に計算する'
+
+# prewarm 経路のレビュアーはレビューペイン起動 (--mode review, PL3) ではディレクティブを
+# 受け取らないため、実装者が依頼文へ転記するこの 1 箇所が唯一の注入点になる。
+# 引用部分は宛先マーカーで挟み、実装者が自分宛と誤読しないようにする。
+assert_contains "$SKILL_MD_FLAT" \
+  'append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) wait by polling' \
+  'PL10 SKILL.md 共通プロトコル a はレビュー依頼文へ宛先マーカー付きでディレクティブを転記する'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
