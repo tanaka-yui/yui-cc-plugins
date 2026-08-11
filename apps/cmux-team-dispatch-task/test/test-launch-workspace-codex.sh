@@ -297,19 +297,37 @@ else
 fi
 
 # --- PL5: --agents の不正値は非ゼロ終了する ---
+# 単なる非ゼロ終了だけでは launch-workspace.sh 自身の範囲チェック (line ~442) を検証したことに
+# ならない。PARALLEL_INSTRUCTION=$(bash parallel-directive.sh ...) は set -euo pipefail 下では、
+# parallel-directive.sh 側の同じ ^[2-8]$ チェック (line 44-45) が die しても同じく exit 1 で
+# launch-workspace.sh を落とす。つまり line 442 を消しても PL5 は同じ理由で「たまたま」通って
+# しまう (PL7 で捕まえたのと同じ「間違った理由で通るテスト」の罠)。launch-workspace.sh 固有の
+# メッセージ ("--agents must be an integer from 2 to 8") が出ていること、かつ
+# parallel-directive.sh 側のメッセージ ("parallel-directive:" prefix) が出ていないことまで
+# 確認して、検証対象を line 442 に固定する。
 pl5_bad=0
+pl5_err_range="$TMP/pl5-err-range.log"
+pl5_err_nonnum="$TMP/pl5-err-nonnum.log"
 CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode execute --runner codex --plan-file "$TMP/plan.md" \
-  --agents 9 codex-agents-bad >/dev/null 2>&1 && pl5_bad=1
+  --agents 9 codex-agents-bad >/dev/null 2>"$pl5_err_range" && pl5_bad=1
 CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode execute --runner codex --plan-file "$TMP/plan.md" \
-  --agents abc codex-agents-bad2 >/dev/null 2>&1 && pl5_bad=1
+  --agents abc codex-agents-bad2 >/dev/null 2>"$pl5_err_nonnum" && pl5_bad=1
 if [[ $pl5_bad -eq 0 ]]; then
   echo 'PASS: PL5 --agents の不正値を拒否する'
 else
   echo 'FAIL: PL5 --agents の不正値が通ってしまった'
   fail=1
 fi
+assert_contains "$pl5_err_range" '--agents must be an integer from 2 to 8' \
+  'PL5 --agents 9 は launch-workspace.sh 自身の range check で拒否される'
+assert_not_contains "$pl5_err_range" 'parallel-directive:' \
+  'PL5 --agents 9 は parallel-directive.sh まで到達していない'
+assert_contains "$pl5_err_nonnum" '--agents must be an integer from 2 to 8' \
+  'PL5 --agents abc は launch-workspace.sh 自身の range check で拒否される'
+assert_not_contains "$pl5_err_nonnum" 'parallel-directive:' \
+  'PL5 --agents abc は parallel-directive.sh まで到達していない'
 
 # --- PL7: --agents が値を伴わず CLI 末尾で終わる場合も die で拒否し、pane を作らない ---
 pl7_bad=0
