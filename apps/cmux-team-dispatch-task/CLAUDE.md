@@ -165,7 +165,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - superpowers への譲歩文（subagent-driven-development の「実装者は同時に 1 体」を上書きしない旨）は engine / mode で出し分けず常に出力する。codex も `superpowers:brainstorming` 前置でパイプラインを辿るため
     - `launch-workspace.sh` が注入するのは plan / superpowers / execute の起動プロンプトだけ。standby / review はプロンプト無しで起動するので、指示は親が `cmux send` で送るテキストに含める。execute では `EXIT_INSTRUCTION` を必ず最後に残すこと
     - Phase B-R の spawn 経路は `review/code-review.json` の `reviewer_engine`（`claude` / `codex`）から依頼文へ埋め込む。欠落時（旧スキーマ）は注入しない。`--no-parallel` は起動プロンプト専用のスイッチで、レビュー依頼文の注入判定には使わない
-    - 回帰は `bash test/test-parallel-directive.sh`（PD1-PD7）、`bash test/test-launch-workspace-codex.sh`（PL1-PL6）、`bash test/test-launch-workspace-review-config.sh`（PR1-PR3）で検証する
+    - 回帰は `bash test/test-parallel-directive.sh`（PD1-PD7）、`bash test/test-launch-workspace-codex.sh`（PL1-PL7）、`bash test/test-launch-workspace-review-config.sh`（PR1-PR3）で検証する
 
 ## テスト方法
 
