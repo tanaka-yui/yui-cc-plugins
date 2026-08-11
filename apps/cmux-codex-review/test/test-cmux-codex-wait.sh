@@ -13,6 +13,7 @@
 #   W3. token 検知で status=done / exit 0（wake の本筋。回帰防止）
 #   W4. --timeout を明示したときだけ従来どおり status=timeout / exit 3（後方互換）
 #   W5. review / exec 2 プラグインの cmux-codex-wait は同一内容（コピー運用のドリフト防止）
+#   W8. codex-parallel-lib.sh が review / exec 2 プラグインで同一内容
 
 set -uo pipefail
 
@@ -118,6 +119,21 @@ if [[ -f "$SIBLING" ]]; then
   fi
 else
   echo "SKIP W5: cmux-codex-exec が同じリポジトリに無い"
+fi
+
+# --- W8: 2 プラグインの codex-parallel-lib.sh は同一内容 ---
+LIB="$SCRIPT_DIR/../bin/codex-parallel-lib.sh"
+LIB_SIBLING="$SCRIPT_DIR/../../cmux-codex-exec/bin/codex-parallel-lib.sh"
+if [[ -f "$LIB" && -f "$LIB_SIBLING" ]]; then
+  if diff -q "$LIB" "$LIB_SIBLING" >/dev/null; then
+    echo "PASS W8: review / exec の codex-parallel-lib.sh が同一"
+  else
+    echo "FAIL W8: 2 プラグインの codex-parallel-lib.sh が乖離している"
+    diff "$LIB" "$LIB_SIBLING" | head -20
+    fail=1
+  fi
+else
+  echo "SKIP W8: codex-parallel-lib.sh が両方には無い"
 fi
 
 [[ $fail -eq 0 ]] && echo "--- すべて PASS ---" || echo "--- FAIL あり ---"
