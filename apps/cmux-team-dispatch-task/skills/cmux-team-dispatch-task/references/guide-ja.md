@@ -441,6 +441,12 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
   「ブランチの diff + plan 参照」）。sonnet 実装（design=claude）/ codex 実装（design=codex）は
   実装者が拡張版 REQUEST_TEXT でレビューペインへ依頼する。レビューペインが利用不可（Phase A-R
   spawn 失敗済み）ならレビュー省略
+- **prewarm 経路のレビュー並列指示**: 拡張版 REQUEST_TEXT には実装者向け（`--mode execute`）に
+  加えてレビュアー向け（`--mode review`、engine は実装者の逆）のディレクティブも埋め込み、
+  実装者がレビュー依頼文に転記する。レビューペインは `--mode review` で起動しており起動
+  プロンプトにディレクティブを持たないため、これが prewarm 経路で唯一の注入点になる。
+  引用部分の前後には宛先マーカー（`Also include this in the message to the reviewer` …
+  `End of the message to the reviewer.`）を付け、実装者が自分宛と誤読しないようにする
 - **修正責任**: needs_work の指摘は実装者自身が修正して再依頼する（却下する指摘は反論を
   次ラウンドの依頼文に添える）。approve 後に実装者が PR を作成する — PR は常にレビュー済みになる
 - **3 往復で approve が出ない**: 実装者が claude セッションなら AskUserQuestion
@@ -669,8 +675,13 @@ parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|r
   1 メッセージで複数の Task サブエージェントを起動することを指示する
 - ファイル編集は常に親エージェントで逐次に保つ。実装の順序を制御するスキル
   （superpowers subagent-driven-development の「実装者は同時に 1 体」）は上書きしない
+- 分散してよいのは**読み取り専用の検証だけ**。auto-fix / write モード
+  （formatter や linter を write フラグ付きで走らせるもの）はファイルと共有ビルドキャッシュを
+  書き換えるため、親エージェントで逐次に実行する
 - `--agents` が同時実行の上限。2〜8 の整数のみで既定は 4
 - `standby` モードは存在しない。standby ペインは実行系なので `--mode execute` を渡す
+- `--agents` / `--no-parallel` は `launch-workspace.sh` のフラグ。このスキルは
+  どちらも渡さないので、スキル経由のディスパッチには常に既定値が適用される
 
 注入箇所:
 
@@ -681,6 +692,11 @@ parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|r
 | Phase A-R のレビュー依頼 | このスキル（スクリプト経由） |
 | Phase B-R のレビュー依頼（prewarm 経路） | このスキル（スクリプト経由） |
 | Phase B-R のレビュー依頼（spawn 経路） | `launch-workspace.sh`（`review/code-review.json` の `reviewer_engine` から） |
+
+ある engine 向けに生成したディレクティブを、別 engine のセッション宛のテキストの中に
+埋め込むとき（実装者のプロンプトに同梱するレビュアー向けディレクティブがこれにあたる）は、
+宛先を明示的にマークする。位置だけでは境界にならず、claude セッションに `spawn_agent` を
+指示してもそのツールは存在しない。
 
 ## Step 3: 監視と完了
 

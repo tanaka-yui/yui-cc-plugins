@@ -57,7 +57,7 @@ case "$MODE" in
     PHASES="Before you design anything, split the investigation across read-only child agents and run them at the same time: blast radius, existing implementation patterns, test layout, and related documentation. Merge their findings before you start writing the plan."
     ;;
   execute)
-    PHASES="Right after you read the plan, split the investigation across read-only child agents and run them at the same time: blast radius, existing implementation patterns, test layout, and related documentation. Merge their findings before you edit anything. Once the implementation is finished, split verification the same way: type checking, linting, tests, and documentation consistency."
+    PHASES="Right after you read the plan, split the investigation across read-only child agents and run them at the same time: blast radius, existing implementation patterns, test layout, and related documentation. Merge their findings before you edit anything. Once the implementation is finished, split read-only verification the same way: type checking, linting, tests, and documentation consistency. Only read-only checks may be fanned out. Never run auto-fix or write modes in parallel, such as a formatter or linter invoked with its write flag, because they mutate files and shared build caches; run those one at a time in the parent agent."
     ;;
   review)
     PHASES="Give each review lens its own child agent and run them at the same time: correctness and bugs, security, design and readability, and test coverage. Gather what they report, drop the duplicates, and present one review ordered by severity."
@@ -67,6 +67,10 @@ esac
 # 逐次を守らせる禁止文と superpowers への譲歩。engine / mode で出し分けない。
 # codex も superpowers パイプラインを辿る (launch-workspace.sh の codex superpowers は
 # プロンプトに superpowers:brainstorming を前置する) ため、claude 限定にすると漏れる。
-GUARDRAIL="File edits stay in the parent agent and stay sequential. Never let two child agents edit files in this worktree at the same time. This applies to investigation and verification only. It never overrides a skill that sequences implementation for you: if you are following superpowers subagent-driven-development, keep its one-implementer-at-a-time rule exactly as written."
+#
+# 適用範囲の一文は禁止文より **前** に置き、直前の指示 (= 並列化ディレクティブ) に係らせる。
+# 禁止文の後ろに置くと最近接先行詞が禁止文になり「同時編集の禁止は調査と検証にだけ適用される
+# = 実装中は同時編集してよい」と読めてしまい、この guardrail が防ぎたい事故そのものを許可する。
+GUARDRAIL="Everything above applies to investigation and verification only, never to implementation. File edits stay in the parent agent and stay sequential; never let two child agents edit files in this worktree at the same time. This directive never overrides a skill that sequences implementation for you: if you are following superpowers subagent-driven-development, keep its one-implementer-at-a-time rule exactly as written."
 
 printf '%s\n' "PARALLEL EXECUTION, mandatory: whenever two or more pieces of work are independent, ${MECHANISM} instead of doing them one after another. Run at most ${AGENTS} child agents at a time. ${PHASES} ${GUARDRAIL}"

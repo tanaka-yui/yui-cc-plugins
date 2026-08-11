@@ -650,11 +650,16 @@ if [[ "$MODE" == "execute" ]]; then
     READ_SCREEN_CMD="$CMUX read-screen $TARGET_FLAGS"
     # レビュアーに観点別の並列レビューをさせる指示。--no-parallel は起動プロンプト専用の
     # スイッチなのでここでは見ない。注入するかどうかは reviewer_engine の有無だけで決める。
+    #
+    # この文面は実装者の inner prompt の中に埋め込まれるが、宛先はレビュアー (実装者とは逆の
+    # engine) である。engine が違えば機構も違う (codex は spawn_agent / claude は Task subagent)
+    # ため、位置だけで「引用された他人宛のペイロード」と読ませると実装者が自分宛と誤読して
+    # 呼べないツールを指示される。前後に明示的な宛先マーカーを付けて境界を語彙で示す。
     REVIEWER_PARALLEL=""
     case "$REVIEWER_ENGINE" in
       claude|codex)
-        REVIEWER_PARALLEL=" $(bash "$SCRIPT_DIR/parallel-directive.sh" \
-          --engine "$REVIEWER_ENGINE" --mode review --agents "$MAX_AGENTS")" ;;
+        REVIEWER_PARALLEL=" Also include this in the message to the reviewer, addressed to the reviewer and not to you: $(bash "$SCRIPT_DIR/parallel-directive.sh" \
+          --engine "$REVIEWER_ENGINE" --mode review --agents "$MAX_AGENTS") End of the message to the reviewer." ;;
       "") ;;
       *) log "warn" "review config has unknown reviewer_engine=$REVIEWER_ENGINE; skipping parallel directive" ;;
     esac

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # launch-workspace.sh が Codex runner 向けに生成するコマンドの回帰テスト。
-# 並列実行ディレクティブ (PL1-PL7) もここで検証する。
+# 並列実行ディレクティブ (PL1-PL10) もここで検証する。
+#   PL1-PL7 : launch-workspace.sh が生成する runner ファイルの動的検査
+#   PL8-PL10: SKILL.md 側の $PARALLEL / $REVIEW_PARALLEL 挿入位置の静的検査
 
 set -euo pipefail
 
@@ -71,6 +73,10 @@ assert_contains() {
 
 assert_not_contains() {
   local file="$1" unexpected="$2" label="$3"
+  # ファイルが存在しないと grep は非ゼロで返るため、この確認が無いと「起動が落ちて runner
+  # ファイルが生成されなかった」ケースが全部 PASS になる (negative assertion が
+  # 間違った理由で通る典型パターン)
+  [[ -f "$file" ]] || { echo "FAIL: $label (no such file: $file)"; fail=1; return; }
   if grep -Fq -- "$unexpected" "$file"; then
     echo "FAIL: $label (unexpected: $unexpected)"
     fail=1
@@ -353,6 +359,30 @@ claude_exec_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.
 claude_exec_runner=$(jq -r '.runner_file' <<<"$claude_exec_output")
 assert_contains "$claude_exec_runner" 'Task subagents' 'PL6 claude execute には Task サブエージェント指示が届く'
 assert_not_contains "$claude_exec_runner" 'spawn_agent' 'PL6 claude には spawn_agent が届かない'
+
+# --- PL8/PL9/PL10: SKILL.md の claude 側 $PARALLEL 挿入位置を静的に固定する ---
+# T7 は codex prewarm 分岐だけを pin していた。sonnet standby 分岐と「共通プロトコル a」の
+# 拡張 REQUEST_TEXT には同等の assertion が無く、$PARALLEL を落としても誰も検出できなかった。
+# 対象の文面は SKILL.md 上で折り返されているため、改行と連続空白を 1 個の空白に潰した
+# 平坦化コピーに対して「連続する 1 本の文字列」で照合する (単なる存在ではなく順序を pin する)。
+# T14 の grep -F は行区切りに依存しているので、平坦化コピーは新規 assertion 専用に使う。
+SKILL_MD_FLAT="$TMP/skill-md-flat.txt"
+tr '\n' ' ' < "$SKILL_MD" | tr -s ' ' > "$SKILL_MD_FLAT"
+
+assert_contains "$SKILL_MD_FLAT" \
+  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine claude --mode execute) REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), run /exit to close this session.' \
+  'PL8 SKILL.md sonnet standby 分岐は $PARALLEL を作業指示と exit 指示の間に保つ'
+
+assert_contains "$SKILL_MD_FLAT" \
+  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <implementer-engine> --mode execute) REVIEW_PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review) "Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are committed and BEFORE creating the PR, you MUST get a code review approval.' \
+  'PL9 SKILL.md 共通プロトコル a は実装者用とレビュアー用の 2 本を先に計算する'
+
+# prewarm 経路のレビュアーはレビューペイン起動 (--mode review, PL3) ではディレクティブを
+# 受け取らないため、実装者が依頼文へ転記するこの 1 箇所が唯一の注入点になる。
+# 引用部分は宛先マーカーで挟み、実装者が自分宛と誤読しないようにする。
+assert_contains "$SKILL_MD_FLAT" \
+  'append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) wait by polling' \
+  'PL10 SKILL.md 共通プロトコル a はレビュー依頼文へ宛先マーカー付きでディレクティブを転記する'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

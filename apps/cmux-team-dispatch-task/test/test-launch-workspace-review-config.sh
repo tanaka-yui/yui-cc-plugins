@@ -87,6 +87,10 @@ assert_contains() {
 
 assert_not_contains() {
   local file="$1" unexpected="$2" label="$3"
+  # ファイルが存在しないと grep は非ゼロで返るため、この確認が無いと「起動が落ちて runner
+  # ファイルが生成されなかった」ケースが全部 PASS になる (例: 空 engine で
+  # parallel-directive.sh が die → set -e で launch 中断 → runner_file が null)
+  [[ -f "$file" ]] || { echo "FAIL: $label (no such file: $file)"; fail=1; return; }
   if grep -Fq -- "$unexpected" "$file"; then
     echo "FAIL: $label (unexpected: $unexpected)"
     fail=1

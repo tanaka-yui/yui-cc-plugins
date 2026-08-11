@@ -1179,10 +1179,16 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     Common protocol a — extended REQUEST_TEXT (the implementer drives the round loop;
     used in every branch above where a standby / delegated pane implements):
       a. Prewarm path only — REQUEST_TEXT: use this extended version instead
-         (compute the parallel-execution directive for the implementer's engine
-         first — claude for the sonnet standby / a delegated claude pane, codex
-         for the codex standby — then fill every <...> before sending):
+         (compute TWO parallel-execution directives first, then fill every <...>
+         before sending. One is for the implementer's engine — claude for the
+         sonnet standby / a delegated claude pane, codex for the codex standby.
+         The other is for the reviewer, who is ALWAYS the opposite engine of the
+         implementer; it is quoted inside the review request the implementer
+         sends, and this is the ONLY thing that gives the prewarm-path reviewer a
+         parallel directive — the reviewer pane itself was launched with
+         `--mode review`, which carries none):
            PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <implementer-engine> --mode execute)
+           REVIEW_PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review)
            "Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are
             committed and BEFORE creating the PR, you MUST get a code review
             approval. Round N starts at 1, max 3 rounds. Each round:
@@ -1200,6 +1206,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 findings to <EXISTING_STATUS_DIR>/review/code-round-N.md whose LAST
                 line must be VERDICT: approve or VERDICT: needs_work. From round 2
                 append your rebuttals to the findings you rejected, with reasons.
+                Also include this in the message to the reviewer, addressed to the
+                reviewer and not to you: $REVIEW_PARALLEL End of the message to the
+                reviewer.
             (2) wait by polling <EXISTING_STATUS_DIR>/review/code-round-N.md every
                 5 seconds for a VERDICT line, in 15-minute chunks with NO overall
                 time limit while the reviewer is active. Right after sending,
@@ -1279,7 +1288,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          <PARENT_WORKSPACE_ID> = the parent workspace ID this dispatch was launched from,
          <implementer-engine> = `claude` when the implementer is the sonnet standby or a
          delegated claude pane (opus 1m / sonnet target in the design=codex variant),
-         `codex` when the implementer is the codex standby.
+         `codex` when the implementer is the codex standby, <reviewer-engine> = the
+         opposite of <implementer-engine> (this is the engine of the pane at
+         <REVIEWER_SURFACE>, and it is what <REVIEWER_ENGINE> below is set to as well).
 
          Before sending this REQUEST_TEXT, write the reviewer wiring file so the
          implementer's runner wrapper can also wake the reviewer if the implementer
@@ -1452,37 +1463,6 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   - **codex runner absent** (`CODEX_CMD` empty):
     - `{{CODEX_OPTION_LINE}}` → empty string (so the option list shows only `1.` and `2.`)
     - `{{CODEX_BEHAVIOR_BLOCK}}` → empty string
-
-## Parallel execution inside a task
-
-Tasks already run in parallel across worktrees. This section is about the work
-*inside* one task: every child session is told to fan independent investigation
-and verification out across child agents instead of doing them one at a time.
-
-`scripts/parallel-directive.sh` is the single source of that wording:
-
-```
-parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|review> [--agents <N>]
-```
-
-- codex sessions are told to use `spawn_agent` / `wait_agent`; claude sessions are
-  told to launch several Task subagents in one message.
-- File edits always stay sequential in the parent agent, and the directive never
-  overrides a skill that sequences implementation (superpowers
-  subagent-driven-development keeps its one-implementer-at-a-time rule).
-- `--agents` caps concurrency. Integers 2-8 only; the default is 4.
-- There is no `standby` mode — a standby pane is an execution pane, so pass
-  `--mode execute` for it.
-
-Where the directive is injected:
-
-| Target | Injected by |
-|--------|-------------|
-| plan / superpowers / execute launch prompt | `launch-workspace.sh` (suppress with `--no-parallel`) |
-| Phase B execution request sent to a standby pane | this skill, via the script |
-| Phase A-R review request | this skill, via the script |
-| Phase B-R review request (prewarm path) | this skill, via the script |
-| Phase B-R review request (spawn path) | `launch-workspace.sh`, from `reviewer_engine` in `review/code-review.json` |
 
 4. **The task description** itself
 
@@ -1790,6 +1770,47 @@ with `agent` suffix `-opus`)):
 Phase B falls back to the on-demand `--mode execute` spawn, and in agmsg mode
 the opus session falls back to the traditional prompt-embedded launch
 ("Launch: Workspace Mode" as-is).
+
+## Parallel execution inside a task
+
+Tasks already run in parallel across worktrees. This section is about the work
+*inside* one task: every child session is told to fan independent investigation
+and verification out across child agents instead of doing them one at a time.
+
+`scripts/parallel-directive.sh` is the single source of that wording:
+
+```
+parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|review> [--agents <N>]
+```
+
+- codex sessions are told to use `spawn_agent` / `wait_agent`; claude sessions are
+  told to launch several Task subagents in one message.
+- File edits always stay sequential in the parent agent, and the directive never
+  overrides a skill that sequences implementation (superpowers
+  subagent-driven-development keeps its one-implementer-at-a-time rule).
+- Only read-only verification may be fanned out. Auto-fix and write modes (a
+  formatter or linter invoked with its write flag) stay sequential in the parent
+  agent, because they mutate files and shared build caches.
+- `--agents` caps concurrency. Integers 2-8 only; the default is 4.
+- There is no `standby` mode — a standby pane is an execution pane, so pass
+  `--mode execute` for it.
+- `--agents` and `--no-parallel` are `launch-workspace.sh` flags. This skill never
+  passes them, so the defaults apply to every dispatch it launches.
+
+Where the directive is injected:
+
+| Target | Injected by |
+|--------|-------------|
+| plan / superpowers / execute launch prompt | `launch-workspace.sh` (suppress with `--no-parallel`) |
+| Phase B execution request sent to a standby pane | this skill, via the script |
+| Phase A-R review request | this skill, via the script |
+| Phase B-R review request (prewarm path) | this skill, via the script |
+| Phase B-R review request (spawn path) | `launch-workspace.sh`, from `reviewer_engine` in `review/code-review.json` |
+
+Whenever a directive computed for one engine is embedded in text addressed to a
+session running the other engine — the reviewer directive carried inside the
+implementer's prompt — mark the addressee explicitly. Position alone is not a
+boundary, and a claude session told to call `spawn_agent` has no such tool.
 
 ## Step 3: Monitor and Complete
 
