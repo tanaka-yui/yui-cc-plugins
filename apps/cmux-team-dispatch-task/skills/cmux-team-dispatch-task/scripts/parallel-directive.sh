@@ -19,9 +19,18 @@ set -euo pipefail
 ENGINE=""; MODE=""; AGENTS=4
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --engine) ENGINE="${2:-}"; shift 2 ;;
-    --mode)   MODE="${2:-}"; shift 2 ;;
-    --agents) AGENTS="${2:-}"; shift 2 ;;
+    --engine)
+      [[ $# -ge 2 ]] || { echo "parallel-directive: --engine requires a value" >&2; exit 1; }
+      ENGINE="$2"; shift 2
+      ;;
+    --mode)
+      [[ $# -ge 2 ]] || { echo "parallel-directive: --mode requires a value" >&2; exit 1; }
+      MODE="$2"; shift 2
+      ;;
+    --agents)
+      [[ $# -ge 2 ]] || { echo "parallel-directive: --agents requires a value" >&2; exit 1; }
+      AGENTS="$2"; shift 2
+      ;;
     *) echo "parallel-directive: unknown argument: $1" >&2; exit 1 ;;
   esac
 done

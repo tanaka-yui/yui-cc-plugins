@@ -9,7 +9,7 @@
 #        (出力は zsh -ic "... '<prompt>' ..." の内側に素で置かれ、エスケープされない)
 #   PD5. 全モードでファイル編集を逐次に保つ禁止文を含む
 #   PD6. --agents が出力に反映され、2..8 以外はエラー終了する
-#   PD7. 不正な --engine / --mode はエラー終了する
+#   PD7. 不正な --engine / --mode / 値なしフラグはエラー終了し stderr メッセージを出す
 
 set -uo pipefail
 
@@ -103,16 +103,20 @@ else
   echo "FAIL PD6: [$o]"; fail=1
 fi
 
-# --- PD7: 不正な --engine / --mode ---
+# --- PD7: 不正な --engine / --mode / 値なしフラグ ---
 bad=0
 bash "$BIN" --engine gpt --mode execute >/dev/null 2>&1 && bad=1
 bash "$BIN" --engine codex --mode standby >/dev/null 2>&1 && bad=1
 bash "$BIN" --engine codex >/dev/null 2>&1 && bad=1
 bash "$BIN" --mode execute >/dev/null 2>&1 && bad=1
+# 値なしフラグ（exit 非ゼロ + stderr メッセージ有）
+stderr_out=$(bash "$BIN" --engine 2>&1); [[ -n "$stderr_out" ]] || bad=1
+stderr_out=$(bash "$BIN" --mode 2>&1); [[ -n "$stderr_out" ]] || bad=1
+stderr_out=$(bash "$BIN" --engine claude --mode execute --agents 2>&1); [[ -n "$stderr_out" ]] || bad=1
 if [[ $bad -eq 0 ]]; then
-  echo "PASS PD7: 不正な engine / mode / 省略を拒否する"
+  echo "PASS PD7: 不正な engine / mode / 省略 / 値なしフラグを拒否し stderr メッセージを出す"
 else
-  echo "FAIL PD7: 不正な引数が通ってしまった"; fail=1
+  echo "FAIL PD7: 不正な引数の処理が不完全"; fail=1
 fi
 
 [[ $fail -eq 0 ]] && echo "--- すべて PASS ---" || echo "--- FAIL あり ---"
