@@ -99,7 +99,7 @@ worktree の `.claude/settings.local.json` に次をマージする。
 ```
 
 これにより通常（非 loop）ディスパッチでも permission prompt が出ない。`AskUserQuestion`
-（ブレストの対話、Phase B のモデル選択、レビュー 3 往復後の判断）は permission gate とは
+（ブレストの対話、Phase B のモデル選択、レビュー 5 往復後の判断）は permission gate とは
 別レイヤーの対話 UI なので、対話的なまま残る。
 
 **前提**: bypass モード突入時の確認ダイアログは `--dangerously-skip-permissions` でも
@@ -200,7 +200,7 @@ claude が担う（詳細は下記 Phase A-R / Phase B-R 参照）。
 
 `runners.json` の codex runner に `review_model`（例: `gpt-5.6-sol`）を設定し、config の
 `review_mode` を `on` にすると、Phase A の成果物（plan/spec）を相手方 engine の専用ペインが
-レビューする。approve が出るまで設計セッションが修正 → 再レビューを繰り返す（各ポイント最大 3 往復。
+レビューする。approve が出るまで設計セッションが修正 → 再レビューを繰り返す（各ポイント最大 5 往復。
 超過時はユーザーに「このまま進む / さらに修正」を確認）。
 
 - plan モード: plan 完成後に 1 回 / superpowers モード: spec と plan で計 2 回
@@ -294,10 +294,10 @@ Phase A-R レビュアーと実装先の二役）が実装する。prewarm.json 
   > クロスエンジン原則により現行は **codex レビューペイン**が担う。
 
 - 指摘と verdict は `.dispatch/<slug>/review/code-round-<N>.md`（末尾 `VERDICT:` 行）で受け渡し。
-  最大 3 往復・verdict 待ちは 5 秒間隔ポーリング + 15 分ごとのレビュアー pane 生存確認
+  最大 5 往復・verdict 待ちは 5 秒間隔ポーリング + 15 分ごとのレビュアー pane 生存確認
   （`cmux read-screen` の画面差分）。レビュアーが活動している限り上限なしで待機し、
   無反応（stalled）のときのみ再依頼 1 回 → フォールバック — Phase A-R と同一プロトコル
-- 3 往復で approve が出ない場合、claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、
+- 5 往復で approve が出ない場合、claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、
   codex 実装者は未解決指摘を PR 本文に注記して続行
 - prewarm 無効では `launch-workspace.sh --mode execute --review-config <path>`
   が孫の prompt にレビュープロトコルを注入する

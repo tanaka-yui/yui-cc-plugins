@@ -87,11 +87,11 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 | 9 | Step 1g review_mode | コール②で事前設定し、ループ中は固定する。 |
 | 10 | 完了時 Wait-and-merge の Option A/B | integration=merge なら常に merge。conflict は cleanup 遷移表で自動処理する。 |
 | 11 | 完了時 cleanup の三問 | cleanup 遷移表で決定的に処理する。 |
-| 12 | Phase A-R の三往復 `needs_work` | 未解決指摘を文書末尾へ注記し、Phase B へ進む。 |
+| 12 | Phase A-R の五往復 `needs_work` | 未解決指摘を文書末尾へ注記し、Phase B へ進む。 |
 | 13 | Phase A-R reviewer stalled | 同一 round を一回再依頼し、再度 stalled ならレビューを省略して Phase B へ進む。 |
 | 14 | Phase B 実行モデル選択 | コール②の exec runner を `EXEC_DEFAULT_HINT` に焼き込む。 |
 | 15 | Phase B exec_choice 永続化確認 | #14 により発生しない。 |
-| 16 | Phase B-R の三往復 `needs_work` | 未解決指摘を PR 本文へ注記し、PR を作成する。 |
+| 16 | Phase B-R の五往復 `needs_work` | 未解決指摘を PR 本文へ注記し、PR を作成する。 |
 | 17 | Phase B-R reviewer stalled | レビューを省略した旨を PR 本文へ注記し、PR を作成する。 |
 | 18 | brainstorming / ExitPlanMode の暗黙の承認ゲート | plan モード固定と `--dangerously-skip-permissions` で承認プロンプトを出さない。 |
 
