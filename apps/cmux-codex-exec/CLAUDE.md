@@ -57,7 +57,7 @@ bash apps/cmux-codex-exec/test/test-cmux-codex-exec.sh
 - **E3**: 候補ゼロ（git リポジトリ外）でも空出力・終了コード 0 で終わる
 - **E4-E5**: 既定でディレクティブが入り `--no-parallel` で消える（prompt は常に 1 引数）
 - **E6-E7**: `.codex/agents/*.toml` の候補列挙とフォールバック、description の `'` エスケープ
-- **E8**: 通知本文の `agents=` が並列有無で切り替わる
+- **E8-E8b**: 通知本文の `agents=` が並列有無で切り替わる
 - **E9**: `--agents` の不正値は非ゼロ終了し、ペインを分割しない
 
 ## 関連プラグインとの境界
