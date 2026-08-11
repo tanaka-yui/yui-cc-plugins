@@ -143,9 +143,12 @@ done
 
 # --- SKILL.md static check: the codex Phase B prewarm-standby block must define a
 # base REQUEST_TEXT with a codex-appropriate exit instruction (regression guard for
-# the "codex completion notification never arrives" bug). ---
+# the "codex completion notification never arrives" bug). $PARALLEL (the
+# parallel-execution directive, injected between the work instruction and the
+# session-end instruction) is now part of this same string — it must stay between
+# the two, with the session-end instruction still last. ---
 SKILL_MD="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
-assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately' \
+assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately' \
   'T7 SKILL.md codex prewarm block defines base REQUEST_TEXT with codex session-end exit'
 
 # --- T14/T15: Phase B-R の拡張 REQUEST_TEXT の退行ガード ---
