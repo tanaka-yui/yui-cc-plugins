@@ -12,6 +12,8 @@
 #       （無制限待機で孤児 watcher が残らないための終了条件。時間ではなく生存で判断する）
 #   W3. token 検知で status=done / exit 0（wake の本筋。回帰防止）
 #   W4. --timeout を明示したときだけ従来どおり status=timeout / exit 3（後方互換）
+#   W6. 完了メッセージに agents=N があれば status=done の行にそれを載せる
+#   W7. agents= が無ければ出力は従来どおり（後方互換）
 #   W5. review / exec 2 プラグインの cmux-codex-wait は同一内容（コピー運用のドリフト防止）
 #   W8. codex-parallel-lib.sh が review / exec 2 プラグインで同一内容
 
@@ -56,6 +58,26 @@ if [[ $rc -eq 0 ]] && printf '%s' "$out" | grep -q "status=done"; then
   echo "PASS W3: token 検知で status=done / exit 0"
 else
   echo "FAIL W3: rc=$rc out=[$out]"
+  fail=1
+fi
+
+# --- W6: 完了メッセージの agents=N を status 行に載せる ---
+echo "2026-08-11 | t | codex → parent | DONE codex-review-31: レビュー完了 agents=5" > "$HIST_OUT"
+out=$("$BIN" t parent codex-review-31 --interval 1 2>&1); rc=$?
+if [[ $rc -eq 0 ]] && printf '%s' "$out" | grep -q "status=done token=codex-review-31 agents=5"; then
+  echo "PASS W6: agents=5 を status 行に載せる"
+else
+  echo "FAIL W6: rc=$rc out=[$out]"
+  fail=1
+fi
+
+# --- W7: agents= が無ければ出力は従来どおり（後方互換） ---
+echo "2026-08-11 | t | codex → parent | DONE codex-review-31: レビュー完了" > "$HIST_OUT"
+out=$("$BIN" t parent codex-review-31 --interval 1 2>&1); rc=$?
+if [[ $rc -eq 0 ]] && [[ "$(printf '%s' "$out" | tr -d '\n')" == "status=done token=codex-review-31" ]]; then
+  echo "PASS W7: agents= 無しなら従来どおりの出力"
+else
+  echo "FAIL W7: rc=$rc out=[$out]"
   fail=1
 fi
 
