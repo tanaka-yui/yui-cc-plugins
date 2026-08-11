@@ -110,9 +110,12 @@ bash "$BIN" --engine codex --mode standby >/dev/null 2>&1 && bad=1
 bash "$BIN" --engine codex >/dev/null 2>&1 && bad=1
 bash "$BIN" --mode execute >/dev/null 2>&1 && bad=1
 # 値なしフラグ（exit 非ゼロ + stderr メッセージ有）
-stderr_out=$(bash "$BIN" --engine 2>&1); [[ -n "$stderr_out" ]] || bad=1
-stderr_out=$(bash "$BIN" --mode 2>&1); [[ -n "$stderr_out" ]] || bad=1
-stderr_out=$(bash "$BIN" --engine claude --mode execute --agents 2>&1); [[ -n "$stderr_out" ]] || bad=1
+bash "$BIN" --engine >/dev/null 2>&1 && bad=1
+stderr_out=$(bash "$BIN" --engine 2>&1 1>/dev/null); [[ -n "$stderr_out" ]] || bad=1
+bash "$BIN" --mode >/dev/null 2>&1 && bad=1
+stderr_out=$(bash "$BIN" --mode 2>&1 1>/dev/null); [[ -n "$stderr_out" ]] || bad=1
+bash "$BIN" --engine claude --mode execute --agents >/dev/null 2>&1 && bad=1
+stderr_out=$(bash "$BIN" --engine claude --mode execute --agents 2>&1 1>/dev/null); [[ -n "$stderr_out" ]] || bad=1
 if [[ $bad -eq 0 ]]; then
   echo "PASS PD7: 不正な engine / mode / 省略 / 値なしフラグを拒否し stderr メッセージを出す"
 else
