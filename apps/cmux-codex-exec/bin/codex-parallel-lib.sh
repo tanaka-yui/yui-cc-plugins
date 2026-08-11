@@ -18,7 +18,7 @@ list_codex_agent_types() {
   local f stem desc line
   [[ -d .codex/agents ]] || return 0
   for f in .codex/agents/*.toml; do
-    [[ -f "$f" ]] || continue
+    [[ -f "$f" && -r "$f" ]] || continue
     stem=$(basename "$f" .toml)
     [[ "$stem" =~ ^[A-Za-z0-9._-]+$ ]] || continue
     desc=""
@@ -61,6 +61,7 @@ $types
 独立して進められる作業が2件以上あるときは、必ず spawn_agent で子エージェントを起動して
 並列に進め、wait_agent で結果を回収せよ。逐次で済ませてはならない。
 同時に走らせる子エージェントは最大 ${max} 体まで。
+ただし、下記のフェーズ指示で逐次と明示された作業はこの原則より優先し、必ず親エージェントが逐次で行え。
 
 ${phases}
 
@@ -68,5 +69,6 @@ ${agent_block}
 
 最後に、次の表で並列実行サマリーを必ず提示せよ:
 | task_name | agent_type | 担当 | 結果 |
+|---|---|---|---|
 "
 }

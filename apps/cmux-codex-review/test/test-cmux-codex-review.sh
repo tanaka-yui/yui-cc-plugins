@@ -269,6 +269,7 @@ fi
 rm -f "$TMP/split.log"
 bad=0
 SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" --agents 9 >/dev/null 2>&1 && bad=1
+SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" --agents 1 >/dev/null 2>&1 && bad=1
 SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" --agents abc >/dev/null 2>&1 && bad=1
 if [[ $bad -eq 0 && ! -f "$TMP/split.log" ]]; then
   echo "PASS D15: --agents の不正値を拒否し、ペインを分割しない"

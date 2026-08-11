@@ -14,7 +14,7 @@
 #   E5. --no-parallel でディレクティブを一切注入しない
 #   E6. .codex/agents/*.toml があれば agent_type 候補が載り、無ければフォールバック文言になる
 #   E7. description に ' が含まれても prompt は 1 引数のまま
-#   E8. 通知配線時、send.sh の本文に agents= が入る
+#   E8-E8b. 通知配線時、send.sh の本文に agents= が入る（--no-parallel では付かない）
 #   E9. --agents の不正値は非ゼロ終了し、ペインを分割しない
 
 set -uo pipefail
@@ -191,6 +191,7 @@ fi
 rm -f "$TMP/split.log"
 bad=0
 SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --agents 9 >/dev/null 2>&1 && bad=1
+SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --agents 1 >/dev/null 2>&1 && bad=1
 SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --agents abc >/dev/null 2>&1 && bad=1
 if [[ $bad -eq 0 && ! -f "$TMP/split.log" ]]; then
   echo "PASS E9: --agents の不正値を拒否し、ペインを分割しない"

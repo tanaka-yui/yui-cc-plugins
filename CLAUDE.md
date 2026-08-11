@@ -29,7 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `bin/<name>` — シェルスクリプト本体
 - `CLAUDE.md` — そのプラグインの開発ガイド（**ルートと内容を重複させず、プラグイン固有の事項のみ**）
 
-ルートと plugin manifest の両方にバージョンが書かれている: `apps/<name>/.claude-plugin/plugin.json` を更新したら、ルートの `.claude-plugin/marketplace.json` の対応する `version` も同期する。
+バージョンは複数箇所に書かれている: `apps/<name>/.claude-plugin/plugin.json` を更新したら、`apps/<name>/.codex-plugin/plugin.json`（存在する場合）とルートの `.claude-plugin/marketplace.json` の対応する `version` も同期する。
 
 ## Commands
 

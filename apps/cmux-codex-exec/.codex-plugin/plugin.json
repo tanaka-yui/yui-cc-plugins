@@ -1,6 +1,6 @@
 {
   "name": "cmux-codex-exec",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Implement a claude/superpowers plan with interactive codex in a new cmux pane; the parent session is woken via agmsg when it finishes.",
   "author": {
     "name": "tanaka-yui",
