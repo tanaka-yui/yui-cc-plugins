@@ -243,7 +243,9 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --no-parallel) NO_PARALLEL=1; shift ;;
-    --agents)      MAX_AGENTS="$2"; shift 2 ;;
+    --agents)
+      [[ $# -lt 2 ]] && die "--agents requires a value"
+      MAX_AGENTS="$2"; shift 2 ;;
     --effort)
       [[ $# -lt 2 ]] && die "--effort requires a value"
       EFFORT="$2"; shift 2 ;;

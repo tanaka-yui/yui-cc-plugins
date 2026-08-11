@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # launch-workspace.sh が Codex runner 向けに生成するコマンドの回帰テスト。
-# 並列実行ディレクティブ (PL1-PL5) もここで検証する。
+# 並列実行ディレクティブ (PL1-PL7) もここで検証する。
 
 set -euo pipefail
 
@@ -310,6 +310,21 @@ else
   echo 'FAIL: PL5 --agents の不正値が通ってしまった'
   fail=1
 fi
+
+# --- PL7: --agents が値を伴わず CLI 末尾で終わる場合も die で拒否し、pane を作らない ---
+pl7_bad=0
+pl7_err="$TMP/pl7-err.log"
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner codex --plan-file "$TMP/plan.md" \
+  codex-agents-missing --agents >/dev/null 2>"$pl7_err" && pl7_bad=1
+if [[ $pl7_bad -eq 0 ]]; then
+  echo 'PASS: PL7 --agents に値が無い呼び出しを拒否する'
+else
+  echo 'FAIL: PL7 --agents に値が無いのに通ってしまった'
+  fail=1
+fi
+assert_contains "$pl7_err" '--agents requires a value' 'PL7 die の明示的なエラーメッセージが出る'
+assert_not_contains "$pl7_err" 'creating workspace with cwd=' 'PL7 --agents 欠損時に cmux pane を作成しない'
 
 # --- PL6: claude engine には Task サブエージェントの文面が届く ---
 claude_exec_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
