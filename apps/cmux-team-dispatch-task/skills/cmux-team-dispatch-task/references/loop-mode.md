@@ -103,11 +103,11 @@ question.
 | 9 | Step 1g review_mode | Pre-configured in call ②, and fixed for the duration of the loop. |
 | 10 | Wait-and-merge Option A/B at completion | Always merge when integration=merge. Conflicts are handled automatically by the cleanup transition table. |
 | 11 | The three cleanup questions at completion | Handled deterministically by the cleanup transition table. |
-| 12 | Phase A-R's three rounds of `needs_work` | Note unresolved findings at the end of the document and proceed to Phase B. |
+| 12 | Phase A-R's five rounds of `needs_work` | Note unresolved findings at the end of the document and proceed to Phase B. |
 | 13 | Phase A-R reviewer stalled | Re-request the same round once; if stalled again, skip review and proceed to Phase B. |
 | 14 | Phase B execution model selection | Bake call ②'s exec runner into `EXEC_DEFAULT_HINT`. |
 | 15 | Phase B exec_choice persistence confirmation | Does not occur, due to #14. |
-| 16 | Phase B-R's three rounds of `needs_work` | Note unresolved findings in the PR body and create the PR. |
+| 16 | Phase B-R's five rounds of `needs_work` | Note unresolved findings in the PR body and create the PR. |
 | 17 | Phase B-R reviewer stalled | Note in the PR body that review was skipped, and create the PR. |
 | 18 | Implicit approval gate of brainstorming / ExitPlanMode | No approval prompt is shown, due to the fixed plan mode and `--dangerously-skip-permissions`. |
 

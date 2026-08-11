@@ -275,7 +275,7 @@ Phase A 成果物は codex レビューペイン（`review_model`）が、design
 
 - **レビューポイント**: plan モード = plan 完成後の 1 回 / superpowers モード = spec（design doc）
   完成後と plan 完成後の 2 回
-- **ラウンドループ**（各ポイント最大 3 往復）: 依頼 → 相手方 engine のレビューペインが
+- **ラウンドループ**（各ポイント最大 5 往復）: 依頼 → 相手方 engine のレビューペインが
   `<STATUS_DIR>/review/<point>-round-<N>.md` に指摘を書き、末尾に `VERDICT: approve` または
   `VERDICT: needs_work` を記す → approve なら次へ / needs_work なら設計セッションが妥当な指摘を反映
   （反論は次ラウンドの依頼文に理由付きで返す）して再依頼
@@ -291,7 +291,7 @@ Phase A 成果物は codex レビューペイン（`review_model`）が、design
   `agmsg` のとき（かつ各ラウンドの送信直前に ready sentinel `ready.${TEAM}__<review-agent>` が
   存在するとき）は、`cmux send` に先立ち同一依頼文を `send.sh` で inbox にも記録する
   （`<review-agent>` は design=claude で `<slug>-review`、design=codex で `<slug>-opus`）
-- **3 往復で approve が出ない** → 残指摘を要約して AskUserQuestion（このまま進む / さらに修正）
+- **5 往復で approve が出ない** → 残指摘を要約して AskUserQuestion（このまま進む / さらに修正）
 - **stalled（1 チャンク画面変化なし / 2 回連続観測不能）・verdict 不正** → verdict を最終確認
   してから同一ラウンドを 1 回だけ再依頼（baseline 取り直し）。それでも stalled なら
   AskUserQuestion（再依頼 / レビュー省略して Phase B へ）
@@ -407,7 +407,7 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
 実装完了（コミット済み）後・**PR 作成前**にコードレビューを挟む。有効化条件は Phase A-R と
 完全に同一（新しい config キーは無い）。レビューポイント id は `code`、findings は
 `<STATUS_DIR>/review/code-round-<N>.md`（末尾 `VERDICT: approve` / `VERDICT: needs_work`）、
-最大 3 往復 — Phase A-R と同一プロトコル。
+最大 5 往復 — Phase A-R と同一プロトコル。
 
 **レビュアー割り当て（統一規則）**: レビュアーは**常に実装者の相手方 engine**。物理配置は次で決まる:
 
@@ -449,7 +449,7 @@ codex の場合は `--model` / `--skip-permissions` の代わりに `--runner <c
   `End of the message to the reviewer.`）を付け、実装者が自分宛と誤読しないようにする
 - **修正責任**: needs_work の指摘は実装者自身が修正して再依頼する（却下する指摘は反論を
   次ラウンドの依頼文に添える）。approve 後に実装者が PR を作成する — PR は常にレビュー済みになる
-- **3 往復で approve が出ない**: 実装者が claude セッションなら AskUserQuestion
+- **5 往復で approve が出ない**: 実装者が claude セッションなら AskUserQuestion
   （このまま PR 作成 / さらに修正）。codex 実装者は対話質問ができないため、未解決指摘を
   **PR 本文に注記して続行**する
 - **stalled（1 チャンク画面変化なし / 2 回連続観測不能）**: verdict を最終確認してから同一ラウンド
@@ -1087,9 +1087,9 @@ done
 - **Phase A-R（plan/spec クロスレビュー）**: 設計 runner の `review_model`（codex 設計は codex runner の `review_model`、codex 設計タスクに対しては claude 側 reviewer runner）があり
   レビューを使うことを選んだとき（dispatch 前に毎回質問。config の `review_mode: "on"` / `"off"` で
   恒久設定も可）、Phase A の成果物（plan モード: plan / superpowers モード:
-  spec と plan）を相手方 engine の専用レビューペインがレビューする。approve まで最大 3 往復、超過時はユーザー判断
+  spec と plan）を相手方 engine の専用レビューペインがレビューする。approve まで最大 5 往復、超過時はユーザー判断
 - **Phase B-R（実装後コードレビュー）**: `review_mode: on` のとき、実装完了後・PR 作成前に
-  コードレビューを挟む。レビュアーは実装者の相手方 engine（統一規則）: 実装者 engine == 設計 engine ならレビューペイン、実装者 engine != 設計 engine なら設計セッション（YOU）がレビューする。approve が出るまで実装者が修正（最大 3 往復）
+  コードレビューを挟む。レビュアーは実装者の相手方 engine（統一規則）: 実装者 engine == 設計 engine ならレビューペイン、実装者 engine != 設計 engine なら設計セッション（YOU）がレビューする。approve が出るまで実装者が修正（最大 5 往復）
 - **統一表示フォーマット**: 子セッション一覧・進捗・最終サマリーは Box drawing 表（Template A/B/C）で常に同じレイアウト
 - **堅牢なバックグラウンド監視**: `monitor-dispatch.sh` が heartbeat / 死亡通知 / `--resume` をサポート。`cmux send` の後に必ず `cmux send-key return` を発行して親 TUI に確実に届ける
 - **2つの統合戦略**: PR per task（子タスクごとに PR 作成）、Wait and merge（全タスク完了後にローカルマージ）

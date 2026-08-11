@@ -1033,11 +1033,11 @@ PHASE B — Execution model selection (REQUIRED before any code change):
       Phase B — review is a quality gate, not a dispatch blocker.
       The SAME pane is reused across all points and rounds (it keeps review context).
 
-    Round loop (at point <point>, N = 1, 2, 3):
+    Round loop (at point <point>, N = 1, 2, 3, 4, 5):
       1. Compose the request text:
            "Review the <point> document at <ABSOLUTE_DOC_PATH>.
             Reference material: <related file paths — e.g. the spec path when reviewing the plan>.
-            This is round <N> (max 3)."
+            This is round <N> (max 5)."
          For N >= 2 append:
            "Previous findings: <EXISTING_STATUS_DIR>/review/<point>-round-<N-1>.md.
             The document was revised in response — check whether concerns were
@@ -1106,9 +1106,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          - "VERDICT: needs_work" → read the findings. Apply the ones you judge
            valid to the document; collect reasons for the ones you reject (they
            go into the next round's request as rebuttals). Then:
-             N < 3  → run round N+1.
-             N == 3 → summarize the unresolved findings and ask via AskUserQuestion:
-               Q: "Three review rounds passed without an approve. Remaining findings: <summary>. What do you want to do?"
+             N < 5  → run round N+1.
+             N == 5 → summarize the unresolved findings and ask via AskUserQuestion:
+               Q: "Five review rounds passed without an approve. Remaining findings: <summary>. What do you want to do?"
                  1. Proceed as is — note the remaining findings in the document and go to Phase B
                  2. Revise further — run one more review round
                "Proceed as is" → append the unresolved findings as a note in the
@@ -1138,7 +1138,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   PHASE B-R — Post-implementation code review (REQUIRED before the PR is created):
     Enabled together with Phase A-R. Review point id: "code". Findings file:
     <EXISTING_STATUS_DIR>/review/code-round-<N>.md — the LAST line MUST be exactly
-    'VERDICT: approve' or 'VERDICT: needs_work'. Max 3 rounds.
+    'VERDICT: approve' or 'VERDICT: needs_work'. Max 5 rounds.
 
     Reviewer assignment (unified rule): the reviewer is ALWAYS the opposite engine
     of the implementer. Physically:
@@ -1191,7 +1191,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            REVIEW_PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review)
            "Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are
             committed and BEFORE creating the PR, you MUST get a code review
-            approval. Round N starts at 1, max 3 rounds. Each round:
+            approval. Round N starts at 1, max 5 rounds. Each round:
             (1) send the review request. If <TEAM> is non-empty AND the file
                 $HOME/.agents/skills/agmsg/run/ready.<TEAM>__<task-slug> exists, first
                 record the request in the reviewer's inbox (an agmsg push alone cannot
@@ -1225,7 +1225,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 consecutive all-failed boundaries count as stalled.
             (3) On VERDICT: approve, create the PR and finish per the instructions
                 below. On VERDICT: needs_work, apply the findings you judge valid,
-                commit, and start round N+1. If round 3 still ends with needs_work:
+                commit, and start round N+1. If round 5 still ends with needs_work:
                 if you can ask the user interactively (AskUserQuestion), ask whether
                 to proceed or run one more round; otherwise note the unresolved
                 findings in the PR body and proceed. If the wait exits stalled,
@@ -1362,8 +1362,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         - Request text: ask for a review of the committed changes on this branch
           (git log / git diff against the branch point) against the plan at
           <PLAN_FILE_PATH>, findings to <EXISTING_STATUS_DIR>/review/code-round-<N>.md.
-        - Round 3 needs_work → ask via AskUserQuestion:
-            Q: "Three code review rounds passed without an approve. Remaining findings: <summary>. What do you want to do?"
+        - Round 5 needs_work → ask via AskUserQuestion:
+            Q: "Five code review rounds passed without an approve. Remaining findings: <summary>. What do you want to do?"
               1. Create the PR as is — note the unresolved findings in the PR body and proceed
               2. Revise further — run one more round (on another needs_work, re-ask)
         - Review pane unavailable (the PHASE A-R Setup spawn failed and review was

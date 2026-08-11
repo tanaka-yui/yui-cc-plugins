@@ -202,7 +202,7 @@ unattended_runner=$(jq -r '.runner_file' <<<"$unattended_output")
 assert_not_contains "$unattended_runner" 'AskUserQuestion' 'T12 --unattended の runner に質問分岐が無い'
 assert_contains "$unattended_runner" '--dangerously-skip-permissions' 'T12 --unattended は claude に skip-permissions を強制'
 assert_contains "$unattended_runner" 'note the unresolved findings in the PR body and proceed' \
-  'T12 --unattended は round 3 の固定フォールバックを持つ'
+  'T12 --unattended は round 5 の固定フォールバックを持つ'
 
 # 後方互換: --unattended 無しでは現行文言が保たれる
 attended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
