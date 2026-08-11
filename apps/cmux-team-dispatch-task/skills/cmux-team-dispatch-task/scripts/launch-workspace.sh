@@ -635,6 +635,10 @@ if [[ "$MODE" == "execute" ]]; then
       || die "failed to parse review config at $REVIEW_CONFIG"
     REVIEWER_WORKSPACE=$(jq -r '.reviewer_workspace // empty' "$REVIEW_CONFIG" 2>/dev/null) \
       || die "failed to parse review config at $REVIEW_CONFIG"
+    # レビュアーの engine。レビュアーは常に設計 engine の逆だが、その情報は親セッション
+    # にしかないので review-config 経由で受け取る。欠落 (旧スキーマ) なら注入しない。
+    REVIEWER_ENGINE=$(jq -r '.reviewer_engine // empty' "$REVIEW_CONFIG" 2>/dev/null) \
+      || die "failed to parse review config at $REVIEW_CONFIG"
     [[ -n "$REVIEWER_SURFACE" && -n "$REVIEW_DIR" ]] \
       || die "review config must contain reviewer_surface and review_dir"
     # reviewer_workspace 欠落時 (旧スキーマ) は --workspace 指定なしにフォールバック。
@@ -644,8 +648,18 @@ if [[ "$MODE" == "execute" ]]; then
     [[ -n "$REVIEWER_WORKSPACE" ]] \
       && TARGET_FLAGS="--workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE"
     READ_SCREEN_CMD="$CMUX read-screen $TARGET_FLAGS"
+    # レビュアーに観点別の並列レビューをさせる指示。--no-parallel は起動プロンプト専用の
+    # スイッチなのでここでは見ない。注入するかどうかは reviewer_engine の有無だけで決める。
+    REVIEWER_PARALLEL=""
+    case "$REVIEWER_ENGINE" in
+      claude|codex)
+        REVIEWER_PARALLEL=" $(bash "$SCRIPT_DIR/parallel-directive.sh" \
+          --engine "$REVIEWER_ENGINE" --mode review --agents "$MAX_AGENTS")" ;;
+      "") ;;
+      *) log "warn" "review config has unknown reviewer_engine=$REVIEWER_ENGINE; skipping parallel directive" ;;
+    esac
     # (1)(2) は対話有無で変わらない共通部分
-    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send $TARGET_FLAGS followed by: $CMUX send-key $TARGET_FLAGS return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons. (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. "
+    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 3 rounds. Each round: (1) request the review by running: $CMUX send $TARGET_FLAGS followed by: $CMUX send-key $TARGET_FLAGS return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons.${REVIEWER_PARALLEL} (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. "
     if [[ $UNATTENDED -eq 1 ]]; then
       # 無人ループ: 判断を求めず固定のフォールバックを取る。文中にクォート文字を使わないこと
       REVIEW_INSTRUCTION="${REVIEW_INSTRUCTION}If round 3 still ends with needs_work, note the unresolved findings in the PR body and proceed to the PR. If the wait exits stalled, re-check the verdict file, then re-send the same round once with a fresh baseline; if it stalls again, skip the review, note the skipped review in the PR body, and proceed to the PR. No interactive user is attached to this session, so never wait for a human decision. "
