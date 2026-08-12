@@ -79,13 +79,10 @@
 #                                      The composed command is always wrapped in `zsh -ic "..."`
 #                                      so functions and env vars from ~/.zshrc are loaded.
 #                                      Default: hardcoded {claude, engine=claude}.
-#   --message-type <send-message|agmsg>  Parent notification transport (default: send-message).
-#                                      send-message = cmux send + send-key return (現行動作)
-#                                      agmsg = 上記に加えて ~/.agents/skills/agmsg/scripts/send.sh で
-#                                      親 (agent 名 "parent") にも inbox 記録として送信 (cmux send は
-#                                      wake 用に常に併発)。--agmsg-team / --agmsg-from が必須
-#   --agmsg-team <team>                agmsg の team 名 (message-type=agmsg 時必須)
-#   --agmsg-from <agent>               agmsg の送信元 agent 名 (message-type=agmsg 時必須)
+#   --agmsg-team <team>                agmsg の team 名 (--agmsg-from とセットで必須)。
+#                                      送信は send-prompt.sh が担い、宛先 watcher が生きている
+#                                      ときだけ agmsg push を使う (タイプ入力は常に併発)
+#   --agmsg-from <agent>               agmsg の送信元 agent 名 (--agmsg-team とセットで必須)
 #
 # Output: JSON to stdout with workspace/pane details
 # Debug:  Logs to stderr
@@ -197,7 +194,6 @@ DEFER_STATUS=0
 REVIEW_CONFIG=""
 TIMEOUT_SENTINEL=""
 UNATTENDED=0
-MESSAGE_TYPE="send-message"
 AGMSG_TEAM=""
 AGMSG_FROM=""
 AGMSG_SEND="$HOME/.agents/skills/agmsg/scripts/send.sh"
@@ -297,12 +293,9 @@ while [[ $# -gt 0 ]]; do
       RUNNER_NAME="$2"
       shift 2
       ;;
+    # v1.16.0 で削除。agmsg を使うかは --agmsg-team の有無と send.sh の存在で決まる。
     --message-type)
-      [[ $# -lt 2 ]] && die "--message-type requires send-message or agmsg"
-      MESSAGE_TYPE="$2"
-      [[ "$MESSAGE_TYPE" == "send-message" || "$MESSAGE_TYPE" == "agmsg" ]] \
-        || die "--message-type must be 'send-message' or 'agmsg'"
-      shift 2
+      die "--message-type was removed: agmsg is wired whenever --agmsg-team is given and send.sh exists"
       ;;
     --agmsg-team)
       [[ $# -lt 2 ]] && die "--agmsg-team requires a team name"
@@ -359,10 +352,10 @@ fi
 # Validate workspace name: only allow safe characters for path/branch usage
 [[ "$WORKSPACE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid workspace name '$WORKSPACE_NAME': use only [A-Za-z0-9._-]"
 
-# agmsg モードは team / from が必須。send.sh が無ければインストールされていない
-if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
-  [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --message-type is agmsg"
-  [[ -n "$AGMSG_FROM" ]] || die "--agmsg-from is required when --message-type is agmsg"
+# agmsg 配線は team / from が揃っているときだけ行う。send.sh が無ければ未インストール。
+if [[ -n "$AGMSG_TEAM" || -n "$AGMSG_FROM" ]]; then
+  [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --agmsg-from is given"
+  [[ -n "$AGMSG_FROM" ]] || die "--agmsg-from is required when --agmsg-team is given"
   [[ -f "$AGMSG_SEND" ]] || die "agmsg is not installed (expected $AGMSG_SEND)"
 fi
 
@@ -806,7 +799,6 @@ STATUS_DIR="${STATUS_DIR}"
 SLUG="${WORKSPACE_NAME}"
 DEFER_STATUS="${DEFER_STATUS}"
 STANDBY="${STANDBY_FLAG}"
-MESSAGE_TYPE="${MESSAGE_TYPE}"
 AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
 AGMSG_FROM="${AGMSG_FROM}"

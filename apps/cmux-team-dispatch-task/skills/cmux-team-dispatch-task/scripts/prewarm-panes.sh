@@ -16,13 +16,13 @@
 #   agmsg モード (workspace 未作成の状態で呼ぶ。opus も standby 起動し workspace はこのスクリプトが作成):
 #     prewarm-panes.sh --with-opus \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
-#       --message-type agmsg --agmsg-team <team> \
+#       --agmsg-team <team> \
 #       [--codex-runner <name>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
 #
-# 注意: --message-type agmsg を --with-opus なしで渡す組み合わせは SKILL からは使用しない
+# 注意: --agmsg-team を --with-opus なしで渡す組み合わせは SKILL からは使用しない
 #       (sonnet/codex 配線のみ行いたい特殊用途向け)
 #
 # 内部処理:
@@ -71,7 +71,6 @@ SLUG=""
 STATUS_DIR=""
 CODEX_RUNNER=""
 REVIEW_MODEL=""
-MESSAGE_TYPE="send-message"
 AGMSG_TEAM=""
 WITH_OPUS=0
 NOTIFY_WORKSPACE=""
@@ -114,12 +113,9 @@ while [[ $# -gt 0 ]]; do
     --review-model)
       [[ $# -lt 2 ]] && die "--review-model requires a model name"
       REVIEW_MODEL="$2"; shift 2 ;;
+    # v1.16.0 で削除。agmsg を使うかは --agmsg-team の有無と send.sh の存在で決まる。
     --message-type)
-      [[ $# -lt 2 ]] && die "--message-type requires send-message or agmsg"
-      MESSAGE_TYPE="$2"
-      [[ "$MESSAGE_TYPE" == "send-message" || "$MESSAGE_TYPE" == "agmsg" ]] \
-        || die "--message-type must be 'send-message' or 'agmsg'"
-      shift 2 ;;
+      die "--message-type was removed: agmsg is wired whenever --agmsg-team is given and send.sh exists" ;;
     --agmsg-team)
       [[ $# -lt 2 ]] && die "--agmsg-team requires a team name"
       AGMSG_TEAM="$2"; shift 2 ;;
@@ -173,7 +169,7 @@ fi
 
 if [[ $WITH_OPUS -eq 1 ]]; then
   # agmsg モード専用: workspace はこのスクリプトが作成する
-  [[ "$MESSAGE_TYPE" == "agmsg" ]] || die "--with-opus requires --message-type agmsg"
+  [[ -n "$AGMSG_TEAM" ]] || die "--with-opus requires --agmsg-team"
   [[ -z "$WORKSPACE" && -z "$BASE_SURFACE" ]] \
     || die "--with-opus is mutually exclusive with --workspace/--base-surface"
 else
@@ -181,8 +177,7 @@ else
   [[ -n "$BASE_SURFACE" ]] || die "--base-surface is required (without --with-opus)"
 fi
 
-if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
-  [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --message-type is agmsg"
+if [[ -n "$AGMSG_TEAM" ]]; then
   [[ -f "$AGMSG_DIR/send.sh" ]] || die "agmsg is not installed (expected $AGMSG_DIR/send.sh)"
 fi
 
@@ -226,7 +221,7 @@ CODEX_DELIVERY="cmux-send"
 REVIEW_DELIVERY="cmux-send"
 DESIGN_DELIVERY="cmux-send"
 
-if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
+if [[ -n "$AGMSG_TEAM" ]]; then
   if [[ $WITH_OPUS -eq 1 ]]; then
     if [[ "$DESIGN_ENGINE" == "codex" ]]; then
       # design=codex: 設計ペインも codex セッションなので codex standby と同じ
@@ -315,7 +310,7 @@ if [[ $WITH_OPUS -eq 1 ]]; then
       ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
       --status-dir "$STATUS_DIR" \
       ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
-      --message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
+      --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
       "$SLUG") || die "failed to launch codex design workspace"
   else
     # actas で identity を claim してから待機する。タスク本文は含めない (後から届く)。
@@ -339,7 +334,7 @@ if [[ $WITH_OPUS -eq 1 ]]; then
       ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
       --status-dir "$STATUS_DIR" \
       ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
-      --message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
+      --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
       "$SLUG" "$OPUS_PROMPT") || die "failed to launch opus standby workspace"
   fi
   WORKSPACE=$(echo "$OPUS_RESULT" | jq -r '.workspace_id // empty')
@@ -352,14 +347,14 @@ fi
 
 SONNET_PROMPT=""
 AGMSG_FLAGS_SONNET=()
-if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
+if [[ -n "$AGMSG_TEAM" ]]; then
   # opus と同じ理由で delivery に応じて出し分ける (cmux-send フォールバック時は actas しない)
   if [[ "$CLAUDE_DELIVERY" == "agmsg" ]]; then
     SONNET_PROMPT="/agmsg actas $SLUG-sonnet then wait idle. Execution instructions will arrive as a prompt typed into this pane; an identical copy is also pushed to your agmsg inbox (treat both as ONE task — ignore the duplicate). Do not start any work until the instructions arrive."
   else
     SONNET_PROMPT="Wait idle. Execution instructions will be typed directly into this pane as a prompt. Do not start any work until they arrive."
   fi
-  AGMSG_FLAGS_SONNET=(--message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-sonnet")
+  AGMSG_FLAGS_SONNET=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-sonnet")
 fi
 
 log "prewarm" "launching sonnet standby pane for $SLUG"
@@ -389,8 +384,8 @@ CODEX_SURFACE=""
 
 if [[ -n "$CODEX_RUNNER" ]]; then
   AGMSG_FLAGS_CODEX=()
-  if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
-    AGMSG_FLAGS_CODEX=(--message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
+  if [[ -n "$AGMSG_TEAM" ]]; then
+    AGMSG_FLAGS_CODEX=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
   fi
   CODEX_DIRECTION_FLAGS=()
   [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]] && CODEX_DIRECTION_FLAGS=(--standby-split-direction right)
@@ -428,8 +423,8 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     REVIEW_RUNNER_FLAGS=(--runner "$REVIEWER_RUNNER" --model "$CLAUDE_REVIEW_MODEL" --skip-permissions)
     # opus 1m 委譲時にこのペインが status.json / 親通知の所有者になるため、
     # 完了通知の dual-send (cmux send + agmsg inbox 記録) 用に agmsg 配線を渡す
-    if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
-      AGMSG_FLAGS_REVIEW=(--message-type agmsg --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-opus")
+    if [[ -n "$AGMSG_TEAM" ]]; then
+      AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-opus")
     fi
   else
     log "prewarm" "launching codex review pane for $SLUG"
