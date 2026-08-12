@@ -3,8 +3,8 @@
 #
 # 守っている不変条件:
 #   SP0. 未知フラグ・必須フラグ欠落は exit 2 の使用法エラーになり、配送は起きない
-#   SP1. agmsg ready sentinel がある宛先では cmux を 1 度も呼ばない
-#   SP2. sentinel が無ければタイプ入力経路に落ちる
+#   SP1. agmsg ready sentinel がある宛先では agmsg に記録し、かつタイプ入力も行う (dual-send)
+#   SP2. sentinel が無ければ agmsg 記録はスキップされ、タイプ入力だけが行われる
 #   SP3. 閾値超えは outbox にファイル化され、1 行のポインタだけがタイプされる
 #   SP4. 同一 label の 2 通目は連番になり 1 通目を上書きしない
 #   SP5. 閾値以下は素のテキストとしてタイプされる
@@ -14,7 +14,8 @@
 #   SP9. 入力欄に残る場合は Enter を再送し、尽きたら exit 1 になる
 #   SP10. read-screen が観測できない (空出力) 場合は観測失敗として成功扱いにする
 #   SP11. 画面は非空だが入力欄行 (❯/>) が見つからない場合も観測失敗として成功扱いにする
-#   SP12. agmsg の send.sh が失敗したらタイプ入力経路へフォールバックする
+#   SP12. agmsg の send.sh が失敗してもタイプ入力は行われ、終了コードは 0 のまま
+#   SP13. 閾値超えの本文を sentinel のある宛先へ送ると、agmsg には全文が渡りタイプ入力側はポインタ 1 行になる
 
 set -uo pipefail
 
@@ -104,18 +105,20 @@ else
   echo "FAIL SP0d: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")]"; fail=1
 fi
 
-# --- SP1: ready sentinel あり → agmsg のみ、cmux は呼ばれない ---
+# --- SP1: ready sentinel あり → agmsg に記録し、かつタイプ入力も行う (dual-send) ---
 reset_logs
 touch "$TMP/run/ready.myteam__reviewer"
 run_sp --to-surface surface:2 --agmsg-team myteam --agmsg-to reviewer \
        --agmsg-from impl --label codereview --outbox-dir "$TMP/outbox" -- "hello reviewer"
-if [[ ! -s "$TMP/cmux.log" ]] && grep -q 'send.sh myteam impl reviewer hello reviewer' "$TMP/agmsg.log"; then
-  echo "PASS SP1: ready sentinel がある宛先では cmux を呼ばず agmsg のみで送る"
+if grep -q 'send.sh myteam impl reviewer hello reviewer' "$TMP/agmsg.log" \
+   && grep -qF 'cmux send --surface surface:2 hello reviewer' "$TMP/cmux.log" \
+   && grep -q 'cmux send-key --surface surface:2 return' "$TMP/cmux.log"; then
+  echo "PASS SP1: ready sentinel がある宛先では agmsg に記録し、かつタイプ入力も行う"
 else
   echo "FAIL SP1: cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
 fi
 
-# --- SP2: sentinel なし → タイプ入力経路 ---
+# --- SP2: sentinel なし → agmsg 記録はスキップされタイプ入力だけが行われる ---
 reset_logs
 rm -f "$TMP/run/ready.myteam__reviewer"
 run_sp --to-surface surface:2 --agmsg-team myteam --agmsg-to reviewer \
@@ -123,7 +126,7 @@ run_sp --to-surface surface:2 --agmsg-team myteam --agmsg-to reviewer \
 if grep -q 'cmux send --surface surface:2 hello reviewer' "$TMP/cmux.log" \
    && grep -q 'cmux send-key --surface surface:2 return' "$TMP/cmux.log" \
    && [[ ! -s "$TMP/agmsg.log" ]]; then
-  echo "PASS SP2: sentinel が無ければタイプ入力経路に落ちる"
+  echo "PASS SP2: sentinel が無ければ agmsg 記録はスキップされタイプ入力だけが行われる"
 else
   echo "FAIL SP2: cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
 fi
@@ -241,7 +244,7 @@ else
 fi
 SCREEN_FIXTURE="$TMP/screen-empty.txt"
 
-# --- SP12: agmsg の send.sh が失敗したらタイプ入力経路へフォールバックする ---
+# --- SP12: agmsg の send.sh が失敗してもタイプ入力は行われ、終了コードは 0 のまま ---
 reset_logs
 touch "$TMP/run/ready.myteam__reviewer"
 cat > "$TMP/bin/send.sh" <<'STUB'
@@ -257,7 +260,7 @@ rc=$?
 if [[ $rc -eq 0 ]] \
    && grep -q 'send.sh myteam impl reviewer' "$TMP/agmsg.log" \
    && grep -qF 'cmux send --surface surface:2 hello reviewer' "$TMP/cmux.log"; then
-  echo "PASS SP12: agmsg 失敗時はタイプ入力経路へフォールバックする"
+  echo "PASS SP12: agmsg の記録が失敗してもタイプ入力は行われ、終了コードは 0 のまま"
 else
   echo "FAIL SP12: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")]"; fail=1
 fi
@@ -265,5 +268,24 @@ rm -f "$TMP/run/ready.myteam__reviewer"
 # send.sh スタブを既定(成功)に戻す。以降のテスト追加時に本テストの失敗スタブが
 # 残らないようにする。
 make_stubs
+
+# --- SP13: 閾値超えの本文を sentinel のある宛先へ送ると、agmsg には全文が渡り
+#           タイプ入力側はポインタ 1 行になる ---
+reset_logs
+touch "$TMP/run/ready.myteam__reviewer"
+LONG4="$(printf 'w%.0s' $(seq 1 500))"
+run_sp --to-surface surface:2 --agmsg-team myteam --agmsg-to reviewer \
+       --agmsg-from impl --label codereview --outbox-dir "$TMP/outbox" -- "$LONG4"
+outfile="$TMP/outbox/codereview-3.md"
+if grep -qF "send.sh myteam impl reviewer $LONG4" "$TMP/agmsg.log" \
+   && [[ -f "$outfile" ]] \
+   && [[ "$(cat "$outfile")" == "$LONG4" ]] \
+   && grep -qF "cmux send --surface surface:2 codereview: read $outfile and follow every instruction in it." "$TMP/cmux.log" \
+   && ! grep -qF "wwwwwwwwww" "$TMP/cmux.log"; then
+  echo "PASS SP13: 閾値超えの本文は agmsg に全文、タイプ入力側はポインタ1行になる"
+else
+  echo "FAIL SP13: outfile=[$outfile] cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
+fi
+rm -f "$TMP/run/ready.myteam__reviewer"
 
 exit $fail

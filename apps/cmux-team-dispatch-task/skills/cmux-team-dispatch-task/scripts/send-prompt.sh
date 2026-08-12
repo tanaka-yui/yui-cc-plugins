@@ -3,10 +3,17 @@ set -uo pipefail
 
 # send-prompt.sh — 子/親セッションへ 1 メッセージを配送する単一の入口。
 #
-# 宛先ごとに agmsg push か タイプ入力かの「どちらか一方だけ」を選ぶ。
-# 従来の cmux send + send-key return を無遅延で撃つ dual-send は、1KB 超の本文が
-# Claude Code TUI に貼り付け判定され、デバウンス中の Enter が submit ではなく
-# 貼り付けバッファに吸われて入力欄に残る事故を起こしていた。
+# タイプ入力を唯一の wake 手段として常に実行する (dual-send)。agmsg は宛先の
+# watcher が生きている (ready sentinel が存在する) ときだけ inbox への記録用に
+# 追加送信するが、これは wake 手段ではなく記録専用であり、失敗しても配送の
+# 成否には影響しない。ready sentinel は watcher プロセスの生存を示すだけで、
+# そのセッションを起こせることは示さないため (Monitor ツール配下でも Bash
+# watcher 配下でも同じ sentinel が書かれる)。
+#
+# 1KB 超の本文は Claude Code TUI に貼り付け判定され、デバウンス中の Enter が
+# submit ではなく貼り付けバッファに吸われて入力欄に残る事故を起こすため、
+# タイプ入力側だけ outbox にファイル化してポインタ 1 行を打つ。agmsg 側には
+# 全文をそのまま渡す (inbox には貼り付け判定の問題が無いため)。
 #
 # Usage: send-prompt.sh [--to-workspace <id>] [--to-surface <id>]
 #                       [--agmsg-team <t>] [--agmsg-to <agent>] [--agmsg-from <name>]
@@ -52,18 +59,14 @@ done
 [[ -n "$TEXT" ]] || die "message text is required"
 [[ -n "$TO_WORKSPACE" || -n "$TO_SURFACE" ]] || die "--to-workspace or --to-surface is required"
 
-# --- 経路選択 ---
+# --- agmsg: inbox 記録専用 (wake 手段ではない) ---
 # agmsg の 3 引数が揃い、宛先の watcher が生きている (ready sentinel が存在する)
-# ときだけ agmsg 経路。sentinel は watcher プロセスの生存を示す。
-route="typed"
+# ときだけ、タイプ入力の前に inbox へ全文を記録する。失敗しても配送失敗には
+# しない (終了コードはタイプ入力経路の結果だけで決まる)。
 if [[ -n "$TEAM" && -n "$TO_AGENT" && -n "$FROM_AGENT" ]] \
    && [[ -f "$AGMSG_READY_DIR/ready.${TEAM}__${TO_AGENT}" ]]; then
-  route="agmsg"
-fi
-
-if [[ "$route" == "agmsg" ]]; then
-  bash "$AGMSG_SEND" "$TEAM" "$FROM_AGENT" "$TO_AGENT" "$TEXT" && exit 0
-  echo "send-prompt: agmsg push failed; falling back to typed delivery" >&2
+  bash "$AGMSG_SEND" "$TEAM" "$FROM_AGENT" "$TO_AGENT" "$TEXT" \
+    || echo "send-prompt: agmsg record failed (non-fatal, typed delivery continues)" >&2
 fi
 
 # --- タイプ入力経路 ---
