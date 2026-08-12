@@ -2,6 +2,7 @@
 # send-prompt.sh の回帰テスト。
 #
 # 守っている不変条件:
+#   SP0. 未知フラグ・必須フラグ欠落は exit 2 の使用法エラーになり、配送は起きない
 #   SP1. agmsg ready sentinel がある宛先では cmux を 1 度も呼ばない
 #   SP2. sentinel が無ければタイプ入力経路に落ちる
 
@@ -44,6 +45,48 @@ run_sp() {
 reset_logs() { : > "$TMP/cmux.log"; : > "$TMP/agmsg.log"; }
 
 make_stubs
+
+# --- SP0: 使用法エラー ---
+
+# SP0a: 未知フラグ(タイプミス)は message text に飲み込まれず exit 2
+reset_logs
+run_sp --to-surface surface:2 --label x --unknown-flag "the actual message" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 2 ]] && [[ ! -s "$TMP/cmux.log" ]] && [[ ! -s "$TMP/agmsg.log" ]]; then
+  echo "PASS SP0a: 未知フラグは exit 2 の使用法エラーになり配送しない"
+else
+  echo "FAIL SP0a: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
+fi
+
+# SP0b: --label 欠落は exit 2
+reset_logs
+run_sp --to-surface surface:2 -- "hello" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 2 ]] && [[ ! -s "$TMP/cmux.log" ]] && [[ ! -s "$TMP/agmsg.log" ]]; then
+  echo "PASS SP0b: --label 欠落は exit 2 の使用法エラーになり配送しない"
+else
+  echo "FAIL SP0b: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
+fi
+
+# SP0c: 宛先(--to-workspace / --to-surface どちらも)欠落は exit 2
+reset_logs
+run_sp --label x -- "hello" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 2 ]] && [[ ! -s "$TMP/cmux.log" ]] && [[ ! -s "$TMP/agmsg.log" ]]; then
+  echo "PASS SP0c: 宛先欠落は exit 2 の使用法エラーになり配送しない"
+else
+  echo "FAIL SP0c: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
+fi
+
+# SP0d: -- 以降はフラグとして解釈されず message text として扱われる(terminator の挙動を壊していない確認)
+reset_logs
+run_sp --to-surface surface:2 --label x -- --to-surface x >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'cmux send --surface surface:2 --to-surface x' "$TMP/cmux.log"; then
+  echo "PASS SP0d: -- 以降はメッセージ本文として扱われフラグとして解釈されない"
+else
+  echo "FAIL SP0d: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")]"; fail=1
+fi
 
 # --- SP1: ready sentinel あり → agmsg のみ、cmux は呼ばれない ---
 reset_logs

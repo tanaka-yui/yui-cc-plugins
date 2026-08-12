@@ -41,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     --retries)      [[ $# -ge 2 ]] || die "--retries requires a value";      RETRIES="$2";      shift 2 ;;
     --settle)       [[ $# -ge 2 ]] || die "--settle requires a value";       SETTLE="$2";       shift 2 ;;
     --) shift; TEXT="$*"; break ;;
+    --*) die "unknown flag: $1" ;;
     *)  TEXT="$*"; break ;;
   esac
 done
