@@ -79,13 +79,10 @@
 #                                      The composed command is always wrapped in `zsh -ic "..."`
 #                                      so functions and env vars from ~/.zshrc are loaded.
 #                                      Default: hardcoded {claude, engine=claude}.
-#   --message-type <send-message|agmsg>  Parent notification transport (default: send-message).
-#                                      send-message = cmux send + send-key return (現行動作)
-#                                      agmsg = 上記に加えて ~/.agents/skills/agmsg/scripts/send.sh で
-#                                      親 (agent 名 "parent") にも inbox 記録として送信 (cmux send は
-#                                      wake 用に常に併発)。--agmsg-team / --agmsg-from が必須
-#   --agmsg-team <team>                agmsg の team 名 (message-type=agmsg 時必須)
-#   --agmsg-from <agent>               agmsg の送信元 agent 名 (message-type=agmsg 時必須)
+#   --agmsg-team <team>                agmsg の team 名 (--agmsg-from とセットで必須)。
+#                                      送信は send-prompt.sh が担い、宛先 watcher が生きている
+#                                      ときだけ agmsg push を使う (タイプ入力は常に併発)
+#   --agmsg-from <agent>               agmsg の送信元 agent 名 (--agmsg-team とセットで必須)
 #
 # Output: JSON to stdout with workspace/pane details
 # Debug:  Logs to stderr
@@ -197,7 +194,6 @@ DEFER_STATUS=0
 REVIEW_CONFIG=""
 TIMEOUT_SENTINEL=""
 UNATTENDED=0
-MESSAGE_TYPE="send-message"
 AGMSG_TEAM=""
 AGMSG_FROM=""
 AGMSG_SEND="$HOME/.agents/skills/agmsg/scripts/send.sh"
@@ -297,12 +293,9 @@ while [[ $# -gt 0 ]]; do
       RUNNER_NAME="$2"
       shift 2
       ;;
+    # v1.16.0 で削除。agmsg を使うかは --agmsg-team の有無と send.sh の存在で決まる。
     --message-type)
-      [[ $# -lt 2 ]] && die "--message-type requires send-message or agmsg"
-      MESSAGE_TYPE="$2"
-      [[ "$MESSAGE_TYPE" == "send-message" || "$MESSAGE_TYPE" == "agmsg" ]] \
-        || die "--message-type must be 'send-message' or 'agmsg'"
-      shift 2
+      die "--message-type was removed: agmsg is wired whenever --agmsg-team is given and send.sh exists"
       ;;
     --agmsg-team)
       [[ $# -lt 2 ]] && die "--agmsg-team requires a team name"
@@ -359,10 +352,10 @@ fi
 # Validate workspace name: only allow safe characters for path/branch usage
 [[ "$WORKSPACE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid workspace name '$WORKSPACE_NAME': use only [A-Za-z0-9._-]"
 
-# agmsg モードは team / from が必須。send.sh が無ければインストールされていない
-if [[ "$MESSAGE_TYPE" == "agmsg" ]]; then
-  [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --message-type is agmsg"
-  [[ -n "$AGMSG_FROM" ]] || die "--agmsg-from is required when --message-type is agmsg"
+# agmsg 配線は team / from が揃っているときだけ行う。send.sh が無ければ未インストール。
+if [[ -n "$AGMSG_TEAM" || -n "$AGMSG_FROM" ]]; then
+  [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --agmsg-from is given"
+  [[ -n "$AGMSG_FROM" ]] || die "--agmsg-from is required when --agmsg-team is given"
   [[ -f "$AGMSG_SEND" ]] || die "agmsg is not installed (expected $AGMSG_SEND)"
 fi
 
@@ -647,6 +640,10 @@ if [[ "$MODE" == "execute" ]]; then
     TARGET_FLAGS="--surface $REVIEWER_SURFACE"
     [[ -n "$REVIEWER_WORKSPACE" ]] \
       && TARGET_FLAGS="--workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE"
+    # send-prompt.sh 向けの同じ宛先 (--workspace/--surface を --to-workspace/--to-surface に改名)
+    SEND_TARGET_FLAGS="--to-surface $REVIEWER_SURFACE"
+    [[ -n "$REVIEWER_WORKSPACE" ]] \
+      && SEND_TARGET_FLAGS="--to-workspace $REVIEWER_WORKSPACE --to-surface $REVIEWER_SURFACE"
     READ_SCREEN_CMD="$CMUX read-screen $TARGET_FLAGS"
     # レビュアーに観点別の並列レビューをさせる指示。--no-parallel は起動プロンプト専用の
     # スイッチなのでここでは見ない。注入するかどうかは reviewer_engine の有無だけで決める。
@@ -664,7 +661,7 @@ if [[ "$MODE" == "execute" ]]; then
       *) log "warn" "review config has unknown reviewer_engine=$REVIEWER_ENGINE; skipping parallel directive" ;;
     esac
     # (1)(2) は対話有無で変わらない共通部分
-    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 5 rounds. Each round: (1) request the review by running: $CMUX send $TARGET_FLAGS followed by: $CMUX send-key $TARGET_FLAGS return -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons.${REVIEWER_PARALLEL} (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. "
+    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 5 rounds. Each round: (1) request the review by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh $SEND_TARGET_FLAGS --label review-code --outbox-dir $REVIEW_DIR/outbox -- followed by the message text itself: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons.${REVIEWER_PARALLEL} (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. "
     if [[ $UNATTENDED -eq 1 ]]; then
       # 無人ループ: 判断を求めず固定のフォールバックを取る。文中にクォート文字を使わないこと
       REVIEW_INSTRUCTION="${REVIEW_INSTRUCTION}If round 5 still ends with needs_work, note the unresolved findings in the PR body and proceed to the PR. If the wait exits stalled, re-check the verdict file, then re-send the same round once with a fresh baseline; if it stalls again, skip the review, note the skipped review in the PR body, and proceed to the PR. No interactive user is attached to this session, so never wait for a human decision. "
@@ -676,11 +673,11 @@ if [[ "$MODE" == "execute" ]]; then
   if [[ -n "$STATUS_DIR" ]]; then
     ABORT_REVIEW_STEP=""
     if [[ -n "$REVIEW_CONFIG" ]]; then
-      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N.md for the current round N, using N=1 if you never sent a review request, with the LAST line being exactly VERDICT: needs_work; this is only a record because the reviewer does not poll that file. Then wake the reviewer by running: $CMUX send $TARGET_FLAGS -- the message must start with [abort] followed by a one line reason -- and then: $CMUX send-key $TARGET_FLAGS return. Next "
+      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N.md for the current round N, using N=1 if you never sent a review request, with the LAST line being exactly VERDICT: needs_work; this is only a record because the reviewer does not poll that file. Then wake the reviewer by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh $SEND_TARGET_FLAGS --label abort-reviewer --outbox-dir $REVIEW_DIR/outbox and pass as the final argument a message that starts with [abort] and then gives a one line reason for stopping. Next "
     fi
     ABORT_PARENT_STEP=""
     if [[ -n "$NOTIFY_WORKSPACE" ]]; then
-      ABORT_PARENT_STEP="Then notify the parent by running: $CMUX send --workspace $NOTIFY_WORKSPACE -- the message must say: [dispatch] task $WORKSPACE_NAME finished (status: error) -- and then: $CMUX send-key --workspace $NOTIFY_WORKSPACE return. "
+      ABORT_PARENT_STEP="Then notify the parent by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh --to-workspace $NOTIFY_WORKSPACE --label dispatch-notify --outbox-dir $STATUS_DIR/outbox -- followed by the message text itself: [dispatch] task $WORKSPACE_NAME finished (status: error). "
     fi
     ABORT_INSTRUCTION="ABORT PROTOCOL, which overrides everything above: if at any point you decide to stop without completing the work, whether from a blocking error, a design contradiction, or simply giving up, you must not stop silently. Writing the status file is not a notification because only the parent polls it. Before you stop: ${ABORT_REVIEW_STEP}write $STATUS_DIR/status.json with status set to error and the reason as the message. ${ABORT_PARENT_STEP}Finally end this session exactly as described below for the successful case. "
   fi
@@ -797,11 +794,11 @@ cat > "$RUNNER_FILE" <<EOF
 set -uo pipefail
 
 CMUX="${CMUX}"
+SEND_PROMPT="${SCRIPT_DIR}/send-prompt.sh"
 STATUS_DIR="${STATUS_DIR}"
 SLUG="${WORKSPACE_NAME}"
 DEFER_STATUS="${DEFER_STATUS}"
 STANDBY="${STANDBY_FLAG}"
-MESSAGE_TYPE="${MESSAGE_TYPE}"
 AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
 AGMSG_FROM="${AGMSG_FROM}"
@@ -844,30 +841,36 @@ NOTIFY_SF="${NOTIFY_SURFACE}"
 NOTIFIED_FILE=""
 [[ -n "\$STATUS_DIR" ]] && NOTIFIED_FILE="\$STATUS_DIR/.notified-\$SLUG"
 
-# 親へ完了通知を送る。cmux send だけでは親が claude TUI の場合 input box に
-# テキストが残って Enter が押されないため、必ず send-key return を続けて発行する。
-# agmsg send.sh は inbox 記録専用で idle な親を起こせないため、その失敗は
-# 成否に含めない (wake は常に cmux send + send-key return が担う)。
+# 親へ完了通知を送る。タイプ入力 (常時)・長文のファイル化・Enter 検証は
+# send-prompt.sh が受け持つ。agmsg の 3 引数が揃っているときだけ --agmsg-* を渡す
+# (inbox 記録は宛先 watcher が生きているときだけ追加で走る。wake 手段ではない)。
 notify_parent() {
   local status_label="\$1"
   local msg="[dispatch] task \\\"\$SLUG\\\" finished (status: \$status_label)"
 
-  if [[ "\$MESSAGE_TYPE" == "agmsg" ]]; then
-    bash "\$AGMSG_SEND" "\$AGMSG_TEAM" "\$AGMSG_FROM" parent "\$msg" 2>/dev/null || \
-      echo "[runner] agmsg record failed (inbox only; wake is cmux send)" >&2
-  fi
-
   local target_flag target_id
   if [[ -n "\$NOTIFY_WS" ]]; then
-    target_flag="--workspace"; target_id="\$NOTIFY_WS"
+    target_flag="--to-workspace"; target_id="\$NOTIFY_WS"
   elif [[ -n "\$NOTIFY_SF" ]]; then
-    target_flag="--surface"; target_id="\$NOTIFY_SF"
+    target_flag="--to-surface"; target_id="\$NOTIFY_SF"
   else
     return 1
   fi
 
-  "\$CMUX" send "\$target_flag" "\$target_id" "\$msg" 2>/dev/null || return 1
-  "\$CMUX" send-key "\$target_flag" "\$target_id" return 2>/dev/null || return 1
+  local agmsg_args=()
+  if [[ -n "\$AGMSG_TEAM" && -n "\$AGMSG_FROM" ]]; then
+    agmsg_args=(--agmsg-team "\$AGMSG_TEAM" --agmsg-to parent --agmsg-from "\$AGMSG_FROM")
+  fi
+
+  # --status-dir は省略可能なため、未指定時は --outbox-dir を渡さない
+  # (渡すと send-prompt.sh 側で "\$STATUS_DIR/outbox" が文字通り "/outbox" になり、
+  # 長文閾値を超えたときに usage エラーで die する)。
+  local outbox_args=()
+  [[ -n "\$STATUS_DIR" ]] && outbox_args=(--outbox-dir "\$STATUS_DIR/outbox")
+
+  CMUX_BIN="\$CMUX" bash "\$SEND_PROMPT" "\$target_flag" "\$target_id" \
+    \${agmsg_args[@]+"\${agmsg_args[@]}"} \${outbox_args[@]+"\${outbox_args[@]}"} \
+    --label dispatch-notify -- "\$msg" || return 1
   return 0
 }
 
@@ -899,9 +902,9 @@ notify_reviewer_once() {
   [[ -f "\$STATUS_DIR/status.json" ]] && reason=\$(jq -r '.message // empty' "\$STATUS_DIR/status.json" 2>/dev/null || echo "")
   local msg="[abort] task \$SLUG stopped with status error: \$reason"
   local ws_args=()
-  [[ -n "\$rworkspace" ]] && ws_args=(--workspace "\$rworkspace")
-  "\$CMUX" send "\${ws_args[@]+\"\${ws_args[@]}\"}" --surface "\$rsurface" "\$msg" 2>/dev/null || return 1
-  "\$CMUX" send-key "\${ws_args[@]+\"\${ws_args[@]}\"}" --surface "\$rsurface" return 2>/dev/null || return 1
+  [[ -n "\$rworkspace" ]] && ws_args=(--to-workspace "\$rworkspace")
+  CMUX_BIN="\$CMUX" bash "\$SEND_PROMPT" \${ws_args[@]+"\${ws_args[@]}"} --to-surface "\$rsurface" \
+    --label abort-reviewer --outbox-dir "\$STATUS_DIR/outbox" -- "\$msg" || return 1
   printf '%s' "\$status_label" > "\$marker"
 }
 
@@ -1079,6 +1082,9 @@ if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; th
 
   wait_for_shell "$SURFACE_ID" || true
 
+  # send-prompt-exempt: TUI へのメッセージ配送ではなくシェルへのコマンド打鍵。
+  # 末尾の \n が自分で改行を送るので send-key return は不要であり、貼り付け判定の
+  # 問題も起きない (宛先はまだ素のシェルで TUI が立ち上がっていない)。
   "$CMUX" send --surface "$SURFACE_ID" \
     "cd '$CWD' && bash $RUNNER_SCRIPT_NAME\n" >/dev/null 2>&1 || die "failed to send cd+runner command"
   log "cmux" "standby runner command sent"

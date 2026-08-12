@@ -76,15 +76,11 @@ and ask no further questions until the loop ends.
 Ask only the applicable questions; if none apply, ask only the single final confirmation
 question.
 
-1. **Notification transport (`message_type`)** (when config is unset and agmsg is
-   available)
-   - Enumerate the available transports; the chosen value is persisted to the global
-     config as usual.
-2. **reviewer runner** (when the design runner is codex, there are two or more claude
+1. **reviewer runner** (when the design runner is codex, there are two or more claude
    engine runners, and review is enabled)
    - Dynamically enumerate claude engine runners, to be chosen as "the runner that
      reviews the codex design."
-3. **Start the loop with this configuration?**
+2. **Start the loop with this configuration?**
    - **Start**: "confirm the above configuration and run"
    - **Redo configuration**: "go back to call ①"
 
@@ -99,17 +95,16 @@ question.
 | 5 | Step 1f runner switch / per-task runner | Use call ②'s design runner in common across all tasks. |
 | 6 | Step 1f first-run setup (interactive `runners.json` generation) | Checked at L0; if missing, exit with an error without starting. |
 | 7 | Step 1f cross-engine reviewer selection | Auto-adopted if there is one claude runner; pre-configured in call ③ if there are two or more. |
-| 8 | Step 1g message_type initial setup | Pre-configured in call ③ only when config is unset, and persisted as usual. |
-| 9 | Step 1g review_mode | Pre-configured in call ②, and fixed for the duration of the loop. |
-| 10 | Wait-and-merge Option A/B at completion | Always merge when integration=merge. Conflicts are handled automatically by the cleanup transition table. |
-| 11 | The three cleanup questions at completion | Handled deterministically by the cleanup transition table. |
-| 12 | Phase A-R's five rounds of `needs_work` | Note unresolved findings at the end of the document and proceed to Phase B. |
-| 13 | Phase A-R reviewer stalled | Re-request the same round once; if stalled again, skip review and proceed to Phase B. |
-| 14 | Phase B execution model selection | Bake call ②'s exec runner into `EXEC_DEFAULT_HINT`. |
-| 15 | Phase B exec_choice persistence confirmation | Does not occur, due to #14. |
-| 16 | Phase B-R's five rounds of `needs_work` | Note unresolved findings in the PR body and create the PR. |
-| 17 | Phase B-R reviewer stalled | Note in the PR body that review was skipped, and create the PR. |
-| 18 | Implicit approval gate of brainstorming / ExitPlanMode | No approval prompt is shown, due to the fixed plan mode and `--dangerously-skip-permissions`. |
+| 8 | Step 1g review_mode | Pre-configured in call ②, and fixed for the duration of the loop. |
+| 9 | Wait-and-merge Option A/B at completion | Always merge when integration=merge. Conflicts are handled automatically by the cleanup transition table. |
+| 10 | The three cleanup questions at completion | Handled deterministically by the cleanup transition table. |
+| 11 | Phase A-R's five rounds of `needs_work` | Note unresolved findings at the end of the document and proceed to Phase B. |
+| 12 | Phase A-R reviewer stalled | Re-request the same round once; if stalled again, skip review and proceed to Phase B. |
+| 13 | Phase B execution model selection | Bake call ②'s exec runner into `EXEC_DEFAULT_HINT`. |
+| 14 | Phase B exec_choice persistence confirmation | Does not occur, due to #13. |
+| 15 | Phase B-R's five rounds of `needs_work` | Note unresolved findings in the PR body and create the PR. |
+| 16 | Phase B-R reviewer stalled | Note in the PR body that review was skipped, and create the PR. |
+| 17 | Implicit approval gate of brainstorming / ExitPlanMode | No approval prompt is shown, due to the fixed plan mode and `--dangerously-skip-permissions`. |
 
 ## L2: Initialization, Dispatch, and Waiting
 

@@ -57,12 +57,12 @@ run_bounded zsh "$MONITOR" --parent-workspace workspace:1 \
 [[ "$rc" -eq 0 ]] && pass 'L5b valid invocation still exits 0' \
   || bad "L5b valid invocation still exits 0 (got exit=$rc)"
 
-if grep -Eq 'send[[:space:]]+--surface' "$MONITOR"; then
+if grep -Eq 'send[[:space:]]+--surface|--to-surface' "$MONITOR"; then
   bad 'L6 monitor must not send to a surface'
 else
   pass 'L6 monitor must not send to a surface'
 fi
-if grep -Fq -- '--workspace "$PARENT_WORKSPACE"' "$MONITOR"; then
+if grep -Fq -- '--to-workspace "$PARENT_WORKSPACE"' "$MONITOR"; then
   pass 'L6 monitor notifies the parent workspace'
 else
   bad 'L6 monitor notifies the parent workspace'

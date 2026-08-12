@@ -56,7 +56,7 @@ run_prewarm() {
   : > "$TMP/argv.log"
   ARGV_LOG="$TMP/argv.log" AGMSG_DIR="$TMP/agmsg" \
     bash "$TMP/scripts/prewarm-panes.sh" \
-      --with-opus --message-type agmsg --agmsg-team demo-team \
+      --with-opus --agmsg-team demo-team \
       --cwd "$TMP/repo" --slug demo --status-dir "$TMP/status" "$@" >/dev/null
 }
 
@@ -84,7 +84,7 @@ JSON
 : > "$TMP/argv.log"
 ARGV_LOG="$TMP/argv.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
   bash "$TMP/scripts/prewarm-panes.sh" \
-    --with-opus --message-type agmsg --agmsg-team demo-team \
+    --with-opus --agmsg-team demo-team \
     --cwd "$TMP/repo" --slug demo --status-dir "$TMP/status" \
     --codex-runner codex --review-model gpt-5.6-sol \
     --unattended --timeout-sentinel "$TMP/loop/timed-out/demo" >/dev/null

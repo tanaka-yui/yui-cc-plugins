@@ -1,6 +1,6 @@
 #!/bin/zsh
 # .dispatch/*/status.json をポーリングし、状態変化を stdout に出力する。
-# 全タスクが terminal 状態（done/error）に到達したら cmux send で親に通知して終了。
+# 全タスクが terminal 状態（done/error）に到達したら send-prompt.sh で親に通知して終了。
 #
 # 使用法:
 #   monitor-dispatch.sh [options] <dispatch-dir>
@@ -18,7 +18,7 @@
 #   - 状態変化を "[HH:MM:SS] slug: old_status -> new_status" 形式で stdout に出力
 #   - 全 stdout は <dispatch-dir>/.monitor.log にも tee される
 #   - PID は <dispatch-dir>/.monitor.pid に書き出される
-#   - 親には heartbeat / 完了通知 / 死亡通知 を cmux send + send-key return で送信
+#   - 親には heartbeat / 完了通知 / 死亡通知 を send-prompt.sh (--label dispatch-monitor) で送信
 #
 # Exit:   全タスク完了時に exit 0、異常終了時は親に DIED 通知後に exit 1
 
@@ -27,6 +27,7 @@ setopt NULL_GLOB 2>/dev/null || true
 
 CMUX="/Applications/cmux.app/Contents/Resources/bin/cmux"
 SCRIPT_PATH="${(%):-%x}"
+SEND_PROMPT="${SCRIPT_PATH:h}/send-prompt.sh"
 
 # --- ヘルパー ---
 
@@ -44,14 +45,14 @@ ts() {
   date +%H:%M:%S
 }
 
-# 親に1メッセージを送信する。cmux send だけでは Claude TUI の input box に
-# テキストが残ってしまい Enter が押されないため、必ず send-key return を続けて
-# 発行する。失敗は silent (|| true)。
+# 親に1メッセージを送信する。タイプ入力 (常時)・長文のファイル化・Enter 検証は
+# send-prompt.sh が受け持つ (この経路は agmsg を使わないのでタイプ入力のみ)。
+# 失敗は silent (|| true)。
 send_to_parent() {
   local msg="$1"
   if [[ -n "$PARENT_WORKSPACE" ]]; then
-    "$CMUX" send --workspace "$PARENT_WORKSPACE" "$msg" 2>/dev/null || true
-    "$CMUX" send-key --workspace "$PARENT_WORKSPACE" return 2>/dev/null || true
+    CMUX_BIN="$CMUX" bash "$SEND_PROMPT" --to-workspace "$PARENT_WORKSPACE" \
+      --label dispatch-monitor --outbox-dir "$DISPATCH_DIR/outbox" -- "$msg" 2>/dev/null || true
   fi
 }
 
