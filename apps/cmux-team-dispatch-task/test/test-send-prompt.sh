@@ -18,6 +18,9 @@
 #   SP13. 閾値超えの本文を sentinel のある宛先へ送ると、agmsg には全文が渡りタイプ入力側はポインタ 1 行になる
 #   SP14. 画面に送信済みプロンプトの反響 (probe と一致する ❯ 行) があっても、最後の ❯ 行 (入力欄) が
 #         空なら反響行は無視され、Enter は 1 回だけで成功する
+#   SP15. 改行を含む閾値以下の本文でも、入力欄が空なら Enter は 1 回だけで成功する
+#   SP16. 改行を含む本文が実際に入力欄へ残っている場合は従来どおり再送し exit 1 する
+#   SP17. 先頭が改行で照合対象が取れない本文は観測不能扱い (fail-open) にする
 
 set -uo pipefail
 
@@ -314,6 +317,52 @@ if [[ $rc -eq 0 && $n -eq 1 ]]; then
   echo "PASS SP14: 送信済みプロンプトの反響ではなく最後の ❯ 行だけを入力欄として検証する"
 else
   echo "FAIL SP14: rc=$rc send-key回数=$n"; fail=1
+fi
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
+
+# --- SP15: 改行を含む閾値以下の本文でも、入力欄が空なら Enter は 1 回だけで成功する ---
+# grep -F はパターン中の改行を「パターンの区切り」として扱うため、改行を含む文字列を
+# そのまま probe に渡すと空パターンが生まれて全行にマッチし、配送に成功していても
+# 必ず「入力欄が埋まっている」と誤検出する。probe は本文の 1 行目から取る。
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
+MULTILINE_MSG=$'Phase A task: implement X.\n\nDetails: do the thing carefully.'
+run_sp --to-surface surface:2 --label phase-a-task --outbox-dir "$TMP/outbox" \
+       --retries 3 --settle 0 -- "$MULTILINE_MSG" >/dev/null 2>&1
+rc=$?
+n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $n -eq 1 ]]; then
+  echo "PASS SP15: 改行を含む本文でも入力欄が空なら Enter は 1 回だけで成功する"
+else
+  echo "FAIL SP15: rc=$rc send-key回数=$n (期待 rc=0, 回数=1)"; fail=1
+fi
+
+# --- SP16: 改行を含む本文が実際に入力欄へ残っている場合は従来どおり検出する ---
+# SP15 の修正が「改行入りは常に成功扱い」へ行き過ぎていないことを守る。
+reset_logs
+printf '%s\n' "some output" "❯ Phase A task: implement X." "  status line" > "$TMP/screen-stuck-multiline.txt"
+SCREEN_FIXTURE="$TMP/screen-stuck-multiline.txt"
+run_sp --to-surface surface:2 --label phase-a-task --outbox-dir "$TMP/outbox" \
+       --retries 3 --settle 0 -- "$MULTILINE_MSG" >/dev/null 2>&1
+rc=$?
+n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+if [[ $rc -eq 1 && $n -eq 4 ]]; then
+  echo "PASS SP16: 改行を含む本文が入力欄に残る場合は再送して exit 1 する"
+else
+  echo "FAIL SP16: rc=$rc send-key回数=$n (期待 rc=1, 回数=4)"; fail=1
+fi
+
+# --- SP17: 先頭が改行の本文は照合対象が無いので観測不能扱い (fail-open) にする ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-stuck.txt"   # 入力欄に何か残っている画面でも失敗にしない
+run_sp --to-surface surface:2 --label phase-a-task --outbox-dir "$TMP/outbox" \
+       --retries 3 --settle 0 -- $'\nleading newline body' >/dev/null 2>&1
+rc=$?
+n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $n -eq 1 ]]; then
+  echo "PASS SP17: 先頭が改行の本文は観測不能扱いで配送済みとする"
+else
+  echo "FAIL SP17: rc=$rc send-key回数=$n (期待 rc=0, 回数=1)"; fail=1
 fi
 SCREEN_FIXTURE="$TMP/screen-empty.txt"
 

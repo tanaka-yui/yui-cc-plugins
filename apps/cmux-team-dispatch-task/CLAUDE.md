@@ -100,7 +100,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - `send-prompt.sh` の契約が 4 ファイルで一致すること: **常にタイプ入力する**（idle セッションを起こせる唯一の手段）/ `--agmsg-*` の 3 引数が揃い宛先の ready sentinel が存在するときだけ**追加で** inbox に記録する（wake 手段ではなく、失敗しても配送の成否と終了コードに影響しない）/ 400 文字超は `<outbox-dir>/<label>-<seq>.md` へ退避しポインタ 1 行だけをタイプする / Enter 後に `cmux read-screen` で入力欄が空になったことを確認し最大 3 回まで再送する / 観測不能は失敗ではなく配送済み扱い（二重配送の防止）
     - **ready sentinel は wake 能力の証明にならない**旨が書かれていること（watcher プロセスの生存しか示さず、idle セッションへ注入できる仕組みの下でも素のバックグラウンドシェルの下でも同じ sentinel が書かれる。検証結果は `docs/superpowers/specs/2026-08-12-delivery-verification-results.md`）。呼び出し元は prewarm.json の `delivery` 値で分岐しない（sentinel の確認は `send-prompt.sh` 自身が行う）
     - `prewarm-panes.sh` が配線失敗（`CLAUDE_DELIVERY=cmux-send`）時に opus / sonnet の初期プロンプトを `/agmsg actas` なしの「直接タイプされる」文面に出し分けること。配線成功時のプロンプトも「タスクはタイプ入力で届く（inbox に同一コピーあり）」文面であり「agmsg message として届く」とは書かないこと
-    - 回帰は `bash test/test-send-prompt-callsites.sh`（CS1-CS3）と `bash test/test-send-prompt.sh`（SP0a-SP0d / SP1-SP13）で検証する
+    - 回帰は `bash test/test-send-prompt-callsites.sh`（CS1-CS3）と `bash test/test-send-prompt.sh`（SP0a-SP0d / SP1-SP18）で検証する
 16. plan モードの遵守ゲート（ExitPlanMode hook）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
     - `launch-workspace.sh` が `--mode plan` かつ claude engine のときのみ worktree の `.claude/settings.local.json` に PostToolUse hook（matcher: `ExitPlanMode`、command: `zsh <skill-dir>/scripts/plan-approved-hook.sh`）を注入すること（既存 settings は jq マージ、worktree 再利用時は重複注入なし、失敗は警告のみで dispatch 続行）
     - `.claude/settings.local.json` と plan 保存先 `.claude/plans/` が repo 共有の `info/exclude` に追記されること（settings のマージ書き込みは tmp + mv のアトミック方式、hook command のスクリプトパスはクォート済み）
