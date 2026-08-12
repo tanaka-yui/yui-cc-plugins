@@ -95,7 +95,7 @@
       "name": "codex-bridge",
       "description": "Claude Code の rules / CLAUDE.md を Codex が読める AGENTS.md にネスト生成する汎用プラグイン。",
       "source": "./apps/codex-bridge",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "license": "MIT",
       "category": "development",
       "tags": [
