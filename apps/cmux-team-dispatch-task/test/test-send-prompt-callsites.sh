@@ -4,7 +4,7 @@
 # 守っている不変条件:
 #   CS1. launch-workspace.sh / monitor-dispatch.sh に cmux send-key の直書きが残らない
 #   CS2. 両スクリプトが send-prompt.sh を呼んでいる
-#   CS3. SKILL.md の指示文に cmux send-key の直書きが残らない
+#   CS3. SKILL.md / guide-ja.md の指示文に cmux send-key の直書きが残らない
 
 set -uo pipefail
 
@@ -40,14 +40,21 @@ else
   echo "FAIL CS2: send-prompt.sh の呼び出しが無い"; fail=1
 fi
 
-# --- CS3: SKILL.md の指示文に cmux send-key の直書きが残らない ---
-SKILL="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
-if grep -q 'send-key' "$SKILL"; then
-  echo "FAIL CS3: SKILL.md に cmux send-key の直書きが残っている"
-  grep -n 'send-key' "$SKILL" | head -10
-  fail=1
+# --- CS3: SKILL.md / guide-ja.md の指示文に cmux send-key の直書きが残らない ---
+# 訳が原文から遅れて dual-send 時代の 2 行ペアを残す事故を防ぐため、両方を検査する。
+SKILL_DIR="$SCRIPT_DIR/../skills/cmux-team-dispatch-task"
+cs3=1
+for f in "SKILL.md" "references/guide-ja.md"; do
+  if grep -q 'send-key' "$SKILL_DIR/$f"; then
+    echo "  cmux send-key の直書きが残っている: $f"
+    grep -n 'send-key' "$SKILL_DIR/$f" | head -10
+    cs3=0
+  fi
+done
+if [[ $cs3 -eq 1 ]]; then
+  echo "PASS CS3: SKILL.md / guide-ja.md に cmux send-key の直書きが残らない"
 else
-  echo "PASS CS3: SKILL.md に cmux send-key の直書きが残らない"
+  echo "FAIL CS3: cmux send-key の直書きが残っている"; fail=1
 fi
 
 exit $fail

@@ -59,7 +59,7 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 ## Step 1: 解析と準備
 
 タスク収集、Agent ルーティング、統合戦略決定、子 runner 設定を1ステップで実行。
-ディスパッチ前に最大5つのユーザーインタラクション: brainstorming 選択、統合戦略選択、子 runner 選択（`runners.json` 初回セットアップ + codex 設計タスクがある場合の claude 側レビュアー runner 選択を含む）、メッセージトランスポート選択（初回のみ）、レビューモード使用確認（`review_mode` が未設定/`"ask"` かつ `review_model` 付き runner またはクロスエンジンレビュアーが解決済みのときは毎回）。
+ディスパッチ前に最大4つのユーザーインタラクション: brainstorming 選択、統合戦略選択、子 runner 選択（`runners.json` 初回セットアップ + codex 設計タスクがある場合の claude 側レビュアー runner 選択を含む）、レビューモード使用確認（`review_mode` が未設定/`"ask"` かつ `review_model` 付き runner またはクロスエンジンレビュアーが解決済みのときは毎回）。メッセージトランスポートの質問は**存在しない** — 1g を参照。
 
 ### 1a. タスク収集
 
@@ -1526,4 +1526,7 @@ runner wrapper は子セッションと並行して status.json watcher を走�
 親通知のラベルは終了コードではなくこの確定 status から導出する。
 
 停止時は ABORT/ESCALATION の 5 手順（findings 記録、reviewer wake、error status、親通知、engine 別
-セッション終了）を必ず実行する。`[abort]` を受けたレビュアーは待機を打ち切る。workspace レイアウトの Child 起動にも `--defer-status` を渡す。これが無いと、Phase B で実行を別 surface へ移譲した Child の wrapper が、孫の書いた終端状態を上書きしてしまう。
+セッション終了）を必ず実行する。reviewer wake は `send-prompt.sh --label abort-reviewer`、親通知は
+完了通知と同じ `send-prompt.sh --label dispatch-notify` を `status: error` で 1 回呼ぶだけであり、
+別途 `send.sh` を呼んではならない（inbox 記録は `send-prompt.sh` が済ませている）。
+`[abort]` を受けたレビュアーは待機を打ち切る。workspace レイアウトの Child 起動にも `--defer-status` を渡す。これが無いと、Phase B で実行を別 surface へ移譲した Child の wrapper が、孫の書いた終端状態を上書きしてしまう。
