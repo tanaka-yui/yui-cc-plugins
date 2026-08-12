@@ -14,6 +14,7 @@
 #   SP9. 入力欄に残る場合は Enter を再送し、尽きたら exit 1 になる
 #   SP10. read-screen が観測できない (空出力) 場合は観測失敗として成功扱いにする
 #   SP11. 画面は非空だが入力欄行 (❯/>) が見つからない場合も観測失敗として成功扱いにする
+#   SP12. agmsg の send.sh が失敗したらタイプ入力経路へフォールバックする
 
 set -uo pipefail
 
@@ -239,5 +240,30 @@ else
   echo "FAIL SP11: rc=$rc send-key回数=$n"; fail=1
 fi
 SCREEN_FIXTURE="$TMP/screen-empty.txt"
+
+# --- SP12: agmsg の send.sh が失敗したらタイプ入力経路へフォールバックする ---
+reset_logs
+touch "$TMP/run/ready.myteam__reviewer"
+cat > "$TMP/bin/send.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "send.sh $*" >> "$AGMSG_LOG"
+exit 1
+STUB
+chmod +x "$TMP/bin/send.sh"
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
+run_sp --to-surface surface:2 --agmsg-team myteam --agmsg-to reviewer \
+       --agmsg-from impl --label codereview --outbox-dir "$TMP/outbox" -- "hello reviewer" 2>/dev/null
+rc=$?
+if [[ $rc -eq 0 ]] \
+   && grep -q 'send.sh myteam impl reviewer' "$TMP/agmsg.log" \
+   && grep -qF 'cmux send --surface surface:2 hello reviewer' "$TMP/cmux.log"; then
+  echo "PASS SP12: agmsg 失敗時はタイプ入力経路へフォールバックする"
+else
+  echo "FAIL SP12: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")]"; fail=1
+fi
+rm -f "$TMP/run/ready.myteam__reviewer"
+# send.sh スタブを既定(成功)に戻す。以降のテスト追加時に本テストの失敗スタブが
+# 残らないようにする。
+make_stubs
 
 exit $fail
