@@ -1,6 +1,6 @@
 {
   "name": "cmux-team-dispatch-task",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "description": "Parallel task dispatch via cmux workspaces. Each task gets its own git worktree and Codex session, orchestrated by the parent session.",
   "author": {
     "name": "tanaka-yui",

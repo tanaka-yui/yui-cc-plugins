@@ -64,11 +64,9 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 
 該当する質問だけを出し、不要なら最終確認一問だけにする。
 
-1. **通知トランスポート (`message_type`)**（config 未設定かつ agmsg が利用可能な場合）
-   - 利用可能な transport を列挙し、選択値は従来どおり global config に永続化する。
-2. **reviewer runner**（design runner が codex、claude engine runner が二件以上、かつレビュー有効の場合）
+1. **reviewer runner**（design runner が codex、claude engine runner が二件以上、かつレビュー有効の場合）
    - claude engine の runner を動的に列挙し、「codex 設計をレビューする runner」として選ぶ。
-3. **この設定でループを開始しますか**
+2. **この設定でループを開始しますか**
    - **開始**: 「上記設定を確定して実行する」
    - **設定をやり直す**: 「コール①へ戻る」
 
@@ -83,17 +81,16 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 | 5 | Step 1f runner switch / per-task runner | コール②の design runner を全 task 共通で使う。 |
 | 6 | Step 1f first-run setup（runners.json 対話生成） | L0 で検査し、無ければ開始せずエラー終了する。 |
 | 7 | Step 1f cross-engine reviewer 選択 | claude runner 一件なら自動採用、二件以上ならコール③で事前設定する。 |
-| 8 | Step 1g message_type 初回設定 | config 未設定時だけコール③で事前設定し、従来どおり永続化する。 |
-| 9 | Step 1g review_mode | コール②で事前設定し、ループ中は固定する。 |
-| 10 | 完了時 Wait-and-merge の Option A/B | integration=merge なら常に merge。conflict は cleanup 遷移表で自動処理する。 |
-| 11 | 完了時 cleanup の三問 | cleanup 遷移表で決定的に処理する。 |
-| 12 | Phase A-R の五往復 `needs_work` | 未解決指摘を文書末尾へ注記し、Phase B へ進む。 |
-| 13 | Phase A-R reviewer stalled | 同一 round を一回再依頼し、再度 stalled ならレビューを省略して Phase B へ進む。 |
-| 14 | Phase B 実行モデル選択 | コール②の exec runner を `EXEC_DEFAULT_HINT` に焼き込む。 |
-| 15 | Phase B exec_choice 永続化確認 | #14 により発生しない。 |
-| 16 | Phase B-R の五往復 `needs_work` | 未解決指摘を PR 本文へ注記し、PR を作成する。 |
-| 17 | Phase B-R reviewer stalled | レビューを省略した旨を PR 本文へ注記し、PR を作成する。 |
-| 18 | brainstorming / ExitPlanMode の暗黙の承認ゲート | plan モード固定と `--dangerously-skip-permissions` で承認プロンプトを出さない。 |
+| 8 | Step 1g review_mode | コール②で事前設定し、ループ中は固定する。 |
+| 9 | 完了時 Wait-and-merge の Option A/B | integration=merge なら常に merge。conflict は cleanup 遷移表で自動処理する。 |
+| 10 | 完了時 cleanup の三問 | cleanup 遷移表で決定的に処理する。 |
+| 11 | Phase A-R の五往復 `needs_work` | 未解決指摘を文書末尾へ注記し、Phase B へ進む。 |
+| 12 | Phase A-R reviewer stalled | 同一 round を一回再依頼し、再度 stalled ならレビューを省略して Phase B へ進む。 |
+| 13 | Phase B 実行モデル選択 | コール②の exec runner を `EXEC_DEFAULT_HINT` に焼き込む。 |
+| 14 | Phase B exec_choice 永続化確認 | #13 により発生しない。 |
+| 15 | Phase B-R の五往復 `needs_work` | 未解決指摘を PR 本文へ注記し、PR を作成する。 |
+| 16 | Phase B-R reviewer stalled | レビューを省略した旨を PR 本文へ注記し、PR を作成する。 |
+| 17 | brainstorming / ExitPlanMode の暗黙の承認ゲート | plan モード固定と `--dangerously-skip-permissions` で承認プロンプトを出さない。 |
 
 ## L2: 初期化・dispatch・待機
 

@@ -236,7 +236,7 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
        4. Always pick a fixed runner → ask once more which runner to fix (options =
           `runners[]`, label = `name`, description = `command (engine)`), assign it to
           all tasks AND persist `design_runner: "<name>"` to the global config
-     Persistence (options 3/4 only) uses the same jq merge pattern as `message_type`
+     Persistence (options 3/4 only) uses the same jq merge pattern as `review_mode`
      in Step 1g below (key: `design_runner` — a writer-specific mktemp, moved only on jq
      success). There are two distinct ways to revert an "always ..." choice, and they mean
      different things: rewriting `design_runner` to `"ask"` restores the this-time-only
@@ -407,51 +407,63 @@ To restore the interactive flow there are TWO distinct ways: set the key to `"as
 (questions only — the persistence options stay hidden), or remove the key entirely
 (back to unset — the questions reappear WITH the persistence options).
 
-### 1g. Resolve Message Transport
+### 1g. Resolve Delivery, Review Mode and Execution Default
 
-Decide how child sessions notify the parent (`message_type`): `send-message`
-(current cmux send behavior, default) or `agmsg` (cross-agent messaging via
-[agmsg](https://github.com/fujibee/agmsg)).
+**There is no notification-transport question and no `message_type` config key.**
+agmsg is wired whenever `~/.agents/skills/agmsg/scripts/send.sh` exists; when it does
+not, the dispatch simply runs without agmsg wiring. Nothing is asked and nothing is
+persisted about it.
 
-1. Read `message_type` from `<project>/.dispatch/config.json`, falling back to
-   `~/.claude/cmux-team-dispatch-task/config.json`:
+```bash
+AGMSG_INSTALLED=false
+[[ -f ~/.agents/skills/agmsg/scripts/send.sh ]] && AGMSG_INSTALLED=true
+```
 
-   ```bash
-   MSG_TYPE=$(jq -r '.message_type // empty' .dispatch/config.json 2>/dev/null)
-   [[ -z "$MSG_TYPE" ]] && MSG_TYPE=$(jq -r '.message_type // empty' \
-     ~/.claude/cmux-team-dispatch-task/config.json 2>/dev/null)
-   ```
+`monitor-dispatch.sh` is launched ONLY when agmsg is not installed (see Step 3).
+`--message-type` was removed from `launch-workspace.sh` and `prewarm-panes.sh`;
+passing it now dies with a `was removed` message.
 
-   If set, use it silently — do NOT ask.
+**Delivery contract (applies to EVERY message this skill sends).** All delivery goes
+through one call to `scripts/send-prompt.sh` — never a raw `cmux send`:
 
-2. If unset, check whether agmsg is installed:
-   `[ -f ~/.agents/skills/agmsg/scripts/send.sh ]`
-   - Not installed → use `send-message`. Do NOT write config (so the question
-     fires once agmsg gets installed later).
-   - Installed → ask via AskUserQuestion:
-     > Use agmsg as the notification transport? (agmsg: direct agent-to-agent messaging. No monitor loop required)
-     Persist BOTH answers (Yes → `agmsg`, No → `send-message`) to the global config:
+```bash
+# --to-surface <id> targets a pane; use --to-workspace <id> instead when the
+# destination is a whole workspace (the parent). Exactly one of them is required.
+bash <SKILL_DIR>/scripts/send-prompt.sh \
+  --to-surface <TARGET_SURFACE> \
+  --agmsg-team "$TEAM" --agmsg-to <TARGET_AGENT> --agmsg-from <YOUR_AGENT_NAME> \
+  --label <label> --outbox-dir <STATUS_DIR>/outbox \
+  -- '<message text>'
+```
 
-   ```bash
-   CONFIG=~/.claude/cmux-team-dispatch-task/config.json
-   mkdir -p "$(dirname "$CONFIG")"
-   # A writer-specific temp file — a shared "$CONFIG.tmp" would be corrupted by concurrent
-   # writes. Only mv when jq succeeds (jq fails if the existing config is invalid JSON —
-   # mv-ing anyway would zero out config, so on failure remove tmp, warn, and give up on
-   # persistence).
-   if TMP=$(mktemp "$CONFIG.XXXXXX"); then
-     if { [[ -f "$CONFIG" ]] && jq --arg mt "<answer>" '.message_type = $mt' "$CONFIG" > "$TMP"; } \
-        || { [[ ! -f "$CONFIG" ]] && jq -n --arg mt "<answer>" '{message_type: $mt}' > "$TMP"; }; then
-       mv "$TMP" "$CONFIG"   # mv within the same directory = atomic replace (whole-file last-write-wins)
-     else
-       rm -f "$TMP"; echo "[warn] config write failed (existing config broken?); persistence skipped" >&2
-     fi
-   else
-     echo "[warn] mktemp failed; persistence skipped" >&2
-   fi
-   ```
+- It **always types the message into the target pane**. Typing is the only thing that
+  wakes an idle session, so this half is never optional.
+- When the three `--agmsg-*` arguments are given AND the destination's ready sentinel
+  (`~/.agents/skills/agmsg/run/ready.<team>__<agent>`) exists, it **additionally
+  records the same body in the agmsg inbox** first. That record is not a wake
+  mechanism; an agmsg failure never affects delivery or the exit code. Drop all three
+  `--agmsg-*` flags when `$TEAM` is empty.
+- Bodies longer than 400 characters are written to `<outbox-dir>/<label>-<seq>.md` and
+  only a one-line pointer is typed. This is what stops a long instruction from being
+  treated as a paste and jamming the input box.
+- After typing it presses Enter, then confirms via `cmux read-screen` that the input
+  box emptied, re-pressing Enter up to 3 times before reporting failure. An
+  unobservable screen counts as delivered, not as failure, so a caller never re-sends
+  and double-delivers.
+- Exit codes: 0 = delivered, 1 = delivery failed, 2 = usage error.
 
-**Resolve review mode (`review_mode`)** — same precedence pattern as `message_type`:
+`<label>` groups the outbox files of one call site. Use exactly these:
+
+| Call site | label |
+|-----------|-------|
+| Phase A task handed to the opus pane | `phase-a-task` |
+| Phase B execution request to a standby pane | `phase-b-exec` |
+| Phase A-R plan/spec review request | `review-plan` |
+| Phase B-R code review request | `review-code` |
+| Abort notice to the reviewer | `abort-reviewer` |
+| Completion / abort notice to the parent | `dispatch-notify` |
+
+**Resolve review mode (`review_mode`)** — precedence: project config → global config → ask:
 
 1. ALWAYS resolve `REVIEW_MODEL` from runners.json first (it is needed by step 3's
    `REVIEW_ENABLED` computation regardless of whether the question fires):
@@ -486,9 +498,31 @@ Decide how child sessions notify the parent (`message_type`): `send-message`
        2. No (this time only)  → `REVIEW_MODE=off`. Do not write to config.
        3. Always on            → `REVIEW_MODE=on`. Persist `review_mode: "on"` to the global config.
        4. Always off           → `REVIEW_MODE=off`. Persist `review_mode: "off"` to the global config.
-     Persistence (options 3/4 only) uses the same jq merge pattern as `message_type`
-     above (key: `review_mode`). To return to asking every time after choosing "always
-     ...", rewrite `review_mode` in config to `"ask"` (or delete it).
+     Persistence (options 3/4 only) writes the GLOBAL config with this jq merge pattern
+     (key: `review_mode`) — the canonical pattern every "always ..." answer in this
+     skill uses:
+
+     ```bash
+     CONFIG=~/.claude/cmux-team-dispatch-task/config.json
+     mkdir -p "$(dirname "$CONFIG")"
+     # A writer-specific temp file — a shared "$CONFIG.tmp" would be corrupted by concurrent
+     # writes. Only mv when jq succeeds (jq fails if the existing config is invalid JSON —
+     # mv-ing anyway would zero out config, so on failure remove tmp, warn, and give up on
+     # persistence).
+     if TMP=$(mktemp "$CONFIG.XXXXXX"); then
+       if { [[ -f "$CONFIG" ]] && jq --arg v "<answer>" '.review_mode = $v' "$CONFIG" > "$TMP"; } \
+          || { [[ ! -f "$CONFIG" ]] && jq -n --arg v "<answer>" '{review_mode: $v}' > "$TMP"; }; then
+         mv "$TMP" "$CONFIG"   # mv within the same directory = atomic replace (whole-file last-write-wins)
+       else
+         rm -f "$TMP"; echo "[warn] config write failed (existing config broken?); persistence skipped" >&2
+       fi
+     else
+       echo "[warn] mktemp failed; persistence skipped" >&2
+     fi
+     ```
+
+     To return to asking every time after choosing "always ...", rewrite `review_mode`
+     in config to `"ask"` (or delete it).
 
 3. Compute the final flag used by prompt construction (Step 2) and pre-warm:
 
@@ -550,7 +584,7 @@ fi
 - `"opus 1m"` / `"sonnet"` / `"codex"` (a valid value that passed layer validation) →
   embed its default-direct Phase B block.
 
-**When `message_type` is `agmsg`, wire the team BEFORE launching (Step 2):**
+**When agmsg is installed (`AGMSG_INSTALLED=true`), wire the team BEFORE launching (Step 2):**
 
 ```bash
 TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
@@ -559,19 +593,20 @@ TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
 ~/.agents/skills/agmsg/scripts/delivery.sh set monitor claude-code "$(pwd)"
 ```
 
+When agmsg is NOT installed, leave `TEAM` empty, skip this whole block, and drop the
+`--agmsg-*` flags everywhere below. Delivery still works — it is just typed-only.
+
 `delivery.sh set` may print an `AGMSG-DIRECTIVE:` line — the SessionStart
 hook it installs only takes effect for FUTURE sessions, so the directive is
 how the CURRENT session activates delivery. If the output contains such a
 line, follow it (invoke the Monitor tool exactly as instructed) BEFORE
 launching tasks. Note the watcher is a record/reply channel, not a wake
 mechanism: its stream output is never injected while this session is idle,
-which is why every instruction and completion notification in this skill is
-ALSO delivered as a typed `cmux send` prompt.
+which is why `send-prompt.sh` always types the message in as well.
 
-Each launch then adds `--message-type agmsg --agmsg-team "$TEAM" --agmsg-from <task-slug>`
-to `launch-workspace.sh` (or `--message-type agmsg --agmsg-team "$TEAM"` to
-`launch-workspace.sh`, which receives an `--agmsg-from` value per slug). After each
-task's worktree exists (launch script returned), register the child:
+Each launch then adds `--agmsg-team "$TEAM" --agmsg-from <task-slug>` to
+`launch-workspace.sh`. After each task's worktree exists (launch script returned),
+register the child:
 
 ```bash
 ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" <task-slug> claude-code "<repo-root>/.worktrees/<task-slug>"
@@ -589,19 +624,18 @@ You can message the parent directly at any time (questions, progress):
   ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent "<message>"
 
 MANDATORY completion notification: immediately after writing done/error to
-status.json, notify the parent yourself over BOTH channels:
-  ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent \
-    "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
-  /Applications/cmux.app/Contents/Resources/bin/cmux send --workspace <PARENT_WORKSPACE_ID> \
-    "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
-  /Applications/cmux.app/Contents/Resources/bin/cmux send-key --workspace <PARENT_WORKSPACE_ID> return
-The agmsg push is the inbox record only — it CANNOT wake an idle parent
-session (a watcher's stream output sits in a background-Bash buffer and is
-never injected while the session is idle), so the cmux send + send-key
-return pair is REQUIRED. Do NOT rely on session exit either. The runner
-wrapper notifies on exit as a backstop, but an idle TUI session never
-exits — without this notification the parent is never informed in agmsg
-mode (no monitor loop is running).
+status.json, notify the parent yourself with ONE send-prompt.sh call:
+  bash <SKILL_DIR>/scripts/send-prompt.sh --to-workspace <PARENT_WORKSPACE_ID> \
+    --agmsg-team <team> --agmsg-to parent --agmsg-from <task-slug> \
+    --label dispatch-notify --outbox-dir <STATUS_DIR>/outbox \
+    -- "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
+Drop the three --agmsg-* flags when <team> is empty. send-prompt.sh types the
+message into the parent pane (the only thing that wakes an idle parent) and,
+when the parent's agmsg watcher is alive, also records the same text in its
+inbox — that record is a log, not a wake mechanism. Do NOT rely on session
+exit either: the runner wrapper notifies on exit as a backstop, but an idle
+TUI session never exits, and when agmsg is installed no monitor loop is
+running, so without this call the parent may never be informed.
 ```
 
 ### 1h. Display Summary and Proceed
@@ -649,6 +683,10 @@ sends `bash .cmux-team-dispatch-task-run-<workspace-name>.sh`, which:
 3. After Claude exits (for any reason), writes `"done"` or `"error"` to `status.json`
 4. Signals completion via `cmux wait-for --signal <slug>-done`
 5. Optionally notifies the parent workspace via `cmux notify`
+6. Delivers the `[dispatch] task ... finished (status: ...)` text to the parent through
+   `scripts/send-prompt.sh` (`--label dispatch-notify`), which types it in and verifies
+   the Enter landed, and additionally records it in the parent's agmsg inbox when
+   `--agmsg-team` / `--agmsg-from` were given and the parent's watcher is alive
 
 **Deferred completion (`--defer-status`)**: When the launch script is invoked with
 `--defer-status` (always done by `launch-workspace.sh` for Child sessions), the
@@ -723,7 +761,7 @@ OUTPUT LANGUAGE: all user-facing questions, option labels, tables, and progress
 reports MUST be rendered in Japanese. The templates in this prompt are written in
 English for consistency; translate them when presenting them to the user.
 
-TEAM: {{TEAM}}                     # agmsg team name (empty when message_type is send-message)
+TEAM: {{TEAM}}                     # agmsg team name (empty when agmsg is not installed)
 
 PHASE A — Planning / Brainstorming (always opus):
   Use opus for plan / brainstorming. Do NOT switch models in this phase.
@@ -776,17 +814,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-sonnet"
            # hands completion ownership (status.json done/error transition +
            # <slug>-sonnet-done signal + parent notification) to the standby wrapper
-        3. Send the execution request. Delivery is ALWAYS the typed prompt
-           (`cmux send`) — an agmsg push alone never wakes an idle claude pane
-           (its watcher runs as a background Bash whose stream output is not
-           injected until the process exits). When the pane's agmsg wiring is
-           alive, ALSO push the same text to its inbox first (record + reply
-           channel). Check `.sonnet.delivery` in prewarm.json:
-             DELIVERY=$(jq -r '.sonnet.delivery // "cmux-send"' "$PREWARM_FILE")
-             # the inbox copy is only useful while the standby's watcher is
-             # alive (ready sentinel present) — re-verify right before sending:
-             [[ "$DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>-sonnet" ]] \
-               && DELIVERY="cmux-send"
+        3. Send the execution request with ONE send-prompt.sh call (see the
+           delivery contract in Step 1g). It types the text into the standby pane —
+           the only thing that wakes it — records the same body in that pane's agmsg
+           inbox when its watcher is alive, spills anything over 400 characters to
+           the outbox so a long instruction cannot jam the input box, and verifies
+           that the Enter landed:
              PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine claude --mode execute)
              REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is
              committed/pushed and the PR is created (or all changes are merged per
@@ -796,13 +829,14 @@ PHASE B — Execution model selection (REQUIRED before any code change):
              # IF the PHASE B-R block exists below, do NOT use this REQUEST_TEXT —
              # use the extended REQUEST_TEXT defined in that block instead (it inserts
              # the pre-PR code-review protocol).
-           IF DELIVERY == "agmsg" (the worktree was wired by prewarm-panes.sh):
-             ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-sonnet "$REQUEST_TEXT"
-             # $TEAM is the TEAM value given above — do NOT re-derive it in this session
-             REQUEST_TEXT="$REQUEST_TEXT (An identical copy of this message is in your agmsg inbox — treat both as ONE task; ignore the duplicate.)"
-           ALWAYS (both delivery values):
-             cmux send --surface "$SONNET_SURFACE" "$REQUEST_TEXT"
-             cmux send-key --surface "$SONNET_SURFACE" return
+             bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface "$SONNET_SURFACE" \
+               --agmsg-team "$TEAM" --agmsg-to <task-slug>-sonnet --agmsg-from <task-slug> \
+               --label phase-b-exec --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
+               -- "$REQUEST_TEXT"
+             # $TEAM is the TEAM value given above — do NOT re-derive it in this session.
+             # Drop the three --agmsg-* flags when $TEAM is empty. Do NOT branch on
+             # prewarm.json's `.sonnet.delivery`: send-prompt.sh re-checks the ready
+             # sentinel itself and simply skips the inbox record when it is gone.
         4. touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block exists
            below, do NOT exit — switch to the reviewer role it defines. OTHERWISE
            exit THIS session.
@@ -881,10 +915,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   opus 1m / "sonnet" / "codex"; NAME = the pane's agent name from prewarm.json):
     1. Leave the unused standby panes OPEN and idle — do NOT close them.
     2. touch "<EXISTING_STATUS_DIR>/.assigned-<NAME>"
-    3. Send the execution request to the pane's surface_id. Delivery is ALWAYS
-       the typed prompt (cmux send + send-key return); when the pane's delivery
-       is "agmsg" AND its ready sentinel exists, ALSO record the request in its
-       inbox first (same dual-send rules as the claude variant).
+    3. Send the execution request to the pane's surface_id with ONE send-prompt.sh
+       call, exactly as the claude variant does:
+         bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface <PANE_SURFACE> \
+           --agmsg-team "$TEAM" --agmsg-to <NAME> --agmsg-from <task-slug> \
+           --label phase-b-exec --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
+           -- "$REQUEST_TEXT"
+       (drop the three --agmsg-* flags when $TEAM is empty).
        REQUEST_TEXT: same as the claude variant (execute the plan at
        <PLAN_FILE_PATH>, code-review protocol block when Phase B-R is enabled,
        exit instruction).
@@ -968,8 +1005,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     confirmation is shown again.
   ```
 
-- `{{TEAM}}` → the agmsg team name resolved in Step 1g (`dispatch-<repo-name>`); empty in
-  send-message mode. Phase B's `send.sh` calls use this value. The child session runs
+- `{{TEAM}}` → the agmsg team name resolved in Step 1g (`dispatch-<repo-name>`); empty
+  when agmsg is not installed. Every `--agmsg-team` argument below uses this value (and
+  when it is empty, all three `--agmsg-*` flags are dropped). The child session runs
   inside a worktree and must NOT re-derive the team name there — deriving it from the
   worktree's `basename` (as Step 1g's `TEAM=` line does for the parent) yields a wrong
   name, since the worktree directory name is `<task-slug>`, not the repo name.
@@ -1017,7 +1055,6 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     Setup (before the first point only):
       mkdir -p "<EXISTING_STATUS_DIR>/review"
       REVIEW_SURFACE=$(jq -r '.review.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
-      REVIEW_DELIVERY=$(jq -r '.review.delivery // "cmux-send"' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
       IF REVIEW_SURFACE is empty (prewarm off), spawn the pane once:
         RESULT=$(zsh <SKILL_DIR>/scripts/launch-workspace.sh \
           --cwd "$PWD" --mode review \
@@ -1028,7 +1065,6 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           {{REVIEW_PANE_AGENT}})
           # (when the reviewer engine is claude, append --skip-permissions to the spawn)
         REVIEW_SURFACE=$(echo "$RESULT" | jq -r '.surface_id // empty')
-        REVIEW_DELIVERY="cmux-send"
       IF the spawn fails: warn the user, SKIP Phase A-R entirely, and continue to
       Phase B — review is a quality gate, not a dispatch blocker.
       The SAME pane is reused across all points and rounds (it keeps review context).
@@ -1054,23 +1090,22 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           claude when the design session is codex):
             PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review)
             <request text>="<request text> $PARALLEL"
-      2. Send the request, then wait by polling the verdict file. The request is
-         ALWAYS delivered as a typed prompt (`cmux send`) — an agmsg push alone
-         never wakes an idle pane, and an agmsg reply push never wakes THIS
-         session while it idle-waits, so the wait is ALWAYS file polling too.
-         When the review pane's agmsg wiring is alive (ready sentinel present),
-         ALSO push the request to its inbox first as a record:
-           [[ "$REVIEW_DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__{{REVIEW_PANE_AGENT}}" ]] \
-             && REVIEW_DELIVERY="cmux-send"
-         IF "agmsg":
-           ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> {{REVIEW_PANE_AGENT}} "<request text>"
-           # $TEAM is the TEAM value given above — do NOT re-derive it
-           Append to the request text: " (An identical copy of this request is in
-           your agmsg inbox — treat both as ONE request; ignore the duplicate.)"
-         ALWAYS (both delivery values):
-           cmux send --surface "$REVIEW_SURFACE" "<request text>"
-           cmux send-key --surface "$REVIEW_SURFACE" return
-           Wait by polling the verdict file (5s interval, in 15-min chunks with
+      2. Send the request with ONE send-prompt.sh call, then wait by polling the
+         verdict file. send-prompt.sh types the request into the review pane (the
+         only thing that wakes it), records the same body in the pane's inbox when
+         its watcher is alive, and files a request longer than 400 characters into
+         the outbox so it cannot jam the input box. An agmsg reply push would never
+         wake THIS session while it idle-waits either, so the wait is ALWAYS file
+         polling:
+           bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface "$REVIEW_SURFACE" \
+             --agmsg-team "$TEAM" --agmsg-to {{REVIEW_PANE_AGENT}} --agmsg-from <task-slug> \
+             --label review-plan --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
+             -- "<request text>"
+           # $TEAM is the TEAM value given above — do NOT re-derive it. Drop the
+           # three --agmsg-* flags when $TEAM is empty. Do NOT branch on
+           # prewarm.json's `.review.delivery`: send-prompt.sh re-checks the ready
+           # sentinel itself and skips the inbox record when the watcher is gone.
+           Then wait by polling the verdict file (5s interval, in 15-min chunks with
            NO overall time limit while the reviewer pane is active — liveness is
            judged by a screen-snapshot diff at every chunk boundary):
              F="<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md"
@@ -1192,15 +1227,16 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            "Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are
             committed and BEFORE creating the PR, you MUST get a code review
             approval. Round N starts at 1, max 5 rounds. Each round:
-            (1) send the review request. If <TEAM> is non-empty AND the file
-                $HOME/.agents/skills/agmsg/run/ready.<TEAM>__<task-slug> exists, first
-                record the request in the reviewer's inbox (an agmsg push alone cannot
-                wake the idle reviewer pane, so this is a record only — the cmux send
-                below is what delivers):
-                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <task-slug> '<request text>'
-                then ALWAYS run (regardless of the agmsg record above):
-                  /Applications/cmux.app/Contents/Resources/bin/cmux send --surface <REVIEWER_SURFACE> '<request text>'
-                  /Applications/cmux.app/Contents/Resources/bin/cmux send-key --surface <REVIEWER_SURFACE> return
+            (1) send the review request with ONE command. It types the request into
+                the reviewer pane (the only thing that wakes it), also records the
+                same text in the reviewer's agmsg inbox when that watcher is alive
+                (a log, not a wake mechanism), and files a request over 400
+                characters into the outbox so it cannot jam the input box:
+                  bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface <REVIEWER_SURFACE> \
+                    --agmsg-team <TEAM> --agmsg-to <task-slug> --agmsg-from <your-agent-name> \
+                    --label review-code --outbox-dir <EXISTING_STATUS_DIR>/outbox \
+                    -- '<request text>'
+                Drop the three --agmsg-* flags when <TEAM> is empty.
                 where <request text> is: code review round N: review the committed
                 changes on this branch against the plan at <PLAN_FILE_PATH>; write
                 findings to <EXISTING_STATUS_DIR>/review/code-round-N.md whose LAST
@@ -1246,12 +1282,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                  LAST line exactly 'VERDICT: needs_work'. If you never sent a
                  review request, use N=1. This is a record for the parent — the
                  reviewer does not poll this file.
-              2. Notify the REVIEWER over both channels. The typed cmux send +
-                 send-key return pair is the ONLY thing that actually wakes it:
-                   ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <task-slug> '[abort] <one-line reason>'
-                   /Applications/cmux.app/Contents/Resources/bin/cmux send --surface <REVIEWER_SURFACE> '[abort] <one-line reason>'
-                   /Applications/cmux.app/Contents/Resources/bin/cmux send-key --surface <REVIEWER_SURFACE> return
-                 Skip only the send.sh line when <TEAM> is empty.
+              2. Notify the REVIEWER. Typing is what actually wakes it, and
+                 send-prompt.sh always types:
+                   bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface <REVIEWER_SURFACE> \
+                     --agmsg-team <TEAM> --agmsg-to <task-slug> --agmsg-from <your-agent-name> \
+                     --label abort-reviewer --outbox-dir <EXISTING_STATUS_DIR>/outbox \
+                     -- '[abort] <one-line reason>'
+                 Drop the three --agmsg-* flags when <TEAM> is empty.
               3. Write status.json with status "error" and the reason as message.
               4. Notify the PARENT over both channels — the same commands as (a)
                  below, but with "status: error".
@@ -1264,16 +1301,15 @@ PHASE B — Execution model selection (REQUIRED before any code change):
             two things IN THIS ORDER. Neither may be skipped.
             (a) MANDATORY completion notification. You received this request as typed
                 text and never read the task prompt file, so no other status protocol
-                applies to you — these commands are the only thing that informs the
-                parent. Send both channels:
-                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> parent
-                    '[dispatch] task <task-slug> finished (status: done)'
-                  /Applications/cmux.app/Contents/Resources/bin/cmux send --workspace <PARENT_WORKSPACE_ID>
-                    '[dispatch] task <task-slug> finished (status: done)'
-                  /Applications/cmux.app/Contents/Resources/bin/cmux send-key --workspace <PARENT_WORKSPACE_ID> return
-                Skip only the send.sh line when <TEAM> is empty. The cmux send +
-                send-key return pair is never optional — it is the only channel that
-                wakes an idle parent.
+                applies to you — this command is the only thing that informs the
+                parent:
+                  bash <SKILL_DIR>/scripts/send-prompt.sh --to-workspace <PARENT_WORKSPACE_ID> \
+                    --agmsg-team <TEAM> --agmsg-to parent --agmsg-from <your-agent-name> \
+                    --label dispatch-notify --outbox-dir <EXISTING_STATUS_DIR>/outbox \
+                    -- '[dispatch] task <task-slug> finished (status: done)'
+                Drop the three --agmsg-* flags when <TEAM> is empty. This call is
+                never optional: typing is the only channel that wakes an idle parent,
+                and the inbox record it may additionally write is just a log.
             (b) End this session so the runner wrapper can finalize. claude
                 implementers run /exit. codex implementers must END THE CODEX SESSION
                 ITSELF — do NOT run /exit (codex does not act on it) and do NOT leave
@@ -1282,7 +1318,10 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          Placeholder values: <REVIEWER_SURFACE> = the value fixed by the design engine
          branch above (YOU review → your own $CMUX_SURFACE_ID; the review pane reviews
          → prewarm.json .review.surface_id), <TEAM> = the TEAM value given above (empty
-         in send-message mode — then always use the cmux send path), <your-agent-name>
+         when agmsg is not installed — then drop the three --agmsg-* flags and let
+         send-prompt.sh deliver by typing alone), <SKILL_DIR> = the absolute path of
+         this skill's directory (substitute it before sending — the implementer pane
+         cannot resolve the placeholder), <your-agent-name>
          = the implementing pane's agent name (<task-slug>-sonnet / <task-slug>-codex /
          <task-slug>-opus, whichever Phase B choice dispatched to),
          <PARENT_WORKSPACE_ID> = the parent workspace ID this dispatch was launched from,
@@ -1350,15 +1389,18 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          panes at the final all-tasks-complete cleanup, and status.json is still
          owned by the implementer's wrapper.
          BUT if you receive an '[abort] ...' message from the implementer, do NOT
-         keep waiting. Report the abort reason to the parent over both channels
-         (~/.agents/skills/agmsg/scripts/send.sh <TEAM> <task-slug> parent '<reason>'
-          + cmux send --workspace <PARENT_WORKSPACE_ID> '<reason>' + send-key return)
-         and then exit THIS session.
+         keep waiting. Report the abort reason to the parent with one call:
+           bash <SKILL_DIR>/scripts/send-prompt.sh --to-workspace <PARENT_WORKSPACE_ID> \
+             --agmsg-team <TEAM> --agmsg-to parent --agmsg-from <task-slug> \
+             --label dispatch-notify --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
+             -- '<reason>'
+         (drop the three --agmsg-* flags when <TEAM> is empty), then exit THIS session.
 
     [opus 1m — the review pane reviews] (design=claude "opus 1m" only)
       After implementation is committed and BEFORE creating the PR, run the SAME
       Round loop as PHASE A-R once more with point id "code", reusing REVIEW_SURFACE
-      and REVIEW_DELIVERY from the PHASE A-R Setup. Differences from a document round:
+      from the PHASE A-R Setup (use --label review-code instead of review-plan).
+      Differences from a document round:
         - Request text: ask for a review of the committed changes on this branch
           (git log / git diff against the branch point) against the plan at
           <PLAN_FILE_PATH>, findings to <EXISTING_STATUS_DIR>/review/code-round-<N>.md.
@@ -1395,18 +1437,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                  NOT close them (see the sonnet branch above: an unassigned standby writes no
                  status.json, and keeping all four panes open is the intended layout).
               2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-codex"
-              3. Send the execution request. Delivery is ALWAYS the typed prompt
-                 (`cmux send`) — an agmsg push alone is not guaranteed to wake an
-                 idle codex pane. When the agmsg wiring is alive, ALSO push the
-                 same text to its inbox first (record + reply channel).
-                 Check `.codex.delivery` in prewarm.json:
+              3. Send the execution request with ONE send-prompt.sh call (see the
+                 delivery contract in Step 1g). It types the text into the codex
+                 pane, records the same body in that pane's inbox when its watcher
+                 is alive, and files anything over 400 characters into the outbox.
                  # IF the PHASE B-R block exists below, REQUEST_TEXT must be the
                  # extended version defined in that block (with the pre-PR
                  # code-review protocol) — same as the sonnet branch.
-                   DELIVERY=$(jq -r '.codex.delivery // "cmux-send"' "<EXISTING_STATUS_DIR>/prewarm.json")
-                   # re-verify watcher liveness right before sending (see the sonnet branch)
-                   [[ "$DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>-codex" ]] \
-                     && DELIVERY="cmux-send"
                    # Base request. CRITICAL: for codex the exit instruction must tell it
                    # to END THE CODEX SESSION ITSELF — do NOT say "run /exit" (that is a
                    # claude command; codex does not act on it). Without a codex-appropriate
@@ -1417,13 +1454,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                    # that launch-workspace.sh bakes into the spawn (`--mode execute`) path.
                    PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine codex --mode execute)
                    REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately so the wrapper script can finalize the completion notification. Do NOT run /exit and do NOT leave the session idle."
-                 IF DELIVERY == "agmsg":
-                   ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-codex "$REQUEST_TEXT"
-                   # $TEAM is the TEAM value given above — do NOT re-derive it in this session
-                   REQUEST_TEXT="$REQUEST_TEXT (An identical copy of this message is in your agmsg inbox — treat both as ONE task; ignore the duplicate.)"
-                 ALWAYS (both delivery values):
-                   cmux send --surface "$CODEX_SURFACE" "$REQUEST_TEXT"
-                   cmux send-key --surface "$CODEX_SURFACE" return
+                   bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface "$CODEX_SURFACE" \
+                     --agmsg-team "$TEAM" --agmsg-to <task-slug>-codex --agmsg-from <task-slug> \
+                     --label phase-b-exec --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
+                     -- "$REQUEST_TEXT"
+                   # $TEAM is the TEAM value given above — do NOT re-derive it in this
+                   # session. Drop the three --agmsg-* flags when $TEAM is empty, and do
+                   # NOT branch on prewarm.json's `.codex.delivery`.
               4. touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block
                  exists below, do NOT exit — switch to the reviewer role it defines.
                  OTHERWISE exit THIS session.
@@ -1566,7 +1603,7 @@ session.
 ```
 
 Replace `<project-root>` with the actual project root path and `<task-slug>` with the task's slug,
-and `<team>` with the agmsg team name resolved in Step 1g (agmsg mode only).
+and `<team>` with the agmsg team name resolved in Step 1g (only when agmsg is installed).
 
 ### Plan-mode Enforcement Hook (ExitPlanMode)
 
@@ -1615,7 +1652,7 @@ parent/child surface chaining to worry about.
 
 ### Pre-warm Standby Panes (workspace layout only)
 
-Read `prewarm` from config (same precedence as `message_type`; default `true`):
+Read `prewarm` from config (project config → global config; default `true`):
 
 ```bash
 PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
@@ -1646,8 +1683,8 @@ inside each task workspace. Layout depends on Phase A-R (Step 1g `REVIEW_ENABLED
 
 Everything is delegated to `prewarm-panes.sh`; do not create panes manually.
 
-**send-message mode** — the opus session was already launched with its task
-prompt by "Launch: Workspace Mode" above. Add the sonnet/codex panes below it
+**agmsg NOT installed (`$TEAM` empty)** — the opus session was already launched with
+its task prompt by "Launch: Workspace Mode" above. Add the sonnet/codex panes below it
 (parse `workspace_id` / `surface_id` from that launch's output JSON):
 
 ```bash
@@ -1664,12 +1701,12 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --parent-notify-surface "$CMUX_SURFACE_ID"
 ```
 
-**agmsg mode** — do NOT run the normal "Launch: Workspace Mode" invocation.
-Instead ALL panes (opus-1m included) start idle with no task message, and the
-Phase A task is delivered afterwards via agmsg. `prewarm-panes.sh` creates the
-worktree, wires agmsg delivery into it (join + `delivery.sh set`, BEFORE any
-pane starts), launches the opus-1m standby workspace, and stacks sonnet/codex
-below:
+**agmsg installed (`$TEAM` non-empty)** — do NOT run the normal "Launch: Workspace
+Mode" invocation. Instead ALL panes (opus-1m included) start idle with no task
+message, and the Phase A task is delivered afterwards by `send-prompt.sh`.
+`prewarm-panes.sh` creates the worktree, wires agmsg delivery into it (join +
+`delivery.sh set`, BEFORE any pane starts), launches the opus-1m standby workspace,
+and stacks sonnet/codex below:
 
 ```bash
 RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
@@ -1681,7 +1718,7 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   [--review-model "$REVIEW_MODEL"] \
   [--design-runner <design-runner-name>] \
   [--reviewer-runner <reviewer-runner-name>] \
-  --message-type agmsg --agmsg-team "$TEAM" \
+  --agmsg-team "$TEAM" \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID")
 ```
@@ -1709,47 +1746,42 @@ Then dispatch the Phase A task to the opus pane:
 
 1. Write the full task prompt (including PROGRESS REPORTING FORMAT, the
    MANDATORY MODEL SELECTION SEQUENCE, and the agmsg status-protocol block
-   from Step 2 — its MANDATORY completion notification (send.sh + cmux send)
-   is what notifies the parent) to
+   from Step 2 — its MANDATORY completion notification, one `send-prompt.sh`
+   call, is what notifies the parent) to
    `<repo-root>/.worktrees/<task-slug>/.cmux-team-dispatch-task-prompt.md`.
 2. `touch .dispatch/<task-slug>/.assigned-<task-slug>` — the opus standby wrapper owns
    status.json transition from now on (it was launched with `--defer-status`,
    so a Phase B handoff can still suppress it via `.deferred`).
-3. Send the task. Delivery is ALWAYS the typed prompt (`cmux send`) — an agmsg
-   push alone never wakes an idle claude pane: its watcher runs as a background
-   Bash whose stream output sits in a buffer and is not injected until the
-   process exits, so a push-only task sits undelivered forever even while the
-   watcher is alive. When the opus pane's agmsg wiring is alive, ALSO push the
-   same text to its inbox first (record + reply channel). Check
-   `.dispatch/<task-slug>/prewarm.json` for `.opus.delivery`:
+3. Send the task with ONE send-prompt.sh call (see the delivery contract in
+   Step 1g). Slash commands cannot fire through agmsg, and typed slash commands
+   are not wanted here either, so the mode is conveyed as message text, never as
+   `/plan`:
 
    ```bash
-   OPUS_DELIVERY=$(jq -r '.opus.delivery // "cmux-send"' .dispatch/<task-slug>/prewarm.json)
-   [[ "$OPUS_DELIVERY" == "agmsg" && ! -f "$HOME/.agents/skills/agmsg/run/ready.${TEAM}__<task-slug>" ]] \
-     && OPUS_DELIVERY="cmux-send"
    TASK_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md. Mode: <plan|superpowers> — for superpowers invoke the superpowers:brainstorming skill first; for plan produce a structured plan before implementing."
+   bash <this-skill-dir>/scripts/send-prompt.sh --to-surface <opus-surface> \
+     --agmsg-team "$TEAM" --agmsg-to <task-slug> --agmsg-from parent \
+     --label phase-a-task --outbox-dir "$(pwd)/.dispatch/<task-slug>/outbox" \
+     -- "$TASK_TEXT"
    ```
 
-   - IF `"agmsg"` → first record the task in the inbox:
-     `~/.agents/skills/agmsg/scripts/send.sh "$TEAM" parent <task-slug> "$TASK_TEXT"`
-     (slash commands cannot fire through agmsg push, so the mode is conveyed
-     as message text, not as `/plan`), then append to TASK_TEXT:
-     ` (An identical copy of this message is in your agmsg inbox — treat both as ONE task; ignore the duplicate.)`
-   - ALWAYS (both delivery values) →
-     `cmux send --surface <opus-surface> "$TASK_TEXT"` followed by
-     `cmux send-key --surface <opus-surface> return`.
-
-   The ready sentinel (`~/.agents/skills/agmsg/run/ready.<team>__<agent>`) is
+   Drop the three `--agmsg-*` flags when `$TEAM` is empty, and do NOT branch on
+   prewarm.json's `.opus.delivery` — send-prompt.sh checks the ready sentinel
+   itself. That sentinel (`~/.agents/skills/agmsg/run/ready.<team>__<agent>`) is
    created by agmsg's watch.sh while a live watcher is receiving for that role
    and removed on exit — team/agent names here are `[A-Za-z0-9._-]` slugs, so
-   the path needs no encoding. It gates only the inbox copy: a live watcher
-   proves the pane can RECORD and REPLY via agmsg, not that a push alone would
-   be seen — the typed prompt is what actually delivers.
+   the path needs no encoding. It gates ONLY the inbox copy. It proves that a
+   watcher PROCESS is alive, not that the pane can be woken: the same sentinel is
+   written whether the watcher runs under a mechanism that injects into an idle
+   session or under a plain background shell that does not. Typing is what
+   actually delivers.
 
-prewarm.json schema (written by `prewarm-panes.sh`; `opus` only in agmsg mode,
-`codex` only when a codex runner exists, `review` only when `--review-model`
-or `--reviewer-runner` was passed; `delivery` is `"agmsg"` or `"cmux-send"`
-depending on whether delivery wiring succeeded; `engine` is `"claude"` or
+prewarm.json schema (written by `prewarm-panes.sh`; `opus` only when agmsg is
+installed, `codex` only when a codex runner exists, `review` only when
+`--review-model` or `--reviewer-runner` was passed; `delivery` is `"agmsg"` or
+`"cmux-send"` depending on whether delivery wiring succeeded — it is
+informational only, since `send-prompt.sh` re-checks the ready sentinel at send
+time; `engine` is `"claude"` or
 `"codex"` — `opus`'s engine follows the design runner (`claude` normally,
 `codex` when `--design-runner` is a codex-engine runner), `sonnet` is
 always `claude`, `codex` is always `codex`, and `review`'s engine is the
@@ -1767,8 +1799,8 @@ with `agent` suffix `-opus`)):
 ```
 
 `prewarm: false` skips this section entirely —
-Phase B falls back to the on-demand `--mode execute` spawn, and in agmsg mode
-the opus session falls back to the traditional prompt-embedded launch
+Phase B falls back to the on-demand `--mode execute` spawn, and when agmsg is
+installed the opus session falls back to the traditional prompt-embedded launch
 ("Launch: Workspace Mode" as-is).
 
 ## Parallel execution inside a task
@@ -1816,18 +1848,17 @@ boundary, and a claude session told to call `spawn_agent` has no such tool.
 
 ### Notification-based Monitoring (Primary)
 
-**Monitoring depends on `message_type` (Step 1g):**
+**Monitoring depends on whether agmsg is installed (Step 1g):**
 
-- `send-message` → launch `monitor-dispatch.sh` as described below (heartbeat,
+- agmsg NOT installed → launch `monitor-dispatch.sh` as described below (heartbeat,
   DIED detection, all-done notification).
-- `agmsg` → do NOT launch `monitor-dispatch.sh`. Completion notifications arrive
-  as typed `[dispatch] task "<slug>" finished (status: ...)` prompts (`cmux send`
-  + `send-key return`), with an identical agmsg push recorded in the parent's
-  inbox. The typed prompt is the channel that actually wakes this session — an
-  agmsg push alone cannot wake an idle session (watcher stream output is never
-  injected while idle). If nothing arrives for an extended period, poll
-  `.dispatch/*/status.json` manually (see "Polling Status Files"). The
-  `[dispatch-monitor]` heartbeat / DIED messages do not exist in this mode.
+- agmsg installed → do NOT launch `monitor-dispatch.sh`. Completion notifications
+  arrive as `[dispatch] task "<slug>" finished (status: ...)` text typed into this
+  pane by `send-prompt.sh`, with an identical copy recorded in this session's agmsg
+  inbox whenever its watcher is alive. The typed text is the channel that actually
+  wakes this session; the inbox copy is a log. If nothing arrives for an extended
+  period, poll `.dispatch/*/status.json` manually (see "Polling Status Files"). The
+  `[dispatch-monitor]` heartbeat / DIED messages do not exist in this case.
   Notifications come from three sources: the child itself right after writing
   status.json (mandatory, see Step 2), the status.json watcher that the runner
   wrapper runs alongside the child (it fires on the terminal transition even if
@@ -1862,7 +1893,7 @@ process exits:
    - Writes its PID to `.dispatch/.monitor.pid`
    - Sends `[dispatch-monitor] alive | loop=N | tasks: …` heartbeats every `--heartbeat-interval` seconds (default 60s)
    - On crash / signal, sends `[dispatch-monitor] DIED (exit=…)` to the parent so silence is never ambiguous
-   - Always uses `cmux send` + `cmux send-key return` so messages are delivered to the parent's claude TUI without leaving text in the input box
+   - Delivers every message through `send-prompt.sh`, so long messages are filed to `.dispatch/outbox/` instead of being pasted, and the Enter is verified — nothing is left sitting in the parent's input box
 
 2. Report the launch summary to the user using Template A with concrete surface IDs.
 3. Tell the user: "Monitoring N tasks. Waiting for completion notifications and heartbeats."
@@ -2162,7 +2193,7 @@ Notes:
 - Child sessions do NOT run cleanup prompts and do NOT execute any deletion —
   doing so from inside a child caused the parent to fail `git worktree remove`
   on a still-held worktree. All cleanup is centralized in this parent-side flow.
-- In agmsg mode, remove the child agents from the team during final cleanup:
+- When agmsg is installed, remove the child agents from the team during final cleanup:
 
   ```bash
   for slug in <task-slugs>; do
@@ -2315,13 +2346,13 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Concurrent sessions**: Limited by system resources; 3-5 sessions recommended
 - **Worktree conflicts**: Two tasks must NOT modify the same files. If they might, run sequentially.
 - **cmux required**: Requires cmux at `/Applications/cmux.app/`
-- **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is sent to the parent terminal via `cmux send` followed by `cmux send-key return` when the child Claude session exits. The trailing `send-key return` is required so messages don't sit in the parent claude TUI's input box waiting for a manual Enter press.
+- **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is delivered to the parent terminal through `scripts/send-prompt.sh` when the child Claude session exits. `send-prompt.sh` presses Enter after typing and then confirms via `cmux read-screen` that the input box emptied, so a notification never sits in the parent claude TUI waiting for a manual Enter press.
 - **Signal-terminated panes do not report failure**: When the final cleanup closes a pane (`cmux close-surface` / `close-workspace`), the child process exits with a signal-derived code (128+N — SIGHUP 129 / SIGKILL 137 / SIGTERM 143). If `status.json` already holds a terminal status (`done` / `error`), the runner wrapper skips both the status write and the parent notification, so closing panes never downgrades a completed task to `error` nor emits a spurious `[dispatch] task ... finished (status: error)`. A pane killed while still `executing` is a genuine interruption and is still reported as `error`.
 - **Runner script**: A `.cmux-team-dispatch-task-run-<workspace-name>.sh` file is created in each worktree (one per launch — Child and Phase B grandchild get different filenames since they share the worktree). They're cleaned up along with the worktree.
 - **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. The `command` of the first such runner is used for the spawn launch. `cmux codex install-hooks` is also required so that `external_migration = true` is set and codex picks up the parent claude session automatically.
 - **Same-model vs different-model in Phase B**: `exec_choice` controls whether Phase B asks or takes a fixed default; it never introduces a new execution path. For design=claude, "opus 1m" counts as the same model and stays in the current session via `/model opus[1m]`. Any other choice (sonnet / codex) is treated as a different model: when a pre-warmed standby pane exists (prewarm.json), the Child hands off by sending the execution request to that pane; otherwise it triggers a spawn via `launch-workspace.sh --mode execute` in a new workspace. The grandchild's claude is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the grandchild owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends an `/exit` instruction so the grandchild Claude/Codex session closes its TUI after the PR is created — without this the runner wrapper never reaches `write_status "done"` and status.json gets stuck on `executing`.
 - **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. `design_runner` can fix the Step 1f selection for all tasks; `exec_choice` can fix Phase B. The runners.json registry remains runtime-only and is bootstrapped on first run via AskUserQuestion.
-- **message_type**: The notification transport switches between `send-message` (default) and `agmsg` via config (`message_type`). In `agmsg` mode, `monitor-dispatch.sh` is never launched (status.json transitions are unchanged in either mode). Whether agmsg is installed is decided by the existence of `~/.agents/skills/agmsg/scripts/send.sh`. **An agmsg push is inbox-record-only and cannot wake an idle session** (its watcher runs as a background Bash whose stream output is not injected until the process exits) — so wake is always done via `cmux send` + `send-key return`, and the same text is additionally recorded in the inbox when the agmsg wiring is alive (dual-send). Completion notifications in agmsg mode have two layers: the mandatory notification the child session sends right after writing status.json (both `send.sh` and `cmux send`, embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop, also on both channels). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Also, if Step 1g's `delivery.sh set` output includes an `AGMSG-DIRECTIVE:` line, it MUST be followed so that the currently-dispatching session's own watcher gets started.
-- **Pre-warm standby panes**: When layout is `workspace` and config `prewarm: true` (default), `prewarm-panes.sh` places standby panes inside each task workspace. When Phase A-R (Step 1g `REVIEW_ENABLED`) is disabled, panes stack vertically (top: opus / middle: `<slug>-sonnet` / bottom: `<slug>-codex` — only when a codex runner is registered); when enabled, a 2×2 even grid is used (top-left: opus / top-right: codex review / bottom-left: sonnet / bottom-right: codex, with a `review` key in prewarm.json). In agmsg mode the opus-1m pane also starts idle (`--with-opus`), and delivery is wired into the worktree (join + `delivery.sh set`) before any pane starts; the Phase A task is then sent from the parent via dual-send (always `cmux send` + `send-key return`, plus an inbox record via `send.sh` when the agmsg wiring is alive). The standby wrapper only transitions status.json on exit when `<STATUS_DIR>/.assigned-<name>` exists. Signal names are `<slug>-done` for opus and `<slug>-sonnet-done` / `<slug>-codex-done` for the others. Phase B's execution request uses the same dual-send: an inbox record via `send.sh` when prewarm.json's `delivery` value is `"agmsg"`, and `cmux send` + `send-key return` are always issued regardless of that value.
+- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). agmsg is wired whenever `~/.agents/skills/agmsg/scripts/send.sh` exists, and `monitor-dispatch.sh` is launched only when it does not (status.json transitions are unchanged either way). Every message goes through one `scripts/send-prompt.sh` call. It **always types the message into the target pane** — typing is the only thing that wakes an idle session — and, when the three `--agmsg-*` arguments are supplied and the destination's ready sentinel exists, it **additionally records the same body in the agmsg inbox** first. **An agmsg push is inbox-record-only and cannot wake an idle session**; the ready sentinel proves only that a watcher PROCESS is alive, not that it can wake the session (the same sentinel is written whether the watcher runs under a mechanism that injects into an idle session or under a plain background shell that does not). An agmsg failure never affects delivery or the exit code. Bodies longer than 400 characters are written to `<outbox-dir>/<label>-<seq>.md` and only a one-line pointer is typed, which is what stops a long instruction from being treated as a paste and jamming the input box. After typing, Enter is pressed and `cmux read-screen` confirms the input box emptied, re-pressing Enter up to 3 times before reporting failure; an unobservable screen counts as delivered, so a caller never re-sends and double-delivers. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Also, if Step 1g's `delivery.sh set` output includes an `AGMSG-DIRECTIVE:` line, it MUST be followed so that the currently-dispatching session's own watcher gets started.
+- **Pre-warm standby panes**: When layout is `workspace` and config `prewarm: true` (default), `prewarm-panes.sh` places standby panes inside each task workspace. When Phase A-R (Step 1g `REVIEW_ENABLED`) is disabled, panes stack vertically (top: opus / middle: `<slug>-sonnet` / bottom: `<slug>-codex` — only when a codex runner is registered); when enabled, a 2×2 even grid is used (top-left: opus / top-right: codex review / bottom-left: sonnet / bottom-right: codex, with a `review` key in prewarm.json). When agmsg is installed the opus-1m pane also starts idle (`--with-opus`), and delivery is wired into the worktree (join + `delivery.sh set`) before any pane starts; the Phase A task is then sent from the parent with one `send-prompt.sh` call (`--label phase-a-task`). The standby wrapper only transitions status.json on exit when `<STATUS_DIR>/.assigned-<name>` exists. Signal names are `<slug>-done` for opus and `<slug>-sonnet-done` / `<slug>-codex-done` for the others. Phase B's execution request uses the same single call (`--label phase-b-exec`); callers do not branch on prewarm.json's `delivery` value, because `send-prompt.sh` re-checks the ready sentinel itself.
 
 - **status.json watcher**: The runner polls for a terminal status and attempts to notify the parent even while the session stays idle. Terminal status is sticky, and the notification marker stores the last status that was successfully notified. The watcher is suppressed by a timeout sentinel, `.deferred`, an unassigned standby, or a foreign assignment.

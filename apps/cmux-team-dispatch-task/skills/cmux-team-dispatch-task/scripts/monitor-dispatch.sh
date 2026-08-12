@@ -45,8 +45,9 @@ ts() {
   date +%H:%M:%S
 }
 
-# 親に1メッセージを送信する。配送経路の選択・長文のファイル化・Enter 検証は
-# send-prompt.sh が受け持つ。失敗は silent (|| true)。
+# 親に1メッセージを送信する。タイプ入力 (常時)・長文のファイル化・Enter 検証は
+# send-prompt.sh が受け持つ (この経路は agmsg を使わないのでタイプ入力のみ)。
+# 失敗は silent (|| true)。
 send_to_parent() {
   local msg="$1"
   if [[ -n "$PARENT_WORKSPACE" ]]; then

@@ -5,7 +5,7 @@
 #  --design-runner（codex engine）有り: 左上 design codex / 右上 claude review (`<slug>-opus`) / 左下 sonnet / 右下 codex)
 #
 # Usage:
-#   send-message モード (opus は通常フローで起動済み。sonnet / codex の split のみ追加):
+#   agmsg 未使用 (opus は通常フローで起動済み。sonnet / codex の split のみ追加):
 #     prewarm-panes.sh --workspace <ws-id> --base-surface <sf-id> \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       [--codex-runner <name>] \
@@ -13,7 +13,7 @@
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
 #
-#   agmsg モード (workspace 未作成の状態で呼ぶ。opus も standby 起動し workspace はこのスクリプトが作成):
+#   agmsg 使用 (workspace 未作成の状態で呼ぶ。opus も standby 起動し workspace はこのスクリプトが作成):
 #     prewarm-panes.sh --with-opus \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       --agmsg-team <team> \

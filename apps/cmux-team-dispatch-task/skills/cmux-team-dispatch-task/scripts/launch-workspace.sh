@@ -841,9 +841,9 @@ NOTIFY_SF="${NOTIFY_SURFACE}"
 NOTIFIED_FILE=""
 [[ -n "\$STATUS_DIR" ]] && NOTIFIED_FILE="\$STATUS_DIR/.notified-\$SLUG"
 
-# 親へ完了通知を送る。配送経路の選択 (agmsg push / タイプ入力)・長文のファイル化・
-# Enter 検証は send-prompt.sh が受け持つ。agmsg の 3 引数が揃っているときだけ
-# --agmsg-* を渡す (agmsg 経路は宛先 watcher が生きているときのみ選ばれる)。
+# 親へ完了通知を送る。タイプ入力 (常時)・長文のファイル化・Enter 検証は
+# send-prompt.sh が受け持つ。agmsg の 3 引数が揃っているときだけ --agmsg-* を渡す
+# (inbox 記録は宛先 watcher が生きているときだけ追加で走る。wake 手段ではない)。
 notify_parent() {
   local status_label="\$1"
   local msg="[dispatch] task \\\"\$SLUG\\\" finished (status: \$status_label)"

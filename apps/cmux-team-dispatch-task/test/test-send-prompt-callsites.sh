@@ -4,6 +4,7 @@
 # 守っている不変条件:
 #   CS1. launch-workspace.sh / monitor-dispatch.sh に cmux send-key の直書きが残らない
 #   CS2. 両スクリプトが send-prompt.sh を呼んでいる
+#   CS3. SKILL.md の指示文に cmux send-key の直書きが残らない
 
 set -uo pipefail
 
@@ -37,6 +38,16 @@ if [[ $cs2 -eq 1 ]]; then
   echo "PASS CS2: 両スクリプトが send-prompt.sh を呼んでいる"
 else
   echo "FAIL CS2: send-prompt.sh の呼び出しが無い"; fail=1
+fi
+
+# --- CS3: SKILL.md の指示文に cmux send-key の直書きが残らない ---
+SKILL="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
+if grep -q 'send-key' "$SKILL"; then
+  echo "FAIL CS3: SKILL.md に cmux send-key の直書きが残っている"
+  grep -n 'send-key' "$SKILL" | head -10
+  fail=1
+else
+  echo "PASS CS3: SKILL.md に cmux send-key の直書きが残らない"
 fi
 
 exit $fail
