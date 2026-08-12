@@ -62,7 +62,7 @@ if grep -Eq 'send[[:space:]]+--surface' "$MONITOR"; then
 else
   pass 'L6 monitor must not send to a surface'
 fi
-if grep -Fq -- '--workspace "$PARENT_WORKSPACE"' "$MONITOR"; then
+if grep -Fq -- '--to-workspace "$PARENT_WORKSPACE"' "$MONITOR"; then
   pass 'L6 monitor notifies the parent workspace'
 else
   bad 'L6 monitor notifies the parent workspace'

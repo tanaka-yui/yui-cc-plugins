@@ -114,8 +114,7 @@ runner_file=$(runner_with_config claude "$TMP/status/review/code-review.json" re
 
 assert_contains "$runner_file" 'MANDATORY CODE REVIEW' 'T1 review protocol injected'
 assert_contains "$runner_file" 'read-screen --workspace workspace:7 --surface surface:99' 'T2 read-screen uses reviewer_workspace'
-assert_contains "$runner_file" 'send --workspace workspace:7 --surface surface:99' 'T2 send uses reviewer_workspace'
-assert_contains "$runner_file" 'send-key --workspace workspace:7 --surface surface:99 return' 'T2 send-key uses reviewer_workspace'
+assert_contains "$runner_file" 'send-prompt.sh --to-workspace workspace:7 --to-surface surface:99' 'T2 send-prompt.sh call uses reviewer_workspace'
 assert_contains "$runner_file" '15-minute chunks with no overall time limit' 'T3 liveness wording present'
 assert_contains "$runner_file" '2 consecutive all-failed boundaries count as stalled' 'T3 observation-failure rule present'
 assert_contains "$runner_file" 'one final time immediately before any re-send or skip decision' 'T3 final verdict re-check present'
@@ -136,8 +135,9 @@ fi
 # 旧スキーマ (reviewer_workspace なし) では --workspace 指定なしにフォールバックする
 legacy_runner=$(runner_with_config codex "$TMP/status/review/code-review-legacy.json" review-cfg-legacy)
 assert_contains "$legacy_runner" 'read-screen --surface surface:99' 'T6 legacy config falls back to surface-only read-screen'
-assert_contains "$legacy_runner" 'send --surface surface:99' 'T6 legacy config falls back to surface-only send'
+assert_contains "$legacy_runner" 'send-prompt.sh --to-surface surface:99' 'T6 legacy config falls back to surface-only send-prompt.sh call'
 assert_not_contains "$legacy_runner" '--workspace workspace:7' 'T6 legacy config has no --workspace flag'
+assert_not_contains "$legacy_runner" '--to-workspace workspace:7' 'T6 legacy config has no --to-workspace flag'
 
 # --- PR1: reviewer_engine ありならレビュー依頼文に review モードのディレクティブが入る ---
 codex_reviewer=$(runner_with_config claude "$TMP/status/review/code-review-codex-reviewer.json" review-cfg-codex-rev)

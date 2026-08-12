@@ -27,6 +27,7 @@ setopt NULL_GLOB 2>/dev/null || true
 
 CMUX="/Applications/cmux.app/Contents/Resources/bin/cmux"
 SCRIPT_PATH="${(%):-%x}"
+SEND_PROMPT="${SCRIPT_PATH:h}/send-prompt.sh"
 
 # --- ヘルパー ---
 
@@ -44,14 +45,13 @@ ts() {
   date +%H:%M:%S
 }
 
-# 親に1メッセージを送信する。cmux send だけでは Claude TUI の input box に
-# テキストが残ってしまい Enter が押されないため、必ず send-key return を続けて
-# 発行する。失敗は silent (|| true)。
+# 親に1メッセージを送信する。配送経路の選択・長文のファイル化・Enter 検証は
+# send-prompt.sh が受け持つ。失敗は silent (|| true)。
 send_to_parent() {
   local msg="$1"
   if [[ -n "$PARENT_WORKSPACE" ]]; then
-    "$CMUX" send --workspace "$PARENT_WORKSPACE" "$msg" 2>/dev/null || true
-    "$CMUX" send-key --workspace "$PARENT_WORKSPACE" return 2>/dev/null || true
+    CMUX_BIN="$CMUX" bash "$SEND_PROMPT" --to-workspace "$PARENT_WORKSPACE" \
+      --label dispatch-monitor --outbox-dir "$DISPATCH_DIR/outbox" -- "$msg" 2>/dev/null || true
   fi
 }
 
