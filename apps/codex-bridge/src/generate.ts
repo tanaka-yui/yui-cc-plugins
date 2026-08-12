@@ -112,9 +112,136 @@ export function checkSize(content: string, limit: number = SIZE_LIMIT): { ok: bo
   return { ok: bytes <= limit, bytes }
 }
 
+/** `--max-bytes 65536` / `--max-bytes=65536` を読む。正の整数でなければ null。 */
+export function parseMaxBytesFlag(argv: string[]): number | null {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] ?? ''
+    const inline = arg.match(/^--max-bytes=(.*)$/)
+    const raw = inline ? inline[1] : arg === '--max-bytes' ? argv[i + 1] : null
+    if (raw == null) continue
+    if (!/^\d+$/.test(raw)) return null
+    const value = Number.parseInt(raw, 10)
+    return value > 0 ? value : null
+  }
+  return null
+}
+
+/**
+ * `~/.codex/config.toml` の root テーブルにある `project_doc_max_bytes` を読む。
+ * TOML を厳密に解釈はせず、最初の `[section]` より前の同名キーだけを見る
+ * （codex はこのキーを root にしか置かないため、これで十分かつ誤検出しない）。
+ */
+export function parseProjectDocMaxBytes(toml: string): number | null {
+  for (const line of toml.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('#')) continue
+    if (trimmed.startsWith('[')) return null
+    const match = trimmed.match(/^project_doc_max_bytes\s*=\s*(\d+)\s*$/)
+    if (match) {
+      const value = Number.parseInt(match[1] ?? '', 10)
+      return value > 0 ? value : null
+    }
+  }
+  return null
+}
+
+/** bytes を収める最小の 2 の冪を返す（limit 以下なら limit のまま）。 */
+export function suggestLimit(bytes: number, limit: number = SIZE_LIMIT): number {
+  let suggested = limit
+  while (suggested < bytes) suggested *= 2
+  return suggested
+}
+
+export interface OutputSource {
+  file: string
+  bytes: number
+}
+
 export interface PlannedOutput {
   path: string
   content: string
+  /** 生成先の codexTargets（root CLAUDE.md 由来なら '<root>'）。 */
+  target: string
+  /** 寄与した rule ファイルと、その本文バイト数。 */
+  sources: OutputSource[]
+}
+
+export type OversizeKind = 'single-rule-over-limit' | 'concatenation-over-limit'
+
+export interface OversizeDiagnosis {
+  path: string
+  target: string
+  bytes: number
+  limit: number
+  overBy: number
+  kind: OversizeKind
+  sources: OutputSource[]
+  /** 単体で limit を超えている rule。空なら連結超過。 */
+  offenders: OutputSource[]
+  suggestedLimit: number
+  remedies: string[]
+}
+
+export interface OversizeInput {
+  path: string
+  target: string
+  sources: OutputSource[]
+}
+
+/**
+ * 32KB 超過の内訳と対処案を組み立てる。
+ *
+ * 重要な区別:
+ * - single-rule-over-limit: 1 つの rule だけで上限を超えている。この場合
+ *   `codexTargets` をどう割り当て直しても解決しない（分割先に丸ごと移るだけ）。
+ * - concatenation-over-limit: 個々は収まるが連結で超えた。より深い
+ *   `codexTargets` へ一部を移せば解決する。
+ */
+export function diagnoseOversize(input: OversizeInput, bytes: number, limit: number = SIZE_LIMIT): OversizeDiagnosis {
+  const sources = [...input.sources].sort((a, b) => b.bytes - a.bytes)
+  const offenders = sources.filter((s) => s.bytes > limit)
+  const kind: OversizeKind = offenders.length > 0 ? 'single-rule-over-limit' : 'concatenation-over-limit'
+  const suggestedLimit = suggestLimit(bytes, limit)
+  const remedies: string[] = []
+
+  if (kind === 'single-rule-over-limit') {
+    for (const offender of offenders) {
+      remedies.push(
+        `${offender.file} は単体で ${offender.bytes} bytes あり上限を超えている。` +
+          `codexTargets の付け替えでは解決しないので、見出し単位でファイルを分割し、` +
+          `分割後の各ファイルに別々の（より深い）codexTargets を割り当てる。`,
+      )
+    }
+  } else if (sources.length > 1) {
+    const largest = sources[0]
+    if (largest) {
+      remedies.push(
+        `${largest.file}（${largest.bytes} bytes）を ${input.target} より深いディレクトリの ` +
+          `codexTargets に移すと、この出力は ${bytes - largest.bytes} bytes になり上限内に収まる。`,
+      )
+    }
+  } else {
+    remedies.push(`${input.target} には rule が 1 つしかないため、その rule 自体を分割するか内容を削る。`)
+  }
+
+  remedies.push(
+    `切り捨てを許容できないが分割もしたくない場合は、~/.codex/config.toml に ` +
+      `project_doc_max_bytes = ${suggestedLimit} を設定する。ただしこれはマシンローカル設定で、` +
+      `リポジトリにコミットできず他の開発者や CI には効かない。`,
+  )
+
+  return {
+    path: input.path,
+    target: input.target,
+    bytes,
+    limit,
+    overBy: bytes - limit,
+    kind,
+    sources,
+    offenders,
+    suggestedLimit,
+    remedies,
+  }
 }
 
 export interface CollectResult {
@@ -156,7 +283,15 @@ export async function collectProjectOutputs(root: string): Promise<CollectResult
       }
       const sources = group.members.map((m) => `.claude/rules/${m.file}`)
       const bodies = group.members.map((m) => m.body)
-      outputs.push({ path: join(targetDir, 'AGENTS.md'), content: renderAgentsFile(sources, bodies) })
+      outputs.push({
+        path: join(targetDir, 'AGENTS.md'),
+        content: renderAgentsFile(sources, bodies),
+        target: group.target,
+        sources: group.members.map((m) => ({
+          file: `.claude/rules/${m.file}`,
+          bytes: Buffer.byteLength(m.body.trim(), 'utf8'),
+        })),
+      })
     }
   } else {
     warnings.push('.claude/rules ディレクトリが見つかりません')
@@ -165,7 +300,12 @@ export async function collectProjectOutputs(root: string): Promise<CollectResult
   const claudeMd = join(root, 'CLAUDE.md')
   if (await pathExists(claudeMd)) {
     const content = await readFile(claudeMd, 'utf8')
-    outputs.push({ path: join(root, 'AGENTS.md'), content: renderAgentsFile(['CLAUDE.md'], [content]) })
+    outputs.push({
+      path: join(root, 'AGENTS.md'),
+      content: renderAgentsFile(['CLAUDE.md'], [content]),
+      target: '<root>',
+      sources: [{ file: 'CLAUDE.md', bytes: Buffer.byteLength(content.trim(), 'utf8') }],
+    })
   } else {
     warnings.push('root CLAUDE.md が見つかりません')
   }
@@ -181,7 +321,12 @@ export async function collectGlobalOutput(home: string): Promise<CollectResult> 
   const content = await readFile(source, 'utf8')
   return {
     outputs: [
-      { path: join(home, '.codex', 'AGENTS.md'), content: renderAgentsFile(['~/.claude/CLAUDE.md'], [content]) },
+      {
+        path: join(home, '.codex', 'AGENTS.md'),
+        content: renderAgentsFile(['~/.claude/CLAUDE.md'], [content]),
+        target: '<global>',
+        sources: [{ file: '~/.claude/CLAUDE.md', bytes: Buffer.byteLength(content.trim(), 'utf8') }],
+      },
     ],
     warnings: [],
   }
@@ -190,10 +335,10 @@ export async function collectGlobalOutput(home: string): Promise<CollectResult> 
 export interface WriteReport {
   written: string[]
   skippedHandwritten: string[]
-  oversize: { path: string; bytes: number }[]
+  oversize: OversizeDiagnosis[]
 }
 
-export async function writeOutputs(outputs: PlannedOutput[]): Promise<WriteReport> {
+export async function writeOutputs(outputs: PlannedOutput[], limit: number = SIZE_LIMIT): Promise<WriteReport> {
   const report: WriteReport = { written: [], skippedHandwritten: [], oversize: [] }
   for (const output of outputs) {
     const existing = (await pathExists(output.path)) ? await readFile(output.path, 'utf8') : null
@@ -204,25 +349,68 @@ export async function writeOutputs(outputs: PlannedOutput[]): Promise<WriteRepor
     await mkdir(dirname(output.path), { recursive: true })
     await writeFile(output.path, output.content)
     report.written.push(output.path)
-    const size = checkSize(output.content)
-    if (!size.ok) report.oversize.push({ path: output.path, bytes: size.bytes })
+    const size = checkSize(output.content, limit)
+    if (!size.ok) {
+      report.oversize.push(
+        diagnoseOversize({ path: output.path, target: output.target, sources: output.sources }, size.bytes, limit),
+      )
+    }
   }
   return report
 }
 
+/**
+ * 有効な上限を決める。優先順位は `--max-bytes` > `~/.codex/config.toml` の
+ * `project_doc_max_bytes` > 既定の 32768。
+ */
+export async function resolveSizeLimit(argv: string[], home: string): Promise<{ limit: number; source: string }> {
+  const flag = parseMaxBytesFlag(argv)
+  if (flag !== null) return { limit: flag, source: '--max-bytes' }
+  const configPath = join(home, '.codex', 'config.toml')
+  if (await pathExists(configPath)) {
+    const fromConfig = parseProjectDocMaxBytes(await readFile(configPath, 'utf8'))
+    if (fromConfig !== null) return { limit: fromConfig, source: '~/.codex/config.toml' }
+  }
+  return { limit: SIZE_LIMIT, source: 'codex 既定値' }
+}
+
+export function formatOversize(diagnosis: OversizeDiagnosis): string[] {
+  const lines: string[] = []
+  const kindLabel = diagnosis.kind === 'single-rule-over-limit' ? '単一 rule が上限超過' : '複数 rule の連結で上限超過'
+  // kind は enum 値も併記する。commands/codex-bridge.md（英語必須）は表示ラベルではなく
+  // この安定した識別子を見て分岐するため。
+  lines.push(
+    `  警告(上限 ${diagnosis.limit} bytes 超過, 切り捨てリスク): ${diagnosis.path} = ${diagnosis.bytes} bytes ` +
+      `(+${diagnosis.overBy} / ${kindLabel} [${diagnosis.kind}])`,
+  )
+  lines.push(`    内訳 (target: ${diagnosis.target}):`)
+  for (const source of diagnosis.sources) {
+    const mark = source.bytes > diagnosis.limit ? ' ← 単体で超過' : ''
+    lines.push(`      - ${source.file}: ${source.bytes} bytes${mark}`)
+  }
+  lines.push('    対処案:')
+  for (const [index, remedy] of diagnosis.remedies.entries()) {
+    lines.push(`      ${index + 1}. ${remedy}`)
+  }
+  return lines
+}
+
 export async function main(argv: string[], env: { cwd: string; home: string }): Promise<number> {
   const isGlobal = argv.includes('--global')
+  const { limit, source: limitSource } = await resolveSizeLimit(argv, env.home)
   const { outputs, warnings } = isGlobal ? await collectGlobalOutput(env.home) : await collectProjectOutputs(env.cwd)
-  const report = await writeOutputs(outputs)
+  const report = await writeOutputs(outputs, limit)
 
-  console.log(`codex-bridge: ${isGlobal ? 'global' : 'project'} モードで実行`)
+  console.log(`codex-bridge: ${isGlobal ? 'global' : 'project'} モードで実行 (上限 ${limit} bytes / ${limitSource})`)
   for (const path of report.written) console.log(`  生成: ${path}`)
   for (const path of report.skippedHandwritten) console.log(`  スキップ(手書き): ${path}`)
-  for (const item of report.oversize)
-    console.log(`  警告(32KB 超過, 切り捨てリスク): ${item.path} = ${item.bytes} bytes`)
+  for (const diagnosis of report.oversize) {
+    for (const line of formatOversize(diagnosis)) console.log(line)
+  }
   for (const warning of warnings) console.log(`  警告: ${warning}`)
   console.log(
-    `完了: ${report.written.length} 件生成 / ${report.skippedHandwritten.length} 件スキップ / ${warnings.length} 件警告`,
+    `完了: ${report.written.length} 件生成 / ${report.skippedHandwritten.length} 件スキップ / ` +
+      `${report.oversize.length} 件サイズ超過 / ${warnings.length} 件警告`,
   )
   return 0
 }

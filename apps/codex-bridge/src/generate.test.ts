@@ -3,11 +3,15 @@ import {
   collectGlobalOutput,
   collectProjectOutputs,
   decideWrite,
+  diagnoseOversize,
   groupRulesByTarget,
   hasSentinel,
   parseFrontmatter,
+  parseMaxBytesFlag,
+  parseProjectDocMaxBytes,
   renderAgentsFile,
   SENTINEL,
+  suggestLimit,
   writeOutputs,
 } from './generate.ts'
 
@@ -96,6 +100,82 @@ test('checkSize は 32768 バイト超過で ok=false', () => {
   expect(big.bytes).toBe(40000)
 })
 
+test('checkSize は limit を渡すとその値で判定する', () => {
+  expect(checkSize('a'.repeat(40000), 65536).ok).toBe(true)
+  expect(checkSize('a'.repeat(40000), 1024).ok).toBe(false)
+})
+
+test('parseMaxBytesFlag は --max-bytes の値を取り出す', () => {
+  expect(parseMaxBytesFlag(['--max-bytes', '65536'])).toBe(65536)
+  expect(parseMaxBytesFlag(['--max-bytes=65536'])).toBe(65536)
+  expect(parseMaxBytesFlag(['--global'])).toBeNull()
+})
+
+test('parseMaxBytesFlag は 正の整数以外を null として無視する', () => {
+  expect(parseMaxBytesFlag(['--max-bytes', 'abc'])).toBeNull()
+  expect(parseMaxBytesFlag(['--max-bytes', '0'])).toBeNull()
+  expect(parseMaxBytesFlag(['--max-bytes', '-5'])).toBeNull()
+  expect(parseMaxBytesFlag(['--max-bytes'])).toBeNull()
+})
+
+test('parseProjectDocMaxBytes は root テーブルの値だけを読む', () => {
+  expect(parseProjectDocMaxBytes('project_doc_max_bytes = 131072\n')).toBe(131072)
+  expect(parseProjectDocMaxBytes('model = "x"\nproject_doc_max_bytes=65536\n')).toBe(65536)
+  // [section] 以降の同名キーは root の設定ではないので無視する
+  expect(parseProjectDocMaxBytes('[features]\nproject_doc_max_bytes = 131072\n')).toBeNull()
+  expect(parseProjectDocMaxBytes('model = "x"\n')).toBeNull()
+})
+
+test('parseProjectDocMaxBytes はコメント行を無視する', () => {
+  expect(parseProjectDocMaxBytes('# project_doc_max_bytes = 999\nmodel = "x"\n')).toBeNull()
+})
+
+test('suggestLimit は超過分を収める 2 の冪を返す', () => {
+  expect(suggestLimit(40000, 32768)).toBe(65536)
+  expect(suggestLimit(65952, 32768)).toBe(131072)
+  expect(suggestLimit(100, 32768)).toBe(32768)
+})
+
+test('diagnoseOversize は単一 rule 超過を single-rule-over-limit と判定する', () => {
+  const d = diagnoseOversize(
+    {
+      path: '/repo/go/AGENTS.md',
+      target: 'go/',
+      sources: [
+        { file: '.claude/rules/go-backend.md', bytes: 50777 },
+        { file: '.claude/rules/go-testing.md', bytes: 15405 },
+      ],
+    },
+    65952,
+    32768,
+  )
+  expect(d.kind).toBe('single-rule-over-limit')
+  expect(d.overBy).toBe(65952 - 32768)
+  expect(d.suggestedLimit).toBe(131072)
+  expect(d.offenders.map((o) => o.file)).toEqual(['.claude/rules/go-backend.md'])
+  // codexTargets の付け替えでは解決しないことを明示する
+  expect(d.remedies.join('\n')).toContain('codexTargets')
+})
+
+test('diagnoseOversize は連結超過を concatenation-over-limit と判定する', () => {
+  const d = diagnoseOversize(
+    {
+      path: '/repo/typescript/AGENTS.md',
+      target: 'typescript/',
+      sources: [
+        { file: '.claude/rules/a.md', bytes: 20000 },
+        { file: '.claude/rules/b.md', bytes: 20000 },
+      ],
+    },
+    40200,
+    32768,
+  )
+  expect(d.kind).toBe('concatenation-over-limit')
+  expect(d.offenders).toEqual([])
+  // 移動候補として最大の rule を提示する
+  expect(d.remedies.join('\n')).toContain('.claude/rules/a.md')
+})
+
 async function makeTmp(): Promise<string> {
   return await mkdtemp(join(tmpdir(), 'codex-bridge-'))
 }
@@ -143,8 +223,8 @@ test('writeOutputs は新規書き込みし、手書きファイルはスキッ�
   await writeFile(handwrittenPath, '# 手書き\n')
 
   const report = await writeOutputs([
-    { path: newPath, content: generated },
-    { path: handwrittenPath, content: generated },
+    { path: newPath, content: generated, target: 'a/', sources: [{ file: '.claude/rules/x.md', bytes: 1 }] },
+    { path: handwrittenPath, content: generated, target: '<root>', sources: [{ file: 'CLAUDE.md', bytes: 1 }] },
   ])
 
   expect(report.written).toContain(newPath)
@@ -153,11 +233,45 @@ test('writeOutputs は新規書き込みし、手書きファイルはスキッ�
   expect(await readFileAssert(handwrittenPath, 'utf8')).toBe('# 手書き\n')
 })
 
-test('writeOutputs は 32KB 超過を oversize に記録する（書き込みは行う）', async () => {
+test('writeOutputs は 32KB 超過を診断つきで oversize に記録する（書き込みは行う）', async () => {
   const dir = await makeTmp()
   const path = join(dir, 'AGENTS.md')
   const content = renderAgentsFile(['x'], ['a'.repeat(40000)])
-  const report = await writeOutputs([{ path, content }])
-  expect(report.oversize.some((o) => o.path === path)).toBe(true)
+  const report = await writeOutputs([
+    { path, content, target: 'x/', sources: [{ file: '.claude/rules/x.md', bytes: 40000 }] },
+  ])
+  const diagnosis = report.oversize.find((o) => o.path === path)
+  expect(diagnosis).toBeDefined()
+  expect(diagnosis?.kind).toBe('single-rule-over-limit')
+  expect(diagnosis?.suggestedLimit).toBe(65536)
   expect(await readFileAssert(path, 'utf8')).toBe(content)
+})
+
+test('writeOutputs は limit を上げれば超過扱いしない', async () => {
+  const dir = await makeTmp()
+  const path = join(dir, 'AGENTS.md')
+  const content = renderAgentsFile(['x'], ['a'.repeat(40000)])
+  const report = await writeOutputs(
+    [{ path, content, target: 'x/', sources: [{ file: '.claude/rules/x.md', bytes: 40000 }] }],
+    131072,
+  )
+  expect(report.oversize).toEqual([])
+})
+
+test('collectProjectOutputs は各出力に target と sources を持たせる', async () => {
+  const root = await makeTmp()
+  await mkdir(join(root, '.claude/rules'), { recursive: true })
+  await mkdir(join(root, 'go'), { recursive: true })
+  await writeFile(join(root, '.claude/rules/go-backend.md'), '---\ncodexTargets:\n  - go/\n---\n# Go\nbody')
+  await writeFile(join(root, 'CLAUDE.md'), '# Project overview')
+
+  const { outputs } = await collectProjectOutputs(root)
+  const goOut = outputs.find((o) => o.path === join(root, 'go', 'AGENTS.md'))
+  expect(goOut?.target).toBe('go/')
+  expect(goOut?.sources.map((s) => s.file)).toEqual(['.claude/rules/go-backend.md'])
+  expect(goOut?.sources[0]?.bytes).toBe(Buffer.byteLength('# Go\nbody', 'utf8'))
+
+  const rootOut = outputs.find((o) => o.path === join(root, 'AGENTS.md'))
+  expect(rootOut?.target).toBe('<root>')
+  expect(rootOut?.sources.map((s) => s.file)).toEqual(['CLAUDE.md'])
 })
