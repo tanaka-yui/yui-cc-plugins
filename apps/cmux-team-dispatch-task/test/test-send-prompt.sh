@@ -5,6 +5,9 @@
 #   SP0. 未知フラグ・必須フラグ欠落は exit 2 の使用法エラーになり、配送は起きない
 #   SP1. agmsg ready sentinel がある宛先では cmux を 1 度も呼ばない
 #   SP2. sentinel が無ければタイプ入力経路に落ちる
+#   SP3. 閾値超えは outbox にファイル化され、1 行のポインタだけがタイプされる
+#   SP4. 同一 label の 2 通目は連番になり 1 通目を上書きしない
+#   SP5. 閾値以下は素のテキストとしてタイプされる
 
 set -uo pipefail
 
@@ -110,6 +113,41 @@ if grep -q 'cmux send --surface surface:2 hello reviewer' "$TMP/cmux.log" \
   echo "PASS SP2: sentinel が無ければタイプ入力経路に落ちる"
 else
   echo "FAIL SP2: cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
+fi
+
+# --- SP3: 閾値超えは outbox にファイル化され、1 行のポインタだけがタイプされる ---
+reset_logs
+LONG="$(printf 'x%.0s' $(seq 1 500))"
+run_sp --to-surface surface:2 --label codereview --outbox-dir "$TMP/outbox" -- "$LONG"
+outfile="$TMP/outbox/codereview-1.md"
+if [[ -f "$outfile" ]] \
+   && [[ "$(cat "$outfile")" == "$LONG" ]] \
+   && grep -qF "cmux send --surface surface:2 codereview: read $outfile and follow every instruction in it." "$TMP/cmux.log" \
+   && ! grep -qF "xxxxxxxxxx" "$TMP/cmux.log"; then
+  echo "PASS SP3: 閾値超えはファイル化され 1 行のポインタだけがタイプされる"
+else
+  echo "FAIL SP3: outfile=[$outfile] cmux.log=[$(cat "$TMP/cmux.log")]"; fail=1
+fi
+
+# --- SP4: 同一 label の 2 通目は連番になり 1 通目を上書きしない ---
+reset_logs
+LONG2="$(printf 'y%.0s' $(seq 1 500))"
+run_sp --to-surface surface:2 --label codereview --outbox-dir "$TMP/outbox" -- "$LONG2"
+if [[ "$(cat "$TMP/outbox/codereview-1.md")" == "$LONG" ]] \
+   && [[ "$(cat "$TMP/outbox/codereview-2.md")" == "$LONG2" ]]; then
+  echo "PASS SP4: 同一 label の 2 通目は連番になり 1 通目を上書きしない"
+else
+  echo "FAIL SP4: outbox=[$(ls "$TMP/outbox")]"; fail=1
+fi
+
+# --- SP5: 閾値以下は素のテキストとしてタイプされる ---
+reset_logs
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" -- "short message"
+if grep -qF 'cmux send --surface surface:2 short message' "$TMP/cmux.log" \
+   && [[ ! -f "$TMP/outbox/notify-1.md" ]]; then
+  echo "PASS SP5: 閾値以下はファイル化せず素のテキストでタイプされる"
+else
+  echo "FAIL SP5: cmux.log=[$(cat "$TMP/cmux.log")] outbox=[$(ls "$TMP/outbox")]"; fail=1
 fi
 
 exit $fail

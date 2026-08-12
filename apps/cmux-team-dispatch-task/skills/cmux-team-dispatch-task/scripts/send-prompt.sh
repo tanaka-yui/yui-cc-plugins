@@ -65,11 +65,28 @@ if [[ "$route" == "agmsg" ]]; then
 fi
 
 # --- タイプ入力経路 ---
+# 閾値を超える本文はタイプさせない。TUI が貼り付けと判定して [Pasted text #N] に
+# 畳み、直後の Enter を吸ってしまうため。全文はファイルへ退避し、パスだけを打つ。
+PAYLOAD="$TEXT"
+if [[ ${#TEXT} -gt $THRESHOLD ]]; then
+  [[ -n "$OUTBOX_DIR" ]] || OUTBOX_DIR="${STATUS_DIR:-}/outbox"
+  [[ "$OUTBOX_DIR" != "/outbox" ]] || die "--outbox-dir is required when STATUS_DIR is unset"
+  mkdir -p "$OUTBOX_DIR" || die "failed to create outbox dir: $OUTBOX_DIR"
+  # 同一 label の既存ファイル数 + 1 を連番にする (過去の送信を上書きしない)
+  seq_n=1
+  while [[ -e "$OUTBOX_DIR/$LABEL-$seq_n.md" ]]; do
+    seq_n=$((seq_n + 1))
+  done
+  OUTBOX_FILE="$OUTBOX_DIR/$LABEL-$seq_n.md"
+  printf '%s' "$TEXT" > "$OUTBOX_FILE" || die "failed to write outbox file: $OUTBOX_FILE"
+  PAYLOAD="$LABEL: read $OUTBOX_FILE and follow every instruction in it."
+fi
+
 TARGET=()
 [[ -n "$TO_WORKSPACE" ]] && TARGET+=(--workspace "$TO_WORKSPACE")
 [[ -n "$TO_SURFACE" ]] && TARGET+=(--surface "$TO_SURFACE")
 
-"$CMUX_BIN" send ${TARGET[@]+"${TARGET[@]}"} "$TEXT" || exit 1
+"$CMUX_BIN" send ${TARGET[@]+"${TARGET[@]}"} "$PAYLOAD" || exit 1
 sleep "$SETTLE"
 "$CMUX_BIN" send-key ${TARGET[@]+"${TARGET[@]}"} return || exit 1
 exit 0
