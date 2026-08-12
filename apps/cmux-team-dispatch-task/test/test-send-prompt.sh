@@ -10,6 +10,9 @@
 #   SP5. 閾値以下は素のテキストとしてタイプされる
 #   SP6. outbox への書き込み失敗 (mkdir -p / printf) は exit 1 になり配送しない
 #   SP7. '/' を含む --label は exit 2 の使用法エラーになり配送しない
+#   SP8. 入力欄が空なら Enter は 1 回だけで成功する
+#   SP9. 入力欄に残る場合は Enter を再送し、尽きたら exit 1 になる
+#   SP10. read-screen が観測できない (空出力) 場合は観測失敗として成功扱いにする
 
 set -uo pipefail
 
@@ -22,14 +25,14 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # cmux / send.sh のスタブ。呼び出し引数を log に追記する。
-# read-screen だけは「入力欄が空」を表す画面を返し、Enter 検証を通す。
+# read-screen は SCREEN_FIXTURE が指すファイルの内容を返す (未設定 or ファイルが無ければ空出力)。
 make_stubs() {
   mkdir -p "$TMP/bin" "$TMP/run" "$TMP/outbox"
   cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "cmux $*" >> "$CMUX_LOG"
 if [[ "$1" == "read-screen" ]]; then
-  printf '%s\n' "some output" "❯ " "  status line"
+  [[ -n "${SCREEN_FIXTURE:-}" && -f "$SCREEN_FIXTURE" ]] && cat "$SCREEN_FIXTURE"
 fi
 exit 0
 STUB
@@ -42,7 +45,7 @@ STUB
 }
 
 run_sp() {
-  CMUX_LOG="$TMP/cmux.log" AGMSG_LOG="$TMP/agmsg.log" \
+  CMUX_LOG="$TMP/cmux.log" AGMSG_LOG="$TMP/agmsg.log" SCREEN_FIXTURE="${SCREEN_FIXTURE:-}" \
   CMUX_BIN="$TMP/bin/cmux" AGMSG_SEND="$TMP/bin/send.sh" AGMSG_READY_DIR="$TMP/run" \
   bash "$BIN" "$@"
 }
@@ -50,6 +53,11 @@ run_sp() {
 reset_logs() { : > "$TMP/cmux.log"; : > "$TMP/agmsg.log"; }
 
 make_stubs
+
+# SP1-SP7 は「入力欄は空」を前提にした検証なので、既定 fixture を空画面にしておく。
+printf '%s\n' "some output" "❯ " "  status line" > "$TMP/screen-empty.txt"
+printf '%s\n' "some output" "❯ short message" "  status line" > "$TMP/screen-stuck.txt"
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
 
 # --- SP0: 使用法エラー ---
 
@@ -179,5 +187,43 @@ if [[ $rc -eq 2 ]] && [[ ! -s "$TMP/cmux.log" ]] && [[ ! -s "$TMP/agmsg.log" ]];
 else
   echo "FAIL SP7: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
 fi
+
+# --- SP8: 入力欄が空なら Enter は 1 回だけで成功する ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" -- "short message"
+rc=$?
+n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $n -eq 1 ]]; then
+  echo "PASS SP8: 入力欄が空なら Enter は 1 回だけで成功する"
+else
+  echo "FAIL SP8: rc=$rc send-key回数=$n"; fail=1
+fi
+
+# --- SP9: 入力欄に残る場合は Enter を再送し、尽きたら exit 1 ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-stuck.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" \
+       --retries 3 --settle 0 -- "short message"
+rc=$?
+n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+if [[ $rc -eq 1 && $n -eq 4 ]]; then
+  echo "PASS SP9: 入力欄に残る場合は Enter を 3 回再送して exit 1 する"
+else
+  echo "FAIL SP9: rc=$rc send-key回数=$n (期待 rc=1, 回数=4)"; fail=1
+fi
+
+# --- SP10: read-screen が空出力なら観測失敗として成功扱いにする ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-missing.txt"   # 存在しない = 空出力
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" -- "short message"
+rc=$?
+n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $n -eq 1 ]]; then
+  echo "PASS SP10: read-screen が空出力なら観測失敗として成功扱いにする"
+else
+  echo "FAIL SP10: rc=$rc send-key回数=$n"; fail=1
+fi
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
 
 exit $fail

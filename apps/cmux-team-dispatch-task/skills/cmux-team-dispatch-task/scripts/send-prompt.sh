@@ -91,4 +91,21 @@ TARGET=()
 "$CMUX_BIN" send ${TARGET[@]+"${TARGET[@]}"} "$PAYLOAD" || exit 1
 sleep "$SETTLE"
 "$CMUX_BIN" send-key ${TARGET[@]+"${TARGET[@]}"} return || exit 1
-exit 0
+
+# 入力欄にテキストが残っていないかを確認する。TUI の貼り付けデバウンスに Enter が
+# 吸われるとここで検出できる。read-screen が観測できない場合は配送失敗とみなさない
+# (Phase A-R の生存確認と同じ扱い)。
+probe="${PAYLOAD:0:30}"
+attempt=0
+while [[ $attempt -lt $RETRIES ]]; do
+  screen=$("$CMUX_BIN" read-screen ${TARGET[@]+"${TARGET[@]}"} 2>/dev/null || true)
+  [[ -n "$screen" ]] || exit 0                       # 観測失敗 = 配送失敗ではない
+  input_line=$(printf '%s\n' "$screen" | grep -E '^[❯>]' || true)
+  printf '%s' "$input_line" | grep -qF -- "$probe" || exit 0   # 入力欄は空 = 送信済み
+  attempt=$((attempt + 1))
+  sleep 1
+  "$CMUX_BIN" send-key ${TARGET[@]+"${TARGET[@]}"} return || exit 1
+done
+
+echo "send-prompt: message still sitting in the input box after $RETRIES retries (label=$LABEL)" >&2
+exit 1
