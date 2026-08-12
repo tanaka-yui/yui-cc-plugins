@@ -424,7 +424,7 @@ AGMSG_INSTALLED=false
 passing it now dies with a `was removed` message.
 
 **Delivery contract (applies to EVERY message this skill sends).** All delivery goes
-through one call to `scripts/send-prompt.sh` — never a raw `cmux send`:
+through one call to `scripts/send-prompt.sh` — never a raw `cmux send`: <!-- send-prompt-exempt: prohibition, not a delivery instruction -->
 
 ```bash
 # --to-surface <id> targets a pane; use --to-workspace <id> instead when the

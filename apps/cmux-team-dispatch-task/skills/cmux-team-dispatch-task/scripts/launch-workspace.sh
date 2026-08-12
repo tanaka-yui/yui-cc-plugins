@@ -1082,6 +1082,9 @@ if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; th
 
   wait_for_shell "$SURFACE_ID" || true
 
+  # send-prompt-exempt: TUI へのメッセージ配送ではなくシェルへのコマンド打鍵。
+  # 末尾の \n が自分で改行を送るので send-key return は不要であり、貼り付け判定の
+  # 問題も起きない (宛先はまだ素のシェルで TUI が立ち上がっていない)。
   "$CMUX" send --surface "$SURFACE_ID" \
     "cd '$CWD' && bash $RUNNER_SCRIPT_NAME\n" >/dev/null 2>&1 || die "failed to send cd+runner command"
   log "cmux" "standby runner command sent"

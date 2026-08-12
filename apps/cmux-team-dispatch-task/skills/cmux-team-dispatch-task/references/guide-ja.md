@@ -114,7 +114,7 @@ AGMSG_INSTALLED=false
 `was removed` を含むメッセージで die する。
 
 **配送規約（本スキルが送るすべてのメッセージに適用）**: 配送は必ず
-`scripts/send-prompt.sh` の 1 回呼び出しで行い、生の `cmux send` は使わない:
+`scripts/send-prompt.sh` の 1 回呼び出しで行い、生の `cmux send` は使わない: <!-- send-prompt-exempt: 禁止事項の記述であって配送指示ではない -->
 
 ```bash
 # --to-surface <id> はペイン宛。宛先が workspace 全体（親）のときは
@@ -1247,6 +1247,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 ## ターミナル起動待機の自動学習
 
+<!-- send-prompt-exempt: TUI へのメッセージ配送ではなくシェルへのコマンド打鍵の説明 -->
 子セッションのシェルが初期化される前に `cmux send` でコマンドを投入すると `sh` が失敗することがあります。これを避けるため、`launch-workspace.sh` は workspace 内の standby ペインでシェルプロンプトを検知してから実際のコマンドを送信します。検知にかかった実時間は config に記録され、次回以降の最大待機時間を適応的に決定します。
 
 ### 実装
