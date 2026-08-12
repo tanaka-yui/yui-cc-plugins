@@ -100,8 +100,12 @@ attempt=0
 while [[ $attempt -lt $RETRIES ]]; do
   screen=$("$CMUX_BIN" read-screen ${TARGET[@]+"${TARGET[@]}"} 2>/dev/null || true)
   [[ -n "$screen" ]] || exit 0                       # 観測失敗 = 配送失敗ではない
+  # 画面から入力欄行 (❯/> 始まり) が 1 行も見つからない場合も、read-screen が空
+  # 出力だった場合と同じ「観測失敗」として配送済み扱いにする (fail-open)。ここで
+  # exit 1 にして呼び出し元に再送させると、実際には届いていたメッセージを二重に
+  # 配送する事故につながるため、パース不能は失敗ではなく成功として扱う。
   input_line=$(printf '%s\n' "$screen" | grep -E '^[❯>]' || true)
-  printf '%s' "$input_line" | grep -qF -- "$probe" || exit 0   # 入力欄は空 = 送信済み
+  printf '%s' "$input_line" | grep -qF -- "$probe" || exit 0   # 入力欄は空(or未検出) = 送信済み扱い
   attempt=$((attempt + 1))
   sleep 1
   "$CMUX_BIN" send-key ${TARGET[@]+"${TARGET[@]}"} return || exit 1

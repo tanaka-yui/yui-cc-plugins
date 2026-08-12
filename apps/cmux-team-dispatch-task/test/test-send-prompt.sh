@@ -13,6 +13,7 @@
 #   SP8. 入力欄が空なら Enter は 1 回だけで成功する
 #   SP9. 入力欄に残る場合は Enter を再送し、尽きたら exit 1 になる
 #   SP10. read-screen が観測できない (空出力) 場合は観測失敗として成功扱いにする
+#   SP11. 画面は非空だが入力欄行 (❯/>) が見つからない場合も観測失敗として成功扱いにする
 
 set -uo pipefail
 
@@ -57,6 +58,7 @@ make_stubs
 # SP1-SP7 は「入力欄は空」を前提にした検証なので、既定 fixture を空画面にしておく。
 printf '%s\n' "some output" "❯ " "  status line" > "$TMP/screen-empty.txt"
 printf '%s\n' "some output" "❯ short message" "  status line" > "$TMP/screen-stuck.txt"
+printf '%s\n' "some output" "more output" "  status line" > "$TMP/screen-no-prompt.txt"
 SCREEN_FIXTURE="$TMP/screen-empty.txt"
 
 # --- SP0: 使用法エラー ---
@@ -204,7 +206,7 @@ fi
 reset_logs
 SCREEN_FIXTURE="$TMP/screen-stuck.txt"
 run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" \
-       --retries 3 --settle 0 -- "short message"
+       --retries 3 --settle 0 -- "short message" >/dev/null 2>&1
 rc=$?
 n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
 if [[ $rc -eq 1 && $n -eq 4 ]]; then
@@ -223,6 +225,18 @@ if [[ $rc -eq 0 && $n -eq 1 ]]; then
   echo "PASS SP10: read-screen が空出力なら観測失敗として成功扱いにする"
 else
   echo "FAIL SP10: rc=$rc send-key回数=$n"; fail=1
+fi
+
+# --- SP11: 画面は非空だが入力欄行が見つからない場合も観測失敗として成功扱いにする ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-no-prompt.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" -- "short message"
+rc=$?
+n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $n -eq 1 ]]; then
+  echo "PASS SP11: 入力欄行が見つからない画面は観測失敗として成功扱いにする"
+else
+  echo "FAIL SP11: rc=$rc send-key回数=$n"; fail=1
 fi
 SCREEN_FIXTURE="$TMP/screen-empty.txt"
 
