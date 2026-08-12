@@ -680,7 +680,7 @@ if [[ "$MODE" == "execute" ]]; then
   if [[ -n "$STATUS_DIR" ]]; then
     ABORT_REVIEW_STEP=""
     if [[ -n "$REVIEW_CONFIG" ]]; then
-      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N.md for the current round N, using N=1 if you never sent a review request, with the LAST line being exactly VERDICT: needs_work; this is only a record because the reviewer does not poll that file. Then wake the reviewer by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh $SEND_TARGET_FLAGS --label abort-reviewer --outbox-dir $REVIEW_DIR/outbox -- followed by the message text itself, which must start with [abort] and then a one line reason. Next "
+      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N.md for the current round N, using N=1 if you never sent a review request, with the LAST line being exactly VERDICT: needs_work; this is only a record because the reviewer does not poll that file. Then wake the reviewer by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh $SEND_TARGET_FLAGS --label abort-reviewer --outbox-dir $REVIEW_DIR/outbox and pass as the final argument a message that starts with [abort] and then gives a one line reason for stopping. Next "
     fi
     ABORT_PARENT_STEP=""
     if [[ -n "$NOTIFY_WORKSPACE" ]]; then

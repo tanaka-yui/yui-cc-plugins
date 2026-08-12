@@ -176,7 +176,7 @@ abort_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" 
   --no-parallel --parent-notify-workspace workspace:9 abort-cfg)
 abort_runner=$(jq -r '.runner_file' <<<"$abort_output")
 
-abort_review_segment=$(grep -o 'First write the reason.*a one line reason\. Next' "$abort_runner" | head -1)
+abort_review_segment=$(grep -o 'First write the reason.*reason for stopping\. Next' "$abort_runner" | head -1)
 abort_parent_segment=$(grep -o 'Then notify the parent by running.*status: error)\.' "$abort_runner" | head -1)
 
 assert_no_forbidden_chars() {
@@ -228,6 +228,18 @@ assert_no_forbidden_chars "$abort_parent_segment" 'AB3 ABORT_PARENT_STEP is free
 # 本文として送られてしまう (今回のバグ本体)。abort_runner は REVIEW_INSTRUCTION /
 # ABORT_REVIEW_STEP / ABORT_PARENT_STEP の 3 箇所すべてを含むため 1 回の検査で足りる。
 assert_not_contains "$abort_runner" '-- the message must' 'AB4 no bare "-- the message must" pattern remains'
+
+# AB5: ABORT_REVIEW_STEP のメッセージは実行時に組み立てる動的な一行理由なので、
+# 固定テンプレートのように "--" (実引数の終端) の後ろへ直接書ける文字列が無い。
+# 地の文に "--" を残すと、それが実引数の終端なのか単なる句読点なのか常に曖昧になる
+# ため、この instruction には " -- " という並び自体が一切現れないことを検査する
+# (round 2 で REVIEW_INSTRUCTION / ABORT_PARENT_STEP と違う対処が要る所以)。
+if [[ "$abort_review_segment" != *' -- '* ]]; then
+  echo 'PASS: AB5 ABORT_REVIEW_STEP に "--" の実引数終端が残っていない'
+else
+  echo 'FAIL: AB5 ABORT_REVIEW_STEP に "--" の実引数終端が残っている'
+  fail=1
+fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
