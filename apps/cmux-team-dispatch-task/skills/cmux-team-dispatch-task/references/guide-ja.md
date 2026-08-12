@@ -136,8 +136,10 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
 - 400 文字を超える本文は `<outbox-dir>/<label>-<seq>.md` に書き出し、1 行のポインタだけを
   タイプする。長文が貼り付け判定されて入力欄に詰まる事故を止めているのがこれ
 - タイプ後に Enter を押し、`cmux read-screen` で入力欄が空になったことを確認する。
-  残っていれば最大 3 回まで Enter を再送してから失敗を報告する。画面を観測できない場合は
-  失敗ではなく配送済みとして扱う（呼び出し元が再送して二重配送するのを防ぐため）
+  残っていれば最大 3 回まで Enter を再送してから失敗を報告する。この確認は**宛先が 0 桁目に
+  `❯`（または `>`）のプロンプト行を描画している場合に働く**（その最終行を入力欄とみなすため）。
+  該当行が無いペインは、画面を観測できない場合と同様に検証なしで配送済みとして扱う
+  （呼び出し元が再送して二重配送するのを防ぐため）
 - 終了コード: 0 = 配送成功 / 1 = 配送失敗 / 2 = 使用法エラー
 
 `<label>` は呼び出し箇所ごとの outbox ファイルをまとめる識別子。次の値を使う:
@@ -148,8 +150,9 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
 | standby ペインへの Phase B 実行指示 | `phase-b-exec` |
 | Phase A-R の plan/spec レビュー依頼 | `review-plan` |
 | Phase B-R のコードレビュー依頼 | `review-code` |
-| レビュアーへの abort 通知 | `abort-reviewer` |
+| レビュアーへの abort 通知（実装者・runner wrapper のどちらから送る場合も） | `abort-reviewer` |
 | 親への完了 / abort 通知 | `dispatch-notify` |
+| `monitor-dispatch.sh` の heartbeat / 全完了 / DIED 通知 | `dispatch-monitor` |
 
 **agmsg インストール済み（`AGMSG_INSTALLED=true`）のときは dispatch 前に team を配線する**:
 
@@ -1096,9 +1099,9 @@ done
 - **cmux 必須**: `/Applications/cmux.app/` にインストールされている必要があります
 - **同時セッション数**: 3〜5 セッションが推奨
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません
-- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。テキスト通知は `scripts/send-prompt.sh` 経由で配送され、タイプ後に Enter を押して `cmux read-screen` で入力欄が空になったことを確認するので、親 claude TUI の input box に滞留しない
+- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。テキスト通知は `scripts/send-prompt.sh` 経由で配送され、タイプ後に Enter を押して `cmux read-screen` で入力欄が空になったことを確認するので、親 claude TUI の input box に滞留しない (確認が働くのは親が 0 桁目に `❯` / `>` のプロンプト行を描画している場合。該当行が無ければ検証なしで配送済み扱い)
 - **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
-- **配送**: 通知トランスポートの設定項目は無い。`message_type` は廃止され、`launch-workspace.sh` / `prewarm-panes.sh` の `--message-type` フラグも削除された (渡すと `was removed` で die する)。agmsg は `~/.agents/skills/agmsg/scripts/send.sh` が存在すれば必ず配線され、`monitor-dispatch.sh` は存在しないときだけ起動する (status.json はどちらでも不変)。すべてのメッセージは `scripts/send-prompt.sh` の 1 回呼び出しで配送する。**常に宛先ペインへタイプ入力し** (idle セッションを起こせるのはこれだけ)、`--agmsg-*` の 3 引数が揃い宛先の ready sentinel が存在するときは、タイプ入力を終えたあとに**同一本文を agmsg inbox にも記録する**（固まった agmsg 書き込みが唯一の wake 手段を塞がないよう順序は常にタイプ入力が先）。**agmsg push は inbox 記録専用で、idle セッションを起こせない**。ready sentinel が示すのは watcher プロセスの生存だけで、そのセッションを起こせることは示さない (idle セッションへ注入できる仕組みの下でも、注入できない素のバックグラウンドシェルの下でも、同じ sentinel が書かれる)。agmsg の失敗は配送の成否にも終了コードにも影響しない。400 文字超の本文は `<outbox-dir>/<label>-<seq>.md` へ書き出し 1 行のポインタだけをタイプするので、長文が貼り付け判定されて入力欄に詰まることはない。タイプ後は Enter を押し `cmux read-screen` で入力欄が空になったことを確認し、残っていれば最大 3 回 Enter を再送してから失敗を報告する。画面を観測できない場合は配送済み扱いにする (呼び出し元が再送して二重配送するのを防ぐため)。完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
+- **配送**: 通知トランスポートの設定項目は無い。`message_type` は廃止され、`launch-workspace.sh` / `prewarm-panes.sh` の `--message-type` フラグも削除された (渡すと `was removed` で die する)。agmsg は `~/.agents/skills/agmsg/scripts/send.sh` が存在すれば必ず配線され、`monitor-dispatch.sh` は存在しないときだけ起動する (status.json はどちらでも不変)。すべてのメッセージは `scripts/send-prompt.sh` の 1 回呼び出しで配送する。**常に宛先ペインへタイプ入力し** (idle セッションを起こせるのはこれだけ)、`--agmsg-*` の 3 引数が揃い宛先の ready sentinel が存在するときは、タイプ入力を終えたあとに**同一本文を agmsg inbox にも記録する**（固まった agmsg 書き込みが唯一の wake 手段を塞がないよう順序は常にタイプ入力が先）。**agmsg push は inbox 記録専用で、idle セッションを起こせない**。ready sentinel が示すのは watcher プロセスの生存だけで、そのセッションを起こせることは示さない (idle セッションへ注入できる仕組みの下でも、注入できない素のバックグラウンドシェルの下でも、同じ sentinel が書かれる)。agmsg の失敗は配送の成否にも終了コードにも影響しない。400 文字超の本文は `<outbox-dir>/<label>-<seq>.md` へ書き出し 1 行のポインタだけをタイプするので、長文が貼り付け判定されて入力欄に詰まることはない。タイプ後は Enter を押し `cmux read-screen` で入力欄が空になったことを確認し、残っていれば最大 3 回 Enter を再送してから失敗を報告する。この確認は宛先が 0 桁目に `❯` (または `>`) のプロンプト行を描画している場合に働き、該当行が無いペインは画面を観測できない場合と同様に配送済み扱いにする (呼び出し元が再送して二重配送するのを防ぐため)。完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
 - **Pre-warm standby panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が各タスク workspace 内に standby ペインを配置。Phase A-R が無効時は縦に積む (上: opus / 中: `<slug>-sonnet` / 下: `<slug>-codex` — codex runner 登録時のみ)、有効時は 2×2 均等グリッドでレビューペインは常に設計 engine の逆: design=claude (`REVIEW_ENABLED`) は左上: opus / 右上: codex レビュー (`<slug>-review`) / 左下: sonnet / 右下: codex、design=codex (`REVIEW_ENABLED_CODEX_DESIGN`) は左上: design codex (`--effort <plan_effort>`) / 右上: claude レビュー (`<slug>-opus`、reviewer runner + `--model <CLAUDE_REVIEW_MODEL>` + `--skip-permissions`、A-R レビュアー兼 Phase B opus 1m 実装先の二役) / 左下: sonnet / 右下: codex。いずれも prewarm.json に `review` キー (`--review-model` または `--reviewer-runner` 時)。agmsg インストール時は opus-1m ペインも idle 起動し (`--with-opus`)、worktree への delivery 配線 (join + `delivery.sh set`) をペイン起動前に行ったうえで、Phase A タスクは親から `send-prompt.sh` の 1 回呼び出し (`--label phase-a-task`) で送る。standby wrapper は `<STATUS_DIR>/.assigned-<name>` が存在するときだけ exit 時に status.json を遷移させる。signal 名は opus が `<slug>-done`、他は `<slug>-sonnet-done` / `<slug>-codex-done`（design=codex の opus 1m 委譲時は `<slug>-opus-done`）。Phase B の実行指示も同じ 1 回呼び出し (`--label phase-b-exec`) で、呼び出し元は prewarm.json の `delivery` 値で分岐しない (ready sentinel の再確認は `send-prompt.sh` 自身が行うため)。
 
 ---

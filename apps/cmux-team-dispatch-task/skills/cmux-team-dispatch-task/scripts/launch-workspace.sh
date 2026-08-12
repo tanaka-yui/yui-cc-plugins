@@ -904,7 +904,7 @@ notify_reviewer_once() {
   local ws_args=()
   [[ -n "\$rworkspace" ]] && ws_args=(--to-workspace "\$rworkspace")
   CMUX_BIN="\$CMUX" bash "\$SEND_PROMPT" \${ws_args[@]+"\${ws_args[@]}"} --to-surface "\$rsurface" \
-    --label dispatch-abort --outbox-dir "\$STATUS_DIR/outbox" -- "\$msg" || return 1
+    --label abort-reviewer --outbox-dir "\$STATUS_DIR/outbox" -- "\$msg" || return 1
   printf '%s' "\$status_label" > "\$marker"
 }
 
