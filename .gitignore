@@ -41,3 +41,5 @@ yarn-error.log*
 # claude
 settings.local.json
 .claude/plans
+# Superpowers SDD scratch
+.superpowers
