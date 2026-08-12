@@ -165,5 +165,69 @@ else
   echo 'PASS: PR3 review instruction is quote-free with the directive'
 fi
 
+# --- AB: ABORT_REVIEW_STEP / ABORT_PARENT_STEP も send-prompt.sh 呼び出しであり、
+#     互いに区別でき、禁止文字 (' " ` ! \) を含まないこと。
+#     (この検査が無かったため、"--" の後ろの説明文がそのまま送信メッセージ本文に混入する
+#     バグ — send-prompt.sh の "--" は実引数の終端であり地の文の句読点ではない — を
+#     静的検査で捕捉できていなかった)
+abort_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
+  --status-dir "$TMP/status" --review-config "$TMP/status/review/code-review.json" \
+  --no-parallel --parent-notify-workspace workspace:9 abort-cfg)
+abort_runner=$(jq -r '.runner_file' <<<"$abort_output")
+
+abort_review_segment=$(grep -o 'First write the reason.*a one line reason\. Next' "$abort_runner" | head -1)
+abort_parent_segment=$(grep -o 'Then notify the parent by running.*status: error)\.' "$abort_runner" | head -1)
+
+assert_no_forbidden_chars() {
+  local text="$1" label="$2"
+  if [[ -z "$text" ]]; then
+    echo "FAIL: $label (segment not extractable)"
+    fail=1
+    return
+  fi
+  case "$text" in
+    *\'*|*\"*|*\`*|*!*|*\\*)
+      echo "FAIL: $label (contains a forbidden character)"
+      fail=1
+      ;;
+    *)
+      echo "PASS: $label"
+      ;;
+  esac
+}
+
+# AB1: 両方の segment が抽出できて、互いに区別できる (同一文字列になっていない)
+if [[ -n "$abort_review_segment" && -n "$abort_parent_segment" && "$abort_review_segment" != "$abort_parent_segment" ]]; then
+  echo 'PASS: AB1 ABORT_REVIEW_STEP と ABORT_PARENT_STEP は抽出でき、互いに区別できる'
+else
+  echo 'FAIL: AB1 ABORT_REVIEW_STEP と ABORT_PARENT_STEP の抽出または区別に失敗'
+  fail=1
+fi
+
+# AB2: 各 segment が send-prompt.sh 呼び出しであり、cmux send-key の直書きペアが残っていない
+if [[ "$abort_review_segment" == *'send-prompt.sh'* && "$abort_review_segment" != *'send-key'* ]]; then
+  echo 'PASS: AB2 ABORT_REVIEW_STEP は send-prompt.sh 呼び出しで send-key の直書きが無い'
+else
+  echo 'FAIL: AB2 ABORT_REVIEW_STEP が send-prompt.sh 呼び出しになっていない、または send-key が残っている'
+  fail=1
+fi
+if [[ "$abort_parent_segment" == *'send-prompt.sh'* && "$abort_parent_segment" != *'send-key'* ]]; then
+  echo 'PASS: AB2 ABORT_PARENT_STEP は send-prompt.sh 呼び出しで send-key の直書きが無い'
+else
+  echo 'FAIL: AB2 ABORT_PARENT_STEP が send-prompt.sh 呼び出しになっていない、または send-key が残っている'
+  fail=1
+fi
+
+# AB3: 禁止文字 (' " ` ! \) が混入していない
+assert_no_forbidden_chars "$abort_review_segment" 'AB3 ABORT_REVIEW_STEP is free of forbidden characters'
+assert_no_forbidden_chars "$abort_parent_segment" 'AB3 ABORT_PARENT_STEP is free of forbidden characters'
+
+# AB4: send-prompt.sh の "--" (実引数の終端) の直後が "the message must ..." という
+# 要件の説明文で始まっていないこと。この形だと "--" 以降の地の文がそのまま送信メッセージ
+# 本文として送られてしまう (今回のバグ本体)。abort_runner は REVIEW_INSTRUCTION /
+# ABORT_REVIEW_STEP / ABORT_PARENT_STEP の 3 箇所すべてを含むため 1 回の検査で足りる。
+assert_not_contains "$abort_runner" '-- the message must' 'AB4 no bare "-- the message must" pattern remains'
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

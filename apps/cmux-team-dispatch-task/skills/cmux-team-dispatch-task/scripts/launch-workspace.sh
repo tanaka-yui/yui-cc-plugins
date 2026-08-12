@@ -668,7 +668,7 @@ if [[ "$MODE" == "execute" ]]; then
       *) log "warn" "review config has unknown reviewer_engine=$REVIEWER_ENGINE; skipping parallel directive" ;;
     esac
     # (1)(2) は対話有無で変わらない共通部分
-    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 5 rounds. Each round: (1) request the review by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh $SEND_TARGET_FLAGS --label review-code --outbox-dir $REVIEW_DIR/outbox -- the message must say: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons.${REVIEWER_PARALLEL} (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. "
+    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 5 rounds. Each round: (1) request the review by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh $SEND_TARGET_FLAGS --label review-code --outbox-dir $REVIEW_DIR/outbox -- followed by the message text itself: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. From round 2 include your rebuttals to the findings you rejected, with reasons.${REVIEWER_PARALLEL} (2) wait by polling $REVIEW_DIR/code-round-N.md every 5 seconds for a VERDICT line, in 15-minute chunks with no overall time limit while the reviewer is active. Right after sending, capture a baseline of the reviewer pane screen by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces. At each chunk boundary without a verdict, first re-check the verdict file once more, then capture the screen again, retrying up to 3 times 10 seconds apart on failure or empty output, and compare with the previous capture: changed means the reviewer is still working, so update the snapshot and keep waiting with no upper bound; unchanged over a full chunk means the reviewer is stalled; all retries failed is an observation failure, not stalled -- only 2 consecutive all-failed boundaries count as stalled. Whenever the wait exits stalled, re-check the verdict file one final time immediately before any re-send or skip decision. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. "
     if [[ $UNATTENDED -eq 1 ]]; then
       # 無人ループ: 判断を求めず固定のフォールバックを取る。文中にクォート文字を使わないこと
       REVIEW_INSTRUCTION="${REVIEW_INSTRUCTION}If round 5 still ends with needs_work, note the unresolved findings in the PR body and proceed to the PR. If the wait exits stalled, re-check the verdict file, then re-send the same round once with a fresh baseline; if it stalls again, skip the review, note the skipped review in the PR body, and proceed to the PR. No interactive user is attached to this session, so never wait for a human decision. "
@@ -680,11 +680,11 @@ if [[ "$MODE" == "execute" ]]; then
   if [[ -n "$STATUS_DIR" ]]; then
     ABORT_REVIEW_STEP=""
     if [[ -n "$REVIEW_CONFIG" ]]; then
-      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N.md for the current round N, using N=1 if you never sent a review request, with the LAST line being exactly VERDICT: needs_work; this is only a record because the reviewer does not poll that file. Then wake the reviewer by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh $SEND_TARGET_FLAGS --label abort-reviewer --outbox-dir $REVIEW_DIR/outbox -- the message must start with [abort] followed by a one line reason. Next "
+      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N.md for the current round N, using N=1 if you never sent a review request, with the LAST line being exactly VERDICT: needs_work; this is only a record because the reviewer does not poll that file. Then wake the reviewer by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh $SEND_TARGET_FLAGS --label abort-reviewer --outbox-dir $REVIEW_DIR/outbox -- followed by the message text itself, which must start with [abort] and then a one line reason. Next "
     fi
     ABORT_PARENT_STEP=""
     if [[ -n "$NOTIFY_WORKSPACE" ]]; then
-      ABORT_PARENT_STEP="Then notify the parent by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh --to-workspace $NOTIFY_WORKSPACE --label dispatch-notify --outbox-dir $STATUS_DIR/outbox -- the message must say: [dispatch] task $WORKSPACE_NAME finished (status: error). "
+      ABORT_PARENT_STEP="Then notify the parent by running: CMUX_BIN=$CMUX bash $SCRIPT_DIR/send-prompt.sh --to-workspace $NOTIFY_WORKSPACE --label dispatch-notify --outbox-dir $STATUS_DIR/outbox -- followed by the message text itself: [dispatch] task $WORKSPACE_NAME finished (status: error). "
     fi
     ABORT_INSTRUCTION="ABORT PROTOCOL, which overrides everything above: if at any point you decide to stop without completing the work, whether from a blocking error, a design contradiction, or simply giving up, you must not stop silently. Writing the status file is not a notification because only the parent polls it. Before you stop: ${ABORT_REVIEW_STEP}write $STATUS_DIR/status.json with status set to error and the reason as the message. ${ABORT_PARENT_STEP}Finally end this session exactly as described below for the successful case. "
   fi
@@ -870,9 +870,15 @@ notify_parent() {
     agmsg_args=(--agmsg-team "\$AGMSG_TEAM" --agmsg-to parent --agmsg-from "\$AGMSG_FROM")
   fi
 
+  # --status-dir は省略可能なため、未指定時は --outbox-dir を渡さない
+  # (渡すと send-prompt.sh 側で "\$STATUS_DIR/outbox" が文字通り "/outbox" になり、
+  # 長文閾値を超えたときに usage エラーで die する)。
+  local outbox_args=()
+  [[ -n "\$STATUS_DIR" ]] && outbox_args=(--outbox-dir "\$STATUS_DIR/outbox")
+
   CMUX_BIN="\$CMUX" bash "\$SEND_PROMPT" "\$target_flag" "\$target_id" \
-    \${agmsg_args[@]+"\${agmsg_args[@]}"} \
-    --label dispatch-notify --outbox-dir "\$STATUS_DIR/outbox" -- "\$msg" || return 1
+    \${agmsg_args[@]+"\${agmsg_args[@]}"} \${outbox_args[@]+"\${outbox_args[@]}"} \
+    --label dispatch-notify -- "\$msg" || return 1
   return 0
 }
 
