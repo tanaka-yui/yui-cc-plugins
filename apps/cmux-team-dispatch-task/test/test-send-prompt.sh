@@ -8,6 +8,8 @@
 #   SP3. 閾値超えは outbox にファイル化され、1 行のポインタだけがタイプされる
 #   SP4. 同一 label の 2 通目は連番になり 1 通目を上書きしない
 #   SP5. 閾値以下は素のテキストとしてタイプされる
+#   SP6. outbox への書き込み失敗 (mkdir -p / printf) は exit 1 になり配送しない
+#   SP7. '/' を含む --label は exit 2 の使用法エラーになり配送しない
 
 set -uo pipefail
 
@@ -148,6 +150,34 @@ if grep -qF 'cmux send --surface surface:2 short message' "$TMP/cmux.log" \
   echo "PASS SP5: 閾値以下はファイル化せず素のテキストでタイプされる"
 else
   echo "FAIL SP5: cmux.log=[$(cat "$TMP/cmux.log")] outbox=[$(ls "$TMP/outbox")]"; fail=1
+fi
+
+# --- SP6: outbox への書き込み失敗は exit 1 (使用法エラーの 2 ではない) になり配送しない ---
+reset_logs
+if [[ $EUID -ne 0 ]]; then
+  mkdir -p "$TMP/ro-parent"
+  chmod 000 "$TMP/ro-parent"
+  LONG3="$(printf 'z%.0s' $(seq 1 500))"
+  run_sp --to-surface surface:2 --label codereview --outbox-dir "$TMP/ro-parent/outbox" -- "$LONG3" >/dev/null 2>&1
+  rc=$?
+  chmod 755 "$TMP/ro-parent"
+  if [[ $rc -eq 1 ]] && [[ ! -s "$TMP/cmux.log" ]]; then
+    echo "PASS SP6: outbox への書き込み失敗は exit 1 になり配送しない"
+  else
+    echo "FAIL SP6: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")]"; fail=1
+  fi
+else
+  echo "PASS SP6: outbox への書き込み失敗は exit 1 になり配送しない (skipped as root)"
+fi
+
+# --- SP7: '/' を含む --label は exit 2 の使用法エラーになり配送しない ---
+reset_logs
+run_sp --to-surface surface:2 --label "foo/bar" -- "hello" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 2 ]] && [[ ! -s "$TMP/cmux.log" ]] && [[ ! -s "$TMP/agmsg.log" ]]; then
+  echo "PASS SP7: '/' を含む --label は exit 2 の使用法エラーになり配送しない"
+else
+  echo "FAIL SP7: rc=$rc cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
 fi
 
 exit $fail

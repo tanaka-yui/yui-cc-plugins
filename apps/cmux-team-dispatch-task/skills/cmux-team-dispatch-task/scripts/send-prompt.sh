@@ -21,6 +21,7 @@ AGMSG_SEND="${AGMSG_SEND:-$HOME/.agents/skills/agmsg/scripts/send.sh}"
 AGMSG_READY_DIR="${AGMSG_READY_DIR:-$HOME/.agents/skills/agmsg/run}"
 
 die() { echo "send-prompt: $1" >&2; exit 2; }
+fail() { echo "send-prompt: $1" >&2; exit 1; }
 
 TO_WORKSPACE=""; TO_SURFACE=""
 TEAM=""; TO_AGENT=""; FROM_AGENT=""
@@ -47,6 +48,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$LABEL" ]] || die "--label is required"
+[[ "$LABEL" != *"/"* ]] || die "--label must not contain '/'"
 [[ -n "$TEXT" ]] || die "message text is required"
 [[ -n "$TO_WORKSPACE" || -n "$TO_SURFACE" ]] || die "--to-workspace or --to-surface is required"
 
@@ -71,14 +73,14 @@ PAYLOAD="$TEXT"
 if [[ ${#TEXT} -gt $THRESHOLD ]]; then
   [[ -n "$OUTBOX_DIR" ]] || OUTBOX_DIR="${STATUS_DIR:-}/outbox"
   [[ "$OUTBOX_DIR" != "/outbox" ]] || die "--outbox-dir is required when STATUS_DIR is unset"
-  mkdir -p "$OUTBOX_DIR" || die "failed to create outbox dir: $OUTBOX_DIR"
+  mkdir -p "$OUTBOX_DIR" || fail "failed to create outbox dir: $OUTBOX_DIR"
   # 同一 label の既存ファイル数 + 1 を連番にする (過去の送信を上書きしない)
   seq_n=1
   while [[ -e "$OUTBOX_DIR/$LABEL-$seq_n.md" ]]; do
     seq_n=$((seq_n + 1))
   done
   OUTBOX_FILE="$OUTBOX_DIR/$LABEL-$seq_n.md"
-  printf '%s' "$TEXT" > "$OUTBOX_FILE" || die "failed to write outbox file: $OUTBOX_FILE"
+  printf '%s' "$TEXT" > "$OUTBOX_FILE" || fail "failed to write outbox file: $OUTBOX_FILE"
   PAYLOAD="$LABEL: read $OUTBOX_FILE and follow every instruction in it."
 fi
 
