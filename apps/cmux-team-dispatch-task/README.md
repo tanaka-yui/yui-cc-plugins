@@ -157,8 +157,11 @@ status.json / result.md / `cmux wait-for` signal は agmsg の有無によらず
 
 1. **必ず宛先ペインへタイプ入力する**。idle セッションを起こせるのはタイプ入力だけ
 2. `--agmsg-team` / `--agmsg-to` / `--agmsg-from` が揃い、かつ宛先の ready sentinel
-   （`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）が存在するときは、タイプ入力の前に
-   **同一本文を agmsg inbox にも記録する**。agmsg の失敗は配送の成否にも終了コードにも影響しない
+   （`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）が存在するときは、**タイプ入力を
+   終えたあとに** 同一本文を agmsg inbox にも記録する。agmsg の失敗は配送の成否にも終了コードにも
+   影響しない。順序が固定なのは、`send.sh` が共有 SQLite DB への書き込みで固まっても、唯一の
+   wake 手段であるタイプ入力を塞がせないため（macOS には `timeout` / `gtimeout` が無く強制打ち切り
+   できない）。記録は単なるログで、受信側にも重複を無視させている
 3. 400 文字を超える本文は `<outbox-dir>/<label>-<seq>.md` へ書き出し、1 行のポインタだけを
    タイプする。長文が Claude Code TUI に貼り付け判定され、直後の Enter がデバウンスに
    吸われて入力欄に残る事故を止めているのがこれ

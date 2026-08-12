@@ -21,6 +21,8 @@
 #   SP15. 改行を含む閾値以下の本文でも、入力欄が空なら Enter は 1 回だけで成功する
 #   SP16. 改行を含む本文が実際に入力欄へ残っている場合は従来どおり再送し exit 1 する
 #   SP17. 先頭が改行で照合対象が取れない本文は観測不能扱い (fail-open) にする
+#   SP18. agmsg の inbox 記録はタイプ入力と Enter の後に行う (send.sh が固まっても
+#         唯一の wake 手段であるタイプ入力を止めない)
 
 set -uo pipefail
 
@@ -33,12 +35,14 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # cmux / send.sh のスタブ。呼び出し引数を log に追記する。
+# 両者は個別の log に加えて共有の ORDER_LOG にも追記するので、呼び出し順序を検査できる。
 # read-screen は SCREEN_FIXTURE が指すファイルの内容を返す (未設定 or ファイルが無ければ空出力)。
 make_stubs() {
   mkdir -p "$TMP/bin" "$TMP/run" "$TMP/outbox"
   cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "cmux $*" >> "$CMUX_LOG"
+printf '%s\n' "cmux $*" >> "$ORDER_LOG"
 if [[ "$1" == "read-screen" ]]; then
   [[ -n "${SCREEN_FIXTURE:-}" && -f "$SCREEN_FIXTURE" ]] && cat "$SCREEN_FIXTURE"
 fi
@@ -47,18 +51,20 @@ STUB
   cat > "$TMP/bin/send.sh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "send.sh $*" >> "$AGMSG_LOG"
+printf '%s\n' "send.sh $*" >> "$ORDER_LOG"
 exit 0
 STUB
   chmod +x "$TMP/bin/cmux" "$TMP/bin/send.sh"
 }
 
 run_sp() {
-  CMUX_LOG="$TMP/cmux.log" AGMSG_LOG="$TMP/agmsg.log" SCREEN_FIXTURE="${SCREEN_FIXTURE:-}" \
+  CMUX_LOG="$TMP/cmux.log" AGMSG_LOG="$TMP/agmsg.log" ORDER_LOG="$TMP/order.log" \
+  SCREEN_FIXTURE="${SCREEN_FIXTURE:-}" \
   CMUX_BIN="$TMP/bin/cmux" AGMSG_SEND="$TMP/bin/send.sh" AGMSG_READY_DIR="$TMP/run" \
   bash "$BIN" "$@"
 }
 
-reset_logs() { : > "$TMP/cmux.log"; : > "$TMP/agmsg.log"; }
+reset_logs() { : > "$TMP/cmux.log"; : > "$TMP/agmsg.log"; : > "$TMP/order.log"; }
 
 make_stubs
 
@@ -365,5 +371,25 @@ else
   echo "FAIL SP17: rc=$rc send-key回数=$n (期待 rc=0, 回数=1)"; fail=1
 fi
 SCREEN_FIXTURE="$TMP/screen-empty.txt"
+
+# --- SP18: agmsg の inbox 記録はタイプ入力より後に行う ---
+# send.sh は共有 SQLite DB へ書き込むので固まりうる。macOS には timeout/gtimeout が
+# 無く強制打ち切りもできないため、唯一の wake 手段であるタイプ入力より前に走らせては
+# ならない (記録は単なるログで、これに依存する処理は無い)。
+reset_logs
+touch "$TMP/run/ready.myteam__reviewer"
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
+run_sp --to-surface surface:2 --agmsg-team myteam --agmsg-to reviewer \
+       --agmsg-from impl --label codereview --outbox-dir "$TMP/outbox" -- "ordered message"
+send_ln=$(grep -n 'cmux send --surface' "$TMP/order.log" | head -1 | cut -d: -f1)
+key_ln=$(grep -n 'cmux send-key' "$TMP/order.log" | head -1 | cut -d: -f1)
+agmsg_ln=$(grep -n 'send.sh myteam' "$TMP/order.log" | head -1 | cut -d: -f1)
+if [[ -n "$send_ln" && -n "$key_ln" && -n "$agmsg_ln" ]] \
+   && [[ $agmsg_ln -gt $send_ln && $agmsg_ln -gt $key_ln ]]; then
+  echo "PASS SP18: agmsg の inbox 記録はタイプ入力と Enter の後に行われる"
+else
+  echo "FAIL SP18: order.log=[$(tr '\n' '|' < "$TMP/order.log")]"; fail=1
+fi
+rm -f "$TMP/run/ready.myteam__reviewer"
 
 exit $fail

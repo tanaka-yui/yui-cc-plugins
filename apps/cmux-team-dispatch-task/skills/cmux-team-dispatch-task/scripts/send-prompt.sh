@@ -8,7 +8,8 @@ set -uo pipefail
 # 追加送信するが、これは wake 手段ではなく記録専用であり、失敗しても配送の
 # 成否には影響しない。ready sentinel は watcher プロセスの生存を示すだけで、
 # そのセッションを起こせることは示さないため (Monitor ツール配下でも Bash
-# watcher 配下でも同じ sentinel が書かれる)。
+# watcher 配下でも同じ sentinel が書かれる)。記録は**タイプ入力の後**に行う
+# (send.sh が固まっても配送を止めないため。詳細は該当ブロックのコメント)。
 #
 # 1KB 超の本文は Claude Code TUI に貼り付け判定され、デバウンス中の Enter が
 # submit ではなく貼り付けバッファに吸われて入力欄に残る事故を起こすため、
@@ -59,16 +60,6 @@ done
 [[ -n "$TEXT" ]] || die "message text is required"
 [[ -n "$TO_WORKSPACE" || -n "$TO_SURFACE" ]] || die "--to-workspace or --to-surface is required"
 
-# --- agmsg: inbox 記録専用 (wake 手段ではない) ---
-# agmsg の 3 引数が揃い、宛先の watcher が生きている (ready sentinel が存在する)
-# ときだけ、タイプ入力の前に inbox へ全文を記録する。失敗しても配送失敗には
-# しない (終了コードはタイプ入力経路の結果だけで決まる)。
-if [[ -n "$TEAM" && -n "$TO_AGENT" && -n "$FROM_AGENT" ]] \
-   && [[ -f "$AGMSG_READY_DIR/ready.${TEAM}__${TO_AGENT}" ]]; then
-  bash "$AGMSG_SEND" "$TEAM" "$FROM_AGENT" "$TO_AGENT" "$TEXT" \
-    || echo "send-prompt: agmsg record failed (non-fatal, typed delivery continues)" >&2
-fi
-
 # --- タイプ入力経路 ---
 # 閾値を超える本文はタイプさせない。TUI が貼り付けと判定して [Pasted text #N] に
 # 畳み、直後の Enter を吸ってしまうため。全文はファイルへ退避し、パスだけを打つ。
@@ -91,42 +82,65 @@ TARGET=()
 [[ -n "$TO_WORKSPACE" ]] && TARGET+=(--workspace "$TO_WORKSPACE")
 [[ -n "$TO_SURFACE" ]] && TARGET+=(--surface "$TO_SURFACE")
 
+# 入力欄にテキストが残っていないかを確認する。TUI の貼り付けデバウンスに Enter が
+# 吸われるとここで検出できる。read-screen が観測できない場合は配送失敗とみなさない
+# (Phase A-R の生存確認と同じ扱い)。
+# 戻り値: 0 = 配送済み (入力欄が空、または観測不能) / 1 = 入力欄に残ったまま
+verify_input_box() {
+  local probe attempt screen input_line
+  # probe は本文の 1 行目の先頭 30 文字から作る。grep -F はパターン中の改行を
+  # 「パターンの区切り」として扱うため、改行を含む文字列をそのまま渡すと複数パターンに
+  # 分解され、先頭・末尾・連続する改行からは全行にマッチする空パターンが生まれる。
+  # その結果、配送に成功していても必ず「入力欄が埋まっている」と誤検出してしまう。
+  probe="${PAYLOAD%%$'\n'*}"
+  probe="${probe:0:30}"
+  # 照合できる文字列が取れない (本文が改行で始まる) 場合は、read-screen が観測できない
+  # ときと同じ「観測不能」として配送済み扱いにする (fail-open)。無意味なパターンで
+  # ループしても、無駄な Enter を送りながら最後に必ず失敗になるだけのため。
+  [[ -n "$probe" ]] || return 0
+
+  attempt=0
+  while [[ $attempt -lt $RETRIES ]]; do
+    screen=$("$CMUX_BIN" read-screen ${TARGET[@]+"${TARGET[@]}"} 2>/dev/null || true)
+    [[ -n "$screen" ]] || return 0                     # 観測失敗 = 配送失敗ではない
+    # 画面から入力欄行 (❯/> 始まり) が 1 行も見つからない場合も、read-screen が空
+    # 出力だった場合と同じ「観測失敗」として配送済み扱いにする (fail-open)。ここで
+    # 失敗にして呼び出し元に再送させると、実際には届いていたメッセージを二重に
+    # 配送する事故につながるため、パース不能は失敗ではなく成功として扱う。
+    # 画面上で最後の ❯/> 行が実際の入力欄であり、それより上の ❯/> 行は Claude Code
+    # がトランスクリプトに表示し続ける送信済みプロンプトの反響なので除外する。
+    # tail -1 を外すと、配送が成功した直後の反響行が probe にマッチし、成功時に
+    # 必ず「入力欄が埋まっている」と誤検出してしまう。
+    input_line=$(printf '%s\n' "$screen" | grep -E '^[❯>]' | tail -1 || true)
+    printf '%s' "$input_line" | grep -qF -- "$probe" || return 0  # 入力欄は空(or未検出) = 送信済み扱い
+    attempt=$((attempt + 1))
+    sleep 1
+    "$CMUX_BIN" send-key ${TARGET[@]+"${TARGET[@]}"} return || return 1
+  done
+
+  echo "send-prompt: message still sitting in the input box after $RETRIES retries (label=$LABEL)" >&2
+  return 1
+}
+
 "$CMUX_BIN" send ${TARGET[@]+"${TARGET[@]}"} "$PAYLOAD" || exit 1
 sleep "$SETTLE"
 "$CMUX_BIN" send-key ${TARGET[@]+"${TARGET[@]}"} return || exit 1
 
-# 入力欄にテキストが残っていないかを確認する。TUI の貼り付けデバウンスに Enter が
-# 吸われるとここで検出できる。read-screen が観測できない場合は配送失敗とみなさない
-# (Phase A-R の生存確認と同じ扱い)。
-# probe は本文の 1 行目の先頭 30 文字から作る。grep -F はパターン中の改行を
-# 「パターンの区切り」として扱うため、改行を含む文字列をそのまま渡すと複数パターンに
-# 分解され、先頭・末尾・連続する改行からは全行にマッチする空パターンが生まれる。
-# その結果、配送に成功していても必ず「入力欄が埋まっている」と誤検出してしまう。
-probe="${PAYLOAD%%$'\n'*}"
-probe="${probe:0:30}"
-# 照合できる文字列が取れない (本文が改行で始まる) 場合は、read-screen が観測できない
-# ときと同じ「観測不能」として配送済み扱いにする (fail-open)。無意味なパターンで
-# ループしても、無駄な Enter を送りながら最後に必ず exit 1 になるだけのため。
-[[ -n "$probe" ]] || exit 0
+verify_input_box
+DELIVERY_RC=$?
 
-attempt=0
-while [[ $attempt -lt $RETRIES ]]; do
-  screen=$("$CMUX_BIN" read-screen ${TARGET[@]+"${TARGET[@]}"} 2>/dev/null || true)
-  [[ -n "$screen" ]] || exit 0                       # 観測失敗 = 配送失敗ではない
-  # 画面から入力欄行 (❯/> 始まり) が 1 行も見つからない場合も、read-screen が空
-  # 出力だった場合と同じ「観測失敗」として配送済み扱いにする (fail-open)。ここで
-  # exit 1 にして呼び出し元に再送させると、実際には届いていたメッセージを二重に
-  # 配送する事故につながるため、パース不能は失敗ではなく成功として扱う。
-  # 画面上で最後の ❯/> 行が実際の入力欄であり、それより上の ❯/> 行は Claude Code
-  # がトランスクリプトに表示し続ける送信済みプロンプトの反響なので除外する。
-  # tail -1 を外すと、配送が成功した直後の反響行が probe にマッチし、成功時に
-  # 必ず「入力欄が埋まっている」と誤検出してしまう。
-  input_line=$(printf '%s\n' "$screen" | grep -E '^[❯>]' | tail -1 || true)
-  printf '%s' "$input_line" | grep -qF -- "$probe" || exit 0   # 入力欄は空(or未検出) = 送信済み扱い
-  attempt=$((attempt + 1))
-  sleep 1
-  "$CMUX_BIN" send-key ${TARGET[@]+"${TARGET[@]}"} return || exit 1
-done
+# --- agmsg: inbox 記録専用 (wake 手段ではない) ---
+# agmsg の 3 引数が揃い、宛先の watcher が生きている (ready sentinel が存在する)
+# ときだけ、inbox へ全文を記録する。失敗しても配送失敗にはしない (終了コードは
+# タイプ入力経路の結果だけで決まる)。
+# **必ずタイプ入力の後に実行する**: send.sh は共有 SQLite DB へ書き込むため固まりうる
+# 一方、macOS には timeout / gtimeout が無く強制打ち切りができない。これを先に走らせて
+# 固まると、唯一の wake 手段であるタイプ入力に到達できず dispatch がデッドロックする。
+# 記録は単なるログで受信側にも重複を無視させているため、後回しにしても失うものは無い。
+if [[ -n "$TEAM" && -n "$TO_AGENT" && -n "$FROM_AGENT" ]] \
+   && [[ -f "$AGMSG_READY_DIR/ready.${TEAM}__${TO_AGENT}" ]]; then
+  bash "$AGMSG_SEND" "$TEAM" "$FROM_AGENT" "$TO_AGENT" "$TEXT" \
+    || echo "send-prompt: agmsg record failed (non-fatal, the typed delivery already happened)" >&2
+fi
 
-echo "send-prompt: message still sitting in the input box after $RETRIES retries (label=$LABEL)" >&2
-exit 1
+exit $DELIVERY_RC
