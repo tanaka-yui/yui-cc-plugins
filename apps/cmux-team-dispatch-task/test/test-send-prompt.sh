@@ -16,6 +16,8 @@
 #   SP11. 画面は非空だが入力欄行 (❯/>) が見つからない場合も観測失敗として成功扱いにする
 #   SP12. agmsg の send.sh が失敗してもタイプ入力は行われ、終了コードは 0 のまま
 #   SP13. 閾値超えの本文を sentinel のある宛先へ送ると、agmsg には全文が渡りタイプ入力側はポインタ 1 行になる
+#   SP14. 画面に送信済みプロンプトの反響 (probe と一致する ❯ 行) があっても、最後の ❯ 行 (入力欄) が
+#         空なら反響行は無視され、Enter は 1 回だけで成功する
 
 set -uo pipefail
 
@@ -61,6 +63,18 @@ make_stubs
 printf '%s\n' "some output" "❯ " "  status line" > "$TMP/screen-empty.txt"
 printf '%s\n' "some output" "❯ short message" "  status line" > "$TMP/screen-stuck.txt"
 printf '%s\n' "some output" "more output" "  status line" > "$TMP/screen-no-prompt.txt"
+
+# SP14 用: 実際の Claude Code TUI 画面を模した fixture。1 行目が送信済みプロンプトの
+# 反響 (probe と 30 文字以上一致)、中間が反響の折り返し行とアシスタント出力、
+# 最後の行が空の入力欄 (実際の ❯)。
+SP14_MSG="review-code: read the outbox file and follow every instruction in it now"
+printf '%s\n' \
+  "❯ ${SP14_MSG:0:30}" \
+  "  ${SP14_MSG:30}" \
+  "⏺ I'll read the instruction file first." \
+  "─────────────────────────" \
+  "❯ " \
+  > "$TMP/screen-echo-then-empty.txt"
 SCREEN_FIXTURE="$TMP/screen-empty.txt"
 
 # --- SP0: 使用法エラー ---
@@ -287,5 +301,20 @@ else
   echo "FAIL SP13: outfile=[$outfile] cmux.log=[$(cat "$TMP/cmux.log")] agmsg.log=[$(cat "$TMP/agmsg.log")]"; fail=1
 fi
 rm -f "$TMP/run/ready.myteam__reviewer"
+
+# --- SP14: 画面上に送信済みプロンプトの反響 (probe と一致する ❯ 行) があっても、
+#           最後の ❯ 行 (実際の入力欄) が空なら反響行は無視され、Enter は 1 回だけで成功する ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-echo-then-empty.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" \
+       --retries 3 --settle 0 -- "$SP14_MSG" >/dev/null 2>&1
+rc=$?
+n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $n -eq 1 ]]; then
+  echo "PASS SP14: 送信済みプロンプトの反響ではなく最後の ❯ 行だけを入力欄として検証する"
+else
+  echo "FAIL SP14: rc=$rc send-key回数=$n"; fail=1
+fi
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
 
 exit $fail

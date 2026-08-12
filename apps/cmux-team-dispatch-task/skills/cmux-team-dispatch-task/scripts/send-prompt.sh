@@ -107,7 +107,11 @@ while [[ $attempt -lt $RETRIES ]]; do
   # 出力だった場合と同じ「観測失敗」として配送済み扱いにする (fail-open)。ここで
   # exit 1 にして呼び出し元に再送させると、実際には届いていたメッセージを二重に
   # 配送する事故につながるため、パース不能は失敗ではなく成功として扱う。
-  input_line=$(printf '%s\n' "$screen" | grep -E '^[❯>]' || true)
+  # 画面上で最後の ❯/> 行が実際の入力欄であり、それより上の ❯/> 行は Claude Code
+  # がトランスクリプトに表示し続ける送信済みプロンプトの反響なので除外する。
+  # tail -1 を外すと、配送が成功した直後の反響行が probe にマッチし、成功時に
+  # 必ず「入力欄が埋まっている」と誤検出してしまう。
+  input_line=$(printf '%s\n' "$screen" | grep -E '^[❯>]' | tail -1 || true)
   printf '%s' "$input_line" | grep -qF -- "$probe" || exit 0   # 入力欄は空(or未検出) = 送信済み扱い
   attempt=$((attempt + 1))
   sleep 1
