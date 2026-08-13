@@ -125,8 +125,6 @@ Enter が効き、受信側の claude がファイルを読んで指示に従い
 
 **検査の穴**
 
-- `CS1` は `launch-workspace.sh` と `monitor-dispatch.sh` しか見ていない。`prewarm-panes.sh` /
-  `parallel-directive.sh` は対象外（現状どちらもコメント中の言及のみ）
 - `CS1` の検出は `cmux` リテラルまたは `$CMUX*` 変数に依存する。別名の変数（`"$BIN" send`）経由の
   残存は検出できない
 - `send-prompt-exempt:` マーカーによる除外は、スクリプトで 3 行・文書で 1 行の窓を持つ。
