@@ -100,7 +100,11 @@ verify_input_box() {
   [[ -n "$probe" ]] || return 0
 
   attempt=0
-  while [[ $attempt -lt $RETRIES ]]; do
+  # 検証は必ず 1 回以上行う (do-while)。--retries は「Enter を再送する上限回数」で
+  # あって「検証回数」ではないため、0 を渡されても最初の Enter の結果は必ず確認する。
+  # ループ条件を [[ $attempt -lt $RETRIES ]] にすると RETRIES=0 で本体に一度も入らず、
+  # 配送に成功していても末尾の return 1 に落ちてしまう。
+  while true; do
     screen=$("$CMUX_BIN" read-screen ${TARGET[@]+"${TARGET[@]}"} 2>/dev/null || true)
     [[ -n "$screen" ]] || return 0                     # 観測失敗 = 配送失敗ではない
     # 画面から入力欄行 (❯/> 始まり) が 1 行も見つからない場合も、read-screen が空
@@ -113,6 +117,7 @@ verify_input_box() {
     # 必ず「入力欄が埋まっている」と誤検出してしまう。
     input_line=$(printf '%s\n' "$screen" | grep -E '^[❯>]' | tail -1 || true)
     printf '%s' "$input_line" | grep -qF -- "$probe" || return 0  # 入力欄は空(or未検出) = 送信済み扱い
+    [[ $attempt -lt $RETRIES ]] || break
     attempt=$((attempt + 1))
     sleep 1
     "$CMUX_BIN" send-key ${TARGET[@]+"${TARGET[@]}"} return || return 1

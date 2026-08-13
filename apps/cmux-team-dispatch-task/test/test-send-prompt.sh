@@ -23,6 +23,12 @@
 #   SP17. 先頭が改行で照合対象が取れない本文は観測不能扱い (fail-open) にする
 #   SP18. agmsg の inbox 記録はタイプ入力と Enter の後に行う (send.sh が固まっても
 #         唯一の wake 手段であるタイプ入力を止めない)
+#   SP19. --retries 0 でも入力欄を 1 回検証し、空なら成功する
+#   SP20. --retries 0 で入力欄に残る場合は再送せず exit 1 する
+#   SP21. --retries 0 の read-screen 空出力は観測失敗として成功扱いにする
+#   SP22. --retries 0 のプロンプト行未検出は観測失敗として成功扱いにする
+#   SP23. --retries 1 は検証 2 回・Enter 2 回で詰まり続けたら exit 1 する
+#   SP24. --retries 1 は 2 回目の検証で解消したら余分な検証なしに成功する
 
 set -uo pipefail
 
@@ -60,6 +66,7 @@ STUB
 run_sp() {
   CMUX_LOG="$TMP/cmux.log" AGMSG_LOG="$TMP/agmsg.log" ORDER_LOG="$TMP/order.log" \
   SCREEN_FIXTURE="${SCREEN_FIXTURE:-}" \
+  TMP="$TMP" SCREEN_COUNT="${SCREEN_COUNT:-}" \
   CMUX_BIN="$TMP/bin/cmux" AGMSG_SEND="$TMP/bin/send.sh" AGMSG_READY_DIR="$TMP/run" \
   bash "$BIN" "$@"
 }
@@ -391,5 +398,111 @@ else
   echo "FAIL SP18: order.log=[$(tr '\n' '|' < "$TMP/order.log")]"; fail=1
 fi
 rm -f "$TMP/run/ready.myteam__reviewer"
+
+# --- SP19: --retries 0 でも入力欄を 1 回検証する ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" \
+       --retries 0 --settle 0 -- "short message"
+rc=$?
+send_n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+read_n=$(grep -c 'read-screen' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $send_n -eq 1 && $read_n -eq 1 ]]; then
+  echo "PASS SP19: --retries 0 でも空の入力欄を 1 回検証して成功する"
+else
+  echo "FAIL SP19: rc=$rc send-key回数=$send_n read-screen回数=$read_n"; fail=1
+fi
+
+# --- SP20: --retries 0 では入力欄に残っても再送しない ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-stuck.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" \
+       --retries 0 --settle 0 -- "short message" >/dev/null 2>&1
+rc=$?
+send_n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+read_n=$(grep -c 'read-screen' "$TMP/cmux.log")
+if [[ $rc -eq 1 && $send_n -eq 1 && $read_n -eq 1 ]]; then
+  echo "PASS SP20: --retries 0 では入力欄に残っても再送せず exit 1 する"
+else
+  echo "FAIL SP20: rc=$rc send-key回数=$send_n read-screen回数=$read_n"; fail=1
+fi
+
+# --- SP21: --retries 0 の read-screen 空出力は fail-open ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-missing.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" \
+       --retries 0 --settle 0 -- "short message"
+rc=$?
+send_n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+read_n=$(grep -c 'read-screen' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $send_n -eq 1 && $read_n -eq 1 ]]; then
+  echo "PASS SP21: --retries 0 の read-screen 空出力は成功扱いにする"
+else
+  echo "FAIL SP21: rc=$rc send-key回数=$send_n read-screen回数=$read_n"; fail=1
+fi
+
+# --- SP22: --retries 0 のプロンプト行未検出は fail-open ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-no-prompt.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" \
+       --retries 0 --settle 0 -- "short message"
+rc=$?
+send_n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+read_n=$(grep -c 'read-screen' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $send_n -eq 1 && $read_n -eq 1 ]]; then
+  echo "PASS SP22: --retries 0 のプロンプト行未検出は成功扱いにする"
+else
+  echo "FAIL SP22: rc=$rc send-key回数=$send_n read-screen回数=$read_n"; fail=1
+fi
+
+# --- SP23: --retries 1 は検証 2 回・Enter 2 回で詰まり続けたら失敗する ---
+reset_logs
+SCREEN_FIXTURE="$TMP/screen-stuck.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" \
+       --retries 1 --settle 0 -- "short message" >/dev/null 2>&1
+rc=$?
+send_n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+read_n=$(grep -c 'read-screen' "$TMP/cmux.log")
+if [[ $rc -eq 1 && $send_n -eq 2 && $read_n -eq 2 ]]; then
+  echo "PASS SP23: --retries 1 は検証 2 回・Enter 2 回で exit 1 する"
+else
+  echo "FAIL SP23: rc=$rc send-key回数=$send_n read-screen回数=$read_n"; fail=1
+fi
+
+# --- SP24: 最後の再送後の検証で入力欄が解消したら成功する ---
+reset_logs
+SCREEN_COUNT="$TMP/screen-count"
+: > "$SCREEN_COUNT"
+cat > "$TMP/bin/cmux" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "cmux $*" >> "$CMUX_LOG"
+printf '%s\n' "cmux $*" >> "$ORDER_LOG"
+if [[ "$1" == "read-screen" ]]; then
+  count=0
+  [[ -s "$SCREEN_COUNT" ]] && count=$(cat "$SCREEN_COUNT")
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$SCREEN_COUNT"
+  if [[ $count -eq 1 ]]; then
+    cat "$TMP/screen-stuck.txt"
+  else
+    cat "$TMP/screen-empty.txt"
+  fi
+fi
+exit 0
+STUB
+chmod +x "$TMP/bin/cmux"
+SCREEN_FIXTURE="$TMP/screen-stuck.txt"
+run_sp --to-surface surface:2 --label notify --outbox-dir "$TMP/outbox" \
+       --retries 1 --settle 0 -- "short message"
+rc=$?
+send_n=$(grep -c 'cmux send-key' "$TMP/cmux.log")
+read_n=$(grep -c 'read-screen' "$TMP/cmux.log")
+if [[ $rc -eq 0 && $send_n -eq 2 && $read_n -eq 2 ]]; then
+  echo "PASS SP24: 最後の再送後の検証で解消したら成功する"
+else
+  echo "FAIL SP24: rc=$rc send-key回数=$send_n read-screen回数=$read_n"; fail=1
+fi
+make_stubs
+SCREEN_FIXTURE="$TMP/screen-empty.txt"
 
 exit $fail
