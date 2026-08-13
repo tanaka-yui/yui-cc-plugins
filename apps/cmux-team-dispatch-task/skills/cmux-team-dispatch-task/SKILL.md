@@ -2159,15 +2159,27 @@ for slug in <task-slugs>; do
   workspace_id=$(jq -r '.workspace_id // empty' "$status_file")
   surface_id=$(jq -r '.surface_id // empty' "$status_file")
 
+  # status.json is not a reliable source for these ids. The child's own
+  # done/error write is a 3-field `echo` that CLOBBERS workspace_id/surface_id,
+  # and the runner wrapper only restores them on session exit — which never
+  # happens when a codex TUI ignores its exit instruction and stays idle.
+  # Fall back to the workspace name, which prewarm-panes.sh sets to the slug.
+  if [[ -z "$workspace_id" ]]; then
+    workspace_id=$(cmux workspace list 2>/dev/null \
+      | awk -v s="[$slug]" '$0 ~ s {print $1; exit}')
+  fi
+
   # 1) Close the task workspace (the child process has already exited by status=done).
   if [[ "$close_all" == "true" && -n "$workspace_id" ]]; then
     cmux close-workspace --workspace "$workspace_id"
   fi
 
-  # Close any remaining pre-warm standby panes (all standbys are still around after Phase B because the layout always keeps 4 panes)
-  if [[ "$close_all" == "true" && -f ".dispatch/$slug/prewarm.json" ]]; then
+  # Close any remaining pre-warm standby panes (all standbys are still around after Phase B because the layout always keeps 4 panes).
+  # --workspace is REQUIRED: without it a `surface:N` ref resolves against the
+  # PARENT's $CMUX_WORKSPACE_ID and always fails with "Surface ref not found".
+  if [[ "$close_all" == "true" && -n "$workspace_id" && -f ".dispatch/$slug/prewarm.json" ]]; then
     for sf in $(jq -r '.[].surface_id' ".dispatch/$slug/prewarm.json" 2>/dev/null); do
-      cmux close-surface --surface "$sf" 2>/dev/null || true
+      cmux close-surface --workspace "$workspace_id" --surface "$sf" 2>/dev/null || true
     done
   fi
 

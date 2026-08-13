@@ -981,15 +981,27 @@ for slug in <task-slugs>; do
   workspace_id=$(jq -r '.workspace_id // empty' "$status_file")
   surface_id=$(jq -r '.surface_id // empty' "$status_file")
 
+  # status.json はこの id の信頼できる情報源ではない。子セッション自身が書く
+  # done/error は 3 フィールドの echo なので workspace_id/surface_id を消す。
+  # runner wrapper はセッション終了時にしか書き戻さず、codex TUI が終了指示を
+  # 無視して idle 残留すると終了自体が起きない。workspace 名（prewarm-panes.sh が
+  # slug を設定する）から引き直す。
+  if [[ -z "$workspace_id" ]]; then
+    workspace_id=$(cmux workspace list 2>/dev/null \
+      | awk -v s="[$slug]" '$0 ~ s {print $1; exit}')
+  fi
+
   # 1) タスクの workspace を先に閉じる
   if [[ "$close_all" == "true" && -n "$workspace_id" ]]; then
     cmux close-workspace --workspace "$workspace_id"
   fi
 
   # pre-warm standby ペインが残っていれば全て閉じる（常 4 ペイン維持のため Phase B 後も全 standby が残る）
-  if [[ "$close_all" == "true" && -f ".dispatch/$slug/prewarm.json" ]]; then
+  # --workspace は必須。付けないと surface ref が親の $CMUX_WORKSPACE_ID に対して
+  # 解決され、必ず "Surface ref not found" で失敗する。
+  if [[ "$close_all" == "true" && -n "$workspace_id" && -f ".dispatch/$slug/prewarm.json" ]]; then
     for sf in $(jq -r '.[].surface_id' ".dispatch/$slug/prewarm.json" 2>/dev/null); do
-      cmux close-surface --surface "$sf" 2>/dev/null || true
+      cmux close-surface --workspace "$workspace_id" --surface "$sf" 2>/dev/null || true
     done
   fi
 
