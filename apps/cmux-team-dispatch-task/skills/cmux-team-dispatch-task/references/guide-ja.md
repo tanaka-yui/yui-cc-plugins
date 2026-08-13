@@ -392,11 +392,12 @@ Phase A 完了後、コード変更を始める前に task prompt が解決し�
    `.assigned-<task-slug>-codex`（codex 選択時） — 完了処理（status.json done/error 遷移 +
    `<slug>-sonnet-done` / `<slug>-codex-done` シグナル + 親通知）の所有権を standby wrapper に渡す
 3. 実行指示（`Read and execute the plan at <PLAN_FILE_PATH>. ...` + exit 指示。
-   exit 指示は engine で分ける — **sonnet（claude）は「run /exit」、codex は「end this codex
-   session immediately … Do NOT run /exit」**。codex は `/exit` では終了せず、作業完了後も TUI が
-   idle のまま残ると runner wrapper（codex プロセスで block 中）が `write_status "done"` /
-   signal 発火 / 親通知に到達できず**完了通知が届かなくなる**ため、codex には必ず「セッション自体を
-   終了せよ」と伝える（spawn 経路で `launch-workspace.sh` が焼き込む EXIT_INSTRUCTION と同じ）。
+   完了報告は `report-status.sh <status-dir> done <要約>` の呼び出しが担い、セッション終了には
+   依存しない。exit 指示は engine で分ける — **claude は「run /exit」、codex は「停止して idle の
+   まま待て」**。codex には自セッションを終わらせる手段が無い（`/exit` は効かず quit/shutdown
+   サブコマンドも無い）ため、終了を前提にすると status が `executing` のまま固まる。完了報告を
+   子の責務に切り出したことで、セッションが終わるかどうかと完了検知が分離されている
+   （spawn 経路で `launch-workspace.sh` が焼き込む COMPLETION_INSTRUCTION と同じ）。
    **Phase B-R 有効時は「PR 作成前にコードレビュー approve を得る」プロトコル入りの拡張版**）を
    `send-prompt.sh` の 1 回呼び出しで送信する:
 
@@ -1522,7 +1523,7 @@ engine 別の base `REQUEST_TEXT` を**上書きする**。そのため拡張版
 
 | 要素 | 内容 |
 |------|------|
-| engine 別 exit 指示 | claude は `run /exit`、codex は `END THE CODEX SESSION ITSELF`（`/exit` は codex では効かない）。codex が TUI に idle 残留すると runner wrapper が完了処理へ到達しない |
+| engine 別 exit 指示 | 完了報告は `report-status.sh` の呼び出しが担い、セッション終了には依存しない。exit 指示は claude が `run /exit`、codex は「停止して idle のまま待て」（codex には自セッションを終わらせる手段が無い）|
 | 完了通知 | `send-prompt.sh --to-workspace <parent> --agmsg-team <team> --agmsg-to parent --agmsg-from <agent> --label dispatch-notify -- '<msg>'` の 1 回呼び出し。タイプ入力は idle な親を起こす唯一の手段なので省略不可（inbox 記録は watcher 生存時に追加される単なるログ） |
 
 standby ペインはタイプ入力で届いた `REQUEST_TEXT` しか読んでいない（`.cmux-team-dispatch-task-prompt.md` は

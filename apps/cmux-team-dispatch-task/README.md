@@ -278,7 +278,7 @@ approval prompt を防ぐため bypass を使います。一方で review ペイ
 
 - Child セッションが `launch-workspace.sh --mode execute --plan-file <path> [--model <X>] [--skip-permissions]` を呼び、新しい workspace で実装を開始
 - 新 surface (孫セッション) は runner script でラップされ、完了時に `status.json` を `done`/`error` に遷移させ、親に `[dispatch] task ... finished` を送信
-- 孫の inner prompt 末尾には自動で「PR 作成後 `/exit` でセッションを閉じる」指示が付与される。これが無いと孫 Claude/Codex が PR 作成後も TUI で idle 待機してしまい、runner wrapper の完了処理に到達できず status.json が `executing` 固定になる
+- 孫の inner prompt 末尾には自動で「停止する前に `scripts/report-status.sh <status-dir> done <要約>` を実行せよ」という完了報告の指示が付与される。status.json を終端へ動かすのはこの呼び出しであってセッション終了ではないため、完了検知が TUI の閉鎖に依存しない。続く exit 指示は engine 別で、claude は `/exit`、**codex は「停止して idle のまま待て」**（codex には自セッションを終わらせる手段が無く、`/exit` は効かず quit/shutdown サブコマンドも無い）。codex ペインは最終クリーンアップで親が閉じるまで開いたままで正常
 - Runner script ファイル名は workspace 名を含む (`.cmux-team-dispatch-task-run-<workspace-name>.sh`)。Child と Phase B 孫が同じ worktree を共有しても runner ファイル同士が衝突しない
 - Child は spawn 完了後 `<STATUS_DIR>/.deferred` を作成して exit する (Child の runner wrapper は `--defer-status` で起動されており、`.deferred` を検知すると status 上書きをスキップして孫の通知を握り潰さない)。**Phase B-R 有効時は exit せず**、コードレビュアーとして idle 待機し、approve を書いた後に exit する
 - sonnet では Claude Code の auto mode (`bypassPermissions`) が効かないため、`--dangerously-skip-permissions` を付けて permission prompt によるハングを防いでいる

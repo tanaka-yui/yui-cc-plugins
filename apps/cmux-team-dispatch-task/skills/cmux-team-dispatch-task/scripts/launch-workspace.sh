@@ -609,14 +609,24 @@ if [[ $NO_PARALLEL -eq 0 ]] \
 fi
 
 # execute モードでは計画ファイルを直接 inner prompt に埋め込む。
-# あわせて「完了後に必ずセッションを exit せよ」という指示を埋め込む。
-# これを入れないと grandchild Claude/Codex が PR 作成後も TUI で idle 待機してしまい、
-# runner wrapper の write_status "done" / signal 発火 / 親通知が永遠に発火しない。
+# あわせて「成功時に必ず完了報告を出せ」という指示を埋め込む。
+# これが無いと status.json の終端遷移が runner wrapper の exit 経路だけに依存する。
+# claude は /exit で終了できるが codex には自セッションを終わらせる手段が無い
+# (/exit は効かず quit/shutdown サブコマンドも無い) ため、codex は作業後に idle
+# 残留し、status が executing のまま固まって親に通知が届かない。子自身に
+# report-status.sh を叩かせることで、セッションが終わるかどうかと完了報告を切り離す。
+# 文中にクォート文字を使わないこと (inner prompt の '...' と zsh -ic の "..." を壊さないため)
 if [[ "$MODE" == "execute" ]]; then
+  COMPLETION_INSTRUCTION=""
+  if [[ -n "$STATUS_DIR" ]]; then
+    COMPLETION_INSTRUCTION="MANDATORY COMPLETION REPORT: after all work is committed and before you stop, run: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done followed by a one line summary of what you changed. That command is the only thing that tells the parent you finished, so do not skip it. "
+  fi
   if [[ "$RUNNER_ENGINE" == "codex" ]]; then
-    EXIT_INSTRUCTION="After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately so the wrapper script can finalize completion notification. Do not leave the session idle."
+    # codex にセッション終了を求めない。実行手段が無い要求はモデルが満たせず、
+    # 満たせない指示を残すと「終了したはず」という誤った前提が設計に残る。
+    EXIT_INSTRUCTION="After the completion report above, stop and stay idle. Do not try to terminate this session yourself; the parent closes this pane during its final cleanup."
   else
-    EXIT_INSTRUCTION="After all work is committed/pushed and the PR is created (or all changes are merged per the plan), run /exit to close this Claude session so the wrapper script can finalize completion notification. Do not leave the session idle."
+    EXIT_INSTRUCTION="After the completion report above, run /exit to close this Claude session so the wrapper script can also finalize. Do not leave the session idle."
   fi
   # Phase B-R: --review-config 指定時は PR 作成前のコードレビュープロトコルを inner prompt に注入する。
   # 文中にクォート文字を使わないこと (inner prompt の '...' と zsh -ic の "..." を壊さないため)
@@ -681,7 +691,7 @@ if [[ "$MODE" == "execute" ]]; then
     fi
     ABORT_INSTRUCTION="ABORT PROTOCOL, which overrides everything above: if at any point you decide to stop without completing the work, whether from a blocking error, a design contradiction, or simply giving up, you must not stop silently. Writing the status file is not a notification because only the parent polls it. Before you stop: ${ABORT_REVIEW_STEP}write $STATUS_DIR/status.json with status set to error and the reason as the message. ${ABORT_PARENT_STEP}Finally end this session exactly as described below for the successful case. "
   fi
-  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${ABORT_INSTRUCTION}${PARALLEL_INSTRUCTION:+$PARALLEL_INSTRUCTION }${EXIT_INSTRUCTION}"
+  PROMPT_TEXT="Read and execute the plan at $PLAN_FILE. ${REVIEW_INSTRUCTION}${ABORT_INSTRUCTION}${PARALLEL_INSTRUCTION:+$PARALLEL_INSTRUCTION }${COMPLETION_INSTRUCTION}${EXIT_INSTRUCTION}"
 else
   PROMPT_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md${PARALLEL_INSTRUCTION:+ $PARALLEL_INSTRUCTION}"
 fi

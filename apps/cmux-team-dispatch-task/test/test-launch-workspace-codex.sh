@@ -127,7 +127,12 @@ assert_contains "$review_runner" '--dangerously-bypass-hook-trust' 'T8 codex + r
 # act on /exit), claude runs /exit. If the codex execute path stopped baking the
 # codex-appropriate exit instruction, the codex TUI would stay idle after the work
 # and the runner wrapper would never fire the completion notification.
-assert_contains "$execute_runner" 'end this codex session' 'T5b codex execute bakes codex session-end exit instruction'
+# codex には自セッションを終わらせる手段が無い (/exit は効かず quit/shutdown も無い) ため、
+# 旧 T5b が固定していた「end this codex session」は実行不能な要求だった。完了検知は
+# report-status.sh の呼び出しに移し、codex には停止して idle のまま待つよう伝える。
+assert_contains "$execute_runner" 'report-status.sh' 'T5b codex execute bakes the completion report call'
+assert_contains "$execute_runner" 'stop and stay idle' 'T5b codex execute tells codex to stay idle instead of self-terminating'
+assert_not_contains "$execute_runner" 'end this codex session' 'T5b codex execute drops the unactionable self-termination demand'
 assert_not_contains "$execute_runner" 'run /exit' 'T5c codex execute does not tell codex to run /exit'
 
 for mode in superpowers plan execute standby review; do
@@ -297,7 +302,9 @@ assert_not_contains "$review_runner" 'PARALLEL EXECUTION, mandatory' 'PL3 review
 
 # --- PL4: execute では EXIT_INSTRUCTION がディレクティブより後ろに来る ---
 # (exit 指示の後ろに別の指示が続くと優先順位が曖昧になる)
-pl4_line=$(grep -o 'PARALLEL EXECUTION, mandatory.*end this codex session' "$execute_runner" | head -1)
+# アンカーは codex の新しい exit 文言。旧文言 (end this codex session) は実行不能な
+# 要求だったため削除済み。grep 失敗で set -e が走らないよう || true で受ける。
+pl4_line=$(grep -o 'PARALLEL EXECUTION, mandatory.*stop and stay idle' "$execute_runner" | head -1 || true)
 if [[ -n "$pl4_line" ]]; then
   echo 'PASS: PL4 exit 指示がディレクティブより後ろにある'
 else
