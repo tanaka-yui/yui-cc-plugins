@@ -422,6 +422,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     REVIEW_PANE_NAME="$SLUG-opus"
     REVIEW_RUNNER_FLAGS=(--runner "$REVIEWER_RUNNER" --model "$CLAUDE_REVIEW_MODEL" --skip-permissions)
     # opus 1m 委譲時にこのペインが status.json / 親通知の所有者になるため、
+    # send-prompt-exempt: TUI へのメッセージ配送ではなく、send-prompt.sh 経由の配送を説明する記述。
     # 完了通知の dual-send (cmux send + agmsg inbox 記録) 用に agmsg 配線を渡す
     if [[ -n "$AGMSG_TEAM" ]]; then
       AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-opus")

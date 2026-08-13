@@ -3,6 +3,7 @@ set -euo pipefail
 
 # parallel-directive.sh — 子セッションへ渡す並列実行ディレクティブを 1 行で出力する。
 #
+# send-prompt-exempt: TUI へのメッセージ配送ではなく、send-prompt.sh 経由の配送を説明する記述。
 # launch-workspace.sh が plan / superpowers / execute の起動プロンプトへ連結するほか、
 # 親セッションが cmux send で送る実行指示・レビュー依頼にも同じ文面を含めさせる
 # (SKILL.md 参照)。文面が各所へ散らないための単一情報源。

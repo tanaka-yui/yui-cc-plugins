@@ -2,8 +2,9 @@
 # 配送経路が send-prompt.sh に一本化されていることの静的検査。
 #
 # 守っている不変条件:
-#   CS1. launch-workspace.sh / monitor-dispatch.sh に cmux send / cmux send-key の
-#        直書きが残らない (シェルコマンドの打鍵だけは免除マーカーで明示的に除外する)
+#   CS1. launch-workspace.sh / monitor-dispatch.sh / prewarm-panes.sh /
+#        parallel-directive.sh に cmux send / cmux send-key の直書きが残らない
+#        (シェルコマンドの打鍵だけは免除マーカーで明示的に除外する)
 #   CS2. 両スクリプトが send-prompt.sh を呼んでいる
 #   CS3. SKILL.md と references 配下の全 .md の指示文に cmux send / cmux send-key の
 #        直書きが残らない (訳や無人ループ用ブロックが原文から遅れて旧文面を残す事故を防ぐ)
@@ -13,6 +14,7 @@
 #   使うため、その出現の直前 3 行以内（ドキュメントは同一行または直前行）に
 #   `send-prompt-exempt:` を含むコメントを置いたときだけ検査対象から外す。
 #   行番号でのハードコードを避け、新しい出現は必ずレビューを通す形にしている。
+#   ただし CS1 はコメント行を無条件で除外するため、コメント中のマーカーは現状 inert な意図の記録である。
 
 set -uo pipefail
 
@@ -29,7 +31,15 @@ DIRECT_SEND_RE='(\$\{?CMUX[A-Z_]*\}?"?|\bcmux) (send|send-key)([^-a-zA-Z]|$)'
 # --- CS1: スクリプトに cmux send / send-key の直書きが残らない ---
 # send-prompt.sh 自身は当然 cmux を直接叩くので対象外。
 cs1=1
-for f in launch-workspace.sh monitor-dispatch.sh; do
+for f in launch-workspace.sh monitor-dispatch.sh prewarm-panes.sh parallel-directive.sh; do
+  if [[ ! -f "$SCRIPTS/$f" || ! -r "$SCRIPTS/$f" ]]; then
+    echo "  検査対象が読めない: $f"; cs1=0; continue
+  fi
+  matches=$(grep -nE "$DIRECT_SEND_RE" "$SCRIPTS/$f")
+  rc=$?
+  if [[ $rc -ge 2 ]]; then
+    echo "  検査対象の grep が失敗した: $f (status $rc)"; cs1=0; continue
+  fi
   while IFS=: read -r line text; do
     [[ -n "$line" ]] || continue
     # コメント行は指示文ではないので対象外
@@ -40,7 +50,7 @@ for f in launch-workspace.sh monitor-dispatch.sh; do
     fi
     echo "  cmux send / send-key の直書きが残っている: $f:$line"
     cs1=0
-  done < <(grep -nE "$DIRECT_SEND_RE" "$SCRIPTS/$f" || true)
+  done <<<"$matches"
 done
 if [[ $cs1 -eq 1 ]]; then
   echo "PASS CS1: スクリプトに cmux send / send-key の直書きが残らない"
