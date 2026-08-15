@@ -599,7 +599,9 @@ PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
 
 レイアウトが `workspace` かつ `PREWARM` が `true` のときは、解決済み role のペインだけを起動する。
 `design` は常に1件、`review` は有効時だけ、`executors` は `exec_choice` が固定なら選択済みの1件だけ、
-未設定/`"ask"` なら既存候補を起動する。固定 review は design と同じ engine でもよい。
+未設定/`"ask"` なら提示する互換候補をすべて起動する。Codex design では
+`CLAUDE_EXEC_RUNNER` を使う専用 Opus/Sonnet executor と、`CODEX_EXEC_RUNNER` を使う Codex executor
+をそれぞれ作る。固定 review は design と同じ engine でもよい。
 
 ペイン作成はすべて `prewarm-panes.sh` に委譲し、手動で作成しないこと。
 
@@ -613,7 +615,8 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --cwd "<repo-root>/.worktrees/<task-slug>" \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  [--codex-runner "<resolved-codex-candidate>"] \
+  [--claude-runner "$CLAUDE_EXEC_RUNNER"] \
+  [--codex-runner "$CODEX_EXEC_RUNNER"] \
   [--exec-runner "$EXEC_RUNNER"] \
   --design-runner "$DESIGN_RUNNER" \
   [--reviewer-runner "$REVIEW_RUNNER"] \
@@ -639,7 +642,8 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --cwd "<repo-root>/.worktrees/<task-slug>" \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  [--codex-runner "<resolved-codex-candidate>"] \
+  [--claude-runner "$CLAUDE_EXEC_RUNNER"] \
+  [--codex-runner "$CODEX_EXEC_RUNNER"] \
   [--exec-runner "$EXEC_RUNNER"] \
   --design-runner "$DESIGN_RUNNER" \
   [--reviewer-runner "$REVIEW_RUNNER"] \
@@ -651,13 +655,16 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
 
 **タスクごとのフラグ選択**: `--design-runner "$DESIGN_RUNNER"` と
 `--exec-choice "$EXEC_CHOICE"` は常に渡す。固定 choice は opus/sonnet/codex のいずれでも
-`--exec-runner "$EXEC_RUNNER"` を渡す。`--codex-runner` は unset/ask の候補集合と旧 caller の
-互換入力に限る。review 有効なら `--reviewer-runner "$REVIEW_RUNNER"` を渡す。
+`--exec-runner "$EXEC_RUNNER"` を渡す。unset/ask は resolver が選んだ互換候補を
+`--claude-runner "$CLAUDE_EXEC_RUNNER"` / `--codex-runner "$CODEX_EXEC_RUNNER"` で渡す。
+Codex design の Opus/Sonnet executor は review runner から推測しない。review 有効なら
+`--reviewer-runner "$REVIEW_RUNNER"` を渡す。
 固定 `exec_choice` の runner が利用不能なら、その config レイヤーだけを無効化して project → global →
 interactive のフォールバックを続ける。
 
-review pane の起動・出力解析が失敗した場合、`prewarm-panes.sh` は警告して `review` key を省略し、
-既に起動した design/executor を `prewarm.json` に保持して Phase B を続行する。
+review pane の起動・出力解析が失敗した場合、`prewarm-panes.sh` は join 済み review member を即 leave
+してから警告し、`review` key を省略して既に起動した design/executor を `prewarm.json` に保持したまま
+Phase B を続行する。
 
 通常のタスクプロンプト起動がこのモードでは走らないため、`prewarm-panes.sh` 自身がペイン作成
 直後に初期 `"launched"` status.json（`workspace_id` / `surface_id` 込み）を書き出す。これにより
@@ -1368,7 +1375,7 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 ## 子セッション runner 設定（runners.json）
 
-親セッションは常に親の `claude` を使い、子セッションは `runners.json` で定義されたいずれかの runtime（`claude` の別アカウント、`codex` バイナリ、`.zshrc` の zsh 関数など）で起動できます。SKILL.md の Step 1f で配置・選択されます。
+親セッションは起動元の runtime（Claude Code または Codex）を使い、子セッションは `runners.json` で定義されたいずれかの runtime（`claude` の別アカウント、`codex` バイナリ、`.zshrc` の zsh 関数など）で起動できます。SKILL.md の Step 1f で配置・選択されます。
 
 ### 配置場所
 
@@ -1441,7 +1448,7 @@ codex engine は影響を受けない。`.claude/settings.local.json` を読ま�
 `--dangerously-bypass-approvals-and-sandbox`（レビューペインは
 `--sandbox workspace-write` + `-c approval_policy='never'`）で既に prompt が出ない。
 
-**execute モードの使い所**: Phase B (実装フェーズ) で sonnet / codex などの別モデルに切り替える場面。Child セッションが `launch-workspace.sh --mode execute --plan-file <path> [--model <X>] [--skip-permissions]` を呼び出して別 surface を spawn し、自分は `<STATUS_DIR>/.deferred` を作成して exit する。execute モードでは `.cmux-team-dispatch-task-prompt.md` を書き換えず、Phase A のものを温存する。codex engine では `--model` 未指定時に runner の `exec_model` がフォールバック適用される（execute / standby のみ。review は常に `review_model` を明示）。
+**execute モードの使い所**: Phase B (実装フェーズ) で sonnet / codex などの別モデルに切り替える場面。Child セッションが `launch-workspace.sh --mode execute --runner "$EXEC_RUNNER" --plan-file <path> [--model <X>] [--skip-permissions]` を呼び出して別 surface を spawn し、自分は `<STATUS_DIR>/.deferred` を作成して exit する。execute モードでは `.cmux-team-dispatch-task-prompt.md` を書き換えず、Phase A のものを温存する。codex engine では `--model` 未指定時に runner の `exec_model` がフォールバック適用される（execute / standby のみ。review は常に `review_model` を明示）。
 
 
 ### 初回セットアップ
@@ -1483,9 +1490,9 @@ codex engine は影響を受けない。`.claude/settings.local.json` を読ま�
 子セッション内で実装フェーズ前に行う Phase B モデル選択（`opus 1m` / `sonnet` / 条件付き `codex`）とは**レイヤーが異なる**:
 
 - **Step 1f (本セクション)**: 子セッションを *どの runtime で起動するか* を親が決める（起動時）
-- **Phase B**: 起動済みの子 claude セッションが *どのモデルで実装フェーズに入るか* を決める（起動後）
+- **Phase B**: 起動済みの design セッションが *どの解決済み execution role へ実装を委譲するか* を決める（起動後）
 
-なお Phase B の `codex` 選択肢は `runners.json` に `engine: codex` runner が登録されている場合にのみ表示される。`engine: codex` で子を起動した場合、Phase B の codex 選択肢は意味を失います（既に codex で動いているため）。
+なお Phase B の `codex` 選択肢は `runners.json` に `engine: codex` runner が登録されている場合にのみ表示される。design が Codex の場合も、Phase B は専用 exec role へ委譲し、`exec_model` / `exec_effort` を design role と独立して適用するため、この選択肢には意味がある。
 
 ## ステータス一覧
 

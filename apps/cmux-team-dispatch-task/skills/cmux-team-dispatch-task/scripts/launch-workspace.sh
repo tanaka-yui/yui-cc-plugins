@@ -6,7 +6,7 @@
 #
 # Options:
 #   --cwd <path>                       Working directory (skips worktree creation)
-#   --mode plan|superpowers|execute|standby|review  Claude launch mode (default: plan).
+#   --mode plan|superpowers|execute|standby|review  Runner launch mode (default: plan).
 #                                      execute = Phase B 実行モード。計画ファイルを
 #                                      inner prompt として渡し、.cmux-team-dispatch-task-prompt.md
 #                                      を書き込まない。--plan-file が必須
@@ -20,6 +20,10 @@
 #                                      同一 (.assigned-<name> が無い限り wrapper は status.json を
 #                                      書かない) だが、レビューペインは .assigned を一切使わない
 #                                      前提のモード。codex engine では --model を反映する
+#   --role plan|review|exec            Model/effort role. Default is derived from mode:
+#                                      plan/superpowers=plan, review=review,
+#                                      execute/standby=exec. A standby design pane passes
+#                                      --role plan; conflicting non-standby overrides fail.
 #   --standby-split-direction right|down  standby/review split 配置の分割方向 (default: down)
 #   --standby-in <workspace-id>        standby ペインを追加する既存 workspace (split 配置時必須)
 #   --standby-split-from <surface-id>  縦分割の分割元 surface (split 配置時必須)
@@ -29,8 +33,8 @@
 #   --model <model>                    Model flag passed as --model <X>
 #                                      (例: sonnet / gpt-5.6-sol)。claude engine は
 #                                      execute/standby、codex engine は execute/standby/review で反映。
-#                                      codex engine では未指定時に runner の exec_model に
-#                                      フォールバックする (execute/standby のみ)
+#                                      codex engine では未指定時に role 対応の plan_model /
+#                                      review_model / exec_model にフォールバックする
 #   --effort <value>                   codex engine の reasoning effort
 #                                      (minimal|low|medium|high|xhigh)。
 #                                      -c model_reasoning_effort='<value>' として注入される。
@@ -74,8 +78,8 @@
 #   --parent-notify-surface <sf-id>    Surface to notify on completion
 #   --runner <name>                    Runner name to look up in
 #                                      ~/.claude/cmux-team-dispatch-task/runners.json.
-#                                      Resolves to {command, engine, exec_model} which control
-#                                      the launch command for the child session.
+#                                      Resolves command/engine and role-specific plan/review/exec
+#                                      model/effort fields for the child session.
 #                                      The composed command is always wrapped in `zsh -ic "..."`
 #                                      so functions and env vars from ~/.zshrc are loaded.
 #                                      Default: hardcoded {claude, engine=claude}.

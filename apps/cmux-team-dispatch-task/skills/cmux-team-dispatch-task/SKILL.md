@@ -634,12 +634,19 @@ fi
 EXEC_RUNNER=""
 EXEC_ENGINE=""
 EXEC_MODEL=""
+CLAUDE_EXEC_RUNNER=""
+CODEX_EXEC_RUNNER=""
 if [[ -n "$EXEC_CHOICE" && "$EXEC_CHOICE" != "ask" ]]; then
   EXEC_RUNNER=$(resolve_exec_runner "$EXEC_CHOICE")
   EXEC_ENGINE=$(jq -r --arg n "$EXEC_RUNNER" '.runners[] | select(.name == $n) | .engine' "$RUNNERS_JSON")
   EXEC_MODEL=$(jq -r --arg n "$EXEC_RUNNER" --arg c "$EXEC_CHOICE" \
     '.runners[] | select(.name == $n) | if .engine == "codex" then .exec_model // empty elif $c == "opus 1m" then "opus[1m]" else "sonnet" end' \
     "$RUNNERS_JSON")
+else
+  # ask/unset advertises every available family. Resolve its candidates now so
+  # prewarm never falls through to the launcher's default command.
+  CLAUDE_EXEC_RUNNER=$(resolve_exec_runner sonnet 2>/dev/null || true)
+  CODEX_EXEC_RUNNER=$(resolve_exec_runner codex 2>/dev/null || true)
 fi
 ```
 
@@ -1800,7 +1807,9 @@ PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
 When layout is `workspace` AND `PREWARM` is `true`, `prewarm-panes.sh` starts only
 the resolved roles inside each task workspace: one design pane, an optional dedicated
 review pane, and the execution panes allowed by `EXEC_CHOICE`. A fixed choice suppresses
-every unselected execution pane; unset/`ask` retains the legacy candidate set. The
+every unselected execution pane; unset/`ask` starts every advertised compatible candidate.
+For Codex design this includes separate Opus and Sonnet executors using
+`CLAUDE_EXEC_RUNNER`, plus Codex using `CODEX_EXEC_RUNNER`. The
 review pane uses `REVIEW_RUNNER` even when its engine equals `DESIGN_ENGINE`. The all-Codex
 fixed example therefore contains exactly design codex, review codex, and executor codex
 panes—no sonnet pane or claude process.
@@ -1817,7 +1826,8 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --cwd "<repo-root>/.worktrees/<task-slug>" \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  [--codex-runner "<resolved-codex-candidate>"] \
+  [--claude-runner "$CLAUDE_EXEC_RUNNER"] \
+  [--codex-runner "$CODEX_EXEC_RUNNER"] \
   [--exec-runner "$EXEC_RUNNER"] \
   [--review-model "$REVIEW_MODEL"] \
   --design-runner "$DESIGN_RUNNER" \
@@ -1840,7 +1850,8 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --cwd "<repo-root>/.worktrees/<task-slug>" \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  [--codex-runner "<resolved-codex-candidate>"] \
+  [--claude-runner "$CLAUDE_EXEC_RUNNER"] \
+  [--codex-runner "$CODEX_EXEC_RUNNER"] \
   [--exec-runner "$EXEC_RUNNER"] \
   --design-runner "$DESIGN_RUNNER" \
   [--reviewer-runner "$REVIEW_RUNNER"] \
@@ -1854,8 +1865,12 @@ Flag selection per task:
 - Always pass `--design-runner "$DESIGN_RUNNER"` and `--exec-choice "$EXEC_CHOICE"`.
 - For a fixed `EXEC_CHOICE`, always pass its resolved runner as
   `--exec-runner "$EXEC_RUNNER"`, regardless of whether the choice is opus 1m,
-  sonnet, or codex. `--codex-runner` remains a compatibility input for the unset/ask
-  candidate set and old callers; never substitute it for a resolved non-Codex executor.
+  sonnet, or codex. For unset/`ask`, pass the independently resolved compatible
+  candidates as `--claude-runner "$CLAUDE_EXEC_RUNNER"` and
+  `--codex-runner "$CODEX_EXEC_RUNNER"`. A Codex design pane needs the explicit
+  Claude candidate for both its dedicated Opus and Sonnet executors; never infer it
+  from `REVIEW_RUNNER`. `--codex-runner` also remains a compatibility input for old
+  callers.
 - When `REVIEW_ENABLED=true`, pass `--reviewer-runner "$REVIEW_RUNNER"`. The legacy
   `--review-model` input remains only for old design=claude callers; new role-aware
   calls use the independent runner. Do not pass both.
@@ -2491,10 +2506,10 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is delivered to the parent terminal through `scripts/send-prompt.sh` when the child runner session exits. `send-prompt.sh` presses Enter after typing and then confirms via `cmux read-screen` that the input box emptied, so a notification never sits in the parent TUI waiting for a manual Enter press. The confirmation step applies when the parent renders a `❯` (or `>`) prompt line at column 0; a pane without one is treated as delivered without verification.
 - **Signal-terminated panes do not report failure**: When the final cleanup closes a pane (`cmux close-surface` / `close-workspace`), the child process exits with a signal-derived code (128+N — SIGHUP 129 / SIGKILL 137 / SIGTERM 143). If `status.json` already holds a terminal status (`done` / `error`), the runner wrapper skips both the status write and the parent notification, so closing panes never downgrades a completed task to `error` nor emits a spurious `[dispatch] task ... finished (status: error)`. A pane killed while still `executing` is a genuine interruption and is still reported as `error`.
 - **Runner script**: A `.cmux-team-dispatch-task-run-<workspace-name>.sh` file is created in each worktree (one per launch — Child and Phase B grandchild get different filenames since they share the worktree). They're cleaned up along with the worktree.
-- **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. The `command` of the first such runner is used for the spawn launch. `cmux codex install-hooks` is also required so that `external_migration = true` is set and codex picks up the parent claude session automatically.
+- **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. Runner resolution prefers the compatible design runner and otherwise uses the first registered compatible Codex runner; the resolved name is passed explicitly to prewarm/spawn. `cmux codex install-hooks` is also required so that `external_migration = true` is set when migrating a Claude parent session.
 - **Same-model vs different-model in Phase B**: `exec_choice` controls whether Phase B asks or takes a fixed default; it never introduces a new execution path. For design=claude, "opus 1m" counts as the same model and stays in the current session via `/model opus[1m]`. Any other choice delegates to the resolved execution role: when its pre-warmed pane exists (prewarm.json), the Child sends the execution request there; otherwise it spawns `launch-workspace.sh --mode execute --runner <EXEC_RUNNER>`. The delegated runner is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the delegated session owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends a MANDATORY COMPLETION REPORT instruction telling the delegated session to run `scripts/report-status.sh <status-dir> done <summary>` before it stops. That call — not the session ending — is what transitions status.json, so completion no longer depends on the TUI closing. The exit instruction that follows it is engine-aware: claude is told to run `/exit` (the wrapper then also finalizes), while **codex is told to stop and stay idle**, because codex has no way to end its own session (`/exit` does nothing and there is no quit/shutdown subcommand). A codex pane therefore legitimately stays open until the parent closes it during final cleanup.
 - **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. `design_runner` can fix the Step 1f selection for all tasks; `exec_choice` can fix Phase B. The runners.json registry remains runtime-only and is bootstrapped on first run via AskUserQuestion.
 - **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). agmsg is wired whenever `~/.agents/skills/agmsg/scripts/send.sh` exists, and `monitor-dispatch.sh` is launched only when it does not (status.json transitions are unchanged either way). Every message goes through one `scripts/send-prompt.sh` call. It **always types the message into the target pane** — typing is the only thing that wakes an idle session — and, when the three `--agmsg-*` arguments are supplied and the destination's ready sentinel exists, it **additionally records the same body in the agmsg inbox**, always AFTER the typed delivery so that a hung agmsg writer can never block the only wake mechanism. **An agmsg push is inbox-record-only and cannot wake an idle session**; the ready sentinel proves only that a watcher PROCESS is alive, not that it can wake the session (the same sentinel is written whether the watcher runs under a mechanism that injects into an idle session or under a plain background shell that does not). An agmsg failure never affects delivery or the exit code. Bodies longer than 400 characters are written to `<outbox-dir>/<label>-<seq>.md` and only a one-line pointer is typed, which is what stops a long instruction from being treated as a paste and jamming the input box. After typing, Enter is pressed and `cmux read-screen` confirms the input box emptied, re-pressing Enter up to 3 times before reporting failure; this verification applies when the destination renders a `❯` (or `>`) prompt line at column 0, and a pane without such a line — like an unobservable screen — counts as delivered, so a caller never re-sends and double-delivers. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Also, if Step 1g's `delivery.sh set` output includes an `AGMSG-DIRECTIVE:` line, it MUST be followed so that the currently-dispatching session's own watcher gets started.
-- **Pre-warm role panes**: When layout is `workspace` and config `prewarm: true` (default), `prewarm-panes.sh` places only resolved roles inside each task workspace: design, optional review, and execution roles allowed by `exec_choice`. `prewarm.json` records only panes that exist; a fixed all-Codex reviewed task has exactly three codex panes and no claude/sonnet process. Delivery is wired before panes start, Phase A uses one `send-prompt.sh` call (`--label phase-a-task`), and Phase B uses one call (`--label phase-b-exec`). The standby wrapper transitions status only when `<STATUS_DIR>/.assigned-<name>` exists. Timeout sentinels and cleanup are applied only to recorded roles; cleanup recursively de-duplicates their `surface_id` and `agent` values. Callers do not branch on a role's `delivery` value because `send-prompt.sh` re-checks the ready sentinel itself.
+- **Pre-warm role panes**: When layout is `workspace` and config `prewarm: true` (default), `prewarm-panes.sh` places only resolved roles inside each task workspace: design, optional review, and execution roles allowed by `exec_choice`. `prewarm.json` records only panes that exist; a fixed all-Codex reviewed task has exactly three codex panes and no claude/sonnet process. For a Codex design with unset/`ask`, every advertised choice has an executor entry: dedicated Opus and Sonnet panes use the explicit `--claude-runner` candidate and Codex uses `--codex-runner`. Review launch/output failure immediately leaves a successfully joined review agmsg member before omitting the role. Delivery is wired before panes start, Phase A uses one `send-prompt.sh` call (`--label phase-a-task`), and Phase B uses one call (`--label phase-b-exec`). The standby wrapper transitions status only when `<STATUS_DIR>/.assigned-<name>` exists. Timeout sentinels and cleanup are applied only to recorded roles; cleanup recursively de-duplicates their `surface_id` and `agent` values. Callers do not branch on a role's `delivery` value because `send-prompt.sh` re-checks the ready sentinel itself.
 
 - **status.json watcher**: The runner polls for a terminal status and attempts to notify the parent even while the session stays idle. Terminal status is sticky, and the notification marker stores the last status that was successfully notified. The watcher is suppressed by a timeout sentinel, `.deferred`, an unassigned standby, or a foreign assignment.

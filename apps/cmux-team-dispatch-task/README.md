@@ -1,7 +1,7 @@
 # cmux-team-dispatch-task
 
 cmux ワークスペースを活用した並列タスクディスパッチプラグイン。
-複数の独立したタスクを、それぞれ独自の git worktree + Claude Code セッションで同時実行する。
+複数の独立したタスクを、それぞれ独自の git worktree + 解決済み runner セッションで同時実行する。
 
 ## 特徴
 
@@ -40,7 +40,7 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 ## 前提条件
 
 - [cmux](https://github.com/anthropics/cmux) がインストール済み
-- Claude Code が利用可能
+- 選択した構成で使う CLI が利用可能（all-Codex 固定構成は Codex のみ。Claude role を選ぶ構成は Claude Code も必要）
 - cmux セッション内で実行すること
 
 ## インストール
@@ -372,8 +372,11 @@ standby ペインを事前起動する。Phase B で sonnet / codex が選ばれ
 prewarm は解決済み role だけを起動し、`prewarm.json` の `design`、任意の `review`、
 `executors` に実在ペインを記録する。固定 `exec_choice` では未選択 executor を起動しない。
 固定 choice の opus/sonnet/codex はすべて generic `--exec-runner` で解決済み runner を受け渡し、
-review runner から executor を推測しない。review pane の起動に失敗した場合は警告して `review` を
-省略し、design/executor pane を保持したまま Phase B を続行する。
+review runner から executor を推測しない。Codex design の unset/ask は resolver が選んだ
+`--claude-runner` で専用 Opus/Sonnet executor、`--codex-runner` で Codex executor を起動し、
+提示する全 choice を `executors` に記録する。review pane の起動または出力解析に失敗した場合は、
+join 済み review member を即 leave してから `review` を省略し、design/executor pane を保持したまま
+Phase B を続行する。
 固定 review は解決済み `review_runner` を使うため、design と同じ engine でも有効。
 all-Codex 固定構成は design/review/codex executor の3ペインだけで、sonnet pane、claude command、
 agmsg `claude-code` 配線を作らない。未割り当てペインは status.json を汚さず、最終クリーンアップでは
