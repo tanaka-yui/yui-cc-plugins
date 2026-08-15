@@ -62,7 +62,7 @@ AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
 bash "$TMP/scripts/prewarm-panes.sh" --with-design --agmsg-team demo-team \
   --cwd "$TMP/repo" --slug demo --status-dir "$TMP/status" \
   --design-runner codex --reviewer-runner codex \
-  --codex-runner codex --exec-choice codex > "$TMP/result.json"
+  --exec-runner codex --exec-choice codex > "$TMP/result.json"
 
 [[ $(wc -l < "$TMP/argv.log" | tr -d ' ') == 3 ]] || bad 'AC1 exactly three panes'
 grep -F -- '--runner codex' "$TMP/argv.log" | grep -Fq -- '--role plan' || bad 'AC2 design role'

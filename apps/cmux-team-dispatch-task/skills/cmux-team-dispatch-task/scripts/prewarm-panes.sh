@@ -5,7 +5,7 @@
 #   agmsg 未使用 (opus は通常フローで起動済み。sonnet / codex の split のみ追加):
 #     prewarm-panes.sh --workspace <ws-id> --base-surface <sf-id> \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
-#       [--codex-runner <name>] \
+#       [--codex-runner <name>] [--exec-runner <name>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
@@ -14,7 +14,7 @@
 #     prewarm-panes.sh --with-design \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       --agmsg-team <team> \
-#       [--codex-runner <name>] [--exec-choice <choice>] \
+#       [--codex-runner <name>] [--exec-runner <name>] [--exec-choice <choice>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
@@ -65,6 +65,7 @@ CWD=""
 SLUG=""
 STATUS_DIR=""
 CODEX_RUNNER=""
+EXEC_RUNNER=""
 REVIEW_MODEL=""
 AGMSG_TEAM=""
 WITH_DESIGN=0
@@ -77,6 +78,7 @@ DESIGN_ENGINE="claude"
 REVIEWER_ENGINE=""
 REVIEW_MODEL_RESOLVED=""
 REVIEW_EFFORT=""
+EXEC_ENGINE=""
 UNATTENDED=0
 TIMEOUT_SENTINEL=""
 RUNNERS_CONFIG_PATH="${RUNNERS_CONFIG_PATH:-$HOME/.claude/cmux-team-dispatch-task/runners.json}"
@@ -101,6 +103,9 @@ while [[ $# -gt 0 ]]; do
     --codex-runner)
       [[ $# -lt 2 ]] && die "--codex-runner requires a runner name"
       CODEX_RUNNER="$2"; shift 2 ;;
+    --exec-runner)
+      [[ $# -lt 2 ]] && die "--exec-runner requires a runner name"
+      EXEC_RUNNER="$2"; shift 2 ;;
     --design-runner)
       [[ $# -lt 2 ]] && die "--design-runner requires a runner name"
       DESIGN_RUNNER="$2"; shift 2 ;;
@@ -168,6 +173,13 @@ fi
 if [[ "$DESIGN_ENGINE" == "codex" && -n "$REVIEW_MODEL" ]]; then
   die "--review-model is for claude-design tasks; use --reviewer-runner when the design runner is codex"
 fi
+if [[ -n "$EXEC_RUNNER" ]]; then
+  [[ -f "$RUNNERS_CONFIG_PATH" ]] \
+    || die "runners.json not found at $RUNNERS_CONFIG_PATH (required for --exec-runner)"
+  EXEC_ENGINE=$(jq -r --arg n "$EXEC_RUNNER" \
+    '.runners[]? | select(.name == $n) | .engine // empty' "$RUNNERS_CONFIG_PATH")
+  [[ -n "$EXEC_ENGINE" ]] || die "exec runner '$EXEC_RUNNER' not found in $RUNNERS_CONFIG_PATH"
+fi
 
 START_SONNET=0
 START_CODEX=0
@@ -175,10 +187,22 @@ START_OPUS=0
 case "$EXEC_CHOICE" in
   "") START_SONNET=1; [[ -n "$CODEX_RUNNER" ]] && START_CODEX=1 ;;
   ask) START_SONNET=1; [[ -n "$CODEX_RUNNER" ]] && START_CODEX=1 ;;
-  sonnet) START_SONNET=1 ;;
-  codex) [[ -n "$CODEX_RUNNER" ]] || die "exec_choice=codex requires --codex-runner"; START_CODEX=1 ;;
+  sonnet)
+    [[ -z "$EXEC_RUNNER" || "$EXEC_ENGINE" == "claude" ]] \
+      || die "exec_choice=sonnet requires a claude exec runner"
+    START_SONNET=1 ;;
+  codex)
+    [[ -n "$EXEC_RUNNER" || -n "$CODEX_RUNNER" ]] \
+      || die "exec_choice=codex requires --exec-runner or --codex-runner"
+    [[ -z "$EXEC_RUNNER" || "$EXEC_ENGINE" == "codex" ]] \
+      || die "exec_choice=codex requires a codex exec runner"
+    START_CODEX=1 ;;
   "opus 1m")
-    [[ "$DESIGN_ENGINE" == "codex" && "$REVIEWER_ENGINE" == "claude" ]] && START_OPUS=1 ;;
+    [[ -z "$EXEC_RUNNER" || "$EXEC_ENGINE" == "claude" ]] \
+      || die "exec_choice=opus 1m requires a claude exec runner"
+    if [[ "$DESIGN_ENGINE" == "codex" ]]; then
+      [[ -n "$EXEC_RUNNER" || "$REVIEWER_ENGINE" == "claude" ]] && START_OPUS=1
+    fi ;;
   *) die "invalid --exec-choice '$EXEC_CHOICE'" ;;
 esac
 
@@ -380,6 +404,7 @@ if [[ $START_SONNET -eq 1 ]]; then
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"}
     --status-dir "$STATUS_DIR"
   )
+  [[ -n "$EXEC_RUNNER" ]] && SONNET_ARGS+=(--runner "$EXEC_RUNNER")
   SONNET_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     "${SONNET_ARGS[@]}" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
@@ -396,14 +421,15 @@ if [[ $START_OPUS -eq 1 ]]; then
   log "prewarm" "launching opus executor standby pane for $SLUG"
   AGMSG_FLAGS_OPUS=()
   [[ -n "$AGMSG_TEAM" ]] && AGMSG_FLAGS_OPUS=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-opus")
+  OPUS_EXEC_RUNNER="${EXEC_RUNNER:-$REVIEWER_RUNNER}"
   OPUS_EXEC_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
     --mode standby \
     --role exec \
     --standby-in "$WORKSPACE" \
     --standby-split-from "$BASE_SURFACE" \
-    --runner "$REVIEWER_RUNNER" \
-    --model "$REVIEW_MODEL_RESOLVED" \
+    --runner "$OPUS_EXEC_RUNNER" \
+    --model "$OPUS_MODEL" \
     --skip-permissions \
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
     --status-dir "$STATUS_DIR" \
@@ -428,13 +454,14 @@ if [[ $START_CODEX -eq 1 ]]; then
   CODEX_SPLIT_FROM="$BASE_SURFACE"
   [[ -n "$SONNET_SURFACE" ]] && CODEX_SPLIT_FROM="$SONNET_SURFACE"
   log "prewarm" "launching codex standby pane for $SLUG"
+  CODEX_EXEC_RUNNER="${EXEC_RUNNER:-$CODEX_RUNNER}"
   CODEX_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
     --mode standby \
     --role exec \
     --standby-in "$WORKSPACE" \
     --standby-split-from "$CODEX_SPLIT_FROM" \
-    --runner "$CODEX_RUNNER" \
+    --runner "$CODEX_EXEC_RUNNER" \
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
@@ -467,7 +494,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     REVIEW_PANE_NAME="$SLUG-review"
     REVIEW_RUNNER_FLAGS=(--runner "$CODEX_RUNNER" --model "$REVIEW_MODEL")
   fi
-  REVIEW_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
+  if REVIEW_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
     --mode review \
     --role review \
@@ -479,15 +506,22 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
     ${AGMSG_FLAGS_REVIEW[@]+"${AGMSG_FLAGS_REVIEW[@]}"} \
-    "$REVIEW_PANE_NAME") || die "failed to launch review pane"
-  REVIEW_SURFACE=$(echo "$REVIEW_RESULT" | jq -r '.surface_id // empty')
-  [[ -n "$REVIEW_SURFACE" ]] || die "failed to parse review pane output"
+    "$REVIEW_PANE_NAME"); then
+    if ! REVIEW_SURFACE=$(echo "$REVIEW_RESULT" | jq -er '.surface_id // empty'); then
+      REVIEW_SURFACE=""
+      log "warn" "review pane output had no surface; review is disabled for this task"
+    fi
+  else
+    log "warn" "failed to launch review pane; review is disabled for this task"
+  fi
 fi
 
 # --- Step 6: prewarm.json 書き込み + 出力 ---
 
 mkdir -p "$STATUS_DIR"
 REVIEW_ENGINE="${REVIEWER_ENGINE:-codex}"
+SONNET_EXEC_RUNNER=""
+[[ "$EXEC_CHOICE" == "sonnet" ]] && SONNET_EXEC_RUNNER="$EXEC_RUNNER"
 PREWARM_JSON=$(jq -n \
   --arg ds "$DESIGN_SURFACE" \
   --arg ops "$OPUS_EXEC_SURFACE" \
@@ -496,8 +530,9 @@ PREWARM_JSON=$(jq -n \
   --arg rs "$REVIEW_SURFACE" \
   --arg slug "$SLUG" \
   --arg drr "$DESIGN_RUNNER" \
-  --arg orr "$REVIEWER_RUNNER" \
-  --arg crr "$CODEX_RUNNER" \
+  --arg oer "${OPUS_EXEC_RUNNER:-}" \
+  --arg ser "$SONNET_EXEC_RUNNER" \
+  --arg crr "${CODEX_EXEC_RUNNER:-$CODEX_RUNNER}" \
   --arg rrr "${REVIEWER_RUNNER:-$CODEX_RUNNER}" \
   --arg de "$DESIGN_ENGINE" \
   --arg dd "$DESIGN_DELIVERY" \
@@ -508,8 +543,8 @@ PREWARM_JSON=$(jq -n \
   '(if $ds != "" then {design: {surface_id: $ds, agent: $slug, runner: $drr, engine: $de, role: "plan", delivery: $dd}} else {} end)
    + (if $rs != "" then {review: {surface_id: $rs, agent: ($slug + "-review"), runner: $rrr, engine: $re, role: "review", delivery: $dr}} else {} end)
    + {executors:
-        ((if $ops != "" then {opus: {surface_id: $ops, agent: ($slug + "-opus"), runner: $orr, engine: "claude", role: "exec", delivery: $dc}} else {} end)
-         + (if $ss != "" then {sonnet: {surface_id: $ss, agent: ($slug + "-sonnet"), runner: "", engine: "claude", role: "exec", delivery: $dc}} else {} end)
+        ((if $ops != "" then {opus: {surface_id: $ops, agent: ($slug + "-opus"), runner: $oer, engine: "claude", role: "exec", delivery: $dc}} else {} end)
+         + (if $ss != "" then {sonnet: {surface_id: $ss, agent: ($slug + "-sonnet"), runner: $ser, engine: "claude", role: "exec", delivery: $dc}} else {} end)
          + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), runner: $crr, engine: "codex", role: "exec", delivery: $dx}} else {} end))}')
 echo "$PREWARM_JSON" > "$STATUS_DIR/prewarm.json"
 log "prewarm" "wrote $STATUS_DIR/prewarm.json"

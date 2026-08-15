@@ -418,8 +418,9 @@ Phase A 完了後、コード変更を始める前に task prompt が解決し�
    動作するため、worktree の basename から再導出すると誤った値になる）。`$TEAM` が空なら
    `--agmsg-*` の 3 フラグごと省略する。`prewarm.json` の `.executors.sonnet.delivery` /
    `.executors.codex.delivery` で分岐してはならない — sentinel の再確認は `send-prompt.sh` 自身が行う
-4. `touch "<EXISTING_STATUS_DIR>/.deferred"`。Phase B-R 有効時は exit **せず**、レビュアー
-   として idle 待機する（下記「Phase B-R」参照）。無効時はこのセッションを exit
+4. `touch "<EXISTING_STATUS_DIR>/.deferred"`。Phase B-R 有効時は fixed/legacy resolver で
+   surface/workspace/runner/engine の一貫した reviewer tuple を解決し、その surface が自分自身の
+   場合だけレビュアーとして idle 待機する。固定 policy の設計ペインを含む、それ以外は exit する
 
 **prewarm.json が無い場合（従来の spawn フォールバック、prewarm off）**
 
@@ -440,14 +441,16 @@ zsh <skill-dir>/scripts/launch-workspace.sh \
   [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # Phase B-R 有効時のみ
   <task-slug>-exec
 
-# Phase B-R 有効かつ「実装者 engine != 設計 engine」のケース (下記 Phase B-R の統一規則参照。
-# design=claude+codex / design=codex+opus 1m / design=codex+sonnet) では、設計セッション (YOU) が
-# レビュアーになるので spawn 前にレビュー配線ファイルを書いておく:
+# Phase B-R 有効時は、下記 Phase B-R resolver を実行してから配線ファイルを書く。
+# fixed は専用 review surface + REVIEW_RUNNER/ENGINE。legacy は6ケースに従い、review pane を
+# 選ぶケースでは REVIEW_SURFACE + REVIEW_RUNNER/ENGINE、design pane を選ぶケースでは
+# CMUX_SURFACE_ID + DESIGN_RUNNER/ENGINE を組み合わせる。surface と runner/engine を混在させない:
 #   mkdir -p "<EXISTING_STATUS_DIR>/review"
-#   jq -n --arg s "$CMUX_SURFACE_ID" --arg w "$CMUX_WORKSPACE_ID" --arg d "<EXISTING_STATUS_DIR>/review" \
-#     '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d}' > "<EXISTING_STATUS_DIR>/review/code-review.json"
-# 「実装者 engine == 設計 engine」のケース (design=claude+sonnet / design=codex+codex) は
-# レビューペインがレビュアーになるので reviewer_surface はレビューペインの surface を指す。
+#   jq -n --arg s "$REVIEWER_SURFACE" --arg w "$REVIEWER_WORKSPACE" \
+#     --arg r "$REVIEWER_RUNNER" --arg e "$REVIEWER_ENGINE" --arg d "<EXISTING_STATUS_DIR>/review" \
+#     '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d,
+#       reviewer_runner: $r, reviewer_engine: $e}' > "<EXISTING_STATUS_DIR>/review/code-review.json"
+# review pane spawn 失敗で REVIEWER_SURFACE が空なら --review-config を省略し、そのgateだけをskipする。
 
 # spawn 完了後、自身は移譲シグナルを書く。Phase B-R 有効かつ YOU がレビュアーのケースは
 # exit せずレビュアーとして待機、それ以外は exit
@@ -594,7 +597,8 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --cwd "<repo-root>/.worktrees/<task-slug>" \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  [--codex-runner "$EXEC_RUNNER"] \
+  [--codex-runner "<resolved-codex-candidate>"] \
+  [--exec-runner "$EXEC_RUNNER"] \
   --design-runner "$DESIGN_RUNNER" \
   [--reviewer-runner "$REVIEW_RUNNER"] \
   --exec-choice "$EXEC_CHOICE" \
@@ -619,7 +623,8 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --cwd "<repo-root>/.worktrees/<task-slug>" \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  [--codex-runner "$EXEC_RUNNER"] \
+  [--codex-runner "<resolved-codex-candidate>"] \
+  [--exec-runner "$EXEC_RUNNER"] \
   --design-runner "$DESIGN_RUNNER" \
   [--reviewer-runner "$REVIEW_RUNNER"] \
   --exec-choice "$EXEC_CHOICE" \
@@ -629,10 +634,14 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
 ```
 
 **タスクごとのフラグ選択**: `--design-runner "$DESIGN_RUNNER"` と
-`--exec-choice "$EXEC_CHOICE"` は常に渡す。codex executor が解決済みなら
-`--codex-runner "$EXEC_RUNNER"`、review 有効なら `--reviewer-runner "$REVIEW_RUNNER"` を渡す。
+`--exec-choice "$EXEC_CHOICE"` は常に渡す。固定 choice は opus/sonnet/codex のいずれでも
+`--exec-runner "$EXEC_RUNNER"` を渡す。`--codex-runner` は unset/ask の候補集合と旧 caller の
+互換入力に限る。review 有効なら `--reviewer-runner "$REVIEW_RUNNER"` を渡す。
 固定 `exec_choice` の runner が利用不能なら、その config レイヤーだけを無効化して project → global →
 interactive のフォールバックを続ける。
+
+review pane の起動・出力解析が失敗した場合、`prewarm-panes.sh` は警告して `review` key を省略し、
+既に起動した design/executor を `prewarm.json` に保持して Phase B を続行する。
 
 通常のタスクプロンプト起動がこのモードでは走らないため、`prewarm-panes.sh` 自身がペイン作成
 直後に初期 `"launched"` status.json（`workspace_id` / `surface_id` 込み）を書き出す。これにより

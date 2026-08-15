@@ -371,6 +371,9 @@ standby ペインを事前起動する。Phase B で sonnet / codex が選ばれ
 
 prewarm は解決済み role だけを起動し、`prewarm.json` の `design`、任意の `review`、
 `executors` に実在ペインを記録する。固定 `exec_choice` では未選択 executor を起動しない。
+固定 choice の opus/sonnet/codex はすべて generic `--exec-runner` で解決済み runner を受け渡し、
+review runner から executor を推測しない。review pane の起動に失敗した場合は警告して `review` を
+省略し、design/executor pane を保持したまま Phase B を続行する。
 固定 review は解決済み `review_runner` を使うため、design と同じ engine でも有効。
 all-Codex 固定構成は design/review/codex executor の3ペインだけで、sonnet pane、claude command、
 agmsg `claude-code` 配線を作らない。未割り当てペインは status.json を汚さず、最終クリーンアップでは
