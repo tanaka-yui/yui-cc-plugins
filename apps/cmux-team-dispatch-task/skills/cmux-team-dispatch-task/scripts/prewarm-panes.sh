@@ -1,8 +1,5 @@
 #!/bin/bash
-# Pre-warm standby panes: タスク workspace に standby ペイン群を事前起動する
-# (--review-model 無し: 縦積み 上 opus / 中 sonnet / 下 codex。
-#  --review-model 有り: 2×2 グリッド 左上 opus / 右上 codex review / 左下 sonnet / 右下 codex。
-#  --design-runner（codex engine）有り: 左上 design codex / 右上 claude review (`<slug>-opus`) / 左下 sonnet / 右下 codex)
+# Pre-warm standby panes: タスク workspace に要求された設計・レビュー・実装ペインを事前起動する。
 #
 # Usage:
 #   agmsg 未使用 (opus は通常フローで起動済み。sonnet / codex の split のみ追加):
@@ -14,36 +11,34 @@
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
 #
 #   agmsg 使用 (workspace 未作成の状態で呼ぶ。opus も standby 起動し workspace はこのスクリプトが作成):
-#     prewarm-panes.sh --with-opus \
+#     prewarm-panes.sh --with-design \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       --agmsg-team <team> \
-#       [--codex-runner <name>] \
+#       [--codex-runner <name>] [--exec-choice <choice>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
 #
-# 注意: --agmsg-team を --with-opus なしで渡す組み合わせは SKILL からは使用しない
+# 注意: --agmsg-team を --with-design なしで渡す組み合わせは SKILL からは使用しない
 #       (sonnet/codex 配線のみ行いたい特殊用途向け)
 #
 # 内部処理:
 #   1. worktree を create-or-reuse (agmsg 配線より先にディレクトリが必要)
 #   2. (agmsg 時) join.sh + delivery.sh set を「ペイン起動前に」実行。
 #      配線に失敗したペインは delivery: "cmux-send" として記録 (die しない)
-#   3. (--with-opus 時) opus-1m standby を workspace 配置で起動 (メイン surface が opus ペイン)。
-#      --design-runner が codex engine の場合は opus の代わりに codex design standby を起動する
-#   4. sonnet / codex を split で配置 (--review-model / --reviewer-runner 有りなら 2×2、無しなら縦積み)
-#   4.5 (--review-model または --reviewer-runner 時) review ペインを opus の右に split 配置。
-#       --reviewer-runner 時は claude review ペイン (`<slug>-opus`)、--review-model 時は従来どおり codex review ペイン
-#   5. <STATUS_DIR>/prewarm.json を書き込む (review キーは --review-model / --reviewer-runner 時のみ。engine フィールドを各ペインに含める)
+#   3. (--with-design 時) 設計 standby を workspace 配置で起動 (メイン surface が design ペイン)
+#   4. --exec-choice で選ばれた sonnet / codex 実装 standby を split で配置
+#   5. --review-model または --reviewer-runner 時に review ペインを split 配置
+#   6. <STATUS_DIR>/prewarm.json を design / review? / executors スキーマで書き込む
 #   --unattended: ループモード専用。設計ペイン (claude opus standby) の起動に
 #                 --skip-permissions を付ける (無人実行で permission prompt / ExitPlanMode
 #                 承認により停止しないようにするため)。codex 系は bypass フラグで解決済み
 #   --timeout-sentinel <path>: ループモード専用。status 所有者になり得る全 standby
-#                 (opus / design codex / sonnet / codex / claude review) の launch へ
+#                 (design / review / 実行) の launch へ
 #                 そのまま転送する。batch-wait.sh が timeout として terminal 化した後に
 #                 遅れて終了した子が status.json を上書きするのを防ぐ
 #
-# Output: JSON to stdout: {workspace_id, panes: {opus?, sonnet, codex?}}
+# Output: JSON to stdout: {workspace_id, panes: {design?, review?, executors}}
 # Debug:  Logs to stderr
 
 set -euo pipefail
@@ -72,14 +67,16 @@ STATUS_DIR=""
 CODEX_RUNNER=""
 REVIEW_MODEL=""
 AGMSG_TEAM=""
-WITH_OPUS=0
+WITH_DESIGN=0
+EXEC_CHOICE=""
 NOTIFY_WORKSPACE=""
 NOTIFY_SURFACE=""
 DESIGN_RUNNER=""
 REVIEWER_RUNNER=""
 DESIGN_ENGINE="claude"
-DESIGN_PLAN_EFFORT=""
-CLAUDE_REVIEW_MODEL=""
+REVIEWER_ENGINE=""
+REVIEW_MODEL_RESOLVED=""
+REVIEW_EFFORT=""
 UNATTENDED=0
 TIMEOUT_SENTINEL=""
 RUNNERS_CONFIG_PATH="${RUNNERS_CONFIG_PATH:-$HOME/.claude/cmux-team-dispatch-task/runners.json}"
@@ -113,14 +110,17 @@ while [[ $# -gt 0 ]]; do
     --review-model)
       [[ $# -lt 2 ]] && die "--review-model requires a model name"
       REVIEW_MODEL="$2"; shift 2 ;;
+    --exec-choice)
+      [[ $# -lt 2 ]] && die "--exec-choice requires a choice"
+      EXEC_CHOICE="$2"; shift 2 ;;
     # v1.16.0 で削除。agmsg を使うかは --agmsg-team の有無と send.sh の存在で決まる。
     --message-type)
       die "--message-type was removed: agmsg is wired whenever --agmsg-team is given and send.sh exists" ;;
     --agmsg-team)
       [[ $# -lt 2 ]] && die "--agmsg-team requires a team name"
       AGMSG_TEAM="$2"; shift 2 ;;
-    --with-opus)
-      WITH_OPUS=1; shift ;;
+    --with-design|--with-opus)
+      WITH_DESIGN=1; shift ;;
     --unattended)
       UNATTENDED=1; shift ;;
     --timeout-sentinel)
@@ -153,28 +153,43 @@ if [[ -n "$DESIGN_RUNNER" ]]; then
   [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH (required for --design-runner)"
   DESIGN_ENGINE=$(jq -r --arg n "$DESIGN_RUNNER" '.runners[]? | select(.name == $n) | .engine // "claude"' "$RUNNERS_CONFIG_PATH")
   [[ -n "$DESIGN_ENGINE" ]] || die "design runner '$DESIGN_RUNNER' not found in $RUNNERS_CONFIG_PATH"
-  DESIGN_PLAN_EFFORT=$(jq -r --arg n "$DESIGN_RUNNER" '.runners[]? | select(.name == $n) | .plan_effort // empty' "$RUNNERS_CONFIG_PATH")
 fi
 if [[ -n "$REVIEWER_RUNNER" ]]; then
-  [[ "$DESIGN_ENGINE" == "codex" ]] || die "--reviewer-runner requires a codex-engine --design-runner"
   [[ -n "$REVIEW_MODEL" ]] && die "--reviewer-runner and --review-model are mutually exclusive"
   REVIEWER_ENGINE=$(jq -r --arg n "$REVIEWER_RUNNER" '.runners[]? | select(.name == $n) | .engine // "claude"' "$RUNNERS_CONFIG_PATH")
-  [[ "$REVIEWER_ENGINE" == "claude" ]] || die "reviewer runner '$REVIEWER_RUNNER' must be claude engine"
-  CLAUDE_REVIEW_MODEL=$(jq -r --arg n "$REVIEWER_RUNNER" '.runners[]? | select(.name == $n) | .review_model // empty' "$RUNNERS_CONFIG_PATH")
-  [[ -z "$CLAUDE_REVIEW_MODEL" ]] && CLAUDE_REVIEW_MODEL="$OPUS_MODEL"
+  [[ -n "$REVIEWER_ENGINE" ]] || die "reviewer runner '$REVIEWER_RUNNER' not found in $RUNNERS_CONFIG_PATH"
+  REVIEW_MODEL_RESOLVED=$(jq -r --arg n "$REVIEWER_RUNNER" '.runners[]? | select(.name == $n) | .review_model // empty' "$RUNNERS_CONFIG_PATH")
+  REVIEW_EFFORT=$(jq -r --arg n "$REVIEWER_RUNNER" '.runners[]? | select(.name == $n) | .review_effort // empty' "$RUNNERS_CONFIG_PATH")
+  if [[ "$REVIEWER_ENGINE" == "codex" && -z "$REVIEW_MODEL_RESOLVED" ]]; then
+    die "codex reviewer runner '$REVIEWER_RUNNER' requires review_model"
+  fi
+  [[ -z "$REVIEW_MODEL_RESOLVED" && "$REVIEWER_ENGINE" == "claude" ]] && REVIEW_MODEL_RESOLVED="$OPUS_MODEL"
 fi
 if [[ "$DESIGN_ENGINE" == "codex" && -n "$REVIEW_MODEL" ]]; then
   die "--review-model is for claude-design tasks; use --reviewer-runner when the design runner is codex"
 fi
 
-if [[ $WITH_OPUS -eq 1 ]]; then
+START_SONNET=0
+START_CODEX=0
+START_OPUS=0
+case "$EXEC_CHOICE" in
+  "") START_SONNET=1; [[ -n "$CODEX_RUNNER" ]] && START_CODEX=1 ;;
+  ask) START_SONNET=1; [[ -n "$CODEX_RUNNER" ]] && START_CODEX=1 ;;
+  sonnet) START_SONNET=1 ;;
+  codex) [[ -n "$CODEX_RUNNER" ]] || die "exec_choice=codex requires --codex-runner"; START_CODEX=1 ;;
+  "opus 1m")
+    [[ "$DESIGN_ENGINE" == "codex" && "$REVIEWER_ENGINE" == "claude" ]] && START_OPUS=1 ;;
+  *) die "invalid --exec-choice '$EXEC_CHOICE'" ;;
+esac
+
+if [[ $WITH_DESIGN -eq 1 ]]; then
   # agmsg モード専用: workspace はこのスクリプトが作成する
-  [[ -n "$AGMSG_TEAM" ]] || die "--with-opus requires --agmsg-team"
+  [[ -n "$AGMSG_TEAM" ]] || die "--with-design requires --agmsg-team"
   [[ -z "$WORKSPACE" && -z "$BASE_SURFACE" ]] \
-    || die "--with-opus is mutually exclusive with --workspace/--base-surface"
+    || die "--with-design is mutually exclusive with --workspace/--base-surface"
 else
-  [[ -n "$WORKSPACE" ]] || die "--workspace is required (without --with-opus)"
-  [[ -n "$BASE_SURFACE" ]] || die "--base-surface is required (without --with-opus)"
+  [[ -n "$WORKSPACE" ]] || die "--workspace is required (without --with-design)"
+  [[ -n "$BASE_SURFACE" ]] || die "--base-surface is required (without --with-design)"
 fi
 
 if [[ -n "$AGMSG_TEAM" ]]; then
@@ -221,92 +236,85 @@ CODEX_DELIVERY="cmux-send"
 REVIEW_DELIVERY="cmux-send"
 DESIGN_DELIVERY="cmux-send"
 
-if [[ -n "$AGMSG_TEAM" ]]; then
-  if [[ $WITH_OPUS -eq 1 ]]; then
-    if [[ "$DESIGN_ENGINE" == "codex" ]]; then
-      # design=codex: 設計ペインも codex セッションなので codex standby と同じ
-      # フォールバック付き join を行う (shim 未導入だと失敗しうる)
-      if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG" codex "$CWD" >&2 2>/dev/null; then
-        if bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >&2 2>/dev/null; then
-          DESIGN_DELIVERY="agmsg"
-        else
-          log "agmsg" "codex design delivery wiring failed; falling back to cmux-send"
-        fi
-      else
-        log "agmsg" "codex design join failed (shim not installed?); falling back to cmux-send"
-        bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG" claude-code "$CWD" >&2 || true
-      fi
+wire_delivery() {
+  local engine="$1"
+  if [[ "$engine" == "codex" ]]; then
+    if bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >&2 2>/dev/null; then
+      CODEX_DELIVERY="agmsg"
     else
-      bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG" claude-code "$CWD" >&2 \
-        || die "agmsg join failed for agent $SLUG"
+      log "agmsg" "codex delivery wiring failed; falling back to cmux-send"
+    fi
+  else
+    if bash "$AGMSG_DIR/delivery.sh" set monitor claude-code "$CWD" >&2 2>/dev/null; then
+      CLAUDE_DELIVERY="agmsg"
+    else
+      log "agmsg" "claude-code delivery wiring failed; falling back to cmux-send"
     fi
   fi
-  bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-sonnet" claude-code "$CWD" >&2 \
-    || die "agmsg join failed for agent $SLUG-sonnet"
-  if bash "$AGMSG_DIR/delivery.sh" set monitor claude-code "$CWD" >&2; then
-    CLAUDE_DELIVERY="agmsg"
-  else
-    log "agmsg" "claude-code delivery wiring failed; falling back to cmux-send"
-  fi
-  if [[ $WITH_OPUS -eq 1 && "$DESIGN_ENGINE" != "codex" ]]; then
-    # claude 設計時は claude-code standby と同じ delivery を共有する
-    DESIGN_DELIVERY="$CLAUDE_DELIVERY"
+}
+
+if [[ -n "$AGMSG_TEAM" ]]; then
+  if [[ $WITH_DESIGN -eq 1 ]]; then
+    DESIGN_WIRING_TYPE="claude-code"
+    [[ "$DESIGN_ENGINE" == "codex" ]] && DESIGN_WIRING_TYPE="codex"
+    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG" "$DESIGN_WIRING_TYPE" "$CWD" >&2 2>/dev/null; then
+      wire_delivery "$DESIGN_ENGINE"
+      [[ "$DESIGN_ENGINE" == "codex" ]] && DESIGN_DELIVERY="$CODEX_DELIVERY" || DESIGN_DELIVERY="$CLAUDE_DELIVERY"
+    else
+      log "agmsg" "design join failed; falling back to cmux-send"
+    fi
   fi
 
-  if [[ -n "$CODEX_RUNNER" ]]; then
-    # codex は shim 未導入だと join / delivery が失敗しうる。失敗しても die せず
-    # cmux-send フォールバックとして記録する (完了通知用に claude-code type で join を試す)
-    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-codex" codex "$CWD" >&2 2>/dev/null; then
-      if bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >&2 2>/dev/null; then
-        CODEX_DELIVERY="agmsg"
-      else
-        log "agmsg" "codex delivery wiring failed; falling back to cmux-send"
-      fi
+  if [[ $START_SONNET -eq 1 ]]; then
+    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-sonnet" claude-code "$CWD" >&2 2>/dev/null; then
+      wire_delivery claude
     else
-      log "agmsg" "codex join failed (shim not installed?); falling back to cmux-send"
-      bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-codex" claude-code "$CWD" >&2 || true
+      log "agmsg" "sonnet join failed; falling back to cmux-send"
+    fi
+  fi
+
+  if [[ $START_OPUS -eq 1 ]]; then
+    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-opus" claude-code "$CWD" >&2 2>/dev/null; then
+      wire_delivery claude
+    else
+      log "agmsg" "opus executor join failed; falling back to cmux-send"
+    fi
+  fi
+
+  if [[ $START_CODEX -eq 1 ]]; then
+    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-codex" codex "$CWD" >&2 2>/dev/null; then
+      wire_delivery codex
+    else
+      log "agmsg" "codex join failed; falling back to cmux-send"
     fi
   fi
 
   if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
-    if [[ -n "$REVIEWER_RUNNER" ]]; then
-      # design=codex: レビューペインは claude セッション (SLUG-opus)。delivery 配線は
-      # claude-code standby (SLUG-sonnet) と共有するので CLAUDE_DELIVERY を流用する
-      if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-opus" claude-code "$CWD" >&2 2>/dev/null; then
-        REVIEW_DELIVERY="$CLAUDE_DELIVERY"
-      else
-        log "agmsg" "review join failed; falling back to cmux-send"
-      fi
+    REVIEW_WIRING_ENGINE="${REVIEWER_ENGINE:-codex}"
+    REVIEW_WIRING_TYPE="claude-code"
+    [[ "$REVIEW_WIRING_ENGINE" == "codex" ]] && REVIEW_WIRING_TYPE="codex"
+    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-review" "$REVIEW_WIRING_TYPE" "$CWD" >&2 2>/dev/null; then
+      wire_delivery "$REVIEW_WIRING_ENGINE"
+      [[ "$REVIEW_WIRING_ENGINE" == "codex" ]] && REVIEW_DELIVERY="$CODEX_DELIVERY" || REVIEW_DELIVERY="$CLAUDE_DELIVERY"
     else
-      # review ペインも codex セッション。delivery 配線 (delivery.sh set) は worktree × type 単位
-      # なので codex standby の結果を共有する。join は agent 名の登録のために別途必要
-      if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-review" codex "$CWD" >&2 2>/dev/null; then
-        REVIEW_DELIVERY="$CODEX_DELIVERY"
-      else
-        log "agmsg" "review join failed (shim not installed?); falling back to cmux-send"
-      fi
+      log "agmsg" "review join failed; falling back to cmux-send"
     fi
   fi
 fi
 
 # --- Step 3: 設計ペイン standby (agmsg モードのみ、workspace 配置) ---
-# DESIGN_ENGINE == codex なら codex design standby、それ以外は現行の opus-1m standby
 
-OPUS_SURFACE=""
+DESIGN_SURFACE=""
 
-if [[ $WITH_OPUS -eq 1 ]]; then
+if [[ $WITH_DESIGN -eq 1 ]]; then
   if [[ "$DESIGN_ENGINE" == "codex" ]]; then
-    # design=codex: 設計ペインは codex idle standby (初期 prompt なし — codex は
-    # slash command での actas ができないため、タスクは常に typed prompt で届く)
     log "prewarm" "launching codex design workspace for $SLUG"
-    EFFORT_FLAGS=()
-    [[ -n "$DESIGN_PLAN_EFFORT" ]] && EFFORT_FLAGS=(--effort "$DESIGN_PLAN_EFFORT")
-    OPUS_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
+    DESIGN_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
       --cwd "$CWD" \
       --mode standby \
+      --role plan \
       --defer-status \
       --runner "$DESIGN_RUNNER" \
-      ${EFFORT_FLAGS[@]+"${EFFORT_FLAGS[@]}"} \
       ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
       --status-dir "$STATUS_DIR" \
       ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
@@ -325,9 +333,10 @@ if [[ $WITH_OPUS -eq 1 ]]; then
     log "prewarm" "launching opus standby workspace for $SLUG"
     OPUS_UNATTENDED_FLAGS=()
     [[ $UNATTENDED -eq 1 ]] && OPUS_UNATTENDED_FLAGS=(--skip-permissions)
-    OPUS_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
+    DESIGN_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
       --cwd "$CWD" \
       --mode standby \
+      --role plan \
       --defer-status \
       --model "$OPUS_MODEL" \
       ${OPUS_UNATTENDED_FLAGS[@]+"${OPUS_UNATTENDED_FLAGS[@]}"} \
@@ -337,17 +346,18 @@ if [[ $WITH_OPUS -eq 1 ]]; then
       --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
       "$SLUG" "$OPUS_PROMPT") || die "failed to launch opus standby workspace"
   fi
-  WORKSPACE=$(echo "$OPUS_RESULT" | jq -r '.workspace_id // empty')
-  OPUS_SURFACE=$(echo "$OPUS_RESULT" | jq -r '.surface_id // empty')
-  BASE_SURFACE="$OPUS_SURFACE"
-  [[ -n "$WORKSPACE" && -n "$OPUS_SURFACE" ]] || die "failed to parse opus standby output"
+  WORKSPACE=$(echo "$DESIGN_RESULT" | jq -r '.workspace_id // empty')
+  DESIGN_SURFACE=$(echo "$DESIGN_RESULT" | jq -r '.surface_id // empty')
+  BASE_SURFACE="$DESIGN_SURFACE"
+  [[ -n "$WORKSPACE" && -n "$DESIGN_SURFACE" ]] || die "failed to parse design standby output"
 fi
 
-# --- Step 4: sonnet standby (常に、split 配置) ---
+# --- Step 4: sonnet standby (選択時のみ、split 配置) ---
 
+SONNET_SURFACE=""
 SONNET_PROMPT=""
 AGMSG_FLAGS_SONNET=()
-if [[ -n "$AGMSG_TEAM" ]]; then
+if [[ $START_SONNET -eq 1 && -n "$AGMSG_TEAM" ]]; then
   # opus と同じ理由で delivery に応じて出し分ける (cmux-send フォールバック時は actas しない)
   if [[ "$CLAUDE_DELIVERY" == "agmsg" ]]; then
     SONNET_PROMPT="/agmsg actas $SLUG-sonnet then wait idle. Execution instructions will arrive as a prompt typed into this pane; an identical copy is also pushed to your agmsg inbox (treat both as ONE task — ignore the duplicate). Do not start any work until the instructions arrive."
@@ -357,24 +367,52 @@ if [[ -n "$AGMSG_TEAM" ]]; then
   AGMSG_FLAGS_SONNET=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-sonnet")
 fi
 
-log "prewarm" "launching sonnet standby pane for $SLUG"
-SONNET_ARGS=(
-  --cwd "$CWD"
-  --mode standby
-  --standby-in "$WORKSPACE"
-  --standby-split-from "$BASE_SURFACE"
-  --model "$SONNET_MODEL"
-  --skip-permissions
-  ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"}
-  --status-dir "$STATUS_DIR"
-)
-SONNET_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
-  "${SONNET_ARGS[@]}" \
-  ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
-  ${AGMSG_FLAGS_SONNET[@]+"${AGMSG_FLAGS_SONNET[@]}"} \
-  "$SLUG-sonnet" ${SONNET_PROMPT:+"$SONNET_PROMPT"}) || die "failed to launch sonnet standby pane"
-SONNET_SURFACE=$(echo "$SONNET_RESULT" | jq -r '.surface_id // empty')
-[[ -n "$SONNET_SURFACE" ]] || die "failed to parse sonnet standby output"
+if [[ $START_SONNET -eq 1 ]]; then
+  log "prewarm" "launching sonnet standby pane for $SLUG"
+  SONNET_ARGS=(
+    --cwd "$CWD"
+    --mode standby
+    --role exec
+    --standby-in "$WORKSPACE"
+    --standby-split-from "$BASE_SURFACE"
+    --model "$SONNET_MODEL"
+    --skip-permissions
+    ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"}
+    --status-dir "$STATUS_DIR"
+  )
+  SONNET_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
+    "${SONNET_ARGS[@]}" \
+    ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
+    ${AGMSG_FLAGS_SONNET[@]+"${AGMSG_FLAGS_SONNET[@]}"} \
+    "$SLUG-sonnet" ${SONNET_PROMPT:+"$SONNET_PROMPT"}) || die "failed to launch sonnet standby pane"
+  SONNET_SURFACE=$(echo "$SONNET_RESULT" | jq -r '.surface_id // empty')
+  [[ -n "$SONNET_SURFACE" ]] || die "failed to parse sonnet standby output"
+fi
+
+# --- Step 4.5: opus executor (design=codex + opus 1m 時のみ) ---
+
+OPUS_EXEC_SURFACE=""
+if [[ $START_OPUS -eq 1 ]]; then
+  log "prewarm" "launching opus executor standby pane for $SLUG"
+  AGMSG_FLAGS_OPUS=()
+  [[ -n "$AGMSG_TEAM" ]] && AGMSG_FLAGS_OPUS=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-opus")
+  OPUS_EXEC_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
+    --cwd "$CWD" \
+    --mode standby \
+    --role exec \
+    --standby-in "$WORKSPACE" \
+    --standby-split-from "$BASE_SURFACE" \
+    --runner "$REVIEWER_RUNNER" \
+    --model "$REVIEW_MODEL_RESOLVED" \
+    --skip-permissions \
+    ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
+    --status-dir "$STATUS_DIR" \
+    ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
+    ${AGMSG_FLAGS_OPUS[@]+"${AGMSG_FLAGS_OPUS[@]}"} \
+    "$SLUG-opus") || die "failed to launch opus executor standby pane"
+  OPUS_EXEC_SURFACE=$(echo "$OPUS_EXEC_RESULT" | jq -r '.surface_id // empty')
+  [[ -n "$OPUS_EXEC_SURFACE" ]] || die "failed to parse opus executor standby output"
+fi
 
 # --- Step 5: codex standby (runner 登録時のみ、sonnet の下に split 配置) ---
 # codex は idle でも agmsg push を受けられる保証が無いため初期 prompt は常に無し。
@@ -382,20 +420,20 @@ SONNET_SURFACE=$(echo "$SONNET_RESULT" | jq -r '.surface_id // empty')
 
 CODEX_SURFACE=""
 
-if [[ -n "$CODEX_RUNNER" ]]; then
+if [[ $START_CODEX -eq 1 ]]; then
   AGMSG_FLAGS_CODEX=()
   if [[ -n "$AGMSG_TEAM" ]]; then
     AGMSG_FLAGS_CODEX=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
   fi
-  CODEX_DIRECTION_FLAGS=()
-  [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]] && CODEX_DIRECTION_FLAGS=(--standby-split-direction right)
+  CODEX_SPLIT_FROM="$BASE_SURFACE"
+  [[ -n "$SONNET_SURFACE" ]] && CODEX_SPLIT_FROM="$SONNET_SURFACE"
   log "prewarm" "launching codex standby pane for $SLUG"
   CODEX_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
     --mode standby \
+    --role exec \
     --standby-in "$WORKSPACE" \
-    --standby-split-from "$SONNET_SURFACE" \
-    ${CODEX_DIRECTION_FLAGS[@]+"${CODEX_DIRECTION_FLAGS[@]}"} \
+    --standby-split-from "$CODEX_SPLIT_FROM" \
     --runner "$CODEX_RUNNER" \
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
     --status-dir "$STATUS_DIR" \
@@ -406,26 +444,23 @@ if [[ -n "$CODEX_RUNNER" ]]; then
   [[ -n "$CODEX_SURFACE" ]] || die "failed to parse codex standby output"
 fi
 
-# --- Step 5.5: review ペイン (--review-model / --reviewer-runner 時のみ、opus の右に split 配置) ---
+# --- Step 5.5: review ペイン (--review-model / --reviewer-runner 時のみ、design の右に split 配置) ---
 # standby と同じ wrapper だが .assigned-<slug>-review は誰も touch しない前提 —
 # close しても status.json を汚さない。初期 prompt は codex standby と同じく常に無し。
-# --reviewer-runner 時 (design=codex) は claude review ペイン (`<slug>-opus`)、
-# --review-model 時は従来どおり codex review ペイン。
+# --reviewer-runner は engine を問わず利用できる。--review-model は claude 設計の
+# 既存 codex review 指定として維持する。
 
 REVIEW_SURFACE=""
 
 if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
   AGMSG_FLAGS_REVIEW=()
   if [[ -n "$REVIEWER_RUNNER" ]]; then
-    # design=codex: claude レビューペイン (A-R レビュアー兼 Phase B opus 1m 実装先の二役)
-    log "prewarm" "launching claude review pane for $SLUG (reviewer runner: $REVIEWER_RUNNER)"
-    REVIEW_PANE_NAME="$SLUG-opus"
-    REVIEW_RUNNER_FLAGS=(--runner "$REVIEWER_RUNNER" --model "$CLAUDE_REVIEW_MODEL" --skip-permissions)
-    # opus 1m 委譲時にこのペインが status.json / 親通知の所有者になるため、
-    # send-prompt-exempt: TUI へのメッセージ配送ではなく、send-prompt.sh 経由の配送を説明する記述。
-    # 完了通知の dual-send (cmux send + agmsg inbox 記録) 用に agmsg 配線を渡す
+    log "prewarm" "launching review pane for $SLUG (reviewer runner: $REVIEWER_RUNNER)"
+    REVIEW_PANE_NAME="$SLUG-review"
+    REVIEW_RUNNER_FLAGS=(--runner "$REVIEWER_RUNNER")
+    [[ "$REVIEWER_ENGINE" == "claude" ]] && REVIEW_RUNNER_FLAGS+=(--model "$REVIEW_MODEL_RESOLVED" --skip-permissions)
     if [[ -n "$AGMSG_TEAM" ]]; then
-      AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-opus")
+      AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-review")
     fi
   else
     log "prewarm" "launching codex review pane for $SLUG"
@@ -435,6 +470,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
   REVIEW_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
     --mode review \
+    --role review \
     --standby-in "$WORKSPACE" \
     --standby-split-from "$BASE_SURFACE" \
     --standby-split-direction right \
@@ -451,36 +487,37 @@ fi
 # --- Step 6: prewarm.json 書き込み + 出力 ---
 
 mkdir -p "$STATUS_DIR"
-REVIEW_AGENT_SUFFIX="-review"
-REVIEW_ENGINE="codex"
-if [[ -n "$REVIEWER_RUNNER" ]]; then
-  REVIEW_AGENT_SUFFIX="-opus"
-  REVIEW_ENGINE="claude"
-fi
+REVIEW_ENGINE="${REVIEWER_ENGINE:-codex}"
 PREWARM_JSON=$(jq -n \
-  --arg os "$OPUS_SURFACE" \
+  --arg ds "$DESIGN_SURFACE" \
+  --arg ops "$OPUS_EXEC_SURFACE" \
   --arg ss "$SONNET_SURFACE" \
   --arg cs "$CODEX_SURFACE" \
   --arg rs "$REVIEW_SURFACE" \
   --arg slug "$SLUG" \
+  --arg drr "$DESIGN_RUNNER" \
+  --arg orr "$REVIEWER_RUNNER" \
+  --arg crr "$CODEX_RUNNER" \
+  --arg rrr "${REVIEWER_RUNNER:-$CODEX_RUNNER}" \
   --arg de "$DESIGN_ENGINE" \
   --arg dd "$DESIGN_DELIVERY" \
   --arg dc "$CLAUDE_DELIVERY" \
   --arg dx "$CODEX_DELIVERY" \
   --arg dr "$REVIEW_DELIVERY" \
-  --arg ras "$REVIEW_AGENT_SUFFIX" \
   --arg re "$REVIEW_ENGINE" \
-  '(if $os != "" then {opus: {surface_id: $os, agent: $slug, engine: $de, delivery: $dd}} else {} end)
-   + {sonnet: {surface_id: $ss, agent: ($slug + "-sonnet"), engine: "claude", delivery: $dc}}
-   + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), engine: "codex", delivery: $dx}} else {} end)
-   + (if $rs != "" then {review: {surface_id: $rs, agent: ($slug + $ras), engine: $re, delivery: $dr}} else {} end)')
+  '(if $ds != "" then {design: {surface_id: $ds, agent: $slug, runner: $drr, engine: $de, role: "plan", delivery: $dd}} else {} end)
+   + (if $rs != "" then {review: {surface_id: $rs, agent: ($slug + "-review"), runner: $rrr, engine: $re, role: "review", delivery: $dr}} else {} end)
+   + {executors:
+        ((if $ops != "" then {opus: {surface_id: $ops, agent: ($slug + "-opus"), runner: $orr, engine: "claude", role: "exec", delivery: $dc}} else {} end)
+         + (if $ss != "" then {sonnet: {surface_id: $ss, agent: ($slug + "-sonnet"), runner: "", engine: "claude", role: "exec", delivery: $dc}} else {} end)
+         + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), runner: $crr, engine: "codex", role: "exec", delivery: $dx}} else {} end))}')
 echo "$PREWARM_JSON" > "$STATUS_DIR/prewarm.json"
 log "prewarm" "wrote $STATUS_DIR/prewarm.json"
 
 # agmsg prewarm 経路では通常 launch が走らないため、観測用の初期 status.json をここで書く
 # (standby wrapper は .assigned-<name> が無い限り status.json を書かないので、上書きの心配はない)
-if [[ $WITH_OPUS -eq 1 && ! -f "$STATUS_DIR/status.json" ]]; then
-  jq -n --arg ws "$WORKSPACE" --arg sf "$OPUS_SURFACE" \
+if [[ $WITH_DESIGN -eq 1 && ! -f "$STATUS_DIR/status.json" ]]; then
+  jq -n --arg ws "$WORKSPACE" --arg sf "$DESIGN_SURFACE" \
     '{status: "launched", workspace_id: $ws, surface_id: $sf,
       message: "agmsg prewarm panes launched (idle)", timestamp: (now | todate)}' \
     > "$STATUS_DIR/status.json"
