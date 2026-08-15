@@ -5,7 +5,7 @@
 #   agmsg 未使用 (opus は通常フローで起動済み。sonnet / codex の split のみ追加):
 #     prewarm-panes.sh --workspace <ws-id> --base-surface <sf-id> \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
-#       [--codex-runner <name>] [--exec-runner <name>] \
+#       [--claude-runner <name>] [--codex-runner <name>] [--exec-runner <name>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
@@ -14,7 +14,8 @@
 #     prewarm-panes.sh --with-design \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       --agmsg-team <team> \
-#       [--codex-runner <name>] [--exec-runner <name>] [--exec-choice <choice>] \
+#       [--claude-runner <name>] [--codex-runner <name>] \
+#       [--exec-runner <name>] [--exec-choice <choice>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
@@ -65,6 +66,7 @@ CWD=""
 SLUG=""
 STATUS_DIR=""
 CODEX_RUNNER=""
+CLAUDE_RUNNER=""
 EXEC_RUNNER=""
 REVIEW_MODEL=""
 AGMSG_TEAM=""
@@ -103,6 +105,9 @@ while [[ $# -gt 0 ]]; do
     --codex-runner)
       [[ $# -lt 2 ]] && die "--codex-runner requires a runner name"
       CODEX_RUNNER="$2"; shift 2 ;;
+    --claude-runner)
+      [[ $# -lt 2 ]] && die "--claude-runner requires a runner name"
+      CLAUDE_RUNNER="$2"; shift 2 ;;
     --exec-runner)
       [[ $# -lt 2 ]] && die "--exec-runner requires a runner name"
       EXEC_RUNNER="$2"; shift 2 ;;
@@ -180,13 +185,27 @@ if [[ -n "$EXEC_RUNNER" ]]; then
     '.runners[]? | select(.name == $n) | .engine // empty' "$RUNNERS_CONFIG_PATH")
   [[ -n "$EXEC_ENGINE" ]] || die "exec runner '$EXEC_RUNNER' not found in $RUNNERS_CONFIG_PATH"
 fi
+if [[ -n "$CLAUDE_RUNNER" ]]; then
+  [[ -f "$RUNNERS_CONFIG_PATH" ]] \
+    || die "runners.json not found at $RUNNERS_CONFIG_PATH (required for --claude-runner)"
+  CLAUDE_RUNNER_ENGINE=$(jq -r --arg n "$CLAUDE_RUNNER" \
+    '.runners[]? | select(.name == $n) | .engine // empty' "$RUNNERS_CONFIG_PATH")
+  [[ -n "$CLAUDE_RUNNER_ENGINE" ]] || die "claude runner '$CLAUDE_RUNNER' not found in $RUNNERS_CONFIG_PATH"
+  [[ "$CLAUDE_RUNNER_ENGINE" == "claude" ]] || die "--claude-runner requires a claude engine runner"
+fi
 
 START_SONNET=0
 START_CODEX=0
 START_OPUS=0
 case "$EXEC_CHOICE" in
-  "") START_SONNET=1; [[ -n "$CODEX_RUNNER" ]] && START_CODEX=1 ;;
-  ask) START_SONNET=1; [[ -n "$CODEX_RUNNER" ]] && START_CODEX=1 ;;
+  ""|ask)
+    START_SONNET=1
+    [[ -n "$CODEX_RUNNER" ]] && START_CODEX=1
+    if [[ "$DESIGN_ENGINE" == "codex" ]]; then
+      [[ -n "$CLAUDE_RUNNER" ]] \
+        || die "codex design with exec_choice=${EXEC_CHOICE:-unset} requires --claude-runner for opus/sonnet choices"
+      START_OPUS=1
+    fi ;;
   sonnet)
     [[ -z "$EXEC_RUNNER" || "$EXEC_ENGINE" == "claude" ]] \
       || die "exec_choice=sonnet requires a claude exec runner"
@@ -201,7 +220,8 @@ case "$EXEC_CHOICE" in
     [[ -z "$EXEC_RUNNER" || "$EXEC_ENGINE" == "claude" ]] \
       || die "exec_choice=opus 1m requires a claude exec runner"
     if [[ "$DESIGN_ENGINE" == "codex" ]]; then
-      [[ -n "$EXEC_RUNNER" || "$REVIEWER_ENGINE" == "claude" ]] && START_OPUS=1
+      [[ -n "$EXEC_RUNNER" ]] || die "exec_choice=opus 1m with codex design requires --exec-runner"
+      START_OPUS=1
     fi ;;
   *) die "invalid --exec-choice '$EXEC_CHOICE'" ;;
 esac
@@ -259,6 +279,7 @@ CLAUDE_DELIVERY="cmux-send"
 CODEX_DELIVERY="cmux-send"
 REVIEW_DELIVERY="cmux-send"
 DESIGN_DELIVERY="cmux-send"
+REVIEW_JOINED=0
 
 wire_delivery() {
   local engine="$1"
@@ -318,6 +339,7 @@ if [[ -n "$AGMSG_TEAM" ]]; then
     REVIEW_WIRING_TYPE="claude-code"
     [[ "$REVIEW_WIRING_ENGINE" == "codex" ]] && REVIEW_WIRING_TYPE="codex"
     if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-review" "$REVIEW_WIRING_TYPE" "$CWD" >&2 2>/dev/null; then
+      REVIEW_JOINED=1
       wire_delivery "$REVIEW_WIRING_ENGINE"
       [[ "$REVIEW_WIRING_ENGINE" == "codex" ]] && REVIEW_DELIVERY="$CODEX_DELIVERY" || REVIEW_DELIVERY="$CLAUDE_DELIVERY"
     else
@@ -380,6 +402,13 @@ fi
 
 SONNET_SURFACE=""
 SONNET_PROMPT=""
+SONNET_EXEC_RUNNER=""
+if [[ "$EXEC_CHOICE" == "sonnet" ]]; then
+  SONNET_EXEC_RUNNER="$EXEC_RUNNER"
+elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
+  SONNET_EXEC_RUNNER="$CLAUDE_RUNNER"
+  [[ -z "$SONNET_EXEC_RUNNER" && "$DESIGN_ENGINE" == "claude" ]] && SONNET_EXEC_RUNNER="$DESIGN_RUNNER"
+fi
 AGMSG_FLAGS_SONNET=()
 if [[ $START_SONNET -eq 1 && -n "$AGMSG_TEAM" ]]; then
   # opus と同じ理由で delivery に応じて出し分ける (cmux-send フォールバック時は actas しない)
@@ -404,7 +433,7 @@ if [[ $START_SONNET -eq 1 ]]; then
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"}
     --status-dir "$STATUS_DIR"
   )
-  [[ -n "$EXEC_RUNNER" ]] && SONNET_ARGS+=(--runner "$EXEC_RUNNER")
+  [[ -n "$SONNET_EXEC_RUNNER" ]] && SONNET_ARGS+=(--runner "$SONNET_EXEC_RUNNER")
   SONNET_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     "${SONNET_ARGS[@]}" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
@@ -421,7 +450,7 @@ if [[ $START_OPUS -eq 1 ]]; then
   log "prewarm" "launching opus executor standby pane for $SLUG"
   AGMSG_FLAGS_OPUS=()
   [[ -n "$AGMSG_TEAM" ]] && AGMSG_FLAGS_OPUS=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-opus")
-  OPUS_EXEC_RUNNER="${EXEC_RUNNER:-$REVIEWER_RUNNER}"
+  OPUS_EXEC_RUNNER="${EXEC_RUNNER:-$CLAUDE_RUNNER}"
   OPUS_EXEC_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
     --mode standby \
@@ -479,6 +508,15 @@ fi
 
 REVIEW_SURFACE=""
 
+leave_failed_review_join() {
+  [[ $REVIEW_JOINED -eq 1 && -n "$AGMSG_TEAM" ]] || return 0
+  if bash "$AGMSG_DIR/leave.sh" "$AGMSG_TEAM" "$SLUG-review" >/dev/null 2>&1; then
+    REVIEW_JOINED=0
+  else
+    log "warn" "failed to leave review agmsg member after pane launch failure"
+  fi
+}
+
 if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
   AGMSG_FLAGS_REVIEW=()
   if [[ -n "$REVIEWER_RUNNER" ]]; then
@@ -509,9 +547,11 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     "$REVIEW_PANE_NAME"); then
     if ! REVIEW_SURFACE=$(echo "$REVIEW_RESULT" | jq -er '.surface_id // empty'); then
       REVIEW_SURFACE=""
+      leave_failed_review_join
       log "warn" "review pane output had no surface; review is disabled for this task"
     fi
   else
+    leave_failed_review_join
     log "warn" "failed to launch review pane; review is disabled for this task"
   fi
 fi
@@ -520,8 +560,6 @@ fi
 
 mkdir -p "$STATUS_DIR"
 REVIEW_ENGINE="${REVIEWER_ENGINE:-codex}"
-SONNET_EXEC_RUNNER=""
-[[ "$EXEC_CHOICE" == "sonnet" ]] && SONNET_EXEC_RUNNER="$EXEC_RUNNER"
 PREWARM_JSON=$(jq -n \
   --arg ds "$DESIGN_SURFACE" \
   --arg ops "$OPUS_EXEC_SURFACE" \

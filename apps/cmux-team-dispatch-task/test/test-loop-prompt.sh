@@ -47,4 +47,31 @@ all_codex=$(bash "$RENDER" \
 for forbidden in 'Claude design pane' 'claude reviewer' 'selected sonnet' 'reviewer is always the opposite'; do
   [[ "$all_codex" != *"$forbidden"* ]] || { echo "FAIL: AC2 all-Codex prompt contains: $forbidden"; exit 1; }
 done
+
+assert_missing_review_field() {
+  local missing="$1" output rc
+  local review_args=(--review on)
+  [[ "$missing" == model ]] || review_args+=(--review-model gpt-5.6-sol)
+  [[ "$missing" == runner ]] || review_args+=(--review-runner codex)
+  [[ "$missing" == engine ]] || review_args+=(--review-engine codex)
+  [[ "$missing" == agent ]] || review_args+=(--review-pane-agent issue-1-review)
+  set +e
+  output=$(bash "$RENDER" \
+    --slug issue-1-missing-review --issue 1 --issue-title test --issue-url https://x/1 \
+    --issue-body-file "$TMP/body.md" --plan-hint "$TMP/plan.md" \
+    --design-runner codex --design-engine codex \
+    "${review_args[@]}" \
+    --exec-choice codex --exec-runner codex --exec-engine codex \
+    --status-dir "$TMP/status" --timeout-sentinel "$TMP/sentinel" --team demo \
+    --layout workspace --parent-workspace workspace:1 --skill-dir "$SKILL" 2>&1)
+  rc=$?
+  set -e
+  [[ $rc -ne 0 ]] || { echo "FAIL: RV1 missing review $missing was accepted"; exit 1; }
+  [[ "$output" == *'review=on requires review model, runner, engine, and pane agent'* ]] \
+    || { echo "FAIL: RV2 missing review $missing diagnostic: $output"; exit 1; }
+}
+
+for missing_review_field in model runner engine agent; do
+  assert_missing_review_field "$missing_review_field"
+done
 echo '--- all tests passed ---'
