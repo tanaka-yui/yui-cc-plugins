@@ -120,7 +120,7 @@ codex engine は対象外（`--dangerously-bypass-approvals-and-sandbox` と
 
 | ステータス | 意味 |
 |-----------|------|
-| `launched` | セッション起動完了、Claude ロード中 |
+| `launched` | runner セッション起動完了、ロード中 |
 | `planning` | 計画フェーズ中 |
 | `executing` | 実装中 |
 | `done` | 全作業完了 |
@@ -533,6 +533,8 @@ security-guidance は hooks しか提供していない（skill / command なし
 # GitHub issue 自動ループ
 
 `--loop` を指定すると、GitHub issue を claim してバッチ単位で処理する。詳細は skill の `references/loop-mode.md` を参照する。ループ中は `.dispatch-loop/` のロックにより通常 dispatch を保護する。Codex runner は hook trust 確認を無人で通すため `--dangerously-bypass-hook-trust` を使用する。
+
+無人 prompt には解決済み design / 任意 review / exec の runner と engine をそのまま渡す。同一 engine の review も有効で、all-Codex 固定例（design/review/exec が codex）は3ペインだけを起動し、Claude/sonnet を補完起動しない。timeout sentinel は生成済みroleだけに渡す。cleanup/ agmsg leave は sparse な `prewarm.json` の `surface_id` / `agent` を再帰列挙して重複除去し、存在するroleだけを対象にする。`close-surface` は常に `--workspace` を伴い、`status.json` にworkspace IDが無い場合はworkspace名から引き直す。
 
 ## Phase B-R 有効時の完了通知について
 

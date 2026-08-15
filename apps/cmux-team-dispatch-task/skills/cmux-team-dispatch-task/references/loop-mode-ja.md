@@ -33,10 +33,11 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
    - **Other**: 「1〜10 の整数を自由入力する」
 
    回答は 1〜10 の整数として検証し、範囲外・非整数ならこの質問だけを再提示する。
-   concurrency は **タスク数であってペイン数ではない**。prewarm 有効時は 1 タスクあたり
-   レビュー無効で 3 ペイン / 有効で 4 ペインが立ち、worktree も 1 タスクにつき 1 個増える
-   （concurrency=10 かつレビュー有効なら 40 ペイン + 10 worktree）。上限を 10 に固定するのは
-   この増幅を踏まえた安全弁であり、それ以上を求められても引き上げない。
+   concurrency は **タスク数であってペイン数ではない**。prewarm 有効時は design、任意の
+   review、解決済み実行 choice が許可する executor という、実際に生成する role だけを起動する。
+   ペイン数は構成ごとに異なり、たとえば review 有効の all-Codex 固定構成は固定4ペインではなく
+   3ペインである。worktree は1タスクにつき1個増える。上限10はこのリソース増幅を踏まえた
+   安全弁であり、それ以上を求められても引き上げない。
 4. **最大バッチ数 (max_batches)**
    - **3**: 「短い実行で止める」
    - **5**: 「標準の上限」
@@ -64,8 +65,9 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 
 該当する質問だけを出し、不要なら最終確認一問だけにする。
 
-1. **reviewer runner**（design runner が codex、claude engine runner が二件以上、かつレビュー有効の場合）
-   - claude engine の runner を動的に列挙し、「codex 設計をレビューする runner」として選ぶ。
+1. **reviewer runner**（レビュー有効で、固定 review runner がまだ解決されていない場合）
+   - review-capable runner を動的に列挙する。design と同じ engine も許可し、下流で engine 関係を
+     再計算せず、解決済み review runner/engine を保持する。
 2. **この設定でループを開始しますか**
    - **開始**: 「上記設定を確定して実行する」
    - **設定をやり直す**: 「コール①へ戻る」
@@ -80,7 +82,7 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 | 4 | Step 1e integration strategy | コール②で事前設定する。 |
 | 5 | Step 1f runner switch / per-task runner | コール②の design runner を全 task 共通で使う。 |
 | 6 | Step 1f first-run setup（runners.json 対話生成） | L0 で検査し、無ければ開始せずエラー終了する。 |
-| 7 | Step 1f cross-engine reviewer 選択 | claude runner 一件なら自動採用、二件以上ならコール③で事前設定する。 |
+| 7 | Step 1f reviewer 選択 | project/global の固定 review runner を優先し、未解決なら legacy policy またはコール③の review-capable runner で解決する。 |
 | 8 | Step 1g review_mode | コール②で事前設定し、ループ中は固定する。 |
 | 9 | 完了時 Wait-and-merge の Option A/B | integration=merge なら常に merge。conflict は cleanup 遷移表で自動処理する。 |
 | 10 | 完了時 cleanup の三問 | cleanup 遷移表で決定的に処理する。 |
@@ -98,6 +100,17 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 
 各 batch は `fetch --limit <concurrency> --batch <N>` で claim する。`fetch` の `[]`、exit 3（claim 全滅）、exit 4（exhaustion unknown）はいずれも次 batch を開始せず終了する。各 issue を `render-loop-prompt.sh` と `prewarm-panes.sh --unattended` で準備し、起動後に `mark-dispatched` する。
 
+prompt renderer には解決済み role tuple を渡す: `--design-runner` / `--design-engine`、レビュー有効時だけ `--review-runner` / `--review-engine` / `--review-model` / `--review-pane-agent`、および `--exec-runner` / `--exec-engine`。all-Codex 固定無人タスクの role 引数例:
+
+```bash
+--design-runner codex --design-engine codex \
+--review on --review-runner codex --review-engine codex \
+--review-model gpt-5.6-sol --review-pane-agent <slug>-review \
+--exec-choice codex --exec-runner codex --exec-engine codex
+```
+
+ペインを埋めるためだけに別 engine/model を追加しない。timeout sentinel は `prewarm.json` に実在する role にだけ渡す。
+
 `batch-wait.sh --state-file <path> --batch <N> --timeout-min <task_timeout_min>` は `ALL_TERMINAL` の場合だけ完了であり、`WAITING` は再実行する。`--timeout-sentinel` がある task は後着の status を受け入れない。
 
 ## L3: cleanup と終了
@@ -105,5 +118,7 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 各 batch 後に `loop-cleanup.sh --state-file <path> --batch <N> --integration <pr|merge>` を実行する。ラベルは claim 時の `dispatch/in-progress` から、完了検証後の `dispatch/done`、または failed/timeout/conflict の `dispatch/failed` へ、terminal を先に付けて遷移する。
 
 成功時だけ worktree、branch、task の `.dispatch` を削除する。merge conflict、WIP 保全失敗、terminal label 失敗、PR 未検証ではすべて温存する。merge では検証済みの issue を `gh issue close --reason completed` で閉じ、正常 cleanup 時だけ agmsg の `leave.sh` で team から除籍する。`leaked[]` と stale lock は手動確認後に削除する。
+
+cleanup は sparse な `prewarm.json` に実在する `surface_id` / `agent` を再帰列挙して重複除去する。`close-surface` には必ず task workspace を渡し、`status.json` に `workspace_id` が無ければ workspace 名で引き直す。`prewarm.json` に無い role へ cleanup / timeout 操作を送らない。
 
 exit 3/4、cleanup 失敗、ユーザー中断を含む全中断経路で `lock-release` を呼ぶ。以後のフォールバックは質問ではなく、確定済み config を用いる。設定されていない任意値だけは仕様の既定値（concurrency=5、design=opus、exec=sonnet、review は設定値、layout=workspace）を使う。

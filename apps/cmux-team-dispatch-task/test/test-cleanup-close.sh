@@ -1,63 +1,113 @@
 #!/usr/bin/env bash
-# 最終クリーンアップの pane / workspace close 手順の静的検査。
-#
-# 守っている不変条件:
-#   CL1. close-surface の呼び出しには必ず --workspace が付く
-#        (付けないと surface ref が親の $CMUX_WORKSPACE_ID に対して解決され、
-#         "Surface ref not found" で必ず失敗する)
-#   CL2. workspace_id は status.json だけに依存せず、取れなかったときに
-#        cmux workspace list から slug 名で引き直すフォールバックがある
-#        (子セッションの status 書き込みは workspace_id を落とすため)
-#
-# 背景: この 2 つが揃って欠けていたため、ディスパッチ終了後に pane が閉じられず、
-# その後 git worktree remove が生きている codex の cwd を消し、codex TUI が
-# "failed to refresh skills: ... failed to reload config: No such file or directory"
-# を出し続ける事故が起きた。
+# 親 cleanup のドキュメント化された shell 例を実行し、sparse な role-aware
+# prewarm.json だけから close/leave 対象を解決することを検証する。
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
 GUIDE="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/references/guide-ja.md"
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/bin" "$TMP/repo" "$TMP/skill/scripts"
 fail=0
 
-for f in "$SKILL" "$GUIDE"; do
-  [[ -f "$f" ]] || { echo "FAIL: ファイルが見つからない: $f"; exit 2; }
-done
-
-# --- CL1: close-surface の呼び出しに --workspace が付く ---
-cl1=1
-for f in "$SKILL" "$GUIDE"; do
-  while IFS= read -r line; do
-    # 実際の呼び出し行だけを見る (散文中の言及は --surface を伴わない)
-    case "$line" in
-      *"close-surface"*"--surface"*)
-        case "$line" in
-          *"--workspace"*) ;;
-          *) echo "  --workspace が無い close-surface: $(basename "$f"): $line"; cl1=0 ;;
-        esac
-        ;;
-    esac
-  done < "$f"
-done
-if [[ $cl1 -eq 1 ]]; then
-  echo "PASS CL1: close-surface の呼び出しには必ず --workspace が付く"
-else
-  echo "FAIL CL1: --workspace の無い close-surface が残っている"; fail=1
+cat > "$TMP/bin/cmux" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1 $2" == "workspace list" ]]; then
+  echo 'workspace:42 [alpha]'
+  exit 0
 fi
+printf '%s\n' "$*" >> "$CMUX_TEST_LOG"
+STUB
+cat > "$TMP/bin/git" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+cat > "$TMP/bin/leave" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$LEAVE_TEST_LOG"
+STUB
+cat > "$TMP/skill/scripts/issue-fetch.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$TMP/bin/cmux" "$TMP/bin/git" "$TMP/bin/leave" "$TMP/skill/scripts/issue-fetch.sh"
 
-# --- CL2: workspace_id のフォールバックがある ---
-cl2=1
-for f in "$SKILL" "$GUIDE"; do
-  if ! grep -q 'workspace list' "$f"; then
-    echo "  workspace_id のフォールバックが無い: $(basename "$f")"
-    cl2=0
+make_fixture() {
+  mkdir -p "$TMP/repo/.dispatch/alpha" "$TMP/repo/.worktrees"
+  printf '{"status":"done"}\n' > "$TMP/repo/.dispatch/alpha/status.json"
+  cat > "$TMP/repo/.dispatch/alpha/prewarm.json" <<'JSON'
+{
+  "design": {"surface_id":"surface:7", "agent":"alpha-design"},
+  "review": {"surface_id":"surface:8", "agent":"alpha-review"},
+  "executors": {
+    "codex": {"surface_id":"surface:7", "agent":"alpha-design"}
+  }
+}
+JSON
+}
+
+extract_block() {
+  local file="$1" occurrence="$2" output="$3"
+  awk -v wanted="$occurrence" '
+    /^### Cleanup prompts/ { section=1 }
+    section && /^[[:space:]]*for slug in <task-slugs>; do$/ { count++; if (count == wanted) capture=1 }
+    capture && /^[[:space:]]*```$/ { exit }
+    capture { sub(/^  /, ""); print }
+  ' "$file" > "$output"
+}
+
+assert_line_count() {
+  local file="$1" expected="$2" pattern="$3" label="$4" actual
+  actual=$(grep -Fxc -- "$pattern" "$file" 2>/dev/null || true)
+  if [[ "$actual" == "$expected" ]]; then
+    echo "PASS $label"
+  else
+    echo "FAIL $label: expected=$expected actual=$actual pattern=$pattern"
+    fail=1
+  fi
+}
+
+for doc in "$SKILL" "$GUIDE"; do
+  name=$(basename "$doc")
+  cleanup_src="$TMP/$name-cleanup-src.sh"
+  cleanup_run="$TMP/$name-cleanup-run.sh"
+  extract_block "$doc" 1 "$cleanup_src"
+  sed -e 's/<task-slugs>/alpha/g' -e "s|<this-skill-dir>|$TMP/skill|g" "$cleanup_src" > "$cleanup_run"
+  make_fixture
+  cmux_log="$TMP/$name-cmux.log"
+  : > "$cmux_log"
+  (
+    cd "$TMP/repo" || exit 1
+    close_all=true remove_wt_all=false delete_br_all=false \
+      CMUX_TEST_LOG="$cmux_log" PATH="$TMP/bin:$PATH" bash "$cleanup_run"
+  ) >/dev/null 2>&1 || { echo "FAIL $name cleanup example did not execute"; fail=1; }
+
+  assert_line_count "$cmux_log" 1 'close-workspace --workspace workspace:42' "$name fallback workspace close"
+  assert_line_count "$cmux_log" 1 'close-surface --workspace workspace:42 --surface surface:7' "$name de-duplicates design surface"
+  assert_line_count "$cmux_log" 1 'close-surface --workspace workspace:42 --surface surface:8' "$name closes review surface"
+
+  leave_src="$TMP/$name-leave-src.sh"
+  leave_run="$TMP/$name-leave-run.sh"
+  extract_block "$doc" 2 "$leave_src"
+  sed -e 's/<task-slugs>/alpha/g' -e "s|~/.agents/skills/agmsg/scripts/leave.sh|$TMP/bin/leave|g" "$leave_src" > "$leave_run"
+  make_fixture
+  leave_log="$TMP/$name-leave.log"
+  : > "$leave_log"
+  (
+    cd "$TMP/repo" || exit 1
+    TEAM=demo LEAVE_TEST_LOG="$leave_log" bash "$leave_run"
+  ) >/dev/null 2>&1 || { echo "FAIL $name leave example did not execute"; fail=1; }
+
+  assert_line_count "$leave_log" 1 'demo alpha-design' "$name de-duplicates actual design agent"
+  assert_line_count "$leave_log" 1 'demo alpha-review' "$name leaves actual review agent"
+  if grep -Eq 'alpha-(sonnet|codex|opus)' "$leave_log"; then
+    echo "FAIL $name synthesized a non-existent agent"
+    fail=1
+  else
+    echo "PASS $name does not synthesize absent agents"
   fi
 done
-if [[ $cl2 -eq 1 ]]; then
-  echo "PASS CL2: workspace_id は status.json 欠落時に cmux workspace list から引き直す"
-else
-  echo "FAIL CL2: status.json だけに依存している"; fail=1
-fi
 
-exit $fail
+exit "$fail"

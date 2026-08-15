@@ -52,7 +52,7 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 
 ## ループモード（GitHub issue 自動ループ）
 
-`--loop` は `references/loop-mode.md` の手順で GitHub issue をバッチ処理する。状態は `.dispatch-loop/`、タスク状態は `.dispatch/` に置く。`loop.task_timeout_min` と `loop.lock_lease_min` は timeout とロック lease を別に設定する。通常 dispatch は active loop lock があれば開始・一括 cleanup を拒否する。Codex 起動には全経路で `--dangerously-bypass-hook-trust` を付与する。runner wrapper は既存の `pr_url` を保持する。
+`--loop` は `references/loop-mode.md` の手順で GitHub issue をバッチ処理する。状態は `.dispatch-loop/`、タスク状態は `.dispatch/` に置く。`loop.task_timeout_min` と `loop.lock_lease_min` は timeout とロック lease を別に設定する。通常 dispatch は active loop lock があれば開始・一括 cleanup を拒否する。Codex 起動には全経路で `--dangerously-bypass-hook-trust` を付与する。runner wrapper は既存の `pr_url` を保持する。無人 prompt には解決済み design / 任意 review / exec の runner と engine を渡し、role 間の関係から再推測しない。all-Codex 固定構成は3つの codex role pane だけを起動する。timeout sentinel と cleanup は `prewarm.json` に実在する role だけを対象にする。
 
 ---
 
@@ -1047,7 +1047,7 @@ done
   "status": "launched",
   "workspace_id": "workspace:3",
   "surface_id": "surface:5",
-  "message": "Claude session launched in plan mode (workspace layout)",
+  "message": "Runner session launched in plan mode (workspace layout)",
   "pr_url": "https://github.com/owner/repo/pull/123",
   "timestamp": "2026-04-07T16:00:00Z"
 }
@@ -1475,9 +1475,9 @@ codex engine は影響を受けない。`.claude/settings.local.json` を読ま�
 
 | ステータス | 意味 | 書き込み元 |
 |-----------|------|-----------|
-| `launched` | セッション起動完了、Claude ロード中 | 起動スクリプト |
+| `launched` | runner セッション起動完了、ロード中 | 起動スクリプト |
 | `planning` | 計画フェーズ中 | 子セッション（任意） |
-| `executing` | Claude 起動中 / 実装中 | ランナースクリプト / 子セッション |
+| `executing` | runner セッション起動中 / 実装中 | ランナースクリプト / 子セッション |
 | `done` | 全作業完了 | ランナースクリプト / 子セッション |
 | `error` | エラー / 異常終了 | ランナースクリプト / 子セッション |
 

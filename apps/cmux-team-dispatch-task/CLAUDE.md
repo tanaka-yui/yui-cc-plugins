@@ -55,7 +55,10 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
   `--runner "$REVIEW_RUNNER"` / `--runner "$EXEC_RUNNER"` を必ず渡す。不正・利用不能な project/global 値はそのレイヤーだけ
   無効化する。初回設定の永続化は writer 固有 `mktemp` + 同一directory `mv` を使う。
 - cleanup は prewarm.json の `.. | objects | .surface_id? // empty` と `.agent?` を列挙し、
-  `awk 'NF && !seen[$0]++'` で重複除去する。
+  `awk 'NF && !seen[$0]++'` で重複除去する。`close-surface` は `--workspace` 必須で、ID欠落時は
+  workspace名へフォールバックする。timeout sentinel / cleanup / agmsg leave は実在roleだけに送る。
+- 無人loop rendererにはdesign/review/execの解決済みrunner/engineを渡す。review fieldsはreview有効時だけ
+  必須。同一engine reviewを許可し、all-Codex固定例でClaude/sonnetを起動・指示しない。
 
 なお SKILL.md は英語、guide-ja.md は日本語で、**見出しは 1:1 対応**させる（ルート `CLAUDE.md`「Language convention」）。SKILL.md に節を足したら guide-ja.md にも対応する節を足すこと。SKILL.md に対応節が無い日本語の解説は guide-ja.md 末尾の「補足」にまとめる。
 
@@ -263,4 +266,4 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 42. **最終クリーンアップの pane close**: `cmux close-surface` の呼び出しに `--workspace` が付いていることを確認する。付けないと `surface:N` ref が親の `$CMUX_WORKSPACE_ID` に対して解決され、必ず `Surface ref not found` で失敗する（`2>/dev/null || true` で握り潰されるため無言で残る）。また `workspace_id` は `status.json` だけに依存してはならない — 子セッション自身が書く done/error は 3 フィールドの `echo` で `workspace_id` / `surface_id` を消し、runner wrapper がそれを書き戻すのはセッション終了時だけなので、codex TUI が終了指示を無視して idle 残留すると永久に欠落する。欠落時は `cmux workspace list` を slug 名（`[<slug>]`）で引いてフォールバックすること。この 2 つが揃って欠けていたため、ディスパッチ終了後に pane が閉じられないまま `git worktree remove` が生きている codex の cwd を消し、codex TUI が `failed to refresh skills: ... failed to reload config: No such file or directory` を出し続ける事故が起きた。回帰は `bash test/test-cleanup-close.sh`（CL1-CL2）で検証する
 # GitHub issue 自動ループの保守
 
-`--loop` の仕様は `skills/cmux-team-dispatch-task/references/loop-mode.md` を正本とする。loop CLI、プロンプト、起動フラグを変更するときは SKILL.md、guide-ja.md、README.md、CLAUDE.md を同時に更新し、`.dispatch-loop/` の owner lock と timeout sentinel の契約を維持する。
+`--loop` の仕様は `skills/cmux-team-dispatch-task/references/loop-mode.md` を正本とする。loop CLI、プロンプト、起動フラグを変更するときは SKILL.md、guide-ja.md、README.md、CLAUDE.md を同時に更新し、`.dispatch-loop/` の owner lock と timeout sentinel の契約を維持する。renderer headerはdesign/review/execの解決済みrunner/engineを一度だけ出し、review無効時にreview fieldsを要求しない。timeout sentinelとcleanupは`prewarm.json`に生成されたroleだけを対象にする。

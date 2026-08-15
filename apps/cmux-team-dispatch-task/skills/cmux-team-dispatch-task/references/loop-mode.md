@@ -43,10 +43,12 @@ and ask no further questions until the loop ends.
 
    Validate the answer as an integer from 1 to 10; if it is out of range or not an
    integer, re-present only this question. `concurrency` is a **task count, not a pane
-   count**. When prewarm is enabled, each task spins up 3 panes (review disabled) or 4
-   panes (review enabled), and adds 1 worktree per task (`concurrency=10` with review
-   enabled means 40 panes + 10 worktrees). The upper bound of 10 is a safety valve
-   accounting for this amplification, and must not be raised even if requested.
+   count**. When prewarm is enabled, each task starts only its instantiated roles: one
+   design pane, an optional review pane, and the executor panes allowed by the resolved
+   execution choice. The pane count therefore varies by configuration; for example, a
+   fixed all-Codex configuration with review enabled has 3 panes, not a fixed 4-pane
+   layout. Each task also adds one worktree. The upper bound of 10 is a safety valve for
+   this resource amplification and must not be raised even if requested.
 4. **Maximum batch count (`max_batches`)**
    - **3**: "stop after a short run"
    - **5**: "standard upper bound"
@@ -76,10 +78,11 @@ and ask no further questions until the loop ends.
 Ask only the applicable questions; if none apply, ask only the single final confirmation
 question.
 
-1. **reviewer runner** (when the design runner is codex, there are two or more claude
-   engine runners, and review is enabled)
-   - Dynamically enumerate claude engine runners, to be chosen as "the runner that
-     reviews the codex design."
+1. **reviewer runner** (when review is enabled and no fixed review runner has already
+   been resolved)
+   - Dynamically enumerate review-capable runners. A reviewer may use the same engine as
+     the design runner; preserve the resolved review runner/engine instead of deriving an
+     engine relationship downstream.
 2. **Start the loop with this configuration?**
    - **Start**: "confirm the above configuration and run"
    - **Redo configuration**: "go back to call ①"
@@ -94,7 +97,7 @@ question.
 | 4 | Step 1e integration strategy | Pre-configured in call ②. |
 | 5 | Step 1f runner switch / per-task runner | Use call ②'s design runner in common across all tasks. |
 | 6 | Step 1f first-run setup (interactive `runners.json` generation) | Checked at L0; if missing, exit with an error without starting. |
-| 7 | Step 1f cross-engine reviewer selection | Auto-adopted if there is one claude runner; pre-configured in call ③ if there are two or more. |
+| 7 | Step 1f reviewer selection | Use the fixed project/global review runner when resolved; otherwise resolve the legacy policy or pre-configure a review-capable runner in call ③. |
 | 8 | Step 1g review_mode | Pre-configured in call ②, and fixed for the duration of the loop. |
 | 9 | Wait-and-merge Option A/B at completion | Always merge when integration=merge. Conflicts are handled automatically by the cleanup transition table. |
 | 10 | The three cleanup questions at completion | Handled deterministically by the cleanup transition table. |
@@ -118,6 +121,21 @@ Each batch is claimed with `fetch --limit <concurrency> --batch <N>`. `fetch` re
 starting the next batch. Prepare each issue with `render-loop-prompt.sh` and
 `prewarm-panes.sh --unattended`, and run `mark-dispatched` after launch.
 
+Pass the resolved role tuple to the prompt renderer: `--design-runner` /
+`--design-engine`, optional `--review-runner` / `--review-engine` / `--review-model` /
+`--review-pane-agent`, and `--exec-runner` / `--exec-engine`. For example, the role
+arguments for a fixed all-Codex unattended task are:
+
+```bash
+--design-runner codex --design-engine codex \
+--review on --review-runner codex --review-engine codex \
+--review-model gpt-5.6-sol --review-pane-agent <slug>-review \
+--exec-choice codex --exec-runner codex --exec-engine codex
+```
+
+Do not add a different engine or model merely to fill a pane. Pass the timeout sentinel
+only to roles that `prewarm.json` actually instantiates.
+
 `batch-wait.sh --state-file <path> --batch <N> --timeout-min <task_timeout_min>` is
 complete only on `ALL_TERMINAL`; re-run on `WAITING`. A task with a `--timeout-sentinel`
 does not accept a late-arriving status.
@@ -134,6 +152,11 @@ WIP preservation failure, terminal label failure, and unverified PRs are all pre
 On merge, close verified issues with `gh issue close --reason completed`, and only on
 normal cleanup remove the agent from the team via agmsg's `leave.sh`. `leaked[]` and
 stale locks are deleted only after manual confirmation.
+
+Cleanup enumerates and de-duplicates the actual `surface_id` and `agent` values in the
+task's sparse `prewarm.json`. Every `close-surface` call includes the task workspace, with
+workspace-name lookup as the fallback when `status.json` lacks `workspace_id`. No cleanup
+or timeout operation targets a role absent from `prewarm.json`.
 
 Call `lock-release` on every interruption path, including exit 3/4, cleanup failure, and
 user interruption. Subsequent fallback uses the finalized config rather than questions.

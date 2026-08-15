@@ -1,5 +1,5 @@
 #!/bin/bash
-# Launch a cmux workspace (or split pane) with git worktree isolation and Claude session
+# Launch a cmux workspace (or split pane) with git worktree isolation and a runner session
 # Based on cmux-launch.sh with cmux-team-dispatch-task extensions
 #
 # Usage: launch-workspace.sh [options] <workspace-name> <prompt...>
@@ -656,8 +656,8 @@ if [[ "$MODE" == "execute" ]]; then
       || die "failed to parse review config at $REVIEW_CONFIG"
     REVIEWER_WORKSPACE=$(jq -r '.reviewer_workspace // empty' "$REVIEW_CONFIG" 2>/dev/null) \
       || die "failed to parse review config at $REVIEW_CONFIG"
-    # レビュアーの engine。レビュアーは常に設計 engine の逆だが、その情報は親セッション
-    # にしかないので review-config 経由で受け取る。欠落 (旧スキーマ) なら注入しない。
+    # 解決済み review role の engine。design engine との関係から再計算せず、親セッションが
+    # review-config に記録した値を使う。欠落 (旧スキーマ) なら注入しない。
     REVIEWER_ENGINE=$(jq -r '.reviewer_engine // empty' "$REVIEW_CONFIG" 2>/dev/null) \
       || die "failed to parse review config at $REVIEW_CONFIG"
     [[ -n "$REVIEWER_SURFACE" && -n "$REVIEW_DIR" ]] \
@@ -676,8 +676,8 @@ if [[ "$MODE" == "execute" ]]; then
     # レビュアーに観点別の並列レビューをさせる指示。--no-parallel は起動プロンプト専用の
     # スイッチなのでここでは見ない。注入するかどうかは reviewer_engine の有無だけで決める。
     #
-    # この文面は実装者の inner prompt の中に埋め込まれるが、宛先はレビュアー (実装者とは逆の
-    # engine) である。engine が違えば機構も違う (codex は spawn_agent / claude は Task subagent)
+    # この文面は実装者の inner prompt の中に埋め込まれるが、宛先は解決済み review role である。
+    # engine ごとに機構が違う (codex は spawn_agent / claude は Task subagent)
     # ため、位置だけで「引用された他人宛のペイロード」と読ませると実装者が自分宛と誤読して
     # 呼べないツールを指示される。前後に明示的な宛先マーカーを付けて境界を語彙で示す。
     REVIEWER_PARALLEL=""
@@ -798,7 +798,7 @@ CODEX_MODEL_FLAG=""
   fi
 
   # 常に zsh -ic で .zshrc を読み込ませてユーザー定義関数 (ccenec 等) と env (proxy 認証 等) を解決
-  CLAUDE_CMD="zsh -ic \"$CORE_CMD\""
+  SESSION_CMD="zsh -ic \"$CORE_CMD\""
 
 # --- Step 4: Generate runner script ---
 # The runner is written BEFORE the workspace is created so it can be launched
@@ -942,7 +942,7 @@ fi
 
 # standby wrapper は起動時に status.json を書かない (同じ STATUS_DIR を Child が使用中のため)
 if [[ "\$STANDBY" != "1" ]]; then
-  write_status "executing" "Claude session starting"
+  write_status "executing" "runner session starting"
 fi
 
 # --- status.json watcher ---
@@ -994,8 +994,9 @@ if [[ -n "\$STATUS_DIR" ]]; then
   WATCHER_PID=\$!
 fi
 
-${CLAUDE_CMD}
-CLAUDE_EXIT=\$?
+SESSION_EXIT=0
+${SESSION_CMD}
+SESSION_EXIT=\$?
 
 # watcher を協調的に停止する。強制 kill は通知の途中で切れる可能性があるため、
 # 先に sentinel を置いて自発的な終了を最大 20 秒待ち、それでも残る場合だけ kill する。
@@ -1045,33 +1046,33 @@ PREV_STATUS=""
 if [[ -n "\$STATUS_DIR" && -f "\$STATUS_DIR/status.json" ]]; then
   PREV_STATUS=\$(jq -r '.status // empty' "\$STATUS_DIR/status.json" 2>/dev/null || echo "")
 fi
-if [[ \$CLAUDE_EXIT -ge 128 && ( "\$PREV_STATUS" == "done" || "\$PREV_STATUS" == "error" ) ]]; then
-  echo "[runner] terminated by signal (exit \$CLAUDE_EXIT) after terminal status '\$PREV_STATUS'; skipping status update and notification" >&2
+if [[ \$SESSION_EXIT -ge 128 && ( "\$PREV_STATUS" == "done" || "\$PREV_STATUS" == "error" ) ]]; then
+  echo "[runner] terminated by signal (exit \$SESSION_EXIT) after terminal status '\$PREV_STATUS'; skipping status update and notification" >&2
   exit 0
 fi
 
 # 子が書いた終端 status は上書きしない。
 # - error: 握り潰すと ABORT プロトコル (status error を書いてセッション終了) が無効化される
-# - done + 正常終了: 子が書いた変更サマリを "Claude session completed" で潰さない
+# - done + 正常終了: 子が書いた変更サマリを "runner session completed" で潰さない
 # - done + 異常終了: done 宣言後のクラッシュは保守的に error 扱いとして親に調査させる
 FINAL_STATUS=""
 if [[ "\$PREV_STATUS" == "error" ]]; then
   FINAL_STATUS="error"
   echo "[runner] preserving child-written terminal status 'error'" >&2
-elif [[ "\$PREV_STATUS" == "done" && \$CLAUDE_EXIT -eq 0 ]]; then
+elif [[ "\$PREV_STATUS" == "done" && \$SESSION_EXIT -eq 0 ]]; then
   FINAL_STATUS="done"
   echo "[runner] preserving child-written terminal status 'done'" >&2
-elif [[ \$CLAUDE_EXIT -eq 0 ]]; then
-  write_status "done" "Claude session completed (exit 0)"
+elif [[ \$SESSION_EXIT -eq 0 ]]; then
+  write_status "done" "runner session completed (exit 0)"
   FINAL_STATUS="done"
 else
-  write_status "error" "Claude session exited with code \$CLAUDE_EXIT"
+  write_status "error" "runner session exited with code \$SESSION_EXIT"
   FINAL_STATUS="error"
 fi
 
 if [[ -n "\$NOTIFY_WS" ]]; then
   "\$CMUX" notify --title "Done: \$SLUG" \\
-    --body "Exit code: \$CLAUDE_EXIT" \\
+    --body "Exit code: \$SESSION_EXIT" \\
     --workspace "\$NOTIFY_WS" 2>/dev/null || true
 fi
 
@@ -1163,7 +1164,7 @@ if [[ -n "$STATUS_DIR" && "$MODE" != "standby" && "$MODE" != "review" ]]; then
         --arg title "$TITLE" \
         --arg mode "$MODE" \
         --arg layout "workspace" \
-        --arg msg "Claude session launched in $MODE mode (workspace layout)" \
+        --arg msg "Runner session launched in $MODE mode (workspace layout)" \
         '{
           status: $status,
           workspace_id: $ws,
