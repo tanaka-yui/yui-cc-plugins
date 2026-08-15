@@ -1,6 +1,6 @@
 {
   "name": "cmux-team-dispatch-task",
-  "version": "1.18.0",
+  "version": "1.18.0+codex.local-20260815-091217",
   "description": "Parallel task dispatch via cmux workspaces. Each task gets its own git worktree and Codex session, orchestrated by the parent session.",
   "author": {
     "name": "tanaka-yui",
@@ -19,11 +19,15 @@
   "interface": {
     "displayName": "cmux-team-dispatch-task",
     "shortDescription": "Dispatch parallel tasks into cmux workspaces.",
+    "longDescription": "Dispatch parallel tasks into isolated cmux workspaces with configurable planning, review, and execution runners.",
     "developerName": "tanaka-yui",
     "category": "Development",
     "capabilities": [
       "Terminal",
       "Workflow"
+    ],
+    "defaultPrompt": [
+      "Use $cmux-team-dispatch-task:cmux-team-dispatch-task to dispatch these tasks in parallel."
     ]
   }
 }
