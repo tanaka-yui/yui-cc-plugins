@@ -59,6 +59,7 @@ cat > "$TMP/status/review/code-review-codex-reviewer.json" <<JSON
 {
   "reviewer_surface": "surface:99",
   "reviewer_workspace": "workspace:7",
+  "reviewer_runner": "codex",
   "reviewer_engine": "codex",
   "review_dir": "$TMP/status/review"
 }
@@ -139,7 +140,8 @@ assert_contains "$legacy_runner" 'send-prompt.sh --to-surface surface:99' 'T6 le
 assert_not_contains "$legacy_runner" '--workspace workspace:7' 'T6 legacy config has no --workspace flag'
 assert_not_contains "$legacy_runner" '--to-workspace workspace:7' 'T6 legacy config has no --to-workspace flag'
 
-# --- PR1: reviewer_engine ありならレビュー依頼文に review モードのディレクティブが入る ---
+# --- PR1: reviewer_runner / reviewer_engine を明示した固定レビュー設定では、
+#     実装者 engine の反対側を計算せず JSON の reviewer_engine をそのまま使う ---
 codex_reviewer=$(runner_with_config claude "$TMP/status/review/code-review-codex-reviewer.json" review-cfg-codex-rev)
 assert_contains "$codex_reviewer" 'PARALLEL EXECUTION, mandatory' 'PR1 reviewer_engine=codex でディレクティブが入る'
 assert_contains "$codex_reviewer" 'spawn_agent' 'PR1 codex レビュアーには spawn_agent が届く'

@@ -10,13 +10,13 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `skills/cmux-team-dispatch-task/SKILL.md` | メインスキル定義（3ステップワークフロー） |
 | `skills/cmux-team-dispatch-task/references/guide-ja.md` | 日本語リファレンスガイド |
 | `skills/cmux-team-dispatch-task/scripts/launch-workspace.sh` | ワークスペース/スプリット起動スクリプト |
-| `skills/cmux-team-dispatch-task/scripts/prewarm-panes.sh` | pre-warm standby ペイン一括起動ラッパー(縦分割 / Phase A-R 有効時は 2×2 グリッド・agmsg 配線・prewarm.json 生成) |
+| `skills/cmux-team-dispatch-task/scripts/prewarm-panes.sh` | design / review / executors の role-aware prewarm と agmsg 配線・prewarm.json 生成 |
 | `skills/cmux-team-dispatch-task/scripts/monitor-dispatch.sh` | 完了通知の監視スクリプト（子 → 親通知＋全完了検知） |
 | `skills/cmux-team-dispatch-task/scripts/send-prompt.sh` | 全メッセージ配送の単一入口（常にタイプ入力 + watcher 生存時は agmsg inbox にも記録 / 長文の outbox 退避 / Enter 検証と再送） |
 | `skills/cmux-team-dispatch-task/scripts/report-status.sh` | 子セッションが status.json を終端へ遷移させる入口（既存フィールドを保存。クォート不要なので inner prompt から安全に呼べる） |
 | `skills/cmux-team-dispatch-task/scripts/terminal-wait.sh` | シェル起動検知と `shell_ready_ms` 学習を行う共通ヘルパー（source 専用） |
 | `skills/cmux-team-dispatch-task/scripts/parallel-directive.sh` | 子セッションへ渡す並列実行ディレクティブの生成（文面の単一情報源） |
-| `~/.claude/cmux-team-dispatch-task/config.json` | グローバル設定（自動生成）。`shell_ready_ms.baseline_ms`（EMA 学習値）、`prewarm`（standby pane 事前起動）、`review_mode`、`design_runner` / `exec_choice`（質問の固定値。未設定時は質問の「常に〜」回答から永続化可能）。**`message_type` は v1.16.0 で廃止**（書いても読まれない） |
+| `~/.claude/cmux-team-dispatch-task/config.json` | グローバル設定（自動生成）。`shell_ready_ms.baseline_ms`、`prewarm`、`review_mode`、`design_runner` / `review_runner` / `exec_choice`。**`message_type` は v1.16.0 で廃止** |
 | `~/.claude/cmux-team-dispatch-task/runners.json` | 子セッション runtime 一覧（初回セットアップで生成）。SKILL.md Step 1f で読込 |
 | `<project>/.dispatch/config.json` | プロジェクト固有の上書き（手動配置）。存在時はグローバルより優先 |
 | `.claude-plugin/plugin.json` | Plugin マニフェスト |
@@ -35,6 +35,26 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 4. `CLAUDE.md` (このファイル) — 開発ガイド
 
 **任意の 1 ファイルを更新したら必ず残り 3 ファイルも同時に更新すること。** 下の「メンテナンス手順」の各項目はこの 4 ファイル整合性の検証手順である。整合が崩れている状態で commit / PR を出してはならない。
+
+### role 解決の現行契約
+
+- `design_runner` / `review_runner` / `exec_choice` は独立。`review_runner` は project → global →
+  key 未設定時だけ legacy cross-engine resolver。固定/`"ask"` は同一 engine を許可する。
+- codex runner の role model は `plan_model` / `review_model` / `exec_model`。all-Codex 例は
+  `gpt-5.6-sol` / `gpt-5.6-sol` / `gpt-5.6-terra` と config
+  `{"design_runner":"codex","review_runner":"codex","exec_choice":"codex","review_mode":"on","prewarm":true}`。
+- 固定 review は1つの専用ペインが Phase A-R/B-R を担当する。設計ペインは実装委譲後
+  `.deferred` を作って exit し、レビュアーへ転じない。`code-review.json` には
+  `reviewer_runner` / `reviewer_engine` を明示する。
+- `review_mode=on` でも reviewer 不在なら警告してそのタスクだけ review off。review spawn 失敗も
+  gate をスキップして Phase B へ進む。config は書き換えない。
+- prewarm.json は `design` / 任意の `review` / `executors`。固定 `exec_choice` は未選択ペインを
+  抑止する。all-Codex は3ペインで、Claude/sonnetを起動しない。
+- non-prewarm の design/review/exec は `--runner "$DESIGN_RUNNER"` /
+  `--runner "$REVIEW_RUNNER"` / `--runner "$EXEC_RUNNER"` を必ず渡す。不正・利用不能な project/global 値はそのレイヤーだけ
+  無効化する。初回設定の永続化は writer 固有 `mktemp` + 同一directory `mv` を使う。
+- cleanup は prewarm.json の `.. | objects | .surface_id? // empty` と `.agent?` を列挙し、
+  `awk 'NF && !seen[$0]++'` で重複除去する。
 
 なお SKILL.md は英語、guide-ja.md は日本語で、**見出しは 1:1 対応**させる（ルート `CLAUDE.md`「Language convention」）。SKILL.md に節を足したら guide-ja.md にも対応する節を足すこと。SKILL.md に対応節が無い日本語の解説は guide-ja.md 末尾の「補足」にまとめる。
 
@@ -86,15 +106,15 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
    - 計画の受け渡しは `--plan-file <path>` で行う (`.cmux-team-dispatch-task-prompt.md` は書き換えず Phase A のものを温存)
 9. 配送が `scripts/send-prompt.sh` に一本化され、`cmux send` / `cmux send-key` の直書きが残っていないことを確認（`launch-workspace.sh` / `monitor-dispatch.sh` / `prewarm-panes.sh` / `parallel-directive.sh` の実装、および SKILL.md / `references/` 配下の全 `.md` の指示文。`send-prompt.sh` 自身が唯一の例外）。回帰は `bash test/test-send-prompt-callsites.sh` で検証する: **CS1 = 4 スクリプトに `cmux send` / `cmux send-key` の直書きが残らない**（`send-key` 無しの一方通行の `cmux send` も配送事故になるため両方を検出する）、CS2 = `launch-workspace.sh` と `monitor-dispatch.sh` の両スクリプトが `send-prompt.sh` を呼ぶ、**CS3 = SKILL.md と `references/**/*.md`**（訳の `guide-ja.md` と、`render-loop-prompt.sh` が子タスクプロンプトへ連結する `references/unattended/*.md` を含む）に直書きが残らない。CS1 は対象ファイルが読めない、または grep が status 2 以上を返すときも FAIL にして fail-open させない。訳や無人ループ用ブロックが原文から遅れて旧文面を残す事故を防ぐため、対象をこれら全部に広げてある
    - **免除は行番号ではなくマーカーで行う**: シェルへのコマンド打鍵（TUI へのメッセージ配送ではない）など正当な `cmux send` は、直前 3 行以内（ドキュメントは同一行または直前行）に `send-prompt-exempt:` を含むコメントを置いたときだけ検査から外れる。新しい出現は必ずレビューを通る。**スクリプトのコメント行はマーカー判定より前に無条件で除外される。** したがってコメント中の `cmux send` 言及に付ける `send-prompt-exempt:` は、レビュー済みの意図を残す注釈であって現行 CS1 の load-bearing な条件ではない。マーカーが load-bearing なのは非コメント行の直書き（`launch-workspace.sh:1085-1088`）に対してだけ
-10. `runners.json` のスキーマ（`default` / `runners[].name|command|engine|review_model|exec_model|plan_effort|review_effort|exec_effort`）が SKILL.md Step 1f / guide-ja.md「子セッション runner 設定」/ `launch-workspace.sh` の `--runner` 解決ロジックの3か所で一致しているか確認。`review_model` は `engine: codex` の runner では design=claude タスクの Phase A-R/B-R レビューペイン（codex）用モデル、`engine: claude` の runner では design=codex タスクでレビュアー runner に選ばれたときに claude レビューペインへ渡すモデル（未設定時は `opus[1m]` にフォールバック）であることを検証。`exec_model` は codex engine の execute / standby で `--model` 未指定時のみフォールバック適用され（明示 `--model` が優先）、review ペイン（常に `review_model` を明示）には適用されないことを検証。`plan_effort` / `review_effort` / `exec_effort`（codex engine の runner のみ、値: `minimal`|`low`|`medium`|`high`|`xhigh`）は codex セッションの reasoning effort を Phase A 設計 (plan/superpowers) / レビューペイン (review) / 実行系 (execute/standby) にそれぞれ `-c model_reasoning_effort='<値>'` として注入し、明示 `--effort` > runner フィールド > `config.toml` 既定の優先順位で解決されることを検証。特に `engine × MODE` の起動コマンド対応表（claude/codex × plan/superpowers/execute の6通り、codex 側は effort 注入込み）が SKILL.md と guide-ja.md で同一か検証。なお composed command は常に `zsh -ic "..."` で wrap される（`.zshrc` の関数 / env を読み込むため）
+10. `runners.json` の `plan_model` / `review_model` / `exec_model` と対応 effort が role 単位で一致すること。plan/superpowers/design standby は plan、Phase A-R/B-R は review、execute/executor standby は exec を使う。明示 `--model` / `--effort` が runner field より優先する。codex reviewer は `review_model` 必須、claude reviewer は `opus[1m]` fallback。
 11. `launch-workspace.sh` の execute モード関連フラグ（`--mode execute` / `--plan-file` / `--model` / `--skip-permissions` / `--defer-status`）が SKILL.md / guide-ja.md / README.md の Phase B 説明と一致しているか確認。Child が `launch-workspace.sh` を直接呼び `--defer-status` を必ず付けて起動していること、孫側 (Phase B spawn) が `--mode execute` + `--plan-file` で起動していることを検証
 12. **`message_type` 廃止後の判定**が SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認。通知トランスポートの質問も config キーも存在せず、agmsg を使うかは `~/.agents/skills/agmsg/scripts/send.sh` の存在**だけ**で決まること。`launch-workspace.sh` / `prewarm-panes.sh` が `--message-type` を `was removed` を含む die で拒否し、agmsg 配線は `--agmsg-team` の有無で決まること。agmsg インストール時は monitor-dispatch.sh を起動しないこと、status.json / signal は不変であることを検証。子プロンプトの status protocol に「status.json 書き込み直後の必須完了通知（`send-prompt.sh --label dispatch-notify` の 1 回呼び出し）」が含まれること、Step 1g に AGMSG-DIRECTIVE 遵守(ディスパッチ実行中セッションの watcher 起動。ただし watcher は記録・返信用で wake 手段ではない旨の注記付き)が記載されていることを検証。回帰は `bash test/test-message-type-removed.sh`（MT1-MT3）で検証する
-13. pre-warm(`prewarm-panes.sh` / `--mode standby` の split・workspace 配置 / `.assigned-<name>` sentinel / prewarm.json スキーマ(`opus`・`sonnet`・`codex`・`review` + `delivery` + `engine`)/ signal 名 `<slug>-done`・`<slug>-sonnet-done`・`<slug>-codex-done`)が SKILL.md / guide-ja.md / README.md で一致しているか確認。prewarm.json の `engine` フィールドは `opus` が設計 runner の engine に追従（design=codex なら `codex`）、`sonnet` は常に `claude`、`codex` は常に `codex`、`review` は設計 engine の逆であることを検証。standby ペインは Phase A-R 無効時は縦積み(上 opus / 中 sonnet / 下 codex)、design=codex かつ Phase A-R 有効時は 2×2 グリッド（左上: design codex ペイン / 右上: claude レビューペイン `<slug>-opus`。詳細は項目 14）であること、standby wrapper が起動時・未 assigned exit 時に status.json を書かないこと、agmsg インストール時は opus-1m も idle 起動し worktree への delivery 配線をペイン起動前に行うこと、Phase A / Phase B の指示送信が `send-prompt.sh` の 1 回呼び出し（label は `phase-a-task` / `phase-b-exec`。常にタイプ入力し、宛先の ready sentinel 生存時のみ inbox にも記録。呼び出し元は prewarm.json の `delivery` 値で分岐しない）であること、Phase B の手順が「`.assigned-<name>` touch → 実行指示送信 → `.deferred` touch」の順であること、未使用側 pane は close せず開いたまま idle 維持する（常 4 ペイン）ことを検証
-14. Phase A-R（設計セッションの plan/spec を逆 engine がレビュー）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
-    - 有効化は設計 engine 別 2 系統（`REVIEW_ENABLED` / `REVIEW_ENABLED_CODEX_DESIGN`）: design=claude タスクは `engine: codex` runner の `review_model` が存在し `review_mode` が on に解決したとき `REVIEW_ENABLED=true`、design=codex タスクは `engine: claude` runner（レビュアー runner、`REVIEWER_RUNNER`）が存在し `review_mode` が on に解決したとき `REVIEW_ENABLED_CODEX_DESIGN=true`。`review_mode` 解決フロー自体は共通（project config 優先 → global → `"on"` / `"off"` は質問なしで恒久適用、未設定または `"ask"` なら対象 runner 存在時のみ dispatch のたびに 4 択質問[はい今回のみ / いいえ今回のみ / 常に有効 / 常に無効]、「常に〜」のみ永続化）
+13. prewarm.json が `design` / 任意の `review` / `executors` の role-aware schema で、固定 `exec_choice` が未選択 pane を抑止すること。all-Codex 固定構成は3ペインで sonnet/Claude wiring が0件。配送順序と未assigned時のstatus非汚染は維持する。
+14. Phase A-R（設計セッションの plan/spec を解決済み review runner がレビュー）が4ファイルで一致しているか確認:
+    - `REVIEW_POLICY=fixed|legacy`、`REVIEW_RUNNER / REVIEW_ENGINE / REVIEW_MODEL` を独立解決し、`REVIEW_ENABLED` は engine 別に分けない。reviewer 不在時はそのタスクだけ無効化する
     - レビューポイント（plan モード: plan 後 1 回 / superpowers モード: spec 後 + plan 後の 2 回）、各ポイント最大 5 往復、approve は何ラウンド目でも即終了、5 往復 needs_work 時は AskUserQuestion（このまま進む / さらに修正）
     - verdict はファイル受け渡し（`<STATUS_DIR>/review/<point>-round-<N>.md` 末尾の `VERDICT: approve|needs_work`）。依頼配送は `send-prompt.sh --label review-plan` の 1 回呼び出し、待機は常に 5 秒間隔・15 分チャンクのファイルポーリング + チャンク境界ごとのレビュアー pane 生存確認（`cmux read-screen --workspace/--surface` の画面差分。read-screen は非フォーカス workspace でも live な内容を返すため refresh 不要 — 実測確認済み。変化ありなら上限なしで待機継続、失敗・空出力は 10 秒間隔 3 回リトライし 2 回連続の境界で全失敗したときのみ pane 消滅扱い。チャンク境界では先に verdict を再確認する）（agmsg push / 返信 push は idle セッションを起こせないため配送・待機手段にしない）。ready sentinel 生存時は依頼文が inbox にも記録される（判定は `send-prompt.sh` が行うので呼び出し元は `review.delivery` で分岐しない）。stalled（1 チャンク画面変化なし / 2 回連続観測不能）時は verdict 最終確認 → 同一ラウンド 1 回再依頼（baseline 取り直し）→ AskUserQuestion
-    - レビューペイン engine は常に設計の逆であること（design=claude → codex レビューペイン `<slug>-review` / design=codex → claude レビューペイン `<slug>-opus`）。prewarm 有効 + Phase A-R 有効時は 2×2 均等グリッド。design=claude: 左上 opus / 右上 codex review / 左下 sonnet / 右下 codex。design=codex: 左上 design codex / 右上 claude レビューペイン（`<slug>-opus`。A-R レビュアーと Phase B opus 1m 実装先の二役）/ 左下 sonnet / 右下 codex。無効時は現行縦積み。review ペインは standby wrapper の status 所有権なし（design=claude では `.assigned-<slug>-review` 非使用。design=codex の `<slug>-opus` ペインは Phase B で opus 1m が選ばれたときのみ `.assigned-<slug>-opus` が touch され実装者として status を持つ）、全レビューポイントで同一ペインを再利用し最終 approve 後も開いたまま idle 維持（常 4 ペイン。途中で close せず、最終の全タスク完了クリーンアップでまとめて close）。spawn 失敗時はレビューをスキップして Phase B へ
+    - fixed runner は設計と同じ engine を許可し、同一専用ペインを全ポイントで再利用する。spawn 失敗時は警告して Phase B へ
     - `launch-workspace.sh` の `--mode review` / `--standby-split-direction` / codex engine への `--model` 反映、`prewarm-panes.sh` の `--review-model`（design=claude、`--codex-runner` 必須）/ `--design-runner` + `--reviewer-runner`（design=codex、`--review-model` と相互排他）と prewarm.json `review` キーが SKILL.md の使用例・スキーマと一致
 15. **配送の `send-prompt.sh` 一本化**が SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認:
     - 指示を送る全箇所（Phase A opus タスク `phase-a-task` / Phase B sonnet・codex・codex 設計 variant の委譲 `phase-b-exec` / Phase A-R review 依頼 `review-plan` / Phase B-R コードレビュー依頼 `review-code` / レビュアーへの abort 通知 `abort-reviewer`（実装者からも runner wrapper の `notify_reviewer_once` からも同じ label を使う。`dispatch-abort` は廃止）/ 親への完了・abort 通知 `dispatch-notify` / `monitor-dispatch.sh` の heartbeat・全完了・DIED 通知 `dispatch-monitor`）が **`send-prompt.sh` の 1 回呼び出し**になっており、`cmux send` + `cmux send-key return` の 2 行ペアが残っていないこと。label は上記のとおり固定（1 メッセージクラス = 1 label）
@@ -109,8 +129,8 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - MANDATORY MODEL SELECTION SEQUENCE の Phase A（plan モード）に「plan 冒頭に Step 0: Phase A-R（有効時）/ Step 1: Phase B を必須ステップとして記載」「plan が ExitPlanMode メッセージ内にしか無い場合は承認後最初にファイル保存」の指示、VIOLATION 節に PLAN-MODE TRAP が含まれること
     - `plan-approved-hook.sh` の出力が有効な JSON（`hookSpecificOutput.additionalContext`）であること
 17. Phase B-R（実装後コードレビュー）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
-    - 有効化条件は Phase A-R と完全に同一（design=claude は `REVIEW_ENABLED`、design=codex は `REVIEW_ENABLED_CODEX_DESIGN`。新 config キー無し）。Step 1g の質問文が「レビューモードを使いますか？（Phase A-R … / Phase B-R …）」の両フェーズ言及形であること
-    - レビュアーの割り当ては統一ルール: レビュアーは常に実装者の逆 engine。実装者 engine == 設計 engine → review ペインがレビュー / 実装者 engine != 設計 engine → 設計セッション自身がレビュアーに転じる（`.deferred` touch 後も exit せず idle 待機、approve 書き込み後に exit）。設計 claude/codex × 実装者 opus 1m/sonnet/codex の 6 ケース:
+    - 有効化条件は Phase A-R と同じ `REVIEW_ENABLED`。Step 1g の質問文は両フェーズへ言及する
+    - fixed policy は Phase A-R と同じ専用ペインが全実装をレビューし、設計ペインは `.deferred` 後に exit。legacy policy のみ既存6ケースを維持する:
       - design=claude, opus 1m（設計ペインで継続実装）→ codex レビューペインがレビュー（Phase A-R と同一ペイン・ポイント id `code`）
       - design=claude, sonnet → codex レビューペインがレビュー。設計 opus ペインは `.deferred` touch 後に exit する（**現行からの変更**: 旧仕様では設計 opus ペインがレビューしていた）
       - design=claude, codex → 設計 opus ペイン自身がレビュアーに転じる
@@ -122,10 +142,10 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - 5 往復 needs_work: claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、codex 実装者は PR 本文に注記して続行
     - status.json の done/error 遷移は従来どおり実装者ペインの wrapper が所有。実装者がレビューを依頼せず終了しても Child は idle のまま残り、最終クリーンアップで閉じる（孤児ガード用の追加機構は無い）
     - spawn 経路: Child が `<STATUS_DIR>/review/code-review.json`（`{reviewer_surface, reviewer_workspace, review_dir}`。`reviewer_workspace` は実装孫が別 workspace に spawn されるため、依頼配送の `send-prompt.sh --to-workspace` と read-screen 生存確認の両方に使う。欠落時は `--workspace` 指定なしにフォールバック）を書き、`launch-workspace.sh --mode execute --review-config <path>` で孫を起動。wrapper が composed prompt にプロトコル（依頼は `send-prompt.sh` の 1 回呼び出し + ポーリング）を追記する。`--review-config` は execute モード専用で、usage コメント / SKILL.md / guide-ja.md の使用例が一致していること。REVIEW_INSTRUCTION（liveness 文言・reviewer_workspace 埋め込み・クォート非混入）と ABORT_REVIEW_STEP / ABORT_PARENT_STEP の `send-prompt.sh` 呼び出しは `bash test/test-launch-workspace-review-config.sh` の静的検査（PR1-PR3 / AB1-AB5）で検証すること
-18. クロスエンジンレビューと codex effort が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
-    - 「レビュアーは常に相手方 engine」原則と B-R 6 ケース表（設計 claude/codex × 実装者 opus 1m/sonnet/codex）が一致
-    - design=codex: Phase B は 3 択とも委譲（設計セッションは実装しない）。右上ペインは agent `<slug>-opus`・A-R レビュアー兼 opus 1m 実装先の二役、opus 1m 選択時のみ `.assigned-<slug>-opus` が touch され signal `<slug>-opus-done`
-    - Step 1f のレビュアー runner 選択（claude runner 0 件 → 無効警告 / 1 件 → 自動 / 2 件以上 → 毎回質問）と `CLAUDE_REVIEW_MODEL` フォールバック（`opus[1m]`）
+18. 独立 review runner と codex effort が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
+    - fixed policy の同一 engine support と legacy B-R 6 ケースが明確に区別される
+   - design=codex: Phase B は 3 択とも解決済み executor へ委譲（設計セッションは実装しない）。fixed policy では review pane と executor を兼用せず、兼用配置は `review_runner` 未設定の legacy policy に限る
+    - `review_runner` の project → global → legacy precedence、codex `review_model` 必須、claude `opus[1m]` fallback、レイヤー単位invalid化
     - effort の優先順位（明示 `--effort` > runner フィールド > config.toml 既定）と MODE 対応（plan_effort: plan/superpowers、review_effort: review、exec_effort: execute/standby）。prewarm の設計 codex ペインは standby 起動のため `--effort <plan_effort>` 明示
     - `prewarm-panes.sh` の `--design-runner` / `--reviewer-runner`（`--review-model` と相互排他）と prewarm.json の `engine` フィールド
 19. `design_runner` / `exec_choice` の precedence（project config → global config → ask）と警告フォールバックが SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認。`design_runner` は有効 runner 名で switch / per-task 質問を両方省略し、`exec_choice` は有効値で Phase B の AskUserQuestion を default-direct に置換することを確認。**未設定と明示 `"ask"` の区別**も確認: 未設定（全レイヤー未設定または不正）では永続化オプション付きの質問（design_runner は switch 質問 4 択、exec_choice はモデル選択直後の永続化確認 1 問）、明示 `"ask"` では従来質問のみで永続化オプションなし（キー削除 = 未設定に戻り再表示、`"ask"` 書き換え = 非表示 — 2 つの戻し方の違いが 4 ファイルで明記されていること）。不正値の検証は **project / global のレイヤーごと**で、不正なレイヤーだけ警告して無視し次へフォールバックする（project の不正値が global の「常に〜」を遮蔽しない）こと。「常に〜」の永続化は `review_mode` と同じ jq merge でグローバル config のみに書き込み（project config には書かない）、一時ファイルは **writer 固有の mktemp + 同一ディレクトリ mv**（共有 `$CONFIG.tmp` は並列書き込みで壊れるため禁止）であること。exec_choice の永続化確認は子セッションが書くため並列時はファイル全体の last-write-wins であること
@@ -172,7 +192,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - **分散を許すのは読み取り専用の検証だけ**。auto-fix / write モード（formatter・linter の write フラグ）はファイルと共有ビルドキャッシュを書き換えるため逐次に走らせる旨を execute モードの文面に含める
     - `launch-workspace.sh` が注入するのは plan / superpowers / execute の起動プロンプトだけ。standby / review はプロンプト無しで起動するので、指示は親が `send-prompt.sh` で送るテキストに含める。execute では `EXIT_INSTRUCTION` を必ず最後に残すこと
     - **注入点は 5 箇所**（起動プロンプト / Phase B 実行指示 / Phase A-R レビュー依頼 / Phase B-R レビュー依頼（prewarm 経路）/ Phase B-R レビュー依頼（spawn 経路））。この 5 行の表が SKILL.md と guide-ja.md で一致し、かつ**全行が実在すること**を確認する。特に prewarm 経路は、レビューペイン自身が `--mode review` 起動でディレクティブを持たないため、「共通プロトコル a」の拡張 REQUEST_TEXT に `--mode review`（engine は実装者の逆）のディレクティブを含め、実装者がレビュー依頼文へ転記する形でしか届かない
-    - **他 engine 宛のディレクティブを引用するときは宛先を語彙で明示する**（`Also include this in the message to the reviewer, addressed to the reviewer and not to you:` … `End of the message to the reviewer.`）。実装者のプロンプトにはレビュアー向け（逆 engine）のディレクティブが同居するため、位置だけを境界にすると claude 実装者が `spawn_agent` を自分宛と誤読する。`launch-workspace.sh` の `REVIEWER_PARALLEL` と SKILL.md の共通プロトコル a の両方で同じマーカーを使うこと
+    - **レビュアー宛ディレクティブを引用するときは宛先を語彙で明示する**。engine は `reviewer_engine` の明示値を使い、実装者との関係から計算しない
     - Phase B-R の spawn 経路は `review/code-review.json` の `reviewer_engine`（`claude` / `codex`）から依頼文へ埋め込む。欠落時（旧スキーマ）は注入しない。`--no-parallel` は起動プロンプト専用のスイッチで、レビュー依頼文の注入判定には使わない
     - **`--no-parallel` はテスト基盤としても load-bearing**。`test/test-launch-workspace-review-config.sh` が起動プロンプト側の注入を止めてレビュー依頼文側の注入だけを切り分けるために渡している（`PARALLEL EXECUTION` が見つかったら必ずレビュー依頼文由来と言える状態を作っている）。フラグを削るなら同等の切り分け手段を別途用意すること
     - `--agents` / `--no-parallel` は `launch-workspace.sh` のスクリプトレベルのフラグで、SKILL.md の起動例はどちらも渡さない。`config.json` のキーも無い（`design_runner` / `exec_choice` / `review_mode` と違い precedence chain を持たない）。README にはスキルが公開していない旨と、手動起動が唯一の手段である旨を書く
@@ -215,10 +235,10 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 15. **`--resume`**: 既存の `.dispatch/` がある状態で monitor を `--resume` 起動 → 完了済みは skip、未完了のみ監視継続すること
 16. **message_type 廃止**: 通知トランスポートの質問が一切出ないこと。`config.json` に `message_type` を書いても無視されること。`launch-workspace.sh` / `prewarm-panes.sh` に `--message-type` を渡すと `was removed` で即座に失敗すること
 17. **agmsg インストール時**: monitor-dispatch.sh が起動しないこと。子が status.json に done/error を書いた**直後**に `[dispatch] task ... finished` が `send-prompt.sh` のタイプ入力で親に届き(親が idle のままでも届くこと — これがタイプ入力を唯一の wake 手段にする理由)、親の watcher が生きていれば同一文が inbox にも記録されること。wrapper の exit 時通知で同じ通知が重複して届くことがあるのは正常。ディスパッチ実行中の親セッションで AGMSG-DIRECTIVE により watcher が起動していること。status.json は従来どおり遷移すること
-18. **pre-warm**: 各タスク workspace が縦分割ペインになること(agmsg インストール時: 上 opus-1m[idle] / 中 sonnet / 下 codex、未インストール時: 上 opus[タスク実行中] / 中 sonnet / 下 codex。codex runner が無ければ縦2分割)。agmsg インストール時は全ペインが idle 起動し、親からの `send-prompt.sh --label phase-a-task`(`.assigned-<slug>` touch 後)で Phase A が開始されること。`prewarm: false` では起動しないこと。タスク未割り当てのまま workspace を閉じても status.json が汚れないこと
-19. **Phase B prewarm 経路**: sonnet 選択 → 未使用側 (codex) standby pane は開いたまま idle 維持され、`.assigned-<slug>-sonnet` が touch され、待機 pane へ実行指示が送信され、実装完了 exit 時に standby wrapper が status.json を done にし `<slug>-sonnet-done` signal + 親通知が発火すること。opus 1m 選択 → 未使用側 standby pane(sonnet / codex)は開いたまま status.json が汚れないこと(常 4 ペイン維持。途中で close しない)。prewarm.json が無い場合は従来の spawn にフォールバックすること。実行指示の送信が `send-prompt.sh --label phase-b-exec` の 1 回呼び出しであること(常にタイプ入力が行われ、宛先 watcher 生存時のみ inbox にも記録される — タイプ入力だけで idle ペインが確実に起きること)。codex 配線失敗時に `delivery: "cmux-send"` へフォールバックすること
-20. **Phase A-R 無効**: `review_model` 未設定または `review_mode: off` で、現行フローと完全一致すること（prewarm レイアウトも縦積みのまま。Phase A 直後は `exec_choice` の解決済み方式、すなわち質問または default-direct に従う）
-21. **Phase A-R 有効 + prewarm（design=claude）**: 2×2 均等グリッドで 4 ペイン起動（左上 opus / 右上 review [idle codex, `--model <review_model>`] / 左下 sonnet / 右下 codex）。prewarm.json に `review` キーがあること（design=codex の場合は項目 33 を参照）
+18. **pre-warm**: `prewarm.json` の role-aware な `design` / `review` / `executors` と実ペインが一致すること。固定 `exec_choice` では未選択 executor を作らず、all-Codex 構成では設計・レビュー・codex executor の3ペインだけを起動すること。agmsg インストール時は design を含む起動済みペインが idle で待ち、親からの `send-prompt.sh --label phase-a-task`（`.assigned-<slug>` touch 後）で Phase A が始まること。`prewarm: false` では起動しないこと。未割当ペインが status.json を汚さないこと
+19. **Phase B prewarm 経路**: `prewarm.json.executors.<choice>` を使い、固定 choice では未選択 pane が存在しないこと。`.assigned-*` → `phase-b-exec` 配送 → `.deferred` の順と status/signal/通知は維持する
+20. **Phase A-R 無効**: `review_mode: off`、または `review_mode: on` でも capable reviewer を解決できないタスクだけ review を省略すること。後者では警告し config を書き換えず、Phase A 直後は `exec_choice` の解決済み方式に従う
+21. **Phase A-R 有効 + prewarm**: 解決済み `review_runner` の専用 `review` ペインがあり、design と同一Codex engine でも Phase A-R/B-R に再利用できること。spawn 失敗時はその quality gate だけを警告・省略し Phase B へ進むこと
 22. **レビューループ**: plan モードで plan 完成後に 1 回、superpowers モードで spec 後 + plan 後の 2 回レビューが走ること。needs_work → opus が修正して**同一ペイン**に再依頼（新ペインが生えない）。approve → レビューペインは開いたまま（close されず）Phase B の解決済み方式が走ること。5 往復 needs_work → AskUserQuestion（このまま進む / さらに修正）が出ること
 23. **verdict プロトコル**: `.dispatch/<slug>/review/<point>-round-<N>.md` が生成され、末尾に `VERDICT:` 行があること。両モードともファイルポーリング(5 秒間隔・15 分チャンク + `cmux read-screen` 画面差分によるレビュアー生存確認。活動中は上限なしで待機し、レビュー中に 15 分超過しても再依頼が飛ばないこと。最終 sleep 中に書かれた verdict もチャンク境界の再確認で検知されること)で verdict を検知すること(agmsg push 待ちは idle セッションを起こせないため使わない)
 24. **review_mode 解決**: config 未設定（または `"ask"`）+ `review_model` 付き runner ありで、dispatch のたびにタスク起動前に 4 択質問（はい今回のみ / いいえ今回のみ / 常に有効 / 常に無効）が出ること。「今回のみ」では config に書き込まれず次回も質問が出ること。「常に〜」で `"on"` / `"off"` が永続化され以後質問が出ないこと。`.dispatch/config.json` の `review_mode` がグローバルより優先されること
@@ -226,16 +246,16 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 26. **exec_model**: codex runner に `exec_model` 設定時、Phase B の codex 実行（`--mode execute` spawn / prewarm codex standby）が `--model <exec_model>` 付きで起動すること。レビューペインは `review_model` のまま変わらないこと。`--model` 明示時は明示値が優先されること。`exec_model` 未設定なら従来どおり codex 側デフォルトで起動すること
 27. **watcher 死亡時のフォールバック**: `delivery: "agmsg"` のタスクで宛先ペインの watcher を kill（ready sentinel が消える）した後に指示を送ると、inbox 記録がスキップされタイプ入力のみで配送されること（watcher 生存時もタイプ入力は常に行われる — inbox 記録の有無だけが変わる）。`send.sh` 自体が失敗した場合も配送は継続し終了コードは 0 のままであること。配線失敗（`delivery: "cmux-send"`）タスクの opus / sonnet 初期プロンプトに `/agmsg actas` が含まれず、「typed directly into this pane」の文面になること。配線成功タスクの初期プロンプトは「task will arrive as a prompt typed into this pane（inbox に同一コピー）」の文面であること
 28. **plan モード遵守ゲート**: plan モード子セッションで ExitPlanMode 承認後、ファイル編集前に Phase A-R（有効時）→ Phase B の task prompt 解決済み方式が走ること。worktree に `.claude/settings.local.json` が生成され、settings と `.claude/plans/` 配下の plan ファイルのどちらも `git status` に現れないこと。superpowers モードの worktree には hook が注入されないこと。既存の `.claude/settings.local.json` がある worktree では既存キーが保持されたままマージされること
-29. **Phase B-R (design=claude, codex 実装)**: `review_mode: on` + codex 選択 → 実装者（codex standby）がコミット後・PR 作成前に設計 opus ペインへレビュー依頼し、Child が `review/code-round-1.md` に VERDICT を書くこと。needs_work → 実装者が修正して round 2 を依頼し**同じ opus セッション**がレビューすること。approve → PR が作成され、opus Child が exit すること。Child は `.deferred` touch 後も exit せず待機していること（sonnet 実装時のレビュアーはコードレビューペインに変わっている — 項目 36 を参照）
-30. **Phase B-R (opus 1m 実装)**: `review_mode: on` + opus 1m 選択 → コミット後・PR 作成前にポイント id `code` の依頼が **Phase A-R と同一の codex レビューペイン**に送られること。レビューペイン spawn 失敗済みの場合はレビューが省略され PR 作成へ進むこと
+29. **Phase B-R fixed**: 実装 runner/engine にかかわらず Phase A-R と同じ専用 review pane が `code` をレビューし、設計paneは `.deferred` 後にexitすること
+30. **Phase B-R legacy**: `review_runner` key 未設定時のみ既存6ケースが動作し、resolver結果を `reviewer_runner` / `reviewer_engine` に書くこと
 31. **Phase B-R 無効 / spawn 経路**: `review_mode: off` では Child が従来どおり `.deferred` touch 後すぐ exit し、実行指示にレビュープロトコルが含まれないこと。prewarm 無効時は `--review-config` 付き spawn で孫の inner prompt に `MANDATORY CODE REVIEW` 文が入り、`review/code-review.json` が生成されること。5 往復 needs_work → claude 実装者は AskUserQuestion が出る / codex 実装者は PR 本文に未解決指摘が注記されること
 32. **codex effort 注入**: codex runner に effort 3 フィールド設定時、composed command（`.cmux-team-dispatch-task-run-*.sh` 内）に `-c model_reasoning_effort='xhigh'`（plan/review）/ `'high'`（execute/standby）が入ること。未設定フィールドでは `-c` が付かないこと。`--effort` 明示時はそちらが優先されること
-33. **design=codex ディスパッチ**: runner に codex を選んだタスクで 2×2 グリッドが 左上 design codex / 右上 claude レビューペイン（agent `<slug>-opus`、モデルはレビュアー runner の `review_model` または `opus[1m]`）/ 左下 sonnet / 右下 codex になること。claude runner が 2 件以上あるときレビュアー選択質問が出ること
-34. **design=codex の Phase A-R**: codex が書いた plan/spec を右上 claude ペインがレビューし、`review/<point>-round-<N>.md` の VERDICT で往復すること
-35. **design=codex の Phase B**: 3 択すべてが委譲であること。opus 1m → `.assigned-<slug>-opus` touch + 右上ペインが実装 + 設計 codex ペインが B-R レビュー。sonnet → 設計 codex ペインが B-R レビュー。codex → 右下 standby が実装 + 右上 claude ペインが B-R レビュー
-36. **design=claude の sonnet B-R 変更**: sonnet 実装時のコードレビューが codex レビューペインに依頼され（設計 opus ペインではなく）、設計 opus ペインは `.deferred` 後に exit すること
+33. **all-Codex ディスパッチ**: design/review/exec が codex、model が `gpt-5.6-sol` / `gpt-5.6-sol` / `gpt-5.6-terra`、prewarm は3ペインのみで Claude/sonnet が0件であること
+34. **同一Codex Phase A-R**: codex design の plan/spec を codex review pane がレビューできること
+35. **fixed Phase B**: codex exec paneへ委譲し、同じcodex review paneがB-Rを担当すること
+36. **review spawn失敗**: 警告して当該gateだけ省略し、Phase B/PRへ進むこと
 37. **design_runner default**: project config が global config より優先し、有効な runner 名では Step 1f の switch / per-task 質問が出ないこと。runner 数分岐（1件は黙って採用・質問なし）は維持しつつ、**未設定**では runner 2 件以上の switch 質問が 4 択（いいえ今回のみ / はい今回のみ / 常に既定 runner / 常に固定 runner を選ぶ）になり「常に〜」でグローバル config に永続化されること。明示 `"ask"` では従来の 2 択のみで永続化オプションが出ないこと。不正名は該当レイヤーのみ警告して無視され（project 不正 → global へフォールバック）、全レイヤー不正・未設定なら 4 択になること
-38. **exec_choice default**: `"sonnet"` を設定すると Phase A 完了後に AskUserQuestion を出さず sonnet standby/spawn の既存手順へ進むこと。**未設定**（全レイヤー未設定、または不正値・runner 未登録の `"codex"` が警告付きで無視された結果）ではモデル選択の直後に永続化確認（今回のみ / 常にこの選択 / 常に毎回選ぶ[= `"ask"` を保存]）が 1 問出て、「常に〜」でグローバル config に永続化されること（回答は今回の Phase B 分岐に影響しない。書き込みは writer 固有 mktemp + mv）。project に不正値・global に有効値がある場合は global の値が使われること。明示 `"ask"` ではモデル質問のみで永続化確認が出ないこと
+38. **exec_choice default**: 固定値の runner が利用不能ならその config レイヤーだけ無効化し、project → global → interactiveへ進むこと。未設定/`"ask"` の既存質問と atomic persistence は維持する
 39. **codex 起動安全性**: superpowers は bypass で approval prompt を出さず、review は `--sandbox workspace-write` + `-c approval_policy='never'` + `--add-dir <STATUS_DIR>` で worktree 外の `<STATUS_DIR>/review/` に findings を書けること。`bash test/test-launch-workspace-codex.sh` の静的検査を実行すること
 40. **pane close の誤通知**: 全タスク完了後のクリーンアップで standby / 実装ペインを閉じたとき、`[dispatch] task ... finished (status: error)` が親へ飛ばないこと、`status.json` の `done` が保持されること。`executing` 中の pane を閉じた場合は従来どおり `error` 通知が飛ぶこと。`bash test/test-runner-signal-exit.sh` の動的検査を実行すること
 41. **タスク内の並列実行**: plan / superpowers / execute で起動した子セッションのプロンプトに `PARALLEL EXECUTION, mandatory` が含まれること。codex には `spawn_agent`、claude には Task サブエージェントの指示が届くこと。standby / review の起動コマンドには含まれず、親が送る実行指示・レビュー依頼側に含まれること。`--no-parallel` で起動プロンプトから消えること

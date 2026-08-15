@@ -242,18 +242,35 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
      different things: rewriting `design_runner` to `"ask"` restores the this-time-only
      2-choice (no persistence options), while deleting the key restores the unset state
      and the 4-choice question reappears.
-4. Each task receives a `runner` field (the chosen `name` string), which Step 2 passes
-   directly to `launch-workspace.sh --runner <name>`.
-5. **Cross-engine reviewer** — if at least one task has an `engine: codex` runner assigned
-   to its design, decide the claude-side reviewer runner (since design=codex reviews are
-   handled by claude):
-   - 0 claude-engine runners → warn, and Phase A-R / B-R are disabled for codex design tasks
-   - 1 → silently adopt that runner
-   - 2 or more → choose via AskUserQuestion on every dispatch:
-     > Choose the runner to use as the reviewer (claude side) for codex design tasks
-     options = claude engine runners (label = `name`, description = `command` + configured `review_model`)
-   Set the chosen runner name as `REVIEWER_RUNNER` and pass its `review_model` (falling
-   back to `opus[1m]` if unset) to Step 1g / Step 2 as `CLAUDE_REVIEW_MODEL`.
+4. Resolve the design role for every task from that runner record and carry all three
+   values forward: `DESIGN_RUNNER`, `DESIGN_ENGINE`, and `PLAN_MODEL`. `PLAN_MODEL` is
+   the runner's `plan_model` for codex; for claude it is the explicitly selected plan
+   model, normally `opus[1m]`. Step 2 passes `--runner "$DESIGN_RUNNER"` on every
+   prewarm and non-prewarm design launch. Do not infer the design model from the engine.
+5. **Resolve the independent review role.** Read `review_runner` with exact precedence
+   project config → global config → legacy automatic resolver. Validate each configured
+   layer independently: `"ask"` is valid and stops fallback; any other value must name a
+   registered runner. A codex candidate is review-capable only when its `review_model` is
+   non-empty. A claude candidate is review-capable and may fall back to `opus[1m]`. An
+   invalid or incapable project/global value warns, invalidates only that layer, and
+   continues to the next layer. The review runner may have the same engine, or even the
+   same runner name, as the design runner.
+
+   - fixed runner name → `REVIEW_POLICY=fixed`; resolve `REVIEW_RUNNER`,
+     `REVIEW_ENGINE`, `REVIEW_MODEL`, and `REVIEW_PANE_AGENT=<task-slug>-review` from
+     that runner. The one dedicated review pane handles both Phase A-R and Phase B-R.
+   - `"ask"` → ask once per dispatch from all review-capable runners, without filtering
+     out the design engine; the answer becomes the fixed policy for this dispatch only.
+   - key absent in both layers → `REVIEW_POLICY=legacy`; preserve the v1.17.0 automatic
+     cross-engine resolver. For design=claude, select a review-model-bearing codex
+     runner. For design=codex, select a claude runner (one silently, multiple via the
+     existing question) and use its `review_model` or `opus[1m]`. Store that resolver's
+     result in the same `REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` variables;
+     downstream prompt and spawn code never recomputes an engine relationship.
+
+   If `review_mode=on` but no review-capable runner is resolved, warn and disable review
+   only for the affected task. Do not rewrite `review_mode`. If a review-pane spawn
+   fails, warn, skip that task's quality gate, and continue to Phase B.
 
 **runners.json schema (minimal):**
 
@@ -263,7 +280,7 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
   "runners": [
     { "name": "claude",  "command": "claude",  "engine": "claude", "review_model": "opus[1m]" },
     { "name": "ccenec",  "command": "ccenec",  "engine": "claude" },
-    { "name": "codex",   "command": "codex",   "engine": "codex",  "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra",
+    { "name": "codex",   "command": "codex",   "engine": "codex",  "plan_model": "gpt-5.6-sol", "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra",
       "plan_effort": "xhigh", "review_effort": "xhigh", "exec_effort": "high" }
   ]
 }
@@ -274,12 +291,10 @@ Field meanings:
 - `name`: unique identifier shown in AskUserQuestion options
 - `command`: the executable / zsh function to invoke
 - `engine`: `claude` or `codex` — controls flag composition (see table below)
-- `review_model` (optional):
-  - For an `engine: codex` runner: the model name passed to the Phase A-R/B-R review pane
-    (codex) for design=claude tasks. If unset, review is disabled for that task.
-  - For an `engine: claude` runner: the model name passed to the claude review pane when
-    this runner is chosen as the reviewer for design=codex tasks. Falls back to
-    `opus[1m]` if unset.
+- `plan_model` (optional): the model for the plan role (`plan`, `superpowers`, and a
+  prewarm design standby launched with `--role plan`). If unset, use the CLI default.
+- `review_model` (optional): the model for the review role in Phase A-R and Phase B-R.
+  A codex review runner requires it; a claude review runner may fall back to `opus[1m]`.
 - `exec_model` (optional, `engine: codex` runners only): the model name `launch-workspace.sh`
   falls back to when `--model` is not specified for Phase B's execution paths
   (execute / standby). Not applied to the review pane. If unset, uses the codex-side
@@ -298,8 +313,8 @@ Field meanings:
 | claude | plan        | `<command> --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
 | claude | superpowers | `<command> 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'`                              |
 | claude | execute     | `<command> [--model <X>] [--dangerously-skip-permissions] 'Read and execute the plan at <plan-file>'`     |
-| codex  | plan        | `<command> [-c model_reasoning_effort='<plan_effort>'] --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
-| codex  | superpowers | `<command> [-c model_reasoning_effort='<plan_effort>'] --dangerously-bypass-approvals-and-sandbox '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
+| codex  | plan        | `<command> [-c model_reasoning_effort='<plan_effort>'] [--model <plan_model>] --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
+| codex  | superpowers | `<command> [-c model_reasoning_effort='<plan_effort>'] [--model <plan_model>] --dangerously-bypass-approvals-and-sandbox '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
 | codex  | execute     | `<command> [-c model_reasoning_effort='<exec_effort>'] [--model <exec_model>] --dangerously-bypass-approvals-and-sandbox 'Read and execute the plan at <plan-file>'` |
 | codex  | review      | `<command> [-c model_reasoning_effort='<review_effort>'] --model <review_model> --sandbox workspace-write -c approval_policy='never' --add-dir <STATUS_DIR>` |
 
@@ -316,7 +331,8 @@ runner field (plan_effort: plan/superpowers, review_effort: review, exec_effort:
 execute/standby) > unspecified (config.toml default), and is injected as
 `-c model_reasoning_effort='<value>'` immediately after `<command>`. Because the
 prewarm design codex pane launches with `--mode standby`, `prewarm-panes.sh` passes
-`--effort <plan_effort>` explicitly.
+`--role plan`; the launcher's role resolver applies both `plan_model` and
+`plan_effort`.
 
 The composed command is always wrapped: `zsh -ic "<composed>"` so that `~/.zshrc`
 functions (e.g. `ccenec`) and env (proxy auth, PATH) are loaded for the child session.
@@ -366,12 +382,14 @@ and it already avoids prompts through
    ```
 
 3. **If custom is chosen**: enter an AskUserQuestion loop. For each runner, collect
-   three fields (one AskUserQuestion call per runner is ideal — use the question text
+   fields (one AskUserQuestion call per runner is ideal — use the question text
    format below; collect all answers, then ask whether to add another):
 
    - **name** (free text, e.g. `ccenec`) — unique identifier
    - **command** (free text, e.g. `ccenec` or `codex` or `claude`) — what to invoke
    - **engine** (choice: `claude` / `codex`)
+   - **plan_model** (free text, asked when engine is `codex`, e.g. `gpt-5.6-sol`) —
+     the model for Phase A plan/brainstorming. May be left blank for the codex default.
    - **review_model** (free text) — when engine is `codex`: the model used for Phase
      A-R/B-R review (e.g. `gpt-5.6-sol`). When engine is `claude`: the model used when
      this runner is chosen as the reviewer for design=codex tasks (e.g. `opus[1m]`).
@@ -390,18 +408,31 @@ and it already avoids prompts through
    (used when the user picks "No" at the switch question, or implicitly when only
    1 runner exists). If only one runner was added, it becomes `default` automatically.
 
-5. Write the assembled object to `~/.claude/cmux-team-dispatch-task/runners.json`
+5. Ask for review behavior: **legacy automatic**, **choose every dispatch**, or
+   **fixed runner**. Legacy automatic leaves `review_runner` absent. Choose every
+   dispatch persists `review_runner: "ask"`; fixed runner asks from the review-capable
+   runners and persists that name. Persistence is only for `"ask"` or a fixed runner
+   name and uses the writer-specific `mktemp "$CONFIG.XXXXXX"` + successful `mv`
+   pattern from Step 1g; never write through a shared temp path.
+6. Write the assembled object to `~/.claude/cmux-team-dispatch-task/runners.json`
    (create the directory if missing). Then continue to the runner selection logic above.
 
-The first-run setup does not ask for defaults. To fix the normal questions manually,
-add either key to config.json (project config overrides global config):
+To fix the normal questions manually, add the role keys to config.json (project config
+overrides global config):
 
 ```json
 {
-  "design_runner": "claude",
-  "exec_choice": "sonnet"
+  "design_runner": "codex",
+  "review_runner": "codex",
+  "exec_choice": "codex",
+  "review_mode": "on",
+  "prewarm": true
 }
 ```
+
+With a codex runner configured with `plan_model: "gpt-5.6-sol"`,
+`review_model: "gpt-5.6-sol"`, and `exec_model: "gpt-5.6-terra"`, this is an
+all-Codex dispatch: no claude command, sonnet pane, or claude agmsg wiring is created.
 
 To restore the interactive flow there are TWO distinct ways: set the key to `"ask"`
 (questions only — the persistence options stay hidden), or remove the key entirely
@@ -467,17 +498,13 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
 | Completion / abort notice to the parent | `dispatch-notify` |
 | `monitor-dispatch.sh` heartbeat / all-done / DIED notice to the parent | `dispatch-monitor` |
 
-**Resolve review mode (`review_mode`)** — precedence: project config → global config → ask:
+**Resolve review mode (`review_mode`)** — precedence: project config → global config → ask.
+Resolve the independent review role from Step 1f first; `REVIEW_POLICY`,
+`REVIEW_RUNNER`, `REVIEW_ENGINE`, and `REVIEW_MODEL` are the only review inputs used
+below. A fixed policy never substitutes a different runner based on the design or
+implementation engine.
 
-1. ALWAYS resolve `REVIEW_MODEL` from runners.json first (it is needed by step 3's
-   `REVIEW_ENABLED` computation regardless of whether the question fires):
-
-   ```bash
-   REVIEW_MODEL=$(jq -r '[.runners[] | select(.engine == "codex" and .review_model != null)] | .[0].review_model // empty' \
-     ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
-   ```
-
-2. Read `review_mode` from `<project>/.dispatch/config.json`, falling back to
+1. Read `review_mode` from `<project>/.dispatch/config.json`, falling back to
    `~/.claude/cmux-team-dispatch-task/config.json`:
 
    ```bash
@@ -489,14 +516,11 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
    If set to `"on"` or `"off"`, use it silently — do NOT ask (permanent opt-in/out).
 
    If unset or `"ask"`:
-   - `REVIEW_MODEL` empty AND `REVIEWER_RUNNER` unresolved (no codex design task, or no
-     claude engine runner) → treat as `off`. Do NOT ask and do NOT write config
-     (so the question starts firing once a review_model or a cross-engine reviewer
-     gets configured later).
-   - `REVIEW_MODEL` non-empty **or** a codex design task exists and `REVIEWER_RUNNER` is
-     resolved → ask via AskUserQuestion **on EVERY dispatch, BEFORE
+   - `REVIEW_RUNNER` unresolved → treat as `off` for that task. Do NOT ask and do NOT
+     write config, so the question starts firing once a capable reviewer is available.
+   - `REVIEW_RUNNER` resolved → ask via AskUserQuestion **on EVERY dispatch, BEFORE
      launching any task** (this question is part of Step 1, alongside 1c-1f):
-     > Use review mode? (Phase A-R: review the plan/spec until codex (`<review_model>`) approves it / Phase B-R: code review after implementation is done, before creating the PR)
+     > Use review mode? (Phase A-R: review the plan/spec with `<review_runner>` / `<review_model>` until approved; Phase B-R: use the same resolved review policy after implementation, before creating the PR)
      Options:
        1. Yes (this time only) → `REVIEW_MODE=on`. Do not write to config.
        2. No (this time only)  → `REVIEW_MODE=off`. Do not write to config.
@@ -528,37 +552,34 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
      To return to asking every time after choosing "always ...", rewrite `review_mode`
      in config to `"ask"` (or delete it).
 
-3. Compute the final flag used by prompt construction (Step 2) and pre-warm:
+2. Compute the final per-task flag used by prompt construction (Step 2) and prewarm:
 
    ```bash
-   # REVIEW_ENABLED is determined per task's design engine (review_mode resolution is shared):
-   #   design=claude task → a review_model-bearing codex runner exists (REVIEW_MODEL non-empty)
-   #   design=codex task  → a claude engine runner exists (REVIEWER_RUNNER non-empty)
-   REVIEW_ENABLED=false                 # for design=claude tasks
-   [[ -n "$REVIEW_MODEL" && "$REVIEW_MODE" == "on" ]] && REVIEW_ENABLED=true
-   REVIEW_ENABLED_CODEX_DESIGN=false    # for design=codex tasks
-   [[ -n "$REVIEWER_RUNNER" && "$REVIEW_MODE" == "on" ]] && REVIEW_ENABLED_CODEX_DESIGN=true
+   REVIEW_ENABLED=false
+   if [[ "$REVIEW_MODE" == "on" && -n "$REVIEW_RUNNER" ]]; then
+     REVIEW_ENABLED=true
+   elif [[ "$REVIEW_MODE" == "on" ]]; then
+     echo "[warn] review_mode=on but no review-capable runner was resolved; disabling review for this task" >&2
+   fi
    ```
 
-   (`CODEX_CMD` / `CODEX_RUNNER_NAME`, needed only when embedding the `{{REVIEW_BLOCK}}`
-   placeholder, come from the same jq query as the placeholder rules section — they are
-   not used to compute REVIEW_ENABLED.)
+   This never writes `review_mode: off`; another task in the same dispatch may still
+   have a capable legacy reviewer. A fixed reviewer is valid when its engine equals
+   `DESIGN_ENGINE` or the eventual `EXEC_ENGINE`.
 
 **Resolve execution default (`exec_choice`)** — same precedence pattern:
 
 ```bash
 # Validate each layer independently so that an invalid project value does not mask an
 # "always ..." choice already persisted in global.
-# Valid values = "opus 1m" | "sonnet" | "ask" | "codex" (only when an engine: codex
-# runner is registered). "ask" is valid and stops the fallback. Invalid values
-# (including "codex" with no registered runner) are warned about and that layer alone
-# is treated as unset, then fall back to the next one.
-CODEX_RUNNER_COUNT=$(jq -r '[.runners[] | select(.engine == "codex")] | length' \
-  ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
+# Valid values = "opus 1m" | "sonnet" | "ask" | "codex". "ask" is valid and stops
+# fallback. A fixed choice is valid only if an execution runner can be resolved for
+# that family and task. Invalid values or unavailable fixed choices warn, invalidate
+# only that config layer, and continue project → global → interactive fallback.
 valid_exec_choice() {
   case "$1" in
-    "opus 1m"|sonnet|ask) return 0 ;;
-    codex) (( ${CODEX_RUNNER_COUNT:-0} > 0 )) ;;
+    ask) return 0 ;;
+    "opus 1m"|sonnet|codex) resolve_exec_runner "$1" >/dev/null ;;
     *) return 1 ;;
   esac
 }
@@ -574,6 +595,23 @@ if [[ -z "$EXEC_CHOICE" ]]; then
     echo "[warn] exec_choice=\"$EXEC_CHOICE\" (global) invalid (expected: opus 1m | sonnet | codex | ask); ignoring this layer" >&2
     EXEC_CHOICE=""
   fi
+fi
+
+# After choosing a fixed valid value, retain the resolved role rather than inferring it later.
+# For codex prefer the codex design runner, otherwise the legacy first capable codex
+# runner. For opus/sonnet prefer the claude design runner, otherwise the claude runner
+# selected by the compatibility resolver. Interactive selection resolves these same
+# three values immediately after the user answers; it never calls the resolver with
+# an empty value or "ask".
+EXEC_RUNNER=""
+EXEC_ENGINE=""
+EXEC_MODEL=""
+if [[ -n "$EXEC_CHOICE" && "$EXEC_CHOICE" != "ask" ]]; then
+  EXEC_RUNNER=$(resolve_exec_runner "$EXEC_CHOICE")
+  EXEC_ENGINE=$(jq -r --arg n "$EXEC_RUNNER" '.runners[] | select(.name == $n) | .engine' "$RUNNERS_JSON")
+  EXEC_MODEL=$(jq -r --arg n "$EXEC_RUNNER" --arg c "$EXEC_CHOICE" \
+    '.runners[] | select(.name == $n) | if .engine == "codex" then .exec_model // empty elif $c == "opus 1m" then "opus[1m]" else "sonnet" end' \
+    "$RUNNERS_JSON")
 fi
 ```
 
@@ -767,8 +805,10 @@ English for consistency; translate them when presenting them to the user.
 
 TEAM: {{TEAM}}                     # agmsg team name (empty when agmsg is not installed)
 
-PHASE A — Planning / Brainstorming (always opus):
-  Use opus for plan / brainstorming. Do NOT switch models in this phase.
+PHASE A — Planning / Brainstorming (resolved design role):
+  Runner: {{DESIGN_RUNNER}}; engine: {{DESIGN_ENGINE}}; model: {{PLAN_MODEL}}.
+  Use that resolved runner/model for plan / brainstorming. Do NOT infer a model from
+  the engine and do NOT switch models in this phase.
   - superpowers mode: invoke "superpowers:brainstorming" then write a plan
   - plan mode: use Claude's built-in /plan to produce a structured plan.
     The plan you present for approval MUST list, BEFORE any implementation
@@ -809,7 +849,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 
     [DIFFERENT MODEL] "sonnet" → FIRST check for a pre-warmed standby pane:
         PREWARM_FILE="<EXISTING_STATUS_DIR>/prewarm.json"
-        SONNET_SURFACE=$(jq -r '.sonnet.surface_id // empty' "$PREWARM_FILE" 2>/dev/null)
+        SONNET_SURFACE=$(jq -r '.executors.sonnet.surface_id // empty' "$PREWARM_FILE" 2>/dev/null)
 
       IF SONNET_SURFACE is non-empty (pre-warm path):
         1. Leave the unused standby panes (codex / opus / review) OPEN and idle — do NOT
@@ -839,7 +879,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                -- "$REQUEST_TEXT"
              # $TEAM is the TEAM value given above — do NOT re-derive it in this session.
              # Drop the three --agmsg-* flags when $TEAM is empty. Do NOT branch on
-             # prewarm.json's `.sonnet.delivery`: send-prompt.sh re-checks the ready
+             # prewarm.json's `.executors.sonnet.delivery`: send-prompt.sh re-checks the ready
              # sentinel itself and simply skips the inbox record when it is gone.
         4. touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block exists
            below, do NOT exit — switch to the reviewer role it defines. OTHERWISE
@@ -851,7 +891,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           --cwd "$PWD" \
           --mode execute \
           --plan-file <PLAN_FILE_PATH> \
-          --model sonnet \
+          --runner "$EXEC_RUNNER" \
+          [--model "$EXEC_MODEL"] \
           --skip-permissions \
           --status-dir "<EXISTING_STATUS_DIR>" \
           --parent-notify-workspace <PARENT_WORKSPACE_ID> \
@@ -861,12 +902,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         IF the PHASE B-R block exists below, BEFORE the launch above write the
         reviewer wiring file (you are the reviewer):
           mkdir -p "<EXISTING_STATUS_DIR>/review"
-          # reviewer_engine lets launch-workspace.sh pick the right parallel-review
-          # wording for the reviewer. It is claude here, since this session (the
-          # design=claude opus session) turns into the reviewer.
+          # Legacy policy may assign this design session as reviewer. Fixed policy
+          # instead uses the dedicated review pane and its resolved runner/engine.
           jq -n --arg s "$CMUX_SURFACE_ID" --arg w "$CMUX_WORKSPACE_ID" \
-            --arg d "<EXISTING_STATUS_DIR>/review" --arg e "claude" \
-            '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_engine: $e}' \
+            --arg d "<EXISTING_STATUS_DIR>/review" --arg r "$REVIEW_RUNNER" \
+            --arg e "$REVIEW_ENGINE" \
+            '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_runner: $r, reviewer_engine: $e}' \
             > "<EXISTING_STATUS_DIR>/review/code-review.json"
         touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block exists below,
         do NOT exit — switch to the reviewer role it defines. OTHERWISE exit THIS session.
@@ -896,7 +937,9 @@ the plan to a file first if you have not already.
 
 ```
 PHASE A — Planning / Brainstorming (THIS codex session):
-  Produce the plan in THIS session. Do NOT switch models mid-session.
+  Runner: {{DESIGN_RUNNER}}; engine: {{DESIGN_ENGINE}}; model: {{PLAN_MODEL}}.
+  Produce the plan in THIS session with that resolved plan role. Do NOT switch models
+  mid-session.
   - superpowers mode: brainstorm, then write a plan file
   - plan mode: use /plan; the approved plan MUST list Step 0 (Phase A-R, when the
     block exists below) and Step 1 (Phase B selection) BEFORE any implementation
@@ -915,8 +958,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          you want a second perspective; when <exec_model> is unset, write "codex default model")
 
   ALL three choices DELEGATE to a pre-warmed pane — THIS session never implements.
-  Common delegation steps (X = chosen pane key in prewarm.json: "review" for
-  opus 1m / "sonnet" / "codex"; NAME = the pane's agent name from prewarm.json):
+  Common delegation steps (X = chosen key in prewarm.json.executors; NAME = the
+  pane's agent name from that object):
     1. Leave the unused standby panes OPEN and idle — do NOT close them.
     2. touch "<EXISTING_STATUS_DIR>/.assigned-<NAME>"
     3. Send the execution request to the pane's surface_id with ONE send-prompt.sh
@@ -933,15 +976,14 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     5. THEN follow the CODE REVIEW block below for your post-delegation role
        (reviewer or idle).
   Pane-specific notes:
-    [opus 1m] target = prewarm.json .review (the claude pane, agent <task-slug>-opus).
-      Its model is already <CLAUDE_REVIEW_MODEL> — do not pass /model commands.
-    [sonnet]  target = prewarm.json .sonnet (same as the claude variant sonnet branch).
-    [codex]   target = prewarm.json .codex (exec_model / exec_effort are baked in
+    [opus 1m] target = prewarm.json .executors.opus.
+    [sonnet]  target = prewarm.json .executors.sonnet.
+    [codex]   target = prewarm.json .executors.codex (exec_model / exec_effort are baked in
       at pane launch).
   IF prewarm.json is absent (prewarm off), fall back to spawning
   via launch-workspace.sh --mode execute exactly as the claude variant does
-  (opus 1m fallback: --model 'opus[1m]' --skip-permissions with the
-  reviewer runner's command via --runner <REVIEWER_RUNNER>).
+  with `--runner "$EXEC_RUNNER"` and the resolved `EXEC_MODEL`; no role may fall
+  through to launch-workspace.sh's default claude command.
 ```
 
 **Placeholder rules** (executed by the parent when constructing each child's prompt):
@@ -956,7 +998,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     After ExitPlanMode, skip AskUserQuestion and immediately run the EXISTING Phase B
     branch for <default>. Do NOT invent a new execution path.
     - opus 1m: design=claude implements in THIS session via `/model opus[1m]`;
-      design=codex runs the existing review/opus pane delegation steps.
+      design=codex delegates to the resolved `.executors.opus` pane.
     - sonnet: run the existing prewarm or spawn sonnet delegation steps.
     - codex: run the existing prewarm or spawn codex delegation steps.
   ```
@@ -1016,11 +1058,15 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   worktree's `basename` (as Step 1g's `TEAM=` line does for the parent) yields a wrong
   name, since the worktree directory name is `<task-slug>`, not the repo name.
 
-- **Design engine** = the engine (`claude` or `codex`) of the runner assigned to this task
-  in Step 1f. Every template variation below is decided by this value.
+- Substitute the complete resolved role tuple into every prompt before launch:
+  `DESIGN_RUNNER` / `DESIGN_ENGINE` / `PLAN_MODEL`, `REVIEW_POLICY` /
+  `REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` / `REVIEW_PANE_AGENT`, and
+  `EXEC_CHOICE` / `EXEC_RUNNER` / `EXEC_ENGINE` / `EXEC_MODEL`. These are values,
+  not hints: a child must not derive a runner or model again from an engine.
+- **Design engine** = `DESIGN_ENGINE` resolved in Step 1f.
 - Vary the template by the engine of the task's design runner:
-  - design=claude → unchanged (PHASE A is "always opus"; PHASE B's SAME MODEL is
-    `/model opus[1m]`)
+  - design=claude → Phase A names the resolved design runner/model. Phase B's
+    in-session option is available only when that role resolves to opus 1m.
   - design=codex → replace the PHASE A / PHASE B sections with the "codex design variant"
     above. `{{REVIEW_BLOCK}}` is still injected between the variant's PHASE A and PHASE B,
     and `{{CODE_REVIEW_BLOCK}}` after the variant's PHASE B — i.e. keep the original
@@ -1029,27 +1075,28 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     design=codex (drop them — substitute the empty string): the variant's PHASE B already
     contains all 3 choices (opus 1m / sonnet / codex), and keeping the design=claude-only
     `{{CODEX_BEHAVIOR_BLOCK}}` (which tells YOU to turn into the reviewer after a codex
-    implementation) would contradict the design=codex codex-implementation case (correct:
-    YOU exit after touching `.deferred`, and the top-right claude pane does the review)
-- `{{REVIEW_MODEL}}` → design=claude: Step 1g's `REVIEW_MODEL` / design=codex:
-  `CLAUDE_REVIEW_MODEL`
-- `{{REVIEW_RUNNER_NAME}}` (renamed from the old `{{CODEX_RUNNER_NAME}}`) → design=claude:
-  the codex runner's `name` / design=codex: `REVIEWER_RUNNER`
-- `{{REVIEW_PANE_AGENT}}` → design=claude: `<task-slug>-review` / design=codex:
-  `<task-slug>-opus`
+    implementation) would contradict the fixed-review case. Under a fixed policy the
+    design pane exits after touching `.deferred`, and the dedicated review pane reviews.
+- `{{DESIGN_RUNNER}}`, `{{DESIGN_ENGINE}}`, `{{PLAN_MODEL}}` → the resolved design tuple.
+- `{{REVIEW_POLICY}}`, `{{REVIEW_RUNNER}}`, `{{REVIEW_ENGINE}}`,
+  `{{REVIEW_MODEL}}`, `{{REVIEW_PANE_AGENT}}` → the resolved review tuple. Under fixed
+  policy the agent is `<task-slug>-review`; under legacy policy retain the existing
+  physical assignment while still passing the resolver output explicitly.
+- `{{EXEC_CHOICE}}`, `{{EXEC_RUNNER}}`, `{{EXEC_ENGINE}}`, `{{EXEC_MODEL}}` → the
+  resolved execution tuple for the selected/default branch.
 
-- `{{REVIEW_BLOCK}}` → **only when Phase A-R is enabled** (design=claude tasks: Step 1g's
-  `REVIEW_ENABLED`; design=codex tasks: `REVIEW_ENABLED_CODEX_DESIGN` is true), bake in the
+- `{{REVIEW_BLOCK}}` → **only when `REVIEW_ENABLED` is true**, bake in the
   WHOLE block below (substituting `{{REVIEW_MODEL}}` / `{{REVIEW_RUNNER_NAME}}` /
   `{{REVIEW_PANE_AGENT}}` per the design-engine branching above). Empty string when disabled:
 
   ````
-  PHASE A-R — Plan/Spec review by the counterpart engine (REQUIRED between Phase A and Phase B):
-    Review model: {{REVIEW_MODEL}} (runs in a dedicated review pane — a plain review
-    session (engine is the opposite of this session's) with NO status.json ownership;
-    NEVER touch .assigned-{{REVIEW_PANE_AGENT}} during review — the ONLY exception is
-    the Phase B opus 1m delegation step (design=codex), which explicitly touches it to
-    hand over implementation ownership)
+  PHASE A-R — Plan/Spec review by the resolved review role (REQUIRED between Phase A and Phase B):
+    Review policy/runner/engine/model: {{REVIEW_POLICY}} / {{REVIEW_RUNNER}} /
+    {{REVIEW_ENGINE}} / {{REVIEW_MODEL}}. It runs in a dedicated plain review session
+    with NO status.json ownership; the review engine may equal the design engine.
+    NEVER touch .assigned-{{REVIEW_PANE_AGENT}} during review. Phase B implementation
+    ownership belongs to the separately resolved executor pane, including opus 1m for
+    design=codex; a fixed review pane is never reused as an executor.
 
     Review points (run the round loop below at EACH point, in order):
       - plan mode:        one point  — id "plan" (after the plan is written)
@@ -1064,7 +1111,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           --cwd "$PWD" --mode review \
           --standby-in "$CMUX_WORKSPACE_ID" --standby-split-from "$CMUX_SURFACE_ID" \
           --standby-split-direction right \
-          --runner {{REVIEW_RUNNER_NAME}} --model '{{REVIEW_MODEL}}' \
+          --runner "$REVIEW_RUNNER" --model '{{REVIEW_MODEL}}' \
           --status-dir "<EXISTING_STATUS_DIR>" \
           {{REVIEW_PANE_AGENT}})
           # (when the reviewer engine is claude, append --skip-permissions to the spawn)
@@ -1088,11 +1135,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
             <EXISTING_STATUS_DIR>/review/<point>-round-<N>.md.
             The LAST line of that file MUST be exactly 'VERDICT: approve' or
             'VERDICT: needs_work'. approve = the document is ready to implement."
-      1b. Append the parallel-review directive for the review pane engine. The
-          reviewer is always the opposite engine of the design session, so pass
-          the reviewer pane engine here (codex when the design session is claude,
-          claude when the design session is codex):
-            PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review)
+      1b. Append the parallel-review directive for the resolved review pane engine:
+            PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine "$REVIEW_ENGINE" --mode review)
             <request text>="<request text> $PARALLEL"
       2. Send the request with ONE send-prompt.sh call, then wait by polling the
          verdict file. send-prompt.sh types the request into the review pane (the
@@ -1169,9 +1213,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     review point reached approve or an explicit user decision was made.
   ````
 
-- `{{CODE_REVIEW_BLOCK}}` → **only under exactly the same condition as Phase A-R**
-  (design=claude tasks: `REVIEW_ENABLED`; design=codex tasks: `REVIEW_ENABLED_CODEX_DESIGN`
-  is true), bake in the WHOLE block below. Empty string when disabled:
+- `{{CODE_REVIEW_BLOCK}}` → **only when `REVIEW_ENABLED` is true**, bake in the WHOLE
+  block below. Empty string when disabled:
 
   ````
   PHASE B-R — Post-implementation code review (REQUIRED before the PR is created):
@@ -1179,13 +1222,29 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     <EXISTING_STATUS_DIR>/review/code-round-<N>.md — the LAST line MUST be exactly
     'VERDICT: approve' or 'VERDICT: needs_work'. Max 5 rounds.
 
-    Reviewer assignment (unified rule): the reviewer is ALWAYS the opposite engine
-    of the implementer. Physically:
-      - implementer engine == design engine → the review pane reviews
-        (REVIEWER_SURFACE = prewarm.json .review.surface_id)
-      - implementer engine != design engine → the DESIGN session (YOU) reviews
-        (REVIEWER_SURFACE = your own $CMUX_SURFACE_ID)
-    Concretely, by design engine and Phase B choice:
+    Reviewer assignment is selected by REVIEW_POLICY, never inferred by comparing
+    engines:
+
+    [fixed policy]
+      - REVIEWER_SURFACE = prewarm.json .review.surface_id (or the one review surface
+        spawned during Phase A-R). REVIEWER_RUNNER / REVIEWER_ENGINE / REVIEWER_MODEL
+        are the resolved REVIEW_RUNNER / REVIEW_ENGINE / REVIEW_MODEL values.
+      - This dedicated review pane reviews every implementation choice, including an
+        implementer with the same engine or runner. It is the same pane used for all
+        Phase A-R and Phase B-R rounds.
+      - Every delegated implementer receives the extended REQUEST_TEXT below and a
+        code-review.json containing the dedicated review pane's explicit runner and
+        engine. After delegation, the design pane touches `.deferred` and exits; it
+        never becomes the reviewer.
+      - If the dedicated review pane failed to spawn, warn, skip this quality gate,
+        and let the implementer continue to PR creation.
+
+    [legacy policy]
+      Retain the six compatibility assignments below. These are outputs of the legacy
+      resolver, not an engine invariant. Write each selected reviewer into the same
+      REVIEWER_RUNNER / REVIEWER_ENGINE fields before delegation.
+
+    Concretely, by design engine and Phase B choice in legacy policy:
 
     [design=claude]
       - "opus 1m" (YOU implement in-session) → the review pane reviews your code:
@@ -1221,8 +1280,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          (compute TWO parallel-execution directives first, then fill every <...>
          before sending. One is for the implementer's engine — claude for the
          sonnet standby / a delegated claude pane, codex for the codex standby.
-         The other is for the reviewer, who is ALWAYS the opposite engine of the
-         implementer; it is quoted inside the review request the implementer
+         The other is for the explicitly resolved reviewer engine; it is quoted
+         inside the review request the implementer
          sends, and this is the ONLY thing that gives the prewarm-path reviewer a
          parallel directive — the reviewer pane itself was launched with
          `--mode review`, which carries none):
@@ -1320,9 +1379,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 ITSELF — do NOT run /exit (codex does not act on it) and do NOT leave
                 the session idle. A codex TUI that stays idle blocks its wrapper
                 forever, so the wrapper backstop never fires either."
-         Placeholder values: <REVIEWER_SURFACE> = the value fixed by the design engine
-         branch above (YOU review → your own $CMUX_SURFACE_ID; the review pane reviews
-         → prewarm.json .review.surface_id), <TEAM> = the TEAM value given above (empty
+         Placeholder values: <REVIEWER_SURFACE> = the review-policy resolver output
+         (fixed → prewarm.json .review.surface_id; legacy → the selected design or
+         dedicated review surface), <TEAM> = the TEAM value given above (empty
          when agmsg is not installed — then drop the three --agmsg-* flags and let
          send-prompt.sh deliver by typing alone), <SKILL_DIR> = the absolute path of
          this skill's directory (substitute it before sending — the implementer pane
@@ -1333,23 +1392,23 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          <implementer-engine> = `claude` when the implementer is the sonnet standby or a
          delegated claude pane (opus 1m / sonnet target in the design=codex variant),
          `codex` when the implementer is the codex standby, <reviewer-engine> = the
-         opposite of <implementer-engine> (this is the engine of the pane at
-         <REVIEWER_SURFACE>, and it is what <REVIEWER_ENGINE> below is set to as well).
+         resolved `REVIEWER_ENGINE` for the pane at <REVIEWER_SURFACE>.
 
          Before sending this REQUEST_TEXT, write the reviewer wiring file so the
          implementer's runner wrapper can also wake the reviewer if the implementer
          stops without following the abort protocol:
            mkdir -p "<EXISTING_STATUS_DIR>/review"
            jq -n --arg s "<REVIEWER_SURFACE>" --arg w "<REVIEWER_WORKSPACE>" \
-             --arg d "<EXISTING_STATUS_DIR>/review" --arg e "<REVIEWER_ENGINE>" \
-             '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_engine: $e}' \
+             --arg d "<EXISTING_STATUS_DIR>/review" --arg r "<REVIEWER_RUNNER>" \
+             --arg e "<REVIEWER_ENGINE>" \
+             '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_runner: $r, reviewer_engine: $e}' \
              > "<EXISTING_STATUS_DIR>/review/code-review.json"
          <REVIEWER_WORKSPACE> is the reviewer pane's workspace ($CMUX_WORKSPACE_ID
-         when YOU are the reviewer). <REVIEWER_ENGINE> is the design engine when YOU
-         are the reviewer, or the opposite of the design engine when the review pane
-         reviews — it lets launch-workspace.sh pick the right parallel-review wording
-         for the spawn-path reviewer. The spawn fallback already writes this file;
-         this makes the prewarm path write it too.
+         when the legacy design pane is the reviewer). <REVIEWER_RUNNER> and
+         <REVIEWER_ENGINE> come directly from the fixed or legacy resolver. The engine
+         lets launch-workspace.sh pick the right parallel-review wording for the
+         spawn-path reviewer. The spawn fallback already writes this file; this makes
+         the prewarm path write it too.
 
          MAINTENANCE NOTE (for SKILL.md editors — not part of the request text):
          the line break inside the quoted old wording below is DELIBERATE.
@@ -1421,13 +1480,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     review reached approve or one of the explicit fallbacks above was taken.
   ````
 
-- Read `~/.claude/cmux-team-dispatch-task/runners.json` and check whether any runner
-  has `engine: "codex"`:
+- Use the Step 1g execution resolver to check whether a codex execution role is
+  available. Prefer a codex `DESIGN_RUNNER`; otherwise use the legacy first capable
+  codex runner:
 
   ```bash
   CODEX_CMD=$(jq -r '[.runners[] | select(.engine == "codex")] | .[0].command // empty' \
-    ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
-  CODEX_RUNNER_NAME=$(jq -r '[.runners[] | select(.engine == "codex")] | .[0].name // empty' \
     ~/.claude/cmux-team-dispatch-task/runners.json 2>/dev/null)
   ```
 
@@ -1436,7 +1494,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     - `{{CODEX_BEHAVIOR_BLOCK}}` →
       ```
           [DIFFERENT MODEL] "codex" → FIRST check for a pre-warmed standby pane:
-              CODEX_SURFACE=$(jq -r '.codex.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
+              CODEX_SURFACE=$(jq -r '.executors.codex.surface_id // empty' "<EXISTING_STATUS_DIR>/prewarm.json" 2>/dev/null)
             IF CODEX_SURFACE is non-empty:
               1. Leave the unused standby panes (sonnet / opus / review) OPEN and idle — do
                  NOT close them (see the sonnet branch above: an unassigned standby writes no
@@ -1465,7 +1523,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                      -- "$REQUEST_TEXT"
                    # $TEAM is the TEAM value given above — do NOT re-derive it in this
                    # session. Drop the three --agmsg-* flags when $TEAM is empty, and do
-                   # NOT branch on prewarm.json's `.codex.delivery`.
+                   # NOT branch on prewarm.json's `.executors.codex.delivery`.
               4. touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block
                  exists below, do NOT exit — switch to the reviewer role it defines.
                  OTHERWISE exit THIS session.
@@ -1476,19 +1534,17 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                   --cwd "$PWD" \
                   --mode execute \
                   --plan-file <PLAN_FILE_PATH> \
-                  --runner <CODEX_RUNNER_NAME> \
+                  --runner "$EXEC_RUNNER" \
                   --status-dir "<EXISTING_STATUS_DIR>" \
                   --parent-notify-workspace <PARENT_WORKSPACE_ID> \
                   [--parent-notify-surface <PARENT_SURFACE_ID>] \
                   [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
                   <task-slug>-exec
               IF the PHASE B-R block exists below, BEFORE the launch above write the
-              reviewer wiring file exactly as in the sonnet branch (mkdir -p the
-              review dir, then jq -n {reviewer_surface: $CMUX_SURFACE_ID,
-              reviewer_workspace: $CMUX_WORKSPACE_ID,
-              review_dir: <EXISTING_STATUS_DIR>/review, reviewer_engine: "claude"}
-              > .../review/code-review.json — reviewer_engine is claude, since this
-              session turns into the reviewer here too).
+              reviewer wiring file exactly as in the sonnet branch, including the
+              resolver outputs `reviewer_runner` and `reviewer_engine`. Fixed policy
+              always targets the dedicated review pane; legacy policy uses its six-case
+              assignment.
               Then write the deferred sentinel:
                 touch "<EXISTING_STATUS_DIR>/.deferred"
               IF the PHASE B-R block exists below, do NOT exit — switch to the
@@ -1498,9 +1554,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
               claude session via external_migration when the cmux codex hooks are
               installed.)
       ```
-      where `<CODEX_RUNNER_NAME>` is the `name` field of the first codex runner in
-      `runners.json` (the SKILL pre-computes this from the same jq query that
-      produces `CODEX_CMD`).
+      where `EXEC_RUNNER` is the resolved codex execution runner for this task.
 
   - **codex runner absent** (`CODEX_CMD` empty):
     - `{{CODEX_OPTION_LINE}}` → empty string (so the option list shows only `1.` and `2.`)
@@ -1642,6 +1696,7 @@ mkdir -p .dispatch/<task-slug>
 
 bash <this-skill-dir>/scripts/launch-workspace.sh \
   --mode <plan|superpowers> \
+  --runner "$DESIGN_RUNNER" \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
   --defer-status \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
@@ -1666,25 +1721,13 @@ PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
 [[ -z "$PREWARM" ]] && PREWARM=true
 ```
 
-When layout is `workspace` AND `PREWARM` is `true`, standby panes are placed
-inside each task workspace. Layout depends on Phase A-R (Step 1g `REVIEW_ENABLED`):
-
-- **Phase A-R disabled** (current behavior): vertical stack — top: opus /
-  middle: sonnet / bottom: codex (codex only when `runners.json` has an
-  `engine: "codex"` runner).
-- **Phase A-R enabled**: 2×2 even grid. The review pane is ALWAYS the opposite of the
-  design engine:
-  - design=claude (current): top-left: opus / top-right: codex review pane (idle,
-    `--model <review_model>`, agent `<slug>-review`) / bottom-left: sonnet /
-    bottom-right: codex
-  - design=codex: top-left: design codex (idle, `--effort <plan_effort>`) /
-    top-right: claude review pane (idle, reviewer runner + `--model
-    <CLAUDE_REVIEW_MODEL>` + `--skip-permissions`, agent `<slug>-opus` — it plays
-    both roles: the A-R reviewer and the Phase B opus 1m implementation target) /
-    bottom-left: sonnet / bottom-right: codex (exec_model / exec_effort)
-  In both cases the review pane starts with NO status ownership in the standby wrapper
-  (only for design=codex's top-right pane: when opus 1m is chosen in Phase B,
-  `.assigned-<slug>-opus` is touched and it owns status as the implementer).
+When layout is `workspace` AND `PREWARM` is `true`, `prewarm-panes.sh` starts only
+the resolved roles inside each task workspace: one design pane, an optional dedicated
+review pane, and the execution panes allowed by `EXEC_CHOICE`. A fixed choice suppresses
+every unselected execution pane; unset/`ask` retains the legacy candidate set. The
+review pane uses `REVIEW_RUNNER` even when its engine equals `DESIGN_ENGINE`. The all-Codex
+fixed example therefore contains exactly design codex, review codex, and executor codex
+panes—no sonnet pane or claude process.
 
 Everything is delegated to `prewarm-panes.sh`; do not create panes manually.
 
@@ -1698,63 +1741,58 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --cwd "<repo-root>/.worktrees/<task-slug>" \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  [--codex-runner <codex-runner-name>] \
+  [--codex-runner "$EXEC_RUNNER"] \
   [--review-model "$REVIEW_MODEL"] \
-  [--design-runner <design-runner-name>] \
-  [--reviewer-runner <reviewer-runner-name>] \
+  --design-runner "$DESIGN_RUNNER" \
+  [--reviewer-runner "$REVIEW_RUNNER"] \
+  --exec-choice "$EXEC_CHOICE" \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID"
 ```
 
 **agmsg installed (`$TEAM` non-empty)** — do NOT run the normal "Launch: Workspace
-Mode" invocation. Instead ALL panes (opus-1m included) start idle with no task
+Mode" invocation. Instead all resolved panes start idle with no task
 message, and the Phase A task is delivered afterwards by `send-prompt.sh`.
 `prewarm-panes.sh` creates the worktree, wires agmsg delivery into it (join +
-`delivery.sh set`, BEFORE any pane starts), launches the opus-1m standby workspace,
-and stacks sonnet/codex below:
+`delivery.sh set`, BEFORE any pane starts), launches the design standby workspace,
+and places only the resolved review/execution roles:
 
 ```bash
 RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
-  --with-opus \
+  --with-design \
   --cwd "<repo-root>/.worktrees/<task-slug>" \
   --slug <task-slug> \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  [--codex-runner <codex-runner-name>] \
-  [--review-model "$REVIEW_MODEL"] \
-  [--design-runner <design-runner-name>] \
-  [--reviewer-runner <reviewer-runner-name>] \
+  [--codex-runner "$EXEC_RUNNER"] \
+  --design-runner "$DESIGN_RUNNER" \
+  [--reviewer-runner "$REVIEW_RUNNER"] \
+  --exec-choice "$EXEC_CHOICE" \
   --agmsg-team "$TEAM" \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID")
 ```
 
 Flag selection per task:
-- codex implementation pane: pass `--codex-runner <name>` whenever a codex
-  runner exists in `runners.json` (`CODEX_RUNNER_COUNT > 0`), **INDEPENDENT of
-  review mode** — this is the Phase B implementation codex pane (bottom of the
-  vertical stack when Phase A-R is off, bottom-right of the 2×2 grid when on).
-  `<name>` is the `name` of the first `engine: codex` runner. Applies to BOTH
-  design=claude and design=codex tasks. Omitting it when review is off would
-  hide the codex exec option even though `exec_choice`/`codex` remains valid.
-- design=claude: pass `--review-model "$REVIEW_MODEL"` only when Phase A-R is
-  enabled (`REVIEW_ENABLED`). It additionally requires `--codex-runner` (already
-  passed by the rule above whenever a codex runner exists).
-- design=codex: ALWAYS pass `--design-runner <runner>`. Pass
-  `--reviewer-runner "$REVIEWER_RUNNER"` only when `REVIEW_ENABLED_CODEX_DESIGN`
-  is true. `--review-model` must NOT be passed (mutually exclusive).
+- Always pass `--design-runner "$DESIGN_RUNNER"` and `--exec-choice "$EXEC_CHOICE"`.
+- When the codex execution role is available, pass its resolved runner as
+  `--codex-runner "$EXEC_RUNNER"`; never substitute the first codex runner after
+  resolution.
+- When `REVIEW_ENABLED=true`, pass `--reviewer-runner "$REVIEW_RUNNER"`. The legacy
+  `--review-model` input remains only for old design=claude callers; new role-aware
+  calls use the independent runner. Do not pass both.
 
 Since the normal task-prompt launch never runs in this mode, `prewarm-panes.sh` itself writes
 an initial `"launched"` status.json (with `workspace_id`/`surface_id` populated) right after
 creating the panes, so `.dispatch/<task-slug>/status.json` is observable immediately.
 
-Then dispatch the Phase A task to the opus pane:
+Then dispatch the Phase A task to the design pane:
 
 1. Write the full task prompt (including PROGRESS REPORTING FORMAT, the
    MANDATORY MODEL SELECTION SEQUENCE, and the agmsg status-protocol block
    from Step 2 — its MANDATORY completion notification, one `send-prompt.sh`
    call, is what notifies the parent) to
    `<repo-root>/.worktrees/<task-slug>/.cmux-team-dispatch-task-prompt.md`.
-2. `touch .dispatch/<task-slug>/.assigned-<task-slug>` — the opus standby wrapper owns
+2. `touch .dispatch/<task-slug>/.assigned-<task-slug>` — the design standby wrapper owns
    status.json transition from now on (it was launched with `--defer-status`,
    so a Phase B handoff can still suppress it via `.deferred`).
 3. Send the task with ONE send-prompt.sh call (see the delivery contract in
@@ -1764,14 +1802,15 @@ Then dispatch the Phase A task to the opus pane:
 
    ```bash
    TASK_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md. Mode: <plan|superpowers> — for superpowers invoke the superpowers:brainstorming skill first; for plan produce a structured plan before implementing."
-   bash <this-skill-dir>/scripts/send-prompt.sh --to-surface <opus-surface> \
+   DESIGN_SURFACE=$(jq -r '.design.surface_id // empty' "$(pwd)/.dispatch/<task-slug>/prewarm.json")
+   bash <this-skill-dir>/scripts/send-prompt.sh --to-surface "$DESIGN_SURFACE" \
      --agmsg-team "$TEAM" --agmsg-to <task-slug> --agmsg-from parent \
      --label phase-a-task --outbox-dir "$(pwd)/.dispatch/<task-slug>/outbox" \
      -- "$TASK_TEXT"
    ```
 
    Drop the three `--agmsg-*` flags when `$TEAM` is empty, and do NOT branch on
-   prewarm.json's `.opus.delivery` — send-prompt.sh checks the ready sentinel
+   prewarm.json's `.design.delivery` — send-prompt.sh checks the ready sentinel
    itself. That sentinel (`~/.agents/skills/agmsg/run/ready.<team>__<agent>`) is
    created by agmsg's watch.sh while a live watcher is receiving for that role
    and removed on exit — team/agent names here are `[A-Za-z0-9._-]` slugs, so
@@ -1781,32 +1820,34 @@ Then dispatch the Phase A task to the opus pane:
    session or under a plain background shell that does not. Typing is what
    actually delivers.
 
-prewarm.json schema (written by `prewarm-panes.sh`; `opus` only when agmsg is
-installed, `codex` only when a codex runner exists, `review` only when
-`--review-model` or `--reviewer-runner` was passed; `delivery` is `"agmsg"` or
-`"cmux-send"` depending on whether delivery wiring succeeded — it is
-informational only, since `send-prompt.sh` re-checks the ready sentinel at send
-time; `engine` is `"claude"` or
-`"codex"` — `opus`'s engine follows the design runner (`claude` normally,
-`codex` when `--design-runner` is a codex-engine runner), `sonnet` is
-always `claude`, `codex` is always `codex`, and `review`'s engine is the
-opposite of the design engine (`codex` review pane when design is `claude`,
-with `agent` suffix `-review`; `claude` review pane when design is `codex`,
-with `agent` suffix `-opus`)):
+prewarm.json uses role names and records only panes that exist. `design` is required;
+`review` exists when the quality gate is enabled; `executors` contains only the
+choices started for this task. Each object records its resolved runner, engine, role,
+agent, and informational delivery state. Consumers use these exact lookups:
+
+```bash
+DESIGN_SURFACE=$(jq -r '.design.surface_id // empty' "$PREWARM_FILE")
+REVIEW_SURFACE=$(jq -r '.review.surface_id // empty' "$PREWARM_FILE")
+CODEX_SURFACE=$(jq -r '.executors.codex.surface_id // empty' "$PREWARM_FILE")
+SONNET_SURFACE=$(jq -r '.executors.sonnet.surface_id // empty' "$PREWARM_FILE")
+```
 
 ```json
 {
-  "opus":   { "surface_id": "surface:N", "agent": "<slug>",        "engine": "claude", "delivery": "agmsg" },
-  "sonnet": { "surface_id": "surface:N", "agent": "<slug>-sonnet", "engine": "claude", "delivery": "agmsg" },
-  "codex":  { "surface_id": "surface:N", "agent": "<slug>-codex",  "engine": "codex",  "delivery": "cmux-send" },
-  "review": { "surface_id": "surface:N", "agent": "<slug>-review", "engine": "codex",  "delivery": "cmux-send" }
+  "design": { "surface_id": "surface:1", "agent": "<slug>", "runner": "codex", "engine": "codex", "role": "plan", "delivery": "agmsg" },
+  "review": { "surface_id": "surface:2", "agent": "<slug>-review", "runner": "codex", "engine": "codex", "role": "review", "delivery": "agmsg" },
+  "executors": {
+    "codex": { "surface_id": "surface:3", "agent": "<slug>-codex", "runner": "codex", "engine": "codex", "role": "exec", "delivery": "agmsg" }
+  }
 }
 ```
 
 `prewarm: false` skips this section entirely —
-Phase B falls back to the on-demand `--mode execute` spawn, and when agmsg is
-installed the opus session falls back to the traditional prompt-embedded launch
-("Launch: Workspace Mode" as-is).
+Phase B falls back to an on-demand `--mode execute --runner "$EXEC_RUNNER"` spawn,
+and Phase A uses the traditional prompt-embedded launch with
+`--runner "$DESIGN_RUNNER"`. Phase A-R uses `--mode review --runner "$REVIEW_RUNNER"`.
+All three non-prewarm paths pass their resolved runner and never fall through to the
+launch script's default claude command.
 
 ## Parallel execution inside a task
 
@@ -2174,11 +2215,14 @@ for slug in <task-slugs>; do
     cmux close-workspace --workspace "$workspace_id"
   fi
 
-  # Close any remaining pre-warm standby panes (all standbys are still around after Phase B because the layout always keeps 4 panes).
+  # Close every existing prewarm role once. The role-aware schema is sparse and a
+  # surface may be referenced by more than one compatibility role, so recurse and
+  # de-duplicate rather than assuming fixed pane names.
   # --workspace is REQUIRED: without it a `surface:N` ref resolves against the
   # PARENT's $CMUX_WORKSPACE_ID and always fails with "Surface ref not found".
   if [[ "$close_all" == "true" && -n "$workspace_id" && -f ".dispatch/$slug/prewarm.json" ]]; then
-    for sf in $(jq -r '.[].surface_id' ".dispatch/$slug/prewarm.json" 2>/dev/null); do
+    for sf in $(jq -r '.. | objects | .surface_id? // empty' ".dispatch/$slug/prewarm.json" 2>/dev/null \
+      | awk 'NF && !seen[$0]++'); do
       cmux close-surface --workspace "$workspace_id" --surface "$sf" 2>/dev/null || true
     done
   fi
@@ -2214,9 +2258,11 @@ Notes:
 
   ```bash
   for slug in <task-slugs>; do
-    ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$slug" 2>/dev/null || true
-    ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$slug-sonnet" 2>/dev/null || true
-    ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$slug-codex" 2>/dev/null || true
+    while IFS= read -r agent; do
+      [[ -n "$agent" ]] || continue
+      ~/.agents/skills/agmsg/scripts/leave.sh "$TEAM" "$agent" 2>/dev/null || true
+    done < <(jq -r '.. | objects | .agent? // empty' ".dispatch/$slug/prewarm.json" 2>/dev/null \
+      | awk 'NF && !seen[$0]++')
   done
   ```
 
