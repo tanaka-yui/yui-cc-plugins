@@ -141,9 +141,9 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
       - design=claude, opus 1m（設計ペインで継続実装）→ codex レビューペインがレビュー（Phase A-R と同一ペイン・ポイント id `code`）
       - design=claude, sonnet → codex レビューペインがレビュー。設計 opus ペインは `.deferred` touch 後に exit する（**現行からの変更**: 旧仕様では設計 opus ペインがレビューしていた）
       - design=claude, codex → 設計 opus ペイン自身がレビュアーに転じる
-      - design=codex, opus 1m → 設計 codex ペイン自身がレビュアーに転じる。実装は claude レビューペイン（`<slug>-opus`、opus 1m 実装先と A-R レビュアーの二役）が担う
+      - design=codex, opus 1m → 設計 codex ペイン自身がレビュアーに転じる。実装は専用 claude executor ペイン（`<slug>-opus`）が担い、A-R の専用レビューペイン（`<slug>-review`）とは兼用しない
       - design=codex, sonnet → 設計 codex ペイン自身がレビュアーに転じる。実装は sonnet standby が担う
-      - design=codex, codex → claude レビューペイン（`<slug>-opus`）がレビュー。設計 codex ペインは `.deferred` touch 後に exit する
+      - design=codex, codex → claude レビューペイン（`<slug>-review`）がレビュー。設計 codex ペインは `.deferred` touch 後に exit する
       - レビューペイン利用不可（Phase A-R spawn 失敗済み）→ 上記いずれのケースもレビュー省略
     - プロトコル: findings は `<STATUS_DIR>/review/code-round-<N>.md` 末尾の `VERDICT: approve|needs_work`、最大 5 往復、実装者の verdict 待ちは 5 秒間隔・15 分チャンクのファイルポーリング + レビュアー pane の read-screen 画面差分による生存確認（活動中は上限なしで待機。standby が実装者のケース。設計セッション自身が実装を継続するケースは Phase A-R Round loop の待ち方を流用）、stalled（1 チャンク画面変化なし / 2 回連続観測不能）は verdict 最終確認 → 同一ラウンド 1 回再依頼 → それでも stalled なら claude 実装者は AskUserQuestion（再依頼 / レビュー省略して PR 作成）、codex 実装者はレビュー省略を PR 本文に注記して続行
     - 5 往復 needs_work: claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、codex 実装者は PR 本文に注記して続行
@@ -151,9 +151,9 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - spawn 経路: Child は fixed なら専用 review tuple、legacy なら6ケースの design/review pane tuple を解決し、同じ pane の surface/workspace/runner/engine を `<STATUS_DIR>/review/code-review.json` に書く。review surface が空なら `--review-config` を省略して gate だけを skip する。`launch-workspace.sh --mode execute --review-config <path>` は孫 prompt にプロトコルを追記し、REVIEW_INSTRUCTION と ABORT 手順は `bash test/test-launch-workspace-review-config.sh` で検証する
 18. 独立 review runner と codex effort が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
     - fixed policy の同一 engine support と legacy B-R 6 ケースが明確に区別される
-   - design=codex: Phase B は 3 択とも解決済み executor へ委譲（設計セッションは実装しない）。fixed policy では review pane と executor を兼用せず、兼用配置は `review_runner` 未設定の legacy policy に限る
+    - design=codex: Phase B は 3 択とも解決済み executor へ委譲（設計セッションは実装しない）。fixed/legacy policy のどちらも review は専用 `<slug>-review`、opus executor は専用 `<slug>-opus` を使って兼用しない。legacy policy が維持するのはクロスエンジンレビュアー割り当て6ケースだけ
     - `review_runner` の project → global → legacy precedence、codex `review_model` 必須、claude `opus[1m]` fallback、レイヤー単位invalid化
-    - effort の優先順位（明示 `--effort` > runner フィールド > config.toml 既定）と MODE 対応（plan_effort: plan/superpowers、review_effort: review、exec_effort: execute/standby）。prewarm の設計 codex ペインは standby 起動のため `--effort <plan_effort>` 明示
+    - effort の優先順位（明示 `--effort` > runner フィールド > config.toml 既定）と role 対応（plan_effort: plan/superpowers、review_effort: review、exec_effort: execute/standby）。prewarm の設計 codex ペインは `--role plan --runner <design runner>` で起動し、`launch-workspace.sh` が `plan_effort` を解決する。未設定なら effort flag を付けず config.toml の既定に委ねる
     - `prewarm-panes.sh` の `--design-runner` / `--reviewer-runner` / 固定 choice 用 `--exec-runner` / unset・ask 候補専用 `--claude-runner`・`--codex-runner` と prewarm.json の runner/engine フィールド。review runner を executor candidate に流用しない
 19. `design_runner` / `exec_choice` の precedence（project config → global config → ask）と警告フォールバックが SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認。`design_runner` は有効 runner 名で switch / per-task 質問を両方省略し、`exec_choice` は有効値で Phase B の AskUserQuestion を default-direct に置換することを確認。**未設定と明示 `"ask"` の区別**も確認: 未設定（全レイヤー未設定または不正）では永続化オプション付きの質問（design_runner は switch 質問 4 択、exec_choice はモデル選択直後の永続化確認 1 問）、明示 `"ask"` では従来質問のみで永続化オプションなし（キー削除 = 未設定に戻り再表示、`"ask"` 書き換え = 非表示 — 2 つの戻し方の違いが 4 ファイルで明記されていること）。不正値の検証は **project / global のレイヤーごと**で、不正なレイヤーだけ警告して無視し次へフォールバックする（project の不正値が global の「常に〜」を遮蔽しない）こと。「常に〜」の永続化は `review_mode` と同じ jq merge でグローバル config のみに書き込み（project config には書かない）、一時ファイルは **writer 固有の mktemp + 同一ディレクトリ mv**（共有 `$CONFIG.tmp` は並列書き込みで壊れるため禁止）であること。exec_choice の永続化確認は子セッションが書くため並列時はファイル全体の last-write-wins であること
 20. codex の engine × MODE 起動規則を確認: superpowers は bypass 付き、review は `--sandbox workspace-write` + `-c approval_policy='never'` + `--add-dir <STATUS_DIR>` の3点セットで、sandbox 完全 off を使わず findings 書込先を許可すること

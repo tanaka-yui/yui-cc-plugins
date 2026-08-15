@@ -307,12 +307,15 @@ codex オプションを使う場合は事前に `cmux codex install-hooks` の�
 
 #### design=codex のタスク
 
-設計 runner が `engine: codex` のタスクでは Phase A をその codex セッション自身が担う
-（`--effort <plan_effort>` の reasoning effort で起動済み。セッション途中でモデルは切り替えない）。
+設計 runner が `engine: codex` のタスクでは Phase A をその codex セッション自身が担う。
+prewarm は `--role plan --runner <design runner>` で起動し、`launch-workspace.sh` が runner の
+`plan_effort` を解決する。未設定なら effort flag を付けず Codex の設定既定に委ねる（セッション途中で
+モデルは切り替えない）。
 Phase B の 3 択（**opus 1m / sonnet / codex**）は**すべて pre-warm ペインへ委譲**し、この codex
-セッション自身は実装しない。固定 `review_runner` ではレビューペインと executor を兼用せず、
-opus 1m も `prewarm.json.executors.opus` の解決済みペインが実装する。`review_runner` 未設定の
-legacy policy だけは従来の兼用配置を維持する。prewarm.json が無い（prewarm off）場合は
+セッション自身は実装しない。固定/legacy policy のどちらも、レビューには専用 `<slug>-review`、
+opus 1m の実装には専用 `<slug>-opus` executor を使い、両者を兼用しない。legacy policy が維持するのは
+従来のクロスエンジンレビュアー割り当て6ケースだけである。opus 1m は
+`prewarm.json.executors.opus` の解決済みペインが実装する。prewarm.json が無い（prewarm off）場合は
 `launch-workspace.sh --mode execute --runner "$EXEC_RUNNER"` へフォールバックする。
 
 ### Phase B-R — 実装後コードレビュー（オプション）
@@ -331,9 +334,9 @@ legacy policy だけは従来の兼用配置を維持する。prewarm.json が�
   | claude | opus 1m | 現セッション（opus, in-session） | codex レビューペイン |
   | claude | sonnet | sonnet standby | codex レビューペイン |
   | claude | codex | codex standby | 現セッション（設計 claude） |
-  | codex | opus 1m | claude review ペイン（`<slug>-opus`） | 現セッション（設計 codex） |
+  | codex | opus 1m | claude executor ペイン（`<slug>-opus`） | 現セッション（設計 codex） |
   | codex | sonnet | sonnet standby | 現セッション（設計 codex） |
-  | codex | codex | codex standby | claude review ペイン |
+  | codex | codex | codex standby | claude review ペイン（`<slug>-review`） |
 
   > design=claude + sonnet 実装のレビュアーは旧仕様では設計 opus ペインが担っていたが、
   > クロスエンジン原則により現行は **codex レビューペイン**が担う。

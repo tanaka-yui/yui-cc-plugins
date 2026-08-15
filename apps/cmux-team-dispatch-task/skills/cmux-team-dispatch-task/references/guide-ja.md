@@ -323,9 +323,10 @@ Phase B-R が実装完了後・PR 作成前に挟まる）。プロンプトテ�
   切り替えない）。plan モードは `/plan` を使い、承認された plan は Step 0（Phase A-R）/
   Step 1（Phase B）を実装ステップより前に列挙してファイル保存する
 - **Phase B**: opus 1m / sonnet / codex の 3 択はすべて pre-warm ペインへ委譲する — **この codex
-  セッション自身は実装しない**。固定 `review_runner` では review pane を executor と兼用せず、
-  opus 1m / sonnet / codex をそれぞれ `prewarm.json.executors.<choice>` の解決済みペインへ送り、
-  `.deferred` を touch する。review pane との兼用は `review_runner` 未設定の legacy policy に限る。
+  セッション自身は実装しない**。固定/legacy policy のどちらも、review は専用 `<slug>-review`、
+  opus executor は専用 `<slug>-opus` を使って兼用しない。legacy policy が維持するのは従来の
+  クロスエンジンレビュアー割り当て6ケースだけである。opus 1m / sonnet / codex をそれぞれ
+  `prewarm.json.executors.<choice>` の解決済みペインへ送り、`.deferred` を touch する。
   prewarm.json が無い（prewarm off）場合は claude variant と同じく `launch-workspace.sh
   --mode execute` にフォールバック（opus 1m は reviewer runner の command + `--model
   'opus[1m]'` + `--skip-permissions`）
@@ -502,9 +503,9 @@ legacy の設計 engine × Phase B 選択 6 ケース:
 | claude | opus 1m | 現セッション（opus, in-session） | codex レビューペイン | prewarm.json `.review.surface_id` |
 | claude | sonnet | sonnet standby | codex レビューペイン | prewarm.json `.review.surface_id` |
 | claude | codex | codex standby | 現セッション（設計 claude, YOU） | 自身の `$CMUX_SURFACE_ID` |
-| codex | opus 1m | claude review ペイン（agent `<slug>-opus`） | 現セッション（設計 codex, YOU） | 自身の `$CMUX_SURFACE_ID` |
+| codex | opus 1m | claude executor ペイン（agent `<slug>-opus`） | 現セッション（設計 codex, YOU） | 自身の `$CMUX_SURFACE_ID` |
 | codex | sonnet | sonnet standby | 現セッション（設計 codex, YOU） | 自身の `$CMUX_SURFACE_ID` |
-| codex | codex | codex standby | claude review ペイン | prewarm.json `.review.surface_id` |
+| codex | codex | codex standby | claude review ペイン（`<slug>-review`） | prewarm.json `.review.surface_id` |
 
 > **現行変更**: design=claude + sonnet 実装のレビュアーは、旧仕様では**設計 opus ペイン**が担って
 > いたが、現行ではクロスエンジン原則に従い **codex レビューペイン**が担う。
