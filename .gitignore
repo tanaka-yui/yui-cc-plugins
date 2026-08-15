@@ -43,3 +43,4 @@ settings.local.json
 .claude/plans
 # Superpowers SDD scratch
 .superpowers
+.worktrees/
