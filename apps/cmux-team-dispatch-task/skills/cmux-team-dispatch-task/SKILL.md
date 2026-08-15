@@ -269,8 +269,9 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
      cross-engine resolver. For design=claude, select a review-model-bearing codex
      runner. For design=codex, select a claude runner (one silently, multiple via the
      existing question) and use its `review_model` or `opus[1m]`. Store that resolver's
-     result in the same `REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` variables;
-     downstream prompt and spawn code never recomputes an engine relationship.
+     result in the same `REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` variables and
+     set `REVIEW_PANE_AGENT=<task-slug>-review`; downstream prompt and spawn code never
+     recomputes an engine relationship.
 
    If `review_mode=on` but no review-capable runner is resolved, warn and disable review
    only for the affected task. Do not rewrite `review_mode`. If a review-pane spawn
@@ -1129,15 +1130,16 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     design pane exits after touching `.deferred`, and the dedicated review pane reviews.
 - `{{DESIGN_RUNNER}}`, `{{DESIGN_ENGINE}}`, `{{PLAN_MODEL}}` → the resolved design tuple.
 - `{{REVIEW_POLICY}}`, `{{REVIEW_RUNNER}}`, `{{REVIEW_ENGINE}}`,
-  `{{REVIEW_MODEL}}`, `{{REVIEW_PANE_AGENT}}` → the resolved review tuple. Under fixed
-  policy the agent is `<task-slug>-review`; under legacy policy retain the existing
-  physical assignment while still passing the resolver output explicitly.
+  `{{REVIEW_MODEL}}`, `{{REVIEW_PANE_AGENT}}` → the resolved review tuple. Under both fixed
+  and legacy policy, the dedicated review pane agent is `<task-slug>-review`. Legacy
+  preserves only the six-case cross-engine Phase B-R reviewer assignment; it does not
+  repurpose the separate `<task-slug>-opus` executor pane as the review pane.
 - `{{EXEC_CHOICE}}`, `{{EXEC_RUNNER}}`, `{{EXEC_ENGINE}}`, `{{EXEC_MODEL}}` → the
   resolved execution tuple for the selected/default branch.
 
 - `{{REVIEW_BLOCK}}` → **only when `REVIEW_ENABLED` is true**, bake in the
   WHOLE block below (substituting `{{REVIEW_MODEL}}` / `{{REVIEW_RUNNER_NAME}}` /
-  `{{REVIEW_PANE_AGENT}}` per the design-engine branching above). Empty string when disabled:
+  `{{REVIEW_PANE_AGENT}}` from the resolved review tuple above). Empty string when disabled:
 
   ````
   PHASE A-R — Plan/Spec review by the resolved review role (REQUIRED between Phase A and Phase B):
@@ -1146,7 +1148,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     with NO status.json ownership; the review engine may equal the design engine.
     NEVER touch .assigned-{{REVIEW_PANE_AGENT}} during review. Phase B implementation
     ownership belongs to the separately resolved executor pane, including opus 1m for
-    design=codex; a fixed review pane is never reused as an executor.
+    design=codex; the dedicated review pane is never reused as an executor under either
+    policy.
 
     Review points (run the round loop below at EACH point, in order):
       - plan mode:        one point  — id "plan" (after the plan is written)
@@ -1290,9 +1293,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         and let the implementer continue to PR creation.
 
     [legacy policy]
-      Retain the six compatibility assignments below. These are outputs of the legacy
-      resolver, not an engine invariant. Write each selected reviewer into the same
-      REVIEWER_RUNNER / REVIEWER_ENGINE fields before delegation.
+      Retain only the six cross-engine reviewer assignments below. Physical panes stay
+      dedicated and separate: <task-slug>-review is the review pane and
+      <task-slug>-opus is the opus executor pane. These assignments select which existing
+      pane reviews Phase B output; they never make the review pane an executor. They are
+      outputs of the legacy resolver, not an engine invariant. Write each selected reviewer
+      into the same REVIEWER_RUNNER / REVIEWER_ENGINE fields before delegation.
 
     Concretely, by design engine and Phase B choice in legacy policy:
 
@@ -1311,8 +1317,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 
     [design=codex]
       - "opus 1m" / "sonnet" → YOU (the design codex session) become the code
-        reviewer. The delegated claude pane is the implementer (opus 1m → the review
-        pane, agent <task-slug>-opus / sonnet → the sonnet standby): send it
+        reviewer. The delegated claude pane is the implementer (opus 1m → the dedicated
+        executor pane, agent <task-slug>-opus / sonnet → the sonnet standby): send it
         REQUEST_TEXT (common protocol a) with <REVIEWER_SURFACE> = your own
         $CMUX_SURFACE_ID, then run steps b–e (do NOT exit after .deferred — idle-wait,
         write findings each round, and exit only after writing approve).

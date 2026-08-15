@@ -328,8 +328,8 @@ Phase B-R が実装完了後・PR 作成前に挟まる）。プロンプトテ�
   クロスエンジンレビュアー割り当て6ケースだけである。opus 1m / sonnet / codex をそれぞれ
   `prewarm.json.executors.<choice>` の解決済みペインへ送り、`.deferred` を touch する。
   prewarm.json が無い（prewarm off）場合は claude variant と同じく `launch-workspace.sh
-  --mode execute` にフォールバック（opus 1m は reviewer runner の command + `--model
-  'opus[1m]'` + `--skip-permissions`）
+  --mode execute --runner "$EXEC_RUNNER"` と解決済み `EXEC_MODEL` にフォールバックし、review
+  runner を executor として流用しない
 
 **Phase A-R — plan/spec レビュー（review_mode: on のときのみ）**
 
@@ -357,9 +357,10 @@ review-capable runner が無いタスクは警告してそのタスクだけ rev
   返信 push も idle 待ちのこのセッションを起こせないため。`send-prompt.sh` は依頼文を
   レビューペインへタイプ入力し、`--agmsg-to <review-agent>` の ready sentinel が生きていれば
   同一文を inbox にも記録し、400 文字超は outbox へ退避してポインタだけをタイプする
-  （`<review-agent>` は design=claude で `<slug>-review`、design=codex で `<slug>-opus`。
-  prewarm.json の `review.delivery` で分岐する必要はない — sentinel の確認は
-  `send-prompt.sh` 自身が送信直前に行う）
+  （`<review-agent>` には解決済み `REVIEW_PANE_AGENT` を使う。現行トポロジーでは設計 engine に
+  かかわらず専用 `<slug>-review` であり、`<slug>-opus` は Phase B の opus executor に限る。
+  prewarm.json の `review.delivery` で分岐する必要はない — sentinel の確認は `send-prompt.sh`
+  自身が送信直前に行う）
 - **5 往復で approve が出ない** → 残指摘を要約して AskUserQuestion（このまま進む / さらに修正）
 - **stalled（1 チャンク画面変化なし / 2 回連続観測不能）・verdict 不正** → verdict を最終確認
   してから同一ラウンドを 1 回だけ再依頼（baseline 取り直し）。それでも stalled なら
