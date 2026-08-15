@@ -157,9 +157,15 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
 
 ```bash
 TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
-~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent claude-code "$(pwd)"
-~/.agents/skills/agmsg/scripts/delivery.sh set monitor claude-code "$(pwd)"
+PARENT_AGMSG_TYPE="claude-code"
+[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_AGMSG_TYPE="codex"
+~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)"
+~/.agents/skills/agmsg/scripts/delivery.sh set monitor "$PARENT_AGMSG_TYPE" "$(pwd)"
 ```
+
+`PARENT_AGMSG_TYPE` は現在の親オーケストレーター runtime に合わせる。Codex は
+`CODEX_THREAD_ID` を設定するため all-Codex では `codex`、Claude Code 互換経路では
+`claude-code` になる。子 runner から親 type を推測してはならない。
 
 未インストールなら `TEAM` は空のままこのブロックごとスキップし、以降の `--agmsg-*` も
 すべて省略する。配送はタイプ入力だけで従来どおり成立する。
@@ -172,7 +178,17 @@ SessionStart hook は次回以降のセッションにしか効かないため�
 セッションには注入されない。だからこそ `send-prompt.sh` は常にタイプ入力も行う。
 
 各 launch には `--agmsg-team "$TEAM" --agmsg-from <slug>` を付与し、
-worktree 作成後に子 agent を join する。子プロンプトには「親 (`parent`) へ
+pre-warm 無効時は worktree 作成後に子 agent を次のように join する（pre-warm 有効時は
+`prewarm-panes.sh` が role ごとの engine を使って join 済みなので、この手動 join を省略する）:
+
+```bash
+CHILD_AGMSG_TYPE="claude-code"
+[[ "$DESIGN_ENGINE" == "codex" ]] && CHILD_AGMSG_TYPE="codex"
+~/.agents/skills/agmsg/scripts/join.sh "$TEAM" <task-slug> "$CHILD_AGMSG_TYPE" "<repo-root>/.worktrees/<task-slug>"
+```
+
+`CHILD_AGMSG_TYPE` はタスクごとに解決済みの `DESIGN_ENGINE` から決め、親 runtime や別 role
+から推測しない。子プロンプトには「親 (`parent`) へ
 `send.sh` で直接質問・進捗報告できる」旨に加えて、次の**必須完了通知**のブロックを追記する:
 
 ```

@@ -658,10 +658,17 @@ fi
 
 ```bash
 TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
+PARENT_AGMSG_TYPE="claude-code"
+[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_AGMSG_TYPE="codex"
 # Join the parent (if already a member, join.sh treats it as a re-registration), and enable real-time push
-~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent claude-code "$(pwd)"
-~/.agents/skills/agmsg/scripts/delivery.sh set monitor claude-code "$(pwd)"
+~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)"
+~/.agents/skills/agmsg/scripts/delivery.sh set monitor "$PARENT_AGMSG_TYPE" "$(pwd)"
 ```
+
+`PARENT_AGMSG_TYPE` must match the current orchestrator runtime. Codex sets
+`CODEX_THREAD_ID`, so an all-Codex dispatch resolves this to `codex`; Claude Code
+compatibility resolves it to `claude-code`. Do not derive the parent type from a child
+runner.
 
 When agmsg is NOT installed, leave `TEAM` empty, skip this whole block, and drop the
 `--agmsg-*` flags everywhere below. Delivery still works — it is just typed-only.
@@ -679,8 +686,13 @@ Each launch then adds `--agmsg-team "$TEAM" --agmsg-from <task-slug>` to
 register the child:
 
 ```bash
-~/.agents/skills/agmsg/scripts/join.sh "$TEAM" <task-slug> claude-code "<repo-root>/.worktrees/<task-slug>"
+CHILD_AGMSG_TYPE="claude-code"
+[[ "$DESIGN_ENGINE" == "codex" ]] && CHILD_AGMSG_TYPE="codex"
+~/.agents/skills/agmsg/scripts/join.sh "$TEAM" <task-slug> "$CHILD_AGMSG_TYPE" "<repo-root>/.worktrees/<task-slug>"
 ```
+
+Resolve `CHILD_AGMSG_TYPE` per task from that task's already-resolved `DESIGN_ENGINE`.
+Do not infer it from the parent runtime or from another role.
 
 When the pre-warm path is active (workspace layout + `prewarm: true`), skip
 this manual `join.sh` — `prewarm-panes.sh` already joins the opus agent
