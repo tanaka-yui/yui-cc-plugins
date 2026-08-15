@@ -186,6 +186,7 @@ WORKSPACE_NAME=""
 PROMPT=""
 PLAN_FILE=""
 MODEL=""
+MODEL_ROLE=""
 NO_PARALLEL=0
 MAX_AGENTS=4
 EFFORT=""
@@ -236,6 +237,11 @@ while [[ $# -gt 0 ]]; do
     --model)
       [[ $# -lt 2 ]] && die "--model requires a model name"
       MODEL="$2"
+      shift 2
+      ;;
+    --role)
+      [[ $# -lt 2 ]] && die "--role requires plan, review, or exec"
+      MODEL_ROLE="$2"
       shift 2
       ;;
     --no-parallel) NO_PARALLEL=1; shift ;;
@@ -322,6 +328,20 @@ done
 
 [[ -z "$WORKSPACE_NAME" ]] && die "workspace name is required. Usage: $0 [options] <workspace-name> <prompt...>"
 
+if [[ -z "$MODEL_ROLE" ]]; then
+  case "$MODE" in
+    plan|superpowers) MODEL_ROLE="plan" ;;
+    review) MODEL_ROLE="review" ;;
+    execute|standby) MODEL_ROLE="exec" ;;
+  esac
+elif [[ "$MODE" != "standby" ]]; then
+  case "$MODE:$MODEL_ROLE" in
+    plan:plan|superpowers:plan|review:review|execute:exec) ;;
+    *) die "--role '$MODEL_ROLE' conflicts with --mode '$MODE'" ;;
+  esac
+fi
+[[ "$MODEL_ROLE" =~ ^(plan|review|exec)$ ]] || die "--role must be 'plan', 'review', or 'exec'"
+
 # execute mode は --plan-file が必須で PROMPT は不要 (inner prompt が plan-file 由来)
 # standby mode は --standby-in / --cwd が必須で PROMPT は省略可 (idle TUI 待機)
 if [[ "$MODE" == "execute" ]]; then
@@ -336,11 +356,6 @@ elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
   fi
 else
   [[ -z "$PROMPT" ]] && die "prompt is required. Usage: $0 [options] <workspace-name> <prompt...>"
-fi
-
-# --model は execute/standby/review 向けの拡張 (claude / codex 両 engine)。--skip-permissions は claude のみ
-if [[ -n "$MODEL" && "$MODE" != "execute" && "$MODE" != "standby" && "$MODE" != "review" ]]; then
-  log "warn" "--model is only meaningful with --mode execute; ignoring for mode=$MODE"
 fi
 
 # --review-config は execute 専用 (Phase B-R: PR 作成前コードレビューのプロトコル注入)
@@ -378,6 +393,8 @@ command -v jq &>/dev/null || die "jq is not installed (required for JSON output)
 
 RUNNER_COMMAND="claude"
 RUNNER_ENGINE="claude"
+RUNNER_PLAN_MODEL=""
+RUNNER_REVIEW_MODEL=""
 RUNNER_EXEC_MODEL=""
 RUNNER_PLAN_EFFORT=""
 RUNNER_REVIEW_EFFORT=""
@@ -391,6 +408,8 @@ if [[ -n "$RUNNER_NAME" ]]; then
 
   RUNNER_COMMAND=$(echo "$RUNNER_JSON" | jq -r '.command // empty')
   RUNNER_ENGINE=$(echo "$RUNNER_JSON" | jq -r '.engine // "claude"')
+  RUNNER_PLAN_MODEL=$(echo "$RUNNER_JSON" | jq -r '.plan_model // empty')
+  RUNNER_REVIEW_MODEL=$(echo "$RUNNER_JSON" | jq -r '.review_model // empty')
   RUNNER_EXEC_MODEL=$(echo "$RUNNER_JSON" | jq -r '.exec_model // empty')
   RUNNER_PLAN_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.plan_effort // empty')
   RUNNER_REVIEW_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.review_effort // empty')
@@ -401,26 +420,25 @@ if [[ -n "$RUNNER_NAME" ]]; then
     || die "runner '$RUNNER_NAME' has invalid engine '$RUNNER_ENGINE' (must be 'claude' or 'codex')"
 fi
 
-# exec_model フォールバック: codex engine の実行系 (execute / standby) で --model 未指定のときのみ
-# runner の exec_model を適用する。review は呼び出し側が常に --model <review_model> を明示するため対象外。
-# 優先順位: 明示 --model > runner の exec_model > codex 側デフォルト (config.toml)
-if [[ "$RUNNER_ENGINE" == "codex" && -z "$MODEL" && -n "$RUNNER_EXEC_MODEL" ]] \
-  && [[ "$MODE" == "execute" || "$MODE" == "standby" ]]; then
-  MODEL="$RUNNER_EXEC_MODEL"
-  log "runner" "applying exec_model=$MODEL (codex $MODE)"
-fi
-
-# effort 解決: codex engine のみ。優先順位: 明示 --effort > runner フィールド (MODE 対応) > 無指定
+# model / effort 解決: codex engine のみ。優先順位: 明示指定 > runner の role フィールド > 無指定
 # 無指定なら -c フラグを付けず codex 側デフォルト (config.toml) に任せる
 CODEX_EFFORT_FLAG=""
 if [[ "$RUNNER_ENGINE" == "codex" ]]; then
-  if [[ -z "$EFFORT" ]]; then
-    case "$MODE" in
-      plan|superpowers) EFFORT="$RUNNER_PLAN_EFFORT" ;;
-      review)           EFFORT="$RUNNER_REVIEW_EFFORT" ;;
-      execute|standby)  EFFORT="$RUNNER_EXEC_EFFORT" ;;
-    esac
-  fi
+  case "$MODEL_ROLE" in
+    plan)
+      [[ -z "$MODEL" ]] && MODEL="$RUNNER_PLAN_MODEL"
+      [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_PLAN_EFFORT"
+      ;;
+    review)
+      [[ -z "$MODEL" ]] && MODEL="$RUNNER_REVIEW_MODEL"
+      [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_REVIEW_EFFORT"
+      ;;
+    exec)
+      [[ -z "$MODEL" ]] && MODEL="$RUNNER_EXEC_MODEL"
+      [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_EXEC_EFFORT"
+      ;;
+  esac
+  [[ -n "$MODEL" ]] && log "runner" "applying model=$MODEL (codex $MODEL_ROLE)"
   if [[ -n "$EFFORT" ]]; then
     [[ "$EFFORT" =~ ^(minimal|low|medium|high|xhigh)$ ]] \
       || die "invalid --effort '$EFFORT' (must be minimal|low|medium|high|xhigh)"
@@ -720,19 +738,18 @@ if [[ $SKIP_PERMISSIONS -eq 1 ]]; then
   fi
 fi
 
+CODEX_MODEL_FLAG=""
+[[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
+
 # engine × mode で起動コマンドを構築
   if [[ "$RUNNER_ENGINE" == "codex" ]]; then
     if [[ "$MODE" == "execute" ]]; then
       # codex execute: plan モードと同じく bypass フラグを付与。
       # --model (明示指定 or runner の exec_model) があれば付与、無ければ codex 側デフォルト
-      CODEX_MODEL_FLAG=""
-      [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
     elif [[ "$MODE" == "standby" ]]; then
       # codex standby: prompt なしで idle 起動。実行指示は常に cmux send で届く
       # (prewarm.json の delivery=agmsg のときは加えて agmsg inbox にも記録される)。
-      CODEX_MODEL_FLAG=""
-      [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       if [[ -n "$PROMPT_TEXT" ]]; then
         CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
       else
@@ -741,18 +758,16 @@ fi
     elif [[ "$MODE" == "review" ]]; then
       # review は workspace-write に限定し、approval prompt は抑止する。findings は
       # worktree 外の STATUS_DIR/review/ に書かれるため、STATUS_DIR だけを追加許可する。
-      CODEX_MODEL_FLAG=""
-      [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
       REVIEW_WRITABLE_FLAG=""
       [[ -n "$STATUS_DIR" ]] && REVIEW_WRITABLE_FLAG=" --add-dir '$STATUS_DIR'"
       CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '\$superpowers:brainstorming $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '\$superpowers:brainstorming $PROMPT_TEXT'"
     else
       # codex plan: claude の --dangerously-skip-permissions に相当するのは
       # --dangerously-bypass-approvals-and-sandbox。/plan slash command は codex でも有効
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '/plan $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '/plan $PROMPT_TEXT'"
     fi
   else
     # claude engine (default)

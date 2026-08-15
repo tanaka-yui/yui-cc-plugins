@@ -38,7 +38,12 @@ cat > "$TMP/runners.json" <<'JSON'
       "name": "codex",
       "command": "codex",
       "engine": "codex",
-      "review_model": "gpt-5.6-sol"
+      "plan_model": "gpt-5.6-sol",
+      "review_model": "gpt-5.6-sol",
+      "exec_model": "gpt-5.6-terra",
+      "plan_effort": "xhigh",
+      "review_effort": "xhigh",
+      "exec_effort": "high"
     },
     { "name": "claude", "command": "claude", "engine": "claude" }
   ]
@@ -91,6 +96,12 @@ execute_runner=$(runner_for execute)
 standby_runner=$(runner_for standby)
 review_runner=$(runner_for review)
 
+assert_contains "$plan_runner" "--model 'gpt-5.6-sol'" 'MR1 plan uses plan_model'
+assert_contains "$superpowers_runner" "--model 'gpt-5.6-sol'" 'MR2 superpowers uses plan_model'
+assert_contains "$review_runner" "--model 'gpt-5.6-sol'" 'MR3 review uses review_model'
+assert_contains "$execute_runner" "--model 'gpt-5.6-terra'" 'MR4 execute uses exec_model'
+assert_contains "$standby_runner" "--model 'gpt-5.6-terra'" 'MR5 standby defaults to exec role'
+
 runner_for_flags() {
   local mode="$1"; shift
   local name="codex-$mode-flags"
@@ -104,6 +115,13 @@ runner_for_flags() {
   fi
   jq -r '.runner_file' <<<"$output"
 }
+
+plan_standby=$(runner_for_flags standby --role plan)
+assert_contains "$plan_standby" "--model 'gpt-5.6-sol'" 'MR6 plan standby uses plan_model'
+assert_not_contains "$plan_standby" "--model 'gpt-5.6-terra'" 'MR6 plan standby excludes exec_model'
+
+explicit_plan=$(runner_for_flags plan --model gpt-5.6-terra)
+assert_contains "$explicit_plan" "--model 'gpt-5.6-terra'" 'MR7 explicit model wins'
 
 assert_contains "$superpowers_runner" '--dangerously-bypass-approvals-and-sandbox' 'T1 codex + superpowers bypass'
 assert_contains "$plan_runner" '--dangerously-bypass-approvals-and-sandbox' 'T2 codex + plan bypass'
