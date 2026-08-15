@@ -986,7 +986,7 @@ for slug in <task-slugs>; do
   # slug を設定する）から引き直す。
   if [[ -z "$workspace_id" ]]; then
     workspace_id=$(cmux workspace list 2>/dev/null \
-      | awk -v s="[$slug]" '$0 ~ s {print $1; exit}')
+      | awk -v s="[$slug]" 'index($0, s) {print $1; exit}')
   fi
 
   # 1) タスクの workspace を先に閉じる

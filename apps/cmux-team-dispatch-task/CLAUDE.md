@@ -56,7 +56,8 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
   無効化する。初回設定の永続化は writer 固有 `mktemp` + 同一directory `mv` を使う。
 - cleanup は prewarm.json の `.. | objects | .surface_id? // empty` と `.agent?` を列挙し、
   `awk 'NF && !seen[$0]++'` で重複除去する。`close-surface` は `--workspace` 必須で、ID欠落時は
-  workspace名へフォールバックする。timeout sentinel / cleanup / agmsg leave は実在roleだけに送る。
+  workspace名の `[slug]` を正規表現でなくリテラル一致してフォールバックする。timeout sentinel /
+  cleanup / agmsg leave は実在roleだけに送る。
 - 無人loop rendererにはdesign/review/execの解決済みrunner/engineを渡す。review fieldsはreview有効時だけ
   必須。同一engine reviewを許可し、all-Codex固定例でClaude/sonnetを起動・指示しない。
 

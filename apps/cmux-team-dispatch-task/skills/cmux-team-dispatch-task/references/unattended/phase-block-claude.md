@@ -1,1 +1,1 @@
-Phase A CLI behavior: use the configured Claude design runner above to produce and commit the plan. Use Claude Code's plan workflow without changing the resolved design role. Do not infer the review or execution role from the design engine. Do not request interactive input; record unresolved decisions in the result.
+Phase A CLI behavior: use the configured Claude design runner above to produce and commit the plan. Use Claude Code's plan workflow.

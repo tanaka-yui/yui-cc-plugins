@@ -2274,7 +2274,7 @@ for slug in <task-slugs>; do
   # Fall back to the workspace name, which prewarm-panes.sh sets to the slug.
   if [[ -z "$workspace_id" ]]; then
     workspace_id=$(cmux workspace list 2>/dev/null \
-      | awk -v s="[$slug]" '$0 ~ s {print $1; exit}')
+      | awk -v s="[$slug]" 'index($0, s) {print $1; exit}')
   fi
 
   # 1) Close the task workspace (the child process has already exited by status=done).

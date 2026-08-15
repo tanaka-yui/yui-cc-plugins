@@ -15,6 +15,7 @@ fail=0
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1 $2" == "workspace list" ]]; then
+  echo 'workspace:13 [beta]'
   echo 'workspace:42 [alpha]'
   exit 0
 fi

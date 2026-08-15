@@ -21,6 +21,19 @@ out=$(run claude off)
 [[ "$out" != *'Review is enabled'* ]] || { echo 'FAIL: R3 review off'; exit 1; }
 [[ "$out" == *'STATUS PROTOCOL:'* && "$out" == *'status=executing'* && "$out" == *'status=done or status=error'* && "$out" == *'result.md'* ]] || { echo 'FAIL: R4 status protocol'; exit 1; }
 
+common_rule='Common unattended rules: do not infer the review or execution role from the design engine. Do not request interactive input; record unresolved decisions in the result.'
+for design in claude codex; do
+  out=$(run "$design" off)
+  count=$(printf '%s\n' "$out" | grep -Foc "$common_rule" || true)
+  [[ "$count" == 1 ]] || { echo "FAIL: R6 common unattended rule count for $design: $count"; exit 1; }
+  count=$(printf '%s\n' "$out" | grep -Foc 'do not infer' || true)
+  [[ "$count" == 1 ]] || { echo "FAIL: R6 role inference rule count for $design: $count"; exit 1; }
+  case "$design" in
+    claude) [[ "$out" == *"Use Claude Code's plan workflow"* ]] || { echo 'FAIL: R7 Claude CLI mechanics'; exit 1; } ;;
+    codex) [[ "$out" == *'Keep the resolved Codex model and reasoning effort'* ]] || { echo 'FAIL: R7 Codex CLI mechanics'; exit 1; } ;;
+  esac
+done
+
 all_codex=$(bash "$RENDER" \
   --slug issue-1-all-codex --issue 1 --issue-title test --issue-url https://x/1 \
   --issue-body-file "$TMP/body.md" --plan-hint "$TMP/plan.md" \

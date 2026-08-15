@@ -1,1 +1,1 @@
-Phase A CLI behavior: use the configured Codex design runner above to produce and commit the plan. Keep the resolved Codex model and reasoning effort for this design session. Do not infer the review or execution role from the design engine. Do not request interactive input; record unresolved decisions in the result.
+Phase A CLI behavior: use the configured Codex design runner above to produce and commit the plan. Keep the resolved Codex model and reasoning effort for this design session.
