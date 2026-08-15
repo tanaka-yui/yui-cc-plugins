@@ -157,8 +157,9 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
 
 ```bash
 TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
-PARENT_AGMSG_TYPE="claude-code"
-[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_AGMSG_TYPE="codex"
+PARENT_ENGINE="claude"
+[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"
+PARENT_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$PARENT_ENGINE") || exit 1
 ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)"
 ~/.agents/skills/agmsg/scripts/delivery.sh set monitor "$PARENT_AGMSG_TYPE" "$(pwd)"
 ```
@@ -182,8 +183,7 @@ pre-warm 無効時は worktree 作成後に子 agent を次のように join す
 `prewarm-panes.sh` が role ごとの engine を使って join 済みなので、この手動 join を省略する）:
 
 ```bash
-CHILD_AGMSG_TYPE="claude-code"
-[[ "$DESIGN_ENGINE" == "codex" ]] && CHILD_AGMSG_TYPE="codex"
+CHILD_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$DESIGN_ENGINE") || exit 1
 ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" <task-slug> "$CHILD_AGMSG_TYPE" "<repo-root>/.worktrees/<task-slug>"
 ```
 

@@ -658,8 +658,9 @@ fi
 
 ```bash
 TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
-PARENT_AGMSG_TYPE="claude-code"
-[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_AGMSG_TYPE="codex"
+PARENT_ENGINE="claude"
+[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"
+PARENT_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$PARENT_ENGINE") || exit 1
 # Join the parent (if already a member, join.sh treats it as a re-registration), and enable real-time push
 ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)"
 ~/.agents/skills/agmsg/scripts/delivery.sh set monitor "$PARENT_AGMSG_TYPE" "$(pwd)"
@@ -686,8 +687,7 @@ Each launch then adds `--agmsg-team "$TEAM" --agmsg-from <task-slug>` to
 register the child:
 
 ```bash
-CHILD_AGMSG_TYPE="claude-code"
-[[ "$DESIGN_ENGINE" == "codex" ]] && CHILD_AGMSG_TYPE="codex"
+CHILD_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$DESIGN_ENGINE") || exit 1
 ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" <task-slug> "$CHILD_AGMSG_TYPE" "<repo-root>/.worktrees/<task-slug>"
 ```
 
