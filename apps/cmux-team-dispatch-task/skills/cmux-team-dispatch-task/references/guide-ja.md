@@ -92,7 +92,8 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 **子セッション runner 選択**（詳細は「子セッション runner 設定（runners.json）」セクション。本ガイドでは「補足」に移設）:
 - `runners.json` 不在 → 初回セットアップで生成
 - runners 1 件 → 自動でその runner を全タスクに適用（切替確認スキップ）
-- runners 2 件以上 → 切替確認 → タスクごとに選択 or デフォルト適用
+- runners 2 件以上かつ `design_runner` 未設定 → 4 択（デフォルト適用 / タスクごとに選択 /
+  設定保存 / `runners.json` reset）。明示 `"ask"` → 設定保存を除く 3 択。固定 runner 名 → 質問なし
 - **独立レビュアー解決**: project `review_runner` → global `review_runner` → key 未設定時の
   legacy 自動 resolver。固定/`"ask"` は同一 engine を許可する。codex 候補は `review_model` 必須、
   claude 候補は `opus[1m]` fallback。不正な project/global 値はそのレイヤーだけ無効化する。
@@ -1347,11 +1348,12 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
   switch / per-task 質問を両方省略して全タスクへ適用する。検証は **project / global のレイヤーごと**
   に行い、不正値は警告してそのレイヤーだけ無視して次へフォールバックする（project の不正値が
   global に保存済みの「常に〜」を遮蔽しない）。**未設定**（全レイヤー未設定または不正）は
-  switch 質問が 4 択（いいえ[今回のみ] / はい[今回のみ] / 常に既定 runner / 常に固定 runner を選ぶ）
-  になり、「常に〜」のみグローバル config に `design_runner` を永続化する（`review_mode` と同じ
-  writer 固有 mktemp + mv の jq merge）。明示 `"ask"` は従来の 2 択のみ（永続化オプションを
-  再提示しない）。戻し方は 2 通りで意味が異なる: `"ask"` へ書き換え = 2 択のみ、キー削除 =
-  未設定に戻り 4 択が再表示
+  switch 質問が 4 択（いいえ[今回のみ] / はい[今回のみ] / runner 設定を保存 / runners.json reset）
+  になる。保存の追加2択（常に既定 / 常に固定）のみグローバル config に `design_runner` を永続化する
+  （`review_mode` と同じ writer 固有 mktemp + mv の jq merge）。明示 `"ask"` は 3 択（いいえ / はい /
+  reset）で永続化オプションを再提示しない。reset は `RUNNERS_JSON` だけを削除し、両 config を保持して
+  初回セットアップ後に Step 1f を再開する。戻し方は 2 通りで意味が異なる: `"ask"` へ書き換え =
+  3 択のみ、キー削除 = 未設定に戻り 4 択が再表示
 - `review_runner`: project → global → legacy 自動解決。固定 runner 名または `"ask"` は
   `REVIEW_POLICY=fixed`、両レイヤーに key が無い場合だけ `REVIEW_POLICY=legacy`。codex 候補は
   `review_model` 必須、claude 候補は `opus[1m]` fallback。同じ design engine も許可する。不正値は
@@ -1455,7 +1457,7 @@ codex engine は影響を受けない。`.claude/settings.local.json` を読ま�
 
 ### 初回セットアップ
 
-`runners.json` が存在しない状態で SKILL を発動すると、Step 1f で初回セットアップが起動します:
+`runners.json` が存在しない状態、または runner 切替質問で reset を選んだ直後は、Step 1f で初回セットアップが起動します:
 
 1. AskUserQuestion で **starter テンプレ（claude のみ）** か **カスタム** を選択
 2. starter テンプレ選択時は claude のみが書き出されます
@@ -1469,21 +1471,29 @@ codex engine は影響を受けない。`.claude/settings.local.json` を読ま�
    - **plan_effort / review_effort / exec_effort**（選択: 空 / minimal / low / medium / high /
      xhigh、engine が `codex` のときのみ質問）— 設計 / レビュー / 実行の reasoning effort。
      空回答で省略可（codex 側 config.toml の既定を使用）
-4. review 方針（legacy 自動 / 毎回選ぶ / 固定 runner）を選ぶ。legacy は key を書かず、後二者だけ
-   `review_runner: "ask"` または固定名を writer 固有 `mktemp` + `mv` でグローバル config に保存する
+4. 通常の初回セットアップでは review 方針（legacy 自動 / 毎回選ぶ / 固定 runner）を選ぶ。legacy は
+   key を書かず、後二者だけ `review_runner: "ask"` または固定名を writer 固有 `mktemp` + `mv` で
+   グローバル config に保存する。reset 直後のセットアップではこの質問と永続化をスキップし、
+   project / global の両 `config.json` を変更しない
 5. 完了後、`~/.claude/cmux-team-dispatch-task/` ディレクトリが無ければ作成され、runners.json が書き出されます
 
 ### タスクごとの runner 切替
 
 - runners が **1 件**: 切替確認は出ず自動でその runner を全タスクに割当（永続化質問も出ない）
 - runners が **2 件以上**: 「子セッションごとにランタイム/モデルを切り替えますか？」を確認。
-  `design_runner` が**未設定**なら 4 択、明示 `"ask"` なら 1–2 の 2 択のみ
+  `design_runner` が**未設定**なら 4 択、明示 `"ask"` なら 3 択
   1. **いいえ (今回のみ)**: `default` runner を全タスクに割当（config には書かない）
   2. **はい (今回のみ)**: タスクごとに AskUserQuestion で選択（config には書かない）
-  3. **常に既定 runner を使う**: `default` runner を全タスクに割当 + グローバル config に
-     `design_runner: "<default>"` を永続化
-  4. **常に固定 runner を選ぶ**: 追加の AskUserQuestion で `runners[]` から 1 つ選び、
-     全タスクに割当 + グローバル config に `design_runner: "<name>"` を永続化
+  3. **未設定時: runner 設定を保存**: 2 択の追加質問を出す
+     - **常に既定 runner を使う**: `default` runner を全タスクに割当 + グローバル config に
+       `design_runner: "<default>"` を永続化
+     - **常に固定 runner を選ぶ**: さらに `runners[]` から 1 つ選び、全タスクに割当 +
+       グローバル config に `design_runner: "<name>"` を永続化
+     明示 `"ask"` の 3 番は次の reset になる
+  4. **`runners.json` を reset**（明示 `"ask"` では 3 番）: `RUNNERS_RESET=true` として
+     `RUNNERS_JSON` だけを削除する。review 方針の質問と永続化をスキップする reset mode で
+     初回セットアップを実行するため、project / global の両 `config.json` は変更されない。新しい
+     registry の書き込み後、Step 1f の runner 解決を再開する
 
 選ばれた runner 名は各タスクの起動時に `launch-workspace.sh --runner <name>` へ渡されます。
 

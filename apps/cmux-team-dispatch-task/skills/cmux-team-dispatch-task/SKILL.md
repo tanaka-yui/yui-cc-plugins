@@ -217,8 +217,8 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
 
    - A value that matches `runners[].name` → assign it to every task and skip both
      the switch and per-task questions (regardless of runner count).
-   - `"ask"` (explicit) → use the interactive flow below in its **ask form** (a this-time-only
-     2-choice; a user who reverted from an "always ..." choice back to `"ask"` is not shown
+   - `"ask"` (explicit) → use the interactive flow below in its **ask form** (No / Yes /
+     reset; a user who reverted from an "always ..." choice back to `"ask"` is not shown
      the persistence options again).
    - Empty (both layers unset, or every layer that was set held an invalid value) →
      use the interactive flow below in its **unset form** (with persistence options —
@@ -229,23 +229,31 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
      Continue to Step 1g.
    - If **2 or more** runners are registered → ask the user via AskUserQuestion:
      > Switch the runtime/model per child session? (default: No — apply the default runner to every task)
-     Options — the **ask form** offers 1–2 only, the **unset form** offers 1–4:
+     Options 1–2 are shared by both forms:
        1. No (this time only) → assign the `default` runner from `runners.json` to all
           tasks. Do not write to config.
        2. Yes (this time only) → for each task, ask which runner to use via AskUserQuestion.
           The options are the entries in `runners[]` (label = `name`, description =
           `command (engine)`). Do not write to config.
-       3. Always use the default runner (<default>) → assign the default runner to all tasks
-          AND persist `design_runner: "<default>"` to the global config
-       4. Always pick a fixed runner → ask once more which runner to fix (options =
-          `runners[]`, label = `name`, description = `command (engine)`), assign it to
-          all tasks AND persist `design_runner: "<name>"` to the global config
-     Persistence (options 3/4 only) uses the same jq merge pattern as `review_mode`
+     The **ask form** adds option 3; the **unset form** offers options 1–4:
+       3. In the ask form: Reset `runners.json` and rerun setup.
+          In the unset form: Save a runner preference → ask a 2-choice follow-up:
+          - Always use the default runner (`<default>`) → assign it to all tasks and
+            persist `design_runner: "<default>"` to the global config.
+          - Always pick a fixed runner → ask once more which runner to fix (options =
+            `runners[]`, label = `name`, description = `command (engine)`), assign it to
+            all tasks, and persist `design_runner: "<name>"` to the global config.
+       4. In the unset form: Reset `runners.json` and rerun setup.
+     The reset option sets `RUNNERS_RESET=true` and removes only `"$RUNNERS_JSON"`
+     (`rm -f -- "$RUNNERS_JSON"`). Immediately run **First-run setup** in reset mode,
+     which skips every config-persistence question, then restart Step 1f runner resolution
+     with the newly written registry. This keeps both project and global `config.json`
+     unchanged throughout reset and re-setup.
+     Persistence under the save follow-up uses the same jq merge pattern as `review_mode`
      in Step 1g below (key: `design_runner` — a writer-specific mktemp, moved only on jq
      success). There are two distinct ways to revert an "always ..." choice, and they mean
-     different things: rewriting `design_runner` to `"ask"` restores the this-time-only
-     2-choice (no persistence options), while deleting the key restores the unset state
-     and the 4-choice question reappears.
+     different things: rewriting `design_runner` to `"ask"` restores the ask form (including
+     reset, but no persistence options), while deleting the key restores the unset form.
 4. Resolve the design role for every task from that runner record and carry all three
    values forward: `DESIGN_RUNNER`, `DESIGN_ENGINE`, and `PLAN_MODEL`. `PLAN_MODEL` is
    the runner's `plan_model` for codex; for claude it is the explicitly selected plan
@@ -366,7 +374,7 @@ and it already avoids prompts through
 `--sandbox workspace-write` with `-c approval_policy='never'`).
 
 
-**First-run setup** (when `runners.json` does not exist):
+**First-run setup** (when `runners.json` does not exist, including immediately after reset):
 
 1. Show the user via AskUserQuestion:
    > runners.json was not found. Running first-run setup.
@@ -413,8 +421,9 @@ and it already avoids prompts through
    (used when the user picks "No" at the switch question, or implicitly when only
    1 runner exists). If only one runner was added, it becomes `default` automatically.
 
-5. Ask for review behavior: **legacy automatic**, **choose every dispatch**, or
-   **fixed runner**. Legacy automatic leaves `review_runner` absent. Choose every
+5. If `RUNNERS_RESET=true`, skip review-behavior selection and do not write either config
+   file. Otherwise ask for review behavior: **legacy automatic**, **choose every dispatch**,
+   or **fixed runner**. Legacy automatic leaves `review_runner` absent. Choose every
    dispatch persists `review_runner: "ask"`; fixed runner asks from the review-capable
    runners and persists that name. Persistence is only for `"ask"` or a fixed runner
    name and uses the writer-specific `mktemp "$CONFIG.XXXXXX"` + successful `mv`
@@ -2514,7 +2523,7 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Runner script**: A `.cmux-team-dispatch-task-run-<workspace-name>.sh` file is created in each worktree (one per launch — Child and Phase B grandchild get different filenames since they share the worktree). They're cleaned up along with the worktree.
 - **Codex option in Phase B**: The "codex" choice is shown only when `runners.json` contains a runner with `engine: "codex"`. Runner resolution prefers the compatible design runner and otherwise uses the first registered compatible Codex runner; the resolved name is passed explicitly to prewarm/spawn. `cmux codex install-hooks` is also required so that `external_migration = true` is set when migrating a Claude parent session.
 - **Same-model vs different-model in Phase B**: `exec_choice` controls whether Phase B asks or takes a fixed default; it never introduces a new execution path. For design=claude, "opus 1m" counts as the same model and stays in the current session via `/model opus[1m]`. Any other choice delegates to the resolved execution role: when its pre-warmed pane exists (prewarm.json), the Child sends the execution request there; otherwise it spawns `launch-workspace.sh --mode execute --runner <EXEC_RUNNER>`. The delegated runner is wrapped by the standard runner script, so `status.json` transitions to `done`/`error`, `cmux wait-for --signal <slug>-exec-done` fires, and the parent receives `[dispatch] task ... finished` automatically. The Child session writes `<STATUS_DIR>/.deferred` and exits cleanly — its own runner wrapper (launched with `--defer-status`) sees the sentinel and skips status overwrite so the delegated session owns the terminal-state transition. The plan file path written in Phase A is passed via `--plan-file`; `.cmux-team-dispatch-task-prompt.md` is preserved (not overwritten). In `--mode execute`, the inner prompt automatically appends a MANDATORY COMPLETION REPORT instruction telling the delegated session to run `scripts/report-status.sh <status-dir> done <summary>` before it stops. That call — not the session ending — is what transitions status.json, so completion no longer depends on the TUI closing. The exit instruction that follows it is engine-aware: claude is told to run `/exit` (the wrapper then also finalizes), while **codex is told to stop and stay idle**, because codex has no way to end its own session (`/exit` does nothing and there is no quit/shutdown subcommand). A codex pane therefore legitimately stays open until the parent closes it during final cleanup.
-- **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. `design_runner` can fix the Step 1f selection for all tasks; `exec_choice` can fix Phase B. The runners.json registry remains runtime-only and is bootstrapped on first run via AskUserQuestion.
+- **Child runner selection (Step 1f)**: A separate concern from Phase B model selection. Step 1f decides which runtime *launches* the child session (claude vs codex vs zsh function), while Phase B happens *inside* the child session after planning to choose execution model. `design_runner` can fix the Step 1f selection for all tasks; `exec_choice` can fix Phase B. The runners.json registry remains runtime-only and is bootstrapped on first run via AskUserQuestion. When the interactive switch question is shown, its reset option removes only `runners.json`, reruns first-run setup without its config-persistence question, preserves both config layers, and resumes Step 1f resolution; the unset form keeps within AskUserQuestion's four-option limit by grouping the two persistence choices behind a 2-choice save follow-up.
 - **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). agmsg is wired whenever `~/.agents/skills/agmsg/scripts/send.sh` exists, and `monitor-dispatch.sh` is launched only when it does not (status.json transitions are unchanged either way). Every message goes through one `scripts/send-prompt.sh` call. It **always types the message into the target pane** — typing is the only thing that wakes an idle session — and, when the three `--agmsg-*` arguments are supplied and the destination's ready sentinel exists, it **additionally records the same body in the agmsg inbox**, always AFTER the typed delivery so that a hung agmsg writer can never block the only wake mechanism. **An agmsg push is inbox-record-only and cannot wake an idle session**; the ready sentinel proves only that a watcher PROCESS is alive, not that it can wake the session (the same sentinel is written whether the watcher runs under a mechanism that injects into an idle session or under a plain background shell that does not). An agmsg failure never affects delivery or the exit code. Bodies longer than 400 characters are written to `<outbox-dir>/<label>-<seq>.md` and only a one-line pointer is typed, which is what stops a long instruction from being treated as a paste and jamming the input box. After typing, Enter is pressed and `cmux read-screen` confirms the input box emptied, re-pressing Enter up to 3 times before reporting failure; this verification applies when the destination renders a `❯` (or `>`) prompt line at column 0, and a pane without such a line — like an unobservable screen — counts as delivered, so a caller never re-sends and double-delivers. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Also, if Step 1g's `delivery.sh set` output includes an `AGMSG-DIRECTIVE:` line, it MUST be followed so that the currently-dispatching session's own watcher gets started.
 - **Pre-warm role panes**: When layout is `workspace` and config `prewarm: true` (default), `prewarm-panes.sh` places only resolved roles inside each task workspace: design, optional review, and execution roles allowed by `exec_choice`. `prewarm.json` records only panes that exist; a fixed all-Codex reviewed task has exactly three codex panes and no claude/sonnet process. For a Codex design with unset/`ask`, every advertised choice has an executor entry: dedicated Opus and Sonnet panes use the explicit `--claude-runner` candidate and Codex uses `--codex-runner`. Review launch/output failure immediately leaves a successfully joined review agmsg member before omitting the role. Delivery is wired before panes start, Phase A uses one `send-prompt.sh` call (`--label phase-a-task`), and Phase B uses one call (`--label phase-b-exec`). The standby wrapper transitions status only when `<STATUS_DIR>/.assigned-<name>` exists. Timeout sentinels and cleanup are applied only to recorded roles; cleanup recursively de-duplicates their `surface_id` and `agent` values. Callers do not branch on a role's `delivery` value because `send-prompt.sh` re-checks the ready sentinel itself.
 

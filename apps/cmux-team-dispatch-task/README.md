@@ -208,7 +208,11 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
 
 - `design_runner`: `runners[].name` を指定すると Step 1f の switch / per-task 質問を省略し、全タスクに適用します。
   **未設定**なら runner 2 件以上のときの switch 質問が 4 択（いいえ[今回のみ] / はい[今回のみ] /
-  常に既定 runner / 常に固定 runner を選ぶ）になり、「常に〜」で永続化されます。
+  runner 設定を保存 / `runners.json` を reset）になります。「runner 設定を保存」は 2 択の追加質問で
+  常に既定 runner / 常に固定 runner を選び、グローバル config に永続化します。明示 `"ask"` では
+  いいえ / はい / reset の 3 択です。reset は `runners.json` だけを削除し、review 方針の質問と
+  永続化を省いた reset mode で初回セットアップを実行します。両 `config.json` を変更せず、
+  その後 Step 1f の解決を再開します。
 - `review_runner`: project → global の順で解決します。runner 名は Phase A-R/B-R の固定レビュアー、
   `"ask"` は dispatch ごとの選択です。両方の key が未設定なら従来のクロスエンジン自動解決を使います。
   project/global の不正値はそのレイヤーだけ無効化して次へ進みます。codex 候補には空でない
@@ -216,7 +220,10 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
   同じ runner を design/review に指定しても有効です。
 - `exec_choice`: `"opus 1m"` / `"sonnet"` / （codex runner 登録時のみ）`"codex"` を指定すると Phase B の質問を省略し、既存の同じ実行分岐へ直行します。
   **未設定**なら子セッションがモデル選択の直後に永続化確認（今回のみ / 常にこの選択 / 常に毎回選ぶ）を 1 問出し、「常に〜」で永続化されます。
-- どちらも明示 `"ask"` なら従来どおり質問のみ（永続化オプションは出ません）。「常に〜」からの戻し方は 2 通りで意味が異なります: `"ask"` へ書き換えると質問のみ、キーを削除すると未設定に戻り永続化オプションが再表示されます。
+- `design_runner: "ask"` は、いいえ / はい / `runners.json` reset の 3 択だけを表示します。
+  `exec_choice: "ask"` は従来のモデル質問だけを表示します。どちらも永続化オプションは出ません。
+  「常に〜」からの戻し方は 2 通りで意味が異なります: `"ask"` へ書き換えると質問のみ、キーを
+  削除すると未設定に戻り永続化オプションが再表示されます。
 - 不正値は project / global のレイヤーごとに検証され、不正なレイヤーだけ警告付きで無視してもう一方へフォールバックします（project の不正値が global に保存した「常に〜」を遮蔽しません）。
 
 初回カスタム設定では codex runner の `plan_model` も収集し、review 方針を「従来の自動解決 /
