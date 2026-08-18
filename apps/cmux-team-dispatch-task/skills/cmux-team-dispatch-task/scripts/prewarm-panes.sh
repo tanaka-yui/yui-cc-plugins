@@ -8,7 +8,7 @@
 # 実装 2 つ + review でちょうど 2×2 になる。固定 exec_choice なら実装は 1 つだけ。
 #
 # Usage:
-#   agmsg 未使用 (opus は通常フローで起動済み。sonnet / codex の split のみ追加):
+#   agmsg 未使用 (design は通常フローで起動済み。claude / codex 実装 executor の split のみ追加):
 #     prewarm-panes.sh --workspace <ws-id> --base-surface <sf-id> \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       [--claude-runner <name>] [--codex-runner <name>] [--exec-runner <name>] \
@@ -16,7 +16,7 @@
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
 #
-#   agmsg 使用 (workspace 未作成の状態で呼ぶ。opus も standby 起動し workspace はこのスクリプトが作成):
+#   agmsg 使用 (workspace 未作成の状態で呼ぶ。--with-design で design standby も起動し workspace はこのスクリプトが作成):
 #     prewarm-panes.sh --with-design \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       --agmsg-team <team> \
@@ -27,7 +27,7 @@
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
 #
 # 注意: --agmsg-team を --with-design なしで渡す組み合わせは SKILL からは使用しない
-#       (sonnet/codex 配線のみ行いたい特殊用途向け)
+#       (claude/codex executor の配線のみ行いたい特殊用途向け)
 #
 # 内部処理:
 #   1. worktree を create-or-reuse (agmsg 配線より先にディレクトリが必要)
@@ -37,7 +37,7 @@
 #   4. --exec-choice で選ばれた engine の実装 standby を split で配置
 #   5. --review-model または --reviewer-runner 時に review ペインを split 配置
 #   6. <STATUS_DIR>/prewarm.json を design / review? / executors スキーマで書き込む
-#   --unattended: ループモード専用。設計ペイン (claude opus standby) の起動に
+#   --unattended: ループモード専用。設計ペイン (claude engine 時は opus standby、--role plan の既定解決による) の起動に
 #                 --skip-permissions を付ける (無人実行で permission prompt / ExitPlanMode
 #                 承認により停止しないようにするため)。codex 系は bypass フラグで解決済み
 #   --timeout-sentinel <path>: ループモード専用。status 所有者になり得る全 standby
