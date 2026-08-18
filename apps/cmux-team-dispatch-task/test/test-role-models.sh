@@ -3,6 +3,9 @@
 #   RM1-RM6 : claude runner の役割別 model / effort
 #   RM7-RM9 : 既定値の適用
 #   RM10-RM12: 明示指定の優先と allowlist
+#   RM13-RM15: codex runner の役割別 model / effort (-c model_reasoning_effort へ注入)
+#   RM16    : codex は effort=max を拒否する (Task 0 probe が INCONCLUSIVE だった safe branch)
+#   RM17    : codex には model の既定値が無い (claude は sonnet に既定する exec role で対比)
 
 set -euo pipefail
 
@@ -37,7 +40,11 @@ cat > "$TMP/runners.json" <<'JSON'
     { "name": "tuned", "command": "claude", "engine": "claude",
       "plan_model": "fable", "review_model": "sonnet", "exec_model": "opus[1m]",
       "plan_effort": "max", "review_effort": "medium", "exec_effort": "low" },
-    { "name": "bare", "command": "claude", "engine": "claude" }
+    { "name": "bare", "command": "claude", "engine": "claude" },
+    { "name": "tuned-codex", "command": "codex", "engine": "codex",
+      "plan_model": "gpt-5.6-sol", "review_model": "gpt-5.6-mid", "exec_model": "gpt-5.6-terra",
+      "plan_effort": "low", "review_effort": "medium", "exec_effort": "minimal" },
+    { "name": "bare-codex", "command": "codex", "engine": "codex" }
   ]
 }
 JSON
@@ -66,6 +73,12 @@ assert_contains() {
   local file="$1" expected="$2" label="$3"
   [[ -f "$file" ]] || { bad "$label (no such file: $file)"; return; }
   grep -Fq -- "$expected" "$file" && pass "$label" || bad "$label (missing: $expected)"
+}
+
+assert_not_contains() {
+  local file="$1" unexpected="$2" label="$3"
+  [[ -f "$file" ]] || { bad "$label (no such file: $file)"; return; }
+  grep -Fq -- "$unexpected" "$file" && bad "$label (unexpectedly present: $unexpected)" || pass "$label"
 }
 
 # --- RM1-RM6: claude runner の役割別 model / effort ---
@@ -97,11 +110,7 @@ assert_contains "$bare_review" "--model 'opus[1m]'" 'RM9c review defaults to opu
 sp_r=$(runner_for rm-sp tuned superpowers)
 assert_contains "$sp_r" "--model 'fable'" 'RM10a superpowers carries plan_model'
 assert_contains "$sp_r" "--effort 'max'"  'RM10b superpowers carries plan_effort'
-if grep -Fq -- '--dangerously-skip-permissions' "$sp_r"; then
-  bad 'RM10c superpowers must not add --dangerously-skip-permissions'
-else
-  pass 'RM10c superpowers must not add --dangerously-skip-permissions'
-fi
+assert_not_contains "$sp_r" '--dangerously-skip-permissions' 'RM10c superpowers must not add --dangerously-skip-permissions'
 
 # --- RM11: 明示指定が runner 設定より優先される ---
 ovr=$(runner_for rm-ovr tuned plan --model haiku --effort high)
@@ -123,6 +132,33 @@ if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNC
 else
   bad 'RM12b claude accepts effort=max'
 fi
+
+# --- RM13-RM15: codex runner の役割別 model / effort (-c model_reasoning_effort へ注入) ---
+codex_plan_r=$(runner_for rm-codex-plan tuned-codex plan)
+assert_contains "$codex_plan_r" "--model 'gpt-5.6-sol'"                'RM13a codex plan uses plan_model'
+assert_contains "$codex_plan_r" "-c model_reasoning_effort='low'"      'RM13b codex plan uses plan_effort'
+
+codex_review_r=$(runner_for rm-codex-review tuned-codex review)
+assert_contains "$codex_review_r" "--model 'gpt-5.6-mid'"              'RM14a codex review uses review_model'
+assert_contains "$codex_review_r" "-c model_reasoning_effort='medium'" 'RM14b codex review uses review_effort'
+
+codex_exec_r=$(runner_for rm-codex-exec tuned-codex execute)
+assert_contains "$codex_exec_r" "--model 'gpt-5.6-terra'"               'RM15a codex execute uses exec_model'
+assert_contains "$codex_exec_r" "-c model_reasoning_effort='minimal'"   'RM15b codex execute uses exec_effort'
+
+# --- RM16: codex は effort=max を拒否する (Task 0 probe が INCONCLUSIVE だった safe branch) ---
+if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+     --cwd "$TMP/repo" --mode plan --runner bare-codex --effort max \
+     --status-dir "$TMP/status" rm-bad-codex prompt >/dev/null 2>&1; then
+  bad 'RM16 codex rejects effort=max'
+else
+  pass 'RM16 codex rejects effort=max'
+fi
+
+# --- RM17: codex には model の既定値が無い (role フィールドが無い runner の exec role) ---
+bare_codex_exec=$(runner_for rm-bare-codex-exec bare-codex execute)
+[[ -f "$bare_codex_exec" ]] && pass 'RM17a bare codex exec runner file exists' || bad 'RM17a bare codex exec runner file exists'
+assert_not_contains "$bare_codex_exec" '--model' 'RM17b codex has no model default (unlike claude which defaults to sonnet)'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
