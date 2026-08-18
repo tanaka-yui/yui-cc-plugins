@@ -81,6 +81,39 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 
 プランファイルとインラインタスクを混在させることもできます。
 
+### 設定（`--setup`）
+
+```
+/cmux-team-dispatch-task --setup
+```
+
+ディスパッチを行わずに設定だけを構成します。現在の設定（プロジェクト値 / グローバル値 /
+解決値）と `runners.json` の一覧を表示したあと、書き込み先（グローバル /
+プロジェクト）と対象（役割キー / `runners.json` / 両方）を選びます。役割キーごとに
+「固定値 / `"ask"` / 未設定に戻す / 変更しない」を指定でき、最後に差分を確認してから
+1 回の原子的な書き込みで反映します。
+
+これまで役割キーはディスパッチ中の質問に「常に〜」と答えたときにしか永続化されなかった
+ため、設定を見直すだけでもダミータスクを投げる必要がありました。`--setup` はその
+ためのエントリポイントです。
+
+### 設定のリセット（`--reset`）
+
+```
+/cmux-team-dispatch-task --reset
+/cmux-team-dispatch-task --reset runners
+/cmux-team-dispatch-task --reset config
+/cmux-team-dispatch-task --reset all
+```
+
+`runners` は `runners.json` を削除して初回セットアップをやり直します（両 `config.json`
+は変更しません）。`config` は役割キー 5 つだけを削除し、`shell_ready_ms` など他のキーは
+残します。対象を省略すると質問されます。
+
+`--setup` / `--reset` はどちらもディスパッチを行わず、`.dispatch/`・worktree・`feat/*`
+ブランチには一切触れません。`--loop` とも互いとも排他で、issue ループがロックを保持して
+いる間は実行を拒否します。
+
 ## Agent 発見と委譲
 
 `.claude/agents/` ディレクトリをスキャンし、各 `.md` ファイルの frontmatter（`name`, `description`）を読み取って利用可能な Agent 一覧を構築します。
@@ -192,9 +225,9 @@ Phase B-R（実装後コードレビュー、後述）を質問なしで恒久�
 config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバル config より優先される。
 
 同じ config には、役割を独立して固定する `design_runner` / `review_runner` / `exec_choice` も設定できます。
-手動編集に加えて、`review_mode` と同様に**質問への回答から永続化**もできます（「常に〜」を
-選んだときだけグローバル config に書き込み）。プロジェクトの `.dispatch/config.json` が
-グローバル config より優先されます。
+設定する経路は 3 通りあります: `review_mode` と同様に**質問への回答から永続化**する
+（「常に〜」を選んだときだけグローバル config に書き込み）、**`--setup` で明示的に構成する**、
+**手動編集**。プロジェクトの `.dispatch/config.json` がグローバル config より優先されます。
 
 ```json
 {
@@ -224,7 +257,15 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
   `exec_choice: "ask"` は従来のモデル質問だけを表示します。どちらも永続化オプションは出ません。
   「常に〜」からの戻し方は 2 通りで意味が異なります: `"ask"` へ書き換えると質問のみ、キーを
   削除すると未設定に戻り永続化オプションが再表示されます。
+- `prewarm`: workspace レイアウト時の role pane 事前起動（`true` が既定 / `false`）。固定
+  `exec_choice` のときは未選択の executor pane を抑止します。
 - 不正値は project / global のレイヤーごとに検証され、不正なレイヤーだけ警告付きで無視してもう一方へフォールバックします（project の不正値が global に保存した「常に〜」を遮蔽しません）。
+
+`--setup` は上記 5 キーすべてについて「固定値 / `"ask"` / 未設定に戻す / 変更しない」を
+選べます。`--reset config` はこの 5 キーだけを削除し、`shell_ready_ms` など他コンポーネント
+所有のキーは残します。どちらも書き込みは `scripts/config-edit.sh` を通し、置換ではなく
+マージします。プロジェクトの `.dispatch/config.json` はディスパッチ末尾の cleanup でも
+削除されません（`config.json` だけが掃き出し対象から外れます）。
 
 初回カスタム設定では codex runner の `plan_model` も収集し、review 方針を「従来の自動解決 /
 毎回選ぶ / 固定 runner」から選びます。従来の自動解決は `review_runner` を書かず、後二者だけ

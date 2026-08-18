@@ -23,19 +23,30 @@ echo 'PASS: concurrency の既定と上限の契約'
 verify_dispatch_cleanup_guard() {
   local file="$1" missing=0 line text start
   # prose の inline code も含めて全出現を読む。実行コマンドだけを判定対象にする。
+  # .dispatch/ の一括削除には 2 形式ある: 素の `rm -rf .dispatch/` と、プロジェクト
+  # config レイヤー (.dispatch/config.json) を残す `find .dispatch ...` の掃き出し。
+  # どちらも直前 6 行以内の lock-check と、fenced block 内であること(行頭インデント)
+  # を必須にする。
   while IFS=: read -r line text; do
-    [[ "$text" =~ ^[[:space:]]*rm\ -rf\ \.dispatch/ ]] || continue
+    [[ "$text" =~ ^[[:space:]]*(rm[[:space:]]|find[[:space:]]|\[\[[[:space:]]) ]] || continue
     start=$(( line > 6 ? line - 6 : 1 ))
     sed -n "${start},${line}p" "$file" | grep -q 'lock-check' || missing=$((missing+1))
     [[ "$text" =~ ^[[:space:]] ]] || missing=$((missing+1))
-  done < <(grep -n 'rm -rf \.dispatch/' "$file" || true)
+  done < <(grep -nE 'rm -rf \.dispatch/|find \.dispatch ' "$file" || true)
   [[ $missing -eq 0 ]]
 }
 verify_dispatch_cleanup_guard "$SK/SKILL.md" || { echo 'FAIL: rm -rf .dispatch/ guard'; exit 1; }
+verify_dispatch_cleanup_guard "$SK/references/guide-ja.md" \
+  || { echo 'FAIL: guide-ja.md の .dispatch/ 一括削除 guard'; exit 1; }
 tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
 { printf 'rm -rf .dispatch/\n'; cat "$SK/SKILL.md"; } > "$tmp"
 if verify_dispatch_cleanup_guard "$tmp"; then
   echo 'FAIL: unguarded rm -rf .dispatch/ を検出できない'; exit 1
 fi
 echo 'PASS: unguarded rm -rf .dispatch/ を検出する'
+{ printf 'find .dispatch -mindepth 1 -maxdepth 1 ! -name config.json -exec rm -rf {} +\n'; cat "$SK/SKILL.md"; } > "$tmp"
+if verify_dispatch_cleanup_guard "$tmp"; then
+  echo 'FAIL: unguarded find .dispatch 掃き出しを検出できない'; exit 1
+fi
+echo 'PASS: unguarded find .dispatch 掃き出しを検出する'
 echo '--- all tests passed ---'

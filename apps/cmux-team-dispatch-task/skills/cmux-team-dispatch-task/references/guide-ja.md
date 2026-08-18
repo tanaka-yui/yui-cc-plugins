@@ -56,6 +56,18 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 
 ---
 
+## セットアップモード（設定の明示構成）
+
+`--setup` でのみ発動する。ディスパッチは一切行わず、タスク・worktree・workspace・ペインを作らない。役割キー（`design_runner` / `review_runner` / `exec_choice` / `review_mode` / `prewarm`）と `runners.json` レジストリを対話で構成し、ユーザーが選んだレイヤーへ書き込む。手順は [`references/setup-mode-ja.md`](setup-mode-ja.md)（英語版は `setup-mode.md`）。
+
+## リセットモード（設定のリセット）
+
+`--reset` でのみ発動する。対象は任意で指定できる: `--reset runners`（レジストリ）、`--reset config`（役割キー）、`--reset all`。対象未指定なら質問する。ディスパッチは行わず、`.dispatch/`・worktree・ブランチは決して削除しない（それはディスパッチ末尾の Cleanup prompts の担当）。手順は [`references/setup-mode-ja.md`](setup-mode-ja.md)。
+
+両モードとも書き込みは `scripts/config-edit.sh` だけを通す。置換ではなくマージするため、他コンポーネントが所有するキー（`shell_ready_ms`）が生き残る。`--loop` とも互いとも排他で、issue ループがロックを保持している間はどちらも実行を拒否する。どちらもタスク記述ではないため、Step 1a のタスク解析に到達させてはならない。
+
+---
+
 ## Step 1: 解析と準備
 
 タスク収集、Agent ルーティング、統合戦略決定、子 runner 設定を1ステップで実行。
@@ -933,9 +945,14 @@ Step 1e で選択した統合戦略に応じて動作が異なります。
 
 **マージしない場合:**
 
-1. `.dispatch/` ディレクトリのみ削除:
+1. `.dispatch/` ディレクトリのみ削除。`config.json` はプロジェクト config レイヤーであって
+   ディスパッチの生成物ではないため、唯一残す:
    ```bash
-   rm -rf .dispatch/
+   if bash <this-skill-dir>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check; then
+     [[ -d .dispatch ]] && find .dispatch -mindepth 1 -maxdepth 1 ! -name config.json -exec rm -rf {} +
+   else
+     echo "<.dispatch/ の一括削除をスキップ: issue ループが実行中>" >&2
+   fi
    ```
 2. 手動クリーンアップのコマンドを表示:
    ```
@@ -976,7 +993,8 @@ Step 1e で選択した統合戦略に応じて動作が異なります。
 2. **親セッションでまとめてクリーンアップ確認**（後述「親セッションのクリーンアップ確認」節）を実行。
    親が一度だけ「ワークスペース閉鎖 / worktree 削除 / ブランチ削除」を聞き、全タスクに適用する。
 
-   すべて「保持」を選んだ場合は `rm -rf .dispatch/` のみで、worktree とブランチは残る。
+   すべて「保持」を選んだ場合は `.dispatch/` の掃き出し（`config.json` は残す）のみで、
+   worktree とブランチは残る。
    手動で後から削除するコマンドは「Wait and merge の『マージしない場合』」と同じ。
 
 ### Cleanup prompts — 親セッションのクリーンアップ確認（両戦略共通）
@@ -1037,8 +1055,14 @@ for slug in <task-slugs>; do
   [[ "$delete_br_all" == "true" ]] && git branch -D "feat/$slug" 2>/dev/null
 done
 
-# 4) 最終整理（回答に関わらず常に実行）
-rm -rf .dispatch/
+# 4) 最終整理（回答に関わらず常に実行）。issue ループ稼働中は .dispatch/ を一括で消さない。
+#    .dispatch/config.json は --setup が書くプロジェクト config レイヤーで、ディスパッチの
+#    生成物ではないため掃き出し対象から外す。
+if bash <this-skill-dir>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check; then
+  [[ -d .dispatch ]] && find .dispatch -mindepth 1 -maxdepth 1 ! -name config.json -exec rm -rf {} +
+else
+  echo "<.dispatch/ の一括削除をスキップ: issue ループが実行中>" >&2
+fi
 rmdir .worktrees 2>/dev/null
 ```
 
@@ -1213,6 +1237,25 @@ done
 
 プランファイルとインラインタスクを混在させることもできます。
 
+### 設定（`--setup`）
+
+```
+/cmux-team-dispatch-task --setup
+```
+
+ディスパッチせずに設定だけを構成します。現在の設定（プロジェクト値 / グローバル値 / 解決値）と `runners.json` の一覧を表示したあと、書き込み先（グローバル / プロジェクト）と対象（役割キー / `runners.json` / 両方）を選び、役割キーごとに「固定値 / `"ask"` / 未設定に戻す / 変更しない」を指定します。最後に差分を確認してから 1 回の原子的な書き込みで反映します。
+
+### 設定のリセット（`--reset`）
+
+```
+/cmux-team-dispatch-task --reset
+/cmux-team-dispatch-task --reset runners
+/cmux-team-dispatch-task --reset config
+/cmux-team-dispatch-task --reset all
+```
+
+`runners` は `runners.json` を削除して初回セットアップをやり直し、`config` は役割キー 5 つだけを削除します（`shell_ready_ms` など他のキーは残ります）。対象を省略すると質問されます。`.dispatch/`・worktree・`feat/*` ブランチには一切触れません。
+
 ## アーキテクチャ
 
 ### レイアウト
@@ -1325,7 +1368,10 @@ stop and use the Skill tool to invoke "superpowers:brainstorming".
 
 `prewarm` などのキーも同じ config ファイル（`.dispatch/config.json` /
 `~/.claude/cmux-team-dispatch-task/config.json`）に並べて保持される（`message_type` は
-廃止済みで、書いても読まれない）:
+廃止済みで、書いても読まれない）。役割キー 5 つを設定する経路は 3 通りある: ディスパッチ中の
+「常に〜」の回答、`--setup`、手動編集。`--reset config` は役割キー 5 つだけを削除する。
+どの経路も書き込みは `scripts/config-edit.sh` を通し、置換ではなくマージするため
+`shell_ready_ms` のような他コンポーネント所有のキーは保持される:
 
 ```json
 {
@@ -1457,7 +1503,7 @@ codex engine は影響を受けない。`.claude/settings.local.json` を読ま�
 
 ### 初回セットアップ
 
-`runners.json` が存在しない状態、または runner 切替質問で reset を選んだ直後は、Step 1f で初回セットアップが起動します:
+`runners.json` が存在しない状態、runner 切替質問で reset を選んだ直後、`--reset runners` の直後、または `--setup` で `runners.json` を対象に選んだときは、初回セットアップが起動します:
 
 1. AskUserQuestion で **starter テンプレ（claude のみ）** か **カスタム** を選択
 2. starter テンプレ選択時は claude のみが書き出されます

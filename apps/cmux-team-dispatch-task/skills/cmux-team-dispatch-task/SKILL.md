@@ -11,7 +11,7 @@ description: >
   Use when: "parallel execution", "team dispatch", "run these at once",
   "run these in parallel", "dispatch tasks", "execute these simultaneously",
   or when 2+ independent tasks need concurrent execution.
-argument-hint: "<task1>, <task2>, ... [--loop]"
+argument-hint: "<task1>, <task2>, ... [--loop] [--setup] [--reset [runners|config|all]]"
 ---
 
 ## Output Language
@@ -97,6 +97,28 @@ review, and execution runner/engine fields; the renderer does not infer one role
 another. A fixed all-Codex unattended task uses codex for all three roles and creates no
 claude or sonnet pane. Timeout sentinels and final cleanup target only the role panes
 recorded in `prewarm.json`.
+
+## Setup Mode (explicit configuration)
+
+Only triggers on `--setup`. Dispatches nothing — no task, worktree, workspace, or pane
+is created. It walks the user through the role keys (`design_runner` / `review_runner` /
+`exec_choice` / `review_mode` / `prewarm`) and the `runners.json` registry, then writes
+the result to the layer the user picked. Follow
+[`references/setup-mode.md`](references/setup-mode.md).
+
+## Reset Mode (configuration reset)
+
+Only triggers on `--reset`, optionally with a target: `--reset runners` (the registry),
+`--reset config` (the role keys), or `--reset all`. With no target, ask for one.
+Dispatches nothing, and never removes `.dispatch/`, a worktree, or a branch — that stays
+with the end-of-dispatch cleanup prompts. Follow
+[`references/setup-mode.md`](references/setup-mode.md).
+
+Both modes write exclusively through `scripts/config-edit.sh`, which merges rather than
+replaces so that keys owned by other components (`shell_ready_ms`) survive. Both are
+mutually exclusive with `--loop` and with each other, and both refuse to run while an
+issue loop holds the lock. Neither is a task description: `--setup` and `--reset` must
+never reach Step 1a's task parsing.
 
 ## Step 1: Parse and Prepare
 
@@ -374,7 +396,8 @@ and it already avoids prompts through
 `--sandbox workspace-write` with `-c approval_policy='never'`).
 
 
-**First-run setup** (when `runners.json` does not exist, including immediately after reset):
+**First-run setup** (when `runners.json` does not exist, including immediately after
+reset, and when `--setup` selects the registry as a target):
 
 1. Show the user via AskUserQuestion:
    > runners.json was not found. Running first-run setup.
@@ -431,8 +454,10 @@ and it already avoids prompts through
 6. Write the assembled object to `~/.claude/cmux-team-dispatch-task/runners.json`
    (create the directory if missing). Then continue to the runner selection logic above.
 
-To fix the normal questions manually, add the role keys to config.json (project config
-overrides global config):
+There are three ways to fix the normal questions: answer "always ..." during a dispatch,
+run `--setup` (see [`references/setup-mode.md`](references/setup-mode.md)), or edit
+config.json by hand. All of them write the same role keys, and project config overrides
+global config:
 
 ```json
 {
@@ -450,7 +475,8 @@ all-Codex dispatch: no claude command, sonnet pane, or claude agmsg wiring is cr
 
 To restore the interactive flow there are TWO distinct ways: set the key to `"ask"`
 (questions only — the persistence options stay hidden), or remove the key entirely
-(back to unset — the questions reappear WITH the persistence options).
+(back to unset — the questions reappear WITH the persistence options). `--setup` offers
+both, and `--reset config` removes the keys.
 
 ### 1g. Resolve Delivery, Review Mode and Execution Default
 
@@ -2221,10 +2247,11 @@ Present the user with two options:
 
 **Option B: Do not merge**
 
-1. Remove only the dispatch directory:
+1. Remove only the dispatch directory. `config.json` is the project config layer and is
+   NOT a dispatch artifact, so it is the one entry that survives:
    ```bash
    if bash <this-skill-dir>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check; then
-     rm -rf .dispatch/
+     [[ -d .dispatch ]] && find .dispatch -mindepth 1 -maxdepth 1 ! -name config.json -exec rm -rf {} +
    else
      # This message is shown to the user — write it in Japanese (see Output Language)
      echo "<skip bulk .dispatch/ delete: issue loop is running>" >&2
@@ -2272,7 +2299,8 @@ PRs are already created by each child session. Present the user with:
    to all tasks.
 
    If the user prefers to defer all cleanup (e.g., PRs still need review), they can
-   answer "No" to each prompt — the parent will then just run `rm -rf .dispatch/`.
+   answer "No" to each prompt — the parent will then just sweep `.dispatch/` as in
+   "Wait and merge" Option B, keeping `.dispatch/config.json`.
    Display the manual cleanup instructions from "Wait and merge" Option B when
    worktrees are intentionally kept.
 
@@ -2344,8 +2372,10 @@ for slug in <task-slugs>; do
 done
 
 # 4) Final housekeeping. A live issue loop owns .dispatch/, so never clear it wholesale.
+#    .dispatch/config.json is the project config layer written by --setup, not a dispatch
+#    artifact, so it is excluded from the sweep.
 if bash <this-skill-dir>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-check; then
-  rm -rf .dispatch/
+  [[ -d .dispatch ]] && find .dispatch -mindepth 1 -maxdepth 1 ! -name config.json -exec rm -rf {} +
 else
   # This message is shown to the user — write it in Japanese (see Output Language)
   echo "<skip bulk .dispatch/ delete: issue loop is running>" >&2
