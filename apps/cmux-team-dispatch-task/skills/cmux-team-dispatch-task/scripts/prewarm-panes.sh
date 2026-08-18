@@ -197,6 +197,38 @@ if [[ -n "$CLAUDE_RUNNER" ]]; then
   [[ "$CLAUDE_RUNNER_ENGINE" == "claude" ]] || die "--claude-runner requires a claude engine runner"
 fi
 
+# 役割ごとの model / effort を runners.json + 既定値から解決する。launch-workspace.sh の
+# 役割フォールバックと同じ表を使う (どちらか一方だけ変えると in-session 判定がずれる)。
+resolve_role_model() {
+  local runner="$1" role="$2" engine="$3" value=""
+  if [[ -n "$runner" && -f "$RUNNERS_CONFIG_PATH" ]]; then
+    value=$(jq -r --arg n "$runner" --arg f "${role}_model" \
+      '.runners[]? | select(.name == $n) | .[$f] // empty' "$RUNNERS_CONFIG_PATH")
+  fi
+  if [[ -z "$value" && "$engine" == "claude" ]]; then
+    case "$role" in
+      plan|review) value="opus[1m]" ;;
+      exec) value="sonnet" ;;
+    esac
+  fi
+  printf '%s' "$value"
+}
+
+resolve_role_effort() {
+  local runner="$1" role="$2" value=""
+  if [[ -n "$runner" && -f "$RUNNERS_CONFIG_PATH" ]]; then
+    value=$(jq -r --arg n "$runner" --arg f "${role}_effort" \
+      '.runners[]? | select(.name == $n) | .[$f] // empty' "$RUNNERS_CONFIG_PATH")
+  fi
+  if [[ -z "$value" ]]; then
+    case "$role" in
+      plan|review) value="xhigh" ;;
+      exec) value="high" ;;
+    esac
+  fi
+  printf '%s' "$value"
+}
+
 # 実装ペインは engine 単位。exec_choice は「どの engine が実装するか」だけを表し、
 # モデルと effort は runners.json の役割フィールドが決める。
 START_CLAUDE=0
@@ -218,6 +250,27 @@ case "$EXEC_CHOICE" in
     START_CODEX=1 ;;
   *) die "invalid --exec-choice '$EXEC_CHOICE' (must be claude, codex, or ask)" ;;
 esac
+
+# 役割設定 (engine + model + effort) が完全一致するときは、設計セッションがそのまま
+# 実装するので実装ペインを起動しない。effort を条件に含めるのは、effort がセッション
+# 起動時に焼き込まれ、後から変える手段が無いため (モデルだけ一致していても
+# exec_effort の設定が無視されてしまう)。
+# exec_choice=ask は実装 engine が未確定なので判定せず、全候補を起動する。
+if [[ -n "$EXEC_CHOICE" && "$EXEC_CHOICE" != "ask" ]]; then
+  EXEC_ROLE_ENGINE="${EXEC_ENGINE:-$EXEC_CHOICE}"
+  if [[ "$EXEC_ROLE_ENGINE" == "$DESIGN_ENGINE" ]]; then
+    PLAN_MODEL_RESOLVED=$(resolve_role_model "$DESIGN_RUNNER" plan "$DESIGN_ENGINE")
+    PLAN_EFFORT_RESOLVED=$(resolve_role_effort "$DESIGN_RUNNER" plan)
+    EXEC_MODEL_RESOLVED=$(resolve_role_model "${EXEC_RUNNER:-$DESIGN_RUNNER}" exec "$EXEC_ROLE_ENGINE")
+    EXEC_EFFORT_RESOLVED=$(resolve_role_effort "${EXEC_RUNNER:-$DESIGN_RUNNER}" exec)
+    if [[ "$PLAN_MODEL_RESOLVED" == "$EXEC_MODEL_RESOLVED" \
+       && "$PLAN_EFFORT_RESOLVED" == "$EXEC_EFFORT_RESOLVED" ]]; then
+      log "prewarm" "in-session execution (role config identical); skipping the executor pane"
+      START_CLAUDE=0
+      START_CODEX=0
+    fi
+  fi
+fi
 
 if [[ $WITH_DESIGN -eq 1 ]]; then
   # agmsg モード専用: workspace はこのスクリプトが作成する
