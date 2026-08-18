@@ -77,6 +77,13 @@ run_case is1 --design-runner same --reviewer-runner codex --exec-runner same --e
 jq -e '.executors == {}' "$TMP/status-is1/prewarm.json" >/dev/null \
   && pass 'IS1b executors is empty' || bad 'IS1b executors is empty'
 
+# Finding B の回帰: 設計 (claude) ペインの起動に選択した runner の --runner フラグが
+# 乗っていること (乗っていないと runner の plan_model/plan_effort が設計ペインへ届かず、
+# in-session 判定が「設計ペインの実際の起動条件」とずれる)
+grep -F -- '--role plan' "$TMP/argv-is1.log" | grep -Fq -- '--runner same' \
+  && pass 'IS1c design pane launch carries --runner for the selected claude design runner' \
+  || bad 'IS1c design pane launch is missing --runner for the selected claude design runner'
+
 # IS2: model だけ違う -> 実装ペインあり
 run_case is2 --design-runner diffm --reviewer-runner codex --exec-runner diffm --exec-choice claude
 jq -e '.executors.claude != null' "$TMP/status-is2/prewarm.json" >/dev/null \
@@ -108,6 +115,23 @@ run_case is6 --design-runner nodef --reviewer-runner codex --exec-runner nodef -
 jq -e '.executors.claude != null' "$TMP/status-is6/prewarm.json" >/dev/null \
   && pass 'IS6 executor pane exists when relying on default model/effort table' \
   || bad 'IS6 executor pane exists when relying on default model/effort table'
+
+# IS7: 固定 exec_choice=claude で --exec-runner を省略。design runner "same" は
+# plan_model=fable/plan_effort=max = exec_model=fable/exec_effort=max なので、判定側が
+# 誤って DESIGN_RUNNER にフォールバックすると in-session と誤判定してしまう
+# (Finding A の回帰)。実際の起動側 (Step 4) は --exec-runner が無いときフォールバック
+# 無しで --runner を一切付けないため、実装ペインは launch-workspace.sh の素の既定
+# (sonnet/high) で立ち上がり、design (fable/max) とは一致しない -> 実装ペインは
+# 起動されねばならない。
+run_case is7 --design-runner same --reviewer-runner codex --exec-choice claude
+jq -e '.executors.claude != null' "$TMP/status-is7/prewarm.json" >/dev/null \
+  && pass 'IS7 executor pane exists when --exec-runner is omitted (detection must not fall back to DESIGN_RUNNER)' \
+  || bad 'IS7 executor pane exists when --exec-runner is omitted (detection must not fall back to DESIGN_RUNNER)'
+# 起動側も --runner フラグを一切付けていないことを確認する (フォールバック無しで
+# 起動していることの直接証拠)
+grep -F -- '--role exec' "$TMP/argv-is7.log" | grep -Fq -- '--runner' \
+  && bad 'IS7b executor pane launch must not carry --runner when --exec-runner is omitted' \
+  || pass 'IS7b executor pane launch carries no --runner when --exec-runner is omitted'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

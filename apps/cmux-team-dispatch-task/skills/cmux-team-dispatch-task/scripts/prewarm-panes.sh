@@ -251,6 +251,17 @@ case "$EXEC_CHOICE" in
   *) die "invalid --exec-choice '$EXEC_CHOICE' (must be claude, codex, or ask)" ;;
 esac
 
+# claude/codex 実装 runner 名をここで解決する。Step 4/5 の起動と in-session 判定の
+# 両方がこの変数を参照するので、起動側とは別の式で再計算して乖離させない。
+CLAUDE_EXEC_RUNNER=""
+if [[ "$EXEC_CHOICE" == "claude" ]]; then
+  CLAUDE_EXEC_RUNNER="$EXEC_RUNNER"
+elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
+  CLAUDE_EXEC_RUNNER="$CLAUDE_RUNNER"
+  [[ -z "$CLAUDE_EXEC_RUNNER" && "$DESIGN_ENGINE" == "claude" ]] && CLAUDE_EXEC_RUNNER="$DESIGN_RUNNER"
+fi
+CODEX_EXEC_RUNNER="${EXEC_RUNNER:-$CODEX_RUNNER}"
+
 # 役割設定 (engine + model + effort) が完全一致するときは、設計セッションがそのまま
 # 実装するので実装ペインを起動しない。effort を条件に含めるのは、effort がセッション
 # 起動時に焼き込まれ、後から変える手段が無いため (モデルだけ一致していても
@@ -259,10 +270,16 @@ esac
 if [[ -n "$EXEC_CHOICE" && "$EXEC_CHOICE" != "ask" ]]; then
   EXEC_ROLE_ENGINE="${EXEC_ENGINE:-$EXEC_CHOICE}"
   if [[ "$EXEC_ROLE_ENGINE" == "$DESIGN_ENGINE" ]]; then
+    # 実装 runner は Step 4/5 が実際に起動へ渡す変数 (CLAUDE_EXEC_RUNNER /
+    # CODEX_EXEC_RUNNER) と同じものを読む。EXEC_RUNNER/DESIGN_RUNNER から
+    # 独自に再計算すると、--exec-runner 省略時に起動側 (フォールバック無し)
+    # と判定側がずれる。
+    EXEC_ROLE_RUNNER="$CLAUDE_EXEC_RUNNER"
+    [[ "$EXEC_ROLE_ENGINE" == "codex" ]] && EXEC_ROLE_RUNNER="$CODEX_EXEC_RUNNER"
     PLAN_MODEL_RESOLVED=$(resolve_role_model "$DESIGN_RUNNER" plan "$DESIGN_ENGINE")
     PLAN_EFFORT_RESOLVED=$(resolve_role_effort "$DESIGN_RUNNER" plan)
-    EXEC_MODEL_RESOLVED=$(resolve_role_model "${EXEC_RUNNER:-$DESIGN_RUNNER}" exec "$EXEC_ROLE_ENGINE")
-    EXEC_EFFORT_RESOLVED=$(resolve_role_effort "${EXEC_RUNNER:-$DESIGN_RUNNER}" exec)
+    EXEC_MODEL_RESOLVED=$(resolve_role_model "$EXEC_ROLE_RUNNER" exec "$EXEC_ROLE_ENGINE")
+    EXEC_EFFORT_RESOLVED=$(resolve_role_effort "$EXEC_ROLE_RUNNER" exec)
     if [[ "$PLAN_MODEL_RESOLVED" == "$EXEC_MODEL_RESOLVED" \
        && "$PLAN_EFFORT_RESOLVED" == "$EXEC_EFFORT_RESOLVED" ]]; then
       log "prewarm" "in-session execution (role config identical); skipping the executor pane"
@@ -417,11 +434,16 @@ if [[ $WITH_DESIGN -eq 1 ]]; then
     log "prewarm" "launching opus standby workspace for $SLUG"
     OPUS_UNATTENDED_FLAGS=()
     [[ $UNATTENDED -eq 1 ]] && OPUS_UNATTENDED_FLAGS=(--skip-permissions)
+    # codex 分岐と対称にする: DESIGN_RUNNER が指定されていれば plan_model/plan_effort が
+    # 設計ペインへ届くよう --runner を渡す (未指定時は launch-workspace.sh の既定に委ねる)
+    DESIGN_RUNNER_FLAGS=()
+    [[ -n "$DESIGN_RUNNER" ]] && DESIGN_RUNNER_FLAGS=(--runner "$DESIGN_RUNNER")
     DESIGN_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
       --cwd "$CWD" \
       --mode standby \
       --role plan \
       --defer-status \
+      ${DESIGN_RUNNER_FLAGS[@]+"${DESIGN_RUNNER_FLAGS[@]}"} \
       ${OPUS_UNATTENDED_FLAGS[@]+"${OPUS_UNATTENDED_FLAGS[@]}"} \
       ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
       --status-dir "$STATUS_DIR" \
@@ -458,13 +480,7 @@ set_exec_split_flags() {
 
 CLAUDE_EXEC_SURFACE=""
 CLAUDE_EXEC_PROMPT=""
-CLAUDE_EXEC_RUNNER=""
-if [[ "$EXEC_CHOICE" == "claude" ]]; then
-  CLAUDE_EXEC_RUNNER="$EXEC_RUNNER"
-elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
-  CLAUDE_EXEC_RUNNER="$CLAUDE_RUNNER"
-  [[ -z "$CLAUDE_EXEC_RUNNER" && "$DESIGN_ENGINE" == "claude" ]] && CLAUDE_EXEC_RUNNER="$DESIGN_RUNNER"
-fi
+# CLAUDE_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
 AGMSG_FLAGS_CLAUDE=()
 if [[ $START_CLAUDE -eq 1 && -n "$AGMSG_TEAM" ]]; then
   # design と同じ理由で delivery に応じて出し分ける (cmux-send フォールバック時は actas しない)
@@ -512,7 +528,7 @@ if [[ $START_CODEX -eq 1 ]]; then
     AGMSG_FLAGS_CODEX=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
   fi
   log "prewarm" "launching codex standby pane for $SLUG"
-  CODEX_EXEC_RUNNER="${EXEC_RUNNER:-$CODEX_RUNNER}"
+  # CODEX_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
   set_exec_split_flags
   CODEX_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
