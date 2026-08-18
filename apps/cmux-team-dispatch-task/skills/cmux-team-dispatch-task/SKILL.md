@@ -441,19 +441,18 @@ reset, and when `--setup` selects the registry as a target):
    - **name** (free text, e.g. `ccenec`) — unique identifier
    - **command** (free text, e.g. `ccenec` or `codex` or `claude`) — what to invoke
    - **engine** (choice: `claude` / `codex`)
-   - **plan_model** (free text, asked when engine is `codex`, e.g. `gpt-5.6-sol`) —
-     the model for Phase A plan/brainstorming. May be left blank for the codex default.
-   - **review_model** (free text) — when engine is `codex`: the model used for Phase
-     A-R/B-R review (e.g. `gpt-5.6-sol`). When engine is `claude`: the model used when
-     this runner is chosen as the reviewer for design=codex tasks (e.g. `opus[1m]`).
-     May be left blank to omit.
-   - **exec_model** (free text, asked only when engine is `codex`, e.g. `gpt-5.6-terra`) —
-     the model for Phase B's execution paths (execute / standby). May be left blank to
-     omit (uses the codex-side default).
-   - **plan_effort / review_effort / exec_effort** (choice: blank / minimal / low / medium /
-     high / xhigh; asked only when engine is `codex`) — reasoning effort for design /
-     review / execution. May be left blank to omit (uses the codex-side config.toml
-     default).
+   - **plan_model** / **review_model** / **exec_model** (asked for **both engines**).
+     For claude offer `opus[1m]` / `sonnet` / `fable` plus a free-text "Other"; for codex
+     offer free text (e.g. `gpt-5.6-sol`). Leaving one blank keeps the default from the
+     schema table: claude uses `opus[1m]` / `opus[1m]` / `sonnet`, codex defers to its
+     own default. A codex runner still needs `review_model` to be review-capable.
+   - **plan_effort / review_effort / exec_effort** (asked for **both engines**). Present
+     four options built around the default so the call stays inside AskUserQuestion's
+     limit:
+     - claude plan / review: `default (xhigh)` / `max` / `high` / Other
+     - claude exec: `default (high)` / `xhigh` / `max` / Other
+     - codex plan / review: `default (xhigh)` / `high` / `medium` / Other
+     - codex exec: `default (high)` / `xhigh` / `medium` / Other
 
    After each runner is added, ask: "Add another one?" (Yes → loop; No → finish).
 

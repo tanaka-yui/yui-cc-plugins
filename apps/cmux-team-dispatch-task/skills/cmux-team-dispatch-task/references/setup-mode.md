@@ -24,7 +24,7 @@ The role keys are exactly these five:
 |---|---|
 | `design_runner` | a `runners[].name`, or `"ask"` |
 | `review_runner` | a `runners[].name`, or `"ask"` |
-| `exec_choice` | `"opus 1m"` / `"sonnet"` / `"codex"` / `"ask"` |
+| `exec_choice` | `"claude"` / `"codex"` / `"ask"` |
 | `review_mode` | `"on"` / `"off"` / `"ask"` |
 | `prewarm` | `true` / `false` |
 
@@ -113,7 +113,7 @@ value.
 |---|---|
 | `design_runner` | pick a fixed runner / `"ask"` / back to unset / leave unchanged |
 | `review_runner` | pick a fixed runner / `"ask"` / back to unset (legacy auto-resolution) / leave unchanged |
-| `exec_choice` | pick a fixed value / `"ask"` / back to unset / leave unchanged |
+| `exec_choice` | pick a fixed engine / `"ask"` / back to unset / leave unchanged |
 | `review_mode` | `on` / `off` / back to asking every dispatch / leave unchanged |
 
 ### S5. Ask call ③ — up to 4 questions, only the ones still needed
@@ -123,8 +123,8 @@ value.
 - **which `review_runner`** — review-capable runners only: a codex runner needs a
   non-empty `review_model`, a claude runner may fall back to `opus[1m]`. The review
   runner may share an engine, or even a name, with the design runner.
-- **which `exec_choice`** — `opus 1m` / `sonnet` / `codex`. Offer `codex` only when a
-  runner with `engine: codex` is registered.
+- **which `exec_choice`** — `claude` / `codex`. Offer `codex` only when a runner with
+  `engine: codex` is registered, and `claude` only when a claude runner is registered.
 - **`prewarm`** — `true` / `false` / back to unset (defaults to `true`) / leave unchanged.
 
 ### S6. Preview and confirm

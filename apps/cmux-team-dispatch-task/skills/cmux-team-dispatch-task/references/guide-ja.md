@@ -1536,15 +1536,17 @@ codex engine は影響を受けない。`.claude/settings.local.json` を読ま�
 1. AskUserQuestion で **starter テンプレ（claude のみ）** か **カスタム** を選択
 2. starter テンプレ選択時は claude のみが書き出されます
 3. カスタム選択時は AskUserQuestion ループで `name / command / engine` を 1 件ずつ収集、最後に「もう 1 件追加？」を繰り返し確認
-   - **plan_model**（自由入力、engine が `codex` のとき、例 `gpt-5.6-sol`）— Phase A 用。空回答で省略可
-   - **review_model**（自由入力）— engine が `codex` のとき: Phase A-R/B-R レビュー用モデル
-     （例 `gpt-5.6-sol`）。engine が `claude` のとき: design=codex タスクのレビュアーに選ばれた
-     場合のモデル（例 `opus[1m]`）。空回答で省略可
-   - **exec_model**（自由入力、engine が `codex` のときのみ質問、例 `gpt-5.6-terra`）—
-     Phase B 実行系（execute / standby）用モデル。空回答で省略可（codex 側デフォルトを使用）
-   - **plan_effort / review_effort / exec_effort**（選択: 空 / minimal / low / medium / high /
-     xhigh、engine が `codex` のときのみ質問）— 設計 / レビュー / 実行の reasoning effort。
-     空回答で省略可（codex 側 config.toml の既定を使用）
+   - **plan_model** / **review_model** / **exec_model**（**両 engine とも**質問する）。claude
+     には `opus[1m]` / `sonnet` / `fable` に加え自由入力の「Other」を、codex には自由入力
+     （例 `gpt-5.6-sol`）を提示する。空回答はスキーマ表の既定値を維持する: claude は
+     `opus[1m]` / `opus[1m]` / `sonnet`、codex は codex 側デフォルトに委ねる。codex runner が
+     review 可能であるためには `review_model` が引き続き必須
+   - **plan_effort / review_effort / exec_effort**（**両 engine とも**質問する）。
+     AskUserQuestion の上限内に収まるよう、既定値を中心にした 4 択を提示する:
+     - claude の plan / review: `default (xhigh)` / `max` / `high` / Other
+     - claude の exec: `default (high)` / `xhigh` / `max` / Other
+     - codex の plan / review: `default (xhigh)` / `high` / `medium` / Other
+     - codex の exec: `default (high)` / `xhigh` / `medium` / Other
 4. 通常の初回セットアップでは review 方針（legacy 自動 / 毎回選ぶ / 固定 runner）を選ぶ。legacy は
    key を書かず、後二者だけ `review_runner: "ask"` または固定名を writer 固有 `mktemp` + `mv` で
    グローバル config に保存する。reset 直後のセットアップではこの質問と永続化をスキップし、
