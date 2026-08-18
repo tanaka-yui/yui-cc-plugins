@@ -261,10 +261,15 @@ assert_contains "$a1_runner" 'ABORT PROTOCOL' 'A1 review 有効の spawn 経路�
 assert_contains "$a1_runner" 'code-round-N.md' 'A1 review 有効時は findings 記録先を含む'
 ARGV_OUT="$TMP/argv-a2.txt" ZDOTDIR="$TMP/zdot" PATH="$TMP/bin:$PATH" bash "$a1_runner" >/dev/null 2>&1 || true
 a2_argc=$(grep -oE 'argc=[0-9]+' "$TMP/argv-a2.txt" 2>/dev/null | head -1 | cut -d= -f2)
-if [[ "$a2_argc" == "1" ]]; then
-  echo 'PASS: A2 inner prompt が単一引数として渡る'
+# probe runner は claude engine で role フィールドなしの execute (role=exec) なので、
+# 既定の --model 'sonnet' --effort 'high' が inner prompt の前に4引数として付く。
+# argc=5 (--model, sonnet, --effort, high, inner prompt) かつ最後の1引数が
+# inner prompt 全文であることを確認し、クォート事故で分割されていないことを検証する。
+a2_last_arg=$(grep -c '^arg=Read and execute the plan at' "$TMP/argv-a2.txt" 2>/dev/null || true)
+if [[ "$a2_argc" == "5" && "$a2_last_arg" == "1" ]]; then
+  echo 'PASS: A2 inner prompt が既定 --model/--effort の後に単一引数として渡る'
 else
-  echo "FAIL: A2 inner prompt が単一引数でない (argc=${a2_argc:-none})"
+  echo "FAIL: A2 inner prompt が単一引数でない (argc=${a2_argc:-none}, last_arg_match=${a2_last_arg:-0})"
   fail=1
 fi
 a3=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status-none" --parent-notify-workspace workspace:9 abort-none)

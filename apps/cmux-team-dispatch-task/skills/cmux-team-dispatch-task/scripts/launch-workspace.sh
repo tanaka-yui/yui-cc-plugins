@@ -30,19 +30,14 @@
 #   --plan-file <path>                 Plan file path (required when --mode execute).
 #                                      inner prompt が
 #                                      "Read and execute the plan at <path>" になる
-#   --model <model>                    Model flag passed as --model <X>
-#                                      (例: sonnet / gpt-5.6-sol)。claude engine は
-#                                      execute/standby、codex engine は execute/standby/review で反映。
-#                                      codex engine では未指定時に role 対応の plan_model /
-#                                      review_model / exec_model にフォールバックする
-#   --effort <value>                   codex engine の reasoning effort
-#                                      (minimal|low|medium|high|xhigh)。
-#                                      -c model_reasoning_effort='<value>' として注入される。
-#                                      未指定時は runner の plan_effort / review_effort /
-#                                      exec_effort を MODE (plan,superpowers / review /
-#                                      execute,standby) に応じて適用。どちらも無ければ
-#                                      フラグを付けず codex 側 config.toml の既定に任せる。
-#                                      claude engine では無視 (警告のみ)
+#   --model <model>                    Model flag passed as --model <X>. engine を問わず
+#                                      未指定時は runner の role 対応 plan_model /
+#                                      review_model / exec_model にフォールバックし、
+#                                      claude はさらに plan/review=opus[1m] / exec=sonnet を既定とする
+#   --effort <level>                   Reasoning effort. engine を問わず未指定時は runner の
+#                                      plan_effort / review_effort / exec_effort に
+#                                      フォールバックし、既定は plan/review=xhigh / exec=high。
+#                                      claude は --effort、codex は -c model_reasoning_effort へ注入
 #   --skip-permissions                 claude に --dangerously-skip-permissions を
 #                                      追加 (sonnet の auto mode 不在対策)。
 #                                      claude engine のみ対応
@@ -424,34 +419,41 @@ if [[ -n "$RUNNER_NAME" ]]; then
     || die "runner '$RUNNER_NAME' has invalid engine '$RUNNER_ENGINE' (must be 'claude' or 'codex')"
 fi
 
-# model / effort 解決: codex engine のみ。優先順位: 明示指定 > runner の role フィールド > 無指定
-# 無指定なら -c フラグを付けず codex 側デフォルト (config.toml) に任せる
+# model / effort 解決: engine 中立。優先順位は 明示指定 > runner の role フィールド > 既定値。
+# claude の model 既定は role ごとに固定し、codex の model 既定は置かない
+# (モデル名がアカウント・バージョン依存のため codex 側 config.toml へ委ねる)。
+# effort の既定は engine 共通 (plan/review=xhigh, exec=high)。
 CODEX_EFFORT_FLAG=""
+case "$MODEL_ROLE" in
+  plan)
+    [[ -z "$MODEL" ]] && MODEL="$RUNNER_PLAN_MODEL"
+    [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_PLAN_EFFORT"
+    [[ -z "$MODEL" && "$RUNNER_ENGINE" == "claude" ]] && MODEL="opus[1m]"
+    [[ -z "$EFFORT" ]] && EFFORT="xhigh"
+    ;;
+  review)
+    [[ -z "$MODEL" ]] && MODEL="$RUNNER_REVIEW_MODEL"
+    [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_REVIEW_EFFORT"
+    [[ -z "$MODEL" && "$RUNNER_ENGINE" == "claude" ]] && MODEL="opus[1m]"
+    [[ -z "$EFFORT" ]] && EFFORT="xhigh"
+    ;;
+  exec)
+    [[ -z "$MODEL" ]] && MODEL="$RUNNER_EXEC_MODEL"
+    [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_EXEC_EFFORT"
+    [[ -z "$MODEL" && "$RUNNER_ENGINE" == "claude" ]] && MODEL="sonnet"
+    [[ -z "$EFFORT" ]] && EFFORT="high"
+    ;;
+esac
+[[ -n "$MODEL" ]] && log "runner" "applying model=$MODEL ($RUNNER_ENGINE $MODEL_ROLE)"
 if [[ "$RUNNER_ENGINE" == "codex" ]]; then
-  case "$MODEL_ROLE" in
-    plan)
-      [[ -z "$MODEL" ]] && MODEL="$RUNNER_PLAN_MODEL"
-      [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_PLAN_EFFORT"
-      ;;
-    review)
-      [[ -z "$MODEL" ]] && MODEL="$RUNNER_REVIEW_MODEL"
-      [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_REVIEW_EFFORT"
-      ;;
-    exec)
-      [[ -z "$MODEL" ]] && MODEL="$RUNNER_EXEC_MODEL"
-      [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_EXEC_EFFORT"
-      ;;
-  esac
-  [[ -n "$MODEL" ]] && log "runner" "applying model=$MODEL (codex $MODEL_ROLE)"
-  if [[ -n "$EFFORT" ]]; then
-    [[ "$EFFORT" =~ ^(minimal|low|medium|high|xhigh)$ ]] \
-      || die "invalid --effort '$EFFORT' (must be minimal|low|medium|high|xhigh)"
-    CODEX_EFFORT_FLAG=" -c model_reasoning_effort='$EFFORT'"
-    log "runner" "applying reasoning effort=$EFFORT (codex $MODE)"
-  fi
-elif [[ -n "$EFFORT" ]]; then
-  log "warn" "--effort is only meaningful with codex engine; ignoring"
+  [[ "$EFFORT" =~ ^(minimal|low|medium|high|xhigh)$ ]] \
+    || die "invalid --effort '$EFFORT' for codex (must be minimal|low|medium|high|xhigh)"
+  CODEX_EFFORT_FLAG=" -c model_reasoning_effort='$EFFORT'"
+else
+  [[ "$EFFORT" =~ ^(low|medium|high|xhigh|max)$ ]] \
+    || die "invalid --effort '$EFFORT' for claude (must be low|medium|high|xhigh|max)"
 fi
+log "runner" "applying reasoning effort=$EFFORT ($RUNNER_ENGINE $MODEL_ROLE)"
 
 # --agents はプロンプトへ埋め込まれる。範囲外・非数値は cmux ペインを起動する前に弾く
 [[ "$MAX_AGENTS" =~ ^[2-8]$ ]] || die "--agents must be an integer from 2 to 8"
@@ -723,23 +725,25 @@ if [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
   PROMPT_TEXT="$PROMPT"
 fi
 
-# claude engine の execute モード向け追加フラグ (--model / --dangerously-skip-permissions)
-# 順序: <command> [--model X] [--dangerously-skip-permissions] '<inner prompt>'
-CLAUDE_EXTRA_FLAGS=""
+# claude engine の起動フラグ。model/effort と権限フラグを分けるのは、superpowers モードが
+# 権限フラグを付けない (permissions.defaultMode を settings.local.json で注入する) 一方で
+# model/effort は全モードで必要なため。
+# 順序: <command> [--model X] [--effort Y] [--dangerously-skip-permissions] '<inner prompt>'
+CLAUDE_MODEL_FLAGS=""
 if [[ -n "$MODEL" ]]; then
   # model 名に [1m] のような glob メタ文字が含まれても zsh -ic 内で展開されないよう quote する
-  CLAUDE_EXTRA_FLAGS="--model '$MODEL'"
+  CLAUDE_MODEL_FLAGS="--model '$MODEL'"
+fi
+if [[ -n "$EFFORT" ]]; then
+  CLAUDE_MODEL_FLAGS="${CLAUDE_MODEL_FLAGS:+$CLAUDE_MODEL_FLAGS }--effort '$EFFORT'"
 fi
 # 無人ループでは permission prompt / ExitPlanMode 承認で止まらないよう強制する
 if [[ $UNATTENDED -eq 1 && "$RUNNER_ENGINE" == "claude" ]]; then
   SKIP_PERMISSIONS=1
 fi
+CLAUDE_EXTRA_FLAGS="$CLAUDE_MODEL_FLAGS"
 if [[ $SKIP_PERMISSIONS -eq 1 ]]; then
-  if [[ -n "$CLAUDE_EXTRA_FLAGS" ]]; then
-    CLAUDE_EXTRA_FLAGS="$CLAUDE_EXTRA_FLAGS --dangerously-skip-permissions"
-  else
-    CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
-  fi
+  CLAUDE_EXTRA_FLAGS="${CLAUDE_EXTRA_FLAGS:+$CLAUDE_EXTRA_FLAGS }--dangerously-skip-permissions"
 fi
 
 CODEX_MODEL_FLAG=""
@@ -791,13 +795,13 @@ CODEX_MODEL_FLAG=""
         CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}"
       fi
     elif [[ "$MODE" == "superpowers" ]]; then
-      # superpowers mode: 起動フラグは付けない。permission prompt の抑止は Step 2a で
+      # superpowers mode: 権限フラグは付けない。permission prompt の抑止は Step 2a で
       # worktree の .claude/settings.local.json に注入する permissions.defaultMode が担う
       # (AskUserQuestion は permission gate とは別レイヤーなので bypassPermissions 下でも
-      #  対話的に残る。詳細は Step 2a のコメント)
-      CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
+      #  対話的に残る。詳細は Step 2a のコメント)。model/effort は役割設定なので付ける
+      CORE_CMD="$RUNNER_COMMAND${CLAUDE_MODEL_FLAGS:+ $CLAUDE_MODEL_FLAGS} '$PROMPT_TEXT'"
     else
-      CORE_CMD="$RUNNER_COMMAND --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND${CLAUDE_MODEL_FLAGS:+ $CLAUDE_MODEL_FLAGS} --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
     fi
   fi
 
