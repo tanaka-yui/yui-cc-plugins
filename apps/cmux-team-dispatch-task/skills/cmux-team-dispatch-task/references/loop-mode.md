@@ -62,9 +62,9 @@ and ask no further questions until the loop ends.
 1. **design runner (the child session's runtime)**
    - Dynamically enumerate `runners[]` from `runners.json`: label = `name`, description =
      `command (engine)`.
-2. **exec runner (Phase B execution model)**
-   - **opus 1m**: "implement with high reasoning effort"
-   - **sonnet**: "standard implementation model"
+2. **exec runner (Phase B execution engine)**
+   - **claude**: "in-session when the execution role matches the design role's model
+     and effort exactly, otherwise delegate to the claude executor pane"
    - **codex**: "shown only when a codex engine runner exists"
 3. **Review feature (Phase A-R / Phase B-R)**
    - **Enabled**: "review the design and implementation"
@@ -160,5 +160,5 @@ or timeout operation targets a role absent from `prewarm.json`.
 
 Call `lock-release` on every interruption path, including exit 3/4, cleanup failure, and
 user interruption. Subsequent fallback uses the finalized config rather than questions.
-Only values left unset use the spec's default values (concurrency=5, design=opus,
-exec=sonnet, review=the configured value, layout=workspace).
+Only values left unset use the spec's default values (concurrency=5, design=claude,
+exec=claude, review=the configured value, layout=workspace).

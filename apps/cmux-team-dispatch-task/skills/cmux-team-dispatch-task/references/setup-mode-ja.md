@@ -20,7 +20,7 @@
 |---|---|
 | `design_runner` | `runners[].name` または `"ask"` |
 | `review_runner` | `runners[].name` または `"ask"` |
-| `exec_choice` | `"opus 1m"` / `"sonnet"` / `"codex"` / `"ask"` |
+| `exec_choice` | `"claude"` / `"codex"` / `"ask"` |
 | `review_mode` | `"on"` / `"off"` / `"ask"` |
 | `prewarm` | `true` / `false` |
 
@@ -86,14 +86,14 @@ bash <SKILL_DIR>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.j
 |---|---|
 | `design_runner` | 固定 runner を選ぶ / `"ask"` / 未設定に戻す / 変更しない |
 | `review_runner` | 固定 runner を選ぶ / `"ask"` / 未設定に戻す（legacy 自動解決）/ 変更しない |
-| `exec_choice` | 固定値を選ぶ / `"ask"` / 未設定に戻す / 変更しない |
+| `exec_choice` | 固定 engine を選ぶ / `"ask"` / 未設定に戻す / 変更しない |
 | `review_mode` | `on` / `off` / 毎回質問に戻す / 変更しない |
 
 ### S5. 質問コール③ — 必要な分だけ最大 4 問
 
 - **`design_runner` の固定先** — `runners[]` の各エントリ。5 件以上登録されている場合は先頭 4 件を提示し、残りは自由入力の「Other」で受ける。
 - **`review_runner` の固定先** — review 可能な runner のみ。codex runner は空でない `review_model` が必須、claude runner は `opus[1m]` へフォールバック可。review runner は design runner と engine が同じでも、runner 名が同じでも構わない。
-- **`exec_choice` の固定値** — `opus 1m` / `sonnet` / `codex`。`codex` は `engine: codex` の runner が登録済みのときだけ提示する。
+- **`exec_choice` の固定値** — `claude` / `codex`。`codex` は `engine: codex` の runner が登録済みのときだけ、`claude` は claude runner が登録済みのときだけ提示する。
 - **`prewarm`** — `true` / `false` / 未設定に戻す（既定 `true`）/ 変更しない。
 
 ### S6. プレビューと確認

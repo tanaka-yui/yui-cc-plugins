@@ -102,12 +102,12 @@ expect_split() {
   fi
 }
 
-# --- PG1: claude design + review + ask (design / sonnet / codex / review = 2×2) ---
+# --- PG1: claude design + review + ask (design / claude / codex / review = 2×2) ---
 run_case pg1 --design-runner claude --reviewer-runner codex \
   --claude-runner claude --codex-runner codex --exec-choice ask
 [[ $(wc -l < "$TMP/argv-pg1.log" | tr -d ' ') == 4 ]] \
   && pass 'PG1 four panes' || bad 'PG1 four panes'
-expect_split PG1 pg1-sonnet surface:1 down
+expect_split PG1 pg1-claude surface:1 down
 expect_split PG1 pg1-codex surface:2 right
 expect_split PG1 pg1-review surface:1 right
 
@@ -119,14 +119,13 @@ run_case pg2 --design-runner claude --reviewer-runner codex \
 expect_split PG2 pg2-codex surface:1 down
 expect_split PG2 pg2-review surface:1 right
 
-# --- PG3: codex design + ask (design / sonnet / opus / codex / review) ---
+# --- PG3: codex design + ask (design / claude / codex / review) ---
 run_case pg3 --design-runner codex --reviewer-runner codex \
   --claude-runner claude --codex-runner codex --exec-choice ask
-[[ $(wc -l < "$TMP/argv-pg3.log" | tr -d ' ') == 5 ]] \
-  && pass 'PG3 five panes' || bad 'PG3 five panes'
-expect_split PG3 pg3-sonnet surface:1 down
-expect_split PG3 pg3-opus surface:2 right
-expect_split PG3 pg3-codex surface:3 right
+[[ $(wc -l < "$TMP/argv-pg3.log" | tr -d ' ') == 4 ]] \
+  && pass 'PG3 four panes' || bad 'PG3 four panes'
+expect_split PG3 pg3-claude surface:1 down
+expect_split PG3 pg3-codex surface:2 right
 expect_split PG3 pg3-review surface:1 right
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

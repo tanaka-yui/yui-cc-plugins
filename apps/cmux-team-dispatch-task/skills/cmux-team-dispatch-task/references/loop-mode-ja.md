@@ -50,9 +50,9 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 
 1. **design runner（子セッションのランタイム）**
    - `runners.json` の `runners[]` を動的に列挙する: label は `name`、説明は `command (engine)`。
-2. **exec runner（Phase B 実行モデル）**
-   - **opus 1m**: 「高い推論量で実装する」
-   - **sonnet**: 「標準の実装モデル」
+2. **exec runner（Phase B 実行 engine）**
+   - **claude**: 「実行 role が design role の model / effort と完全一致するときは
+     in-session、それ以外は claude executor ペインへ委譲する」
    - **codex**: 「codex engine runner が存在する場合だけ表示する」
 3. **レビュー機能（Phase A-R / Phase B-R）**
    - **有効**: 「設計・実装のレビューを行う」
@@ -121,4 +121,4 @@ prompt renderer には解決済み role tuple を渡す: `--design-runner` / `--
 
 cleanup は sparse な `prewarm.json` に実在する `surface_id` / `agent` を再帰列挙して重複除去する。`close-surface` には必ず task workspace を渡し、`status.json` に `workspace_id` が無ければ workspace 名で引き直す。`prewarm.json` に無い role へ cleanup / timeout 操作を送らない。
 
-exit 3/4、cleanup 失敗、ユーザー中断を含む全中断経路で `lock-release` を呼ぶ。以後のフォールバックは質問ではなく、確定済み config を用いる。設定されていない任意値だけは仕様の既定値（concurrency=5、design=opus、exec=sonnet、review は設定値、layout=workspace）を使う。
+exit 3/4、cleanup 失敗、ユーザー中断を含む全中断経路で `lock-release` を呼ぶ。以後のフォールバックは質問ではなく、確定済み config を用いる。設定されていない任意値だけは仕様の既定値（concurrency=5、design=claude、exec=claude、review は設定値、layout=workspace）を使う。

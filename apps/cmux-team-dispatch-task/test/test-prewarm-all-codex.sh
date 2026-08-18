@@ -68,10 +68,12 @@ bash "$TMP/scripts/prewarm-panes.sh" --with-design --agmsg-team demo-team \
 grep -F -- '--runner codex' "$TMP/argv.log" | grep -Fq -- '--role plan' || bad 'AC2 design role'
 grep -F -- '--mode review' "$TMP/argv.log" | grep -F -- '--runner codex' | grep -Fq -- '--role review' || bad 'AC3 review role'
 grep -F -- '--runner codex' "$TMP/argv.log" | grep -Fq -- '--role exec' || bad 'AC4 exec role'
-grep -Fq -- '--model sonnet' "$TMP/argv.log" && bad 'AC5 no sonnet pane'
+# prewarm はもう --model を渡さないので "--model sonnet" の不在では claude ペインの
+# 不在を証明できない。engine ごとの pane 記録そのものを見る
+grep -Fq -- '--runner claude' "$TMP/argv.log" && bad 'AC5 no claude pane'
 grep -Fq -- ' claude-code ' "$TMP/agmsg.log" && bad 'AC6 no claude-code wiring'
 jq -e '.design.engine == "codex" and .review.engine == "codex" and
-  .executors.codex.engine == "codex" and (.executors.sonnet == null)' \
+  .executors.codex.engine == "codex" and (.executors.claude == null)' \
   "$TMP/status/prewarm.json" >/dev/null || bad 'AC7 role-aware prewarm.json'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

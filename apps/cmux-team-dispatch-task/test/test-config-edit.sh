@@ -91,7 +91,7 @@ else
 fi
 
 # CE6: 範囲外の値
-for pair in 'review_mode=maybe' 'exec_choice=haiku' 'prewarm=yes' 'design_runner='; do
+for pair in 'review_mode=maybe' 'exec_choice=haiku' 'exec_choice=opus 1m' 'exec_choice=sonnet' 'prewarm=yes' 'design_runner='; do
   out=$(bash "$EDIT" --config "$C" --set "$pair" 2>&1); rc=$?
   if [[ $rc -eq 2 ]]; then
     ok "CE6: 不正値 $pair は exit 2"
@@ -101,7 +101,7 @@ for pair in 'review_mode=maybe' 'exec_choice=haiku' 'prewarm=yes' 'design_runner
 done
 # 正当な値は通る
 reset_config
-for pair in 'review_mode=ask' 'exec_choice=opus 1m' 'exec_choice=sonnet' 'exec_choice=codex' 'design_runner=ask'; do
+for pair in 'review_mode=ask' 'exec_choice=claude' 'exec_choice=codex' 'exec_choice=ask' 'design_runner=ask'; do
   bash "$EDIT" --config "$C" --set "$pair" >/dev/null 2>&1 || bad "CE6: 正当値 $pair が拒否された"
 done
 ok 'CE6: 正当値は受理される'
@@ -142,7 +142,7 @@ ok 'CE9: --get は値 / 空 を返して exit 0'
 
 # CE10: 複数操作が 1 回でまとまる
 reset_config
-printf '{"shell_ready_ms":{"baseline_ms":1},"review_mode":"off","exec_choice":"sonnet"}\n' > "$C"
+printf '{"shell_ready_ms":{"baseline_ms":1},"review_mode":"off","exec_choice":"claude"}\n' > "$C"
 bash "$EDIT" --config "$C" \
   --set design_runner=codex --set review_runner=codex --set prewarm=true \
   --unset review_mode --unset exec_choice >/dev/null 2>&1

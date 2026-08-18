@@ -27,7 +27,7 @@ set -euo pipefail
 # 扱えるキーは役割キー 5 つだけ。未知キー・不正値は exit 2 で弾く。
 #   design_runner  runners[].name または "ask"
 #   review_runner  runners[].name または "ask"
-#   exec_choice    "opus 1m" | "sonnet" | "codex" | "ask"
+#   exec_choice    "claude" | "codex" | "ask"
 #   review_mode    "on" | "off" | "ask"
 #   prewarm        true | false (JSON boolean として書き込む)
 # runner 名が runners.json に実在するかの確認は呼び出し側 (SKILL.md) の責務。
@@ -57,7 +57,7 @@ valid_value() {
     review_mode)
       case "$2" in on|off|ask) return 0 ;; *) return 1 ;; esac ;;
     exec_choice)
-      case "$2" in 'opus 1m'|sonnet|codex|ask) return 0 ;; *) return 1 ;; esac ;;
+      case "$2" in claude|codex|ask) return 0 ;; *) return 1 ;; esac ;;
     design_runner|review_runner)
       [[ -n "$2" ]] ;;
     *)
