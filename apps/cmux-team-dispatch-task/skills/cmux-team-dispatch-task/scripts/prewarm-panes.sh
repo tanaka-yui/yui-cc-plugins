@@ -1,6 +1,12 @@
 #!/bin/bash
 # Pre-warm standby panes: タスク workspace に要求された設計・レビュー・実装ペインを事前起動する。
 #
+# 配置は 2 行のグリッド。上段が design (左) と review (右)、下段に実装ペインを横並びに置く:
+#   design = workspace のメイン surface
+#   review = design から right split
+#   実装   = 1 つ目が design から down split、2 つ目以降は直前の実装ペインから right split
+# 実装 2 つ + review でちょうど 2×2 になる。固定 exec_choice なら実装は 1 つだけ。
+#
 # Usage:
 #   agmsg 未使用 (opus は通常フローで起動済み。sonnet / codex の split のみ追加):
 #     prewarm-panes.sh --workspace <ws-id> --base-surface <sf-id> \
@@ -398,6 +404,25 @@ if [[ $WITH_DESIGN -eq 1 ]]; then
   [[ -n "$WORKSPACE" && -n "$DESIGN_SURFACE" ]] || die "failed to parse design standby output"
 fi
 
+# --- 実装ペインの配置ヘルパー ---
+# 実装ペインは design の下に 1 行を作り、そこへ横並びで積む。
+#   1 つ目 = design から down split (左下)
+#   2 つ目以降 = 直前の実装ペインから right split (右下 …)
+# review が design の右に入るので、実装 2 つ + review でちょうど 2×2 になる。
+# down のまま縦積みすると左カラムが 3 段になり 2×2 が崩れるため、
+# 2 つ目以降の direction は必ず right を渡す。
+
+EXEC_LAST_SURFACE=""
+EXEC_SPLIT_FLAGS=()
+
+set_exec_split_flags() {
+  if [[ -z "$EXEC_LAST_SURFACE" ]]; then
+    EXEC_SPLIT_FLAGS=(--standby-split-from "$BASE_SURFACE")
+  else
+    EXEC_SPLIT_FLAGS=(--standby-split-from "$EXEC_LAST_SURFACE" --standby-split-direction right)
+  fi
+}
+
 # --- Step 4: sonnet standby (選択時のみ、split 配置) ---
 
 SONNET_SURFACE=""
@@ -422,12 +447,13 @@ fi
 
 if [[ $START_SONNET -eq 1 ]]; then
   log "prewarm" "launching sonnet standby pane for $SLUG"
+  set_exec_split_flags
   SONNET_ARGS=(
     --cwd "$CWD"
     --mode standby
     --role exec
     --standby-in "$WORKSPACE"
-    --standby-split-from "$BASE_SURFACE"
+    "${EXEC_SPLIT_FLAGS[@]}"
     --model "$SONNET_MODEL"
     --skip-permissions
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"}
@@ -441,6 +467,7 @@ if [[ $START_SONNET -eq 1 ]]; then
     "$SLUG-sonnet" ${SONNET_PROMPT:+"$SONNET_PROMPT"}) || die "failed to launch sonnet standby pane"
   SONNET_SURFACE=$(echo "$SONNET_RESULT" | jq -r '.surface_id // empty')
   [[ -n "$SONNET_SURFACE" ]] || die "failed to parse sonnet standby output"
+  EXEC_LAST_SURFACE="$SONNET_SURFACE"
 fi
 
 # --- Step 4.5: opus executor (design=codex + opus 1m 時のみ) ---
@@ -451,12 +478,13 @@ if [[ $START_OPUS -eq 1 ]]; then
   AGMSG_FLAGS_OPUS=()
   [[ -n "$AGMSG_TEAM" ]] && AGMSG_FLAGS_OPUS=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-opus")
   OPUS_EXEC_RUNNER="${EXEC_RUNNER:-$CLAUDE_RUNNER}"
+  set_exec_split_flags
   OPUS_EXEC_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
     --mode standby \
     --role exec \
     --standby-in "$WORKSPACE" \
-    --standby-split-from "$BASE_SURFACE" \
+    "${EXEC_SPLIT_FLAGS[@]}" \
     --runner "$OPUS_EXEC_RUNNER" \
     --model "$OPUS_MODEL" \
     --skip-permissions \
@@ -467,9 +495,10 @@ if [[ $START_OPUS -eq 1 ]]; then
     "$SLUG-opus") || die "failed to launch opus executor standby pane"
   OPUS_EXEC_SURFACE=$(echo "$OPUS_EXEC_RESULT" | jq -r '.surface_id // empty')
   [[ -n "$OPUS_EXEC_SURFACE" ]] || die "failed to parse opus executor standby output"
+  EXEC_LAST_SURFACE="$OPUS_EXEC_SURFACE"
 fi
 
-# --- Step 5: codex standby (runner 登録時のみ、sonnet の下に split 配置) ---
+# --- Step 5: codex standby (選択時のみ、実装行へ split 配置) ---
 # codex は idle でも agmsg push を受けられる保証が無いため初期 prompt は常に無し。
 # 実行指示の配送手段は CODEX_DELIVERY (prewarm.json) で分岐する。
 
@@ -480,16 +509,15 @@ if [[ $START_CODEX -eq 1 ]]; then
   if [[ -n "$AGMSG_TEAM" ]]; then
     AGMSG_FLAGS_CODEX=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
   fi
-  CODEX_SPLIT_FROM="$BASE_SURFACE"
-  [[ -n "$SONNET_SURFACE" ]] && CODEX_SPLIT_FROM="$SONNET_SURFACE"
   log "prewarm" "launching codex standby pane for $SLUG"
   CODEX_EXEC_RUNNER="${EXEC_RUNNER:-$CODEX_RUNNER}"
+  set_exec_split_flags
   CODEX_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
     --mode standby \
     --role exec \
     --standby-in "$WORKSPACE" \
-    --standby-split-from "$CODEX_SPLIT_FROM" \
+    "${EXEC_SPLIT_FLAGS[@]}" \
     --runner "$CODEX_EXEC_RUNNER" \
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
     --status-dir "$STATUS_DIR" \
@@ -498,6 +526,7 @@ if [[ $START_CODEX -eq 1 ]]; then
     "$SLUG-codex") || die "failed to launch codex standby pane"
   CODEX_SURFACE=$(echo "$CODEX_RESULT" | jq -r '.surface_id // empty')
   [[ -n "$CODEX_SURFACE" ]] || die "failed to parse codex standby output"
+  EXEC_LAST_SURFACE="$CODEX_SURFACE"
 fi
 
 # --- Step 5.5: review ペイン (--review-model / --reviewer-runner 時のみ、design の右に split 配置) ---

@@ -1855,6 +1855,12 @@ review pane uses `REVIEW_RUNNER` even when its engine equals `DESIGN_ENGINE`. Th
 fixed example therefore contains exactly design codex, review codex, and executor codex
 panes—no sonnet pane or claude process.
 
+Pane placement is a two-row grid: design owns the workspace's main surface, review is a
+`right` split off design, and the execution panes form the row below—the first splits
+`down` off design, every later one splits `right` off the previous execution pane. Two
+execution panes plus review therefore render as a 2×2 grid; a fixed `EXEC_CHOICE` leaves
+one execution pane under design with review beside them.
+
 Everything is delegated to `prewarm-panes.sh`; do not create panes manually.
 
 **agmsg NOT installed (`$TEAM` empty)** — the opus session was already launched with

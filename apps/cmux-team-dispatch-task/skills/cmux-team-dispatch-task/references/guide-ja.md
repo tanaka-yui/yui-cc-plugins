@@ -618,6 +618,11 @@ PREWARM=$(jq -r '.prewarm // empty' .dispatch/config.json 2>/dev/null)
 `CLAUDE_EXEC_RUNNER` を使う専用 Opus/Sonnet executor と、`CODEX_EXEC_RUNNER` を使う Codex executor
 をそれぞれ作る。固定 review は design と同じ engine でもよい。
 
+ペイン配置は 2 行のグリッド。design が workspace のメイン surface を持ち、review は design から
+`right` split、実装ペインはその下の行に並ぶ（1 つ目は design から `down` split、2 つ目以降は
+直前の実装ペインから `right` split）。実装 2 件 + review でちょうど 2×2 になり、固定
+`EXEC_CHOICE` なら design の下に実装 1 件・その右に review という配置になる。
+
 ペイン作成はすべて `prewarm-panes.sh` に委譲し、手動で作成しないこと。
 
 **agmsg 未インストール（`$TEAM` が空）** — opus セッションはすでにワークスペース起動時に

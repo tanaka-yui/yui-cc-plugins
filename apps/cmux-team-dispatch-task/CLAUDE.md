@@ -197,7 +197,8 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - SKILL.md / guide-ja.md に `{{LAYOUT}}` / `LAYOUT_MODE` / `LAYOUT=split` が残っておらず、起動例に削除済みの split 系フラグが残っていないこと。最終クリーンアップは workspace を閉じる 1 経路に統一すること
     - stdout JSON と初期 `status.json` の `layout` が定数 `"workspace"` のまま残り、`split_from` / `split_direction` キーは出力されないこと
     - `launch-session-splits.sh` / `cmux-grid.sh` が存在せず、README の移行注記以外の利用手順に削除済みレイアウトへの参照が残らないこと
-    - 回帰は `bash test/test-launch-workspace-layout.sh` と `bash test/test-monitor-layout.sh` で検証すること
+    - **workspace 内のペイン配置は 2 行のグリッド**であること: design = メイン surface、review = design から `right` split、実装ペイン = 1 つ目が design から `down` split・2 つ目以降が直前の実装ペインから `right` split。実装 2 件 + review でちょうど 2×2 になる。2 つ目以降の実装ペインを `down`（direction 省略）で積むと左カラムが 3 段になり 2×2 が崩れるので、`prewarm-panes.sh` の実装ペイン起動は必ず `set_exec_split_flags` が組み立てた `EXEC_SPLIT_FLAGS` を渡し、起動後に `EXEC_LAST_SURFACE` を更新すること（sonnet / opus executor / codex の 3 箇所すべて）。実際に v1.18.0 の role ベース化で codex 側の `--standby-split-direction right` が落ち、design/sonnet/codex が縦 3 段に積まれる退行が発生した
+    - 回帰は `bash test/test-launch-workspace-layout.sh`、`bash test/test-monitor-layout.sh`、`bash test/test-prewarm-layout.sh`（PG1-PG3）で検証すること
 
 27. **タスク内の並列実行**が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
     - 文面の単一情報源は `scripts/parallel-directive.sh`。`--engine <claude|codex>` × `--mode <plan|superpowers|execute|review>` で 1 行を出力し、`--agents <N>`（2〜8、既定 4）で同時実行の上限を変える。`standby` モードは存在せず、standby ペインには `--mode execute` を渡す
@@ -259,7 +260,7 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 15. **`--resume`**: 既存の `.dispatch/` がある状態で monitor を `--resume` 起動 → 完了済みは skip、未完了のみ監視継続すること
 16. **message_type 廃止**: 通知トランスポートの質問が一切出ないこと。`config.json` に `message_type` を書いても無視されること。`launch-workspace.sh` / `prewarm-panes.sh` に `--message-type` を渡すと `was removed` で即座に失敗すること
 17. **agmsg インストール時**: monitor-dispatch.sh が起動しないこと。子が status.json に done/error を書いた**直後**に `[dispatch] task ... finished` が `send-prompt.sh` のタイプ入力で親に届き(親が idle のままでも届くこと — これがタイプ入力を唯一の wake 手段にする理由)、親の watcher が生きていれば同一文が inbox にも記録されること。wrapper の exit 時通知で同じ通知が重複して届くことがあるのは正常。ディスパッチ実行中の親セッションで AGMSG-DIRECTIVE により watcher が起動していること。status.json は従来どおり遷移すること
-18. **pre-warm**: `prewarm.json` の role-aware な `design` / `review` / `executors` と実ペインが一致すること。固定 `exec_choice` では未選択 executor を作らず、all-Codex 構成では設計・レビュー・codex executor の3ペインだけを起動すること。agmsg インストール時は design を含む起動済みペインが idle で待ち、親からの `send-prompt.sh --label phase-a-task`（`.assigned-<slug>` touch 後）で Phase A が始まること。`prewarm: false` では起動しないこと。未割当ペインが status.json を汚さないこと
+18. **pre-warm**: `prewarm.json` の role-aware な `design` / `review` / `executors` と実ペインが一致すること。ペインが 2 行グリッド（上段 design / review、下段に実装ペインを横並び）で配置され、実装 2 件 + review のときに 2×2 に見えること。固定 `exec_choice` では未選択 executor を作らず、all-Codex 構成では設計・レビュー・codex executor の3ペインだけを起動すること。agmsg インストール時は design を含む起動済みペインが idle で待ち、親からの `send-prompt.sh --label phase-a-task`（`.assigned-<slug>` touch 後）で Phase A が始まること。`prewarm: false` では起動しないこと。未割当ペインが status.json を汚さないこと
 19. **Phase B prewarm 経路**: `prewarm.json.executors.<choice>` を使い、固定 choice では未選択 pane が存在しないこと。`.assigned-*` → `phase-b-exec` 配送 → `.deferred` の順と status/signal/通知は維持する
 20. **Phase A-R 無効**: `review_mode: off`、または `review_mode: on` でも capable reviewer を解決できないタスクだけ review を省略すること。後者では警告し config を書き換えず、Phase A 直後は `exec_choice` の解決済み方式に従う
 21. **Phase A-R 有効 + prewarm**: 解決済み `review_runner` の専用 `review` ペインがあり、design と同一Codex engine でも Phase A-R/B-R に再利用できること。spawn 失敗時はその quality gate だけを警告・省略し Phase B へ進むこと

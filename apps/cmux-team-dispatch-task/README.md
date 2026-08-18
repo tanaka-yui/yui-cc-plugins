@@ -420,6 +420,11 @@ config `prewarm: true`(default)のとき、`prewarm-panes.sh` が各タスクの
 standby ペインを事前起動する。Phase B で sonnet / codex が選ばれたら待機中のペインに
 実行指示を送るだけで済み、セッション起動を待たない。
 
+ペイン配置は 2 行のグリッド。design が workspace のメイン surface、review はその右
+（`right` split）、実装ペインは design の下の行に横並び（1 つ目は design から `down` split、
+2 つ目以降は直前の実装ペインから `right` split）になる。実装 2 件 + review でちょうど 2×2、
+固定 `exec_choice` なら design の下に実装 1 件・その右に review という 3 ペイン構成になる。
+
 prewarm は解決済み role だけを起動し、`prewarm.json` の `design`、任意の `review`、
 `executors` に実在ペインを記録する。固定 `exec_choice` では未選択 executor を起動しない。
 固定 choice の opus/sonnet/codex はすべて generic `--exec-runner` で解決済み runner を受け渡し、
