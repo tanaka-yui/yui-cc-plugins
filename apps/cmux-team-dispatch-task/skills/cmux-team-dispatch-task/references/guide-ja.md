@@ -405,7 +405,11 @@ Phase A 完了後、コード変更を始める前に task prompt が解決し�
 
 effort を判定条件に含めるのは、effort がセッション起動時に焼き込まれ後から変更できないため。
 model だけを比較すると、実行フェーズが設計セッションの effort のまま走り `exec_effort` が
-無視されてしまう。
+無視されてしまう。この比較を子セッション側で正しく行えるよう、親が子プロンプトへ埋め込む
+解決済みタプルには `DESIGN_RUNNER` / `DESIGN_ENGINE` / `PLAN_MODEL` / `PLAN_EFFORT` と
+`EXEC_CHOICE` / `EXEC_RUNNER` / `EXEC_ENGINE` / `EXEC_MODEL` / `EXEC_EFFORT` を含める
+（`PLAN_EFFORT` / `EXEC_EFFORT` が欠けていると両辺とも空文字列になり、effort が食い違って
+いても in-session と誤判定してしまう）。
 
 **Codex の起動安全性**
 

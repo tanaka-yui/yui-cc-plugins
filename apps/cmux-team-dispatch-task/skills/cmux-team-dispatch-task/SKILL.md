@@ -1184,10 +1184,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   name, since the worktree directory name is `<task-slug>`, not the repo name.
 
 - Substitute the complete resolved role tuple into every prompt before launch:
-  `DESIGN_RUNNER` / `DESIGN_ENGINE` / `PLAN_MODEL`, `REVIEW_POLICY` /
+  `DESIGN_RUNNER` / `DESIGN_ENGINE` / `PLAN_MODEL` / `PLAN_EFFORT`, `REVIEW_POLICY` /
   `REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` / `REVIEW_PANE_AGENT`, and
-  `EXEC_CHOICE` / `EXEC_RUNNER` / `EXEC_ENGINE` / `EXEC_MODEL`. These are values,
-  not hints: a child must not derive a runner or model again from an engine.
+  `EXEC_CHOICE` / `EXEC_RUNNER` / `EXEC_ENGINE` / `EXEC_MODEL` / `EXEC_EFFORT`. These are
+  values, not hints: a child must not derive a runner, model, or effort again from an
+  engine. `PLAN_EFFORT` / `EXEC_EFFORT` feed the in-session condition (Phase B block
+  below); leaving either unsubstituted would make the child compare two empty strings
+  and false-positive into in-session execution on a genuine effort mismatch.
 - **Design engine** = `DESIGN_ENGINE` resolved in Step 1f.
 - Vary the template by the engine of the task's design runner:
   - design=claude → Phase A names the resolved design runner/model. Phase B's
@@ -1204,14 +1207,15 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     `{{CODEX_BEHAVIOR_BLOCK}}` (which tells YOU to turn into the reviewer after a codex
     implementation) would contradict the fixed-review case. Under a fixed policy the
     design pane exits after touching `.deferred`, and the dedicated review pane reviews.
-- `{{DESIGN_RUNNER}}`, `{{DESIGN_ENGINE}}`, `{{PLAN_MODEL}}` → the resolved design tuple.
+- `{{DESIGN_RUNNER}}`, `{{DESIGN_ENGINE}}`, `{{PLAN_MODEL}}`, `{{PLAN_EFFORT}}` → the
+  resolved design tuple.
 - `{{REVIEW_POLICY}}`, `{{REVIEW_RUNNER}}`, `{{REVIEW_ENGINE}}`,
   `{{REVIEW_MODEL}}`, `{{REVIEW_PANE_AGENT}}` → the resolved review tuple. Under both fixed
   and legacy policy, the dedicated review pane agent is `<task-slug>-review`. Legacy
   preserves only the six-case cross-engine Phase B-R reviewer assignment; it does not
   repurpose the separate `<task-slug>-claude` executor pane as the review pane.
-- `{{EXEC_CHOICE}}`, `{{EXEC_RUNNER}}`, `{{EXEC_ENGINE}}`, `{{EXEC_MODEL}}` → the
-  resolved execution tuple for the selected/default branch.
+- `{{EXEC_CHOICE}}`, `{{EXEC_RUNNER}}`, `{{EXEC_ENGINE}}`, `{{EXEC_MODEL}}`,
+  `{{EXEC_EFFORT}}` → the resolved execution tuple for the selected/default branch.
 
 - `{{REVIEW_BLOCK}}` → **only when `REVIEW_ENABLED` is true**, bake in the
   WHOLE block below (substituting `{{REVIEW_MODEL}}` / `{{REVIEW_RUNNER_NAME}}` /

@@ -83,7 +83,6 @@ REVIEWER_RUNNER=""
 DESIGN_ENGINE="claude"
 REVIEWER_ENGINE=""
 REVIEW_MODEL_RESOLVED=""
-REVIEW_EFFORT=""
 EXEC_ENGINE=""
 UNATTENDED=0
 TIMEOUT_SENTINEL=""
@@ -173,7 +172,6 @@ if [[ -n "$REVIEWER_RUNNER" ]]; then
   REVIEWER_ENGINE=$(jq -r --arg n "$REVIEWER_RUNNER" '.runners[]? | select(.name == $n) | .engine // "claude"' "$RUNNERS_CONFIG_PATH")
   [[ -n "$REVIEWER_ENGINE" ]] || die "reviewer runner '$REVIEWER_RUNNER' not found in $RUNNERS_CONFIG_PATH"
   REVIEW_MODEL_RESOLVED=$(jq -r --arg n "$REVIEWER_RUNNER" '.runners[]? | select(.name == $n) | .review_model // empty' "$RUNNERS_CONFIG_PATH")
-  REVIEW_EFFORT=$(jq -r --arg n "$REVIEWER_RUNNER" '.runners[]? | select(.name == $n) | .review_effort // empty' "$RUNNERS_CONFIG_PATH")
   if [[ "$REVIEWER_ENGINE" == "codex" && -z "$REVIEW_MODEL_RESOLVED" ]]; then
     die "codex reviewer runner '$REVIEWER_RUNNER' requires review_model"
   fi
@@ -260,7 +258,16 @@ elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
   CLAUDE_EXEC_RUNNER="$CLAUDE_RUNNER"
   [[ -z "$CLAUDE_EXEC_RUNNER" && "$DESIGN_ENGINE" == "claude" ]] && CLAUDE_EXEC_RUNNER="$DESIGN_RUNNER"
 fi
-CODEX_EXEC_RUNNER="${EXEC_RUNNER:-$CODEX_RUNNER}"
+# exec_choice=claude のとき EXEC_RUNNER は claude runner 名を持つため、無条件で
+# ${EXEC_RUNNER:-$CODEX_RUNNER} にすると codex 用のこの変数が claude runner 名を
+# 引き継んでしまう (実害は START_CODEX=0 で未使用のため無いが、次の変更で罠になる)。
+# CLAUDE_EXEC_RUNNER と対称に、exec_choice が実際に codex のときだけ EXEC_RUNNER を使う。
+CODEX_EXEC_RUNNER=""
+if [[ "$EXEC_CHOICE" == "codex" ]]; then
+  CODEX_EXEC_RUNNER="$EXEC_RUNNER"
+elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
+  CODEX_EXEC_RUNNER="$CODEX_RUNNER"
+fi
 
 # 役割設定 (engine + model + effort) が完全一致するときは、設計セッションがそのまま
 # 実装するので実装ペインを起動しない。effort を条件に含めるのは、effort がセッション
