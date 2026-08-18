@@ -140,7 +140,7 @@ ARGV_LOG="$TMP/argv.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runner
     --codex-runner codex --review-model gpt-5.6-sol --exec-choice ask \
     --unattended --timeout-sentinel "$TMP/loop/timed-out/demo" >/dev/null
 
-for pane in 'opus[1m]' 'sonnet' '--role exec' '--mode review'; do
+for pane in '--role plan' '--role exec' '--mode review'; do
   if grep -F -- "$pane" "$TMP/argv.log" | grep -Fq -- "$SENT"; then
     ok "U4 ask '$pane' の起動に sentinel が転送される"
   else
@@ -148,10 +148,10 @@ for pane in 'opus[1m]' 'sonnet' '--role exec' '--mode review'; do
   fi
 done
 [[ $(wc -l < "$TMP/argv.log" | tr -d ' ') == 4 ]] \
-  && ok 'U4 ask は legacy candidate set の4ペインを起動する' \
+  && ok 'U4 ask は engine candidate set の4ペインを起動する' \
   || bad 'U4 ask の起動ペイン数が4ではない'
 
-# --- U5: fixed same-Codex reviewer と独立した Claude executor を opus/sonnet へ渡す ---
+# --- U5: fixed same-Codex reviewer と独立した Claude executor を渡す ---
 cat > "$TMP/runners.json" <<'JSON'
 {
   "default": "codex",
@@ -168,54 +168,29 @@ if ARGV_LOG="$TMP/argv.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/run
     --with-design --agmsg-team demo-team \
     --cwd "$TMP/repo" --slug demo --status-dir "$TMP/status" \
     --design-runner codex --reviewer-runner codex \
-    --exec-runner claude-exec --exec-choice 'opus 1m' \
+    --exec-runner claude-exec --exec-choice claude \
     --timeout-sentinel "$TMP/loop/timed-out/demo" >/dev/null; then
-  opus_rc=0
+  claude_rc=0
 else
-  opus_rc=$?
+  claude_rc=$?
 fi
 
-[[ $opus_rc -eq 0 ]] \
-  && ok 'U5 fixed same-Codex review + opus executor を受理する' \
-  || bad "U5 fixed same-Codex review + opus executor が失敗した (exit $opus_rc)"
-grep -F -- '--runner claude-exec' "$TMP/argv.log" | grep -F -- '--role exec' | grep -Fq -- '--model opus[1m]' \
-  && ok 'U5 opus executor は独立した解決済み runner を使う' \
-  || bad 'U5 opus executor が解決済み runner を使っていない'
+[[ $claude_rc -eq 0 ]] \
+  && ok 'U5 fixed same-Codex review + claude executor を受理する' \
+  || bad "U5 fixed same-Codex review + claude executor が失敗した (exit $claude_rc)"
+grep -F -- '--runner claude-exec' "$TMP/argv.log" | grep -Fq -- '--role exec' \
+  && ok 'U5 claude executor は独立した解決済み runner を使う' \
+  || bad 'U5 claude executor が解決済み runner を使っていない'
 [[ $(wc -l < "$TMP/argv.log" | tr -d ' ') == 3 ]] \
-  && ok 'U5 fixed opus は design/review/opus だけを起動する' \
-  || bad 'U5 fixed opus が不要な executor を起動した'
+  && ok 'U5 fixed claude は design/review/claude だけを起動する' \
+  || bad 'U5 fixed claude が不要な executor を起動した'
 grep -F -- '--runner codex' "$TMP/argv.log" | grep -Fq -- '--mode review' \
   && ok 'U5 reviewer は executor と独立して Codex のまま' \
   || bad 'U5 reviewer が Codex runner ではない'
-jq -e '.review.runner == "codex" and .executors.opus.runner == "claude-exec"' \
+jq -e '.review.runner == "codex" and .executors.claude.runner == "claude-exec"' \
   "$TMP/status/prewarm.json" >/dev/null \
-  && ok 'U5 opus の prewarm.json は独立 runner を記録する' \
-  || bad 'U5 opus の prewarm.json runner が不正'
-
-: > "$TMP/argv.log"
-if ARGV_LOG="$TMP/argv.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-  bash "$TMP/scripts/prewarm-panes.sh" \
-    --with-design --agmsg-team demo-team \
-    --cwd "$TMP/repo" --slug demo --status-dir "$TMP/status" \
-    --design-runner codex --reviewer-runner codex \
-    --exec-runner claude-exec --exec-choice sonnet >/dev/null; then
-  sonnet_rc=0
-else
-  sonnet_rc=$?
-fi
-[[ $sonnet_rc -eq 0 ]] \
-  && ok 'U5 fixed same-Codex review + sonnet executor を受理する' \
-  || bad "U5 fixed same-Codex review + sonnet executor が失敗した (exit $sonnet_rc)"
-grep -F -- '--runner claude-exec' "$TMP/argv.log" | grep -F -- '--role exec' | grep -Fq -- '--model sonnet' \
-  && ok 'U5 sonnet executor は独立した解決済み runner を使う' \
-  || bad 'U5 sonnet executor が解決済み runner を使っていない'
-[[ $(wc -l < "$TMP/argv.log" | tr -d ' ') == 3 ]] \
-  && ok 'U5 fixed sonnet は design/review/sonnet だけを起動する' \
-  || bad 'U5 fixed sonnet が不要な executor を起動した'
-jq -e '.review.runner == "codex" and .executors.sonnet.runner == "claude-exec"' \
-  "$TMP/status/prewarm.json" >/dev/null \
-  && ok 'U5 sonnet の prewarm.json は独立 runner を記録する' \
-  || bad 'U5 sonnet の prewarm.json runner が不正'
+  && ok 'U5 claude の prewarm.json は独立 runner を記録する' \
+  || bad 'U5 claude の prewarm.json runner が不正'
 
 # --- U6: Codex design の ask/unset は提示する3 choiceをすべて解決済み runner で起動する ---
 run_dynamic_candidates() {
@@ -236,22 +211,18 @@ run_dynamic_candidates() {
   [[ $dynamic_rc -eq 0 ]] \
     && ok "U6 Codex design + $label を受理する" \
     || bad "U6 Codex design + $label が失敗した (exit $dynamic_rc)"
-  [[ $(wc -l < "$TMP/argv.log" | tr -d ' ') == 5 ]] \
-    && ok "U6 $label は design/review + 3 executors を起動する" \
-    || bad "U6 $label の起動ペイン数が5ではない"
+  [[ $(wc -l < "$TMP/argv.log" | tr -d ' ') == 4 ]] \
+    && ok "U6 $label は design/review + 2 executors を起動する" \
+    || bad "U6 $label の起動ペイン数が4ではない"
   jq -e '.review.runner == "codex" and .review.engine == "codex" and
-    .executors.opus.runner == "claude-exec" and .executors.opus.engine == "claude" and
-    .executors.sonnet.runner == "claude-exec" and .executors.sonnet.engine == "claude" and
+    .executors.claude.runner == "claude-exec" and .executors.claude.engine == "claude" and
     .executors.codex.runner == "codex" and .executors.codex.engine == "codex"' \
     "$TMP/status/prewarm.json" >/dev/null 2>&1 \
     && ok "U6 $label の全 advertised choice に正しい executor tuple がある" \
     || bad "U6 $label の executor tuple が不正"
-  grep -F -- '--runner claude-exec' "$TMP/argv.log" | grep -F -- '--role exec' | grep -Fq -- '--model opus[1m]' \
-    && ok "U6 $label の opus は明示 Claude runner を使う" \
-    || bad "U6 $label の opus runner が不正"
-  grep -F -- '--runner claude-exec' "$TMP/argv.log" | grep -F -- '--role exec' | grep -Fq -- '--model sonnet' \
-    && ok "U6 $label の sonnet は明示 Claude runner を使う" \
-    || bad "U6 $label の sonnet runner が不正"
+  grep -F -- '--runner claude-exec' "$TMP/argv.log" | grep -Fq -- '--role exec' \
+    && ok "U6 $label の claude executor は明示 Claude runner を使う" \
+    || bad "U6 $label の claude executor runner が不正"
 }
 
 run_dynamic_candidates ask --exec-choice ask
@@ -268,7 +239,7 @@ for failure_mode in launch parse; do
       --with-design --agmsg-team demo-team \
       --cwd "$TMP/repo" --slug demo --status-dir "$TMP/status" \
       --design-runner codex --reviewer-runner codex \
-      --exec-runner claude-exec --exec-choice sonnet >/dev/null; then
+      --exec-runner claude-exec --exec-choice claude >/dev/null; then
     review_fail_rc=0
   else
     review_fail_rc=$?
@@ -276,7 +247,7 @@ for failure_mode in launch parse; do
   [[ $review_fail_rc -eq 0 ]] \
     && ok "U7 review pane $failure_mode failure でも dispatch を継続する" \
     || bad "U7 review pane $failure_mode failure が dispatch を中断した (exit $review_fail_rc)"
-  jq -e '.design and .executors.sonnet and (.review == null)' "$TMP/status/prewarm.json" >/dev/null 2>&1 \
+  jq -e '.design and .executors.claude and (.review == null)' "$TMP/status/prewarm.json" >/dev/null 2>&1 \
     && ok "U7 $failure_mode failure では review を省略し design/executor を保持する" \
     || bad "U7 $failure_mode failure 時の review omission または design/executor が不正"
   [[ $(grep -Fc -- 'join.sh demo-team demo-review codex' "$TMP/agmsg.log" || true) == 1 ]] \
