@@ -16,6 +16,10 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 Do not start if the lock is live. Only a natural-language trigger without `--loop`
 requires confirming "should the loop be started" as a single question before this step.
 
+`--loop` is also mutually exclusive with `--override`. This one is structural rather than
+policy: `--override` asks a question per task, and an unattended issue loop has nobody to
+answer it. A loop run therefore always uses the resolved configuration as-is.
+
 ## L1: Batched Configuration Before Start (3 calls)
 
 Because `AskUserQuestion` allows at most four questions per call, this configuration must

@@ -71,8 +71,9 @@ bash <SKILL_DIR>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.j
 If the lock is live, refuse and stop: an issue loop reads this configuration between
 batches, and removing `runners.json` mid-loop breaks it outright.
 
-`--setup` is mutually exclusive with `--loop` and with `--reset`. If more than one is
-given, do not guess — report the conflict and ask which one to run.
+`--setup` is mutually exclusive with `--loop`, `--reset`, and `--override`. If more than
+one is given, do not guess — report the conflict and ask which one to run. Want the
+change to stick? Use `--setup`. Want it for this dispatch only? Use `--override` instead.
 
 ### S1. Show the current state
 

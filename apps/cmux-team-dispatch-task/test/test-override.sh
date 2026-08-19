@@ -188,5 +188,25 @@ grep -Fq -- "model_reasoning_effort='xhigh'" "$ov9_codex" \
   && pass 'OV9b codex review pane carries model_reasoning_effort' \
   || bad 'OV9b codex review pane carries model_reasoning_effort'
 
+# --- OV8: SKILL.md の CLI 記述 ---
+SKILL="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
+grep -Fq -- '[--override]' "$SKILL" \
+  && pass 'OV8a argument-hint lists --override' \
+  || bad 'OV8a argument-hint lists --override'
+
+# OV8b: section-scoped exclusivity check. Extract the "## Override Mode" section (up to the
+# next "## " heading) instead of grepping the whole file, so a harmless rewrap elsewhere in
+# SKILL.md can't flip this test and an unrelated exclusivity sentence can't pass it.
+OVERRIDE_SECTION=$(sed -n '/^## Override Mode/,/^## /p' "$SKILL")
+for other in '--loop' '--setup' '--reset'; do
+  grep -Fq -- "$other" <<<"$OVERRIDE_SECTION" \
+    && pass "OV8b --override exclusivity with $other is documented" \
+    || bad "OV8b --override exclusivity with $other is documented"
+done
+
+grep -Fq -- '1g-2' "$SKILL" \
+  && pass 'OV8c the override step is present' \
+  || bad 'OV8c the override step is present'
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

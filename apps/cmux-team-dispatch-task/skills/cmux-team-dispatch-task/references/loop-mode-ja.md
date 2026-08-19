@@ -12,6 +12,10 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 
 ロックが生きている場合は開始しない。`--loop` 指定が無い自然言語発動だけは、ここより前に「ループを開始するか」の一問を確認する。
 
+`--loop` は `--override` とも排他である。これは方針ではなく構造上の制約で、
+`--override` はタスクごとに質問を出すのに対し、無人の issue ループには答える人がいない。
+ループ実行は常に解決済みの設定をそのまま使う。
+
 ## L1: 開始前の一括設定（3 コール）
 
 この設定は `AskUserQuestion` の一回あたり最大四問という制限に合わせ、必ず次の三コールで取得する。コール③の最終確認を通過したら、設定を `loop-state.json.config` と `.filter` に保存し、ループ終了まで追加の質問はしない。
