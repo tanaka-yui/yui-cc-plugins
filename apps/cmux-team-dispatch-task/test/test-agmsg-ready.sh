@@ -141,6 +141,129 @@ out=$(env -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID AGMSG_STUB_MODE=silent-ex
       bash "$GUARD" --type claude-code --name ar-$$-15c 2>/dev/null)
 grep -q '|- ' "$AGMSG_STUB_LOG" && bad 'AR15 must not pass the "-" sentinel'
 
+start_fixture() {  # <instance_id> <sid> <project> <type> [<name>] → pid を FIXTURE_PIDS へ
+  local iid="$1"; shift
+  AGMSG_STUB_INSTANCE_ID="$iid" AGMSG_STUB_MODE=alive \
+    nohup bash "$AGMSG_DIR/watch.sh" "$@" </dev/null >/dev/null 2>&1 &
+  local p=$!
+  FIXTURE_PIDS+=("$p")
+  printf '%s\n' "$p" > "$AGMSG_READY_DIR/watch.$iid.pid"
+  sleep 0.3
+  printf '%s' "$p"
+}
+
+# --- AR3: 自セッション・composite・名前一致 → existing ---
+reset_case
+start_fixture "s3.111" s3 /p claude-code "ar-$$-3" >/dev/null
+: > "$AGMSG_STUB_LOG"
+CLAUDE_CODE_SESSION_ID=s3 run_guard --type claude-code --name "ar-$$-3"; out="$GUARD_OUT"; assert_line "$out"
+[[ "$out" == *"watcher=existing"* ]] || bad 'AR3 existing'
+grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR3 must not launch a new watcher'
+
+# --- AR3i: existing を返しても既存 watcher を kill しない ---
+existing_pid=$(cat "$AGMSG_READY_DIR/watch.s3.111.pid")
+kill -0 "$existing_pid" 2>/dev/null || bad 'AR3i the existing watcher was killed'
+ls "$AGMSG_READY_DIR"/ready.* >/dev/null 2>&1 || bad 'AR3i the sentinel was removed'
+
+# --- AR3d: 同一セッション・別ロール → existing-other ---
+reset_case
+start_fixture "s3d.111" s3d /p claude-code "ar-$$-3d-claude" >/dev/null
+: > "$AGMSG_STUB_LOG"
+CLAUDE_CODE_SESSION_ID=s3d run_guard --type claude-code --name "ar-$$-3d"; out="$GUARD_OUT"
+[[ "$out" == *"watcher=existing-other"* ]] || bad 'AR3d existing-other'
+grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR3d must not launch'
+
+# --- AR3e: broad ($# 3) → existing-other ---
+reset_case
+start_fixture "s3e.111" s3e /p claude-code >/dev/null
+: > "$AGMSG_STUB_LOG"
+CLAUDE_CODE_SESSION_ID=s3e run_guard --type claude-code --name "ar-$$-3e"; out="$GUARD_OUT"
+[[ "$out" == *"watcher=existing-other"* ]] || bad 'AR3e broad'
+
+# --- AR3c: 別セッションの同名は候補にせず起動する ---
+reset_case
+start_fixture "other.111" other /p claude-code "ar-$$-3c" >/dev/null
+: > "$AGMSG_STUB_LOG"
+CLAUDE_CODE_SESSION_ID=s3c AGMSG_STUB_MODE=held run_guard --type claude-code --name "ar-$$-3c"; out="$GUARD_OUT"
+[[ "$out" == *"reason=held-by-other-session"* ]] || bad 'AR3c must attempt and report held'
+grep -q 'drop' "$TMP/stderr.txt" || bad 'AR3c recovery hint'
+
+# --- AR3j: bare は候補にせず起動する。bare は kill しない ---
+reset_case
+bare_pid=$(start_fixture "s3j" s3j /p claude-code "ar-$$-3j")
+: > "$AGMSG_STUB_LOG"
+CLAUDE_CODE_SESSION_ID=s3j AGMSG_STUB_MODE=silent-exit run_guard --type claude-code --name "ar-$$-3j"; out="$GUARD_OUT"
+grep -q 'watch.sh' "$AGMSG_STUB_LOG" || bad 'AR3j must launch despite the bare candidate'
+kill -0 "$bare_pid" 2>/dev/null || bad 'AR3j must not kill the bare watcher'
+grep -q 'bare instance id' "$TMP/stderr.txt" || bad 'AR3j hint'
+
+# --- AR3k: --name codex が型引数へ誤ヒットしない ---
+reset_case
+start_fixture "s3k.111" s3k /p codex >/dev/null
+: > "$AGMSG_STUB_LOG"
+CODEX_THREAD_ID=s3k run_guard --type codex --name codex; out="$GUARD_OUT"
+[[ "$out" == *"watcher=existing-other"* ]] || bad 'AR3k name slot must be positional'
+
+# --- AR4: 候補の pid が死んでいれば起動する ---
+reset_case
+printf '%s\n' 999999 > "$AGMSG_READY_DIR/watch.s4.111.pid"
+: > "$AGMSG_STUB_LOG"
+CLAUDE_CODE_SESSION_ID=s4 AGMSG_STUB_MODE=silent-exit run_guard --type claude-code --name "ar-$$-4"; out="$GUARD_OUT"
+grep -q 'watch.sh' "$AGMSG_STUB_LOG" || bad 'AR4 must launch when the candidate pid is dead'
+
+# --- AR3h: 候補ゼロなら ps が空でも起動する ---
+reset_case
+mkdir -p "$TMP/nops"; printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/nops/ps"; chmod +x "$TMP/nops/ps"
+: > "$AGMSG_STUB_LOG"
+PATH="$TMP/nops:$PATH" CLAUDE_CODE_SESSION_ID=s3h AGMSG_STUB_MODE=silent-exit \
+      run_guard --type claude-code --name "ar-$$-3h"
+out="$GUARD_OUT"
+grep -q 'watch.sh' "$AGMSG_STUB_LOG" || bad 'AR3h must launch when there is no candidate'
+
+# --- AR3g: 候補があり ps が空 → existing-other ---
+reset_case
+start_fixture "s3g.111" s3g /p claude-code "ar-$$-3g" >/dev/null
+: > "$AGMSG_STUB_LOG"
+PATH="$TMP/nops:$PATH" CLAUDE_CODE_SESSION_ID=s3g run_guard --type claude-code --name "ar-$$-3g"; out="$GUARD_OUT"
+[[ "$out" == *"watcher=existing-other"* ]] || bad 'AR3g'
+grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR3g must not launch'
+
+# --- AR5: 生きた owner の sentinel を消さない / 死んだものは消す ---
+reset_case
+enc=$(bash -c "source '$SD/agmsg-path.sh'; agmsg_encode_component 'ar-$$-5'")
+printf 'alive.1\n' > "$AGMSG_READY_DIR/ready.t__$enc"
+printf '%s\n' "$$" > "$AGMSG_READY_DIR/watch.alive.1.pid"
+CLAUDE_CODE_SESSION_ID=s5 AGMSG_STUB_MODE=silent-exit run_guard --type claude-code --name "ar-$$-5"
+[[ -f "$AGMSG_READY_DIR/ready.t__$enc" ]] || bad 'AR5 must keep a sentinel whose pidfile pid is alive'
+reset_case
+printf 'dead.1\n' > "$AGMSG_READY_DIR/ready.t__$enc"
+CLAUDE_CODE_SESSION_ID=s5b AGMSG_STUB_MODE=silent-exit run_guard --type claude-code --name "ar-$$-5"
+[[ -f "$AGMSG_READY_DIR/ready.t__$enc" ]] && bad 'AR5 must remove a sentinel with no pidfile'
+
+# --- AR3b: argv[0]/argv[1] が watch.sh でないプロセスは候補にしない ---
+reset_case
+nohup /bin/sh -c "sleep 300 # $AGMSG_DIR/watch.sh s3b /p claude-code ar-$$-3b" </dev/null >/dev/null 2>&1 &
+FIXTURE_PIDS+=($!)
+printf '%s\n' "$!" > "$AGMSG_READY_DIR/watch.s3b.111.pid"
+sleep 0.3; : > "$AGMSG_STUB_LOG"
+CLAUDE_CODE_SESSION_ID=s3b AGMSG_STUB_MODE=silent-exit run_guard --type claude-code --name "ar-$$-3b"
+grep -q 'watch.sh' "$AGMSG_STUB_LOG" || bad 'AR3b wrapper shell must not count as a candidate'
+
+# --- AR4b: EPERM を生存として扱う ---
+reset_case
+mkdir -p "$TMP/eperm"
+cat > "$TMP/eperm/kill" <<'STUB'
+#!/usr/bin/env bash
+# -0 は必ず "not permitted" で失敗させる (EPERM のシミュレーション)
+if [[ "${1:-}" == "-0" ]]; then echo "kill: ($2) - Operation not permitted" >&2; exit 1; fi
+exec /bin/kill "$@"
+STUB
+chmod +x "$TMP/eperm/kill"
+start_fixture "s4b.111" s4b /p claude-code "ar-$$-4b" >/dev/null
+: > "$AGMSG_STUB_LOG"
+PATH="$TMP/eperm:$PATH" CLAUDE_CODE_SESSION_ID=s4b run_guard --type claude-code --name "ar-$$-4b"
+grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR4b EPERM must be treated as alive'
+
 # --- AR17: エンコードのゴールデンベクタ ---
 # shellcheck disable=SC1091
 source "$SD/agmsg-path.sh"
