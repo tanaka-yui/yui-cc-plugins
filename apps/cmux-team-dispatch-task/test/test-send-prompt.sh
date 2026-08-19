@@ -505,4 +505,51 @@ fi
 make_stubs
 SCREEN_FIXTURE="$TMP/screen-empty.txt"
 
+# --- SP25: sentinel パスが %XX エンコードされる ---
+SP25_TMP=$(mktemp -d)
+mkdir -p "$SP25_TMP/run" "$SP25_TMP/outbox"
+# watch.sh が作るのと同じ綴りで sentinel を置く（空白 → %20）
+: > "$SP25_TMP/run/ready.dispatch-my%20repo__reviewer"
+: > "$SP25_TMP/agmsg-send.log"
+cat > "$SP25_TMP/send.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$AGMSG_SEND_LOG"
+STUB
+chmod +x "$SP25_TMP/send.sh"
+cat > "$SP25_TMP/cmux" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$SP25_TMP/cmux"
+CMUX_BIN="$SP25_TMP/cmux" AGMSG_SEND="$SP25_TMP/send.sh" \
+AGMSG_SEND_LOG="$SP25_TMP/agmsg-send.log" AGMSG_READY_DIR="$SP25_TMP/run" \
+bash "$BIN" --to-surface s1 --agmsg-team 'dispatch-my repo' --agmsg-to reviewer \
+  --agmsg-from parent --label t --outbox-dir "$SP25_TMP/outbox" -- hello >/dev/null 2>&1
+if grep -q 'reviewer' "$SP25_TMP/agmsg-send.log"; then
+  echo "PASS SP25: encoded sentinel path was found (inbox record succeeded)"
+else
+  echo "FAIL SP25: encoded sentinel path was not found (inbox record skipped)"; fail=1
+fi
+rm -rf "$SP25_TMP"
+
+# --- SP26: agmsg-path.sh が無くても die しない ---
+SP26_TMP=$(mktemp -d)
+mkdir -p "$SP26_TMP/scripts" "$SP26_TMP/run" "$SP26_TMP/outbox"
+cp "$BIN" "$SP26_TMP/scripts/send-prompt.sh"   # lib を持たないディレクトリへ複製
+cat > "$SP26_TMP/cmux" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$SP26_TMP/cmux"
+CMUX_BIN="$SP26_TMP/cmux" AGMSG_READY_DIR="$SP26_TMP/run" \
+bash "$SP26_TMP/scripts/send-prompt.sh" --to-surface s1 --label t \
+  --outbox-dir "$SP26_TMP/outbox" -- hello >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+  echo "PASS SP26: send-prompt.sh did not die without agmsg-path.sh"
+else
+  echo "FAIL SP26: send-prompt.sh died without agmsg-path.sh (rc=$rc)"; fail=1
+fi
+rm -rf "$SP26_TMP"
+
 exit $fail

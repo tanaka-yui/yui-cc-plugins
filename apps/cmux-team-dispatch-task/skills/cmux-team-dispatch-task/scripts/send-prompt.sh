@@ -28,6 +28,25 @@ CMUX_BIN="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
 AGMSG_SEND="${AGMSG_SEND:-$HOME/.agents/skills/agmsg/scripts/send.sh}"
 AGMSG_READY_DIR="${AGMSG_READY_DIR:-$HOME/.agents/skills/agmsg/run}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# sentinel パスのエンコードは agmsg-path.sh に一本化している。読めない場合でも
+# die しない — send-prompt.sh の die は唯一の wake 手段の喪失を意味するため、
+# 生連結へフォールバックして配送だけは必ず行う。
+if [[ -r "$SCRIPT_DIR/agmsg-path.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/agmsg-path.sh"
+fi
+
+# ready sentinel のパスを返す。agmsg-path.sh を読めていればエンコード、
+# 読めていなければ従来どおりの生連結。
+resolve_ready_path() {
+  if declare -F agmsg_ready_path >/dev/null 2>&1; then
+    agmsg_ready_path "$AGMSG_READY_DIR" "$1" "$2"
+  else
+    printf '%s/ready.%s__%s' "$AGMSG_READY_DIR" "$1" "$2"
+  fi
+}
+
 die() { echo "send-prompt: $1" >&2; exit 2; }
 fail() { echo "send-prompt: $1" >&2; exit 1; }
 
@@ -143,7 +162,7 @@ DELIVERY_RC=$?
 # 固まると、唯一の wake 手段であるタイプ入力に到達できず dispatch がデッドロックする。
 # 記録は単なるログで受信側にも重複を無視させているため、後回しにしても失うものは無い。
 if [[ -n "$TEAM" && -n "$TO_AGENT" && -n "$FROM_AGENT" ]] \
-   && [[ -f "$AGMSG_READY_DIR/ready.${TEAM}__${TO_AGENT}" ]]; then
+   && [[ -f "$(resolve_ready_path "$TEAM" "$TO_AGENT")" ]]; then
   bash "$AGMSG_SEND" "$TEAM" "$FROM_AGENT" "$TO_AGENT" "$TEXT" \
     || echo "send-prompt: agmsg record failed (non-fatal, the typed delivery already happened)" >&2
 fi
