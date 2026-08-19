@@ -829,7 +829,7 @@ die "codex reviewer runner '<name>' requires review_model"
 | M1 が `'` を含む名前を除外 | `runner <name> contains a single quote and cannot be edited here; edit runners.json by hand` | `runner <name> は名前に ' を含むためここでは編集できません。runners.json を手で編集してください` |
 | M1 が engine 不明の runner を除外 | `runner <name> has no usable engine and cannot be edited here` | `runner <name> は engine が不明なためここでは編集できません` |
 | effort "Other" が範囲外 | `<value> is not a valid effort for the <engine> engine` | `<value> は <engine> engine の effort として不正です` |
-| model "Other" が拒否条件に触れた | `<value> contains a character that cannot be used in a model name` | `<value> はモデル名に使えない文字を含みます` |
+| model "Other" が拒否条件に触れた | `<value> cannot be used as a model name (it is empty, padded with whitespace, or contains a shell metacharacter or a control character)` | `<value> はモデル名に使えません（空・前後に空白・シェルメタ文字・制御文字のいずれか）` |
 | S6 の警告リスト見出し | `Warnings:` | `警告:` |
 
 - **effort の "Other"** — engine 別 allowlist と照合する。範囲外なら警告して
@@ -838,7 +838,9 @@ die "codex reviewer runner '<name>' requires review_model"
   `--override` のように黙って既定へフォールバックすると「入力した値と違う値が
   保存される」ことになり、あとから気づけない。
 - **model の "Other"** — モデル名としては検証しないが、§1.3 の拒否条件
-  （空白のみ / 5 つのシェルメタ文字 / `[[:cntrl:]]`）は適用される。違反したら警告して
+  （空 / 空白のみ / **前後に空白を持つ値** / 5 つのシェルメタ文字 / `[[:cntrl:]]`）は
+  適用される。**内部の空白は通る**（`opus 1m` は受理される。値は層 2 / 3 で必ず引用の
+  内側に置かれ、§2.6 が記述例の単一引用を規約化しているので引数が割れる経路は無い）。違反したら警告して
   その 1 問だけを再質問する（1 回まで。effort と対称）。**この事前チェックが
   §1.3.1 の層 1（S7 のコマンドライン）を守る唯一のガードである** — スクリプト側の
   deny-list はシェルの後ろにあるので層 1 には届かない。**この拒否条件は
@@ -944,7 +946,7 @@ stale になる節が漏れる）。**この表が SoT** であり、件数の�
 | 〃 | ``### S3. `runners.json` (only when it is a target)`` | 4 択（§2.3 の EN ラベル）と到達不能リスト |
 | 〃 | `### S3-M`（新設） | S3-M 本体。下位見出しは `####`。**英日で個数・順序・見出し名（下記の 8 個）を一致させる** |
 | 〃 | S3-M 内の候補プール表 | claude / codex の `*_effort` **2 行を逐語**で持つ（SU12 のアンカー）。ヘッダと `codex *_model` セルは英語 |
-| 〃 | S3-M 内の `*_model` 拒否条件 | 空白のみ / `'` `"` `` ` `` `$` `\` / `[[:cntrl:]]` を拒否する旨。**限定句を下記の逐語文で添える**（§1.3.1） |
+| 〃 | S3-M 内の `*_model` 拒否条件 | 空 / 空白のみ / **前後に空白を持つ値** / `'` `"` `` ` `` `$` `\` / `[[:cntrl:]]` を拒否する旨（**内部の空白は通る**）。**限定句を下記の逐語文で添える**（§1.3.1） |
 | 〃 | `### S6. Preview and confirm` | 2 ファイル分のプレビューと `Warnings:` |
 | 〃 | `### S7. Write` | **挿入であり置換ではない**（§2.6 の温存表の逐語 3 文を維持） |
 | 〃 | `## All writes go through \`config-edit.sh\`` | **改題 ＋ `runners-edit.sh` の I/F 段落を追記**（下記 3.1） |
@@ -1072,8 +1074,15 @@ read without writing まで）と同じ粒度で `runners-edit.sh` を書く。�
 - **`mktemp "$RUNNERS.XXXXXX"`**（逐語）。既存本文の `mktemp "$CONFIG.XXXXXX"` と
   同じ形。**SU11 の needle はこの文字列**にする（`runners.json.XXXXXX` にすると、
   `--runners` が任意パスを取る以上 doc と実装が食い違う）。
+- **フラグの列挙は次の 1 文を逐語で置く**（SU11 の needle。7 フラグのうち
+  `--set` / `--unset` / `--get` / `--show` は既存の `config-edit.sh` 例文にも現れるため、
+  個別 grep では「I/F 段落から落ちたが他所に在る」を検出できない）:
+  `runners-edit.sh takes --runners and --name, then one of --set / --unset (optionally with --dry-run), --get, or --show.`
 - exit code 0 / 1 / 2 の意味と、置換ではなくマージすること。
 - `exits 2 when the file is absent` と `First-run setup`。**SU11 の needle。**
+- **§1.4 が「文書化のみ」と決めた 3 つの既存挙動**を次の 1 文で逐語で置く（SU11 の needle。
+  文書化が唯一の緩和策なので、書かれなければ緩和策が存在しないのと同じ）:
+  `The write is last-write-wins, replaces a symlink with a regular file, and leaves the temp file's mode on the result.`
 
 **追記する段落では、`runners-edit.sh` を含む行に `--config` を書かない。** 2 スクリプトを
 対比するなら行を分ける。SU14 の逆方向は code fence 内に限定されているので散文の対比は
@@ -1146,11 +1155,13 @@ SU8 は見出し数しか見ないので片方だけ改題しても緑になる 
 | RE9d | **順序の直接検証。** `chmod 555` の親に置いた既存 `runners.json` に対し **effort 検証エラー**と**未知 `--name`** を実行し、**exit 2** を assert する。誤った順序（mktemp が検証より前）の実装は mktemp が Permission denied で落ちて rc=1 になる。**残骸ゼロではなく exit code が順序の観測窓である。** `*_model` 検証エラーは**正のコントロールとして**同時に流すが、この検証は手順 0（引数パース）にあるため mktemp を手順 0 直後に置いた誤実装でも rc=2 になる — **順序の観測窓ではない**。RE9c と同じ root ガードと `chmod` 復元を行う |
 | RE9e | **`--dry-run` の no-mktemp 規則と、読み取りモードの no-mktemp。** `chmod 555` の親で `--dry-run` を実行し、**exit 0 かつ正しいレコードを stdout へ出す**ことを assert する。mktemp する実装はここで落ちる。**同じフィクスチャで `--show --name` と `--get` も exit 0 で正しい出力**を assert する（mktemp を読み取りモード dispatch より前に置いた実装は RE9d も dry-run も通過するが、S1 の `--show` が rc=1 になる。§1.5 は S1 の読み取りを load-bearing にしている）。RE9c と同じ root ガードと `chmod` 復元を行う |
 | RE10 | `--get` / `--show` は非破壊。フィールド未設定は空文字で exit 0。**ファイル不在時も `--get` は空 + exit 0、`--show` は `{}` + exit 0**。**`--show --name <未登録名>` と `--get --name <未登録名>` はどちらも exit 2**（フィールド未設定の exit 0 と区別する）。**破損 JSON に対する `--get` / `--show` はどちらも exit 1**（`{}` + exit 0 に倒れると §2.3 の破損ガードが発火しなくなる） |
-| RE11 | 引数エラーはすべて exit 2: モードの同時指定 / モード未指定 / `--runners` 未指定 / `--set` を `--name` 無し / `--get` を `--name` 無し / `--set` が `<field>=<value>` 形式でない / 同一フィールドへの `--set` と `--unset` の同時指定 |
+| RE11 | 引数エラーはすべて exit 2: モードの同時指定 / モード未指定 / `--runners` 未指定 / `--set` を `--name` 無し / `--get` を `--name` 無し / `--set` が `<field>=<value>` 形式でない / 同一フィールドへの `--set` と `--unset` の同時指定（**順序を問わない。両方向を検査する**）/ **同一フィールドへの `--set` の重複** / **同一フィールドへの `--unset` の重複** / **`--runners` の重複** / **`--name` の重複** / **`--get` の重複** |
 | RE12 | 編集対象レコード内の allowlist 外フィールドが生存する（置換ではなくマージ） |
 | RE13 | **書き込みモードで** `--runners` が存在しないファイルを指すと exit 2。**かつ親ディレクトリを作らない**（`--runners "$TMP/nodir/runners.json"` に対し `[[ ! -d "$TMP/nodir" ]]`。`config-edit.sh:154` からの `mkdir -p` 写経を検出する）。読み取りモードの不在は RE10 |
 | RE14a | **注入・拒否側**: `--set 'plan_model=a", "command": "pwned'` → exit 2 **かつ** `cmp` でファイルがバイト同一。**このケースは逸脱分岐に依存する**（撤回すると期待値が変わる。撤回表を参照） |
-| RE14b | **注入・往復側**: シェルメタ文字を含まないが **jq 構文として意味を持つ**値を実際に書き込む。`--set 'plan_model=opus[1m]'`（`[` `]` は jq の添字構文）で exit 0 + 完全一致往復 + `.command` / `.engine` / `.name` 不変 + 他 runner と `default` 不変。素朴な無引用補間 `.plan_model = $VALUE` は jq 構文エラーで落ちるので確実に検出できる。**逸脱分岐を採っても採らなくても弁別力が残る唯一のケース** |
+| RE14b | **注入・往復側**: シェルメタ文字を含まないが **jq 構文として意味を持つ**値を実際に書き込む。`--set 'plan_model=fable[1m]'`（`[` `]` は jq の添字構文。**フィクスチャの現在値
+`opus[1m]` とは必ず違える** — 同値だと `--set` を no-op にする変異体でも PASS してしまい
+「完全一致往復」が証明できない）で exit 0 + 完全一致往復 + `.command` / `.engine` / `.name` 不変 + 他 runner と `default` 不変。素朴な無引用補間 `.plan_model = $VALUE` は jq 構文エラーで落ちるので確実に検出できる。**逸脱分岐を採っても採らなくても弁別力が残る唯一のケース** |
 | RE15 | **書き込みモード、または `--name` 付き読み取りで** `.runners` 欠落 / `null` / 非配列（オブジェクト）に対して **exit 2**（exit 1 では不可）かつファイル無変更。特にオブジェクトが配列へ化けないこと。**`{"runners":[1,2]}`（配列だが要素が非オブジェクト）も exit 2**（型安全 select が無いと手順 4 の jq が `Cannot index number with string` で **rc=5** を返す）。`--name` 無しの `--show` は素通しで exit 0 |
 | RE16 | `--name` が 2 件一致する（重複 name）レジストリでは exit 2 かつファイル無変更。**隣接ケース（3 モード分）**: `a"b$c` のような `"` / `$` を含む runner 名で、(1) `--set` が成功し当該レコードだけが更新される、(2) **`--get` が正しい値を返す**、(3) **`--show --name` が正しいレコードを返す**。`--name` を jq 式へ補間する実装は、`x") , {leak: $ENV.SECRET_TOKEN} , ("` 相当の名前で環境変数を rc=0 のまま吐く（手順 4 / 6 が補間で書かれても RE1-RE20 の他は全部緑になる） |
 | RE17 | `engine` 欠落レコード / `engine: gemini` に `--set plan_effort=high` → exit 2 かつファイル無変更。**一方 `--unset plan_effort` は同じレコードでも exit 0**（engine 検証は `--set <*_effort>` 専用） |
@@ -1190,11 +1201,11 @@ SU15 の `####` 個数・下限・順序 / SU16 の行順の 4 つは、**生フ
 | id | 対象 | needle（逐語） |
 |---|---|---|
 | SU10 | `setup-mode.md` | `S3-M` / 6 フィールド名 / `edit an existing runner's models and efforts`（S3 選択肢 2）/ `keep (` / `back to the default (` / `unset it (not review-capable)` / `unset (not review-capable)` / `no longer be chosen as the reviewer` / **`it is the current review_runner`**（3 段防御 (c) の S6 警告）/ **`contains a single quote`**（M1 の `'` 除外警告）/ `gpt-5.6-sol` / `the role keys only` / **`pick option 2 or 3 to reach them`**（S2 選択肢 1 の description。`the role keys only` は改訂前の現物に既にあるので、これが無いと §2.2 の変更が 1 文字も入らなくても緑になる）/ `mkdir -p .dispatch` / `shadows the global layer` / `[[:cntrl:]]` / `only through option 2`（§3.0.1 の限定句） |
-| SU11 | `setup-mode.md` | `runners-edit.sh` / `mktemp "$RUNNERS.XXXXXX"` / `exits 2 when the file is absent` / `First-run setup` |
+| SU11 | `setup-mode.md` | `runners-edit.sh` / `mktemp "$RUNNERS.XXXXXX"` / `exits 2 when the file is absent` / `First-run setup` / `runners-edit.sh takes --runners and --name` / `last-write-wins`。**加えて改題そのもの**: `## All field-level writes go through the edit scripts` が**存在し**、旧見出し ``## All writes go through `config-edit.sh`​`` が**存在しない**こと（needle は I/F 段落が持つので改題の有無と独立してしまう。改題を落としても全ゲートが緑になる穴を塞ぐ） |
 | SU12 | `setup-mode.md` **と** `setup-mode-ja.md` の**両方** | 候補プール 2 行のアンカー（下記レシピ） |
 | SU13 | `SKILL.md` と `guide-ja.md` | 両方が `runners-edit.sh` を**名指し**している |
 | SU14 | `runners-edit.sh` と `setup-mode.md` | 存在・`-x`・引数なしで usage + exit 2。**双方向の I/F 整合**（下記） |
-| SU15 | `setup-mode-ja.md`（(1) の個数比較のみ `setup-mode.md` も読む） | 6 フィールド名 / `S3-M` / `登録済み runner の model / effort を編集` / `変更なし（現在:` / `既定に戻す（` / `未設定（レビュアーに選べません）` / `未設定に戻す（レビュアーに選べません）` / `レビュアーに選べなくなります` / **`現在の review_runner なので`** / **`名前に ' を含むため`** / `gpt-5.6-sol` / `役割キーのみ` / **`2 か 3 を選ぶと到達できます`**（同上）/ `mkdir -p .dispatch` / `グローバルより優先されることをユーザーに伝える` / `選択肢 2 経由のみ` / **`runners-edit.sh`** / **`mktemp "$RUNNERS.XXXXXX"`**（識別子なので JA 側も同一文字列。§3.1 の改題・限定文・I/F 段落が JA 側に入ったことをこの 2 つで担保する — SU8 は見出し数しか見ないので片方だけ改題しても緑になる）。**加えて `####` について 3 点**: (1) 個数が `setup-mode.md` と一致、(2) 両方とも 6 個以上（パリティだけだと両方 0 個で緑になり、S3-M の小節構造が丸ごと欠けても検出できない）、(3) **§3.0.1 の 8 見出しが英日それぞれ「その順序で」出現する**（`grep -n` で行番号を取り、昇順であることを assert する） |
+| SU15 | `setup-mode-ja.md`（(1) の個数比較のみ `setup-mode.md` も読む） | 6 フィールド名 / `S3-M` / `登録済み runner の model / effort を編集` / `変更なし（現在:` / `既定に戻す（` / `未設定（レビュアーに選べません）` / `未設定に戻す（レビュアーに選べません）` / `レビュアーに選べなくなります` / **`現在の review_runner なので`** / **`名前に ' を含むため`** / `gpt-5.6-sol` / `役割キーのみ` / **`2 か 3 を選ぶと到達できます`**（同上）/ `mkdir -p .dispatch` / `グローバルより優先されることをユーザーに伝える` / `選択肢 2 経由のみ` / **`選択肢 1 / 3 の First-run setup は値を検証しない`** / **`runners-edit.sh`** / **`mktemp "$RUNNERS.XXXXXX"`**（識別子なので JA 側も同一文字列。§3.1 の改題・限定文・I/F 段落が JA 側に入ったことをこの 2 つで担保する — SU8 は見出し数しか見ないので片方だけ改題しても緑になる）。**加えて改題そのもの**: `## フィールド単位の書き込みは全て edit スクリプトを通す` が**存在し**、旧見出し ``## 書き込みは全て `config-edit.sh` を通す`` が**存在しない**こと。**さらに `####` について 3 点**: (1) 個数が `setup-mode.md` と一致、(2) 両方とも 6 個以上（パリティだけだと両方 0 個で緑になり、S3-M の小節構造が丸ごと欠けても検出できない）、(3) **§3.0.1 の 8 見出しが英日それぞれ「その順序で」出現する**（`grep -n` で行番号を取り、昇順であることを assert する） |
 | SU16 | `setup-mode.md` / `setup-mode-ja.md` | §2.6 温存表の逐語 3 文（英日それぞれ。平坦化テキストに対して `grep -F`）。**加えて S7 節内の呼び出し順**（下記） |
 
 **SU12 のレシピ**（重要）: 両ファイルには **claude 行に正当な `max` が現れる**ので、
@@ -1340,7 +1351,8 @@ echo "residue: $residue"
 タスク指示は「**Model strings are NOT validated.** Offer the common claude aliases
 … but let any string through.」と述べている。本設計はこの意図（**モデル名の
 allowlist を作らない** = 新しいモデル名がそのまま通る）を守るが、
-**空白のみ・5 つのシェルメタ文字・制御文字だけは拒否する**（§1.3 / §1.3.1）。
+**空 / 空白のみ / 前後に空白を持つ値 / 5 つのシェルメタ文字 / 制御文字だけは拒否する**
+（§1.3 / §1.3.1。内部の空白は通る）。
 
 理由: `--setup` は値を `runners.json` へ永続化し、それが 3 層のシンク（S7 の
 コマンドライン / bash の runner script 行 / `zsh -ic`）を通って以後の全ディスパッチに
@@ -1366,7 +1378,7 @@ allowlist を作らない** = 新しいモデル名がそのまま通る）を�
 | 9 | §2.6 のクォート規約の相互参照 | 参照先を §1.3.1 から #4 の残置要件へ差し替える |
 | 10 | §3 同期表の「S3-M（`*_model` の拒否条件）」行と §3.0.1 (1) の逐語文 2 本 | `'` 限定へ縮小 |
 | 11 | SU10 の `[[:cntrl:]]` / `only through option 2` needle、SU15 の `選択肢 2 経由のみ` | 削除または `'` 限定へ |
-| 12 | **RE4** | **`'` のみへ縮小してはならない。** 撤回後の正しい期待値は「**空文字 / 空白のみ → exit 2**（#2 のとおり条件 1 は残る）」「**`'` `"` `` ` `` `$` `\` / ESC → exit 0 かつ完全一致往復**」である。`'` の拒否は §2.4 の LLM 側事前チェックへ移るので、**スクリプト単体テストである RE4 が `'` → exit 2 を assert すると赤くなる** |
+| 12 | **RE4** | **`'` のみへ縮小してはならない。** 撤回後の正しい期待値は「**空文字 / 空白のみ / 前後に空白を持つ値 → exit 2**（#2 のとおり条件 1 は残る）」「**`'` `"` `` ` `` `$` `\` / ESC → exit 0 かつ完全一致往復**」である。`'` の拒否は §2.4 の LLM 側事前チェックへ移るので、**スクリプト単体テストである RE4 が `'` → exit 2 を assert すると赤くなる** |
 | 13 | **RE14a** | **期待値が反転する** — `exit 2` + `cmp` バイト同一ではなく、`exit 0` + `.plan_model` がペイロードとリテラル一致 + `.command` / `.engine` / `.name` 不変 + 他 runner と `default` 不変 に書き換える |
 | 14 | 「明示的に採らなかった対策」の該当 2 行、リスク表の「親セッションのシェル注入（§1.3.1 の層 1）」行、リスク表の「deny-list が `"` `\` `$` を弾く限り引用付き補間は悪用不能なので追加テストは要らない」という結論、および本節 | 参照先が消えるので層 1 の説明の移動先（#3 で §2.6 へ移す）を指すよう直すか削除する。**引用付き補間の結論も撤回対象** — 撤回すると `"` が通るので、値の引用付き補間を弁別するテストを 1 件足す必要がある |
 
