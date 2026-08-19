@@ -1601,11 +1601,17 @@ execute モードのプロンプトテキスト: `Read and execute the plan at <
 | engine | MODE        | 組み立てコマンド |
 |--------|-------------|----------------|
 | claude | plan        | `<command> [--model <plan_model>] [--effort <plan_effort>] --dangerously-skip-permissions '/plan <PROMPT>'` |
-| claude | superpowers | `<command> [--model <plan_model>] [--effort <plan_effort>] '<PROMPT>'` |
+| claude | superpowers | `<command> [--model <plan_model>] [--effort <plan_effort>] [--dangerously-skip-permissions] '<PROMPT>'` |
 | claude | execute     | `<command> [--model <exec_model>] [--effort <exec_effort>] [--dangerously-skip-permissions] '<EXEC_PROMPT>'` |
 | codex  | plan        | `<command> [-c model_reasoning_effort='<plan_effort>'] [--model <plan_model>] --dangerously-bypass-approvals-and-sandbox '/plan <PROMPT>'` |
-| codex  | superpowers | `<command> [-c model_reasoning_effort='<plan_effort>'] [--model <plan_model>] '$superpowers:brainstorming <PROMPT>'` |
+| codex  | superpowers | `<command> [-c model_reasoning_effort='<plan_effort>'] [--model <plan_model>] --dangerously-bypass-approvals-and-sandbox '$superpowers:brainstorming <PROMPT>'` |
 | codex  | execute     | `<command> [-c model_reasoning_effort='<exec_effort>'] [--model <exec_model>] --dangerously-bypass-approvals-and-sandbox '<EXEC_PROMPT>'` |
+| codex  | review      | `<command> [-c model_reasoning_effort='<review_effort>'] --model <review_model> --sandbox workspace-write -c approval_policy='never' --add-dir <STATUS_DIR>` |
+
+上表の 2 つの `[--dangerously-skip-permissions]` はどちらも条件付きだが、条件は同じではない。
+`execute` 行のそれは、呼び出し元が要求したとき（`--skip-permissions`、または claude engine での
+`--unattended`）か、後述の settings 読み直しが失敗したときに現れる。`superpowers` 行のそれは
+読み直しの条件だけで、その組み立て箇所は `--skip-permissions` をそもそも読まない。
 
 reasoning effort は両 engine とも **明示 `--effort` > runner フィールド（plan_effort:
 plan/superpowers、review_effort: review、exec_effort: execute/standby）> 上表の既定値（plan/review
@@ -1619,10 +1625,28 @@ plan/superpowers、review_effort: review、exec_effort: execute/standby）> 上�
 MODE によらず、解決された runner engine が `claude` のときは worktree の
 `.claude/settings.local.json` に `permissions.defaultMode: "bypassPermissions"` を
 注入する（`jq` でマージし、`mktemp` + `mv` でアトミックに置換。既に同値なら
-スキップ）。これが、すべての起動経路に `--dangerously-skip-permissions` を足すことなく
-通常（非 loop）ディスパッチから permission prompt を消している仕組み。
+スキップ）。これが、権限フラグを自前で持たない起動経路 — `superpowers` と、`--skip-permissions`
+無しで起動する `execute` / `standby` / `review` ペイン — から通常（非 loop）ディスパッチの
+permission prompt を消している仕組み。実際の主役は prewarm の設計ペインで、Phase B の
+executor も claude のレビューペインも常にフラグ付きで spawn される。loop 経路は
+`--unattended` で別途保証される。
 
-このモードでも `AskUserQuestion` は対話的なまま残る。permission システムが門番をするのは
+注入はベストエフォートで、しかも戻り値は信用できない。`settings.local.json` が
+たまたまディレクトリだったとき、アトミックな `mv` は temp をその中へ移動したうえで
+成功を報告するからである。そのため launcher は `jq -e` でファイル自体を判定する。その時点で
+`permissions.defaultMode` が厳密に `bypassPermissions` でなければ — マージを書き込めなかった、
+既存の `settings.local.json` が不正な JSON で `jq` に拒否された、あるいは上記の
+ディレクトリのケース — `permission bypass not confirmed` を含む警告を出し、その launch に
+`--dangerously-skip-permissions` を足す。二重付与は起きない。`plan` は組み立て箇所で
+既にリテラルを持っており、`execute` / `standby` / `review` は呼び出し元が実際に
+`--skip-permissions` を渡していたときは足さないからである。`superpowers` だけは例外で、
+組み立て箇所がそもそも `--skip-permissions` を読まないため常にフォールバックが付く。
+上の表の `superpowers` 行の `[--dangerously-skip-permissions]` が `execute` 行のそれより
+狭い条件しか持たないのはこのためである。フォールバックが無いと、設計ペインだけが
+第二の防壁を持たない claude ペインとなり、誰も見ていない状態で最初の permission prompt に
+当たって停止する。
+
+`bypassPermissions` の下でも `AskUserQuestion` は対話的なまま残る。permission システムが門番をするのは
 ツール呼び出しであり、`AskUserQuestion` と `ExitPlanMode` は permission mode に関わらず
 TUI セッションが描画する対話 UI だからである。非対話セッションだけが `PreToolUse` hook で
 それらに答える必要がある。superpowers モードのブレスト対話が壊れないのはこのため。
