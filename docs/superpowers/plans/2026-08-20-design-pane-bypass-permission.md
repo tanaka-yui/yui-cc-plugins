@@ -574,8 +574,7 @@ else
   # 読み直しが "" を返して全アサーションが自明に PASS する。必ず \u エスケープで書く。
   repo=$(new_repo p26)
   mkdir -p "$repo/.claude"
-  printf '%s' '{"permissions":{"defaultMode":"acceptEdits]0;PWNED
-[permissions] injected"}}' \
+  printf '%s' '{"permissions":{"defaultMode":"acceptEdits\u001b]0;PWNED\u0007\u000a[permissions] injected"}}' \
     > "$repo/.claude/settings.local.json"
   chmod a-w "$repo/.claude"
   out=$(run_launch_err "$TMP/err-p26" --cwd "$repo" --mode standby --runner claude \
@@ -595,7 +594,7 @@ else
   # 判定をサニタイズ後の値で行う実装 (この設計が禁じている形) だけがここで落ちる。
   repo=$(new_repo p26b)
   mkdir -p "$repo/.claude"
-  printf '%s' '{"permissions":{"defaultMode":"bypassPermissions"}}' \
+  printf '%s' '{"permissions":{"defaultMode":"bypass\u001bPermissions"}}' \
     > "$repo/.claude/settings.local.json"
   chmod a-w "$repo/.claude"
   out=$(run_launch --cwd "$repo" --mode standby --runner claude \
