@@ -270,6 +270,13 @@ ensure-agmsg-ready.sh --type <claude-code|codex> --name <agent> [--project <path
 | `AGMSG_READY_DIR` | `$(dirname "$AGMSG_DIR")/run` | ready sentinel の場所。`AGMSG_DIR` から導出するので、テストで片方だけ差し替えて本物の `run/` を読む事故が起きない |
 | `AGMSG_LOG_DIR` | `${TMPDIR:-/tmp}` | watcher のログの置き場 |
 | `AGMSG_READY_TIMEOUT` | `15` | sentinel の出現を待つ上限秒数 |
+| `AGMSG_WATCH_INTERVAL` | `30` | 起動する watcher のポーリング間隔。`watch.sh:148` が env を最優先する |
+
+`AGMSG_WATCH_INTERVAL` を既定の 5 秒から 30 秒へ上げるのは、**guard が起動する watcher は
+定義上「読み手が居ない」から**である。ペインに `Monitor` があれば手順 3 で `watcher=existing` に
+なって guard は起動しないので、手順 4 に到達した時点でストリームを消費する主体は存在しない。
+inbox への記録は `send-prompt.sh` が `send.sh` で直接行っており watcher のポーリングとは無関係なので、
+間隔を上げても失うものが無い。トレードオフ 5 の共有 SQLite への負荷はその分だけ下がる。
 
 `--mode` / `--no-start` / `--team` / `--session-id` / `--detached` / `--timeout` / `--log-dir` は
 設けない。呼び出し箇所が無い、または誤用しかできない。可変にする必要があるものは環境変数へ寄せ、
@@ -298,9 +305,13 @@ session id はフラグでは受け取らず環境から取る。`--type claude-
    2. `<type>` が位置引数として**厳密等価**で存在する
    3. `<name>` が位置引数として**厳密等価**で存在する（`grep` / `case` パターンでの実装を禁じる。
       `<slug>` が `<slug>-claude` にヒットする）
-   4. project の位置引数が `--project` の値、または `--project` 内で
-      `git rev-parse --show-toplevel` した値と**厳密等価**である
-      （agmsg が実際に使うのはこの 2 つの綴りだけ。ワークツリー / メインリポジトリの両方に対応する）
+   4. project の位置引数が `--project` の値、またはメインリポジトリのパスと**厳密等価**である。
+      メインリポジトリは `dirname "$(git -C "$PROJECT" rev-parse --path-format=absolute --git-common-dir)"`
+      で導く。**`git rev-parse --show-toplevel` は使えない** — ワークツリー内で実行すると
+      ワークツリー自身を返す（実測）。`--path-format` を解さない古い git では
+      `git -C "$PROJECT" rev-parse --git-common-dir` の結果を `$PROJECT` 基準で絶対化する。
+      実機の稼働 watcher は両方の綴りが混在していた（ワークツリーで起動されたものと
+      メインリポジトリで起動されたもの）ので、2 つとも受け入れる必要がある
    5. その pid が生存している
 
    - 4 条件すべてを満たす生存プロセスが見つかった → `watcher=existing pid=<n>` を出力し **exit 0**。
@@ -573,9 +584,10 @@ prewarm は watcher を起動しないので、このキーが表すのは「gua
 
 5. **本プラグインが常駐プロセスを fork するようになる。** これまで watcher の起動は
    ハーネス（`Monitor`）の責任だったが、本設計では同梱スクリプトが `nohup` で起動する。
-   台数は N タスクで最大 `3N+1`（親・design・executor・review）で、既定 5 秒間隔で同一 SQLite を
-   ポーリングする。`send-prompt.sh:141-144` のコメント自身が「`send.sh` は共有 SQLite で固まりうる」
-   と警告している。`CLAUDE.md`「関連プラグインとの境界」表の「永続プロセス: なし」を
+   台数は N タスクで最大 `3N+1`（親・design・executor・review）。`AGMSG_WATCH_INTERVAL=30` に
+   することで同一 SQLite へのポーリングは既定の 1/6 に下がるが、ゼロではない。
+   `send-prompt.sh:141-144` のコメント自身が「`send.sh` は共有 SQLite で固まりうる」と警告している。
+   `CLAUDE.md`「関連プラグインとの境界」表の「永続プロセス: なし」を
    **「agmsg inbox watcher（ペインごと 1 プロセス、ペイン終了で自己終了）」に書き換える。**
 
 ## テスト
