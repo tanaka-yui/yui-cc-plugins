@@ -2,7 +2,10 @@
 # launch-workspace.sh が claude engine の worktree に注入する
 # .claude/settings.local.json の permissions.defaultMode の回帰テスト。
 # 検証項目: 全 MODE への注入 / codex engine 非対象 / 既存キー保持 / 冪等性 /
-# superpowers にフラグを足していないこと / info/exclude の追記。
+# 正常系では superpowers にフラグを足さないこと / info/exclude の追記 /
+# 注入を確認できなかったときの --dangerously-skip-permissions へのフォールバック
+# (3 ケース A・B・C、二重付与なし、正常系で誤発火しないこと) /
+# 警告ログ値のサニタイズ (P26 / P26b、root では skip)。
 
 set -euo pipefail
 
@@ -10,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCH="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/launch-workspace.sh"
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+trap 'chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
 
 cat > "$TMP/bin/cmux" <<'STUB'
@@ -62,6 +65,37 @@ settings_of() { echo "$1/.claude/settings.local.json"; }
 
 default_mode_of() {
   jq -r '.permissions.defaultMode // ""' "$(settings_of "$1")" 2>/dev/null || echo ""
+}
+
+WARN_NOT_CONFIRMED='permission bypass not confirmed'
+WARN_FLAG_ADDED='added the CLI permission flag'
+
+# composed command は runner script の単一行に載るので grep -c (行数) では二重付与を
+# 検出できない。set -euo pipefail 下で 0 件を数えると落ちるので || true が要る。
+# macOS の wc -l は先頭空白を出すので tr -d ' ' する。ファイル不在で 0 を返すと
+# 否定側が空虚に PASS するため、存在確認を先に置く。
+# 戻り値は必ず文字列で比較すること (( )) に渡すと missing:... が unbound variable になる。
+count_flag() {
+  [[ -f "${1:-}" ]] || { echo "missing:${1:-<none>}"; return; }
+  { grep -o -- '--dangerously-skip-permissions' "$1" || true; } | wc -l | tr -d ' '
+}
+
+# 既存の run_launch は stderr を捨てるので、警告を assert するケース用に別に用意する。
+# 素朴に 2>&1 でマージすると stdout 先頭に [runner] が混ざり jq -r '.runner_file' が壊れる。
+run_launch_err() {   # $1 = stderr の保存先, 以降 launch の引数
+  local err="$1"; shift
+  CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+    bash "$LAUNCH" "$@" 2> "$err"
+}
+
+# 注入不能状態を作る 3 つのレシピ。いずれも chmod と違って root でも成立する。
+break_a() { rm -rf "$1/.claude"; printf '' > "$1/.claude"; }                       # .claude が通常ファイル
+break_b() { mkdir -p "$1/.claude"; printf '{ not json,,,\n' > "$1/.claude/settings.local.json"; }
+break_c() { mkdir -p "$1/.claude/settings.local.json"; }                            # settings がディレクトリ
+
+# 1 行に制御文字が含まれないことの macOS 可搬なアサート
+has_no_ctrl() {
+  [[ "$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')" == "$1" ]]
 }
 
 # --- P1: claude engine + superpowers ---
@@ -184,6 +218,224 @@ if run_launch --cwd "$plain" --mode superpowers --runner claude \
   fi
 else
   bad 'P11 non-git cwd must not abort the launch'
+fi
+
+# --- P12: standby (prompt 引数あり) + 注入不能 A ---
+# prewarm の設計ペインは "$SLUG" "$OPUS_PROMPT" の 2 位置引数で起動するので prompt 有りの
+# 合成行を通る。prompt 無しのケースだけではこの行の splice 忘れを 1 件も検出できない。
+repo=$(new_repo p12); break_a "$repo"
+out=$(run_launch_err "$TMP/err-p12" --cwd "$repo" --mode standby --role plan --runner claude \
+  --status-dir "$TMP/status-p12" p12-standby 'agmsg actas p12 then wait idle')
+runner_file=$(jq -r '.runner_file' <<<"$out")
+if [[ "$(count_flag "$runner_file")" == "1" ]] \
+   && grep -Fq -- "$WARN_FLAG_ADDED" "$TMP/err-p12" \
+   && ! grep -Fq -- '--dangerously-skip-permissions' "$TMP/err-p12"; then
+  pass 'P12 standby with prompt gains exactly one flag and logs the add'
+else
+  bad  'P12 standby with prompt gains exactly one flag and logs the add'
+fi
+
+# --- P13: superpowers + 注入不能 A ---
+repo=$(new_repo p13); break_a "$repo"
+out=$(run_launch --cwd "$repo" --mode superpowers --runner claude \
+  --status-dir "$TMP/status-p13" p13-task 'do something')
+[[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+  && pass 'P13 superpowers gains the fallback flag' \
+  || bad  'P13 superpowers gains the fallback flag'
+
+# --- P14: superpowers + 注入不能 A + --skip-permissions 明示 ---
+# superpowers の合成箇所は SKIP_PERMISSIONS を読まないので、フォールバックは
+# その値に関わらず 1 個だけ付く。case の superpowers アームが *) に落ちると 0 個になる。
+repo=$(new_repo p14); break_a "$repo"
+out=$(run_launch --cwd "$repo" --mode superpowers --runner claude --skip-permissions \
+  --status-dir "$TMP/status-p14" p14-task 'do something')
+[[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+  && pass 'P14 superpowers ignores --skip-permissions but takes the fallback once' \
+  || bad  'P14 superpowers ignores --skip-permissions but takes the fallback once'
+
+# --- P15: superpowers 正常系 + --skip-permissions 明示 ---
+repo=$(new_repo p15)
+out=$(run_launch --cwd "$repo" --mode superpowers --runner claude --skip-permissions \
+  --status-dir "$TMP/status-p15" p15-task 'do something')
+[[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "0" ]] \
+  && pass 'P15 superpowers keeps no flag when the injection succeeded' \
+  || bad  'P15 superpowers keeps no flag when the injection succeeded'
+
+# --- P16: standby (prompt なし) + 注入不能 A + --skip-permissions 明示 ---
+# 二重付与の検出。P23 の弱い版で独自の検出力は無く、:795 の splice も担保しない
+# (SKIP_PERMISSIONS=1 なので *) アームが偽になり PERM_FALLBACK_FLAG は空のまま)。
+repo=$(new_repo p16); break_a "$repo"
+out=$(run_launch --cwd "$repo" --mode standby --runner claude --skip-permissions \
+  --status-dir "$TMP/status-p16" p16-standby)
+[[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+  && pass 'P16 standby with --skip-permissions never doubles the flag' \
+  || bad  'P16 standby with --skip-permissions never doubles the flag'
+
+# --- P17: plan + 注入不能 A ---
+# plan) ;; の単独削除・:804 への二重 splice・付与ログの無条件出力の 3 種を単独検出する
+# 唯一のケース。stderr の否定 assert を落とさないこと。
+repo=$(new_repo p17); break_a "$repo"
+out=$(run_launch_err "$TMP/err-p17" --cwd "$repo" --mode plan --runner claude \
+  --status-dir "$TMP/status-p17" p17-task 'do something')
+if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+   && ! grep -Fq -- "$WARN_FLAG_ADDED" "$TMP/err-p17"; then
+  pass 'P17 plan keeps one literal flag and logs no add'
+else
+  bad  'P17 plan keeps one literal flag and logs no add'
+fi
+
+# --- P18: execute + 注入不能 A + --skip-permissions なし ---
+repo=$(new_repo p18); break_a "$repo"
+out=$(run_launch --cwd "$repo" --mode execute --runner claude \
+  --plan-file "$TMP/plan.md" --status-dir "$TMP/status-p18" p18-task)
+[[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+  && pass 'P18 execute gains the fallback flag' \
+  || bad  'P18 execute gains the fallback flag'
+
+# --- P19: codex engine ---
+# フラグ側は判別能力を持たない (BYPASS_INJECTION_OK が 0 になるのは claude 限定ブロックの
+# 内側だけ) が、併記する「新警告が出ない」の側は読み直しを claude ブロックの外へ動かした
+# 実装を実際に検出する。両方を必ず assert すること。
+repo=$(new_repo p19); break_a "$repo"
+out=$(run_launch_err "$TMP/err-p19" --cwd "$repo" --mode superpowers --runner codex \
+  --status-dir "$TMP/status-p19" p19-task 'do something')
+if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "0" ]] \
+   && ! grep -Fq -- "$WARN_NOT_CONFIRMED" "$TMP/err-p19"; then
+  pass 'P19 codex takes neither the fallback nor the warning'
+else
+  bad 'P19 codex takes neither the fallback nor the warning'
+fi
+
+# --- P20: 正常系で誤発火しない ---
+# standby / review / execute は元からフラグを持つ経路があるため、読み直しが常に失敗する
+# 実装バグ (パス誤りなど) が composed command に現れず不可視になりうる。ここが唯一の砦。
+for m in standby superpowers; do
+  repo=$(new_repo "p20-$m")
+  if [[ "$m" == "superpowers" ]]; then
+    out=$(run_launch_err "$TMP/err-p20-$m" --cwd "$repo" --mode "$m" --runner claude \
+      --status-dir "$TMP/status-p20-$m" "p20-$m" 'do something')
+  else
+    out=$(run_launch_err "$TMP/err-p20-$m" --cwd "$repo" --mode "$m" --runner claude \
+      --status-dir "$TMP/status-p20-$m" "p20-$m")
+  fi
+  if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "0" ]] \
+     && ! grep -Fq -- "$WARN_NOT_CONFIRMED" "$TMP/err-p20-$m"; then
+    pass "P20 $m stays unchanged when the injection succeeded"
+  else
+    bad  "P20 $m stays unchanged when the injection succeeded"
+  fi
+done
+
+# --- P21: standby (prompt なし・--skip-permissions なし) + 注入不能 B ---
+# :795 の splice の担保者。B は既存ファイルが不正 JSON でマージが拒否されるケース。
+repo=$(new_repo p21); break_b "$repo"
+out=$(run_launch_err "$TMP/err-p21" --cwd "$repo" --mode standby --runner claude \
+  --status-dir "$TMP/status-p21" p21-standby)
+if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+   && grep -Fq -- "$WARN_NOT_CONFIRMED" "$TMP/err-p21" \
+   && ! jq -e . "$(settings_of "$repo")" >/dev/null 2>&1; then
+  pass 'P21 invalid JSON takes the fallback and is left untouched'
+else
+  bad 'P21 invalid JSON takes the fallback and is left untouched'
+fi
+
+# --- P22: worktree 再利用 (:575 の短絡経路) ---
+# prewarm は全ペインに同一 --cwd を渡すので 2 枚目以降は必ずここを通る実運用の主経路。
+repo=$(new_repo p22)
+run_launch --cwd "$repo" --mode superpowers --runner claude \
+  --status-dir "$TMP/status-p22" p22-first 'do something' >/dev/null
+out=$(run_launch_err "$TMP/err-p22" --cwd "$repo" --mode standby --runner claude \
+  --status-dir "$TMP/status-p22" p22-standby)
+if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "0" ]] \
+   && ! grep -Fq -- "$WARN_NOT_CONFIRMED" "$TMP/err-p22" \
+   && grep -Fq -- 'defaultMode is already bypassPermissions' "$TMP/err-p22"; then
+  pass 'P22 worktree reuse short-circuits without firing the fallback'
+else
+  bad 'P22 worktree reuse short-circuits without firing the fallback'
+fi
+
+# --- P23: standby + --unattended + 注入不能 A ---
+# PERM_FALLBACK_FLAG のブロックが UNATTENDED の SKIP_PERMISSIONS=1 より前に置かれると
+# *) が足した後にもう 1 個足されて 2 個になる。ブロック位置の担保。
+repo=$(new_repo p23); break_a "$repo"
+out=$(run_launch --cwd "$repo" --mode standby --runner claude --unattended \
+  --status-dir "$TMP/status-p23" p23-standby)
+[[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+  && pass 'P23 --unattended never doubles the flag' \
+  || bad  'P23 --unattended never doubles the flag'
+
+# --- P24: standby (prompt なし・--skip-permissions なし) + 注入不能 C ---
+# :795 の担保者かつ、戻り値ベース誤実装を弾ける唯一のケース。A と B は
+# merge_claude_settings が 1 を返すので戻り値で分岐した実装でも P24 以外は全部通る。
+# 「P22 があるから P24 は冗長」という判断でこの穴を復活させないこと。
+repo=$(new_repo p24); break_c "$repo"
+out=$(run_launch_err "$TMP/err-p24" --cwd "$repo" --mode standby --runner claude \
+  --status-dir "$TMP/status-p24" p24-standby)
+if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+   && grep -Fq -- "$WARN_NOT_CONFIRMED" "$TMP/err-p24"; then
+  pass 'P24 directory settings takes the fallback despite merge returning 0'
+else
+  bad 'P24 directory settings takes the fallback despite merge returning 0'
+fi
+
+# --- P25: 非 git --cwd + 注入不能 A ---
+# flag oracle としては P13 の重複。残す意味は「非 git でも launch が rc=0 で続き、
+# 異常系でもフラグが付くこと」= P11 の異常系版。
+# P11 の $TMP/plain-dir を再利用しないこと (P11 が .claude をディレクトリとして残すので
+# break_a の printf が Is a directory で落ち、set -euo pipefail 下でスイートが停止する)。
+plain25="$TMP/plain-dir-p25"
+mkdir -p "$plain25"; break_a "$plain25"
+if out=$(run_launch --cwd "$plain25" --mode superpowers --runner claude \
+     --status-dir "$TMP/status-p25" p25-task 'do something' 2>/dev/null); then
+  [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+    && pass 'P25 non-git cwd still launches and gains the fallback' \
+    || bad  'P25 non-git cwd still launches and gains the fallback'
+else
+  bad 'P25 non-git cwd must not abort the launch'
+fi
+
+# --- P26 / P26b: 読めるが別値のケース (chmod が要るので root では skip) ---
+# 到達には「有効な JSON が読めるのに書き込みは失敗する」状態が要り、それを作れるのは
+# chmod a-w だけ。uid 0 はモードビットを無視して mktemp が成功し、ファイルが
+# bypassPermissions に上書きされて全 assert が落ちるため root では成立しない。
+# 到達するのは merge_claude_settings の failed to create a temp file であって
+# failed to create .../.claude ではない (既存ディレクトリへの mkdir -p は成功する)。
+if [[ $EUID -eq 0 ]]; then
+  echo 'SKIP: P26 / P26b need chmod a-w, which uid 0 ignores'
+else
+  # P26: ESC/OSC + 改行で偽の [permissions] injected 行を捏造しようとする payload。
+  # 生の制御バイトを JSON に書くと jq が control characters must be escaped で失敗し、
+  # 読み直しが "" を返して全アサーションが自明に PASS する。必ず \u エスケープで書く。
+  repo=$(new_repo p26)
+  mkdir -p "$repo/.claude"
+  printf '%s' '{"permissions":{"defaultMode":"acceptEdits\u001b]0;PWNED\u0007\u000a[permissions] injected"}}' \
+    > "$repo/.claude/settings.local.json"
+  chmod a-w "$repo/.claude"
+  out=$(run_launch_err "$TMP/err-p26" --cwd "$repo" --mode standby --runner claude \
+    --status-dir "$TMP/status-p26" p26-standby)
+  warn_line=$(grep -F -- "$WARN_NOT_CONFIRMED" "$TMP/err-p26" || true)
+  # tr / grep は行単位なので改行の捏造は捕まえられない。警告が 1 行であることも見る。
+  if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+     && [[ -n "$warn_line" ]] && has_no_ctrl "$warn_line" \
+     && [[ "$(grep -ac "$WARN_NOT_CONFIRMED" "$TMP/err-p26" | tr -d ' ')" == "1" ]] \
+     && ! grep -Fq -- '[permissions] injected permissions.defaultMode' "$TMP/err-p26"; then
+    pass 'P26 sanitizer strips control bytes and blocks the forged injected line'
+  else
+    bad 'P26 sanitizer strips control bytes and blocks the forged injected line'
+  fi
+
+  # P26b: サニタイズすると bypassPermissions へちょうど潰れる payload。
+  # 判定をサニタイズ後の値で行う実装 (この設計が禁じている形) だけがここで落ちる。
+  repo=$(new_repo p26b)
+  mkdir -p "$repo/.claude"
+  printf '%s' '{"permissions":{"defaultMode":"bypass\u001bPermissions"}}' \
+    > "$repo/.claude/settings.local.json"
+  chmod a-w "$repo/.claude"
+  out=$(run_launch --cwd "$repo" --mode standby --runner claude \
+    --status-dir "$TMP/status-p26b" p26b-standby)
+  [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+    && pass 'P26b a value that sanitizes to bypassPermissions still takes the fallback' \
+    || bad  'P26b a value that sanitizes to bypassPermissions still takes the fallback'
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
