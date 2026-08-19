@@ -20,6 +20,8 @@
 - **バージョン番号を bump しない。push しない。PR を作らない。** 親がローカルで merge する。
 - **4 ファイル整合ルール**（`apps/cmux-team-dispatch-task/CLAUDE.md`）: `SKILL.md` / `references/guide-ja.md` / `README.md` / `CLAUDE.md` は同じコミットで一致させる。`setup-mode.md` / `setup-mode-ja.md` も相互にミラーする。
 - **既存テストの grep 対象を壊さない。** 特に `test-setup-skill.sh` SU5 が探す 10 個の文字列（うち 7 個が今回の改訂対象セクション内）と SU1 / SU3 / SU8 の needle。詳細は spec §3.2。
+  **SU6 の 2 needle にも注意**: `mutually exclusive with \`--loop\`` と `never reach Step 1a` は
+  Task 5 が書き換える `SKILL.md:117` と**同じ段落（117-121 行）**にある。段落ごと書き直すと道連れになる。
 - **`prewarm-panes.sh` を呼ぶテストを足さない。** 呼ぶなら先に worktree ディレクトリを `mkdir -p` すること（呼ばなければ該当しない）。本計画のテストは一切呼ばない。
 - effort allowlist は engine 別: claude `low|medium|high|xhigh|max`、codex `minimal|low|medium|high|xhigh`。**codex に `max` を出さない・通さない。**
 - 既定値（変更しない）: model は plan/review claude `opus[1m]` / exec claude `sonnet`（codex は既定なし）、effort は両 engine 共通で plan/review `xhigh` / exec `high`。
@@ -36,9 +38,9 @@
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/setup-mode.md` | 変更 | `--setup` の runtime SoT。S1/S2/S3/S6/S7 改訂、`### S3-M` 新設、`## All writes …` 改題 + I/F 段落 |
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/setup-mode-ja.md` | 変更 | 上記の日本語ミラー（見出しレベル・個数・順序まで一致） |
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md` | 変更 | `## Setup Mode` 節、`Both modes write exclusively …`、First-run setup 見出し、`Never call config-edit.sh here.` |
-| `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md` | 変更 | SKILL.md の 1:1 訳 + 独自 3 箇所（67 / 251 / 1363 / 1641 行） |
+| `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md` | 変更 | SKILL.md の 1:1 訳 4 箇所（`## セットアップモード` 節 / 67 行 / 251 行）＋ **1:1 訳では拾えない独自 2 箇所（1363 行の README ミラー / 1641 行の初回セットアップ）** |
 | `apps/cmux-team-dispatch-task/README.md` | 変更 | `### 設定（--setup）` / 286 行 / 131 行 |
-| `apps/cmux-team-dispatch-task/CLAUDE.md` | 変更 | ファイル構成表 2 箇所、保守手順 19 相当の 91 行、保守手順 28（4 箇所）、保守手順 44（2 箇所）、E2E 項目 43 |
+| `apps/cmux-team-dispatch-task/CLAUDE.md` | 変更 | ファイル構成表 2 箇所（新規行 + 23 行）、**「role 解決の現行契約」節の 91 行**、保守手順 28（4 箇所: 247 / 251 / 本文 / needle 一覧）、保守手順 44（2 箇所）、E2E 項目 43。**193 行（保守手順 19）と 152 行（保守項目 10）は変更不要・逐語保護**なので触らない |
 
 **タスクの切り方**: Task 1-3 でスクリプトを TDD で作り（読み取り → 書き込み → dry-run）、Task 4 で `setup-mode*` と対応 SU、Task 5 で 4 ファイル整合と SU13、Task 6 で全ゲート。各タスクの末尾で `test/*.sh` が全部緑になる。
 
@@ -69,12 +71,14 @@
 #   RE1  --set が指定 runner のフィールドだけを更新し、他 runner と default の値を変えない
 #   RE2  allowlist 外のフィールド名は --set / --unset / --get の 3 モードとも exit 2
 #   RE3  engine 別 effort allowlist（負と正のコントロール両方）
-#   RE4  model はモデル名を allowlist しないが、空 / 空白のみ / シェルメタ文字 / 制御文字は exit 2
+#   RE4  model はモデル名を allowlist しないが、空 / 空白のみ / 前後の空白 /
+#        シェルメタ文字 / 制御文字は exit 2
 #   RE5  --unset は該当フィールドだけ削除。不在フィールドでも exit 0（冪等）
 #   RE6  未知の --name は exit 2 かつ cmp でバイト同一
 #   RE7  複数の --set / --unset が 1 回でまとめて反映される
 #   RE8  壊れた JSON / 読み取り不能 / 0 バイトは exit 1、元ファイル無傷
-#   RE9  temp の残骸が全経路でゼロ
+#   RE9  temp の残骸が全経路でゼロ（7 経路。--dry-run は RE18 の no_residue、
+#        mv 失敗は RE9b の find が担保する）
 #   RE9b mv 失敗（chflags uchg）で exit 1・固有メッセージ・残骸ゼロ・原ファイル無傷
 #   RE9c mktemp 失敗（chmod 555 の親）で exit 1・固有メッセージ・残骸ゼロ
 #   RE9d 順序の直接検証（555 親で検証エラーが exit 2 になる = mktemp より前に検証している）
@@ -85,7 +89,8 @@
 #   RE13 書き込みモードでファイル不在は exit 2、親ディレクトリを作らない
 #   RE14a 注入・拒否側: メタ文字入りペイロードは exit 2 かつ cmp バイト同一
 #   RE14b 注入・往復側: opus[1m] が exit 0 で完全一致往復し、他フィールドが不変
-#   RE15 .runners が配列でない / 要素が非オブジェクトは exit 2（exit 1 でも 5 でもない）
+#   RE15 .runners が配列でないときは exit 2。配列だが要素が非オブジェクトのときは
+#        型安全 select で素通しして exit 0（ガードを外すと rc=5 → exit 1 になる）
 #   RE16 name 重複は exit 2。" や $ を含む name でも 3 モードとも正しく動く
 #   RE17 engine 欠落 / 未知 engine への --set <*_effort> は exit 2、--unset は exit 0
 #   RE18 --dry-run は書き込まず当該レコードだけを出す
@@ -108,7 +113,7 @@ cleanup() {
   find "$TMP" -flags uchg -exec chflags nouchg {} + 2>/dev/null || true
   rm -rf "$TMP"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 bad() { echo "FAIL $1"; fail=1; }
 ok() { echo "PASS $1"; }
@@ -152,6 +157,12 @@ run_rc() { bash "$EDIT" "$@" >/dev/null 2>&1; echo $?; }
 [[ "$(run_rc --runners "$R" --get plan_model)" == 2 ]] || re11_pass=0          # --get に --name なし
 [[ "$(run_rc --runners "$R" --name cc --set plan_effort)" == 2 ]] || re11_pass=0  # 形式違い
 [[ "$(run_rc --runners "$R" --name cc --set plan_effort=max --unset plan_effort)" == 2 ]] || re11_pass=0
+[[ "$(run_rc --runners "$R" --name cc --unset plan_effort --set plan_effort=max)" == 2 ]] || re11_pass=0  # 逆順
+[[ "$(run_rc --runners "$R" --name cc --set plan_effort=max --set plan_effort=high)" == 2 ]] || re11_pass=0
+[[ "$(run_rc --runners "$R" --name cc --unset plan_effort --unset plan_effort)" == 2 ]] || re11_pass=0
+[[ "$(run_rc --runners "$R" --name cc --get plan_model --get exec_model)" == 2 ]] || re11_pass=0
+[[ "$(run_rc --runners "$R" --name cc --name cx --show)" == 2 ]] || re11_pass=0
+[[ "$(run_rc --runners "$R" --runners "$R" --name cc --show)" == 2 ]] || re11_pass=0
 [[ "$(run_rc --runners "$R" --name cc --show --dry-run)" == 2 ]] || re11_pass=0
 if [[ $re11_pass == 1 ]]; then ok 'RE11: 引数エラーはすべて exit 2'; else bad 'RE11'; fi
 
@@ -169,7 +180,8 @@ if [[ $re2_pass == 1 ]]; then ok 'RE2: allowlist 外フィールドは 3 モー�
 reset_registry
 # Task 1 では拒否側だけを検査する（受理側は書き込みを伴うので Task 2 で足す）。
 re4_pass=1
-for bad_v in '' '   ' "a'b" 'a"b' 'a`b' 'a$b' 'a\b' "$(printf 'a\033b')" "$(printf 'a\tb')"; do
+for bad_v in '' '   ' '  fable' 'fable  ' "a'b" 'a"b' 'a`b' 'a$b' 'a\b' \
+             "$(printf 'a\033b')" "$(printf 'a\tb')"; do
   [[ "$(run_rc --runners "$R" --name cc --set "plan_model=$bad_v")" == 2 ]] || re4_pass=0
 done
 if [[ $re4_pass == 1 ]]; then ok 'RE4: model の空とメタ文字を弾く'; else bad 'RE4'; fi
@@ -202,15 +214,18 @@ echo '{ broken' > "$TMP/b.json"; before=$(cksum < "$TMP/b.json")
 [[ "$(run_rc --runners "$TMP/b.json" --name cc --set plan_effort=max)" == 1 ]] || re8_pass=0
 [[ "$(cksum < "$TMP/b.json")" == "$before" ]] || re8_pass=0
 : > "$TMP/z.json"
-for m in '--show' '--name cc --get plan_model' '--name cc --set plan_effort=max'; do
+for m in '--show' '--name cc --get plan_model' '--name cc --set plan_effort=max' \
+         '--name cc --set plan_effort=max --dry-run'; do
   # shellcheck disable=SC2086
   [[ "$(run_rc --runners "$TMP/z.json" $m)" == 1 ]] || re8_pass=0
 done
 if [[ $EUID -ne 0 ]]; then
-  cp "$R" "$TMP/ro.json" 2>/dev/null || reset_registry && cp "$R" "$TMP/ro.json"
+  reset_registry
+  cp "$R" "$TMP/ro.json"
   chmod 000 "$TMP/ro.json"
-  [[ "$(run_rc --runners "$TMP/ro.json" --show)" == 1 ]] || re8_pass=0
-  chmod 644 "$TMP/ro.json"
+  rc_ro=$(run_rc --runners "$TMP/ro.json" --show)
+  chmod 644 "$TMP/ro.json"          # 判定より前に必ず戻す（SP6 と同じ形）
+  [[ "$rc_ro" == 1 ]] || re8_pass=0
 fi
 if [[ $re8_pass == 1 ]]; then ok 'RE8: 破損 / 0 バイト / 読み取り不能は exit 1 で原本保持'; else bad 'RE8'; fi
 
@@ -226,9 +241,16 @@ echo '{"x": 1}' > "$TMP/m.json"
 echo '{"runners": [1, 2]}' > "$TMP/e.json"
 [[ "$(run_rc --runners "$TMP/e.json" --name cc --set plan_effort=max)" == 2 ]] || re15_pass=0
 [[ "$(run_rc --runners "$TMP/e.json" --name cc --get plan_model)" == 2 ]] || re15_pass=0
+# 配列だが一部の要素が非オブジェクト: 型安全 select が効くので成功し、非オブジェクト要素も生存する。
+# WRITE_FILTER から (type == "object") and を外すと jq が rc=5 → exit 1 になるのでここで kill できる。
+echo '{"runners":[{"name":"cc","engine":"claude"},true]}' > "$TMP/mixed.json"
+[[ "$(run_rc --runners "$TMP/mixed.json" --name cc --set plan_effort=max)" == 0 ]] || re15_pass=0
+[[ "$(jq -r '.runners[0].plan_effort' "$TMP/mixed.json")" == max ]] || re15_pass=0
+[[ "$(jq -r '.runners[1]' "$TMP/mixed.json")" == true ]] || re15_pass=0
+[[ "$(bash "$EDIT" --runners "$TMP/mixed.json" --name cc --show 2>/dev/null | jq -r '.name')" == cc ]] || re15_pass=0
 # --name 無しの bare --show は素通し
 [[ "$(run_rc --runners "$TMP/o.json" --show)" == 0 ]] || re15_pass=0
-if [[ $re15_pass == 1 ]]; then ok 'RE15: .runners の型崩れは exit 2、bare --show は素通し'; else bad 'RE15'; fi
+if [[ $re15_pass == 1 ]]; then ok 'RE15: .runners が非配列なら exit 2、要素が非オブジェクトなら型安全 select で素通し'; else bad 'RE15'; fi
 
 # ---- RE20: runners[] が空配列 ----
 re20_pass=1
@@ -283,13 +305,15 @@ set -euo pipefail
 #   --set <field>=<value> フィールドを設定する (繰り返し可)
 #   --unset <field>      フィールドを削除する (繰り返し可)。不在でも成功 (冪等)
 #   --dry-run            書き込まず、適用後の当該レコードだけを stdout に出す
-#   --get <field>        値を stdout に出す。未設定なら空
+#   --get <field>        値を stdout に出す。未設定なら空。値が文字列であることを前提と
+#                        する (手編集でオブジェクトが入っていると整形済み複数行を返す)
 #   --show               --name 併用でレコード単体、省略時はファイル全体
 #
 # 検証:
 #   フィールドは 6 つの allowlist のみ。未知は exit 2。
-#   model は「モデル名の allowlist を作らない」が、空・空白のみ・シェルメタ文字
-#   (' " ` $ \) ・制御文字は exit 2。値は zsh -ic の二重引用を通って再実行されるため。
+#   model は「モデル名の allowlist を作らない」が、空・空白のみ・前後の空白パディング・
+#   シェルメタ文字 (' " ` $ \) ・制御文字は exit 2。値は zsh -ic の二重引用を通って
+#   再実行されるため。
 #   effort は runner レコードの engine 別 allowlist
 #   (claude: low|medium|high|xhigh|max / codex: minimal|low|medium|high|xhigh)。
 #   codex に max は無い。
@@ -313,10 +337,14 @@ known_field() {
 
 is_model_field() { case "$1" in *_model) return 0 ;; *) return 1 ;; esac; }
 
-# モデル名の allowlist は作らない。空とシェルメタ文字・制御文字だけ弾く。
+# モデル名の allowlist は作らない。空・前後の空白・シェルメタ文字・制御文字だけ弾く。
+# 前後の空白を黙ってトリムすると「入力した値と違う値が保存される」ことになるので弾く。
 valid_model_value() {
   local v="$1"
-  [[ -n "${v//[[:space:]]/}" ]] || return 1
+  [[ -n "$v" ]] || return 1
+  case "$v" in
+    [[:space:]]*|*[[:space:]]) return 1 ;;
+  esac
   case "$v" in
     *\'*|*\"*|*\`*|*\$*|*\\*) return 1 ;;
   esac
@@ -351,9 +379,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --runners)
       [[ $# -ge 2 ]] || die_usage '--runners requires a value'
+      # 繰り返し不可のフラグは last-wins で黙って通さない。S6 のプレビューを組み立てる
+      # LLM がフラグを重ねたとき、別フィールドの値を「現在値」として提示しうるため。
+      [[ -z "$RUNNERS" ]] || die_usage '--runners given more than once'
       RUNNERS="$2"; shift 2 ;;
     --name)
       [[ $# -ge 2 ]] || die_usage '--name requires a value'
+      [[ -z "$NAME" ]] || die_usage '--name given more than once'
       NAME="$2"; shift 2 ;;
     --set)
       [[ $# -ge 2 ]] || die_usage '--set requires <field>=<value>'
@@ -384,6 +416,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die_usage '--unset requires a field'
       known_field "$2" || die_usage "unknown field: $2"
       case "$SET_FIELDS" in *" $2 "*) die_usage "--set and --unset for the same field: $2" ;; esac
+      case "$UNSET_FIELDS" in *" $2 "*) die_usage "duplicate --unset for $2" ;; esac
       UNSET_FIELDS="$UNSET_FIELDS$2 "
       FILTER="${FILTER:+$FILTER | }del(.${2})"
       MUTATE=1
@@ -393,6 +426,7 @@ while [[ $# -gt 0 ]]; do
     --get)
       [[ $# -ge 2 ]] || die_usage '--get requires a field'
       known_field "$2" || die_usage "unknown field: $2"
+      [[ -z "$GET_FIELD" ]] || die_usage '--get given more than once'
       GET_FIELD="$2"; shift 2 ;;
     --show)
       SHOW=1; shift ;;
@@ -412,8 +446,9 @@ if [[ "$MUTATE" -eq 1 || -n "$GET_FIELD" ]]; then
   [[ -n "$NAME" ]] || die_usage '--name is required for --set/--unset/--get'
 fi
 
-# 検証はすべて mktemp より前に完了する。trap は引数パース直後に張り、
-# mktemp 〜 mv の窓を SIGINT / SIGTERM から守る。
+# 検証はすべて mktemp より前に完了する。trap は引数パース直後に張る:
+# 検証エラーの exit 経路と mktemp 経路で trap の有無を分岐させないためと、
+# mktemp 〜 mv の窓を SIGINT / SIGTERM / SIGHUP から守るため。
 # trap 本体は必ず成功で終わる形にする (rm -f の -f を外すと exit 2 が exit 1 に化ける)。
 TMP=""
 trap 'rm -f "${TMP:-}"' EXIT
@@ -508,6 +543,9 @@ exit 1
 ```
 
 - [ ] **Step 4: テストが通ることを確認する**
+
+**注**: RE15 の mixed 配列ケース（`$TMP/mixed.json` の 4 行）だけは書き込みを伴うので、
+Task 1 の Step 1 では**外しておく**。Task 2 の Step 1 で戻す。
 
 Run: `cd apps/cmux-team-dispatch-task && bash test/test-runners-edit.sh`
 Expected: `--- all tests passed ---` で exit 0（RE11 / RE2 / RE4 / RE10 / RE8 / RE15 /
@@ -613,10 +651,12 @@ cmp -s "$R" "$TMP/expect.json" || re14a_pass=0
 if [[ $re14a_pass == 1 ]]; then ok 'RE14a: メタ文字入りペイロードは exit 2 かつバイト同一'; else bad 'RE14a'; fi
 
 # ---- RE14b: 注入・往復側（jq 構文として意味を持つ値） ----
+# 値はフィクスチャの現在値 (opus[1m]) と必ず違えること。同値だと --set を no-op にする
+# 変異体でも PASS してしまい、「完全一致往復」が証明できない。
 reset_registry
 re14b_pass=1
-bash "$EDIT" --runners "$R" --name cc --set 'plan_model=opus[1m]' >/dev/null 2>&1 || re14b_pass=0
-[[ "$(jq -r '.runners[0].plan_model' "$R")" == 'opus[1m]' ]] || re14b_pass=0
+bash "$EDIT" --runners "$R" --name cc --set 'plan_model=fable[1m]' >/dev/null 2>&1 || re14b_pass=0
+[[ "$(jq -r '.runners[0].plan_model' "$R")" == 'fable[1m]' ]] || re14b_pass=0
 [[ "$(jq -r '.runners[0].command' "$R")" == claude ]] || re14b_pass=0
 [[ "$(jq -r '.runners[0].engine' "$R")" == claude ]] || re14b_pass=0
 [[ "$(jq -r '.runners[0].name' "$R")" == cc ]] || re14b_pass=0
@@ -740,8 +780,10 @@ Task 2 の Step 1 では `--dry-run` を呼ぶ行と `re9e_pass` の判定ブロ
 - [ ] **Step 2: テストが失敗することを確認する**
 
 Run: `cd apps/cmux-team-dispatch-task && bash test/test-runners-edit.sh`
-Expected: RE1 / RE3 / RE5 / RE6 / RE7 / RE9 / RE9b / RE9c / RE9d / RE12 / RE14a / RE14b / RE16 / RE17 が FAIL
-（`write path not implemented yet`）。
+Expected: **FAIL するのはちょうど次の 10 件** —
+`RE1/RE12` / `RE4 受理側` / `RE3` / `RE5` / `RE7` / `RE14b` / `RE16` / `RE17` / `RE9b` / `RE9c`。
+`RE6` / `RE9` / `RE9d` / `RE14a` は**この時点でも PASS する**（いずれも書き込みパスへ到達せず
+parse / 手順 4 / 手順 0 で exit 2 になるため）。ここで期待と食い違うと幻の不具合を追うことになる。
 
 - [ ] **Step 3: 書き込みパスを実装する**
 
@@ -919,7 +961,10 @@ git commit -m "feat(cmux-team-dispatch-task): runners-edit.sh に --dry-run を�
 
 `test/test-setup-skill.sh` を編集する。
 
-1. 冒頭の必須ファイルリスト（現在 5 ファイル）に `runners-edit.sh` を足す。
+1. 冒頭の不変条件コメント（現在 SU1-SU9 の 9 行）に SU10-SU16 の 7 行を足す。
+   `test-runners-edit.sh` が RE1-RE20 のコメントを持つ形で新規作成されるのと対称にする。
+
+2. 冒頭の必須ファイルリスト（現在 5 ファイル）に `runners-edit.sh` を足す。
 
 ```bash
 EDIT="$SK/scripts/config-edit.sh"
@@ -930,7 +975,7 @@ for f in "$SKILL" "$SETUP_EN" "$SETUP_JA" "$GUIDE" "$EDIT" "$REDIT"; do
 done
 ```
 
-2. SU9 の直後（`if [[ $fail -eq 0 ]]` の直前）に次を挿入する。
+3. SU9 の直後（`if [[ $fail -eq 0 ]]` の直前）に次を挿入する。
 
 ```bash
 # 平坦化テキスト。長い needle は doc の折り返しをまたぐので生ファイルでは一致しない。
@@ -975,7 +1020,8 @@ for f in "$SETUP_EN" "$SETUP_JA"; do
   if [[ $rc -ge 2 ]]; then echo "  grep error on $f"; su12_pass=0; continue; fi
   [[ "$n_codex" == 1 ]] || { echo "  codex pool row count=$n_codex in $(basename "$f")"; su12_pass=0; }
   grep -F -- "$CODEX_POOL" "$f" | grep -Fq -- 'max' && { echo "  max leaked into the codex pool row in $(basename "$f")"; su12_pass=0; }
-  n_claude=$(grep -Fc -- "$CLAUDE_POOL" "$f")
+  n_claude=$(grep -Fc -- "$CLAUDE_POOL" "$f"); rc=$?
+  if [[ $rc -ge 2 ]]; then echo "  grep error on $f"; su12_pass=0; continue; fi
   [[ "$n_claude" == 1 ]] || { echo "  claude pool row count=$n_claude in $(basename "$f")"; su12_pass=0; }
   grep -F -- "$CLAUDE_POOL" "$f" | grep -Fq -- 'max' || { echo "  claude pool row lost max in $(basename "$f")"; su12_pass=0; }
 done
@@ -991,12 +1037,22 @@ for fl in --runners --name --set --unset --get --show --dry-run; do
   grep -Fq -- "$fl" <<<"$usage" || { echo "  usage に $fl が無い"; su14_pass=0; }
   grep -Fq -- "$fl" "$SETUP_EN" || { echo "  setup-mode.md に $fl が無い"; su14_pass=0; }
 done
-# 逆方向: doc の runners-edit.sh 実行行（と \ 継続行）に、usage に無いフラグが現れない
+# 逆方向: code fence の内側にある runners-edit.sh 実行行（と \ 継続行）に、
+# usage に無いフラグが現れない。fence の外（散文の対比行）は対象にしない
+# — §3.1 は runners-edit.sh の I/F 段落を config-edit.sh の本文の後ろへ追記させるので、
+#   「runners-edit.sh takes --runners where config-edit.sh takes --config」のような
+#   対比行が書かれやすく、ファイル全体を走査すると正しい doc が誤 FAIL する。
 doc_flags=$(awk '
-  /runners-edit\.sh/ { inblk=1 }
-  inblk { print }
-  inblk && !/\\$/ { inblk=0 }
+  /^```/ { fence = !fence; next }
+  !fence { next }
+  /runners-edit\.sh/ { inln = 1 }
+  inln { print }
+  inln && !/\\$/ { inln = 0 }
 ' "$SETUP_EN" | grep -o -- '--[a-z][a-z-]*' | sort -u)
+if [[ -z "$doc_flags" ]]; then
+  echo '  code block 内に runners-edit.sh の実行行が無い（fail-open 禁止）'
+  su14_pass=0
+fi
 for fl in $doc_flags; do
   grep -Fq -- "$fl" <<<"$usage" || { echo "  doc の $fl が usage に無い"; su14_pass=0; }
 done
@@ -1013,7 +1069,8 @@ need_flat "$ja_flat" 'SU15: setup-mode-ja.md が S3-M の日本語 needle を持
   '現在の review_runner なので' "名前に ' を含むため" \
   'gpt-5.6-sol' '役割キーのみ' '2 か 3 を選ぶと到達できます' \
   'mkdir -p .dispatch' 'グローバルより優先されることをユーザーに伝える' \
-  '選択肢 2 経由のみ'
+  '選択肢 2 経由のみ' '選択肢 1 / 3 の First-run setup は値を検証しない' \
+  'runners-edit.sh' 'mktemp "$RUNNERS.XXXXXX"'
 
 # SU15 の #### 検査（生ファイル）: 個数一致 / 6 個以上 / 8 見出しが同順
 su15h_pass=1
@@ -1079,7 +1136,10 @@ if [[ $su16o_pass == 1 ]]; then ok 'SU16: S7 節内で runners-edit.sh が confi
 - [ ] **Step 2: テストが失敗することを確認する**
 
 Run: `cd apps/cmux-team-dispatch-task && bash test/test-setup-skill.sh`
-Expected: SU10 / SU11 / SU12 / SU14 / SU15 / SU16 が FAIL。SU1-SU9 は PASS のまま。
+Expected: SU10 / SU11 / SU12 / SU14 / SU15 が FAIL。SU1-SU9 は PASS のまま。
+**SU16 は 3 ラベルに分かれており、温存 3 文の 2 ラベル（EN / JA）は改訂前の現物で
+既に PASS する**（保護テストなので正しい）。赤くなるのは「S7 節内で runners-edit.sh が
+config-edit.sh より前」の 1 ラベルだけ。ここを誤診しないこと。
 
 - [ ] **Step 3: `setup-mode.md` を改訂する**
 
@@ -1106,7 +1166,9 @@ spec §2.1 / §2.2 / §2.3 / §2.4 / §2.5 / §2.6 と §3.0.1 / §3.1 のとお
    codex 候補導出 step 1-4、3 段防御 (b)(c)、自由入力の扱い（拒否条件 + §3.0.1 (1) の
    EN 限定句を逐語）、警告文言の EN 6 種。
 5. **`### S6. Preview and confirm`** — 2 ファイル分。before は `--show --name`、after は
-   同じ `--set` / `--unset` 群 + `--dry-run`。`Warnings:` 見出し。
+   同じ `--set` / `--unset` 群 + `--dry-run`。警告リストのラベルは `Warnings:` ↔ `警告:`。
+   **これはユーザーへ提示するラベルであって markdown 見出しではない。`### Warnings:` と
+   書くと SU8 の 19/19 が壊れる**（EN だけ 20 になる）。
 6. **`### S7. Write`** — **既存散文を消さずに** `runners-edit.sh` の手順を 1 番目へ挿入。
    温存 3 文（spec §2.6 の表）を逐語で残す。**S7 節内で `runners-edit.sh` が
    `config-edit.sh` より前に現れること**（SU16）。2 ファイル非トランザクションと
@@ -1115,17 +1177,50 @@ spec §2.1 / §2.2 / §2.3 / §2.4 / §2.5 / §2.6 と §3.0.1 / §3.1 のとお
    **既存本文（49-61 行）は 1 文字も消さない**。その後ろに限定文と `runners-edit.sh` の
    I/F 段落（7 フラグ全部 / `mktemp "$RUNNERS.XXXXXX"` / exit 0/1/2 / マージ /
    `exits 2 when the file is absent` と `First-run setup`）を追記する。
+   - **`runners-edit.sh` を含む行に `--config` を書かない。** 2 スクリプトを対比するなら
+     行を分ける。SU14 の逆方向は code fence の内側だけを見るので散文の対比は安全だが、
+     fence 内で 1 行に混ぜると誤 FAIL する。
+   - **逐語 needle を含む文は 1 行に収め、行頭マーカーを挟まない。** SU10 / SU11 / SU15 /
+     SU16 は `tr '\n' ' '` の平坦化テキストを grep するので、blockquote の `> ` や
+     箇条書きの `- ` が needle の内側に落ちると一致しない。特に
+     `exits 2 when the file is absent` を blockquote で折り返さないこと。
 
 - [ ] **Step 4: `setup-mode-ja.md` を同一構造で改訂する**
 
-英語版と **H1-H3 の見出し数を一致**させ（`### S3-M.` を足して 19 個ずつ）、`####` も
-§3.0.1 (2) の JA 8 個を同順で置く。ユーザー可視文字列は spec §2 の JA 表記。
-括弧は全角。候補プール表の 2 行は英語版と**バイト単位で同一**にする。
+英語版と **H1-H3 の見出し数を一致**させ（`### S3-M. runner の model / effort を編集する`
+を足して 19 個ずつ）、`####` も §3.0.1 (2) の JA 8 個を同順で置く。
+ユーザー可視文字列は spec §2 の JA 表記。**括弧は全角。**
+
+**Step 3 の項目 1-7 すべてに JA 側の対応がある。とくに次の 4 つは
+どのゲートも捕まえないので明示的に消化すること。**
+
+1. **項目 7 の JA 版（最重要）** — `## 書き込みは全て \`config-edit.sh\` を通す`
+   （`setup-mode-ja.md:39`）を **`## フィールド単位の書き込みは全て edit スクリプトを通す`**
+   へ改題し、**既存本文（41-48 行）は 1 文字も消さず**、その後ろに §3.1 の限定文と
+   `runners-edit.sh` の I/F 段落（7 フラグ全部 / `mktemp "$RUNNERS.XXXXXX"` / exit 0/1/2 /
+   マージ / ファイル不在は exit 2 / First-run setup）の訳を追記する。
+   **SU8 は見出し数しか見ないので片方だけ改題しても 19/19 で緑になる。**
+   これを落とすと、`runners-edit.sh` 導入後に**偽になる見出し**が残り、
+   spec §3.1 が 20 行かけて警告した「First-run setup を `runners-edit.sh` に寄せて
+   exit 2 のデッドロックになる」誤読を招く。SU15 の `runners-edit.sh` /
+   `mktemp "$RUNNERS.XXXXXX"` needle がこれを機械的に守る。
+2. **§3.0.1 (1) の JA 逐語文** — S3-M の「自由入力の扱い」に
+   **`この拒否は S3 の選択肢 2 経由のみに適用される。選択肢 1 / 3 の First-run setup は値を検証しない。`**
+   をそのまま書く。SU15 が強制するのは部分列 `選択肢 2 経由のみ` だけなので、
+   2 文目が落ちても緑になる。これは spec §1.3.1「既知の限界（重要）」が最も強く
+   要求した限定句の JA 側の担保である。
+3. **候補プール表の 2 行は英語版とバイト単位で同一**にする（SU12 のアンカー）。
+   **表のヘッダ（`| target | pool |`）と `codex *_model` セル
+   （`see the codex candidate derivation below`）も英語のまま**にする。
+   識別子であり、SU12 は 2 行しか見ないので訳すと英日で表の形が割れる。
+4. **S7 節（`### S7. 書き込み`）** — 温存 3 文（spec §2.6 の JA 列）を逐語で残し、
+   `runners-edit.sh` の手順を 1 番目に挿入する（SU16 の行順）。
 
 - [ ] **Step 5: テストが通ることを確認する**
 
 Run: `cd apps/cmux-team-dispatch-task && bash test/test-setup-skill.sh`
-Expected: SU1-SU16 すべて PASS（`--- all tests passed ---`）。
+Expected: **SU1-SU12 / SU14-SU16** がすべて PASS（`--- all tests passed ---`）。
+**SU13 はこの時点でまだ存在しない** — Task 5 Step 1 で追加する。
 
 Run: `cd $(git rev-parse --show-toplevel) && node scripts/check-doc-lang.mjs apps/cmux-team-dispatch-task`
 Expected: OK（`setup-mode.md` に日本語が 1 文字も無いこと）。
@@ -1187,7 +1282,7 @@ Expected: SU13 が FAIL、他は PASS。
 4. **822 行 `Never call config-edit.sh here.`**（`--override`）— `runners-edit.sh` も
    呼んではならない旨を追加する。
 
-- [ ] **Step 4: `guide-ja.md` を更新する（4 箇所。日本語）**
+- [ ] **Step 4: `guide-ja.md` を更新する（5 箇所。日本語）**
 
 1. `## セットアップモード（設定の明示構成）` — SKILL.md 変更の 1:1 訳。
    **`runners-edit.sh` を名指しする**（SU13）。
@@ -1207,7 +1302,7 @@ Expected: SU13 が FAIL、他は PASS。
 3. **131 行** 「**config には一切書き戻しません。**」（`--override`）— `runners.json` へも
    書き戻さない旨を追加。
 
-- [ ] **Step 6: `CLAUDE.md` を更新する（7 箇所。日本語）**
+- [ ] **Step 6: `CLAUDE.md` を更新する（8 箇所。日本語）**
 
 1. ファイル構成表に `skills/cmux-team-dispatch-task/scripts/runners-edit.sh` の行を追加。
    隣接する 19 行（`config-edit.sh` = 「config.json への唯一の書き込み口」）は真のままなので

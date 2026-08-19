@@ -158,8 +158,10 @@ plan_model  review_model  exec_model  plan_effort  review_effort  exec_effort
 **値の検証**:
 
 - `*_model` — 次の 2 条件のみ。**モデル名の allowlist は作らない。**
-  1. 前後の空白を除いて非空であること（空値・空白のみは下流で `--model ''` /
-     `--model '   '` になり壊れる）。
+  1. **前後に空白を持たず、かつ非空であること**（空値・空白のみは下流で `--model ''` /
+     `--model '   '` になり壊れる。同じ理由が前後の空白パディングにも当たる —
+     `--model '  fable'` は起動時に失敗しうる。黙ってトリムすると「入力した値と違う値が
+     保存される」ことになるので、**トリムせず exit 2 にする**）。
   2. `'` `"` `` ` `` `$` `\` を含まず、かつ `[[:cntrl:]]` を 1 文字も含まないこと
      （改行 / CR / タブ / ESC / BEL などすべて）。違反は exit 2。根拠は §1.3.1。
 - `*_effort` — レコードの `engine` を読み、engine 別 allowlist と照合する。
@@ -191,7 +193,13 @@ plan_model  review_model  exec_model  plan_effort  review_effort  exec_effort
   `--set must be <key>=<value>` と同型）。
 - `--set` / `--unset` / `--get` を `--name` 無しで呼ぶと exit 2。
 - 同一フィールドへの `--set` と `--unset` の同時指定は exit 2（jq 合成順に結果が
-  依存するため、曖昧なまま通さない）。
+  依存するため、曖昧なまま通さない）。**指定順は問わない**（`--set X=a --unset X` も
+  `--unset X --set X=a` も exit 2）。
+- **同一フィールドへの `--set` の重複、同一フィールドへの `--unset` の重複、および
+  `--runners` / `--name` / `--get` の重複指定はすべて exit 2。** last-wins で黙って
+  通すと、S6 のプレビューを組み立てる LLM がフラグを重ねたときに別フィールドの値を
+  「現在値」として提示しうる。繰り返してよいのは異なるフィールドに対する `--set` /
+  `--unset` だけである。
 - `--dry-run` は `--set`/`--unset` モード専用。`--get` / `--show` との併用は exit 2。
 
 ##### 1.3.1 `*_model` でシェルメタ文字を拒否する理由
@@ -394,10 +402,14 @@ TMP=""                                  # 成功後は trap を無害化
 `.name` を変えられない**からである。この 2 条件が同時に必要なので、allowlist を
 将来広げるときは 7a の不変条件を再確認すること。
 
-**手順 7a と手順 8 の jq 失敗ハンドラには witness を構築できない。** 手順 3（配列型）と
-手順 4（一致 1 件・型安全 select）を通過した文書では、7a / 8 の jq は構造上失敗しえない
-（`{"runners":[1,2]}` も `{"runners":[{…},true]}` も手順 4 で exit 2 になり到達しない）。
-どちらも**意図的に到達困難な安全弁**であり、テストで踏むケースは書けない。
+**手順 7a と手順 8 の jq 失敗ハンドラには witness を構築できない。** 理由は 2 通りある。
+`{"runners":[1,2]}` は手順 4 で 0 件一致になり **exit 2** で止まる。
+`{"runners":[{"name":"cc","engine":"claude"},true]}` は手順 3（`array`）/ 4（1 件）/
+5（`claude`）を**すべて通過する**が、7a / 8 の `map` と `select` が型安全なので
+非オブジェクト要素は `else .` で素通りし、jq は成功する。
+つまり 7a / 8 の失敗ハンドラはどちらも**意図的に到達困難な安全弁**であり、
+テストで踏むケースは書けない。**逆に言えば、型安全ガードを外すとこの入力が rc=5 になる** —
+その回帰は RE15 の mixed 配列ケースが exit 0 を要求することで捕まえる。
 RE9 / RE18 がこれを守っているわけではない点を明記しておく。
 
 **jq への値の渡し方（セキュリティ上 load-bearing）**:
@@ -1063,7 +1075,15 @@ read without writing まで）と同じ粒度で `runners-edit.sh` を書く。�
 - exit code 0 / 1 / 2 の意味と、置換ではなくマージすること。
 - `exits 2 when the file is absent` と `First-run setup`。**SU11 の needle。**
 
-`setup-mode-ja.md` にも同じ段落を訳して置く。SKILL.md の
+**追記する段落では、`runners-edit.sh` を含む行に `--config` を書かない。** 2 スクリプトを
+対比するなら行を分ける。SU14 の逆方向は code fence 内に限定されているので散文の対比は
+安全だが、fence 内で 1 行に混ぜると誤 FAIL する。
+
+`setup-mode-ja.md` にも同じ段落を訳して置く。**JA 側も改題する**
+（`## 書き込みは全て \`config-edit.sh\` を通す` → `## フィールド単位の書き込みは全て
+edit スクリプトを通す`）。**既存本文（`setup-mode-ja.md:41-48`）は 1 文字も消さない。**
+SU8 は見出し数しか見ないので片方だけ改題しても緑になる — SU15 の
+`runners-edit.sh` / `mktemp "$RUNNERS.XXXXXX"` needle がこれを機械的に守る。SKILL.md の
 `Both modes write exclusively through scripts/config-edit.sh` も同じ限定を付ける
 （`--reset runners` は 2 スクリプトのどちらも通らないため、無条件の「2 スクリプトを
 通る」は `--reset` について偽になる）。
@@ -1115,7 +1135,7 @@ read without writing まで）と同じ粒度で `runners-edit.sh` を書く。�
 | RE1 | `--set` が指定 runner のフィールドだけを更新し、他 runner と `default` の**値**を変えない（jq は再整形するのでバイト比較は使わない） |
 | RE2 | allowlist 外のフィールド名は exit 2。**`--set engine=codex` / `--unset engine` / `--get engine` の 3 モードすべて**を検査する |
 | RE3 | engine 別 effort allowlist。**負**: claude runner に `minimal`、codex runner に `max` はどちらも exit 2。**正のコントロール**: claude×`max` / claude×`low` / codex×`minimal` / codex×`xhigh` は exit 0 で実際に書き込まれる（CE6 が正負の両半分を持つのに倣う） |
-| RE4 | model はモデル名を allowlist しない: `[A-Za-z0-9._\[\]/-]` からなる任意の未知文字列が通る。**exit 2 になるもの**: 空文字 / 空白のみ / `'` / `"` / `` ` `` / `$` / `\` を含む値 / ESC（`\033`）を含む値 |
+| RE4 | model はモデル名を allowlist しない: `[A-Za-z0-9._\[\]/-]` からなる任意の未知文字列が通る。**exit 2 になるもの**: 空文字 / 空白のみ / **前後に空白を持つ値**（`  fable` / `fable  `）/ `'` / `"` / `` ` `` / `$` / `\` を含む値 / ESC（`\033`）を含む値 |
 | RE5 | `--unset` が該当フィールドだけを削除し、同レコードの他フィールドを残す。**不在フィールドへの `--unset` は exit 0（冪等）** |
 | RE6 | 未知の `--name` は exit 2 かつファイルが `cmp` でバイト同一 |
 | RE7 | 複数の `--set` / `--unset` が 1 回の呼び出しでまとめて反映される |
@@ -1174,7 +1194,7 @@ SU15 の `####` 個数・下限・順序 / SU16 の行順の 4 つは、**生フ
 | SU12 | `setup-mode.md` **と** `setup-mode-ja.md` の**両方** | 候補プール 2 行のアンカー（下記レシピ） |
 | SU13 | `SKILL.md` と `guide-ja.md` | 両方が `runners-edit.sh` を**名指し**している |
 | SU14 | `runners-edit.sh` と `setup-mode.md` | 存在・`-x`・引数なしで usage + exit 2。**双方向の I/F 整合**（下記） |
-| SU15 | `setup-mode-ja.md`（(1) の個数比較のみ `setup-mode.md` も読む） | 6 フィールド名 / `S3-M` / `登録済み runner の model / effort を編集` / `変更なし（現在:` / `既定に戻す（` / `未設定（レビュアーに選べません）` / `未設定に戻す（レビュアーに選べません）` / `レビュアーに選べなくなります` / **`現在の review_runner なので`** / **`名前に ' を含むため`** / `gpt-5.6-sol` / `役割キーのみ` / **`2 か 3 を選ぶと到達できます`**（同上）/ `mkdir -p .dispatch` / `グローバルより優先されることをユーザーに伝える` / `選択肢 2 経由のみ`。**加えて `####` について 3 点**: (1) 個数が `setup-mode.md` と一致、(2) 両方とも 6 個以上（パリティだけだと両方 0 個で緑になり、S3-M の小節構造が丸ごと欠けても検出できない）、(3) **§3.0.1 の 8 見出しが英日それぞれ「その順序で」出現する**（`grep -n` で行番号を取り、昇順であることを assert する） |
+| SU15 | `setup-mode-ja.md`（(1) の個数比較のみ `setup-mode.md` も読む） | 6 フィールド名 / `S3-M` / `登録済み runner の model / effort を編集` / `変更なし（現在:` / `既定に戻す（` / `未設定（レビュアーに選べません）` / `未設定に戻す（レビュアーに選べません）` / `レビュアーに選べなくなります` / **`現在の review_runner なので`** / **`名前に ' を含むため`** / `gpt-5.6-sol` / `役割キーのみ` / **`2 か 3 を選ぶと到達できます`**（同上）/ `mkdir -p .dispatch` / `グローバルより優先されることをユーザーに伝える` / `選択肢 2 経由のみ` / **`runners-edit.sh`** / **`mktemp "$RUNNERS.XXXXXX"`**（識別子なので JA 側も同一文字列。§3.1 の改題・限定文・I/F 段落が JA 側に入ったことをこの 2 つで担保する — SU8 は見出し数しか見ないので片方だけ改題しても緑になる）。**加えて `####` について 3 点**: (1) 個数が `setup-mode.md` と一致、(2) 両方とも 6 個以上（パリティだけだと両方 0 個で緑になり、S3-M の小節構造が丸ごと欠けても検出できない）、(3) **§3.0.1 の 8 見出しが英日それぞれ「その順序で」出現する**（`grep -n` で行番号を取り、昇順であることを assert する） |
 | SU16 | `setup-mode.md` / `setup-mode-ja.md` | §2.6 温存表の逐語 3 文（英日それぞれ。平坦化テキストに対して `grep -F`）。**加えて S7 節内の呼び出し順**（下記） |
 
 **SU12 のレシピ**（重要）: 両ファイルには **claude 行に正当な `max` が現れる**ので、
@@ -1218,6 +1238,15 @@ SU12 は 4 部構成にする。
     ごく自然な書き方**である。その瞬間 `--config` が抽出され、`runners-edit.sh` の
     usage に無いので**正しく書かれた doc が誤 FAIL する**。行単位に絞れば、
     2 スクリプトを同一ブロックに書いても安全になる。
+  - **range を「ファイル全体」にしてもならない。** §3.1 は `runners-edit.sh` の I/F 段落を
+    `config-edit.sh` の既存本文の後ろへ追記させるので、
+    `` `runners-edit.sh` takes `--runners <path>` where `config-edit.sh` takes `--config <path>`. ``
+    のような**散文の対比行**が書かれやすい。code fence の内側に限定していないと
+    この 1 行から `--config` が抽出され、やはり誤 FAIL する。
+    実装は code fence（```` ``` ````）のトグルで state を持つこと。
+  - **抽出結果が空なら FAIL にする。** `runners-edit.sh` を含む行が code block 内に
+    1 行も無いとき、ループが 0 回まわるだけで逆方向の検査が無言で消える。
+    ルート `CLAUDE.md` 保守手順 9 と SU12 (4) と同じ fail-open 禁止。
 
 **SU16 の行順アサーション**: 測るのは **S7 節内の呼び出し順**であって、ファイル全体の
 初出ではない。§3.1 は `runners-edit.sh` の I/F 段落を
