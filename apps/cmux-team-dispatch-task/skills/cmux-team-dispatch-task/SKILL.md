@@ -116,9 +116,9 @@ with the end-of-dispatch cleanup prompts. Follow
 
 Both modes write exclusively through `scripts/config-edit.sh`, which merges rather than
 replaces so that keys owned by other components (`shell_ready_ms`) survive. Both are
-mutually exclusive with `--loop` and with each other, and both refuse to run while an
-issue loop holds the lock. Neither is a task description: `--setup` and `--reset` must
-never reach Step 1a's task parsing.
+mutually exclusive with `--loop`, `--override`, and with each other, and both refuse to
+run while an issue loop holds the lock. Neither is a task description: `--setup` and
+`--reset` must never reach Step 1a's task parsing.
 
 ## Override Mode (per-task temporary override)
 
@@ -154,6 +154,8 @@ If `$ARGUMENTS` is empty or not provided, ask the user what tasks to run:
 
 If `$ARGUMENTS` is provided, parse the input into a task list:
 
+- First strip the mode flags — `--loop`, `--setup`, `--reset [target]`, and `--override`
+  — from `$ARGUMENTS` before splitting, so no task text or slug can ever carry one
 - Split on commas or newlines
 - Paths ending in `.md` inside `.claude/plans/` are recognized as plan file references
 - Each task gets a short slug name derived from its description (lowercase, hyphens, max 30 chars)
@@ -1318,8 +1320,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   `{{EXEC_EFFORT}}` → the resolved execution tuple for the selected/default branch.
 
 - `{{REVIEW_BLOCK}}` → **only when `REVIEW_ENABLED` is true**, bake in the
-  WHOLE block below (substituting `{{REVIEW_MODEL}}` / `{{REVIEW_RUNNER_NAME}}` /
-  `{{REVIEW_PANE_AGENT}}` from the resolved review tuple above). Empty string when disabled:
+  WHOLE block below (substituting `{{REVIEW_MODEL}}` / `{{REVIEW_EFFORT}}` /
+  `{{REVIEW_RUNNER_NAME}}` / `{{REVIEW_PANE_AGENT}}` from the resolved review tuple
+  above). Empty string when disabled:
 
   ````
   PHASE A-R — Plan/Spec review by the resolved review role (REQUIRED between Phase A and Phase B):
@@ -1345,6 +1348,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           --standby-in "$CMUX_WORKSPACE_ID" --standby-split-from "$CMUX_SURFACE_ID" \
           --standby-split-direction right \
           --runner "$REVIEW_RUNNER" --model '{{REVIEW_MODEL}}' \
+          [--effort '{{REVIEW_EFFORT}}'] \
           --status-dir "<EXISTING_STATUS_DIR>" \
           {{REVIEW_PANE_AGENT}})
           # (when the reviewer engine is claude, append --skip-permissions to the spawn)
@@ -1969,6 +1973,7 @@ mkdir -p .dispatch/<task-slug>
 bash <this-skill-dir>/scripts/launch-workspace.sh \
   --mode <plan|superpowers> \
   --runner "$DESIGN_RUNNER" \
+  [--model "$PLAN_MODEL"] [--effort "$PLAN_EFFORT"] \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
   --defer-status \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \

@@ -133,15 +133,20 @@ else
 fi
 
 # --- OV5: --reviewer-model と legacy --review-model の同時指定を拒否する ---
+# exit code だけでは die() の理由を証明できない (runners.json 欠落など無関係な失敗も
+# non-zero を返すため)。stderr に "mutually exclusive" が出ていることまで確認する。
 mkdir -p "$TMP/repo-ov5"
+ov5_stderr="$TMP/stderr-ov5.log"
 if ARGV_LOG="$TMP/argv-ov5.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
    bash "$TMP/scripts/prewarm-panes.sh" --with-design --agmsg-team demo-team \
      --cwd "$TMP/repo-ov5" --slug ov5 --status-dir "$TMP/status-ov5" \
      --codex-runner codex --review-model gpt-5.6-sol --reviewer-model gpt-5.6-sol \
-     >/dev/null 2>&1; then
+     >/dev/null 2>"$ov5_stderr"; then
   bad 'OV5 --reviewer-model with --review-model must be rejected'
-else
+elif grep -Fq -- "mutually exclusive" "$ov5_stderr"; then
   pass 'OV5 --reviewer-model with --review-model is rejected'
+else
+  bad "OV5 rejected for the wrong reason (stderr: $(cat "$ov5_stderr"))"
 fi
 
 # --- OV6: 上書きが in-session 判定に反映される ---

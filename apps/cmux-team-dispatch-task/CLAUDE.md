@@ -253,8 +253,9 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 44. **`--override`**が SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認:
     - `argument-hint` に `--override` があり、`--loop` / `--setup` / `--reset` との排他が
       4 ファイルすべてで同じ理由（`--loop` は無人実行で対話できない）とともに書かれていること
-    - config への書き込み経路を持たないこと。`--override` の説明のどこにも
-      `config-edit.sh` が現れないこと
+    - config への書き込み経路を持たないこと。`--override` の説明中に `config-edit.sh` を
+      **呼び出す**記述が無いこと（「Never call `config-edit.sh` here」のように呼ばない旨を
+      説明のために言及するのは正しい記述であり違反ではない）
     - `prewarm-panes.sh` の 6 フラグ名が SKILL.md の記述と一致すること
     - 回帰は `bash test/test-override.sh`（OV1-OV9）で検証する
 
