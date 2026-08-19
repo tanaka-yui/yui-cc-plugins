@@ -119,8 +119,11 @@ CLI フラグへ落とす。正常系の composed command は 1 バイトも変�
 
 (1) 注入が物理的に失敗した場合と (2) ファイルは読めるが別値が入っている場合を **挙動としては
 区別しない**（この (1)/(2) は「調査結果」および「変更 3」のケース A/B/C とは別の軸なので
-混同しないこと）。(2) の唯一の実在形は「`.claude` が書き込み不可 + 既存の有効 JSON が別値」で
-`:138` の `mktemp` が失敗するケースである。repo 内の自動フローから作る経路は無い
+混同しないこと）。(2) の実在形は 2 つある。「`.claude` が書き込み不可 + 既存の有効 JSON が別値」で `:138` の
+`mktemp` が失敗するケースと、ターゲットに immutable フラグ（macOS の `chflags uchg`）が
+付いていて `:142` の `mv` が EPERM になるケースである（後者は `mkdir -p` も `jq` 読み込みも
+`mktemp` もすべて成功したままファイルが別値で残り、`:146` の `failed to write` だけが出る）。
+どちらも repo 内の自動フローから作る経路は無い
 （git は exec ビット以外の mode を保存しない / read-only FS や ENOSPC なら `:825` の
 `cat > "$RUNNER_FILE"` が `set -e` 下で先に死ぬ / 同一 worktree への並行起動は prewarm が
 全 launch を同期コマンド置換で直列化しているため到達不能）。tracked な
@@ -152,7 +155,7 @@ blast radius を変えない。本変更が新たに広げるものは無い。
 使わないこと。`delivery.sh set` は `launch-workspace.sh` より先に走り（`prewarm-panes.sh` の
 Step 2 = `:411` / `:417` が最初の launch = `:474` より厳密に前）、`launch-workspace.sh` 自身は
 `delivery.sh` を一度も呼ばない。ケース A / B では `delivery.sh` 自身が rc=1 で落ちて hook を
-1 つも書かず、`prewarm-panes.sh:401-402` の既定値 `cmux-send` が上書きされないまま残る
+1 つも書かず、`prewarm-panes.sh:402` の既定値 `cmux-send` が上書きされないまま残る
 （`:414/420` は警告ログのみ）。つまり Step 2a が壊れたファイルを見る時点で配線はすでに失われている。
 
 ### 変更 1: Step 2a に注入結果の読み直しを足す (`launch-workspace.sh`)
@@ -179,18 +182,28 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
   # jq の失敗も、既存ファイルが不正 JSON でマージが拒否されたケースも同時に捕まえられる。
   # 設計ペイン (standby / superpowers の有人経路) は CLI フラグを持たないので、
   # ここが唯一の防壁になる。
-  EFFECTIVE_DEFAULT_MODE=$(jq -r '.permissions.defaultMode // ""' \
-    "$CWD/.claude/settings.local.json" 2>/dev/null || echo "")
-  # 判定は必ず生の値で行う (下の if)。サニタイズ済みの値で比較してはならない。
-  # ログ用の値だけを別変数へ落とす。制御文字を含む値が stderr へ抜けると端末を書き換えられ、
-  # 偽の [permissions] injected 行まで捏造できるため。defaultMode の正当な値域は英数字なので、
-  # それ以外を落とせば制御・書式・分離文字は全 locale で確実に消える
-  # (A-Z / a-z / 0-9 は範囲式で collation 依存のため一部のラテン文字は locale により残るが無害)。
-  EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE//[^A-Za-z0-9_-]/}"
-  EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE_LOG:0:64}"
-  if [[ "$EFFECTIVE_DEFAULT_MODE" != "bypassPermissions" ]]; then
+  # 判定は jq の中だけで完結させる。シェル文字列へ往復させると $() が末尾改行を剥がすため
+  # "bypassPermissions\n" のような enum として不正な値が等値になってしまう。
+  # jq -e は false で 1、不正 JSON で 5、ファイル不在・ディレクトリで 2 を返すので、
+  # 0 以外をすべてフォールバックとして扱えば型混同・末尾空白・A/B/C 全ケースに fail-closed。
+  if ! jq -e '.permissions.defaultMode == "bypassPermissions"' \
+       "$CWD/.claude/settings.local.json" >/dev/null 2>&1; then
     BYPASS_INJECTION_OK=0
-    log "warn" "permission bypass not confirmed in $CWD/.claude/settings.local.json (defaultMode='$EFFECTIVE_DEFAULT_MODE_LOG')"
+    # ログ用の値だけを別に読む。制御文字を含む値が stderr へ抜けると端末を書き換えられ、
+    # 偽の [permissions] injected 行まで捏造できるため英数字以外を落とす。制御・書式・分離
+    # 文字は全 locale で確実に消える (A-Z / a-z / 0-9 は範囲式で collation 依存のため
+    # 一部のラテン文字は locale により残るが無害)。
+    EFFECTIVE_DEFAULT_MODE=$(jq -r '.permissions.defaultMode // ""' \
+      "$CWD/.claude/settings.local.json" 2>/dev/null || echo "")
+    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE//[^A-Za-z0-9_-]/}"
+    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE_LOG:0:64}"
+    # 生値と潰した値の長さを併記する。これが無いと near-miss 値
+    # (例 ["bypassPermissions"]) で「not confirmed なのに defaultMode='bypassPermissions'」
+    # という読めない診断になり、保守者が「比較が壊れている」と誤解してサニタイズ済みの値で
+    # 比較するよう直してしまう (それはこの設計が禁じている変更そのもの)。
+    # 末尾改行だけは $() が剥がすので raw_len と shown_len が並ぶが、判定は jq -e が
+    # 行っているので取りこぼしは無い。
+    log "warn" "permission bypass not confirmed in $CWD/.claude/settings.local.json (defaultMode='$EFFECTIVE_DEFAULT_MODE_LOG' raw_len=${#EFFECTIVE_DEFAULT_MODE} shown_len=${#EFFECTIVE_DEFAULT_MODE_LOG})"
   fi
 
   # 既存の :581-583 のコメント (ensure_claude_exclusions の || true の理由) はそのまま残す
@@ -198,12 +211,22 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
 fi
 ```
 
-**サニタイズを比較の前に置いてはならない。** `[^A-Za-z0-9_-]` は空白・`.`・`!`・`"`・
+`if !` は条件文脈なので `set -e` の影響を受けない。`jq -e` の終了コードと判定の対応:
+
+| `settings.local.json` の状態 | `jq -e` rc | 判定 |
+|------------------------------|-----------|------|
+| `"bypassPermissions"`（厳密一致） | 0 | フォールバックしない |
+| `"bypassPermissions\n"` / `"bypassPermissions "` / `["bypassPermissions"]` | 1 | フォールバック |
+| `"acceptEdits"` / `{}` / `null` | 1 | フォールバック |
+| 不正 JSON（ケース B） | 5 | フォールバック |
+| ディレクトリ（ケース C）/ ファイル不在（ケース A） | 2 | フォールバック |
+
+**サニタイズした値を比較に使ってはならない。** `[^A-Za-z0-9_-]` は空白・`.`・`!`・`"`・
 `[` `]`・`/` をすべて落とすため、`bypassPermissions ` / `bypass Permissions` /
 `bypass.Permissions` / `bypassPermissions!` / JSON 配列 `["bypassPermissions"]` といった
 **Claude Code が `bypassPermissions` として解釈しない値**がすべて `bypassPermissions` へ潰れ、
 フォールバックが発火しなくなる。本 spec が塞ごうとしているデッドロックがそのまま再現する。
-生の値で比較し、サニタイズはログ専用の別変数に限ること。
+サニタイザはログ専用であり、判定は上記の `jq -e` だけが行う。
 
 **警告文にフラグのリテラル `--dangerously-skip-permissions` を含めないこと。** テストが
 composed command のフラグを数えるとき、stdout と stderr を混ぜた入力に対して数えると警告文に
@@ -243,12 +266,12 @@ plan はリテラルでフラグを持つため実害はない。
 `CLAUDE_EXTRA_FLAGS` を組み立てた直後 (`:747` の後) に置く:
 
 ```bash
-# Step 2a の読み直しで bypass を確認できなかったときだけ付ける緊急フラグ。
-# plan は :804 でリテラルのフラグを持つので足さない。
+# Step 2a の判定で bypass を確認できなかったときだけ付ける緊急フラグ。
+# plan は自分の合成箇所でリテラルのフラグを持つので足さない。
 # execute / standby / review は呼び出し元の --skip-permissions が CLAUDE_EXTRA_FLAGS 経由で
 # 届くので、実際に渡されたときだけ足さない (二重付与の回避)。
-# superpowers は :802 が CLAUDE_MODEL_FLAGS しか読まず --skip-permissions を受け取らないため、
-# その値に関わらず足す。
+# superpowers はその合成箇所が CLAUDE_MODEL_FLAGS しか読まず --skip-permissions を
+# 受け取らないため、その値に関わらず足す。
 PERM_FALLBACK_FLAG=""
 if [[ "$RUNNER_ENGINE" == "claude" && $BYPASS_INJECTION_OK -eq 0 ]]; then
   case "$MODE" in
@@ -275,10 +298,12 @@ claude engine の 3 分岐に `$PERM_FALLBACK_FLAG` を挿す。`plan` (`:804`) 
 | `:795` | `standby` / `review`（prompt 無し） | この行は prompt を持たないので**末尾に追記**する |
 | `:802` | `superpowers` | `${CLAUDE_MODEL_FLAGS:+ $CLAUDE_MODEL_FLAGS}$PERM_FALLBACK_FLAG` |
 
-**行番号はすべて変更前のファイル基準である。** 同一ファイルへの編集は 4 つ（変更 1 / 変更 2 /
-4-5 / 4-6）あり、変更 1 が約 20 行を挿入するため、適用後は `:802` → 実際 820、`:804` → 822、
-`:793` → 811、`:795` → 813 のようにずれる。アンカー文字列は一意なので事故には至らないが、
-**適用順は 4-5 → 4-6 → 変更 1 → 変更 2 とし、恒久コメントに行番号を焼かないこと**
+**行番号はすべて変更前のファイル基準であり、編集を進めるたびにずれる。** 同一ファイルへの
+編集は 4 つ（変更 1 / 変更 2 / 4-5 / 4-6）あり、変更 1 と変更 2 のブロックはどちらも
+splice 対象 4 箇所より前に入る。**行番号ではなくアンカー文字列で探すこと**（各アンカーは
+ファイル内で一意であることを確認済み）。どうしても行番号順に進めたい場合は
+**下から上（変更 2 → 変更 1 → 4-6 → 4-5）**の順に当てれば、各編集の時点で変更前の行番号が
+そのまま有効になる。**恒久コメントに行番号を焼かないこと**
 （「`superpowers` の合成箇所」のように記述で書く）。
 
 `:793` の splice 忘れは **prewarm の claude 設計ペインそのものを壊す**（`prewarm-panes.sh:515`
@@ -326,7 +351,7 @@ claude engine の 3 分岐に `$PERM_FALLBACK_FLAG` を挿す。`plan` (`:804`) 
 prompt 引数 + 注入不能）で `launch-workspace.sh` を直叩きし、`:793` を通す。この 1 本で
 上記 5 条件を満たさずに継ぎ目を塞ぐ。
 
-#### 3-1. `test/test-launch-workspace-permissions.sh` に P12〜P25 を追加
+#### 3-1. `test/test-launch-workspace-permissions.sh` に P12〜P26b を追加
 
 既存ハーネス（`cmux` スタブ + `RUNNERS_CONFIG_PATH` + `new_repo`）をそのまま使う。ただし
 **2 つのヘルパーを新設する**。
@@ -346,6 +371,21 @@ count_flag() {
 
 **比較は必ず文字列で行い `(( ))` を使わないこと。** `missing:...` を `(( v == 1 ))` に渡すと
 bash 3.2 + `set -u` で `missing: unbound variable` になり、テストファイルごと rc=1 で中断する。
+
+**EXIT trap を書き換えること（必須）**: P26 / P26b は `chmod a-w` したディレクトリを残すため、
+既存の `trap 'rm -rf "$TMP"' EXIT`（`test-launch-workspace-permissions.sh:13`）が
+`Permission denied` で失敗する。`set -euo pipefail` 下では **trap 内の `rm` の失敗が
+そのままスクリプトの終了ステータスになる**ので、`--- all tests passed ---` を出しながら rc=1 に
+なり、検証ブロックは stderr を捨てるので「FAILED」としか表示されず理由が見えない。
+ケース内で `chmod u+w` を戻すだけでは不十分（`out=$(run_launch_err …)` が `set -e` で落ちた経路が
+復元行に到達しない）。trap 自体を次に変える:
+
+```bash
+trap 'chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+```
+
+同種の前例は `test/test-send-prompt.sh:199-207`（`chmod 000` 後に必ず `chmod 755` で戻し
+`[[ $EUID -ne 0 ]]` でガードする）にある。
 
 **stderr 捕捉ヘルパー（必須）**: 既存の `run_launch` (`:56-59`) はリダイレクトを持たず、
 stderr を assert している既存ケースは 1 つも無い。素朴に `2>&1` でマージすると stdout の
@@ -372,11 +412,11 @@ run_launch_err() {   # $1 = stderr の保存先, 以降 launch の引数
 
 | id | MODE / 条件 | 期待 |
 |----|------------|------|
-| P12 | `standby`・**prompt 引数あり**・注入不能 A | `count_flag == 1`、stderr に `added the CLI permission flag` が**出る**。`:793`（prewarm 設計ペインの実構成）を通す |
+| P12 | `standby`・**prompt 引数あり**・注入不能 A | `count_flag == 1`、stderr に `added the CLI permission flag` が**出る**、かつ stderr に `--dangerously-skip-permissions` のリテラルが**出ない**。`:793`（prewarm 設計ペインの実構成）を通す |
 | P13 | `superpowers`・注入不能 A | `count_flag == 1`（変更 2 の `:802` splice の担保） |
 | P14 | `superpowers`・注入不能 A・`--skip-permissions` 明示 | `count_flag == 1`（`superpowers)` 分岐が `SKIP_PERMISSIONS` を見ないこと） |
 | P15 | `superpowers`・正常系・`--skip-permissions` 明示 | `count_flag == 0`（P6 / RM10c の契約を維持） |
-| P16 | `standby`・prompt 引数なし・注入不能 A・`--skip-permissions` 明示 | `count_flag == 1`（二重付与なし。`:795` の splice は担保しない — 後述） |
+| P16 | `standby`・prompt 引数なし・注入不能 A・`--skip-permissions` 明示 | `count_flag == 1`（二重付与なし。P23 の弱い版で独自の検出力は無く、`:795` の splice も担保しない — 後述） |
 | P17 | `plan`・注入不能 A | `count_flag == 1`、stderr に `added the CLI permission flag` が**出ない** |
 | P18 | `execute`・注入不能 A・`--skip-permissions` 無し | `count_flag == 1`（`:785` splice の担保） |
 | P19 | codex engine・`.claude` の状態に関わらず | `count_flag == 0` かつ新警告が出ない |
@@ -387,6 +427,7 @@ run_launch_err() {   # $1 = stderr の保存先, 以降 launch の引数
 | P24 | `standby`・**prompt 引数なし・`--skip-permissions` なし**・注入不能 **C**（`settings.local.json` がディレクトリ） | `count_flag == 1`。`:795` の担保者かつ戻り値ベース誤実装の唯一の検出者 |
 | P25 | 非 git `--cwd`・注入不能 A | launch が rc=0 で成功し `count_flag == 1` |
 | P26 | `standby`・`.claude` を `chmod a-w` して既存の有効 JSON に制御文字入りの `defaultMode` を残す（**root では skip**） | `count_flag == 1`、警告行に制御文字が 1 バイトも含まれず、偽の `[permissions] injected` 行が捏造されない |
+| P26b | P26 と同じレシピで payload を `bypass<ESC>Permissions` にする（**root では skip**） | `count_flag == 1`。サニタイズすると `bypassPermissions` へ潰れる値なので、判定をサニタイズ後の値で行う実装だけが落ちる |
 
 各ケースの意図（テスト内コメントに書くこと）:
 
@@ -420,24 +461,61 @@ run_launch_err() {   # $1 = stderr の保存先, 以降 launch の引数
   `plan) ;;` 削除 + `:804` への splice（フラグが 2 個になる）、付与ログの無条件出力
   （変更 1 の検出ログと変更 2 の付与ログを分離した設計の回帰）。P17 はこの分離を守る唯一の砦である。
 - **P25 に flag oracle としての価値は無い**（P13 の重複であり、P13 自身も P14 の真部分集合）。
-  読み直しを `ensure_claude_exclusions` の後ろへ動かす mutant も P1〜P26 を全件 PASS するので、
+  読み直しを `ensure_claude_exclusions` の後ろへ動かす mutant も P1〜P26b を全件 PASS するので、
   「将来の位置変更への保険」とも書かないこと。残す意味は「非 git `--cwd` でも launch が rc=0 で
   続き、異常系でもフラグが付くこと」= P11 の異常系版の確認だけである。
 - **`review` MODE のケースは置かない。** `:789` は `standby` / `review` の単一分岐なので、
   変更 2 の `case` でも両者は同じ `*)` に落ちる。ただし `*)` の代わりに
-  `execute|standby)` と MODE を列挙するスリップは自然に起こり、それは P12〜P26 を全件 PASS する。
-  それでもケースを置かないのは、**production の claude review ペインが prewarm 経路
-  （`prewarm-panes.sh:638`）でもオンデマンド経路（`SKILL.md:1354`）でも常に
-  `--skip-permissions` 付きで起動するため、`*)` が review を落としても composed command が
-  変わらない**からである（「mutant が作れないから」ではない）。
-- **サニタイザ（変更 1 のログ用 2 行）の回帰は P26 が持つ。** ただし到達には「読めるが別値」の
-  状態が要るため `chmod a-w` が必要で、root 実行では成立しない。**root のときは skip し、
-  skip したことを標準出力に明示すること**（無言 skip は空虚な PASS と同じ）。他ケースの
-  A/B/C レシピが root でも成立するのとは扱いが違う点に注意。
+  `execute|standby)` と MODE を列挙するスリップは自然に起こり、それは P12〜P26b を全件 PASS する。
+  それでもケースを置かないのは、**production の claude review ペインが 2 つの spawn 経路の
+  どちらでも `--skip-permissions` 付きで起動するため、`*)` が review を落としても
+  composed command が変わらない**からである（「mutant が作れないから」ではない。
+  `execute|standby)` のように MODE を列挙するスリップは実際に作れて全件 PASS する）。
+  ただし 2 経路の担保の強さは対称ではない: `prewarm-panes.sh:638` は実コードだが、
+  `SKILL.md:1353` は子セッション向けのコメント指示なのでモデルの遵守に依存する。
+- **サニタイザ関連の回帰は 2 本に分かれる。** P26 が「サニタイザ 2 行の削除」を、
+  **P26b が「サニタイズ済みの値で判定する実装」**（この設計が明示的に禁じている形）を検出する。
+  1 つの payload に「偽 `[permissions] injected` 行の捏造」と「`bypassPermissions` への潰れ」を
+  同居させることは原理的に不可能（捏造文字列の英数字がサニタイズを生き残る）なので、
+  2 ケースに分けるのが唯一の解である。
+- **P26 / P26b の到達には `chmod a-w` が要り、root 実行では成立しない**（uid 0 はモードビットを
+  無視するので `mktemp` が成功し、ファイルが `bypassPermissions` に上書きされて全 assert が
+  落ちる）。`[[ $EUID -ne 0 ]]` でガードし、**skip したことを標準出力に明示すること**
+  （無言 skip は空虚な PASS と同じ）。他ケースの A/B/C レシピが root でも成立するのとは
+  扱いが違う点に注意。到達するのは `merge_claude_settings:139` の
+  `failed to create a temp file` であって `:122` ではない（既存ディレクトリへの `mkdir -p` は成功する）。
+
+**P26 / P26b の `settings.local.json` の中身を逐語で確定する。** 生の制御バイトを JSON 文字列に
+書くと `jq` が `control characters from U+0000 through U+001F must be escaped` で失敗し、
+読み直しが `""` を返して**全アサーションが自明に PASS** する。必ず `\u` エスケープで書くこと:
+
+```bash
+# P26: ESC/OSC + 改行で偽の [permissions] injected 行を捏造しようとする payload
+printf '%s' '{"permissions":{"defaultMode":"acceptEdits\u001b]0;PWNED\u0007\u000a[permissions] injected"}}' \
+  > "$repo/.claude/settings.local.json"
+
+# P26b: サニタイズすると bypassPermissions へ潰れる payload (ESC 1 文字だけを挟む)
+printf '%s' '{"permissions":{"defaultMode":"bypass\u001bPermissions"}}' \
+  > "$repo/.claude/settings.local.json"
+```
+
+**「制御文字ゼロ」のアサートは macOS 可搬な形で書く**（bash 3.2.57 で動作確認済み）:
+
+```bash
+[[ "$(printf '%s' "$line" | LC_ALL=C tr -d '\000-\037\177')" == "$line" ]]
+```
+
+`tr` / `grep` は行単位なので**改行の捏造は捕まえられない**。`grep -ac 'permission bypass not
+confirmed' "$err"` が `1` であることを併せて assert すること（捏造された改行で行が増えていない
+ことの確認になる）。なお警告文に埋め込む `$CWD` はサニタイズしない（既存の 4 警告
+`:122` / `:133` / `:139` / `:146` と同じ扱い）。P26 / P26b の主張は `defaultMode` フィールドに
+ついてのものである。
 
 警告文字列 `permission bypass not confirmed` と `added the CLI permission flag` の 2 つを
 テスト定数に固定する（`CLAUDE.md` 保守項目 24 の `HOOK_WARN` と同じ運用）。前者は肯定側
-（P21）と否定側（P19 / P20 / P22）、後者は肯定側（P12）と否定側（P17）で使う。
+（P21 / P26 / P26b）と否定側（P19 / P20 / P22）、後者は肯定側（P12）と否定側（P17）で使う。
+P12 では加えて、警告文にフラグのリテラルが混ざっていないことも stderr に対して assert する
+（この制約はテストが無いと無言で破れる）。
 
 **注入不能状態の作り方**:
 
@@ -485,7 +563,8 @@ CLAUDE.md 側だけ直してテストファイル側が残ると同じドリフ�
 # 検証項目: 全 MODE への注入 / codex engine 非対象 / 既存キー保持 / 冪等性 /
 # 正常系では superpowers にフラグを足さないこと / info/exclude の追記 /
 # 注入を確認できなかったときの --dangerously-skip-permissions へのフォールバック
-# (3 ケース A・B・C、二重付与なし、正常系で誤発火しないこと)。
+# (3 ケース A・B・C、二重付与なし、正常系で誤発火しないこと) /
+# 警告ログ値のサニタイズ (P26 / P26b、root では skip)。
 ```
 
 #### 3-2. `test/test-prewarm-design-permissions.sh` を新設（id prefix は `DB`、2 ケースのみ）
@@ -532,8 +611,10 @@ id は 2 つに絞って運用コストを抑える。
   executor 2 行にマッチし、フラグを持つのは 1 行だけなので偽 FAIL する。`pane_line()` を使えば
   DB1 は 1 ケースで両半分（設計行に flag なし / `<slug>-claude` 行に flag あり）を assert できる。
 - **`pane_line()` を使うには `prewarm-panes.sh` に `--agmsg-team <name>` を渡すこと。**
-  `--agmsg-from` は `AGMSG_TEAM` が空だと argv に出ない（`prewarm-panes.sh:555` / `:591`）。
-  モデルの `test-prewarm-layout.sh:73` は `--agmsg-team demo-team` を渡している。
+  DB1 / DB2 は `--with-design` を使うので、渡さないと `prewarm-panes.sh:355` の
+  `[[ -n "$AGMSG_TEAM" ]] || die "--with-design requires --agmsg-team"` で即 die する
+  （executor 行の `--agmsg-from` が argv から消えるのはさらに手前の話で、設計ペインの `:514` は
+  無ガードで常に渡す）。モデルの `test-prewarm-layout.sh:73` は `--agmsg-team demo-team` を渡している。
 - **否定アサーションは 3 段構えで書く**: 対象行を取得 → 空なら `bad` → その行にフラグが無いことを
   assert。`test-prewarm-unattended.sh:60-65` の `assert_no_line_with` は 0 行マッチでも `ok` を
   返すのでモデルにしないこと（同ファイル `:53-59` の `assert_all_lines_with` は
@@ -563,20 +644,26 @@ engine × MODE 表の本体は `:378-386`。差し替え対象は **`:381`（`cl
 条件は直下の散文（`:388-395`）が担う形で、セル内に脚注記法を持つ前例は SKILL.md に 0 件である。
 この選択は guide-ja 側の書式差の問題も同時に消す。`:382` は変更しない。
 
-**慣行に従う以上、直下の散文も更新する。** `:391-393` の末尾（`work).` の直後）に次の 2 文を足す:
+**慣行に従う以上、直下の散文も更新する。** アンカーは `:395` の
+`` `review_model` explicitly); when still unset, codex's own default model applies. ``
+（`:388-395` の段落の最終行）で、**その直後に空行 1 行と次の段落**を挿入する。
+`:391-393` の途中へ割り込ませないこと。折り返しは同ファイルの散文に合わせて 89 文字以内:
 
 ```
-Both brackets in that table are conditional, but not on the same thing: the one on the
-`execute` row means the caller passed `--skip-permissions`, while the one on the
-`superpowers` row means the settings readback described below failed. `superpowers` never
-takes the flag from `--skip-permissions`, and `execute` gains it from either source.
+The two `[--dangerously-skip-permissions]` brackets in that table are both conditional,
+but not on the same condition. On the `execute` row it appears when the caller asked for
+it, that is `--skip-permissions` or `--unattended` on the claude engine, or when the
+settings readback described below fails. On the `superpowers` row only the readback
+condition applies: that composition site never reads `--skip-permissions` at all.
 ```
 
 `claude | standby` / `claude | review` の行は **足さない**。理由は「表がプロンプトを持つ
 モードだけを並べているから」ではない（`:386` の `codex | review` 行はプロンプトを持たない）。
 行を足すと guide-ja.md の対応表にも同じ拡張が要り、standby / review は起動プロンプトが
-`--mode` ごとに固定されず親からの送信で決まるためセルに書ける「Composed command」が
-一意にならないからである。standby / review の扱いは直下の段落で文章として書く。
+`--mode` ごとに固定されず親からの送信で決まるため、セルに書ける「Composed command」の
+情報量がフラグの列挙だけになるからである（`:386` の `codex | review` 行がプロンプトを
+セルから省いて載っているとおり、行を書くこと自体は可能なので、これは費用対効果の判断である）。
+standby / review の扱いは直下の段落で文章として書く。
 
 `:409-414` の段落を次で置き換える:
 
@@ -604,8 +691,9 @@ a warning containing `permission bypass not confirmed` and adds
 `standby` / `review` are skipped when the caller actually passed
 `--skip-permissions`. `superpowers` is the exception that always gets the
 fallback, because its composition site never reads `--skip-permissions` at all.
-That is also why the bracket on the `superpowers` row above means something
-different from the one on the `execute` row. Without the fallback the design
+That is also why the `[--dangerously-skip-permissions]` bracket on the
+`superpowers` row above carries only part of the condition the one on the
+`execute` row carries. Without the fallback the design
 pane would be the only claude pane with no second line of defence, and it would
 block on its first permission prompt with nobody attached.
 ```
@@ -641,7 +729,8 @@ executor も claude のレビューペインも常にフラグ付きで spawn �
 既にリテラルを持っており、`execute` / `standby` / `review` は呼び出し元が実際に
 `--skip-permissions` を渡していたときは足さないからである。`superpowers` だけは例外で、
 組み立て箇所がそもそも `--skip-permissions` を読まないため常にフォールバックが付く。
-上の表の `superpowers` 行の角括弧が `execute` 行の角括弧と違う意味になるのはこのためである。
+上の表の `superpowers` 行の `[--dangerously-skip-permissions]` が `execute` 行のそれより
+狭い条件しか持たないのはこのためである。
 フォールバックが無いと、設計ペインだけが第二の防壁を持たない claude ペインとなり、
 誰も見ていない状態で最初の permission prompt に当たって停止する。
 ```
@@ -662,14 +751,15 @@ SKILL.md `:416` と同様に置き換える。置換後の直前の段落がフ�
 | claude | superpowers | `<command> [--model <plan_model>] [--effort <plan_effort>] [--dangerously-skip-permissions] '<PROMPT>'` |
 ```
 
-SKILL.md `:391-393` と対応する散文（guide-ja `:1610-1615` の effort 段落）の末尾にも、
-角括弧の意味差を説明する 2 文を足す:
+角括弧の意味差を説明する段落も足す。**guide-ja は表の直下が effort 段落（`:1610-1615`、
+原文は `SKILL.md:397-404`）なので、そこへ混ぜてはならない。** 表の直後・effort 段落の直前、
+すなわち **`:1609` の空行の位置に独立段落として**挿入する（挿入後に空行が 1 行残るようにする）:
 
 ```
-上表の角括弧はどちらも条件付きだが、条件は同じではない。`execute` 行のそれは
-「呼び出し元が `--skip-permissions` を渡したとき」、`superpowers` 行のそれは
-「後述の settings 読み直しが失敗したとき」を意味する。`superpowers` は
-`--skip-permissions` からフラグを受け取ることが無く、`execute` は両方の経路から受け取る。
+上表の 2 つの `[--dangerously-skip-permissions]` はどちらも条件付きだが、条件は同じではない。
+`execute` 行のそれは、呼び出し元が要求したとき（`--skip-permissions`、または claude engine での
+`--unattended`）か、後述の settings 読み直しが失敗したときに現れる。`superpowers` 行のそれは
+読み直しの条件だけで、その組み立て箇所は `--skip-permissions` をそもそも読まない。
 ```
 
 あわせて **既存のドリフト 2 件を同 commit で直す**（4 ファイル整合ルール上、放置できない）:
@@ -728,26 +818,24 @@ codex bullet の該当文は `codex engine には**一切注入しない**こと
 フォールバックフラグも codex には付けないこと（P19 が守る）。
 ```
 
-`merge_claude_settings` bullet の末尾に、実装時に崩してはならない制約 2 件を足す:
+`merge_claude_settings` bullet（`…両者が同じ settings.local.json に共存すること` で終わる行）は
+**句点で終わっていないので、区切りを含めて 1 行に連結する**。兄弟 bullet はすべて 1 行で
+句点無しに終わる形式なので、それに合わせて次を末尾へ足す（改行を入れないこと）:
 
 ```
-新しい警告文にフラグのリテラル `--dangerously-skip-permissions` を含めないこと（テストが
-composed command のフラグを数えるとき警告文にマッチして空虚な PASS になる）。agmsg の
-`delivery.sh set` は同じ `settings.local.json` を read-modify-write するので、
-`prewarm-panes.sh` の Step 2 が全 launch より前に走る順序を崩さないこと（崩すと注入が
-巻き戻り、読み直しは Step 2a で終わっているため検出できない）。
+。また、新しい警告文にフラグのリテラル `--dangerously-skip-permissions` を含めないこと（テストが composed command のフラグを数えるとき警告文にマッチして空虚な PASS になる）。agmsg の `delivery.sh set` は同じ `settings.local.json` を read-modify-write するので、`prewarm-panes.sh` の Step 2 が全 launch より前に走る順序を崩さないこと（崩すと注入が巻き戻り、読み直しは Step 2a で終わっているため検出できない）
 ```
 
 最終 bullet を次で置き換える:
 
 ```
-回帰は `bash test/test-launch-workspace-permissions.sh` の P1〜P26（全 MODE 注入 / codex 非対象
+回帰は `bash test/test-launch-workspace-permissions.sh` の P1〜P26b（全 MODE 注入 / codex 非対象
 / 既存キー保持 / 冪等 / 正常系では superpowers にフラグを足さない / info/exclude 追記 /
 `--skip-permissions` との共存 / 非 git cwd でも launch が成功 / 読み直し失敗の 3 ケース
 A・B・C でのフォールバック / superpowers は `--skip-permissions` を読まない（P14）/
 standby の prompt 有無の両分岐 / plan と `--skip-permissions` 既付与での二重付与なし /
 正常系で誤発火しない（P20）/ worktree 再利用の短絡では発火しない / `--unattended` との共存 /
-ログ値のサニタイズ（P26、root では skip））と
+ログ値のサニタイズと判定順序の回帰（P26 / P26b、root では skip））と
 `bash test/test-prewarm-design-permissions.sh`（DB1-DB2: 設計ペインと claude executor の
 `--skip-permissions` 非対称。本項目の変更に対する回帰ではなく既存カバレッジ負債の返済）で
 検証する。警告文言 `permission bypass not confirmed` と `added the CLI permission flag` は
@@ -793,8 +881,10 @@ standby の prompt 有無の両分岐 / plan と `--skip-permissions` 既付与�
 #
 # 注入は best effort で、しかも merge_claude_settings の戻り値は信用できない。
 # settings.local.json がディレクトリのとき mv は temp をその中へ移動したうえで 0 を返し、
-# 値が 1 つも入っていないのに injected とログに出る。だから戻り値ではなくファイルを
-# 読み直して判定する。読み直しが失敗を告げたときに CLI フラグへ落とすのは、設計ペイン
+# 値が 1 つも入っていないのに injected とログに出る。だから戻り値ではなく、書き込んだ
+# ファイルを jq -e で直接判定する (シェル文字列へ往復させると $() が末尾改行を剥がして
+# 不正な値が等値になるので、比較は jq の中で完結させる)。判定が失敗を告げたときに
+# CLI フラグへ落とすのは、設計ペイン
 # (standby / superpowers の有人経路) だけが第二の防壁を持たず、permission prompt に
 # 当たると誰にも通知されないまま停止してディスパッチごとデッドロックするため。
 #
@@ -846,8 +936,9 @@ standby の prompt 有無の両分岐 / plan と `--skip-permissions` 既付与�
   `write_status "error"` (`:1077`) と親通知 (`:1087`) を出す。無言のハングより検知可能な
   失敗のほうが望ましいので、これは意図した結果として受け入れる。
 - シェルは bash 3.2 互換を維持する（新規の配列展開を導入しない。`${var//[^A-Za-z0-9_-]/}` と
-  `${var:0:64}` は bash 3.2.57 で動作確認済み。文字クラスではなく否定リテラル集合なので
-  locale にも依存しない）。
+  `${var:0:64}` は bash 3.2.57 で動作確認済み。制御・書式・分離文字は全 locale で確実に
+  除去される。`A-Z` / `a-z` / `0-9` は範囲式で collation 依存のため一部のラテン文字は
+  locale により残るが、ログ 1 行の見た目の問題であって無害である）。
 
 ## 検証
 
@@ -856,12 +947,25 @@ standby の prompt 有無の両分岐 / plan と `--skip-permissions` 既付与�
 `check-doc-lang` を走らせても必ず green になり、`japanese-in-english-doc` 違反を取り逃がす。
 
 ```
-WT=$(git rev-parse --show-toplevel)
-cd "$WT/apps/cmux-team-dispatch-task"
-rc=0; for t in test/*.sh; do printf '%-46s ' "$t"; if bash "$t" >/dev/null 2>&1; then echo OK; else echo FAILED; rc=1; fi; done
-cd "$WT" && node scripts/check-doc-lang.mjs apps/cmux-team-dispatch-task
-exit $rc
+(
+  set +e
+  WT=$(git rev-parse --show-toplevel)
+  cd "$WT/apps/cmux-team-dispatch-task" || exit 1
+  rc=0
+  for t in test/*.sh; do
+    printf '%-46s ' "$t"
+    if bash "$t" >/dev/null 2>&1; then echo OK; else echo FAILED; rc=1; fi
+  done
+  cd "$WT" || exit 1
+  node scripts/check-doc-lang.mjs apps/cmux-team-dispatch-task || rc=1
+  echo "rc=$rc"
+)
 ```
+
+`|| rc=1` は必須である。これが無いと `node` の終了コードがどこにも反映されず、
+`japanese-in-english-doc` 違反があっても無言で green になる。全体をサブシェルで包み
+`exit` ではなく `echo "rc=$rc"` で終えるのは、対話シェルへ貼っても端末が落ちず cwd も
+戻るようにするためである。
 
 失敗したスイートは `>/dev/null` を外して項目単位で確認する。全スイート green かつ
 `check-doc-lang` が OK であること。
