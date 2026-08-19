@@ -46,8 +46,11 @@
 #
 #   注記: claude engine では MODE を問わず、worktree の
 #   .claude/settings.local.json に permissions.defaultMode: "bypassPermissions" を
-#   注入する (Step 2a)。--skip-permissions はそれとは別に
-#   --dangerously-skip-permissions フラグを付ける。codex engine は対象外。
+#   注入する (Step 2a)。注入後にファイルを読み直して確認できなかったときは、
+#   plan (組み立て箇所でリテラル付与済み) と、呼び出し元が --skip-permissions を
+#   渡した execute / standby / review を除いて --dangerously-skip-permissions を
+#   自動で足す。superpowers は --skip-permissions を読まないので常に足す。
+#   --skip-permissions はそれとは別に呼び出し元が明示するフラグ。codex engine は対象外。
 #   --defer-status                     runner wrapper が exit 時に <STATUS_DIR>/.deferred
 #                                      が存在する場合 status.json 更新 / 親通知 /
 #                                      cmux wait-for 発火をスキップ。Phase B で別 surface に
@@ -546,7 +549,8 @@ fi
 
 # --- Step 2a: permission prompt 抑止 (claude engine の全 MODE) ---
 # claude の子セッションで permission prompt が出ないよう、worktree の
-# .claude/settings.local.json に permissions.defaultMode: bypassPermissions を注入する。
+# .claude/settings.local.json に permissions.defaultMode: bypassPermissions を注入し、
+# 注入できたことをファイル実体で確認する。確認できなければ CLI フラグへ落とす (Step 3)。
 #
 # 裏取り (Claude Code 公式ドキュメント + 実測):
 #   - --dangerously-skip-permissions は --permission-mode bypassPermissions と
@@ -559,13 +563,24 @@ fi
 #   - settings.local.json に defaultMode を書くだけで CLI フラグ無しに permission
 #     prompt が消えることは実測済み
 #
+# 注入は best effort で、しかも merge_claude_settings の戻り値は信用できない。
+# settings.local.json がディレクトリのとき mv は temp をその中へ移動したうえで 0 を返し、
+# 値が 1 つも入っていないのに injected とログに出る。だから戻り値ではなく、書き込んだ
+# ファイルを jq -e で直接判定する (シェル文字列へ往復させると $() が末尾改行を剥がして
+# 不正な値が等値になるので、比較は jq の中で完結させる)。判定が失敗を告げたときに
+# CLI フラグへ落とすのは、設計ペイン (standby / superpowers の有人経路) だけが第二の
+# 防壁を持たず、permission prompt に当たると誰にも通知されないまま停止して
+# ディスパッチごとデッドロックするため。
+#
 # bypass モード突入の確認ダイアログはフラグでも defaultMode でも出る。抑止する
 # skipDangerousModePermissionPrompt は project settings では無視されるため、
 # ユーザー設定 ~/.claude/settings.json 側に置く必要がある (README 参照)。
+# したがってフォールバックもこの前提を共有する。
 #
 # codex engine は .claude/settings.local.json を読まないため対象外。codex は
 # --dangerously-bypass-approvals-and-sandbox / review ペインの
 # --sandbox workspace-write で既に prompt が出ない。
+BYPASS_INJECTION_OK=1
 if [[ "$RUNNER_ENGINE" == "claude" ]]; then
   CURRENT_DEFAULT_MODE=""
   if [[ -f "$CWD/.claude/settings.local.json" ]]; then
@@ -578,6 +593,31 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
   elif merge_claude_settings '.permissions.defaultMode = "bypassPermissions"'; then
     log "permissions" "injected permissions.defaultMode=bypassPermissions into $CWD/.claude/settings.local.json"
   fi
+
+  # 注入結果をファイル実体で判定する。merge_claude_settings の戻り値を信用しないのは、
+  # settings.local.json がディレクトリのとき mv が temp をその中へ移動して return 0 を返し、
+  # 値が 1 つも入っていないのに injected とログに出るため。判定を jq の中で完結させるのは、
+  # シェル文字列へ往復させると $() が末尾改行を剥がして "bypassPermissions\n" のような
+  # enum として不正な値が等値になってしまうため。jq -e は false で 1、不正 JSON で 5、
+  # ファイル不在・ディレクトリで 2 を返すので、0 以外をすべて失敗として扱えば
+  # 型混同・末尾空白・注入不能の全ケースに fail-closed になる。
+  if ! jq -e '.permissions.defaultMode == "bypassPermissions"' \
+       "$CWD/.claude/settings.local.json" >/dev/null 2>&1; then
+    BYPASS_INJECTION_OK=0
+    # ログ用の値だけを別に読む。制御文字を含む値が stderr へ抜けると端末を書き換えられ、
+    # 偽の [permissions] injected 行まで捏造できるため英数字以外を落とす。
+    EFFECTIVE_DEFAULT_MODE=$(jq -r '.permissions.defaultMode // ""' \
+      "$CWD/.claude/settings.local.json" 2>/dev/null || echo "")
+    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE//[^A-Za-z0-9_-]/}"
+    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE_LOG:0:64}"
+    # 生値と潰した値の長さを併記する。これが無いと near-miss 値 (例 ["bypassPermissions"])
+    # で「not confirmed なのに defaultMode='bypassPermissions'」という読めない診断になり、
+    # 保守者が「比較が壊れている」と誤解してサニタイズ済みの値で比較するよう直してしまう
+    # (それはこの設計が禁じている変更そのもの)。末尾改行だけは $() が剥がすので raw_len と
+    # shown_len が並ぶが、判定は jq -e が行っているので取りこぼしは無い。
+    log "warn" "permission bypass not confirmed in $CWD/.claude/settings.local.json (defaultMode='$EFFECTIVE_DEFAULT_MODE_LOG' raw_len=${#EFFECTIVE_DEFAULT_MODE} shown_len=${#EFFECTIVE_DEFAULT_MODE_LOG})"
+  fi
+
   # `|| true` は必須。このスクリプトは set -euo pipefail で走るので、bare 呼び出しだと
   # info/exclude を解決できないケース (非 git な --cwd など) で launch ごと死ぬ。
   # ensure_claude_exclusions はベストエフォート契約 (警告のみ)。
