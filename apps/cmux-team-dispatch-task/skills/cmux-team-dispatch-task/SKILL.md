@@ -301,15 +301,18 @@ a different account via a zsh function such as `ccenec`, or `codex`). Resolution
    same runner name, as the design runner.
 
    - fixed runner name → `REVIEW_POLICY=fixed`; resolve `REVIEW_RUNNER`,
-     `REVIEW_ENGINE`, `REVIEW_MODEL`, and `REVIEW_PANE_AGENT=<task-slug>-review` from
-     that runner. The one dedicated review pane handles both Phase A-R and Phase B-R.
+     `REVIEW_ENGINE`, `REVIEW_MODEL`, `REVIEW_EFFORT`, and
+     `REVIEW_PANE_AGENT=<task-slug>-review` from that runner. `REVIEW_EFFORT` is the
+     runner's `review_effort`, defaulting to `xhigh` on both engines. The one dedicated
+     review pane handles both Phase A-R and Phase B-R.
    - `"ask"` → ask once per dispatch from all review-capable runners, without filtering
      out the design engine; the answer becomes the fixed policy for this dispatch only.
    - key absent in both layers → `REVIEW_POLICY=legacy`; preserve the v1.17.0 automatic
      cross-engine resolver. For design=claude, select a review-model-bearing codex
      runner. For design=codex, select a claude runner (one silently, multiple via the
      existing question) and use its `review_model` or `opus[1m]`. Store that resolver's
-     result in the same `REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` variables and
+     result in the same `REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` /
+     `REVIEW_EFFORT` variables and
      set `REVIEW_PANE_AGENT=<task-slug>-review`; downstream prompt and spawn code never
      recomputes an engine relationship.
 
@@ -556,9 +559,9 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
 
 **Resolve review mode (`review_mode`)** — precedence: project config → global config → ask.
 Resolve the independent review role from Step 1f first; `REVIEW_POLICY`,
-`REVIEW_RUNNER`, `REVIEW_ENGINE`, and `REVIEW_MODEL` are the only review inputs used
-below. A fixed policy never substitutes a different runner based on the design or
-implementation engine.
+`REVIEW_RUNNER`, `REVIEW_ENGINE`, `REVIEW_MODEL`, and `REVIEW_EFFORT` are the only
+review inputs used below. A fixed policy never substitutes a different runner based on
+the design or implementation engine.
 
 1. Read `review_mode` from `<project>/.dispatch/config.json`, falling back to
    `~/.claude/cmux-team-dispatch-task/config.json`:
@@ -1185,7 +1188,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 
 - Substitute the complete resolved role tuple into every prompt before launch:
   `DESIGN_RUNNER` / `DESIGN_ENGINE` / `PLAN_MODEL` / `PLAN_EFFORT`, `REVIEW_POLICY` /
-  `REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` / `REVIEW_PANE_AGENT`, and
+  `REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` / `REVIEW_EFFORT` /
+  `REVIEW_PANE_AGENT`, and
   `EXEC_CHOICE` / `EXEC_RUNNER` / `EXEC_ENGINE` / `EXEC_MODEL` / `EXEC_EFFORT`. These are
   values, not hints: a child must not derive a runner, model, or effort again from an
   engine. `PLAN_EFFORT` / `EXEC_EFFORT` feed the in-session condition (Phase B block
@@ -1210,7 +1214,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 - `{{DESIGN_RUNNER}}`, `{{DESIGN_ENGINE}}`, `{{PLAN_MODEL}}`, `{{PLAN_EFFORT}}` → the
   resolved design tuple.
 - `{{REVIEW_POLICY}}`, `{{REVIEW_RUNNER}}`, `{{REVIEW_ENGINE}}`,
-  `{{REVIEW_MODEL}}`, `{{REVIEW_PANE_AGENT}}` → the resolved review tuple. Under both fixed
+  `{{REVIEW_MODEL}}`, `{{REVIEW_EFFORT}}`, `{{REVIEW_PANE_AGENT}}` → the resolved review
+  tuple. Under both fixed
   and legacy policy, the dedicated review pane agent is `<task-slug>-review`. Legacy
   preserves only the six-case cross-engine Phase B-R reviewer assignment; it does not
   repurpose the separate `<task-slug>-claude` executor pane as the review pane.

@@ -109,6 +109,8 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 - **独立レビュアー解決**: project `review_runner` → global `review_runner` → key 未設定時の
   legacy 自動 resolver。固定/`"ask"` は同一 engine を許可する。codex 候補は `review_model` 必須、
   claude 候補は `opus[1m]` fallback。不正な project/global 値はそのレイヤーだけ無効化する。
+  `REVIEW_EFFORT` はどちらの policy でも解決済み runner の `review_effort` から決まり、
+  既定値は両 engine とも `xhigh`。
 
 ### 1g. 配送・レビューモード・実行既定の解決
 
@@ -353,7 +355,7 @@ Phase B-R が実装完了後・PR 作成前に挟まる）。プロンプトテ�
 で選んだ runner は `REVIEW_POLICY=fixed` となり、設計と同じ engine でもよい。同じ専用ペインが
 Phase A-R/B-R を通して使われる。key が両レイヤーに無い場合だけ v1.17.0 のクロスエンジン自動解決を
 `REVIEW_POLICY=legacy` として維持する。どちらも `REVIEW_RUNNER / REVIEW_ENGINE / REVIEW_MODEL /
-REVIEW_PANE_AGENT` を prompt に明示し、下流で engine の関係を再計算しない。`review_mode=on` でも
+REVIEW_EFFORT / REVIEW_PANE_AGENT` を prompt に明示し、下流で engine の関係を再計算しない。`review_mode=on` でも
 review-capable runner が無いタスクは警告してそのタスクだけ review を無効化し、config は書き換えない。
 
 - **レビューポイント**: plan モード = plan 完成後の 1 回 / superpowers モード = spec（design doc）
