@@ -12,6 +12,9 @@
 #     prewarm-panes.sh --workspace <ws-id> --base-surface <sf-id> \
 #       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
 #       [--claude-runner <name>] [--codex-runner <name>] [--exec-runner <name>] \
+#       [--design-model <m>] [--design-effort <e>] \
+#       [--reviewer-model <m>] [--reviewer-effort <e>] \
+#       [--exec-model <m>] [--exec-effort <e>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
@@ -22,6 +25,9 @@
 #       --agmsg-team <team> \
 #       [--claude-runner <name>] [--codex-runner <name>] \
 #       [--exec-runner <name>] [--exec-choice <choice>] \
+#       [--design-model <m>] [--design-effort <e>] \
+#       [--reviewer-model <m>] [--reviewer-effort <e>] \
+#       [--exec-model <m>] [--exec-effort <e>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
 #       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
@@ -30,6 +36,7 @@
 #       (claude/codex executor の配線のみ行いたい特殊用途向け)
 #
 # 内部処理:
+#   0. 役割別の model/effort 上書き (--override 由来) を該当ペインへ --model / --effort で転送
 #   1. worktree を create-or-reuse (agmsg 配線より先にディレクトリが必要)
 #   2. (agmsg 時) join.sh + delivery.sh set を「ペイン起動前に」実行。
 #      配線に失敗したペインは delivery: "cmux-send" として記録 (die しない)
@@ -84,6 +91,12 @@ DESIGN_ENGINE="claude"
 REVIEWER_ENGINE=""
 REVIEW_MODEL_RESOLVED=""
 EXEC_ENGINE=""
+DESIGN_MODEL_OVERRIDE=""
+DESIGN_EFFORT_OVERRIDE=""
+REVIEWER_MODEL_OVERRIDE=""
+REVIEWER_EFFORT_OVERRIDE=""
+EXEC_MODEL_OVERRIDE=""
+EXEC_EFFORT_OVERRIDE=""
 UNATTENDED=0
 TIMEOUT_SENTINEL=""
 RUNNERS_CONFIG_PATH="${RUNNERS_CONFIG_PATH:-$HOME/.claude/cmux-team-dispatch-task/runners.json}"
@@ -126,6 +139,26 @@ while [[ $# -gt 0 ]]; do
     --exec-choice)
       [[ $# -lt 2 ]] && die "--exec-choice requires a choice"
       EXEC_CHOICE="$2"; shift 2 ;;
+    # 役割別の一時上書き (--override 経由)。指定時は launch-workspace.sh の
+    # 役割フォールバックより優先される明示値として該当ペインへ転送する
+    --design-model)
+      [[ $# -lt 2 ]] && die "--design-model requires a model name"
+      DESIGN_MODEL_OVERRIDE="$2"; shift 2 ;;
+    --design-effort)
+      [[ $# -lt 2 ]] && die "--design-effort requires an effort level"
+      DESIGN_EFFORT_OVERRIDE="$2"; shift 2 ;;
+    --reviewer-model)
+      [[ $# -lt 2 ]] && die "--reviewer-model requires a model name"
+      REVIEWER_MODEL_OVERRIDE="$2"; shift 2 ;;
+    --reviewer-effort)
+      [[ $# -lt 2 ]] && die "--reviewer-effort requires an effort level"
+      REVIEWER_EFFORT_OVERRIDE="$2"; shift 2 ;;
+    --exec-model)
+      [[ $# -lt 2 ]] && die "--exec-model requires a model name"
+      EXEC_MODEL_OVERRIDE="$2"; shift 2 ;;
+    --exec-effort)
+      [[ $# -lt 2 ]] && die "--exec-effort requires an effort level"
+      EXEC_EFFORT_OVERRIDE="$2"; shift 2 ;;
     # v1.16.0 で削除。agmsg を使うかは --agmsg-team の有無と send.sh の存在で決まる。
     --message-type)
       die "--message-type was removed: agmsg is wired whenever --agmsg-team is given and send.sh exists" ;;
@@ -159,6 +192,12 @@ done
 
 if [[ -n "$REVIEW_MODEL" && -z "$CODEX_RUNNER" ]]; then
   die "--review-model requires --codex-runner"
+fi
+
+# --reviewer-model は --reviewer-runner 経路の上書き、--review-model は claude 設計の
+# legacy 指定。両方渡すのは意図の取り違えなので受け付けない。
+if [[ -n "$REVIEWER_MODEL_OVERRIDE" && -n "$REVIEW_MODEL" ]]; then
+  die "--reviewer-model and --review-model are mutually exclusive"
 fi
 
 # design=codex / reviewer の解決。runner の engine と model/effort を runners.json から引く
@@ -227,6 +266,20 @@ resolve_role_effort() {
   printf '%s' "$value"
 }
 
+# 役割別上書きを launch-workspace.sh の --model / --effort へ転送する配列。
+# 空になりうるので展開は必ず ${arr[@]+"${arr[@]}"} を使う。
+DESIGN_OVERRIDE_FLAGS=()
+[[ -n "$DESIGN_MODEL_OVERRIDE" ]] && DESIGN_OVERRIDE_FLAGS+=(--model "$DESIGN_MODEL_OVERRIDE")
+[[ -n "$DESIGN_EFFORT_OVERRIDE" ]] && DESIGN_OVERRIDE_FLAGS+=(--effort "$DESIGN_EFFORT_OVERRIDE")
+
+EXEC_OVERRIDE_FLAGS=()
+[[ -n "$EXEC_MODEL_OVERRIDE" ]] && EXEC_OVERRIDE_FLAGS+=(--model "$EXEC_MODEL_OVERRIDE")
+[[ -n "$EXEC_EFFORT_OVERRIDE" ]] && EXEC_OVERRIDE_FLAGS+=(--effort "$EXEC_EFFORT_OVERRIDE")
+
+REVIEW_OVERRIDE_FLAGS=()
+[[ -n "$REVIEWER_MODEL_OVERRIDE" ]] && REVIEW_OVERRIDE_FLAGS+=(--model "$REVIEWER_MODEL_OVERRIDE")
+[[ -n "$REVIEWER_EFFORT_OVERRIDE" ]] && REVIEW_OVERRIDE_FLAGS+=(--effort "$REVIEWER_EFFORT_OVERRIDE")
+
 # 実装ペインは engine 単位。exec_choice は「どの engine が実装するか」だけを表し、
 # モデルと effort は runners.json の役割フィールドが決める。
 START_CLAUDE=0
@@ -283,10 +336,11 @@ if [[ -n "$EXEC_CHOICE" && "$EXEC_CHOICE" != "ask" ]]; then
     # と判定側がずれる。
     EXEC_ROLE_RUNNER="$CLAUDE_EXEC_RUNNER"
     [[ "$EXEC_ROLE_ENGINE" == "codex" ]] && EXEC_ROLE_RUNNER="$CODEX_EXEC_RUNNER"
-    PLAN_MODEL_RESOLVED=$(resolve_role_model "$DESIGN_RUNNER" plan "$DESIGN_ENGINE")
-    PLAN_EFFORT_RESOLVED=$(resolve_role_effort "$DESIGN_RUNNER" plan)
-    EXEC_MODEL_RESOLVED=$(resolve_role_model "$EXEC_ROLE_RUNNER" exec "$EXEC_ROLE_ENGINE")
-    EXEC_EFFORT_RESOLVED=$(resolve_role_effort "$EXEC_ROLE_RUNNER" exec)
+    # 上書きがあればそれが解決値。無ければ runners.json + 既定値から解く。
+    PLAN_MODEL_RESOLVED="${DESIGN_MODEL_OVERRIDE:-$(resolve_role_model "$DESIGN_RUNNER" plan "$DESIGN_ENGINE")}"
+    PLAN_EFFORT_RESOLVED="${DESIGN_EFFORT_OVERRIDE:-$(resolve_role_effort "$DESIGN_RUNNER" plan)}"
+    EXEC_MODEL_RESOLVED="${EXEC_MODEL_OVERRIDE:-$(resolve_role_model "$EXEC_ROLE_RUNNER" exec "$EXEC_ROLE_ENGINE")}"
+    EXEC_EFFORT_RESOLVED="${EXEC_EFFORT_OVERRIDE:-$(resolve_role_effort "$EXEC_ROLE_RUNNER" exec)}"
     if [[ "$PLAN_MODEL_RESOLVED" == "$EXEC_MODEL_RESOLVED" \
        && "$PLAN_EFFORT_RESOLVED" == "$EXEC_EFFORT_RESOLVED" ]]; then
       log "prewarm" "in-session execution (role config identical); skipping the executor pane"
@@ -423,6 +477,7 @@ if [[ $WITH_DESIGN -eq 1 ]]; then
       --role plan \
       --defer-status \
       --runner "$DESIGN_RUNNER" \
+      ${DESIGN_OVERRIDE_FLAGS[@]+"${DESIGN_OVERRIDE_FLAGS[@]}"} \
       ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
       --status-dir "$STATUS_DIR" \
       ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
@@ -451,6 +506,7 @@ if [[ $WITH_DESIGN -eq 1 ]]; then
       --role plan \
       --defer-status \
       ${DESIGN_RUNNER_FLAGS[@]+"${DESIGN_RUNNER_FLAGS[@]}"} \
+      ${DESIGN_OVERRIDE_FLAGS[@]+"${DESIGN_OVERRIDE_FLAGS[@]}"} \
       ${OPUS_UNATTENDED_FLAGS[@]+"${OPUS_UNATTENDED_FLAGS[@]}"} \
       ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
       --status-dir "$STATUS_DIR" \
@@ -511,6 +567,7 @@ if [[ $START_CLAUDE -eq 1 ]]; then
     --skip-permissions
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"}
     --status-dir "$STATUS_DIR"
+    ${EXEC_OVERRIDE_FLAGS[@]+"${EXEC_OVERRIDE_FLAGS[@]}"}
   )
   [[ -n "$CLAUDE_EXEC_RUNNER" ]] && CLAUDE_ARGS+=(--runner "$CLAUDE_EXEC_RUNNER")
   CLAUDE_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
@@ -544,6 +601,7 @@ if [[ $START_CODEX -eq 1 ]]; then
     --standby-in "$WORKSPACE" \
     "${EXEC_SPLIT_FLAGS[@]}" \
     --runner "$CODEX_EXEC_RUNNER" \
+    ${EXEC_OVERRIDE_FLAGS[@]+"${EXEC_OVERRIDE_FLAGS[@]}"} \
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
@@ -594,6 +652,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     --standby-split-from "$BASE_SURFACE" \
     --standby-split-direction right \
     "${REVIEW_RUNNER_FLAGS[@]}" \
+    ${REVIEW_OVERRIDE_FLAGS[@]+"${REVIEW_OVERRIDE_FLAGS[@]}"} \
     ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
