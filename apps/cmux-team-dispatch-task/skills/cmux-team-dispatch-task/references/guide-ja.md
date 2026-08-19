@@ -64,7 +64,20 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 
 `--reset` でのみ発動する。対象は任意で指定できる: `--reset runners`（レジストリ）、`--reset config`（役割キー）、`--reset all`。対象未指定なら質問する。ディスパッチは行わず、`.dispatch/`・worktree・ブランチは決して削除しない（それはディスパッチ末尾の Cleanup prompts の担当）。手順は [`references/setup-mode-ja.md`](setup-mode-ja.md)。
 
-両モードとも書き込みは `scripts/config-edit.sh` だけを通す。置換ではなくマージするため、他コンポーネントが所有するキー（`shell_ready_ms`）が生き残る。`--loop` とも互いとも排他で、issue ループがロックを保持している間はどちらも実行を拒否する。どちらもタスク記述ではないため、Step 1a のタスク解析に到達させてはならない。
+両モードとも書き込みは `scripts/config-edit.sh` だけを通す。置換ではなくマージするため、他コンポーネントが所有するキー（`shell_ready_ms`）が生き残る。`--loop` / `--override` とも互いとも排他で、issue ループがロックを保持している間はどちらも実行を拒否する。どちらもタスク記述ではないため、Step 1a のタスク解析に到達させてはならない。
+
+---
+
+## Override Mode（タスク単位の一時上書き）
+
+`--override` は値を取らないフラグ。design / review / exec の各役割のうち、どれをこのディスパッチ
+（このディスパッチだけ）で解決済み設定とは別の runner / model / effort で動かすかを、タスクごとに
+質問する。**どちらの config ファイルにも一切書き込まない** — 永続化経路は意図的に存在しない。
+
+`--override` は `--loop` / `--setup` / `--reset` と互いに排他。`--loop` が排他なのはポリシーでは
+なく構造上の理由で、無人の issue ループには質問に答える人がいない。複数同時指定はエラーで両方の
+名前を挙げて停止する。`--setup` / `--reset` と同様、`--override` は Step 1a のタスク解析へ絶対に
+到達させない。
 
 ---
 
@@ -76,7 +89,9 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 
 ### 1a. タスク収集
 
-タスクを `$ARGUMENTS` から解析（なければ1回だけ質問）
+タスクを `$ARGUMENTS` から解析（なければ1回だけ質問）。分割の前に、まず `--loop` / `--setup` /
+`--reset [target]` / `--override` のモードフラグを `$ARGUMENTS` から取り除き、タスク文言や
+slug にこれらが混入しないようにする。
 
 ### 1b. 利用可能な Agent の発見（自動）
 
@@ -109,6 +124,8 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 - **独立レビュアー解決**: project `review_runner` → global `review_runner` → key 未設定時の
   legacy 自動 resolver。固定/`"ask"` は同一 engine を許可する。codex 候補は `review_model` 必須、
   claude 候補は `opus[1m]` fallback。不正な project/global 値はそのレイヤーだけ無効化する。
+  `REVIEW_EFFORT` はどちらの policy でも解決済み runner の `review_effort` から決まり、
+  既定値は両 engine とも `xhigh`。
 
 ### 1g. 配送・レビューモード・実行既定の解決
 
@@ -223,6 +240,72 @@ TUI session never exits, and when agmsg is installed no monitor loop is
 running, so without this call the parent may never be informed.
 ```
 
+### 1g-2. タスク単位の一時上書きを適用する（`--override` のみ）
+
+`--override` が指定されていない限りこのステップ全体をスキップする。
+
+この時点で全 role は解決済みなので、各質問は解決済み値を「keep」選択肢として表示できる。
+上書きはメモリ上の解決済み値だけを差し替える対象: `DESIGN_RUNNER` / `DESIGN_ENGINE` /
+`PLAN_MODEL` / `PLAN_EFFORT`、`REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` /
+`REVIEW_EFFORT`、`EXEC_CHOICE` / `EXEC_RUNNER` / `EXEC_ENGINE` / `EXEC_MODEL` /
+`EXEC_EFFORT`。`config-edit.sh` はここでは絶対に呼ばない。
+
+**Call 1 — 対象タスク。** `multiSelect: true` の AskUserQuestion を1回:
+
+> Which tasks should use a one-off configuration for this dispatch?
+
+選択肢はタスクの slug。AskUserQuestion は最大4選択肢までなので、タスクが4件を超える場合は
+先頭3件を選択肢にし、残りは自動的に付く "Other" の自由記述欄（カンマ区切りで slug を入力）に
+逃がす — `runners[]` が5件以上のときに使うのと同じ逃がし方。何も選ばなければ全タスクが解決済み
+設定のまま Step 1h へスキップする。
+
+**Call 2 — 選択タスクごとの role。** 選択された各タスクに1回ずつ、`multiSelect: true` の
+AskUserQuestion（選択肢は `design` / `review` / `exec` の3つ）。`review` はそのタスクで
+`REVIEW_ENABLED` が true のときだけ提示する。
+
+**Call 3.. — 選択 role ごとの各次元。** 1回の呼び出しで3問:
+
+| 質問 | 選択肢（先頭は常に keep 選択肢） |
+|---|---|
+| runner | `keep (<解決済み runner>)`、続けて `runners[].name` を最大3件、残りは "Other" |
+| model | `keep (<解決済み model>)`、claude engine なら `opus[1m]` / `sonnet` / `fable`、codex engine ならその role の model、それ以外の文字列は "Other" |
+| effort | `keep (<解決済み effort>)`、claude なら `xhigh` / `max` / `high`、codex なら `xhigh` / `high` / `medium` |
+
+codex engine には `max` を絶対に提示しない — codex が受け付けるか未確認のため安全側に倒す。
+
+**runner / model / effort の食い違いを解決する。** 3問は1回の呼び出しで聞くため、選択肢は
+その role の*現在解決済みの* engine から組み立てられ、runner の回答はまだ分からない。回答が
+揃った時点で runner の回答が決定打になる:
+
+- 選ばれた runner の `engine` がその role の engine になる。exec は `EXEC_ENGINE` と
+  `EXEC_CHOICE` の両方に反映する。
+- 選ばれた effort が新しい engine の allowlist（claude `low|medium|high|xhigh|max`、codex
+  `minimal|low|medium|high|xhigh`）に無ければ警告し、その role の新 engine 向け既定 effort
+  （plan/review は `xhigh`、exec は `high`）を使う。
+- 選ばれた model が claude のエイリアス `opus[1m]` / `sonnet` / `fable` のいずれかで、新
+  engine が codex なら警告してその role の model 上書きを取り下げ、通常の
+  `runners.json` → 既定値の解決にフォールバックする。model 文字列自体は検証しないので、
+  この判定はエイリアス名だけで行う。
+- どちらのケースもディスパッチは止めず、両方の警告を Step 1h の override ブロックへ含める。
+
+**結果を下流へ渡す。** 上書きが1つでもあるタスクは、その `prewarm-panes.sh` 呼び出し
+（Step 2）に対応フラグを足す: `--design-model` / `--design-effort` / `--reviewer-model` /
+`--reviewer-effort` / `--exec-model` / `--exec-effort`。実際に上書きした次元だけを渡す。
+runner の上書きはフラグを足すのではなく既存の `--design-runner` / `--reviewer-runner` /
+`--exec-runner` / `--exec-choice` の値そのものを差し替える。非 prewarm の spawn 経路では
+同じ値を `launch-workspace.sh` へ `--model` / `--effort` として渡す。
+
+**Step 1f の既存分岐との関係。** Step 1f の switch 質問（「Yes (this time only) →
+for each task, ask which runner to use」）はそのまま残る。両者は対象範囲が異なる:
+
+| 経路 | 対象 | 粒度 |
+|---|---|---|
+| Step 1f の switch 質問 | design runner のみ | タスク単位 |
+| `--override` | design / review / exec の runner / model / effort | タスク単位 |
+
+`--override` はより後で実行されるため、両方使われたときはその回答が最後の勝者になる。Step 1f
+で選んだ design runner をここで上書きしても矛盾ではなく、単に override が最後の決定になるだけ。
+
 ### 1h. サマリー表示と実行
 
 Template A（Display Format Conventions）で情報表示し、即座にディスパッチ:
@@ -240,6 +323,18 @@ Dispatching 3 tasks (workspace mode, PR per task):
 Available agents: backend-coding, frontend-coding
 Launching…
 ```
+
+`--override` が何らかの変更を生んだ場合、Template A の表の直後にこのブロックを印字する。表自体は
+変更しない。実際に変わった次元だけを、タスク・role ごとに1行で列挙し、Step 1g-2 で出た警告も
+含める:
+
+```
+Overrides (this dispatch only):
+  auth-api  exec    runner codex / model gpt-5.6-terra / effort xhigh
+  auth-api  design  effort max
+```
+
+上書きが無ければ何も印字しない。
 
 Mode 略称: `superpwr` = superpowers/brainstorming、`plan` = 組み込み /plan モード。
 
@@ -353,7 +448,7 @@ Phase B-R が実装完了後・PR 作成前に挟まる）。プロンプトテ�
 で選んだ runner は `REVIEW_POLICY=fixed` となり、設計と同じ engine でもよい。同じ専用ペインが
 Phase A-R/B-R を通して使われる。key が両レイヤーに無い場合だけ v1.17.0 のクロスエンジン自動解決を
 `REVIEW_POLICY=legacy` として維持する。どちらも `REVIEW_RUNNER / REVIEW_ENGINE / REVIEW_MODEL /
-REVIEW_PANE_AGENT` を prompt に明示し、下流で engine の関係を再計算しない。`review_mode=on` でも
+REVIEW_EFFORT / REVIEW_PANE_AGENT` を prompt に明示し、下流で engine の関係を再計算しない。`review_mode=on` でも
 review-capable runner が無いタスクは警告してそのタスクだけ review を無効化し、config は書き換えない。
 
 - **レビューポイント**: plan モード = plan 完成後の 1 回 / superpowers モード = spec（design doc）
@@ -475,6 +570,7 @@ zsh <skill-dir>/scripts/launch-workspace.sh \
   --plan-file <PLAN_FILE_PATH> \
   --runner "$EXEC_RUNNER" \
   [--model "$EXEC_MODEL"] \
+  [--effort "$EXEC_EFFORT"] \
   --skip-permissions \
   --status-dir "<EXISTING_STATUS_DIR>" \
   --parent-notify-workspace <PARENT_WORKSPACE_ID> \
@@ -654,6 +750,9 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --design-runner "$DESIGN_RUNNER" \
   [--reviewer-runner "$REVIEW_RUNNER"] \
   --exec-choice "$EXEC_CHOICE" \
+  [--design-model "$PLAN_MODEL"] [--design-effort "$PLAN_EFFORT"] \
+  [--reviewer-model "$REVIEW_MODEL"] [--reviewer-effort "$REVIEW_EFFORT"] \
+  [--exec-model "$EXEC_MODEL"] [--exec-effort "$EXEC_EFFORT"] \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID"
 ```
@@ -681,6 +780,9 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --design-runner "$DESIGN_RUNNER" \
   [--reviewer-runner "$REVIEW_RUNNER"] \
   --exec-choice "$EXEC_CHOICE" \
+  [--design-model "$PLAN_MODEL"] [--design-effort "$PLAN_EFFORT"] \
+  [--reviewer-model "$REVIEW_MODEL"] [--reviewer-effort "$REVIEW_EFFORT"] \
+  [--exec-model "$EXEC_MODEL"] [--exec-effort "$EXEC_EFFORT"] \
   --agmsg-team "$TEAM" \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID")
@@ -694,6 +796,9 @@ Codex design の claude executor は review runner から推測しない。revie
 `--reviewer-runner "$REVIEW_RUNNER"` を渡す。
 固定 `exec_choice` の runner が利用不能なら、その config レイヤーだけを無効化して project → global →
 interactive のフォールバックを続ける。
+`--design-model` / `--design-effort` / `--reviewer-model` / `--reviewer-effort` /
+`--exec-model` / `--exec-effort` は Step 1g-2 が実際に上書きした dimension のときだけ渡す。
+`--override` が無いディスパッチではこれらを一切渡さず、launcher の role フォールバックに委ねる。
 
 review pane の起動・出力解析が失敗した場合、`prewarm-panes.sh` は join 済み review member を即 leave
 してから警告し、`review` key を省略して既に起動した design/executor を `prewarm.json` に保持したまま

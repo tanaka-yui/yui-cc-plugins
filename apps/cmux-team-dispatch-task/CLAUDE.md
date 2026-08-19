@@ -86,6 +86,16 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
   cleanup / agmsg leave は実在roleだけに送る。
 - 無人loop rendererにはdesign/review/execの解決済みrunner/engineを渡す。review fieldsはreview有効時だけ
   必須。同一engine reviewを許可し、all-Codex固定例でclaude executorを起動・指示しない。
+- `--override` は dispatch 1 回限りのタスク別上書き。precedence は
+  `--override` > project config > global config > `runners.json` の役割フィールド > 既定値。
+  **config へ書き戻さない**（`config-edit.sh` を呼ばない）。`--loop` / `--setup` / `--reset`
+  と排他で、Step 1a のタスク解析に落ちてはならない。上書きは Step 1g-2 で解決値
+  （`PLAN_MODEL` / `PLAN_EFFORT` / `REVIEW_MODEL` / `REVIEW_EFFORT` / `EXEC_MODEL` /
+  `EXEC_EFFORT` と各 runner / engine）を置き換え、`prewarm-panes.sh` へは
+  `--design-model` / `--design-effort` / `--reviewer-model` / `--reviewer-effort` /
+  `--exec-model` / `--exec-effort` で渡る
+- `REVIEW_EFFORT` は review 役割の effort。runner の `review_effort` → 既定 `xhigh`。
+  substitution tuple の `{{REVIEW_EFFORT}}` として子へ渡る
 
 なお SKILL.md は英語、guide-ja.md は日本語で、**見出しは 1:1 対応**させる（ルート `CLAUDE.md`「Language convention」）。SKILL.md に節を足したら guide-ja.md にも対応する節を足すこと。SKILL.md に対応節が無い日本語の解説は guide-ja.md 末尾の「補足」にまとめる。
 
@@ -240,6 +250,15 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - **`.dispatch/config.json` はプロジェクト config レイヤーであってディスパッチの生成物ではない**。cleanup の一括削除は `find .dispatch -mindepth 1 -maxdepth 1 ! -name config.json -exec rm -rf {} +` で `config.json` だけを残すこと（素の `rm -rf .dispatch/` に戻すとプロジェクト config が毎回消える）。この掃き出しも従来どおり直前の lock-check ガードの内側に置くこと
     - 回帰は `bash test/test-config-edit.sh`（CE1-CE11）と `bash test/test-setup-skill.sh`（SU1-SU9）、cleanup ガードは `bash test/test-loop-skill.sh` で検証する
 
+44. **`--override`**が SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認:
+    - `argument-hint` に `--override` があり、`--loop` / `--setup` / `--reset` との排他が
+      4 ファイルすべてで同じ理由（`--loop` は無人実行で対話できない）とともに書かれていること
+    - config への書き込み経路を持たないこと。`--override` の説明中に `config-edit.sh` を
+      **呼び出す**記述が無いこと（「Never call `config-edit.sh` here」のように呼ばない旨を
+      説明のために言及するのは正しい記述であり違反ではない）
+    - `prewarm-panes.sh` の 6 フラグ名が SKILL.md の記述と一致すること
+    - 回帰は `bash test/test-override.sh`（OV1-OV9）で検証する
+
 ## テスト方法
 
 ```bash
@@ -303,6 +322,10 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 41. **タスク内の並列実行**: plan / superpowers / execute で起動した子セッションのプロンプトに `PARALLEL EXECUTION, mandatory` が含まれること。codex には `spawn_agent`、claude には Task サブエージェントの指示が届くこと。standby / review の起動コマンドには含まれず、親が送る実行指示・レビュー依頼側に含まれること。`--no-parallel` で起動プロンプトから消えること
 42. **最終クリーンアップの pane close**: `cmux close-surface` の呼び出しに `--workspace` が付いていることを確認する。付けないと `surface:N` ref が親の `$CMUX_WORKSPACE_ID` に対して解決され、必ず `Surface ref not found` で失敗する（`2>/dev/null || true` で握り潰されるため無言で残る）。また `workspace_id` は `status.json` だけに依存してはならない — 子セッション自身が書く done/error は 3 フィールドの `echo` で `workspace_id` / `surface_id` を消し、runner wrapper がそれを書き戻すのはセッション終了時だけなので、codex TUI が終了指示を無視して idle 残留すると永久に欠落する。欠落時は `cmux workspace list` を slug 名（`[<slug>]`）で引いてフォールバックすること。この 2 つが揃って欠けていたため、ディスパッチ終了後に pane が閉じられないまま `git worktree remove` が生きている codex の cwd を消し、codex TUI が `failed to refresh skills: ... failed to reload config: No such file or directory` を出し続ける事故が起きた。回帰は `bash test/test-cleanup-close.sh`（CL1-CL2）で検証する
 43. **`--setup` / `--reset`**: どちらもディスパッチが起動しないこと。`--setup` で現在の設定表 → 書き込み先/対象 → 役割キー → 差分確認の順に進み、書き込み後も `shell_ready_ms` が残ること。プロジェクトを選んで `.dispatch/config.json` を作り、1 件ディスパッチして cleanup まで通しても**生き残る**こと。`--reset config` は役割 5 キーだけ消し worktree / ブランチ / `.dispatch/` の他の中身を消さないこと。`--reset` 単体で対象メニューが出ること。`--reset runners` で `runners.json` が再生成され両 config.json が変わらないこと。`--setup --loop` の同時指定が排他エラーになること
+45. **`--override`**: タスク一覧 → 対象タスク → 役割 → runner/model/effort の順に質問が出て、
+    各質問の先頭が「変更なし（現在: <解決値>）」であること。上書きした内容がサマリー表の
+    直後にブロックとして表示されること。dispatch 後に両 `config.json` が変化していないこと。
+    `--override --loop` が排他エラーになること
 # GitHub issue 自動ループの保守
 
 `--loop` の仕様は `skills/cmux-team-dispatch-task/references/loop-mode.md` を正本とする。loop CLI、プロンプト、起動フラグを変更するときは SKILL.md、guide-ja.md、README.md、CLAUDE.md を同時に更新し、`.dispatch-loop/` の owner lock と timeout sentinel の契約を維持する。renderer headerはdesign/review/execの解決済みrunner/engineを一度だけ出し、review無効時にreview fieldsを要求しない。timeout sentinelとcleanupは`prewarm.json`に生成されたroleだけを対象にする。

@@ -57,7 +57,7 @@ bash <SKILL_DIR>/scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.j
 
 ロックが生きている場合は拒否して停止する。issue ループはバッチ間でこの設定を読むため、ループ中に `runners.json` を消すと確実に壊れる。
 
-`--setup` は `--loop` および `--reset` と排他である。複数指定されたら推測せず、競合を報告してどれを実行するか聞く。
+`--setup` は `--loop` / `--reset` / `--override` と排他である。複数指定されたら推測せず、競合を報告してどれを実行するか聞く。恒久化したいなら `--setup`、その回限りなら `--override` を使う。
 
 ### S1. 現状表示
 

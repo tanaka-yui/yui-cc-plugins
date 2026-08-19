@@ -111,8 +111,28 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 残します。対象を省略すると質問されます。
 
 `--setup` / `--reset` はどちらもディスパッチを行わず、`.dispatch/`・worktree・`feat/*`
-ブランチには一切触れません。`--loop` とも互いとも排他で、issue ループがロックを保持して
-いる間は実行を拒否します。
+ブランチには一切触れません。`--loop` / `--override` とも互いとも排他で、issue ループが
+ロックを保持している間は実行を拒否します。
+
+### タスク個別の一時上書き（`--override`）
+
+```
+/cmux-team-dispatch-task タスクA, タスクB --override
+```
+
+その dispatch に限って、タスクごとに design / review / exec の runner / model / effort を
+上書きします。難しいタスクだけ effort を上げる、実装だけ別 engine に投げる、といった
+使い方を想定しています。
+
+タスク一覧を見てから対象タスクを選び、次に上書きする役割を選び、選んだ役割の
+runner / model / effort を答える流れです。各質問の先頭は必ず「変更なし（現在: <解決値>）」
+なので、変えたい次元だけ触れば済みます。
+
+**config には一切書き戻しません。** 恒久的に変えたいときは `--setup` を使ってください。
+無人実行の `--loop`、および `--setup` / `--reset` とは排他です（`--loop` は質問に答える人が
+いないため）。
+
+上書きした内容は起動前のサマリー表の直後に差分として表示されます。
 
 ## Agent 発見と委譲
 
