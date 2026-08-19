@@ -11,7 +11,7 @@ description: >
   Use when: "parallel execution", "team dispatch", "run these at once",
   "run these in parallel", "dispatch tasks", "execute these simultaneously",
   or when 2+ independent tasks need concurrent execution.
-argument-hint: "<task1>, <task2>, ... [--loop] [--setup] [--reset [runners|config|all]]"
+argument-hint: "<task1>, <task2>, ... [--loop] [--setup] [--reset [runners|config|all]] [--override]"
 ---
 
 ## Output Language
@@ -119,6 +119,18 @@ replaces so that keys owned by other components (`shell_ready_ms`) survive. Both
 mutually exclusive with `--loop` and with each other, and both refuse to run while an
 issue loop holds the lock. Neither is a task description: `--setup` and `--reset` must
 never reach Step 1a's task parsing.
+
+## Override Mode (per-task temporary override)
+
+`--override` takes no value. It makes this dispatch — and only this dispatch — ask, per
+task, which of the design / review / exec roles should run on a different runner, model,
+or effort than the resolved configuration says. **It never writes to either config file**;
+there is no persistence path, by design.
+
+`--override` is mutually exclusive with `--loop`, `--setup`, and `--reset`. The `--loop`
+case is structural rather than a policy choice: an unattended issue loop has nobody to
+answer the questions. If more than one is given, stop with an error naming both. Like
+`--setup` and `--reset`, `--override` must never reach Step 1a's task parsing.
 
 ## Step 1: Parse and Prepare
 
@@ -797,6 +809,76 @@ TUI session never exits, and when agmsg is installed no monitor loop is
 running, so without this call the parent may never be informed.
 ```
 
+### 1g-2. Apply Per-Task Overrides (`--override` only)
+
+Skip this entire step unless `--override` was given.
+
+Every role is already resolved at this point, so each question can show the resolved
+value as its "keep" option. Overriding replaces the in-memory resolved values only:
+`DESIGN_RUNNER` / `DESIGN_ENGINE` / `PLAN_MODEL` / `PLAN_EFFORT`, `REVIEW_RUNNER` /
+`REVIEW_ENGINE` / `REVIEW_MODEL` / `REVIEW_EFFORT`, and `EXEC_CHOICE` / `EXEC_RUNNER` /
+`EXEC_ENGINE` / `EXEC_MODEL` / `EXEC_EFFORT`. Never call `config-edit.sh` here.
+
+**Call 1 — which tasks.** One AskUserQuestion, `multiSelect: true`:
+
+> Which tasks should use a one-off configuration for this dispatch?
+
+Options are the task slugs. AskUserQuestion allows at most four options, so with more
+than three tasks list the first three and let the rest arrive through the automatic
+"Other" free-text field, where the user types task slugs separated by commas — the same
+escape hatch `runners[]` uses when more than four runners are registered. Selecting
+nothing leaves every task on its resolved configuration; skip to Step 1h.
+
+**Call 2 — which roles, per selected task.** One AskUserQuestion per selected task,
+`multiSelect: true`, three options: `design` / `review` / `exec`. `review` is offered
+only when `REVIEW_ENABLED` is true for that task.
+
+**Call 3.. — the dimensions, one call per selected role.** Three questions in one call:
+
+| Question | Options (first is always the keep option) |
+|---|---|
+| runner | `keep (<resolved runner>)`, then up to three `runners[].name`; the rest via "Other" |
+| model | `keep (<resolved model>)`, then `opus[1m]` / `sonnet` / `fable` for a claude engine, or the runner's role model for a codex engine; any other string via "Other" |
+| effort | `keep (<resolved effort>)`, then `xhigh` / `max` / `high` for claude, or `xhigh` / `high` / `medium` for codex |
+
+Never offer `max` for a codex engine — whether codex accepts it was never confirmed, so
+the safe branch stands.
+
+**Resolving a runner/model/effort disagreement.** The three questions are asked in one
+call, so the options are built from the role's *currently resolved* engine and the
+runner answer is not known yet. When the answers land, the runner answer decides:
+
+- The chosen runner's `engine` becomes the role's engine. For exec, assign it to both
+  `EXEC_ENGINE` and `EXEC_CHOICE`.
+- If the chosen effort is not in the new engine's allowlist (claude
+  `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh`), warn and use that
+  role's default effort for the new engine (`xhigh` for plan/review, `high` for exec).
+- If the chosen model is one of the claude aliases `opus[1m]` / `sonnet` / `fable` and
+  the new engine is codex, warn and drop the model override for that role, falling back
+  to the normal `runners.json` → default resolution. Model strings are not validated, so
+  decide this on the alias name alone.
+- Never stop the dispatch for either case, and carry both warnings into the Step 1h
+  override block.
+
+**Passing the result downstream.** For each task with any override, add the matching
+flags to that task's `prewarm-panes.sh` invocation (Step 2): `--design-model` /
+`--design-effort` / `--reviewer-model` / `--reviewer-effort` / `--exec-model` /
+`--exec-effort`. Pass only the dimensions actually overridden. A runner override changes
+the existing `--design-runner` / `--reviewer-runner` / `--exec-runner` / `--exec-choice`
+values rather than adding a flag. On the non-prewarm spawn path, pass the same values as
+`--model` / `--effort` to `launch-workspace.sh`.
+
+**Relationship to Step 1f's per-task runner question.** Step 1f's switch question stays
+as it is. The two cover different ground:
+
+| Path | Covers | Granularity |
+|---|---|---|
+| Step 1f switch question | the design runner only | per task |
+| `--override` | runner / model / effort for design, review, and exec | per task |
+
+`--override` runs later, so when both are used its answer wins. A design runner chosen in
+Step 1f and then overridden here is not a conflict — the override is simply the last word.
+
 ### 1h. Display Summary and Proceed
 
 Print an informational summary using **Template A** (see "Display Format Conventions" above) and proceed to launch immediately. Do NOT free-form the layout.
@@ -815,6 +897,18 @@ Dispatching 3 tasks (workspace mode, PR per task):
 Available agents: backend-coding, frontend-coding
 Launching…
 ```
+
+When `--override` produced any change, print this block immediately after the Template A
+table. Do not change the table itself. List only the dimensions that actually changed,
+one line per task and role, and include any warning raised in Step 1g-2:
+
+```
+Overrides (this dispatch only):
+  auth-api  exec    runner codex / model gpt-5.6-terra / effort xhigh
+  auth-api  design  effort max
+```
+
+Print nothing when no override was applied.
 
 Surface IDs are not yet known at this point; print `pending` in that column. After Step 2 launches, re-print using Template A again with concrete `surf:N` values.
 
@@ -1016,6 +1110,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           --plan-file <PLAN_FILE_PATH> \
           --runner "$EXEC_RUNNER" \
           [--model "$EXEC_MODEL"] \
+          [--effort "$EXEC_EFFORT"] \
           --skip-permissions \
           --status-dir "<EXISTING_STATUS_DIR>" \
           --parent-notify-workspace <PARENT_WORKSPACE_ID> \
@@ -1933,6 +2028,9 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --design-runner "$DESIGN_RUNNER" \
   [--reviewer-runner "$REVIEW_RUNNER"] \
   --exec-choice "$EXEC_CHOICE" \
+  [--design-model "$PLAN_MODEL"] [--design-effort "$PLAN_EFFORT"] \
+  [--reviewer-model "$REVIEW_MODEL"] [--reviewer-effort "$REVIEW_EFFORT"] \
+  [--exec-model "$EXEC_MODEL"] [--exec-effort "$EXEC_EFFORT"] \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID"
 ```
@@ -1956,6 +2054,9 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   --design-runner "$DESIGN_RUNNER" \
   [--reviewer-runner "$REVIEW_RUNNER"] \
   --exec-choice "$EXEC_CHOICE" \
+  [--design-model "$PLAN_MODEL"] [--design-effort "$PLAN_EFFORT"] \
+  [--reviewer-model "$REVIEW_MODEL"] [--reviewer-effort "$REVIEW_EFFORT"] \
+  [--exec-model "$EXEC_MODEL"] [--exec-effort "$EXEC_EFFORT"] \
   --agmsg-team "$TEAM" \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID")
@@ -1973,6 +2074,9 @@ Flag selection per task:
 - When `REVIEW_ENABLED=true`, pass `--reviewer-runner "$REVIEW_RUNNER"`. The legacy
   `--review-model` input remains only for old design=claude callers; new role-aware
   calls use the independent runner. Do not pass both.
+- Pass a `--design-model` / `--design-effort` / `--reviewer-model` / `--reviewer-effort` /
+  `--exec-model` / `--exec-effort` flag only for a dimension Step 1g-2 actually overrode.
+  Without `--override` none of them is passed and the launcher's role fallback decides.
 
 Since the normal task-prompt launch never runs in this mode, `prewarm-panes.sh` itself writes
 an initial `"launched"` status.json (with `workspace_id`/`surface_id` populated) right after
