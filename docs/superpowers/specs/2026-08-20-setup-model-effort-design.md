@@ -321,6 +321,7 @@ if [[ "$(jq -r '.runners | type' <<<"$DOC" 2>/dev/null)" != array ]]; then
 fi
 
 # 手順 4 — --name の一致件数。jq が失敗しても空文字になり "1" と等しくならない
+# （型安全 select にした今 || echo '' は到達不能な安全弁。select を戻したときのため残す）
 MATCHES=$(jq --arg n "$NAME" \
   '[.runners[] | select((type == "object") and .name == $n)] | length' \
   <<<"$DOC" 2>/dev/null || echo '')
@@ -338,17 +339,30 @@ case "$ENGINE" in claude|codex) ;; *)
   exit 2 ;;
 esac
 
-# 手順 6 — 読み取りモードの出力。フィールド名は allowlist 通過後にのみ埋める
-if ! jq -r --arg n "$NAME" \
-  "first(.runners[] | select((type == \"object\") and .name == \$n) | .${field} // empty)" \
-  <<<"$DOC"; then
-  echo "runners-edit: read failed" >&2
-  exit 1
-fi
+# 手順 6 — 読み取りモードの出力。3 形すべてに分岐を書く。
+# フィールド名は allowlist 通過後にのみ埋め、--name は必ず --arg で渡す
+case "$MODE" in
+  get)
+    if ! jq -r --arg n "$NAME" \
+      "first(.runners[] | select((type == \"object\") and .name == \$n) | .${field} // empty)" \
+      <<<"$DOC"; then
+      echo "runners-edit: read failed" >&2; exit 1
+    fi ;;
+  show-named)                      # round-4 M1 が $ENV 漏洩を実証したのはこの形
+    if ! jq --arg n "$NAME" \
+      'first(.runners[] | select((type == "object") and .name == $n))' <<<"$DOC"; then
+      echo "runners-edit: read failed" >&2; exit 1
+    fi ;;
+  show-all)                        # 手順 3 / 4 はスキップ済み。config-edit.sh:147 と同じ素通し
+    if ! jq '.' <<<"$DOC"; then
+      echo "runners-edit: read failed" >&2; exit 1
+    fi ;;
+esac
 exit 0
 
-# 手順 7a — dry-run。mktemp を経由しない
-if ! jq <jq-args> "<filter> | .runners[] | select(.name == \$n)" <<<"$DOC"; then
+# 手順 7a — dry-run。mktemp を経由しない。select は型安全にする
+if ! jq <jq-args> \
+  "<filter> | .runners[] | select((type == \"object\") and .name == \$n)" <<<"$DOC"; then
   echo "runners-edit: dry-run failed (jq error)" >&2
   exit 1
 fi
@@ -413,8 +427,15 @@ allowlist から意図的に外した `.command` を書き換えられる。`.co
 jq 式は対象 runner だけを写像する形にする。他の要素はそのまま通す。
 
 ```
-.runners |= map(if .name == $n then (.plan_effort = $v1 | del(.exec_model)) else . end)
+.runners |= map(if (type == "object") and .name == $n
+                then (.plan_effort = $v1 | del(.exec_model))
+                else . end)
 ```
+
+**`(type == "object") and` は省略しない。** これを落とすと
+`{"runners":[{"name":"a","engine":"claude"},true]}` が手順 3 / 4 / 5 をすべて通過した
+うえで手順 7a / 8 の jq が rc=5 で死ぬ（明示ハンドラが exit 1 へ変換するので契約違反には
+ならないが、「witness を構築できない」という §1.4 の主張が偽になる）。
 
 これにより次が保証される。
 
@@ -596,8 +617,12 @@ model / effort は `runners.json` の中身なので、対象を 4 つへ増や�
   列挙できない。**選択肢 2 を出さず、選択肢 3（作り直し）へ誘導する。**
 - **選択肢 1（追加）/ 3（作り直し）の後** — 同じ理由で S3-M は提示せず S4 へ向かう。
   追加した runner を続けて編集したい場合は `--setup` を再実行する。
-- **`runners[]` が空配列のとき** — 選択肢 2 を**出さない**（M1 の選択肢が 0 件になり
-  AskUserQuestion の最低 2 選択肢を満たせないため）。
+- **`runners[]` が空配列 / 除外後に選択可能 runner が 0 件のとき** — 選択肢 2 を**出さない**
+  （M1 の選択肢が 0 件になり AskUserQuestion の最低 2 選択肢を満たせないため）。
+- **選択可能 runner が「ちょうど 1 件」のとき** — 同じ理由で 2 選択肢を満たせないが、
+  **選択肢 2 は出す**。M1 を出さずにその 1 件を黙って採用し、M2 へ進む。runner 1 件は
+  最も普通の構成であり、リポジトリにも先例がある（`CLAUDE.md` 保守項目 37
+  「runner 数分岐（1 件は黙って採用・質問なし）」）。
 - **`engine` が `claude` / `codex` でない runner**（欠落 / `gemini` など）は M1 の
   選択肢から**除外して警告する**。規則 1 の 4 形も候補プールも決まらず質問を
   組み立てられないので、M3 まで進んだ末に S7 で exit 2 になるより先に止める。
@@ -614,6 +639,10 @@ S3 で選択肢 2 を選んだときだけ走る。**happy path で AskUserQuest
 `^#\{1,3\} ` を数えるので `####` はカウント対象外であり、英日で
 **見出しレベル・個数・順序をすべて一致させる**（`####` は両ファイルにとって新しい深さで、
 SU8 は不一致を検出できないため、SU15 に個数一致と下限のアサーションを持たせる）。
+
+> **doc へ写すときの見出し名は §3.0.1 (2) の表を正とする。** 以下の設計書側の下位見出しには
+> `（1 問）` や `` ` `` などの装飾が付いているが、SU15 (3) が grep するのは §3.0.1 の形である。
+> 節見出しそのもの（`### S3-M`）も §3.0.1 (2) の直前に置いた行で英日を確定させる。
 
 ##### M1. どの runner か（1 問）
 
@@ -731,6 +760,11 @@ doc にも書く。
 例（codex runner、`review_model: "gpt-5.6-sol"`、レジストリ中の codex model が
 これ 1 種類だけ）: `keep (gpt-5.6-sol)` / `unset it (not review-capable)`
 （候補プールは空。床の 2 択は規則 3 が支える）。
+
+**上の 4 例のラベルは EN 形である。`setup-mode-ja.md` へ写すときは規則 1 / 3 の JA 形
+（`変更なし（既定: xhigh）` / `既定に戻す（xhigh）` / `変更なし（未設定 — レビュアーに
+選べません）` / `未設定に戻す（レビュアーに選べません）`）へ置換する。** そのまま写すと
+§2 冒頭が警戒する「英語ラベルの素通り」が起き、`check-doc-lang` では検出できない。
 
 ##### codex model 候補の導出
 
@@ -920,7 +954,7 @@ stale になる節が漏れる）。**この表が SoT** であり、件数の�
 | 〃 | **`CLAUDE.md:91`**（role 解決の現行契約、`--override`） | 「**config へ書き戻さない**（`config-edit.sh` を呼ばない）」→ `runners-edit.sh` も追加 |
 | 〃 | 保守手順 28 の「書き込みは **`scripts/config-edit.sh` だけ**を通す」（`CLAUDE.md:247`） | 「だけ」は追記では消えない。§3.1 と同じ限定へ書き換える |
 | 〃 | 保守手順 28 の回帰行（`CLAUDE.md:251`） | `SU1-SU9` → **`SU1-SU16`**、`test-runners-edit.sh`（**RE1-RE20。RE9b / RE9c / RE9d / RE9e / RE14a / RE14b / RE18b を含む**）を追加。sub-id を明記するのは項目 15 の `SP0a-SP0d / SP1-SP24` と同じ慣習 |
-| 〃 | 保守手順 28 本文 | `runners-edit.sh` の契約、SU10-SU16 の needle 一覧、`setup-mode.md` が維持する義務 4 つ: (1) SU12 のアンカー 2 行を §2.4 と 1 バイト一致で持つ、(2) S7 温存 3 文を逐語で持つ、(3) **S7 節内で `runners-edit.sh` の記述が `config-edit.sh` の記述より前にある**、(4) §3.0.1 の限定句 2 文と `####` 8 見出しを逐語・同順で持つ |
+| 〃 | 保守手順 28 本文 | `runners-edit.sh` の契約、SU10-SU16 の needle 一覧、**`setup-mode.md` / `setup-mode-ja.md` の両方**が維持する義務 4 つ: (1) SU12 のアンカー 2 行を §2.4 と 1 バイト一致で持つ、(2) S7 温存 3 文を逐語で持つ、(3) **S7 節内で `runners-edit.sh` の記述が `config-edit.sh` の記述より前にある**、(4) §3.0.1 の限定句 2 文と `####` 8 見出しを逐語・同順で持つ |
 | 〃 | **保守手順 44（`--override`）の検査条件（`CLAUDE.md:256-257`）** | 「`config-edit.sh` を**呼び出す**記述が無いこと」→ **`config-edit.sh` / `runners-edit.sh` のどちらも**。`test-override.sh` には `config-edit` の grep が 1 件も無いので機械的には捕まらない |
 | 〃 | 保守手順 44 の末尾 | §2.4「次元単位 vs 役割単位」と effort 範囲外時の挙動差（`--override` は警告して既定へフォールバック / `--setup` は再質問）を**意図的な差**として 1 行 |
 | 〃 | 「テスト方法」E2E 項目 43 | S3-M のケースを追記（§4.3 の限界と対）。**E2E は 43 の次が 45 で 44 が欠番だが、これは既存の欠番なので触らない** |
@@ -936,8 +970,12 @@ stale になる節が漏れる）。**この表が SoT** であり、件数の�
 | `setup-mode.md` | `This rejection applies only through option 2 of S3; the First-run setup paths behind options 1 and 3 do not validate the value.` |
 | `setup-mode-ja.md` | `この拒否は S3 の選択肢 2 経由のみに適用される。選択肢 1 / 3 の First-run setup は値を検証しない。` |
 
-**(2) S3-M 配下の `####` 見出し 8 個。** SU15 が個数・下限に加えて**順序**まで
-検査できるよう、名前と順序を確定させる。
+**(2) 節見出しと S3-M 配下の `####` 見出し 8 個。** SU15 が個数・下限に加えて**順序**まで
+検査できるよう、名前と順序を確定させる。**節見出しそのものも英日で固定する**:
+`setup-mode.md` は `### S3-M. Edit a runner's models and efforts`、
+`setup-mode-ja.md` は `### S3-M. runner の model / effort を編集する`。
+（SU10 / SU15 の needle は `S3-M` の部分列なのでどちらでも落ちないが、
+英日ミラーの揺れを消すために確定させる。）
 
 | # | `setup-mode.md`（EN） | `setup-mode-ja.md`（JA） |
 |---|---|---|
@@ -959,7 +997,7 @@ stale になる節が漏れる）。**この表が SoT** であり、件数の�
 - **主語が「役割キー 5 つ」に限定されていて変更後も真な同一命題 4 箇所**:
   `SKILL.md:490` / **`guide-ja.md:1494-1497`** / **`README.md:247-250`** の
   「3 通りの設定経路」と
-  **`CLAUDE.md:193`（保守手順 19）「書き込みは全経路とも `config-edit.sh` を通すこと」**。
+  **`CLAUDE.md:193`（保守手順 19）「書き込みは全経路とも `scripts/config-edit.sh` を通すこと」**（逐語。1 語違うと改題作業時に grep で拾えない）。
   3 つだけ挙げて 1 つ落とすと誤って追記されるので 4 ファイル分を列挙する
   （`guide-ja.md` を 2 回数えて 3 ファイルにしない）。
 - **`--reset` の R2 節**（`setup-mode.md:159-169` / `setup-mode-ja.md:121-127` /
@@ -967,7 +1005,10 @@ stale になる節が漏れる）。**この表が SoT** であり、件数の�
   記述があり、SU5 の `shell_ready_ms`（165 行）もここにある。§3.1 が
   「`--reset runners` はどちらのスクリプトも通らない」の論拠に使う節でもある。
   **改題作業で隣接節を巻き込みやすいので、変更不要側にも節として明記する。**
-- `runners.json` スキーマ節（`SKILL.md:337-372` / `guide-ja.md:1560-1590` /
+- **`CLAUDE.md:152`（保守項目 10）**。今回触る 6 フィールドの role 単位一致を 4 ファイルで
+  検査する項目だが、主語が解決規則なので変更後も真。「この表が SoT」を名乗る以上、
+  変更不要側に明記しておく。
+- `runners.json` スキーマ節（`SKILL.md:337-372` / `guide-ja.md:1560-1591` /
   **`README.md:324-350`**。6 フィールドと既定値表が既に完備）
 
 #### 3.1 「All writes go through …」の改題と I/F 段落の追記
@@ -1094,7 +1135,7 @@ read without writing まで）と同じ粒度で `runners-edit.sh` を書く。�
 | RE16 | `--name` が 2 件一致する（重複 name）レジストリでは exit 2 かつファイル無変更。**隣接ケース（3 モード分）**: `a"b$c` のような `"` / `$` を含む runner 名で、(1) `--set` が成功し当該レコードだけが更新される、(2) **`--get` が正しい値を返す**、(3) **`--show --name` が正しいレコードを返す**。`--name` を jq 式へ補間する実装は、`x") , {leak: $ENV.SECRET_TOKEN} , ("` 相当の名前で環境変数を rc=0 のまま吐く（手順 4 / 6 が補間で書かれても RE1-RE20 の他は全部緑になる） |
 | RE17 | `engine` 欠落レコード / `engine: gemini` に `--set plan_effort=high` → exit 2 かつファイル無変更。**一方 `--unset plan_effort` は同じレコードでも exit 0**（engine 検証は `--set <*_effort>` 専用） |
 | RE18 | `--dry-run` は当該レコードだけを stdout へ出し、**ファイルを変更しない**。`--get` / `--show` との併用は exit 2。**ファイル不在での `--dry-run` は exit 2**。（手順 7a の jq 失敗は §1.4 のとおり witness を構築できないので検査しない） |
-| RE18b | **`--dry-run` の出力内容**: 同一引数で `--dry-run` した出力と、実書き込み後に `--show --name` で得たレコードが `jq -S` 正規化のうえ一致する。**(a) fixture の現在値と `--set` の値は必ず異なるものにする**（同値だと「編集前をそのまま出す」実装でも恒真になり、S6 の事故がそのまま通る）。**(b) 同一呼び出しに `--set` と `--unset` を両方載せる**（例 `--set plan_effort=max --unset exec_model`。S6 は S7 と完全に同じ引数群を使う規定であり、`--unset` を無視する実装は codex `review_model` の unset プレビューを嘘にする）。**(c) 比較後に `.plan_effort == "max"` と `has("exec_model") == false` を追加で assert する**（等価性が恒真になるのを防ぐ正のコントロール） |
+| RE18b | **`--dry-run` の出力内容**: 同一引数で `--dry-run` した出力と、実書き込み後に `--show --name` で得たレコードが `jq -S` 正規化のうえ一致する。**(a) fixture の現在値と `--set` の値は必ず異なるものにする**（同値だと「編集前をそのまま出す」実装でも恒真になり、S6 の事故がそのまま通る）。**(b) 同一呼び出しに `--set` と `--unset` を両方載せる**（例 `--set plan_effort=max --unset exec_model`。**フィクスチャは `engine: claude` の runner にする** — codex には `max` が無いので effort allowlist で exit 2 になり (a)(b)(c) の assert 以前に落ちる。S6 は S7 と完全に同じ引数群を使う規定であり、`--unset` を無視する実装は codex `review_model` の unset プレビューを嘘にする）。**(c) 比較後に `.plan_effort == "max"` と `has("exec_model") == false` を追加で assert する**（等価性が恒真になるのを防ぐ正のコントロール） |
 | RE19 | **欠番。** 旧 RE19「手順 2 の parse 失敗で temp が 1 件も作られていない」は、**trap があるため correct と誤実装が完全に同一の結果（rc=1 / 残骸 0 / 原ファイル保持）になり弁別力がゼロ**だった。残骸検査としての価値だけを RE9 の 7 経路目へ移し、順序検証は RE9d が担う。id を詰めると CLAUDE.md の `RE1-RE20` 表記とずれるので欠番として残す |
 | RE20 | `runners[]` が空配列のレジストリに対する `--set` は exit 2（`--name` が 0 件一致）。**`--name` 無しの `--show`** は素通しで exit 0 |
 
@@ -1107,7 +1148,9 @@ read without writing まで）と同じ粒度で `runners-edit.sh` を書く。�
 **needle は SU5 と同じ形式で逐語列挙する**（概念だけ書くと実装者が grep 文字列を発明する）。
 既存の `need()` ヘルパー（`test-setup-skill.sh:37`）は `grep -Fq --` なので
 `[[:cntrl:]]` のようなブラケット式もそのまま安全に扱える。**独自 grep を書く場合は
-`-F` を落とさないこと。**
+`-F` を落とさないこと。ただし `need()` は「ファイル」を見るので、平坦化が要る
+SU10 / SU15 では使えない** — この 2 つは `en_flat` / `ja_flat` に対する独自ループにする
+（`grep -Fq --` は維持する）。
 
 **SU10〜SU16 は SU5 と同じ平坦化テキストに対して `grep -F` する。** SU5 だけが
 `en_flat=$(tr '\n' ' ' < "$SETUP_EN" | tr -s ' ')`（`test-setup-skill.sh:71-72`。
@@ -1118,17 +1161,20 @@ SU16 の needle はそのままでは生ファイル grep に一致しない。�
 `exits 2 when the file is absent` / `no longer be chosen as the reviewer` /
 `edit an existing runner's models and efforts` / 3 段防御 (c) の警告 1 文 /
 §3.0.1 の限定句 2 文など多数ある。`ja_flat` も同様に用意する。
-**例外は SU16 の行順アサーションだけ** — こちらは行番号が要るので生ファイルの
-`grep -n` を使う（B2 のスコープ規則とセットで実装する）。
+**例外は「行」「行番号」を要するアサーション** — SU12 の 4 部 / SU14 の逆方向抽出 /
+SU15 の `####` 個数・下限・順序 / SU16 の行順の 4 つは、**生ファイル**に対して実行する。
+平坦化テキスト（全文が 1 行）では「ちょうど 1 行」も「含む行だけ」も
+`grep -c '^#### '` も成立せず、SU12 は claude 行の `max` を拾い、SU14 は `--config` を
+拾って**誤 FAIL する**。平坦化テキストを使うのは**長文 needle の `grep -F` だけ**。
 
 | id | 対象 | needle（逐語） |
 |---|---|---|
-| SU10 | `setup-mode.md` | `S3-M` / 6 フィールド名 / `edit an existing runner's models and efforts`（S3 選択肢 2）/ `keep (` / `back to the default (` / `unset it (not review-capable)` / `unset (not review-capable)` / `no longer be chosen as the reviewer` / **`it is the current review_runner`**（3 段防御 (c) の S6 警告）/ **`contains a single quote`**（M1 の `'` 除外警告）/ `gpt-5.6-sol` / `the role keys only` / `mkdir -p .dispatch` / `shadows the global layer` / `[[:cntrl:]]` / `only through option 2`（§3.0.1 の限定句） |
+| SU10 | `setup-mode.md` | `S3-M` / 6 フィールド名 / `edit an existing runner's models and efforts`（S3 選択肢 2）/ `keep (` / `back to the default (` / `unset it (not review-capable)` / `unset (not review-capable)` / `no longer be chosen as the reviewer` / **`it is the current review_runner`**（3 段防御 (c) の S6 警告）/ **`contains a single quote`**（M1 の `'` 除外警告）/ `gpt-5.6-sol` / `the role keys only` / **`pick option 2 or 3 to reach them`**（S2 選択肢 1 の description。`the role keys only` は改訂前の現物に既にあるので、これが無いと §2.2 の変更が 1 文字も入らなくても緑になる）/ `mkdir -p .dispatch` / `shadows the global layer` / `[[:cntrl:]]` / `only through option 2`（§3.0.1 の限定句） |
 | SU11 | `setup-mode.md` | `runners-edit.sh` / `mktemp "$RUNNERS.XXXXXX"` / `exits 2 when the file is absent` / `First-run setup` |
 | SU12 | `setup-mode.md` **と** `setup-mode-ja.md` の**両方** | 候補プール 2 行のアンカー（下記レシピ） |
 | SU13 | `SKILL.md` と `guide-ja.md` | 両方が `runners-edit.sh` を**名指し**している |
 | SU14 | `runners-edit.sh` と `setup-mode.md` | 存在・`-x`・引数なしで usage + exit 2。**双方向の I/F 整合**（下記） |
-| SU15 | `setup-mode-ja.md` | 6 フィールド名 / `S3-M` / `登録済み runner の model / effort を編集` / `変更なし（現在:` / `既定に戻す（` / `未設定（レビュアーに選べません）` / `未設定に戻す（レビュアーに選べません）` / `レビュアーに選べなくなります` / **`現在の review_runner なので`** / **`名前に ' を含むため`** / `gpt-5.6-sol` / `役割キーのみ` / `mkdir -p .dispatch` / `グローバルより優先されることをユーザーに伝える` / `選択肢 2 経由のみ`。**加えて `####` について 3 点**: (1) 個数が `setup-mode.md` と一致、(2) 両方とも 6 個以上（パリティだけだと両方 0 個で緑になり、S3-M の小節構造が丸ごと欠けても検出できない）、(3) **§3.0.1 の 8 見出しが英日それぞれ「その順序で」出現する**（`grep -n` で行番号を取り、昇順であることを assert する） |
+| SU15 | `setup-mode-ja.md`（(1) の個数比較のみ `setup-mode.md` も読む） | 6 フィールド名 / `S3-M` / `登録済み runner の model / effort を編集` / `変更なし（現在:` / `既定に戻す（` / `未設定（レビュアーに選べません）` / `未設定に戻す（レビュアーに選べません）` / `レビュアーに選べなくなります` / **`現在の review_runner なので`** / **`名前に ' を含むため`** / `gpt-5.6-sol` / `役割キーのみ` / **`2 か 3 を選ぶと到達できます`**（同上）/ `mkdir -p .dispatch` / `グローバルより優先されることをユーザーに伝える` / `選択肢 2 経由のみ`。**加えて `####` について 3 点**: (1) 個数が `setup-mode.md` と一致、(2) 両方とも 6 個以上（パリティだけだと両方 0 個で緑になり、S3-M の小節構造が丸ごと欠けても検出できない）、(3) **§3.0.1 の 8 見出しが英日それぞれ「その順序で」出現する**（`grep -n` で行番号を取り、昇順であることを assert する） |
 | SU16 | `setup-mode.md` / `setup-mode-ja.md` | §2.6 温存表の逐語 3 文（英日それぞれ。平坦化テキストに対して `grep -F`）。**加えて S7 節内の呼び出し順**（下記） |
 
 **SU12 のレシピ**（重要）: 両ファイルには **claude 行に正当な `max` が現れる**ので、
@@ -1187,6 +1233,8 @@ c=$(grep -n 'config-edit\.sh'  <<<"$s7" | head -1 | cut -d: -f1)
 ```
 
 英日とも同じスコープで実行する（JA は `### S7. 書き込み`）。
+`awk` は `### S7.` から次の `## ` までを取るので、将来 S7 の後ろに別の `###` 節が
+挟まると巻き込む。現物は直後が `## R: --reset` / `## R: --reset` の訳なので問題ない。
 
 #### 4.3 テストに関する注意と、自動テストの限界
 
@@ -1212,6 +1260,7 @@ c=$(grep -n 'config-edit\.sh'  <<<"$s7" | head -1 | cut -d: -f1)
 ## 検証ゲート
 
 worktree ルートから次をすべて実行する。**`gate exit: 0` 以外は不合格。**
+（`test/*.sh` の件数は本タスク完了後に 1 増えるので、件数は書かない。）
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/apps/cmux-team-dispatch-task" || exit 1
@@ -1247,7 +1296,7 @@ snap() {
   git branch --list --format='%(refname:short)' | sort > "$2"
 }
 snap "$SNAPDIR/wt.before" "$SNAPDIR/br.before"
-# ここに上のテストループを差し込む（28 スイートを 2 回走らせないこと）
+# ここに上のテストループを差し込む（同じスイートを 2 回走らせないこと）
 snap "$SNAPDIR/wt.after" "$SNAPDIR/br.after"
 residue=0
 diff "$SNAPDIR/wt.before" "$SNAPDIR/wt.after" || residue=1   # && ではなく必ず両方走らせる
@@ -1288,9 +1337,9 @@ allowlist を作らない** = 新しいモデル名がそのまま通る）を�
 | 9 | §2.6 のクォート規約の相互参照 | 参照先を §1.3.1 から #4 の残置要件へ差し替える |
 | 10 | §3 同期表の「S3-M（`*_model` の拒否条件）」行と §3.0.1 (1) の逐語文 2 本 | `'` 限定へ縮小 |
 | 11 | SU10 の `[[:cntrl:]]` / `only through option 2` needle、SU15 の `選択肢 2 経由のみ` | 削除または `'` 限定へ |
-| 12 | **RE4** | **`'` のみへ縮小してはならない。** 撤回後の正しい期待値は「**空文字 / 空白のみ → exit 2**（#2 のとおり条件 1 は残る）」「**`'` `\"` `` ` `` `$` `\` / ESC → exit 0 かつ完全一致往復**」である。`'` の拒否は §2.4 の LLM 側事前チェックへ移るので、**スクリプト単体テストである RE4 が `'` → exit 2 を assert すると赤くなる** |
+| 12 | **RE4** | **`'` のみへ縮小してはならない。** 撤回後の正しい期待値は「**空文字 / 空白のみ → exit 2**（#2 のとおり条件 1 は残る）」「**`'` `"` `` ` `` `$` `\` / ESC → exit 0 かつ完全一致往復**」である。`'` の拒否は §2.4 の LLM 側事前チェックへ移るので、**スクリプト単体テストである RE4 が `'` → exit 2 を assert すると赤くなる** |
 | 13 | **RE14a** | **期待値が反転する** — `exit 2` + `cmp` バイト同一ではなく、`exit 0` + `.plan_model` がペイロードとリテラル一致 + `.command` / `.engine` / `.name` 不変 + 他 runner と `default` 不変 に書き換える |
-| 14 | 「明示的に採らなかった対策」の該当 2 行、リスク表の「親セッションのシェル注入（§1.3.1 の層 1）」行、および本節 | 参照先が消えるので、層 1 の説明の移動先（#3 で §2.6 へ移す）を指すよう直すか削除する |
+| 14 | 「明示的に採らなかった対策」の該当 2 行、リスク表の「親セッションのシェル注入（§1.3.1 の層 1）」行、リスク表の「deny-list が `"` `\` `$` を弾く限り引用付き補間は悪用不能なので追加テストは要らない」という結論、および本節 | 参照先が消えるので層 1 の説明の移動先（#3 で §2.6 へ移す）を指すよう直すか削除する。**引用付き補間の結論も撤回対象** — 撤回すると `"` が通るので、値の引用付き補間を弁別するテストを 1 件足す必要がある |
 
 **RE14b だけが両分岐で成立する**（`opus[1m]` は拒否文字を含まないので、どちらでも
 exit 0 + 往復になる）。RE4 と RE14a は分岐依存なので上表 #12 / #13 のとおり書き換えが要る。
@@ -1321,7 +1370,7 @@ exit 0 + 往復になる）。RE4 と RE14a は分岐依存なので上表 #12 /
 | `runners-edit.sh` の jq 式が対象外の runner / フィールドを壊す | RE1 / RE12 / RE14b / RE15 / RE16 |
 | 値やフィールド名の補間による `.command` 書き換え / `$ENV` 読み出し | §1.4 の `--arg` 契約（**手順 4 / 5 / 6 / 7a / 8 すべてに適用**）+ RE14b（値の無引用補間）+ RE16 の隣接ケース 3 モード（`--name` の補間）+ RE2 の 3 モード（フィールド名の補間）。**RE14a は deny-list のテストであって `--arg` 契約のテストではない** — 引用付きの素朴な補間 `jq ".plan_model = \"opus[1m]\""` は rc=0 で往復するので、値側を弁別できるのは RE14b だけ。deny-list が `"` `\` `$` を弾く限り引用付き補間は悪用不能なので、追加テストは要らない |
 | 親セッションのシェル注入（§1.3.1 の層 1） | §2.4 の "Other" 事前チェック + M1 の `'` 除外。§2.6 に相互参照。撤回分岐でも `'` の拒否だけは残す |
-| jq / mktemp の rc がそのまま漏れて 0/1/2 契約が破れる | §1.4 の 4 スニペット（手順 2 / 7a / 7b / 8 / 9）+ RE8 / RE18 / RE19 |
+| jq / mktemp の rc がそのまま漏れて 0/1/2 契約が破れる | §1.4 の **9 スニペット**（手順 2 / 3 / 4 / 5 / 6 / 7a / 7b / 8 / 9）+ 手順 4 / 5 / 6 / 7a / 8 の型安全 select + RE8 / **RE15** / RE18 |
 | 検証より前に mktemp する実装 | RE9d が read-only 親での exit code で弁別する（trap があるので残骸では見えない） |
 | `--dry-run` が mktemp を経由する実装 | RE9e が read-only 親での exit 0 で弁別する |
 | `--dry-run` が嘘のプレビューを出す | RE18b の (a) fixture 差 / (b) `--unset` 同載 / (c) 正のコントロール |
