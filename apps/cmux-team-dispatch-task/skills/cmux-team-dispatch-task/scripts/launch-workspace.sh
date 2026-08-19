@@ -786,6 +786,26 @@ if [[ $SKIP_PERMISSIONS -eq 1 ]]; then
   CLAUDE_EXTRA_FLAGS="${CLAUDE_EXTRA_FLAGS:+$CLAUDE_EXTRA_FLAGS }--dangerously-skip-permissions"
 fi
 
+# Step 2a の判定で bypass を確認できなかったときだけ付ける緊急フラグ。
+# plan は自分の合成箇所でリテラルのフラグを持つので足さない。
+# execute / standby / review は呼び出し元の --skip-permissions が CLAUDE_EXTRA_FLAGS 経由で
+# 届くので、実際に渡されたときだけ足さない (二重付与の回避)。
+# superpowers はその合成箇所が CLAUDE_MODEL_FLAGS しか読まず --skip-permissions を
+# 受け取らないため、その値に関わらず足す。
+PERM_FALLBACK_FLAG=""
+if [[ "$RUNNER_ENGINE" == "claude" && $BYPASS_INJECTION_OK -eq 0 ]]; then
+  case "$MODE" in
+    plan) ;;
+    superpowers) PERM_FALLBACK_FLAG=" --dangerously-skip-permissions" ;;
+    *) if [[ $SKIP_PERMISSIONS -eq 0 ]]; then PERM_FALLBACK_FLAG=" --dangerously-skip-permissions"; fi ;;
+  esac
+fi
+# `|| true` は必須。条件が偽のときではなく、log への書き込みが失敗したときのため。
+# log は最後の && の後ろにあり set -e の免除対象外なので、これが無いと launch ごと死ぬ。
+[[ -n "$PERM_FALLBACK_FLAG" ]] \
+  && log "permissions" "added the CLI permission flag for mode=$MODE because the settings injection was not confirmed" \
+  || true
+
 CODEX_MODEL_FLAG=""
 [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
 
@@ -822,24 +842,25 @@ CODEX_MODEL_FLAG=""
     if [[ "$MODE" == "execute" ]]; then
       # claude execute: --model / --dangerously-skip-permissions を inner prompt の直前にインジェクト
       if [[ -n "$CLAUDE_EXTRA_FLAGS" ]]; then
-        CORE_CMD="$RUNNER_COMMAND $CLAUDE_EXTRA_FLAGS '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND $CLAUDE_EXTRA_FLAGS$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
       else
-        CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
       fi
     elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
       # claude standby/review: --model / --skip-permissions を反映し、prompt があれば渡す
       # (agmsg モードでは "/agmsg actas <name>" + 待機指示を初期 prompt にする)
       if [[ -n "$PROMPT_TEXT" ]]; then
-        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS} '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
       else
-        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}"
+        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}$PERM_FALLBACK_FLAG"
       fi
     elif [[ "$MODE" == "superpowers" ]]; then
       # superpowers mode: 権限フラグは付けない。permission prompt の抑止は Step 2a で
       # worktree の .claude/settings.local.json に注入する permissions.defaultMode が担う
       # (AskUserQuestion は permission gate とは別レイヤーなので bypassPermissions 下でも
       #  対話的に残る。詳細は Step 2a のコメント)。model/effort は役割設定なので付ける
-      CORE_CMD="$RUNNER_COMMAND${CLAUDE_MODEL_FLAGS:+ $CLAUDE_MODEL_FLAGS} '$PROMPT_TEXT'"
+      #  注入を確認できなかったときだけ PERM_FALLBACK_FLAG が権限フラグを補う
+      CORE_CMD="$RUNNER_COMMAND${CLAUDE_MODEL_FLAGS:+ $CLAUDE_MODEL_FLAGS}$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
     else
       CORE_CMD="$RUNNER_COMMAND${CLAUDE_MODEL_FLAGS:+ $CLAUDE_MODEL_FLAGS} --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
     fi
