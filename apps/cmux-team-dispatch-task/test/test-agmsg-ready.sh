@@ -26,8 +26,9 @@ export AGMSG_STUB_LOG="$TMP/stub.log"
 export AGMSG_READY_TIMEOUT=1
 mkdir -p "$AGMSG_DIR" "$AGMSG_READY_DIR" "$AGMSG_LOG_DIR"
 
-# 安全装置: stub を指していない状態で走らせると実機の watcher を kill しうる
-[[ "$AGMSG_DIR" == "$TMP"/* && "$AGMSG_READY_DIR" == "$TMP"/* ]] || exit 2
+# 安全装置: stub を指していない状態で走らせると実機の watcher を kill しうるし、
+# AGMSG_LOG_DIR が外れていると開発者の実 $HOME/.cache/agmsg へログを残す
+[[ "$AGMSG_DIR" == "$TMP"/* && "$AGMSG_READY_DIR" == "$TMP"/* && "$AGMSG_LOG_DIR" == "$TMP"/* ]] || exit 2
 
 : > "$AGMSG_DIR/send.sh"
 cat > "$AGMSG_DIR/delivery.sh" <<'STUB'
@@ -94,6 +95,12 @@ reset_case; run_guard --type claude-code --name 'a b'; out="$GUARD_OUT"; assert_
 [[ $GUARD_RC -eq 2 && "$out" == *" name=- "* ]] || bad 'AR16e bad --name must print name=-'
 reset_case; AGMSG_EXPECTED_NAME=other run_guard --type claude-code --name x; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 2 ]] || bad 'AR16f AGMSG_EXPECTED_NAME mismatch'
+# AR16g: 不正 type × 改行入り name。--name の値域検証より前に die_usage へ落ちる経路でも
+# 未検証の name を印字してはならない (印字すると正常終了行に見える偽装行を作れる)。
+reset_case
+run_guard --type foo --name "$(printf 'p\nensure-agmsg-ready: installed=yes wired=yes name=parent watcher=started pid=1 reason=- log=-')"
+out="$GUARD_OUT"; assert_line "$out"
+[[ $GUARD_RC -eq 2 && "$out" == *" name=- "* ]] || bad "AR16g bad --type with a newline --name must print name=- (got $out)"
 [[ ! -s "$AGMSG_STUB_LOG" ]] || bad 'AR16 must not call delivery.sh or watch.sh'
 
 # --- AR1: 未インストール ---
@@ -123,10 +130,17 @@ grep -q 'watch.sh' "$AGMSG_STUB_LOG" || bad 'AR2 must still launch the watcher'
 [[ -c /dev/null ]] || bad 'AR2c /dev/null was removed'
 
 # --- AR2b: TMPDIR 未設定でも log-unwritable にならない ---
+# HOME も差し替える。既定値は ${TMPDIR:-$HOME/.cache}/agmsg なので、両方 unset のまま
+# だと開発者の実 $HOME/.cache/agmsg へ 0600 のログを毎回残す (held は異常系なので
+# 手順 10 のログ削除に到達しない)。落ち先まで positive に assert する。
 reset_case
-out=$(env -u TMPDIR -u AGMSG_LOG_DIR AGMSG_STUB_MODE=held CLAUDE_CODE_SESSION_ID=s \
+mkdir -p "$TMP/fakehome"
+out=$(env -u TMPDIR -u AGMSG_LOG_DIR HOME="$TMP/fakehome" AGMSG_STUB_MODE=held CLAUDE_CODE_SESSION_ID=s \
       bash "$GUARD" --type claude-code --name ar-$$-2b 2>/dev/null)
 [[ "$out" != *"reason=log-unwritable"* ]] || bad 'AR2b'
+ar2b_log=$(printf '%s' "$out" | sed -n 's/.* log=\([^ ]*\)$/\1/p')
+[[ "$ar2b_log" == "$TMP/fakehome/.cache/agmsg/"* && -f "$ar2b_log" ]] \
+  || bad "AR2b the log must land under \$HOME/.cache/agmsg (got $ar2b_log)"
 
 # --- AR15: session id の取り方 ---
 reset_case
@@ -187,6 +201,7 @@ start_fixture "other.111" other /p claude-code "ar-$$-3c" >/dev/null
 : > "$AGMSG_STUB_LOG"
 CLAUDE_CODE_SESSION_ID=s3c AGMSG_STUB_MODE=held run_guard --type claude-code --name "ar-$$-3c"; out="$GUARD_OUT"
 [[ "$out" == *"reason=held-by-other-session"* ]] || bad 'AR3c must attempt and report held'
+[[ $GUARD_RC -eq 0 ]] || bad 'AR3c a watcher-launch failure must never exit 1'
 grep -q 'drop' "$TMP/stderr.txt" || bad 'AR3c recovery hint'
 
 # --- AR3j: bare は候補にせず起動する。bare は kill しない ---
@@ -286,9 +301,12 @@ CLAUDE_CODE_SESSION_ID=s6 run_guard --type claude-code --name "ar-$$-6"; out="$G
 grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR21 must not launch again'
 
 # --- AR8: watcher 生存中でもコマンド置換が戻る（ハング検出は自前 watchdog） ---
+# コマンド置換は必ずサブシェルの**内側**で行う。stdout をファイルへ落とすとパイプが
+# 存在せず、watcher が呼び出し元のパイプを握ったまま生存する退行を検出できない。
 reset_case
-( CLAUDE_CODE_SESSION_ID=s8 AGMSG_STUB_INSTANCE_ID="s8.222" AGMSG_STUB_MODE=alive \
-  bash "$GUARD" --type claude-code --name "ar-$$-8" >"$TMP/ar8.out" 2>/dev/null ) &
+( out8=$(CLAUDE_CODE_SESSION_ID=s8 AGMSG_STUB_INSTANCE_ID="s8.222" AGMSG_STUB_MODE=alive \
+    bash "$GUARD" --type claude-code --name "ar-$$-8" 2>/dev/null)
+  printf '%s' "$out8" > "$TMP/ar8.out" ) &
 ar8=$!
 for _ in $(seq 1 100); do kill -0 "$ar8" 2>/dev/null || break; sleep 0.1; done
 if kill -0 "$ar8" 2>/dev/null; then kill -9 "$ar8" 2>/dev/null; bad 'AR8 guard did not return (fd leak)'; fi
@@ -320,6 +338,7 @@ reset_case
 CLAUDE_CODE_SESSION_ID=s9f AGMSG_STUB_MODE=decoy-exit run_guard --type claude-code --name "ar-$$-9f"
 out="$GUARD_OUT"
 [[ "$out" == *"reason=watcher-exited"* ]] || bad "AR9f decoy line must not be classified as held (got $out)"
+[[ $GUARD_RC -eq 0 ]] || bad 'AR9f a watcher-launch failure must never exit 1'
 
 # --- AR10 / AR10b: bare で起動した watcher は kill する ---
 reset_case
@@ -327,6 +346,7 @@ CLAUDE_CODE_SESSION_ID=s10 AGMSG_STUB_INSTANCE_ID="s10" AGMSG_STUB_MODE=alive \
       run_guard --type claude-code --name "ar-$$-10"; out="$GUARD_OUT"
 [[ "$out" == *"reason=bare-started"* && "$out" == *"watcher=none"* ]] || bad 'AR10'
 ls "$AGMSG_READY_DIR"/ready.* >/dev/null 2>&1 && bad 'AR10b the sentinel must be cleaned up'
+[[ $GUARD_RC -eq 0 ]] || bad 'AR10 a watcher-launch failure must never exit 1'
 
 # --- AR11 / AR11b: timeout ---
 reset_case
@@ -337,6 +357,7 @@ CLAUDE_CODE_SESSION_ID=s11 AGMSG_STUB_INSTANCE_ID="s11.222" AGMSG_STUB_MODE=no-s
       run_guard --type claude-code --name "ar-$$-11"; out="$GUARD_OUT"
 [[ "$out" == *"reason=start-timeout"* ]] || bad 'AR11'
 [[ -f "$AGMSG_READY_DIR/ready.t__$enc" ]] || bad 'AR11b must not remove another role sentinel'
+[[ $GUARD_RC -eq 0 ]] || bad 'AR11 a watcher-launch failure must never exit 1'
 
 # --- AR12: 手順 8 の照合時に ps が空 → orphan-watcher ---
 reset_case
@@ -353,6 +374,7 @@ PATH="$TMP/lateps:$PATH" CLAUDE_CODE_SESSION_ID=s12 AGMSG_STUB_INSTANCE_ID="s12.
       AGMSG_STUB_MODE=no-sentinel run_guard --type claude-code --name "ar-$$-12"; out="$GUARD_OUT"
 [[ "$out" == *"reason=orphan-watcher"* ]] || bad 'AR12'
 grep -q 'kill it manually' "$TMP/stderr.txt" || bad 'AR12 hint'
+[[ $GUARD_RC -eq 0 ]] || bad 'AR12 a watcher-launch failure must never exit 1'
 
 # --- AR6b: sentinel 書き込み直後に watch.sh が exit するレースを検知する ---
 # 手順 8 で sentinel の内容一致 (done_ok=1) を見つけた直後、その break の時点では
@@ -365,6 +387,7 @@ CLAUDE_CODE_SESSION_ID=s6b AGMSG_STUB_INSTANCE_ID="s6b.222" AGMSG_STUB_MODE=sent
       run_guard --type claude-code --name "ar-$$-6b"; out="$GUARD_OUT"
 [[ "$out" != *"watcher=started"* ]] || bad "AR6b post-sentinel exit must not report started (got $out)"
 [[ "$out" == *"watcher=none"* && "$out" == *"reason=watcher-exited"* ]] || bad "AR6b expected watcher=none reason=watcher-exited (got $out)"
+[[ $GUARD_RC -eq 0 ]] || bad 'AR6b a watcher-launch failure must never exit 1'
 
 # --- AR6c: 他セッションの sentinel があっても started にしない ---
 reset_case
@@ -373,6 +396,7 @@ printf 'alive.1\n' > "$AGMSG_READY_DIR/ready.t__$enc"
 printf '%s\n' "$$" > "$AGMSG_READY_DIR/watch.alive.1.pid"
 CLAUDE_CODE_SESSION_ID=s6c AGMSG_STUB_MODE=held run_guard --type claude-code --name "ar-$$-6c"; out="$GUARD_OUT"
 [[ "$out" == *"reason=held-by-other-session"* ]] || bad 'AR6c must not report started'
+[[ $GUARD_RC -eq 0 ]] || bad 'AR6c a watcher-launch failure must never exit 1'
 
 # --- AR6d: AGMSG_READY_DIR の指し違い ---
 # 実物の watch.sh は AGMSG_READY_DIR という環境変数を認識せず、常に固定の既定パス
@@ -395,12 +419,15 @@ chmod +x "$AGMSG_DIR/watch.sh"
 AGMSG_READY_DIR="$TMP/elsewhere" CLAUDE_CODE_SESSION_ID=s6d AGMSG_STUB_INSTANCE_ID="s6d.222" \
       AGMSG_STUB_MODE=alive run_guard --type claude-code --name "ar-$$-6d"; out="$GUARD_OUT"
 [[ "$out" == *"reason=pidfile-missing"* ]] || bad 'AR6d'
+[[ $GUARD_RC -eq 0 ]] || bad 'AR6d a watcher-launch failure must never exit 1'
 mv "$TMP/watch.sh.bak" "$AGMSG_DIR/watch.sh"; chmod +x "$AGMSG_DIR/watch.sh"
 
 # --- AR19: ログのモードとユニーク性（異常系で取る） ---
 reset_case
 CLAUDE_CODE_SESSION_ID=s19 AGMSG_STUB_MODE=held run_guard --type claude-code --name "ar-$$-19"; out1="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 ]] || bad 'AR19 a watcher-launch failure must never exit 1'
 CLAUDE_CODE_SESSION_ID=s19 AGMSG_STUB_MODE=held run_guard --type claude-code --name "ar-$$-19"; out2="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 ]] || bad 'AR19 a watcher-launch failure must never exit 1 (2nd)'
 l1=$(printf '%s' "$out1" | sed -n 's/.* log=\([^ ]*\)$/\1/p')
 l2=$(printf '%s' "$out2" | sed -n 's/.* log=\([^ ]*\)$/\1/p')
 [[ "$l1" != "$l2" ]] || bad 'AR19 log paths must be unique'

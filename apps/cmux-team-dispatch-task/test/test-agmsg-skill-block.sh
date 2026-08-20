@@ -15,7 +15,12 @@ mkdir -p "$TMP/skill/scripts" "$TMP/agmsg"
 # Substitute first, then assert not a single ~/.agents survives (fail-closed).
 sed -e "s|~/.agents/skills/agmsg/scripts|$TMP/agmsg|g" \
     -e "s|<SKILL_DIR>|$TMP/skill|g" "$TMP/block.raw" > "$TMP/block.sh"
-grep -q '~/.agents' "$TMP/block.sh" && bad 'AG1 the extracted block still touches the real agmsg'
+# Must stop, not just record a failure: the block below is EXECUTED, so a surviving real
+# path would run the real join.sh against the real agmsg DB. Catch $HOME/${HOME} forms too.
+if grep -qE '(\$\{?HOME\}?|~)/\.agents' "$TMP/block.sh"; then
+  echo 'FAIL: AG1 the extracted block still touches the real agmsg' >&2
+  exit 1
+fi
 
 cat > "$TMP/agmsg/join.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -73,7 +78,9 @@ make_guard 2 'ensure-agmsg-ready: installed=no wired=no name=- watcher=none pid=
 out=$(run_block); [[ "$out" == *"[error]"* ]] || bad 'AG1 rc2 must error out'
 
 # AG1-f: join failure still reaches the guard
+# Remove the marker AG1-a left behind, otherwise the assertion below is vacuous.
 make_guard 0 'ensure-agmsg-ready: installed=yes wired=yes name=parent watcher=started pid=1 reason=- log=-'
+rm -f "$TMP/guard.argv"
 out=$(JOIN_RC=1 run_block); [[ -f "$TMP/guard.argv" ]] || bad 'AG1 join failure must not abort the block'
 
 # AG2: --name parent is passed and --session-id is not
@@ -81,9 +88,17 @@ grep -Fq -- '--name parent' "$TMP/guard.argv" || bad 'AG2 --name parent'
 grep -Fq -- '--session-id' "$TMP/guard.argv" && bad 'AG2 must not pass --session-id'
 
 # AG3 / AG4: the child prompt's guard line
-grep -q 'prewarm: false' "$SKILL" || bad 'AG3 the child guard line must be gated on prewarm: false'
-grep -q 'ensure-agmsg-ready.sh --type <CHILD_AGMSG_TYPE> --name <task-slug>' "$SKILL" \
-  || bad 'AG4 the child guard line must resolve --type per task'
+# AG3 must not settle for "prewarm: false appears somewhere" — that is true of any
+# SKILL.md. Require the gate to sit within 10 lines above the guard line itself.
+child_guard_ln=$(grep -n 'ensure-agmsg-ready.sh --type <CHILD_AGMSG_TYPE> --name <task-slug>' "$SKILL" \
+  | head -1 | cut -d: -f1)
+if [[ -z "$child_guard_ln" ]]; then
+  bad 'AG4 the child guard line must resolve --type per task'
+else
+  gate_ln=$(grep -n 'prewarm: false' "$SKILL" | cut -d: -f1 \
+    | awk -v g="$child_guard_ln" '$1 < g && g - $1 <= 10 {print; exit}')
+  [[ -n "$gate_ln" ]] || bad 'AG3 the child guard line must be gated on prewarm: false'
+fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
