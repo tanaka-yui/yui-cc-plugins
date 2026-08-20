@@ -1091,8 +1091,10 @@ read without writing まで）と同じ粒度で `runners-edit.sh` を書く。�
 `setup-mode-ja.md` にも同じ段落を訳して置く。**JA 側も改題する**
 （`## 書き込みは全て \`config-edit.sh\` を通す` → `## フィールド単位の書き込みは全て
 edit スクリプトを通す`）。**既存本文（`setup-mode-ja.md:41-48`）は 1 文字も消さない。**
-SU8 は見出し数しか見ないので片方だけ改題しても緑になる — SU15 の
-`runners-edit.sh` / `mktemp "$RUNNERS.XXXXXX"` needle がこれを機械的に守る。SKILL.md の
+SU8 は見出し数しか見ないので片方だけ改題しても緑になる — **これを守るのは §4.2 の
+SU11 / SU15 に置いた「新見出しが存在し旧見出しが存在しない」アサーション**である。
+`runners-edit.sh` / `mktemp "$RUNNERS.XXXXXX"` の needle は I/F 段落が満たすので、
+改題の有無とは独立している（旧見出しを残したまま I/F 段落だけ足した doc でも緑になる）。SKILL.md の
 `Both modes write exclusively through scripts/config-edit.sh` も同じ限定を付ける
 （`--reset runners` は 2 スクリプトのどちらも通らないため、無条件の「2 スクリプトを
 通る」は `--reset` について偽になる）。
@@ -1142,7 +1144,7 @@ SU8 は見出し数しか見ないので片方だけ改題しても緑になる 
 | id | 不変条件 |
 |---|---|
 | RE1 | `--set` が指定 runner のフィールドだけを更新し、他 runner と `default` の**値**を変えない（jq は再整形するのでバイト比較は使わない） |
-| RE2 | allowlist 外のフィールド名は exit 2。**`--set engine=codex` / `--unset engine` / `--get engine` の 3 モードすべて**を検査する |
+| RE2 | allowlist 外のフィールド名は exit 2。**`--set engine=codex` / `--unset engine` / `--get engine` の 3 モードすべて**に加え、**`--set command=x` / `--unset command` / `--unset name` / `--unset default`**（runner の同一性に触らないことの唯一の機械的担保。`command` は実際に実行される文字列）と綴り違い |
 | RE3 | engine 別 effort allowlist。**負**: claude runner に `minimal`、codex runner に `max` はどちらも exit 2。**正のコントロール**: claude×`max` / claude×`low` / codex×`minimal` / codex×`xhigh` は exit 0 で実際に書き込まれる（CE6 が正負の両半分を持つのに倣う） |
 | RE4 | model はモデル名を allowlist しない: `[A-Za-z0-9._\[\]/-]` からなる任意の未知文字列が通る。**exit 2 になるもの**: 空文字 / 空白のみ / **前後に空白を持つ値**（`  fable` / `fable  `）/ `'` / `"` / `` ` `` / `$` / `\` を含む値 / ESC（`\033`）を含む値 |
 | RE5 | `--unset` が該当フィールドだけを削除し、同レコードの他フィールドを残す。**不在フィールドへの `--unset` は exit 0（冪等）** |
@@ -1157,12 +1159,12 @@ SU8 は見出し数しか見ないので片方だけ改題しても緑になる 
 | RE10 | `--get` / `--show` は非破壊。フィールド未設定は空文字で exit 0。**ファイル不在時も `--get` は空 + exit 0、`--show` は `{}` + exit 0**。**`--show --name <未登録名>` と `--get --name <未登録名>` はどちらも exit 2**（フィールド未設定の exit 0 と区別する）。**破損 JSON に対する `--get` / `--show` はどちらも exit 1**（`{}` + exit 0 に倒れると §2.3 の破損ガードが発火しなくなる） |
 | RE11 | 引数エラーはすべて exit 2: モードの同時指定 / モード未指定 / `--runners` 未指定 / `--set` を `--name` 無し / `--get` を `--name` 無し / `--set` が `<field>=<value>` 形式でない / 同一フィールドへの `--set` と `--unset` の同時指定（**順序を問わない。両方向を検査する**）/ **同一フィールドへの `--set` の重複** / **同一フィールドへの `--unset` の重複** / **`--runners` の重複** / **`--name` の重複** / **`--get` の重複** |
 | RE12 | 編集対象レコード内の allowlist 外フィールドが生存する（置換ではなくマージ） |
-| RE13 | **書き込みモードで** `--runners` が存在しないファイルを指すと exit 2。**かつ親ディレクトリを作らない**（`--runners "$TMP/nodir/runners.json"` に対し `[[ ! -d "$TMP/nodir" ]]`。`config-edit.sh:154` からの `mkdir -p` 写経を検出する）。読み取りモードの不在は RE10 |
+| RE13 | **書き込みモードで** `--runners` が存在しないファイルを指すと exit 2。**かつ親ディレクトリを作らない**（`--runners "$TMP/nodir/runners.json"` に対し `[[ ! -d "$TMP/nodir" ]]`。`config-edit.sh:154` からの `mkdir -p` 写経を検出する）。**ディレクトリを渡した場合も `--set` は exit 2、`--show` は `{}` + exit 0**（`-f` を `-e` に緩めた変異を kill する）。読み取りモードの不在は RE10 |
 | RE14a | **注入・拒否側**: `--set 'plan_model=a", "command": "pwned'` → exit 2 **かつ** `cmp` でファイルがバイト同一。**このケースは逸脱分岐に依存する**（撤回すると期待値が変わる。撤回表を参照） |
 | RE14b | **注入・往復側**: シェルメタ文字を含まないが **jq 構文として意味を持つ**値を実際に書き込む。`--set 'plan_model=fable[1m]'`（`[` `]` は jq の添字構文。**フィクスチャの現在値
 `opus[1m]` とは必ず違える** — 同値だと `--set` を no-op にする変異体でも PASS してしまい
 「完全一致往復」が証明できない）で exit 0 + 完全一致往復 + `.command` / `.engine` / `.name` 不変 + 他 runner と `default` 不変。素朴な無引用補間 `.plan_model = $VALUE` は jq 構文エラーで落ちるので確実に検出できる。**逸脱分岐を採っても採らなくても弁別力が残る唯一のケース** |
-| RE15 | **書き込みモード、または `--name` 付き読み取りで** `.runners` 欠落 / `null` / 非配列（オブジェクト）に対して **exit 2**（exit 1 では不可）かつファイル無変更。特にオブジェクトが配列へ化けないこと。**`{"runners":[1,2]}`（配列だが要素が非オブジェクト）も exit 2**（型安全 select が無いと手順 4 の jq が `Cannot index number with string` で **rc=5** を返す）。`--name` 無しの `--show` は素通しで exit 0 |
+| RE15 | **書き込みモード、または `--name` 付き読み取りで** `.runners` 欠落 / `null` / 非配列（オブジェクト）に対して **exit 2**（exit 1 では不可）かつファイル無変更。特にオブジェクトが配列へ化けないこと。**`{"runners":[1,2]}`（配列だが要素が非オブジェクト）も exit 2**（型安全 select が無いと手順 4 の jq が `Cannot index number with string` で **rc=5** を返す）。**一方 `{"runners":[{obj},true]}` は手順 3/4/5 をすべて通過し、`--set` / `--dry-run` / `--get` / `--show` がすべて exit 0 で成功し、非オブジェクト要素が生存すること。`{"runners":[true,{obj}]}` の逆順でも同じ**（`first(...)` の短絡で object-first では露見しない `ENGINE` / `--get` / `--show` の型安全ガードを kill する）。`--name` 無しの `--show` は素通しで exit 0 |
 | RE16 | `--name` が 2 件一致する（重複 name）レジストリでは exit 2 かつファイル無変更。**隣接ケース（3 モード分）**: `a"b$c` のような `"` / `$` を含む runner 名で、(1) `--set` が成功し当該レコードだけが更新される、(2) **`--get` が正しい値を返す**、(3) **`--show --name` が正しいレコードを返す**。`--name` を jq 式へ補間する実装は、`x") , {leak: $ENV.SECRET_TOKEN} , ("` 相当の名前で環境変数を rc=0 のまま吐く（手順 4 / 6 が補間で書かれても RE1-RE20 の他は全部緑になる） |
 | RE17 | `engine` 欠落レコード / `engine: gemini` に `--set plan_effort=high` → exit 2 かつファイル無変更。**一方 `--unset plan_effort` は同じレコードでも exit 0**（engine 検証は `--set <*_effort>` 専用） |
 | RE18 | `--dry-run` は当該レコードだけを stdout へ出し、**ファイルを変更しない**。`--get` / `--show` との併用は exit 2。**ファイル不在での `--dry-run` は exit 2**。（手順 7a の jq 失敗は §1.4 のとおり witness を構築できないので検査しない） |
@@ -1201,7 +1203,7 @@ SU15 の `####` 個数・下限・順序 / SU16 の行順の 4 つは、**生フ
 | id | 対象 | needle（逐語） |
 |---|---|---|
 | SU10 | `setup-mode.md` | `S3-M` / 6 フィールド名 / `edit an existing runner's models and efforts`（S3 選択肢 2）/ `keep (` / `back to the default (` / `unset it (not review-capable)` / `unset (not review-capable)` / `no longer be chosen as the reviewer` / **`it is the current review_runner`**（3 段防御 (c) の S6 警告）/ **`contains a single quote`**（M1 の `'` 除外警告）/ `gpt-5.6-sol` / `the role keys only` / **`pick option 2 or 3 to reach them`**（S2 選択肢 1 の description。`the role keys only` は改訂前の現物に既にあるので、これが無いと §2.2 の変更が 1 文字も入らなくても緑になる）/ `mkdir -p .dispatch` / `shadows the global layer` / `[[:cntrl:]]` / `only through option 2`（§3.0.1 の限定句） |
-| SU11 | `setup-mode.md` | `runners-edit.sh` / `mktemp "$RUNNERS.XXXXXX"` / `exits 2 when the file is absent` / `First-run setup` / `runners-edit.sh takes --runners and --name` / `last-write-wins`。**加えて改題そのもの**: `## All field-level writes go through the edit scripts` が**存在し**、旧見出し ``## All writes go through `config-edit.sh`​`` が**存在しない**こと（needle は I/F 段落が持つので改題の有無と独立してしまう。改題を落としても全ゲートが緑になる穴を塞ぐ） |
+| SU11 | `setup-mode.md` | `runners-edit.sh` / `mktemp "$RUNNERS.XXXXXX"` / `exits 2 when the file is absent` / `First-run setup` / `runners-edit.sh takes --runners and --name, then one of --set / --unset (optionally with --dry-run), --get, or --show.`（**末尾のピリオドまで全文**。前半だけを needle にすると文を切り詰めても緑になる）/ `last-write-wins` / `replaces a symlink with a regular file`（句だけだと symlink と mode の 2 挙動が無言で落ちる）。**加えて改題そのもの**: `## All field-level writes go through the edit scripts` が**存在し**、旧見出し ``## All writes go through `config-edit.sh`​`` が**存在しない**こと（needle は I/F 段落が持つので改題の有無と独立してしまう。改題を落としても全ゲートが緑になる穴を塞ぐ） |
 | SU12 | `setup-mode.md` **と** `setup-mode-ja.md` の**両方** | 候補プール 2 行のアンカー（下記レシピ） |
 | SU13 | `SKILL.md` と `guide-ja.md` | 両方が `runners-edit.sh` を**名指し**している |
 | SU14 | `runners-edit.sh` と `setup-mode.md` | 存在・`-x`・引数なしで usage + exit 2。**双方向の I/F 整合**（下記） |

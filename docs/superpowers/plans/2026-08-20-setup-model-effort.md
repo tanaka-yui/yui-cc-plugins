@@ -40,7 +40,7 @@
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md` | 変更 | `## Setup Mode` 節、`Both modes write exclusively …`、First-run setup 見出し、`Never call config-edit.sh here.` |
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md` | 変更 | SKILL.md の 1:1 訳 3 箇所（`## セットアップモード` 節 / 67 行 / 251 行）＋ **1:1 訳では拾えない独自 2 箇所（1363 行の README ミラー / 1641 行の初回セットアップ）** |
 | `apps/cmux-team-dispatch-task/README.md` | 変更 | `### 設定（--setup）` / 286 行 / 131 行 |
-| `apps/cmux-team-dispatch-task/CLAUDE.md` | 変更 | ファイル構成表 2 箇所（新規行 + 23 行）、**「role 解決の現行契約」節の 91 行**、保守手順 28（4 箇所: 247 / 251 / 本文 / needle 一覧）、保守手順 44（2 箇所）、E2E 項目 43。**193 行（保守手順 19）と 152 行（保守項目 10）は変更不要・逐語保護**なので触らない |
+| `apps/cmux-team-dispatch-task/CLAUDE.md` | 変更 | **8 箇所**: ファイル構成表 2 箇所（新規行 + 23 行）、「role 解決の現行契約」節の 91 行、保守手順 28 の 3 箇所（247 / 251 / 本文）、保守手順 44 の 2 箇所、E2E 項目 43。**193 行（保守手順 19）と 152 行（保守項目 10）は変更不要・逐語保護**なので触らない |
 
 **タスクの切り方**: Task 1-3 でスクリプトを TDD で作り（読み取り → 書き込み → dry-run）、Task 4 で `setup-mode*` と対応 SU、Task 5 で 4 ファイル整合と SU13、Task 6 で全ゲート。各タスクの末尾で `test/*.sh` が全部緑になる。
 
@@ -182,6 +182,7 @@ re2_pass=1
 [[ "$(run_rc --runners "$R" --name cc --set command=x)" == 2 ]] || re2_pass=0
 [[ "$(run_rc --runners "$R" --name cc --unset command)" == 2 ]] || re2_pass=0
 [[ "$(run_rc --runners "$R" --name cc --unset name)" == 2 ]] || re2_pass=0
+[[ "$(run_rc --runners "$R" --name cc --unset default)" == 2 ]] || re2_pass=0
 if [[ $re2_pass == 1 ]]; then ok 'RE2: allowlist 外フィールドは 3 モードとも exit 2'; else bad 'RE2'; fi
 
 # ---- RE4: model の値検証（allowlist は作らないが空とメタ文字は弾く） ----
@@ -267,11 +268,6 @@ echo '{"runners":[true,{"name":"cc","engine":"claude"}]}' > "$TMP/mixedrev.json"
 [[ "$(run_rc --runners "$TMP/o.json" --show)" == 0 ]] || re15_pass=0
 if [[ $re15_pass == 1 ]]; then ok 'RE15: .runners が非配列なら exit 2、要素が非オブジェクトなら型安全 select で素通し'; else bad 'RE15'; fi
 
-# 注: 上の RE15 のうち `$TMP/mixed.json` / `$TMP/mixedrev.json` に対する
-# **assert 8 行**（`run_rc` / `jq` / `--show` / `--get` / `--dry-run`）は書き込みを伴うので、
-# Task 1 Step 1 では**この 8 行だけを外す**（`echo '{"runners":…}' >` の 2 行は残す）。
-# Task 2 Step 1 で戻す。外さないと Task 1 Step 4 が RE15 で赤くなる。
-
 # ---- RE20: runners[] が空配列 ----
 re20_pass=1
 echo '{"default": "cc", "runners": []}' > "$TMP/empty.json"
@@ -296,6 +292,12 @@ else
 fi
 exit "$fail"
 ```
+
+**段取り注（コードブロックには入れない）**: 上の RE15 のうち、`$TMP/mixed.json` と
+`$TMP/mixedrev.json` に対する **assert 8 行**（`run_rc` ×3 / `jq` ×2 / `--show` ×2 /
+`--dry-run` ×1）は書き込みを伴うので、**Task 1 Step 1 ではこの 8 行だけを外す**
+（`echo '{"runners":…}' >` の 2 行は残す）。外さないと Task 1 Step 4 が RE15 で赤くなる。
+復帰は **7 行が Task 2 Step 1、`--dry-run` の 1 行だけが Task 3 Step 1**。
 
 - [ ] **Step 2: テストが失敗することを確認する**
 
@@ -598,8 +600,13 @@ git commit -m "feat(cmux-team-dispatch-task): runners-edit.sh の引数解析・
 - [ ] **Step 1: 書き込み系のテストを追加する（失敗する）**
 
 まず **Task 1 Step 1 で外した 2 箇所を戻す**:
-(a) **RE15 の mixed 配列 assert 4 行**（`$TMP/mixed.json` に対する `run_rc` / `jq` / `--show`。
-`echo` の 1 行は Task 1 でも残っている）、(b) **RE4 の受理側ループ**（Task 1 には書かないので新規に足す）。
+(a) **RE15 の assert 7 行** —
+`mixed.json` に対する `run_rc` / `jq` ×2 / `--show` の 4 行と、
+`mixedrev.json` に対する `run_rc` / `--get` / `--show` の 3 行。
+**`mixed.json` に対する `--dry-run` の 1 行だけは戻さない**（Task 3 Step 1 で戻す。
+この時点では `--dry-run` が未実装なので戻すと Task 2 Step 4 が赤くなる）。
+`echo` の 2 行は Task 1 でも残っている。
+(b) **RE4 の受理側ループ**（Task 1 には書かないので新規に足す）。
 そのうえで `if [[ $fail -eq 0 ]]` の直前に次を挿入する。
 
 ```bash
@@ -719,6 +726,7 @@ cp "$TMP/noeng.json" "$TMP/noeng.expect"
 [[ "$(run_rc --runners "$TMP/noeng.json" --name g --set plan_effort=high)" == 2 ]] || re17_pass=0
 [[ "$(run_rc --runners "$TMP/noeng.json" --name h --set plan_effort=high)" == 2 ]] || re17_pass=0
 cmp -s "$TMP/noeng.json" "$TMP/noeng.expect" || re17_pass=0
+[[ "$(run_rc --runners "$TMP/noeng.json" --name g --set plan_effort=high --dry-run)" == 2 ]] || re17_pass=0
 bash "$EDIT" --runners "$TMP/noeng.json" --name g --unset plan_effort >/dev/null 2>&1 || re17_pass=0
 [[ "$(jq -r '.runners[0] | has("plan_effort")' "$TMP/noeng.json")" == false ]] || re17_pass=0
 if [[ $re17_pass == 1 ]]; then ok 'RE17: engine 不明への --set <*_effort> は exit 2、--unset は exit 0'; else bad 'RE17'; fi
@@ -886,7 +894,9 @@ git commit -m "feat(cmux-team-dispatch-task): runners-edit.sh の原子的な書
 
 - [ ] **Step 1: `--dry-run` のテストを追加する（失敗する）**
 
-Task 2 でコメントアウトした RE9e の `--dry-run` 3 行を戻し、さらに次を追加する。
+Task 2 でコメントアウトした **RE9e の `--dry-run` 3 行**と、Task 2 で保留した
+**RE15 の `--dry-run` 1 行**（`mixed.json` に対する `--set plan_effort=max --dry-run`）を戻し、
+さらに次を追加する。
 
 ```bash
 # ---- RE18 / RE18b: --dry-run ----
@@ -924,7 +934,7 @@ if [[ $re18b_pass == 1 ]]; then ok 'RE18b: dry-run 出力が実書き込み結�
 - [ ] **Step 2: テストが失敗することを確認する**
 
 Run: `cd apps/cmux-team-dispatch-task && bash test/test-runners-edit.sh`
-Expected: RE18 / RE18b / RE9e が FAIL（`--dry-run not implemented yet`）。
+Expected: **RE15 / RE9e / RE18 / RE18b の 4 件**が FAIL（`--dry-run not implemented yet`）。
 
 - [ ] **Step 3: `--dry-run` を実装する**
 
@@ -1031,14 +1041,14 @@ need_flat "$en_flat" 'SU10: setup-mode.md が S3-M と選択肢生成規則を�
   'it is the current review_runner' 'contains a single quote' \
   'gpt-5.6-sol' 'the role keys only' 'pick option 2 or 3 to reach them' \
   'mkdir -p .dispatch' 'shadows the global layer' \
-  '[[:cntrl:]]' 'only through option 2'
+  '[[:cntrl:]]' 'leading/trailing whitespace' 'only through option 2'
 
 # SU11
 need_flat "$en_flat" 'SU11: setup-mode.md が runners-edit.sh の契約を記載する' \
   'runners-edit.sh' 'mktemp "$RUNNERS.XXXXXX"' \
   'exits 2 when the file is absent' 'First-run setup' \
-  'runners-edit.sh takes --runners and --name' \
-  'last-write-wins'
+  'runners-edit.sh takes --runners and --name, then one of --set / --unset (optionally with --dry-run), --get, or --show.' \
+  'last-write-wins' 'replaces a symlink with a regular file'
 # 改題そのもの。needle は I/F 段落が持つので、改題の有無とは独立してしまう。
 su11h_pass=1
 grep -Fq -- '## All field-level writes go through the edit scripts' "$SETUP_EN" \
@@ -1070,9 +1080,10 @@ su14_pass=1
 usage=$(bash "$REDIT" 2>&1); rc=$?
 [[ $rc -eq 2 ]] || { echo "  usage rc=$rc"; su14_pass=0; }
 grep -q 'Usage: runners-edit.sh' <<<"$usage" || { echo '  usage 行が無い'; su14_pass=0; }
+# 部分一致だと単数形タイポ --runner が --runners に当たって生存するので語境界を要求する
 for fl in --runners --name --unset --get --show --dry-run; do
-  grep -Fq -- "$fl" <<<"$usage" || { echo "  usage に $fl が無い"; su14_pass=0; }
-  grep -Fq -- "$fl" "$SETUP_EN" || { echo "  setup-mode.md に $fl が無い"; su14_pass=0; }
+  grep -Eq -- "(^|[^a-z-])${fl}([^a-z-]|\$)" <<<"$usage" || { echo "  usage に $fl が無い"; su14_pass=0; }
+  grep -Eq -- "(^|[^a-z-])${fl}([^a-z-]|\$)" "$SETUP_EN" || { echo "  setup-mode.md に $fl が無い"; su14_pass=0; }
 done
 # --set だけは --setup に食われるので語境界を要求する（setup-mode.md には --setup が既に 7 箇所ある）
 grep -Eq -- '(^|[^a-z-])--set([^a-z-]|$)' <<<"$usage" || { echo '  usage に --set が無い'; su14_pass=0; }
@@ -1094,7 +1105,8 @@ if [[ -z "$doc_flags" ]]; then
   su14_pass=0
 fi
 for fl in $doc_flags; do
-  grep -Fq -- "$fl" <<<"$usage" || { echo "  doc の $fl が usage に無い"; su14_pass=0; }
+  grep -Eq -- "(^|[^a-z-])${fl}([^a-z-]|\$)" <<<"$usage" \
+    || { echo "  doc の $fl が usage に無い"; su14_pass=0; }
 done
 if [[ $su14_pass == 1 ]]; then ok 'SU14: runners-edit.sh の usage と doc の I/F が双方向で一致'; else bad 'SU14'; fi
 
@@ -1110,7 +1122,8 @@ need_flat "$ja_flat" 'SU15: setup-mode-ja.md が S3-M の日本語 needle を持
   'gpt-5.6-sol' '役割キーのみ' '2 か 3 を選ぶと到達できます' \
   'mkdir -p .dispatch' 'グローバルより優先されることをユーザーに伝える' \
   '選択肢 2 経由のみ' '選択肢 1 / 3 の First-run setup は値を検証しない' \
-  'runners-edit.sh' 'mktemp "$RUNNERS.XXXXXX"'
+  '前後に空白' 'runners-edit.sh' 'mktemp "$RUNNERS.XXXXXX"' \
+  'symlink は通常ファイルに置き換わり'
 
 # 改題そのもの（EN と対称）
 su15h2_pass=1
@@ -1212,15 +1225,22 @@ spec §2.1 / §2.2 / §2.3 / §2.4 / §2.5 / §2.6 と §3.0.1 / §3.1 のとお
    EN 8 個をその順で。規則 1（4 形）/ 規則 2 / 規則 3（4 行の表）/ 規則 4、候補プール表
    （**`claude *_effort` と `codex *_effort` の 2 行は spec §2.4 から 1 バイト単位でコピー**）、
    codex 候補導出 step 1-4、3 段防御 (b)(c)、自由入力の扱い、警告文言の EN 6 種。
-   - **拒否条件は 4 つすべて書く**: 空 / 空白のみ / **前後に空白を持つ値** /
+   - **拒否条件は 5 つすべて書く**: 空 / 空白のみ / **前後に空白を持つ値** /
      5 つのシェルメタ文字 / `[[:cntrl:]]`。**内部の空白は通る**（`opus 1m` は受理される）。
      これを落とすと S3-M の "Other" 事前チェックが `  fable` を通し、S6 の `--dry-run` が
      exit 2 でプレビュー生成が落ちる、という **doc に書かれていない失敗経路**が開く。
    - **§3.0.1 (1) の EN 限定句を逐語で**添える。
+   - **spec §2.4 の選択肢生成例 4 つには日本語の括弧説明が付いている。** 丸写しすると
+     `japanese-in-english-doc` に当たるので、`setup-mode.md` へ写すときは括弧内も英語にする
+     （Step 5 の `check-doc-lang` で必ず捕まるが、往復を減らすためここで潰す）。
 5. **`### S6. Preview and confirm`** — 2 ファイル分。before は `--show --name`、after は
    同じ `--set` / `--unset` 群 + `--dry-run`。警告リストのラベルは `Warnings:` ↔ `警告:`。
-   **これはユーザーへ提示するラベルであって markdown 見出しではない。`### Warnings:` と
-   書くと SU8 の 19/19 が壊れる**（EN だけ 20 になる）。
+   **これはユーザーへ提示するラベルであって markdown 見出しではない。** 見出し化すると
+   SU8 の見出し数が変わる（片方だけなら 19/20 で即赤、英日そろえても 20/20 で釣り合って
+   しまい「S3-M を足して 19 個ずつ」という意図が崩れる）。危険なのは見出し化そのもの。
+5b. **doc にも書く指示 2 つ** — §2.1 の「閾値 5 は M1 の『5 件以上なら先頭 4 件』とは
+   別の数え方である」と、§2.4 の「選択肢は必ず 2 つ以上になる」（床の根拠 1 文）。
+   どちらも spec が明示的に「doc にも書く」と指示しているが、ゲートは見ない。
 6. **`### S7. Write`** — **既存散文を消さずに** `runners-edit.sh` の手順を 1 番目へ挿入。
    温存 3 文（spec §2.6 の表）を逐語で残す。**S7 節内で `runners-edit.sh` が
    `config-edit.sh` より前に現れること**（SU16）。2 ファイル非トランザクションと
@@ -1260,8 +1280,13 @@ spec §2.1 / §2.2 / §2.3 / §2.4 / §2.5 / §2.6 と §3.0.1 / §3.1 のとお
 1. **項目 7 の JA 版（最重要）** — `## 書き込みは全て \`config-edit.sh\` を通す`
    （`setup-mode-ja.md:39`）を **`## フィールド単位の書き込みは全て edit スクリプトを通す`**
    へ改題し、**既存本文（41-48 行）は 1 文字も消さず**、その後ろに §3.1 の限定文と
-   `runners-edit.sh` の I/F 段落（7 フラグ全部 / `mktemp "$RUNNERS.XXXXXX"` / exit 0/1/2 /
-   マージ / ファイル不在は exit 2 / First-run setup）の訳を追記する。
+   `runners-edit.sh` の I/F 段落（7 フラグを 1 文に集約したもの /
+   `mktemp "$RUNNERS.XXXXXX"` / exit 0/1/2 / マージ / ファイル不在は exit 2 /
+   First-run setup）の訳を追記する。
+   **§1.4 が「文書化のみ」と決めた 3 挙動の 1 文も訳す**（EN 側と同じく、文書化が唯一の
+   緩和策なので、書かれなければ緩和策が存在しないのと同じ）。逐語:
+   `書き込みは last-write-wins で、symlink は通常ファイルに置き換わり、temp の mode が結果に残る。`
+   実行例は ```` ```bash ```` フェンスに入れる。
    **SU8 は見出し数しか見ないので片方だけ改題しても 19/19 で緑になる。**
    これを落とすと、`runners-edit.sh` 導入後に**偽になる見出し**が残り、
    spec §3.1 が 20 行かけて警告した「First-run setup を `runners-edit.sh` に寄せて
@@ -1338,6 +1363,14 @@ git commit -m "feat(cmux-team-dispatch-task): --setup に役割別 model/effort 
 su13_pass=1
 grep -Fq -- 'runners-edit.sh' "$SKILL" || { echo '  SKILL.md が runners-edit.sh を名指ししていない'; su13_pass=0; }
 grep -Fq -- 'runners-edit.sh' "$GUIDE" || { echo '  guide-ja.md が runners-edit.sh を名指ししていない'; su13_pass=0; }
+# --override が runners-edit.sh も呼ばない旨。CLAUDE.md 項目 44 は人手チェックリストなので、
+# ここが唯一の機械的担保になる。
+skill_flat2=$(tr '\n' ' ' < "$SKILL" | tr -s ' ')
+guide_flat2=$(tr '\n' ' ' < "$GUIDE" | tr -s ' ')
+grep -Fq -- 'Never call `config-edit.sh` or `runners-edit.sh` here.' <<<"$skill_flat2" \
+  || { echo '  SKILL.md の --override が runners-edit.sh に触れていない'; su13_pass=0; }
+grep -Fq -- '`config-edit.sh` と `runners-edit.sh` はここでは絶対に呼ばない。' <<<"$guide_flat2" \
+  || { echo '  guide-ja.md の --override が runners-edit.sh に触れていない'; su13_pass=0; }
 if [[ $su13_pass == 1 ]]; then ok 'SU13: SKILL.md と guide-ja.md が runners-edit.sh を名指しする'; else bad 'SU13'; fi
 ```
 
@@ -1357,8 +1390,8 @@ Expected: SU13 が FAIL、他は PASS。
 3. **First-run setup 見出し（433-434 行）** — 現行の
    `(when runners.json does not exist, …, and when --setup selects the registry as a target)`
    は S3 に選択肢 2 が増えると偽になるので、**選択肢 1 / 3 に限る**旨へ改める。
-4. **822 行 `Never call config-edit.sh here.`**（`--override`）— `runners-edit.sh` も
-   呼んではならない旨を追加する。
+4. **822 行 `Never call config-edit.sh here.`**（`--override`）— **逐語で**
+   ``Never call `config-edit.sh` or `runners-edit.sh` here.`` にする（SU13 の needle）。
 
 - [ ] **Step 4: `guide-ja.md` を更新する（5 箇所。日本語）**
 
@@ -1367,7 +1400,8 @@ Expected: SU13 が FAIL、他は PASS。
 2. **67 行**（`## リセットモード（設定のリセット）` 配下）「両モードとも書き込みは
    `scripts/config-edit.sh` **だけ**を通す」— `SKILL.md:117` の訳なので同じ限定へ。
    **節名だけを追うと漏れるので注意。**
-3. **251 行**「`config-edit.sh` はここでは絶対に呼ばない。」— `runners-edit.sh` を追加。
+3. **251 行**「`config-edit.sh` はここでは絶対に呼ばない。」— **逐語で**
+   「`config-edit.sh` と `runners-edit.sh` はここでは絶対に呼ばない。」にする（SU13 の needle）。
 4. **1363 行 `### 設定（\`--setup\`）`** — `README.md:84-98` の逐語ミラー。README と同じ更新。
 5. **1641 行 `### 初回セットアップ`** — 本文の「…または `--setup` で `runners.json` を
    対象に選んだときは、初回セットアップが起動します」を選択肢 1 / 3 限定へ。
@@ -1440,22 +1474,21 @@ git commit -m "docs(cmux-team-dispatch-task): S3-M と runners-edit.sh を 4 フ
 - Consumes: Task 1-5 のすべて
 - Produces: `gate exit: 0` と `residue: 0`
 
-- [ ] **Step 1: テストのスナップショットを取る**
+- [ ] **Step 1: スナップショット → 全スイート → 残骸確認を 1 つの Bash 呼び出しで走らせる**
+
+**3 つに分けてはならない。** `snap()` と `$SNAPDIR` はシェル関数と変数なので、
+別々の Bash 呼び出しに分けると後半が `snap: command not found` で
+**偽の `residue: 1`** を出す。
 
 ```bash
-cd "$(git rev-parse --show-toplevel)"
+cd "$(git rev-parse --show-toplevel)" || exit 1
 SNAPDIR=$(mktemp -d)
 snap() {
   git worktree list --porcelain | awk '/^worktree /{print substr($0,10)}' | sort > "$1"
   git branch --list --format='%(refname:short)' | sort > "$2"
 }
 snap "$SNAPDIR/wt.before" "$SNAPDIR/br.before"
-echo "$SNAPDIR"
-```
 
-- [ ] **Step 2: 全スイートと `pnpm check` を走らせる**
-
-```bash
 cd "$(git rev-parse --show-toplevel)/apps/cmux-team-dispatch-task" || exit 1
 fail=0
 for t in test/*.sh; do
@@ -1465,16 +1498,7 @@ done
 cd "$(git rev-parse --show-toplevel)" || exit 1
 pnpm check || fail=1
 echo "gate exit: $fail"
-```
 
-Expected: 全スイート OK、`check-doc-lang` が OK、`gate exit: 0`。
-`@tanaka-yui/token-meter` の `noNonNullAssertion` 警告 4 件は既知のノイズで失敗ではない。
-FAILED が出たら、当該スイートを**リダイレクト無しで再実行**して原因を読む。
-
-- [ ] **Step 3: 残骸が無いことを確認する**
-
-```bash
-cd "$(git rev-parse --show-toplevel)"
 snap "$SNAPDIR/wt.after" "$SNAPDIR/br.after"
 residue=0
 diff "$SNAPDIR/wt.before" "$SNAPDIR/wt.after" || residue=1
@@ -1482,10 +1506,13 @@ diff "$SNAPDIR/br.before" "$SNAPDIR/br.after" || residue=1
 echo "residue: $residue"
 ```
 
-Expected: `residue: 0`。`feat/pg*` / `feat/is*` / `feat/ov*` のような残留ブランチも
-worktree 登録も増えていないこと。
+Expected: 全スイート OK、`check-doc-lang` が OK、**`gate exit: 0` かつ `residue: 0`**。
+`feat/pg*` / `feat/is*` / `feat/ov*` のような残留ブランチも worktree 登録も
+増えていないこと。
+`@tanaka-yui/token-meter` の `noNonNullAssertion` 警告 4 件は既知のノイズで失敗ではない。
+FAILED が出たら、当該スイートを**リダイレクト無しで再実行**して原因を読む。
 
-- [ ] **Step 4: 未コミットの変更が無いことを確認する**
+- [ ] **Step 2: 未コミットの変更が無いことを確認する**
 
 ```bash
 cd "$(git rev-parse --show-toplevel)" && git status --porcelain
@@ -1494,7 +1521,7 @@ cd "$(git rev-parse --show-toplevel)" && git status --porcelain
 Expected: `.cmux-team-dispatch-task-*` 系の実行時ファイル以外に何も出ないこと。
 出たら `git add -A && git commit` する（worktree のクリーンアップで失われるため）。
 
-- [ ] **Step 5: 最終コミット（必要な場合のみ）**
+- [ ] **Step 3: 最終コミット（必要な場合のみ）**
 
 ```bash
 git add -A
