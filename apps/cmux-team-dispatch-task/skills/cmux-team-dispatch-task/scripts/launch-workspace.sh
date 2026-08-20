@@ -607,7 +607,7 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
   # -s (slurp) + length == 1 も必須。素の jq -e は複数 JSON ドキュメントが連結された
   # ファイル (JSON としては不正) に対して最後の値だけで rc を決めるため、末尾が
   # bypassPermissions なら confirmed 扱いになってしまう。
-  # 既知の残余 (round 2 レビュー MI2-5): jq のパーサは JSON.parse より寛容な入力を
+  # 既知の残余: jq のパーサは JSON.parse より寛容な入力を
   # 一部受理する (UTF-8 BOM 付きファイル、NaN/Infinity/先頭ゼロ等の非標準数値リテラル)。
   # 到達には既存の settings.local.json がその形で "既に" bypassPermissions を持つ必要が
   # あり (defaultMode が別値なら merge が走って jq が正規化し自己修復する)、
@@ -621,8 +621,10 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
     EFFECTIVE_DEFAULT_MODE=$(jq -r '.permissions.defaultMode // ""' \
       "$CWD/.claude/settings.local.json" 2>/dev/null || echo "")
     # 先に 64 文字へ切り詰めてからサニタイズする。逆順だと bash 3.2 の ${var//[^…]/} が
-    # 連結 JSON ドキュメント由来の巨大な値 (jq -e -s が全ドキュメントを改行連結して返す)
-    # に対して超線形になり、launch を数十秒〜数分止める。切り詰めを先にすれば入力は
+    # 除去対象の文字を多く含む長い EFFECTIVE_DEFAULT_MODE (直上の jq -r は -s を付けて
+    # いないため、連結 JSON ドキュメントでは全ドキュメント分の値が改行連結されて返る。
+    # 単一ドキュメントでも defaultMode 自体が長ければ同じ経路に乗る) に対して超線形になり、
+    # launch を実質ハングさせる (実測: 数千文字で数分以上)。切り詰めを先にすれば入力は
     # 常に 64 文字以下に収まり、この経路のコストは定数になる。
     EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE:0:64}"
     EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE_LOG//[^A-Za-z0-9_-]/}"

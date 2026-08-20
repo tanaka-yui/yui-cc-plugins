@@ -366,8 +366,8 @@ out=$(run_launch --cwd "$repo" --mode standby --runner claude --unattended \
   || bad  'P23 --unattended never doubles the flag'
 
 # --- P24: standby (prompt なし・--skip-permissions なし) + 注入不能 C ---
-# :795 の担保者かつ、戻り値ベース誤実装を弾ける唯一のケース。A と B は
-# merge_claude_settings が 1 を返すので戻り値で分岐した実装でも P24 以外は全部通る。
+# :795 の担保者。A と B は merge_claude_settings が 1 を返すので、戻り値で分岐した
+# 実装でも P24 と P28（merge は 0 を返すが confirmed ではない）以外は全部通る。
 # 「P22 があるから P24 は冗長」という判断でこの穴を復活させないこと。
 repo=$(new_repo p24); break_c "$repo"
 out=$(run_launch_err "$TMP/err-p24" --cwd "$repo" --mode standby --runner claude \
@@ -454,9 +454,11 @@ else
   bad  'P27 review gains the fallback flag and logs the add'
 fi
 
-# --- P28: settings.local.json が複数 JSON ドキュメントの連結 (jq -e -s の担保) ---
-# 素の jq -e は最後の値だけで rc を決めるため、末尾が bypassPermissions の連結ドキュメントを
-# confirmed と誤判定する (round 2 レビュー MA2-3)。chmod 不要なので root でも成立する。
+# --- P28: settings.local.json が複数 JSON ドキュメントの連結 (jq -e -s の length == 1 の担保) ---
+# .claude は書き込み可能なので merge_claude_settings は成功し、2 ドキュメントとも
+# bypassPermissions へ上書きされる (先頭の acceptEdits はマージで消えるため fixture の
+# 値そのものに判別力は無い)。それでもマージ後のファイルは依然 2 ドキュメントのままなので、
+# 判定を落とすのは length == 1 の側である。chmod 不要なので root でも成立する。
 repo=$(new_repo p28); mkdir -p "$repo/.claude"
 printf '%s\n%s\n' '{"permissions":{"defaultMode":"acceptEdits"}}' \
                   '{"permissions":{"defaultMode":"bypassPermissions"}}' \
@@ -479,6 +481,28 @@ out=$(run_launch --cwd "$repo" --mode review --runner claude --skip-permissions 
 [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
   && pass 'P29 review with --skip-permissions never doubles the flag' \
   || bad  'P29 review with --skip-permissions never doubles the flag'
+
+# --- P30: 先頭 64 raw 文字が全部非英数の defaultMode (切り詰め順序の担保) ---
+# サニタイズ先行へ戻すミュータントは全件素通りする。タイミング
+# ではなく内容で判別する: 切り詰めが先なら先頭 64 文字 (すべて空白) だけがサニタイズに渡り
+# 全滅して shown_len=0 になるが、サニタイズが先だと空白が全部落ちた後に残る
+# "bypassPermissions" が truncate を素通りして shown_len=17 になる。
+# 2 番目のドキュメントを裸の数値にすると jq が per-input エラーを出しつつ他の出力は
+# 保持したまま終了コードだけ非 0 にするため、merge_claude_settings の merged 変数が
+# 空になり (失敗として扱われ) 元のファイルが書き換えられずに残る。chmod は不要なので
+# root でも成立する。
+repo=$(new_repo p30); mkdir -p "$repo/.claude"
+pad64=$(printf '%64s' '')
+printf '{"permissions":{"defaultMode":"%sbypassPermissions"}}\n5\n' "$pad64" \
+  > "$repo/.claude/settings.local.json"
+out=$(run_launch_err "$TMP/err-p30" --cwd "$repo" --mode standby --runner claude \
+  --status-dir "$TMP/status-p30" p30-standby)
+if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+   && grep -Fq -- "defaultMode='' raw_len=81 shown_len=0" "$TMP/err-p30"; then
+  pass 'P30 sanitizer runs after truncation, not before'
+else
+  bad  'P30 sanitizer runs after truncation, not before'
+fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
