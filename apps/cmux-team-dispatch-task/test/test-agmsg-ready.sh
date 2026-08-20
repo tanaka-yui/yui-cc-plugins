@@ -824,6 +824,23 @@ if [[ -n "$ar31_pid" ]]; then
   FIXTURE_PIDS+=("$ar31_pid")
 fi
 
+# --- AR31c: rc 1 (watcher ではないと確定) は今も pid を抑止する (R1 の対) ---
+# AR31 の裏取り。rc 2 を通すようにした結果 rc 1 まで通ってしまうと、pid 周回で
+# $WATCH_PID を掴んだ無関係なプロセスを「手動 kill せよ」と案内することになる。
+mkdir -p "$TMP/fakeps"
+printf '#!/usr/bin/env bash\necho "/bin/zsh -c placeholder"\nexit 0\n' > "$TMP/fakeps/ps"
+chmod +x "$TMP/fakeps/ps"
+reset_case
+GUARD_PATH_PREFIX="$TMP/fakeps" CLAUDE_CODE_SESSION_ID=s31c AGMSG_STUB_INSTANCE_ID="s31c.222" \
+  AGMSG_STUB_MODE=no-sentinel AGMSG_STUB_TTL=40 AGMSG_READY_TIMEOUT=30 \
+  run_guard_signaled AR31c "file:$AGMSG_READY_DIR/watch.s31c.222.pid" --type claude-code --name "ar-$$-31c"
+out="$SIGNAL_OUT"
+[[ "$out" == *"reason=interrupted"* ]] || bad "AR31c expected reason=interrupted (got $out)"
+[[ "$out" == *"pid=-"* ]] \
+  || bad "AR31c a confirmed non-watcher (rc 1) must still suppress the pid (got $out)"
+ar31c_pid=$(cat "$AGMSG_READY_DIR/watch.s31c.222.pid" 2>/dev/null || true)
+[[ -n "$ar31c_pid" ]] && FIXTURE_PIDS+=("$ar31c_pid")
+
 # --- AR31b: guard_stop_watcher の 2 秒待機中に撃たれても pid が正確 (C4 / R1) ---
 # SIGTERM を無視する watcher なので、報告される pid は「本物の生きた孤児」でなければ
 # ならない。窓は壁時計依存 (待機ループ中に着弾すると reason=interrupted、
