@@ -252,7 +252,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - `--reset runners` は `RUNNERS_JSON` だけを削除して reset mode の初回セットアップへ入り、両 `config.json` を変更しない。`--reset config` は役割 5 キーだけを unset し、他のキーを残すこと
     - **`.dispatch/config.json` はプロジェクト config レイヤーであってディスパッチの生成物ではない**。cleanup の一括削除は `find .dispatch -mindepth 1 -maxdepth 1 ! -name config.json -exec rm -rf {} +` で `config.json` だけを残すこと（素の `rm -rf .dispatch/` に戻すとプロジェクト config が毎回消える）。この掃き出しも従来どおり直前の lock-check ガードの内側に置くこと
     - `setup-mode.md` / `setup-mode-ja.md` は次の 4 つを維持する義務を負う: (1) S3-M の候補プール表のうち `claude *_effort` / `codex *_effort` の 2 行を、`setup-mode.md` の §該当節（SU12 のアンカー）と英日・1 バイト単位で同一に持つ、(2) S7 の温存 3 文（`single atomic move` を含む文 / `mkdir -p .dispatch` の文 / shadow する旨の文）を逐語で持つ、(3) S7 節内で `runners-edit.sh` の記述が `config-edit.sh` の記述より前にある、(4) `*_model` 拒否条件の限定句（「S3 の選択肢 2 経由のみ」）と S3-M 配下の `####` 見出し 8 個を英日で逐語・同順に持つ
-    - 回帰は `bash test/test-config-edit.sh`（CE1-CE11）、`bash test/test-runners-edit.sh`（RE1-RE20。RE9b / RE9c / RE9d / RE9e / RE14a / RE14b / RE18b を含む。RE19 は欠番）、`bash test/test-setup-skill.sh`（SU1-SU16。SU10-12/14-16 は `setup-mode*` の S3-M・I/F 段落の needle、SU13 は SKILL.md/guide-ja.md/README.md が両スクリプトを名指しする担保）で検証する。cleanup ガードは `bash test/test-loop-skill.sh` で検証する
+    - 回帰は `bash test/test-config-edit.sh`（CE1-CE11）、`bash test/test-runners-edit.sh`（RE1-RE21。RE9b / RE9c / RE9d / RE9e / RE14a / RE14b / RE18b / RE21 を含む。RE19 は欠番）、`bash test/test-setup-skill.sh`（SU1-SU16。SU10-12/14-16 は `setup-mode*` の S3-M・I/F 段落の needle、SU13 は SKILL.md/guide-ja.md/README.md が両スクリプトを名指しする担保）で検証する。cleanup ガードは `bash test/test-loop-skill.sh` で検証する
 
 44. **`--override`**が SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認:
     - `argument-hint` に `--override` があり、`--loop` / `--setup` / `--reset` との排他が

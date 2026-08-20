@@ -264,10 +264,10 @@ does not follow that shape:
 
 **Do not build a static options table.** Because writing the effective default
 explicitly and deleting the field are effectively the same outcome for many
-combinations (see the resolution-order consequence in the Global Constraints), a fixed
-table would leave 1-2 of the 4 slots dead most of the time. First-run setup
-(`SKILL.md:469-472`) already builds its options without duplicates for the same
-reason.
+combinations (see the two-state note in S1: a runner field always resolves to an
+effective value), a fixed table would leave 1-2 of the 4 slots dead most of the time.
+First-run setup's effort options (SKILL.md Step 1f, "plan_effort / review_effort /
+exec_effort") already build without duplicates for the same reason.
 
 Build each question with these rules, in order:
 

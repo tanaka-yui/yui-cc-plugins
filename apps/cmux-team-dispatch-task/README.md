@@ -285,7 +285,8 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
 
 `--setup` は上記 5 キーすべてについて「固定値 / `"ask"` / 未設定に戻す / 変更しない」を
 選べます。`--reset config` はこの 5 キーだけを削除し、`shell_ready_ms` など他コンポーネント
-所有のキーは残します。どちらも書き込みは `scripts/config-edit.sh` を通し、置換ではなく
+所有のキーは残します。どちらも書き込みは `scripts/config-edit.sh`（役割キー）と
+`scripts/runners-edit.sh`（runner の役割別 model / effort）を通し、置換ではなく
 マージします（`--reset runners` はどちらの edit スクリプトも通らず First-run setup 経由で
 `runners.json` を作り直します）。プロジェクトの `.dispatch/config.json` はディスパッチ末尾の
 cleanup でも削除されません（`config.json` だけが掃き出し対象から外れます）。

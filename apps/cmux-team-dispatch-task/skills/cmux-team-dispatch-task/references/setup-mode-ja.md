@@ -56,8 +56,8 @@ bash <SKILL_DIR>/scripts/runners-edit.sh --runners <path> --name 'ccenec' \
   --set 'plan_model=opus[1m]' --unset exec_model
 ```
 
-runners-edit.sh takes --runners and --name, then one of --set / --unset (optionally with --dry-run), --get, or --show.
-役割別の model / effort 6 フィールドを検証し、置換ではなくマージし（`name` / `command` / `engine`、他の runner、関係の無いフィールドはすべて生き残る）、writer 固有の `mktemp "$RUNNERS.XXXXXX"` に書き、jq が成功したときだけ mv する。exit code の意味は `config-edit.sh` と同じ: 0 が成功、1 がファイルを変更しないまま失敗、2 が usage・検証エラー。`--get <field>` と `--show` は書き込まずに読む。
+`runners-edit.sh` は `--runners` と `--name` を取り、続けて `--set` / `--unset`（`--dry-run` 併用可）、`--get`、`--show` のいずれか 1 つを取る。
+このスクリプトは役割別の model / effort 6 フィールドを検証し、置換ではなくマージし（`name` / `command` / `engine`、他の runner、関係の無いフィールドはすべて生き残る）、writer 固有の `mktemp "$RUNNERS.XXXXXX"` に書き、jq が成功したときだけ mv する。exit code の意味は `config-edit.sh` と同じ: 0 が成功、1 がファイルを変更しないまま失敗、2 が usage・検証エラー。`--get <field>` と `--show` は書き込まずに読む。
 
 書き込みは last-write-wins で、symlink は通常ファイルに置き換わり、temp の mode が結果に残る。
 
@@ -179,7 +179,7 @@ S3 の選択肢 2 を選んだときだけ走る。happy path は **AskUserQuest
 
 #### 選択肢の組み立て
 
-**静的な選択肢表は作らない。** 既定値を明示的に書くこととフィールドを削除することが実効同値になる組み合わせが多く（Global Constraints の解決順序の帰結を参照）、表に固定すると 4 枠のうち 1〜2 枠が常に死ぬ。First-run setup（`SKILL.md:469-472`）も重複なしで組んでいる。
+**静的な選択肢表は作らない。** 既定値を明示的に書くこととフィールドを削除することが実効同値になる組み合わせが多く（S1 の二値の注記を参照。runner フィールドは必ず実効値へ解決される）、表に固定すると 4 枠のうち 1〜2 枠が常に死ぬ。First-run setup の effort 選択肢（SKILL.md Step 1f の「plan_effort / review_effort / exec_effort」）も重複なしで組んでいる。
 
 各問は次の規則で組み立てる。
 

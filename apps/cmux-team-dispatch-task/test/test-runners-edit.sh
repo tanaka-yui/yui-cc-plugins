@@ -31,6 +31,7 @@
 #   RE18b --dry-run の出力が実書き込み結果と一致する
 #   RE19 欠番（trap により弁別力がゼロだったため RE9 へ統合。id は詰めない）
 #   RE20 runners[] が空配列のときの --set / bare --show
+#   RE21 mv は symlink を通常ファイルに置き換え、リンク先は無傷（cp 実装との弁別。review round 1 m1）
 
 set -uo pipefail
 
@@ -174,8 +175,10 @@ if [[ $re8_pass == 1 ]]; then ok 'RE8: 破損 / 0 バイト / 読み取り不能
 
 # ---- RE15: .runners の型崩れ ----
 re15_pass=1
-echo '{"runners": {"a": {"name": "cc"}}}' > "$TMP/o.json"
+echo '{"runners": {"a": {"name": "cc", "engine": "claude"}}}' > "$TMP/o.json"
 [[ "$(run_rc --runners "$TMP/o.json" --name cc --set plan_effort=max)" == 2 ]] || re15_pass=0
+[[ "$(run_rc --runners "$TMP/o.json" --name cc --set plan_model=fable)" == 2 ]] || re15_pass=0
+[[ "$(run_rc --runners "$TMP/o.json" --name cc --unset plan_model)" == 2 ]] || re15_pass=0
 [[ "$(jq -r '.runners | type' "$TMP/o.json")" == object ]] || re15_pass=0
 echo '{"runners": null}' > "$TMP/n.json"
 [[ "$(run_rc --runners "$TMP/n.json" --name cc --set plan_effort=max)" == 2 ]] || re15_pass=0
@@ -354,6 +357,21 @@ echo '{ broken' > "$TMP/br2.json"
 bash "$EDIT" --runners "$TMP/br2.json" --name cc --set plan_effort=max >/dev/null 2>&1
 [[ "$(find "$TMP" -maxdepth 1 -name 'br2.json.*' | wc -l | tr -d ' ')" == 0 ]] || re9_pass=0
 if [[ $re9_pass == 1 ]]; then ok 'RE9: 全経路で temp の残骸がゼロ'; else bad 'RE9'; fi
+
+# ---- RE21: mv は symlink を通常ファイルに置き換え、リンク先は無傷（cp 実装との弁別）----
+reset_registry
+cp "$R" "$TMP/real.json"
+if ln -sf real.json "$TMP/link.json" 2>/dev/null; then
+  before_real=$(cat "$TMP/real.json")
+  bash "$EDIT" --runners "$TMP/link.json" --name cc --set plan_effort=high >/dev/null 2>&1
+  re21_pass=1
+  [[ ! -L "$TMP/link.json" ]] || re21_pass=0
+  [[ "$(jq -r '.runners[0].plan_effort' "$TMP/link.json")" == high ]] || re21_pass=0
+  [[ "$(cat "$TMP/real.json")" == "$before_real" ]] || re21_pass=0
+  if [[ $re21_pass == 1 ]]; then ok 'RE21: mv が symlink を通常ファイルへ置き換え、リンク先は無傷'; else bad 'RE21'; fi
+else
+  echo 'SKIP RE21: symlink が使えない'
+fi
 
 # ---- RE9b: mv 失敗（chflags uchg） ----
 if [[ $EUID -ne 0 ]] && command -v chflags >/dev/null 2>&1; then
