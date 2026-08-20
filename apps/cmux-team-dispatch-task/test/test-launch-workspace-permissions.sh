@@ -73,15 +73,18 @@ WARN_FLAG_ADDED='added the CLI permission flag'
 
 # composed command は runner script の単一行に載るので grep -c (行数) では二重付与を
 # 検出できない。set -euo pipefail 下で 0 件を数えると落ちるので || true が要る。
-# macOS の wc -l は先頭空白を出すので tr -d ' ' する。ファイル不在で 0 を返すと
-# 否定側が空虚に PASS するため、存在確認を先に置く。
+# ファイル不在で 0 を返すと否定側が空虚に PASS するため、存在確認を先に置く。
 # 戻り値は必ず文字列で比較すること (( )) に渡すと missing:... が unbound variable になる。
 count_flag() {
   [[ -f "${1:-}" ]] || { echo "missing:${1:-<none>}"; return; }
-  # 部分文字列一致では語境界を見ないので、直前の値 (--effort 'high' 等) と結合して
-  # フラグが実質消えるタイポ (例: 先頭空白の欠落) を見逃す。前後を空白/引用符/行末に限定する。
-  { grep -o -E -- '(^|[[:space:]])--dangerously-skip-permissions([[:space:]]|"|$)' "$1" || true; } \
-    | wc -l | tr -d ' '
+  # 空白でトークン分割し、各トークンが (末尾の閉じ引用符を除いて) フラグと完全一致するかで
+  # 数える。部分文字列一致では語境界を見ないので、直前の値 (--effort 'high' 等) と結合して
+  # フラグが実質消えるタイポ (例: 先頭空白の欠落) を見逃す。かといって grep -o の非重複マッチで
+  # 語境界だけを見ると、空白 1 個で隣接する二重付与 (5 箇所の splice はすべて無区切りで
+  # 連結するため、実際の二重付与は必ずこの形になる) が境界文字を消費し合って 1 個と
+  # 数えられてしまう。トークン化 + 完全一致ならどちらも正しく数える。
+  { tr -s '[:space:]' '\n' < "$1" | grep -c -x -E -- '--dangerously-skip-permissions"?' || true; } \
+    | tr -d ' '
 }
 
 # 既存の run_launch は stderr を捨てるので、警告を assert するケース用に別に用意する。
@@ -166,11 +169,9 @@ repo=$(new_repo p6)
 out=$(run_launch --cwd "$repo" --mode superpowers --runner claude \
   --status-dir "$TMP/status-p6" p6-task 'do something')
 runner_file=$(jq -r '.runner_file' <<<"$out")
-if grep -Fq -- '--dangerously-skip-permissions' "$runner_file"; then
-  bad 'P6 superpowers must not gain --dangerously-skip-permissions'
-else
-  pass 'P6 superpowers must not gain --dangerously-skip-permissions'
-fi
+[[ "$(count_flag "$runner_file")" == "0" ]] \
+  && pass 'P6 superpowers must not gain --dangerously-skip-permissions' \
+  || bad  'P6 superpowers must not gain --dangerously-skip-permissions'
 
 # --- P7: superpowers でも info/exclude に追記される ---
 repo=$(new_repo p7)
