@@ -21,17 +21,31 @@ case "$AGMSG_DIR" in "~"*) AGMSG_DIR="$HOME${AGMSG_DIR#\~}" ;; esac
 AGMSG_READY_DIR="${AGMSG_READY_DIR:-$(dirname "$AGMSG_DIR")/run}"
 AGMSG_LOG_DIR="${AGMSG_LOG_DIR:-${TMPDIR:-$HOME/.cache}/agmsg}"
 AGMSG_READY_TIMEOUT="${AGMSG_READY_TIMEOUT:-15}"
+# 値域検証。set -u 下の算術評価は非数値を変数名として再帰評価するので、検証しないと
+# `deadline=$(( AGMSG_READY_TIMEOUT * 5 ))` が unbound variable でシェルごと落ちる。
+# その時点で watcher は起動済みなので、無出力 rc 0 のまま孤児化する。
+# 0 / 負値も seq の降順展開で直感に反する待機になるため既定値へ倒す。
+case "$AGMSG_READY_TIMEOUT" in ''|*[!0-9]*|0) AGMSG_READY_TIMEOUT=15 ;; esac
 AGMSG_WATCH_INTERVAL="${AGMSG_WATCH_INTERVAL:-30}"
 
 TYPE=""; NAME=""; PROJECT="$PWD"
 INSTALLED=no; WIRED=no; WATCHER=none; PID="-"; REASON="-"; LOG="-"
 
+EMITTED=0
 emit() {  # 常にこれ 1 回だけで出力する
+  EMITTED=1
   printf 'ensure-agmsg-ready: installed=%s wired=%s name=%s watcher=%s pid=%s reason=%s log=%s\n' \
     "$INSTALLED" "$WIRED" "${NAME:--}" "$WATCHER" "$PID" "$REASON" "$LOG"
 }
+# 「全経路で必ず 1 行」の構造的な安全網。emit を通らずにシェルが落ちた場合だけ発火する
+# (emit 済みなら EMITTED=1 なので二重出力にはならない)。
+trap '[[ $EMITTED -eq 1 ]] || emit' EXIT
 hint() { printf 'ensure-agmsg-ready: %s\n' "$1" >&2; }
 die_usage() {
+  # 値域検証より前の die_usage 経路 (未知フラグ / 不正 --type) でも未検証の NAME を
+  # 印字しないよう、ここで必ず落とす。改行入りの値は 1 行契約を破り、
+  # 正常終了行に見える偽装行を作れてしまう。
+  case "$NAME" in *[!A-Za-z0-9._-]*|'') NAME="" ;; esac
   REASON=usage
   hint "usage: ensure-agmsg-ready.sh --type <claude-code|codex> --name <agent> [--project <path>]"
   emit
@@ -50,8 +64,8 @@ done
 [[ -n "$TYPE" && -n "$NAME" ]] || die_usage
 [[ "$TYPE" == claude-code || "$TYPE" == codex ]] || die_usage
 # --name は $LOG のファイル名へ生連結されるので値域を必ず検証する。
-# 通らない値は name= にも出さない (1 行契約が壊れるため)。
-if ! [[ "$NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then NAME=""; die_usage; fi
+# 通らない値を name= に出さないのは die_usage 側の責務 (どの経路からでも効く)。
+[[ "$NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die_usage
 [[ -d "$PROJECT" ]] || die_usage
 # AGMSG_EXPECTED_NAME はセキュリティ境界ではなく、配線ミスの早期検出である。
 if [[ -n "${AGMSG_EXPECTED_NAME:-}" && "$AGMSG_EXPECTED_NAME" != "$NAME" ]]; then die_usage; fi
@@ -112,12 +126,25 @@ guard_is_composite() {
   return 0
 }
 
+# _agmsg_pid_valid (instance-id.sh:69-99) と同じ値域検証。
+# `^[1-9][0-9]*$` かつ 2147483647 以下。上限が必要なのは、INT32_MAX を超える pid に対して
+# kill(1) が ESRCH ではなく引数エラーを返すためで、下の「No such process 以外は生存」
+# という読み方だと巨大 pid が永久に alive と判定されてしまう。pid は pidfile 由来の
+# 非信頼値なので、両呼び出し元 (生存判定と kill) からこの 1 箇所を通す。
+guard_pid_valid() {
+  local pid="$1"
+  case "$pid" in ''|0*|*[!0-9]*) return 1 ;; esac
+  [[ "${#pid}" -le 10 ]] || return 1
+  [[ "$pid" -le 2147483647 ]] || return 1
+  return 0
+}
+
 # _agmsg_pid_alive_local (instance-id.sh:112-139) と同じ意味論。
 # 素の kill -0 は「シグナルを送れるか」であって生存判定ではない。EPERM を
 # 「死」と読むと、注入中の watcher を kill したり生きた sentinel を消したりする。
 guard_pid_alive() {
   local pid="$1" err stat
-  case "$pid" in ''|*[!0-9]*|0*) return 1 ;; esac
+  guard_pid_valid "$pid" || return 1
   kill -0 "$pid" 2>/dev/null && return 0
   err="$(export LC_ALL=C; kill -0 "$pid" 2>&1)" && return 0
   case "$err" in
@@ -178,7 +205,7 @@ for f in "$AGMSG_READY_DIR"/watch.*.pid; do
   # bare は自分の起動 (composite の pidfile) と衝突しないので候補にしない。
   # かつ bare は永久に自己終了しないので、候補に数えると恒久ブロックになる。
   if ! guard_is_composite "$id"; then
-    hint "a watcher with a bare instance id is running for this role (pid $p); it will never self-terminate - kill it manually"
+    hint "a watcher with a bare instance id is running for this role (pid $p); it will never self-terminate — kill it manually"
     continue
   fi
   guard_is_watcher "$p"; rc=$?
@@ -192,22 +219,33 @@ for f in "$AGMSG_READY_DIR"/watch.*.pid; do
   CAND_PID="${CAND_PID:-$p}"; CAND_KIND="${CAND_KIND:-other}"
 done
 
+# 正常系 (started / existing / existing-other) のログ削除。REASON が付いた実行では
+# 事後解析のためにログを残す。LOG_PATH が /dev/null のときは絶対に削除しない — root では
+# /dev/null が消え、非 root では rm が rc 1 を返す。
+guard_drop_log() {
+  [[ "$LOG_PATH" != /dev/null && "$REASON" == "-" ]] || return 0
+  rm -f "$LOG_PATH"; LOG="-"
+}
+
+READY_ENC="$(agmsg_encode_component "$NAME")"
+
 if [[ -n "$CAND_KIND" ]]; then
   PID="$CAND_PID"
   [[ "$CAND_KIND" == mine ]] && WATCHER=existing || WATCHER=existing-other
-  if [[ "$LOG_PATH" != /dev/null && ( "$REASON" == "-" || "$REASON" == log-unwritable ) ]]; then
-    rm -f "$LOG_PATH"; LOG="-"
-  fi
+  guard_drop_log
   emit; exit 0
 fi
 
 # --- 手順 6: stale sentinel の掃除 ---
 # 生きた watcher の sentinel を消すと再作成されない (watch.sh:385-395 は起動時 1 回のみ)
 # ので、pidfile の pid が生きているものは絶対に消さない。
-for s in "$AGMSG_READY_DIR"/ready.*__"$(agmsg_encode_component "$NAME")"; do
+for s in "$AGMSG_READY_DIR"/ready.*__"$READY_ENC"; do
   [[ -f "$s" ]] || continue
   t="$(head -1 "$s" 2>/dev/null || true)"
-  if [[ -n "$t" && -f "$AGMSG_READY_DIR/watch.$t.pid" ]] \
+  # 中身を読めない = 判定不能であって stale ではない。watch.sh は `> "$_rp"` で書くので
+  # 「存在するが空」の窓が実在し、ここで消すと生きた watcher の sentinel を永久に失う。
+  [[ -n "$t" ]] || continue
+  if [[ -f "$AGMSG_READY_DIR/watch.$t.pid" ]] \
      && guard_pid_alive "$(head -1 "$AGMSG_READY_DIR/watch.$t.pid" 2>/dev/null || true)"; then
     continue
   fi
@@ -224,8 +262,6 @@ AGMSG_WATCH_INTERVAL="$AGMSG_WATCH_INTERVAL" \
 nohup bash "$AGMSG_DIR/watch.sh" "$SID" "$PROJECT" "$TYPE" "$NAME" </dev/null >>"$LOG_PATH" 2>&1 &
 WATCH_PID=$!
 
-READY_GLOB="$AGMSG_READY_DIR/ready.*__$(agmsg_encode_component "$NAME")"
-
 # 起動した watcher の正規化 id を pidfile から復元する。
 guard_my_norm_id() {
   local f id p
@@ -241,8 +277,8 @@ guard_my_norm_id() {
 # SIGTERM のみ。kill -9 は watch.sh の trap を飛ばして sentinel と pidfile を残す。
 guard_stop_watcher() {
   local i
-  case "$WATCH_PID" in ''|*[!0-9]*|0*) return 1 ;; esac
-  [[ "${#WATCH_PID}" -le 10 ]] || return 1
+  # kill 規則 1: 値域検証 (`kill 0` は呼び出し元のプロセスグループ全員へ SIGTERM を送る)
+  guard_pid_valid "$WATCH_PID" || return 1
   guard_is_watcher "$WATCH_PID" || return 1     # 判定不能 (rc 2) でも kill しない
   kill -TERM "$WATCH_PID" 2>/dev/null || true
   for i in $(seq 1 20); do
@@ -254,7 +290,9 @@ guard_stop_watcher() {
 
 guard_clean_my_sentinels() {   # 自分の正規化 id を持つ sentinel だけ消す
   local s t; local mine="$1"
-  for s in $READY_GLOB; do
+  # 手順 6 と同じクォート形にする。文字列変数を未クォート展開すると、glob だけでなく
+  # ディレクトリ部分まで単語分割され、空白入りパスで 1 件もマッチしなくなる。
+  for s in "$AGMSG_READY_DIR"/ready.*__"$READY_ENC"; do
     [[ -f "$s" ]] || continue
     t="$(head -1 "$s" 2>/dev/null || true)"
     [[ "$t" == "$mine" ]] && rm -f "$s"
@@ -280,7 +318,7 @@ mine=""; done_ok=""
 for _ in $(seq 1 "$deadline"); do
   mine="$(guard_my_norm_id || true)"
   if [[ -n "$mine" ]]; then
-    for s in $READY_GLOB; do
+    for s in "$AGMSG_READY_DIR"/ready.*__"$READY_ENC"; do
       [[ -f "$s" ]] || continue
       # sentinel の中身が自分の正規化 id と一致することまで確認する。
       # 存在だけを見ると、他セッションの生きた sentinel を掴んで偽の started を返す。
@@ -323,17 +361,21 @@ fi
 # done_ok が真の時点で mine は必ず非空 (手順 8 のループが mine 判定と同一反復で
 # done_ok を立てて break するため)。pidfile 不在の分岐は手順 8 側で処理済み。
 if ! guard_is_composite "$mine"; then
-  if guard_stop_watcher; then guard_clean_my_sentinels "$mine"; fi
-  REASON=bare-started; WATCHER=none; hint "see $LOG"; emit; exit 0
+  # kill 規則 6: kill を諦めた / 2 秒以内に死ななかった場合は bare-started ではなく
+  # orphan-watcher。自己終了しない watcher が残るので、手動 kill 用に pid を出す。
+  if guard_stop_watcher; then
+    guard_clean_my_sentinels "$mine"
+    REASON=bare-started; hint "see $LOG"
+  else
+    REASON=orphan-watcher; PID="$WATCH_PID"
+    hint "watcher $WATCH_PID did not stop; kill it manually. see $LOG"
+  fi
+  WATCHER=none; emit; exit 0
 fi
 
 WATCHER=started; PID="$WATCH_PID"
 
 # --- 手順 10: 正常系のログ削除 ---
-# LOG_PATH が /dev/null のときは絶対に削除しない。root では /dev/null が消え、
-# 非 root では rm が rc 1 を返して set -e 下の呼び出し元ごと落ちる。
-if [[ "$LOG_PATH" != /dev/null && ( "$REASON" == "-" || "$REASON" == log-unwritable ) ]]; then
-  rm -f "$LOG_PATH"; LOG="-"
-fi
+guard_drop_log
 emit
 exit 0
