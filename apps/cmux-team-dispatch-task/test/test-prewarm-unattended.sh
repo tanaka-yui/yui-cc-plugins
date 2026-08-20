@@ -58,8 +58,11 @@ assert_all_lines_with() {
   else bad "$label (pattern 一致 $total 行のうち flag を含むのは $matched 行)"; fi
 }
 assert_no_line_with() {
-  local pattern="$1" flag="$2" label="$3"
-  if grep -F -- "$pattern" "$TMP/argv.log" | grep -Fq -- "$flag"; then
+  local pattern="$1" flag="$2" label="$3" total
+  total=$(grep -c -F -- "$pattern" "$TMP/argv.log" || true)
+  if [[ "$total" -eq 0 ]]; then
+    bad "$label (pattern '$pattern' が argv.log に 1 行も無く判定不能)"
+  elif grep -F -- "$pattern" "$TMP/argv.log" | grep -Fq -- "$flag"; then
     bad "$label (予期しない $flag)"
   else ok "$label"; fi
 }
