@@ -102,8 +102,9 @@ recorded in `prewarm.json`.
 
 Only triggers on `--setup`. Dispatches nothing — no task, worktree, workspace, or pane
 is created. It walks the user through the role keys (`design_runner` / `review_runner` /
-`exec_choice` / `review_mode` / `prewarm`) and the `runners.json` registry, then writes
-the result to the layer the user picked. Follow
+`exec_choice` / `review_mode` / `prewarm`) and the `runners.json` registry — including
+each registered runner's per-role models and efforts, edited through
+`scripts/runners-edit.sh` — then writes the result to the layer the user picked. Follow
 [`references/setup-mode.md`](references/setup-mode.md).
 
 ## Reset Mode (configuration reset)
@@ -114,11 +115,14 @@ Dispatches nothing, and never removes `.dispatch/`, a worktree, or a branch — 
 with the end-of-dispatch cleanup prompts. Follow
 [`references/setup-mode.md`](references/setup-mode.md).
 
-Both modes write exclusively through `scripts/config-edit.sh`, which merges rather than
-replaces so that keys owned by other components (`shell_ready_ms`) survive. Both are
-mutually exclusive with `--loop`, `--override`, and with each other, and both refuse to
-run while an issue loop holds the lock. Neither is a task description: `--setup` and
-`--reset` must never reach Step 1a's task parsing.
+Every field-level write goes through the edit scripts — `scripts/config-edit.sh` for
+the role keys, `scripts/runners-edit.sh` for a runner's per-role models and efforts —
+which merge rather than replace so that keys owned by other components
+(`shell_ready_ms`) survive. `--reset runners` is the one exception: it rebuilds
+`runners.json` through First-run setup (Step 1f) rather than through either edit
+script. Both modes are mutually exclusive with `--loop`, `--override`, and with each
+other, and both refuse to run while an issue loop holds the lock. Neither is a task
+description: `--setup` and `--reset` must never reach Step 1a's task parsing.
 
 ## Override Mode (per-task temporary override)
 
@@ -431,7 +435,9 @@ and it already avoids prompts through
 
 
 **First-run setup** (when `runners.json` does not exist, including immediately after
-reset, and when `--setup` selects the registry as a target):
+reset, and when `--setup`'s S3 picks option 1 "add a runner" or option 3 "rebuild the
+registry from scratch" — not option 2, which edits an existing runner's models and
+efforts through `runners-edit.sh` instead; see `references/setup-mode.md`):
 
 1. Show the user via AskUserQuestion:
    > runners.json was not found. Running first-run setup.
@@ -819,7 +825,7 @@ Every role is already resolved at this point, so each question can show the reso
 value as its "keep" option. Overriding replaces the in-memory resolved values only:
 `DESIGN_RUNNER` / `DESIGN_ENGINE` / `PLAN_MODEL` / `PLAN_EFFORT`, `REVIEW_RUNNER` /
 `REVIEW_ENGINE` / `REVIEW_MODEL` / `REVIEW_EFFORT`, and `EXEC_CHOICE` / `EXEC_RUNNER` /
-`EXEC_ENGINE` / `EXEC_MODEL` / `EXEC_EFFORT`. Never call `config-edit.sh` here.
+`EXEC_ENGINE` / `EXEC_MODEL` / `EXEC_EFFORT`. Never call `config-edit.sh` or `runners-edit.sh` here.
 
 **Call 1 — which tasks.** One AskUserQuestion, `multiSelect: true`:
 

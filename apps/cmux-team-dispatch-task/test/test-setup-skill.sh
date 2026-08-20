@@ -199,6 +199,24 @@ for f in "$SETUP_EN" "$SETUP_JA"; do
 done
 if [[ $su12_pass == 1 ]]; then ok 'SU12: codex の候補プール行に max が無い（claude 行は max を持つ）'; else bad 'SU12'; fi
 
+# SU13
+su13_pass=1
+grep -Fq -- 'runners-edit.sh' "$SKILL" || { echo '  SKILL.md が runners-edit.sh を名指ししていない'; su13_pass=0; }
+grep -Fq -- 'runners-edit.sh' "$GUIDE" || { echo '  guide-ja.md が runners-edit.sh を名指ししていない'; su13_pass=0; }
+# --override が runners-edit.sh も呼ばない旨。CLAUDE.md 項目 44 は人手チェックリストなので、
+# ここが唯一の機械的担保になる。
+skill_flat2=$(tr '\n' ' ' < "$SKILL" | tr -s ' ')
+guide_flat2=$(tr '\n' ' ' < "$GUIDE" | tr -s ' ')
+grep -Fq -- 'Never call `config-edit.sh` or `runners-edit.sh` here.' <<<"$skill_flat2" \
+  || { echo '  SKILL.md の --override が runners-edit.sh に触れていない'; su13_pass=0; }
+grep -Fq -- '`config-edit.sh` と `runners-edit.sh` はここでは絶対に呼ばない。' <<<"$guide_flat2" \
+  || { echo '  guide-ja.md の --override が runners-edit.sh に触れていない'; su13_pass=0; }
+README="$SCRIPT_DIR/../README.md"
+readme_flat=$(tr '\n' ' ' < "$README" | tr -s ' ')
+grep -Fq -- 'config にも `runners.json` にも一切書き戻しません。' <<<"$readme_flat" \
+  || { echo '  README.md の --override が runners.json に触れていない'; su13_pass=0; }
+if [[ $su13_pass == 1 ]]; then ok 'SU13: SKILL.md / guide-ja.md / README.md が両スクリプトを名指しする'; else bad 'SU13'; fi
+
 # SU14: runners-edit.sh が動き、usage の 7 フラグと doc の記述が双方向で一致する
 su14_pass=1
 [[ -x "$REDIT" ]] || { echo '  runners-edit.sh に実行ビットが無い'; su14_pass=0; }

@@ -17,10 +17,11 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `skills/cmux-team-dispatch-task/scripts/terminal-wait.sh` | シェル起動検知と `shell_ready_ms` 学習を行う共通ヘルパー（source 専用） |
 | `skills/cmux-team-dispatch-task/scripts/parallel-directive.sh` | 子セッションへ渡す並列実行ディレクティブの生成（文面の単一情報源） |
 | `skills/cmux-team-dispatch-task/scripts/config-edit.sh` | config.json への唯一の書き込み口（キー/値検証・置換ではなくマージ・writer 固有 mktemp + jq 成功時のみ mv） |
+| `skills/cmux-team-dispatch-task/scripts/runners-edit.sh` | runners.json の役割別 model/effort 6 フィールドを原子的に読み書きする唯一の書き込み口（フィールド allowlist・engine 別 effort 検証・writer 固有 mktemp + jq 成功時のみ mv。runner の同一性 (name/command/engine) と default には触らない） |
 | `skills/cmux-team-dispatch-task/references/setup-mode.md` | `--setup` / `--reset` の実行時 SoT（英語） |
 | `skills/cmux-team-dispatch-task/references/setup-mode-ja.md` | 同上の日本語版 |
 | `~/.claude/cmux-team-dispatch-task/config.json` | グローバル設定（自動生成）。`shell_ready_ms.baseline_ms`、`prewarm`、`review_mode`、`design_runner` / `review_runner` / `exec_choice`。「常に〜」の回答・`--setup` / `--reset`・手動編集の 3 経路で変更される。**`message_type` は v1.16.0 で廃止** |
-| `~/.claude/cmux-team-dispatch-task/runners.json` | 子セッション runtime 一覧（初回セットアップで生成）。SKILL.md Step 1f で読込。`--setup` / `--reset runners` からも再生成される |
+| `~/.claude/cmux-team-dispatch-task/runners.json` | 子セッション runtime 一覧（初回セットアップで生成）。SKILL.md Step 1f で読込。`--reset runners` からも再生成される。`--setup` の S3-M は `runners-edit.sh` 経由で登録済み runner の役割別 model/effort をフィールド単位で編集する（runner の追加・削除・再生成は S3 の別選択肢の担当） |
 | `<project>/.dispatch/config.json` | プロジェクト固有の上書き（手動配置または `--setup` で書き込み）。存在時はグローバルより優先。ディスパッチ末尾の cleanup の掃き出し対象から唯一除外される |
 | `.claude-plugin/plugin.json` | Plugin マニフェスト |
 | `README.md` | 人間向けガイド |
@@ -88,7 +89,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
   必須。同一engine reviewを許可し、all-Codex固定例でclaude executorを起動・指示しない。
 - `--override` は dispatch 1 回限りのタスク別上書き。precedence は
   `--override` > project config > global config > `runners.json` の役割フィールド > 既定値。
-  **config へ書き戻さない**（`config-edit.sh` を呼ばない）。`--loop` / `--setup` / `--reset`
+  **config へも runners.json へも書き戻さない**（`config-edit.sh` も `runners-edit.sh` も呼ばない）。`--loop` / `--setup` / `--reset`
   と排他で、Step 1a のタスク解析に落ちてはならない。上書きは Step 1g-2 で解決値
   （`PLAN_MODEL` / `PLAN_EFFORT` / `REVIEW_MODEL` / `REVIEW_EFFORT` / `EXEC_MODEL` /
   `EXEC_EFFORT` と各 runner / engine）を置き換え、`prewarm-panes.sh` へは
@@ -244,19 +245,28 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 28. **設定の明示 setup / reset**が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
     - `--setup` と `--reset [runners|config|all]` は引数レベルのフラグで、実行時 SoT は `references/setup-mode.md`（日本語版 `setup-mode-ja.md`）。SKILL.md 側は `## Setup Mode` / `## Reset Mode` の短い委譲節だけを持ち、詳細を二重管理しない。`argument-hint` にも両方を書く
     - **どちらもディスパッチしない**。タスク・worktree・workspace・ペインを作らず、`.dispatch/` / worktree / `feat/*` ブランチを削除しない（削除はディスパッチ末尾の Cleanup prompts の担当）。`--setup` / `--reset` が Step 1a のタスク解析へ落ちてタスク名として扱われないこと。`--loop` とも互いとも排他で、issue ループの lock-check が生きている間は両方とも拒否すること
-    - 書き込みは **`scripts/config-edit.sh` だけ**を通す。`--set <key>=<value>` / `--unset <key>` は 1 回の呼び出しで単一の jq 式に合成され 1 回の `mv` で反映される。扱えるキーは役割 5 つ（`design_runner` / `review_runner` / `exec_choice` / `review_mode` / `prewarm`）のみで、未知キー・範囲外の値は exit 2。**置換ではなくマージ**であり `terminal-wait.sh` 所有の `shell_ready_ms` を消さないこと。壊れた JSON では exit 1 で元ファイルを保持すること
+    - 書き込みは **`scripts/config-edit.sh`（役割キー）と `scripts/runners-edit.sh`（runner の役割別 model/effort）だけ**を通す。ただし `--reset runners` はどちらの edit スクリプトも通らず、First-run setup（Step 1f）経由で `runners.json` を作り直す。`config-edit.sh` の `--set <key>=<value>` / `--unset <key>` は 1 回の呼び出しで単一の jq 式に合成され 1 回の `mv` で反映される。扱えるキーは役割 5 つ（`design_runner` / `review_runner` / `exec_choice` / `review_mode` / `prewarm`）のみで、未知キー・範囲外の値は exit 2。**置換ではなくマージ**であり `terminal-wait.sh` 所有の `shell_ready_ms` を消さないこと。壊れた JSON では exit 1 で元ファイルを保持すること
+    - `runners-edit.sh` は `--runners <path> --name <runner>` に続けて `--set <field>=<value>` / `--unset <field>`（`--dry-run` 併用可）、`--get <field>`、`--show` のいずれか 1 つを取る。扱えるフィールドは役割別 model/effort 6 つ（`plan_model` / `review_model` / `exec_model` / `plan_effort` / `review_effort` / `exec_effort`）のみで、`name` / `command` / `engine` / `default` には触らない。model は allowlist しないが空・空白のみ・前後の空白・シェルメタ文字（`'` `"` `` ` `` `$` `\`）・制御文字は exit 2、effort は engine 別 allowlist（claude `low|medium|high|xhigh|max`、codex `minimal|low|medium|high|xhigh`。**codex に `max` は無い**）。writer 固有 `mktemp "$RUNNERS.XXXXXX"` + jq 成功時のみ mv、検証は全て mktemp より前。ファイル不在時は `--set`/`--unset` が exit 2（新規作成しない）、`--get`/`--show` は非破壊で exit 0。`--dry-run` は mktemp を経由せず当該レコードだけを stdout へ出す
     - `--setup` は三値（固定値 / `"ask"` / キー削除）をすべて指定できること。書き込み先はグローバルとプロジェクトから選び、**プロジェクトへ書くのは「永続化はグローバル config のみ」規約の唯一の例外**（ユーザーが明示選択した場合に限る）。AskUserQuestion は 1 コール 4 問・各 4 択の上限を守り、runner 一覧が 5 件以上のときは先頭 4 件＋「Other」自由入力に逃がすこと
+    - `--setup` の S3 は 4 択（runner を追加 / 登録済み runner の model・effort を編集 / レジストリを作り直す / そのまま）を持つ。「編集」を選ぶと **S3-M** が走り、runner 選択（M1・1 問）→ model 3 問（M2・1 コール）→ effort 3 問（M3・1 コール）の 3 コールで役割別 6 フィールドを編集する。選択肢は動的に組み立てる（静的な表は作らない）: opt1 は常に「変更なし」、規則 3 が「既定へ戻す/未設定へ戻す」の枠を規則 2（候補プールからの充填）より優先して確保する。codex `*_model` は候補プールが空でも `gpt-5.6-sol` の補充で床（opt1+1 件）を保証する。`'` を含む runner 名・`claude`/`codex` 以外の engine は M1 から除外して警告する。codex `review_model` を unset するときは S1 表示・M2 の選択肢説明・S6 の警告リストの 3 段で「reviewer に選べなくなる」旨を伝える
     - `--reset runners` は `RUNNERS_JSON` だけを削除して reset mode の初回セットアップへ入り、両 `config.json` を変更しない。`--reset config` は役割 5 キーだけを unset し、他のキーを残すこと
     - **`.dispatch/config.json` はプロジェクト config レイヤーであってディスパッチの生成物ではない**。cleanup の一括削除は `find .dispatch -mindepth 1 -maxdepth 1 ! -name config.json -exec rm -rf {} +` で `config.json` だけを残すこと（素の `rm -rf .dispatch/` に戻すとプロジェクト config が毎回消える）。この掃き出しも従来どおり直前の lock-check ガードの内側に置くこと
-    - 回帰は `bash test/test-config-edit.sh`（CE1-CE11）と `bash test/test-setup-skill.sh`（SU1-SU9）、cleanup ガードは `bash test/test-loop-skill.sh` で検証する
+    - `setup-mode.md` / `setup-mode-ja.md` は次の 4 つを維持する義務を負う: (1) S3-M の候補プール表のうち `claude *_effort` / `codex *_effort` の 2 行を、`setup-mode.md` の §該当節（SU12 のアンカー）と英日・1 バイト単位で同一に持つ、(2) S7 の温存 3 文（`single atomic move` を含む文 / `mkdir -p .dispatch` の文 / shadow する旨の文）を逐語で持つ、(3) S7 節内で `runners-edit.sh` の記述が `config-edit.sh` の記述より前にある、(4) `*_model` 拒否条件の限定句（「S3 の選択肢 2 経由のみ」）と S3-M 配下の `####` 見出し 8 個を英日で逐語・同順に持つ
+    - 回帰は `bash test/test-config-edit.sh`（CE1-CE11）、`bash test/test-runners-edit.sh`（RE1-RE20。RE9b / RE9c / RE9d / RE9e / RE14a / RE14b / RE18b を含む。RE19 は欠番）、`bash test/test-setup-skill.sh`（SU1-SU16。SU10-12/14-16 は `setup-mode*` の S3-M・I/F 段落の needle、SU13 は SKILL.md/guide-ja.md/README.md が両スクリプトを名指しする担保）で検証する。cleanup ガードは `bash test/test-loop-skill.sh` で検証する
 
 44. **`--override`**が SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認:
     - `argument-hint` に `--override` があり、`--loop` / `--setup` / `--reset` との排他が
       4 ファイルすべてで同じ理由（`--loop` は無人実行で対話できない）とともに書かれていること
-    - config への書き込み経路を持たないこと。`--override` の説明中に `config-edit.sh` を
-      **呼び出す**記述が無いこと（「Never call `config-edit.sh` here」のように呼ばない旨を
-      説明のために言及するのは正しい記述であり違反ではない）
+    - config への書き込み経路を持たないこと。`--override` の説明中に `config-edit.sh` /
+      `runners-edit.sh` の**どちらも呼び出す**記述が無いこと（「Never call
+      `config-edit.sh` or `runners-edit.sh` here」のように呼ばない旨を説明のために
+      言及するのは正しい記述であり違反ではない）
     - `prewarm-panes.sh` の 6 フラグ名が SKILL.md の記述と一致すること
+    - `--override` が役割単位（Call 3 を役割ごとに 1 回）で model/effort を聞くのに対し、
+      `--setup` の S3-M は次元単位（M2/M3 で全役割をまとめて 1 コール）で聞くのは
+      **意図的な差**であること（§2.4「役割単位ではなく次元単位にした理由」参照）。
+      effort が範囲外のときの挙動差（`--override` は警告して既定へフォールバック / `--setup`
+      は同じ質問を再質問する）も意図的な差として扱うこと
     - 回帰は `bash test/test-override.sh`（OV1-OV9）で検証する
 
 ## テスト方法
@@ -321,7 +331,7 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 40. **pane close の誤通知**: 全タスク完了後のクリーンアップで standby / 実装ペインを閉じたとき、`[dispatch] task ... finished (status: error)` が親へ飛ばないこと、`status.json` の `done` が保持されること。`executing` 中の pane を閉じた場合は従来どおり `error` 通知が飛ぶこと。`bash test/test-runner-signal-exit.sh` の動的検査を実行すること
 41. **タスク内の並列実行**: plan / superpowers / execute で起動した子セッションのプロンプトに `PARALLEL EXECUTION, mandatory` が含まれること。codex には `spawn_agent`、claude には Task サブエージェントの指示が届くこと。standby / review の起動コマンドには含まれず、親が送る実行指示・レビュー依頼側に含まれること。`--no-parallel` で起動プロンプトから消えること
 42. **最終クリーンアップの pane close**: `cmux close-surface` の呼び出しに `--workspace` が付いていることを確認する。付けないと `surface:N` ref が親の `$CMUX_WORKSPACE_ID` に対して解決され、必ず `Surface ref not found` で失敗する（`2>/dev/null || true` で握り潰されるため無言で残る）。また `workspace_id` は `status.json` だけに依存してはならない — 子セッション自身が書く done/error は 3 フィールドの `echo` で `workspace_id` / `surface_id` を消し、runner wrapper がそれを書き戻すのはセッション終了時だけなので、codex TUI が終了指示を無視して idle 残留すると永久に欠落する。欠落時は `cmux workspace list` を slug 名（`[<slug>]`）で引いてフォールバックすること。この 2 つが揃って欠けていたため、ディスパッチ終了後に pane が閉じられないまま `git worktree remove` が生きている codex の cwd を消し、codex TUI が `failed to refresh skills: ... failed to reload config: No such file or directory` を出し続ける事故が起きた。回帰は `bash test/test-cleanup-close.sh`（CL1-CL2）で検証する
-43. **`--setup` / `--reset`**: どちらもディスパッチが起動しないこと。`--setup` で現在の設定表 → 書き込み先/対象 → 役割キー → 差分確認の順に進み、書き込み後も `shell_ready_ms` が残ること。プロジェクトを選んで `.dispatch/config.json` を作り、1 件ディスパッチして cleanup まで通しても**生き残る**こと。`--reset config` は役割 5 キーだけ消し worktree / ブランチ / `.dispatch/` の他の中身を消さないこと。`--reset` 単体で対象メニューが出ること。`--reset runners` で `runners.json` が再生成され両 config.json が変わらないこと。`--setup --loop` の同時指定が排他エラーになること
+43. **`--setup` / `--reset`**: どちらもディスパッチが起動しないこと。`--setup` で現在の設定表 → 書き込み先/対象 → 役割キー → 差分確認の順に進み、書き込み後も `shell_ready_ms` が残ること。プロジェクトを選んで `.dispatch/config.json` を作り、1 件ディスパッチして cleanup まで通しても**生き残る**こと。`--reset config` は役割 5 キーだけ消し worktree / ブランチ / `.dispatch/` の他の中身を消さないこと。`--reset` 単体で対象メニューが出ること。`--reset runners` で `runners.json` が再生成され両 config.json が変わらないこと。`--setup --loop` の同時指定が排他エラーになること。**S3-M**: `runners.json` を対象に選ぶと S3 で 4 択が出て「登録済み runner の model / effort を編集」を選ぶと runner 選択（5 件以上なら先頭 4 件 + Other）→ model 3 問（1 コール）→ effort 3 問（1 コール）の順に進み、S6 で `config.json` と `runners.json`（編集対象レコードのみ）の 2 ファイルプレビューが出て、書き込むと S7 で `runners-edit.sh` → `config-edit.sh` の 2 コールが走ること。編集後に `runners.json` の当該フィールドが変わり、他の runner と `default` は変わらないこと
 45. **`--override`**: タスク一覧 → 対象タスク → 役割 → runner/model/effort の順に質問が出て、
     各質問の先頭が「変更なし（現在: <解決値>）」であること。上書きした内容がサマリー表の
     直後にブロックとして表示されること。dispatch 後に両 `config.json` が変化していないこと。
