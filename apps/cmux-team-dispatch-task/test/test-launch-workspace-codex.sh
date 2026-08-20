@@ -183,8 +183,16 @@ cr1e_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" A
 cr1e_runner=$(jq -r '.runner_file' <<<"$cr1e_output")
 assert_not_contains "$cr1e_runner" "qu'ote-agmsg" 'CR1e a quoted AGMSG_SKILL_DIR must not be injected'
 
+# --- LW1 / LW2: agmsg 配線経路 ---
+# launch-workspace.sh:379 は send.sh が無ければ die する。実 $HOME の agmsg に依存させると
+# 未インストールのホストで `set -euo pipefail` のこのファイルが LW1 で即死し、以降の
+# 全ケースが走らないまま終端行すら出ない。stub を AGMSG_SEND で差し替えてホスト非依存にする。
+STUB_AGMSG_SEND="$TMP/agmsg-send.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_AGMSG_SEND"
+chmod +x "$STUB_AGMSG_SEND"
+
 # --- LW1: runner script に AGMSG_EXPECTED_NAME が入る ---
-lw1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+lw1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SEND="$STUB_AGMSG_SEND" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \
   --status-dir "$TMP/status" --agmsg-team demo --agmsg-from demo-claude lw1)
 lw1_runner=$(jq -r '.runner_file' <<<"$lw1_output")
@@ -192,7 +200,7 @@ assert_contains "$lw1_runner" "export AGMSG_EXPECTED_NAME='demo-claude'" 'LW1 ru
 
 # --- LW2: --agmsg-from の値域検証 ---
 lw2_bad=0
-CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SEND="$STUB_AGMSG_SEND" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \
   --status-dir "$TMP/status" --agmsg-team demo --agmsg-from 'bad name' lw2 >/dev/null 2>&1 && lw2_bad=1
 if [[ $lw2_bad -eq 0 ]]; then

@@ -19,6 +19,10 @@ cleanup_all() {
 }
 
 GUARD="$SD/ensure-agmsg-ready.sh"
+# guard の PROJECT 既定は $PWD で、空白入りのパスは hint を 1 行増やす (AR33 参照)。
+# チェックアウト先がどこにあってもスイートの stderr 期待値が変わらないよう、
+# 空白を含まないことが保証された $TMP を cwd にする。
+cd "$TMP" || exit 2
 export AGMSG_DIR="$TMP/stub/scripts"
 export AGMSG_READY_DIR="$TMP/stub/run"
 export AGMSG_LOG_DIR="$TMP/logs"
@@ -52,6 +56,9 @@ case "${AGMSG_STUB_MODE:-alive}" in
   alive)              write_ready "$@"; sleep "${AGMSG_STUB_TTL:-120}" ;;
   sentinel-then-exit) write_ready "$@"; exit 0 ;;
   no-sentinel)        printf '%s\n' "$$" > "$pidfile"; sleep "${AGMSG_STUB_TTL:-120}" ;;
+  # SIGTERM を無視する watcher。guard_stop_watcher の 2 秒待機を必ず使い切らせる。
+  # cleanup_all の kill も効かないので、呼び出し側は必ず短い AGMSG_STUB_TTL を渡すこと。
+  nosent-ignore-term) trap '' TERM; printf '%s\n' "$$" > "$pidfile"; sleep "${AGMSG_STUB_TTL:-120}" ;;
   held)               echo 'agmsg watch: cannot claim (held by other sessions): x' >&2; exit 1 ;;
   unregistered)       echo "agmsg watch: no registration for agent 'x'"; exit 0 ;;
   db-error)           echo 'ERROR: cannot open message DB /x'; exit 1 ;;
@@ -150,7 +157,12 @@ run_guard() {  # 追加の引数をそのまま渡す。GUARD_OUT に stdout、G
     printf '%s' "$out" > "$TMP/run_guard.out"
     printf '%s' "$rc" > "$TMP/run_guard.rc" ) &
   local gp=$!
-  for tick in $(seq 1 "$GUARD_BOUND_TICKS"); do
+  # 反復数を `$(seq 1 ...)` から取らない。ハーネス自身が seq に依存していると、
+  # seq を潰す AR32 のようなケースで反復 0 回 → 直後の `kill -0` がほぼ確実に真 →
+  # 偽の "did not return" でスイートごと打ち切られる。guard 側 (C5 / R6) と同じ算術ループ。
+  tick=0
+  while [[ $tick -lt $GUARD_BOUND_TICKS ]]; do
+    tick=$((tick + 1))
     kill -0 "$gp" 2>/dev/null || break
     sleep 0.1
   done
@@ -168,6 +180,72 @@ run_guard() {  # 追加の引数をそのまま渡す。GUARD_OUT に stdout、G
   # 出力契約の検証はここで行う。呼び出し側に任せると書き忘れが必ず出る
   # (以前は 39 呼び出しのうち 10 箇所しか検証していなかった)。
   assert_line "$GUARD_OUT" "$*"
+}
+
+# --- シグナル系ケースの共通ドライバ (AR23 / AR27-AR31) ---
+# run_guard は使えない: シグナルを送る相手は guard 本体でなければならず、
+# バックグラウンドのラッパー越しでは pid が取れない。guard をラッパーのサブシェル越しに
+# 起こすのは、ジョブ表に載るのをラッパーだけにするため (撃つ相手は pgrep で辿った guard 本体)。
+# なお `Terminated: 15` のジョブ通知はラッパー自身の stderr に出るのでスイートの stderr へ
+# 漏れる。これは無害で、テストの成否には影響しない。
+#   $1 = 診断ラベル
+#   $2 = 待機スペック。`file:<path>` はそのファイルが現れるまで、`delay:<秒>` はその秒数
+#   残り = guard へ渡す引数
+# 結果は SIGNAL_OUT / SIGNAL_RC / $TMP/sig.err に入る。
+SIGNAL_OUT=""; SIGNAL_RC=0
+run_guard_signaled() {
+  local label="$1" spec="$2"; shift 2
+  local wrap gp i
+  SIGNAL_OUT=""; SIGNAL_RC=0
+  rm -f "$TMP/sig.out" "$TMP/sig.rc" "$TMP/sig.err"
+  # PATH の差し替えは guard のサブシェルの内側だけで行う。呼び出し側の env 前置で
+  # PATH を渡すと、この関数自身が使う rm / cat / pgrep まで stub を踏んでしまう。
+  ( if [[ -n "${GUARD_PATH_PREFIX:-}" ]]; then PATH="$GUARD_PATH_PREFIX:$PATH"; fi
+    bash "$GUARD" "$@" >"$TMP/sig.out" 2>"$TMP/sig.err"
+    printf '%s' "$?" > "$TMP/sig.rc" ) &
+  wrap=$!
+  case "$spec" in
+    file:*)
+      i=0
+      while [[ $i -lt 300 ]]; do
+        i=$((i + 1))
+        [[ -e "${spec#file:}" ]] && break
+        sleep 0.1
+      done
+      sleep 0.3 ;;
+    delay:*) sleep "${spec#delay:}" ;;
+  esac
+  gp=$(pgrep -P "$wrap" 2>/dev/null | head -1)
+  if [[ -z "$gp" ]]; then
+    bad "$label could not locate the guard process"
+    kill_tree "$wrap"
+    return
+  fi
+  kill -TERM "$gp" 2>/dev/null
+  # ラッパーが戻るまで待つ。反復数は算術で数える (seq の失敗で 0 回になると
+  # 出力が書かれる前に読みに行ってしまう)。
+  i=0
+  while [[ $i -lt 300 ]]; do
+    i=$((i + 1))
+    kill -0 "$wrap" 2>/dev/null || break
+    sleep 0.1
+  done
+  SIGNAL_OUT=$(cat "$TMP/sig.out" 2>/dev/null || true)
+  SIGNAL_RC=$(cat "$TMP/sig.rc" 2>/dev/null || echo 0)
+  assert_line "$SIGNAL_OUT" "$label"
+}
+
+# シグナル系ケース用の「入ったら止まる」外部コマンド stub。
+# <dir> に <cmd> を作り、呼ばれたら marker を作ってから <secs> 眠り、本物へ exec する。
+make_slow_stub() {  # <dir> <cmd> <real-path> <marker> <secs>
+  mkdir -p "$1"
+  cat > "$1/$2" <<STUB
+#!/usr/bin/env bash
+: > "$4"
+sleep $5
+exec "$3" "\$@"
+STUB
+  chmod +x "$1/$2"
 }
 
 # --- AR16a-f: exit 2 ---
@@ -665,6 +743,179 @@ out="$GUARD_OUT"
 [[ ! -s "$TMP/stderr.txt" ]] || bad 'AR26 the guard must keep stderr empty without agmsg-path.sh'
 ar26_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
 [[ -n "$ar26_pid" ]] && FIXTURE_PIDS+=("$ar26_pid")
+
+# --- AR27: 手順 10 の直前で撃たれても watcher=started を出さない (C2) ---
+# 手順 10 の `guard_drop_log` は `rm -f` を fork するので、`WATCHER=started` /
+# `PID=$WATCH_PID` を立てた後にシグナルを受け取る窓が実在する。trap が WATCHER=none を
+# 強制しないと `watcher=started reason=interrupted` という出力表に無い行が出る。
+# rm を「marker を作ってから眠る」stub に差し替えて窓を決定的に広げる。
+REAL_RM="$(command -v rm)"
+REAL_GREP="$(command -v grep)"
+reset_case
+"$REAL_RM" -f "$TMP/rm-entered"
+make_slow_stub "$TMP/slowrm" rm "$REAL_RM" "$TMP/rm-entered" 5
+GUARD_PATH_PREFIX="$TMP/slowrm" CLAUDE_CODE_SESSION_ID=s27 AGMSG_STUB_INSTANCE_ID="s27.222" \
+  AGMSG_STUB_MODE=alive AGMSG_STUB_TTL=25 \
+  run_guard_signaled AR27 "file:$TMP/rm-entered" --type claude-code --name "ar-$$-27"
+out="$SIGNAL_OUT"
+[[ "$out" == *"reason=interrupted"* ]] || bad "AR27 a signal before step 10 must emit reason=interrupted (got $out)"
+[[ "$out" == *"watcher=none"* ]] \
+  || bad "AR27 the trap must force watcher=none even after WATCHER=started (got $out)"
+ar27_pid=$(cat "$AGMSG_READY_DIR/watch.s27.222.pid" 2>/dev/null || true)
+[[ -n "$ar27_pid" ]] && FIXTURE_PIDS+=("$ar27_pid")
+
+# --- AR28: 確定済みの REASON を trap が上書きしない (C3) ---
+# `log-unwritable` が確定した後に撃たれても reason は据え置き。上書きすると
+# 分類が失われるうえ、PID まで代入すると orphan-watcher 専用の組合せを偽造する。
+reset_case
+: > "$TMP/afile28"
+AGMSG_LOG_DIR="$TMP/afile28/sub" CLAUDE_CODE_SESSION_ID=s28 AGMSG_STUB_INSTANCE_ID="s28.222" \
+  AGMSG_STUB_MODE=no-sentinel AGMSG_STUB_TTL=40 AGMSG_READY_TIMEOUT=30 \
+  run_guard_signaled AR28 "file:$AGMSG_READY_DIR/watch.s28.222.pid" --type claude-code --name "ar-$$-28"
+out="$SIGNAL_OUT"
+[[ "$out" == *"reason=log-unwritable"* ]] \
+  || bad "AR28 the trap must not overwrite an already-decided reason (got $out)"
+[[ "$out" == *"pid=-"* ]] || bad "AR28 the trap must not forge a pid for a non-interrupted reason (got $out)"
+ar28_pid=$(cat "$AGMSG_READY_DIR/watch.s28.222.pid" 2>/dev/null || true)
+[[ -n "$ar28_pid" ]] && FIXTURE_PIDS+=("$ar28_pid")
+
+# --- AR29: 既に死んだ watcher の pid を「手動 kill せよ」と名指ししない (C4) ---
+# classify_from_log の最初の grep を眠らせて、「WATCH_PID は死んでいるが REASON はまだ `-`」
+# の窓を決定的に作る。trap が guard_pid_alive を通さないとこの死んだ pid が出る。
+reset_case
+"$REAL_RM" -f "$TMP/grep-entered"
+make_slow_stub "$TMP/slowgrep" grep "$REAL_GREP" "$TMP/grep-entered" 5
+GUARD_PATH_PREFIX="$TMP/slowgrep" CLAUDE_CODE_SESSION_ID=s29 AGMSG_STUB_INSTANCE_ID="s29.222" \
+  AGMSG_STUB_MODE=silent-exit \
+  run_guard_signaled AR29 "file:$TMP/grep-entered" --type claude-code --name "ar-$$-29"
+out="$SIGNAL_OUT"
+[[ "$out" == *"reason=interrupted"* ]] || bad "AR29 expected reason=interrupted (got $out)"
+[[ "$out" == *"pid=-"* ]] || bad "AR29 a watcher that already exited must not be reported as an orphan (got $out)"
+
+# --- AR30: 既存 watcher の pid を「自分の孤児」として名指ししない (R1a) ---
+# `existing` 経路の `PID="$CAND_PID"` は trap のガードの外側にある。そのまま出すと
+# `watcher=none pid=<他人の生きた watcher>` になり、案内に従うと健全な watcher を殺す。
+reset_case
+"$REAL_RM" -f "$TMP/rm-entered"
+ar30_existing=$(start_fixture "s30.111" s30 /p claude-code "ar-$$-30")
+GUARD_PATH_PREFIX="$TMP/slowrm" CLAUDE_CODE_SESSION_ID=s30 \
+  run_guard_signaled AR30 "file:$TMP/rm-entered" --type claude-code --name "ar-$$-30"
+out="$SIGNAL_OUT"
+[[ "$out" == *"reason=interrupted"* ]] || bad "AR30 expected reason=interrupted (got $out)"
+[[ "$out" == *"pid=-"* ]] \
+  || bad "AR30 an existing (possibly another session's) watcher must not be named as our orphan (got $out)"
+kill -0 "$ar30_existing" 2>/dev/null || bad 'AR30 the existing watcher must stay alive'
+
+# --- AR31: ps が使えなくても本物の孤児 pid を落とさない (R1b) ---
+# guard_is_watcher は 3 値 (0=watcher / 1=違う / 2=判定不能)。rc 2 まで「報告しない」側へ
+# 倒すと、sandbox のように ps が無い環境で孤児 watcher の pid がどこにも出ず手動 kill が
+# できない。上流 watch.sh:205-207 も ps 不在時は kill -0 へフォールバックして残す側に倒す。
+reset_case
+GUARD_PATH_PREFIX="$TMP/nops" CLAUDE_CODE_SESSION_ID=s31 AGMSG_STUB_INSTANCE_ID="s31.222" \
+  AGMSG_STUB_MODE=no-sentinel AGMSG_STUB_TTL=40 AGMSG_READY_TIMEOUT=30 \
+  run_guard_signaled AR31 "file:$AGMSG_READY_DIR/watch.s31.222.pid" --type claude-code --name "ar-$$-31"
+out="$SIGNAL_OUT"
+[[ "$out" == *"reason=interrupted"* ]] || bad "AR31 expected reason=interrupted (got $out)"
+[[ "$out" =~ \ pid=[0-9]+\  ]] \
+  || bad "AR31 an undetermined guard_is_watcher (rc 2) must not suppress a live orphan pid (got $out)"
+ar31_pid=$(cat "$AGMSG_READY_DIR/watch.s31.222.pid" 2>/dev/null || true)
+if [[ -n "$ar31_pid" ]]; then
+  [[ "$out" == *" pid=$ar31_pid "* ]] || bad "AR31 the reported pid must be the orphaned watcher (got $out)"
+  FIXTURE_PIDS+=("$ar31_pid")
+fi
+
+# --- AR31b: guard_stop_watcher の 2 秒待機中に撃たれても pid が正確 (C4 / R1) ---
+# SIGTERM を無視する watcher なので、報告される pid は「本物の生きた孤児」でなければ
+# ならない。窓は壁時計依存 (待機ループ中に着弾すると reason=interrupted、
+# guard_stop_watcher が諦めた後なら reason=orphan-watcher) なので、どちらでも成り立つ
+# 「pid が出ていて、その pid が生きている」ことを assert する。
+reset_case
+CLAUDE_CODE_SESSION_ID=s31b AGMSG_STUB_INSTANCE_ID="s31b.222" \
+  AGMSG_STUB_MODE=nosent-ignore-term AGMSG_STUB_TTL=12 AGMSG_READY_TIMEOUT=3 \
+  run_guard_signaled AR31b "delay:4" --type claude-code --name "ar-$$-31b"
+out="$SIGNAL_OUT"
+case "$out" in
+  *"reason=interrupted"*|*"reason=orphan-watcher"*) ;;
+  *) bad "AR31b expected interrupted or orphan-watcher (got $out)" ;;
+esac
+ar31b_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+if [[ -n "$ar31b_pid" ]]; then
+  kill -0 "$ar31b_pid" 2>/dev/null || bad "AR31b the reported pid is not alive (got $out)"
+  FIXTURE_PIDS+=("$ar31b_pid")
+else
+  bad "AR31b a watcher that ignores SIGTERM must be reported for manual kill (got $out)"
+fi
+
+# --- AR32 / AR32b: seq が失敗しても待機ループが 0 回にならない (C5 / R6) ---
+# `for i in $(seq 1 N)` はコマンド置換が失敗するだけで反復 0 回になる。手順 8 なら
+# pidfile-missing の誤分類、guard_stop_watcher なら「SIGTERM は成功しているのに
+# orphan-watcher」+ 死んだ watcher を指す sentinel の残留になる。
+mkdir -p "$TMP/badseq"
+printf '#!/usr/bin/env bash\nexit 127\n' > "$TMP/badseq/seq"; chmod +x "$TMP/badseq/seq"
+reset_case
+PATH="$TMP/badseq:$PATH" CLAUDE_CODE_SESSION_ID=s32 AGMSG_STUB_INSTANCE_ID="s32.222" \
+  AGMSG_STUB_MODE=alive run_guard --type claude-code --name "ar-$$-32"
+out="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* ]] \
+  || bad "AR32 a failing seq must not collapse the step-8 wait loop (got rc=$GUARD_RC $out)"
+[[ ! -s "$TMP/stderr.txt" ]] || bad 'AR32 a failing seq must keep stderr empty'
+ar32_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+[[ -n "$ar32_pid" ]] && FIXTURE_PIDS+=("$ar32_pid")
+
+reset_case
+PATH="$TMP/badseq:$PATH" CLAUDE_CODE_SESSION_ID=s32b AGMSG_STUB_INSTANCE_ID="s32b" \
+  AGMSG_STUB_MODE=alive run_guard --type claude-code --name "ar-$$-32b"
+out="$GUARD_OUT"
+[[ "$out" == *"reason=bare-started"* && "$out" == *"watcher=none"* ]] \
+  || bad "AR32b a failing seq must not collapse the guard_stop_watcher wait loop (got $out)"
+ls "$AGMSG_READY_DIR"/ready.* >/dev/null 2>&1 \
+  && bad 'AR32b the sentinel of the stopped watcher must be cleaned up'
+
+# --- AR33 / AR33b: 空白入りパスの検出 hint (M5 / R7) ---
+# guard_is_watcher / guard_name_slot は `set -- $args` で単語分割するので、空白入りの
+# AGMSG_DIR / PROJECT は既存 watcher の識別を壊す。正常に見える壊れ方なので hint を出す。
+reset_case
+mkdir -p "$TMP/sp ace/scripts"
+cp "$AGMSG_DIR/send.sh" "$AGMSG_DIR/delivery.sh" "$AGMSG_DIR/watch.sh" "$TMP/sp ace/scripts/"
+AGMSG_DIR="$TMP/sp ace/scripts" CLAUDE_CODE_SESSION_ID=s33 AGMSG_STUB_INSTANCE_ID="s33.222" \
+  AGMSG_STUB_MODE=alive run_guard --type claude-code --name "ar-$$-33"
+out="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* ]] || bad "AR33 (got rc=$GUARD_RC $out)"
+grep -q 'AGMSG_DIR contains whitespace' "$TMP/stderr.txt" \
+  || bad 'AR33 a whitespace AGMSG_DIR must be reported'
+grep -q 'without whitespace' "$TMP/stderr.txt" \
+  || bad 'AR33 the hint must state a recovery action, not just the symptom'
+ar33_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+[[ -n "$ar33_pid" ]] && FIXTURE_PIDS+=("$ar33_pid")
+
+reset_case
+mkdir -p "$TMP/sp ace/proj"
+CLAUDE_CODE_SESSION_ID=s33b AGMSG_STUB_INSTANCE_ID="s33b.222" AGMSG_STUB_MODE=alive \
+  run_guard --type claude-code --name "ar-$$-33b" --project "$TMP/sp ace/proj"
+out="$GUARD_OUT"
+grep -q 'project path contains whitespace' "$TMP/stderr.txt" \
+  || bad 'AR33b a whitespace project path must be reported too (guard_name_slot splits it as well)'
+ar33b_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+[[ -n "$ar33b_pid" ]] && FIXTURE_PIDS+=("$ar33b_pid")
+
+# --- AR34: 起動前から在る同一 SID・純数字 suffix の残骸を「自分」と誤認しない (R8) ---
+# AR22b が閉じたのは非数値 suffix だけ。`s34.111` のような純数字 suffix の残骸が
+# pid 周回で $WATCH_PID と衝突すると、glob 順で先に来るそちらが「自分」として通り、
+# sentinel の中身と一致しないまま時間切れ → 健全な watcher を SIGTERM で殺す。
+# 起動前スナップショットに載っている id を第一候補から外すことで閉じる。
+reset_case
+ar34_dead=$(bash -c 'echo $$')
+printf '%s\n' "$ar34_dead" > "$AGMSG_READY_DIR/watch.s34.111.pid"
+AGMSG_STUB_DECOY_ID="s34.111" CLAUDE_CODE_SESSION_ID=s34 AGMSG_STUB_INSTANCE_ID="s34.222" \
+  AGMSG_STUB_MODE=alive run_guard --type claude-code --name "ar-$$-34"
+out="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* ]] \
+  || bad "AR34 a pre-existing numeric-suffix pidfile must not hijack the guard's own id (got rc=$GUARD_RC $out)"
+ar34_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+if [[ -n "$ar34_pid" ]]; then
+  kill -0 "$ar34_pid" 2>/dev/null || bad 'AR34 the guard must not kill its own healthy watcher'
+  FIXTURE_PIDS+=("$ar34_pid")
+fi
 
 # --- AR17: エンコードのゴールデンベクタ ---
 # shellcheck disable=SC1091
