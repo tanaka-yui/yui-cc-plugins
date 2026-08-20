@@ -802,6 +802,12 @@ The watcher the guard starts is a record/reply channel, not a wake mechanism: it
 stream output is never injected while this session is idle, which is why
 `send-prompt.sh` always types the message in as well.
 
+Known limitation: the guard runs exactly once, from this initial prompt, so `/clear`
+(or a resume) does NOT restore the watcher — the new session id makes the old watcher
+self-terminate and nothing re-runs the guard. That pane keeps delivering and receiving
+typed prompts, but stops recording them in its agmsg inbox until a new session starts.
+Re-run the guard by hand in that pane if the inbox record matters.
+
 Each launch then adds `--agmsg-team "$TEAM" --agmsg-from <task-slug>` to
 `launch-workspace.sh`. After each task's worktree exists (launch script returned),
 register the child:

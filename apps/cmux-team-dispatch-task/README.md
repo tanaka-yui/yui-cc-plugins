@@ -362,8 +362,10 @@ effort の allowlist は engine 別: claude `low`\|`medium`\|`high`\|`xhigh`\|`m
 すべて `send-prompt.sh` の 1 回呼び出しで行う。**常にペインへ直接タイプ入力し** — agmsg push 単独では
 idle なペインは起きないため、push は配送手段ではなく inbox 記録である — 送信直前に宛先ペインの
 watcher 生存（agmsg の ready sentinel）を確認し、生きているときだけ同一指示文を inbox にも
-記録する。配線に失敗したペインの初期プロンプトは「指示は直接タイプされる」文面に
-切り替わるため、agmsg の watcher 障害でディスパッチがハングすることはない。
+記録する。配線に失敗したペインには guard 呼び出しを注入せず、design と claude executor は
+「指示は直接タイプされる」文面へ切り替わり、codex executor と review は初期プロンプト無しで
+idle 起動する。いずれも指示はタイプ入力で届くので、agmsg の watcher 障害でディスパッチが
+ハングすることはない。
 
 各子セッションは Phase A (計画 / brainstorming) 完了後、`exec_choice` が未設定または `"ask"` なら**実装フェーズで使う engine**を `AskUserQuestion` で聞きます。固定値なら質問を省略し、同じ既存分岐を実行します。選択肢は `runners.json` の登録状況で出し分けられます: `claude` は claude runner が登録済みのときだけ、`codex` は `engine: codex` runner が登録済みのときだけ表示され、片方しか登録されていなければ質問自体が省略されます。
 

@@ -240,6 +240,12 @@ guard が起動する watcher は記録・返信用のチャネルであり wake
 stream 出力は idle セッションには注入されない。だからこそ `send-prompt.sh` は常に
 タイプ入力も行う。
 
+既知の制限: guard はこの初期プロンプトから 1 回だけ走るので、`/clear`（および resume）
+では watcher が復帰しない — 新しい session id によって旧 watcher は自己終了し、guard を
+再実行する経路がどこにも無い。そのペインはタイプ入力での送受信を続けられるが、
+新しいセッションが始まるまで agmsg inbox への記録が止まる。inbox 記録が必要なら、
+そのペインで guard を手動で再実行すること。
+
 各 launch には `--agmsg-team "$TEAM" --agmsg-from <slug>` を付与し、
 pre-warm 無効時は worktree 作成後に子 agent を次のように join する（pre-warm 有効時は
 `prewarm-panes.sh` が role ごとの engine を使って join 済みなので、この手動 join を省略する）:
@@ -824,11 +830,15 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
 生存時は inbox にも記録）。`prewarm-panes.sh` が worktree を作成し、agmsg delivery
 配線（join + `delivery.sh set`。いずれのペインが起動するより前に行う）を済ませてから design の
 standby workspace を起動し、その下に claude/codex executor を積む。配線に失敗したロール
-（`delivery: "cmux-send"` フォールバック）では、**design / claude executor / codex executor /
-review の全ロール**で初期プロンプトが guard 呼び出しを含まない「指示はこのペインに直接
-タイプされる」という文面に切り替わる（配線が失敗しているペインへ不要な guard 呼び出しを
-注入しないため。配線成功時のプロンプトも「タスクはタイプ入力で届く（inbox に同一
-コピーあり）」という文面で、agmsg push 単独で届くとは伝えない）:
+（`delivery: "cmux-send"` フォールバック）では、**どのロールも初期プロンプトに guard
+呼び出しを含まない**。ただし代替の文面はロールで異なる: **design と claude executor** は
+「指示はこのペインに直接タイプされる」というフォールバック文面へ切り替わり、
+**codex executor と review** は初期プロンプト自体を一切渡さずに idle 起動する
+（`${CODEX_EXEC_PROMPT:+...}` / `${REVIEW_PROMPT:+...}` が空文字で引数ごと落ちる。
+この 2 ロールは元々プロンプト無し起動で、guard 導入でも変えていない）。
+配線が失敗しているペインへ不要な guard 呼び出しを注入しないためであり、
+配線成功時のプロンプトは 4 ロールとも「タスクはタイプ入力で届く（inbox に同一
+コピーあり）」という文面で、agmsg push 単独で届くとは伝えない:
 
 ```bash
 RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
