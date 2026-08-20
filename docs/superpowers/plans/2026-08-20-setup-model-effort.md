@@ -1418,8 +1418,8 @@ Expected: SU13 が FAIL、他は PASS。
 1. `### 設定（\`--setup\`）` — 役割別 model / effort を設定できる旨を追記。
 2. **286 行** 「どちらも書き込みは `scripts/config-edit.sh` を通し、置換ではなくマージします」
    — spec §3.1 と同じ限定を付ける。
-3. **131 行** 「**config には一切書き戻しません。**」（`--override`）— `runners.json` へも
-   書き戻さない旨を追加。
+3. **131 行** 「**config には一切書き戻しません。**」（`--override`）— **逐語で**
+   「**config にも `runners.json` にも一切書き戻しません。**」にする（SU13 の needle）。
 
 - [ ] **Step 6: `CLAUDE.md` を更新する（8 箇所。日本語）**
 
