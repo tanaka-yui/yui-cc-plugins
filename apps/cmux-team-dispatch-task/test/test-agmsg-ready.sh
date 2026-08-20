@@ -53,6 +53,7 @@ case "${AGMSG_STUB_MODE:-alive}" in
   db-error)           echo 'ERROR: cannot open message DB /x'; exit 1 ;;
   silent-exit)        exit 0 ;;
   decoy)              echo '2026-01-01 | t | a - b | agmsg watch: cannot claim'; write_ready "$@"; sleep 300 ;;
+  decoy-exit)         echo '2026-01-01 | t | a - b | agmsg watch: cannot claim'; exit 0 ;;
 esac
 STUB
 chmod +x "$AGMSG_DIR/watch.sh"
@@ -311,6 +312,15 @@ CLAUDE_CODE_SESSION_ID=s9e AGMSG_STUB_INSTANCE_ID="s9e.222" AGMSG_STUB_MODE=deco
       run_guard --type claude-code --name "ar-$$-9e"; out="$GUARD_OUT"
 [[ "$out" == *"watcher=started"* ]] || bad 'AR9e decoy body line must not be classified'
 
+# --- AR9f: decoy 行を吐いて即 exit しても anchoring が効いていれば watcher-exited になる ---
+# 行頭アンカーなしの全文一致だと decoy 行の "agmsg watch: cannot claim" 部分文字列に
+# 引っかかって held-by-other-session に誤分類される。classify_from_log() が
+# '^agmsg watch: cannot claim' のように行頭アンカーで実装されていることの直接検証。
+reset_case
+CLAUDE_CODE_SESSION_ID=s9f AGMSG_STUB_MODE=decoy-exit run_guard --type claude-code --name "ar-$$-9f"
+out="$GUARD_OUT"
+[[ "$out" == *"reason=watcher-exited"* ]] || bad "AR9f decoy line must not be classified as held (got $out)"
+
 # --- AR10 / AR10b: bare で起動した watcher は kill する ---
 reset_case
 CLAUDE_CODE_SESSION_ID=s10 AGMSG_STUB_INSTANCE_ID="s10" AGMSG_STUB_MODE=alive \
@@ -343,6 +353,18 @@ PATH="$TMP/lateps:$PATH" CLAUDE_CODE_SESSION_ID=s12 AGMSG_STUB_INSTANCE_ID="s12.
       AGMSG_STUB_MODE=no-sentinel run_guard --type claude-code --name "ar-$$-12"; out="$GUARD_OUT"
 [[ "$out" == *"reason=orphan-watcher"* ]] || bad 'AR12'
 grep -q 'kill it manually' "$TMP/stderr.txt" || bad 'AR12 hint'
+
+# --- AR6b: sentinel 書き込み直後に watch.sh が exit するレースを検知する ---
+# 手順 8 で sentinel の内容一致 (done_ok=1) を見つけた直後、その break の時点では
+# watch.sh がまだ生きていたかどうか確定しない。手順 8 末尾の再確認
+# (`if ! guard_pid_alive "$WATCH_PID"; then classify_from_log; ...`) が
+# sentinel-then-exit のような「書いてすぐ exit する」watcher を正しく捕まえ、
+# 偽の watcher=started を返さないことを検証する。
+reset_case
+CLAUDE_CODE_SESSION_ID=s6b AGMSG_STUB_INSTANCE_ID="s6b.222" AGMSG_STUB_MODE=sentinel-then-exit \
+      run_guard --type claude-code --name "ar-$$-6b"; out="$GUARD_OUT"
+[[ "$out" != *"watcher=started"* ]] || bad "AR6b post-sentinel exit must not report started (got $out)"
+[[ "$out" == *"watcher=none"* && "$out" == *"reason=watcher-exited"* ]] || bad "AR6b expected watcher=none reason=watcher-exited (got $out)"
 
 # --- AR6c: 他セッションの sentinel があっても started にしない ---
 reset_case
