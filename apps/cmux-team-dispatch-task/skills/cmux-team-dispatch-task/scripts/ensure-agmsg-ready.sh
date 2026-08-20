@@ -11,10 +11,6 @@ set -uo pipefail
 # 出力は常に 1 行 7 キー。exit 0 = 配線できた / 1 = 配線できない / 2 = 使用法エラー。
 # **watcher を起動できなかったことは決して exit 1 にしない。**
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/agmsg-path.sh"
-
 AGMSG_DIR="${AGMSG_DIR:-$HOME/.agents/skills/agmsg/scripts}"
 # AGMSG_DIR は比較に使うので絶対パス化する (~ を残さない)
 case "$AGMSG_DIR" in "~"*) AGMSG_DIR="$HOME${AGMSG_DIR#\~}" ;; esac
@@ -25,7 +21,11 @@ AGMSG_READY_TIMEOUT="${AGMSG_READY_TIMEOUT:-15}"
 # `deadline=$(( AGMSG_READY_TIMEOUT * 5 ))` が unbound variable でシェルごと落ちる。
 # その時点で watcher は起動済みなので、無出力 rc 0 のまま孤児化する。
 # 0 / 負値も seq の降順展開で直感に反する待機になるため既定値へ倒す。
-case "$AGMSG_READY_TIMEOUT" in ''|*[!0-9]*|0) AGMSG_READY_TIMEOUT=15 ;; esac
+# 先頭ゼロ (`0*`) も弾く。bash 算術は先頭ゼロを 8 進として解釈するので、`08` は
+# 「value too great for base」で `deadline=$(( ... ))` ごと落ち (コマンド置換の
+# サブシェル内なので親は死なず deadline が未設定のまま待機 0 回になる)、`010` は
+# 無言で 10 ではなく 8 秒になる。`0*` は `0` 単体も包含する。guard_pid_valid と同形。
+case "$AGMSG_READY_TIMEOUT" in ''|0*|*[!0-9]*) AGMSG_READY_TIMEOUT=15 ;; esac
 # 桁数上限。全桁数字でも 20 桁のような値は `deadline=$(( ... * 5 ))` で 64bit 算術が
 # ラップし、続く `seq 1 "$deadline"` がメモリを食い潰して xrealloc の致命エラーになる。
 # 致命エラーは EXIT trap すら走らせないので、1 行契約がこの入力だけで破れる。
@@ -243,7 +243,14 @@ guard_drop_log() {
   rm -f "$LOG_PATH"; LOG="-"
 }
 
-READY_ENC="$(agmsg_encode_component "$NAME")"
+# --name は上の値域検証で [A-Za-z0-9._-]+ に限定済みで、agmsg-path.sh の
+# agmsg_encode_component はその文字集合を素通しする = ここでは恒等写像である。
+# したがってエンコーダを呼ぶ必要は無い。むしろ agmsg-path.sh を source すると、
+# それが読めない環境 (権限・削除) で関数が未定義になり READY_ENC が空になる。
+# 空だと手順 6/8/9 の glob `ready.*__$READY_ENC` が一切マッチせず、guard は自分で
+# 起動した健全な watcher を start-timeout で殺してしまう (B1 と同じ自滅経路)。
+# team 側は wildcard で扱うので agmsg_ready_path も不要であり、依存ごと持たない。
+READY_ENC="$NAME"
 
 if [[ -n "$CAND_KIND" ]]; then
   PID="$CAND_PID"
