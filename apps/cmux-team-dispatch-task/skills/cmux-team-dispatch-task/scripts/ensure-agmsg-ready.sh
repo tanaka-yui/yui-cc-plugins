@@ -124,8 +124,9 @@ INSTALLED=yes
 #   - AGMSG_DIR: `$AGMSG_DIR/watch.sh` との突き合わせが全滅する。既存 watcher を一切
 #     識別できないので毎回この役割の watcher を起こし直す (上流 watch.sh:223-238 の
 #     predecessor displace が先住を SIGTERM するため蓄積はしないが、チャーンは起きる)。
-#     さらに guard_stop_watcher も同じ比較を通るので、SIGTERM が成功していても
-#     start-timeout が orphan-watcher へ化ける誤警報が出る。
+#     さらに guard_stop_watcher も同じ比較 (guard_is_watcher) を通るため、SIGTERM を送る
+#     前に return 1 してしまい SIGTERM は一度も送られない。したがって orphan-watcher は
+#     誤警報ではなく正しい報告で、その watcher は本当に手動 kill が要る。
 #   - PROJECT: watch.sh の argv 位置が右へずれ、guard_name_slot が読む 5 番目の
 #     トークンが NAME でなくなる。自分の watcher が existing-other に化ける。
 # どちらも**正常に見える**壊れ方なので、回復手順つきの hint を 1 行出す
@@ -136,11 +137,11 @@ INSTALLED=yes
 # 現れないため、通常運用では従来どおり stderr 0 行になる。
 case "$AGMSG_DIR" in
   *[[:space:]]*)
-    hint "AGMSG_DIR contains whitespace ($AGMSG_DIR); existing watchers cannot be identified, so every call restarts this role's watcher and a stopped watcher can be misreported as orphan-watcher — reinstall agmsg under a path without whitespace" ;;
+    hint "AGMSG_DIR contains whitespace ($AGMSG_DIR); existing watchers cannot be identified, so every call restarts this role's watcher, and the guard cannot confirm/stop its own watcher either, so every invocation reports orphan-watcher and requires manual cleanup — reinstall agmsg under a path without whitespace" ;;
 esac
 case "$PROJECT" in
   *[[:space:]]*)
-    hint "the project path contains whitespace ($PROJECT); this role's own watcher is misreported as existing-other — pass --project a path without whitespace, or run the guard from one" ;;
+    hint "the project path contains whitespace ($PROJECT); this role's own watcher is misreported as existing-other — place the worktree/project at a path without whitespace" ;;
 esac
 
 # --- 手順 3: ログの用意 ---

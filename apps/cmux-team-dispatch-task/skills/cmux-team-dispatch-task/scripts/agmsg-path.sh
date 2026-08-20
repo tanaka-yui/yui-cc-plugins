@@ -5,7 +5,9 @@
 # _actas_lock_encode / agmsg_ready_path で [A-Za-z0-9._-] 以外を %XX へ変換した
 # パスを作る。send-prompt.sh は長らく生連結しており、team 名に空白や非 ASCII が
 # 入ると watcher が動いていても sentinel を見つけられなかった。
-# 本ファイルはその規則を 1 箇所に置き、guard と send-prompt.sh で共有する。
+# 本ファイルはその規則を 1 箇所に置く send-prompt.sh 専用のヘルパーである。guard
+# (ensure-agmsg-ready.sh) は --name を ^[A-Za-z0-9._-]+$ に値域検証済みでエンコードが
+# 恒等写像になるため、本ファイルには依存しない。
 # 上流の規則が変わっても検出できないので、追跡点として上記の行番号を残す。
 #
 # 提供関数:

@@ -811,6 +811,10 @@ kill -0 "$ar30_existing" 2>/dev/null || bad 'AR30 the existing watcher must stay
 # 倒すと、sandbox のように ps が無い環境で孤児 watcher の pid がどこにも出ず手動 kill が
 # できない。上流 watch.sh:205-207 も ps 不在時は kill -0 へフォールバックして残す側に倒す。
 reset_case
+# $TMP/nops は AR3h (:427) が作る fixture の使い回し。そちらを触ると本テストは無言で
+# 無効化される (stub が消えれば本物の ps が使われ guard_is_watcher が rc 0 を返し、
+# rc 2 経路を一度も踏まないまま pid=[0-9]+ が通ってしまう) ので、踏む前に実在を確認する。
+[[ -x "$TMP/nops/ps" ]] || bad 'AR31 the nops ps stub fixture is missing before the run'
 GUARD_PATH_PREFIX="$TMP/nops" CLAUDE_CODE_SESSION_ID=s31 AGMSG_STUB_INSTANCE_ID="s31.222" \
   AGMSG_STUB_MODE=no-sentinel AGMSG_STUB_TTL=40 AGMSG_READY_TIMEOUT=30 \
   run_guard_signaled AR31 "file:$AGMSG_READY_DIR/watch.s31.222.pid" --type claude-code --name "ar-$$-31"
@@ -932,6 +936,23 @@ ar34_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
 if [[ -n "$ar34_pid" ]]; then
   kill -0 "$ar34_pid" 2>/dev/null || bad 'AR34 the guard must not kill its own healthy watcher'
   FIXTURE_PIDS+=("$ar34_pid")
+fi
+
+# --- AR34b: 自分の watcher が同一 id の起動前 stale pidfile を正当に上書きしたケースでは
+# fallback がその id を拾う (R8 の「安全側の半分」。捨てる側の変異体は AR34 で落ちるが、
+# 拾う側の fallback 分岐だけを外す変異体は AR34 だけでは検出できない) ---
+reset_case
+ar34b_dead=$(bash -c 'echo $$')
+printf '%s\n' "$ar34b_dead" > "$AGMSG_READY_DIR/watch.s34b.222.pid"
+CLAUDE_CODE_SESSION_ID=s34b AGMSG_STUB_INSTANCE_ID="s34b.222" AGMSG_STUB_MODE=alive \
+  run_guard --type claude-code --name "ar-$$-34b"
+out="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* ]] \
+  || bad "AR34b the guard must not lose its own id when it legitimately overwrote a same-id stale pidfile (got rc=$GUARD_RC $out)"
+ar34b_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+if [[ -n "$ar34b_pid" ]]; then
+  kill -0 "$ar34b_pid" 2>/dev/null || bad 'AR34b the guard must not kill its own healthy watcher'
+  FIXTURE_PIDS+=("$ar34b_pid")
 fi
 
 # --- AR17: エンコードのゴールデンベクタ ---

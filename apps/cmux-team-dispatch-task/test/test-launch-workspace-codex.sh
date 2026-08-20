@@ -197,6 +197,10 @@ lw1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AG
   --status-dir "$TMP/status" --agmsg-team demo --agmsg-from demo-claude lw1)
 lw1_runner=$(jq -r '.runner_file' <<<"$lw1_output")
 assert_contains "$lw1_runner" "export AGMSG_EXPECTED_NAME='demo-claude'" 'LW1 runner script must export AGMSG_EXPECTED_NAME'
+# AGMSG_SEND が env で差し替え可能なままであること (:202) の回帰。ここを見ずに
+# STUB_AGMSG_SEND を注入するだけだと、:202 がハードコードへ戻っても agmsg 導入済みの
+# ホスト (= 実開発機全部) では本物の $HOME 配下 send.sh が -f を通り LW1 自体は緑のまま通る。
+assert_contains "$lw1_runner" "AGMSG_SEND=\"$STUB_AGMSG_SEND\"" 'LW1 AGMSG_SEND is env-substitutable'
 
 # --- LW2: --agmsg-from の値域検証 ---
 lw2_bad=0

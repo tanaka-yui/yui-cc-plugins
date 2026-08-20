@@ -375,6 +375,10 @@ if [[ -n "$AGMSG_FROM" ]]; then
   [[ "$AGMSG_FROM" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid --agmsg-from '$AGMSG_FROM': use only [A-Za-z0-9._-]"
 fi
 
+# AGMSG_SEND は :875 の未クォート heredoc へそのまま埋まる。WORKSPACE_NAME / AGMSG_FROM /
+# AGMSG_SKILL_DIR と同じ理由で、埋め込みを破る文字は事前に弾く。
+case "$AGMSG_SEND" in *[\'\"\`\$\!\\]*) die "invalid AGMSG_SEND '$AGMSG_SEND': must not contain ' \" \` \$ ! \\" ;; esac
+
 # agmsg 配線は team / from が揃っているときだけ行う。send.sh が無ければ未インストール。
 if [[ -n "$AGMSG_TEAM" || -n "$AGMSG_FROM" ]]; then
   [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --agmsg-from is given"

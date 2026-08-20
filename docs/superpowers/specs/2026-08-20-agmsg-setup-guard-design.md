@@ -557,8 +557,9 @@ bare 候補を手順 5 で外したときは、`reason` を変えずに stderr �
 `guard_is_watcher` / `guard_name_slot` は `ps -o args=` を `set -- $args` で単語分割するので、
 空白入りのパスはトークン等値比較を必ず外す。`AGMSG_DIR` 側は既存 watcher の識別が全滅して
 毎回この役割の watcher を起こし直すことになり（上流 `watch.sh:223-238` の predecessor displace が
-先住を SIGTERM するので**蓄積はしない**が、チャーンと「SIGTERM は成功しているのに
-`orphan-watcher`」という誤警報が出る）、project 側は argv 位置がずれて自分の watcher が
+先住を SIGTERM するので**蓄積はしない**が、チャーンに加え、`guard_stop_watcher` も同じ
+比較を通るため SIGTERM を送る前に return してしまい、毎回 `orphan-watcher`（誤警報ではなく
+正しい報告）として手動 kill を要求される）、project 側は argv 位置がずれて自分の watcher が
 `existing-other` に化ける。どちらも正常に見える壊れ方なので、回復手順つきの hint を 1 行出す。
 既定の `AGMSG_DIR` にも通常のリポジトリパスにも空白は現れないため、通常運用では従来どおり
 stderr 0 行である。回帰は AR33 / AR33b。
@@ -910,8 +911,11 @@ prewarm は watcher を起動しないので、このキーが表すのは「gua
 | AR8 | 起動した watcher が生きている間もコマンド置換 `$( )` が戻る。バックグラウンドのサブシェル + `kill -0` ポーリングで検証 |
 | AR9a-d | 事実 10 の 4 経路が正しい `reason` に分類され、`AGMSG_READY_TIMEOUT=10` でも 3 秒未満で打ち切られる |
 | AR9e | `decoy` stub（本文行に `agmsg watch: cannot claim` を含む）で誤分類しない（行頭アンカーの検証） |
+| AR9f | `decoy-exit` stub（decoy 行を吐いて即 exit）でも `reason=watcher-exited`。`classify_from_log` の行頭アンカーが全文一致ではないことの直接検証 |
 | AR10 | pidfile 名が bare → SIGTERM で kill して `reason=bare-started`、sentinel が残らない |
+| AR10b | AR10 の kill 後、`ready.*` sentinel が 1 件も残らない |
 | AR11 | `no-sentinel` stub → `AGMSG_READY_TIMEOUT` で打ち切り、SIGTERM で kill、`reason=start-timeout`。**他人の sentinel は消さない** |
+| AR11b | AR11 と同じ実行で、事前に置いた**他ロールの** sentinel が削除されずに残る |
 | AR12 | 手順 5 では `ps` が成功し、**手順 8 の照合時に空出力になる** stub → kill せず `reason=orphan-watcher`、stderr に pid が出る |
 | AR13 | `delivery.sh` が AGMSG-DIRECTIVE を印字しても標準出力へ漏れず、`$LOG` に残る（異常系で `log=path` のとき） |
 | AR14 | `delivery.sh set` が非ゼロ → `reason=delivery-set-failed` / exit 1、`watch.sh` を呼ばない |
@@ -934,9 +938,11 @@ prewarm は watcher を起動しないので、このキーが表すのは「gua
 | AR30 | `existing` 経路で撃たれても既存 watcher の pid を「自分の孤児」として名指ししない（`PID="-"` の先置き） |
 | AR31 | `ps` が使えない環境（`guard_is_watcher` rc 2）でも生きた孤児 pid を落とさない |
 | AR31b | SIGTERM を無視する watcher（`nosent-ignore-term`）で報告される pid が実在・生存している |
+| AR31c | rc 1（watcher ではないと確定）は今も pid を抑止する（AR31 の rc 2 と対をなす回帰。R1 の対） |
 | AR32 / AR32b | `seq` を rc 127 に差し替えても手順 8 と `guard_stop_watcher` の待機ループが 0 回にならない |
 | AR33 / AR33b | 空白入りの `AGMSG_DIR` / project パスで回復手順つきの hint が stderr へ 1 行出る |
 | AR34 | 起動前から在る**同一 SID・純数字 suffix**の残骸を「自分」と誤認しない（起動前スナップショット） |
+| AR34b | 自分の watcher が同一 id の起動前 stale pidfile を正当に上書きしたケースでは `guard_my_norm_id` の fallback がその id を拾い `watcher=started` を返す（R8 の「安全側の半分」。AR34 は捨てる側だけを守る） |
 
 AR17 のゴールデンベクタ:
 
@@ -957,6 +963,7 @@ PW3 は claude 構成と all-codex 構成の 2 回に分けて実行する。
 | id | 検証内容 |
 |---|---|
 | PW1 | `watcher: "guard-injected"`。かつ `[.. \| objects \| select(has("delivery")) \| has("watcher")] \| all` と `(.delivery == "agmsg") == (.watcher == "guard-injected")` |
+| PW1c | codex design ペインの初期プロンプトにも `ensure-agmsg-ready.sh` の guard 呼び出しが入る |
 | PW2 | `delivery.sh` を失敗させる stub で claude-code 型の全ロールが同時に `watcher: "none"` になり、guard が注入されない |
 | PW3 | claude 構成と all-codex 構成の 2 回で、design / executor / review の全ペインが guard を含み `--type` が供給元表どおり |
 | PW4 | どのペインの初期プロンプトにも `/agmsg actas` が現れない |
@@ -968,6 +975,7 @@ PW3 は claude 構成と all-codex 構成の 2 回に分けて実行する。
 | PW8 | `--agmsg-team` 無しのとき guard を載せない |
 | PW9 | design ペインの gate が `DESIGN_DELIVERY` である。**`AGMSG_STUB_JOIN_FAIL=<agent 名>` の join stub で design だけ失敗させる**（全 join 成功では `DESIGN_DELIVERY` と `CLAUDE_DELIVERY` が常に一致し、gate を差し替えても挙動が変わらないので PW9 は恒真になる） |
 | PW10 | prewarm が各ペインへ `--agmsg-from <そのロール>` を渡す（argv 層。PW スイートは `launch-workspace.sh` を argv 記録スタブに置換するので composed command は生成されない） |
+| PW10b | legacy `--review-model` 経路（`review_runner` key 未設定時の cross-engine resolver）でも review ペインへ `--agmsg-from` と guard 注入の両方が渡る |
 | LW1 | `launch-workspace.sh` が生成する runner script に `export AGMSG_EXPECTED_NAME='<name>'` が入る（`test-launch-workspace-codex.sh` 側。runner ファイル層） |
 | LW2 | `--agmsg-from` が `^[A-Za-z0-9._-]+$` に一致しないと die する |
 | AG1 | `SKILL.md` の Step 1g ブロックを **`TEAM="dispatch-` を awk のアンカー**にして抽出し（Step 1g 配下に bash フェンスが 6 個ある。この文字列は SKILL.md 全体で 1 箇所）、**先に** `test-cleanup-close.sh:95` と同じ sed で `~/.agents` と `<SKILL_DIR>` を stub パスへ置換し、**そのうえで** `~/.agents` が残っていないことを assert してから `set -euo pipefail` 下で実行。rc 0（`started` / `none` / `existing-other` の 3 サブ分岐）/ rc 1 / rc 2 と join 失敗時の継続を検証。stub は `git` / `join.sh` / `resolve-agmsg-type.sh` / `ensure-agmsg-ready.sh` の 4 つ |
