@@ -366,6 +366,12 @@ fi
 # Validate workspace name: only allow safe characters for path/branch usage
 [[ "$WORKSPACE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid workspace name '$WORKSPACE_NAME': use only [A-Za-z0-9._-]"
 
+# agmsg の from 名は guard の --name と runner script の AGMSG_EXPECTED_NAME に
+# そのまま入るので、workspace 名と同じ値域で検証する。
+if [[ -n "$AGMSG_FROM" ]]; then
+  [[ "$AGMSG_FROM" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid --agmsg-from '$AGMSG_FROM': use only [A-Za-z0-9._-]"
+fi
+
 # agmsg 配線は team / from が揃っているときだけ行う。send.sh が無ければ未インストール。
 if [[ -n "$AGMSG_TEAM" || -n "$AGMSG_FROM" ]]; then
   [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --agmsg-from is given"
@@ -767,7 +773,14 @@ CODEX_MODEL_FLAG=""
       # review は workspace-write に限定し、approval prompt は抑止する。findings は
       # worktree 外の STATUS_DIR/review/ に書かれるため、STATUS_DIR だけを追加許可する。
       REVIEW_WRITABLE_FLAG=""
-      [[ -n "$STATUS_DIR" ]] && REVIEW_WRITABLE_FLAG=" --add-dir '$STATUS_DIR'"
+      [[ -n "$STATUS_DIR" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$STATUS_DIR'"
+      # watcher は run/ と db/ にしか書かない。scripts/ を書き込み許可に含めては
+      # ならない — そこは全ペインの guard が実行し session-start.sh 経由で
+      # マシン上の全 Claude Code セッションが触れるコードで、無人 codex reviewer に
+      # 書き込み権を与えるとサンドボックス外・別セッションの権限で任意コードが走る。
+      AGMSG_SKILL_DIR="${AGMSG_SKILL_DIR:-$HOME/.agents/skills/agmsg}"
+      [[ -d "$AGMSG_SKILL_DIR/run" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/run'"
+      [[ -d "$AGMSG_SKILL_DIR/db" ]]  && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/db'"
       CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
@@ -835,6 +848,16 @@ STANDBY="${STANDBY_FLAG}"
 AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
 AGMSG_FROM="${AGMSG_FROM}"
+EOF
+# AGMSG_EXPECTED_NAME is the safety-net value ensure-agmsg-ready.sh compares
+# its resolved --name against. Only emit the export when AGMSG_FROM is set —
+# an empty export would defeat the guard's "was a name actually provided" check.
+if [[ -n "$AGMSG_FROM" ]]; then
+  cat >> "$RUNNER_FILE" <<EOF
+export AGMSG_EXPECTED_NAME='${AGMSG_FROM}'
+EOF
+fi
+cat >> "$RUNNER_FILE" <<EOF
 TIMEOUT_SENTINEL="${TIMEOUT_SENTINEL}"
 
 # Resolve the workspace / surface IDs we are running inside.

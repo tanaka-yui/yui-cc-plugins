@@ -135,6 +135,40 @@ assert_contains "$review_runner" "-c approval_policy='never'" 'T5 review approva
 assert_contains "$review_runner" "--add-dir '$TMP/status'" 'T5 review status directory writable'
 assert_not_contains "$review_runner" '--dangerously-bypass-approvals-and-sandbox' 'T5 review does not disable sandbox'
 
+# --- CR1 / CR1b: codex review の --add-dir (agmsg run/db は writable, scripts は不可) ---
+FAKE_AGMSG="$TMP/fake-agmsg"; mkdir -p "$FAKE_AGMSG/run" "$FAKE_AGMSG/db" "$FAKE_AGMSG/scripts"
+cr1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex \
+  --status-dir "$TMP/status" rv1 prompt)
+cr1_runner=$(jq -r '.runner_file' <<<"$cr1_output")
+assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1 agmsg run must be writable'
+assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/db'"  'CR1 agmsg db must be writable'
+assert_not_contains "$cr1_runner" "$FAKE_AGMSG/scripts"     'CR1 agmsg scripts must NOT be writable'
+
+cr1b_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv2 prompt)
+cr1b_runner=$(jq -r '.runner_file' <<<"$cr1b_output")
+assert_contains "$cr1b_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1b must add agmsg dirs without STATUS_DIR'
+
+# --- LW1: runner script に AGMSG_EXPECTED_NAME が入る ---
+lw1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \
+  --status-dir "$TMP/status" --agmsg-team demo --agmsg-from demo-claude lw1)
+lw1_runner=$(jq -r '.runner_file' <<<"$lw1_output")
+assert_contains "$lw1_runner" "export AGMSG_EXPECTED_NAME='demo-claude'" 'LW1 runner script must export AGMSG_EXPECTED_NAME'
+
+# --- LW2: --agmsg-from の値域検証 ---
+lw2_bad=0
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \
+  --status-dir "$TMP/status" --agmsg-team demo --agmsg-from 'bad name' lw2 >/dev/null 2>&1 && lw2_bad=1
+if [[ $lw2_bad -eq 0 ]]; then
+  echo 'PASS: LW2 --agmsg-from with a space must die'
+else
+  echo 'FAIL: LW2 --agmsg-from with a space must die'
+  fail=1
+fi
+
 # --- hook trust: codex 0.145 は project-local .codex/hooks.json ごとに信頼を求める。
 # agmsg が worktree ごとに新しい hooks.json を生成するためパスが毎回変わり、常に未信頼と
 # 判定されて起動直後に承認待ちで停止する。approvals-and-sandbox のバイパスとは別フラグ。 ---
