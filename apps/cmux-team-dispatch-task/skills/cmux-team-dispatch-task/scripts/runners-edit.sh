@@ -254,6 +254,34 @@ if [[ "$SHOW" -eq 1 ]]; then
   exit 0
 fi
 
-# 書き込みは Task 2 で実装する。
-echo 'runners-edit: write path not implemented yet' >&2
-exit 1
+# 対象 runner だけを写像する。他の要素・default・未知キーはそのまま通す。
+# (type == "object") and を省略すると、要素が非オブジェクトのレジストリで jq が rc=5 で死ぬ。
+WRITE_FILTER=".runners |= map(if (type == \"object\") and .name == \$n then ($FILTER) else . end)"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  # 書き込みは Task 3 で実装する。
+  echo 'runners-edit: --dry-run not implemented yet' >&2
+  exit 1
+fi
+
+# 共有 $RUNNERS.tmp は並列書き込みで壊れるため必ず writer 固有の mktemp を使う。
+if ! TMP=$(mktemp "$RUNNERS.XXXXXX"); then
+  echo 'runners-edit: mktemp failed; nothing was written' >&2
+  exit 1
+fi
+
+# jq が失敗したまま mv すると runners.json を壊すので、成功時だけ mv する。
+# なおここに到達する失敗の witness は構築できない (手順 3 / 4 を通過した文書では
+# 型安全 select が効くため)。意図的に到達困難な安全弁である。
+jq ${JQ_ARGS[@]+"${JQ_ARGS[@]}"} --arg n "$NAME" "$WRITE_FILTER" <<<"$DOC" > "$TMP" || {
+  rm -f "$TMP"
+  echo "runners-edit: write failed (jq error); $RUNNERS is unchanged" >&2
+  exit 1
+}
+
+mv "$TMP" "$RUNNERS" || {
+  rm -f "$TMP"
+  echo "runners-edit: move failed; $RUNNERS is unchanged" >&2
+  exit 1
+}
+TMP=""
