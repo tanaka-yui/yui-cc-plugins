@@ -165,8 +165,8 @@ project settings では無視されるため、**ユーザー設定 `~/.claude/s
 意図した挙動で、opt-out 用の config キーは用意していない。
 
 注入はベストエフォートで、戻り値も信用できない（`settings.local.json` がディレクトリだと
-`mv` が temp をその中へ移して成功を報告する）。そのため起動スクリプトは書き込み後に
-`jq -e` でファイルを判定し、`permissions.defaultMode` が `bypassPermissions` になっていなければ
+`mv` が temp をその中へ移して成功を報告する）。そのため起動スクリプトは claude engine では
+注入の成否に関わらず無条件に `jq -e` でファイルを判定し、`permissions.defaultMode` が `bypassPermissions` になっていなければ
 `permission bypass not confirmed` を含む警告を出したうえで、その起動にだけ
 `--dangerously-skip-permissions` を足す。これが無いと、権限フラグを持たない設計ペインだけが
 注入失敗時に素の権限で上がり、誰も見ていない状態で permission prompt に当たって止まる。

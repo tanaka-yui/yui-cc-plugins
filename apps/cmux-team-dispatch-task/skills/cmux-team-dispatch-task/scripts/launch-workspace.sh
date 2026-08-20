@@ -46,8 +46,9 @@
 #
 #   注記: claude engine では MODE を問わず、worktree の
 #   .claude/settings.local.json に permissions.defaultMode: "bypassPermissions" を
-#   注入する (Step 2a)。注入後にファイルを読み直して確認できなかったときは、
-#   plan (組み立て箇所でリテラル付与済み) と、呼び出し元が --skip-permissions を
+#   注入する (Step 2a)。claude engine では注入の成否に関わらず無条件にファイルを
+#   読み直し、確認できなかったときは plan (組み立て箇所でリテラル付与済み) と、
+#   呼び出し元が --skip-permissions または claude engine での --unattended を
 #   渡した execute / standby / review を除いて --dangerously-skip-permissions を
 #   自動で足す。superpowers は --skip-permissions を読まないので常に足す。
 #   --skip-permissions はそれとは別に呼び出し元が明示するフラグ。codex engine は対象外。
@@ -601,7 +602,10 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
   # enum として不正な値が等値になってしまうため。jq -e は false で 1、不正 JSON で 5、
   # ファイル不在・ディレクトリで 2 を返すので、0 以外をすべて失敗として扱えば
   # 型混同・末尾空白・注入不能の全ケースに fail-closed になる。
-  if ! jq -e '.permissions.defaultMode == "bypassPermissions"' \
+  # -s (slurp) + length == 1 も必須。素の jq -e は複数 JSON ドキュメントが連結された
+  # ファイル (JSON としては不正) に対して最後の値だけで rc を決めるため、末尾が
+  # bypassPermissions なら confirmed 扱いになってしまう (round 1 レビュー MI-2)。
+  if ! jq -e -s 'length == 1 and .[0].permissions.defaultMode == "bypassPermissions"' \
        "$CWD/.claude/settings.local.json" >/dev/null 2>&1; then
     BYPASS_INJECTION_OK=0
     # ログ用の値だけを別に読む。制御文字を含む値が stderr へ抜けると端末を書き換えられ、
@@ -765,9 +769,10 @@ if [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
   PROMPT_TEXT="$PROMPT"
 fi
 
-# claude engine の起動フラグ。model/effort と権限フラグを分けるのは、superpowers モードが
-# 権限フラグを付けない (permissions.defaultMode を settings.local.json で注入する) 一方で
-# model/effort は全モードで必要なため。
+# claude engine の起動フラグ。model/effort と権限フラグを分けるのは、superpowers モードの
+# 合成箇所が本来は権限フラグを持たない (permissions.defaultMode を settings.local.json で
+# 注入する) 一方で model/effort は全モードで必要なため。ただし注入を確認できなかったときは
+# PERM_FALLBACK_FLAG 経由で superpowers にも --dangerously-skip-permissions が付く。
 # 順序: <command> [--model X] [--effort Y] [--dangerously-skip-permissions] '<inner prompt>'
 CLAUDE_MODEL_FLAGS=""
 if [[ -n "$MODEL" ]]; then
@@ -788,8 +793,9 @@ fi
 
 # Step 2a の判定で bypass を確認できなかったときだけ付ける緊急フラグ。
 # plan は自分の合成箇所でリテラルのフラグを持つので足さない。
-# execute / standby / review は呼び出し元の --skip-permissions が CLAUDE_EXTRA_FLAGS 経由で
-# 届くので、実際に渡されたときだけ足さない (二重付与の回避)。
+# execute / standby / review は呼び出し元の --skip-permissions (または claude engine での
+# --unattended。無人ループ強制のブロックで SKIP_PERMISSIONS=1 になる) が CLAUDE_EXTRA_FLAGS
+# 経由で届くので、実際にそのどちらかが渡されたときだけ足さない (二重付与の回避)。
 # superpowers はその合成箇所が CLAUDE_MODEL_FLAGS しか読まず --skip-permissions を
 # 受け取らないため、その値に関わらず足す。
 PERM_FALLBACK_FLAG=""

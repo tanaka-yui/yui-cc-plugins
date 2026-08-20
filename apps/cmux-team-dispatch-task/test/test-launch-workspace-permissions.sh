@@ -418,7 +418,7 @@ else
   if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
      && [[ -n "$warn_line" ]] && has_no_ctrl "$warn_line" \
      && [[ "$(grep -ac "$WARN_NOT_CONFIRMED" "$TMP/err-p26" | tr -d ' ')" == "1" ]] \
-     && ! grep -Fq -- '[permissions] injected permissions.defaultMode' "$TMP/err-p26"; then
+     && ! grep -Fq -- '[permissions] injected' "$TMP/err-p26"; then
     pass 'P26 sanitizer strips control bytes and blocks the forged injected line'
   else
     bad 'P26 sanitizer strips control bytes and blocks the forged injected line'
@@ -437,6 +437,16 @@ else
     && pass 'P26b a value that sanitizes to bypassPermissions still takes the fallback' \
     || bad  'P26b a value that sanitizes to bypassPermissions still takes the fallback'
 fi
+
+# --- P27: review + 注入不能 A + --skip-permissions なし ---
+# launch-workspace.sh の case "$MODE" が *) を execute|standby のように MODE を列挙する形へ
+# 書き換えられても検出できるよう、review 単独のケースを持つ (round 1 レビュー MI-1)。
+repo=$(new_repo p27); break_a "$repo"
+out=$(run_launch --cwd "$repo" --mode review --runner claude \
+  --status-dir "$TMP/status-p27" p27-review)
+[[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+  && pass 'P27 review gains the fallback flag' \
+  || bad  'P27 review gains the fallback flag'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

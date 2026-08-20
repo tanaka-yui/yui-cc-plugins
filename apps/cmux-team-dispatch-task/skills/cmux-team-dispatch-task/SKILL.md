@@ -433,7 +433,8 @@ directory case above — the launcher logs a warning containing `permission bypa
 not confirmed` and adds `--dangerously-skip-permissions` to that launch. It never
 doubles the flag: `plan` already carries it literally at the composition site,
 and `execute` / `standby` / `review` are skipped when the caller actually passed
-`--skip-permissions`. `superpowers` is the exception that always gets the
+`--skip-permissions` (or `--unattended` on the claude engine, which sets the same
+underlying flag). `superpowers` is the exception that always gets the
 fallback, because its composition site never reads `--skip-permissions` at all.
 That is also why the `[--dangerously-skip-permissions]` bracket on the
 `superpowers` row above carries only part of the condition the one on the

@@ -1639,7 +1639,8 @@ executor も claude のレビューペインも常にフラグ付きで spawn �
 ディレクトリのケース — `permission bypass not confirmed` を含む警告を出し、その launch に
 `--dangerously-skip-permissions` を足す。二重付与は起きない。`plan` は組み立て箇所で
 既にリテラルを持っており、`execute` / `standby` / `review` は呼び出し元が実際に
-`--skip-permissions` を渡していたときは足さないからである。`superpowers` だけは例外で、
+`--skip-permissions` を渡していた（あるいは claude engine で同じフラグを立てる
+`--unattended` を渡していた）ときは足さないからである。`superpowers` だけは例外で、
 組み立て箇所がそもそも `--skip-permissions` を読まないため常にフォールバックが付く。
 上の表の `superpowers` 行の `[--dangerously-skip-permissions]` が `execute` 行のそれより
 狭い条件しか持たないのはこのためである。フォールバックが無いと、設計ペインだけが
