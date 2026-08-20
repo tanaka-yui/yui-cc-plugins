@@ -2099,6 +2099,18 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
 **agmsg installed (`$TEAM` non-empty)** — do NOT run the normal "Launch: Workspace
 Mode" invocation. Instead all resolved panes start idle with no task
 message, and the Phase A task is delivered afterwards by `send-prompt.sh`.
+
+When wiring fails for a role (the `delivery: "cmux-send"` fallback), **none of the
+four roles gets a guard call injected** into its initial prompt, but the replacement
+differs per role. **Design and the claude executor** fall back to a prompt telling the
+pane to wait idle because the task or execution instructions will be typed directly
+into it. **The codex executor and review** get no initial prompt at all and simply start
+idle — `${CODEX_EXEC_PROMPT:+...}` / `${REVIEW_PROMPT:+...}` drop the argument entirely
+when the variable is empty, which is how those two roles already started before the
+guard existed. When wiring succeeds, all four roles get the same wording: the task
+arrives as a prompt typed into this pane with an identical copy recorded in the inbox —
+never "delivered as an agmsg message".
+
 `prewarm-panes.sh` creates the worktree, wires agmsg delivery into it (join +
 `delivery.sh set`, BEFORE any pane starts), launches the design standby workspace,
 and places only the resolved review/execution roles:
