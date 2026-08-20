@@ -114,11 +114,53 @@ assert_line() {  # <output> [<label>]
   esac
 }
 
+# プロセスツリーを子から順に SIGKILL する。バックグラウンドのサブシェルだけを
+# kill すると、その下の guard 本体と guard が起こした watcher が孤児として残る。
+# 非対話シェルはジョブ制御が無効なのでサブシェルは独立した pgid を持たない
+# (`kill -9 -$pid` はスイート自身のプロセスグループを撃ちかねない)。よって
+# pgrep で親子関係を辿る。
+kill_tree() {
+  local p="$1" c
+  for c in $(pgrep -P "$p" 2>/dev/null || true); do kill_tree "$c"; done
+  kill -9 "$p" 2>/dev/null || true
+}
+
+# run_guard の上限 (0.1 秒 × N)。正常なケースは最長でも 15 秒程度
+# (AGMSG_READY_TIMEOUT の既定 15 = 75 反復 × 0.2 秒) なので 4 倍の余裕を取る。
+GUARD_BOUND_TICKS=600
+
 run_guard() {  # 追加の引数をそのまま渡す。GUARD_OUT に stdout、GUARD_RC に rc を入れる。
   # 呼び出しは `out=$(run_guard ...)` の形にしないこと — command substitution は
   # サブシェルで走るため、その中で行った GUARD_RC への代入は呼び出し元へ伝播しない。
-  GUARD_RC=0
-  GUARD_OUT=$(bash "$GUARD" "$@" 2>"$TMP/stderr.txt") || GUARD_RC=$?
+  #
+  # **上限付きで走らせる。** 素の `GUARD_OUT=$(bash "$GUARD" ...)` は上限が無く、
+  # fd 漏れの退行が入るとスイート全体が無限にハングして `--- failures ---` すら
+  # 出さない (CI は永久に終わらない)。AR8 と同型のバックグラウンドサブシェル +
+  # `kill -0` ポーリングで囲み、どの呼び出し箇所で詰まっても診断を出して落ちるようにする。
+  # `timeout` / `gtimeout` は macOS に無いので使えない。
+  #
+  # コマンド置換はサブシェルの**内側**に置く。ここでファイルへ直接リダイレクトすると
+  # guard の stdout がパイプでなくなり、watcher が呼び出し元のパイプを握り続ける
+  # 退行 (AR8 が見ているもの) を全呼び出し箇所で見逃す。
+  local bin="${RUN_GUARD_BIN:-$GUARD}" tick
+  GUARD_RC=0; GUARD_OUT=""
+  rm -f "$TMP/run_guard.out" "$TMP/run_guard.rc"
+  ( rc=0
+    out=$(bash "$bin" "$@" 2>"$TMP/stderr.txt") || rc=$?
+    printf '%s' "$out" > "$TMP/run_guard.out"
+    printf '%s' "$rc" > "$TMP/run_guard.rc" ) &
+  local gp=$!
+  for tick in $(seq 1 "$GUARD_BOUND_TICKS"); do
+    kill -0 "$gp" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$gp" 2>/dev/null; then
+    kill_tree "$gp"
+    bad "run_guard did not return within $((GUARD_BOUND_TICKS / 10))s: $*"
+    return
+  fi
+  GUARD_OUT=$(cat "$TMP/run_guard.out" 2>/dev/null || true)
+  GUARD_RC=$(cat "$TMP/run_guard.rc" 2>/dev/null || echo 0)
   # 出力契約の検証はここで行う。呼び出し側に任せると書き忘れが必ず出る
   # (以前は 39 呼び出しのうち 10 箇所しか検証していなかった)。
   assert_line "$GUARD_OUT" "$*"
@@ -149,10 +191,10 @@ out="$GUARD_OUT"
 # コマンド置換は必ずサブシェルの**内側**で行う。stdout をファイルへ落とすとパイプが
 # 存在せず、watcher が呼び出し元のパイプを握ったまま生存する退行を検出できない。
 #
-# **意図的にスイートの先頭近くに置いている。** run_guard 自身が上限なしの
-# `GUARD_OUT=$(bash "$GUARD" ...)` なので、fd 漏れの退行が入ると長命 watcher を起動する
-# 最初のケース (AR2) が先にブロックし、スイートは診断メッセージを 1 行も出さずに
-# 無限ハングする。ここに置けば `FAIL: AR8 ...` が真っ先に出て早期に落ちる。
+# **意図的にスイートの先頭近くに置いている。** fd 漏れの退行が入ったとき、
+# `FAIL: AR8 ...` が真っ先に出て原因を名指しできるようにするため
+# (run_guard 自体も上限付きになったのでスイートは必ず終了するが、
+#  そちらの診断は「どの呼び出しが返らなかったか」しか言わない)。
 # 依存は stub ツリーと reset_case だけで、start_fixture より前でも自己完結する。
 reset_case
 ( out8=$(CLAUDE_CODE_SESSION_ID=s8 AGMSG_STUB_INSTANCE_ID="s8.222" AGMSG_STUB_MODE=alive \
@@ -161,7 +203,8 @@ reset_case
 ar8=$!
 for _ in $(seq 1 100); do kill -0 "$ar8" 2>/dev/null || break; sleep 0.1; done
 if kill -0 "$ar8" 2>/dev/null; then
-  kill -9 "$ar8" 2>/dev/null; bad 'AR8 guard did not return (fd leak)'
+  # サブシェルだけでなく guard 本体と guard が起こした watcher まで回収する。
+  kill_tree "$ar8"; bad 'AR8 guard did not return (fd leak)'
 else
   # 「戻ってくる」だけでなく「正しい 1 行を返す」まで見る。
   out=$(cat "$TMP/ar8.out" 2>/dev/null); assert_line "$out" AR8
@@ -513,6 +556,85 @@ l2=$(printf '%s' "$out2" | sed -n 's/.* log=\([^ ]*\)$/\1/p')
 for l in "$l1" "$l2"; do
   [[ "$(ls -l "$l" | cut -c1-10)" == "-rw-------" ]] || bad "AR19 $l is not 0600"
 done
+
+# --- AR23: 待機中の SIGTERM は reason=interrupted の 1 行になる ---
+# EXIT trap の契約 (シグナル死でも出力表に無い行を出さない) の唯一の直接検証。
+# trap から interrupted 分岐を外すと `reason=-` かつ `watcher=none` の行が出て
+# assert_line が落ちる。run_guard は使えない — シグナルを送る相手が guard 本体である
+# 必要があり、バックグラウンドのラッパー越しでは pid が取れないため。
+# guard をラッパーのサブシェル越しに起こすのは、ジョブ表に載るのをラッパーだけにして
+# `Terminated: 15` の通知行がスイートの stderr へ漏れないようにするため
+# (ラッパー自身は printf で正常終了する)。撃つ相手は pgrep で辿った guard 本体。
+reset_case
+( CLAUDE_CODE_SESSION_ID=s23 AGMSG_STUB_INSTANCE_ID="s23.222" AGMSG_STUB_MODE=no-sentinel \
+    AGMSG_READY_TIMEOUT=30 bash "$GUARD" --type claude-code --name "ar-$$-23" \
+    >"$TMP/ar23.out" 2>/dev/null
+  printf '%s' "$?" > "$TMP/ar23.rc" ) &
+ar23_wrap=$!
+# 手順 8 の待機ループへ入るまで待つ (pidfile が出れば watcher は起動済み)。
+for _ in $(seq 1 100); do
+  [[ -f "$AGMSG_READY_DIR/watch.s23.222.pid" ]] && break
+  sleep 0.1
+done
+sleep 0.3
+ar23=$(pgrep -P "$ar23_wrap" 2>/dev/null | head -1)
+[[ -n "$ar23" ]] || bad 'AR23 could not locate the guard process'
+kill -TERM "$ar23" 2>/dev/null
+for _ in $(seq 1 100); do kill -0 "$ar23_wrap" 2>/dev/null || break; sleep 0.1; done
+ar23_rc=$(cat "$TMP/ar23.rc" 2>/dev/null || echo 0)
+out=$(cat "$TMP/ar23.out" 2>/dev/null || true)
+assert_line "$out" AR23
+[[ "$out" == *"reason=interrupted"* ]] \
+  || bad "AR23 a SIGTERM during the wait must emit reason=interrupted (got $out)"
+[[ "$out" == *"watcher=none"* ]] || bad "AR23 interrupted must be watcher=none (got $out)"
+[[ "$out" =~ \ pid=[0-9]+\  ]] \
+  || bad "AR23 the orphaned watcher pid must be reported for manual kill (got $out)"
+[[ $ar23_rc -eq 143 ]] || bad "AR23 expected rc 143 from SIGTERM (got $ar23_rc)"
+ar23_watcher=$(cat "$AGMSG_READY_DIR/watch.s23.222.pid" 2>/dev/null || true)
+[[ -n "$ar23_watcher" ]] && FIXTURE_PIDS+=("$ar23_watcher")
+
+# --- AR24: 20 桁の AGMSG_READY_TIMEOUT でも rc 0 で 1 行 ---
+# 桁数上限を外すと `seq 1 <巨大>` が xrealloc の致命エラーになり、EXIT trap すら
+# 走らずに 0 行 rc 2 が返る (1 行契約がこの入力だけで破れる)。
+reset_case
+AGMSG_READY_TIMEOUT=99999999999999999999 CLAUDE_CODE_SESSION_ID=s24 \
+  AGMSG_STUB_MODE=silent-exit run_guard --type claude-code --name "ar-$$-24"
+out="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 ]] || bad "AR24 a 20-digit AGMSG_READY_TIMEOUT must not crash the guard (rc=$GUARD_RC)"
+[[ -n "$out" ]] || bad 'AR24 the guard printed no line'
+
+# --- AR25: 先頭ゼロの AGMSG_READY_TIMEOUT は既定値へ倒す ---
+# bash 算術は先頭ゼロを 8 進として読む。`08` / `0018` は不正な 8 進数字で
+# `deadline=$(( ... ))` ごと落ち (待機 0 回 + stderr 3 行)、`0000` は待機 0 回になる。
+# どちらも健全な watcher を即 kill するか pidfile-missing と誤分類する。
+for tv in 08 0018 0000; do
+  reset_case
+  AGMSG_READY_TIMEOUT="$tv" CLAUDE_CODE_SESSION_ID="s25$tv" AGMSG_STUB_INSTANCE_ID="s25$tv.222" \
+    AGMSG_STUB_MODE=alive run_guard --type claude-code --name "ar-$$-25"
+  out="$GUARD_OUT"
+  [[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* ]] \
+    || bad "AR25 AGMSG_READY_TIMEOUT=$tv must fall back to the default (got rc=$GUARD_RC $out)"
+  [[ ! -s "$TMP/stderr.txt" ]] || bad "AR25 AGMSG_READY_TIMEOUT=$tv must keep stderr empty"
+  tv_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+  [[ -n "$tv_pid" ]] && FIXTURE_PIDS+=("$tv_pid")
+done
+
+# --- AR26: agmsg-path.sh が読めなくても壊れない (send-prompt.sh の SP26 と対) ---
+# guard は --name を [A-Za-z0-9._-]+ に限定済みで、エンコーダはその文字集合の恒等写像
+# なので依存を持たない。source して読めなかった場合は READY_ENC が空になり、
+# 手順 8 の glob が一切マッチせず自分の健全な watcher を start-timeout で殺す。
+reset_case
+mkdir -p "$TMP/nolib"
+cp "$GUARD" "$TMP/nolib/ensure-agmsg-ready.sh"
+RUN_GUARD_BIN="$TMP/nolib/ensure-agmsg-ready.sh" CLAUDE_CODE_SESSION_ID=s26 \
+  AGMSG_STUB_INSTANCE_ID="s26.222" AGMSG_STUB_MODE=alive \
+  run_guard --type claude-code --name "ar-$$-26"
+out="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* ]] \
+  || bad "AR26 the guard must not depend on agmsg-path.sh (got rc=$GUARD_RC $out)"
+[[ ! -s "$TMP/stderr.txt" ]] || bad 'AR26 the guard must keep stderr empty without agmsg-path.sh'
+ar26_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+[[ -n "$ar26_pid" ]] && FIXTURE_PIDS+=("$ar26_pid")
 
 # --- AR17: エンコードのゴールデンベクタ ---
 # shellcheck disable=SC1091
