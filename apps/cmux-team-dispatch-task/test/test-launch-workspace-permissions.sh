@@ -4,8 +4,9 @@
 # 検証項目: 全 MODE への注入 / codex engine 非対象 / 既存キー保持 / 冪等性 /
 # 正常系では superpowers にフラグを足さないこと / info/exclude の追記 /
 # 注入を確認できなかったときの --dangerously-skip-permissions へのフォールバック
-# (3 ケース A・B・C、二重付与なし、正常系で誤発火しないこと) /
-# 警告ログ値のサニタイズ (P26 / P26b、root では skip)。
+# (3 ケース A・B・C、二重付与なし、正常系で誤発火しないこと、review 単独の *) 分岐) /
+# 警告ログ値のサニタイズ (P26 / P26b、root では skip) /
+# jq -e -s による複数 JSON ドキュメント連結の誤判定防止 (P28)。
 
 set -euo pipefail
 
@@ -440,13 +441,44 @@ fi
 
 # --- P27: review + 注入不能 A + --skip-permissions なし ---
 # launch-workspace.sh の case "$MODE" が *) を execute|standby のように MODE を列挙する形へ
-# 書き換えられても検出できるよう、review 単独のケースを持つ (round 1 レビュー MI-1)。
+# 書き換えられても検出できるよう、review 単独のケースを持つ。stderr も assert するのは、
+# review 用に別アームを足してフラグは付けるがログは出さない形の退行も捕まえるため
+# (P12 / P17 / P19 / P21 / P24 と同じ流儀)。
 repo=$(new_repo p27); break_a "$repo"
-out=$(run_launch --cwd "$repo" --mode review --runner claude \
+out=$(run_launch_err "$TMP/err-p27" --cwd "$repo" --mode review --runner claude \
   --status-dir "$TMP/status-p27" p27-review)
+if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+   && grep -Fq -- "$WARN_FLAG_ADDED" "$TMP/err-p27"; then
+  pass 'P27 review gains the fallback flag and logs the add'
+else
+  bad  'P27 review gains the fallback flag and logs the add'
+fi
+
+# --- P28: settings.local.json が複数 JSON ドキュメントの連結 (jq -e -s の担保) ---
+# 素の jq -e は最後の値だけで rc を決めるため、末尾が bypassPermissions の連結ドキュメントを
+# confirmed と誤判定する (round 2 レビュー MA2-3)。chmod 不要なので root でも成立する。
+repo=$(new_repo p28); mkdir -p "$repo/.claude"
+printf '%s\n%s\n' '{"permissions":{"defaultMode":"acceptEdits"}}' \
+                  '{"permissions":{"defaultMode":"bypassPermissions"}}' \
+  > "$repo/.claude/settings.local.json"
+out=$(run_launch_err "$TMP/err-p28" --cwd "$repo" --mode standby --runner claude \
+  --status-dir "$TMP/status-p28" p28-standby)
+if [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
+   && grep -Fq -- "$WARN_NOT_CONFIRMED" "$TMP/err-p28"; then
+  pass 'P28 concatenated JSON documents take the fallback'
+else
+  bad  'P28 concatenated JSON documents take the fallback'
+fi
+
+# --- P29: review + 注入不能 A + --skip-permissions 明示 ---
+# superpowers) アームを superpowers|review) に書き換えるミュータント (自然に起きうるスリップ)
+# は review にも --skip-permissions の免除を誤って適用させ、二重付与になる。
+repo=$(new_repo p29); break_a "$repo"
+out=$(run_launch --cwd "$repo" --mode review --runner claude --skip-permissions \
+  --status-dir "$TMP/status-p29" p29-review)
 [[ "$(count_flag "$(jq -r '.runner_file' <<<"$out")")" == "1" ]] \
-  && pass 'P27 review gains the fallback flag' \
-  || bad  'P27 review gains the fallback flag'
+  && pass 'P29 review with --skip-permissions never doubles the flag' \
+  || bad  'P29 review with --skip-permissions never doubles the flag'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

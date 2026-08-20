@@ -426,15 +426,19 @@ own guarantee through `--unattended`.
 The injection is best effort, and its return code cannot be trusted: when
 `settings.local.json` happens to be a directory, the atomic `mv` moves the temp
 file inside it and still reports success. The launcher therefore checks the file
-itself with `jq -e`. When `permissions.defaultMode` is not exactly
+itself with `jq -e`, unconditionally on the claude engine regardless of whether
+the merge was written, skipped (already matching), or failed. When
+`permissions.defaultMode` is not exactly
 `bypassPermissions` at that point — the merge could not be written, a
 pre-existing `settings.local.json` holds invalid JSON that `jq` refuses, or the
 directory case above — the launcher logs a warning containing `permission bypass
 not confirmed` and adds `--dangerously-skip-permissions` to that launch. It never
 doubles the flag: `plan` already carries it literally at the composition site,
 and `execute` / `standby` / `review` are skipped when the caller actually passed
-`--skip-permissions` (or `--unattended` on the claude engine, which sets the same
-underlying flag). `superpowers` is the exception that always gets the
+`--skip-permissions`; `execute` and `standby` are also skipped under
+`--unattended` on the claude engine, which sets the same underlying flag, but
+`review` does not accept `--unattended` so only `--skip-permissions` exempts
+it there. `superpowers` is the exception that always gets the
 fallback, because its composition site never reads `--skip-permissions` at all.
 That is also why the `[--dangerously-skip-permissions]` bracket on the
 `superpowers` row above carries only part of the condition the one on the

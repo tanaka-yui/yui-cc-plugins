@@ -48,9 +48,11 @@
 #   .claude/settings.local.json に permissions.defaultMode: "bypassPermissions" を
 #   注入する (Step 2a)。claude engine では注入の成否に関わらず無条件にファイルを
 #   読み直し、確認できなかったときは plan (組み立て箇所でリテラル付与済み) と、
-#   呼び出し元が --skip-permissions または claude engine での --unattended を
-#   渡した execute / standby / review を除いて --dangerously-skip-permissions を
-#   自動で足す。superpowers は --skip-permissions を読まないので常に足す。
+#   呼び出し元が --skip-permissions を渡した execute / standby / review
+#   (execute / standby は claude engine での --unattended も同様に免除する。
+#   review は --unattended を受け付けないので --skip-permissions のみが免除する)
+#   を除いて --dangerously-skip-permissions を自動で足す。
+#   superpowers は --skip-permissions を読まないので常に足す。
 #   --skip-permissions はそれとは別に呼び出し元が明示するフラグ。codex engine は対象外。
 #   --defer-status                     runner wrapper が exit 時に <STATUS_DIR>/.deferred
 #                                      が存在する場合 status.json 更新 / 親通知 /
@@ -604,7 +606,13 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
   # 型混同・末尾空白・注入不能の全ケースに fail-closed になる。
   # -s (slurp) + length == 1 も必須。素の jq -e は複数 JSON ドキュメントが連結された
   # ファイル (JSON としては不正) に対して最後の値だけで rc を決めるため、末尾が
-  # bypassPermissions なら confirmed 扱いになってしまう (round 1 レビュー MI-2)。
+  # bypassPermissions なら confirmed 扱いになってしまう。
+  # 既知の残余 (round 2 レビュー MI2-5): jq のパーサは JSON.parse より寛容な入力を
+  # 一部受理する (UTF-8 BOM 付きファイル、NaN/Infinity/先頭ゼロ等の非標準数値リテラル)。
+  # 到達には既存の settings.local.json がその形で "既に" bypassPermissions を持つ必要が
+  # あり (defaultMode が別値なら merge が走って jq が正規化し自己修復する)、
+  # merge_claude_settings も delivery.sh もそのような値を書き出さないため外部の書き手を
+  # 要する。失敗の向きは可用性側 (フォールバックせずデッドロック) であり権限昇格ではない。
   if ! jq -e -s 'length == 1 and .[0].permissions.defaultMode == "bypassPermissions"' \
        "$CWD/.claude/settings.local.json" >/dev/null 2>&1; then
     BYPASS_INJECTION_OK=0
@@ -612,8 +620,12 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
     # 偽の [permissions] injected 行まで捏造できるため英数字以外を落とす。
     EFFECTIVE_DEFAULT_MODE=$(jq -r '.permissions.defaultMode // ""' \
       "$CWD/.claude/settings.local.json" 2>/dev/null || echo "")
-    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE//[^A-Za-z0-9_-]/}"
-    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE_LOG:0:64}"
+    # 先に 64 文字へ切り詰めてからサニタイズする。逆順だと bash 3.2 の ${var//[^…]/} が
+    # 連結 JSON ドキュメント由来の巨大な値 (jq -e -s が全ドキュメントを改行連結して返す)
+    # に対して超線形になり、launch を数十秒〜数分止める。切り詰めを先にすれば入力は
+    # 常に 64 文字以下に収まり、この経路のコストは定数になる。
+    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE:0:64}"
+    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE_LOG//[^A-Za-z0-9_-]/}"
     # 生値と潰した値の長さを併記する。これが無いと near-miss 値 (例 ["bypassPermissions"])
     # で「not confirmed なのに defaultMode='bypassPermissions'」という読めない診断になり、
     # 保守者が「比較が壊れている」と誤解してサニタイズ済みの値で比較するよう直してしまう
@@ -793,9 +805,10 @@ fi
 
 # Step 2a の判定で bypass を確認できなかったときだけ付ける緊急フラグ。
 # plan は自分の合成箇所でリテラルのフラグを持つので足さない。
-# execute / standby / review は呼び出し元の --skip-permissions (または claude engine での
-# --unattended。無人ループ強制のブロックで SKIP_PERMISSIONS=1 になる) が CLAUDE_EXTRA_FLAGS
-# 経由で届くので、実際にそのどちらかが渡されたときだけ足さない (二重付与の回避)。
+# execute / standby / review は呼び出し元の --skip-permissions が CLAUDE_EXTRA_FLAGS 経由で
+# 届くので、実際に渡されたときだけ足さない (二重付与の回避)。execute / standby は claude
+# engine での --unattended でも SKIP_PERMISSIONS=1 になり同様に免除されるが、review は
+# --unattended を受け付けない MODE なのでこの免除は効かず、--skip-permissions のみが効く。
 # superpowers はその合成箇所が CLAUDE_MODEL_FLAGS しか読まず --skip-permissions を
 # 受け取らないため、その値に関わらず足す。
 PERM_FALLBACK_FLAG=""
