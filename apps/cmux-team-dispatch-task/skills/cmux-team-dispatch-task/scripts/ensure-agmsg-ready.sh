@@ -54,8 +54,24 @@ emit() {  # 常にこれ 1 回だけで出力する
 #   reason=interrupted: シグナルで guard 自身が中断された。watcher=none。
 #     pid は起動済みなら孤児 watcher の pid、未起動なら `-`。log は残す (削除しない)。
 #     正常な emit を通った経路では REASON が必ず `-` 以外か EMITTED=1 なので発火しない。
-trap '[[ $EMITTED -eq 1 ]] || { [[ "$REASON" == "-" ]] && REASON=interrupted; \
-      [[ -n "${WATCH_PID:-}" ]] && PID="$WATCH_PID"; emit; }' EXIT
+#
+# 3 つの代入を `REASON == "-"` の 1 ブロックにまとめてあるのは意図的である:
+#   - WATCHER=none を強制しないと、WATCHER=started を立てた後 (手順 10 の rm -f 中など) に
+#     シグナルを受けたときに `watcher=started reason=interrupted` という出力表に無い行が出る。
+#   - REASON が既に別の値 (log-unwritable など) のときに PID を上書きすると、
+#     `watcher=none pid=<n> reason=log-unwritable` という orphan-watcher 専用の組合せを
+#     偽造してしまい、その reason の分類も失われる。
+#   - PID は「今も生きている本物の watcher」に限る。guard_stop_watcher の 2 秒待機中に
+#     シグナルを受けると、自分が既に SIGTERM を送った pid を「手動 kill せよ」と案内して
+#     しまい、pid 周回で無関係なプロセスを殺させうる。
+# WATCH_PID が未設定の間は関数定義前でも短絡するので、`command not found` は起きない。
+trap '[[ $EMITTED -eq 1 ]] || { \
+      if [[ "$REASON" == "-" ]]; then \
+        REASON=interrupted; WATCHER=none; \
+        if [[ -n "${WATCH_PID:-}" ]] && guard_pid_alive "$WATCH_PID" \
+           && guard_is_watcher "$WATCH_PID"; then PID="$WATCH_PID"; fi; \
+      fi; \
+      emit; }' EXIT
 hint() { printf 'ensure-agmsg-ready: %s\n' "$1" >&2; }
 die_usage() {
   # 値域検証より前の die_usage 経路 (未知フラグ / 不正 --type) でも未検証の NAME を
@@ -297,7 +313,14 @@ guard_my_norm_id() {
   for f in "$AGMSG_READY_DIR"/watch.*.pid; do
     [[ -f "$f" ]] || continue
     id="$(guard_normalized_id_from_pidfile "$f")"
-    case "$id" in "$SID"|"$SID".*) ;; *) continue ;; esac
+    # 手順 5 と同じ厳密形にする。`$SID.<任意>` まで受理すると、`s22.0abc` のような
+    # 数字でない suffix を持つ decoy pidfile (glob 順で純数字より前に来る) が
+    # 「自分」として通り、B1 と同じ形で健全な watcher を殺せてしまう。
+    case "$id" in
+      "$SID") ;;
+      "$SID".*) [[ "${id#"$SID".}" =~ ^[0-9]+$ ]] || continue ;;
+      *) continue ;;
+    esac
     p="$(head -1 "$f" 2>/dev/null || true)"
     [[ "$p" == "$WATCH_PID" ]] || continue
     printf '%s' "$id"; return 0
@@ -352,7 +375,12 @@ classify_from_log() {
 # --- 手順 8: 待機 ---
 deadline=$(( AGMSG_READY_TIMEOUT * 5 ))
 mine=""; done_ok=""
-for _ in $(seq 1 "$deadline"); do
+# 反復数を `$(seq 1 "$deadline")` から取らない。seq が失敗する (PATH の差し替え・rc 127)
+# だけで反復 0 回になり、健全な watcher を即 kill する / pidfile-missing と誤分類する、
+# という先頭ゼロ timeout と同じ壊れ方をする。算術ループなら外部コマンドに依存しない。
+iter=0
+while [[ $iter -lt $deadline ]]; do
+  iter=$((iter + 1))
   mine="$(guard_my_norm_id || true)"
   if [[ -n "$mine" ]]; then
     for s in "$AGMSG_READY_DIR"/ready.*__"$READY_ENC"; do
