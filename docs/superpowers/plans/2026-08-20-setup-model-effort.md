@@ -34,13 +34,13 @@
 |---|---|---|
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/runners-edit.sh` | 新規 | `runners.json` の 6 フィールドを原子的に読み書きする唯一の口。runner の同一性（`name` / `command` / `engine` / `default`）には触らない |
 | `apps/cmux-team-dispatch-task/test/test-runners-edit.sh` | 新規 | 上記の動的ユニットテスト（RE1-RE20 + 7 sub-id） |
-| `apps/cmux-team-dispatch-task/test/test-setup-skill.sh` | 変更 | SU10-SU16 を追加（SU1-SU9 は変更しない） |
+| `apps/cmux-team-dispatch-task/test/test-setup-skill.sh` | 変更 | SU10-SU16 を追加（SU1-SU9 は変更しない）。SU13 は `README.md` も読むので `$SCRIPT_DIR/../README.md` を解決する |
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/setup-mode.md` | 変更 | `--setup` の runtime SoT。S1/S2/S3/S6/S7 改訂、`### S3-M` 新設、`## All writes …` 改題 + I/F 段落 |
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/setup-mode-ja.md` | 変更 | 上記の日本語ミラー（見出しレベル・個数・順序まで一致） |
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md` | 変更 | `## Setup Mode` 節、`Both modes write exclusively …`、First-run setup 見出し、`Never call config-edit.sh here.` |
 | `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md` | 変更 | SKILL.md の 1:1 訳 3 箇所（`## セットアップモード` 節 / 67 行 / 251 行）＋ **1:1 訳では拾えない独自 2 箇所（1363 行の README ミラー / 1641 行の初回セットアップ）** |
 | `apps/cmux-team-dispatch-task/README.md` | 変更 | `### 設定（--setup）` / 286 行 / 131 行 |
-| `apps/cmux-team-dispatch-task/CLAUDE.md` | 変更 | **8 箇所**: ファイル構成表 2 箇所（新規行 + 23 行）、「role 解決の現行契約」節の 91 行、保守手順 28 の 3 箇所（247 / 251 / 本文）、保守手順 44 の 2 箇所、E2E 項目 43。**193 行（保守手順 19）と 152 行（保守項目 10）は変更不要・逐語保護**なので触らない |
+| `apps/cmux-team-dispatch-task/CLAUDE.md` | 変更 | **Task 5 Step 6 の 8 項目**（保守手順 44 の 2 変更を 1 項目にまとめている）: ファイル構成表 2 箇所（新規行 + 23 行）、「role 解決の現行契約」節の 91 行、保守手順 28 の 3 箇所（247 / 251 / 本文）、保守手順 44（検査条件の拡張 + 末尾 1 行）、E2E 項目 43。**193 行（保守手順 19）と 152 行（保守項目 10）は変更不要・逐語保護**なので触らない |
 
 **タスクの切り方**: Task 1-3 でスクリプトを TDD で作り（読み取り → 書き込み → dry-run）、Task 4 で `setup-mode*` と対応 SU、Task 5 で 4 ファイル整合と SU13、Task 6 で全ゲート。各タスクの末尾で `test/*.sh` が全部緑になる。
 
@@ -294,8 +294,8 @@ exit "$fail"
 ```
 
 **段取り注（コードブロックには入れない）**: 上の RE15 のうち、`$TMP/mixed.json` と
-`$TMP/mixedrev.json` に対する **assert 8 行**（`run_rc` ×3 / `jq` ×2 / `--show` ×2 /
-`--dry-run` ×1）は書き込みを伴うので、**Task 1 Step 1 ではこの 8 行だけを外す**
+`$TMP/mixedrev.json` に対する **assert 8 行**（`run_rc` ×3〔うち 1 つが `--dry-run`〕/
+`jq` ×2 / `--show` ×2 / `--get` ×1）は書き込みを伴うので、**Task 1 Step 1 ではこの 8 行だけを外す**
 （`echo '{"runners":…}' >` の 2 行は残す）。外さないと Task 1 Step 4 が RE15 で赤くなる。
 復帰は **7 行が Task 2 Step 1、`--dry-run` の 1 行だけが Task 3 Step 1**。
 
@@ -606,7 +606,8 @@ git commit -m "feat(cmux-team-dispatch-task): runners-edit.sh の引数解析・
 **`mixed.json` に対する `--dry-run` の 1 行だけは戻さない**（Task 3 Step 1 で戻す。
 この時点では `--dry-run` が未実装なので戻すと Task 2 Step 4 が赤くなる）。
 `echo` の 2 行は Task 1 でも残っている。
-(b) **RE4 の受理側ループ**（Task 1 には書かないので新規に足す）。
+(b) **RE4 の受理側ループ**（Task 1 には書かない。下の挿入ブロックに含まれているので、
+別途足す必要は無い）。
 そのうえで `if [[ $fail -eq 0 ]]` の直前に次を挿入する。
 
 ```bash
@@ -626,7 +627,9 @@ if [[ $re1_pass == 1 ]]; then ok 'RE1/RE12: 指定 runner だけ更新、未知�
 # ---- RE4（受理側）: モデル名の allowlist は作らない ----
 reset_registry
 re4b_pass=1
-for good in 'gpt-9.9-nova' 'opus[1m]' 'a.b_c-d/e'; do
+# 'opus 1m' は「内部の空白は通る」の witness。doc がそう書いているのに検査が無いと、
+# valid_model_value を *[[:space:]]* で弾く変異体が全緑で生存する。
+for good in 'gpt-9.9-nova' 'opus[1m]' 'a.b_c-d/e' 'opus 1m'; do
   bash "$EDIT" --runners "$R" --name cc --set "plan_model=$good" >/dev/null 2>&1 \
     && [[ "$(jq -r '.runners[0].plan_model' "$R")" == "$good" ]] || re4b_pass=0
 done
@@ -896,7 +899,8 @@ git commit -m "feat(cmux-team-dispatch-task): runners-edit.sh の原子的な書
 
 Task 2 でコメントアウトした **RE9e の `--dry-run` 3 行**と、Task 2 で保留した
 **RE15 の `--dry-run` 1 行**（`mixed.json` に対する `--set plan_effort=max --dry-run`）を戻し、
-さらに次を追加する。
+さらに次を `if [[ $fail -eq 0 ]]` の直前へ挿入する（各ブロックは `reset_registry` から
+始まるので順序には依存しない）。
 
 ```bash
 # ---- RE18 / RE18b: --dry-run ----
@@ -1041,7 +1045,7 @@ need_flat "$en_flat" 'SU10: setup-mode.md が S3-M と選択肢生成規則を�
   'it is the current review_runner' 'contains a single quote' \
   'gpt-5.6-sol' 'the role keys only' 'pick option 2 or 3 to reach them' \
   'mkdir -p .dispatch' 'shadows the global layer' \
-  '[[:cntrl:]]' 'leading/trailing whitespace' 'only through option 2'
+  '[[:cntrl:]]' 'padded with whitespace' 'only through option 2'
 
 # SU11
 need_flat "$en_flat" 'SU11: setup-mode.md が runners-edit.sh の契約を記載する' \
@@ -1081,13 +1085,12 @@ usage=$(bash "$REDIT" 2>&1); rc=$?
 [[ $rc -eq 2 ]] || { echo "  usage rc=$rc"; su14_pass=0; }
 grep -q 'Usage: runners-edit.sh' <<<"$usage" || { echo '  usage 行が無い'; su14_pass=0; }
 # 部分一致だと単数形タイポ --runner が --runners に当たって生存するので語境界を要求する
-for fl in --runners --name --unset --get --show --dry-run; do
+# 語境界が必須。--set は --setup に食われ（setup-mode.md に --setup が既に 7 箇所ある）、
+# --runner は --runners に食われる。
+for fl in --runners --name --set --unset --get --show --dry-run; do
   grep -Eq -- "(^|[^a-z-])${fl}([^a-z-]|\$)" <<<"$usage" || { echo "  usage に $fl が無い"; su14_pass=0; }
   grep -Eq -- "(^|[^a-z-])${fl}([^a-z-]|\$)" "$SETUP_EN" || { echo "  setup-mode.md に $fl が無い"; su14_pass=0; }
 done
-# --set だけは --setup に食われるので語境界を要求する（setup-mode.md には --setup が既に 7 箇所ある）
-grep -Eq -- '(^|[^a-z-])--set([^a-z-]|$)' <<<"$usage" || { echo '  usage に --set が無い'; su14_pass=0; }
-grep -Eq -- '(^|[^a-z-])--set([^a-z-]|$)' "$SETUP_EN" || { echo '  setup-mode.md に --set が無い'; su14_pass=0; }
 # 逆方向: code fence の内側にある runners-edit.sh 実行行（と \ 継続行）に、
 # usage に無いフラグが現れない。fence の外（散文の対比行）は対象にしない
 # — §3.1 は runners-edit.sh の I/F 段落を config-edit.sh の本文の後ろへ追記させるので、
@@ -1298,8 +1301,8 @@ spec §2.1 / §2.2 / §2.3 / §2.4 / §2.5 / §2.6 と §3.0.1 / §3.1 のとお
    **`この拒否は S3 の選択肢 2 経由のみに適用される。選択肢 1 / 3 の First-run setup は値を検証しない。`**
    をそのまま書く。**SU15 は 2 文とも needle にしている**ので、どちらが落ちても赤くなる。
    これは spec §1.3.1「既知の限界（重要）」が最も強く要求した限定句の JA 側の担保である。
-   拒否条件そのもの（空 / 空白のみ / 前後の空白 / 5 メタ文字 / `[[:cntrl:]]`、内部空白は通る）も
-   EN 側と同じ内訳で書く。
+   拒否条件そのもの（空 / 空白のみ / **前後に空白** / 5 メタ文字 / `[[:cntrl:]]`、
+   内部の空白は通る）も EN 側と同じ内訳で書く。
 3. **候補プール表の 2 行は英語版とバイト単位で同一**にする（SU12 のアンカー）。
    **表のヘッダ（`| target | pool |`）と `codex *_model` セル
    （`see the codex candidate derivation below`）も英語のまま**にする。
@@ -1371,7 +1374,11 @@ grep -Fq -- 'Never call `config-edit.sh` or `runners-edit.sh` here.' <<<"$skill_
   || { echo '  SKILL.md の --override が runners-edit.sh に触れていない'; su13_pass=0; }
 grep -Fq -- '`config-edit.sh` と `runners-edit.sh` はここでは絶対に呼ばない。' <<<"$guide_flat2" \
   || { echo '  guide-ja.md の --override が runners-edit.sh に触れていない'; su13_pass=0; }
-if [[ $su13_pass == 1 ]]; then ok 'SU13: SKILL.md と guide-ja.md が runners-edit.sh を名指しする'; else bad 'SU13'; fi
+README="$SCRIPT_DIR/../README.md"
+readme_flat=$(tr '\n' ' ' < "$README" | tr -s ' ')
+grep -Fq -- 'config にも `runners.json` にも一切書き戻しません。' <<<"$readme_flat" \
+  || { echo '  README.md の --override が runners.json に触れていない'; su13_pass=0; }
+if [[ $su13_pass == 1 ]]; then ok 'SU13: SKILL.md / guide-ja.md / README.md が両スクリプトを名指しする'; else bad 'SU13'; fi
 ```
 
 - [ ] **Step 2: テストが失敗することを確認する**
@@ -1433,7 +1440,10 @@ Expected: SU13 が FAIL、他は PASS。
    （SU12 のアンカー 2 行を 1 バイト一致で持つ / S7 温存 3 文 / S7 節内の順序 /
    §3.0.1 の限定句 2 文と `####` 8 見出しを逐語・同順で持つ）。
 7. **保守手順 44（256-257 行）** — 検査条件を「`config-edit.sh` / `runners-edit.sh` の
-   **どちらも**呼び出す記述が無いこと」へ拡張。末尾に §2.4「次元単位 vs 役割単位」と
+   **どちらも**呼び出す記述が無いこと」へ拡張。**257 行の引用例
+   「（「Never call `config-edit.sh` here」のように…）」も同時に更新する** —
+   Step 3-4 でこの文字列は SKILL.md から消えるので、放置すると stale な引用になる
+   （SU13 は CLAUDE.md を読まないので機械的には捕まらない）。末尾に §2.4「次元単位 vs 役割単位」と
    effort 範囲外時の挙動差（`--override` は警告して既定へフォールバック / `--setup` は
    再質問）を**意図的な差**として 1 行。
 8. **「テスト方法」E2E 項目 43** — S3-M のケースを追記（S3 の 4 択 → runner 選択 →
@@ -1504,6 +1514,7 @@ residue=0
 diff "$SNAPDIR/wt.before" "$SNAPDIR/wt.after" || residue=1
 diff "$SNAPDIR/br.before" "$SNAPDIR/br.after" || residue=1
 echo "residue: $residue"
+[[ $fail -eq 0 && $residue -eq 0 ]]
 ```
 
 Expected: 全スイート OK、`check-doc-lang` が OK、**`gate exit: 0` かつ `residue: 0`**。

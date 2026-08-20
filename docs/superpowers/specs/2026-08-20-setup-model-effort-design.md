@@ -1022,6 +1022,8 @@ stale になる節が漏れる）。**この表が SoT** であり、件数の�
 - **`CLAUDE.md:152`（保守項目 10）**。今回触る 6 フィールドの role 単位一致を 4 ファイルで
   検査する項目だが、主語が解決規則なので変更後も真。「この表が SoT」を名乗る以上、
   変更不要側に明記しておく。
+- **`SKILL.md:860` / `guide-ja.md:287`**（`--override` の「Model strings are not validated」）。
+  主語が `--override` なので変更後も真。
 - `runners.json` スキーマ節（`SKILL.md:337-372` / `guide-ja.md:1560-1591` /
   **`README.md:324-350`**。6 フィールドと既定値表が既に完備）
 
@@ -1166,7 +1168,7 @@ SU11 / SU15 に置いた「新見出しが存在し旧見出しが存在しな�
 「完全一致往復」が証明できない）で exit 0 + 完全一致往復 + `.command` / `.engine` / `.name` 不変 + 他 runner と `default` 不変。素朴な無引用補間 `.plan_model = $VALUE` は jq 構文エラーで落ちるので確実に検出できる。**逸脱分岐を採っても採らなくても弁別力が残る唯一のケース** |
 | RE15 | **書き込みモード、または `--name` 付き読み取りで** `.runners` 欠落 / `null` / 非配列（オブジェクト）に対して **exit 2**（exit 1 では不可）かつファイル無変更。特にオブジェクトが配列へ化けないこと。**`{"runners":[1,2]}`（配列だが要素が非オブジェクト）も exit 2**（型安全 select が無いと手順 4 の jq が `Cannot index number with string` で **rc=5** を返す）。**一方 `{"runners":[{obj},true]}` は手順 3/4/5 をすべて通過し、`--set` / `--dry-run` / `--get` / `--show` がすべて exit 0 で成功し、非オブジェクト要素が生存すること。`{"runners":[true,{obj}]}` の逆順でも同じ**（`first(...)` の短絡で object-first では露見しない `ENGINE` / `--get` / `--show` の型安全ガードを kill する）。`--name` 無しの `--show` は素通しで exit 0 |
 | RE16 | `--name` が 2 件一致する（重複 name）レジストリでは exit 2 かつファイル無変更。**隣接ケース（3 モード分）**: `a"b$c` のような `"` / `$` を含む runner 名で、(1) `--set` が成功し当該レコードだけが更新される、(2) **`--get` が正しい値を返す**、(3) **`--show --name` が正しいレコードを返す**。`--name` を jq 式へ補間する実装は、`x") , {leak: $ENV.SECRET_TOKEN} , ("` 相当の名前で環境変数を rc=0 のまま吐く（手順 4 / 6 が補間で書かれても RE1-RE20 の他は全部緑になる） |
-| RE17 | `engine` 欠落レコード / `engine: gemini` に `--set plan_effort=high` → exit 2 かつファイル無変更。**一方 `--unset plan_effort` は同じレコードでも exit 0**（engine 検証は `--set <*_effort>` 専用） |
+| RE17 | `engine` 欠落レコード / `engine: gemini` に `--set plan_effort=high` → exit 2 かつファイル無変更。**一方 `--unset plan_effort` は同じレコードでも exit 0**（engine 検証は `--set <*_effort>` 専用）。**`--dry-run` 版も exit 2**（手順 5 は手順 7a より前） |
 | RE18 | `--dry-run` は当該レコードだけを stdout へ出し、**ファイルを変更しない**。`--get` / `--show` との併用は exit 2。**ファイル不在での `--dry-run` は exit 2**。（手順 7a の jq 失敗は §1.4 のとおり witness を構築できないので検査しない） |
 | RE18b | **`--dry-run` の出力内容**: 同一引数で `--dry-run` した出力と、実書き込み後に `--show --name` で得たレコードが `jq -S` 正規化のうえ一致する。**(a) fixture の現在値と `--set` の値は必ず異なるものにする**（同値だと「編集前をそのまま出す」実装でも恒真になり、S6 の事故がそのまま通る）。**(b) 同一呼び出しに `--set` と `--unset` を両方載せる**（例 `--set plan_effort=max --unset exec_model`。**フィクスチャは `engine: claude` の runner にする** — codex には `max` が無いので effort allowlist で exit 2 になり (a)(b)(c) の assert 以前に落ちる。S6 は S7 と完全に同じ引数群を使う規定であり、`--unset` を無視する実装は codex `review_model` の unset プレビューを嘘にする）。**(c) 比較後に `.plan_effort == "max"` と `has("exec_model") == false` を追加で assert する**（等価性が恒真になるのを防ぐ正のコントロール） |
 | RE19 | **欠番。** 旧 RE19「手順 2 の parse 失敗で temp が 1 件も作られていない」は、**trap があるため correct と誤実装が完全に同一の結果（rc=1 / 残骸 0 / 原ファイル保持）になり弁別力がゼロ**だった。残骸検査としての価値だけを RE9 の 7 経路目へ移し、順序検証は RE9d が担う。id を詰めると CLAUDE.md の `RE1-RE20` 表記とずれるので欠番として残す |
@@ -1202,12 +1204,12 @@ SU15 の `####` 個数・下限・順序 / SU16 の行順の 4 つは、**生フ
 
 | id | 対象 | needle（逐語） |
 |---|---|---|
-| SU10 | `setup-mode.md` | `S3-M` / 6 フィールド名 / `edit an existing runner's models and efforts`（S3 選択肢 2）/ `keep (` / `back to the default (` / `unset it (not review-capable)` / `unset (not review-capable)` / `no longer be chosen as the reviewer` / **`it is the current review_runner`**（3 段防御 (c) の S6 警告）/ **`contains a single quote`**（M1 の `'` 除外警告）/ `gpt-5.6-sol` / `the role keys only` / **`pick option 2 or 3 to reach them`**（S2 選択肢 1 の description。`the role keys only` は改訂前の現物に既にあるので、これが無いと §2.2 の変更が 1 文字も入らなくても緑になる）/ `mkdir -p .dispatch` / `shadows the global layer` / `[[:cntrl:]]` / `only through option 2`（§3.0.1 の限定句） |
+| SU10 | `setup-mode.md` | `S3-M` / 6 フィールド名 / `edit an existing runner's models and efforts`（S3 選択肢 2）/ `keep (` / `back to the default (` / `unset it (not review-capable)` / `unset (not review-capable)` / `no longer be chosen as the reviewer` / **`it is the current review_runner`**（3 段防御 (c) の S6 警告）/ **`contains a single quote`**（M1 の `'` 除外警告）/ `gpt-5.6-sol` / `the role keys only` / **`pick option 2 or 3 to reach them`**（S2 選択肢 1 の description。`the role keys only` は改訂前の現物に既にあるので、これが無いと §2.2 の変更が 1 文字も入らなくても緑になる）/ `mkdir -p .dispatch` / `shadows the global layer` / `[[:cntrl:]]` / **`padded with whitespace`**（警告文言に含まれる。`leading/trailing whitespace` は `.sh` 側の die_usage 文言なので doc には届かない）/ `only through option 2`（§3.0.1 の限定句） |
 | SU11 | `setup-mode.md` | `runners-edit.sh` / `mktemp "$RUNNERS.XXXXXX"` / `exits 2 when the file is absent` / `First-run setup` / `runners-edit.sh takes --runners and --name, then one of --set / --unset (optionally with --dry-run), --get, or --show.`（**末尾のピリオドまで全文**。前半だけを needle にすると文を切り詰めても緑になる）/ `last-write-wins` / `replaces a symlink with a regular file`（句だけだと symlink と mode の 2 挙動が無言で落ちる）。**加えて改題そのもの**: `## All field-level writes go through the edit scripts` が**存在し**、旧見出し ``## All writes go through `config-edit.sh`​`` が**存在しない**こと（needle は I/F 段落が持つので改題の有無と独立してしまう。改題を落としても全ゲートが緑になる穴を塞ぐ） |
 | SU12 | `setup-mode.md` **と** `setup-mode-ja.md` の**両方** | 候補プール 2 行のアンカー（下記レシピ） |
-| SU13 | `SKILL.md` と `guide-ja.md` | 両方が `runners-edit.sh` を**名指し**している |
+| SU13 | `SKILL.md` / `guide-ja.md` / `README.md` | 両方が `runners-edit.sh` を**名指し**していること。**加えて `--override` が両スクリプトを呼ばない旨の逐語 3 本**: `SKILL.md` に ``Never call `config-edit.sh` or `runners-edit.sh` here.``、`guide-ja.md` に `` `config-edit.sh` と `runners-edit.sh` はここでは絶対に呼ばない。``、`README.md` に `runners.json` へも書き戻さない旨。CLAUDE.md 保守手順 44 は人手チェックリストなので、ここが唯一の機械的担保になる |
 | SU14 | `runners-edit.sh` と `setup-mode.md` | 存在・`-x`・引数なしで usage + exit 2。**双方向の I/F 整合**（下記） |
-| SU15 | `setup-mode-ja.md`（(1) の個数比較のみ `setup-mode.md` も読む） | 6 フィールド名 / `S3-M` / `登録済み runner の model / effort を編集` / `変更なし（現在:` / `既定に戻す（` / `未設定（レビュアーに選べません）` / `未設定に戻す（レビュアーに選べません）` / `レビュアーに選べなくなります` / **`現在の review_runner なので`** / **`名前に ' を含むため`** / `gpt-5.6-sol` / `役割キーのみ` / **`2 か 3 を選ぶと到達できます`**（同上）/ `mkdir -p .dispatch` / `グローバルより優先されることをユーザーに伝える` / `選択肢 2 経由のみ` / **`選択肢 1 / 3 の First-run setup は値を検証しない`** / **`runners-edit.sh`** / **`mktemp "$RUNNERS.XXXXXX"`**（識別子なので JA 側も同一文字列。§3.1 の改題・限定文・I/F 段落が JA 側に入ったことをこの 2 つで担保する — SU8 は見出し数しか見ないので片方だけ改題しても緑になる）。**加えて改題そのもの**: `## フィールド単位の書き込みは全て edit スクリプトを通す` が**存在し**、旧見出し ``## 書き込みは全て `config-edit.sh` を通す`` が**存在しない**こと。**さらに `####` について 3 点**: (1) 個数が `setup-mode.md` と一致、(2) 両方とも 6 個以上（パリティだけだと両方 0 個で緑になり、S3-M の小節構造が丸ごと欠けても検出できない）、(3) **§3.0.1 の 8 見出しが英日それぞれ「その順序で」出現する**（`grep -n` で行番号を取り、昇順であることを assert する） |
+| SU15 | `setup-mode-ja.md`（(1) の個数比較のみ `setup-mode.md` も読む） | 6 フィールド名 / `S3-M` / `登録済み runner の model / effort を編集` / `変更なし（現在:` / `既定に戻す（` / `未設定（レビュアーに選べません）` / `未設定に戻す（レビュアーに選べません）` / `レビュアーに選べなくなります` / **`現在の review_runner なので`** / **`名前に ' を含むため`** / `gpt-5.6-sol` / `役割キーのみ` / **`2 か 3 を選ぶと到達できます`**（同上）/ `mkdir -p .dispatch` / `グローバルより優先されることをユーザーに伝える` / `選択肢 2 経由のみ` / **`選択肢 1 / 3 の First-run setup は値を検証しない`** / **`前後に空白`** / **`symlink は通常ファイルに置き換わり`** / **`runners-edit.sh`** / **`mktemp "$RUNNERS.XXXXXX"`**（識別子なので JA 側も同一文字列。§3.1 の改題・限定文・I/F 段落が JA 側に入ったことをこの 2 つで担保する — SU8 は見出し数しか見ないので片方だけ改題しても緑になる）。**加えて改題そのもの**: `## フィールド単位の書き込みは全て edit スクリプトを通す` が**存在し**、旧見出し ``## 書き込みは全て `config-edit.sh` を通す`` が**存在しない**こと。**さらに `####` について 3 点**: (1) 個数が `setup-mode.md` と一致、(2) 両方とも 6 個以上（パリティだけだと両方 0 個で緑になり、S3-M の小節構造が丸ごと欠けても検出できない）、(3) **§3.0.1 の 8 見出しが英日それぞれ「その順序で」出現する**（`grep -n` で行番号を取り、昇順であることを assert する） |
 | SU16 | `setup-mode.md` / `setup-mode-ja.md` | §2.6 温存表の逐語 3 文（英日それぞれ。平坦化テキストに対して `grep -F`）。**加えて S7 節内の呼び出し順**（下記） |
 
 **SU12 のレシピ**（重要）: 両ファイルには **claude 行に正当な `max` が現れる**ので、
@@ -1245,6 +1247,10 @@ SU12 は 4 部構成にする。
   - 正規表現を `--[a-z-]\+` ではなく `--[a-z][a-z-]*` にするのは、markdown の
     表区切り行・水平線の `---` を拾わないため（2 文字目が `[a-z]` でない）。
     7 フラグはすべて 2 文字目が英小文字なので取りこぼさない。
+  - **順方向・逆方向とも照合は語境界付き（`(^|[^a-z-])<flag>([^a-z-]|$)`）にする。**
+    素の `grep -F` だと `--set` が `--setup` に、`--runner` が `--runners` に食われ、
+    このレシピが名指しした「実在しないフラグの検出」が達成できない
+    （`setup-mode.md` には `--setup` が既に 7 箇所ある）。
   - **range を「code block 全体」にしてはならない。** §2.6 は S7 に
     「1. runners-edit.sh → 2. `mkdir -p .dispatch` → 3. config-edit.sh」の 5 手順を
     書けと要求しており、**これを 1 つの ```` ```bash ```` ブロックにまとめるのは
