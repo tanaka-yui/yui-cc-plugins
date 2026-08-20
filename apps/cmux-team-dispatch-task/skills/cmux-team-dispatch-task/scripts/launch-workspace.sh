@@ -196,7 +196,10 @@ TIMEOUT_SENTINEL=""
 UNATTENDED=0
 AGMSG_TEAM=""
 AGMSG_FROM=""
-AGMSG_SEND="$HOME/.agents/skills/agmsg/scripts/send.sh"
+# send-prompt.sh:28 と同じ形。env で差し替えられないと、agmsg 未インストールのホストで
+# `--agmsg-team` を渡すテストが :379 の die で即死し、`set -euo pipefail` のスイートが
+# 終端行すら出さずに途中で止まる。既定値は従来と同一。
+AGMSG_SEND="${AGMSG_SEND:-$HOME/.agents/skills/agmsg/scripts/send.sh}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

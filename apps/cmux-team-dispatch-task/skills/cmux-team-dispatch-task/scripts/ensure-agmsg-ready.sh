@@ -48,28 +48,38 @@ emit() {  # 常にこれ 1 回だけで出力する
 # 二重出力にはならない (実測済み)。
 # この trap は SIGTERM / SIGHUP でも発火する。ペインを閉じた / ツール呼び出しを中断した
 # ケースがそれで、REASON が初期値 `-` のまま emit すると「reason=- なのに watcher=none」
-# という出力表に無い行になる。専用の reason=interrupted を立て、起動済みなら孤児 watcher の
-# pid も出して手動 kill できるようにする。
+# という出力表に無い行になる。専用の reason=interrupted を立て、この呼び出しが起こした
+# watcher が生き残っていればその pid だけを出して手動 kill できるようにする。
+# reason=interrupted 行の意味論は spec の出力表を参照 (docs/superpowers/specs/
+# 2026-08-20-agmsg-setup-guard-design.md)。ただし `pid` 列だけは表より狭く、
+# **この呼び出しが起動した ($WATCH_PID) かつ今も生きている watcher** に限る。
 #
-#   reason=interrupted: シグナルで guard 自身が中断された。watcher=none。
-#     pid は起動済みなら孤児 watcher の pid、未起動なら `-`。log は残す (削除しない)。
-#     正常な emit を通った経路では REASON が必ず `-` 以外か EMITTED=1 なので発火しない。
-#
-# 3 つの代入を `REASON == "-"` の 1 ブロックにまとめてあるのは意図的である:
+# 4 つの代入を `REASON == "-"` の 1 ブロックにまとめてあるのは意図的である:
 #   - WATCHER=none を強制しないと、WATCHER=started を立てた後 (手順 10 の rm -f 中など) に
 #     シグナルを受けたときに `watcher=started reason=interrupted` という出力表に無い行が出る。
 #   - REASON が既に別の値 (log-unwritable など) のときに PID を上書きすると、
 #     `watcher=none pid=<n> reason=log-unwritable` という orphan-watcher 専用の組合せを
 #     偽造してしまい、その reason の分類も失われる。
+#   - PID="-" を無条件に先置きするのは、手順 5 の `PID="$CAND_PID"` (既存 watcher の pid) が
+#     この trap のガードの外側で代入されるため。そのまま出すと `watcher=none pid=<他人の
+#     生きた watcher>` になり、「自分が起こした孤児だから手動 kill せよ」と読ませてしまう。
+#     本ブランチが閉じようとしている「健全な watcher を殺す」事故そのものになる。
 #   - PID は「今も生きている本物の watcher」に限る。guard_stop_watcher の 2 秒待機中に
-#     シグナルを受けると、自分が既に SIGTERM を送った pid を「手動 kill せよ」と案内して
-#     しまい、pid 周回で無関係なプロセスを殺させうる。
+#     シグナルを受けても、SIGTERM で既に死んだ pid は guard_pid_alive が弾く (生きている
+#     なら SIGTERM を無視する本物の孤児なので、報告するのが正しい)。
+#   - guard_is_watcher の rc 2 (`ps` 不在などで判定不能) では**抑止しない**。抑止するのは
+#     rc 1 (watcher ではないと確定) だけである。上流 watch.sh:205-207 も「ps unavailable
+#     (Claude Code sandbox 等)」を想定して kill -0 へフォールバックし displace 対象に残す。
+#     判定不能で pid を落とすと、sandbox 内では孤児 watcher の pid がどこにも出ず手動 kill
+#     できなくなる (A7 / B2 が閉じた穴の再発)。手順 5 と guard_stop_watcher も rc 2 を
+#     「情報を捨てない / 撃たない」側へ倒しており、これで 3 箇所の既定が揃う。
 # WATCH_PID が未設定の間は関数定義前でも短絡するので、`command not found` は起きない。
 trap '[[ $EMITTED -eq 1 ]] || { \
       if [[ "$REASON" == "-" ]]; then \
-        REASON=interrupted; WATCHER=none; \
-        if [[ -n "${WATCH_PID:-}" ]] && guard_pid_alive "$WATCH_PID" \
-           && guard_is_watcher "$WATCH_PID"; then PID="$WATCH_PID"; fi; \
+        REASON=interrupted; WATCHER=none; PID="-"; \
+        if [[ -n "${WATCH_PID:-}" ]] && guard_pid_alive "$WATCH_PID"; then \
+          guard_is_watcher "$WATCH_PID"; [[ $? -eq 1 ]] || PID="$WATCH_PID"; \
+        fi; \
       fi; \
       emit; }' EXIT
 hint() { printf 'ensure-agmsg-ready: %s\n' "$1" >&2; }
@@ -108,16 +118,29 @@ if [[ ! -f "$AGMSG_DIR/send.sh" ]]; then
 fi
 INSTALLED=yes
 
-# AGMSG_DIR に空白があると既存 watcher を一切検出できない。guard_is_watcher /
-# guard_name_slot は `ps -o args=` の出力を `set -- $args` で単語分割してトークン等値
-# 比較するので、`$AGMSG_DIR/watch.sh` 自体が複数トークンへ割れて必ず不一致になる。
-# 帰結は「毎回 watcher=started で新しい watcher が増える」という**正常に見える**壊れ方
-# なので、せめて診断できるよう hint を 1 行出す (prewarm-panes.sh が SCRIPT_DIR に
-# 対して行っているのと同じ検出)。空白は現実の agmsg インストール先には現れないため、
-# 正常系の stderr 0 行という契約はこの検出で壊れない。
+# guard_is_watcher / guard_name_slot は `ps -o args=` の出力を `set -- $args` で単語分割して
+# トークン等値比較するので、空白を含むパスは複数トークンへ割れて必ず不一致になる。
+# 影響は変数ごとに違う:
+#   - AGMSG_DIR: `$AGMSG_DIR/watch.sh` との突き合わせが全滅する。既存 watcher を一切
+#     識別できないので毎回この役割の watcher を起こし直す (上流 watch.sh:223-238 の
+#     predecessor displace が先住を SIGTERM するため蓄積はしないが、チャーンは起きる)。
+#     さらに guard_stop_watcher も同じ比較を通るので、SIGTERM が成功していても
+#     start-timeout が orphan-watcher へ化ける誤警報が出る。
+#   - PROJECT: watch.sh の argv 位置が右へずれ、guard_name_slot が読む 5 番目の
+#     トークンが NAME でなくなる。自分の watcher が existing-other に化ける。
+# どちらも**正常に見える**壊れ方なので、回復手順つきの hint を 1 行出す
+# (prewarm-panes.sh が SCRIPT_DIR に対して行っているのと同じ検出)。
+# **spec の stderr 契約に対する意図的な 2 例目**である: 出力表は `reason=-` の成功行の
+# stderr を「bare 候補を外したときだけ 1 行」と定めるが、この検出はそれとは別に
+# 成功行へ 1 行足しうる。空白は現実の agmsg インストール先にも既定の PROJECT にも
+# 現れないため、通常運用では従来どおり stderr 0 行になる。
 case "$AGMSG_DIR" in
   *[[:space:]]*)
-    hint "AGMSG_DIR contains whitespace ($AGMSG_DIR); existing watchers cannot be detected and a duplicate will be started on every call" ;;
+    hint "AGMSG_DIR contains whitespace ($AGMSG_DIR); existing watchers cannot be identified, so every call restarts this role's watcher and a stopped watcher can be misreported as orphan-watcher — reinstall agmsg under a path without whitespace" ;;
+esac
+case "$PROJECT" in
+  *[[:space:]]*)
+    hint "the project path contains whitespace ($PROJECT); this role's own watcher is misreported as existing-other — pass --project a path without whitespace, or run the guard from one" ;;
 esac
 
 # --- 手順 3: ログの用意 ---
@@ -236,6 +259,9 @@ guard_name_slot() {
 # 自分の起動が壊しうるのは「正規化 id が自分と同じ watcher」だけ (watch.sh:165-179)。
 # 正規化 id は必ず $SID か $SID.<pid> になるので、この 2 形だけを見る。
 CAND_PID=""; CAND_KIND=""
+# 手順 7 の起動より前から在った pidfile の正規化 id を控える。guard_my_norm_id が
+# これを使って「自分」の第一候補から外す (下の注記を参照)。`|` 区切りの集合。
+PRE_EXISTING_IDS="|"
 for f in "$AGMSG_READY_DIR"/watch.*.pid; do
   [[ -f "$f" ]] || continue
   id="$(guard_normalized_id_from_pidfile "$f")"
@@ -244,6 +270,7 @@ for f in "$AGMSG_READY_DIR"/watch.*.pid; do
     "$SID".*) [[ "${id#"$SID".}" =~ ^[0-9]+$ ]] || continue ;;
     *) continue ;;
   esac
+  PRE_EXISTING_IDS="$PRE_EXISTING_IDS$id|"
   p="$(head -1 "$f" 2>/dev/null || true)"
   guard_pid_alive "$p" || continue
   # bare は自分の起動 (composite の pidfile) と衝突しないので候補にしない。
@@ -321,7 +348,7 @@ WATCH_PID=$!
 # 一致しないまま時間切れになり、guard_stop_watcher が**健全な自分の watcher を
 # SIGTERM で殺す**うえ、guard_clean_my_sentinels も誤った id で掃除に失敗する。
 guard_my_norm_id() {
-  local f id p
+  local f id p fallback=""
   for f in "$AGMSG_READY_DIR"/watch.*.pid; do
     [[ -f "$f" ]] || continue
     id="$(guard_normalized_id_from_pidfile "$f")"
@@ -335,9 +362,21 @@ guard_my_norm_id() {
     esac
     p="$(head -1 "$f" 2>/dev/null || true)"
     [[ "$p" == "$WATCH_PID" ]] || continue
+    # 純数字 suffix でも同じ穴が残る。起動前から在った残骸 (instance-id.sh:186-190 の
+    # とおり resume は bare sid を保つので、同一 SID・別数値 suffix の pidfile が並ぶ
+    # 前提条件は現実に起きる) の記録 pid が pid 周回で $WATCH_PID と衝突すると、
+    # glob 順で先に来るそちらを「自分」と誤認する。よって起動前スナップショットに
+    # 載っている id は第一候補から外す。
+    # ただし**捨てはしない**。同じ id の stale pidfile を自分の watcher が上書きした
+    # ケースではそれが唯一の正解なので、他に候補が無ければ採用する。捨てると
+    # pidfile-missing の誤分類になり、watcher が孤児として残る。
+    case "$PRE_EXISTING_IDS" in
+      *"|$id|"*) fallback="${fallback:-$id}"; continue ;;
+    esac
     printf '%s' "$id"; return 0
   done
-  return 1
+  [[ -n "$fallback" ]] || return 1
+  printf '%s' "$fallback"
 }
 
 # SIGTERM のみ。kill -9 は watch.sh の trap を飛ばして sentinel と pidfile を残す。
@@ -353,7 +392,14 @@ guard_stop_watcher() {
   # (この関数は 2 秒で諦める契約)。
   disown "$WATCH_PID" 2>/dev/null || true
   kill -TERM "$WATCH_PID" 2>/dev/null || true
-  for i in $(seq 1 20); do
+  # 反復数を `$(seq 1 20)` から取らない (手順 8 の待機ループと同じ理由)。seq が失敗する
+  # だけで 0 回ループ = 即 `return 1` になり、SIGTERM が成功して pid が消えていても
+  # orphan-watcher として「その pid を手動 kill せよ」と嘘の案内をする。加えて
+  # guard_clean_my_sentinels がスキップされるので、bare-started 経路では死んだ watcher を
+  # 指す sentinel が残る。算術ループなら外部コマンドに依存しない。
+  i=0
+  while [[ $i -lt 20 ]]; do
+    i=$((i + 1))
     guard_pid_alive "$WATCH_PID" || return 0
     sleep 0.1
   done
