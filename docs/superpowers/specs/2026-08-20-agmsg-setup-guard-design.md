@@ -558,8 +558,10 @@ bare 候補を手順 5 で外したときは、`reason` を変えずに stderr �
 空白入りのパスはトークン等値比較を必ず外す。`AGMSG_DIR` 側は既存 watcher の識別が全滅して
 毎回この役割の watcher を起こし直すことになり（上流 `watch.sh:223-238` の predecessor displace が
 先住を SIGTERM するので**蓄積はしない**が、チャーンに加え、`guard_stop_watcher` も同じ
-比較を通るため SIGTERM を送る前に return してしまい、毎回 `orphan-watcher`（誤警報ではなく
-正しい報告）として手動 kill を要求される）、project 側は argv 位置がずれて自分の watcher が
+比較を通るため SIGTERM を送る前に return してしまい、start-timeout / bare-started の各経路では
+`orphan-watcher`（誤警報ではなく正しい報告）として手動 kill を要求される — sentinel を正しく
+書けた通常の成功経路は `guard_stop_watcher` を経由しないため `watcher=started` のまま影響しない）、
+project 側は argv 位置がずれて自分の watcher が
 `existing-other` に化ける。どちらも正常に見える壊れ方なので、回復手順つきの hint を 1 行出す。
 既定の `AGMSG_DIR` にも通常のリポジトリパスにも空白は現れないため、通常運用では従来どおり
 stderr 0 行である。回帰は AR33 / AR33b。
@@ -1031,12 +1033,12 @@ PW3 は claude 構成と all-codex 構成の 2 回に分けて実行する。
 | 27 | `guide-ja.md` | 768-769 | 初期プロンプト文面の契約 |
 | 28 | `CLAUDE.md` | ファイル構成表 | `ensure-agmsg-ready.sh` の行を追加 |
 | 29 | 同上 | ファイル構成表 | `agmsg-path.sh` の行を追加 |
-| 30 | 同上 | 154（項目 12） | AGMSG-DIRECTIVE 遵守 → guard の検証項目。**回帰は `test-agmsg-ready.sh`（AR1-21）と AG1-4** |
+| 30 | 同上 | 154（項目 12） | AGMSG-DIRECTIVE 遵守 → guard の検証項目。**回帰は `test-agmsg-ready.sh`（AR1-AR34。AR15b / AR18 / AR3f は欠番）と AG1-4** |
 | 31 | 同上 | 155（項目 13） | `prewarm.json` の role-aware schema に `watcher` を追加 |
 | 32 | 同上 | 165（項目 15） | ready sentinel 段落（エンコード規則の追加） |
 | 33 | 同上 | 166（項目 15） | 「design / claude executor の初期プロンプト」→ 全ロール。`CLAUDE_DELIVERY` gate literal も `DESIGN_DELIVERY` へ |
 | 34 | 同上 | 167（項目 15） | 回帰行に **PW1-10 / LW1-2 / SP25-26** を追加 |
-| 35 | 同上 | 194（項目 20） | codex review の sandbox 3 点の内訳。**回帰は CR1/CR1b** |
+| 35 | 同上 | 194（項目 20） | codex review の sandbox 3 点の内訳。**回帰は CR1/CR1b/CR1c/CR1d/CR1e** |
 | 36 | 同上 | 215（項目 25） | 「レビューペインの 3 点は不変」 |
 | 37 | 同上 | 298（E2E 17） | agmsg インストール時の E2E 手順 |
 | 38 | 同上 | 299（E2E 18） | pre-warm の E2E 手順（`watcher` キー） |

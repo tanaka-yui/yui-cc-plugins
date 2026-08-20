@@ -137,7 +137,7 @@ INSTALLED=yes
 # 現れないため、通常運用では従来どおり stderr 0 行になる。
 case "$AGMSG_DIR" in
   *[[:space:]]*)
-    hint "AGMSG_DIR contains whitespace ($AGMSG_DIR); existing watchers cannot be identified, so every call restarts this role's watcher, and the guard cannot confirm/stop its own watcher either, so every invocation reports orphan-watcher and requires manual cleanup — reinstall agmsg under a path without whitespace" ;;
+    hint "AGMSG_DIR contains whitespace ($AGMSG_DIR); existing watchers cannot be identified, so every call restarts this role's watcher, and the guard cannot confirm/stop its own watcher either, so the start-timeout and bare-started paths report orphan-watcher and require manual cleanup — reinstall agmsg under a path without whitespace" ;;
 esac
 case "$PROJECT" in
   *[[:space:]]*)
