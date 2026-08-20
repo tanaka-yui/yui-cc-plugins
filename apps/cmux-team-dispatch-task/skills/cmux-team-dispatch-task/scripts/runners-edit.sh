@@ -259,9 +259,16 @@ fi
 WRITE_FILTER=".runners |= map(if (type == \"object\") and .name == \$n then ($FILTER) else . end)"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  # 書き込みは Task 3 で実装する。
-  echo 'runners-edit: --dry-run not implemented yet' >&2
-  exit 1
+  # mktemp を経由しない。経由すると書き込み権限の無いレジストリでプレビューが失敗し、
+  # S6 が確認質問へ進めなくなる。出すのは当該レコードだけ (--show --name と対称) で、
+  # 呼び出し側が jq でレコードを抜く必要を無くしている。
+  if ! jq ${JQ_ARGS[@]+"${JQ_ARGS[@]}"} --arg n "$NAME" \
+    "$WRITE_FILTER | .runners[] | select((type == \"object\") and .name == \$n)" \
+    <<<"$DOC"; then
+    echo "runners-edit: dry-run failed (jq error)" >&2
+    exit 1
+  fi
+  exit 0
 fi
 
 # 共有 $RUNNERS.tmp は並列書き込みで壊れるため必ず writer 固有の mktemp を使う。

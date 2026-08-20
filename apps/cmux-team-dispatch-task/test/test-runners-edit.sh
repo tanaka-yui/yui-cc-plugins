@@ -193,6 +193,7 @@ echo '{"runners":[{"name":"cc","engine":"claude"},true]}' > "$TMP/mixed.json"
 [[ "$(bash "$EDIT" --runners "$TMP/mixed.json" --name cc --show 2>/dev/null | jq -r '.name')" == cc ]] || re15_pass=0
 # --dry-run の select / ENGINE / --get / --show の型安全ガードも kill する。
 # object-first だと first(...) の短絡で露見しないので、非オブジェクトが先頭のレジストリも使う。
+[[ "$(run_rc --runners "$TMP/mixed.json" --name cc --set plan_effort=max --dry-run)" == 0 ]] || re15_pass=0
 echo '{"runners":[true,{"name":"cc","engine":"claude"}]}' > "$TMP/mixedrev.json"
 [[ "$(run_rc --runners "$TMP/mixedrev.json" --name cc --set plan_effort=max)" == 0 ]] || re15_pass=0
 [[ "$(bash "$EDIT" --runners "$TMP/mixedrev.json" --name cc --get plan_effort 2>/dev/null)" == max ]] || re15_pass=0
@@ -384,8 +385,8 @@ if [[ $EUID -ne 0 ]]; then
   rc_effort=$(bash "$EDIT" --runners "$TMP/ro/runners.json" --name cc --set plan_effort=minimal >/dev/null 2>&1; echo $?)
   rc_name=$(bash "$EDIT" --runners "$TMP/ro/runners.json" --name nope --set plan_effort=high >/dev/null 2>&1; echo $?)
   rc_model=$(bash "$EDIT" --runners "$TMP/ro/runners.json" --name cc --set "plan_model=a'b" >/dev/null 2>&1; echo $?)
-  # RE9e: --dry-run は Task 3 で実装するまで未対応。今は --show / --get の半分だけで見る。
-  # dry=$(bash "$EDIT" --runners "$TMP/ro/runners.json" --name cc --set plan_effort=high --dry-run 2>/dev/null); rc_dry=$?
+  # RE9e: --dry-run と読み取りモードは mktemp を経由しないので 555 でも成功する
+  dry=$(bash "$EDIT" --runners "$TMP/ro/runners.json" --name cc --set plan_effort=high --dry-run 2>/dev/null); rc_dry=$?
   showout=$(bash "$EDIT" --runners "$TMP/ro/runners.json" --name cc --show 2>/dev/null); rc_show=$?
   getout=$(bash "$EDIT" --runners "$TMP/ro/runners.json" --name cc --get plan_model 2>/dev/null); rc_get=$?
   residue=$(find "$TMP/ro" -maxdepth 1 -name 'runners.json.*' 2>/dev/null | wc -l | tr -d ' ')
@@ -404,8 +405,8 @@ if [[ $EUID -ne 0 ]]; then
   if [[ $re9d_pass == 1 ]]; then ok 'RE9d: 検証は mktemp より前（555 親でも exit 2）'; else bad 'RE9d'; fi
 
   re9e_pass=1
-  # [[ $rc_dry -eq 0 ]] || re9e_pass=0
-  # [[ "$(jq -r '.plan_effort' <<<"$dry")" == high ]] || re9e_pass=0
+  [[ $rc_dry -eq 0 ]] || re9e_pass=0
+  [[ "$(jq -r '.plan_effort' <<<"$dry")" == high ]] || re9e_pass=0
   [[ $rc_show -eq 0 ]] || re9e_pass=0
   [[ "$(jq -r '.name' <<<"$showout")" == cc ]] || re9e_pass=0
   [[ $rc_get -eq 0 ]] || re9e_pass=0
@@ -414,6 +415,37 @@ if [[ $EUID -ne 0 ]]; then
 else
   echo 'SKIP RE9c/RE9d/RE9e: root'
 fi
+
+# ---- RE18 / RE18b: --dry-run ----
+reset_registry
+cp "$R" "$TMP/expect.json"
+re18_pass=1
+out=$(bash "$EDIT" --runners "$R" --name cc --set plan_effort=high --dry-run 2>/dev/null); rc=$?
+[[ $rc -eq 0 ]] || re18_pass=0
+cmp -s "$R" "$TMP/expect.json" || re18_pass=0            # ファイルを変更しない
+[[ "$(jq -r '.name' <<<"$out")" == cc ]] || re18_pass=0  # レコード単体を出す
+[[ "$(jq -r '.plan_effort' <<<"$out")" == high ]] || re18_pass=0
+no_residue || re18_pass=0
+[[ "$(run_rc --runners "$R" --name cc --show --dry-run)" == 2 ]] || re18_pass=0
+[[ "$(run_rc --runners "$R" --name cc --get plan_model --dry-run)" == 2 ]] || re18_pass=0
+[[ "$(run_rc --runners "$TMP/none2.json" --name cc --set plan_effort=high --dry-run)" == 2 ]] || re18_pass=0
+if [[ $re18_pass == 1 ]]; then ok 'RE18: --dry-run は書き込まずレコード単体を出す'; else bad 'RE18'; fi
+
+# RE18b: dry-run の出力 == 同一引数の実書き込み結果。
+# フィクスチャは claude runner（codex には max が無く effort allowlist で落ちるため）。
+# 現在値 (max) と --set の値 (high) を必ず違えて、恒真になるのを防ぐ。
+reset_registry
+re18b_pass=1
+dry=$(bash "$EDIT" --runners "$R" --name cc \
+        --set plan_effort=high --unset exec_model --dry-run 2>/dev/null) || re18b_pass=0
+bash "$EDIT" --runners "$R" --name cc \
+  --set plan_effort=high --unset exec_model >/dev/null 2>&1 || re18b_pass=0
+real=$(bash "$EDIT" --runners "$R" --name cc --show 2>/dev/null)
+[[ "$(jq -S . <<<"$dry")" == "$(jq -S . <<<"$real")" ]] || re18b_pass=0
+# 正のコントロール: 実際に変わっていること
+[[ "$(jq -r '.plan_effort' <<<"$dry")" == high ]] || re18b_pass=0
+[[ "$(jq -r 'has("exec_model")' <<<"$dry")" == false ]] || re18b_pass=0
+if [[ $re18b_pass == 1 ]]; then ok 'RE18b: dry-run 出力が実書き込み結果と一致する'; else bad 'RE18b'; fi
 
 if [[ $fail -eq 0 ]]; then
   echo '--- all tests passed ---'
