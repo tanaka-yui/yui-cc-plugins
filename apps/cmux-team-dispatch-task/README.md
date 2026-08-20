@@ -197,10 +197,14 @@ codex engine は対象外（`--dangerously-bypass-approvals-and-sandbox` と
 `was removed` を含むメッセージで die する）。[agmsg](https://github.com/fujibee/agmsg) は
 `~/.agents/skills/agmsg/scripts/send.sh` が存在すれば自動で配線され、質問も永続化も行わない。
 
-| agmsg | 通知手段 | monitor ループ |
+`AGMSG_INSTALLED` は `send.sh` の有無を初期値とし、Step 1g の guard 呼び出し（親自身の
+watcher を起動するための `ensure-agmsg-ready.sh` 呼び出し）が配線に失敗すると、agmsg が
+ディスク上にインストールされていても `false` へ降格することがある。
+
+| `AGMSG_INSTALLED` | 通知手段 | monitor ループ |
 |-------|---------|---------------|
-| 未インストール | `send-prompt.sh`（タイプ入力のみ） | `monitor-dispatch.sh` を起動（heartbeat / 死活監視） |
-| インストール済み | `send-prompt.sh`（タイプ入力 + watcher 生存時は inbox にも記録） | 起動しない（沈黙時は status.json を手動確認） |
+| `false`（未インストール、または配線失敗） | `send-prompt.sh`（タイプ入力のみ） | `monitor-dispatch.sh` を起動（heartbeat / 死活監視） |
+| `true`（インストール済みかつ配線成功） | `send-prompt.sh`（タイプ入力 + watcher 生存時は inbox にも記録） | 起動しない（沈黙時は status.json を手動確認） |
 
 agmsg 配線時の team 名は `dispatch-<repo-name>`、親の agent 名は `parent`。
 status.json / result.md / `cmux wait-for` signal は agmsg の有無によらず不変。
@@ -235,8 +239,10 @@ agmsg 配線時の完了通知は2段構え: 子セッションが status.json
 書き込み直後に自分で送る必須通知と、runner wrapper の exit 時通知（バックストップ）。
 idle のまま開いている TUI セッションは exit
 しないため、wrapper だけに頼ると通知されない（このため子プロンプトに必須通知が埋め込まれる）。
-また、ディスパッチを実行しているセッション自身は `delivery.sh set` が出力する
-`AGMSG-DIRECTIVE:` に従って watcher を起動する（SessionStart hook は次回セッションから有効）。
+また、ディスパッチを実行しているセッション自身の watcher は、Step 1g が
+`scripts/ensure-agmsg-ready.sh` を直接呼び出して起動する。`AGMSG-DIRECTIVE:` 行に従う
+必要も `Monitor` tool も不要で、`Monitor` tool を持たないハーネスでも watcher が立ち上がる
+（SessionStart hook は次回セッションから有効）。
 
 config の `review_mode`（`"on"` / `"off"` / `"ask"`）は Phase A-R（plan/spec レビュー、後述）と
 Phase B-R（実装後コードレビュー、後述）を質問なしで恒久的に有効/無効にする。未設定または
@@ -370,8 +376,10 @@ watcher 生存（agmsg の ready sentinel）を確認し、生きているとき
 
 Codex の起動方針は mode ごとに分離されています。`superpowers` / `plan` / `execute` / `standby` は
 approval prompt を防ぐため bypass を使います。一方で review ペインは sandbox を完全 off にせず、
-`--sandbox workspace-write`、`-c approval_policy='never'`、`--add-dir <STATUS_DIR>` を併用します。
-これにより approval prompt を出さず、worktree 外の `.dispatch/<slug>/review/` への findings 書込みだけを
+`--sandbox workspace-write` と `-c approval_policy='never'` を指定したうえで、`--add-dir <STATUS_DIR>`
+に agmsg watcher 用の `--add-dir <AGMSG_SKILL_DIR>/run` と `--add-dir <AGMSG_SKILL_DIR>/db` を
+加えた 3 本の `--add-dir` を条件付きで併用します。これにより approval prompt を出さず、worktree 外の
+`.dispatch/<slug>/review/` への findings 書込みと agmsg の run/db ディレクトリへのアクセスだけを
 許可します。
 
 **委譲**（in-session 条件が不成立）が選ばれた場合の挙動:

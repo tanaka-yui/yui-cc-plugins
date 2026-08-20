@@ -16,6 +16,7 @@ dispatch の通知経路と待機条件を確認するときの参照資料。�
 | P6 | 無人ループ文面に abort 経路が無い | `references/unattended/code-review-block.md:1` | loop で通知不能 | 文面を追加 |
 | P7 | workspace 起動に --defer-status が無い | `SKILL.md:1513-1534` | Child が孫の status を上書き | フラグを追加 |
 | P8 | assigned から deferred の窓で二重通知する | `SKILL.md:741-801` | 二重通知 | foreign assignment を watcher が抑止 |
+| P9 | agmsg watcher が起動せず inbox 記録が全ロールで落ちる | `SKILL.md` の AGMSG-DIRECTIVE 依存 | Monitor ツールを持たないハーネスで watcher ゼロ | `ensure-agmsg-ready.sh` を追加 |
 
 ## 未解決として記録するパターン
 
@@ -29,6 +30,7 @@ dispatch の通知経路と待機条件を確認するときの参照資料。�
 | U6 | dispatch 世代の PID 排他 | `launch-workspace.sh:691-827`。generation token と親側 lock が必要 |
 | U7 | agmsg 記録失敗の再試行 | `SKILL.md:1858-1865`。wake は cmux が担うため記録失敗は警告に留める |
 | U8 | 最初の poll 前の signal 終了 | `launch-workspace.sh:925-931`、`test/test-runner-signal-exit.sh:97-100`。既存 signal guard の重複通知抑止を維持する |
+| U9 | `/clear` 後に watcher が戻らない | guard は初期プロンプトから 1 回だけ走る。Monitor 非搭載ハーネスではそのペインの watcher が復帰しない |
 
 ## この一覧の使い方
 

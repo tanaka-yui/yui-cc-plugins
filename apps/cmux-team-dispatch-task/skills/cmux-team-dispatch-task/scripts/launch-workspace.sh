@@ -801,7 +801,8 @@ CODEX_MODEL_FLAG=""
       fi
     elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
       # claude standby/review: --model / --skip-permissions を反映し、prompt があれば渡す
-      # (agmsg モードでは "/agmsg actas <name>" + 待機指示を初期 prompt にする)
+      # (agmsg 配線時は呼び出し元 (prewarm-panes.sh) が組み立てた
+      #  "ensure-agmsg-ready.sh" guard 呼び出し + 待機指示を初期 prompt にする)
       if [[ -n "$PROMPT_TEXT" ]]; then
         CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS} '$PROMPT_TEXT'"
       else
