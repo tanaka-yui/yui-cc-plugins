@@ -150,6 +150,28 @@ cr1b_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" A
 cr1b_runner=$(jq -r '.runner_file' <<<"$cr1b_output")
 assert_contains "$cr1b_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1b must add agmsg dirs without STATUS_DIR'
 
+# --- CR1c: 新規インストール (run/ db/ が未作成) でも --add-dir が付く ---
+# CR1/CR1b は fixture が mkdir -p 済みなのでこの分岐を踏まない。実 watch.sh は run/ を
+# 初回起動時に自分で作るが、codex reviewer は workspace-write サンドボックスなので
+# 中からは作れない。launch-workspace.sh 側がサンドボックス外で先に作る必要がある。
+FRESH_AGMSG="$TMP/fresh-agmsg"; mkdir -p "$FRESH_AGMSG/scripts"
+cr1c_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FRESH_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv3 prompt)
+cr1c_runner=$(jq -r '.runner_file' <<<"$cr1c_output")
+assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/run'" 'CR1c fresh install must still grant agmsg run'
+assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/db'"  'CR1c fresh install must still grant agmsg db'
+
+# --- CR1d: agmsg 未インストールならツリーを勝手に作らない ---
+MISSING_AGMSG="$TMP/no-agmsg"
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$MISSING_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv4 prompt >/dev/null
+if [[ -d "$MISSING_AGMSG" ]]; then
+  echo 'FAIL: CR1d must not create an agmsg tree when agmsg is not installed'
+  fail=1
+else
+  echo 'PASS: CR1d must not create an agmsg tree when agmsg is not installed'
+fi
+
 # --- LW1: runner script に AGMSG_EXPECTED_NAME が入る ---
 lw1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \

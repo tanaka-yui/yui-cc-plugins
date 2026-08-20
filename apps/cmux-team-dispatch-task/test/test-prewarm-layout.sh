@@ -190,6 +190,20 @@ grep -Fq -- '--agmsg-from pw1-review ' "$TMP/argv-pw1.log" \
   && pass 'PW10 review role name (--agmsg-from pw1-review)' \
   || bad 'PW10 review role name が渡っていない'
 
+# PW10b: legacy --review-model 経路にも --agmsg-from が渡る
+# guard 注入は REVIEW_DELIVERY だけを見るので、この分岐で --agmsg-from を落とすと
+# 「guard は注入されるのに runner script へ export AGMSG_EXPECTED_NAME が出ない」状態に
+# なる。ネストしたディスパッチで外側の名前を継承すると guard が rc 2 (usage) で死ぬのに、
+# prewarm.json は watcher: guard-injected と報告してしまう。
+run_case pw10b --design-runner claude --review-model gpt-5.6-sol \
+  --claude-runner claude --codex-runner codex --exec-choice claude
+grep -Fq -- '--agmsg-from pw10b-review ' "$TMP/argv-pw10b.log" \
+  && pass 'PW10b legacy --review-model にも --agmsg-from が渡る' \
+  || bad 'PW10b legacy --review-model で --agmsg-from が落ちている'
+grep -Fq -- '--name pw10b-review ' "$TMP/argv-pw10b.log" \
+  && pass 'PW10b legacy review にも guard が注入される' \
+  || bad 'PW10b legacy review に guard が注入されていない'
+
 # --- PW1c: codex design (design (claude / codex 共通) の codex 側も guard を持つ) ---
 run_case pw1c --design-runner codex --reviewer-runner codex \
   --claude-runner claude --exec-choice claude

@@ -44,6 +44,9 @@ cat > "$AGMSG_DIR/watch.sh" <<'STUB'
 printf 'watch.sh|%s|%s\n' "${AGMSG_WATCH_INTERVAL:-}" "$*" >> "$AGMSG_STUB_LOG"
 sentinel="$AGMSG_READY_DIR/ready.t__$4"
 pidfile="$AGMSG_READY_DIR/watch.$AGMSG_STUB_INSTANCE_ID.pid"
+# AR22 用: 自分と同じ pid を持つ「他ロールの stale pidfile」を先に置く。
+# nohup は exec するので、ここの $$ は guard 側の $WATCH_PID と同じ値になる。
+[[ -n "${AGMSG_STUB_DECOY_ID:-}" ]] && printf '%s\n' "$$" > "$AGMSG_READY_DIR/watch.$AGMSG_STUB_DECOY_ID.pid"
 write_ready() { [[ $# -ge 4 ]] && { printf '%s\n' "$AGMSG_STUB_INSTANCE_ID" > "$sentinel"; printf '%s\n' "$$" > "$pidfile"; }; }
 case "${AGMSG_STUB_MODE:-alive}" in
   alive)              write_ready "$@"; sleep 300 ;;
@@ -64,15 +67,51 @@ reset_case() {
   : > "$AGMSG_STUB_LOG"
 }
 
-# 出力契約の検証。全ケースで呼ぶ。
-assert_line() {  # <output>
-  local out="$1"
-  [[ $(printf '%s' "$out" | wc -l | tr -d ' ') -eq 0 ]] || bad "output is not a single line: $out"
-  local k
-  for k in installed wired name watcher pid reason log; do
-    [[ "$out" == *" $k="* ]] || bad "output is missing key '$k': $out"
-  done
-  [[ "$out" == ensure-agmsg-ready:* ]] || bad "output has no prefix: $out"
+# 出力契約の検証。**全ケースで呼ぶ** (spec の「毎ケース」要求)。
+# キー名の存在だけでは足りない: キーの**順序**と、その reason 行における各値の**値域**まで
+# 見ないと「reason=- なのに watcher=none」のような spec の出力表に無い行を通してしまう。
+assert_line() {  # <output> [<label>]
+  local out="$1" label="${2:-}"
+  [[ -n "$label" ]] && label=" [$label]"
+  if [[ $(printf '%s' "$out" | wc -l | tr -d ' ') -ne 0 ]]; then
+    bad "output is not a single line$label: $out"; return
+  fi
+  # 7 キーがこの順序で並び、各キーの字面が値域内であること。
+  local re='^ensure-agmsg-ready: installed=(yes|no) wired=(yes|no) name=([A-Za-z0-9._-]+|-) watcher=(existing|existing-other|started|none) pid=([0-9]+|-) reason=([a-z-]+) log=(.+)$'
+  if [[ ! "$out" =~ $re ]]; then
+    bad "output does not match the 7-key contract (prefix / order / value domain)$label: $out"; return
+  fi
+  local installed="${BASH_REMATCH[1]}" wired="${BASH_REMATCH[2]}" watcher="${BASH_REMATCH[4]}"
+  local pid="${BASH_REMATCH[5]}" reason="${BASH_REMATCH[6]}" log="${BASH_REMATCH[7]}"
+  # spec の出力表 1 行 = ここの 1 分岐。
+  case "$reason" in
+    -)
+      [[ "$installed" == yes && "$wired" == yes ]] || bad "reason=- must be installed=yes wired=yes$label: $out"
+      [[ "$watcher" != none ]] || bad "reason=- must not be watcher=none$label: $out"
+      [[ "$pid" != - ]] || bad "reason=- must carry a pid$label: $out"
+      [[ "$log" == - ]] || bad "reason=- must have dropped the log$label: $out" ;;
+    usage|not-installed)
+      [[ "$installed" == no && "$wired" == no && "$watcher" == none && "$pid" == - && "$log" == - ]] \
+        || bad "reason=$reason row does not match the table$label: $out" ;;
+    delivery-set-failed)
+      [[ "$installed" == yes && "$wired" == no && "$watcher" == none && "$pid" == - ]] \
+        || bad "reason=delivery-set-failed row does not match the table$label: $out" ;;
+    log-unwritable)
+      # watcher / pid は「通常どおり」。ログを作れなかった実行なので log は必ず -。
+      [[ "$installed" == yes && "$wired" == yes && "$log" == - ]] \
+        || bad "reason=log-unwritable row does not match the table$label: $out" ;;
+    orphan-watcher)
+      # 失敗系で唯一 pid を出す reason (手動 kill の案内に要る)。
+      [[ "$installed" == yes && "$wired" == yes && "$watcher" == none && "$pid" != - ]] \
+        || bad "reason=orphan-watcher row does not match the table$label: $out" ;;
+    interrupted)
+      # EXIT trap 専用。シグナル死でしか出ないので run_guard 経由では現れない。
+      [[ "$watcher" == none ]] || bad "reason=interrupted must be watcher=none$label: $out" ;;
+    pidfile-missing|not-registered|held-by-other-session|db-unavailable|watcher-exited|start-timeout|bare-started)
+      [[ "$installed" == yes && "$wired" == yes && "$watcher" == none && "$pid" == - ]] \
+        || bad "reason=$reason row does not match the table$label: $out" ;;
+    *) bad "unknown reason '$reason'$label: $out" ;;
+  esac
 }
 
 run_guard() {  # 追加の引数をそのまま渡す。GUARD_OUT に stdout、GUARD_RC に rc を入れる。
@@ -80,18 +119,21 @@ run_guard() {  # 追加の引数をそのまま渡す。GUARD_OUT に stdout、G
   # サブシェルで走るため、その中で行った GUARD_RC への代入は呼び出し元へ伝播しない。
   GUARD_RC=0
   GUARD_OUT=$(bash "$GUARD" "$@" 2>"$TMP/stderr.txt") || GUARD_RC=$?
+  # 出力契約の検証はここで行う。呼び出し側に任せると書き忘れが必ず出る
+  # (以前は 39 呼び出しのうち 10 箇所しか検証していなかった)。
+  assert_line "$GUARD_OUT" "$*"
 }
 
 # --- AR16a-f: exit 2 ---
-reset_case; run_guard --name x; out="$GUARD_OUT"; assert_line "$out"
+reset_case; run_guard --name x; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 2 && "$out" == *"reason=usage"* ]] || bad 'AR16a missing --type'
-reset_case; run_guard --type claude-code; out="$GUARD_OUT"; assert_line "$out"
+reset_case; run_guard --type claude-code; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 2 ]] || bad 'AR16b missing --name'
 reset_case; run_guard --type claude-code --name x --bogus; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 2 ]] || bad 'AR16c unknown flag'
 reset_case; run_guard --type grok --name x; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 2 ]] || bad 'AR16d bad --type'
-reset_case; run_guard --type claude-code --name 'a b'; out="$GUARD_OUT"; assert_line "$out"
+reset_case; run_guard --type claude-code --name 'a b'; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 2 && "$out" == *" name=- "* ]] || bad 'AR16e bad --name must print name=-'
 reset_case; AGMSG_EXPECTED_NAME=other run_guard --type claude-code --name x; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 2 ]] || bad 'AR16f AGMSG_EXPECTED_NAME mismatch'
@@ -99,20 +141,47 @@ reset_case; AGMSG_EXPECTED_NAME=other run_guard --type claude-code --name x; out
 # 未検証の name を印字してはならない (印字すると正常終了行に見える偽装行を作れる)。
 reset_case
 run_guard --type foo --name "$(printf 'p\nensure-agmsg-ready: installed=yes wired=yes name=parent watcher=started pid=1 reason=- log=-')"
-out="$GUARD_OUT"; assert_line "$out"
+out="$GUARD_OUT"
 [[ $GUARD_RC -eq 2 && "$out" == *" name=- "* ]] || bad "AR16g bad --type with a newline --name must print name=- (got $out)"
 [[ ! -s "$AGMSG_STUB_LOG" ]] || bad 'AR16 must not call delivery.sh or watch.sh'
 
+# --- AR8: watcher 生存中でもコマンド置換が戻る（ハング検出は自前 watchdog） ---
+# コマンド置換は必ずサブシェルの**内側**で行う。stdout をファイルへ落とすとパイプが
+# 存在せず、watcher が呼び出し元のパイプを握ったまま生存する退行を検出できない。
+#
+# **意図的にスイートの先頭近くに置いている。** run_guard 自身が上限なしの
+# `GUARD_OUT=$(bash "$GUARD" ...)` なので、fd 漏れの退行が入ると長命 watcher を起動する
+# 最初のケース (AR2) が先にブロックし、スイートは診断メッセージを 1 行も出さずに
+# 無限ハングする。ここに置けば `FAIL: AR8 ...` が真っ先に出て早期に落ちる。
+# 依存は stub ツリーと reset_case だけで、start_fixture より前でも自己完結する。
+reset_case
+( out8=$(CLAUDE_CODE_SESSION_ID=s8 AGMSG_STUB_INSTANCE_ID="s8.222" AGMSG_STUB_MODE=alive \
+    bash "$GUARD" --type claude-code --name "ar-$$-8" 2>/dev/null)
+  printf '%s' "$out8" > "$TMP/ar8.out" ) &
+ar8=$!
+for _ in $(seq 1 100); do kill -0 "$ar8" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$ar8" 2>/dev/null; then
+  kill -9 "$ar8" 2>/dev/null; bad 'AR8 guard did not return (fd leak)'
+else
+  # 「戻ってくる」だけでなく「正しい 1 行を返す」まで見る。
+  out=$(cat "$TMP/ar8.out" 2>/dev/null); assert_line "$out" AR8
+  [[ "$out" == *"watcher=started"* ]] || bad "AR8 expected watcher=started (got $out)"
+  # AR8 は「guard が返っても watcher は生きている」ことを前提にした唯一のケースなので、
+  # ここで回収しないとスイート終了後も sleep 300 の孤児が残る。
+  ar8_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+  [[ -n "$ar8_pid" ]] && FIXTURE_PIDS+=("$ar8_pid")
+fi
+
 # --- AR1: 未インストール ---
 reset_case; mv "$AGMSG_DIR/send.sh" "$TMP/send.sh.bak"
-run_guard --type claude-code --name ar-$$-1; out="$GUARD_OUT"; assert_line "$out"
+run_guard --type claude-code --name ar-$$-1; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 1 && "$out" == *"reason=not-installed"* ]] || bad 'AR1'
 grep -q 'not installed' "$TMP/stderr.txt" || bad 'AR1 stderr hint'
 mv "$TMP/send.sh.bak" "$AGMSG_DIR/send.sh"
 
 # --- AR14: delivery.sh 失敗 ---
 reset_case
-AGMSG_STUB_DELIVERY_RC=1 run_guard --type claude-code --name ar-$$-14; out="$GUARD_OUT"; assert_line "$out"
+AGMSG_STUB_DELIVERY_RC=1 run_guard --type claude-code --name ar-$$-14; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 1 && "$out" == *"reason=delivery-set-failed"* ]] || bad 'AR14'
 grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR14 must not launch watch.sh'
 
@@ -124,7 +193,6 @@ reset_case; : > "$TMP/afile"
 AGMSG_LOG_DIR="$TMP/afile/sub" AGMSG_STUB_MODE=alive AGMSG_STUB_INSTANCE_ID="s.1" \
       CLAUDE_CODE_SESSION_ID=s run_guard --type claude-code --name ar-$$-2
 out="$GUARD_OUT"
-assert_line "$out"
 [[ $GUARD_RC -eq 0 && "$out" == *"reason=log-unwritable"* ]] || bad 'AR2 reason'
 grep -q 'watch.sh' "$AGMSG_STUB_LOG" || bad 'AR2 must still launch the watcher'
 [[ -c /dev/null ]] || bad 'AR2c /dev/null was removed'
@@ -137,6 +205,7 @@ reset_case
 mkdir -p "$TMP/fakehome"
 out=$(env -u TMPDIR -u AGMSG_LOG_DIR HOME="$TMP/fakehome" AGMSG_STUB_MODE=held CLAUDE_CODE_SESSION_ID=s \
       bash "$GUARD" --type claude-code --name ar-$$-2b 2>/dev/null)
+assert_line "$out" AR2b
 [[ "$out" != *"reason=log-unwritable"* ]] || bad 'AR2b'
 ar2b_log=$(printf '%s' "$out" | sed -n 's/.* log=\([^ ]*\)$/\1/p')
 [[ "$ar2b_log" == "$TMP/fakehome/.cache/agmsg/"* && -f "$ar2b_log" ]] \
@@ -154,6 +223,7 @@ grep -q '|cx-sid ' "$AGMSG_STUB_LOG" || bad 'AR15 codex must use CODEX_THREAD_ID
 reset_case
 out=$(env -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID AGMSG_STUB_MODE=silent-exit \
       bash "$GUARD" --type claude-code --name ar-$$-15c 2>/dev/null)
+assert_line "$out" AR15c
 grep -q '|- ' "$AGMSG_STUB_LOG" && bad 'AR15 must not pass the "-" sentinel'
 
 start_fixture() {  # <instance_id> <sid> <project> <type> [<name>] → pid を FIXTURE_PIDS へ
@@ -171,7 +241,7 @@ start_fixture() {  # <instance_id> <sid> <project> <type> [<name>] → pid を F
 reset_case
 start_fixture "s3.111" s3 /p claude-code "ar-$$-3" >/dev/null
 : > "$AGMSG_STUB_LOG"
-CLAUDE_CODE_SESSION_ID=s3 run_guard --type claude-code --name "ar-$$-3"; out="$GUARD_OUT"; assert_line "$out"
+CLAUDE_CODE_SESSION_ID=s3 run_guard --type claude-code --name "ar-$$-3"; out="$GUARD_OUT"
 [[ "$out" == *"watcher=existing"* ]] || bad 'AR3 existing'
 grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR3 must not launch a new watcher'
 
@@ -280,10 +350,30 @@ start_fixture "s4b.111" s4b /p claude-code "ar-$$-4b" >/dev/null
 PATH="$TMP/eperm:$PATH" CLAUDE_CODE_SESSION_ID=s4b run_guard --type claude-code --name "ar-$$-4b"
 grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR4b EPERM must be treated as alive'
 
+# --- AR22: pid が衝突する他ロールの stale pidfile を「自分」と誤認しない ---
+# SIGKILL でペインが落ちると EXIT trap が走らず pidfile が run/ に残る。macOS の pid は
+# 周回するので、$WATCH_PID と同じ pid 番号を持つ他ロールの残骸は現実に起こりうる。
+# glob はアルファベット順なので decoy (aaa-stale) の方が先に来る。pid 値だけで照合して
+# いると decoy の正規化 id を「自分のもの」と誤認し、sentinel の中身と一致しないまま
+# 時間切れになって**健全な自分の watcher を SIGTERM で殺す**。
+reset_case
+AGMSG_STUB_DECOY_ID="aaa-stale" CLAUDE_CODE_SESSION_ID=s22 AGMSG_STUB_INSTANCE_ID="s22.222" \
+      AGMSG_STUB_MODE=alive run_guard --type claude-code --name "ar-$$-22"
+out="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* ]] \
+  || bad "AR22 a colliding decoy pidfile must not hijack the guard's own normalized id (got $out)"
+ar22_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+if [[ -n "$ar22_pid" ]]; then
+  kill -0 "$ar22_pid" 2>/dev/null || bad 'AR22 the guard must not kill its own healthy watcher'
+  FIXTURE_PIDS+=("$ar22_pid")
+else
+  bad 'AR22 no pid was reported'
+fi
+
 # --- AR6: 正常系 ---
 reset_case
 CLAUDE_CODE_SESSION_ID=s6 AGMSG_STUB_INSTANCE_ID="s6.222" AGMSG_STUB_MODE=alive \
-      run_guard --type claude-code --name "ar-$$-6"; out="$GUARD_OUT"; assert_line "$out"
+      run_guard --type claude-code --name "ar-$$-6"; out="$GUARD_OUT"
 [[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* && "$out" == *" log=-" ]] || bad 'AR6'
 [[ -f "$AGMSG_READY_DIR/watch.s6.222.pid" ]] || bad 'AR6 pidfile must be composite'
 ls "$AGMSG_LOG_DIR"/agmsg-watch-* >/dev/null 2>&1 && bad 'AR6 the log must be removed on success'
@@ -300,17 +390,6 @@ CLAUDE_CODE_SESSION_ID=s6 run_guard --type claude-code --name "ar-$$-6"; out="$G
 [[ "$out" == *"watcher=existing"* ]] || bad 'AR21 second run must not start a second watcher'
 grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR21 must not launch again'
 
-# --- AR8: watcher 生存中でもコマンド置換が戻る（ハング検出は自前 watchdog） ---
-# コマンド置換は必ずサブシェルの**内側**で行う。stdout をファイルへ落とすとパイプが
-# 存在せず、watcher が呼び出し元のパイプを握ったまま生存する退行を検出できない。
-reset_case
-( out8=$(CLAUDE_CODE_SESSION_ID=s8 AGMSG_STUB_INSTANCE_ID="s8.222" AGMSG_STUB_MODE=alive \
-    bash "$GUARD" --type claude-code --name "ar-$$-8" 2>/dev/null)
-  printf '%s' "$out8" > "$TMP/ar8.out" ) &
-ar8=$!
-for _ in $(seq 1 100); do kill -0 "$ar8" 2>/dev/null || break; sleep 0.1; done
-if kill -0 "$ar8" 2>/dev/null; then kill -9 "$ar8" 2>/dev/null; bad 'AR8 guard did not return (fd leak)'; fi
-
 # --- AR9a-d: 分類 ---
 for m in held:held-by-other-session unregistered:not-registered \
          db-error:db-unavailable silent-exit:watcher-exited; do
@@ -318,7 +397,7 @@ for m in held:held-by-other-session unregistered:not-registered \
   mode="${m%%:*}"; want="${m##*:}"
   start=$SECONDS
   AGMSG_READY_TIMEOUT=10 CLAUDE_CODE_SESSION_ID="s9$mode" AGMSG_STUB_MODE="$mode" \
-        run_guard --type claude-code --name "ar-$$-9"; out="$GUARD_OUT"; assert_line "$out"
+        run_guard --type claude-code --name "ar-$$-9"; out="$GUARD_OUT"
   [[ "$out" == *"reason=$want"* ]] || bad "AR9 $mode -> $want (got $out)"
   [[ $((SECONDS - start)) -lt 3 ]] || bad "AR9 $mode did not abort early"
   [[ $GUARD_RC -eq 0 ]] || bad "AR9 $mode must exit 0"

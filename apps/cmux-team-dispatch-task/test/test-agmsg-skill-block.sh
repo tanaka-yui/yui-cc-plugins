@@ -9,16 +9,26 @@ fail=0; bad() { echo "FAIL: $1" >&2; fail=1; }
 # TEAM="dispatch- appears exactly once in SKILL.md, so it is a unique anchor.
 # "the fenced block under Step 1g" cannot identify it (there are 6 bash fences underneath).
 awk '/TEAM="dispatch-/{f=1} f{print} f&&/^```$/{exit}' "$SKILL" | sed '/^```/d' > "$TMP/block.raw"
-[[ -s "$TMP/block.raw" ]] || bad 'AG1 could not extract the Step 1g block'
+# Fail closed like the real-agmsg check below: with an empty block every case that follows
+# asserts against an empty string and silently "passes", hiding the extraction breakage.
+if [[ ! -s "$TMP/block.raw" ]]; then
+  echo 'FAIL: AG1 could not extract the Step 1g block' >&2
+  exit 1
+fi
 
 mkdir -p "$TMP/skill/scripts" "$TMP/agmsg"
 # Substitute first, then assert not a single ~/.agents survives (fail-closed).
 sed -e "s|~/.agents/skills/agmsg/scripts|$TMP/agmsg|g" \
     -e "s|<SKILL_DIR>|$TMP/skill|g" "$TMP/block.raw" > "$TMP/block.sh"
 # Must stop, not just record a failure: the block below is EXECUTED, so a surviving real
-# path would run the real join.sh against the real agmsg DB. Catch $HOME/${HOME} forms too.
-if grep -qE '(\$\{?HOME\}?|~)/\.agents' "$TMP/block.sh"; then
-  echo 'FAIL: AG1 the extracted block still touches the real agmsg' >&2
+# path would run the real join.sh against the real agmsg DB.
+# The check is a blunt substring match on purpose. A $HOME/~ specific pattern misses the
+# quoted forms "$HOME"/.agents and "${HOME}"/.agents, and any such pattern has to be
+# re-audited every time SKILL.md rephrases the path. The stub tree never contains the
+# substring ".agents", so any occurrence here means a real path survived the substitution.
+# The matching lines are printed so the failure still says WHICH line leaked.
+if grep -n '\.agents' "$TMP/block.sh" >&2; then
+  echo 'FAIL: AG1 the extracted block still touches the real agmsg (see the lines above)' >&2
   exit 1
 fi
 
@@ -84,6 +94,9 @@ rm -f "$TMP/guard.argv"
 out=$(JOIN_RC=1 run_block); [[ -f "$TMP/guard.argv" ]] || bad 'AG1 join failure must not abort the block'
 
 # AG2: --name parent is passed and --session-id is not
+# The negative assertion below is fail-OPEN without this: grep against a missing file returns
+# rc 2, which short-circuits the `&&` so `bad` never fires and the case checks nothing.
+[[ -f "$TMP/guard.argv" ]] || bad 'AG2 guard.argv is missing; the assertions below check nothing'
 grep -Fq -- '--name parent' "$TMP/guard.argv" || bad 'AG2 --name parent'
 grep -Fq -- '--session-id' "$TMP/guard.argv" && bad 'AG2 must not pass --session-id'
 
