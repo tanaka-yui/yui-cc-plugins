@@ -507,6 +507,7 @@ ensure-agmsg-ready: installed=<yes|no> wired=<yes|no> name=<a|-> watcher=<existi
 | `start-timeout` | yes | yes | name | none | - | path | **0** | `see <log>` |
 | `bare-started` | yes | yes | name | none | - | path | **0** | `see <log>` |
 | `orphan-watcher` | yes | yes | name | none | pid | path | **0** | `watcher <pid> did not stop; kill it manually. see <log>` |
+| `interrupted` | 到達時点の値 | 到達時点の値 | name | none | 起動済みなら pid、未起動なら `-` | path | **128+n** | （追加の行は出さない） |
 | `usage` | no | no | `--name` が値域検証に通ったときだけ実値、通らなければ `-` | none | - | - | **2** | usage メッセージ |
 
 exit 2 の行について 3 点。`reason` は文字列 `usage` である。`name` に**未検証の値をそのまま印字しない**
@@ -518,6 +519,13 @@ exit 2 の行について 3 点。`reason` は文字列 `usage` である。`nam
 （`delivery-set-failed` / `pidfile-missing` / `not-registered` / `watcher-exited` / `start-timeout` /
 `bare-started` / `orphan-watcher`）は実際には `log=-` になり、stderr の `see <log>` も `see -` になる。
 **`log` 列は「ログが作れた場合の値」を表す。**
+
+`interrupted` は **EXIT trap 専用の値**である。SIGTERM / SIGHUP（ペインを閉じた・ツール呼び出しを
+中断した）で guard 自身が死ぬと bash は EXIT trap を走らせるので、`REASON` が初期値 `-` のまま
+emit すると「`reason=-` なのに `watcher=none`」という表に無い行になる。trap は `REASON` が `-` の
+ときだけ `interrupted` を立て、watcher を起動済みならその pid も出す（孤児 watcher を手動 kill
+できるようにするため）。`REASON` が既に付いている場合はその値を優先する。exit code は 128+n なので
+Step 1g の `case` は `*)` に落ちる。
 
 bare 候補を手順 5 で外したときは、`reason` を変えずに stderr へ 1 行だけ出す:
 `a watcher with a bare instance id is running for this role (pid <n>); it will never self-terminate — kill it manually`。

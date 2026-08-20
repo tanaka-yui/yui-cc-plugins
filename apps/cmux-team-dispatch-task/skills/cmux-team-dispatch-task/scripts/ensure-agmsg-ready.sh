@@ -26,6 +26,11 @@ AGMSG_READY_TIMEOUT="${AGMSG_READY_TIMEOUT:-15}"
 # その時点で watcher は起動済みなので、無出力 rc 0 のまま孤児化する。
 # 0 / 負値も seq の降順展開で直感に反する待機になるため既定値へ倒す。
 case "$AGMSG_READY_TIMEOUT" in ''|*[!0-9]*|0) AGMSG_READY_TIMEOUT=15 ;; esac
+# 桁数上限。全桁数字でも 20 桁のような値は `deadline=$(( ... * 5 ))` で 64bit 算術が
+# ラップし、続く `seq 1 "$deadline"` がメモリを食い潰して xrealloc の致命エラーになる。
+# 致命エラーは EXIT trap すら走らせないので、1 行契約がこの入力だけで破れる。
+# 4 桁 (9999 秒) あれば現実の待機時間はすべて表現できる。
+[[ "${#AGMSG_READY_TIMEOUT}" -le 4 ]] || AGMSG_READY_TIMEOUT=15
 AGMSG_WATCH_INTERVAL="${AGMSG_WATCH_INTERVAL:-30}"
 
 TYPE=""; NAME=""; PROJECT="$PWD"
@@ -39,7 +44,18 @@ emit() {  # 常にこれ 1 回だけで出力する
 }
 # 「全経路で必ず 1 行」の構造的な安全網。emit を通らずにシェルが落ちた場合だけ発火する
 # (emit 済みなら EMITTED=1 なので二重出力にはならない)。
-trap '[[ $EMITTED -eq 1 ]] || emit' EXIT
+# bash 3.2 はサブシェルで EXIT trap をリセットするので、`$( )` / `( )` / `&` のいずれでも
+# 二重出力にはならない (実測済み)。
+# この trap は SIGTERM / SIGHUP でも発火する。ペインを閉じた / ツール呼び出しを中断した
+# ケースがそれで、REASON が初期値 `-` のまま emit すると「reason=- なのに watcher=none」
+# という出力表に無い行になる。専用の reason=interrupted を立て、起動済みなら孤児 watcher の
+# pid も出して手動 kill できるようにする。
+#
+#   reason=interrupted: シグナルで guard 自身が中断された。watcher=none。
+#     pid は起動済みなら孤児 watcher の pid、未起動なら `-`。log は残す (削除しない)。
+#     正常な emit を通った経路では REASON が必ず `-` 以外か EMITTED=1 なので発火しない。
+trap '[[ $EMITTED -eq 1 ]] || { [[ "$REASON" == "-" ]] && REASON=interrupted; \
+      [[ -n "${WATCH_PID:-}" ]] && PID="$WATCH_PID"; emit; }' EXIT
 hint() { printf 'ensure-agmsg-ready: %s\n' "$1" >&2; }
 die_usage() {
   # 値域検証より前の die_usage 経路 (未知フラグ / 不正 --type) でも未検証の NAME を
@@ -263,13 +279,21 @@ nohup bash "$AGMSG_DIR/watch.sh" "$SID" "$PROJECT" "$TYPE" "$NAME" </dev/null >>
 WATCH_PID=$!
 
 # 起動した watcher の正規化 id を pidfile から復元する。
+# 手順 5 と同じ session-id フィルタを必ず先に通す。pid 値だけで照合すると、SIGKILL で
+# ペインが落ちて EXIT trap が走らずに残った**他ロールの stale pidfile**が、たまたま
+# $WATCH_PID と同じ pid 番号を持っていたときにそちらを「自分」と誤認する
+# (macOS の pid は周回し、run/ には残骸が蓄積する)。誤認すると sentinel の中身と
+# 一致しないまま時間切れになり、guard_stop_watcher が**健全な自分の watcher を
+# SIGTERM で殺す**うえ、guard_clean_my_sentinels も誤った id で掃除に失敗する。
 guard_my_norm_id() {
   local f id p
   for f in "$AGMSG_READY_DIR"/watch.*.pid; do
     [[ -f "$f" ]] || continue
+    id="$(guard_normalized_id_from_pidfile "$f")"
+    case "$id" in "$SID"|"$SID".*) ;; *) continue ;; esac
     p="$(head -1 "$f" 2>/dev/null || true)"
     [[ "$p" == "$WATCH_PID" ]] || continue
-    guard_normalized_id_from_pidfile "$f"; return 0
+    printf '%s' "$id"; return 0
   done
   return 1
 }
@@ -280,6 +304,12 @@ guard_stop_watcher() {
   # kill 規則 1: 値域検証 (`kill 0` は呼び出し元のプロセスグループ全員へ SIGTERM を送る)
   guard_pid_valid "$WATCH_PID" || return 1
   guard_is_watcher "$WATCH_PID" || return 1     # 判定不能 (rc 2) でも kill しない
+  # ジョブ表から外してから撃つ。外さないと bash が非対話でも
+  # `line N: <pid> Terminated: 15  AGMSG_WATCH_INTERVAL=... nohup bash ...` を stderr へ出し、
+  # spec が「see <log>」1 行と定めた stderr に内部変数込みのコマンドラインが混ざる。
+  # `wait` でも吸えるが、SIGTERM を無視する watcher で無限に待つので使わない
+  # (この関数は 2 秒で諦める契約)。
+  disown "$WATCH_PID" 2>/dev/null || true
   kill -TERM "$WATCH_PID" 2>/dev/null || true
   for i in $(seq 1 20); do
     guard_pid_alive "$WATCH_PID" || return 0
