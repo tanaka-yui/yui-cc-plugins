@@ -49,14 +49,14 @@ pidfile="$AGMSG_READY_DIR/watch.$AGMSG_STUB_INSTANCE_ID.pid"
 [[ -n "${AGMSG_STUB_DECOY_ID:-}" ]] && printf '%s\n' "$$" > "$AGMSG_READY_DIR/watch.$AGMSG_STUB_DECOY_ID.pid"
 write_ready() { [[ $# -ge 4 ]] && { printf '%s\n' "$AGMSG_STUB_INSTANCE_ID" > "$sentinel"; printf '%s\n' "$$" > "$pidfile"; }; }
 case "${AGMSG_STUB_MODE:-alive}" in
-  alive)              write_ready "$@"; sleep 300 ;;
+  alive)              write_ready "$@"; sleep "${AGMSG_STUB_TTL:-120}" ;;
   sentinel-then-exit) write_ready "$@"; exit 0 ;;
-  no-sentinel)        printf '%s\n' "$$" > "$pidfile"; sleep 300 ;;
+  no-sentinel)        printf '%s\n' "$$" > "$pidfile"; sleep "${AGMSG_STUB_TTL:-120}" ;;
   held)               echo 'agmsg watch: cannot claim (held by other sessions): x' >&2; exit 1 ;;
   unregistered)       echo "agmsg watch: no registration for agent 'x'"; exit 0 ;;
   db-error)           echo 'ERROR: cannot open message DB /x'; exit 1 ;;
   silent-exit)        exit 0 ;;
-  decoy)              echo '2026-01-01 | t | a - b | agmsg watch: cannot claim'; write_ready "$@"; sleep 300 ;;
+  decoy)              echo '2026-01-01 | t | a - b | agmsg watch: cannot claim'; write_ready "$@"; sleep "${AGMSG_STUB_TTL:-120}" ;;
   decoy-exit)         echo '2026-01-01 | t | a - b | agmsg watch: cannot claim'; exit 0 ;;
 esac
 STUB
@@ -214,7 +214,7 @@ else
   out=$(cat "$TMP/ar8.out" 2>/dev/null); assert_line "$out" AR8
   [[ "$out" == *"watcher=started"* ]] || bad "AR8 expected watcher=started (got $out)"
   # AR8 は「guard が返っても watcher は生きている」ことを前提にした唯一のケースなので、
-  # ここで回収しないとスイート終了後も sleep 300 の孤児が残る。
+  # ここで回収しないとスイート終了後も stub の sleep の孤児が残る。
   ar8_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
   [[ -n "$ar8_pid" ]] && FIXTURE_PIDS+=("$ar8_pid")
 fi
@@ -375,7 +375,7 @@ CLAUDE_CODE_SESSION_ID=s5b AGMSG_STUB_MODE=silent-exit run_guard --type claude-c
 
 # --- AR3b: argv[0]/argv[1] が watch.sh でないプロセスは候補にしない ---
 reset_case
-nohup /bin/sh -c "sleep 300 # $AGMSG_DIR/watch.sh s3b /p claude-code ar-$$-3b" </dev/null >/dev/null 2>&1 &
+nohup /bin/sh -c "sleep 120 # $AGMSG_DIR/watch.sh s3b /p claude-code ar-$$-3b" </dev/null >/dev/null 2>&1 &
 FIXTURE_PIDS+=($!)
 printf '%s\n' "$!" > "$AGMSG_READY_DIR/watch.s3b.111.pid"
 sleep 0.3; : > "$AGMSG_STUB_LOG"
@@ -556,7 +556,7 @@ cat > "$AGMSG_DIR/watch.sh" <<STUB
 printf 'watch.sh|%s|%s\n' "\${AGMSG_WATCH_INTERVAL:-}" "\$*" >> "$AGMSG_STUB_LOG"
 printf '%s\n' "\$AGMSG_STUB_INSTANCE_ID" > "$real_ready_dir/ready.t__\$4"
 printf '%s\n' "\$\$" > "$real_ready_dir/watch.\$AGMSG_STUB_INSTANCE_ID.pid"
-sleep 300
+sleep "\${AGMSG_STUB_TTL:-120}"
 STUB
 chmod +x "$AGMSG_DIR/watch.sh"
 AGMSG_READY_DIR="$TMP/elsewhere" CLAUDE_CODE_SESSION_ID=s6d AGMSG_STUB_INSTANCE_ID="s6d.222" \
