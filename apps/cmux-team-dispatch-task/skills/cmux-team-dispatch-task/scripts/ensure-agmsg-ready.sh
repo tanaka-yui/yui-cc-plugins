@@ -108,6 +108,18 @@ if [[ ! -f "$AGMSG_DIR/send.sh" ]]; then
 fi
 INSTALLED=yes
 
+# AGMSG_DIR に空白があると既存 watcher を一切検出できない。guard_is_watcher /
+# guard_name_slot は `ps -o args=` の出力を `set -- $args` で単語分割してトークン等値
+# 比較するので、`$AGMSG_DIR/watch.sh` 自体が複数トークンへ割れて必ず不一致になる。
+# 帰結は「毎回 watcher=started で新しい watcher が増える」という**正常に見える**壊れ方
+# なので、せめて診断できるよう hint を 1 行出す (prewarm-panes.sh が SCRIPT_DIR に
+# 対して行っているのと同じ検出)。空白は現実の agmsg インストール先には現れないため、
+# 正常系の stderr 0 行という契約はこの検出で壊れない。
+case "$AGMSG_DIR" in
+  *[[:space:]]*)
+    hint "AGMSG_DIR contains whitespace ($AGMSG_DIR); existing watchers cannot be detected and a duplicate will be started on every call" ;;
+esac
+
 # --- 手順 3: ログの用意 ---
 mkdir -p "$AGMSG_LOG_DIR" 2>/dev/null || true
 LOG_PATH="$(umask 077; mktemp "$AGMSG_LOG_DIR/agmsg-watch-$NAME.XXXXXX" 2>/dev/null || true)"

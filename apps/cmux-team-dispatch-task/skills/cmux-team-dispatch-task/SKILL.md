@@ -2201,7 +2201,8 @@ choices started for this task. Each object records its resolved runner, engine, 
 agent, informational delivery state, and `watcher` — `"guard-injected"` when the
 pane's initial prompt included the `ensure-agmsg-ready.sh` guard call, `"none"`
 otherwise (delivery wiring failed, or the guard could not be injected because
-`SCRIPT_DIR` contains whitespace). Consumers use these exact lookups:
+`SCRIPT_DIR` contains whitespace or a shell metacharacter). Consumers use these
+exact lookups:
 
 ```bash
 DESIGN_SURFACE=$(jq -r '.design.surface_id // empty' "$PREWARM_FILE")

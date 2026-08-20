@@ -467,9 +467,16 @@ fi
 # --- guard 注入ヘルパー ---
 # 初期プロンプトへ埋め込む guard 実行文。SCRIPT_DIR に空白が含まれる場合は
 # プロンプトをクォートできず bash が exit 127 で終わるので、注入しない。
+# 空白以外のシェルメタ文字も同じ理由で弾く: この文字列は launch-workspace.sh が
+# `zsh -ic "... '<prompt>' ..."` の中へエスケープせず埋めるので、`'` があれば引用符を
+# 破って後続を別トークンにできる (`-i` は対話モードなので `!` の history 展開も効く)。
+# 禁止集合は parallel-directive.sh / --agmsg-from と同じ `' " \` $ ! \` に揃える。
 GUARD_INJECTABLE=1
-case "$SCRIPT_DIR" in *[[:space:]]*) GUARD_INJECTABLE=0 ;; esac
-[[ $GUARD_INJECTABLE -eq 0 ]] && log "agmsg" "skill dir contains whitespace; not injecting the guard"
+case "$SCRIPT_DIR" in
+  *[[:space:]]*|*[\'\"\`\$\!\\]*) GUARD_INJECTABLE=0 ;;
+esac
+[[ $GUARD_INJECTABLE -eq 0 ]] \
+  && log "agmsg" "skill dir contains whitespace or a shell metacharacter; not injecting the guard"
 
 guard_clause() {  # <type> <name>
   printf 'Run bash %s/ensure-agmsg-ready.sh --type %s --name %s and continue even if it exits non-zero.' \

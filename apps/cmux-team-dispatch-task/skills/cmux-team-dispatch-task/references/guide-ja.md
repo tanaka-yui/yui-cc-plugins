@@ -920,8 +920,8 @@ Phase B を続行する。
 参照は `.design` / `.review` / `.executors.claude|codex` を使う。各オブジェクトは解決済みの
 runner / engine / role / agent / 情報用途の delivery 状態に加え `watcher` を記録する。値は
 そのペインの初期プロンプトに `ensure-agmsg-ready.sh` の guard 呼び出しが含まれていた場合は
-`"guard-injected"`、それ以外（配線失敗、または `SCRIPT_DIR` に空白があり guard を注入
-できなかった場合）は `"none"` になる:
+`"guard-injected"`、それ以外（配線失敗、または `SCRIPT_DIR` に空白かシェルメタ文字が
+あり guard を注入できなかった場合）は `"none"` になる:
 
 ```json
 {

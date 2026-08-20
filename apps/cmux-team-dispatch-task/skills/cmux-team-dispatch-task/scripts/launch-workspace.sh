@@ -779,6 +779,17 @@ CODEX_MODEL_FLAG=""
       # マシン上の全 Claude Code セッションが触れるコードで、無人 codex reviewer に
       # 書き込み権を与えるとサンドボックス外・別セッションの権限で任意コードが走る。
       AGMSG_SKILL_DIR="${AGMSG_SKILL_DIR:-$HOME/.agents/skills/agmsg}"
+      # 値域検証。この値は下で `--add-dir '<path>'` として composed command に埋まり、
+      # その全体が `zsh -ic "..."` で再度包まれる。launch-workspace.sh はエスケープを
+      # しないので、`'` を含むパスは引用符を破って後続を別トークンにできる
+      # (`-i` は対話モードなので `!` の history 展開も効く)。--agmsg-from と同じ
+      # 禁止文字集合で弾く。弾いたときは mkdir も --add-dir もしない (fail-closed)。
+      AGMSG_SKILL_DIR_SAFE=1
+      case "$AGMSG_SKILL_DIR" in
+        *[\'\"\`\$\!\\]*)
+          AGMSG_SKILL_DIR_SAFE=0
+          log "warn" "AGMSG_SKILL_DIR contains a shell metacharacter; not granting --add-dir for agmsg run/db" ;;
+      esac
       # run/ と db/ をここで先に作る。watch.sh は run/ を初回起動時に自分で作る設計
       # (`mkdir -p "$RUN_DIR" 2>/dev/null || return 0`) だが、codex reviewer は
       # --sandbox workspace-write で走るのでサンドボックス内の mkdir は黙って拒否される。
@@ -786,11 +797,13 @@ CODEX_MODEL_FLAG=""
       # reason=pidfile-missing に落ちる (agmsg を新規インストールしてまだ一度も watcher を
       # 起動していない環境 = このガードが救おうとしている状況そのもの)。
       # agmsg 未インストール時にツリーを勝手に生やさないよう、親の存在を条件にする。
-      if [[ -d "$AGMSG_SKILL_DIR" ]]; then
+      if [[ $AGMSG_SKILL_DIR_SAFE -eq 1 && -d "$AGMSG_SKILL_DIR" ]]; then
         mkdir -p "$AGMSG_SKILL_DIR/run" "$AGMSG_SKILL_DIR/db" 2>/dev/null || true
       fi
-      [[ -d "$AGMSG_SKILL_DIR/run" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/run'"
-      [[ -d "$AGMSG_SKILL_DIR/db" ]]  && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/db'"
+      if [[ $AGMSG_SKILL_DIR_SAFE -eq 1 ]]; then
+        [[ -d "$AGMSG_SKILL_DIR/run" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/run'"
+        [[ -d "$AGMSG_SKILL_DIR/db" ]]  && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/db'"
+      fi
       CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
