@@ -78,7 +78,10 @@ WARN_FLAG_ADDED='added the CLI permission flag'
 # 戻り値は必ず文字列で比較すること (( )) に渡すと missing:... が unbound variable になる。
 count_flag() {
   [[ -f "${1:-}" ]] || { echo "missing:${1:-<none>}"; return; }
-  { grep -o -- '--dangerously-skip-permissions' "$1" || true; } | wc -l | tr -d ' '
+  # 部分文字列一致では語境界を見ないので、直前の値 (--effort 'high' 等) と結合して
+  # フラグが実質消えるタイポ (例: 先頭空白の欠落) を見逃す。前後を空白/引用符/行末に限定する。
+  { grep -o -E -- '(^|[[:space:]])--dangerously-skip-permissions([[:space:]]|"|$)' "$1" || true; } \
+    | wc -l | tr -d ' '
 }
 
 # 既存の run_launch は stderr を捨てるので、警告を assert するケース用に別に用意する。
@@ -263,7 +266,8 @@ out=$(run_launch --cwd "$repo" --mode superpowers --runner claude --skip-permiss
   || bad  'P15 superpowers keeps no flag when the injection succeeded'
 
 # --- P16: standby (prompt なし) + 注入不能 A + --skip-permissions 明示 ---
-# 二重付与の検出。P23 の弱い版で独自の検出力は無く、:795 の splice も担保しない
+# 二重付与の検出。P23 の弱い版で独自の検出力は無く、PERM_FALLBACK_FLAG の
+# standby/review (prompt 無し分岐) への splice も担保しない
 # (SKIP_PERMISSIONS=1 なので *) アームが偽になり PERM_FALLBACK_FLAG は空のまま)。
 repo=$(new_repo p16); break_a "$repo"
 out=$(run_launch --cwd "$repo" --mode standby --runner claude --skip-permissions \
@@ -273,8 +277,12 @@ out=$(run_launch --cwd "$repo" --mode standby --runner claude --skip-permissions
   || bad  'P16 standby with --skip-permissions never doubles the flag'
 
 # --- P17: plan + 注入不能 A ---
-# plan) ;; の単独削除・:804 への二重 splice・付与ログの無条件出力の 3 種を単独検出する
-# 唯一のケース。stderr の否定 assert を落とさないこと。
+# plan) ;; の単独削除、および付与ログの無条件出力の 2 種を単独検出する唯一のケース。
+# 「plan アームの CORE_CMD へ PERM_FALLBACK_FLAG を単体で splice する」変異は、
+# plan) ;; が残っている限り PERM_FALLBACK_FLAG が plan では常に空なので原理的に
+# 検出不能な等価変異であり、この 2 種には含まれない (P17 が実際に捕まえるのは
+# plan) ;; 削除 + plan アームへの splice という二重違反の形)。stderr の否定 assert を
+# 落とさないこと。
 repo=$(new_repo p17); break_a "$repo"
 out=$(run_launch_err "$TMP/err-p17" --cwd "$repo" --mode plan --runner claude \
   --status-dir "$TMP/status-p17" p17-task 'do something')
@@ -328,7 +336,8 @@ for m in standby superpowers; do
 done
 
 # --- P21: standby (prompt なし・--skip-permissions なし) + 注入不能 B ---
-# :795 の splice の担保者。B は既存ファイルが不正 JSON でマージが拒否されるケース。
+# PERM_FALLBACK_FLAG の standby/review (prompt 無し分岐) への splice の担保者。
+# B は既存ファイルが不正 JSON でマージが拒否されるケース。
 repo=$(new_repo p21); break_b "$repo"
 out=$(run_launch_err "$TMP/err-p21" --cwd "$repo" --mode standby --runner claude \
   --status-dir "$TMP/status-p21" p21-standby)
@@ -340,7 +349,7 @@ else
   bad 'P21 invalid JSON takes the fallback and is left untouched'
 fi
 
-# --- P22: worktree 再利用 (:575 の短絡経路) ---
+# --- P22: worktree 再利用 (CURRENT_DEFAULT_MODE 一致による短絡経路) ---
 # prewarm は全ペインに同一 --cwd を渡すので 2 枚目以降は必ずここを通る実運用の主経路。
 repo=$(new_repo p22)
 run_launch --cwd "$repo" --mode superpowers --runner claude \
@@ -366,9 +375,10 @@ out=$(run_launch --cwd "$repo" --mode standby --runner claude --unattended \
   || bad  'P23 --unattended never doubles the flag'
 
 # --- P24: standby (prompt なし・--skip-permissions なし) + 注入不能 C ---
-# :795 の担保者。A と B は merge_claude_settings が 1 を返すので、戻り値で分岐した
-# 実装でも P24 と P28（merge は 0 を返すが confirmed ではない）以外は全部通る。
-# 「P22 があるから P24 は冗長」という判断でこの穴を復活させないこと。
+# PERM_FALLBACK_FLAG の standby/review (prompt 無し分岐) への splice の担保者かつ、
+# settings.local.json がディレクトリのまま残る (break_c) 唯一のケース。
+# 「P22 があるから P24 は冗長」という判断でこの穴を復活させないこと。単独担保者の列挙は
+# ケースを足すたびに腐るので、この説明では挙げない。
 repo=$(new_repo p24); break_c "$repo"
 out=$(run_launch_err "$TMP/err-p24" --cwd "$repo" --mode standby --runner claude \
   --status-dir "$TMP/status-p24" p24-standby)

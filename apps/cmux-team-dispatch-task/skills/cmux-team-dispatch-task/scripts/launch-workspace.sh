@@ -621,11 +621,11 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
     EFFECTIVE_DEFAULT_MODE=$(jq -r '.permissions.defaultMode // ""' \
       "$CWD/.claude/settings.local.json" 2>/dev/null || echo "")
     # 先に 64 文字へ切り詰めてからサニタイズする。逆順だと bash 3.2 の ${var//[^…]/} が
-    # 除去対象の文字を多く含む長い EFFECTIVE_DEFAULT_MODE (直上の jq -r は -s を付けて
-    # いないため、連結 JSON ドキュメントでは全ドキュメント分の値が改行連結されて返る。
-    # 単一ドキュメントでも defaultMode 自体が長ければ同じ経路に乗る) に対して超線形になり、
-    # launch を実質ハングさせる (実測: 数千文字で数分以上)。切り詰めを先にすれば入力は
-    # 常に 64 文字以下に収まり、この経路のコストは定数になる。
+    # 除去対象を 1 つでも含む (先頭付近を除き) 長い EFFECTIVE_DEFAULT_MODE (直上の jq -r は
+    # -s を付けていないため、連結 JSON ドキュメントでは全ドキュメント分の値が改行連結されて
+    # 返る。単一ドキュメントでも defaultMode 自体が長ければ同じ経路に乗る) に対して長さの
+    # 二次関数的なコストになり、1 万文字を超えると launch を数分単位で止める。切り詰めを
+    # 先にすれば入力は常に 64 文字以下に収まり、この経路のコストは定数になる。
     EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE:0:64}"
     EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE_LOG//[^A-Za-z0-9_-]/}"
     # 生値と潰した値の長さを併記する。これが無いと near-miss 値 (例 ["bypassPermissions"])
