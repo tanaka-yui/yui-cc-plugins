@@ -157,7 +157,11 @@ run_guard() {  # 追加の引数をそのまま渡す。GUARD_OUT に stdout、G
   if kill -0 "$gp" 2>/dev/null; then
     kill_tree "$gp"
     bad "run_guard did not return within $((GUARD_BOUND_TICKS / 10))s: $*"
-    return
+    # ここで打ち切る。上限に掛かるのは fd 漏れのような構造的な退行だけで、その場合は
+    # 長命 watcher を起こす後続ケースがすべて同じように詰まる (実測: 打ち切らないと
+    # 1 実行あたり 10 分以上かかる)。診断は既に出ているので即座に落とす。
+    echo '--- failures ---'
+    exit 1
   fi
   GUARD_OUT=$(cat "$TMP/run_guard.out" 2>/dev/null || true)
   GUARD_RC=$(cat "$TMP/run_guard.rc" 2>/dev/null || echo 0)
@@ -413,6 +417,23 @@ else
   bad 'AR22 no pid was reported'
 fi
 
+# --- AR22b: 同一セッションの非数値 suffix も「自分」と誤認しない ---
+# guard_my_norm_id の session-id フィルタが `"$SID"|"$SID".*` と緩いと、
+# `s22b.0abc` (glob 順で純数字の `.222` より前) が手順 5 の `^[0-9]+$` 判定を
+# 通らないまま「自分」として採用され、AR22 と同じ形で健全な watcher を殺す。
+reset_case
+AGMSG_STUB_DECOY_ID="s22b.0abc" CLAUDE_CODE_SESSION_ID=s22b AGMSG_STUB_INSTANCE_ID="s22b.222" \
+      AGMSG_STUB_MODE=alive run_guard --type claude-code --name "ar-$$-22b"
+out="$GUARD_OUT"
+[[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* ]] \
+  || bad "AR22b a non-numeric suffix must not be accepted as the guard's own id (got $out)"
+[[ -f "$AGMSG_READY_DIR/watch.s22b.0abc.pid" ]] || bad 'AR22b the decoy pidfile was not written'
+ar22b_pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+if [[ -n "$ar22b_pid" ]]; then
+  kill -0 "$ar22b_pid" 2>/dev/null || bad 'AR22b the guard must not kill its own healthy watcher'
+  FIXTURE_PIDS+=("$ar22b_pid")
+fi
+
 # --- AR6: 正常系 ---
 reset_case
 CLAUDE_CODE_SESSION_ID=s6 AGMSG_STUB_INSTANCE_ID="s6.222" AGMSG_STUB_MODE=alive \
@@ -593,15 +614,24 @@ assert_line "$out" AR23
 ar23_watcher=$(cat "$AGMSG_READY_DIR/watch.s23.222.pid" 2>/dev/null || true)
 [[ -n "$ar23_watcher" ]] && FIXTURE_PIDS+=("$ar23_watcher")
 
-# --- AR24: 20 桁の AGMSG_READY_TIMEOUT でも rc 0 で 1 行 ---
-# 桁数上限を外すと `seq 1 <巨大>` が xrealloc の致命エラーになり、EXIT trap すら
-# 走らずに 0 行 rc 2 が返る (1 行契約がこの入力だけで破れる)。
+# --- AR24: 20 桁の AGMSG_READY_TIMEOUT でも rc 0・1 行・有限時間で戻る ---
+# 桁数上限を外すと `deadline=$(( 99999999999999999999 * 5 ))` が 64bit 算術で
+# 1937910009842106363 へラップし、待機が事実上無限になる (旧実装ではさらに
+# `seq 1 <巨大>` が xrealloc の致命エラーになり、EXIT trap すら走らずに 0 行 rc 2)。
+# sentinel を書かない watcher を相手にして「既定の 15 秒で start-timeout する」
+# ところまで見ないと上限が効いているか確かめられない。
 reset_case
+ar24_start=$SECONDS
 AGMSG_READY_TIMEOUT=99999999999999999999 CLAUDE_CODE_SESSION_ID=s24 \
-  AGMSG_STUB_MODE=silent-exit run_guard --type claude-code --name "ar-$$-24"
+  AGMSG_STUB_INSTANCE_ID="s24.222" AGMSG_STUB_MODE=no-sentinel \
+  run_guard --type claude-code --name "ar-$$-24"
 out="$GUARD_OUT"
 [[ $GUARD_RC -eq 0 ]] || bad "AR24 a 20-digit AGMSG_READY_TIMEOUT must not crash the guard (rc=$GUARD_RC)"
 [[ -n "$out" ]] || bad 'AR24 the guard printed no line'
+[[ "$out" == *"reason=start-timeout"* || "$out" == *"reason=orphan-watcher"* ]] \
+  || bad "AR24 expected the capped default timeout to expire (got $out)"
+[[ $((SECONDS - ar24_start)) -lt 40 ]] \
+  || bad "AR24 the 4-digit cap did not apply (waited $((SECONDS - ar24_start))s)"
 
 # --- AR25: 先頭ゼロの AGMSG_READY_TIMEOUT は既定値へ倒す ---
 # bash 算術は先頭ゼロを 8 進として読む。`08` / `0018` は不正な 8 進数字で

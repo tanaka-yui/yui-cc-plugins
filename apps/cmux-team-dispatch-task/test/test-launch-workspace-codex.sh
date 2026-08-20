@@ -172,6 +172,17 @@ else
   echo 'PASS: CR1d must not create an agmsg tree when agmsg is not installed'
 fi
 
+# --- CR1e: AGMSG_SKILL_DIR にシェルメタ文字があれば --add-dir を付けない ---
+# composed command は `zsh -ic "... --add-dir '<path>' ..."` の二重引用で、
+# launch-workspace.sh はエスケープしない。`'` を含むパスをそのまま埋めると引用符が
+# 破れて後続が別トークンになる。B8 の mkdir -p もこの未検証値を引数に取るので、
+# 検出したときは --add-dir もツリー作成もしない (fail-closed)。
+QUOTED_AGMSG="$TMP/qu'ote-agmsg"; mkdir -p "$QUOTED_AGMSG/run" "$QUOTED_AGMSG/db"
+cr1e_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$QUOTED_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv5 prompt 2>/dev/null)
+cr1e_runner=$(jq -r '.runner_file' <<<"$cr1e_output")
+assert_not_contains "$cr1e_runner" "qu'ote-agmsg" 'CR1e a quoted AGMSG_SKILL_DIR must not be injected'
+
 # --- LW1: runner script に AGMSG_EXPECTED_NAME が入る ---
 lw1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \

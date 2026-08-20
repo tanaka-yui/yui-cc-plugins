@@ -246,6 +246,25 @@ grep -q 'ensure-agmsg-ready.sh' "$TMP/argv-pw5b.log" \
 jq -e '.design.watcher == "none"' "$TMP/status-pw5b/prewarm.json" >/dev/null \
   && pass 'PW5b design watcher は none' || bad 'PW5b design watcher が none ではない'
 
+# --- PW5c: SCRIPT_DIR にシェルメタ文字があるときも guard を注入しない ---
+# 空白と同根。composed command は `zsh -ic "... '<prompt>' ..."` の二重引用なので、
+# `'` を含むパスを埋めると引用符が破れて後続が別トークンになる。
+QT_DIR="$TMP/qu'ote-dir/scripts"
+mkdir -p "$QT_DIR" "$TMP/qu'ote-dir/repo-pw5c"
+cp "$PREWARM" "$QT_DIR/prewarm-panes.sh"
+cp "$TMP/scripts/launch-workspace.sh" "$QT_DIR/launch-workspace.sh"
+chmod +x "$QT_DIR/launch-workspace.sh"
+: > "$TMP/argv-pw5c.log"
+ARGV_LOG="$TMP/argv-pw5c.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  bash "$QT_DIR/prewarm-panes.sh" --with-design --agmsg-team demo-team \
+    --cwd "$TMP/qu'ote-dir/repo-pw5c" --slug pw5c --status-dir "$TMP/status-pw5c" \
+    --claude-runner claude --exec-choice claude >/dev/null
+grep -q 'ensure-agmsg-ready.sh' "$TMP/argv-pw5c.log" \
+  && bad 'PW5c SCRIPT_DIR にメタ文字があるのに guard を注入した' \
+  || pass 'PW5c SCRIPT_DIR にメタ文字があるときは guard を注入しない'
+jq -e '.design.watcher == "none"' "$TMP/status-pw5c/prewarm.json" >/dev/null \
+  && pass 'PW5c design watcher は none' || bad 'PW5c design watcher が none ではない'
+
 # --- PW6: delivery.sh の AGMSG-DIRECTIVE 出力が prewarm-panes.sh 自身の stderr へ
 #     漏れない (wire_delivery のリダイレクト修正の回帰) ---
 mkdir -p "$TMP/repo-pw6"
