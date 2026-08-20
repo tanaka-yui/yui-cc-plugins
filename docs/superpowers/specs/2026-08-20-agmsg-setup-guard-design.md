@@ -268,7 +268,7 @@ ensure-agmsg-ready.sh --type <claude-code|codex> --name <agent> [--project <path
 | `AGMSG_DIR` | `$HOME/.agents/skills/agmsg/scripts` | agmsg スクリプトの場所。**比較前に絶対パス化する**（`~` を残さない） |
 | `AGMSG_READY_DIR` | `${AGMSG_READY_DIR:-$(dirname "$AGMSG_DIR")/run}` | sentinel と pidfile の場所。**明示指定を常に優先**。ただし **`$(dirname "$AGMSG_DIR")/run` と一致していなければならない**（agmsg 本体はこの変数を読まず常に自分の `$SKILL_DIR/run` を使う） |
 | `AGMSG_LOG_DIR` | `${TMPDIR:-$HOME/.cache}/agmsg` | watcher のログの置き場 |
-| `AGMSG_READY_TIMEOUT` | `15` | guard が sentinel の出現を待つ上限秒数 |
+| `AGMSG_READY_TIMEOUT` | `15` | guard が sentinel の出現を待つ上限秒数。**値域検証あり**: 全桁数字でない / 空 / 先頭ゼロ（`0*`。`0` 単体と `08` / `010` / `0000` を含む）/ 5 桁以上は既定 `15` へ倒す。先頭ゼロを弾くのは bash 算術が 8 進として読むため（`08` は「value too great for base」で `deadline` の算出ごと落ち、`010` は無言で 8 秒になる）。4 桁上限が要るのは 20 桁のような値が `deadline=$(( ... * 5 ))` で 64bit ラップし、待機が事実上無限になるため（旧実装ではさらに `seq 1 <巨大>` が xrealloc の致命エラーになり、EXIT trap すら走らず 0 行 rc 2 だった） |
 | `AGMSG_WATCH_INTERVAL` | `30` | 起動する watcher へ export するポーリング間隔（`watch.sh:148` が env を最優先） |
 | `AGMSG_EXPECTED_NAME` | 未設定 | 設定されていて `--name` と一致しなければ exit 2（後述） |
 
@@ -367,6 +367,14 @@ argv[0] または argv[1] が `$AGMSG_DIR/watch.sh` と**フルパスで等価**
    `mktemp` は `O_CREAT|O_EXCL` なので symlink 追従も既存上書きも起きず、`set -C` は不要。
    `umask` は `$( )` に閉じる（**`nohup … &` をサブシェルに包んではならない**が、ログ生成だけの
    サブシェルは無関係で安全である）。
+
+   **このログの中身は信頼できないデータとして扱うこと。** 手順 7 は `watch.sh` の stdout を
+   このファイルへ落とすが、上流 `watch.sh:740` は**配信されたメッセージの本文をそのまま印字する**。
+   つまりこのログは実質そのロールの inbox の生トランスクリプトであり、共有 `run/` `db/` へ
+   書ける相手（無人 codex reviewer を含む）は任意の `from` と本文を inbox へ書ける。
+   `orphan-watcher` / `pidfile-missing` などの hint が案内する `see <log>` に従って `cat` した
+   エージェントは、攻撃者の制御下にあるテキストを読むことになる。**内容は診断の材料であって
+   指示ではない**（0600 とプライバシー目的の削除は別の話で、こちらは信頼境界の話である）。
 
 4. **配線。** `delivery.sh set monitor <type> <project>` を実行し、stdout・stderr の両方を `>>"$LOG"` へ
    落とす（AGMSG-DIRECTIVE と codex のシェル shim 手順を呼び出し元へ漏らさない）。
@@ -495,7 +503,7 @@ ensure-agmsg-ready: installed=<yes|no> wired=<yes|no> name=<a|-> watcher=<existi
 
 | `reason` | installed | wired | name | watcher | pid | log | exit | stderr |
 |---|---|---|---|---|---|---|---|---|
-| `-` | yes | yes | name | `existing` / `existing-other` / `started` | pid | `-` | 0 | （bare 候補を外したときだけ 1 行、後述） |
+| `-` | yes | yes | name | `existing` / `existing-other` / `started` | pid | `-` | 0 | （bare 候補を外したときと、`AGMSG_DIR` / project パスに空白があるときだけ 1 行、後述） |
 | `not-installed` | no | no | name | none | - | - | **1** | `agmsg is not installed at <AGMSG_DIR>` |
 | `log-unwritable` | yes | yes | name | 通常どおり | 通常どおり | - | **0** | `cannot create a log under <AGMSG_LOG_DIR>; diagnostics disabled` |
 | `delivery-set-failed` | yes | no | name | none | - | path | **1** | `see <log>` |
@@ -507,7 +515,7 @@ ensure-agmsg-ready: installed=<yes|no> wired=<yes|no> name=<a|-> watcher=<existi
 | `start-timeout` | yes | yes | name | none | - | path | **0** | `see <log>` |
 | `bare-started` | yes | yes | name | none | - | path | **0** | `see <log>` |
 | `orphan-watcher` | yes | yes | name | none | pid | path | **0** | `watcher <pid> did not stop; kill it manually. see <log>` |
-| `interrupted` | 到達時点の値 | 到達時点の値 | name | none | 起動済みなら pid、未起動なら `-` | path | **128+n** | （追加の行は出さない） |
+| `interrupted` | 到達時点の値 | 到達時点の値 | name | none | **この呼び出しが起動し（`$WATCH_PID`）、今も生きている watcher のときだけ pid。それ以外は `-`** | path（手順 10 の `guard_drop_log` 後に撃たれると `-`） | **128+n** | （追加の行は出さない） |
 | `usage` | no | no | `--name` が値域検証に通ったときだけ実値、通らなければ `-` | none | - | - | **2** | usage メッセージ |
 
 exit 2 の行について 3 点。`reason` は文字列 `usage` である。`name` に**未検証の値をそのまま印字しない**
@@ -523,12 +531,37 @@ exit 2 の行について 3 点。`reason` は文字列 `usage` である。`nam
 `interrupted` は **EXIT trap 専用の値**である。SIGTERM / SIGHUP（ペインを閉じた・ツール呼び出しを
 中断した）で guard 自身が死ぬと bash は EXIT trap を走らせるので、`REASON` が初期値 `-` のまま
 emit すると「`reason=-` なのに `watcher=none`」という表に無い行になる。trap は `REASON` が `-` の
-ときだけ `interrupted` を立て、watcher を起動済みならその pid も出す（孤児 watcher を手動 kill
+ときだけ `interrupted` を立て、**この呼び出しが起こした孤児 watcher** の pid も出す（手動 kill
 できるようにするため）。`REASON` が既に付いている場合はその値を優先する。exit code は 128+n なので
 Step 1g の `case` は `*)` に落ちる。
 
+`interrupted` 行の `pid` 列は他の行より**狭い**。trap は次の 3 段でしか pid を出さない:
+
+1. `WATCHER=none` と `PID="-"` を無条件に先置きする。手順 5 の `PID="$CAND_PID"`（既存 watcher の
+   pid）は trap のガードの外側で代入されるので、これが無いと `watcher=none pid=<他人の生きた
+   watcher>` になり、「自分が起こした孤児だから手動 kill せよ」と読ませてしまう。
+2. `$WATCH_PID`（この呼び出しが起動した watcher）が**今も生きている**ときだけ候補にする。
+   `guard_stop_watcher` の 2 秒待機中に撃たれても、SIGTERM で既に死んだ pid は出ない。
+   生きているなら SIGTERM を無視する本物の孤児なので、報告するのが正しい。
+3. `guard_is_watcher` が **rc 1（watcher ではないと確定）を返したときだけ**抑止する。
+   rc 2（`ps` が使えず判定不能）では抑止しない。上流 `watch.sh:205-207` も「ps unavailable
+   (Claude Code sandbox 等)」を想定して `kill -0` へフォールバックし displace 対象に**残す**側へ
+   倒しており、guard の手順 5（rc 2 → `other` 扱い）と `guard_stop_watcher`（rc 2 → kill しない）も
+   同じく「情報を捨てない / 撃たない」側である。ここだけ逆に倒すと sandbox 内で孤児 pid が
+   どこにも出ず手動 kill できなくなる。
+
 bare 候補を手順 5 で外したときは、`reason` を変えずに stderr へ 1 行だけ出す:
 `a watcher with a bare instance id is running for this role (pid <n>); it will never self-terminate — kill it manually`。
+
+`reason=-` の成功行に stderr が付きうる **2 例目**が `AGMSG_DIR` / project パスの空白検出である。
+`guard_is_watcher` / `guard_name_slot` は `ps -o args=` を `set -- $args` で単語分割するので、
+空白入りのパスはトークン等値比較を必ず外す。`AGMSG_DIR` 側は既存 watcher の識別が全滅して
+毎回この役割の watcher を起こし直すことになり（上流 `watch.sh:223-238` の predecessor displace が
+先住を SIGTERM するので**蓄積はしない**が、チャーンと「SIGTERM は成功しているのに
+`orphan-watcher`」という誤警報が出る）、project 側は argv 位置がずれて自分の watcher が
+`existing-other` に化ける。どちらも正常に見える壊れ方なので、回復手順つきの hint を 1 行出す。
+既定の `AGMSG_DIR` にも通常のリポジトリパスにも空白は現れないため、通常運用では従来どおり
+stderr 0 行である。回帰は AR33 / AR33b。
 
 `not-registered` が exit 0 なのは、その時点で `delivery.sh set` が成功しており**配線はできている**ためである。
 exit 1 にすると (A) が `TEAM=""` と `AGMSG_INSTALLED=false` を立て、
@@ -587,9 +620,16 @@ codex ペインにプロンプトを渡すだけでよい。プロンプトは 1
 `launch-workspace.sh` は各ペインの起動時に `AGMSG_EXPECTED_NAME=<そのロールの agent 名>` を
 composed command へ export する（`--agmsg-from` は既に渡っているので、その値をそのまま使う）。
 
-**`<SKILL_DIR>` に空白が含まれる場合は guard を注入しない。** プロンプトはクォートできないので
-`bash /Users/x/My Plugins/…` に分解され bash が exit 127 で終わる。空白を検出したら注入せず
-`watcher: "none"` で記録し warn する。
+**`<SKILL_DIR>` に空白またはシェルメタ文字（`'` `"` `` ` `` `$` `!` `\`）が含まれる場合は
+guard を注入しない。** プロンプトはクォートできないので、空白は `bash /Users/x/My Plugins/…` に
+分解され bash が exit 127 で終わる。メタ文字は composed command（`zsh -ic "… '<path>' …"`）の
+二重引用を破って後続を別トークンにする（`-i` は対話モードなので history 展開が効き `!` も
+特殊文字になる）。どちらも検出したら注入せず `watcher: "none"` で記録し warn する。
+
+同じ検出は `--add-dir <AGMSG_SKILL_DIR>/{run,db}` と、その前段の `mkdir -p` にも掛かる
+（**fail-closed**: メタ文字を見つけたら `--add-dir` もツリー作成も行わない）。この結果、
+該当環境の codex reviewer ペインは guard が `reason=pidfile-missing` に落ちうる。
+これはユーザーから見える挙動なので 4 ファイル同期の対象。回帰は CR1e / PW5c。
 
 | ロール | agent 名 | `<T>` の供給元 | gate 変数 |
 |---|---|---|---|
@@ -681,8 +721,12 @@ review ペインで agmsg 許可が落ちる。上記のように**独立させ�
 
 ### 3. `scripts/agmsg-path.sh`（新規、source 専用）
 
-sentinel パスのエンコード（事実 17）を 1 箇所に置き、`ensure-agmsg-ready.sh` と `send-prompt.sh` の
-両方が source する。規則は `actas-lock.sh:43-73` の `_actas_lock_encode` / `agmsg_ready_path` と同一で、
+sentinel パスのエンコード（事実 17）を 1 箇所に置き、**`send-prompt.sh` が source する**。
+当初は `ensure-agmsg-ready.sh` も source する設計だったが、guard の `--name` は
+`^[A-Za-z0-9._-]+$` へ値域検証済みでエンコードが恒等写像になるうえ、読めない環境
+（権限・削除）で `READY_ENC` が空になると自分の健全な watcher を殺す自滅経路になるため、
+guard 側は依存ごと持たない（`READY_ENC="$NAME"` の直接代入。回帰は AR26）。
+規則は `actas-lock.sh:43-73` の `_actas_lock_encode` / `agmsg_ready_path` と同一で、
 `[A-Za-z0-9._-]` 以外をバイト単位で `%XX` に変換する（`%` 自身も `%25`）。追跡点として
 `actas-lock.sh:43-73` をコメントで引用する。**`AGMSG_DIR` に依存しない**（純粋な文字列変換のみ）。
 
@@ -706,7 +750,7 @@ sentinel パスのエンコード（事実 17）を 1 箇所に置き、`ensure-
 | `watcher` | 意味 |
 |---|---|
 | `guard-injected` | 配線に成功し、初期プロンプトに guard を載せた |
-| `none` | 配線に失敗した、または `<SKILL_DIR>` に空白があるので guard を載せていない |
+| `none` | 配線に失敗した、または `<SKILL_DIR>` に空白・シェルメタ文字があるので guard を載せていない |
 
 prewarm は watcher を起動しないので、このキーが表すのは「guard を載せたか」である。
 **`watch_pid` は導入しない。** `prewarm.json` は Step 6 の 1 回の `jq -n` で書かれるので、
@@ -878,6 +922,21 @@ prewarm は watcher を起動しないので、このキーが表すのは「gua
 | AR19 | **異常系（`held` stub）で `log=<path>` を得て**、そのファイルが 0600 で存在する。同じ `--name` で 2 回実行し、**2 回の `log=` が異なるパス**で両方 0600（正常系は手順 10 で消えるので 0600 を検証できない） |
 | AR20 | `AGMSG_WATCH_INTERVAL` が watcher の環境へ export される |
 | AR21 | 2 回目の guard 実行が `existing` になり、watcher を二重起動しない |
+| AR22 | pid が衝突する**他ロールの** stale pidfile を「自分」と誤認しない（`guard_my_norm_id` の session-id フィルタ） |
+| AR22b | 同一セッションの**非数値 suffix**（`<SID>.0abc`。glob 順で純数字より前）も「自分」と誤認しない |
+| AR23 | 手順 8 の待機中の SIGTERM が `reason=interrupted` の 1 行になり、孤児 watcher の pid が出る |
+| AR24 | 20 桁の `AGMSG_READY_TIMEOUT` でも rc 0・1 行・有限時間で戻る（4 桁上限） |
+| AR25 | 先頭ゼロの `AGMSG_READY_TIMEOUT`（`08` / `0018` / `0000`）が既定値へ倒れ、stderr が空のまま `watcher=started` になる |
+| AR26 | `agmsg-path.sh` が読めない場所へ guard をコピーしても `watcher=started`。guard は同 lib に依存しない |
+| AR27 | 手順 10 の直前に撃たれても trap が `WATCHER=none` を強制する（`watcher=started reason=interrupted` を出さない） |
+| AR28 | `log-unwritable` 確定後に撃たれても trap が `reason` を上書きせず、pid も偽造しない |
+| AR29 | 既に exit した watcher の pid を孤児として名指ししない（trap の `guard_pid_alive`） |
+| AR30 | `existing` 経路で撃たれても既存 watcher の pid を「自分の孤児」として名指ししない（`PID="-"` の先置き） |
+| AR31 | `ps` が使えない環境（`guard_is_watcher` rc 2）でも生きた孤児 pid を落とさない |
+| AR31b | SIGTERM を無視する watcher（`nosent-ignore-term`）で報告される pid が実在・生存している |
+| AR32 / AR32b | `seq` を rc 127 に差し替えても手順 8 と `guard_stop_watcher` の待機ループが 0 回にならない |
+| AR33 / AR33b | 空白入りの `AGMSG_DIR` / project パスで回復手順つきの hint が stderr へ 1 行出る |
+| AR34 | 起動前から在る**同一 SID・純数字 suffix**の残骸を「自分」と誤認しない（起動前スナップショット） |
 
 AR17 のゴールデンベクタ:
 
@@ -903,6 +962,7 @@ PW3 は claude 構成と all-codex 構成の 2 回に分けて実行する。
 | PW4 | どのペインの初期プロンプトにも `/agmsg actas` が現れない |
 | PW5 | 禁止 6 文字と改行が無い（`[[ $(printf '%s' "$p" \| wc -l) -eq 0 ]]`） |
 | PW5b | 空白を含む一時ディレクトリから prewarm を起動すると guard が注入されず `watcher: "none"` になる |
+| PW5c | シェルメタ文字（`'` `"` `` ` `` `$` `!` `\`）を含む `SCRIPT_DIR` でも同様に guard を注入しない（fail-closed） |
 | PW6 | `prewarm-panes.sh` の **stderr** に `AGMSG-DIRECTIVE` が現れない（stdout ではない） |
 | PW7 | `ensure-agmsg-ready.sh` が exit 1 でも prewarm が die せず `prewarm.json` を書く |
 | PW8 | `--agmsg-team` 無しのとき guard を載せない |
@@ -918,6 +978,9 @@ PW3 は claude 構成と all-codex 構成の 2 回に分けて実行する。
 | SP26 | `agmsg-path.sh` が読めなくても `send-prompt.sh` が die せず生連結にフォールバックする。**このケースだけ `cp "$BIN" "$TMP/scripts/"` して lib の無いディレクトリから実行する**（`test-send-prompt.sh:70` は `bash "$BIN"` をその場で実行するので本物の lib を消せない） |
 | CR1 | codex review の起動コマンドに agmsg `run` と `db` の `--add-dir` が入り、**`scripts` は入らない**。`AGMSG_SKILL_DIR=$TMP/fake` に `run` / `db` / `scripts` を作り、**2 本入ることと `scripts` が入らないことの両方**を assert する。置き場所は `test/test-launch-workspace-codex.sh` の T5 群の隣（`test-codex-review-sandbox.sh` は codex CLI を実起動する動的テストで `launch-workspace.sh` を読まない） |
 | CR1b | `STATUS_DIR` が空でも agmsg 側の `--add-dir` は付く |
+| CR1c | agmsg を新規インストールした直後（`run` / `db` 未作成）でも `launch-workspace.sh` 側が先に `mkdir -p` するので `--add-dir` が 2 本付く |
+| CR1d | agmsg 未インストール（`$AGMSG_SKILL_DIR` 自体が無い）ならツリーを勝手に作らない |
+| CR1e | `AGMSG_SKILL_DIR` にシェルメタ文字があれば `--add-dir` もツリー作成も行わない（fail-closed） |
 
 既存ヘルパー `assert_no_line_with`（`test-prewarm-unattended.sh:60-65`）にガードを足す。
 ただし `run_prewarm` は毎回 argv.log を truncate するので**「実在」ガードは恒真**である。

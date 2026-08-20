@@ -406,6 +406,15 @@ prewarm design codex pane launches with `--mode standby`, `prewarm-panes.sh` pas
 The composed command is always wrapped: `zsh -ic "<composed>"` so that `~/.zshrc`
 functions (e.g. `ccenec`) and env (proxy auth, PATH) are loaded for the child session.
 
+The two agmsg `--add-dir` flags in the review row are conditional in two ways. They are
+omitted when agmsg is not installed, and they are **omitted fail-closed** when
+`<AGMSG_SKILL_DIR>` contains a shell metacharacter (`'` `"` `` ` `` `$` `!` `\`): the
+composed command is not escaped, so such a path would break out of the surrounding
+quoting. The same check gates the `mkdir -p` that creates `run/` and `db/` beforehand —
+under this condition neither the flags nor the tree are created. A codex review pane
+launched that way can therefore have its guard land on `reason=pidfile-missing`, which is
+the intended, visible fallback rather than a broken command line.
+
 Regardless of MODE, when the resolved runner engine is `claude`, the script
 injects `permissions.defaultMode: "bypassPermissions"` into the worktree's
 `.claude/settings.local.json` (merged with `jq`, atomically via `mktemp` + `mv`,
@@ -2186,9 +2195,11 @@ Then dispatch the Phase A task to the design pane:
    and removed on exit. Agent names here are already validated to
    `^[A-Za-z0-9._-]+$` at every call site, so they need no further encoding, but
    team names (e.g. `dispatch-<repo-name-with-spaces>`) are not slug-restricted —
-   the team half of the path is percent-encoded (`agmsg-path.sh`, shared by the
-   guard and `send-prompt.sh`) so a repo name containing spaces or other
-   non-slug characters still resolves to the same path agmsg itself writes.
+   the team half of the path is percent-encoded (`agmsg-path.sh`, a
+   `send-prompt.sh`-only helper — the guard does not source it because its
+   `--name` is already validated to that charset, making the encoding an
+   identity map) so a repo name containing spaces or other non-slug characters
+   still resolves to the same path agmsg itself writes.
    It gates ONLY the inbox copy. It proves that a
    watcher PROCESS is alive, not that the pane can be woken: the same sentinel is
    written whether the watcher runs under a mechanism that injects into an idle

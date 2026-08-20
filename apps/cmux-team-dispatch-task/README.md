@@ -384,6 +384,14 @@ approval prompt を防ぐため bypass を使います。一方で review ペイ
 `.dispatch/<slug>/review/` への findings 書込みと agmsg の run/db ディレクトリへのアクセスだけを
 許可します。
 
+agmsg 側の 2 本が「条件付き」なのは、agmsg 未インストール時に落ちるからだけではありません。
+`<AGMSG_SKILL_DIR>` にシェルメタ文字（`'` `"` `` ` `` `$` `!` `\`）が含まれるときも **fail-closed で
+落とします**（composed command はエスケープしないので、そのようなパスは引用を破ってしまうため）。
+同じ判定は `run/` `db/` を先に作る `mkdir -p` にも掛かるので、この条件下ではフラグもツリーも
+作られません。その結果、該当環境の codex レビューペインでは agmsg watcher の setup guard が
+`reason=pidfile-missing` に落ちることがあります（壊れたコマンドラインを流すより安全な、
+意図されたフォールバックです）。
+
 **委譲**（in-session 条件が不成立）が選ばれた場合の挙動:
 
 - prewarm 経路では待機中の executor pane（`prewarm.json.executors.claude` / `.executors.codex`）に実行指示を送るだけで済む。prewarm 無効時は Child セッションが `launch-workspace.sh --mode execute --plan-file <path> --runner <EXEC_RUNNER> [--model <X>] [--skip-permissions]` を呼び、新しい workspace で実装を開始する

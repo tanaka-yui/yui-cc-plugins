@@ -580,6 +580,13 @@ agmsg watcher 用の `--add-dir <AGMSG_SKILL_DIR>/run` と `--add-dir <AGMSG_SKI
 3本の `--add-dir` を条件付きで指定する。これにより approval prompt を抑止しつつ、worktree 外の
 `<STATUS_DIR>/review/` への findings 書込みと agmsg の run/db ディレクトリへのアクセスだけを許可する。
 
+agmsg 側の 2 本が「条件付き」なのは 2 つの意味がある。agmsg 未インストール時に落ちるのに加えて、
+`<AGMSG_SKILL_DIR>` にシェルメタ文字（`'` `"` `` ` `` `$` `!` `\`）が含まれるときも **fail-closed で
+落とす**。composed command はエスケープしないので、そのようなパスは周囲の引用を破ってしまうため。
+同じ判定は `run/` `db/` を先に作る `mkdir -p` にも掛かり、この条件下ではフラグもツリーも作らない。
+その結果、該当環境の codex レビューペインは guard が `reason=pidfile-missing` に落ちうるが、これは
+壊れたコマンドラインを流すより望ましい、意図された可視のフォールバックである。
+
 **in-session 実行時のペイン**
 
 `prewarm.json` に存在する未使用の standby/review ペインは **閉じずに
@@ -909,7 +916,8 @@ Phase B を続行する。
    そのロールを受信中の間だけ作成するファイル。agent 名はどの呼び出し箇所でも既に
    `^[A-Za-z0-9._-]+$` として検証済みなので、これ以上のエンコードは不要。一方 team 名
    （例: `dispatch-<空白を含むリポジトリ名>`）は slug 制約が無いため、パスの team 側だけ
-   percent-encode される（`agmsg-path.sh`。guard と `send-prompt.sh` で共有）。これにより
+   percent-encode される（`agmsg-path.sh`。**`send-prompt.sh` 専用のヘルパー**で、guard は
+   `--name` が既に同じ文字集合へ値域検証済みでエンコードが恒等写像になるため source しない）。これにより
    空白などの非 slug 文字を含むリポジトリ名でも、agmsg 自身が書くのと同じパスに解決される。
    sentinel が判定するのは inbox 記録を行うかどうかだけであり、
    示しているのは「watcher プロセスが生きている」ことだけで「そのペインを起こせる」ことでは
