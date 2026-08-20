@@ -264,6 +264,128 @@ start_fixture "s4b.111" s4b /p claude-code "ar-$$-4b" >/dev/null
 PATH="$TMP/eperm:$PATH" CLAUDE_CODE_SESSION_ID=s4b run_guard --type claude-code --name "ar-$$-4b"
 grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR4b EPERM must be treated as alive'
 
+# --- AR6: 正常系 ---
+reset_case
+CLAUDE_CODE_SESSION_ID=s6 AGMSG_STUB_INSTANCE_ID="s6.222" AGMSG_STUB_MODE=alive \
+      run_guard --type claude-code --name "ar-$$-6"; out="$GUARD_OUT"; assert_line "$out"
+[[ $GUARD_RC -eq 0 && "$out" == *"watcher=started"* && "$out" == *" log=-" ]] || bad 'AR6'
+[[ -f "$AGMSG_READY_DIR/watch.s6.222.pid" ]] || bad 'AR6 pidfile must be composite'
+ls "$AGMSG_LOG_DIR"/agmsg-watch-* >/dev/null 2>&1 && bad 'AR6 the log must be removed on success'
+# AR7: pid が watch.sh 本体であること
+pid=$(printf '%s' "$out" | sed -n 's/.* pid=\([0-9]*\) .*/\1/p')
+guard_ps=$(ps -ww -p "$pid" -o args= 2>/dev/null)
+[[ "$guard_ps" == *"$AGMSG_DIR/watch.sh"* ]] || bad 'AR7 pid is not the watch.sh process'
+# AR20: interval が export される
+grep -q '^watch.sh|30|' "$AGMSG_STUB_LOG" || bad 'AR20 AGMSG_WATCH_INTERVAL was not exported'
+
+# --- AR21: 2 回目は existing ---
+: > "$AGMSG_STUB_LOG"
+CLAUDE_CODE_SESSION_ID=s6 run_guard --type claude-code --name "ar-$$-6"; out="$GUARD_OUT"
+[[ "$out" == *"watcher=existing"* ]] || bad 'AR21 second run must not start a second watcher'
+grep -q 'watch.sh' "$AGMSG_STUB_LOG" && bad 'AR21 must not launch again'
+
+# --- AR8: watcher 生存中でもコマンド置換が戻る（ハング検出は自前 watchdog） ---
+reset_case
+( CLAUDE_CODE_SESSION_ID=s8 AGMSG_STUB_INSTANCE_ID="s8.222" AGMSG_STUB_MODE=alive \
+  bash "$GUARD" --type claude-code --name "ar-$$-8" >"$TMP/ar8.out" 2>/dev/null ) &
+ar8=$!
+for _ in $(seq 1 100); do kill -0 "$ar8" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$ar8" 2>/dev/null; then kill -9 "$ar8" 2>/dev/null; bad 'AR8 guard did not return (fd leak)'; fi
+
+# --- AR9a-d: 分類 ---
+for m in held:held-by-other-session unregistered:not-registered \
+         db-error:db-unavailable silent-exit:watcher-exited; do
+  reset_case
+  mode="${m%%:*}"; want="${m##*:}"
+  start=$SECONDS
+  AGMSG_READY_TIMEOUT=10 CLAUDE_CODE_SESSION_ID="s9$mode" AGMSG_STUB_MODE="$mode" \
+        run_guard --type claude-code --name "ar-$$-9"; out="$GUARD_OUT"; assert_line "$out"
+  [[ "$out" == *"reason=$want"* ]] || bad "AR9 $mode -> $want (got $out)"
+  [[ $((SECONDS - start)) -lt 3 ]] || bad "AR9 $mode did not abort early"
+  [[ $GUARD_RC -eq 0 ]] || bad "AR9 $mode must exit 0"
+done
+
+# --- AR9e: decoy 行で誤分類しない ---
+reset_case
+CLAUDE_CODE_SESSION_ID=s9e AGMSG_STUB_INSTANCE_ID="s9e.222" AGMSG_STUB_MODE=decoy \
+      run_guard --type claude-code --name "ar-$$-9e"; out="$GUARD_OUT"
+[[ "$out" == *"watcher=started"* ]] || bad 'AR9e decoy body line must not be classified'
+
+# --- AR10 / AR10b: bare で起動した watcher は kill する ---
+reset_case
+CLAUDE_CODE_SESSION_ID=s10 AGMSG_STUB_INSTANCE_ID="s10" AGMSG_STUB_MODE=alive \
+      run_guard --type claude-code --name "ar-$$-10"; out="$GUARD_OUT"
+[[ "$out" == *"reason=bare-started"* && "$out" == *"watcher=none"* ]] || bad 'AR10'
+ls "$AGMSG_READY_DIR"/ready.* >/dev/null 2>&1 && bad 'AR10b the sentinel must be cleaned up'
+
+# --- AR11 / AR11b: timeout ---
+reset_case
+enc=$(bash -c "source '$SD/agmsg-path.sh'; agmsg_encode_component 'someone-else'")
+printf 'alive.1\n' > "$AGMSG_READY_DIR/ready.t__$enc"
+printf '%s\n' "$$" > "$AGMSG_READY_DIR/watch.alive.1.pid"
+CLAUDE_CODE_SESSION_ID=s11 AGMSG_STUB_INSTANCE_ID="s11.222" AGMSG_STUB_MODE=no-sentinel \
+      run_guard --type claude-code --name "ar-$$-11"; out="$GUARD_OUT"
+[[ "$out" == *"reason=start-timeout"* ]] || bad 'AR11'
+[[ -f "$AGMSG_READY_DIR/ready.t__$enc" ]] || bad 'AR11b must not remove another role sentinel'
+
+# --- AR12: 手順 8 の照合時に ps が空 → orphan-watcher ---
+reset_case
+mkdir -p "$TMP/lateps"
+cat > "$TMP/lateps/ps" <<STUB
+#!/usr/bin/env bash
+# 候補ゼロの新規起動では手順 5 は ps を呼ばないので、guard_stop_watcher の
+# guard_is_watcher 再照合 (手順 8) が最初の呼び出しになる。そこを空にする。
+n=\$(cat "$TMP/psn" 2>/dev/null || echo 0); n=\$((n+1)); echo \$n > "$TMP/psn"
+exit 0
+STUB
+chmod +x "$TMP/lateps/ps"; echo 0 > "$TMP/psn"
+PATH="$TMP/lateps:$PATH" CLAUDE_CODE_SESSION_ID=s12 AGMSG_STUB_INSTANCE_ID="s12.222" \
+      AGMSG_STUB_MODE=no-sentinel run_guard --type claude-code --name "ar-$$-12"; out="$GUARD_OUT"
+[[ "$out" == *"reason=orphan-watcher"* ]] || bad 'AR12'
+grep -q 'kill it manually' "$TMP/stderr.txt" || bad 'AR12 hint'
+
+# --- AR6c: 他セッションの sentinel があっても started にしない ---
+reset_case
+enc=$(bash -c "source '$SD/agmsg-path.sh'; agmsg_encode_component 'ar-$$-6c'")
+printf 'alive.1\n' > "$AGMSG_READY_DIR/ready.t__$enc"
+printf '%s\n' "$$" > "$AGMSG_READY_DIR/watch.alive.1.pid"
+CLAUDE_CODE_SESSION_ID=s6c AGMSG_STUB_MODE=held run_guard --type claude-code --name "ar-$$-6c"; out="$GUARD_OUT"
+[[ "$out" == *"reason=held-by-other-session"* ]] || bad 'AR6c must not report started'
+
+# --- AR6d: AGMSG_READY_DIR の指し違い ---
+# 実物の watch.sh は AGMSG_READY_DIR という環境変数を認識せず、常に固定の既定パス
+# ($AGMSG_READY_DIR の本来値) へ書く。stub は他の全テストのために $AGMSG_READY_DIR を
+# 尊重する作りなので、そのままだと guard と stub が常に同じ場所を見てしまい
+# 指し違いを再現できない。この 1 ケースだけ watch.sh を固定パス版へ退避・差し替える
+# (恒久的な stub 定義は変更しない)。
+reset_case
+mkdir -p "$TMP/elsewhere"
+real_ready_dir="$AGMSG_READY_DIR"
+cp "$AGMSG_DIR/watch.sh" "$TMP/watch.sh.bak"
+cat > "$AGMSG_DIR/watch.sh" <<STUB
+#!/usr/bin/env bash
+printf 'watch.sh|%s|%s\n' "\${AGMSG_WATCH_INTERVAL:-}" "\$*" >> "$AGMSG_STUB_LOG"
+printf '%s\n' "\$AGMSG_STUB_INSTANCE_ID" > "$real_ready_dir/ready.t__\$4"
+printf '%s\n' "\$\$" > "$real_ready_dir/watch.\$AGMSG_STUB_INSTANCE_ID.pid"
+sleep 300
+STUB
+chmod +x "$AGMSG_DIR/watch.sh"
+AGMSG_READY_DIR="$TMP/elsewhere" CLAUDE_CODE_SESSION_ID=s6d AGMSG_STUB_INSTANCE_ID="s6d.222" \
+      AGMSG_STUB_MODE=alive run_guard --type claude-code --name "ar-$$-6d"; out="$GUARD_OUT"
+[[ "$out" == *"reason=pidfile-missing"* ]] || bad 'AR6d'
+mv "$TMP/watch.sh.bak" "$AGMSG_DIR/watch.sh"; chmod +x "$AGMSG_DIR/watch.sh"
+
+# --- AR19: ログのモードとユニーク性（異常系で取る） ---
+reset_case
+CLAUDE_CODE_SESSION_ID=s19 AGMSG_STUB_MODE=held run_guard --type claude-code --name "ar-$$-19"; out1="$GUARD_OUT"
+CLAUDE_CODE_SESSION_ID=s19 AGMSG_STUB_MODE=held run_guard --type claude-code --name "ar-$$-19"; out2="$GUARD_OUT"
+l1=$(printf '%s' "$out1" | sed -n 's/.* log=\([^ ]*\)$/\1/p')
+l2=$(printf '%s' "$out2" | sed -n 's/.* log=\([^ ]*\)$/\1/p')
+[[ "$l1" != "$l2" ]] || bad 'AR19 log paths must be unique'
+for l in "$l1" "$l2"; do
+  [[ "$(ls -l "$l" | cut -c1-10)" == "-rw-------" ]] || bad "AR19 $l is not 0600"
+done
+
 # --- AR17: エンコードのゴールデンベクタ ---
 # shellcheck disable=SC1091
 source "$SD/agmsg-path.sh"

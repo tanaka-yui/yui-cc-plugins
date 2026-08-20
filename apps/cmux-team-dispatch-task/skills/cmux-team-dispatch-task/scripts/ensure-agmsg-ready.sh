@@ -195,6 +195,9 @@ done
 if [[ -n "$CAND_KIND" ]]; then
   PID="$CAND_PID"
   [[ "$CAND_KIND" == mine ]] && WATCHER=existing || WATCHER=existing-other
+  if [[ "$LOG_PATH" != /dev/null && ( "$REASON" == "-" || "$REASON" == log-unwritable ) ]]; then
+    rm -f "$LOG_PATH"; LOG="-"
+  fi
   emit; exit 0
 fi
 
@@ -211,23 +214,126 @@ for s in "$AGMSG_READY_DIR"/ready.*__"$(agmsg_encode_component "$NAME")"; do
   rm -f "$s"
 done
 
-# --- 手順 7-9 は Task 5 で実装する。暫定: 常に起動して待つ ---
+# --- 手順 7: 起動 ---
+# サブシェルで包まない / setsid を使わない / bash -c を挟まない。
+# サブシェルは echo $! の直後に終了するのでプロセスが pid 1 へ再親付けされ、
+# agmsg の ppid ウォークが失敗して bare id になる (実測 3/3)。
+# fd 3 本すべてを付け替える。呼び出し元のパイプを 1 本でも残すと、
+# コマンド置換が EOF を待って戻らなくなる。
 AGMSG_WATCH_INTERVAL="$AGMSG_WATCH_INTERVAL" \
 nohup bash "$AGMSG_DIR/watch.sh" "$SID" "$PROJECT" "$TYPE" "$NAME" </dev/null >>"$LOG_PATH" 2>&1 &
 WATCH_PID=$!
 
-deadline=$(( AGMSG_READY_TIMEOUT * 5 ))
-found=""
-for _ in $(seq 1 "$deadline"); do
-  if compgen -G "$AGMSG_READY_DIR/ready.*__$(agmsg_encode_component "$NAME")" >/dev/null 2>&1; then
-    found=1; break
+READY_GLOB="$AGMSG_READY_DIR/ready.*__$(agmsg_encode_component "$NAME")"
+
+# 起動した watcher の正規化 id を pidfile から復元する。
+guard_my_norm_id() {
+  local f id p
+  for f in "$AGMSG_READY_DIR"/watch.*.pid; do
+    [[ -f "$f" ]] || continue
+    p="$(head -1 "$f" 2>/dev/null || true)"
+    [[ "$p" == "$WATCH_PID" ]] || continue
+    guard_normalized_id_from_pidfile "$f"; return 0
+  done
+  return 1
+}
+
+# SIGTERM のみ。kill -9 は watch.sh の trap を飛ばして sentinel と pidfile を残す。
+guard_stop_watcher() {
+  local i
+  case "$WATCH_PID" in ''|*[!0-9]*|0*) return 1 ;; esac
+  [[ "${#WATCH_PID}" -le 10 ]] || return 1
+  guard_is_watcher "$WATCH_PID" || return 1     # 判定不能 (rc 2) でも kill しない
+  kill -TERM "$WATCH_PID" 2>/dev/null || true
+  for i in $(seq 1 20); do
+    guard_pid_alive "$WATCH_PID" || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+guard_clean_my_sentinels() {   # 自分の正規化 id を持つ sentinel だけ消す
+  local s t; local mine="$1"
+  for s in $READY_GLOB; do
+    [[ -f "$s" ]] || continue
+    t="$(head -1 "$s" 2>/dev/null || true)"
+    [[ "$t" == "$mine" ]] && rm -f "$s"
+  done
+}
+
+classify_from_log() {
+  if grep -q '^agmsg watch: cannot claim' "$LOG_PATH" 2>/dev/null; then
+    REASON=held-by-other-session
+    hint "run /agmsg drop $NAME in the owning session, then retry"
+  elif grep -q '^agmsg watch: no registration' "$LOG_PATH" 2>/dev/null; then
+    REASON=not-registered; hint "run join.sh for this role first; see $LOG"
+  elif grep -q '^ERROR: cannot open message DB' "$LOG_PATH" 2>/dev/null; then
+    REASON=db-unavailable; hint "see $LOG"
+  else
+    REASON=watcher-exited; hint "see $LOG"
   fi
+}
+
+# --- 手順 8: 待機 ---
+deadline=$(( AGMSG_READY_TIMEOUT * 5 ))
+mine=""; done_ok=""
+for _ in $(seq 1 "$deadline"); do
+  mine="$(guard_my_norm_id || true)"
+  if [[ -n "$mine" ]]; then
+    for s in $READY_GLOB; do
+      [[ -f "$s" ]] || continue
+      # sentinel の中身が自分の正規化 id と一致することまで確認する。
+      # 存在だけを見ると、他セッションの生きた sentinel を掴んで偽の started を返す。
+      [[ "$(head -1 "$s" 2>/dev/null || true)" == "$mine" ]] && { done_ok=1; break; }
+    done
+  fi
+  [[ -n "$done_ok" ]] && break
+  guard_pid_alive "$WATCH_PID" || { classify_from_log; WATCHER=none; emit; exit 0; }
   sleep 0.2
 done
-if [[ -n "$found" ]]; then
-  WATCHER=started; PID="$WATCH_PID"
-else
-  WATCHER=none; [[ "$REASON" == "-" ]] && REASON=watcher-exited; hint "see $LOG"
+
+if [[ -z "$done_ok" ]]; then
+  if [[ -z "$mine" ]]; then
+    if ! guard_pid_alive "$WATCH_PID"; then
+      classify_from_log; WATCHER=none; emit; exit 0
+    fi
+    # 待機の全期間を通して自分の pidfile が一度も見つからなかった。bare とは違い、
+    # AGMSG_READY_DIR の指し違いや $SID の不正でも起きる。ここで kill すると
+    # 健全な watcher を毎回殺すので、mine 不明のときは絶対に kill しない。
+    REASON=pidfile-missing; WATCHER=none
+    hint "no pidfile under $AGMSG_READY_DIR; it must match \$(dirname AGMSG_DIR)/run"
+    emit; exit 0
+  fi
+  if guard_stop_watcher; then
+    guard_clean_my_sentinels "$mine"
+    REASON=start-timeout; hint "see $LOG"
+  else
+    REASON=orphan-watcher; PID="$WATCH_PID"
+    hint "watcher $WATCH_PID did not stop; kill it manually. see $LOG"
+  fi
+  WATCHER=none; emit; exit 0
+fi
+
+# sentinel を書いた直後に watch.sh が exit するレースがあるので再確認する
+if ! guard_pid_alive "$WATCH_PID"; then
+  classify_from_log; WATCHER=none; emit; exit 0
+fi
+
+# --- 手順 9: composite 検証 ---
+# done_ok が真の時点で mine は必ず非空 (手順 8 のループが mine 判定と同一反復で
+# done_ok を立てて break するため)。pidfile 不在の分岐は手順 8 側で処理済み。
+if ! guard_is_composite "$mine"; then
+  if guard_stop_watcher; then guard_clean_my_sentinels "$mine"; fi
+  REASON=bare-started; WATCHER=none; hint "see $LOG"; emit; exit 0
+fi
+
+WATCHER=started; PID="$WATCH_PID"
+
+# --- 手順 10: 正常系のログ削除 ---
+# LOG_PATH が /dev/null のときは絶対に削除しない。root では /dev/null が消え、
+# 非 root では rm が rc 1 を返して set -e 下の呼び出し元ごと落ちる。
+if [[ "$LOG_PATH" != /dev/null && ( "$REASON" == "-" || "$REASON" == log-unwritable ) ]]; then
+  rm -f "$LOG_PATH"; LOG="-"
 fi
 emit
 exit 0
