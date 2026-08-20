@@ -668,6 +668,14 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     log "prewarm" "launching codex review pane for $SLUG"
     REVIEW_PANE_NAME="$SLUG-review"
     REVIEW_RUNNER_FLAGS=(--runner "$CODEX_RUNNER" --model "$REVIEW_MODEL")
+    # legacy 経路でも --agmsg-from は必須。guard 注入は REVIEW_DELIVERY だけで決まるので、
+    # ここを落とすと「guard は注入されるのに runner script に
+    # export AGMSG_EXPECTED_NAME が出ない」状態になる。ネストしたディスパッチで外側の
+    # 値を継承すると guard が die_usage (rc 2) になり、watcher が起動しないのに
+    # prewarm.json は guard-injected と報告する。
+    if [[ -n "$AGMSG_TEAM" ]]; then
+      AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-review")
+    fi
   fi
   REVIEW_PROMPT=""
   if [[ $GUARD_INJECTABLE -eq 1 && "$REVIEW_DELIVERY" == "agmsg" ]]; then

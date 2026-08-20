@@ -779,6 +779,16 @@ CODEX_MODEL_FLAG=""
       # マシン上の全 Claude Code セッションが触れるコードで、無人 codex reviewer に
       # 書き込み権を与えるとサンドボックス外・別セッションの権限で任意コードが走る。
       AGMSG_SKILL_DIR="${AGMSG_SKILL_DIR:-$HOME/.agents/skills/agmsg}"
+      # run/ と db/ をここで先に作る。watch.sh は run/ を初回起動時に自分で作る設計
+      # (`mkdir -p "$RUN_DIR" 2>/dev/null || return 0`) だが、codex reviewer は
+      # --sandbox workspace-write で走るのでサンドボックス内の mkdir は黙って拒否される。
+      # 未作成のまま下の -d を評価すると --add-dir が付かず、guard は恒久的に
+      # reason=pidfile-missing に落ちる (agmsg を新規インストールしてまだ一度も watcher を
+      # 起動していない環境 = このガードが救おうとしている状況そのもの)。
+      # agmsg 未インストール時にツリーを勝手に生やさないよう、親の存在を条件にする。
+      if [[ -d "$AGMSG_SKILL_DIR" ]]; then
+        mkdir -p "$AGMSG_SKILL_DIR/run" "$AGMSG_SKILL_DIR/db" 2>/dev/null || true
+      fi
       [[ -d "$AGMSG_SKILL_DIR/run" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/run'"
       [[ -d "$AGMSG_SKILL_DIR/db" ]]  && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/db'"
       CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
