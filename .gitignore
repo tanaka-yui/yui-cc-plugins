@@ -44,3 +44,7 @@ settings.local.json
 # Superpowers SDD scratch
 .superpowers
 .worktrees/
+
+# cmux-team-dispatch-task runtime scaffolding (machine-specific, written per dispatch)
+.cmux-team-dispatch-task-prompt.md
+.cmux-team-dispatch-task-run-*.sh
