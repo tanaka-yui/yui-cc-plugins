@@ -32,7 +32,23 @@ dispatch の通知経路と待機条件を確認するときの参照資料。�
 | U8 | 最初の poll 前の signal 終了 | `launch-workspace.sh:925-931`、`test/test-runner-signal-exit.sh:97-100`。既存 signal guard の重複通知抑止を維持する |
 | U9 | `/clear` 後に watcher が戻らない | guard は初期プロンプトから 1 回だけ走る。Monitor 非搭載ハーネスではそのペインの watcher が復帰しない |
 
+## monitor 専用化の残余リスク
+
+`docs/superpowers/specs/2026-08-21-agmsg-monitor-only-design.md` が要求する記録。
+**2026-08-21 時点で `cmux-codex-review` / `cmux-codex-exec` に実在する**（dispatch は未移行）。
+
+| ID | 症状 | 根拠・判断理由 |
+|---|---|---|
+| R1 | ペイン死亡の即時検知が失われた | 旧ポーリング watcher は `--surface` の生存確認で即時に検知していた。monitor 専用化でその経路が消え、検知は単発タイマーが発火する T 分後まで遅れる。monitor 専用化の代償として受け入れる。タイマーで起きたときは (a) 判断の前に `history.sh` で完了 row を確認し、(b) ペイン消滅を断定する前に `cmux read-screen` を 1 回リトライし、(c) 再武装に上限を設ける（`commands/codex-review.md` Step 3b / `commands/codex-exec.md` Step 5） |
+| R2 | codex の seat 喪失（セッション再起動で thread が変わる） | `run/codex-bridge.<team>.<agent>.thread` の seat が古いままだと、`send.sh` は成功するのにメッセージは未読で滞留する。**新規の残余リスク**。codex 系 2 プラグインの codex は送信専用なので現時点では影響しないが、親→codex の追撃指示を足した瞬間に事故になる |
+
+read cursor の競合（同じ (team, agent) を購読する watcher が 2 つあると先に poll した方が
+row を取る）は残余リスクではなく**配送コントラクトの要件**として spec 側に記載した。
+検出と排他の手段はそちらを参照する。
+
 ## この一覧の使い方
 
 - 通知が届かない事象では P1〜P8 の退行を確認する。
 - U1〜U8 は既知の残余リスクとして扱い、根拠を添えて更新する。
+- R1 / R2 は monitor 専用化で新たに生じた残余リスク。dispatch を移行するときは U1 / U9 の
+  解消可否も併せて見直す。

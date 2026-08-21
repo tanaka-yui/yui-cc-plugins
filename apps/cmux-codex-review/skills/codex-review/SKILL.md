@@ -8,7 +8,7 @@ description: >-
   (CMUX_SOCKET_PATH が設定されている) が前提。単に diff を自分で読むのではなく、独立した codex プロセスに
   高リーズニングでレビューさせたい意図があればこのスキルを起動すること。対話型で起動し、
   完了を agmsg 経由で親へ通知できる。
-allowed-tools: Bash
+allowed-tools: Bash, TaskStop
 ---
 
 ## Output Language
@@ -102,17 +102,24 @@ Main arguments (all optional; see the bin's header comment for details):
 | `--no-parallel` | Do not inject the parallel-execution directive |
 | `--agents <N>` | Concurrency cap for child agents. Integers 2-8 only (default: 4) |
 
-The bin outputs `surface=` / `token=`. When notification wiring is enabled, pass this
-`token` and `surface` to `bin/cmux-codex-wait` to wait for completion (do not attach
-`--timeout`; the default is unlimited, and termination is judged by pane liveness. See
-Step 3 of the `/codex-review` command).
+The bin outputs `surface=` / `token=`. When notification wiring is enabled, the
+token identifies which request a completion line belongs to; the parent is woken by
+the agmsg Monitor stream, not by a watcher.
 
-### 3. Report
+### 3. Report and wait
 
 Convey the launch summary line the bin prints (surface / direction / model / effort /
 target) in one line. Since the review starts flowing on the codex side, polling from
-this session is unnecessary (when notification wiring is enabled, run
-`cmux-codex-wait` as a background task and wait for the wake).
+this session is unnecessary (when notification wiring is enabled, end the turn; the
+completion arrives as an agmsg Monitor event, with one single-shot sleep task armed
+as a safety net).
+
+**Follow Step 3 of the `/codex-review` command (`commands/codex-review.md`) for the
+waiting contract itself**, exactly as Sections 0 and 1 above delegate their branching.
+It is the only place that carries the Monitor-liveness preflight, the competing-watcher
+check, the timer duration, the `TaskStop` on completion, the `token` match, the
+`history.sh` read that must happen before any judgement on a timer wake, and the bound
+on re-arming. Do not improvise those from this file.
 
 ## codex command that gets launched (reference)
 
@@ -135,7 +142,7 @@ disabled).
 
 When `--team/--reviewer/--parent` is specified, "after presenting the review, notify
 the parent session of completion via `send.sh`" is injected at the end of the prompt.
-The parent session side is woken by running `bin/cmux-codex-wait` as a background task.
+The parent session is woken by the agmsg Monitor event carrying that notification.
 
 > **Do not set the sandbox to `read-only`**: the completion notification's `send.sh`
 > INSERTs into agmsg's SQLite DB (i.e., writes). `config.toml`'s
