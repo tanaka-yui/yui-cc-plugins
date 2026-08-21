@@ -201,6 +201,8 @@ done
 # AGMSG_TEAM のメタ文字チェックを引数パース直後へ移したのと同じ理由)。
 [[ -n "$AGMSG_TEAM" ]] \
   || die "--agmsg-team is required: prewarmed panes only ever receive work through agmsg send.sh and there is no typed fallback, so a prewarm without agmsg wiring would start panes that nothing can reach"
+# この die 以降、後続の `-n "$AGMSG_TEAM"` 判定はすべて常に真である (退役候補。
+# 挙動を変えない純粋なリファクタなので、まとめて外すのは別タスク。CLAUDE.md 項目 47)。
 
 # readiness_clause (下記) は AGMSG_DIR / AGMSG_TEAM をエスケープせず埋め込む。空白や
 # シェルメタ文字が入ると launch-workspace.sh の `zsh -ic "... '<prompt>' ..."` を
@@ -377,6 +379,7 @@ fi
 
 if [[ $WITH_DESIGN -eq 1 ]]; then
   # agmsg モード専用: workspace はこのスクリプトが作成する
+  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
   [[ -n "$AGMSG_TEAM" ]] || die "--with-design requires --agmsg-team"
   [[ -z "$WORKSPACE" && -z "$BASE_SURFACE" ]] \
     || die "--with-design is mutually exclusive with --workspace/--base-surface"
@@ -385,6 +388,7 @@ else
   [[ -n "$BASE_SURFACE" ]] || die "--base-surface is required (without --with-design)"
 fi
 
+# 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
 if [[ -n "$AGMSG_TEAM" ]]; then
   [[ -f "$AGMSG_DIR/send.sh" ]] || die "agmsg is not installed (expected $AGMSG_DIR/send.sh)"
 fi
@@ -448,6 +452,7 @@ wire_delivery() {  # <engine>
   fi
 }
 
+# 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
 if [[ -n "$AGMSG_TEAM" ]]; then
   if [[ $WITH_DESIGN -eq 1 ]]; then
     DESIGN_WIRING_TYPE="claude-code"
@@ -591,6 +596,7 @@ CLAUDE_EXEC_SURFACE=""
 CLAUDE_EXEC_PROMPT=""
 # CLAUDE_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
 AGMSG_FLAGS_CLAUDE=()
+# 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
 if [[ $START_CLAUDE -eq 1 && -n "$AGMSG_TEAM" ]]; then
   CLAUDE_EXEC_PROMPT="$(readiness_clause claude-code "$SLUG-claude") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive."
   AGMSG_FLAGS_CLAUDE=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-claude")
@@ -631,6 +637,7 @@ CODEX_SURFACE=""
 if [[ $START_CODEX -eq 1 ]]; then
   AGMSG_FLAGS_CODEX=()
   CODEX_EXEC_PROMPT=""
+  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
   if [[ -n "$AGMSG_TEAM" ]]; then
     AGMSG_FLAGS_CODEX=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
     CODEX_EXEC_PROMPT="$(readiness_clause codex "$SLUG-codex") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive."
@@ -666,6 +673,7 @@ fi
 REVIEW_SURFACE=""
 
 leave_failed_review_join() {
+  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
   [[ $REVIEW_JOINED -eq 1 && -n "$AGMSG_TEAM" ]] || return 0
   if bash "$AGMSG_DIR/leave.sh" "$AGMSG_TEAM" "$SLUG-review" >/dev/null 2>&1; then
     REVIEW_JOINED=0
@@ -681,6 +689,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     REVIEW_PANE_NAME="$SLUG-review"
     REVIEW_RUNNER_FLAGS=(--runner "$REVIEWER_RUNNER")
     [[ "$REVIEWER_ENGINE" == "claude" ]] && REVIEW_RUNNER_FLAGS+=(--skip-permissions)
+    # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
     if [[ -n "$AGMSG_TEAM" ]]; then
       AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-review")
     fi
@@ -692,11 +701,13 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     # ($SLUG-review) と launch-workspace.sh の dispatch-notify 配線
     # (--agmsg-team/--agmsg-from) が食い違い、review pane の agmsg 上の身元が
     # 曖昧になる。
+    # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
     if [[ -n "$AGMSG_TEAM" ]]; then
       AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-review")
     fi
   fi
   REVIEW_PROMPT=""
+  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
   if [[ -n "$AGMSG_TEAM" ]]; then
     REVIEW_PROMPT="$(readiness_clause "$REVIEW_WIRING_TYPE" "$SLUG-review") Then wait idle. Review requests will arrive as an agmsg message. Do not start any work until a request arrives."
   fi

@@ -7,21 +7,29 @@
 # 無かったのが根本原因である — `test-delivery-callsites.sh` の CS5 は
 # "polling" / "every 5 seconds" のような**英語の語彙**しか走査しない。
 #
+# **適用範囲は固有名だけで、散文は対象外。** 「親は 5 秒ごとに status.json を
+# ポーリングし」のような日本語の散文による旧手順の説明は、この検査では捕まらない。
+# 一般語 (「ポーリング」「タイプ入力」「heartbeat」) を needle に入れると、正しい
+# 否定文 (「heartbeat は無い」) まで FAIL にして免除マーカーだらけになり、検査が
+# 形骸化するためである。捕まえるのは「現行仕様では書きようが無い固有名」に限る。
+#
 # 守っている不変条件:
 #   DS1. 対象の日本語ドキュメントに、退役済みスクリプト名が出現しない
-#   DS2. 対象の日本語ドキュメントに、退役済みの語彙が出現しない
-#   DS3. DS1 / DS2 のリストが陳腐化していない (退役済みのはずのスクリプトが
-#        復活していたら、リストから外せと言う)
+#   DS2. 対象の日本語ドキュメントに、退役済みの固有名 (フラグ・変数・値) が出現しない
+#   DS3. DS1 / DS2 のリストが陳腐化していない。RETIRED_SCRIPTS は現行 scripts/ に
+#        実在しないこと、RETIRED_VOCAB は現行 scripts/ にヒットしないことを要求する
+#        (現役のトークンを needle にすると、正しいドキュメントが書けなくなる)
 #
 # **免除マーカー**: 履歴を記録する箇所は、その行または直前の 5 行以内に
-# `stale-vocab-exempt:` を含む行を置くと除外される。素朴な実装 (マーカー無しの
-# 単純 grep) がなぜ FAIL するかの反例:
+# `stale-vocab-exempt: <needle>` を置くと、**その needle だけ**除外される。
+# needle 非限定にすると、1 個のマーカーが以後 5 行のあらゆる旧語彙を無条件に
+# 通してしまう。素朴な実装 (マーカー無しの単純 grep) がなぜ FAIL するかの反例:
 #
 #   docs/notification-gaps.md の「修正したパターン」表は「いつ何が壊れていて、
-#   どう直したか」の履歴である。P9 の行は `ensure-agmsg-ready.sh` による guard
-#   追加とその廃止を記録しており、この名前が出るのは**意図**である。マーカーの
-#   無い素朴な検査はこの正しい履歴記述を FAIL にし、「履歴を消す」方向の修正を
-#   誘発してしまう。同じことは CLAUDE.md の「退役候補」節にも起きる。
+#   どう直したか」の履歴である。P9 の行は ensure-agmsg-ready.sh による guard の
+#   追加と廃止を記録しており、旧名で grep して経緯へ辿り着けることに価値がある。
+#   マーカーの無い素朴な検査はこの正しい履歴記述を FAIL にし、「名前を消す」
+#   方向の修正を誘発する (実際に T7 の初版でそれが起きた)。
 #
 # したがって「名前が 1 つも出ない」ではなく「マーカーで明示していない箇所に
 # 出ない」を不変条件にしている。
@@ -51,20 +59,23 @@ RETIRED_SCRIPTS=(
   batch-wait.sh
 )
 
-# 退役済みの語彙。日本語・英語が混在するので固定文字列で持つ。
-# 否定文（「heartbeat は無い」等）でも正当に登場しうる一般語は入れない — 入れると
-# 正しい記述を FAIL にしてしまい、免除マーカーだらけになって検査が形骸化する。
-# ここに置くのは「現行仕様では書きようが無い」固有名だけ。
+# 退役済みの固有名。日本語・英語が混在するので固定文字列で持つ。
+# **現役のトークンを入れてはならない** — DS3 が現行 scripts/ を grep して弾く。
+# 例: `--dispatch-dir` は loop-cleanup.sh:10 が、`--label ` は issue-fetch.sh:233 が
+# gh へ渡す生きたフラグなので needle にできない。前者は monitor-dispatch.sh を
+# DS1 が捕まえるので不要、後者は退役した label 名まで含めて限定する。
 RETIRED_VOCAB=(
   'AGMSG_INSTALLED'        # 二系統分岐の変数。現行に存在しない
   'dispatch-monitor'       # 退役した監視ループの label
   '--heartbeat-interval'   # 退役した監視スクリプトのフラグ
-  '--dispatch-dir'         # 同上
   '--outbox-dir'           # 退役した配送スクリプトのフラグ
   '--agmsg-to'             # 同上 (現行は send.sh の位置引数)
   '--to-surface'           # 同上
   '--to-workspace'         # 同上
-  '--label '               # 同上 (label は本文の接頭辞になった)
+  '--label phase-'         # 同上。label は本文の接頭辞になった。gh の
+  '--label review-'        #   `--label bug` を巻き込まないよう、退役した
+  '--label dispatch-'      #   label 名の接頭辞まで含めて限定する
+  '--label abort-'         #   (phase-a-task / review-plan / dispatch-notify / abort-reviewer)
   'guard-injected'         # 退役した prewarm.json の watcher 値
   'ready sentinel'         # agmsg 1.2.1 に実在しない (spec の B5)
   'ready.<team>__<agent>'  # 同上
@@ -72,13 +83,14 @@ RETIRED_VOCAB=(
 
 MARKER='stale-vocab-exempt:'
 
-# 行番号 $2 のヒットが免除されているか。行そのもの、または直前 5 行にマーカーが
-# あれば免除。表形式の履歴記録では見出しコメントが表全体を覆えるようにしたいので、
-# CS1 の 3 行より広めの窓を取る。
+# 行番号 $2 のヒットが needle $3 について免除されているか。行そのもの、または直前
+# 5 行に `stale-vocab-exempt: ... <needle> ...` があれば免除。表形式の履歴記録では
+# 見出しコメントが表全体を覆えるよう CS1 の 3 行より広い窓を取るが、その分だけ
+# needle 一致を要求して「1 個のマーカーが以後 5 行を無条件に通す」のを防ぐ。
 is_exempt() {
-  local file="$1" lineno="$2" from
+  local file="$1" lineno="$2" needle="$3" from
   from=$(( lineno - 5 )); (( from < 1 )) && from=1
-  sed -n "${from},${lineno}p" "$file" | grep -qF -- "$MARKER"
+  sed -n "${from},${lineno}p" "$file" | grep -F -- "$MARKER" | grep -qF -- "$needle"
 }
 
 # 結果はグローバルへ返す (コマンド置換で受けると、見つけた違反の出力まで
@@ -99,7 +111,7 @@ check_needles() {
       while IFS=: read -r lineno line; do
         [[ -n "$lineno" ]] || continue
         seen=$(( seen + 1 ))
-        if is_exempt "$abs" "$lineno"; then continue; fi
+        if is_exempt "$abs" "$lineno" "$needle"; then continue; fi
         echo "  旧$label が残っている: $rel:$lineno  [$needle]"
         echo "    ${line:0:120}"
         ok=0
@@ -119,23 +131,31 @@ else
   echo "FAIL DS1: 日本語ドキュメントに退役済みスクリプト名が残っている"; fail=1
 fi
 
-# --- DS2: 退役済みの語彙 ---
-check_needles "語彙" "${RETIRED_VOCAB[@]}"
+# --- DS2: 退役済みの固有名 ---
+check_needles "固有名" "${RETIRED_VOCAB[@]}"
 ds2=$CHECK_OK; ds2_seen=$CHECK_SEEN
 if [[ $ds2 -eq 1 ]]; then
-  echo "PASS DS2: 日本語 4 ファイルに退役済みの語彙が残らない (免除込みの出現 $ds2_seen 件)"
+  echo "PASS DS2: 日本語 4 ファイルに退役済みの固有名が残らない (免除込みの出現 $ds2_seen 件)"
 else
-  echo "FAIL DS2: 日本語ドキュメントに退役済みの語彙が残っている"; fail=1
+  echo "FAIL DS2: 日本語ドキュメントに退役済みの固有名が残っている"; fail=1
 fi
 
-# --- DS3: リストのラチェット ---
-# RETIRED_SCRIPTS のスクリプトが復活したら、それはもう「退役済み」ではないので
-# リストから外す必要がある。放置すると、復活した現行スクリプトを日本語ドキュメントで
-# 説明できなくなる。
+# --- DS3: 両リストのラチェット ---
+# 退役したはずのものが現行 scripts/ に実在する = もう「退役済み」ではない。
+# 放置すると、現役のスクリプト / フラグを日本語ドキュメントで説明できなくなる
+# (書けないか、免除マーカーで潰して検査を薄めるかの二択を将来の書き手に強いる)。
 ds3=1
 for name in "${RETIRED_SCRIPTS[@]}"; do
   if [[ -f "$SCRIPTS/$name" ]]; then
     echo "  退役済みリストのスクリプトが実在する: $name — RETIRED_SCRIPTS から外せ"
+    ds3=0
+  fi
+done
+for needle in "${RETIRED_VOCAB[@]}"; do
+  hits=$(grep -rlF -- "$needle" "$SCRIPTS" 2>/dev/null | head -3 | tr '\n' ' ')
+  if [[ -n "$hits" ]]; then
+    echo "  退役済みリストの固有名が現行 scripts/ で使われている: [$needle] — $hits"
+    echo "    現役トークンを needle にすると正しいドキュメントが書けなくなる。RETIRED_VOCAB から外すか、退役形まで限定せよ"
     ds3=0
   fi
 done
@@ -144,7 +164,7 @@ if [[ ${#RETIRED_SCRIPTS[@]} -eq 0 || ${#RETIRED_VOCAB[@]} -eq 0 ]]; then
   ds3=0
 fi
 if [[ $ds3 -eq 1 ]]; then
-  echo "PASS DS3: 退役済みリストは陳腐化していない"
+  echo "PASS DS3: 両リストは陳腐化していない (スクリプト ${#RETIRED_SCRIPTS[@]} 件 / 固有名 ${#RETIRED_VOCAB[@]} 件)"
 else
   echo "FAIL DS3: 退役済みリストが陳腐化している"; fail=1
 fi

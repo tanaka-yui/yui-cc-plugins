@@ -128,6 +128,7 @@ fi
 DELETED_RE='send-prompt\.sh|agmsg-path\.sh|monitor-dispatch\.sh|ensure-agmsg-ready\.sh|batch-wait\.sh'
 PENDING=(
   "test/test-doc-stale-vocab.sh|*|検査対象そのものを needle として持つ検査スクリプト"
+  "docs/notification-gaps.md|1|履歴表 P9 の旧名 (旧名で grep して経緯へ辿り着けることに価値がある。test-doc-stale-vocab.sh の行内マーカーで明示済み)"
 )
 pending_expect() {
   local rel="$1" entry

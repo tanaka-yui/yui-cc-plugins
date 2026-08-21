@@ -7,6 +7,14 @@ dispatch の通知経路と待機条件を確認するときの参照資料。�
 
 ## 修正したパターン
 
+`U*` の ID は、旧「未解決として記録するパターン」表からこちらへ移したものである。ID は
+履歴を辿るためのキーなので、解消しても改番しない。
+
+この表は「いつ何が壊れていて、どう直したか」の履歴記録である。退役済みの旧名で grep して
+当時の判断へ辿り着けることに価値があるので、現行仕様から消えた名前を意図的に残している。
+その行には `stale-vocab-exempt: <名前>` を行内マーカーとして置き、
+`test/test-doc-stale-vocab.sh` の DS1 / DS2 からその名前だけを除外する。
+
 | ID | 症状 | 根拠 | 影響 | 対応 |
 |---|---|---|---|---|
 | P1 | 実装者に error 時の通知手順が無い | `SKILL.md:1209-1216` | 親と reviewer が無期限待機 | ABORT/ESCALATION を追加 |
@@ -17,7 +25,7 @@ dispatch の通知経路と待機条件を確認するときの参照資料。�
 | P6 | 無人ループ文面に abort 経路が無い | `references/unattended/code-review-block.md:1` | loop で通知不能 | 文面を追加 |
 | P7 | workspace 起動に --defer-status が無い | `SKILL.md:1513-1534` | Child が孫の status を上書き | フラグを追加 |
 | P8 | assigned から deferred の窓で二重通知する | `SKILL.md:741-801` | 二重通知 | foreign assignment を watcher が抑止 |
-| P9 | agmsg watcher が起動せず inbox 記録が全ロールで落ちる | `SKILL.md` の AGMSG-DIRECTIVE 依存 | Monitor ツールを持たないハーネスで watcher ゼロ | setup guard を追加（v1.20.0）。**v1.21.0 で guard ごと廃止** — watcher は SessionStart hook が要求する `Monitor` tool 自身であり、スキルは `verify-agmsg-ready.sh` で生存を確認するだけになった |
+| P9 | agmsg watcher が起動せず inbox 記録が全ロールで落ちる | `SKILL.md` の AGMSG-DIRECTIVE 依存 | Monitor ツールを持たないハーネスで watcher ゼロ | setup guard `ensure-agmsg-ready.sh` を追加（v1.20.0）。**v1.21.0 で guard ごと廃止** — watcher は SessionStart hook が要求する `Monitor` tool 自身であり、スキルは `verify-agmsg-ready.sh` で生存を確認するだけになった <!-- stale-vocab-exempt: ensure-agmsg-ready.sh --> |
 | U1 | status.json を書かずに沈黙する | `SKILL.md:1159-1172`。terminal 遷移が無く watcher は発火できない | 親が無期限待機 | **解消（v1.21.0）**: 親はペイン起動直後に 90 分の単発タイマーを武装する。その起床で `.dispatch/*/status.json` と `history.sh` の `[ready]` を読み直し、ペイン生存を 1 回リトライ付きで確認して再武装（3 回上限）または `error` 確定へ進む |
 | U9 | `/clear` 後に watcher が戻らない | guard は初期プロンプトから 1 回だけ走るので、新しい session id で旧 watcher が自己終了したあと再実行する経路が無かった | そのペインの inbox 記録が止まる | **解消（v1.21.0）**: guard を廃止し、watcher は SessionStart hook が要求する `Monitor` tool になった。`/clear` はその hook を再発火させるので watcher は自力で戻る |
 

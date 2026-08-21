@@ -2362,6 +2362,10 @@ messages only tell you when to look.
    reaches this timer. Use a different number only if the
    user asked for one. This is a safety net, not a deadline — a live-but-slow task
    re-arms it.
+   **Timeout detection is coarser than it used to be.** The retired loop wait script
+   re-checked `claimed_at` on a short fixed interval; nothing re-checks it between wakes
+   now, so a `loop.task_timeout_min` shorter than this timer is not detected until the
+   next wake. That is the intended price of removing every wait loop, not a defect.
    **Remember the task id and the number of times you have armed it.** Do not annotate
    the `sleep` with an invented flag name (there is no `--wake-after` parameter on the
    Bash tool; a model that reads one will try to pass it) — say it in prose.

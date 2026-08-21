@@ -1043,6 +1043,7 @@ write_status() {
 }
 
 NOTIFY_WS="${NOTIFY_WORKSPACE}"
+# 退役候補 (CLAUDE.md 項目 47): NOTIFY_SF に読み手は無い (cmux notify は --workspace のみ)
 NOTIFY_SF="${NOTIFY_SURFACE}"
 NOTIFIED_FILE=""
 [[ -n "\$STATUS_DIR" ]] && NOTIFIED_FILE="\$STATUS_DIR/.notified-\$SLUG"
