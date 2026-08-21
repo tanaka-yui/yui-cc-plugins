@@ -782,12 +782,15 @@ Then branch on what woke you:
   task whose `[ready]` you never saw, check the history rather than the inbox:
 
   ```bash
-  ~/.agents/skills/agmsg/scripts/history.sh "$TEAM" parent 50 | grep -F '[ready]'
+  ~/.agents/skills/agmsg/scripts/history.sh "$TEAM" parent 50 | grep -E '\[ready\] <slug>$'
   ```
 
   Use `history.sh`, **never `inbox.sh`**: a `[ready]` consumed by a competing watcher is
   already marked read, so `inbox.sh` would truthfully answer "nothing new" while the
-  row sits in the DB. **Marking a task `error` because its `[ready]` was stolen kills a
+  row sits in the DB. Anchor the slug to the end of the line, never a bare
+  `grep -F '[ready]'`: the body is always `[ready] <slug>` and it ends the history line,
+  so an unanchored match lets slug `api` be satisfied by `[ready] api-v2` — a task that
+  never reported would look ready. **Marking a task `error` because its `[ready]` was stolen kills a
   healthy child.** Only after the history also shows no `[ready]` may you treat the pane
   as unreachable.
 

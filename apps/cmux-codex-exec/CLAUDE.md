@@ -26,7 +26,7 @@ SessionStart hook が起動する常駐 agmsg Monitor ストリームが担う�
 1 本保険として張る。タイマーで起きたときの規則は次の 4 つで、詳細は `commands/codex-exec.md` の
 Step 5 が正である:
 
-1. **判断の前に永続記録を 1 回読む**。`history.sh <TEAM> <PARENT> 30 | grep -F <token> | tail -1`。
+1. **判断の前に永続記録を 1 回読む**。`history.sh <TEAM> <PARENT> 30 | grep -F "DONE <token>:" | tail -1`。**コロンまで含めて照合する**（token は surface 番号由来で `codex-review-4` は `codex-review-40` の前方一致になるため、裸の token では短い方の照合が長い方の完了に当たり、進行中を完了と誤報告する）。
    **`inbox.sh` は使わない**（盗られた row は既読マークされるため）。最も新しい一致を採る
 2. **ペイン消滅を断定する前に `cmux read-screen` を 1 回リトライする**
 3. **再武装に上限を設ける**（既定 3 回）。上限に達したら `read-screen` を添えて報告する

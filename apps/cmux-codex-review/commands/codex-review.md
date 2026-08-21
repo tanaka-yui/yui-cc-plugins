@@ -211,14 +211,20 @@ Then end the turn.
   persistent record exactly once:**
 
   ```bash
-  ~/.agents/skills/agmsg/scripts/history.sh <TEAM> <PARENT> 30 | grep -F "<token>" | tail -1
+  ~/.agents/skills/agmsg/scripts/history.sh <TEAM> <PARENT> 30 | grep -F "DONE <token>:" | tail -1
   ```
 
   Use `history.sh` and **never `inbox.sh`**: a row a competing watcher consumed is
   already marked read, so `inbox.sh` would truthfully answer "nothing new" while the
-  completion sits in the DB. Limit the scan to the last 30 lines and take the **last**
-  match (`tail -1`) — the token is derived from the surface number, so a recycled pane
-  number can make an old `DONE codex-review-40` look like an answer to this request.
+  completion sits in the DB.
+
+  Match `DONE <token>:` **with the colon**, never the bare token. The token is derived
+  from the surface number, so `codex-review-4` is a prefix of `codex-review-40`: a bare
+  `grep -F` for the shorter token matches the longer one's completion and reports a
+  review that is still running as finished. The colon is what makes the match exact,
+  because the notification body is always `DONE <token>: <text>`. Limit the scan to the
+  last 30 lines and take the **last** match (`tail -1`) so a recycled pane number cannot
+  make an old completion answer this request.
 
   - **A `DONE <token>` line exists** → treat it as the completion. `TaskStop` the timer
     and report exactly as the Monitor branch does (the notification was lost; the work

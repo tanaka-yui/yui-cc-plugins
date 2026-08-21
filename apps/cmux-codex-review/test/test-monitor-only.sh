@@ -17,6 +17,9 @@
 #   M6. 両プラグインの commands/** / skills/** / bin/** に旧ポーリング watcher の
 #       契約語彙が残っていない (否定的不変条件)。M2 は具体名 1 つしか grep しないため、
 #       自己矛盾した記述が 7 コミットと承認済みレビューを通過した (F5)
+#   M7. 完了通知の照合が `DONE <token>:` 形式で、裸の token を grep していないこと
+#       (token は surface 番号由来で `codex-review-4` は `codex-review-40` の前方一致に
+#        なる。裸の照合は進行中を完了と誤報告する = 見逃しより悪い誤答)
 
 set -uo pipefail
 
@@ -115,6 +118,17 @@ if [[ $m6_fail -eq 0 ]]; then
 else
   fail=1
 fi
+
+# --- M7: 完了通知の照合が DONE <token>: 形式であること ---
+for f in "$REVIEW/commands/codex-review.md" "$EXEC/commands/codex-exec.md"; do
+  base=$(basename "$f")
+  if grep -qF 'grep -F "DONE <token>:"' "$f" && ! grep -qF 'grep -F "<token>"' "$f"; then
+    echo "PASS M7: $base は DONE <token>: で照合し裸の token を grep していない"
+  else
+    echo "FAIL M7: $base の token 照合が裸のまま (進行中を完了と誤報告する)"
+    fail=1
+  fi
+done
 
 if [[ $fail -eq 0 ]]; then
   echo "--- all passed ---"
