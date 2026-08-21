@@ -28,6 +28,14 @@ check '[[ "$old" != "$new" ]]' 'W5 heartbeat が更新される'
 # W6: 実際の runner 終了後に sentinel がある場合、削除済み status dir を復活させない。
 LAUNCH="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/launch-workspace.sh"
 mkdir -p "$TMP/bin" "$TMP/wt" "$DISP/slug-late"
+
+# agmsg send.sh の stub。--status-dir を渡す launch は agmsg 識別子を要求するので
+# (配送は agmsg send.sh の 1 本だけで、タイプ入力への fallback が無い)、
+# 実体の存在チェックを通すためにこれを AGMSG_SEND として export する。
+mkdir -p "$TMP/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/agmsg-send.sh"
+chmod +x "$TMP/bin/agmsg-send.sh"
+export AGMSG_SEND="$TMP/bin/agmsg-send.sh"
 cat > "$TMP/bin/cmux" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in new-workspace) echo workspace:1;; list-pane-surfaces) echo surface:2;; esac
@@ -37,7 +45,7 @@ cat > "$TMP/bin/claude" <<'EOF'
 while [[ ! -f "$W6_BARRIER" ]]; do sleep 0.1; done
 EOF
 chmod +x "$TMP/bin/cmux" "$TMP/bin/claude"
-res=$(PATH="$TMP/bin:$PATH" CMUX_BIN="$TMP/bin/cmux" bash "$LAUNCH" --cwd "$TMP/wt" --mode standby --status-dir "$DISP/slug-late" --timeout-sentinel "$LOOP/timed-out/slug-late" slug-late)
+res=$(PATH="$TMP/bin:$PATH" CMUX_BIN="$TMP/bin/cmux" bash "$LAUNCH" --cwd "$TMP/wt" --mode standby --agmsg-team demo-team --agmsg-from slug-late --status-dir "$DISP/slug-late" --timeout-sentinel "$LOOP/timed-out/slug-late" slug-late)
 runner=$(jq -r '.runner_file' <<<"$res")
 : > "$DISP/slug-late/.assigned-slug-late"; W6_BARRIER="$TMP/barrier" PATH="$TMP/bin:$PATH" bash "$runner" >/dev/null 2>&1 & pid=$!
 sleep 1; mkdir -p "$LOOP/timed-out"; : > "$LOOP/timed-out/slug-late"; rm -rf "$DISP/slug-late"; : > "$TMP/barrier"; wait "$pid" || true

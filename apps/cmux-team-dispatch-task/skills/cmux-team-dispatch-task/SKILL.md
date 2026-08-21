@@ -2066,6 +2066,7 @@ bash <this-skill-dir>/scripts/launch-workspace.sh \
   [--model "$PLAN_MODEL"] [--effort "$PLAN_EFFORT"] \
   --status-dir "$(pwd)/.dispatch/<task-slug>" \
   --defer-status \
+  --agmsg-team "$TEAM" --agmsg-from <task-slug> \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
   --parent-notify-surface "$CMUX_SURFACE_ID" \
   <task-slug> \
@@ -2073,7 +2074,12 @@ bash <this-skill-dir>/scripts/launch-workspace.sh \
 ```
 
 Run one invocation per task. `--defer-status` is required so a Child runner skips
-status.json after Phase B transfers execution to another surface. Each task lands
+status.json after Phase B transfers execution to another surface. The two
+`--agmsg-*` flags are MANDATORY whenever `--status-dir` is passed (the launcher
+dies otherwise): the generated runner wrapper owns the parent completion
+notification, and agmsg `send.sh` is the only channel it can use. The
+`--parent-notify-*` flags are a separate mechanism — they only drive the
+`cmux notify` desktop popup — so they neither replace nor imply the agmsg wiring. Each task lands
 in its own cmux workspace (sidebar entry) and runs independently — there is no
 parent/child surface chaining to worry about.
 
@@ -2109,6 +2115,12 @@ Everything is delegated to `prewarm-panes.sh`; do not create panes manually.
 **agmsg NOT installed (`$TEAM` empty)** — the design session was already launched with
 its task prompt by "Launch: Workspace Mode" above. Add the claude/codex executor panes
 below it (parse `workspace_id` / `surface_id` from that launch's output JSON):
+
+> NOTE: `prewarm-panes.sh` now requires `--agmsg-team`, and `launch-workspace.sh`
+> requires `--agmsg-team` / `--agmsg-from` whenever `--status-dir` is passed. A
+> prewarmed pane only ever receives work as an agmsg message, so this branch cannot
+> actually run — both scripts die immediately, before creating any pane. It is kept
+> here only until the `AGMSG_INSTALLED` two-branch design is removed.
 
 ```bash
 bash <this-skill-dir>/scripts/prewarm-panes.sh \

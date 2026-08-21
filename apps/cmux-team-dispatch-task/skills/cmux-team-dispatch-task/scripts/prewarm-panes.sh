@@ -191,6 +191,16 @@ done
 [[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid slug '$SLUG': use only [A-Za-z0-9._-]"
 [[ -n "$STATUS_DIR" ]] || die "--status-dir is required"
 
+# agmsg は prewarm の前提条件であって option ではない。prewarm したペインは idle で
+# 待ち、指示は agmsg send.sh でしか届かない (タイプ入力への fallback は存在しない)。
+# --agmsg-team が無ければ readiness 句も載らず、launch-workspace.sh へ渡す
+# --agmsg-team/--agmsg-from も空になるので、生き残っても誰にも到達できないペインが
+# 並ぶだけになる。**ペインを 1 つも起動する前に**落とすこと — worktree 作成や
+# agmsg join より後に死ぬと孤児 worktree / team member が残る (AGMSG_DIR /
+# AGMSG_TEAM のメタ文字チェックを引数パース直後へ移したのと同じ理由)。
+[[ -n "$AGMSG_TEAM" ]] \
+  || die "--agmsg-team is required: prewarmed panes only ever receive work through agmsg send.sh and there is no typed fallback, so a prewarm without agmsg wiring would start panes that nothing can reach"
+
 # readiness_clause (下記) は AGMSG_DIR / AGMSG_TEAM をエスケープせず埋め込む。空白や
 # シェルメタ文字が入ると launch-workspace.sh の `zsh -ic "... '<prompt>' ..."` を
 # 実際に破る (T2-1 で実測済み: 二重引用符の中に無条件の `"` を混ぜただけで
@@ -200,11 +210,9 @@ done
 case "$AGMSG_DIR" in
   *[[:space:]]*|*[\'\"\`\$\!\\]*) die "AGMSG_DIR contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $AGMSG_DIR" ;;
 esac
-if [[ -n "$AGMSG_TEAM" ]]; then
-  case "$AGMSG_TEAM" in
-    *[[:space:]]*|*[\'\"\`\$\!\\]*) die "--agmsg-team contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $AGMSG_TEAM" ;;
-  esac
-fi
+case "$AGMSG_TEAM" in
+  *[[:space:]]*|*[\'\"\`\$\!\\]*) die "--agmsg-team contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $AGMSG_TEAM" ;;
+esac
 
 if [[ -n "$REVIEW_MODEL" && -z "$CODEX_RUNNER" ]]; then
   die "--review-model requires --codex-runner"

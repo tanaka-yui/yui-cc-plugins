@@ -405,17 +405,25 @@ if [[ -n "$AGMSG_TEAM" || -n "$AGMSG_FROM" ]]; then
 fi
 
 # 配送は agmsg send.sh の 1 本だけで、送信元は --agmsg-team / --agmsg-from である。
-# タイプ入力への fallback は存在しないので、通知やレビュー依頼を「約束する」フラグが
-# 来ているのに agmsg 識別子が無い組み合わせは、黙って無通知になる前にここで落とす:
-#   --parent-notify-workspace / --parent-notify-surface … wrapper の親通知が
-#       notify_parent の `return 1` で永久に失敗し、watcher が回り続けるだけになる
+# タイプ入力への fallback は無いので、agmsg 識別子が無いまま「通知するはずの launch」を
+# 通してしまうと、黙って無通知のペインが立つ。実際に agmsg を必要とするものに紐付けて落とす:
+#
+#   --status-dir … この launch は dispatch 管理下であり、生成される runner wrapper が
+#       status.json の終端遷移と親への完了通知 (notify_parent_once) を所有する。
+#       notify_parent_once は watcher からも exit 経路からも**全モードで無条件に**呼ばれ、
+#       team / from が無いと毎回 return 1 になる (watcher は `|| continue` で回り続け、
+#       exit 経路は警告 1 行だけ)。
 #   --review-config … REVIEW_INSTRUCTION / ABORT_REVIEW_STEP に空の team / sender が
-#       補間され、実行不能な指示が子のプロンプトに焼き込まれる
-# --status-dir 単独は対象にしない。それは HEAD でも親通知を約束していなかった
-# (notify_parent は宛先が無ければ return 1 だった) ため、本変更の退行ではない。
+#       補間され、実行不能な指示が子のプロンプトに焼き込まれる。
+#
+# **--parent-notify-workspace / --parent-notify-surface は条件に入れない。**
+# この 2 つは wrapper 内で `cmux notify` のデスクトップ通知にしか使われず
+# (:1233 付近)、agmsg の親通知とは独立した機構である。両者を混同すると
+# 「デスクトップ通知だけ欲しい launch」を殺し、逆に「--parent-notify-* 無しで
+# status-dir だけの launch」の無通知を見逃す。
 if [[ -z "$AGMSG_TEAM" || -z "$AGMSG_FROM" ]]; then
-  if [[ -n "$NOTIFY_WORKSPACE" || -n "$NOTIFY_SURFACE" ]]; then
-    die "--parent-notify-workspace/--parent-notify-surface require --agmsg-team and --agmsg-from: agmsg send.sh is the only delivery channel and there is no typed fallback"
+  if [[ -n "$STATUS_DIR" ]]; then
+    die "--status-dir requires --agmsg-team and --agmsg-from: the runner wrapper owns the parent completion notification and agmsg send.sh is the only delivery channel (there is no typed fallback)"
   fi
   if [[ -n "$REVIEW_CONFIG" ]]; then
     die "--review-config requires --agmsg-team and --agmsg-from: the review request instruction is composed from them and there is no typed fallback"

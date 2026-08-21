@@ -287,17 +287,36 @@ grep -q 'AGMSG-DIRECTIVE' "$TMP/prewarm-pw6.stderr" \
   && bad 'PW6 AGMSG-DIRECTIVE が prewarm-panes.sh の stderr へ漏れた' \
   || pass 'PW6 AGMSG-DIRECTIVE は stderr へ漏れない'
 
-# --- PW8: --agmsg-team 無しでは readiness 句を載せない (agmsg を使わない特殊用途) ---
-mkdir -p "$TMP/repo-pw8"
+# --- PW8: --agmsg-team が無い prewarm は引数検証の時点で die する (旧テストは
+#     「readiness 句を載せずにペインを起動する」を期待値にしていたが、配送が agmsg
+#     send.sh の 1 本になった後は、その挙動は「誰にも到達できないペインが並ぶ」
+#     ことしか意味しない。PW14 と同じ形で、ペインを 1 つも起動しないことまで検査する) ---
 : > "$TMP/argv-noteam.log"
-ARGV_LOG="$TMP/argv-noteam.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-  bash "$TMP/scripts/prewarm-panes.sh" \
-    --workspace workspace:1 --base-surface surface:1 \
-    --cwd "$TMP/repo-pw8" --slug pw8 --status-dir "$TMP/status-pw8" \
-    --claude-runner claude --codex-runner codex --exec-choice ask >/dev/null
-grep -q 'send.sh' "$TMP/argv-noteam.log" \
-  && bad 'PW8 --agmsg-team 無しで readiness 句が注入された' \
-  || pass 'PW8 --agmsg-team 無しでは readiness 句を載せない'
+: > "$TMP/agmsg-noteam.log"
+if out=$(ARGV_LOG="$TMP/argv-noteam.log" AGMSG_LOG="$TMP/agmsg-noteam.log" \
+    AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+    bash "$TMP/scripts/prewarm-panes.sh" \
+      --workspace workspace:1 --base-surface surface:1 \
+      --cwd "$TMP/would-be-repo-pw8" --slug pw8 --status-dir "$TMP/status-pw8" \
+      --claude-runner claude --codex-runner codex --exec-choice ask 2>&1); then
+  bad "PW8 --agmsg-team 無しで die しなかった (exit 0): $out"
+else
+  grep -q -- '--agmsg-team is required' <<<"$out" \
+    && pass 'PW8 --agmsg-team 無しの prewarm は --agmsg-team を名指しして die する' \
+    || bad "PW8 die メッセージが --agmsg-team を示さない: $out"
+  [[ ! -s "$TMP/argv-noteam.log" ]] \
+    && pass 'PW8 ペインを 1 つも起動しないまま die する' \
+    || bad "PW8 die する前にペインを起動してしまった: $(cat "$TMP/argv-noteam.log")"
+  [[ ! -s "$TMP/agmsg-noteam.log" ]] \
+    && pass 'PW8 agmsg join / delivery.sh を一切呼ばないまま die する (孤児 team member 無し)' \
+    || bad "PW8 die する前に agmsg join/delivery を呼んでしまった: $(cat "$TMP/agmsg-noteam.log")"
+  [[ ! -d "$TMP/would-be-repo-pw8" ]] \
+    && pass 'PW8 worktree を作らないまま die する (孤児 worktree 無し)' \
+    || bad 'PW8 die する前に worktree を作ってしまった'
+  [[ ! -f "$TMP/status-pw8/prewarm.json" ]] \
+    && pass 'PW8 prewarm.json を書かない' \
+    || bad 'PW8 prewarm.json が書かれてしまった (die のはず)'
+fi
 
 # --- PW9: design の join が失敗すると die し、ペインを 1 つも起動しない (I1: no
 #     fallback。旧 PW9 は「design join 失敗時は design だけ readiness 句が乗らないが

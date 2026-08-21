@@ -17,6 +17,14 @@ TMP=$(mktemp -d)
 trap 'chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
 
+# agmsg send.sh の stub。--status-dir を渡す launch は agmsg 識別子を要求するので
+# (配送は agmsg send.sh の 1 本だけで、タイプ入力への fallback が無い)、
+# 実体の存在チェックを通すためにこれを AGMSG_SEND として export する。
+mkdir -p "$TMP/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/agmsg-send.sh"
+chmod +x "$TMP/bin/agmsg-send.sh"
+export AGMSG_SEND="$TMP/bin/agmsg-send.sh"
+
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -59,7 +67,7 @@ new_repo() {
 
 run_launch() {
   CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-    bash "$LAUNCH" "$@"
+    bash "$LAUNCH" --agmsg-team demo-team --agmsg-from perm-probe "$@"
 }
 
 settings_of() { echo "$1/.claude/settings.local.json"; }
@@ -92,7 +100,7 @@ count_flag() {
 run_launch_err() {   # $1 = stderr の保存先, 以降 launch の引数
   local err="$1"; shift
   CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-    bash "$LAUNCH" "$@" 2> "$err"
+    bash "$LAUNCH" --agmsg-team demo-team --agmsg-from perm-probe "$@" 2> "$err"
 }
 
 # 注入不能状態を作る 3 つのレシピ。いずれも chmod と違って root でも成立する。

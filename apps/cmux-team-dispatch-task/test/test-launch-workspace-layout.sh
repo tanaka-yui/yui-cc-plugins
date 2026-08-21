@@ -9,6 +9,14 @@ LAUNCH="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/launch-workspace.s
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/repo" "$TMP/status"
+
+# agmsg send.sh の stub。--status-dir を渡す launch は agmsg 識別子を要求するので
+# (配送は agmsg send.sh の 1 本だけで、タイプ入力への fallback が無い)、
+# 実体の存在チェックを通すためにこれを AGMSG_SEND として export する。
+mkdir -p "$TMP/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/agmsg-send.sh"
+chmod +x "$TMP/bin/agmsg-send.sh"
+export AGMSG_SEND="$TMP/bin/agmsg-send.sh"
 git -C "$TMP/repo" init -q
 git -C "$TMP/repo" config user.email test@example.invalid
 git -C "$TMP/repo" config user.name test
@@ -43,7 +51,8 @@ bad() { echo "FAIL: $1"; fail=1; }
 
 run_launch() {
   CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-    CMUX_CALL_LOG="${CMUX_CALL_LOG:-$TMP/calls.log}" bash "$LAUNCH" "$@"
+    CMUX_CALL_LOG="${CMUX_CALL_LOG:-$TMP/calls.log}" \
+    bash "$LAUNCH" --agmsg-team demo-team --agmsg-from layout-probe "$@"
 }
 
 for flag_pair in "--layout workspace" "--layout split" "--split-from surface:9" \

@@ -65,10 +65,10 @@ runner_for() {
   local output
   if [[ "$mode" == "execute" ]]; then
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --status-dir "$TMP/status" "$name")
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$name")
   else
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-      --cwd "$TMP/repo" --mode "$mode" --runner codex --status-dir "$TMP/status" "$name" prompt)
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$name" prompt)
   fi
   jq -r '.runner_file' <<<"$output"
 }
@@ -115,10 +115,10 @@ runner_for_flags() {
   local output
   if [[ "$mode" == "execute" ]]; then
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --status-dir "$TMP/status" "$@" "$name")
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$@" "$name")
   else
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-      --cwd "$TMP/repo" --mode "$mode" --runner codex --status-dir "$TMP/status" "$@" "$name" prompt)
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$@" "$name" prompt)
   fi
   jq -r '.runner_file' <<<"$output"
 }
@@ -146,7 +146,7 @@ assert_not_contains "$review_runner" '--dangerously-bypass-approvals-and-sandbox
 FAKE_AGMSG="$TMP/fake-agmsg"; mkdir -p "$FAKE_AGMSG/run" "$FAKE_AGMSG/db" "$FAKE_AGMSG/scripts"
 cr1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex \
-  --status-dir "$TMP/status" rv1 prompt)
+  --agmsg-team demo-team --agmsg-from rv1 --status-dir "$TMP/status" rv1 prompt)
 cr1_runner=$(jq -r '.runner_file' <<<"$cr1_output")
 assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1 agmsg run must be writable'
 assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/db'"  'CR1 agmsg db must be writable'
@@ -288,7 +288,7 @@ assert_contains "$SKILL_MD" "send.sh <TEAM> <your-agent-name> parent" \
 
 # --- pr_url 引き継ぎ / timeout sentinel ガード ---
 sentinel_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-  --cwd "$TMP/repo" --mode standby --runner claude --status-dir "$TMP/status" \
+  --cwd "$TMP/repo" --mode standby --runner claude --agmsg-team demo-team --agmsg-from sentinel-task --status-dir "$TMP/status" \
   --timeout-sentinel "$TMP/loopstate/timed-out/sentinel-task" "sentinel-task")
 sentinel_runner=$(jq -r '.runner_file' <<<"$sentinel_output")
 assert_contains "$sentinel_runner" 'TIMEOUT_SENTINEL="'"$TMP"'/loopstate/timed-out/sentinel-task"' \
@@ -298,7 +298,7 @@ assert_contains "$sentinel_runner" 'PREV_PR_URL' 'T11 write_status が既存 pr_
 
 # sentinel を渡さない通常経路には一切現れない（非ループ挙動の不変性）
 plain_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-  --cwd "$TMP/repo" --mode standby --runner claude --status-dir "$TMP/status" "plain-task")
+  --cwd "$TMP/repo" --mode standby --runner claude --agmsg-team demo-team --agmsg-from plain-task --status-dir "$TMP/status" "plain-task")
 plain_runner=$(jq -r '.runner_file' <<<"$plain_output")
 assert_contains "$plain_runner" 'TIMEOUT_SENTINEL=""' 'T10 未指定時は空の sentinel パス'
 
@@ -375,7 +375,7 @@ assert_not_contains "$a3_runner" 'code-round-N.md' 'A3 review 無効では revie
 hook_warn_stderr() {
   local home="$1" runner="$2" name="$3" out="$4"
   CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" CODEX_HOME="$home" \
-    bash "$LAUNCH" --cwd "$TMP/repo" --mode plan --runner "$runner" --status-dir "$TMP/status" "$name" prompt \
+    bash "$LAUNCH" --cwd "$TMP/repo" --mode plan --runner "$runner" --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$name" prompt \
     >/dev/null 2>"$out"
 }
 

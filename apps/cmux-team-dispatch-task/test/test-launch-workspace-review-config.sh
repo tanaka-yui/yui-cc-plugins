@@ -230,14 +230,34 @@ assert_die 'T9 reviewer_agent のシングルクォートは die する' 'invali
   "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
   --review-config "$TMP/status/review/code-review-bad-agent.json" guard-agent-quote
 
-# T10: agmsg 識別子が無いのに --review-config が来た (空の team/sender が補間される経路)
-assert_die 'T10 agmsg 未配線の --review-config は die する' '--review-config requires' \
-  "${BASE_ARGS[@]}" --review-config "$TMP/status/review/code-review.json" guard-nowire-review
+# T10: agmsg 識別子が無いのに --status-dir が来た。この launch は dispatch 管理下であり、
+# 生成される runner wrapper の notify_parent_once が (全モードで無条件に) 親通知を所有する
+# ので、team/from が無いと通知は毎回 return 1 になり黙って失われる。
+assert_die 'T10 agmsg 未配線の --status-dir は die する' '--status-dir requires' \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" --no-parallel \
+  --status-dir "$TMP/status" guard-nowire-status
 
-# T11: agmsg 識別子が無いのに親通知を約束するフラグが来た (notify_parent が永久に return 1)
-assert_die 'T11 agmsg 未配線の --parent-notify-workspace は die する' \
-  '--parent-notify-workspace/--parent-notify-surface require' \
-  "${BASE_ARGS[@]}" --parent-notify-workspace workspace:9 guard-nowire-notify
+# T10b: --status-dir を伴わない --review-config も die する (REVIEW_INSTRUCTION /
+# ABORT_REVIEW_STEP に空の team/sender が補間され、実行不能な指示が焼き込まれる経路)
+assert_die 'T10b agmsg 未配線の --review-config は die する' '--review-config requires' \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" --no-parallel \
+  --review-config "$TMP/status/review/code-review.json" guard-nowire-review
+
+# T11 (退行防止): --parent-notify-workspace / --parent-notify-surface だけでは die しない。
+# この 2 つは wrapper 内で `cmux notify` のデスクトップ通知にしか使われず、agmsg の親通知
+# とは独立した機構である。ここを die 条件に混ぜると「デスクトップ通知だけ欲しい launch」
+# (--status-dir を持たない素の起動) を殺してしまう — fix round 1 で実際に持ち込んだ退行。
+t11_out="$TMP/t11.out"; t11_err="$TMP/t11.err"
+if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+   AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
+   --cwd "$TMP/repo" --mode plan --runner claude --no-parallel \
+   --parent-notify-workspace workspace:9 --parent-notify-surface surface:9 \
+   guard-notify-only 'do something' >"$t11_out" 2>"$t11_err"; then
+  echo 'PASS: T11 --parent-notify-* 単独 (status-dir 無し) は die しない'
+else
+  echo "FAIL: T11 --parent-notify-* 単独で die した (agmsg と cmux notify を混同している): $(tr '\n' ' ' < "$t11_err")"
+  fail=1
+fi
 
 # --- PR1: reviewer_runner / reviewer_engine を明示した固定レビュー設定では、
 #     実装者 engine の反対側を計算せず JSON の reviewer_engine をそのまま使う ---
