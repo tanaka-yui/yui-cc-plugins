@@ -135,6 +135,85 @@ assert_contains "$review_runner" "-c approval_policy='never'" 'T5 review approva
 assert_contains "$review_runner" "--add-dir '$TMP/status'" 'T5 review status directory writable'
 assert_not_contains "$review_runner" '--dangerously-bypass-approvals-and-sandbox' 'T5 review does not disable sandbox'
 
+# --- CR1 / CR1b: codex review の --add-dir (agmsg run/db は writable, scripts は不可) ---
+FAKE_AGMSG="$TMP/fake-agmsg"; mkdir -p "$FAKE_AGMSG/run" "$FAKE_AGMSG/db" "$FAKE_AGMSG/scripts"
+cr1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex \
+  --status-dir "$TMP/status" rv1 prompt)
+cr1_runner=$(jq -r '.runner_file' <<<"$cr1_output")
+assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1 agmsg run must be writable'
+assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/db'"  'CR1 agmsg db must be writable'
+assert_not_contains "$cr1_runner" "$FAKE_AGMSG/scripts"     'CR1 agmsg scripts must NOT be writable'
+
+cr1b_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv2 prompt)
+cr1b_runner=$(jq -r '.runner_file' <<<"$cr1b_output")
+assert_contains "$cr1b_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1b must add agmsg dirs without STATUS_DIR'
+
+# --- CR1c: 新規インストール (run/ db/ が未作成) でも --add-dir が付く ---
+# CR1/CR1b は fixture が mkdir -p 済みなのでこの分岐を踏まない。実 watch.sh は run/ を
+# 初回起動時に自分で作るが、codex reviewer は workspace-write サンドボックスなので
+# 中からは作れない。launch-workspace.sh 側がサンドボックス外で先に作る必要がある。
+FRESH_AGMSG="$TMP/fresh-agmsg"; mkdir -p "$FRESH_AGMSG/scripts"
+cr1c_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FRESH_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv3 prompt)
+cr1c_runner=$(jq -r '.runner_file' <<<"$cr1c_output")
+assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/run'" 'CR1c fresh install must still grant agmsg run'
+assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/db'"  'CR1c fresh install must still grant agmsg db'
+
+# --- CR1d: agmsg 未インストールならツリーを勝手に作らない ---
+MISSING_AGMSG="$TMP/no-agmsg"
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$MISSING_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv4 prompt >/dev/null
+if [[ -d "$MISSING_AGMSG" ]]; then
+  echo 'FAIL: CR1d must not create an agmsg tree when agmsg is not installed'
+  fail=1
+else
+  echo 'PASS: CR1d must not create an agmsg tree when agmsg is not installed'
+fi
+
+# --- CR1e: AGMSG_SKILL_DIR にシェルメタ文字があれば --add-dir を付けない ---
+# composed command は `zsh -ic "... --add-dir '<path>' ..."` の二重引用で、
+# launch-workspace.sh はエスケープしない。`'` を含むパスをそのまま埋めると引用符が
+# 破れて後続が別トークンになる。B8 の mkdir -p もこの未検証値を引数に取るので、
+# 検出したときは --add-dir もツリー作成もしない (fail-closed)。
+QUOTED_AGMSG="$TMP/qu'ote-agmsg"; mkdir -p "$QUOTED_AGMSG/run" "$QUOTED_AGMSG/db"
+cr1e_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$QUOTED_AGMSG" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv5 prompt 2>/dev/null)
+cr1e_runner=$(jq -r '.runner_file' <<<"$cr1e_output")
+assert_not_contains "$cr1e_runner" "qu'ote-agmsg" 'CR1e a quoted AGMSG_SKILL_DIR must not be injected'
+
+# --- LW1 / LW2: agmsg 配線経路 ---
+# launch-workspace.sh:379 は send.sh が無ければ die する。実 $HOME の agmsg に依存させると
+# 未インストールのホストで `set -euo pipefail` のこのファイルが LW1 で即死し、以降の
+# 全ケースが走らないまま終端行すら出ない。stub を AGMSG_SEND で差し替えてホスト非依存にする。
+STUB_AGMSG_SEND="$TMP/agmsg-send.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_AGMSG_SEND"
+chmod +x "$STUB_AGMSG_SEND"
+
+# --- LW1: runner script に AGMSG_EXPECTED_NAME が入る ---
+lw1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SEND="$STUB_AGMSG_SEND" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \
+  --status-dir "$TMP/status" --agmsg-team demo --agmsg-from demo-claude lw1)
+lw1_runner=$(jq -r '.runner_file' <<<"$lw1_output")
+assert_contains "$lw1_runner" "export AGMSG_EXPECTED_NAME='demo-claude'" 'LW1 runner script must export AGMSG_EXPECTED_NAME'
+# AGMSG_SEND が env で差し替え可能なままであること (:202) の回帰。ここを見ずに
+# STUB_AGMSG_SEND を注入するだけだと、:202 がハードコードへ戻っても agmsg 導入済みの
+# ホスト (= 実開発機全部) では本物の $HOME 配下 send.sh が -f を通り LW1 自体は緑のまま通る。
+assert_contains "$lw1_runner" "AGMSG_SEND=\"$STUB_AGMSG_SEND\"" 'LW1 AGMSG_SEND is env-substitutable'
+
+# --- LW2: --agmsg-from の値域検証 ---
+lw2_bad=0
+CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SEND="$STUB_AGMSG_SEND" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \
+  --status-dir "$TMP/status" --agmsg-team demo --agmsg-from 'bad name' lw2 >/dev/null 2>&1 && lw2_bad=1
+if [[ $lw2_bad -eq 0 ]]; then
+  echo 'PASS: LW2 --agmsg-from with a space must die'
+else
+  echo 'FAIL: LW2 --agmsg-from with a space must die'
+  fail=1
+fi
+
 # --- hook trust: codex 0.145 は project-local .codex/hooks.json ごとに信頼を求める。
 # agmsg が worktree ごとに新しい hooks.json を生成するためパスが毎回変わり、常に未信頼と
 # 判定されて起動直後に承認待ちで停止する。approvals-and-sandbox のバイパスとは別フラグ。 ---

@@ -408,13 +408,13 @@ REVIEW_JOINED=0
 wire_delivery() {
   local engine="$1"
   if [[ "$engine" == "codex" ]]; then
-    if bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >&2 2>/dev/null; then
+    if bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >/dev/null 2>&1; then
       CODEX_DELIVERY="agmsg"
     else
       log "agmsg" "codex delivery wiring failed; falling back to cmux-send"
     fi
   else
-    if bash "$AGMSG_DIR/delivery.sh" set monitor claude-code "$CWD" >&2 2>/dev/null; then
+    if bash "$AGMSG_DIR/delivery.sh" set monitor claude-code "$CWD" >/dev/null 2>&1; then
       CLAUDE_DELIVERY="agmsg"
     else
       log "agmsg" "claude-code delivery wiring failed; falling back to cmux-send"
@@ -464,11 +464,41 @@ if [[ -n "$AGMSG_TEAM" ]]; then
   fi
 fi
 
+# --- guard 注入ヘルパー ---
+# 初期プロンプトへ埋め込む guard 実行文。SCRIPT_DIR に空白が含まれる場合は
+# プロンプトをクォートできず bash が exit 127 で終わるので、注入しない。
+# 空白以外のシェルメタ文字も同じ理由で弾く: この文字列は launch-workspace.sh が
+# `zsh -ic "... '<prompt>' ..."` の中へエスケープせず埋めるので、`'` があれば引用符を
+# 破って後続を別トークンにできる (`-i` は対話モードなので `!` の history 展開も効く)。
+# 禁止集合は parallel-directive.sh / --agmsg-from と同じ `' " \` $ ! \` に揃える。
+GUARD_INJECTABLE=1
+case "$SCRIPT_DIR" in
+  *[[:space:]]*|*[\'\"\`\$\!\\]*) GUARD_INJECTABLE=0 ;;
+esac
+[[ $GUARD_INJECTABLE -eq 0 ]] \
+  && log "agmsg" "skill dir contains whitespace or a shell metacharacter; not injecting the guard"
+
+guard_clause() {  # <type> <name>
+  printf 'Run bash %s/ensure-agmsg-ready.sh --type %s --name %s and continue even if it exits non-zero.' \
+    "$SCRIPT_DIR" "$1" "$2"
+}
+
 # --- Step 3: 設計ペイン standby (agmsg モードのみ、workspace 配置) ---
 
 DESIGN_SURFACE=""
+DESIGN_WATCHER="none"
 
 if [[ $WITH_DESIGN -eq 1 ]]; then
+  # design は engine を問わず同じ guard-call プロンプトで起動する。配線失敗
+  # (DESIGN_DELIVERY=cmux-send) や SCRIPT_DIR に空白がある場合は guard を注入せず、
+  # タスクが直接タイプ入力で届く旨の文面にフォールバックする。
+  if [[ $GUARD_INJECTABLE -eq 1 && "$DESIGN_DELIVERY" == "agmsg" ]]; then
+    DESIGN_WATCHER="guard-injected"
+    OPUS_PROMPT="$(guard_clause "$DESIGN_WIRING_TYPE" "$SLUG") Then wait idle. Your task will arrive as a prompt typed into this pane; an identical copy may also be recorded in your agmsg inbox history (treat both as ONE task). Do not start any work until the task prompt arrives."
+  else
+    OPUS_PROMPT="Wait idle. Your task will be typed directly into this pane as a prompt. Do not start any work until it arrives."
+  fi
+
   if [[ "$DESIGN_ENGINE" == "codex" ]]; then
     log "prewarm" "launching codex design workspace for $SLUG"
     DESIGN_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
@@ -482,17 +512,8 @@ if [[ $WITH_DESIGN -eq 1 ]]; then
       --status-dir "$STATUS_DIR" \
       ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
       --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
-      "$SLUG") || die "failed to launch codex design workspace"
+      "$SLUG" "$OPUS_PROMPT") || die "failed to launch codex design workspace"
   else
-    # actas で identity を claim してから待機する。タスク本文は含めない (後から届く)。
-    # タスクは常に typed prompt で届く (agmsg push は idle セッションを起こせないため
-    # wake チャネルにはならない — inbox には同一コピーが記録として残るだけ)。
-    # 配線失敗 (CLAUDE_DELIVERY=cmux-send) のときは actas/watcher が不要なためスキップする
-    if [[ "$CLAUDE_DELIVERY" == "agmsg" ]]; then
-      OPUS_PROMPT="/agmsg actas $SLUG then wait idle. Your task will arrive as a prompt typed into this pane; an identical copy is also pushed to your agmsg inbox (treat both as ONE task — ignore the duplicate). Do not start any work until the task prompt arrives."
-    else
-      OPUS_PROMPT="Wait idle. Your task will be typed directly into this pane as a prompt. Do not start any work until it arrives."
-    fi
     log "prewarm" "launching opus standby workspace for $SLUG"
     OPUS_UNATTENDED_FLAGS=()
     [[ $UNATTENDED -eq 1 ]] && OPUS_UNATTENDED_FLAGS=(--skip-permissions)
@@ -543,12 +564,14 @@ set_exec_split_flags() {
 
 CLAUDE_EXEC_SURFACE=""
 CLAUDE_EXEC_PROMPT=""
+CLAUDE_EXEC_WATCHER="none"
 # CLAUDE_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
 AGMSG_FLAGS_CLAUDE=()
 if [[ $START_CLAUDE -eq 1 && -n "$AGMSG_TEAM" ]]; then
-  # design と同じ理由で delivery に応じて出し分ける (cmux-send フォールバック時は actas しない)
-  if [[ "$CLAUDE_DELIVERY" == "agmsg" ]]; then
-    CLAUDE_EXEC_PROMPT="/agmsg actas $SLUG-claude then wait idle. Execution instructions will arrive as a prompt typed into this pane; an identical copy is also pushed to your agmsg inbox (treat both as ONE task — ignore the duplicate). Do not start any work until the instructions arrive."
+  # design と同じ理由で delivery に応じて出し分ける (cmux-send フォールバック時は guard を注入しない)
+  if [[ $GUARD_INJECTABLE -eq 1 && "$CLAUDE_DELIVERY" == "agmsg" ]]; then
+    CLAUDE_EXEC_WATCHER="guard-injected"
+    CLAUDE_EXEC_PROMPT="$(guard_clause claude-code "$SLUG-claude") Then wait idle. Execution instructions will arrive as a prompt typed into this pane; an identical copy may also be recorded in your agmsg inbox history (treat both as ONE task). Do not start any work until the instructions arrive."
   else
     CLAUDE_EXEC_PROMPT="Wait idle. Execution instructions will be typed directly into this pane as a prompt. Do not start any work until they arrive."
   fi
@@ -581,15 +604,22 @@ if [[ $START_CLAUDE -eq 1 ]]; then
 fi
 
 # --- Step 5: codex standby (選択時のみ、実装行へ split 配置) ---
-# codex は idle でも agmsg push を受けられる保証が無いため初期 prompt は常に無し。
-# 実行指示の配送手段は CODEX_DELIVERY (prewarm.json) で分岐する。
+# codex は idle でも agmsg push を受けられる保証が無いため、実行指示そのものは常に
+# 別配送 (CODEX_DELIVERY, prewarm.json で分岐) に任せる。初期プロンプトには
+# guard-call のみを乗せ、配線失敗時は guard も注入しない。
 
 CODEX_SURFACE=""
+CODEX_WATCHER="none"
 
 if [[ $START_CODEX -eq 1 ]]; then
   AGMSG_FLAGS_CODEX=()
+  CODEX_EXEC_PROMPT=""
   if [[ -n "$AGMSG_TEAM" ]]; then
     AGMSG_FLAGS_CODEX=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
+    if [[ $GUARD_INJECTABLE -eq 1 && "$CODEX_DELIVERY" == "agmsg" ]]; then
+      CODEX_WATCHER="guard-injected"
+      CODEX_EXEC_PROMPT="$(guard_clause codex "$SLUG-codex") Then wait idle. Execution instructions will arrive as a prompt typed into this pane; an identical copy may also be recorded in your agmsg inbox history (treat both as ONE task). Do not start any work until the instructions arrive."
+    fi
   fi
   log "prewarm" "launching codex standby pane for $SLUG"
   # CODEX_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
@@ -606,7 +636,7 @@ if [[ $START_CODEX -eq 1 ]]; then
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
     ${AGMSG_FLAGS_CODEX[@]+"${AGMSG_FLAGS_CODEX[@]}"} \
-    "$SLUG-codex") || die "failed to launch codex standby pane"
+    "$SLUG-codex" ${CODEX_EXEC_PROMPT:+"$CODEX_EXEC_PROMPT"}) || die "failed to launch codex standby pane"
   CODEX_SURFACE=$(echo "$CODEX_RESULT" | jq -r '.surface_id // empty')
   [[ -n "$CODEX_SURFACE" ]] || die "failed to parse codex standby output"
   EXEC_LAST_SURFACE="$CODEX_SURFACE"
@@ -614,11 +644,13 @@ fi
 
 # --- Step 5.5: review ペイン (--review-model / --reviewer-runner 時のみ、design の右に split 配置) ---
 # standby と同じ wrapper だが .assigned-<slug>-review は誰も touch しない前提 —
-# close しても status.json を汚さない。初期 prompt は codex standby と同じく常に無し。
+# close しても status.json を汚さない。初期プロンプトには guard-call のみを乗せ、
+# 配線失敗時は codex standby と同じく guard を注入しない。
 # --reviewer-runner は engine を問わず利用できる。--review-model は claude 設計の
 # 既存 codex review 指定として維持する。
 
 REVIEW_SURFACE=""
+REVIEW_WATCHER="none"
 
 leave_failed_review_join() {
   [[ $REVIEW_JOINED -eq 1 && -n "$AGMSG_TEAM" ]] || return 0
@@ -643,6 +675,19 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     log "prewarm" "launching codex review pane for $SLUG"
     REVIEW_PANE_NAME="$SLUG-review"
     REVIEW_RUNNER_FLAGS=(--runner "$CODEX_RUNNER" --model "$REVIEW_MODEL")
+    # legacy 経路でも --agmsg-from は必須。guard 注入は REVIEW_DELIVERY だけで決まるので、
+    # ここを落とすと「guard は注入されるのに runner script に
+    # export AGMSG_EXPECTED_NAME が出ない」状態になる。ネストしたディスパッチで外側の
+    # 値を継承すると guard が die_usage (rc 2) になり、watcher が起動しないのに
+    # prewarm.json は guard-injected と報告する。
+    if [[ -n "$AGMSG_TEAM" ]]; then
+      AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-review")
+    fi
+  fi
+  REVIEW_PROMPT=""
+  if [[ $GUARD_INJECTABLE -eq 1 && "$REVIEW_DELIVERY" == "agmsg" ]]; then
+    REVIEW_WATCHER="guard-injected"
+    REVIEW_PROMPT="$(guard_clause "$REVIEW_WIRING_TYPE" "$SLUG-review") Then wait idle. Review requests will arrive as a prompt typed into this pane; an identical copy may also be recorded in your agmsg inbox history (treat both as ONE request). Do not start any work until a request arrives."
   fi
   if REVIEW_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
@@ -657,7 +702,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
     ${AGMSG_FLAGS_REVIEW[@]+"${AGMSG_FLAGS_REVIEW[@]}"} \
-    "$REVIEW_PANE_NAME"); then
+    "$REVIEW_PANE_NAME" ${REVIEW_PROMPT:+"$REVIEW_PROMPT"}); then
     if ! REVIEW_SURFACE=$(echo "$REVIEW_RESULT" | jq -er '.surface_id // empty'); then
       REVIEW_SURFACE=""
       leave_failed_review_join
@@ -689,11 +734,15 @@ PREWARM_JSON=$(jq -n \
   --arg dx "$CODEX_DELIVERY" \
   --arg dr "$REVIEW_DELIVERY" \
   --arg re "$REVIEW_ENGINE" \
-  '(if $ds != "" then {design: {surface_id: $ds, agent: $slug, runner: $drr, engine: $de, role: "plan", delivery: $dd}} else {} end)
-   + (if $rs != "" then {review: {surface_id: $rs, agent: ($slug + "-review"), runner: $rrr, engine: $re, role: "review", delivery: $dr}} else {} end)
+  --arg dw "$DESIGN_WATCHER" \
+  --arg cw "$CLAUDE_EXEC_WATCHER" \
+  --arg xw "$CODEX_WATCHER" \
+  --arg rw "$REVIEW_WATCHER" \
+  '(if $ds != "" then {design: {surface_id: $ds, agent: $slug, runner: $drr, engine: $de, role: "plan", delivery: $dd, watcher: $dw}} else {} end)
+   + (if $rs != "" then {review: {surface_id: $rs, agent: ($slug + "-review"), runner: $rrr, engine: $re, role: "review", delivery: $dr, watcher: $rw}} else {} end)
    + {executors:
-        ((if $ces != "" then {claude: {surface_id: $ces, agent: ($slug + "-claude"), runner: $cer, engine: "claude", role: "exec", delivery: $dc}} else {} end)
-         + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), runner: $crr, engine: "codex", role: "exec", delivery: $dx}} else {} end))}')
+        ((if $ces != "" then {claude: {surface_id: $ces, agent: ($slug + "-claude"), runner: $cer, engine: "claude", role: "exec", delivery: $dc, watcher: $cw}} else {} end)
+         + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), runner: $crr, engine: "codex", role: "exec", delivery: $dx, watcher: $xw}} else {} end))}')
 echo "$PREWARM_JSON" > "$STATUS_DIR/prewarm.json"
 log "prewarm" "wrote $STATUS_DIR/prewarm.json"
 

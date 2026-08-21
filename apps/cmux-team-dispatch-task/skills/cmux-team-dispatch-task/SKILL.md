@@ -387,7 +387,7 @@ Resolution order for both model and effort:
 | codex  | plan        | `<command> [-c model_reasoning_effort='<plan_effort>'] [--model <plan_model>] --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
 | codex  | superpowers | `<command> [-c model_reasoning_effort='<plan_effort>'] [--model <plan_model>] --dangerously-bypass-approvals-and-sandbox '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
 | codex  | execute     | `<command> [-c model_reasoning_effort='<exec_effort>'] [--model <exec_model>] --dangerously-bypass-approvals-and-sandbox 'Read and execute the plan at <plan-file>'` |
-| codex  | review      | `<command> [-c model_reasoning_effort='<review_effort>'] --model <review_model> --sandbox workspace-write -c approval_policy='never' --add-dir <STATUS_DIR>` |
+| codex  | review      | `<command> [-c model_reasoning_effort='<review_effort>'] --model <review_model> --sandbox workspace-write -c approval_policy='never' [--add-dir <STATUS_DIR>] [--add-dir <AGMSG_SKILL_DIR>/run] [--add-dir <AGMSG_SKILL_DIR>/db]` |
 
 `execute` mode is used in Phase B (the implementation phase) to hand implementation off
 to a separate surface. `--plan-file <path>` specifies the plan file path, and
@@ -415,6 +415,15 @@ prewarm design codex pane launches with `--mode standby`, `prewarm-panes.sh` pas
 
 The composed command is always wrapped: `zsh -ic "<composed>"` so that `~/.zshrc`
 functions (e.g. `ccenec`) and env (proxy auth, PATH) are loaded for the child session.
+
+The two agmsg `--add-dir` flags in the review row are conditional in two ways. They are
+omitted when agmsg is not installed, and they are **omitted fail-closed** when
+`<AGMSG_SKILL_DIR>` contains a shell metacharacter (`'` `"` `` ` `` `$` `!` `\`): the
+composed command is not escaped, so such a path would break out of the surrounding
+quoting. The same check gates the `mkdir -p` that creates `run/` and `db/` beforehand —
+under this condition neither the flags nor the tree are created. A codex review pane
+launched that way can therefore have its guard land on `reason=pidfile-missing`, which is
+the intended, visible fallback rather than a broken command line.
 
 Regardless of MODE, when the resolved runner engine is `claude`, the script
 injects `permissions.defaultMode: "bypassPermissions"` into the worktree's
@@ -553,18 +562,21 @@ both, and `--reset config` removes the keys.
 ### 1g. Resolve Delivery, Review Mode and Execution Default
 
 **There is no notification-transport question and no `message_type` config key.**
-agmsg is wired whenever `~/.agents/skills/agmsg/scripts/send.sh` exists; when it does
-not, the dispatch simply runs without agmsg wiring. Nothing is asked and nothing is
-persisted about it.
+`AGMSG_INSTALLED` decides whether this dispatch uses agmsg at all. It starts from
+whether `~/.agents/skills/agmsg/scripts/send.sh` exists on disk, and the guard call
+below (Step 1g's wiring block) can still flip it to `false` afterward even when the
+binary IS present, when the wiring attempt itself fails. Nothing is asked and nothing
+is persisted about it.
 
 ```bash
 AGMSG_INSTALLED=false
 [[ -f ~/.agents/skills/agmsg/scripts/send.sh ]] && AGMSG_INSTALLED=true
 ```
 
-`monitor-dispatch.sh` is launched ONLY when agmsg is not installed (see Step 3).
-`--message-type` was removed from `launch-workspace.sh` and `prewarm-panes.sh`;
-passing it now dies with a `was removed` message.
+`monitor-dispatch.sh` is launched whenever `AGMSG_INSTALLED` ends up `false`, for
+either reason above (see Step 3). `--message-type` was removed from
+`launch-workspace.sh` and `prewarm-panes.sh`; passing it now dies with a `was removed`
+message.
 
 **Delivery contract (applies to EVERY message this skill sends).** All delivery goes
 through one call to `scripts/send-prompt.sh` — never a raw `cmux send`: <!-- send-prompt-exempt: prohibition, not a delivery instruction -->
@@ -784,16 +796,31 @@ fi
 - `"claude"` / `"codex"` (a valid value that passed layer validation) →
   embed its default-direct Phase B block.
 
-**When agmsg is installed (`AGMSG_INSTALLED=true`), wire the team BEFORE launching (Step 2):**
+**When agmsg is installed (`AGMSG_INSTALLED=true`), wire the team BEFORE launching
+(Step 2) by calling the guard script — never by following an `AGMSG-DIRECTIVE:` line
+by hand. A harness without a `Monitor` tool has no way to comply with that directive;
+an orchestrator that tried previously stalled indefinitely waiting on it. The guard
+script starts the watcher itself, without needing that tool, and reports back what it
+managed to do:**
 
 ```bash
 TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
 PARENT_ENGINE="claude"
 [[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"
 PARENT_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$PARENT_ENGINE") || exit 1
-# Join the parent (if already a member, join.sh treats it as a re-registration), and enable real-time push
-~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)"
-~/.agents/skills/agmsg/scripts/delivery.sh set monitor "$PARENT_AGMSG_TYPE" "$(pwd)"
+~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)" >/dev/null 2>&1 || true
+AGMSG_RC=0
+AGMSG_STATE=$(env -u AGMSG_EXPECTED_NAME bash <SKILL_DIR>/scripts/ensure-agmsg-ready.sh \
+  --type "$PARENT_AGMSG_TYPE" --name parent --project "$(pwd)") || AGMSG_RC=$?
+case "$AGMSG_RC" in
+  0) case "$AGMSG_STATE" in
+       *"watcher=none"*)           echo "[warn] agmsg watcher not running ($AGMSG_STATE)" ;;
+       *"watcher=existing-other"*) echo "[warn] agmsg inbox records are off for parent ($AGMSG_STATE)" ;;
+     esac ;;
+  1) TEAM=""; AGMSG_INSTALLED=false
+     echo "[warn] agmsg wiring failed ($AGMSG_STATE) — typed-only delivery with monitor-dispatch.sh" ;;
+  *) echo "[error] ensure-agmsg-ready.sh usage error ($AGMSG_STATE)"; exit 1 ;;
+esac
 ```
 
 `PARENT_AGMSG_TYPE` must match the current orchestrator runtime. Codex sets
@@ -801,16 +828,33 @@ PARENT_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$PA
 compatibility resolves it to `claude-code`. Do not derive the parent type from a child
 runner.
 
+`env -u AGMSG_EXPECTED_NAME` strips any role name this session may have inherited from
+an outer dispatch before calling the guard: without it, a nested dispatch launched from
+inside an already-guarded session would inherit a name that does not match `parent` and
+the guard would die with a usage error. `join.sh`'s `|| true` and the guard call's
+`|| AGMSG_RC=$?` both exist because this whole section runs under `set -e`; without
+them a non-zero exit from either command would abort the script before the `case` can
+run its branch.
+
+`AGMSG_INSTALLED` broadens here from "does `send.sh` exist" to "should this dispatch
+use agmsg at all": exit code 1 from the guard sets `AGMSG_INSTALLED=false` even though
+agmsg IS installed on disk, because the WIRING failed, not the binary. Whichever reason
+produced `AGMSG_INSTALLED=false`, `monitor-dispatch.sh` must still launch in Step 3 —
+that trigger condition already reads `AGMSG_INSTALLED` and needs no code change, only
+this description had to catch up to the broader meaning.
+
 When agmsg is NOT installed, leave `TEAM` empty, skip this whole block, and drop the
 `--agmsg-*` flags everywhere below. Delivery still works — it is just typed-only.
 
-`delivery.sh set` may print an `AGMSG-DIRECTIVE:` line — the SessionStart
-hook it installs only takes effect for FUTURE sessions, so the directive is
-how the CURRENT session activates delivery. If the output contains such a
-line, follow it (invoke the Monitor tool exactly as instructed) BEFORE
-launching tasks. Note the watcher is a record/reply channel, not a wake
-mechanism: its stream output is never injected while this session is idle,
-which is why `send-prompt.sh` always types the message in as well.
+The watcher the guard starts is a record/reply channel, not a wake mechanism: its
+stream output is never injected while this session is idle, which is why
+`send-prompt.sh` always types the message in as well.
+
+Known limitation: the guard runs exactly once, from this initial prompt, so `/clear`
+(or a resume) does NOT restore the watcher — the new session id makes the old watcher
+self-terminate and nothing re-runs the guard. That pane keeps delivering and receiving
+typed prompts, but stops recording them in its agmsg inbox until a new session starts.
+Re-run the guard by hand in that pane if the inbox record matters.
 
 Each launch then adds `--agmsg-team "$TEAM" --agmsg-from <task-slug>` to
 `launch-workspace.sh`. After each task's worktree exists (launch script returned),
@@ -827,7 +871,28 @@ Do not infer it from the parent runtime or from another role.
 When the pre-warm path is active (workspace layout + `prewarm: true`), skip
 this manual `join.sh` — `prewarm-panes.sh` already joins the design agent
 (`<task-slug>`) and the standby agents (`<task-slug>-claude` / `-codex`) and
-wires delivery into the worktree before any pane starts.
+wires delivery into the worktree before any pane starts. That path also injects its
+own guard call into each pane's initial prompt, so nothing further is needed there.
+
+Only when `prewarm: false`, include this additional guard line in the child's own
+prompt (a non-prewarm design pane never gets a guard call from anywhere else, unlike
+a prewarm pane):
+
+```
+Before you start, run this once and continue even if it exits non-zero: bash <SKILL_DIR>/scripts/ensure-agmsg-ready.sh --type <CHILD_AGMSG_TYPE> --name <task-slug>
+```
+
+Resolve `<CHILD_AGMSG_TYPE>` per task from that task's own already-resolved
+`DESIGN_ENGINE`, the same way as the `join.sh` call above — do not infer it from the
+parent runtime or from another role. Drop this whole line when `<team>` is empty (no
+agmsg wiring at all for this dispatch).
+
+Never add this line when `prewarm: true`: prewarm panes already receive a guard call
+from `prewarm-panes.sh` (see above), and this line's `--name` is fixed to
+`<task-slug>` — the design pane's own agent name — so repeating it inside a prewarm
+pane's prompt would run the guard twice and, worse, would make the claude executor
+(`<slug>-claude`) or review (`<slug>-review`) pane try to claim a DIFFERENT role's
+actas lock under its own name.
 
 Additionally, append this block to every child prompt's status protocol section:
 
@@ -2082,6 +2147,18 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
 **agmsg installed (`$TEAM` non-empty)** — do NOT run the normal "Launch: Workspace
 Mode" invocation. Instead all resolved panes start idle with no task
 message, and the Phase A task is delivered afterwards by `send-prompt.sh`.
+
+When wiring fails for a role (the `delivery: "cmux-send"` fallback), **none of the
+four roles gets a guard call injected** into its initial prompt, but the replacement
+differs per role. **Design and the claude executor** fall back to a prompt telling the
+pane to wait idle because the task or execution instructions will be typed directly
+into it. **The codex executor and review** get no initial prompt at all and simply start
+idle — `${CODEX_EXEC_PROMPT:+...}` / `${REVIEW_PROMPT:+...}` drop the argument entirely
+when the variable is empty, which is how those two roles already started before the
+guard existed. When wiring succeeds, all four roles get the same wording: the task
+arrives as a prompt typed into this pane with an identical copy recorded in the inbox —
+never "delivered as an agmsg message".
+
 `prewarm-panes.sh` creates the worktree, wires agmsg delivery into it (join +
 `delivery.sh set`, BEFORE any pane starts), launches the design standby workspace,
 and places only the resolved review/execution roles:
@@ -2154,8 +2231,15 @@ Then dispatch the Phase A task to the design pane:
    prewarm.json's `.design.delivery` — send-prompt.sh checks the ready sentinel
    itself. That sentinel (`~/.agents/skills/agmsg/run/ready.<team>__<agent>`) is
    created by agmsg's watch.sh while a live watcher is receiving for that role
-   and removed on exit — team/agent names here are `[A-Za-z0-9._-]` slugs, so
-   the path needs no encoding. It gates ONLY the inbox copy. It proves that a
+   and removed on exit. Agent names here are already validated to
+   `^[A-Za-z0-9._-]+$` at every call site, so they need no further encoding, but
+   team names (e.g. `dispatch-<repo-name-with-spaces>`) are not slug-restricted —
+   the team half of the path is percent-encoded (`agmsg-path.sh`, a
+   `send-prompt.sh`-only helper — the guard does not source it because its
+   `--name` is already validated to that charset, making the encoding an
+   identity map) so a repo name containing spaces or other non-slug characters
+   still resolves to the same path agmsg itself writes.
+   It gates ONLY the inbox copy. It proves that a
    watcher PROCESS is alive, not that the pane can be woken: the same sentinel is
    written whether the watcher runs under a mechanism that injects into an idle
    session or under a plain background shell that does not. Typing is what
@@ -2164,7 +2248,11 @@ Then dispatch the Phase A task to the design pane:
 prewarm.json uses role names and records only panes that exist. `design` is required;
 `review` exists when the quality gate is enabled; `executors` contains only the
 choices started for this task. Each object records its resolved runner, engine, role,
-agent, and informational delivery state. Consumers use these exact lookups:
+agent, informational delivery state, and `watcher` — `"guard-injected"` when the
+pane's initial prompt included the `ensure-agmsg-ready.sh` guard call, `"none"`
+otherwise (delivery wiring failed, or the guard could not be injected because
+`SCRIPT_DIR` contains whitespace or a shell metacharacter). Consumers use these
+exact lookups:
 
 ```bash
 DESIGN_SURFACE=$(jq -r '.design.surface_id // empty' "$PREWARM_FILE")
@@ -2175,10 +2263,10 @@ CLAUDE_EXEC_SURFACE=$(jq -r '.executors.claude.surface_id // empty' "$PREWARM_FI
 
 ```json
 {
-  "design": { "surface_id": "surface:1", "agent": "<slug>", "runner": "codex", "engine": "codex", "role": "plan", "delivery": "agmsg" },
-  "review": { "surface_id": "surface:2", "agent": "<slug>-review", "runner": "codex", "engine": "codex", "role": "review", "delivery": "agmsg" },
+  "design": { "surface_id": "surface:1", "agent": "<slug>", "runner": "codex", "engine": "codex", "role": "plan", "delivery": "agmsg", "watcher": "guard-injected" },
+  "review": { "surface_id": "surface:2", "agent": "<slug>-review", "runner": "codex", "engine": "codex", "role": "review", "delivery": "agmsg", "watcher": "guard-injected" },
   "executors": {
-    "codex": { "surface_id": "surface:3", "agent": "<slug>-codex", "runner": "codex", "engine": "codex", "role": "exec", "delivery": "agmsg" }
+    "codex": { "surface_id": "surface:3", "agent": "<slug>-codex", "runner": "codex", "engine": "codex", "role": "exec", "delivery": "agmsg", "watcher": "guard-injected" }
   }
 }
 ```
@@ -2235,11 +2323,12 @@ boundary, and a claude session told to call `spawn_agent` has no such tool.
 
 ### Notification-based Monitoring (Primary)
 
-**Monitoring depends on whether agmsg is installed (Step 1g):**
+**Monitoring depends on `AGMSG_INSTALLED` (Step 1g), which can end up `false` either
+because agmsg is not on disk or because Step 1g's guard call failed to wire it:**
 
-- agmsg NOT installed → launch `monitor-dispatch.sh` as described below (heartbeat,
-  DIED detection, all-done notification).
-- agmsg installed → do NOT launch `monitor-dispatch.sh`. Completion notifications
+- `AGMSG_INSTALLED=false` → launch `monitor-dispatch.sh` as described below
+  (heartbeat, DIED detection, all-done notification).
+- `AGMSG_INSTALLED=true` → do NOT launch `monitor-dispatch.sh`. Completion notifications
   arrive as `[dispatch] task "<slug>" finished (status: ...)` text typed into this
   pane by `send-prompt.sh`, with an identical copy recorded in this session's agmsg
   inbox whenever its watcher is alive. The typed text is the channel that actually
@@ -2773,7 +2862,7 @@ When parsing a `superpowers:writing-plans` plan file:
   child session; Phase B decides which *engine* implements. `design_runner` can fix
   Step 1f; `exec_choice` can fix Phase B. Models and efforts come from the runner's role
   fields in either case, never from the Phase B answer.
-- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). agmsg is wired whenever `~/.agents/skills/agmsg/scripts/send.sh` exists, and `monitor-dispatch.sh` is launched only when it does not (status.json transitions are unchanged either way). Every message goes through one `scripts/send-prompt.sh` call. It **always types the message into the target pane** — typing is the only thing that wakes an idle session — and, when the three `--agmsg-*` arguments are supplied and the destination's ready sentinel exists, it **additionally records the same body in the agmsg inbox**, always AFTER the typed delivery so that a hung agmsg writer can never block the only wake mechanism. **An agmsg push is inbox-record-only and cannot wake an idle session**; the ready sentinel proves only that a watcher PROCESS is alive, not that it can wake the session (the same sentinel is written whether the watcher runs under a mechanism that injects into an idle session or under a plain background shell that does not). An agmsg failure never affects delivery or the exit code. Bodies longer than 400 characters are written to `<outbox-dir>/<label>-<seq>.md` and only a one-line pointer is typed, which is what stops a long instruction from being treated as a paste and jamming the input box. After typing, Enter is pressed and `cmux read-screen` confirms the input box emptied, re-pressing Enter up to 3 times before reporting failure; this verification applies when the destination renders a `❯` (or `>`) prompt line at column 0, and a pane without such a line — like an unobservable screen — counts as delivered, so a caller never re-sends and double-delivers. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Also, if Step 1g's `delivery.sh set` output includes an `AGMSG-DIRECTIVE:` line, it MUST be followed so that the currently-dispatching session's own watcher gets started.
+- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). `AGMSG_INSTALLED` starts from whether `~/.agents/skills/agmsg/scripts/send.sh` exists and can be downgraded to `false` by Step 1g's guard call if wiring itself fails; `monitor-dispatch.sh` is launched only when `AGMSG_INSTALLED` ends up `false` (status.json transitions are unchanged either way). Every message goes through one `scripts/send-prompt.sh` call. It **always types the message into the target pane** — typing is the only thing that wakes an idle session — and, when the three `--agmsg-*` arguments are supplied and the destination's ready sentinel exists, it **additionally records the same body in the agmsg inbox**, always AFTER the typed delivery so that a hung agmsg writer can never block the only wake mechanism. **An agmsg push is inbox-record-only and cannot wake an idle session**; the ready sentinel proves only that a watcher PROCESS is alive, not that it can wake the session (the same sentinel is written whether the watcher runs under a mechanism that injects into an idle session or under a plain background shell that does not). An agmsg failure never affects delivery or the exit code. Bodies longer than 400 characters are written to `<outbox-dir>/<label>-<seq>.md` and only a one-line pointer is typed, which is what stops a long instruction from being treated as a paste and jamming the input box. After typing, Enter is pressed and `cmux read-screen` confirms the input box emptied, re-pressing Enter up to 3 times before reporting failure; this verification applies when the destination renders a `❯` (or `>`) prompt line at column 0, and a pane without such a line — like an unobservable screen — counts as delivered, so a caller never re-sends and double-delivers. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Step 1g starts the currently-dispatching session's own watcher with a direct call to `ensure-agmsg-ready.sh` — no `AGMSG-DIRECTIVE:` line to follow and no `Monitor` tool required.
 - **Pre-warm role panes**: when layout is `workspace` and config `prewarm: true`
   (default), `prewarm-panes.sh` places only resolved roles: design, optional review, and
   the execution engines allowed by `exec_choice`. `prewarm.json`'s `executors` holds at

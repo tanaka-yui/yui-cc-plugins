@@ -130,17 +130,21 @@ slug にこれらが混入しないようにする。
 ### 1g. 配送・レビューモード・実行既定の解決
 
 **通知トランスポートの質問は無く、`message_type` という config キーも無い。**
-agmsg は `~/.agents/skills/agmsg/scripts/send.sh` が存在すれば必ず配線され、無ければ
-agmsg 配線なしでそのままディスパッチする。質問も永続化も行わない。
+
+`AGMSG_INSTALLED` は、このディスパッチが agmsg をそもそも使うかどうか全体を決める。
+まず `~/.agents/skills/agmsg/scripts/send.sh` がディスク上に存在するかで初期値が決まり、
+続く guard 呼び出し（Step 1g の配線ブロック）は、バイナリ自体は存在していても配線の
+試みそのものが失敗した場合にこれを事後的に `false` へ倒すことがある。質問も永続化も
+行わない。
 
 ```bash
 AGMSG_INSTALLED=false
 [[ -f ~/.agents/skills/agmsg/scripts/send.sh ]] && AGMSG_INSTALLED=true
 ```
 
-`monitor-dispatch.sh` は **agmsg が未インストールのときだけ** 起動する（Step 3）。
-`--message-type` は `launch-workspace.sh` / `prewarm-panes.sh` から削除済みで、渡すと
-`was removed` を含むメッセージで die する。
+`monitor-dispatch.sh` は、上記いずれの理由であれ `AGMSG_INSTALLED` が最終的に `false`
+になったときに起動する（Step 3 参照）。`--message-type` は `launch-workspace.sh` /
+`prewarm-panes.sh` から削除済みで、渡すと `was removed` を含むメッセージで die する。
 
 **配送規約（本スキルが送るすべてのメッセージに適用）**: 配送は必ず
 `scripts/send-prompt.sh` の 1 回呼び出しで行い、生の `cmux send` は使わない: <!-- send-prompt-exempt: 禁止事項の記述であって配送指示ではない -->
@@ -183,30 +187,64 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
 | 親への完了 / abort 通知 | `dispatch-notify` |
 | `monitor-dispatch.sh` の heartbeat / 全完了 / DIED 通知 | `dispatch-monitor` |
 
-**agmsg インストール済み（`AGMSG_INSTALLED=true`）のときは dispatch 前に team を配線する**:
+**agmsg インストール済み（`AGMSG_INSTALLED=true`）のときは dispatch 前に（Step 2）guard
+スクリプトを呼び出して team を配線する — `AGMSG-DIRECTIVE:` 行を手で追うことは二度と
+しない。`Monitor` tool を持たないハーネスにはその directive に従う手段が無く、以前
+それを試みたオーケストレーターは無期限に待機してスタックした。guard スクリプトは
+その tool を必要とせず自分自身で watcher を起動し、何ができたかを報告し返す**:
 
 ```bash
 TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
 PARENT_ENGINE="claude"
 [[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"
 PARENT_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$PARENT_ENGINE") || exit 1
-~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)"
-~/.agents/skills/agmsg/scripts/delivery.sh set monitor "$PARENT_AGMSG_TYPE" "$(pwd)"
+~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)" >/dev/null 2>&1 || true
+AGMSG_RC=0
+AGMSG_STATE=$(env -u AGMSG_EXPECTED_NAME bash <SKILL_DIR>/scripts/ensure-agmsg-ready.sh \
+  --type "$PARENT_AGMSG_TYPE" --name parent --project "$(pwd)") || AGMSG_RC=$?
+case "$AGMSG_RC" in
+  0) case "$AGMSG_STATE" in
+       *"watcher=none"*)           echo "[warn] agmsg watcher not running ($AGMSG_STATE)" ;;
+       *"watcher=existing-other"*) echo "[warn] agmsg inbox records are off for parent ($AGMSG_STATE)" ;;
+     esac ;;
+  1) TEAM=""; AGMSG_INSTALLED=false
+     echo "[warn] agmsg wiring failed ($AGMSG_STATE) — typed-only delivery with monitor-dispatch.sh" ;;
+  *) echo "[error] ensure-agmsg-ready.sh usage error ($AGMSG_STATE)"; exit 1 ;;
+esac
 ```
 
 `PARENT_AGMSG_TYPE` は現在の親オーケストレーター runtime に合わせる。Codex は
 `CODEX_THREAD_ID` を設定するため all-Codex では `codex`、Claude Code 互換経路では
 `claude-code` になる。子 runner から親 type を推測してはならない。
 
+`env -u AGMSG_EXPECTED_NAME` は、guard を呼ぶ前に、このセッションが外側の dispatch から
+引き継いでいるかもしれないロール名を取り除く。これが無いと、既に guard 済みのセッション
+内から起動されたネストされた dispatch が `parent` と一致しない名前を引き継いでしまい、
+guard が使用法エラーで die する。`join.sh` の `|| true` と guard 呼び出しの
+`|| AGMSG_RC=$?` はどちらも、このセクション全体が `set -e` の下で走るために存在する。
+これらが無いと、どちらかのコマンドが非ゼロで終了した時点で `case` がその分岐を実行する
+前にスクリプトごと中断してしまう。
+
+`AGMSG_INSTALLED` はここで「`send.sh` が存在するか」から「このディスパッチが agmsg を
+そもそも使うべきか」へと意味が広がる: guard の終了コード 1 は、agmsg がディスク上に
+インストール**されていても**、失敗したのはバイナリではなく WIRING（配線）そのものだった
+という理由で `AGMSG_INSTALLED=false` にする。どちらの理由で `AGMSG_INSTALLED=false` に
+なったとしても、`monitor-dispatch.sh` は Step 3 で必ず起動しなければならない —
+その起動条件は既に `AGMSG_INSTALLED` を読んでおりコード変更は不要で、この説明文だけが
+広がった意味に追いつく必要があった。
+
 未インストールなら `TEAM` は空のままこのブロックごとスキップし、以降の `--agmsg-*` も
 すべて省略する。配送はタイプ入力だけで従来どおり成立する。
 
-`delivery.sh set` が `AGMSG-DIRECTIVE:` 行を出力することがある — この行が起動する
-SessionStart hook は次回以降のセッションにしか効かないため、この directive こそが
-**現セッション**で delivery を有効化する手段である。出力にこの行があれば、タスクを
-起動する前に必ず従うこと（指示どおり Monitor tool を呼び出す）。ただし watcher は
-記録・返信用のチャネルであり wake 手段ではない: watcher の stream 出力は idle
-セッションには注入されない。だからこそ `send-prompt.sh` は常にタイプ入力も行う。
+guard が起動する watcher は記録・返信用のチャネルであり wake 手段ではない: watcher の
+stream 出力は idle セッションには注入されない。だからこそ `send-prompt.sh` は常に
+タイプ入力も行う。
+
+既知の制限: guard はこの初期プロンプトから 1 回だけ走るので、`/clear`（および resume）
+では watcher が復帰しない — 新しい session id によって旧 watcher は自己終了し、guard を
+再実行する経路がどこにも無い。そのペインはタイプ入力での送受信を続けられるが、
+新しいセッションが始まるまで agmsg inbox への記録が止まる。inbox 記録が必要なら、
+そのペインで guard を手動で再実行すること。
 
 各 launch には `--agmsg-team "$TEAM" --agmsg-from <slug>` を付与し、
 pre-warm 無効時は worktree 作成後に子 agent を次のように join する（pre-warm 有効時は
@@ -218,7 +256,34 @@ CHILD_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$DES
 ```
 
 `CHILD_AGMSG_TYPE` はタスクごとに解決済みの `DESIGN_ENGINE` から決め、親 runtime や別 role
-から推測しない。子プロンプトには「親 (`parent`) へ
+から推測しない。
+
+pre-warm 経路が有効（workspace レイアウト + `prewarm: true`）なときは、この手動
+`join.sh` を省略する — `prewarm-panes.sh` がどのペインの起動よりも前に design agent
+（`<task-slug>`）と standby agent（`<task-slug>-claude` / `-codex`）を join し、
+worktree への delivery 配線も済ませている。その経路は各ペインの初期プロンプトに
+guard 呼び出し自体も注入済みなので、ここでさらに何かする必要は無い。
+
+`prewarm: false` のときだけ、子自身のプロンプトに次の guard 行を追加で含める
+（非 prewarm の design ペインは、prewarm ペインと違って他のどこからも guard 呼び出しを
+受け取らないため）:
+
+```
+Before you start, run this once and continue even if it exits non-zero: bash <SKILL_DIR>/scripts/ensure-agmsg-ready.sh --type <CHILD_AGMSG_TYPE> --name <task-slug>
+```
+
+`<CHILD_AGMSG_TYPE>` はタスクごとに、上の `join.sh` 呼び出しと同じ方法で、そのタスク
+自身の解決済み `DESIGN_ENGINE` から決める — 親 runtime や別 role から推測しない。
+`<team>` が空（このディスパッチで agmsg 配線が一切無い）のときはこの行ごと省略する。
+
+`prewarm: true` のときはこの行を絶対に追加しないこと: prewarm ペインは既に
+`prewarm-panes.sh`（前述）から guard 呼び出しを受け取っており、かつこの行の
+`--name` は `<task-slug>`（design ペイン自身の agent 名）に固定されているため、
+prewarm ペインのプロンプト内で繰り返すと guard が二重に走るだけでなく、claude
+executor（`<slug>-claude`）や review（`<slug>-review`）ペインが自分の名前で
+**別 role の** actas lock を取得しようとしてしまう。
+
+子プロンプトには「親 (`parent`) へ
 `send.sh` で直接質問・進捗報告できる」旨に加えて、次の**必須完了通知**のブロックを追記する:
 
 ```
@@ -510,8 +575,17 @@ model だけを比較すると、実行フェーズが設計セッションの e
 
 `superpowers` / `plan` / `execute` / `standby` の Codex は approval prompt を防ぐため
 `--dangerously-bypass-approvals-and-sandbox` を使う。一方、review ペインは sandbox を完全 off にせず
-`--sandbox workspace-write`、`-c approval_policy='never'`、`--add-dir <STATUS_DIR>` を3点セットで指定する。
-これにより approval prompt を抑止しつつ、worktree 外の `<STATUS_DIR>/review/` への findings 書込みだけを許可する。
+`--sandbox workspace-write` と `-c approval_policy='never'` を指定したうえで、`--add-dir <STATUS_DIR>` に
+agmsg watcher 用の `--add-dir <AGMSG_SKILL_DIR>/run` と `--add-dir <AGMSG_SKILL_DIR>/db` を加えた
+3本の `--add-dir` を条件付きで指定する。これにより approval prompt を抑止しつつ、worktree 外の
+`<STATUS_DIR>/review/` への findings 書込みと agmsg の run/db ディレクトリへのアクセスだけを許可する。
+
+agmsg 側の 2 本が「条件付き」なのは 2 つの意味がある。agmsg 未インストール時に落ちるのに加えて、
+`<AGMSG_SKILL_DIR>` にシェルメタ文字（`'` `"` `` ` `` `$` `!` `\`）が含まれるときも **fail-closed で
+落とす**。composed command はエスケープしないので、そのようなパスは周囲の引用を破ってしまうため。
+同じ判定は `run/` `db/` を先に作る `mkdir -p` にも掛かり、この条件下ではフラグもツリーも作らない。
+その結果、該当環境の codex レビューペインは guard が `reason=pidfile-missing` に落ちうるが、これは
+壊れたコマンドラインを流すより望ましい、意図された可視のフォールバックである。
 
 **in-session 実行時のペイン**
 
@@ -762,11 +836,16 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
 起動し、Phase A のタスクは後から `send-prompt.sh` で配送される（常にタイプ入力し、agmsg 配線
 生存時は inbox にも記録）。`prewarm-panes.sh` が worktree を作成し、agmsg delivery
 配線（join + `delivery.sh set`。いずれのペインが起動するより前に行う）を済ませてから design の
-standby workspace を起動し、その下に claude/codex executor を積む。配線に失敗したタスク
-（`delivery: "cmux-send"` フォールバック）では、design / claude executor の初期プロンプトは
-`/agmsg actas` を含まない「指示はこのペインに直接タイプされる」という文面に切り替わる
-（不要な actas / watcher 起動を避けるため。配線成功時のプロンプトも「タスクはタイプ入力で
-届く（inbox に同一コピーあり）」という文面で、agmsg push 単独で届くとは伝えない）:
+standby workspace を起動し、その下に claude/codex executor を積む。配線に失敗したロール
+（`delivery: "cmux-send"` フォールバック）では、**どのロールも初期プロンプトに guard
+呼び出しを含まない**。ただし代替の文面はロールで異なる: **design と claude executor** は
+「指示はこのペインに直接タイプされる」というフォールバック文面へ切り替わり、
+**codex executor と review** は初期プロンプト自体を一切渡さずに idle 起動する
+（`${CODEX_EXEC_PROMPT:+...}` / `${REVIEW_PROMPT:+...}` が空文字で引数ごと落ちる。
+この 2 ロールは元々プロンプト無し起動で、guard 導入でも変えていない）。
+配線が失敗しているペインへ不要な guard 呼び出しを注入しないためであり、
+配線成功時のプロンプトは 4 ロールとも「タスクはタイプ入力で届く（inbox に同一
+コピーあり）」という文面で、agmsg push 単独で届くとは伝えない:
 
 ```bash
 RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
@@ -834,21 +913,30 @@ Phase B を続行する。
    `$TEAM` が空なら `--agmsg-*` の 3 フラグごと省略し、prewarm.json の `.design.delivery` で
    分岐してはならない — ready sentinel の確認は `send-prompt.sh` 自身が行う。その sentinel
    （`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）は agmsg の watch.sh が
-   そのロールを受信中の間だけ作成するファイル。team / agent 名は `[A-Za-z0-9._-]` の slug
-   なのでパスのエンコードは不要。sentinel が判定するのは inbox 記録を行うかどうかだけであり、
+   そのロールを受信中の間だけ作成するファイル。agent 名はどの呼び出し箇所でも既に
+   `^[A-Za-z0-9._-]+$` として検証済みなので、これ以上のエンコードは不要。一方 team 名
+   （例: `dispatch-<空白を含むリポジトリ名>`）は slug 制約が無いため、パスの team 側だけ
+   percent-encode される（`agmsg-path.sh`。**`send-prompt.sh` 専用のヘルパー**で、guard は
+   `--name` が既に同じ文字集合へ値域検証済みでエンコードが恒等写像になるため source しない）。これにより
+   空白などの非 slug 文字を含むリポジトリ名でも、agmsg 自身が書くのと同じパスに解決される。
+   sentinel が判定するのは inbox 記録を行うかどうかだけであり、
    示しているのは「watcher プロセスが生きている」ことだけで「そのペインを起こせる」ことでは
    ない（idle セッションへ注入できる仕組みの下でも、注入できない素のバックグラウンドシェルの
    下でも、同じ sentinel が書かれる）。実際の配送はタイプ入力が担う。
 
 `prewarm-panes.sh` が書き出す prewarm.json は role-aware で、実在ペインだけを含む。
-参照は `.design` / `.review` / `.executors.claude|codex` を使う:
+参照は `.design` / `.review` / `.executors.claude|codex` を使う。各オブジェクトは解決済みの
+runner / engine / role / agent / 情報用途の delivery 状態に加え `watcher` を記録する。値は
+そのペインの初期プロンプトに `ensure-agmsg-ready.sh` の guard 呼び出しが含まれていた場合は
+`"guard-injected"`、それ以外（配線失敗、または `SCRIPT_DIR` に空白かシェルメタ文字が
+あり guard を注入できなかった場合）は `"none"` になる:
 
 ```json
 {
-  "design": { "surface_id": "surface:1", "agent": "<slug>", "runner": "codex", "engine": "codex", "role": "plan", "delivery": "agmsg" },
-  "review": { "surface_id": "surface:2", "agent": "<slug>-review", "runner": "codex", "engine": "codex", "role": "review", "delivery": "agmsg" },
+  "design": { "surface_id": "surface:1", "agent": "<slug>", "runner": "codex", "engine": "codex", "role": "plan", "delivery": "agmsg", "watcher": "guard-injected" },
+  "review": { "surface_id": "surface:2", "agent": "<slug>-review", "runner": "codex", "engine": "codex", "role": "review", "delivery": "agmsg", "watcher": "guard-injected" },
   "executors": {
-    "codex": { "surface_id": "surface:3", "agent": "<slug>-codex", "runner": "codex", "engine": "codex", "role": "exec", "delivery": "agmsg" }
+    "codex": { "surface_id": "surface:3", "agent": "<slug>-codex", "runner": "codex", "engine": "codex", "role": "exec", "delivery": "agmsg", "watcher": "guard-injected" }
   }
 }
 ```
@@ -906,10 +994,11 @@ parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|r
 
 ### 通知ベースの監視（主経路）
 
-**監視方法は agmsg がインストールされているかで決まる（Step 1g）:**
+**監視方法は `AGMSG_INSTALLED`（Step 1g）で決まる。この値は、agmsg がディスク上に無い
+場合と、Step 1g の guard 呼び出しが配線に失敗した場合のどちらでも `false` になりうる:**
 
-- agmsg 未インストール: 従来どおり `monitor-dispatch.sh` を起動（heartbeat / DIED 検知 / 全完了通知）
-- agmsg インストール済み: `monitor-dispatch.sh` を**起動しない**。完了通知は
+- `AGMSG_INSTALLED=false`: 従来どおり `monitor-dispatch.sh` を起動（heartbeat / DIED 検知 / 全完了通知）
+- `AGMSG_INSTALLED=true`: `monitor-dispatch.sh` を**起動しない**。完了通知は
   `send-prompt.sh` がこのペインへタイプ入力するテキストとして届き、このセッションの watcher が
   生きていれば同一文が agmsg inbox にも記録される。実際に idle な親セッションを起こすのは
   タイプ入力の方で、inbox のコピーはログにすぎない。長時間通知が
@@ -1287,7 +1376,12 @@ done
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新とシグナル発火を保証。テキスト通知は `scripts/send-prompt.sh` 経由で配送され、タイプ後に Enter を押して `cmux read-screen` で入力欄が空になったことを確認するので、親 claude TUI の input box に滞留しない (確認が働くのは親が 0 桁目に `❯` / `>` のプロンプト行を描画している場合。該当行が無ければ検証なしで配送済み扱い)
 - **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
-- **配送**: 通知トランスポートの設定項目は無い。`message_type` は廃止され、`launch-workspace.sh` / `prewarm-panes.sh` の `--message-type` フラグも削除された (渡すと `was removed` で die する)。agmsg は `~/.agents/skills/agmsg/scripts/send.sh` が存在すれば必ず配線され、`monitor-dispatch.sh` は存在しないときだけ起動する (status.json はどちらでも不変)。すべてのメッセージは `scripts/send-prompt.sh` の 1 回呼び出しで配送する。**常に宛先ペインへタイプ入力し** (idle セッションを起こせるのはこれだけ)、`--agmsg-*` の 3 引数が揃い宛先の ready sentinel が存在するときは、タイプ入力を終えたあとに**同一本文を agmsg inbox にも記録する**（固まった agmsg 書き込みが唯一の wake 手段を塞がないよう順序は常にタイプ入力が先）。**agmsg push は inbox 記録専用で、idle セッションを起こせない**。ready sentinel が示すのは watcher プロセスの生存だけで、そのセッションを起こせることは示さない (idle セッションへ注入できる仕組みの下でも、注入できない素のバックグラウンドシェルの下でも、同じ sentinel が書かれる)。agmsg の失敗は配送の成否にも終了コードにも影響しない。400 文字超の本文は `<outbox-dir>/<label>-<seq>.md` へ書き出し 1 行のポインタだけをタイプするので、長文が貼り付け判定されて入力欄に詰まることはない。タイプ後は Enter を押し `cmux read-screen` で入力欄が空になったことを確認し、残っていれば最大 3 回 Enter を再送してから失敗を報告する。この確認は宛先が 0 桁目に `❯` (または `>`) のプロンプト行を描画している場合に働き、該当行が無いペインは画面を観測できない場合と同様に配送済み扱いにする (呼び出し元が再送して二重配送するのを防ぐため)。完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。また Step 1g の `delivery.sh set` 出力に `AGMSG-DIRECTIVE:` 行があれば、ディスパッチ実行中のセッション自身の watcher 起動のため必ず従うこと。
+- **配送**: 通知トランスポートの設定項目は無い。`message_type` は廃止され、`launch-workspace.sh` / `prewarm-panes.sh` の `--message-type` フラグも削除された (渡すと `was removed` で die する)。`AGMSG_INSTALLED` は `~/.agents/skills/agmsg/scripts/send.sh` の有無を初期値とし、配線そのものが
+失敗すると Step 1g の guard 呼び出しがこれを `false` へ降格させることがある。`monitor-dispatch.sh`
+は `AGMSG_INSTALLED` が最終的に `false` になったときだけ起動する (status.json はどちらでも不変)。
+すべてのメッセージは `scripts/send-prompt.sh` の 1 回呼び出しで配送する。**常に宛先ペインへタイプ入力し** (idle セッションを起こせるのはこれだけ)、`--agmsg-*` の 3 引数が揃い宛先の ready sentinel が存在するときは、タイプ入力を終えたあとに**同一本文を agmsg inbox にも記録する**（固まった agmsg 書き込みが唯一の wake 手段を塞がないよう順序は常にタイプ入力が先）。**agmsg push は inbox 記録専用で、idle セッションを起こせない**。ready sentinel が示すのは watcher プロセスの生存だけで、そのセッションを起こせることは示さない (idle セッションへ注入できる仕組みの下でも、注入できない素のバックグラウンドシェルの下でも、同じ sentinel が書かれる)。agmsg の失敗は配送の成否にも終了コードにも影響しない。400 文字超の本文は `<outbox-dir>/<label>-<seq>.md` へ書き出し 1 行のポインタだけをタイプするので、長文が貼り付け判定されて入力欄に詰まることはない。タイプ後は Enter を押し `cmux read-screen` で入力欄が空になったことを確認し、残っていれば最大 3 回 Enter を再送してから失敗を報告する。この確認は宛先が 0 桁目に `❯` (または `>`) のプロンプト行を描画している場合に働き、該当行が無いペインは画面を観測できない場合と同様に配送済み扱いにする (呼び出し元が再送して二重配送するのを防ぐため)。完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。Step 1g は `ensure-agmsg-ready.sh` を
+直接呼び出してディスパッチ実行中のセッション自身の watcher を起動する — `AGMSG-DIRECTIVE:` 行に
+従う必要も `Monitor` tool も不要である。
 - **Pre-warm role panes**: workspace レイアウト + config `prewarm: true` (default) のとき、`prewarm-panes.sh` が `design` / 任意の `review` / `exec_choice` が許可する実行 engine だけを起動する。`prewarm.json` の `executors` が保持できるキーは `claude` / `codex` の最大2つ。固定 `exec_choice` はもう一方の engine を抑止し、in-session 判定が成立するタスクは `executors` を空のまま保つ。model / effort は prewarm から `--model` / `--effort` として渡されることは無く、launcher 側の role fallback が解決する。
 
 ---

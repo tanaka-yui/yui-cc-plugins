@@ -202,7 +202,10 @@ TIMEOUT_SENTINEL=""
 UNATTENDED=0
 AGMSG_TEAM=""
 AGMSG_FROM=""
-AGMSG_SEND="$HOME/.agents/skills/agmsg/scripts/send.sh"
+# send-prompt.sh:28 と同じ形。env で差し替えられないと、agmsg 未インストールのホストで
+# `--agmsg-team` を渡すテストが :379 の die で即死し、`set -euo pipefail` のスイートが
+# 終端行すら出さずに途中で止まる。既定値は従来と同一。
+AGMSG_SEND="${AGMSG_SEND:-$HOME/.agents/skills/agmsg/scripts/send.sh}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -371,6 +374,16 @@ fi
 
 # Validate workspace name: only allow safe characters for path/branch usage
 [[ "$WORKSPACE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid workspace name '$WORKSPACE_NAME': use only [A-Za-z0-9._-]"
+
+# agmsg の from 名は guard の --name と runner script の AGMSG_EXPECTED_NAME に
+# そのまま入るので、workspace 名と同じ値域で検証する。
+if [[ -n "$AGMSG_FROM" ]]; then
+  [[ "$AGMSG_FROM" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid --agmsg-from '$AGMSG_FROM': use only [A-Za-z0-9._-]"
+fi
+
+# AGMSG_SEND は :875 の未クォート heredoc へそのまま埋まる。WORKSPACE_NAME / AGMSG_FROM /
+# AGMSG_SKILL_DIR と同じ理由で、埋め込みを破る文字は事前に弾く。
+case "$AGMSG_SEND" in *[\'\"\`\$\!\\]*) die "invalid AGMSG_SEND '$AGMSG_SEND': must not contain ' \" \` \$ ! \\" ;; esac
 
 # agmsg 配線は team / from が揃っているときだけ行う。send.sh が無ければ未インストール。
 if [[ -n "$AGMSG_TEAM" || -n "$AGMSG_FROM" ]]; then
@@ -849,7 +862,37 @@ CODEX_MODEL_FLAG=""
       # review は workspace-write に限定し、approval prompt は抑止する。findings は
       # worktree 外の STATUS_DIR/review/ に書かれるため、STATUS_DIR だけを追加許可する。
       REVIEW_WRITABLE_FLAG=""
-      [[ -n "$STATUS_DIR" ]] && REVIEW_WRITABLE_FLAG=" --add-dir '$STATUS_DIR'"
+      [[ -n "$STATUS_DIR" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$STATUS_DIR'"
+      # watcher は run/ と db/ にしか書かない。scripts/ を書き込み許可に含めては
+      # ならない — そこは全ペインの guard が実行し session-start.sh 経由で
+      # マシン上の全 Claude Code セッションが触れるコードで、無人 codex reviewer に
+      # 書き込み権を与えるとサンドボックス外・別セッションの権限で任意コードが走る。
+      AGMSG_SKILL_DIR="${AGMSG_SKILL_DIR:-$HOME/.agents/skills/agmsg}"
+      # 値域検証。この値は下で `--add-dir '<path>'` として composed command に埋まり、
+      # その全体が `zsh -ic "..."` で再度包まれる。launch-workspace.sh はエスケープを
+      # しないので、`'` を含むパスは引用符を破って後続を別トークンにできる
+      # (`-i` は対話モードなので `!` の history 展開も効く)。--agmsg-from と同じ
+      # 禁止文字集合で弾く。弾いたときは mkdir も --add-dir もしない (fail-closed)。
+      AGMSG_SKILL_DIR_SAFE=1
+      case "$AGMSG_SKILL_DIR" in
+        *[\'\"\`\$\!\\]*)
+          AGMSG_SKILL_DIR_SAFE=0
+          log "warn" "AGMSG_SKILL_DIR contains a shell metacharacter; not granting --add-dir for agmsg run/db" ;;
+      esac
+      # run/ と db/ をここで先に作る。watch.sh は run/ を初回起動時に自分で作る設計
+      # (`mkdir -p "$RUN_DIR" 2>/dev/null || return 0`) だが、codex reviewer は
+      # --sandbox workspace-write で走るのでサンドボックス内の mkdir は黙って拒否される。
+      # 未作成のまま下の -d を評価すると --add-dir が付かず、guard は恒久的に
+      # reason=pidfile-missing に落ちる (agmsg を新規インストールしてまだ一度も watcher を
+      # 起動していない環境 = このガードが救おうとしている状況そのもの)。
+      # agmsg 未インストール時にツリーを勝手に生やさないよう、親の存在を条件にする。
+      if [[ $AGMSG_SKILL_DIR_SAFE -eq 1 && -d "$AGMSG_SKILL_DIR" ]]; then
+        mkdir -p "$AGMSG_SKILL_DIR/run" "$AGMSG_SKILL_DIR/db" 2>/dev/null || true
+      fi
+      if [[ $AGMSG_SKILL_DIR_SAFE -eq 1 ]]; then
+        [[ -d "$AGMSG_SKILL_DIR/run" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/run'"
+        [[ -d "$AGMSG_SKILL_DIR/db" ]]  && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/db'"
+      fi
       CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
@@ -870,7 +913,8 @@ CODEX_MODEL_FLAG=""
       fi
     elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
       # claude standby/review: --model / --skip-permissions を反映し、prompt があれば渡す
-      # (agmsg モードでは "/agmsg actas <name>" + 待機指示を初期 prompt にする)
+      # (agmsg 配線時は呼び出し元 (prewarm-panes.sh) が組み立てた
+      #  "ensure-agmsg-ready.sh" guard 呼び出し + 待機指示を初期 prompt にする)
       if [[ -n "$PROMPT_TEXT" ]]; then
         CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
       else
@@ -918,6 +962,16 @@ STANDBY="${STANDBY_FLAG}"
 AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
 AGMSG_FROM="${AGMSG_FROM}"
+EOF
+# AGMSG_EXPECTED_NAME is the safety-net value ensure-agmsg-ready.sh compares
+# its resolved --name against. Only emit the export when AGMSG_FROM is set —
+# an empty export would defeat the guard's "was a name actually provided" check.
+if [[ -n "$AGMSG_FROM" ]]; then
+  cat >> "$RUNNER_FILE" <<EOF
+export AGMSG_EXPECTED_NAME='${AGMSG_FROM}'
+EOF
+fi
+cat >> "$RUNNER_FILE" <<EOF
 TIMEOUT_SENTINEL="${TIMEOUT_SENTINEL}"
 
 # Resolve the workspace / surface IDs we are running inside.
