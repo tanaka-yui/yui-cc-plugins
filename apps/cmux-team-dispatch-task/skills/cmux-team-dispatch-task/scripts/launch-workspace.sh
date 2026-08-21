@@ -377,7 +377,7 @@ fi
 # Validate workspace name: only allow safe characters for path/branch usage
 [[ "$WORKSPACE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid workspace name '$WORKSPACE_NAME': use only [A-Za-z0-9._-]"
 
-# agmsg の from 名は readiness 確立句の name と runner script の AGMSG_EXPECTED_NAME に
+# agmsg の from 名は readiness 確立句の name と runner script の AGMSG_FROM に
 # そのまま入るので、workspace 名と同じ値域で検証する。
 if [[ -n "$AGMSG_FROM" ]]; then
   [[ "$AGMSG_FROM" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid --agmsg-from '$AGMSG_FROM': use only [A-Za-z0-9._-]"
@@ -1008,16 +1008,6 @@ STANDBY="${STANDBY_FLAG}"
 AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
 AGMSG_FROM="${AGMSG_FROM}"
-EOF
-# AGMSG_EXPECTED_NAME is the safety-net value this session's own agmsg name is
-# expected to match. Only emit the export when AGMSG_FROM is set — an empty
-# export would defeat the "was a name actually provided" check.
-if [[ -n "$AGMSG_FROM" ]]; then
-  cat >> "$RUNNER_FILE" <<EOF
-export AGMSG_EXPECTED_NAME='${AGMSG_FROM}'
-EOF
-fi
-cat >> "$RUNNER_FILE" <<EOF
 TIMEOUT_SENTINEL="${TIMEOUT_SENTINEL}"
 
 # Resolve the workspace / surface IDs we are running inside.

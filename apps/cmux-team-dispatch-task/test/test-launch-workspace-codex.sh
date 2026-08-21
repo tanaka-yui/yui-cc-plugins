@@ -198,12 +198,13 @@ STUB_AGMSG_SEND="$TMP/agmsg-send.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_AGMSG_SEND"
 chmod +x "$STUB_AGMSG_SEND"
 
-# --- LW1: runner script に AGMSG_EXPECTED_NAME が入る ---
+# --- LW1: runner script に agmsg 識別子が入る ---
 lw1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SEND="$STUB_AGMSG_SEND" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \
   --status-dir "$TMP/status" --agmsg-team demo --agmsg-from demo-claude lw1)
 lw1_runner=$(jq -r '.runner_file' <<<"$lw1_output")
-assert_contains "$lw1_runner" "export AGMSG_EXPECTED_NAME='demo-claude'" 'LW1 runner script must export AGMSG_EXPECTED_NAME'
+assert_contains "$lw1_runner" 'AGMSG_TEAM="demo"' 'LW1 runner script must carry AGMSG_TEAM'
+assert_contains "$lw1_runner" 'AGMSG_FROM="demo-claude"' 'LW1 runner script must carry AGMSG_FROM'
 # AGMSG_SEND が env で差し替え可能なままであること (:202) の回帰。ここを見ずに
 # STUB_AGMSG_SEND を注入するだけだと、:202 がハードコードへ戻っても agmsg 導入済みの
 # ホスト (= 実開発機全部) では本物の $HOME 配下 send.sh が -f を通り LW1 自体は緑のまま通る。

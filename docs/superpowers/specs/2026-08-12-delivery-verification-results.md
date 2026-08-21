@@ -172,3 +172,37 @@ Enter が効き、受信側の claude がファイルを読んで指示に従い
 自身を改修するタスクを自分でディスパッチするときに特に危ない。緩和策としては、
 タスク文で対象ファイルを常にワークツリー相対で示し、絶対パスは配送スクリプトの
 呼び出しにのみ使うことを徹底する。
+
+---
+
+## 2026-08-21 の再検証で結論が逆転した
+
+冒頭の注記の根拠。本文は当時の観測記録として温存し、ここに何がいつ変わったのかを残す。
+一次記録は `docs/superpowers/specs/2026-08-21-agmsg-monitor-only-design.md`。
+
+| ID | 検証内容 | 結果 | 観測 |
+|----|---------|------|------|
+| B1 | Monitor イベントは idle な claude セッションを起こすか | **pass** | 親セッションがターンを閉じた後、20 秒後に届いた agmsg で再起動された |
+| B2 | ターンを一度も持っていないペインは受信できるか | **fail（制約として受け入れ）** | 無反応。V1 の観測 2 と同じ。各ペインが初回ターンを 1 回持つ必要がある |
+| B5 | `ready.<team>__<agent>` sentinel は存在するか | **存在しない** | agmsg 1.2.1 の `watch.sh` に書くコードが無い。readiness の実体は `run/watch.<session_id>.pid`（claude）と `run/codex-bridge.<team>.<agent>.thread`（codex） |
+| V2a | seat 未記録の idle codex は受信するか | **fail** | メッセージは inbox に未読で滞留する |
+| V2b | seat 記録後の idle codex は受信するか | **pass** | `codex-record-session.sh` 実行後の再送で inline 配信され、codex が応答した |
+
+**V1 の fail 原因は agmsg ではなかった。** 当時のハーネスに Monitor ツールが無く、watcher の
+stream 出力を idle セッションへ注入する経路が存在しなかったことが原因である。Monitor ツールが
+露出した現在、B1 が示すとおり「agmsg push が idle な claude セッションを起こす」は成立する。
+したがって本文が導いた **dual-send（タイプ入力 + inbox 記録）という設計判断はもはや正しくない**。
+
+**B5 は本文の前提も 1 つ壊している。** 本文は ready sentinel の有無を「watcher プロセスの生存の
+証明」として扱っているが、その sentinel は agmsg 1.2.1 には**そもそも存在しない**。したがって
+「親の watcher が生きていれば inbox にも記録される」という条件分岐は、現行の agmsg では判定
+不能である。claude 子の readiness は session id キーで親から観測できないため、
+**`[ready] <slug>` の自己申告が唯一の手段**になった。
+
+**V2 は「未実施」から「seat を記録すれば通る」へ変わった。** V2a/V2b のとおり、codex ペインは
+`codex-record-session.sh` で seat を記録しさえすれば idle でも受信できる。`~/.zshrc` の変更は
+不要だった（`codex-shim.sh` 経由の bridge が既に入っていた）。
+
+2026-08-21 の v1.21.0 で `cmux-team-dispatch-task` はこの結論に沿って移行済みである。配送は
+agmsg `send.sh` の 1 回呼び出しだけになり、タイプ入力・outbox・Enter 検証・ポーリング監視は
+すべて削除された。

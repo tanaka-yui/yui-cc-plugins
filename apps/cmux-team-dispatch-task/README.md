@@ -202,59 +202,94 @@ codex engine は対象外（`--dangerously-bypass-approvals-and-sandbox` と
 回答を全タスクに適用する。子セッションは質問も削除も行わない（子が自分の worktree を掴んだまま
 親が削除を試みて失敗するのを防ぐため）。
 
-## メッセージ配送（send-prompt.sh）
+## メッセージ配送（agmsg send.sh 一本）
 
 **通知トランスポートの設定項目は無い。** `message_type` は v1.16.0 で廃止され、
 `launch-workspace.sh` / `prewarm-panes.sh` の `--message-type` フラグも削除された（渡すと
-`was removed` を含むメッセージで die する）。[agmsg](https://github.com/fujibee/agmsg) は
-`~/.agents/skills/agmsg/scripts/send.sh` が存在すれば自動で配線され、質問も永続化も行わない。
+`was removed` を含むメッセージで die する）。
 
-`AGMSG_INSTALLED` は `send.sh` の有無を初期値とし、Step 1g の guard 呼び出し（親自身の
-watcher を起動するための `ensure-agmsg-ready.sh` 呼び出し）が配線に失敗すると、agmsg が
-ディスク上にインストールされていても `false` へ降格することがある。
+**[agmsg](https://github.com/fujibee/agmsg) は v1.21.0 から必須要件**で、劣化モードは無い。
+このスキルのすべてのメッセージとすべての起床は agmsg の Monitor ストリームに乗る。タイプ入力の
+フォールバックも、ポーリング型の監視スクリプトも存在しない。次のどれかに当てはまると、
+ディスパッチはペインを 1 つも作らずにエラーで止まる:
 
-| `AGMSG_INSTALLED` | 通知手段 | monitor ループ |
-|-------|---------|---------------|
-| `false`（未インストール、または配線失敗） | `send-prompt.sh`（タイプ入力のみ） | `monitor-dispatch.sh` を起動（heartbeat / 死活監視） |
-| `true`（インストール済みかつ配線成功） | `send-prompt.sh`（タイプ入力 + watcher 生存時は inbox にも記録） | 起動しない（沈黙時は status.json を手動確認） |
+| 状況 | 検査 |
+|------|------|
+| `~/.agents/skills/agmsg/scripts/send.sh` が無い | ファイル存在チェック |
+| claude 親に生きた watcher が無い | `verify-agmsg-ready.sh --self` が exit 1 |
+| codex 親に bridge seat の記録が無い | `verify-agmsg-ready.sh --codex --team <t> --name parent` が exit 1 |
 
-agmsg 配線時の team 名は `dispatch-<repo-name>`、親の agent 名は `parent`。
-status.json / result.md / `cmux wait-for` signal は agmsg の有無によらず不変。
+claude 親の watcher は SessionStart hook が要求する `Monitor` tool そのもので、`/clear` は
+その hook を再発火させるので watcher は自力で戻る。codex 親には session id が無いため、
+受信チャネルは bridge seat（`run/codex-bridge.<team>.<agent>.thread`）になる。codex セッション
+から `--self` を呼ぶのは「watcher が無い」ではなく**使用法エラー**（exit 2）なので、両者は
+別々に扱われる。
 
-配送はすべて `skills/cmux-team-dispatch-task/scripts/send-prompt.sh` の 1 回呼び出しに
-一本化されている。このスクリプトは:
+team 名は `dispatch-<repo-name>`、親の agent 名は `parent`。
+status.json / result.md / `cmux wait-for` signal はこの変更でも不変。
 
-1. **必ず宛先ペインへタイプ入力する**。idle セッションを起こせるのはタイプ入力だけ
-2. `--agmsg-team` / `--agmsg-to` / `--agmsg-from` が揃い、かつ宛先の ready sentinel
-   （`~/.agents/skills/agmsg/run/ready.<team>__<agent>`）が存在するときは、**タイプ入力を
-   終えたあとに** 同一本文を agmsg inbox にも記録する。agmsg の失敗は配送の成否にも終了コードにも
-   影響しない。順序が固定なのは、`send.sh` が共有 SQLite DB への書き込みで固まっても、唯一の
-   wake 手段であるタイプ入力を塞がせないため（macOS には `timeout` / `gtimeout` が無く強制打ち切り
-   できない）。記録は単なるログで、受信側にも重複を無視させている
-3. 400 文字を超える本文は `<outbox-dir>/<label>-<seq>.md` へ書き出し、1 行のポインタだけを
-   タイプする。長文が Claude Code TUI に貼り付け判定され、直後の Enter がデバウンスに
-   吸われて入力欄に残る事故を止めているのがこれ
-4. タイプ後に Enter を押し、`cmux read-screen` で入力欄が空になったことを確認する。残っていれば
-   最大 3 回まで Enter を再送してから失敗を報告する。この確認は**宛先が 0 桁目に `❯`（または `>`）
-   のプロンプト行を描画している場合に働く**（その最終行を入力欄とみなす仕組みのため）。該当行が
-   見つからないペインは、画面を観測できない場合と同様に検証なしで配送済みとして扱う（呼び出し元が
-   再送して二重配送するのを防ぐため）
+配送はすべて agmsg `send.sh` の 1 回呼び出しに一本化されている:
 
-**agmsg push は inbox 記録専用で、idle セッションを起こせない**（watcher はバックグラウンド
-Bash として動き、その stream 出力はプロセスが終了するまで注入されない）。ready sentinel が
-示すのは **watcher プロセスの生存だけ**で、そのセッションを起こせることは示さない — idle
-セッションへ注入できる仕組みの下でも、注入できない素のバックグラウンドシェルの下でも、
-同じ sentinel が書かれるためである（検証結果は
-`docs/superpowers/specs/2026-08-12-delivery-verification-results.md`）。
+```bash
+~/.agents/skills/agmsg/scripts/send.sh "<team>" <from-agent> <to-agent> '<label>: <本文>'
+```
 
-agmsg 配線時の完了通知は2段構え: 子セッションが status.json
-書き込み直後に自分で送る必須通知と、runner wrapper の exit 時通知（バックストップ）。
-idle のまま開いている TUI セッションは exit
-しないため、wrapper だけに頼ると通知されない（このため子プロンプトに必須通知が埋め込まれる）。
-また、ディスパッチを実行しているセッション自身の watcher は、Step 1g が
-`scripts/ensure-agmsg-ready.sh` を直接呼び出して起動する。`AGMSG-DIRECTIVE:` 行に従う
-必要も `Monitor` tool も不要で、`Monitor` tool を持たないハーネスでも watcher が立ち上がる
-（SessionStart hook は次回セッションから有効）。
+1. 宛先は **agmsg の agent 名**であり、surface / workspace ID ではない。ペインは
+   `[ready] <name>` を報告してはじめて到達可能になり、それ以前に送ったメッセージはその inbox に
+   未読のまま残る
+2. 回避すべき長さ制限も outbox も無い。inbox は TUI の貼り付け判定を受けないので、本文はそのまま
+   丸ごと渡せる
+3. Enter の検証も再送も無い。`send.sh` は agmsg の共有 SQLite DB へ書くか非ゼロで終了するかの
+   どちらかで、**非ゼロ終了はメッセージが配送されなかったことを意味する**
+4. メッセージ種別はフラグではなく本文の label 接頭辞で表す（`phase-a-task:` / `phase-b-exec:` /
+   `review-plan:` / `review-code:` / `review-verdict:` / `review-timer:` / `dispatch-timer:` /
+   `abort-reviewer:` / `dispatch-notify:`）
+
+### ペインの readiness（3 要件）
+
+ペインが配送先になれるのは次の 3 つが揃ったときだけである:
+
+1. team に join 済み（`join.sh`）
+2. そのプロジェクトが monitor モード（`delivery.sh set monitor`）
+3. ペインが初回ターンを 1 回持った — claude なら `Monitor` tool が起動し、codex なら bridge の
+   seat が記録される
+
+**claude 子の readiness は親から観測できない**（watcher の pidfile が session id キーで、親は
+その session id を知らないため）。したがって各ペインは初回ターンで `[ready] <name>` を親へ
+自己申告する。親はこれを受け取ってから初めてタスクを配送する。codex 子だけは team/agent キー
+なので、`verify-agmsg-ready.sh --codex` で「seat 未記録」と「ペイン死亡」を切り分けられる。
+
+### 待機（ポーリングは全廃）
+
+待機ループは 1 つも無い。時間ベースの仕組みは**単発タイマー**だけである。
+
+| 待機者 | 起こすもの | 保険 |
+|--------|-----------|------|
+| 親（全タスクの完了待ち） | 子の `dispatch-notify:` メッセージ | 90 分の単発タイマー（`dispatch-timer:`） |
+| Phase A-R の設計ペイン / Phase B-R の実装者 | レビュアーの `review-verdict:` メッセージ | 30 分の単発タイマー（`review-timer:`） |
+
+タイマーは `sleep` 1 回であってループではなく、engine 中立に武装する: claude は Bash tool を
+`run_in_background` で、codex は `run_in_background` を持たないので自分自身へ遅延メッセージを
+送ってサブシェルごと kill できる形で。verdict は**ファイルが記録、メッセージが起床手段**で、
+どの起床でも先に findings ファイルを読み直す（失われうるのはメッセージだけだから）。
+**verdict 行の無いタイマー起床は `needs_work` ではない** — メッセージが来なかったという意味しか
+持たない。再武装は同一ラウンドで 3 回までで、無人ループでは上限に達した時点で
+AskUserQuestion に落とさずスキップ／エラー扱いにする。
+
+タイマーで起きたときは、判断の前に**永続記録**を読む: `.dispatch/*/status.json` から状態を
+再導出し、`[ready]` の確認には `history.sh` を使う（`inbox.sh` は使わない — 競合 watcher に
+消費された row は既読になり「新着なし」と答えてしまう）。照合は `[ready] <slug>` を行末まで
+アンカーして行う（アンカーが無いと slug `api` が `[ready] api-v2` で満たされる）。
+
+> **既知の挙動変化（タイムアウト検知の粒度）**
+> 旧 loop 待機スクリプトは 5 秒間隔で `claimed_at` を見ていたが、現行は 90 分の単発タイマーで
+> 起きたときにしか評価しない。そのため `loop.task_timeout_min` を 90 分未満に設定しても、
+> timeout の検知は次の起床までずれる。ポーリングを全廃したことの意図した代償である。
+
+完了通知は2段構え: 子セッションが status.json 書き込み直後に自分で送る必須通知と、runner
+wrapper の exit 時通知（バックストップ）。idle のまま開いている TUI セッションは exit しない
+ため、wrapper だけに頼ると通知されない（このため子プロンプトに必須通知が埋め込まれる）。
+
 
 config の `review_mode`（`"on"` / `"off"` / `"ask"`）は Phase A-R（plan/spec レビュー、後述）と
 Phase B-R（実装後コードレビュー、後述）を質問なしで恒久的に有効/無効にする。未設定または
@@ -373,13 +408,10 @@ effort の allowlist は engine 別: claude `low`\|`medium`\|`high`\|`xhigh`\|`m
 `minimal`\|`low`\|`medium`\|`high`\|`xhigh`。範囲外の値はレイヤーごとに警告して無視される。
 
 指示配送（Phase A タスク / Phase B 実行指示 / Phase A-R レビュー依頼 / Phase B-R コードレビュー依頼）は
-すべて `send-prompt.sh` の 1 回呼び出しで行う。**常にペインへ直接タイプ入力し** — agmsg push 単独では
-idle なペインは起きないため、push は配送手段ではなく inbox 記録である — 送信直前に宛先ペインの
-watcher 生存（agmsg の ready sentinel）を確認し、生きているときだけ同一指示文を inbox にも
-記録する。配線に失敗したペインには guard 呼び出しを注入せず、design と claude executor は
-「指示は直接タイプされる」文面へ切り替わり、codex executor と review は初期プロンプト無しで
-idle 起動する。いずれも指示はタイプ入力で届くので、agmsg の watcher 障害でディスパッチが
-ハングすることはない。
+すべて agmsg `send.sh` の 1 回呼び出しで行う。宛先は相手ペインの **agent 名**（surface ID では
+ない）で、本文の先頭に label 接頭辞を付ける。配線されない variant は無く、agmsg 配線に失敗した
+ディスパッチはペインを作る前に落ちる。全ロールが readiness 確立句付きで idle 起動し、
+`[ready] <name>` を報告してから配送対象になる。
 
 各子セッションは Phase A (計画 / brainstorming) 完了後、`exec_choice` が未設定または `"ask"` なら**実装フェーズで使う engine**を `AskUserQuestion` で聞きます。固定値なら質問を省略し、同じ既存分岐を実行します。選択肢は `runners.json` の登録状況で出し分けられます: `claude` は claude runner が登録済みのときだけ、`codex` は `engine: codex` runner が登録済みのときだけ表示され、片方しか登録されていなければ質問自体が省略されます。
 
@@ -402,9 +434,8 @@ agmsg 側の 2 本が「条件付き」なのは、agmsg 未インストール�
 `<AGMSG_SKILL_DIR>` にシェルメタ文字（`'` `"` `` ` `` `$` `!` `\`）が含まれるときも **fail-closed で
 落とします**（composed command はエスケープしないので、そのようなパスは引用を破ってしまうため）。
 同じ判定は `run/` `db/` を先に作る `mkdir -p` にも掛かるので、この条件下ではフラグもツリーも
-作られません。その結果、該当環境の codex レビューペインでは agmsg watcher の setup guard が
-`reason=pidfile-missing` に落ちることがあります（壊れたコマンドラインを流すより安全な、
-意図されたフォールバックです）。
+作られません。その結果、該当環境の codex レビューペインは agmsg の run/db へ書けず readiness を
+確立できないことがあります（壊れたコマンドラインを流すより安全な、意図されたフォールバックです）。
 
 **委譲**（in-session 条件が不成立）が選ばれた場合の挙動:
 
@@ -452,9 +483,11 @@ Phase B の 2 択（**claude / codex**）は**すべて pre-warm ペインへ委
   転じます。design=codex 側も対称です。
 
 - 指摘と verdict は `.dispatch/<slug>/review/code-round-<N>.md`（末尾 `VERDICT:` 行）で受け渡し。
-  最大 5 往復・verdict 待ちは 5 秒間隔ポーリング + 15 分ごとのレビュアー pane 生存確認
-  （`cmux read-screen` の画面差分）。レビュアーが活動している限り上限なしで待機し、
-  無反応（stalled）のときのみ再依頼 1 回 → フォールバック — Phase A-R と同一プロトコル
+  最大 5 往復。**verdict 待ちは push**: レビュアーはファイルを書いた直後に `review-verdict:`
+  メッセージを実装者へ 1 通送り、実装者はポーリングせず 30 分の単発 safety timer を 1 つ武装して
+  ターンを閉じる。どの起床でも先にファイルを読み直し、verdict 行の無いタイマー起床は verdict と
+  して扱わない。タイマーが空振りしたらペイン生存を 1 回リトライ付きで確認 → 再武装（同一ラウンド
+  最大 3 回）→ 再依頼 1 回 → フォールバック — Phase A-R と同一プロトコル
 - 5 往復で approve が出ない場合、claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、
   codex 実装者は未解決指摘を PR 本文に注記して続行
 - `review/code-review.json` は `reviewer_runner` と `reviewer_engine` を明示し、実装者はここから実際の
@@ -503,12 +536,11 @@ all-Codex 固定構成は design/review/codex executor の3ペインだけで、
 agmsg `claude-code` 配線を作らない。未割り当てペインは status.json を汚さず、最終クリーンアップでは
 `prewarm.json` の surface/agent を再帰列挙して重複除去し、実在するものだけを close/leave する。
 
-- agmsg 未インストール: design は従来どおりタスクプロンプト付きで起動し、review / executor のみ
-  idle 起動。実行指示は `send-prompt.sh` で注入する。
-- agmsg インストール済み: design を含む全ペインをメッセージ未指定(idle)で起動する。
-  `prewarm-panes.sh` が worktree への agmsg delivery 配線(join + `delivery.sh set`)を
-  ペイン起動前に行い、Phase A の初期タスクも Phase B の実行指示も `send-prompt.sh` の
-  1 回呼び出しで配送する(常にタイプ入力。宛先の ready sentinel 生存時は加えて inbox にも記録)。
+design を含む全ペインを、タスクメッセージ無しの idle 状態で起動する。`prewarm-panes.sh` が
+worktree への agmsg delivery 配線(join + `delivery.sh set`)をペイン起動前に行い、Phase A の
+初期タスクも Phase B の実行指示も agmsg `send.sh` の 1 回呼び出しで配送する。`--agmsg-team`
+が無い、または配線に失敗したときはペインを 1 つも作らずに die する — 受け取る手段の無いペインを
+立てないためである。
 
 `prewarm: false` では on-demand spawn。design/review/exec の全経路が解決済み runner を
 `--runner` で渡し、all-Codex 構成が launch script の claude 既定値へフォールスルーすることはない。
@@ -603,7 +635,7 @@ rmdir .pre-link-backup-<TS>
 - **同時セッション数**: 3〜5 セッションが推奨
 - **同時セッション数の上限**: 多数の workspace を同時に開くと端末資源を消費します
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません。競合の可能性がある場合は順次実行にしてください
-- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新、`cmux wait-for --signal` の発火、`send-prompt.sh` による親ターミナルへの通知を保証。加えて `monitor-dispatch.sh` も個別タスク完了時に `[dispatch]` 通知を親に送信
+- **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新、`cmux wait-for --signal` の発火、`parent` agmsg agent 宛の `dispatch-notify:` 通知（agmsg `send.sh` の 1 回呼び出し）を保証。検証すべき Enter も詰まりうる input box も無く、非ゼロ終了なら notify marker を更新しないので次の poll で再試行される
 - **pane を閉じても誤通知しない**: 最終クリーンアップの `cmux close-surface` / `close-workspace` で子プロセスは signal 終了（終了コード 128+N）する。`status.json` が既に `done` / `error` なら wrapper は status 書き込みと親通知の両方をスキップするため、完了済みタスクが `error` に降格したり偽の `[dispatch] ... (status: error)` が飛んだりしない。まだ `executing` の pane を kill した場合は本当の中断なので従来どおり `error` を報告する
 
 ## タスク内の並列実行
@@ -664,7 +696,7 @@ security-guidance は hooks しか提供していない（skill / command なし
 
 Phase B-R（実装後コードレビュー）を有効にすると、実装ペインへ送る指示文が拡張版に差し替わります。
 この拡張版には **engine 別の終了指示**（codex は `/exit` ではなくセッション自体を終了）と
-**親への完了通知**（`send-prompt.sh --label dispatch-notify` の 1 回呼び出し）の両方が含まれます。
+**親への完了通知**（本文接頭辞 `dispatch-notify:` の agmsg `send.sh` 1 回呼び出し）の両方が含まれます。
 
 実装ペインは指示文しか読んでいないため、この 2 つが指示文の中に無いと、実装が完了しても
 セッションが終了せず、親に通知が届きません。カスタマイズする場合はこの 2 点を落とさないでください。

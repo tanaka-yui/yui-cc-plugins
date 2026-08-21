@@ -118,15 +118,16 @@ fi
 # 置き換え) / batch-wait.sh (T6 で削除)。SKILL.md 自身が存在しないスクリプトを参照して
 # いないことは test-skill-script-refs.sh (SR1/SR2) が別途固定する。
 #
-# PENDING 表は「担当外なので参照が残る箇所」を、担当タスクと件数つきで固定する。
+# PENDING 表は「意図的に参照が残る箇所」を、理由と件数つきで固定する。
 # `*` は件数を問わないの意。表に無いファイルに 1 件でも出れば FAIL、表にあるのに
 # 0 件なら「猶予はもう不要」で FAIL する (allowlist が黙って陳腐化しないためのラチェット)。
+#
+# T7 (ドキュメント更新) の完了により、日本語 4 ファイル (guide-ja.md / README.md /
+# CLAUDE.md / docs/notification-gaps.md) の猶予は不要になったので表から外した。
+# 日本語側の退役語彙は test-doc-stale-vocab.sh (DS1-DS3) が別途固定する。
 DELETED_RE='send-prompt\.sh|agmsg-path\.sh|monitor-dispatch\.sh|ensure-agmsg-ready\.sh|batch-wait\.sh'
 PENDING=(
-  "skills/cmux-team-dispatch-task/references/guide-ja.md|*|T7 (訳の追従)"
-  "README.md|*|T7 (ドキュメント更新)"
-  "CLAUDE.md|*|T7 (ドキュメント更新)"
-  "docs/notification-gaps.md|*|T7 (ドキュメント更新)"
+  "test/test-doc-stale-vocab.sh|*|検査対象そのものを needle として持つ検査スクリプト"
 )
 pending_expect() {
   local rel="$1" entry
