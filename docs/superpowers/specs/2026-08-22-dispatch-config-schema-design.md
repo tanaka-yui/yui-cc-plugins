@@ -85,8 +85,10 @@
 
 - `review_mode` の値域は `"on" | "off"` のみ。`"ask"` は無い（D3）。
 - 削除するキー: `design_runner` / `review_runner` / `exec_choice` / `prewarm`。
-- `shell_ready_ms`（`terminal-wait.sh` 所有）など他コンポーネントのキーは、書き込みが
-  置換ではなくマージであることによって従来どおり温存される。
+- 他コンポーネントが所有するキーは、書き込みが置換ではなくマージであることによって従来どおり
+  温存される。既知のものは `shell_ready_ms`（`terminal-wait.sh` 所有）と
+  `loop.task_timeout_min`（loop モードの起床時 reconciliation が読む）。`--reset config` は
+  この 2 つを**消してはならない**。
 
 ### レイヤー合成の粒度
 
@@ -97,6 +99,11 @@
 
 ロールオブジェクトごと置換する案は採らない。project に `{"model": "x"}` とだけ書いた
 とき runner が消えて Q8 の fail-fast に落ちるのは、ユーザーの意図とかけ離れている。
+
+この粒度は書き手にも影響する。project に `runner.design.effort` だけを書く場合、engine を
+決める `runner.design.runner` は global 側にあるため、`config-edit.sh` は対象ファイルだけを
+見て effort の allowlist を選べない。§3 の「effort 検証のための engine 解決順」がこの穴を
+塞ぐ。
 
 ## §2 パス解決（D6）
 
@@ -133,7 +140,10 @@ dispatch_runners_file() { printf '%s\n' "${RUNNERS_CONFIG_PATH:-$DISPATCH_CONFIG
 
 ## §3 読み手 `config-resolve.sh` と書き手 `config-edit.sh`
 
-### config-resolve.sh（新規・唯一の読み手）
+### config-resolve.sh（ロール解決の唯一の読み手）
+
+「唯一の読み手」は**ロール解決と `review_mode` に限った話**である。`terminal-wait.sh` が
+`shell_ready_ms` を自分で読み書きすることは従来どおり許される（§2 / #11）。
 
 ```
 config-resolve.sh --project-root <dir> [--runners <path>] [--set <role>.<field>=<value>]...
@@ -168,9 +178,37 @@ config-resolve.sh --project-root <dir> [--runners <path>] [--set <role>.<field>=
   拒否する**。
 - `--set <role>.<field>=<value>` を最優先レイヤーとして適用する。これが
   `--override` の適用点であり、**config には書き戻さない**（Q6）。
-- **fail-fast**: いずれかのロールの `runner` が未設定、または `runners.json` に実在
-  しないとき、exit 2 で停止し `--setup` を案内する（Q8）。`review_mode=off` のときは
-  `design_review` / `exec_review` を解決対象から外す。
+- **fail-fast**: 次のいずれかで exit 2 で停止し `--setup` を案内する。ペインは 1 つも
+  作られない（Q8）。
+  1. 解決対象ロールの `runner` が未設定、または `runners.json` に実在しない。
+  2. **engine が codex の review ロール（`design_review` / `exec_review`）の `model` が空**。
+     codex model には組込み既定値が無く、現行の「codex reviewer は `review_model` 必須」
+     invariant（CLAUDE.md 項目 18）をそのまま引き継ぐ。**2 つの review ロールは独立に
+     検査する**（片方だけ不備でも止める）。engine が claude の review ロールは既定値
+     `opus[1m]` が埋まるのでこの検査に掛からない。engine が codex の `design` / `exec` は
+     model 空が正当なので**掛けない**。
+  `review_mode=off` のときは `design_review` / `exec_review` を解決対象から外す（上の 2 つの
+  検査も掛けない）。
+
+**`review_mode` の解決規則**（D3 で質問が消え、D5 でこの値がペイン数を一意に決めるため、
+終端まで規定する）:
+
+- 各レイヤーを**独立に検証**する。値が文字列 `"on"` または `"off"` に**厳密一致**しなければ
+  無効とする。`"ask"`、boolean の `true` / `false`、その他の型、その他の文字列はすべて無効。
+- 無効なレイヤーは警告して**そのレイヤーだけ**を無視し、次のレイヤーへ落ちる
+  （project 無効 → global へ）。
+- 全レイヤーが未設定または無効なら、**組込み既定値 `on`** を使う。質問へ落としてはならない
+  （D3）。`runner` と違い `review_mode` には普遍的に妥当な既定があるので fail-fast にしない。
+
+**engine と model の不整合**（`--override` で runner を変えたときに起きる）:
+
+- claude のエイリアス（`opus[1m]` / `sonnet` / `fable`）が codex engine のロールに来たとき、
+  警告して**その値を持つレイヤーの model だけを無効化**し、次のレイヤー、最終的に既定値へ
+  落とす（他のフィールドと同じレイヤー単位の扱い）。model 文字列の一般的な検証はしないので、
+  判定はエイリアス名の一致だけで行う。
+- **model 無しの表現は「フィールドを省略する」の 1 つだけ**とする。`null` も空文字も出さない。
+  codex engine で model が決まらないときは `roles.<r>.model` が存在しない。downstream は
+  キーの有無で判定し、無ければ `--model` フラグ自体を付けない。
 
 組込み既定値（現行の表を維持する）:
 
@@ -184,19 +222,51 @@ config-resolve.sh --project-root <dir> [--runners <path>] [--set <role>.<field>=
 codex engine の model に既定値は無い（codex 側のデフォルトに委ねる）。`runner` には
 普遍的な既定値が存在しないので、既定値の表に `runner` の行は無い（Q8 の fail-fast）。
 
-### config-edit.sh（唯一の書き手）
+### config-edit.sh（ロール / review 設定の唯一の書き手）
+
+「唯一の書き手」は**ロール設定と `review_mode` に限った話**である。`shell_ready_ms` の
+owner は従来どおり `terminal-wait.sh` で、自前の merge + atomic write 契約を維持したまま、
+パスの解決だけを `config-lib.sh` に移す（#11）。
 
 扱えるキーを次へ拡張する。
 
 - `review_mode` — `on` | `off` のみ（`ask` は exit 2）
 - `runner.<role>.runner` — 非空文字列
 - `runner.<role>.model` — `config-lib.sh` の model 検証
-- `runner.<role>.effort` — `config-lib.sh` の正規化 + engine 別 allowlist。engine を
-  引くために `--runners <path>` を受け取る（省略時は `dispatch_runners_file`）。
-  対象ロールの `runner` は、同じ `--set` バッチ内の値 → 既存 config の値 の順で解決
-  する。どちらからも決まらないときは exit 2。
+- `runner.<role>.effort` — `config-lib.sh` の正規化 + engine 別 allowlist
+
+**effort 検証のための engine 解決順**（#1）。engine は次の順で決め、最初に決まったものを
+使う。**この順序は `--set` の並び順に依存しない**（引数を全部読み終えてから解決する）。
+
+1. 同じ呼び出しの `--set runner.<同じ role>.runner=<name>` の値
+2. `--engine <claude|codex>` フラグの明示値
+3. 書き込み対象ファイル内の `runner.<role>.runner`
+4. どれからも決まらなければ **exit 2**。メッセージで `--engine` を渡すよう案内する
+
+3 を「対象ファイル内」に限るのは、書き手にレイヤー合成を持ち込まないためである。project に
+effort だけを書き global に runner がある正規のケース（§1）は 2 で解決する。呼び出し側
+（`--setup` / `--override`）はロールを解決済みなので engine を必ず知っている。runner 名の
+解決には `--runners <path>` を使う（省略時は `dispatch_runners_file`）。
+
+- `runner` — **トップレベルの `--unset runner` だけ**を許す（#3）。`--reset config` の
+  正準手順が `config-edit.sh --config <path> --unset review_mode --unset runner` の
+  **1 回の呼び出し**（1 つの jq 式 / 1 回の `mv`）で表現できるようにするため。空の
+  `runner` オブジェクトは残さない（`del(.runner)` なのでキーごと消える）。
+  `--set runner=...` は受け付けない。
 
 削除するキー: `design_runner` / `review_runner` / `exec_choice` / `prewarm`。
+
+**自由入力の事前検証（command line 保護）**（#5）。SKILL.md / setup-mode.md の指示に従う
+エージェントは、ユーザーの自由入力を `config-edit.sh --set runner.design.model='<値>'` の
+ような**シェルコマンド文字列として組み立てる**。したがって `'` やバッククォート、`$`、`\`、
+制御文字は、スクリプトの検証関数に届く前に引用を破壊する。旧 `setup-mode.md` はこの事前検証を
+「command line を守る唯一の guard」として持っていたので、**必ず引き継ぐ**:
+
+- `--setup` と `--override` の runner / model / effort の自由入力は、**コマンドを組み立てる
+  前に** `config-lib.sh` と同じ拒否条件で検査する。違反したら値を捨てて**再質問**し、
+  再入力も違反ならその次元の変更を中止する。**違反値をコマンドへ埋めてはならない。**
+- スクリプト側の検証は取り除かない。手編集された config を読む経路には事前検証が無いので、
+  二重に持つことが必要である。
 
 writer 固有 `mktemp` + jq 成功時のみ同一ディレクトリへ `mv`、複数 `--set` / `--unset`
 を 1 つの jq 式へ合成する既存の契約はそのまま維持する。`--unset runner.<role>` で
@@ -331,6 +401,10 @@ resolver を全削除する。
   `exec_review` の解決値で埋まる。
 - 設計ペインは**常に** `.deferred` を作って exit する。設計セッションがレビュアーへ
   転じる経路は消滅する。
+- **`code-review.json` と `--review-config` は exec_review ペインの起動と readiness が
+  成功したときだけ**書く／渡す（#10）。spawn に失敗したときは**両方とも省略**し、Phase B-R
+  の gate だけをスキップする。到達不能な surface / agent を書いた JSON を残すと、実装者が
+  永遠に来ない verdict を待つ。
 - `review_mode=on` でロールが解決できないケースは Q8 の fail-fast に統合される。
   「reviewer 不在ならそのタスクだけ review off」という警告フォールバックは、
   `review_mode=on` かつ review ロールの runner が不正という設定の誤りを黙って握り潰す
@@ -413,8 +487,13 @@ AskUserQuestion を持たず常に `exec` ペインへ委譲する。
   1 ファイルへ。
 - **S7 書き込み**: `config-edit.sh` の 1 コールのみ。`runners-edit.sh` → `config-edit.sh`
   の順序規約は消える。
-- **`--reset config`**: `review_mode` と `runner` の 2 キーを unset する（旧: 役割
-  5 キー）。`shell_ready_ms` を残す規約は維持。
+- **`--reset config`**: `config-edit.sh --config <path> --unset review_mode --unset runner`
+  の**1 回の呼び出し**で行う（#3）。1 つの jq 式に合成され 1 回の `mv` で反映されるので、
+  途中状態は観測されない。`shell_ready_ms` など他コンポーネントのキーを残す規約は維持し、
+  空の `runner` オブジェクトも残さない。
+- **自由入力の事前検証**: runner / model / effort の自由入力（`runners[]` が 5 件以上のときの
+  「Other」を含む）は、`config-edit.sh` のコマンドを組み立てる**前に** §3 の拒否条件で検査し、
+  違反なら再質問する（#5）。
 - **`--reset runners`**: 変更なし。`runners.json` だけ削除して reset mode の
   First-run setup へ入り、両 `config.json` を変更しない。
 
@@ -424,8 +503,13 @@ AskUserQuestion を持たず常に `exec` ペインへ委譲する。
 
 - `runner.<role>.runner` は 4 ロールとも `runners.json` の `default` を入れる（Q4）。
   これが `default` の唯一の読み手である。
-- `runner.<role>.model` と `runner.<role>.effort` は**書かない**。§3 の組込み既定値が
-  そのまま効く。ユーザーが後から `--setup` か手編集で個別に埋める。
+- `runner.<role>.effort` は**書かない**。§3 の組込み既定値がそのまま効く。
+- `runner.<role>.model` も原則**書かない**が、**例外が 1 つある**（#2）: `default` が
+  codex engine の runner のとき、`design_review` と `exec_review` はその engine で model が
+  必須（§3 の fail-fast 2）なので、**First-run setup が 2 つの review ロールぶんの model を
+  1 コールで聞いて書く**。聞かずに済ませると、初回生成した config が §3 の fail-fast に
+  必ず引っかかり、ディスパッチが 1 度も動かない。`default` が claude engine のときは
+  既定値 `opus[1m]` が埋まるので聞かない。
 - `review_mode` は First-run setup で 1 回だけ聞く（`on` / `off` の 2 択）。D3 で
   ディスパッチ時の質問が消えた以上、値の初回決定はここか `--setup` しか無い。
 
@@ -434,10 +518,32 @@ AskUserQuestion を持たず常に `exec` ペインへ委譲する。
 
 ### Loop mode / unattended
 
-`render-loop-prompt.sh` が受け取る解決済み runner / engine を 3 ロールから 4 ロール
-へ拡張する。`references/loop-mode.md` / `loop-mode-ja.md` と
-`references/unattended/*.md` のロール語彙を新名称へ揃える。`review-block.md` /
-`code-review-block.md` の宛先を design_review / exec_review へ分ける。
+**`render-loop-prompt.sh` の I/F を 4 ロールへ作り直す**（#6）。現行は review の tuple を
+1 つしか受けず、2 つの review ブロックを同じ tuple から生成してしまうため、design_review と
+exec_review に別 runner を設定した構成で **Phase A-R と Phase B-R の依頼が片方の reviewer へ
+誤配送される**。
+
+- 入力フラグ: 4 ロールそれぞれに `--<role>-runner` / `--<role>-engine` / `--<role>-model` /
+  `--<role>-effort` / `--<role>-agent`。`<role>` は `design` / `design-review` / `exec` /
+  `exec-review`。
+- `review_mode=off` のときは review 2 ロールのフラグを**省略でき**、レンダラは
+  `review-block.md` と `code-review-block.md` を出力しない。`on` のときは 2 ロールぶんが
+  **必須**で、欠けたら die する。
+- 旧来の単一 `--review-*` フラグは**受け付けずに die** する（黙って片方へ流用しない）。
+- ブロック対応: `references/unattended/review-block.md` → **design_review**、
+  `code-review-block.md` → **exec_review**。`phase-block-claude.md` / `phase-block-codex.md`
+  は exec ロールの engine で選ぶ。
+
+**`loop-cleanup.sh` を 4 ロール対応にする**（#7。task brief が scope に明示している）。
+現行は旧 agent 名（`<slug>-codex` / `<slug>-review` など）を決め打ちで leave するため、
+新名称の `<slug>-design-review` / `<slug>-exec` / `<slug>-exec-review` が team に残り、
+次のディスパッチの配送先と衝突する。**`prewarm.json` に実在するロールの `agent` を列挙して
+leave / close する**契約に変える（`review_mode=off` なら 2 件、`on` なら 4 件、いずれも
+各 1 回だけ）。既存の `.. | objects | .surface_id? // empty` 列挙と `awk 'NF && !seen[$0]++'`
+の重複除去、`close-surface --workspace` 必須の規約はそのまま維持する。
+
+`references/loop-mode.md` / `loop-mode-ja.md` と `references/unattended/*.md` のロール語彙を
+新名称へ揃える。
 
 ## §7 テスト
 
@@ -445,14 +551,17 @@ AskUserQuestion を持たず常に `exec` ペインへ委譲する。
 
 | ファイル | 内容 |
 |----------|------|
-| `test/test-config-resolve.sh` | (role, field) 単位の precedence、`xHigh` → `xhigh` の正規化、組込み既定値の表、runner 未設定・不在の fail-fast（exit 2）、model メタ文字の拒否、`DISPATCH_CONFIG_HOME` / `RUNNERS_CONFIG_PATH` の解決、`--set` の最優先適用、`review_mode=off` で review 2 ロールを解決対象から外すこと |
-| `test/test-pane-invariant.sh` | `review_mode=on` でちょうど 4 ペイン・`off` でちょうど 2 ペイン。split 方向が §4 の固定表と一致すること。`executors` キーが出力されないこと |
+| `test/test-config-resolve.sh` | (role, field) 単位の precedence（global runner + project effort-only を含む）、`xHigh` → `xhigh` の正規化、組込み既定値の表、runner 未設定・不在の fail-fast（exit 2）、**codex review ロールの model 空を 2 ロール別々に fail-fast すること / codex の `design`・`exec` は model 空でも通ること**（#2）、model メタ文字の拒否、`DISPATCH_CONFIG_HOME` / `RUNNERS_CONFIG_PATH` の解決、`--set` の最優先適用、`review_mode=off` で review 2 ロールを解決対象から外すこと |
+| `test/test-review-mode-resolve.sh`（`test-config-resolve.sh` に統合可） | `review_mode` の終端規則（#4）: 未設定 / `"ask"` / boolean / 任意文字列 / 型違いを各レイヤーで無効化して次へ落ち、全レイヤー無効なら既定 `on` に到達すること。質問へ落ちる経路が存在しないこと |
+| `test/test-pane-invariant.sh` | `review_mode=on` でちょうど 4 ペイン・`off` でちょうど 2 ペイン。split 方向が §4 の固定表と一致すること。`executors` キーが出力されないこと。**exec_review の spawn 失敗時に `code-review.json` と `--review-config` の両方が出ないこと / 正常系で design_review と exec_review に異なる値が入ること**（#10） |
+| `test/test-config-paths.sh` | D6 の path helper が**全 consumer へ届く**こと（#12）: `terminal-wait.sh` が `DISPATCH_CONFIG_HOME` 配下の `config.json` を読み書きすること、`launch-workspace.sh` が `RUNNERS_CONFIG_PATH` 未設定時に既定 base を解決し、設定時はそちらを使うこと。旧 `~/.claude/cmux-team-dispatch-task` を参照する箇所が 1 つも残らないこと |
+| `test/test-input-validation.sh` | 自由入力の事前検証（#5）: `'` / バッククォート / `$` / `\` / 制御文字 / 空 / 前後空白を含む値が、`config-edit.sh` を**起動する前に**拒否されて再質問に落ちる旨が SKILL.md・setup-mode.md・setup-mode-ja.md に明記されていること（needle 検査）|
 
 ### 更新
 
 | ファイル | 変更 |
 |----------|------|
-| `test-config-edit.sh` | 入れ子キー `runner.<role>.<field>`、`review_mode` の `ask` 拒否、`--reset config` 相当の 2 キー unset、`--unset runner.<role>` |
+| `test-config-edit.sh` | 入れ子キー `runner.<role>.<field>`、`review_mode` の `ask` 拒否、`--unset review_mode --unset runner` の 1 コール reset（空 `runner` を残さず `shell_ready_ms` を温存）、`--unset runner.<role>`、**effort の engine 解決順 4 段（同一バッチ runner → `--engine` → 対象ファイル → exit 2）が `--set` の並び順に依存しないこと**（#1）、そして **`test-runners-edit.sh` から移植する検証群**（#8）: model の全拒否条件（空 / 前後空白 / `'` `"` `` ` `` `$` `\` / 制御文字）と**内部空白を含む値は許容**すること、engine 別 effort allowlist の正例・負例（codex に `max` が無いこと）、`xHigh` → `xhigh`、失敗時に元ファイルが変更されないこと |
 | `test-role-models.sh` | runners.json の役割フィールドではなく config の 4 ロールから解決することへ全面書き換え |
 | `test-in-session.sh` | **反転**。`executors` が `{}` にならず exec ペインが必ず立つこと、in-session 判定コードが存在しないことのラチェット |
 | `test-override.sh` | 対象ロール 4 つ、`--set` 経由の適用、prewarm へは `--roles` 1 本で渡ること |
@@ -460,6 +569,8 @@ AskUserQuestion を持たず常に `exec` ペインへ委譲する。
 | `test-prewarm-layout.sh` / `test-prewarm-all-codex.sh` / `test-prewarm-unattended.sh` / `test-prewarm-design-permissions.sh` | ロールキーと `--roles` 入力へ |
 | `test-launch-workspace-*.sh` | `--role` の新しい値域、役割フィールド層の消滅 |
 | `test-delivery-callsites.sh` | CS4 ratchet の削除済みスクリプト表へ `runners-edit.sh` を追加 |
+| `test-loop-prompt.sh` / `test-loop-skill.sh` | renderer の 4 ロール I/F（#6）: design_review と exec_review に異なる reviewer を与えたとき 2 つのブロックが別々の宛先を持つこと、`review_mode=off` で 2 ブロックとも出ないこと、旧単一 `--review-*` I/F が die すること |
+| `test-loop-cleanup.sh` / `test-cleanup-close.sh` | `prewarm.json` 実在ロールの列挙による leave / close（#7）: `review_mode=on` で 4 ロールを各 1 回、`off` で 2 ロールを各 1 回。`close-surface --workspace` が付くこと |
 | `test-doc-stale-vocab.sh` | DS2 の旧語彙リストへ `design_runner` / `review_runner` / `exec_choice` / `prewarm` キー / `"ask"` / in-session / `REVIEW_POLICY` / legacy resolver / `runners-edit.sh` を追加。DS3 のラチェットも更新 |
 
 ### 削除
@@ -501,6 +612,9 @@ for f in apps/cmux-team-dispatch-task/test/test-*.sh; do bash "$f"; done
 - 項目 44（`--override`）— 4 段 precedence、4 ロール、`config-edit.sh` のみ言及。
 - E2E テスト節の項目 8 / 9（モデル選択の動的表示 / in-session 実行）— 削除。
 - 項目 47（退役候補）— `runners-edit.sh` と削除した分岐を反映。
+
+ファイル構成表には `config-lib.sh` / `config-resolve.sh` を足し、`runners-edit.sh` を落とす。
+`render-loop-prompt.sh` と `loop-cleanup.sh` の説明も 4 ロール対応へ書き換える。
 
 `README.md` は設定ファイルのパス、スキーマ例、ペイン配置図、`--setup` の手順を更新。
 
