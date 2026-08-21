@@ -67,10 +67,10 @@
 #                                      しない)」プロトコルを追記する
 #   --timeout-sentinel <path>          ループモード専用。runner wrapper が exit 時にこの
 #                                      パスの存在を確認し、あれば status.json を書かずに
-#                                      終了する。batch-wait.sh が timeout として terminal 化
-#                                      したタスクの遅延書き込み (status 上書き / status dir の
-#                                      再生成) を防ぐ。未指定 (非ループ) では wrapper の
-#                                      挙動は従来どおり
+#                                      終了する。親の単発タイマー wake 時の再導出処理が
+#                                      timeout として terminal 化したタスクの遅延書き込み
+#                                      (status 上書き / status dir の再生成) を防ぐ。
+#                                      未指定 (非ループ) では wrapper の挙動は従来どおり
 #   --unattended                       ループモード専用。--mode execute / standby で有効。
 #                                      inner prompt のレビュー fallback から対話質問を除去し、
 #                                      claude engine には --dangerously-skip-permissions を
@@ -377,7 +377,7 @@ fi
 # Validate workspace name: only allow safe characters for path/branch usage
 [[ "$WORKSPACE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid workspace name '$WORKSPACE_NAME': use only [A-Za-z0-9._-]"
 
-# agmsg の from 名は guard の --name と runner script の AGMSG_EXPECTED_NAME に
+# agmsg の from 名は readiness 確立句の name と runner script の AGMSG_EXPECTED_NAME に
 # そのまま入るので、workspace 名と同じ値域で検証する。
 if [[ -n "$AGMSG_FROM" ]]; then
   [[ "$AGMSG_FROM" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid --agmsg-from '$AGMSG_FROM': use only [A-Za-z0-9._-]"
@@ -961,7 +961,7 @@ CODEX_MODEL_FLAG=""
     elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
       # claude standby/review: --model / --skip-permissions を反映し、prompt があれば渡す
       # (agmsg 配線時は呼び出し元 (prewarm-panes.sh) が組み立てた
-      #  "ensure-agmsg-ready.sh" guard 呼び出し + 待機指示を初期 prompt にする)
+      #  readiness 確立句 + 待機指示を初期 prompt にする)
       if [[ -n "$PROMPT_TEXT" ]]; then
         CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
       else
@@ -1009,9 +1009,9 @@ AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
 AGMSG_FROM="${AGMSG_FROM}"
 EOF
-# AGMSG_EXPECTED_NAME is the safety-net value ensure-agmsg-ready.sh compares
-# its resolved --name against. Only emit the export when AGMSG_FROM is set —
-# an empty export would defeat the guard's "was a name actually provided" check.
+# AGMSG_EXPECTED_NAME is the safety-net value this session's own agmsg name is
+# expected to match. Only emit the export when AGMSG_FROM is set — an empty
+# export would defeat the "was a name actually provided" check.
 if [[ -n "$AGMSG_FROM" ]]; then
   cat >> "$RUNNER_FILE" <<EOF
 export AGMSG_EXPECTED_NAME='${AGMSG_FROM}'
@@ -1179,9 +1179,9 @@ if [[ -n "\$WATCHER_PID" ]]; then
   wait "\$WATCHER_PID" 2>/dev/null || true
 fi
 
-# ループモード: batch-wait.sh が deadline 超過でこのタスクを terminal 化済みなら、
-# 遅れて終了した子が status.json を上書きしたり、cleanup 済みの STATUS_DIR を
-# mkdir -p で復活させたりしないよう、ここで何も書かずに終了する。
+# ループモード: 親の単発タイマー wake 時の再導出処理が deadline 超過でこのタスクを
+# terminal 化済みなら、遅れて終了した子が status.json を上書きしたり、cleanup 済みの
+# STATUS_DIR を mkdir -p で復活させたりしないよう、ここで何も書かずに終了する。
 if [[ -n "\$TIMEOUT_SENTINEL" && -f "\$TIMEOUT_SENTINEL" ]]; then
   echo "[runner] timeout sentinel found at \$TIMEOUT_SENTINEL; skipping status update" >&2
   exit 0

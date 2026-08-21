@@ -140,9 +140,18 @@ arguments for a fixed all-Codex unattended task are:
 Do not add a different engine or model merely to fill a pane. Pass the timeout sentinel
 only to roles that `prewarm.json` actually instantiates.
 
-`batch-wait.sh --state-file <path> --batch <N> --timeout-min <task_timeout_min>` is
-complete only on `ALL_TERMINAL`; re-run on `WAITING`. A task with a `--timeout-sentinel`
-does not accept a late-arriving status.
+Do not wait with a script. After dispatching a batch, end your turn. Each child's
+`dispatch-notify` message wakes you; on every wake, reconcile the loop state file from
+`.dispatch/*/status.json` (the same re-derivation Step 3 describes) and write each
+issue's terminal status and `pr_url` into it with `issue-fetch.sh --state-file <path>
+heartbeat` first, so the lock owner check still runs before the write.
+
+A batch is complete when every issue in it has a terminal status. Until then, end your
+turn again. The single-shot safety timer armed in Step 3 covers a child that never
+reports: on that wake, any issue whose `claimed_at` is older than `task_timeout_min`
+becomes `timeout`, with the same sentinel (`<loop-dir>/timed-out/<slug>`) and
+`status.json` write the old script performed. A task with a `--timeout-sentinel` does
+not accept a late-arriving status.
 
 ## L3: Cleanup and Termination
 

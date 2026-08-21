@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # SKILL.md が「存在しないスクリプト」を参照していないことの静的検査。
 #
-# 由来: 削除済みの ensure-agmsg-ready.sh を SKILL.md の Step 1g が呼び続けていた事故
-# (rc 127 → `*)` 分岐 → exit 1 で親の dispatch が起動直後に中止される)。この破綻を
-# 検知していた唯一のテスト (削除済み test-agmsg-skill-block.sh の AG1) の代替。
+# 由来: 削除済みの旧 ensure-agmsg-ready ガードスクリプトを SKILL.md の Step 1g が
+# 呼び続けていた事故 (rc 127 → `*)` 分岐 → exit 1 で親の dispatch が起動直後に
+# 中止される)。この破綻を検知していた唯一のテスト (削除済み test-agmsg-skill-block.sh
+# の AG1) の代替。
 #
 # 守っている不変条件:
 #   SR1. パス付きの参照 (`<SKILL_DIR>/scripts/x.sh` / `<this-skill-dir>/scripts/x.sh`
 #        など、agmsg ツリー以外) は skills/*/scripts/ に実在する
-#   SR2. 地の文の裸のファイル名 (`monitor-dispatch.sh` のようにパスを伴わない言及) も
+#   SR2. 地の文の裸のファイル名 (`verify-agmsg-ready.sh` のようにパスを伴わない言及) も
 #        プラグイン配下に実在する。agmsg 等の外部ツリーが持つ名前だけは
 #        AGMSG_OWNED で明示的に除外する
 #   SR3. AGMSG_OWNED の各エントリは SKILL.md に実際に出現する (allowlist が黙って
 #        陳腐化し、いつか同名の自スクリプトを見逃すのを防ぐラチェット)
 #
 # SR1 と SR2 は補完関係にある。SR1 だけでは
-# 「`monitor-dispatch.sh` is launched whenever …」のようなパス無しの言及を見逃し、
+# 「`verify-agmsg-ready.sh` is invoked whenever …」のようなパス無しの言及を見逃し、
 # SR2 だけでは `<SKILL_DIR>/scripts/send.sh` のような「実在する名前を誤った場所から
 # 呼ぶ」参照を見逃す。片方だけの素朴な実装は空虚に PASS する。
 

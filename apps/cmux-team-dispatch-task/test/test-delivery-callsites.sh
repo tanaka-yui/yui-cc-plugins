@@ -10,9 +10,10 @@
 #   CS3. SKILL.md と references 配下の全 .md の指示文に配送目的の cmux send /
 #        cmux send-key が残らない (訳や無人ループ用ブロックが原文から遅れて旧文面を
 #        残す事故を防ぐ)
-#   CS4. 削除済みスクリプト (send-prompt.sh / agmsg-path.sh) への参照が
-#        スクリプト・文書のどこにも残らない。後続タスクが担当する箇所だけを
-#        PENDING 表で明示的に猶予し、件数まで固定する
+#   CS4. 削除済みスクリプト (send-prompt.sh / agmsg-path.sh / monitor-dispatch.sh /
+#        ensure-agmsg-ready.sh / batch-wait.sh) への参照がスクリプト・文書のどこにも
+#        残らない。後続タスクが担当する箇所だけを PENDING 表で明示的に猶予し、件数まで
+#        固定する
 #   CS5. verdict 待ちのポーリング指示 (polling / every 5 seconds / 15-min /
 #        seq 1 180) が SKILL.md / references/**/*.md / launch-workspace.sh に
 #        残らない。「ポーリングしない」と否定形で語る行だけを許す。あわせて
@@ -112,20 +113,20 @@ else
 fi
 
 # --- CS4: 削除済みスクリプトへの参照が残らない ---
-# 対象は send-prompt.sh と agmsg-path.sh の 2 つ (T3 の時点で削除したもの)。
-# monitor-dispatch.sh (T4 で削除済み) / ensure-agmsg-ready.sh / batch-wait.sh を
-# DELETED_RE へ加えるのは brief が Task 6 に割り当てている作業なので、ここでは対象に
-# しない。SKILL.md 自身が存在しないスクリプトを参照していないことは
-# test-skill-script-refs.sh (SR1/SR2) が別途固定する。
+# 対象は 5 つ: send-prompt.sh / agmsg-path.sh (T3 の時点で削除) と
+# monitor-dispatch.sh (T4 で削除) / ensure-agmsg-ready.sh (T1 で verify-agmsg-ready.sh に
+# 置き換え) / batch-wait.sh (T6 で削除)。SKILL.md 自身が存在しないスクリプトを参照して
+# いないことは test-skill-script-refs.sh (SR1/SR2) が別途固定する。
 #
 # PENDING 表は「担当外なので参照が残る箇所」を、担当タスクと件数つきで固定する。
 # `*` は件数を問わないの意。表に無いファイルに 1 件でも出れば FAIL、表にあるのに
 # 0 件なら「猶予はもう不要」で FAIL する (allowlist が黙って陳腐化しないためのラチェット)。
-DELETED_RE='send-prompt\.sh|agmsg-path\.sh'
+DELETED_RE='send-prompt\.sh|agmsg-path\.sh|monitor-dispatch\.sh|ensure-agmsg-ready\.sh|batch-wait\.sh'
 PENDING=(
   "skills/cmux-team-dispatch-task/references/guide-ja.md|*|T7 (訳の追従)"
   "README.md|*|T7 (ドキュメント更新)"
   "CLAUDE.md|*|T7 (ドキュメント更新)"
+  "docs/notification-gaps.md|*|T7 (ドキュメント更新)"
 )
 pending_expect() {
   local rel="$1" entry
@@ -170,7 +171,7 @@ for entry in "${PENDING[@]}"; do
   fi
 done
 if [[ $cs4 -eq 1 ]]; then
-  echo "PASS CS4: send-prompt.sh / agmsg-path.sh への参照は PENDING 表の箇所だけに残る"
+  echo "PASS CS4: 削除済み 5 スクリプトへの参照は PENDING 表の箇所だけに残る"
 else
   echo "FAIL CS4: 削除済みスクリプトへの参照が想定外の場所に残っている"; fail=1
 fi

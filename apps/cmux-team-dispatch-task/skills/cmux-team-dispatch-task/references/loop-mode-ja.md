@@ -115,7 +115,9 @@ prompt renderer には解決済み role tuple を渡す: `--design-runner` / `--
 
 ペインを埋めるためだけに別 engine/model を追加しない。timeout sentinel は `prewarm.json` に実在する role にだけ渡す。
 
-`batch-wait.sh --state-file <path> --batch <N> --timeout-min <task_timeout_min>` は `ALL_TERMINAL` の場合だけ完了であり、`WAITING` は再実行する。`--timeout-sentinel` がある task は後着の status を受け入れない。
+スクリプトで待たない。batch を dispatch したらターンを閉じる。各子の `dispatch-notify` メッセージがこのセッションを起こす。起きるたびに `.dispatch/*/status.json` から loop state file を再導出し（Step 3 が説明する再導出と同じ手順）、各 issue の terminal status と `pr_url` を `issue-fetch.sh --state-file <path> heartbeat` を先に呼んでから書き込む — こうすることで lock owner チェックを書き込みより先に必ず通す。
+
+batch が完了するのは、その中の全 issue が terminal status になったときだけ。まだなら再びターンを閉じる。Step 3 で armed した単発 safety timer が「一度も報告しない子」をカバーする: そのタイマーの wake で、`claimed_at` が `task_timeout_min` より古い issue はすべて `timeout` になり、旧スクリプトが行っていたのと同じ sentinel（`<loop-dir>/timed-out/<slug>`）書き込みと `status.json` 書き込みを行う。`--timeout-sentinel` がある task は後着の status を受け入れない。
 
 ## L3: cleanup と終了
 

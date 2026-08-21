@@ -155,7 +155,7 @@ expect_split PG3 pg3-review surface:1 right
 # PW1-PW17: 全ロールの初期プロンプトへの readiness 確立句 (readiness_clause) 注入
 # ==========================================================================
 #
-# guard_clause() / ensure-agmsg-ready.sh (nohup watcher) は廃止された。
+# guard_clause() / 旧 guard スクリプト (nohup watcher) は廃止された。
 # 新設計では claude は Monitor ツール起動、codex は seat 記録 (codex-record-session.sh)
 # を行い、どちらも最後に親へ send.sh 経由で本文が厳密に `[ready] <name>` (末尾ピリオド
 # 無し) のメッセージを送る指示をプロンプトに埋め込む。「実行するコマンド」を一字一句

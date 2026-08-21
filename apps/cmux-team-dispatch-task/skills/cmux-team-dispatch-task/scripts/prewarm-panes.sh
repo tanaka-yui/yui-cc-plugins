@@ -50,8 +50,8 @@
 #                 承認により停止しないようにするため)。codex 系は bypass フラグで解決済み
 #   --timeout-sentinel <path>: ループモード専用。status 所有者になり得る全 standby
 #                 (design / review / 実行) の launch へ
-#                 そのまま転送する。batch-wait.sh が timeout として terminal 化した後に
-#                 遅れて終了した子が status.json を上書きするのを防ぐ
+#                 そのまま転送する。親の単発タイマー wake 時の再導出処理が timeout として
+#                 terminal 化した後に遅れて終了した子が status.json を上書きするのを防ぐ
 #
 # Output: JSON to stdout: {workspace_id, panes: {design?, review?, executors}}
 # Debug:  Logs to stderr

@@ -2357,8 +2357,9 @@ messages only tell you when to look.
    ```
 
    **90 minutes, fixed.** Nothing in this dispatch resolves a different value: the
-   `loop.task_timeout_min` config key is read only by `batch-wait.sh`, for its own
-   per-issue timeout, and never reaches this timer. Use a different number only if the
+   `loop.task_timeout_min` config key is read only by loop mode's wake-time
+   reconciliation (`references/loop-mode.md`), for its own per-issue timeout, and never
+   reaches this timer. Use a different number only if the
    user asked for one. This is a safety net, not a deadline — a live-but-slow task
    re-arms it.
    **Remember the task id and the number of times you have armed it.** Do not annotate
