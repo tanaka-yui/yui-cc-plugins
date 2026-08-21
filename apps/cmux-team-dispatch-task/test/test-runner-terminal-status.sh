@@ -52,27 +52,34 @@ touch "$TMP/repo/.gitkeep"
 git -C "$TMP/repo" add .gitkeep
 git -C "$TMP/repo" commit -qm init
 
-# cmux stub。
-# - cmux-attempts.log: 成否によらず send / send-key の呼び出しを記録する
-#   (通知の再試行が止まったことを検証するために使う)
-# - cmux-calls.log: 成功した呼び出しだけを記録する
-# - $TMP/cmux-fail が存在する間は send / send-key を失敗させる
+# cmux stub。配送は agmsg send.sh に移ったので cmux send / send-key は
+# 「呼ばれてはならない」経路になった (呼ばれたら unexpected で落ちる)。
 cat > "$TMP/bin/cmux" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
   new-workspace) echo 'workspace:1' ;;
   list-pane-surfaces) echo 'surface:2' ;;
-  send|send-key)
-    echo "\$*" >> "$TMP/cmux-attempts.log"
-    if [[ -f "$TMP/cmux-fail" ]]; then exit 1; fi
-    if [[ -f "$TMP/cmux-fail-reviewer" && "\$*" == *"surface:77"* ]]; then exit 1; fi
-    echo "\$*" >> "$TMP/cmux-calls.log" ;;
   notify) echo "\$*" >> "$TMP/cmux-calls.log" ;;
   rename-workspace|rename-tab|wait-for|identify|new-split) ;;
   *) echo "unexpected cmux command: \$*" >&2; exit 1 ;;
 esac
 STUB
 chmod +x "$TMP/bin/cmux"
+
+# agmsg send.sh stub。配送の唯一の経路であり、引数は
+# <team> <from> <to> <body> の 4 つだけ (フラグは無い)。
+# - cmux-attempts.log: 成否によらず呼び出しを記録する (再試行の検証に使う)
+# - cmux-calls.log:    成功した呼び出しだけを記録する
+# - $TMP/cmux-fail:          存在する間はすべて失敗させる
+# - $TMP/cmux-fail-reviewer: 存在する間は宛先 rv-review だけ失敗させる
+cat > "$TMP/bin/agmsg-send.sh" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$TMP/cmux-attempts.log"
+if [[ -f "$TMP/cmux-fail" ]]; then exit 1; fi
+if [[ -f "$TMP/cmux-fail-reviewer" && "\$3" == "rv-review" ]]; then exit 1; fi
+echo "\$*" >> "$TMP/cmux-calls.log"
+STUB
+chmod +x "$TMP/bin/agmsg-send.sh"
 
 # stub runner。
 # - STUB_READY:   起動したことを知らせる sentinel
@@ -135,8 +142,10 @@ run_case() {
   [[ -n "${EXTRA_SENTINEL:-}" ]] && touch "$STATUS_DIR/$EXTRA_SENTINEL"
 
   local output runner
-  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+    AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode standby --runner stub --status-dir "$STATUS_DIR" \
+    --agmsg-team demo-team --agmsg-from "$name" \
     --defer-status --parent-notify-workspace 'workspace:9' "$name")
   runner=$(jq -r '.runner_file' <<<"$output")
 
@@ -218,8 +227,10 @@ run_case_bg() {
   [[ -n "${PRESEED_MARKER:-}" ]] && printf '%s' "$PRESEED_MARKER" > "$STATUS_DIR/.notified-$name"
 
   local output runner
-  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+    AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode standby --runner stub --status-dir "$STATUS_DIR" \
+    --agmsg-team demo-team --agmsg-from "$name" \
     --defer-status --parent-notify-workspace 'workspace:9' "$name")
   runner=$(jq -r '.runner_file' <<<"$output")
 
@@ -255,6 +266,7 @@ wait_for_content() {
   done
   return 1
 }
+# reviewer 宛は surface ではなく agmsg agent 名で観測する
 wait_for_attempt_to() {
   local target="$1" limit="${2:-15}" i
   for i in $(seq 1 $((limit * 2))); do
@@ -388,7 +400,7 @@ seed_review_config() { mkdir -p "$1/review"; printf '%s' "$2" > "$1/review/code-
 
 # R1: reviewer config があれば error の watcher が reviewer を wake する。
 STATUS_DIR="$TMP/status-rv1"; rm -rf "$STATUS_DIR"
-seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
+seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","reviewer_agent":"rv-review","review_dir":"x"}'
 REVIEW_PRESEED=1 STUB_WRITE_STATUS=error run_case_bg rv1 0 executing
 unset REVIEW_PRESEED STUB_WRITE_STATUS
 wait_for_log '\[abort\]' 15 && r1=yes || r1=no
@@ -396,10 +408,12 @@ release_case
 assert_eq "$r1" 'yes' 'R1 code-review.json があればレビュアーへ [abort] が飛ぶ'
 
 # R2/R3/R4: reviewer 不在、done、壊れた/legacy config は親通知を妨げない。
-for case in none done broken legacy; do
+# no-agent は reviewer_agent 欠落 (旧スキーマ)。宛先を捏造せず送らないことを確かめる。
+for case in none done broken legacy no-agent; do
   STATUS_DIR="$TMP/status-rv-$case"; rm -rf "$STATUS_DIR"
   if [[ "$case" == broken ]]; then seed_review_config "$STATUS_DIR" 'broken'; fi
-  if [[ "$case" == legacy ]]; then seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"","review_dir":"x"}'; fi
+  if [[ "$case" == no-agent ]]; then seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'; fi
+  if [[ "$case" == legacy ]]; then seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"","reviewer_agent":"rv-review","review_dir":"x"}'; fi
   write=error; [[ "$case" == done ]] && write=done
   REVIEW_PRESEED=1 STUB_WRITE_STATUS="$write" run_case_bg "rv-$case" 0 executing
   unset REVIEW_PRESEED STUB_WRITE_STATUS
@@ -407,7 +421,7 @@ for case in none done broken legacy; do
   if [[ "$case" == legacy ]]; then
     wait_for_log '\[abort\]' 15 || true
     legacy_abort=$(reviewer_msgs)
-    assert_eq "$legacy_abort" '1' 'R4 legacy config は workspace 無しでも [abort] を送る'
+    assert_eq "$legacy_abort" '1' 'R4 reviewer_workspace 無しでも reviewer_agent があれば [abort] を送る'
   else
     plain_abort=$(reviewer_msgs)
     assert_eq "$plain_abort" '0' "R2/R3 $case では reviewer へ [abort] を送らない"
@@ -417,11 +431,11 @@ done
 
 # R5: reviewer の送信だけが失敗しても、復旧後に独立 marker を確定する。
 STATUS_DIR="$TMP/status-rv5"; rm -rf "$STATUS_DIR"
-seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","review_dir":"x"}'
+seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:77","reviewer_workspace":"workspace:7","reviewer_agent":"rv-review","review_dir":"x"}'
 : > "$TMP/cmux-fail-reviewer"
 REVIEW_PRESEED=1 STUB_WRITE_STATUS=error run_case_bg rv5 0 executing
 unset REVIEW_PRESEED STUB_WRITE_STATUS
-wait_for_attempt_to 'surface:77' 20 || true
+wait_for_attempt_to 'rv-review' 20 || true
 rm -f "$TMP/cmux-fail-reviewer"
 wait_for_content "$STATUS_DIR/.notified-reviewer-task-rv5" error 20 && r5=yes || r5=no
 release_case

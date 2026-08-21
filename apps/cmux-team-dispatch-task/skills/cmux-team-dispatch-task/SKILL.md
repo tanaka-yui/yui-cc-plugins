@@ -579,38 +579,24 @@ either reason above (see Step 3). `--message-type` was removed from
 message.
 
 **Delivery contract (applies to EVERY message this skill sends).** All delivery goes
-through one call to `scripts/send-prompt.sh` — never a raw `cmux send`: <!-- send-prompt-exempt: prohibition, not a delivery instruction -->
+through one call to agmsg `send.sh` — never a `cmux send`: <!-- send-prompt-exempt: prohibition, not a delivery instruction -->
 
 ```bash
-# --to-surface <id> targets a pane; use --to-workspace <id> instead when the
-# destination is a whole workspace (the parent). Exactly one of them is required.
-bash <SKILL_DIR>/scripts/send-prompt.sh \
-  --to-surface <TARGET_SURFACE> \
-  --agmsg-team "$TEAM" --agmsg-to <TARGET_AGENT> --agmsg-from <YOUR_AGENT_NAME> \
-  --label <label> --outbox-dir <STATUS_DIR>/outbox \
-  -- '<message text>'
+~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <YOUR_AGENT_NAME> <TARGET_AGENT> '<label>: <message text>'
 ```
 
-- It **always types the message into the target pane**. Typing is the only thing that
-  wakes an idle session, so this half is never optional.
-- When the three `--agmsg-*` arguments are given AND the destination's ready sentinel
-  (`~/.agents/skills/agmsg/run/ready.<team>__<agent>`) exists, it **additionally
-  records the same body in the agmsg inbox**, always AFTER the typed delivery. That
-  record is not a wake mechanism; an agmsg failure never affects delivery or the exit
-  code, and a hung agmsg writer can never block the only thing that wakes the
-  destination. Drop all three `--agmsg-*` flags when `$TEAM` is empty.
-- Bodies longer than 400 characters are written to `<outbox-dir>/<label>-<seq>.md` and
-  only a one-line pointer is typed. This is what stops a long instruction from being
-  treated as a paste and jamming the input box.
-- After typing it presses Enter, then confirms via `cmux read-screen` that the input
-  box emptied, re-pressing Enter up to 3 times before reporting failure. The check
-  applies **when the destination renders a `❯` (or `>`) prompt line at column 0**,
-  which is how the input box is located; on a pane that renders no such line the
-  message is treated as delivered without verification. An unobservable screen counts
-  as delivered too, not as failure, so a caller never re-sends and double-delivers.
-- Exit codes: 0 = delivered, 1 = delivery failed, 2 = usage error.
+- The destination is an **agmsg agent name**, never a surface or workspace id. A pane
+  becomes reachable only after it has reported `[ready] <name>` (Step 1g). Sending to a
+  pane that never reported ready leaves the message unread in its inbox forever.
+- There is no length limit to work around and no outbox: the inbox is not subject to
+  the TUI's paste detection, so pass the full body as-is.
+- There is no Enter verification and no re-send. `send.sh` either writes the message to
+  agmsg's shared SQLite DB or exits non-zero. **A non-zero exit means the message was
+  NOT delivered** — report it, never ignore it.
+- `<label>` is a prefix on the message body, not a flag. The Monitor stream delivers one
+  message as one line, and the parent identifies the kind of message from this prefix.
 
-`<label>` groups the outbox files of one call site. Use exactly these:
+Use exactly these labels:
 
 | Call site | label |
 |-----------|-------|
@@ -620,7 +606,6 @@ bash <SKILL_DIR>/scripts/send-prompt.sh \
 | Phase B-R code review request | `review-code` |
 | Abort notice to the reviewer (from the implementer or the runner wrapper) | `abort-reviewer` |
 | Completion / abort notice to the parent | `dispatch-notify` |
-| `monitor-dispatch.sh` heartbeat / all-done / DIED notice to the parent | `dispatch-monitor` |
 
 **Resolve review mode (`review_mode`)** — precedence: project config → global config → ask.
 Resolve the independent review role from Step 1f first; `REVIEW_POLICY`,
@@ -901,18 +886,12 @@ You can message the parent directly at any time (questions, progress):
   ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent "<message>"
 
 MANDATORY completion notification: immediately after writing done/error to
-status.json, notify the parent yourself with ONE send-prompt.sh call:
-  bash <SKILL_DIR>/scripts/send-prompt.sh --to-workspace <PARENT_WORKSPACE_ID> \
-    --agmsg-team <team> --agmsg-to parent --agmsg-from <task-slug> \
-    --label dispatch-notify --outbox-dir <STATUS_DIR>/outbox \
-    -- "[dispatch] task \"<task-slug>\" finished (status: <done|error>)"
-Drop the three --agmsg-* flags when <team> is empty. send-prompt.sh types the
-message into the parent pane (the only thing that wakes an idle parent) and,
-when the parent's agmsg watcher is alive, also records the same text in its
-inbox — that record is a log, not a wake mechanism. Do NOT rely on session
-exit either: the runner wrapper notifies on exit as a backstop, but an idle
-TUI session never exits, and when agmsg is installed no monitor loop is
-running, so without this call the parent may never be informed.
+status.json, notify the parent yourself with ONE send.sh call:
+  ~/.agents/skills/agmsg/scripts/send.sh <team> <task-slug> parent 'dispatch-notify: [dispatch] task "<task-slug>" finished (status: <done|error>)'
+A non-zero exit means the parent was NOT told — retry once, then write the failure
+into status.json's message field so the parent can see it when it re-derives state.
+Do NOT rely on session exit: an idle TUI session never exits, and no monitor loop
+is running, so without this call the parent is never informed.
 ```
 
 ### 1g-2. Apply Per-Task Overrides (`--override` only)
@@ -1042,10 +1021,10 @@ sends `bash .cmux-team-dispatch-task-run-<workspace-name>.sh`, which:
 3. After Claude exits (for any reason), writes `"done"` or `"error"` to `status.json`
 4. Signals completion via `cmux wait-for --signal <slug>-done`
 5. Optionally notifies the parent workspace via `cmux notify`
-6. Delivers the `[dispatch] task ... finished (status: ...)` text to the parent through
-   `scripts/send-prompt.sh` (`--label dispatch-notify`), which types it in and verifies
-   the Enter landed, and additionally records it in the parent's agmsg inbox when
-   `--agmsg-team` / `--agmsg-from` were given and the parent's watcher is alive
+6. Delivers the `dispatch-notify: [dispatch] task ... finished (status: ...)` text to
+   the parent through one agmsg `send.sh` call addressed to the `parent` agent name.
+   It is skipped when `--agmsg-team` / `--agmsg-from` were not given, because then this
+   pane has no agmsg identity to send from
 
 **Deferred completion (`--defer-status`)**: When the launch script is invoked with
 `--defer-status` (always done by `launch-workspace.sh` for Child sessions), the
@@ -1180,12 +1159,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-claude"
            # hands completion ownership (status.json done/error transition +
            # <slug>-claude-done signal + parent notification) to the standby wrapper
-        3. Send the execution request with ONE send-prompt.sh call (see the
-           delivery contract in Step 1g). It types the text into the standby pane —
-           the only thing that wakes it — records the same body in that pane's agmsg
-           inbox when its watcher is alive, spills anything over 400 characters to
-           the outbox so a long instruction cannot jam the input box, and verifies
-           that the Enter landed:
+        3. Send the execution request with ONE send.sh call (see the delivery
+           contract in Step 1g). The destination is the standby pane's agmsg agent
+           name, not its surface, and the whole body goes through as-is:
              PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine claude --mode execute)
              REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is
              committed/pushed and the PR is created (or all changes are merged per
@@ -1195,14 +1171,11 @@ PHASE B — Execution model selection (REQUIRED before any code change):
              # IF the PHASE B-R block exists below, do NOT use this REQUEST_TEXT —
              # use the extended REQUEST_TEXT defined in that block instead (it inserts
              # the pre-PR code-review protocol).
-             bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface "$CLAUDE_EXEC_SURFACE" \
-               --agmsg-team "$TEAM" --agmsg-to <task-slug>-claude --agmsg-from <task-slug> \
-               --label phase-b-exec --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
-               -- "$REQUEST_TEXT"
+             ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-claude \
+               "phase-b-exec: $REQUEST_TEXT"
              # $TEAM is the TEAM value given above — do NOT re-derive it in this session.
-             # Drop the three --agmsg-* flags when $TEAM is empty. Do NOT branch on
-             # prewarm.json's `.executors.claude.delivery`: send-prompt.sh re-checks the ready
-             # sentinel itself and simply skips the inbox record when it is gone.
+             # A non-zero exit means the pane was NOT told: report it, do not proceed
+             # as if the implementation had started.
         4. touch "<EXISTING_STATUS_DIR>/.deferred". IF the PHASE B-R block exists,
            call `resolve_code_reviewer_for_choice`: run common protocol b–e only when
            REVIEWER_SURFACE equals your `$CMUX_SURFACE_ID`; otherwise exit THIS session.
@@ -1230,8 +1203,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           resolve_code_reviewer_for_choice
           jq -n --arg s "$REVIEWER_SURFACE" --arg w "$REVIEWER_WORKSPACE" \
             --arg d "<EXISTING_STATUS_DIR>/review" --arg r "$REVIEWER_RUNNER" \
-            --arg e "$REVIEWER_ENGINE" \
-            '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_runner: $r, reviewer_engine: $e}' \
+            --arg e "$REVIEWER_ENGINE" --arg a "$REVIEW_PANE_AGENT" \
+            '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_runner: $r, reviewer_engine: $e, reviewer_agent: $a}' \
             > "<EXISTING_STATUS_DIR>/review/code-review.json"
           If REVIEWER_SURFACE is empty, omit `--review-config`, warn, and continue
           Phase B without this review gate.
@@ -1290,13 +1263,11 @@ PHASE B — Execution model selection (REQUIRED before any code change):
   pane's agent name from that object):
     1. Leave the unused standby panes OPEN and idle — do NOT close them.
     2. touch "<EXISTING_STATUS_DIR>/.assigned-<NAME>"
-    3. Send the execution request to the pane's surface_id with ONE send-prompt.sh
+    3. Send the execution request to the pane's agent name with ONE send.sh
        call, exactly as the claude variant does:
-         bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface <PANE_SURFACE> \
-           --agmsg-team "$TEAM" --agmsg-to <NAME> --agmsg-from <task-slug> \
-           --label phase-b-exec --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
-           -- "$REQUEST_TEXT"
-       (drop the three --agmsg-* flags when $TEAM is empty).
+         ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <NAME> \
+           "phase-b-exec: $REQUEST_TEXT"
+       (a non-zero exit means the pane was NOT told — report it).
        REQUEST_TEXT: same as the claude variant (execute the plan at
        <PLAN_FILE_PATH>, code-review protocol block when Phase B-R is enabled,
        exit instruction).
@@ -1479,21 +1450,15 @@ PHASE B — Execution model selection (REQUIRED before any code change):
       1b. Append the parallel-review directive for the resolved review pane engine:
             PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine "$REVIEW_ENGINE" --mode review)
             <request text>="<request text> $PARALLEL"
-      2. Send the request with ONE send-prompt.sh call, then wait by polling the
-         verdict file. send-prompt.sh types the request into the review pane (the
-         only thing that wakes it), records the same body in the pane's inbox when
-         its watcher is alive, and files a request longer than 400 characters into
-         the outbox so it cannot jam the input box. An agmsg reply push would never
-         wake THIS session while it idle-waits either, so the wait is ALWAYS file
-         polling:
-           bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface "$REVIEW_SURFACE" \
-             --agmsg-team "$TEAM" --agmsg-to {{REVIEW_PANE_AGENT}} --agmsg-from <task-slug> \
-             --label review-plan --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
-             -- "<request text>"
-           # $TEAM is the TEAM value given above — do NOT re-derive it. Drop the
-           # three --agmsg-* flags when $TEAM is empty. Do NOT branch on
-           # prewarm.json's `.review.delivery`: send-prompt.sh re-checks the ready
-           # sentinel itself and skips the inbox record when the watcher is gone.
+      2. Send the request with ONE send.sh call, then wait by polling the
+         verdict file. The destination is the review pane's agmsg agent name, not
+         its surface. An agmsg reply push would never wake THIS session while it
+         idle-waits, so the wait is ALWAYS file polling:
+           ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> {{REVIEW_PANE_AGENT}} \
+             "review-plan: <request text>"
+           # $TEAM is the TEAM value given above — do NOT re-derive it. A non-zero
+           # exit means the reviewer was NOT told: report it instead of starting to
+           # poll for a verdict that can never appear.
            Then wait by polling the verdict file (5s interval, in 15-min chunks with
            NO overall time limit while the reviewer pane is active — liveness is
            judged by a screen-snapshot diff at every chunk boundary):
@@ -1667,16 +1632,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            "Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are
             committed and BEFORE creating the PR, you MUST get a code review
             approval. Round N starts at 1, max 5 rounds. Each round:
-            (1) send the review request with ONE command. It types the request into
-                the reviewer pane (the only thing that wakes it), also records the
-                same text in the reviewer's agmsg inbox when that watcher is alive
-                (a log, not a wake mechanism), and files a request over 400
-                characters into the outbox so it cannot jam the input box:
-                  bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface <REVIEWER_SURFACE> \
-                    --agmsg-team <TEAM> --agmsg-to <task-slug> --agmsg-from <your-agent-name> \
-                    --label review-code --outbox-dir <EXISTING_STATUS_DIR>/outbox \
-                    -- '<request text>'
-                Drop the three --agmsg-* flags when <TEAM> is empty.
+            (1) send the review request with ONE command. The destination is the
+                reviewer's agmsg agent name, not its surface, and the whole body
+                goes through as-is:
+                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <task-slug>-review \
+                    'review-code: <request text>'
+                A non-zero exit means the reviewer was NOT told: report it instead
+                of polling for a verdict that can never appear.
                 where <request text> is: code review round N: review the committed
                 changes on this branch against the plan at <PLAN_FILE_PATH>; write
                 findings to <EXISTING_STATUS_DIR>/review/code-round-N.md whose LAST
@@ -1722,17 +1684,14 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                  LAST line exactly 'VERDICT: needs_work'. If you never sent a
                  review request, use N=1. This is a record for the parent — the
                  reviewer does not poll this file.
-              2. Notify the REVIEWER. Typing is what actually wakes it, and
-                 send-prompt.sh always types:
-                   bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface <REVIEWER_SURFACE> \
-                     --agmsg-team <TEAM> --agmsg-to <task-slug> --agmsg-from <your-agent-name> \
-                     --label abort-reviewer --outbox-dir <EXISTING_STATUS_DIR>/outbox \
-                     -- '[abort] <one-line reason>'
-                 Drop the three --agmsg-* flags when <TEAM> is empty.
+              2. Notify the REVIEWER with ONE send.sh call, addressed to its agmsg
+                 agent name:
+                   ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <task-slug>-review \
+                     'abort-reviewer: [abort] <one-line reason>'
+                 A non-zero exit means the reviewer was NOT told — report it.
               3. Write status.json with status "error" and the reason as message.
-              4. Notify the PARENT with the SAME single send-prompt.sh call as (a)
-                 below, but with "status: error". Do NOT add a separate send.sh
-                 invocation — send-prompt.sh already records the inbox copy.
+              4. Notify the PARENT with the SAME single send.sh call as (a)
+                 below, but with "status: error".
               5. END THIS SESSION so the runner wrapper can finalize. claude
                  implementers run /exit. codex implementers must END THE CODEX
                  SESSION ITSELF — do NOT run /exit (codex does not act on it).
@@ -1740,17 +1699,15 @@ PHASE B — Execution model selection (REQUIRED before any code change):
 
             After the PR is created (or all changes are merged per the plan), do these
             two things IN THIS ORDER. Neither may be skipped.
-            (a) MANDATORY completion notification. You received this request as typed
-                text and never read the task prompt file, so no other status protocol
-                applies to you — this command is the only thing that informs the
-                parent:
-                  bash <SKILL_DIR>/scripts/send-prompt.sh --to-workspace <PARENT_WORKSPACE_ID> \
-                    --agmsg-team <TEAM> --agmsg-to parent --agmsg-from <your-agent-name> \
-                    --label dispatch-notify --outbox-dir <EXISTING_STATUS_DIR>/outbox \
-                    -- '[dispatch] task <task-slug> finished (status: done)'
-                Drop the three --agmsg-* flags when <TEAM> is empty. This call is
-                never optional: typing is the only channel that wakes an idle parent,
-                and the inbox record it may additionally write is just a log.
+            (a) MANDATORY completion notification. You received this request as an
+                agmsg message and never read the task prompt file, so no other status
+                protocol applies to you — this command is the only thing that informs
+                the parent:
+                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> parent \
+                    'dispatch-notify: [dispatch] task <task-slug> finished (status: done)'
+                This call is never optional, and a non-zero exit means the parent was
+                NOT told: retry once, then record the failure in status.json's message
+                field.
             (b) End this session so the runner wrapper can finalize. claude
                 implementers run /exit. codex implementers must END THE CODEX SESSION
                 ITSELF — do NOT run /exit (codex does not act on it) and do NOT leave
@@ -1758,14 +1715,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 forever, so the wrapper backstop never fires either."
          Placeholder values: <REVIEWER_SURFACE> = the review-policy resolver output
          (fixed → prewarm.json .review.surface_id; legacy → the selected design or
-         dedicated review surface), <TEAM> = the TEAM value given above (empty
-         when agmsg is not installed — then drop the three --agmsg-* flags and let
-         send-prompt.sh deliver by typing alone), <SKILL_DIR> = the absolute path of
+         dedicated review surface); it is used ONLY for the read-screen liveness
+         check, never as a delivery target, <TEAM> = the TEAM value given above,
+         <SKILL_DIR> = the absolute path of
          this skill's directory (substitute it before sending — the implementer pane
          cannot resolve the placeholder), <your-agent-name>
          = the implementing pane's agent name (<task-slug>-claude / <task-slug>-codex,
          whichever Phase B choice dispatched to),
-         <PARENT_WORKSPACE_ID> = the parent workspace ID this dispatch was launched from,
          <implementer-engine> = `claude` when the implementer is the claude executor
          standby or a delegated claude pane (the claude target in the design=codex
          variant), `codex` when the implementer is the codex standby, <reviewer-engine> = the
@@ -1777,8 +1733,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            mkdir -p "<EXISTING_STATUS_DIR>/review"
            jq -n --arg s "<REVIEWER_SURFACE>" --arg w "<REVIEWER_WORKSPACE>" \
              --arg d "<EXISTING_STATUS_DIR>/review" --arg r "<REVIEWER_RUNNER>" \
-             --arg e "<REVIEWER_ENGINE>" \
-             '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_runner: $r, reviewer_engine: $e}' \
+             --arg e "<REVIEWER_ENGINE>" --arg a "{{REVIEW_PANE_AGENT}}" \
+             '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_runner: $r, reviewer_engine: $e, reviewer_agent: $a}' \
              > "<EXISTING_STATUS_DIR>/review/code-review.json"
          <REVIEWER_WORKSPACE> is the reviewer pane's workspace ($CMUX_WORKSPACE_ID
          when the legacy design pane is the reviewer). <REVIEWER_RUNNER> and
@@ -1831,16 +1787,15 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          owned by the implementer's wrapper.
          BUT if you receive an '[abort] ...' message from the implementer, do NOT
          keep waiting. Report the abort reason to the parent with one call:
-           bash <SKILL_DIR>/scripts/send-prompt.sh --to-workspace <PARENT_WORKSPACE_ID> \
-             --agmsg-team <TEAM> --agmsg-to parent --agmsg-from <task-slug> \
-             --label dispatch-notify --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
-             -- '<reason>'
-         (drop the three --agmsg-* flags when <TEAM> is empty), then exit THIS session.
+           ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <task-slug>-review parent \
+             'dispatch-notify: <reason>'
+         (a non-zero exit means the parent was NOT told — report it), then exit THIS
+         session.
 
     [in-session — the review pane reviews] (IN_SESSION == true only)
       After implementation is committed and BEFORE creating the PR, run the SAME
       Round loop as PHASE A-R once more with point id "code", reusing REVIEW_SURFACE
-      from the PHASE A-R Setup (use --label review-code instead of review-plan).
+      from the PHASE A-R Setup (prefix the body with review-code: instead of review-plan:).
       Differences from a document round:
         - Request text: ask for a review of the committed changes on this branch
           (git log / git diff against the branch point) against the plan at
@@ -1877,10 +1832,9 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                  NOT close it (see the branch above: an unassigned standby writes no
                  status.json).
               2. touch "<EXISTING_STATUS_DIR>/.assigned-<task-slug>-codex"
-              3. Send the execution request with ONE send-prompt.sh call (see the
-                 delivery contract in Step 1g). It types the text into the codex
-                 pane, records the same body in that pane's inbox when its watcher
-                 is alive, and files anything over 400 characters into the outbox.
+              3. Send the execution request with ONE send.sh call (see the
+                 delivery contract in Step 1g). The destination is the codex pane's
+                 agmsg agent name, not its surface.
                  # IF the PHASE B-R block exists below, REQUEST_TEXT must be the
                  # extended version defined in that block (with the pre-PR
                  # code-review protocol) — same as the claude branch.
@@ -1894,13 +1848,10 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                    # that launch-workspace.sh bakes into the spawn (`--mode execute`) path.
                    PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine codex --mode execute)
                    REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately so the wrapper script can finalize the completion notification. Do NOT run /exit and do NOT leave the session idle."
-                   bash <SKILL_DIR>/scripts/send-prompt.sh --to-surface "$CODEX_SURFACE" \
-                     --agmsg-team "$TEAM" --agmsg-to <task-slug>-codex --agmsg-from <task-slug> \
-                     --label phase-b-exec --outbox-dir "<EXISTING_STATUS_DIR>/outbox" \
-                     -- "$REQUEST_TEXT"
+                   ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug>-codex \
+                     "phase-b-exec: $REQUEST_TEXT"
                    # $TEAM is the TEAM value given above — do NOT re-derive it in this
-                   # session. Drop the three --agmsg-* flags when $TEAM is empty, and do
-                   # NOT branch on prewarm.json's `.executors.codex.delivery`.
+                   # session. A non-zero exit means the pane was NOT told — report it.
               4. touch "<EXISTING_STATUS_DIR>/.deferred". IF the Phase B-R block
                  exists, run common protocol b–e only when REVIEWER_SURFACE equals
                  your `$CMUX_SURFACE_ID`; otherwise exit. Without Phase B-R, exit.
@@ -2146,7 +2097,7 @@ bash <this-skill-dir>/scripts/prewarm-panes.sh \
 
 **agmsg installed (`$TEAM` non-empty)** — do NOT run the normal "Launch: Workspace
 Mode" invocation. Instead all resolved panes start idle with no task
-message, and the Phase A task is delivered afterwards by `send-prompt.sh`.
+message, and the Phase A task is delivered afterwards by one agmsg `send.sh` call.
 
 When wiring fails for a role (the `delivery: "cmux-send"` fallback), **none of the
 four roles gets a guard call injected** into its initial prompt, but the replacement
@@ -2207,43 +2158,27 @@ Then dispatch the Phase A task to the design pane:
 
 1. Write the full task prompt (including PROGRESS REPORTING FORMAT, the
    MANDATORY MODEL SELECTION SEQUENCE, and the agmsg status-protocol block
-   from Step 2 — its MANDATORY completion notification, one `send-prompt.sh`
+   from Step 2 — its MANDATORY completion notification, one `send.sh`
    call, is what notifies the parent) to
    `<repo-root>/.worktrees/<task-slug>/.cmux-team-dispatch-task-prompt.md`.
 2. `touch .dispatch/<task-slug>/.assigned-<task-slug>` — the design standby wrapper owns
    status.json transition from now on (it was launched with `--defer-status`,
    so a Phase B handoff can still suppress it via `.deferred`).
-3. Send the task with ONE send-prompt.sh call (see the delivery contract in
-   Step 1g). Slash commands cannot fire through agmsg, and typed slash commands
-   are not wanted here either, so the mode is conveyed as message text, never as
-   `/plan`:
+3. Send the task with ONE send.sh call (see the delivery contract in
+   Step 1g). Slash commands cannot fire through agmsg, so the mode is conveyed as
+   message text, never as `/plan`:
 
    ```bash
    TASK_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md. Mode: <plan|superpowers> — for superpowers invoke the superpowers:brainstorming skill first; for plan produce a structured plan before implementing."
-   DESIGN_SURFACE=$(jq -r '.design.surface_id // empty' "$(pwd)/.dispatch/<task-slug>/prewarm.json")
-   bash <this-skill-dir>/scripts/send-prompt.sh --to-surface "$DESIGN_SURFACE" \
-     --agmsg-team "$TEAM" --agmsg-to <task-slug> --agmsg-from parent \
-     --label phase-a-task --outbox-dir "$(pwd)/.dispatch/<task-slug>/outbox" \
-     -- "$TASK_TEXT"
+   ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" parent <task-slug> "phase-a-task: $TASK_TEXT"
    ```
 
-   Drop the three `--agmsg-*` flags when `$TEAM` is empty, and do NOT branch on
-   prewarm.json's `.design.delivery` — send-prompt.sh checks the ready sentinel
-   itself. That sentinel (`~/.agents/skills/agmsg/run/ready.<team>__<agent>`) is
-   created by agmsg's watch.sh while a live watcher is receiving for that role
-   and removed on exit. Agent names here are already validated to
-   `^[A-Za-z0-9._-]+$` at every call site, so they need no further encoding, but
-   team names (e.g. `dispatch-<repo-name-with-spaces>`) are not slug-restricted —
-   the team half of the path is percent-encoded (`agmsg-path.sh`, a
-   `send-prompt.sh`-only helper — the guard does not source it because its
-   `--name` is already validated to that charset, making the encoding an
-   identity map) so a repo name containing spaces or other non-slug characters
-   still resolves to the same path agmsg itself writes.
-   It gates ONLY the inbox copy. It proves that a
-   watcher PROCESS is alive, not that the pane can be woken: the same sentinel is
-   written whether the watcher runs under a mechanism that injects into an idle
-   session or under a plain background shell that does not. Typing is what
-   actually delivers.
+   The destination is the design pane's agmsg agent name (`<task-slug>`), never its
+   surface id — prewarm.json's `.design.surface_id` is not a delivery target. The
+   pane is reachable only once it has reported `[ready] <task-slug>`; a message sent
+   before that sits unread in its inbox forever. A non-zero exit means the design
+   pane was NOT told, so report it instead of waiting for a Phase A that never
+   started.
 
 prewarm.json uses role names and records only panes that exist. `design` is required;
 `review` exists when the quality gate is enabled; `executors` contains only the
@@ -2843,7 +2778,7 @@ When parsing a `superpowers:writing-plans` plan file:
 - **Concurrent sessions**: Limited by system resources; 3-5 sessions recommended
 - **Worktree conflicts**: Two tasks must NOT modify the same files. If they might, run sequentially.
 - **cmux required**: Requires cmux at `/Applications/cmux.app/`
-- **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `[dispatch]` text message is delivered to the parent terminal through `scripts/send-prompt.sh` when the child runner session exits. `send-prompt.sh` presses Enter after typing and then confirms via `cmux read-screen` that the input box emptied, so a notification never sits in the parent TUI waiting for a manual Enter press. The confirmation step applies when the parent renders a `❯` (or `>`) prompt line at column 0; a pane without one is treated as delivered without verification.
+- **Completion notifications are reliable**: The runner script wrapper guarantees that `status.json` is updated, `cmux wait-for --signal <slug>-done` fires, and a `dispatch-notify: [dispatch] ...` message is delivered to the `parent` agmsg agent through one `send.sh` call when the child runner session exits. There is no Enter to verify and no input box to jam: the message lands in the parent's inbox. A non-zero `send.sh` exit means the parent was NOT told, and the wrapper leaves its notify marker untouched so the next poll retries.
 - **Signal-terminated panes do not report failure**: When the final cleanup closes a pane (`cmux close-surface` / `close-workspace`), the child process exits with a signal-derived code (128+N — SIGHUP 129 / SIGKILL 137 / SIGTERM 143). If `status.json` already holds a terminal status (`done` / `error`), the runner wrapper skips both the status write and the parent notification, so closing panes never downgrades a completed task to `error` nor emits a spurious `[dispatch] task ... finished (status: error)`. A pane killed while still `executing` is a genuine interruption and is still reported as `error`.
 - **Runner script**: A `.cmux-team-dispatch-task-run-<workspace-name>.sh` file is created in each worktree (one per launch — Child and Phase B grandchild get different filenames since they share the worktree). They're cleaned up along with the worktree.
 - **Codex option in Phase B**: the `codex` choice is shown only when `runners.json`
@@ -2862,7 +2797,7 @@ When parsing a `superpowers:writing-plans` plan file:
   child session; Phase B decides which *engine* implements. `design_runner` can fix
   Step 1f; `exec_choice` can fix Phase B. Models and efforts come from the runner's role
   fields in either case, never from the Phase B answer.
-- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). `AGMSG_INSTALLED` starts from whether `~/.agents/skills/agmsg/scripts/send.sh` exists and can be downgraded to `false` by Step 1g's guard call if wiring itself fails; `monitor-dispatch.sh` is launched only when `AGMSG_INSTALLED` ends up `false` (status.json transitions are unchanged either way). Every message goes through one `scripts/send-prompt.sh` call. It **always types the message into the target pane** — typing is the only thing that wakes an idle session — and, when the three `--agmsg-*` arguments are supplied and the destination's ready sentinel exists, it **additionally records the same body in the agmsg inbox**, always AFTER the typed delivery so that a hung agmsg writer can never block the only wake mechanism. **An agmsg push is inbox-record-only and cannot wake an idle session**; the ready sentinel proves only that a watcher PROCESS is alive, not that it can wake the session (the same sentinel is written whether the watcher runs under a mechanism that injects into an idle session or under a plain background shell that does not). An agmsg failure never affects delivery or the exit code. Bodies longer than 400 characters are written to `<outbox-dir>/<label>-<seq>.md` and only a one-line pointer is typed, which is what stops a long instruction from being treated as a paste and jamming the input box. After typing, Enter is pressed and `cmux read-screen` confirms the input box emptied, re-pressing Enter up to 3 times before reporting failure; this verification applies when the destination renders a `❯` (or `>`) prompt line at column 0, and a pane without such a line — like an unobservable screen — counts as delivered, so a caller never re-sends and double-delivers. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Step 1g starts the currently-dispatching session's own watcher with a direct call to `ensure-agmsg-ready.sh` — no `AGMSG-DIRECTIVE:` line to follow and no `Monitor` tool required.
+- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). `AGMSG_INSTALLED` starts from whether `~/.agents/skills/agmsg/scripts/send.sh` exists and can be downgraded to `false` by Step 1g's guard call if wiring itself fails; `monitor-dispatch.sh` is launched only when `AGMSG_INSTALLED` ends up `false` (status.json transitions are unchanged either way). Every message goes through one `~/.agents/skills/agmsg/scripts/send.sh` call whose destination is an **agmsg agent name**, never a surface or workspace id. There is no outbox, no length threshold, no Enter verification and no re-send: `send.sh` either writes the body into agmsg's shared SQLite DB or exits non-zero, and **a non-zero exit means the message was NOT delivered** and must be reported. The message kind is a label prefix on the body (`phase-a-task:`, `phase-b-exec:`, `review-plan:`, `review-code:`, `abort-reviewer:`, `dispatch-notify:`), not a flag. A pane is reachable only after it has reported `[ready] <name>`; a message sent earlier sits unread in its inbox. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Step 1g starts the currently-dispatching session's own watcher with a direct call to `ensure-agmsg-ready.sh` — no `AGMSG-DIRECTIVE:` line to follow and no `Monitor` tool required.
 - **Pre-warm role panes**: when layout is `workspace` and config `prewarm: true`
   (default), `prewarm-panes.sh` places only resolved roles: design, optional review, and
   the execution engines allowed by `exec_choice`. `prewarm.json`'s `executors` holds at

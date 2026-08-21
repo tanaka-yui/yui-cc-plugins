@@ -274,10 +274,10 @@ assert_contains "$SKILL_MD" 'do NOT run /exit (codex does not act on it) and do 
   'T14 extended REQUEST_TEXT forbids /exit for codex'
 assert_not_contains "$SKILL_MD" 'or end the session (codex)' \
   'T14 the ambiguous engine-neutral exit wording is gone'
-assert_contains "$SKILL_MD" 'MANDATORY completion notification. You received this request as typed' \
+assert_contains "$SKILL_MD" 'MANDATORY completion notification. You received this request as an' \
   'T15 extended REQUEST_TEXT carries the mandatory completion notification'
-assert_contains "$SKILL_MD" '<PARENT_WORKSPACE_ID> = the parent workspace ID' \
-  'T15 extended REQUEST_TEXT documents the parent workspace placeholder'
+assert_contains "$SKILL_MD" "send.sh <TEAM> <your-agent-name> parent" \
+  'T15 extended REQUEST_TEXT addresses the completion notification to the parent agent'
 
 # --- pr_url 引き継ぎ / timeout sentinel ガード ---
 sentinel_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
@@ -297,7 +297,7 @@ assert_contains "$plain_runner" 'TIMEOUT_SENTINEL=""' 'T10 未指定時は空の
 
 # --- --unattended: spawn 経路の inner prompt から質問分岐を除去する ---
 cat > "$TMP/review-config.json" <<JSON
-{"reviewer_surface":"surface:9","reviewer_workspace":"workspace:3","review_dir":"$TMP/status/review"}
+{"reviewer_surface":"surface:9","reviewer_workspace":"workspace:3","reviewer_agent":"unattended-review","review_dir":"$TMP/status/review"}
 JSON
 
 unattended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
@@ -333,7 +333,7 @@ cat > "$TMP/runners-probe.json" <<JSON
 JSON
 mkdir -p "$TMP/abort-status/review" "$TMP/zdot"
 : > "$TMP/zdot/.zshrc"
-jq -n --arg d "$TMP/abort-status/review" '{reviewer_surface:"surface:55", reviewer_workspace:"workspace:5", review_dir:$d}' > "$TMP/abort-status/review/code-review.json"
+jq -n --arg d "$TMP/abort-status/review" '{reviewer_surface:"surface:55", reviewer_workspace:"workspace:5", reviewer_agent:"abort-review-review", review_dir:$d}' > "$TMP/abort-status/review/code-review.json"
 a1=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status" --parent-notify-workspace workspace:9 --review-config "$TMP/abort-status/review/code-review.json" abort-review)
 a1_runner=$(jq -r '.runner_file' <<<"$a1")
 assert_contains "$a1_runner" 'ABORT PROTOCOL' 'A1 review 有効の spawn 経路に abort 手順が入る'

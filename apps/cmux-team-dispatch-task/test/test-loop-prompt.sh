@@ -12,8 +12,8 @@ for design in claude codex; do
     out=$(run "$design" "$review" "$args")
     [[ "$out" != *AskUserQuestion* && "$out" != *'{{'* ]] || { echo "FAIL: R1 $design/$review"; exit 1; }
     [[ "$out" == *'Task slug: issue-1-test'* && "$out" == *'Issue body:'* ]] || { echo "FAIL: R2 $design/$review"; exit 1; }
-    # R5: 配送指示が send-prompt.sh の 1 回呼び出しであり、生の cmux send/send-key を含まない
-    [[ "$out" == *'send-prompt.sh'* ]] || { echo "FAIL: R5 send-prompt.sh の指示が無い $design/$review"; exit 1; }
+    # R5: 配送指示が agmsg send.sh の 1 回呼び出しであり、生の cmux send/send-key を含まない
+    [[ "$out" == *'agmsg/scripts/send.sh'* ]] || { echo "FAIL: R5 agmsg send.sh の指示が無い $design/$review"; exit 1; }
     [[ "$out" != *'cmux send'* ]] || { echo "FAIL: R5 生の cmux send が残っている $design/$review"; exit 1; }
   done
 done
