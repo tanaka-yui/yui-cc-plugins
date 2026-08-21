@@ -22,7 +22,7 @@ claude/superpowers が作成した plan を、新しい cmux ペインで**対�
 1. 実装する plan を確定（無指定なら候補を提示して確認）
 2. 親の agmsg identity を解決（未参加なら join を案内）
 3. 新ペインで対話 codex が plan を実装（調査と検証は `spawn_agent` で並列化。既定 4 並列）
-4. codex 完了 → agmsg 通知 → 親の短命 watcher が exit → 親が wake
+4. codex 完了 → agmsg 通知 → 親の常駐 Monitor イベントとして届き、親が wake
 5. 親が「レビューする?」と確認 → Yes で cmux-codex-review 起動
 
 ## 前提条件

@@ -7,8 +7,7 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 - `commands/codex-review.md` — `/codex-review` スラッシュコマンド（agmsg inbox 確認 + bin 実行）
 - `skills/codex-review/SKILL.md` — レビュー起動スキル（トリガー定義）
 - `bin/cmux-codex-review` — ペイン分割 + 対話 codex へのレビュープロンプト送信の本体（`!` 直接実行も可、LLM 不要で高速）
-- `bin/cmux-codex-wait` — 短命 watcher（`cmux-codex-exec` と**同一内容のコピー**。W5 が同一性を検証する）
-- `bin/codex-parallel-lib.sh` — 並列実行ディレクティブの生成（`cmux-codex-exec` と**同一内容のコピー**。W8 が同一性を検証する）
+- `bin/codex-parallel-lib.sh` — 並列実行ディレクティブの生成（`cmux-codex-exec` と**同一内容のコピー**。M5 が同一性を検証する）
 - `.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` — Plugin マニフェスト
 
 ## 動作
@@ -17,7 +16,8 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 2. agmsg を起動して受信箱を確認（非ブロッキング。未参加・未インストールならスキップ）
 3. `cmux new-split <dir>` で新ペインを分割
 4. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox workspace-write --ask-for-approval never -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
-5. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親側は `bin/cmux-codex-wait` で完了を待つ
+5. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親はターンを閉じて
+   agmsg Monitor イベントで完了を検知する
 
 ## テスト
 
@@ -44,27 +44,26 @@ codex が実際に受け取る引数を検証する（生文字列の grep で�
 - **D15**: `--agents` の不正値は非ゼロ終了し、ペインを分割しない
 
 ```bash
-bash apps/cmux-codex-review/test/test-cmux-codex-wait.sh
+bash apps/cmux-codex-review/test/test-monitor-only.sh
 ```
 
-stub の agmsg history / cmux で watcher の終了条件を検証する（両プラグイン分をここで担保）:
+monitor 専用化の回帰テスト（静的検査。両プラグイン分をここで担保）:
 
-- **W1**: 既定（`--timeout` 無指定）では壁時計で打ち切らない
-- **W2**: `--surface` のペインが消えていたら `status=gone` / exit 4 で親を起こす
-- **W3**: token 検知で `status=done` / exit 0
-- **W4**: `--timeout` を明示したときだけ従来どおり `status=timeout` / exit 3
-- **W5**: review / exec 2 プラグインの `cmux-codex-wait` が同一内容
-- **W6**: 完了メッセージの `agents=N` を `status=done` 行へ転記する
-- **W7**: `agents=` が無ければ出力は従来どおり（後方互換）
-- **W8**: review / exec 2 プラグインの `codex-parallel-lib.sh` が同一内容
+- **M1**: 両プラグインから旧ポーリング watcher の bin が削除されている
+- **M2**: 両プラグインの `.md` / `bin` に旧ポーリング watcher への参照が残っていない
+- **M3**: 両プラグインの `commands/*.md` に「ターンを閉じて Monitor イベントで起きる」手順がある
+- **M4**: 両プラグインの `commands/*.md` に単発タイマー保険（`sleep`）の手順がある
+- **M5**: review / exec 2 プラグインの `codex-parallel-lib.sh` が同一内容
 
-## watcher を壁時計で打ち切ってはいけない
+## 完了検知は agmsg Monitor の push、タイマーは保険
 
-`cmux-codex-wait` の `--timeout` 既定は **0（無制限）**。以前は 1800s で打ち切っていたが、codex のレビューが
-それを超えると、まだ生きている codex を見捨てて `status=timeout` で exit → 親が待機を畳み、**後から届く
-完了通知では二度と wake しなかった**。`cmux-team-dispatch-task` の `monitor-dispatch.sh` と同じく
-「時間ではなく生存」で判断する: `--surface <id>` を渡すと 60 秒ごとに `cmux read-screen` でペインの生存を
-確認し、2 回連続で見つからなければ `status=gone`（exit 4）で親を起こす。コマンド層は `--timeout` を渡さない。
+完了通知の待ち受けは、親セッションが SessionStart hook で起動する常駐 agmsg Monitor ストリームが担う。
+親はターンを閉じて idle になり、codex の完了 `send.sh` が Monitor の 1 行として届くとそこで起きる
+（2026-08-21 に実測済み。根拠は `docs/superpowers/specs/2026-08-21-agmsg-monitor-only-design.md`）。
+
+この方式には `--surface` による即時のペイン死亡検知が無い。代わりに単発の `sleep` background task を
+1 本保険として張り、時間切れで起きたら `cmux read-screen --surface <surface>` でペインの生存を確認する。
+生きていれば同じタイマーを再武装してターンを閉じ直し、消えていれば検知不能として報告する。
 
 ## サンドボックスを read-only にしてはいけない
 
@@ -76,8 +75,8 @@ stub の agmsg history / cmux で watcher の終了条件を検証する（両�
 ## whoami の `suggest=true` に注意
 
 `suggest=true` は「このプロジェクトは未参加」を意味する。出力に含まれる `teams=` / `agents=` は
-**他プロジェクトの登録**であり、参加済みと誤読して使うと codex の通知先と watcher の待ち先がズレて
-通知が届かなくなる。コマンドの Step 1 は必ず join を確認してから配線する。
+**他プロジェクトの登録**であり、参加済みと誤読して使うと codex の通知先と親の Monitor が見ている team が
+ズレて通知が届かなくなる。コマンドの Step 1 は必ず join を確認してから配線する。
 
 ## デフォルト
 

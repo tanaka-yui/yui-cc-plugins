@@ -4,31 +4,27 @@ plan を対話 codex にカレントdir で実装させ、完了を親が agmsg 
 
 ## 構成
 
-- `commands/codex-exec.md` — `/codex-exec`（identity 解決 → bin → watcher 起動 → 待機 → レビュー案内）
+- `commands/codex-exec.md` — `/codex-exec`（identity 解決 → bin → ターンを閉じて Monitor 待機 → レビュー案内）
 - `skills/codex-exec/SKILL.md` — トリガー定義
 - `bin/cmux-codex-exec` — plan 解決 + 対話 codex 起動 + token/agent 導出 + `--list-targets`（候補列挙）
-- `bin/cmux-codex-wait` — 短命 watcher（history polling → token 検知で exit → 親 wake）。
-  `cmux-codex-review` 側と**同一内容のコピー**（回帰テストの W5 が同一性を検証する）
 - `bin/codex-parallel-lib.sh` — 並列実行ディレクティブの生成（`.codex/agents/*.toml` の検出含む）。
-  `cmux-codex-review` 側と**同一内容のコピー**（W8 が同一性を検証する）
+  `cmux-codex-review` 側と**同一内容のコピー**（`test-monitor-only.sh` の M5 が同一性を検証する）
 
 ## 完了通知の仕組み
 
-対話 codex は exit しないので、codex 自身に完了時 `send.sh` を撃たせ、親は「token 検知で *exit* する
-短命 watcher」を background task で回す。その exit が harness の `<task-notification>` を発火し idle 親を wake する。
-agmsg 常駐 monitor push は idle 親を起こせない（実測済み）ため、この方式が必須。
+対話 codex は exit しないので、codex 自身に完了時 `send.sh` を撃たせる。親側の待ち受けは、
+SessionStart hook が起動する常駐 agmsg Monitor ストリームが担う。親はターンを閉じて idle になり、
+その `send.sh` が Monitor の 1 行として届くとそこで起きる（2026-08-21 に実測済み。根拠は
+`docs/superpowers/specs/2026-08-21-agmsg-monitor-only-design.md`）。
 
-並列実行時は codex が完了メッセージ末尾に `agents=<N>` を付け、`cmux-codex-wait` がそれを
-`status=done token=... agents=<N>` として親へ転記する。指示が守られていなければ `agents=` が
-付かないので、親側で気づける。
+並列実行時は codex が完了メッセージ末尾に `agents=<N>` を付け、agmsg Monitor の行にそのまま乗って
+親へ届く。指示が守られていなければ `agents=` が付かないので、親側で気づける。
 
-## watcher を壁時計で打ち切ってはいけない
+## 完了検知は agmsg Monitor の push、タイマーは保険
 
-`cmux-codex-wait` の `--timeout` 既定は **0（無制限）**。以前は 1800s で打ち切っていたが、codex の実装が
-それを超えると、まだ生きている codex を見捨てて `status=timeout` で exit → 親が待機を畳み、**後から届く
-完了通知では二度と wake しなかった**。`cmux-team-dispatch-task` の `monitor-dispatch.sh` と同じく
-「時間ではなく生存」で判断する: `--surface <id>` を渡すと 60 秒ごとに `cmux read-screen` でペインの生存を
-確認し、2 回連続で見つからなければ `status=gone`（exit 4）で親を起こす。コマンド層は `--timeout` を渡さない。
+この方式には `--surface` による即時のペイン死亡検知が無い。代わりに単発の `sleep` background task を
+1 本保険として張り、時間切れで起きたら `cmux read-screen --surface <surface>` でペインの生存を確認する。
+生きていれば同じタイマーを再武装してターンを閉じ直し、消えていれば検知不能として報告する。
 
 ## デフォルト
 
