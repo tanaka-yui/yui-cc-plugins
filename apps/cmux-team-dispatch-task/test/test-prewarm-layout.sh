@@ -148,36 +148,65 @@ expect_split PG3 pg3-review surface:1 right
 
 
 # ==========================================================================
-# PW1-PW10: 全ロールの初期プロンプトへの agmsg guard 注入
+# PW1-PW14: 全ロールの初期プロンプトへの readiness 確立句 (readiness_clause) 注入
 # ==========================================================================
+#
+# guard_clause() / ensure-agmsg-ready.sh (nohup watcher) は廃止された。
+# 新設計では claude は Monitor ツール起動、codex は seat 記録 (codex-record-session.sh)
+# を行い、どちらも最後に親へ `send.sh ... parent [ready]\ <name>.` を送る指示を
+# プロンプトに埋め込む。fallback は無いので、delivery/join の成否に関わらず
+# readiness_clause は常に呼ばれる (PW2 / PW9 がこの no-fallback 特性を検査する)。
+
+# <id> <agent>: そのペインの起動プロンプトに [ready] 送信の readiness 句が入っているか
+expect_readiness() {
+  local id="$1" agent="$2" line
+  line=$(pane_line "$agent")
+  if [[ -z "$line" ]]; then
+    bad "$id pane '$agent' was not launched"
+    return
+  fi
+  if grep -Fq -- "send.sh demo-team $agent parent [ready]\\ $agent." <<<"$line"; then
+    pass "$id pane '$agent' carries the readiness clause ([ready] send instruction)"
+  else
+    bad "$id pane '$agent' is missing the readiness clause: $line"
+  fi
+}
 
 # --- PW1 / PW3 / PW4 / PW5 / PW10: 配線成功時、design/claude/codex/review の
-#     全ロールに guard が乗り、watcher が delivery と一致し、禁止文字・改行が無い ---
+#     全ロールに readiness 句が乗り、prewarm.json の wired が true、禁止文字・改行が無い ---
 run_case pw1 --design-runner claude --reviewer-runner codex \
   --claude-runner claude --codex-runner codex --exec-choice ask
 
-# PW1: prewarm.json の watcher キー
-jq -e '[.. | objects | select(has("delivery")) | has("watcher")] | all' \
+# PW1: prewarm.json の delivery/watcher キーは退役し、wired: true に統一される
+# (join / delivery.sh set / readiness 句注入がすべて成功したことを表す診断情報。
+#  fallback が無いのでロールが存在する限り必ず true — 呼び出し元はこの値で分岐しない)
+jq -e '[.. | objects | select(has("surface_id")) | (has("delivery") or has("watcher"))] | any' \
   "$TMP/status-pw1/prewarm.json" >/dev/null \
-  && pass 'PW1 delivery を持つ全ロールに watcher がある' \
-  || bad 'PW1 delivery を持つロールに watcher が無い'
-jq -e '[.. | objects | select(has("delivery")) | (.delivery == "agmsg") == (.watcher == "guard-injected")] | all' \
+  && bad 'PW1 delivery/watcher キーが残っている (退役したはず)' \
+  || pass 'PW1 delivery/watcher キーは残っていない'
+jq -e '[.. | objects | select(has("surface_id")) | .wired] | all(. == true)' \
   "$TMP/status-pw1/prewarm.json" >/dev/null \
-  && pass 'PW1 delivery と watcher が一致する' \
-  || bad 'PW1 delivery と watcher が不一致'
+  && pass 'PW1 全ロールの wired が true' \
+  || bad 'PW1 wired が true ではないロールがある'
 
-# PW3: guard が実際にプロンプトへ埋め込まれる
+# PW3: readiness 句が実際にプロンプトへ埋め込まれる
 [[ -s "$TMP/argv-pw1.log" ]] || bad 'PW3 argv-pw1.log が空'
-grep -q 'ensure-agmsg-ready.sh' "$TMP/argv-pw1.log" \
-  && pass 'PW3 guard が注入される' || bad 'PW3 guard が注入されていない'
+expect_readiness PW3 pw1
 
 # PW4: 旧 /agmsg actas 文言が完全に消えている
 grep -q '/agmsg actas' "$TMP/argv-pw1.log" \
   && bad 'PW4 /agmsg actas が残っている' || pass 'PW4 /agmsg actas は残っていない'
 
-# PW5: 禁止文字 (' " ` $ ! \) が一切無く、改行でペイン数が壊れていない
-grep -qE "['\"\`\$!\\\\]" "$TMP/argv-pw1.log" \
+# PW5: 禁止文字 (' " ` $ !) が一切無く、改行でペイン数が壊れていない。
+# \ (バックスラッシュ) だけは [ready] の後の空白を保護するため readiness_clause が
+# 意図的に 1 箇所使う (合成後の zsh -ic "... '<prompt>' ..." を実際に二重引用符で
+# 壊さないための唯一の安全な手段であることを実測で確認済み。prewarm-panes.sh の
+# readiness_clause() 直上コメント参照)。
+grep -qE "['\"\`\$!]" "$TMP/argv-pw1.log" \
   && bad 'PW5 禁止文字がプロンプトに含まれる' || pass 'PW5 禁止文字は含まれない'
+grep -Fq -- '[ready]\ ' "$TMP/argv-pw1.log" \
+  && pass 'PW5 [ready] の後の空白は \\ (バックスラッシュ) で保護されている' \
+  || bad 'PW5 [ready] の空白保護 (\\ ) が見つからない'
 [[ $(wc -l < "$TMP/argv-pw1.log" | tr -d ' ') == 4 ]] \
   && pass 'PW5 改行でペイン数が壊れていない (4 行)' \
   || bad 'PW5 argv-pw1.log の行数が 4 ではない (改行混入の疑い)'
@@ -190,30 +219,29 @@ grep -Fq -- '--agmsg-from pw1-review ' "$TMP/argv-pw1.log" \
   && pass 'PW10 review role name (--agmsg-from pw1-review)' \
   || bad 'PW10 review role name が渡っていない'
 
-# PW10b: legacy --review-model 経路にも --agmsg-from が渡る
-# guard 注入は REVIEW_DELIVERY だけを見るので、この分岐で --agmsg-from を落とすと
-# 「guard は注入されるのに runner script へ export AGMSG_EXPECTED_NAME が出ない」状態に
-# なる。ネストしたディスパッチで外側の名前を継承すると guard が rc 2 (usage) で死ぬのに、
-# prewarm.json は watcher: guard-injected と報告してしまう。
+# PW10b: legacy --review-model 経路にも --agmsg-from と readiness 句 (codex seat 記録)
+# が渡る (review は REVIEWER_ENGINE 未設定時に codex 既定になるため)
 run_case pw10b --design-runner claude --review-model gpt-5.6-sol \
   --claude-runner claude --codex-runner codex --exec-choice claude
 grep -Fq -- '--agmsg-from pw10b-review ' "$TMP/argv-pw10b.log" \
   && pass 'PW10b legacy --review-model にも --agmsg-from が渡る' \
   || bad 'PW10b legacy --review-model で --agmsg-from が落ちている'
-grep -Fq -- '--name pw10b-review ' "$TMP/argv-pw10b.log" \
-  && pass 'PW10b legacy review にも guard が注入される' \
-  || bad 'PW10b legacy review に guard が注入されていない'
+grep -Fq -- 'codex-record-session.sh demo-team pw10b-review .' "$TMP/argv-pw10b.log" \
+  && pass 'PW10b legacy review にも readiness 句 (codex seat 記録) が注入される' \
+  || bad 'PW10b legacy review に readiness 句が注入されていない'
 
-# --- PW1c: codex design (design (claude / codex 共通) の codex 側も guard を持つ) ---
+# --- PW1c: codex design (design (claude / codex 共通) の codex 側も readiness 句を持つ) ---
 run_case pw1c --design-runner codex --reviewer-runner codex \
   --claude-runner claude --exec-choice claude
 codex_design_line=$(pane_line pw1c)
-[[ "$codex_design_line" == *'ensure-agmsg-ready.sh'* ]] \
-  && pass 'PW1c codex design にも guard が注入される' \
-  || bad 'PW1c codex design に guard が注入されていない'
+[[ "$codex_design_line" == *'codex-record-session.sh'* ]] \
+  && pass 'PW1c codex design にも readiness 句 (codex seat 記録) が注入される' \
+  || bad 'PW1c codex design に readiness 句が注入されていない'
 
-# --- PW2: delivery.sh set が全て失敗する場合、全ロールの watcher が none になり
-#     guard もプロンプトへ現れない ---
+# --- PW2: delivery.sh set が全ロールで失敗しても (no fallback) readiness 句は
+#     変わらず注入され、ペイン数も wired も変わらない。素朴な実装が旧来の
+#     「delivery 失敗時は注入しない」ゲートを残していると、readiness 句が消えて
+#     ここが FAIL する ---
 mkdir -p "$TMP/repo-pw2"
 : > "$TMP/argv-pw2.log"
 AGMSG_STUB_DELIVERY_RC=1 ARGV_LOG="$TMP/argv-pw2.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
@@ -221,52 +249,20 @@ AGMSG_STUB_DELIVERY_RC=1 ARGV_LOG="$TMP/argv-pw2.log" AGMSG_DIR="$TMP/agmsg" RUN
     --cwd "$TMP/repo-pw2" --slug pw2 --status-dir "$TMP/status-pw2" \
     --design-runner claude --reviewer-runner codex \
     --claude-runner claude --codex-runner codex --exec-choice ask >/dev/null
-grep -q 'ensure-agmsg-ready.sh' "$TMP/argv-pw2.log" \
-  && bad 'PW2 delivery 失敗時に guard が注入された' \
-  || pass 'PW2 delivery 失敗時は guard を注入しない'
-jq -e '[.. | objects | select(has("delivery")) | .watcher] | all(. == "none")' \
+grep -Fq -- 'send.sh demo-team pw2 parent [ready]\ pw2.' "$TMP/argv-pw2.log" \
+  && pass 'PW2 delivery.sh set 失敗時も readiness 句は注入される (no fallback)' \
+  || bad 'PW2 delivery.sh set 失敗時に readiness 句が消えた'
+[[ $(wc -l < "$TMP/argv-pw2.log" | tr -d ' ') == 4 ]] \
+  && pass 'PW2 delivery.sh set 失敗時も4ペインすべて起動する' \
+  || bad 'PW2 delivery.sh set 失敗時に起動ペイン数が変わった'
+jq -e '[.. | objects | select(has("surface_id")) | .wired] | all(. == true)' \
   "$TMP/status-pw2/prewarm.json" >/dev/null \
-  && pass 'PW2 delivery 失敗時は全ロール watcher: none' \
-  || bad 'PW2 watcher が none になっていないロールがある'
-
-# --- PW5b: SCRIPT_DIR に空白があるときは guard を注入しない (GUARD_INJECTABLE=0) ---
-SP_DIR="$TMP/space dir/scripts"
-mkdir -p "$SP_DIR" "$TMP/space dir/repo-pw5b"
-cp "$PREWARM" "$SP_DIR/prewarm-panes.sh"
-cp "$TMP/scripts/launch-workspace.sh" "$SP_DIR/launch-workspace.sh"
-chmod +x "$SP_DIR/launch-workspace.sh"
-: > "$TMP/argv-pw5b.log"
-ARGV_LOG="$TMP/argv-pw5b.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-  bash "$SP_DIR/prewarm-panes.sh" --with-design --agmsg-team demo-team \
-    --cwd "$TMP/space dir/repo-pw5b" --slug pw5b --status-dir "$TMP/status-pw5b" \
-    --claude-runner claude --exec-choice claude >/dev/null
-grep -q 'ensure-agmsg-ready.sh' "$TMP/argv-pw5b.log" \
-  && bad 'PW5b SCRIPT_DIR に空白があるのに guard を注入した' \
-  || pass 'PW5b SCRIPT_DIR に空白があるときは guard を注入しない'
-jq -e '.design.watcher == "none"' "$TMP/status-pw5b/prewarm.json" >/dev/null \
-  && pass 'PW5b design watcher は none' || bad 'PW5b design watcher が none ではない'
-
-# --- PW5c: SCRIPT_DIR にシェルメタ文字があるときも guard を注入しない ---
-# 空白と同根。composed command は `zsh -ic "... '<prompt>' ..."` の二重引用なので、
-# `'` を含むパスを埋めると引用符が破れて後続が別トークンになる。
-QT_DIR="$TMP/qu'ote-dir/scripts"
-mkdir -p "$QT_DIR" "$TMP/qu'ote-dir/repo-pw5c"
-cp "$PREWARM" "$QT_DIR/prewarm-panes.sh"
-cp "$TMP/scripts/launch-workspace.sh" "$QT_DIR/launch-workspace.sh"
-chmod +x "$QT_DIR/launch-workspace.sh"
-: > "$TMP/argv-pw5c.log"
-ARGV_LOG="$TMP/argv-pw5c.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-  bash "$QT_DIR/prewarm-panes.sh" --with-design --agmsg-team demo-team \
-    --cwd "$TMP/qu'ote-dir/repo-pw5c" --slug pw5c --status-dir "$TMP/status-pw5c" \
-    --claude-runner claude --exec-choice claude >/dev/null
-grep -q 'ensure-agmsg-ready.sh' "$TMP/argv-pw5c.log" \
-  && bad 'PW5c SCRIPT_DIR にメタ文字があるのに guard を注入した' \
-  || pass 'PW5c SCRIPT_DIR にメタ文字があるときは guard を注入しない'
-jq -e '.design.watcher == "none"' "$TMP/status-pw5c/prewarm.json" >/dev/null \
-  && pass 'PW5c design watcher は none' || bad 'PW5c design watcher が none ではない'
+  && pass 'PW2 delivery.sh set 失敗時も wired は true のまま' \
+  || bad 'PW2 wired が true ではないロールがある'
 
 # --- PW6: delivery.sh の AGMSG-DIRECTIVE 出力が prewarm-panes.sh 自身の stderr へ
-#     漏れない (wire_delivery のリダイレクト修正の回帰) ---
+#     漏れない (wire_delivery のリダイレクト修正の回帰。wire_delivery 自体は本タスクの
+#     変更対象ではないため挙動は不変) ---
 mkdir -p "$TMP/repo-pw6"
 : > "$TMP/argv-pw6.log"
 AGMSG_STUB_DIRECTIVE=1 ARGV_LOG="$TMP/argv-pw6.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
@@ -278,21 +274,7 @@ grep -q 'AGMSG-DIRECTIVE' "$TMP/prewarm-pw6.stderr" \
   && bad 'PW6 AGMSG-DIRECTIVE が prewarm-panes.sh の stderr へ漏れた' \
   || pass 'PW6 AGMSG-DIRECTIVE は stderr へ漏れない'
 
-# --- PW7: ensure-agmsg-ready.sh 自体が exit 1 でも (prewarm は文字列として
-#     埋め込むだけで実行しないため) prewarm.json は正常に書かれる ---
-printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/scripts/ensure-agmsg-ready.sh"
-chmod +x "$TMP/scripts/ensure-agmsg-ready.sh"
-mkdir -p "$TMP/repo-pw7"
-: > "$TMP/argv-pw7.log"
-ARGV_LOG="$TMP/argv-pw7.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-  bash "$TMP/scripts/prewarm-panes.sh" --with-design --agmsg-team demo-team \
-    --cwd "$TMP/repo-pw7" --slug pw7 --status-dir "$TMP/status-pw7" \
-    --claude-runner claude --exec-choice claude >/dev/null
-jq -e '.design.watcher == "guard-injected"' "$TMP/status-pw7/prewarm.json" >/dev/null \
-  && pass 'PW7 guard exit 1 でも prewarm.json が正常に書かれる' \
-  || bad 'PW7 prewarm.json が期待どおりに書かれていない'
-
-# --- PW8: --agmsg-team 無しでは guard を載せない ---
+# --- PW8: --agmsg-team 無しでは readiness 句を載せない (agmsg を使わない特殊用途) ---
 mkdir -p "$TMP/repo-pw8"
 : > "$TMP/argv-noteam.log"
 ARGV_LOG="$TMP/argv-noteam.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
@@ -300,13 +282,13 @@ ARGV_LOG="$TMP/argv-noteam.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP
     --workspace workspace:1 --base-surface surface:1 \
     --cwd "$TMP/repo-pw8" --slug pw8 --status-dir "$TMP/status-pw8" \
     --claude-runner claude --codex-runner codex --exec-choice ask >/dev/null
-grep -q 'ensure-agmsg-ready.sh' "$TMP/argv-noteam.log" \
-  && bad 'PW8 --agmsg-team 無しで guard が注入された' \
-  || pass 'PW8 --agmsg-team 無しでは guard を載せない'
+grep -q 'send.sh' "$TMP/argv-noteam.log" \
+  && bad 'PW8 --agmsg-team 無しで readiness 句が注入された' \
+  || pass 'PW8 --agmsg-team 無しでは readiness 句を載せない'
 
-# --- PW9: design の join だけが失敗するとき、design gate は DESIGN_DELIVERY を
-#     見るべきで、claude executor の join/delivery 成功に引きずられて design へ
-#     guard が漏れてはならない (DESIGN_DELIVERY gate バグの回帰) ---
+# --- PW9: design の join だけが失敗しても、readiness 句は無条件で注入される
+#     (no fallback の原則そのものの検査。旧 DESIGN_DELIVERY ゲートを素朴に残した
+#     実装だと design だけ readiness 句が消えてここが FAIL する) ---
 mkdir -p "$TMP/repo-pw9"
 : > "$TMP/argv-pw9.log"
 AGMSG_STUB_JOIN_FAIL=pw9 ARGV_LOG="$TMP/argv-pw9.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
@@ -316,14 +298,80 @@ AGMSG_STUB_JOIN_FAIL=pw9 ARGV_LOG="$TMP/argv-pw9.log" AGMSG_DIR="$TMP/agmsg" RUN
 CASE_LOG="$TMP/argv-pw9.log"
 pw9_design_line=$(pane_line pw9)
 pw9_claude_line=$(pane_line pw9-claude)
-[[ -n "$pw9_design_line" && "$pw9_design_line" != *'ensure-agmsg-ready.sh'* ]] \
-  && pass 'PW9 design join 失敗時は design プロンプトに guard が無い' \
-  || bad 'PW9 design プロンプトに guard が (誤って) 含まれる'
-[[ -n "$pw9_claude_line" && "$pw9_claude_line" == *'ensure-agmsg-ready.sh'* ]] \
-  && pass 'PW9 claude executor の join は独立して成功し guard が乗る' \
-  || bad 'PW9 claude executor に guard が乗っていない'
-jq -e '.design.watcher == "none"' "$TMP/status-pw9/prewarm.json" >/dev/null \
-  && pass 'PW9 design watcher は none' || bad 'PW9 design watcher が none ではない'
+[[ -n "$pw9_design_line" && "$pw9_design_line" == *'send.sh demo-team pw9 parent [ready]\ pw9.'* ]] \
+  && pass 'PW9 design join 失敗時も readiness 句は注入される (no fallback)' \
+  || bad "PW9 design join 失敗時に readiness 句が消えた (fallback してはならない): $pw9_design_line"
+[[ -n "$pw9_claude_line" && "$pw9_claude_line" == *'send.sh demo-team pw9-claude parent'* ]] \
+  && pass 'PW9 claude executor の join は独立して成功し readiness 句が乗る' \
+  || bad 'PW9 claude executor に readiness 句が乗っていない'
+jq -e '.design.wired == true' "$TMP/status-pw9/prewarm.json" >/dev/null \
+  && pass 'PW9 design の wired は true のまま' || bad 'PW9 design の wired が true ではない'
+
+# ==========================================================================
+# PW11-PW14: readiness_clause 導入 (Task 2) 自体の回帰
+# ==========================================================================
+
+# PW9 が CASE_LOG を argv-pw9.log へ進めているので、pw1 の行を見る PW11-13 の前に戻す
+# (pane_line は run_case が設定するグローバル $CASE_LOG を見るため)
+CASE_LOG="$TMP/argv-pw1.log"
+
+# --- PW11: 4 ロールすべての起動プロンプトに readiness 句 ([ready] を送る指示) が入る ---
+for agent in pw1 pw1-claude pw1-codex pw1-review; do
+  expect_readiness PW11 "$agent"
+done
+
+# --- PW12: codex ロール (codex executor / codex reviewer) の起動プロンプトに
+#     codex-record-session.sh が入る ---
+for agent in pw1-codex pw1-review; do
+  line=$(pane_line "$agent")
+  grep -Fq -- 'codex-record-session.sh' <<<"$line" \
+    && pass "PW12 codex pane '$agent' carries codex-record-session.sh" \
+    || bad "PW12 codex pane '$agent' is missing codex-record-session.sh: $line"
+done
+
+# --- PW13: claude ロール (design / claude executor) の起動プロンプトに
+#     Monitor ツールの起動指示が入る ---
+for agent in pw1 pw1-claude; do
+  line=$(pane_line "$agent")
+  if grep -Fq -- 'AGMSG-DIRECTIVE' <<<"$line" && grep -Fq -- 'Monitor tool' <<<"$line"; then
+    pass "PW13 claude pane '$agent' carries the Monitor tool instruction"
+  else
+    bad "PW13 claude pane '$agent' is missing the Monitor tool instruction: $line"
+  fi
+done
+
+# --- PW14: SCRIPT_DIR にシェルメタ文字 (空白含む) があるとき die する。
+#     fallback は無いので、旧挙動の「readiness 句無しで idle 起動」に落ちてはならない
+#     (die を忘れて旧 PW5b/PW5c のような黙って続行する実装だとここが FAIL する) ---
+run_readiness_die_case() {  # <id> <script-dir-name (contains a metachar)>
+  local id="$1" dirname="$2" dir repo out
+  dir="$TMP/$dirname/scripts"
+  repo="$TMP/$dirname/repo-$id"
+  mkdir -p "$dir" "$repo"
+  cp "$PREWARM" "$dir/prewarm-panes.sh"
+  cp "$TMP/scripts/launch-workspace.sh" "$dir/launch-workspace.sh"
+  chmod +x "$dir/launch-workspace.sh"
+  : > "$TMP/argv-$id.log"
+  if out=$(ARGV_LOG="$TMP/argv-$id.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+      bash "$dir/prewarm-panes.sh" --with-design --agmsg-team demo-team \
+        --cwd "$repo" --slug "$id" --status-dir "$TMP/status-$id" \
+        --claude-runner claude --exec-choice claude 2>&1); then
+    bad "$id must die (fail-fast) but exited 0: $out"
+    return
+  fi
+  [[ ! -s "$TMP/argv-$id.log" ]] \
+    && pass "$id 何のペインも起動しないまま die する" \
+    || bad "$id die する前にペインを起動してしまった: $(cat "$TMP/argv-$id.log")"
+  [[ ! -f "$TMP/status-$id/prewarm.json" ]] \
+    && pass "$id prewarm.json を書かない" \
+    || bad "$id prewarm.json が書かれてしまった (die のはず)"
+  grep -q 'readiness clause cannot be composed safely' <<<"$out" \
+    && pass "$id die のメッセージが readiness 句の合成失敗を示す" \
+    || bad "$id die メッセージが期待と異なる: $out"
+}
+
+run_readiness_die_case pw14 "space dir"
+run_readiness_die_case pw14b "qu'ote-dir"
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
