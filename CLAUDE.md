@@ -99,7 +99,7 @@ bash install.sh    # marketplace add + update でローカルパスを登録・�
 - **環境変数では回避できない**。`SECURITY_GUIDANCE_DISABLE=1` / `ENABLE_SECURITY_REMINDER=0` の kill switch 経路も `metrics` を出す。findings ゼロのターンでも必ず失敗する。
 - **非互換は Stop だけではない**。`post_tool_use`（git commit/push レビュー。codex は `if` 条件を解さないので 5 エントリ全部が発火する）と `session_start`（`{"async": true, ...}` を出力）も同じくスキーマ違反。無事なのは `user_prompt_submit` のみ。
 - security-guidance は **hooks しか提供していない**（skill / command なし）ので、codex 側で無効化して失うのは「codex では元々動かない security review」だけ。
-- このフック失敗は**セッションを終了させない**。「Stop hook (failed)」はターン終了時の表示で、以降もプロンプトは生きている。実装セッションが黙って止まる事象は別件（`apps/cmux-team-dispatch-task/docs/notification-gaps.md` の U1。v1.21.0 の単発 safety timer で解消済み）。
+- このフック失敗は**セッションを終了させない**。「Stop hook (failed)」はターン終了時の表示で、以降もプロンプトは生きている。実装セッションが黙って止まる事象は別件（`apps/cmux-team-dispatch-task/docs/notification-gaps.md` の U1。v2.0.0 の単発 safety timer で解消済み）。
 
 対処は codex 側でプラグインごと無効化する:
 

@@ -599,6 +599,22 @@ case "$READY_RC" in
 esac
 ```
 
+**A codex parent has no safety timer, and you must say so.** The 90-minute single-shot
+timer of Step 3 is a background Bash task, which codex does not have, and the fallback
+that used to be prescribed — a delayed message addressed to itself — was measured not to
+work: a backgrounded subshell that sleeps and then messages you, and the detached `nohup` form of the same, both die when
+the codex turn ends (D-T2, 2026-08-21; the exact commands are recorded in
+`docs/superpowers/specs/2026-08-21-agmsg-monitor-only-design.md`). So when `PARENT_ENGINE` is `codex`, tell the user in
+plain words, before launching anything, that **this configuration has no 90-minute timer:
+if a child's `dispatch-notify:` message is lost, this session stays asleep until the user
+comes back to it.**
+
+**Refuse the unattended combination.** An unattended loop (`prewarm-panes.sh
+--unattended`, `references/loop-mode.md`) has nobody to come back to it, so a codex
+parent there turns a single lost message into a silently vanished job. `prewarm-panes.sh`
+dies on that combination; do not try to work around it by dropping `--unattended`. Run
+the loop from a claude parent, or run this dispatch attended.
+
 The parent engine decides which readiness signal exists at all. A claude parent is
 reachable through its own watcher process (`--self`, keyed by `CLAUDE_CODE_SESSION_ID`).
 A codex parent has no such session id — its inbound channel is the codex bridge seat
@@ -646,7 +662,7 @@ Use exactly these labels:
 | Phase A-R plan/spec review request | `review-plan` |
 | Phase B-R code review request | `review-code` |
 | Verdict-ready notice from the reviewer back to the requester | `review-verdict` |
-| Self-addressed safety-timer wake (codex sessions only, delivered over the bridge seat) | `review-timer` (a waiter) / `dispatch-timer` (the parent) |
+| Reserved, currently unsent: a self-addressed safety-timer wake. **Nothing emits these today** — a codex session cannot schedule a delayed message to itself (measured, D-T2), and a claude session's timer is a background task, not a message | `review-timer` (a waiter) / `dispatch-timer` (the parent) |
 | Abort notice to the reviewer (from the implementer or the runner wrapper) | `abort-reviewer` |
 | Completion / abort notice to the parent | `dispatch-notify` |
 
@@ -850,10 +866,25 @@ prompt does this). Wait for all expected `[ready]` lines before sending any task
 
 - A claude pane's readiness **cannot be observed from here** — its signal is keyed by a
   session id this session does not know. The `[ready]` line is the only confirmation.
-- A codex pane can additionally be verified with
-  `bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name <agent>`.
-  Use this when a codex pane's `[ready]` never arrives, to tell "seat not recorded"
-  (fixable: ask the pane to re-run `codex-record-session.sh`) from "pane died".
+- A codex pane's seat IS observable from here, so **do not take its `[ready]` at face
+  value**. Before the first delivery to any codex pane — even one that already reported
+  `[ready]` — run:
+
+  ```bash
+  bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name <agent>
+  ```
+
+  `codex-record-session.sh` is best-effort by design: **every failure path in it is a
+  silent no-op that exits 0**, so a pane whose thread id could not be resolved records
+  nothing and then sends `[ready]` anyway. That pane is not reachable — a task sent to it
+  sits unread in the inbox (this is V2a, measured) while this session waits for a
+  completion that can never come. The check costs one command and turns that into a
+  fixable "seat not recorded": ask the pane to re-run `codex-record-session.sh`, then
+  re-check. Use the same command when a codex pane's `[ready]` never arrives at all, to
+  tell "seat not recorded" from "pane died".
+
+  The asymmetry with claude panes is intended, not an oversight: there is simply nothing
+  equivalent to observe for a claude pane.
 
 Each launch then adds `--agmsg-team "$TEAM" --agmsg-from <task-slug>` to
 `launch-workspace.sh`. After each task's worktree exists (launch script returned),
@@ -1213,7 +1244,6 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           --status-dir "<EXISTING_STATUS_DIR>" \
           --agmsg-team "$TEAM" --agmsg-from <task-slug>-exec \
           --parent-notify-workspace <PARENT_WORKSPACE_ID> \
-          [--parent-notify-surface <PARENT_SURFACE_ID>] \
           [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
           <task-slug>-exec
         # The two --agmsg-* flags are MANDATORY, not optional: agmsg send.sh is the only
@@ -1485,27 +1515,43 @@ PHASE B — Execution model selection (REQUIRED before any code change):
       1b. Append the parallel-review directive for the resolved review pane engine:
             PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine "$REVIEW_ENGINE" --mode review)
             <request text>="<request text> $PARALLEL"
-      2. Send the request with ONE send.sh call, then arm ONE single-shot safety
-         timer and end your turn. The destination is the review pane's agmsg agent
-         name, not its surface:
+      2. Send the request with ONE send.sh call, then end your turn. The destination
+         is the review pane's agmsg agent name, not its surface:
            ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> {{REVIEW_PANE_AGENT}} \
              "review-plan: <request text>"
            # $TEAM is the TEAM value given above — do NOT re-derive it. A non-zero
            # exit means the reviewer was NOT told: report it instead of waiting for a
            # verdict that can never appear.
-         The timer is ONE `sleep $((30 * 60))` — a single sleep, never a loop — armed
-         the way YOUR engine allows, because the two engines wake differently:
-           # claude: run it with the Bash tool and `run_in_background: true`
+         **Only a claude session can arm a safety timer for this wait.** It is ONE
+         single-shot safety timer — one `sleep $((30 * 60))`, a single sleep and never
+         a loop — run with the Bash tool and `run_in_background: true`:
+           # claude only
            sleep $((30 * 60))
-           # codex: there is no such tool and a bare background sleep never resumes the
-           # turn. The only inbound channel is the bridge seat, so schedule a message to
-           # YOURSELF and wake on it:
-           ( sleep $((30 * 60)); ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> <task-slug> \
-               'review-timer: <point>-round-<N>' ) &
+         **As a codex session you have NO safety net for this wait, and you cannot
+         build one.** Both a backgrounded subshell that sleeps and then messages you, and the detached `nohup` form of the same, were
+         measured on 2026-08-21 (D-T2) and both die when the codex turn ends, so a timer
+         you believe you armed simply never fires.
+         Do not write one: an instruction that reads like a safety net but is not is
+         worse than none, because you would close your turn believing you are covered.
+         If the `review-verdict:` message is lost you stay asleep until something else
+         wakes you — a claude parent's 90-minute timer is the last backstop, and an
+         all-Codex dispatch has none at all. So as a codex session, do these two things
+         BEFORE you end the turn, while you can still act:
+           - **Confirm the reviewer is reachable now.** For a codex review pane:
+               bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name {{REVIEW_PANE_AGENT}}
+             For a claude review pane its `[ready]` line is the only evidence, so do not
+             enter this wait if you never saw one. Not reachable → report that now
+             instead of waiting for a verdict that can never appear.
+           - **Report to the parent that you are entering an unbacked wait**, one
+             send.sh call:
+               ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> parent \
+                 "dispatch-notify: <task-slug> waiting for review verdict; this engine has no timer"
+             That single line is what lets a human or a claude parent notice a waiter
+             that never came back.
          Do NOT poll the verdict file and do NOT watch the reviewer pane. The reviewer
          sends a `review-verdict:` message after writing the file, and that message
-         wakes this session. Stop the timer as soon as you act on a verdict: claude
-         `TaskStop`s the background task, codex kills that background subshell.
+         wakes this session. A claude session stops its timer as soon as it acts on a
+         verdict (`TaskStop` the background task); a codex session has nothing to stop.
       3. On waking with `review-verdict: <point>-round-<N> ...`, read
          `<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md` and act on the verdict
          line at its end. The file is the source of truth; the message only says it is
@@ -1514,8 +1560,8 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          may be rendered with surrounding punctuation. If the message arrives but the
          file has no `VERDICT:` line, treat it as `needs_work` and say so in the next
          round's request.
-      4. If the safety timer fires while you are waiting on a verdict (a codex session
-         sees this as a `review-timer:` message from itself), **read
+      4. If the safety timer fires while you are waiting on a verdict (claude only —
+         a codex session never gets this wake), **read
          `<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md` first**. Only the message
          can be lost; the verdict may already be on disk. If it has a `VERDICT:` line,
          act on it exactly as in item 3 and do not touch the pane at all. A timer wake
@@ -1702,20 +1748,31 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 Also include this in the message to the reviewer, addressed to the
                 reviewer and not to you: $REVIEW_PARALLEL End of the message to the
                 reviewer.
-            (2) then arm ONE single-shot safety timer — `sleep $((30 * 60))`, one
-                sleep and never a loop — and end your turn. Arm it the way YOUR engine
-                allows: as a claude session, with the Bash tool and
-                `run_in_background: true`; as a codex session there is no such tool and
-                a bare background sleep never resumes the turn, so schedule a message
-                to YOURSELF and wake over your bridge seat:
-                  ( sleep $((30 * 60)); ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <your-agent-name> \
-                      'review-timer: code-round-N' ) &
+            (2) then end your turn. **As a claude session, first arm ONE single-shot
+                safety timer** — `sleep $((30 * 60))`, one sleep and never a loop —
+                with the Bash tool and `run_in_background: true`.
+                **As a codex session you have NO safety net for this wait, and you
+                cannot build one.** Both a backgrounded subshell that sleeps and then messages you, and the detached `nohup` form of the same,
+                were measured on 2026-08-21 (D-T2) and both die when the codex turn
+                ends, so a timer you believe you armed never fires. Do not write one: an instruction that reads like a safety
+                net but is not is worse than none. If the `review-verdict:` message is
+                lost you stay asleep until something else wakes you, and an all-Codex
+                dispatch has no backstop at all. So as a codex session, before ending
+                the turn: (a) confirm the reviewer is reachable now — for a codex
+                reviewer run
+                  bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team <TEAM> --name <REVIEWER_AGENT>
+                and for a claude reviewer treat its `[ready]` line as the only
+                evidence; if it is not reachable, report that instead of waiting — and
+                (b) send ONE message telling the parent you are entering an unbacked
+                wait:
+                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> parent \
+                    'dispatch-notify: <task-slug> waiting for code review verdict; this engine has no timer'
                 Do NOT poll the verdict file and do NOT watch the reviewer pane. The
                 reviewer sends you a `review-verdict:` message when the file is ready,
-                and that message resumes you; stop that timer as soon as it arrives
-                (claude `TaskStop`, codex kills the subshell). Identify the message by
-                the `review-verdict:` prefix plus the round id as a substring, never by
-                an exact whole-line match. On ANY wake, whether the message or the
+                and that message resumes you; a claude session stops its timer as soon
+                as it arrives (`TaskStop`), a codex session has nothing to stop.
+                Identify the message by the `review-verdict:` prefix plus the round
+                id as a substring, never by an exact whole-line match. On ANY wake, whether the message or the
                 timer, re-read <EXISTING_STATUS_DIR>/review/code-round-N.md before
                 deciding anything: only the message can be lost, so a timer wake with a
                 VERDICT line already in the file means the review finished. If the
@@ -1950,8 +2007,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                   --status-dir "<EXISTING_STATUS_DIR>" \
                   --agmsg-team "$TEAM" --agmsg-from <task-slug>-exec \
                   --parent-notify-workspace <PARENT_WORKSPACE_ID> \
-                  [--parent-notify-surface <PARENT_SURFACE_ID>] \
-                  [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
+                          [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
                   <task-slug>-exec
                 # The two --agmsg-* flags are MANDATORY here for the same reason as in
                 # the claude branch, and the same join.sh registration follows the launch.
@@ -2120,7 +2176,6 @@ bash <this-skill-dir>/scripts/launch-workspace.sh \
   --defer-status \
   --agmsg-team "$TEAM" --agmsg-from <task-slug> \
   --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
-  --parent-notify-surface "$CMUX_SURFACE_ID" \
   <task-slug> \
   "$TASK_PROMPT"
 ```
@@ -2199,8 +2254,7 @@ RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
   [--reviewer-model "$REVIEW_MODEL"] [--reviewer-effort "$REVIEW_EFFORT"] \
   [--exec-model "$EXEC_MODEL"] [--exec-effort "$EXEC_EFFORT"] \
   --agmsg-team "$TEAM" \
-  --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
-  --parent-notify-surface "$CMUX_SURFACE_ID")
+  --parent-notify-workspace "$CMUX_WORKSPACE_ID")
 ```
 
 Flag selection per task:
@@ -2236,9 +2290,9 @@ itself happens later, on the `[ready]` wake (item 3):
    so a Phase B handoff can still suppress it via `.deferred`).
 3. **Do NOT send the task here.** The design pane is not reachable until it has
    reported `[ready] <task-slug>`, and a message sent earlier sits unread in its inbox
-   forever. Arm the safety timer (Step 3, item 1 — it must be armed BEFORE the readiness
-   wait, so the wait itself is covered), report the launch summary, and **end your
-   turn**. The `[ready]` message wakes this session; Step 3's `[ready]` branch is the
+   forever. Arm the safety timer if you are a claude parent (Step 3, item 1 — it must be
+   armed BEFORE the readiness wait, so the wait itself is covered; a codex parent has no
+   timer and arms nothing), report the launch summary, and **end your turn**. The `[ready]` message wakes this session; Step 3's `[ready]` branch is the
    ONE place that performs this send. Never poll or busy-wait for `[ready]`.
 
    When Step 3's `[ready]` branch fires for this task, send it with ONE send.sh call
@@ -2339,43 +2393,49 @@ messages only tell you when to look.
 
 **As soon as the panes are launched — BEFORE waiting for a single `[ready]`:**
 
-1. Arm one single-shot safety timer so a pane that never reports ready, and a child that
-   never starts, cannot leave this session asleep forever. Arming it first is what makes
-   the readiness wait itself safe; arming it after the tasks are delivered would leave
-   the whole `[ready]` window uncovered. **One sleep, never a loop**, armed the way
-   THIS session's engine allows — an all-Codex dispatch has a codex parent (Step 1g
-   resolves `PARENT_ENGINE` from `CODEX_THREAD_ID`), and codex has no
-   `run_in_background`:
+1. **A claude parent** arms one single-shot safety timer so a pane that never reports
+   ready, and a child that never starts, cannot leave this session asleep forever.
+   Arming it first is what makes the readiness wait itself safe; arming it after the
+   tasks are delivered would leave the whole `[ready]` window uncovered. **One sleep,
+   never a loop**:
 
    ```bash
-   # claude parent: run this with the Bash tool and `run_in_background: true`
+   # claude parent only: run this with the Bash tool and `run_in_background: true`
    sleep $((90 * 60))
-   # codex parent: a bare background sleep never resumes the turn. The bridge seat is
-   # the only inbound channel, so schedule a message to YOURSELF and wake on it:
-   ( sleep $((90 * 60)); ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" parent parent \
-       'dispatch-timer: safety timer' ) &
    ```
 
-   **90 minutes, fixed.** Nothing in this dispatch resolves a different value: the
+   **A codex parent has no such timer and cannot build one.** It has no
+   `run_in_background`, and the self-addressed delayed message that used to be
+   prescribed here does not work either: a backgrounded subshell that sleeps and then messages you, and the detached `nohup` form of the same,
+   were both measured on 2026-08-21 (D-T2) and both die when the codex turn ends. **Arm nothing here as a codex parent** — writing a timer
+   that never fires is worse than having none, because you would end the turn believing
+   the `[ready]` window is covered. Step 1g already told the user this configuration is
+   uncovered (and it refuses `--unattended` outright for exactly this reason). Instead,
+   before ending this turn, confirm every expected codex pane's seat with
+   `verify-agmsg-ready.sh --codex` and say plainly in the launch summary that nothing
+   but a child message will wake this session, so a silent child needs the user's eyes.
+
+   **90 minutes, fixed** (for the claude parent's timer). Nothing in this dispatch resolves a different value: the
    `loop.task_timeout_min` config key is read only by loop mode's wake-time
    reconciliation (`references/loop-mode.md`), for its own per-issue timeout, and never
    reaches this timer. Use a different number only if the
    user asked for one. This is a safety net, not a deadline — a live-but-slow task
    re-arms it.
-   **Timeout detection is coarser than it used to be.** The retired loop wait script
-   re-checked `claimed_at` on a short fixed interval; nothing re-checks it between wakes
-   now, so a `loop.task_timeout_min` shorter than this timer is not detected until the
-   next wake. That is the intended price of removing every wait loop, not a defect.
+   **Timeout detection is coarser than it used to be.** `claimed_at` is no longer
+   re-checked every 5 seconds the way the retired loop wait script did it; nothing
+   re-checks it between wakes now, so a `loop.task_timeout_min` shorter than this timer
+   is not detected until the next wake. That is the intended price of removing every
+   wait loop, not a defect.
    **Remember the task id and the number of times you have armed it.** Do not annotate
    the `sleep` with an invented flag name (there is no `--wake-after` parameter on the
    Bash tool; a model that reads one will try to pass it) — say it in prose.
 
    **Stop the timer at Completion.** When every task is terminal and you emit Template
-   C, stop the timer first (it is step 1 of `### Completion` below): claude `TaskStop`s
-   the background task, a codex parent kills the background subshell. A surviving
-   `sleep` exits 90 minutes later and injects a useless wake into whatever the user has
-   moved on to, and that wake lands in the re-arm branch, so every dispatch would leave
-   one stale timer behind forever.
+   C, a claude parent stops the timer first (it is step 1 of `### Completion` below) by
+   `TaskStop`ing the background task. A surviving `sleep` exits 90 minutes later and
+   injects a useless wake into whatever the user has moved on to, and that wake lands in
+   the re-arm branch, so every dispatch would leave one stale timer behind forever. A
+   codex parent armed nothing, so it has nothing to stop.
 
    **Bound the re-arming.** After 3 re-arms with no message and no visible progress,
    stop re-arming: report with the `cmux read-screen` excerpt and ask the user how to
@@ -2391,22 +2451,39 @@ messages only tell you when to look.
 You do not keep a monitoring loop, so treat each wake as stateless: read all of
 `.dispatch/*/status.json` and decide from that, not from what you remember.
 
-**Re-verify your own Monitor stream on every wake and on every timer firing**, not just
-once at launch:
+**Re-verify your own inbound channel on every wake and on every timer firing**, not just
+once at launch. **Branch on `PARENT_ENGINE` exactly as Step 1g does** — a codex parent
+has no `CLAUDE_CODE_SESSION_ID`, so `--self` answers rc=2 (usage error) every single
+time, and the rc=2 rule below ("undetermined, stop and report") would make every
+all-Codex dispatch abort on its own first wake:
 
 ```bash
-bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --self
+# wake-readiness (same branch as Step 1g; re-derived because each wake is stateless)
+TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
+PARENT_ENGINE="claude"
+[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"
+
+WAKE_READY_RC=0
+if [[ "$PARENT_ENGINE" == "codex" ]]; then
+  bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name parent || WAKE_READY_RC=$?
+else
+  bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --self || WAKE_READY_RC=$?
+fi
 ```
 
-Judge it by exit code (`0` = live watcher, `1` = none, `2` = usage error) or by the
+Judge it by exit code (`0` = reachable, `1` = not reachable, `2` = usage error) or by the
 `ready=yes` / `ready=no` prefix of its stdout — never by the whole line, because
-diagnostic fields (`pid=`, `session=`) follow the prefix and change between runs.
+diagnostic fields (`pid=`, `session=`) follow the prefix and change between runs. Keep
+`1` and `2` apart here too: `1` is a fact about this session, `2` means the question was
+never answered, so on `2` stop and report the usage error instead of concluding anything
+about the watcher or the seat.
 
-Your own watcher can die mid-dispatch (`_install_changed` self-exit at
-`watch.sh:426-429`; a `/compact` racing a `TaskStop`). Once it is gone, **every** child
-notification is silently lost and the only thing left is the timer. If it reports
-`ready=no`, say so and stop treating "no message arrived" as information about the
-children.
+A claude parent's watcher can die mid-dispatch (`_install_changed` self-exit at
+`watch.sh:426-429`; a `/compact` racing a `TaskStop`), and a codex parent's bridge seat
+can be dropped the same way. Once the channel is gone, **every** child notification is
+silently lost. If it reports `ready=no`, say so and stop treating "no message arrived" as
+information about the children — and for a codex parent say it plainly, because there is
+no safety timer behind it either (Step 1g).
 
 ```bash
 for f in .dispatch/*/status.json; do
@@ -2435,7 +2512,7 @@ Then branch on what woke you:
   the wrapper at session exit. Treat them idempotently and trust status.json.
 - **Any other child message** (a question, a progress note) — answer it by replying with
   `send.sh` to that child's agent name, then end your turn.
-- **The timer task** (a codex parent sees it as its own `dispatch-timer:` message) —
+- **The timer task** (claude parent only — a codex parent has no timer to fire) —
   no message arrived within the window. This is not evidence that
   a child failed; it is evidence that no message arrived. **Read the persistent records
   before judging anything**: re-derive state from `.dispatch/*/status.json`, and for a
@@ -2488,7 +2565,8 @@ cmux read-screen --workspace <workspace-id> --scrollback
 - **Status "error"**: Read the error message and session screen. Offer to retry or escalate.
 - **Long silence**: Not your cue to act — silence is what the safety timer is for. Do
   NOT start polling; end your turn and let the timer wake you, then follow the timer
-  branch above.
+  branch above. As a codex parent there is no timer, so silence stays silence until the
+  user asks: say that once at launch and do not invent a wait here.
 - **User request**: The user can ask to check on any specific session at any time. That
   is a wake like any other: re-derive state once, answer, end your turn.
 
@@ -2496,8 +2574,8 @@ cmux read-screen --workspace <workspace-id> --scrollback
 
 When all tasks reach a terminal status (`"done"` or `"error"`):
 
-1. **Stop the safety timer** armed in Step 3: claude `TaskStop`s the background `sleep`
-   task, a codex parent kills the background subshell.
+1. **Stop the safety timer** armed in Step 3: a claude parent `TaskStop`s the
+   background `sleep` task (a codex parent armed none, so it has nothing to stop).
    Do this first, before reading anything — it is the only place the timer is stopped,
    and a survivor fires 90 minutes later into an unrelated conversation.
 
@@ -2911,7 +2989,7 @@ When parsing a `superpowers:writing-plans` plan file:
   child session; Phase B decides which *engine* implements. `design_runner` can fix
   Step 1f; `exec_choice` can fix Phase B. Models and efforts come from the runner's role
   fields in either case, never from the Phase B answer.
-- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). agmsg is a hard requirement with no degraded mode: Step 1g stops the dispatch when `~/.agents/skills/agmsg/scripts/send.sh` is missing, or when the parent's own readiness check fails — `verify-agmsg-ready.sh --self` for a claude parent (no live watcher) and `verify-agmsg-ready.sh --codex --team "$TEAM" --name parent` for a codex parent (no recorded bridge seat), branched on `CODEX_THREAD_ID` because `--self` from a codex session is a usage error, not a "no watcher" answer. There is no monitor script, no heartbeat and no polling loop (status.json transitions are unchanged). Every message goes through one `~/.agents/skills/agmsg/scripts/send.sh` call whose destination is an **agmsg agent name**, never a surface or workspace id. There is no outbox, no length threshold, no Enter verification and no re-send: `send.sh` either writes the body into agmsg's shared SQLite DB or exits non-zero, and **a non-zero exit means the message was NOT delivered** and must be reported. The message kind is a label prefix on the body (`phase-a-task:`, `phase-b-exec:`, `review-plan:`, `review-code:`, `review-verdict:`, `review-timer:`, `dispatch-timer:`, `abort-reviewer:`, `dispatch-notify:`), not a flag. A pane is reachable only after it has reported `[ready] <name>`; a message sent earlier sits unread in its inbox. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. The parent's own wake channel is the persistent `Monitor` stream its SessionStart hook asks for; Step 1g only verifies that it is alive and Step 3 re-verifies it on every wake. Waiting for a review verdict is push too: the reviewer writes the findings file and then sends one `review-verdict:` message to the requester, and nobody polls the file. Every waiter — the design pane in Phase A-R, the implementer in Phase B-R — arms ONE single-shot safety timer and re-reads the findings file on every wake, because only the message can be lost. Timers are engine-specific: a claude session backgrounds a `sleep` with the Bash tool, a codex session has no such tool and instead schedules a `review-timer:` message to itself that arrives over its bridge seat (the parent's 90-minute timer works the same way, with `dispatch-timer:`). A timer wake never means `needs_work` — it means no message arrived.
+- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). agmsg is a hard requirement with no degraded mode: Step 1g stops the dispatch when `~/.agents/skills/agmsg/scripts/send.sh` is missing, or when the parent's own readiness check fails — `verify-agmsg-ready.sh --self` for a claude parent (no live watcher) and `verify-agmsg-ready.sh --codex --team "$TEAM" --name parent` for a codex parent (no recorded bridge seat), branched on `CODEX_THREAD_ID` because `--self` from a codex session is a usage error, not a "no watcher" answer. There is no monitor script, no heartbeat and no polling loop (status.json transitions are unchanged). Every message goes through one `~/.agents/skills/agmsg/scripts/send.sh` call whose destination is an **agmsg agent name**, never a surface or workspace id. There is no outbox, no length threshold, no Enter verification and no re-send: `send.sh` either writes the body into agmsg's shared SQLite DB or exits non-zero, and **a non-zero exit means the message was NOT delivered** and must be reported. The message kind is a label prefix on the body (`phase-a-task:`, `phase-b-exec:`, `review-plan:`, `review-code:`, `review-verdict:`, `review-timer:`, `dispatch-timer:`, `abort-reviewer:`, `dispatch-notify:`), not a flag. A pane is reachable only after it has reported `[ready] <name>`; a message sent earlier sits unread in its inbox. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. The parent's own wake channel is the persistent `Monitor` stream its SessionStart hook asks for; Step 1g only verifies that it is alive and Step 3 re-verifies it on every wake. Waiting for a review verdict is push too: the reviewer writes the findings file and then sends one `review-verdict:` message to the requester, and nobody polls the file. Every waiter — the design pane in Phase A-R, the implementer in Phase B-R — re-reads the findings file on every wake, because only the message can be lost. **Safety timers are claude-only**: a claude session backgrounds ONE single-shot `sleep` with the Bash tool (the parent's 90-minute timer is the same mechanism). A codex session has no such tool and cannot substitute a self-addressed delayed message either — a backgrounded subshell that sleeps and then messages you, and the detached `nohup` form of the same, were both measured on 2026-08-21 (D-T2) and both die with the turn — so **a codex waiter has no safety net and must not pretend to arm one**; it verifies its counterpart is reachable and reports the unbacked wait to the parent before ending its turn. An all-Codex unattended loop therefore has no backstop at all and is refused in Step 1g. The `review-timer:` / `dispatch-timer:` labels stay reserved but nothing emits them today. A timer wake never means `needs_work` — it means no message arrived.
 - **Pre-warm role panes**: when layout is `workspace` and config `prewarm: true`
   (default), `prewarm-panes.sh` places only resolved roles: design, optional review, and
   the execution engines allowed by `exec_choice`. `prewarm.json`'s `executors` holds at

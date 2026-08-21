@@ -211,7 +211,10 @@ extract_region() {
 # 「ポーリングしない」と書いた行 (no polling monitor / do NOT start polling など) は
 # 新プロトコルの説明そのものなので許す。素の指示だけを落とす。
 POLL_RE='polling|every 5 seconds|5s interval|15-min|seq 1 180'
-POLL_NEGATED_RE='(\bno\b|\bnot\b|\bNOT\b|\bnever\b|\bNever\b|\bwithout\b|\bWithout\b)[^.]{0,40}polling'
+# 否定免除は 5 語彙すべてに掛ける。`polling` だけを免除していた頃は、旧挙動の具体値
+# (「かつては 5 秒ごとに再確認していた」) が書けず、書き手が「a short fixed interval」の
+# ような言い換えで回避した — 検査が文書の精度を下げていた。
+POLL_NEGATED_RE='(\bno\b|\bnot\b|\bNOT\b|\bnever\b|\bNever\b|\bwithout\b|\bWithout\b)[^.]{0,40}('"$POLL_RE"')'
 # 待機ループの構文。語彙 (POLL_RE) だけの検査は
 # `while true; do ... sleep 5; done` を書き戻す変異を素通しする (実測済み)。
 # 対象は verdict を待つ 3 領域だけに絞る: SKILL.md には status.json を読む正当な
@@ -233,13 +236,13 @@ while IFS= read -r target; do
   fi
   while IFS=: read -r line text; do
     [[ -n "$line" ]] || continue
-    # 否定形で「ポーリングしない」と語る行だけ許す。polling 以外の
-    # 具体的なポーリング手順 (5 秒間隔 / 15 分チャンク / seq 1 180) は無条件で禁止。
+    # 否定形で「ポーリングしない」と語る行だけ許す。5 秒間隔 / 15 分チャンク /
+    # seq 1 180 も同じ免除の対象で、否定語が語彙の直前 (40 桁以内・文をまたがない)
+    # にあるときだけ通す。素の指示は依然として落ちる。
     # 否定語は 80 桁の折り返しで前の行に残ることがあるので、前後 1 行を含めて
     # 平坦化 (改行と連続空白を 1 空白に) した窓で判定する。
     window=$(sed -n "$((line > 1 ? line - 1 : 1)),$((line + 1))p" "$target" | tr '\n' ' ' | tr -s ' ')
-    if ! grep -qE 'every 5 seconds|5s interval|15-min|seq 1 180' <<<"$window" \
-       && grep -qE "$POLL_NEGATED_RE" <<<"$window"; then
+    if grep -qE "$POLL_NEGATED_RE" <<<"$window"; then
       continue
     fi
     echo "  verdict のポーリング指示が残っている: ${target#"$PLUGIN_DIR/"}:$line"
@@ -349,22 +352,51 @@ else
   echo "FAIL CS6: レビュー依頼文に review-verdict: の通知指示が無い"; fail=1
 fi
 
-# --- CS7: verdict を待つ側に単発タイマーがある ---
-# review-verdict が失われた場合の唯一の保険。文面整理で落ちやすいので固定する。
+# --- CS7: verdict を待つ側の保険が engine ごとに正しく書かれている ---
+# claude 待機者には単発タイマーが 1 本あること。**codex 待機者には保険が無いと明記され、
+# 動かないと実測された自己タイマー (D-T2: `( sleep N; send.sh ) &` /
+# `setsid nohup bash -c ... &`) の指示が残っていないこと。**
+# engine で分けずに「単発タイマーがある」だけを検査していた頃は、codex 待機者へ
+# 「不発の手段を張れ」と指示したままでも緑だった (待機者は保険があるつもりで永久に眠る)。
 cs7=1
-check_region_has 'Phase A-R の待機手順' "$SKILL_DIR/SKILL.md" \
+# claude 側: タイマーの指示が生きていること
+check_region_has 'Phase A-R の待機手順 (claude)' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' \
-  'single-shot safety timer' || cs7=0
-check_region_has 'Phase B-R の待機手順' "$SKILL_DIR/SKILL.md" \
+  'single-shot safety timer' 'run_in_background' || cs7=0
+check_region_has 'Phase B-R の待機手順 (claude)' "$SKILL_DIR/SKILL.md" \
   '(1) send the review request with ONE command' '(3) On VERDICT: approve' \
-  'single-shot safety timer' || cs7=0
-check_region_has 'REVIEW_INSTRUCTION の待機手順' "$LAUNCH" \
+  'single-shot safety timer' 'run_in_background' || cs7=0
+check_region_has 'REVIEW_INSTRUCTION の待機手順 (claude)' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' \
   'single-shot safety timer' || cs7=0
+# codex 側: 「保険が無い」ことと、代替の 2 手 (到達性確認 + 親への 1 通報告) があること
+check_region_has 'Phase A-R の待機手順 (codex)' "$SKILL_DIR/SKILL.md" \
+  '2. Send the request with ONE send.sh call' 'Act on the verdict:' \
+  'NO safety net' 'verify-agmsg-ready\.sh --codex' 'dispatch-notify:' || cs7=0
+check_region_has 'Phase B-R の待機手順 (codex)' "$SKILL_DIR/SKILL.md" \
+  '(1) send the review request with ONE command' '(3) On VERDICT: approve' \
+  'NO safety net' 'verify-agmsg-ready\.sh --codex' 'dispatch-notify:' || cs7=0
+check_region_has 'REVIEW_INSTRUCTION の待機手順 (codex)' "$LAUNCH" \
+  'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' \
+  'NO safety net' 'dispatch-notify:' || cs7=0
+# 不発と実測された自己タイマーの指示が復活していないこと
+CODEX_TIMER_RE='\( *sleep [^;]*; *[^)]*send\.sh|setsid|start a background subshell|prefix review-timer:'
+check_region_lacks 'Phase A-R の待機手順' "$SKILL_DIR/SKILL.md" \
+  '2. Send the request with ONE send.sh call' 'Act on the verdict:' "$CODEX_TIMER_RE" || cs7=0
+check_region_lacks 'Phase B-R の待機手順' "$SKILL_DIR/SKILL.md" \
+  '(1) send the review request with ONE command' '(3) On VERDICT: approve' "$CODEX_TIMER_RE" || cs7=0
+check_region_lacks 'REVIEW_INSTRUCTION の待機手順' "$LAUNCH" \
+  'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' "$CODEX_TIMER_RE" || cs7=0
+# 無人ループのブロックも同じ規律に従うこと
+check_region_has '無人ループの code-review-block (engine 別)' "$CODE_REVIEW_BLOCK_MD" \
+  'Request each review with ONE call' '' \
+  'single-shot safety timer' 'NO safety net' 'dispatch-notify:' || cs7=0
+check_region_lacks '無人ループの code-review-block' "$CODE_REVIEW_BLOCK_MD" \
+  'Request each review with ONE call' '' "$CODEX_TIMER_RE" || cs7=0
 if [[ $cs7 -eq 1 ]]; then
-  echo "PASS CS7: verdict を待つ 3 箇所すべてに単発タイマーの指示がある"
+  echo "PASS CS7: verdict を待つ 4 箇所とも claude=タイマー / codex=保険なし+代替 2 手で書かれている"
 else
-  echo "FAIL CS7: verdict を待つ側に単発タイマーの指示が無い"; fail=1
+  echo "FAIL CS7: verdict 待機の保険が engine ごとに正しく書かれていない"; fail=1
 fi
 
 exit $fail

@@ -486,5 +486,36 @@ else
   bad 'PW18b delivery.sh set monitor が readiness 句の前提である旨のコメントが無い'
 fi
 
+# --- PW18c (E2E F2 の回帰): 4 ロール全部の起動プロンプトに「ポーリングするな /
+#     inbox コマンドを実行するな / 待機ループを書くな」の否定句が載る。実測: 「待て」と
+#     だけ書かれた codex は inbox.sh のポーリングループを自分で書いた (D1 違反であり、
+#     inbox.sh は row を既読にするので bridge との配送レースになる)。
+#     ログ全体を 1 回 grep する素朴な実装では、design ペインにだけ否定句を足して
+#     残り 3 ロールが素のままでも PASS するので、必ずロールごとに検査する ---
+for agent in pw1 pw1-claude pw1-codex pw1-review; do
+  line=$(pane_line "$agent")
+  if grep -Fq -- 'Do not poll and do not run any inbox command or wait loop' <<<"$line"; then
+    pass "PW18c pane '$agent' にポーリング禁止の否定句が載っている"
+  else
+    bad "PW18c pane '$agent' にポーリング禁止の否定句が無い: $line"
+  fi
+done
+
+# --- PW19 (F3): --exec-choice codex で --exec-runner を省略し --codex-runner だけを
+#     渡しても codex runner が解決される。検証側 (case "$EXEC_CHOICE" の codex 分岐) は
+#     --exec-runner か --codex-runner のどちらか一方で通るのに、解決側が $EXEC_RUNNER
+#     だけを見ていた頃は `--runner ` が空で渡り、launch-workspace.sh が既定の claude へ
+#     黙って落ちていた (engine の反転)。反例: CODEX_EXEC_RUNNER="$EXEC_RUNNER" に戻すと
+#     この行の --runner が空になり、ここが落ちる ---
+run_case pw19 --design-runner claude --codex-runner codex --exec-choice codex
+pw19_line=$(pane_line pw19-codex)
+if [[ -z "$pw19_line" ]]; then
+  bad 'PW19 codex executor ペインが起動していない'
+elif grep -Fq -- '--runner codex ' <<<"$pw19_line "; then
+  pass 'PW19 --codex-runner だけでも codex executor の --runner が解決される'
+else
+  bad "PW19 codex executor の --runner が解決されていない: $pw19_line"
+fi
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

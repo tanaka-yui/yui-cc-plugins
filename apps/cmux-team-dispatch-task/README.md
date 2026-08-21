@@ -208,7 +208,7 @@ codex engine は対象外（`--dangerously-bypass-approvals-and-sandbox` と
 `launch-workspace.sh` / `prewarm-panes.sh` の `--message-type` フラグも削除された（渡すと
 `was removed` を含むメッセージで die する）。
 
-**[agmsg](https://github.com/fujibee/agmsg) は v1.21.0 から必須要件**で、劣化モードは無い。
+**[agmsg](https://github.com/fujibee/agmsg) は v2.0.0 から必須要件**で、劣化モードは無い。
 このスキルのすべてのメッセージとすべての起床は agmsg の Monitor ストリームに乗る。タイプ入力の
 フォールバックも、ポーリング型の監視スクリプトも存在しない。次のどれかに当てはまると、
 ディスパッチはペインを 1 つも作らずにエラーで止まる:
@@ -265,12 +265,17 @@ status.json / result.md / `cmux wait-for` signal はこの変更でも不変。
 
 | 待機者 | 起こすもの | 保険 |
 |--------|-----------|------|
-| 親（全タスクの完了待ち） | 子の `dispatch-notify:` メッセージ | 90 分の単発タイマー（`dispatch-timer:`） |
-| Phase A-R の設計ペイン / Phase B-R の実装者 | レビュアーの `review-verdict:` メッセージ | 30 分の単発タイマー（`review-timer:`） |
+| 親（全タスクの完了待ち） | 子の `dispatch-notify:` メッセージ | claude 親のみ 90 分の単発タイマー。**codex 親には保険が無い** |
+| Phase A-R の設計ペイン / Phase B-R の実装者 | レビュアーの `review-verdict:` メッセージ | claude 待機者のみ 30 分の単発タイマー。**codex 待機者には保険が無い** |
 
-タイマーは `sleep` 1 回であってループではなく、engine 中立に武装する: claude は Bash tool を
-`run_in_background` で、codex は `run_in_background` を持たないので自分自身へ遅延メッセージを
-送ってサブシェルごと kill できる形で。verdict は**ファイルが記録、メッセージが起床手段**で、
+タイマーは `sleep` 1 回であってループではないが、**張れるのは claude だけ**である。codex は
+`run_in_background` を持たず、代替として指示されていた「自分宛の遅延メッセージ」も 2026-08-21
+の実測で不発だった（バックグラウンドのサブシェルで sleep してから自分へメッセージを送る
+やり方も、その detached (`nohup`) 版も codex のターン終了で消える。D-T2）。したがって **codex の待機者には保険が存在せず、張ったふりをしてはならない** —
+待機に入る前に依頼相手の到達性を確認し、「保険の無い待機に入った」ことを親へ 1 通報告する。
+all-Codex の無人ループには backstop が 1 つも無いため、`prewarm-panes.sh --unattended` は
+codex 親から呼ばれた時点で die する。`review-timer:` / `dispatch-timer:` label は予約のまま
+残るが、現在これを送る箇所は無い。verdict は**ファイルが記録、メッセージが起床手段**で、
 どの起床でも先に findings ファイルを読み直す（失われうるのはメッセージだけだから）。
 **verdict 行の無いタイマー起床は `needs_work` ではない** — メッセージが来なかったという意味しか
 持たない。再武装は同一ラウンドで 3 回までで、無人ループでは上限に達した時点で

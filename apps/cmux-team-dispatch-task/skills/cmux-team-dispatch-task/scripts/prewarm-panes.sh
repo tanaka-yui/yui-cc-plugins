@@ -17,7 +17,7 @@
 #       [--exec-model <m>] [--exec-effort <e>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
-#       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
+#       [--parent-notify-workspace <ws-id>] [--unattended]
 #
 #   agmsg 使用 (workspace 未作成の状態で呼ぶ。--with-design で design standby も起動し workspace はこのスクリプトが作成):
 #     prewarm-panes.sh --with-design \
@@ -30,7 +30,7 @@
 #       [--exec-model <m>] [--exec-effort <e>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
-#       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
+#       [--parent-notify-workspace <ws-id>] [--unattended]
 #
 # 注意: --agmsg-team を --with-design なしで渡す組み合わせは SKILL からは使用しない
 #       (claude/codex executor の配線のみ行いたい特殊用途向け)
@@ -85,7 +85,6 @@ AGMSG_TEAM=""
 WITH_DESIGN=0
 EXEC_CHOICE=""
 NOTIFY_WORKSPACE=""
-NOTIFY_SURFACE=""
 DESIGN_RUNNER=""
 REVIEWER_RUNNER=""
 DESIGN_ENGINE="claude"
@@ -177,9 +176,9 @@ while [[ $# -gt 0 ]]; do
     --parent-notify-workspace)
       [[ $# -lt 2 ]] && die "--parent-notify-workspace requires a workspace ID"
       NOTIFY_WORKSPACE="$2"; shift 2 ;;
+    # v2.0.0 で削除。launch-workspace.sh 側に読み手が無かったため素通ししていた値も廃止。
     --parent-notify-surface)
-      [[ $# -lt 2 ]] && die "--parent-notify-surface requires a surface ID"
-      NOTIFY_SURFACE="$2"; shift 2 ;;
+      die "--parent-notify-surface was removed: the runner wrapper never read it (cmux notify only takes --workspace); pass --parent-notify-workspace instead" ;;
     *)
       die "unknown option: $1" ;;
   esac
@@ -201,6 +200,16 @@ done
 # AGMSG_TEAM のメタ文字チェックを引数パース直後へ移したのと同じ理由)。
 [[ -n "$AGMSG_TEAM" ]] \
   || die "--agmsg-team is required: prewarmed panes only ever receive work through agmsg send.sh and there is no typed fallback, so a prewarm without agmsg wiring would start panes that nothing can reach"
+
+# 無人ループ (--unattended) × codex 親は受け付けない。codex は自分宛の遅延メッセージで
+# タイマーを張れないと実測済みで (D-T2, 2026-08-21: バックグラウンドのサブシェルで
+# sleep してから自分へ送る形も、その detached 版もターン終了で消える)、codex 親には Step 3 の 90 分
+# safety timer が存在しない。無人ループには聞ける相手もいないので、`dispatch-notify:`
+# が 1 通失われた時点でジョブが静かに消える。ここも fail-fast にする (fallback は作らない)。
+# ペインを 1 つも起動する前に落とす — 孤児 worktree / team member を残さないため。
+if [[ $UNATTENDED -eq 1 && -n "${CODEX_THREAD_ID:-}" ]]; then
+  die "--unattended is refused from a codex parent: codex cannot arm the 90-minute safety timer (measured: a self-addressed delayed message dies with the turn), so an unattended loop would lose the job silently when one dispatch-notify message is lost; run the loop from a claude parent or run this dispatch attended"
+fi
 # この die 以降、後続の `-n "$AGMSG_TEAM"` 判定はすべて常に真である (退役候補。
 # 挙動を変えない純粋なリファクタなので、まとめて外すのは別タスク。CLAUDE.md 項目 47)。
 
@@ -331,23 +340,30 @@ esac
 
 # claude/codex 実装 runner 名をここで解決する。Step 4/5 の起動と in-session 判定の
 # 両方がこの変数を参照するので、起動側とは別の式で再計算して乖離させない。
+# 解決式は上の case の検証式と対称でなければならない (F3)。検証は
+# `--exec-runner` か `--codex-runner` のどちらか一方で通るのに、解決が
+# `$EXEC_RUNNER` だけを見ていると `--codex-runner codex` 単独指定で空文字が
+# launch-workspace.sh へ渡り、engine が黙って claude へ反転する。
+# engine を跨いだ引き継ぎは起こさない: exec_choice=claude のとき EXEC_RUNNER は
+# claude runner 名なので、codex 側は exec_choice が実際に codex のときだけ読む。
 CLAUDE_EXEC_RUNNER=""
 if [[ "$EXEC_CHOICE" == "claude" ]]; then
-  CLAUDE_EXEC_RUNNER="$EXEC_RUNNER"
+  # DESIGN_RUNNER へは落とさない (Finding A の回帰。in-session 判定が誤って
+  # 「設計と実装が同一設定」と結論する)。--claude-runner までで止める。
+  CLAUDE_EXEC_RUNNER="${EXEC_RUNNER:-$CLAUDE_RUNNER}"
 elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
   CLAUDE_EXEC_RUNNER="$CLAUDE_RUNNER"
   [[ -z "$CLAUDE_EXEC_RUNNER" && "$DESIGN_ENGINE" == "claude" ]] && CLAUDE_EXEC_RUNNER="$DESIGN_RUNNER"
 fi
-# exec_choice=claude のとき EXEC_RUNNER は claude runner 名を持つため、無条件で
-# ${EXEC_RUNNER:-$CODEX_RUNNER} にすると codex 用のこの変数が claude runner 名を
-# 引き継んでしまう (実害は START_CODEX=0 で未使用のため無いが、次の変更で罠になる)。
-# CLAUDE_EXEC_RUNNER と対称に、exec_choice が実際に codex のときだけ EXEC_RUNNER を使う。
 CODEX_EXEC_RUNNER=""
 if [[ "$EXEC_CHOICE" == "codex" ]]; then
-  CODEX_EXEC_RUNNER="$EXEC_RUNNER"
+  CODEX_EXEC_RUNNER="${EXEC_RUNNER:-$CODEX_RUNNER}"
 elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
   CODEX_EXEC_RUNNER="$CODEX_RUNNER"
 fi
+# 起動するのに runner 名が解決できていないなら die する。空文字を渡して
+# launch-workspace.sh の既定 (claude) に落ちるのは fallback であり、この設計では禁止。
+[[ $START_CODEX -eq 0 || -n "$CODEX_EXEC_RUNNER" ]] || die "codex executor runner unresolved"
 
 # 役割設定 (engine + model + effort) が完全一致するときは、設計セッションがそのまま
 # 実装するので実装ペインを起動しない。effort を条件に含めるのは、effort がセッション
@@ -401,7 +417,6 @@ command -v git &>/dev/null || die "git is not installed"
 # 空になりうる配列の展開は必ず ${arr[@]+"${arr[@]}"} イディオムを使う
 NOTIFY_FLAGS=()
 [[ -n "$NOTIFY_WORKSPACE" ]] && NOTIFY_FLAGS+=(--parent-notify-workspace "$NOTIFY_WORKSPACE")
-[[ -n "$NOTIFY_SURFACE" ]] && NOTIFY_FLAGS+=(--parent-notify-surface "$NOTIFY_SURFACE")
 
 # ループモードでは、status 所有者になり得る全 standby wrapper に timeout sentinel を
 # 焼き込む。ここで転送しないと prewarm 経路 (既定) では sentinel が効かず、
@@ -527,7 +542,7 @@ DESIGN_SURFACE=""
 if [[ $WITH_DESIGN -eq 1 ]]; then
   # design は engine を問わず同じ readiness 確立句で起動する
   # (AGMSG_DIR / AGMSG_TEAM のメタ文字チェックは引数パース直後に die 済み)。
-  OPUS_PROMPT="$(readiness_clause "$DESIGN_WIRING_TYPE" "$SLUG") Then wait idle. Your task will arrive as an agmsg message. Do not start any work until it arrives."
+  OPUS_PROMPT="$(readiness_clause "$DESIGN_WIRING_TYPE" "$SLUG") Then wait idle. Your task will arrive as an agmsg message. Do not start any work until it arrives. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
 
   if [[ "$DESIGN_ENGINE" == "codex" ]]; then
     log "prewarm" "launching codex design workspace for $SLUG"
@@ -598,7 +613,7 @@ CLAUDE_EXEC_PROMPT=""
 AGMSG_FLAGS_CLAUDE=()
 # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
 if [[ $START_CLAUDE -eq 1 && -n "$AGMSG_TEAM" ]]; then
-  CLAUDE_EXEC_PROMPT="$(readiness_clause claude-code "$SLUG-claude") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive."
+  CLAUDE_EXEC_PROMPT="$(readiness_clause claude-code "$SLUG-claude") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
   AGMSG_FLAGS_CLAUDE=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-claude")
 fi
 
@@ -640,7 +655,7 @@ if [[ $START_CODEX -eq 1 ]]; then
   # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
   if [[ -n "$AGMSG_TEAM" ]]; then
     AGMSG_FLAGS_CODEX=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
-    CODEX_EXEC_PROMPT="$(readiness_clause codex "$SLUG-codex") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive."
+    CODEX_EXEC_PROMPT="$(readiness_clause codex "$SLUG-codex") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
   fi
   log "prewarm" "launching codex standby pane for $SLUG"
   # CODEX_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
@@ -709,7 +724,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
   REVIEW_PROMPT=""
   # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
   if [[ -n "$AGMSG_TEAM" ]]; then
-    REVIEW_PROMPT="$(readiness_clause "$REVIEW_WIRING_TYPE" "$SLUG-review") Then wait idle. Review requests will arrive as an agmsg message. Do not start any work until a request arrives."
+    REVIEW_PROMPT="$(readiness_clause "$REVIEW_WIRING_TYPE" "$SLUG-review") Then wait idle. Review requests will arrive as an agmsg message. Do not start any work until a request arrives. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
   fi
   if REVIEW_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \

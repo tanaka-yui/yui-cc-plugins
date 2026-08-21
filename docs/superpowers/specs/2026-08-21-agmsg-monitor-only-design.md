@@ -62,6 +62,23 @@ Phase B-R の実装者、親オーケストレータのいずれかが codex の
 あるつもりで眠る）。最低限、指示を実態に合わせる必要がある。より良い機構
 （`launch-workspace.sh` は codex のサンドボックス外で動くので、そこで張る等）は後続の課題。
 
+**2026-08-22 の対処（v2.0.0 で merge する範囲）**: 機構は変えず、指示文を実態に合わせた。
+
+- codex 待機者・codex 親の分岐から自己タイマーの指示を全削除し、「**この engine には保険が
+  無い**」と明記した（`SKILL.md` Phase A-R / Phase B-R / Step 1g / Step 3、
+  `launch-workspace.sh` の `REVIEW_INSTRUCTION`、`references/unattended/code-review-block.md`
+  と `review-block.md`、`guide-ja.md` / `README.md` / `CLAUDE.md`）
+- 代替として、codex 待機者には「待機に入る前に依頼相手の到達性を確認し、待機に入ったことを
+  親へ `dispatch-notify:` で 1 通報告する」を課した
+- **無人ループ（`--unattended`）× codex 親は `prewarm-panes.sh` が die する**ようにした
+  （`test-prewarm-unattended.sh` の U10 / U10b が固定）。無人ループには聞ける相手がいないので、
+  保険ゼロの構成を走らせない
+- `review-timer:` / `dispatch-timer:` label は**予約のまま残す**が、現在これを送る箇所は無い
+  （後続の timer broker が再利用できるようにするため）
+- 検査は `test-delivery-callsites.sh` の CS7 を engine 別に分割し（claude=タイマーがある /
+  codex=保険が無いと書かれている + 自己タイマーの指示が復活していない）、
+  `test-launch-workspace-review-config.sh` の T3b を同じ形にした
+
 #### F2 (Important) 「待て」とだけ言うと codex がポーリングを再発明する
 
 readiness 句の「Then wait idle. Execution instructions will arrive as an agmsg message.」を
@@ -360,6 +377,37 @@ V1 の教訓は「静的検査だけで通したら前提が間違っていた�
 3 プラグインとも major bump。スクリプトと CLI フラグの削除を含む破壊的変更である。
 `apps/<name>/.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` / ルートの
 `.claude-plugin/marketplace.json` の 3 箇所を同期する。
+
+## 後続の課題（別 PR）
+
+このブランチ（v2.0.0）では扱わず、記録だけ残す項目。
+
+### F1 の機構変更: timer broker（E2E 必須）
+
+codex の待機者は自分でタイマーを張らず、`timer-request: <round> <seconds>` を claude の親へ
+送る。親は期限で `review-timer:` を送り返す。**実測済みの唯一の機構（親の background sleep +
+agmsg push）を再利用できる**のが利点で、`review-timer:` / `dispatch-timer:` label をそのまま
+使える。codex 親しかいない構成では broker が立たないので、そこは今と同じく「保険なし」の
+ままになる。この変更は指示文だけでは閉じないため、実ペインでの E2E を必須とする。
+
+### I3: 配送コントラクトの read cursor 排他が実装にも指示にも無い
+
+`## 配送コントラクト` は read cursor の排他を要件として書いているが、実装されたのは
+「起きたら `history.sh` を読む」という**事後の緩和策だけ**である。レビュアーの推奨は
+`verify-agmsg-ready.sh --self` に競合 watcher の検出（約 10 行）を足すこと。
+**計画と実装の乖離**なので、実装を足すか spec の記述を実態に合わせるかを決める必要がある。
+
+### 小さいもの
+
+- **M2**: `render-loop-prompt.sh:34` が `send.sh` のパスをハードコードしている
+  （他の呼び出しは `AGMSG_SEND` で差し替え可能）
+- **M3**: `prewarm.json` の `wired: true` は常に真の定数フィールド。フォールバックが無い以上
+  `false` になる経路が存在しないので、診断としても意味を持たない
+- **`guide-ja.md` のタイムアウト粒度の記述が重複**している
+- **`prewarm-panes.sh` の死んだ条件**（`--agmsg-team` 必須化以降、後続 9 箇所の
+  `[[ -n "$AGMSG_TEAM" ]]` は常に真。`CLAUDE.md` 項目 47）
+- **`test-runner-terminal-status.sh` が 84 秒**かかる。テスト全体の直列実行が 2 分を超える
+  主因である
 
 ## 適用範囲外
 

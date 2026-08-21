@@ -25,9 +25,9 @@ dispatch の通知経路と待機条件を確認するときの参照資料。�
 | P6 | 無人ループ文面に abort 経路が無い | `references/unattended/code-review-block.md:1` | loop で通知不能 | 文面を追加 |
 | P7 | workspace 起動に --defer-status が無い | `SKILL.md:1513-1534` | Child が孫の status を上書き | フラグを追加 |
 | P8 | assigned から deferred の窓で二重通知する | `SKILL.md:741-801` | 二重通知 | foreign assignment を watcher が抑止 |
-| P9 | agmsg watcher が起動せず inbox 記録が全ロールで落ちる | `SKILL.md` の AGMSG-DIRECTIVE 依存 | Monitor ツールを持たないハーネスで watcher ゼロ | setup guard `ensure-agmsg-ready.sh` を追加（v1.20.0）。**v1.21.0 で guard ごと廃止** — watcher は SessionStart hook が要求する `Monitor` tool 自身であり、スキルは `verify-agmsg-ready.sh` で生存を確認するだけになった <!-- stale-vocab-exempt: ensure-agmsg-ready.sh --> |
-| U1 | status.json を書かずに沈黙する | `SKILL.md:1159-1172`。terminal 遷移が無く watcher は発火できない | 親が無期限待機 | **解消（v1.21.0）**: 親はペイン起動直後に 90 分の単発タイマーを武装する。その起床で `.dispatch/*/status.json` と `history.sh` の `[ready]` を読み直し、ペイン生存を 1 回リトライ付きで確認して再武装（3 回上限）または `error` 確定へ進む |
-| U9 | `/clear` 後に watcher が戻らない | guard は初期プロンプトから 1 回だけ走るので、新しい session id で旧 watcher が自己終了したあと再実行する経路が無かった | そのペインの inbox 記録が止まる | **解消（v1.21.0）**: guard を廃止し、watcher は SessionStart hook が要求する `Monitor` tool になった。`/clear` はその hook を再発火させるので watcher は自力で戻る |
+| P9 | agmsg watcher が起動せず inbox 記録が全ロールで落ちる | `SKILL.md` の AGMSG-DIRECTIVE 依存 | Monitor ツールを持たないハーネスで watcher ゼロ | setup guard `ensure-agmsg-ready.sh` を追加（v1.20.0）。**v2.0.0 で guard ごと廃止** — watcher は SessionStart hook が要求する `Monitor` tool 自身であり、スキルは `verify-agmsg-ready.sh` で生存を確認するだけになった <!-- stale-vocab-exempt: ensure-agmsg-ready.sh --> |
+| U1 | status.json を書かずに沈黙する | `SKILL.md:1159-1172`。terminal 遷移が無く watcher は発火できない | 親が無期限待機 | **解消（v2.0.0）**: 親はペイン起動直後に 90 分の単発タイマーを武装する。その起床で `.dispatch/*/status.json` と `history.sh` の `[ready]` を読み直し、ペイン生存を 1 回リトライ付きで確認して再武装（3 回上限）または `error` 確定へ進む |
+| U9 | `/clear` 後に watcher が戻らない | guard は初期プロンプトから 1 回だけ走るので、新しい session id で旧 watcher が自己終了したあと再実行する経路が無かった | そのペインの inbox 記録が止まる | **解消（v2.0.0）**: guard を廃止し、watcher は SessionStart hook が要求する `Monitor` tool になった。`/clear` はその hook を再発火させるので watcher は自力で戻る |
 
 ## 未解決として記録するパターン
 
@@ -40,14 +40,14 @@ dispatch の通知経路と待機条件を確認するときの参照資料。�
 | U8 | 最初の poll 前の signal 終了 | `launch-workspace.sh:925-931`、`test/test-runner-signal-exit.sh:97-100`。既存 signal guard の重複通知抑止を維持する |
 
 U2（handoff 失敗時の所有権移譲）と U4（send 成功・send-key 失敗の部分配信）は、どちらも
-`cmux send` / `cmux send-key` による配送の観測不能性が根拠だった。v1.21.0 で配送経路が
+`cmux send` / `cmux send-key` による配送の観測不能性が根拠だった。v2.0.0 で配送経路が
 agmsg `send.sh` の 1 回呼び出しに置き換わり、配送の成否は終了コードで確定するようになったため
 **この 2 件は削除した**。
 
 ## monitor 専用化の残余リスク
 
 `docs/superpowers/specs/2026-08-21-agmsg-monitor-only-design.md` が要求する記録。
-**2026-08-21 の v1.21.0 で dispatch も移行済み**（`cmux-codex-review` / `cmux-codex-exec` は先行）。
+**2026-08-21 の v2.0.0 で dispatch も移行済み**（`cmux-codex-review` / `cmux-codex-exec` は先行）。
 
 | ID | 症状 | 根拠・判断理由 |
 |---|---|---|

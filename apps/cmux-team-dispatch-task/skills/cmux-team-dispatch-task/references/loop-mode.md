@@ -137,6 +137,13 @@ arguments for a fixed all-Codex unattended task are:
 --exec-choice codex --exec-runner codex --exec-engine codex
 ```
 
+**The parent that runs this loop must be a claude session.** `prewarm-panes.sh
+--unattended` dies when it is called from a codex parent: codex cannot arm the 90-minute
+safety timer (a self-addressed delayed message dies with the turn, measured as D-T2), and
+an unattended loop has nobody to ask, so one lost `dispatch-notify:` would make the job
+vanish silently. The all-Codex role tuple above is about the CHILD panes; it says nothing
+about the loop driver.
+
 Do not add a different engine or model merely to fill a pane. Pass the timeout sentinel
 only to roles that `prewarm.json` actually instantiates.
 

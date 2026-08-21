@@ -283,5 +283,39 @@ design_design=$(grep -F -- '--role plan' "$TMP/argv.log" || true)
   && ok 'U9 --with-opus と --with-design は同じ design-role request を作る' \
   || bad 'U9 --with-opus と --with-design の design-role request が異なる'
 
+# --- U10 (F1): 無人ループ (--unattended) × codex 親は die する。
+#     codex は自分宛の遅延タイマーを張れないと実測済み (D-T2) なので codex 親には Step 3 の
+#     90 分 safety timer が無く、無人ループには聞ける相手もいない。したがって
+#     dispatch-notify が 1 通失われた時点でジョブが静かに消える。
+#     **ペインを 1 つも起動する前に**落ちること (孤児 worktree / team member を残さない)。
+#     反例: この die が無い素朴な実装では argv.log にペイン行が並び rc=0 になる ---
+: > "$TMP/argv.log"
+: > "$TMP/agmsg.log"
+mkdir -p "$TMP/repo-u10"
+u10_rc=0
+u10_out=$(ARGV_LOG="$TMP/argv.log" AGMSG_LOG="$TMP/agmsg.log" AGMSG_DIR="$TMP/agmsg" \
+  CODEX_THREAD_ID=thread-u10 \
+  bash "$TMP/scripts/prewarm-panes.sh" \
+    --with-design --agmsg-team demo-team --unattended \
+    --cwd "$TMP/repo-u10" --slug u10 --status-dir "$TMP/status-u10" 2>&1) || u10_rc=$?
+if [[ $u10_rc -eq 0 ]]; then
+  bad "U10 --unattended × codex 親が die しなかった: $u10_out"
+elif ! grep -Fq -- '--unattended is refused from a codex parent' <<<"$u10_out"; then
+  bad "U10 die はしたがメッセージが期待と違う: $u10_out"
+else
+  ok 'U10 --unattended × codex 親は die する'
+fi
+[[ ! -s "$TMP/argv.log" ]] \
+  && ok 'U10 die する前にペインを 1 つも起動しない' \
+  || bad "U10 die 前にペインを起動した: $(cat "$TMP/argv.log")"
+[[ ! -s "$TMP/agmsg.log" ]] \
+  && ok 'U10 die する前に agmsg join / delivery を呼ばない' \
+  || bad "U10 die 前に agmsg を呼んだ: $(cat "$TMP/agmsg.log")"
+# U10b: claude 親 (CODEX_THREAD_ID 無し) の --unattended は従来どおり通る
+run_prewarm --unattended
+[[ -s "$TMP/argv.log" ]] \
+  && ok 'U10b claude 親の --unattended は従来どおりペインを起動する' \
+  || bad 'U10b claude 親の --unattended まで殺している'
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

@@ -77,7 +77,6 @@
 #                                      強制付与する。他モードでは警告して無視
 #   --status-dir <path>                Directory for writing status files
 #   --parent-notify-workspace <ws-id>  Workspace to notify on completion
-#   --parent-notify-surface <sf-id>    Surface to notify on completion
 #   --runner <name>                    Runner name to look up in
 #                                      ~/.claude/cmux-team-dispatch-task/runners.json.
 #                                      Resolves command/engine and role-specific plan/review/exec
@@ -187,7 +186,6 @@ STANDBY_SPLIT_FROM=""
 STANDBY_SPLIT_DIRECTION="down"
 STATUS_DIR=""
 NOTIFY_WORKSPACE=""
-NOTIFY_SURFACE=""
 RUNNER_NAME=""
 WORKSPACE_NAME=""
 PROMPT=""
@@ -299,13 +297,12 @@ while [[ $# -gt 0 ]]; do
       NOTIFY_WORKSPACE="$2"
       shift 2
       ;;
-    --parent-notify-surface)
-      [[ $# -lt 2 ]] && die "--parent-notify-surface requires a surface ID"
-      NOTIFY_SURFACE="$2"
-      shift 2
-      ;;
     --runner)
       [[ $# -lt 2 ]] && die "--runner requires a runner name"
+      # 空文字は「指定なし」と同じ扱いになり、runners.json を引かずに既定 (claude) へ
+      # 落ちる。呼び出し側で runner 名の解決に失敗したときに engine が黙って反転する
+      # ため、ここで落とす (F3 をクラス単位で塞ぐ)。
+      [[ -n "$2" ]] || die "--runner requires a non-empty runner name"
       RUNNER_NAME="$2"
       shift 2
       ;;
@@ -323,6 +320,12 @@ while [[ $# -gt 0 ]]; do
       AGMSG_FROM="$2"
       shift 2
       ;;
+    # v2.0.0 で削除。runner wrapper へ NOTIFY_SF として書き出していたが読み手が無く
+    # (cmux notify は --workspace しか取らない)、渡した側は通知先を指定したつもりで
+    # 黙って無視されていた。未知オプションは workspace 名として飲まれてしまうので、
+    # ここで明示的に die する。
+    --parent-notify-surface)
+      die "--parent-notify-surface was removed: the runner wrapper never read it (cmux notify only takes --workspace); pass --parent-notify-workspace instead" ;;
     *)
       if [[ -z "$WORKSPACE_NAME" ]]; then
         WORKSPACE_NAME="$1"
@@ -417,11 +420,13 @@ fi
 #   --review-config … REVIEW_INSTRUCTION / ABORT_REVIEW_STEP に空の team / sender が
 #       補間され、実行不能な指示が子のプロンプトに焼き込まれる。
 #
-# **--parent-notify-workspace / --parent-notify-surface は条件に入れない。**
-# この 2 つは wrapper 内で `cmux notify` のデスクトップ通知にしか使われず
-# (:1233 付近)、agmsg の親通知とは独立した機構である。両者を混同すると
-# 「デスクトップ通知だけ欲しい launch」を殺し、逆に「--parent-notify-* 無しで
-# status-dir だけの launch」の無通知を見逃す。
+# **--parent-notify-workspace は条件に入れない。**
+# これは wrapper 内で `cmux notify` のデスクトップ通知にしか使われず、agmsg の
+# 親通知とは独立した機構である。両者を混同すると「デスクトップ通知だけ欲しい
+# launch」を殺し、逆に「--parent-notify-workspace 無しで status-dir だけの launch」の
+# 無通知を見逃す。(対になっていた `--parent-notify-surface` は v2.0.0 で削除した:
+# runner wrapper が書き出す NOTIFY_SF に読み手が無く、`cmux notify` は --workspace
+# しか取らないため。)
 if [[ -z "$AGMSG_TEAM" || -z "$AGMSG_FROM" ]]; then
   if [[ -n "$STATUS_DIR" ]]; then
     die "--status-dir requires --agmsg-team and --agmsg-from: the runner wrapper owns the parent completion notification and agmsg send.sh is the only delivery channel (there is no typed fallback)"
@@ -812,7 +817,7 @@ if [[ "$MODE" == "execute" ]]; then
       *) log "warn" "review config has unknown reviewer_engine=$REVIEWER_ENGINE; skipping parallel directive" ;;
     esac
     # (1)(2) は対話有無で変わらない共通部分
-    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 5 rounds. Each round: (1) request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: the team $AGMSG_TEAM, the sender $AGMSG_FROM, the recipient $REVIEWER_AGENT, and the whole message text as a single quoted argument. A non-zero exit means the reviewer was NOT told, so report that instead of waiting. The message text starts with the prefix review-code: and then reads: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. After writing that file, notify me with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: the team $AGMSG_TEAM, the sender $REVIEWER_AGENT, the recipient $AGMSG_FROM, and as a single quoted argument a message that starts with the prefix review-verdict: followed by code-round-N and then the verdict word, approve or needs_work. The file is the record and that message is the only thing that wakes me, so without it I never learn the review finished. From round 2 include your rebuttals to the findings you rejected, with reasons.${REVIEWER_PARALLEL} (2) then arm ONE single-shot safety timer, a single 30 minute sleep and never a loop, and then stop and wait. Arm it the way your own engine allows: as a claude session, run sleep 1800 as a background Bash task; as a codex session you have no such tool and a bare background sleep never resumes your turn, so start a background subshell that sleeps 1800 and then calls $AGMSG_SEND with exactly four arguments in this order: the team $AGMSG_TEAM, the sender $AGMSG_FROM, the recipient $AGMSG_FROM, and as a single quoted argument a message starting with the prefix review-timer: followed by code-round-N -- that self addressed message arrives over your bridge seat and is what resumes you. Do NOT poll the verdict file and do NOT watch the reviewer pane. The reviewer sends you a message whose body starts with review-verdict: once the file is ready, and that message resumes you; stop that timer as soon as it arrives, which means TaskStop for claude and killing that background subshell for codex. Match that message by the review-verdict: prefix plus the round id as a substring, never by an exact whole line match. On ANY wake, whether the message or the timer, re-read $REVIEW_DIR/code-round-N.md before deciding anything: only the message can be lost, so a timer wake with a VERDICT line already in the file means the review finished. If the review-verdict: message arrives but the file has no VERDICT line, treat it as VERDICT: needs_work and say so in your next request. A timer wake with no VERDICT line is NOT a verdict and says nothing about the review, so handle it under (3) and never start a new round on it. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. If the timer fires while $REVIEW_DIR/code-round-N.md still has no VERDICT line, check whether the reviewer is alive by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces, and a transient failure must not be read as a dead pane, so retry it once. Still working means re-arm the same timer and keep waiting, at most 3 re-arms for this round. Otherwise re-send the same round once and re-arm the timer. "
+    REVIEW_INSTRUCTION="MANDATORY CODE REVIEW: after all changes are committed and BEFORE creating the PR, you must get a code review approval. Round N starts at 1, max 5 rounds. Each round: (1) request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: the team $AGMSG_TEAM, the sender $AGMSG_FROM, the recipient $REVIEWER_AGENT, and the whole message text as a single quoted argument. A non-zero exit means the reviewer was NOT told, so report that instead of waiting. The message text starts with the prefix review-code: and then reads: code review round N: review the committed changes on this branch against the plan at $PLAN_FILE and write findings to $REVIEW_DIR/code-round-N.md whose LAST line must be VERDICT: approve or VERDICT: needs_work. After writing that file, notify me with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: the team $AGMSG_TEAM, the sender $REVIEWER_AGENT, the recipient $AGMSG_FROM, and as a single quoted argument a message that starts with the prefix review-verdict: followed by code-round-N and then the verdict word, approve or needs_work. The file is the record and that message is the only thing that wakes me, so without it I never learn the review finished. From round 2 include your rebuttals to the findings you rejected, with reasons.${REVIEWER_PARALLEL} (2) then stop and wait. As a claude session, first arm ONE single-shot safety timer, a single 30 minute sleep and never a loop, by running sleep 1800 as a background Bash task. As a codex session you have NO safety net for this wait and you cannot build one: a background subshell that first sleeps and then messages you was measured on 2026-08-21 and it dies the moment your turn ends, so do NOT write one -- a timer that looks armed but never fires is worse than no timer, because you would stop believing you are covered. As a codex session do these two things instead, before you stop: first check that the reviewer is alive by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces and a transient failure must not be read as a dead pane, so retry it once, and if the reviewer is gone report that now instead of waiting for a verdict that can never appear; second send ONE message with $AGMSG_SEND, passing exactly four arguments in this order: the team $AGMSG_TEAM, the sender $AGMSG_FROM, the recipient parent, and as a single quoted argument a message starting with the prefix dispatch-notify: followed by $AGMSG_FROM and then the words waiting for code review verdict, this engine has no timer -- that one line is what lets a human notice a waiter that never came back. Do NOT poll the verdict file and do NOT watch the reviewer pane. The reviewer sends you a message whose body starts with review-verdict: once the file is ready, and that message resumes you; as a claude session stop that timer as soon as it arrives, which means TaskStop, and as a codex session there is nothing to stop. Match that message by the review-verdict: prefix plus the round id as a substring, never by an exact whole line match. On ANY wake, whether the message or the timer, re-read $REVIEW_DIR/code-round-N.md before deciding anything: only the message can be lost, so a timer wake with a VERDICT line already in the file means the review finished. If the review-verdict: message arrives but the file has no VERDICT line, treat it as VERDICT: needs_work and say so in your next request. A timer wake with no VERDICT line is NOT a verdict and says nothing about the review, so handle it under (3) and never start a new round on it. (3) On VERDICT: approve proceed to the PR. On VERDICT: needs_work apply the findings you judge valid, commit, and start round N+1. If the timer fires while $REVIEW_DIR/code-round-N.md still has no VERDICT line (claude only -- as a codex session no timer will ever fire), check whether the reviewer is alive by running: $READ_SCREEN_CMD -- read-screen returns live content even for unfocused workspaces, and a transient failure must not be read as a dead pane, so retry it once. Still working means re-arm the same timer and keep waiting, at most 3 re-arms for this round. Otherwise re-send the same round once and re-arm the timer. "
     if [[ $UNATTENDED -eq 1 ]]; then
       # 無人ループ: 判断を求めず固定のフォールバックを取る。文中にクォート文字を使わないこと
       REVIEW_INSTRUCTION="${REVIEW_INSTRUCTION}If round 5 still ends with needs_work, note the unresolved findings in the PR body and proceed to the PR. If the re-armed timer also fires with no VERDICT line after that one re-send, or the 3 re-arms are used up, skip the review, note the skipped review in the PR body, and proceed to the PR. No interactive user is attached to this session, so never wait for a human decision. "
@@ -1043,8 +1048,6 @@ write_status() {
 }
 
 NOTIFY_WS="${NOTIFY_WORKSPACE}"
-# 退役候補 (CLAUDE.md 項目 47): NOTIFY_SF に読み手は無い (cmux notify は --workspace のみ)
-NOTIFY_SF="${NOTIFY_SURFACE}"
 NOTIFIED_FILE=""
 [[ -n "\$STATUS_DIR" ]] && NOTIFIED_FILE="\$STATUS_DIR/.notified-\$SLUG"
 

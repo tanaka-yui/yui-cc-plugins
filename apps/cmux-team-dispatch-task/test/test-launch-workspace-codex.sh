@@ -222,6 +222,21 @@ else
   fail=1
 fi
 
+# --- LW3 (F3): --runner に空文字を渡したら die する。空は「指定なし」と同じ扱いになり
+#     runners.json を引かずに既定 (claude) へ落ちるため、呼び出し側の runner 解決漏れが
+#     engine の黙った反転になる。素朴な実装 (`[[ $# -lt 2 ]]` だけ) はこれを通す ---
+lw3_bad=0
+lw3_out=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SEND="$STUB_AGMSG_SEND" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner '' \
+  --status-dir "$TMP/status" lw3 2>&1) && lw3_bad=1
+# 終了コードだけでは足りない (別の理由で落ちても緑になる)。die の文面まで固定する。
+if [[ $lw3_bad -eq 0 ]] && grep -Fq 'non-empty runner name' <<<"$lw3_out"; then
+  echo 'PASS: LW3 --runner with an empty value must die'
+else
+  echo "FAIL: LW3 --runner with an empty value must die (rc_bad=$lw3_bad out=$lw3_out)"
+  fail=1
+fi
+
 # --- hook trust: codex 0.145 は project-local .codex/hooks.json ごとに信頼を求める。
 # agmsg が worktree ごとに新しい hooks.json を生成するためパスが毎回変わり、常に未信頼と
 # 判定されて起動直後に承認待ちで停止する。approvals-and-sandbox のバイパスとは別フラグ。 ---
@@ -505,7 +520,7 @@ assert_contains "$SKILL_MD_FLAT" \
 # 受け取らないため、実装者が依頼文へ転記するこの 1 箇所が唯一の注入点になる。
 # 引用部分は宛先マーカーで挟み、実装者が自分宛と誤読しないようにする。
 assert_contains "$SKILL_MD_FLAT" \
-  'append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) then arm ONE single-shot safety timer' \
+  'append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) then end your turn.' \
   'PL10 SKILL.md 共通プロトコル a はレビュー依頼文へ宛先マーカー付きでディレクティブを転記する'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

@@ -203,6 +203,6 @@ stream 出力を idle セッションへ注入する経路が存在しなかっ�
 `codex-record-session.sh` で seat を記録しさえすれば idle でも受信できる。`~/.zshrc` の変更は
 不要だった（`codex-shim.sh` 経由の bridge が既に入っていた）。
 
-2026-08-21 の v1.21.0 で `cmux-team-dispatch-task` はこの結論に沿って移行済みである。配送は
+2026-08-21 の v2.0.0 で `cmux-team-dispatch-task` はこの結論に沿って移行済みである。配送は
 agmsg `send.sh` の 1 回呼び出しだけになり、タイプ入力・outbox・Enter 検証・ポーリング監視は
 すべて削除された。

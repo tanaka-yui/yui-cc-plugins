@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 日本語ドキュメントに旧語彙が残っていないことの静的検査。
 #
-# 由来: v1.21.0 の monitor 専用化で SKILL.md と英語 references は更新されたのに、
+# 由来: v2.0.0 の monitor 専用化で SKILL.md と英語 references は更新されたのに、
 # guide-ja.md / README.md / CLAUDE.md の日本語側だけが旧ポーリング記述と削除済み
 # スクリプト名を丸ごと抱えたまま取り残された。これを検知していたテストが 1 つも
 # 無かったのが根本原因である — `test-delivery-callsites.sh` の CS5 は

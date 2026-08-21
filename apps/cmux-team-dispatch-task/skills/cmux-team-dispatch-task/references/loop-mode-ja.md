@@ -113,6 +113,8 @@ prompt renderer には解決済み role tuple を渡す: `--design-runner` / `--
 --exec-choice codex --exec-runner codex --exec-engine codex
 ```
 
+**このループを回す親は claude セッションでなければならない。** `prewarm-panes.sh --unattended` は codex 親から呼ばれると die する: codex は 90 分の safety timer を張れず（自分宛の遅延メッセージはターン終了で消える。実測 D-T2）、無人ループには聞ける相手もいないので、`dispatch-notify:` が 1 通失われただけでジョブが静かに消えるためである。上の all-Codex の role tuple は**子ペイン**の話であって、ループを回す親については何も言っていない。
+
 ペインを埋めるためだけに別 engine/model を追加しない。timeout sentinel は `prewarm.json` に実在する role にだけ渡す。
 
 スクリプトで待たない。batch を dispatch したらターンを閉じる。各子の `dispatch-notify` メッセージがこのセッションを起こす。起きるたびに `.dispatch/*/status.json` から loop state file を再導出し（Step 3 が説明する再導出と同じ手順）、各 issue の terminal status と `pr_url` を `issue-fetch.sh --state-file <path> heartbeat` を先に呼んでから書き込む — こうすることで lock owner チェックを書き込みより先に必ず通す。

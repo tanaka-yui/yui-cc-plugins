@@ -14,6 +14,11 @@
 #   GB5. claude 親で watcher が無い → exit 1、理由は watcher 不在。seat の話はしない
 #   GB6. どちらの id も無い (判定不能 = rc 2) → exit 1 だが理由は usage error であり、
 #        「watcher が無い」と断定してはならない
+#   GB7. Step 3「起床のたびに再導出する」の readiness 検査ブロックも同じ PARENT_ENGINE
+#        分岐を持つ: codex 親 + seat 記録済み → rc 0
+#   GB8. 同ブロックで codex 親 + seat 無し → rc 1。**rc 2 になってはならない**
+#        (無条件 --self は codex 親で必ず rc 2 になり、SKILL.md 自身の「rc 2 = 判定不能
+#         なので停止」規約に従うと all-Codex ディスパッチが最初の起床で自滅する)
 
 set -uo pipefail
 
@@ -64,6 +69,30 @@ run_guard() {  # 環境変数は呼び出し側で env として渡す
   env -i HOME="$HOME_DIR" PATH="$TMP/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     STUB_REPO="$TMP/repo" "$@" \
     bash -c 'set -e; source "$0"' "$GUARD_RUN" 2>&1
+}
+
+# --- Step 3 (起床のたびに状態を再導出する) の readiness 検査ブロックを抽出する。
+#     アンカーは SKILL.md 側のコメント 1 行。Step 1g と同じ分岐であることを、静的な
+#     文字列一致ではなく実行で固定する ---
+WAKE_SRC="$TMP/wake.sh"
+awk '
+  /^```bash$/ { buf=""; capture=1; next }
+  capture && /^```$/ { if (buf ~ /wake-readiness/) { printf "%s", buf; exit } capture=0; next }
+  capture { buf = buf $0 "\n" }
+' "$SKILL" > "$WAKE_SRC"
+if ! grep -q 'verify-agmsg-ready.sh' "$WAKE_SRC"; then
+  echo "FAIL GB0: Step 3 の起床時 readiness ブロックを抽出できなかった (アンカー wake-readiness が無い?)"
+  exit 1
+fi
+WAKE_RUN="$TMP/wake-run.sh"
+sed -e "s|<SKILL_DIR>|$SKILL_STUB|g" "$WAKE_SRC" > "$WAKE_RUN"
+# ブロック自身は exit しないので、source した後に WAKE_READY_RC を出力させて判定する
+printf '\necho "WAKE_READY_RC=$WAKE_READY_RC"\n' >> "$WAKE_RUN"
+
+run_wake() {  # 環境変数は呼び出し側で env として渡す
+  env -i HOME="$HOME_DIR" PATH="$TMP/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    STUB_REPO="$TMP/repo" "$@" \
+    bash -c 'source "$0"' "$WAKE_RUN" 2>&1
 }
 
 install_agmsg() { : > "$AGMSG_SCRIPTS/send.sh"; }
@@ -136,6 +165,28 @@ elif grep -Fq 'UNDETERMINED' <<<"$out" && grep -Fq 'usage error' <<<"$out"; then
   pass 'GB6 判定不能は usage error として報告され、watcher 不在とは断定しない'
 else
   bad "GB6 理由の文面が usage error になっていない: $out"
+fi
+
+# --- GB7: Step 3 の起床時検査、codex 親 / seat 記録済み → rc 0 ---
+clear_run
+install_agmsg
+printf 'thread-1\n' > "$RUN_DIR/codex-bridge.$TEAM_EXPECTED.parent.thread"
+out=$(run_wake CODEX_THREAD_ID=thread-1)
+if grep -Fq 'WAKE_READY_RC=0' <<<"$out"; then
+  pass 'GB7 起床時検査は codex 親 / seat 記録済みを rc 0 と判定する'
+else
+  bad "GB7 out=[$out]"
+fi
+
+# --- GB8: Step 3 の起床時検査、codex 親 / seat 無し → rc 1 (rc 2 ではない) ---
+clear_run
+out=$(run_wake CODEX_THREAD_ID=thread-1)
+if grep -Fq 'WAKE_READY_RC=2' <<<"$out"; then
+  bad "GB8 起床時検査が codex 親へ --self を投げている (rc 2 = 判定不能。最初の起床で自滅する): $out"
+elif grep -Fq 'WAKE_READY_RC=1' <<<"$out"; then
+  pass 'GB8 起床時検査は codex 親 / seat 無しを rc 1 (到達不能) と判定する'
+else
+  bad "GB8 out=[$out]"
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

@@ -145,12 +145,19 @@ assert_not_contains "$runner_file" '--to-surface' 'T2 旧配送 (surface/workspa
 assert_not_contains "$runner_file" '--to-workspace' 'T2 旧配送 (surface/workspace 宛) のフラグが残っていない (workspace)'
 # T3: verdict 待ちは push (review-verdict メッセージ) + 単発タイマー 1 本であること。
 # ポーリング文言が復活しても、タイマーや通知指示が落ちても、どちらでも落ちる形にする。
-assert_contains "$runner_file" 'arm ONE single-shot safety timer, a single 30 minute sleep and never a loop' 'T3 単発タイマー 1 本の指示がある'
+assert_contains "$runner_file" 'arm ONE single-shot safety timer, a single 30 minute sleep and never a loop' 'T3 単発タイマー 1 本の指示がある (claude 側)'
 assert_contains "$runner_file" 'prefix review-verdict: followed by code-round-N' 'T3 依頼文がレビュアーへ verdict 通知を求める'
 assert_contains "$runner_file" 'On ANY wake, whether the message or the timer, re-read' 'T3 どの wake でも verdict ファイルを読み直す規則がある'
-# codex の子は run_in_background を持たないので、自分宛の遅延メッセージ経路が要る
-assert_contains "$runner_file" 'as a codex session you have no such tool' 'T3 タイマーの張り方がエンジン中立である'
-assert_contains "$runner_file" 'prefix review-timer: followed by code-round-N' 'T3 codex は自分宛 review-timer で起きる'
+# T3b (F1): タイマーは claude 専用であること。codex には自分宛の遅延タイマーが張れないと
+# 実測済み (D-T2) なので、依頼文は「保険が無い」と書き、代替として (a) 依頼相手の生存確認と
+# (b) 親への 1 通報告を求める。素朴な実装 — 「エンジン中立にタイマーを張れ」と書いたまま
+# codex 分岐だけ消す — は、この 3 本のうち下 2 本で落ちる。
+assert_contains "$runner_file" 'As a claude session, first arm ONE single-shot safety timer' 'T3b タイマーは claude 専用と明示される'
+assert_contains "$runner_file" 'As a codex session you have NO safety net for this wait and you cannot build one' 'T3b codex には保険が無いと明示される'
+assert_contains "$runner_file" 'the recipient parent, and as a single quoted argument a message starting with the prefix dispatch-notify:' 'T3b codex は保険の無い待機に入ったことを親へ 1 通報告する'
+# 動かないと実測された自己タイマーの指示が復活していないこと
+assert_not_contains "$runner_file" 'prefix review-timer:' 'T3b 自分宛 review-timer の指示が復活していない'
+assert_not_contains "$runner_file" 'start a background subshell' 'T3b 不発と実測された background subshell の指示が復活していない'
 # タイマー起床を needs_work と読み替えないこと (空振りのラウンド N+1 を防ぐ)
 assert_contains "$runner_file" 'If the review-verdict: message arrives but the file has no VERDICT line' 'T3 needs_work 読み替えはメッセージ到着時に限定される'
 assert_contains "$runner_file" 'A timer wake with no VERDICT line is NOT a verdict' 'T3 タイマー起床は verdict ではないと明示される'
@@ -254,21 +261,28 @@ assert_die 'T10b agmsg 未配線の --review-config は die する' '--review-co
   --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" --no-parallel \
   --review-config "$TMP/status/review/code-review.json" guard-nowire-review
 
-# T11 (退行防止): --parent-notify-workspace / --parent-notify-surface だけでは die しない。
-# この 2 つは wrapper 内で `cmux notify` のデスクトップ通知にしか使われず、agmsg の親通知
+# T11 (退行防止): --parent-notify-workspace だけでは die しない。
+# これは wrapper 内で `cmux notify` のデスクトップ通知にしか使われず、agmsg の親通知
 # とは独立した機構である。ここを die 条件に混ぜると「デスクトップ通知だけ欲しい launch」
 # (--status-dir を持たない素の起動) を殺してしまう — fix round 1 で実際に持ち込んだ退行。
 t11_out="$TMP/t11.out"; t11_err="$TMP/t11.err"
 if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
    AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
    --cwd "$TMP/repo" --mode plan --runner claude --no-parallel \
-   --parent-notify-workspace workspace:9 --parent-notify-surface surface:9 \
+   --parent-notify-workspace workspace:9 \
    guard-notify-only 'do something' >"$t11_out" 2>"$t11_err"; then
-  echo 'PASS: T11 --parent-notify-* 単独 (status-dir 無し) は die しない'
+  echo 'PASS: T11 --parent-notify-workspace 単独 (status-dir 無し) は die しない'
 else
-  echo "FAIL: T11 --parent-notify-* 単独で die した (agmsg と cmux notify を混同している): $(tr '\n' ' ' < "$t11_err")"
+  echo "FAIL: T11 --parent-notify-workspace 単独で die した (agmsg と cmux notify を混同している): $(tr '\n' ' ' < "$t11_err")"
   fail=1
 fi
+
+# T11b (v2.0.0 で削除): --parent-notify-surface は受け付けない。runner wrapper が書き出す
+# NOTIFY_SF に読み手が無く (cmux notify は --workspace しか取らない)、渡せてしまうと
+# 「通知先 surface を指定した」つもりの呼び出しが黙って無視される。
+assert_die 'T11b --parent-notify-surface は削除済みなので拒否される' 'was removed' \
+  --cwd "$TMP/repo" --mode plan --runner claude --no-parallel \
+  --parent-notify-surface surface:9 guard-notify-surface-removed 'do something'
 
 # --- PR1: reviewer_runner / reviewer_engine を明示した固定レビュー設定では、
 #     実装者 engine の反対側を計算せず JSON の reviewer_engine をそのまま使う ---
