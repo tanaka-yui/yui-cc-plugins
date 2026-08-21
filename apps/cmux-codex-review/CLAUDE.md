@@ -69,7 +69,7 @@ monitor 専用化の回帰テスト（静的検査。両プラグイン分をこ
 1 本保険として張る。タイマーで起きたときの規則は次の 4 つで、詳細は `commands/codex-review.md` の
 Step 3 が正である:
 
-1. **判断の前に永続記録を 1 回読む**。`history.sh <TEAM> <PARENT> 30 | grep -F <token> | tail -1`。
+1. **判断の前に永続記録を 1 回読む**。`history.sh <TEAM> <PARENT> 30 | grep -F "DONE <token>:" | tail -1`。**コロンまで含めて照合する**（token は surface 番号由来で `codex-review-4` は `codex-review-40` の前方一致になるため、裸の token では短い方の照合が長い方の完了に当たり、進行中を完了と誤報告する）。
    **`inbox.sh` は使わない**（競合 watcher に盗られた row は既読マークされるので「新着なし」と
    正直に答えてしまう）。直近 N 行に限って最も新しい一致を採るのは、token がペイン番号由来で
    再利用されうるため。完了 row があればタイマーの発火は「通知が失われただけ」を意味する

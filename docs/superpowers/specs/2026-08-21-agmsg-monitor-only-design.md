@@ -33,7 +33,7 @@ V1 の記録は `docs/superpowers/specs/2026-08-12-delivery-verification-results
 | V2a | seat 未記録の idle codex は受信するか | **fail** | メッセージは inbox に未読で滞留。`delivery.sh status` は `has no session recorded, though one thread is loaded` |
 | V2b | seat 記録後の idle codex は受信するか | **pass** | `codex-record-session.sh` 実行後の再送で inline 配信され、codex が応答した |
 | B5 | `ready.<team>__<agent>` sentinel は存在するか | **存在しない** | agmsg 1.2.1 の `watch.sh` に書くコードが無く、`run/` に 1 つも無い。readiness の実体は `run/watch.<session_id>.pid` (claude) と `run/codex-bridge.<team>.<agent>.thread` (codex) |
-| E2E | codex 系プラグインの実起動 1 本で、親が Monitor の push だけで完了を検知できるか (B4 の代替) | **pass** | 2026-08-21。`/codex-review --base main` を surface:40 / token=`codex-review-40` / team=`yui-cc-plugins` / reviewer=`cxrev-monitor-e2e` / parent=`parent` で起動。(1) 旧ポーリング watcher の bin もプロセスも不在 (2) background task は `sleep` 1 本だけ (3) codex 完了後、`06:26:40Z \| yui-cc-plugins \| cxrev-monitor-e2e → parent \| DONE codex-review-40: レビュー完了 agents=6` の 1 行で idle の親が起床 (4) token 一致・`agents=6` も転記 (5) codex 側で 3 テストスイート / turbo check / check-doc-lang / `bash -n` が全 pass。証拠は `.superpowers/sdd/2026-08-21-agmsg-monitor-only-codex-plugins/progress.md` の T4 節 |
+| E2E | codex 系プラグインの実起動 1 本で、親が Monitor の push だけで完了を検知できるか (B4 の代替) | **pass** | 2026-08-21。`/codex-review --base main` を surface:40 / token=`codex-review-40` / team=`yui-cc-plugins` / reviewer=`cxrev-monitor-e2e` / parent=`parent` で起動。(1) 旧ポーリング watcher の bin もプロセスも不在 (2) background task は `sleep` 1 本だけ (3) codex 完了後、`06:26:40Z \| yui-cc-plugins \| cxrev-monitor-e2e → parent \| DONE codex-review-40: レビュー完了 agents=6` の 1 行で idle の親が起床 (4) token 一致・`agents=6` も転記 (5) codex 側で 3 テストスイート / turbo check / check-doc-lang / `bash -n` が全 pass。上記 (1)-(5) がこの行に転記した観測そのもので、これが証拠である（実行時の作業ログは git-ignored なスクラッチにしか残らないため、参照先としては挙げない） |
 | T1 | バックグラウンドの単発 `sleep` タスクは exit でセッションを起こすか | **pass (60 秒で 1 回のみ)** | 2026-08-21。Bash ツールの `run_in_background: true` で `sleep 60` を張り、06:42:38Z → 06:43:38Z にちょうど 60 秒で exit。その exit が `<task-notification>` としてセッションへ注入され、reap もされなかった。**60 分 / 90 分の実測ではなく、compaction を跨いだ生存も未観測**（60 秒では compaction が起きないため）。この 2 点は依然として明文化されていない仮定である |
 
 B4 として子 claude 上での B1 再現も予定していたが、probe 用の子が別アカウントの
@@ -122,10 +122,16 @@ sentinel 自体が存在しないため **agmsg 1.2.1 では一度も発火し�
 | 子 → 親の完了 / abort | `.dispatch/*/status.json` |
 | レビュアー → 依頼者の verdict | `<point>-round-<N>.md` の `VERDICT:` 行 |
 | 子 → 親の readiness (`[ready]`) | `history.sh <team> <agent> N`（**`inbox.sh` は不可**。取られた row は既読になる） |
-| codex 系の完了通知 | `history.sh <team> <parent> 30 \| grep -F <token> \| tail -1` |
+| codex 系の完了通知 | `history.sh <team> <parent> 30 \| grep -F "DONE <token>:" \| tail -1` |
 
 `history.sh` を使い `inbox.sh` を使わないこと、直近 N 行に限って**最も新しい一致**を採ること
-（token はペイン番号由来で再利用されうる）を規則として固定する。メッセージが来ないことを
+（token はペイン番号由来で再利用されうる）を規則として固定する。
+
+**照合は接尾の区切りまで含めて行う。** token もスラッグも裸で `grep -F` すると前方一致で衝突する
+（`codex-review-4` は `codex-review-40` の前方一致、スラッグ `api` は `api-v2` の前方一致）。
+完了通知の本文は必ず `DONE <token>: <text>`、readiness は必ず `[ready] <slug>` で行末に来るので、
+前者は `grep -F "DONE <token>:"`、後者は `grep -E '\[ready\] <slug>$'` で照合する。裸の照合は
+**進行中を完了と誤報告する**——通知の見逃しより悪い誤答である。メッセージが来ないことを
 「相手が失敗した」と読み替えてはならない。盗られた `[ready]` を理由に健全な子を error に
 落とすのは、この規則を破った典型である。
 
