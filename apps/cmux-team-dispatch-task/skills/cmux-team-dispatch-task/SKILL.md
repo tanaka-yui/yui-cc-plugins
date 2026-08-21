@@ -561,22 +561,28 @@ both, and `--reset config` removes the keys.
 
 ### 1g. Resolve Delivery, Review Mode and Execution Default
 
-**There is no notification-transport question and no `message_type` config key.**
-`AGMSG_INSTALLED` decides whether this dispatch uses agmsg at all. It starts from
-whether `~/.agents/skills/agmsg/scripts/send.sh` exists on disk, and the guard call
-below (Step 1g's wiring block) can still flip it to `false` afterward even when the
-binary IS present, when the wiring attempt itself fails. Nothing is asked and nothing
-is persisted about it.
+**agmsg is a hard requirement.** Every message and every wake in this skill rides the
+agmsg Monitor stream; there is no typed fallback and no polling monitor. If agmsg is
+missing, or this session has no live watcher, STOP and tell the user — do not launch a
+degraded dispatch:
 
 ```bash
-AGMSG_INSTALLED=false
-[[ -f ~/.agents/skills/agmsg/scripts/send.sh ]] && AGMSG_INSTALLED=true
+[[ -f ~/.agents/skills/agmsg/scripts/send.sh ]] || {
+  echo "[error] agmsg is not installed; this skill cannot dispatch without it"; exit 1; }
+bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --self || {
+  echo "[error] this session has no live agmsg watcher — the Monitor tool must be running"
+  echo "        (SessionStart hook starts it; re-run /clear or start a new session)"; exit 1; }
 ```
 
-`monitor-dispatch.sh` is launched whenever `AGMSG_INSTALLED` ends up `false`, for
-either reason above (see Step 3). `--message-type` was removed from
-`launch-workspace.sh` and `prewarm-panes.sh`; passing it now dies with a `was removed`
-message.
+`verify-agmsg-ready.sh` exits `0` when it found a live watcher, `1` when there is none,
+and `2` on a usage error (for example `CLAUDE_CODE_SESSION_ID` is unset and no
+`--session-id` was passed — a usage error is not evidence about the watcher, so say
+which one happened). Its stdout begins with `ready=yes` or `ready=no` and then carries
+extra diagnostic fields (`pid=`, `session=`, `team=`, `name=`), so branch on the exit
+code or on that prefix — never compare the whole line.
+
+`--message-type` was removed from `launch-workspace.sh` and `prewarm-panes.sh`; passing
+it now dies with a `was removed` message.
 
 **Delivery contract (applies to EVERY message this skill sends).** All delivery goes
 through one call to agmsg `send.sh` — never a `cmux send`: <!-- send-prompt-exempt: prohibition, not a delivery instruction -->
@@ -781,12 +787,7 @@ fi
 - `"claude"` / `"codex"` (a valid value that passed layer validation) →
   embed its default-direct Phase B block.
 
-**When agmsg is installed (`AGMSG_INSTALLED=true`), wire the team BEFORE launching
-(Step 2) by calling the guard script — never by following an `AGMSG-DIRECTIVE:` line
-by hand. A harness without a `Monitor` tool has no way to comply with that directive;
-an orchestrator that tried previously stalled indefinitely waiting on it. The guard
-script starts the watcher itself, without needing that tool, and reports back what it
-managed to do:**
+**Wire the team BEFORE launching (Step 2):**
 
 ```bash
 TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
@@ -794,52 +795,29 @@ PARENT_ENGINE="claude"
 [[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"
 PARENT_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$PARENT_ENGINE") || exit 1
 ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)" >/dev/null 2>&1 || true
-AGMSG_RC=0
-AGMSG_STATE=$(env -u AGMSG_EXPECTED_NAME bash <SKILL_DIR>/scripts/ensure-agmsg-ready.sh \
-  --type "$PARENT_AGMSG_TYPE" --name parent --project "$(pwd)") || AGMSG_RC=$?
-case "$AGMSG_RC" in
-  0) case "$AGMSG_STATE" in
-       *"watcher=none"*)           echo "[warn] agmsg watcher not running ($AGMSG_STATE)" ;;
-       *"watcher=existing-other"*) echo "[warn] agmsg inbox records are off for parent ($AGMSG_STATE)" ;;
-     esac ;;
-  1) TEAM=""; AGMSG_INSTALLED=false
-     echo "[warn] agmsg wiring failed ($AGMSG_STATE) — typed-only delivery with monitor-dispatch.sh" ;;
-  *) echo "[error] ensure-agmsg-ready.sh usage error ($AGMSG_STATE)"; exit 1 ;;
-esac
 ```
 
 `PARENT_AGMSG_TYPE` must match the current orchestrator runtime. Codex sets
-`CODEX_THREAD_ID`, so an all-Codex dispatch resolves this to `codex`; Claude Code
-compatibility resolves it to `claude-code`. Do not derive the parent type from a child
-runner.
+`CODEX_THREAD_ID`, so an all-Codex dispatch resolves to `codex`; Claude Code resolves to
+`claude-code`. Do not derive the parent type from a child runner. `join.sh`'s `|| true`
+exists because this section runs under `set -e` and re-joining an existing member is not
+an error.
 
-`env -u AGMSG_EXPECTED_NAME` strips any role name this session may have inherited from
-an outer dispatch before calling the guard: without it, a nested dispatch launched from
-inside an already-guarded session would inherit a name that does not match `parent` and
-the guard would die with a usage error. `join.sh`'s `|| true` and the guard call's
-`|| AGMSG_RC=$?` both exist because this whole section runs under `set -e`; without
-them a non-zero exit from either command would abort the script before the `case` can
-run its branch.
+The parent's own readiness was already checked at the top of Step 1g
+(`verify-agmsg-ready.sh --self`). Unlike the old guard, nothing here starts a watcher:
+the Monitor tool the SessionStart hook asked for IS the watcher, and a `/clear` re-fires
+that hook, so the watcher comes back on its own.
 
-`AGMSG_INSTALLED` broadens here from "does `send.sh` exist" to "should this dispatch
-use agmsg at all": exit code 1 from the guard sets `AGMSG_INSTALLED=false` even though
-agmsg IS installed on disk, because the WIRING failed, not the binary. Whichever reason
-produced `AGMSG_INSTALLED=false`, `monitor-dispatch.sh` must still launch in Step 3 —
-that trigger condition already reads `AGMSG_INSTALLED` and needs no code change, only
-this description had to catch up to the broader meaning.
+**Each pane reports its own readiness.** A pane is reachable only after it sends
+`[ready] <name>` (the readiness clause `prewarm-panes.sh` injects into every launch
+prompt does this). Wait for all expected `[ready]` lines before sending any task:
 
-When agmsg is NOT installed, leave `TEAM` empty, skip this whole block, and drop the
-`--agmsg-*` flags everywhere below. Delivery still works — it is just typed-only.
-
-The watcher the guard starts is a record/reply channel, not a wake mechanism: its
-stream output is never injected while this session is idle, which is why
-`send-prompt.sh` always types the message in as well.
-
-Known limitation: the guard runs exactly once, from this initial prompt, so `/clear`
-(or a resume) does NOT restore the watcher — the new session id makes the old watcher
-self-terminate and nothing re-runs the guard. That pane keeps delivering and receiving
-typed prompts, but stops recording them in its agmsg inbox until a new session starts.
-Re-run the guard by hand in that pane if the inbox record matters.
+- A claude pane's readiness **cannot be observed from here** — its signal is keyed by a
+  session id this session does not know. The `[ready]` line is the only confirmation.
+- A codex pane can additionally be verified with
+  `bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name <agent>`.
+  Use this when a codex pane's `[ready]` never arrives, to tell "seat not recorded"
+  (fixable: ask the pane to re-run `codex-record-session.sh`) from "pane died".
 
 Each launch then adds `--agmsg-team "$TEAM" --agmsg-from <task-slug>` to
 `launch-workspace.sh`. After each task's worktree exists (launch script returned),
@@ -857,27 +835,32 @@ When the pre-warm path is active (workspace layout + `prewarm: true`), skip
 this manual `join.sh` — `prewarm-panes.sh` already joins the design agent
 (`<task-slug>`) and the standby agents (`<task-slug>-claude` / `-codex`) and
 wires delivery into the worktree before any pane starts. That path also injects its
-own guard call into each pane's initial prompt, so nothing further is needed there.
+own readiness clause into each pane's initial prompt, so nothing further is needed
+there.
 
-Only when `prewarm: false`, include this additional guard line in the child's own
-prompt (a non-prewarm design pane never gets a guard call from anywhere else, unlike
-a prewarm pane):
+When `prewarm: false`, the design pane gets no readiness clause from `prewarm-panes.sh`,
+so include it in that child's own prompt instead:
 
 ```
-Before you start, run this once and continue even if it exits non-zero: bash <SKILL_DIR>/scripts/ensure-agmsg-ready.sh --type <CHILD_AGMSG_TYPE> --name <task-slug>
+FIRST follow the AGMSG-DIRECTIVE printed by your SessionStart hook and invoke the Monitor tool right now — that is the only way work will reach you. THEN send a message: call ~/.agents/skills/agmsg/scripts/send.sh with team <team>, from <task-slug>, to parent, and a body — quoted as a single argument — that is exactly [ready] <task-slug> with no trailing period or other characters.
 ```
 
-Resolve `<CHILD_AGMSG_TYPE>` per task from that task's own already-resolved
-`DESIGN_ENGINE`, the same way as the `join.sh` call above — do not infer it from the
-parent runtime or from another role. Drop this whole line when `<team>` is empty (no
-agmsg wiring at all for this dispatch).
+For a codex design pane, replace the first sentence with: `FIRST make yourself
+reachable: call ~/.agents/skills/agmsg/scripts/drivers/types/codex/codex-record-session.sh
+with team <team> and agent name <task-slug> (two arguments, no trailing punctuation).`
 
-Never add this line when `prewarm: true`: prewarm panes already receive a guard call
-from `prewarm-panes.sh` (see above), and this line's `--name` is fixed to
-`<task-slug>` — the design pane's own agent name — so repeating it inside a prewarm
-pane's prompt would run the guard twice and, worse, would make the claude executor
-(`<slug>-claude`) or review (`<slug>-review`) pane try to claim a DIFFERENT role's
-actas lock under its own name.
+This wording is deliberately prose, not a literal command line, and it contains no
+quote character. It is the same clause `prewarm-panes.sh`'s `readiness_clause()` injects,
+for the same two measured reasons: this text becomes a launch prompt inside
+`zsh -ic "claude ... '<prompt>'"` and `launch-workspace.sh` escapes nothing, so a `"` or
+`'` in it breaks the command; and spelling the body out as a command to run makes zsh
+glob-expand `[ready]` and fail with `no matches found` before `send.sh` ever runs.
+
+Never add this line when `prewarm: true`: prewarm panes already carry a readiness clause
+from `prewarm-panes.sh` (see above), and this line's name is fixed to `<task-slug>` —
+the design pane's own agent name — so repeating it inside a prewarm pane's prompt would
+make the claude executor (`<slug>-claude`) or review (`<slug>-review`) pane announce
+readiness under a DIFFERENT role's name.
 
 Additionally, append this block to every child prompt's status protocol section:
 
@@ -2112,50 +2095,20 @@ one execution pane under design with review beside them.
 
 Everything is delegated to `prewarm-panes.sh`; do not create panes manually.
 
-**agmsg NOT installed (`$TEAM` empty)** — the design session was already launched with
-its task prompt by "Launch: Workspace Mode" above. Add the claude/codex executor panes
-below it (parse `workspace_id` / `surface_id` from that launch's output JSON):
+Do NOT run the normal "Launch: Workspace Mode" invocation on this path. All resolved
+panes start idle with no task message, and the Phase A task is delivered afterwards by
+one agmsg `send.sh` call.
 
-> NOTE: `prewarm-panes.sh` now requires `--agmsg-team`, and `launch-workspace.sh`
-> requires `--agmsg-team` / `--agmsg-from` whenever `--status-dir` is passed. A
-> prewarmed pane only ever receives work as an agmsg message, so this branch cannot
-> actually run — both scripts die immediately, before creating any pane. It is kept
-> here only until the `AGMSG_INSTALLED` two-branch design is removed.
+There is no unwired variant of this path. `prewarm-panes.sh` requires `--agmsg-team`,
+`launch-workspace.sh` requires `--agmsg-team` / `--agmsg-from` whenever `--status-dir`
+is passed, and a failed `join.sh` / `delivery.sh set` makes `prewarm-panes.sh` die
+before it creates a single pane. A pane that cannot receive an agmsg message has no way
+to receive work at all, so failing loudly is the only behaviour.
 
-```bash
-bash <this-skill-dir>/scripts/prewarm-panes.sh \
-  --workspace <workspace-id> --base-surface <surface-id> \
-  --cwd "<repo-root>/.worktrees/<task-slug>" \
-  --slug <task-slug> \
-  --status-dir "$(pwd)/.dispatch/<task-slug>" \
-  [--claude-runner "$CLAUDE_EXEC_RUNNER"] \
-  [--codex-runner "$CODEX_EXEC_RUNNER"] \
-  [--exec-runner "$EXEC_RUNNER"] \
-  [--review-model "$REVIEW_MODEL"] \
-  --design-runner "$DESIGN_RUNNER" \
-  [--reviewer-runner "$REVIEW_RUNNER"] \
-  --exec-choice "$EXEC_CHOICE" \
-  [--design-model "$PLAN_MODEL"] [--design-effort "$PLAN_EFFORT"] \
-  [--reviewer-model "$REVIEW_MODEL"] [--reviewer-effort "$REVIEW_EFFORT"] \
-  [--exec-model "$EXEC_MODEL"] [--exec-effort "$EXEC_EFFORT"] \
-  --parent-notify-workspace "$CMUX_WORKSPACE_ID" \
-  --parent-notify-surface "$CMUX_SURFACE_ID"
-```
-
-**agmsg installed (`$TEAM` non-empty)** — do NOT run the normal "Launch: Workspace
-Mode" invocation. Instead all resolved panes start idle with no task
-message, and the Phase A task is delivered afterwards by one agmsg `send.sh` call.
-
-When wiring fails for a role (the `delivery: "cmux-send"` fallback), **none of the
-four roles gets a guard call injected** into its initial prompt, but the replacement
-differs per role. **Design and the claude executor** fall back to a prompt telling the
-pane to wait idle because the task or execution instructions will be typed directly
-into it. **The codex executor and review** get no initial prompt at all and simply start
-idle — `${CODEX_EXEC_PROMPT:+...}` / `${REVIEW_PROMPT:+...}` drop the argument entirely
-when the variable is empty, which is how those two roles already started before the
-guard existed. When wiring succeeds, all four roles get the same wording: the task
-arrives as a prompt typed into this pane with an identical copy recorded in the inbox —
-never "delivered as an agmsg message".
+Every role therefore starts with the same shape of prompt: a readiness clause, then
+"wait idle — your task will arrive as an agmsg message". The task is **delivered as an
+agmsg message into that pane's inbox**; nothing is typed into the pane and there is no
+second copy to reconcile.
 
 `prewarm-panes.sh` creates the worktree, wires agmsg delivery into it (join +
 `delivery.sh set`, BEFORE any pane starts), launches the design standby workspace,
@@ -2230,11 +2183,10 @@ Then dispatch the Phase A task to the design pane:
 prewarm.json uses role names and records only panes that exist. `design` is required;
 `review` exists when the quality gate is enabled; `executors` contains only the
 choices started for this task. Each object records its resolved runner, engine, role,
-agent, informational delivery state, and `watcher` — `"guard-injected"` when the
-pane's initial prompt included the `ensure-agmsg-ready.sh` guard call, `"none"`
-otherwise (delivery wiring failed, or the guard could not be injected because
-`SCRIPT_DIR` contains whitespace or a shell metacharacter). Consumers use these
-exact lookups:
+agent, and `wired: true`. The retired `delivery` / `watcher` keys are gone: with no
+fallback left, a role that could not be wired never reaches prewarm.json at all, so
+`wired` is always `true` for every role present. It is diagnostic output — **never
+branch on it.** Consumers use these exact lookups:
 
 ```bash
 DESIGN_SURFACE=$(jq -r '.design.surface_id // empty' "$PREWARM_FILE")
@@ -2245,10 +2197,10 @@ CLAUDE_EXEC_SURFACE=$(jq -r '.executors.claude.surface_id // empty' "$PREWARM_FI
 
 ```json
 {
-  "design": { "surface_id": "surface:1", "agent": "<slug>", "runner": "codex", "engine": "codex", "role": "plan", "delivery": "agmsg", "watcher": "guard-injected" },
-  "review": { "surface_id": "surface:2", "agent": "<slug>-review", "runner": "codex", "engine": "codex", "role": "review", "delivery": "agmsg", "watcher": "guard-injected" },
+  "design": { "surface_id": "surface:1", "agent": "<slug>", "runner": "codex", "engine": "codex", "role": "plan", "wired": true },
+  "review": { "surface_id": "surface:2", "agent": "<slug>-review", "runner": "codex", "engine": "codex", "role": "review", "wired": true },
   "executors": {
-    "codex": { "surface_id": "surface:3", "agent": "<slug>-codex", "runner": "codex", "engine": "codex", "role": "exec", "delivery": "agmsg", "watcher": "guard-injected" }
+    "codex": { "surface_id": "surface:3", "agent": "<slug>-codex", "runner": "codex", "engine": "codex", "role": "exec", "wired": true }
   }
 }
 ```
@@ -2303,105 +2255,118 @@ boundary, and a claude session told to call `spawn_agent` has no such tool.
 
 ## Step 3: Monitor and Complete
 
-### Notification-based Monitoring (Primary)
+### Push-based Monitoring (the only mode)
 
-**Monitoring depends on `AGMSG_INSTALLED` (Step 1g), which can end up `false` either
-because agmsg is not on disk or because Step 1g's guard call failed to wire it:**
-
-- `AGMSG_INSTALLED=false` → launch `monitor-dispatch.sh` as described below
-  (heartbeat, DIED detection, all-done notification).
-- `AGMSG_INSTALLED=true` → do NOT launch `monitor-dispatch.sh`. Completion notifications
-  arrive as `[dispatch] task "<slug>" finished (status: ...)` text typed into this
-  pane by `send-prompt.sh`, with an identical copy recorded in this session's agmsg
-  inbox whenever its watcher is alive. The typed text is the channel that actually
-  wakes this session; the inbox copy is a log. If nothing arrives for an extended
-  period, poll `.dispatch/*/status.json` manually (see "Polling Status Files"). The
-  `[dispatch-monitor]` heartbeat / DIED messages do not exist in this case.
-  Notifications come from three sources: the child itself right after writing
-  status.json (mandatory, see Step 2), the status.json watcher that the runner
-  wrapper runs alongside the child (it fires on the terminal transition even if
-  the session never exits), and the runner wrapper at session exit (backstop).
-  Receiving the same completion twice (or via several of these) is normal —
-  treat notifications idempotently and trust status.json as the source of truth.
-
-Each child session sends a `[dispatch]` message to the parent terminal when the Claude
-process exits:
-
-```
-[dispatch] task "<slug>" finished (status: done|error)
-```
+There is no monitor script, no heartbeat, and no polling loop. This session keeps a
+persistent agmsg Monitor stream, so every child message arrives as one line and wakes
+this session even while idle. `.dispatch/*/status.json` is the source of truth; the
+messages only tell you when to look.
 
 **After launching all tasks:**
 
-1. Launch the background monitor script:
+1. Arm one single-shot safety timer so a child that never starts cannot leave this
+   session asleep forever. **Using the Bash tool with `run_in_background: true`**:
 
    ```bash
-   zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
-     --parent-workspace "$CMUX_WORKSPACE_ID" \
-     --interval 10 \
-     --heartbeat-interval 60 \
-     --dispatch-dir "$(pwd)/.dispatch"
+   TASK_TIMEOUT_MIN=${TASK_TIMEOUT_MIN:-90}
+   sleep $((TASK_TIMEOUT_MIN * 60))
    ```
 
-   Run this command with `run_in_background` so it does not block your turn.
+   `TASK_TIMEOUT_MIN` is the task timeout already resolved for this dispatch (loop mode
+   resolves `loop.task_timeout_min`; every other dispatch defaults to 90). This is a
+   safety net, not a deadline — a live-but-slow task re-arms it.
+   **Remember the task id and the number of times you have armed it.** Do not annotate
+   the `sleep` with an invented flag name (there is no `--wake-after` parameter on the
+   Bash tool; a model that reads one will try to pass it) — say it in prose.
 
-   The monitor:
+   **Stop the timer at Completion.** When every task is terminal and you emit Template
+   C, `TaskStop` the timer first. A surviving `sleep` exits `TASK_TIMEOUT_MIN` minutes
+   later and injects a useless wake into whatever the user has moved on to, and that
+   wake lands in the re-arm branch, so every dispatch would leave one stale timer
+   behind forever.
 
-   - Tees all output to `.dispatch/.monitor.log`
-   - Writes its PID to `.dispatch/.monitor.pid`
-   - Sends `[dispatch-monitor] alive | loop=N | tasks: …` heartbeats every `--heartbeat-interval` seconds (default 60s)
-   - On crash / signal, sends `[dispatch-monitor] DIED (exit=…)` to the parent so silence is never ambiguous
-   - Delivers every message through `send-prompt.sh`, so long messages are filed to `.dispatch/outbox/` instead of being pasted, and the Enter is verified — nothing is left sitting in the parent's input box
+   **Bound the re-arming.** After 3 re-arms with no message and no visible progress,
+   stop re-arming: report with the `cmux read-screen` excerpt and ask the user how to
+   proceed. "The pane is alive" is not evidence of progress.
 
-2. Report the launch summary to the user using Template A with concrete surface IDs.
-3. Tell the user: "Monitoring N tasks. Waiting for completion notifications and heartbeats."
-4. **End your turn.** Do not block waiting.
+2. Report the launch summary using Template A with concrete surface IDs.
+3. Tell the user: "Monitoring N tasks. Waiting for agmsg notifications."
+4. **End your turn.** Do not block and do not poll.
 
-### Background process health check
+### On every wake, re-derive state
 
-If the parent does NOT receive a `[dispatch-monitor] alive` heartbeat for >2× the heartbeat interval (default >2 minutes), assume the monitor may have died and verify:
+You do not keep a monitoring loop, so treat each wake as stateless: read all of
+`.dispatch/*/status.json` and decide from that, not from what you remember.
 
-```bash
-# 1. Check if the PID is still alive
-PID=$(cat .dispatch/.monitor.pid 2>/dev/null)
-if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
-  echo "monitor pid $PID is alive"
-else
-  echo "monitor is DEAD"
-  tail -n 40 .dispatch/.monitor.log
-fi
-```
-
-If dead, re-launch with `--resume` so already-completed tasks are not re-notified:
+**Re-verify your own Monitor stream on every wake and on every timer firing**, not just
+once at launch:
 
 ```bash
-zsh <this-skill-dir>/scripts/monitor-dispatch.sh \
-  --parent-workspace "$CMUX_WORKSPACE_ID" \
-  --interval 10 \
-  --heartbeat-interval 60 \
-  --dispatch-dir "$(pwd)/.dispatch" \
-  --resume
+bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --self
 ```
 
-**When you receive a `[dispatch] task "X" finished` message:**
+Judge it by exit code (`0` = live watcher, `1` = none, `2` = usage error) or by the
+`ready=yes` / `ready=no` prefix of its stdout — never by the whole line, because
+diagnostic fields (`pid=`, `session=`) follow the prefix and change between runs.
 
-1. Read `.dispatch/<slug>/status.json` to get the full status and message.
-2. If status is `"done"`, also read `.dispatch/<slug>/result.md` if it exists.
-3. Report the task result to the user using **Template B** (re-emit the full progress table — never a one-line free-form message).
-4. Count completed tasks against the total. If all tasks are done, proceed to Completion (Template C).
-5. If some tasks remain, tell the user how many are left and end your turn again.
+Your own watcher can die mid-dispatch (`_install_changed` self-exit at
+`watch.sh:426-429`; a `/compact` racing a `TaskStop`). Once it is gone, **every** child
+notification is silently lost and the only thing left is the timer. If it reports
+`ready=no`, say so and stop treating "no message arrived" as information about the
+children.
 
-**When you receive a `[dispatch-monitor] alive` heartbeat:**
+```bash
+for f in .dispatch/*/status.json; do
+  slug=$(basename "$(dirname "$f")")
+  echo "$slug: $(jq -r '.status' "$f" 2>/dev/null || echo unknown) - $(jq -r '.message // ""' "$f" 2>/dev/null)"
+done
+```
 
-This is a liveness signal from the background monitor. Do nothing unless the user is actively asking about progress — heartbeats prove the loop is running, not that anything changed.
+Then branch on what woke you:
 
-**When you receive a `[dispatch-monitor] DIED` message:**
+- **`[ready] <name>`** — that pane is now reachable. Once every expected pane has
+  reported, send the tasks (Step 2's delivery). Nothing else to report to the user.
+- **A message whose body starts with `dispatch-notify:` and mentions a task slug** —
+  read that task's `status.json` and, when `done`, its `result.md`. Re-emit the full
+  progress table (**Template B** — never a one-line free-form message). If every task is
+  terminal, proceed to Completion (Template C). Otherwise tell the user how many remain
+  and end your turn again.
 
-The monitor exited unexpectedly. Inspect `.dispatch/.monitor.log`, then re-launch with `--resume` (see "Background process health check" below).
+  Identify it by the `dispatch-notify:` prefix **plus the slug as a substring**. Do NOT
+  require an exact `task "<slug>" finished`: the runner wrapper's copy renders the slug
+  wrapped in literal backslashes (`task \"<slug>\" finished`), so a matcher anchored on
+  the plain double quotes silently never fires on it.
 
-**When you receive a completion message that starts with `[dispatch-monitor]` and contains `(done: N, error: N)`:**
+  Receiving the same completion twice is normal: notifications come from the child
+  itself, from the status.json watcher the runner wrapper runs alongside it, and from
+  the wrapper at session exit. Treat them idempotently and trust status.json.
+- **Any other child message** (a question, a progress note) — answer it by replying with
+  `send.sh` to that child's agent name, then end your turn.
+- **The timer task** — no message arrived within the window. This is not evidence that
+  a child failed; it is evidence that no message arrived. **Read the persistent records
+  before judging anything**: re-derive state from `.dispatch/*/status.json`, and for a
+  task whose `[ready]` you never saw, check the history rather than the inbox:
 
-This is the all-done notification from the background monitor (`monitor-dispatch.sh`). Identify it by that prefix and the `(done: N, error: N)` counts rather than matching the message body verbatim — the script emits the body text in Japanese and it is not translated here. All tasks have reached a terminal state. Proceed to Completion.
+  ```bash
+  ~/.agents/skills/agmsg/scripts/history.sh "$TEAM" parent 50 | grep -E '\[ready\] <slug>$'
+  ```
+
+  Use `history.sh`, **never `inbox.sh`**: a `[ready]` consumed by a competing watcher is
+  already marked read, so `inbox.sh` would truthfully answer "nothing new" while the
+  row sits in the DB. Anchor the slug to the end of the line, never a bare
+  `grep -F '[ready]'`: the body is always `[ready] <slug>` and it ends the history line,
+  so an unanchored match lets slug `api` be satisfied by `[ready] api-v2` — a task that
+  never reported would look ready. **Marking a task `error` because its `[ready]` was
+  stolen kills a healthy child.** Only after the history also shows no `[ready]` may you
+  treat the pane as unreachable.
+
+  Then, for each non-terminal task: if its pane still shows activity
+  (`cmux read-screen --surface <id>`, **retried once** before you conclude anything — a
+  transient cmux socket failure must not be read as a dead pane), re-arm the same timer
+  and end your turn, up to the re-arm bound above. If a pane is really gone, mark that
+  task `error` with the reason and report it. Use
+  `bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name <agent>`
+  on codex panes to separate "seat never recorded" from "pane died".
 
 ### Polling Status Files (Manual Check)
 
@@ -2844,7 +2809,7 @@ When parsing a `superpowers:writing-plans` plan file:
   child session; Phase B decides which *engine* implements. `design_runner` can fix
   Step 1f; `exec_choice` can fix Phase B. Models and efforts come from the runner's role
   fields in either case, never from the Phase B answer.
-- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). `AGMSG_INSTALLED` starts from whether `~/.agents/skills/agmsg/scripts/send.sh` exists and can be downgraded to `false` by Step 1g's guard call if wiring itself fails; `monitor-dispatch.sh` is launched only when `AGMSG_INSTALLED` ends up `false` (status.json transitions are unchanged either way). Every message goes through one `~/.agents/skills/agmsg/scripts/send.sh` call whose destination is an **agmsg agent name**, never a surface or workspace id. There is no outbox, no length threshold, no Enter verification and no re-send: `send.sh` either writes the body into agmsg's shared SQLite DB or exits non-zero, and **a non-zero exit means the message was NOT delivered** and must be reported. The message kind is a label prefix on the body (`phase-a-task:`, `phase-b-exec:`, `review-plan:`, `review-code:`, `abort-reviewer:`, `dispatch-notify:`), not a flag. A pane is reachable only after it has reported `[ready] <name>`; a message sent earlier sits unread in its inbox. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. Step 1g starts the currently-dispatching session's own watcher with a direct call to `ensure-agmsg-ready.sh` — no `AGMSG-DIRECTIVE:` line to follow and no `Monitor` tool required.
+- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). agmsg is a hard requirement with no degraded mode: Step 1g stops the dispatch when `~/.agents/skills/agmsg/scripts/send.sh` is missing or `verify-agmsg-ready.sh --self` finds no live watcher for this session. There is no monitor script, no heartbeat and no polling loop (status.json transitions are unchanged). Every message goes through one `~/.agents/skills/agmsg/scripts/send.sh` call whose destination is an **agmsg agent name**, never a surface or workspace id. There is no outbox, no length threshold, no Enter verification and no re-send: `send.sh` either writes the body into agmsg's shared SQLite DB or exits non-zero, and **a non-zero exit means the message was NOT delivered** and must be reported. The message kind is a label prefix on the body (`phase-a-task:`, `phase-b-exec:`, `review-plan:`, `review-code:`, `abort-reviewer:`, `dispatch-notify:`), not a flag. A pane is reachable only after it has reported `[ready] <name>`; a message sent earlier sits unread in its inbox. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. The parent's own wake channel is the persistent `Monitor` stream its SessionStart hook asks for; Step 1g only verifies that it is alive and Step 3 re-verifies it on every wake.
 - **Pre-warm role panes**: when layout is `workspace` and config `prewarm: true`
   (default), `prewarm-panes.sh` places only resolved roles: design, optional review, and
   the execution engines allowed by `exec_choice`. `prewarm.json`'s `executors` holds at

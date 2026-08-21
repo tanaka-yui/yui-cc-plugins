@@ -456,5 +456,35 @@ grep -q 'quoted as a single argument' "$TMP/argv-pw1.log" \
   && pass 'PW17 本文を 1 個の引数として渡すことが明示されている' \
   || bad 'PW17 本文を 1 個の引数として渡す指示が無い'
 
+# --- PW18 (brief T4 Step 4 の PW2): claude ロールの readiness 句が「SessionStart hook が
+#     出す AGMSG-DIRECTIVE に従って Monitor を起動する」ことを指示している。これは
+#     そのペインの `delivery.sh set monitor claude-code` が同じ実行内で成功している
+#     ことを前提にした文面である (delivery が monitor に設定されていなければ hook は
+#     AGMSG-DIRECTIVE を出さず、子は従うべき指示を見つけられない)。その順序保証は
+#     PW15 が固定しており、失敗時に die することは PW2 が固定している。
+#     文面と前提の両方を検査するのは、片方だけだと「Monitor 起動を指示しないまま
+#     [ready] だけ送らせる」(親は届いた [ready] を信じるが、そのペインへメッセージは
+#     二度と届かない) 退行を通してしまうため ---
+claude_pane_line=$(pane_line pw1-claude)
+if grep -Fq -- 'follow the AGMSG-DIRECTIVE printed by your SessionStart hook' <<<"$claude_pane_line" \
+   && grep -Fq -- 'invoke the Monitor tool right now' <<<"$claude_pane_line"; then
+  pass 'PW18 claude ロールの readiness 句が AGMSG-DIRECTIVE への追従と Monitor 起動を指示している'
+else
+  bad "PW18 claude ロールの readiness 句が AGMSG-DIRECTIVE / Monitor を指示していない: $claude_pane_line"
+fi
+# codex ロールは Monitor ではなく seat 記録なので、同じ文面を持ってはならない
+codex_pane_line=$(pane_line pw1-codex)
+grep -Fq -- 'AGMSG-DIRECTIVE' <<<"$codex_pane_line" \
+  && bad 'PW18 codex ロールに claude 用の AGMSG-DIRECTIVE 文面が混入している' \
+  || pass 'PW18 codex ロールは AGMSG-DIRECTIVE ではなく seat 記録を指示している'
+# PW18b: 上記の前提 (delivery.sh set monitor claude-code) がソースにコメントで明記されている
+if grep -q 'readiness 句の前提' "$TMP/scripts/prewarm-panes.sh" \
+   && grep -Fq 'delivery.sh set monitor claude-code <worktree>' "$TMP/scripts/prewarm-panes.sh" \
+   && grep -q 'この同じ実行内で成功している' "$TMP/scripts/prewarm-panes.sh"; then
+  pass 'PW18b readiness 句が delivery.sh set monitor の成功を前提にする旨がソースに明記されている'
+else
+  bad 'PW18b delivery.sh set monitor が readiness 句の前提である旨のコメントが無い'
+fi
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

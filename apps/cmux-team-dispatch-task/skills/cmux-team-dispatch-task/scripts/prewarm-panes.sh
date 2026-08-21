@@ -424,6 +424,15 @@ fi
 # hook が効かないため、必ずこの位置で行う。fallback は無い: join / delivery.sh set が
 # 失敗すれば readiness を確立する手段が無く必ず不通になるため die する
 # (cmux-send への配送フォールバックは廃止済み)。
+#
+# **readiness 句の前提**: claude ロールの readiness 句 (readiness_clause の claude 分岐)
+# は「SessionStart hook が出す AGMSG-DIRECTIVE に従って Monitor tool を起動せよ」と
+# 指示する。この指示が成立するのは、そのペインの
+# `delivery.sh set monitor claude-code <worktree>` が**この同じ実行内で成功している**
+# 場合だけである。配線が無ければ hook は AGMSG-DIRECTIVE を出さず、子は従うべき指示を
+# 見つけられないまま [ready] を送り、親は「到達可能になった」と誤認する。だから
+# wire_delivery の失敗は警告ではなく die であり、この呼び出しは必ず launch より前に
+# 置く (順序は test-prewarm-layout.sh の PW15、die は PW2、文面と前提は PW18 が固定)。
 
 REVIEW_JOINED=0
 
