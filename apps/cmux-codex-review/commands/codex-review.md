@@ -110,26 +110,32 @@ instructions, and subsequent flags stop being parsed.**
 > `cxrev-review`). Separately from the surface-derived token, send.sh works fine even
 > when the reviewer agent name is pre-joined under a human-readable fixed name.
 
-### Step 3: Only when notification is wired up, launch and wait on the watcher
+### Step 3: Only when notification is wired up, end the turn and wait for the push
 
-**Using the Bash tool with `run_in_background: true`**:
+Do NOT run a watcher and do NOT poll. The parent session keeps a persistent agmsg
+Monitor stream (started by the SessionStart hook), so codex's completion `send.sh`
+arrives as one line in this session and wakes it even while idle.
+
+Arm one single-shot safety timer so a codex pane that dies silently cannot leave this
+session asleep forever. **Using the Bash tool with `run_in_background: true`**:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --surface <surface>
+sleep $((60 * 60))   # --wake-after: 60 min safety net, not a deadline
 ```
 
-Don't attach `--timeout` (the default is unlimited). Cutting off a long review by wall
-clock abandons a codex that's still alive, collapsing the wait so that a
-later-arriving completion notification never wakes it again. Instead, pass `--surface`
-so termination is judged by pane liveness.
+Then end the turn. Two things can wake this session:
 
-Once launched, end the turn. After waking, branch on the watcher task's output:
-
-- `status=done`: tell the user the review is complete. If the output also carries
-  `agents=<N>`, report that number as how many child agents codex ran in parallel.
-  Respond to the user in Japanese.
-- `status=gone`: tell the user the review pane `<surface>` was closed and completion
-  could not be detected. Respond to the user in Japanese.
+- **The Monitor event** — one line of the form
+  `<ts> | <team> | <reviewer> → <parent> | DONE <token>: ...`. Match the `<token>`
+  from Step 2 to confirm it is this review (several reviews may be in flight). Tell
+  the user the review is complete. If the line also carries `agents=<N>`, report that
+  number as how many child agents codex ran in parallel. Respond to the user in
+  Japanese.
+- **The timer task** — no completion arrived within the window. Check whether the pane
+  is still alive with `cmux read-screen --surface <surface>`. If it is alive, re-arm
+  the same timer and end the turn again. If read-screen fails, tell the user the
+  review pane `<surface>` is gone and completion could not be detected. Respond to
+  the user in Japanese.
 
 ### Step 4: Report
 

@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # 新しい cmux ペインで対話 codex を起動し、plan の実装を依頼する。--team/--parent が
 # 与えられた場合、codex に「完了時に agmsg send.sh を撃つ」指示を注入する。親側の
-# 完了検知は cmux-codex-wait（短命 watcher）が担う。
+# 完了検知は親の常駐 agmsg monitor が担う（watcher もポーリングも無い）。
 #
 # Usage: cmux-codex-exec [plan-path] [options]
 #   -d, --dir <right|down|left|up>  分割方向 (default: right)

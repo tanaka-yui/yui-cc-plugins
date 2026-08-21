@@ -13,8 +13,9 @@ plan を独立した対話 codex に実装させ、完了を agmsg 経由で待�
 ## なぜこの構成か
 
 実装を独立 codex に委ねると、設計した本人（このセッション）とは別視点で plan が具現化される。
-完了検知に agmsg を使いつつ、idle 親を確実に起こすため「token 検知で exit する短命 watcher」を
-background task として噛ませる（agmsg monitor push は idle 親を起こせないことを実測済み）。
+完了検知そのものが agmsg の Monitor ストリーム: 親は SessionStart hook が起動した常駐 watcher を
+持ち、そこに届くメッセージが idle 中でも親を起こす（2026-08-21 に実測済み。これに反する以前の
+実測結果は、このハーネスが Monitor ツールを露出する前のものである）。
 
 並列化は codex の裁量に任せない。起動プロンプトには「独立して進められる作業が2件以上あるときは
 必ず `spawn_agent` で並列化し、`wait_agent` で回収せよ」という義務指示を載せる。並列化するのは
@@ -39,8 +40,8 @@ description つきで列挙する。1 つも無ければ「agent_type は省略�
 | `--no-parallel` | ディレクティブを注入しない（従来どおりの挙動） |
 | `--agents <N>` | 同時実行の上限。2〜8 の整数のみ。それ以外はペイン分割前に非ゼロ終了（default: 4） |
 
-通知配線がある場合、codex は完了メッセージに `agents=<N>` を付け、`bin/cmux-codex-wait` が
-`status=done token=<token> agents=<N>` として親へ返す。
+通知配線がある場合、codex は完了メッセージに `agents=<N>` を付け、agmsg Monitor の行にそのまま
+乗って届く。
 
 ## 実行手順
 
@@ -52,6 +53,7 @@ description つきで列挙する。1 つも無ければ「agent_type は省略�
 2. `whoami.sh` で親 identity（TEAM/PARENT）を解決（未参加なら join）。
 3. `bin/cmux-codex-exec <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>` でペイン起動、`token`/`codex_agent` を取得。
 4. `join.sh <TEAM> <codex_agent> codex` で送信元を pre-join。
-5. `bin/cmux-codex-wait <TEAM> <PARENT> <token> --surface <surface>` を **background task** で起動して待機
-   （`--timeout` は付けない。既定は無制限で、打ち切りはペインの生存で判断する）。
-6. wake 後、`status=done` ならレビュー可否を確認して `cmux-codex-review` へ、`status=gone` ならペイン確認を促す。
+5. ターンを閉じる。完了は agmsg Monitor イベントとして届く。保険として単発の `sleep`
+   background task を 1 本張っておく（`commands/codex-exec.md` の Step 4 参照）。
+6. 完了行で wake したらレビュー可否を確認して `cmux-codex-review` へ、タイマーで wake したら
+   `cmux read-screen` でペインを確認して再武装するか、消滅を報告する。

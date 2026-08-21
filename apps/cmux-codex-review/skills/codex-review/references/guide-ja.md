@@ -74,15 +74,15 @@ bin スクリプトを実行する。cmux ペインを分割し、そのペイ�
 | `--no-parallel` | 並列実行ディレクティブを注入しない |
 | `--agents <N>` | 子エージェントの同時実行上限。2〜8 の整数のみ（default: 4） |
 
-bin は `surface=` / `token=` を出力する。通知配線時はこの `token` と `surface` を
-`bin/cmux-codex-wait` に渡して完了を待つ（`--timeout` は付けない。既定は無制限で、
-打ち切りはペインの生存で判断する。`/codex-review` コマンドの Step 3 参照）。
+bin は `surface=` / `token=` を出力する。通知配線時はこの `token` がどの依頼への完了通知かを
+識別するラベルになる。親を起こすのは agmsg の Monitor ストリームであり、watcher ではない。
 
 ### 3. 報告
 
 bin が出力する起動サマリ（`codex review 起動: <surface> (...)`）を 1 行で伝える。
 codex 側でレビューが流れ始めるので、このセッションでのポーリングは不要
-（通知配線時は `cmux-codex-wait` を background task で回して wake を待つ）。
+（通知配線時はターンを閉じる。完了は agmsg Monitor イベントとして届き、保険として
+単発の sleep タスクを 1 本張っておく）。
 
 ## 起動される codex コマンド（参考）
 
@@ -98,7 +98,7 @@ approval policy を `never` にするのは、無指定だと codex がコマン
 停止し、レビューが人間の accept 待ちになるため（sandbox は workspace-write のまま承認だけ止める）。
 
 `--team/--reviewer/--parent` 指定時は、プロンプト末尾に「レビュー提示後に `send.sh` で親へ完了通知せよ」を
-注入する。親側は `bin/cmux-codex-wait` を background task で回して wake される。
+注入する。親側はその通知を運ぶ agmsg Monitor イベントで wake される。
 
 > **サンドボックスを `read-only` にしてはいけない**: 完了通知の `send.sh` は agmsg の SQLite DB へ
 > INSERT する（＝書き込み）。`config.toml` の `[sandbox_workspace_write] writable_roots`（agmsg の

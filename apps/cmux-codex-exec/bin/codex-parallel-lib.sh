@@ -2,7 +2,7 @@
 # codex-parallel-lib.sh — codex に spawn_agent で並列作業させるディレクティブを組み立てる。
 #
 # cmux-codex-exec / cmux-codex-review の両プラグインに**同一内容のコピー**として置く。
-# 乖離は apps/cmux-codex-review/test/test-cmux-codex-wait.sh の W8 が検出する。
+# 乖離は apps/cmux-codex-review/test/test-monitor-only.sh の M5 が検出する。
 #
 # 提供する関数:
 #   list_codex_agent_types                   .codex/agents/*.toml を候補行として列挙

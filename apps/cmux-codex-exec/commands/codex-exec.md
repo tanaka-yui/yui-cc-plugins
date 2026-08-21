@@ -73,33 +73,32 @@ the team (agmsg 1.1.8 rejects an unregistered `from`):
 ~/.agents/skills/agmsg/scripts/join.sh <TEAM> <codex_agent> codex "$(pwd)"
 ```
 
-### Step 4: Launch the short-lived watcher as a background task and wait
+### Step 4: End the turn and wait for the push
 
-**Using the Bash tool with `run_in_background: true`**, launch the following (token
-is the value from Step 2's output):
+Do NOT run a watcher and do NOT poll. The parent session keeps a persistent agmsg
+Monitor stream (started by the SessionStart hook), so codex's completion `send.sh`
+arrives as one line in this session and wakes it even while idle.
+
+Arm one single-shot safety timer so a codex pane that dies silently cannot leave this
+session asleep forever. **Using the Bash tool with `run_in_background: true`**:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-wait" <TEAM> <PARENT> <token> --surface <surface>
+sleep $((90 * 60))   # --wake-after: 90 min safety net, not a deadline
 ```
 
-Don't attach `--timeout` (the default is unlimited). Cutting off a long implementation
-by wall clock abandons a codex that's still alive, collapsing the wait so that a
-later-arriving completion notification never wakes it again. Instead, pass `--surface`
-so termination is judged by pane liveness.
-
-Once launched, end this turn. The watcher's completion notification
-(`<task-notification>`) wakes the parent.
+Then end the turn.
 
 ### Step 5: Branch after waking
 
-Check the watcher task's output:
-
-- `status=done`: ask the user whether to review the uncommitted changes with
-  codex-review, noting that codex-exec has finished (including which plan). If the
-  output also carries `agents=<N>`, report that number as how many child agents
-  codex ran in parallel. If yes, launch `/codex-review --uncommitted`
-  (cmux-codex-review) with the target stated explicitly (since the user has
-  already answered the target, don't make Step 0 ask for candidates again).
+- **Woken by the Monitor event** — one line of the form
+  `<ts> | <team> | <codex_agent> → <parent> | DONE <token>: ...`. Match the `<token>`
+  from Step 2 to confirm it is this run. Ask the user whether to review the
+  uncommitted changes with codex-review, noting that codex-exec has finished
+  (including which plan). If the line also carries `agents=<N>`, report that number as
+  how many child agents codex ran in parallel. If yes, launch `/codex-review
+  --uncommitted`. Respond to the user in Japanese.
+- **Woken by the timer task** — no completion arrived within the window. Check whether
+  the pane is still alive with `cmux read-screen --surface <surface>`. If it is alive,
+  re-arm the same timer and end the turn again. If read-screen fails, tell the user
+  the implementation pane `<surface>` is gone and completion could not be detected.
   Respond to the user in Japanese.
-- `status=gone`: tell the user the implementation pane `<surface>` was closed and
-  codex's completion could not be detected. Respond to the user in Japanese.
