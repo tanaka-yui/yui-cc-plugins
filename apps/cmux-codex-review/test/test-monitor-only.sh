@@ -6,6 +6,7 @@
 # 守っている不変条件:
 #   M1. 両プラグインに bin/cmux-codex-wait が存在しない
 #   M2. 両プラグインの .md / bin に cmux-codex-wait への参照が残っていない
+#       (このファイル自身が持つ検出用の文字列リテラルは対象外。除外は自ファイル名のみで行う)
 #   M3. 両プラグインの commands/*.md に「ターンを閉じて Monitor イベントで起きる」
 #       手順がある (agmsg monitor が唯一の完了検知経路であること)
 #   M4. 両プラグインの commands/*.md に単発タイマー保険 (sleep) の手順がある
@@ -30,8 +31,11 @@ else
 fi
 
 # --- M2: cmux-codex-wait への参照が残っていない ---
+# このスクリプト自身は検出用の文字列リテラルとして "cmux-codex-wait" を含むため、
+# 自ファイル名だけを --exclude で除外する (プロダクト/ドキュメントへの検査は厳格に保つ)。
 # grep の exit status 2 以上 (読めない等) も FAIL にして fail-open させない
-hits=$(grep -rl "cmux-codex-wait" "$REVIEW" "$EXEC" 2>/dev/null); rc=$?
+SELF_NAME="$(basename "${BASH_SOURCE[0]}")"
+hits=$(grep -rl --exclude="$SELF_NAME" "cmux-codex-wait" "$REVIEW" "$EXEC" 2>/dev/null); rc=$?
 if [[ $rc -ge 2 ]]; then
   echo "FAIL M2: grep が status=$rc を返した (検査不能)"
   fail=1
