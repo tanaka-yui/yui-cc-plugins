@@ -15,7 +15,9 @@
 #        PENDING 表で明示的に猶予し、件数まで固定する
 #   CS5. verdict 待ちのポーリング指示 (polling / every 5 seconds / 15-min /
 #        seq 1 180) が SKILL.md / references/**/*.md / launch-workspace.sh に
-#        残らない。「ポーリングしない」と否定形で語る行だけを許す
+#        残らない。「ポーリングしない」と否定形で語る行だけを許す。あわせて
+#        verdict を待つ 3 領域に待機ループの構文 (while true / seq ループ等) が
+#        無いことも見る (語彙だけの検査はループの書き戻しを素通しする)
 #   CS6. レビュー依頼文に verdict 通知 (review-verdict: の送信指示) が含まれる
 #   CS7. verdict を待つ側の手順に単発タイマー (single-shot safety timer) がある
 #        — これが無いと review-verdict が失われた瞬間に待つ側が永久に眠る
@@ -186,13 +188,19 @@ CODE_REVIEW_BLOCK_MD="$SKILL_DIR/references/unattended/code-review-block.md"
 extract_region() {
   local file="$1" start="$2" end="$3"
   [[ -r "$file" ]] || return 0
-  # 終端アンカーが見つからないときは何も出さない。ここで EOF まで垂れ流すと
+  # 終端アンカーが見つからないときは領域を出さない。ここで EOF まで垂れ流すと
   # 無関係な後続セクション (Step 3 の単発タイマーなど) を拾って空虚に PASS する。
+  # 失敗の理由は start / end を区別して返す (どちらのアンカーが崩れたのか分からないと
+  # 保守者が誤った側を直すため)。
   awk -v s="$start" -v e="$end" '
     !f && index($0, s) { f = 1 }
     f { buf = buf $0 "\n"; n++ }
     f && n > 1 && index($0, e) { closed = 1; exit }
-    END { if (closed) printf "%s", buf }
+    END {
+      if (closed) printf "%s", buf
+      else if (f) print "__REGION_NO_END__"
+      else print "__REGION_NO_START__"
+    }
   ' "$file"
 }
 
@@ -201,6 +209,12 @@ extract_region() {
 # 新プロトコルの説明そのものなので許す。素の指示だけを落とす。
 POLL_RE='polling|every 5 seconds|5s interval|15-min|seq 1 180'
 POLL_NEGATED_RE='(\bno\b|\bnot\b|\bNOT\b|\bnever\b|\bNever\b|\bwithout\b|\bWithout\b)[^.]{0,40}polling'
+# 待機ループの構文。語彙 (POLL_RE) だけの検査は
+# `while true; do ... sleep 5; done` を書き戻す変異を素通しする (実測済み)。
+# 対象は verdict を待つ 3 領域だけに絞る: SKILL.md には status.json を読む正当な
+# `for ... do ... done` があり、launch-workspace.sh の runner wrapper 本体にも
+# 正当な `while true` があるので、ファイル全体に掛けると誤検知する。
+WAIT_LOOP_RE='while true|while :|until [^;]*;|for [A-Za-z_]+ in \$\(seq|for [A-Za-z_]+ in \{[0-9]+\.\.|sleep [0-9]+ *;? *(done|do)'
 cs5=1
 cs5_files=0
 while IFS= read -r target; do
@@ -218,18 +232,53 @@ while IFS= read -r target; do
     [[ -n "$line" ]] || continue
     # 否定形で「ポーリングしない」と語る行だけ許す。polling 以外の
     # 具体的なポーリング手順 (5 秒間隔 / 15 分チャンク / seq 1 180) は無条件で禁止。
-    if ! grep -qE 'every 5 seconds|5s interval|15-min|seq 1 180' <<<"$text" \
-       && grep -qE "$POLL_NEGATED_RE" <<<"$text"; then
+    # 否定語は 80 桁の折り返しで前の行に残ることがあるので、前後 1 行を含めて
+    # 平坦化 (改行と連続空白を 1 空白に) した窓で判定する。
+    window=$(sed -n "$((line > 1 ? line - 1 : 1)),$((line + 1))p" "$target" | tr '\n' ' ' | tr -s ' ')
+    if ! grep -qE 'every 5 seconds|5s interval|15-min|seq 1 180' <<<"$window" \
+       && grep -qE "$POLL_NEGATED_RE" <<<"$window"; then
       continue
     fi
     echo "  verdict のポーリング指示が残っている: ${target#"$PLUGIN_DIR/"}:$line"
     cs5=0
   done <<<"$matches"
 done < <(printf '%s\n' "$SKILL_DIR/SKILL.md" "$LAUNCH"; find "$SKILL_DIR/references" -name '*.md' | sort)
+# verdict を待つ 3 領域に待機ループの構文が無いこと。領域抽出は CS7 と同じアンカーを
+# 使うので、アンカーごと消す変異も (空抽出として) 落ちる。
+check_region_lacks() {
+  local label="$1" file="$2" start="$3" end="$4" banned="$5"
+  local region hit
+  if [[ ! -r "$file" ]]; then
+    echo "  検査対象が読めない ($label): $file"; return 1
+  fi
+  if [[ -z "$end" ]]; then
+    region=$(grep -F -- "$start" "$file")
+  else
+    region=$(extract_region "$file" "$start" "$end")
+  fi
+  case "$region" in
+    "")                   echo "  領域の抽出が空 ($label): 開始アンカー '$start' が無い"; return 1 ;;
+    __REGION_NO_START__*) echo "  領域を切り出せない ($label): 開始アンカー '$start' が無い"; return 1 ;;
+    __REGION_NO_END__*)   echo "  領域を切り出せない ($label): 終端アンカー '$end' が無い"; return 1 ;;
+  esac
+  if hit=$(grep -nE -- "$banned" <<<"$region"); then
+    # REVIEW_INSTRUCTION は 1 行が数千文字あるので、診断は先頭 160 文字に切る
+    echo "  $label に待機ループの構文が復活している (${file#"$PLUGIN_DIR/"}): $(head -1 <<<"$hit" | cut -c1-160)"
+    return 1
+  fi
+  return 0
+}
+check_region_lacks 'Phase A-R の待機手順' "$SKILL_DIR/SKILL.md" \
+  '2. Send the request with ONE send.sh call' 'Act on the verdict:' "$WAIT_LOOP_RE" || cs5=0
+check_region_lacks 'Phase B-R の待機手順' "$SKILL_DIR/SKILL.md" \
+  '(1) send the review request with ONE command' '(3) On VERDICT: approve' "$WAIT_LOOP_RE" || cs5=0
+check_region_lacks 'REVIEW_INSTRUCTION の待機手順' "$LAUNCH" \
+  'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' "$WAIT_LOOP_RE" || cs5=0
+
 if [[ $cs5_files -eq 0 ]]; then
   echo "FAIL CS5: 検査対象が 1 件も無い (検査が空虚に PASS している)"; fail=1
 elif [[ $cs5 -eq 1 ]]; then
-  echo "PASS CS5: verdict のポーリング指示は $cs5_files ファイルのどこにも残らない"
+  echo "PASS CS5: verdict のポーリング指示 (語彙) が $cs5_files ファイルに無く、待機 3 領域に待機ループの構文も無い"
 else
   echo "FAIL CS5: verdict のポーリング指示が残っている"; fail=1
 fi
@@ -249,10 +298,17 @@ check_region_has() {
   else
     region=$(extract_region "$file" "$start" "$end")
   fi
-  if [[ -z "$region" ]]; then
-    echo "  領域の抽出が空 ($label): アンカー '$start' が ${file#"$PLUGIN_DIR/"} に無い"
-    return 1
-  fi
+  case "$region" in
+    "")
+      echo "  領域の抽出が空 ($label): 開始アンカー '$start' が ${file#"$PLUGIN_DIR/"} に無い"
+      return 1 ;;
+    __REGION_NO_START__*)
+      echo "  領域を切り出せない ($label): 開始アンカー '$start' が ${file#"$PLUGIN_DIR/"} に無い"
+      return 1 ;;
+    __REGION_NO_END__*)
+      echo "  領域を切り出せない ($label): 開始アンカーは見つかったが終端アンカー '$end' が後ろに無い (${file#"$PLUGIN_DIR/"})"
+      return 1 ;;
+  esac
   # 改行と連続空白を 1 個の空白に潰した平坦化コピーで照合する。SKILL.md の指示文は
   # 80 桁で折り返されるので、行単位で見ると「single-shot safety timer」のような句が
   # 折り返しの位置次第で見つからなくなる (再折り返しだけで FAIL する偽陽性になる)。

@@ -145,9 +145,15 @@ assert_not_contains "$runner_file" '--to-surface' 'T2 旧配送 (surface/workspa
 assert_not_contains "$runner_file" '--to-workspace' 'T2 旧配送 (surface/workspace 宛) のフラグが残っていない (workspace)'
 # T3: verdict 待ちは push (review-verdict メッセージ) + 単発タイマー 1 本であること。
 # ポーリング文言が復活しても、タイマーや通知指示が落ちても、どちらでも落ちる形にする。
-assert_contains "$runner_file" 'arm ONE single-shot safety timer as a background Bash task running sleep 1800' 'T3 単発タイマー 1 本の指示がある'
+assert_contains "$runner_file" 'arm ONE single-shot safety timer, a single 30 minute sleep and never a loop' 'T3 単発タイマー 1 本の指示がある'
 assert_contains "$runner_file" 'prefix review-verdict: followed by code-round-N' 'T3 依頼文がレビュアーへ verdict 通知を求める'
 assert_contains "$runner_file" 'On ANY wake, whether the message or the timer, re-read' 'T3 どの wake でも verdict ファイルを読み直す規則がある'
+# codex の子は run_in_background を持たないので、自分宛の遅延メッセージ経路が要る
+assert_contains "$runner_file" 'as a codex session you have no such tool' 'T3 タイマーの張り方がエンジン中立である'
+assert_contains "$runner_file" 'prefix review-timer: followed by code-round-N' 'T3 codex は自分宛 review-timer で起きる'
+# タイマー起床を needs_work と読み替えないこと (空振りのラウンド N+1 を防ぐ)
+assert_contains "$runner_file" 'If the review-verdict: message arrives but the file has no VERDICT line' 'T3 needs_work 読み替えはメッセージ到着時に限定される'
+assert_contains "$runner_file" 'A timer wake with no VERDICT line is NOT a verdict' 'T3 タイマー起床は verdict ではないと明示される'
 assert_not_contains "$runner_file" 'wait by polling' 'T3 verdict のポーリング指示が残っていない'
 assert_not_contains "$runner_file" 'every 5 seconds' 'T3 5 秒間隔のポーリングが残っていない'
 assert_not_contains "$runner_file" '15-minute chunks' 'T3 15 分チャンクの待機が残っていない'
