@@ -38,8 +38,9 @@
 # 内部処理:
 #   0. 役割別の model/effort 上書き (--override 由来) を該当ペインへ --model / --effort で転送
 #   1. worktree を create-or-reuse (agmsg 配線より先にディレクトリが必要)
-#   2. (agmsg 時) join.sh + delivery.sh set を「ペイン起動前に」実行。
-#      配線に失敗したペインは delivery: "cmux-send" として記録 (die しない)
+#   2. join.sh + delivery.sh set を「ペイン起動前に」実行。fallback は無いので
+#      配線に失敗した時点で die する (cmux-send への記録・降格は廃止済み。Step 2 の
+#      コメント参照)
 #   3. (--with-design 時) 設計 standby を workspace 配置で起動 (メイン surface が design ペイン)
 #   4. --exec-choice で選ばれた engine の実装 standby を split で配置
 #   5. --review-model または --reviewer-runner 時に review ペインを split 配置

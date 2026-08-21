@@ -563,23 +563,58 @@ both, and `--reset config` removes the keys.
 
 **agmsg is a hard requirement.** Every message and every wake in this skill rides the
 agmsg Monitor stream; there is no typed fallback and no polling monitor. If agmsg is
-missing, or this session has no live watcher, STOP and tell the user — do not launch a
-degraded dispatch:
+missing, or this session is not reachable over agmsg (no live watcher for a claude
+parent, no recorded bridge seat for a codex one), STOP and tell the user — do not launch
+a degraded dispatch:
 
 ```bash
 [[ -f ~/.agents/skills/agmsg/scripts/send.sh ]] || {
   echo "[error] agmsg is not installed; this skill cannot dispatch without it"; exit 1; }
-bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --self || {
-  echo "[error] this session has no live agmsg watcher — the Monitor tool must be running"
-  echo "        (SessionStart hook starts it; re-run /clear or start a new session)"; exit 1; }
+
+# TEAM and PARENT_ENGINE must be resolved BEFORE the readiness check: a codex parent's
+# own reachability is keyed by team + agent name, not by a session id.
+TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
+PARENT_ENGINE="claude"
+[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"
+
+READY_RC=0
+if [[ "$PARENT_ENGINE" == "codex" ]]; then
+  bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name parent || READY_RC=$?
+else
+  bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --self || READY_RC=$?
+fi
+case "$READY_RC" in
+  0) ;;
+  1) if [[ "$PARENT_ENGINE" == "codex" ]]; then
+       echo "[error] this codex session has no agmsg seat recorded as parent; record it with"
+       echo "        ~/.agents/skills/agmsg/scripts/drivers/types/codex/codex-record-session.sh $TEAM parent"
+     else
+       echo "[error] this session has no live agmsg watcher — the Monitor tool must be running"
+       echo "        (SessionStart hook asks for it; /clear re-fires that hook)"
+     fi
+     exit 1 ;;
+  *) echo "[error] agmsg readiness is UNDETERMINED (verify-agmsg-ready.sh usage error, rc=$READY_RC)"
+     echo "        a usage error says nothing about the watcher or the seat — fix the call, then re-check"
+     exit 1 ;;
+esac
 ```
 
-`verify-agmsg-ready.sh` exits `0` when it found a live watcher, `1` when there is none,
-and `2` on a usage error (for example `CLAUDE_CODE_SESSION_ID` is unset and no
-`--session-id` was passed — a usage error is not evidence about the watcher, so say
-which one happened). Its stdout begins with `ready=yes` or `ready=no` and then carries
-extra diagnostic fields (`pid=`, `session=`, `team=`, `name=`), so branch on the exit
-code or on that prefix — never compare the whole line.
+The parent engine decides which readiness signal exists at all. A claude parent is
+reachable through its own watcher process (`--self`, keyed by `CLAUDE_CODE_SESSION_ID`).
+A codex parent has no such session id — its inbound channel is the codex bridge seat
+(`run/codex-bridge.<team>.<agent>.thread`), which is what `--codex` inspects. Calling
+`--self` from a codex session is not a "no watcher" answer, it is a usage error, so the
+branch above is not cosmetic: without it every all-Codex dispatch aborts at launch for a
+reason that is not true.
+
+`verify-agmsg-ready.sh` exits `0` when the session is reachable, `1` when it is not, and
+`2` on a usage error (for example `--self` with `CLAUDE_CODE_SESSION_ID` unset and no
+`--session-id`). **Keep `1` and `2` on separate branches**: `1` is a fact about the
+session, `2` means the question was never answered, and reporting the second as the first
+sends the user hunting for a watcher that was never checked. Its stdout begins with
+`ready=yes` or `ready=no`, always followed by `reason=<slug>`, and then by extra
+diagnostic fields (`pid=`, `session=`, `team=`, `name=`), so branch on the exit code or
+on that prefix — never compare the whole line.
 
 `--message-type` was removed from `launch-workspace.sh` and `prewarm-panes.sh`; passing
 it now dies with a `was removed` message.
@@ -787,26 +822,25 @@ fi
 - `"claude"` / `"codex"` (a valid value that passed layer validation) →
   embed its default-direct Phase B block.
 
-**Wire the team BEFORE launching (Step 2):**
+**Wire the team BEFORE launching (Step 2).** `TEAM` and `PARENT_ENGINE` are already
+resolved at the top of Step 1g (the readiness check needed them) — do not re-derive
+them here:
 
 ```bash
-TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
-PARENT_ENGINE="claude"
-[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"
 PARENT_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$PARENT_ENGINE") || exit 1
 ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)" >/dev/null 2>&1 || true
 ```
 
-`PARENT_AGMSG_TYPE` must match the current orchestrator runtime. Codex sets
-`CODEX_THREAD_ID`, so an all-Codex dispatch resolves to `codex`; Claude Code resolves to
+`PARENT_AGMSG_TYPE` must match the current orchestrator runtime, so it comes from
+`PARENT_ENGINE`: an all-Codex dispatch resolves to `codex`, Claude Code to
 `claude-code`. Do not derive the parent type from a child runner. `join.sh`'s `|| true`
 exists because this section runs under `set -e` and re-joining an existing member is not
 an error.
 
 The parent's own readiness was already checked at the top of Step 1g
-(`verify-agmsg-ready.sh --self`). Unlike the old guard, nothing here starts a watcher:
-the Monitor tool the SessionStart hook asked for IS the watcher, and a `/clear` re-fires
-that hook, so the watcher comes back on its own.
+(`--self` for a claude parent, `--codex --name parent` for a codex one). Unlike the old
+guard, nothing here starts a watcher: the Monitor tool the SessionStart hook asked for IS
+the watcher, and a `/clear` re-fires that hook, so the watcher comes back on its own.
 
 **Each pane reports its own readiness.** A pane is reachable only after it sends
 `[ready] <name>` (the readiness clause `prewarm-panes.sh` injects into every launch
@@ -2154,7 +2188,8 @@ Since the normal task-prompt launch never runs in this mode, `prewarm-panes.sh` 
 an initial `"launched"` status.json (with `workspace_id`/`surface_id` populated) right after
 creating the panes, so `.dispatch/<task-slug>/status.json` is observable immediately.
 
-Then dispatch the Phase A task to the design pane:
+Then prepare the Phase A task for the design pane. Preparation happens now; the send
+itself happens later, on the `[ready]` wake (item 3):
 
 1. Write the full task prompt (including PROGRESS REPORTING FORMAT, the
    MANDATORY MODEL SELECTION SEQUENCE, and the agmsg status-protocol block
@@ -2164,9 +2199,16 @@ Then dispatch the Phase A task to the design pane:
 2. `touch .dispatch/<task-slug>/.assigned-<task-slug>` — the design standby wrapper owns
    status.json transition from now on (it was launched with `--defer-status`,
    so a Phase B handoff can still suppress it via `.deferred`).
-3. Send the task with ONE send.sh call (see the delivery contract in
-   Step 1g). Slash commands cannot fire through agmsg, so the mode is conveyed as
-   message text, never as `/plan`:
+3. **Do NOT send the task here.** The design pane is not reachable until it has
+   reported `[ready] <task-slug>`, and a message sent earlier sits unread in its inbox
+   forever. Arm the safety timer (Step 3, item 1 — it must be armed BEFORE the readiness
+   wait, so the wait itself is covered), report the launch summary, and **end your
+   turn**. The `[ready]` message wakes this session; Step 3's `[ready]` branch is the
+   ONE place that performs this send. Never poll or busy-wait for `[ready]`.
+
+   When Step 3's `[ready]` branch fires for this task, send it with ONE send.sh call
+   (see the delivery contract in Step 1g). Slash commands cannot fire through agmsg, so
+   the mode is conveyed as message text, never as `/plan`:
 
    ```bash
    TASK_TEXT="Read and follow the task in .cmux-team-dispatch-task-prompt.md. Mode: <plan|superpowers> — for superpowers invoke the superpowers:brainstorming skill first; for plan produce a structured plan before implementing."
@@ -2174,11 +2216,9 @@ Then dispatch the Phase A task to the design pane:
    ```
 
    The destination is the design pane's agmsg agent name (`<task-slug>`), never its
-   surface id — prewarm.json's `.design.surface_id` is not a delivery target. The
-   pane is reachable only once it has reported `[ready] <task-slug>`; a message sent
-   before that sits unread in its inbox forever. A non-zero exit means the design
-   pane was NOT told, so report it instead of waiting for a Phase A that never
-   started.
+   surface id — prewarm.json's `.design.surface_id` is not a delivery target. A non-zero
+   exit means the design pane was NOT told, so report it instead of waiting for a Phase A
+   that never started.
 
 prewarm.json uses role names and records only panes that exist. `design` is required;
 `review` exists when the quality gate is enabled; `executors` contains only the
@@ -2262,28 +2302,32 @@ persistent agmsg Monitor stream, so every child message arrives as one line and 
 this session even while idle. `.dispatch/*/status.json` is the source of truth; the
 messages only tell you when to look.
 
-**After launching all tasks:**
+**As soon as the panes are launched — BEFORE waiting for a single `[ready]`:**
 
-1. Arm one single-shot safety timer so a child that never starts cannot leave this
-   session asleep forever. **Using the Bash tool with `run_in_background: true`**:
+1. Arm one single-shot safety timer so a pane that never reports ready, and a child that
+   never starts, cannot leave this session asleep forever. Arming it first is what makes
+   the readiness wait itself safe; arming it after the tasks are delivered would leave
+   the whole `[ready]` window uncovered. **Using the Bash tool with
+   `run_in_background: true`**:
 
    ```bash
-   TASK_TIMEOUT_MIN=${TASK_TIMEOUT_MIN:-90}
-   sleep $((TASK_TIMEOUT_MIN * 60))
+   sleep $((90 * 60))
    ```
 
-   `TASK_TIMEOUT_MIN` is the task timeout already resolved for this dispatch (loop mode
-   resolves `loop.task_timeout_min`; every other dispatch defaults to 90). This is a
-   safety net, not a deadline — a live-but-slow task re-arms it.
+   **90 minutes, fixed.** Nothing in this dispatch resolves a different value: the
+   `loop.task_timeout_min` config key is read only by `batch-wait.sh`, for its own
+   per-issue timeout, and never reaches this timer. Use a different number only if the
+   user asked for one. This is a safety net, not a deadline — a live-but-slow task
+   re-arms it.
    **Remember the task id and the number of times you have armed it.** Do not annotate
    the `sleep` with an invented flag name (there is no `--wake-after` parameter on the
    Bash tool; a model that reads one will try to pass it) — say it in prose.
 
    **Stop the timer at Completion.** When every task is terminal and you emit Template
-   C, `TaskStop` the timer first. A surviving `sleep` exits `TASK_TIMEOUT_MIN` minutes
-   later and injects a useless wake into whatever the user has moved on to, and that
-   wake lands in the re-arm branch, so every dispatch would leave one stale timer
-   behind forever.
+   C, `TaskStop` the timer first (it is step 1 of `### Completion` below). A surviving
+   `sleep` exits 90 minutes later and injects a useless wake into whatever the user has
+   moved on to, and that wake lands in the re-arm branch, so every dispatch would leave
+   one stale timer behind forever.
 
    **Bound the re-arming.** After 3 re-arms with no message and no visible progress,
    stop re-arming: report with the `cmux read-screen` excerpt and ask the user how to
@@ -2291,7 +2335,8 @@ messages only tell you when to look.
 
 2. Report the launch summary using Template A with concrete surface IDs.
 3. Tell the user: "Monitoring N tasks. Waiting for agmsg notifications."
-4. **End your turn.** Do not block and do not poll.
+4. **End your turn.** Do not block and do not poll — not for `[ready]`, not for
+   completions. Every subsequent step of this dispatch starts from a wake.
 
 ### On every wake, re-derive state
 
@@ -2392,16 +2437,23 @@ cmux read-screen --workspace <workspace-id> --scrollback
 ### When to Intervene
 
 - **Status "error"**: Read the error message and session screen. Offer to retry or escalate.
-- **Long silence**: If no notifications arrive for an extended time, poll status files or read screens.
-- **User request**: The user can ask to check on any specific session at any time.
+- **Long silence**: Not your cue to act — silence is what the safety timer is for. Do
+  NOT start polling; end your turn and let the timer wake you, then follow the timer
+  branch above.
+- **User request**: The user can ask to check on any specific session at any time. That
+  is a wake like any other: re-derive state once, answer, end your turn.
 
 ### Completion
 
 When all tasks reach a terminal status (`"done"` or `"error"`):
 
-1. **Collect results**: Read all `.dispatch/<task-slug>/result.md` files.
+1. **Stop the safety timer**: `TaskStop` the background `sleep` task armed in Step 3.
+   Do this first, before reading anything — it is the only place the timer is stopped,
+   and a survivor fires 90 minutes later into an unrelated conversation.
 
-2. **Generate consolidated report**. ALWAYS lead with **Template C** (final summary table) before any per-task detail or merge instructions.
+2. **Collect results**: Read all `.dispatch/<task-slug>/result.md` files.
+
+3. **Generate consolidated report**. ALWAYS lead with **Template C** (final summary table) before any per-task detail or merge instructions.
 
    **When integration strategy is "Wait and merge":**
 
@@ -2464,7 +2516,7 @@ When all tasks reach a terminal status (`"done"` or `"error"`):
    - Clean up worktrees when done
    ```
 
-3. **Proceed to integration based on strategy selected in Step 1e**:
+4. **Proceed to integration based on strategy selected in Step 1e**:
 
 ### Integration and Cleanup
 
