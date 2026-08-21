@@ -123,7 +123,7 @@ done
 
 # --- M4: 単発タイマー保険の手順がある ---
 for f in "$REVIEW/commands/codex-review.md" "$EXEC/commands/codex-exec.md"; do
-  if grep -q "wake-after" "$f" && grep -qE 'sleep [0-9$]' "$f"; then
+  if grep -q "run_in_background" "$f" && grep -qE 'sleep [0-9$]' "$f"; then
     echo "PASS M4: $(basename "$f") にタイマー保険の手順がある"
   else
     echo "FAIL M4: $(basename "$f") にタイマー保険の手順が無い"
@@ -177,7 +177,7 @@ Arm one single-shot safety timer so a codex pane that dies silently cannot leave
 session asleep forever. **Using the Bash tool with `run_in_background: true`**:
 
 ```bash
-sleep $((60 * 60))   # --wake-after: 60 min safety net, not a deadline
+sleep $((60 * 60))
 ```
 
 Then end the turn. Two things can wake this session:
@@ -212,7 +212,7 @@ Arm one single-shot safety timer so a codex pane that dies silently cannot leave
 session asleep forever. **Using the Bash tool with `run_in_background: true`**:
 
 ```bash
-sleep $((90 * 60))   # --wake-after: 90 min safety net, not a deadline
+sleep $((90 * 60))
 ```
 
 Then end the turn.

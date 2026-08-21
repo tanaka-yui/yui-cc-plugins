@@ -23,8 +23,20 @@ SessionStart hook が起動する常駐 agmsg Monitor ストリームが担う�
 ## 完了検知は agmsg Monitor の push、タイマーは保険
 
 この方式には `--surface` による即時のペイン死亡検知が無い。代わりに単発の `sleep` background task を
-1 本保険として張り、時間切れで起きたら `cmux read-screen --surface <surface>` でペインの生存を確認する。
-生きていれば同じタイマーを再武装してターンを閉じ直し、消えていれば検知不能として報告する。
+1 本保険として張る。タイマーで起きたときの規則は次の 4 つで、詳細は `commands/codex-exec.md` の
+Step 5 が正である:
+
+1. **判断の前に永続記録を 1 回読む**。`history.sh <TEAM> <PARENT> 30 | grep -F <token> | tail -1`。
+   **`inbox.sh` は使わない**（盗られた row は既読マークされるため）。最も新しい一致を採る
+2. **ペイン消滅を断定する前に `cmux read-screen` を 1 回リトライする**
+3. **再武装に上限を設ける**（既定 3 回）。上限に達したら `read-screen` を添えて報告する
+4. **完了を受け取ったらタイマーを止める**（`TaskStop`）
+
+親が Monitor ストリームを実際に持っているかは、配線前に preflight で確認する
+（`run/watch.<session_id>.*.pid`）。`join.sh` は登録だけで、`delivery.sh set monitor` が書く
+SessionStart hook は実行中のセッションには発火しないため、新規 join の直後は決定的に Monitor が
+無い。その場合は通知配線をスキップし、タイマーも張らずにその場で報告する（agmsg 未インストール /
+ユーザーが join を辞退した場合も同じ）。
 
 ## デフォルト
 
@@ -55,6 +67,9 @@ bash apps/cmux-codex-exec/test/test-cmux-codex-exec.sh
 - **E6-E7**: `.codex/agents/*.toml` の候補列挙とフォールバック、description の `'` エスケープ
 - **E8-E8b**: 通知本文の `agents=` が並列有無で切り替わる
 - **E9**: `--agents` の不正値は非ゼロ終了し、ペインを分割しない
+
+monitor 専用化の静的検査（M1-M6）は review 側の `test-monitor-only.sh` が 2 プラグイン分を
+まとめて担保する。
 
 ## 関連プラグインとの境界
 

@@ -54,6 +54,8 @@ description つきで列挙する。1 つも無ければ「agent_type は省略�
 3. `bin/cmux-codex-exec <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>` でペイン起動、`token`/`codex_agent` を取得。
 4. `join.sh <TEAM> <codex_agent> codex` で送信元を pre-join。
 5. ターンを閉じる。完了は agmsg Monitor イベントとして届く。保険として単発の `sleep`
-   background task を 1 本張っておく（`commands/codex-exec.md` の Step 4 参照）。
-6. 完了行で wake したらレビュー可否を確認して `cmux-codex-review` へ、タイマーで wake したら
-   `cmux read-screen` でペインを確認して再武装するか、消滅を報告する。
+   background task を 1 本張り、その task id を覚えておく（`commands/codex-exec.md` の Step 4 参照）。
+6. wake したら **`commands/codex-exec.md` の Step 5 に書かれたとおり**に従う。`token` の照合、
+   完了時にタイマーを止める `TaskStop`、タイマーで起きたときに何かを判断する前に必ず行う
+   `history.sh` の読み取り、ペイン消滅を断定する前の 1 回のリトライ、再武装の上限は、すべて
+   コマンド側にしか書かれていない。このファイルから推測で補ってはならない。

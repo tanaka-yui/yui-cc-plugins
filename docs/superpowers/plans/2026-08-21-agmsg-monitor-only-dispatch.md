@@ -27,6 +27,30 @@
     claude が `run/watch.<session_id>.pid`、codex が
     `run/codex-bridge.<team>.<agent>.thread`。前者は session id キーなので**親から観測
     できない** → claude 子の readiness は `[ready]` 自己申告のみ。
+- **read cursor は (team, agent) 単位で共有される** (spec の「read cursor の排他（要件）」)。
+  `storage_watch_after` は既読 row を除外するので、同じ (team, agent) を購読する watcher が
+  2 つあると**先に poll した方が row を取り、他方は何も見ない** (`watch.sh:619-626`)。
+  既定のディレクティブは第 4 引数なしで `watch.sh` を起動するため **unfiltered** で、
+  そのプロジェクトの全 (team, agent) を購読する (`session-start.sh:367-378` /
+  `watch.sh:432-435`)。
+  dispatch は単一の `parent` identity を `[ready]` / `dispatch-notify` / `review-verdict` の
+  **全部**に再利用するので、親のチェックアウトにある第 2 のセッションがそのどれでも消費しうる。
+  よって親は起動時と各 wake で次のどちらかを満たすこと:
+  - `~/.agents/skills/agmsg/run/watch.*.filter` を走査し (1 行目 = role または `unfiltered`、
+    2 行目 = プロジェクトパス、3 行目 = owner pid)、自分以外の live な unfiltered watcher が
+    同じプロジェクトに居ないことを確認する
+  - `actas-claim.sh <project> <type> <name> <session_id>` で排他を主張する (他者所有なら
+    `status=held owner=<sid>`)。配送ループは毎周期 lock を読み直す (`watch.sh:630`) ため
+    Monitor 再起動なしで効く見込みだが、**主張だけで配送先が切り替わるかは未実測**。
+    保証として扱わず、下の「起きたら永続記録を読む」を必ず併用する。
+- **起きたら永続記録を読む (全経路の規則)**。メッセージが来ないことを「相手が失敗した」と
+  読み替えてはならない。競合 watcher による row の奪取、`_install_changed` による watcher の
+  自己終了 (`watch.sh:426-429`)、`send.sh` のハングでは**メッセージだけが失われて成果物は
+  ディスク上にある**。どの経路で起床しても、判断の前に永続記録を 1 回読む:
+  - 子の完了 / abort → `.dispatch/*/status.json`
+  - verdict → `<point>-round-<N>.md` の `VERDICT:` 行
+  - `[ready]` → `history.sh <team> <agent> N`。**`inbox.sh` は不可** (盗られた row は既読に
+    なるので `inbox.sh` は「新着なし」と正直に答える)
 - **fallback は作らない**。readiness が確立できない場合は fail-fast で理由を報告する。
   `AGMSG_INSTALLED` による true/false 二系統分岐は廃止し、agmsg は必須前提とする。
 - `delivery.sh status` の出力は readiness 判定に使わない (V2b の時点で `not running` と
@@ -328,6 +352,16 @@ readiness_clause() {
   fi
 }
 ```
+
+> **hook 順序の不変条件 (F1 の同型)。** claude 側の readiness 句は「そのペインの claude が
+> 起動する**前に** `delivery.sh set monitor claude-code <cwd>` が走っていた」場合にしか
+> 成立しない。SessionStart hook は書き込み後に起動したセッションにしか発火せず、それが無ければ
+> AGMSG-DIRECTIVE そのものが出ないので、子は「従うべき指示」を受け取れない。
+> 現状この順序は `prewarm-panes.sh` の `# --- Step 2: agmsg 配線 (ペイン起動前) ---`
+> (398-424 行付近、`wire_delivery` が `delivery.sh set monitor` を呼ぶ) がペイン起動より
+> 前に置かれていることだけに依存しており、**テストが無い**。上の `fallback は作らない` +
+> `die` と組み合わせると、順序を間違えた瞬間に劣化ではなく**ディスパッチの硬い失敗**になる。
+> よって Step 4 で静的検査を追加する。
 
 - [ ] **Step 2: 4 ロールのプロンプト文面を agmsg 配送前提に書き換える**
 
@@ -686,6 +720,19 @@ messages only tell you when to look.
 
    `TASK_TIMEOUT_MIN` is the task timeout already resolved for this dispatch (default
    90). This is a safety net, not a deadline — a live-but-slow task re-arms it.
+   **Remember the task id and the number of times you have armed it.** Do not annotate
+   the `sleep` with an invented flag name (there is no `--wake-after` parameter on the
+   Bash tool; a model that reads one will try to pass it) — say it in prose.
+
+   **Stop the timer at Completion.** When every task is terminal and you emit Template
+   C, `TaskStop` the timer first. A surviving `sleep` exits `TASK_TIMEOUT_MIN` minutes
+   later and injects a useless wake into whatever the user has moved on to, and that
+   wake lands in the re-arm branch, so every dispatch would leave one stale timer
+   behind forever.
+
+   **Bound the re-arming.** After 3 re-arms with no message and no visible progress,
+   stop re-arming: report with the `cmux read-screen` excerpt and ask the user how to
+   proceed. "The pane is alive" is not evidence of progress.
 
 2. Report the launch summary using Template A with concrete surface IDs.
 3. Tell the user: "Monitoring N tasks. Waiting for agmsg notifications."
@@ -695,6 +742,19 @@ messages only tell you when to look.
 
 You do not keep a monitoring loop, so treat each wake as stateless: read all of
 `.dispatch/*/status.json` and decide from that, not from what you remember.
+
+**Re-verify your own Monitor stream on every wake and on every timer firing**, not just
+once at launch:
+
+```bash
+bash "$SCRIPT_DIR/verify-agmsg-ready.sh" --self
+```
+
+Your own watcher can die mid-dispatch (`_install_changed` self-exit at
+`watch.sh:426-429`; a `/compact` racing a `TaskStop`). Once it is gone, **every** child
+notification is silently lost and the only thing left is the 90-minute timer. If it
+reports `ready=no`, say so and stop treating "no message arrived" as information about
+the children.
 
 ```bash
 for f in .dispatch/*/status.json; do
@@ -716,17 +776,43 @@ Then branch on what woke you:
   the wrapper at session exit. Treat them idempotently and trust status.json.
 - **Any other child message** (a question, a progress note) — answer it by replying with
   `send.sh` to that child's agent name, then end your turn.
-- **The timer task** — no message arrived within the window. Re-derive state, then for
-  each non-terminal task decide: if its pane still shows activity
-  (`cmux read-screen --surface <id>`), re-arm the same timer and end your turn; if a
-  pane is gone or a `[ready]` never arrived, mark that task `error` with the reason and
-  report it. Use `verify-agmsg-ready.sh --codex` on codex panes to separate "seat never
-  recorded" from "pane died".
+- **The timer task** — no message arrived within the window. This is not evidence that
+  a child failed; it is evidence that no message arrived. **Read the persistent records
+  before judging anything**: re-derive state from `.dispatch/*/status.json`, and for a
+  task whose `[ready]` you never saw, check the history rather than the inbox:
+
+  ```bash
+  ~/.agents/skills/agmsg/scripts/history.sh "$TEAM" parent 50 | grep -F '[ready]'
+  ```
+
+  Use `history.sh`, **never `inbox.sh`**: a `[ready]` consumed by a competing watcher is
+  already marked read, so `inbox.sh` would truthfully answer "nothing new" while the
+  row sits in the DB. **Marking a task `error` because its `[ready]` was stolen kills a
+  healthy child.** Only after the history also shows no `[ready]` may you treat the pane
+  as unreachable.
+
+  Then, for each non-terminal task: if its pane still shows activity
+  (`cmux read-screen --surface <id>`, **retried once** before you conclude anything — a
+  transient cmux socket failure must not be read as a dead pane), re-arm the same timer
+  and end your turn, up to the re-arm bound in Step 3. If a pane is really gone, mark
+  that task `error` with the reason and report it. Use `verify-agmsg-ready.sh --codex`
+  on codex panes to separate "seat never recorded" from "pane died".
 ```
 
 `### Background process health check` の節は丸ごと削除する (監視プロセスが存在しない)。
 
-- [ ] **Step 4: `monitor-dispatch.sh` を削除**
+- [ ] **Step 4: hook 順序の静的検査を追加**
+
+`test-agmsg-only-delivery.sh` (Task 2 で新設) に次を追加する。順序を壊した瞬間に
+`die` でディスパッチが硬く失敗するため、テストで固定する:
+
+- **PW1**: `prewarm-panes.sh` で `delivery.sh set monitor` を呼ぶ行が、ペインを起動する
+  (`cmux new-workspace` / `new-split` / 起動コマンドの打鍵) いずれの行よりも**前**にあること
+- **PW2**: claude 用の readiness 句が AGMSG-DIRECTIVE への追従を指示していること、かつ
+  そのペインの `delivery.sh set monitor claude-code` が同じ実行内で成功していることを
+  前提にしている旨がコメントで明記されていること
+
+- [ ] **Step 5: `monitor-dispatch.sh` を削除**
 
 ```bash
 git rm apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/monitor-dispatch.sh
@@ -735,7 +821,7 @@ git rm apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/monit
 `.monitor.pid` / `.monitor.log` を掃除するコードが cleanup 系スクリプト・テストに
 残っていないか `grep -rn "\.monitor\." apps/cmux-team-dispatch-task` で確認して消す。
 
-- [ ] **Step 5: テストを実行**
+- [ ] **Step 6: テストを実行**
 
 Run:
 ```bash
@@ -747,7 +833,7 @@ node scripts/check-doc-lang.mjs
 ```
 Expected: 全 PASS / `check-doc-lang: OK`
 
-- [ ] **Step 6: commit**
+- [ ] **Step 7: commit**
 
 ```bash
 git add -A apps/cmux-team-dispatch-task
@@ -806,11 +892,15 @@ polling the verdict file.` から、その `while true` ブロックと stalled 
          line at its end. The file is the source of truth; the message only says it is
          ready. If the message arrives but the file has no `VERDICT:` line, treat it as
          `needs_work` and say so in the next round's request.
-      4. If the safety timer (Step 3) fires while you are waiting on a verdict, check
-         the reviewer pane with `cmux read-screen --surface "$REVIEW_SURFACE"`. Still
-         working → re-arm the timer and end your turn. Pane gone or idle with no
-         verdict → re-send the request once for the same round, then fall back to
-         AskUserQuestion.
+      4. If the safety timer (Step 3) fires while you are waiting on a verdict, **read
+         `<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md` first**. Only the message
+         can be lost; the verdict may already be on disk. If it has a `VERDICT:` line,
+         act on it exactly as in item 3 and do not touch the pane at all. Only when the
+         file is missing or has no verdict line, check the reviewer pane with
+         `cmux read-screen --surface "$REVIEW_SURFACE"` (**retried once** before
+         concluding it is gone). Still working → re-arm the timer and end your turn.
+         Pane gone or idle with no verdict → re-send the request once for the same
+         round, then fall back to AskUserQuestion.
 ```
 
 - [ ] **Step 3: Phase B-R の待機ブロックを同じ形にする**
@@ -821,13 +911,24 @@ Phase B-R は**実装者 (子) がレビュアーを待つ**ので、待つ主�
 `immediately before any re-send or skip decision.` までを次で置き換える:
 
 ```
-(2) then stop and wait. Do NOT poll the file. The reviewer sends you a review-verdict
-message when the file is ready, and that message resumes you. If you are resumed with
-no verdict line in the file, treat it as VERDICT: needs_work.
+(2) then arm ONE single-shot safety timer as a background Bash task running
+sleep $((30 * 60)) -- one sleep, never a loop -- and stop and wait. Do NOT poll the
+file. The reviewer sends you a review-verdict message when the file is ready, and that
+message resumes you; stop that timer as soon as it arrives. On ANY wake, whether the
+message or the timer, re-read $REVIEW_DIR/code-round-N.md before deciding anything:
+only the message can be lost, so a timer wake with a VERDICT line already in the file
+means the review finished. If the file has no VERDICT line, treat it as VERDICT:
+needs_work and say so in your next request.
 ```
 
 子が claude なら Monitor で起き、codex なら bridge で起きる。どちらも readiness を
 確立済みである (Task 2) ことが前提。
+
+**子側にも保険が必要**である。「stop and wait. Do NOT poll」だけを渡すと、子はタイマーを
+1 本も持たない。`review-verdict` が失われた瞬間に子は永久に眠り、親はやがてそのタスクを
+`error` に落として**良い作業を捨てる**。上の文面は (a) 単発タイマー 1 本と
+(b) 「どの wake でも verdict ファイルを読み直す」という明示規則の両方を子に渡している。
+どちらも省略しないこと。
 
 - [ ] **Step 4: 静的検査を追加**
 

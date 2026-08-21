@@ -52,8 +52,12 @@ monitor 専用化の回帰テスト（静的検査。両プラグイン分をこ
 - **M1**: 両プラグインから旧ポーリング watcher の bin が削除されている
 - **M2**: 両プラグインの `.md` / `bin` に旧ポーリング watcher への参照が残っていない
 - **M3**: 両プラグインの `commands/*.md` に「ターンを閉じて Monitor イベントで起きる」手順がある
-- **M4**: 両プラグインの `commands/*.md` に単発タイマー保険（`sleep`）の手順がある
+- **M4**: 両プラグインの `commands/*.md` に単発タイマー保険（`run_in_background` + `sleep`）の手順がある
 - **M5**: review / exec 2 プラグインの `codex-parallel-lib.sh` が同一内容
+- **M6**: 両プラグインの `commands/**` / `skills/**` / `bin/**` に旧ポーリング watcher の契約語彙
+  （`short-lived watcher` / `watcher's wait target` / `status=done|gone|timeout` / `--timeout` /
+  `--interval` / `--liveness-interval`）が残っていない（否定的不変条件。具体名 1 つの grep = M2 では
+  陳腐化した記述を捕まえられなかったため）
 
 ## 完了検知は agmsg Monitor の push、タイマーは保険
 
@@ -62,8 +66,25 @@ monitor 専用化の回帰テスト（静的検査。両プラグイン分をこ
 （2026-08-21 に実測済み。根拠は `docs/superpowers/specs/2026-08-21-agmsg-monitor-only-design.md`）。
 
 この方式には `--surface` による即時のペイン死亡検知が無い。代わりに単発の `sleep` background task を
-1 本保険として張り、時間切れで起きたら `cmux read-screen --surface <surface>` でペインの生存を確認する。
-生きていれば同じタイマーを再武装してターンを閉じ直し、消えていれば検知不能として報告する。
+1 本保険として張る。タイマーで起きたときの規則は次の 4 つで、詳細は `commands/codex-review.md` の
+Step 3 が正である:
+
+1. **判断の前に永続記録を 1 回読む**。`history.sh <TEAM> <PARENT> 30 | grep -F <token> | tail -1`。
+   **`inbox.sh` は使わない**（競合 watcher に盗られた row は既読マークされるので「新着なし」と
+   正直に答えてしまう）。直近 N 行に限って最も新しい一致を採るのは、token がペイン番号由来で
+   再利用されうるため。完了 row があればタイマーの発火は「通知が失われただけ」を意味する
+2. **ペイン消滅を断定する前に `cmux read-screen` を 1 回リトライする**（socket の一時的な失敗で
+   誤検知しないため。旧 watcher は 2 回連続の失敗を要求していた）
+3. **再武装に上限を設ける**（既定 3 回）。対話 codex ペインは終了しないので「生きている」を根拠に
+   再武装すると無限ループになる。上限に達したら `read-screen` の内容を添えてユーザーへ報告する
+4. **完了を受け取ったらタイマーを止める**（`TaskStop`）。止めないと 60 分後に無駄な wake が
+   別の会話へ注入される
+
+親が Monitor ストリームを実際に持っているかは、配線前に preflight で確認する
+（`run/watch.<session_id>.*.pid` の存在と生存）。`join.sh` は登録だけで monitor モードを
+有効にせず、`delivery.sh set monitor` が書く SessionStart hook は**実行中のセッションには
+発火しない**ため、新規 join の直後は決定的に Monitor が無い。無ければ通知配線をスキップし、
+成功しえないタイマーを張らない。
 
 ## サンドボックスを read-only にしてはいけない
 

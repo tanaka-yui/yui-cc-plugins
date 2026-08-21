@@ -6,7 +6,7 @@ description: >-
   スキル。ユーザーが「この plan を codex に実装させて」「codex で plan を実行」「plan を回して終わったら教えて」
   「codex-exec」等と言ったとき、または書き上げた plan を独立した codex プロセスに実装させたいときに必ず使う。
   cmux セッション内 (CMUX_SOCKET_PATH) が前提。実装後は cmux-codex-review でのレビューへ繋ぐ。
-allowed-tools: Bash
+allowed-tools: Bash, TaskStop
 ---
 
 ## Output Language
@@ -80,8 +80,10 @@ Follow Step 0-5 of the `/codex-exec` command (`commands/codex-exec.md`). Key poi
    and obtain `token`/`codex_agent`.
 4. Pre-join the sender with `join.sh <TEAM> <codex_agent> codex`.
 5. End the turn. The completion arrives as an agmsg Monitor event; arm one
-   single-shot `sleep` background task as a safety net (see Step 4 of
-   `commands/codex-exec.md`).
-6. After waking on the completion line, confirm whether review is appropriate and
-   hand off to `cmux-codex-review`; if the timer fired instead, check the pane with
-   `cmux read-screen` and either re-arm or report that the pane is gone.
+   single-shot `sleep` background task as a safety net and remember its task id (see
+   Step 4 of `commands/codex-exec.md`).
+6. After waking, follow **Step 5 of `commands/codex-exec.md`** as written. It is the
+   only place that carries the `token` match, the `TaskStop` that stops the timer on
+   completion, the `history.sh` read that must happen before any judgement on a timer
+   wake, the single retry before declaring a pane gone, and the bound on re-arming. Do
+   not improvise those from this file.

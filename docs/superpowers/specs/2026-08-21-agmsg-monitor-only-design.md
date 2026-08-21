@@ -33,10 +33,13 @@ V1 の記録は `docs/superpowers/specs/2026-08-12-delivery-verification-results
 | V2a | seat 未記録の idle codex は受信するか | **fail** | メッセージは inbox に未読で滞留。`delivery.sh status` は `has no session recorded, though one thread is loaded` |
 | V2b | seat 記録後の idle codex は受信するか | **pass** | `codex-record-session.sh` 実行後の再送で inline 配信され、codex が応答した |
 | B5 | `ready.<team>__<agent>` sentinel は存在するか | **存在しない** | agmsg 1.2.1 の `watch.sh` に書くコードが無く、`run/` に 1 つも無い。readiness の実体は `run/watch.<session_id>.pid` (claude) と `run/codex-bridge.<team>.<agent>.thread` (codex) |
+| E2E | codex 系プラグインの実起動 1 本で、親が Monitor の push だけで完了を検知できるか (B4 の代替) | **pass** | 2026-08-21。`/codex-review --base main` を surface:40 / token=`codex-review-40` / team=`yui-cc-plugins` / reviewer=`cxrev-monitor-e2e` / parent=`parent` で起動。(1) 旧ポーリング watcher の bin もプロセスも不在 (2) background task は `sleep` 1 本だけ (3) codex 完了後、`06:26:40Z \| yui-cc-plugins \| cxrev-monitor-e2e → parent \| DONE codex-review-40: レビュー完了 agents=6` の 1 行で idle の親が起床 (4) token 一致・`agents=6` も転記 (5) codex 側で 3 テストスイート / turbo check / check-doc-lang / `bash -n` が全 pass。証拠は `.superpowers/sdd/2026-08-21-agmsg-monitor-only-codex-plugins/progress.md` の T4 節 |
+| T1 | バックグラウンドの単発 `sleep` タスクは exit でセッションを起こすか | **pass (60 秒で 1 回のみ)** | 2026-08-21。Bash ツールの `run_in_background: true` で `sleep 60` を張り、06:42:38Z → 06:43:38Z にちょうど 60 秒で exit。その exit が `<task-notification>` としてセッションへ注入され、reap もされなかった。**60 分 / 90 分の実測ではなく、compaction を跨いだ生存も未観測**（60 秒では compaction が起きないため）。この 2 点は依然として明文化されていない仮定である |
 
 B4 として子 claude 上での B1 再現も予定していたが、probe 用の子が別アカウントの
 weekly limit に当たりターンを持てなかったため未実施。B1 は親セッションで観測済みで、
-子と親でハーネスは同一のため、B4 は E2E で確認する。
+子と親でハーネスは同一のため、B4 は E2E で確認した（上表の E2E 行。dispatch の子 claude
+での再現は dispatch 側の E2E に残る）。
 
 ### 制約として扱う 3 点
 
@@ -77,6 +80,55 @@ sentinel 自体が存在しないため **agmsg 1.2.1 では一度も発火し�
    - codex → bridge が起動し `run/codex-bridge.<team>.<agent>.thread` に seat が記録される
      (team/agent キーなので親から観測できる)
 
+### read cursor の排他（要件）
+
+**read cursor は (team, agent) 単位で 1 つしかない。** `storage_watch_after` は既読 row を
+除外するので、同じ (team, agent) を購読する watcher が 2 つあると**先に poll した方が row を
+取り、他方は何も見ない**（`watch.sh:619-626`）。取られた row は read マークされるため、
+`inbox.sh` も「新着なし」と正直に答える。
+
+しかも既定のディレクティブは**フィルタ無し**である。`session-start.sh:367-378` は
+`watch.sh <instance> <project> <type>` を第 4 引数（agent 名）**なし**で起動するため、その
+プロジェクトに登録された全 (team, agent) を購読する（`watch.sh:432-435`）。同じチェックアウトで
+2 セッションを開くだけで競合が成立する。
+
+よって配送コントラクトに次を要件として加える:
+
+> **親は自分の (team, agent) ペアに対する排他を保持するか、同一プロジェクトを見る競合
+> unfiltered watcher が居ないことを確認する。**
+
+- 検出（安価）: `~/.agents/skills/agmsg/run/watch.*.filter` を走査する。1 行目 = role または
+  `unfiltered`、2 行目 = プロジェクトパス、3 行目 = owner pid。自分以外に live な unfiltered
+  watcher が同じプロジェクトに居れば警告する。
+- 主張（強い）: `actas-claim.sh <project> <type> <name> <session_id>` で排他を主張する
+  （他者所有なら `status=held owner=<sid>`）。配送ループは毎周期 lock を読み直すので
+  （`watch.sh:630`）Monitor を再起動せずに効く見込みだが、**主張だけで配送先が切り替わるかは
+  未実測**である。保証として扱ってはならない。
+
+この穴は codex 系プラグインだけの問題ではない。dispatch は単一の `parent` identity を
+`[ready]` / `dispatch-notify` / `review-verdict` の**全部**に再利用するため、そのままでは
+親のチェックアウトにある第 2 のセッションがどのメッセージでも消費しうる。
+
+### 起きたら永続記録を読む（全経路の規則）
+
+上記の競合、watcher の自己終了（`watch.sh:426-429` の `_install_changed`。agmsg の `scripts/`
+が起動時より新しいと watcher は黙って自己終了する）、`send.sh` のハング、相手が指示に従わない、
+といった経路では**メッセージだけが失われて成果物はディスク上にある**。したがって:
+
+> **どの経路で起床しても、何かを判断する前に永続記録を 1 回読む。**
+
+| 待っているもの | 起床時に読む永続記録 |
+|---|---|
+| 子 → 親の完了 / abort | `.dispatch/*/status.json` |
+| レビュアー → 依頼者の verdict | `<point>-round-<N>.md` の `VERDICT:` 行 |
+| 子 → 親の readiness (`[ready]`) | `history.sh <team> <agent> N`（**`inbox.sh` は不可**。取られた row は既読になる） |
+| codex 系の完了通知 | `history.sh <team> <parent> 30 \| grep -F <token> \| tail -1` |
+
+`history.sh` を使い `inbox.sh` を使わないこと、直近 N 行に限って**最も新しい一致**を採ること
+（token はペイン番号由来で再利用されうる）を規則として固定する。メッセージが来ないことを
+「相手が失敗した」と読み替えてはならない。盗られた `[ready]` を理由に健全な子を error に
+落とすのは、この規則を破った典型である。
+
 ### 起動プロンプト
 
 現在プロンプト無しで idle 起動している standby / review ペインも、**readiness 確立
@@ -111,6 +163,11 @@ Monitor は 1 メッセージを 1 行で届けるので、親はこの prefix �
 ハーネスに Monitor ツールが無い」と明示して停止する。agmsg 未インストールも同様に
 fail-fast とし、`AGMSG_INSTALLED` による true/false の二系統分岐は廃止する。
 
+**この確認は起動時 1 回では足りない。起床ごとに再確認する。** 親自身の watcher は dispatch や
+レビューの途中で死にうる（`watch.sh:426-429` の `_install_changed` による自己終了、`/compact`
+と TaskStop の競合）。死んだ後は全ての子の通知が黙って失われ、頼れるのはタイマー 1 本だけに
+なる。よって `verify-agmsg-ready.sh --self` は各 wake とタイマー発火のたびに再実行する。
+
 ### タイマー保険
 
 子が quota 切れなどで一度も起動しなければ readiness 通知も完了通知も来ない。
@@ -122,6 +179,22 @@ nohup sh -c 'sleep <T>' &   # プロセスの exit が親を起こす
 
 親はこのタイマーで起きたら `status.json` を再評価し、terminal でないものを error に
 するか延長する。`T` は既存の `task_timeout_min` を流用する。ループは残らない。
+
+タイマーには次の 4 つの規則を必ず付ける。E2E で 3 つ目を実際に踏み、手で停止する必要があった。
+
+1. **起きたら永続記録を先に読む。** 前節の規則をそのまま適用する。タイマーが問うべきは
+   「相手は生きているか」ではなく「**メッセージは着いたか**」である。相手のペインの生存だけを
+   見て再武装すると、対話ペインは終了しないので答えは常に「再武装」になる。
+2. **再武装に上限を設ける。** 進捗のない再武装が N 回（既定 3）続いたら、黙って再武装せず
+   `cmux read-screen` の内容を添えてユーザーへ報告する。上限の無い再武装は、エスカレーションも
+   報告も無い無限ループである。
+3. **完了を受け取ったらタイマーを止める。** 止めないと 60/90 分後に `sleep` が exit し、
+   ユーザーが既に別の話題へ移った会話へ無駄な wake が注入される。Claude Code では `TaskStop`
+   に task id を渡す（そのため `commands/*.md` の `allowed-tools` に `TaskStop` が必要）。
+   放置すると再武装分岐へ入り、これも無限に続く。
+4. **存在しないフラグ名を注釈に書かない。** Bash ツールに `--wake-after` のようなパラメータは
+   無い。造語を注釈に書くと、読んだモデルがそれを渡そうとする。手段は散文で書き、静的検査は
+   `run_in_background` + `sleep` に紐付ける。
 
 ## プラグインごとの変更
 
@@ -204,7 +277,15 @@ R1 / R2 は `docs/notification-gaps.md` に追記し、U1 / U9 は解消とし�
   レビュー有効)。outbox が 1 つも生成されないこと、親が agmsg だけで全フェーズを進むこと、
   子 claude で B1 が再現すること (B4) を実測する
 
+- **旧契約の語彙に対する否定検査**: 具体名 1 つの grep では陳腐化した記述を捕まえられない。
+  旧ポーリング watcher の契約語彙 (`short-lived watcher` / `watcher's wait target` /
+  `status=done|gone|timeout` / `--timeout` / `--interval` / `--liveness-interval`) が
+  `commands/**` / `skills/**` / `bin/**` に出現しないことを検査する
+  (`test-monitor-only.sh` の M6)
+
 V1 の教訓は「静的検査だけで通したら前提が間違っていた」である。E2E を省略しない。
+**そして E2E の結果は上の実測結果表に必ず記録する。** 証拠が SDD の作業ディレクトリにしか
+無いと、specs を grep した将来の読者は古い結論に先に当たる（I6 で実際に起きた）。
 
 ## ドキュメント更新
 

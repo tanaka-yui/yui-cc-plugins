@@ -1,5 +1,11 @@
 # 配送前提の検証結果
 
+> **この結論は 2026-08-21 に逆転した。→ `docs/superpowers/specs/2026-08-21-agmsg-monitor-only-design.md`**
+> V1 の fail 原因は agmsg ではなく「当時のハーネスに Monitor ツールが無かったこと」であり、
+> Monitor ツールが露出した現在は「agmsg push が idle な claude セッションを起こす」は
+> **成立する**（2026-08-21 の B1 / E2E で実測）。以下の本文は当時の観測記録として残す。
+> **現在の設計判断の根拠には使わないこと。**
+
 実施日: 2026-08-13
 対象: `docs/superpowers/specs/2026-08-12-dispatch-message-delivery-design.md` の V1 / V2
 
