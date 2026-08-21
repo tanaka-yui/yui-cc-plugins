@@ -34,12 +34,64 @@ V1 の記録は `docs/superpowers/specs/2026-08-12-delivery-verification-results
 | V2b | seat 記録後の idle codex は受信するか | **pass** | `codex-record-session.sh` 実行後の再送で inline 配信され、codex が応答した |
 | B5 | `ready.<team>__<agent>` sentinel は存在するか | **存在しない** | agmsg 1.2.1 の `watch.sh` に書くコードが無く、`run/` に 1 つも無い。readiness の実体は `run/watch.<session_id>.pid` (claude) と `run/codex-bridge.<team>.<agent>.thread` (codex) |
 | E2E | codex 系プラグインの実起動 1 本で、親が Monitor の push だけで完了を検知できるか (B4 の代替) | **pass** | 2026-08-21。`/codex-review --base main` を surface:40 / token=`codex-review-40` / team=`yui-cc-plugins` / reviewer=`cxrev-monitor-e2e` / parent=`parent` で起動。(1) 旧ポーリング watcher の bin もプロセスも不在 (2) background task は `sleep` 1 本だけ (3) codex 完了後、`06:26:40Z \| yui-cc-plugins \| cxrev-monitor-e2e → parent \| DONE codex-review-40: レビュー完了 agents=6` の 1 行で idle の親が起床 (4) token 一致・`agents=6` も転記 (5) codex 側で 3 テストスイート / turbo check / check-doc-lang / `bash -n` が全 pass。上記 (1)-(5) がこの行に転記した観測そのもので、これが証拠である（実行時の作業ログは git-ignored なスクラッチにしか残らないため、参照先としては挙げない） |
+| D-E2E | dispatch の縮小 E2E（prewarm から実ペインを起動し、readiness / 配送 / 完了通知を実測） | **pass** | 2026-08-21。scratch repo に design(claude) + codex executor を prewarm 起動。(1) readiness プロンプトが `zsh -ic "claude ... 'PROMPT'"` の二重引用を無傷で通過（クォート破綻・グロブ展開なし、「末尾ピリオド禁止」「1 引数で渡す」の指示も到達）(2) codex の seat が `run/codex-bridge.<team>.<agent>.thread` に記録され V2a の未読滞留は再現せず (3) `[ready] e2e-mon-codex` と `[ready] e2e-mon` が**末尾ピリオドなし**の正確なワイヤフォーマットで両エンジンから到着（B4 の未実施分もここで回収）(4) 親→codex 子へ agmsg push でタスクが届き、worktree の `src/a.js` が実際に編集された (5) `DONE e2e-mon-codex` が親へ返った |
+| D-T2 | **codex は自分宛の遅延メッセージでタイマーを張れるか** | **fail** | 2026-08-21。2 形式とも不発。`( sleep 60; send.sh ... ) &` も `setsid nohup bash -c '...' &` も codex のターン終了で消える（指示から 2 分以上後に `e2e-mon-codex → e2e-mon-codex` のメッセージ 0 件、残存プロセスも 0）。**codex の待機者には保険が存在しない。** 詳細は下記「E2E が見つけた欠陥」 |
 | T1 | バックグラウンドの単発 `sleep` タスクは exit でセッションを起こすか | **pass (60 秒で 1 回のみ)** | 2026-08-21。Bash ツールの `run_in_background: true` で `sleep 60` を張り、06:42:38Z → 06:43:38Z にちょうど 60 秒で exit。その exit が `<task-notification>` としてセッションへ注入され、reap もされなかった。**60 分 / 90 分の実測ではなく、compaction を跨いだ生存も未観測**（60 秒では compaction が起きないため）。この 2 点は依然として明文化されていない仮定である |
 
 B4 として子 claude 上での B1 再現も予定していたが、probe 用の子が別アカウントの
 weekly limit に当たりターンを持てなかったため未実施。B1 は親セッションで観測済みで、
 子と親でハーネスは同一のため、B4 は E2E で確認した（上表の E2E 行。dispatch の子 claude
 での再現は dispatch 側の E2E に残る）。
+
+### E2E が見つけた欠陥（2026-08-21）
+
+静的検査は 9 タスク分すべて緑で、各タスクのレビューも通っていたが、実ペインを起動して初めて
+分かった欠陥が 3 件ある。**動かすまで分からない種類がここに集中している。**
+
+#### F1 (Critical) codex の待機者には保険が存在しない
+
+`( sleep N; send.sh ... ) &` も `setsid nohup bash -c '...' &` も、**codex のターン終了で消える**
+（D-T2 の実測）。したがって「codex は自分宛の遅延メッセージでタイマーを張る」という指示は
+**動かない手段を指示していることになる**。影響を受けるのは Phase A-R の design ペイン、
+Phase B-R の実装者、親オーケストレータのいずれかが codex のとき。
+
+親が claude なら親の 90 分タイマーが最後に拾うが、**all-Codex 構成では誰も拾わない**。
+`review-verdict` や完了通知が失われた瞬間、その待機者は永久に眠る。
+
+**動かないと実測で分かった手段を指示文に残すのは、手段が無いと書くより悪い**（待機者は保険が
+あるつもりで眠る）。最低限、指示を実態に合わせる必要がある。より良い機構
+（`launch-workspace.sh` は codex のサンドボックス外で動くので、そこで張る等）は後続の課題。
+
+#### F2 (Important) 「待て」とだけ言うと codex がポーリングを再発明する
+
+readiness 句の「Then wait idle. Execution instructions will arrive as an agmsg message.」を
+受けた codex は、**自分で `inbox.sh` のポーリングループを書いた**:
+
+```
+for i in {1..11}; do agmsg_inbox_output="$(bash .../inbox.sh <team> <agent>)";
+  if [ "$agmsg_inbox_output" != 'No new messages.' ]; then printf '%s\n' "$..."; exit 0; fi;
+  sleep 5; done
+```
+
+害は 2 つ。(1) 「待機ループを 1 つも作らない」という設計の目的そのものを子が破る。
+(2) **`inbox.sh` は row を既読にする**ので、`[ready]` 直後にタスクを配送すると bridge ではなく
+子の自作ループが飲み込むレースになる（この設計自身が「`history.sh` を使い `inbox.sh` は
+使うな」と定めている理由と同じ）。
+
+**ポーリングは消えたのではなく移動しうる。** 親から消しても、子に「待て」とだけ言えば子が
+再発明する。指示文に「ポーリングするな。メッセージは自動で注入される」と明示する必要がある。
+
+#### F3 (Important・既存バグ) prewarm の検証と runner 解決が食い違う
+
+`prewarm-panes.sh` の検証は `--exec-runner` **または** `--codex-runner` のどちらでも通すが
+（`exec_choice=codex requires --exec-runner or --codex-runner`）、解決は
+`--exec-choice codex` のとき `--exec-runner` しか読まない。`--codex-runner` だけを渡すと
+**検証を通過したうえで runner が空になり `claude` にフォールバックする**。
+
+結果として、codex 向けのプロンプト（`codex-record-session.sh` を呼べ）を渡された **claude ペイン**
+が立ち上がる。`main` と同一のコードなので**このブランチの退行ではない**が、monitor 専用化で
+深刻度が上がった: 以前は engine が違ってもタイプ入力で配送されたが、今は **engine ごとに
+readiness の確立手段が違う**ので、不一致は静かな不通に直結する。
 
 ### 制約として扱う 3 点
 
