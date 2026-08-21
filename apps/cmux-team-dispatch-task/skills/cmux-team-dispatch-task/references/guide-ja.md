@@ -58,13 +58,13 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 
 ## セットアップモード（設定の明示構成）
 
-`--setup` でのみ発動する。ディスパッチは一切行わず、タスク・worktree・workspace・ペインを作らない。役割キー（`design_runner` / `review_runner` / `exec_choice` / `review_mode` / `prewarm`）と `runners.json` レジストリを対話で構成し、ユーザーが選んだレイヤーへ書き込む。手順は [`references/setup-mode-ja.md`](setup-mode-ja.md)（英語版は `setup-mode.md`）。
+`--setup` でのみ発動する。ディスパッチは一切行わず、タスク・worktree・workspace・ペインを作らない。役割キー（`design_runner` / `review_runner` / `exec_choice` / `review_mode` / `prewarm`）と `runners.json` レジストリ（登録済み各 runner の役割別 model / effort を含む。`scripts/runners-edit.sh` で編集する）を対話で構成し、ユーザーが選んだレイヤーへ書き込む。手順は [`references/setup-mode-ja.md`](setup-mode-ja.md)（英語版は `setup-mode.md`）。
 
 ## リセットモード（設定のリセット）
 
 `--reset` でのみ発動する。対象は任意で指定できる: `--reset runners`（レジストリ）、`--reset config`（役割キー）、`--reset all`。対象未指定なら質問する。ディスパッチは行わず、`.dispatch/`・worktree・ブランチは決して削除しない（それはディスパッチ末尾の Cleanup prompts の担当）。手順は [`references/setup-mode-ja.md`](setup-mode-ja.md)。
 
-両モードとも書き込みは `scripts/config-edit.sh` だけを通す。置換ではなくマージするため、他コンポーネントが所有するキー（`shell_ready_ms`）が生き残る。`--loop` / `--override` とも互いとも排他で、issue ループがロックを保持している間はどちらも実行を拒否する。どちらもタスク記述ではないため、Step 1a のタスク解析に到達させてはならない。
+フィールド単位の書き込みは全て edit スクリプトを通す — 役割キーは `scripts/config-edit.sh`、runner の役割別 model / effort は `scripts/runners-edit.sh`。どちらも置換ではなくマージするため、他コンポーネントが所有するキー（`shell_ready_ms`）が生き残る。ただし `--reset runners` は例外で、どちらの edit スクリプトも通らず First-run setup（Step 1f）経由で `runners.json` を作り直す。`--loop` / `--override` とも互いとも排他で、issue ループがロックを保持している間はどちらも実行を拒否する。どちらもタスク記述ではないため、Step 1a のタスク解析に到達させてはならない。
 
 ---
 
@@ -248,7 +248,7 @@ running, so without this call the parent may never be informed.
 上書きはメモリ上の解決済み値だけを差し替える対象: `DESIGN_RUNNER` / `DESIGN_ENGINE` /
 `PLAN_MODEL` / `PLAN_EFFORT`、`REVIEW_RUNNER` / `REVIEW_ENGINE` / `REVIEW_MODEL` /
 `REVIEW_EFFORT`、`EXEC_CHOICE` / `EXEC_RUNNER` / `EXEC_ENGINE` / `EXEC_MODEL` /
-`EXEC_EFFORT`。`config-edit.sh` はここでは絶対に呼ばない。
+`EXEC_EFFORT`。`config-edit.sh` と `runners-edit.sh` はここでは絶対に呼ばない。
 
 **Call 1 — 対象タスク。** `multiSelect: true` の AskUserQuestion を1回:
 
@@ -1366,7 +1366,7 @@ done
 /cmux-team-dispatch-task --setup
 ```
 
-ディスパッチせずに設定だけを構成します。現在の設定（プロジェクト値 / グローバル値 / 解決値）と `runners.json` の一覧を表示したあと、書き込み先（グローバル / プロジェクト）と対象（役割キー / `runners.json` / 両方）を選び、役割キーごとに「固定値 / `"ask"` / 未設定に戻す / 変更しない」を指定します。最後に差分を確認してから 1 回の原子的な書き込みで反映します。
+ディスパッチせずに設定だけを構成します。現在の設定（プロジェクト値 / グローバル値 / 解決値）と `runners.json` の一覧を表示したあと、書き込み先（グローバル / プロジェクト）と対象（役割キー / `runners.json` / 両方）を選び、役割キーごとに「固定値 / `"ask"` / 未設定に戻す / 変更しない」を指定します。`runners.json` を対象に選んだときは登録済み runner を 1 件選んで役割別 model / effort（`plan_model` / `review_model` / `exec_model` と対応 effort）を編集することもできます。最後に差分を確認してから 1 回の原子的な書き込みで反映します。
 
 ### 設定のリセット（`--reset`）
 
@@ -1640,7 +1640,7 @@ codex engine は影響を受けない。`.claude/settings.local.json` を読ま�
 
 ### 初回セットアップ
 
-`runners.json` が存在しない状態、runner 切替質問で reset を選んだ直後、`--reset runners` の直後、または `--setup` で `runners.json` を対象に選んだときは、初回セットアップが起動します:
+`runners.json` が存在しない状態、runner 切替質問で reset を選んだ直後、`--reset runners` の直後、または `--setup` の S3 で「runner を追加」「レジストリを作り直す」を選んだとき（「登録済み runner の model / effort を編集」を選んだときは初回セットアップではなく S3-M が起動する）は、初回セットアップが起動します:
 
 1. AskUserQuestion で **starter テンプレ（claude のみ）** か **カスタム** を選択
 2. starter テンプレ選択時は claude のみが書き出されます

@@ -90,7 +90,9 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 ディスパッチを行わずに設定だけを構成します。現在の設定（プロジェクト値 / グローバル値 /
 解決値）と `runners.json` の一覧を表示したあと、書き込み先（グローバル /
 プロジェクト）と対象（役割キー / `runners.json` / 両方）を選びます。役割キーごとに
-「固定値 / `"ask"` / 未設定に戻す / 変更しない」を指定でき、最後に差分を確認してから
+「固定値 / `"ask"` / 未設定に戻す / 変更しない」を指定でき、`runners.json` を対象に選んだ
+ときは登録済み runner を 1 件選んで役割別 model / effort（`plan_model` / `review_model` /
+`exec_model` と対応 effort）を編集することもできます。最後に差分を確認してから
 1 回の原子的な書き込みで反映します。
 
 これまで役割キーはディスパッチ中の質問に「常に〜」と答えたときにしか永続化されなかった
@@ -128,7 +130,7 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 runner / model / effort を答える流れです。各質問の先頭は必ず「変更なし（現在: <解決値>）」
 なので、変えたい次元だけ触れば済みます。
 
-**config には一切書き戻しません。** 恒久的に変えたいときは `--setup` を使ってください。
+**config にも `runners.json` にも一切書き戻しません。** 恒久的に変えたいときは `--setup` を使ってください。
 無人実行の `--loop`、および `--setup` / `--reset` とは排他です（`--loop` は質問に答える人が
 いないため）。
 
@@ -283,9 +285,11 @@ config に永続化）。プロジェクト側 `.dispatch/config.json` がグロ
 
 `--setup` は上記 5 キーすべてについて「固定値 / `"ask"` / 未設定に戻す / 変更しない」を
 選べます。`--reset config` はこの 5 キーだけを削除し、`shell_ready_ms` など他コンポーネント
-所有のキーは残します。どちらも書き込みは `scripts/config-edit.sh` を通し、置換ではなく
-マージします。プロジェクトの `.dispatch/config.json` はディスパッチ末尾の cleanup でも
-削除されません（`config.json` だけが掃き出し対象から外れます）。
+所有のキーは残します。どちらも書き込みは `scripts/config-edit.sh`（役割キー）と
+`scripts/runners-edit.sh`（runner の役割別 model / effort）を通し、置換ではなく
+マージします（`--reset runners` はどちらの edit スクリプトも通らず First-run setup 経由で
+`runners.json` を作り直します）。プロジェクトの `.dispatch/config.json` はディスパッチ末尾の
+cleanup でも削除されません（`config.json` だけが掃き出し対象から外れます）。
 
 初回カスタム設定では `plan_model` / `review_model` / `exec_model` と対応 effort を **claude / codex
 両 engine** について収集します（claude は `opus[1m]` / `sonnet` / `fable` + 自由入力、codex は
