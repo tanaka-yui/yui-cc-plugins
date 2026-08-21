@@ -32,18 +32,32 @@ V1 の記録は `docs/superpowers/specs/2026-08-12-delivery-verification-results
 | B3 | codex bridge の導入状況 | **pass** | `~/.zshrc.local:47` に `codex()` 関数が定義済み。`codex-shim.sh` 経由で app-server bridge に載る |
 | V2a | seat 未記録の idle codex は受信するか | **fail** | メッセージは inbox に未読で滞留。`delivery.sh status` は `has no session recorded, though one thread is loaded` |
 | V2b | seat 記録後の idle codex は受信するか | **pass** | `codex-record-session.sh` 実行後の再送で inline 配信され、codex が応答した |
+| B5 | `ready.<team>__<agent>` sentinel は存在するか | **存在しない** | agmsg 1.2.1 の `watch.sh` に書くコードが無く、`run/` に 1 つも無い。readiness の実体は `run/watch.<session_id>.pid` (claude) と `run/codex-bridge.<team>.<agent>.thread` (codex) |
 
 B4 として子 claude 上での B1 再現も予定していたが、probe 用の子が別アカウントの
 weekly limit に当たりターンを持てなかったため未実施。B1 は親セッションで観測済みで、
 子と親でハーネスは同一のため、B4 は E2E で確認する。
 
-### 制約として扱う 2 点
+### 制約として扱う 3 点
 
 1. **各ペインは初回ターンを 1 回持つ必要がある** (B2)。claude は Monitor 起動、
    codex は bridge 起動がそのターンで行われる。
 2. **codex ペインは seat 記録が必要** (V2a/V2b)。現行の `prewarm-panes.sh:411` は
    `delivery.sh set monitor codex` までは行うが seat を記録しないので、親→codex の
    配送を agmsg に切り替えた瞬間に未読滞留で止まる。
+3. **claude 子の readiness は親から観測できない** (B5)。readiness シグナルが
+   session id キー (`run/watch.<session_id>.pid`) で、親は子の session id を知らない。
+   よって claude 子の readiness は **agmsg による自己申告 (`[ready] <slug>`) が唯一の
+   確認手段**である。codex 子は `run/codex-bridge.<team>.<agent>.thread` が team/agent
+   キーなので親から観測できる。
+
+### 副産物: 現行の inbox 記録は既に死んでいる
+
+`send-prompt.sh` の「watcher が生きていれば inbox にも記録する」半分は、B5 のとおり
+sentinel 自体が存在しないため **agmsg 1.2.1 では一度も発火していない**。現行の dual-send
+は実質タイプ入力のみで動いている。`cmux-team-dispatch-task/CLAUDE.md` の検証項目 17 が
+求める「親の watcher が生きていれば同一文が inbox にも記録される」は現バージョンでは
+成立しないので、この機会に記述を正す。
 
 ## 配送コントラクト
 
@@ -58,8 +72,10 @@ weekly limit に当たりターンを持てなかったため未実施。B1 は�
 1. team に join 済み — `join.sh <team> <name> <type> <cwd>`
 2. そのプロジェクトが monitor モード — `delivery.sh set monitor <type> <cwd>`
 3. ペインが初回ターンを 1 回持った。その結果として:
-   - claude → Monitor ツールが起動し `run/ready.<team>__<agent>` sentinel が出る
-   - codex → bridge が起動し seat (thread id) が記録される
+   - claude → Monitor ツールが起動し `run/watch.<session_id>.pid` が出る
+     (session id キーなので**親からは観測できない**。B5 / 制約 3)
+   - codex → bridge が起動し `run/codex-bridge.<team>.<agent>.thread` に seat が記録される
+     (team/agent キーなので親から観測できる)
 
 ### 起動プロンプト
 
@@ -144,8 +160,17 @@ nohup sh -c 'sleep <T>' &   # プロセスの exit が親を起こす
 **置換**
 
 - `ensure-agmsg-ready.sh` (505 行) → `verify-agmsg-ready.sh` (約 80 行)。watcher は起動
-  せず確認だけ行う。claude は sentinel の存在、codex は `delivery.sh status` が seat
-  recorded かつ bridge running を返すことを見る
+  せず確認だけ行う。判定は B5 の実測に従う:
+  - 自セッション (親) → `run/watch.<session_id>.pid` の存在
+  - codex ペイン → `run/codex-bridge.<team>.<agent>.thread` の存在
+  - claude ペイン → **判定しない**。`[ready]` の自己申告を待つ (制約 3)
+
+  `delivery.sh status` の出力は判定に使わない。V2b の時点で `not running` と報告しながら
+  bridge プロセスは実在し配信も成功していたため、これを fail-closed の条件にすると
+  動いているペインを不通と誤判定する。
+
+- `agmsg-path.sh` (37 行) は削除する。`ready.<team>__<agent>` を組み立てる唯一の用途が
+  B5 で消滅した (`codex-bridge.<team>.<agent>.*` は team/agent をそのまま使う)
 
 **変更**
 
