@@ -128,6 +128,14 @@ done
 [[ -n "$DISPATCH_DIR" ]] || die "dispatch directory is required"
 [[ -d "$DISPATCH_DIR" ]] || die "dispatch directory does not exist: $DISPATCH_DIR"
 
+# 配送スクリプトが実在することを起動時に確認する。存在しないまま走らせると
+# heartbeat / 全完了 / DIED 通知のすべてが send_to_parent の `|| true` で無音のまま
+# 失われ、「沈黙は曖昧ではない」という DIED 通知の存在理由が崩れる。
+# 暫定: 配送は agmsg send.sh へ一本化されたが、この monitor の書き換えは別タスクの
+# 担当なので、それが済むまでは起動時に大声で落ちる方を選ぶ。
+[[ -f "$SEND_PROMPT" ]] \
+  || die "delivery script not found: $SEND_PROMPT — this monitor cannot notify the parent (heartbeat / all-done / DIED would all be lost silently); it must be migrated to agmsg send.sh"
+
 if $DEBUG; then
   set -x
 fi

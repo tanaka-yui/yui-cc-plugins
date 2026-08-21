@@ -105,8 +105,8 @@ fi
 
 # --- CS4: 削除済みスクリプトへの参照が残らない ---
 # 対象は send-prompt.sh と agmsg-path.sh の 2 つ (この時点で削除したもの)。
-# monitor-dispatch.sh / batch-wait.sh は後続タスクが削除するまで存在するので、
-# その 2 つを CS4 の対象へ加えるのは削除タスク側の仕事である。
+# monitor-dispatch.sh / ensure-agmsg-ready.sh / batch-wait.sh の 3 つを DELETED_RE へ
+# 加えるのは brief が Task 6 に割り当てている作業なので、ここでは対象にしない。
 #
 # PENDING 表は「T3 の担当外なので参照が残る箇所」を、担当タスクと件数つきで固定する。
 # `*` は件数を問わないの意。表に無いファイルに 1 件でも出れば FAIL、表にあるのに
@@ -114,7 +114,7 @@ fi
 DELETED_RE='send-prompt\.sh|agmsg-path\.sh'
 PENDING=(
   "skills/cmux-team-dispatch-task/SKILL.md|3|T4 (Step 1g の agmsg 配線ブロック / Step 3 の監視セクション)"
-  "skills/cmux-team-dispatch-task/scripts/monitor-dispatch.sh|4|T4 (monitor-dispatch の配送を Monitor push へ移す)"
+  "skills/cmux-team-dispatch-task/scripts/monitor-dispatch.sh|4|T6 (DELETED_RE を 5 つへ拡張して monitor-dispatch.sh / batch-wait.sh を削除。配送の書き換え自体は T4)"
   "skills/cmux-team-dispatch-task/references/guide-ja.md|*|T7 (訳の追従)"
   "README.md|*|T7 (ドキュメント更新)"
   "CLAUDE.md|*|T7 (ドキュメント更新)"

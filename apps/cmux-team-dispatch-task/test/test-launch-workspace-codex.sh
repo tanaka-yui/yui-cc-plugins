@@ -30,6 +30,13 @@ esac
 STUB
 chmod +x "$TMP/bin/cmux"
 
+# agmsg send.sh のスタブ。--agmsg-team/--agmsg-from を渡す invocation の存在チェック用。
+cat > "$TMP/bin/agmsg-send.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$TMP/bin/agmsg-send.sh"
+
 cat > "$TMP/runners.json" <<'JSON'
 {
   "default": "codex",
@@ -300,8 +307,10 @@ cat > "$TMP/review-config.json" <<JSON
 {"reviewer_surface":"surface:9","reviewer_workspace":"workspace:3","reviewer_agent":"unattended-review","review_dir":"$TMP/status/review"}
 JSON
 
-unattended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+unattended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
+  --agmsg-team demo-team --agmsg-from unattended-exec \
   --status-dir "$TMP/status" --review-config "$TMP/review-config.json" --unattended "unattended-exec")
 unattended_runner=$(jq -r '.runner_file' <<<"$unattended_output")
 assert_not_contains "$unattended_runner" 'AskUserQuestion' 'T12 --unattended の runner に質問分岐が無い'
@@ -310,8 +319,10 @@ assert_contains "$unattended_runner" 'note the unresolved findings in the PR bod
   'T12 --unattended は round 5 の固定フォールバックを持つ'
 
 # 後方互換: --unattended 無しでは現行文言が保たれる
-attended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+attended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
+  --agmsg-team demo-team --agmsg-from attended-exec \
   --status-dir "$TMP/status" --review-config "$TMP/review-config.json" "attended-exec")
 attended_runner=$(jq -r '.runner_file' <<<"$attended_output")
 assert_contains "$attended_runner" 'AskUserQuestion' 'T13 --unattended 無しでは現行の質問分岐が残る'
@@ -334,7 +345,7 @@ JSON
 mkdir -p "$TMP/abort-status/review" "$TMP/zdot"
 : > "$TMP/zdot/.zshrc"
 jq -n --arg d "$TMP/abort-status/review" '{reviewer_surface:"surface:55", reviewer_workspace:"workspace:5", reviewer_agent:"abort-review-review", review_dir:$d}' > "$TMP/abort-status/review/code-review.json"
-a1=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status" --parent-notify-workspace workspace:9 --review-config "$TMP/abort-status/review/code-review.json" abort-review)
+a1=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status" --agmsg-team demo-team --agmsg-from abort-review --parent-notify-workspace workspace:9 --review-config "$TMP/abort-status/review/code-review.json" abort-review)
 a1_runner=$(jq -r '.runner_file' <<<"$a1")
 assert_contains "$a1_runner" 'ABORT PROTOCOL' 'A1 review 有効の spawn 経路に abort 手順が入る'
 assert_contains "$a1_runner" 'code-round-N.md' 'A1 review 有効時は findings 記録先を含む'
@@ -351,7 +362,7 @@ else
   echo "FAIL: A2 inner prompt が単一引数でない (argc=${a2_argc:-none}, last_arg_match=${a2_last_arg:-0})"
   fail=1
 fi
-a3=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status-none" --parent-notify-workspace workspace:9 abort-none)
+a3=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status-none" --agmsg-team demo-team --agmsg-from abort-none --parent-notify-workspace workspace:9 abort-none)
 a3_runner=$(jq -r '.runner_file' <<<"$a3")
 assert_contains "$a3_runner" 'ABORT PROTOCOL' 'A3 review 無効の spawn 経路に abort 手順が入る'
 assert_not_contains "$a3_runner" 'code-round-N.md' 'A3 review 無効では reviewer 手順を含めない'

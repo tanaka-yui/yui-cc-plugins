@@ -386,11 +386,40 @@ fi
 # AGMSG_SKILL_DIR と同じ理由で、埋め込みを破る文字は事前に弾く。
 case "$AGMSG_SEND" in *[\'\"\`\$\!\\]*) die "invalid AGMSG_SEND '$AGMSG_SEND': must not contain ' \" \` \$ ! \\" ;; esac
 
+# AGMSG_TEAM も REVIEW_INSTRUCTION / ABORT_* 経由で inner prompt に補間され、その全体が
+# `zsh -ic "... '<prompt>'"` の二重引用へ入る。team 名には slug 制約が無い
+# (prewarm-panes.sh:205 が空白とメタ文字を die させているのと同じ理由) ため、
+# ここで同じ禁止文字集合を適用する。fallback は無いので合成できなければ die する。
+if [[ -n "$AGMSG_TEAM" ]]; then
+  case "$AGMSG_TEAM" in
+    *[[:space:]]*|*[\'\"\`\$\!\\]*)
+      die "invalid --agmsg-team '$AGMSG_TEAM': must not contain whitespace or ' \" \` \$ ! \\" ;;
+  esac
+fi
+
 # agmsg 配線は team / from が揃っているときだけ行う。send.sh が無ければ未インストール。
 if [[ -n "$AGMSG_TEAM" || -n "$AGMSG_FROM" ]]; then
   [[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required when --agmsg-from is given"
   [[ -n "$AGMSG_FROM" ]] || die "--agmsg-from is required when --agmsg-team is given"
   [[ -f "$AGMSG_SEND" ]] || die "agmsg is not installed (expected $AGMSG_SEND)"
+fi
+
+# 配送は agmsg send.sh の 1 本だけで、送信元は --agmsg-team / --agmsg-from である。
+# タイプ入力への fallback は存在しないので、通知やレビュー依頼を「約束する」フラグが
+# 来ているのに agmsg 識別子が無い組み合わせは、黙って無通知になる前にここで落とす:
+#   --parent-notify-workspace / --parent-notify-surface … wrapper の親通知が
+#       notify_parent の `return 1` で永久に失敗し、watcher が回り続けるだけになる
+#   --review-config … REVIEW_INSTRUCTION / ABORT_REVIEW_STEP に空の team / sender が
+#       補間され、実行不能な指示が子のプロンプトに焼き込まれる
+# --status-dir 単独は対象にしない。それは HEAD でも親通知を約束していなかった
+# (notify_parent は宛先が無ければ return 1 だった) ため、本変更の退行ではない。
+if [[ -z "$AGMSG_TEAM" || -z "$AGMSG_FROM" ]]; then
+  if [[ -n "$NOTIFY_WORKSPACE" || -n "$NOTIFY_SURFACE" ]]; then
+    die "--parent-notify-workspace/--parent-notify-surface require --agmsg-team and --agmsg-from: agmsg send.sh is the only delivery channel and there is no typed fallback"
+  fi
+  if [[ -n "$REVIEW_CONFIG" ]]; then
+    die "--review-config requires --agmsg-team and --agmsg-from: the review request instruction is composed from them and there is no typed fallback"
+  fi
 fi
 
 # WORKSPACE_NAME 別に runner script ファイル名を unique 化する。
@@ -747,6 +776,10 @@ if [[ "$MODE" == "execute" ]]; then
       || die "failed to parse review config at $REVIEW_CONFIG"
     [[ -n "$REVIEWER_SURFACE" && -n "$REVIEW_DIR" && -n "$REVIEWER_AGENT" ]] \
       || die "review config must contain reviewer_surface, reviewer_agent and review_dir"
+    # review-config は親セッションが書くファイルであって、この値も inner prompt へ
+    # 補間される。--agmsg-from と同じ値域で検証する (agmsg agent 名の値域そのもの)。
+    [[ "$REVIEWER_AGENT" =~ ^[A-Za-z0-9._-]+$ ]] \
+      || die "invalid reviewer_agent '$REVIEWER_AGENT' in $REVIEW_CONFIG: use only [A-Za-z0-9._-]"
     # reviewer_workspace 欠落時 (旧スキーマ) は --workspace 指定なしにフォールバック。
     # read-screen は生存確認専用 (配送は agmsg なので workspace/surface を使わない) だが、
     # 実装孫は別 workspace に spawn されるためレビュアー側 workspace の明示は今も必要。

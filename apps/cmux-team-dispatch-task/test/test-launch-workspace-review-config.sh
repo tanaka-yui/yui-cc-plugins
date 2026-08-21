@@ -183,6 +183,62 @@ else
   fail=1
 fi
 
+# --- T8-T12: inner prompt に補間される値のガードと、配送不能な組み合わせの fail-fast ---
+# これらの値はすべて `zsh -ic "... '<prompt>'"` の二重引用の中へ素で埋まる。
+# ガードが無いと rc=0 のまま合成行のクォート数が狂い、ペイン起動が黙って壊れる
+# (レビュー指摘 Important 1 の実測: --agmsg-team "dispatch-my'repo" で
+#  シングルクォートが 9 個 / 釣り合うのは 6 個)。
+# Q1 の正常系フィクスチャはクォートを含まないので、この欠陥はここでしか捕まらない。
+assert_die() {
+  local label="$1" needle="$2"; shift 2
+  local out="$TMP/die-$$.out" err="$TMP/die-$$.err"
+  if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+     AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" "$@" >"$out" 2>"$err"; then
+    echo "FAIL: $label (rc=0 で通ってしまった。合成が壊れているのに何も報告しない)"
+    fail=1
+  elif grep -Fq -- "$needle" "$err"; then
+    echo "PASS: $label"
+  else
+    echo "FAIL: $label (die はしたがメッセージが期待と違う: $(tr '\n' ' ' < "$err"))"
+    fail=1
+  fi
+}
+
+BASE_ARGS=(--cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md"
+           --status-dir "$TMP/status" --no-parallel)
+
+# T8: team 名にシングルクォート
+assert_die 'T8 --agmsg-team のシングルクォートは die する' '--agmsg-team' \
+  "${BASE_ARGS[@]}" --agmsg-team "dispatch-my'repo" --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review.json" guard-team-quote
+
+# T8b: team 名に空白 (prewarm-panes.sh:205 と同じ禁止集合)
+assert_die 'T8b --agmsg-team の空白は die する' '--agmsg-team' \
+  "${BASE_ARGS[@]}" --agmsg-team "dispatch my repo" --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review.json" guard-team-space
+
+# T9: review-config の reviewer_agent にシングルクォート
+cat > "$TMP/status/review/code-review-bad-agent.json" <<JSON
+{
+  "reviewer_surface": "surface:99",
+  "reviewer_workspace": "workspace:7",
+  "reviewer_agent": "t1'-review",
+  "review_dir": "$TMP/status/review"
+}
+JSON
+assert_die 'T9 reviewer_agent のシングルクォートは die する' 'invalid reviewer_agent' \
+  "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review-bad-agent.json" guard-agent-quote
+
+# T10: agmsg 識別子が無いのに --review-config が来た (空の team/sender が補間される経路)
+assert_die 'T10 agmsg 未配線の --review-config は die する' '--review-config requires' \
+  "${BASE_ARGS[@]}" --review-config "$TMP/status/review/code-review.json" guard-nowire-review
+
+# T11: agmsg 識別子が無いのに親通知を約束するフラグが来た (notify_parent が永久に return 1)
+assert_die 'T11 agmsg 未配線の --parent-notify-workspace は die する' \
+  '--parent-notify-workspace/--parent-notify-surface require' \
+  "${BASE_ARGS[@]}" --parent-notify-workspace workspace:9 guard-nowire-notify
+
 # --- PR1: reviewer_runner / reviewer_engine を明示した固定レビュー設定では、
 #     実装者 engine の反対側を計算せず JSON の reviewer_engine をそのまま使う ---
 codex_reviewer=$(runner_with_config claude "$TMP/status/review/code-review-codex-reviewer.json" review-cfg-codex-rev)

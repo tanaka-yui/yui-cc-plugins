@@ -51,11 +51,22 @@ for flag_pair in "--layout workspace" "--layout split" "--parent-surface surface
   esac
 done
 
+# L5b: 配送は agmsg send.sh へ一本化され、この monitor がまだ叩いている
+# この monitor がまだ叩いている旧配送スクリプトは削除された。壊れたまま黙って走る
+# (通知が全部 || true で消える) のは
+# 容認しないので、起動時に配送スクリプトの不在を名指しして落ちることを固定する。
+# この monitor が agmsg send.sh へ移行したら、このテストは「正常起動で exit 0」へ戻す。
 rc=0
 run_bounded zsh "$MONITOR" --parent-workspace workspace:1 \
   --dispatch-dir "$TMP/dispatch" --interval 1 --heartbeat-interval 0 || rc=$?
-[[ "$rc" -eq 0 ]] && pass 'L5b valid invocation still exits 0' \
-  || bad "L5b valid invocation still exits 0 (got exit=$rc)"
+if [[ "$rc" -eq 124 ]]; then
+  bad 'L5b delivery-script guard hung (must fail immediately)'
+elif [[ "$rc" -ne 0 ]] && grep -Fq 'delivery script not found' "$RUN_OUT" \
+     && grep -Fq 'migrated to agmsg send.sh' "$RUN_OUT"; then
+  pass 'L5b 配送スクリプトが無いときは起動時に名指しして落ちる (無音の通知喪失を許さない)'
+else
+  bad "L5b 配送スクリプト不在を検出できていない (exit=$rc): $(tr '\n' ' ' < "$RUN_OUT")"
+fi
 
 if grep -Eq 'send[[:space:]]+--surface|--to-surface' "$MONITOR"; then
   bad 'L6 monitor must not send to a surface'

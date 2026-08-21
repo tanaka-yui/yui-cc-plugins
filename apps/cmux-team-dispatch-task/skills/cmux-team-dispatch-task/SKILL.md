@@ -1192,10 +1192,17 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           [--effort "$EXEC_EFFORT"] \
           --skip-permissions \
           --status-dir "<EXISTING_STATUS_DIR>" \
+          --agmsg-team "$TEAM" --agmsg-from <task-slug>-exec \
           --parent-notify-workspace <PARENT_WORKSPACE_ID> \
           [--parent-notify-surface <PARENT_SURFACE_ID>] \
           [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
           <task-slug>-exec
+        # The two --agmsg-* flags are MANDATORY, not optional: agmsg send.sh is the only
+        # delivery channel, so without them the grandchild's wrapper cannot notify the
+        # parent at all and launch-workspace.sh dies rather than launching a mute pane.
+        # Register the grandchild in the team right after the launch returns:
+        #   ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" <task-slug>-exec "$CHILD_AGMSG_TYPE" "$PWD"
+        # (resolve CHILD_AGMSG_TYPE from resolve-agmsg-type.sh --engine "$EXEC_ENGINE")
         IF the PHASE B-R block exists below, BEFORE the launch above call
         `resolve_code_reviewer_for_choice` from that block and write its coherent
         tuple (the selected pane is not necessarily YOU):
@@ -1203,7 +1210,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           resolve_code_reviewer_for_choice
           jq -n --arg s "$REVIEWER_SURFACE" --arg w "$REVIEWER_WORKSPACE" \
             --arg d "<EXISTING_STATUS_DIR>/review" --arg r "$REVIEWER_RUNNER" \
-            --arg e "$REVIEWER_ENGINE" --arg a "$REVIEW_PANE_AGENT" \
+            --arg e "$REVIEWER_ENGINE" --arg a "$REVIEWER_AGENT" \
             '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_runner: $r, reviewer_engine: $e, reviewer_agent: $a}' \
             > "<EXISTING_STATUS_DIR>/review/code-review.json"
           If REVIEWER_SURFACE is empty, omit `--review-config`, warn, and continue
@@ -1425,7 +1432,11 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           --runner "$REVIEW_RUNNER" --model '{{REVIEW_MODEL}}' \
           [--effort '{{REVIEW_EFFORT}}'] \
           --status-dir "<EXISTING_STATUS_DIR>" \
+          --agmsg-team "$TEAM" --agmsg-from {{REVIEW_PANE_AGENT}} \
           {{REVIEW_PANE_AGENT}})
+        # Then join it and make it reachable — a review request can only arrive over
+        # agmsg, so a pane that never joined the team is unreachable:
+        #   ~/.agents/skills/agmsg/scripts/join.sh "$TEAM" {{REVIEW_PANE_AGENT}} "$REVIEW_AGMSG_TYPE" "$PWD"
           # (when the reviewer engine is claude, append --skip-permissions to the spawn)
         REVIEW_SURFACE=$(echo "$RESULT" | jq -r '.surface_id // empty')
       IF the spawn fails: warn the user, SKIP Phase A-R entirely, and continue to
@@ -1586,7 +1597,11 @@ PHASE B — Execution model selection (REQUIRED before any code change):
         gate, not a dispatch blocker.
 
     Before writing `code-review.json` on either prewarm or spawn paths, resolve one
-    coherent reviewer tuple. The runner/engine must describe the pane selected here:
+    coherent reviewer tuple. The runner/engine must describe the pane selected here,
+    and so must `REVIEWER_AGENT` — that agent name is the ONLY delivery channel to the
+    reviewer, so a name that points at a different pane sends every review request to
+    a pane that is idle-waiting for something else while the real reviewer never hears
+    from anyone:
 
       resolve_code_reviewer_for_choice() {
         REVIEWER_WORKSPACE="$CMUX_WORKSPACE_ID"
@@ -1594,6 +1609,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           REVIEWER_SURFACE="$REVIEW_SURFACE"
           REVIEWER_RUNNER="$REVIEW_RUNNER"
           REVIEWER_ENGINE="$REVIEW_ENGINE"
+          REVIEWER_AGENT="{{REVIEW_PANE_AGENT}}"
           return
         fi
 
@@ -1604,17 +1620,27 @@ PHASE B — Execution model selection (REQUIRED before any code change):
           REVIEWER_SURFACE="$REVIEW_SURFACE"
           REVIEWER_RUNNER="$REVIEW_RUNNER"
           REVIEWER_ENGINE="$REVIEW_ENGINE"
+          REVIEWER_AGENT="{{REVIEW_PANE_AGENT}}"
         else
           REVIEWER_SURFACE="$CMUX_SURFACE_ID"
           REVIEWER_RUNNER="$DESIGN_RUNNER"
           REVIEWER_ENGINE="$DESIGN_ENGINE"
+          # The design session itself reviews, so the reviewer's agent name is the
+          # design pane's own name — NOT {{REVIEW_PANE_AGENT}}.
+          REVIEWER_AGENT="<task-slug>"
         fi
       }
 
     Call this after the Phase B choice is known. If its selected surface is empty
     because the review pane failed to spawn, warn and omit `--review-config`; this
     skips only the review gate. Never combine the design surface with the fixed
-    review runner/engine, or a review-pane surface with the design runner/engine.
+    review runner/engine, or a review-pane surface with the design runner/engine, and
+    never combine one pane's surface with another pane's agent name — `REVIEWER_AGENT`
+    must always name the same pane as `REVIEWER_SURFACE`.
+
+    `REVIEWER_AGENT` is a Phase B-R value only. Phase A-R (above) always uses the
+    dedicated review pane, so its request goes to `{{REVIEW_PANE_AGENT}}` and this
+    resolver is not involved.
 
     Common protocol a — extended REQUEST_TEXT (the implementer drives the round loop;
     used in every branch above where a standby / delegated pane implements):
@@ -1635,7 +1661,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
             (1) send the review request with ONE command. The destination is the
                 reviewer's agmsg agent name, not its surface, and the whole body
                 goes through as-is:
-                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <task-slug>-review \
+                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <REVIEWER_AGENT> \
                     'review-code: <request text>'
                 A non-zero exit means the reviewer was NOT told: report it instead
                 of polling for a verdict that can never appear.
@@ -1686,7 +1712,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                  reviewer does not poll this file.
               2. Notify the REVIEWER with ONE send.sh call, addressed to its agmsg
                  agent name:
-                   ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <task-slug>-review \
+                   ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <REVIEWER_AGENT> \
                      'abort-reviewer: [abort] <one-line reason>'
                  A non-zero exit means the reviewer was NOT told — report it.
               3. Write status.json with status "error" and the reason as message.
@@ -1716,7 +1742,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          Placeholder values: <REVIEWER_SURFACE> = the review-policy resolver output
          (fixed → prewarm.json .review.surface_id; legacy → the selected design or
          dedicated review surface); it is used ONLY for the read-screen liveness
-         check, never as a delivery target, <TEAM> = the TEAM value given above,
+         check, never as a delivery target, <REVIEWER_AGENT> = the `REVIEWER_AGENT`
+         that `resolve_code_reviewer_for_choice` set for the SAME pane as
+         <REVIEWER_SURFACE> (`{{REVIEW_PANE_AGENT}}` when the dedicated review pane
+         reviews, `<task-slug>` when the design session reviews) — this is the only
+         channel to the reviewer, so substitute it before sending and never assume
+         `<task-slug>-review`, <TEAM> = the TEAM value given above,
          <SKILL_DIR> = the absolute path of
          this skill's directory (substitute it before sending — the implementer pane
          cannot resolve the placeholder), <your-agent-name>
@@ -1733,7 +1764,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            mkdir -p "<EXISTING_STATUS_DIR>/review"
            jq -n --arg s "<REVIEWER_SURFACE>" --arg w "<REVIEWER_WORKSPACE>" \
              --arg d "<EXISTING_STATUS_DIR>/review" --arg r "<REVIEWER_RUNNER>" \
-             --arg e "<REVIEWER_ENGINE>" --arg a "{{REVIEW_PANE_AGENT}}" \
+             --arg e "<REVIEWER_ENGINE>" --arg a "<REVIEWER_AGENT>" \
              '{reviewer_surface: $s, reviewer_workspace: $w, review_dir: $d, reviewer_runner: $r, reviewer_engine: $e, reviewer_agent: $a}' \
              > "<EXISTING_STATUS_DIR>/review/code-review.json"
          <REVIEWER_WORKSPACE> is the reviewer pane's workspace ($CMUX_WORKSPACE_ID
@@ -1767,9 +1798,10 @@ PHASE B — Execution model selection (REQUIRED before any code change):
     that assign the reviewer role to YOU):
       b. After touching .deferred (prewarm step 4 / spawn fallback): do NOT exit.
          Run mkdir -p "<EXISTING_STATUS_DIR>/review", then END YOUR TURN and
-         idle-wait for the implementer's review requests (they arrive as text
-         typed into this pane; an identical agmsg inbox copy may exist — treat
-         both as ONE request). Do not poll or busy-wait.
+         idle-wait for the implementer's review requests. Each request arrives as
+         ONE agmsg message addressed to your own agent name, whose body starts with
+         `review-code:` (an abort notice starts with `abort-reviewer:`); there is no
+         typed copy and no second delivery to reconcile. Do not poll or busy-wait.
       c. When the round-N request arrives: review the implementation — the branch
          commits (git log) and the full diff against the branch point (e.g.
          git diff main...HEAD) — against the plan at <PLAN_FILE_PATH>. Judge
@@ -1787,7 +1819,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          owned by the implementer's wrapper.
          BUT if you receive an '[abort] ...' message from the implementer, do NOT
          keep waiting. Report the abort reason to the parent with one call:
-           ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <task-slug>-review parent \
+           ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <REVIEWER_AGENT> parent \
              'dispatch-notify: <reason>'
          (a non-zero exit means the parent was NOT told — report it), then exit THIS
          session.
@@ -1864,10 +1896,13 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                   --plan-file <PLAN_FILE_PATH> \
                   --runner "$EXEC_RUNNER" \
                   --status-dir "<EXISTING_STATUS_DIR>" \
+                  --agmsg-team "$TEAM" --agmsg-from <task-slug>-exec \
                   --parent-notify-workspace <PARENT_WORKSPACE_ID> \
                   [--parent-notify-surface <PARENT_SURFACE_ID>] \
                   [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
                   <task-slug>-exec
+                # The two --agmsg-* flags are MANDATORY here for the same reason as in
+                # the claude branch, and the same join.sh registration follows the launch.
               IF the PHASE B-R block exists below, BEFORE the launch above write the
               reviewer wiring file exactly as in the claude branch, including the
               resolver outputs `reviewer_runner` and `reviewer_engine`. Fixed policy
