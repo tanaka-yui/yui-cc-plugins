@@ -13,6 +13,12 @@
 #   CS4. 削除済みスクリプト (send-prompt.sh / agmsg-path.sh) への参照が
 #        スクリプト・文書のどこにも残らない。後続タスクが担当する箇所だけを
 #        PENDING 表で明示的に猶予し、件数まで固定する
+#   CS5. verdict 待ちのポーリング指示 (polling / every 5 seconds / 15-min /
+#        seq 1 180) が SKILL.md / references/**/*.md / launch-workspace.sh に
+#        残らない。「ポーリングしない」と否定形で語る行だけを許す
+#   CS6. レビュー依頼文に verdict 通知 (review-verdict: の送信指示) が含まれる
+#   CS7. verdict を待つ側の手順に単発タイマー (single-shot safety timer) がある
+#        — これが無いと review-verdict が失われた瞬間に待つ側が永久に眠る
 #
 # 免除の仕組み:
 #   `cmux send` はシェルにコマンドを打ち込む用途（TUI へのメッセージ配送ではない）でも
@@ -165,6 +171,141 @@ if [[ $cs4 -eq 1 ]]; then
   echo "PASS CS4: send-prompt.sh / agmsg-path.sh への参照は PENDING 表の箇所だけに残る"
 else
   echo "FAIL CS4: 削除済みスクリプトへの参照が想定外の場所に残っている"; fail=1
+fi
+
+
+# ---------------------------------------------------------------------------
+# CS5-CS7: verdict 待ちが push (review-verdict メッセージ) になっていることの検査
+# ---------------------------------------------------------------------------
+LAUNCH="$SCRIPTS/launch-workspace.sh"
+REVIEW_BLOCK_MD="$SKILL_DIR/references/unattended/review-block.md"
+CODE_REVIEW_BLOCK_MD="$SKILL_DIR/references/unattended/code-review-block.md"
+
+# 領域抽出。抽出が空なら呼び出し側で FAIL させる (アンカーを動かした瞬間に
+# 検査が空虚に PASS するのを防ぐ番人。T4 の GB 系と同じ規律)。
+extract_region() {
+  local file="$1" start="$2" end="$3"
+  [[ -r "$file" ]] || return 0
+  # 終端アンカーが見つからないときは何も出さない。ここで EOF まで垂れ流すと
+  # 無関係な後続セクション (Step 3 の単発タイマーなど) を拾って空虚に PASS する。
+  awk -v s="$start" -v e="$end" '
+    !f && index($0, s) { f = 1 }
+    f { buf = buf $0 "\n"; n++ }
+    f && n > 1 && index($0, e) { closed = 1; exit }
+    END { if (closed) printf "%s", buf }
+  ' "$file"
+}
+
+# --- CS5: verdict のポーリング指示が残らない ---
+# 「ポーリングしない」と書いた行 (no polling monitor / do NOT start polling など) は
+# 新プロトコルの説明そのものなので許す。素の指示だけを落とす。
+POLL_RE='polling|every 5 seconds|5s interval|15-min|seq 1 180'
+POLL_NEGATED_RE='(\bno\b|\bnot\b|\bNOT\b|\bnever\b|\bNever\b|\bwithout\b|\bWithout\b)[^.]{0,40}polling'
+cs5=1
+cs5_files=0
+while IFS= read -r target; do
+  [[ -n "$target" ]] || continue
+  if [[ ! -f "$target" || ! -r "$target" ]]; then
+    echo "  検査対象が読めない: $target"; cs5=0; continue
+  fi
+  cs5_files=$((cs5_files + 1))
+  matches=$(grep -nE "$POLL_RE" "$target")
+  rc=$?
+  if [[ $rc -ge 2 ]]; then
+    echo "  検査対象の grep が失敗した: $target (status $rc)"; cs5=0; continue
+  fi
+  while IFS=: read -r line text; do
+    [[ -n "$line" ]] || continue
+    # 否定形で「ポーリングしない」と語る行だけ許す。polling 以外の
+    # 具体的なポーリング手順 (5 秒間隔 / 15 分チャンク / seq 1 180) は無条件で禁止。
+    if ! grep -qE 'every 5 seconds|5s interval|15-min|seq 1 180' <<<"$text" \
+       && grep -qE "$POLL_NEGATED_RE" <<<"$text"; then
+      continue
+    fi
+    echo "  verdict のポーリング指示が残っている: ${target#"$PLUGIN_DIR/"}:$line"
+    cs5=0
+  done <<<"$matches"
+done < <(printf '%s\n' "$SKILL_DIR/SKILL.md" "$LAUNCH"; find "$SKILL_DIR/references" -name '*.md' | sort)
+if [[ $cs5_files -eq 0 ]]; then
+  echo "FAIL CS5: 検査対象が 1 件も無い (検査が空虚に PASS している)"; fail=1
+elif [[ $cs5 -eq 1 ]]; then
+  echo "PASS CS5: verdict のポーリング指示は $cs5_files ファイルのどこにも残らない"
+else
+  echo "FAIL CS5: verdict のポーリング指示が残っている"; fail=1
+fi
+
+# --- CS6: レビュー依頼文に review-verdict: の通知指示がある ---
+# 依頼文ごとに領域を切って検査する。ファイル全体を 1 回 grep する素朴な実装では、
+# Phase A-R にだけ通知指示があって Phase B-R の依頼文が素のままでも PASS してしまう。
+cs6=1
+check_region_has() {
+  local label="$1" file="$2" start="$3" end="$4"; shift 4
+  local region needle
+  if [[ ! -r "$file" ]]; then
+    echo "  検査対象が読めない ($label): $file"; return 1
+  fi
+  if [[ -z "$end" ]]; then
+    region=$(grep -F -- "$start" "$file")
+  else
+    region=$(extract_region "$file" "$start" "$end")
+  fi
+  if [[ -z "$region" ]]; then
+    echo "  領域の抽出が空 ($label): アンカー '$start' が ${file#"$PLUGIN_DIR/"} に無い"
+    return 1
+  fi
+  # 改行と連続空白を 1 個の空白に潰した平坦化コピーで照合する。SKILL.md の指示文は
+  # 80 桁で折り返されるので、行単位で見ると「single-shot safety timer」のような句が
+  # 折り返しの位置次第で見つからなくなる (再折り返しだけで FAIL する偽陽性になる)。
+  region=$(tr '\n' ' ' <<<"$region" | tr -s ' ')
+  local rc=0
+  for needle in "$@"; do
+    if ! grep -qE -- "$needle" <<<"$region"; then
+      echo "  $label に '$needle' が無い (${file#"$PLUGIN_DIR/"})"
+      rc=1
+    fi
+  done
+  return $rc
+}
+
+# 依頼文 1: SKILL.md Phase A-R (親でなく design ペインが待つ側)
+check_region_has 'Phase A-R の依頼文' "$SKILL_DIR/SKILL.md" \
+  'Always append the protocol:' '1b. Append the parallel-review directive' \
+  'review-verdict:' 'send\.sh' || cs6=0
+# 依頼文 2: SKILL.md Phase B-R 共通プロトコル a (実装者が待つ側)
+check_region_has 'Phase B-R の依頼文' "$SKILL_DIR/SKILL.md" \
+  'where <request text> is: code review round N' 'End of the message to the' \
+  'review-verdict:' 'send\.sh' || cs6=0
+# 依頼文 3: launch-workspace.sh が焼き込む REVIEW_INSTRUCTION (spawn 経路)
+check_region_has 'REVIEW_INSTRUCTION の依頼文' "$LAUNCH" \
+  'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' \
+  'review-verdict:' 'AGMSG_SEND' || cs6=0
+# 依頼文 4/5: 無人ループ用ブロック (子プロンプトへそのまま連結される)
+check_region_has '無人ループの review-block' "$REVIEW_BLOCK_MD" \
+  'Review is enabled.' '' 'review-verdict:' || cs6=0
+check_region_has '無人ループの code-review-block' "$CODE_REVIEW_BLOCK_MD" \
+  'Request each review with ONE call' '' 'review-verdict:' 'send\.sh' || cs6=0
+if [[ $cs6 -eq 1 ]]; then
+  echo "PASS CS6: 5 箇所のレビュー依頼文すべてに review-verdict: の通知指示がある"
+else
+  echo "FAIL CS6: レビュー依頼文に review-verdict: の通知指示が無い"; fail=1
+fi
+
+# --- CS7: verdict を待つ側に単発タイマーがある ---
+# review-verdict が失われた場合の唯一の保険。文面整理で落ちやすいので固定する。
+cs7=1
+check_region_has 'Phase A-R の待機手順' "$SKILL_DIR/SKILL.md" \
+  '2. Send the request with ONE send.sh call' 'Act on the verdict:' \
+  'single-shot safety timer' || cs7=0
+check_region_has 'Phase B-R の待機手順' "$SKILL_DIR/SKILL.md" \
+  '(1) send the review request with ONE command' '(3) On VERDICT: approve' \
+  'single-shot safety timer' || cs7=0
+check_region_has 'REVIEW_INSTRUCTION の待機手順' "$LAUNCH" \
+  'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' \
+  'single-shot safety timer' || cs7=0
+if [[ $cs7 -eq 1 ]]; then
+  echo "PASS CS7: verdict を待つ 3 箇所すべてに単発タイマーの指示がある"
+else
+  echo "FAIL CS7: verdict を待つ側に単発タイマーの指示が無い"; fail=1
 fi
 
 exit $fail

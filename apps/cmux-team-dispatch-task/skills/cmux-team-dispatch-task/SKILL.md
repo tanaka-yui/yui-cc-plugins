@@ -645,6 +645,7 @@ Use exactly these labels:
 | Phase B execution request to a standby pane | `phase-b-exec` |
 | Phase A-R plan/spec review request | `review-plan` |
 | Phase B-R code review request | `review-code` |
+| Verdict-ready notice from the reviewer back to the requester | `review-verdict` |
 | Abort notice to the reviewer (from the implementer or the runner wrapper) | `abort-reviewer` |
 | Completion / abort notice to the parent | `dispatch-notify` |
 
@@ -1474,47 +1475,51 @@ PHASE B — Execution model selection (REQUIRED before any code change):
            "Write your findings as markdown to
             <EXISTING_STATUS_DIR>/review/<point>-round-<N>.md.
             The LAST line of that file MUST be exactly 'VERDICT: approve' or
-            'VERDICT: needs_work'. approve = the document is ready to implement."
+            'VERDICT: needs_work'. approve = the document is ready to implement.
+            After writing the file, notify the requester with ONE send.sh call:
+              ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" {{REVIEW_PANE_AGENT}} <task-slug> \
+                'review-verdict: <point>-round-<N> VERDICT: approve|needs_work'
+            The file is the record; this message is what wakes the requester. Without
+            it the requester never learns the review finished."
       1b. Append the parallel-review directive for the resolved review pane engine:
             PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine "$REVIEW_ENGINE" --mode review)
             <request text>="<request text> $PARALLEL"
-      2. Send the request with ONE send.sh call, then wait by polling the
-         verdict file. The destination is the review pane's agmsg agent name, not
-         its surface. An agmsg reply push would never wake THIS session while it
-         idle-waits, so the wait is ALWAYS file polling:
+      2. Send the request with ONE send.sh call, then arm ONE single-shot safety
+         timer and end your turn. The destination is the review pane's agmsg agent
+         name, not its surface:
            ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> {{REVIEW_PANE_AGENT}} \
              "review-plan: <request text>"
            # $TEAM is the TEAM value given above — do NOT re-derive it. A non-zero
-           # exit means the reviewer was NOT told: report it instead of starting to
-           # poll for a verdict that can never appear.
-           Then wait by polling the verdict file (5s interval, in 15-min chunks with
-           NO overall time limit while the reviewer pane is active — liveness is
-           judged by a screen-snapshot diff at every chunk boundary):
-             F="<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md"
-             # read-screen returns live terminal content even for unfocused
-             # workspaces (empirically verified) — no refresh step is needed
-             RS() { cmux read-screen --workspace "$CMUX_WORKSPACE_ID" --surface "$REVIEW_SURFACE" 2>/dev/null; }
-             SNAP=$(RS); STALLED=0; READFAIL=0
-             while true; do
-               for i in $(seq 1 180); do   # one 15-min chunk
-                 [[ -f "$F" ]] && grep -qE '^VERDICT: (approve|needs_work)$' "$F" && break 2
-                 sleep 5
-               done
-               # a verdict written during the final sleep must win over the liveness check
-               [[ -f "$F" ]] && grep -qE '^VERDICT: (approve|needs_work)$' "$F" && break
-               NEW=""; for r in 1 2 3; do NEW=$(RS); [[ -n "$NEW" ]] && break; sleep 10; done
-               if [[ -z "$NEW" ]]; then
-                 # observation failure — NOT stalled by itself; only 2 consecutive
-                 # all-failed chunk boundaries count as a vanished pane
-                 READFAIL=$((READFAIL+1)); (( READFAIL >= 2 )) && { STALLED=1; break; }; continue
-               fi
-               READFAIL=0
-               [[ "$NEW" != "$SNAP" ]] && { SNAP="$NEW"; continue; }   # reviewer still working — keep waiting
-               STALLED=1; break
-             done
-           Each time a chunk boundary passes with the reviewer still active,
-           briefly report the elapsed wait to the user and keep waiting.
-      3. Read the verdict:
+           # exit means the reviewer was NOT told: report it instead of waiting for a
+           # verdict that can never appear.
+         The timer is ONE background `sleep $((30 * 60))` — a single sleep, never a
+         loop, armed with the Bash tool's `run_in_background: true`. Do NOT poll the
+         verdict file and do NOT watch the reviewer pane. The reviewer sends a
+         `review-verdict:` message after writing the file, and that message wakes this
+         session; `TaskStop` the timer as soon as you act on a verdict.
+      3. On waking with `review-verdict: <point>-round-<N> ...`, read
+         `<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md` and act on the verdict
+         line at its end. The file is the source of truth; the message only says it is
+         ready. Identify the message by the `review-verdict:` prefix **plus the round
+         id as a substring** — never by an exact whole-line match, because the round id
+         may be rendered with surrounding punctuation. If the message arrives but the
+         file has no `VERDICT:` line, treat it as `needs_work` and say so in the next
+         round's request.
+      4. If the safety timer fires while you are waiting on a verdict, **read
+         `<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md` first**. Only the message
+         can be lost; the verdict may already be on disk. If it has a `VERDICT:` line,
+         act on it exactly as in item 3 and do not touch the pane at all. Only when the
+         file is missing or has no verdict line, check the reviewer pane with
+         `cmux read-screen --surface "$REVIEW_SURFACE"` (**retried once** before
+         concluding it is gone). Still working → re-arm the same timer and end your
+         turn. Pane gone, or idle with no verdict → re-send the request once for the
+         same round (re-arming the timer), then fall back to AskUserQuestion:
+             Q: "The reviewer has not answered and its pane looks idle. What do you want to do?"
+               1. Re-send the request
+               2. Skip the review and proceed to Phase B
+             Option 2 → skip the review and continue to Phase B (leave the review
+             pane open — do not close it).
+      5. Act on the verdict:
            VERDICT=$(grep -oE 'VERDICT: (approve|needs_work)' "<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md" 2>/dev/null | tail -1)
          - "VERDICT: approve" → this point is done. Move to the next point; after
            the LAST point, proceed to Phase B. Leave the review pane OPEN and idle —
@@ -1531,17 +1536,6 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                "Proceed as is" → append the unresolved findings as a note in the
                document and move on (leave the review pane open — do not close it).
                "Revise further" → run one more round; on another needs_work, re-ask.
-         - The wait exited stalled (STALLED=1: no screen change over a full
-           15-min chunk, or the pane was unobservable at 2 consecutive chunk
-           boundaries) → check the verdict file one last time; if still no
-           VERDICT line, re-send the SAME round's request once (retake the
-           baseline snapshot). If the wait exits stalled again, ask via
-           AskUserQuestion:
-             Q: "The reviewer appears to be stalled (no change in its pane). What do you want to do?"
-               1. Re-send the request
-               2. Skip the review and proceed to Phase B
-             Option 2 → skip the review and continue to Phase B (leave the review
-             pane open — do not close it).
 
     VIOLATION: When this block is present, do NOT start Phase B before every
     review point reached approve or an explicit user decision was made.
@@ -1681,37 +1675,47 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                   ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> <REVIEWER_AGENT> \
                     'review-code: <request text>'
                 A non-zero exit means the reviewer was NOT told: report it instead
-                of polling for a verdict that can never appear.
+                of waiting for a verdict that can never appear.
                 where <request text> is: code review round N: review the committed
                 changes on this branch against the plan at <PLAN_FILE_PATH>; write
                 findings to <EXISTING_STATUS_DIR>/review/code-round-N.md whose LAST
-                line must be VERDICT: approve or VERDICT: needs_work. From round 2
+                line must be VERDICT: approve or VERDICT: needs_work. After writing
+                that file, notify me with ONE send.sh call:
+                  ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <REVIEWER_AGENT> <your-agent-name> \
+                    'review-verdict: code-round-N VERDICT: approve|needs_work'
+                The file is the record; this message is what wakes me. Without it I
+                never learn the review finished. From round 2
                 append your rebuttals to the findings you rejected, with reasons.
                 Also include this in the message to the reviewer, addressed to the
                 reviewer and not to you: $REVIEW_PARALLEL End of the message to the
                 reviewer.
-            (2) wait by polling <EXISTING_STATUS_DIR>/review/code-round-N.md every
-                5 seconds for a VERDICT line, in 15-minute chunks with NO overall
-                time limit while the reviewer is active. Right after sending,
-                capture a baseline of the reviewer pane screen (read-screen returns
-                live content even when the target workspace is unfocused):
-                  cmux read-screen --workspace "$CMUX_WORKSPACE_ID" --surface <REVIEWER_SURFACE>
-                At each chunk boundary without a verdict: re-check the verdict
-                file once more (a verdict written during the final sleep must
-                win), then capture the screen again (on failure or empty output
-                retry up to 3 times, 10s apart) and compare with the previous
-                capture. Changed → the reviewer is still working: update the
-                snapshot and keep waiting. Unchanged → the reviewer is stalled.
-                All retries failed → observation failure, NOT stalled; only 2
-                consecutive all-failed boundaries count as stalled.
+            (2) then arm ONE single-shot safety timer — a background Bash task
+                running `sleep $((30 * 60))`, one sleep and never a loop — and end
+                your turn. Do NOT poll the verdict file and do NOT watch the reviewer
+                pane. The reviewer sends you a `review-verdict:` message when the file
+                is ready, and that message resumes you; stop that timer as soon as it
+                arrives. Identify the message by the `review-verdict:` prefix plus the
+                round id as a substring, never by an exact whole-line match. On ANY
+                wake, whether the message or the timer, re-read
+                <EXISTING_STATUS_DIR>/review/code-round-N.md before deciding
+                anything: only the message can be lost, so a timer wake with a VERDICT
+                line already in the file means the review finished. If the file has no
+                VERDICT line, treat it as VERDICT: needs_work and say so in your next
+                request.
             (3) On VERDICT: approve, create the PR and finish per the instructions
                 below. On VERDICT: needs_work, apply the findings you judge valid,
                 commit, and start round N+1. If round 5 still ends with needs_work:
                 if you can ask the user interactively (AskUserQuestion), ask whether
                 to proceed or run one more round; otherwise note the unresolved
-                findings in the PR body and proceed. If the wait exits stalled,
-                check the verdict file one last time, then re-send the same round
-                once (retake the baseline); if it stalls again, ask via
+                findings in the PR body and proceed. If the timer fires and the
+                verdict file still has no VERDICT line, check whether the reviewer is
+                alive (read-screen returns live content even when the target workspace
+                is unfocused, and a transient failure must not be read as a dead pane,
+                so retry it once):
+                  cmux read-screen --workspace "$CMUX_WORKSPACE_ID" --surface <REVIEWER_SURFACE>
+                Still working → re-arm the same timer and end your turn. Otherwise
+                re-send the same round once and re-arm the timer; if that timer also
+                fires with no verdict, ask via
                 AskUserQuestion if you can (re-send the request / skip the review and
                 create the PR);
                 otherwise skip the review and note that in the PR body.
@@ -1826,8 +1830,16 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          findings as markdown to <EXISTING_STATUS_DIR>/review/code-round-<N>.md;
          the LAST line MUST be exactly 'VERDICT: approve' or 'VERDICT: needs_work'.
          approve = ready to become a PR. Consider the implementer's rebuttals —
-         do not blindly repeat rejected findings.
-      d. After writing needs_work → END YOUR TURN and idle-wait for the next round.
+         do not blindly repeat rejected findings. Then, AFTER the file is written,
+         wake the implementer with ONE send.sh call — it is asleep on a single-shot
+         timer and this message is the only thing that resumes it:
+           ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <REVIEWER_AGENT> <implementer-agent-name> \
+             'review-verdict: code-round-<N> VERDICT: approve|needs_work'
+         A non-zero exit means the implementer was NOT told — report it. Never send
+         this before the file exists: the file is the record, the message only says it
+         is ready.
+      d. After writing needs_work (and sending the `review-verdict:` message) → END
+         YOUR TURN and idle-wait for the next round.
          After writing approve → exit THIS session (.deferred is already in place,
          so your wrapper stays silent; the implementer pane's wrapper owns status.json).
       e. Orphan guard: if the implementer COMPLETES its work without ever requesting
@@ -2861,7 +2873,7 @@ When parsing a `superpowers:writing-plans` plan file:
   child session; Phase B decides which *engine* implements. `design_runner` can fix
   Step 1f; `exec_choice` can fix Phase B. Models and efforts come from the runner's role
   fields in either case, never from the Phase B answer.
-- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). agmsg is a hard requirement with no degraded mode: Step 1g stops the dispatch when `~/.agents/skills/agmsg/scripts/send.sh` is missing or `verify-agmsg-ready.sh --self` finds no live watcher for this session. There is no monitor script, no heartbeat and no polling loop (status.json transitions are unchanged). Every message goes through one `~/.agents/skills/agmsg/scripts/send.sh` call whose destination is an **agmsg agent name**, never a surface or workspace id. There is no outbox, no length threshold, no Enter verification and no re-send: `send.sh` either writes the body into agmsg's shared SQLite DB or exits non-zero, and **a non-zero exit means the message was NOT delivered** and must be reported. The message kind is a label prefix on the body (`phase-a-task:`, `phase-b-exec:`, `review-plan:`, `review-code:`, `abort-reviewer:`, `dispatch-notify:`), not a flag. A pane is reachable only after it has reported `[ready] <name>`; a message sent earlier sits unread in its inbox. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. The parent's own wake channel is the persistent `Monitor` stream its SessionStart hook asks for; Step 1g only verifies that it is alive and Step 3 re-verifies it on every wake.
+- **Delivery**: There is no notification-transport setting. `message_type` was removed, along with the `--message-type` flag on `launch-workspace.sh` / `prewarm-panes.sh` (both now die with `was removed`). agmsg is a hard requirement with no degraded mode: Step 1g stops the dispatch when `~/.agents/skills/agmsg/scripts/send.sh` is missing, or when the parent's own readiness check fails — `verify-agmsg-ready.sh --self` for a claude parent (no live watcher) and `verify-agmsg-ready.sh --codex --team "$TEAM" --name parent` for a codex parent (no recorded bridge seat), branched on `CODEX_THREAD_ID` because `--self` from a codex session is a usage error, not a "no watcher" answer. There is no monitor script, no heartbeat and no polling loop (status.json transitions are unchanged). Every message goes through one `~/.agents/skills/agmsg/scripts/send.sh` call whose destination is an **agmsg agent name**, never a surface or workspace id. There is no outbox, no length threshold, no Enter verification and no re-send: `send.sh` either writes the body into agmsg's shared SQLite DB or exits non-zero, and **a non-zero exit means the message was NOT delivered** and must be reported. The message kind is a label prefix on the body (`phase-a-task:`, `phase-b-exec:`, `review-plan:`, `review-code:`, `review-verdict:`, `abort-reviewer:`, `dispatch-notify:`), not a flag. A pane is reachable only after it has reported `[ready] <name>`; a message sent earlier sits unread in its inbox. Completion notifications have two layers: the mandatory one the child session sends right after writing status.json (embedded into the child prompt in Step 2) plus the runner wrapper's exit-time notification (a backstop). Relying on the wrapper alone would miss notifications, because an idle TUI never exits. The parent's own wake channel is the persistent `Monitor` stream its SessionStart hook asks for; Step 1g only verifies that it is alive and Step 3 re-verifies it on every wake. Waiting for a review verdict is push too: the reviewer writes the findings file and then sends one `review-verdict:` message to the requester, and nobody polls the file. Every waiter — the design pane in Phase A-R, the implementer in Phase B-R — arms ONE single-shot safety timer and re-reads the findings file on every wake, because only the message can be lost.
 - **Pre-warm role panes**: when layout is `workspace` and config `prewarm: true`
   (default), `prewarm-panes.sh` places only resolved roles: design, optional review, and
   the execution engines allowed by `exec_choice`. `prewarm.json`'s `executors` holds at

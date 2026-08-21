@@ -504,7 +504,7 @@ assert_contains "$SKILL_MD_FLAT" \
 # 受け取らないため、実装者が依頼文へ転記するこの 1 箇所が唯一の注入点になる。
 # 引用部分は宛先マーカーで挟み、実装者が自分宛と誤読しないようにする。
 assert_contains "$SKILL_MD_FLAT" \
-  'append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) wait by polling' \
+  'append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) then arm ONE single-shot safety timer' \
   'PL10 SKILL.md 共通プロトコル a はレビュー依頼文へ宛先マーカー付きでディレクティブを転記する'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

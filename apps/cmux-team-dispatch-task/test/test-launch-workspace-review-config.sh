@@ -143,9 +143,14 @@ assert_contains "$runner_file" 'read-screen --workspace workspace:7 --surface su
 assert_contains "$runner_file" "$TMP/bin/agmsg-send.sh, passing exactly four arguments in this order: the team demo-team, the sender t1-exec, the recipient t1-review" 'T2 レビュー依頼は send.sh + reviewer_agent の 1 呼び出し'
 assert_not_contains "$runner_file" '--to-surface' 'T2 旧配送 (surface/workspace 宛) のフラグが残っていない'
 assert_not_contains "$runner_file" '--to-workspace' 'T2 旧配送 (surface/workspace 宛) のフラグが残っていない (workspace)'
-assert_contains "$runner_file" '15-minute chunks with no overall time limit' 'T3 liveness wording present'
-assert_contains "$runner_file" '2 consecutive all-failed boundaries count as stalled' 'T3 observation-failure rule present'
-assert_contains "$runner_file" 'one final time immediately before any re-send or skip decision' 'T3 final verdict re-check present'
+# T3: verdict 待ちは push (review-verdict メッセージ) + 単発タイマー 1 本であること。
+# ポーリング文言が復活しても、タイマーや通知指示が落ちても、どちらでも落ちる形にする。
+assert_contains "$runner_file" 'arm ONE single-shot safety timer as a background Bash task running sleep 1800' 'T3 単発タイマー 1 本の指示がある'
+assert_contains "$runner_file" 'prefix review-verdict: followed by code-round-N' 'T3 依頼文がレビュアーへ verdict 通知を求める'
+assert_contains "$runner_file" 'On ANY wake, whether the message or the timer, re-read' 'T3 どの wake でも verdict ファイルを読み直す規則がある'
+assert_not_contains "$runner_file" 'wait by polling' 'T3 verdict のポーリング指示が残っていない'
+assert_not_contains "$runner_file" 'every 5 seconds' 'T3 5 秒間隔のポーリングが残っていない'
+assert_not_contains "$runner_file" '15-minute chunks' 'T3 15 分チャンクの待機が残っていない'
 assert_not_contains "$runner_file" 'up to 15 minutes' 'T4 old timeout wording removed'
 
 # REVIEW_INSTRUCTION 部分にクォート文字が混入していないこと (inner prompt の '...' を壊さないため)
