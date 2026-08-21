@@ -30,6 +30,13 @@ esac
 STUB
 chmod +x "$TMP/bin/cmux"
 
+# agmsg send.sh のスタブ。--agmsg-team/--agmsg-from を渡す invocation の存在チェック用。
+cat > "$TMP/bin/agmsg-send.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$TMP/bin/agmsg-send.sh"
+
 cat > "$TMP/runners.json" <<'JSON'
 {
   "default": "codex",
@@ -58,10 +65,10 @@ runner_for() {
   local output
   if [[ "$mode" == "execute" ]]; then
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --status-dir "$TMP/status" "$name")
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$name")
   else
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-      --cwd "$TMP/repo" --mode "$mode" --runner codex --status-dir "$TMP/status" "$name" prompt)
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$name" prompt)
   fi
   jq -r '.runner_file' <<<"$output"
 }
@@ -108,10 +115,10 @@ runner_for_flags() {
   local output
   if [[ "$mode" == "execute" ]]; then
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --status-dir "$TMP/status" "$@" "$name")
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --plan-file "$TMP/plan.md" --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$@" "$name")
   else
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-      --cwd "$TMP/repo" --mode "$mode" --runner codex --status-dir "$TMP/status" "$@" "$name" prompt)
+      --cwd "$TMP/repo" --mode "$mode" --runner codex --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$@" "$name" prompt)
   fi
   jq -r '.runner_file' <<<"$output"
 }
@@ -139,7 +146,7 @@ assert_not_contains "$review_runner" '--dangerously-bypass-approvals-and-sandbox
 FAKE_AGMSG="$TMP/fake-agmsg"; mkdir -p "$FAKE_AGMSG/run" "$FAKE_AGMSG/db" "$FAKE_AGMSG/scripts"
 cr1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex \
-  --status-dir "$TMP/status" rv1 prompt)
+  --agmsg-team demo-team --agmsg-from rv1 --status-dir "$TMP/status" rv1 prompt)
 cr1_runner=$(jq -r '.runner_file' <<<"$cr1_output")
 assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1 agmsg run must be writable'
 assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/db'"  'CR1 agmsg db must be writable'
@@ -191,12 +198,13 @@ STUB_AGMSG_SEND="$TMP/agmsg-send.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_AGMSG_SEND"
 chmod +x "$STUB_AGMSG_SEND"
 
-# --- LW1: runner script に AGMSG_EXPECTED_NAME が入る ---
+# --- LW1: runner script に agmsg 識別子が入る ---
 lw1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SEND="$STUB_AGMSG_SEND" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner claude \
   --status-dir "$TMP/status" --agmsg-team demo --agmsg-from demo-claude lw1)
 lw1_runner=$(jq -r '.runner_file' <<<"$lw1_output")
-assert_contains "$lw1_runner" "export AGMSG_EXPECTED_NAME='demo-claude'" 'LW1 runner script must export AGMSG_EXPECTED_NAME'
+assert_contains "$lw1_runner" 'AGMSG_TEAM="demo"' 'LW1 runner script must carry AGMSG_TEAM'
+assert_contains "$lw1_runner" 'AGMSG_FROM="demo-claude"' 'LW1 runner script must carry AGMSG_FROM'
 # AGMSG_SEND が env で差し替え可能なままであること (:202) の回帰。ここを見ずに
 # STUB_AGMSG_SEND を注入するだけだと、:202 がハードコードへ戻っても agmsg 導入済みの
 # ホスト (= 実開発機全部) では本物の $HOME 配下 send.sh が -f を通り LW1 自体は緑のまま通る。
@@ -211,6 +219,21 @@ if [[ $lw2_bad -eq 0 ]]; then
   echo 'PASS: LW2 --agmsg-from with a space must die'
 else
   echo 'FAIL: LW2 --agmsg-from with a space must die'
+  fail=1
+fi
+
+# --- LW3 (F3): --runner に空文字を渡したら die する。空は「指定なし」と同じ扱いになり
+#     runners.json を引かずに既定 (claude) へ落ちるため、呼び出し側の runner 解決漏れが
+#     engine の黙った反転になる。素朴な実装 (`[[ $# -lt 2 ]]` だけ) はこれを通す ---
+lw3_bad=0
+lw3_out=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SEND="$STUB_AGMSG_SEND" \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role exec --runner '' \
+  --status-dir "$TMP/status" lw3 2>&1) && lw3_bad=1
+# 終了コードだけでは足りない (別の理由で落ちても緑になる)。die の文面まで固定する。
+if [[ $lw3_bad -eq 0 ]] && grep -Fq 'non-empty runner name' <<<"$lw3_out"; then
+  echo 'PASS: LW3 --runner with an empty value must die'
+else
+  echo "FAIL: LW3 --runner with an empty value must die (rc_bad=$lw3_bad out=$lw3_out)"
   fail=1
 fi
 
@@ -274,14 +297,14 @@ assert_contains "$SKILL_MD" 'do NOT run /exit (codex does not act on it) and do 
   'T14 extended REQUEST_TEXT forbids /exit for codex'
 assert_not_contains "$SKILL_MD" 'or end the session (codex)' \
   'T14 the ambiguous engine-neutral exit wording is gone'
-assert_contains "$SKILL_MD" 'MANDATORY completion notification. You received this request as typed' \
+assert_contains "$SKILL_MD" 'MANDATORY completion notification. You received this request as an' \
   'T15 extended REQUEST_TEXT carries the mandatory completion notification'
-assert_contains "$SKILL_MD" '<PARENT_WORKSPACE_ID> = the parent workspace ID' \
-  'T15 extended REQUEST_TEXT documents the parent workspace placeholder'
+assert_contains "$SKILL_MD" "send.sh <TEAM> <your-agent-name> parent" \
+  'T15 extended REQUEST_TEXT addresses the completion notification to the parent agent'
 
 # --- pr_url 引き継ぎ / timeout sentinel ガード ---
 sentinel_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-  --cwd "$TMP/repo" --mode standby --runner claude --status-dir "$TMP/status" \
+  --cwd "$TMP/repo" --mode standby --runner claude --agmsg-team demo-team --agmsg-from sentinel-task --status-dir "$TMP/status" \
   --timeout-sentinel "$TMP/loopstate/timed-out/sentinel-task" "sentinel-task")
 sentinel_runner=$(jq -r '.runner_file' <<<"$sentinel_output")
 assert_contains "$sentinel_runner" 'TIMEOUT_SENTINEL="'"$TMP"'/loopstate/timed-out/sentinel-task"' \
@@ -291,17 +314,19 @@ assert_contains "$sentinel_runner" 'PREV_PR_URL' 'T11 write_status が既存 pr_
 
 # sentinel を渡さない通常経路には一切現れない（非ループ挙動の不変性）
 plain_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-  --cwd "$TMP/repo" --mode standby --runner claude --status-dir "$TMP/status" "plain-task")
+  --cwd "$TMP/repo" --mode standby --runner claude --agmsg-team demo-team --agmsg-from plain-task --status-dir "$TMP/status" "plain-task")
 plain_runner=$(jq -r '.runner_file' <<<"$plain_output")
 assert_contains "$plain_runner" 'TIMEOUT_SENTINEL=""' 'T10 未指定時は空の sentinel パス'
 
 # --- --unattended: spawn 経路の inner prompt から質問分岐を除去する ---
 cat > "$TMP/review-config.json" <<JSON
-{"reviewer_surface":"surface:9","reviewer_workspace":"workspace:3","review_dir":"$TMP/status/review"}
+{"reviewer_surface":"surface:9","reviewer_workspace":"workspace:3","reviewer_agent":"unattended-review","review_dir":"$TMP/status/review"}
 JSON
 
-unattended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+unattended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
+  --agmsg-team demo-team --agmsg-from unattended-exec \
   --status-dir "$TMP/status" --review-config "$TMP/review-config.json" --unattended "unattended-exec")
 unattended_runner=$(jq -r '.runner_file' <<<"$unattended_output")
 assert_not_contains "$unattended_runner" 'AskUserQuestion' 'T12 --unattended の runner に質問分岐が無い'
@@ -310,8 +335,10 @@ assert_contains "$unattended_runner" 'note the unresolved findings in the PR bod
   'T12 --unattended は round 5 の固定フォールバックを持つ'
 
 # 後方互換: --unattended 無しでは現行文言が保たれる
-attended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+attended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
+  --agmsg-team demo-team --agmsg-from attended-exec \
   --status-dir "$TMP/status" --review-config "$TMP/review-config.json" "attended-exec")
 attended_runner=$(jq -r '.runner_file' <<<"$attended_output")
 assert_contains "$attended_runner" 'AskUserQuestion' 'T13 --unattended 無しでは現行の質問分岐が残る'
@@ -333,8 +360,8 @@ cat > "$TMP/runners-probe.json" <<JSON
 JSON
 mkdir -p "$TMP/abort-status/review" "$TMP/zdot"
 : > "$TMP/zdot/.zshrc"
-jq -n --arg d "$TMP/abort-status/review" '{reviewer_surface:"surface:55", reviewer_workspace:"workspace:5", review_dir:$d}' > "$TMP/abort-status/review/code-review.json"
-a1=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status" --parent-notify-workspace workspace:9 --review-config "$TMP/abort-status/review/code-review.json" abort-review)
+jq -n --arg d "$TMP/abort-status/review" '{reviewer_surface:"surface:55", reviewer_workspace:"workspace:5", reviewer_agent:"abort-review-review", review_dir:$d}' > "$TMP/abort-status/review/code-review.json"
+a1=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status" --agmsg-team demo-team --agmsg-from abort-review --parent-notify-workspace workspace:9 --review-config "$TMP/abort-status/review/code-review.json" abort-review)
 a1_runner=$(jq -r '.runner_file' <<<"$a1")
 assert_contains "$a1_runner" 'ABORT PROTOCOL' 'A1 review 有効の spawn 経路に abort 手順が入る'
 assert_contains "$a1_runner" 'code-round-N.md' 'A1 review 有効時は findings 記録先を含む'
@@ -351,7 +378,7 @@ else
   echo "FAIL: A2 inner prompt が単一引数でない (argc=${a2_argc:-none}, last_arg_match=${a2_last_arg:-0})"
   fail=1
 fi
-a3=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status-none" --parent-notify-workspace workspace:9 abort-none)
+a3=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status-none" --agmsg-team demo-team --agmsg-from abort-none --parent-notify-workspace workspace:9 abort-none)
 a3_runner=$(jq -r '.runner_file' <<<"$a3")
 assert_contains "$a3_runner" 'ABORT PROTOCOL' 'A3 review 無効の spawn 経路に abort 手順が入る'
 assert_not_contains "$a3_runner" 'code-round-N.md' 'A3 review 無効では reviewer 手順を含めない'
@@ -364,7 +391,7 @@ assert_not_contains "$a3_runner" 'code-round-N.md' 'A3 review 無効では revie
 hook_warn_stderr() {
   local home="$1" runner="$2" name="$3" out="$4"
   CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" CODEX_HOME="$home" \
-    bash "$LAUNCH" --cwd "$TMP/repo" --mode plan --runner "$runner" --status-dir "$TMP/status" "$name" prompt \
+    bash "$LAUNCH" --cwd "$TMP/repo" --mode plan --runner "$runner" --agmsg-team demo-team --agmsg-from "$name" --status-dir "$TMP/status" "$name" prompt \
     >/dev/null 2>"$out"
 }
 
@@ -493,7 +520,7 @@ assert_contains "$SKILL_MD_FLAT" \
 # 受け取らないため、実装者が依頼文へ転記するこの 1 箇所が唯一の注入点になる。
 # 引用部分は宛先マーカーで挟み、実装者が自分宛と誤読しないようにする。
 assert_contains "$SKILL_MD_FLAT" \
-  'append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) wait by polling' \
+  'append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) then end your turn.' \
   'PL10 SKILL.md 共通プロトコル a はレビュー依頼文へ宛先マーカー付きでディレクティブを転記する'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

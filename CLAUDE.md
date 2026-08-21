@@ -99,7 +99,7 @@ bash install.sh    # marketplace add + update でローカルパスを登録・�
 - **環境変数では回避できない**。`SECURITY_GUIDANCE_DISABLE=1` / `ENABLE_SECURITY_REMINDER=0` の kill switch 経路も `metrics` を出す。findings ゼロのターンでも必ず失敗する。
 - **非互換は Stop だけではない**。`post_tool_use`（git commit/push レビュー。codex は `if` 条件を解さないので 5 エントリ全部が発火する）と `session_start`（`{"async": true, ...}` を出力）も同じくスキーマ違反。無事なのは `user_prompt_submit` のみ。
 - security-guidance は **hooks しか提供していない**（skill / command なし）ので、codex 側で無効化して失うのは「codex では元々動かない security review」だけ。
-- このフック失敗は**セッションを終了させない**。「Stop hook (failed)」はターン終了時の表示で、以降もプロンプトは生きている。実装セッションが黙って止まる事象は別件（`apps/cmux-team-dispatch-task/docs/notification-gaps.md` の U1）。
+- このフック失敗は**セッションを終了させない**。「Stop hook (failed)」はターン終了時の表示で、以降もプロンプトは生きている。実装セッションが黙って止まる事象は別件（`apps/cmux-team-dispatch-task/docs/notification-gaps.md` の U1。v2.0.0 の単発 safety timer で解消済み）。
 
 対処は codex 側でプラグインごと無効化する:
 
@@ -198,7 +198,7 @@ node scripts/check-doc-lang.mjs apps/dev-up  # パス指定で絞り込み
 
 各プラグインの開発に踏み込む前に、必ず対応する CLAUDE.md を読むこと:
 
-- `apps/cmux-team-dispatch-task/CLAUDE.md` — 並列ディスパッチ、Display Format Conventions (Box drawing 表), モデル選択フロー (opus/sonnet/codex), monitor heartbeat / `--resume`
+- `apps/cmux-team-dispatch-task/CLAUDE.md` — 並列ディスパッチ、Display Format Conventions (Box drawing 表), モデル選択フロー (opus/sonnet/codex), agmsg monitor 専用の push 監視 (readiness 3 要件 / 単発 safety timer)
 - `apps/cmux-using/CLAUDE.md` — cmux ターミナル操作スキルの構成
 - `apps/cmux-fork/CLAUDE.md` — `/cfork` の動作と前提
 

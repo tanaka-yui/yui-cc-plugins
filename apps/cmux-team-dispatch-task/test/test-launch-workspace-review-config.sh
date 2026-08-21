@@ -2,7 +2,10 @@
 # launch-workspace.sh が --review-config 指定時に生成する REVIEW_INSTRUCTION の回帰テスト。
 # 検証項目: liveness 待機文言 / 旧 15 分タイムアウト文言の除去 / reviewer_workspace の
 # read-screen への埋め込み（欠落時フォールバック含む）/ クォート文字の混入なし /
-# reviewer_engine による並列レビュー指示の埋め込み（欠落時は非注入）。
+# reviewer_engine による並列レビュー指示の埋め込み（欠落時は非注入）/
+# 配送が agmsg send.sh + reviewer_agent の 1 呼び出しであること /
+# Q1: inner prompt 全体にクォート文字が無いこと（`zsh -ic "... '<prompt>'"` の
+# 二重引用を破らないための M7 静的検査。合成層のバグはこのテストしか捕まえられない）。
 
 set -euo pipefail
 
@@ -44,6 +47,7 @@ cat > "$TMP/status/review/code-review.json" <<JSON
 {
   "reviewer_surface": "surface:99",
   "reviewer_workspace": "workspace:7",
+  "reviewer_agent": "t1-review",
   "review_dir": "$TMP/status/review"
 }
 JSON
@@ -51,6 +55,7 @@ JSON
 cat > "$TMP/status/review/code-review-legacy.json" <<JSON
 {
   "reviewer_surface": "surface:99",
+  "reviewer_agent": "t1-review",
   "review_dir": "$TMP/status/review"
 }
 JSON
@@ -61,6 +66,7 @@ cat > "$TMP/status/review/code-review-codex-reviewer.json" <<JSON
   "reviewer_workspace": "workspace:7",
   "reviewer_runner": "codex",
   "reviewer_engine": "codex",
+  "reviewer_agent": "t1-review",
   "review_dir": "$TMP/status/review"
 }
 JSON
@@ -70,9 +76,26 @@ cat > "$TMP/status/review/code-review-claude-reviewer.json" <<JSON
   "reviewer_surface": "surface:99",
   "reviewer_workspace": "workspace:7",
   "reviewer_engine": "claude",
+  "reviewer_agent": "t1-review",
   "review_dir": "$TMP/status/review"
 }
 JSON
+
+# reviewer_agent 欠落 (旧スキーマ) — 宛先を捏造せず die することを検証する
+cat > "$TMP/status/review/code-review-no-agent.json" <<JSON
+{
+  "reviewer_surface": "surface:99",
+  "reviewer_workspace": "workspace:7",
+  "review_dir": "$TMP/status/review"
+}
+JSON
+
+# agmsg send.sh のスタブ (実体の存在チェックを通すためだけに使う)
+cat > "$TMP/bin/agmsg-send.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$TMP/bin/agmsg-send.sh"
 
 fail=0
 
@@ -105,8 +128,10 @@ runner_with_config() {
   local output
   # --no-parallel で起動プロンプト側のディレクティブを止め、レビュー依頼文への
   # 注入だけを切り分けて検査する
-  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+    AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode execute --runner "$runner" --plan-file "$TMP/plan.md" \
+    --agmsg-team demo-team --agmsg-from t1-exec \
     --status-dir "$TMP/status" --review-config "$config" --no-parallel "$name")
   jq -r '.runner_file' <<<"$output"
 }
@@ -115,10 +140,30 @@ runner_file=$(runner_with_config claude "$TMP/status/review/code-review.json" re
 
 assert_contains "$runner_file" 'MANDATORY CODE REVIEW' 'T1 review protocol injected'
 assert_contains "$runner_file" 'read-screen --workspace workspace:7 --surface surface:99' 'T2 read-screen uses reviewer_workspace'
-assert_contains "$runner_file" 'send-prompt.sh --to-workspace workspace:7 --to-surface surface:99' 'T2 send-prompt.sh call uses reviewer_workspace'
-assert_contains "$runner_file" '15-minute chunks with no overall time limit' 'T3 liveness wording present'
-assert_contains "$runner_file" '2 consecutive all-failed boundaries count as stalled' 'T3 observation-failure rule present'
-assert_contains "$runner_file" 'one final time immediately before any re-send or skip decision' 'T3 final verdict re-check present'
+assert_contains "$runner_file" "$TMP/bin/agmsg-send.sh, passing exactly four arguments in this order: the team demo-team, the sender t1-exec, the recipient t1-review" 'T2 レビュー依頼は send.sh + reviewer_agent の 1 呼び出し'
+assert_not_contains "$runner_file" '--to-surface' 'T2 旧配送 (surface/workspace 宛) のフラグが残っていない'
+assert_not_contains "$runner_file" '--to-workspace' 'T2 旧配送 (surface/workspace 宛) のフラグが残っていない (workspace)'
+# T3: verdict 待ちは push (review-verdict メッセージ) + 単発タイマー 1 本であること。
+# ポーリング文言が復活しても、タイマーや通知指示が落ちても、どちらでも落ちる形にする。
+assert_contains "$runner_file" 'arm ONE single-shot safety timer, a single 30 minute sleep and never a loop' 'T3 単発タイマー 1 本の指示がある (claude 側)'
+assert_contains "$runner_file" 'prefix review-verdict: followed by code-round-N' 'T3 依頼文がレビュアーへ verdict 通知を求める'
+assert_contains "$runner_file" 'On ANY wake, whether the message or the timer, re-read' 'T3 どの wake でも verdict ファイルを読み直す規則がある'
+# T3b (F1): タイマーは claude 専用であること。codex には自分宛の遅延タイマーが張れないと
+# 実測済み (D-T2) なので、依頼文は「保険が無い」と書き、代替として (a) 依頼相手の生存確認と
+# (b) 親への 1 通報告を求める。素朴な実装 — 「エンジン中立にタイマーを張れ」と書いたまま
+# codex 分岐だけ消す — は、この 3 本のうち下 2 本で落ちる。
+assert_contains "$runner_file" 'As a claude session, first arm ONE single-shot safety timer' 'T3b タイマーは claude 専用と明示される'
+assert_contains "$runner_file" 'As a codex session you have NO safety net for this wait and you cannot build one' 'T3b codex には保険が無いと明示される'
+assert_contains "$runner_file" 'the recipient parent, and as a single quoted argument a message starting with the prefix dispatch-notify:' 'T3b codex は保険の無い待機に入ったことを親へ 1 通報告する'
+# 動かないと実測された自己タイマーの指示が復活していないこと
+assert_not_contains "$runner_file" 'prefix review-timer:' 'T3b 自分宛 review-timer の指示が復活していない'
+assert_not_contains "$runner_file" 'start a background subshell' 'T3b 不発と実測された background subshell の指示が復活していない'
+# タイマー起床を needs_work と読み替えないこと (空振りのラウンド N+1 を防ぐ)
+assert_contains "$runner_file" 'If the review-verdict: message arrives but the file has no VERDICT line' 'T3 needs_work 読み替えはメッセージ到着時に限定される'
+assert_contains "$runner_file" 'A timer wake with no VERDICT line is NOT a verdict' 'T3 タイマー起床は verdict ではないと明示される'
+assert_not_contains "$runner_file" 'wait by polling' 'T3 verdict のポーリング指示が残っていない'
+assert_not_contains "$runner_file" 'every 5 seconds' 'T3 5 秒間隔のポーリングが残っていない'
+assert_not_contains "$runner_file" '15-minute chunks' 'T3 15 分チャンクの待機が残っていない'
 assert_not_contains "$runner_file" 'up to 15 minutes' 'T4 old timeout wording removed'
 
 # REVIEW_INSTRUCTION 部分にクォート文字が混入していないこと (inner prompt の '...' を壊さないため)
@@ -136,9 +181,108 @@ fi
 # 旧スキーマ (reviewer_workspace なし) では --workspace 指定なしにフォールバックする
 legacy_runner=$(runner_with_config codex "$TMP/status/review/code-review-legacy.json" review-cfg-legacy)
 assert_contains "$legacy_runner" 'read-screen --surface surface:99' 'T6 legacy config falls back to surface-only read-screen'
-assert_contains "$legacy_runner" 'send-prompt.sh --to-surface surface:99' 'T6 legacy config falls back to surface-only send-prompt.sh call'
+assert_contains "$legacy_runner" 'the recipient t1-review' 'T6 legacy config でも配送先は reviewer_agent'
 assert_not_contains "$legacy_runner" '--workspace workspace:7' 'T6 legacy config has no --workspace flag'
 assert_not_contains "$legacy_runner" '--to-workspace workspace:7' 'T6 legacy config has no --to-workspace flag'
+
+# --- T7: reviewer_agent 欠落は die する (SLUG から宛先を捏造しない) ---
+if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+   AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
+   --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
+   --agmsg-team demo-team --agmsg-from t1-exec \
+   --status-dir "$TMP/status" --review-config "$TMP/status/review/code-review-no-agent.json" \
+   --no-parallel review-cfg-no-agent >"$TMP/no-agent.out" 2>"$TMP/no-agent.err"; then
+  echo 'FAIL: T7 reviewer_agent 欠落で die しなかった'
+  fail=1
+elif grep -q 'reviewer_agent' "$TMP/no-agent.err"; then
+  echo 'PASS: T7 reviewer_agent 欠落は reviewer_agent を名指しして die する'
+else
+  echo "FAIL: T7 die メッセージが reviewer_agent を示さない: $(cat "$TMP/no-agent.err")"
+  fail=1
+fi
+
+# --- T8-T12: inner prompt に補間される値のガードと、配送不能な組み合わせの fail-fast ---
+# これらの値はすべて `zsh -ic "... '<prompt>'"` の二重引用の中へ素で埋まる。
+# ガードが無いと rc=0 のまま合成行のクォート数が狂い、ペイン起動が黙って壊れる
+# (レビュー指摘 Important 1 の実測: --agmsg-team "dispatch-my'repo" で
+#  シングルクォートが 9 個 / 釣り合うのは 6 個)。
+# Q1 の正常系フィクスチャはクォートを含まないので、この欠陥はここでしか捕まらない。
+assert_die() {
+  local label="$1" needle="$2"; shift 2
+  local out="$TMP/die-$$.out" err="$TMP/die-$$.err"
+  if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+     AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" "$@" >"$out" 2>"$err"; then
+    echo "FAIL: $label (rc=0 で通ってしまった。合成が壊れているのに何も報告しない)"
+    fail=1
+  elif grep -Fq -- "$needle" "$err"; then
+    echo "PASS: $label"
+  else
+    echo "FAIL: $label (die はしたがメッセージが期待と違う: $(tr '\n' ' ' < "$err"))"
+    fail=1
+  fi
+}
+
+BASE_ARGS=(--cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md"
+           --status-dir "$TMP/status" --no-parallel)
+
+# T8: team 名にシングルクォート
+assert_die 'T8 --agmsg-team のシングルクォートは die する' '--agmsg-team' \
+  "${BASE_ARGS[@]}" --agmsg-team "dispatch-my'repo" --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review.json" guard-team-quote
+
+# T8b: team 名に空白 (prewarm-panes.sh:205 と同じ禁止集合)
+assert_die 'T8b --agmsg-team の空白は die する' '--agmsg-team' \
+  "${BASE_ARGS[@]}" --agmsg-team "dispatch my repo" --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review.json" guard-team-space
+
+# T9: review-config の reviewer_agent にシングルクォート
+cat > "$TMP/status/review/code-review-bad-agent.json" <<JSON
+{
+  "reviewer_surface": "surface:99",
+  "reviewer_workspace": "workspace:7",
+  "reviewer_agent": "t1'-review",
+  "review_dir": "$TMP/status/review"
+}
+JSON
+assert_die 'T9 reviewer_agent のシングルクォートは die する' 'invalid reviewer_agent' \
+  "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review-bad-agent.json" guard-agent-quote
+
+# T10: agmsg 識別子が無いのに --status-dir が来た。この launch は dispatch 管理下であり、
+# 生成される runner wrapper の notify_parent_once が (全モードで無条件に) 親通知を所有する
+# ので、team/from が無いと通知は毎回 return 1 になり黙って失われる。
+assert_die 'T10 agmsg 未配線の --status-dir は die する' '--status-dir requires' \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" --no-parallel \
+  --status-dir "$TMP/status" guard-nowire-status
+
+# T10b: --status-dir を伴わない --review-config も die する (REVIEW_INSTRUCTION /
+# ABORT_REVIEW_STEP に空の team/sender が補間され、実行不能な指示が焼き込まれる経路)
+assert_die 'T10b agmsg 未配線の --review-config は die する' '--review-config requires' \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" --no-parallel \
+  --review-config "$TMP/status/review/code-review.json" guard-nowire-review
+
+# T11 (退行防止): --parent-notify-workspace だけでは die しない。
+# これは wrapper 内で `cmux notify` のデスクトップ通知にしか使われず、agmsg の親通知
+# とは独立した機構である。ここを die 条件に混ぜると「デスクトップ通知だけ欲しい launch」
+# (--status-dir を持たない素の起動) を殺してしまう — fix round 1 で実際に持ち込んだ退行。
+t11_out="$TMP/t11.out"; t11_err="$TMP/t11.err"
+if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+   AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
+   --cwd "$TMP/repo" --mode plan --runner claude --no-parallel \
+   --parent-notify-workspace workspace:9 \
+   guard-notify-only 'do something' >"$t11_out" 2>"$t11_err"; then
+  echo 'PASS: T11 --parent-notify-workspace 単独 (status-dir 無し) は die しない'
+else
+  echo "FAIL: T11 --parent-notify-workspace 単独で die した (agmsg と cmux notify を混同している): $(tr '\n' ' ' < "$t11_err")"
+  fail=1
+fi
+
+# T11b (v2.0.0 で削除): --parent-notify-surface は受け付けない。runner wrapper が書き出す
+# NOTIFY_SF に読み手が無く (cmux notify は --workspace しか取らない)、渡せてしまうと
+# 「通知先 surface を指定した」つもりの呼び出しが黙って無視される。
+assert_die 'T11b --parent-notify-surface は削除済みなので拒否される' 'was removed' \
+  --cwd "$TMP/repo" --mode plan --runner claude --no-parallel \
+  --parent-notify-surface surface:9 guard-notify-surface-removed 'do something'
 
 # --- PR1: reviewer_runner / reviewer_engine を明示した固定レビュー設定では、
 #     実装者 engine の反対側を計算せず JSON の reviewer_engine をそのまま使う ---
@@ -167,19 +311,21 @@ else
   echo 'PASS: PR3 review instruction is quote-free with the directive'
 fi
 
-# --- AB: ABORT_REVIEW_STEP / ABORT_PARENT_STEP も send-prompt.sh 呼び出しであり、
+# --- AB: ABORT_REVIEW_STEP / ABORT_PARENT_STEP も agmsg send.sh の 1 呼び出しであり、
 #     互いに区別でき、禁止文字 (' " ` ! \) を含まないこと。
 #     (この検査が無かったため、"--" の後ろの説明文がそのまま送信メッセージ本文に混入する
-#     バグ — send-prompt.sh の "--" は実引数の終端であり地の文の句読点ではない — を
+#     バグ — 旧配送スクリプトの "--" は実引数の終端であり地の文の句読点ではない — を
 #     静的検査で捕捉できていなかった)
-abort_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+abort_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
+  --agmsg-team demo-team --agmsg-from t1-exec \
   --status-dir "$TMP/status" --review-config "$TMP/status/review/code-review.json" \
   --no-parallel --parent-notify-workspace workspace:9 abort-cfg)
 abort_runner=$(jq -r '.runner_file' <<<"$abort_output")
 
-abort_review_segment=$(grep -o 'First write the reason.*reason for stopping\. Next' "$abort_runner" | head -1)
-abort_parent_segment=$(grep -o 'Then notify the parent by running.*status: error)\.' "$abort_runner" | head -1)
+abort_review_segment=$(grep -o 'First write the reason.*\. Next' "$abort_runner" | head -1)
+abort_parent_segment=$(grep -o 'Then notify the parent with ONE call.*status: error)\.' "$abort_runner" | head -1)
 
 assert_no_forbidden_chars() {
   local text="$1" label="$2"
@@ -207,17 +353,19 @@ else
   fail=1
 fi
 
-# AB2: 各 segment が send-prompt.sh 呼び出しであり、cmux send-key の直書きペアが残っていない
-if [[ "$abort_review_segment" == *'send-prompt.sh'* && "$abort_review_segment" != *'send-key'* ]]; then
-  echo 'PASS: AB2 ABORT_REVIEW_STEP は send-prompt.sh 呼び出しで send-key の直書きが無い'
+# AB2: 各 segment が agmsg send.sh の 1 呼び出しであり、cmux send-key の直書きペアが残っていない
+if [[ "$abort_review_segment" == *'agmsg-send.sh'* && "$abort_review_segment" == *'the recipient t1-review'* \
+      && "$abort_review_segment" != *'send-key'* ]]; then
+  echo 'PASS: AB2 ABORT_REVIEW_STEP は send.sh 呼び出しで宛先が reviewer_agent'
 else
-  echo 'FAIL: AB2 ABORT_REVIEW_STEP が send-prompt.sh 呼び出しになっていない、または send-key が残っている'
+  echo 'FAIL: AB2 ABORT_REVIEW_STEP が send.sh 呼び出しになっていない、または宛先が reviewer_agent でない'
   fail=1
 fi
-if [[ "$abort_parent_segment" == *'send-prompt.sh'* && "$abort_parent_segment" != *'send-key'* ]]; then
-  echo 'PASS: AB2 ABORT_PARENT_STEP は send-prompt.sh 呼び出しで send-key の直書きが無い'
+if [[ "$abort_parent_segment" == *'agmsg-send.sh'* && "$abort_parent_segment" == *'the recipient parent'* \
+      && "$abort_parent_segment" != *'send-key'* ]]; then
+  echo 'PASS: AB2 ABORT_PARENT_STEP は send.sh 呼び出しで宛先が parent'
 else
-  echo 'FAIL: AB2 ABORT_PARENT_STEP が send-prompt.sh 呼び出しになっていない、または send-key が残っている'
+  echo 'FAIL: AB2 ABORT_PARENT_STEP が send.sh 呼び出しになっていない、または宛先が parent でない'
   fail=1
 fi
 
@@ -225,9 +373,10 @@ fi
 assert_no_forbidden_chars "$abort_review_segment" 'AB3 ABORT_REVIEW_STEP is free of forbidden characters'
 assert_no_forbidden_chars "$abort_parent_segment" 'AB3 ABORT_PARENT_STEP is free of forbidden characters'
 
-# AB4: send-prompt.sh の "--" (実引数の終端) の直後が "the message must ..." という
-# 要件の説明文で始まっていないこと。この形だと "--" 以降の地の文がそのまま送信メッセージ
-# 本文として送られてしまう (今回のバグ本体)。abort_runner は REVIEW_INSTRUCTION /
+# AB4: "--" (実引数の終端) の直後が "the message must ..." という要件の説明文で
+# 始まっていないこと。この形だと "--" 以降の地の文がそのまま送信メッセージ本文として
+# 送られてしまう。send.sh には flag が無いので "--" 自体が現れないのが正しい姿だが、
+# 退行の形として固定しておく。abort_runner は REVIEW_INSTRUCTION /
 # ABORT_REVIEW_STEP / ABORT_PARENT_STEP の 3 箇所すべてを含むため 1 回の検査で足りる。
 assert_not_contains "$abort_runner" '-- the message must' 'AB4 no bare "-- the message must" pattern remains'
 
@@ -242,6 +391,39 @@ else
   echo 'FAIL: AB5 ABORT_REVIEW_STEP に "--" の実引数終端が残っている'
   fail=1
 fi
+
+# --- Q1 (M7): inner prompt 全体にクォート文字が無い ---
+# launch-workspace.sh は inner prompt を `'...'` で包み、その全体をさらに
+# `zsh -ic "..."` で包む。エスケープはしないので、prompt 側にクォート文字が
+# 1 つ混じるだけでペイン起動が壊れる (T2 で実測済み)。prewarm 側は
+# test-prewarm-layout.sh の PW5 が同じ検査をしているが、launch-workspace.sh 自身が
+# 合成する REVIEW_INSTRUCTION / ABORT_* / COMPLETION / EXIT は
+# どのテストも見ていなかった (M7)。
+#
+# 抽出は `'Read and execute the plan at` から次の `'` までを取る。prompt 内に `'` が
+# あれば途中で切れるので、末尾が EXIT_INSTRUCTION の最終文で終わっているかを見れば
+# 混入を検出できる。
+assert_prompt_quote_free() {
+  local runner="$1" label="$2" seg
+  seg=$(grep -o "'Read and execute the plan at[^']*'" "$runner" | head -1)
+  if [[ -z "$seg" ]]; then
+    echo "FAIL: $label (inner prompt not extractable)"; fail=1; return
+  fi
+  case "$seg" in
+    *'Do not leave the session idle.'\'*) ;;
+    *)
+      echo "FAIL: $label (inner prompt が途中で切れている = クォート文字が混入している)"
+      fail=1; return ;;
+  esac
+  case "$seg" in
+    *'"'*|*'`'*)
+      echo "FAIL: $label (inner prompt に \" または \` が混入している)"
+      fail=1; return ;;
+  esac
+  echo "PASS: $label"
+}
+assert_prompt_quote_free "$abort_runner" 'Q1 review + abort 入りの inner prompt はクォートフリー'
+assert_prompt_quote_free "$runner_file" 'Q1 review 入りの inner prompt はクォートフリー'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

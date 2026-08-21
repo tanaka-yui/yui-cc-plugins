@@ -30,12 +30,19 @@ cat > "$TMP/bin/cmux" <<STUB
 case "\$1" in
   new-workspace) echo 'workspace:1' ;;
   list-pane-surfaces) echo 'surface:2' ;;
-  send|send-key|notify) echo "\$*" >> "$TMP/cmux-calls.log" ;;
+  notify) echo "\$*" >> "$TMP/cmux-calls.log" ;;
   rename-workspace|rename-tab|wait-for|identify|new-split) ;;
   *) echo "unexpected cmux command: \$*" >&2; exit 1 ;;
 esac
 STUB
 chmod +x "$TMP/bin/cmux"
+
+# agmsg send.sh stub。親通知の唯一の経路。<team> <from> <to> <body> の 4 引数。
+cat > "$TMP/bin/agmsg-send.sh" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$TMP/agmsg-calls.log"
+STUB
+chmod +x "$TMP/bin/agmsg-send.sh"
 
 # 終了コードを引数で決める stub runner。zsh -ic 経由でも終了コードは伝播する
 cat > "$TMP/bin/stub-agent" <<'STUB'
@@ -62,15 +69,17 @@ run_case() {
   local status_dir="$TMP/status-$label"
   local name="task-$label"
 
-  rm -rf "$status_dir" "$TMP/cmux-calls.log"
+  rm -rf "$status_dir" "$TMP/cmux-calls.log" "$TMP/agmsg-calls.log"
   mkdir -p "$status_dir"
   jq -n --arg s "$prior_status" '{status:$s, message:"pre-existing"}' > "$status_dir/status.json"
   # standby が実装を引き受けている状態 (.assigned) を作る
   touch "$status_dir/.assigned-$name"
 
   local output runner
-  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+    AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode standby --runner stub --status-dir "$status_dir" \
+    --agmsg-team demo-team --agmsg-from "$name" \
     --parent-notify-workspace 'workspace:9' "$name")
   runner=$(jq -r '.runner_file' <<<"$output")
 
@@ -80,7 +89,7 @@ run_case() {
   jq -r '.status' "$status_dir/status.json"
 }
 
-notified() { [[ -s "$TMP/cmux-calls.log" ]] && echo yes || echo no; }
+notified() { [[ -s "$TMP/agmsg-calls.log" ]] && echo yes || echo no; }
 
 assert_eq() {
   local actual="$1" expected="$2" label="$3"

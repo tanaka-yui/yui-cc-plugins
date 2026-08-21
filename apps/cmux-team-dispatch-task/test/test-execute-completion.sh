@@ -26,6 +26,14 @@ REPORT="$SKILL_SCRIPTS/report-status.sh"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/repo" "$TMP/status"
+
+# agmsg send.sh の stub。--status-dir を渡す launch は agmsg 識別子を要求するので
+# (配送は agmsg send.sh の 1 本だけで、タイプ入力への fallback が無い)、
+# 実体の存在チェックを通すためにこれを AGMSG_SEND として export する。
+mkdir -p "$TMP/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/agmsg-send.sh"
+chmod +x "$TMP/bin/agmsg-send.sh"
+export AGMSG_SEND="$TMP/bin/agmsg-send.sh"
 git -C "$TMP/repo" init -q
 git -C "$TMP/repo" config user.email test@example.invalid
 git -C "$TMP/repo" config user.name test
@@ -61,6 +69,7 @@ runner_for() {
   local runner="$1" name="$2"
   CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode execute --runner "$runner" --plan-file "$TMP/plan.md" \
+    --agmsg-team demo-team --agmsg-from "$name" \
     --status-dir "$TMP/status" --no-parallel "$name" 2>/dev/null \
     | jq -r '.runner_file'
 }

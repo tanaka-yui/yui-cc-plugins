@@ -17,7 +17,7 @@
 #       [--exec-model <m>] [--exec-effort <e>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
-#       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
+#       [--parent-notify-workspace <ws-id>] [--unattended]
 #
 #   agmsg 使用 (workspace 未作成の状態で呼ぶ。--with-design で design standby も起動し workspace はこのスクリプトが作成):
 #     prewarm-panes.sh --with-design \
@@ -30,7 +30,7 @@
 #       [--exec-model <m>] [--exec-effort <e>] \
 #       [--review-model <model>] \
 #       [--design-runner <name>] [--reviewer-runner <name>] \
-#       [--parent-notify-workspace <ws-id>] [--parent-notify-surface <sf-id>] [--unattended]
+#       [--parent-notify-workspace <ws-id>] [--unattended]
 #
 # 注意: --agmsg-team を --with-design なしで渡す組み合わせは SKILL からは使用しない
 #       (claude/codex executor の配線のみ行いたい特殊用途向け)
@@ -38,8 +38,9 @@
 # 内部処理:
 #   0. 役割別の model/effort 上書き (--override 由来) を該当ペインへ --model / --effort で転送
 #   1. worktree を create-or-reuse (agmsg 配線より先にディレクトリが必要)
-#   2. (agmsg 時) join.sh + delivery.sh set を「ペイン起動前に」実行。
-#      配線に失敗したペインは delivery: "cmux-send" として記録 (die しない)
+#   2. join.sh + delivery.sh set を「ペイン起動前に」実行。fallback は無いので
+#      配線に失敗した時点で die する (cmux-send への記録・降格は廃止済み。Step 2 の
+#      コメント参照)
 #   3. (--with-design 時) 設計 standby を workspace 配置で起動 (メイン surface が design ペイン)
 #   4. --exec-choice で選ばれた engine の実装 standby を split で配置
 #   5. --review-model または --reviewer-runner 時に review ペインを split 配置
@@ -49,8 +50,8 @@
 #                 承認により停止しないようにするため)。codex 系は bypass フラグで解決済み
 #   --timeout-sentinel <path>: ループモード専用。status 所有者になり得る全 standby
 #                 (design / review / 実行) の launch へ
-#                 そのまま転送する。batch-wait.sh が timeout として terminal 化した後に
-#                 遅れて終了した子が status.json を上書きするのを防ぐ
+#                 そのまま転送する。親の単発タイマー wake 時の再導出処理が timeout として
+#                 terminal 化した後に遅れて終了した子が status.json を上書きするのを防ぐ
 #
 # Output: JSON to stdout: {workspace_id, panes: {design?, review?, executors}}
 # Debug:  Logs to stderr
@@ -84,11 +85,11 @@ AGMSG_TEAM=""
 WITH_DESIGN=0
 EXEC_CHOICE=""
 NOTIFY_WORKSPACE=""
-NOTIFY_SURFACE=""
 DESIGN_RUNNER=""
 REVIEWER_RUNNER=""
 DESIGN_ENGINE="claude"
 REVIEWER_ENGINE=""
+DESIGN_WIRING_TYPE=""
 REVIEW_MODEL_RESOLVED=""
 EXEC_ENGINE=""
 DESIGN_MODEL_OVERRIDE=""
@@ -175,9 +176,9 @@ while [[ $# -gt 0 ]]; do
     --parent-notify-workspace)
       [[ $# -lt 2 ]] && die "--parent-notify-workspace requires a workspace ID"
       NOTIFY_WORKSPACE="$2"; shift 2 ;;
+    # v2.0.0 で削除。launch-workspace.sh 側に読み手が無かったため素通ししていた値も廃止。
     --parent-notify-surface)
-      [[ $# -lt 2 ]] && die "--parent-notify-surface requires a surface ID"
-      NOTIFY_SURFACE="$2"; shift 2 ;;
+      die "--parent-notify-surface was removed: the runner wrapper never read it (cmux notify only takes --workspace); pass --parent-notify-workspace instead" ;;
     *)
       die "unknown option: $1" ;;
   esac
@@ -189,6 +190,41 @@ done
 [[ -n "$SLUG" ]] || die "--slug is required"
 [[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid slug '$SLUG': use only [A-Za-z0-9._-]"
 [[ -n "$STATUS_DIR" ]] || die "--status-dir is required"
+
+# agmsg は prewarm の前提条件であって option ではない。prewarm したペインは idle で
+# 待ち、指示は agmsg send.sh でしか届かない (タイプ入力への fallback は存在しない)。
+# --agmsg-team が無ければ readiness 句も載らず、launch-workspace.sh へ渡す
+# --agmsg-team/--agmsg-from も空になるので、生き残っても誰にも到達できないペインが
+# 並ぶだけになる。**ペインを 1 つも起動する前に**落とすこと — worktree 作成や
+# agmsg join より後に死ぬと孤児 worktree / team member が残る (AGMSG_DIR /
+# AGMSG_TEAM のメタ文字チェックを引数パース直後へ移したのと同じ理由)。
+[[ -n "$AGMSG_TEAM" ]] \
+  || die "--agmsg-team is required: prewarmed panes only ever receive work through agmsg send.sh and there is no typed fallback, so a prewarm without agmsg wiring would start panes that nothing can reach"
+
+# 無人ループ (--unattended) × codex 親は受け付けない。codex は自分宛の遅延メッセージで
+# タイマーを張れないと実測済みで (D-T2, 2026-08-21: バックグラウンドのサブシェルで
+# sleep してから自分へ送る形も、その detached 版もターン終了で消える)、codex 親には Step 3 の 90 分
+# safety timer が存在しない。無人ループには聞ける相手もいないので、`dispatch-notify:`
+# が 1 通失われた時点でジョブが静かに消える。ここも fail-fast にする (fallback は作らない)。
+# ペインを 1 つも起動する前に落とす — 孤児 worktree / team member を残さないため。
+if [[ $UNATTENDED -eq 1 && -n "${CODEX_THREAD_ID:-}" ]]; then
+  die "--unattended is refused from a codex parent: codex cannot arm the 90-minute safety timer (measured: a self-addressed delayed message dies with the turn), so an unattended loop would lose the job silently when one dispatch-notify message is lost; run the loop from a claude parent or run this dispatch attended"
+fi
+# この die 以降、後続の `-n "$AGMSG_TEAM"` 判定はすべて常に真である (退役候補。
+# 挙動を変えない純粋なリファクタなので、まとめて外すのは別タスク。CLAUDE.md 項目 47)。
+
+# readiness_clause (下記) は AGMSG_DIR / AGMSG_TEAM をエスケープせず埋め込む。空白や
+# シェルメタ文字が入ると launch-workspace.sh の `zsh -ic "... '<prompt>' ..."` を
+# 実際に破る (T2-1 で実測済み: 二重引用符の中に無条件の `"` を混ぜただけで
+# `zsh: unmatched '` になった。$name は --slug と同じ正規表現で既に安全なので対象外)。
+# fallback は無いので合成できなければここで die する。worktree 作成や agmsg join より
+# 前に置くことで、孤児 worktree / team member を作らずに fail-fast する。
+case "$AGMSG_DIR" in
+  *[[:space:]]*|*[\'\"\`\$\!\\]*) die "AGMSG_DIR contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $AGMSG_DIR" ;;
+esac
+case "$AGMSG_TEAM" in
+  *[[:space:]]*|*[\'\"\`\$\!\\]*) die "--agmsg-team contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $AGMSG_TEAM" ;;
+esac
 
 if [[ -n "$REVIEW_MODEL" && -z "$CODEX_RUNNER" ]]; then
   die "--review-model requires --codex-runner"
@@ -304,23 +340,30 @@ esac
 
 # claude/codex 実装 runner 名をここで解決する。Step 4/5 の起動と in-session 判定の
 # 両方がこの変数を参照するので、起動側とは別の式で再計算して乖離させない。
+# 解決式は上の case の検証式と対称でなければならない (F3)。検証は
+# `--exec-runner` か `--codex-runner` のどちらか一方で通るのに、解決が
+# `$EXEC_RUNNER` だけを見ていると `--codex-runner codex` 単独指定で空文字が
+# launch-workspace.sh へ渡り、engine が黙って claude へ反転する。
+# engine を跨いだ引き継ぎは起こさない: exec_choice=claude のとき EXEC_RUNNER は
+# claude runner 名なので、codex 側は exec_choice が実際に codex のときだけ読む。
 CLAUDE_EXEC_RUNNER=""
 if [[ "$EXEC_CHOICE" == "claude" ]]; then
-  CLAUDE_EXEC_RUNNER="$EXEC_RUNNER"
+  # DESIGN_RUNNER へは落とさない (Finding A の回帰。in-session 判定が誤って
+  # 「設計と実装が同一設定」と結論する)。--claude-runner までで止める。
+  CLAUDE_EXEC_RUNNER="${EXEC_RUNNER:-$CLAUDE_RUNNER}"
 elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
   CLAUDE_EXEC_RUNNER="$CLAUDE_RUNNER"
   [[ -z "$CLAUDE_EXEC_RUNNER" && "$DESIGN_ENGINE" == "claude" ]] && CLAUDE_EXEC_RUNNER="$DESIGN_RUNNER"
 fi
-# exec_choice=claude のとき EXEC_RUNNER は claude runner 名を持つため、無条件で
-# ${EXEC_RUNNER:-$CODEX_RUNNER} にすると codex 用のこの変数が claude runner 名を
-# 引き継んでしまう (実害は START_CODEX=0 で未使用のため無いが、次の変更で罠になる)。
-# CLAUDE_EXEC_RUNNER と対称に、exec_choice が実際に codex のときだけ EXEC_RUNNER を使う。
 CODEX_EXEC_RUNNER=""
 if [[ "$EXEC_CHOICE" == "codex" ]]; then
-  CODEX_EXEC_RUNNER="$EXEC_RUNNER"
+  CODEX_EXEC_RUNNER="${EXEC_RUNNER:-$CODEX_RUNNER}"
 elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
   CODEX_EXEC_RUNNER="$CODEX_RUNNER"
 fi
+# 起動するのに runner 名が解決できていないなら die する。空文字を渡して
+# launch-workspace.sh の既定 (claude) に落ちるのは fallback であり、この設計では禁止。
+[[ $START_CODEX -eq 0 || -n "$CODEX_EXEC_RUNNER" ]] || die "codex executor runner unresolved"
 
 # 役割設定 (engine + model + effort) が完全一致するときは、設計セッションがそのまま
 # 実装するので実装ペインを起動しない。effort を条件に含めるのは、effort がセッション
@@ -352,6 +395,7 @@ fi
 
 if [[ $WITH_DESIGN -eq 1 ]]; then
   # agmsg モード専用: workspace はこのスクリプトが作成する
+  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
   [[ -n "$AGMSG_TEAM" ]] || die "--with-design requires --agmsg-team"
   [[ -z "$WORKSPACE" && -z "$BASE_SURFACE" ]] \
     || die "--with-design is mutually exclusive with --workspace/--base-surface"
@@ -360,6 +404,7 @@ else
   [[ -n "$BASE_SURFACE" ]] || die "--base-surface is required (without --with-design)"
 fi
 
+# 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
 if [[ -n "$AGMSG_TEAM" ]]; then
   [[ -f "$AGMSG_DIR/send.sh" ]] || die "agmsg is not installed (expected $AGMSG_DIR/send.sh)"
 fi
@@ -372,7 +417,6 @@ command -v git &>/dev/null || die "git is not installed"
 # 空になりうる配列の展開は必ず ${arr[@]+"${arr[@]}"} イディオムを使う
 NOTIFY_FLAGS=()
 [[ -n "$NOTIFY_WORKSPACE" ]] && NOTIFY_FLAGS+=(--parent-notify-workspace "$NOTIFY_WORKSPACE")
-[[ -n "$NOTIFY_SURFACE" ]] && NOTIFY_FLAGS+=(--parent-notify-surface "$NOTIFY_SURFACE")
 
 # ループモードでは、status 所有者になり得る全 standby wrapper に timeout sentinel を
 # 焼き込む。ここで転送しないと prewarm 経路 (既定) では sentinel が効かず、
@@ -397,107 +441,108 @@ fi
 # --- Step 2: agmsg 配線 (ペイン起動前) ---
 # delivery.sh set は worktree 相対の未追跡ファイル (.claude/settings.local.json /
 # .codex/hooks.json) に SessionStart hook を注入する。セッション起動前に実行しないと
-# hook が効かないため、必ずこの位置で行う。失敗したペインは cmux-send にフォールバック。
+# hook が効かないため、必ずこの位置で行う。fallback は無い: join / delivery.sh set が
+# 失敗すれば readiness を確立する手段が無く必ず不通になるため die する
+# (cmux-send への配送フォールバックは廃止済み)。
+#
+# **readiness 句の前提**: claude ロールの readiness 句 (readiness_clause の claude 分岐)
+# は「SessionStart hook が出す AGMSG-DIRECTIVE に従って Monitor tool を起動せよ」と
+# 指示する。この指示が成立するのは、そのペインの
+# `delivery.sh set monitor claude-code <worktree>` が**この同じ実行内で成功している**
+# 場合だけである。配線が無ければ hook は AGMSG-DIRECTIVE を出さず、子は従うべき指示を
+# 見つけられないまま [ready] を送り、親は「到達可能になった」と誤認する。だから
+# wire_delivery の失敗は警告ではなく die であり、この呼び出しは必ず launch より前に
+# 置く (順序は test-prewarm-layout.sh の PW15、die は PW2、文面と前提は PW18 が固定)。
 
-CLAUDE_DELIVERY="cmux-send"
-CODEX_DELIVERY="cmux-send"
-REVIEW_DELIVERY="cmux-send"
-DESIGN_DELIVERY="cmux-send"
 REVIEW_JOINED=0
 
-wire_delivery() {
+wire_delivery() {  # <engine>
   local engine="$1"
   if [[ "$engine" == "codex" ]]; then
-    if bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >/dev/null 2>&1; then
-      CODEX_DELIVERY="agmsg"
-    else
-      log "agmsg" "codex delivery wiring failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >/dev/null 2>&1 \
+      || die "codex delivery wiring failed (delivery.sh set monitor); readiness cannot be established and there is no fallback"
   else
-    if bash "$AGMSG_DIR/delivery.sh" set monitor claude-code "$CWD" >/dev/null 2>&1; then
-      CLAUDE_DELIVERY="agmsg"
-    else
-      log "agmsg" "claude-code delivery wiring failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/delivery.sh" set monitor claude-code "$CWD" >/dev/null 2>&1 \
+      || die "claude-code delivery wiring failed (delivery.sh set monitor); readiness cannot be established and there is no fallback"
   fi
 }
 
+# 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
 if [[ -n "$AGMSG_TEAM" ]]; then
   if [[ $WITH_DESIGN -eq 1 ]]; then
     DESIGN_WIRING_TYPE="claude-code"
     [[ "$DESIGN_ENGINE" == "codex" ]] && DESIGN_WIRING_TYPE="codex"
-    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG" "$DESIGN_WIRING_TYPE" "$CWD" >&2 2>/dev/null; then
-      wire_delivery "$DESIGN_ENGINE"
-      [[ "$DESIGN_ENGINE" == "codex" ]] && DESIGN_DELIVERY="$CODEX_DELIVERY" || DESIGN_DELIVERY="$CLAUDE_DELIVERY"
-    else
-      log "agmsg" "design join failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG" "$DESIGN_WIRING_TYPE" "$CWD" >&2 2>/dev/null \
+      || die "design agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
+    wire_delivery "$DESIGN_ENGINE"
   fi
 
   if [[ $START_CLAUDE -eq 1 ]]; then
-    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-claude" claude-code "$CWD" >&2 2>/dev/null; then
-      wire_delivery claude
-    else
-      log "agmsg" "claude executor join failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-claude" claude-code "$CWD" >&2 2>/dev/null \
+      || die "claude executor agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
+    wire_delivery claude
   fi
 
   if [[ $START_CODEX -eq 1 ]]; then
-    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-codex" codex "$CWD" >&2 2>/dev/null; then
-      wire_delivery codex
-    else
-      log "agmsg" "codex join failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-codex" codex "$CWD" >&2 2>/dev/null \
+      || die "codex executor agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
+    wire_delivery codex
   fi
 
   if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     REVIEW_WIRING_ENGINE="${REVIEWER_ENGINE:-codex}"
     REVIEW_WIRING_TYPE="claude-code"
     [[ "$REVIEW_WIRING_ENGINE" == "codex" ]] && REVIEW_WIRING_TYPE="codex"
-    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-review" "$REVIEW_WIRING_TYPE" "$CWD" >&2 2>/dev/null; then
-      REVIEW_JOINED=1
-      wire_delivery "$REVIEW_WIRING_ENGINE"
-      [[ "$REVIEW_WIRING_ENGINE" == "codex" ]] && REVIEW_DELIVERY="$CODEX_DELIVERY" || REVIEW_DELIVERY="$CLAUDE_DELIVERY"
-    else
-      log "agmsg" "review join failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-review" "$REVIEW_WIRING_TYPE" "$CWD" >&2 2>/dev/null \
+      || die "review agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
+    REVIEW_JOINED=1
+    wire_delivery "$REVIEW_WIRING_ENGINE"
   fi
 fi
 
-# --- guard 注入ヘルパー ---
-# 初期プロンプトへ埋め込む guard 実行文。SCRIPT_DIR に空白が含まれる場合は
-# プロンプトをクォートできず bash が exit 127 で終わるので、注入しない。
-# 空白以外のシェルメタ文字も同じ理由で弾く: この文字列は launch-workspace.sh が
-# `zsh -ic "... '<prompt>' ..."` の中へエスケープせず埋めるので、`'` があれば引用符を
-# 破って後続を別トークンにできる (`-i` は対話モードなので `!` の history 展開も効く)。
-# 禁止集合は parallel-directive.sh / --agmsg-from と同じ `' " \` $ ! \` に揃える。
-GUARD_INJECTABLE=1
-case "$SCRIPT_DIR" in
-  *[[:space:]]*|*[\'\"\`\$\!\\]*) GUARD_INJECTABLE=0 ;;
-esac
-[[ $GUARD_INJECTABLE -eq 0 ]] \
-  && log "agmsg" "skill dir contains whitespace or a shell metacharacter; not injecting the guard"
-
-guard_clause() {  # <type> <name>
-  printf 'Run bash %s/ensure-agmsg-ready.sh --type %s --name %s and continue even if it exits non-zero.' \
-    "$SCRIPT_DIR" "$1" "$2"
+# --- readiness 確立ヘルパー ---
+# 初期プロンプトへ埋め込む readiness 確立句。埋め込む変数 (AGMSG_DIR / AGMSG_TEAM /
+# name) のメタ文字チェックは引数パース直後 (--- Validation --- 節) で die 済みなので、
+# ここではもう SCRIPT_DIR のチェックは不要 (SCRIPT_DIR はこのプロンプトに埋め込まない。
+# $SCRIPT_DIR/launch-workspace.sh の呼び出しはこのスクリプト自身が直接実行する native な
+# bash 呼び出しであり、二重にクォートされた文字列へ再埋め込みされる訳ではないため
+# 対象外)。
+#
+# readiness 確立句。エンジンごとに手段が違う (spec 2026-08-21 の B2 / V2a):
+#   claude → Monitor ツールを起動する。これが無いと idle 中の受信ができない
+#   codex  → seat を記録する。これが無いとメッセージは inbox に未読で滞留する
+# どちらも最後に親へ [ready] <name> を送る。親はこれを readiness の唯一の確認手段に
+# する (claude 子の readiness は親から観測できないため。B5 / 制約 3)。ワイヤフォーマット
+# `[ready] <name>` は spec / T4/T5 の照合規則が依存するため変えない。
+#
+# 「実行するコマンド」を一字一句指定する形にはしない (レビューで実測済みの 2 つの
+# 欠陥を踏むため):
+#   - 文中の記述的な句点がそのまま引数へ混入する (末尾ピリオドが名前/本文の一部になる)
+#   - `[ready]` を引用せず zsh 上で直接実行させると glob 展開で
+#     `no matches found: [ready] <name>` となり送信コマンド自体が実行されない
+# 代わりに「送るメッセージ」を記述する形にする: 各引数を明示し、send.sh の本文は
+# 1 個の引数として渡すこと、本文は厳密に `[ready] <name>` であり余分な文字
+# (末尾ピリオド等) を含まないことを明示する。エージェント自身が引用を組み立てるので、
+# glob 展開もピリオド混入も起こらない (この文中にクォート文字は書けない制約は維持する)。
+readiness_clause() {
+  local wiring_type="$1" name="$2"
+  if [[ "$wiring_type" == "codex" ]]; then
+    printf 'FIRST make yourself reachable: call %s/drivers/types/codex/codex-record-session.sh with team %s and agent name %s (two arguments, no trailing punctuation). THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
+      "$AGMSG_DIR" "$AGMSG_TEAM" "$name" "$AGMSG_DIR" "$AGMSG_TEAM" "$name" "$name"
+  else
+    printf 'FIRST follow the AGMSG-DIRECTIVE printed by your SessionStart hook and invoke the Monitor tool right now — that is the only way work will reach you. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
+      "$AGMSG_DIR" "$AGMSG_TEAM" "$name" "$name"
+  fi
 }
 
 # --- Step 3: 設計ペイン standby (agmsg モードのみ、workspace 配置) ---
 
 DESIGN_SURFACE=""
-DESIGN_WATCHER="none"
 
 if [[ $WITH_DESIGN -eq 1 ]]; then
-  # design は engine を問わず同じ guard-call プロンプトで起動する。配線失敗
-  # (DESIGN_DELIVERY=cmux-send) や SCRIPT_DIR に空白がある場合は guard を注入せず、
-  # タスクが直接タイプ入力で届く旨の文面にフォールバックする。
-  if [[ $GUARD_INJECTABLE -eq 1 && "$DESIGN_DELIVERY" == "agmsg" ]]; then
-    DESIGN_WATCHER="guard-injected"
-    OPUS_PROMPT="$(guard_clause "$DESIGN_WIRING_TYPE" "$SLUG") Then wait idle. Your task will arrive as a prompt typed into this pane; an identical copy may also be recorded in your agmsg inbox history (treat both as ONE task). Do not start any work until the task prompt arrives."
-  else
-    OPUS_PROMPT="Wait idle. Your task will be typed directly into this pane as a prompt. Do not start any work until it arrives."
-  fi
+  # design は engine を問わず同じ readiness 確立句で起動する
+  # (AGMSG_DIR / AGMSG_TEAM のメタ文字チェックは引数パース直後に die 済み)。
+  OPUS_PROMPT="$(readiness_clause "$DESIGN_WIRING_TYPE" "$SLUG") Then wait idle. Your task will arrive as an agmsg message. Do not start any work until it arrives. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
 
   if [[ "$DESIGN_ENGINE" == "codex" ]]; then
     log "prewarm" "launching codex design workspace for $SLUG"
@@ -564,17 +609,11 @@ set_exec_split_flags() {
 
 CLAUDE_EXEC_SURFACE=""
 CLAUDE_EXEC_PROMPT=""
-CLAUDE_EXEC_WATCHER="none"
 # CLAUDE_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
 AGMSG_FLAGS_CLAUDE=()
+# 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
 if [[ $START_CLAUDE -eq 1 && -n "$AGMSG_TEAM" ]]; then
-  # design と同じ理由で delivery に応じて出し分ける (cmux-send フォールバック時は guard を注入しない)
-  if [[ $GUARD_INJECTABLE -eq 1 && "$CLAUDE_DELIVERY" == "agmsg" ]]; then
-    CLAUDE_EXEC_WATCHER="guard-injected"
-    CLAUDE_EXEC_PROMPT="$(guard_clause claude-code "$SLUG-claude") Then wait idle. Execution instructions will arrive as a prompt typed into this pane; an identical copy may also be recorded in your agmsg inbox history (treat both as ONE task). Do not start any work until the instructions arrive."
-  else
-    CLAUDE_EXEC_PROMPT="Wait idle. Execution instructions will be typed directly into this pane as a prompt. Do not start any work until they arrive."
-  fi
+  CLAUDE_EXEC_PROMPT="$(readiness_clause claude-code "$SLUG-claude") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
   AGMSG_FLAGS_CLAUDE=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-claude")
 fi
 
@@ -604,22 +643,19 @@ if [[ $START_CLAUDE -eq 1 ]]; then
 fi
 
 # --- Step 5: codex standby (選択時のみ、実装行へ split 配置) ---
-# codex は idle でも agmsg push を受けられる保証が無いため、実行指示そのものは常に
-# 別配送 (CODEX_DELIVERY, prewarm.json で分岐) に任せる。初期プロンプトには
-# guard-call のみを乗せ、配線失敗時は guard も注入しない。
+# codex は seat 記録 (readiness_clause の codex 分岐) が無いと agmsg message が
+# inbox に未読で滞留する (V2a)。配線成否に関わらず常にプロンプトを渡す —
+# プロンプト無し起動は readiness を確立できず必ず不通になるので、フォールバックにしない。
 
 CODEX_SURFACE=""
-CODEX_WATCHER="none"
 
 if [[ $START_CODEX -eq 1 ]]; then
   AGMSG_FLAGS_CODEX=()
   CODEX_EXEC_PROMPT=""
+  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
   if [[ -n "$AGMSG_TEAM" ]]; then
     AGMSG_FLAGS_CODEX=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
-    if [[ $GUARD_INJECTABLE -eq 1 && "$CODEX_DELIVERY" == "agmsg" ]]; then
-      CODEX_WATCHER="guard-injected"
-      CODEX_EXEC_PROMPT="$(guard_clause codex "$SLUG-codex") Then wait idle. Execution instructions will arrive as a prompt typed into this pane; an identical copy may also be recorded in your agmsg inbox history (treat both as ONE task). Do not start any work until the instructions arrive."
-    fi
+    CODEX_EXEC_PROMPT="$(readiness_clause codex "$SLUG-codex") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
   fi
   log "prewarm" "launching codex standby pane for $SLUG"
   # CODEX_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
@@ -636,7 +672,7 @@ if [[ $START_CODEX -eq 1 ]]; then
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
     ${AGMSG_FLAGS_CODEX[@]+"${AGMSG_FLAGS_CODEX[@]}"} \
-    "$SLUG-codex" ${CODEX_EXEC_PROMPT:+"$CODEX_EXEC_PROMPT"}) || die "failed to launch codex standby pane"
+    "$SLUG-codex" "$CODEX_EXEC_PROMPT") || die "failed to launch codex standby pane"
   CODEX_SURFACE=$(echo "$CODEX_RESULT" | jq -r '.surface_id // empty')
   [[ -n "$CODEX_SURFACE" ]] || die "failed to parse codex standby output"
   EXEC_LAST_SURFACE="$CODEX_SURFACE"
@@ -644,15 +680,15 @@ fi
 
 # --- Step 5.5: review ペイン (--review-model / --reviewer-runner 時のみ、design の右に split 配置) ---
 # standby と同じ wrapper だが .assigned-<slug>-review は誰も touch しない前提 —
-# close しても status.json を汚さない。初期プロンプトには guard-call のみを乗せ、
-# 配線失敗時は codex standby と同じく guard を注入しない。
+# close しても status.json を汚さない。初期プロンプトには readiness 確立句を乗せる —
+# codex standby と同じく、配線成否に関わらず常にプロンプトを渡す。
 # --reviewer-runner は engine を問わず利用できる。--review-model は claude 設計の
 # 既存 codex review 指定として維持する。
 
 REVIEW_SURFACE=""
-REVIEW_WATCHER="none"
 
 leave_failed_review_join() {
+  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
   [[ $REVIEW_JOINED -eq 1 && -n "$AGMSG_TEAM" ]] || return 0
   if bash "$AGMSG_DIR/leave.sh" "$AGMSG_TEAM" "$SLUG-review" >/dev/null 2>&1; then
     REVIEW_JOINED=0
@@ -668,6 +704,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     REVIEW_PANE_NAME="$SLUG-review"
     REVIEW_RUNNER_FLAGS=(--runner "$REVIEWER_RUNNER")
     [[ "$REVIEWER_ENGINE" == "claude" ]] && REVIEW_RUNNER_FLAGS+=(--skip-permissions)
+    # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
     if [[ -n "$AGMSG_TEAM" ]]; then
       AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-review")
     fi
@@ -675,19 +712,19 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     log "prewarm" "launching codex review pane for $SLUG"
     REVIEW_PANE_NAME="$SLUG-review"
     REVIEW_RUNNER_FLAGS=(--runner "$CODEX_RUNNER" --model "$REVIEW_MODEL")
-    # legacy 経路でも --agmsg-from は必須。guard 注入は REVIEW_DELIVERY だけで決まるので、
-    # ここを落とすと「guard は注入されるのに runner script に
-    # export AGMSG_EXPECTED_NAME が出ない」状態になる。ネストしたディスパッチで外側の
-    # 値を継承すると guard が die_usage (rc 2) になり、watcher が起動しないのに
-    # prewarm.json は guard-injected と報告する。
+    # legacy 経路でも --agmsg-from は必須。落とすと readiness_clause の name 引数
+    # ($SLUG-review) と launch-workspace.sh の dispatch-notify 配線
+    # (--agmsg-team/--agmsg-from) が食い違い、review pane の agmsg 上の身元が
+    # 曖昧になる。
+    # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
     if [[ -n "$AGMSG_TEAM" ]]; then
       AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-review")
     fi
   fi
   REVIEW_PROMPT=""
-  if [[ $GUARD_INJECTABLE -eq 1 && "$REVIEW_DELIVERY" == "agmsg" ]]; then
-    REVIEW_WATCHER="guard-injected"
-    REVIEW_PROMPT="$(guard_clause "$REVIEW_WIRING_TYPE" "$SLUG-review") Then wait idle. Review requests will arrive as a prompt typed into this pane; an identical copy may also be recorded in your agmsg inbox history (treat both as ONE request). Do not start any work until a request arrives."
+  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
+  if [[ -n "$AGMSG_TEAM" ]]; then
+    REVIEW_PROMPT="$(readiness_clause "$REVIEW_WIRING_TYPE" "$SLUG-review") Then wait idle. Review requests will arrive as an agmsg message. Do not start any work until a request arrives. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
   fi
   if REVIEW_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
     --cwd "$CWD" \
@@ -702,7 +739,7 @@ if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     --status-dir "$STATUS_DIR" \
     ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
     ${AGMSG_FLAGS_REVIEW[@]+"${AGMSG_FLAGS_REVIEW[@]}"} \
-    "$REVIEW_PANE_NAME" ${REVIEW_PROMPT:+"$REVIEW_PROMPT"}); then
+    "$REVIEW_PANE_NAME" "$REVIEW_PROMPT"); then
     if ! REVIEW_SURFACE=$(echo "$REVIEW_RESULT" | jq -er '.surface_id // empty'); then
       REVIEW_SURFACE=""
       leave_failed_review_join
@@ -729,20 +766,12 @@ PREWARM_JSON=$(jq -n \
   --arg crr "${CODEX_EXEC_RUNNER:-$CODEX_RUNNER}" \
   --arg rrr "${REVIEWER_RUNNER:-$CODEX_RUNNER}" \
   --arg de "$DESIGN_ENGINE" \
-  --arg dd "$DESIGN_DELIVERY" \
-  --arg dc "$CLAUDE_DELIVERY" \
-  --arg dx "$CODEX_DELIVERY" \
-  --arg dr "$REVIEW_DELIVERY" \
   --arg re "$REVIEW_ENGINE" \
-  --arg dw "$DESIGN_WATCHER" \
-  --arg cw "$CLAUDE_EXEC_WATCHER" \
-  --arg xw "$CODEX_WATCHER" \
-  --arg rw "$REVIEW_WATCHER" \
-  '(if $ds != "" then {design: {surface_id: $ds, agent: $slug, runner: $drr, engine: $de, role: "plan", delivery: $dd, watcher: $dw}} else {} end)
-   + (if $rs != "" then {review: {surface_id: $rs, agent: ($slug + "-review"), runner: $rrr, engine: $re, role: "review", delivery: $dr, watcher: $rw}} else {} end)
+  '(if $ds != "" then {design: {surface_id: $ds, agent: $slug, runner: $drr, engine: $de, role: "plan", wired: true}} else {} end)
+   + (if $rs != "" then {review: {surface_id: $rs, agent: ($slug + "-review"), runner: $rrr, engine: $re, role: "review", wired: true}} else {} end)
    + {executors:
-        ((if $ces != "" then {claude: {surface_id: $ces, agent: ($slug + "-claude"), runner: $cer, engine: "claude", role: "exec", delivery: $dc, watcher: $cw}} else {} end)
-         + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), runner: $crr, engine: "codex", role: "exec", delivery: $dx, watcher: $xw}} else {} end))}')
+        ((if $ces != "" then {claude: {surface_id: $ces, agent: ($slug + "-claude"), runner: $cer, engine: "claude", role: "exec", wired: true}} else {} end)
+         + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), runner: $crr, engine: "codex", role: "exec", wired: true}} else {} end))}')
 echo "$PREWARM_JSON" > "$STATUS_DIR/prewarm.json"
 log "prewarm" "wrote $STATUS_DIR/prewarm.json"
 

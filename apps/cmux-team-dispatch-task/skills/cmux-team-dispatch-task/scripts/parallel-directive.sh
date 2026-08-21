@@ -3,9 +3,9 @@ set -euo pipefail
 
 # parallel-directive.sh — 子セッションへ渡す並列実行ディレクティブを 1 行で出力する。
 #
-# send-prompt-exempt: TUI へのメッセージ配送ではなく、send-prompt.sh 経由の配送を説明する記述。
+# send-prompt-exempt: TUI へのメッセージ配送ではなく、agmsg send.sh 経由の配送を説明する記述。
 # launch-workspace.sh が plan / superpowers / execute の起動プロンプトへ連結するほか、
-# 親セッションが cmux send で送る実行指示・レビュー依頼にも同じ文面を含めさせる
+# 親セッションが agmsg send.sh で送る実行指示・レビュー依頼にも同じ文面を含めさせる
 # (SKILL.md 参照)。文面が各所へ散らないための単一情報源。
 #
 # 出力は zsh -ic "... '<prompt>' ..." という二重引用の内側に素で置かれる。

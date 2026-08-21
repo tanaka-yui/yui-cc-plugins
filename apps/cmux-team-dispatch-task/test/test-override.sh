@@ -15,6 +15,13 @@ LAUNCH="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/launch-workspace.s
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/scripts" "$TMP/repo" "$TMP/agmsg" "$TMP/bin" "$TMP/status"
+
+# agmsg send.sh の stub。--status-dir を渡す launch は agmsg 識別子を要求するので
+# (配送は agmsg send.sh の 1 本だけで、タイプ入力への fallback が無い)、
+# 実体の存在チェックを通すためにこれを AGMSG_SEND として export する。
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/agmsg-send.sh"
+chmod +x "$TMP/bin/agmsg-send.sh"
+export AGMSG_SEND="$TMP/bin/agmsg-send.sh"
 git -C "$TMP/repo" init -q
 git -C "$TMP/repo" config user.email test@example.invalid
 git -C "$TMP/repo" config user.name test
@@ -171,12 +178,14 @@ real_runner() {
   local name="$1"; shift
   local output
   output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+    --agmsg-team demo-team --agmsg-from "$name" \
     --cwd "$TMP/repo" --status-dir "$TMP/status" "$@" "$name" prompt)
   jq -r '.runner_file' <<<"$output"
 }
 
 if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
      --cwd "$TMP/repo" --mode review --role review --runner codex --effort max \
+     --agmsg-team demo-team --agmsg-from ov7 \
      --status-dir "$TMP/status" ov7 prompt >/dev/null 2>&1; then
   bad 'OV7 codex rejects effort=max'
 else

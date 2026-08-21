@@ -15,6 +15,13 @@ LAUNCH="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/launch-workspace.s
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/repo" "$TMP/status"
+
+# agmsg send.sh の stub。--status-dir を渡す launch は agmsg 識別子を要求するので
+# (配送は agmsg send.sh の 1 本だけで、タイプ入力への fallback が無い)、
+# 実体の存在チェックを通すためにこれを AGMSG_SEND として export する。
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/agmsg-send.sh"
+chmod +x "$TMP/bin/agmsg-send.sh"
+export AGMSG_SEND="$TMP/bin/agmsg-send.sh"
 git -C "$TMP/repo" init -q
 git -C "$TMP/repo" config user.email test@example.invalid
 git -C "$TMP/repo" config user.name test
@@ -60,10 +67,12 @@ runner_for() {
   if [[ "$mode" == "execute" ]]; then
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
       --cwd "$TMP/repo" --mode "$mode" --runner "$runner" --plan-file "$TMP/plan.md" \
+      --agmsg-team demo-team --agmsg-from "$name" \
       --status-dir "$TMP/status" "$@" "$name")
   else
     output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
       --cwd "$TMP/repo" --mode "$mode" --runner "$runner" \
+      --agmsg-team demo-team --agmsg-from "$name" \
       --status-dir "$TMP/status" "$@" "$name" prompt)
   fi
   jq -r '.runner_file' <<<"$output"
@@ -120,6 +129,7 @@ assert_contains "$ovr" "--effort 'high'" 'RM11b explicit --effort wins'
 # --- RM12: engine 別の effort allowlist ---
 if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
      --cwd "$TMP/repo" --mode plan --runner bare --effort minimal \
+     --agmsg-team demo-team --agmsg-from rm-bad-claude \
      --status-dir "$TMP/status" rm-bad-claude prompt >/dev/null 2>&1; then
   bad 'RM12a claude rejects effort=minimal'
 else
@@ -127,6 +137,7 @@ else
 fi
 if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
      --cwd "$TMP/repo" --mode plan --runner bare --effort max \
+     --agmsg-team demo-team --agmsg-from rm-ok-claude \
      --status-dir "$TMP/status" rm-ok-claude prompt >/dev/null 2>&1; then
   pass 'RM12b claude accepts effort=max'
 else
@@ -149,6 +160,7 @@ assert_contains "$codex_exec_r" "-c model_reasoning_effort='minimal'"   'RM15b c
 # --- RM16: codex は effort=max を拒否する (Task 0 probe が INCONCLUSIVE だった safe branch) ---
 if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
      --cwd "$TMP/repo" --mode plan --runner bare-codex --effort max \
+     --agmsg-team demo-team --agmsg-from rm-bad-codex \
      --status-dir "$TMP/status" rm-bad-codex prompt >/dev/null 2>&1; then
   bad 'RM16 codex rejects effort=max'
 else
