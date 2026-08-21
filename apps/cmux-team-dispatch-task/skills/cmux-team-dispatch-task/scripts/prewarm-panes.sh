@@ -89,6 +89,7 @@ DESIGN_RUNNER=""
 REVIEWER_RUNNER=""
 DESIGN_ENGINE="claude"
 REVIEWER_ENGINE=""
+DESIGN_WIRING_TYPE=""
 REVIEW_MODEL_RESOLVED=""
 EXEC_ENGINE=""
 DESIGN_MODEL_OVERRIDE=""
@@ -189,6 +190,21 @@ done
 [[ -n "$SLUG" ]] || die "--slug is required"
 [[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid slug '$SLUG': use only [A-Za-z0-9._-]"
 [[ -n "$STATUS_DIR" ]] || die "--status-dir is required"
+
+# readiness_clause (下記) は AGMSG_DIR / AGMSG_TEAM をエスケープせず埋め込む。空白や
+# シェルメタ文字が入ると launch-workspace.sh の `zsh -ic "... '<prompt>' ..."` を
+# 実際に破る (T2-1 で実測済み: 二重引用符の中に無条件の `"` を混ぜただけで
+# `zsh: unmatched '` になった。$name は --slug と同じ正規表現で既に安全なので対象外)。
+# fallback は無いので合成できなければここで die する。worktree 作成や agmsg join より
+# 前に置くことで、孤児 worktree / team member を作らずに fail-fast する。
+case "$AGMSG_DIR" in
+  *[[:space:]]*|*[\'\"\`\$\!\\]*) die "AGMSG_DIR contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $AGMSG_DIR" ;;
+esac
+if [[ -n "$AGMSG_TEAM" ]]; then
+  case "$AGMSG_TEAM" in
+    *[[:space:]]*|*[\'\"\`\$\!\\]*) die "--agmsg-team contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $AGMSG_TEAM" ;;
+  esac
+fi
 
 if [[ -n "$REVIEW_MODEL" && -z "$CODEX_RUNNER" ]]; then
   die "--review-model requires --codex-runner"
@@ -397,28 +413,20 @@ fi
 # --- Step 2: agmsg 配線 (ペイン起動前) ---
 # delivery.sh set は worktree 相対の未追跡ファイル (.claude/settings.local.json /
 # .codex/hooks.json) に SessionStart hook を注入する。セッション起動前に実行しないと
-# hook が効かないため、必ずこの位置で行う。失敗したペインは cmux-send にフォールバック。
+# hook が効かないため、必ずこの位置で行う。fallback は無い: join / delivery.sh set が
+# 失敗すれば readiness を確立する手段が無く必ず不通になるため die する
+# (cmux-send への配送フォールバックは廃止済み)。
 
-CLAUDE_DELIVERY="cmux-send"
-CODEX_DELIVERY="cmux-send"
-REVIEW_DELIVERY="cmux-send"
-DESIGN_DELIVERY="cmux-send"
 REVIEW_JOINED=0
 
-wire_delivery() {
+wire_delivery() {  # <engine>
   local engine="$1"
   if [[ "$engine" == "codex" ]]; then
-    if bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >/dev/null 2>&1; then
-      CODEX_DELIVERY="agmsg"
-    else
-      log "agmsg" "codex delivery wiring failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >/dev/null 2>&1 \
+      || die "codex delivery wiring failed (delivery.sh set monitor); readiness cannot be established and there is no fallback"
   else
-    if bash "$AGMSG_DIR/delivery.sh" set monitor claude-code "$CWD" >/dev/null 2>&1; then
-      CLAUDE_DELIVERY="agmsg"
-    else
-      log "agmsg" "claude-code delivery wiring failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/delivery.sh" set monitor claude-code "$CWD" >/dev/null 2>&1 \
+      || die "claude-code delivery wiring failed (delivery.sh set monitor); readiness cannot be established and there is no fallback"
   fi
 }
 
@@ -426,81 +434,65 @@ if [[ -n "$AGMSG_TEAM" ]]; then
   if [[ $WITH_DESIGN -eq 1 ]]; then
     DESIGN_WIRING_TYPE="claude-code"
     [[ "$DESIGN_ENGINE" == "codex" ]] && DESIGN_WIRING_TYPE="codex"
-    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG" "$DESIGN_WIRING_TYPE" "$CWD" >&2 2>/dev/null; then
-      wire_delivery "$DESIGN_ENGINE"
-      [[ "$DESIGN_ENGINE" == "codex" ]] && DESIGN_DELIVERY="$CODEX_DELIVERY" || DESIGN_DELIVERY="$CLAUDE_DELIVERY"
-    else
-      log "agmsg" "design join failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG" "$DESIGN_WIRING_TYPE" "$CWD" >&2 2>/dev/null \
+      || die "design agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
+    wire_delivery "$DESIGN_ENGINE"
   fi
 
   if [[ $START_CLAUDE -eq 1 ]]; then
-    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-claude" claude-code "$CWD" >&2 2>/dev/null; then
-      wire_delivery claude
-    else
-      log "agmsg" "claude executor join failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-claude" claude-code "$CWD" >&2 2>/dev/null \
+      || die "claude executor agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
+    wire_delivery claude
   fi
 
   if [[ $START_CODEX -eq 1 ]]; then
-    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-codex" codex "$CWD" >&2 2>/dev/null; then
-      wire_delivery codex
-    else
-      log "agmsg" "codex join failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-codex" codex "$CWD" >&2 2>/dev/null \
+      || die "codex executor agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
+    wire_delivery codex
   fi
 
   if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
     REVIEW_WIRING_ENGINE="${REVIEWER_ENGINE:-codex}"
     REVIEW_WIRING_TYPE="claude-code"
     [[ "$REVIEW_WIRING_ENGINE" == "codex" ]] && REVIEW_WIRING_TYPE="codex"
-    if bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-review" "$REVIEW_WIRING_TYPE" "$CWD" >&2 2>/dev/null; then
-      REVIEW_JOINED=1
-      wire_delivery "$REVIEW_WIRING_ENGINE"
-      [[ "$REVIEW_WIRING_ENGINE" == "codex" ]] && REVIEW_DELIVERY="$CODEX_DELIVERY" || REVIEW_DELIVERY="$CLAUDE_DELIVERY"
-    else
-      log "agmsg" "review join failed; falling back to cmux-send"
-    fi
+    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-review" "$REVIEW_WIRING_TYPE" "$CWD" >&2 2>/dev/null \
+      || die "review agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
+    REVIEW_JOINED=1
+    wire_delivery "$REVIEW_WIRING_ENGINE"
   fi
 fi
 
 # --- readiness 確立ヘルパー ---
-# 初期プロンプトへ埋め込む readiness 確立句。SCRIPT_DIR に空白が含まれる場合は
-# プロンプトをクォートできず bash が exit 127 で終わるので、注入できない。
-# 空白以外のシェルメタ文字も同じ理由で弾く: この文字列は launch-workspace.sh が
-# `zsh -ic "... '<prompt>' ..."` の中へエスケープせず埋めるので、`'` があれば引用符を
-# 破って後続を別トークンにできる (`-i` は対話モードなので `!` の history 展開も効く)。
-# 禁止集合は parallel-directive.sh / --agmsg-from と同じ `' " \` $ ! \` に揃える。
-# fallback は無い: 合成できなければ readiness を確立する手段が無く、必ず不通になるので die する。
-READINESS_INJECTABLE=1
-case "$SCRIPT_DIR" in
-  *[[:space:]]*|*[\'\"\`\$\!\\]*) READINESS_INJECTABLE=0 ;;
-esac
-[[ $READINESS_INJECTABLE -eq 0 ]] \
-  && die "SCRIPT_DIR contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $SCRIPT_DIR"
-
+# 初期プロンプトへ埋め込む readiness 確立句。埋め込む変数 (AGMSG_DIR / AGMSG_TEAM /
+# name) のメタ文字チェックは引数パース直後 (--- Validation --- 節) で die 済みなので、
+# ここではもう SCRIPT_DIR のチェックは不要 (SCRIPT_DIR はこのプロンプトに埋め込まない。
+# $SCRIPT_DIR/launch-workspace.sh の呼び出しはこのスクリプト自身が直接実行する native な
+# bash 呼び出しであり、二重にクォートされた文字列へ再埋め込みされる訳ではないため
+# 対象外)。
+#
 # readiness 確立句。エンジンごとに手段が違う (spec 2026-08-21 の B2 / V2a):
 #   claude → Monitor ツールを起動する。これが無いと idle 中の受信ができない
 #   codex  → seat を記録する。これが無いとメッセージは inbox に未読で滞留する
-# どちらも最後に親へ [ready] を送る。親はこれを readiness の唯一の確認手段にする
-# (claude 子の readiness は親から観測できないため。B5 / 制約 3)。
+# どちらも最後に親へ [ready] <name> を送る。親はこれを readiness の唯一の確認手段に
+# する (claude 子の readiness は親から観測できないため。B5 / 制約 3)。ワイヤフォーマット
+# `[ready] <name>` は spec / T4/T5 の照合規則が依存するため変えない。
 #
-# [ready] の後の空白は `\ ` (バックスラッシュ) で保護する。`"[ready] %s"` の
-# ように " で括ると、この文字列全体を launch-workspace.sh が
-# `zsh -ic "... '<prompt>' ..."` へエスケープせず埋め込む際に **外側の二重引用符が
-# 途中で閉じてしまい、合成コマンドそのものが壊れる** (実測済み: `zsh:1: unmatched '`
-# で全ロールの起動が確実に破綻する — SCRIPT_DIR の値とは無関係の、テンプレート自体の
-# 欠陥)。`\ ` は launch-workspace.sh の二重引用符・単一引用符のどちらの内側でも
-# リテラルとして生き残り、子が実際にこのコマンドを打つときは通常のバックスラッシュ
-# エスケープとして機能して "[ready] <name>" が 1 引数のまま send.sh の BODY に渡る
-# (往復とも実測で確認済み)。
+# 「実行するコマンド」を一字一句指定する形にはしない (レビューで実測済みの 2 つの
+# 欠陥を踏むため):
+#   - 文中の記述的な句点がそのまま引数へ混入する (末尾ピリオドが名前/本文の一部になる)
+#   - `[ready]` を引用せず zsh 上で直接実行させると glob 展開で
+#     `no matches found: [ready] <name>` となり送信コマンド自体が実行されない
+# 代わりに「送るメッセージ」を記述する形にする: 各引数を明示し、send.sh の本文は
+# 1 個の引数として渡すこと、本文は厳密に `[ready] <name>` であり余分な文字
+# (末尾ピリオド等) を含まないことを明示する。エージェント自身が引用を組み立てるので、
+# glob 展開もピリオド混入も起こらない (この文中にクォート文字は書けない制約は維持する)。
 readiness_clause() {
   local wiring_type="$1" name="$2"
   if [[ "$wiring_type" == "codex" ]]; then
-    printf 'FIRST run this so agmsg messages can reach you: bash %s/drivers/types/codex/codex-record-session.sh %s %s . THEN run this exact command: bash %s/send.sh %s %s parent [ready]\ %s.' \
+    printf 'FIRST make yourself reachable: call %s/drivers/types/codex/codex-record-session.sh with team %s and agent name %s (two arguments, no trailing punctuation). THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
       "$AGMSG_DIR" "$AGMSG_TEAM" "$name" "$AGMSG_DIR" "$AGMSG_TEAM" "$name" "$name"
   else
-    printf 'FIRST follow the AGMSG-DIRECTIVE printed by your SessionStart hook and invoke the Monitor tool right now — that is the only way work will reach you. THEN run this exact command: bash %s/send.sh %s %s parent [ready]\ %s.' \
+    printf 'FIRST follow the AGMSG-DIRECTIVE printed by your SessionStart hook and invoke the Monitor tool right now — that is the only way work will reach you. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
       "$AGMSG_DIR" "$AGMSG_TEAM" "$name" "$name"
   fi
 }
@@ -511,7 +503,7 @@ DESIGN_SURFACE=""
 
 if [[ $WITH_DESIGN -eq 1 ]]; then
   # design は engine を問わず同じ readiness 確立句で起動する
-  # (READINESS_INJECTABLE=0 は上で die 済みなので、ここへ来た時点で常に注入できる)。
+  # (AGMSG_DIR / AGMSG_TEAM のメタ文字チェックは引数パース直後に die 済み)。
   OPUS_PROMPT="$(readiness_clause "$DESIGN_WIRING_TYPE" "$SLUG") Then wait idle. Your task will arrive as an agmsg message. Do not start any work until it arrives."
 
   if [[ "$DESIGN_ENGINE" == "codex" ]]; then
