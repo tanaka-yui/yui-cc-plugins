@@ -46,8 +46,14 @@
 #
 #   注記: claude engine では MODE を問わず、worktree の
 #   .claude/settings.local.json に permissions.defaultMode: "bypassPermissions" を
-#   注入する (Step 2a)。--skip-permissions はそれとは別に
-#   --dangerously-skip-permissions フラグを付ける。codex engine は対象外。
+#   注入する (Step 2a)。claude engine では注入の成否に関わらず無条件にファイルを
+#   読み直し、確認できなかったときは plan (組み立て箇所でリテラル付与済み) と、
+#   呼び出し元が --skip-permissions を渡した execute / standby / review
+#   (execute / standby は claude engine での --unattended も同様に免除する。
+#   review は --unattended を受け付けないので --skip-permissions のみが免除する)
+#   を除いて --dangerously-skip-permissions を自動で足す。
+#   superpowers は --skip-permissions を読まないので常に足す。
+#   --skip-permissions はそれとは別に呼び出し元が明示するフラグ。codex engine は対象外。
 #   --defer-status                     runner wrapper が exit 時に <STATUS_DIR>/.deferred
 #                                      が存在する場合 status.json 更新 / 親通知 /
 #                                      cmux wait-for 発火をスキップ。Phase B で別 surface に
@@ -546,7 +552,8 @@ fi
 
 # --- Step 2a: permission prompt 抑止 (claude engine の全 MODE) ---
 # claude の子セッションで permission prompt が出ないよう、worktree の
-# .claude/settings.local.json に permissions.defaultMode: bypassPermissions を注入する。
+# .claude/settings.local.json に permissions.defaultMode: bypassPermissions を注入し、
+# 注入できたことをファイル実体で確認する。確認できなければ CLI フラグへ落とす (Step 3)。
 #
 # 裏取り (Claude Code 公式ドキュメント + 実測):
 #   - --dangerously-skip-permissions は --permission-mode bypassPermissions と
@@ -559,13 +566,24 @@ fi
 #   - settings.local.json に defaultMode を書くだけで CLI フラグ無しに permission
 #     prompt が消えることは実測済み
 #
+# 注入は best effort で、しかも merge_claude_settings の戻り値は信用できない。
+# settings.local.json がディレクトリのとき mv は temp をその中へ移動したうえで 0 を返し、
+# 値が 1 つも入っていないのに injected とログに出る。だから戻り値ではなく、書き込んだ
+# ファイルを jq -e で直接判定する (シェル文字列へ往復させると $() が末尾改行を剥がして
+# 不正な値が等値になるので、比較は jq の中で完結させる)。判定が失敗を告げたときに
+# CLI フラグへ落とすのは、設計ペイン (standby / superpowers の有人経路) だけが第二の
+# 防壁を持たず、permission prompt に当たると誰にも通知されないまま停止して
+# ディスパッチごとデッドロックするため。
+#
 # bypass モード突入の確認ダイアログはフラグでも defaultMode でも出る。抑止する
 # skipDangerousModePermissionPrompt は project settings では無視されるため、
 # ユーザー設定 ~/.claude/settings.json 側に置く必要がある (README 参照)。
+# したがってフォールバックもこの前提を共有する。
 #
 # codex engine は .claude/settings.local.json を読まないため対象外。codex は
 # --dangerously-bypass-approvals-and-sandbox / review ペインの
 # --sandbox workspace-write で既に prompt が出ない。
+BYPASS_INJECTION_OK=1
 if [[ "$RUNNER_ENGINE" == "claude" ]]; then
   CURRENT_DEFAULT_MODE=""
   if [[ -f "$CWD/.claude/settings.local.json" ]]; then
@@ -578,6 +596,47 @@ if [[ "$RUNNER_ENGINE" == "claude" ]]; then
   elif merge_claude_settings '.permissions.defaultMode = "bypassPermissions"'; then
     log "permissions" "injected permissions.defaultMode=bypassPermissions into $CWD/.claude/settings.local.json"
   fi
+
+  # 注入結果をファイル実体で判定する。merge_claude_settings の戻り値を信用しないのは、
+  # settings.local.json がディレクトリのとき mv が temp をその中へ移動して return 0 を返し、
+  # 値が 1 つも入っていないのに injected とログに出るため。判定を jq の中で完結させるのは、
+  # シェル文字列へ往復させると $() が末尾改行を剥がして "bypassPermissions\n" のような
+  # enum として不正な値が等値になってしまうため。jq -e は false で 1、不正 JSON で 5、
+  # ファイル不在・ディレクトリで 2 を返すので、0 以外をすべて失敗として扱えば
+  # 型混同・末尾空白・注入不能の全ケースに fail-closed になる。
+  # -s (slurp) + length == 1 も必須。素の jq -e は複数 JSON ドキュメントが連結された
+  # ファイル (JSON としては不正) に対して最後の値だけで rc を決めるため、末尾が
+  # bypassPermissions なら confirmed 扱いになってしまう。
+  # 既知の残余: jq のパーサは JSON.parse より寛容な入力を
+  # 一部受理する (UTF-8 BOM 付きファイル、NaN/Infinity/先頭ゼロ等の非標準数値リテラル)。
+  # 到達には既存の settings.local.json がその形で "既に" bypassPermissions を持つ必要が
+  # あり (defaultMode が別値なら merge が走って jq が正規化し自己修復する)、
+  # merge_claude_settings も delivery.sh もそのような値を書き出さないため外部の書き手を
+  # 要する。失敗の向きは可用性側 (フォールバックせずデッドロック) であり権限昇格ではない。
+  if ! jq -e -s 'length == 1 and .[0].permissions.defaultMode == "bypassPermissions"' \
+       "$CWD/.claude/settings.local.json" >/dev/null 2>&1; then
+    BYPASS_INJECTION_OK=0
+    # ログ用の値だけを別に読む。制御文字を含む値が stderr へ抜けると端末を書き換えられ、
+    # 偽の [permissions] injected 行まで捏造できるため英数字以外を落とす。
+    EFFECTIVE_DEFAULT_MODE=$(jq -r '.permissions.defaultMode // ""' \
+      "$CWD/.claude/settings.local.json" 2>/dev/null || echo "")
+    # 先に 64 文字へ切り詰めてからサニタイズする。逆順だと bash 3.2 の ${var//[^…]/} が
+    # 除去対象を 1 つでも含む (先頭付近を除き) 長い EFFECTIVE_DEFAULT_MODE (直上の jq -r は
+    # -s を付けていないため、連結 JSON ドキュメントでは全ドキュメント分の値が改行連結されて
+    # 返る。単一ドキュメントでも defaultMode 自体が長ければ同じ経路に乗る) に対して長さの
+    # 超線形 (実測で長さの約 2.7〜3 乗) なコストになり、1 万文字を超えると launch を
+    # 数分単位で止める。切り詰めを先にすれば入力は常に 64 文字以下に収まり、
+    # この経路のコストは定数になる。
+    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE:0:64}"
+    EFFECTIVE_DEFAULT_MODE_LOG="${EFFECTIVE_DEFAULT_MODE_LOG//[^A-Za-z0-9_-]/}"
+    # 生値と潰した値の長さを併記する。これが無いと near-miss 値 (例 ["bypassPermissions"])
+    # で「not confirmed なのに defaultMode='bypassPermissions'」という読めない診断になり、
+    # 保守者が「比較が壊れている」と誤解してサニタイズ済みの値で比較するよう直してしまう
+    # (それはこの設計が禁じている変更そのもの)。末尾改行だけは $() が剥がすので raw_len と
+    # shown_len が並ぶが、判定は jq -e が行っているので取りこぼしは無い。
+    log "warn" "permission bypass not confirmed in $CWD/.claude/settings.local.json (defaultMode='$EFFECTIVE_DEFAULT_MODE_LOG' raw_len=${#EFFECTIVE_DEFAULT_MODE} shown_len=${#EFFECTIVE_DEFAULT_MODE_LOG})"
+  fi
+
   # `|| true` は必須。このスクリプトは set -euo pipefail で走るので、bare 呼び出しだと
   # info/exclude を解決できないケース (非 git な --cwd など) で launch ごと死ぬ。
   # ensure_claude_exclusions はベストエフォート契約 (警告のみ)。
@@ -725,9 +784,10 @@ if [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
   PROMPT_TEXT="$PROMPT"
 fi
 
-# claude engine の起動フラグ。model/effort と権限フラグを分けるのは、superpowers モードが
-# 権限フラグを付けない (permissions.defaultMode を settings.local.json で注入する) 一方で
-# model/effort は全モードで必要なため。
+# claude engine の起動フラグ。model/effort と権限フラグを分けるのは、superpowers モードの
+# 合成箇所が本来は権限フラグを持たない (permissions.defaultMode を settings.local.json で
+# 注入する) 一方で model/effort は全モードで必要なため。ただし注入を確認できなかったときは
+# PERM_FALLBACK_FLAG 経由で superpowers にも --dangerously-skip-permissions が付く。
 # 順序: <command> [--model X] [--effort Y] [--dangerously-skip-permissions] '<inner prompt>'
 CLAUDE_MODEL_FLAGS=""
 if [[ -n "$MODEL" ]]; then
@@ -745,6 +805,28 @@ CLAUDE_EXTRA_FLAGS="$CLAUDE_MODEL_FLAGS"
 if [[ $SKIP_PERMISSIONS -eq 1 ]]; then
   CLAUDE_EXTRA_FLAGS="${CLAUDE_EXTRA_FLAGS:+$CLAUDE_EXTRA_FLAGS }--dangerously-skip-permissions"
 fi
+
+# Step 2a の判定で bypass を確認できなかったときだけ付ける緊急フラグ。
+# plan は自分の合成箇所でリテラルのフラグを持つので足さない。
+# execute / standby / review は呼び出し元の --skip-permissions が CLAUDE_EXTRA_FLAGS 経由で
+# 届くので、実際に渡されたときだけ足さない (二重付与の回避)。execute / standby は claude
+# engine での --unattended でも SKIP_PERMISSIONS=1 になり同様に免除されるが、review は
+# --unattended を受け付けない MODE なのでこの免除は効かず、--skip-permissions のみが効く。
+# superpowers はその合成箇所が CLAUDE_MODEL_FLAGS しか読まず --skip-permissions を
+# 受け取らないため、その値に関わらず足す。
+PERM_FALLBACK_FLAG=""
+if [[ "$RUNNER_ENGINE" == "claude" && $BYPASS_INJECTION_OK -eq 0 ]]; then
+  case "$MODE" in
+    plan) ;;
+    superpowers) PERM_FALLBACK_FLAG=" --dangerously-skip-permissions" ;;
+    *) if [[ $SKIP_PERMISSIONS -eq 0 ]]; then PERM_FALLBACK_FLAG=" --dangerously-skip-permissions"; fi ;;
+  esac
+fi
+# `|| true` は必須。条件が偽のときではなく、log への書き込みが失敗したときのため。
+# log は最後の && の後ろにあり set -e の免除対象外なので、これが無いと launch ごと死ぬ。
+[[ -n "$PERM_FALLBACK_FLAG" ]] \
+  && log "permissions" "added the CLI permission flag for mode=$MODE because the settings injection was not confirmed" \
+  || true
 
 CODEX_MODEL_FLAG=""
 [[ -n "$MODEL" ]] && CODEX_MODEL_FLAG=" --model '$MODEL'"
@@ -782,24 +864,25 @@ CODEX_MODEL_FLAG=""
     if [[ "$MODE" == "execute" ]]; then
       # claude execute: --model / --dangerously-skip-permissions を inner prompt の直前にインジェクト
       if [[ -n "$CLAUDE_EXTRA_FLAGS" ]]; then
-        CORE_CMD="$RUNNER_COMMAND $CLAUDE_EXTRA_FLAGS '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND $CLAUDE_EXTRA_FLAGS$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
       else
-        CORE_CMD="$RUNNER_COMMAND '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
       fi
     elif [[ "$MODE" == "standby" || "$MODE" == "review" ]]; then
       # claude standby/review: --model / --skip-permissions を反映し、prompt があれば渡す
       # (agmsg モードでは "/agmsg actas <name>" + 待機指示を初期 prompt にする)
       if [[ -n "$PROMPT_TEXT" ]]; then
-        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS} '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
       else
-        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}"
+        CORE_CMD="$RUNNER_COMMAND${CLAUDE_EXTRA_FLAGS:+ $CLAUDE_EXTRA_FLAGS}$PERM_FALLBACK_FLAG"
       fi
     elif [[ "$MODE" == "superpowers" ]]; then
       # superpowers mode: 権限フラグは付けない。permission prompt の抑止は Step 2a で
       # worktree の .claude/settings.local.json に注入する permissions.defaultMode が担う
       # (AskUserQuestion は permission gate とは別レイヤーなので bypassPermissions 下でも
       #  対話的に残る。詳細は Step 2a のコメント)。model/effort は役割設定なので付ける
-      CORE_CMD="$RUNNER_COMMAND${CLAUDE_MODEL_FLAGS:+ $CLAUDE_MODEL_FLAGS} '$PROMPT_TEXT'"
+      #  注入を確認できなかったときだけ PERM_FALLBACK_FLAG が権限フラグを補う
+      CORE_CMD="$RUNNER_COMMAND${CLAUDE_MODEL_FLAGS:+ $CLAUDE_MODEL_FLAGS}$PERM_FALLBACK_FLAG '$PROMPT_TEXT'"
     else
       CORE_CMD="$RUNNER_COMMAND${CLAUDE_MODEL_FLAGS:+ $CLAUDE_MODEL_FLAGS} --dangerously-skip-permissions '/plan $PROMPT_TEXT'"
     fi

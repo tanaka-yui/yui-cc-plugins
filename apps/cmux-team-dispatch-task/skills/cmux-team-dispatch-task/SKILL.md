@@ -382,7 +382,7 @@ Resolution order for both model and effort:
 | engine | MODE        | Composed command                                                                                          |
 |--------|-------------|-----------------------------------------------------------------------------------------------------------|
 | claude | plan        | `<command> [--model <plan_model>] [--effort <plan_effort>] --dangerously-skip-permissions '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
-| claude | superpowers | `<command> [--model <plan_model>] [--effort <plan_effort>] 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
+| claude | superpowers | `<command> [--model <plan_model>] [--effort <plan_effort>] [--dangerously-skip-permissions] 'Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
 | claude | execute     | `<command> [--model <exec_model>] [--effort <exec_effort>] [--dangerously-skip-permissions] 'Read and execute the plan at <plan-file>'` |
 | codex  | plan        | `<command> [-c model_reasoning_effort='<plan_effort>'] [--model <plan_model>] --dangerously-bypass-approvals-and-sandbox '/plan Read and follow the task in .cmux-team-dispatch-task-prompt.md'` |
 | codex  | superpowers | `<command> [-c model_reasoning_effort='<plan_effort>'] [--model <plan_model>] --dangerously-bypass-approvals-and-sandbox '$superpowers:brainstorming Read and follow the task in .cmux-team-dispatch-task-prompt.md'`   |
@@ -397,6 +397,12 @@ and `--skip-permissions` can be added (for models such as sonnet where auto mode
 work). For the codex engine, the runner's `exec_model` is applied as a fallback when
 `--model` is not specified (execute / standby only; review always specifies
 `review_model` explicitly); when still unset, codex's own default model applies.
+
+The two `[--dangerously-skip-permissions]` brackets in that table are both conditional,
+but not on the same condition. On the `execute` row it appears when the caller asked for
+it, that is `--skip-permissions` or `--unattended` on the claude engine, or when the
+settings readback described below fails. On the `superpowers` row only the readback
+condition applies: that composition site never reads `--skip-permissions` at all.
 
 Reasoning effort resolves the same way on both engines, with priority: explicit
 `--effort` > runner field (plan_effort: plan/superpowers, review_effort: review,
@@ -414,10 +420,37 @@ Regardless of MODE, when the resolved runner engine is `claude`, the script
 injects `permissions.defaultMode: "bypassPermissions"` into the worktree's
 `.claude/settings.local.json` (merged with `jq`, atomically via `mktemp` + `mv`,
 and skipped when the key already holds that value). This is what keeps normal
-(non-loop) dispatches free of permission prompts without adding
-`--dangerously-skip-permissions` to every launch path.
+(non-loop) dispatches free of permission prompts on the launch paths that carry
+no permission flag of their own: `superpowers`, and the `execute` / `standby` /
+`review` panes started without `--skip-permissions` — the prewarm design pane
+being the main one in practice, since Phase B always spawns executors with the
+flag and every claude reviewer is spawned with it too. The loop path keeps its
+own guarantee through `--unattended`.
 
-`AskUserQuestion` stays interactive under that mode: the permission system gates
+The injection is best effort, and its return code cannot be trusted: when
+`settings.local.json` happens to be a directory, the atomic `mv` moves the temp
+file inside it and still reports success. The launcher therefore checks the file
+itself with `jq -e`, unconditionally on the claude engine regardless of whether
+the merge was written, skipped (already matching), or failed. When
+`permissions.defaultMode` is not exactly
+`bypassPermissions` at that point — the merge could not be written, a
+pre-existing `settings.local.json` holds invalid JSON that `jq` refuses, or the
+directory case above — the launcher logs a warning containing `permission bypass
+not confirmed` and adds `--dangerously-skip-permissions` to that launch. It never
+doubles the flag: `plan` already carries it literally at the composition site,
+and `execute` / `standby` / `review` are skipped when the caller actually passed
+`--skip-permissions`; `execute` and `standby` are also skipped under
+`--unattended` on the claude engine, which sets the same underlying flag, but
+`review` does not accept `--unattended` so only `--skip-permissions` exempts
+it there. `superpowers` is the exception that always gets the
+fallback, because its composition site never reads `--skip-permissions` at all.
+That is also why the `[--dangerously-skip-permissions]` bracket on the
+`superpowers` row above carries only part of the condition the one on the
+`execute` row carries. Without the fallback the design pane would be the only
+claude pane with no second line of defence, and it would block on its first
+permission prompt with nobody attached.
+
+`AskUserQuestion` stays interactive under `bypassPermissions`: the permission system gates
 tool calls, while `AskUserQuestion` and `ExitPlanMode` are interactive UIs that a
 TUI session renders regardless of the permission mode. Only a non-interactive
 session needs a `PreToolUse` hook to answer them. This is why the brainstorming
