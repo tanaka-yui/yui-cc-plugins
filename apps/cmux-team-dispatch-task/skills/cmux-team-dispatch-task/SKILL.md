@@ -1539,9 +1539,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
          BEFORE you end the turn, while you can still act:
            - **Confirm the reviewer is reachable now.** For a codex review pane:
                bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name {{REVIEW_PANE_AGENT}}
-             For a claude review pane its `[ready]` line is the only evidence, so do not
-             enter this wait if you never saw one. Not reachable → report that now
-             instead of waiting for a verdict that can never appear.
+             For a claude review pane, check its pane once for liveness instead:
+               cmux read-screen --workspace "$CMUX_WORKSPACE_ID" --surface "$REVIEW_SURFACE"
+             (**retried once** before concluding it is gone — read-screen returns live
+             content even for an unfocused workspace, so a transient failure must not
+             be read as a dead pane). Not reachable → report that now instead of
+             waiting for a verdict that can never appear.
            - **Report to the parent that you are entering an unbacked wait**, one
              send.sh call:
                ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <task-slug> parent \
@@ -1761,8 +1764,12 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                 the turn: (a) confirm the reviewer is reachable now — for a codex
                 reviewer run
                   bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team <TEAM> --name <REVIEWER_AGENT>
-                and for a claude reviewer treat its `[ready]` line as the only
-                evidence; if it is not reachable, report that instead of waiting — and
+                and for a claude reviewer check its pane once for liveness instead:
+                  cmux read-screen --workspace "$CMUX_WORKSPACE_ID" --surface <REVIEWER_SURFACE>
+                (**retried once** before concluding it is gone — read-screen returns
+                live content even for an unfocused workspace, so a transient failure
+                must not be read as a dead pane); if it is not reachable, report that
+                instead of waiting — and
                 (b) send ONE message telling the parent you are entering an unbacked
                 wait:
                   ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> parent \
@@ -2007,7 +2014,7 @@ PHASE B — Execution model selection (REQUIRED before any code change):
                   --status-dir "<EXISTING_STATUS_DIR>" \
                   --agmsg-team "$TEAM" --agmsg-from <task-slug>-exec \
                   --parent-notify-workspace <PARENT_WORKSPACE_ID> \
-                          [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
+                  [--review-config "<EXISTING_STATUS_DIR>/review/code-review.json"]  # only when PHASE B-R is present
                   <task-slug>-exec
                 # The two --agmsg-* flags are MANDATORY here for the same reason as in
                 # the claude branch, and the same join.sh registration follows the launch.

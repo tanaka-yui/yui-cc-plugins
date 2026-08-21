@@ -300,7 +300,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 46. **日本語ドキュメントの旧語彙**が残っていないことを `bash test/test-doc-stale-vocab.sh`（DS1-DS3）で確認する。`test-delivery-callsites.sh` の CS5 は英語の語彙しか見ないため、`guide-ja.md` / `README.md` / `CLAUDE.md` の日本語側だけが原文から取り残されても赤くならない — v2.0.0 の monitor 専用化ではこれが実際に起きた。DS1 は退役済みスクリプト名、DS2 は旧語彙（廃止された二系統分岐の変数名、定期通知やタイプ入力を指す語など）を検出し、DS3 はその 2 つのリストが陳腐化していないことのラチェットである。**意図的な履歴記述**は行内・直前行の `stale-vocab-exempt:` マーカーで除外する（`docs/notification-gaps.md` の履歴表がその用途）
 
 47. **退役候補（まだ削除していない死んだコード）** を把握しておくこと。どれも動作には影響しないが、次に触るときに一緒に消せるよう記録する:
-    - `--parent-notify-surface`: `launch-workspace.sh` は `NOTIFY_SURFACE` を受け取り runner script へ `NOTIFY_SF` として書き出すが、生成されたスクリプト内に**読み手が無い**（`cmux notify` は `--workspace` しか使わない）。`prewarm-panes.sh` も素通しするだけ。公開フラグかつ SKILL.md の起動例 4 箇所と T11 に載っているため、削除は独立したコード変更として行う。現地には `NOTIFY_SF` の代入行に 1 行コメントを置いてある
+    - `--parent-notify-surface` はこの表からは外れた: `launch-workspace.sh` / `prewarm-panes.sh` とも `was removed` を含む die で明示的に拒否するようになり、`NOTIFY_SURFACE` / `NOTIFY_SF` への読み手なし配線は無くなった。SKILL.md の起動例にも残っていない。`--parent-notify-workspace` は `cmux notify --workspace` のために引き続き必須で現役
     - `prewarm-panes.sh` の `[[ -n "$AGMSG_TEAM" ]]` 分岐: `--agmsg-team` 必須化（引数パース直後の die）以降、後続 9 箇所のこの条件は**常に真**。挙動を変えない純粋なリファクタなので、まとめて外すのは別タスクで行う。die の直後と 9 箇所それぞれに 1 行コメントを置いてある
     - **現地コメントは必ず本項目を参照させること**（`# 退役候補 (CLAUDE.md 項目 47)`）。参照が無いと、次に読んだ人が「消し忘れ」なのか「意図して残した」のか判別できず、勝手に消すか永遠に残すかのどちらかになる
 

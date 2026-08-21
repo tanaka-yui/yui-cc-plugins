@@ -563,7 +563,10 @@ review-capable runner が無いタスクは警告してそのタスクだけ rev
   張ったつもりのタイマーは決して発火しない。書いてはならない: 保険に見えて保険でない指示は
   保険が無いより悪い（覆われているつもりでターンを閉じてしまう）。codex セッションは代わりに、
   ターンを閉じる前に (a) 依頼相手が到達可能であることを今すぐ確認し（codex レビューペインなら
-  `verify-agmsg-ready.sh --codex`、claude レビューペインなら `[ready]` 行だけが証拠）、
+  `verify-agmsg-ready.sh --codex`、claude レビューペインなら
+  `cmux read-screen --workspace "$CMUX_WORKSPACE_ID" --surface "$REVIEW_SURFACE"` を
+  **1 回リトライ付きで**確認する — read-screen はワークスペースが非フォーカスでも生きた
+  内容を返すので、一時的な失敗をペイン消滅と読んではならない）、
   到達不能なら待たずに報告する、(b) 「保険の無い待機に入った」ことを親へ `dispatch-notify:`
   で 1 通報告する。
   **verdict ファイルをポーリングしてはならず、レビュアーのペインを監視してもいけない**

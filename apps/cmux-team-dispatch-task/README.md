@@ -243,7 +243,8 @@ status.json / result.md / `cmux wait-for` signal はこの変更でも不変。
    どちらかで、**非ゼロ終了はメッセージが配送されなかったことを意味する**
 4. メッセージ種別はフラグではなく本文の label 接頭辞で表す（`phase-a-task:` / `phase-b-exec:` /
    `review-plan:` / `review-code:` / `review-verdict:` / `review-timer:` / `dispatch-timer:` /
-   `abort-reviewer:` / `dispatch-notify:`）
+   `abort-reviewer:` / `dispatch-notify:`。**`review-timer:` / `dispatch-timer:` は予約のみで、
+   現在これを送る箇所は無い**）
 
 ### ペインの readiness（3 要件）
 
