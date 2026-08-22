@@ -407,6 +407,23 @@ if [[ $WITH_DESIGN -eq 1 ]]; then
 fi
 [[ -n "$WORKSPACE" && -n "$DESIGN_SURFACE" ]] || die "design workspace and surface are required"
 
+# 順序が 4 象限の均等さを決める。`cmux new-split` はサイズ引数を取らず対象ペインを 50/50 に
+# 割るだけなので、「何を分割するか」を間違えると幅と高さがずれる。
+#
+#   1) design が全面        2) exec を down    3) design_review を right  4) exec_review を right
+#   +-------------+         +------+------+   +------+------+            +------+------+
+#   |             |         |design       |   |design| d_rev|            |design| d_rev|
+#   |   design    |   -->   +------+------+ - +------+------+     -->    +------+------+
+#   |             |         |exec         |   |exec         |            |exec  | e_rev|
+#   +-------------+         +------+------+   +------+------+            +------+------+
+#
+# design_review を exec より先に作ってはならない。design が先に左半分へ縮み、design_review が
+# 右半分を全高で占めるため、そのあと design を down 分割しても割れるのは左半分だけになり、
+# 左に 3 枚・右に 1 枚という不均等なレイアウトになる。方向と分割元は個別には正しいままなので、
+# この崩れは順序を検査しないと見つからない (test-prewarm-layout.sh の PG1)。
+launch_role exec "$WORKSPACE" "$DESIGN_SURFACE" down
+EXEC_SURFACE="$LAUNCHED_SURFACE"
+
 DESIGN_REVIEW_SURFACE=""
 if [[ "$REVIEW_MODE" == on ]]; then
   if launch_role design_review "$WORKSPACE" "$DESIGN_SURFACE" right; then
@@ -414,8 +431,6 @@ if [[ "$REVIEW_MODE" == on ]]; then
   fi
 fi
 
-launch_role exec "$WORKSPACE" "$DESIGN_SURFACE" down
-EXEC_SURFACE="$LAUNCHED_SURFACE"
 EXEC_REVIEW_SURFACE=""
 if [[ "$REVIEW_MODE" == on ]]; then
   if launch_role exec_review "$WORKSPACE" "$EXEC_SURFACE" right; then

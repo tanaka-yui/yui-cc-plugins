@@ -130,7 +130,7 @@ do not pass role-specific runner or execution-choice flags.
 --unattended` dies when it is called from a codex parent: codex cannot arm the 90-minute
 safety timer (a self-addressed delayed message dies with the turn, measured as D-T2), and
 an unattended loop has nobody to ask, so one lost `dispatch-notify:` would make the job
-vanish silently. The all-Codex role tuple above is about the CHILD panes; it says nothing
+vanish silently. The four-codex-role tuple above is about the CHILD panes; it says nothing
 about the loop driver.
 
 Do not add a different engine or model merely to fill a pane. Pass the timeout sentinel

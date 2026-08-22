@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # prewarm-panes.sh fixed layout, readiness wiring, and fail-fast guards.
 # PG1 on=2x2; PG2 off=2 panes; PG3 role tuples drive each launch.
+#
+# PG1 は分割の方向と分割元だけでなく **順序** も固定する。`cmux new-split` はサイズ引数を
+# 取らず対象ペインを 50/50 に割るだけなので、均等な 2x2 になるかどうかは順序だけで決まる。
+# design_review を exec より先に作ると design が先に左半分へ縮み、design_review が右半分を
+# 全高で占めてしまう。その後 design を down 分割しても割れるのは左半分だけなので、
+# 左に 3 枚・右に 1 枚（全高）という不均等なレイアウトになる。方向と分割元は 1 つずつ見れば
+# どれも正しいままなので、順序を検査しない限りこの崩れはテストを通過する。
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,12 +54,22 @@ launch_line() { grep '^launch ' "$TMP/calls.log" | grep -F -- "--role $1 " || tr
 
 run_layout "$ROLES_ON" pg1
 [[ "$(launch_count)" == 4 ]] && pass 'PG1 review on launches four panes' || bad 'PG1 pane count'
-grep -Fq -- '--role design_review --standby-in workspace:1 --standby-split-from surface:1 --standby-split-direction right' <<< "$(launch_line design_review)" \
-  && pass 'PG1 design_review splits right from design' || bad 'PG1 design_review split'
+# 1) design (全面) → 2) exec を down (上下 2 段、どちらも全幅) →
+# 3) design_review を design から right (上段を左右へ) →
+# 4) exec_review を exec から right (下段を左右へ)。これで 4 象限が均等になる。
 grep -Fq -- '--role exec --standby-in workspace:1 --standby-split-from surface:1 --standby-split-direction down' <<< "$(launch_line exec)" \
   && pass 'PG1 exec splits down from design' || bad 'PG1 exec split'
-grep -Fq -- '--role exec_review --standby-in workspace:1 --standby-split-from surface:3 --standby-split-direction right' <<< "$(launch_line exec_review)" \
+grep -Fq -- '--role design_review --standby-in workspace:1 --standby-split-from surface:1 --standby-split-direction right' <<< "$(launch_line design_review)" \
+  && pass 'PG1 design_review splits right from design' || bad 'PG1 design_review split'
+grep -Fq -- '--role exec_review --standby-in workspace:1 --standby-split-from surface:2 --standby-split-direction right' <<< "$(launch_line exec_review)" \
   && pass 'PG1 exec_review splits right from exec' || bad 'PG1 exec_review split'
+
+# 均等な 2x2 を決めているのは順序である。exec は design_review より先でなければならない。
+LAUNCH_ORDER=$(grep '^launch ' "$TMP/calls.log" \
+  | sed -n 's/.*--role \([a-z_]*\) .*/\1/p' | tr '\n' ' ')
+[[ "$LAUNCH_ORDER" == "design exec design_review exec_review " ]] \
+  && pass 'PG1 分割順序が design → exec → design_review → exec_review である' \
+  || bad "PG1 分割順序が不均等な 2x2 を生む: [$LAUNCH_ORDER]"
 
 run_layout "$ROLES_OFF" pg2
 [[ "$(launch_count)" == 2 ]] && pass 'PG2 review off launches two panes' || bad 'PG2 pane count'
@@ -130,8 +147,12 @@ FAIL_LAUNCH_ROLE=exec CALLS_LOG="$TMP/calls.log" bash "$PW" --with-design --cwd 
 rc=$?
 leaves=$(grep -c '^leave.sh ' "$TMP/calls.log" 2>/dev/null || true)
 closes=$(grep -c '^cmux close-surface ' "$TMP/calls.log" 2>/dev/null || true)
-if [[ $rc -ne 0 && "$leaves" == 4 && "$closes" == 2 && ! -e "$STATUS/prewarm.json" ]] \
-  && grep -Fq 'surface:1' "$TMP/calls.log" && grep -Fq 'surface:2' "$TMP/calls.log"; then
+# exec は design の直後に立てるので、この時点で存在するペインは design の 1 枚だけである
+# (均等な 2x2 のための順序変更による。以前は design_review が先だったので 2 枚だった)。
+# 必須ロールの失敗はこの 2 地点しか無く、design での失敗は 0 枚なので、
+# 「このプロセスが作ったものだけを閉じる」不変条件はここが最大ケースになる。
+if [[ $rc -ne 0 && "$leaves" == 4 && "$closes" == 1 && ! -e "$STATUS/prewarm.json" ]] \
+  && grep -Fq 'surface:1' "$TMP/calls.log"; then
   pass 'PW12 exec launch failure closes only panes launched by this invocation'
 else
   bad "PW12 rollback (rc=$rc leaves=$leaves closes=$closes)"
@@ -254,7 +275,8 @@ rc=$?
 launches=$(launch_count)
 leaves=$(grep -c '^leave.sh ' "$TMP/calls.log" 2>/dev/null || true)
 closes=$(grep -c '^cmux close-surface ' "$TMP/calls.log" 2>/dev/null || true)
-if [[ $rc -ne 0 && "$launches" == 3 && "$leaves" == 4 && "$closes" == 2 \
+# launches=2 / closes=1 は PW12 と同じ理由 (exec は design の直後)。
+if [[ $rc -ne 0 && "$launches" == 2 && "$leaves" == 4 && "$closes" == 1 \
    && ! -e "$STATUS/prewarm.json" ]]; then
   pass 'PW18 invalid successful launcher JSON triggers required-role rollback'
 else

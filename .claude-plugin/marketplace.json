@@ -36,7 +36,7 @@
       "name": "cmux-team-dispatch-task",
       "description": "cmux ワークスペースによる並列タスクディスパッチ。タスクごとに分離した git worktree と設定可能なエージェントセッションを起動し、親セッションがオーケストレーション。",
       "source": "./apps/cmux-team-dispatch-task",
-      "version": "3.1.0",
+      "version": "3.2.1",
       "license": "MIT",
       "category": "development",
       "tags": [

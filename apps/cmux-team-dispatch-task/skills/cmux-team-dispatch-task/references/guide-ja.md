@@ -52,7 +52,7 @@ ASCII 罫線（`-`, `+`, `|`）や自由記述レイアウトは禁止。詳細�
 
 ## ループモード（GitHub issue 自動ループ）
 
-`--loop` は `references/loop-mode.md` の手順で GitHub issue をバッチ処理する。状態は `.dispatch-loop/`、タスク状態は `.dispatch/` に置く。`loop.task_timeout_min` と `loop.lock_lease_min` は timeout とロック lease を別に設定する。通常 dispatch は active loop lock があれば開始・一括 cleanup を拒否する。Codex 起動には全経路で `--dangerously-bypass-hook-trust` を付与する。runner wrapper は既存の `pr_url` を保持する。無人 prompt には解決済み 4 ロールの runner と engine を渡し、role 間の関係から再推測しない。all-Codex 固定構成は4つの codex role pane を起動する。timeout sentinel と cleanup は `prewarm.json` に実在する role だけを対象にする。
+`--loop` は `references/loop-mode.md` の手順で GitHub issue をバッチ処理する。状態は `.dispatch-loop/`、タスク状態は `.dispatch/` に置く。`loop.task_timeout_min` と `loop.lock_lease_min` は timeout とロック lease を別に設定する。通常 dispatch は active loop lock があれば開始・一括 cleanup を拒否する。Codex 起動には全経路で `--dangerously-bypass-hook-trust` を付与する。runner wrapper は既存の `pr_url` を保持する。無人 prompt には解決済み 4 ロールの runner と engine を渡し、role 間の関係から再推測しない。4 ロールすべてを codex にした構成は codex の role pane を 4 枚起動する。timeout sentinel と cleanup は `prewarm.json` に実在する role だけを対象にする。
 
 ---
 
@@ -166,15 +166,30 @@ agmsg は必須であり、縮退配送や pane へのタイプ入力は無い�
 **確認したパスをそのまま `AGMSG_SEND` へ代入して以降の全 callsite で使い回す**。存在確認だけして
 変数へ束縛しないと `$AGMSG_SEND` が未定義のまま空文字へ展開され、`--send-command` に非空を要求する
 helper（`phase-a-review-wait.sh`）が usage error (exit 2) で止まる。
-Claude 親は verify-agmsg-ready.sh --self、Codex 親は --codex --team "$TEAM" --name parent
-で自身の到達性を確認する。Codex 親では永続タイマーを作れないためタイマーを装わず、無人
-ディスパッチを拒否する。Claude 親だけが 90 分の single-shot timer を 1 本張れる。
+自身の到達性は `verify-agmsg-ready.sh --parent --team "$TEAM"` の 1 回呼び出しで確認する。
+**呼び出し側で engine 分岐を書かないこと**: 分岐はスクリプトの中にあり、Claude 親なら生きた
+Monitor watcher を、Codex 親なら記録済みの bridge seat を見る。無条件の `--self` は codex
+セッションから呼ぶと必ず rc=2 になり、「rc=2 は判定不能なので停止」規則と噛み合って
+codex 親のディスパッチを最初の起床で自滅させる。rc=1 のときにユーザーへ出す助言は
+**engine ではなく返ってきた `reason=` で分ける**（`reason=no-seat` なら seat 記録の手順、
+それ以外なら Monitor watcher の話）。reason はスクリプトの答えであり、engine は呼び出し側が
+してはならない推測だからである。
+同じ呼び出しは `sharing=<N>|unknown` も返す。これはこのプロジェクトの未 claim な role を
+受信している他の watcher の数である。read cursor は (team, agent) に 1 つしか無いので、
+先に poll した watcher が row を取り、他方は何も見ない（取られた row は既読になるので
+`inbox.sh` は「新着なし」と正直に答える）。到達可能かどうかの判定は変わらないので、正の数の
+ときだけ 1 行警告し、`0` と `unknown` では何も言わない。`unknown` は「判定できなかった」で
+あって 0 ではなく、毎回出る警告は誰も読まないからである。
+**safety timer を持つのは Claude 親だけである。** 90 分の single-shot sleep を 1 本だけ張り、
+ループにはしない。Codex 親は永続タイマーを作れない（バックグラウンドのサブシェルも detached
+な nohup 版も 2026-08-21 の実測 D-T2 でターン終了とともに消えた）ので何も武装せず、装っても
+ならない。**この事実を述べるのはここだけ**で、以降はすべて「親のタイマー」と呼び「あれば」の
+意味で読む。無人ディスパッチを Codex 親から拒否するのはこの理由による。
 
 全メッセージは team / sender agent / recipient agent / quoted body の 4 位置引数を渡す
 send.sh 1 回で送る。宛先は agent 名であり surface / workspace ではない。本文 prefix は
 phase-a-task: / phase-b-exec: / review-plan: / review-code: / review-verdict: /
-abort-reviewer: / dispatch-notify: を使う。review-timer: と dispatch-timer: は予約済みだが
-現在は何も送らない。
+abort-reviewer: / dispatch-notify: を使う。
 
 親を team へ join した後、prewarm-panes.sh が 4 role agent を join・wire する。agent 名は
 design が slug、以後 slug-design-review / slug-exec / slug-exec-review。各 pane は Claude
@@ -438,6 +453,24 @@ prewarm-panes.sh には検証済み resolver 出力を --roles "$ROLES_JSON" 1 �
     | exec           |              | exec           | exec_review    |
     +----------------+              +----------------+----------------+
 
+**4 ペインは均等な 4 象限でなければならない** — 高さの等しい 2 段、それぞれが幅の等しい 2 列。
+2 ペインのときは高さの等しい 2 段。これは挿絵ではなく要件である。1 枚が全高を占め、残り 3 枚が
+反対側を分け合っているワークスペースは、全ペインが存在して配線されていても**欠陥**である。
+
+均等かどうかは**ペインを作る順序だけ**で決まる。`cmux new-split` はサイズ引数を取らず、
+指し示された surface を半分に割るだけだからである。したがって順序は固定である:
+
+    1. design         ワークスペース全面
+    2. exec           design から down  → 高さの等しい 2 段（どちらも全幅）
+    3. design_review  design から right → 上段が幅の等しい 2 列になる
+    4. exec_review    exec から right   → 下段が幅の等しい 2 列になる
+
+**exec は design_review より先に作らなければならない。** design_review を先に作ると design が
+左半分へ縮み、design_review が右半分を全高で占める。そのあと design を down 分割しても割れるのは
+左半分だけなので、左に 3 枚・右に 1 枚（全高）という不均等なレイアウトになる。この壊れた状態でも
+個々の分割方向と分割元は正しいままなので、`test-prewarm-layout.sh` は方向だけでなく**順序そのもの**
+を検査している。
+
 off は 2 pane、on は 4 pane 固定。review pane の launch 失敗はその role key だけを省略して
 対応 gate をスキップする。design / exec の launch 失敗時は、この prewarm 呼び出しが作成・join・
 launch した worktree / branch / team member / surface だけを rollback し、再利用資源を残して停止する。
@@ -530,17 +563,12 @@ agmsg Monitor ストリームを保持しているので、子からのメッセ
    sleep $((90 * 60))
    ```
 
-   **codex 親にはこのタイマーが無く、作ることもできない。** `run_in_background` を持たず、
-   ここで指示されていた「自分宛の遅延メッセージ」も動かない: バックグラウンドのサブシェルで
-   sleep してから自分へメッセージを送るやり方も、その detached (`nohup`) 版も codex の
-   ターン終了で消えると実測済みである（D-T2、2026-08-21）。**codex 親はここで何も武装しないこと** — 決して発火しないタイマーを書くのは
-   タイマーが無いより悪い（`[ready]` の窓が覆われているつもりでターンを閉じてしまう）。
-   Step 1g がこの構成は無防備だと既にユーザーへ伝えており、まさにこの理由で `--unattended`
-   を拒否している。代わりに、このターンを閉じる前に期待する codex ペインの seat を
+   codex 親はここで何も武装しない — 理由は Step 1g に書いてあり、述べるのはそこだけである。
+   代わりに、このターンを閉じる前に期待する codex ペインの seat を
    `verify-agmsg-ready.sh --codex` で確認し、「子のメッセージ以外にこのセッションを起こす
    ものは無いので、黙った子はユーザーの目が必要になる」と起動サマリーで明言すること。
 
-   **90 分固定**（claude 親のタイマーについて）。このディスパッチで別の値が解決されることは
+   **90 分固定**。このディスパッチで別の値が解決されることは
    無い: config キー
    `loop.task_timeout_min` を読むのは loop モードの起床時 reconciliation
    （`references/loop-mode.md`）だけで、issue ごとの timeout に使われ、このタイマーには
@@ -555,9 +583,8 @@ agmsg Monitor ストリームを保持しているので、子からのメッセ
    — 散文で書く。
 
    **Completion でタイマーを止める。** 全タスクが terminal になり Template C を出すときは、
-   claude 親はまずタイマーを止める（下の `### Completion（完了レポート）` の手順 1）:
-   background task を `TaskStop` する。codex 親は何も武装していないので止めるものが無い。
-   生き残った `sleep` は 90 分後に終了し、ユーザーが既に別の話に移っている場に無意味な
+   まずタイマーを止める（下の `### Completion（完了レポート）` の手順 1）:
+   background task を `TaskStop` する。生き残った `sleep` は 90 分後に終了し、ユーザーが既に別の話に移っている場に無意味な
    起床を注入する。
    しかもその起床は再武装分岐に落ちるので、ディスパッチのたびに古いタイマーが 1 つずつ
    永久に残ることになる。
@@ -576,24 +603,17 @@ agmsg Monitor ストリームを保持しているので、子からのメッセ
 監視ループを持たないので、どの起床もステートレスに扱う: `.dispatch/*/status.json` をすべて
 読み、記憶ではなくそこから判断する。
 
-**自分自身の受信チャネルを、起動時だけでなく起床のたび・タイマー発火のたびに再検証する。
-分岐は Step 1g とまったく同じ `PARENT_ENGINE` 分岐にする** — codex 親には
-`CLAUDE_CODE_SESSION_ID` が無いので `--self` は毎回 rc=2（使用法エラー）を返し、下の
-「rc=2 は判定不能なので停止して報告」規則に従うと all-Codex ディスパッチは最初の起床で
-必ず自滅する:
+**自分自身の受信チャネルを、起動時だけでなく起床のたび・タイマー発火のたびに再検証する。**
+Step 1g とまったく同じ `--parent` の 1 行を使う。起床はステートレスなので `TEAM` は記憶せず
+毎回導出し直す:
 
 ```bash
-# 起床時の readiness 検査（Step 1g と同じ分岐。起床はステートレスなので毎回導出し直す）
+# 起床時の readiness 検査（Step 1g と同一。engine の選択はスクリプトの中にある）
 TEAM="dispatch-$(basename "$(git rev-parse --show-toplevel)")"
-PARENT_ENGINE="claude"
-[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"
 
 WAKE_READY_RC=0
-if [[ "$PARENT_ENGINE" == "codex" ]]; then
-  bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name parent || WAKE_READY_RC=$?
-else
-  bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --self || WAKE_READY_RC=$?
-fi
+WAKE_READY_OUT=$(bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --parent --team "$TEAM") \
+  || WAKE_READY_RC=$?
 ```
 
 判定は終了コード（`0` = 到達可能 / `1` = 到達不能 / `2` = 使用法エラー）か stdout の
@@ -605,8 +625,13 @@ fi
 claude 親の watcher はディスパッチ途中で死にうる（`watch.sh:426-429` の `_install_changed`
 による自己終了、`/compact` と `TaskStop` の競合）。codex 親の bridge seat も同様に落ちうる。
 チャネルが消えたあとは **すべての** 子の通知が黙って失われる。`ready=no` ならそう報告し、
-「メッセージが来ない」ことを子についての情報として扱うのをやめる — codex 親のときは
-その後ろに safety timer も無い（Step 1g）ので、はっきりそう言うこと。
+「メッセージが来ない」ことを子についての情報として扱うのをやめる。
+
+`sharing=` は起床のたびに変わりうる。同じチェックアウトでいつでも 2 つ目のセッションを
+開けるからである。Step 1g と同じ規則を適用する: 正の数のときだけ警告し、`0` と `unknown`
+では何も言わない。ディスパッチ途中に現れた競合は 1 行の価値がある — その瞬間から parent 宛の
+`[ready]` や `dispatch-notify:` が他方の watcher に消費され、このセッションへ二度と届かなく
+なりうるからである。
 
 ```bash
 for f in .dispatch/*/status.json; do
@@ -634,7 +659,7 @@ done
   信頼する。
 - **それ以外の子メッセージ**（質問・進捗報告） — その子の agent 名宛に `send.sh` で返信し、
   ターンを閉じる。
-- **タイマー**（claude 親のみ。codex 親にはタイマーが無いのでこの起床は来ない） —
+- **タイマー**（武装されている場合だけ発火する） —
   この窓の間にメッセージが来なかったというだけである。子が失敗した証拠ではなく、
   メッセージが来なかったという証拠にすぎない。**判断の前に永続記録を読む**:
   `.dispatch/*/status.json` から状態を再導出し、`[ready]` を一度も見ていないタスクについては
@@ -682,8 +707,8 @@ done
 
 - **ステータスが "error"**: エラーメッセージとセッション画面を確認し、リトライまたはエスカレーションを提案
 - **長時間応答なし**: 行動の合図ではない。沈黙のために safety timer がある。ポーリングを
-  始めず、ターンを閉じてタイマーに起こされ、上のタイマー分岐に従う。codex 親にはタイマーが
-  無いので、沈黙はユーザーが尋ねるまで沈黙のままである — そのことは起動時に 1 度伝え、
+  始めず、ターンを閉じてタイマーに起こされ、上のタイマー分岐に従う。タイマーを武装して
+  いなければ沈黙はユーザーが尋ねるまで沈黙のままである — そのことは起動時に 1 度伝え、
   ここで待機を発明しないこと
 - **ユーザーリクエスト**: ユーザーはいつでも特定のセッションの確認を依頼できる。これも他と
   同じ「起床」なので、状態を 1 度だけ再導出して答え、ターンを閉じる
@@ -692,8 +717,8 @@ done
 
 全タスクが終了ステータス（`"done"` または `"error"`）に到達したら:
 
-1. **Step 3 で武装した safety timer を止める**: claude 親は background の `sleep` タスクを
-   `TaskStop` する（codex 親は何も武装していないので止めるものが無い）。何かを読むより
+1. **Step 3 で武装した safety timer を、武装していれば止める**: background の `sleep`
+   タスクを `TaskStop` する。何かを読むより
    **先に**これを行う —
    タイマーを止める場所はここだけで、生き残ると 90 分後に無関係な会話へ発火する。
 2. **結果を収集**: `.dispatch/<task-slug>/result.md` をすべて読む。
@@ -1094,7 +1119,7 @@ close → worktree → branch の順序を守る。child session 自身は clean
 - **ファイル競合**: 2つのタスクが同じファイルを変更してはいけません
 - **完了シグナルは信頼性あり**: ランナースクリプトが `status.json` の更新と `cmux wait-for --signal <slug>-done` の発火を保証し、子 runner セッション終了時に `dispatch-notify: [dispatch] ...` を `parent` agmsg agent 宛の `send.sh` 1 回呼び出しで配送する。検証すべき Enter も詰まりうる input box も無く、メッセージは親の inbox に着く。`send.sh` の非ゼロ終了は親へ届いていないことを意味し、wrapper は notify marker を更新しないので次の poll で再試行する
 - **codex 統合の前提**: `cmux codex install-hooks` 済みであること（`external_migration = true` と hooks がインストールされている）
-- **配送**: 通知トランスポートの設定項目は無い。`message_type` は廃止され、`launch-workspace.sh` / `prewarm-panes.sh` の `--message-type` フラグも削除された (渡すと `was removed` で die する)。agmsg は必須要件で劣化モードは無い: Step 1g は `~/.agents/skills/agmsg/scripts/send.sh` が無いとき、または親自身の readiness 検査が失敗したときにディスパッチを止める — claude 親は `verify-agmsg-ready.sh --self`（生きた watcher が無い）、codex 親は `verify-agmsg-ready.sh --codex --team "$TEAM" --name parent`（bridge seat が未記録）で、codex セッションからの `--self` は「watcher が無い」ではなく使用法エラーなので `CODEX_THREAD_ID` で分岐する。monitor スクリプトも heartbeat もポーリングループも無い (status.json の遷移は不変)。すべてのメッセージは `~/.agents/skills/agmsg/scripts/send.sh` の 1 回呼び出しで配送し、宛先は **agmsg の agent 名** であって surface / workspace ID ではない。outbox も長さ閾値も Enter 検証も再送も無い: `send.sh` は agmsg の共有 SQLite DB へ本文を書くか非ゼロで終了するかのどちらかで、**非ゼロ終了は配送されなかったことを意味する**ので必ず報告する。メッセージ種別はフラグではなく本文の label 接頭辞 (`phase-a-task:` / `phase-b-exec:` / `review-plan:` / `review-code:` / `review-verdict:` / `review-timer:` / `dispatch-timer:` / `abort-reviewer:` / `dispatch-notify:`) で表す。ペインは `[ready] <name>` を報告してはじめて到達可能で、それ以前に送ったメッセージは inbox に未読で残る。完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。親自身の wake チャネルは SessionStart hook が要求する常設の `Monitor` ストリームで、Step 1g はその生存を検証するだけ、Step 3 は起床のたびに再検証する。verdict 待ちも push である: レビュアーが findings ファイルを書いてから `review-verdict:` を依頼元へ 1 通送り、誰もファイルをポーリングしない。待機者 (Phase A-R の設計ペイン、Phase B-R の実装者) は起床のたびに findings ファイルを読み直す — 失われうるのはメッセージだけだからである。**safety timer は claude 専用**で、claude セッションは Bash tool で単発の `sleep` を background 実行する (親の 90 分タイマーも同じ仕組み)。codex はその tool を持たず、自分宛の遅延メッセージで代用することもできない — バックグラウンドのサブシェルで sleep してから自分へメッセージを送るやり方も、その detached (`nohup`) 版も 2026-08-21 に実測してターン終了で消えた (D-T2) — ので、**codex の待機者には保険が無く、張ったふりをしてはならない**。到達性を確認し、保険の無い待機に入ったことを親へ 1 通報告してからターンを閉じる。したがって all-Codex の無人ループには backstop が 1 つも無く、Step 1g で拒否される。`review-timer:` / `dispatch-timer:` label は予約のまま残るが、今日これを送る箇所は無い。**verdict 行の無いタイマー起床は `needs_work` ではない** — メッセージが来なかったという意味しかない。**タイムアウト検知の粒度**は旧 loop 待機スクリプトの 5 秒間隔から 90 分固定タイマーの起床時のみへ粗くなっており、`loop.task_timeout_min` を 90 分未満にしても検知は次の起床までずれる (ポーリング全廃の意図した代償)。
+- **配送**: 通知トランスポートの設定項目は無い。`message_type` は廃止され、`launch-workspace.sh` / `prewarm-panes.sh` の `--message-type` フラグも削除された (渡すと `was removed` で die する)。agmsg は必須要件で劣化モードは無い: Step 1g は `~/.agents/skills/agmsg/scripts/send.sh` が無いとき、または親自身の readiness 検査が失敗したときにディスパッチを止める。検査は `verify-agmsg-ready.sh --parent --team "$TEAM"` の 1 回呼び出しで、engine の選択はスクリプトの中にある: claude 親は生きた Monitor watcher、codex 親は記録済みの bridge seat で判定する。**呼び出し側は engine で分岐しない** — 無条件の `--self` は codex セッションから呼ぶと rc=2 になり、「rc=2 は判定不能なので停止」規則と噛み合ってディスパッチを最初の起床で自滅させる。同じ呼び出しは `sharing=<N>|unknown`（このプロジェクトの未 claim な role を受信している他の watcher の数）も返す。到達可能かどうかの判定は変えないので、正の数のときだけ警告し `0` / `unknown` では何も言わない。monitor スクリプトも heartbeat もポーリングループも無い (status.json の遷移は不変)。すべてのメッセージは `~/.agents/skills/agmsg/scripts/send.sh` の 1 回呼び出しで配送し、宛先は **agmsg の agent 名** であって surface / workspace ID ではない。outbox も長さ閾値も Enter 検証も再送も無い: `send.sh` は agmsg の共有 SQLite DB へ本文を書くか非ゼロで終了するかのどちらかで、**非ゼロ終了は配送されなかったことを意味する**ので必ず報告する。メッセージ種別はフラグではなく本文の label 接頭辞 (`phase-a-task:` / `phase-b-exec:` / `review-plan:` / `review-code:` / `review-verdict:` / `abort-reviewer:` / `dispatch-notify:`) で表す。ペインは `[ready] <name>` を報告してはじめて到達可能で、それ以前に送ったメッセージは inbox に未読で残る。完了通知は2段構え: 子セッションが status.json 書き込み直後に送る必須通知 (Step 2 で子プロンプトに埋め込む) + runner wrapper の exit 時通知 (バックストップ)。idle TUI は exit しないため wrapper だけに頼ると通知されない。親自身の wake チャネルは SessionStart hook が要求する常設の `Monitor` ストリームで、Step 1g はその生存を検証するだけ、Step 3 は起床のたびに再検証する。verdict 待ちも push である: レビュアーが findings ファイルを書いてから `review-verdict:` を依頼元へ 1 通送り、誰もファイルをポーリングしない。待機者 (Phase A-R の設計ペイン、Phase B-R の実装者) は起床のたびに findings ファイルを読み直す — 失われうるのはメッセージだけだからである。**safety timer は claude 専用**で、claude セッションは Bash tool で単発の `sleep` を background 実行する (親の 90 分タイマーも同じ仕組み)。codex はその tool を持たず、自分宛の遅延メッセージで代用することもできない — バックグラウンドのサブシェルで sleep してから自分へメッセージを送るやり方も、その detached (`nohup`) 版も 2026-08-21 に実測してターン終了で消えた (D-T2) — ので、**codex の待機者には保険が無く、張ったふりをしてはならない**。到達性を確認し、保険の無い待機に入ったことを親へ 1 通報告してからターンを閉じる。したがって codex 親が回す無人ループには backstop が 1 つも無く、拒否される。**verdict 行の無いタイマー起床は `needs_work` ではない** — メッセージが来なかったという意味しかない。**タイムアウト検知の粒度**は旧 loop 待機スクリプトの 5 秒間隔から 90 分固定タイマーの起床時のみへ粗くなっており、`loop.task_timeout_min` を 90 分未満にしても検知は次の起床までずれる (ポーリング全廃の意図した代償)。
 - **Pre-warm role panes**: prewarm は常時 on。review_mode=off は design / exec、on は design / design_review / exec / exec_review を起動する。prewarm.json はこの 4 role key を明示的に持ち、consumer は検証済み snapshot を 1 回だけ読む。
 
 ---
