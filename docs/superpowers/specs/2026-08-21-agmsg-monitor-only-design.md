@@ -63,6 +63,17 @@ V1 の記録は `docs/superpowers/specs/2026-08-12-delivery-verification-results
 > なお `spawn --wait-ready` は既にこの sentinel をポーリングしている（#108）。agmsg 側には
 > readiness 待ちの正式な primitive が存在するが、spawn / actas に紐付いている。
 >
+> **この結論は 2026-08-22 に一部撤回した（未解決）。** 上で「dispatch の子ペインは sentinel を
+> 1 つも作らない」と書いたが、稼働中のディスパッチの live watcher を数えたところ
+> `influencer-platform` の 4 ロールと `parent` は**全て role-filtered（actas）** であり、
+> `unfiltered` は 1 つも無かった（`run/watch.*.filter` の 1 行目が role 名）。対応する
+> `run/ready.<team>__<agent>` も実在する。つまりどこかで actas になる経路があり、
+> 「dispatch は actas を呼ばない」という前提が実態と合っていない。
+>
+> **その経路を特定するまで、この節の採否判断は保留とする。** 経路が判明すれば
+> 「sentinel は使えない」という結論も、それを根拠にした「actas 化は大きな変更」という
+> 評価も、両方とも見直しになる。特定作業は未着手。
+>
 > 本文の B5 依存箇所は当時の計測として残す。
 | E2E | codex 系プラグインの実起動 1 本で、親が Monitor の push だけで完了を検知できるか (B4 の代替) | **pass** | 2026-08-21。`/codex-review --base main` を surface:40 / token=`codex-review-40` / team=`yui-cc-plugins` / reviewer=`cxrev-monitor-e2e` / parent=`parent` で起動。(1) 旧ポーリング watcher の bin もプロセスも不在 (2) background task は `sleep` 1 本だけ (3) codex 完了後、`06:26:40Z \| yui-cc-plugins \| cxrev-monitor-e2e → parent \| DONE codex-review-40: レビュー完了 agents=6` の 1 行で idle の親が起床 (4) token 一致・`agents=6` も転記 (5) codex 側で 3 テストスイート / turbo check / check-doc-lang / `bash -n` が全 pass。上記 (1)-(5) がこの行に転記した観測そのもので、これが証拠である（実行時の作業ログは git-ignored なスクラッチにしか残らないため、参照先としては挙げない） |
 | D-E2E | dispatch の縮小 E2E（prewarm から実ペインを起動し、readiness / 配送 / 完了通知を実測） | **pass** | 2026-08-21。scratch repo に design(claude) + codex executor を prewarm 起動。(1) readiness プロンプトが `zsh -ic "claude ... 'PROMPT'"` の二重引用を無傷で通過（クォート破綻・グロブ展開なし、「末尾ピリオド禁止」「1 引数で渡す」の指示も到達）(2) codex の seat が `run/codex-bridge.<team>.<agent>.thread` に記録され V2a の未読滞留は再現せず (3) `[ready] e2e-mon-codex` と `[ready] e2e-mon` が**末尾ピリオドなし**の正確なワイヤフォーマットで両エンジンから到着（B4 の未実施分もここで回収）(4) 親→codex 子へ agmsg push でタスクが届き、worktree の `src/a.js` が実際に編集された (5) `DONE e2e-mon-codex` が親へ返った |
