@@ -191,7 +191,9 @@ inject_completion_gate() {
     return 0
   fi
   # パスと値をクォートして焼き込む (スキルの配置先やタスク slug に空白が入っても壊れない)
-  cmd="zsh '$script' --status-dir '$STATUS_DIR' --role '$MODEL_ROLE' --agent '$AGMSG_FROM'"
+  # team も渡す。reason は次ターンのガイダンスとして機能するので、dispatch-notify の
+  # 送信に必要な値をこちらから渡さないと、子が team 名を探し回ることになる (E2E で観測)。
+  cmd="zsh '$script' --status-dir '$STATUS_DIR' --role '$MODEL_ROLE' --agent '$AGMSG_FROM' --team '$AGMSG_TEAM' --send-command '$AGMSG_SEND'"
   if merge_claude_settings \
     '.hooks.Stop = ((.hooks.Stop // []) + [{matcher: "", hooks: [{type: "command", command: $cmd}]}])' \
     --arg cmd "$cmd"; then
@@ -222,7 +224,7 @@ inject_completion_gate_codex() {
     log "warn" "failed to create $hooks_dir; skipping the codex completion gate"
     return 1
   fi
-  cmd="bash '$script' --status-dir '$STATUS_DIR' --role '$MODEL_ROLE' --agent '$AGMSG_FROM'"
+  cmd="bash '$script' --status-dir '$STATUS_DIR' --role '$MODEL_ROLE' --agent '$AGMSG_FROM' --team '$AGMSG_TEAM' --send-command '$AGMSG_SEND'"
   if [[ -f "$hooks_file" ]]; then
     merged=$(jq --arg cmd "$cmd" \
       '.hooks.Stop = ((.hooks.Stop // []) + [{matcher: "", hooks: [{type: "command", command: $cmd}]}])' \

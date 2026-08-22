@@ -93,6 +93,25 @@ else
   bad "CG8: codex が拒否するキーが混じっている: [$out]"
 fi
 
+# --- CG12: reason はスクリプトが知っている値を含む ---
+# reason は次ターンのガイダンスとして機能するので、status dir や agent を書かないと
+# 子がそれらを探し回る (実ペイン E2E で観測した退行)。
+d=$(mkdir_case cg12); set_status "$d" executing; : > "$d/.assigned-task-exec"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec --team demo-team \
+  --send-command /x/send.sh 2>/dev/null)
+reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
+cg12=1
+for needle in "$d/status.json" "report-status.sh" "task-exec" "demo-team" "/x/send.sh demo-team task-exec parent"; do
+  [[ "$reason" == *"$needle"* ]] || { bad "CG12 reason に $needle が無い: [$reason]"; cg12=0; }
+done
+[[ $cg12 -eq 1 ]] && pass 'CG12: reason が status dir / report-status.sh / agent / team を含む'
+
+# --- CG13: team が無いときは team を騙らせない ---
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
+[[ "$reason" != *"team "* ]] && pass 'CG13: team 未指定なら reason で team に触れない' \
+  || bad "CG13 team を捏造させうる文面がある: [$reason]"
+
 # --- CG9: 引数不正は exit 2 で stdout 無出力 ---
 for args in "" "--status-dir $TMP" "--role exec --agent a" "--status-dir $TMP --role bogus --agent a"; do
   out=$(bash "$BIN" $args 2>/dev/null); rc=$?
