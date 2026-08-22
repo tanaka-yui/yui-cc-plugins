@@ -34,12 +34,35 @@ V1 の記録は `docs/superpowers/specs/2026-08-12-delivery-verification-results
 | V2b | seat 記録後の idle codex は受信するか | **pass** | `codex-record-session.sh` 実行後の再送で inline 配信され、codex が応答した |
 | B5 | `ready.<team>__<agent>` sentinel は存在するか | **存在しない** | agmsg 1.2.1 の `watch.sh` に書くコードが無く、`run/` に 1 つも無い。readiness の実体は `run/watch.<session_id>.pid` (claude) と `run/codex-bridge.<team>.<agent>.thread` (codex) |
 
-> **B5 の追記（2026-08-22 再確認）**: この計測は現在の agmsg では**成立しない**。手元の
-> インストールには `run/ready.<team>__<agent>` が実在し、`watch.sh` が購読解決後に作成して
-> exit で削除している（`READY_FILES`。「present iff a live watcher is currently receiving for
-> that role」）。**claude 子の readiness を親から観測できる可能性がある**ということなので、
-> `[ready] <name>` の自己申告を唯一の手段としている現行設計は見直しうる。ただし
-> **今回は再計測していない**（D-T2 の教訓どおり、動くと分かるまで設計を変えない）。
+> **B5 の追記（2026-08-22、コード確認によるスパイク）**: 「sentinel は存在しない」という
+> 計測結果は現在の agmsg では**成立しない**。`lib/actas-lock.sh:69-73` の `agmsg_ready_path`
+> が `run/ready.<team>__<agent>` を組み立て、`watch.sh` が購読解決後に作成して exit で削除する
+> （「present iff a live watcher is currently receiving for that role」）。(team, agent) キー
+> なので**形としては親から観測できる**。
+>
+> **ただし dispatch では使えない。** sentinel を作るのは **actas（排他）watcher だけ**である
+> （`watch.sh` の `if [ -n "$ACTIVE_NAME" ]`。コメントも "Only exclusive (actas) watchers
+> signal" と明示）。SessionStart hook が role-filtered ディレクティブ（`watch.sh` の第 4 引数に
+> agent 名を付ける形）を出すのは、そのセッションの bare sid が既に role の seat として
+> 記録済みのときだけで（`session-start.sh:313-333`、#339）、記録するのは `actas-claim.sh` か
+> codex actas である。dispatch はどちらも呼ばないため、**現行の子ペインは sentinel を 1 つも
+> 作らない**。したがって `[ready] <name>` の自己申告が唯一の手段であるという結論は変わらない。
+>
+> **採用しない判断**: sentinel を子 readiness に使うには全ロールペインを actas 化する必要が
+> ある。actas watcher は claim 失敗時に `exit 1` で落ちる（`watch.sh:479-483`）ので、ペイン
+> 起動時の致命パスが 1 本増える。`[ready]` の自己申告は両 engine で動いていてコストが無いため、
+> 動いているものを新しい致命パスと引き換えに捨てる取引になる。
+>
+> **記録に値する副産物**: actas 化は read cursor 競合（上記「read cursor の排他」）を**構造的に**
+> 解く。unfiltered watcher は他セッションが保持するペアを購読集合から外すからである
+> （`watch.sh:452-460` の `skipped` 分岐）。今回実装した `sharing=` が事後の警告なのに対し、
+> こちらは競合そのものを消す。ただし親の identity は `parent` なので**子を actas にしても親の
+> ペアは守られず**、親も actas 化するとディスパッチ中に Monitor を張り替える問題へ戻る。
+> 「ロール群をまるごと actas 化する」は一貫した将来設計だが、スパイクではなく設計判断である。
+>
+> なお `spawn --wait-ready` は既にこの sentinel をポーリングしている（#108）。agmsg 側には
+> readiness 待ちの正式な primitive が存在するが、spawn / actas に紐付いている。
+>
 > 本文の B5 依存箇所は当時の計測として残す。
 | E2E | codex 系プラグインの実起動 1 本で、親が Monitor の push だけで完了を検知できるか (B4 の代替) | **pass** | 2026-08-21。`/codex-review --base main` を surface:40 / token=`codex-review-40` / team=`yui-cc-plugins` / reviewer=`cxrev-monitor-e2e` / parent=`parent` で起動。(1) 旧ポーリング watcher の bin もプロセスも不在 (2) background task は `sleep` 1 本だけ (3) codex 完了後、`06:26:40Z \| yui-cc-plugins \| cxrev-monitor-e2e → parent \| DONE codex-review-40: レビュー完了 agents=6` の 1 行で idle の親が起床 (4) token 一致・`agents=6` も転記 (5) codex 側で 3 テストスイート / turbo check / check-doc-lang / `bash -n` が全 pass。上記 (1)-(5) がこの行に転記した観測そのもので、これが証拠である（実行時の作業ログは git-ignored なスクラッチにしか残らないため、参照先としては挙げない） |
 | D-E2E | dispatch の縮小 E2E（prewarm から実ペインを起動し、readiness / 配送 / 完了通知を実測） | **pass** | 2026-08-21。scratch repo に design(claude) + codex executor を prewarm 起動。(1) readiness プロンプトが `zsh -ic "claude ... 'PROMPT'"` の二重引用を無傷で通過（クォート破綻・グロブ展開なし、「末尾ピリオド禁止」「1 引数で渡す」の指示も到達）(2) codex の seat が `run/codex-bridge.<team>.<agent>.thread` に記録され V2a の未読滞留は再現せず (3) `[ready] e2e-mon-codex` と `[ready] e2e-mon` が**末尾ピリオドなし**の正確なワイヤフォーマットで両エンジンから到着（B4 の未実施分もここで回収）(4) 親→codex 子へ agmsg push でタスクが届き、worktree の `src/a.js` が実際に編集された (5) `DONE e2e-mon-codex` が親へ返った |
