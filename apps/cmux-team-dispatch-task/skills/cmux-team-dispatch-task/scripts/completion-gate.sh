@@ -44,11 +44,38 @@ case "$ROLE" in
   *) die "--role must be design, design_review, exec or exec_review" ;;
 esac
 
-# 停止を許す。stdout へ何も出さない。
-allow() { exit 0; }
+# hook が渡してくる JSON (stdin) は読まない。判定材料はすべてディスク上にあるからである。
+# 「書き手が EPIPE を踏まないように空読みする」形を一度書いたが、EOF に達しない stdin を
+# 継承した呼び出し (テストハーネスなど) でハングした。得られる利益は仮説にすぎず、害は
+# 実測されたので読まない。stop_hook_active を使いたくなったときは、ハングしない読み方を
+# 実測してから入れること。
+# 連続 block の上限。Stop hook が永久に block すると無限ループになるので、これは機能の
+# 一部であって任意のオプションではない。2026-08-22 の実測 (spec §6) で engine 側には
+# 連続 block の回数上限が無いことを確認しているため、止める責任はこちらにある。
+MAX_BLOCKS="${DISPATCH_GATE_MAX_BLOCKS:-10}"
+[[ "$MAX_BLOCKS" =~ ^[0-9]+$ ]] || die "DISPATCH_GATE_MAX_BLOCKS must be a whole number"
+BLOCK_COUNT_FILE="$STATUS_DIR/.gate-blocks"
 
-# 継続させる。
+# 停止を許す。stdout へ何も出さない。
+# 待機から復帰したあとに前の回数を持ち越さないよう、必ずカウンタを消す。数えているのは
+# 「ターンが進んだ回数」ではなく「連続して block した回数」である。
+allow() { rm -f "$BLOCK_COUNT_FILE" 2>/dev/null || true; exit 0; }
+
+# 継続させる。ただし上限に達したら諦めて停止を許す。
 block() {
+  local n
+  n=$(cat "$BLOCK_COUNT_FILE" 2>/dev/null || echo 0)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  if [[ "$n" -ge "$MAX_BLOCKS" ]]; then
+    # stdout は engine が JSON として読むので、諦めた事実は stderr へ出す。
+    echo "completion-gate: gave up after $n consecutive blocks; letting the session stop" >&2
+    # ここで allow() を呼んではならない。allow() はカウンタを消すので、次の呼び出しで
+    # 上限が再武装され「上限まで block → 1 回休み」を永久に繰り返す。諦めた状態は
+    # 維持し、判定 1-5 のいずれかで本当に停止を許したときだけリセットする
+    # (待機や完了に入れば自然に回復する)。
+    exit 0
+  fi
+  echo "$((n + 1))" > "$BLOCK_COUNT_FILE" 2>/dev/null || true
   jq -nc --arg r "$1" '{decision:"block",reason:$r}'
   exit 0
 }

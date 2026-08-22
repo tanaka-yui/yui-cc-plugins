@@ -15,6 +15,11 @@
 #   CG8. block の JSON は decision / reason 以外のキーを含まない (codex の
 #        additionalProperties:false に適合させるため)
 #   CG9. 引数不正は exit 2 で、stdout には何も出さない
+#  CG10. 連続 block には上限があり、達したら block をやめる
+#        (Stop hook が永久に block すると無限ループになる。2026-08-22 の実測で、
+#         engine 側に連続 block の回数上限が無いことを確認済みなので自前で持つ)
+#  CG11. 停止を許したときにカウンタがリセットされる
+#        (待機から復帰したあとに前の回数を持ち越さない)
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,6 +99,33 @@ for args in "" "--status-dir $TMP" "--role exec --agent a" "--status-dir $TMP --
   [[ $rc -eq 2 && -z "$out" ]] && pass "CG9([$args]): exit 2 で stdout 無出力" \
     || bad "CG9([$args]): rc=$rc out=[$out]"
 done
+
+# --- CG10: 連続 block はカウントされ、上限で止まる ---
+d=$(mkdir_case cg10); set_status "$d" executing; : > "$d/.assigned-task-exec"
+blocked=0
+for i in 1 2 3 4 5; do
+  out=$(DISPATCH_GATE_MAX_BLOCKS=3 bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+  [[ -n "$out" ]] && blocked=$((blocked + 1))
+done
+[[ "$blocked" == 3 ]] && pass 'CG10: 上限 3 で block が止まる' \
+  || bad "CG10: block した回数が $blocked (期待 3)"
+
+# --- CG11: 停止を許すとカウンタがリセットされる ---
+d=$(mkdir_case cg11); set_status "$d" executing; : > "$d/.assigned-task-exec"
+DISPATCH_GATE_MAX_BLOCKS=3 bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+DISPATCH_GATE_MAX_BLOCKS=3 bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+# verdict 待ちにして allow させる (ここでリセットされるはず)
+printf 'findings\n' > "$d/review/code-round-1.md"
+DISPATCH_GATE_MAX_BLOCKS=3 bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+# verdict が来た状態に戻すと、また 3 回 block できるはず
+printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-1.md"
+blocked=0
+for i in 1 2 3 4; do
+  out=$(DISPATCH_GATE_MAX_BLOCKS=3 bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+  [[ -n "$out" ]] && blocked=$((blocked + 1))
+done
+[[ "$blocked" == 3 ]] && pass 'CG11: 停止を許すとカウンタがリセットされる' \
+  || bad "CG11: リセット後の block が $blocked 回 (期待 3)"
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail
