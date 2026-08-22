@@ -1,138 +1,172 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# config-edit.sh — cmux-team-dispatch-task の config.json を原子的に読み書きする。
+# config-edit.sh — 4 ロールの config.json を原子的に読み書きする。
 #
-# `--setup` / `--reset` および「常に〜」の永続化から呼ばれる唯一の書き込み口。
-# SKILL.md の正準パターン (writer 固有 mktemp + jq merge + jq 成功時のみ同一
-# directory へ mv) をスクリプト側で保証し、呼び出しごとに jq を組み立て直すことで
-# 起きるマージ漏れを防ぐ。特に terminal-wait.sh が所有する `shell_ready_ms` は
-# このスクリプトが知らないキーだが、必ず保持する (置換ではなくマージ)。
-#
-# 複数の --set / --unset は 1 つの jq 式に合成され、1 回の mv で反映される。
-# 途中まで書けた中間状態は外から観測されない。
-#
-# Usage: config-edit.sh --config <path> [--set <key>=<value>]... [--unset <key>]...
+# Usage: config-edit.sh --config <path> [--runners <path>] [--engine <role>=<engine>]...
+#                       [--set <key>=<value>]... [--unset <key>]...
 #        config-edit.sh --config <path> --get <key>
 #        config-edit.sh --config <path> --show
 #
-#   --config <path>      対象 config.json。グローバルは
-#                        ~/.claude/cmux-team-dispatch-task/config.json、
-#                        プロジェクトは <repo>/.dispatch/config.json
-#   --set <key>=<value>  キーを設定する (繰り返し可)
-#   --unset <key>        キーを削除する (繰り返し可)。未設定に戻す用
-#   --get <key>          値を stdout に出す。未設定・ファイル未存在なら空
-#   --show               config 全体を整形して stdout に出す
+# 扱えるキー:
+#   review_mode                         on | off
+#   runner.<role>.runner | .model | .effort
+#   runner.<role> / runner              --unset 専用
 #
-# 扱えるキーは役割キー 5 つだけ。未知キー・不正値は exit 2 で弾く。
-#   design_runner  runners[].name または "ask"
-#   review_runner  runners[].name または "ask"
-#   exec_choice    "claude" | "codex" | "ask"
-#   review_mode    "on" | "off" | "ask"
-#   prewarm        true | false (JSON boolean として書き込む)
-# runner 名が runners.json に実在するかの確認は呼び出し側 (SKILL.md) の責務。
-#
-# exit code: 0 成功 / 1 書き込み・読み取り失敗 / 2 usage・検証エラー
+# 複数の変更は一つの jq 式と同じ directory 内の mv で反映する。未知の第三者キーは
+# 保持する。effort の engine は、同一バッチの runner、--engine、既存 config の
+# runner の順に runners.json から解決する。
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/config-lib.sh"
 
 die_usage() {
   echo "config-edit: $1" >&2
-  echo 'Usage: config-edit.sh --config <path> [--set <key>=<value>]... [--unset <key>]...' >&2
+  echo 'Usage: config-edit.sh --config <path> [--runners <path>] [--engine <role>=<engine>]...' >&2
+  echo '                      [--set <key>=<value>]... [--unset <key>]...' >&2
   echo '       config-edit.sh --config <path> --get <key>' >&2
   echo '       config-edit.sh --config <path> --show' >&2
   exit 2
 }
 
-known_key() {
-  case "$1" in
-    design_runner|review_runner|exec_choice|review_mode|prewarm) return 0 ;;
+valid_role() {
+  local role
+  while IFS= read -r role; do
+    [[ "$role" == "$1" ]] && return 0
+  done < <(dispatch_role_names)
+  return 1
+}
+
+KEY_ROLE=""
+KEY_FIELD=""
+
+parse_runner_field() {
+  local key="$1"
+  case "$key" in
+    runner.*.*)
+      role="${key#runner.}"
+      field="${role#*.}"
+      role="${role%%.*}"
+      valid_role "$role" || return 1
+      case "$field" in runner|model|effort) ;; *) return 1 ;; esac
+      KEY_ROLE="$role"
+      KEY_FIELD="$field"
+      return 0
+      ;;
     *) return 1 ;;
   esac
 }
 
-# 値が当該キーの取り得る範囲に収まっているか。範囲外は呼び出し側のバグなので弾く。
-valid_value() {
+parse_runner_role() {
+  local role
   case "$1" in
-    prewarm)
-      [[ "$2" == 'true' || "$2" == 'false' ]] ;;
-    review_mode)
-      case "$2" in on|off|ask) return 0 ;; *) return 1 ;; esac ;;
-    exec_choice)
-      case "$2" in claude|codex|ask) return 0 ;; *) return 1 ;; esac ;;
-    design_runner|review_runner)
-      [[ -n "$2" ]] ;;
-    *)
-      return 1 ;;
+    runner.*)
+      role="${1#runner.}"
+      [[ "$role" != *.* ]] || return 1
+      valid_role "$role" || return 1
+      KEY_ROLE="$role"
+      return 0
+      ;;
+    *) return 1 ;;
   esac
 }
 
+key_kind() {
+  case "$1" in
+    review_mode) printf 'review_mode\n' ;;
+    runner) printf 'runner\n' ;;
+    runner.*.*) parse_runner_field "$1" && printf 'field\n' ;;
+    runner.*) parse_runner_role "$1" && printf 'role\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+runner_engine() {
+  local engine
+  [[ -f "$RUNNERS" ]] || return 1
+  engine=$(jq -r --arg name "$1" \
+    '[.runners[]? | select(type == "object" and .name == $name) | .engine][0] // empty' "$RUNNERS" 2>/dev/null) \
+    || return 1
+  case "$engine" in claude|codex) printf '%s\n' "$engine" ;; *) return 1 ;; esac
+}
+
 CONFIG=""
+RUNNERS="$(dispatch_runners_file)"
 GET_KEY=""
 SHOW=0
-FILTER=""
-JQ_ARGS=()
 MUTATE=0
-ARG_INDEX=0
+OPS=()
+KEYS=()
+VALUES=()
+ENGINE_ROLES=()
+ENGINE_VALUES=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)
       [[ $# -ge 2 ]] || die_usage '--config requires a value'
-      CONFIG="$2"; shift 2
+      CONFIG="$2"
+      shift 2
+      ;;
+    --runners)
+      [[ $# -ge 2 ]] || die_usage '--runners requires a value'
+      RUNNERS="$2"
+      shift 2
+      ;;
+    --engine)
+      [[ $# -ge 2 ]] || die_usage '--engine requires <role>=<engine>'
+      case "$2" in *=*) ;; *) die_usage "--engine must be <role>=<engine>: $2" ;; esac
+      ENGINE_ROLES+=("${2%%=*}")
+      ENGINE_VALUES+=("${2#*=}")
+      shift 2
       ;;
     --set)
       [[ $# -ge 2 ]] || die_usage '--set requires <key>=<value>'
-      case "$2" in
-        *=*) ;;
-        *) die_usage "--set must be <key>=<value>: $2" ;;
-      esac
-      set_key="${2%%=*}"
-      set_value="${2#*=}"
-      known_key "$set_key" || die_usage "unknown key: $set_key"
-      valid_value "$set_key" "$set_value" || die_usage "invalid value for $set_key: $set_value"
-      ARG_INDEX=$((ARG_INDEX + 1))
-      if [[ "$set_key" == 'prewarm' ]]; then
-        # boolean は文字列 "true" ではなく JSON boolean として書く
-        JQ_ARGS+=(--argjson "v$ARG_INDEX" "$set_value")
-      else
-        JQ_ARGS+=(--arg "v$ARG_INDEX" "$set_value")
-      fi
-      # キーは allowlist 済みなので jq 式へ直接埋めてよい
-      FILTER="${FILTER:+$FILTER | }.${set_key} = \$v$ARG_INDEX"
+      case "$2" in *=*) ;; *) die_usage "--set must be <key>=<value>: $2" ;; esac
+      OPS+=(set)
+      KEYS+=("${2%%=*}")
+      VALUES+=("${2#*=}")
       MUTATE=1
       shift 2
       ;;
     --unset)
       [[ $# -ge 2 ]] || die_usage '--unset requires a key'
-      known_key "$2" || die_usage "unknown key: $2"
-      FILTER="${FILTER:+$FILTER | }del(.${2})"
+      OPS+=(unset)
+      KEYS+=("$2")
+      VALUES+=("")
       MUTATE=1
       shift 2
       ;;
     --get)
       [[ $# -ge 2 ]] || die_usage '--get requires a key'
-      known_key "$2" || die_usage "unknown key: $2"
-      GET_KEY="$2"; shift 2
+      [[ -z "$GET_KEY" ]] || die_usage '--get may be specified once'
+      GET_KEY="$2"
+      shift 2
       ;;
     --show)
-      SHOW=1; shift
+      SHOW=1
+      shift
       ;;
-    *)
-      die_usage "unknown argument: $1"
-      ;;
+    *) die_usage "unknown argument: $1" ;;
   esac
 done
 
 [[ -n "$CONFIG" ]] || die_usage '--config is required'
-
-# モードは 1 つだけ。読み取りと書き込みを 1 回の呼び出しに混ぜない。
 mode_count=$((MUTATE + SHOW))
 [[ -n "$GET_KEY" ]] && mode_count=$((mode_count + 1))
-[[ "$mode_count" -eq 1 ]] \
-  || die_usage 'specify exactly one of --set/--unset, --get, or --show'
+[[ "$mode_count" -eq 1 ]] || die_usage 'specify exactly one of --set/--unset, --get, or --show'
 
 if [[ -n "$GET_KEY" ]]; then
+  kind=$(key_kind "$GET_KEY") || die_usage "unknown key: $GET_KEY"
+  [[ "$kind" == review_mode || "$kind" == field ]] || die_usage "key is unset-only: $GET_KEY"
   [[ -f "$CONFIG" ]] || exit 0
-  if ! jq -r --arg k "$GET_KEY" '.[$k] // empty' "$CONFIG" 2>/dev/null; then
+  if [[ "$kind" == field ]]; then
+    parse_runner_field "$GET_KEY"
+    filter=".runner.$KEY_ROLE.$KEY_FIELD // empty"
+  else
+    filter='.review_mode // empty'
+  fi
+  if ! jq -r "$filter" "$CONFIG" 2>/dev/null; then
     echo "config-edit: cannot read $CONFIG (invalid JSON?)" >&2
     exit 1
   fi
@@ -151,15 +185,109 @@ if [[ "$SHOW" -eq 1 ]]; then
   exit 0
 fi
 
-mkdir -p "$(dirname "$CONFIG")"
+if [[ -f "$CONFIG" ]] && ! jq -e 'type == "object"' "$CONFIG" >/dev/null 2>&1; then
+  echo "config-edit: cannot read $CONFIG (invalid JSON?)" >&2
+  exit 1
+fi
 
-# 共有 $CONFIG.tmp は並列書き込みで壊れるため必ず writer 固有の mktemp を使う。
+for index in "${!ENGINE_ROLES[@]}"; do
+  role="${ENGINE_ROLES[$index]}"
+  engine="${ENGINE_VALUES[$index]}"
+  valid_role "$role" || die_usage "unknown role for --engine: $role"
+  case "$engine" in claude|codex) ;; *) die_usage "invalid engine for role '$role': $engine" ;; esac
+  printf -v "ENGINE_$role" '%s' "$engine"
+done
+
+for index in "${!OPS[@]}"; do
+  op="${OPS[$index]}"
+  key="${KEYS[$index]}"
+  value="${VALUES[$index]}"
+  kind=$(key_kind "$key") || die_usage "unknown key: $key"
+  if [[ "$op" == set ]]; then
+    [[ "$kind" == review_mode || "$kind" == field ]] || die_usage "key is unset-only: $key"
+    if [[ "$kind" == review_mode ]]; then
+      [[ "$value" == on || "$value" == off ]] || die_usage "invalid value for $key: $value"
+      continue
+    fi
+    parse_runner_field "$key"
+    case "$KEY_FIELD" in
+      runner)
+        dispatch_valid_runner_name "$value" || die_usage "invalid value for $key: $value"
+        printf -v "SET_RUNNER_$KEY_ROLE" '%s' "$value"
+        ;;
+      model)
+        dispatch_valid_model "$value" || die_usage "invalid value for $key: $value"
+        ;;
+      effort) ;;
+    esac
+  fi
+done
+
+for index in "${!OPS[@]}"; do
+  [[ "${OPS[$index]}" == set ]] || continue
+  key="${KEYS[$index]}"
+  kind=$(key_kind "$key")
+  [[ "$kind" == field ]] || continue
+  parse_runner_field "$key"
+  [[ "$KEY_FIELD" == effort ]] || continue
+
+  runner_var="SET_RUNNER_$KEY_ROLE"
+  runner="${!runner_var-}"
+  engine=""
+  [[ -n "$runner" ]] && engine=$(runner_engine "$runner" || true)
+  if [[ -z "$engine" ]]; then
+    engine_var="ENGINE_$KEY_ROLE"
+    engine="${!engine_var-}"
+  fi
+  if [[ -z "$engine" && -f "$CONFIG" ]]; then
+    runner=$(jq -r --arg role "$KEY_ROLE" '.runner[$role].runner // empty' "$CONFIG")
+    [[ -n "$runner" ]] && engine=$(runner_engine "$runner" || true)
+  fi
+  [[ -n "$engine" ]] || die_usage "cannot determine the engine for role '$KEY_ROLE'; pass --engine <role>=<claude|codex>"
+  effort=$(dispatch_normalize_effort "${VALUES[$index]}")
+  dispatch_valid_effort "$effort" "$engine" || die_usage "invalid value for $key: ${VALUES[$index]}"
+  VALUES[$index]="$effort"
+done
+
+FILTER=""
+JQ_ARGS=()
+ARG_INDEX=0
+for index in "${!OPS[@]}"; do
+  op="${OPS[$index]}"
+  key="${KEYS[$index]}"
+  kind=$(key_kind "$key")
+  if [[ "$op" == set ]]; then
+    ARG_INDEX=$((ARG_INDEX + 1))
+    JQ_ARGS+=(--arg "v$ARG_INDEX" "${VALUES[$index]}")
+    if [[ "$kind" == review_mode ]]; then
+      action=".review_mode = \$v$ARG_INDEX"
+    else
+      parse_runner_field "$key"
+      action=".runner.$KEY_ROLE.$KEY_FIELD = \$v$ARG_INDEX"
+    fi
+  else
+    case "$kind" in
+      review_mode) action='del(.review_mode)' ;;
+      runner) action='del(.runner)' ;;
+      role)
+        parse_runner_role "$key"
+        action="del(.runner.$KEY_ROLE)"
+        ;;
+      field)
+        parse_runner_field "$key"
+        action="del(.runner.$KEY_ROLE.$KEY_FIELD)"
+        ;;
+    esac
+  fi
+  FILTER="${FILTER:+$FILTER | }$action"
+done
+
+mkdir -p "$(dirname "$CONFIG")"
 if ! TMP=$(mktemp "$CONFIG.XXXXXX"); then
   echo 'config-edit: mktemp failed; nothing was written' >&2
   exit 1
 fi
 
-# jq が失敗したまま mv すると config を空にしてしまうので、成功時だけ mv する。
 if [[ -f "$CONFIG" ]]; then
   jq_ok=0
   jq ${JQ_ARGS[@]+"${JQ_ARGS[@]}"} "$FILTER" "$CONFIG" > "$TMP" 2>/dev/null || jq_ok=1

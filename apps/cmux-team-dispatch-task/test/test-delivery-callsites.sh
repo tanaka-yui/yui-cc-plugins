@@ -11,7 +11,7 @@
 #        cmux send-key が残らない (訳や無人ループ用ブロックが原文から遅れて旧文面を
 #        残す事故を防ぐ)
 #   CS4. 削除済みスクリプト (send-prompt.sh / agmsg-path.sh / monitor-dispatch.sh /
-#        ensure-agmsg-ready.sh / batch-wait.sh) への参照がスクリプト・文書のどこにも
+#        ensure-agmsg-ready.sh / batch-wait.sh / runners-edit.sh) への参照がスクリプト・文書のどこにも
 #        残らない。後続タスクが担当する箇所だけを PENDING 表で明示的に猶予し、件数まで
 #        固定する
 #   CS5. verdict 待ちのポーリング指示 (polling / every 5 seconds / 15-min /
@@ -113,7 +113,7 @@ else
 fi
 
 # --- CS4: 削除済みスクリプトへの参照が残らない ---
-# 対象は 5 つ: send-prompt.sh / agmsg-path.sh (T3 の時点で削除) と
+# 対象は 6 つ: send-prompt.sh / agmsg-path.sh / runners-edit.sh (T3 の時点で削除) と
 # monitor-dispatch.sh (T4 で削除) / ensure-agmsg-ready.sh (T1 で verify-agmsg-ready.sh に
 # 置き換え) / batch-wait.sh (T6 で削除)。SKILL.md 自身が存在しないスクリプトを参照して
 # いないことは test-skill-script-refs.sh (SR1/SR2) が別途固定する。
@@ -125,7 +125,7 @@ fi
 # T7 (ドキュメント更新) の完了により、日本語 4 ファイル (guide-ja.md / README.md /
 # CLAUDE.md / docs/notification-gaps.md) の猶予は不要になったので表から外した。
 # 日本語側の退役語彙は test-doc-stale-vocab.sh (DS1-DS3) が別途固定する。
-DELETED_RE='send-prompt\.sh|agmsg-path\.sh|monitor-dispatch\.sh|ensure-agmsg-ready\.sh|batch-wait\.sh'
+DELETED_RE='send-prompt\.sh|agmsg-path\.sh|monitor-dispatch\.sh|ensure-agmsg-ready\.sh|batch-wait\.sh|runners-edit\.sh'
 PENDING=(
   "test/test-doc-stale-vocab.sh|*|検査対象そのものを needle として持つ検査スクリプト"
   "docs/notification-gaps.md|1|履歴表 P9 の旧名 (旧名で grep して経緯へ辿り着けることに価値がある。test-doc-stale-vocab.sh の行内マーカーで明示済み)"
@@ -173,7 +173,7 @@ for entry in "${PENDING[@]}"; do
   fi
 done
 if [[ $cs4 -eq 1 ]]; then
-  echo "PASS CS4: 削除済み 5 スクリプトへの参照は PENDING 表の箇所だけに残る"
+  echo "PASS CS4: 削除済み 6 スクリプトへの参照は PENDING 表の箇所だけに残る"
 else
   echo "FAIL CS4: 削除済みスクリプトへの参照が想定外の場所に残っている"; fail=1
 fi
