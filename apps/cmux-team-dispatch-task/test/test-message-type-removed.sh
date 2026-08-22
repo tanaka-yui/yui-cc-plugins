@@ -82,8 +82,19 @@ fi
 
 # --- MT5: Step 1g が agmsg 必須の fail-fast guard になっている ---
 mt5=1
-grep -Fq '[[ -f ~/.agents/skills/agmsg/scripts/send.sh ]] ||' "$STEP1G" \
-  || { echo "  agmsg 未インストールを検出する guard が無い"; mt5=0; }
+# guard は send.sh のパスを AGMSG_SEND へ束縛したうえで存在確認する。
+# 直接リテラルを test する旧形も、変数へ束縛してから test する現行形も受け入れるが、
+# 変数形のときは「代入が実在すること」まで確認する — 存在確認だけして束縛を忘れると
+# $AGMSG_SEND が空へ展開され、--send-command を要求する helper が exit 2 で止まる
+# (実際に起きた欠陥。回帰は test-skill-agmsg-send-binding.sh が別途固定する)。
+if grep -Fq '[[ -f ~/.agents/skills/agmsg/scripts/send.sh ]] ||' "$STEP1G"; then
+  : # 旧リテラル形
+elif grep -Fq '[[ -f "$AGMSG_SEND" ]] ||' "$STEP1G"; then
+  grep -Eq '^[[:space:]]*AGMSG_SEND=.*agmsg/scripts/send\.sh' "$STEP1G" \
+    || { echo "  AGMSG_SEND を test しているが send.sh への代入が無い"; mt5=0; }
+else
+  echo "  agmsg 未インストールを検出する guard が無い"; mt5=0
+fi
 # 3 経路 (未インストール / readiness 不成立 / 判定不能) がすべて exit 1 で止まること
 exits=$(grep -c 'exit 1' "$STEP1G")
 if [[ "$exits" -lt 3 ]]; then

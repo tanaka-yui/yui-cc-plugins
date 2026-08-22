@@ -2,7 +2,7 @@
 # launch-workspace.sh が Codex runner 向けに生成するコマンドの回帰テスト。
 # 並列実行ディレクティブ (PL1-PL10) もここで検証する。
 #   PL1-PL7 : launch-workspace.sh が生成する runner ファイルの動的検査
-#   PL8-PL10: SKILL.md 側の $PARALLEL / $REVIEW_PARALLEL 挿入位置の静的検査
+#   PL8-PL10: Phase B delivery helper の $PARALLEL / $REVIEW_PARALLEL 静的検査
 
 set -euo pipefail
 
@@ -22,13 +22,23 @@ git -C "$TMP/repo" commit -qm init
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  new-workspace) echo 'workspace:1' ;;
+  list-workspaces)
+    count=$(cat "$CMUX_TEST_STATE" 2>/dev/null || echo 0)
+    for ((i=1; i<=count; i++)); do echo "workspace:$i"; done
+    ;;
+  new-workspace)
+    count=$(cat "$CMUX_TEST_STATE" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    echo "$count" > "$CMUX_TEST_STATE"
+    echo "workspace:$count"
+    ;;
   list-pane-surfaces) echo 'surface:2' ;;
   rename-workspace|rename-tab|notify|send|send-key|wait-for|identify) ;;
   *) echo "unexpected cmux command: $*" >&2; exit 1 ;;
 esac
 STUB
 chmod +x "$TMP/bin/cmux"
+export CMUX_TEST_STATE="$TMP/cmux-workspace-count"
 
 # agmsg send.sh のスタブ。--agmsg-team/--agmsg-from を渡す invocation の存在チェック用。
 cat > "$TMP/bin/agmsg-send.sh" <<'STUB'
@@ -102,12 +112,13 @@ plan_runner=$(runner_for plan)
 execute_runner=$(runner_for execute)
 standby_runner=$(runner_for standby)
 review_runner=$(runner_for review)
+STATUS_REVIEW_REAL=$(cd "$TMP/status/review" && pwd -P)
 
-assert_contains "$plan_runner" "--model 'gpt-5.6-sol'" 'MR1 plan uses plan_model'
-assert_contains "$superpowers_runner" "--model 'gpt-5.6-sol'" 'MR2 superpowers uses plan_model'
-assert_contains "$review_runner" "--model 'gpt-5.6-sol'" 'MR3 review uses review_model'
-assert_contains "$execute_runner" "--model 'gpt-5.6-terra'" 'MR4 execute uses exec_model'
-assert_contains "$standby_runner" "--model 'gpt-5.6-terra'" 'MR5 standby defaults to exec role'
+assert_not_contains "$plan_runner" '--model' 'MR1 plan omits a codex default model'
+assert_not_contains "$superpowers_runner" '--model' 'MR2 superpowers omits a codex default model'
+assert_not_contains "$review_runner" '--model' 'MR3 review omits a codex default model'
+assert_not_contains "$execute_runner" '--model' 'MR4 execute omits a codex default model'
+assert_not_contains "$standby_runner" '--model' 'MR5 standby omits a codex default model'
 
 runner_for_flags() {
   local mode="$1"; shift
@@ -123,9 +134,9 @@ runner_for_flags() {
   jq -r '.runner_file' <<<"$output"
 }
 
-plan_standby=$(runner_for_flags standby --role plan)
-assert_contains "$plan_standby" "--model 'gpt-5.6-sol'" 'MR6 plan standby uses plan_model'
-assert_not_contains "$plan_standby" "--model 'gpt-5.6-terra'" 'MR6 plan standby excludes exec_model'
+plan_standby=$(runner_for_flags standby --role design)
+assert_not_contains "$plan_standby" '--model' 'MR6 design standby omits a codex default model'
+assert_contains "$plan_standby" "-c model_reasoning_effort='xhigh'" 'MR6 design standby gets design effort'
 
 explicit_plan=$(runner_for_flags plan --model gpt-5.6-terra)
 assert_contains "$explicit_plan" "--model 'gpt-5.6-terra'" 'MR7 explicit model wins'
@@ -139,13 +150,13 @@ assert_not_contains "$execute_runner" 'Claude session starting' 'EN3 no Claude s
 assert_contains "$standby_runner" '--dangerously-bypass-approvals-and-sandbox' 'T4 codex + standby bypass'
 assert_contains "$review_runner" '--sandbox workspace-write' 'T5 review sandbox workspace-write'
 assert_contains "$review_runner" "-c approval_policy='never'" 'T5 review approval policy never'
-assert_contains "$review_runner" "--add-dir '$TMP/status'" 'T5 review status directory writable'
+assert_contains "$review_runner" "--add-dir '$STATUS_REVIEW_REAL'" 'T5 canonical review findings directory writable'
 assert_not_contains "$review_runner" '--dangerously-bypass-approvals-and-sandbox' 'T5 review does not disable sandbox'
 
 # --- CR1 / CR1b: codex review の --add-dir (agmsg run/db は writable, scripts は不可) ---
 FAKE_AGMSG="$TMP/fake-agmsg"; mkdir -p "$FAKE_AGMSG/run" "$FAKE_AGMSG/db" "$FAKE_AGMSG/scripts"
 cr1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex \
   --agmsg-team demo-team --agmsg-from rv1 --status-dir "$TMP/status" rv1 prompt)
 cr1_runner=$(jq -r '.runner_file' <<<"$cr1_output")
 assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1 agmsg run must be writable'
@@ -153,7 +164,7 @@ assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/db'"  'CR1 agmsg db must b
 assert_not_contains "$cr1_runner" "$FAKE_AGMSG/scripts"     'CR1 agmsg scripts must NOT be writable'
 
 cr1b_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv2 prompt)
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv2 prompt)
 cr1b_runner=$(jq -r '.runner_file' <<<"$cr1b_output")
 assert_contains "$cr1b_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1b must add agmsg dirs without STATUS_DIR'
 
@@ -163,7 +174,7 @@ assert_contains "$cr1b_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1b must add agms
 # 中からは作れない。launch-workspace.sh 側がサンドボックス外で先に作る必要がある。
 FRESH_AGMSG="$TMP/fresh-agmsg"; mkdir -p "$FRESH_AGMSG/scripts"
 cr1c_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FRESH_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv3 prompt)
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv3 prompt)
 cr1c_runner=$(jq -r '.runner_file' <<<"$cr1c_output")
 assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/run'" 'CR1c fresh install must still grant agmsg run'
 assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/db'"  'CR1c fresh install must still grant agmsg db'
@@ -171,7 +182,7 @@ assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/db'"  'CR1c fresh instal
 # --- CR1d: agmsg 未インストールならツリーを勝手に作らない ---
 MISSING_AGMSG="$TMP/no-agmsg"
 CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$MISSING_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv4 prompt >/dev/null
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv4 prompt >/dev/null
 if [[ -d "$MISSING_AGMSG" ]]; then
   echo 'FAIL: CR1d must not create an agmsg tree when agmsg is not installed'
   fail=1
@@ -186,9 +197,42 @@ fi
 # 検出したときは --add-dir もツリー作成もしない (fail-closed)。
 QUOTED_AGMSG="$TMP/qu'ote-agmsg"; mkdir -p "$QUOTED_AGMSG/run" "$QUOTED_AGMSG/db"
 cr1e_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$QUOTED_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv5 prompt 2>/dev/null)
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv5 prompt 2>/dev/null)
 cr1e_runner=$(jq -r '.runner_file' <<<"$cr1e_output")
 assert_not_contains "$cr1e_runner" "qu'ote-agmsg" 'CR1e a quoted AGMSG_SKILL_DIR must not be injected'
+
+# CR1f: review ペインの --add-dir は検証・canonicalize 済みの review directory だけ
+if grep -q "add-dir '\$REVIEW_SANDBOX_DIR'" "$LAUNCH" && ! grep -q "add-dir '\$STATUS_DIR'" "$LAUNCH"; then
+  echo 'PASS: CR1f review pane write permission uses the validated canonical review directory'
+else
+  echo 'FAIL: CR1f --add-dir is not restricted to the validated review directory'
+  fail=1
+fi
+# CR1g: helper が directory 型・symlink・canonical containment を検証してから付与する
+if grep -q '^prepare_review_directory()' "$LAUNCH" \
+   && grep -Fq '[[ -d "$review_dir" && ! -L "$review_dir" ]]' "$LAUNCH" \
+   && grep -Fq '[[ "$review_real" == "$status_real/review" ]]' "$LAUNCH"; then
+  echo 'PASS: CR1g validates and contains the review directory before granting it'
+else
+  echo 'FAIL: CR1g missing review directory validation/containment'
+  fail=1
+fi
+# CR1h: STATUS_DIR にシェルメタ文字があるときは fail-closed で die する。
+BAD_STATUS="$TMP/sta'tus"
+if out=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+         bash "$LAUNCH" --cwd "$TMP/repo" --mode review --runner codex \
+           --agmsg-team demo --agmsg-from p --status-dir "$BAD_STATUS" ws prompt 2>&1); then
+  rc=0
+else
+  rc=$?
+fi
+if [[ $rc -ne 0 ]] && grep -qi 'status-dir' <<<"$out" \
+   && [[ ! -d "$BAD_STATUS" ]] && ! grep -rq "sta'tus" "$TMP" --include='*.sh' 2>/dev/null; then
+  echo 'PASS: CR1h rejects metacharacter STATUS_DIR without side effects'
+else
+  echo "FAIL: CR1h rc=$rc out=$out"
+  fail=1
+fi
 
 # --- LW1 / LW2: agmsg 配線経路 ---
 # launch-workspace.sh:379 は send.sh が無ければ die する。実 $HOME の agmsg に依存させると
@@ -276,31 +320,36 @@ for mode in superpowers plan execute standby review; do
 done
 
 # --- SKILL.md static check: the codex Phase B prewarm-standby block must define a
-# base REQUEST_TEXT with a codex-appropriate exit instruction (regression guard for
+# base REQUEST_TEXT with a codex-appropriate idle instruction (regression guard for
 # the "codex completion notification never arrives" bug). $PARALLEL (the
 # parallel-execution directive, injected between the work instruction and the
-# session-end instruction) is now part of this same string — it must stay between
-# the two, with the session-end instruction still last. ---
+# completion instruction) is now part of this same string — it must stay between
+# the two, with the idle instruction still last. ---
 SKILL_MD="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
-assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately' \
-  'T7 SKILL.md codex prewarm block defines base REQUEST_TEXT with codex session-end exit'
+PHASE_B_DELIVER="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/phase-b-deliver.sh"
+assert_contains "$SKILL_MD" 'scripts/phase-b-deliver.sh' \
+  'T7 SKILL.md delegates prewarmed Phase B request construction to the delivery helper'
+assert_contains "$PHASE_B_DELIVER" 'After completion, stop and stay idle. Do not run /exit; the parent closes this pane during final cleanup.' \
+  'T7 delivery helper defines the codex completion report and idle instruction'
 
 # --- T14/T15: Phase B-R の拡張 REQUEST_TEXT の退行ガード ---
 # Phase B-R が有効なとき、拡張 REQUEST_TEXT は codex 用 base REQUEST_TEXT を上書きする。
 # 旧仕様の末尾は engine 中立の「run /exit (claude) or end the session (codex)」1 文だったため、
-# codex への強い指示 (Do NOT run /exit / idle 残留禁止) が失われ、codex が TUI に居座って
-# runner wrapper の完了通知に到達しない事故が起きた。さらに standby ペインは task prompt を
-# 読まないので、子側の必須通知も構造的に届いていなかった。両方を固定する。
-assert_contains "$SKILL_MD" 'END THE CODEX SESSION' \
-  'T14 extended REQUEST_TEXT tells codex to end its own session'
-assert_contains "$SKILL_MD" 'do NOT run /exit (codex does not act on it) and do NOT leave' \
-  'T14 extended REQUEST_TEXT forbids /exit for codex'
+# codex への強い指示 (Do NOT run /exit / completion report 後は idle) が失われると、
+# 実行不能な自己終了を要求する文面へ戻る。さらに standby ペインは task prompt を読まないので、
+# 子側の必須通知も構造的に届かない。両方を固定する。
+assert_contains "$PHASE_B_DELIVER" 'stop and stay idle' \
+  'T14 delivered REQUEST_TEXT tells codex to stay idle for parent cleanup'
+assert_contains "$PHASE_B_DELIVER" 'Do not run /exit' \
+  'T14 delivered REQUEST_TEXT forbids /exit for codex'
+assert_not_contains "$SKILL_MD" 'END THE CODEX SESSION' \
+  'T14 self-termination demand is absent from SKILL.md'
 assert_not_contains "$SKILL_MD" 'or end the session (codex)' \
   'T14 the ambiguous engine-neutral exit wording is gone'
-assert_contains "$SKILL_MD" 'MANDATORY completion notification. You received this request as an' \
-  'T15 extended REQUEST_TEXT carries the mandatory completion notification'
-assert_contains "$SKILL_MD" "send.sh <TEAM> <your-agent-name> parent" \
-  'T15 extended REQUEST_TEXT addresses the completion notification to the parent agent'
+assert_contains "$PHASE_B_DELIVER" 'MANDATORY STATUS PROTOCOL' \
+  'T15 delivered REQUEST_TEXT carries the mandatory status and completion notification protocol'
+assert_contains "$PHASE_B_DELIVER" 'recipient parent' \
+  'T15 delivered REQUEST_TEXT addresses the completion notification to the parent agent'
 
 # --- pr_url 引き継ぎ / timeout sentinel ガード ---
 sentinel_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
@@ -319,15 +368,15 @@ plain_runner=$(jq -r '.runner_file' <<<"$plain_output")
 assert_contains "$plain_runner" 'TIMEOUT_SENTINEL=""' 'T10 未指定時は空の sentinel パス'
 
 # --- --unattended: spawn 経路の inner prompt から質問分岐を除去する ---
-cat > "$TMP/review-config.json" <<JSON
-{"reviewer_surface":"surface:9","reviewer_workspace":"workspace:3","reviewer_agent":"unattended-review","review_dir":"$TMP/status/review"}
+cat > "$TMP/status/review/code-review.json" <<JSON
+{"review_dir":"$STATUS_REVIEW_REAL","reviewer_agent":"unattended-review","reviewer_engine":"codex","reviewer_runner":"codex","reviewer_surface":"surface:2","reviewer_workspace":"workspace:3"}
 JSON
 
 unattended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
   AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
   --agmsg-team demo-team --agmsg-from unattended-exec \
-  --status-dir "$TMP/status" --review-config "$TMP/review-config.json" --unattended "unattended-exec")
+  --status-dir "$TMP/status" --review-config "$TMP/status/review/code-review.json" --unattended "unattended-exec")
 unattended_runner=$(jq -r '.runner_file' <<<"$unattended_output")
 assert_not_contains "$unattended_runner" 'AskUserQuestion' 'T12 --unattended の runner に質問分岐が無い'
 assert_contains "$unattended_runner" '--dangerously-skip-permissions' 'T12 --unattended は claude に skip-permissions を強制'
@@ -339,7 +388,7 @@ attended_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.jso
   AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
   --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" \
   --agmsg-team demo-team --agmsg-from attended-exec \
-  --status-dir "$TMP/status" --review-config "$TMP/review-config.json" "attended-exec")
+  --status-dir "$TMP/status" --review-config "$TMP/status/review/code-review.json" "attended-exec")
 attended_runner=$(jq -r '.runner_file' <<<"$attended_output")
 assert_contains "$attended_runner" 'AskUserQuestion' 'T13 --unattended 無しでは現行の質問分岐が残る'
 
@@ -360,7 +409,9 @@ cat > "$TMP/runners-probe.json" <<JSON
 JSON
 mkdir -p "$TMP/abort-status/review" "$TMP/zdot"
 : > "$TMP/zdot/.zshrc"
-jq -n --arg d "$TMP/abort-status/review" '{reviewer_surface:"surface:55", reviewer_workspace:"workspace:5", reviewer_agent:"abort-review-review", review_dir:$d}' > "$TMP/abort-status/review/code-review.json"
+jq -n --arg d "$(cd "$TMP/abort-status/review" && pwd -P)" \
+  '{review_dir:$d, reviewer_agent:"abort-review-review", reviewer_engine:"claude", reviewer_runner:"probe", reviewer_surface:"surface:2", reviewer_workspace:"workspace:5"}' \
+  > "$TMP/abort-status/review/code-review.json"
 a1=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners-probe.json" AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" --cwd "$TMP/repo" --mode execute --runner probe --plan-file "$TMP/plan.md" --status-dir "$TMP/abort-status" --agmsg-team demo-team --agmsg-from abort-review --parent-notify-workspace workspace:9 --review-config "$TMP/abort-status/review/code-review.json" abort-review)
 a1_runner=$(jq -r '.runner_file' <<<"$a1")
 assert_contains "$a1_runner" 'ABORT PROTOCOL' 'A1 review 有効の spawn 経路に abort 手順が入る'
@@ -499,29 +550,18 @@ claude_exec_runner=$(jq -r '.runner_file' <<<"$claude_exec_output")
 assert_contains "$claude_exec_runner" 'Task subagents' 'PL6 claude execute には Task サブエージェント指示が届く'
 assert_not_contains "$claude_exec_runner" 'spawn_agent' 'PL6 claude には spawn_agent が届かない'
 
-# --- PL8/PL9/PL10: SKILL.md の claude 側 $PARALLEL 挿入位置を静的に固定する ---
-# T7 は codex prewarm 分岐だけを pin していた。sonnet standby 分岐と「共通プロトコル a」の
-# 拡張 REQUEST_TEXT には同等の assertion が無く、$PARALLEL を落としても誰も検出できなかった。
-# 対象の文面は SKILL.md 上で折り返されているため、改行と連続空白を 1 個の空白に潰した
-# 平坦化コピーに対して「連続する 1 本の文字列」で照合する (単なる存在ではなく順序を pin する)。
-# T14 の grep -F は行区切りに依存しているので、平坦化コピーは新規 assertion 専用に使う。
-SKILL_MD_FLAT="$TMP/skill-md-flat.txt"
-tr '\n' ' ' < "$SKILL_MD" | tr -s ' ' > "$SKILL_MD_FLAT"
-
-assert_contains "$SKILL_MD_FLAT" \
-  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine claude --mode execute) REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), run /exit to close this session.' \
-  'PL8 SKILL.md sonnet standby 分岐は $PARALLEL を作業指示と exit 指示の間に保つ'
-
-assert_contains "$SKILL_MD_FLAT" \
-  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <implementer-engine> --mode execute) REVIEW_PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review) "Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are committed and BEFORE creating the PR, you MUST get a code review approval.' \
-  'PL9 SKILL.md 共通プロトコル a は実装者用とレビュアー用の 2 本を先に計算する'
-
-# prewarm 経路のレビュアーはレビューペイン起動 (--mode review, PL3) ではディレクティブを
-# 受け取らないため、実装者が依頼文へ転記するこの 1 箇所が唯一の注入点になる。
-# 引用部分は宛先マーカーで挟み、実装者が自分宛と誤読しないようにする。
-assert_contains "$SKILL_MD_FLAT" \
-  'append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) then end your turn.' \
-  'PL10 SKILL.md 共通プロトコル a はレビュー依頼文へ宛先マーカー付きでディレクティブを転記する'
+# --- PL8/PL9/PL10: prewarmed Phase B helper の parallel directive 挿入を固定する ---
+# SKILL.md の手組み REQUEST_TEXT は helper へ集約した。実際に配送本文を作る script を検査し、
+# base / review の両 directive と reviewer-only 境界が失われないことを固定する。
+assert_contains "$PHASE_B_DELIVER" \
+  'PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh"' \
+  'PL8 delivery helper computes the implementer parallel directive'
+assert_contains "$PHASE_B_DELIVER" \
+  'REVIEW_PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh"' \
+  'PL9 delivery helper computes the reviewer parallel directive'
+assert_contains "$PHASE_B_DELIVER" \
+  'Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive.' \
+  'PL10 delivery helper marks the reviewer-only parallel directive boundary'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

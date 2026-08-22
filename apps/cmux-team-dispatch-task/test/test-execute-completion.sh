@@ -45,7 +45,8 @@ echo "plan" > "$TMP/plan.md"
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  new-workspace) echo 'workspace:1' ;;
+  list-workspaces) [[ ! -f "$CMUX_TEST_STATE" ]] || echo 'workspace:1' ;;
+  new-workspace) touch "$CMUX_TEST_STATE"; echo 'workspace:1' ;;
   list-pane-surfaces) echo 'surface:2' ;;
   rename-workspace|rename-tab|notify|send|send-key|wait-for|identify) ;;
   *) echo "unexpected cmux command: $*" >&2; exit 1 ;;
@@ -67,7 +68,9 @@ fail=0
 
 runner_for() {
   local runner="$1" name="$2"
-  CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  rm -f "$TMP/cmux-created"
+  CMUX_TEST_STATE="$TMP/cmux-created" CMUX_BIN="$TMP/bin/cmux" \
+    RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode execute --runner "$runner" --plan-file "$TMP/plan.md" \
     --agmsg-team demo-team --agmsg-from "$name" \
     --status-dir "$TMP/status" --no-parallel "$name" 2>/dev/null \

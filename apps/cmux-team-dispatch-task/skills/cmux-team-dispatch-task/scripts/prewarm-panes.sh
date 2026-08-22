@@ -1,789 +1,482 @@
-#!/bin/bash
-# Pre-warm standby panes: タスク workspace に要求された設計・レビュー・実装ペインを事前起動する。
-#
-# 配置は 2 行のグリッド。上段が design (左) と review (右)、下段に実装ペインを横並びに置く:
-#   design = workspace のメイン surface
-#   review = design から right split
-#   実装   = 1 つ目が design から down split、2 つ目以降は直前の実装ペインから right split
-# 実装 2 つ + review でちょうど 2×2 になる。固定 exec_choice なら実装は 1 つだけ。
-#
-# Usage:
-#   agmsg 未使用 (design は通常フローで起動済み。claude / codex 実装 executor の split のみ追加):
-#     prewarm-panes.sh --workspace <ws-id> --base-surface <sf-id> \
-#       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
-#       [--claude-runner <name>] [--codex-runner <name>] [--exec-runner <name>] \
-#       [--design-model <m>] [--design-effort <e>] \
-#       [--reviewer-model <m>] [--reviewer-effort <e>] \
-#       [--exec-model <m>] [--exec-effort <e>] \
-#       [--review-model <model>] \
-#       [--design-runner <name>] [--reviewer-runner <name>] \
-#       [--parent-notify-workspace <ws-id>] [--unattended]
-#
-#   agmsg 使用 (workspace 未作成の状態で呼ぶ。--with-design で design standby も起動し workspace はこのスクリプトが作成):
-#     prewarm-panes.sh --with-design \
-#       --cwd <worktree> --slug <task-slug> --status-dir <dir> \
-#       --agmsg-team <team> \
-#       [--claude-runner <name>] [--codex-runner <name>] \
-#       [--exec-runner <name>] [--exec-choice <choice>] \
-#       [--design-model <m>] [--design-effort <e>] \
-#       [--reviewer-model <m>] [--reviewer-effort <e>] \
-#       [--exec-model <m>] [--exec-effort <e>] \
-#       [--review-model <model>] \
-#       [--design-runner <name>] [--reviewer-runner <name>] \
-#       [--parent-notify-workspace <ws-id>] [--unattended]
-#
-# 注意: --agmsg-team を --with-design なしで渡す組み合わせは SKILL からは使用しない
-#       (claude/codex executor の配線のみ行いたい特殊用途向け)
-#
-# 内部処理:
-#   0. 役割別の model/effort 上書き (--override 由来) を該当ペインへ --model / --effort で転送
-#   1. worktree を create-or-reuse (agmsg 配線より先にディレクトリが必要)
-#   2. join.sh + delivery.sh set を「ペイン起動前に」実行。fallback は無いので
-#      配線に失敗した時点で die する (cmux-send への記録・降格は廃止済み。Step 2 の
-#      コメント参照)
-#   3. (--with-design 時) 設計 standby を workspace 配置で起動 (メイン surface が design ペイン)
-#   4. --exec-choice で選ばれた engine の実装 standby を split で配置
-#   5. --review-model または --reviewer-runner 時に review ペインを split 配置
-#   6. <STATUS_DIR>/prewarm.json を design / review? / executors スキーマで書き込む
-#   --unattended: ループモード専用。設計ペイン (claude engine 時は opus standby、--role plan の既定解決による) の起動に
-#                 --skip-permissions を付ける (無人実行で permission prompt / ExitPlanMode
-#                 承認により停止しないようにするため)。codex 系は bypass フラグで解決済み
-#   --timeout-sentinel <path>: ループモード専用。status 所有者になり得る全 standby
-#                 (design / review / 実行) の launch へ
-#                 そのまま転送する。親の単発タイマー wake 時の再導出処理が timeout として
-#                 terminal 化した後に遅れて終了した子が status.json を上書きするのを防ぐ
-#
-# Output: JSON to stdout: {workspace_id, panes: {design?, review?, executors}}
-# Debug:  Logs to stderr
+#!/usr/bin/env bash
+# Pre-warm resolved roles in a fixed two-row workspace layout.
+# review_mode=off launches design + exec. review_mode=on additionally launches
+# design_review to the right of design and exec_review to the right of exec.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./config-lib.sh
+source "$SCRIPT_DIR/config-lib.sh"
 AGMSG_DIR="${AGMSG_DIR:-$HOME/.agents/skills/agmsg/scripts}"
+CMUX_BIN="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
+
+ROLLBACK_ACTIVE=0
+CREATED_WORKTREE=0
+CREATED_BRANCH=""
+JOINED_ROLES=()
+LAUNCHED_SURFACES=()
+LAUNCHED_WORKSPACES=()
+PREWARM_TMP=""
+STATUS_TMP=""
+PUBLISHED_INITIAL_STATUS=0
+
+rollback_owned_resources() {
+  local i role agent workspace surface
+  [[ $ROLLBACK_ACTIVE -eq 1 ]] || return 0
+  ROLLBACK_ACTIVE=0
+
+  if [[ $PUBLISHED_INITIAL_STATUS -eq 1 ]]; then
+    if [[ -f "$STATUS_DIR/status.json" && ! -L "$STATUS_DIR/status.json" ]]; then
+      rm -f -- "$STATUS_DIR/status.json" \
+        || log warn "failed to remove rollback status artifact $STATUS_DIR/status.json"
+    else
+      log warn "refusing to remove changed rollback status artifact $STATUS_DIR/status.json"
+    fi
+    PUBLISHED_INITIAL_STATUS=0
+  fi
+  if [[ -n "$PREWARM_TMP" ]]; then
+    rm -f -- "$PREWARM_TMP" || log warn "failed to remove temporary prewarm artifact"
+    PREWARM_TMP=""
+  fi
+  if [[ -n "$STATUS_TMP" ]]; then
+    rm -f -- "$STATUS_TMP" || log warn "failed to remove temporary status artifact"
+    STATUS_TMP=""
+  fi
+
+  for ((i=${#LAUNCHED_SURFACES[@]}-1; i>=0; i--)); do
+    surface="${LAUNCHED_SURFACES[$i]}"
+    workspace="${LAUNCHED_WORKSPACES[$i]}"
+    [[ -n "$workspace" && -n "$surface" ]] || continue
+    "$CMUX_BIN" close-surface --workspace "$workspace" --surface "$surface" \
+      >/dev/null 2>&1 || log warn "failed to close rollback surface $surface in $workspace"
+  done
+  for ((i=${#JOINED_ROLES[@]}-1; i>=0; i--)); do
+    role="${JOINED_ROLES[$i]}"
+    agent=$(role_agent "$role")
+    bash "$AGMSG_DIR/leave.sh" "$AGMSG_TEAM" "$agent" >/dev/null 2>&1 \
+      || log warn "failed to leave rollback agent $agent"
+  done
+  if [[ $CREATED_WORKTREE -eq 1 && -n "${CWD:-}" ]]; then
+    git worktree remove "$CWD" --force >/dev/null 2>&1 \
+      || log warn "failed to remove rollback worktree $CWD"
+  fi
+  if [[ -n "$CREATED_BRANCH" ]]; then
+    git branch -D "$CREATED_BRANCH" >/dev/null 2>&1 \
+      || log warn "failed to remove rollback branch $CREATED_BRANCH"
+  fi
+}
 
 die() {
   echo "Error: $1" >&2
-  exit 1
+  rollback_owned_resources
+  exit 2
 }
 
-log() {
-  echo "[$1] $2" >&2
-}
-
-# --- Argument Parsing ---
+log() { echo "[$1] $2" >&2; }
 
 WORKSPACE=""
 BASE_SURFACE=""
 CWD=""
 SLUG=""
 STATUS_DIR=""
-CODEX_RUNNER=""
-CLAUDE_RUNNER=""
-EXEC_RUNNER=""
-REVIEW_MODEL=""
 AGMSG_TEAM=""
 WITH_DESIGN=0
-EXEC_CHOICE=""
 NOTIFY_WORKSPACE=""
-DESIGN_RUNNER=""
-REVIEWER_RUNNER=""
-DESIGN_ENGINE="claude"
-REVIEWER_ENGINE=""
-DESIGN_WIRING_TYPE=""
-REVIEW_MODEL_RESOLVED=""
-EXEC_ENGINE=""
-DESIGN_MODEL_OVERRIDE=""
-DESIGN_EFFORT_OVERRIDE=""
-REVIEWER_MODEL_OVERRIDE=""
-REVIEWER_EFFORT_OVERRIDE=""
-EXEC_MODEL_OVERRIDE=""
-EXEC_EFFORT_OVERRIDE=""
 UNATTENDED=0
 TIMEOUT_SENTINEL=""
-RUNNERS_CONFIG_PATH="${RUNNERS_CONFIG_PATH:-$HOME/.claude/cmux-team-dispatch-task/runners.json}"
+ROLES_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workspace)
-      [[ $# -lt 2 ]] && die "--workspace requires a workspace ID"
+      [[ $# -ge 2 ]] || die "--workspace requires a workspace ID"
       WORKSPACE="$2"; shift 2 ;;
     --base-surface)
-      [[ $# -lt 2 ]] && die "--base-surface requires a surface ID"
+      [[ $# -ge 2 ]] || die "--base-surface requires a surface ID"
       BASE_SURFACE="$2"; shift 2 ;;
     --cwd)
-      [[ $# -lt 2 ]] && die "--cwd requires a path argument"
+      [[ $# -ge 2 ]] || die "--cwd requires a path argument"
       CWD="$2"; shift 2 ;;
     --slug)
-      [[ $# -lt 2 ]] && die "--slug requires a task slug"
+      [[ $# -ge 2 ]] || die "--slug requires a task slug"
       SLUG="$2"; shift 2 ;;
     --status-dir)
-      [[ $# -lt 2 ]] && die "--status-dir requires a path argument"
+      [[ $# -ge 2 ]] || die "--status-dir requires a path argument"
       STATUS_DIR="$2"; shift 2 ;;
-    --codex-runner)
-      [[ $# -lt 2 ]] && die "--codex-runner requires a runner name"
-      CODEX_RUNNER="$2"; shift 2 ;;
-    --claude-runner)
-      [[ $# -lt 2 ]] && die "--claude-runner requires a runner name"
-      CLAUDE_RUNNER="$2"; shift 2 ;;
-    --exec-runner)
-      [[ $# -lt 2 ]] && die "--exec-runner requires a runner name"
-      EXEC_RUNNER="$2"; shift 2 ;;
-    --design-runner)
-      [[ $# -lt 2 ]] && die "--design-runner requires a runner name"
-      DESIGN_RUNNER="$2"; shift 2 ;;
-    --reviewer-runner)
-      [[ $# -lt 2 ]] && die "--reviewer-runner requires a runner name"
-      REVIEWER_RUNNER="$2"; shift 2 ;;
-    --review-model)
-      [[ $# -lt 2 ]] && die "--review-model requires a model name"
-      REVIEW_MODEL="$2"; shift 2 ;;
-    --exec-choice)
-      [[ $# -lt 2 ]] && die "--exec-choice requires a choice"
-      EXEC_CHOICE="$2"; shift 2 ;;
-    # 役割別の一時上書き (--override 経由)。指定時は launch-workspace.sh の
-    # 役割フォールバックより優先される明示値として該当ペインへ転送する
-    --design-model)
-      [[ $# -lt 2 ]] && die "--design-model requires a model name"
-      DESIGN_MODEL_OVERRIDE="$2"; shift 2 ;;
-    --design-effort)
-      [[ $# -lt 2 ]] && die "--design-effort requires an effort level"
-      DESIGN_EFFORT_OVERRIDE="$2"; shift 2 ;;
-    --reviewer-model)
-      [[ $# -lt 2 ]] && die "--reviewer-model requires a model name"
-      REVIEWER_MODEL_OVERRIDE="$2"; shift 2 ;;
-    --reviewer-effort)
-      [[ $# -lt 2 ]] && die "--reviewer-effort requires an effort level"
-      REVIEWER_EFFORT_OVERRIDE="$2"; shift 2 ;;
-    --exec-model)
-      [[ $# -lt 2 ]] && die "--exec-model requires a model name"
-      EXEC_MODEL_OVERRIDE="$2"; shift 2 ;;
-    --exec-effort)
-      [[ $# -lt 2 ]] && die "--exec-effort requires an effort level"
-      EXEC_EFFORT_OVERRIDE="$2"; shift 2 ;;
-    # v1.16.0 で削除。agmsg を使うかは --agmsg-team の有無と send.sh の存在で決まる。
-    --message-type)
-      die "--message-type was removed: agmsg is wired whenever --agmsg-team is given and send.sh exists" ;;
     --agmsg-team)
-      [[ $# -lt 2 ]] && die "--agmsg-team requires a team name"
+      [[ $# -ge 2 ]] || die "--agmsg-team requires a team name"
       AGMSG_TEAM="$2"; shift 2 ;;
+    --roles)
+      [[ $# -ge 2 ]] || die "--roles requires a path argument"
+      ROLES_FILE="$2"; shift 2 ;;
     --with-design|--with-opus)
       WITH_DESIGN=1; shift ;;
     --unattended)
       UNATTENDED=1; shift ;;
     --timeout-sentinel)
-      [[ $# -lt 2 ]] && die "--timeout-sentinel requires a path"
+      [[ $# -ge 2 ]] || die "--timeout-sentinel requires a path"
       TIMEOUT_SENTINEL="$2"; shift 2 ;;
     --parent-notify-workspace)
-      [[ $# -lt 2 ]] && die "--parent-notify-workspace requires a workspace ID"
+      [[ $# -ge 2 ]] || die "--parent-notify-workspace requires a workspace ID"
       NOTIFY_WORKSPACE="$2"; shift 2 ;;
-    # v2.0.0 で削除。launch-workspace.sh 側に読み手が無かったため素通ししていた値も廃止。
+    --design-runner|--reviewer-runner|--exec-runner|--claude-runner|--codex-runner|--exec-choice|--review-"model"|--design-model|--design-effort|--reviewer-model|--reviewer-effort|--exec-model|--exec-effort)
+      die "$1 was removed: pass the validated resolver output with --roles instead" ;;
+    --message-type)
+      die "--message-type was removed: agmsg is mandatory for prewarmed panes" ;;
     --parent-notify-surface)
-      die "--parent-notify-surface was removed: the runner wrapper never read it (cmux notify only takes --workspace); pass --parent-notify-workspace instead" ;;
-    *)
-      die "unknown option: $1" ;;
+      die "--parent-notify-surface was removed: pass --parent-notify-workspace instead" ;;
+    *) die "unknown option: $1" ;;
   esac
 done
-
-# --- Validation ---
 
 [[ -n "$CWD" ]] || die "--cwd is required"
 [[ -n "$SLUG" ]] || die "--slug is required"
 [[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid slug '$SLUG': use only [A-Za-z0-9._-]"
 [[ -n "$STATUS_DIR" ]] || die "--status-dir is required"
+[[ -n "$AGMSG_TEAM" ]] || die "--agmsg-team is required: prewarmed panes only receive work through agmsg"
+[[ -n "$ROLES_FILE" ]] || die "--roles is required"
 
-# agmsg は prewarm の前提条件であって option ではない。prewarm したペインは idle で
-# 待ち、指示は agmsg send.sh でしか届かない (タイプ入力への fallback は存在しない)。
-# --agmsg-team が無ければ readiness 句も載らず、launch-workspace.sh へ渡す
-# --agmsg-team/--agmsg-from も空になるので、生き残っても誰にも到達できないペインが
-# 並ぶだけになる。**ペインを 1 つも起動する前に**落とすこと — worktree 作成や
-# agmsg join より後に死ぬと孤児 worktree / team member が残る (AGMSG_DIR /
-# AGMSG_TEAM のメタ文字チェックを引数パース直後へ移したのと同じ理由)。
-[[ -n "$AGMSG_TEAM" ]] \
-  || die "--agmsg-team is required: prewarmed panes only ever receive work through agmsg send.sh and there is no typed fallback, so a prewarm without agmsg wiring would start panes that nothing can reach"
-
-# 無人ループ (--unattended) × codex 親は受け付けない。codex は自分宛の遅延メッセージで
-# タイマーを張れないと実測済みで (D-T2, 2026-08-21: バックグラウンドのサブシェルで
-# sleep してから自分へ送る形も、その detached 版もターン終了で消える)、codex 親には Step 3 の 90 分
-# safety timer が存在しない。無人ループには聞ける相手もいないので、`dispatch-notify:`
-# が 1 通失われた時点でジョブが静かに消える。ここも fail-fast にする (fallback は作らない)。
-# ペインを 1 つも起動する前に落とす — 孤児 worktree / team member を残さないため。
 if [[ $UNATTENDED -eq 1 && -n "${CODEX_THREAD_ID:-}" ]]; then
-  die "--unattended is refused from a codex parent: codex cannot arm the 90-minute safety timer (measured: a self-addressed delayed message dies with the turn), so an unattended loop would lose the job silently when one dispatch-notify message is lost; run the loop from a claude parent or run this dispatch attended"
+  die "--unattended is refused from a codex parent: codex cannot arm the 90-minute safety timer"
 fi
-# この die 以降、後続の `-n "$AGMSG_TEAM"` 判定はすべて常に真である (退役候補。
-# 挙動を変えない純粋なリファクタなので、まとめて外すのは別タスク。CLAUDE.md 項目 47)。
 
-# readiness_clause (下記) は AGMSG_DIR / AGMSG_TEAM をエスケープせず埋め込む。空白や
-# シェルメタ文字が入ると launch-workspace.sh の `zsh -ic "... '<prompt>' ..."` を
-# 実際に破る (T2-1 で実測済み: 二重引用符の中に無条件の `"` を混ぜただけで
-# `zsh: unmatched '` になった。$name は --slug と同じ正規表現で既に安全なので対象外)。
-# fallback は無いので合成できなければここで die する。worktree 作成や agmsg join より
-# 前に置くことで、孤児 worktree / team member を作らずに fail-fast する。
 case "$AGMSG_DIR" in
-  *[[:space:]]*|*[\'\"\`\$\!\\]*) die "AGMSG_DIR contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $AGMSG_DIR" ;;
+  *[[:space:]]*|*[\'\"\`\$\!\\]*) die "AGMSG_DIR contains whitespace or shell metacharacters" ;;
 esac
 case "$AGMSG_TEAM" in
-  *[[:space:]]*|*[\'\"\`\$\!\\]*) die "--agmsg-team contains whitespace or shell metacharacters; the readiness clause cannot be composed safely and there is no typed fallback: $AGMSG_TEAM" ;;
+  *[[:space:]]*|*[\'\"\`\$\!\\]*) die "--agmsg-team contains whitespace or shell metacharacters" ;;
 esac
 
-if [[ -n "$REVIEW_MODEL" && -z "$CODEX_RUNNER" ]]; then
-  die "--review-model requires --codex-runner"
-fi
+command -v jq >/dev/null 2>&1 || die "jq is not installed"
+command -v git >/dev/null 2>&1 || die "git is not installed"
 
-# --reviewer-model は --reviewer-runner 経路の上書き、--review-model は claude 設計の
-# legacy 指定。両方渡すのは意図の取り違えなので受け付けない。
-if [[ -n "$REVIEWER_MODEL_OVERRIDE" && -n "$REVIEW_MODEL" ]]; then
-  die "--reviewer-model and --review-model are mutually exclusive"
-fi
-
-# design=codex / reviewer の解決。runner の engine と model/effort を runners.json から引く
-if [[ -n "$DESIGN_RUNNER" ]]; then
-  [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH (required for --design-runner)"
-  DESIGN_ENGINE=$(jq -r --arg n "$DESIGN_RUNNER" '.runners[]? | select(.name == $n) | .engine // "claude"' "$RUNNERS_CONFIG_PATH")
-  [[ -n "$DESIGN_ENGINE" ]] || die "design runner '$DESIGN_RUNNER' not found in $RUNNERS_CONFIG_PATH"
-fi
-if [[ -n "$REVIEWER_RUNNER" ]]; then
-  [[ -n "$REVIEW_MODEL" ]] && die "--reviewer-runner and --review-model are mutually exclusive"
-  REVIEWER_ENGINE=$(jq -r --arg n "$REVIEWER_RUNNER" '.runners[]? | select(.name == $n) | .engine // "claude"' "$RUNNERS_CONFIG_PATH")
-  [[ -n "$REVIEWER_ENGINE" ]] || die "reviewer runner '$REVIEWER_RUNNER' not found in $RUNNERS_CONFIG_PATH"
-  REVIEW_MODEL_RESOLVED=$(jq -r --arg n "$REVIEWER_RUNNER" '.runners[]? | select(.name == $n) | .review_model // empty' "$RUNNERS_CONFIG_PATH")
-  if [[ "$REVIEWER_ENGINE" == "codex" && -z "$REVIEW_MODEL_RESOLVED" ]]; then
-    die "codex reviewer runner '$REVIEWER_RUNNER' requires review_model"
+validate_publish_destination() {
+  local prewarm_file="$STATUS_DIR/prewarm.json" status_file="$STATUS_DIR/status.json"
+  if [[ -e "$STATUS_DIR" || -L "$STATUS_DIR" ]]; then
+    [[ -d "$STATUS_DIR" && ! -L "$STATUS_DIR" ]] \
+      || die "status path must be a non-symlink directory"
   fi
-fi
-if [[ "$DESIGN_ENGINE" == "codex" && -n "$REVIEW_MODEL" ]]; then
-  die "--review-model is for claude-design tasks; use --reviewer-runner when the design runner is codex"
-fi
-if [[ -n "$EXEC_RUNNER" ]]; then
-  [[ -f "$RUNNERS_CONFIG_PATH" ]] \
-    || die "runners.json not found at $RUNNERS_CONFIG_PATH (required for --exec-runner)"
-  EXEC_ENGINE=$(jq -r --arg n "$EXEC_RUNNER" \
-    '.runners[]? | select(.name == $n) | .engine // empty' "$RUNNERS_CONFIG_PATH")
-  [[ -n "$EXEC_ENGINE" ]] || die "exec runner '$EXEC_RUNNER' not found in $RUNNERS_CONFIG_PATH"
-fi
-if [[ -n "$CLAUDE_RUNNER" ]]; then
-  [[ -f "$RUNNERS_CONFIG_PATH" ]] \
-    || die "runners.json not found at $RUNNERS_CONFIG_PATH (required for --claude-runner)"
-  CLAUDE_RUNNER_ENGINE=$(jq -r --arg n "$CLAUDE_RUNNER" \
-    '.runners[]? | select(.name == $n) | .engine // empty' "$RUNNERS_CONFIG_PATH")
-  [[ -n "$CLAUDE_RUNNER_ENGINE" ]] || die "claude runner '$CLAUDE_RUNNER' not found in $RUNNERS_CONFIG_PATH"
-  [[ "$CLAUDE_RUNNER_ENGINE" == "claude" ]] || die "--claude-runner requires a claude engine runner"
-fi
-
-# 役割ごとの model / effort を runners.json + 既定値から解決する。launch-workspace.sh の
-# 役割フォールバックと同じ表を使う (どちらか一方だけ変えると in-session 判定がずれる)。
-resolve_role_model() {
-  local runner="$1" role="$2" engine="$3" value=""
-  if [[ -n "$runner" && -f "$RUNNERS_CONFIG_PATH" ]]; then
-    value=$(jq -r --arg n "$runner" --arg f "${role}_model" \
-      '.runners[]? | select(.name == $n) | .[$f] // empty' "$RUNNERS_CONFIG_PATH")
+  if [[ -e "$prewarm_file" || -L "$prewarm_file" ]]; then
+    [[ -f "$prewarm_file" && ! -L "$prewarm_file" ]] \
+      || die "prewarm target must be a regular non-symlink file"
   fi
-  if [[ -z "$value" && "$engine" == "claude" ]]; then
-    case "$role" in
-      plan|review) value="opus[1m]" ;;
-      exec) value="sonnet" ;;
-    esac
+  if [[ -e "$status_file" || -L "$status_file" ]]; then
+    [[ -f "$status_file" && ! -L "$status_file" ]] \
+      || die "status target must be a regular non-symlink file"
   fi
-  printf '%s' "$value"
 }
 
-resolve_role_effort() {
-  local runner="$1" role="$2" value=""
-  if [[ -n "$runner" && -f "$RUNNERS_CONFIG_PATH" ]]; then
-    value=$(jq -r --arg n "$runner" --arg f "${role}_effort" \
-      '.runners[]? | select(.name == $n) | .[$f] // empty' "$RUNNERS_CONFIG_PATH")
+# Read the resolver output exactly once. All validation and extraction below use
+# this immutable in-process snapshot, never ROLES_FILE again.
+ROLES_DOC=$(cat "$ROLES_FILE") || die "cannot read --roles file"
+jq -e 'type' >/dev/null 2>&1 <<< "$ROLES_DOC" || die "--roles file is not valid JSON"
+
+RUNNERS_FILE="$(dispatch_runners_file)"
+[[ -f "$RUNNERS_FILE" ]] || die "runners.json not found at $RUNNERS_FILE"
+jq -e '.runners | type == "array"' "$RUNNERS_FILE" >/dev/null 2>&1 \
+  || die "invalid runners.json at $RUNNERS_FILE"
+
+validate_roles_doc() {
+  local bad_top review_mode expected role runner engine effort model runner_engine
+  jq -e 'type == "object"' >/dev/null 2>&1 <<< "$ROLES_DOC" \
+    || die "invalid --roles: top-level JSON value must be an object"
+  bad_top=$(jq -r '[keys[] | select(. != "review_mode" and . != "roles" and
+    . != "config_home" and . != "global_config" and . != "project_config" and
+    . != "runners_file")] | first // empty' <<< "$ROLES_DOC")
+  [[ -z "$bad_top" ]] || die "invalid --roles top-level key '$bad_top'"
+  jq -e '.roles | type == "object"' >/dev/null 2>&1 <<< "$ROLES_DOC" \
+    || die "invalid --roles: roles must be an object"
+
+  review_mode=$(jq -r '.review_mode // empty' <<< "$ROLES_DOC")
+  [[ "$review_mode" == on || "$review_mode" == off ]] \
+    || die "invalid --roles review_mode: expected on or off"
+  if [[ "$review_mode" == on ]]; then
+    expected='["design","design_review","exec","exec_review"]'
+  else
+    expected='["design","exec"]'
   fi
-  if [[ -z "$value" ]]; then
-    case "$role" in
-      plan|review) value="xhigh" ;;
-      exec) value="high" ;;
-    esac
-  fi
-  printf '%s' "$value"
-}
+  jq -e --argjson expected "$expected" '(.roles | keys) == $expected' >/dev/null 2>&1 <<< "$ROLES_DOC" \
+    || die "invalid --roles: active role set does not match review_mode=$review_mode"
 
-# 役割別上書きを launch-workspace.sh の --model / --effort へ転送する配列。
-# 空になりうるので展開は必ず ${arr[@]+"${arr[@]}"} を使う。
-DESIGN_OVERRIDE_FLAGS=()
-[[ -n "$DESIGN_MODEL_OVERRIDE" ]] && DESIGN_OVERRIDE_FLAGS+=(--model "$DESIGN_MODEL_OVERRIDE")
-[[ -n "$DESIGN_EFFORT_OVERRIDE" ]] && DESIGN_OVERRIDE_FLAGS+=(--effort "$DESIGN_EFFORT_OVERRIDE")
+  for role in design design_review exec exec_review; do
+    jq -e --arg role "$role" '.roles | has($role)' >/dev/null 2>&1 <<< "$ROLES_DOC" || continue
+    jq -e --arg role "$role" '
+      (.roles[$role] | type == "object") and
+      ((.roles[$role] | keys - ["runner","engine","model","effort"]) | length == 0) and
+      (.roles[$role] | has("runner") and has("engine") and has("effort")) and
+      (.roles[$role].runner | type == "string") and
+      (.roles[$role].engine | type == "string") and
+      (.roles[$role].effort | type == "string")' >/dev/null 2>&1 <<< "$ROLES_DOC" \
+      || die "invalid --roles tuple for $role"
 
-EXEC_OVERRIDE_FLAGS=()
-[[ -n "$EXEC_MODEL_OVERRIDE" ]] && EXEC_OVERRIDE_FLAGS+=(--model "$EXEC_MODEL_OVERRIDE")
-[[ -n "$EXEC_EFFORT_OVERRIDE" ]] && EXEC_OVERRIDE_FLAGS+=(--effort "$EXEC_EFFORT_OVERRIDE")
+    runner=$(jq -r --arg role "$role" '.roles[$role].runner' <<< "$ROLES_DOC")
+    engine=$(jq -r --arg role "$role" '.roles[$role].engine' <<< "$ROLES_DOC")
+    effort=$(jq -r --arg role "$role" '.roles[$role].effort' <<< "$ROLES_DOC")
+    dispatch_valid_runner_name "$runner" || die "invalid runner name for $role"
+    dispatch_valid_effort "$effort" "$engine" || die "invalid effort for $role"
+    runner_engine=$(jq -r --arg runner "$runner" \
+      'first(.runners[]? | select(.name == $runner) | .engine) // empty' "$RUNNERS_FILE")
+    [[ -n "$runner_engine" ]] || die "runner '$runner' for $role is not registered"
+    [[ "$runner_engine" == "$engine" ]] \
+      || die "engine mismatch for $role: runner '$runner' is $runner_engine, not $engine"
 
-REVIEW_OVERRIDE_FLAGS=()
-[[ -n "$REVIEWER_MODEL_OVERRIDE" ]] && REVIEW_OVERRIDE_FLAGS+=(--model "$REVIEWER_MODEL_OVERRIDE")
-[[ -n "$REVIEWER_EFFORT_OVERRIDE" ]] && REVIEW_OVERRIDE_FLAGS+=(--effort "$REVIEWER_EFFORT_OVERRIDE")
-
-# 実装ペインは engine 単位。exec_choice は「どの engine が実装するか」だけを表し、
-# モデルと effort は runners.json の役割フィールドが決める。
-START_CLAUDE=0
-START_CODEX=0
-case "$EXEC_CHOICE" in
-  ""|ask)
-    [[ -n "$CLAUDE_RUNNER" || "$DESIGN_ENGINE" == "claude" ]] && START_CLAUDE=1
-    [[ -n "$CODEX_RUNNER" ]] && START_CODEX=1
-    ;;
-  claude)
-    [[ -z "$EXEC_RUNNER" || "$EXEC_ENGINE" == "claude" ]] \
-      || die "exec_choice=claude requires a claude exec runner"
-    START_CLAUDE=1 ;;
-  codex)
-    [[ -n "$EXEC_RUNNER" || -n "$CODEX_RUNNER" ]] \
-      || die "exec_choice=codex requires --exec-runner or --codex-runner"
-    [[ -z "$EXEC_RUNNER" || "$EXEC_ENGINE" == "codex" ]] \
-      || die "exec_choice=codex requires a codex exec runner"
-    START_CODEX=1 ;;
-  *) die "invalid --exec-choice '$EXEC_CHOICE' (must be claude, codex, or ask)" ;;
-esac
-
-# claude/codex 実装 runner 名をここで解決する。Step 4/5 の起動と in-session 判定の
-# 両方がこの変数を参照するので、起動側とは別の式で再計算して乖離させない。
-# 解決式は上の case の検証式と対称でなければならない (F3)。検証は
-# `--exec-runner` か `--codex-runner` のどちらか一方で通るのに、解決が
-# `$EXEC_RUNNER` だけを見ていると `--codex-runner codex` 単独指定で空文字が
-# launch-workspace.sh へ渡り、engine が黙って claude へ反転する。
-# engine を跨いだ引き継ぎは起こさない: exec_choice=claude のとき EXEC_RUNNER は
-# claude runner 名なので、codex 側は exec_choice が実際に codex のときだけ読む。
-CLAUDE_EXEC_RUNNER=""
-if [[ "$EXEC_CHOICE" == "claude" ]]; then
-  # DESIGN_RUNNER へは落とさない (Finding A の回帰。in-session 判定が誤って
-  # 「設計と実装が同一設定」と結論する)。--claude-runner までで止める。
-  CLAUDE_EXEC_RUNNER="${EXEC_RUNNER:-$CLAUDE_RUNNER}"
-elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
-  CLAUDE_EXEC_RUNNER="$CLAUDE_RUNNER"
-  [[ -z "$CLAUDE_EXEC_RUNNER" && "$DESIGN_ENGINE" == "claude" ]] && CLAUDE_EXEC_RUNNER="$DESIGN_RUNNER"
-fi
-CODEX_EXEC_RUNNER=""
-if [[ "$EXEC_CHOICE" == "codex" ]]; then
-  CODEX_EXEC_RUNNER="${EXEC_RUNNER:-$CODEX_RUNNER}"
-elif [[ -z "$EXEC_CHOICE" || "$EXEC_CHOICE" == "ask" ]]; then
-  CODEX_EXEC_RUNNER="$CODEX_RUNNER"
-fi
-# 起動するのに runner 名が解決できていないなら die する。空文字を渡して
-# launch-workspace.sh の既定 (claude) に落ちるのは fallback であり、この設計では禁止。
-[[ $START_CODEX -eq 0 || -n "$CODEX_EXEC_RUNNER" ]] || die "codex executor runner unresolved"
-
-# 役割設定 (engine + model + effort) が完全一致するときは、設計セッションがそのまま
-# 実装するので実装ペインを起動しない。effort を条件に含めるのは、effort がセッション
-# 起動時に焼き込まれ、後から変える手段が無いため (モデルだけ一致していても
-# exec_effort の設定が無視されてしまう)。
-# exec_choice=ask は実装 engine が未確定なので判定せず、全候補を起動する。
-if [[ -n "$EXEC_CHOICE" && "$EXEC_CHOICE" != "ask" ]]; then
-  EXEC_ROLE_ENGINE="${EXEC_ENGINE:-$EXEC_CHOICE}"
-  if [[ "$EXEC_ROLE_ENGINE" == "$DESIGN_ENGINE" ]]; then
-    # 実装 runner は Step 4/5 が実際に起動へ渡す変数 (CLAUDE_EXEC_RUNNER /
-    # CODEX_EXEC_RUNNER) と同じものを読む。EXEC_RUNNER/DESIGN_RUNNER から
-    # 独自に再計算すると、--exec-runner 省略時に起動側 (フォールバック無し)
-    # と判定側がずれる。
-    EXEC_ROLE_RUNNER="$CLAUDE_EXEC_RUNNER"
-    [[ "$EXEC_ROLE_ENGINE" == "codex" ]] && EXEC_ROLE_RUNNER="$CODEX_EXEC_RUNNER"
-    # 上書きがあればそれが解決値。無ければ runners.json + 既定値から解く。
-    PLAN_MODEL_RESOLVED="${DESIGN_MODEL_OVERRIDE:-$(resolve_role_model "$DESIGN_RUNNER" plan "$DESIGN_ENGINE")}"
-    PLAN_EFFORT_RESOLVED="${DESIGN_EFFORT_OVERRIDE:-$(resolve_role_effort "$DESIGN_RUNNER" plan)}"
-    EXEC_MODEL_RESOLVED="${EXEC_MODEL_OVERRIDE:-$(resolve_role_model "$EXEC_ROLE_RUNNER" exec "$EXEC_ROLE_ENGINE")}"
-    EXEC_EFFORT_RESOLVED="${EXEC_EFFORT_OVERRIDE:-$(resolve_role_effort "$EXEC_ROLE_RUNNER" exec)}"
-    if [[ "$PLAN_MODEL_RESOLVED" == "$EXEC_MODEL_RESOLVED" \
-       && "$PLAN_EFFORT_RESOLVED" == "$EXEC_EFFORT_RESOLVED" ]]; then
-      log "prewarm" "in-session execution (role config identical); skipping the executor pane"
-      START_CLAUDE=0
-      START_CODEX=0
+    if jq -e --arg role "$role" '.roles[$role] | has("model")' >/dev/null 2>&1 <<< "$ROLES_DOC"; then
+      jq -e --arg role "$role" '.roles[$role].model | type == "string" and length > 0' \
+        >/dev/null 2>&1 <<< "$ROLES_DOC" || die "invalid model for $role"
+      model=$(jq -r --arg role "$role" '.roles[$role].model' <<< "$ROLES_DOC")
+      dispatch_valid_model "$model" || die "invalid model for $role"
+    elif dispatch_model_required "$role" "$engine"; then
+      die "model is required for $role with engine $engine"
     fi
-  fi
-fi
+  done
+}
+
+# Every configuration violation is rejected before worktree, agmsg, or pane side effects.
+validate_roles_doc
+REVIEW_MODE=$(jq -r '.review_mode' <<< "$ROLES_DOC")
+validate_publish_destination
 
 if [[ $WITH_DESIGN -eq 1 ]]; then
-  # agmsg モード専用: workspace はこのスクリプトが作成する
-  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
-  [[ -n "$AGMSG_TEAM" ]] || die "--with-design requires --agmsg-team"
   [[ -z "$WORKSPACE" && -z "$BASE_SURFACE" ]] \
     || die "--with-design is mutually exclusive with --workspace/--base-surface"
 else
-  [[ -n "$WORKSPACE" ]] || die "--workspace is required (without --with-design)"
-  [[ -n "$BASE_SURFACE" ]] || die "--base-surface is required (without --with-design)"
+  [[ -n "$WORKSPACE" ]] || die "--workspace is required without --with-design"
+  [[ -n "$BASE_SURFACE" ]] || die "--base-surface is required without --with-design"
+fi
+[[ -f "$AGMSG_DIR/send.sh" ]] || die "agmsg is not installed (expected $AGMSG_DIR/send.sh)"
+
+if [[ -d "$CWD" ]]; then
+  log worktree "already exists at $CWD, reusing"
+else
+  BRANCH_NAME="feat/$SLUG"
+  BRANCH_EXISTED=0
+  git show-ref --verify --quiet "refs/heads/$BRANCH_NAME" && BRANCH_EXISTED=1 || true
+  log worktree "creating $CWD with branch $BRANCH_NAME"
+  git worktree add "$CWD" -b "$BRANCH_NAME" 2>/dev/null \
+    || git worktree add "$CWD" "$BRANCH_NAME" 2>/dev/null \
+    || die "failed to create worktree at $CWD"
+  CREATED_WORKTREE=1
+  [[ $BRANCH_EXISTED -eq 1 ]] || CREATED_BRANCH="$BRANCH_NAME"
 fi
 
-# 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
-if [[ -n "$AGMSG_TEAM" ]]; then
-  [[ -f "$AGMSG_DIR/send.sh" ]] || die "agmsg is not installed (expected $AGMSG_DIR/send.sh)"
+role_value() { jq -r --arg role "$1" --arg field "$2" '.roles[$role][$field] // empty' <<< "$ROLES_DOC"; }
+role_has_model() { jq -e --arg role "$1" '.roles[$role] | has("model")' >/dev/null 2>&1 <<< "$ROLES_DOC"; }
+role_agent() {
+  case "$1" in
+    design) printf '%s\n' "$SLUG" ;;
+    *) printf '%s-%s\n' "$SLUG" "${1//_/-}" ;;
+  esac
+}
+role_wiring_type() { [[ "$(role_value "$1" engine)" == codex ]] && printf 'codex\n' || printf 'claude-code\n'; }
+
+# readiness 句の前提: delivery.sh set monitor claude-code <worktree> が
+# この同じ実行内で成功していること。失敗時は到達不能なので launch 前に止める。
+wire_delivery() {
+  local role="$1" wiring
+  wiring=$(role_wiring_type "$role")
+  bash "$AGMSG_DIR/delivery.sh" set monitor "$wiring" "$CWD" >/dev/null 2>&1 \
+    || die "$wiring delivery wiring failed; readiness cannot be established"
+}
+
+join_role() {
+  local role="$1" agent wiring
+  agent=$(role_agent "$role")
+  wiring=$(role_wiring_type "$role")
+  bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$agent" "$wiring" "$CWD" >&2 2>/dev/null \
+    || die "$role agmsg join failed; readiness cannot be established"
+  JOINED_ROLES+=("$role")
+  wire_delivery "$role"
+}
+
+forget_joined_role() {
+  local target="$1" current kept=()
+  for current in "${JOINED_ROLES[@]}"; do
+    [[ "$current" == "$target" ]] || kept+=("$current")
+  done
+  JOINED_ROLES=("${kept[@]}")
+}
+
+leave_role() {
+  local role="$1" agent
+  agent=$(role_agent "$role")
+  if bash "$AGMSG_DIR/leave.sh" "$AGMSG_TEAM" "$agent" >/dev/null 2>&1; then
+    forget_joined_role "$role"
+  else
+    log warn "failed to leave $agent after pane launch failure"
+  fi
+}
+
+ROLLBACK_ACTIVE=1
+for role in design exec; do join_role "$role"; done
+if [[ "$REVIEW_MODE" == on ]]; then
+  join_role design_review
+  join_role exec_review
 fi
 
-command -v jq &>/dev/null || die "jq is not installed"
-command -v git &>/dev/null || die "git is not installed"
+readiness_clause() {
+  local role="$1" agent wiring
+  agent=$(role_agent "$role")
+  wiring=$(role_wiring_type "$role")
+  if [[ "$wiring" == codex ]]; then
+    printf 'FIRST make yourself reachable: call %s/drivers/types/codex/codex-record-session.sh with team %s and agent name %s (two arguments, no trailing punctuation). THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
+      "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$agent"
+  else
+    printf 'FIRST follow the AGMSG-DIRECTIVE printed by your SessionStart hook and invoke the Monitor tool right now — that is the only way work will reach you. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
+      "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$agent"
+  fi
+}
 
-# 共通の notify / agmsg フラグ (配列で組み立てて quote 事故を防ぐ)
-# 注意: macOS の bash 3.2 は set -u 下で空配列の "${arr[@]}" 展開がエラーになるため、
-# 空になりうる配列の展開は必ず ${arr[@]+"${arr[@]}"} イディオムを使う
 NOTIFY_FLAGS=()
-[[ -n "$NOTIFY_WORKSPACE" ]] && NOTIFY_FLAGS+=(--parent-notify-workspace "$NOTIFY_WORKSPACE")
-
-# ループモードでは、status 所有者になり得る全 standby wrapper に timeout sentinel を
-# 焼き込む。ここで転送しないと prewarm 経路 (既定) では sentinel が効かず、
-# timeout 後に遅れて終了した子が status.json を上書きしてしまう
+[[ -n "$NOTIFY_WORKSPACE" ]] && NOTIFY_FLAGS=(--parent-notify-workspace "$NOTIFY_WORKSPACE")
 SENTINEL_FLAGS=()
 [[ -n "$TIMEOUT_SENTINEL" ]] && SENTINEL_FLAGS=(--timeout-sentinel "$TIMEOUT_SENTINEL")
 
-# --- Step 1: worktree create-or-reuse ---
-# agmsg 配線 (settings.local.json への hook 注入) が worktree ディレクトリを必要とするため、
-# launch-workspace.sh に任せず先に作成する (ロジックは launch-workspace.sh と同一)。
+launch_role() { # role [workspace split-from direction]
+  local role="$1" workspace="${2:-}" split_from="${3:-}" direction="${4:-}"
+  local runner engine effort agent prompt result surface
+  runner=$(role_value "$role" runner)
+  engine=$(role_value "$role" engine)
+  effort=$(role_value "$role" effort)
+  agent=$(role_agent "$role")
+  prompt="$(readiness_clause "$role") Then wait idle. Your task will arrive as an agmsg message. Do not start work until it arrives. Do not poll or run an inbox wait loop."
 
-if [[ -d "$CWD" ]]; then
-  log "worktree" "already exists at $CWD, reusing"
-else
-  BRANCH_NAME="feat/$SLUG"
-  log "worktree" "creating $CWD with branch $BRANCH_NAME"
-  if ! git worktree add "$CWD" -b "$BRANCH_NAME" 2>/dev/null; then
-    git worktree add "$CWD" "$BRANCH_NAME" 2>/dev/null || die "failed to create worktree at $CWD"
-  fi
-fi
-
-# --- Step 2: agmsg 配線 (ペイン起動前) ---
-# delivery.sh set は worktree 相対の未追跡ファイル (.claude/settings.local.json /
-# .codex/hooks.json) に SessionStart hook を注入する。セッション起動前に実行しないと
-# hook が効かないため、必ずこの位置で行う。fallback は無い: join / delivery.sh set が
-# 失敗すれば readiness を確立する手段が無く必ず不通になるため die する
-# (cmux-send への配送フォールバックは廃止済み)。
-#
-# **readiness 句の前提**: claude ロールの readiness 句 (readiness_clause の claude 分岐)
-# は「SessionStart hook が出す AGMSG-DIRECTIVE に従って Monitor tool を起動せよ」と
-# 指示する。この指示が成立するのは、そのペインの
-# `delivery.sh set monitor claude-code <worktree>` が**この同じ実行内で成功している**
-# 場合だけである。配線が無ければ hook は AGMSG-DIRECTIVE を出さず、子は従うべき指示を
-# 見つけられないまま [ready] を送り、親は「到達可能になった」と誤認する。だから
-# wire_delivery の失敗は警告ではなく die であり、この呼び出しは必ず launch より前に
-# 置く (順序は test-prewarm-layout.sh の PW15、die は PW2、文面と前提は PW18 が固定)。
-
-REVIEW_JOINED=0
-
-wire_delivery() {  # <engine>
-  local engine="$1"
-  if [[ "$engine" == "codex" ]]; then
-    bash "$AGMSG_DIR/delivery.sh" set monitor codex "$CWD" >/dev/null 2>&1 \
-      || die "codex delivery wiring failed (delivery.sh set monitor); readiness cannot be established and there is no fallback"
+  local args=(--cwd "$CWD")
+  if [[ "$role" == design ]]; then
+    args+=(--mode standby --role design --defer-status)
+  elif [[ "$role" == exec ]]; then
+    args+=(--mode standby --role exec --standby-in "$workspace"
+      --standby-split-from "$split_from" --standby-split-direction "$direction")
   else
-    bash "$AGMSG_DIR/delivery.sh" set monitor claude-code "$CWD" >/dev/null 2>&1 \
-      || die "claude-code delivery wiring failed (delivery.sh set monitor); readiness cannot be established and there is no fallback"
+    args+=(--mode review --role "$role" --standby-in "$workspace"
+      --standby-split-from "$split_from" --standby-split-direction "$direction")
   fi
+  args+=(--runner "$runner")
+  role_has_model "$role" && args+=(--model "$(role_value "$role" model)")
+  args+=(--effort "$effort")
+  [[ "$engine" == claude && "$role" != design ]] && args+=(--skip-permissions)
+  [[ "$engine" == claude && "$role" == design && $UNATTENDED -eq 1 ]] && args+=(--skip-permissions)
+  [[ ${#SENTINEL_FLAGS[@]} -eq 0 ]] || args+=("${SENTINEL_FLAGS[@]}")
+  args+=(--status-dir "$STATUS_DIR")
+  [[ ${#NOTIFY_FLAGS[@]} -eq 0 ]] || args+=("${NOTIFY_FLAGS[@]}")
+  args+=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$agent")
+
+  if result=$(bash "$SCRIPT_DIR/launch-workspace.sh" "${args[@]}" "$agent" "$prompt"); then
+    if ! jq -e 'type == "object"' >/dev/null 2>&1 <<< "$result"; then
+      if [[ "$role" == design || "$role" == exec ]]; then
+        die "required $role pane returned invalid JSON"
+      fi
+      leave_role "$role"
+      log warn "$role pane returned invalid JSON; omitting that review role"
+      return 1
+    fi
+    surface=$(jq -r 'if (.surface_id | type) == "string" then .surface_id else empty end' <<< "$result")
+    if [[ -z "$surface" ]]; then
+      [[ "$role" == design || "$role" == exec ]] && die "failed to parse required $role pane output"
+      leave_role "$role"
+      log warn "$role pane output had no surface; omitting that review role"
+      return 1
+    fi
+    LAUNCHED_SURFACE="$surface"
+    LAUNCHED_WORKSPACE=""
+    [[ "$role" != design ]] || LAUNCHED_WORKSPACE=$(jq -r \
+      'if (.workspace_id | type) == "string" then .workspace_id else empty end' <<< "$result")
+    [[ "$role" != design || -n "$LAUNCHED_WORKSPACE" ]] || die "failed to parse design workspace output"
+    LAUNCHED_SURFACES+=("$LAUNCHED_SURFACE")
+    if [[ "$role" == design ]]; then
+      LAUNCHED_WORKSPACES+=("$LAUNCHED_WORKSPACE")
+    else
+      LAUNCHED_WORKSPACES+=("$workspace")
+    fi
+    return 0
+  fi
+
+  if [[ "$role" == design || "$role" == exec ]]; then
+    die "failed to launch required $role pane"
+  fi
+  leave_role "$role"
+  log warn "failed to launch $role pane; omitting that review role"
+  return 1
 }
 
-# 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
-if [[ -n "$AGMSG_TEAM" ]]; then
-  if [[ $WITH_DESIGN -eq 1 ]]; then
-    DESIGN_WIRING_TYPE="claude-code"
-    [[ "$DESIGN_ENGINE" == "codex" ]] && DESIGN_WIRING_TYPE="codex"
-    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG" "$DESIGN_WIRING_TYPE" "$CWD" >&2 2>/dev/null \
-      || die "design agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
-    wire_delivery "$DESIGN_ENGINE"
-  fi
-
-  if [[ $START_CLAUDE -eq 1 ]]; then
-    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-claude" claude-code "$CWD" >&2 2>/dev/null \
-      || die "claude executor agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
-    wire_delivery claude
-  fi
-
-  if [[ $START_CODEX -eq 1 ]]; then
-    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-codex" codex "$CWD" >&2 2>/dev/null \
-      || die "codex executor agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
-    wire_delivery codex
-  fi
-
-  if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
-    REVIEW_WIRING_ENGINE="${REVIEWER_ENGINE:-codex}"
-    REVIEW_WIRING_TYPE="claude-code"
-    [[ "$REVIEW_WIRING_ENGINE" == "codex" ]] && REVIEW_WIRING_TYPE="codex"
-    bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$SLUG-review" "$REVIEW_WIRING_TYPE" "$CWD" >&2 2>/dev/null \
-      || die "review agmsg join failed (join.sh); readiness cannot be established and there is no fallback"
-    REVIEW_JOINED=1
-    wire_delivery "$REVIEW_WIRING_ENGINE"
-  fi
-fi
-
-# --- readiness 確立ヘルパー ---
-# 初期プロンプトへ埋め込む readiness 確立句。埋め込む変数 (AGMSG_DIR / AGMSG_TEAM /
-# name) のメタ文字チェックは引数パース直後 (--- Validation --- 節) で die 済みなので、
-# ここではもう SCRIPT_DIR のチェックは不要 (SCRIPT_DIR はこのプロンプトに埋め込まない。
-# $SCRIPT_DIR/launch-workspace.sh の呼び出しはこのスクリプト自身が直接実行する native な
-# bash 呼び出しであり、二重にクォートされた文字列へ再埋め込みされる訳ではないため
-# 対象外)。
-#
-# readiness 確立句。エンジンごとに手段が違う (spec 2026-08-21 の B2 / V2a):
-#   claude → Monitor ツールを起動する。これが無いと idle 中の受信ができない
-#   codex  → seat を記録する。これが無いとメッセージは inbox に未読で滞留する
-# どちらも最後に親へ [ready] <name> を送る。親はこれを readiness の唯一の確認手段に
-# する (claude 子の readiness は親から観測できないため。B5 / 制約 3)。ワイヤフォーマット
-# `[ready] <name>` は spec / T4/T5 の照合規則が依存するため変えない。
-#
-# 「実行するコマンド」を一字一句指定する形にはしない (レビューで実測済みの 2 つの
-# 欠陥を踏むため):
-#   - 文中の記述的な句点がそのまま引数へ混入する (末尾ピリオドが名前/本文の一部になる)
-#   - `[ready]` を引用せず zsh 上で直接実行させると glob 展開で
-#     `no matches found: [ready] <name>` となり送信コマンド自体が実行されない
-# 代わりに「送るメッセージ」を記述する形にする: 各引数を明示し、send.sh の本文は
-# 1 個の引数として渡すこと、本文は厳密に `[ready] <name>` であり余分な文字
-# (末尾ピリオド等) を含まないことを明示する。エージェント自身が引用を組み立てるので、
-# glob 展開もピリオド混入も起こらない (この文中にクォート文字は書けない制約は維持する)。
-readiness_clause() {
-  local wiring_type="$1" name="$2"
-  if [[ "$wiring_type" == "codex" ]]; then
-    printf 'FIRST make yourself reachable: call %s/drivers/types/codex/codex-record-session.sh with team %s and agent name %s (two arguments, no trailing punctuation). THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
-      "$AGMSG_DIR" "$AGMSG_TEAM" "$name" "$AGMSG_DIR" "$AGMSG_TEAM" "$name" "$name"
-  else
-    printf 'FIRST follow the AGMSG-DIRECTIVE printed by your SessionStart hook and invoke the Monitor tool right now — that is the only way work will reach you. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
-      "$AGMSG_DIR" "$AGMSG_TEAM" "$name" "$name"
-  fi
-}
-
-# --- Step 3: 設計ペイン standby (agmsg モードのみ、workspace 配置) ---
-
-DESIGN_SURFACE=""
-
+DESIGN_SURFACE="$BASE_SURFACE"
 if [[ $WITH_DESIGN -eq 1 ]]; then
-  # design は engine を問わず同じ readiness 確立句で起動する
-  # (AGMSG_DIR / AGMSG_TEAM のメタ文字チェックは引数パース直後に die 済み)。
-  OPUS_PROMPT="$(readiness_clause "$DESIGN_WIRING_TYPE" "$SLUG") Then wait idle. Your task will arrive as an agmsg message. Do not start any work until it arrives. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
+  launch_role design
+  DESIGN_SURFACE="$LAUNCHED_SURFACE"
+  WORKSPACE="$LAUNCHED_WORKSPACE"
+fi
+[[ -n "$WORKSPACE" && -n "$DESIGN_SURFACE" ]] || die "design workspace and surface are required"
 
-  if [[ "$DESIGN_ENGINE" == "codex" ]]; then
-    log "prewarm" "launching codex design workspace for $SLUG"
-    DESIGN_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
-      --cwd "$CWD" \
-      --mode standby \
-      --role plan \
-      --defer-status \
-      --runner "$DESIGN_RUNNER" \
-      ${DESIGN_OVERRIDE_FLAGS[@]+"${DESIGN_OVERRIDE_FLAGS[@]}"} \
-      ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
-      --status-dir "$STATUS_DIR" \
-      ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
-      --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
-      "$SLUG" "$OPUS_PROMPT") || die "failed to launch codex design workspace"
-  else
-    log "prewarm" "launching opus standby workspace for $SLUG"
-    OPUS_UNATTENDED_FLAGS=()
-    [[ $UNATTENDED -eq 1 ]] && OPUS_UNATTENDED_FLAGS=(--skip-permissions)
-    # codex 分岐と対称にする: DESIGN_RUNNER が指定されていれば plan_model/plan_effort が
-    # 設計ペインへ届くよう --runner を渡す (未指定時は launch-workspace.sh の既定に委ねる)
-    DESIGN_RUNNER_FLAGS=()
-    [[ -n "$DESIGN_RUNNER" ]] && DESIGN_RUNNER_FLAGS=(--runner "$DESIGN_RUNNER")
-    DESIGN_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
-      --cwd "$CWD" \
-      --mode standby \
-      --role plan \
-      --defer-status \
-      ${DESIGN_RUNNER_FLAGS[@]+"${DESIGN_RUNNER_FLAGS[@]}"} \
-      ${DESIGN_OVERRIDE_FLAGS[@]+"${DESIGN_OVERRIDE_FLAGS[@]}"} \
-      ${OPUS_UNATTENDED_FLAGS[@]+"${OPUS_UNATTENDED_FLAGS[@]}"} \
-      ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
-      --status-dir "$STATUS_DIR" \
-      ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
-      --agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG" \
-      "$SLUG" "$OPUS_PROMPT") || die "failed to launch opus standby workspace"
+DESIGN_REVIEW_SURFACE=""
+if [[ "$REVIEW_MODE" == on ]]; then
+  if launch_role design_review "$WORKSPACE" "$DESIGN_SURFACE" right; then
+    DESIGN_REVIEW_SURFACE="$LAUNCHED_SURFACE"
   fi
-  WORKSPACE=$(echo "$DESIGN_RESULT" | jq -r '.workspace_id // empty')
-  DESIGN_SURFACE=$(echo "$DESIGN_RESULT" | jq -r '.surface_id // empty')
-  BASE_SURFACE="$DESIGN_SURFACE"
-  [[ -n "$WORKSPACE" && -n "$DESIGN_SURFACE" ]] || die "failed to parse design standby output"
 fi
 
-# --- 実装ペインの配置ヘルパー ---
-# 実装ペインは design の下に 1 行を作り、そこへ横並びで積む。
-#   1 つ目 = design から down split (左下)
-#   2 つ目以降 = 直前の実装ペインから right split (右下 …)
-# review が design の右に入るので、実装 2 つ + review でちょうど 2×2 になる。
-# down のまま縦積みすると左カラムが 3 段になり 2×2 が崩れるため、
-# 2 つ目以降の direction は必ず right を渡す。
-
-EXEC_LAST_SURFACE=""
-EXEC_SPLIT_FLAGS=()
-
-set_exec_split_flags() {
-  if [[ -z "$EXEC_LAST_SURFACE" ]]; then
-    EXEC_SPLIT_FLAGS=(--standby-split-from "$BASE_SURFACE")
-  else
-    EXEC_SPLIT_FLAGS=(--standby-split-from "$EXEC_LAST_SURFACE" --standby-split-direction right)
+launch_role exec "$WORKSPACE" "$DESIGN_SURFACE" down
+EXEC_SURFACE="$LAUNCHED_SURFACE"
+EXEC_REVIEW_SURFACE=""
+if [[ "$REVIEW_MODE" == on ]]; then
+  if launch_role exec_review "$WORKSPACE" "$EXEC_SURFACE" right; then
+    EXEC_REVIEW_SURFACE="$LAUNCHED_SURFACE"
   fi
+fi
+
+role_entry() {
+  local role="$1" surface="$2" agent
+  agent=$(role_agent "$role")
+  jq -c --arg role "$role" --arg surface "$surface" --arg agent "$agent" \
+    '.roles[$role] + {surface_id: $surface, agent: $agent, wired: true}' <<< "$ROLES_DOC"
 }
 
-# --- Step 4: claude 実装 standby (選択時のみ、split 配置) ---
+DESIGN_ENTRY=$(role_entry design "$DESIGN_SURFACE")
+EXEC_ENTRY=$(role_entry exec "$EXEC_SURFACE")
+DESIGN_REVIEW_ENTRY='{}'
+EXEC_REVIEW_ENTRY='{}'
+[[ -z "$DESIGN_REVIEW_SURFACE" ]] || DESIGN_REVIEW_ENTRY=$(role_entry design_review "$DESIGN_REVIEW_SURFACE")
+[[ -z "$EXEC_REVIEW_SURFACE" ]] || EXEC_REVIEW_ENTRY=$(role_entry exec_review "$EXEC_REVIEW_SURFACE")
+PANES_JSON=$(jq -n \
+  --argjson design "$DESIGN_ENTRY" --argjson exec "$EXEC_ENTRY" \
+  --arg drs "$DESIGN_REVIEW_SURFACE" --arg ers "$EXEC_REVIEW_SURFACE" \
+  --argjson dr "$DESIGN_REVIEW_ENTRY" --argjson er "$EXEC_REVIEW_ENTRY" \
+  '{design: $design} + (if $drs != "" then {design_review: $dr} else {} end) +
+   {exec: $exec} + (if $ers != "" then {exec_review: $er} else {} end)')
 
-CLAUDE_EXEC_SURFACE=""
-CLAUDE_EXEC_PROMPT=""
-# CLAUDE_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
-AGMSG_FLAGS_CLAUDE=()
-# 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
-if [[ $START_CLAUDE -eq 1 && -n "$AGMSG_TEAM" ]]; then
-  CLAUDE_EXEC_PROMPT="$(readiness_clause claude-code "$SLUG-claude") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
-  AGMSG_FLAGS_CLAUDE=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-claude")
-fi
+mkdir -p "$STATUS_DIR" || die "cannot create status directory at $STATUS_DIR"
+validate_publish_destination
+PREWARM_TMP=$(mktemp "$STATUS_DIR/.prewarm.json.XXXXXX") \
+  || die "cannot create temporary prewarm artifact"
+jq -n --arg workspace_id "$WORKSPACE" --arg review_mode "$REVIEW_MODE" --argjson panes "$PANES_JSON" \
+  '{workspace_id: $workspace_id, review_mode: $review_mode} + $panes' > "$PREWARM_TMP" \
+  || die "cannot write temporary prewarm artifact"
 
-if [[ $START_CLAUDE -eq 1 ]]; then
-  log "prewarm" "launching claude executor standby pane for $SLUG"
-  set_exec_split_flags
-  CLAUDE_ARGS=(
-    --cwd "$CWD"
-    --mode standby
-    --role exec
-    --standby-in "$WORKSPACE"
-    "${EXEC_SPLIT_FLAGS[@]}"
-    --skip-permissions
-    ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"}
-    --status-dir "$STATUS_DIR"
-    ${EXEC_OVERRIDE_FLAGS[@]+"${EXEC_OVERRIDE_FLAGS[@]}"}
-  )
-  [[ -n "$CLAUDE_EXEC_RUNNER" ]] && CLAUDE_ARGS+=(--runner "$CLAUDE_EXEC_RUNNER")
-  CLAUDE_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
-    "${CLAUDE_ARGS[@]}" \
-    ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
-    ${AGMSG_FLAGS_CLAUDE[@]+"${AGMSG_FLAGS_CLAUDE[@]}"} \
-    "$SLUG-claude" ${CLAUDE_EXEC_PROMPT:+"$CLAUDE_EXEC_PROMPT"}) || die "failed to launch claude executor standby pane"
-  CLAUDE_EXEC_SURFACE=$(echo "$CLAUDE_RESULT" | jq -r '.surface_id // empty')
-  [[ -n "$CLAUDE_EXEC_SURFACE" ]] || die "failed to parse claude executor standby output"
-  EXEC_LAST_SURFACE="$CLAUDE_EXEC_SURFACE"
-fi
-
-# --- Step 5: codex standby (選択時のみ、実装行へ split 配置) ---
-# codex は seat 記録 (readiness_clause の codex 分岐) が無いと agmsg message が
-# inbox に未読で滞留する (V2a)。配線成否に関わらず常にプロンプトを渡す —
-# プロンプト無し起動は readiness を確立できず必ず不通になるので、フォールバックにしない。
-
-CODEX_SURFACE=""
-
-if [[ $START_CODEX -eq 1 ]]; then
-  AGMSG_FLAGS_CODEX=()
-  CODEX_EXEC_PROMPT=""
-  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
-  if [[ -n "$AGMSG_TEAM" ]]; then
-    AGMSG_FLAGS_CODEX=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-codex")
-    CODEX_EXEC_PROMPT="$(readiness_clause codex "$SLUG-codex") Then wait idle. Execution instructions will arrive as an agmsg message. Do not start any work until they arrive. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
-  fi
-  log "prewarm" "launching codex standby pane for $SLUG"
-  # CODEX_EXEC_RUNNER は case "$EXEC_CHOICE" の直後で解決済み (in-session 判定と共有)
-  set_exec_split_flags
-  CODEX_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
-    --cwd "$CWD" \
-    --mode standby \
-    --role exec \
-    --standby-in "$WORKSPACE" \
-    "${EXEC_SPLIT_FLAGS[@]}" \
-    --runner "$CODEX_EXEC_RUNNER" \
-    ${EXEC_OVERRIDE_FLAGS[@]+"${EXEC_OVERRIDE_FLAGS[@]}"} \
-    ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
-    --status-dir "$STATUS_DIR" \
-    ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
-    ${AGMSG_FLAGS_CODEX[@]+"${AGMSG_FLAGS_CODEX[@]}"} \
-    "$SLUG-codex" "$CODEX_EXEC_PROMPT") || die "failed to launch codex standby pane"
-  CODEX_SURFACE=$(echo "$CODEX_RESULT" | jq -r '.surface_id // empty')
-  [[ -n "$CODEX_SURFACE" ]] || die "failed to parse codex standby output"
-  EXEC_LAST_SURFACE="$CODEX_SURFACE"
-fi
-
-# --- Step 5.5: review ペイン (--review-model / --reviewer-runner 時のみ、design の右に split 配置) ---
-# standby と同じ wrapper だが .assigned-<slug>-review は誰も touch しない前提 —
-# close しても status.json を汚さない。初期プロンプトには readiness 確立句を乗せる —
-# codex standby と同じく、配線成否に関わらず常にプロンプトを渡す。
-# --reviewer-runner は engine を問わず利用できる。--review-model は claude 設計の
-# 既存 codex review 指定として維持する。
-
-REVIEW_SURFACE=""
-
-leave_failed_review_join() {
-  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
-  [[ $REVIEW_JOINED -eq 1 && -n "$AGMSG_TEAM" ]] || return 0
-  if bash "$AGMSG_DIR/leave.sh" "$AGMSG_TEAM" "$SLUG-review" >/dev/null 2>&1; then
-    REVIEW_JOINED=0
-  else
-    log "warn" "failed to leave review agmsg member after pane launch failure"
-  fi
-}
-
-if [[ -n "$REVIEW_MODEL" || -n "$REVIEWER_RUNNER" ]]; then
-  AGMSG_FLAGS_REVIEW=()
-  if [[ -n "$REVIEWER_RUNNER" ]]; then
-    log "prewarm" "launching review pane for $SLUG (reviewer runner: $REVIEWER_RUNNER)"
-    REVIEW_PANE_NAME="$SLUG-review"
-    REVIEW_RUNNER_FLAGS=(--runner "$REVIEWER_RUNNER")
-    [[ "$REVIEWER_ENGINE" == "claude" ]] && REVIEW_RUNNER_FLAGS+=(--skip-permissions)
-    # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
-    if [[ -n "$AGMSG_TEAM" ]]; then
-      AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-review")
-    fi
-  else
-    log "prewarm" "launching codex review pane for $SLUG"
-    REVIEW_PANE_NAME="$SLUG-review"
-    REVIEW_RUNNER_FLAGS=(--runner "$CODEX_RUNNER" --model "$REVIEW_MODEL")
-    # legacy 経路でも --agmsg-from は必須。落とすと readiness_clause の name 引数
-    # ($SLUG-review) と launch-workspace.sh の dispatch-notify 配線
-    # (--agmsg-team/--agmsg-from) が食い違い、review pane の agmsg 上の身元が
-    # 曖昧になる。
-    # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
-    if [[ -n "$AGMSG_TEAM" ]]; then
-      AGMSG_FLAGS_REVIEW=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$SLUG-review")
-    fi
-  fi
-  REVIEW_PROMPT=""
-  # 退役候補 (CLAUDE.md 項目 47): --agmsg-team 必須化 (:202) 以降この条件は常に真
-  if [[ -n "$AGMSG_TEAM" ]]; then
-    REVIEW_PROMPT="$(readiness_clause "$REVIEW_WIRING_TYPE" "$SLUG-review") Then wait idle. Review requests will arrive as an agmsg message. Do not start any work until a request arrives. Do not poll and do not run any inbox command or wait loop. The message is injected into your session automatically. Just end your turn."
-  fi
-  if REVIEW_RESULT=$(bash "$SCRIPT_DIR/launch-workspace.sh" \
-    --cwd "$CWD" \
-    --mode review \
-    --role review \
-    --standby-in "$WORKSPACE" \
-    --standby-split-from "$BASE_SURFACE" \
-    --standby-split-direction right \
-    "${REVIEW_RUNNER_FLAGS[@]}" \
-    ${REVIEW_OVERRIDE_FLAGS[@]+"${REVIEW_OVERRIDE_FLAGS[@]}"} \
-    ${SENTINEL_FLAGS[@]+"${SENTINEL_FLAGS[@]}"} \
-    --status-dir "$STATUS_DIR" \
-    ${NOTIFY_FLAGS[@]+"${NOTIFY_FLAGS[@]}"} \
-    ${AGMSG_FLAGS_REVIEW[@]+"${AGMSG_FLAGS_REVIEW[@]}"} \
-    "$REVIEW_PANE_NAME" "$REVIEW_PROMPT"); then
-    if ! REVIEW_SURFACE=$(echo "$REVIEW_RESULT" | jq -er '.surface_id // empty'); then
-      REVIEW_SURFACE=""
-      leave_failed_review_join
-      log "warn" "review pane output had no surface; review is disabled for this task"
-    fi
-  else
-    leave_failed_review_join
-    log "warn" "failed to launch review pane; review is disabled for this task"
-  fi
-fi
-
-# --- Step 6: prewarm.json 書き込み + 出力 ---
-
-mkdir -p "$STATUS_DIR"
-REVIEW_ENGINE="${REVIEWER_ENGINE:-codex}"
-PREWARM_JSON=$(jq -n \
-  --arg ds "$DESIGN_SURFACE" \
-  --arg ces "$CLAUDE_EXEC_SURFACE" \
-  --arg cs "$CODEX_SURFACE" \
-  --arg rs "$REVIEW_SURFACE" \
-  --arg slug "$SLUG" \
-  --arg drr "$DESIGN_RUNNER" \
-  --arg cer "$CLAUDE_EXEC_RUNNER" \
-  --arg crr "${CODEX_EXEC_RUNNER:-$CODEX_RUNNER}" \
-  --arg rrr "${REVIEWER_RUNNER:-$CODEX_RUNNER}" \
-  --arg de "$DESIGN_ENGINE" \
-  --arg re "$REVIEW_ENGINE" \
-  '(if $ds != "" then {design: {surface_id: $ds, agent: $slug, runner: $drr, engine: $de, role: "plan", wired: true}} else {} end)
-   + (if $rs != "" then {review: {surface_id: $rs, agent: ($slug + "-review"), runner: $rrr, engine: $re, role: "review", wired: true}} else {} end)
-   + {executors:
-        ((if $ces != "" then {claude: {surface_id: $ces, agent: ($slug + "-claude"), runner: $cer, engine: "claude", role: "exec", wired: true}} else {} end)
-         + (if $cs != "" then {codex: {surface_id: $cs, agent: ($slug + "-codex"), runner: $crr, engine: "codex", role: "exec", wired: true}} else {} end))}')
-echo "$PREWARM_JSON" > "$STATUS_DIR/prewarm.json"
-log "prewarm" "wrote $STATUS_DIR/prewarm.json"
-
-# agmsg prewarm 経路では通常 launch が走らないため、観測用の初期 status.json をここで書く
-# (standby wrapper は .assigned-<name> が無い限り status.json を書かないので、上書きの心配はない)
+WROTE_INITIAL_STATUS=0
 if [[ $WITH_DESIGN -eq 1 && ! -f "$STATUS_DIR/status.json" ]]; then
+  STATUS_TMP=$(mktemp "$STATUS_DIR/.status.json.XXXXXX") \
+    || die "cannot create temporary initial status artifact"
   jq -n --arg ws "$WORKSPACE" --arg sf "$DESIGN_SURFACE" \
     '{status: "launched", workspace_id: $ws, surface_id: $sf,
       message: "agmsg prewarm panes launched (idle)", timestamp: (now | todate)}' \
-    > "$STATUS_DIR/status.json"
-  log "prewarm" "wrote initial launched status.json"
+    > "$STATUS_TMP" || die "cannot write temporary initial status artifact"
 fi
 
-jq -n --arg ws "$WORKSPACE" --argjson panes "$PREWARM_JSON" \
-  '{workspace_id: $ws, panes: $panes}'
+validate_publish_destination
+if [[ -n "$STATUS_TMP" ]]; then
+  mv -- "$STATUS_TMP" "$STATUS_DIR/status.json" \
+    || die "cannot publish initial $STATUS_DIR/status.json"
+  STATUS_TMP=""
+  PUBLISHED_INITIAL_STATUS=1
+  WROTE_INITIAL_STATUS=1
+fi
+mv -- "$PREWARM_TMP" "$STATUS_DIR/prewarm.json" \
+  || die "cannot publish $STATUS_DIR/prewarm.json"
+PREWARM_TMP=""
+ROLLBACK_ACTIVE=0
+PUBLISHED_INITIAL_STATUS=0
+
+log prewarm "wrote $STATUS_DIR/prewarm.json"
+[[ $WROTE_INITIAL_STATUS -eq 0 ]] || log prewarm "wrote initial launched status.json"
+
+jq -n --arg workspace_id "$WORKSPACE" --arg review_mode "$REVIEW_MODE" --argjson panes "$PANES_JSON" \
+  '{workspace_id: $workspace_id, review_mode: $review_mode, panes: $panes}'

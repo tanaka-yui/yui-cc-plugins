@@ -12,7 +12,9 @@
 #   log（任意）  関数。未定義なら内蔵フォールバックを使う
 
 # --- 設定 ---
-TERMINAL_WAIT_GLOBAL_CONFIG="$HOME/.claude/cmux-team-dispatch-task/config.json"
+TERMINAL_WAIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$TERMINAL_WAIT_SCRIPT_DIR/config-lib.sh"
+TERMINAL_WAIT_GLOBAL_CONFIG="$(dispatch_config_file)"
 TERMINAL_WAIT_EMA_ALPHA_NUM=3   # EMA α = 0.3（×10 で整数演算）
 TERMINAL_WAIT_EMA_ALPHA_DEN=10
 TERMINAL_WAIT_SAMPLES_MAX=5
@@ -65,7 +67,7 @@ save_sample_ms() {
   fi
 
   local tmp
-  tmp=$(mktemp)
+  tmp=$(mktemp "$TERMINAL_WAIT_GLOBAL_CONFIG.XXXXXX")
   if echo "$existing" | jq \
     --argjson new "$new_ms" \
     --argjson alpha_num "$TERMINAL_WAIT_EMA_ALPHA_NUM" \

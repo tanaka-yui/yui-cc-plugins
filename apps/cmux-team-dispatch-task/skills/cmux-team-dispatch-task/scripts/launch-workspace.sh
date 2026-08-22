@@ -20,10 +20,11 @@
 #                                      同一 (.assigned-<name> が無い限り wrapper は status.json を
 #                                      書かない) だが、レビューペインは .assigned を一切使わない
 #                                      前提のモード。codex engine では --model を反映する
-#   --role plan|review|exec            Model/effort role. Default is derived from mode:
-#                                      plan/superpowers=plan, review=review,
+#   --role design|design_review|exec|exec_review
+#                                      Model/effort role. Default is derived from mode:
+#                                      plan/superpowers=design, review=design_review,
 #                                      execute/standby=exec. A standby design pane passes
-#                                      --role plan; conflicting non-standby overrides fail.
+#                                      --role design; conflicting non-standby overrides fail.
 #   --standby-split-direction right|down  standby/review split 配置の分割方向 (default: down)
 #   --standby-in <workspace-id>        standby ペインを追加する既存 workspace (split 配置時必須)
 #   --standby-split-from <surface-id>  縦分割の分割元 surface (split 配置時必須)
@@ -31,12 +32,11 @@
 #                                      inner prompt が
 #                                      "Read and execute the plan at <path>" になる
 #   --model <model>                    Model flag passed as --model <X>. engine を問わず
-#                                      未指定時は runner の role 対応 plan_model /
-#                                      review_model / exec_model にフォールバックし、
-#                                      claude はさらに plan/review=opus[1m] / exec=sonnet を既定とする
+#                                      未指定時は role 対応の組込み既定値を使う。claude は
+#                                      design/design_review/exec_review=opus[1m] / exec=sonnet、
+#                                      codex は model を省略して codex 側の既定に委ねる
 #   --effort <level>                   Reasoning effort. engine を問わず未指定時は runner の
-#                                      plan_effort / review_effort / exec_effort に
-#                                      フォールバックし、既定は plan/review=xhigh / exec=high。
+#                                      組込み既定値は design/design_review/exec_review=xhigh / exec=high。
 #                                      claude は --effort、codex は -c model_reasoning_effort へ注入
 #   --skip-permissions                 claude に --dangerously-skip-permissions を
 #                                      追加 (sonnet の auto mode 不在対策)。
@@ -78,9 +78,8 @@
 #   --status-dir <path>                Directory for writing status files
 #   --parent-notify-workspace <ws-id>  Workspace to notify on completion
 #   --runner <name>                    Runner name to look up in
-#                                      ~/.claude/cmux-team-dispatch-task/runners.json.
-#                                      Resolves command/engine and role-specific plan/review/exec
-#                                      model/effort fields for the child session.
+#                                      DISPATCH_CONFIG_HOME/runners.json (or RUNNERS_CONFIG_PATH override).
+#                                      Resolves command/engine for the child session.
 #                                      The composed command is always wrapped in `zsh -ic "..."`
 #                                      so functions and env vars from ~/.zshrc are loaded.
 #                                      Default: hardcoded {claude, engine=claude}.
@@ -101,7 +100,8 @@ CMUX="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
 # Child の実行中 runner ファイルを上書きしてしまい bash の挙動が undefined になる。
 RUNNER_SCRIPT_NAME=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNNERS_CONFIG_PATH="${RUNNERS_CONFIG_PATH:-$HOME/.claude/cmux-team-dispatch-task/runners.json}"
+source "$SCRIPT_DIR/config-lib.sh"
+RUNNERS_CONFIG_PATH="$(dispatch_runners_file)"
 
 # --- Helpers ---
 
@@ -198,6 +198,14 @@ EFFORT=""
 SKIP_PERMISSIONS=0
 DEFER_STATUS=0
 REVIEW_CONFIG=""
+REVIEW_CONFIG_DOC=""
+REVIEWER_SURFACE=""
+REVIEWER_WORKSPACE=""
+REVIEWER_RUNNER=""
+REVIEWER_ENGINE=""
+REVIEWER_AGENT=""
+REVIEW_DIR=""
+REVIEW_SANDBOX_DIR=""
 TIMEOUT_SENTINEL=""
 UNATTENDED=0
 AGMSG_TEAM=""
@@ -248,7 +256,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --role)
-      [[ $# -lt 2 ]] && die "--role requires plan, review, or exec"
+      [[ $# -lt 2 ]] && die "--role requires design, design_review, exec, or exec_review"
       MODEL_ROLE="$2"
       shift 2
       ;;
@@ -343,17 +351,27 @@ done
 
 if [[ -z "$MODEL_ROLE" ]]; then
   case "$MODE" in
-    plan|superpowers) MODEL_ROLE="plan" ;;
-    review) MODEL_ROLE="review" ;;
+    plan|superpowers) MODEL_ROLE="design" ;;
+    review) MODEL_ROLE="design_review" ;;
     execute|standby) MODEL_ROLE="exec" ;;
   esac
 elif [[ "$MODE" != "standby" ]]; then
   case "$MODE:$MODEL_ROLE" in
-    plan:plan|superpowers:plan|review:review|execute:exec) ;;
+    plan:design|superpowers:design|review:design_review|review:exec_review|execute:exec) ;;
     *) die "--role '$MODEL_ROLE' conflicts with --mode '$MODE'" ;;
   esac
 fi
-[[ "$MODEL_ROLE" =~ ^(plan|review|exec)$ ]] || die "--role must be 'plan', 'review', or 'exec'"
+[[ "$MODEL_ROLE" =~ ^(design|design_review|exec|exec_review)$ ]] \
+  || die "--role must be 'design', 'design_review', 'exec', or 'exec_review'"
+
+# STATUS_DIR は review の composed command に --add-dir '<path>' として埋め込まれる。
+# 引用を破る値は、ファイル生成やコマンド組立てより前に fail-closed で拒否する。
+STATUS_DIR_SAFE=1
+case "$STATUS_DIR" in
+  *\'*|*\"*|*\`*|*\$*|*\!*|*\\*|*[[:cntrl:]]*)
+    STATUS_DIR_SAFE=0
+    die "--status-dir contains a shell metacharacter; refusing to build the composed command" ;;
+esac
 
 # execute mode は --plan-file が必須で PROMPT は不要 (inner prompt が plan-file 由来)
 # standby mode は --standby-in / --cwd が必須で PROMPT は省略可 (idle TUI 待機)
@@ -374,7 +392,8 @@ fi
 # --review-config は execute 専用 (Phase B-R: PR 作成前コードレビューのプロトコル注入)
 if [[ -n "$REVIEW_CONFIG" ]]; then
   [[ "$MODE" == "execute" ]] || die "--review-config is only valid with --mode execute"
-  [[ -f "$REVIEW_CONFIG" ]] || die "review config file not found: $REVIEW_CONFIG"
+  [[ -f "$REVIEW_CONFIG" && ! -L "$REVIEW_CONFIG" ]] \
+    || die "review config must be a regular non-symlink file: $REVIEW_CONFIG"
 fi
 
 # Validate workspace name: only allow safe characters for path/branch usage
@@ -455,12 +474,6 @@ command -v jq &>/dev/null || die "jq is not installed (required for JSON output)
 
 RUNNER_COMMAND="claude"
 RUNNER_ENGINE="claude"
-RUNNER_PLAN_MODEL=""
-RUNNER_REVIEW_MODEL=""
-RUNNER_EXEC_MODEL=""
-RUNNER_PLAN_EFFORT=""
-RUNNER_REVIEW_EFFORT=""
-RUNNER_EXEC_EFFORT=""
 
 if [[ -n "$RUNNER_NAME" ]]; then
   [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH (required when --runner is specified)"
@@ -470,43 +483,16 @@ if [[ -n "$RUNNER_NAME" ]]; then
 
   RUNNER_COMMAND=$(echo "$RUNNER_JSON" | jq -r '.command // empty')
   RUNNER_ENGINE=$(echo "$RUNNER_JSON" | jq -r '.engine // "claude"')
-  RUNNER_PLAN_MODEL=$(echo "$RUNNER_JSON" | jq -r '.plan_model // empty')
-  RUNNER_REVIEW_MODEL=$(echo "$RUNNER_JSON" | jq -r '.review_model // empty')
-  RUNNER_EXEC_MODEL=$(echo "$RUNNER_JSON" | jq -r '.exec_model // empty')
-  RUNNER_PLAN_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.plan_effort // empty')
-  RUNNER_REVIEW_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.review_effort // empty')
-  RUNNER_EXEC_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.exec_effort // empty')
 
   [[ -n "$RUNNER_COMMAND" ]] || die "runner '$RUNNER_NAME' is missing 'command' field"
   [[ "$RUNNER_ENGINE" == "claude" || "$RUNNER_ENGINE" == "codex" ]] \
     || die "runner '$RUNNER_NAME' has invalid engine '$RUNNER_ENGINE' (must be 'claude' or 'codex')"
 fi
 
-# model / effort 解決: engine 中立。優先順位は 明示指定 > runner の role フィールド > 既定値。
-# claude の model 既定は role ごとに固定し、codex の model 既定は置かない
-# (モデル名がアカウント・バージョン依存のため codex 側 config.toml へ委ねる)。
-# effort の既定は engine 共通 (plan/review=xhigh, exec=high)。
+# model / effort 解決: 明示指定 > role 対応の組込み既定値。
 CODEX_EFFORT_FLAG=""
-case "$MODEL_ROLE" in
-  plan)
-    [[ -z "$MODEL" ]] && MODEL="$RUNNER_PLAN_MODEL"
-    [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_PLAN_EFFORT"
-    [[ -z "$MODEL" && "$RUNNER_ENGINE" == "claude" ]] && MODEL="opus[1m]"
-    [[ -z "$EFFORT" ]] && EFFORT="xhigh"
-    ;;
-  review)
-    [[ -z "$MODEL" ]] && MODEL="$RUNNER_REVIEW_MODEL"
-    [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_REVIEW_EFFORT"
-    [[ -z "$MODEL" && "$RUNNER_ENGINE" == "claude" ]] && MODEL="opus[1m]"
-    [[ -z "$EFFORT" ]] && EFFORT="xhigh"
-    ;;
-  exec)
-    [[ -z "$MODEL" ]] && MODEL="$RUNNER_EXEC_MODEL"
-    [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_EXEC_EFFORT"
-    [[ -z "$MODEL" && "$RUNNER_ENGINE" == "claude" ]] && MODEL="sonnet"
-    [[ -z "$EFFORT" ]] && EFFORT="high"
-    ;;
-esac
+[[ -z "$MODEL" ]] && MODEL="$(dispatch_default_model "$MODEL_ROLE" "$RUNNER_ENGINE")"
+[[ -z "$EFFORT" ]] && EFFORT="$(dispatch_default_effort "$MODEL_ROLE")"
 [[ -n "$MODEL" ]] && log "runner" "applying model=$MODEL ($RUNNER_ENGINE $MODEL_ROLE)"
 if [[ "$RUNNER_ENGINE" == "codex" ]]; then
   [[ "$EFFORT" =~ ^(minimal|low|medium|high|xhigh)$ ]] \
@@ -555,6 +541,97 @@ if [[ "$RUNNER_ENGINE" == "codex" ]]; then
 fi
 
 log "runner" "name=${RUNNER_NAME:-<default>} command=$RUNNER_COMMAND engine=$RUNNER_ENGINE"
+
+prepare_review_directory() { # $1=status directory; stdout=canonical review directory
+  local status_dir="$1" review_dir status_real review_real
+  [[ -n "$status_dir" ]] || return 1
+  if [[ -e "$status_dir" || -L "$status_dir" ]]; then
+    [[ -d "$status_dir" && ! -L "$status_dir" ]] || return 1
+  else
+    mkdir -p "$status_dir" || return 1
+  fi
+  review_dir="$status_dir/review"
+  if [[ -e "$review_dir" || -L "$review_dir" ]]; then
+    [[ -d "$review_dir" && ! -L "$review_dir" ]] || return 1
+  else
+    mkdir "$review_dir" || return 1
+  fi
+  status_real=$(cd "$status_dir" 2>/dev/null && pwd -P) || return 1
+  review_real=$(cd "$review_dir" 2>/dev/null && pwd -P) || return 1
+  [[ "$review_real" == "$status_real/review" ]] || return 1
+  printf '%s\n' "$review_real"
+}
+
+validate_review_config() {
+  local expected_review config_parent surface_list registered_engine required_field
+  REVIEW_CONFIG_DOC=$(cat "$REVIEW_CONFIG") || die "cannot read review config at $REVIEW_CONFIG"
+  for required_field in reviewer_surface reviewer_workspace reviewer_agent reviewer_runner reviewer_engine review_dir; do
+    jq -e --arg field "$required_field" -s \
+      'length == 1 and (.[0] | type == "object") and (.[0] | has($field))' \
+      >/dev/null 2>&1 <<< "$REVIEW_CONFIG_DOC" \
+      || die "review config must contain $required_field"
+  done
+  jq -e -s 'length == 1 and (.[0] | type == "object") and
+    (.[0] | keys == ["review_dir","reviewer_agent","reviewer_engine","reviewer_runner",
+      "reviewer_surface","reviewer_workspace"]) and
+    (.[0].reviewer_surface | type == "string") and
+    (.[0].reviewer_workspace | type == "string") and
+    (.[0].reviewer_agent | type == "string") and
+    (.[0].reviewer_runner | type == "string") and
+    (.[0].reviewer_engine == "claude" or .[0].reviewer_engine == "codex") and
+    (.[0].review_dir | type == "string")' >/dev/null 2>&1 <<< "$REVIEW_CONFIG_DOC" \
+    || die "invalid review config schema at $REVIEW_CONFIG"
+
+  REVIEWER_SURFACE=$(jq -r '.reviewer_surface' <<< "$REVIEW_CONFIG_DOC")
+  REVIEWER_WORKSPACE=$(jq -r '.reviewer_workspace' <<< "$REVIEW_CONFIG_DOC")
+  REVIEWER_RUNNER=$(jq -r '.reviewer_runner' <<< "$REVIEW_CONFIG_DOC")
+  REVIEWER_ENGINE=$(jq -r '.reviewer_engine' <<< "$REVIEW_CONFIG_DOC")
+  REVIEWER_AGENT=$(jq -r '.reviewer_agent' <<< "$REVIEW_CONFIG_DOC")
+  REVIEW_DIR=$(jq -r '.review_dir' <<< "$REVIEW_CONFIG_DOC")
+
+  dispatch_valid_surface_id "$REVIEWER_SURFACE" \
+    || die "invalid reviewer_surface '$REVIEWER_SURFACE' in $REVIEW_CONFIG"
+  dispatch_valid_workspace_id "$REVIEWER_WORKSPACE" \
+    || die "invalid reviewer_workspace '$REVIEWER_WORKSPACE' in $REVIEW_CONFIG"
+  [[ "$REVIEWER_AGENT" =~ ^[A-Za-z0-9._-]+$ ]] \
+    || die "invalid reviewer_agent '$REVIEWER_AGENT' in $REVIEW_CONFIG: use only [A-Za-z0-9._-]"
+  dispatch_valid_runner_name "$REVIEWER_RUNNER" \
+    || die "invalid reviewer_runner '$REVIEWER_RUNNER' in $REVIEW_CONFIG"
+
+  [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH"
+  registered_engine=$(jq -r --arg runner "$REVIEWER_RUNNER" \
+    'first(.runners[]? | select(.name == $runner) | .engine) // empty' "$RUNNERS_CONFIG_PATH") \
+    || die "failed to parse runners.json at $RUNNERS_CONFIG_PATH"
+  [[ -n "$registered_engine" && "$registered_engine" == "$REVIEWER_ENGINE" ]] \
+    || die "reviewer_runner/reviewer_engine mismatch in $REVIEW_CONFIG"
+
+  expected_review=$(prepare_review_directory "$STATUS_DIR") \
+    || die "unsafe review directory under --status-dir"
+  [[ -d "$REVIEW_DIR" && ! -L "$REVIEW_DIR" ]] \
+    || die "review_dir must be a non-symlink directory in $REVIEW_CONFIG"
+  REVIEW_DIR=$(cd "$REVIEW_DIR" 2>/dev/null && pwd -P) \
+    || die "cannot resolve review_dir in $REVIEW_CONFIG"
+  [[ "$REVIEW_DIR" == "$expected_review" ]] \
+    || die "review_dir is outside the canonical --status-dir review directory"
+  config_parent=$(cd "$(dirname "$REVIEW_CONFIG")" 2>/dev/null && pwd -P) \
+    || die "cannot resolve review config parent directory"
+  [[ "$config_parent" == "$REVIEW_DIR" ]] \
+    || die "review config is outside review_dir"
+
+  surface_list=$("$CMUX" list-pane-surfaces --workspace "$REVIEWER_WORKSPACE" 2>/dev/null) \
+    || die "cannot inspect reviewer_workspace '$REVIEWER_WORKSPACE'"
+  grep -oE 'surface:[0-9]+' <<< "$surface_list" | grep -Fxq "$REVIEWER_SURFACE" \
+    || die "reviewer_surface '$REVIEWER_SURFACE' does not belong to '$REVIEWER_WORKSPACE'"
+}
+
+if [[ -n "$REVIEW_CONFIG" ]]; then
+  validate_review_config
+fi
+
+if [[ "$MODE" == "review" && -n "$STATUS_DIR" ]]; then
+  REVIEW_SANDBOX_DIR=$(prepare_review_directory "$STATUS_DIR") \
+    || die "unsafe review directory under --status-dir"
+fi
 
 # Resolve git repo info
 REPO_ROOT=""
@@ -772,34 +849,7 @@ if [[ "$MODE" == "execute" ]]; then
   # 文中にクォート文字を使わないこと (inner prompt の '...' と zsh -ic の "..." を壊さないため)
   REVIEW_INSTRUCTION=""
   if [[ -n "$REVIEW_CONFIG" ]]; then
-    REVIEWER_SURFACE=$(jq -r '.reviewer_surface // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    REVIEW_DIR=$(jq -r '.review_dir // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    REVIEWER_WORKSPACE=$(jq -r '.reviewer_workspace // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    # 解決済み review role の engine。design engine との関係から再計算せず、親セッションが
-    # review-config に記録した値を使う。欠落 (旧スキーマ) なら注入しない。
-    REVIEWER_ENGINE=$(jq -r '.reviewer_engine // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    # 配送先は surface ではなく agmsg agent 名なので、review-config から読む。
-    # 親セッションが解決した review role の agent 名 (<task-slug>-review) であり、
-    # ここで SLUG から組み立て直してはならない (SLUG は <task-slug>-exec や
-    # <task-slug>-claude であって review agent の親 slug とは一致しない)。
-    REVIEWER_AGENT=$(jq -r '.reviewer_agent // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    [[ -n "$REVIEWER_SURFACE" && -n "$REVIEW_DIR" && -n "$REVIEWER_AGENT" ]] \
-      || die "review config must contain reviewer_surface, reviewer_agent and review_dir"
-    # review-config は親セッションが書くファイルであって、この値も inner prompt へ
-    # 補間される。--agmsg-from と同じ値域で検証する (agmsg agent 名の値域そのもの)。
-    [[ "$REVIEWER_AGENT" =~ ^[A-Za-z0-9._-]+$ ]] \
-      || die "invalid reviewer_agent '$REVIEWER_AGENT' in $REVIEW_CONFIG: use only [A-Za-z0-9._-]"
-    # reviewer_workspace 欠落時 (旧スキーマ) は --workspace 指定なしにフォールバック。
-    # read-screen は生存確認専用 (配送は agmsg なので workspace/surface を使わない) だが、
-    # 実装孫は別 workspace に spawn されるためレビュアー側 workspace の明示は今も必要。
-    TARGET_FLAGS="--surface $REVIEWER_SURFACE"
-    [[ -n "$REVIEWER_WORKSPACE" ]] \
-      && TARGET_FLAGS="--workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE"
+    TARGET_FLAGS="--workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE"
     READ_SCREEN_CMD="$CMUX read-screen $TARGET_FLAGS"
     # レビュアーに観点別の並列レビューをさせる指示。--no-parallel は起動プロンプト専用の
     # スイッチなのでここでは見ない。注入するかどうかは reviewer_engine の有無だけで決める。
@@ -900,7 +950,7 @@ CODEX_MODEL_FLAG=""
   if [[ "$RUNNER_ENGINE" == "codex" ]]; then
     if [[ "$MODE" == "execute" ]]; then
       # codex execute: plan モードと同じく bypass フラグを付与。
-      # --model (明示指定 or runner の exec_model) があれば付与、無ければ codex 側デフォルト
+      # --model (明示指定) があれば付与、無ければ codex 側デフォルト
       CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
     elif [[ "$MODE" == "standby" ]]; then
       # codex standby: prompt なしで idle 起動。実行指示は常に cmux send で届く
@@ -912,9 +962,13 @@ CODEX_MODEL_FLAG=""
       fi
     elif [[ "$MODE" == "review" ]]; then
       # review は workspace-write に限定し、approval prompt は抑止する。findings は
-      # worktree 外の STATUS_DIR/review/ に書かれるため、STATUS_DIR だけを追加許可する。
+      # worktree 外の findings 保存先だけを追加許可する。
       REVIEW_WRITABLE_FLAG=""
-      [[ -n "$STATUS_DIR" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$STATUS_DIR'"
+      if [[ -n "$REVIEW_SANDBOX_DIR" ]]; then
+        # reviewer が worktree 外へ書くのは findings だけ。STATUS_DIR 全体を許可すると
+        # roles.json / prewarm.json まで書けてしまい、検証を通る別内容へ差し替えられる。
+        REVIEW_WRITABLE_FLAG+=" --add-dir '$REVIEW_SANDBOX_DIR'"
+      fi
       # watcher は run/ と db/ にしか書かない。scripts/ を書き込み許可に含めては
       # ならない — そこは全ペインの guard が実行し session-start.sh 経由で
       # マシン上の全 Claude Code セッションが触れるコードで、無人 codex reviewer に
@@ -1252,18 +1306,112 @@ log "runner" "generated $RUNNER_FILE"
 WORKSPACE_ID=""
 SURFACE_ID=""
 TITLE=""
+CREATED_WORKSPACE_ID=""
+CREATED_SURFACE_ID=""
+CREATED_SURFACE_WORKSPACE=""
+
+list_workspace_ids() {
+  local output
+  output=$("$CMUX" list-workspaces 2>/dev/null) || return 1
+  grep -oE 'workspace:[0-9]+' <<< "$output" | sort -u || true
+}
+
+list_workspace_surface_ids() { # $1=workspace
+  local output
+  output=$("$CMUX" tree --workspace "$1" 2>/dev/null) || return 1
+  grep -oE 'surface:[0-9]+' <<< "$output" | sort -u || true
+}
+
+# --- 作成したリソースの所有権判定 ---
+#
+# 2 つの性質を同時に満たす必要がある。片方だけを見て単純化すると、もう片方が壊れる。
+#
+#   (A) 並列ディスパッチが成立すること。別タスクの launch が同じ瞬間に別の
+#       workspace / surface を足すのは正常系なので、「追加はちょうど 1 件」を
+#       所有権の条件にしてはならない。条件にすると 2 タスク同時起動が必ず die し、
+#       しかも所有権確定前なので EXIT trap も掃除できず孤児が残る。
+#   (B) stdout が壊れていても自分のリソースを閉じられること。cmux が成功しつつ
+#       解析不能な payload を返す / 既存 ID を先頭に返すケースでは、差分が唯一なら
+#       それが自分のものだと確定できるので、所有してから die する。
+#
+# したがって「stdout の ID が差分に含まれるか」を第一の判定にし (A)、それが使えない
+# ときだけ「差分が唯一なら所有」へ落とす (B)。差分が複数かつ stdout が使えない場合は
+# 他人のリソースを閉じる危険があるので、所有せずに die する。
+
+added_refs() { # $1=kind $2=before refs $3=after refs
+  comm -13 \
+    <(grep -E "^$1:[0-9]+$" <<< "$2" | sort -u || true) \
+    <(grep -E "^$1:[0-9]+$" <<< "$3" | sort -u || true)
+}
+
+# (A) stdout が名乗った ref が差分に含まれるか。追加件数は問わない。
+ref_was_added() { # $1=kind $2=ref $3=before refs $4=after refs
+  [[ "$2" =~ ^$1:[0-9]+$ ]] || return 1
+  grep -qxF "$2" <<< "$(added_refs "$1" "$3" "$4")"
+}
+
+# (B) 差分がちょうど 1 件ならそれを返す。stdout が使えないときの回収専用。
+sole_added_ref() { # $1=kind $2=before refs $3=after refs
+  local added
+  added=$(added_refs "$1" "$2" "$3")
+  [[ $(grep -Ec "^$1:[0-9]+$" <<< "$added" || true) == 1 ]] || return 1
+  printf '%s\n' "$added"
+}
+
+# 作成直後・inventory 取得前の暫定所有。inventory 呼び出し自体が一時失敗しても
+# 自分のリソースを閉じられるようにする。ただし stdout が既存 ID を返した場合に
+# 他人のリソースを掴まないよう、before に無い ID だけを暫定所有する。
+provisional_ref() { # $1=kind $2=ref $3=before refs
+  [[ "$2" =~ ^$1:[0-9]+$ ]] || return 1
+  grep -qxF "$2" <<< "$3" && return 1
+  return 0
+}
+
+cleanup_created_cmux_resource() {
+  local rc=$?
+  [[ $rc -ne 0 ]] || return 0
+  if [[ -n "$CREATED_SURFACE_ID" ]]; then
+    "$CMUX" close-surface --workspace "$CREATED_SURFACE_WORKSPACE" \
+      --surface "$CREATED_SURFACE_ID" >/dev/null 2>&1 \
+      || log "warn" "failed to close launcher-owned surface $CREATED_SURFACE_ID"
+  elif [[ -n "$CREATED_WORKSPACE_ID" ]]; then
+    "$CMUX" close-workspace --workspace "$CREATED_WORKSPACE_ID" >/dev/null 2>&1 \
+      || log "warn" "failed to close launcher-owned workspace $CREATED_WORKSPACE_ID"
+  fi
+  return "$rc"
+}
+trap cleanup_created_cmux_resource EXIT
 
 if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; then
   # --- Standby Split Placement: 既存 workspace 内に縦分割ペインを追加 ---
   WORKSPACE_ID="$STANDBY_IN"
   TITLE="$WORKSPACE_NAME"
 
+  SURFACES_BEFORE=$(list_workspace_surface_ids "$STANDBY_IN") \
+    || die "failed to inventory standby workspace before split creation"
   log "cmux" "creating standby pane (split $STANDBY_SPLIT_DIRECTION from $STANDBY_SPLIT_FROM) in $STANDBY_IN"
   SPLIT_OUTPUT=$("$CMUX" new-split "$STANDBY_SPLIT_DIRECTION" \
     --workspace "$STANDBY_IN" \
     --surface "$STANDBY_SPLIT_FROM" 2>/dev/null) || die "failed to create standby split pane"
-  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
-  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
+  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1 || true)
+  # 暫定所有: inventory 取得が一時失敗しても閉じられるようにする。既存 ID は掴まない。
+  CREATED_SURFACE_WORKSPACE="$WORKSPACE_ID"
+  if provisional_ref surface "$SURFACE_ID" "$SURFACES_BEFORE"; then
+    CREATED_SURFACE_ID="$SURFACE_ID"
+  fi
+  SURFACES_AFTER=$(list_workspace_surface_ids "$STANDBY_IN") \
+    || die "failed to inventory standby workspace after split creation"
+  if ref_was_added surface "$SURFACE_ID" "$SURFACES_BEFORE" "$SURFACES_AFTER"; then
+    CREATED_SURFACE_ID="$SURFACE_ID"
+  else
+    # stdout が使えない。差分が唯一ならそれを回収してから落ちる。
+    if RECOVERED_SURFACE_ID=$(sole_added_ref surface "$SURFACES_BEFORE" "$SURFACES_AFTER"); then
+      CREATED_SURFACE_ID="$RECOVERED_SURFACE_ID"
+    else
+      CREATED_SURFACE_ID=""
+    fi
+    die "split output surface '${SURFACE_ID:-<unparseable>}' is not in the inventory delta: $SPLIT_OUTPUT"
+  fi
   log "cmux" "standby pane surface: $SURFACE_ID"
 
   "$CMUX" rename-tab --workspace "$STANDBY_IN" --surface "$SURFACE_ID" "$TITLE" >/dev/null 2>&1 || \
@@ -1284,11 +1432,29 @@ else
   # This is strictly better than creating the workspace and then sending the
   # runner via `cmux send`: on some environments the new surface is not a
   # terminal at creation time, which previously caused dropped commands.
+  WORKSPACES_BEFORE=$(list_workspace_ids) \
+    || die "failed to inventory workspaces before workspace creation"
   log "cmux" "creating workspace with cwd=$CWD, auto-launching runner via --command"
   WORKSPACE_OUTPUT=$("$CMUX" new-workspace --cwd "$CWD" --command "bash $RUNNER_SCRIPT_NAME" 2>/dev/null) \
     || die "failed to create cmux workspace"
-  WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1)
-  [[ -z "$WORKSPACE_ID" ]] && die "failed to parse workspace ID from output: $WORKSPACE_OUTPUT"
+  WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1 || true)
+  # 暫定所有: inventory 取得が一時失敗しても閉じられるようにする。既存 ID は掴まない。
+  if provisional_ref workspace "$WORKSPACE_ID" "$WORKSPACES_BEFORE"; then
+    CREATED_WORKSPACE_ID="$WORKSPACE_ID"
+  fi
+  WORKSPACES_AFTER=$(list_workspace_ids) \
+    || die "failed to inventory workspaces after workspace creation"
+  if ref_was_added workspace "$WORKSPACE_ID" "$WORKSPACES_BEFORE" "$WORKSPACES_AFTER"; then
+    CREATED_WORKSPACE_ID="$WORKSPACE_ID"
+  else
+    # stdout が使えない。差分が唯一ならそれを回収してから落ちる。
+    if RECOVERED_WORKSPACE_ID=$(sole_added_ref workspace "$WORKSPACES_BEFORE" "$WORKSPACES_AFTER"); then
+      CREATED_WORKSPACE_ID="$RECOVERED_WORKSPACE_ID"
+    else
+      CREATED_WORKSPACE_ID=""
+    fi
+    die "workspace output ID '${WORKSPACE_ID:-<unparseable>}' is not in the inventory delta: $WORKSPACE_OUTPUT"
+  fi
   log "cmux" "created $WORKSPACE_ID"
 
   # Rename workspace

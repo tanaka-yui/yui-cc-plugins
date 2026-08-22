@@ -62,4 +62,44 @@ printf '#!/usr/bin/env bash\ncase "$*" in *"pr view"*) exit 0;; *) printf "%s\\n
 check '[[ $(jq -r .merged <<<"$out") -eq 1 ]] && grep -Fq "gh issue close \"\$issue\" --reason completed" "$CLEANUP"' 'merge 完了時に gh issue close --reason completed を呼ぶ'
 check '[[ ! -d "$REPO/.worktrees/merged" ]]' '正常 cleanup を完了する'
 bash "$FETCH" --state-file "$STATE" lock-release >/dev/null 2>&1 || true
+
+# C9-C12: prewarm.json の実在 role だけを leave し、workspace と snapshot を検証する。
+. "$SCRIPT_DIR/lib/cleanup-harness.sh"
+ROLE_DISPATCH="$CLEANUP_HARNESS_ROOT/dispatch"
+mkdir -p "$ROLE_DISPATCH/t"
+write_prewarm() { # $1=review mode
+  local review_mode="$1"
+  mkdir -p "$ROLE_DISPATCH/t"
+  jq -n --arg mode "$review_mode" '{
+    workspace_id:"workspace:1",review_mode:$mode,
+    design:{surface_id:"s1",agent:"t",runner:"ccf",engine:"claude",model:"opus[1m]",effort:"xhigh",wired:true},
+    exec:{surface_id:"s2",agent:"t-exec",runner:"cx",engine:"codex",effort:"high",wired:true}}
+    + (if $mode == "on" then {
+      design_review:{surface_id:"s3",agent:"t-design-review",runner:"cx",engine:"codex",model:"gpt-5.6-sol",effort:"xhigh",wired:true},
+      exec_review:{surface_id:"s4",agent:"t-exec-review",runner:"ccf",engine:"claude",model:"opus[1m]",effort:"high",wired:true}}
+      else {} end)' > "$ROLE_DISPATCH/t/prewarm.json"
+}
+
+write_prewarm off
+cleanup_stub_workspace 'workspace:1'
+run_cleanup_for_slug t "$ROLE_DISPATCH" >/dev/null
+check '[[ $(grep -c "leave.sh" "$CLEANUP_HARNESS_CALLS" 2>/dev/null || true) == 2 ]]' 'C9 review=off は実在 2 role だけ leave する'
+
+write_prewarm on
+cleanup_stub_workspace 'workspace:1'
+run_cleanup_for_slug t "$ROLE_DISPATCH" done merge >/dev/null
+check '[[ ! -d "$ROLE_DISPATCH/t" ]] && [[ $(grep -c "leave.sh" "$CLEANUP_HARNESS_CALLS" 2>/dev/null || true) == 4 ]] && [[ $(sort "$CLEANUP_HARNESS_CALLS" | uniq | wc -l | tr -d " ") == 4 ]]' 'C10 done が prewarm を削除しても snapshot 済みの実在 4 role を各 1 回 leave する'
+
+write_prewarm on
+jq '.design.agent = "t-exec"' "$ROLE_DISPATCH/t/prewarm.json" > "$ROLE_DISPATCH/t/bad.json"
+mv "$ROLE_DISPATCH/t/bad.json" "$ROLE_DISPATCH/t/prewarm.json"
+cleanup_stub_workspace 'workspace:1'
+run_cleanup_for_slug t "$ROLE_DISPATCH" >/dev/null
+check '[[ $(grep -c "leave.sh" "$CLEANUP_HARNESS_CALLS" 2>/dev/null || true) == 0 ]]' 'C11 invalid snapshot では leave しない'
+
+rm -f "$ROLE_DISPATCH/t/prewarm.json"
+cleanup_stub_workspace 'workspace:1'
+run_cleanup_for_slug t "$ROLE_DISPATCH" >/dev/null
+check '[[ $(grep -c "leave.sh" "$CLEANUP_HARNESS_CALLS" 2>/dev/null || true) == 0 ]]' 'C12 prewarm 欠落でも cleanup は継続し旧 agent を合成しない'
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || exit 1

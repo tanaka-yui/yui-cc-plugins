@@ -7,6 +7,24 @@ done
 for needle in 'issue-fetch.sh' 'loop-cleanup.sh' 'render-loop-prompt.sh' '--state-file' 'lock-acquire' 'init' 'dispatch-notify' '--timeout-sentinel' '--unattended'; do
   grep -Fq -- "$needle" "$SK/references/loop-mode.md" || { echo "FAIL: $needle"; exit 1; }
 done
+for needle in design_runner review_runner exec_choice 'review_mode: ask'; do
+  ! grep -Fq -- "$needle" "$SK/references/loop-mode.md" "$SK/references/loop-mode-ja.md" \
+    || { echo "FAIL: legacy loop vocabulary ($needle)"; exit 1; }
+done
+for needle in '`design`' '`design_review`' '`exec`' '`exec_review`' 'review_mode=on' 'review_mode=off'; do
+  grep -Fq -- "$needle" "$SK/references/loop-mode.md" "$SK/references/loop-mode-ja.md" \
+    || { echo "FAIL: config schema vocabulary ($needle)"; exit 1; }
+done
+for needle in 'prune-not-ready.sh' '--prewarm <STATUS_DIR>/prewarm.json' 'loop.task_timeout_min' '--reset config'; do
+  grep -Fq -- "$needle" "$SK/references/loop-mode.md" "$SK/references/loop-mode-ja.md" \
+    || { echo "FAIL: loop contract ($needle)"; exit 1; }
+done
+prewarm_line=$(grep -n 'prewarm-panes.sh --unattended' "$SK/references/loop-mode.md" | tail -1 | cut -d: -f1)
+prune_line=$(grep -n 'prune-not-ready.sh' "$SK/references/loop-mode.md" | head -1 | cut -d: -f1)
+render_line=$(grep -n -- '--prewarm <STATUS_DIR>/prewarm.json' "$SK/references/loop-mode.md" | head -1 | cut -d: -f1)
+(( prewarm_line < prune_line && prune_line < render_line )) || {
+  echo 'FAIL: prewarm/readiness/prune/renderer order'; exit 1;
+}
 # concurrency の契約: 既定 5 / 自由入力可 / 上限 10 / 「タスク数であってペイン数ではない」注記。
 # 選択肢の並びは AskUserQuestion の先頭が既定になるため、5 が 3 より前にあることまで検査する。
 # loop-mode.md は英語ドキュメントのため needle は英語表現。改行をまたぐ表現があるため

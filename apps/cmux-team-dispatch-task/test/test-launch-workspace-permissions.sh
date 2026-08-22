@@ -28,7 +28,16 @@ export AGMSG_SEND="$TMP/bin/agmsg-send.sh"
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  new-workspace) echo 'workspace:1' ;;
+  list-workspaces)
+    count=$(cat "$CMUX_TEST_STATE" 2>/dev/null || echo 0)
+    for ((i=1; i<=count; i++)); do echo "workspace:$i"; done
+    ;;
+  new-workspace)
+    count=$(cat "$CMUX_TEST_STATE" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    echo "$count" > "$CMUX_TEST_STATE"
+    echo "workspace:$count"
+    ;;
   list-pane-surfaces) echo 'surface:2' ;;
   new-split) echo 'surface:3' ;;
   rename-workspace|rename-tab|notify|send|send-key|wait-for|identify) ;;
@@ -36,6 +45,7 @@ case "$1" in
 esac
 STUB
 chmod +x "$TMP/bin/cmux"
+export CMUX_TEST_STATE="$TMP/cmux-workspace-count"
 
 cat > "$TMP/runners.json" <<'JSON'
 {
@@ -237,7 +247,7 @@ fi
 # prewarm の設計ペインは "$SLUG" "$OPUS_PROMPT" の 2 位置引数で起動するので prompt 有りの
 # 合成行を通る。prompt 無しのケースだけではこの行の splice 忘れを 1 件も検出できない。
 repo=$(new_repo p12); break_a "$repo"
-out=$(run_launch_err "$TMP/err-p12" --cwd "$repo" --mode standby --role plan --runner claude \
+out=$(run_launch_err "$TMP/err-p12" --cwd "$repo" --mode standby --role design --runner claude \
   --status-dir "$TMP/status-p12" p12-standby 'agmsg actas p12 then wait idle')
 runner_file=$(jq -r '.runner_file' <<<"$out")
 if [[ "$(count_flag "$runner_file")" == "1" ]] \

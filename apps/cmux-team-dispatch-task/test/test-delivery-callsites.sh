@@ -11,7 +11,7 @@
 #        cmux send-key が残らない (訳や無人ループ用ブロックが原文から遅れて旧文面を
 #        残す事故を防ぐ)
 #   CS4. 削除済みスクリプト (send-prompt.sh / agmsg-path.sh / monitor-dispatch.sh /
-#        ensure-agmsg-ready.sh / batch-wait.sh) への参照がスクリプト・文書のどこにも
+#        ensure-agmsg-ready.sh / batch-wait.sh / runners-edit.sh) への参照がスクリプト・文書のどこにも
 #        残らない。後続タスクが担当する箇所だけを PENDING 表で明示的に猶予し、件数まで
 #        固定する
 #   CS5. verdict 待ちのポーリング指示 (polling / every 5 seconds / 15-min /
@@ -113,7 +113,7 @@ else
 fi
 
 # --- CS4: 削除済みスクリプトへの参照が残らない ---
-# 対象は 5 つ: send-prompt.sh / agmsg-path.sh (T3 の時点で削除) と
+# 対象は 6 つ: send-prompt.sh / agmsg-path.sh / runners-edit.sh (T3 の時点で削除) と
 # monitor-dispatch.sh (T4 で削除) / ensure-agmsg-ready.sh (T1 で verify-agmsg-ready.sh に
 # 置き換え) / batch-wait.sh (T6 で削除)。SKILL.md 自身が存在しないスクリプトを参照して
 # いないことは test-skill-script-refs.sh (SR1/SR2) が別途固定する。
@@ -125,7 +125,7 @@ fi
 # T7 (ドキュメント更新) の完了により、日本語 4 ファイル (guide-ja.md / README.md /
 # CLAUDE.md / docs/notification-gaps.md) の猶予は不要になったので表から外した。
 # 日本語側の退役語彙は test-doc-stale-vocab.sh (DS1-DS3) が別途固定する。
-DELETED_RE='send-prompt\.sh|agmsg-path\.sh|monitor-dispatch\.sh|ensure-agmsg-ready\.sh|batch-wait\.sh'
+DELETED_RE='send-prompt\.sh|agmsg-path\.sh|monitor-dispatch\.sh|ensure-agmsg-ready\.sh|batch-wait\.sh|runners-edit\.sh'
 PENDING=(
   "test/test-doc-stale-vocab.sh|*|検査対象そのものを needle として持つ検査スクリプト"
   "docs/notification-gaps.md|1|履歴表 P9 の旧名 (旧名で grep して経緯へ辿り着けることに価値がある。test-doc-stale-vocab.sh の行内マーカーで明示済み)"
@@ -173,7 +173,7 @@ for entry in "${PENDING[@]}"; do
   fi
 done
 if [[ $cs4 -eq 1 ]]; then
-  echo "PASS CS4: 削除済み 5 スクリプトへの参照は PENDING 表の箇所だけに残る"
+  echo "PASS CS4: 削除済み 6 スクリプトへの参照は PENDING 表の箇所だけに残る"
 else
   echo "FAIL CS4: 削除済みスクリプトへの参照が想定外の場所に残っている"; fail=1
 fi
@@ -277,7 +277,8 @@ check_region_lacks() {
 check_region_lacks 'Phase A-R の待機手順' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' "$WAIT_LOOP_RE" || cs5=0
 check_region_lacks 'Phase B-R の待機手順' "$SKILL_DIR/SKILL.md" \
-  '(1) send the review request with ONE command' '(3) On VERDICT: approve' "$WAIT_LOOP_RE" || cs5=0
+  'After sending each `review-code:` request' 'The design pane is never selected as code reviewer' \
+  "$WAIT_LOOP_RE" || cs5=0
 check_region_lacks 'REVIEW_INSTRUCTION の待機手順' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' "$WAIT_LOOP_RE" || cs5=0
 
@@ -335,7 +336,8 @@ check_region_has 'Phase A-R の依頼文' "$SKILL_DIR/SKILL.md" \
   'review-verdict:' 'send\.sh' || cs6=0
 # 依頼文 2: SKILL.md Phase B-R 共通プロトコル a (実装者が待つ側)
 check_region_has 'Phase B-R の依頼文' "$SKILL_DIR/SKILL.md" \
-  'where <request text> is: code review round N' 'End of the message to the' \
+  'After all changes are committed and BEFORE creating the PR' \
+  'Append the same engine-specific final instruction' \
   'review-verdict:' 'send\.sh' || cs6=0
 # 依頼文 3: launch-workspace.sh が焼き込む REVIEW_INSTRUCTION (spawn 経路)
 check_region_has 'REVIEW_INSTRUCTION の依頼文' "$LAUNCH" \
@@ -343,9 +345,10 @@ check_region_has 'REVIEW_INSTRUCTION の依頼文' "$LAUNCH" \
   'review-verdict:' 'AGMSG_SEND' || cs6=0
 # 依頼文 4/5: 無人ループ用ブロック (子プロンプトへそのまま連結される)
 check_region_has '無人ループの review-block' "$REVIEW_BLOCK_MD" \
-  'Review is enabled.' '' 'review-verdict:' || cs6=0
+  'Phase A-R is assigned to the `design_review` pane.' '' 'review-verdict:' || cs6=0
 check_region_has '無人ループの code-review-block' "$CODE_REVIEW_BLOCK_MD" \
-  'Request each review with ONE call' '' 'review-verdict:' 'send\.sh' || cs6=0
+  'Request each review with ONE call' 'If you stop before completing the work' \
+  'review-verdict:' 'send\.sh' || cs6=0
 if [[ $cs6 -eq 1 ]]; then
   echo "PASS CS6: 5 箇所のレビュー依頼文すべてに review-verdict: の通知指示がある"
 else
@@ -364,17 +367,18 @@ check_region_has 'Phase A-R の待機手順 (claude)' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' \
   'single-shot safety timer' 'run_in_background' || cs7=0
 check_region_has 'Phase B-R の待機手順 (claude)' "$SKILL_DIR/SKILL.md" \
-  '(1) send the review request with ONE command' '(3) On VERDICT: approve' \
+  'After sending each `review-code:` request' 'The design pane is never selected as code reviewer' \
   'single-shot safety timer' 'run_in_background' || cs7=0
 check_region_has 'REVIEW_INSTRUCTION の待機手順 (claude)' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' \
   'single-shot safety timer' || cs7=0
-# codex 側: 「保険が無い」ことと、代替の 2 手 (到達性確認 + 親への 1 通報告) があること
+# codex 側: 「保険が無い」ことと親への 1 通報告があること。Phase A-R の
+# reviewer-engine 別到達性確認は、下の CS8 が production renderer の実出力で検査する。
 check_region_has 'Phase A-R の待機手順 (codex)' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' \
-  'NO safety net' 'verify-agmsg-ready\.sh --codex' 'dispatch-notify:' || cs7=0
+  'NO safety net' 'dispatch-notify:' || cs7=0
 check_region_has 'Phase B-R の待機手順 (codex)' "$SKILL_DIR/SKILL.md" \
-  '(1) send the review request with ONE command' '(3) On VERDICT: approve' \
+  'After sending each `review-code:` request' 'The design pane is never selected as code reviewer' \
   'NO safety net' 'verify-agmsg-ready\.sh --codex' 'dispatch-notify:' || cs7=0
 check_region_has 'REVIEW_INSTRUCTION の待機手順 (codex)' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' \
@@ -384,19 +388,55 @@ CODEX_TIMER_RE='\( *sleep [^;]*; *[^)]*send\.sh|setsid|start a background subshe
 check_region_lacks 'Phase A-R の待機手順' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' "$CODEX_TIMER_RE" || cs7=0
 check_region_lacks 'Phase B-R の待機手順' "$SKILL_DIR/SKILL.md" \
-  '(1) send the review request with ONE command' '(3) On VERDICT: approve' "$CODEX_TIMER_RE" || cs7=0
+  'After sending each `review-code:` request' 'The design pane is never selected as code reviewer' \
+  "$CODEX_TIMER_RE" || cs7=0
 check_region_lacks 'REVIEW_INSTRUCTION の待機手順' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' "$CODEX_TIMER_RE" || cs7=0
 # 無人ループのブロックも同じ規律に従うこと
 check_region_has '無人ループの code-review-block (engine 別)' "$CODE_REVIEW_BLOCK_MD" \
-  'Request each review with ONE call' '' \
+  'Request each review with ONE call' 'If you stop before completing the work' \
   'single-shot safety timer' 'NO safety net' 'dispatch-notify:' || cs7=0
 check_region_lacks '無人ループの code-review-block' "$CODE_REVIEW_BLOCK_MD" \
-  'Request each review with ONE call' '' "$CODEX_TIMER_RE" || cs7=0
+  'Request each review with ONE call' 'If you stop before completing the work' \
+  "$CODEX_TIMER_RE" || cs7=0
 if [[ $cs7 -eq 1 ]]; then
   echo "PASS CS7: verdict を待つ 4 箇所とも claude=タイマー / codex=保険なし+代替 2 手で書かれている"
 else
   echo "FAIL CS7: verdict 待機の保険が engine ごとに正しく書かれていない"; fail=1
+fi
+
+# --- CS8: Phase A-R の実配送 prompt は waiter/reviewer engine を独立に扱う ---
+# 静的な語彙検査だけでは、design=codex の分岐内で reviewer engine を見ずに常に
+# --codex seat を検査する退行を見逃す。production renderer を mixed-engine 2 方向で
+# 実行し、配送される wait protocol 本文そのものを検査する。
+PHASE_A_WAIT="$SCRIPTS/phase-a-review-wait.sh"
+codex_claude=$(bash "$PHASE_A_WAIT" --waiter-engine codex --reviewer-engine claude \
+  --team tm --waiter-agent task --reviewer-agent task-design-review \
+  --reviewer-workspace workspace:1 --reviewer-surface surface:2 \
+  --findings-path /dispatch/review/spec-round-1.md --send-command /agmsg/send.sh 2>/dev/null)
+codex_claude_rc=$?
+claude_codex=$(bash "$PHASE_A_WAIT" --waiter-engine claude --reviewer-engine codex \
+  --team tm --waiter-agent task --reviewer-agent task-design-review \
+  --reviewer-workspace workspace:1 --reviewer-surface surface:2 \
+  --findings-path /dispatch/review/plan-round-1.md --send-command /agmsg/send.sh 2>/dev/null)
+claude_codex_rc=$?
+skill_flat=$(tr '\n' ' ' < "$SKILL_DIR/SKILL.md" | tr -s ' ')
+if [[ $codex_claude_rc -eq 0 \
+   && "$codex_claude" == *'NO safety net'* \
+   && "$codex_claude" == *'cmux read-screen --workspace workspace:1 --surface surface:2'* \
+   && "$codex_claude" == *'dispatch-notify:'* \
+   && "$codex_claude" != *'verify-agmsg-ready.sh --codex'* \
+   && $claude_codex_rc -eq 0 \
+   && "$claude_codex" == *'single-shot safety timer'* \
+   && "$claude_codex" == *'run_in_background'* \
+   && "$claude_codex" == *'verify-agmsg-ready.sh --codex --team tm --name task-design-review'* \
+   && "$claude_codex" != *'cmux read-screen'* \
+   && "$skill_flat" == *'{{DESIGN_REVIEW_SURFACE}}'* \
+   && "$skill_flat" == *'{{DESIGN_REVIEW_WORKSPACE}}'* ]]; then
+  echo 'PASS CS8: mixed-engine 2 方向の Phase A-R 実配送 prompt が reviewer engine 別 liveness を持つ'
+else
+  echo 'FAIL CS8: Phase A-R 実配送 prompt が waiter/reviewer engine を独立に扱っていない'
+  fail=1
 fi
 
 exit $fail

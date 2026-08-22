@@ -28,7 +28,16 @@ git -C "$TMP/repo" commit -qm init
 cat > "$TMP/bin/cmux" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
-  new-workspace) echo 'workspace:1' ;;
+  list-workspaces)
+    count=\$(cat "$TMP/cmux-workspace-count" 2>/dev/null || echo 0)
+    for ((i=1; i<=count; i++)); do echo "workspace:\$i"; done
+    ;;
+  new-workspace)
+    count=\$(cat "$TMP/cmux-workspace-count" 2>/dev/null || echo 0)
+    count=\$((count + 1))
+    echo "\$count" > "$TMP/cmux-workspace-count"
+    echo "workspace:\$count"
+    ;;
   list-pane-surfaces) echo 'surface:2' ;;
   notify) echo "\$*" >> "$TMP/cmux-calls.log" ;;
   rename-workspace|rename-tab|wait-for|identify|new-split) ;;
