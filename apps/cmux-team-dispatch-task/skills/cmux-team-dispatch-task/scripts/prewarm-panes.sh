@@ -272,10 +272,24 @@ role_wiring_type() { [[ "$(role_value "$1" engine)" == codex ]] && printf 'codex
 
 # readiness 句の前提: delivery.sh set monitor claude-code <worktree> が
 # この同じ実行内で成功していること。失敗時は到達不能なので launch 前に止める。
+# worktree を agmsg の独立プロジェクトとして登録する。
+#
+# resolve-project.sh は既定で git worktree をメインリポジトリのルートへ解決する (#92 の
+# 意図的な仕様。ユーザーがサブディレクトリへ cd したときの取り違えを防ぐため)。だが
+# dispatch の子セッションは worktree に *住んでいる* ので、その解決は事実と合わない。
+# 解決されると子も親も同一のプロジェクトキーを共有し、無記名 watcher が (project, type) に
+# 登録された全 agent 宛てを購読して read cursor を奪い合う。2026-08-22 の実害は
+# 「子の無記名 watcher が parent ペアを購読していたため [ready] が食われた」形で出た。
+#
+# AGMSG_RESOLVE_PROJECT=0 は raw パスを保つ documented なエスケープハッチで、
+# spawn.sh:357 が同じ理由で使っている。以後 agmsg_ancestor_project は inclusive
+# (start 自身を候補にする) なので worktree で止まり、タスクごとに別キーになる。
+#
+# join と delivery の両方に付けること。片方だけだと登録先と配送モードの付け先がずれる。
 wire_delivery() {
   local role="$1" wiring
   wiring=$(role_wiring_type "$role")
-  bash "$AGMSG_DIR/delivery.sh" set monitor "$wiring" "$CWD" >/dev/null 2>&1 \
+  AGMSG_RESOLVE_PROJECT=0 bash "$AGMSG_DIR/delivery.sh" set monitor "$wiring" "$CWD" >/dev/null 2>&1 \
     || die "$wiring delivery wiring failed; readiness cannot be established"
 }
 
@@ -283,7 +297,7 @@ join_role() {
   local role="$1" agent wiring
   agent=$(role_agent "$role")
   wiring=$(role_wiring_type "$role")
-  bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$agent" "$wiring" "$CWD" >&2 2>/dev/null \
+  AGMSG_RESOLVE_PROJECT=0 bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$agent" "$wiring" "$CWD" >&2 2>/dev/null \
     || die "$role agmsg join failed; readiness cannot be established"
   JOINED_ROLES+=("$role")
   wire_delivery "$role"
