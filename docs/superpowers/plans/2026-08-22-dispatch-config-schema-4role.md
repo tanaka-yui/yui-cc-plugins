@@ -40,6 +40,7 @@
 | `skills/cmux-team-dispatch-task/scripts/config-lib.sh` | **新規** | source 専用。パス解決（`DISPATCH_CONFIG_HOME` / `RUNNERS_CONFIG_PATH`）、runner 名・model 値の検証、effort の小文字正規化と engine 別 allowlist、ロール名と組込み既定値の表 |
 | `skills/cmux-team-dispatch-task/scripts/config-resolve.sh` | **新規** | ロール解決の唯一の読み手。project → global → 既定値を (role, field) 単位で合成し、engine を引き、`--set` を最優先で適用して JSON を 1 つ出す。fail-fast を持つ |
 | `skills/cmux-team-dispatch-task/scripts/override-args.sh` | **新規** | `--override` の回答（pending tuple）を `config-resolve.sh` へ渡す `--set` 引数列へ変換する。**engine 整合が取れないロールは丸ごと破棄**して警告する。resolver の「フィールド単位の layer fallback」とは別の政策なので、別スクリプトに分ける |
+| `skills/cmux-team-dispatch-task/scripts/review-gate.sh` | **新規** | Phase B-R の gating。`prewarm.json` と ready 済みロール一覧から、`code-review.json` を書くか / `--review-config` を出すかを決める。**両方出すか両方出さないか**の二択であることをスクリプトで保証する |
 | `skills/cmux-team-dispatch-task/scripts/config-edit.sh` | 改修 | ロール / review 設定の唯一の書き手。入れ子キー、`--engine <role>=<engine>`、旧キーの拒否 |
 | `skills/cmux-team-dispatch-task/scripts/runners-edit.sh` | **削除** | 扱っていた 6 フィールドが `runners.json` から出ていくため |
 | `skills/cmux-team-dispatch-task/scripts/launch-workspace.sh` | 改修 | runners.json 役割フィールド層を削除、`--role` の値域を 4 ロールへ、review ペインの `--add-dir` を `<STATUS_DIR>/review` へ |
@@ -699,10 +700,17 @@ args --pending design.runner=cx --pending design.model=gpt-5.6-sol --pending des
 for bad_case in model effort runner; do
   case "$bad_case" in
     model)  drop=(--pending exec.runner=cx --pending 'exec.model=opus[1m]') ;;  # codex に claude alias
-    effort) drop=(--pending exec.runner=cx --pending exec.effort=max) ;;        # codex に max は無い
+    # 有効な併記値は **別 field** にする。同じ field を 2 回渡すと last-wins で
+    # 不正値が消え、破棄が起きなくて当然になる (R5 #1)。
+    effort) drop=(--pending exec.runner=cx --pending exec.effort=max
+                  --pending exec.model=gpt-5.6-sol) ;;                          # codex に max は無い
     runner) drop=(--pending exec.runner=nope) ;;                                # 未登録
   esac
-  args --pending design.model=KEPT "${drop[@]}" --pending exec.effort=medium
+  # exec 側にも「有効な別次元」を必ず 1 つ混ぜる。効いてしまえば部分適用の証拠になる。
+  case "$bad_case" in
+    effort) args --pending design.model=KEPT "${drop[@]}" ;;   # 有効な model は drop に含めた
+    *)      args --pending design.model=KEPT "${drop[@]}" --pending exec.effort=medium ;;
+  esac
   if has 'design.model=KEPT' \
      && ! printf '%s\n' "${OUT[@]}" | grep -q '^exec\.' \
      && grep -qi 'dropping the whole override' "$TMP/err"; then
@@ -1172,8 +1180,27 @@ Expected: **CP1 / CP3 / CP4 が FAIL**。CP2 は既存実装も `RUNNERS_CONFIG_
 
 `:15` の `TERMINAL_WAIT_GLOBAL_CONFIG="$HOME/.claude/cmux-team-dispatch-task/config.json"` を
 `config-lib.sh` を source したうえで `TERMINAL_WAIT_GLOBAL_CONFIG="$(dispatch_config_file)"` にする。
-`shell_ready_ms` の merge / atomic write は**そのまま維持**する（terminal-wait.sh は
-`shell_ready_ms` の owner であり続ける）。
+`shell_ready_ms` の owner が `terminal-wait.sh` であることは**維持**する。
+
+**あわせて mktemp を writer 固有・同一ディレクトリへ直す**（R5 #5）。現行は引数なしの
+`mktemp`（= `TMPDIR` 配下）を作ってから config へ `mv` している。`DISPATCH_CONFIG_HOME` が
+`TMPDIR` と別ファイルシステムにあると、`mv` は rename ではなく copy + unlink になり
+**atomic ではなくなる**（途中状態が観測されうる）。`config-edit.sh` と同じ形にする:
+
+```bash
+# 旧: TMP=$(mktemp)                       … TMPDIR 配下。別 FS だと mv が非 atomic
+# 新: TMP=$(mktemp "$CONFIG.XXXXXX")      … 対象と同一ディレクトリ = rename が保証される
+```
+
+回帰は `test-config-paths.sh` に足す:
+
+```bash
+# CP5: terminal-wait.sh の temp が config と同じディレクトリに作られる
+grep -q 'mktemp "\$TERMINAL_WAIT_GLOBAL_CONFIG\.XXXXXX"\|mktemp "\$CONFIG\.XXXXXX"' \
+  "$S/terminal-wait.sh" \
+  && ok 'CP5: terminal-wait.sh が同一ディレクトリの mktemp を使う' \
+  || bad 'CP5: 引数なし mktemp のままで、別 FS だと mv が atomic にならない'
+```
 
 - [ ] **Step 5: `test-role-models.sh` を書き換える**
 
@@ -1218,7 +1245,7 @@ git commit -m "feat(dispatch)!: launch-workspace を 4 ロール化し reviewer 
 - Create: `apps/cmux-team-dispatch-task/test/test-roles-input.sh`
 - Create: `apps/cmux-team-dispatch-task/test/test-pane-invariant.sh`
 - Create: `apps/cmux-team-dispatch-task/test/lib/prewarm-harness.sh`（stub 注入・fixture・`run_pw` / `run_pw_roles` / `launch_count` / `no_side_effects`）
-- Create: `apps/cmux-team-dispatch-task/test/lib/fifo-once.sh`（bounded watchdog 付き read-once helper。**Task 5 で作る**。Task 6 も同じものを source する）
+- Create: `apps/cmux-team-dispatch-task/test/lib/fifo-once.sh`（bounded watchdog 付き read-once helper。**本体の実装は Task 6 の SC2 節に載せてあるが、ファイルを作るのはこの Task 5** — 最初に source するのが `test-roles-input.sh` の RI2d だから。Task 6 は source するだけ）
 - Modify: `apps/cmux-team-dispatch-task/test/test-prewarm-layout.sh`, `test-prewarm-all-codex.sh`, `test-prewarm-unattended.sh`, `test-prewarm-design-permissions.sh`, `test-in-session.sh`
 
 **Interfaces:**
@@ -1843,11 +1870,17 @@ run_cleanup_for_slug t "$TMP/dispatch"; rc=$?
 # --- SC7: 「検証前の生読み」だけを検出する needle ---
 # 正しい実装は PREWARM_DOC=$(cat …) の 1 回だけで、以後は <<<"$PREWARM_DOC" を使う。
 # したがって「jq ... "<...>/prewarm.json"」の形 (ファイルを直接 jq する) が残っていたら FAIL。
-if grep -nE 'jq [^|]*prewarm\.json"' "$SKILL" >/dev/null 2>&1; then
-  bad "SC7: SKILL.md にファイルを直接 jq する生読みが残っている: $(grep -nE 'jq [^|]*prewarm\.json"' "$SKILL" | head -3)"
+# literal な prewarm.json だけでなく、変数経由 ("$pj" / "$PREWARM_FILE") の直接 jq も見る。
+# 正しい実装は `jq ... <<<"$doc"` なので、`jq` と同じ行にファイル引数が来ることは無い。
+SC7_PAT='jq [^|<]*(prewarm\.json"|\$\{?(pj|PREWARM_FILE|PJ)\}?")'
+if grep -nEc "$SC7_PAT" "$SKILL" >/dev/null 2>&1 && grep -nE "$SC7_PAT" "$SKILL" >/dev/null; then
+  bad "SC7: prewarm.json をファイルとして直接 jq する箇所が残っている: $(grep -nE "$SC7_PAT" "$SKILL" | head -3)"
 else
-  ok 'SC7: SKILL.md の prewarm.json 読み取りがスナップショット契約に沿っている'
+  ok 'SC7: prewarm.json 読み取りがスナップショット契約に沿っている'
 fi
+# 同じ needle を prune_not_ready の実装にも掛ける (SKILL.md 内に書かれるため同ファイル)
+grep -q 'validate_prewarm_snapshot' "$SKILL" \
+  && ok 'SC7b: prune_not_ready がスナップショットを検証する' || bad 'SC7b'
 exit $fail
 ```
 
@@ -2037,6 +2070,8 @@ git commit -m "feat(dispatch)!: loop の renderer と cleanup を prewarm.json �
 - Modify: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/references/guide-ja.md`
 - Modify: `apps/cmux-team-dispatch-task/test/test-cleanup-close.sh`（close の 4 ロール化と workspace 照合。実装が SKILL.md 側にあるためここが担当）
 - Modify: `apps/cmux-team-dispatch-task/test/test-override.sh`（`override-args.sh` を通した OV14 を含む）
+- Create: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/review-gate.sh`（Phase B-R の gating。Step 9b）
+- Create: `apps/cmux-team-dispatch-task/test/test-review-gate.sh`（gating の 4 組合せ）
 
 **Interfaces:**
 - Consumes: Task 2 の `config-resolve.sh` CLI、Task 2b の `override-args.sh`、Task 5 の `prewarm.json` スキーマ、Task 4 の `--role` 値域
@@ -2111,24 +2146,31 @@ Read every role value from `$ROLES_JSON`. Do not re-derive them anywhere else.
   再質問し、2 回目も不正ならそのロールの変更を丸ごと破棄する旨を書く。
 - 自由入力は**コマンドを組み立てる前に**検証する旨を明記する（`'` `"` `` ` `` `$` `\` `!`・
   制御文字・空・前後空白を拒否して再質問）。
-- 結果の適用。**選択されたロールと、実際に変更された次元だけ**を `--set` へ組み立てる。
-  `exec` 固定でも `model` / `effort` 固定でもない:
+- 結果の適用。**必ず `override-args.sh`（Task 2b）を通す**。inline で `--set` を組み立てては
+  ならない — ロール丸ごと破棄の判定はそのスクリプトにしか無く、迂回すると engine と整合しない
+  部分適用が起きる（R5 #1）:
 
   ```bash
-  # 各ロールの pending tuple が確定したら、変更された次元だけを集める。
-  # OVERRIDE_ARGS は配列で持つ (文字列連結は値に空白があると壊れる)。
-  OVERRIDE_ARGS=()
+  # 1) 回答を --pending の列にする。「変更なし」は空値なので builder が無視する。
+  PENDING=()
   for role in design design_review exec exec_review; do
-    # <role> が Call 2 で選ばれていなければスキップする
-    eval "sel=\${SELECTED_$role:-}"; [[ -n "$sel" ]] || continue
+    eval "sel=\${SELECTED_$role:-}"; [[ -n "$sel" ]] || continue   # Call 2 で選ばれたロールだけ
     for field in runner model effort; do
       eval "v=\${PENDING_${role}_${field}:-}"
-      # 「変更なし」を選んだ次元は空のまま。空は --set しない
-      [[ -n "$v" ]] || continue
-      OVERRIDE_ARGS+=(--set "$role.$field=$v")
+      PENDING+=(--pending "$role.$field=$v")
     done
   done
 
+  # 2) builder に engine 整合を判定させ、生き残った --set だけを受け取る。
+  #    出力は NUL 区切りなので配列へ読む (値に空白が入りうる)。
+  OVERRIDE_ARGS=()
+  if [[ ${#PENDING[@]} -gt 0 ]]; then
+    while IFS= read -r -d '' a; do OVERRIDE_ARGS+=("$a"); done < <(
+      bash <SKILL_DIR>/scripts/override-args.sh --roles "$ROLES_JSON" \
+        ${PENDING[@]+"${PENDING[@]}"})
+  fi
+
+  # 3) 生き残った引数で resolve し直す。
   if [[ ${#OVERRIDE_ARGS[@]} -gt 0 ]]; then
     RESOLVE_RC=0
     bash <SKILL_DIR>/scripts/config-resolve.sh --project-root "$ROOT" \
@@ -2142,8 +2184,8 @@ Read every role value from `$ROLES_JSON`. Do not re-derive them anywhere else.
   fi
   ```
 
-  `runner` を含めるのが要点である。runner の override は engine を変えるので、
-  `--set <role>.runner=` を渡さないと model / effort だけが変わって engine と食い違う。
+  `runner` を `--pending` に含めるのが要点である。runner の override は engine を変えるので、
+  渡さないと model / effort だけが変わって engine と食い違う。
 - 「Step 1f の switch 質問との関係」表を**削除**する。
 
 - [ ] **Step 4: placeholder を改名する**
@@ -2185,24 +2227,52 @@ gating）は「キーがある = 使える」と読むしかなく、readiness �
 後続の loop cleanup も最終 cleanup も「実在するロール」だけを列挙するので、そのペインと
 member を誰も回収できず残る。
 
+実装は 2 つの規約を同時に満たす必要がある:
+
+- **検証済みスナップショット契約**（spec §4）: `prewarm.json` を**内容として 1 回だけ読み**、
+  以後は元のパスを読み直さない。ロールごとに `jq ... "$pj"` を繰り返すのは違反であり、
+  読み取りの合間に差し替えられると**無関係な surface / agent を close / leave する**（R5 #2）。
+- **回収に失敗したロールのキーは消さない**。`|| true` で失敗を捨てて消すと、そのペインと
+  member は以後どの cleanup 経路からも見えなくなる（R5 #2）。
+
 ```bash
 # writer 固有 mktemp + 同一ディレクトリ mv (config-edit.sh と同じ規約)
 prune_not_ready() {   # $1.. = ready にならなかったロール名
-  local pj="<EXISTING_STATUS_DIR>/prewarm.json" tmp role filter='.' sf ag
+  local pj="<EXISTING_STATUS_DIR>/prewarm.json" doc tmp role sf ag
+  local -a reclaimed=()
   [[ $# -gt 0 ]] || return 0
 
-  # 1) 先に回収する。キーを消したあとでは surface_id も agent も引けない。
+  # 1) 1 回だけ読む。以降 "$pj" を読み直さない。
+  doc=$(cat "$pj") || return 1
+  validate_prewarm_snapshot "$doc" || return 1   # §4 と同じ検証
+
+  # 2) 検証済みローカル値から回収する。成功したロールだけを reclaimed へ積む。
   for role in "$@"; do
-    sf=$(jq -r --arg r "$role" '.[$r].surface_id // empty' "$pj")
-    ag=$(jq -r --arg r "$role" '.[$r].agent // empty' "$pj")
-    [[ -n "$sf" ]] && "$CMUX_BIN" close-surface --workspace "$WS" --surface "$sf" 2>/dev/null || true
-    [[ -n "$ag" ]] && "$AGMSG_DIR/leave.sh" "$TEAM" "$ag" >/dev/null 2>&1 || true
+    sf=$(jq -r --arg r "$role" '.[$r].surface_id // empty' <<<"$doc")
+    ag=$(jq -r --arg r "$role" '.[$r].agent // empty' <<<"$doc")
+    local okc=1
+    if [[ -n "$sf" ]]; then
+      "$CMUX_BIN" close-surface --workspace "$WS" --surface "$sf" 2>/dev/null || okc=0
+    fi
+    if [[ -n "$ag" ]]; then
+      "$AGMSG_DIR/leave.sh" "$TEAM" "$ag" >/dev/null 2>&1 || okc=0
+    fi
+    if [[ $okc -eq 1 ]]; then
+      reclaimed+=("$role")
+    else
+      echo "[warn] could not reclaim role '$role' (surface=$sf agent=$ag); keeping its key so cleanup can retry" >&2
+    fi
   done
 
-  # 2) そのあとでキーを消す
+  # 3) 回収できたロールのキーだけを消す。1 つも回収できなければ非 0 を返す。
+  [[ ${#reclaimed[@]} -gt 0 ]] || return 1
+  local filter='.'
+  for role in "${reclaimed[@]}"; do filter="$filter | del(.$role)"; done
   tmp=$(mktemp "$pj.XXXXXX") || return 1
-  for role in "$@"; do filter="$filter | del(.$role)"; done
-  if jq "$filter" "$pj" > "$tmp"; then mv "$tmp" "$pj"; else rm -f "$tmp"; return 1; fi
+  if jq "$filter" <<<"$doc" > "$tmp"; then mv "$tmp" "$pj"; else rm -f "$tmp"; return 1; fi
+
+  # 回収しきれなかったロールが残っていれば非 0 (呼び出し側が停止する)
+  [[ ${#reclaimed[@]} -eq $# ]]
 }
 ```
 
@@ -2233,10 +2303,10 @@ renderer / delivery / `code-review.json` 生成。
 - Phase B-R は `exec_review` ペインが担当する。`review/code-review.json` は常に `exec_review` の
   解決値で埋める（`reviewer_surface` / `reviewer_agent` / `reviewer_runner` / `reviewer_engine` /
   `reviewer_workspace` / `review_dir` のフィールド自体は配線情報として残す）。
-- **gating**: `code-review.json` を書き `--review-config` を渡すのは、**次の 2 つが揃った
-  ときだけ**である。どちらか欠けたら**両方とも省略**して Phase B-R の gate をスキップし、
-  警告を出す。到達不能な surface / agent を書いた JSON を残すと、実装者が永遠に来ない
-  verdict を待つ。
+- **gating は `review-gate.sh`（Step 9b）に任せる**。判定を自前で書いてはならない。
+  スクリプトが `code-review.json` を書き `--review-config` を出すのは、**次の 2 つが揃った
+  ときだけ**である。どちらか欠けたら**両方とも省略**して Phase B-R の gate をスキップする。
+  到達不能な surface / agent を書いた JSON を残すと、実装者が永遠に来ない verdict を待つ。
   1. `prewarm.json` に `exec_review` キーがある（launch 成功。Task 5）
   2. `exec_review` から `[ready] <slug>-exec-review` を受け取った（readiness 成功。Step 4a）
 - 「`review_mode=on` だが capable reviewer が解決できない」ケースの警告フォールバック記述は
@@ -2263,9 +2333,14 @@ renderer / delivery / `code-review.json` 生成。
   `awk 'NF && !seen[$0]++'` の重複除去と `close-surface --workspace` 必須は**維持**する
   （CLAUDE.md 項目 42）。
   **workspace 照合を追加する**（spec §4）: `prewarm.json` の `workspace_id` を、
-  status.json / 引数 / `cmux workspace list` を `[<slug>]` でリテラル一致して引いた値
-  （この 3 つは `prewarm.json` とは独立に得られる）と**比較し、一致したときだけ**
-  `close-surface` する。一致しなければ警告して**close を 1 件も行わない**。
+  **cleanup 自身の引数**、または `cmux workspace list` を `[<slug>]` でリテラル一致して
+  引いた値と**比較し、一致したときだけ** `close-surface` する。一致しなければ警告して
+  **close を 1 件も行わない**。
+
+  **`status.json` を照合元にしてはならない**（R5 #4）。子セッションが書く done/error は
+  3 フィールドの `echo` で `workspace_id` を消し、runner wrapper が書き戻すのはセッション
+  終了時だけなので信頼できない（CLAUDE.md 項目 42）。古い `status.json` と古い
+  `prewarm.json` が互いに一致してしまうと、**現在とは別の workspace を閉じる**。
   `workspace_id` が欠落しているときの `cmux workspace list` フォールバックは維持する。
   再帰列挙のままだと、将来 `prewarm.json` に `surface_id` を持つ別のオブジェクトが増えたときに
   無関係なサーフェスを閉じる。回帰は `test-cleanup-close.sh` で `review_mode=on` の 4 件 /
@@ -2408,11 +2483,59 @@ grep -nE -- '--design-model|--design-effort|--reviewer-model|--reviewer-effort|-
   || ok 'OV15: prewarm への引渡しは --roles 1 本'
 ```
 
-- [ ] **Step 9b: gating と cleanup 照合の動的テストを足す（R4 #5）**
+- [ ] **Step 9b: gating を `review-gate.sh` へ切り出し、4 組合せを動的に検査する（R4 #5 / R5 #3）**
 
-`test/test-launch-workspace-review-config.sh` に **exec_review の「key 有無 × ready 有無」
-2x2** を足す。`code-review.json` と `--review-config` は**必ず同時に出るか同時に出ないか**の
-どちらかでなければならない:
+**散文のままにしてはならない**（R5 #3）。`code-review.json` を書くかどうかの判定を SKILL.md の
+指示文に置くと、実装者が「ready だけを見る」誤りを書いてもテストで検出できない。
+`--override` の builder と同じ理由で、**実行可能なスクリプトへ切り出して本番とテストで共有**する。
+
+```
+review-gate.sh --prewarm <path> --ready <role> [--ready <role>]... \
+               --status-dir <dir> --slug <slug> --team <team> \
+               --reviewer-workspace <ws>
+```
+
+- `prewarm.json` に `exec_review` が**あり**、かつ `--ready exec_review` が**渡された**ときだけ、
+  `<status-dir>/review/code-review.json` を書き、標準出力へ
+  `--review-config <path>` を出す（呼び出し側はこれをそのまま launcher へ渡す）。
+- それ以外は**何も書かず、標準出力も空**にする。stderr に理由を 1 行出す。
+- `prewarm.json` は §4 の検証済みスナップショット契約で 1 回だけ読む。
+
+Task 7 の本番ブロックは、この出力を受け取って `--review-config` を渡すかどうかを決める
+（自前で `code-review.json` を書いてはならない）。
+
+`test/test-review-gate.sh`（新規）に **4 組合せ**すべてを置く。表は「key 有無 × ready 有無」で、
+**「key なし・ready あり」を必ず含める**（ready だけを見る誤実装を落とすため。R5 #3）:
+
+| `prewarm.json` の `exec_review` | `--ready exec_review` | `code-review.json` | 標準出力 |
+|---|---|---|---|
+| あり | 渡す | **作る** | `--review-config <path>` |
+| あり | 渡さない | 作らない | 空 |
+| **なし** | **渡す**（stale） | **作らない** | **空** |
+| なし | 渡さない | 作らない | 空 |
+
+```bash
+for key in have missing; do
+  for ready in yes no; do
+    setup_prewarm "$key"                       # exec_review キーの有無だけを変える
+    args=(--prewarm "$PJ" --status-dir "$STATUS" --slug t --team tm --reviewer-workspace w)
+    [[ "$ready" == yes ]] && args+=(--ready exec_review)
+    out=$(bash "$GATE" "${args[@]}" 2>/dev/null)
+    cr="$STATUS/review/code-review.json"
+    if [[ "$key" == have && "$ready" == yes ]]; then
+      { [[ -f "$cr" ]] && grep -q -- '--review-config' <<<"$out"; } \
+        && ok "RG-$key-$ready: 両方そろって出る" || bad "RG-$key-$ready"
+    else
+      { [[ ! -f "$cr" ]] && [[ -z "$out" ]]; } \
+        && ok "RG-$key-$ready: 両方とも出ない" || bad "RG-$key-$ready: 片方だけ出た (out=$out)"
+    fi
+    rm -f "$cr"
+  done
+done
+```
+
+`test/test-cleanup-close.sh` には **workspace 一致 / 不一致の fixture**を足す
+（件数だけでは照合を実装しないコードが通る）:
 
 | `prewarm.json` の `exec_review` | `[ready] <slug>-exec-review` | `code-review.json` | `--review-config` |
 |---|---|---|---|
@@ -2420,21 +2543,6 @@ grep -nE -- '--design-model|--design-effort|--reviewer-model|--reviewer-effort|-
 | あり | 未受領（親が prune 済みなので実際にはキーも消える） | 作らない | 渡さない |
 | なし（launch 失敗） | — | 作らない | 渡さない |
 | なし（prune 済み） | — | 作らない | 渡さない |
-
-```bash
-for case in have_ready have_notready missing; do
-  setup_prewarm "$case"       # exec_review キーと ready sentinel を case ごとに用意する
-  run_phase_b_wiring
-  cr="$STATUS/review/code-review.json"
-  if [[ "$case" == have_ready ]]; then
-    { [[ -f "$cr" ]] && grep -q -- '--review-config' "$GENERATED_CMD"; } \
-      && ok "RC-$case: 両方そろって出る" || bad "RC-$case"
-  else
-    { [[ ! -f "$cr" ]] && ! grep -q -- '--review-config' "$GENERATED_CMD"; } \
-      && ok "RC-$case: 両方とも出ない" || bad "RC-$case: 片方だけ出た"
-  fi
-done
-```
 
 `test/test-cleanup-close.sh` には **workspace 一致 / 不一致の 2 fixture**を足す
 （件数だけでは照合を実装しないコードが通る）:
@@ -2446,6 +2554,12 @@ close_fixture 'workspace:1' off; [[ "$(close_count)" == 2 ]] && ok 'CL3b' || bad
 # 不一致: 1 件も close しない
 close_fixture 'workspace:999' on; [[ "$(close_count)" == 0 ]] \
   && ok 'CL3c: workspace 不一致では 1 件も close しない' || bad 'CL3c'
+# 古い status.json と古い prewarm.json が互いに一致するが、引数 / workspace list とは
+# 一致しないケース。status.json を照合元にした実装はここで close してしまう (R5 #4)。
+printf '%s\n' '{"status":"done","workspace_id":"workspace:999"}' > "$STATUS/status.json"
+close_fixture 'workspace:999' on   # prewarm も status も 999、引数と list は workspace:1
+[[ "$(close_count)" == 0 ]] \
+  && ok 'CL3d: status.json は照合元にならない' || bad 'CL3d: status.json 経由で close した'
 ```
 
 - [ ] **Step 10: 検証**
@@ -2933,8 +3047,22 @@ git commit -m "chore(dispatch)!: バージョンを 3.0.0 へ上げる"
 6. バージョンが 3 箇所とも `3.0.0`。
 7. `bash apps/cmux-team-dispatch-task/test/test-delivery-callsites.sh` の **CS4 が PASS**
    （Task 3 で意図的に赤くしたラチェットが Task 10 で緑に戻っていること）。
-8. **新規スクリプト 3 本が存在し、対応するテストが緑**であること:
-   `config-lib.sh` / `config-resolve.sh` / `override-args.sh` と
-   `test-config-lib.sh` / `test-config-resolve.sh` / `test-override-args.sh`。
-9. **`fifo_read_once` を使うテストの実行後にプロセスが残らない**こと:
-   `ps -eo command | grep -c '[p]rewarm-panes.sh'` が全テスト実行後に 0。
+8. **新規スクリプト 4 本が存在し、対応するテストが緑**であること:
+   `config-lib.sh` / `config-resolve.sh` / `override-args.sh` / `review-gate.sh` と
+   `test-config-lib.sh` / `test-config-resolve.sh` / `test-override-args.sh` /
+   `test-review-gate.sh`。
+   さらに **SKILL.md が `override-args.sh` と `review-gate.sh` を実際に呼んでいる**こと
+   （散文で判定を再実装していないこと）:
+   ```bash
+   grep -c 'override-args.sh' apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md
+   grep -c 'review-gate.sh'   apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md
+   ```
+   Expected: どちらも 1 以上。
+9. **`fifo_read_once` を使うテストの実行後にプロセスが残らない**こと。
+   `ps` に頼ると権限制限環境で失敗しても 0 件に見えるので、**helper 自身が追跡している
+   プロセスグループへ `kill -0` が通らないこと**をテスト内で確認する:
+   ```bash
+   # fifo_read_once の末尾に置く
+   kill -0 -- "-$cpid" 2>/dev/null && bad "$label: プロセスグループが残っている" || true
+   ```
+   renderer / cleanup / prewarm の 3 consumer すべてでこれを行う。
