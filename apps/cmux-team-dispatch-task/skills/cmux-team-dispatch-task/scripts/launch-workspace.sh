@@ -165,7 +165,9 @@ ensure_claude_exclusions() {
     return 1
   fi
   mkdir -p "$(dirname "$exclude_file")" 2>/dev/null || true
-  for entry in '.claude/settings.local.json' '.claude/plans/'; do
+  # .codex/hooks.json も対象にする。worktree ごとに生成され、放っておくと git 差分として
+  # 現れて実装ペインへ「コミットするな」と口頭で伝える運用になっていた。
+  for entry in '.claude/settings.local.json' '.claude/plans/' '.codex/hooks.json'; do
     grep -qxF "$entry" "$exclude_file" 2>/dev/null \
       || echo "$entry" >> "$exclude_file" 2>/dev/null \
       || log "warn" "failed to append $entry to $exclude_file"
@@ -197,6 +199,55 @@ inject_completion_gate() {
   else
     log "warn" "failed to inject the completion gate into $settings_file"
   fi
+}
+
+# codex 版。注入先が .codex/hooks.json である以外は claude 版と同じ契約である。
+# このファイルには agmsg が SessionStart / SessionEnd を書いているので必ずマージする
+# (上書きすると codex ペインが agmsg を受信できなくなる)。
+# worktree ごとに新しいパスになるため codex は毎回「未信頼」と判定するが、
+# launch-workspace は全 codex 経路に --dangerously-bypass-hook-trust を付けているので
+# 承認待ちにはならない (CODEX_HOOK_TRUST_FLAG)。
+inject_completion_gate_codex() {
+  local script="$SCRIPT_DIR/completion-gate.sh"
+  local hooks_dir="$CWD/.codex"
+  local hooks_file="$hooks_dir/hooks.json"
+  local cmd merged tmp
+
+  [[ -n "$STATUS_DIR" ]] || return 0
+  if [[ -f "$hooks_file" ]] && grep -q 'completion-gate.sh' "$hooks_file" 2>/dev/null; then
+    log "hook" "completion gate already present in $hooks_file"
+    return 0
+  fi
+  if ! mkdir -p "$hooks_dir" 2>/dev/null; then
+    log "warn" "failed to create $hooks_dir; skipping the codex completion gate"
+    return 1
+  fi
+  cmd="bash '$script' --status-dir '$STATUS_DIR' --role '$MODEL_ROLE' --agent '$AGMSG_FROM'"
+  if [[ -f "$hooks_file" ]]; then
+    merged=$(jq --arg cmd "$cmd" \
+      '.hooks.Stop = ((.hooks.Stop // []) + [{matcher: "", hooks: [{type: "command", command: $cmd}]}])' \
+      "$hooks_file" 2>/dev/null) || merged=""
+  else
+    merged=$(jq -n --arg cmd "$cmd" \
+      '{hooks:{Stop:[{matcher:"",hooks:[{type:"command",command:$cmd}]}]}}' 2>/dev/null) || merged=""
+  fi
+  if [[ -z "$merged" ]]; then
+    log "warn" "failed to merge the completion gate into $hooks_file; skipping"
+    return 1
+  fi
+  # 一時ファイルは同一ディレクトリの mktemp + mv でアトミックに置き換える
+  # (共有名は prewarm が同じ worktree に複数ペインを起こす場面で壊れる)。
+  tmp=$(mktemp "$hooks_dir/.hooks.json.XXXXXX" 2>/dev/null) || {
+    log "warn" "failed to create a temp file in $hooks_dir; skipping"
+    return 1
+  }
+  if printf '%s\n' "$merged" > "$tmp" && mv "$tmp" "$hooks_file"; then
+    log "hook" "merged the completion gate into $hooks_file"
+    return 0
+  fi
+  rm -f "$tmp"
+  log "warn" "failed to write $hooks_file"
+  return 1
 }
 
 # シェル起動検知と config 学習（split / standby mode で使用）
@@ -830,9 +881,15 @@ if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
 fi
 
 # --- Step 2c: 完走ゲート (Stop hook 注入) ---
-# plan モードに限らず、claude engine で status-dir がある全ロールに入れる。
+# plan モードに限らず、status-dir がある全ロール・両 engine に入れる。判定スクリプトと
+# 出力契約は共通で、注入先だけが engine ごとに違う。
 if [[ "$RUNNER_ENGINE" == "claude" ]]; then
   inject_completion_gate || true
+else
+  inject_completion_gate_codex || true
+  # claude 側は Step 2a で呼んでいるが、codex はそこを通らないのでここで呼ぶ。
+  # `|| true` は必須 (非 git な --cwd で launch ごと死ぬのを防ぐ)。
+  ensure_claude_exclusions || true
 fi
 
 # --- Step 3: Build runner command ---

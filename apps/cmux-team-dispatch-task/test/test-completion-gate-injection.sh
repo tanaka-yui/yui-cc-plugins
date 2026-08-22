@@ -8,6 +8,10 @@
 #   CI1b. 注入された command が role / agent / status-dir を持つ
 #   CI2.  同じ worktree で 2 回起動しても二重に入らない
 #   CI3.  既存の hook (ExitPlanMode) を壊さない
+#   CI4.  codex engine では .codex/hooks.json の Stop に 1 本入る
+#   CI5.  codex でも二重に入らない
+#   CI6.  agmsg が書いた SessionStart を壊さない (上書きせずマージする)
+#   CI7.  .claude/settings.local.json と .codex/hooks.json が info/exclude に入る
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,6 +88,32 @@ n=$(gate_count "$TMP/repo/.claude/settings.local.json")
 jq -e '.hooks.PostToolUse[0].matcher == "ExitPlanMode"' \
   "$TMP/repo/.claude/settings.local.json" >/dev/null 2>&1 \
   && pass 'CI3 既存の hook が残っている' || bad 'CI3 既存の hook を壊した'
+
+# --- CI4/CI5/CI6: codex 側 ---
+# .codex/hooks.json には agmsg が SessionStart を書いているので、壊さないことまで見る。
+cat > "$TMP/repo/.codex/hooks.json" <<'EOF'
+{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"'/x/session-start.sh' 'codex' '/x'"}]}]}}
+EOF
+
+run_launch codex ci-4
+n=$(gate_count "$TMP/repo/.codex/hooks.json")
+[[ "$n" == 1 ]] && pass 'CI4 codex に Stop hook が 1 本入る' || bad "CI4 入っていない (n=$n)"
+
+run_launch codex ci-5
+n=$(gate_count "$TMP/repo/.codex/hooks.json")
+[[ "$n" == 1 ]] && pass 'CI5 codex でも二重に入らない' || bad "CI5 重複した (n=$n)"
+
+jq -e '.hooks.SessionStart[0].hooks[0].command | test("session-start.sh")' \
+  "$TMP/repo/.codex/hooks.json" >/dev/null 2>&1 \
+  && pass 'CI6 agmsg の SessionStart を壊さない' || bad 'CI6 agmsg の hook を壊した'
+
+# --- CI7: 誤コミット防止 ---
+exclude=$(git -C "$TMP/repo" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null)
+ci7=1
+for entry in '.claude/settings.local.json' '.codex/hooks.json'; do
+  grep -qxF "$entry" "$exclude" 2>/dev/null || { bad "CI7 $entry が info/exclude に無い"; ci7=0; }
+done
+[[ $ci7 -eq 1 ]] && pass 'CI7 両方の設定ファイルが info/exclude に入る'
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail
