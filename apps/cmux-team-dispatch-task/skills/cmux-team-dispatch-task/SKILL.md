@@ -799,6 +799,38 @@ and one full-height pane on the right. Each individual direction and split sourc
 correct in that broken layout, which is why `test-prewarm-layout.sh` asserts the order
 itself and not only the directions.
 
+### Completion Gate (Stop hook)
+
+A child session sometimes stops in the middle of its task — the implementation does not reach
+the end, or a reviewer ends before writing its verdict. `launch-workspace.sh` injects one
+`type: "command"` Stop hook per pane so the session continues instead of waiting for a human
+to say "keep going". The hook is `scripts/completion-gate.sh`, and it is the same script and
+the same output contract on both engines; only the destination differs
+(`.claude/settings.local.json` for claude, `.codex/hooks.json` for codex, merged so agmsg's
+own entries survive).
+
+**The gate reads only the disk.** No model evaluation, no network, no cmux. The completion
+condition is already materialised as `status.json`, `.deferred`, and the review round files,
+so there is nothing to infer from the transcript. This is what keeps the gate compatible with
+push-based waiting: a pane that has not been given its task yet, and a pane waiting for a
+`review-verdict:` it already requested, are **states the gate must not interrupt**, and both
+are visible on disk. A model-evaluated gate would have to guess at them.
+
+**The same state means opposite things to the two sides of a review.** A round file with no
+`VERDICT:` line means "my counterpart has not answered yet, keep waiting" to the requester and
+"I have not finished writing my own review" to the reviewer. The gate lets the requester stop
+and blocks the reviewer. Reversing this either strands a reviewer that never writes a verdict
+or wakes an implementer that should be idle.
+
+Blocking is bounded. Consecutive blocks are counted in `<status-dir>/.gate-blocks` and stop at
+10 (`DISPATCH_GATE_MAX_BLOCKS`); the engines impose no limit of their own, so an unbounded gate
+would loop forever. Giving up does not clear the counter — clearing it there would re-arm the
+limit immediately and produce an endless block-then-pause cycle. Only a genuine allow resets
+it, which happens as soon as the task reaches a wait or a terminal status.
+
+Injection is best-effort exactly like the `ExitPlanMode` hook: a failure warns and the dispatch
+continues. Re-using a worktree does not inject a second copy.
+
 The review-off layout has exactly two panes. The review-on layout has four unless a review
 pane fails to launch, in which case prewarm omits only that review key and the corresponding
 gate is skipped. If a required design or exec launch fails, prewarm-panes.sh rolls back

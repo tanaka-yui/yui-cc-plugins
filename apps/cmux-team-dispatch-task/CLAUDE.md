@@ -300,10 +300,11 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 29. **Phase B-R fixed**: 実装 runner / engine にかかわらず `exec_review` が code review を担当し、`design_review` と design pane は code reviewer にならないこと
 31. **Phase B-R gate**: `review_mode=off` または `exec_review` が launch / readiness 後に残らない場合、`review-gate.sh` は stdout と `code-review.json` の両方を省略すること。Phase B は同じ prewarm 済み exec へ配送され、review protocol だけを含めないこと
 32. **effort 注入（両 engine）**: 各ロールの解決済み effort が claude / codex の allowlist で検証され、対応する起動フラグへ注入されること
-33. **4 ロールすべて codex のディスパッチ**: review 有効時も 4 ロールそれぞれの固定ペインが起動し、claude ペインが 0 件であること
-34. **同一Codex Phase A-R**: codex design の plan/spec を codex `design_review` ペインがレビューできること
-35. **fixed Phase B**: codex `exec` ペインへ委譲し、codex `exec_review` ペインが B-R を担当すること
-36. **review role 脱落**: launch または readiness で脱落した review role を警告・回収・prune し、その role の gate だけを省略すること。design / exec の脱落とは混同しないこと
+33. **完走ゲート**: 4 ロールとも Stop hook (`completion-gate.sh`) が注入され、判定がディスクだけを読むこと。**「待って良い状態」を block しない**こと — タスク未着（`design`/`exec` は `.assigned-<agent>` 無し、review ロールは `review/*round*.md` 無し）と verdict 待ち（依頼側で `VERDICT:` 行が無い）は停止を許す。レビュアーは同じ「`VERDICT:` 行が無い」状態で逆に block する（自分がまだ書いていない意味だから）。連続 block は `<status-dir>/.gate-blocks` で 10 回に制限し、**上限到達時にカウンタを消さない**こと（消すと即座に再武装され「上限まで block → 1 回休み」を繰り返す）。注入は冪等でベストエフォート、`.codex/hooks.json` は agmsg の entry とマージし `info/exclude` に入ること
+34. **4 ロールすべて codex のディスパッチ**: review 有効時も 4 ロールそれぞれの固定ペインが起動し、claude ペインが 0 件であること
+35. **同一Codex Phase A-R**: codex design の plan/spec を codex `design_review` ペインがレビューできること
+36. **fixed Phase B**: codex `exec` ペインへ委譲し、codex `exec_review` ペインが B-R を担当すること
+37. **review role 脱落**: launch または readiness で脱落した review role を警告・回収・prune し、その role の gate だけを省略すること。design / exec の脱落とは混同しないこと
 39. **codex 起動安全性**: superpowers は bypass で approval prompt を出さず、review は `--sandbox workspace-write` + `-c approval_policy='never'` に加え `--add-dir <STATUS_DIR>/review` / `--add-dir <AGMSG_SKILL_DIR>/run` / `--add-dir <AGMSG_SKILL_DIR>/db` の3本だけを条件付きで併用すること
 40. **pane close の誤通知**: 全タスク完了後のクリーンアップで standby / 実装ペインを閉じたとき、`[dispatch] task ... finished (status: error)` が親へ飛ばないこと、`status.json` の `done` が保持されること。`executing` 中の pane を閉じた場合は従来どおり `error` 通知が飛ぶこと。`bash test/test-runner-signal-exit.sh` の動的検査を実行すること
 41. **タスク内の並列実行**: plan / superpowers / execute で起動した子セッションのプロンプトに `PARALLEL EXECUTION, mandatory` が含まれること。codex には `spawn_agent`、claude には Task サブエージェントの指示が届くこと。standby / review の起動コマンドには含まれず、親が送る実行指示・レビュー依頼側に含まれること。`--no-parallel` で起動プロンプトから消えること
