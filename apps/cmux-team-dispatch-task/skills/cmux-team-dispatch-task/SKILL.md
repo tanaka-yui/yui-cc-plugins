@@ -371,123 +371,49 @@ warn and skip Phase A-R; if exec_review is not ready, warn and skip Phase B-R. D
 rewrite config.
 
 prewarm.json records launch success, not readiness. After collecting ready messages,
-reclaim each non-ready review pane and team member before deleting its key. Read and
-validate the snapshot once; never jq the original path repeatedly:
+delegate removal of every non-ready optional review role to the fail-closed helper:
 
-    validate_prewarm_snapshot() { # $1 is the immutable document
-      local doc="$1" role expected runner engine effort model registered review_mode
-      jq -e 'type == "object" and
-        ((keys - ["workspace_id","review_mode","design","design_review","exec","exec_review"]) | length == 0) and
-        (.workspace_id | type == "string" and length > 0) and
-        (.review_mode == "on" or .review_mode == "off") and has("design") and has("exec")' \
-        >/dev/null 2>&1 <<<"$doc" || return 1
-      review_mode=$(jq -r '.review_mode' <<<"$doc")
-      if [[ "$review_mode" == off ]]; then
-        jq -e 'has("design_review") or has("exec_review")' >/dev/null 2>&1 <<<"$doc" && return 1
-      fi
-      for role in design design_review exec exec_review; do
-        jq -e --arg r "$role" 'has($r)' >/dev/null 2>&1 <<<"$doc" || continue
-        jq -e --arg r "$role" '
-          (.[$r] | type == "object") and
-          ((.[$r] | keys - ["surface_id","agent","runner","engine","model","effort","wired"]) | length == 0) and
-          (.[$r].surface_id | type == "string" and length > 0) and
-          (.[$r].agent | type == "string" and length > 0) and
-          (.[$r].runner | type == "string" and length > 0) and
-          (.[$r].engine == "claude" or .[$r].engine == "codex") and
-          (.[$r].effort | type == "string") and (.[$r].wired == true)' \
-          >/dev/null 2>&1 <<<"$doc" || return 1
-        case "$role" in
-          design) expected="<slug>" ;;
-          *) expected="<slug>-${role//_/-}" ;;
-        esac
-        [[ "$(jq -r --arg r "$role" '.[$r].agent' <<<"$doc")" == "$expected" ]] || return 1
-        runner=$(jq -r --arg r "$role" '.[$r].runner' <<<"$doc")
-        engine=$(jq -r --arg r "$role" '.[$r].engine' <<<"$doc")
-        effort=$(jq -r --arg r "$role" '.[$r].effort' <<<"$doc")
-        dispatch_valid_runner_name "$runner" || return 1
-        dispatch_valid_effort "$effort" "$engine" || return 1
-        registered=$(jq -r --arg runner "$runner" \
-          'first(.runners[]? | select(.name == $runner) | .engine) // empty' "$RUNNERS_FILE")
-        [[ "$registered" == "$engine" ]] || return 1
-        if jq -e --arg r "$role" '.[$r] | has("model")' >/dev/null 2>&1 <<<"$doc"; then
-          jq -e --arg r "$role" '.[$r].model | type == "string" and length > 0' \
-            >/dev/null 2>&1 <<<"$doc" || return 1
-          model=$(jq -r --arg r "$role" '.[$r].model' <<<"$doc")
-          dispatch_valid_model "$model" || return 1
-        elif dispatch_model_required "$role" "$engine"; then
-          return 1
-        fi
-      done
-    }
+    PRUNE_ARGS=()
+    for role in "${NOT_READY[@]}"; do PRUNE_ARGS+=(--role "$role"); done
+    if [[ ${#PRUNE_ARGS[@]} -gt 0 ]]; then
+      bash <SKILL_DIR>/scripts/prune-not-ready.sh \
+        --prewarm "<EXISTING_STATUS_DIR>/prewarm.json" --workspace "$WS" \
+        --team "$TEAM" --slug "<slug>" "${PRUNE_ARGS[@]}" || exit 1
+    fi
 
-    prune_not_ready() {   # $1.. = review roles that did not report ready
-      local pj="<EXISTING_STATUS_DIR>/prewarm.json" doc tmp role sf ag
-      local -a reclaimed=()
-      [[ $# -gt 0 ]] || return 0
-
-      doc=$(cat "$pj") || return 1
-      validate_prewarm_snapshot "$doc" || return 1
-
-      for role in "$@"; do
-        sf=$(jq -r --arg r "$role" '.[$r].surface_id // empty' <<<"$doc")
-        ag=$(jq -r --arg r "$role" '.[$r].agent // empty' <<<"$doc")
-        local okc=1
-        if [[ -n "$sf" ]]; then
-          "$CMUX_BIN" close-surface --workspace "$WS" --surface "$sf" 2>/dev/null || okc=0
-        fi
-        if [[ -n "$ag" ]]; then
-          "$AGMSG_DIR/leave.sh" "$TEAM" "$ag" >/dev/null 2>&1 || okc=0
-        fi
-        if [[ $okc -eq 1 ]]; then
-          reclaimed+=("$role")
-        else
-          echo "[warn] could not reclaim role '$role' (surface=$sf agent=$ag); keeping its key so cleanup can retry" >&2
-        fi
-      done
-
-      [[ ${#reclaimed[@]} -gt 0 ]] || return 1
-      local filter='.'
-      for role in "${reclaimed[@]}"; do filter="$filter | del(.$role)"; done
-      tmp=$(mktemp "$pj.XXXXXX") || return 1
-      if jq "$filter" <<<"$doc" > "$tmp"; then mv "$tmp" "$pj"; else rm -f "$tmp"; return 1; fi
-      [[ ${#reclaimed[@]} -eq $# ]]
-    }
-
-    prune_not_ready "${NOT_READY[@]}" || {
-      echo "[error] could not prune non-ready roles from prewarm.json; stopping before delivery" >&2
-      echo "        (a stale role key would send a request to a pane that never reported ready)" >&2
-      exit 1
-    }
-
-The order is fixed: prewarm launch, ready collection, prune_not_ready, then rendering,
-delivery, and review configuration. After pruning, a role key exists if and only if that
-role is usable.
+`prune-not-ready.sh` reads and validates one snapshot, rejects unsafe or duplicate
+surface IDs and workspace disagreement, verifies that every target is still owned by the
+workspace, and only then closes the optional surfaces, leaves their team members, and
+publishes the pruned snapshot. It never accepts design or exec. The order is fixed:
+prewarm launch, ready collection, prune-not-ready.sh, then rendering, review gating, and
+delivery. After pruning, a role key exists if and only if that role is usable.
 
 Phase A-R always reuses design_review at both the spec and plan checkpoints. Phase B-R
 always uses exec_review. The design session never becomes a reviewer; after delegating
 Phase B it always touches .deferred and exits. The generated Phase B prompt contains no
 AskUserQuestion and always delegates to the configured exec pane.
 
-Do not implement the Phase B-R gate inline. Pass the ready-role set to review-gate.sh and
-use its output as the launcher arguments:
+Do not implement the Phase B-R gate inline. Pass the ready-role set to review-gate.sh.
+Its stdout is either empty or the canonical review-config path; it is never a launcher
+argument list:
 
     READY_ARGS=()
     for role in "${READY_ROLES[@]}"; do READY_ARGS+=(--ready "$role"); done
-    REVIEW_GATE_OUTPUT=$(bash <SKILL_DIR>/scripts/review-gate.sh \
+    REVIEW_CONFIG_PATH=$(bash <SKILL_DIR>/scripts/review-gate.sh \
       --prewarm "<EXISTING_STATUS_DIR>/prewarm.json" "${READY_ARGS[@]}" \
       --status-dir "<EXISTING_STATUS_DIR>" --slug "<slug>" --team "$TEAM" \
       --reviewer-workspace "$WS") || exit 1
-    REVIEW_CONFIG_ARGS=()
-    if [[ -n "$REVIEW_GATE_OUTPUT" ]]; then
-      read -r review_flag review_path <<<"$REVIEW_GATE_OUTPUT"
-      REVIEW_CONFIG_ARGS=("$review_flag" "$review_path")
-    fi
 
-Only review-gate.sh may write review/code-review.json. It emits --review-config <path>
-only when exec_review exists in the validated prewarm snapshot and exec_review was passed
-as ready. Otherwise it emits no stdout and no file, so the execution launcher receives
-no review config and does not wait for an unreachable verdict. The JSON contains the
-exec_review surface, agent, runner, engine, workspace, and review directory.
+Embed that exact value as the `REVIEW_CONFIG_PATH` literal in the generated design task
+prompt; do not rely on a parent-shell variable being inherited by the child.
+
+Only review-gate.sh may write review/code-review.json. It emits the path only when
+exec_review exists in the validated snapshot and was passed as ready. It validates strict
+`workspace:<digits>` / `surface:<digits>` identifiers, workspace agreement, unique role
+surfaces, the canonical non-symlink review directory, and a final regular JSON file.
+Otherwise it emits no stdout and no file, so Phase B does not wait for an unreachable
+verdict. Pass the path to phase-b-deliver.sh exactly as shown in Phase B delivery below;
+never pass it to launch-workspace.sh.
 
 Append the following to every child prompt. This is the mandatory completion layer; the
 runner wrapper exit notification is only a backstop because an idle TUI may never exit:
@@ -533,9 +459,17 @@ decision; never build --set arguments inline:
 
     OVERRIDE_ARGS=()
     if [[ ${#PENDING[@]} -gt 0 ]]; then
-      while IFS= read -r -d '' a; do OVERRIDE_ARGS+=("$a"); done < <(
-        bash <SKILL_DIR>/scripts/override-args.sh --roles "$ROLES_JSON" \
-          ${PENDING[@]+"${PENDING[@]}"})
+      OVERRIDE_OUTPUT=$(mktemp) || exit 1
+      OVERRIDE_BUILDER_RC=0
+      bash <SKILL_DIR>/scripts/override-args.sh --roles "$ROLES_JSON" \
+        ${PENDING[@]+"${PENDING[@]}"} > "$OVERRIDE_OUTPUT" || OVERRIDE_BUILDER_RC=$?
+      if [[ $OVERRIDE_BUILDER_RC -ne 0 ]]; then
+        rm -f "$OVERRIDE_OUTPUT"
+        echo "[error] override validation failed; refusing to continue with silent defaults" >&2
+        exit "$OVERRIDE_BUILDER_RC"
+      fi
+      while IFS= read -r -d '' a; do OVERRIDE_ARGS+=("$a"); done < "$OVERRIDE_OUTPUT"
+      rm -f "$OVERRIDE_OUTPUT"
     fi
 
     if [[ ${#OVERRIDE_ARGS[@]} -gt 0 ]]; then
@@ -689,7 +623,7 @@ skip only Phase A-R.
 
 Always append the protocol:
 
-1a. The reviewer writes VERDICT: approved or VERDICT: needs_work to the findings file,
+1a. The reviewer writes VERDICT: approve or VERDICT: needs_work to the findings file,
 then calls send.sh once with a review-verdict: body addressed to the design agent.
 2. Send the request with ONE send.sh call. After a successful send, wait for the push
 message and re-read the findings file on every wake. As a Claude session, arm ONE
@@ -697,51 +631,44 @@ single-shot safety timer with the Bash tool using run_in_background. As a Codex 
 you have NO safety net: first run verify-agmsg-ready.sh --codex for
 {{DESIGN_REVIEW_AGENT}}, then send one dispatch-notify: message to parent reporting the
 unbacked wait. Never infer a verdict from a timer wake.
-Act on the verdict: fix needs_work findings and resend, or proceed only on approved.
+Act on the verdict: fix needs_work findings and resend, or proceed only on approve.
 1b. Append the parallel-review directive generated for {{DESIGN_REVIEW_ENGINE}} to the
 request text.
 
 **Phase B delivery.** Phase B always uses the `exec` entry from the validated prewarm
 snapshot. Never call `launch-workspace.sh --mode execute` and never create another pane.
-Before sending, touch `<STATUS_DIR>/.assigned-<slug>-exec`. Build the execution directive
-for the resolved exec engine and the completion text that an already-running standby pane
-would not otherwise receive:
+Call the delivery helper once. It reads the snapshot once, validates the fixed exec tuple,
+uses its verified agent and engine to build the execution and completion directives,
+writes the assignment marker, and sends one `phase-b-exec:` message to that prewarmed exec
+agent. Pass the gate path to this call, not to a launcher:
 
-    COMPLETION_TEXT="MANDATORY completion notification. You received this request as an already-running standby pane, so no execute launcher will add the status protocol. After writing result.md, run bash <SKILL_DIR>/scripts/report-status.sh <STATUS_DIR> done <one-line-summary>, then call ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <your-agent-name> parent with a dispatch-notify: body. A non-zero send.sh exit means the parent was not told; retry once and record a second failure in status.json."
+    PHASE_B_REVIEW_ARGS=()
+    if [[ -n "$REVIEW_CONFIG_PATH" ]]; then
+      PHASE_B_REVIEW_ARGS=(--review-config "$REVIEW_CONFIG_PATH")
+    fi
+    bash <SKILL_DIR>/scripts/phase-b-deliver.sh \
+      --prewarm "<EXISTING_STATUS_DIR>/prewarm.json" \
+      --plan-file "<PLAN_FILE_PATH>" --status-dir "<EXISTING_STATUS_DIR>" \
+      --team "$TEAM" --slug "<slug>" "${PHASE_B_REVIEW_ARGS[@]}" || exit 1
 
-For a Claude exec role:
+`phase-b-deliver.sh` creates `.deferred` only after its single four-argument send.sh call
+succeeds. A send failure is not retried by this ownership layer and leaves `.deferred`
+absent. The design pane exits only after helper success.
 
-    PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine claude --mode execute)
-    REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL $COMPLETION_TEXT After all work is committed/pushed and the PR is created (or all changes are merged per the plan), run /exit to close this session."
-
-For a Codex exec role:
-
-    PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine codex --mode execute)
-    REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL $COMPLETION_TEXT After all work is committed/pushed and the PR is created (or all changes are merged per the plan), stop and stay idle. Do not try to terminate this session yourself; the parent closes this pane during final cleanup. In particular, do NOT run /exit because codex does not act on it."
-
-Send the finished text with exactly one call, addressed to the prewarmed exec agent:
-
-    ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" <slug> <slug>-exec \
-      "phase-b-exec: $REQUEST_TEXT"
-
-Only after that call succeeds, touch `<STATUS_DIR>/.deferred` and exit the design pane.
-If delivery fails, report it and do not create `.deferred`.
-
-**Phase B-R extension.** The parent invokes `review-gate.sh` after readiness pruning and
-embeds its output in the design prompt. The output is a gate decision, not launcher
-arguments: Phase B still uses the prewarmed exec pane. Empty output means that Phase B-R
-is omitted. `--review-config <path>` means that `exec_review` survived both launch and
-readiness; read that file once and extend `REQUEST_TEXT` with this common protocol:
-
-    PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <implementer-engine> --mode execute)
-    REVIEW_PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review)
-    REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are committed and BEFORE creating the PR, you MUST get a code review approval. For round N, send ONE review-code: message to {{EXEC_REVIEW_AGENT}} asking it to inspect the implementation and write a findings file whose last line is VERDICT: approve or VERDICT: needs_work. The reviewer must call send.sh once with a review-verdict: body to the implementer after writing the file. On needs_work, fix every valid finding and request the next round; on approve, continue. For later rounds, append your rebuttals to the findings you rejected, with reasons. Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEW_PARALLEL End of the message to the reviewer. (2) then end your turn. $COMPLETION_TEXT"
+**Phase B-R extension.** A non-empty `REVIEW_CONFIG_PATH` means that exec_review survived
+launch and readiness. The helper reads that regular JSON file once, proves that it is in
+the canonical review directory and matches the verified exec_review tuple and workspace,
+then embeds the following protocol into the actual prewarmed exec request exactly once.
+After all changes are committed and BEFORE creating the PR, the implementer sends one
+`review-code:` request per round only to the verified exec_review agent. The reviewer
+writes `<EXISTING_STATUS_DIR>/review/code-round-N.md`; its last line is `VERDICT: approve`
+or `VERDICT: needs_work`, followed by one `review-verdict:` send.sh call back to the
+implementer. On needs_work, fix valid findings and request the next round; on approve,
+continue. Run a maximum of 5 rounds. Do not start round 6; when round 5 still returns
+needs_work, record unresolved findings in the PR body and proceed.
 
 Append the same engine-specific final instruction used by the base request: Claude runs
-`/exit` after the completion report; Codex must `stop and stay idle. Do not try to
-terminate this session yourself; the parent closes this pane during final cleanup.` and
-must `do NOT run /exit because codex does not act on it`. Then deliver the extended text
-with the same single `phase-b-exec:` call above.
+`/exit` after the completion report; Codex stops and stays idle until parent cleanup.
 
 After sending each `review-code:` request, a Claude implementer arms one single-shot
 safety timer with the Bash tool using `run_in_background`. A Codex implementer has NO
@@ -821,7 +748,9 @@ argument and launches a fixed role layout:
 
 The review-off layout has exactly two panes. The review-on layout has four unless a review
 pane fails to launch, in which case prewarm omits only that review key and the corresponding
-gate is skipped. design and exec launch failures stop the dispatch.
+gate is skipped. If a required design or exec launch fails, prewarm-panes.sh rolls back
+only the worktree, branch, team members, and surfaces that this invocation created,
+joined, or launched; reused resources are preserved. The dispatch then stops.
 
 Everything is delegated to prewarm-panes.sh. Do not create role panes manually and do not
 also run the normal design launch:

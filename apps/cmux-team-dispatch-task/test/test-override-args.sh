@@ -4,6 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OA="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/override-args.sh"
 fail=0; bad() { echo "FAIL $1"; fail=1; }; ok() { echo "PASS $1"; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+. "$SCRIPT_DIR/lib/fifo-once.sh"
 printf '%s\n' '{"default":"ccf","runners":[{"name":"ccf","command":"ccf","engine":"claude"},{"name":"cx","command":"codex","engine":"codex"}]}' > "$TMP/runners.json"
 printf '%s\n' '{"review_mode":"on","roles":{"design":{"runner":"ccf","engine":"claude","model":"opus[1m]","effort":"xhigh"},"design_review":{"runner":"ccf","engine":"claude","model":"opus[1m]","effort":"xhigh"},"exec":{"runner":"ccf","engine":"claude","model":"sonnet","effort":"high"},"exec_review":{"runner":"ccf","engine":"claude","model":"opus[1m]","effort":"high"}}}' > "$TMP/roles.json"
 ROLE_INPUT="$TMP/roles.json"
@@ -33,4 +34,10 @@ ROLE_INPUT="$TMP/bad-runner.json"; args --pending design.effort=high
 printf '%s\n' '{"roles":{"design":{"runner":"ccf","engine":"claude","model":"","effort":"xhigh"}}}' >"$TMP/bad-model.json"
 ROLE_INPUT="$TMP/bad-model.json"; args --pending design.effort=high
 [[ "$OA_RC" -eq 0 ]] && ! has 'design.effort=high' && grep -q 'required model' "$TMP/err" && ok 'OA9: 必須 model 欠落なら破棄' || bad 'OA9'
+
+oa_fifo_once() { # fifo path is appended by fifo_read_once
+  local fifo="$1"
+  bash "$OA" --roles "$fifo" --runners "$TMP/runners.json" --pending design.effort=high
+}
+fifo_read_once 'OA10: roles snapshot is read exactly once' "$TMP/roles.json" oa_fifo_once
 exit $fail

@@ -7,7 +7,7 @@
 #   - runner 名 / model 値の拒否条件。値は zsh -ic "... '<prompt>' ..." の二重引用を
 #     通って再実行されるため、引用を破る文字を 1 箇所で弾く
 #   - effort の小文字正規化と engine 別 allowlist。ユーザーは "xHigh" と書きうる
-#   - ロール名・組込み既定値・model 省略可否の表
+#   - ロール名・cmux ID・組込み既定値・model 省略可否の表
 #
 # source する側: config-edit.sh / config-resolve.sh / prewarm-panes.sh /
 #                render-loop-prompt.sh / terminal-wait.sh / launch-workspace.sh
@@ -26,6 +26,11 @@ dispatch_runners_file() {
 }
 
 dispatch_role_names() { printf 'design\ndesign_review\nexec\nexec_review\n'; }
+
+# launch-workspace.sh が cmux 出力から採用する ref と同じ strict 形式だけを許す。
+# shell-safe なだけの自由文字列は、read-screen / close-surface の対象に使わない。
+dispatch_valid_workspace_id() { [[ "$1" =~ ^workspace:[0-9]+$ ]]; }
+dispatch_valid_surface_id() { [[ "$1" =~ ^surface:[0-9]+$ ]]; }
 
 # 空・前後の空白・シェルメタ文字・制御文字を拒否する。内部の空白は許容する
 # (前後の空白を黙ってトリムすると「入力した値と違う値が保存される」ため弾く)。

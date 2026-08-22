@@ -10,8 +10,44 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config-lib.sh"
 AGMSG_DIR="${AGMSG_DIR:-$HOME/.agents/skills/agmsg/scripts}"
 
+ROLLBACK_ACTIVE=0
+CREATED_WORKTREE=0
+CREATED_BRANCH=""
+JOINED_ROLES=()
+LAUNCHED_SURFACES=()
+LAUNCHED_WORKSPACES=()
+
+rollback_owned_resources() {
+  local i role agent workspace surface
+  [[ $ROLLBACK_ACTIVE -eq 1 ]] || return 0
+  ROLLBACK_ACTIVE=0
+
+  for ((i=${#LAUNCHED_SURFACES[@]}-1; i>=0; i--)); do
+    surface="${LAUNCHED_SURFACES[$i]}"
+    workspace="${LAUNCHED_WORKSPACES[$i]}"
+    [[ -n "$workspace" && -n "$surface" ]] || continue
+    "$CMUX_BIN" close-surface --workspace "$workspace" --surface "$surface" \
+      >/dev/null 2>&1 || log warn "failed to close rollback surface $surface in $workspace"
+  done
+  for ((i=${#JOINED_ROLES[@]}-1; i>=0; i--)); do
+    role="${JOINED_ROLES[$i]}"
+    agent=$(role_agent "$role")
+    bash "$AGMSG_DIR/leave.sh" "$AGMSG_TEAM" "$agent" >/dev/null 2>&1 \
+      || log warn "failed to leave rollback agent $agent"
+  done
+  if [[ $CREATED_WORKTREE -eq 1 && -n "${CWD:-}" ]]; then
+    git worktree remove "$CWD" --force >/dev/null 2>&1 \
+      || log warn "failed to remove rollback worktree $CWD"
+  fi
+  if [[ -n "$CREATED_BRANCH" ]]; then
+    git branch -D "$CREATED_BRANCH" >/dev/null 2>&1 \
+      || log warn "failed to remove rollback branch $CREATED_BRANCH"
+  fi
+}
+
 die() {
   echo "Error: $1" >&2
+  rollback_owned_resources
   exit 2
 }
 
@@ -175,10 +211,14 @@ if [[ -d "$CWD" ]]; then
   log worktree "already exists at $CWD, reusing"
 else
   BRANCH_NAME="feat/$SLUG"
+  BRANCH_EXISTED=0
+  git show-ref --verify --quiet "refs/heads/$BRANCH_NAME" && BRANCH_EXISTED=1 || true
   log worktree "creating $CWD with branch $BRANCH_NAME"
   git worktree add "$CWD" -b "$BRANCH_NAME" 2>/dev/null \
     || git worktree add "$CWD" "$BRANCH_NAME" 2>/dev/null \
     || die "failed to create worktree at $CWD"
+  CREATED_WORKTREE=1
+  [[ $BRANCH_EXISTED -eq 1 ]] || CREATED_BRANCH="$BRANCH_NAME"
 fi
 
 role_value() { jq -r --arg role "$1" --arg field "$2" '.roles[$role][$field] // empty' <<< "$ROLES_DOC"; }
@@ -206,16 +246,29 @@ join_role() {
   wiring=$(role_wiring_type "$role")
   bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$agent" "$wiring" "$CWD" >&2 2>/dev/null \
     || die "$role agmsg join failed; readiness cannot be established"
+  JOINED_ROLES+=("$role")
   wire_delivery "$role"
+}
+
+forget_joined_role() {
+  local target="$1" current kept=()
+  for current in "${JOINED_ROLES[@]}"; do
+    [[ "$current" == "$target" ]] || kept+=("$current")
+  done
+  JOINED_ROLES=("${kept[@]}")
 }
 
 leave_role() {
   local role="$1" agent
   agent=$(role_agent "$role")
-  bash "$AGMSG_DIR/leave.sh" "$AGMSG_TEAM" "$agent" >/dev/null 2>&1 \
-    || log warn "failed to leave $agent after pane launch failure"
+  if bash "$AGMSG_DIR/leave.sh" "$AGMSG_TEAM" "$agent" >/dev/null 2>&1; then
+    forget_joined_role "$role"
+  else
+    log warn "failed to leave $agent after pane launch failure"
+  fi
 }
 
+ROLLBACK_ACTIVE=1
 for role in design exec; do join_role "$role"; done
 if [[ "$REVIEW_MODE" == on ]]; then
   join_role design_review
@@ -281,6 +334,12 @@ launch_role() { # role [workspace split-from direction]
     LAUNCHED_WORKSPACE=""
     [[ "$role" != design ]] || LAUNCHED_WORKSPACE=$(jq -r '.workspace_id // empty' <<< "$result")
     [[ "$role" != design || -n "$LAUNCHED_WORKSPACE" ]] || die "failed to parse design workspace output"
+    LAUNCHED_SURFACES+=("$LAUNCHED_SURFACE")
+    if [[ "$role" == design ]]; then
+      LAUNCHED_WORKSPACES+=("$LAUNCHED_WORKSPACE")
+    else
+      LAUNCHED_WORKSPACES+=("$workspace")
+    fi
     return 0
   fi
 
@@ -348,6 +407,8 @@ if [[ $WITH_DESIGN -eq 1 && ! -f "$STATUS_DIR/status.json" ]]; then
     > "$STATUS_DIR/status.json"
   log prewarm "wrote initial launched status.json"
 fi
+
+ROLLBACK_ACTIVE=0
 
 jq -n --arg workspace_id "$WORKSPACE" --arg review_mode "$REVIEW_MODE" --argjson panes "$PANES_JSON" \
   '{workspace_id: $workspace_id, review_mode: $review_mode, panes: $panes}'

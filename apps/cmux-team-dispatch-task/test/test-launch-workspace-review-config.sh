@@ -26,7 +26,11 @@ cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
   new-workspace) echo 'workspace:1' ;;
-  list-pane-surfaces) echo 'surface:2' ;;
+  list-pane-surfaces)
+    case "$*" in
+      *'--workspace workspace:7'*) echo 'surface:99' ;;
+      *) echo 'surface:2' ;;
+    esac ;;
   rename-workspace|rename-tab|notify|send|send-key|wait-for|identify) ;;
   *) echo "unexpected cmux command: $*" >&2; exit 1 ;;
 esac
@@ -47,6 +51,8 @@ cat > "$TMP/status/review/code-review.json" <<JSON
 {
   "reviewer_surface": "surface:99",
   "reviewer_workspace": "workspace:7",
+  "reviewer_runner": "codex",
+  "reviewer_engine": "codex",
   "reviewer_agent": "t1-review",
   "review_dir": "$TMP/status/review"
 }
@@ -55,6 +61,8 @@ JSON
 cat > "$TMP/status/review/code-review-legacy.json" <<JSON
 {
   "reviewer_surface": "surface:99",
+  "reviewer_runner": "codex",
+  "reviewer_engine": "codex",
   "reviewer_agent": "t1-review",
   "review_dir": "$TMP/status/review"
 }
@@ -75,6 +83,7 @@ cat > "$TMP/status/review/code-review-claude-reviewer.json" <<JSON
 {
   "reviewer_surface": "surface:99",
   "reviewer_workspace": "workspace:7",
+  "reviewer_runner": "claude",
   "reviewer_engine": "claude",
   "reviewer_agent": "t1-review",
   "review_dir": "$TMP/status/review"
@@ -86,6 +95,8 @@ cat > "$TMP/status/review/code-review-no-agent.json" <<JSON
 {
   "reviewer_surface": "surface:99",
   "reviewer_workspace": "workspace:7",
+  "reviewer_runner": "codex",
+  "reviewer_engine": "codex",
   "review_dir": "$TMP/status/review"
 }
 JSON
@@ -178,13 +189,6 @@ else
   echo 'PASS: T5 review instruction is quote-free'
 fi
 
-# 旧スキーマ (reviewer_workspace なし) では --workspace 指定なしにフォールバックする
-legacy_runner=$(runner_with_config codex "$TMP/status/review/code-review-legacy.json" review-cfg-legacy)
-assert_contains "$legacy_runner" 'read-screen --surface surface:99' 'T6 legacy config falls back to surface-only read-screen'
-assert_contains "$legacy_runner" 'the recipient t1-review' 'T6 legacy config でも配送先は reviewer_agent'
-assert_not_contains "$legacy_runner" '--workspace workspace:7' 'T6 legacy config has no --workspace flag'
-assert_not_contains "$legacy_runner" '--to-workspace workspace:7' 'T6 legacy config has no --to-workspace flag'
-
 # --- T7: reviewer_agent 欠落は die する (SLUG から宛先を捏造しない) ---
 if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
    AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
@@ -225,6 +229,11 @@ assert_die() {
 BASE_ARGS=(--cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md"
            --status-dir "$TMP/status" --no-parallel)
 
+# T6: legacy の workspace 欠落を許すと surface 所有 workspace を証明できない。
+assert_die 'T6 reviewer_workspace 欠落は拒否する' 'reviewer_workspace' \
+  "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review-legacy.json" review-cfg-legacy
+
 # T8: team 名にシングルクォート
 assert_die 'T8 --agmsg-team のシングルクォートは die する' '--agmsg-team' \
   "${BASE_ARGS[@]}" --agmsg-team "dispatch-my'repo" --agmsg-from t1-exec \
@@ -240,6 +249,8 @@ cat > "$TMP/status/review/code-review-bad-agent.json" <<JSON
 {
   "reviewer_surface": "surface:99",
   "reviewer_workspace": "workspace:7",
+  "reviewer_runner": "codex",
+  "reviewer_engine": "codex",
   "reviewer_agent": "t1'-review",
   "review_dir": "$TMP/status/review"
 }
@@ -247,6 +258,35 @@ JSON
 assert_die 'T9 reviewer_agent のシングルクォートは die する' 'invalid reviewer_agent' \
   "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
   --review-config "$TMP/status/review/code-review-bad-agent.json" guard-agent-quote
+
+# T9b/T9c: cmux ID は strict value range で検査し、shell-special 値は command 組立て前に拒否する。
+sentinel="$TMP/review-config-pwn"
+jq --arg v "surface:99'; touch $sentinel; #" '.reviewer_surface = $v' \
+  "$TMP/status/review/code-review.json" > "$TMP/status/review/code-review-bad-surface.json"
+assert_die 'T9b shell-special reviewer_surface は拒否する' 'reviewer_surface' \
+  "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review-bad-surface.json" guard-surface-quote
+[[ ! -e "$sentinel" ]] && echo 'PASS: T9b shell-special reviewer_surface caused no side effect' \
+  || { echo 'FAIL: T9b shell-special reviewer_surface caused a side effect'; fail=1; }
+
+jq --arg v 'workspace:not-safe!' '.reviewer_workspace = $v' \
+  "$TMP/status/review/code-review.json" > "$TMP/status/review/code-review-bad-workspace.json"
+assert_die 'T9c invalid reviewer_workspace は拒否する' 'reviewer_workspace' \
+  "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review-bad-workspace.json" guard-workspace
+
+# T9d: safe-looking ID でも実 workspace に存在しない surface は拒否する。
+jq '.reviewer_surface = "surface:98"' "$TMP/status/review/code-review.json" \
+  > "$TMP/status/review/code-review-wrong-owner.json"
+assert_die 'T9d reviewer surface の workspace 所有権を確認する' 'does not belong' \
+  "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review-wrong-owner.json" guard-owner
+
+# T9e: review-config 自体の symlink は snapshot 差し替え境界になるため拒否する。
+ln -s "$TMP/status/review/code-review.json" "$TMP/status/review/code-review-link.json"
+assert_die 'T9e symlink review-config は拒否する' 'regular non-symlink' \
+  "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
+  --review-config "$TMP/status/review/code-review-link.json" guard-config-link
 
 # T10: agmsg 識別子が無いのに --status-dir が来た。この launch は dispatch 管理下であり、
 # 生成される runner wrapper の notify_parent_once が (全モードで無条件に) 親通知を所有する
@@ -294,10 +334,6 @@ assert_contains "$codex_reviewer" 'Give each review lens its own child agent' 'P
 claude_reviewer=$(runner_with_config codex "$TMP/status/review/code-review-claude-reviewer.json" review-cfg-claude-rev)
 assert_contains "$claude_reviewer" 'Task subagents' 'PR1 claude レビュアーには Task サブエージェント指示が届く'
 assert_not_contains "$claude_reviewer" 'spawn_agent' 'PR1 claude レビュアーに spawn_agent は届かない'
-
-# --- PR2: reviewer_engine 欠落 (旧スキーマ) では注入しない ---
-assert_not_contains "$runner_file" 'PARALLEL EXECUTION, mandatory' 'PR2 reviewer_engine 欠落ではディレクティブ非注入'
-assert_not_contains "$legacy_runner" 'PARALLEL EXECUTION, mandatory' 'PR2 旧スキーマではディレクティブ非注入'
 
 # --- PR3: ディレクティブを足しても REVIEW_INSTRUCTION はクォートフリーのまま ---
 pr3_segment=$(grep -o 'MANDATORY CODE REVIEW.*in the PR body and proceed\.' "$codex_reviewer" | head -1)

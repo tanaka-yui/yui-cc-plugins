@@ -114,8 +114,8 @@ Each batch is claimed with `fetch --limit <concurrency> --batch <N>`. `fetch` re
 `[]`, exit 3 (all claims failed), or exit 4 (exhaustion unknown) all end the loop without
 starting the next batch. For each issue, start prewarm with
 `prewarm-panes.sh --unattended`.
-Collect `[ready]` reports, then run `prune_not_ready` to remove review roles that did
-not become ready, and invoke the renderer with the
+Collect `[ready]` reports, then run `prune-not-ready.sh` to validate ownership and remove
+optional review roles that did not become ready, and invoke the renderer with the
 validated snapshot:
 
 ```bash

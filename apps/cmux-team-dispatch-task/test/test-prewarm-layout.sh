@@ -15,6 +15,7 @@ cat > "$FAKE/launch-workspace.sh" <<'STUB'
 printf 'launch %s\n' "$*" >> "$CALLS_LOG"
 [[ -n "${ORDER_LOG:-}" ]] && printf 'launch %s\n' "$*" >> "$ORDER_LOG"
 count=$(grep -c '^launch ' "$CALLS_LOG" || true)
+case "$*" in *"--role ${FAIL_LAUNCH_ROLE:-__none__} "*) exit 1 ;; esac
 jq -n --arg surface "surface:$count" '{workspace_id:"workspace:1",surface_id:$surface}'
 STUB
 chmod +x "$FAKE/launch-workspace.sh"
@@ -106,6 +107,66 @@ first_launch=$(grep -n '^launch ' "$TMP/order.log" | head -1 | cut -d: -f1)
 last_delivery=$(grep -n '^delivery.sh ' "$TMP/order.log" | tail -1 | cut -d: -f1)
 [[ -n "$first_launch" && -n "$last_delivery" && $last_delivery -lt $first_launch ]] \
   && pass 'PW10 all delivery wiring finishes before launch' || bad 'PW10 wiring order'
+
+# Required launch failures roll back only resources owned by this invocation.
+STATUS=$(mktemp -d "$TMP/status-layout.XXXXXX")
+: > "$TMP/calls.log"
+FAIL_LAUNCH_ROLE=design CALLS_LOG="$TMP/calls.log" bash "$PW" --with-design --cwd "$TMP/wt" --slug pw11 \
+  --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_ON" >/dev/null 2>&1
+rc=$?
+leaves=$(grep -c '^leave.sh ' "$TMP/calls.log" 2>/dev/null || true)
+closes=$(grep -c '^cmux close-surface ' "$TMP/calls.log" 2>/dev/null || true)
+[[ $rc -ne 0 && "$leaves" == 4 && "$closes" == 0 && -d "$TMP/wt" && ! -e "$STATUS/prewarm.json" ]] \
+  && pass 'PW11 design launch failure leaves joined roles and preserves reused worktree' \
+  || bad "PW11 rollback (rc=$rc leaves=$leaves closes=$closes)"
+
+STATUS=$(mktemp -d "$TMP/status-layout.XXXXXX")
+: > "$TMP/calls.log"
+FAIL_LAUNCH_ROLE=exec CALLS_LOG="$TMP/calls.log" bash "$PW" --with-design --cwd "$TMP/wt" --slug pw12 \
+  --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_ON" >/dev/null 2>&1
+rc=$?
+leaves=$(grep -c '^leave.sh ' "$TMP/calls.log" 2>/dev/null || true)
+closes=$(grep -c '^cmux close-surface ' "$TMP/calls.log" 2>/dev/null || true)
+if [[ $rc -ne 0 && "$leaves" == 4 && "$closes" == 2 && ! -e "$STATUS/prewarm.json" ]] \
+  && grep -Fq 'surface:1' "$TMP/calls.log" && grep -Fq 'surface:2' "$TMP/calls.log"; then
+  pass 'PW12 exec launch failure closes only panes launched by this invocation'
+else
+  bad "PW12 rollback (rc=$rc leaves=$leaves closes=$closes)"
+fi
+
+# A missing worktree is owned by this invocation and must be removed together with a newly
+# created branch. The git stub confines every effect and records exact targets.
+mkdir -p "$TMP/git-bin"
+cat > "$TMP/git-bin/git" <<'STUB'
+#!/usr/bin/env bash
+printf 'git %s\n' "$*" >> "$GIT_CALLS"
+case "$1 $2" in
+  'show-ref --verify') exit 1 ;;
+  'worktree add')
+    for arg in "$@"; do case "$arg" in /*) mkdir -p "$arg"; break ;; esac; done
+    exit 0 ;;
+  'worktree remove')
+    for arg in "$@"; do case "$arg" in /*) rm -rf "$arg"; break ;; esac; done
+    exit 0 ;;
+  'branch -D') exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$TMP/git-bin/git"
+created_wt="$TMP/created-wt"
+STATUS=$(mktemp -d "$TMP/status-layout.XXXXXX")
+: > "$TMP/calls.log"; : > "$TMP/git.calls"
+FAIL_LAUNCH_ROLE=design CALLS_LOG="$TMP/calls.log" GIT_CALLS="$TMP/git.calls" \
+  PATH="$TMP/git-bin:$PATH" bash "$PW" --with-design --cwd "$created_wt" --slug pw13 \
+    --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_ON" >/dev/null 2>&1
+rc=$?
+if [[ $rc -ne 0 && ! -e "$created_wt" ]] \
+  && grep -Fq "worktree remove $created_wt --force" "$TMP/git.calls" \
+  && grep -Fq 'branch -D feat/pw13' "$TMP/git.calls"; then
+  pass 'PW13 failure removes only the worktree and branch created by this invocation'
+else
+  bad "PW13 created worktree rollback (rc=$rc exists=$([[ -e "$created_wt" ]] && echo yes || echo no))"
+fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

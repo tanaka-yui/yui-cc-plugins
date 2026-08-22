@@ -81,6 +81,10 @@ validate_prewarm_snapshot() { # $1=slug; reads PREWARM_DOC only
   review_mode=$(jq -r '.review_mode // empty' <<< "$PREWARM_DOC")
   [[ "$review_mode" == on || "$review_mode" == off ]] \
     || { prewarm_invalid "$slug (review_mode)"; return 1; }
+  if [[ "$review_mode" == off ]]; then
+    jq -e 'has("design_review") or has("exec_review")' >/dev/null 2>&1 <<< "$PREWARM_DOC" \
+      && { prewarm_invalid "$slug (review_mode=off with review roles)"; return 1; }
+  fi
   jq -e 'has("design") and has("exec")' >/dev/null 2>&1 <<< "$PREWARM_DOC" \
     || { prewarm_invalid "$slug (design and exec are required)"; return 1; }
 

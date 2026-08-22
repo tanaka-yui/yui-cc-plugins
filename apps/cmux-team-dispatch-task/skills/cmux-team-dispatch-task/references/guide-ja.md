@@ -181,53 +181,34 @@ design が slug、以後 slug-design-review / slug-exec / slug-exec-review。各
 design / exec が ready でなければ停止する。design_review が ready でなければ警告して
 Phase A-R だけを、exec_review なら Phase B-R だけをスキップする。config は変更しない。
 
-prewarm.json の key は launch 成功しか示さない。ready でない review role は pane と team
-member を先に回収し、回収成功後だけ key を削除する。内容は 1 回だけ読み、検証済み snapshot
-だけから surface / agent を得る:
+prewarm.json の key は launch 成功しか示さない。ready でない optional review role は
+`prune-not-ready.sh` だけで回収する。この helper は snapshot を 1 回だけ読み、strict な
+workspace / surface ID、workspace 一致、全 active role の surface 一意性、対象 surface の live
+ownership を破壊操作前に検証する。design / exec は対象にできない。検証後だけ pane close、team
+leave、snapshot key 削除を行う。
 
-    prune_not_ready() {
-      local pj="<EXISTING_STATUS_DIR>/prewarm.json" doc tmp role sf ag
-      local -a reclaimed=()
-      [[ $# -gt 0 ]] || return 0
-      doc=$(cat "$pj") || return 1
-      validate_prewarm_snapshot "$doc" || return 1
-      for role in "$@"; do
-        sf=$(jq -r --arg r "$role" '.[$r].surface_id // empty' <<<"$doc")
-        ag=$(jq -r --arg r "$role" '.[$r].agent // empty' <<<"$doc")
-        local okc=1
-        [[ -z "$sf" ]] || "$CMUX_BIN" close-surface --workspace "$WS" --surface "$sf" 2>/dev/null || okc=0
-        [[ -z "$ag" ]] || "$AGMSG_DIR/leave.sh" "$TEAM" "$ag" >/dev/null 2>&1 || okc=0
-        if [[ $okc -eq 1 ]]; then
-          reclaimed+=("$role")
-        else
-          echo "[warn] role '$role' を回収できないため key を残します" >&2
-        fi
-      done
-      [[ ${#reclaimed[@]} -gt 0 ]] || return 1
-      local filter='.'
-      for role in "${reclaimed[@]}"; do filter="$filter | del(.$role)"; done
-      tmp=$(mktemp "$pj.XXXXXX") || return 1
-      if jq "$filter" <<<"$doc" > "$tmp"; then mv "$tmp" "$pj"; else rm -f "$tmp"; return 1; fi
-      [[ ${#reclaimed[@]} -eq $# ]]
-    }
+    PRUNE_ARGS=()
+    for role in "${NOT_READY[@]}"; do PRUNE_ARGS+=(--role "$role"); done
+    if [[ ${#PRUNE_ARGS[@]} -gt 0 ]]; then
+      bash <SKILL_DIR>/scripts/prune-not-ready.sh \
+        --prewarm "<EXISTING_STATUS_DIR>/prewarm.json" --workspace "$WS" \
+        --team "$TEAM" --slug "<slug>" "${PRUNE_ARGS[@]}" || exit 1
+    fi
 
-    prune_not_ready "${NOT_READY[@]}" || {
-      echo "[error] ready でない role を prewarm.json から prune できないため配送前に停止します" >&2
-      exit 1
-    }
-
-順序は prewarm 起動 → ready 収集 → prune_not_ready → render / delivery /
-code-review.json 生成で固定する。以後は role key が存在することと利用可能であることが同値になる。
+順序は prewarm 起動 → ready 収集 → prune-not-ready.sh → render → review gate → delivery
+で固定する。以後は role key が存在することと利用可能であることが同値になる。
 
 Phase A-R は design_review pane を spec / plan の 2 ポイントで再利用する。Phase B-R は
 exec_review pane が担当する。design session が reviewer へ転じる分岐は無く、Phase B を exec
 へ委譲したら常に .deferred を作って exit する。
 
-Phase B-R の判定を散文で再実装せず review-gate.sh へ委譲する。ready role を --ready で渡し、
-出力が空でなければその --review-config <path> を launcher へそのまま渡す。exec_review key と
-exec_review readiness の両方がそろった場合だけ、この script が review/code-review.json を書く。
-片方でも欠ければファイルも引数も生成しない。JSON は exec_review の surface / agent / runner /
-engine と workspace / review_dir を保持する。
+Phase B-R の判定を散文で再実装せず `review-gate.sh` へ委譲する。ready role を --ready で渡す。
+stdout は空または canonical な review config path だけであり、launcher の引数列ではない。
+exec_review key と readiness がそろった場合だけ `review/code-review.json` を書く。strict な
+workspace / surface ID、workspace 一致、全 surface の一意性、canonical non-symlink review dir、
+最終 regular JSON を検証する。この path は `phase-b-deliver.sh --review-config` に渡し、
+`launch-workspace.sh` には渡さない。親 shell の変数継承には頼らず、返された exact path を生成する
+design task prompt の `REVIEW_CONFIG_PATH` literal として埋め込む。
 
 全 child prompt には、done/error の status.json 書き込み直後に dispatch-notify: を send.sh
 1 回で親へ送る完了通知を入れる。非 0 なら 1 回再試行し、再失敗を status.json に記録する。
@@ -378,27 +359,28 @@ Codex waiter には safety net が無いため、review agent を verify-agmsg-r
 確認し、保険の無い待機へ入ることを dispatch-notify: で親へ 1 通報告する。どの wake でも
 findings を再読し、timer wake を verdict とみなさない。
 
-Phase B は検証済み snapshot の `exec` ペインへ必ず配送する。新しい execute session を起動せず、
-`launch-workspace.sh --mode execute` も呼ばない。送信前に `.assigned-<slug>-exec` を作り、exec engine
-に合わせて `parallel-directive.sh --mode execute` を実行する。prewarm 済み standby は execute
-launcher の prompt を読まないため、`REQUEST_TEXT` 自体に次を必ず含める:
+Phase B は `phase-b-deliver.sh` だけで検証済み snapshot の `exec` ペインへ配送する。新しい execute
+session を起動せず、`launch-workspace.sh --mode execute` も呼ばない。helper は exec の固定 tuple を
+検証し、確認済み agent / engine から本文と宛先を組み立て、assignment marker の後に 4 位置引数の
+send.sh を 1 回だけ呼ぶ。成功後だけ `.deferred` を作る。
 
-- plan path と `$PARALLEL`
-- `report-status.sh <STATUS_DIR> done <要約>` による terminal status
-- `send.sh <TEAM> <exec-agent> parent` 1 回による `dispatch-notify:`
-- Claude は完了報告後に `/exit`、Codex は完了報告後に idle のまま待ち、pane の close を親へ任せる
+    PHASE_B_REVIEW_ARGS=()
+    if [[ -n "$REVIEW_CONFIG_PATH" ]]; then
+      PHASE_B_REVIEW_ARGS=(--review-config "$REVIEW_CONFIG_PATH")
+    fi
+    bash <SKILL_DIR>/scripts/phase-b-deliver.sh \
+      --prewarm "<EXISTING_STATUS_DIR>/prewarm.json" \
+      --plan-file "<PLAN_FILE_PATH>" --status-dir "<EXISTING_STATUS_DIR>" \
+      --team "$TEAM" --slug "<slug>" "${PHASE_B_REVIEW_ARGS[@]}" || exit 1
 
-完成した本文を `send.sh "$TEAM" <slug> <slug>-exec "phase-b-exec: $REQUEST_TEXT"` の 1 回だけで
-送る。成功後だけ `.deferred` を作って design pane を終了し、失敗時は委譲済みとして扱わない。
-
-親は readiness prune 後に `review-gate.sh` を呼び、その結果を design prompt へ埋め込む。これは
-launcher 引数ではなく Phase B-R の gate 判定である。空なら Phase B-R だけを省略する。
-`--review-config <path>` があれば、implementer / reviewer 両 engine の parallel directive と
-exec_review tuple の protocol を `REQUEST_TEXT` へ追加する。implementer は
-{{EXEC_REVIEW_AGENT}} だけへ review-code: を送り、reviewer は findings 書き込み後に send.sh 1 回で
-review-verdict: を返す。needs_work は修正後に次 round、approve だけが PR / 完了を許す。
-拡張後も完了通知と engine 別の終了規則を落としてはならない。design pane を reviewer にせず、
-design_review と exec_review の担当を混ぜない。
+review config が空なら base request だけを送る。非空なら helper が canonical review directory 内の
+regular JSON を 1 回読み、exec_review tuple / workspace と一致することを証明した後、実際の
+prewarmed exec request へ Phase B-R protocol を 1 回だけ埋め込む。implementer は各 round で
+verified exec_review agent だけへ review-code: を送り、reviewer は
+`<EXISTING_STATUS_DIR>/review/code-round-N.md` の末尾へ `VERDICT: approve` または
+`VERDICT: needs_work` を書いて review-verdict: を 1 回返す。最大 5 ラウンドとし、第 6 ラウンドは
+開始しない。round 5 が needs_work なら未解決指摘を PR 本文へ記録して進む。design pane を
+reviewer にせず、design_review と exec_review の担当を混ぜない。
 
 全 child は executing を書いてから作業し、成功時は result.md + done、失敗時は error を書く。
 既存 pr_url を保持し、terminal status の直後に dispatch-notify: を親へ送る。委譲済み design
@@ -449,7 +431,8 @@ prewarm-panes.sh には検証済み resolver 出力を --roles "$ROLES_JSON" 1 �
     +----------------+              +----------------+----------------+
 
 off は 2 pane、on は 4 pane 固定。review pane の launch 失敗はその role key だけを省略して
-対応 gate をスキップする。design / exec の launch 失敗は停止する。
+対応 gate をスキップする。design / exec の launch 失敗時は、この prewarm 呼び出しが作成・join・
+launch した worktree / branch / team member / surface だけを rollback し、再利用資源を残して停止する。
 
     RESULT=$(bash <this-skill-dir>/scripts/prewarm-panes.sh \
       --with-design \

@@ -350,22 +350,29 @@ Phase A の成果物は `design_review` がレビューし、Phase B の実装�
 design は実装指示の配送後に `.deferred` を作って終了し、レビュアーへ転じません。Phase B-R は
 `exec_review` が担当します。review ロールは同じ engine でも構いませんが、他ロールの engine から
 レビュアーを推測してはいけません。
-Phase B は検証済み `prewarm.json.exec` の agent へ `phase-b-exec:` を 1 通送る固定経路であり、
-新しい execute session は起動しません。
+Phase B は `phase-b-deliver.sh` が検証済み `prewarm.json.exec` の固定 tuple から agent / engine を使い、
+同 agent へ `phase-b-exec:` を 1 通だけ送ります。新しい execute session は起動しません。
 
 - `review_mode=off`: `design` と `exec` の 2 ペイン。Phase A-R / B-R は行いません。
 - `review_mode=on`: 4 ペイン。Phase A-R は `design_review`、B-R は `exec_review` を再利用します。
 - review ペインの launch/readiness だけが失敗した場合は、対応 gate だけを警告して省略します。
   design / exec の readiness 失敗は dispatch 全体を停止します。
-- `review/code-review.json` と `--review-config` は、`prewarm.json` に `exec_review` が存在し、かつ
-  同ロールの `[ready]` を受信した場合だけ `review-gate.sh` が生成します。
+- `review-gate.sh` は `prewarm.json` に `exec_review` が存在し、同ロールの `[ready]` を受信した
+  場合だけ canonical な `review/code-review.json` path を stdout へ出します。この path は
+  design task prompt の `REVIEW_CONFIG_PATH` literal として渡され、`phase-b-deliver.sh` の
+  `--review-config` だけが消費します。親 shell の変数継承や launcher 引数にはしません。
+- gate・delivery・launcher consumer は strict な `workspace:<digits>` / `surface:<digits>`、workspace
+  一致、active surface の一意性と live ownership を検証します。review directory は status directory
+  直下の non-symlink directory、config はその中の regular JSON に限定します。
 
-レビューの findings は `.dispatch/<slug>/review/<point>-round-<N>.md` に記録し、末尾を
-`VERDICT: approve` または `VERDICT: needs_work` にします。レビュアーは書き込み直後に
+Phase A-R の findings は `.dispatch/<slug>/review/<point>-round-<N>.md`、Phase B-R は
+`.dispatch/<slug>/review/code-round-N.md` に記録し、末尾を `VERDICT: approve` または
+`VERDICT: needs_work` にします。Phase B-R は最大 5 ラウンドで、第 6 ラウンドは開始しません。
+round 5 が needs_work なら未解決指摘を PR 本文へ記録して進みます。レビュアーは書き込み直後に
 `review-verdict:` を 1 通送信し、待機側はファイルをポーリングしません。
 
 Codex review ペインは `--sandbox workspace-write` と `-c approval_policy='never'` に加え、
-`--add-dir <STATUS_DIR>/review`、`--add-dir <AGMSG_SKILL_DIR>/run`、
+`--add-dir <canonical-status-dir>/review`、`--add-dir <AGMSG_SKILL_DIR>/run`、
 `--add-dir <AGMSG_SKILL_DIR>/db` を条件付きで使います。findings 以外の status 領域は書き込み許可へ
 含めません。
 
@@ -393,7 +400,10 @@ delivery 設定を終え、`[ready] <agent>` を親へ送ってから初めて�
 `design` / `design_review` / `exec` / `exec_review` キーだけを持ちます。各ロールに
 surface_id / agent / runner / engine / model（必要な場合）/ effort / wired を記録します。
 ready にならなかった review ロールは surface と team member を先に回収し、回収に成功した場合だけ
-キーを削除します。
+キーを削除します。`prune-not-ready.sh` は destructive call の前に workspace 一致、全 role surface
+の一意性、対象 surface の live ownership を検証し、design / exec を prune 対象にできません。
+必須 role の launch が失敗した場合、`prewarm-panes.sh` は今回作成・join・launch した worktree / branch /
+member / surface だけを rollback し、再利用資源は残します。
 
 全 consumer は**検証済みスナップショット契約**に従います。ファイル内容を 1 回だけ読み、document
 全体を検証し、以後の抽出はそのローカル値だけから行います。cleanup は固定 4 ロール名を明示列挙し、

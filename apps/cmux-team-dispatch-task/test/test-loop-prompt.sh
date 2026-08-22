@@ -104,6 +104,27 @@ else
   bad 'LP7: reviewer tuples were mixed'
 fi
 
+# LP7b: verified exec tuple is self-contained in the rendered prompt. A child must not
+# reopen live prewarm.json, and the removed spawn path must not be advertised.
+out=$(render_ok "$FULL_ON")
+for expected in 'Exec surface: s2' 'Exec agent: t-exec' 'Exec runner: cx' \
+                'Exec engine: codex' 'Exec model: m' 'Exec effort: high'; do
+  grep -Fq -- "$expected" <<< "$out" || bad "LP7b: missing verified tuple field: $expected"
+done
+if grep -Eq 'inspect .*prewarm\.json|Spawn fallback' <<< "$out"; then
+  bad 'LP7b: rendered prompt tells the child to reread live prewarm or spawn'
+else
+  ok 'LP7b: rendered prompt embeds exec tuple and has no live reread/spawn fallback'
+fi
+
+# LP7c: review_mode=off cannot be contradicted by stale/replaced review keys.
+jq '.review_mode = "off"' "$FULL_ON" > "$TMP/p.json"
+if render_ok "$TMP/p.json" >/dev/null 2>&1; then
+  bad 'LP7c: review_mode=off with review roles was accepted'
+else
+  ok 'LP7c: review_mode=off with review roles is rejected'
+fi
+
 # Existing prompt invariants remain in every phase selection.
 for prewarm in "$FULL_OFF" "$FULL_ON"; do
   out=$(render_ok "$prewarm")

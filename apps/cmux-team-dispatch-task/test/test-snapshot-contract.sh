@@ -40,9 +40,10 @@ render() {
     --skill-dir "$S/.." 2> "$TMP/err"
 }
 
-if grep -q "add-dir '\$STATUS_DIR/review'" "$S/launch-workspace.sh" \
+if grep -q "add-dir '\$REVIEW_SANDBOX_DIR'" "$S/launch-workspace.sh" \
+   && grep -q 'prepare_review_directory' "$S/launch-workspace.sh" \
    && ! grep -q "add-dir '\$STATUS_DIR'" "$S/launch-workspace.sh"; then
-  ok 'SC1: reviewer add-dir is restricted to review/'
+  ok 'SC1: reviewer add-dir uses the canonical validated review directory'
 else
   bad 'SC1'
 fi
@@ -73,6 +74,7 @@ expect_reject 'SC5c: unknown role key' '.design.bogus = 1'
 expect_reject 'SC5d: numeric effort' '.design.effort = 3'
 expect_reject 'SC5e: shell metachar model' '.design.model = $v' "a'; touch $TMP/pwn; #"
 expect_reject 'SC5g: active review model missing' 'del(.design_review.model)'
+expect_reject 'SC5h: review_mode off rejects review roles' '.review_mode = "off"'
 [[ -e "$TMP/pwn" ]] && bad 'SC5f: model caused side effect' || ok 'SC5f: no side effect'
 
 expect_reject_cleanup() {
@@ -91,6 +93,7 @@ expect_reject_cleanup 'SC8c: cleanup rejects non-boolean wired' '.design.wired =
 expect_reject_cleanup 'SC8d: cleanup rejects type mismatch' '.design.effort = 3'
 expect_reject_cleanup 'SC8e: cleanup rejects unknown key' '.design.bogus = 1'
 expect_reject_cleanup 'SC8f: cleanup rejects missing review model' 'del(.exec_review.model)'
+expect_reject_cleanup 'SC8g: cleanup rejects review_mode off with review roles' '.review_mode = "off"'
 
 cp "$VALID" "$TMP/dispatch/t/prewarm.json"
 cleanup_stub_workspace 'workspace:1'
@@ -110,7 +113,7 @@ if grep -nE "$SC7_PAT" "$SKILL" >/dev/null; then
 else
   ok 'SC7: SKILL.md follows snapshot contract'
 fi
-grep -q 'validate_prewarm_snapshot' "$SKILL" \
-  && ok 'SC7b: prune_not_ready validates snapshot' || bad 'SC7b'
+grep -q 'prune-not-ready.sh' "$SKILL" \
+  && ok 'SC7b: SKILL delegates readiness pruning to the validated helper' || bad 'SC7b'
 
 exit "$fail"

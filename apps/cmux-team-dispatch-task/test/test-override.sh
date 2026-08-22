@@ -53,6 +53,15 @@ grep -Fq -- 'review_mode=on' <<< "$OVERRIDE_SECTION" \
   && ok 'OV11: review 2 ロールは review_mode=on のときだけ提示する' \
   || bad 'OV11: review 2 ロールの提示条件が無い'
 
+if grep -Fq 'done < <(' <<< "$OVERRIDE_SECTION"; then
+  bad 'OV11b: override builder status is hidden by process substitution'
+elif grep -Fq 'OVERRIDE_BUILDER_RC=$?' <<< "$OVERRIDE_SECTION" \
+  && grep -Fq 'OVERRIDE_OUTPUT' <<< "$OVERRIDE_SECTION"; then
+  ok 'OV11b: override builder output and non-zero status are captured explicitly'
+else
+  bad 'OV11b: explicit override builder status capture is missing'
+fi
+
 ARGS=()
 for role in design design_review exec exec_review; do
   ARGS+=(--set "$role.runner=cx" --set "$role.model=M-$role" --set "$role.effort=medium")

@@ -15,12 +15,12 @@ for needle in '`design`' '`design_review`' '`exec`' '`exec_review`' 'review_mode
   grep -Fq -- "$needle" "$SK/references/loop-mode.md" "$SK/references/loop-mode-ja.md" \
     || { echo "FAIL: config schema vocabulary ($needle)"; exit 1; }
 done
-for needle in 'prune_not_ready' '--prewarm <STATUS_DIR>/prewarm.json' 'loop.task_timeout_min' '--reset config'; do
+for needle in 'prune-not-ready.sh' '--prewarm <STATUS_DIR>/prewarm.json' 'loop.task_timeout_min' '--reset config'; do
   grep -Fq -- "$needle" "$SK/references/loop-mode.md" "$SK/references/loop-mode-ja.md" \
     || { echo "FAIL: loop contract ($needle)"; exit 1; }
 done
 prewarm_line=$(grep -n 'prewarm-panes.sh --unattended' "$SK/references/loop-mode.md" | tail -1 | cut -d: -f1)
-prune_line=$(grep -n 'prune_not_ready' "$SK/references/loop-mode.md" | head -1 | cut -d: -f1)
+prune_line=$(grep -n 'prune-not-ready.sh' "$SK/references/loop-mode.md" | head -1 | cut -d: -f1)
 render_line=$(grep -n -- '--prewarm <STATUS_DIR>/prewarm.json' "$SK/references/loop-mode.md" | head -1 | cut -d: -f1)
 (( prewarm_line < prune_line && prune_line < render_line )) || {
   echo 'FAIL: prewarm/readiness/prune/renderer order'; exit 1;

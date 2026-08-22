@@ -59,6 +59,10 @@ validate_prewarm_snapshot() {
     || die "invalid prewarm workspace_id"
   review_mode=$(jq -r '.review_mode // empty' <<< "$PREWARM_DOC")
   [[ "$review_mode" == on || "$review_mode" == off ]] || die "invalid prewarm review_mode"
+  if [[ "$review_mode" == off ]]; then
+    jq -e 'has("design_review") or has("exec_review")' >/dev/null 2>&1 <<< "$PREWARM_DOC" \
+      && die "invalid prewarm: review_mode=off cannot contain review roles"
+  fi
   jq -e 'has("design") and has("exec")' >/dev/null 2>&1 <<< "$PREWARM_DOC" \
     || die "invalid prewarm: design and exec roles are required"
 
@@ -107,11 +111,15 @@ role_present() { jq -e --arg role "$1" 'has($role)' >/dev/null 2>&1 <<< "$PREWAR
 
 REVIEW_MODE=$(jq -r '.review_mode' <<< "$PREWARM_DOC")
 DESIGN_RUNNER=$(role_value design runner); DESIGN_ENGINE=$(role_value design engine)
+EXEC_SURFACE=$(role_value exec surface_id); EXEC_AGENT=$(role_value exec agent)
 EXEC_RUNNER=$(role_value exec runner); EXEC_ENGINE=$(role_value exec engine)
+EXEC_MODEL=$(role_value exec model); EXEC_EFFORT=$(role_value exec effort)
 phase=$(cat "$REF_DIR/phase-block-$DESIGN_ENGINE.md")
 
 printf 'Task slug: %s\nIssue: #%s — %s\nURL: %s\nDesign runner: %s\nDesign engine: %s\nExec runner: %s\nExec engine: %s\n' \
   "$SLUG" "$ISSUE" "$TITLE" "$URL" "$DESIGN_RUNNER" "$DESIGN_ENGINE" "$EXEC_RUNNER" "$EXEC_ENGINE"
+printf 'Exec surface: %s\nExec agent: %s\nExec model: %s\nExec effort: %s\n' \
+  "$EXEC_SURFACE" "$EXEC_AGENT" "$EXEC_MODEL" "$EXEC_EFFORT"
 for role in design_review exec_review; do
   role_present "$role" || continue
   case "$role" in
@@ -128,7 +136,8 @@ printf '\n%s\nCommon unattended rules: do not infer the review or execution role
 cat "$BODY_FILE"
 printf '\n\nPlan hint: %s\nStatus directory: %s\nTimeout sentinel: %s\nTeam: %s\nLayout: %s\nParent workspace: %s\nSkill directory: %s\n' "$PLAN_HINT" "$STATUS" "$SENTINEL" "$TEAM" "$LAYOUT" "$PARENT_WS" "$SKILL_DIR"
 printf '\nSTATUS PROTOCOL: immediately write %s/status.json with status=executing. On completion, write status=done or status=error and write %s/result.md. Preserve an existing pr_url. If the timeout sentinel exists, do not write status. For PR integration include Closes #%s.\n' "$STATUS" "$STATUS" "$ISSUE"
-printf 'Before delegating, inspect %s/prewarm.json, touch .assigned-<selected-pane>, send the complete request text, and touch .deferred when a child owns status. Spawn fallback must pass --unattended and --timeout-sentinel %s.\n' "$STATUS" "$SENTINEL"
+printf 'Before delegating, use the fixed verified exec tuple above, touch .assigned-%s, send the complete request text to %s, and touch .deferred only after successful delivery. No child may replace this tuple from another source.\n' \
+  "$EXEC_AGENT" "$EXEC_AGENT"
 [[ -n "$PARENT_SF" ]] && printf 'Parent surface: %s\n' "$PARENT_SF"
 
 if role_present design_review; then

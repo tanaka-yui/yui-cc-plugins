@@ -18,6 +18,9 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `skills/cmux-team-dispatch-task/scripts/config-lib.sh` | config パス、4 ロール、engine 別既定値と値検証の共通関数（source 専用） |
 | `skills/cmux-team-dispatch-task/scripts/config-resolve.sh` | 4 レイヤーを `(role, field)` 単位で合成し roles.json を出力する resolver |
 | `skills/cmux-team-dispatch-task/scripts/config-edit.sh` | config.json への唯一の書き込み口（キー/値検証・置換ではなくマージ・writer 固有 mktemp + jq 成功時のみ mv） |
+| `skills/cmux-team-dispatch-task/scripts/prune-not-ready.sh` | 非 ready optional review role の surface ownership を検証して回収・snapshot prune |
+| `skills/cmux-team-dispatch-task/scripts/review-gate.sh` | Phase B-R の canonical review config を all-or-nothing で発行 |
+| `skills/cmux-team-dispatch-task/scripts/phase-b-deliver.sh` | 検証済み exec tuple と任意の review config から Phase B request を組み立て、1 回配送 |
 | `skills/cmux-team-dispatch-task/scripts/render-loop-prompt.sh` | 検証済み prewarm snapshot の 4 ロール tuple から無人 prompt を生成 |
 | `skills/cmux-team-dispatch-task/scripts/loop-cleanup.sh` | 検証済み prewarm snapshot に存在する 4 ロールの surface / agent だけを cleanup |
 | `skills/cmux-team-dispatch-task/references/setup-mode.md` | `--setup` / `--reset` の実行時 SoT（英語） |
@@ -57,10 +60,15 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
   reviewer を推測する分岐も、実装 engine を質問する分岐も無い。
 - prewarm は常時有効。`review_mode=off` は design / exec の 2 ペイン、`on` は 4 ロールの 2×2。
   `prewarm.json` のロールキーもこの 4 つだけで、readiness に失敗した review ロールは回収成功後に
-  key を prune する。design / exec の readiness 失敗は dispatch を止める。
+  `prune-not-ready.sh` で key を prune する。design / exec の readiness 失敗は dispatch を止める。
+- 必須 role の launch failure は、当該 `prewarm-panes.sh` 呼び出しが作成・join・launch した
+  worktree / branch / team member / surface だけを rollback し、再利用資源は保持する。
 - すべての roles.json / prewarm.json consumer は検証済みスナップショット契約に従う。内容を
   1 回だけ読み、document 全体を検証し、以後はローカル値からだけ抽出する。cleanup は snapshot の
   workspace_id と現在の workspace を照合し、固定 4 ロールキーだけを close / leave する。
+- destructive prune と review config consumer は strict な `workspace:<digits>` / `surface:<digits>`、
+  workspace 一致、active surface の一意性と live ownership を shell 構築前に検証する。review dir は
+  status dir 直下の canonical non-symlink directory、config はその中の regular JSON に限定する。
 - `--override` は 4 ロールの pending tuple を `override-args.sh` で検証し、config / registry へ
   書き戻さない。review ロールは `review_mode=on` の場合だけ選択肢へ出す。
 
@@ -114,7 +122,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
    - **CS5 は日本語を検出しない**（英語の語彙だけを走査する）。`guide-ja.md` / `README.md` / `CLAUDE.md` の日本語側に旧ポーリング記述や退役済みスクリプト名が残っても CS5 は赤くならない — 実際に v2.0.0 の移行で `guide-ja.md` の旧記述だけが丸ごと取り残された。日本語文書の旧語彙は `bash test/test-doc-stale-vocab.sh`（DS1-DS3）で別に固定する（項目 45）
    - **免除は行番号ではなくマーカーで行う**: シェルへのコマンド打鍵（TUI へのメッセージ配送ではない）など正当な `cmux send` は、直前 3 行以内（ドキュメントは同一行または直前行）に `send-prompt-exempt:` を含むコメントを置いたときだけ検査から外れる。新しい出現は必ずレビューを通る。**スクリプトのコメント行はマーカー判定より前に無条件で除外される。** したがってコメント中の `cmux send` 言及に付ける `send-prompt-exempt:` は、レビュー済みの意図を残す注釈であって現行 CS1 の load-bearing な条件ではない。マーカーが load-bearing なのは非コメント行の直書き（`launch-workspace.sh:1085-1088`）に対してだけ
 10. 4 ロールの runner / model / effort / engine が `config-resolve.sh` の出力だけから読まれ、別箇所で再導出されないこと。design_review / exec_review は独立し、Codex review role は model 必須、Claude は組み込み model を使えること。
-11. Phase B は検証済み `prewarm.json.exec` の agent へ `phase-b-exec:` を 1 通送るだけで、新しい execute session を起動しないことを SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致させる。送信前の assignment marker、送信成功後の `.deferred`、実装者用 parallel directive、terminal status と `dispatch-notify:`、engine 別の終了規則を依頼文に含める。`launch-workspace.sh --mode execute` は launcher 単体の回帰用経路として残るが dispatch の Phase B からは呼ばない
+11. Phase B は `phase-b-deliver.sh` が検証済み `prewarm.json.exec` の固定 tuple から agent / engine を使い、同 agent へ `phase-b-exec:` を 1 通送るだけで、新しい execute session を起動しないことを SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致させる。送信前の assignment marker、送信成功後の `.deferred`、実装者用 parallel directive、terminal status と `dispatch-notify:`、engine 別の終了規則を依頼文に含める。`launch-workspace.sh --mode execute` は launcher 単体の回帰用経路として残るが dispatch の Phase B からは呼ばない
 12. **`message_type` 廃止と agmsg 必須化の判定**が SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認。通知トランスポートの質問も config キーも存在しないこと。`launch-workspace.sh` / `prewarm-panes.sh` が `--message-type` を `was removed` を含む die で拒否し、agmsg 配線は `--agmsg-team` / `--agmsg-from` で行われること。**agmsg は劣化モードの無い必須要件**であること（詳細は項目 17）。**監視は単発タイマーの wake で状態を再導出する方式**であり、監視スクリプトも定期通知も再開フラグも存在しないこと:
     - 起床のたびに `.dispatch/*/status.json` を全部読んで状態を**再導出**し、記憶に頼らないこと。自分自身の受信チャネルも毎回 `verify-agmsg-ready.sh` で再検証すること。**この再検証は Step 1g と同じ `PARENT_ENGINE` 分岐を持つこと**（claude 親は `--self`、codex 親は `--codex --team "$TEAM" --name parent`）— 無条件 `--self` は codex 親で必ず rc=2 になり、「rc=2 は判定不能なので停止」規約に従うと all-Codex ディスパッチが最初の起床で自滅する（`test-agmsg-guard-block.sh` の GB7/GB8 が固定）。（親の watcher は `watch.sh` の自己終了や `/compact` との競合でディスパッチ途中に死にうる。死ねば全通知が黙って失われ、残るのはタイマーだけになる）
     - タイマーは **90 分固定の単発**（`sleep` 1 回。ループ禁止）で、ペイン起動直後・`[ready]` を待つ**前**に武装すること。ただし**張れるのは claude 親だけ**である: codex は `run_in_background` を持たず、代替の「自分宛の遅延メッセージ」も 2026-08-21 の実測（D-T2）でターン終了と同時に消えた。したがって **codex 親には 90 分タイマーが存在せず、張ったふりをする指示を書いてはならない**。Step 1g はその事実をユーザーへ明示し、`prewarm-panes.sh` は `--unattended` × codex 親を die で拒否すること。`loop.task_timeout_min` はこのタイマーには届かない（loop モードの起床時 reconciliation 専用）
@@ -144,12 +152,12 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - MANDATORY MODEL SELECTION SEQUENCE の Phase A（plan モード）に「plan 冒頭に Step 0: Phase A-R（有効時）/ Step 1: Phase B を必須ステップとして記載」「plan が ExitPlanMode メッセージ内にしか無い場合は承認後最初にファイル保存」の指示、VIOLATION 節に PLAN-MODE TRAP が含まれること
     - `plan-approved-hook.sh` の出力が有効な JSON（`hookSpecificOutput.additionalContext`）であること
 17. Phase B-R（実装後コードレビュー）が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
-    - `review_mode=on` かつ ready な `exec_review` が存在するときだけ有効。`review-gate.sh` が `code-review.json` と `--review-config` を all-or-nothing で生成する
-    - 実装者は `exec_review` agent へ `review-code:` を送り、reviewer は findings 書き込み直後に `review-verdict:` を返す。最大 5 往復で、status の終端遷移は exec wrapper が所有する
+    - `review_mode=on` かつ ready な `exec_review` が存在するときだけ有効。`review-gate.sh` は canonical `code-review.json` path だけを all-or-nothing で出力し、親が exact path を design task prompt の `REVIEW_CONFIG_PATH` literal へ埋め込み、`phase-b-deliver.sh --review-config` が消費する。親 shell の変数継承や launcher 引数にはしない
+    - 実装者は `exec_review` agent へ `review-code:` を送り、reviewer は `<STATUS_DIR>/review/code-round-N.md` の末尾に `VERDICT: approve` または `VERDICT: needs_work` を書いてから `review-verdict:` を返す。最大 5 ラウンドで、第 6 ラウンドは開始しない。round 5 が needs_work なら未解決指摘を PR 本文へ記録して進む
     - design / design_review を code reviewer に使わない。exec_review launch/readiness 失敗は gate だけを省略し、stale `code-review.json` を残さない
 18. review の 2 ロールが独立していることを 4 ファイルで確認する。`design_review` は plan/spec だけ、`exec_review` は code だけを担当し、各 tuple は `(role, field)` 合成で解決する。同一 engine を許可するが、他ロールとの engine 関係から値を導出しない。
 19. `(role, field)` precedence が `--override` → project config → global config → 組み込み既定値で一致すること。各 layer の runner / model / effort を field 単位で合成し、合成後に runner 登録・engine・model・effort を検証する。active role が解決不能なら setup で修正可能な exit 2 とし、壊れた JSON 等の読取失敗と分けて fail-fast する。
-20. codex の engine × MODE 起動規則を確認: superpowers は bypass 付き、review は `--sandbox workspace-write` + `-c approval_policy='never'` に加えて `--add-dir <STATUS_DIR>/review` / `--add-dir <AGMSG_SKILL_DIR>/run` / `--add-dir <AGMSG_SKILL_DIR>/db` の3本の `--add-dir` を条件付きで併用し、findings 以外の status 領域へ書き込ませないこと。`run/` と `db/` は `-d` 判定の前に launcher 側で作る。回帰は `bash test/test-launch-workspace-codex.sh` の CR1/CR1b/CR1c/CR1d/CR1e で検証する
+20. codex の engine × MODE 起動規則を確認: superpowers は bypass 付き、review は `--sandbox workspace-write` + `-c approval_policy='never'` に加えて `--add-dir <canonical-status-dir>/review` / `--add-dir <AGMSG_SKILL_DIR>/run` / `--add-dir <AGMSG_SKILL_DIR>/db` の3本の `--add-dir` を条件付きで併用し、findings 以外の status 領域へ書き込ませないこと。review dir は symlink を拒否して status dir 直下への containment を証明する。`run/` と `db/` は `-d` 判定の前に launcher 側で作る。回帰は `bash test/test-launch-workspace-codex.sh` の CR1/CR1b/CR1c/CR1d/CR1e で検証する
 
     **トラストバウンダリ（`--add-dir <AGMSG_SKILL_DIR>/{run,db}`）**: この付与は「このディスパッチ限り」ではなく**マシン全体の agmsg 状態への書き込み許可**である。`run/` には全セッション・全プロジェクトの watcher pidfile / codex bridge seat / actas lock が同居し、`db/` は全 team 共有の 1 つの SQLite DB **に加えて** agmsg のマシン全体設定 `config.yaml`（実体は `delivery.monitor.poll_interval` と `delivery.turn.check_interval` の 2 キーだけで、読むのは `scripts/config.sh` のみ。spawn 系の設定は `db/` の外の `~/.agmsg/config/spawn_options.yaml` にある）と、外部ストレージドライバの opt-in allowlist `trusted-plugins`（`storage.sh` が `.` でソースするファイルの信頼リスト）も置かれる。したがって無人・承認なしの codex reviewer は、他ディスパッチの sentinel を消す / 任意の `from` を騙るメッセージを inbox へ書く（inbox の本文は他エージェントへテキストとして注入されるので**プロジェクト境界を越えるプロンプトインジェクション経路**になる）ことが原理上できる。guard を注入する以上この付与は機能上必須であり、`scripts/`（そこは全ペインの guard が実行するコード）を除外していることが**主要な**緩和策である。
 

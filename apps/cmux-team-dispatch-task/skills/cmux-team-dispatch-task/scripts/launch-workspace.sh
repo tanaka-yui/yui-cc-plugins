@@ -198,6 +198,14 @@ EFFORT=""
 SKIP_PERMISSIONS=0
 DEFER_STATUS=0
 REVIEW_CONFIG=""
+REVIEW_CONFIG_DOC=""
+REVIEWER_SURFACE=""
+REVIEWER_WORKSPACE=""
+REVIEWER_RUNNER=""
+REVIEWER_ENGINE=""
+REVIEWER_AGENT=""
+REVIEW_DIR=""
+REVIEW_SANDBOX_DIR=""
 TIMEOUT_SENTINEL=""
 UNATTENDED=0
 AGMSG_TEAM=""
@@ -349,7 +357,7 @@ if [[ -z "$MODEL_ROLE" ]]; then
   esac
 elif [[ "$MODE" != "standby" ]]; then
   case "$MODE:$MODEL_ROLE" in
-    plan:design|superpowers:design|review:design_review|execute:exec) ;;
+    plan:design|superpowers:design|review:design_review|review:exec_review|execute:exec) ;;
     *) die "--role '$MODEL_ROLE' conflicts with --mode '$MODE'" ;;
   esac
 fi
@@ -384,7 +392,8 @@ fi
 # --review-config は execute 専用 (Phase B-R: PR 作成前コードレビューのプロトコル注入)
 if [[ -n "$REVIEW_CONFIG" ]]; then
   [[ "$MODE" == "execute" ]] || die "--review-config is only valid with --mode execute"
-  [[ -f "$REVIEW_CONFIG" ]] || die "review config file not found: $REVIEW_CONFIG"
+  [[ -f "$REVIEW_CONFIG" && ! -L "$REVIEW_CONFIG" ]] \
+    || die "review config must be a regular non-symlink file: $REVIEW_CONFIG"
 fi
 
 # Validate workspace name: only allow safe characters for path/branch usage
@@ -532,6 +541,97 @@ if [[ "$RUNNER_ENGINE" == "codex" ]]; then
 fi
 
 log "runner" "name=${RUNNER_NAME:-<default>} command=$RUNNER_COMMAND engine=$RUNNER_ENGINE"
+
+prepare_review_directory() { # $1=status directory; stdout=canonical review directory
+  local status_dir="$1" review_dir status_real review_real
+  [[ -n "$status_dir" ]] || return 1
+  if [[ -e "$status_dir" || -L "$status_dir" ]]; then
+    [[ -d "$status_dir" ]] || return 1
+  else
+    mkdir -p "$status_dir" || return 1
+  fi
+  review_dir="$status_dir/review"
+  if [[ -e "$review_dir" || -L "$review_dir" ]]; then
+    [[ -d "$review_dir" && ! -L "$review_dir" ]] || return 1
+  else
+    mkdir "$review_dir" || return 1
+  fi
+  status_real=$(cd "$status_dir" 2>/dev/null && pwd -P) || return 1
+  review_real=$(cd "$review_dir" 2>/dev/null && pwd -P) || return 1
+  [[ "$review_real" == "$status_real/review" ]] || return 1
+  printf '%s\n' "$review_real"
+}
+
+validate_review_config() {
+  local expected_review config_parent surface_list registered_engine required_field
+  REVIEW_CONFIG_DOC=$(cat "$REVIEW_CONFIG") || die "cannot read review config at $REVIEW_CONFIG"
+  for required_field in reviewer_surface reviewer_workspace reviewer_agent reviewer_runner reviewer_engine review_dir; do
+    jq -e --arg field "$required_field" -s \
+      'length == 1 and (.[0] | type == "object") and (.[0] | has($field))' \
+      >/dev/null 2>&1 <<< "$REVIEW_CONFIG_DOC" \
+      || die "review config must contain $required_field"
+  done
+  jq -e -s 'length == 1 and (.[0] | type == "object") and
+    (.[0] | keys == ["review_dir","reviewer_agent","reviewer_engine","reviewer_runner",
+      "reviewer_surface","reviewer_workspace"]) and
+    (.[0].reviewer_surface | type == "string") and
+    (.[0].reviewer_workspace | type == "string") and
+    (.[0].reviewer_agent | type == "string") and
+    (.[0].reviewer_runner | type == "string") and
+    (.[0].reviewer_engine == "claude" or .[0].reviewer_engine == "codex") and
+    (.[0].review_dir | type == "string")' >/dev/null 2>&1 <<< "$REVIEW_CONFIG_DOC" \
+    || die "invalid review config schema at $REVIEW_CONFIG"
+
+  REVIEWER_SURFACE=$(jq -r '.reviewer_surface' <<< "$REVIEW_CONFIG_DOC")
+  REVIEWER_WORKSPACE=$(jq -r '.reviewer_workspace' <<< "$REVIEW_CONFIG_DOC")
+  REVIEWER_RUNNER=$(jq -r '.reviewer_runner' <<< "$REVIEW_CONFIG_DOC")
+  REVIEWER_ENGINE=$(jq -r '.reviewer_engine' <<< "$REVIEW_CONFIG_DOC")
+  REVIEWER_AGENT=$(jq -r '.reviewer_agent' <<< "$REVIEW_CONFIG_DOC")
+  REVIEW_DIR=$(jq -r '.review_dir' <<< "$REVIEW_CONFIG_DOC")
+
+  dispatch_valid_surface_id "$REVIEWER_SURFACE" \
+    || die "invalid reviewer_surface '$REVIEWER_SURFACE' in $REVIEW_CONFIG"
+  dispatch_valid_workspace_id "$REVIEWER_WORKSPACE" \
+    || die "invalid reviewer_workspace '$REVIEWER_WORKSPACE' in $REVIEW_CONFIG"
+  [[ "$REVIEWER_AGENT" =~ ^[A-Za-z0-9._-]+$ ]] \
+    || die "invalid reviewer_agent '$REVIEWER_AGENT' in $REVIEW_CONFIG: use only [A-Za-z0-9._-]"
+  dispatch_valid_runner_name "$REVIEWER_RUNNER" \
+    || die "invalid reviewer_runner '$REVIEWER_RUNNER' in $REVIEW_CONFIG"
+
+  [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH"
+  registered_engine=$(jq -r --arg runner "$REVIEWER_RUNNER" \
+    'first(.runners[]? | select(.name == $runner) | .engine) // empty' "$RUNNERS_CONFIG_PATH") \
+    || die "failed to parse runners.json at $RUNNERS_CONFIG_PATH"
+  [[ -n "$registered_engine" && "$registered_engine" == "$REVIEWER_ENGINE" ]] \
+    || die "reviewer_runner/reviewer_engine mismatch in $REVIEW_CONFIG"
+
+  expected_review=$(prepare_review_directory "$STATUS_DIR") \
+    || die "unsafe review directory under --status-dir"
+  [[ -d "$REVIEW_DIR" && ! -L "$REVIEW_DIR" ]] \
+    || die "review_dir must be a non-symlink directory in $REVIEW_CONFIG"
+  REVIEW_DIR=$(cd "$REVIEW_DIR" 2>/dev/null && pwd -P) \
+    || die "cannot resolve review_dir in $REVIEW_CONFIG"
+  [[ "$REVIEW_DIR" == "$expected_review" ]] \
+    || die "review_dir is outside the canonical --status-dir review directory"
+  config_parent=$(cd "$(dirname "$REVIEW_CONFIG")" 2>/dev/null && pwd -P) \
+    || die "cannot resolve review config parent directory"
+  [[ "$config_parent" == "$REVIEW_DIR" ]] \
+    || die "review config is outside review_dir"
+
+  surface_list=$("$CMUX" list-pane-surfaces --workspace "$REVIEWER_WORKSPACE" 2>/dev/null) \
+    || die "cannot inspect reviewer_workspace '$REVIEWER_WORKSPACE'"
+  grep -oE 'surface:[0-9]+' <<< "$surface_list" | grep -Fxq "$REVIEWER_SURFACE" \
+    || die "reviewer_surface '$REVIEWER_SURFACE' does not belong to '$REVIEWER_WORKSPACE'"
+}
+
+if [[ -n "$REVIEW_CONFIG" ]]; then
+  validate_review_config
+fi
+
+if [[ "$MODE" == "review" && -n "$STATUS_DIR" ]]; then
+  REVIEW_SANDBOX_DIR=$(prepare_review_directory "$STATUS_DIR") \
+    || die "unsafe review directory under --status-dir"
+fi
 
 # Resolve git repo info
 REPO_ROOT=""
@@ -749,34 +849,7 @@ if [[ "$MODE" == "execute" ]]; then
   # 文中にクォート文字を使わないこと (inner prompt の '...' と zsh -ic の "..." を壊さないため)
   REVIEW_INSTRUCTION=""
   if [[ -n "$REVIEW_CONFIG" ]]; then
-    REVIEWER_SURFACE=$(jq -r '.reviewer_surface // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    REVIEW_DIR=$(jq -r '.review_dir // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    REVIEWER_WORKSPACE=$(jq -r '.reviewer_workspace // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    # 解決済み review role の engine。design engine との関係から再計算せず、親セッションが
-    # review-config に記録した値を使う。欠落 (旧スキーマ) なら注入しない。
-    REVIEWER_ENGINE=$(jq -r '.reviewer_engine // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    # 配送先は surface ではなく agmsg agent 名なので、review-config から読む。
-    # 親セッションが解決した review role の agent 名 (<task-slug>-review) であり、
-    # ここで SLUG から組み立て直してはならない (SLUG は <task-slug>-exec や
-    # <task-slug>-claude であって review agent の親 slug とは一致しない)。
-    REVIEWER_AGENT=$(jq -r '.reviewer_agent // empty' "$REVIEW_CONFIG" 2>/dev/null) \
-      || die "failed to parse review config at $REVIEW_CONFIG"
-    [[ -n "$REVIEWER_SURFACE" && -n "$REVIEW_DIR" && -n "$REVIEWER_AGENT" ]] \
-      || die "review config must contain reviewer_surface, reviewer_agent and review_dir"
-    # review-config は親セッションが書くファイルであって、この値も inner prompt へ
-    # 補間される。--agmsg-from と同じ値域で検証する (agmsg agent 名の値域そのもの)。
-    [[ "$REVIEWER_AGENT" =~ ^[A-Za-z0-9._-]+$ ]] \
-      || die "invalid reviewer_agent '$REVIEWER_AGENT' in $REVIEW_CONFIG: use only [A-Za-z0-9._-]"
-    # reviewer_workspace 欠落時 (旧スキーマ) は --workspace 指定なしにフォールバック。
-    # read-screen は生存確認専用 (配送は agmsg なので workspace/surface を使わない) だが、
-    # 実装孫は別 workspace に spawn されるためレビュアー側 workspace の明示は今も必要。
-    TARGET_FLAGS="--surface $REVIEWER_SURFACE"
-    [[ -n "$REVIEWER_WORKSPACE" ]] \
-      && TARGET_FLAGS="--workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE"
+    TARGET_FLAGS="--workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE"
     READ_SCREEN_CMD="$CMUX read-screen $TARGET_FLAGS"
     # レビュアーに観点別の並列レビューをさせる指示。--no-parallel は起動プロンプト専用の
     # スイッチなのでここでは見ない。注入するかどうかは reviewer_engine の有無だけで決める。
@@ -891,11 +964,10 @@ CODEX_MODEL_FLAG=""
       # review は workspace-write に限定し、approval prompt は抑止する。findings は
       # worktree 外の findings 保存先だけを追加許可する。
       REVIEW_WRITABLE_FLAG=""
-      if [[ -n "$STATUS_DIR" ]]; then
+      if [[ -n "$REVIEW_SANDBOX_DIR" ]]; then
         # reviewer が worktree 外へ書くのは findings だけ。STATUS_DIR 全体を許可すると
         # roles.json / prewarm.json まで書けてしまい、検証を通る別内容へ差し替えられる。
-        mkdir -p "$STATUS_DIR/review" 2>/dev/null || true
-        [[ -d "$STATUS_DIR/review" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$STATUS_DIR/review'"
+        REVIEW_WRITABLE_FLAG+=" --add-dir '$REVIEW_SANDBOX_DIR'"
       fi
       # watcher は run/ と db/ にしか書かない。scripts/ を書き込み許可に含めては
       # ならない — そこは全ペインの guard が実行し session-start.sh 経由で

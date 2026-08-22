@@ -96,7 +96,7 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 
 設定確定後、`lock-acquire --lease-min <lock_lease_min>`、`init --config-json <json> --filter-json <json>`、`reconcile`、通常 dispatch の stale 痕跡検査、`ensure-labels` の順に実行する。`reconcile` が abort なら `lock-release` して中止する。
 
-各 batch は `fetch --limit <concurrency> --batch <N>` で claim する。`fetch` の `[]`、exit 3（claim 全滅）、exit 4（exhaustion unknown）はいずれも次 batch を開始せず終了する。各 issue では `prewarm-panes.sh --unattended` を起動し、`[ready]` を収集し、`prune_not_ready` で ready にならなかった review role を削除してから、検証済み snapshot を renderer に渡す。
+各 batch は `fetch --limit <concurrency> --batch <N>` で claim する。`fetch` の `[]`、exit 3（claim 全滅）、exit 4（exhaustion unknown）はいずれも次 batch を開始せず終了する。各 issue では `prewarm-panes.sh --unattended` を起動し、`[ready]` を収集し、`prune-not-ready.sh` で ownership を検証して ready にならなかった optional review role を削除してから、検証済み snapshot を renderer に渡す。
 
 ```bash
 render-loop-prompt.sh ... --prewarm <STATUS_DIR>/prewarm.json

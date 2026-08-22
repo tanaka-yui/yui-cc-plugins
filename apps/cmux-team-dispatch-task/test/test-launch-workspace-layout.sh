@@ -103,5 +103,35 @@ else
   bad 'L3 standby split still calls cmux new-split'
 fi
 
+# L5: prewarm-panes.sh の実 callsite と同じ review/exec_review 引数を、stub ではなく
+# 実 launcher の引数検証へ通す。mode matrix から review:exec_review が落ちる変異を捕捉する。
+CMUX_CALL_LOG="$TMP/calls-l5.log"; export CMUX_CALL_LOG
+: > "$CMUX_CALL_LOG"
+if run_launch --cwd "$TMP/repo" --mode review --role exec_review \
+     --standby-in workspace:5 --standby-split-from surface:6 --standby-split-direction right \
+     --status-dir "$TMP/status-exec-review" l5-exec-review >/dev/null 2>"$TMP/l5.err"; then
+  grep -Fq 'new-split right --workspace workspace:5 --surface surface:6' "$CMUX_CALL_LOG" \
+    && pass 'L5 review:exec_review reaches the real launcher split path' \
+    || bad 'L5 review:exec_review did not reach the real launcher split path'
+else
+  bad "L5 review:exec_review was rejected: $(tr '\n' ' ' < "$TMP/l5.err")"
+fi
+
+# L6: review sandbox は status dir 配下の実ディレクトリに限定する。symlink の外側へ
+# Codex の --add-dir を向ける変異は、pane 構築前に拒否しなければならない。
+mkdir -p "$TMP/outside-review" "$TMP/status-symlink"
+ln -s "$TMP/outside-review" "$TMP/status-symlink/review"
+CMUX_CALL_LOG="$TMP/calls-l6.log"; export CMUX_CALL_LOG
+: > "$CMUX_CALL_LOG"
+if run_launch --cwd "$TMP/repo" --mode review --role design_review \
+     --standby-in workspace:5 --standby-split-from surface:6 --standby-split-direction right \
+     --status-dir "$TMP/status-symlink" l6-design-review >/dev/null 2>"$TMP/l6.err"; then
+  bad 'L6 symlinked review sandbox was accepted'
+elif [[ ! -s "$CMUX_CALL_LOG" ]] && grep -qiE 'review directory|symlink|unsafe' "$TMP/l6.err"; then
+  pass 'L6 symlinked review sandbox is rejected before cmux construction'
+else
+  bad "L6 rejection was late or unclear: $(tr '\n' ' ' < "$TMP/l6.err")"
+fi
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
