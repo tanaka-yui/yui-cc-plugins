@@ -191,6 +191,30 @@ send.sh 1 回で送る。宛先は agent 名であり surface / workspace では
 phase-a-task: / phase-b-exec: / review-plan: / review-code: / review-verdict: /
 abort-reviewer: / dispatch-notify: を使う。
 
+**親を join したら、ペインを 1 枚も起動する前に `parent` identity を claim する。**
+SessionStart が起動した親の Monitor は *無記名* で、このプロジェクトに登録され誰も claim して
+いない全 agent 宛てを購読する。read cursor は (team, agent) ごとに 1 つなので、同じチェック
+アウトで開かれた無関係なセッションが `parent` 宛の `[ready]` や `dispatch-notify:` を先に
+取ってしまう。取られた row は既読になるため、`inbox.sh` は DB に残っているのに「新着なし」と
+正直に答える。これは 2026-08-22 に実測した事実であって推測ではない。
+
+claude 親のみ `actas-claim.sh "$(pwd)" claude-code parent "$CLAUDE_CODE_SESSION_ID"` を呼び、
+`status=` 行を読む。`status=held` は**停止**（同一リポジトリで 2 つのディスパッチが 1 つの
+`parent` を共有できない）。codex 親は watch.sh を持たず bridge seat で受信するので claim は不要。
+
+claim が通ったら **自分の Monitor を名前付きで張り直す**: SessionStart 由来の watcher タスクを
+`TaskStop` し、同じコマンドに `parent` を第 4 引数として足して Monitor を起動し直す。claim
+だけでは既に走っている watcher は無記名のままである。
+
+**この位置でだけ安全である。** まだペインが 1 枚も無いので、チャネルを張り替えても落ちる
+in-flight メッセージが存在しない。**ペインが動き始めたあとに親の Monitor を張り替えては
+ならない。**
+
+`held` を fail-closed にするのは意図的である。同一リポジトリの 2 ディスパッチは今日すでに
+単一の `parent` 名を共有して互いの通知を食い合っており、2 つ目を拒否することでそれが可視の
+エラーに変わる。落ちたディスパッチが次を塞ぐことは無い — `actas_lock_state` は死んだ owner を
+`free` と報告する（`actas-lock.sh:243`）。
+
 親を team へ join した後、prewarm-panes.sh が 4 role agent を join・wire する。agent 名は
 design が slug、以後 slug-design-review / slug-exec / slug-exec-review。各 pane は Claude
 なら Monitor directive、Codex なら codex-record-session.sh を先に実行し、[ready] <agent>

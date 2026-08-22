@@ -272,10 +272,24 @@ role_wiring_type() { [[ "$(role_value "$1" engine)" == codex ]] && printf 'codex
 
 # readiness 句の前提: delivery.sh set monitor claude-code <worktree> が
 # この同じ実行内で成功していること。失敗時は到達不能なので launch 前に止める。
+# worktree を agmsg の独立プロジェクトとして登録する。
+#
+# resolve-project.sh は既定で git worktree をメインリポジトリのルートへ解決する (#92 の
+# 意図的な仕様。ユーザーがサブディレクトリへ cd したときの取り違えを防ぐため)。だが
+# dispatch の子セッションは worktree に *住んでいる* ので、その解決は事実と合わない。
+# 解決されると子も親も同一のプロジェクトキーを共有し、無記名 watcher が (project, type) に
+# 登録された全 agent 宛てを購読して read cursor を奪い合う。2026-08-22 の実害は
+# 「子の無記名 watcher が parent ペアを購読していたため [ready] が食われた」形で出た。
+#
+# AGMSG_RESOLVE_PROJECT=0 は raw パスを保つ documented なエスケープハッチで、
+# spawn.sh:357 が同じ理由で使っている。以後 agmsg_ancestor_project は inclusive
+# (start 自身を候補にする) なので worktree で止まり、タスクごとに別キーになる。
+#
+# join と delivery の両方に付けること。片方だけだと登録先と配送モードの付け先がずれる。
 wire_delivery() {
   local role="$1" wiring
   wiring=$(role_wiring_type "$role")
-  bash "$AGMSG_DIR/delivery.sh" set monitor "$wiring" "$CWD" >/dev/null 2>&1 \
+  AGMSG_RESOLVE_PROJECT=0 bash "$AGMSG_DIR/delivery.sh" set monitor "$wiring" "$CWD" >/dev/null 2>&1 \
     || die "$wiring delivery wiring failed; readiness cannot be established"
 }
 
@@ -283,7 +297,7 @@ join_role() {
   local role="$1" agent wiring
   agent=$(role_agent "$role")
   wiring=$(role_wiring_type "$role")
-  bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$agent" "$wiring" "$CWD" >&2 2>/dev/null \
+  AGMSG_RESOLVE_PROJECT=0 bash "$AGMSG_DIR/join.sh" "$AGMSG_TEAM" "$agent" "$wiring" "$CWD" >&2 2>/dev/null \
     || die "$role agmsg join failed; readiness cannot be established"
   JOINED_ROLES+=("$role")
   wire_delivery "$role"
@@ -319,11 +333,23 @@ readiness_clause() {
   agent=$(role_agent "$role")
   wiring=$(role_wiring_type "$role")
   if [[ "$wiring" == codex ]]; then
-    printf 'FIRST make yourself reachable: call %s/drivers/types/codex/codex-record-session.sh with team %s and agent name %s (two arguments, no trailing punctuation). THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
+    # codex には Monitor tool が無い (type.conf の monitor=no) が、agmsg の SessionStart は
+    # engine で分岐せず invoke the Monitor tool now と出力する。それに従おうとした codex
+    # ペインが、代替として watch.sh をバックグラウンド端末で起動した実例がある
+    # (2026-08-22)。watch.sh は読まれたかに関係なく row を既読にするので、idle の codex
+    # ペイン — つまりターンを取らないペイン — 宛のメッセージは配信され、既読になり、誰にも
+    # 読まれずに消える。review-plan: 2 通がこれで失われ、design ペインは応答を待ち続けた。
+    # 起動しなければメッセージは未読のまま残り、あとから回復できる。だから明示的に禁じる。
+    printf 'FIRST make yourself reachable: call %s/drivers/types/codex/codex-record-session.sh with team %s and agent name %s (two arguments, no trailing punctuation). Do not start watch.sh yourself, in a background terminal or anywhere else, and never start a watcher of any kind by hand: you have no Monitor tool, so if your SessionStart hook tells you to invoke one, that part does not apply to you. A watcher you start marks messages as read whether or not you ever look at them, so anything that arrives while you are idle is consumed and lost; left alone, it stays unread and can still be recovered. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
       "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$agent"
   else
-    printf 'FIRST follow the AGMSG-DIRECTIVE printed by your SessionStart hook and invoke the Monitor tool right now — that is the only way work will reach you. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
-      "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$agent"
+    # 順序が要件そのものである。claim → 名前付き Monitor → [ready] の順で打たないと、
+    # 無記名 watcher のまま名乗ることになり、その窓の間 (project, type) に登録された
+    # 全 agent 宛てを購読して read cursor を奪い合う。SessionStart は role-filtered 指示を
+    # 出せない — その判定材料 (role-session レコード) を書くのがペイン起動後だからである。
+    # 文面にクォート文字を入れてはならない (zsh -ic "... '<prompt>'" の二重引用が壊れる)。
+    printf 'FIRST claim your identity so messages addressed to you cannot be taken by another watcher: run %s/actas-claim.sh with four arguments in this order — the current working directory, then claude-code, then %s, then the value of CLAUDE_CODE_SESSION_ID — and read the status= line it prints. On status=held another live session already owns this name: stop, report that, and do not continue. SECOND invoke the Monitor tool with the command your SessionStart AGMSG-DIRECTIVE printed plus %s appended as a fourth argument; that fourth argument is what limits delivery to you. If you already started that Monitor without the fourth argument, TaskStop it first — a watcher started without a name stays unnamed for its whole life. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
+      "$AGMSG_DIR" "$agent" "$agent" "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$agent"
   fi
 }
 
