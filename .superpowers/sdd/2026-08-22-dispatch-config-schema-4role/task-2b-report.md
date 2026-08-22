@@ -22,3 +22,10 @@
 ## Commit
 
 未コミット（親エージェントが確認後にコミットする）。
+
+## Fix round 1
+
+- effective runner は pending の有無にかかわらず registry で再検証し、未登録なら role 全体を破棄。
+- effective model の空値を必須判定（Claude 全 role と codex review role）し、存在時は常に `dispatch_valid_model` と codex alias 規則を適用。
+- test helper が script の exit status を `OA_RC` に捕捉するよう修正し、effective runner 未登録（OA8）と必須 model 欠落（OA9）の回帰テストを追加。
+- `bash apps/cmux-team-dispatch-task/test/test-override-args.sh`: OA1, OA5-model, OA5-effort, OA5-runner, OA6, OA7, OA8, OA9 全 PASS。

@@ -34,8 +34,10 @@ for role in design design_review exec exec_review; do
   for f in runner model effort; do pending_present "$role" "$f" && found=1; done
   [[ $found -eq 1 ]] || continue
   runner="$(pending_present "$role" runner && pending_value "$role" runner || jq -r --arg r "$role" '.roles[$r].runner // empty' "$ROLES_FILE")"
-  if pending_present "$role" runner; then engine="$(runner_engine "$runner")"; [[ -n "$engine" ]] || { drop "$role" runner 'not registered'; continue; }; else engine="$(jq -r --arg r "$role" '.roles[$r].engine // empty' "$ROLES_FILE")"; fi
+  engine="$(runner_engine "$runner")"
+  [[ -n "$engine" ]] || { drop "$role" runner 'not registered'; continue; }
   model="$(pending_present "$role" model && pending_value "$role" model || jq -r --arg r "$role" '.roles[$r].model // empty' "$ROLES_FILE")"
+  if [[ -z "$model" ]] && dispatch_model_required "$role" "$engine"; then drop "$role" model 'required model is missing'; continue; fi
   if [[ -n "$model" ]] && ! dispatch_valid_model "$model"; then drop "$role" model 'invalid for engine'; continue; fi
   if [[ "$engine" == codex ]]; then case "$model" in opus\[1m\]|sonnet|fable) drop "$role" model 'Claude model alias for codex'; continue;; esac; fi
   effort="$(pending_present "$role" effort && dispatch_normalize_effort "$(pending_value "$role" effort)" || jq -r --arg r "$role" '.roles[$r].effort // empty' "$ROLES_FILE")"
