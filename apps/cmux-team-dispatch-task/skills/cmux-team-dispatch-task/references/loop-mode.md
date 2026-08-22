@@ -47,12 +47,11 @@ and ask no further questions until the loop ends.
 
    Validate the answer as an integer from 1 to 10; if it is out of range or not an
    integer, re-present only this question. `concurrency` is a **task count, not a pane
-   count**. When prewarm is enabled, each task starts only its instantiated roles: one
-   design pane, an optional review pane, and the executor panes allowed by the resolved
-   execution choice. The pane count therefore varies by configuration; for example, a
-   fixed all-Codex configuration with review enabled has 3 panes, not a fixed 4-pane
-   layout. Each task also adds one worktree. The upper bound of 10 is a safety valve for
-   this resource amplification and must not be raised even if requested.
+   count**. When prewarm is enabled, each task starts only its instantiated roles from
+   `design`, `design_review`, `exec`, and `exec_review`. With `review_mode=off`, only
+   `design` and `exec` are present; with `review_mode=on`, all four roles are present.
+   Each task also adds one worktree. The upper bound of 10 is a safety valve for this
+   resource amplification and must not be raised even if requested.
 4. **Maximum batch count (`max_batches`)**
    - **3**: "stop after a short run"
    - **5**: "standard upper bound"
@@ -63,17 +62,13 @@ and ask no further questions until the loop ends.
 
 ### Call ②: Execution Configuration
 
-1. **design runner (the child session's runtime)**
-   - Dynamically enumerate `runners[]` from `runners.json`: label = `name`, description =
-     `command (engine)`.
-2. **exec runner (Phase B execution engine)**
-   - **claude**: "in-session when the execution role matches the design role's model
-     and effort exactly, otherwise delegate to the claude executor pane"
-   - **codex**: "shown only when a codex engine runner exists"
-3. **Review feature (Phase A-R / Phase B-R)**
-   - **Enabled**: "review the design and implementation"
-   - **Disabled**: "skip review and proceed"
-4. **integration strategy**
+1. **Resolved role tuples**
+   - Read `design`, `design_review`, `exec`, and `exec_review` from the config layers.
+     Each role has its configured `runner`, `model`, and `effort`.
+2. **Review mode (`review_mode`)**
+   - **on**: use both review roles.
+   - **off**: omit both review roles.
+3. **integration strategy**
    - **PR per task**: "create a PR per issue"
    - **Wait and merge**: "merge after waiting for verified changes"
 
@@ -82,12 +77,7 @@ and ask no further questions until the loop ends.
 Ask only the applicable questions; if none apply, ask only the single final confirmation
 question.
 
-1. **reviewer runner** (when review is enabled and no fixed review runner has already
-   been resolved)
-   - Dynamically enumerate review-capable runners. A reviewer may use the same engine as
-     the design runner; preserve the resolved review runner/engine instead of deriving an
-     engine relationship downstream.
-2. **Start the loop with this configuration?**
+1. **Start the loop with this configuration?**
    - **Start**: "confirm the above configuration and run"
    - **Redo configuration**: "go back to call ①"
 
@@ -99,16 +89,16 @@ question.
 | 2 | Step 1c brainstorming selection | Fixed to plan mode. |
 | 3 | Step 1d layout | Fixed to workspace. |
 | 4 | Step 1e integration strategy | Pre-configured in call ②. |
-| 5 | Step 1f runner switch / per-task runner | Use call ②'s design runner in common across all tasks. |
+| 5 | Step 1f runner switch / per-task runner | Use the four role tuples from config in common across all tasks. |
 | 6 | Step 1f first-run setup (interactive `runners.json` generation) | Checked at L0; if missing, exit with an error without starting. |
-| 7 | Step 1f reviewer selection | Use the fixed project/global review runner when resolved; otherwise resolve the legacy policy or pre-configure a review-capable runner in call ③. |
-| 8 | Step 1g review_mode | Pre-configured in call ②, and fixed for the duration of the loop. |
+| 7 | Step 1f reviewer selection | Use the configured `design_review` and `exec_review` tuples when `review_mode=on`; omit them when it is `off`. |
+| 8 | Step 1g review_mode | Resolved from config as `on` or `off`, and fixed for the duration of the loop. |
 | 9 | Wait-and-merge Option A/B at completion | Always merge when integration=merge. Conflicts are handled automatically by the cleanup transition table. |
 | 10 | The three cleanup questions at completion | Handled deterministically by the cleanup transition table. |
 | 11 | Phase A-R's five rounds of `needs_work` | Note unresolved findings at the end of the document and proceed to Phase B. |
 | 12 | Phase A-R reviewer stalled | Re-request the same round once; if stalled again, skip review and proceed to Phase B. |
-| 13 | Phase B execution model selection | Bake call ②'s exec runner into `EXEC_DEFAULT_HINT`. |
-| 14 | Phase B exec_choice persistence confirmation | Does not occur, due to #13. |
+| 13 | Phase B execution model selection | Use the configured `exec` tuple. |
+| 14 | Phase B execution model persistence confirmation | Does not occur because the tuple is fixed in config. |
 | 15 | Phase B-R's five rounds of `needs_work` | Note unresolved findings in the PR body and create the PR. |
 | 16 | Phase B-R reviewer stalled | Note in the PR body that review was skipped, and create the PR. |
 | 17 | Implicit approval gate of brainstorming / ExitPlanMode | No approval prompt is shown, due to the fixed plan mode and `--dangerously-skip-permissions`. |
@@ -122,20 +112,19 @@ stale-evidence check for normal dispatch, and `ensure-labels`. If `reconcile` ab
 
 Each batch is claimed with `fetch --limit <concurrency> --batch <N>`. `fetch` returning
 `[]`, exit 3 (all claims failed), or exit 4 (exhaustion unknown) all end the loop without
-starting the next batch. Prepare each issue with `render-loop-prompt.sh` and
-`prewarm-panes.sh --unattended`, and run `mark-dispatched` after launch.
-
-Pass the resolved role tuple to the prompt renderer: `--design-runner` /
-`--design-engine`, optional `--review-runner` / `--review-engine` / `--review-model` /
-`--review-pane-agent`, and `--exec-runner` / `--exec-engine`. For example, the role
-arguments for a fixed all-Codex unattended task are:
+starting the next batch. For each issue, start prewarm with
+`prewarm-panes.sh --unattended`.
+Collect `[ready]` reports, then run `prune_not_ready` to remove review roles that did
+not become ready, and invoke the renderer with the
+validated snapshot:
 
 ```bash
---design-runner codex --design-engine codex \
---review on --review-runner codex --review-engine codex \
---review-model gpt-5.6-sol --review-pane-agent <slug>-review \
---exec-choice codex --exec-runner codex --exec-engine codex
+render-loop-prompt.sh ... --prewarm <STATUS_DIR>/prewarm.json
 ```
+
+Deliver the rendered prompt only after this sequence, and run `mark-dispatched` after
+launch. The renderer reads the four role tuples and `review_mode` from `prewarm.json`;
+do not pass role-specific runner or execution-choice flags.
 
 **The parent that runs this loop must be a claude session.** `prewarm-panes.sh
 --unattended` dies when it is called from a codex parent: codex cannot arm the 90-minute
@@ -177,6 +166,9 @@ Cleanup enumerates and de-duplicates the actual `surface_id` and `agent` values 
 task's sparse `prewarm.json`. Every `close-surface` call includes the task workspace, with
 workspace-name lookup as the fallback when `status.json` lacks `workspace_id`. No cleanup
 or timeout operation targets a role absent from `prewarm.json`.
+
+`loop.task_timeout_min` is a third-party key in `config.json`; `--reset config` does not
+remove it.
 
 Call `lock-release` on every interruption path, including exit 3/4, cleanup failure, and
 user interruption. Subsequent fallback uses the finalized config rather than questions.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 日本語ドキュメントに旧語彙が残っていないことの静的検査。
+# 公開・実行時ドキュメントに旧語彙が残っていないことの静的検査。
 #
 # 由来: v2.0.0 の monitor 専用化で SKILL.md と英語 references は更新されたのに、
 # guide-ja.md / README.md / CLAUDE.md の日本語側だけが旧ポーリング記述と削除済み
@@ -41,14 +41,19 @@ PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCRIPTS="$PLUGIN_DIR/skills/cmux-team-dispatch-task/scripts"
 fail=0
 
-# 対象は日本語で書かれた 4 ファイル。英語側 (SKILL.md / references/*.md) は
-# test-delivery-callsites.sh の CS3 / CS5 と test-skill-script-refs.sh が見る。
+# 日本語 4 ファイルに加え、実行時の英語指示である SKILL.md と
+# references/unattended/*.md も対象にする。後者は render-loop-prompt.sh が子 prompt へ
+# そのまま連結するため、英語側だけ旧 role 契約が残っても見逃してはならない。
 TARGETS=(
   "skills/cmux-team-dispatch-task/references/guide-ja.md"
+  "skills/cmux-team-dispatch-task/SKILL.md"
   "README.md"
   "CLAUDE.md"
   "docs/notification-gaps.md"
 )
+while IFS= read -r unattended; do
+  TARGETS+=("${unattended#"$PLUGIN_DIR/"}")
+done < <(find "$PLUGIN_DIR/skills/cmux-team-dispatch-task/references/unattended" -name '*.md' -type f | sort)
 
 # 退役済みスクリプト名 (このプラグイン配下に実在しないことが正しい)。
 RETIRED_SCRIPTS=(
@@ -57,6 +62,7 @@ RETIRED_SCRIPTS=(
   monitor-dispatch.sh
   ensure-agmsg-ready.sh
   batch-wait.sh
+  runners-edit.sh
 )
 
 # 退役済みの固有名。日本語・英語が混在するので固定文字列で持つ。
@@ -79,6 +85,25 @@ RETIRED_VOCAB=(
   'guard-injected'         # 退役した prewarm.json の watcher 値
   'ready sentinel'         # agmsg 1.2.1 に実在しない (spec の B5)
   'ready.<team>__<agent>'  # 同上
+  'design_runner'          # 旧 3 キー config schema
+  'review_runner'
+  'exec_choice'
+  '"prewarm"'             # 旧 prewarm 設定キー (prewarm.json は現役)
+  '`prewarm`:'             # 散文中の旧 prewarm 設定キー
+  'review_mode: "ask"'    # review_mode は on / off のみ
+  'review_mode":"ask"'
+  'review_mode=ask'
+  'in-session'             # 実装は常に exec role へ委譲
+  'REVIEW_POLICY'          # 旧 reviewer policy / resolver
+  'legacy cross-engine resolver'
+  'resolve_code_reviewer_for_choice'
+  'plan_model'             # 旧 runners.json role fields
+  'review_model'
+  'exec_model'
+  'plan_effort'
+  'review_effort'
+  'exec_effort'
+  '~/.claude/cmux-team-dispatch-task' # 旧 global config directory
 )
 
 MARKER='stale-vocab-exempt:'
@@ -126,18 +151,18 @@ check_needles() {
 check_needles "スクリプト名" "${RETIRED_SCRIPTS[@]}"
 ds1=$CHECK_OK; ds1_seen=$CHECK_SEEN
 if [[ $ds1 -eq 1 ]]; then
-  echo "PASS DS1: 日本語 4 ファイルに退役済みスクリプト名が残らない (免除込みの出現 $ds1_seen 件)"
+  echo "PASS DS1: 対象文書に退役済みスクリプト名が残らない (免除込みの出現 $ds1_seen 件)"
 else
-  echo "FAIL DS1: 日本語ドキュメントに退役済みスクリプト名が残っている"; fail=1
+  echo "FAIL DS1: 対象文書に退役済みスクリプト名が残っている"; fail=1
 fi
 
 # --- DS2: 退役済みの固有名 ---
 check_needles "固有名" "${RETIRED_VOCAB[@]}"
 ds2=$CHECK_OK; ds2_seen=$CHECK_SEEN
 if [[ $ds2 -eq 1 ]]; then
-  echo "PASS DS2: 日本語 4 ファイルに退役済みの固有名が残らない (免除込みの出現 $ds2_seen 件)"
+  echo "PASS DS2: 対象文書に退役済みの固有名が残らない (免除込みの出現 $ds2_seen 件)"
 else
-  echo "FAIL DS2: 日本語ドキュメントに退役済みの固有名が残っている"; fail=1
+  echo "FAIL DS2: 対象文書に退役済みの固有名が残っている"; fail=1
 fi
 
 # --- DS3: 両リストのラチェット ---
@@ -161,6 +186,40 @@ for needle in "${RETIRED_VOCAB[@]}"; do
 done
 if [[ ${#RETIRED_SCRIPTS[@]} -eq 0 || ${#RETIRED_VOCAB[@]} -eq 0 ]]; then
   echo "  リストが空になっている (検査が空虚に PASS する)"
+  ds3=0
+fi
+for required in design_runner review_runner exec_choice '"prewarm"' '`prewarm`:' \
+  'review_mode: "ask"' 'review_mode":"ask"' review_mode=ask in-session REVIEW_POLICY \
+  'legacy cross-engine resolver' resolve_code_reviewer_for_choice plan_model review_model exec_model \
+  plan_effort review_effort exec_effort '~/.claude/cmux-team-dispatch-task'; do
+  found=0
+  for needle in "${RETIRED_VOCAB[@]}"; do
+    [[ "$needle" == "$required" ]] && found=1
+  done
+  if [[ $found -ne 1 ]]; then
+    echo "  4 role 移行の必須 needle が無い: $required"
+    ds3=0
+  fi
+done
+required_script_found=0
+for name in "${RETIRED_SCRIPTS[@]}"; do
+  [[ "$name" == runners-edit.sh ]] && required_script_found=1
+done
+if [[ $required_script_found -ne 1 ]]; then
+  echo "  4 role 移行の必須退役スクリプトが無い: runners-edit.sh"
+  ds3=0
+fi
+if [[ " ${TARGETS[*]} " != *" skills/cmux-team-dispatch-task/SKILL.md "* ]]; then
+  echo "  SKILL.md が走査対象に含まれていない"
+  ds3=0
+fi
+unattended_targets=0
+for target in "${TARGETS[@]}"; do
+  [[ "$target" == skills/cmux-team-dispatch-task/references/unattended/*.md ]] \
+    && unattended_targets=$(( unattended_targets + 1 ))
+done
+if [[ $unattended_targets -eq 0 ]]; then
+  echo "  references/unattended/*.md が走査対象に含まれていない"
   ds3=0
 fi
 if [[ $ds3 -eq 1 ]]; then

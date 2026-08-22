@@ -304,25 +304,27 @@ for mode in superpowers plan execute standby review; do
 done
 
 # --- SKILL.md static check: the codex Phase B prewarm-standby block must define a
-# base REQUEST_TEXT with a codex-appropriate exit instruction (regression guard for
+# base REQUEST_TEXT with a codex-appropriate idle instruction (regression guard for
 # the "codex completion notification never arrives" bug). $PARALLEL (the
 # parallel-execution directive, injected between the work instruction and the
-# session-end instruction) is now part of this same string — it must stay between
-# the two, with the session-end instruction still last. ---
+# completion instruction) is now part of this same string — it must stay between
+# the two, with the idle instruction still last. ---
 SKILL_MD="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
-assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), end this codex session immediately' \
-  'T7 SKILL.md codex prewarm block defines base REQUEST_TEXT with codex session-end exit'
+assert_contains "$SKILL_MD" 'REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL $COMPLETION_TEXT After all work is committed/pushed and the PR is created (or all changes are merged per the plan), stop and stay idle.' \
+  'T7 SKILL.md codex prewarm block defines base REQUEST_TEXT with completion report and idle'
 
 # --- T14/T15: Phase B-R の拡張 REQUEST_TEXT の退行ガード ---
 # Phase B-R が有効なとき、拡張 REQUEST_TEXT は codex 用 base REQUEST_TEXT を上書きする。
 # 旧仕様の末尾は engine 中立の「run /exit (claude) or end the session (codex)」1 文だったため、
-# codex への強い指示 (Do NOT run /exit / idle 残留禁止) が失われ、codex が TUI に居座って
-# runner wrapper の完了通知に到達しない事故が起きた。さらに standby ペインは task prompt を
-# 読まないので、子側の必須通知も構造的に届いていなかった。両方を固定する。
-assert_contains "$SKILL_MD" 'END THE CODEX SESSION' \
-  'T14 extended REQUEST_TEXT tells codex to end its own session'
-assert_contains "$SKILL_MD" 'do NOT run /exit (codex does not act on it) and do NOT leave' \
+# codex への強い指示 (Do NOT run /exit / completion report 後は idle) が失われると、
+# 実行不能な自己終了を要求する文面へ戻る。さらに standby ペインは task prompt を読まないので、
+# 子側の必須通知も構造的に届かない。両方を固定する。
+assert_contains "$SKILL_MD" 'stop and stay idle. Do not try to terminate this session yourself; the parent closes this pane during final cleanup.' \
+  'T14 extended REQUEST_TEXT tells codex to stay idle for parent cleanup'
+assert_contains "$SKILL_MD" 'do NOT run /exit because codex does not act on it' \
   'T14 extended REQUEST_TEXT forbids /exit for codex'
+assert_not_contains "$SKILL_MD" 'END THE CODEX SESSION' \
+  'T14 self-termination demand is absent from SKILL.md'
 assert_not_contains "$SKILL_MD" 'or end the session (codex)' \
   'T14 the ambiguous engine-neutral exit wording is gone'
 assert_contains "$SKILL_MD" 'MANDATORY completion notification. You received this request as an' \
@@ -537,11 +539,11 @@ SKILL_MD_FLAT="$TMP/skill-md-flat.txt"
 tr '\n' ' ' < "$SKILL_MD" | tr -s ' ' > "$SKILL_MD_FLAT"
 
 assert_contains "$SKILL_MD_FLAT" \
-  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine claude --mode execute) REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all work is committed/pushed and the PR is created (or all changes are merged per the plan), run /exit to close this session.' \
+  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine claude --mode execute) REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL $COMPLETION_TEXT After all work is committed/pushed and the PR is created (or all changes are merged per the plan), run /exit to close this session.' \
   'PL8 SKILL.md sonnet standby 分岐は $PARALLEL を作業指示と exit 指示の間に保つ'
 
 assert_contains "$SKILL_MD_FLAT" \
-  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <implementer-engine> --mode execute) REVIEW_PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review) "Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are committed and BEFORE creating the PR, you MUST get a code review approval.' \
+  'PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <implementer-engine> --mode execute) REVIEW_PARALLEL=$(bash <SKILL_DIR>/scripts/parallel-directive.sh --engine <reviewer-engine> --mode review) REQUEST_TEXT="Read and execute the plan at <PLAN_FILE_PATH>. $PARALLEL After all changes are committed and BEFORE creating the PR, you MUST get a code review approval.' \
   'PL9 SKILL.md 共通プロトコル a は実装者用とレビュアー用の 2 本を先に計算する'
 
 # prewarm 経路のレビュアーはレビューペイン起動 (--mode review, PL3) ではディレクティブを

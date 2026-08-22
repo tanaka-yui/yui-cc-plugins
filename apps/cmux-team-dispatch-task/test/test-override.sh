@@ -1,226 +1,121 @@
 #!/usr/bin/env bash
-# --override が下流へ届く経路の回帰テスト。
-#   OV1-OV3: prewarm-panes.sh が役割別 model/effort を該当ペインへ転送する
-#   OV4    : 転送された明示値が runners.json の役割フィールドより優先される
-#   OV5    : --reviewer-model と legacy --review-model の同時指定を拒否する
-#   OV6    : 上書きが in-session 判定に反映される
-#   OV7/OV9: engine 別 effort allowlist と review ペインへの effort 到達 (実 launcher)
+# --override の 4 ロール契約を検証する。
+#  OV10. 対象ロールは design / design_review / exec / exec_review
+#  OV11. review 2 ロールは review_mode=on のときだけ提示する
+#  OV12. 4 ロール x 3 次元の override は適用され、config は不変
+#  OV13. override 無しで再 resolve すると永続値へ戻る
+#  OV14. pending tuple の不正次元はロール単位で破棄され、他ロールは生き残る
+#  OV15. prewarm には --roles だけを渡し、旧ロール別フラグを渡さない
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PREWARM="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/prewarm-panes.sh"
-LAUNCH="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/launch-workspace.sh"
+SKILL_DIR="$SCRIPT_DIR/../skills/cmux-team-dispatch-task"
+SKILL_MD="$SKILL_DIR/SKILL.md"
+RESOLVE="$SKILL_DIR/scripts/config-resolve.sh"
+OVERRIDE_ARGS_SH="$SKILL_DIR/scripts/override-args.sh"
+
+fail=0
+bad() { echo "FAIL $1"; fail=1; }
+ok() { echo "PASS $1"; }
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/scripts" "$TMP/repo" "$TMP/agmsg" "$TMP/bin" "$TMP/status"
+export DISPATCH_CONFIG_HOME="$TMP/home"
+PROJ="$TMP/repo"
+GLOBAL_CONFIG="$DISPATCH_CONFIG_HOME/config.json"
+RUNNERS_JSON="$DISPATCH_CONFIG_HOME/runners.json"
+PROJ_CONFIG="$PROJ/.dispatch/config.json"
+mkdir -p "$DISPATCH_CONFIG_HOME" "$PROJ/.dispatch"
 
-# agmsg send.sh の stub。--status-dir を渡す launch は agmsg 識別子を要求するので
-# (配送は agmsg send.sh の 1 本だけで、タイプ入力への fallback が無い)、
-# 実体の存在チェックを通すためにこれを AGMSG_SEND として export する。
-printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/agmsg-send.sh"
-chmod +x "$TMP/bin/agmsg-send.sh"
-export AGMSG_SEND="$TMP/bin/agmsg-send.sh"
-git -C "$TMP/repo" init -q
-git -C "$TMP/repo" config user.email test@example.invalid
-git -C "$TMP/repo" config user.name test
-touch "$TMP/repo/.gitkeep"
-git -C "$TMP/repo" add .gitkeep
-git -C "$TMP/repo" commit -qm init
-
-cp "$PREWARM" "$TMP/scripts/prewarm-panes.sh"
-
-cat > "$TMP/scripts/launch-workspace.sh" <<'STUB'
-#!/usr/bin/env bash
-echo "$*" >> "$ARGV_LOG"
-count=$(wc -l < "$ARGV_LOG" | tr -d ' ')
-jq -n --arg surface "surface:$count" '{workspace_id:"workspace:1", surface_id:$surface}'
-STUB
-chmod +x "$TMP/scripts/launch-workspace.sh"
-
-cat > "$TMP/bin/cmux" <<'STUB'
-#!/usr/bin/env bash
-case "$1" in
-  new-workspace) echo 'workspace:1' ;;
-  list-pane-surfaces) echo 'surface:2' ;;
-  rename-workspace|rename-tab|notify|send|send-key|wait-for|identify) ;;
-  *) echo "unexpected cmux command: $*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "$TMP/bin/cmux"
-
-for s in join.sh delivery.sh leave.sh send.sh; do
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/agmsg/$s"
-  chmod +x "$TMP/agmsg/$s"
-done
-
-# claude / codex 双方に役割フィールドを持たせ、上書きが「勝つ」ことを見えるようにする
-cat > "$TMP/runners.json" <<'JSON'
-{
-  "default": "claude",
-  "runners": [
-    { "name": "claude", "command": "claude", "engine": "claude",
-      "plan_model": "opus[1m]", "review_model": "opus[1m]", "exec_model": "sonnet",
-      "plan_effort": "xhigh", "review_effort": "xhigh", "exec_effort": "high" },
-    { "name": "codex", "command": "codex", "engine": "codex",
-      "plan_model": "gpt-5.6-sol", "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra",
-      "plan_effort": "xhigh", "review_effort": "xhigh", "exec_effort": "high" }
-  ]
-}
+cat > "$RUNNERS_JSON" <<'JSON'
+{"default":"ccf","runners":[
+  {"name":"ccf","command":"ccf","engine":"claude"},
+  {"name":"cx","command":"codex","engine":"codex"}
+]}
+JSON
+cat > "$GLOBAL_CONFIG" <<'JSON'
+{"review_mode":"on","runner":{
+  "design":{"runner":"ccf"},"design_review":{"runner":"ccf"},
+  "exec":{"runner":"ccf"},"exec_review":{"runner":"ccf"}}}
+JSON
+cat > "$PROJ_CONFIG" <<'JSON'
+{"unrelated":"preserved"}
 JSON
 
-fail=0
-pass() { echo "PASS: $1"; }
-bad() { echo "FAIL: $1" >&2; fail=1; }
-
-CASE_LOG=""
-run_case() {
-  local slug="$1"; shift
-  CASE_LOG="$TMP/argv-$slug.log"
-  : > "$CASE_LOG"
-  mkdir -p "$TMP/repo-$slug"
-  ARGV_LOG="$CASE_LOG" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-    bash "$TMP/scripts/prewarm-panes.sh" --with-design --agmsg-team demo-team \
-      --cwd "$TMP/repo-$slug" --slug "$slug" --status-dir "$TMP/status-$slug" "$@" >/dev/null
-}
-
-# pane 行を --agmsg-from で特定する (末尾に必ず pane 名が続くので trailing space で前方一致を防ぐ)
-pane_line() { grep -F -- "--agmsg-from $1 " "$CASE_LOG" || true; }
-
-# <id> <pane-agent> <expected substring>
-expect_in_pane() {
-  local id="$1" agent="$2" expected="$3" line
-  line=$(pane_line "$agent")
-  if [[ -z "$line" ]]; then
-    bad "$id pane '$agent' was not launched"
-    return
-  fi
-  grep -Fq -- "$expected" <<<"$line" \
-    && pass "$id pane '$agent' carries $expected" \
-    || bad "$id pane '$agent' must carry $expected: $line"
-}
-
-# --- OV1: design の model/effort 上書きが design ペインへ届く ---
-run_case ov1 --design-runner claude --reviewer-runner codex \
-  --exec-runner codex --exec-choice codex \
-  --design-model fable --design-effort max
-expect_in_pane OV1 ov1 "--model fable"
-expect_in_pane OV1 ov1 "--effort max"
-
-# --- OV2: exec の model/effort 上書きが実装ペインへ届く ---
-run_case ov2 --design-runner claude --reviewer-runner codex \
-  --exec-runner claude --exec-choice claude \
-  --exec-model fable --exec-effort max
-expect_in_pane OV2 ov2-claude "--model fable"
-expect_in_pane OV2 ov2-claude "--effort max"
-
-# --- OV3: reviewer の model/effort 上書きが review ペインへ届く ---
-run_case ov3 --design-runner claude --reviewer-runner codex \
-  --exec-runner codex --exec-choice codex \
-  --reviewer-model gpt-5.6-sol --reviewer-effort medium
-expect_in_pane OV3 ov3-review "--model gpt-5.6-sol"
-expect_in_pane OV3 ov3-review "--effort medium"
-
-# --- OV4: 上書きが runners.json の役割フィールドより優先される ---
-# runner `claude` は exec_model=sonnet / exec_effort=high を持つ。上書きは fable/max。
-# prewarm は runner 由来の値を --model として渡さない (launch-workspace の役割
-# フォールバックに委ねる) ので、ペイン行に sonnet/high が現れないことまで確認する。
-#
-# CASE_LOG は直近の run_case のものを指すので、OV2 のログへ明示的に戻す。戻さないと
-# pane_line が空を返し、否定アサーションが「行が無いから一致しない」で通ってしまう。
-CASE_LOG="$TMP/argv-ov2.log"
-line=$(pane_line ov2-claude)
-if [[ -z "$line" ]]; then
-  bad 'OV4 the ov2 claude executor pane line is missing (cannot judge)'
-elif grep -Fq -- "--model sonnet" <<<"$line" || grep -Fq -- "--effort high" <<<"$line"; then
-  bad 'OV4 override must replace the runner role fields, not coexist with them'
-else
-  pass 'OV4 override replaces the runner role fields'
-fi
-
-# --- OV5: --reviewer-model と legacy --review-model の同時指定を拒否する ---
-# exit code だけでは die() の理由を証明できない (runners.json 欠落など無関係な失敗も
-# non-zero を返すため)。stderr に "mutually exclusive" が出ていることまで確認する。
-mkdir -p "$TMP/repo-ov5"
-ov5_stderr="$TMP/stderr-ov5.log"
-if ARGV_LOG="$TMP/argv-ov5.log" AGMSG_DIR="$TMP/agmsg" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
-   bash "$TMP/scripts/prewarm-panes.sh" --with-design --agmsg-team demo-team \
-     --cwd "$TMP/repo-ov5" --slug ov5 --status-dir "$TMP/status-ov5" \
-     --codex-runner codex --review-model gpt-5.6-sol --reviewer-model gpt-5.6-sol \
-     >/dev/null 2>"$ov5_stderr"; then
-  bad 'OV5 --reviewer-model with --review-model must be rejected'
-elif grep -Fq -- "mutually exclusive" "$ov5_stderr"; then
-  pass 'OV5 --reviewer-model with --review-model is rejected'
-else
-  bad "OV5 rejected for the wrong reason (stderr: $(cat "$ov5_stderr"))"
-fi
-
-# --- OV6: 上書きが in-session 判定に反映される ---
-# runner `claude` の既定は plan opus[1m]/xhigh vs exec sonnet/high なので通常は委譲。
-# exec を design と同じ opus[1m]/xhigh に上書きすると in-session になり実装ペインが消える。
-run_case ov6 --design-runner claude --reviewer-runner codex \
-  --exec-runner claude --exec-choice claude \
-  --exec-model 'opus[1m]' --exec-effort xhigh
-jq -e '.executors == {}' "$TMP/status-ov6/prewarm.json" >/dev/null \
-  && pass 'OV6 override makes the roles identical and drops the executor pane' \
-  || bad 'OV6 override makes the roles identical and drops the executor pane'
-
-run_case ov6b --design-runner claude --reviewer-runner codex \
-  --exec-runner claude --exec-choice claude \
-  --exec-model 'opus[1m]' --exec-effort max
-jq -e '.executors.claude != null' "$TMP/status-ov6b/prewarm.json" >/dev/null \
-  && pass 'OV6b an effort-only difference still delegates' \
-  || bad 'OV6b an effort-only difference still delegates'
-
-# --- OV7 / OV9: 実 launcher で effort allowlist と review ペインへの到達を見る ---
-real_runner() {
-  local name="$1"; shift
-  local output
-  output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-    --agmsg-team demo-team --agmsg-from "$name" \
-    --cwd "$TMP/repo" --status-dir "$TMP/status" "$@" "$name" prompt)
-  jq -r '.runner_file' <<<"$output"
-}
-
-if CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
-     --cwd "$TMP/repo" --mode review --role review --runner codex --effort max \
-     --agmsg-team demo-team --agmsg-from ov7 \
-     --status-dir "$TMP/status" ov7 prompt >/dev/null 2>&1; then
-  bad 'OV7 codex rejects effort=max'
-else
-  pass 'OV7 codex rejects effort=max'
-fi
-
-ov9_claude=$(real_runner ov9c --mode review --role review --runner claude --effort max)
-grep -Fq -- "--effort 'max'" "$ov9_claude" \
-  && pass 'OV9a claude review pane carries --effort' \
-  || bad 'OV9a claude review pane carries --effort'
-
-ov9_codex=$(real_runner ov9x --mode review --role review --runner codex --effort xhigh)
-grep -Fq -- "model_reasoning_effort='xhigh'" "$ov9_codex" \
-  && pass 'OV9b codex review pane carries model_reasoning_effort' \
-  || bad 'OV9b codex review pane carries model_reasoning_effort'
-
-# --- OV8: SKILL.md の CLI 記述 ---
-SKILL="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
-grep -Fq -- '[--override]' "$SKILL" \
-  && pass 'OV8a argument-hint lists --override' \
-  || bad 'OV8a argument-hint lists --override'
-
-# OV8b: section-scoped exclusivity check. Extract the "## Override Mode" section (up to the
-# next "## " heading) instead of grepping the whole file, so a harmless rewrap elsewhere in
-# SKILL.md can't flip this test and an unrelated exclusivity sentence can't pass it.
-OVERRIDE_SECTION=$(sed -n '/^## Override Mode/,/^## /p' "$SKILL")
-for other in '--loop' '--setup' '--reset'; do
-  grep -Fq -- "$other" <<<"$OVERRIDE_SECTION" \
-    && pass "OV8b --override exclusivity with $other is documented" \
-    || bad "OV8b --override exclusivity with $other is documented"
+OVERRIDE_SECTION=$(sed -n '/^### 1g-2\./,/^### 1h\./p' "$SKILL_MD")
+all_roles=1
+for role in design design_review exec exec_review; do
+  grep -Fq -- "$role" <<< "$OVERRIDE_SECTION" || { bad "OV10: $role が override 対象に無い"; all_roles=0; }
 done
+[[ $all_roles -eq 1 ]] && ok 'OV10: override 対象は 4 ロール'
+grep -Fq -- 'review_mode=on' <<< "$OVERRIDE_SECTION" \
+  && ok 'OV11: review 2 ロールは review_mode=on のときだけ提示する' \
+  || bad 'OV11: review 2 ロールの提示条件が無い'
 
-grep -Fq -- '1g-2' "$SKILL" \
-  && pass 'OV8c the override step is present' \
-  || bad 'OV8c the override step is present'
+ARGS=()
+for role in design design_review exec exec_review; do
+  ARGS+=(--set "$role.runner=cx" --set "$role.model=M-$role" --set "$role.effort=medium")
+done
+g_before=$(shasum -a 256 "$GLOBAL_CONFIG" | cut -d' ' -f1)
+p_before=$(shasum -a 256 "$PROJ_CONFIG" | cut -d' ' -f1)
+out=$(bash "$RESOLVE" --project-root "$PROJ" "${ARGS[@]}")
 
-[[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
+applied=1
+for role in design design_review exec exec_review; do
+  [[ "$(jq -r --arg r "$role" '.roles[$r].runner' <<< "$out")" == cx ]] || applied=0
+  [[ "$(jq -r --arg r "$role" '.roles[$r].model' <<< "$out")" == "M-$role" ]] || applied=0
+  [[ "$(jq -r --arg r "$role" '.roles[$r].effort' <<< "$out")" == medium ]] || applied=0
+  [[ "$(jq -r --arg r "$role" '.roles[$r].engine' <<< "$out")" == codex ]] || applied=0
+done
+[[ $applied -eq 1 ]] \
+  && ok 'OV12a: 4 ロール x 3 次元の override が適用され engine も追随する' \
+  || bad "OV12a: $(jq -c '.roles' <<< "$out")"
+
+[[ "$(shasum -a 256 "$GLOBAL_CONFIG" | cut -d' ' -f1)" == "$g_before" \
+  && "$(shasum -a 256 "$PROJ_CONFIG" | cut -d' ' -f1)" == "$p_before" ]] \
+  && ok 'OV12b: override は両 config を 1 バイトも変えない' || bad 'OV12b'
+
+out2=$(bash "$RESOLVE" --project-root "$PROJ")
+[[ "$(jq -r '.roles.design.model' <<< "$out2")" == 'opus[1m]' \
+  && "$(jq -r '.roles.design.runner' <<< "$out2")" == ccf ]] \
+  && ok 'OV13: 次回の resolve は元の値へ戻る' \
+  || bad "OV13: $(jq -c '.roles.design' <<< "$out2")"
+
+ROLES_JSON="$TMP/roles.json"
+printf '%s\n' "$out2" > "$ROLES_JSON"
+build_args() {
+  ARGS=()
+  while IFS= read -r -d '' arg; do ARGS+=("$arg"); done < <(
+    bash "$OVERRIDE_ARGS_SH" --roles "$ROLES_JSON" --runners "$RUNNERS_JSON" "$@" 2>/dev/null
+  )
+}
+
+assert_role_drop() {
+  local label="$1"; shift
+  build_args --pending design.model=KEPT "$@"
+  local resolved
+  resolved=$(bash "$RESOLVE" --project-root "$PROJ" "${ARGS[@]}")
+  if [[ "$(jq -r '.roles.design.model' <<< "$resolved")" == KEPT \
+    && "$(jq -r '.roles.exec.runner' <<< "$resolved")" == ccf \
+    && "$(jq -r '.roles.exec.model' <<< "$resolved")" == sonnet \
+    && "$(jq -r '.roles.exec.effort' <<< "$resolved")" == high ]]; then
+    ok "OV14-$label: exec 全体を破棄し design の override は維持"
+  else
+    bad "OV14-$label: $(jq -c '.roles | {design,exec}' <<< "$resolved")"
+  fi
+}
+assert_role_drop model --pending exec.runner=cx --pending 'exec.model=opus[1m]' --pending exec.effort=medium
+assert_role_drop effort --pending exec.runner=cx --pending exec.model=gpt-5.6-terra --pending exec.effort=max
+assert_role_drop runner --pending exec.runner=missing --pending exec.model=gpt-5.6-terra --pending exec.effort=medium
+
+PREWARM_SECTION=$(sed -n '/^### Pre-warm Standby Panes/,/^## /p' "$SKILL_MD")
+grep -Fq -- '--roles "$ROLES_JSON"' <<< "$PREWARM_SECTION" \
+  && ok 'OV15a: prewarm へ --roles を渡す' || bad 'OV15a: prewarm の --roles が無い'
+if grep -nE -- '--design-model|--design-effort|--reviewer-model|--reviewer-effort|--exec-model|--exec-effort' "$SKILL_MD"; then
+  bad 'OV15b: 旧 override フラグが SKILL.md に残っている'
+else
+  ok 'OV15b: prewarm への引渡しは --roles 1 本'
+fi
+
 exit "$fail"

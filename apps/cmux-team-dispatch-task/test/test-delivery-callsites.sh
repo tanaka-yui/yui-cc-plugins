@@ -277,7 +277,8 @@ check_region_lacks() {
 check_region_lacks 'Phase A-R の待機手順' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' "$WAIT_LOOP_RE" || cs5=0
 check_region_lacks 'Phase B-R の待機手順' "$SKILL_DIR/SKILL.md" \
-  '(1) send the review request with ONE command' '(3) On VERDICT: approve' "$WAIT_LOOP_RE" || cs5=0
+  'After sending each `review-code:` request' 'The design pane is never selected as code reviewer' \
+  "$WAIT_LOOP_RE" || cs5=0
 check_region_lacks 'REVIEW_INSTRUCTION の待機手順' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' "$WAIT_LOOP_RE" || cs5=0
 
@@ -335,7 +336,8 @@ check_region_has 'Phase A-R の依頼文' "$SKILL_DIR/SKILL.md" \
   'review-verdict:' 'send\.sh' || cs6=0
 # 依頼文 2: SKILL.md Phase B-R 共通プロトコル a (実装者が待つ側)
 check_region_has 'Phase B-R の依頼文' "$SKILL_DIR/SKILL.md" \
-  'where <request text> is: code review round N' 'End of the message to the' \
+  'After all changes are committed and BEFORE creating the PR' \
+  'Append the same engine-specific final instruction' \
   'review-verdict:' 'send\.sh' || cs6=0
 # 依頼文 3: launch-workspace.sh が焼き込む REVIEW_INSTRUCTION (spawn 経路)
 check_region_has 'REVIEW_INSTRUCTION の依頼文' "$LAUNCH" \
@@ -343,9 +345,10 @@ check_region_has 'REVIEW_INSTRUCTION の依頼文' "$LAUNCH" \
   'review-verdict:' 'AGMSG_SEND' || cs6=0
 # 依頼文 4/5: 無人ループ用ブロック (子プロンプトへそのまま連結される)
 check_region_has '無人ループの review-block' "$REVIEW_BLOCK_MD" \
-  'Review is enabled.' '' 'review-verdict:' || cs6=0
+  'Phase A-R is assigned to the `design_review` pane.' '' 'review-verdict:' || cs6=0
 check_region_has '無人ループの code-review-block' "$CODE_REVIEW_BLOCK_MD" \
-  'Request each review with ONE call' '' 'review-verdict:' 'send\.sh' || cs6=0
+  'Request each review with ONE call' 'If you stop before completing the work' \
+  'review-verdict:' 'send\.sh' || cs6=0
 if [[ $cs6 -eq 1 ]]; then
   echo "PASS CS6: 5 箇所のレビュー依頼文すべてに review-verdict: の通知指示がある"
 else
@@ -364,7 +367,7 @@ check_region_has 'Phase A-R の待機手順 (claude)' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' \
   'single-shot safety timer' 'run_in_background' || cs7=0
 check_region_has 'Phase B-R の待機手順 (claude)' "$SKILL_DIR/SKILL.md" \
-  '(1) send the review request with ONE command' '(3) On VERDICT: approve' \
+  'After sending each `review-code:` request' 'The design pane is never selected as code reviewer' \
   'single-shot safety timer' 'run_in_background' || cs7=0
 check_region_has 'REVIEW_INSTRUCTION の待機手順 (claude)' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' \
@@ -374,7 +377,7 @@ check_region_has 'Phase A-R の待機手順 (codex)' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' \
   'NO safety net' 'verify-agmsg-ready\.sh --codex' 'dispatch-notify:' || cs7=0
 check_region_has 'Phase B-R の待機手順 (codex)' "$SKILL_DIR/SKILL.md" \
-  '(1) send the review request with ONE command' '(3) On VERDICT: approve' \
+  'After sending each `review-code:` request' 'The design pane is never selected as code reviewer' \
   'NO safety net' 'verify-agmsg-ready\.sh --codex' 'dispatch-notify:' || cs7=0
 check_region_has 'REVIEW_INSTRUCTION の待機手順 (codex)' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' \
@@ -384,15 +387,17 @@ CODEX_TIMER_RE='\( *sleep [^;]*; *[^)]*send\.sh|setsid|start a background subshe
 check_region_lacks 'Phase A-R の待機手順' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' "$CODEX_TIMER_RE" || cs7=0
 check_region_lacks 'Phase B-R の待機手順' "$SKILL_DIR/SKILL.md" \
-  '(1) send the review request with ONE command' '(3) On VERDICT: approve' "$CODEX_TIMER_RE" || cs7=0
+  'After sending each `review-code:` request' 'The design pane is never selected as code reviewer' \
+  "$CODEX_TIMER_RE" || cs7=0
 check_region_lacks 'REVIEW_INSTRUCTION の待機手順' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' "$CODEX_TIMER_RE" || cs7=0
 # 無人ループのブロックも同じ規律に従うこと
 check_region_has '無人ループの code-review-block (engine 別)' "$CODE_REVIEW_BLOCK_MD" \
-  'Request each review with ONE call' '' \
+  'Request each review with ONE call' 'If you stop before completing the work' \
   'single-shot safety timer' 'NO safety net' 'dispatch-notify:' || cs7=0
 check_region_lacks '無人ループの code-review-block' "$CODE_REVIEW_BLOCK_MD" \
-  'Request each review with ONE call' '' "$CODEX_TIMER_RE" || cs7=0
+  'Request each review with ONE call' 'If you stop before completing the work' \
+  "$CODEX_TIMER_RE" || cs7=0
 if [[ $cs7 -eq 1 ]]; then
   echo "PASS CS7: verdict を待つ 4 箇所とも claude=タイマー / codex=保険なし+代替 2 手で書かれている"
 else

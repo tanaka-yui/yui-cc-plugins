@@ -17,6 +17,7 @@ mkdir -p "$DISPATCH_CONFIG_HOME" "$TMP/bin" "$TMP/status" "$TMP/dispatch/t"
 . "$SCRIPT_DIR/lib/prewarm-harness.sh"
 . "$SCRIPT_DIR/lib/cleanup-harness.sh"
 mkdir -p "$TMP/dispatch/t" "$TMP/status"
+touch "$TMP/body.md"
 
 cat > "$DISPATCH_CONFIG_HOME/runners.json" <<'JSON'
 {"default":"ccf","runners":[{"name":"ccf","command":"ccf","engine":"claude"},
@@ -34,7 +35,7 @@ JSON
 
 render() {
   bash "$S/render-loop-prompt.sh" --prewarm "$1" --slug t --issue 1 --issue-title x \
-    --issue-url u --issue-body-file /dev/null --plan-hint h --status-dir "$TMP/status" \
+    --issue-url u --issue-body-file "$TMP/body.md" --plan-hint h --status-dir "$TMP/status" \
     --timeout-sentinel "$TMP/sentinel" --team tm --layout workspace --parent-workspace w \
     --skill-dir "$S/.." 2> "$TMP/err"
 }

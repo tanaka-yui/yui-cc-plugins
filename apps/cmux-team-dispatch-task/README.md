@@ -13,29 +13,24 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 - **ステータス監視**: `.dispatch/` ディレクトリを介したファイルベースのステータス通信とシグナルによるリアルタイム進捗追跡
 - **superpowers 連携**: Execution Handoff の第3選択肢「Parallel (cmux)」として統合
 - **プロンプトファイル経由**: シェルエスケープの問題を回避するため、プロンプトはファイル経由で子セッションに渡される
-- **ターミナル起動待機の自動学習**: 子セッションのシェル初期化時間を計測して `~/.claude/cmux-team-dispatch-task/config.json` に EMA で永続化し、次回以降の最大待機時間を適応的に決定（`sh: command not found` を防止）。詳細は [guide-ja.md](skills/cmux-team-dispatch-task/references/guide-ja.md#ターミナル起動待機の自動学習)
+- **ターミナル起動待機の自動学習**: 子セッションのシェル初期化時間を計測して `~/.claude/config/cmux-team-dispatch-task/config.json` に EMA で永続化し、次回以降の最大待機時間を適応的に決定（`sh: command not found` を防止）。詳細は [guide-ja.md](skills/cmux-team-dispatch-task/references/guide-ja.md#ターミナル起動待機の自動学習)
 
 ## レイアウト
 
 レイアウトは常に `workspace`。各タスクは独立した cmux workspace（タブ）で実行される。
 
-```
-┌──────────────────────────────────────────────┐
-│           親セッション（オーケストレータ）           │
-└──────┬──────────┬──────────┬─────────────────┘
-       │          │          │
-       ▼          ▼          ▼
-┌──────────┐ ┌──────────┐ ┌──────────┐
-│ workspace │ │ workspace │ │ workspace │
-│  task-1   │ │  task-2   │ │  task-3   │
-│ worktree  │ │ worktree  │ │ worktree  │
-└──────────┘ └──────────┘ └──────────┘
-```
+各タスクの workspace 内は `review_mode` に応じた 2 パターンだけです。
+
+| `review_mode=off`（2 ペイン） | `review_mode=on`（4 ペイン） |
+|---|---|
+| `design` | `design` ｜ `design_review` |
+| `exec` | `exec` ｜ `exec_review` |
 
 > **破壊的変更 (v1.13.0)**: `--layout split` と `--layout claude-teams` を削除しました。
 > レイアウトは常に `workspace` です。あわせて split 専用の
 > `launch-session-splits.sh` と `cmux-grid.sh` も削除しています。
-> pre-warm は1ワークスペース内に解決済み role のペインだけを配置します。
+> pre-warm は常時有効です。各タスクは独立した workspace と worktree を持ち、review が無効なら
+> `design` / `exec`、有効なら 4 ロールすべてを配置します。
 
 ## 前提条件
 
@@ -87,17 +82,16 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 /cmux-team-dispatch-task --setup
 ```
 
-ディスパッチを行わずに設定だけを構成します。現在の設定（プロジェクト値 / グローバル値 /
-解決値）と `runners.json` の一覧を表示したあと、書き込み先（グローバル /
-プロジェクト）と対象（役割キー / `runners.json` / 両方）を選びます。役割キーごとに
-「固定値 / `"ask"` / 未設定に戻す / 変更しない」を指定でき、`runners.json` を対象に選んだ
-ときは登録済み runner を 1 件選んで役割別 model / effort（`plan_model` / `review_model` /
-`exec_model` と対応 effort）を編集することもできます。最後に差分を確認してから
-1 回の原子的な書き込みで反映します。
+ディスパッチを行わずに設定だけを構成します。現在の global / project / 解決値と
+`runners.json` を表示し、対象を global `config.json`、project `config.json`、
+`runners.json` から選びます。config を選ぶと、最初に `review_mode` と編集するロール
+（`design` / `design_review` / `exec` / `exec_review`、複数選択）を聞き、選んだロールごとに
+runner / model / effort を 1 コールで聞きます。runner 変更後の engine で tuple 全体を再検証し、
+無効な次元だけを再質問します。2 回目も無効ならそのロールの変更全体を破棄します。
 
-これまで役割キーはディスパッチ中の質問に「常に〜」と答えたときにしか永続化されなかった
-ため、設定を見直すだけでもダミータスクを投げる必要がありました。`--setup` はその
-ためのエントリポイントです。
+`runners.json` を選んだ場合は runner の追加、registry の作り直し、変更なしの 3 択です。
+最後に対象 1 ファイルの差分を確認し、config は全変更を 1 回の `config-edit.sh` 呼び出しで
+原子的に反映します。
 
 ### 設定のリセット（`--reset`）
 
@@ -108,9 +102,10 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 /cmux-team-dispatch-task --reset all
 ```
 
-`runners` は `runners.json` を削除して初回セットアップをやり直します（両 `config.json`
-は変更しません）。`config` は役割キー 5 つだけを削除し、`shell_ready_ms` など他のキーは
-残します。対象を省略すると質問されます。
+`runners` は registry だけを作り直し、両 `config.json` を変更しません。`config` は選んだ
+layer から `review_mode` と `runner` の 2 キーだけを削除し、`shell_ready_ms` や `loop` など
+他の所有者のキーを残します。`all` は両 config layer の 2 キーを消して registry と初期 global
+config を作り直します。対象を省略すると質問されます。
 
 `--setup` / `--reset` はどちらもディスパッチを行わず、`.dispatch/`・worktree・`feat/*`
 ブランチには一切触れません。`--loop` / `--override` とも互いとも排他で、issue ループが
@@ -122,13 +117,15 @@ claude plugin add tanaka-yui/yui-cc-plugins/apps/cmux-team-dispatch-task
 /cmux-team-dispatch-task タスクA, タスクB --override
 ```
 
-その dispatch に限って、タスクごとに design / review / exec の runner / model / effort を
+その dispatch に限って、タスクごとに design / design_review / exec / exec_review の runner / model / effort を
 上書きします。難しいタスクだけ effort を上げる、実装だけ別 engine に投げる、といった
 使い方を想定しています。
 
 タスク一覧を見てから対象タスクを選び、次に上書きする役割を選び、選んだ役割の
 runner / model / effort を答える流れです。各質問の先頭は必ず「変更なし（現在: <解決値>）」
-なので、変えたい次元だけ触れば済みます。
+なので、変えたい次元だけ触れば済みます。review の 2 ロールは `review_mode=on` のときだけ
+表示されます。回答はロール単位の pending tuple として検証され、不整合な部分だけを再質問し、
+2 回目も不正ならそのロールの上書き全体を破棄します。
 
 **config にも `runners.json` にも一切書き戻しません。** 恒久的に変えたいときは `--setup` を使ってください。
 無人実行の `--loop`、および `--setup` / `--reset` とは排他です（`--loop` は質問に答える人が
@@ -154,7 +151,7 @@ worktree の `.claude/settings.local.json` に次をマージする。
 ```
 
 これにより通常（非 loop）ディスパッチでも permission prompt が出ない。`AskUserQuestion`
-（ブレストの対話、Phase B のモデル選択、レビュー 5 往復後の判断）は permission gate とは
+（ブレストの対話、レビュー 5 往復後の判断）は permission gate とは
 別レイヤーの対話 UI なので、対話的なまま残る。
 
 **前提**: bypass モード突入時の確認ダイアログは `--dangerously-skip-permissions` でも
@@ -297,209 +294,80 @@ wrapper の exit 時通知（バックストップ）。idle のまま開いて�
 ため、wrapper だけに頼ると通知されない（このため子プロンプトに必須通知が埋め込まれる）。
 
 
-config の `review_mode`（`"on"` / `"off"` / `"ask"`）は Phase A-R（plan/spec レビュー、後述）と
-Phase B-R（実装後コードレビュー、後述）を質問なしで恒久的に有効/無効にする。未設定または
-`"ask"` のときは、レビュー可能な runner が解決済みの場合のみ **dispatch のたびに**レビューを
-使うか質問される（はい[今回のみ] / いいえ[今回のみ] / 常に有効 / 常に無効 — 「常に〜」を選んだときだけ
-config に永続化）。プロジェクト側 `.dispatch/config.json` がグローバル config より優先される。
+## 4 ロール設定と解決
 
-同じ config には、役割を独立して固定する `design_runner` / `review_runner` / `exec_choice` も設定できます。
-設定する経路は 3 通りあります: `review_mode` と同様に**質問への回答から永続化**する
-（「常に〜」を選んだときだけグローバル config に書き込み）、**`--setup` で明示的に構成する**、
-**手動編集**。プロジェクトの `.dispatch/config.json` がグローバル config より優先されます。
+ロールは `design`、`design_review`、`exec`、`exec_review` の 4 つです。ディスパッチ時に
+runner や実装 engine を質問する経路はなく、`config-resolve.sh` が各ロールの runner / model /
+effort / engine を起動前に確定します。global config は
+`~/.claude/config/cmux-team-dispatch-task/config.json`、project override は
+`<repo>/.dispatch/config.json` です。
 
 ```json
 {
-  "design_runner": "codex",
-  "review_runner": "codex",
-  "exec_choice": "codex",
   "review_mode": "on",
-  "prewarm": true
+  "runner": {
+    "design": { "runner": "claude", "model": "opus[1m]", "effort": "xhigh" },
+    "design_review": { "runner": "codex", "model": "gpt-5.6-sol", "effort": "xhigh" },
+    "exec": { "runner": "codex", "model": "gpt-5.6-terra", "effort": "high" },
+    "exec_review": { "runner": "claude", "model": "opus[1m]", "effort": "xhigh" }
+  }
 }
 ```
 
-- `design_runner`: `runners[].name` を指定すると Step 1f の switch / per-task 質問を省略し、全タスクに適用します。
-  **未設定**なら runner 2 件以上のときの switch 質問が 4 択（いいえ[今回のみ] / はい[今回のみ] /
-  runner 設定を保存 / `runners.json` を reset）になります。「runner 設定を保存」は 2 択の追加質問で
-  常に既定 runner / 常に固定 runner を選び、グローバル config に永続化します。明示 `"ask"` では
-  いいえ / はい / reset の 3 択です。reset は `runners.json` だけを削除し、review 方針の質問と
-  永続化を省いた reset mode で初回セットアップを実行します。両 `config.json` を変更せず、
-  その後 Step 1f の解決を再開します。
-- `review_runner`: project → global の順で解決します。runner 名は Phase A-R/B-R の固定レビュアー、
-  `"ask"` は dispatch ごとの選択です。両方の key が未設定なら従来のクロスエンジン自動解決を使います。
-  project/global の不正値はそのレイヤーだけ無効化して次へ進みます。codex 候補には空でない
-  `review_model` が必要で、claude 候補は未設定時に `opus[1m]` へフォールバックします。同じ engine、
-  同じ runner を design/review に指定しても有効です。
-- `exec_choice`: `"claude"`（claude runner 登録時のみ）/ `"codex"`（codex runner 登録時のみ）を指定すると Phase B の質問を省略し、既存の同じ実行分岐へ直行します。v1.19 以前の model 名を直接指定する旧値（claude の同一 model 名や `"sonnet"`）は v1.20.0 以降不正値として警告され、そのレイヤーだけ無効化されます（移行はしません。作り直すには `--reset config`）。
-  **未設定**なら子セッションがモデル選択の直後に永続化確認（今回のみ / 常にこの選択 / 常に毎回選ぶ）を 1 問出し、「常に〜」で永続化されます。
-- `design_runner: "ask"` は、いいえ / はい / `runners.json` reset の 3 択だけを表示します。
-  `exec_choice: "ask"` は従来のモデル質問だけを表示します。どちらも永続化オプションは出ません。
-  「常に〜」からの戻し方は 2 通りで意味が異なります: `"ask"` へ書き換えると質問のみ、キーを
-  削除すると未設定に戻り永続化オプションが再表示されます。
-- `prewarm`: workspace レイアウト時の role pane 事前起動（`true` が既定 / `false`）。固定
-  `exec_choice` のときは未選択の executor pane を抑止します。
-- 不正値は project / global のレイヤーごとに検証され、不正なレイヤーだけ警告付きで無視してもう一方へフォールバックします（project の不正値が global に保存した「常に〜」を遮蔽しません）。
+`review_mode` は `on` / `off` だけです。各 `(role, field)` は次の 4 段を field 単位で合成します。
 
-`--setup` は上記 5 キーすべてについて「固定値 / `"ask"` / 未設定に戻す / 変更しない」を
-選べます。`--reset config` はこの 5 キーだけを削除し、`shell_ready_ms` など他コンポーネント
-所有のキーは残します。どちらも書き込みは `scripts/config-edit.sh`（役割キー）と
-`scripts/runners-edit.sh`（runner の役割別 model / effort）を通し、置換ではなく
-マージします（`--reset runners` はどちらの edit スクリプトも通らず First-run setup 経由で
-`runners.json` を作り直します）。プロジェクトの `.dispatch/config.json` はディスパッチ末尾の
-cleanup でも削除されません（`config.json` だけが掃き出し対象から外れます）。
+1. その dispatch 限りの `--override`
+2. project `config.json`
+3. global `config.json`
+4. 組み込み既定値
 
-初回カスタム設定では `plan_model` / `review_model` / `exec_model` と対応 effort を **claude / codex
-両 engine** について収集します（claude は `opus[1m]` / `sonnet` / `fable` + 自由入力、codex は
-自由入力。空回答はスキーマ既定値を維持）。続けて review 方針を「従来の自動解決 /
-毎回選ぶ / 固定 runner」から選びます。従来の自動解決は `review_runner` を書かず、後二者だけ
-`"ask"` または runner 名をグローバル config へ保存します。保存は共有 `.tmp` ではなく writer 固有の
-`mktemp "$CONFIG.XXXXXX"` を使い、jq 成功時だけ同一directoryで `mv` するアトミック更新です。
+project に model だけがあれば、runner と effort は global または組み込み値から補います。
+runner 名、engine 別 effort、model の安全な文字列を検証し、codex の review ロールは model を
+必須とします。active ロールの runner が未設定、runner が registry に無い、または必須 model が
+無い場合は exit 2 で fail-fast し、ペインを 1 つも作りません。`review_mode=off` では review の
+2 ロールを解決しません。
 
-prewarm 無効時も role ごとに次の解決済み値を渡します:
-
-```bash
-launch-workspace.sh --mode plan --runner "$DESIGN_RUNNER"
-launch-workspace.sh --mode review --runner "$REVIEW_RUNNER"
-launch-workspace.sh --mode execute --runner "$EXEC_RUNNER"
-```
-
-## モデル選択フロー (Phase A-R / Phase B / Phase B-R)
-
-`review_runner` を固定した場合、同じ専用レビューペインが Phase A-R と Phase B-R の全ラウンドを担当し、
-実装者と同じ engine でも構いません。key 未設定時だけ、v1.17.0 のクロスエンジン割り当てを互換経路として
-維持します。どちらの経路も解決後は runner/engine/model を明示値として扱い、engine の関係を再計算しません。
-
-### Phase A-R — plan/spec クロスレビュー（オプション）
-
-`runners.json` の review runner に `review_model`（例: `gpt-5.6-sol`）を設定し、config の
-`review_mode` を `on` にすると、Phase A の成果物（plan/spec）を解決済みの専用ペインが
-レビューする。approve が出るまで設計セッションが修正 → 再レビューを繰り返す（各ポイント最大 5 往復。
-超過時はユーザーに「このまま進む / さらに修正」を確認）。
-
-- plan モード: plan 完成後に 1 回 / superpowers モード: spec と plan で計 2 回
-- 指摘と verdict は `.dispatch/<slug>/review/<point>-round-<N>.md`（末尾 `VERDICT:` 行）で受け渡し
-- 使うかどうかは dispatch のたびに質問される（「常に有効/常に無効」を選べば以後は質問なし。
-  毎回質問に戻すには config の `review_mode` を `"ask"` にするか削除する）
-- 無効化はいつでも config の `review_mode: "off"` で可能（runners.json はそのまま残せる）
-
-`runners.json` のスキーマ（レビュー / effort 関連フィールド抜粋。全フィールドは
-[リファレンスガイド](skills/cmux-team-dispatch-task/references/guide-ja.md)の
-「子セッション runner 設定（runners.json）」節を参照）:
+`runners.json` は runtime registry だけを持ちます。
 
 ```json
 {
   "default": "claude",
   "runners": [
-    { "name": "claude", "command": "claude", "engine": "claude", "review_model": "opus[1m]" },
-    { "name": "codex",  "command": "codex",  "engine": "codex",  "plan_model": "gpt-5.6-sol", "review_model": "gpt-5.6-sol", "exec_model": "gpt-5.6-terra",
-      "plan_effort": "xhigh", "review_effort": "xhigh", "exec_effort": "high" }
+    { "name": "claude", "command": "claude", "engine": "claude" },
+    { "name": "codex", "command": "codex", "engine": "codex" }
   ]
 }
 ```
 
-| フィールド | 意味 |
-|----------|------|
-| `runners[].plan_model` / `review_model` / `exec_model` | **engine を問わず有効**。それぞれ Phase A の plan/superpowers・prewarm design standby（`--role plan`）／ Phase A-R/B-R のレビューペイン／ Phase B 実行系（execute / standby ペイン）に渡すモデル名。review ペインは常に `review_model` を使う（`exec_model` は適用されない）。codex review runner は `review_model` が必須、claude runner は未設定時に `opus[1m]` へフォールバック |
-| `runners[].plan_effort` / `review_effort` / `exec_effort` | **engine を問わず有効**。設計（plan/superpowers）/ レビュー / 実行（execute/standby）の reasoning effort。claude runner には `--effort <値>`、codex runner には `-c model_reasoning_effort='<値>'` として注入される。優先順位: **明示 `--effort` > runner フィールド > 既定値**（下表） |
+`default` は初回 global config 生成時だけ、4 ロールの runner 初期値として使われます。model と
+effort は config のロール tuple または組み込み値から解決します。Claude の model 既定は design /
+review が `opus[1m]`、exec が `sonnet`。Codex の design / exec は model 省略可ですが、2 つの
+review ロールは model 必須です。effort 既定は design / review が `xhigh`、exec が `high` です。
 
-未設定時の既定値（両 engine とも常に埋まり、flag は必ず注入される）:
+## Phase A-R / Phase B / Phase B-R
 
-| ロール | claude model 既定 | codex model 既定 | effort 既定（両 engine 共通） |
-|--------|-------------------|-------------------|-------------------------------|
-| plan | `opus[1m]` | なし（codex 側デフォルト） | `xhigh` |
-| review | `opus[1m]` | なし（codex 側デフォルト） | `xhigh` |
-| exec | `sonnet` | なし（codex 側デフォルト） | `high` |
+Phase A の成果物は `design_review` がレビューし、Phase B の実装は常に `exec` へ委譲します。
+design は実装指示の配送後に `.deferred` を作って終了し、レビュアーへ転じません。Phase B-R は
+`exec_review` が担当します。review ロールは同じ engine でも構いませんが、他ロールの engine から
+レビュアーを推測してはいけません。
+Phase B は検証済み `prewarm.json.exec` の agent へ `phase-b-exec:` を 1 通送る固定経路であり、
+新しい execute session は起動しません。
 
-effort の allowlist は engine 別: claude `low`\|`medium`\|`high`\|`xhigh`\|`max`、codex
-`minimal`\|`low`\|`medium`\|`high`\|`xhigh`。範囲外の値はレイヤーごとに警告して無視される。
+- `review_mode=off`: `design` と `exec` の 2 ペイン。Phase A-R / B-R は行いません。
+- `review_mode=on`: 4 ペイン。Phase A-R は `design_review`、B-R は `exec_review` を再利用します。
+- review ペインの launch/readiness だけが失敗した場合は、対応 gate だけを警告して省略します。
+  design / exec の readiness 失敗は dispatch 全体を停止します。
+- `review/code-review.json` と `--review-config` は、`prewarm.json` に `exec_review` が存在し、かつ
+  同ロールの `[ready]` を受信した場合だけ `review-gate.sh` が生成します。
 
-指示配送（Phase A タスク / Phase B 実行指示 / Phase A-R レビュー依頼 / Phase B-R コードレビュー依頼）は
-すべて agmsg `send.sh` の 1 回呼び出しで行う。宛先は相手ペインの **agent 名**（surface ID では
-ない）で、本文の先頭に label 接頭辞を付ける。配線されない variant は無く、agmsg 配線に失敗した
-ディスパッチはペインを作る前に落ちる。全ロールが readiness 確立句付きで idle 起動し、
-`[ready] <name>` を報告してから配送対象になる。
+レビューの findings は `.dispatch/<slug>/review/<point>-round-<N>.md` に記録し、末尾を
+`VERDICT: approve` または `VERDICT: needs_work` にします。レビュアーは書き込み直後に
+`review-verdict:` を 1 通送信し、待機側はファイルをポーリングしません。
 
-各子セッションは Phase A (計画 / brainstorming) 完了後、`exec_choice` が未設定または `"ask"` なら**実装フェーズで使う engine**を `AskUserQuestion` で聞きます。固定値なら質問を省略し、同じ既存分岐を実行します。選択肢は `runners.json` の登録状況で出し分けられます: `claude` は claude runner が登録済みのときだけ、`codex` は `engine: codex` runner が登録済みのときだけ表示され、片方しか登録されていなければ質問自体が省略されます。
-
-| 選択肢 | 表示条件 | 動作 |
-|--------|---------|------|
-| **claude** | claude runner 登録時 | **in-session 条件**（`EXEC_ENGINE == DESIGN_ENGINE && EXEC_MODEL == PLAN_MODEL && EXEC_EFFORT == PLAN_EFFORT`、既定値を埋めた後で判定）が成立すれば、Phase A と**同一 model/effort** として**現セッションで実装続行**（`.deferred` を作らない）。成立しなければ claude executor pane（prewarm 経路）または `launch-workspace.sh --mode execute --runner <claude-runner>`（spawn 経路）へ委譲する |
-| **codex** | `~/.claude/cmux-team-dispatch-task/runners.json` に `engine: codex` runner がある時のみ | 同じ in-session 条件が成立すれば設計 codex セッションが継続実装。成立しなければ `launch-workspace.sh --mode execute --runner <codex-runner>` で spawn し、codex を `--dangerously-bypass-approvals-and-sandbox` 付きで起動。runner に `exec_model` があれば `--model` として適用（レビューペインの `review_model` とは独立）。`external_migration` により親 claude セッションを引き継ぐ |
-
-`design_runner` と `exec_choice` を同じ runner・同じ model・同じ effort に固定すると in-session 条件が常に成立し、`prewarm.json.executors` は `{}` になって実装ペインが 1 つも起動しません。
-
-Codex の起動方針は mode ごとに分離されています。`superpowers` / `plan` / `execute` / `standby` は
-approval prompt を防ぐため bypass を使います。一方で review ペインは sandbox を完全 off にせず、
-`--sandbox workspace-write` と `-c approval_policy='never'` を指定したうえで、`--add-dir <STATUS_DIR>`
-に agmsg watcher 用の `--add-dir <AGMSG_SKILL_DIR>/run` と `--add-dir <AGMSG_SKILL_DIR>/db` を
-加えた 3 本の `--add-dir` を条件付きで併用します。これにより approval prompt を出さず、worktree 外の
-`.dispatch/<slug>/review/` への findings 書込みと agmsg の run/db ディレクトリへのアクセスだけを
-許可します。
-
-agmsg 側の 2 本が「条件付き」なのは、agmsg 未インストール時に落ちるからだけではありません。
-`<AGMSG_SKILL_DIR>` にシェルメタ文字（`'` `"` `` ` `` `$` `!` `\`）が含まれるときも **fail-closed で
-落とします**（composed command はエスケープしないので、そのようなパスは引用を破ってしまうため）。
-同じ判定は `run/` `db/` を先に作る `mkdir -p` にも掛かるので、この条件下ではフラグもツリーも
-作られません。その結果、該当環境の codex レビューペインは agmsg の run/db へ書けず readiness を
-確立できないことがあります（壊れたコマンドラインを流すより安全な、意図されたフォールバックです）。
-
-**委譲**（in-session 条件が不成立）が選ばれた場合の挙動:
-
-- prewarm 経路では待機中の executor pane（`prewarm.json.executors.claude` / `.executors.codex`）に実行指示を送るだけで済む。prewarm 無効時は Child セッションが `launch-workspace.sh --mode execute --plan-file <path> --runner <EXEC_RUNNER> [--model <X>] [--skip-permissions]` を呼び、新しい workspace で実装を開始する
-- 新 surface (孫セッション) は runner script でラップされ、完了時に `status.json` を `done`/`error` に遷移させ、親に `[dispatch] task ... finished` を送信
-- 孫の inner prompt 末尾には自動で「停止する前に `scripts/report-status.sh <status-dir> done <要約>` を実行せよ」という完了報告の指示が付与される。status.json を終端へ動かすのはこの呼び出しであってセッション終了ではないため、完了検知が TUI の閉鎖に依存しない。続く exit 指示は engine 別で、claude は `/exit`、**codex は「停止して idle のまま待て」**（codex には自セッションを終わらせる手段が無く、`/exit` は効かず quit/shutdown サブコマンドも無い）。codex ペインは最終クリーンアップで親が閉じるまで開いたままで正常
-- Runner script ファイル名は workspace 名を含む (`.cmux-team-dispatch-task-run-<workspace-name>.sh`)。Child と Phase B 孫が同じ worktree を共有しても runner ファイル同士が衝突しない
-- Child は spawn 完了後 `<STATUS_DIR>/.deferred` を作成して exit する (Child の runner wrapper は `--defer-status` で起動されており、`.deferred` を検知すると status 上書きをスキップして孫の通知を握り潰さない)。**Phase B-R 有効時は exit せず**、コードレビュアーとして idle 待機し、approve を書いた後に exit する
-- claude executor spawn には `--skip-permissions` が付く（auto mode が効かないモデルでも permission prompt によるハングを防ぐため）
-
-codex オプションを使う場合は事前に `cmux codex install-hooks` の実行が必要です。
-
-#### design=codex のタスク
-
-設計 runner が `engine: codex` のタスクでは Phase A をその codex セッション自身が担う。
-prewarm は `--role plan --runner <design runner>` で起動し、`launch-workspace.sh` が runner の
-`plan_effort` を解決する。未設定なら既定値 `xhigh` を effort flag として渡す（セッション途中で
-モデルは切り替えない）。
-Phase B の 2 択（**claude / codex**）は**すべて pre-warm ペインへ委譲**し（in-session 条件が
-成立する場合のみ設計 codex セッション自身が実装する）、それ以外はこの codex セッション自身は
-実装しない。固定/legacy policy のどちらも、レビューには専用 `<slug>-review`、claude 実装には
-専用 `<slug>-claude` executor を使い、両者を兼用しない。legacy policy が維持するのは
-従来のクロスエンジンレビュアー割り当ての簡略ルール（後述）だけである。claude 実装は
-`prewarm.json.executors.claude` の解決済みペインが担う。prewarm.json が無い（prewarm off）場合は
-`launch-workspace.sh --mode execute --runner "$EXEC_RUNNER"` へフォールバックする。
-
-### Phase B-R — 実装後コードレビュー（オプション）
-
-`review_mode` が `on` のとき（Phase A-R と同一条件）、実装完了後・**PR 作成前**に
-コードレビューを挟む。approve が出るまで実装者が修正 → 再依頼を繰り返すため、PR は常に
-レビュー済みになる。
-
-- 固定 `review_runner` では Phase A-R と同じ専用レビューペインが全実装をレビューします。設計ペインは
-  委譲後に `.deferred` を作って exit し、レビュアーへ転じません。同一Codex engine の実装者/レビュアーも
-  正式にサポートします。`review_runner` 未設定の互換ポリシー（legacy）だけは、`DESIGN_ENGINE` と
-  `EXEC_ENGINE`（実装フェーズの engine。in-session でも delegated でも同じ）を比較する単純規則です:
-
-  | `DESIGN_ENGINE` == `EXEC_ENGINE` | レビュアー |
-  |-----------------------------------|-----------|
-  | はい（in-session 実装を含む） | 専用 review ペイン |
-  | いいえ | 設計セッション自身 |
-
-  design=claude で claude 実装（in-session でも `<slug>-claude` executor 委譲でも）は codex
-  レビューペインがレビューし、design=claude で codex 実装は設計 claude セッション自身がレビュアーに
-  転じます。design=codex 側も対称です。
-
-- 指摘と verdict は `.dispatch/<slug>/review/code-round-<N>.md`（末尾 `VERDICT:` 行）で受け渡し。
-  最大 5 往復。**verdict 待ちは push**: レビュアーはファイルを書いた直後に `review-verdict:`
-  メッセージを実装者へ 1 通送り、実装者はポーリングせず 30 分の単発 safety timer を 1 つ武装して
-  ターンを閉じる。どの起床でも先にファイルを読み直し、verdict 行の無いタイマー起床は verdict と
-  して扱わない。タイマーが空振りしたらペイン生存を 1 回リトライ付きで確認 → 再武装（同一ラウンド
-  最大 3 回）→ 再依頼 1 回 → フォールバック — Phase A-R と同一プロトコル
-- 5 往復で approve が出ない場合、claude 実装者は AskUserQuestion（このまま PR 作成 / さらに修正）、
-  codex 実装者は未解決指摘を PR 本文に注記して続行
-- `review/code-review.json` は `reviewer_runner` と `reviewer_engine` を明示し、実装者はここから実際の
-  レビュアーを取得します。反対 engine は計算しません。prewarm 無効では
-  `launch-workspace.sh --mode execute --runner <resolved-exec-runner> --review-config <path>`
-  が孫の prompt にレビュープロトコルを注入する
+Codex review ペインは `--sandbox workspace-write` と `-c approval_policy='never'` に加え、
+`--add-dir <STATUS_DIR>/review`、`--add-dir <AGMSG_SKILL_DIR>/run`、
+`--add-dir <AGMSG_SKILL_DIR>/db` を条件付きで使います。findings 以外の status 領域は書き込み許可へ
+含めません。
 
 ### plan モードの Phase A-R / B 遵守ゲート
 
@@ -512,44 +380,24 @@ Phase A-R（有効時）→ Phase B を実行せよ」という指示を機械�
 エフォートで、書き込みに失敗しても dispatch は止まりません。`.claude/settings.local.json`
 と plan 保存先 `.claude/plans/` は repo 共有の `info/exclude` に追記され、タスクブランチに
 コミットされません。hook は worktree に残存するため同一 worktree を再利用する後続セッション
-（Phase B の execute 孫を含む）にも作用しますが、それらは plan モードを使わないため実害は
+（prewarm 済みの exec ロールを含む）にも作用しますが、それらは plan モードを使わないため実害は
 ありません。
 
-### Pre-warm standby panes(workspace レイアウト時)
+### Pre-warm role panes
 
-config `prewarm: true`(default)のとき、`prewarm-panes.sh` が各タスクの workspace 内に
-standby ペインを事前起動する。Phase B で claude / codex executor が選ばれたら待機中のペインに
-実行指示を送るだけで済み、セッション起動を待たない。in-session 条件
-（`EXEC_ENGINE == DESIGN_ENGINE && EXEC_MODEL == PLAN_MODEL && EXEC_EFFORT == PLAN_EFFORT`）が
-成立するタスクは executor pane を 1 つも起動しない。
+pre-warm は常時有効で、`prewarm-panes.sh --roles <STATUS_DIR>/roles.json` が解決済みロールを
+起動します。配置は冒頭の 2/4 ペイン表で固定です。すべて idle で起動し、agmsg の join と
+delivery 設定を終え、`[ready] <agent>` を親へ送ってから初めて配送対象になります。
 
-ペイン配置は 2 行のグリッド。design が workspace のメイン surface、review はその右
-（`right` split）、実装ペインは design の下の行に横並び（1 つ目は design から `down` split、
-2 つ目以降は直前の実装ペインから `right` split）になる。実装 2 件 + review でちょうど 2×2、
-固定 `exec_choice` なら design の下に実装 1 件・その右に review という 3 ペイン構成になる。
+`prewarm.json` は `workspace_id` / `review_mode` と、実在する
+`design` / `design_review` / `exec` / `exec_review` キーだけを持ちます。各ロールに
+surface_id / agent / runner / engine / model（必要な場合）/ effort / wired を記録します。
+ready にならなかった review ロールは surface と team member を先に回収し、回収に成功した場合だけ
+キーを削除します。
 
-prewarm は解決済み role だけを起動し、`prewarm.json` の `design`、任意の `review`、
-`executors`（キーは `claude` / `codex` の最大 2 つ、in-session 成立時は `{}`）に実在ペインを
-記録する。固定 `exec_choice` では未選択 executor を起動しない。固定 choice の claude/codex は
-すべて generic `--exec-runner` で解決済み runner を受け渡し、review runner から executor を
-推測しない。unset/ask は resolver が選んだ `--claude-runner` で専用 claude executor
-（agmsg agent 名 `<slug>-claude`）、`--codex-runner` で codex executor を起動し、提示する全
-choice を `executors` に記録する。review pane の起動または出力解析に失敗した場合は、join 済み
-review member を即 leave してから `review` を省略し、design/executor pane を保持したまま
-Phase B を続行する。
-固定 review は解決済み `review_runner` を使うため、design と同じ engine でも有効。
-all-Codex 固定構成は design/review/codex executor の3ペインだけで、claude executor pane、
-agmsg `claude-code` 配線を作らない。未割り当てペインは status.json を汚さず、最終クリーンアップでは
-`prewarm.json` の surface/agent を再帰列挙して重複除去し、実在するものだけを close/leave する。
-
-design を含む全ペインを、タスクメッセージ無しの idle 状態で起動する。`prewarm-panes.sh` が
-worktree への agmsg delivery 配線(join + `delivery.sh set`)をペイン起動前に行い、Phase A の
-初期タスクも Phase B の実行指示も agmsg `send.sh` の 1 回呼び出しで配送する。`--agmsg-team`
-が無い、または配線に失敗したときはペインを 1 つも作らずに die する — 受け取る手段の無いペインを
-立てないためである。
-
-`prewarm: false` では on-demand spawn。design/review/exec の全経路が解決済み runner を
-`--runner` で渡し、all-Codex 構成が launch script の claude 既定値へフォールスルーすることはない。
+全 consumer は**検証済みスナップショット契約**に従います。ファイル内容を 1 回だけ読み、document
+全体を検証し、以後の抽出はそのローカル値だけから行います。cleanup は固定 4 ロール名を明示列挙し、
+snapshot の `workspace_id` が現在の workspace と一致するときだけ close / leave します。
 
 ## アカウント切り替えとセッション共有 (claude-link.sh)
 
@@ -592,7 +440,7 @@ ccmyaccount() {
 
 ### `runners.json` との連携
 
-`~/.claude/cmux-team-dispatch-task/runners.json` の runner `command` に上記関数を組み込めば、その runner で起動する子セッションは別認証で動きつつ、履歴・skills・plugins を共有できます:
+`~/.claude/config/cmux-team-dispatch-task/runners.json` の runner `command` に上記関数を組み込めば、その runner で起動する子セッションは別認証で動きつつ、履歴・skills・plugins を共有できます:
 
 ```json
 {
@@ -655,8 +503,8 @@ linter を write フラグ付きで走らせるもの）は親エージェント
 同時に走る子エージェントの上限は既定 4。これを変える `--agents <N>`（2〜8）と、
 起動プロンプトへの指示を止める `--no-parallel` は、いずれも
 **`launch-workspace.sh` のスクリプトレベルのフラグ**である。スキルはこの 2 つを
-公開しておらず（`design_runner` / `exec_choice` / `review_mode` のような `config.json`
-キーも無い）、スキル経由のディスパッチは常に既定値で走る。値を変える現実的な手段は
+公開しておらず（対応する `config.json` キーも無い）、スキル経由のディスパッチは常に
+既定値で走る。値を変える現実的な手段は
 今のところ `launch-workspace.sh` を手で呼ぶことだけ。
 
 タスク自体も worktree 横断で並列に走るため、**トークン消費は「タスク数 × 子エージェント数」
@@ -696,16 +544,22 @@ security-guidance は hooks しか提供していない（skill / command なし
 
 `--loop` を指定すると、GitHub issue を claim してバッチ単位で処理する。詳細は skill の `references/loop-mode.md` を参照する。ループ中は `.dispatch-loop/` のロックにより通常 dispatch を保護する。Codex runner は hook trust 確認を無人で通すため `--dangerously-bypass-hook-trust` を使用する。
 
-無人 prompt には解決済み design / 任意 review / exec の runner と engine をそのまま渡す。同一 engine の review も有効で、all-Codex 固定例（design/review/exec が codex）は3ペインだけを起動し、Claude/sonnet を補完起動しない。timeout sentinel は生成済みroleだけに渡す。cleanup/ agmsg leave は sparse な `prewarm.json` の `surface_id` / `agent` を再帰列挙して重複除去し、存在するroleだけを対象にする。`close-surface` は常に `--workspace` を伴い、`status.json` にworkspace IDが無い場合はworkspace名の `[slug]` をリテラル一致で引き直す。
+無人 prompt には解決済みの 4 ロール tuple をそのまま渡す。同一 engine の review も有効で、
+review 無効時は design / exec の 2 ペイン、有効時は 4 ペインを起動する。timeout sentinel は
+`prewarm.json` に存在するロールだけへ渡す。cleanup / agmsg leave は検証済み snapshot の固定
+4 ロールキーから対象を列挙し、`workspace_id` が現在の workspace と一致するときだけ実行する。
 
 ## Phase B-R 有効時の完了通知について
 
 Phase B-R（実装後コードレビュー）を有効にすると、実装ペインへ送る指示文が拡張版に差し替わります。
-この拡張版には **engine 別の終了指示**（codex は `/exit` ではなくセッション自体を終了）と
+base / 拡張版のどちらにも **engine 別の終了指示**（Claude は `/exit`、Codex は自分で終了せず
+idle のまま待ち、親が final cleanup で pane を閉じる）と
 **親への完了通知**（本文接頭辞 `dispatch-notify:` の agmsg `send.sh` 1 回呼び出し）の両方が含まれます。
 
-実装ペインは指示文しか読んでいないため、この 2 つが指示文の中に無いと、実装が完了しても
-セッションが終了せず、親に通知が届きません。カスタマイズする場合はこの 2 点を落とさないでください。
+prewarm 済み実装ペインは execute launcher の prompt を読まず、`phase-b-exec:` の指示文しか
+読みません。したがって指示文自身が `report-status.sh`、`dispatch-notify:`、実装者・レビュアー用の
+parallel directive、engine 別の終了規則を持つ必要があります。Codex に `/exit` や自己終了を要求しては
+ならず、terminal status と親通知を書いたあと idle のまま待たせます。
 
 完了通知は status.json の終端遷移で発火します。runner wrapper は子セッションと並行して
 status.json watcher を走らせており、子が `done` / `error` を書けばセッションが終了しなくても
@@ -715,7 +569,8 @@ marker は成功した status 文字列を保持し、親通知と reviewer wake
 
 watcher は timeout sentinel、`.deferred`、未 assigned standby、他 pane の `.assigned-*` を
 所有権の抑止条件として poll ごとに再評価します。停止時は ABORT/ESCALATION（findings 記録、
-reviewer wake、error status、親通知、セッション終了）の 5 手順を実行してください。workspace レイアウトの Child 起動にも `--defer-status` を渡す。これが無いと、Phase B で実行を別 surface へ移譲した Child の wrapper が、孫の書いた終端状態を上書きしてしまいます。
+reviewer wake、error status、親通知、engine 別の終了規則）の 5 手順を実行してください。design は
+`phase-b-exec:` の配送成功後に `.deferred` を作り、prewarm 済み exec の終端状態を上書きしません。
 
 ただし子が status.json を書かないまま沈黙した場合は検知できません。既知の配信上の限界と通知
 欠落パターンは [`docs/notification-gaps.md`](docs/notification-gaps.md) にまとめています。
