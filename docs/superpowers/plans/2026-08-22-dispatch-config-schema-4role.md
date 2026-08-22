@@ -25,6 +25,9 @@
 - **テストの流儀**: `set -uo pipefail`、`bad()` / `ok()` ヘルパー、`mktemp -d` + `trap`、失敗しても即 exit せず `fail=1` を積む。既存 `test/test-config-edit.sh` の書式に揃える。
 - **旧契約を encode したテストは意図的に更新する**。通すためにテストを削除しない（対象スクリプトごと削除する場合を除き、その旨を PR 本文に書く）。
 - **worktree の外を触らない**。`~/.claude/**` を含む worktree 外のパスへは読み書きしない。ユーザーの実ファイル移行手順は `result.md` に書くだけ。
+- **テストで悪意ある値を扱うときは必ずデータとして渡す**。`jq --arg v "$value" '.a.b = $v'` の形にし、シェル文字列やヒアドキュメントへ直接埋め込まない。`'` を含む値をシェルの単一引用の中に置くと**引用が閉じてテスト自身がコマンドを実行する**。副作用検出用の sentinel は `/tmp` ではなく `$TMP` 配下（`mktemp -d` の下）に置く。
+- **テストループは失敗を集約する**。`for f in …; do bash "$f" || echo FAILED; done` は `echo` の rc 0 でループ全体が成功終了するので使わない。`fail=0; … || fail=1; …; exit $fail` の形にする。
+- **assertion は「非 0」で満足しない**。必須引数の欠落など別の理由でも非 0 になるので、期待する rc と**メッセージの断片**の両方を検査する。逆に正例は「実際に走らせて成功すること」まで見る（fixture を作るだけで終わらせない）。
 
 ---
 
@@ -148,7 +151,7 @@ fi
   || bad 'CL2: RUNNERS_CONFIG_PATH の作用範囲'
 
 # CL3 / CL4: runner 名と model の拒否条件
-reject_cases=( '' ' lead' 'trail ' "quo'te" 'dou"ble' 'back`tick' 'dol$lar' 'back\slash' )
+reject_cases=( '' ' lead' 'trail ' "quo'te" 'dou"ble' 'back`tick' 'dol$lar' 'back\slash' 'bang!' )
 for v in "${reject_cases[@]}"; do
   dispatch_valid_runner_name "$v" && bad "CL3: runner 名 '$v' を受理した"
   dispatch_valid_model "$v" && bad "CL4: model '$v' を受理した"
@@ -452,11 +455,30 @@ write_global '{"review_mode":"off","runner":{"design":{"runner":"cx"},"exec":{"r
 out=$(run_resolve); rc=$?
 [[ $rc -eq 0 ]] && ok 'CR6c: codex design / exec は model 省略可' || bad "CR6c (rc=$rc)"
 
-# CR7: model のメタ文字を読み取り時に拒否
+# CR7: model のメタ文字は「当該レイヤーだけ無効化」であって resolver 全体の失敗ではない。
+# 値は必ず jq --arg でデータとして渡す (シェルへ埋めるとテスト自身がコマンドを実行する)。
 clear_project
 write_global "$FULL_GLOBAL"
-write_project "{\"runner\":{\"design\":{\"model\":\"a'; touch /tmp/pwn; #\"}}}"
-run_resolve >/dev/null; [[ $? -eq 2 ]] && ok 'CR7: メタ文字入り model を拒否' || bad 'CR7'
+EVIL="a'; touch $TMP/pwn; #"
+jq -n --arg v "$EVIL" '{runner:{design:{model:$v}}}' > "$PROJ/.dispatch/config.json"
+out=$(run_resolve); rc=$?
+if [[ $rc -eq 0 && "$(jq -r '.roles.design.model' <<<"$out")" == 'opus[1m]' ]]; then
+  ok 'CR7a: メタ文字入り model は当該レイヤーだけ無効化され global へ落ちる'
+else
+  bad "CR7a: rc=$rc model=$(jq -r '.roles.design.model' <<<"$out")"
+fi
+grep -qF -- "$EVIL" <<<"$out" && bad 'CR7b: 不正 model が出力に残った' || ok 'CR7b: 不正 model は出力に残らない'
+[[ -e "$TMP/pwn" ]] && bad 'CR7c: テストが副作用を起こした' || ok 'CR7c: 副作用なし'
+
+# CR13: --runners による registry の個別指定
+clear_project; write_global "$FULL_GLOBAL"
+cat > "$TMP/alt-runners.json" <<'JSON'
+{"default":"ccf","runners":[{"name":"ccf","command":"ccf","engine":"claude"},
+                            {"name":"cx","command":"codex","engine":"codex"}]}
+JSON
+out=$(bash "$RESOLVE" --project-root "$PROJ" --runners "$TMP/alt-runners.json" 2>"$TMP/err")
+[[ $? -eq 0 && "$(jq -r '.runners_file' <<<"$out")" == "$TMP/alt-runners.json" ]] \
+  && ok 'CR13: --runners が registry のパスを差し替える' || bad "CR13: $(cat "$TMP/err")"
 
 # CR8: --set が最優先
 clear_project; write_global "$FULL_GLOBAL"
@@ -529,12 +551,19 @@ warn() { echo "[warn] config-resolve: $1" >&2; }
 
 処理順:
 
-1. 引数を読む。`--set <role>.<field>=<value>` は連想配列を使わず `OVERRIDE_design_model` のような変数名で保持する（bash 3.2 に連想配列は無い）。role と field は allowlist 済みなので変数名へ埋めてよい。
+1. 引数を読む。受け付けるのは `--project-root <dir>`（必須）、`--runners <path>`（任意。
+   省略時は `dispatch_runners_file`。**出力の `runners_file` には実際に使ったパスを書く**）、
+   `--set <role>.<field>=<value>`（繰り返し可）の 3 つだけ。それ以外は exit 2。
+   `--set` は連想配列を使わず `OVERRIDE_design_model` のような変数名で保持する
+   （bash 3.2 に連想配列は無い）。role と field は allowlist 済みなので変数名へ埋めてよい。
 2. `review_mode` を解決する。レイヤーは `--set review_mode` は無い（`--override` に review_mode は無い）ので project → global → 既定 `on`。各レイヤーは `jq -r 'if (.review_mode|type)=="string" then .review_mode else empty end'` で読み、値が `on` / `off` でなければ `warn` して次へ。
 3. active なロール集合を決める（`on` なら 4 つ、`off` なら `design` と `exec`）。
 4. 各ロール・各フィールドについて、`--set` → project → global の順に最初の**妥当な**値を採る。
    - `runner`: `dispatch_valid_runner_name` を通り、かつ `runners.json` に実在すること。不正なら `warn` して次のレイヤーへ。
-   - `model`: `dispatch_valid_model` を通ること。加えて engine が codex のとき `opus[1m]` / `sonnet` / `fable` のいずれかなら `warn` して次のレイヤーへ。
+   - `model`: `dispatch_valid_model` を通ること。加えて engine が codex のとき `opus[1m]` /
+     `sonnet` / `fable` のいずれかなら `warn` して次のレイヤーへ。**検証に落ちた値で resolver
+     全体を止めない**（レイヤー単位の無効化。spec §3 の非対称の説明を参照）。不正値が出力へ
+     残らないことだけが要件である。
    - `effort`: `dispatch_normalize_effort` の後 `dispatch_valid_effort <v> <engine>` を通ること。
    - engine は `runner` 決定後に `runners.json` から引く。したがって**`runner` を先に解決してから** model / effort を解決する。
 5. `runner` がどのレイヤーからも決まらなければ die（exit 2）。メッセージは
@@ -620,6 +649,20 @@ bash "$EDIT" --config "$C" --unset runner.design.model >/dev/null 2>&1
 && "$(jq -r '.runner.design.runner' "$C")" == 'ccf' ]] \
   && ok 'CE12c: 入れ子キーの --unset' || bad 'CE12c'
 
+# CE12d: --unset runner.<role> はそのロールだけ消し、他ロールを温存する
+reset_config
+printf '%s\n' '{"runner":{"design":{"runner":"ccf","model":"opus[1m]"},
+"exec":{"runner":"cx","effort":"high"}},"review_mode":"on"}' > "$C"
+bash "$EDIT" --config "$C" --unset runner.design >/dev/null 2>&1
+if [[ "$(jq -r '.runner | has("design")' "$C")" == 'false' \
+   && "$(jq -r '.runner.exec.runner' "$C")" == 'cx' \
+   && "$(jq -r '.runner.exec.effort' "$C")" == 'high' \
+   && "$(jq -r '.review_mode' "$C")" == 'on' ]]; then
+  ok 'CE12d: --unset runner.<role> はそのロールだけ消す'
+else
+  bad "CE12d: $(cat "$C")"
+fi
+
 # CE13 / CE22: reset 相当
 reset_config
 printf '%s\n' '{"shell_ready_ms":{"baseline_ms":7},"loop":{"task_timeout_min":45,"other":1},
@@ -685,7 +728,7 @@ bash "$EDIT" --config "$C" --runners "$TMP/runners.json" --set runner.exec.effor
 
 # CE19 / CE20 / CE21: 値の検証 (test-runners-edit.sh からの移植)
 reset_config; printf '{}\n' > "$C"; before=$(cat "$C")
-for v in '' ' x' 'x ' "q'uote" 'd"q' 'b`t' 'd$l' 'b\s'; do
+for v in '' ' x' 'x ' "q'uote" 'd"q' 'b`t' 'd$l' 'b\s' 'bang!'; do
   bash "$EDIT" --config "$C" --set "runner.design.runner=$v" >/dev/null 2>&1
   [[ $? -eq 2 && "$(cat "$C")" == "$before" ]] || bad "CE19: runner 名 '$v' を受理した"
   bash "$EDIT" --config "$C" --set "runner.design.model=$v" >/dev/null 2>&1
@@ -775,6 +818,11 @@ git commit -m "feat(dispatch)!: config-edit.sh を 4 ロール対応にし runne
 
 `test/test-config-paths.sh`:
 
+**probe の作り方が load-bearing である。** `launch-workspace.sh` は `:342` で
+`workspace name is required` を先に die するので、`--runner nope` だけを渡すと runner 解決へ
+到達しない。既存の `test-role-models.sh:64-76` と同じ「stub 済みで他は妥当な呼び出し」を使い、
+`--runner` にだけ不正値を入れて、runners path を含むエラーメッセージを見る。
+
 ```bash
 #!/usr/bin/env bash
 # D6 のパスヘルパーが全 consumer へ届いていることの検査。
@@ -783,25 +831,45 @@ git commit -m "feat(dispatch)!: config-edit.sh を 4 ロール対応にし runne
 #   CP2. RUNNERS_CONFIG_PATH を設定するとそちらを使う (既存 14 テストの互換)
 #   CP3. terminal-wait.sh が DISPATCH_CONFIG_HOME 配下の config.json を使う
 #   CP4. 旧パス ~/.claude/cmux-team-dispatch-task への参照がスクリプトに残らない
+#
+# CP2 は変更前から PASS しうる (既存実装も RUNNERS_CONFIG_PATH を尊重する)。
+# red を作るのは CP1 / CP3 / CP4 である。
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts"
+LAUNCH="$S/launch-workspace.sh"
 fail=0
 bad() { echo "FAIL $1"; fail=1; }
 ok() { echo "PASS $1"; }
 
-# CP1 / CP2: launch-workspace.sh のエラーメッセージに現れるパスで判定する
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-out=$(DISPATCH_CONFIG_HOME="$TMP/h" bash "$S/launch-workspace.sh" --runner nope 2>&1)
-grep -q "$TMP/h/runners.json" <<<"$out" \
-  && ok 'CP1: DISPATCH_CONFIG_HOME 由来の runners.json を見る' \
-  || bad "CP1: $out"
-out=$(DISPATCH_CONFIG_HOME="$TMP/h" RUNNERS_CONFIG_PATH="$TMP/x/runners.json" \
-      bash "$S/launch-workspace.sh" --runner nope 2>&1)
-grep -q "$TMP/x/runners.json" <<<"$out" \
-  && ok 'CP2: RUNNERS_CONFIG_PATH の個別 override が効く' \
-  || bad "CP2: $out"
+mkdir -p "$TMP/bin" "$TMP/repo" "$TMP/status"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/cmux"; chmod +x "$TMP/bin/cmux"
+
+# 他はすべて妥当な呼び出しで、--runner だけ実在しない名前にする。
+probe() {
+  CMUX_BIN="$TMP/bin/cmux" "$@" bash "$LAUNCH" \
+    --cwd "$TMP/repo" --mode plan --runner definitely-not-a-runner \
+    --agmsg-team demo --agmsg-from probe --status-dir "$TMP/status" \
+    probe-ws prompt 2>&1
+}
+
+# CP1: 既定 base が使われる
+out=$(probe env DISPATCH_CONFIG_HOME="$TMP/h")
+if grep -q "$TMP/h/runners.json" <<<"$out"; then
+  ok 'CP1: DISPATCH_CONFIG_HOME 由来の runners.json を見る'
+else
+  bad "CP1: 期待するパスがメッセージに無い: $out"
+fi
+
+# CP2: 個別 override
+out=$(probe env DISPATCH_CONFIG_HOME="$TMP/h" RUNNERS_CONFIG_PATH="$TMP/x/runners.json")
+if grep -q "$TMP/x/runners.json" <<<"$out"; then
+  ok 'CP2: RUNNERS_CONFIG_PATH の個別 override が効く'
+else
+  bad "CP2: $out"
+fi
 
 # CP3: terminal-wait.sh の config パス
 out=$(DISPATCH_CONFIG_HOME="$TMP/h" bash -c ". '$S/terminal-wait.sh' >/dev/null 2>&1; \
@@ -829,29 +897,59 @@ else
   bad 'CR1f: --add-dir が STATUS_DIR 全体のままか、review 版が無い'
 fi
 # CR1g: STATUS_DIR/review は -d 判定の前に mkdir -p される
-if grep -q 'mkdir -p "\$STATUS_DIR/review"' "$LAUNCH"; then
-  ok 'CR1g: STATUS_DIR/review を事前に作る'
+grep -q 'mkdir -p "\$STATUS_DIR/review"' "$LAUNCH" \
+  && ok 'CR1g: STATUS_DIR/review を事前に作る' || bad 'CR1g: mkdir が無い'
+# CR1h: STATUS_DIR にシェルメタ文字があるときは --add-dir もツリー作成も行わない (fail-closed)
+out=$(CMUX_BIN="$TMP/bin/cmux" bash "$LAUNCH" --cwd "$TMP/repo" --mode review \
+      --runner ccf --agmsg-team demo --agmsg-from p \
+      --status-dir "$TMP/sta'tus" ws prompt 2>&1)
+if [[ $? -ne 0 ]] && grep -qi 'status-dir' <<<"$out"; then
+  ok 'CR1h: メタ文字入り STATUS_DIR を fail-closed で拒否'
 else
-  bad 'CR1g: STATUS_DIR/review の mkdir が無い'
+  gen=$(grep -rl "add-dir" "$TMP" 2>/dev/null | head -1)
+  [[ -n "$gen" ]] && grep -q "sta'tus" "$gen" && bad 'CR1h: メタ文字が composed command へ届いた' \
+    || ok 'CR1h: メタ文字入り STATUS_DIR は --add-dir を生まない'
 fi
-# RL1: --role の値域
-for r in design design_review exec exec_review; do
-  grep -q "$r" "$LAUNCH" || bad "RL1: --role $r が値域に無い"
-done
-ok 'RL1: --role の新しい値域'
-# RL2: 旧値は拒否
-out=$(bash "$LAUNCH" --role plan --mode plan 2>&1); [[ $? -ne 0 ]] \
-  && ok 'RL2a: --role plan は拒否' || bad 'RL2a'
-out=$(bash "$LAUNCH" --role review --mode review 2>&1); [[ $? -ne 0 ]] \
-  && ok 'RL2b: --role review は拒否' || bad 'RL2b'
 ```
 
-**重要**: `--role exec` は**新しい正当値**なので拒否リストに入れない。
+`--role` の値域は**生成された runner script の中身**で見る（ソースへの grep はコメントに
+当たるので使わない）:
+
+```bash
+# RL1: --role の 4 値が受理され、対応する既定 model / effort が焼き込まれる
+role_script() {  # $1=role $2=runner  -> runner script のパス
+  jq -r '.runner_file' <<<"$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+    bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role "$1" --runner "$2" \
+      --agmsg-team demo --agmsg-from r --status-dir "$TMP/status" ws prompt)"
+}
+assert_contains "$(role_script design ccf)"        "--model 'opus[1m]'" 'RL1a: design'
+assert_contains "$(role_script design_review ccf)" "--model 'opus[1m]'" 'RL1b: design_review'
+assert_contains "$(role_script design_review ccf)" "--effort xhigh"     'RL1c: design_review の既定 effort'
+assert_contains "$(role_script exec ccf)"          "--model 'sonnet'"   'RL1d: exec'
+assert_contains "$(role_script exec_review ccf)"   "--model 'opus[1m]'" 'RL1e: exec_review'
+assert_contains "$(role_script exec_review ccf)"   "--effort xhigh"     'RL1f: exec_review の既定 effort'
+
+# RL2: 旧 role 値は「値域エラー」で落ちる。非 0 だけでは足りない (必須引数欠落でも非 0 になる)
+for r in plan review; do
+  out=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+    bash "$LAUNCH" --cwd "$TMP/repo" --mode standby --role "$r" --runner ccf \
+      --agmsg-team demo --agmsg-from r --status-dir "$TMP/status" ws prompt 2>&1)
+  rc=$?
+  if [[ $rc -ne 0 ]] && grep -q -- "--role" <<<"$out" && grep -qE "design|exec" <<<"$out"; then
+    ok "RL2: --role $r が値域エラーで拒否される"
+  else
+    bad "RL2: --role $r (rc=$rc) $out"
+  fi
+done
+```
+
+**`--role exec` は新しい正当値なので拒否リストに入れない**（RL1d が正例を押さえる）。
 
 - [ ] **Step 2: テストを走らせて失敗を確認**
 
 Run: `bash apps/cmux-team-dispatch-task/test/test-config-paths.sh`
-Expected: CP1-CP4 が FAIL
+Expected: **CP1 / CP3 / CP4 が FAIL**。CP2 は既存実装も `RUNNERS_CONFIG_PATH` を尊重するので
+変更前から PASS してよい（red を作るのは残り 3 つ）。
 
 - [ ] **Step 3: `launch-workspace.sh` を改修**
 
@@ -867,7 +965,21 @@ Expected: CP1-CP4 が FAIL
    [[ -z "$EFFORT" ]] && EFFORT="$(dispatch_default_effort "$MODEL_ROLE")"
    ```
    `--runner` から `command` と `engine` を引く処理（`:466-469`）は残す。
-4. `:915-917` を次に変える:
+4. **`STATUS_DIR` を `AGMSG_SKILL_DIR` と同じ fail-closed で検証する**。この値は
+   `--add-dir '<path>'` として `zsh -ic "... '<prompt>' ..."` の合成コマンドへ埋まるのに、
+   現行コードは検証していない（既存の欠落。`AGMSG_SKILL_DIR` にだけ `:929-932` の検査がある）。
+   引数パース直後、`mkdir` とコマンド組立ての**前**に置く:
+   ```bash
+   STATUS_DIR_SAFE=1
+   case "$STATUS_DIR" in
+     *\'*|*\"*|*\`*|*\$*|*\!*|*\\*|*[[:cntrl:]]*)
+       STATUS_DIR_SAFE=0
+       die "--status-dir contains a shell metacharacter; refusing to build the composed command" ;;
+   esac
+   ```
+   `die` にするのは、`STATUS_DIR` が無いと status.json も findings も書けず、警告して続行する
+   意味が無いからである（`AGMSG_SKILL_DIR` は警告して `--add-dir` を諦めるだけでよい）。
+5. `:915-917` を次に変える:
    ```bash
    REVIEW_WRITABLE_FLAG=""
    if [[ -n "$STATUS_DIR" ]]; then
@@ -877,7 +989,8 @@ Expected: CP1-CP4 が FAIL
      [[ -d "$STATUS_DIR/review" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$STATUS_DIR/review'"
    fi
    ```
-5. `--help` / ヘッダーコメントの `--role` 説明と runners.json のパス説明を更新する。
+6. `--help` / ヘッダーコメントの `--role` 説明（`:23-26`, `:251` の die メッセージを含む）と
+   runners.json のパス説明（`:81`）を更新する。
 
 - [ ] **Step 4: `terminal-wait.sh` を改修**
 
@@ -989,9 +1102,26 @@ cat > "$ROLES_OFF" <<'JSON'
  "design":{"runner":"ccf","engine":"claude","model":"opus[1m]","effort":"xhigh"},
  "exec":{"runner":"cx","engine":"codex","effort":"high"}}}
 JSON
+# cmux / agmsg / launch-workspace の最小 stub。呼ばれた引数を log へ追記する。
+mkdir -p "$TMP/bin"
+for b in cmux join.sh delivery.sh; do
+  printf '#!/bin/sh\nprintf "%%s\\n" "$0 $*" >> "%s/calls.log"\nexit 0\n' "$TMP" > "$TMP/bin/$b"
+  chmod +x "$TMP/bin/$b"
+done
+printf '#!/bin/sh\nprintf "%%s\\n" "launch $*" >> "%s/calls.log"\nprintf "{\\"surface_id\\":\\"s\\",\\"workspace_id\\":\\"w\\"}\\n"\n' \
+  "$TMP" > "$TMP/bin/launch-workspace.sh"; chmod +x "$TMP/bin/launch-workspace.sh"
+export CMUX_BIN="$TMP/bin/cmux" AGMSG_DIR="$TMP/bin"
+
 run_pw() {
+  : > "$TMP/calls.log"
   bash "$PW" --with-design --cwd "$TMP/wt" --slug t --status-dir "$TMP/status" \
     --agmsg-team team --roles "$1" "${@:2}" 2>&1
+}
+launch_count() { grep -c '^launch ' "$TMP/calls.log" 2>/dev/null | head -1; }
+no_side_effects() {
+  # 副作用ゼロ = launch も join も走らず、status.json も prewarm.json も生まれていない
+  [[ ! -s "$TMP/calls.log" ]] && [[ ! -e "$TMP/status/prewarm.json" ]] \
+    && [[ ! -e "$TMP/pwn" ]]
 }
 
 # RI1: 旧フラグの拒否
@@ -1004,17 +1134,42 @@ for f in --design-runner --reviewer-runner --exec-runner --claude-runner --codex
 done
 ok 'RI1: 旧 13 フラグと --review-mode を拒否する'
 
+# RI2: 妥当な入力は検証を通り、ロール数ぶんの launch が走る
+run_pw "$ROLES_ON" >/dev/null 2>&1
+[[ "$(launch_count)" == 4 ]] && ok 'RI2a: review on で 4 ロールぶん launch する' \
+  || bad "RI2a: launch 回数 $(launch_count)"
+run_pw "$ROLES_OFF" >/dev/null 2>&1
+[[ "$(launch_count)" == 2 ]] && ok 'RI2b: review off で 2 ロールぶん launch する' \
+  || bad "RI2b: launch 回数 $(launch_count)"
+
+# RI2c: --roles 未指定は「値域エラー」で落ちる (必須引数欠落とメッセージで区別する)
+out=$(bash "$PW" --with-design --cwd "$TMP/wt" --slug t --status-dir "$TMP/status" \
+       --agmsg-team team 2>&1); rc=$?
+[[ $rc -eq 2 ]] && grep -q -- '--roles' <<<"$out" \
+  && ok 'RI2c: --roles 未指定を exit 2 と明示メッセージで拒否' || bad "RI2c: rc=$rc $out"
+
 # RI3: 改竄 fixture は副作用ゼロで exit 2
-tamper() { jq "$1" "$ROLES_ON" > "$TMP/bad.json"; run_pw "$TMP/bad.json" >/dev/null 2>&1; }
-tamper '.roles.design.model = "a'; touch /tmp/pwn; #"'; [[ $? -eq 2 ]] || bad 'RI3a: メタ文字 model'
-tamper '.roles.design.effort = "bogus"';                      [[ $? -eq 2 ]] || bad 'RI3b: 範囲外 effort'
-tamper '.roles.design.engine = "codex"';                      [[ $? -eq 2 ]] || bad 'RI3c: engine 不整合'
-tamper '.roles.design.runner = "nope"';                       [[ $? -eq 2 ]] || bad 'RI3d: 未登録 runner'
-tamper 'del(.roles.exec_review)';                             [[ $? -eq 2 ]] || bad 'RI3e: on なのに review ロール欠落'
-tamper '.review_mode = "off"';                                [[ $? -eq 2 ]] || bad 'RI3f: off なのに review ロールがある'
-tamper '.roles.design.bogus = 1';                             [[ $? -eq 2 ]] || bad 'RI3g: 許可外キー'
-[[ -e /tmp/pwn ]] && bad 'RI3h: 副作用が起きた'
-ok 'RI3: 改竄 roles.json を副作用ゼロで拒否する'
+# 値は必ず jq --arg でデータとして渡す。シェル文字列へ埋めるとテスト自身がコマンドを実行する。
+tamper_expr() { jq "$1" "$ROLES_ON" > "$TMP/bad.json"; run_pw "$TMP/bad.json" >/dev/null 2>&1; }
+tamper_arg()  { jq --arg v "$2" "$1" "$ROLES_ON" > "$TMP/bad.json"; run_pw "$TMP/bad.json" >/dev/null 2>&1; }
+
+tamper_arg '.roles.design.model = $v' "a'; touch $TMP/pwn; #"
+rc=$?; { [[ $rc -eq 2 ]] && no_side_effects; } && ok 'RI3a: メタ文字 model' || bad "RI3a (rc=$rc)"
+tamper_arg '.roles.design.model = $v' 'bang!'
+rc=$?; [[ $rc -eq 2 ]] && ok 'RI3a2: ! を含む model' || bad "RI3a2 (rc=$rc)"
+tamper_expr '.roles.design.effort = "bogus"'
+rc=$?; { [[ $rc -eq 2 ]] && no_side_effects; } && ok 'RI3b: 範囲外 effort' || bad "RI3b (rc=$rc)"
+tamper_expr '.roles.design.engine = "codex"'
+rc=$?; [[ $rc -eq 2 ]] && ok 'RI3c: engine 不整合' || bad "RI3c (rc=$rc)"
+tamper_expr '.roles.design.runner = "nope"'
+rc=$?; [[ $rc -eq 2 ]] && ok 'RI3d: 未登録 runner' || bad "RI3d (rc=$rc)"
+tamper_expr 'del(.roles.exec_review)'
+rc=$?; [[ $rc -eq 2 ]] && ok 'RI3e: on なのに review ロール欠落' || bad "RI3e (rc=$rc)"
+tamper_expr '.review_mode = "off"'
+rc=$?; [[ $rc -eq 2 ]] && ok 'RI3f: off なのに review ロールがある' || bad "RI3f (rc=$rc)"
+tamper_expr '.roles.design.bogus = 1'
+rc=$?; [[ $rc -eq 2 ]] && ok 'RI3g: 許可外キー' || bad "RI3g (rc=$rc)"
+[[ -e "$TMP/pwn" ]] && bad 'RI3h: テストまたは実装が副作用を起こした' || ok 'RI3h: 副作用なし'
 
 # RI4: runners_file の差し替えを信じない
 cat > "$TMP/fake-runners.json" <<'JSON'
@@ -1025,14 +1180,21 @@ jq --arg f "$TMP/fake-runners.json" '.runners_file = $f | .roles.design.runner =
 run_pw "$TMP/bad.json" >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok 'RI4: roles.json の runners_file を参照先に使わない' || bad 'RI4'
 
-# RI5: model 省略可否
-jq 'del(.roles.exec.model)' "$ROLES_ON" > "$TMP/ok.json"   # codex exec は省略可
+# RI5: model 省略可否 (負例だけでなく正例も実際に走らせる)
 jq 'del(.roles.design_review.model)' "$ROLES_ON" > "$TMP/bad.json"
 run_pw "$TMP/bad.json" >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok 'RI5a: codex design_review の model 欠落を拒否' || bad 'RI5a'
 jq '.roles.design_review.model = null' "$ROLES_ON" > "$TMP/bad.json"
 run_pw "$TMP/bad.json" >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok 'RI5b: null も拒否' || bad 'RI5b'
+jq 'del(.roles.exec.model)' "$ROLES_ON" > "$TMP/ok.json"   # codex exec は省略可
+run_pw "$TMP/ok.json" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && ! grep -E '^launch .*--role exec( |$)' "$TMP/calls.log" | grep -q -- '--model'; then
+  ok 'RI5c: codex exec は model 省略で成功し --model が付かない'
+else
+  bad "RI5c: rc=$rc $(grep '^launch .*--role exec' "$TMP/calls.log")"
+fi
 
 # RI6: --review-mode フラグがソースに存在しない
 grep -q -- '--review-mode' "$PW" && bad 'RI6: --review-mode フラグが残っている' \
@@ -1045,28 +1207,75 @@ exit $fail
 
 配置の固定表とスキーマを**ソースの静的検査**で押さえる（既存 `test-prewarm-layout.sh` の PG 系と同じ流儀）:
 
+`test-roles-input.sh` と同じ stub を使い、**生成された `prewarm.json` と launch の引数**を
+検査する。ソースへの grep はコメントに当たるので使わない。
+
 ```bash
 #!/usr/bin/env bash
-#   PI1. review on = 4 ペイン / off = 2 ペインの固定表
+#   PI1. review on = 4 launch / off = 2 launch
 #   PI2. split 方向: design_review=right(design) / exec=down(design) / exec_review=right(exec)
 #   PI3. prewarm.json のキーが 4 ロール名で、executors / review が現れない
 #   PI4. agent 名が <slug> / <slug>-design-review / <slug>-exec / <slug>-exec-review
-#   PI5. in-session 分岐が存在しない
+#   PI5. design と exec のロール設定が完全一致でも exec ペインが立つ (in-session 廃止)
+#   PI6. exec_review の spawn 失敗時は prewarm.json にそのキーが現れない
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PW="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/prewarm-panes.sh"
 fail=0; bad() { echo "FAIL $1"; fail=1; }; ok() { echo "PASS $1"; }
+# --- stub と fixture は test-roles-input.sh と同一 (TMP / bin stub / ROLES_ON /
+#     ROLES_OFF / run_pw / launch_count をそのままコピーする) ---
 
-grep -q 'executors' "$PW" && bad 'PI3a: executors が残っている' || ok 'PI3a: executors キーが無い'
-grep -qE '"review"|\.review\b' "$PW" && bad 'PI3b: 旧 review キーが残っている' || ok 'PI3b'
-for a in '\-design-review' '\-exec-review' '\-exec\b'; do
-  grep -qE "SLUG}?$a" "$PW" || bad "PI4: agent 名 $a が無い"
+PJ="$TMP/status/prewarm.json"
+
+# PI1 / PI3 / PI4
+run_pw "$ROLES_ON" >/dev/null 2>&1
+[[ "$(launch_count)" == 4 ]] && ok 'PI1a: on で 4 launch' || bad "PI1a: $(launch_count)"
+[[ "$(jq -r 'del(.workspace_id,.review_mode) | keys | join(",")' "$PJ")" \
+   == 'design,design_review,exec,exec_review' ]] \
+  && ok 'PI3a: prewarm.json のキーが 4 ロール名' || bad "PI3a: $(jq -c 'keys' "$PJ")"
+jq -e 'has("executors") or has("review")' "$PJ" >/dev/null \
+  && bad 'PI3b: executors / review キーが残っている' || ok 'PI3b'
+for pair in 'design:t' 'design_review:t-design-review' 'exec:t-exec' 'exec_review:t-exec-review'; do
+  r="${pair%%:*}"; a="${pair##*:}"
+  [[ "$(jq -r --arg r "$r" '.[$r].agent' "$PJ")" == "$a" ]] || bad "PI4: $r の agent 名"
 done
 ok 'PI4: 4 つの agent 名'
-grep -qE 'IN_SESSION|in-session' "$PW" && bad 'PI5: in-session 分岐が残っている' || ok 'PI5'
-grep -q 'standby-split-direction right' "$PW" || bad 'PI2: right split が無い'
-grep -q 'standby-split-direction down' "$PW" || bad 'PI2: down split が無い'
-ok 'PI1/PI2: 固定表の split 方向'
+
+# PI2: split 方向を launch の引数から見る
+grep -qE '^launch .*--role design_review .*--standby-split-direction right' "$TMP/calls.log" \
+  && ok 'PI2a: design_review は right split' || bad 'PI2a'
+grep -qE '^launch .*--role exec .*--standby-split-direction down' "$TMP/calls.log" \
+  && ok 'PI2b: exec は down split' || bad 'PI2b'
+grep -qE '^launch .*--role exec_review .*--standby-split-direction right' "$TMP/calls.log" \
+  && ok 'PI2c: exec_review は right split' || bad 'PI2c'
+
+# PI1b: off
+run_pw "$ROLES_OFF" >/dev/null 2>&1
+[[ "$(launch_count)" == 2 ]] && ok 'PI1b: off で 2 launch' || bad "PI1b: $(launch_count)"
+[[ "$(jq -r 'del(.workspace_id,.review_mode) | keys | join(",")' "$PJ")" == 'design,exec' ]] \
+  && ok 'PI1c: off の prewarm.json は 2 ロール' || bad 'PI1c'
+
+# PI5: design と exec が完全一致でも exec ペインが立つ
+jq '.roles.exec = .roles.design' "$ROLES_OFF" > "$TMP/same.json"
+run_pw "$TMP/same.json" >/dev/null 2>&1
+{ [[ "$(launch_count)" == 2 ]] && jq -e 'has("exec")' "$PJ" >/dev/null; } \
+  && ok 'PI5: in-session 廃止 — 一致していても exec ペインが立つ' || bad 'PI5'
+
+# PI6: exec_review の launch だけ失敗させる
+cat > "$TMP/bin/launch-workspace.sh" <<STUB
+#!/bin/sh
+printf '%s\n' "launch \$*" >> "$TMP/calls.log"
+case "\$*" in *"--role exec_review"*) exit 1 ;; esac
+printf '{"surface_id":"s","workspace_id":"w"}\n'
+STUB
+chmod +x "$TMP/bin/launch-workspace.sh"
+run_pw "$ROLES_ON" >/dev/null 2>&1
+if jq -e 'has("exec_review")' "$PJ" >/dev/null 2>&1; then
+  bad 'PI6: spawn 失敗した exec_review が prewarm.json に現れた'
+else
+  jq -e 'has("design_review") and has("design") and has("exec")' "$PJ" >/dev/null \
+    && ok 'PI6: exec_review だけ省略され残り 3 ロールは保持される' || bad 'PI6: 他ロールが消えた'
+fi
 exit $fail
 ```
 
@@ -1114,10 +1323,20 @@ Expected: RI1 以降が FAIL
    ```
 6. 各ロールの launch は `launch-workspace.sh --role <role> --runner <runner> --effort <effort>`
    を渡し、`model` キーがあるときだけ `--model <model>` を足す。**無いときはフラグごと付けない**。
-7. `prewarm.json` の書き出しを新スキーマにする。`review_mode` を含める（Task 6 の renderer が
-   不一致を検出するため）。`wired` は診断出力として `true` を書く（分岐に使わない）。
-8. agmsg の join は 4 つの新 agent 名で行う。
-9. `--unattended` × codex 親の die、`--agmsg-team` 必須、`--timeout-sentinel` の転送は**維持**。
+7. **ロール別の起動失敗を扱う**（spec §5 / §6）。ロールごとに扱いが違う:
+   - `design` / `exec` の launch が失敗したら**ディスパッチを止める**（die）。この 2 つは必須で、
+     欠けたまま進んでも実装が走らない。
+   - `design_review` / `exec_review` の launch または readiness が失敗したら、**警告してその
+     ロールだけ省略**する。`prewarm.json` にそのキーを書かず、既に `join.sh` を済ませていれば
+     `leave.sh` で team member を戻す。残りのロールは保持して続行する。
+   - この非対称は spec §5 の「review spawn 失敗時は当該 gate だけを警告してスキップ」と
+     「ロールが解決できない設定エラーは fail-fast」の区別に対応する。設定の誤りは Task 2 の
+     resolver が既に止めているので、ここに残るのは runtime の失敗だけである。
+8. `prewarm.json` の書き出しを新スキーマにする。`review_mode` は**解決された意図された値**を
+   書く（Task 6 の renderer が「on なのに review ロールが無い」を検出するため。起動できた
+   ロール数から逆算してはならない）。`wired` は診断出力として `true` を書く（分岐に使わない）。
+9. agmsg の join は 4 つの新 agent 名で行う。
+10. `--unattended` × codex 親の die、`--agmsg-team` 必須、`--timeout-sentinel` の転送は**維持**。
 
 - [ ] **Step 5: 既存 prewarm テストを更新**
 
@@ -1134,12 +1353,14 @@ Expected: RI1 以降が FAIL
 - [ ] **Step 6: テストを走らせて通過を確認**
 
 ```bash
+fail=0
 for f in test-roles-input test-pane-invariant test-prewarm-layout test-prewarm-all-codex \
          test-prewarm-unattended test-prewarm-design-permissions test-in-session; do
-  bash "apps/cmux-team-dispatch-task/test/$f.sh" || echo "^^ $f FAILED"
+  bash "apps/cmux-team-dispatch-task/test/$f.sh" || { echo "^^ $f FAILED"; fail=1; }
 done
+exit $fail
 ```
-Expected: すべて exit 0
+Expected: exit 0（`|| echo` だけにすると `echo` の rc 0 でループ全体が成功終了してしまう）
 
 - [ ] **Step 7: commit**
 
@@ -1169,61 +1390,119 @@ git commit -m "feat(dispatch)!: prewarm を --roles 入力・2/4 ペイン固定
 
 ```bash
 #!/usr/bin/env bash
-#   SC1. reviewer の --add-dir が STATUS_DIR/review に狭まっている
-#   SC2. 3 consumer が対象 JSON を 1 回だけ内容として読む (再読しない)
+# 検証済みスナップショット契約の動的検査。
+#
+#   SC1. reviewer の --add-dir が STATUS_DIR/review に狭まっている (静的)
+#   SC2. 検証後に対象 JSON を差し替えても差し替え後の値が使われない (動的 TOCTOU)
 #   SC3. prewarm.json の agent がロール名と対応しないと拒否
 #   SC4. surface_id / workspace_id が空だと拒否
 #   SC5. wired が boolean true でないと拒否
-#   SC6. cleanup は workspace_id を独立値と照合してから close する
-#   SC7. SKILL.md に prewarm.json の生読みが残っていない
+#   SC6. cleanup は workspace_id を独立値と照合し、不一致なら leave しない
+#   SC7. SKILL.md に「検証前の生読み」が残っていない
+
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts"
 SKILL="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/SKILL.md"
 fail=0; bad() { echo "FAIL $1"; fail=1; }; ok() { echo "PASS $1"; }
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+export DISPATCH_CONFIG_HOME="$TMP/home"; mkdir -p "$DISPATCH_CONFIG_HOME" "$TMP/bin" "$TMP/status"
 
-# SC1
-grep -q "add-dir '\$STATUS_DIR/review'" "$S/launch-workspace.sh" \
-  && ! grep -q "add-dir '\$STATUS_DIR'" "$S/launch-workspace.sh" \
-  && ok 'SC1: reviewer の書き込み許可が review/ に狭まっている' || bad 'SC1'
-
-# SC2: 対象ファイルへの jq/cat が 1 回だけであることの静的検査
-for pair in "prewarm-panes.sh:ROLES_FILE" "render-loop-prompt.sh:PREWARM_FILE" "loop-cleanup.sh:PREWARM_FILE"; do
-  f="${pair%%:*}"; v="${pair##*:}"
-  n=$(grep -c "\"\$$v\"" "$S/$f" 2>/dev/null || echo 0)
-  if [[ "$n" -le 1 ]]; then ok "SC2: $f は $v を 1 回しか読まない"; else bad "SC2: $f が $v を $n 回読む"; fi
+# registry fixture が無いと「別の理由の失敗」で空疎に通るので必ず置く
+cat > "$DISPATCH_CONFIG_HOME/runners.json" <<'JSON'
+{"default":"ccf","runners":[{"name":"ccf","command":"ccf","engine":"claude"}]}
+JSON
+for b in cmux leave.sh; do
+  printf '#!/bin/sh\nprintf "%%s\\n" "$0 $*" >> "%s/calls.log"\nexit 0\n' "$TMP" > "$TMP/bin/$b"
+  chmod +x "$TMP/bin/$b"
 done
 
-# SC3-SC5 は renderer と cleanup の早期 exit で検査する
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-cat > "$TMP/prewarm.json" <<'JSON'
+VALID="$TMP/prewarm.json"
+cat > "$VALID" <<'JSON'
 {"workspace_id":"workspace:1","review_mode":"on",
  "design":{"surface_id":"s1","agent":"t","runner":"ccf","engine":"claude","model":"opus[1m]","effort":"xhigh","wired":true},
  "design_review":{"surface_id":"s2","agent":"t-design-review","runner":"ccf","engine":"claude","model":"opus[1m]","effort":"xhigh","wired":true},
  "exec":{"surface_id":"s3","agent":"t-exec","runner":"ccf","engine":"claude","model":"sonnet","effort":"high","wired":true},
  "exec_review":{"surface_id":"s4","agent":"t-exec-review","runner":"ccf","engine":"claude","model":"opus[1m]","effort":"high","wired":true}}
 JSON
-bad_prewarm() { jq "$1" "$TMP/prewarm.json" > "$TMP/bad.json"; }
-render() { bash "$S/render-loop-prompt.sh" --prewarm "$1" --slug t --issue 1 --issue-title x \
-  --issue-url u --issue-body-file /dev/null --plan-hint h --status-dir "$TMP" \
-  --timeout-sentinel "$TMP/s" --team tm --layout workspace --parent-workspace w \
-  --skill-dir "$S/.." >/dev/null 2>&1; }
-bad_prewarm '.design_review.agent = "parent"';  render "$TMP/bad.json"; [[ $? -ne 0 ]] && ok 'SC3: 別ロールの agent 名を拒否' || bad 'SC3'
-bad_prewarm '.design.surface_id = ""';          render "$TMP/bad.json"; [[ $? -ne 0 ]] && ok 'SC4: 空 surface_id を拒否' || bad 'SC4'
-bad_prewarm '.design.wired = "true"';           render "$TMP/bad.json"; [[ $? -ne 0 ]] && ok 'SC5: 文字列 "true" を拒否' || bad 'SC5'
 
-# SC6
-grep -q 'workspace_id' "$S/loop-cleanup.sh" \
-  && grep -qE 'workspace list|EXPECTED_WORKSPACE|\$CMUX_WORKSPACE_ID' "$S/loop-cleanup.sh" \
-  && ok 'SC6: cleanup が workspace_id を照合する' || bad 'SC6'
+render() {  # $1 = prewarm path
+  bash "$S/render-loop-prompt.sh" --prewarm "$1" --slug t --issue 1 --issue-title x \
+    --issue-url u --issue-body-file /dev/null --plan-hint h --status-dir "$TMP/status" \
+    --timeout-sentinel "$TMP/sentinel" --team tm --layout workspace --parent-workspace w \
+    --skill-dir "$S/.." 2>"$TMP/err"
+}
 
-# SC7
-grep -q 'prewarm.json"' "$SKILL" && bad 'SC7: SKILL.md に prewarm.json の生読みが残っている' \
-  || ok 'SC7: SKILL.md の prewarm.json 読み取りが契約に沿っている'
+# --- SC1 ---
+if grep -q "add-dir '\$STATUS_DIR/review'" "$S/launch-workspace.sh" \
+   && ! grep -q "add-dir '\$STATUS_DIR'" "$S/launch-workspace.sh"; then
+  ok 'SC1: reviewer の書き込み許可が review/ に狭まっている'
+else
+  bad 'SC1'
+fi
+
+# --- SC2: 動的 TOCTOU。FIFO で「読まれた直後に差し替える」を作る ---
+# renderer が内容を 1 回だけ読むなら、読み終えた後に中身を書き換えても出力は変わらない。
+cp "$VALID" "$TMP/toctou.json"
+before=$(render "$TMP/toctou.json")
+jq '.exec.agent = "t-HIJACKED"' "$VALID" > "$TMP/toctou.json"   # 検証済み実行の「後」に差し替え
+after=$(render "$TMP/toctou.json")
+# 1 回目の出力に HIJACKED が現れなければ、少なくとも読取と利用が同一スナップショットである。
+grep -q 'HIJACKED' <<<"$before" && bad 'SC2a: 1 回目の出力に差し替え後の値が現れた' \
+  || ok 'SC2a: 出力は読取時点のスナップショットに基づく'
+# 2 回目は差し替え後を読むので拒否される (agent 名がロールと対応しない)
+[[ -z "$after" ]] && ok 'SC2b: 差し替えた内容は次回の検証で拒否される' || bad 'SC2b'
+
+# --- SC3 / SC4 / SC5: 検証固有の失敗であることをメッセージで確かめる ---
+expect_reject() {  # $1=ラベル $2=jq 式 [$3=--arg 値]
+  local label="$1" expr="$2"
+  if [[ $# -ge 3 ]]; then jq --arg v "$3" "$expr" "$VALID" > "$TMP/bad.json"
+  else jq "$expr" "$VALID" > "$TMP/bad.json"; fi
+  : > "$TMP/calls.log"
+  render "$TMP/bad.json" >/dev/null 2>&1
+  local rc=$?
+  if [[ $rc -ne 0 ]] && grep -qiE 'prewarm|invalid|agent|wired|surface' "$TMP/err"; then
+    ok "$label"
+  else
+    bad "$label (rc=$rc err=$(cat "$TMP/err"))"
+  fi
+}
+expect_reject 'SC3a: 別ロールの agent 名を拒否' '.design_review.agent = "t-exec"'
+expect_reject 'SC3b: parent への差し替えを拒否'  '.design_review.agent = "parent"'
+expect_reject 'SC4a: 空 surface_id を拒否'       '.design.surface_id = ""'
+expect_reject 'SC4b: 空 workspace_id を拒否'     '.workspace_id = ""'
+expect_reject 'SC5a: 文字列 "true" を拒否'       '.design.wired = "true"'
+expect_reject 'SC5b: wired=false を拒否'          '.design.wired = false'
+expect_reject 'SC5c: 許可外キーを拒否'            '.design.bogus = 1'
+expect_reject 'SC5d: 型違い (effort が数値) を拒否' '.design.effort = 3'
+expect_reject 'SC5e: メタ文字入り model を拒否'   '.design.model = $v' "a'; touch $TMP/pwn; #"
+[[ -e "$TMP/pwn" ]] && bad 'SC5f: 副作用が起きた' || ok 'SC5f: 副作用なし'
+
+# --- SC6: cleanup の workspace 照合 ---
+# cmux stub に「別 workspace」を返させ、leave が 1 件も走らないことを見る
+mkdir -p "$TMP/dispatch/t"; cp "$VALID" "$TMP/dispatch/t/prewarm.json"
+printf '#!/bin/sh\ncase "$1" in workspace) printf "workspace:999 [t]\\n" ;; esac\nexit 0\n' \
+  > "$TMP/bin/cmux"; chmod +x "$TMP/bin/cmux"
+: > "$TMP/calls.log"
+# loop-cleanup.sh の起動は test-loop-cleanup.sh のヘルパーを流用する
+run_cleanup_for_slug t "$TMP/dispatch" >/dev/null 2>&1
+grep -q 'leave.sh' "$TMP/calls.log" && bad 'SC6: workspace 不一致なのに leave した' \
+  || ok 'SC6: workspace 不一致では leave しない'
+
+# --- SC7: 「検証前の生読み」だけを検出する needle ---
+# 正しい実装は PREWARM_DOC=$(cat …) の 1 回だけで、以後は <<<"$PREWARM_DOC" を使う。
+# したがって「jq ... "<...>/prewarm.json"」の形 (ファイルを直接 jq する) が残っていたら FAIL。
+if grep -nE 'jq [^|]*prewarm\.json"' "$SKILL" >/dev/null 2>&1; then
+  bad "SC7: SKILL.md にファイルを直接 jq する生読みが残っている: $(grep -nE 'jq [^|]*prewarm\.json"' "$SKILL" | head -3)"
+else
+  ok 'SC7: SKILL.md の prewarm.json 読み取りがスナップショット契約に沿っている'
+fi
 exit $fail
 ```
 
-**注**: SC7 は Task 7 で SKILL.md を書き換えるまで赤い。Task 6 の時点では SC1-SC6 が緑なら可。
+**注**: SC7 は Task 7 で SKILL.md を書き換えるまで赤い。**Task 6 の green 確認では
+`test-snapshot-contract.sh` を実行しない**（実行すれば必ず非 0 になり、緑の判定にならない）。
+このテストは **Task 7 の Step 9 で初めて実行する**。
 
 - [ ] **Step 2: `test-loop-prompt.sh` を書き換える**
 
@@ -1233,6 +1512,8 @@ exit $fail
 #   LP3. 4 状態: review 0 件 / 2 件 / exec_review 欠落 / design_review 欠落
 #   LP4. review_mode=on なのに review ロールが欠けると stderr に警告 (die はしない)
 #   LP5. codex の design / exec は model 省略で成功、active review の model 欠落は die
+#   LP6. review 2 ロール × 必須 5 field を 1 つずつ欠落させると die する (5x2 = 10 ケース)
+#   LP7. 2 つの reviewer tuple が別々のブロックへ届き、混線しない
 ```
 
 LP2 の具体:
@@ -1271,6 +1552,28 @@ grep -q 'exec-review' <<<"$out" && ! grep -q 'design-review' <<<"$out" \
 # review off + 0 件 -> 警告なし
 err=$(render_err "$FULL_OFF")
 grep -qi 'warn' <<<"$err" && bad 'LP4b: off なのに警告が出た' || ok 'LP4b: off では警告なし'
+
+# LP6: 必須 field の欠落 matrix (review 2 ロール × 5 field)
+for role in design_review exec_review; do
+  for f in surface_id agent runner engine effort; do
+    jq --arg r "$role" --arg f "$f" 'del(.[$r][$f])' "$FULL_ON" > "$TMP/p.json"
+    render_ok "$TMP/p.json" >/dev/null 2>&1
+    [[ $? -ne 0 ]] || bad "LP6: $role の $f 欠落を見逃した"
+  done
+done
+ok 'LP6: review 2 ロール × 必須 5 field の欠落をすべて die する'
+
+# LP7: 2 つの reviewer tuple が混線しない
+jq '.design_review.agent = "t-design-review" | .design_review.model = "DR-MODEL"
+  | .exec_review.agent = "t-exec-review"   | .exec_review.model = "XR-MODEL"' \
+  "$FULL_ON" > "$TMP/p.json"
+out=$(render_ok "$TMP/p.json")
+dr_block=$(sed -n '/design-review/,/^$/p' <<<"$out")
+xr_block=$(sed -n '/exec-review/,/^$/p' <<<"$out")
+{ grep -q 'DR-MODEL' <<<"$dr_block" && ! grep -q 'XR-MODEL' <<<"$dr_block" \
+  && grep -q 'XR-MODEL' <<<"$xr_block" && ! grep -q 'DR-MODEL' <<<"$xr_block"; } \
+  && ok 'LP7: 2 つの reviewer tuple が別々のブロックへ届く' \
+  || bad 'LP7: reviewer tuple が混線した'
 ```
 
 - [ ] **Step 3: `render-loop-prompt.sh` を改修**
@@ -1298,17 +1601,42 @@ grep -qi 'warn' <<<"$err" && bad 'LP4b: off なのに警告が出た' || ok 'LP4
 
 - [ ] **Step 5: `loop-cleanup.sh` を改修**
 
-1. `PREWARM_DOC=$(cat "$PREWARM_FILE")` で 1 回だけ読み、以後再読しない。
-2. Task 5 / Step 4 と同じ検証を通す。
-3. `agent` と `surface_id` を**実在ロールから列挙**する:
+現状の把握（これを踏まえないと指示が実装不能になる）:
+`loop-cleanup.sh` は `--dispatch-dir` / `--repo-root` / `--agmsg-team` を取り、slug ごとの
+ループの中で `leave.sh` を **ハードコードした 5 つの agent 名**
+（`"$slug" "$slug-sonnet" "$slug-codex" "$slug-review" "$slug-opus"`）に対して呼ぶ。
+**`close-surface` は行わない**（サーフェスを閉じるのは SKILL.md 側の最終クリーンアップ）。
+`prewarm.json` も現状は読んでいない。
+
+1. **prewarm path を導出する**: slug ループの中で `PREWARM_FILE="$DISPATCH_DIR/$slug/prewarm.json"`。
+   存在しなければ従来どおり何もせず次の slug へ進む（ループが途中で落ちたケース）。
+2. `PREWARM_DOC=$(cat "$PREWARM_FILE")` で **1 回だけ内容として読み**、以後は
+   `<<<"$PREWARM_DOC"` で jq する。**元パスを読み直さない**。
+3. **`prewarm.json` 用の検証**を通す（`roles.json` 用の検証とは別物である点に注意）:
+   - JSON として妥当。
+   - トップレベルの許可キーは `workspace_id` / `review_mode` / 4 ロール名だけ。
+   - 各ロールのキーは `surface_id` / `agent` / `runner` / `engine` / `model` / `effort` /
+     `wired` の部分集合で、`surface_id` / `agent` / `runner` / `engine` / `effort` / `wired` は必須。
+   - `agent` が**そのロールに対応する名前**（`$slug` / `$slug-design-review` / `$slug-exec` /
+     `$slug-exec-review`）。
+   - `surface_id` と `workspace_id` が非空文字列、`wired` が boolean の `true`。
+   - `config-lib.sh` の runner / model / effort 検証を通る。
+   - 違反したら**その slug の leave を行わず**警告して次へ（ループ全体は止めない。他の slug の
+     cleanup は独立に価値がある）。
+4. **leave 対象を実在ロールから列挙**する。ハードコードの 5 名を置き換える:
    ```bash
-   AGENTS=$(jq -r '. as $d | ["design","design_review","exec","exec_review"]
+   while IFS= read -r agent; do
+     [[ -n "$agent" ]] || continue
+     "$HOME/.agents/skills/agmsg/scripts/leave.sh" "$AGMSG_TEAM" "$agent" >/dev/null 2>&1 || true
+   done < <(jq -r '. as $d | ["design","design_review","exec","exec_review"]
                    | map(select($d[.] != null) | $d[.].agent) | .[]' <<<"$PREWARM_DOC")
    ```
-4. **workspace 照合**: `prewarm.json` の `workspace_id` が、cleanup が独立に知っている値
-   （引数、または `cmux workspace list` を `[<slug>]` でリテラル一致して引いた値）と一致
-   しなければ close を行わず警告する。
-5. `close-surface --workspace` 必須の既存規約は維持する。
+   `review_mode=off` なら 2 件、`on` なら 4 件、いずれも各 1 回。
+5. **workspace 照合**: `prewarm.json` の `workspace_id` が cleanup 自身が独立に知っている値と
+   一致しなければ、**その slug の leave をスキップ**して警告する。独立値は
+   `cmux workspace list` を `[<slug>]` で**リテラル一致**（正規表現ではなく `grep -F`）して
+   引く。前回実行の古い `prewarm.json` が残っていても誤爆しないための照合でもある。
+   `close-surface` は `loop-cleanup.sh` の責務ではないので**追加しない**。
 
 - [ ] **Step 6: テストを走らせて通過を確認**
 
@@ -1316,7 +1644,8 @@ grep -qi 'warn' <<<"$err" && bad 'LP4b: off なのに警告が出た' || ok 'LP4
 bash apps/cmux-team-dispatch-task/test/test-loop-prompt.sh
 bash apps/cmux-team-dispatch-task/test/test-loop-cleanup.sh
 bash apps/cmux-team-dispatch-task/test/test-cleanup-close.sh
-bash apps/cmux-team-dispatch-task/test/test-snapshot-contract.sh   # SC7 は Task 7 まで赤で可
+# test-snapshot-contract.sh はここでは走らせない (SC7 が Task 7 まで赤いため)。
+# SC1-SC6 だけを確認したいときは individual に grep して目視すること。
 ```
 
 - [ ] **Step 7: commit**
@@ -1468,16 +1797,76 @@ SKILL.md の見出しと 1:1 対応を保つ。SKILL.md に対応節が無い日
 「補足（SKILL.md に対応セクションなし）」へまとめる。`ターミナル起動待機の自動学習` の
 config パス記述（`:879`, `:1733`, `:1754`, `:1809`, `:1810`, `:1818`, `:1952`）を新パスへ更新する。
 
-- [ ] **Step 9: 検証**
+- [ ] **Step 9: `test-input-validation.sh` と `test-override.sh` を作る／更新する（spec §7）**
+
+`test/test-input-validation.sh`（新規。**needle 検査**であり、指示文書に事前検証の契約が
+書かれていることを固定する）:
+
+```bash
+#!/usr/bin/env bash
+#   IV1. SKILL.md / setup-mode.md / setup-mode-ja.md に「コマンドを組み立てる前に検証する」旨がある
+#   IV2. 拒否文字集合が 3 文書で一致する (' " ` $ \ ! と制御文字と空と前後空白)
+#   IV3. 違反時は再質問する旨がある
+#   IV4. 3 次元 (runner / model / effort) すべてが事前検証の対象と書かれている
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+R="$SCRIPT_DIR/../skills/cmux-team-dispatch-task"
+fail=0; bad() { echo "FAIL $1"; fail=1; }; ok() { echo "PASS $1"; }
+for f in "$R/SKILL.md" "$R/references/setup-mode.md" "$R/references/setup-mode-ja.md"; do
+  base=$(basename "$f")
+  grep -qE 'before building|before the command|コマンドを組み立てる前' "$f" \
+    && ok "IV1: $base に事前検証の契約がある" || bad "IV1: $base"
+  for ch in "'" '"' '`' '\$' '\\' '!'; do
+    grep -qF -- "$ch" "$f" || bad "IV2: $base に拒否文字 $ch が列挙されていない"
+  done
+  grep -qE 're-ask|再質問' "$f" && ok "IV3: $base に再質問の指示がある" || bad "IV3: $base"
+  for dim in runner model effort; do
+    grep -qi "$dim" "$f" || bad "IV4: $base に $dim への言及が無い"
+  done
+done
+exit $fail
+```
+
+`test/test-override.sh` の更新（spec §7 / R2 #6 / R2 #3）:
+
+```bash
+#   OV10. 対象ロールが design / design_review / exec / exec_review の 4 つ
+#   OV11. review 2 ロールは review_mode=on のときだけ提示される
+#   OV12. 全ロール・全フィールドを override しても両 config.json がバイト単位で不変
+#   OV13. override 無しで再 resolve すると元の値へ戻る
+#   OV14. pending tuple の 3 負例 (model / effort / 未登録 runner) がそのロールの変更を
+#         丸ごと破棄し、他ロールの override は生き残る
+#   OV15. prewarm へは --roles 1 本で渡り、旧 6 フラグは現れない
+```
+
+OV12 / OV13 の実体:
+
+```bash
+g_before=$(shasum -a 256 "$GLOBAL_CONFIG" | cut -d' ' -f1)
+p_before=$(shasum -a 256 "$PROJ_CONFIG" | cut -d' ' -f1)
+bash "$RESOLVE" --project-root "$PROJ" \
+  --set design.runner=cx --set design.model=m1 --set design.effort=medium \
+  --set exec.runner=ccf --set exec.model=m2 --set exec.effort=low >/dev/null
+[[ "$(shasum -a 256 "$GLOBAL_CONFIG" | cut -d' ' -f1)" == "$g_before" \
+&& "$(shasum -a 256 "$PROJ_CONFIG" | cut -d' ' -f1)" == "$p_before" ]] \
+  && ok 'OV12: override は両 config を 1 バイトも変えない' || bad 'OV12'
+out=$(bash "$RESOLVE" --project-root "$PROJ")
+[[ "$(jq -r '.roles.design.model' <<<"$out")" == 'opus[1m]' ]] \
+  && ok 'OV13: 次回の resolve は元の値へ戻る' || bad 'OV13'
+```
+
+- [ ] **Step 10: 検証**
 
 ```bash
 pnpm check:doc-lang
 bash apps/cmux-team-dispatch-task/test/test-skill-script-refs.sh
-bash apps/cmux-team-dispatch-task/test/test-snapshot-contract.sh   # SC7 がここで緑になる
+bash apps/cmux-team-dispatch-task/test/test-snapshot-contract.sh   # SC7 がここで初めて緑になる
+bash apps/cmux-team-dispatch-task/test/test-input-validation.sh
+bash apps/cmux-team-dispatch-task/test/test-override.sh
 bash apps/cmux-team-dispatch-task/test/test-delivery-callsites.sh  # CS3 / CS5-CS7
 ```
 
-- [ ] **Step 10: commit**
+- [ ] **Step 11: commit**
 
 ```bash
 git add apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/SKILL.md \
@@ -1700,12 +2089,16 @@ Expected: 3 行とも `3.0.0`
 - [ ] **Step 2: 全テストを走らせる**
 
 ```bash
+fail=0
 for f in apps/cmux-team-dispatch-task/test/test-*.sh; do
   echo "=== $f ==="
-  bash "$f" || echo "!!! FAILED: $f"
+  bash "$f" || { echo "!!! FAILED: $f"; fail=1; }
 done
+echo "aggregate exit: $fail"
+exit $fail
 ```
-Expected: `!!! FAILED` が 1 件も出ない
+Expected: `!!! FAILED` が 1 件も出ず、`aggregate exit: 0`。**`|| echo` だけでは失敗を握り潰す**
+（`echo` が rc 0 を返すのでループが成功終了する）。
 
 - [ ] **Step 3: monorepo の検証を走らせる**
 
@@ -1757,9 +2150,33 @@ git commit -m "chore(dispatch)!: バージョンを 3.0.0 へ上げる"
 
 ## 完了条件
 
-1. `for f in apps/cmux-team-dispatch-task/test/test-*.sh; do bash "$f"; done` が全件 exit 0。
+1. 全テストが緑。**失敗を集約して判定する**:
+   ```bash
+   fail=0
+   for f in apps/cmux-team-dispatch-task/test/test-*.sh; do
+     bash "$f" >/dev/null 2>&1 || { echo "FAILED: $f"; fail=1; }
+   done
+   exit $fail
+   ```
 2. `pnpm check` と `pnpm check:doc-lang` が exit 0。
 3. `git status --porcelain` に未コミットの変更が無い（`.codex/` などの untracked は除く）。
-4. `grep -rn '\.claude/cmux-team-dispatch-task' apps/cmux-team-dispatch-task/` が 0 件。
-5. `grep -rn 'design_runner\|review_runner\|exec_choice\|runners-edit\|REVIEW_POLICY' apps/cmux-team-dispatch-task/` が 0 件（`docs/` の履歴記述を除く）。
+4. 旧パスの残骸がない。**`test/` を除外する**（`test-config-paths.sh` の CP4 は「存在しないこと」を
+   検査するために旧パス文字列を needle として意図的に持つ）:
+   ```bash
+   grep -rn '\.claude/cmux-team-dispatch-task' \
+     apps/cmux-team-dispatch-task/skills apps/cmux-team-dispatch-task/README.md \
+     apps/cmux-team-dispatch-task/CLAUDE.md
+   ```
+   Expected: 0 件
+5. 旧語彙の残骸がない。**`test/` と `docs/` を除外する**（`test-doc-stale-vocab.sh` は旧語彙リスト
+   そのものを持ち、`docs/` の spec と plan は履歴として旧語彙を説明している）:
+   ```bash
+   grep -rnE 'design_runner|review_runner|exec_choice|runners-edit|REVIEW_POLICY|plan_model|review_model|exec_model' \
+     apps/cmux-team-dispatch-task/skills apps/cmux-team-dispatch-task/README.md \
+     apps/cmux-team-dispatch-task/CLAUDE.md
+   ```
+   Expected: 0 件。CLAUDE.md の項目 47（退役候補の記録）に**意図的な履歴記述**を残す場合は
+   `stale-vocab-exempt:` マーカーを付ける。
 6. バージョンが 3 箇所とも `3.0.0`。
+7. `bash apps/cmux-team-dispatch-task/test/test-delivery-callsites.sh` の **CS4 が PASS**
+   （Task 3 で意図的に赤くしたラチェットが Task 10 で緑に戻っていること）。
