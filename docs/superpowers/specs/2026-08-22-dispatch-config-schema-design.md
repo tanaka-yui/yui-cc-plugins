@@ -432,8 +432,29 @@ prewarm 側に上書きフラグを持たせる必要が無くなる。`RUNNERS_
   `null` と空文字はどちらも不正であり、省略の表現は「キーが無いこと」だけである。
 - 違反は**副作用ゼロで exit 2**（ペインも worktree も team member も作らない）。
 
-**検証済みスナップショット契約**（R4 #2）。`<STATUS_DIR>` は codex reviewer に書き込み許可を
-与えている領域なので、`roles.json` と `prewarm.json` は**検証したあとも書き換えられうる**。
+**reviewer の書き込み許可を `<STATUS_DIR>/review` へ狭める**（R5 #1 の根本対処）。
+`launch-workspace.sh:915-917` は review ペインへ `--add-dir '$STATUS_DIR'` を渡しているが、
+**直前のコメント自身が「worktree 外の `STATUS_DIR/review/` に書かれるため」**と、`review/` だけが
+理由だと述べている。実際 reviewer が `<STATUS_DIR>` へ書くのは findings
+（`review/<point>-round-<N>.md`）だけである。したがって:
+
+```
+--add-dir '<STATUS_DIR>/review'      # 旧: --add-dir '<STATUS_DIR>'
+```
+
+へ狭める。`<STATUS_DIR>/review` は agmsg の `run` / `db` と同じく、`-d` 判定の**前に**
+`launch-workspace.sh` 側（サンドボックス外）で `mkdir -p` しておく。
+
+この 1 行で reviewer は `roles.json` と `prewarm.json` を**そもそも書けなくなる**ので、
+「consumer の初回読み込み前に schema-valid な別内容へ置換する」経路が根元から消える。
+残るのは `--dangerously-bypass-approvals-and-sandbox` で動く executor だが、そちらは元から
+全権であり境界にならない。**署名機構やファイル移設のような新しい部分システムは作らない** —
+この露出は 2.0.0 の既存状態であって本 refactor が新設したものではなく、根本対処が
+`--add-dir` の 1 行で足りる以上、追加機構は割に合わない。
+
+**検証済みスナップショット契約**（R4 #2）。上の絞り込みがあってもなお、`<STATUS_DIR>` は
+worktree 外の共有領域であり、`roles.json` と `prewarm.json` は**検証したあとも書き換えられうる**
+（executor、並行するディスパッチ、前回実行の残骸）。
 「読み込み直後に検証する」だけでは、検証と利用の間に差し替えられた値が
 `zsh -ic "... '<prompt>' ..."` の合成へ到達する。素直なシェル実装（検証後にもう一度同じパスを
 `jq` する）はまさにこの形になるので、契約として縛る。
@@ -441,9 +462,22 @@ prewarm 側に上書きフラグを持たせる必要が無くなる。`RUNNERS_
 - 各 consumer は対象 JSON を**内容として 1 回だけ読む**（`DOC=$(cat …)` など）。
 - 検証はその読み込んだ内容に対して行い、**以後は検証済みのローカル値だけを使う**。
 - **同じ処理の中で元のパスを読み直してはならない。**
-- 対象 consumer は 3 つ: `prewarm-panes.sh`（`roles.json`）、`render-loop-prompt.sh`
-  （`prewarm.json`）、**`loop-cleanup.sh`（`prewarm.json`）**。cleanup を落とすと、
-  leave / close の対象が差し替えられて**別のエージェントやサーフェスを終了させられる**。
+- 対象 consumer は `roles.json` / `prewarm.json` を読む**すべて**である（R5 #1）。既知の内訳:
+
+  | consumer | 読むもの |
+  |----------|----------|
+  | `prewarm-panes.sh` | `roles.json` |
+  | `render-loop-prompt.sh` | `prewarm.json` |
+  | `loop-cleanup.sh` | `prewarm.json` |
+  | SKILL.md の executor 選択 / review 生存確認 / 最終 cleanup | `prewarm.json`（現行 SKILL.md の 5 箇所。4 ロール化で書き換える全箇所が対象） |
+
+  cleanup を落とすと、leave / close の対象が差し替えられて**別のエージェントやサーフェスを
+  終了させられる**。
+- **cleanup は `workspace_id` を自分が独立に知っている値と照合してから close する**（R5 #1）。
+  `prewarm.json` の `workspace_id` をそのまま `close-surface --workspace` に渡してはならない。
+  照合先は cleanup 自身の引数、または CLAUDE.md 項目 42 が既に定めている
+  「`cmux workspace list` を slug 名 `[<slug>]` でリテラル一致して引く」フォールバックである。
+  これは改竄以前に、**前回実行の古い `prewarm.json` が残っていても誤爆する実バグ**でもある。
 
 `prewarm.json` を読む 2 つ（renderer / cleanup）は、runner / engine / model / effort に加えて
 **実際に配送と終了処理へ使うフィールドも検証する**:
@@ -667,6 +701,12 @@ exec_review に別 runner を設定した構成で **Phase A-R と Phase B-R の
   `prewarm.json` は**実際に起動したロールだけ**を持つので、「ロールが存在する ⇔ そのロールの
   ブロックを出す」という 1 本の規則で 3 状態すべてを正しく表現できる。runner / engine / model /
   effort / agent もすべて `prewarm.json` にある（§4）。
+- **`prewarm.json` に `review_mode`（意図された値）を書き、renderer は不一致を警告する**
+  （R5 #1）。「ロールが存在する ⇔ ブロックを出す」だけだと、`review_mode=on` なのに review
+  ロールが欠けている状態を**無音で**「review 無し」として扱ってしまい、quality gate が黙って
+  消える。§5 が spawn 失敗を「警告してスキップ」と定めている以上、renderer 側も黙ってはならない。
+  ブロックの出し方は従来どおりロールの存在で決め、**不一致は stderr の警告として必ず出す**
+  （die はしない — 実際に起動していないペインへ依頼を送っても届かないため）。
 - `prewarm.json` も `<STATUS_DIR>` にあるので、renderer は §4 の**検証済みスナップショット契約**
   に従う（1 回だけ内容として読む / 検証済みローカル値だけを使う / 再読しない）。検証内容は
   `config-lib.sh` の 3 つの検証 + engine 整合 + model 省略可否 matrix に加えて、`agent` の
@@ -703,7 +743,7 @@ leave / close する**契約に変える（`review_mode=off` なら 2 件、`on`
 | `test/test-config-resolve.sh` | (role, field) 単位の precedence（global runner + project effort-only を含む）、`xHigh` → `xhigh` の正規化、組込み既定値の表、runner 未設定・不在の fail-fast（exit 2）、**codex review ロールの model 空を 2 ロール別々に fail-fast すること / codex の `design`・`exec` は model 空でも通ること**（#2）、model メタ文字の拒否、`DISPATCH_CONFIG_HOME` / `RUNNERS_CONFIG_PATH` の解決、`--set` の最優先適用、`review_mode=off` で review 2 ロールを解決対象から外すこと |
 | `test/test-config-resolve.sh`（続き） | **レイヤー単位 fallback の負例**（R2 #7）: global に有効値・project に不正 effort → global の値へ落ちること、codex ロールに claude エイリアス model → その layer だけ無効化して次層／既定へ落ちること。いずれも**不正値が出力に一切残らない**こと、resolver 全体が exit せず既定値へ飛び越しもしないこと |
 | `test/test-review-mode-resolve.sh`（`test-config-resolve.sh` に統合可） | `review_mode` の終端規則（#4）: 未設定 / `"ask"` / boolean / 任意文字列 / 型違いを各レイヤーで無効化して次へ落ち、全レイヤー無効なら既定 `on` に到達すること。質問へ落ちる経路が存在しないこと |
-| `test/test-snapshot-contract.sh` | 検証済みスナップショット契約（R4 #2）: `prewarm-panes.sh` / `render-loop-prompt.sh` / `loop-cleanup.sh` の 3 者それぞれで、**検証の後に対象 JSON を差し替えても差し替え後の値が使われない**こと（検証時点の値で動くか、そもそも再読しないこと）。`prewarm.json` を読む 2 者では、`agent` を別ロール名や `parent` に変えたもの、`surface_id` / `workspace_id` が空のもの、`wired` が `false` / 文字列 `"true"` のもの、型違い、許可外キーの追加を**すべて副作用ゼロで拒否**すること。特に `loop-cleanup.sh` が差し替えられた `agent` / `surface_id` を leave / close しないこと |
+| `test/test-snapshot-contract.sh` | **reviewer の `--add-dir` が `<STATUS_DIR>/review` に狭まっていること**、および `<STATUS_DIR>` そのものが review ペインの許可に含まれないこと、`review` ディレクトリが起動前に `mkdir -p` されること（R5 #1。`test-launch-workspace-codex.sh` の CR1 系へ入れてもよい）。検証済みスナップショット契約（R4 #2 / R5 #1）: `prewarm-panes.sh` / `render-loop-prompt.sh` / `loop-cleanup.sh` の 3 者それぞれで、**検証の後に対象 JSON を差し替えても差し替え後の値が使われない**こと（検証時点の値で動くか、そもそも再読しないこと）。`prewarm.json` を読む 2 者では、`agent` を別ロール名や `parent` に変えたもの、`surface_id` / `workspace_id` が空のもの、`wired` が `false` / 文字列 `"true"` のもの、型違い、許可外キーの追加を**すべて副作用ゼロで拒否**すること。特に `loop-cleanup.sh` が差し替えられた `agent` / `surface_id` を leave / close しないこと。**cleanup が `workspace_id` を独立に知っている値と照合し、一致しなければ close しないこと**（前回実行の古い `prewarm.json` が残っているケースを含む）。**契約の対象に SKILL.md の `prewarm.json` 読み取り箇所が全部入っていること**（生読みが残っていないことの needle 検査）|
 | `test/test-roles-input.sh` | `--roles` の再検証（R2 #1 / R3 #5）: **registry path を `roles.json.runners_file` から取らない**こと（偽 registry を指す `runners_file` を置いても `dispatch_runners_file` 側で判定して exit 2）、model 省略可否 matrix（codex `design` / `exec` の省略は成功、codex `design_review` / `exec_review` の省略・`null`・空文字は副作用ゼロの exit 2、claude 4 ロールは既定値で埋まる）、`review_mode=on` の 4 ロール fixture と `off` の 2 ロール fixture を別々に持つこと。加えて **`review_mode` と active ロールのキー集合が整合した 2 つの fixture**（on = 4 ロール / off = 2 ロール）で 2/4 ペインが決まること、そのとき `--review-mode` フラグが存在しないこと（R4 #3。厳密スキーマ検証と両立しないので「同一 fixture の `review_mode` だけを変える」形にはしない — 4 ロール fixture を off にすれば余分なロールで、2 ロール fixture を on にすれば必須ロール欠落で、どちらも exit 2 になり正例にならない）、改竄 `roles.json`（不正キー・engine 不整合・model のメタ文字・effort 範囲外・review_mode と review ロールの矛盾）が**副作用ゼロで exit 2** になること、`model` キー省略時に `--model` が渡らないこと、廃止した 13 フラグをすべて拒否すること、prewarm 本体から `RUNNERS_CONFIG_PATH` を読む経路が消えていること |
 | `test/test-pane-invariant.sh` | `review_mode=on` でちょうど 4 ペイン・`off` でちょうど 2 ペイン。split 方向が §4 の固定表と一致すること。`executors` キーが出力されないこと。**exec_review の spawn 失敗時に `code-review.json` と `--review-config` の両方が出ないこと / 正常系で design_review と exec_review に異なる値が入ること**（#10） |
 | `test/test-config-paths.sh` | D6 の path helper が**全 consumer へ届く**こと（#12）: `terminal-wait.sh` が `DISPATCH_CONFIG_HOME` 配下の `config.json` を読み書きすること、`launch-workspace.sh` が `RUNNERS_CONFIG_PATH` 未設定時に既定 base を解決し、設定時はそちらを使うこと。旧 `~/.claude/cmux-team-dispatch-task` を参照する箇所が 1 つも残らないこと |
@@ -722,7 +762,7 @@ leave / close する**契約に変える（`review_mode=off` なら 2 件、`on`
 | `test-launch-workspace-*.sh` | `--role` の新しい値域、役割フィールド層の消滅。**旧 `--role plan` / `review` が exit 2 になること**（R3 #7 の負例ラチェット）。**`--role exec` は新しい正当値として成功すること**（R4 #1。`exec` は旧値であると同時に新値でもあるので、退役リストに入れてはならない。入れると必須の exec ペインが起動できなくなる）|
 | `test-setup-skill.sh`（追加分） | pending tuple の再検証（R3 #2）: claude → codex の runner 変更に対し、不正になった **model / effort / 未登録 runner のそれぞれ**で当該次元だけが再質問されること、再質問の最中も両 `config.json` がバイト不変であること、2 回目も不正なら `--setup` はそのロールを未変更のままにすること。入口ごとの config 書き込み契約（R2 #5 / R3 #3）: global と project に異なる値を置いた状態で初回ディスパッチ / `--reset runners` / `--reset config` / `--reset all` を通し、両 config の前後バイト列・質問の有無・最終 resolve が §6 の表どおりになること。特に `--reset all` が**両レイヤー**の役割キーを消すこと |
 | `test-delivery-callsites.sh` | CS4 ratchet の削除済みスクリプト表へ `runners-edit.sh` を追加 |
-| `test-loop-prompt.sh` / `test-loop-skill.sh` | renderer の 4 ロール I/F（#6）: design_review と exec_review に異なる reviewer を与えたとき 2 つのブロックが別々の宛先を持つこと、`review_mode=off` で review フラグ一式を完全省略して成功すること、旧単一 `--review-*` I/F が die すること。**必須フィールド欠落の検出**（R2 #9）: `review_mode=on` で review 2 ロール × `runner` / `engine` / `model` / `effort` / `agent` を 1 つずつ欠落させ、いずれも非ゼロ終了すること（空宛先のレビュー依頼を生成しないこと）。**phase block の選択基準**（R2 #2）: design=claude / exec=codex と design=codex / exec=claude の 2 方向で、Phase A の文言が **design engine** と一致すること。**`--prewarm` 入力の 4 状態**（R3 #4 + R4 非ブロッキング注記 3）: review ロール 0 件 / 2 件 / exec_review だけ欠落 / **design_review だけ欠落** の 4 fixture（欠落を対称に置くことで「実在するロールだけ block を出す」一般則そのものを固定する） でブロックの出方が表どおりになること、codex `design` / `exec` の model 省略が成功し active review ロールの model 欠落が die すること、`--prewarm` 未指定と旧フラグ群が die すること |
+| `test-loop-prompt.sh` / `test-loop-skill.sh` | renderer の 4 ロール I/F（#6）: design_review と exec_review に異なる reviewer を与えたとき 2 つのブロックが別々の宛先を持つこと、`review_mode=off` で review フラグ一式を完全省略して成功すること、旧単一 `--review-*` I/F が die すること。**必須フィールド欠落の検出**（R2 #9）: `review_mode=on` で review 2 ロール × `runner` / `engine` / `model` / `effort` / `agent` を 1 つずつ欠落させ、いずれも非ゼロ終了すること（空宛先のレビュー依頼を生成しないこと）。**phase block の選択基準**（R2 #2）: design=claude / exec=codex と design=codex / exec=claude の 2 方向で、Phase A の文言が **design engine** と一致すること。**`--prewarm` 入力の 4 状態**（R3 #4 + R4 非ブロッキング注記 3）: review ロール 0 件 / 2 件 / exec_review だけ欠落 / **design_review だけ欠落** の 4 fixture（欠落を対称に置くことで「実在するロールだけ block を出す」一般則そのものを固定する）。**`review_mode` 不一致の警告**（R5 #1）: `prewarm.json` の `review_mode=on` に対して review ロールが欠けている 2 つの部分失敗 fixture で、stderr に警告が出ること（かつ die しないこと）、`review_mode=off` × review ロール 0 件では警告が出ないこと でブロックの出方が表どおりになること、codex `design` / `exec` の model 省略が成功し active review ロールの model 欠落が die すること、`--prewarm` 未指定と旧フラグ群が die すること |
 | `test-loop-cleanup.sh` / `test-cleanup-close.sh` | `prewarm.json` 実在ロールの列挙による leave / close（#7）: `review_mode=on` で 4 ロールを各 1 回、`off` で 2 ロールを各 1 回。`close-surface --workspace` が付くこと |
 | `test-doc-stale-vocab.sh` | **走査対象に英語の `SKILL.md` と `references/unattended/*.md` を明示的に含める**（R3 #7）。DS2 の旧語彙リストへ `design_runner` / `review_runner` / `exec_choice` / `prewarm` キー / `"ask"` / in-session / `REVIEW_POLICY` / legacy resolver / `runners-edit.sh` を追加。DS3 のラチェットも更新 |
 
@@ -813,3 +853,11 @@ local-conf 側は、`~/.claude/config` が既に単一シンボリックリン�
 - **`--roles <file>` はファイル経由の受け渡し**なので、`<STATUS_DIR>` が作れない環境
   では prewarm が動かない。`<STATUS_DIR>` は既に status.json / prewarm.json /
   review/ の置き場所として必須なので、新しい前提ではない。
+- **`<STATUS_DIR>` の JSON を信頼しきれない**（R5 #1 の残余）。§4 で reviewer の書き込み許可を
+  `<STATUS_DIR>/review` へ狭め、全 consumer に検証済みスナップショット契約を課し、cleanup に
+  workspace 照合を入れたことで、現実的な経路はほぼ塞がる。それでもなお
+  `--dangerously-bypass-approvals-and-sandbox` で動く executor は `<STATUS_DIR>` へ何でも書ける。
+  これは executor が元から全権であることの帰結であって新たに開いた経路ではなく、CLAUDE.md が
+  agmsg の `run` / `db` について既に採っているのと同じ「残余リスクとして記録する」扱いにする。
+  `prewarm.json` を署名するか reviewer の届かない場所へ移す案は、本 refactor とは別の部分
+  システムになるため**適用範囲外**とする。
