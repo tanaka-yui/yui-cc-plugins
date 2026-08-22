@@ -157,4 +157,40 @@ else
   echo "FAIL MT6: --parent への一本化または rc の分離が欠けている"; fail=1
 fi
 
+# --- MT7: 親自身の identity claim ---
+#
+# 親の Monitor は SessionStart が起動する無記名 watcher で、(project, type) に登録された
+# 全 agent 宛てを購読する。read cursor は (team, agent) ごとに 1 つなので、同じリポジトリで
+# 開かれた無関係なセッションが parent 宛の [ready] / dispatch-notify を先に取ると、親には
+# 二度と届かない。2026-08-22 の実測でこれが起きている。
+#
+# claim は join のあと、ペインを 1 枚も起動する前に行う。この位置が安全性の条件そのもので、
+# ディスパッチ途中に受信チャネルを張り替えると in-flight のメッセージを落とす。
+mt7=1
+grep -Fq 'actas-claim.sh' "$STEP1G" \
+  || { echo "  親の actas-claim.sh 呼び出しが無い"; mt7=0; }
+grep -Fq 'status=held' "$STEP1G" \
+  || { echo "  held の扱いが書かれていない"; mt7=0; }
+# claim のあとに Monitor を張り直すこと (claim だけでは無記名のまま)
+grep -Fq 'TaskStop' "$STEP1G" \
+  || { echo "  Monitor の張り直し指示が無い"; mt7=0; }
+# join が claim より前にあること (未登録だと actas-claim は not_registered で失敗する)
+join_line=$(grep -n 'join.sh' "$STEP1G" | head -1 | cut -d: -f1)
+claim_line=$(grep -n 'actas-claim.sh' "$STEP1G" | head -1 | cut -d: -f1)
+if [[ -z "$join_line" || -z "$claim_line" ]]; then
+  echo "  join / claim の行が見つからない"; mt7=0
+elif [[ "$join_line" -ge "$claim_line" ]]; then
+  echo "  join ($join_line 行) が claim ($claim_line 行) より後にある"; mt7=0
+fi
+# ペイン起動より前であること
+prewarm_line=$(grep -n 'prewarm-panes.sh' "$STEP1G" | head -1 | cut -d: -f1)
+if [[ -n "$prewarm_line" && "$claim_line" -ge "$prewarm_line" ]]; then
+  echo "  claim ($claim_line 行) がペイン起動 ($prewarm_line 行) より後にある"; mt7=0
+fi
+if [[ $mt7 -eq 1 ]]; then
+  echo "PASS MT7: 親は join 後・ペイン起動前に identity を claim し Monitor を張り直す"
+else
+  echo "FAIL MT7: 親の identity claim が欠けている"; fail=1
+fi
+
 exit $fail

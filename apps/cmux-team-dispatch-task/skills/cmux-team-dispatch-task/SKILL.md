@@ -370,6 +370,45 @@ depends on the parent engine, so derive it here, where it is used, and nowhere e
     PARENT_AGMSG_TYPE=$(bash <SKILL_DIR>/scripts/resolve-agmsg-type.sh --engine "$PARENT_ENGINE") || exit 1
     "$AGMSG_DIR/join.sh" "$TEAM" parent "$PARENT_AGMSG_TYPE" "$(pwd)" >/dev/null 2>&1 || true
 
+**Then claim the `parent` identity, before a single pane is launched.** The Monitor your
+SessionStart hook started is *unfiltered*: it subscribes to every agent registered for this
+project that nobody has claimed, and the read cursor is one per (team, agent). Any other
+session open in this checkout therefore consumes `[ready]` and `dispatch-notify:` rows
+addressed to `parent`, and once a row is taken it is marked read — `inbox.sh` will truthfully
+answer "nothing new" while the message sits in the DB, unseen. This was measured on
+2026-08-22, not theorised.
+
+    # claude parent only. A codex parent has no watch.sh to re-arm; it receives through its
+    # bridge seat, so there is nothing to claim here.
+    if [[ "$PARENT_ENGINE" == claude ]]; then
+      CLAIM=$("$AGMSG_DIR/actas-claim.sh" "$(pwd)" claude-code parent "$CLAUDE_CODE_SESSION_ID" 2>&1) || true
+      case "$CLAIM" in
+        *status=ok*) ;;
+        *status=held*)
+          echo "[error] another live session already holds the parent identity for $TEAM:"
+          echo "        $CLAIM"
+          echo "        two dispatches cannot share one parent in the same repository --"
+          echo "        finish or stop the other one, then retry"
+          exit 1 ;;
+        *) echo "[warn] could not claim the parent identity ($CLAIM); continuing unclaimed --"
+           echo "       messages addressed to parent may be consumed by another watcher" ;;
+      esac
+    fi
+
+When the claim succeeds, **re-arm your own Monitor with the name**: `TaskStop` the watcher task
+the SessionStart directive started, then invoke Monitor again with the same command plus
+`parent` as a fourth argument. The claim alone changes nothing for an already-running watcher —
+a watcher started without a name stays unnamed for its whole life.
+
+Doing this here, and only here, is what makes it safe: no pane exists yet, so there is no
+in-flight message to drop while the channel is swapped. **Never re-arm the parent's Monitor
+once panes are running.**
+
+A `held` result is fail-closed on purpose. Two dispatches in one repository already share the
+single `parent` name today and silently eat each other's notifications; refusing the second one
+turns that into a visible error. A crashed dispatch does not block the next: `actas_lock_state`
+reports a dead owner as free (`actas-lock.sh:243`).
+
 prewarm-panes.sh joins and wires all child roles. The four agent names are the task slug
 for design, then task-slug-design-review, task-slug-exec, and task-slug-exec-review.
 Every launched pane must first follow its SessionStart Monitor directive (Claude) or call

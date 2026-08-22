@@ -35,6 +35,7 @@ fail=0
 AGMSG_OWNED=(
   send.sh join.sh leave.sh inbox.sh history.sh
   delivery.sh watch.sh codex-record-session.sh
+  actas-claim.sh actas-lock.sh
 )
 is_agmsg_owned() {
   local n="$1" e
