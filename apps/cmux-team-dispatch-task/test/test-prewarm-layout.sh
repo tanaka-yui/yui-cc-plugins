@@ -16,6 +16,9 @@ printf 'launch %s\n' "$*" >> "$CALLS_LOG"
 [[ -n "${ORDER_LOG:-}" ]] && printf 'launch %s\n' "$*" >> "$ORDER_LOG"
 count=$(grep -c '^launch ' "$CALLS_LOG" || true)
 case "$*" in *"--role ${FAIL_LAUNCH_ROLE:-__none__} "*) exit 1 ;; esac
+case "$*" in
+  *"--role ${INVALID_JSON_ROLE:-__none__} "*) printf '%s\n' 'not-json'; exit 0 ;;
+esac
 jq -n --arg surface "surface:$count" '{workspace_id:"workspace:1",surface_id:$surface}'
 STUB
 chmod +x "$FAKE/launch-workspace.sh"
@@ -185,9 +188,7 @@ else
   bad "PW13 created worktree rollback (rc=$rc exists=$([[ -e "$created_wt" ]] && echo yes || echo no))"
 fi
 
-# Publishing is still inside the ownership transaction. If the status destination cannot
-# become a directory after all four panes launched, every joined role and created surface
-# must be rolled back even though no prewarm.json could be published.
+# An existing non-directory status path is rejected before any owned resources are created.
 STATUS="$TMP/status-publish-file"
 : > "$STATUS"
 : > "$TMP/calls.log"
@@ -198,11 +199,127 @@ rc=$?
 launches=$(launch_count)
 leaves=$(grep -c '^leave.sh ' "$TMP/calls.log" 2>/dev/null || true)
 closes=$(grep -c '^cmux close-surface ' "$TMP/calls.log" 2>/dev/null || true)
-if [[ $rc -ne 0 && "$launches" == 4 && "$leaves" == 4 && "$closes" == 4 \
+if [[ $rc -ne 0 && "$launches" == 0 && "$leaves" == 0 && "$closes" == 0 \
    && ! -e "$STATUS/prewarm.json" ]]; then
-  pass 'PW15 prewarm publish failure rolls back all joined roles and launched surfaces'
+  pass 'PW15 invalid status root is rejected before resource creation'
 else
-  bad "PW15 publish rollback (rc=$rc launches=$launches leaves=$leaves closes=$closes)"
+  bad "PW15 status root guard (rc=$rc launches=$launches leaves=$leaves closes=$closes)"
+fi
+
+# The producer owns the status trust boundary. A symlink status root must not let
+# either JSON artifact escape the dispatch directory.
+outside_status="$TMP/outside-status"
+mkdir -p "$outside_status"
+STATUS="$TMP/status-root-link"
+ln -s "$outside_status" "$STATUS"
+: > "$TMP/calls.log"
+CALLS_LOG="$TMP/calls.log" bash "$PW" --with-design --cwd "$TMP/wt" --slug pw16 \
+  --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_OFF" \
+  >/dev/null 2>"$TMP/pw16.err"
+rc=$?
+if [[ $rc -ne 0 && "$(launch_count)" == 0 \
+   && ! -e "$outside_status/prewarm.json" && ! -e "$outside_status/status.json" ]]; then
+  pass 'PW16 symlink status root is rejected before launch or external writes'
+else
+  bad "PW16 status root trust boundary (rc=$rc launches=$(launch_count))"
+fi
+
+# Existing artifact leaves may be replaced only when they are regular non-symlink
+# files. In particular, redirection must never follow an external-file symlink.
+STATUS=$(mktemp -d "$TMP/status-layout.XXXXXX")
+outside_prewarm="$TMP/outside-prewarm.json"
+printf '%s\n' 'outside sentinel' > "$outside_prewarm"
+ln -s "$outside_prewarm" "$STATUS/prewarm.json"
+: > "$TMP/calls.log"
+CALLS_LOG="$TMP/calls.log" bash "$PW" --with-design --cwd "$TMP/wt" --slug pw17 \
+  --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_OFF" \
+  >/dev/null 2>"$TMP/pw17.err"
+rc=$?
+outside_content=$(cat "$outside_prewarm")
+if [[ $rc -ne 0 && "$(launch_count)" == 0 && "$outside_content" == 'outside sentinel' \
+   && -L "$STATUS/prewarm.json" ]]; then
+  pass 'PW17 symlink prewarm leaf is rejected without overwriting its target'
+else
+  bad "PW17 prewarm leaf trust boundary (rc=$rc launches=$(launch_count) outside=$outside_content)"
+fi
+
+# A launcher may exit zero while violating its JSON stdout contract. The producer must
+# route that parse failure through the same required-role rollback as a non-zero launch.
+STATUS=$(mktemp -d "$TMP/status-layout.XXXXXX")
+: > "$TMP/calls.log"
+INVALID_JSON_ROLE=exec CALLS_LOG="$TMP/calls.log" bash "$PW" --with-design \
+  --cwd "$TMP/wt" --slug pw18 --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_ON" \
+  >/dev/null 2>"$TMP/pw18.err"
+rc=$?
+launches=$(launch_count)
+leaves=$(grep -c '^leave.sh ' "$TMP/calls.log" 2>/dev/null || true)
+closes=$(grep -c '^cmux close-surface ' "$TMP/calls.log" 2>/dev/null || true)
+if [[ $rc -ne 0 && "$launches" == 3 && "$leaves" == 4 && "$closes" == 2 \
+   && ! -e "$STATUS/prewarm.json" ]]; then
+  pass 'PW18 invalid successful launcher JSON triggers required-role rollback'
+else
+  bad "PW18 invalid launcher JSON rollback (rc=$rc launches=$launches leaves=$leaves closes=$closes)"
+fi
+
+# A directory at the initial-status leaf is invalid before launch. It must not allow a
+# prewarm artifact to be committed first and left behind after status publication fails.
+STATUS=$(mktemp -d "$TMP/status-layout.XXXXXX")
+mkdir "$STATUS/status.json"
+: > "$TMP/calls.log"
+CALLS_LOG="$TMP/calls.log" bash "$PW" --with-design --cwd "$TMP/wt" --slug pw19 \
+  --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_ON" \
+  >/dev/null 2>"$TMP/pw19.err"
+rc=$?
+if [[ $rc -ne 0 && "$(launch_count)" == 0 && ! -e "$STATUS/prewarm.json" ]]; then
+  pass 'PW19 directory status leaf is rejected before launch or partial publication'
+else
+  bad "PW19 status directory leaf (rc=$rc launches=$(launch_count) prewarm=$([[ -e "$STATUS/prewarm.json" ]] && echo yes || echo no))"
+fi
+
+# The initial-status leaf has the same non-symlink rule as prewarm.json.
+STATUS=$(mktemp -d "$TMP/status-layout.XXXXXX")
+outside_initial_status="$TMP/outside-status.json"
+printf '%s\n' 'outside status sentinel' > "$outside_initial_status"
+ln -s "$outside_initial_status" "$STATUS/status.json"
+: > "$TMP/calls.log"
+CALLS_LOG="$TMP/calls.log" bash "$PW" --with-design --cwd "$TMP/wt" --slug pw20 \
+  --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_ON" \
+  >/dev/null 2>"$TMP/pw20.err"
+rc=$?
+outside_status_content=$(cat "$outside_initial_status")
+if [[ $rc -ne 0 && "$(launch_count)" == 0 && ! -e "$STATUS/prewarm.json" \
+   && "$outside_status_content" == 'outside status sentinel' ]]; then
+  pass 'PW20 symlink status leaf is rejected without overwriting its target'
+else
+  bad "PW20 status symlink leaf (rc=$rc launches=$(launch_count) outside=$outside_status_content)"
+fi
+
+# Inject a genuine late failure at the atomic status rename. Both JSON documents must be
+# staged before commit, so no prewarm artifact is visible and all owned resources roll back.
+mkdir -p "$TMP/publish-bin"
+REAL_MV=$(command -v mv)
+cat > "$TMP/publish-bin/mv" <<'STUB'
+#!/usr/bin/env bash
+last=''
+for arg in "$@"; do last="$arg"; done
+[[ "$last" == */status.json ]] && exit 1
+exec "$REAL_MV" "$@"
+STUB
+chmod +x "$TMP/publish-bin/mv"
+STATUS=$(mktemp -d "$TMP/status-layout.XXXXXX")
+: > "$TMP/calls.log"
+REAL_MV="$REAL_MV" PATH="$TMP/publish-bin:$PATH" CALLS_LOG="$TMP/calls.log" \
+  bash "$PW" --with-design --cwd "$TMP/wt" --slug pw21 --status-dir "$STATUS" \
+    --agmsg-team team --roles "$ROLES_ON" >/dev/null 2>"$TMP/pw21.err"
+rc=$?
+launches=$(launch_count)
+leaves=$(grep -c '^leave.sh ' "$TMP/calls.log" 2>/dev/null || true)
+closes=$(grep -c '^cmux close-surface ' "$TMP/calls.log" 2>/dev/null || true)
+if [[ $rc -ne 0 && "$launches" == 4 && "$leaves" == 4 && "$closes" == 4 \
+   && ! -e "$STATUS/prewarm.json" && ! -e "$STATUS/status.json" ]]; then
+  pass 'PW21 late status rename failure leaves no partial artifacts and rolls back resources'
+else
+  bad "PW21 late status failure (rc=$rc launches=$launches leaves=$leaves closes=$closes)"
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

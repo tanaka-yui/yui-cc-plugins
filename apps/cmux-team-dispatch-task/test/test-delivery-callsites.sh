@@ -372,10 +372,11 @@ check_region_has 'Phase B-R の待機手順 (claude)' "$SKILL_DIR/SKILL.md" \
 check_region_has 'REVIEW_INSTRUCTION の待機手順 (claude)' "$LAUNCH" \
   'REVIEW_INSTRUCTION="MANDATORY CODE REVIEW' '' \
   'single-shot safety timer' || cs7=0
-# codex 側: 「保険が無い」ことと、代替の 2 手 (到達性確認 + 親への 1 通報告) があること
+# codex 側: 「保険が無い」ことと親への 1 通報告があること。Phase A-R の
+# reviewer-engine 別到達性確認は、下の CS8 が production renderer の実出力で検査する。
 check_region_has 'Phase A-R の待機手順 (codex)' "$SKILL_DIR/SKILL.md" \
   '2. Send the request with ONE send.sh call' 'Act on the verdict:' \
-  'NO safety net' 'verify-agmsg-ready\.sh --codex' 'dispatch-notify:' || cs7=0
+  'NO safety net' 'dispatch-notify:' || cs7=0
 check_region_has 'Phase B-R の待機手順 (codex)' "$SKILL_DIR/SKILL.md" \
   'After sending each `review-code:` request' 'The design pane is never selected as code reviewer' \
   'NO safety net' 'verify-agmsg-ready\.sh --codex' 'dispatch-notify:' || cs7=0
@@ -402,6 +403,40 @@ if [[ $cs7 -eq 1 ]]; then
   echo "PASS CS7: verdict を待つ 4 箇所とも claude=タイマー / codex=保険なし+代替 2 手で書かれている"
 else
   echo "FAIL CS7: verdict 待機の保険が engine ごとに正しく書かれていない"; fail=1
+fi
+
+# --- CS8: Phase A-R の実配送 prompt は waiter/reviewer engine を独立に扱う ---
+# 静的な語彙検査だけでは、design=codex の分岐内で reviewer engine を見ずに常に
+# --codex seat を検査する退行を見逃す。production renderer を mixed-engine 2 方向で
+# 実行し、配送される wait protocol 本文そのものを検査する。
+PHASE_A_WAIT="$SCRIPTS/phase-a-review-wait.sh"
+codex_claude=$(bash "$PHASE_A_WAIT" --waiter-engine codex --reviewer-engine claude \
+  --team tm --waiter-agent task --reviewer-agent task-design-review \
+  --reviewer-workspace workspace:1 --reviewer-surface surface:2 \
+  --findings-path /dispatch/review/spec-round-1.md --send-command /agmsg/send.sh 2>/dev/null)
+codex_claude_rc=$?
+claude_codex=$(bash "$PHASE_A_WAIT" --waiter-engine claude --reviewer-engine codex \
+  --team tm --waiter-agent task --reviewer-agent task-design-review \
+  --reviewer-workspace workspace:1 --reviewer-surface surface:2 \
+  --findings-path /dispatch/review/plan-round-1.md --send-command /agmsg/send.sh 2>/dev/null)
+claude_codex_rc=$?
+skill_flat=$(tr '\n' ' ' < "$SKILL_DIR/SKILL.md" | tr -s ' ')
+if [[ $codex_claude_rc -eq 0 \
+   && "$codex_claude" == *'NO safety net'* \
+   && "$codex_claude" == *'cmux read-screen --workspace workspace:1 --surface surface:2'* \
+   && "$codex_claude" == *'dispatch-notify:'* \
+   && "$codex_claude" != *'verify-agmsg-ready.sh --codex'* \
+   && $claude_codex_rc -eq 0 \
+   && "$claude_codex" == *'single-shot safety timer'* \
+   && "$claude_codex" == *'run_in_background'* \
+   && "$claude_codex" == *'verify-agmsg-ready.sh --codex --team tm --name task-design-review'* \
+   && "$claude_codex" != *'cmux read-screen'* \
+   && "$skill_flat" == *'{{DESIGN_REVIEW_SURFACE}}'* \
+   && "$skill_flat" == *'{{DESIGN_REVIEW_WORKSPACE}}'* ]]; then
+  echo 'PASS CS8: mixed-engine 2 方向の Phase A-R 実配送 prompt が reviewer engine 別 liveness を持つ'
+else
+  echo 'FAIL CS8: Phase A-R 実配送 prompt が waiter/reviewer engine を独立に扱っていない'
+  fail=1
 fi
 
 exit $fail

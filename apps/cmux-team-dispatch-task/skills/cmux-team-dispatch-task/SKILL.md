@@ -566,7 +566,8 @@ another role's engine, and do not read config again. The placeholder set is:
 | placeholder group | source |
 |---|---|
 | {{DESIGN_RUNNER}}, {{DESIGN_ENGINE}}, {{DESIGN_MODEL}}, {{DESIGN_EFFORT}} | roles.design |
-| {{DESIGN_REVIEW_RUNNER}}, {{DESIGN_REVIEW_ENGINE}}, {{DESIGN_REVIEW_MODEL}}, {{DESIGN_REVIEW_EFFORT}}, {{DESIGN_REVIEW_AGENT}} | roles.design_review when present |
+| {{DESIGN_REVIEW_RUNNER}}, {{DESIGN_REVIEW_ENGINE}}, {{DESIGN_REVIEW_MODEL}}, {{DESIGN_REVIEW_EFFORT}}, {{DESIGN_REVIEW_AGENT}}, {{DESIGN_REVIEW_SURFACE}} | roles.design_review when present |
+| {{DESIGN_REVIEW_WORKSPACE}} | validated prewarm workspace_id when design_review is present |
 | {{EXEC_RUNNER}}, {{EXEC_ENGINE}}, {{EXEC_MODEL}}, {{EXEC_EFFORT}} | roles.exec |
 | {{EXEC_REVIEW_RUNNER}}, {{EXEC_REVIEW_ENGINE}}, {{EXEC_REVIEW_MODEL}}, {{EXEC_REVIEW_EFFORT}}, {{EXEC_REVIEW_AGENT}} | roles.exec_review when present |
 
@@ -593,6 +594,7 @@ then states:
 Before any role lookup, consume prewarm.json through one immutable validated snapshot:
 
     PREWARM_FILE="<EXISTING_STATUS_DIR>/prewarm.json"
+    source <SKILL_DIR>/scripts/prewarm-snapshot.sh
     PREWARM_DOC=$(cat "$PREWARM_FILE") || {
       echo "[error] required prewarm snapshot is missing or unreadable" >&2
       exit 1
@@ -617,9 +619,22 @@ For each checkpoint, write the request and findings files under
 review-plan: message to {{DESIGN_REVIEW_AGENT}}. The reviewer writes a VERDICT line and
 sends one review-verdict: message back. On every wake, re-read the findings file. Fix
 needs_work findings and repeat for at most five rounds. A Claude waiter may arm one
-single-shot safety timer; a Codex waiter has no timer and must verify the reviewer seat
-and notify parent that the wait is unbacked. If design_review is absent, warn once and
-skip only Phase A-R.
+single-shot safety timer; a Codex waiter has no timer. Reviewer liveness always branches
+on {{DESIGN_REVIEW_ENGINE}}: a Codex reviewer uses its bridge seat, while a Claude
+reviewer uses {{DESIGN_REVIEW_WORKSPACE}} and {{DESIGN_REVIEW_SURFACE}} with one
+`cmux read-screen` retry. If design_review is absent, warn once and skip only Phase A-R.
+
+Before delivering the Phase A task, render the exact wait protocol and append its output
+once to the generated design prompt. The waiter engine controls timer availability; the
+reviewer engine independently controls liveness:
+
+    PHASE_A_WAIT_PROTOCOL=$(bash <SKILL_DIR>/scripts/phase-a-review-wait.sh \
+      --waiter-engine "{{DESIGN_ENGINE}}" --reviewer-engine "{{DESIGN_REVIEW_ENGINE}}" \
+      --team "$TEAM" --waiter-agent "<slug>" --reviewer-agent "{{DESIGN_REVIEW_AGENT}}" \
+      --reviewer-workspace "{{DESIGN_REVIEW_WORKSPACE}}" \
+      --reviewer-surface "{{DESIGN_REVIEW_SURFACE}}" \
+      --findings-path "<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md" \
+      --send-command "$AGMSG_SEND") || exit 1
 
 Always append the protocol:
 
@@ -628,9 +643,10 @@ then calls send.sh once with a review-verdict: body addressed to the design agen
 2. Send the request with ONE send.sh call. After a successful send, wait for the push
 message and re-read the findings file on every wake. As a Claude session, arm ONE
 single-shot safety timer with the Bash tool using run_in_background. As a Codex session,
-you have NO safety net: first run verify-agmsg-ready.sh --codex for
-{{DESIGN_REVIEW_AGENT}}, then send one dispatch-notify: message to parent reporting the
-unbacked wait. Never infer a verdict from a timer wake.
+you have NO safety net. Follow the generated `PHASE_A_WAIT_PROTOCOL`; do not replace its
+reviewer-engine-specific liveness command with a waiter-engine assumption. Then send one
+dispatch-notify: message to parent when that protocol requires it. Never infer a verdict
+from a timer wake.
 Act on the verdict: fix needs_work findings and resend, or proceed only on approve.
 1b. Append the parallel-review directive generated for {{DESIGN_REVIEW_ENGINE}} to the
 request text.
@@ -784,6 +800,7 @@ wired=true. There are no nested executor or generic review containers:
 Every consumer follows the verified-snapshot contract: read the file content once, validate
 the complete document, and use here-strings for every later jq extraction:
 
+    source <this-skill-dir>/scripts/prewarm-snapshot.sh
     PREWARM_DOC=$(cat "<EXISTING_STATUS_DIR>/prewarm.json") || exit 1
     validate_prewarm_snapshot "$PREWARM_DOC" || exit 1
     DESIGN_SURFACE=$(jq -r '.design.surface_id' <<<"$PREWARM_DOC")

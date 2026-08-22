@@ -17,11 +17,32 @@ CREATED_BRANCH=""
 JOINED_ROLES=()
 LAUNCHED_SURFACES=()
 LAUNCHED_WORKSPACES=()
+PREWARM_TMP=""
+STATUS_TMP=""
+PUBLISHED_INITIAL_STATUS=0
 
 rollback_owned_resources() {
   local i role agent workspace surface
   [[ $ROLLBACK_ACTIVE -eq 1 ]] || return 0
   ROLLBACK_ACTIVE=0
+
+  if [[ $PUBLISHED_INITIAL_STATUS -eq 1 ]]; then
+    if [[ -f "$STATUS_DIR/status.json" && ! -L "$STATUS_DIR/status.json" ]]; then
+      rm -f -- "$STATUS_DIR/status.json" \
+        || log warn "failed to remove rollback status artifact $STATUS_DIR/status.json"
+    else
+      log warn "refusing to remove changed rollback status artifact $STATUS_DIR/status.json"
+    fi
+    PUBLISHED_INITIAL_STATUS=0
+  fi
+  if [[ -n "$PREWARM_TMP" ]]; then
+    rm -f -- "$PREWARM_TMP" || log warn "failed to remove temporary prewarm artifact"
+    PREWARM_TMP=""
+  fi
+  if [[ -n "$STATUS_TMP" ]]; then
+    rm -f -- "$STATUS_TMP" || log warn "failed to remove temporary status artifact"
+    STATUS_TMP=""
+  fi
 
   for ((i=${#LAUNCHED_SURFACES[@]}-1; i>=0; i--)); do
     surface="${LAUNCHED_SURFACES[$i]}"
@@ -130,6 +151,22 @@ esac
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
 command -v git >/dev/null 2>&1 || die "git is not installed"
 
+validate_publish_destination() {
+  local prewarm_file="$STATUS_DIR/prewarm.json" status_file="$STATUS_DIR/status.json"
+  if [[ -e "$STATUS_DIR" || -L "$STATUS_DIR" ]]; then
+    [[ -d "$STATUS_DIR" && ! -L "$STATUS_DIR" ]] \
+      || die "status path must be a non-symlink directory"
+  fi
+  if [[ -e "$prewarm_file" || -L "$prewarm_file" ]]; then
+    [[ -f "$prewarm_file" && ! -L "$prewarm_file" ]] \
+      || die "prewarm target must be a regular non-symlink file"
+  fi
+  if [[ -e "$status_file" || -L "$status_file" ]]; then
+    [[ -f "$status_file" && ! -L "$status_file" ]] \
+      || die "status target must be a regular non-symlink file"
+  fi
+}
+
 # Read the resolver output exactly once. All validation and extraction below use
 # this immutable in-process snapshot, never ROLES_FILE again.
 ROLES_DOC=$(cat "$ROLES_FILE") || die "cannot read --roles file"
@@ -198,6 +235,7 @@ validate_roles_doc() {
 # Every configuration violation is rejected before worktree, agmsg, or pane side effects.
 validate_roles_doc
 REVIEW_MODE=$(jq -r '.review_mode' <<< "$ROLES_DOC")
+validate_publish_destination
 
 if [[ $WITH_DESIGN -eq 1 ]]; then
   [[ -z "$WORKSPACE" && -z "$BASE_SURFACE" ]] \
@@ -324,7 +362,15 @@ launch_role() { # role [workspace split-from direction]
   args+=(--agmsg-team "$AGMSG_TEAM" --agmsg-from "$agent")
 
   if result=$(bash "$SCRIPT_DIR/launch-workspace.sh" "${args[@]}" "$agent" "$prompt"); then
-    surface=$(jq -r '.surface_id // empty' <<< "$result")
+    if ! jq -e 'type == "object"' >/dev/null 2>&1 <<< "$result"; then
+      if [[ "$role" == design || "$role" == exec ]]; then
+        die "required $role pane returned invalid JSON"
+      fi
+      leave_role "$role"
+      log warn "$role pane returned invalid JSON; omitting that review role"
+      return 1
+    fi
+    surface=$(jq -r 'if (.surface_id | type) == "string" then .surface_id else empty end' <<< "$result")
     if [[ -z "$surface" ]]; then
       [[ "$role" == design || "$role" == exec ]] && die "failed to parse required $role pane output"
       leave_role "$role"
@@ -333,7 +379,8 @@ launch_role() { # role [workspace split-from direction]
     fi
     LAUNCHED_SURFACE="$surface"
     LAUNCHED_WORKSPACE=""
-    [[ "$role" != design ]] || LAUNCHED_WORKSPACE=$(jq -r '.workspace_id // empty' <<< "$result")
+    [[ "$role" != design ]] || LAUNCHED_WORKSPACE=$(jq -r \
+      'if (.workspace_id | type) == "string" then .workspace_id else empty end' <<< "$result")
     [[ "$role" != design || -n "$LAUNCHED_WORKSPACE" ]] || die "failed to parse design workspace output"
     LAUNCHED_SURFACES+=("$LAUNCHED_SURFACE")
     if [[ "$role" == design ]]; then
@@ -397,20 +444,39 @@ PANES_JSON=$(jq -n \
    {exec: $exec} + (if $ers != "" then {exec_review: $er} else {} end)')
 
 mkdir -p "$STATUS_DIR" || die "cannot create status directory at $STATUS_DIR"
+validate_publish_destination
+PREWARM_TMP=$(mktemp "$STATUS_DIR/.prewarm.json.XXXXXX") \
+  || die "cannot create temporary prewarm artifact"
 jq -n --arg workspace_id "$WORKSPACE" --arg review_mode "$REVIEW_MODE" --argjson panes "$PANES_JSON" \
-  '{workspace_id: $workspace_id, review_mode: $review_mode} + $panes' > "$STATUS_DIR/prewarm.json" \
-  || die "cannot publish $STATUS_DIR/prewarm.json"
-log prewarm "wrote $STATUS_DIR/prewarm.json"
+  '{workspace_id: $workspace_id, review_mode: $review_mode} + $panes' > "$PREWARM_TMP" \
+  || die "cannot write temporary prewarm artifact"
 
+WROTE_INITIAL_STATUS=0
 if [[ $WITH_DESIGN -eq 1 && ! -f "$STATUS_DIR/status.json" ]]; then
+  STATUS_TMP=$(mktemp "$STATUS_DIR/.status.json.XXXXXX") \
+    || die "cannot create temporary initial status artifact"
   jq -n --arg ws "$WORKSPACE" --arg sf "$DESIGN_SURFACE" \
     '{status: "launched", workspace_id: $ws, surface_id: $sf,
       message: "agmsg prewarm panes launched (idle)", timestamp: (now | todate)}' \
-    > "$STATUS_DIR/status.json" || die "cannot publish initial $STATUS_DIR/status.json"
-  log prewarm "wrote initial launched status.json"
+    > "$STATUS_TMP" || die "cannot write temporary initial status artifact"
 fi
 
+validate_publish_destination
+if [[ -n "$STATUS_TMP" ]]; then
+  mv -- "$STATUS_TMP" "$STATUS_DIR/status.json" \
+    || die "cannot publish initial $STATUS_DIR/status.json"
+  STATUS_TMP=""
+  PUBLISHED_INITIAL_STATUS=1
+  WROTE_INITIAL_STATUS=1
+fi
+mv -- "$PREWARM_TMP" "$STATUS_DIR/prewarm.json" \
+  || die "cannot publish $STATUS_DIR/prewarm.json"
+PREWARM_TMP=""
 ROLLBACK_ACTIVE=0
+PUBLISHED_INITIAL_STATUS=0
+
+log prewarm "wrote $STATUS_DIR/prewarm.json"
+[[ $WROTE_INITIAL_STATUS -eq 0 ]] || log prewarm "wrote initial launched status.json"
 
 jq -n --arg workspace_id "$WORKSPACE" --arg review_mode "$REVIEW_MODE" --argjson panes "$PANES_JSON" \
   '{workspace_id: $workspace_id, review_mode: $review_mode, panes: $panes}'

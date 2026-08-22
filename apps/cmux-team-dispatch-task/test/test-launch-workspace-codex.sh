@@ -22,14 +22,23 @@ git -C "$TMP/repo" commit -qm init
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  list-workspaces) ;;
-  new-workspace) echo 'workspace:1' ;;
+  list-workspaces)
+    count=$(cat "$CMUX_TEST_STATE" 2>/dev/null || echo 0)
+    for ((i=1; i<=count; i++)); do echo "workspace:$i"; done
+    ;;
+  new-workspace)
+    count=$(cat "$CMUX_TEST_STATE" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    echo "$count" > "$CMUX_TEST_STATE"
+    echo "workspace:$count"
+    ;;
   list-pane-surfaces) echo 'surface:2' ;;
   rename-workspace|rename-tab|notify|send|send-key|wait-for|identify) ;;
   *) echo "unexpected cmux command: $*" >&2; exit 1 ;;
 esac
 STUB
 chmod +x "$TMP/bin/cmux"
+export CMUX_TEST_STATE="$TMP/cmux-workspace-count"
 
 # agmsg send.sh のスタブ。--agmsg-team/--agmsg-from を渡す invocation の存在チェック用。
 cat > "$TMP/bin/agmsg-send.sh" <<'STUB'

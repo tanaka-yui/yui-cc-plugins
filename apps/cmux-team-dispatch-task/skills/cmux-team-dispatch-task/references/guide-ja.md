@@ -333,7 +333,8 @@ config を読み直さない。
 | placeholder group | source |
 |---|---|
 | {{DESIGN_RUNNER}}, {{DESIGN_ENGINE}}, {{DESIGN_MODEL}}, {{DESIGN_EFFORT}} | roles.design |
-| {{DESIGN_REVIEW_RUNNER}}, {{DESIGN_REVIEW_ENGINE}}, {{DESIGN_REVIEW_MODEL}}, {{DESIGN_REVIEW_EFFORT}}, {{DESIGN_REVIEW_AGENT}} | roles.design_review |
+| {{DESIGN_REVIEW_RUNNER}}, {{DESIGN_REVIEW_ENGINE}}, {{DESIGN_REVIEW_MODEL}}, {{DESIGN_REVIEW_EFFORT}}, {{DESIGN_REVIEW_AGENT}}, {{DESIGN_REVIEW_SURFACE}} | roles.design_review |
+| {{DESIGN_REVIEW_WORKSPACE}} | 検証済み prewarm workspace_id |
 | {{EXEC_RUNNER}}, {{EXEC_ENGINE}}, {{EXEC_MODEL}}, {{EXEC_EFFORT}} | roles.exec |
 | {{EXEC_REVIEW_RUNNER}}, {{EXEC_REVIEW_ENGINE}}, {{EXEC_REVIEW_MODEL}}, {{EXEC_REVIEW_EFFORT}}, {{EXEC_REVIEW_AGENT}} | roles.exec_review |
 
@@ -351,13 +352,17 @@ prewarm.json は必須で、内容を 1 回だけ読み、全体を検証して�
 
 Phase A-R は design_review pane を spec と plan の 2 checkpoint で再利用する。review-plan:
 を 1 通送り、reviewer は findings の VERDICT と review-verdict: を返す。wake のたびに findings
-を再読する。needs_work は修正して最大 5 round。Codex waiter は timer を作らず、counterpart
-到達性を検証して保険の無い待機を親へ報告する。
+を再読する。needs_work は修正して最大 5 round。waiter engine は timer の有無だけを決め、
+reviewer engine は到達性検査を独立に決める。Codex reviewer は bridge seat、Claude reviewer は
+{{DESIGN_REVIEW_WORKSPACE}} / {{DESIGN_REVIEW_SURFACE}} の `cmux read-screen` を 1 回 retry して検査する。
+
+親は Phase A task の配送前に `phase-a-review-wait.sh` を waiter / reviewer の両 engine と
+reviewer workspace / surface 付きで実行し、その出力を design prompt へ 1 回だけ埋め込む。
 
 Claude waiter は Bash tool の run_in_background で single-shot safety timer を 1 本だけ張る。
-Codex waiter には safety net が無いため、review agent を verify-agmsg-ready.sh --codex で
-確認し、保険の無い待機へ入ることを dispatch-notify: で親へ 1 通報告する。どの wake でも
-findings を再読し、timer wake を verdict とみなさない。
+Codex waiter には safety net が無いため、生成済み wait protocol に従って reviewer engine 別の
+到達性を確認し、保険の無い待機へ入ることを dispatch-notify: で親へ 1 通報告する。どの wake
+でも findings を再読し、timer wake を verdict とみなさない。
 
 Phase B は `phase-b-deliver.sh` だけで検証済み snapshot の `exec` ペインへ配送する。新しい execute
 session を起動せず、`launch-workspace.sh --mode execute` も呼ばない。helper は exec の固定 tuple を
@@ -451,6 +456,7 @@ executor や汎用 review container は無い。
 
 consumer は必ず内容を 1 回だけ読む:
 
+    source <this-skill-dir>/scripts/prewarm-snapshot.sh
     PREWARM_DOC=$(cat "<EXISTING_STATUS_DIR>/prewarm.json") || exit 1
     validate_prewarm_snapshot "$PREWARM_DOC" || exit 1
     DESIGN_SURFACE=$(jq -r '.design.surface_id' <<<"$PREWARM_DOC")

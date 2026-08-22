@@ -355,6 +355,9 @@ Phase B は `phase-b-deliver.sh` が検証済み `prewarm.json.exec` の固定 t
 
 - `review_mode=off`: `design` と `exec` の 2 ペイン。Phase A-R / B-R は行いません。
 - `review_mode=on`: 4 ペイン。Phase A-R は `design_review`、B-R は `exec_review` を再利用します。
+- Phase A-R の wait protocol は `phase-a-review-wait.sh` が生成します。design engine は timer の
+  有無、design_review engine は liveness 検査を独立に決めます。Codex reviewer は bridge seat、
+  Claude reviewer は検証済み workspace / surface への `cmux read-screen` を 1 回 retry します。
 - review ペインの launch/readiness だけが失敗した場合は、対応 gate だけを警告して省略します。
   design / exec の readiness 失敗は dispatch 全体を停止します。
 - `review-gate.sh` は `prewarm.json` に `exec_review` が存在し、同ロールの `[ready]` を受信した
@@ -408,6 +411,7 @@ member / surface だけを rollback し、再利用資源は残します。
 全 consumer は**検証済みスナップショット契約**に従います。ファイル内容を 1 回だけ読み、document
 全体を検証し、以後の抽出はそのローカル値だけから行います。cleanup は固定 4 ロール名を明示列挙し、
 snapshot の `workspace_id` が現在の workspace と一致するときだけ close / leave します。
+normative task prompt は `prewarm-snapshot.sh` を source し、この共通 validator を role lookup より先に実行します。
 
 ## アカウント切り替えとセッション共有 (claude-link.sh)
 

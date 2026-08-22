@@ -1358,18 +1358,19 @@ if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; th
   SPLIT_OUTPUT=$("$CMUX" new-split "$STANDBY_SPLIT_DIRECTION" \
     --workspace "$STANDBY_IN" \
     --surface "$STANDBY_SPLIT_FROM" 2>/dev/null) || die "failed to create standby split pane"
+  SURFACES_AFTER=$(list_workspace_surface_ids "$STANDBY_IN") \
+    || die "failed to inventory standby workspace after split creation"
+  ADDED_SURFACE_ID=$(single_added_ref surface "$SURFACES_BEFORE" "$SURFACES_AFTER") \
+    || die "failed to identify one created surface from the inventory delta: $SPLIT_OUTPUT"
+  CREATED_SURFACE_ID="$ADDED_SURFACE_ID"
+  CREATED_SURFACE_WORKSPACE="$WORKSPACE_ID"
   SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1 || true)
   if [[ -z "$SURFACE_ID" ]]; then
-    SURFACES_AFTER=$(list_workspace_surface_ids "$STANDBY_IN") \
-      || die "failed to inventory standby workspace after malformed split output"
-    SURFACE_ID=$(single_added_ref surface "$SURFACES_BEFORE" "$SURFACES_AFTER") \
-      || die "failed to identify the created surface after malformed split output: $SPLIT_OUTPUT"
-    CREATED_SURFACE_ID="$SURFACE_ID"
-    CREATED_SURFACE_WORKSPACE="$WORKSPACE_ID"
     die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
   fi
-  CREATED_SURFACE_ID="$SURFACE_ID"
-  CREATED_SURFACE_WORKSPACE="$WORKSPACE_ID"
+  [[ "$SURFACE_ID" == "$ADDED_SURFACE_ID" ]] \
+    || die "split output surface $SURFACE_ID does not match inventory-added surface $ADDED_SURFACE_ID"
+  SURFACE_ID="$ADDED_SURFACE_ID"
   log "cmux" "standby pane surface: $SURFACE_ID"
 
   "$CMUX" rename-tab --workspace "$STANDBY_IN" --surface "$SURFACE_ID" "$TITLE" >/dev/null 2>&1 || \
@@ -1395,16 +1396,18 @@ else
   log "cmux" "creating workspace with cwd=$CWD, auto-launching runner via --command"
   WORKSPACE_OUTPUT=$("$CMUX" new-workspace --cwd "$CWD" --command "bash $RUNNER_SCRIPT_NAME" 2>/dev/null) \
     || die "failed to create cmux workspace"
+  WORKSPACES_AFTER=$(list_workspace_ids) \
+    || die "failed to inventory workspaces after workspace creation"
+  ADDED_WORKSPACE_ID=$(single_added_ref workspace "$WORKSPACES_BEFORE" "$WORKSPACES_AFTER") \
+    || die "failed to identify one created workspace from the inventory delta: $WORKSPACE_OUTPUT"
+  CREATED_WORKSPACE_ID="$ADDED_WORKSPACE_ID"
   WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1 || true)
   if [[ -z "$WORKSPACE_ID" ]]; then
-    WORKSPACES_AFTER=$(list_workspace_ids) \
-      || die "failed to inventory workspaces after malformed workspace output"
-    WORKSPACE_ID=$(single_added_ref workspace "$WORKSPACES_BEFORE" "$WORKSPACES_AFTER") \
-      || die "failed to identify the created workspace after malformed output: $WORKSPACE_OUTPUT"
-    CREATED_WORKSPACE_ID="$WORKSPACE_ID"
     die "failed to parse workspace ID from output: $WORKSPACE_OUTPUT"
   fi
-  CREATED_WORKSPACE_ID="$WORKSPACE_ID"
+  [[ "$WORKSPACE_ID" == "$ADDED_WORKSPACE_ID" ]] \
+    || die "workspace output ID $WORKSPACE_ID does not match inventory-added workspace $ADDED_WORKSPACE_ID"
+  WORKSPACE_ID="$ADDED_WORKSPACE_ID"
   log "cmux" "created $WORKSPACE_ID"
 
   # Rename workspace

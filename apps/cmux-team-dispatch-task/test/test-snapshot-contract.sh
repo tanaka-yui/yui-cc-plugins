@@ -116,4 +116,46 @@ fi
 grep -q 'prune-not-ready.sh' "$SKILL" \
   && ok 'SC7b: SKILL delegates readiness pruning to the validated helper' || bad 'SC7b'
 
+# Execute the normative task-prompt snippet itself. A source-grep for the function name
+# cannot detect an undefined shell function, which previously stopped before role lookup.
+mkdir -p "$TMP/prompt-status"
+jq '.design.surface_id = "surface:1" |
+    .design_review.surface_id = "surface:2" |
+    .exec.surface_id = "surface:3" |
+    .exec_review.surface_id = "surface:4"' "$VALID" > "$TMP/prompt-valid.json"
+extract_prompt_snippet() {
+  awk '
+    /^    PREWARM_FILE=/ { in_snippet = 1 }
+    in_snippet && /^prewarm\.json is mandatory/ { exit }
+    in_snippet { sub(/^    /, ""); print }
+  ' "$SKILL"
+}
+run_prompt_snippet() {
+  local snapshot="$1" snippet
+  cp "$snapshot" "$TMP/prompt-status/prewarm.json"
+  snippet=$(extract_prompt_snippet)
+  snippet=${snippet//<EXISTING_STATUS_DIR>/$TMP\/prompt-status}
+  snippet=${snippet//<SKILL_DIR>/$S\/..}
+  printf '%s\nprintf "role=%%s\\n" "$(role_value exec engine)"\n' "$snippet" > "$TMP/normative-prompt.sh"
+  bash "$TMP/normative-prompt.sh" 2> "$TMP/normative-prompt.err"
+}
+prompt_out=$(run_prompt_snippet "$TMP/prompt-valid.json")
+prompt_rc=$?
+if [[ $prompt_rc -eq 0 && "$prompt_out" == 'role=claude' \
+   && ! -s "$TMP/normative-prompt.err" ]]; then
+  ok 'SC7c: normative SKILL prompt sources and executes the common validator before role lookup'
+else
+  bad "SC7c: normative prompt failed before role lookup (rc=$prompt_rc err=$(tr '\n' ' ' < "$TMP/normative-prompt.err"))"
+fi
+
+jq '.exec.wired = false' "$TMP/prompt-valid.json" > "$TMP/prompt-invalid.json"
+prompt_out=$(run_prompt_snippet "$TMP/prompt-invalid.json")
+prompt_rc=$?
+if [[ $prompt_rc -ne 0 && "$prompt_out" != *'role='* ]] \
+   && ! grep -Fq 'command not found' "$TMP/normative-prompt.err"; then
+  ok 'SC7d: normative prompt rejects an invalid snapshot before role lookup'
+else
+  bad "SC7d: normative prompt did not execute real validation (rc=$prompt_rc out=$prompt_out err=$(tr '\n' ' ' < "$TMP/normative-prompt.err"))"
+fi
+
 exit "$fail"

@@ -30,11 +30,18 @@ echo "$*" >> "$CMUX_CALL_LOG"
 mkdir -p "$CMUX_STATE_DIR"
 case "$1" in
   list-workspaces)
+    echo 'workspace:6 existing-workspace'
     [[ ! -f "$CMUX_STATE_DIR/workspace-created" ]] || echo 'workspace:1 created-workspace'
     ;;
   new-workspace)
     : > "$CMUX_STATE_DIR/workspace-created"
-    [[ -z "${MALFORMED_WORKSPACE_OUTPUT:-}" ]] && echo 'workspace:1' || echo 'created'
+    if [[ -n "${MISLEADING_WORKSPACE_OUTPUT:-}" ]]; then
+      printf '%s\n' 'workspace:6 existing-workspace' 'workspace:1 created-workspace'
+    elif [[ -n "${MALFORMED_WORKSPACE_OUTPUT:-}" ]]; then
+      echo 'created'
+    else
+      echo 'workspace:1'
+    fi
     ;;
   list-pane-surfaces) echo 'surface:2' ;;
   tree)
@@ -43,7 +50,13 @@ case "$1" in
     ;;
   new-split)
     : > "$CMUX_STATE_DIR/split-created"
-    [[ -z "${MALFORMED_SPLIT_OUTPUT:-}" ]] && echo 'surface:3' || echo 'created'
+    if [[ -n "${MISLEADING_SPLIT_OUTPUT:-}" ]]; then
+      printf '%s\n' 'surface:6 existing-surface' 'surface:3 created-surface'
+    elif [[ -n "${MALFORMED_SPLIT_OUTPUT:-}" ]]; then
+      echo 'created'
+    else
+      echo 'surface:3'
+    fi
     ;;
   rename-workspace) [[ -z "${FAIL_RENAME_WORKSPACE:-}" ]] ;;
   send) [[ -z "${FAIL_CMUX_SEND:-}" ]] ;;
@@ -111,6 +124,7 @@ fi
 
 CMUX_CALL_LOG="$TMP/calls-l3.log"; export CMUX_CALL_LOG
 : > "$CMUX_CALL_LOG"
+rm -rf "$TMP/cmux-state"
 run_launch --cwd "$TMP/repo" --mode standby --standby-in workspace:5 \
   --standby-split-from surface:6 --standby-split-direction right \
   --status-dir "$TMP/status-standby" l3-standby >/dev/null
@@ -124,6 +138,7 @@ fi
 # 実 launcher の引数検証へ通す。mode matrix から review:exec_review が落ちる変異を捕捉する。
 CMUX_CALL_LOG="$TMP/calls-l5.log"; export CMUX_CALL_LOG
 : > "$CMUX_CALL_LOG"
+rm -rf "$TMP/cmux-state"
 if run_launch --cwd "$TMP/repo" --mode review --role exec_review \
      --standby-in workspace:5 --standby-split-from surface:6 --standby-split-direction right \
      --status-dir "$TMP/status-exec-review" l5-exec-review >/dev/null 2>"$TMP/l5.err"; then
@@ -154,6 +169,7 @@ fi
 # A later runner-command send failure must close that exact surface before exit.
 CMUX_CALL_LOG="$TMP/calls-l7.log"; export CMUX_CALL_LOG
 : > "$CMUX_CALL_LOG"
+rm -rf "$TMP/cmux-state"
 if FAIL_CMUX_SEND=1 run_launch --cwd "$TMP/repo" --mode standby \
      --standby-in workspace:5 --standby-split-from surface:6 \
      --status-dir "$TMP/status-l7" l7-standby >/dev/null 2>"$TMP/l7.err"; then
@@ -167,6 +183,7 @@ fi
 # L8: workspace placement has the same ownership rule after new-workspace returns an ID.
 CMUX_CALL_LOG="$TMP/calls-l8.log"; export CMUX_CALL_LOG
 : > "$CMUX_CALL_LOG"
+rm -rf "$TMP/cmux-state"
 if FAIL_RENAME_WORKSPACE=1 run_launch --cwd "$TMP/repo" --mode superpowers \
      --status-dir "$TMP/status-l8" l8-task 'do something' >/dev/null 2>"$TMP/l8.err"; then
   bad 'L8 workspace rename failure was accepted'
@@ -205,6 +222,40 @@ elif [[ $(grep -c '^close-workspace --workspace workspace:1$' "$CMUX_CALL_LOG" |
   pass 'L10 malformed successful workspace output closes the inventory-detected workspace'
 else
   bad "L10 malformed workspace output leaked its workspace: $(tr '\n' ' ' < "$CMUX_CALL_LOG")"
+fi
+
+# L11: a syntactically valid first surface ID may name a pre-existing pane. Ownership is
+# assigned only to the unique inventory delta, and an output/delta mismatch must close the
+# new surface without touching the pre-existing one.
+rm -rf "$TMP/cmux-state"
+CMUX_CALL_LOG="$TMP/calls-l11.log"; export CMUX_CALL_LOG
+: > "$CMUX_CALL_LOG"
+if MISLEADING_SPLIT_OUTPUT=1 run_launch --cwd "$TMP/repo" --mode standby \
+     --standby-in workspace:5 --standby-split-from surface:6 \
+     --status-dir "$TMP/status-l11" l11-standby >/dev/null 2>"$TMP/l11.err"; then
+  bad 'L11 misleading successful split output was accepted'
+elif [[ $(grep -c '^close-surface --workspace workspace:5 --surface surface:3$' \
+            "$CMUX_CALL_LOG" || true) == 1 \
+   && $(grep -c '^close-surface --workspace workspace:5 --surface surface:6$' \
+            "$CMUX_CALL_LOG" || true) == 0 ]]; then
+  pass 'L11 valid pre-existing surface ID never acquires launcher ownership'
+else
+  bad "L11 misleading split ownership: $(tr '\n' ' ' < "$CMUX_CALL_LOG")"
+fi
+
+# L12: workspace creation uses the same unique-delta ownership proof even when stdout
+# starts with a valid pre-existing workspace ID.
+rm -rf "$TMP/cmux-state"
+CMUX_CALL_LOG="$TMP/calls-l12.log"; export CMUX_CALL_LOG
+: > "$CMUX_CALL_LOG"
+if MISLEADING_WORKSPACE_OUTPUT=1 run_launch --cwd "$TMP/repo" --mode superpowers \
+     --status-dir "$TMP/status-l12" l12-task 'do something' >/dev/null 2>"$TMP/l12.err"; then
+  bad 'L12 misleading successful workspace output was accepted'
+elif [[ $(grep -c '^close-workspace --workspace workspace:1$' "$CMUX_CALL_LOG" || true) == 1 \
+   && $(grep -c '^close-workspace --workspace workspace:6$' "$CMUX_CALL_LOG" || true) == 0 ]]; then
+  pass 'L12 valid pre-existing workspace ID never acquires launcher ownership'
+else
+  bad "L12 misleading workspace ownership: $(tr '\n' ' ' < "$CMUX_CALL_LOG")"
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
