@@ -185,5 +185,25 @@ else
   bad "PW13 created worktree rollback (rc=$rc exists=$([[ -e "$created_wt" ]] && echo yes || echo no))"
 fi
 
+# Publishing is still inside the ownership transaction. If the status destination cannot
+# become a directory after all four panes launched, every joined role and created surface
+# must be rolled back even though no prewarm.json could be published.
+STATUS="$TMP/status-publish-file"
+: > "$STATUS"
+: > "$TMP/calls.log"
+CALLS_LOG="$TMP/calls.log" bash "$PW" --with-design --cwd "$TMP/wt" --slug pw15 \
+  --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_ON" \
+  >/dev/null 2>"$TMP/pw15.err"
+rc=$?
+launches=$(launch_count)
+leaves=$(grep -c '^leave.sh ' "$TMP/calls.log" 2>/dev/null || true)
+closes=$(grep -c '^cmux close-surface ' "$TMP/calls.log" 2>/dev/null || true)
+if [[ $rc -ne 0 && "$launches" == 4 && "$leaves" == 4 && "$closes" == 4 \
+   && ! -e "$STATUS/prewarm.json" ]]; then
+  pass 'PW15 prewarm publish failure rolls back all joined roles and launched surfaces'
+else
+  bad "PW15 publish rollback (rc=$rc launches=$launches leaves=$leaves closes=$closes)"
+fi
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

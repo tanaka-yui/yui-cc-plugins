@@ -126,8 +126,9 @@ for role in design_review exec_review; do
     design_review) label='Design review' ;;
     exec_review) label='Exec review' ;;
   esac
-  printf '%s agent: %s\n%s runner: %s\n%s engine: %s\n%s model: %s\n%s effort: %s\n' \
-    "$label" "$(role_value "$role" agent)" "$label" "$(role_value "$role" runner)" \
+  printf '%s surface: %s\n%s agent: %s\n%s runner: %s\n%s engine: %s\n%s model: %s\n%s effort: %s\n' \
+    "$label" "$(role_value "$role" surface_id)" "$label" "$(role_value "$role" agent)" \
+    "$label" "$(role_value "$role" runner)" \
     "$label" "$(role_value "$role" engine)" "$label" "$(role_value "$role" model)" \
     "$label" "$(role_value "$role" effort)"
 done
@@ -141,8 +142,9 @@ printf 'Before delegating, use the fixed verified exec tuple above, touch .assig
 [[ -n "$PARENT_SF" ]] && printf 'Parent surface: %s\n' "$PARENT_SF"
 
 if role_present design_review; then
-  printf '\nPhase A-R — design-review\nAgent: %s\nRunner: %s\nEngine: %s\nModel: %s\nEffort: %s\n\n' \
-    "$(role_value design_review agent)" "$(role_value design_review runner)" \
+  printf '\nPhase A-R — design-review\nSurface: %s\nAgent: %s\nRunner: %s\nEngine: %s\nModel: %s\nEffort: %s\n\n' \
+    "$(role_value design_review surface_id)" "$(role_value design_review agent)" \
+    "$(role_value design_review runner)" \
     "$(role_value design_review engine)" "$(role_value design_review model)" \
     "$(role_value design_review effort)"
   cat "$REF_DIR/review-block.md"
@@ -150,8 +152,9 @@ elif [[ "$REVIEW_MODE" == on ]]; then
   log warn "render-loop-prompt: review_mode is on but role 'design_review' is absent from prewarm.json; its review gate will be skipped"
 fi
 if role_present exec_review; then
-  printf '\nPhase B-R — exec-review\nAgent: %s\nRunner: %s\nEngine: %s\nModel: %s\nEffort: %s\n\n' \
-    "$(role_value exec_review agent)" "$(role_value exec_review runner)" \
+  printf '\nPhase B-R — exec-review\nSurface: %s\nAgent: %s\nRunner: %s\nEngine: %s\nModel: %s\nEffort: %s\n\n' \
+    "$(role_value exec_review surface_id)" "$(role_value exec_review agent)" \
+    "$(role_value exec_review runner)" \
     "$(role_value exec_review engine)" "$(role_value exec_review model)" \
     "$(role_value exec_review effort)"
   cat "$REF_DIR/code-review-block.md"

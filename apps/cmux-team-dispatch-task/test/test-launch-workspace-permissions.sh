@@ -28,6 +28,7 @@ export AGMSG_SEND="$TMP/bin/agmsg-send.sh"
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
+  list-workspaces) ;;
   new-workspace) echo 'workspace:1' ;;
   list-pane-surfaces) echo 'surface:2' ;;
   new-split) echo 'surface:3' ;;

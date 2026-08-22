@@ -83,10 +83,10 @@ render_ok "$TMP/p.json" >/dev/null && ok 'LP5a: codex design/exec model omission
 jq 'del(.design_review.model)' "$FULL_ON" > "$TMP/p.json"
 render_ok "$TMP/p.json" >/dev/null 2>&1 && bad 'LP5b: active review model omission was accepted' || ok 'LP5b: active review model is required'
 
-# LP6: each active reviewer requires all five routing fields.
+# LP6: each active reviewer requires the complete verified routing tuple.
 lp6_fail=0
 for role in design_review exec_review; do
-  for field in runner engine model effort agent; do
+  for field in surface_id runner engine model effort agent; do
     jq --arg role "$role" --arg field "$field" 'del(.[$role][$field])' "$FULL_ON" > "$TMP/p.json"
     render_ok "$TMP/p.json" >/dev/null 2>&1 && { bad "LP6: $role.$field omission was accepted"; lp6_fail=1; }
   done
@@ -97,8 +97,10 @@ done
 out=$(render_ok "$FULL_ON")
 dr_block=$(sed -n '/Phase A-R.*design-review/,/^$/p' <<< "$out")
 xr_block=$(sed -n '/Phase B-R.*exec-review/,/^$/p' <<< "$out")
-if grep -q 'DR-MODEL' <<< "$dr_block" && ! grep -q 'XR-MODEL' <<< "$dr_block" \
-  && grep -q 'XR-MODEL' <<< "$xr_block" && ! grep -q 'DR-MODEL' <<< "$xr_block"; then
+if grep -q 'Surface: s3' <<< "$dr_block" && grep -q 'DR-MODEL' <<< "$dr_block" \
+  && ! grep -q 'XR-MODEL' <<< "$dr_block" \
+  && grep -q 'Surface: s4' <<< "$xr_block" && grep -q 'XR-MODEL' <<< "$xr_block" \
+  && ! grep -q 'DR-MODEL' <<< "$xr_block"; then
   ok 'LP7: reviewer tuples reach separate blocks'
 else
   bad 'LP7: reviewer tuples were mixed'
@@ -111,10 +113,24 @@ for expected in 'Exec surface: s2' 'Exec agent: t-exec' 'Exec runner: cx' \
                 'Exec engine: codex' 'Exec model: m' 'Exec effort: high'; do
   grep -Fq -- "$expected" <<< "$out" || bad "LP7b: missing verified tuple field: $expected"
 done
-if grep -Eq 'inspect .*prewarm\.json|Spawn fallback' <<< "$out"; then
+if grep -Eq 'prewarm\.json|Spawn fallback' <<< "$out"; then
   bad 'LP7b: rendered prompt tells the child to reread live prewarm or spawn'
 else
   ok 'LP7b: rendered prompt embeds exec tuple and has no live reread/spawn fallback'
+fi
+
+# LP7d: after rendering, replacing the source snapshot cannot redirect the liveness target.
+# The prompt must carry the already-verified surface and contain no instruction to reopen
+# the source path.
+rendered_before_replace="$out"
+jq '.exec_review.surface_id = "s999"' "$FULL_ON" > "$TMP/replaced-prewarm.json"
+mv "$TMP/replaced-prewarm.json" "$FULL_ON"
+if [[ "$rendered_before_replace" == *'Exec review surface: s4'* \
+   && "$rendered_before_replace" != *'Exec review surface: s999'* \
+   && "$rendered_before_replace" != *'prewarm.json'* ]]; then
+  ok 'LP7d rendered reviewer liveness target is immutable after source replacement'
+else
+  bad 'LP7d rendered prompt can be redirected through the live prewarm path'
 fi
 
 # LP7c: review_mode=off cannot be contradicted by stale/replaced review keys.

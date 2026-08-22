@@ -22,6 +22,7 @@ git -C "$TMP/repo" commit -qm init
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
+  list-workspaces) ;;
   new-workspace) echo 'workspace:1' ;;
   list-pane-surfaces) echo 'surface:2' ;;
   rename-workspace|rename-tab|notify|send|send-key|wait-for|identify) ;;
@@ -336,8 +337,8 @@ assert_not_contains "$SKILL_MD" 'END THE CODEX SESSION' \
   'T14 self-termination demand is absent from SKILL.md'
 assert_not_contains "$SKILL_MD" 'or end the session (codex)' \
   'T14 the ambiguous engine-neutral exit wording is gone'
-assert_contains "$PHASE_B_DELIVER" 'MANDATORY COMPLETION REPORT' \
-  'T15 delivered REQUEST_TEXT carries the mandatory completion notification'
+assert_contains "$PHASE_B_DELIVER" 'MANDATORY STATUS PROTOCOL' \
+  'T15 delivered REQUEST_TEXT carries the mandatory status and completion notification protocol'
 assert_contains "$PHASE_B_DELIVER" 'recipient parent' \
   'T15 delivered REQUEST_TEXT addresses the completion notification to the parent agent'
 

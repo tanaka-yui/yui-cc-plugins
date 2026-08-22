@@ -27,10 +27,24 @@ git -C "$TMP/repo" commit -qm init
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$CMUX_CALL_LOG"
+mkdir -p "$CMUX_STATE_DIR"
 case "$1" in
-  new-workspace) echo 'workspace:1' ;;
+  list-workspaces)
+    [[ ! -f "$CMUX_STATE_DIR/workspace-created" ]] || echo 'workspace:1 created-workspace'
+    ;;
+  new-workspace)
+    : > "$CMUX_STATE_DIR/workspace-created"
+    [[ -z "${MALFORMED_WORKSPACE_OUTPUT:-}" ]] && echo 'workspace:1' || echo 'created'
+    ;;
   list-pane-surfaces) echo 'surface:2' ;;
-  new-split) echo 'surface:3' ;;
+  tree)
+    echo 'surface:6 existing-surface'
+    [[ ! -f "$CMUX_STATE_DIR/split-created" ]] || echo 'surface:3 created-surface'
+    ;;
+  new-split)
+    : > "$CMUX_STATE_DIR/split-created"
+    [[ -z "${MALFORMED_SPLIT_OUTPUT:-}" ]] && echo 'surface:3' || echo 'created'
+    ;;
   rename-workspace) [[ -z "${FAIL_RENAME_WORKSPACE:-}" ]] ;;
   send) [[ -z "${FAIL_CMUX_SEND:-}" ]] ;;
   rename-tab|notify|send-key|wait-for|identify|close-surface|close-workspace) ;;
@@ -54,6 +68,7 @@ bad() { echo "FAIL: $1"; fail=1; }
 run_launch() {
   CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
     CMUX_CALL_LOG="${CMUX_CALL_LOG:-$TMP/calls.log}" \
+    CMUX_STATE_DIR="${CMUX_STATE_DIR:-$TMP/cmux-state}" \
     bash "$LAUNCH" --agmsg-team demo-team --agmsg-from layout-probe "$@"
 }
 
@@ -159,6 +174,37 @@ elif [[ $(grep -c '^close-workspace --workspace workspace:1$' "$CMUX_CALL_LOG" |
   pass 'L8 post-create workspace failure closes the launcher-owned workspace'
 else
   bad "L8 post-create workspace failure leaked its workspace: $(tr '\n' ' ' < "$CMUX_CALL_LOG")"
+fi
+
+# L9: new-split may create a surface successfully while returning a changed/malformed
+# success payload. The before/after surface inventory must still identify and close the
+# launcher-owned surface when parsing fails.
+rm -rf "$TMP/cmux-state"
+CMUX_CALL_LOG="$TMP/calls-l9.log"; export CMUX_CALL_LOG
+: > "$CMUX_CALL_LOG"
+if MALFORMED_SPLIT_OUTPUT=1 run_launch --cwd "$TMP/repo" --mode standby \
+     --standby-in workspace:5 --standby-split-from surface:6 \
+     --status-dir "$TMP/status-l9" l9-standby >/dev/null 2>"$TMP/l9.err"; then
+  bad 'L9 malformed successful split output was accepted'
+elif [[ $(grep -c '^close-surface --workspace workspace:5 --surface surface:3$' \
+            "$CMUX_CALL_LOG" || true) == 1 ]]; then
+  pass 'L9 malformed successful split output closes the inventory-detected surface'
+else
+  bad "L9 malformed split output leaked its surface: $(tr '\n' ' ' < "$CMUX_CALL_LOG")"
+fi
+
+# L10: workspace creation has the same malformed-success boundary and must close the
+# single workspace added between inventories.
+rm -rf "$TMP/cmux-state"
+CMUX_CALL_LOG="$TMP/calls-l10.log"; export CMUX_CALL_LOG
+: > "$CMUX_CALL_LOG"
+if MALFORMED_WORKSPACE_OUTPUT=1 run_launch --cwd "$TMP/repo" --mode superpowers \
+     --status-dir "$TMP/status-l10" l10-task 'do something' >/dev/null 2>"$TMP/l10.err"; then
+  bad 'L10 malformed successful workspace output was accepted'
+elif [[ $(grep -c '^close-workspace --workspace workspace:1$' "$CMUX_CALL_LOG" || true) == 1 ]]; then
+  pass 'L10 malformed successful workspace output closes the inventory-detected workspace'
+else
+  bad "L10 malformed workspace output leaked its workspace: $(tr '\n' ' ' < "$CMUX_CALL_LOG")"
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

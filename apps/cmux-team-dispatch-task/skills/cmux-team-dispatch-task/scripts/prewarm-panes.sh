@@ -396,16 +396,17 @@ PANES_JSON=$(jq -n \
   '{design: $design} + (if $drs != "" then {design_review: $dr} else {} end) +
    {exec: $exec} + (if $ers != "" then {exec_review: $er} else {} end)')
 
-mkdir -p "$STATUS_DIR"
+mkdir -p "$STATUS_DIR" || die "cannot create status directory at $STATUS_DIR"
 jq -n --arg workspace_id "$WORKSPACE" --arg review_mode "$REVIEW_MODE" --argjson panes "$PANES_JSON" \
-  '{workspace_id: $workspace_id, review_mode: $review_mode} + $panes' > "$STATUS_DIR/prewarm.json"
+  '{workspace_id: $workspace_id, review_mode: $review_mode} + $panes' > "$STATUS_DIR/prewarm.json" \
+  || die "cannot publish $STATUS_DIR/prewarm.json"
 log prewarm "wrote $STATUS_DIR/prewarm.json"
 
 if [[ $WITH_DESIGN -eq 1 && ! -f "$STATUS_DIR/status.json" ]]; then
   jq -n --arg ws "$WORKSPACE" --arg sf "$DESIGN_SURFACE" \
     '{status: "launched", workspace_id: $ws, surface_id: $sf,
       message: "agmsg prewarm panes launched (idle)", timestamp: (now | todate)}' \
-    > "$STATUS_DIR/status.json"
+    > "$STATUS_DIR/status.json" || die "cannot publish initial $STATUS_DIR/status.json"
   log prewarm "wrote initial launched status.json"
 fi
 

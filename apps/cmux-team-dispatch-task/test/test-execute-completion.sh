@@ -45,6 +45,7 @@ echo "plan" > "$TMP/plan.md"
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
+  list-workspaces) ;;
   new-workspace) echo 'workspace:1' ;;
   list-pane-surfaces) echo 'surface:2' ;;
   rename-workspace|rename-tab|notify|send|send-key|wait-for|identify) ;;

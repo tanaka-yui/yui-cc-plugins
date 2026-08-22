@@ -25,6 +25,7 @@ git -C "$TMP/repo" commit -qm init
 cat > "$TMP/bin/cmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
+  list-workspaces) ;;
   new-workspace) echo 'workspace:1' ;;
   list-pane-surfaces)
     case "$*" in

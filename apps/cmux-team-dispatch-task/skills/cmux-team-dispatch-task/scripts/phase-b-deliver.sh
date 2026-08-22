@@ -109,11 +109,18 @@ validate_prewarm_snapshot || die 'invalid prewarm snapshot'
 PREWARM_WORKSPACE=$(jq -r '.workspace_id' <<< "$PREWARM_DOC")
 EXEC_AGENT=$(jq -r '.exec.agent' <<< "$PREWARM_DOC")
 EXEC_ENGINE=$(jq -r '.exec.engine' <<< "$PREWARM_DOC")
+HAS_EXEC_REVIEW=0
+jq -e 'has("exec_review")' >/dev/null 2>&1 <<< "$PREWARM_DOC" && HAS_EXEC_REVIEW=1
+if [[ $HAS_EXEC_REVIEW -eq 1 && -z "$REVIEW_CONFIG" ]]; then
+  die 'usable exec_review requires --review-config'
+elif [[ $HAS_EXEC_REVIEW -eq 0 && -n "$REVIEW_CONFIG" ]]; then
+  die '--review-config requires a usable exec_review tuple'
+fi
 
 PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
   --engine "$EXEC_ENGINE" --mode execute --agents "$MAX_AGENTS")
-COMPLETION_TEXT="MANDATORY COMPLETION REPORT: after writing result.md, run bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done followed by a one line summary, then call $AGMSG_SEND with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient parent, and one dispatch-notify: body. A non-zero send exit means the parent was not told; retry once and record a second failure in status.json."
-REQUEST_TEXT="Read and execute the plan at $PLAN_FILE. $PARALLEL $COMPLETION_TEXT"
+STATUS_PROTOCOL="MANDATORY STATUS PROTOCOL: before doing any work, write $STATUS_DIR/status.json with status executing, preserve all existing fields, and preserve an existing pr_url. Every terminal path must write $STATUS_DIR/result.md. On success, write the result summary, run bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done followed by a one line summary, then immediately call $AGMSG_SEND with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient parent, and the body dispatch-notify: [dispatch] task $EXEC_AGENT finished (status: done). On any failure or blocking error, write the reason to the result file, run bash $SCRIPT_DIR/report-status.sh $STATUS_DIR error followed by that reason, then immediately call $AGMSG_SEND with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient parent, and the body dispatch-notify: [dispatch] task $EXEC_AGENT finished (status: error). A non-zero terminal notification means the parent was not told; retry once and, if the second send also fails, record that notification failure in status.json."
+REQUEST_TEXT="Read and execute the plan at $PLAN_FILE. $PARALLEL $STATUS_PROTOCOL"
 
 if [[ -n "$REVIEW_CONFIG" ]]; then
   [[ -f "$REVIEW_CONFIG" && ! -L "$REVIEW_CONFIG" ]] \
@@ -153,7 +160,24 @@ if [[ -n "$REVIEW_CONFIG" ]]; then
   REVIEW_PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
     --engine "$REVIEWER_ENGINE" --mode review --agents "$MAX_AGENTS")
   FINDINGS_PATH="$REVIEW_DIR/code-round-N.md"
-  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and the whole review-code: message as one argument. For round N, that message tells the reviewer to inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $REVIEWER_AGENT, recipient $EXEC_AGENT, and the whole review-verdict: message as one argument. Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive. After each successful review-code: send, stop and wait for the review-verdict: push. If you are a Claude implementer, arm ONE single-shot safety timer with the Bash tool using run_in_background before waiting. If you are a Codex implementer, you have NO safety net: before waiting run bash $SCRIPT_DIR/verify-agmsg-ready.sh --codex --team $TEAM --name $REVIEWER_AGENT, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient parent, and one dispatch-notify: body reporting an unbacked code review wait. A non-zero send exit means the recipient was not told, so report it instead of waiting. On every wake, re-read $FINDINGS_PATH before deciding anything; a timer wake without a VERDICT line is not a verdict. Do not poll the findings file. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed."
+  case "$REVIEWER_ENGINE" in
+    codex)
+      REVIEWER_LIVENESS="run bash $SCRIPT_DIR/verify-agmsg-ready.sh --codex --team $TEAM --name $REVIEWER_AGENT once"
+      ;;
+    claude)
+      REVIEWER_LIVENESS="run cmux read-screen --workspace $REVIEWER_WORKSPACE --surface $REVIEWER_SURFACE once; if that transiently fails, retry it once before treating the reviewer as unreachable"
+      ;;
+  esac
+  case "$EXEC_ENGINE" in
+    claude)
+      WAIT_PROTOCOL="After each successful review-code: send, stop and wait for the review-verdict: push. Before stopping, arm ONE single-shot safety timer with the Bash tool using run_in_background. On every wake, re-read $FINDINGS_PATH before deciding anything; a timer wake without a VERDICT line is not a verdict. If the timer fires without a verdict, $REVIEWER_LIVENESS, then re-send the same round once when needed and re-arm the same timer, up to 3 re-arms for that round."
+      ;;
+    codex)
+      WAIT_PROTOCOL="After each successful review-code: send, stop and wait for the review-verdict: push. You have NO safety net for this wait and must not create a timer. Before stopping, $REVIEWER_LIVENESS, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient parent, and one dispatch-notify: body reporting an unbacked code review wait; the body must say dispatch-notify: $EXEC_AGENT waiting for code review verdict; this engine has no timer. On every wake, re-read $FINDINGS_PATH before deciding anything."
+      ;;
+  esac
+  REVIEW_ABORT="REVIEW ABORT PROTOCOL: if you stop before completing the work, write the stop reason to $FINDINGS_PATH and make its last line VERDICT: needs_work, then call $AGMSG_SEND once with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and a body starting abort-reviewer: [abort] followed by the one line reason. Next follow the error branch of the mandatory status protocol, including the result file, bash $SCRIPT_DIR/report-status.sh $STATUS_DIR error, and the parent notification ending finished (status: error), before ending the session."
+  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and the whole review-code: message as one argument. For round N, that message tells the reviewer to inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $REVIEWER_AGENT, recipient $EXEC_AGENT, and the whole review-verdict: message as one argument. Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive. $WAIT_PROTOCOL A non-zero send exit means the recipient was not told, so report it instead of waiting. Do not poll the findings file. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed. $REVIEW_ABORT"
 fi
 
 case "$EXEC_ENGINE" in

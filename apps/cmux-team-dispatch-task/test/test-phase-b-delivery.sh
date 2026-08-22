@@ -16,7 +16,8 @@ ok() { echo "PASS $1"; }
 export DISPATCH_CONFIG_HOME="$TMP/home"
 mkdir -p "$DISPATCH_CONFIG_HOME" "$TMP/status" "$TMP/bin"
 cat > "$DISPATCH_CONFIG_HOME/runners.json" <<'JSON'
-{"default":"ccf","runners":[{"name":"ccf","command":"ccf","engine":"claude"}]}
+{"default":"ccf","runners":[{"name":"ccf","command":"ccf","engine":"claude"},
+                                  {"name":"cx","command":"codex","engine":"codex"}]}
 JSON
 cat > "$TMP/prewarm.json" <<'JSON'
 {"workspace_id":"workspace:1","review_mode":"on",
@@ -35,6 +36,7 @@ chmod +x "$TMP/bin/send.sh"
 
 gate_output=$(bash "$GATE" --prewarm "$TMP/prewarm.json" --ready exec_review \
   --status-dir "$TMP/status" --slug t --team tm --reviewer-workspace workspace:1)
+review_dir_real=$(cd "$TMP/status/review" && pwd -P)
 
 [[ -f "$DELIVER" ]] || { bad "PB0 missing production delivery script: $DELIVER"; exit "$fail"; }
 
@@ -57,25 +59,45 @@ body="${SEND[4]-}"
   && ok 'PB2 delivery targets the verified prewarmed exec agent' || bad 'PB2 wrong send tuple'
 [[ $(grep -Fo 'phase-b-exec:' <<< "$body" | wc -l | tr -d ' ') == 1 ]] \
   && ok 'PB3 phase-b-exec prefix appears exactly once' || bad 'PB3 duplicate/missing phase-b-exec prefix'
-[[ "$body" == *"$TMP/status/review/code-round-N.md"* \
+[[ "$body" == *"$review_dir_real/code-round-N.md"* \
   && "$body" == *'maximum of 5 rounds'* && "$body" == *'Do not start round 6'* \
   && "$body" == *'VERDICT: approve'* && "$body" == *'t-exec-review'* ]] \
   && ok 'PB4 concrete findings path, verdict, cap, terminal rule, and reviewer are embedded' \
   || bad 'PB4 incomplete Phase B-R protocol'
 review_send_contract="passing exactly four arguments in this order: team tm, sender t-exec, recipient t-exec-review, and the whole review-code: message as one argument"
 verdict_send_contract="passing exactly four arguments in this order: team tm, sender t-exec-review, recipient t-exec, and the whole review-verdict: message as one argument"
-codex_ready_command="bash $S_REAL/verify-agmsg-ready.sh --codex --team tm --name t-exec-review"
-parent_send_contract="passing exactly four arguments in this order: team tm, sender t-exec, recipient parent, and one dispatch-notify: body reporting an unbacked code review wait"
+claude_liveness='cmux read-screen --workspace workspace:1 --surface surface:4'
 if [[ $(grep -Fo "$review_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo "$verdict_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo 'After each successful review-code: send, stop and wait for the review-verdict: push.' <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo 'On every wake, re-read' <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo 'arm ONE single-shot safety timer with the Bash tool using run_in_background' <<< "$body" | wc -l | tr -d ' ') == 1 \
-   && $(grep -Fo "$codex_ready_command" <<< "$body" | wc -l | tr -d ' ') == 1 \
-   && $(grep -Fo "$parent_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 ]]; then
+   && $(grep -Fo "$claude_liveness" <<< "$body" | wc -l | tr -d ' ') == 1 \
+   && "$body" != *'one dispatch-notify: body reporting an unbacked code review wait'* ]]; then
   ok 'PB4b actual delivery embeds the complete wait protocol exactly once'
 else
   bad 'PB4b actual delivery is missing or duplicates the complete wait protocol'
+fi
+status_file="$TMP/status/status.json"
+result_file="$TMP/status/result.md"
+done_command="bash $S_REAL/report-status.sh $TMP/status done"
+error_command="bash $S_REAL/report-status.sh $TMP/status error"
+if [[ "$body" == *"write $status_file with status executing"* \
+   && "$body" == *"write $result_file"* \
+   && "$body" == *"$done_command"* && "$body" == *"$error_command"* \
+   && "$body" == *'preserve an existing pr_url'* \
+   && "$body" == *'finished (status: done)'* && "$body" == *'finished (status: error)'* \
+   && "$body" == *'retry once'* ]]; then
+  ok 'PB4c actual delivery embeds executing, result, terminal status, and parent notification protocol'
+else
+  bad 'PB4c actual delivery omits part of the status/result/notification protocol'
+fi
+if [[ "$body" == *"write the stop reason to $review_dir_real/code-round-N.md"* \
+   && "$body" == *'VERDICT: needs_work'* && "$body" == *'abort-reviewer: [abort]'* \
+   && "$body" == *"$error_command"* && "$body" == *'finished (status: error)'* ]]; then
+  ok 'PB4d actual delivery embeds the review-abort terminal protocol'
+else
+  bad 'PB4d actual delivery omits part of the review-abort terminal protocol'
 fi
 [[ -f "$TMP/status/.assigned-t-exec" && -f "$TMP/status/.deferred" ]] \
   && ok 'PB5 assignment precedes successful delegation and deferred is recorded' \
@@ -198,5 +220,61 @@ assert_invalid_snapshot exec-review-wired '.exec_review.wired = false'
 assert_invalid_snapshot exec-review-effort '.exec_review.effort = "minimal"'
 assert_invalid_snapshot workspace-id '.workspace_id = "workspace:not-safe!"'
 assert_invalid_snapshot duplicate-surface '.design.surface_id = .exec.surface_id'
+
+# A surviving exec_review tuple is usable by definition. Omitting the gate output must
+# fail closed before assignment or delivery instead of silently disabling mandatory review.
+rm -f "$TMP/send.calls" "$TMP/send.args" "$TMP/status/.assigned-t-exec" "$TMP/status/.deferred"
+if AGMSG_SEND="$TMP/bin/send.sh" \
+   bash "$DELIVER" --prewarm "$TMP/prewarm.json" \
+     --plan-file "$TMP/plan.md" --status-dir "$TMP/status" --team tm --slug t \
+     >/dev/null 2>"$TMP/missing-review-config.err"; then
+  bad 'PB13 usable exec_review without --review-config was accepted'
+elif [[ ! -e "$TMP/send.calls" && ! -e "$TMP/status/.assigned-t-exec" \
+     && ! -e "$TMP/status/.deferred" ]]; then
+  ok 'PB13 usable exec_review requires --review-config before assignment or delivery'
+else
+  bad 'PB13 missing review config caused delivery side effects'
+fi
+
+deliver_mixed_body() { # $1=prewarm $2=status dir
+  local prewarm="$1" status="$2" config
+  mkdir -p "$status"
+  config=$(bash "$GATE" --prewarm "$prewarm" --ready exec_review \
+    --status-dir "$status" --slug t --team tm --reviewer-workspace workspace:1)
+  rm -f "$TMP/send.calls" "$TMP/send.args"
+  AGMSG_SEND="$TMP/bin/send.sh" bash "$DELIVER" --prewarm "$prewarm" \
+    --review-config "$config" --plan-file "$TMP/plan.md" --status-dir "$status" \
+    --team tm --slug t >/dev/null 2>"$status/deliver.err" || return 1
+  read_nul_args
+  printf '%s' "${SEND[4]-}"
+}
+
+# Codex implementer + Claude reviewer: Claude has no Codex bridge seat. The verified
+# surface must be checked once, and the Codex-only seat helper must not appear.
+jq '.exec.runner = "cx" | .exec.engine = "codex" | .exec.model = "gpt-5.6-sol"' \
+  "$TMP/prewarm.json" > "$TMP/prewarm-codex-claude.json"
+mixed_body=$(deliver_mixed_body "$TMP/prewarm-codex-claude.json" "$TMP/status-codex-claude")
+codex_liveness="bash $S_REAL/verify-agmsg-ready.sh --codex --team tm --name t-exec-review"
+if [[ $(grep -Fo "$claude_liveness" <<< "$mixed_body" | wc -l | tr -d ' ') == 1 \
+   && "$mixed_body" != *"$codex_liveness"* \
+   && $(grep -Fo 'this engine has no timer' <<< "$mixed_body" | wc -l | tr -d ' ') == 1 ]]; then
+  ok 'PB14a Codex implementer waits for a Claude reviewer via the verified surface once'
+else
+  bad 'PB14a Codex-to-Claude review wait uses the wrong liveness protocol'
+fi
+
+# Claude implementer + Codex reviewer: the Codex bridge seat is the reachable contract,
+# while the Claude implementer still owns exactly one single-shot timer.
+jq '.exec_review.runner = "cx" | .exec_review.engine = "codex" | .exec_review.model = "gpt-5.6-sol"' \
+  "$TMP/prewarm.json" > "$TMP/prewarm-claude-codex.json"
+mixed_body=$(deliver_mixed_body "$TMP/prewarm-claude-codex.json" "$TMP/status-claude-codex")
+if [[ $(grep -Fo "$codex_liveness" <<< "$mixed_body" | wc -l | tr -d ' ') == 1 \
+   && "$mixed_body" != *"$claude_liveness"* \
+   && $(grep -Fo 'arm ONE single-shot safety timer with the Bash tool using run_in_background' \
+        <<< "$mixed_body" | wc -l | tr -d ' ') == 1 ]]; then
+  ok 'PB14b Claude implementer waits for a Codex reviewer via its bridge seat once'
+else
+  bad 'PB14b Claude-to-Codex review wait uses the wrong liveness protocol'
+fi
 
 exit "$fail"

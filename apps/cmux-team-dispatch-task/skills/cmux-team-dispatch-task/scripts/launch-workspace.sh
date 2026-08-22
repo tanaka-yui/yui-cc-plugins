@@ -1310,6 +1310,28 @@ CREATED_WORKSPACE_ID=""
 CREATED_SURFACE_ID=""
 CREATED_SURFACE_WORKSPACE=""
 
+list_workspace_ids() {
+  local output
+  output=$("$CMUX" list-workspaces 2>/dev/null) || return 1
+  grep -oE 'workspace:[0-9]+' <<< "$output" | sort -u || true
+}
+
+list_workspace_surface_ids() { # $1=workspace
+  local output
+  output=$("$CMUX" tree --workspace "$1" 2>/dev/null) || return 1
+  grep -oE 'surface:[0-9]+' <<< "$output" | sort -u || true
+}
+
+single_added_ref() { # $1=kind $2=before refs $3=after refs
+  local kind="$1" before="$2" after="$3" added count
+  added=$(comm -13 \
+    <(grep -E "^$kind:[0-9]+$" <<< "$before" | sort -u || true) \
+    <(grep -E "^$kind:[0-9]+$" <<< "$after" | sort -u || true))
+  count=$(grep -Ec "^$kind:[0-9]+$" <<< "$added" || true)
+  [[ "$count" == 1 ]] || return 1
+  printf '%s\n' "$added"
+}
+
 cleanup_created_cmux_resource() {
   local rc=$?
   [[ $rc -ne 0 ]] || return 0
@@ -1330,12 +1352,22 @@ if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; th
   WORKSPACE_ID="$STANDBY_IN"
   TITLE="$WORKSPACE_NAME"
 
+  SURFACES_BEFORE=$(list_workspace_surface_ids "$STANDBY_IN") \
+    || die "failed to inventory standby workspace before split creation"
   log "cmux" "creating standby pane (split $STANDBY_SPLIT_DIRECTION from $STANDBY_SPLIT_FROM) in $STANDBY_IN"
   SPLIT_OUTPUT=$("$CMUX" new-split "$STANDBY_SPLIT_DIRECTION" \
     --workspace "$STANDBY_IN" \
     --surface "$STANDBY_SPLIT_FROM" 2>/dev/null) || die "failed to create standby split pane"
-  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
-  [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
+  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1 || true)
+  if [[ -z "$SURFACE_ID" ]]; then
+    SURFACES_AFTER=$(list_workspace_surface_ids "$STANDBY_IN") \
+      || die "failed to inventory standby workspace after malformed split output"
+    SURFACE_ID=$(single_added_ref surface "$SURFACES_BEFORE" "$SURFACES_AFTER") \
+      || die "failed to identify the created surface after malformed split output: $SPLIT_OUTPUT"
+    CREATED_SURFACE_ID="$SURFACE_ID"
+    CREATED_SURFACE_WORKSPACE="$WORKSPACE_ID"
+    die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
+  fi
   CREATED_SURFACE_ID="$SURFACE_ID"
   CREATED_SURFACE_WORKSPACE="$WORKSPACE_ID"
   log "cmux" "standby pane surface: $SURFACE_ID"
@@ -1358,11 +1390,20 @@ else
   # This is strictly better than creating the workspace and then sending the
   # runner via `cmux send`: on some environments the new surface is not a
   # terminal at creation time, which previously caused dropped commands.
+  WORKSPACES_BEFORE=$(list_workspace_ids) \
+    || die "failed to inventory workspaces before workspace creation"
   log "cmux" "creating workspace with cwd=$CWD, auto-launching runner via --command"
   WORKSPACE_OUTPUT=$("$CMUX" new-workspace --cwd "$CWD" --command "bash $RUNNER_SCRIPT_NAME" 2>/dev/null) \
     || die "failed to create cmux workspace"
-  WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1)
-  [[ -z "$WORKSPACE_ID" ]] && die "failed to parse workspace ID from output: $WORKSPACE_OUTPUT"
+  WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1 || true)
+  if [[ -z "$WORKSPACE_ID" ]]; then
+    WORKSPACES_AFTER=$(list_workspace_ids) \
+      || die "failed to inventory workspaces after malformed workspace output"
+    WORKSPACE_ID=$(single_added_ref workspace "$WORKSPACES_BEFORE" "$WORKSPACES_AFTER") \
+      || die "failed to identify the created workspace after malformed output: $WORKSPACE_OUTPUT"
+    CREATED_WORKSPACE_ID="$WORKSPACE_ID"
+    die "failed to parse workspace ID from output: $WORKSPACE_OUTPUT"
+  fi
   CREATED_WORKSPACE_ID="$WORKSPACE_ID"
   log "cmux" "created $WORKSPACE_ID"
 
