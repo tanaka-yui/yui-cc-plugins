@@ -828,6 +828,17 @@ would loop forever. Giving up does not clear the counter — clearing it there w
 limit immediately and produce an endless block-then-pause cycle. Only a genuine allow resets
 it, which happens as soon as the task reaches a wait or a terminal status.
 
+**Whatever the gate knows goes into the `reason`.** The reason is delivered as guidance for
+the next turn and the model acts on it, so a reason that names the condition but not the values
+needed to satisfy it makes the session go hunting. Measured on a real pane: with only the
+condition, the blocked session spent a whole turn running `ls ..`, reading `completion-gate.sh`
+and `report-status.sh`, and searching for a team name it never found — and gave up on the
+notification. With the status directory, `report-status.sh`, the agent, the team, and the exact
+`send.sh` invocation in the reason, the same scenario took three tool calls and completed the
+whole contract. The gate says nothing about notifying when the team or the send command is
+missing: showing a command with unfillable arguments makes the session either invent values or
+go looking for them.
+
 Injection is best-effort exactly like the `ExitPlanMode` hook: a failure warns and the dispatch
 continues. Re-using a worktree does not inject a second copy.
 

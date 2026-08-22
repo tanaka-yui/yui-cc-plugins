@@ -17,7 +17,8 @@
 # 2026-08-22 に両 engine で実測済み (spec §6 の G-T1 / G-T2)。何をすべきかを書くこと。
 #
 # Usage:
-#   completion-gate.sh --status-dir <dir> --role <design|design_review|exec|exec_review> --agent <name>
+#   completion-gate.sh --status-dir <dir> --role <design|design_review|exec|exec_review> \
+#                      --agent <name> [--team <team>] [--send-command <path>]
 #
 # Output: block したいときだけ {"decision":"block","reason":"..."} を stdout へ
 # Exit:   0 = 判定完了 (block の有無は stdout で表す) / 2 = 使用法エラー
@@ -28,12 +29,14 @@ set -uo pipefail
 
 die() { echo "completion-gate: $1" >&2; exit 2; }
 
-STATUS_DIR=""; ROLE=""; AGENT=""
+STATUS_DIR=""; ROLE=""; AGENT=""; TEAM=""; SEND_CMD=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --status-dir) [[ $# -ge 2 ]] || die "--status-dir requires a value"; STATUS_DIR="$2"; shift 2 ;;
     --role)       [[ $# -ge 2 ]] || die "--role requires a value";       ROLE="$2";       shift 2 ;;
     --agent)      [[ $# -ge 2 ]] || die "--agent requires a value";      AGENT="$2";      shift 2 ;;
+    --team)       [[ $# -ge 2 ]] || die "--team requires a value";       TEAM="$2";       shift 2 ;;
+    --send-command) [[ $# -ge 2 ]] || die "--send-command requires a value"; SEND_CMD="$2"; shift 2 ;;
     *)            die "unknown argument: $1" ;;
   esac
 done
@@ -55,6 +58,24 @@ esac
 MAX_BLOCKS="${DISPATCH_GATE_MAX_BLOCKS:-10}"
 [[ "$MAX_BLOCKS" =~ ^[0-9]+$ ]] || die "DISPATCH_GATE_MAX_BLOCKS must be a whole number"
 BLOCK_COUNT_FILE="$STATUS_DIR/.gate-blocks"
+
+# reason は次ターンのガイダンスとして届き、モデルがそれに従う (spec §6 の G-T1 で実証)。
+# したがって **このスクリプトが知っている値は reason に入れる**。実ペインの E2E で、
+# パスを書かなかったために block されたセッションが status dir を ls で探し、
+# completion-gate.sh と report-status.sh を読み、team 名を find で探す、という考古学に
+# まる 1 ターンを費やした。知っているものを渡さないのは単なる取りこぼしである。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# team はディスパッチ配下でのみ渡る。無いときに send.sh の 4 引数を埋めさせようとすると
+# 存在しない team 名を捏造させることになるので、そのときは触れない。
+# 送信コマンドまで書けるのは team と send-command の両方が揃ったときだけ。片方でも欠けたら
+# 具体的な手順を書かない — 埋められない引数を持つコマンドを見せると、子はそれを埋めようとして
+# 存在しない値を捏造するか、探し回って 1 ターンを溶かす (どちらも E2E で観測した)。
+NOTIFY_HINT=""
+if [[ -n "$TEAM" && -n "$SEND_CMD" ]]; then
+  NOTIFY_HINT=" Send it with exactly: $SEND_CMD $TEAM $AGENT parent 'dispatch-notify: ...'"
+elif [[ -n "$TEAM" ]]; then
+  NOTIFY_HINT=" (team $TEAM)"
+fi
 
 # 停止を許す。stdout へ何も出さない。
 # 待機から復帰したあとに前の回数を持ち越さないよう、必ずカウンタを消す。数えているのは
@@ -117,11 +138,11 @@ case "$ROLE" in
     [[ -n "$ROUND_FILE" ]] || allow
     # 6. VERDICT を書き終えていない = 自分の仕事が途中。依頼側 (判定 5) とは逆の判定になる。
     if ! grep -q '^VERDICT:' "$ROUND_FILE" 2>/dev/null; then
-      block "review round file $ROUND_FILE has no VERDICT line yet. Finish the review, write VERDICT: approve or VERDICT: needs_work as its last line, then send the review-verdict: message."
+      block "review round file $ROUND_FILE has no VERDICT line yet. Finish the review, write VERDICT: approve or VERDICT: needs_work as its last line, then send one review-verdict: message from $AGENT to whoever requested it$NOTIFY_HINT."
     fi
     allow
     ;;
 esac
 
 # 7. 作業の途中で止まろうとしている
-block "the task is not finished: status.json has no terminal status yet. Continue the work, then write status.json and send the dispatch-notify: message."
+block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet. Continue the work. To finish, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done if you are blocked), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."
