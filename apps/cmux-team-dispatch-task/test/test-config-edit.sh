@@ -24,6 +24,8 @@
 #  CE20. model の禁止文字 / 内部空白の許容
 #  CE21. effort の engine 別 allowlist (codex に max は無い)
 #  CE22. reset 相当 (--unset review_mode --unset runner) が第三者キーを温存する
+#  CE23. read モードでは --engine / --runners を拒否し、指定 engine も検証する
+#  CE24. 不正な入れ子 role / field を set / get / unset で拒否する
 
 set -uo pipefail
 
@@ -165,6 +167,45 @@ bash "$EDIT" --config "$C" >/dev/null 2>&1; rc=$?
 bash "$EDIT" --show >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] || bad "CE11: --config 未指定 (rc=$rc)"
 ok 'CE11: モード指定の検証'
+
+# CE23: read モードの mutation helper と engine の検証
+reset_config
+printf '{"review_mode":"on","runner":{"design":{"runner":"ccf"}}}\n' > "$C"
+out=$(bash "$EDIT" --config "$C" --engine bogus=gemini --get review_mode 2>&1); rc=$?
+[[ $rc -eq 2 && "$out" == *'unknown role for --engine: bogus'* ]] \
+  && ok 'CE23a: --get でも --engine の role を検証する' \
+  || bad "CE23a: rc=$rc out=[$out]"
+out=$(bash "$EDIT" --config "$C" --engine design=gemini --show 2>&1); rc=$?
+[[ $rc -eq 2 && "$out" == *"invalid engine for role 'design': gemini"* ]] \
+  && ok 'CE23b: --show でも --engine の値を検証する' \
+  || bad "CE23b: rc=$rc out=[$out]"
+out=$(bash "$EDIT" --config "$C" --engine design=claude --get review_mode 2>&1); rc=$?
+[[ $rc -eq 2 && "$out" == *'--engine is only valid with mutations'* ]] \
+  && ok 'CE23c: --get は有効な --engine も拒否する' \
+  || bad "CE23c: rc=$rc out=[$out]"
+out=$(bash "$EDIT" --config "$C" --runners "$TMP/runners.json" --show 2>&1); rc=$?
+[[ $rc -eq 2 && "$out" == *'--runners is only valid with mutations'* ]] \
+  && ok 'CE23d: --show は --runners を拒否する' \
+  || bad "CE23d: rc=$rc out=[$out]"
+
+# CE24: allowlist 外の role / field は全境界で拒否する
+reset_config
+printf '{"review_mode":"on","runner":{"design":{"runner":"ccf"}}}\n' > "$C"
+before=$(cat "$C")
+for key in runner.unknown.model runner.design.unknown; do
+  out=$(bash "$EDIT" --config "$C" --set "$key=value" 2>&1); rc=$?
+  [[ $rc -eq 2 && "$out" == *"unknown key: $key"* && "$(cat "$C")" == "$before" ]] \
+    && ok "CE24: --set $key を拒否し原本不変" \
+    || bad "CE24: --set $key (rc=$rc out=[$out])"
+  out=$(bash "$EDIT" --config "$C" --unset "$key" 2>&1); rc=$?
+  [[ $rc -eq 2 && "$out" == *"unknown key: $key"* && "$(cat "$C")" == "$before" ]] \
+    && ok "CE24: --unset $key を拒否し原本不変" \
+    || bad "CE24: --unset $key (rc=$rc out=[$out])"
+  out=$(bash "$EDIT" --config "$C" --get "$key" 2>&1); rc=$?
+  [[ $rc -eq 2 && "$out" == *"unknown key: $key"* ]] \
+    && ok "CE24: --get $key を拒否する" \
+    || bad "CE24: --get $key (rc=$rc out=[$out])"
+done
 
 # CE12: 入れ子キー
 reset_config

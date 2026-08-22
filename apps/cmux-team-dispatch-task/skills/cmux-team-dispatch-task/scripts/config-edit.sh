@@ -92,6 +92,7 @@ runner_engine() {
 
 CONFIG=""
 RUNNERS="$(dispatch_runners_file)"
+RUNNERS_SET=0
 GET_KEY=""
 SHOW=0
 MUTATE=0
@@ -111,6 +112,7 @@ while [[ $# -gt 0 ]]; do
     --runners)
       [[ $# -ge 2 ]] || die_usage '--runners requires a value'
       RUNNERS="$2"
+      RUNNERS_SET=1
       shift 2
       ;;
     --engine)
@@ -156,6 +158,19 @@ mode_count=$((MUTATE + SHOW))
 [[ -n "$GET_KEY" ]] && mode_count=$((mode_count + 1))
 [[ "$mode_count" -eq 1 ]] || die_usage 'specify exactly one of --set/--unset, --get, or --show'
 
+for index in "${!ENGINE_ROLES[@]}"; do
+  role="${ENGINE_ROLES[$index]}"
+  engine="${ENGINE_VALUES[$index]}"
+  valid_role "$role" || die_usage "unknown role for --engine: $role"
+  case "$engine" in claude|codex) ;; *) die_usage "invalid engine for role '$role': $engine" ;; esac
+  printf -v "ENGINE_$role" '%s' "$engine"
+done
+
+if [[ -n "$GET_KEY" || "$SHOW" -eq 1 ]]; then
+  [[ "${#ENGINE_ROLES[@]}" -eq 0 ]] || die_usage '--engine is only valid with mutations'
+  [[ "$RUNNERS_SET" -eq 0 ]] || die_usage '--runners is only valid with mutations'
+fi
+
 if [[ -n "$GET_KEY" ]]; then
   kind=$(key_kind "$GET_KEY") || die_usage "unknown key: $GET_KEY"
   [[ "$kind" == review_mode || "$kind" == field ]] || die_usage "key is unset-only: $GET_KEY"
@@ -189,14 +204,6 @@ if [[ -f "$CONFIG" ]] && ! jq -e 'type == "object"' "$CONFIG" >/dev/null 2>&1; t
   echo "config-edit: cannot read $CONFIG (invalid JSON?)" >&2
   exit 1
 fi
-
-for index in "${!ENGINE_ROLES[@]}"; do
-  role="${ENGINE_ROLES[$index]}"
-  engine="${ENGINE_VALUES[$index]}"
-  valid_role "$role" || die_usage "unknown role for --engine: $role"
-  case "$engine" in claude|codex) ;; *) die_usage "invalid engine for role '$role': $engine" ;; esac
-  printf -v "ENGINE_$role" '%s' "$engine"
-done
 
 for index in "${!OPS[@]}"; do
   op="${OPS[$index]}"
