@@ -36,6 +36,28 @@ rc=$?
 [[ $rc -eq 2 ]] && grep -q -- '--roles' <<< "$out" \
   && ok 'RI2c: missing --roles is an explicit exit 2' || bad "RI2c: rc=$rc $out"
 
+# Valid JSON containers other than an object must take the validation path, not
+# leak jq's internal exit status/error from the first object-only expression.
+expect_non_object() { # $1=label $2=valid JSON document
+  local label="$1" doc="$2" rc
+  printf '%s\n' "$doc" > "$TMP/non-object.json"
+  run_pw "$TMP/non-object.json" > "$TMP/non-object.out" 2>&1
+  rc=$?
+  if [[ $rc -eq 2 ]] \
+    && grep -qi 'top-level.*object' "$TMP/non-object.out" \
+    && no_side_effects; then
+    ok "RI2e-$label: valid non-object JSON is an explicit side-effect-free validation error"
+  else
+    bad "RI2e-$label: rc=$rc output=$(cat "$TMP/non-object.out")"
+  fi
+}
+expect_non_object number '42'
+expect_non_object string '"roles"'
+expect_non_object boolean 'true'
+expect_non_object boolean-false 'false'
+expect_non_object null 'null'
+expect_non_object array '[]'
+
 tamper_expr() { jq "$1" "$ROLES_ON" > "$TMP/bad.json"; run_pw "$TMP/bad.json" >/dev/null 2>&1; }
 tamper_arg() { jq --arg v "$2" "$1" "$ROLES_ON" > "$TMP/bad.json"; run_pw "$TMP/bad.json" >/dev/null 2>&1; }
 

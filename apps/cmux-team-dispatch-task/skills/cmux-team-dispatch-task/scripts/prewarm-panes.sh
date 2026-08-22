@@ -96,7 +96,7 @@ command -v git >/dev/null 2>&1 || die "git is not installed"
 # Read the resolver output exactly once. All validation and extraction below use
 # this immutable in-process snapshot, never ROLES_FILE again.
 ROLES_DOC=$(cat "$ROLES_FILE") || die "cannot read --roles file"
-jq -e . >/dev/null 2>&1 <<< "$ROLES_DOC" || die "--roles file is not valid JSON"
+jq -e 'type' >/dev/null 2>&1 <<< "$ROLES_DOC" || die "--roles file is not valid JSON"
 
 RUNNERS_FILE="$(dispatch_runners_file)"
 [[ -f "$RUNNERS_FILE" ]] || die "runners.json not found at $RUNNERS_FILE"
@@ -105,6 +105,8 @@ jq -e '.runners | type == "array"' "$RUNNERS_FILE" >/dev/null 2>&1 \
 
 validate_roles_doc() {
   local bad_top review_mode expected role runner engine effort model runner_engine
+  jq -e 'type == "object"' >/dev/null 2>&1 <<< "$ROLES_DOC" \
+    || die "invalid --roles: top-level JSON value must be an object"
   bad_top=$(jq -r '[keys[] | select(. != "review_mode" and . != "roles" and
     . != "config_home" and . != "global_config" and . != "project_config" and
     . != "runners_file")] | first // empty' <<< "$ROLES_DOC")
