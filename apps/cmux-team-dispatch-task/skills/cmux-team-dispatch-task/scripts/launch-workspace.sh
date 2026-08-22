@@ -173,6 +173,32 @@ ensure_claude_exclusions() {
   return 0
 }
 
+# 完走ゲート: 子セッションが仕事の途中で止まったら Stop hook が継続させる。
+# 判定は completion-gate.sh がディスクだけを見て行う (モデル評価は使わない)。
+# ExitPlanMode hook と同じくベストエフォート — 失敗は警告のみで dispatch を止めない。
+# 冪等性はファイルに completion-gate.sh が既にあるかで判定する (worktree 再利用時の
+# 二重注入を防ぐ)。
+inject_completion_gate() {
+  local script="$SCRIPT_DIR/completion-gate.sh"
+  local settings_file="$CWD/.claude/settings.local.json"
+  local cmd
+
+  [[ -n "$STATUS_DIR" ]] || return 0
+  if [[ -f "$settings_file" ]] && grep -q 'completion-gate.sh' "$settings_file" 2>/dev/null; then
+    log "hook" "completion gate already present in $settings_file"
+    return 0
+  fi
+  # パスと値をクォートして焼き込む (スキルの配置先やタスク slug に空白が入っても壊れない)
+  cmd="zsh '$script' --status-dir '$STATUS_DIR' --role '$MODEL_ROLE' --agent '$AGMSG_FROM'"
+  if merge_claude_settings \
+    '.hooks.Stop = ((.hooks.Stop // []) + [{matcher: "", hooks: [{type: "command", command: $cmd}]}])' \
+    --arg cmd "$cmd"; then
+    log "hook" "merged the completion gate into $settings_file"
+  else
+    log "warn" "failed to inject the completion gate into $settings_file"
+  fi
+}
+
 # シェル起動検知と config 学習（split / standby mode で使用）
 # shellcheck source=./terminal-wait.sh
 source "$SCRIPT_DIR/terminal-wait.sh"
@@ -801,6 +827,12 @@ if [[ "$MODE" == "plan" && "$RUNNER_ENGINE" == "claude" ]]; then
       log "hook" "merged ExitPlanMode hook into $SETTINGS_FILE"
     fi
   fi
+fi
+
+# --- Step 2c: 完走ゲート (Stop hook 注入) ---
+# plan モードに限らず、claude engine で status-dir がある全ロールに入れる。
+if [[ "$RUNNER_ENGINE" == "claude" ]]; then
+  inject_completion_gate || true
 fi
 
 # --- Step 3: Build runner command ---
