@@ -103,11 +103,11 @@ execute_runner=$(runner_for execute)
 standby_runner=$(runner_for standby)
 review_runner=$(runner_for review)
 
-assert_contains "$plan_runner" "--model 'gpt-5.6-sol'" 'MR1 plan uses plan_model'
-assert_contains "$superpowers_runner" "--model 'gpt-5.6-sol'" 'MR2 superpowers uses plan_model'
-assert_contains "$review_runner" "--model 'gpt-5.6-sol'" 'MR3 review uses review_model'
-assert_contains "$execute_runner" "--model 'gpt-5.6-terra'" 'MR4 execute uses exec_model'
-assert_contains "$standby_runner" "--model 'gpt-5.6-terra'" 'MR5 standby defaults to exec role'
+assert_not_contains "$plan_runner" '--model' 'MR1 plan omits a codex default model'
+assert_not_contains "$superpowers_runner" '--model' 'MR2 superpowers omits a codex default model'
+assert_not_contains "$review_runner" '--model' 'MR3 review omits a codex default model'
+assert_not_contains "$execute_runner" '--model' 'MR4 execute omits a codex default model'
+assert_not_contains "$standby_runner" '--model' 'MR5 standby omits a codex default model'
 
 runner_for_flags() {
   local mode="$1"; shift
@@ -123,9 +123,9 @@ runner_for_flags() {
   jq -r '.runner_file' <<<"$output"
 }
 
-plan_standby=$(runner_for_flags standby --role plan)
-assert_contains "$plan_standby" "--model 'gpt-5.6-sol'" 'MR6 plan standby uses plan_model'
-assert_not_contains "$plan_standby" "--model 'gpt-5.6-terra'" 'MR6 plan standby excludes exec_model'
+plan_standby=$(runner_for_flags standby --role design)
+assert_not_contains "$plan_standby" '--model' 'MR6 design standby omits a codex default model'
+assert_contains "$plan_standby" "-c model_reasoning_effort='xhigh'" 'MR6 design standby gets design effort'
 
 explicit_plan=$(runner_for_flags plan --model gpt-5.6-terra)
 assert_contains "$explicit_plan" "--model 'gpt-5.6-terra'" 'MR7 explicit model wins'
@@ -139,13 +139,13 @@ assert_not_contains "$execute_runner" 'Claude session starting' 'EN3 no Claude s
 assert_contains "$standby_runner" '--dangerously-bypass-approvals-and-sandbox' 'T4 codex + standby bypass'
 assert_contains "$review_runner" '--sandbox workspace-write' 'T5 review sandbox workspace-write'
 assert_contains "$review_runner" "-c approval_policy='never'" 'T5 review approval policy never'
-assert_contains "$review_runner" "--add-dir '$TMP/status'" 'T5 review status directory writable'
+assert_contains "$review_runner" "--add-dir '$TMP/status/review'" 'T5 review findings directory writable'
 assert_not_contains "$review_runner" '--dangerously-bypass-approvals-and-sandbox' 'T5 review does not disable sandbox'
 
 # --- CR1 / CR1b: codex review の --add-dir (agmsg run/db は writable, scripts は不可) ---
 FAKE_AGMSG="$TMP/fake-agmsg"; mkdir -p "$FAKE_AGMSG/run" "$FAKE_AGMSG/db" "$FAKE_AGMSG/scripts"
 cr1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex \
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex \
   --agmsg-team demo-team --agmsg-from rv1 --status-dir "$TMP/status" rv1 prompt)
 cr1_runner=$(jq -r '.runner_file' <<<"$cr1_output")
 assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1 agmsg run must be writable'
@@ -153,7 +153,7 @@ assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/db'"  'CR1 agmsg db must b
 assert_not_contains "$cr1_runner" "$FAKE_AGMSG/scripts"     'CR1 agmsg scripts must NOT be writable'
 
 cr1b_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv2 prompt)
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv2 prompt)
 cr1b_runner=$(jq -r '.runner_file' <<<"$cr1b_output")
 assert_contains "$cr1b_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1b must add agmsg dirs without STATUS_DIR'
 
@@ -163,7 +163,7 @@ assert_contains "$cr1b_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1b must add agms
 # 中からは作れない。launch-workspace.sh 側がサンドボックス外で先に作る必要がある。
 FRESH_AGMSG="$TMP/fresh-agmsg"; mkdir -p "$FRESH_AGMSG/scripts"
 cr1c_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FRESH_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv3 prompt)
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv3 prompt)
 cr1c_runner=$(jq -r '.runner_file' <<<"$cr1c_output")
 assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/run'" 'CR1c fresh install must still grant agmsg run'
 assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/db'"  'CR1c fresh install must still grant agmsg db'
@@ -171,7 +171,7 @@ assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/db'"  'CR1c fresh instal
 # --- CR1d: agmsg 未インストールならツリーを勝手に作らない ---
 MISSING_AGMSG="$TMP/no-agmsg"
 CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$MISSING_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv4 prompt >/dev/null
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv4 prompt >/dev/null
 if [[ -d "$MISSING_AGMSG" ]]; then
   echo 'FAIL: CR1d must not create an agmsg tree when agmsg is not installed'
   fail=1
@@ -186,9 +186,37 @@ fi
 # 検出したときは --add-dir もツリー作成もしない (fail-closed)。
 QUOTED_AGMSG="$TMP/qu'ote-agmsg"; mkdir -p "$QUOTED_AGMSG/run" "$QUOTED_AGMSG/db"
 cr1e_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$QUOTED_AGMSG" \
-  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role review --runner codex rv5 prompt 2>/dev/null)
+  bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv5 prompt 2>/dev/null)
 cr1e_runner=$(jq -r '.runner_file' <<<"$cr1e_output")
 assert_not_contains "$cr1e_runner" "qu'ote-agmsg" 'CR1e a quoted AGMSG_SKILL_DIR must not be injected'
+
+# CR1f: review ペインの --add-dir は STATUS_DIR ではなく STATUS_DIR/review
+if grep -q "add-dir '\$STATUS_DIR/review'" "$LAUNCH" && ! grep -q "add-dir '\$STATUS_DIR'" "$LAUNCH"; then
+  echo 'PASS: CR1f review pane write permission is restricted to STATUS_DIR/review'
+else
+  echo 'FAIL: CR1f --add-dir remains STATUS_DIR-wide or has no review subdirectory'
+  fail=1
+fi
+# CR1g: STATUS_DIR/review は -d 判定の前に mkdir -p される
+grep -q 'mkdir -p "\$STATUS_DIR/review"' "$LAUNCH" \
+  && echo 'PASS: CR1g creates STATUS_DIR/review before granting it' \
+  || { echo 'FAIL: CR1g missing review directory creation'; fail=1; }
+# CR1h: STATUS_DIR にシェルメタ文字があるときは fail-closed で die する。
+BAD_STATUS="$TMP/sta'tus"
+if out=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+         bash "$LAUNCH" --cwd "$TMP/repo" --mode review --runner codex \
+           --agmsg-team demo --agmsg-from p --status-dir "$BAD_STATUS" ws prompt 2>&1); then
+  rc=0
+else
+  rc=$?
+fi
+if [[ $rc -ne 0 ]] && grep -qi 'status-dir' <<<"$out" \
+   && [[ ! -d "$BAD_STATUS" ]] && ! grep -rq "sta'tus" "$TMP" --include='*.sh' 2>/dev/null; then
+  echo 'PASS: CR1h rejects metacharacter STATUS_DIR without side effects'
+else
+  echo "FAIL: CR1h rc=$rc out=$out"
+  fail=1
+fi
 
 # --- LW1 / LW2: agmsg 配線経路 ---
 # launch-workspace.sh:379 は send.sh が無ければ die する。実 $HOME の agmsg に依存させると

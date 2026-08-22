@@ -237,7 +237,7 @@ fi
 # prewarm の設計ペインは "$SLUG" "$OPUS_PROMPT" の 2 位置引数で起動するので prompt 有りの
 # 合成行を通る。prompt 無しのケースだけではこの行の splice 忘れを 1 件も検出できない。
 repo=$(new_repo p12); break_a "$repo"
-out=$(run_launch_err "$TMP/err-p12" --cwd "$repo" --mode standby --role plan --runner claude \
+out=$(run_launch_err "$TMP/err-p12" --cwd "$repo" --mode standby --role design --runner claude \
   --status-dir "$TMP/status-p12" p12-standby 'agmsg actas p12 then wait idle')
 runner_file=$(jq -r '.runner_file' <<<"$out")
 if [[ "$(count_flag "$runner_file")" == "1" ]] \

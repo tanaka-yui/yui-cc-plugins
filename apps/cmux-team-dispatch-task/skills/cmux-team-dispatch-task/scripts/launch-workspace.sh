@@ -20,10 +20,11 @@
 #                                      同一 (.assigned-<name> が無い限り wrapper は status.json を
 #                                      書かない) だが、レビューペインは .assigned を一切使わない
 #                                      前提のモード。codex engine では --model を反映する
-#   --role plan|review|exec            Model/effort role. Default is derived from mode:
-#                                      plan/superpowers=plan, review=review,
+#   --role design|design_review|exec|exec_review
+#                                      Model/effort role. Default is derived from mode:
+#                                      plan/superpowers=design, review=design_review,
 #                                      execute/standby=exec. A standby design pane passes
-#                                      --role plan; conflicting non-standby overrides fail.
+#                                      --role design; conflicting non-standby overrides fail.
 #   --standby-split-direction right|down  standby/review split 配置の分割方向 (default: down)
 #   --standby-in <workspace-id>        standby ペインを追加する既存 workspace (split 配置時必須)
 #   --standby-split-from <surface-id>  縦分割の分割元 surface (split 配置時必須)
@@ -31,12 +32,11 @@
 #                                      inner prompt が
 #                                      "Read and execute the plan at <path>" になる
 #   --model <model>                    Model flag passed as --model <X>. engine を問わず
-#                                      未指定時は runner の role 対応 plan_model /
-#                                      review_model / exec_model にフォールバックし、
-#                                      claude はさらに plan/review=opus[1m] / exec=sonnet を既定とする
+#                                      未指定時は role 対応の組込み既定値を使う。claude は
+#                                      design/design_review/exec_review=opus[1m] / exec=sonnet、
+#                                      codex は model を省略して codex 側の既定に委ねる
 #   --effort <level>                   Reasoning effort. engine を問わず未指定時は runner の
-#                                      plan_effort / review_effort / exec_effort に
-#                                      フォールバックし、既定は plan/review=xhigh / exec=high。
+#                                      組込み既定値は design/design_review/exec_review=xhigh / exec=high。
 #                                      claude は --effort、codex は -c model_reasoning_effort へ注入
 #   --skip-permissions                 claude に --dangerously-skip-permissions を
 #                                      追加 (sonnet の auto mode 不在対策)。
@@ -78,9 +78,8 @@
 #   --status-dir <path>                Directory for writing status files
 #   --parent-notify-workspace <ws-id>  Workspace to notify on completion
 #   --runner <name>                    Runner name to look up in
-#                                      ~/.claude/cmux-team-dispatch-task/runners.json.
-#                                      Resolves command/engine and role-specific plan/review/exec
-#                                      model/effort fields for the child session.
+#                                      DISPATCH_CONFIG_HOME/runners.json (or RUNNERS_CONFIG_PATH override).
+#                                      Resolves command/engine for the child session.
 #                                      The composed command is always wrapped in `zsh -ic "..."`
 #                                      so functions and env vars from ~/.zshrc are loaded.
 #                                      Default: hardcoded {claude, engine=claude}.
@@ -101,7 +100,8 @@ CMUX="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
 # Child の実行中 runner ファイルを上書きしてしまい bash の挙動が undefined になる。
 RUNNER_SCRIPT_NAME=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNNERS_CONFIG_PATH="${RUNNERS_CONFIG_PATH:-$HOME/.claude/cmux-team-dispatch-task/runners.json}"
+source "$SCRIPT_DIR/config-lib.sh"
+RUNNERS_CONFIG_PATH="$(dispatch_runners_file)"
 
 # --- Helpers ---
 
@@ -248,7 +248,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --role)
-      [[ $# -lt 2 ]] && die "--role requires plan, review, or exec"
+      [[ $# -lt 2 ]] && die "--role requires design, design_review, exec, or exec_review"
       MODEL_ROLE="$2"
       shift 2
       ;;
@@ -343,17 +343,27 @@ done
 
 if [[ -z "$MODEL_ROLE" ]]; then
   case "$MODE" in
-    plan|superpowers) MODEL_ROLE="plan" ;;
-    review) MODEL_ROLE="review" ;;
+    plan|superpowers) MODEL_ROLE="design" ;;
+    review) MODEL_ROLE="design_review" ;;
     execute|standby) MODEL_ROLE="exec" ;;
   esac
 elif [[ "$MODE" != "standby" ]]; then
   case "$MODE:$MODEL_ROLE" in
-    plan:plan|superpowers:plan|review:review|execute:exec) ;;
+    plan:design|superpowers:design|review:design_review|execute:exec) ;;
     *) die "--role '$MODEL_ROLE' conflicts with --mode '$MODE'" ;;
   esac
 fi
-[[ "$MODEL_ROLE" =~ ^(plan|review|exec)$ ]] || die "--role must be 'plan', 'review', or 'exec'"
+[[ "$MODEL_ROLE" =~ ^(design|design_review|exec|exec_review)$ ]] \
+  || die "--role must be 'design', 'design_review', 'exec', or 'exec_review'"
+
+# STATUS_DIR は review の composed command に --add-dir '<path>' として埋め込まれる。
+# 引用を破る値は、ファイル生成やコマンド組立てより前に fail-closed で拒否する。
+STATUS_DIR_SAFE=1
+case "$STATUS_DIR" in
+  *\'*|*\"*|*\`*|*\$*|*\!*|*\\*|*[[:cntrl:]]*)
+    STATUS_DIR_SAFE=0
+    die "--status-dir contains a shell metacharacter; refusing to build the composed command" ;;
+esac
 
 # execute mode は --plan-file が必須で PROMPT は不要 (inner prompt が plan-file 由来)
 # standby mode は --standby-in / --cwd が必須で PROMPT は省略可 (idle TUI 待機)
@@ -455,12 +465,6 @@ command -v jq &>/dev/null || die "jq is not installed (required for JSON output)
 
 RUNNER_COMMAND="claude"
 RUNNER_ENGINE="claude"
-RUNNER_PLAN_MODEL=""
-RUNNER_REVIEW_MODEL=""
-RUNNER_EXEC_MODEL=""
-RUNNER_PLAN_EFFORT=""
-RUNNER_REVIEW_EFFORT=""
-RUNNER_EXEC_EFFORT=""
 
 if [[ -n "$RUNNER_NAME" ]]; then
   [[ -f "$RUNNERS_CONFIG_PATH" ]] || die "runners.json not found at $RUNNERS_CONFIG_PATH (required when --runner is specified)"
@@ -470,43 +474,16 @@ if [[ -n "$RUNNER_NAME" ]]; then
 
   RUNNER_COMMAND=$(echo "$RUNNER_JSON" | jq -r '.command // empty')
   RUNNER_ENGINE=$(echo "$RUNNER_JSON" | jq -r '.engine // "claude"')
-  RUNNER_PLAN_MODEL=$(echo "$RUNNER_JSON" | jq -r '.plan_model // empty')
-  RUNNER_REVIEW_MODEL=$(echo "$RUNNER_JSON" | jq -r '.review_model // empty')
-  RUNNER_EXEC_MODEL=$(echo "$RUNNER_JSON" | jq -r '.exec_model // empty')
-  RUNNER_PLAN_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.plan_effort // empty')
-  RUNNER_REVIEW_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.review_effort // empty')
-  RUNNER_EXEC_EFFORT=$(echo "$RUNNER_JSON" | jq -r '.exec_effort // empty')
 
   [[ -n "$RUNNER_COMMAND" ]] || die "runner '$RUNNER_NAME' is missing 'command' field"
   [[ "$RUNNER_ENGINE" == "claude" || "$RUNNER_ENGINE" == "codex" ]] \
     || die "runner '$RUNNER_NAME' has invalid engine '$RUNNER_ENGINE' (must be 'claude' or 'codex')"
 fi
 
-# model / effort 解決: engine 中立。優先順位は 明示指定 > runner の role フィールド > 既定値。
-# claude の model 既定は role ごとに固定し、codex の model 既定は置かない
-# (モデル名がアカウント・バージョン依存のため codex 側 config.toml へ委ねる)。
-# effort の既定は engine 共通 (plan/review=xhigh, exec=high)。
+# model / effort 解決: 明示指定 > role 対応の組込み既定値。
 CODEX_EFFORT_FLAG=""
-case "$MODEL_ROLE" in
-  plan)
-    [[ -z "$MODEL" ]] && MODEL="$RUNNER_PLAN_MODEL"
-    [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_PLAN_EFFORT"
-    [[ -z "$MODEL" && "$RUNNER_ENGINE" == "claude" ]] && MODEL="opus[1m]"
-    [[ -z "$EFFORT" ]] && EFFORT="xhigh"
-    ;;
-  review)
-    [[ -z "$MODEL" ]] && MODEL="$RUNNER_REVIEW_MODEL"
-    [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_REVIEW_EFFORT"
-    [[ -z "$MODEL" && "$RUNNER_ENGINE" == "claude" ]] && MODEL="opus[1m]"
-    [[ -z "$EFFORT" ]] && EFFORT="xhigh"
-    ;;
-  exec)
-    [[ -z "$MODEL" ]] && MODEL="$RUNNER_EXEC_MODEL"
-    [[ -z "$EFFORT" ]] && EFFORT="$RUNNER_EXEC_EFFORT"
-    [[ -z "$MODEL" && "$RUNNER_ENGINE" == "claude" ]] && MODEL="sonnet"
-    [[ -z "$EFFORT" ]] && EFFORT="high"
-    ;;
-esac
+[[ -z "$MODEL" ]] && MODEL="$(dispatch_default_model "$MODEL_ROLE" "$RUNNER_ENGINE")"
+[[ -z "$EFFORT" ]] && EFFORT="$(dispatch_default_effort "$MODEL_ROLE")"
 [[ -n "$MODEL" ]] && log "runner" "applying model=$MODEL ($RUNNER_ENGINE $MODEL_ROLE)"
 if [[ "$RUNNER_ENGINE" == "codex" ]]; then
   [[ "$EFFORT" =~ ^(minimal|low|medium|high|xhigh)$ ]] \
@@ -900,7 +877,7 @@ CODEX_MODEL_FLAG=""
   if [[ "$RUNNER_ENGINE" == "codex" ]]; then
     if [[ "$MODE" == "execute" ]]; then
       # codex execute: plan モードと同じく bypass フラグを付与。
-      # --model (明示指定 or runner の exec_model) があれば付与、無ければ codex 側デフォルト
+      # --model (明示指定) があれば付与、無ければ codex 側デフォルト
       CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
     elif [[ "$MODE" == "standby" ]]; then
       # codex standby: prompt なしで idle 起動。実行指示は常に cmux send で届く
@@ -912,9 +889,14 @@ CODEX_MODEL_FLAG=""
       fi
     elif [[ "$MODE" == "review" ]]; then
       # review は workspace-write に限定し、approval prompt は抑止する。findings は
-      # worktree 外の STATUS_DIR/review/ に書かれるため、STATUS_DIR だけを追加許可する。
+      # worktree 外の findings 保存先だけを追加許可する。
       REVIEW_WRITABLE_FLAG=""
-      [[ -n "$STATUS_DIR" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$STATUS_DIR'"
+      if [[ -n "$STATUS_DIR" ]]; then
+        # reviewer が worktree 外へ書くのは findings だけ。STATUS_DIR 全体を許可すると
+        # roles.json / prewarm.json まで書けてしまい、検証を通る別内容へ差し替えられる。
+        mkdir -p "$STATUS_DIR/review" 2>/dev/null || true
+        [[ -d "$STATUS_DIR/review" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$STATUS_DIR/review'"
+      fi
       # watcher は run/ と db/ にしか書かない。scripts/ を書き込み許可に含めては
       # ならない — そこは全ペインの guard が実行し session-start.sh 経由で
       # マシン上の全 Claude Code セッションが触れるコードで、無人 codex reviewer に
