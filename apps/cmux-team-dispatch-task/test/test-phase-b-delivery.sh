@@ -4,6 +4,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts"
+S_REAL=$(cd "$S" && pwd -P)
 GATE="$S/review-gate.sh"
 DELIVER="$S/phase-b-deliver.sh"
 TMP=$(mktemp -d)
@@ -61,6 +62,21 @@ body="${SEND[4]-}"
   && "$body" == *'VERDICT: approve'* && "$body" == *'t-exec-review'* ]] \
   && ok 'PB4 concrete findings path, verdict, cap, terminal rule, and reviewer are embedded' \
   || bad 'PB4 incomplete Phase B-R protocol'
+review_send_contract="passing exactly four arguments in this order: team tm, sender t-exec, recipient t-exec-review, and the whole review-code: message as one argument"
+verdict_send_contract="passing exactly four arguments in this order: team tm, sender t-exec-review, recipient t-exec, and the whole review-verdict: message as one argument"
+codex_ready_command="bash $S_REAL/verify-agmsg-ready.sh --codex --team tm --name t-exec-review"
+parent_send_contract="passing exactly four arguments in this order: team tm, sender t-exec, recipient parent, and one dispatch-notify: body reporting an unbacked code review wait"
+if [[ $(grep -Fo "$review_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
+   && $(grep -Fo "$verdict_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
+   && $(grep -Fo 'After each successful review-code: send, stop and wait for the review-verdict: push.' <<< "$body" | wc -l | tr -d ' ') == 1 \
+   && $(grep -Fo 'On every wake, re-read' <<< "$body" | wc -l | tr -d ' ') == 1 \
+   && $(grep -Fo 'arm ONE single-shot safety timer with the Bash tool using run_in_background' <<< "$body" | wc -l | tr -d ' ') == 1 \
+   && $(grep -Fo "$codex_ready_command" <<< "$body" | wc -l | tr -d ' ') == 1 \
+   && $(grep -Fo "$parent_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 ]]; then
+  ok 'PB4b actual delivery embeds the complete wait protocol exactly once'
+else
+  bad 'PB4b actual delivery is missing or duplicates the complete wait protocol'
+fi
 [[ -f "$TMP/status/.assigned-t-exec" && -f "$TMP/status/.deferred" ]] \
   && ok 'PB5 assignment precedes successful delegation and deferred is recorded' \
   || bad 'PB5 assignment/deferred markers missing'
@@ -137,5 +153,50 @@ elif [[ ! -e "$TMP/send.calls" && ! -e "$TMP/status/.deferred" ]]; then
 else
   bad 'PB10 outside review config caused delivery side effects'
 fi
+
+ln -s "$TMP/status" "$TMP/status-link"
+rm -f "$TMP/send.calls" "$TMP/send.args" "$TMP/status/.deferred"
+if AGMSG_SEND="$TMP/bin/send.sh" \
+   bash "$DELIVER" --prewarm "$TMP/prewarm.json" \
+     --review-config "$TMP/status-link/review/code-review.json" \
+     --plan-file "$TMP/plan.md" --status-dir "$TMP/status-link" --team tm --slug t \
+     >/dev/null 2>"$TMP/status-link.err"; then
+  bad 'PB11 symlink status directory was accepted'
+elif [[ ! -e "$TMP/send.calls" && ! -e "$TMP/status/.deferred" ]]; then
+  ok 'PB11 symlink status directory is rejected before delivery'
+else
+  bad 'PB11 symlink status directory caused delivery side effects'
+fi
+
+assert_invalid_snapshot() { # label, jq filter
+  local label="$1" filter="$2" file="$TMP/prewarm-invalid.json"
+  jq "$filter" "$TMP/prewarm.json" > "$file"
+  rm -f "$TMP/send.calls" "$TMP/send.args" "$TMP/status/.deferred"
+  if AGMSG_SEND="$TMP/bin/send.sh" \
+     bash "$DELIVER" --prewarm "$file" --review-config "$gate_output" \
+       --plan-file "$TMP/plan.md" --status-dir "$TMP/status" --team tm --slug t \
+       >/dev/null 2>"$TMP/prewarm-invalid.err"; then
+    bad "PB12-$label invalid complete snapshot was accepted"
+  elif [[ ! -e "$TMP/send.calls" && ! -e "$TMP/status/.deferred" ]]; then
+    ok "PB12-$label invalid complete snapshot is rejected before delivery"
+  else
+    bad "PB12-$label invalid complete snapshot caused delivery side effects"
+  fi
+}
+
+assert_invalid_snapshot top-key '.unexpected = true'
+assert_invalid_snapshot missing-design 'del(.design)'
+assert_invalid_snapshot design-key '.design.unexpected = true'
+assert_invalid_snapshot design-wired '.design.wired = false'
+assert_invalid_snapshot design-agent '.design.agent = "other"'
+assert_invalid_snapshot design-runner '.design.runner = "missing"'
+assert_invalid_snapshot design-engine '.design.engine = "codex"'
+assert_invalid_snapshot design-model '.design.model = " bad"'
+assert_invalid_snapshot design-effort '.design.effort = "minimal"'
+assert_invalid_snapshot exec-review-key '.exec_review.unexpected = true'
+assert_invalid_snapshot exec-review-wired '.exec_review.wired = false'
+assert_invalid_snapshot exec-review-effort '.exec_review.effort = "minimal"'
+assert_invalid_snapshot workspace-id '.workspace_id = "workspace:not-safe!"'
+assert_invalid_snapshot duplicate-surface '.design.surface_id = .exec.surface_id'
 
 exit "$fail"

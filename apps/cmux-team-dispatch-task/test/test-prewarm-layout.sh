@@ -134,6 +134,23 @@ else
   bad "PW12 rollback (rc=$rc leaves=$leaves closes=$closes)"
 fi
 
+# The production caller does not export CMUX_BIN. A required launch failure after earlier
+# panes were created must still run the rest of rollback instead of aborting on set -u.
+STATUS=$(mktemp -d "$TMP/status-layout.XXXXXX")
+: > "$TMP/calls.log"
+FAIL_LAUNCH_ROLE=exec CALLS_LOG="$TMP/calls.log" env -u CMUX_BIN \
+  bash "$PW" --with-design --cwd "$TMP/wt" --slug pw14 \
+    --status-dir "$STATUS" --agmsg-team team --roles "$ROLES_ON" \
+    >/dev/null 2>"$TMP/pw14.err"
+rc=$?
+leaves=$(grep -c '^leave.sh ' "$TMP/calls.log" 2>/dev/null || true)
+if [[ $rc -ne 0 && "$leaves" == 4 && ! -e "$STATUS/prewarm.json" ]] \
+  && ! grep -Fq 'CMUX_BIN: unbound variable' "$TMP/pw14.err"; then
+  pass 'PW14 unset CMUX_BIN still completes required-failure rollback'
+else
+  bad "PW14 unset CMUX_BIN rollback (rc=$rc leaves=$leaves err=$(tr '\n' ' ' < "$TMP/pw14.err"))"
+fi
+
 # A missing worktree is owned by this invocation and must be removed together with a newly
 # created branch. The git stub confines every effect and records exact targets.
 mkdir -p "$TMP/git-bin"

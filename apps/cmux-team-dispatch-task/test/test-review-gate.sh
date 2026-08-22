@@ -104,4 +104,13 @@ assert_reject 'RG9 directory code-review target is rejected' 'target'
 [[ ! -f "$TMP/status/review/code-review.json" ]] && ok 'RG9 final target is not misreported as a file' \
   || bad 'RG9 unexpected regular target'
 
+setup_prewarm have
+mkdir -p "$TMP/outside-status"
+ln -s "$TMP/outside-status" "$TMP/status-link"
+assert_reject 'RG10 symlink status directory is rejected' 'status' \
+  --status-dir "$TMP/status-link"
+[[ ! -e "$TMP/outside-status/review/code-review.json" ]] \
+  && ok 'RG10 publish did not follow the top-level status symlink' \
+  || bad 'RG10 publish escaped through the top-level status symlink'
+
 exit "$fail"

@@ -32,42 +32,83 @@ done
 case "$TEAM" in *[[:space:]]*|*[\'\"\`\$\!\\]*) die 'invalid team' ;; esac
 [[ "$MAX_AGENTS" =~ ^[2-8]$ ]] || die 'agents must be 2..8'
 [[ -f "$AGMSG_SEND" ]] || die "send.sh not found at $AGMSG_SEND"
+if [[ -e "$STATUS_DIR" || -L "$STATUS_DIR" ]]; then
+  [[ -d "$STATUS_DIR" && ! -L "$STATUS_DIR" ]] \
+    || die 'status directory must be a non-symlink directory'
+fi
 
 PREWARM_DOC=$(cat "$PREWARM_FILE") || die 'cannot read prewarm snapshot'
 RUNNERS_FILE="$(dispatch_runners_file)"
 [[ -f "$RUNNERS_FILE" ]] || die "runners.json not found at $RUNNERS_FILE"
-jq -e -s 'length == 1 and (.[0] | type == "object") and
-  (.[0].review_mode == "on" or .[0].review_mode == "off") and
-  (.[0] | has("design") and has("exec")) and
-  (if .[0].review_mode == "off" then
-    (.[0] | has("design_review") or has("exec_review") | not) else true end)' \
-  >/dev/null 2>&1 <<< "$PREWARM_DOC" || die 'invalid prewarm snapshot'
-PREWARM_WORKSPACE=$(jq -r '.workspace_id // empty' <<< "$PREWARM_DOC")
-dispatch_valid_workspace_id "$PREWARM_WORKSPACE" || die 'invalid prewarm workspace ID'
-jq -e '.exec | type == "object" and
-  ((keys - ["surface_id","agent","runner","engine","model","effort","wired"]) | length == 0) and
-  (.surface_id | type == "string") and (.agent | type == "string") and
-  (.runner | type == "string") and (.engine == "claude" or .engine == "codex") and
-  (.effort | type == "string") and (.wired == true)' >/dev/null 2>&1 <<< "$PREWARM_DOC" \
-  || die 'invalid exec tuple'
-EXEC_SURFACE=$(jq -r '.exec.surface_id' <<< "$PREWARM_DOC")
+jq -e '.runners | type == "array"' "$RUNNERS_FILE" >/dev/null 2>&1 \
+  || die 'runners.json is invalid'
+
+validate_prewarm_snapshot() {
+  local bad_top review_mode role expected_agent runner engine effort model runner_engine
+  jq -e -s 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1 <<< "$PREWARM_DOC" \
+    || return 1
+  bad_top=$(jq -r '[keys[] | select(. != "workspace_id" and . != "review_mode" and
+    . != "design" and . != "design_review" and . != "exec" and . != "exec_review")] |
+    first // empty' <<< "$PREWARM_DOC")
+  [[ -z "$bad_top" ]] || return 1
+  jq -e '.workspace_id | type == "string" and length > 0' >/dev/null 2>&1 <<< "$PREWARM_DOC" \
+    || return 1
+  dispatch_valid_workspace_id "$(jq -r '.workspace_id' <<< "$PREWARM_DOC")" || return 1
+  review_mode=$(jq -r '.review_mode // empty' <<< "$PREWARM_DOC")
+  [[ "$review_mode" == on || "$review_mode" == off ]] || return 1
+  if [[ "$review_mode" == off ]]; then
+    jq -e 'has("design_review") or has("exec_review")' >/dev/null 2>&1 <<< "$PREWARM_DOC" \
+      && return 1
+  fi
+  jq -e 'has("design") and has("exec")' >/dev/null 2>&1 <<< "$PREWARM_DOC" || return 1
+
+  for role in design design_review exec exec_review; do
+    jq -e --arg role "$role" 'has($role)' >/dev/null 2>&1 <<< "$PREWARM_DOC" || continue
+    jq -e --arg role "$role" '
+      (.[$role] | type == "object") and
+      ((.[$role] | keys - ["surface_id","agent","runner","engine","model","effort","wired"]) |
+        length == 0) and
+      (.[$role] | has("surface_id") and has("agent") and has("runner") and has("engine") and
+        has("effort") and has("wired")) and
+      (.[$role].surface_id | type == "string" and length > 0) and
+      (.[$role].agent | type == "string" and length > 0) and
+      (.[$role].runner | type == "string") and (.[$role].engine | type == "string") and
+      (.[$role].effort | type == "string") and (.[$role].wired == true)' \
+      >/dev/null 2>&1 <<< "$PREWARM_DOC" || return 1
+    dispatch_valid_surface_id "$(jq -r --arg role "$role" '.[$role].surface_id' <<< "$PREWARM_DOC")" \
+      || return 1
+    case "$role" in
+      design) expected_agent="$SLUG" ;;
+      *) expected_agent="$SLUG-${role//_/-}" ;;
+    esac
+    [[ "$(jq -r --arg role "$role" '.[$role].agent' <<< "$PREWARM_DOC")" == "$expected_agent" ]] \
+      || return 1
+    runner=$(jq -r --arg role "$role" '.[$role].runner' <<< "$PREWARM_DOC")
+    engine=$(jq -r --arg role "$role" '.[$role].engine' <<< "$PREWARM_DOC")
+    effort=$(jq -r --arg role "$role" '.[$role].effort' <<< "$PREWARM_DOC")
+    dispatch_valid_runner_name "$runner" || return 1
+    dispatch_valid_effort "$effort" "$engine" || return 1
+    runner_engine=$(jq -r --arg runner "$runner" \
+      'first(.runners[]? | select(.name == $runner) | .engine) // empty' "$RUNNERS_FILE")
+    [[ -n "$runner_engine" && "$runner_engine" == "$engine" ]] || return 1
+    if jq -e --arg role "$role" '.[$role] | has("model")' >/dev/null 2>&1 <<< "$PREWARM_DOC"; then
+      jq -e --arg role "$role" '.[$role].model | type == "string" and length > 0' \
+        >/dev/null 2>&1 <<< "$PREWARM_DOC" || return 1
+      model=$(jq -r --arg role "$role" '.[$role].model' <<< "$PREWARM_DOC")
+      dispatch_valid_model "$model" || return 1
+    elif dispatch_model_required "$role" "$engine"; then
+      return 1
+    fi
+  done
+  jq -e '[. as $d | ["design","design_review","exec","exec_review"][] |
+    select($d[.] != null) | $d[.].surface_id] as $ids |
+    ($ids | length) == ($ids | unique | length)' >/dev/null 2>&1 <<< "$PREWARM_DOC" || return 1
+}
+
+validate_prewarm_snapshot || die 'invalid prewarm snapshot'
+PREWARM_WORKSPACE=$(jq -r '.workspace_id' <<< "$PREWARM_DOC")
 EXEC_AGENT=$(jq -r '.exec.agent' <<< "$PREWARM_DOC")
-EXEC_RUNNER=$(jq -r '.exec.runner' <<< "$PREWARM_DOC")
 EXEC_ENGINE=$(jq -r '.exec.engine' <<< "$PREWARM_DOC")
-EXEC_EFFORT=$(jq -r '.exec.effort' <<< "$PREWARM_DOC")
-dispatch_valid_surface_id "$EXEC_SURFACE" || die 'invalid exec surface ID'
-[[ "$EXEC_AGENT" == "$SLUG-exec" ]] || die 'exec agent does not match slug'
-dispatch_valid_runner_name "$EXEC_RUNNER" || die 'invalid exec runner'
-dispatch_valid_effort "$EXEC_EFFORT" "$EXEC_ENGINE" || die 'invalid exec effort'
-if jq -e '.exec | has("model")' >/dev/null 2>&1 <<< "$PREWARM_DOC"; then
-  EXEC_MODEL=$(jq -r '.exec.model' <<< "$PREWARM_DOC")
-  dispatch_valid_model "$EXEC_MODEL" || die 'invalid exec model'
-elif dispatch_model_required exec "$EXEC_ENGINE"; then
-  die 'exec model is required'
-fi
-REGISTERED_ENGINE=$(jq -r --arg runner "$EXEC_RUNNER" \
-  'first(.runners[]? | select(.name == $runner) | .engine) // empty' "$RUNNERS_FILE")
-[[ "$REGISTERED_ENGINE" == "$EXEC_ENGINE" ]] || die 'exec runner/engine mismatch'
 
 PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
   --engine "$EXEC_ENGINE" --mode execute --agents "$MAX_AGENTS")
@@ -112,7 +153,7 @@ if [[ -n "$REVIEW_CONFIG" ]]; then
   REVIEW_PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
     --engine "$REVIEWER_ENGINE" --mode review --agents "$MAX_AGENTS")
   FINDINGS_PATH="$REVIEW_DIR/code-round-N.md"
-  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request a review from $REVIEWER_AGENT with one review-code: message. For round N, the reviewer must inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then send one review-verdict: message back. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed. Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive."
+  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and the whole review-code: message as one argument. For round N, that message tells the reviewer to inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $REVIEWER_AGENT, recipient $EXEC_AGENT, and the whole review-verdict: message as one argument. Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive. After each successful review-code: send, stop and wait for the review-verdict: push. If you are a Claude implementer, arm ONE single-shot safety timer with the Bash tool using run_in_background before waiting. If you are a Codex implementer, you have NO safety net: before waiting run bash $SCRIPT_DIR/verify-agmsg-ready.sh --codex --team $TEAM --name $REVIEWER_AGENT, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient parent, and one dispatch-notify: body reporting an unbacked code review wait. A non-zero send exit means the recipient was not told, so report it instead of waiting. On every wake, re-read $FINDINGS_PATH before deciding anything; a timer wake without a VERDICT line is not a verdict. Do not poll the findings file. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed."
 fi
 
 case "$EXEC_ENGINE" in

@@ -288,6 +288,14 @@ assert_die 'T9e symlink review-config は拒否する' 'regular non-symlink' \
   "${BASE_ARGS[@]}" --agmsg-team demo-team --agmsg-from t1-exec \
   --review-config "$TMP/status/review/code-review-link.json" guard-config-link
 
+# T9f: review config path の親だけでなく、top-level STATUS_DIR 自体も実 directory を要求する。
+# component symlink 経由の同一 config は canonicalize 後に一致してしまうため、先に拒否する。
+ln -s "$TMP/status" "$TMP/status-link"
+assert_die 'T9f symlink status directory は review-config consumer で拒否する' 'status-dir' \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" --no-parallel \
+  --status-dir "$TMP/status-link" --agmsg-team demo-team --agmsg-from t1-exec \
+  --review-config "$TMP/status-link/review/code-review.json" guard-status-link
+
 # T10: agmsg 識別子が無いのに --status-dir が来た。この launch は dispatch 管理下であり、
 # 生成される runner wrapper の notify_parent_once が (全モードで無条件に) 親通知を所有する
 # ので、team/from が無いと通知は毎回 return 1 になり黙って失われる。

@@ -31,7 +31,9 @@ case "$1" in
   new-workspace) echo 'workspace:1' ;;
   list-pane-surfaces) echo 'surface:2' ;;
   new-split) echo 'surface:3' ;;
-  rename-workspace|rename-tab|notify|send|send-key|wait-for|identify) ;;
+  rename-workspace) [[ -z "${FAIL_RENAME_WORKSPACE:-}" ]] ;;
+  send) [[ -z "${FAIL_CMUX_SEND:-}" ]] ;;
+  rename-tab|notify|send-key|wait-for|identify|close-surface|close-workspace) ;;
   read-screen) echo '$ ' ;;
   *) echo "unexpected cmux command: $*" >&2; exit 1 ;;
 esac
@@ -131,6 +133,32 @@ elif [[ ! -s "$CMUX_CALL_LOG" ]] && grep -qiE 'review directory|symlink|unsafe' 
   pass 'L6 symlinked review sandbox is rejected before cmux construction'
 else
   bad "L6 rejection was late or unclear: $(tr '\n' ' ' < "$TMP/l6.err")"
+fi
+
+# L7: the real launcher owns a split as soon as new-split returns its surface ID.
+# A later runner-command send failure must close that exact surface before exit.
+CMUX_CALL_LOG="$TMP/calls-l7.log"; export CMUX_CALL_LOG
+: > "$CMUX_CALL_LOG"
+if FAIL_CMUX_SEND=1 run_launch --cwd "$TMP/repo" --mode standby \
+     --standby-in workspace:5 --standby-split-from surface:6 \
+     --status-dir "$TMP/status-l7" l7-standby >/dev/null 2>"$TMP/l7.err"; then
+  bad 'L7 split send failure was accepted'
+elif [[ $(grep -c '^close-surface --workspace workspace:5 --surface surface:3$' "$CMUX_CALL_LOG" || true) == 1 ]]; then
+  pass 'L7 split send failure closes the launcher-owned surface'
+else
+  bad "L7 split send failure leaked its surface: $(tr '\n' ' ' < "$CMUX_CALL_LOG")"
+fi
+
+# L8: workspace placement has the same ownership rule after new-workspace returns an ID.
+CMUX_CALL_LOG="$TMP/calls-l8.log"; export CMUX_CALL_LOG
+: > "$CMUX_CALL_LOG"
+if FAIL_RENAME_WORKSPACE=1 run_launch --cwd "$TMP/repo" --mode superpowers \
+     --status-dir "$TMP/status-l8" l8-task 'do something' >/dev/null 2>"$TMP/l8.err"; then
+  bad 'L8 workspace rename failure was accepted'
+elif [[ $(grep -c '^close-workspace --workspace workspace:1$' "$CMUX_CALL_LOG" || true) == 1 ]]; then
+  pass 'L8 post-create workspace failure closes the launcher-owned workspace'
+else
+  bad "L8 post-create workspace failure leaked its workspace: $(tr '\n' ' ' < "$CMUX_CALL_LOG")"
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

@@ -546,7 +546,7 @@ prepare_review_directory() { # $1=status directory; stdout=canonical review dire
   local status_dir="$1" review_dir status_real review_real
   [[ -n "$status_dir" ]] || return 1
   if [[ -e "$status_dir" || -L "$status_dir" ]]; then
-    [[ -d "$status_dir" ]] || return 1
+    [[ -d "$status_dir" && ! -L "$status_dir" ]] || return 1
   else
     mkdir -p "$status_dir" || return 1
   fi
@@ -1306,6 +1306,24 @@ log "runner" "generated $RUNNER_FILE"
 WORKSPACE_ID=""
 SURFACE_ID=""
 TITLE=""
+CREATED_WORKSPACE_ID=""
+CREATED_SURFACE_ID=""
+CREATED_SURFACE_WORKSPACE=""
+
+cleanup_created_cmux_resource() {
+  local rc=$?
+  [[ $rc -ne 0 ]] || return 0
+  if [[ -n "$CREATED_SURFACE_ID" ]]; then
+    "$CMUX" close-surface --workspace "$CREATED_SURFACE_WORKSPACE" \
+      --surface "$CREATED_SURFACE_ID" >/dev/null 2>&1 \
+      || log "warn" "failed to close launcher-owned surface $CREATED_SURFACE_ID"
+  elif [[ -n "$CREATED_WORKSPACE_ID" ]]; then
+    "$CMUX" close-workspace --workspace "$CREATED_WORKSPACE_ID" >/dev/null 2>&1 \
+      || log "warn" "failed to close launcher-owned workspace $CREATED_WORKSPACE_ID"
+  fi
+  return "$rc"
+}
+trap cleanup_created_cmux_resource EXIT
 
 if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; then
   # --- Standby Split Placement: 既存 workspace 内に縦分割ペインを追加 ---
@@ -1318,6 +1336,8 @@ if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; th
     --surface "$STANDBY_SPLIT_FROM" 2>/dev/null) || die "failed to create standby split pane"
   SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1)
   [[ -z "$SURFACE_ID" ]] && die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
+  CREATED_SURFACE_ID="$SURFACE_ID"
+  CREATED_SURFACE_WORKSPACE="$WORKSPACE_ID"
   log "cmux" "standby pane surface: $SURFACE_ID"
 
   "$CMUX" rename-tab --workspace "$STANDBY_IN" --surface "$SURFACE_ID" "$TITLE" >/dev/null 2>&1 || \
@@ -1343,6 +1363,7 @@ else
     || die "failed to create cmux workspace"
   WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1)
   [[ -z "$WORKSPACE_ID" ]] && die "failed to parse workspace ID from output: $WORKSPACE_OUTPUT"
+  CREATED_WORKSPACE_ID="$WORKSPACE_ID"
   log "cmux" "created $WORKSPACE_ID"
 
   # Rename workspace

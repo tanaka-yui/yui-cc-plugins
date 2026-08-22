@@ -61,7 +61,8 @@ CONFIG_FILE="$REVIEW_DIR/code-review.json"
 prepare_review_destination() { # $1=yes creates missing directories; no only validates existing paths
   local create="$1" status_real review_real
   if [[ -e "$STATUS_DIR" || -L "$STATUS_DIR" ]]; then
-    [[ -d "$STATUS_DIR" ]] || die 'status path is not a directory'
+    [[ -d "$STATUS_DIR" && ! -L "$STATUS_DIR" ]] \
+      || die 'status path must be a non-symlink directory'
   elif [[ "$create" == yes ]]; then
     mkdir -p "$STATUS_DIR" || die 'cannot create status directory'
   else
