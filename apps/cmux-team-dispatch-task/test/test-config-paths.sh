@@ -13,10 +13,11 @@ ok() { echo "PASS $1"; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/repo" "$TMP/status"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/cmux"; chmod +x "$TMP/bin/cmux"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/agmsg-send.sh"; chmod +x "$TMP/bin/agmsg-send.sh"
 
 # 他はすべて妥当な呼び出しで、--runner だけ実在しない名前にする。
 probe() {
-  CMUX_BIN="$TMP/bin/cmux" "$@" bash "$LAUNCH" \
+  AGMSG_SEND="$TMP/bin/agmsg-send.sh" CMUX_BIN="$TMP/bin/cmux" "$@" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode plan --runner definitely-not-a-runner \
     --agmsg-team demo --agmsg-from probe --status-dir "$TMP/status" \
     probe-ws prompt 2>&1
