@@ -163,6 +163,9 @@ review_mode を聞かず、project / global の両 config を変更しない。
 ### 1g. 配送とレビューモードを解決する（Resolve Delivery and Review Mode）
 
 agmsg は必須であり、縮退配送や pane へのタイプ入力は無い。pane 起動前に send.sh の存在を確認し、
+**確認したパスをそのまま `AGMSG_SEND` へ代入して以降の全 callsite で使い回す**。存在確認だけして
+変数へ束縛しないと `$AGMSG_SEND` が未定義のまま空文字へ展開され、`--send-command` に非空を要求する
+helper（`phase-a-review-wait.sh`）が usage error (exit 2) で止まる。
 Claude 親は verify-agmsg-ready.sh --self、Codex 親は --codex --team "$TEAM" --name parent
 で自身の到達性を確認する。Codex 親では永続タイマーを作れないためタイマーを装わず、無人
 ディスパッチを拒否する。Claude 親だけが 90 分の single-shot timer を 1 本張れる。

@@ -294,7 +294,11 @@ the parent engine from the current runtime. A Claude parent verifies the Monitor
 a Codex parent verifies its recorded bridge seat:
 
 ```bash
-[[ -f ~/.agents/skills/agmsg/scripts/send.sh ]] || {
+# Capture the verified path into AGMSG_SEND and pass THAT to every later callsite.
+# Checking existence without binding the path leaves $AGMSG_SEND unset, which expands
+# to an empty string and makes helpers that require a non-empty --send-command exit 2.
+AGMSG_SEND=~/.agents/skills/agmsg/scripts/send.sh
+[[ -f "$AGMSG_SEND" ]] || {
   echo "[error] agmsg is not installed; this skill cannot dispatch without it"
   exit 1
 }

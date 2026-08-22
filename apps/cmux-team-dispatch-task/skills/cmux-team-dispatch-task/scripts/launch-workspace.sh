@@ -1322,14 +1322,49 @@ list_workspace_surface_ids() { # $1=workspace
   grep -oE 'surface:[0-9]+' <<< "$output" | sort -u || true
 }
 
-single_added_ref() { # $1=kind $2=before refs $3=after refs
-  local kind="$1" before="$2" after="$3" added count
-  added=$(comm -13 \
-    <(grep -E "^$kind:[0-9]+$" <<< "$before" | sort -u || true) \
-    <(grep -E "^$kind:[0-9]+$" <<< "$after" | sort -u || true))
-  count=$(grep -Ec "^$kind:[0-9]+$" <<< "$added" || true)
-  [[ "$count" == 1 ]] || return 1
+# --- 作成したリソースの所有権判定 ---
+#
+# 2 つの性質を同時に満たす必要がある。片方だけを見て単純化すると、もう片方が壊れる。
+#
+#   (A) 並列ディスパッチが成立すること。別タスクの launch が同じ瞬間に別の
+#       workspace / surface を足すのは正常系なので、「追加はちょうど 1 件」を
+#       所有権の条件にしてはならない。条件にすると 2 タスク同時起動が必ず die し、
+#       しかも所有権確定前なので EXIT trap も掃除できず孤児が残る。
+#   (B) stdout が壊れていても自分のリソースを閉じられること。cmux が成功しつつ
+#       解析不能な payload を返す / 既存 ID を先頭に返すケースでは、差分が唯一なら
+#       それが自分のものだと確定できるので、所有してから die する。
+#
+# したがって「stdout の ID が差分に含まれるか」を第一の判定にし (A)、それが使えない
+# ときだけ「差分が唯一なら所有」へ落とす (B)。差分が複数かつ stdout が使えない場合は
+# 他人のリソースを閉じる危険があるので、所有せずに die する。
+
+added_refs() { # $1=kind $2=before refs $3=after refs
+  comm -13 \
+    <(grep -E "^$1:[0-9]+$" <<< "$2" | sort -u || true) \
+    <(grep -E "^$1:[0-9]+$" <<< "$3" | sort -u || true)
+}
+
+# (A) stdout が名乗った ref が差分に含まれるか。追加件数は問わない。
+ref_was_added() { # $1=kind $2=ref $3=before refs $4=after refs
+  [[ "$2" =~ ^$1:[0-9]+$ ]] || return 1
+  grep -qxF "$2" <<< "$(added_refs "$1" "$3" "$4")"
+}
+
+# (B) 差分がちょうど 1 件ならそれを返す。stdout が使えないときの回収専用。
+sole_added_ref() { # $1=kind $2=before refs $3=after refs
+  local added
+  added=$(added_refs "$1" "$2" "$3")
+  [[ $(grep -Ec "^$1:[0-9]+$" <<< "$added" || true) == 1 ]] || return 1
   printf '%s\n' "$added"
+}
+
+# 作成直後・inventory 取得前の暫定所有。inventory 呼び出し自体が一時失敗しても
+# 自分のリソースを閉じられるようにする。ただし stdout が既存 ID を返した場合に
+# 他人のリソースを掴まないよう、before に無い ID だけを暫定所有する。
+provisional_ref() { # $1=kind $2=ref $3=before refs
+  [[ "$2" =~ ^$1:[0-9]+$ ]] || return 1
+  grep -qxF "$2" <<< "$3" && return 1
+  return 0
 }
 
 cleanup_created_cmux_resource() {
@@ -1358,19 +1393,25 @@ if [[ ( "$MODE" == "standby" || "$MODE" == "review" ) && -n "$STANDBY_IN" ]]; th
   SPLIT_OUTPUT=$("$CMUX" new-split "$STANDBY_SPLIT_DIRECTION" \
     --workspace "$STANDBY_IN" \
     --surface "$STANDBY_SPLIT_FROM" 2>/dev/null) || die "failed to create standby split pane"
+  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1 || true)
+  # 暫定所有: inventory 取得が一時失敗しても閉じられるようにする。既存 ID は掴まない。
+  CREATED_SURFACE_WORKSPACE="$WORKSPACE_ID"
+  if provisional_ref surface "$SURFACE_ID" "$SURFACES_BEFORE"; then
+    CREATED_SURFACE_ID="$SURFACE_ID"
+  fi
   SURFACES_AFTER=$(list_workspace_surface_ids "$STANDBY_IN") \
     || die "failed to inventory standby workspace after split creation"
-  ADDED_SURFACE_ID=$(single_added_ref surface "$SURFACES_BEFORE" "$SURFACES_AFTER") \
-    || die "failed to identify one created surface from the inventory delta: $SPLIT_OUTPUT"
-  CREATED_SURFACE_ID="$ADDED_SURFACE_ID"
-  CREATED_SURFACE_WORKSPACE="$WORKSPACE_ID"
-  SURFACE_ID=$(echo "$SPLIT_OUTPUT" | grep -oE 'surface:[0-9]+' | head -1 || true)
-  if [[ -z "$SURFACE_ID" ]]; then
-    die "failed to parse surface ID from split output: $SPLIT_OUTPUT"
+  if ref_was_added surface "$SURFACE_ID" "$SURFACES_BEFORE" "$SURFACES_AFTER"; then
+    CREATED_SURFACE_ID="$SURFACE_ID"
+  else
+    # stdout が使えない。差分が唯一ならそれを回収してから落ちる。
+    if RECOVERED_SURFACE_ID=$(sole_added_ref surface "$SURFACES_BEFORE" "$SURFACES_AFTER"); then
+      CREATED_SURFACE_ID="$RECOVERED_SURFACE_ID"
+    else
+      CREATED_SURFACE_ID=""
+    fi
+    die "split output surface '${SURFACE_ID:-<unparseable>}' is not in the inventory delta: $SPLIT_OUTPUT"
   fi
-  [[ "$SURFACE_ID" == "$ADDED_SURFACE_ID" ]] \
-    || die "split output surface $SURFACE_ID does not match inventory-added surface $ADDED_SURFACE_ID"
-  SURFACE_ID="$ADDED_SURFACE_ID"
   log "cmux" "standby pane surface: $SURFACE_ID"
 
   "$CMUX" rename-tab --workspace "$STANDBY_IN" --surface "$SURFACE_ID" "$TITLE" >/dev/null 2>&1 || \
@@ -1396,18 +1437,24 @@ else
   log "cmux" "creating workspace with cwd=$CWD, auto-launching runner via --command"
   WORKSPACE_OUTPUT=$("$CMUX" new-workspace --cwd "$CWD" --command "bash $RUNNER_SCRIPT_NAME" 2>/dev/null) \
     || die "failed to create cmux workspace"
+  WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1 || true)
+  # 暫定所有: inventory 取得が一時失敗しても閉じられるようにする。既存 ID は掴まない。
+  if provisional_ref workspace "$WORKSPACE_ID" "$WORKSPACES_BEFORE"; then
+    CREATED_WORKSPACE_ID="$WORKSPACE_ID"
+  fi
   WORKSPACES_AFTER=$(list_workspace_ids) \
     || die "failed to inventory workspaces after workspace creation"
-  ADDED_WORKSPACE_ID=$(single_added_ref workspace "$WORKSPACES_BEFORE" "$WORKSPACES_AFTER") \
-    || die "failed to identify one created workspace from the inventory delta: $WORKSPACE_OUTPUT"
-  CREATED_WORKSPACE_ID="$ADDED_WORKSPACE_ID"
-  WORKSPACE_ID=$(echo "$WORKSPACE_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1 || true)
-  if [[ -z "$WORKSPACE_ID" ]]; then
-    die "failed to parse workspace ID from output: $WORKSPACE_OUTPUT"
+  if ref_was_added workspace "$WORKSPACE_ID" "$WORKSPACES_BEFORE" "$WORKSPACES_AFTER"; then
+    CREATED_WORKSPACE_ID="$WORKSPACE_ID"
+  else
+    # stdout が使えない。差分が唯一ならそれを回収してから落ちる。
+    if RECOVERED_WORKSPACE_ID=$(sole_added_ref workspace "$WORKSPACES_BEFORE" "$WORKSPACES_AFTER"); then
+      CREATED_WORKSPACE_ID="$RECOVERED_WORKSPACE_ID"
+    else
+      CREATED_WORKSPACE_ID=""
+    fi
+    die "workspace output ID '${WORKSPACE_ID:-<unparseable>}' is not in the inventory delta: $WORKSPACE_OUTPUT"
   fi
-  [[ "$WORKSPACE_ID" == "$ADDED_WORKSPACE_ID" ]] \
-    || die "workspace output ID $WORKSPACE_ID does not match inventory-added workspace $ADDED_WORKSPACE_ID"
-  WORKSPACE_ID="$ADDED_WORKSPACE_ID"
   log "cmux" "created $WORKSPACE_ID"
 
   # Rename workspace
