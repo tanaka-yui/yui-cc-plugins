@@ -165,6 +165,37 @@ D-T2（codex の自分宛タイマーが不発だった件）の教訓により�
 G-T1 の「組込みガード」は公式 doc に記載が無い。存在するなら 4-3 の自前カウンタと二重になる
 ので、実測して整合させる。
 
+### 実測結果（2026-08-22）
+
+**G-T1: 成立。** scratch リポジトリに「3 回まで block を返す」probe を Stop hook として置き、
+`claude --dangerously-skip-permissions -p 'Say the word "one" and nothing else.'` を実行した。
+
+- hook の起動回数は **4**（= 3 回の block が 3 つの追加ターンを起こした）
+- assistant の出力は `one` → `two` → `three` → `four` と進んだ。**`reason` に書いた
+  「say the next number word」が次ターンのガイダンスとして届き、モデルがそれに従った**。
+  reason は単なるログではなく指示として機能する
+- **連続 block に対する組込みの回数上限は無い。** 3 回続けても Claude 側は止めなかった。
+  したがって 4-3 の自前上限は必須である
+- ただし hook の stdin に **`stop_hook_active`** が入る。1 回目は `false`、2 回目以降は `true`。
+  「このターンが自分の block で始まったか」を判定できるので、4-3 のカウンタのリセットは
+  「allow したとき」に加えて「`stop_hook_active` が `false` のとき」も条件にすると正確になる
+  （セッションが自力で停止した = 前の停滞は解消している）
+
+**G-T2: 成立。** 同じ probe を `.codex/hooks.json` の Stop に置き、
+`codex --dangerously-bypass-approvals-and-sandbox exec '...'` を実行した。
+
+- hook の起動回数は **4**。出力は `one` → `two` → `three` → `four`
+- ログに `hook: Stop Blocked` が 3 回現れ、`invalid stop hook JSON output` は**出なかった**。
+  `decision` / `reason` だけの出力が codex のスキーマに適合することの確認（G8）
+- **`--dangerously-bypass-hook-trust` はこの環境では既定で有効**だった。明示的に渡すと
+  `the argument '--dangerously-bypass-hook-trust' cannot be used multiple times` で
+  起動に失敗する。`launch-workspace.sh` は現在この flag を明示的に付けており、実際の
+  ディスパッチは動いているので衝突していないが、**環境によっては二重付与になりうる**点は
+  記録しておく。付与経路の特定は本設計の範囲外
+
+**結論: 設計は成立する。Task 2 以降へ進んでよい。** codex を対象外にする分岐（実装計画
+Task 1 Step 5 の 2 番目の場合）は発生しない。
+
 ## 7. テスト
 
 - `completion-gate.sh` の単体: 判定 1-5 の各分岐、上限到達、カウンタのリセット
