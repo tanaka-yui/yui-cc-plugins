@@ -63,16 +63,41 @@ V1 の記録は `docs/superpowers/specs/2026-08-12-delivery-verification-results
 > なお `spawn --wait-ready` は既にこの sentinel をポーリングしている（#108）。agmsg 側には
 > readiness 待ちの正式な primitive が存在するが、spawn / actas に紐付いている。
 >
-> **この結論は 2026-08-22 に一部撤回した（未解決）。** 上で「dispatch の子ペインは sentinel を
-> 1 つも作らない」と書いたが、稼働中のディスパッチの live watcher を数えたところ
-> `influencer-platform` の 4 ロールと `parent` は**全て role-filtered（actas）** であり、
-> `unfiltered` は 1 つも無かった（`run/watch.*.filter` の 1 行目が role 名）。対応する
-> `run/ready.<team>__<agent>` も実在する。つまりどこかで actas になる経路があり、
-> 「dispatch は actas を呼ばない」という前提が実態と合っていない。
+> **経路を特定した（2026-08-22）。結論は維持するが理由が違う。**
 >
-> **その経路を特定するまで、この節の採否判断は保留とする。** 経路が判明すれば
-> 「sentinel は使えない」という結論も、それを根拠にした「actas 化は大きな変更」という
-> 評価も、両方とも見直しになる。特定作業は未着手。
+> 「dispatch の子ペインは sentinel を 1 つも作らない」と書いたが、稼働中のディスパッチの
+> live watcher は `influencer-platform` の 4 ロールと `parent` が**全て role-filtered
+> （actas）** で、`unfiltered` は 1 つも無かった。対応する `run/ready.<team>__<agent>` も
+> 実在する。追跡した結果はこうである。
+>
+> `role-session.*` レコードを書けるのは `actas-claim.sh`（type=claude-code）と
+> `codex-record-session.sh`（type=codex）の 2 つだけである。該当ディスパッチのレコードは
+> design / exec_review / parent が **`type=claude-code`**、exec / design_review が
+> `type=codex` で、いずれも当日付＝現行 v3.x のディスパッチが作ったものだった。codex 側は
+> dispatch が `codex-record-session.sh` を呼ぶので設計どおりだが、**claude 側を説明できる
+> のは `actas-claim.sh` の実行だけ**で、dispatch の指示文に `/agmsg actas` は無い
+> （旧 v1.x の起動プロンプトには `\/agmsg actas $SLUG then wait idle` があったが、
+> monitor 専用化で消えている）。
+>
+> つまり **claude ペインは自分で actas を実行している。** readiness 句が「SessionStart の
+> AGMSG-DIRECTIVE に従え」と言い、agmsg スキルが「既定以外の名前で送るには actas で
+> identity を得よ」と定めているため、`<agent>` 名で送れと指示された claude セッションが
+> 自力でその結論に達している、という筋である。傍証として、同じ dispatch コードでありながら
+> influencer-platform の parent は actas、別プロジェクトの parent は `unfiltered` だった。
+> コードが決めているなら揃うはずで、セッションの判断で分かれていることを示す。
+>
+> **これは創発であって設計ではない。** したがって B5 の結論は維持するが、理由は
+> 「sentinel は作られない」ではなく「**sentinel の作成を dispatch が何も保証していない**」
+> である。実際には作られているが、そう仕向けているものが指示文にもコードにも無いので、
+> readiness の判定根拠にはできない。`[ready] <name>` の自己申告が唯一の手段であるという
+> 結論は変わらない。
+>
+> 同じ理由で「read cursor の排他」節の `sharing=` 検出も引き続き必要である。競合が実際には
+> ほとんど起きていないのは全ペインが actas になっているからだが、それも保証されていない。
+>
+> 「ロール群をまるごと actas 化する」を将来設計として検討するなら、出発点は「新しく actas を
+> 導入する」ではなく「**既に起きている actas を明示的な契約に格上げする**」になる。実測が
+> 示しているのは、機構そのものは既に動いているということである。
 >
 > 本文の B5 依存箇所は当時の計測として残す。
 | E2E | codex 系プラグインの実起動 1 本で、親が Monitor の push だけで完了を検知できるか (B4 の代替) | **pass** | 2026-08-21。`/codex-review --base main` を surface:40 / token=`codex-review-40` / team=`yui-cc-plugins` / reviewer=`cxrev-monitor-e2e` / parent=`parent` で起動。(1) 旧ポーリング watcher の bin もプロセスも不在 (2) background task は `sleep` 1 本だけ (3) codex 完了後、`06:26:40Z \| yui-cc-plugins \| cxrev-monitor-e2e → parent \| DONE codex-review-40: レビュー完了 agents=6` の 1 行で idle の親が起床 (4) token 一致・`agents=6` も転記 (5) codex 側で 3 テストスイート / turbo check / check-doc-lang / `bash -n` が全 pass。上記 (1)-(5) がこの行に転記した観測そのもので、これが証拠である（実行時の作業ログは git-ignored なスクラッチにしか残らないため、参照先としては挙げない） |
