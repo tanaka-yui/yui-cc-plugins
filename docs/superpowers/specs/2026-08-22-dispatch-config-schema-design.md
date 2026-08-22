@@ -526,10 +526,22 @@ resolver を全削除する。
   `exec_review` の解決値で埋まる。
 - 設計ペインは**常に** `.deferred` を作って exit する。設計セッションがレビュアーへ
   転じる経路は消滅する。
-- **`code-review.json` と `--review-config` は exec_review ペインの起動と readiness が
-  成功したときだけ**書く／渡す（#10）。spawn に失敗したときは**両方とも省略**し、Phase B-R
-  の gate だけをスキップする。到達不能な surface / agent を書いた JSON を残すと、実装者が
-  永遠に来ない verdict を待つ。
+- **`code-review.json` と `--review-config` は exec_review ペインが使えるときだけ**書く／渡す
+  （#10）。使えないときは**両方とも省略**し、Phase B-R の gate だけをスキップする。到達不能な
+  surface / agent を書いた JSON を残すと、実装者が永遠に来ない verdict を待つ。
+
+  **「使えない」の観測主体は 2 つに分かれる**（plan レビュー R2 #6 で明確化）:
+
+  | 失敗 | 観測できるのは | 現れ方 |
+  |------|----------------|--------|
+  | launch 失敗 | `prewarm-panes.sh` | `prewarm.json` にそのロールのキーを書かない。警告して他ロールは保持し、join 済みなら `leave.sh` で戻す |
+  | readiness 失敗（`[ready] <name>` が来ない） | **親セッション（SKILL.md）** | `prewarm-panes.sh` は launch 直後に `prewarm.json` を書くので観測できない。親が `[ready]` を待つ段階で判定する |
+
+  したがって `prewarm-panes.sh` に readiness の待機・callback は**持たせない**。親が
+  `[ready]` を待つ既存のステップで、review ロールの `[ready]` が来なければ警告し、
+  `design_review` なら Phase A-R を、`exec_review` なら Phase B-R を（`code-review.json` と
+  `--review-config` の両方を省いて）スキップする。design / exec の `[ready]` が来ない場合は
+  従来どおりディスパッチを止める。
 - `review_mode=on` でロールが解決できないケースは Q8 の fail-fast に統合される。
   「reviewer 不在ならそのタスクだけ review off」という警告フォールバックは、
   `review_mode=on` かつ review ロールの runner が不正という設定の誤りを黙って握り潰す
@@ -729,14 +741,18 @@ exec_review に別 runner を設定した構成で **Phase A-R と Phase B-R の
   `phase-block-$DESIGN_ENGINE.md` を読む。exec engine で選ぶと design=claude / exec=codex の
   構成で claude 設計ペインへ codex 用の plan 手順が渡る。
 
-**`loop-cleanup.sh` を 4 ロール対応にする**（#7。task brief が scope に明示している）。
-現行は旧 agent 名（`<slug>-codex` / `<slug>-review` など）を決め打ちで leave するため、
-新名称の `<slug>-design-review` / `<slug>-exec` / `<slug>-exec-review` が team に残り、
-次のディスパッチの配送先と衝突する。**`prewarm.json` に実在するロールの `agent` を列挙して
-leave / close する**契約に変える（`review_mode=off` なら 2 件、`on` なら 4 件、いずれも
-各 1 回だけ）。cleanup も §4 の**検証済みスナップショット契約**に従う（R4 #2）— leave / close の
-対象を後から差し替えられると、無関係なエージェントやサーフェスを終了させられる。既存の `.. | objects | .surface_id? // empty` 列挙と `awk 'NF && !seen[$0]++'`
-の重複除去、`close-surface --workspace` 必須の規約はそのまま維持する。
+**cleanup を 4 ロール対応にする**（#7。task brief が `loop-cleanup.sh` を scope に明示している）。
+ここは **2 つの別々の場所**であり、混同してはならない（plan レビュー R2 #5 で発覚した誤り）:
+
+| 場所 | 現状 | 責務 | 変更 |
+|------|------|------|------|
+| `loop-cleanup.sh` | 旧 agent 名 5 つ（`<slug>` / `-sonnet` / `-codex` / `-review` / `-opus`）を決め打ちで `leave.sh` する。`close-surface` は**持たない**。`prewarm.json` も読まない | ループのバッチ間で team member を戻す | `prewarm.json` に実在するロールの `agent` を列挙して leave する |
+| SKILL.md の最終クリーンアップ（`:2789-2832`） | `.. \| objects \| .surface_id? // empty` の再帰列挙 + `awk 'NF && !seen[$0]++'` の重複除去 + `close-surface --workspace` | ディスパッチ末尾でサーフェスを閉じ、agent を leave する | 再帰列挙を **4 ロールキーの明示列挙**へ変える。重複除去と `close-surface --workspace` 必須は維持 |
+
+どちらも `review_mode=off` なら 2 件、`on` なら 4 件、各 1 回だけ。どちらも §4 の
+**検証済みスナップショット契約**に従う（R4 #2）— 対象を後から差し替えられると、無関係な
+エージェントやサーフェスを終了させられる。回帰は `test-loop-cleanup.sh`（leave 件数）と
+`test-cleanup-close.sh`（close 件数）で別々に固定する。
 
 `references/loop-mode.md` / `loop-mode-ja.md` と `references/unattended/*.md` のロール語彙を
 新名称へ揃える。
