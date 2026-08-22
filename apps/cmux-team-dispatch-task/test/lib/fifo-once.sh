@@ -39,8 +39,9 @@ fifo_read_once() { # $1=label $2=source file $3..=command (FIFO path is appended
 
   if [[ $timed_out -eq 1 ]]; then
     bad "$label — did not finish within 20 seconds; it may have blocked opening the FIFO twice"
-    return
+  else
+    [[ "$(cat "$TMP/fifo.rc" 2>/dev/null)" == 0 ]] \
+      && ok "$label" || bad "$label (rc=$(cat "$TMP/fifo.rc" 2>/dev/null))"
   fi
-  [[ "$(cat "$TMP/fifo.rc" 2>/dev/null)" == 0 ]] \
-    && ok "$label" || bad "$label (rc=$(cat "$TMP/fifo.rc" 2>/dev/null))"
+  kill -0 -- "-$cpid" 2>/dev/null && bad "$label: プロセスグループが残っている" || true
 }
