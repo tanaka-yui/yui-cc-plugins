@@ -76,7 +76,7 @@ V1 の記録は `docs/superpowers/specs/2026-08-12-delivery-verification-results
 > `type=codex` で、いずれも当日付＝現行 v3.x のディスパッチが作ったものだった。codex 側は
 > dispatch が `codex-record-session.sh` を呼ぶので設計どおりだが、**claude 側を説明できる
 > のは `actas-claim.sh` の実行だけ**で、dispatch の指示文に `/agmsg actas` は無い
-> （旧 v1.x の起動プロンプトには `\/agmsg actas $SLUG then wait idle` があったが、
+> （旧 v1.x の起動プロンプトには `/agmsg actas $SLUG then wait idle` があったが、
 > monitor 専用化で消えている）。
 >
 > つまり **claude ペインは自分で actas を実行している。** readiness 句が「SessionStart の
