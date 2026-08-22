@@ -322,8 +322,13 @@ readiness_clause() {
     printf 'FIRST make yourself reachable: call %s/drivers/types/codex/codex-record-session.sh with team %s and agent name %s (two arguments, no trailing punctuation). THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
       "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$agent"
   else
-    printf 'FIRST follow the AGMSG-DIRECTIVE printed by your SessionStart hook and invoke the Monitor tool right now — that is the only way work will reach you. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
-      "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$agent"
+    # 順序が要件そのものである。claim → 名前付き Monitor → [ready] の順で打たないと、
+    # 無記名 watcher のまま名乗ることになり、その窓の間 (project, type) に登録された
+    # 全 agent 宛てを購読して read cursor を奪い合う。SessionStart は role-filtered 指示を
+    # 出せない — その判定材料 (role-session レコード) を書くのがペイン起動後だからである。
+    # 文面にクォート文字を入れてはならない (zsh -ic "... '<prompt>'" の二重引用が壊れる)。
+    printf 'FIRST claim your identity so messages addressed to you cannot be taken by another watcher: run %s/actas-claim.sh with four arguments in this order — the current working directory, then claude-code, then %s, then the value of CLAUDE_CODE_SESSION_ID — and read the status= line it prints. On status=held another live session already owns this name: stop, report that, and do not continue. SECOND invoke the Monitor tool with the command your SessionStart AGMSG-DIRECTIVE printed plus %s appended as a fourth argument; that fourth argument is what limits delivery to you. If you already started that Monitor without the fourth argument, TaskStop it first — a watcher started without a name stays unnamed for its whole life. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
+      "$AGMSG_DIR" "$agent" "$agent" "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$agent"
   fi
 }
 
