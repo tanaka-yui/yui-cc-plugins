@@ -18,6 +18,14 @@
 #        (claim だけでは既に起動済みの無記名 watcher は無記名のまま)
 #   PI4. status=held は停止条件として明示される (他セッションが同名を保持している)
 #   PI5. codex ロールは actas-claim.sh を使わない (identity 経路が別)
+#   PI6. codex ロールは watch.sh を自前で起動しないよう明示される
+#        codex は Monitor tool を持たない (type.conf monitor=no) が、agmsg の SessionStart は
+#        engine 非分岐で「invoke the Monitor tool now」と出力する。それに従おうとした codex
+#        ペインが代替として watch.sh をバックグラウンド端末で起動した実例がある。watch.sh は
+#        読まれたかに関係なく row を既読にするので、idle の codex ペイン (= ターンを取らない)
+#        宛のメッセージは配信され既読になり誰にも読まれず消える。2026-08-22 に review-plan:
+#        2 通がこれで失われ、design ペインが応答を待ち続けた。
+#        起動しなければメッセージは未読のまま残り、回復可能である。
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,6 +88,19 @@ if [[ "$design_review" != *"actas-claim.sh"* && "$design_review" == *"codex-reco
 else
   bad 'PI5 codex ロールの identity 経路が変わっている'
 fi
+
+# --- PI6: codex は watch.sh を自前で起動しない ---
+pi6=1
+for needle in "watch.sh" "Monitor tool"; do
+  [[ "$design_review" == *"$needle"* ]] || { bad "PI6 codex 句に $needle が無い"; pi6=0; }
+done
+# 「起動するな」であって「起動せよ」ではないこと
+if [[ "$design_review" == *"never start"* || "$design_review" == *"Do not start"* ]]; then
+  :
+else
+  bad 'PI6 watch.sh を起動しない指示になっていない'; pi6=0
+fi
+[[ $pi6 -eq 1 ]] && pass 'PI6 codex ロールは watch.sh を自前起動しないよう明示される'
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

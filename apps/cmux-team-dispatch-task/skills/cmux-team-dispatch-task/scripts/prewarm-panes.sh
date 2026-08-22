@@ -333,7 +333,14 @@ readiness_clause() {
   agent=$(role_agent "$role")
   wiring=$(role_wiring_type "$role")
   if [[ "$wiring" == codex ]]; then
-    printf 'FIRST make yourself reachable: call %s/drivers/types/codex/codex-record-session.sh with team %s and agent name %s (two arguments, no trailing punctuation). THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
+    # codex には Monitor tool が無い (type.conf の monitor=no) が、agmsg の SessionStart は
+    # engine で分岐せず invoke the Monitor tool now と出力する。それに従おうとした codex
+    # ペインが、代替として watch.sh をバックグラウンド端末で起動した実例がある
+    # (2026-08-22)。watch.sh は読まれたかに関係なく row を既読にするので、idle の codex
+    # ペイン — つまりターンを取らないペイン — 宛のメッセージは配信され、既読になり、誰にも
+    # 読まれずに消える。review-plan: 2 通がこれで失われ、design ペインは応答を待ち続けた。
+    # 起動しなければメッセージは未読のまま残り、あとから回復できる。だから明示的に禁じる。
+    printf 'FIRST make yourself reachable: call %s/drivers/types/codex/codex-record-session.sh with team %s and agent name %s (two arguments, no trailing punctuation). Do not start watch.sh yourself, in a background terminal or anywhere else, and never start a watcher of any kind by hand: you have no Monitor tool, so if your SessionStart hook tells you to invoke one, that part does not apply to you. A watcher you start marks messages as read whether or not you ever look at them, so anything that arrives while you are idle is consumed and lost; left alone, it stays unread and can still be recovered. THEN send a message: call %s/send.sh with team %s, from %s, to parent, and a body — quoted as a single argument — that is exactly [ready] %s with no trailing period or other characters.' \
       "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$AGMSG_DIR" "$AGMSG_TEAM" "$agent" "$agent"
   else
     # 順序が要件そのものである。claim → 名前付き Monitor → [ready] の順で打たないと、
