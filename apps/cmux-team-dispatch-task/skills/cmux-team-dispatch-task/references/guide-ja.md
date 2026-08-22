@@ -471,6 +471,35 @@ prewarm-panes.sh には検証済み resolver 出力を --roles "$ROLES_JSON" 1 �
 個々の分割方向と分割元は正しいままなので、`test-prewarm-layout.sh` は方向だけでなく**順序そのもの**
 を検査している。
 
+### 完走ゲート（Stop hook）
+
+子セッションは仕事の途中で止まることがある（実装が最後まで行かない、レビュアーが verdict を
+書く前に終わる）。`launch-workspace.sh` はペインごとに `type: "command"` の Stop hook を 1 本
+注入し、人が「続けて」と言わなくてもセッションが継続するようにする。実体は
+`scripts/completion-gate.sh` で、**判定スクリプトも出力契約も両 engine で共通**、違うのは
+注入先だけである（claude は `.claude/settings.local.json`、codex は `.codex/hooks.json`。
+後者は agmsg 自身の entry を壊さないようマージする）。
+
+**ゲートはディスクだけを読む。** モデル評価もネットワークも cmux も使わない。完了条件は
+`status.json` / `.deferred` / review のラウンドファイルとして既に materialize されており、
+会話から推測すべきものが無いからである。これが push 待機と両立する理由でもある: まだタスクを
+受け取っていないペインと、依頼済みの `review-verdict:` を待っているペインは**ゲートが邪魔しては
+ならない状態**で、どちらもディスク上に見えている。モデル評価のゲートはこれを推測するしかない。
+
+**同じ状態がレビューの両側で逆の意味を持つ。** `VERDICT:` 行の無いラウンドファイルは、依頼側に
+とっては「相手がまだ答えていないので待て」、レビュアーにとっては「自分がまだ書き終えていない」で
+ある。ゲートは依頼側の停止を許し、レビュアーを block する。逆にすると、verdict を書かない
+レビュアーが取り残されるか、idle でいるべき実装者が叩き起こされる。
+
+block には上限がある。連続 block を `<status-dir>/.gate-blocks` に数え、10 回
+（`DISPATCH_GATE_MAX_BLOCKS`）で止める。engine 側に上限は無いので、上限を持たないゲートは
+永久にループする。**諦めるときにカウンタを消してはならない** — 消すと上限が即座に再武装され、
+「上限まで block → 1 回休み」を延々と繰り返す。リセットするのは本当に停止を許したときだけで、
+タスクが待機か終端に入れば自然に回復する。
+
+注入は `ExitPlanMode` hook と同じくベストエフォートで、失敗しても警告だけで dispatch は続く。
+worktree を再利用しても二重には入らない。
+
 off は 2 pane、on は 4 pane 固定。review pane の launch 失敗はその role key だけを省略して
 対応 gate をスキップする。design / exec の launch 失敗時は、この prewarm 呼び出しが作成・join・
 launch した worktree / branch / team member / surface だけを rollback し、再利用資源を残して停止する。
