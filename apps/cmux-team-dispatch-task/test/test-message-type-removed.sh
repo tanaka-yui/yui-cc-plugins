@@ -111,20 +111,39 @@ else
   echo "FAIL MT5: agmsg 必須の fail-fast guard になっていない"; fail=1
 fi
 
-# --- MT6: 親エンジンでの分岐 / rc 1 と rc 2 の分離 / TEAM の解決順序 ---
+# --- MT6: 呼び出し側で engine 分岐しない / rc 1 と rc 2 の分離 / TEAM の解決順序 ---
+#
+# 親の engine は設定項目ではなく実行時のセッションそのもの (CODEX_THREAD_ID の有無) で
+# 決まる。その分岐を指示文へ書き写すと SKILL.md / guide-ja.md / CLAUDE.md の 3 箇所が
+# 同時にずれるので、分岐は verify-agmsg-ready.sh --parent の中だけに置く。
 mt6=1
-grep -Fq 'bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --self' "$STEP1G" \
-  || { echo "  claude 親用の --self 呼び出しが無い"; mt6=0; }
-grep -Fq 'verify-agmsg-ready.sh --codex --team "$TEAM" --name parent' "$STEP1G" \
-  || { echo "  codex 親用の --codex --name parent 呼び出しが無い"; mt6=0; }
-grep -Fq '[[ -n "${CODEX_THREAD_ID:-}" ]] && PARENT_ENGINE="codex"' "$STEP1G" \
-  || { echo "  PARENT_ENGINE の解決が無い"; mt6=0; }
-# rc 1 と rc 2 が別分岐で、rc 2 側が usage error と名指ししていること
-grep -Fq '1) if [[ "$PARENT_ENGINE" == "codex" ]]; then' "$STEP1G" \
-  || { echo "  rc 1 が親エンジンで分岐していない"; mt6=0; }
-grep -Fq 'usage error' "$STEP1G" \
+# 負の検査は readiness guard の bash ブロックだけを対象にする。Step 1g 全体には
+# 子ペイン用の --codex 呼び出しと、join の driver type を決める 1 行が正当に存在する。
+GUARD_BLOCK=$(awk '
+  section && capture && /^```$/ { exit }
+  section && capture { print }
+  section && !capture && /^```bash$/ { capture=1 }
+  /^### 1g\. Resolve Delivery/ { section=1 }
+' "$SKILL")
+[[ -n "$GUARD_BLOCK" ]] || { echo "  readiness guard の bash ブロックを切り出せない"; mt6=0; }
+grep -Fq 'verify-agmsg-ready.sh --parent --team "$TEAM"' <<<"$GUARD_BLOCK" \
+  || { echo "  --parent --team の 1 行呼び出しが無い"; mt6=0; }
+# engine 分岐が呼び出し側へ戻っていないこと (これが戻ると codex 親は rc 2 で自滅する)
+if grep -qE 'PARENT_ENGINE|CODEX_THREAD_ID|verify-agmsg-ready\.sh --(self|codex)' <<<"$GUARD_BLOCK"; then
+  echo "  readiness guard に engine 分岐が復活している (--parent の中へ畳んだはず)"; mt6=0
+fi
+# rc 1 の助言は engine ではなく返ってきた reason で分けること
+grep -Fq '*reason=no-seat*)' <<<"$GUARD_BLOCK" \
+  || { echo "  rc 1 の助言が reason= で分岐していない"; mt6=0; }
+grep -Fq 'usage error' <<<"$GUARD_BLOCK" \
   || { echo "  rc 2 を usage error として報告していない"; mt6=0; }
-# TEAM の解決が readiness 確認より前にあること (codex 親の分岐は TEAM を必要とする)
+# 競合 watcher は警告であって停止条件ではないこと
+grep -Fq 'SHARING=' <<<"$GUARD_BLOCK" \
+  || { echo "  sharing= を読んでいない"; mt6=0; }
+if grep -A4 'SHARING' <<<"$GUARD_BLOCK" | grep -qE 'exit 1'; then
+  echo "  競合 watcher で停止している (警告であって停止条件ではない)"; mt6=0
+fi
+# TEAM の解決が readiness 確認より前にあること (--parent は TEAM を必要とする)
 team_line=$(grep -n 'TEAM="dispatch-' "$STEP1G" | head -1 | cut -d: -f1)
 verify_line=$(grep -n 'verify-agmsg-ready.sh' "$STEP1G" | head -1 | cut -d: -f1)
 if [[ -z "$team_line" || -z "$verify_line" ]]; then
@@ -133,9 +152,9 @@ elif [[ "$team_line" -ge "$verify_line" ]]; then
   echo "  TEAM の解決 ($team_line 行) が readiness 確認 ($verify_line 行) より後にある"; mt6=0
 fi
 if [[ $mt6 -eq 1 ]]; then
-  echo "PASS MT6: guard は親エンジンで分岐し、rc 1 / rc 2 を分け、TEAM を先に解決する"
+  echo "PASS MT6: guard は engine 分岐を持たず、rc 1 / rc 2 を分け、TEAM を先に解決する"
 else
-  echo "FAIL MT6: codex 親のサポートまたは rc の分離が欠けている"; fail=1
+  echo "FAIL MT6: --parent への一本化または rc の分離が欠けている"; fail=1
 fi
 
 exit $fail

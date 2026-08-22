@@ -57,8 +57,12 @@ agmsg `send.sh` の 1 回呼び出しに置き換わり、配送の成否は終�
 
 read cursor の競合（同じ (team, agent) を購読する watcher が 2 つあると先に poll した方が
 row を取る）は残余リスクではなく**配送コントラクトの要件**として spec 側に記載した。
-検出と排他の手段はそちらを参照する。`[ready]` の確認に `inbox.sh` ではなく `history.sh` を
-使うのはこの競合が理由である。
+**検出は v3.2.0 で実装済み**: `verify-agmsg-ready.sh --parent` が同一プロジェクトの live な
+unfiltered watcher を数えて `sharing=<N>|unknown` を返し、Step 1g と起床時検査が正の数の
+ときだけ警告する（到達可能かの判定は変えない）。排他の主張（`actas-claim.sh`）は Monitor の
+再起動を要求するため見送った — 判断の根拠は spec を参照する。`[ready]` の確認に `inbox.sh`
+ではなく `history.sh` を使うのはこの競合が理由であり、検出を足したあとも競合が起きた**後**の
+回復手段として必要である。
 
 ## この一覧の使い方
 

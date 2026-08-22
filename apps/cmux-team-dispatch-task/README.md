@@ -35,7 +35,7 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 ## 前提条件
 
 - [cmux](https://github.com/anthropics/cmux) がインストール済み
-- 選択した構成で使う CLI が利用可能（all-Codex 固定構成は Codex のみ。Claude role を選ぶ構成は Claude Code も必要）
+- 選択した構成で使う CLI が利用可能（4 ロールすべて codex の構成は Codex のみ。Claude role を選ぶ構成は Claude Code も必要）
 - cmux セッション内で実行すること
 
 ## インストール
@@ -213,14 +213,22 @@ codex engine は対象外（`--dangerously-bypass-approvals-and-sandbox` と
 | 状況 | 検査 |
 |------|------|
 | `~/.agents/skills/agmsg/scripts/send.sh` が無い | ファイル存在チェック |
-| claude 親に生きた watcher が無い | `verify-agmsg-ready.sh --self` が exit 1 |
-| codex 親に bridge seat の記録が無い | `verify-agmsg-ready.sh --codex --team <t> --name parent` が exit 1 |
+| 親が agmsg を受信できない | `verify-agmsg-ready.sh --parent --team <t>` が exit 1 |
 
-claude 親の watcher は SessionStart hook が要求する `Monitor` tool そのもので、`/clear` は
-その hook を再発火させるので watcher は自力で戻る。codex 親には session id が無いため、
-受信チャネルは bridge seat（`run/codex-bridge.<team>.<agent>.thread`）になる。codex セッション
-から `--self` を呼ぶのは「watcher が無い」ではなく**使用法エラー**（exit 2）なので、両者は
-別々に扱われる。
+親の readiness は engine で判定が分かれるが、**その分岐はスクリプトの中にある**。claude 親の
+watcher は SessionStart hook が要求する `Monitor` tool そのもので、`/clear` はその hook を
+再発火させるので watcher は自力で戻る。codex 親には session id が無いため、受信チャネルは
+bridge seat（`run/codex-bridge.<team>.<agent>.thread`）になる。呼び出し側で engine 分岐を
+書いてはならない: codex セッションから `--self` を呼ぶのは「watcher が無い」ではなく
+**使用法エラー**（exit 2）で、「exit 2 は判定不能なので停止」規則と噛み合うとディスパッチが
+最初の起床で自滅する。
+
+`--parent` は `sharing=<N>|unknown` も返す。これは同じプロジェクトの未 claim な role を
+受信している他の watcher の数である。read cursor は (team, agent) に 1 つしか無いので、
+同じチェックアウトで 2 つ目のセッションを開くと、先に poll した方が row を取り他方は何も
+見ない（取られた row は既読になるので `inbox.sh` は「新着なし」と正直に答える）。到達可能
+かどうかの判定は変えないため、正の数のときだけ警告する。agmsg 自身も同じ検出を持つが、
+その警告は stderr に出るので Monitor のイベントにならず、親セッションには届かない。
 
 team 名は `dispatch-<repo-name>`、親の agent 名は `parent`。
 status.json / result.md / `cmux wait-for` signal はこの変更でも不変。
@@ -239,9 +247,7 @@ status.json / result.md / `cmux wait-for` signal はこの変更でも不変。
 3. Enter の検証も再送も無い。`send.sh` は agmsg の共有 SQLite DB へ書くか非ゼロで終了するかの
    どちらかで、**非ゼロ終了はメッセージが配送されなかったことを意味する**
 4. メッセージ種別はフラグではなく本文の label 接頭辞で表す（`phase-a-task:` / `phase-b-exec:` /
-   `review-plan:` / `review-code:` / `review-verdict:` / `review-timer:` / `dispatch-timer:` /
-   `abort-reviewer:` / `dispatch-notify:`。**`review-timer:` / `dispatch-timer:` は予約のみで、
-   現在これを送る箇所は無い**）
+   `review-plan:` / `review-code:` / `review-verdict:` / `abort-reviewer:` / `dispatch-notify:`）
 
 ### ペインの readiness（3 要件）
 
@@ -263,7 +269,7 @@ status.json / result.md / `cmux wait-for` signal はこの変更でも不変。
 
 | 待機者 | 起こすもの | 保険 |
 |--------|-----------|------|
-| 親（全タスクの完了待ち） | 子の `dispatch-notify:` メッセージ | claude 親のみ 90 分の単発タイマー。**codex 親には保険が無い** |
+| 親（全タスクの完了待ち） | 子の `dispatch-notify:` メッセージ | 90 分の単発タイマー（claude 親のみ張れる。codex 親は張れないので保険が無い） |
 | Phase A-R の設計ペイン / Phase B-R の実装者 | レビュアーの `review-verdict:` メッセージ | claude 待機者のみ 30 分の単発タイマー。**codex 待機者には保険が無い** |
 
 タイマーは `sleep` 1 回であってループではないが、**張れるのは claude だけ**である。codex は
@@ -271,9 +277,8 @@ status.json / result.md / `cmux wait-for` signal はこの変更でも不変。
 の実測で不発だった（バックグラウンドのサブシェルで sleep してから自分へメッセージを送る
 やり方も、その detached (`nohup`) 版も codex のターン終了で消える。D-T2）。したがって **codex の待機者には保険が存在せず、張ったふりをしてはならない** —
 待機に入る前に依頼相手の到達性を確認し、「保険の無い待機に入った」ことを親へ 1 通報告する。
-all-Codex の無人ループには backstop が 1 つも無いため、`prewarm-panes.sh --unattended` は
-codex 親から呼ばれた時点で die する。`review-timer:` / `dispatch-timer:` label は予約のまま
-残るが、現在これを送る箇所は無い。verdict は**ファイルが記録、メッセージが起床手段**で、
+codex 親が回す無人ループには backstop が 1 つも無いため、`prewarm-panes.sh --unattended` は
+codex 親から呼ばれた時点で die する。verdict は**ファイルが記録、メッセージが起床手段**で、
 どの起床でも先に findings ファイルを読み直す（失われうるのはメッセージだけだから）。
 **verdict 行の無いタイマー起床は `needs_work` ではない** — メッセージが来なかったという意味しか
 持たない。再武装は同一ラウンドで 3 回までで、無人ループでは上限に達した時点で

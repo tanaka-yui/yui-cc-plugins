@@ -33,6 +33,14 @@ V1 の記録は `docs/superpowers/specs/2026-08-12-delivery-verification-results
 | V2a | seat 未記録の idle codex は受信するか | **fail** | メッセージは inbox に未読で滞留。`delivery.sh status` は `has no session recorded, though one thread is loaded` |
 | V2b | seat 記録後の idle codex は受信するか | **pass** | `codex-record-session.sh` 実行後の再送で inline 配信され、codex が応答した |
 | B5 | `ready.<team>__<agent>` sentinel は存在するか | **存在しない** | agmsg 1.2.1 の `watch.sh` に書くコードが無く、`run/` に 1 つも無い。readiness の実体は `run/watch.<session_id>.pid` (claude) と `run/codex-bridge.<team>.<agent>.thread` (codex) |
+
+> **B5 の追記（2026-08-22 再確認）**: この計測は現在の agmsg では**成立しない**。手元の
+> インストールには `run/ready.<team>__<agent>` が実在し、`watch.sh` が購読解決後に作成して
+> exit で削除している（`READY_FILES`。「present iff a live watcher is currently receiving for
+> that role」）。**claude 子の readiness を親から観測できる可能性がある**ということなので、
+> `[ready] <name>` の自己申告を唯一の手段としている現行設計は見直しうる。ただし
+> **今回は再計測していない**（D-T2 の教訓どおり、動くと分かるまで設計を変えない）。
+> 本文の B5 依存箇所は当時の計測として残す。
 | E2E | codex 系プラグインの実起動 1 本で、親が Monitor の push だけで完了を検知できるか (B4 の代替) | **pass** | 2026-08-21。`/codex-review --base main` を surface:40 / token=`codex-review-40` / team=`yui-cc-plugins` / reviewer=`cxrev-monitor-e2e` / parent=`parent` で起動。(1) 旧ポーリング watcher の bin もプロセスも不在 (2) background task は `sleep` 1 本だけ (3) codex 完了後、`06:26:40Z \| yui-cc-plugins \| cxrev-monitor-e2e → parent \| DONE codex-review-40: レビュー完了 agents=6` の 1 行で idle の親が起床 (4) token 一致・`agents=6` も転記 (5) codex 側で 3 テストスイート / turbo check / check-doc-lang / `bash -n` が全 pass。上記 (1)-(5) がこの行に転記した観測そのもので、これが証拠である（実行時の作業ログは git-ignored なスクラッチにしか残らないため、参照先としては挙げない） |
 | D-E2E | dispatch の縮小 E2E（prewarm から実ペインを起動し、readiness / 配送 / 完了通知を実測） | **pass** | 2026-08-21。scratch repo に design(claude) + codex executor を prewarm 起動。(1) readiness プロンプトが `zsh -ic "claude ... 'PROMPT'"` の二重引用を無傷で通過（クォート破綻・グロブ展開なし、「末尾ピリオド禁止」「1 引数で渡す」の指示も到達）(2) codex の seat が `run/codex-bridge.<team>.<agent>.thread` に記録され V2a の未読滞留は再現せず (3) `[ready] e2e-mon-codex` と `[ready] e2e-mon` が**末尾ピリオドなし**の正確なワイヤフォーマットで両エンジンから到着（B4 の未実施分もここで回収）(4) 親→codex 子へ agmsg push でタスクが届き、worktree の `src/a.js` が実際に編集された (5) `DONE e2e-mon-codex` が親へ返った |
 | D-T2 | **codex は自分宛の遅延メッセージでタイマーを張れるか** | **fail** | 2026-08-21。2 形式とも不発。`( sleep 60; send.sh ... ) &` も `setsid nohup bash -c '...' &` も codex のターン終了で消える（指示から 2 分以上後に `e2e-mon-codex → e2e-mon-codex` のメッセージ 0 件、残存プロセスも 0）。**codex の待機者には保険が存在しない。** 詳細は下記「E2E が見つけた欠陥」 |
@@ -161,18 +169,26 @@ sentinel 自体が存在しないため **agmsg 1.2.1 では一度も発火し�
 プロジェクトに登録された全 (team, agent) を購読する（`watch.sh:432-435`）。同じチェックアウトで
 2 セッションを開くだけで競合が成立する。
 
-よって配送コントラクトに次を要件として加える:
+よって配送コントラクトに次を要件として加える（**2026-08-22 に検出のみを実装して確定**）:
 
-> **親は自分の (team, agent) ペアに対する排他を保持するか、同一プロジェクトを見る競合
-> unfiltered watcher が居ないことを確認する。**
+> **親は同一プロジェクトを見る競合 unfiltered watcher が居ないことを確認し、居れば報告する。**
 
-- 検出（安価）: `~/.agents/skills/agmsg/run/watch.*.filter` を走査する。1 行目 = role または
-  `unfiltered`、2 行目 = プロジェクトパス、3 行目 = owner pid。自分以外に live な unfiltered
-  watcher が同じプロジェクトに居れば警告する。
-- 主張（強い）: `actas-claim.sh <project> <type> <name> <session_id>` で排他を主張する
-  （他者所有なら `status=held owner=<sid>`）。配送ループは毎周期 lock を読み直すので
-  （`watch.sh:630`）Monitor を再起動せずに効く見込みだが、**主張だけで配送先が切り替わるかは
-  未実測**である。保証として扱ってはならない。
+- **採用（実装済み）— 検出**: `verify-agmsg-ready.sh --parent` が
+  `~/.agents/skills/agmsg/run/watch.*.filter` を走査する。1 行目 = role または `unfiltered`、
+  2 行目 = プロジェクトパス、3 行目 = owner pid。自分以外に live な unfiltered watcher が同じ
+  プロジェクトに居れば `sharing=<N>` として数え、Step 1g と起床時検査が正の数のときだけ 1 行
+  警告する。**到達可能かどうかの判定は変えない**（exit code に影響しない）: 競合していても
+  自分が row を取る可能性は残るので、止めるのは過剰である。判定できないときは `0` ではなく
+  `sharing=unknown` を返す。比較対象のプロジェクトは推測せず、**自分の filter ファイルの
+  2 行目**、すなわち agmsg 自身が記録したプロジェクトを使う。
+- **見送り — 排他の主張**: `actas-claim.sh <project> <type> <name> <session_id>`。手順として
+  Monitor の `TaskStop` と `<name>` 付き再起動を要求する（`actas-claim.sh` のヘッダが
+  join → claim → Monitor 再起動の順を明示している）。ディスパッチの最中に親自身の受信チャネル
+  を張り替えることになり、塞ごうとしている穴より大きい危険を持ち込む。**採らない。**
+
+**agmsg 自身も同じ検出を持つ**（`watch.sh:279-337`、#683。この設計を書いた時点では未確認
+だった）。ただし出力は `watch_log` 経由で **stderr** へ出る。Monitor tool がイベント化するのは
+stdout だけなので、その警告は親セッションに届かない。dispatch 側で数え直す理由はこれである。
 
 この穴は codex 系プラグインだけの問題ではない。dispatch は単一の `parent` identity を
 `[ready]` / `dispatch-notify` / `review-verdict` の**全部**に再利用するため、そのままでは
@@ -390,12 +406,17 @@ agmsg push）を再利用できる**のが利点で、`review-timer:` / `dispatc
 使える。codex 親しかいない構成では broker が立たないので、そこは今と同じく「保険なし」の
 ままになる。この変更は指示文だけでは閉じないため、実ペインでの E2E を必須とする。
 
-### I3: 配送コントラクトの read cursor 排他が実装にも指示にも無い
+### I3: 配送コントラクトの read cursor 排他が実装にも指示にも無い（**2026-08-22 解消**）
 
 `## 配送コントラクト` は read cursor の排他を要件として書いているが、実装されたのは
-「起きたら `history.sh` を読む」という**事後の緩和策だけ**である。レビュアーの推奨は
-`verify-agmsg-ready.sh --self` に競合 watcher の検出（約 10 行）を足すこと。
-**計画と実装の乖離**なので、実装を足すか spec の記述を実態に合わせるかを決める必要がある。
+「起きたら `history.sh` を読む」という**事後の緩和策だけ**だった。
+
+解消の形は「検出を足し、要件の記述を検出に合わせて下げる」である。`verify-agmsg-ready.sh` に
+`--parent` モードを新設し、そこで競合 watcher を数えて `sharing=<N>|unknown` を返すようにした
+（回帰は `test-verify-agmsg-ready.sh` の VR13-VR19 と `test-agmsg-guard-block.sh` の
+GB9/GB10）。排他の主張は上記のとおり見送った。事後の緩和策（`history.sh` を使う、
+`[ready] <slug>` を行末までアンカーする）は競合が起きたあとの回復手段として引き続き必要なので
+残している。
 
 ### 小さいもの
 

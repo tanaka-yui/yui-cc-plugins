@@ -14,11 +14,14 @@
 #   GB5. claude 親で watcher が無い → exit 1、理由は watcher 不在。seat の話はしない
 #   GB6. どちらの id も無い (判定不能 = rc 2) → exit 1 だが理由は usage error であり、
 #        「watcher が無い」と断定してはならない
-#   GB7. Step 3「起床のたびに再導出する」の readiness 検査ブロックも同じ PARENT_ENGINE
-#        分岐を持つ: codex 親 + seat 記録済み → rc 0
+#   GB7. Step 3「起床のたびに再導出する」の readiness 検査ブロックも Step 1g と同じ
+#        --parent 呼び出しを使う: codex 親 + seat 記録済み → rc 0
 #   GB8. 同ブロックで codex 親 + seat 無し → rc 1。**rc 2 になってはならない**
 #        (無条件 --self は codex 親で必ず rc 2 になり、SKILL.md 自身の「rc 2 = 判定不能
-#         なので停止」規約に従うと all-Codex ディスパッチが最初の起床で自滅する)
+#         なので停止」規約に従うと codex 親のディスパッチが最初の起床で自滅する)
+#   GB9.  競合 watcher が居るとき guard は警告を出すが **止めない** (exit 0)
+#   GB10. 別プロジェクトの watcher では警告を出さない
+#         (毎回出る警告は誰も読まないので、偽陽性を出さないことが警告の価値を決める)
 
 set -uo pipefail
 
@@ -187,6 +190,34 @@ elif grep -Fq 'WAKE_READY_RC=1' <<<"$out"; then
   pass 'GB8 起床時検査は codex 親 / seat 無しを rc 1 (到達不能) と判定する'
 else
   bad "GB8 out=[$out]"
+fi
+
+# --- GB9: 競合 watcher が居ても止めず、警告だけ出す ---
+clear_run
+printf '%s' "$$" > "$RUN_DIR/watch.sess1.pid"
+printf 'unfiltered\n/proj/a\n%s\n' "$$" > "$RUN_DIR/watch.sess1.filter"
+printf '%s' "$$" > "$RUN_DIR/watch.other.pid"
+printf 'unfiltered\n/proj/a\n%s\n' "$$" > "$RUN_DIR/watch.other.filter"
+out=$(run_guard CLAUDE_CODE_SESSION_ID=sess1); rc=$?
+if [[ $rc -ne 0 ]]; then
+  bad "GB9 競合は警告であって停止条件ではない (rc=$rc): $out"
+elif grep -Fq '[warn]' <<<"$out" && grep -Fq 'polls first' <<<"$out"; then
+  pass 'GB9 競合 watcher は警告を出すが exit 0 で通過する'
+else
+  bad "GB9 競合 watcher の警告が出ていない: $out"
+fi
+
+# --- GB10: 別プロジェクトなら警告を出さない ---
+clear_run
+printf '%s' "$$" > "$RUN_DIR/watch.sess1.pid"
+printf 'unfiltered\n/proj/a\n%s\n' "$$" > "$RUN_DIR/watch.sess1.filter"
+printf '%s' "$$" > "$RUN_DIR/watch.other.pid"
+printf 'unfiltered\n/proj/b\n%s\n' "$$" > "$RUN_DIR/watch.other.filter"
+out=$(run_guard CLAUDE_CODE_SESSION_ID=sess1); rc=$?
+if [[ $rc -eq 0 ]] && ! grep -Fq '[warn]' <<<"$out"; then
+  pass 'GB10 別プロジェクトの watcher では警告を出さない'
+else
+  bad "GB10 rc=$rc out=[$out]"
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'

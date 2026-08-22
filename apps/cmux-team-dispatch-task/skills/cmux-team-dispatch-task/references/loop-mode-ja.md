@@ -106,7 +106,7 @@ render-loop-prompt.sh ... --prewarm <STATUS_DIR>/prewarm.json
 `prewarm.json` の4 role tuple と `review_mode` を読むため、role 別 runner や実行選択の
 flag は渡さない。
 
-**このループを回す親は claude セッションでなければならない。** `prewarm-panes.sh --unattended` は codex 親から呼ばれると die する: codex は 90 分の safety timer を張れず（自分宛の遅延メッセージはターン終了で消える。実測 D-T2）、無人ループには聞ける相手もいないので、`dispatch-notify:` が 1 通失われただけでジョブが静かに消えるためである。上の all-Codex の role tuple は**子ペイン**の話であって、ループを回す親については何も言っていない。
+**このループを回す親は claude セッションでなければならない。** `prewarm-panes.sh --unattended` は codex 親から呼ばれると die する: codex は 90 分の safety timer を張れず（自分宛の遅延メッセージはターン終了で消える。実測 D-T2）、無人ループには聞ける相手もいないので、`dispatch-notify:` が 1 通失われただけでジョブが静かに消えるためである。上の「4 ロールすべて codex」の role tuple は**子ペイン**の話であって、ループを回す親については何も言っていない。
 
 ペインを埋めるためだけに別 engine/model を追加しない。timeout sentinel は `prewarm.json` に実在する role にだけ渡す。
 
