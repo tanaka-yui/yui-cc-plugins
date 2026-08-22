@@ -453,6 +453,24 @@ prewarm-panes.sh には検証済み resolver 出力を --roles "$ROLES_JSON" 1 �
     | exec           |              | exec           | exec_review    |
     +----------------+              +----------------+----------------+
 
+**4 ペインは均等な 4 象限でなければならない** — 高さの等しい 2 段、それぞれが幅の等しい 2 列。
+2 ペインのときは高さの等しい 2 段。これは挿絵ではなく要件である。1 枚が全高を占め、残り 3 枚が
+反対側を分け合っているワークスペースは、全ペインが存在して配線されていても**欠陥**である。
+
+均等かどうかは**ペインを作る順序だけ**で決まる。`cmux new-split` はサイズ引数を取らず、
+指し示された surface を半分に割るだけだからである。したがって順序は固定である:
+
+    1. design         ワークスペース全面
+    2. exec           design から down  → 高さの等しい 2 段（どちらも全幅）
+    3. design_review  design から right → 上段が幅の等しい 2 列になる
+    4. exec_review    exec から right   → 下段が幅の等しい 2 列になる
+
+**exec は design_review より先に作らなければならない。** design_review を先に作ると design が
+左半分へ縮み、design_review が右半分を全高で占める。そのあと design を down 分割しても割れるのは
+左半分だけなので、左に 3 枚・右に 1 枚（全高）という不均等なレイアウトになる。この壊れた状態でも
+個々の分割方向と分割元は正しいままなので、`test-prewarm-layout.sh` は方向だけでなく**順序そのもの**
+を検査している。
+
 off は 2 pane、on は 4 pane 固定。review pane の launch 失敗はその role key だけを省略して
 対応 gate をスキップする。design / exec の launch 失敗時は、この prewarm 呼び出しが作成・join・
 launch した worktree / branch / team member / surface だけを rollback し、再利用資源を残して停止する。

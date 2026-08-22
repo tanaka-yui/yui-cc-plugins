@@ -26,6 +26,10 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 | `design` | `design` ｜ `design_review` |
 | `exec` | `exec` ｜ `exec_review` |
 
+**4 ペインは均等な 4 象限になります**（高さの等しい 2 段 × 幅の等しい 2 列）。1 枚が全高を
+占めるような配置は欠陥です。`cmux new-split` はサイズ指定を持たず対象ペインを半分に割るだけ
+なので、均等さは作る順序（design → exec → design_review → exec_review）だけで決まります。
+
 > **破壊的変更 (v1.13.0)**: `--layout split` と `--layout claude-teams` を削除しました。
 > レイアウトは常に `workspace` です。あわせて split 専用の
 > `launch-session-splits.sh` と `cmux-grid.sh` も削除しています。

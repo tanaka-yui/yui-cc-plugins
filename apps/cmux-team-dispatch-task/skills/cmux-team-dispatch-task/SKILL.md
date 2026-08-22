@@ -779,6 +779,26 @@ argument and launches a fixed role layout:
     | exec           |              | exec           | exec_review    |
     +----------------+              +----------------+----------------+
 
+**The four panes must be equal quadrants** — two equal rows, each divided into two equal
+columns — and the two-pane layout must be two equal rows. This is a requirement, not an
+illustration: a workspace where one pane spans the full height while the other three share
+the opposite side is a defect even though every pane exists and is wired.
+
+Evenness is decided entirely by the ORDER the panes are created in. `cmux new-split` takes
+no size argument; it halves whatever surface it is pointed at. So the order is fixed:
+
+    1. design      the whole workspace
+    2. exec        split down from design    -> two equal full-width rows
+    3. design_review  split right from design -> top row becomes two equal columns
+    4. exec_review    split right from exec   -> bottom row becomes two equal columns
+
+**exec must be created before design_review.** Creating design_review first shrinks design
+to the left half and gives design_review the full height of the right half; splitting design
+down afterwards then divides only the left half, producing three panes stacked on the left
+and one full-height pane on the right. Each individual direction and split source is still
+correct in that broken layout, which is why `test-prewarm-layout.sh` asserts the order
+itself and not only the directions.
+
 The review-off layout has exactly two panes. The review-on layout has four unless a review
 pane fails to launch, in which case prewarm omits only that review key and the corresponding
 gate is skipped. If a required design or exec launch fails, prewarm-panes.sh rolls back
