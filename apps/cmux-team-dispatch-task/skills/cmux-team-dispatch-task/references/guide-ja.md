@@ -218,13 +218,38 @@ in-flight メッセージが存在しない。**ペインが動き始めたあ�
 親を team へ join した後、prewarm-panes.sh が 4 role agent を join・wire する。agent 名は
 design が slug、以後 slug-design-review / slug-exec / slug-exec-review。各 pane は Claude
 なら Monitor directive、Codex なら codex-record-session.sh を先に実行し、[ready] <agent>
-を親へ送る。Codex は ready 受領後にも verify-agmsg-ready.sh --codex を通す。
+を親へ送る。
 
-design / exec が ready でなければ停止する。design_review が ready でなければ警告して
-Phase A-R だけを、exec_review なら Phase B-R だけをスキップする。config は変更しない。
+**`[ready]` 行だけでは readiness にならない。** codex role の場合それはペインがターンを 1 回
+持ったことしか示さない。`codex-record-session.sh` は best-effort の no-op 経路でも成功終了
+するので、agmsg bridge seat が無いまま ready を名乗れてしまい、以後の `send.sh` は成功する
+のにメッセージは未読で滞留する。**手で判定せず、`NOT_READY` を自分で組み立てないこと。**
+両方の条件を全 role について検査する `verify-roles-ready.sh` に聞く:
 
-prewarm.json の key は launch 成功しか示さない。ready でない optional review role は
-`prune-not-ready.sh` だけで回収する。この helper は snapshot を 1 回だけ読み、strict な
+    NOT_READY=()
+    READY_ARGS=()
+    for role in "${REPORTED_READY[@]}"; do READY_ARGS+=(--ready "$role"); done
+    RR_RC=0
+    while IFS= read -r role; do
+      [[ -n "$role" ]] && NOT_READY+=("$role")
+    done < <(bash <SKILL_DIR>/scripts/verify-roles-ready.sh \
+      --prewarm "<EXISTING_STATUS_DIR>/prewarm.json" --team "$TEAM" \
+      ${READY_ARGS[@]+"${READY_ARGS[@]}"}) || RR_RC=$?
+    if [[ "$RR_RC" -ne 0 ]]; then
+      echo "[error] 必須 role が到達不能。停止する" >&2
+      exit 1
+    fi
+
+このスクリプトは到達不能な role を stdout へ列挙し、理由を stderr へ書く。`design` または
+`exec` が到達不能なら exit 1 を返すので、**必須 role の fail-closed は段落を覚えていることでは
+なくスクリプトによって担保される** — 存在理由がそこにある。この検査は以前ここの地の文にしか
+無く、2026-08-22 に実際に飛ばされた。seat の無い codex ペインを抱えたままディスパッチが進み、
+そこへ送られた `review-plan:` は誰にも読まれなかった。review の readiness は gate 単位のまま
+で、`design_review` 欠落は Phase A-R を、`exec_review` 欠落は Phase B-R をスキップする。
+config は変更しない。
+
+prewarm.json の key は launch 成功しか示さない。得られた一覧はそのまま
+`prune-not-ready.sh` へ渡す。この helper は snapshot を 1 回だけ読み、strict な
 workspace / surface ID、workspace 一致、全 active role の surface 一意性、対象 surface の live
 ownership を破壊操作前に検証する。design / exec は対象にできない。検証後だけ pane close、team
 leave、snapshot key 削除を行う。

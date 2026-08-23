@@ -413,24 +413,41 @@ prewarm-panes.sh joins and wires all child roles. The four agent names are the t
 for design, then task-slug-design-review, task-slug-exec, and task-slug-exec-review.
 Every launched pane must first follow its SessionStart Monitor directive (Claude) or call
 codex-record-session.sh (Codex), then send exactly [ready] <agent> to parent. Wait for the
-expected readiness messages before delivery. For every Codex role, additionally run:
+expected readiness messages before delivery.
 
-    bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name <agent>
+**A `[ready]` line is not readiness on its own.** For a Codex role it proves the pane took a
+turn, not that anything can reach it: `codex-record-session.sh` exits successfully on its
+best-effort no-op paths, so a pane can report ready with no agmsg bridge seat, and every
+later `send.sh` then succeeds while the message sits unread. Do not judge this by hand and do
+not derive `NOT_READY` yourself. Ask the script, which checks both conditions for every role:
 
-This preserves the existing distinction between a missing Codex seat and a dead pane.
-A ready line alone is not enough for Codex because codex-record-session.sh intentionally
-exits successfully on best-effort no-op paths.
+    NOT_READY=()
+    READY_ARGS=()
+    for role in "${REPORTED_READY[@]}"; do READY_ARGS+=(--ready "$role"); done
+    RR_RC=0
+    while IFS= read -r role; do
+      [[ -n "$role" ]] && NOT_READY+=("$role")
+    done < <(bash <SKILL_DIR>/scripts/verify-roles-ready.sh \
+      --prewarm "<EXISTING_STATUS_DIR>/prewarm.json" --team "$TEAM" \
+      ${READY_ARGS[@]+"${READY_ARGS[@]}"}) || RR_RC=$?
+    if [[ "$RR_RC" -ne 0 ]]; then
+      echo "[error] a required role is not reachable; see the reasons above. Stopping." >&2
+      exit 1
+    fi
 
-Required-role readiness remains fail-closed: if design or exec does not report ready,
-stop the dispatch. Review readiness is local to its gate: if design_review is not ready,
-warn and skip Phase A-R; if exec_review is not ready, warn and skip Phase B-R. Do not
-rewrite config.
+`verify-roles-ready.sh` prints the unreachable roles and explains each on stderr. It exits 1
+when `design` or `exec` is unreachable, so the required-role fail-closed rule is enforced by
+the script rather than by remembering a paragraph — that is the whole point of it existing.
+This check used to live only in prose here, and on 2026-08-22 it was skipped: a dispatch ran
+with Codex panes that had no seat, and the `review-plan:` messages sent to them were never
+read. Review readiness stays local to its gate: a missing `design_review` skips Phase A-R and
+a missing `exec_review` skips Phase B-R. Do not rewrite config.
 
-prewarm.json records launch success, not readiness. After collecting ready messages,
-delegate removal of every non-ready optional review role to the fail-closed helper:
+prewarm.json records launch success, not readiness. Feed the list straight into the
+fail-closed pruning helper:
 
     PRUNE_ARGS=()
-    for role in "${NOT_READY[@]}"; do PRUNE_ARGS+=(--role "$role"); done
+    for role in ${NOT_READY[@]+"${NOT_READY[@]}"}; do PRUNE_ARGS+=(--role "$role"); done
     if [[ ${#PRUNE_ARGS[@]} -gt 0 ]]; then
       bash <SKILL_DIR>/scripts/prune-not-ready.sh \
         --prewarm "<EXISTING_STATUS_DIR>/prewarm.json" --workspace "$WS" \
