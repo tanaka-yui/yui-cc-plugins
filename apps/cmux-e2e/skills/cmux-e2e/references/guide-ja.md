@@ -7,7 +7,7 @@ cmux の表示中ブラウザを使う E2E テスト実行基盤です。
 | コマンド | 用途 |
 | --- | --- |
 | `up [--profile <name>]` | この worktree のブラウザサーフェスを作成または再利用する。 |
-| `auth save|load|check|list|delete` | 検証付きブラウザ state を管理する。 |
+| `auth save|load|check|list|delete` | 保存済みブラウザ state を管理する。 |
 | `run <scenario> [--auth <name>]` | シナリオを実行し、証跡を集約する。 |
 | `down [--sweep]` | 記録済みのブラウザサーフェスを閉じる。 |
 

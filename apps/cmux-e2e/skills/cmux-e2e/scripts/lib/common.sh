@@ -42,7 +42,7 @@ cmux_e2e_project_key() {
       return 0
     fi
   fi
-  common=$(git rev-parse --git-common-dir) || return 1
+  common=$(git -C "$root" rev-parse --git-common-dir) || return 1
   case "$common" in /*) ;; *) common="$root/$common" ;; esac
   main=$(cd "$(dirname "$common")" && pwd -P) || return 1
   key="$(basename "$main")-$(_cmux_e2e_sha256_16 "$main")" || return 1

@@ -44,7 +44,7 @@ cmux_e2e_lock_acquire() {
     _cmux_e2e_leave_critical
     info='holder unknown'
     if [[ -f "$dir/owner.json" ]]; then
-      info=$("$CMUX_E2E_JQ" -r '"pid=\(.pid // \"?\") started_at=\(.started_at // \"?\")"' "$dir/owner.json" 2>/dev/null) || info='owner.json is unreadable'
+      info=$("$CMUX_E2E_JQ" -r '"pid=\(.pid // "?") started_at=\(.started_at // "?")"' "$dir/owner.json" 2>/dev/null) || info='owner.json is unreadable'
     fi
     esc=$(printf '%q' "$dir")
     {

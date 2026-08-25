@@ -21,7 +21,7 @@ Use a real visible browser surface for worktree-scoped E2E scenarios.
 | Command | Purpose |
 | --- | --- |
 | `up [--profile <name>]` | Create or reuse this worktree's browser surface. |
-| `auth save|load|check|list|delete` | Manage verified browser state. |
+| `auth save|load|check|list|delete` | Manage saved browser state. |
 | `run <scenario> [--auth <name>]` | Run a scenario and collect artifacts. |
 | `down [--sweep]` | Close the recorded browser surface. |
 
