@@ -26,6 +26,9 @@ case "$sub" in
       tab) [[ ${#b[@]} -eq 2 && "${b[1]}" == list ]] || die "$@"; printf '{"tabs":[{}]}\n' ;;
       goto) [[ ${#b[@]} -eq 2 ]] || die "$@"; exit "${CMUX_STUB_BROWSER_RC:-0}" ;;
       wait) [[ ${#b[@]} -eq 5 && "${b[1]}" == --selector && "${b[3]}" == --timeout-ms ]] || die "$@"; exit "${CMUX_STUB_BROWSER_RC:-0}" ;;
+      console) [[ ${#b[@]} -eq 2 && "${b[1]}" == list ]] || die "$@"; printf '%s\n' "${CMUX_STUB_CONSOLE_OUTPUT:-No browser console messages}" ;;
+      errors) [[ ${#b[@]} -eq 2 && "${b[1]}" == list ]] || die "$@"; printf '%s\n' "${CMUX_STUB_ERRORS_OUTPUT:-No browser errors}" ;;
+      screenshot) [[ ${#b[@]} -eq 3 && "${b[1]}" == --out ]] || die "$@"; : > "${b[2]}" ;;
       state) [[ ${#b[@]} -eq 3 ]] || die "$@"; case "${b[1]}" in save) printf '{"cookies":[]}' > "${b[2]}" ;; load) [[ -f "${b[2]}" ]] ;; *) die "$@" ;; esac ;;
       *) die "$@" ;;
     esac ;;
