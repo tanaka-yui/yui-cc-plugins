@@ -20,15 +20,17 @@ cmux_e2e_secure_artifact "$(dirname "$out")/summary.md" "$root" || { echo "ERROR
 if [[ -e "$out" && ! -d "$out" || -L "$out" ]]; then echo "ERROR: unsafe results directory: $out" >&2; exit 1; fi
 mkdir -p "$out" && chmod 700 "$out" || exit 1
 wrap=$(mktemp -d); trap 'rm -rf -- "$wrap"; cmux_e2e_lock_release_all' EXIT
-cat > "$wrap/cmux-e2e-browser" <<'EOF'
-#!/usr/bin/env bash
-set -uo pipefail
-if [[ "${CMUX_E2E_GUARD:-1}" == 1 ]]; then
-  got=$("$CMUX_E2E_WRAPPER_BIN" --json browser --surface "$CMUX_E2E_WRAPPER_REF" identify | "$CMUX_E2E_WRAPPER_JQ" -r '.surface_ref // .browser.surface // empty') || exit 1
-  [[ "$got" == "$CMUX_E2E_WRAPPER_REF" ]] || exit 1
+{
+  printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+  printf 'REF=%q\nGUARD=%q\nBIN=%q\nJQ=%q\n' "$ref" "$guard" "$CMUX_BIN" "$CMUX_E2E_JQ"
+  cat <<'EOF'
+if [[ "$GUARD" == 1 ]]; then
+  got=$("$BIN" --json browser --surface "$REF" identify | "$JQ" -r '.surface_ref // .browser.surface // empty') || exit 1
+  [[ "$got" == "$REF" ]] || exit 1
 fi
-exec "$CMUX_E2E_WRAPPER_BIN" browser --surface "$CMUX_E2E_WRAPPER_REF" "$@"
+exec "$BIN" browser --surface "$REF" "$@"
 EOF
+} > "$wrap/cmux-e2e-browser" || exit 1
 chmod 755 "$wrap/cmux-e2e-browser"
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 scenario_env=()
@@ -54,7 +56,7 @@ trap 'stop_scenario; exit 130' INT
 trap 'stop_scenario; exit 143' TERM
 trap 'stop_scenario; exit 129' HUP
 set -m
-env -i "HOME=$HOME" "USER=${USER:-}" "TERM=${TERM:-dumb}" "PATH=$wrap:$PATH" "RESULTS_DIR=$out" "WORKTREE_ROOT=$root" "CMUX_E2E_SURFACE=$ref" "CMUX_E2E_GUARD=$guard" "CMUX_E2E_WRAPPER_REF=$ref" "CMUX_E2E_WRAPPER_BIN=$CMUX_BIN" "CMUX_E2E_WRAPPER_JQ=$CMUX_E2E_JQ" ${scenario_env[@]+"${scenario_env[@]}"} bash "$file" &
+env -i "HOME=$HOME" "USER=${USER:-}" "TERM=${TERM:-dumb}" "PATH=$wrap:$PATH" "RESULTS_DIR=$out" "WORKTREE_ROOT=$root" "CMUX_E2E_SURFACE=$ref" ${scenario_env[@]+"${scenario_env[@]}"} bash "$file" < /dev/null &
 scenario_pid=$!
 set +m
 wait "$scenario_pid"; rc=$?

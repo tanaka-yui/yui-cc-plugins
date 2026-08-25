@@ -11,13 +11,16 @@ if [[ "$sweep" -eq 1 ]]; then
   cmux_e2e_secure_path "$entries" || { echo "ERROR: unsafe surface registry directory" >&2; exit 1; }
   for stale in "$entries"/*.json; do
     [[ -f "$stale" && ! -L "$stale" ]] || continue
-    worktree=$("$CMUX_E2E_JQ" -r '.worktree // empty' "$stale") || { echo "ERROR: corrupt registry: $stale" >&2; exit 1; }
-    [[ -n "$worktree" ]] || { echo "ERROR: corrupt registry: $stale" >&2; exit 1; }
+    worktree=$("$CMUX_E2E_JQ" -r '.worktree // empty' "$stale") || { echo "WARN: skipping corrupt registry: $stale" >&2; continue; }
+    [[ -n "$worktree" ]] || { echo "WARN: skipping registry without worktree: $stale" >&2; continue; }
     [[ -e "$worktree" ]] && continue
-    id=$("$CMUX_E2E_JQ" -r '.surface_id // empty' "$stale") || exit 1
-    tree=$("$CMUX_BIN" --json --id-format both tree --all) || exit 1
-    ref=$("$CMUX_E2E_JQ" -r --arg id "$id" '[.windows[]?.workspaces[]?.panes[]?.surfaces[]? | select(.id==$id)] | first.ref // empty' <<< "$tree") || exit 1
-    [[ -z "$ref" ]] || cmux_e2e_surface_close "$ref" || exit 1
+    key=$(basename "$stale" .json)
+    sibling="$(dirname "$entries")/locks/$key"
+    cmux_e2e_lock_acquire "$sibling" 2>/dev/null || { echo "WARN: skipping locked stale worktree: $worktree" >&2; continue; }
+    id=$("$CMUX_E2E_JQ" -r '.surface_id // empty' "$stale") || { echo "WARN: skipping corrupt registry: $stale" >&2; continue; }
+    tree=$("$CMUX_BIN" --json --id-format both tree --all) || { echo "WARN: cannot inspect stale surface: $stale" >&2; continue; }
+    ref=$("$CMUX_E2E_JQ" -r --arg id "$id" '[.windows[]?.workspaces[]?.panes[]?.surfaces[]? | select(.id==$id)] | first.ref // empty' <<< "$tree") || { echo "WARN: cannot resolve stale surface: $stale" >&2; continue; }
+    [[ -z "$ref" ]] || cmux_e2e_surface_close "$ref" || { echo "WARN: cannot close stale surface: $stale" >&2; continue; }
     rm -f -- "$stale"
   done
 fi

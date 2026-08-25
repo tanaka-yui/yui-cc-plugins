@@ -48,3 +48,5 @@ settings.local.json
 # cmux-team-dispatch-task runtime scaffolding (machine-specific, written per dispatch)
 .cmux-team-dispatch-task-prompt.md
 .cmux-team-dispatch-task-run-*.sh
+.cmux-e2e-scenarios/
+.cmux-e2e-results/

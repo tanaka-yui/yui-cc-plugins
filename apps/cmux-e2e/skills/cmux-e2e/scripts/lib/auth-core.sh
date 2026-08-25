@@ -13,7 +13,7 @@ auth_save_locked() {
   "$CMUX_BIN" browser --surface "$ref" state save "$s" >/dev/null || { rm -f -- "$s" "$m"; return 1; }
   "$CMUX_E2E_JQ" -n --arg sha "$(_cmux_e2e_digest "$s")" --arg url "$url" --arg sel "$sel" '{state_sha256:$sha,check_url:($url|select(.!="") // null),check_selector:($sel|select(.!="") // null)}' > "$m" || { rm -f -- "$s" "$m"; return 1; }
   cmux_e2e_install_file "$s" "$d/state.json" || { rm -f -- "$s" "$m"; return 1; }
-  cmux_e2e_install_file "$m" "$d/meta.json" || { rm -f -- "$m"; return 1; }
+  cmux_e2e_install_file "$m" "$d/meta.json" || { rm -f -- "$m" "$d/state.json"; return 1; }
 }
 auth_load_locked() { local ref="$1" name="$2" d want got; d=$(_cmux_e2e_auth_dir "$name") || return $?; [[ -f "$d/state.json" && -f "$d/meta.json" && ! -L "$d/state.json" && ! -L "$d/meta.json" ]] || return 1; want=$("$CMUX_E2E_JQ" -r '.state_sha256 // empty' "$d/meta.json") || return 1; got=$(_cmux_e2e_digest "$d/state.json") || return 1; [[ -n "$want" && "$want" == "$got" ]] || return 1; "$CMUX_BIN" browser --surface "$ref" state load "$d/state.json" >/dev/null; }
 auth_check_locked() {

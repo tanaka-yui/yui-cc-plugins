@@ -21,8 +21,9 @@ Use a real visible browser surface for worktree-scoped E2E scenarios.
 | Command | Purpose |
 | --- | --- |
 | `up [--profile <name>]` | Create or reuse this worktree's browser surface. |
-| `auth save|load|check|list|delete` | Manage saved browser state. |
-| `run <scenario> [--auth <name>]` | Run a scenario and collect artifacts. |
+| `auth save <name> [--check-url <url> --check-selector <css>]` | Save browser state and an optional validity check; both check flags are required together. |
+| `auth load|check|list|delete <name>` | Apply, verify, list, or delete saved browser state. |
+| `run <scenario> [--auth <name>] [--allow-js-errors] [--no-guard]` | Run a scenario and collect artifacts. |
 | `down [--sweep]` | Close the recorded browser surface. |
 
 ## Safety
@@ -40,3 +41,19 @@ written to `.cmux-e2e-results/<name>/`. The wrapper checks identity before each 
 
 Read the `cmux-browser` skill for browser-operation mechanics and authentication steps. Use
 `e2e-test` for headless CI scenarios; the two plugins use separate directories.
+
+## Environment
+
+When `.env.dispatch` exists, it is parsed as data rather than sourced. Only
+`COMPOSE_PROJECT_NAME`, `PROJECT`, `SLOT`, and `*_PORT` keys are supplied to the scenario.
+
+## Artifacts
+
+Artifacts may contain session data. Directories are private and files are mode `0600`; inspect
+them before sharing. Add both `.cmux-e2e-scenarios/` and `.cmux-e2e-results/` to a consuming
+project's `.gitignore`.
+
+## Failure modes
+
+Exit `2` means invalid arguments. Exit `1` means a missing/unusable surface, locked operation,
+failed scenario, artifact collection failure, or unapproved JavaScript errors.
