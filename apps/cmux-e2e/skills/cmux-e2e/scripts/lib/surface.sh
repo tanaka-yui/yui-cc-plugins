@@ -10,7 +10,7 @@ cmux_e2e_surface_resolve() {
   node=$("$CMUX_E2E_JQ" -c --arg id "$id" '[.windows[]?.workspaces[]?.panes[]?.surfaces[]? | select(.id==$id)] | first // empty' <<< "$tree") || return 20
   [[ -n "$node" ]] || return 11; [[ $("$CMUX_E2E_JQ" -r '.type' <<< "$node") == browser ]] || return 12
   ref=$("$CMUX_E2E_JQ" -r '.ref // empty' <<< "$node") || return 20; [[ -n "$ref" ]] || return 20
-  got=$("$CMUX_BIN" --json browser --surface "$ref" identify | "$CMUX_E2E_JQ" -r '.surface_ref // empty') || return 20; [[ "$got" == "$ref" ]] || return 13
+  got=$("$CMUX_BIN" --json browser --surface "$ref" identify | "$CMUX_E2E_JQ" -r '.surface_ref // .browser.surface // empty') || return 20; [[ "$got" == "$ref" ]] || return 13
   tmp="$reg.tmp.$$"; "$CMUX_E2E_JQ" --arg r "$ref" '.surface_ref=$r' "$reg" > "$tmp" || return 20; cmux_e2e_install_file "$tmp" "$reg" || return 20; printf '%s' "$ref"
 }
 cmux_e2e_surface_create() {

@@ -24,7 +24,7 @@ cat > "$wrap/cmux-e2e-browser" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
 if [[ "${CMUX_E2E_GUARD:-1}" == 1 ]]; then
-  got=$("$CMUX_E2E_WRAPPER_BIN" --json browser --surface "$CMUX_E2E_WRAPPER_REF" identify | "$CMUX_E2E_WRAPPER_JQ" -r '.surface_ref // empty') || exit 1
+  got=$("$CMUX_E2E_WRAPPER_BIN" --json browser --surface "$CMUX_E2E_WRAPPER_REF" identify | "$CMUX_E2E_WRAPPER_JQ" -r '.surface_ref // .browser.surface // empty') || exit 1
   [[ "$got" == "$CMUX_E2E_WRAPPER_REF" ]] || exit 1
 fi
 exec "$CMUX_E2E_WRAPPER_BIN" browser --surface "$CMUX_E2E_WRAPPER_REF" "$@"
