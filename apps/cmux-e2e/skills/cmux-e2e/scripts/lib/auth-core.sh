@@ -16,6 +16,18 @@ auth_save_locked() {
   cmux_e2e_install_file "$m" "$d/meta.json" || { rm -f -- "$m"; return 1; }
 }
 auth_load_locked() { local ref="$1" name="$2" d want got; d=$(_cmux_e2e_auth_dir "$name") || return $?; [[ -f "$d/state.json" && -f "$d/meta.json" && ! -L "$d/state.json" && ! -L "$d/meta.json" ]] || return 1; want=$("$CMUX_E2E_JQ" -r '.state_sha256 // empty' "$d/meta.json") || return 1; got=$(_cmux_e2e_digest "$d/state.json") || return 1; [[ -n "$want" && "$want" == "$got" ]] || return 1; "$CMUX_BIN" browser --surface "$ref" state load "$d/state.json" >/dev/null; }
-auth_check_locked() { auth_load_locked "$1" "$2"; }
+auth_check_locked() {
+  local ref="$1" name="$2" d url selector
+  auth_load_locked "$ref" "$name" || return $?
+  d=$(_cmux_e2e_auth_dir "$name") || return $?
+  url=$("$CMUX_E2E_JQ" -r '.check_url // empty' "$d/meta.json") || return 1
+  selector=$("$CMUX_E2E_JQ" -r '.check_selector // empty' "$d/meta.json") || return 1
+  if [[ -z "$url" && -z "$selector" ]]; then
+    echo "WARN: auth '$name' has no verification condition" >&2
+    return 0
+  fi
+  [[ -n "$url" && -n "$selector" ]] || return 1
+  "$CMUX_BIN" browser --surface "$ref" goto "$url" >/dev/null && "$CMUX_BIN" browser --surface "$ref" wait --selector "$selector" --timeout-ms 15000 >/dev/null
+}
 auth_list() { local r d; r=$(cmux_e2e_auth_root) || return 1; for d in "$r"/entries/*; do [[ -f "$d/state.json" && -f "$d/meta.json" ]] && basename "$d"; done; }
 auth_delete_locked() { local d; d=$(_cmux_e2e_auth_dir "$1") || return $?; [[ -d "$d" ]] && rm -rf -- "$d"; return 0; }
