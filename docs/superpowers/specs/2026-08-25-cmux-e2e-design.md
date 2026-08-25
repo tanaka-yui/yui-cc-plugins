@@ -52,24 +52,24 @@ skills/cmux-e2e/SKILL.md  … エージェント向けの手順書。どのサ�
 
 | 置き場所 | 内容 | 消えてよいか |
 |---------|------|-------------|
-| `~/.cache/cc-skills/cmux-e2e/<project>/surfaces/` | サーフェスレジストリとロック | 消えると孤児が出る。消してはならない |
-| `~/.cache/cc-skills/cmux-e2e/<project>/auth/` | 認証ステートと検証条件 | 消すと再ログインが必要 |
+| `~/.cache/cc-skills/cmux-e2e/<project>/surfaces/` | サーフェスレジストリとロック（4.0） | 消えると孤児が出る。消してはならない |
+| `~/.cache/cc-skills/cmux-e2e/<project>/auth/` | 認証ステート・検証条件・ロック（4.0） | 消すと再ログインが必要 |
 | `<worktree>/.cmux-e2e-scenarios/` | シナリオ | プロジェクト側の資産 |
 | `<worktree>/.cmux-e2e-results/` | 成果物 | いつ消してもよい |
 
 データフロー:
 
 ```
-project key 解決（.dev-up.yaml の project → git common dir の名前 + hash）
+project key 解決（.dev-up.yaml の project → git common dir の名前 + hash 16 桁）
         │
         ▼
-ロック取得（同一 worktree の run / down を直列化）
+ロック取得（worktree → auth の順。--auth 指定時のみ auth も取る）
         │
         ▼
-surface 解決（レジストリの surface_id を tree --all と突き合わせ）
+surface 解決（レジストリの surface_id を tree --all と突き合わせ、現在の ref を採る）
         │  CMUX_E2E_SURFACE + identity guard ラッパー
         ▼
-認証ステート適用（--auth 指定時のみ: load → 世代確認 → check）
+認証（--auth 指定時のみ。locked core: digest 照合 → state load 1 回 → 条件があれば検証）
         │
         ▼
 タブ数の確認（load 後に 1 つであること）→ console / errors clear
@@ -78,12 +78,45 @@ surface 解決（レジストリの surface_id を tree --all と突き合わせ
 シナリオ実行（bash。cmux-e2e-browser 経由で操作）
         │
         ▼
-結果集約（screenshot / console / errors）→ summary.md → 合否判定
+結果集約（screenshot / console / errors）→ summary.md → 合否判定 → ロック解放
 ```
 
 ## 4. 設計判断
 
 要件定義の「設計で詰めるべき論点」6 項目に 1:1 で対応する。
+
+## 4.0 cache root のレイアウト
+
+名前が衝突しうる要素を同じ親に並べない。auth 名は名前中の `.` を許すため、
+`<name>.lock` や `<name>.meta.json` のように**接尾辞で種別を表すと必ず衝突する**
+（auth `foo` の lock と auth `foo.lock` の実体が同じパスになる）。
+種別は接尾辞ではなく**固定のディレクトリ名**で表す。
+
+```
+~/.cache/cc-skills/cmux-e2e/<project>/
+├── auth/
+│   ├── entries/<name>/state.json      ← cmux が書く storageState 本体
+│   ├── entries/<name>/meta.json       ← cmux-e2e が書く付帯情報
+│   ├── locks/<name>/owner.json        ← auth ロック
+│   ├── locks-takeover/<name>/         ← stale 回収を直列化する mutex
+│   └── locks-quarantine/<name>.<gen>/ ← 回収した stale ロックの隔離先
+└── surfaces/
+    ├── entries/<worktree-key>.json    ← サーフェスレジストリ
+    ├── locks/<worktree-key>/owner.json
+    ├── locks-takeover/<worktree-key>/
+    └── locks-quarantine/<worktree-key>.<gen>/
+```
+
+`entries` / `locks` / `locks-takeover` / `locks-quarantine` は固定名なので、
+`<name>` がどんな値でも別の種別と衝突しない。
+
+**すべてのディレクトリを `0700`、すべてのファイルを `0600`** で作成する。
+`entries/` の state と meta だけでなく、レジストリ・ロックディレクトリ・`owner.json` も対象である。
+
+**`auth list` が列挙する対象**: `auth/entries/<name>/` のうち、`state.json` と `meta.json` の
+**両方が揃っているもの**だけ。作りかけの一時ファイルを含むディレクトリ、`locks/`、
+`locks-takeover/`、`locks-quarantine/` は列挙しない。種別が別ディレクトリなので、
+そもそも `locks` 配下が `auth/entries` の列挙に混ざることはない。
 
 ## 4.1 サーフェスのライフサイクル
 
@@ -250,19 +283,9 @@ cookie 認証・トークン更新・セキュリティ規則まで揃ってい�
 再説明せず、cmux-browser の該当リファレンスへリンクする。cmux-e2e が持つのは運用の側、すなわち
 **保存先の規約・鍵付け・入力契約・実行前の有効性検証・秘密情報の保護・失敗時の報告**である。
 
-**保存レイアウト — 名前とファイル種別を別のパス要素にする**:
-
-```
-~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>/state.json  ← cmux が書く storageState 本体
-~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>/meta.json   ← cmux-e2e が書く付帯情報
-~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>.lock        ← auth 単位のロック
-```
-
-`<name>.json` / `<name>.meta.json` という並べ方にしてはならない。auth 名は名前中の `.` を
-許すため、auth `foo` の meta と auth `foo.meta` の state がどちらも `foo.meta.json` になり、
-後から保存した方が前者の meta を破壊する。`auth delete foo` が `foo.meta` の state まで消し、
-`auth list` はファイル名だけでは state と meta を弁別できない。認証情報の破壊と取り違えの
-経路になるので、name をディレクトリにして種別をその中のファイル名で表す。
+**保存レイアウト**: 4.0 のとおり `auth/entries/<name>/state.json` と
+`auth/entries/<name>/meta.json` に置く。接尾辞で種別を表さないので、auth 名がどんな値でも
+別の種別と衝突しない。
 
 **`<name>` の規則**（4.2 の project key と同一の規則にそろえる）:
 
@@ -293,17 +316,35 @@ cookie 認証・トークン更新・セキュリティ規則まで揃ってい�
 `saved_at` を判定に使わない根拠: 粒度と一意性が定義できない。同一秒内の連続保存では
 別世代の組を一致と誤認する。
 
-**`auth save` の手順（1 世代として置き換える）**:
+**`auth save` の公開手順（実装可能な形にする）**:
+
+ディレクトリ単位の原子的置換は使わない。**`mv` は既存の非空ディレクトリを原子的に置換できない**。
+destination が既存ディレクトリなら source をその中へ移す第 2 形式になり、`rename(2)` 自体も
+空でない既存ディレクトリを置換できない。仕様としてこれを要求すると、portable な bash 実装が書けない。
+
+代わりに **同一ディレクトリ内でのファイル単位の atomic rename** を使う。
 
 1. worktree ロック → auth ロックの順に取得する（4.4）
 2. タブが 1 つであることを確認する。2 つ以上なら exit 1
-3. `cmux browser --surface <ref> state save <tmp>/state.json` を実行する
-4. `<tmp>/state.json` の SHA-256 を計算し、`<tmp>/meta.json` を書く
-   （検証条件が省略された場合は `check_url` / `check_selector` を持たない meta を書く）
-5. `<tmp>` ディレクトリごと `mv` で `<name>/` を置き換える
+3. `auth/entries/<name>/` を作る（既存ならそのまま使う）
+4. `cmux browser --surface <ref> state save auth/entries/<name>/.state.json.tmp.$$` を実行する
+   一時ファイルは**同じディレクトリ**に置く。`$TMPDIR` に置くと別ファイルシステムになりえ、
+   `mv` が copy + delete へ退化して原子性を失う
+5. 一時 state の SHA-256 を計算し、`auth/entries/<name>/.meta.json.tmp.$$` を書く
+6. `.state.json.tmp.$$` を `state.json` へ rename する
+7. `.meta.json.tmp.$$` を `meta.json` へ rename する
 
-5 でディレクトリ単位に置き換えるので、state だけ新しく meta だけ古いという組は原理的に残らない。
-検証条件を省略した保存で古い meta が残ることもない。
+6 と 7 の間で落ちた場合、`meta.json` は古い digest を指したまま `state.json` が新しくなる。
+このとき digest は一致しないので、**次の読み手は load する前に fail-close する**。
+逆順に落ちた場合も同様に不一致になる。どちらの順で落ちても、不整合な組が
+「有効なもの」として使われることはない。
+
+これが「世代を原子的に切り替える」代わりに採る保証である。切り替えの原子性ではなく、
+**読み取り側の fail-close** で安全性を担保する。
+
+完全な世代切り替えが必要になった場合の代替案（現時点では採らない）: 不変の
+`generations/<gen>/` を作り、`current` という 1 ファイルの atomic rename で切り替える。
+今回は digest による fail-close で十分であり、複雑さに見合わない。
 
 **有効性の検証手順（load の前に照合する）**:
 
@@ -313,12 +354,11 @@ cookie 認証・トークン更新・セキュリティ規則まで揃ってい�
 4. 一致した場合に限り `state load` する
 5. `check_url` / `check_selector` があれば遷移して `wait` する
 
-**load を行う場所を 1 箇所に固定する**: `state load` を実行するのは `auth check` だけとする。
-`run --auth <name>` は「digest を照合してから `auth check` を呼ぶ」だけであり、自分では load しない。
-これにより正常経路での load はちょうど 1 回になり、照合前に state を適用することもない。
-
-`auth load <name>` は、検証を伴わずに state を適用したい場合のための単独操作として残す
-（`auth save` の下準備などで使う）。`run` の経路からは呼ばない。
+**digest 照合と `state load` は locked core の中で 1 回だけ行う**（4.4）。
+`auth_load_locked` が「digest 照合 → 不一致なら fail-close → `state load`」を行い、
+`auth_check_locked` がそれに「遷移 → `wait`」を足す。CLI の `auth load` / `auth check` は
+ロックを取ってこの core を呼ぶだけであり、`run --auth` は自分が取得したロックの下で
+core を直接呼ぶ。`run` 側で先に digest を照合しない。
 
 **共有 auth の差し替えレース**: auth は project 内の全 worktree で共有されるため、
 照合と load の間に別 worktree が同じ auth を保存し直す可能性がある。
@@ -352,11 +392,12 @@ admin / customer など複数の state がある場合、どれを使うかを `
 
 `--auth <name>` が与えられたときの動作:
 
-1. `<name>/state.json` が無ければ exit 1（`auth save` を促す）
-2. digest が `meta.json` の `state_sha256` と一致しなければ exit 1（保存し直しを促す）
-3. meta に検証条件が無ければ、`auth load` のみ行い「検証していない」と警告を出して続行する
-4. 検証条件があれば `auth check` を実行し、失敗したら exit 1。
-   「ステートが失効している。`auth save` で保存し直せ」と手順を示す
+1. `auth/entries/<name>/state.json` が無ければ exit 1（`auth save` を促す）
+2. meta に検証条件が無ければ `auth_load_locked` を呼ぶ。
+   digest が一致しなければ exit 1（**load しない**）。load できたら
+   「検証していない」と警告を出して続行する
+3. 検証条件があれば `auth_check_locked` を呼ぶ。digest 不一致なら exit 1。
+   検証に失敗したら exit 1 とし、「ステートが失効している。`auth save` で保存し直せ」と手順を示す
 
 **失効検知の限界**: `state load` は「ファイルを読めたか」しか判定できない。セッションが
 有効かどうかは、認証済みでのみ現れる目印を実際に待つ以外に判定手段が無い。
@@ -384,8 +425,8 @@ cookie をデフォルトプロファイルへ取り込んだ**。surface 引数
 
 | ロック | 場所 | 守るもの |
 |--------|------|---------|
-| worktree ロック | `~/.cache/cc-skills/cmux-e2e/<project>/surfaces/<worktree-key>.lock` | この worktree のサーフェスとレジストリ |
-| auth ロック | `~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>.lock` | project 内で共有される 1 つの auth |
+| worktree ロック | `surfaces/locks/<worktree-key>/` | この worktree のサーフェスとレジストリ |
+| auth ロック | `auth/locks/<name>/` | project 内で共有される 1 つの auth |
 
 **サブコマンドごとに取るロック**:
 
@@ -402,50 +443,100 @@ cookie をデフォルトプロファイルへ取り込んだ**。surface 引数
 | `auth list` | — | — |
 
 **`up` も取る根拠**: 状態 A で `up` が 2 本同時に走ると両方がサーフェスを作り、
-最後のレジストリ書き込みだけが残って孤児ができる。サーフェスを触る操作はすべて直列化する。
+最後のレジストリ書き込みだけが残って孤児ができる。
 
 **auth ロックが worktree ロックと別に必要な根拠**: auth は project 内の全 worktree で
 共有される。worktree ロックだけでは、worktree A の `run --auth foo` と worktree B の
-`auth save foo` / `auth delete foo` を防げない。守る資源が違うので、ロックも分ける。
-
-**`auth save` / `auth load` / `auth check` が worktree ロックも取る根拠**:
-これらはサーフェスの cookie・storage・タブを変更する。auth ロックだけでは
-同一 worktree の `run` と競合する。
+`auth save foo` / `auth delete foo` を防げない。
 
 **取得順序は worktree → auth に固定する**。逆順で取る経路を作らない。
-2 種類のロックを異なる順で取る経路が 1 つでもあればデッドロックしうる。
 
-**ロックの実体**: `mkdir` の atomic 性を利用する（dev-up の `reserve-slot.sh` と同じ手法）。
-取得できたディレクトリに `owner.json` を書く。
+### ロックを再入させない — CLI と locked core を分ける
+
+`run --auth` がロックを取った後に CLI の `auth check` を呼ぶと、`auth check` 自身も
+同じロックを取ろうとして、自分の live ロックに対して exit 1 になるか自己デッドロックする。
+ロックは再入可能ではない。
+
+したがって実装を 2 層に分ける。
+
+| 層 | 置き場所 | ロック |
+|----|---------|--------|
+| locked core | `skills/cmux-e2e/scripts/lib/auth-core.sh` の `auth_save_locked` / `auth_load_locked` / `auth_check_locked` | **取らない**。呼び出し側が保持している前提 |
+| CLI | `auth save` / `auth load` / `auth check` | 取得 → core を呼ぶ → 解放 |
+
+`run --auth` は CLI を呼ばず、自分が取得したロックの下で core を直接呼ぶ。
+
+**digest 照合と `state load` は core の中で 1 回だけ行う**。`run` 側で先に digest を照合しない。
+core の `auth_load_locked` が「digest 照合 → 不一致なら fail-close → `state load`」を行い、
+`auth_check_locked` がそれに「遷移 → `wait`」を足す。これにより正常経路の `state load` は
+ちょうど 1 回になり、照合と load の間に別 worktree が割り込む余地も無い（auth ロックの内側だから）。
+
+`auth load` と `auth check` の違いは検証条件を使うかどうかだけで、どちらも digest 照合を行う。
+
+### ロックの実体
+
+取得は `mkdir` の atomic 性を利用する。取得できたディレクトリに `owner.json` を置く。
 
 | キー | 内容 |
 |------|------|
+| `generation` | この取得に固有の ID（UUID）。**解放と回収の判定に使う** |
 | `pid` | 取得したプロセスの PID |
+| `pid_start` | その PID の開始時刻（`ps -o lstart= -p <pid>` の値） |
 | `host` | ホスト名 |
 | `worktree` | worktree の canonical realpath |
 | `started_at` | 取得時刻 |
 
-**解放**: 正常終了と捕捉可能なシグナル（INT / TERM / HUP）で `trap` により解放する。
+**`owner.json` は temp + rename で公開する**（`.owner.json.tmp.$$` → `owner.json`）。
+書きかけの owner を他プロセスが読む状態を作らない。
 
-**stale ロックの回収**: `SIGKILL` や端末の強制終了では `trap` が走らず `owner.json` が残る。
-これを放置すると、その worktree の `run` と `down` が永久に exit 1 になり、
-認証済みのサーフェスも閉じられなくなる。
+**解放**: 正常終了と捕捉可能なシグナル（INT / TERM / HUP）で `trap` により行う。
+解放の前に `owner.json` の `generation` が自分のものと一致することを確認する。
+一致しなければ何もしない。自分のロックが既に回収されていた場合に、
+別プロセスが新たに取得した live ロックを削除してしまうのを防ぐ。
+
+### stale ロックの回収
+
+`SIGKILL` や端末の強制終了では `trap` が走らない。放置するとその worktree の
+`run` と `down` が永久に exit 1 になり、認証済みのサーフェスも閉じられなくなる。
 
 取得に失敗したときは次を順に判定する。
 
-1. `owner.json` が読めない、または壊れている → stale とみなして回収する
-2. `host` が自ホストと異なる → 生存を判定できないので回収せず exit 1。
-   手動で消す手順をメッセージに示す
-3. `host` が自ホストで `pid` が生きていない → stale とみなして回収する
-4. `pid` が生きている → 正常な競合。exit 1 で「実行中である」と伝える
+| # | 条件 | 判定 |
+|---|------|------|
+| 1 | `owner.json` が無い、かつロックディレクトリの mtime が 10 秒以内 | **公開途中**とみなす。回収せず exit 1（「取得中」と伝える） |
+| 2 | `owner.json` が無い、かつ mtime が 10 秒より古い | 回収候補 |
+| 3 | `owner.json` が読めない / 壊れている、かつ mtime が 10 秒より古い | 回収候補 |
+| 4 | `host` が自ホストと異なる | 生存を判定できない。回収せず exit 1。手動で消す手順を示す |
+| 5 | `host` が自ホスト、`pid` が生きていて `pid_start` も一致 | 正常な競合。exit 1（「実行中」と伝える） |
+| 6 | `host` が自ホスト、`pid` が生きているが `pid_start` が一致しない | PID 再利用。回収候補 |
+| 7 | `host` が自ホスト、`pid` が生きていない | 回収候補 |
+| 8 | `ps` が使えず `pid_start` を取得できない | 回収せず exit 1。手動回復の手順を示す |
 
-回収は「ロックディレクトリを消してから取り直す」ではなく、
-一意な名前へ `mv` してから改めて `mkdir` を試みる。回収と取得の間に
-別プロセスが取得した場合、単純な削除では取り消してしまう。
+**1 の grace が必要な根拠**: `mkdir` の成功と `owner.json` の公開の間には必ず窓がある。
+その窓に別プロセスが来て「owner が無いから stale」と判断すると、取得したばかりの
+live ロックを奪い、2 つのプロセスが同時に owner として動く。
 
-**`down --sweep` との関係**: `--sweep` は孤児レコードの回収を行うが、
-stale ロックの回収は上の取得手順に含まれるので `--sweep` の責務ではない。
-`--sweep` 自身も worktree ロックを取る。
+**回収は直列化する**: 回収候補と判定したら、まず `locks-takeover/<name>/` を `mkdir` して
+takeover mutex を取る。取れなければ他が回収中なので exit 1。
+
+mutex を取った後、**もう一度** `owner.json` を読み直して回収条件を再確認する。
+確認した `generation`（無い場合はディレクトリの inode と mtime）が、最初に見たものと
+同じであることを確かめる。変わっていれば別プロセスが既に回収して新しいロックを
+取得しているので、回収せず exit 1 とする。
+
+再確認が通ったら `locks/<name>/` を `locks-quarantine/<name>.<generation>/` へ `mv` し、
+mutex を解放してから、改めて `mkdir` で取得を試みる。
+
+**削除ではなく `mv` する根拠**: 削除してから `mkdir` するまでの間に別プロセスが取得すると、
+削除が別プロセスのロックを取り消してしまう。隔離しておけば原因調査にも使える。
+
+**再確認が必要な根拠**: mutex が無い、あるいは mutex 取得後に再確認しないと、
+P1 と P2 が同じ stale ロックを観測 → P2 が回収して新ロックを取得 → P1 が元のパスを `mv`、
+という順序で P1 が P2 の **live** ロックを奪える（ABA）。
+
+**`down --sweep` との関係**: `--sweep` は孤児レコードの回収を行う。stale ロックの回収は
+上の取得手順に含まれるので `--sweep` の責務ではない。`locks-quarantine/` の掃除は
+`--sweep` が行う。
 
 ## 4.5 シナリオの記法
 
@@ -521,7 +612,7 @@ snapshot / screenshot は、アクセストークンや個人情報を含みう�
 
 1. ロック取得（worktree → auth の順。4.4。取れなければ exit 1）
 2. サーフェス解決（状態 A / B / B' / C の判定）
-3. `--auth <name>` があれば digest 照合 → `auth check`（load は `auth check` が 1 回だけ行う）
+3. `--auth <name>` があれば locked core を直接呼ぶ（digest 照合 → `state load` 1 回 → 条件があれば検証）。CLI の `auth check` は呼ばない（ロックの再入を避けるため。4.4）
 4. **タブ数の確認**（1 つでなければ exit 1）
 5. `console clear` / `errors clear`
 6. シナリオ実行
@@ -580,7 +671,8 @@ snapshot / screenshot は、アクセストークンや個人情報を含みう�
 | `down` | `down [--sweep]` | サーフェスを破棄しレコードを消す。`--sweep` は worktree が消えた孤児を回収する |
 
 **排他制御**: どのサブコマンドがどのロックを取るかは 4.4 の表で定める。
-取得順は常に worktree → auth である。
+取得順は常に worktree → auth である。ロックは再入できないため、`run --auth` は
+CLI の `auth check` / `auth load` を呼ばず、locked core を直接呼ぶ（4.4）。
 
 **`--no-guard` を環境変数にしない根拠**: identity guard は安全機構であり、
 `.env.dispatch` や親シェルから意図せず無効化されると、実行結果からどちらで走ったのか
@@ -697,6 +789,14 @@ gitignore へ追加すべき行（消費側プロジェクトの責任として�
 | シナリオは成功したが JS エラーを検出 | exit 1。JS エラーが理由であることを明示 |
 | 証跡の収集に失敗 | 単独なら exit 1。シナリオ失敗や JS エラーが先に成立していればそちらを優先し、警告に残す |
 | `summary.md` の書き込みに失敗 | 単独なら exit 1。先に成立した失敗があればそちらを優先し、警告に残す |
+| ロックディレクトリはあるが `owner.json` が無く、mtime が 10 秒以内 | exit 1。取得中である旨を伝える（回収しない） |
+| ロックの `owner.json` が壊れており mtime が 10 秒より古い | takeover mutex を取って再確認し、stale として隔離してから取得し直す |
+| ロックの owner の `pid` は生きているが `pid_start` が一致しない | PID 再利用。stale として隔離してから取得し直す |
+| `ps` が使えず `pid_start` を判定できない | exit 1。回収せず手動回復の手順を示す |
+| takeover mutex を取得できない | exit 1。他プロセスが回収中である旨を伝える |
+| takeover mutex 取得後の再確認で `generation` が変わっていた | 回収せず exit 1。別プロセスが既に回収して取得済み |
+| 解放時に `owner.json` の `generation` が自分のものと違う | 何もしない。自分のロックは既に回収されている |
+| `auth save` の rename が state と meta の間で中断した | 次の読み手が digest 不一致で exit 1。**load はしない** |
 | `down` でレコードが無い / surface が既に無い | exit 0（冪等） |
 | `down --sweep` で worktree が消えた孤児を検出 | 対応する surface を閉じてレコードを消す（exit 0） |
 | `snapshot --interactive` が `js_error` | cmux-browser の案内どおり `get text body` へフォールバックするようシナリオ側で対処 |
@@ -716,8 +816,14 @@ apps/cmux-e2e/
 └── skills/cmux-e2e/
     ├── SKILL.md
     ├── references/guide-ja.md
-    └── scripts/*.sh
+    ├── scripts/*.sh          ← CLI（up / auth / run / down）
+    └── scripts/lib/*.sh      ← locked core とロック実装。CLI から source する
 ```
+
+`scripts/lib/` に置くのは `auth-core.sh`（`auth_*_locked`）と `lock.sh`（取得・解放・stale 回収）、
+`surface.sh`（`tree --all` による解決）である。dev-up が `scripts/` に公開サブコマンド、
+`scripts/lib/` に内部を置く構成と同じにする。ただし dev-up は lib を `bash` で実行するのに対し、
+ここでは locked core をロック保持のまま呼ぶ必要があるため `source` する。
 
 `test/` はスタブ `cmux` を使った分岐テスト（9 章）を置く。`apps/cmux-team-dispatch-task/test/`
 と同じ配置である。turbo には test タスクが無いため、実行は手動または plan の検証手順で行う。
@@ -870,6 +976,57 @@ marketplace.json / plugin.json（claude）/ plugin.json（codex）の 3 箇所�
 | T53 | 異なる git common dir が異なる project key になる（導出ヘルパーをスタブして確認） |
 | T54 | project key のハッシュが 16 桁である |
 
+
+**保存レイアウトの衝突（round 4 指摘 1）**
+
+| # | 確認内容 |
+|---|---------|
+| T55 | `foo` と `foo.lock` を同時に保存しても、一方の lock が他方の state / meta を移動・削除しない |
+| T56 | `auth list` が `foo` と `foo.lock` を別々に列挙する |
+| T57 | `auth list` が `locks/` / `locks-takeover/` / `locks-quarantine/` を列挙しない |
+| T58 | `auth list` が state と meta の片方しか無いディレクトリを列挙しない |
+
+**公開手順（round 4 指摘 2）**
+
+| # | 確認内容 |
+|---|---------|
+| T59 | 既存の非空 `entries/<name>/` に対する上書き保存が成功する |
+| T60 | state の rename 後・meta の rename 前に中断した状態で、読み手が digest 不一致により **load せずに** exit 1 になる |
+| T61 | 一時ファイルが `entries/<name>/` と同じディレクトリに作られる（別ファイルシステムへ退化しない） |
+| T62 | 初回保存（`entries/<name>/` が存在しない）が成功する |
+
+**ロックの公開窓と同時回収（round 4 指摘 3）**
+
+| # | 確認内容 |
+|---|---------|
+| T63 | `mkdir` 直後・`owner.json` 公開前のロックを、別プロセスが stale と判定せず exit 1 になる |
+| T64 | `owner.json` が部分的に書かれた状態を読み手が観測しない（temp + rename） |
+| T65 | 2 つのプロセスが同じ stale ロックを回収しようとしたとき、takeover mutex により一方だけが回収する |
+| T66 | 回収直後に旧 owner の `trap` が走っても、新しい live ロックを削除しない（`generation` 不一致で何もしない） |
+| T67 | 回収が削除ではなく `locks-quarantine/` への `mv` で行われる |
+
+**ロックの再入（round 4 指摘 4）**
+
+| # | 確認内容 |
+|---|---------|
+| T68 | `run --auth`（検証条件あり）がロックを再取得せず完走する |
+| T69 | `run --auth`（検証条件なし）がロックを再取得せず完走する |
+| T70 | どちらの経路でも `state load` がちょうど 1 回だけ呼ばれる |
+| T71 | CLI の `auth check` を単独で実行したときはロックを取得する |
+
+**PID 再利用（round 4 指摘 5）**
+
+| # | 確認内容 |
+|---|---------|
+| T72 | owner の `pid` が別プロセスへ再利用された状況で、stale と判定して回収する |
+| T73 | `pid` と `pid_start` の両方が一致する live owner は回収しない |
+
+**control-plane の権限（round 4 指摘 6）**
+
+| # | 確認内容 |
+|---|---------|
+| T74 | `meta.json` / レジストリ / ロックディレクトリ / `owner.json` がすべて `0700` / `0600` |
+
 ### 実機確認（必須）
 
 ドキュメントとスタブだけで完成としない。実際の `cmux browser` に対して次を通し、
@@ -894,4 +1051,7 @@ marketplace.json / plugin.json（claude）/ plugin.json（codex）の 3 箇所�
 | R5 | `.env.dispatch` を必須にしないため、ポート変数を前提にしたシナリオは dev-up 未導入プロジェクトで動かない | シナリオ側の責任として文書化する。実行基盤は警告を出すのみ |
 | R6 | identity guard ラッパーは CLI 呼び出しを 2 倍にする | `run --no-guard` で無効化できる（使用は `summary.md` に記録される）。R2 の実測結果しだいで既定を見直す |
 | R7 | **identity guard は残余レースを閉じない**。`identify` と本コマンドは別々の CLI 呼び出しであり、その間にサーフェスが閉じられればフォールバックが起きうる | 仕様上の既知の穴として 4.1 に明記した。ロックによる直列化と「実行中に手で閉じない」規約で実務上の発生確率を下げる。cmux が対象解決と操作を 1 RPC で fail-close できるようになれば解消する。上流へ要望として出す価値がある |
+| R9 | ロックの grace period（10 秒）は経験則であり、極端に遅いファイルシステムでは公開が間に合わない可能性がある | 間に合わなかった場合は live ロックが stale として回収される。値を定数として 1 箇所に置き、実装時に見直せるようにする |
+| R10 | `pid_start` の取得は `ps -o lstart=` に依存する。取得できない環境では stale 回収が働かない | 取得できない場合は回収せず手動回復の手順を示す（fail-close）。恒久デッドロックにはなるが、他プロセスのロックを誤って奪うよりは安全である |
+| R11 | `auth save` は世代の切り替えを原子的に行わない。state と meta の rename の間で中断すると不整合な組がディスクに残る | 読み取り側が digest で fail-close するため、不整合な組が有効なものとして使われることはない。残骸は次の `auth save` が上書きする |
 | R8 | `tree --all` の JSON 構造は実測（cmux 0.64.22）に依存する。将来のバージョンで変わりうる | スタブテスト T2 / T5 が構造を前提にしているため、構造が変われば必ずテストが落ちる。無言で壊れることはない |
