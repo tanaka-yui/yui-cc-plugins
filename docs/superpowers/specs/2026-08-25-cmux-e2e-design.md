@@ -97,23 +97,20 @@ surface 解決（レジストリの surface_id を tree --all と突き合わせ
 ├── auth/
 │   ├── entries/<name>/state.json      ← cmux が書く storageState 本体
 │   ├── entries/<name>/meta.json       ← cmux-e2e が書く付帯情報
-│   ├── locks/<name>/owner.json        ← auth ロック
-│   └── locks-quarantine/<name>.<gen>/ ← 回収した stale ロックの隔離先
+│   └── locks/<name>/owner.json        ← auth ロック（診断情報のみ）
 └── surfaces/
     ├── entries/<worktree-key>.json    ← サーフェスレジストリ
-    ├── locks/<worktree-key>/owner.json
-    └── locks-quarantine/<worktree-key>.<gen>/
+    └── locks/<worktree-key>/owner.json
 ```
 
-`entries` / `locks` / `locks-quarantine` は固定名なので、
+`entries` / `locks` は固定名なので、
 `<name>` がどんな値でも別の種別と衝突しない。
 
 **すべてのディレクトリを `0700`、すべてのファイルを `0600`** で作成する。
 `entries/` の state と meta だけでなく、レジストリ・ロックディレクトリ・`owner.json` も対象である。
 
 **`auth list` が列挙する対象**: `auth/entries/<name>/` のうち、`state.json` と `meta.json` の
-**両方が揃っているもの**だけ。作りかけの一時ファイルを含むディレクトリ、`locks/`、
-`locks-quarantine/` は列挙しない。種別が別ディレクトリなので、
+**両方が揃っているもの**だけ。作りかけの一時ファイルを含むディレクトリと `locks/` は列挙しない。種別が別ディレクトリなので、
 そもそも `locks` 配下が `auth/entries` の列挙に混ざることはない。
 
 ## 4.1 サーフェスのライフサイクル
@@ -131,7 +128,7 @@ surface 解決（レジストリの surface_id を tree --all と突き合わせ
 
 `<worktree-key>` は **worktree の canonical realpath の SHA-256 先頭 16 桁**とする。
 レジストリの作成・読み取り・更新・削除と `down --sweep` は `surfaces/entries/` だけを対象とし、
-`locks/` や `locks-quarantine/` を走査しない。
+`locks/` を走査しない。
 basename では同名 worktree が衝突し、session key では slot が変わると以前のレコードを見失う。
 
 短 ref ではなく UUID を主キーにする根拠: surface は pane / workspace / window 間を移動でき、
@@ -475,94 +472,41 @@ core の `auth_load_locked` が「digest 照合 → 不一致なら fail-close �
 
 ### ロックの実体
 
-取得は 2 段階で行う。**`mkdir` が claim、`owner.json` の create-only 公開が確定**である。
+取得は `mkdir locks/<name>/` の 1 段階のみ。**排他の正しさは `mkdir` の atomic 性だけに依存する。**
 
-1. `mkdir locks/<name>/` に成功する（claim）
-2. そのディレクトリに `.owner.json.tmp.<generation>` を**内容を完成させてから**書く
-3. `ln .owner.json.tmp.<generation> owner.json` で公開する。
-   ハードリンクの作成は atomic かつ **create-only** で、`owner.json` が既に存在すれば失敗する
-4. 3 が失敗したら、このロックは自分のものではない。一時ファイルを消して exit 1 とし、
-   critical section に入らない
-5. `owner.json` を読み直し、`generation` が自分のものであることを確認する。
-   違えば exit 1 とし、critical section に入らない
-6. 一時ファイルを消して critical section へ入る
-
-`owner.json` の内容:
+取得できたディレクトリに `owner.json` を書く。これは**診断のための情報であり、
+排他の判定には使わない**。
 
 | キー | 内容 |
 |------|------|
-| `generation` | この取得に固有の ID（UUID）。**公開・解放・回収の判定に使う** |
 | `pid` | 取得したプロセスの PID |
-| `pid_start` | その PID の開始時刻（`ps -o lstart= -p <pid>` の値） |
-| `host` | ホスト名 |
 | `worktree` | worktree の canonical realpath |
 | `started_at` | 取得時刻 |
 
-**create-only で公開する根拠**: `mkdir` の成功から `owner.json` の公開までには必ず窓がある。
-この窓で取得者が停止（SIGSTOP・ホストの suspend・長いスケジューラ遅延）し、その間に
-ロックディレクトリが別の経路で隔離されて新しいディレクトリが同じパスに作られると、
-停止していた取得者が復帰したときに**新しい所有者の `owner.json` を上書きしうる**。
-パス名は再解決されるため、古いディレクトリハンドルを握っているわけではないからである。
-公開を create-only にすれば、この上書きは EEXIST で失敗し、復帰した側は
-critical section に入らずに脱落する。
+**解放**: 正常終了と捕捉可能なシグナル（INT / TERM / HUP）で `trap` により
+ロックディレクトリを消す。
 
-**内容を完成させてからリンクする根拠**: 書きかけの `owner.json` を他プロセスが読む状態を作らない。
-
-**解放**: 正常終了と捕捉可能なシグナル（INT / TERM / HUP）で `trap` により行う。
-解放の前に `owner.json` の `generation` が自分のものと一致することを確認する。
-一致しなければ何もしない。
-
-### stale ロックは自動回収しない
+### ロックが取得できないときは fail-close する
 
 `SIGKILL` や端末の強制終了では `trap` が走らず、ロックが残る。
-**これを自動で回収する経路は設けない。**
+**残ったロックを自動で回収する経路は設けない。**
 
-**自動回収を捨てる根拠**:
+**自動回収を設けない根拠**: 回収には「回収してよいか」の判定と回収そのものを原子的に行う
+必要があるが、portable な bash にその手段が無い。判定と回収の間に別プロセスが取得すれば、
+回収は live なロックを奪う。回収を直列化する別 mutex を導入すると、今度はその mutex を
+保持したまま落ちた場合に誰も回収できなくなり、同じ問題が 1 段深いところで再発する。
 
-- 自動回収には「回収してよいか」の判定と「回収そのもの」を原子的に行う必要があるが、
-  portable な bash でこれを安全に実装する手段が無い。判定と回収の間に別プロセスが
-  取得すれば、回収は live なロックを奪う
-- 回収を直列化する別 mutex を導入すると、今度は**その mutex を保持したまま落ちた場合に
-  誰も回収できなくなる**。mutex を回収する仕組みが要り、同じ問題が 1 段深いところで再発する
-- どちらの失敗も、E2E テストの利便性のために排他保証を壊す取引になる。
-  ロックが守っているのは認証ステートとサーフェスであり、二重所有は
-  「別の worktree のテストが自分の認証を上書きする」形で表面化する
+これはローカルの単一ユーザーが使う E2E テストハーネスであり、crash-safe な回収機構を
+持つ価値より、排他が常に正しいことのほうが重要である。異常終了後の回復は人手で行う。
 
-したがって**回復は明示的な人手の操作に限る**。
+取得に失敗したら即座に exit 1 とし、エラーメッセージに次を含める。
 
-### ロックの状態報告と手動回復
+- 保持者の情報（`owner.json` が読めれば `pid` と `started_at`。読めなければその旨）
+- **削除すべきディレクトリの絶対パス**
+- 復旧手順の 1 行（`rm -rf <絶対パス>`）
 
-取得に失敗したときは、判定して**報告するだけ**にする。回収はしない。
-
-| # | 条件 | 報告 |
-|---|------|------|
-| 1 | `owner.json` が無い | 「取得中、または取得者が異常終了した」。`unlock` の手順を示す |
-| 2 | `owner.json` が読めない / 壊れている | 「ロックが壊れている」。`unlock` の手順を示す |
-| 3 | `host` が自ホストと異なる | 「別ホストが保持している」。生存は判定できない |
-| 4 | `host` が自ホスト、`pid` が生きていて `pid_start` も一致 | 「実行中」。PID を示す |
-| 5 | `host` が自ホスト、`pid` が生きているが `pid_start` が一致しない | 「取得者は終了している（PID 再利用）」。`unlock` の手順を示す |
-| 6 | `host` が自ホスト、`pid` が生きていない | 「取得者は終了している」。`unlock` の手順を示す |
-| 7 | `ps` が使えず `pid_start` を判定できない | 「生存を判定できない」。`unlock` の手順を示す |
-
-いずれも exit 1。4 以外はメッセージに次の形の復旧コマンドを含める。
-
-```
-cmux-e2e unlock <surface|auth> <key> --generation <観測した generation>
-```
-
-**`--generation` を必須にする根拠**: 人間が状態を確認してから実行するまでの間に、
-別プロセスが正常に取得している可能性がある。観測した `generation` と現在の `owner.json` の
-`generation` が一致する場合だけ隔離すれば、その間に取得された live ロックを奪わない。
-
-`owner.json` が無い、または壊れている場合は `--generation` を照合できないので、
-`--force` を追加で要求する。このときに何が起こりうるか（停止していた取得者が復帰した場合の挙動）を
-メッセージに明記する。create-only 公開があるため、復帰した取得者は新しい所有者を上書きせず脱落する。
-
-`unlock` は対象を `locks-quarantine/<key>.<generation または timestamp>/` へ `mv` する。
-削除しないのは、原因調査に使えるようにするためと、削除と再取得の競合を避けるためである。
-
-**`down --sweep` との関係**: `--sweep` は孤児レコードの回収と `locks-quarantine/` の掃除を行う。
-stale ロックの回収は `--sweep` の責務ではない。
+実行中のプロセスがあるかどうかは `owner.json` の `pid` を参考情報として示すだけで、
+それを根拠に自動で何かを行うことはしない。
 
 ## 4.5 シナリオの記法
 
@@ -683,7 +627,7 @@ snapshot / screenshot は、アクセストークンや個人情報を含みう�
 
 ## 5. サブコマンド構成
 
-**決定**: 5 本。`install` と `report` は作らない。
+**決定**: 4 本。`install` と `report` は作らない。
 
 | サブコマンド | 形 | 役割 |
 |-------------|-----|------|
@@ -694,8 +638,7 @@ snapshot / screenshot は、アクセストークンや個人情報を含みう�
 | `auth list` | `auth list` | 引数なし。`<project>` 配下の name を列挙 |
 | `auth delete` | `auth delete <name>` | state と meta を削除 |
 | `run` | `run <scenario> [--auth <name>] [--allow-js-errors] [--no-guard]` | ロックを取り、サーフェスを解決し、認証を通し、シナリオを実行して結果を集約する |
-| `down` | `down [--sweep]` | サーフェスを破棄しレコードを消す。`--sweep` は worktree が消えた孤児と `locks-quarantine/` を掃除する |
-| `unlock` | `unlock <surface\|auth> <key> --generation <gen> [--force]` | 異常終了で残ったロックを手動で隔離する。自動回収は行わないため、これが唯一の回復経路 |
+| `down` | `down [--sweep]` | サーフェスを破棄しレコードを消す。`--sweep` は worktree が消えた孤児を回収する |
 
 **排他制御**: どのサブコマンドがどのロックを取るかは 4.4 の表で定める。
 取得順は常に worktree → auth である。ロックは再入できないため、`run --auth` は
@@ -787,10 +730,6 @@ gitignore へ追加すべき行（消費側プロジェクトの責任として�
 | 状況 | 挙動 |
 |------|------|
 | cmux CLI が見つからない | exit 1。cmux 内で実行しているか確認するよう案内 |
-| worktree ロックを取得できない（生きた owner あり） | exit 1。実行中である旨と owner の PID を示す |
-| auth ロックを取得できない（生きた owner あり） | exit 1。別 worktree が同じ auth を操作中である旨を示す |
-| ロックの owner が別ホスト | exit 1。生存を判定できないため回収せず、手動で消す手順を示す |
-| ロックの owner が自ホストで死んでいる | stale として回収し、取得し直す（exit 0 で続行） |
 | レコードが無い（`up` 未実行）で `run` | exit 1。`up` を先に実行するよう案内 |
 | `surface_id` が `tree --all` に無い（状態 B）で `up` | 作り直して記録を更新（exit 0） |
 | `surface_id` が `tree --all` に無い（状態 B）で `run` | exit 1。`up` を促す |
@@ -817,14 +756,7 @@ gitignore へ追加すべき行（消費側プロジェクトの責任として�
 | シナリオは成功したが JS エラーを検出 | exit 1。JS エラーが理由であることを明示 |
 | 証跡の収集に失敗 | 単独なら exit 1。シナリオ失敗や JS エラーが先に成立していればそちらを優先し、警告に残す |
 | `summary.md` の書き込みに失敗 | 単独なら exit 1。先に成立した失敗があればそちらを優先し、警告に残す |
-| ロックディレクトリはあるが `owner.json` が無い | exit 1。取得中または異常終了と報告し、`unlock` の手順を示す（自動回収しない） |
-| ロックの `owner.json` が壊れている | exit 1。`unlock --force` の手順を示す |
-| ロックの owner の `pid` は生きているが `pid_start` が一致しない | exit 1。PID 再利用と報告し、`unlock` の手順を示す |
-| `ps` が使えず `pid_start` を判定できない | exit 1。生存を判定できないと報告し、`unlock` の手順を示す |
-| `owner.json` の create-only 公開が EEXIST で失敗 | exit 1。critical section に入らず脱落する |
-| 公開後の読み直しで `generation` が自分のものでない | exit 1。critical section に入らず脱落する |
-| 解放時に `owner.json` の `generation` が自分のものと違う | 何もしない |
-| `unlock` の `--generation` が現在の `owner.json` と一致しない | exit 1。別プロセスが取得済みである旨を伝える |
+| ロックを取得できない（保持者あり、または異常終了の残骸） | exit 1。`owner.json` が読めれば `pid` と `started_at` を示し、削除すべきディレクトリの絶対パスと `rm -rf <絶対パス>` を案内する。**自動回収はしない** |
 | `auth save` の rename が state と meta の間で中断した | 次の読み手が digest 不一致で exit 1。**load はしない** |
 | `down` でレコードが無い / surface が既に無い | exit 0（冪等） |
 | `down --sweep` で worktree が消えた孤児を検出 | 対応する surface を閉じてレコードを消す（exit 0） |
@@ -935,134 +867,127 @@ marketplace.json / plugin.json（claude）/ plugin.json（codex）の 3 箇所�
 | T17 | `--check-url` と `--check-selector` の片方だけなら exit 2 |
 | T18 | auth 名が `..` / `/` / 空なら exit 2。`oauth.v1` は通る |
 | T19 | 保存された state のパーミッションが `0600`、ディレクトリが `0700` |
-| T22 | `auth save` はタブが 2 つ以上なら exit 1 |
-| T23 | 複数タブを復元する state を `--auth` で load したとき、タブ確認が exit 1 になる |
+| T20 | `auth save` はタブが 2 つ以上なら exit 1 |
+| T21 | 複数タブを復元する state を `--auth` で load したとき、タブ確認が exit 1 になる |
 
 **パスの保護**
 
 | # | 確認内容 |
 |---|---------|
-| T24 | project key が `..` / 空 / regex 違反なら exit 1 |
-| T25 | `auth/` と `surfaces/` の両方で、経路上の symlink を拒否する |
-| T26 | 異なる worktree（realpath が違う）が別の `<worktree-key>` になり、同名 basename でも衝突しない |
-| T27 | 別クローンのリポジトリが別の project key になり、`auth list` に互いの name が出ない |
+| T22 | project key が `..` / 空 / regex 違反なら exit 1 |
+| T23 | `auth/` と `surfaces/` の両方で、経路上の symlink を拒否する |
+| T24 | 異なる worktree（realpath が違う）が別の `<worktree-key>` になり、同名 basename でも衝突しない |
+| T25 | 別クローンのリポジトリが別の project key になり、`auth list` に互いの name が出ない |
 
 **合否判定**
 
 | # | 確認内容 |
 |---|---------|
-| T28 | シナリオ失敗と JS エラー検出が同時に起きたとき、シナリオの終了コードが優先される |
-| T29 | `--allow-js-errors` で JS エラーが合否に影響しない |
-| T30 | 証跡収集の失敗がシナリオの合否を塗り替えない |
-| T31 | `summary.md` の書き込み失敗が単独で起きたら exit 1、先行する失敗があればそちらを優先する |
-| T32 | 開始時（state load 後）にタブが 2 つ以上あれば exit 1 |
-| T33 | どの経路からも `cmux browser ... import` を呼ばない（スタブが呼び出しを記録して検証） |
+| T26 | シナリオ失敗と JS エラー検出が同時に起きたとき、シナリオの終了コードが優先される |
+| T27 | `--allow-js-errors` で JS エラーが合否に影響しない |
+| T28 | 証跡収集の失敗がシナリオの合否を塗り替えない |
+| T29 | `summary.md` の書き込み失敗が単独で起きたら exit 1、先行する失敗があればそちらを優先する |
+| T30 | 開始時（state load 後）にタブが 2 つ以上あれば exit 1 |
+| T31 | どの経路からも `cmux browser ... import` を呼ばない（スタブが呼び出しを記録して検証） |
 
 
 **排他制御とロック回復**
 
 | # | 確認内容 |
 |---|---------|
-| T34 | `up` を 2 本同時に起動すると 2 本目が exit 1 になり、サーフェスが 2 つ作られない |
-| T35 | worktree A の `run --auth foo` と worktree B の `auth save foo` が同時に走らない |
-| T36 | worktree A の `run --auth foo` 中に worktree B の `auth delete foo` が待たされる |
-| T37 | ロック取得順が常に worktree → auth である（逆順の経路が存在しない） |
-| T38 | `run` を SIGKILL で落とした後、次の `run` が stale ロックを回収して続行する |
-| T39 | 生きた owner のロックは回収されない |
-| T40 | 別ホストの owner のロックは回収せず exit 1 になる |
-| T41 | 壊れた `owner.json` を stale として回収する |
+| T32 | `up` を 2 本同時に起動すると 2 本目が exit 1 になり、サーフェスが 2 つ作られない |
+| T33 | worktree A の `run --auth foo` と worktree B の `auth save foo` が同時に走らない |
+| T34 | worktree A の `run --auth foo` 中に worktree B の `auth delete foo` が待たされる |
+| T35 | ロック取得順が常に worktree → auth である（逆順の経路が存在しない） |
+| T36 | `run` を SIGKILL で落とした後、次の `run` が stale ロックを回収して続行する |
+| T37 | 生きた owner のロックは回収されない |
+| T38 | 別ホストの owner のロックは回収せず exit 1 になる |
+| T39 | 壊れた `owner.json` を stale として回収する |
 
 **auth の保存レイアウトと世代整合**
 
 | # | 確認内容 |
 |---|---------|
-| T42 | `foo` と `foo.meta` を同時に保存しても互いの state / meta を壊さない |
-| T43 | `auth delete foo` が `foo.meta` を消さない |
-| T44 | `auth list` が `foo` と `foo.meta` を別々に列挙する |
-| T45 | `state.json` を改変すると digest 不一致になり、**load されずに** exit 1 になる |
-| T46 | 正常経路での `state load` がちょうど 1 回だけ呼ばれる（スタブが呼び出し回数を記録） |
-| T47 | 同一秒内に連続して `auth save` しても、digest により別世代を取り違えない |
-| T48 | `entries/<name>/` の rename が中断して state と meta の世代が食い違っても、読み手が digest 不一致で **load せずに** exit 1 になる |
+| T40 | `foo` と `foo.meta` を同時に保存しても互いの state / meta を壊さない |
+| T41 | `auth delete foo` が `foo.meta` を消さない |
+| T42 | `auth list` が `foo` と `foo.meta` を別々に列挙する |
+| T43 | `state.json` を改変すると digest 不一致になり、**load されずに** exit 1 になる |
+| T44 | 正常経路での `state load` がちょうど 1 回だけ呼ばれる（スタブが呼び出し回数を記録） |
+| T45 | 同一秒内に連続して `auth save` しても、digest により別世代を取り違えない |
 
 **UUID と現在の ref**
 
 | # | 確認内容 |
 |---|---------|
-| T49 | UUID が同じで `ref` が変わったとき、`run` と `down` が**新しい ref** を使う |
-| T50 | レジストリの `surface_ref` キャッシュが解決のたびに更新される |
+| T46 | UUID が同じで `ref` が変わったとき、`run` と `down` が**新しい ref** を使う |
+| T47 | レジストリの `surface_ref` キャッシュが解決のたびに更新される |
 
 **成果物の権限**
 
 | # | 確認内容 |
 |---|---------|
-| T51 | 結果ディレクトリが `0700`、成果物ファイルが `0600` で作られる |
-| T52 | `down` が `.cmux-e2e-results/` を消さない |
+| T48 | 結果ディレクトリが `0700`、成果物ファイルが `0600` で作られる |
+| T49 | `down` が `.cmux-e2e-results/` を消さない |
 
 **project key**
 
 | # | 確認内容 |
 |---|---------|
-| T53 | 異なる git common dir が異なる project key になる（導出ヘルパーをスタブして確認） |
-| T54 | project key のハッシュが 16 桁である |
+| T50 | 異なる git common dir が異なる project key になる（導出ヘルパーをスタブして確認） |
+| T51 | project key のハッシュが 16 桁である |
 
 
 **保存レイアウトの衝突（round 4 指摘 1）**
 
 | # | 確認内容 |
 |---|---------|
-| T55 | `foo` と `foo.lock` を同時に保存しても、一方の lock が他方の state / meta を移動・削除しない |
-| T56 | `auth list` が `foo` と `foo.lock` を別々に列挙する |
-| T57 | `auth list` が `locks/` / `locks-quarantine/` を列挙しない |
-| T58 | `auth list` が state と meta の片方しか無いディレクトリを列挙しない |
+| T52 | `foo` と `foo.lock` を同時に保存しても、一方の lock が他方の state / meta を移動・削除しない |
+| T53 | `auth list` が `foo` と `foo.lock` を別々に列挙する |
+| T54 | `auth list` が `locks/` を列挙しない |
+| T55 | `auth list` が state と meta の片方しか無いディレクトリを列挙しない |
 
 **公開手順（round 4 指摘 2）**
 
 | # | 確認内容 |
 |---|---------|
-| T59 | 既存の非空 `entries/<name>/` に対する上書き保存が成功する |
-| T60 | state の rename 後・meta の rename 前に中断した状態で、読み手が digest 不一致により **load せずに** exit 1 になる |
-| T61 | 一時ファイルが `entries/<name>/` と同じディレクトリに作られる（別ファイルシステムへ退化しない） |
-| T62 | 初回保存（`entries/<name>/` が存在しない）が成功する |
+| T56 | 既存の非空 `entries/<name>/` に対する上書き保存が成功する |
+| T57 | state の rename 後・meta の rename 前に中断した状態で、読み手が digest 不一致により **load せずに** exit 1 になる |
+| T58 | 一時ファイルが `entries/<name>/` と同じディレクトリに作られる（別ファイルシステムへ退化しない） |
+| T59 | 初回保存（`entries/<name>/` が存在しない）が成功する |
 
-**ロックの公開と回復（round 4 指摘 3 / round 5 ブロッカー 1・2）**
+**ロック**
 
 | # | 確認内容 |
 |---|---------|
-| T63 | `mkdir` 直後・`owner.json` 公開前のロックに対し、別プロセスが**回収せず** exit 1 になる |
-| T64 | `owner.json` が部分的に書かれた状態を読み手が観測しない（内容を完成させてから `ln` する） |
-| T65 | **取得者を `mkdir` 後に停止させ、その間に別プロセスが `unlock --force` で隔離し新たに取得した後、停止していた取得者を再開しても、create-only 公開が EEXIST で失敗して critical section に入らない** |
-| T66 | 公開後の読み直しで `generation` が自分のものでなければ critical section に入らない |
-| T67 | 解放時に `generation` が一致しなければ何もしない |
-| T68 | 取得失敗時に自動回収が**一切行われない**（`locks/` が勝手に消えない・移動しない） |
-| T69 | `unlock --generation` が一致しなければ exit 1 になり、隔離しない |
-| T70 | `unlock` が削除ではなく `locks-quarantine/` への `mv` で行われる |
-| T71 | `unlock` 後に同じキーを正常に取得できる |
-| T72 | 取得失敗の 7 分岐（owner 無し / 壊れ / 別ホスト / live / PID 再利用 / 死亡 / `ps` 不可）がそれぞれ正しい報告を出す |
+| T60 | ロックが残っているとき、取得側が exit 1 になり、削除すべき絶対パスを案内する |
+| T61 | 取得失敗時に `locks/` が自動で消えたり移動したりしない |
+| T62 | ロックディレクトリを手で消した後、同じキーを正常に取得できる |
+| T63 | `trap` による解放後にロックディレクトリが残らない |
 
 **ロックの再入（round 4 指摘 4）**
 
 | # | 確認内容 |
 |---|---------|
-| T73 | `run --auth`（検証条件あり）がロックを再取得せず完走する |
-| T74 | `run --auth`（検証条件なし）がロックを再取得せず完走する |
-| T75 | どちらの経路でも `state load` がちょうど 1 回だけ呼ばれる |
-| T76 | CLI の `auth check` を単独で実行したときはロックを取得する |
+| T64 | `run --auth`（検証条件あり）がロックを再取得せず完走する |
+| T65 | `run --auth`（検証条件なし）がロックを再取得せず完走する |
+| T66 | どちらの経路でも `state load` がちょうど 1 回だけ呼ばれる |
+| T67 | CLI の `auth check` を単独で実行したときはロックを取得する |
 
 **control-plane の権限とパス（round 4 指摘 6 / round 5 指摘 4）**
 
 | # | 確認内容 |
 |---|---------|
-| T77 | `meta.json` / レジストリ / ロックディレクトリ / `owner.json` がすべて `0700` / `0600` |
-| T78 | レジストリの作成・読み取り・更新・削除が `surfaces/entries/` だけを対象にする |
-| T79 | `down --sweep` が `surfaces/entries/` と `locks-quarantine/` だけを触り、`locks/` を消さない |
-| T80 | `auth delete` が `auth/entries/<name>/` だけを消し、`auth/locks/<name>/` を消さない |
+| T68 | `meta.json` / レジストリ / ロックディレクトリ / `owner.json` がすべて `0700` / `0600` |
+| T69 | レジストリの作成・読み取り・更新・削除が `surfaces/entries/` だけを対象にする |
+| T70 | `down --sweep` が `surfaces/entries/` だけを触り、`locks/` を消さない |
+| T71 | `auth delete` が `auth/entries/<name>/` だけを消し、`auth/locks/<name>/` を消さない |
 
 **meta 欠落の fail-close（round 5 指摘 5）**
 
 | # | 確認内容 |
 |---|---------|
-| T81 | 初回保存が state の rename 直後に中断し `meta.json` が存在しない状態で、読み手が **load せずに** exit 1 になる |
-| T82 | `meta.json` が壊れている状態でも **load せずに** exit 1 になる |
+| T72 | 初回保存が state の rename 直後に中断し `meta.json` が存在しない状態で、読み手が **load せずに** exit 1 になる |
+| T73 | `meta.json` が壊れている状態でも **load せずに** exit 1 になる |
 
 ### 実機確認（必須）
 
@@ -1088,7 +1013,6 @@ marketplace.json / plugin.json（claude）/ plugin.json（codex）の 3 箇所�
 | R5 | `.env.dispatch` を必須にしないため、ポート変数を前提にしたシナリオは dev-up 未導入プロジェクトで動かない | シナリオ側の責任として文書化する。実行基盤は警告を出すのみ |
 | R6 | identity guard ラッパーは CLI 呼び出しを 2 倍にする | `run --no-guard` で無効化できる（使用は `summary.md` に記録される）。R2 の実測結果しだいで既定を見直す |
 | R7 | **identity guard は残余レースを閉じない**。`identify` と本コマンドは別々の CLI 呼び出しであり、その間にサーフェスが閉じられればフォールバックが起きうる | 仕様上の既知の穴として 4.1 に明記した。ロックによる直列化と「実行中に手で閉じない」規約で実務上の発生確率を下げる。cmux が対象解決と操作を 1 RPC で fail-close できるようになれば解消する。上流へ要望として出す価値がある |
-| R9 | **異常終了（SIGKILL・端末の強制終了）で残ったロックは自動回復しない**。人手で `unlock` を実行するまで、その worktree または auth は使えない | 意図した取引である。portable な bash で自動回収を安全に行う手段が無く、回収を直列化する mutex を足すと今度はその mutex が孤児化する。排他保証を壊すより、1 コマンドの手動回復を要求するほうが安全と判断した。失敗時のメッセージに復旧コマンドを必ず含める |
-| R10 | `pid_start` の取得は `ps -o lstart=` に依存する | 取得できない場合は「生存を判定できない」と報告して `unlock` を促す（fail-close）。判定できないことを live とも dead とも決めつけない |
+| R9 | **異常終了（SIGKILL・端末の強制終了）で残ったロックは自動回復しない**。人手でディレクトリを消すまで、その worktree または auth は使えない | 意図した取引である。portable な bash で自動回収を安全に行う手段が無く、回収を直列化する mutex を足すと今度はその mutex が孤児化する。ローカル単一ユーザー向けのテストハーネスとして、排他が常に正しいことを優先した。失敗時のメッセージに削除すべき絶対パスと `rm -rf` を必ず含める |
 | R11 | `auth save` は世代の切り替えを原子的に行わない。state と meta の rename の間で中断すると不整合な組（meta 欠落を含む）がディスクに残る | 読み取り側が digest で fail-close するため、不整合な組が有効なものとして使われることはない。残骸は次の `auth save` が上書きする |
 | R8 | `tree --all` の JSON 構造は実測（cmux 0.64.22）に依存する。将来のバージョンで変わりうる | スタブテスト T2 / T5 が構造を前提にしているため、構造が変われば必ずテストが落ちる。無言で壊れることはない |
