@@ -72,7 +72,7 @@ set -uo pipefail
 source "$LIBDIR/common.sh"; source "$LIBDIR/lock.sh"
 cmux_e2e_install_traps
 cmux_e2e_lock_acquire "$MINE" || exit 1
-sleep 30
+sleep 2
 EOS
 bash "$(h_tmp)/child.sh" & cpid=$!
 sleep 1; kill -TERM "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null
