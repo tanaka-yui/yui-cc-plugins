@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -uo pipefail
+[[ -n "${CMUX_STUB_LOG:-}" ]] && printf '%s\n' "$*" >> "$CMUX_STUB_LOG"
+die() { echo "stub: unexpected invocation: $*" >&2; exit 64; }
+args=("$@"); n=${#args[@]}; i=0
+while [[ $i -lt $n ]]; do
+  case "${args[$i]}" in
+    --json) i=$((i + 1)) ;;
+    --id-format) [[ $((i + 1)) -lt $n ]] || die "$@"; i=$((i + 2)) ;;
+    *) break ;;
+  esac
+done
+sub="${args[$i]:-}"; i=$((i + 1)); rest=("${args[@]:$i}")
+case "$sub" in
+  tree) [[ ${#rest[@]} -eq 1 && "${rest[0]}" == --all ]] || die "$@"; [[ "${CMUX_STUB_TREE_RC:-0}" == 0 ]] || exit "$CMUX_STUB_TREE_RC"; cat "$CMUX_STUB_TREE" ;;
+  close-surface) [[ ${#rest[@]} -eq 2 && "${rest[0]}" == --surface ]] || die "$@"; exit "${CMUX_STUB_CLOSE_RC:-0}" ;;
+  browser)
+    if [[ "${rest[0]:-}" == new ]]; then
+      [[ ${#rest[@]} -eq 1 || (${#rest[@]} -eq 3 && "${rest[1]}" == --profile) ]] || die "$@"
+      printf '{"surface_ref":"%s"}\n' "${CMUX_STUB_NEW_REF:-surface:5}"; exit 0
+    fi
+    [[ "${rest[0]:-}" == --surface && -n "${rest[1]:-}" ]] || die "$@"
+    ref="${rest[1]}"; b=("${rest[@]:2}")
+    case "${b[0]:-}" in
+      identify) [[ ${#b[@]} -eq 1 ]] || die "$@"; printf '{"surface_ref":"%s"}\n' "${CMUX_STUB_IDENTIFY_REF:-$ref}" ;;
+      tab) [[ ${#b[@]} -eq 2 && "${b[1]}" == list ]] || die "$@"; printf '{"tabs":[{}]}\n' ;;
+      *) die "$@" ;;
+    esac ;;
+  *) die "$@" ;;
+esac
