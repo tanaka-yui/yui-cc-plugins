@@ -50,3 +50,5 @@ settings.local.json
 .cmux-team-dispatch-task-run-*.sh
 .cmux-e2e-scenarios/
 .cmux-e2e-results/
+.codex/hooks.json
+.codex/hooks.json.bak.*
