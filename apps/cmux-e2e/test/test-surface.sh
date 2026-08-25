@@ -19,5 +19,10 @@ cmux_e2e_surface_resolve >/dev/null 2>&1; h_check 'state C' 13 $?
 unset CMUX_STUB_IDENTIFY_REF
 got=$(cmux_e2e_surface_resolve); h_check 'resolve current ref' surface:5 "$got"
 h_check 'registry updated' surface:5 "$(jq -r .surface_ref "$reg")"
+h_tree UUID-CREATED surface:8 browser
+created=$(CMUX_STUB_NEW_REF=surface:8 cmux_e2e_surface_create)
+h_check 'created surface ref' surface:8 "$created"
+expected_git_dir=$(cmux_e2e_worktree_git_dir)
+h_check 'created record persists worktree git dir' "$expected_git_dir" "$(jq -r .git_dir "$reg")"
 h_assert_no_import
 exit "$(h_fail_count)"

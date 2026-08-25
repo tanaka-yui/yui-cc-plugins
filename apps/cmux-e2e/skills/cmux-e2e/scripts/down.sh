@@ -5,6 +5,21 @@ source "$SCRIPT_DIR/lib/common.sh"; source "$SCRIPT_DIR/lib/lock.sh"; source "$S
 cmux_e2e_harden_umask
 [[ $# -eq 0 || ($# -eq 1 && "$1" == --sweep) ]] || { echo 'usage: down.sh [--sweep]' >&2; exit 2; }
 sweep=0; [[ $# -eq 1 ]] && sweep=1
+cmux_e2e_git_dir_is_live() {
+  local expected="$1" line worktree actual
+  [[ "$expected" == /* ]] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      'worktree '*)
+        worktree="${line#worktree }"
+        actual=$(git -C "$worktree" rev-parse --git-dir 2>/dev/null) || continue
+        case "$actual" in /*) ;; *) actual=$(cd "$worktree/$actual" && pwd -P) || continue ;; esac
+        [[ "$actual" == "$expected" ]] && return 0
+        ;;
+    esac
+  done < <(git worktree list --porcelain)
+  return 1
+}
 cmux_e2e_install_traps; lock=$(cmux_e2e_surface_lock_dir) || exit 1; cmux_e2e_lock_acquire "$lock" || exit 1
 if [[ "$sweep" -eq 1 ]]; then
   entries=$(dirname "$(cmux_e2e_surface_registry_path)") || exit 1
@@ -14,6 +29,9 @@ if [[ "$sweep" -eq 1 ]]; then
     worktree=$("$CMUX_E2E_JQ" -r '.worktree // empty' "$stale") || { echo "WARN: skipping corrupt registry: $stale" >&2; continue; }
     [[ -n "$worktree" ]] || { echo "WARN: skipping registry without worktree: $stale" >&2; continue; }
     [[ -e "$worktree" ]] && continue
+    git_dir=$("$CMUX_E2E_JQ" -r '.git_dir // empty' "$stale") || { echo "WARN: skipping corrupt registry: $stale" >&2; continue; }
+    [[ -n "$git_dir" ]] || { echo "WARN: skipping registry without git_dir: $stale" >&2; continue; }
+    cmux_e2e_git_dir_is_live "$git_dir" && { echo "WARN: skipping moved live worktree: $worktree" >&2; continue; }
     key=$(basename "$stale" .json)
     sibling="$(dirname "$entries")/locks/$key"
     cmux_e2e_lock_acquire "$sibling" 2>/dev/null || { echo "WARN: skipping locked stale worktree: $worktree" >&2; continue; }

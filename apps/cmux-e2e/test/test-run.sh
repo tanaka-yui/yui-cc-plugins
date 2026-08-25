@@ -8,6 +8,16 @@ h_setup
 trap h_teardown EXIT
 source "$SCRIPTS/lib/common.sh"
 source "$SCRIPTS/lib/surface.sh"
+run_with_timeout() {
+  "$@" &
+  local pid=$! rc
+  ( sleep 10; kill -TERM "$pid" 2>/dev/null ) &
+  local watchdog=$!
+  wait "$pid"; rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  return "$rc"
+}
 
 reg=$(cmux_e2e_surface_registry_path)
 cmux_e2e_mkdir_secure "$(dirname "$reg")"
@@ -19,7 +29,7 @@ cat > .cmux-e2e-scenarios/stdin.sh <<'EOF'
 #!/usr/bin/env bash
 read ignored
 EOF
-/usr/bin/script -q /dev/null bash "$SCRIPTS/run.sh" stdin </dev/null >/dev/null 2>&1
+run_with_timeout /usr/bin/script -q /dev/null bash "$SCRIPTS/run.sh" stdin </dev/null >/dev/null 2>&1
 h_check 'stdin-reading scenario receives EOF instead of hanging' 1 $?
 
 cat > .cmux-e2e-scenarios/wrapper-env.sh <<'EOF'

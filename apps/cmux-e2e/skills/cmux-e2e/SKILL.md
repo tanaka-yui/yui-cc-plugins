@@ -26,6 +26,17 @@ Use a real visible browser surface for worktree-scoped E2E scenarios.
 | `run <scenario> [--auth <name>] [--allow-js-errors] [--no-guard]` | Run a scenario and collect artifacts. |
 | `down [--sweep]` | Close the recorded browser surface. |
 
+## How to invoke
+
+The scripts are not installed on `PATH`. Invoke them from this plugin's directory, for example:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/up.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/auth.sh" save admin --check-url "http://localhost:5173/home" --check-selector "#avatar"
+bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/run.sh" login-flow --auth admin
+bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/down.sh"
+```
+
 ## Safety
 
 Always use `--surface <ref>` for browser operations. The surface identity is resolved by UUID,
@@ -37,6 +48,24 @@ while a scenario is running.
 Scenarios live in `.cmux-e2e-scenarios/<name>.sh` and call `cmux-e2e-browser`. Artifacts are
 written to `.cmux-e2e-results/<name>/`. The wrapper checks identity before each browser command.
 
+## Scenario file template
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+cmux-e2e-browser goto "http://localhost:${VITE_PORT}/login"
+cmux-e2e-browser wait --load-state complete --timeout-ms 10000
+cmux-e2e-browser snapshot --interactive > "$RESULTS_DIR/01-login.txt"
+```
+
+The scenario receives `CMUX_E2E_SURFACE`, `WORKTREE_ROOT`, and `RESULTS_DIR`.
+
+## CLI invocation rules
+
+Use `--surface <ref>` and named flags such as `--selector`; use `--timeout-ms`, not `--timeout`.
+Branch on cmux exit codes rather than parsing stderr. Never invoke browser `import`.
+
 ## Related skills
 
 Read the `cmux-browser` skill for browser-operation mechanics and authentication steps. Use
@@ -46,6 +75,11 @@ Read the `cmux-browser` skill for browser-operation mechanics and authentication
 
 When `.env.dispatch` exists, it is parsed as data rather than sourced. Only
 `COMPOSE_PROJECT_NAME`, `PROJECT`, `SLOT`, and `*_PORT` keys are supplied to the scenario.
+
+## Authentication
+
+Use `up`, complete the login in the visible surface, then run `auth save <name>` with both
+verification flags. Pass `--auth <name>` to `run`; `auth check` verifies the digest and condition.
 
 ## Artifacts
 

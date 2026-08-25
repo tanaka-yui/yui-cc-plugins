@@ -24,6 +24,14 @@ cmux_e2e_worktree_key() {
   printf '%s' "$key"
 }
 
+cmux_e2e_worktree_git_dir() {
+  local root git_dir
+  root=$(git rev-parse --show-toplevel) || return 1
+  git_dir=$(git -C "$root" rev-parse --git-dir) || return 1
+  case "$git_dir" in /*) ;; *) git_dir=$(cd "$root/$git_dir" && pwd -P) || return 1 ;; esac
+  printf '%s' "$git_dir"
+}
+
 cmux_e2e_project_key() {
   local root common main key
   root=$(git rev-parse --show-toplevel) || return 1

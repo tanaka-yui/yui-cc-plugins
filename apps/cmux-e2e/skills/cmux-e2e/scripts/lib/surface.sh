@@ -14,14 +14,15 @@ cmux_e2e_surface_resolve() {
   tmp="$reg.tmp.$$"; "$CMUX_E2E_JQ" --arg r "$ref" '.surface_ref=$r' "$reg" > "$tmp" || return 20; cmux_e2e_install_file "$tmp" "$reg" || return 20; printf '%s' "$ref"
 }
 cmux_e2e_surface_create() {
-  local profile="${1:-}" out ref tree id reg tmp
+  local profile="${1:-}" out ref tree id reg tmp git_dir
   if [[ -n "$profile" ]]; then out=$("$CMUX_BIN" --json browser new --profile "$profile") || return 20; else out=$("$CMUX_BIN" --json browser new) || return 20; fi
   ref=$("$CMUX_E2E_JQ" -r '.surface_ref // empty' <<< "$out") || return 20; [[ -n "$ref" ]] || return 20
   tree=$("$CMUX_BIN" --json --id-format both tree --all) || return 20
   id=$("$CMUX_E2E_JQ" -r --arg ref "$ref" '[.windows[]?.workspaces[]?.panes[]?.surfaces[]? | select(.ref==$ref)] | first.id // empty' <<< "$tree") || return 20; [[ -n "$id" ]] || return 20
   reg=$(cmux_e2e_surface_registry_path) || return 20; cmux_e2e_mkdir_secure "$(dirname "$reg")" || return 20
+  git_dir=$(cmux_e2e_worktree_git_dir) || return 20
   tmp="$reg.tmp.$$"
-  "$CMUX_E2E_JQ" -n --arg id "$id" --arg ref "$ref" --arg wt "$(git rev-parse --show-toplevel)" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{surface_id:$id,surface_ref:$ref,worktree:$wt,created_at:$at}' > "$tmp" || return 20
+  "$CMUX_E2E_JQ" -n --arg id "$id" --arg ref "$ref" --arg wt "$(git rev-parse --show-toplevel)" --arg gd "$git_dir" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{surface_id:$id,surface_ref:$ref,worktree:$wt,git_dir:$gd,created_at:$at}' > "$tmp" || return 20
   cmux_e2e_install_file "$tmp" "$reg" || return 20; printf '%s' "$ref"
 }
 cmux_e2e_surface_close() { "$CMUX_BIN" close-surface --surface "$1" >/dev/null 2>&1; }
