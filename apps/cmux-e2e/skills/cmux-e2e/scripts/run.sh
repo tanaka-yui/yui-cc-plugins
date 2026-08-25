@@ -20,18 +20,28 @@ cmux_e2e_secure_artifact "$(dirname "$out")/summary.md" "$root" || { echo "ERROR
 if [[ -e "$out" && ! -d "$out" || -L "$out" ]]; then echo "ERROR: unsafe results directory: $out" >&2; exit 1; fi
 mkdir -p "$out" && chmod 700 "$out" || exit 1
 wrap=$(mktemp -d); trap 'rm -rf -- "$wrap"; cmux_e2e_lock_release_all' EXIT
-cat > "$wrap/cmux-e2e-browser" <<EOF
+cat > "$wrap/cmux-e2e-browser" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
-if [[ '$guard' == 1 ]]; then
-  got=\$("$CMUX_BIN" --json browser --surface '$ref' identify | "$CMUX_E2E_JQ" -r '.surface_ref // empty') || exit 1
-  [[ "\$got" == '$ref' ]] || exit 1
+if [[ "${CMUX_E2E_GUARD:-1}" == 1 ]]; then
+  got=$("$CMUX_E2E_WRAPPER_BIN" --json browser --surface "$CMUX_E2E_WRAPPER_REF" identify | "$CMUX_E2E_WRAPPER_JQ" -r '.surface_ref // empty') || exit 1
+  [[ "$got" == "$CMUX_E2E_WRAPPER_REF" ]] || exit 1
 fi
-exec "$CMUX_BIN" browser --surface "$ref" "\$@"
+exec "$CMUX_E2E_WRAPPER_BIN" browser --surface "$CMUX_E2E_WRAPPER_REF" "$@"
 EOF
 chmod 755 "$wrap/cmux-e2e-browser"
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-PATH="$wrap:$PATH" RESULTS_DIR="$out" WORKTREE_ROOT="$root" CMUX_E2E_SURFACE="$ref" bash "$file"; rc=$?
+scenario_env=()
+env_file="$root/.env.dispatch"
+if [[ -e "$env_file" || -L "$env_file" ]]; then
+  cmux_e2e_secure_artifact "$env_file" "$root" && [[ -f "$env_file" && ! -L "$env_file" ]] || { echo 'ERROR: unsafe .env.dispatch' >&2; exit 1; }
+  while IFS= read -r line; do
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    case "$key" in COMPOSE_PROJECT_NAME|SLOT|PROJECT|*_PORT) scenario_env+=("$key=$value") ;; *) echo "WARN: ignoring $key from .env.dispatch" >&2 ;; esac
+  done < "$env_file"
+fi
+env -i "HOME=$HOME" "USER=${USER:-}" "TERM=${TERM:-dumb}" "PATH=$wrap:$PATH" "RESULTS_DIR=$out" "WORKTREE_ROOT=$root" "CMUX_E2E_SURFACE=$ref" "CMUX_E2E_GUARD=$guard" "CMUX_E2E_WRAPPER_REF=$ref" "CMUX_E2E_WRAPPER_BIN=$CMUX_BIN" "CMUX_E2E_WRAPPER_JQ=$CMUX_E2E_JQ" ${scenario_env[@]+"${scenario_env[@]}"} bash "$file"; rc=$?
 collect=0
 "$CMUX_BIN" browser --surface "$ref" console list > "$out/console.log" 2>/dev/null || collect=1
 "$CMUX_BIN" browser --surface "$ref" errors list > "$out/errors.log" 2>/dev/null || collect=1

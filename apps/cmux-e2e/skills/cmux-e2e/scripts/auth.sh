@@ -2,6 +2,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"; source "$SCRIPT_DIR/lib/lock.sh"; source "$SCRIPT_DIR/lib/surface.sh"; source "$SCRIPT_DIR/lib/auth-core.sh"
+cmux_e2e_harden_umask
 action="${1:-}"; shift || true
 case "$action" in save|load|check|delete) name="${1:-}"; [[ -n "$name" ]] || exit 2; shift ;; list) [[ $# -eq 0 ]] || exit 2; auth_list; exit $? ;; *) exit 2 ;; esac
 cmux_e2e_validate_name "$name" || exit 2; [[ $# -eq 0 ]] || exit 2; cmux_e2e_install_traps

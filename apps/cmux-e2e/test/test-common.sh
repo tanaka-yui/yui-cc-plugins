@@ -24,6 +24,8 @@ p1=$(cmux_e2e_project_key); h_check 'project key rc' 0 $?
 mkdir -p "$(h_tmp)/repo2" && (cd "$(h_tmp)/repo2" && git init -q)
 p2=$(cd "$(h_tmp)/repo2" && cmux_e2e_project_key)
 [[ "$p1" != "$p2" ]]; h_check 'distinct repos get distinct project keys' 0 $?
+mkdir -p src
+p3=$(cd src && cmux_e2e_project_key); h_check 'project key is stable from a subdirectory' "$p1" "$p3"
 
 printf 'project: myproj\n' > .dev-up.yaml
 if command -v yq >/dev/null 2>&1; then
