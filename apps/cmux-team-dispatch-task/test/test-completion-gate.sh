@@ -15,11 +15,16 @@
 #   CG8. block の JSON は decision / reason 以外のキーを含まない (codex の
 #        additionalProperties:false に適合させるため)
 #   CG9. 引数不正は exit 2 で、stdout には何も出さない
-#  CG10. 連続 block には上限があり、達したら block をやめる
-#        (Stop hook が永久に block すると無限ループになる。2026-08-22 の実測で、
-#         engine 側に連続 block の回数上限が無いことを確認済みなので自前で持つ)
+#  CG10. DISPATCH_GATE_MAX_BLOCKS に正の数を入れたときだけ上限が働き、達したら
+#        block をやめる (既定は無制限。CG14 を参照)
 #  CG11. 停止を許したときにカウンタがリセットされる
 #        (待機から復帰したあとに前の回数を持ち越さない)
+#  CG14. 既定 (env 未設定) では上限が無く、block し続ける
+#        (有限の上限は、まだ終わっていない長いタスクを永久停止させる。2026-08-25 に
+#         上限 10 に達した exec が毎ターン止まって進まなくなるのを実ペインで観測した)
+#  CG15. カウンタはロールごとに独立している
+#        (4 ロールが 1 つの status dir を共有するので、1 ファイルに数えると
+#         「4 ペイン合計で上限」になり、どのペインも自分の回数の前に諦める)
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -145,6 +150,31 @@ for i in 1 2 3 4; do
 done
 [[ "$blocked" == 3 ]] && pass 'CG11: 停止を許すとカウンタがリセットされる' \
   || bad "CG11: リセット後の block が $blocked 回 (期待 3)"
+
+# --- CG14: 既定では上限が無く、block し続ける ---
+d=$(mkdir_case cg14); set_status "$d" executing; : > "$d/.assigned-task-exec"
+blocked=0
+for i in $(seq 1 25); do
+  out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+  [[ -n "$out" ]] && blocked=$((blocked + 1))
+done
+[[ "$blocked" == 25 ]] && pass 'CG14: 既定では上限が無く block し続ける' \
+  || bad "CG14: 25 回中 block したのは $blocked 回 (期待 25)"
+
+# --- CG15: カウンタはロールごとに独立 ---
+# 上限 2 で exec と design を交互に叩く。カウンタが共有なら合計 2 回で尽きる。
+d=$(mkdir_case cg15); set_status "$d" executing
+: > "$d/.assigned-task-exec"; : > "$d/.assigned-task"
+exec_blocked=0; design_blocked=0
+for i in 1 2 3; do
+  out=$(DISPATCH_GATE_MAX_BLOCKS=2 bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+  [[ -n "$out" ]] && exec_blocked=$((exec_blocked + 1))
+  out=$(DISPATCH_GATE_MAX_BLOCKS=2 bash "$BIN" --status-dir "$d" --role design --agent task 2>/dev/null)
+  [[ -n "$out" ]] && design_blocked=$((design_blocked + 1))
+done
+[[ "$exec_blocked" == 2 && "$design_blocked" == 2 ]] \
+  && pass 'CG15: カウンタはロールごとに独立している' \
+  || bad "CG15: exec=$exec_blocked design=$design_blocked (期待 2/2)"
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

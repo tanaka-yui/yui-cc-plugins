@@ -52,12 +52,23 @@ esac
 # 継承した呼び出し (テストハーネスなど) でハングした。得られる利益は仮説にすぎず、害は
 # 実測されたので読まない。stop_hook_active を使いたくなったときは、ハングしない読み方を
 # 実測してから入れること。
-# 連続 block の上限。Stop hook が永久に block すると無限ループになるので、これは機能の
-# 一部であって任意のオプションではない。2026-08-22 の実測 (spec §6) で engine 側には
-# 連続 block の回数上限が無いことを確認しているため、止める責任はこちらにある。
-MAX_BLOCKS="${DISPATCH_GATE_MAX_BLOCKS:-10}"
+# 連続 block の上限。既定は 0 = 無制限。engine 側には連続 block の回数上限が無いことを
+# 2026-08-22 に実測済み (spec §6) なので、有限値を入れたときだけこちらが止める責任を持つ。
+#
+# 既定を無制限にしたのは、有限の上限が「本当にまだ終わっていない長いタスク」を殺すからで
+# ある。上限に達した block() はカウンタを保持したまま諦める。カウンタを消せるのは判定 1-5
+# の allow だけなので、実装フェーズの exec (status=executing、かつ最新 round に VERDICT が
+# 既にある = 待機でもない) はどの allow にも二度と当たらず、以後永久に毎ターン停止する。
+# 2026-08-25 に実ペインで観測した: 上限 10 に達した exec が、作業の途中であるにもかかわらず
+# ターンのたびに止まり、人間が突かない限り一歩も進まなくなった。
+#
+# 暴走が怖い場面 (原理的に完了できないタスクを回すなど) では DISPATCH_GATE_MAX_BLOCKS に
+# 正の数を入れて上限を復活させること。
+MAX_BLOCKS="${DISPATCH_GATE_MAX_BLOCKS:-0}"
 [[ "$MAX_BLOCKS" =~ ^[0-9]+$ ]] || die "DISPATCH_GATE_MAX_BLOCKS must be a whole number"
-BLOCK_COUNT_FILE="$STATUS_DIR/.gate-blocks"
+# カウンタはロールごとに分ける。4 ロールは 1 つの status dir を共有するので、1 ファイルに
+# 数えると「4 ペイン合計で上限」になり、どのペインも自分の回数に達する前に諦めてしまう。
+BLOCK_COUNT_FILE="$STATUS_DIR/.gate-blocks-$ROLE"
 
 # reason は次ターンのガイダンスとして届き、モデルがそれに従う (spec §6 の G-T1 で実証)。
 # したがって **このスクリプトが知っている値は reason に入れる**。実ペインの E2E で、
@@ -82,21 +93,24 @@ fi
 # 「ターンが進んだ回数」ではなく「連続して block した回数」である。
 allow() { rm -f "$BLOCK_COUNT_FILE" 2>/dev/null || true; exit 0; }
 
-# 継続させる。ただし上限に達したら諦めて停止を許す。
+# 継続させる。上限が設定されている (MAX_BLOCKS > 0) ときだけ数え、達したら諦めて停止を許す。
+# 既定の無制限ではカウンタに触れない — 数える相手が居ないので、ファイル I/O ごと不要である。
 block() {
   local n
-  n=$(cat "$BLOCK_COUNT_FILE" 2>/dev/null || echo 0)
-  [[ "$n" =~ ^[0-9]+$ ]] || n=0
-  if [[ "$n" -ge "$MAX_BLOCKS" ]]; then
-    # stdout は engine が JSON として読むので、諦めた事実は stderr へ出す。
-    echo "completion-gate: gave up after $n consecutive blocks; letting the session stop" >&2
-    # ここで allow() を呼んではならない。allow() はカウンタを消すので、次の呼び出しで
-    # 上限が再武装され「上限まで block → 1 回休み」を永久に繰り返す。諦めた状態は
-    # 維持し、判定 1-5 のいずれかで本当に停止を許したときだけリセットする
-    # (待機や完了に入れば自然に回復する)。
-    exit 0
+  if [[ "$MAX_BLOCKS" -gt 0 ]]; then
+    n=$(cat "$BLOCK_COUNT_FILE" 2>/dev/null || echo 0)
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    if [[ "$n" -ge "$MAX_BLOCKS" ]]; then
+      # stdout は engine が JSON として読むので、諦めた事実は stderr へ出す。
+      echo "completion-gate: gave up after $n consecutive blocks; letting the session stop" >&2
+      # ここで allow() を呼んではならない。allow() はカウンタを消すので、次の呼び出しで
+      # 上限が再武装され「上限まで block → 1 回休み」を永久に繰り返す。諦めた状態は
+      # 維持し、判定 1-5 のいずれかで本当に停止を許したときだけリセットする
+      # (待機や完了に入れば自然に回復する)。
+      exit 0
+    fi
+    echo "$((n + 1))" > "$BLOCK_COUNT_FILE" 2>/dev/null || true
   fi
-  echo "$((n + 1))" > "$BLOCK_COUNT_FILE" 2>/dev/null || true
   jq -nc --arg r "$1" '{decision:"block",reason:$r}'
   exit 0
 }

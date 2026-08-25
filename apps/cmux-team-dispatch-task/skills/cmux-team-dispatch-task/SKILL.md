@@ -878,11 +878,19 @@ are visible on disk. A model-evaluated gate would have to guess at them.
 and blocks the reviewer. Reversing this either strands a reviewer that never writes a verdict
 or wakes an implementer that should be idle.
 
-Blocking is bounded. Consecutive blocks are counted in `<status-dir>/.gate-blocks` and stop at
-10 (`DISPATCH_GATE_MAX_BLOCKS`); the engines impose no limit of their own, so an unbounded gate
-would loop forever. Giving up does not clear the counter — clearing it there would re-arm the
-limit immediately and produce an endless block-then-pause cycle. Only a genuine allow resets
-it, which happens as soon as the task reaches a wait or a terminal status.
+**Blocking is unbounded by default.** A finite cap kills a long task that simply has not
+finished yet: the gate keeps its counter when it gives up, and only a genuine allow (decisions
+1-5) clears it — so an implementing `exec` (`status=executing`, and the latest round already
+carrying a `VERDICT:` line, so not waiting either) never matches any allow again and stops on
+every single turn from then on. Measured on a real pane on 2026-08-25. Set
+`DISPATCH_GATE_MAX_BLOCKS` to a positive number to restore a cap where a runaway loop is the
+bigger risk.
+
+When a cap is enabled, consecutive blocks are counted in `<status-dir>/.gate-blocks-<role>` and
+giving up does not clear the counter — clearing it there would re-arm the limit immediately and
+produce an endless block-then-pause cycle. The counter is per role because all four roles share
+one status directory; a single shared file would mean "the cap across all four panes", so no
+pane ever reaches its own count.
 
 **Whatever the gate knows goes into the `reason`.** The reason is delivered as guidance for
 the next turn and the model acts on it, so a reason that names the condition but not the values
