@@ -62,7 +62,7 @@ scenario_pid=''
 collect=0
 "$CMUX_BIN" browser --surface "$ref" console list > "$out/console.log" 2>/dev/null || collect=1
 "$CMUX_BIN" browser --surface "$ref" errors list > "$out/errors.log" 2>/dev/null || collect=1
-if [[ "$rc" -eq 0 && "$allow_js" -eq 0 && -s "$out/errors.log" ]]; then rc=1; fi
+if [[ "$rc" -eq 0 && "$allow_js" -eq 0 ]] && grep -qv '^No browser errors$' "$out/errors.log"; then rc=1; fi
 if [[ "$rc" -eq 0 && "$collect" -ne 0 ]]; then rc=1; fi
 if [[ "$rc" -ne 0 ]]; then "$CMUX_BIN" browser --surface "$ref" screenshot --out "$out/failure.png" >/dev/null 2>&1 || true; fi
 finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
