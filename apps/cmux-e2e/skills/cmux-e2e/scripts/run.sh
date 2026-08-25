@@ -41,7 +41,24 @@ if [[ -e "$env_file" || -L "$env_file" ]]; then
     case "$key" in COMPOSE_PROJECT_NAME|SLOT|PROJECT|*_PORT) scenario_env+=("$key=$value") ;; *) echo "WARN: ignoring $key from .env.dispatch" >&2 ;; esac
   done < "$env_file"
 fi
-env -i "HOME=$HOME" "USER=${USER:-}" "TERM=${TERM:-dumb}" "PATH=$wrap:$PATH" "RESULTS_DIR=$out" "WORKTREE_ROOT=$root" "CMUX_E2E_SURFACE=$ref" "CMUX_E2E_GUARD=$guard" "CMUX_E2E_WRAPPER_REF=$ref" "CMUX_E2E_WRAPPER_BIN=$CMUX_BIN" "CMUX_E2E_WRAPPER_JQ=$CMUX_E2E_JQ" ${scenario_env[@]+"${scenario_env[@]}"} bash "$file"; rc=$?
+scenario_pid=''
+stop_scenario() {
+  [[ -n "$scenario_pid" ]] || return 0
+  kill -TERM -- "-$scenario_pid" 2>/dev/null || kill -TERM "$scenario_pid" 2>/dev/null || true
+  sleep 1
+  kill -KILL -- "-$scenario_pid" 2>/dev/null || true
+  wait "$scenario_pid" 2>/dev/null || true
+  scenario_pid=''
+}
+trap 'stop_scenario; exit 130' INT
+trap 'stop_scenario; exit 143' TERM
+trap 'stop_scenario; exit 129' HUP
+set -m
+env -i "HOME=$HOME" "USER=${USER:-}" "TERM=${TERM:-dumb}" "PATH=$wrap:$PATH" "RESULTS_DIR=$out" "WORKTREE_ROOT=$root" "CMUX_E2E_SURFACE=$ref" "CMUX_E2E_GUARD=$guard" "CMUX_E2E_WRAPPER_REF=$ref" "CMUX_E2E_WRAPPER_BIN=$CMUX_BIN" "CMUX_E2E_WRAPPER_JQ=$CMUX_E2E_JQ" ${scenario_env[@]+"${scenario_env[@]}"} bash "$file" &
+scenario_pid=$!
+set +m
+wait "$scenario_pid"; rc=$?
+scenario_pid=''
 collect=0
 "$CMUX_BIN" browser --surface "$ref" console list > "$out/console.log" 2>/dev/null || collect=1
 "$CMUX_BIN" browser --surface "$ref" errors list > "$out/errors.log" 2>/dev/null || collect=1
