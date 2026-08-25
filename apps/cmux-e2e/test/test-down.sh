@@ -10,6 +10,16 @@ trap h_teardown EXIT
 source "$LIBDIR/common.sh"
 source "$LIBDIR/lock.sh"
 source "$LIBDIR/surface.sh"
+real_git=$(command -v git)
+git_shim="$(h_tmp)/git-shim"
+mkdir "$git_shim"
+cat > "$git_shim/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\${CMUX_STUB_GIT_WORKTREE_LIST:-ok}" == fail && "\${1:-}" == worktree && "\${2:-}" == list ]]; then exit 1; fi
+exec "$real_git" "\$@"
+EOF
+chmod 755 "$git_shim/git"
+export PATH="$git_shim:$PATH"
 
 reg=$(cmux_e2e_surface_registry_path)
 entries=$(dirname "$reg")
@@ -57,6 +67,47 @@ if grep -q -- 'close-surface --surface surface:10' "$CMUX_STUB_LOG"; then
   _H_FAIL=1
 else
   echo 'ok   - sweep keeps a surface owned by a moved live worktree'
+fi
+
+jq -n --arg wt "$PWD" '{surface_id:"UUID-MINE",surface_ref:"surface:5",worktree:$wt}' > "$reg"
+h_tree UUID-MINE surface:5 browser UUID-MOVED surface:10 browser
+: > "$CMUX_STUB_LOG"
+CMUX_STUB_GIT_WORKTREE_LIST=fail bash "$SCRIPTS/down.sh" --sweep >/dev/null 2>&1
+h_check 'worktree-list failure does not prevent own down' 0 $?
+[[ -f "$moved" ]]; h_check 'worktree-list failure retains moved live record' 0 $?
+if grep -q -- 'close-surface --surface surface:10' "$CMUX_STUB_LOG"; then
+  echo 'FAIL - failed worktree listing closed a moved live surface'
+  _H_FAIL=1
+else
+  echo 'ok   - failed worktree listing keeps a moved live surface'
+fi
+
+jq -n --arg wt "$PWD" '{surface_id:"UUID-MINE",surface_ref:"surface:5",worktree:$wt}' > "$reg"
+dead_from="$(h_tmp)/sweep-dead"
+git worktree add -q -b sweep-dead "$dead_from"
+dead_git_dir=$(git -C "$dead_from" rev-parse --git-dir)
+dead="$entries/dead.json"
+jq -n --arg wt "$dead_from" --arg gd "$dead_git_dir" '{surface_id:"UUID-DEAD",surface_ref:"surface:11",worktree:$wt,git_dir:$gd}' > "$dead"
+git worktree remove --force "$dead_from"
+legacy="$entries/legacy.json"
+jq -n '{surface_id:"UUID-LEGACY",surface_ref:"surface:12",worktree:"/definitely/missing/legacy"}' > "$legacy"
+h_tree UUID-MINE surface:5 browser UUID-DEAD surface:11 browser UUID-LEGACY surface:12 browser
+: > "$CMUX_STUB_LOG"
+bash "$SCRIPTS/down.sh" --sweep >/dev/null 2>&1
+h_check 'dead worktree does not prevent own down' 0 $?
+[[ ! -f "$dead" ]]; h_check 'dead worktree record is collected' 0 $?
+[[ -f "$legacy" ]]; h_check 'legacy record without git dir is retained' 0 $?
+if grep -q -- 'close-surface --surface surface:11' "$CMUX_STUB_LOG"; then
+  echo 'ok   - sweep closes a dead worktree surface'
+else
+  echo 'FAIL - sweep did not close a dead worktree surface'
+  _H_FAIL=1
+fi
+if grep -q -- 'close-surface --surface surface:12' "$CMUX_STUB_LOG"; then
+  echo 'FAIL - sweep closed a legacy record without git dir'
+  _H_FAIL=1
+else
+  echo 'ok   - sweep keeps a legacy record without git dir'
 fi
 h_assert_no_import
 exit "$(h_fail_count)"

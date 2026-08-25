@@ -7,7 +7,7 @@ cmux_e2e_harden_umask
 sweep=0; [[ $# -eq 1 ]] && sweep=1
 cmux_e2e_git_dir_is_live() {
   local expected="$1" line worktree actual
-  [[ "$expected" == /* ]] || return 1
+  [[ "$expected" == /* && -n "${CMUX_E2E_WORKTREE_LIST:-}" ]] || return 1
   while IFS= read -r line; do
     case "$line" in
       'worktree '*)
@@ -17,20 +17,27 @@ cmux_e2e_git_dir_is_live() {
         [[ "$actual" == "$expected" ]] && return 0
         ;;
     esac
-  done < <(git worktree list --porcelain)
+  done <<< "$CMUX_E2E_WORKTREE_LIST"
   return 1
 }
 cmux_e2e_install_traps; lock=$(cmux_e2e_surface_lock_dir) || exit 1; cmux_e2e_lock_acquire "$lock" || exit 1
 if [[ "$sweep" -eq 1 ]]; then
   entries=$(dirname "$(cmux_e2e_surface_registry_path)") || exit 1
   cmux_e2e_secure_path "$entries" || { echo "ERROR: unsafe surface registry directory" >&2; exit 1; }
+  CMUX_E2E_WORKTREE_LIST=''
+  if ! CMUX_E2E_WORKTREE_LIST=$(git worktree list --porcelain 2>/dev/null); then
+    echo 'WARN: cannot list worktrees; skipping stale entries' >&2
+  elif [[ -z "$CMUX_E2E_WORKTREE_LIST" ]]; then
+    echo 'WARN: worktree list is empty; skipping stale entries' >&2
+  fi
   for stale in "$entries"/*.json; do
     [[ -f "$stale" && ! -L "$stale" ]] || continue
     worktree=$("$CMUX_E2E_JQ" -r '.worktree // empty' "$stale") || { echo "WARN: skipping corrupt registry: $stale" >&2; continue; }
     [[ -n "$worktree" ]] || { echo "WARN: skipping registry without worktree: $stale" >&2; continue; }
     [[ -e "$worktree" ]] && continue
     git_dir=$("$CMUX_E2E_JQ" -r '.git_dir // empty' "$stale") || { echo "WARN: skipping corrupt registry: $stale" >&2; continue; }
-    [[ -n "$git_dir" ]] || { echo "WARN: skipping registry without git_dir: $stale" >&2; continue; }
+    [[ "$git_dir" == /* ]] || { echo "WARN: skipping registry without valid git_dir: $stale" >&2; continue; }
+    [[ -n "$CMUX_E2E_WORKTREE_LIST" ]] || { echo "WARN: skipping stale entry because worktrees are unavailable: $stale" >&2; continue; }
     cmux_e2e_git_dir_is_live "$git_dir" && { echo "WARN: skipping moved live worktree: $worktree" >&2; continue; }
     key=$(basename "$stale" .json)
     sibling="$(dirname "$entries")/locks/$key"
