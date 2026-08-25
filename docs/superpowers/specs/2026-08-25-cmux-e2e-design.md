@@ -52,7 +52,7 @@ skills/cmux-e2e/SKILL.md  … エージェント向けの手順書。どのサ�
 
 | 置き場所 | 内容 | 消えてよいか |
 |---------|------|-------------|
-| `~/.cache/cc-skills/cmux-e2e/<project>/surfaces/` | サーフェスレジストリ | 消えると孤児が出る。消してはならない |
+| `~/.cache/cc-skills/cmux-e2e/<project>/surfaces/` | サーフェスレジストリとロック | 消えると孤児が出る。消してはならない |
 | `~/.cache/cc-skills/cmux-e2e/<project>/auth/` | 認証ステートと検証条件 | 消すと再ログインが必要 |
 | `<worktree>/.cmux-e2e-scenarios/` | シナリオ | プロジェクト側の資産 |
 | `<worktree>/.cmux-e2e-results/` | 成果物 | いつ消してもよい |
@@ -60,13 +60,19 @@ skills/cmux-e2e/SKILL.md  … エージェント向けの手順書。どのサ�
 データフロー:
 
 ```
-project key 解決（.dev-up.yaml → git remote → git common dir）
+project key 解決（.dev-up.yaml の project → git common dir の名前 + hash）
         │
         ▼
-surface 確保（保持型・レジストリを cache root に記録）
+ロック取得（同一 worktree の run / down を直列化）
+        │
+        ▼
+surface 解決（レジストリの surface_id を tree --all と突き合わせ）
         │  CMUX_E2E_SURFACE + identity guard ラッパー
         ▼
-認証ステート適用（--auth 指定時のみ: load → check）
+認証ステート適用（--auth 指定時のみ: load → 世代確認 → check）
+        │
+        ▼
+タブ数の確認（load 後に 1 つであること）→ console / errors clear
         │
         ▼
 シナリオ実行（bash。cmux-e2e-browser 経由で操作）
@@ -83,57 +89,88 @@ surface 確保（保持型・レジストリを cache root に記録）
 
 **決定**: worktree ごとに 1 サーフェスを保持して使い回す（保持型）。破棄は `down` でのみ行う。
 
-**レジストリの置き場所**: `~/.cache/cc-skills/cmux-e2e/<project>/surfaces/<worktree-key>.json`。
-worktree 内には置かない。`.cmux-e2e-results/` は成果物であり掃除の対象なので、そこへ
-control-plane の状態を置くと「結果を消したら ref を失い、画面に残った surface を `down`
-できなくなる」経路が生まれる。レコードは dev-up の `owner.json` に倣い
-`{surface_ref, worktree, created_at}` を持つ。
+**レジストリ**: `~/.cache/cc-skills/cmux-e2e/<project>/surfaces/<worktree-key>.json`
+
+| フィールド | 内容 |
+|-----------|------|
+| `surface_id` | サーフェスの UUID。**これが主キー**である |
+| `surface_ref` | 直近に観測した短 ref。表示用のキャッシュにすぎない |
+| `worktree` | worktree の canonical realpath |
+| `created_at` | 作成時刻 |
+
+`<worktree-key>` は **worktree の canonical realpath の SHA-256 先頭 16 桁**とする。
+basename では同名 worktree が衝突し、session key では slot が変わると以前のレコードを見失う。
+
+短 ref ではなく UUID を主キーにする根拠: surface は pane / workspace / window 間を移動でき、
+移動しても identity は保たれる。短 ref は表示上の番号であり、レジストリの同一性判定に使うと
+移動を追跡できない。
+
+**パスの保護**: `surfaces/` にも `auth/` と同じ規則を適用する。すなわち解決後の絶対パスが
+固定 cache root 配下にあることを再確認し、経路上に symlink があれば拒否し、書き込みは
+一時ファイル + `mv` で置き換え、ディレクトリは `0700`、ファイルは `0600` とする。
 
 **孤児の回収**: worktree ごと消された場合はレコードだけが残る。`down --sweep` は
 `worktree` が実在しないレコードを走査し、対応する surface を閉じてレコードを消す。
-dev-up の `reserve-slot.sh` が Phase 1 で行っている zombie sweep と同じ発想である。
+dev-up の `reserve-slot.sh` が Phase 1 で行う zombie sweep と同じ発想である。
 
-**サーフェス解決の状態遷移**: 「一致しなければ作り直す」と「不一致なら中断」を混ぜてはならない。
-3 状態を区別して、状態ごとに `up` と `run` の挙動を固定する。
+**サーフェスの探索範囲**: `cmux --json --id-format both tree --all` を使う。
+
+`list-pane-surfaces` は使わない。`--pane` を省略すると**フォーカス中の pane しか列挙しない**
+（実測: `{"pane_ref":"pane:28","surfaces":[…1 件…]}`）。これで存在判定すると、
+別 pane へ移動しただけの生きたサーフェスを「消滅した」と誤判定し、新しいサーフェスを
+作って孤児を増やす。
+
+`tree --all` は全 window → workspace → pane を走査し、各サーフェスについて
+`id`（UUID）/ `ref` / `type` / `url` / `selected_in_pane` を返す（実測: 20 件を列挙）。
+レジストリの `surface_id` と `id` を突き合わせれば、移動後も追跡できる。
+
+**サーフェス解決の状態遷移**: 3 状態を区別し、状態ごとに `up` と `run` の挙動を固定する。
 
 | 状態 | 判定方法 | `up` の挙動 | `run` の挙動 |
 |------|---------|------------|-------------|
 | A. レコードが無い | ファイル不在 | 新規作成して記録 | exit 1（`up` を促す） |
-| B. ref が消滅、または browser ではない | `cmux --json list-pane-surfaces` に ref が無い、または type が browser でない | 作り直して記録を更新 | exit 1（`up` を促す） |
-| C. ref が**生きている別の surface** に解決される | `cmux --json browser --surface <ref> identify` の `surface_ref` が要求と不一致 | **中断（exit 1）** | **中断（exit 1）** |
+| B. `surface_id` が `tree --all` に無い | UUID 不一致 | 作り直して記録を更新 | exit 1（`up` を促す） |
+| B'. `surface_id` はあるが `type` が browser でない | UUID 一致・type 不一致 | **中断（exit 1）** | **中断（exit 1）** |
+| C. `identify` の `surface_ref` が要求と不一致 | 応答不一致 | **中断（exit 1）** | **中断（exit 1）** |
 
-C を作り直しにしないのは、他人の画面を操作しうる状態で新しい surface を増やすと、
-どちらが自分のものか判別できなくなるためである。B と C を分けるために、存在確認は
-`browser` 経路ではなく汎用の `list-pane-surfaces` で行う。実測 T4 のフォールバックは
-`browser` 経路固有であり、汎用リゾルバは正確だった（`read-screen --surface surface:36` は
-surface:36 を正しく読んだ）。
+B と B' を分ける根拠: 前者は対象が消えているので作り直してよいが、後者は UUID が生きたまま
+別種のサーフェスになっている（通常は起こりえない）状態であり、作り直すと元の何かを
+放置したまま増やすことになる。異常として中断する。
 
-**検証後レースの扱い**: 上の検証は `run` の開始時点のものでしかない。シナリオ実行中に
-対象 surface が閉じられると、以降の `cmux browser --surface` は実測 T4 のフォールバックにより
-別画面へ届きうる。UUID を渡しても回避できない（UUID 指定でも別 surface が返った）。
+C を作り直しにしないのは、他人の画面を操作しうる状態でサーフェスを増やすと、
+どちらが自分のものか判別できなくなるためである。
 
-対処として、シナリオへは生の ref だけでなく **identity を保証するラッパー**を渡す。
-`run` は一時ディレクトリに実行可能な `cmux-e2e-browser` を作り、`PATH` の先頭へ置く。
-ラッパーは毎回 `identify` で `surface_ref` の一致を確認してから本来のコマンドを実行し、
-不一致なら非ゼロで終了する。
+**検証後レースの扱い — 保証ではなく best-effort である**:
 
-これは 4.4 の「ヘルパーライブラリを提供しない」に反しない。禁じているのはアサーションや
-テスト記述のための DSL（cmux-browser と責務が重なるもの）であって、これは identity guard、
-すなわち実行基盤の側の責務である。
+上の検証は `run` 開始時点のものでしかない。シナリオ実行中に対象サーフェスが閉じられると、
+以降の `cmux browser --surface` は実測 T4 のフォールバックにより別画面へ届きうる。
+UUID を渡しても回避できない（UUID 指定でも別サーフェスが返った）。
 
-呼び出しが 2 倍になるため、`CMUX_E2E_NO_GUARD=1` で無効化できるようにする。
-実測 T4 がブラウザサーフェス不在時のフォールバックに過ぎないと確認できれば（R2）、
-既定を緩める余地がある。
+対処として `run` は一時ディレクトリに実行可能な `cmux-e2e-browser` を作り `PATH` の先頭へ置く。
+このラッパーは毎回 `identify` で一致を確認してから本来のコマンドを実行する。
+
+**ただしこれは identity の保証ではない**。`identify` と本コマンドは別々の CLI 呼び出しであり、
+その間にサーフェスが閉じられれば本コマンド側でフォールバックが起きる余地は残る。
+ラッパーが縮めるのは窓であって、閉じるものではない。cmux が「対象解決と操作を 1 RPC で
+fail-close する」手段を提供するまで、この残余レースは仕様上の既知の穴として明記する。
+
+残余レースを実務上許容できる水準まで下げるため、次を併せて行う。
+
+- `run` と `down` は同一 worktree について**同一ロックで直列化**する（`~/.cache/cc-skills/cmux-e2e/<project>/surfaces/<worktree-key>.lock` を atomic mkdir で取る。dev-up の slot 予約と同じ手法）。同時実行は 2 本目を exit 1 で拒否する
+- 実行中に対象サーフェスを手で閉じることを禁止事項として SKILL.md に書く
+- ラッパーの無効化は**明示的な CLI フラグ `run --no-guard`** でのみ行う。環境変数では変えられない。無効化した事実は `summary.md` に必ず記録する
+
+環境変数で無効化できるようにしない根拠: `.env.dispatch` や親シェルから意図せず安全性が変わり、
+実行結果からどちらで走ったのか判別できなくなる。
 
 **破棄の経路**: `browser close|quit|kill|destroy` は存在しない（`Unsupported browser subcommand`）。
 teardown は `cmux close-surface --surface <ref>` を使う。`down` は冪等とし、
-レコードが無い場合も surface が既に無い場合も exit 0 で終わる。
+レコードが無い場合もサーフェスが既に無い場合も exit 0 で終わる。
 
 **根拠（保持型を選ぶ理由）**:
 
 - 本タスクの中核は認証である。ログイン済みの状態はサーフェスとプロファイルに紐づくため、
   シナリオごとに開いて閉じると毎回ログインし直すことになり、要件そのものを壊す
-- surface identity は move / reorder をまたいで安定（`~/.agents/skills/cmux/references/panes-surfaces.md`）
 - 目視できることが `cmux browser` を選ぶ理由そのものなので、シナリオ終了時に自動で閉じるのは
   この手段の利点を捨てることになる
 
@@ -144,23 +181,40 @@ teardown は `cmux close-surface --surface <ref>` を使う。`down` は冪等�
 
 **決定**: 鍵を 2 種類に分ける。混ぜてはならない。
 
-| 鍵 | 用途 | 解決順 | worktree ごとに変わるか |
-|----|------|--------|----------------------|
-| project key | 認証ステートとサーフェスレジストリの置き場所 | ① `.dev-up.yaml` の `project` ② git remote の basename（`.git` を除去） ③ git common dir の親ディレクトリ名（= メインチェックアウト名） | **変わらない** |
+| 鍵 | 用途 | 解決 | worktree ごとに変わるか |
+|----|------|------|----------------------|
+| project key | 認証ステートとサーフェスレジストリの置き場所 | ① `.dev-up.yaml` の `project` があればそれ ② 無ければ `<git common dir の親ディレクトリ名>-<realpath(git common dir) の SHA-256 先頭 8 桁>` | **変わらない** |
 | session key | 同時実行の識別（ログ表示・診断） | `.env.dispatch` があれば `<PROJECT>-<SLOT>`、無ければ worktree ディレクトリ名 | 変わる |
 
-**分けなければならない根拠**: 認証ステートを worktree ごとに分断すると「一度ログインしたら
-以降のシナリオで使い回す」という中核要件を壊す。worktree は cmux-team-dispatch-task が
-使い捨てる前提の存在なので、project key が worktree 名に依存してはならない。
-解決順 ③ が git common dir を使うのは、worktree から見てもメインチェックアウトが同一に定まるためである
-（agmsg の `agmsg_gitcommon_project` が同じ手法を採っている）。
+**git remote の basename を使わない根拠**: `git@github.com:org-a/admin.git` と
+`git@gitlab.example:org-b/admin.git` はどちらも `admin` になる。無関係なリポジトリが
+同じ project key を共有すると、片方から他方の認証ステートを `auth list` / `auth load` /
+`auth delete` でき、同じサーフェスレジストリに対して `down --sweep` まで実行できてしまう。
+複数 remote があるときにどれを選ぶかも決められない。
 
-**project key の検証**: 解決結果は `^[A-Za-z0-9._-]+$` に一致しなければならない。
-一致しない場合は exit 1 とし、`.dev-up.yaml` へ明示するよう促す。`..` や `/` を含む値を
-パス要素にしないための最低条件である。
+**git common dir を使う根拠**: worktree から見てもメインチェックアウトが一意に定まり、
+同一リポジトリの worktree 群だけが同じ project key を共有する。これは
+「worktree をまたいで認証を使い回す」という要件そのものである。
+agmsg の `agmsg_gitcommon_project` が同じ手法を採っている。
+
+ハッシュを付ける理由は、別の場所にクローンした同名リポジトリと衝突させないためである。
+先頭にディレクトリ名を残すのは、`~/.cache` を人が覗いたときに判別できるようにするため。
+
+**クローン間で共有したい場合**: 別クローンでも同じ認証を使いたいなら、`.dev-up.yaml` に
+`project` を明示する。これが解決順 ① を用意した理由であり、共有は暗黙ではなく宣言で行う。
+
+**project key の検証**: 解決結果は次をすべて満たさなければならない。満たさなければ exit 1 とし、
+`.dev-up.yaml` へ明示するよう促す。
+
+- `^[A-Za-z0-9._-]+$` に一致する
+- 空文字列でない
+- `.` でも `..` でもない
+
+`^[A-Za-z0-9._-]+$` は `.` と `..` を受理してしまうため、正規表現だけでは
+「`..` をパス要素にしない」を担保できない。明示的に弾く。
 
 **分離の実体**: サーフェスを worktree ごとに分けることで成立させる。ブラウザプロファイルの
-分離は既定にしない。プロファイルを分けると認証ステートまで分断され、上記の中核要件と衝突する。
+分離は既定にしない。プロファイルを分けると認証ステートまで分断され、中核要件と衝突する。
 プロファイルを分けたい場合は `up --profile <name>` で明示的に選ばせる。
 
 **`.env.dispatch` を必須にしない根拠**:
@@ -168,8 +222,7 @@ teardown は `cmux close-surface --surface <ref>` を使う。`down` は冪等�
 - `.env.dispatch` は `PROJECT` と `SLOT` を固定キーとして持ち、e2e-test は
   `AGENT_BROWSER_SESSION="$PROJECT-$SLOT"` の 1 行だけで分離を成立させている
 - ただし **このリポジトリには `.dev-up.yaml` も `.env.dispatch` も存在しない**。dev-up を
-  導入していないプロジェクトで使えなければ、完了条件である実機確認（公開ページに対する操作）
-  自体が実行できない
+  導入していないプロジェクトで使えなければ、完了条件である実機確認自体が実行できない
 - dev-up の main worktree はそもそも slot を持たない設計であり、`.env.dispatch` 不在は
   異常ではなく正常系のひとつである
 
@@ -184,31 +237,56 @@ cookie 認証・トークン更新・セキュリティ規則まで揃ってい�
 **保存レイアウト**:
 
 ```
-~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>.json     ← storageState 本体
+~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>.json      ← storageState 本体
 ~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>.meta.json ← 検証条件
 ```
 
-`<project>` は 4.2 の project key。`<name>` は `^[A-Za-z0-9._-]+$` に一致しなければならず、
-一致しない場合は exit 2（シナリオ名と同じ扱い）。これにより `..` や `/` による
-別プロジェクトの読み書きを構造的に封じる。書き込み前に解決後の絶対パスが固定 cache root
-配下にあることを再確認し、経路上に symlink があれば拒否する。
+`<project>` は 4.2 の project key。
 
-**秘密情報の保護**: state は bearer token 相当を含む。
+**`<name>` の規則**（4.2 の project key と同一の規則にそろえる）:
 
-- ディレクトリは `0700`、ファイルは `0600` で作成する
-- 保存は一時ファイルへ書いてから `mv` で置き換える（atomic rename）。途中で落ちたときに
-  中途半端な state を残さない
-- リポジトリの外に置くため、`.gitignore` への追加漏れがそのままコミット事故になる経路が消える
+- `^[A-Za-z0-9._-]+$` に一致する
+- 空文字列でない
+- `.` でも `..` でもない
+
+違反は exit 2。`.` を許すので `oauth.v1` のような名前は有効である。禁じるのは
+パス要素として意味を持つ `.` / `..` / `/` であって、名前中のドットではない。
+
+**パスの保護**: 書き込み前に解決後の絶対パスが固定 cache root 配下にあることを再確認し、
+経路上に symlink があれば拒否する。ディレクトリは `0700`、ファイルは `0600` で作成する。
+
+**state と meta は 1 世代として置き換える**: 別ファイルなので、個別に atomic rename すると
+「state を更新した直後・meta を更新する前」に落ちた場合や、`--check-*` を省略した保存で
+古い meta が残った場合に、内容の食い違った組が残る。
+
+したがって `auth save` は次の順で行う。
+
+1. 両方を一時ファイルへ書く（検証条件が省略された場合は meta を「条件なし」として書く）
+2. state を `mv` で置き換える
+3. meta を `mv` で置き換える
+4. 2 と 3 の間で失敗した場合に備え、`auth check` は meta の `saved_at` が state の
+   `saved_at` と一致しない組を「不整合」として exit 1 にする
+
+検証条件を省略した保存で古い meta を残さないため、3 は削除ではなく必ず「条件なし」の
+meta で上書きする。
 
 **サブコマンドと入力契約**:
 
 | 操作 | 形 | 内容 |
 |------|-----|------|
-| 保存 | `auth save <name> [--check-url <url>] [--check-selector <css>]` | 現在のサーフェスの storageState を保存し、検証条件を meta へ書く |
+| 保存 | `auth save <name> [--check-url <url> --check-selector <css>]` | 現在のサーフェスの storageState と検証条件を 1 世代として保存する |
 | 読込 | `auth load <name>` | state をサーフェスへ適用する |
-| 検証 | `auth check <name>` | `load` → `--check-url` へ遷移 → `--check-selector` を `wait` |
-| 一覧 | `auth list` | `<project>` 配下の name を列挙する |
+| 検証 | `auth check <name>` | `load` → `check_url` へ遷移 → `check_selector` を `wait` |
+| 一覧 | `auth list` | `<project>` 配下の name を列挙する（引数を取らない） |
 | 削除 | `auth delete <name>` | state と meta を消す |
+
+**`--check-url` と `--check-selector` は両方指定または両方省略**とし、片方だけなら exit 2。
+片側だけでは検証が成立せず、「指定したのに検証されない」という最も紛らわしい状態になるためである。
+
+**`auth save` はタブが 1 つのときだけ許可する**。state は開いているタブの情報を含むため、
+複数タブの状態を保存すると、`load` するたびに複数タブへ復元され、4.5 のタブ 1 つ要求に
+毎回引っかかる state を「正常に」保存できてしまう。タブが 2 つ以上なら exit 1 とし、
+余分なタブを閉じてから保存し直すよう案内する。
 
 **`run` との結び付け — 明示 opt-in にする**:
 
@@ -222,10 +300,10 @@ admin / customer など複数の state がある場合、どれを使うかを `
 `--auth <name>` が与えられたときの動作:
 
 1. `<name>.json` が無ければ exit 1（`auth save` を促す）
-2. `auth check <name>` を実行する
-3. meta に `check_url` / `check_selector` の両方が無ければ検証せず、
-   「検証していない」と警告を出して続行する（黙って通さない）
-4. 検証に失敗したら exit 1。「ステートが失効している。`auth save` で保存し直せ」と手順を示す
+2. state と meta の世代が食い違っていれば exit 1（保存し直しを促す）
+3. meta に検証条件が無ければ検証せず、「検証していない」と警告を出して続行する（黙って通さない）
+4. 検証条件があれば `auth check` を実行し、失敗したら exit 1。
+   「ステートが失効している。`auth save` で保存し直せ」と手順を示す
 
 **失効検知の限界**: `state load` は「ファイルを読めたか」しか判定できない。セッションが
 有効かどうかは、認証済みでのみ現れる目印を実際に待つ以外に判定手段が無い。
@@ -285,8 +363,8 @@ prefix を分けることで、並存という決定済み事項をディレク�
 シナリオ自身が撮った screenshot / snapshot は同じディレクトリへ番号付きで置く（e2e-test の慣習）。
 
 **`summary.md` の責務**: `run` が必ず生成する単一ファイルで、シナリオ名・開始終了時刻・
-終了コード・失敗理由の区分・収集した成果物の一覧を書く。エージェントが読んで人間へ報告するための
-入力であり、エージェントの考察を書く場所ではない。
+終了コード・失敗理由の区分・収集した成果物の一覧・**`--no-guard` を使ったかどうか**を書く。
+エージェントが読んで人間へ報告するための入力であり、エージェントの考察を書く場所ではない。
 
 **命名の注意**: dispatch の STATUS_DIR に置く `result.md`（タスク全体の結果報告）とは別物である。
 混同を避けるため、シナリオ単位の要約は `summary.md` と呼ぶ。
@@ -307,26 +385,52 @@ prefix を分けることで、並存という決定済み事項をディレク�
 状態を成功と報告するのは誤報になる。一方、サードパーティスクリプトが恒常的にエラーを吐く
 実プロジェクトは珍しくないため、逃げ道の無い強制は実用性を損なう。
 
-**判定対象を 1 タブに限定する**: `errors list` はサーフェス単位であり、保持型サーフェスでは
-別タブが出したエラーも混ざりうる。`run` は開始時に `tab list` を確認し、タブが 2 つ以上あれば
-exit 1 として「`down` して `up` し直すか、余分なタブを閉じよ」と案内する。
-シナリオが自分で開いたタブはシナリオが閉じる責任を持つ。
+**`run` の工程順（固定・入れ替えてはならない）**:
 
-タブを実行基盤が自動で閉じない理由は、利用者が目視のために開いた画面を黙って消す動作になるためである。
+1. ロック取得（同一 worktree の `run` / `down` を直列化。取れなければ exit 1）
+2. サーフェス解決（状態 A / B / B' / C の判定）
+3. `--auth <name>` があれば state load → 世代整合の確認 → `auth check`
+4. **タブ数の確認**（1 つでなければ exit 1）
+5. `console clear` / `errors clear`
+6. シナリオ実行
+7. 証跡の収集
+8. `summary.md` の生成
+9. ロック解放
+
+**タブ数の確認を 3 の後に置く根拠**: state は開いているタブの情報を含むため、`load` 前に
+タブが 1 つでも `load` 後に複数へ復元されうる。実際に判定対象となるのは `load` 後の状態なので、
+確認は必ず `load` の後に行う。
+
+**タブを実行基盤が自動で閉じない根拠**: 利用者が目視のために開いた画面を黙って消す動作になる。
+タブが 2 つ以上あった場合の案内は、`down` / `up` のやり直しではなく
+「余分なタブを閉じ、必要なら `auth save` で state を保存し直せ」とする。
+複数タブを復元する state が原因の場合、`down` / `up` では直らないためである。
+
+**判定対象を 1 タブに限定する根拠**: `errors list` はサーフェス単位であり、保持型サーフェスでは
+別タブが出したエラーも混ざりうる。
 
 **実行前に console / errors をクリアする**: サーフェスを使い回す設計なので、前回の実行で
-出たエラーが残っていると次の実行を誤って失敗させる。シナリオ開始前に
-`console clear` / `errors clear` を実行する。
+出たエラーが残っていると次の実行を誤って失敗させる。
 
 **終了コードの優先順位**: 上から順に判定し、最初に該当したものを採用する。
 どの理由で落ちたかは必ず標準エラーへ明示する。
 
-1. サーフェス解決の失敗（状態 C）→ exit 1
-2. シナリオの非ゼロ終了 → シナリオの終了コードをそのまま返す
-3. JS エラー検出（`--allow-js-errors` 未指定）→ exit 1
-4. 証跡の収集失敗 → exit 1。ただし 2 と 3 が先に成立していればそちらを優先し、
-   収集失敗は `summary.md` と警告に残す（テストの合否を収集の失敗で塗り替えない）
-5. すべて成功 → exit 0
+| 順位 | 事象 | 終了コード |
+|------|------|-----------|
+| 1 | ロックを取得できない（同一 worktree で実行中） | 1 |
+| 2 | サーフェス解決の失敗（状態 A / B / B' / C） | 1 |
+| 3 | 認証の失敗（state 不在 / 世代不整合 / 失効） | 1 |
+| 4 | タブが 1 つでない | 1 |
+| 5 | identity guard がシナリオ実行中に不一致を検出 | 1 |
+| 6 | シナリオの非ゼロ終了 | シナリオの終了コードをそのまま返す |
+| 7 | JS エラー検出（`--allow-js-errors` 未指定） | 1 |
+| 8 | 証跡の収集失敗 | 1 |
+| 9 | `summary.md` の書き込み失敗 | 1 |
+| 10 | すべて成功 | 0 |
+
+8 と 9 は、6 や 7 が先に成立していればそちらを優先し、失敗の事実は標準エラーへ出す
+（テストの合否を収集や要約の失敗で塗り替えない）。9 が単独で起きた場合は、
+`summary.md` が無いまま成功と報告すると後続が結果を読めないため exit 1 とする。
 
 ## 5. サブコマンド構成
 
@@ -334,10 +438,18 @@ exit 1 として「`down` して `up` し直すか、余分なタブを閉じよ
 
 | サブコマンド | 形 | 役割 |
 |-------------|-----|------|
-| `up` | `up [--profile <name>]` | サーフェスを確保する（状態 A/B なら作成、C なら中断）。ref を出力しレジストリへ記録 |
-| `auth` | `auth <save\|load\|check\|list\|delete> <name> [--check-url <url>] [--check-selector <css>]` | 認証ステートの保存 / 読込 / 検証 / 一覧 / 削除 |
-| `run` | `run <scenario> [--auth <name>] [--allow-js-errors]` | 環境変数とラッパーを組み立て、console/errors をクリアし、シナリオを実行し、結果を集約して合否を返す |
+| `up` | `up [--profile <name>]` | サーフェスを確保する（状態 A/B なら作成、B'/C なら中断）。ref を出力しレジストリへ記録 |
+| `auth save` | `auth save <name> [--check-url <url> --check-selector <css>]` | storageState と検証条件を 1 世代として保存 |
+| `auth load` | `auth load <name>` | state をサーフェスへ適用 |
+| `auth check` | `auth check <name>` | load → 遷移 → 目印を待って有効性を確認 |
+| `auth list` | `auth list` | 引数なし。`<project>` 配下の name を列挙 |
+| `auth delete` | `auth delete <name>` | state と meta を削除 |
+| `run` | `run <scenario> [--auth <name>] [--allow-js-errors] [--no-guard]` | ロックを取り、サーフェスを解決し、認証を通し、シナリオを実行して結果を集約する |
 | `down` | `down [--sweep]` | サーフェスを破棄しレコードを消す。`--sweep` は worktree が消えた孤児を回収する |
+
+**`--no-guard` を環境変数にしない根拠**: identity guard は安全機構であり、
+`.env.dispatch` や親シェルから意図せず無効化されると、実行結果からどちらで走ったのか
+判別できなくなる。CLI フラグに限定し、使用した事実を `summary.md` へ記録する。
 
 **`install` を作らない根拠**: `cmux browser` は cmux 本体の機能であり、導入すべき依存が無い。
 e2e-test の `install` は agent-browser を npm から入れるためだけに存在する。依存ゼロが
@@ -351,7 +463,7 @@ e2e-test の `install` は agent-browser を npm から入れるためだけに�
 | e2e-test | cmux-e2e | 差分の理由 |
 |----------|----------|-----------|
 | `install` | （無し） | 依存が無い |
-| `run <scenario>` | `run <scenario> [--auth <name>] [--allow-js-errors]` | 認証の指定と JS エラーの扱いを追加 |
+| `run <scenario>` | `run <scenario> [--auth <name>] [--allow-js-errors] [--no-guard]` | 認証の指定、JS エラーの扱い、guard の制御を追加 |
 | `snapshot [url]` | （無し） | 単発のブラウザ操作は cmux-browser の管轄。重複させない |
 | `teardown` | `down [--sweep]` | サーフェス破棄という実体に名前を寄せ、孤児回収を足した |
 | （無し） | `up` | 保持型ライフサイクルに必要 |
@@ -379,7 +491,7 @@ cmux-browser スキルはこれらを一切警告していない。スクリプ�
 
 | 変数 / 経路 | 内容 |
 |------------|------|
-| `cmux-e2e-browser` | `PATH` の先頭に置かれる identity guard ラッパー。`cmux browser --surface <ref>` と等価だが、毎回 `surface_ref` の一致を確認する |
+| `cmux-e2e-browser` | `PATH` の先頭に置かれる identity guard ラッパー。`cmux browser --surface <ref>` と等価だが、毎回 `surface_ref` の一致を確認する（best-effort。4.1 の残余レースを参照） |
 | `CMUX_E2E_SURFACE` | 操作対象のサーフェス ref（ラッパーを使わず読み取り系を直接叩きたい場合のため） |
 | `CMUX_E2E_SESSION` | session key（4.2） |
 | `CMUX_E2E_PROJECT` | project key（4.2） |
@@ -413,7 +525,7 @@ gitignore へ追加すべき行（消費側プロジェクトの責任として�
 ```
 
 **ヘルパーライブラリを提供しない方針との関係**: `cmux-e2e-browser` はアサーションでも
-テスト記述の DSL でもなく、実行基盤が identity を保証するためのラッパーである。
+テスト記述の DSL でもなく、実行基盤が identity を確認するためのラッパーである。
 操作の作法（snapshot → ref → 操作 → wait）は cmux-browser の管轄であり、ここでは説明しない。
 
 ## 7. 失敗モード表
@@ -421,24 +533,32 @@ gitignore へ追加すべき行（消費側プロジェクトの責任として�
 | 状況 | 挙動 |
 |------|------|
 | cmux CLI が見つからない | exit 1。cmux 内で実行しているか確認するよう案内 |
+| 同一 worktree で `run` / `down` が実行中（ロック取得失敗） | exit 1。実行中である旨と待つよう案内 |
 | レコードが無い（`up` 未実行）で `run` | exit 1。`up` を先に実行するよう案内 |
-| ref が消滅、または browser ではない（状態 B）で `up` | 作り直して記録を更新（exit 0） |
-| ref が消滅、または browser ではない（状態 B）で `run` | exit 1。`up` を促す |
-| ref が生きている別 surface に解決される（状態 C） | exit 1。別の画面を操作しないために中断する |
-| project key を解決できない、または `^[A-Za-z0-9._-]+$` に反する | exit 1。`.dev-up.yaml` へ明示するよう案内 |
-| シナリオ名または auth 名に `/` `.` などが含まれる | exit 2 |
+| `surface_id` が `tree --all` に無い（状態 B）で `up` | 作り直して記録を更新（exit 0） |
+| `surface_id` が `tree --all` に無い（状態 B）で `run` | exit 1。`up` を促す |
+| `surface_id` はあるが type が browser でない（状態 B'） | exit 1。異常として中断する |
+| `identify` の `surface_ref` が要求と不一致（状態 C） | exit 1。別の画面を操作しないために中断する |
+| identity guard がシナリオ実行中に不一致を検出 | exit 1。ラッパーが非ゼロで終了しシナリオを止める |
+| project key を解決できない / 空 / `.` / `..` / regex 違反 | exit 1。`.dev-up.yaml` へ明示するよう案内 |
+| シナリオ名に `/` または `.` が含まれる | exit 2 |
+| auth 名が空 / `.` / `..` / `^[A-Za-z0-9._-]+$` 違反 | exit 2（名前中の `.` 自体は許可する） |
+| `--check-url` と `--check-selector` の片方だけを指定 | exit 2。両方指定か両方省略のみ |
+| `auth save` 時にタブが 2 つ以上 | exit 1。余分なタブを閉じてから保存し直すよう案内 |
 | シナリオファイルが存在しない | exit 1。解決後の絶対パスを示す |
 | `.env.dispatch` が無い | 続行する。ポート変数が無いことを警告に出すのみ |
-| 開始時にタブが 2 つ以上ある | exit 1。`down` して `up` し直すか余分なタブを閉じるよう案内 |
 | `--auth <name>` の state が存在しない | exit 1。`auth save <name>` で作成するよう案内 |
+| state と meta の世代が食い違う | exit 1。`auth save` で保存し直すよう案内 |
 | 認証ステートが失効している | exit 1。ログインし直して保存し直す手順を示す |
 | meta に検証条件が無い | 検証せず続行し、検証していない旨を警告に出す |
-| auth の保存先を作成 / 書き込みできない | exit 1。パスと必要な権限を示す |
+| state load 後にタブが 1 つでない | exit 1。余分なタブを閉じ、必要なら `auth save` で保存し直すよう案内 |
+| auth / surfaces の保存先を作成・書き込みできない | exit 1。パスと必要な権限を示す |
 | 保存先の経路に symlink がある | exit 1。cache root の外へ書かないために中断する |
 | 結果ディレクトリを作成できない | exit 1。パスを示す |
 | シナリオが非ゼロ終了 | 失敗。シナリオの終了コードを返し、console/errors を集約して failure.png を撮る |
 | シナリオは成功したが JS エラーを検出 | exit 1。JS エラーが理由であることを明示 |
-| 証跡の収集に失敗 | 単独なら exit 1。シナリオ失敗や JS エラーが先に成立していればそちらを優先し、収集失敗は警告と `summary.md` に残す |
+| 証跡の収集に失敗 | 単独なら exit 1。シナリオ失敗や JS エラーが先に成立していればそちらを優先し、警告に残す |
+| `summary.md` の書き込みに失敗 | 単独なら exit 1。先に成立した失敗があればそちらを優先し、警告に残す |
 | `down` でレコードが無い / surface が既に無い | exit 0（冪等） |
 | `down --sweep` で worktree が消えた孤児を検出 | 対応する surface を閉じてレコードを消す（exit 0） |
 | `snapshot --interactive` が `js_error` | cmux-browser の案内どおり `get text body` へフォールバックするようシナリオ側で対処 |
@@ -509,24 +629,63 @@ marketplace.json / plugin.json（claude）/ plugin.json（codex）の 3 箇所�
 そこにあるため、`cmux` を置き換えるスタブを `PATH` に置いて挙動を確認するテストを
 `apps/cmux-e2e/test/test-*.sh` に置く（リポジトリの既存慣習と同じ配置）。
 
+**サーフェスのライフサイクル**
+
 | # | 確認内容 |
 |---|---------|
 | T1 | 状態 A（レコード無し）で `run` が exit 1、`up` が作成する |
-| T2 | 状態 B（ref 消滅）で `up` が作り直す |
-| T3 | 状態 C（別の生きた surface へ解決）で `up` と `run` の両方が exit 1 |
-| T4 | 2 つの worktree を模して同時に実行しても互いのレコードを壊さない |
-| T5 | `--auth` 未指定なら認証を一切扱わない |
-| T6 | `--auth` 指定で state 不在なら exit 1 |
-| T7 | `auth check` が成功 / 失効 / 検証条件未設定の 3 経路で正しく分岐する |
-| T8 | auth 名に `../` を与えると exit 2 で拒否される |
-| T9 | 保存された state のパーミッションが `0600`、ディレクトリが `0700` |
-| T10 | シナリオ失敗と JS エラー検出が同時に起きたとき、シナリオの終了コードが優先される |
-| T11 | `--allow-js-errors` で JS エラーが合否に影響しない |
-| T12 | 証跡収集の失敗がシナリオの合否を塗り替えない |
-| T13 | 開始時にタブが 2 つ以上あれば exit 1 |
-| T14 | `down` を 2 回続けて実行しても exit 0（冪等） |
-| T15 | `down --sweep` が worktree 消滅済みのレコードだけを回収する |
-| T16 | どの経路からも `cmux browser ... import` を呼ばない（スタブが呼び出しを記録して検証） |
+| T2 | 状態 B（`surface_id` が `tree --all` に無い）で `up` が作り直す |
+| T3 | 状態 B'（`surface_id` はあるが type が browser でない）で `up` と `run` が exit 1 |
+| T4 | 状態 C（`identify` の `surface_ref` が不一致）で `up` と `run` が exit 1 |
+| T5 | サーフェスを**別 pane / workspace / window へ移動**しても、`surface_id` で追跡でき状態 B に落ちない |
+| T6 | `down` を 2 回続けて実行しても exit 0（冪等） |
+| T7 | `down --sweep` が worktree 消滅済みのレコードだけを回収し、生きたレコードを消さない |
+
+**identity guard と並行実行**
+
+| # | 確認内容 |
+|---|---------|
+| T8 | guard が不一致を検出したらシナリオを非ゼロで止める |
+| T9 | シナリオ実行中にサーフェスが閉じられた場合、guard が次の呼び出しで検出する |
+| T10 | `--no-guard` で guard を通らず、その事実が `summary.md` に記録される |
+| T11 | 環境変数では guard を無効化できない |
+| T12 | 同一 worktree で `run` を 2 本同時に起動すると 2 本目が exit 1 |
+| T13 | `run` と `down` が同じロックで直列化される |
+
+**認証**
+
+| # | 確認内容 |
+|---|---------|
+| T14 | `--auth` 未指定なら認証を一切扱わない |
+| T15 | `--auth` 指定で state 不在なら exit 1 |
+| T16 | `auth check` が成功 / 失効 / 検証条件未設定の 3 経路で正しく分岐する |
+| T17 | `--check-url` と `--check-selector` の片方だけなら exit 2 |
+| T18 | auth 名が `..` / `/` / 空なら exit 2。`oauth.v1` は通る |
+| T19 | 保存された state のパーミッションが `0600`、ディレクトリが `0700` |
+| T20 | state 更新後・meta 更新前に中断した状態を `auth check` が世代不整合として exit 1 にする |
+| T21 | 検証条件を省略した `auth save` が古い meta を残さない |
+| T22 | `auth save` はタブが 2 つ以上なら exit 1 |
+| T23 | 複数タブを復元する state を `--auth` で load したとき、タブ確認が exit 1 になる |
+
+**パスの保護**
+
+| # | 確認内容 |
+|---|---------|
+| T24 | project key が `..` / 空 / regex 違反なら exit 1 |
+| T25 | `auth/` と `surfaces/` の両方で、経路上の symlink を拒否する |
+| T26 | 異なる worktree（realpath が違う）が別の `<worktree-key>` になり、同名 basename でも衝突しない |
+| T27 | 別クローンのリポジトリが別の project key になり、`auth list` に互いの name が出ない |
+
+**合否判定**
+
+| # | 確認内容 |
+|---|---------|
+| T28 | シナリオ失敗と JS エラー検出が同時に起きたとき、シナリオの終了コードが優先される |
+| T29 | `--allow-js-errors` で JS エラーが合否に影響しない |
+| T30 | 証跡収集の失敗がシナリオの合否を塗り替えない |
+| T31 | `summary.md` の書き込み失敗が単独で起きたら exit 1、先行する失敗があればそちらを優先する |
+| T32 | 開始時（state load 後）にタブが 2 つ以上あれば exit 1 |
+| T33 | どの経路からも `cmux browser ... import` を呼ばない（スタブが呼び出しを記録して検証） |
 
 ### 実機確認（必須）
 
@@ -538,16 +697,18 @@ marketplace.json / plugin.json（claude）/ plugin.json（codex）の 3 箇所�
 | E1 | 公開ページを開いて snapshot → click → wait → screenshot → `state save` → `state load` が通る |
 | E2 | `wait` がタイムアウトしたときの終了コードを実測する（R3） |
 | E3 | ブラウザサーフェスが 2 つ存在する状態で ref 指定が正確に解決されるかを実測する（R2） |
-| E4 | `up` → `run` → `down` を通し、`down` 後に surface が実際に閉じている |
+| E4 | `up` → `run` → `down` を通し、`down` 後にサーフェスが実際に閉じている |
+| E5 | ブラウザサーフェスを別 pane へ移動しても `tree --all` の `id` で追跡できる |
 
 ## 10. 未決事項とリスク
 
 | # | 事項 | 扱い |
 |---|------|------|
-| R1 | `browser open` が `--json` で返す surface ref の形は文書化されているが未検証 | 実機確認 E1 で確かめる。返り値が使えない場合は `cmux --json list-pane-surfaces` から拾う |
+| R1 | `browser open` が `--json` で返す surface ref / UUID の形は文書化されているが未検証 | 実機確認 E1 で確かめる。返り値が使えない場合は `cmux --json --id-format both tree --all` の差分から拾う（4.1 のとおり `list-pane-surfaces` は使わない） |
 | R2 | 要求 ref と異なる surface に解決される事象が、ブラウザサーフェス不在時のフォールバックなのか常時の挙動なのか未確定 | 安全側に倒して「不一致なら中断」+ identity guard ラッパーで設計済み。実機確認 E3 で 2 つ以上のブラウザサーフェスを作って再測定し、常時ではないと確認できれば guard の既定を緩める |
 | R3 | `wait` のタイムアウト時の終了コードが未検証 | 実機確認 E2 で確かめる。非ゼロでなければ合否判定の設計を見直す |
 | R4 | `screenshot` の `--out` 省略時に base64 が stdout へ出るという記述が cmux-browser スキル由来で未検証 | 実行基盤は常に `--out` を付けるため影響しない |
 | R5 | `.env.dispatch` を必須にしないため、ポート変数を前提にしたシナリオは dev-up 未導入プロジェクトで動かない | シナリオ側の責任として文書化する。実行基盤は警告を出すのみ |
-| R6 | identity guard ラッパーは CLI 呼び出しを 2 倍にする | `CMUX_E2E_NO_GUARD=1` で無効化できる。R2 の実測結果しだいで既定を見直す |
-| R7 | project key の解決順 ② が git remote に依存するため、remote 名を変えると認証ステートの置き場所が変わる | `.dev-up.yaml` の `project` を書けば ① が優先される。SKILL.md の失敗モードに記載する |
+| R6 | identity guard ラッパーは CLI 呼び出しを 2 倍にする | `run --no-guard` で無効化できる（使用は `summary.md` に記録される）。R2 の実測結果しだいで既定を見直す |
+| R7 | **identity guard は残余レースを閉じない**。`identify` と本コマンドは別々の CLI 呼び出しであり、その間にサーフェスが閉じられればフォールバックが起きうる | 仕様上の既知の穴として 4.1 に明記した。ロックによる直列化と「実行中に手で閉じない」規約で実務上の発生確率を下げる。cmux が対象解決と操作を 1 RPC で fail-close できるようになれば解消する。上流へ要望として出す価値がある |
+| R8 | `tree --all` の JSON 構造は実測（cmux 0.64.22）に依存する。将来のバージョンで変わりうる | スタブテスト T2 / T5 が構造を前提にしているため、構造が変われば必ずテストが落ちる。無言で壊れることはない |
