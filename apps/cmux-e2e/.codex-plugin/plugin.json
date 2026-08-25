@@ -1,0 +1,11 @@
+{
+  "name": "cmux-e2e",
+  "version": "1.0.0",
+  "description": "E2E tests driven by the cmux built-in browser.",
+  "author": { "name": "tanaka-yui", "url": "https://github.com/tanaka-yui" },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/cmux-e2e",
+  "license": "MIT",
+  "keywords": ["e2e", "browser"],
+  "skills": "./skills/",
+  "interface": { "displayName": "cmux-e2e", "shortDescription": "E2E tests on a visible cmux browser surface.", "developerName": "tanaka-yui", "category": "Development", "capabilities": ["Terminal", "Workflow"] }
+}

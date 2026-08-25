@@ -1,0 +1,10 @@
+{
+  "name": "cmux-e2e",
+  "version": "1.0.0",
+  "description": "cmux 内蔵ブラウザを使った E2E テスト実行基盤。認証を含む UI フローを画面で見ながら検証する。",
+  "author": { "name": "tanaka-yui", "url": "https://github.com/tanaka-yui" },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins/apps/cmux-e2e",
+  "license": "MIT",
+  "keywords": ["e2e", "browser", "cmux", "auth"],
+  "skills": "./skills/"
+}

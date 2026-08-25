@@ -134,6 +134,15 @@
         "plan",
         "agmsg"
       ]
+    },
+    {
+      "name": "cmux-e2e",
+      "description": "cmux 内蔵ブラウザを使った E2E テスト実行基盤。認証を含む UI フローを画面で見ながら検証する。",
+      "source": "./apps/cmux-e2e",
+      "version": "1.0.0",
+      "license": "MIT",
+      "category": "development",
+      "tags": ["e2e", "browser", "cmux", "auth"]
     }
   ]
 }
