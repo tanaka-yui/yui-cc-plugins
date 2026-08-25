@@ -124,6 +124,17 @@ dev-up の `reserve-slot.sh` が Phase 1 で行う zombie sweep と同じ発想�
 `id`（UUID）/ `ref` / `type` / `url` / `selected_in_pane` を返す（実測: 20 件を列挙）。
 レジストリの `surface_id` と `id` を突き合わせれば、移動後も追跡できる。
 
+**UUID に一致した後に使う ref**: `tree --all` で `surface_id` に一致したノードの
+**現在の `ref`** を、以後の `identify` / `cmux browser --surface` / `close-surface` すべてに使う。
+レジストリの `surface_ref` キャッシュもこの値へ更新する。
+
+レジストリに保存された古い `surface_ref` を使ってはならない。サーフェスが移動すると
+短 ref は変わりうるため、古い ref で `identify` すると UUID で正しく発見したサーフェスを
+状態 C と誤判定し、`down` が別のサーフェスを閉じようとする。
+
+したがって状態 C の判定は「`identify` の `surface_ref`」対「`tree --all` で得た現在の `ref`」の
+比較である。レジストリの値との比較ではない。
+
 **サーフェス解決の状態遷移**: 3 状態を区別し、状態ごとに `up` と `run` の挙動を固定する。
 
 | 状態 | 判定方法 | `up` の挙動 | `run` の挙動 |
@@ -156,7 +167,7 @@ fail-close する」手段を提供するまで、この残余レースは仕様
 
 残余レースを実務上許容できる水準まで下げるため、次を併せて行う。
 
-- `run` と `down` は同一 worktree について**同一ロックで直列化**する（`~/.cache/cc-skills/cmux-e2e/<project>/surfaces/<worktree-key>.lock` を atomic mkdir で取る。dev-up の slot 予約と同じ手法）。同時実行は 2 本目を exit 1 で拒否する
+- サーフェスを触る操作（`up` / `run` / `down` / `auth save|load|check`）を worktree ロックで直列化する（4.4）
 - 実行中に対象サーフェスを手で閉じることを禁止事項として SKILL.md に書く
 - ラッパーの無効化は**明示的な CLI フラグ `run --no-guard`** でのみ行う。環境変数では変えられない。無効化した事実は `summary.md` に必ず記録する
 
@@ -183,7 +194,7 @@ teardown は `cmux close-surface --surface <ref>` を使う。`down` は冪等�
 
 | 鍵 | 用途 | 解決 | worktree ごとに変わるか |
 |----|------|------|----------------------|
-| project key | 認証ステートとサーフェスレジストリの置き場所 | ① `.dev-up.yaml` の `project` があればそれ ② 無ければ `<git common dir の親ディレクトリ名>-<realpath(git common dir) の SHA-256 先頭 8 桁>` | **変わらない** |
+| project key | 認証ステートとサーフェスレジストリの置き場所 | ① `.dev-up.yaml` の `project` があればそれ ② 無ければ `<git common dir の親ディレクトリ名>-<realpath(git common dir) の SHA-256 先頭 16 桁>` | **変わらない** |
 | session key | 同時実行の識別（ログ表示・診断） | `.env.dispatch` があれば `<PROJECT>-<SLOT>`、無ければ worktree ディレクトリ名 | 変わる |
 
 **git remote の basename を使わない根拠**: `git@github.com:org-a/admin.git` と
@@ -191,6 +202,11 @@ teardown は `cmux close-surface --surface <ref>` を使う。`down` は冪等�
 同じ project key を共有すると、片方から他方の認証ステートを `auth list` / `auth load` /
 `auth delete` でき、同じサーフェスレジストリに対して `down --sweep` まで実行できてしまう。
 複数 remote があるときにどれを選ぶかも決められない。
+
+**ハッシュ長を 16 桁にする根拠**: 8 hex は 32 bit しかなく、同じ表示名を持つクローン群が
+約 9,300 個あれば偶発衝突の確率が 1% に達する。この衝突は単なるキャッシュミスではなく、
+別クローン間で `auth list` / `load` / `delete` と `down --sweep` が混線することを意味する。
+`<worktree-key>` が 16 桁である以上、こちらを弱くする利点も無い。
 
 **git common dir を使う根拠**: worktree から見てもメインチェックアウトが一意に定まり、
 同一リポジトリの worktree 群だけが同じ project key を共有する。これは
@@ -234,14 +250,19 @@ cookie 認証・トークン更新・セキュリティ規則まで揃ってい�
 再説明せず、cmux-browser の該当リファレンスへリンクする。cmux-e2e が持つのは運用の側、すなわち
 **保存先の規約・鍵付け・入力契約・実行前の有効性検証・秘密情報の保護・失敗時の報告**である。
 
-**保存レイアウト**:
+**保存レイアウト — 名前とファイル種別を別のパス要素にする**:
 
 ```
-~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>.json      ← storageState 本体
-~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>.meta.json ← 検証条件
+~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>/state.json  ← cmux が書く storageState 本体
+~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>/meta.json   ← cmux-e2e が書く付帯情報
+~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>.lock        ← auth 単位のロック
 ```
 
-`<project>` は 4.2 の project key。
+`<name>.json` / `<name>.meta.json` という並べ方にしてはならない。auth 名は名前中の `.` を
+許すため、auth `foo` の meta と auth `foo.meta` の state がどちらも `foo.meta.json` になり、
+後から保存した方が前者の meta を破壊する。`auth delete foo` が `foo.meta` の state まで消し、
+`auth list` はファイル名だけでは state と meta を弁別できない。認証情報の破壊と取り違えの
+経路になるので、name をディレクトリにして種別をその中のファイル名で表す。
 
 **`<name>` の規則**（4.2 の project key と同一の規則にそろえる）:
 
@@ -255,38 +276,70 @@ cookie 認証・トークン更新・セキュリティ規則まで揃ってい�
 **パスの保護**: 書き込み前に解決後の絶対パスが固定 cache root 配下にあることを再確認し、
 経路上に symlink があれば拒否する。ディレクトリは `0700`、ファイルは `0600` で作成する。
 
-**state と meta は 1 世代として置き換える**: 別ファイルなので、個別に atomic rename すると
-「state を更新した直後・meta を更新する前」に落ちた場合や、`--check-*` を省略した保存で
-古い meta が残った場合に、内容の食い違った組が残る。
+**`meta.json` の内容**:
 
-したがって `auth save` は次の順で行う。
+| キー | 内容 |
+|------|------|
+| `state_sha256` | 対になる `state.json` の SHA-256。**世代整合の判定はこれだけで行う** |
+| `check_url` | 検証で遷移する URL（省略可） |
+| `check_selector` | 認証済みでのみ現れる目印（省略可） |
+| `saved_at` | 保存時刻。人間が見るための情報であり、判定には使わない |
 
-1. 両方を一時ファイルへ書く（検証条件が省略された場合は meta を「条件なし」として書く）
-2. state を `mv` で置き換える
-3. meta を `mv` で置き換える
-4. 2 と 3 の間で失敗した場合に備え、`auth check` は meta の `saved_at` が state の
-   `saved_at` と一致しない組を「不整合」として exit 1 にする
+**`state.json` に独自キーを足さない根拠**: このファイルは `cmux browser state save` が書き、
+`state load` が読む。形式の所有者は cmux であり、cmux-e2e が `saved_at` などを注入してよい
+根拠は無く、`load` の前に取り除く手順も定義できない。世代の同一性は、ファイルの中身を
+変えずに外側から確認できる SHA-256 で判定する。
 
-検証条件を省略した保存で古い meta を残さないため、3 は削除ではなく必ず「条件なし」の
-meta で上書きする。
+`saved_at` を判定に使わない根拠: 粒度と一意性が定義できない。同一秒内の連続保存では
+別世代の組を一致と誤認する。
+
+**`auth save` の手順（1 世代として置き換える）**:
+
+1. worktree ロック → auth ロックの順に取得する（4.4）
+2. タブが 1 つであることを確認する。2 つ以上なら exit 1
+3. `cmux browser --surface <ref> state save <tmp>/state.json` を実行する
+4. `<tmp>/state.json` の SHA-256 を計算し、`<tmp>/meta.json` を書く
+   （検証条件が省略された場合は `check_url` / `check_selector` を持たない meta を書く）
+5. `<tmp>` ディレクトリごと `mv` で `<name>/` を置き換える
+
+5 でディレクトリ単位に置き換えるので、state だけ新しく meta だけ古いという組は原理的に残らない。
+検証条件を省略した保存で古い meta が残ることもない。
+
+**有効性の検証手順（load の前に照合する）**:
+
+1. `meta.json` を読む
+2. `state.json` の SHA-256 を計算し、`state_sha256` と比較する
+3. 一致しなければ exit 1（「保存が中断されている。`auth save` で保存し直せ」）
+4. 一致した場合に限り `state load` する
+5. `check_url` / `check_selector` があれば遷移して `wait` する
+
+**load を行う場所を 1 箇所に固定する**: `state load` を実行するのは `auth check` だけとする。
+`run --auth <name>` は「digest を照合してから `auth check` を呼ぶ」だけであり、自分では load しない。
+これにより正常経路での load はちょうど 1 回になり、照合前に state を適用することもない。
+
+`auth load <name>` は、検証を伴わずに state を適用したい場合のための単独操作として残す
+（`auth save` の下準備などで使う）。`run` の経路からは呼ばない。
+
+**共有 auth の差し替えレース**: auth は project 内の全 worktree で共有されるため、
+照合と load の間に別 worktree が同じ auth を保存し直す可能性がある。
+2〜5 は同一の auth ロックを保持したまま行う（4.4）。
 
 **サブコマンドと入力契約**:
 
 | 操作 | 形 | 内容 |
 |------|-----|------|
-| 保存 | `auth save <name> [--check-url <url> --check-selector <css>]` | 現在のサーフェスの storageState と検証条件を 1 世代として保存する |
-| 読込 | `auth load <name>` | state をサーフェスへ適用する |
-| 検証 | `auth check <name>` | `load` → `check_url` へ遷移 → `check_selector` を `wait` |
+| 保存 | `auth save <name> [--check-url <url> --check-selector <css>]` | storageState と meta を 1 世代として保存する |
+| 読込 | `auth load <name>` | 検証せず state を適用する（単独操作） |
+| 検証 | `auth check <name>` | digest 照合 → `load` → `check_url` へ遷移 → `check_selector` を `wait` |
 | 一覧 | `auth list` | `<project>` 配下の name を列挙する（引数を取らない） |
-| 削除 | `auth delete <name>` | state と meta を消す |
+| 削除 | `auth delete <name>` | `<name>/` ディレクトリごと消す |
 
 **`--check-url` と `--check-selector` は両方指定または両方省略**とし、片方だけなら exit 2。
 片側だけでは検証が成立せず、「指定したのに検証されない」という最も紛らわしい状態になるためである。
 
 **`auth save` はタブが 1 つのときだけ許可する**。state は開いているタブの情報を含むため、
-複数タブの状態を保存すると、`load` するたびに複数タブへ復元され、4.5 のタブ 1 つ要求に
-毎回引っかかる state を「正常に」保存できてしまう。タブが 2 つ以上なら exit 1 とし、
-余分なタブを閉じてから保存し直すよう案内する。
+複数タブの状態を保存すると、`load` するたびに複数タブへ復元され、4.6 のタブ 1 つ要求に
+毎回引っかかる state を「正常に」保存できてしまう。
 
 **`run` との結び付け — 明示 opt-in にする**:
 
@@ -299,15 +352,14 @@ admin / customer など複数の state がある場合、どれを使うかを `
 
 `--auth <name>` が与えられたときの動作:
 
-1. `<name>.json` が無ければ exit 1（`auth save` を促す）
-2. state と meta の世代が食い違っていれば exit 1（保存し直しを促す）
-3. meta に検証条件が無ければ検証せず、「検証していない」と警告を出して続行する（黙って通さない）
+1. `<name>/state.json` が無ければ exit 1（`auth save` を促す）
+2. digest が `meta.json` の `state_sha256` と一致しなければ exit 1（保存し直しを促す）
+3. meta に検証条件が無ければ、`auth load` のみ行い「検証していない」と警告を出して続行する
 4. 検証条件があれば `auth check` を実行し、失敗したら exit 1。
    「ステートが失効している。`auth save` で保存し直せ」と手順を示す
 
 **失効検知の限界**: `state load` は「ファイルを読めたか」しか判定できない。セッションが
 有効かどうかは、認証済みでのみ現れる目印を実際に待つ以外に判定手段が無い。
-だから meta に検証条件を持たせ、実行基盤の工程として通す。
 
 **`import` の扱い — 実測による重大な注意**:
 
@@ -326,11 +378,80 @@ cookie をデフォルトプロファイルへ取り込んだ**。surface 引数
 **却下案**: cookie を個別に `cookies set` する。`state save|load` が storageState 相当を
 まとめて扱えるのに、localStorage / sessionStorage の分を取りこぼす。
 
-## 4.4 シナリオの記法
+## 4.4 排他制御
+
+保護すべき資源は 2 つあり、影響範囲が違う。
+
+| ロック | 場所 | 守るもの |
+|--------|------|---------|
+| worktree ロック | `~/.cache/cc-skills/cmux-e2e/<project>/surfaces/<worktree-key>.lock` | この worktree のサーフェスとレジストリ |
+| auth ロック | `~/.cache/cc-skills/cmux-e2e/<project>/auth/<name>.lock` | project 内で共有される 1 つの auth |
+
+**サブコマンドごとに取るロック**:
+
+| サブコマンド | worktree | auth |
+|-------------|----------|------|
+| `up` | 取る | — |
+| `down` | 取る | — |
+| `run`（`--auth` なし） | 取る | — |
+| `run --auth <name>` | 取る | 取る |
+| `auth save <name>` | 取る | 取る |
+| `auth load <name>` | 取る | 取る |
+| `auth check <name>` | 取る | 取る |
+| `auth delete <name>` | — | 取る |
+| `auth list` | — | — |
+
+**`up` も取る根拠**: 状態 A で `up` が 2 本同時に走ると両方がサーフェスを作り、
+最後のレジストリ書き込みだけが残って孤児ができる。サーフェスを触る操作はすべて直列化する。
+
+**auth ロックが worktree ロックと別に必要な根拠**: auth は project 内の全 worktree で
+共有される。worktree ロックだけでは、worktree A の `run --auth foo` と worktree B の
+`auth save foo` / `auth delete foo` を防げない。守る資源が違うので、ロックも分ける。
+
+**`auth save` / `auth load` / `auth check` が worktree ロックも取る根拠**:
+これらはサーフェスの cookie・storage・タブを変更する。auth ロックだけでは
+同一 worktree の `run` と競合する。
+
+**取得順序は worktree → auth に固定する**。逆順で取る経路を作らない。
+2 種類のロックを異なる順で取る経路が 1 つでもあればデッドロックしうる。
+
+**ロックの実体**: `mkdir` の atomic 性を利用する（dev-up の `reserve-slot.sh` と同じ手法）。
+取得できたディレクトリに `owner.json` を書く。
+
+| キー | 内容 |
+|------|------|
+| `pid` | 取得したプロセスの PID |
+| `host` | ホスト名 |
+| `worktree` | worktree の canonical realpath |
+| `started_at` | 取得時刻 |
+
+**解放**: 正常終了と捕捉可能なシグナル（INT / TERM / HUP）で `trap` により解放する。
+
+**stale ロックの回収**: `SIGKILL` や端末の強制終了では `trap` が走らず `owner.json` が残る。
+これを放置すると、その worktree の `run` と `down` が永久に exit 1 になり、
+認証済みのサーフェスも閉じられなくなる。
+
+取得に失敗したときは次を順に判定する。
+
+1. `owner.json` が読めない、または壊れている → stale とみなして回収する
+2. `host` が自ホストと異なる → 生存を判定できないので回収せず exit 1。
+   手動で消す手順をメッセージに示す
+3. `host` が自ホストで `pid` が生きていない → stale とみなして回収する
+4. `pid` が生きている → 正常な競合。exit 1 で「実行中である」と伝える
+
+回収は「ロックディレクトリを消してから取り直す」ではなく、
+一意な名前へ `mv` してから改めて `mkdir` を試みる。回収と取得の間に
+別プロセスが取得した場合、単純な削除では取り消してしまう。
+
+**`down --sweep` との関係**: `--sweep` は孤児レコードの回収を行うが、
+stale ロックの回収は上の取得手順に含まれるので `--sweep` の責務ではない。
+`--sweep` 自身も worktree ロックを取る。
+
+## 4.5 シナリオの記法
 
 **決定**: `apps/e2e-test` と同じ bash スクリプトに揃える。置き場は
-`<worktree-root>/.cmux-e2e-scenarios/<name>.sh`。契約は環境変数のみで、ヘルパーライブラリを
-提供しない。合否はシナリオの終了ステータスとする。
+`<worktree-root>/.cmux-e2e-scenarios/<name>.sh`。契約は**環境変数と `cmux-e2e-browser` ラッパーのみ**とし、
+アサーションやテスト記述のためのヘルパーライブラリは提供しない。合否はシナリオの終了ステータスとする。
 
 **根拠**:
 
@@ -348,7 +469,7 @@ prefix を分けることで、並存という決定済み事項をディレク�
 
 **シナリオ名の検証**: e2e-test と同じく単一トークンとし、`/` や `.` を含む場合は exit 2。
 
-## 4.5 結果の集約と失敗条件
+## 4.6 結果の集約と失敗条件
 
 **決定**: `<worktree-root>/.cmux-e2e-results/<scenario>/` に集約する。
 実行基盤が自動で集めるのは次の 4 つ。
@@ -361,6 +482,17 @@ prefix を分けることで、並存という決定済み事項をディレク�
 | `summary.md` | 実行基盤が生成 | 常に |
 
 シナリオ自身が撮った screenshot / snapshot は同じディレクトリへ番号付きで置く（e2e-test の慣習）。
+
+**成果物の権限と保持**: `console.log` / `errors.log` / `failure.png` およびシナリオが撮った
+snapshot / screenshot は、アクセストークンや個人情報を含みうる。認証済みの画面を撮っているので
+当然そうなる。したがって結果ディレクトリは `umask 077` の下で作成し、ディレクトリを `0700`、
+ファイルを `0600` とする。既定の umask 次第では同一ホストの別ユーザーから読める状態で
+残るため、`mkdir -p` と gitignore だけでは足りない。
+
+保持と共有について SKILL.md と guide-ja.md に次を明記する。
+
+- `.cmux-e2e-results/` は成果物であり、いつ消してもよい。`down` では消さない（証跡を残すため）
+- 外部へ共有する前に内容を確認し、必要なら伏せる。特に `console.log` はトークンを含みやすい
 
 **`summary.md` の責務**: `run` が必ず生成する単一ファイルで、シナリオ名・開始終了時刻・
 終了コード・失敗理由の区分・収集した成果物の一覧・**`--no-guard` を使ったかどうか**を書く。
@@ -387,9 +519,9 @@ prefix を分けることで、並存という決定済み事項をディレク�
 
 **`run` の工程順（固定・入れ替えてはならない）**:
 
-1. ロック取得（同一 worktree の `run` / `down` を直列化。取れなければ exit 1）
+1. ロック取得（worktree → auth の順。4.4。取れなければ exit 1）
 2. サーフェス解決（状態 A / B / B' / C の判定）
-3. `--auth <name>` があれば state load → 世代整合の確認 → `auth check`
+3. `--auth <name>` があれば digest 照合 → `auth check`（load は `auth check` が 1 回だけ行う）
 4. **タブ数の確認**（1 つでなければ exit 1）
 5. `console clear` / `errors clear`
 6. シナリオ実行
@@ -447,6 +579,9 @@ prefix を分けることで、並存という決定済み事項をディレク�
 | `run` | `run <scenario> [--auth <name>] [--allow-js-errors] [--no-guard]` | ロックを取り、サーフェスを解決し、認証を通し、シナリオを実行して結果を集約する |
 | `down` | `down [--sweep]` | サーフェスを破棄しレコードを消す。`--sweep` は worktree が消えた孤児を回収する |
 
+**排他制御**: どのサブコマンドがどのロックを取るかは 4.4 の表で定める。
+取得順は常に worktree → auth である。
+
 **`--no-guard` を環境変数にしない根拠**: identity guard は安全機構であり、
 `.env.dispatch` や親シェルから意図せず無効化されると、実行結果からどちらで走ったのか
 判別できなくなる。CLI フラグに限定し、使用した事実を `summary.md` へ記録する。
@@ -455,7 +590,7 @@ prefix を分けることで、並存という決定済み事項をディレク�
 e2e-test の `install` は agent-browser を npm から入れるためだけに存在する。依存ゼロが
 本プラグインの売りなので、何もしないサブコマンドを置くのは害になる。
 
-**`report` を作らない根拠**: 4.5 のとおり、集約は `run` の一部として `summary.md` に畳む。
+**`report` を作らない根拠**: 4.6 のとおり、集約は `run` の一部として `summary.md` に畳む。
 独立させると生成主体が二重定義になる。
 
 **e2e-test との対応**:
@@ -533,12 +668,15 @@ gitignore へ追加すべき行（消費側プロジェクトの責任として�
 | 状況 | 挙動 |
 |------|------|
 | cmux CLI が見つからない | exit 1。cmux 内で実行しているか確認するよう案内 |
-| 同一 worktree で `run` / `down` が実行中（ロック取得失敗） | exit 1。実行中である旨と待つよう案内 |
+| worktree ロックを取得できない（生きた owner あり） | exit 1。実行中である旨と owner の PID を示す |
+| auth ロックを取得できない（生きた owner あり） | exit 1。別 worktree が同じ auth を操作中である旨を示す |
+| ロックの owner が別ホスト | exit 1。生存を判定できないため回収せず、手動で消す手順を示す |
+| ロックの owner が自ホストで死んでいる | stale として回収し、取得し直す（exit 0 で続行） |
 | レコードが無い（`up` 未実行）で `run` | exit 1。`up` を先に実行するよう案内 |
 | `surface_id` が `tree --all` に無い（状態 B）で `up` | 作り直して記録を更新（exit 0） |
 | `surface_id` が `tree --all` に無い（状態 B）で `run` | exit 1。`up` を促す |
 | `surface_id` はあるが type が browser でない（状態 B'） | exit 1。異常として中断する |
-| `identify` の `surface_ref` が要求と不一致（状態 C） | exit 1。別の画面を操作しないために中断する |
+| `identify` の `surface_ref` が現在の ref と不一致（状態 C） | exit 1。別の画面を操作しないために中断する |
 | identity guard がシナリオ実行中に不一致を検出 | exit 1。ラッパーが非ゼロで終了しシナリオを止める |
 | project key を解決できない / 空 / `.` / `..` / regex 違反 | exit 1。`.dev-up.yaml` へ明示するよう案内 |
 | シナリオ名に `/` または `.` が含まれる | exit 2 |
@@ -547,10 +685,10 @@ gitignore へ追加すべき行（消費側プロジェクトの責任として�
 | `auth save` 時にタブが 2 つ以上 | exit 1。余分なタブを閉じてから保存し直すよう案内 |
 | シナリオファイルが存在しない | exit 1。解決後の絶対パスを示す |
 | `.env.dispatch` が無い | 続行する。ポート変数が無いことを警告に出すのみ |
-| `--auth <name>` の state が存在しない | exit 1。`auth save <name>` で作成するよう案内 |
-| state と meta の世代が食い違う | exit 1。`auth save` で保存し直すよう案内 |
+| `--auth <name>` の `state.json` が存在しない | exit 1。`auth save <name>` で作成するよう案内 |
+| `state.json` の SHA-256 が `meta.json` の `state_sha256` と不一致 | exit 1。保存が中断されている旨と `auth save` での保存し直しを案内。**state は load しない** |
 | 認証ステートが失効している | exit 1。ログインし直して保存し直す手順を示す |
-| meta に検証条件が無い | 検証せず続行し、検証していない旨を警告に出す |
+| meta に検証条件が無い | `auth load` のみ行い、検証していない旨を警告に出す |
 | state load 後にタブが 1 つでない | exit 1。余分なタブを閉じ、必要なら `auth save` で保存し直すよう案内 |
 | auth / surfaces の保存先を作成・書き込みできない | exit 1。パスと必要な権限を示す |
 | 保存先の経路に symlink がある | exit 1。cache root の外へ書かないために中断する |
@@ -662,8 +800,6 @@ marketplace.json / plugin.json（claude）/ plugin.json（codex）の 3 箇所�
 | T17 | `--check-url` と `--check-selector` の片方だけなら exit 2 |
 | T18 | auth 名が `..` / `/` / 空なら exit 2。`oauth.v1` は通る |
 | T19 | 保存された state のパーミッションが `0600`、ディレクトリが `0700` |
-| T20 | state 更新後・meta 更新前に中断した状態を `auth check` が世代不整合として exit 1 にする |
-| T21 | 検証条件を省略した `auth save` が古い meta を残さない |
 | T22 | `auth save` はタブが 2 つ以上なら exit 1 |
 | T23 | 複数タブを復元する state を `--auth` で load したとき、タブ確認が exit 1 になる |
 
@@ -686,6 +822,53 @@ marketplace.json / plugin.json（claude）/ plugin.json（codex）の 3 箇所�
 | T31 | `summary.md` の書き込み失敗が単独で起きたら exit 1、先行する失敗があればそちらを優先する |
 | T32 | 開始時（state load 後）にタブが 2 つ以上あれば exit 1 |
 | T33 | どの経路からも `cmux browser ... import` を呼ばない（スタブが呼び出しを記録して検証） |
+
+
+**排他制御とロック回復**
+
+| # | 確認内容 |
+|---|---------|
+| T34 | `up` を 2 本同時に起動すると 2 本目が exit 1 になり、サーフェスが 2 つ作られない |
+| T35 | worktree A の `run --auth foo` と worktree B の `auth save foo` が同時に走らない |
+| T36 | worktree A の `run --auth foo` 中に worktree B の `auth delete foo` が待たされる |
+| T37 | ロック取得順が常に worktree → auth である（逆順の経路が存在しない） |
+| T38 | `run` を SIGKILL で落とした後、次の `run` が stale ロックを回収して続行する |
+| T39 | 生きた owner のロックは回収されない |
+| T40 | 別ホストの owner のロックは回収せず exit 1 になる |
+| T41 | 壊れた `owner.json` を stale として回収する |
+
+**auth の保存レイアウトと世代整合**
+
+| # | 確認内容 |
+|---|---------|
+| T42 | `foo` と `foo.meta` を同時に保存しても互いの state / meta を壊さない |
+| T43 | `auth delete foo` が `foo.meta` を消さない |
+| T44 | `auth list` が `foo` と `foo.meta` を別々に列挙する |
+| T45 | `state.json` を改変すると digest 不一致になり、**load されずに** exit 1 になる |
+| T46 | 正常経路での `state load` がちょうど 1 回だけ呼ばれる（スタブが呼び出し回数を記録） |
+| T47 | 同一秒内に連続して `auth save` しても、digest により別世代を取り違えない |
+| T48 | `<name>/` の置き換えが中断しても、state だけ新しく meta だけ古い組が残らない |
+
+**UUID と現在の ref**
+
+| # | 確認内容 |
+|---|---------|
+| T49 | UUID が同じで `ref` が変わったとき、`run` と `down` が**新しい ref** を使う |
+| T50 | レジストリの `surface_ref` キャッシュが解決のたびに更新される |
+
+**成果物の権限**
+
+| # | 確認内容 |
+|---|---------|
+| T51 | 結果ディレクトリが `0700`、成果物ファイルが `0600` で作られる |
+| T52 | `down` が `.cmux-e2e-results/` を消さない |
+
+**project key**
+
+| # | 確認内容 |
+|---|---------|
+| T53 | 異なる git common dir が異なる project key になる（導出ヘルパーをスタブして確認） |
+| T54 | project key のハッシュが 16 桁である |
 
 ### 実機確認（必須）
 
