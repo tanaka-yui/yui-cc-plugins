@@ -100,6 +100,9 @@ CMUX="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
 # Child の実行中 runner ファイルを上書きしてしまい bash の挙動が undefined になる。
 RUNNER_SCRIPT_NAME=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 完走ゲートの entry を識別する印。command は 4 ロールで共有される 1 本なので、
+# 「誰の entry か」を role ではなくこの印で判定する。
+GATE_MARKER="cmux-team-dispatch-task"
 source "$SCRIPT_DIR/config-lib.sh"
 RUNNERS_CONFIG_PATH="$(dispatch_runners_file)"
 
@@ -175,6 +178,22 @@ ensure_claude_exclusions() {
   return 0
 }
 
+# gate へ渡す送信コマンドは hook のコマンド文字列ではなく STATUS_DIR のファイルで
+# 受け渡す。agmsg は「その Stop エントリが自分の書いたものか」を command 文字列に
+# 'agmsg' が含まれるかどうか **だけ** で判定しており (delivery.sh の
+# agmsg_delivery_status_default: instr(json_extract(h.value,'$.command'), 'agmsg') > 0)、
+# --send-command に ~/.agents/skills/agmsg/scripts/send.sh を焼き込むと、この gate が
+# agmsg 由来の Stop と誤認される。すると mode が monitor ではなく both と報告され、
+# codex-shim.sh は `mode: monitor` の完全一致 (grep -qx) を要求するため shim が素通しに
+# なり、app-server bridge が起動しない。結果として codex ペインは bridge seat を持てず、
+# send.sh は成功するのにメッセージが永久に届かない (2026-08-24 実測)。
+# ファイル経由なら AGMSG_SEND をユーザーが上書きしても衝突は再発しない。
+write_send_command_file() {
+  [[ -n "$STATUS_DIR" && -n "$AGMSG_SEND" ]] || return 0
+  mkdir -p "$STATUS_DIR" 2>/dev/null || return 0
+  printf '%s\n' "$AGMSG_SEND" > "$STATUS_DIR/.send-command" 2>/dev/null || true
+}
+
 # 完走ゲート: 子セッションが仕事の途中で止まったら Stop hook が継続させる。
 # 判定は completion-gate.sh がディスクだけを見て行う (モデル評価は使わない)。
 # ExitPlanMode hook と同じくベストエフォート — 失敗は警告のみで dispatch を止めない。
@@ -186,16 +205,23 @@ inject_completion_gate() {
   local cmd
 
   [[ -n "$STATUS_DIR" ]] || return 0
-  if [[ -f "$settings_file" ]] && grep -q 'completion-gate.sh' "$settings_file" 2>/dev/null; then
-    log "hook" "completion gate already present in $settings_file"
-    return 0
-  fi
-  # パスと値をクォートして焼き込む (スキルの配置先やタスク slug に空白が入っても壊れない)
-  # team も渡す。reason は次ターンのガイダンスとして機能するので、dispatch-notify の
-  # 送信に必要な値をこちらから渡さないと、子が team 名を探し回ることになる (E2E で観測)。
-  cmd="zsh '$script' --status-dir '$STATUS_DIR' --role '$MODEL_ROLE' --agent '$AGMSG_FROM' --team '$AGMSG_TEAM' --send-command '$AGMSG_SEND'"
+  write_send_command_file
+  # status-dir / role / agent / team は焼き込まない。4 ロールは 1 つの worktree を共有し、
+  # .claude/settings.local.json は 1 本しか無いので、焼き込むと後発ロールが先発ロールの
+  # ゲートを実行する (2026-08-25 実測: exec_review が design のゲートで動き、レビュー専任
+  # なのに「タスクの terminal status を書け」と迫られ続けた)。値は runner script が
+  # DISPATCH_GATE_* として export し、gate がプロセス環境から読む。
+  # command 文字列に '$VAR' を書いて実行時展開させることはできない — シングルクォート内は
+  # hook 実行時も展開されず、\$VAR も同じである。
+  cmd="zsh '$script' --gate-id '$GATE_MARKER'"
+  # 既存の gate entry を取り除いてから 1 本足す。worktree 再利用時の二重注入防止と、
+  # 3.5.0 以前の「値を焼き込んだ entry」の migration が、これ 1 つで同時に済む。
+  # 古い entry を残したままだと、そちらが先発ロールの値で全ペインを縛り続ける。
   if merge_claude_settings \
-    '.hooks.Stop = ((.hooks.Stop // []) + [{matcher: "", hooks: [{type: "command", command: $cmd}]}])' \
+    '.hooks.Stop = (((.hooks.Stop // [])
+       | map(.hooks |= map(select((.command // "") | test("completion-gate\\.sh") | not)))
+       | map(select((.hooks | length) > 0)))
+       + [{matcher: "", hooks: [{type: "command", command: $cmd}]}])' \
     --arg cmd "$cmd"; then
     log "hook" "merged the completion gate into $settings_file"
   else
@@ -216,18 +242,24 @@ inject_completion_gate_codex() {
   local cmd merged tmp
 
   [[ -n "$STATUS_DIR" ]] || return 0
-  if [[ -f "$hooks_file" ]] && grep -q 'completion-gate.sh' "$hooks_file" 2>/dev/null; then
-    log "hook" "completion gate already present in $hooks_file"
-    return 0
-  fi
+  write_send_command_file
   if ! mkdir -p "$hooks_dir" 2>/dev/null; then
     log "warn" "failed to create $hooks_dir; skipping the codex completion gate"
     return 1
   fi
-  cmd="bash '$script' --status-dir '$STATUS_DIR' --role '$MODEL_ROLE' --agent '$AGMSG_FROM' --team '$AGMSG_TEAM' --send-command '$AGMSG_SEND'"
+  # 値を焼き込まない理由は claude 版と同じ。codex も .codex/hooks.json を worktree で
+  # 共有するので、焼き込むと design_review が exec のゲートを実行する。
+  # --send-command も渡さない。渡すと agmsg がこの Stop を自分のものと誤認し、
+  # mode が both と報告されて codex-shim が bridge を起動しなくなる
+  # (write_send_command_file の comment を参照)。
+  cmd="bash '$script' --gate-id '$GATE_MARKER'"
   if [[ -f "$hooks_file" ]]; then
+    # 既存の gate entry を除去してから足す (二重注入防止 + 旧形式の migration)。
     merged=$(jq --arg cmd "$cmd" \
-      '.hooks.Stop = ((.hooks.Stop // []) + [{matcher: "", hooks: [{type: "command", command: $cmd}]}])' \
+      '.hooks.Stop = (((.hooks.Stop // [])
+         | map(.hooks |= map(select((.command // "") | test("completion-gate\\.sh") | not)))
+         | map(select((.hooks | length) > 0)))
+         + [{matcher: "", hooks: [{type: "command", command: $cmd}]}])' \
       "$hooks_file" 2>/dev/null) || merged=""
   else
     merged=$(jq -n --arg cmd "$cmd" \
@@ -1153,6 +1185,14 @@ set -uo pipefail
 CMUX="${CMUX}"
 STATUS_DIR="${STATUS_DIR}"
 SLUG="${WORKSPACE_NAME}"
+
+# completion-gate はこの 4 つでロールを解決する。hook の command は 4 ロールで共有される
+# 1 本なので、値は command ではなくプロセス環境から渡さなければならない
+# (理由は completion-gate.sh の環境変数フォールバックの comment を参照)。
+export DISPATCH_GATE_STATUS_DIR="${STATUS_DIR}"
+export DISPATCH_GATE_ROLE="${MODEL_ROLE}"
+export DISPATCH_GATE_AGENT="${AGMSG_FROM}"
+export DISPATCH_GATE_TEAM="${AGMSG_TEAM}"
 DEFER_STATUS="${DEFER_STATUS}"
 STANDBY="${STANDBY_FLAG}"
 AGMSG_SEND="${AGMSG_SEND}"

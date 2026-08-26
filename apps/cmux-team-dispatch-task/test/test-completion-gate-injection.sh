@@ -72,13 +72,25 @@ run_launch claude ci-1
 n=$(gate_count "$TMP/repo/.claude/settings.local.json")
 [[ "$n" == 1 ]] && pass 'CI1 Stop hook が 1 本入る' || bad "CI1 入っていない (n=$n)"
 
+# command は 4 ロールで共有される 1 本なので、ロールを焼き込んではならない。
+# 焼き込むと後発ロールが先発ロールのゲートを実行する (2026-08-25 実測)。
 cmd=$(jq -r '[.hooks.Stop[]?.hooks[]? | select(.command | test("completion-gate.sh"))][0].command' \
   "$TMP/repo/.claude/settings.local.json" 2>/dev/null || echo "")
-if [[ "$cmd" == *"--role 'exec'"* && "$cmd" == *"--agent 'task-exec'"* \
-   && "$cmd" == *"--status-dir '$TMP/status'"* ]]; then
-  pass 'CI1b 注入された command が role / agent / status-dir を持つ'
+if [[ "$cmd" != *"--role"* && "$cmd" != *"--agent"* && "$cmd" != *"--status-dir"* \
+   && "$cmd" == *"--gate-id"* ]]; then
+  pass 'CI1b command にロールを焼き込まない'
 else
-  bad "CI1b command の引数が違う: [$cmd]"
+  bad "CI1b command にロールが焼き込まれている: [$cmd]"
+fi
+
+# ロールは runner script のプロセス環境から渡る。
+runner="$TMP/repo/.cmux-team-dispatch-task-run-ci-1.sh"
+if grep -q 'export DISPATCH_GATE_ROLE="exec"' "$runner" 2>/dev/null \
+   && grep -q 'export DISPATCH_GATE_AGENT="task-exec"' "$runner" 2>/dev/null \
+   && grep -q "export DISPATCH_GATE_STATUS_DIR=\"$TMP/status\"" "$runner" 2>/dev/null; then
+  pass 'CI1c runner script がロールを export する'
+else
+  bad "CI1c runner script が DISPATCH_GATE_* を export していない"
 fi
 
 run_launch claude ci-2
@@ -114,6 +126,43 @@ for entry in '.claude/settings.local.json' '.codex/hooks.json'; do
   grep -qxF "$entry" "$exclude" 2>/dev/null || { bad "CI7 $entry が info/exclude に無い"; ci7=0; }
 done
 [[ $ci7 -eq 1 ]] && pass 'CI7 両方の設定ファイルが info/exclude に入る'
+
+# --- CI8: 同一 worktree・同一 engine で 2 ロールを起動しても取り違えない ---
+# 不具合の核心。settings.local.json は worktree に 1 本しか無いので gate も 1 本になり、
+# ロールは runner script ごとの環境変数で分かれていなければならない。
+run_launch_role() { # $1=runner $2=workspace-name $3=mode $4=role $5=agent
+  AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
+    --cwd "$TMP/repo" --mode "$3" --runner "$1" --role "$4" \
+    --plan-file "$TMP/plan.md" --agmsg-team demo-team --agmsg-from "$5" \
+    --status-dir "$TMP/status" --no-parallel "$2" >/dev/null 2>&1
+}
+run_launch_role claude ci-8-exec execute exec task-exec
+run_launch_role claude ci-8-review review exec_review task-exec-review
+n=$(gate_count "$TMP/repo/.claude/settings.local.json")
+r1=$(grep -o 'DISPATCH_GATE_ROLE="[^"]*"' "$TMP/repo/.cmux-team-dispatch-task-run-ci-8-exec.sh" 2>/dev/null | head -1)
+r2=$(grep -o 'DISPATCH_GATE_ROLE="[^"]*"' "$TMP/repo/.cmux-team-dispatch-task-run-ci-8-review.sh" 2>/dev/null | head -1)
+if [[ "$n" == 1 && "$r1" == 'DISPATCH_GATE_ROLE="exec"' \
+   && "$r2" == 'DISPATCH_GATE_ROLE="exec_review"' ]]; then
+  pass 'CI8 2 ロールでも gate は 1 本、ロールは runner ごとに分かれる'
+else
+  bad "CI8 gate=$n exec=[$r1] exec_review=[$r2]"
+fi
+
+# --- CI9: 3.5.0 以前の「値を焼き込んだ entry」を置換する ---
+# 古い entry を残すと、そちらが先発ロールの値で全ペインを縛り続ける。
+jq '.hooks.Stop = [{matcher:"",hooks:[{type:"command",
+      command:"zsh /old/skills/scripts/completion-gate.sh --status-dir /old --role design --agent other"}]}]' \
+  "$TMP/repo/.claude/settings.local.json" > "$TMP/ci9.json" 2>/dev/null \
+  && mv "$TMP/ci9.json" "$TMP/repo/.claude/settings.local.json"
+run_launch claude ci-9
+n=$(gate_count "$TMP/repo/.claude/settings.local.json")
+cmd=$(jq -r '[.hooks.Stop[]?.hooks[]? | select(.command | test("completion-gate.sh"))][0].command' \
+  "$TMP/repo/.claude/settings.local.json" 2>/dev/null || echo "")
+if [[ "$n" == 1 && "$cmd" != *"--role design"* && "$cmd" == *"--gate-id"* ]]; then
+  pass 'CI9 旧形式の entry を新形式へ置換する'
+else
+  bad "CI9 migration されていない n=$n cmd=[$cmd]"
+fi
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

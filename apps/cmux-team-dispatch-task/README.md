@@ -44,6 +44,12 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 `DISPATCH_GATE_MAX_BLOCKS` に正の数を入れると上限が復活します。カウンタは
 `<status-dir>/.gate-blocks-<role>` とロールごとに分かれます。
 
+ロールは hook の command に焼き込まず、runner script が `DISPATCH_GATE_*` としてプロセス環境へ
+export します。4 ロールが 1 つの worktree（と engine ごとに 1 本の hook ファイル）を共有するため、
+焼き込むと後発ロールが先発ロールのゲートを実行してしまうからです。identity を解決できない場合は
+fail-open（`exit 0`・出力なし）で、無関係なペインを縛りません。注入時に既存のゲート entry を
+除去するので、古い形式の entry は自動的に置き換わります。
+
 **4 ペインは均等な 4 象限になります**（高さの等しい 2 段 × 幅の等しい 2 列）。1 枚が全高を
 占めるような配置は欠陥です。`cmux new-split` はサイズ指定を持たず対象ペインを半分に割るだけ
 なので、均等さは作る順序（design → exec → design_review → exec_review）だけで決まります。

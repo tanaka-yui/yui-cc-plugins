@@ -562,6 +562,26 @@ prewarm-panes.sh には検証済み resolver 出力を --roles "$ROLES_JSON" 1 �
 果たした。team か送信コマンドが欠けているときは通知の手順を書かない — 埋められない引数を持つ
 コマンドを見せると、セッションは値を捏造するか探し回るかのどちらかになる。
 
+**ゲートの identity は command 文字列ではなくプロセス環境から来る。** 4 ロールは 1 つの
+worktree を共有し、engine ごとの hook ファイルは 1 本しか無い（`.claude/settings.local.json` /
+`.codex/hooks.json`）ので、command は必然的に共有される。ここに `--role` / `--agent` を焼き込むと、
+同じ engine の 2 ロール目は「既にゲートがある」で注入をスキップし、1 ロール目の値で動く。
+2026-08-25 に実測: `exec_review` ペインが `design` のゲートを実行して、書く筋合いのない
+terminal status を迫られ続けた（codex 側では `design_review` が `exec` のゲートを実行していた）。
+値は runner script が `DISPATCH_GATE_ROLE` / `DISPATCH_GATE_AGENT` / `DISPATCH_GATE_STATUS_DIR` /
+`DISPATCH_GATE_TEAM` として export し、gate は対応する引数が無いときにそれを読む。
+command に `'$VAR'` と書いて実行時展開させる手は使えない — シングルクォート内は hook 実行時も
+展開されず、`\$VAR` でも同じである。
+
+**identity が揃わないときは fail-open。** 共有 Stop hook は同じ worktree を開いた手動セッションでも
+発火するので、ロールを解決できないゲートは、自分のものでないペインを縛らずに exit 0（出力なし）で
+停止を許す。`die` してはならない: Claude Code の Stop hook では exit 2 は **blocking error** であって
+「何もしない」ではない。ロールの値が有るのに不正な場合は従来どおり usage error (exit 2)。
+
+注入は既存のゲート entry を除去してから 1 本足す。この 1 つのルールで、worktree 再利用時の二重注入と、
+3.6.0 以前の「値を焼き込んだ entry」の migration が同時に片づく。古い entry を残すと、そちらが
+先発ロールの値で全ペインを縛り続ける。
+
 注入は `ExitPlanMode` hook と同じくベストエフォートで、失敗しても警告だけで dispatch は続く。
 worktree を再利用しても二重には入らない。
 

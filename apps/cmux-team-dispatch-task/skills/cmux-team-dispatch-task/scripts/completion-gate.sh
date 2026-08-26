@@ -20,6 +20,10 @@
 #   completion-gate.sh --status-dir <dir> --role <design|design_review|exec|exec_review> \
 #                      --agent <name> [--team <team>] [--send-command <path>]
 #
+# --send-command を省略した場合は <status-dir>/.send-command から読む。launch-workspace.sh
+# はこのファイル経由で渡す (hook のコマンド文字列に agmsg の実パスを埋められないため。
+# 理由は下の SEND_CMD フォールバックの comment を参照)。
+#
 # Output: block したいときだけ {"decision":"block","reason":"..."} を stdout へ
 # Exit:   0 = 判定完了 (block の有無は stdout で表す) / 2 = 使用法エラー
 #
@@ -29,7 +33,7 @@ set -uo pipefail
 
 die() { echo "completion-gate: $1" >&2; exit 2; }
 
-STATUS_DIR=""; ROLE=""; AGENT=""; TEAM=""; SEND_CMD=""
+STATUS_DIR=""; ROLE=""; AGENT=""; TEAM=""; SEND_CMD=""; GATE_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --status-dir) [[ $# -ge 2 ]] || die "--status-dir requires a value"; STATUS_DIR="$2"; shift 2 ;;
@@ -37,15 +41,56 @@ while [[ $# -gt 0 ]]; do
     --agent)      [[ $# -ge 2 ]] || die "--agent requires a value";      AGENT="$2";      shift 2 ;;
     --team)       [[ $# -ge 2 ]] || die "--team requires a value";       TEAM="$2";       shift 2 ;;
     --send-command) [[ $# -ge 2 ]] || die "--send-command requires a value"; SEND_CMD="$2"; shift 2 ;;
+    --gate-id)    [[ $# -ge 2 ]] || die "--gate-id requires a value";    GATE_ID="$2";    shift 2 ;;
     *)            die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$STATUS_DIR" ]] || die "--status-dir is required"
-[[ -n "$AGENT" ]] || die "--agent is required"
+
+# 引数で来なかった値は runner が export したプロセス環境から読む。
+#
+# ロールを hook の command 文字列に焼き込んではならない。4 ロールは 1 つの worktree を
+# 共有し、claude は .claude/settings.local.json を、codex は .codex/hooks.json を
+# それぞれ 1 本しか持たない。注入の冪等性判定はファイル内に gate があるかしか見ないので、
+# 同じ engine の 2 ロール目は注入をスキップし、1 ロール目の焼き込み値で動いてしまう。
+# 2026-08-25 に実測: exec_review ペインが design のゲートを実行し、レビュー専任なのに
+# 「タスクの terminal status を書け」と迫られ続けた (codex 側は design_review が exec の
+# ゲートを実行していた)。
+#
+# 環境変数ならペインごとに違う値が入るので、command が共有のままでも取り違えない。
+# command 文字列に '$VAR' を書いて実行時展開させる方法は使えない: シングルクォート内は
+# hook 実行時も展開されず、\$VAR も同じである。
+[[ -n "$STATUS_DIR" ]] || STATUS_DIR="${DISPATCH_GATE_STATUS_DIR:-}"
+[[ -n "$ROLE" ]]       || ROLE="${DISPATCH_GATE_ROLE:-}"
+[[ -n "$AGENT" ]]      || AGENT="${DISPATCH_GATE_AGENT:-}"
+[[ -n "$TEAM" ]]       || TEAM="${DISPATCH_GATE_TEAM:-}"
+
+# identity が揃わない = この hook を書いた dispatch の管理外で実行されている。
+# 共有設定に残った Stop hook は、同じ worktree を開いた手動セッションでも発火するので、
+# ここで縛ると無関係のペインを無期限に拘束することになる。停止を許す。
+#
+# die (exit 2) にしてはならない。Claude Code の Stop hook では exit 2 は blocking error
+# であって「何もしない」ではない。fail-open にしたいなら exit 0 かつ stdout 無出力である。
+# 診断は stderr に出す — stdout は engine が JSON として読むので混ぜられない。
+if [[ -z "$STATUS_DIR" || -z "$ROLE" || -z "$AGENT" ]]; then
+  echo "completion-gate: no dispatch identity in args or environment; letting the session stop" >&2
+  exit 0
+fi
+
 case "$ROLE" in
   design|design_review|exec|exec_review) ;;
   *) die "--role must be design, design_review, exec or exec_review" ;;
 esac
+
+# --send-command が省略されたときは STATUS_DIR のファイルから読む。launch-workspace.sh は
+# 送信コマンドを hook のコマンド文字列に埋められない: agmsg は自分が書いた Stop エントリ
+# かどうかを command に 'agmsg' が含まれるかだけで判定するので、send.sh の実パスを埋めると
+# この gate が agmsg 由来と誤認され、mode が monitor ではなく both と報告される。
+# codex-shim.sh は `mode: monitor` の完全一致を要求するため、そうなると app-server bridge が
+# 起動せず codex ペインが受信不能になる (2026-08-24 実測)。
+# 値は reason の文面に埋めるだけで、この gate が実行することはない。
+if [[ -z "$SEND_CMD" && -r "$STATUS_DIR/.send-command" ]]; then
+  IFS= read -r SEND_CMD < "$STATUS_DIR/.send-command" || SEND_CMD=""
+fi
 
 # hook が渡してくる JSON (stdin) は読まない。判定材料はすべてディスク上にあるからである。
 # 「書き手が EPIPE を踏まないように空読みする」形を一度書いたが、EOF に達しない stdin を
@@ -60,7 +105,8 @@ esac
 # の allow だけなので、実装フェーズの exec (status=executing、かつ最新 round に VERDICT が
 # 既にある = 待機でもない) はどの allow にも二度と当たらず、以後永久に毎ターン停止する。
 # 2026-08-25 に実ペインで観測した: 上限 10 に達した exec が、作業の途中であるにもかかわらず
-# ターンのたびに止まり、人間が突かない限り一歩も進まなくなった。
+# ターンのたびに止まり、人間が突かない限り一歩も進まなくなった。Codex ペインは素の実行
+# モデルが「1 turn = 1 応答」なので、この gate が諦めた瞬間に task ごとの停止が露出する。
 #
 # 暴走が怖い場面 (原理的に完了できないタスクを回すなど) では DISPATCH_GATE_MAX_BLOCKS に
 # 正の数を入れて上限を復活させること。
@@ -126,12 +172,37 @@ if [[ "$ROLE" == design && -f "$STATUS_DIR/.deferred" ]]; then
   allow
 fi
 
-# 最新の review ラウンドファイル。名前は design-round-N.md / code-round-N.md など複数あるので
-# glob で拾い、名前順の最後を取る (N が増える命名なので順序が意味を持つ)。
+# 2b. parent へ判断を引き渡して待っている。待つのが正しい状態である。
+# レビューのラウンド上限に達した子は、round 6 を始めることも Phase B へ進むこともできない。
+# このとき .assigned は残り、最新 round ファイルには VERDICT があり、.deferred はまだ無いので、
+# この sentinel が無いと判定 7 に落ちて「terminal status を書け」と迫られる。ところが
+# report-status.sh が受け付けるのは done か error だけで、どちらも虚偽になる —
+# done は未完了、error は指示どおりの正常な引き渡しであって障害ではない。
+# 子は引き渡し時に touch し、parent の回答を受けて再開するときに自分で消す (.deferred と同じ扱い)。
+# 2026-08-24 に実測: 5 ラウンド上限に達した design ペインが停止のたびに block された。
+if [[ -f "$STATUS_DIR/.escalated" ]]; then
+  allow
+fi
+
+# 最新の review ラウンドファイル。checkpoint 名は spec / plan / design / code など複数あるので
+# glob で拾うが、選び方には 2 つの落とし穴がある。どちらも実測で踏んだ (2026-08-24)。
+#
+# 1. 依頼文 (<point>-round-<N>-request.md) も同じ glob に一致する。依頼文は findings では
+#    ないうえ、レビュアーへの手順説明として "VERDICT: approve" という行を含むのが普通なので、
+#    拾うと「verdict 済み」と誤判定する。findings の形 (末尾が round-<数字>.md) だけを取る。
+# 2. 「名前順の最後」は checkpoint をまたぐと壊れる。spec が approve 済みで plan が進行中の
+#    とき、辞書順では plan-round-1.md < spec-round-5.md なので完了済みの spec を選んでしまい、
+#    判定 5 の「verdict 待ちなら allow」が成立せず、正しく待っている依頼側が毎回 block される。
+#    要求側もレビュアー側も欲しいのは「最後に依頼されたラウンド」なので mtime で選ぶ。
+#    ついでに round-10 が round-2 より前に来る辞書順の問題も同時に消える。
 latest_round() {
-  local f last=""
+  local f base last=""
   shopt -s nullglob
-  for f in "$STATUS_DIR"/review/*round*.md; do last="$f"; done
+  for f in "$STATUS_DIR"/review/*round*.md; do
+    base=${f##*/}
+    [[ "$base" =~ round-[0-9]+\.md$ ]] || continue
+    [[ -z "$last" || "$f" -nt "$last" ]] && last="$f"
+  done
   [[ -n "$last" ]] && printf '%s' "$last"
 }
 ROUND_FILE=$(latest_round)

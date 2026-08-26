@@ -117,12 +117,21 @@ reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
 [[ "$reason" != *"team "* ]] && pass 'CG13: team 未指定なら reason で team に触れない' \
   || bad "CG13 team を捏造させうる文面がある: [$reason]"
 
-# --- CG9: 引数不正は exit 2 で stdout 無出力 ---
-for args in "" "--status-dir $TMP" "--role exec --agent a" "--status-dir $TMP --role bogus --agent a"; do
-  out=$(bash "$BIN" $args 2>/dev/null); rc=$?
-  [[ $rc -eq 2 && -z "$out" ]] && pass "CG9([$args]): exit 2 で stdout 無出力" \
+# --- CG9: identity 欠落は fail-open、値が不正なら exit 2。どちらも stdout 無出力 ---
+# identity が揃わないのは「この gate を書いた dispatch の管理外で実行された」状態である。
+# 同じ worktree を開いた手動セッションでも共有 Stop hook は発火するので、ここで縛ると
+# 無関係のペインを無期限に拘束する。Claude Code の Stop hook では exit 2 が blocking error
+# なので、fail-open にしたいなら exit 0 でなければならない。
+for args in "" "--status-dir $TMP" "--role exec --agent a"; do
+  out=$(env -u DISPATCH_GATE_STATUS_DIR -u DISPATCH_GATE_ROLE -u DISPATCH_GATE_AGENT \
+    bash "$BIN" $args 2>/dev/null); rc=$?
+  [[ $rc -eq 0 && -z "$out" ]] && pass "CG9([$args]): identity 欠落は exit 0 で stdout 無出力" \
     || bad "CG9([$args]): rc=$rc out=[$out]"
 done
+# identity は揃っているが role の値が不正 = 明確な設定ミスなので usage error のまま。
+out=$(bash "$BIN" --status-dir "$TMP" --role bogus --agent a 2>/dev/null); rc=$?
+[[ $rc -eq 2 && -z "$out" ]] && pass 'CG9(bogus role): exit 2 で stdout 無出力' \
+  || bad "CG9(bogus role): rc=$rc out=[$out]"
 
 # --- CG10: 連続 block はカウントされ、上限で止まる ---
 d=$(mkdir_case cg10); set_status "$d" executing; : > "$d/.assigned-task-exec"
@@ -175,6 +184,86 @@ done
 [[ "$exec_blocked" == 2 && "$design_blocked" == 2 ]] \
   && pass 'CG15: カウンタはロールごとに独立している' \
   || bad "CG15: exec=$exec_blocked design=$design_blocked (期待 2/2)"
+
+# --- CG16: 依頼文は round ファイルとして選ばれない ---
+# 依頼文には手順説明として "VERDICT: approve" が普通に含まれる。これを findings と誤認すると
+# 「verdict 済み」と判断される (2026-08-24 実測)。
+# round 番号を変えてあるのは意図的である。同じ番号だと "-" < "." で依頼文の方が辞書順で先に
+# 来てしまい、名前順の実装でも偶然 findings が選ばれるのでテストが差を検出できない。
+# レビュアー視点で見るのも意図的で、VERDICT の有無に対する判定が依頼側と逆になるため、
+# 「依頼文を拾った = allow」「findings を拾った = block」と結果がはっきり分かれる。
+d=$(mkdir_case cg16); set_status "$d" executing
+printf 'findings\n' > "$d/review/code-round-1.md"
+printf 'instructions\nVERDICT: approve\n' > "$d/review/code-round-2-request.md"
+touch -t 202608260800 "$d/review/code-round-1.md"
+touch -t 202608260900 "$d/review/code-round-2-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec_review --agent task-exec-review 2>/dev/null)
+[[ -n "$out" ]] && pass 'CG16: 依頼文を findings と誤認しない' \
+  || bad "CG16: 依頼文の VERDICT を拾ってレビュー未完了のまま allow した"
+
+# --- CG17: checkpoint をまたぐと辞書順では壊れる。mtime で選ぶ ---
+# 辞書順では plan-round-1.md < spec-round-5.md なので、完了済みの spec を選んでしまう。
+d=$(mkdir_case cg17); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'findings\nVERDICT: approve\n' > "$d/review/spec-round-5.md"
+printf 'findings\n' > "$d/review/plan-round-1.md"
+touch -t 202608260800 "$d/review/spec-round-5.md"
+touch -t 202608260900 "$d/review/plan-round-1.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG17: 進行中の checkpoint を mtime で選ぶ' \
+  || bad "CG17: 完了済み checkpoint を選んで block した: [$out]"
+
+# --- CG18: .escalated は全ロールで停止を許す ---
+# ラウンド上限で parent へ引き渡した子は、done も error も虚偽になる。待つのが正しい。
+for role in design design_review exec exec_review; do
+  d=$(mkdir_case "cg18-$role"); set_status "$d" executing
+  : > "$d/.assigned-task-exec"; : > "$d/.assigned-task"
+  printf 'findings\nVERDICT: needs_work\n' > "$d/review/code-round-1.md"
+  : > "$d/.escalated"
+  out=$(bash "$BIN" --status-dir "$d" --role "$role" --agent task-exec 2>/dev/null)
+  [[ -z "$out" ]] && pass "CG18($role): .escalated で停止を許す" \
+    || bad "CG18($role): block した: [$out]"
+done
+
+# --- CG19: --send-command 省略時は .send-command から読む ---
+# hook のコマンド文字列に send.sh の実パスを焼くと agmsg が自分の Stop と誤認し、
+# codex の app-server bridge が起動しなくなる。だからファイル経由で渡す (2026-08-24 実測)。
+d=$(mkdir_case cg19); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf '/tmp/fake-send.sh\n' > "$d/.send-command"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec --team myteam 2>/dev/null)
+reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
+[[ "$reason" == *"/tmp/fake-send.sh myteam task-exec parent"* ]] \
+  && pass 'CG19: .send-command から送信コマンドを読む' \
+  || bad "CG19: reason に送信コマンドが無い: [$reason]"
+
+# --- CG20: identity をプロセス環境から読む ---
+# hook の command は 4 ロールで共有される 1 本なので、ロールは環境から来なければならない。
+d=$(mkdir_case cg20); set_status "$d" executing; : > "$d/.assigned-task-exec"
+out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=exec DISPATCH_GATE_AGENT=task-exec \
+  bash "$BIN" 2>/dev/null)
+[[ -n "$out" ]] && pass 'CG20: 環境変数だけで identity を解決する' \
+  || bad "CG20: 環境変数から解決できず block しなかった"
+
+# --- CG21: 同じ status dir でもロールごとに別の判定になる ---
+# これが不具合の核心である。1 本の共有 command で 2 ロールが正しく分岐すること。
+d=$(mkdir_case cg21); set_status "$d" executing
+: > "$d/.assigned-task"            # design にはタスクが来ている
+printf 'findings\n' > "$d/review/code-round-1.md"   # VERDICT 未記入
+# design (依頼側): verdict 待ちなので停止を許す
+out_d=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=task \
+  bash "$BIN" 2>/dev/null)
+# exec_review (レビュアー): 自分がまだ書いていないので block
+out_r=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=exec_review DISPATCH_GATE_AGENT=task-exec-review \
+  bash "$BIN" 2>/dev/null)
+[[ -z "$out_d" && -n "$out_r" ]] && pass 'CG21: 共有 command でもロールごとに分岐する' \
+  || bad "CG21: design=[$out_d] exec_review=[$out_r] (期待 allow/block)"
+
+# --- CG22: 引数は環境変数より優先される ---
+d=$(mkdir_case cg22); set_status "$d" executing; : > "$d/.assigned-task-exec"
+out=$(DISPATCH_GATE_STATUS_DIR=/nonexistent DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=other \
+  bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
+[[ "$reason" == *"$d"* ]] && pass 'CG22: 引数が環境変数を上書きする' \
+  || bad "CG22: 引数が効いていない: [$reason]"
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

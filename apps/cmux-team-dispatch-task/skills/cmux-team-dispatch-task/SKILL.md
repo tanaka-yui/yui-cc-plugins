@@ -878,13 +878,32 @@ are visible on disk. A model-evaluated gate would have to guess at them.
 and blocks the reviewer. Reversing this either strands a reviewer that never writes a verdict
 or wakes an implementer that should be idle.
 
+**Only findings files count as round files, and the newest one wins.** `latest_round()` takes
+only names ending `round-<N>.md`, so a request file (`<point>-round-<N>-request.md`) is never
+mistaken for findings — request text routinely contains a literal `VERDICT: approve` line as
+instructions, and reading it as a verdict blocks a requester that is correctly waiting. It then
+picks by mtime, not by name: checkpoint names differ per phase (`spec`, `plan`, `design`,
+`code`), and `plan-round-1.md` sorts *before* an already-approved `spec-round-5.md`, so a
+name-ordered pick returns the finished checkpoint and strands the live one. Both were measured
+on 2026-08-24.
+
+**A child waiting on the parent is not a stalled child.** When a review hits its round cap, the
+child can neither start another round nor proceed, so it hands the decision to the parent and
+waits. `status.json` cannot express that — `report-status.sh` takes only `done` or `error`, and
+both would be false. The child therefore touches `<STATUS_DIR>/.escalated` before it stops, and
+the gate allows on that sentinel for **every** role. The child removes it when the parent's
+answer arrives and it resumes, exactly like `.deferred`. Without it the child is pushed toward
+writing a terminal status it knows to be a lie — measured on 2026-08-24, when a design pane at
+its 5-round cap was blocked on every stop attempt.
+
 **Blocking is unbounded by default.** A finite cap kills a long task that simply has not
 finished yet: the gate keeps its counter when it gives up, and only a genuine allow (decisions
 1-5) clears it — so an implementing `exec` (`status=executing`, and the latest round already
 carrying a `VERDICT:` line, so not waiting either) never matches any allow again and stops on
-every single turn from then on. Measured on a real pane on 2026-08-25. Set
-`DISPATCH_GATE_MAX_BLOCKS` to a positive number to restore a cap where a runaway loop is the
-bigger risk.
+every single turn from then on. Measured on a real pane on 2026-08-25. A Codex pane's native
+execution model is one turn per reply, so the moment this gate gives up, per-task stopping is
+what the user sees. Set `DISPATCH_GATE_MAX_BLOCKS` to a positive number to restore a cap where
+a runaway loop is the bigger risk.
 
 When a cap is enabled, consecutive blocks are counted in `<status-dir>/.gate-blocks-<role>` and
 giving up does not clear the counter — clearing it there would re-arm the limit immediately and
@@ -902,6 +921,29 @@ notification. With the status directory, `report-status.sh`, the agent, the team
 whole contract. The gate says nothing about notifying when the team or the send command is
 missing: showing a command with unfillable arguments makes the session either invent values or
 go looking for them.
+
+**The gate's identity comes from the process environment, not the command string.** All four
+roles share one worktree, and each engine has exactly one hook file
+(`.claude/settings.local.json` / `.codex/hooks.json`), so the command is necessarily shared.
+Baking `--role` / `--agent` into it makes the second role of the same engine run the first
+role's gate: injection is skipped because a gate is already present, and the stale command
+still carries the first role's values. Measured on 2026-08-25 — an `exec_review` pane ran the
+`design` gate and was told to write a terminal status it had no business writing, while on the
+codex side `design_review` ran `exec`'s. The runner script exports `DISPATCH_GATE_ROLE`,
+`DISPATCH_GATE_AGENT`, `DISPATCH_GATE_STATUS_DIR` and `DISPATCH_GATE_TEAM` instead, and the
+gate reads them whenever the matching flag is absent. Writing `'$VAR'` into the command is not
+an alternative: single quotes are not expanded at hook execution time either, and neither is
+`\$VAR`.
+
+**Missing identity is fail-open.** A shared Stop hook fires for any session that opens the same
+worktree, including a manual one that this dispatch never launched, so a gate that cannot
+resolve its role exits 0 with no output instead of blocking a pane it does not own. It must not
+`die`: in Claude Code's Stop hook, exit 2 is a *blocking* error, not a no-op. A role value that
+is present but invalid is still a usage error and still exits 2.
+
+Injection removes every existing gate entry before adding one. That single rule covers both a
+re-used worktree (no second copy) and a pre-3.6.0 entry with values baked in (migrated away) —
+leaving the old entry would keep binding every pane to the first role's values.
 
 Injection is best-effort exactly like the `ExitPlanMode` hook: a failure warns and the dispatch
 continues. Re-using a worktree does not inject a second copy.
