@@ -16,6 +16,7 @@
 #   CI9.  送信コマンドは <status-dir>/.send-command で渡り、gate の reason に出る
 #   CI10. 同一 worktree・同一 engine で 2 ロールを起動しても取り違えない
 #   CI11. 3.6.0 以前の「値を焼き込んだ entry」を置換する
+#   CI12. 保存された command を実シェルで実行すると、環境から identity を解決する
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -201,6 +202,25 @@ if [[ "$n" == 1 && "$cmd" != *"--role design"* && "$cmd" == *"--gate-id"* ]]; th
   pass 'CI11 旧形式の entry を新形式へ置換する'
 else
   bad "CI11 migration されていない n=$n cmd=[$cmd]"
+fi
+
+# --- CI12: 保存された command を実シェルで実行し、環境から identity を解決できる ---
+# engine が Stop hook を起動するとき親プロセスの環境を継承することは、2026-08-26 に
+# claude (claude -p) と codex (codex exec) の両方で実測済み。ここで固定するのは
+# 「保存された command 文字列が、その環境で実際に動くか」である。command を組み立て直す
+# 変更 (クォートの入れ子、引数の増減) が入っても、ここで落ちる。
+run_launch claude ci-12
+cmd=$(jq -r '[.hooks.Stop[]?.hooks[]? | select(.command | test("completion-gate.sh"))][0].command' \
+  "$TMP/repo/.claude/settings.local.json" 2>/dev/null || echo "")
+mkdir -p "$TMP/ci12/review"
+printf '{"status":"executing"}\n' > "$TMP/ci12/status.json"
+: > "$TMP/ci12/.assigned-task-exec"
+out=$(DISPATCH_GATE_STATUS_DIR="$TMP/ci12" DISPATCH_GATE_ROLE=exec DISPATCH_GATE_AGENT=task-exec \
+  eval "$cmd" 2>/dev/null)
+if [[ -n "$out" ]] && jq -e '.decision == "block"' >/dev/null 2>&1 <<< "$out"; then
+  pass 'CI12 保存された command が環境から identity を解決する'
+else
+  bad "CI12 command が環境から解決できない: [$out]"
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
