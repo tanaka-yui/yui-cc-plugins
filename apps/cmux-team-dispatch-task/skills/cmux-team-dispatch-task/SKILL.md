@@ -887,6 +887,17 @@ picks by mtime, not by name: checkpoint names differ per phase (`spec`, `plan`, 
 name-ordered pick returns the finished checkpoint and strands the live one. Both were measured
 on 2026-08-24.
 
+**A findings file alone cannot express "I asked and nobody has answered".** Excluding request
+files from the round-file pick is right, but it leaves two windows where the requester looks
+idle: right after round 1 is requested (no findings exist yet, so the pick returns nothing) and
+during any round N+1 (the pick returns round N's findings, which already carry a `VERDICT:`).
+Neither matches the "waiting for a verdict" rule, so both fall through to the final decision and
+the requester is told to write a terminal status it must not write. Measured on a real pane on
+2026-08-26. The gate therefore also tracks the newest `<point>-round-<N>-request.md` and treats
+"request newer than findings" as the answer still being pending. The two sides read that one
+condition in opposite directions: the requester is allowed to stop, and the reviewer is blocked —
+without the reviewer half, a reviewer could stop having never written a review at all.
+
 **A child waiting on the parent is not a stalled child.** When a review hits its round cap, the
 child can neither start another round nor proceed, so it hands the decision to the parent and
 waits. `status.json` cannot express that — `report-status.sh` takes only `done` or `error`, and

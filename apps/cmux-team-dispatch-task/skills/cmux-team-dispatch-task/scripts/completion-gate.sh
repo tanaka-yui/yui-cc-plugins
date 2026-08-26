@@ -207,6 +207,34 @@ latest_round() {
 }
 ROUND_FILE=$(latest_round)
 
+# 最新の依頼文。findings と対で見る必要がある。findings だけでは「依頼を出して待っている」
+# 状態を表現できないからである。round-<N>.md フィルタが依頼文を除外した結果、依頼直後は
+# ROUND_FILE が空になり、round 2 以降は ROUND_FILE が前ラウンドの VERDICT 付き findings を
+# 指したままになる。どちらも「答えがまだ来ていない」のに、findings だけを見ると
+# 「待っていない」と判定されてしまう。
+# 2026-08-26 に実ペインで観測: レビュー依頼中の design が毎ターン判定 7 に落ち、
+# 「terminal status を書け」と迫られ続けた (上限が無制限だったので停止はしなかった)。
+latest_request() {
+  local f base last=""
+  shopt -s nullglob
+  for f in "$STATUS_DIR"/review/*round*-request.md; do
+    base=${f##*/}
+    [[ "$base" =~ round-[0-9]+-request\.md$ ]] || continue
+    [[ -z "$last" || "$f" -nt "$last" ]] && last="$f"
+  done
+  [[ -n "$last" ]] && printf '%s' "$last"
+}
+REQUEST_FILE=$(latest_request)
+
+# 最新の依頼に対する答えがまだ無い、を両側で共有する判定。依頼が findings より新しければ、
+# その依頼はまだ処理されていない。依頼側にとっては「待て」、レビュアーにとっては「書け」と
+# 正反対の意味になるので、判定そのものは 1 か所に置き、使う側で向きを決める。
+answer_pending() {
+  [[ -n "$REQUEST_FILE" ]] || return 1
+  [[ -z "$ROUND_FILE" ]] && return 0
+  [[ "$REQUEST_FILE" -nt "$ROUND_FILE" ]]
+}
+
 case "$ROLE" in
   design|exec)
     # 3. タスク未着。待つのが正しい状態。
@@ -215,14 +243,26 @@ case "$ROLE" in
     if [[ -n "$ROUND_FILE" ]] && ! grep -q '^VERDICT:' "$ROUND_FILE" 2>/dev/null; then
       allow
     fi
+    # 5b. 依頼は出したが、その依頼に対する findings がまだ無い = 相手待ち。
+    #     判定 5 は findings が存在することを前提にしているので、round 1 の依頼直後
+    #     (findings 未作成) と round N+1 の依頼中 (findings は round N のもので VERDICT 済み)
+    #     を拾えない。ここで拾う。
+    if answer_pending; then
+      allow
+    fi
     ;;
   design_review|exec_review)
-    # 4. 依頼未着。レビューペインは .assigned を使わないので round ファイルの有無で判定する
+    # 4. 依頼未着。レビューペインは .assigned を使わないので review/ のファイルで判定する
     #    (launch-workspace.sh の所有権判定が .assigned-* を見ており、レビュアーがそれを作ると
     #     foreign assignment と誤認されて status 書き込みが抑止される)。
-    [[ -n "$ROUND_FILE" ]] || allow
-    # 6. VERDICT を書き終えていない = 自分の仕事が途中。依頼側 (判定 5) とは逆の判定になる。
-    if ! grep -q '^VERDICT:' "$ROUND_FILE" 2>/dev/null; then
+    #    依頼文だけが先に届く区間があるので、findings と依頼文のどちらも無いときだけ許す。
+    [[ -n "$ROUND_FILE" || -n "$REQUEST_FILE" ]] || allow
+    # 6. 最新の依頼に答え終えていない = 自分の仕事が途中。依頼側 (判定 5/5b) とは逆になる。
+    #    依頼文しか無い区間で許してしまうと、レビューを一度も書かないまま止まれてしまう。
+    if answer_pending; then
+      block "the review requested in ${REQUEST_FILE:-the request file} has no findings file yet. Write your findings to the path that request names, whose LAST line must be VERDICT: approve or VERDICT: needs_work, then send one review-verdict: message from $AGENT to whoever requested it$NOTIFY_HINT."
+    fi
+    if [[ -n "$ROUND_FILE" ]] && ! grep -q '^VERDICT:' "$ROUND_FILE" 2>/dev/null; then
       block "review round file $ROUND_FILE has no VERDICT line yet. Finish the review, write VERDICT: approve or VERDICT: needs_work as its last line, then send one review-verdict: message from $AGENT to whoever requested it$NOTIFY_HINT."
     fi
     allow

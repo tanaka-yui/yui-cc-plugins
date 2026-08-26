@@ -34,6 +34,11 @@
 #  CG19. identity をプロセス環境から解決する
 #  CG20. 同じ status dir でもロールごとに判定が分かれる (共有 command の要件)
 #  CG21. 引数は環境変数より優先される
+#  CG22. 依頼を出したが findings がまだ無い間、依頼側は許される
+#        (2026-08-26 実測: レビュー依頼中の design が毎ターン判定 7 に落ちていた)
+#  CG23. 次ラウンドの依頼中も依頼側は許される (findings は前ラウンドの VERDICT 付き)
+#  CG24. 同じ状態でレビュアーは block される (書く側なので判定が逆になる)
+#  CG25. 次ラウンドの依頼が来たらレビュアーは再び block される
 #        ラウンド上限に達した子は .assigned が残り最新 round に VERDICT があるため、
 #        この sentinel が無いと判定 7 に落ち、done/error のどちらを書いても虚偽になる
 
@@ -273,6 +278,44 @@ out=$(DISPATCH_GATE_STATUS_DIR=/nonexistent DISPATCH_GATE_ROLE=design DISPATCH_G
 reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
 [[ "$reason" == *"$d"* ]] && pass 'CG21: 引数が環境変数を上書きする' \
   || bad "CG21: 引数が効いていない: [$reason]"
+
+# --- CG22: 依頼直後 (findings 未作成) は依頼側を許す ---
+# round-<N>.md フィルタが依頼文を除外するので ROUND_FILE は空になる。判定 5 は findings が
+# 存在する前提なのでここを拾えず、判定 7 に落ちて「terminal status を書け」と迫られていた。
+d=$(mkdir_case cg22); set_status "$d" executing; : > "$d/.assigned-task"
+printf 'request\n' > "$d/review/plan-round-1-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG22: 依頼直後は依頼側を許す' \
+  || bad "CG22: 依頼待ちなのに block された: [$out]"
+
+# --- CG23: 次ラウンドの依頼中も依頼側を許す ---
+# ROUND_FILE は round 1 の findings (VERDICT 済み) を指すため、判定 5 も成立しない。
+d=$(mkdir_case cg23); set_status "$d" executing; : > "$d/.assigned-task"
+printf 'findings\nVERDICT: needs_work\n' > "$d/review/plan-round-1.md"
+printf 'request\n' > "$d/review/plan-round-2-request.md"
+touch -t 202608260800 "$d/review/plan-round-1.md"
+touch -t 202608260900 "$d/review/plan-round-2-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG23: 次ラウンド依頼中も依頼側を許す' \
+  || bad "CG23: 依頼待ちなのに block された: [$out]"
+
+# --- CG24: 同じ状態でレビュアーは block される ---
+# 依頼文しか無い区間で許すと、レビューを一度も書かないまま止まれてしまう。
+d=$(mkdir_case cg24); set_status "$d" executing
+printf 'request\n' > "$d/review/plan-round-1-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role design_review --agent task-design-review 2>/dev/null)
+[[ -n "$out" ]] && pass 'CG24: 依頼直後のレビュアーは block される' \
+  || bad "CG24: レビュー未着手なのに allow された"
+
+# --- CG25: 次ラウンドの依頼が来たらレビュアーは再び block される ---
+d=$(mkdir_case cg25); set_status "$d" executing
+printf 'findings\nVERDICT: needs_work\n' > "$d/review/plan-round-1.md"
+printf 'request\n' > "$d/review/plan-round-2-request.md"
+touch -t 202608260800 "$d/review/plan-round-1.md"
+touch -t 202608260900 "$d/review/plan-round-2-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role design_review --agent task-design-review 2>/dev/null)
+[[ -n "$out" ]] && pass 'CG25: 次ラウンド依頼でレビュアーは再び block される' \
+  || bad "CG25: 前ラウンドの VERDICT で allow された"
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail
