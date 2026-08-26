@@ -12,6 +12,10 @@
 #   CI5.  codex でも二重に入らない
 #   CI6.  agmsg が書いた SessionStart を壊さない (上書きせずマージする)
 #   CI7.  .claude/settings.local.json と .codex/hooks.json が info/exclude に入る
+#   CI8.  注入された command に 'agmsg' が含まれない (agmsg の自エントリ判定と衝突しない)
+#   CI9.  送信コマンドは <status-dir>/.send-command で渡り、gate の reason に出る
+#   CI10. 同一 worktree・同一 engine で 2 ロールを起動しても取り違えない
+#   CI11. 3.6.0 以前の「値を焼き込んだ entry」を置換する
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,10 +76,10 @@ run_launch claude ci-1
 n=$(gate_count "$TMP/repo/.claude/settings.local.json")
 [[ "$n" == 1 ]] && pass 'CI1 Stop hook が 1 本入る' || bad "CI1 入っていない (n=$n)"
 
-# command は 4 ロールで共有される 1 本なので、ロールを焼き込んではならない。
-# 焼き込むと後発ロールが先発ロールのゲートを実行する (2026-08-25 実測)。
 cmd=$(jq -r '[.hooks.Stop[]?.hooks[]? | select(.command | test("completion-gate.sh"))][0].command' \
   "$TMP/repo/.claude/settings.local.json" 2>/dev/null || echo "")
+# command は 4 ロールで共有される 1 本なので、ロールを焼き込んではならない。
+# 焼き込むと後発ロールが先発ロールのゲートを実行する (2026-08-25 実測)。
 if [[ "$cmd" != *"--role"* && "$cmd" != *"--agent"* && "$cmd" != *"--status-dir"* \
    && "$cmd" == *"--gate-id"* ]]; then
   pass 'CI1b command にロールを焼き込まない'
@@ -119,6 +123,41 @@ jq -e '.hooks.SessionStart[0].hooks[0].command | test("session-start.sh")' \
   "$TMP/repo/.codex/hooks.json" >/dev/null 2>&1 \
   && pass 'CI6 agmsg の SessionStart を壊さない' || bad 'CI6 agmsg の hook を壊した'
 
+# --- CI8: agmsg の自エントリ判定と衝突しない ---
+# agmsg は delivery.sh status で「その Stop が自分の書いたものか」を command 文字列に
+# 'agmsg' が含まれるかだけで判定する。gate の command に send.sh の実パスを埋めると
+# 誤認され mode が both と報告され、codex-shim.sh (`mode: monitor` の完全一致を要求) が
+# 素通しになって app-server bridge が起動しない。実際にこの経路で codex ペインが
+# 受信不能になった (2026-08-24)。AGMSG_SEND のスタブ名にはわざと agmsg を含めてある。
+ci8=1
+for f in "$TMP/repo/.claude/settings.local.json" "$TMP/repo/.codex/hooks.json"; do
+  c=$(jq -r '[.hooks.Stop[]?.hooks[]? | select(.command | test("completion-gate.sh"))][0].command' \
+    "$f" 2>/dev/null || echo "")
+  if [[ -z "$c" ]]; then
+    bad "CI8 $f に gate の command が無い"; ci8=0
+  elif [[ "$c" == *agmsg* ]]; then
+    bad "CI8 $f の command に agmsg が含まれる: [$c]"; ci8=0
+  fi
+done
+[[ $ci8 -eq 1 ]] && pass 'CI8 注入された command に agmsg が含まれない'
+
+# --- CI9: 送信コマンドはファイルで渡る ---
+GATE="$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/completion-gate.sh"
+if [[ "$(cat "$TMP/status/.send-command" 2>/dev/null)" == "$TMP/bin/agmsg-send.sh" ]]; then
+  # 判定 7 (作業途中で停止) を踏ませて reason に送信コマンドが載ることを見る。
+  : > "$TMP/status/.assigned-task-exec"
+  rm -f "$TMP/status/status.json" "$TMP/status/.gate-blocks"
+  reason=$(bash "$GATE" --status-dir "$TMP/status" --role exec \
+    --agent task-exec --team demo-team 2>/dev/null | jq -r '.reason // ""')
+  if [[ "$reason" == *"$TMP/bin/agmsg-send.sh demo-team task-exec parent"* ]]; then
+    pass 'CI9 .send-command から読んだ送信コマンドが reason に出る'
+  else
+    bad "CI9 reason に送信コマンドが無い: [$reason]"
+  fi
+else
+  bad "CI9 .send-command が書かれていない"
+fi
+
 # --- CI7: 誤コミット防止 ---
 exclude=$(git -C "$TMP/repo" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null)
 ci7=1
@@ -127,7 +166,7 @@ for entry in '.claude/settings.local.json' '.codex/hooks.json'; do
 done
 [[ $ci7 -eq 1 ]] && pass 'CI7 両方の設定ファイルが info/exclude に入る'
 
-# --- CI8: 同一 worktree・同一 engine で 2 ロールを起動しても取り違えない ---
+# --- CI10: 同一 worktree・同一 engine で 2 ロールを起動しても取り違えない ---
 # 不具合の核心。settings.local.json は worktree に 1 本しか無いので gate も 1 本になり、
 # ロールは runner script ごとの環境変数で分かれていなければならない。
 run_launch_role() { # $1=runner $2=workspace-name $3=mode $4=role $5=agent
@@ -136,32 +175,32 @@ run_launch_role() { # $1=runner $2=workspace-name $3=mode $4=role $5=agent
     --plan-file "$TMP/plan.md" --agmsg-team demo-team --agmsg-from "$5" \
     --status-dir "$TMP/status" --no-parallel "$2" >/dev/null 2>&1
 }
-run_launch_role claude ci-8-exec execute exec task-exec
-run_launch_role claude ci-8-review review exec_review task-exec-review
+run_launch_role claude ci-10-exec execute exec task-exec
+run_launch_role claude ci-10-review review exec_review task-exec-review
 n=$(gate_count "$TMP/repo/.claude/settings.local.json")
-r1=$(grep -o 'DISPATCH_GATE_ROLE="[^"]*"' "$TMP/repo/.cmux-team-dispatch-task-run-ci-8-exec.sh" 2>/dev/null | head -1)
-r2=$(grep -o 'DISPATCH_GATE_ROLE="[^"]*"' "$TMP/repo/.cmux-team-dispatch-task-run-ci-8-review.sh" 2>/dev/null | head -1)
+r1=$(grep -o 'DISPATCH_GATE_ROLE="[^"]*"' "$TMP/repo/.cmux-team-dispatch-task-run-ci-10-exec.sh" 2>/dev/null | head -1)
+r2=$(grep -o 'DISPATCH_GATE_ROLE="[^"]*"' "$TMP/repo/.cmux-team-dispatch-task-run-ci-10-review.sh" 2>/dev/null | head -1)
 if [[ "$n" == 1 && "$r1" == 'DISPATCH_GATE_ROLE="exec"' \
    && "$r2" == 'DISPATCH_GATE_ROLE="exec_review"' ]]; then
-  pass 'CI8 2 ロールでも gate は 1 本、ロールは runner ごとに分かれる'
+  pass 'CI10 2 ロールでも gate は 1 本、ロールは runner ごとに分かれる'
 else
-  bad "CI8 gate=$n exec=[$r1] exec_review=[$r2]"
+  bad "CI10 gate=$n exec=[$r1] exec_review=[$r2]"
 fi
 
-# --- CI9: 3.5.0 以前の「値を焼き込んだ entry」を置換する ---
+# --- CI11: 3.6.0 以前の「値を焼き込んだ entry」を置換する ---
 # 古い entry を残すと、そちらが先発ロールの値で全ペインを縛り続ける。
 jq '.hooks.Stop = [{matcher:"",hooks:[{type:"command",
       command:"zsh /old/skills/scripts/completion-gate.sh --status-dir /old --role design --agent other"}]}]' \
-  "$TMP/repo/.claude/settings.local.json" > "$TMP/ci9.json" 2>/dev/null \
-  && mv "$TMP/ci9.json" "$TMP/repo/.claude/settings.local.json"
-run_launch claude ci-9
+  "$TMP/repo/.claude/settings.local.json" > "$TMP/ci11.json" 2>/dev/null \
+  && mv "$TMP/ci11.json" "$TMP/repo/.claude/settings.local.json"
+run_launch claude ci-11
 n=$(gate_count "$TMP/repo/.claude/settings.local.json")
 cmd=$(jq -r '[.hooks.Stop[]?.hooks[]? | select(.command | test("completion-gate.sh"))][0].command' \
   "$TMP/repo/.claude/settings.local.json" 2>/dev/null || echo "")
 if [[ "$n" == 1 && "$cmd" != *"--role design"* && "$cmd" == *"--gate-id"* ]]; then
-  pass 'CI9 旧形式の entry を新形式へ置換する'
+  pass 'CI11 旧形式の entry を新形式へ置換する'
 else
-  bad "CI9 migration されていない n=$n cmd=[$cmd]"
+  bad "CI11 migration されていない n=$n cmd=[$cmd]"
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'

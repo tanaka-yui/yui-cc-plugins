@@ -15,16 +15,27 @@
 #   CG8. block の JSON は decision / reason 以外のキーを含まない (codex の
 #        additionalProperties:false に適合させるため)
 #   CG9. 引数不正は exit 2 で、stdout には何も出さない
-#  CG10. DISPATCH_GATE_MAX_BLOCKS に正の数を入れたときだけ上限が働き、達したら
-#        block をやめる (既定は無制限。CG14 を参照)
+#  CG10. 連続 block には上限があり、達したら block をやめる
+#        (Stop hook が永久に block すると無限ループになる。2026-08-22 の実測で、
+#         engine 側に連続 block の回数上限が無いことを確認済みなので自前で持つ)
 #  CG11. 停止を許したときにカウンタがリセットされる
 #        (待機から復帰したあとに前の回数を持ち越さない)
-#  CG14. 既定 (env 未設定) では上限が無く、block し続ける
+#  CG14. 依頼文 (*-round-<N>-request.md) を round ファイルとして拾わない
+#        (依頼文には手順説明として行頭 "VERDICT: approve" が入るので、拾うと
+#         verdict 済みと誤判定して、待っているだけの依頼側を block してしまう)
+#  CG15. checkpoint をまたぐとき、名前順ではなく最後に依頼されたラウンドを選ぶ
+#        (spec が approve 済み / plan が進行中のとき、辞書順では
+#         plan-round-1.md < spec-round-5.md なので完了済みの spec を選んでしまう)
+#  CG16. .escalated があれば許す (parent へ判断を引き渡して待っている状態)
+#  CG17. 既定では上限が無く block し続ける
 #        (有限の上限は、まだ終わっていない長いタスクを永久停止させる。2026-08-25 に
 #         上限 10 に達した exec が毎ターン止まって進まなくなるのを実ペインで観測した)
-#  CG15. カウンタはロールごとに独立している
-#        (4 ロールが 1 つの status dir を共有するので、1 ファイルに数えると
-#         「4 ペイン合計で上限」になり、どのペインも自分の回数の前に諦める)
+#  CG18. カウンタはロールごとに独立している
+#  CG19. identity をプロセス環境から解決する
+#  CG20. 同じ status dir でもロールごとに判定が分かれる (共有 command の要件)
+#  CG21. 引数は環境変数より優先される
+#        ラウンド上限に達した子は .assigned が残り最新 round に VERDICT があるため、
+#        この sentinel が無いと判定 7 に落ち、done/error のどちらを書いても虚偽になる
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -160,19 +171,69 @@ done
 [[ "$blocked" == 3 ]] && pass 'CG11: 停止を許すとカウンタがリセットされる' \
   || bad "CG11: リセット後の block が $blocked 回 (期待 3)"
 
-# --- CG14: 既定では上限が無く、block し続ける ---
-d=$(mkdir_case cg14); set_status "$d" executing; : > "$d/.assigned-task-exec"
+# --- CG14: 依頼文を round ファイルとして拾わない ---
+# 依頼文にはレビュアーへの手順説明として行頭 "VERDICT: approve" が入る (実物と同じ形にする)。
+# これを findings と取り違えると、verdict を待っているだけの依頼側が「作業途中」と
+# 判定されて block される。依頼文が mtime でも名前順でも「最後」になる配置にして、
+# 除外フィルタ単独を検証する (CG15 の mtime 修正に助けられて通らないようにする)。
+d=$(mkdir_case cg14); touch "$d/.assigned-task-exec"
+printf '（レビュー結果をここに記入）\n' > "$d/review/plan-round-1.md"
+sleep 1
+printf '最終行を次のいずれかにすること:\nVERDICT: approve\n' \
+  > "$d/review/spec-round-5-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null); rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && pass 'CG14: 依頼文を拾わず verdict 待ちとして許す' \
+  || bad "CG14: block された (rc=$rc out=[$out])"
+
+# --- CG15: checkpoint をまたぐとき最後に依頼されたラウンドを選ぶ ---
+# spec が approve 済み、plan が進行中。辞書順なら spec-round-5.md が最後になるが、
+# 実際に待っているのは plan-round-1.md である。
+d=$(mkdir_case cg15); touch "$d/.assigned-task-design"
+printf 'findings\nVERDICT: approve\n' > "$d/review/spec-round-5.md"
+sleep 1   # mtime を確実に分ける (秒単位の精度しか無い環境があるため)
+printf '（レビュー結果をここに記入）\n' > "$d/review/plan-round-1.md"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null); rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && pass 'CG15: 進行中の plan ラウンドを選び verdict 待ちとして許す' \
+  || bad "CG15: 完了済みの spec を選んで block した (rc=$rc out=[$out])"
+
+# 逆向き: レビュアー側は同じ状態で block される (まだ VERDICT を書いていない)
+out=$(bash "$BIN" --status-dir "$d" --role design_review --agent task-design-review 2>/dev/null)
+echo "$out" | grep -q 'plan-round-1.md' \
+  && pass 'CG15b: レビュアーは進行中の plan ラウンドを指して block する' \
+  || bad "CG15b: reason が plan-round-1.md を指していない: [$out]"
+
+# --- CG16: parent へ引き渡して判断待ちなら許す ---
+# ラウンド上限に達した状態を再現する: .assigned あり / 最新 round に VERDICT あり /
+# .deferred 無し。sentinel が無ければ判定 7 で block されることまで対で確認する。
+d=$(mkdir_case cg16); touch "$d/.assigned-task-design"
+printf 'findings\nVERDICT: needs_work\n' > "$d/review/plan-round-5.md"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -n "$out" ]] && pass 'CG16a: sentinel 無しなら block する (判定 7)' \
+  || bad 'CG16a: sentinel 無しでも block されない'
+
+touch "$d/.escalated"; rm -f "$d/.gate-blocks"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null); rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && pass 'CG16b: .escalated があれば引き渡し待ちとして許す' \
+  || bad "CG16b: block された (rc=$rc out=[$out])"
+
+# ロール非依存であること (exec もレビュー上限で同じ状態になりうる)
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-design 2>/dev/null); rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && pass 'CG16c: .escalated は exec ロールでも効く' \
+  || bad "CG16c: exec で block された (rc=$rc out=[$out])"
+
+# --- CG17: 既定では上限が無く block し続ける ---
+d=$(mkdir_case cg17); set_status "$d" executing; : > "$d/.assigned-task-exec"
 blocked=0
 for i in $(seq 1 25); do
   out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
   [[ -n "$out" ]] && blocked=$((blocked + 1))
 done
-[[ "$blocked" == 25 ]] && pass 'CG14: 既定では上限が無く block し続ける' \
-  || bad "CG14: 25 回中 block したのは $blocked 回 (期待 25)"
+[[ "$blocked" == 25 ]] && pass 'CG17: 既定では上限が無く block し続ける' \
+  || bad "CG17: 25 回中 block したのは $blocked 回 (期待 25)"
 
-# --- CG15: カウンタはロールごとに独立 ---
+# --- CG18: カウンタはロールごとに独立 ---
 # 上限 2 で exec と design を交互に叩く。カウンタが共有なら合計 2 回で尽きる。
-d=$(mkdir_case cg15); set_status "$d" executing
+d=$(mkdir_case cg18); set_status "$d" executing
 : > "$d/.assigned-task-exec"; : > "$d/.assigned-task"
 exec_blocked=0; design_blocked=0
 for i in 1 2 3; do
@@ -182,88 +243,36 @@ for i in 1 2 3; do
   [[ -n "$out" ]] && design_blocked=$((design_blocked + 1))
 done
 [[ "$exec_blocked" == 2 && "$design_blocked" == 2 ]] \
-  && pass 'CG15: カウンタはロールごとに独立している' \
-  || bad "CG15: exec=$exec_blocked design=$design_blocked (期待 2/2)"
+  && pass 'CG18: カウンタはロールごとに独立している' \
+  || bad "CG18: exec=$exec_blocked design=$design_blocked (期待 2/2)"
 
-# --- CG16: 依頼文は round ファイルとして選ばれない ---
-# 依頼文には手順説明として "VERDICT: approve" が普通に含まれる。これを findings と誤認すると
-# 「verdict 済み」と判断される (2026-08-24 実測)。
-# round 番号を変えてあるのは意図的である。同じ番号だと "-" < "." で依頼文の方が辞書順で先に
-# 来てしまい、名前順の実装でも偶然 findings が選ばれるのでテストが差を検出できない。
-# レビュアー視点で見るのも意図的で、VERDICT の有無に対する判定が依頼側と逆になるため、
-# 「依頼文を拾った = allow」「findings を拾った = block」と結果がはっきり分かれる。
-d=$(mkdir_case cg16); set_status "$d" executing
-printf 'findings\n' > "$d/review/code-round-1.md"
-printf 'instructions\nVERDICT: approve\n' > "$d/review/code-round-2-request.md"
-touch -t 202608260800 "$d/review/code-round-1.md"
-touch -t 202608260900 "$d/review/code-round-2-request.md"
-out=$(bash "$BIN" --status-dir "$d" --role exec_review --agent task-exec-review 2>/dev/null)
-[[ -n "$out" ]] && pass 'CG16: 依頼文を findings と誤認しない' \
-  || bad "CG16: 依頼文の VERDICT を拾ってレビュー未完了のまま allow した"
-
-# --- CG17: checkpoint をまたぐと辞書順では壊れる。mtime で選ぶ ---
-# 辞書順では plan-round-1.md < spec-round-5.md なので、完了済みの spec を選んでしまう。
-d=$(mkdir_case cg17); set_status "$d" executing; : > "$d/.assigned-task-exec"
-printf 'findings\nVERDICT: approve\n' > "$d/review/spec-round-5.md"
-printf 'findings\n' > "$d/review/plan-round-1.md"
-touch -t 202608260800 "$d/review/spec-round-5.md"
-touch -t 202608260900 "$d/review/plan-round-1.md"
-out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
-[[ -z "$out" ]] && pass 'CG17: 進行中の checkpoint を mtime で選ぶ' \
-  || bad "CG17: 完了済み checkpoint を選んで block した: [$out]"
-
-# --- CG18: .escalated は全ロールで停止を許す ---
-# ラウンド上限で parent へ引き渡した子は、done も error も虚偽になる。待つのが正しい。
-for role in design design_review exec exec_review; do
-  d=$(mkdir_case "cg18-$role"); set_status "$d" executing
-  : > "$d/.assigned-task-exec"; : > "$d/.assigned-task"
-  printf 'findings\nVERDICT: needs_work\n' > "$d/review/code-round-1.md"
-  : > "$d/.escalated"
-  out=$(bash "$BIN" --status-dir "$d" --role "$role" --agent task-exec 2>/dev/null)
-  [[ -z "$out" ]] && pass "CG18($role): .escalated で停止を許す" \
-    || bad "CG18($role): block した: [$out]"
-done
-
-# --- CG19: --send-command 省略時は .send-command から読む ---
-# hook のコマンド文字列に send.sh の実パスを焼くと agmsg が自分の Stop と誤認し、
-# codex の app-server bridge が起動しなくなる。だからファイル経由で渡す (2026-08-24 実測)。
-d=$(mkdir_case cg19); set_status "$d" executing; : > "$d/.assigned-task-exec"
-printf '/tmp/fake-send.sh\n' > "$d/.send-command"
-out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec --team myteam 2>/dev/null)
-reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
-[[ "$reason" == *"/tmp/fake-send.sh myteam task-exec parent"* ]] \
-  && pass 'CG19: .send-command から送信コマンドを読む' \
-  || bad "CG19: reason に送信コマンドが無い: [$reason]"
-
-# --- CG20: identity をプロセス環境から読む ---
+# --- CG19: identity をプロセス環境から読む ---
 # hook の command は 4 ロールで共有される 1 本なので、ロールは環境から来なければならない。
-d=$(mkdir_case cg20); set_status "$d" executing; : > "$d/.assigned-task-exec"
+d=$(mkdir_case cg19); set_status "$d" executing; : > "$d/.assigned-task-exec"
 out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=exec DISPATCH_GATE_AGENT=task-exec \
   bash "$BIN" 2>/dev/null)
-[[ -n "$out" ]] && pass 'CG20: 環境変数だけで identity を解決する' \
-  || bad "CG20: 環境変数から解決できず block しなかった"
+[[ -n "$out" ]] && pass 'CG19: 環境変数だけで identity を解決する' \
+  || bad "CG19: 環境変数から解決できず block しなかった"
 
-# --- CG21: 同じ status dir でもロールごとに別の判定になる ---
+# --- CG20: 同じ status dir でもロールごとに別の判定になる ---
 # これが不具合の核心である。1 本の共有 command で 2 ロールが正しく分岐すること。
-d=$(mkdir_case cg21); set_status "$d" executing
-: > "$d/.assigned-task"            # design にはタスクが来ている
-printf 'findings\n' > "$d/review/code-round-1.md"   # VERDICT 未記入
-# design (依頼側): verdict 待ちなので停止を許す
+d=$(mkdir_case cg20); set_status "$d" executing
+: > "$d/.assigned-task"
+printf 'findings\n' > "$d/review/code-round-1.md"
 out_d=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=task \
   bash "$BIN" 2>/dev/null)
-# exec_review (レビュアー): 自分がまだ書いていないので block
 out_r=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=exec_review DISPATCH_GATE_AGENT=task-exec-review \
   bash "$BIN" 2>/dev/null)
-[[ -z "$out_d" && -n "$out_r" ]] && pass 'CG21: 共有 command でもロールごとに分岐する' \
-  || bad "CG21: design=[$out_d] exec_review=[$out_r] (期待 allow/block)"
+[[ -z "$out_d" && -n "$out_r" ]] && pass 'CG20: 共有 command でもロールごとに分岐する' \
+  || bad "CG20: design=[$out_d] exec_review=[$out_r] (期待 allow/block)"
 
-# --- CG22: 引数は環境変数より優先される ---
-d=$(mkdir_case cg22); set_status "$d" executing; : > "$d/.assigned-task-exec"
+# --- CG21: 引数は環境変数より優先される ---
+d=$(mkdir_case cg21); set_status "$d" executing; : > "$d/.assigned-task-exec"
 out=$(DISPATCH_GATE_STATUS_DIR=/nonexistent DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=other \
   bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
 reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
-[[ "$reason" == *"$d"* ]] && pass 'CG22: 引数が環境変数を上書きする' \
-  || bad "CG22: 引数が効いていない: [$reason]"
+[[ "$reason" == *"$d"* ]] && pass 'CG21: 引数が環境変数を上書きする' \
+  || bad "CG21: 引数が効いていない: [$reason]"
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail
