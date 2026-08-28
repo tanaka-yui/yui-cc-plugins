@@ -10,20 +10,24 @@ claude/superpowers が作成した plan を、新しい cmux ペインで**対�
 /codex-exec                                   # plan 候補を提示して確認してから実装
 /codex-exec docs/superpowers/plans/foo.md     # plan をパス指定
 /codex-exec down                              # 下に分割
-/codex-exec --no-parallel                     # 並列化させず従来どおり逐次で実装
-/codex-exec --agents 2                        # 同時実行の子エージェントを 2 体までに絞る
 ```
 
-並列実行は既定で有効で、消費トークンが逐次実行の 4〜5 倍程度に増える。タイポ修正のような小さな plan では
-`--no-parallel` か `--agents` で並列度を絞るとよい。
+codex には並列実行を指示しない。作業はすべて可視ペインのフォアグラウンドで進む。codex の
+子エージェントは shared local app-server daemon 上の別スレッドで走りペインに映らないため、
+「4 体が動いている」のか「1 体も動いていない」のかを見分けられなくなるからである。
+`--no-parallel` / `--agents` は削除済みで、渡すとペイン分割前に非ゼロ終了する。
 
 ## フロー
 
 1. 実装する plan を確定（無指定なら候補を提示して確認）
 2. 親の agmsg identity を解決（未参加なら join を案内）
-3. 新ペインで対話 codex が plan を実装（調査と検証は `spawn_agent` で並列化。既定 4 並列）
+3. 新ペインで対話 codex が plan を実装（すべて可視ペインのフォアグラウンド）
 4. codex 完了 → agmsg 通知 → 親の常駐 Monitor イベントとして届き、親が wake
 5. 親が「レビューする?」と確認 → Yes で cmux-codex-review 起動
+
+タイマーで起きたときは `bin/work-signal` で「動いていて黙っている」のか「止まっている」のかを
+切り分ける。止まっていて到達可能なら `dispatch-nudge:` を 1 回だけ送って自動再開する
+（ポーリングは増やさず、契機は元からある単発タイマーの起床だけ）。
 
 ## 前提条件
 

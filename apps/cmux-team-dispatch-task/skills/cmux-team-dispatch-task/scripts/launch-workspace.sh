@@ -984,8 +984,15 @@ if [[ "$MODE" == "execute" ]]; then
     REVIEWER_PARALLEL=""
     case "$REVIEWER_ENGINE" in
       claude|codex)
-        REVIEWER_PARALLEL=" Also include this in the message to the reviewer, addressed to the reviewer and not to you: $(bash "$SCRIPT_DIR/parallel-directive.sh" \
-          --engine "$REVIEWER_ENGINE" --mode review --agents "$MAX_AGENTS") End of the message to the reviewer." ;;
+        # directive が空 (codex は指示しないので常に空) のときは囲みの一文ごと出さない。
+        # 空の囲みを残すと、実装者が中身のない「reviewer-only directive」をレビュー依頼へ
+        # 転記してしまい、レビュアーは意味の無い指示を受け取る。
+        REVIEWER_DIRECTIVE=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
+          --engine "$REVIEWER_ENGINE" --mode review --agents "$MAX_AGENTS")
+        if [[ -n "$REVIEWER_DIRECTIVE" ]]; then
+          REVIEWER_PARALLEL=" Also include this in the message to the reviewer, addressed to the reviewer and not to you: $REVIEWER_DIRECTIVE End of the message to the reviewer."
+        fi
+        ;;
       "") ;;
       *) log "warn" "review config has unknown reviewer_engine=$REVIEWER_ENGINE; skipping parallel directive" ;;
     esac

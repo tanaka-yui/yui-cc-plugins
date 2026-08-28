@@ -16,12 +16,12 @@ agmsg の受信箱を確認したうえで、新しい cmux ペインで **codex
 /codex-review --base main  # main との差分をレビュー
 /codex-review -- セキュリティ観点を重点的に   # カスタム指示付き
 /codex-review --path docs/superpowers/specs/x-design.md  # 指定ファイルの内容をレビュー
-/codex-review --no-parallel   # 並列化させず 1 エージェントでレビュー
-/codex-review --agents 2      # 同時実行の子エージェントを 2 体までに絞る
 ```
 
-並列実行は既定で有効で、観点別レビューと背景調査を同時に走らせるぶん消費トークンが逐次実行の 4〜5 倍程度に
-増える。1 行の typo 修正のような小さな差分では `--no-parallel` か `--agents` で並列度を絞るとよい。
+codex には並列レビューを指示しない。レビューは可視ペイン 1 枚のフォアグラウンドで進む。
+codex の子エージェントは shared local app-server daemon 上の別スレッドで走りペインに映らず、
+可視ペインで指摘を追えることがこのプラグインの設計意図そのものだからである。
+`--no-parallel` / `--agents` は削除済みで、渡すとペイン分割前に非ゼロ終了する。
 
 対象を指定せずに `/codex-review` を打った場合は、未コミット変更と
 `docs/superpowers/{specs,plans}` の直近 md を候補として提示し、どれをレビューするか確認する。

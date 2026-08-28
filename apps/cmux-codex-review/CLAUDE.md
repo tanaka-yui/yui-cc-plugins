@@ -7,7 +7,6 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 - `commands/codex-review.md` — `/codex-review` スラッシュコマンド（agmsg inbox 確認 + bin 実行）
 - `skills/codex-review/SKILL.md` — レビュー起動スキル（トリガー定義）
 - `bin/cmux-codex-review` — ペイン分割 + 対話 codex へのレビュープロンプト送信の本体（`!` 直接実行も可、LLM 不要で高速）
-- `bin/codex-parallel-lib.sh` — 並列実行ディレクティブの生成（`cmux-codex-exec` と**同一内容のコピー**。M5 が同一性を検証する）
 - `.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` — Plugin マニフェスト
 
 ## 動作
@@ -38,10 +37,10 @@ codex が実際に受け取る引数を検証する（生文字列の grep で�
 - **D8**: `--list-targets` は cmux を呼ばずに候補を TSV 出力する（`CMUX_SOCKET_PATH` 不要）
 - **D9**: 候補ゼロ（git リポジトリ外）でも空出力・終了コード 0 で終わる
 - `--base` の反映 / `-m`・`-e` の不正値拒否
-- **D10-D11**: 既定でディレクティブが入り `--no-parallel` で消える（prompt は常に 1 引数）
-- **D12-D13**: `.codex/agents/*.toml` の候補列挙とフォールバック、description の `'` エスケープ
-- **D14**: 通知本文の `agents=` が並列有無で切り替わる
-- **D15**: `--agents` の不正値は非ゼロ終了し、ペインを分割しない
+- **D10**: prompt に並列実行の語彙が 1 つも入らない（否定的不変条件。再導入を防ぐ）
+- **D11**: 削除済みフラグ `--no-parallel` / `--agents` は**明示的に**非ゼロ終了し、ペインを分割しない
+  （この bin の `*)` は追加レビュー指示へ落ちるため、拒否しないと黙って本文に混ざる）
+- **D12**: 通知本文に `agents=` が入らず、prompt は常に 1 引数
 
 ```bash
 bash apps/cmux-codex-review/test/test-monitor-only.sh
@@ -53,7 +52,8 @@ monitor 専用化の回帰テスト（静的検査。両プラグイン分をこ
 - **M2**: 両プラグインの `.md` / `bin` に旧ポーリング watcher への参照が残っていない
 - **M3**: 両プラグインの `commands/*.md` に「ターンを閉じて Monitor イベントで起きる」手順がある
 - **M4**: 両プラグインの `commands/*.md` に単発タイマー保険（`run_in_background` + `sleep`）の手順がある
-- **M5**: review / exec 2 プラグインの `codex-parallel-lib.sh` が同一内容
+- **M5**: 並列実行が両プラグインから完全に消えている（`codex-parallel-lib.sh` が存在せず、
+  `commands/**` / `skills/**` / `bin/**` に `spawn_agent` などの契約語彙が残らない否定的不変条件）
 - **M6**: 両プラグインの `commands/**` / `skills/**` / `bin/**` に旧ポーリング watcher の契約語彙
   （`short-lived watcher` / `watcher's wait target` / `status=done|gone|timeout` / `--timeout` /
   `--interval` / `--liveness-interval`）が残っていない（否定的不変条件。具体名 1 つの grep = M2 では
@@ -93,6 +93,27 @@ Step 3 が正である:
 適用されない**ため、`--sandbox read-only` にすると codex が通知を撃てず、親が永久に wake しない。
 過去に read-only へ変更して通知が壊れた実績があるので戻さないこと。
 
+## codex に並列を指示しない理由
+
+codex の子エージェントは shared local app-server daemon 上の別スレッドで走り、ペインには映らない
+（覗けるのは `codex agents` という別 TUI）。可視ペインで進行を追えることがこのプラグインの
+設計意図そのものなので、追えない場所へ作業を逃がす指示とは両立しない。
+
+**依頼しない限定であって、codex ができないという保証ではない。** collaboration tools は
+`features.multi_agent_v2 = false` でも登録されたままである（codex-cli 0.149.1 で実測。
+`codex debug prompt-input` に `functions.collaboration.*` が残り、`list_agents` の実呼び出しも成功する。
+`multi_agent_v2.enabled=false` / `--disable multi_agent` / `--disable collaboration_modes` /
+`non_code_mode_only=true` などのいずれでも消えない）。詳細は
+`apps/cmux-codex-exec/CLAUDE.md` の同名の節に測定結果をまとめてある。
+
+## 停滞検知は適用外
+
+`cmux-codex-exec` と `cmux-team-dispatch-task` は `work-signal` で停滞を検知して
+`dispatch-nudge:` を自動送信するが、**このプラグインは対象外**である。作業信号はコミットと
+ファイル mtime を主成分にしており、レビューは何も書かないので、作業中のレビュアーと止まった
+レビュアーが同じ `changed=no` に見えてしまう。ここでは `commands/codex-review.md` の Step 3b の
+タイマー分岐（`history.sh` → `read-screen` 1 回リトライ → 再武装 3 回上限）だけが保険である。
+
 ## whoami の `suggest=true` に注意
 
 `suggest=true` は「このプロジェクトは未参加」を意味する。出力に含まれる `teams=` / `agents=` は
@@ -107,8 +128,7 @@ Step 3 が正である:
 | reasoning effort | `xhigh`（extra high） | `-e` / `--effort` |
 | 対象 | `--uncommitted` | `--base <branch>` / `--commit <sha>` / `--path <file>`（繰り返し可） |
 | 分割方向 | `right` | 位置引数 `down`/`left`/`up` or `-d` |
-| 並列実行 | 有効（観点別レビュー・背景調査を `spawn_agent` で分割） | `--no-parallel` |
-| 同時実行の上限 | `4`（2〜8） | `--agents <N>` |
+| 並列実行 | **無効**（codex には指示しない。`--no-parallel` / `--agents` は削除済みで、渡すと非ゼロ終了） | — |
 
 ## 前提
 

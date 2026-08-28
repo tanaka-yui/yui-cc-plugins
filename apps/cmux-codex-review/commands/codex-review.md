@@ -201,9 +201,8 @@ Then end the turn.
   Step 2 to confirm it is this review (several reviews may be in flight). **First stop
   the safety timer** with `TaskStop` on the task id from Step 3a: a surviving `sleep`
   exits an hour later and injects a useless wake into whatever conversation the user has
-  moved on to. Then tell the user the review is complete. If the line also carries
-  `agents=<N>`, report that number as how many child agents codex ran in parallel.
-  Respond to the user in Japanese.
+  moved on to. Then tell the user the review is complete. Respond to the user in
+  Japanese.
 - **Woken by the timer task** — this does **not** mean the review is unfinished. The
   completion row may exist in the DB while the push never reached this session (no
   Monitor stream, a competing watcher took the row, the stream died, codex's `send.sh`

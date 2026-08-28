@@ -120,7 +120,7 @@ fi
 PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
   --engine "$EXEC_ENGINE" --mode execute --agents "$MAX_AGENTS")
 STATUS_PROTOCOL="MANDATORY STATUS PROTOCOL: before doing any work, write $STATUS_DIR/status.json with status executing, preserve all existing fields, and preserve an existing pr_url. Every terminal path must write $STATUS_DIR/result.md. On success, write the result summary, run bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done followed by a one line summary, then immediately call $AGMSG_SEND with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient parent, and the body dispatch-notify: [dispatch] task $EXEC_AGENT finished (status: done). On any failure or blocking error, write the reason to the result file, run bash $SCRIPT_DIR/report-status.sh $STATUS_DIR error followed by that reason, then immediately call $AGMSG_SEND with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient parent, and the body dispatch-notify: [dispatch] task $EXEC_AGENT finished (status: error). A non-zero terminal notification means the parent was not told; retry once and, if the second send also fails, record that notification failure in status.json."
-REQUEST_TEXT="Read and execute the plan at $PLAN_FILE. $PARALLEL $STATUS_PROTOCOL"
+REQUEST_TEXT="Read and execute the plan at $PLAN_FILE. ${PARALLEL:+$PARALLEL }$STATUS_PROTOCOL"
 
 if [[ -n "$REVIEW_CONFIG" ]]; then
   [[ -f "$REVIEW_CONFIG" && ! -L "$REVIEW_CONFIG" ]] \
@@ -159,6 +159,12 @@ if [[ -n "$REVIEW_CONFIG" ]]; then
 
   REVIEW_PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
     --engine "$REVIEWER_ENGINE" --mode review --agents "$MAX_AGENTS")
+  # directive が空 (codex reviewer) のときは囲みごと落とす。空の囲みを残すと実装者が
+  # 中身のない reviewer-only directive をレビュー依頼へ転記してしまう。
+  REVIEWER_ONLY_BLOCK=""
+  if [[ -n "$REVIEW_PARALLEL" ]]; then
+    REVIEWER_ONLY_BLOCK="Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive. "
+  fi
   FINDINGS_PATH="$REVIEW_DIR/code-round-N.md"
   case "$REVIEWER_ENGINE" in
     codex)
@@ -177,7 +183,7 @@ if [[ -n "$REVIEW_CONFIG" ]]; then
       ;;
   esac
   REVIEW_ABORT="REVIEW ABORT PROTOCOL: if you stop before completing the work, write the stop reason to $FINDINGS_PATH and make its last line VERDICT: needs_work, then call $AGMSG_SEND once with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and a body starting abort-reviewer: [abort] followed by the one line reason. Next follow the error branch of the mandatory status protocol, including the result file, bash $SCRIPT_DIR/report-status.sh $STATUS_DIR error, and the parent notification ending finished (status: error), before ending the session."
-  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and the whole review-code: message as one argument. For round N, that message tells the reviewer to inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $REVIEWER_AGENT, recipient $EXEC_AGENT, and the whole review-verdict: message as one argument. Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive. $WAIT_PROTOCOL A non-zero send exit means the recipient was not told, so report it instead of waiting. Do not poll the findings file. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed. $REVIEW_ABORT"
+  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and the whole review-code: message as one argument. For round N, that message tells the reviewer to inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $REVIEWER_AGENT, recipient $EXEC_AGENT, and the whole review-verdict: message as one argument. ${REVIEWER_ONLY_BLOCK}$WAIT_PROTOCOL A non-zero send exit means the recipient was not told, so report it instead of waiting. Do not poll the findings file. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed. $REVIEW_ABORT"
 fi
 
 case "$EXEC_ENGINE" in

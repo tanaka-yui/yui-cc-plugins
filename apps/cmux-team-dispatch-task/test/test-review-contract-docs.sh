@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Review trust-boundary behavior must be described consistently at all entry points.
+#
+# RD5/RD6 extend that to the two decisions that changed how a Codex child is driven:
+# no parallel directive is sent to Codex, and a stalled child is nudged once. Both are
+# behavior a reader acts on, so all four entry docs must agree about them.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,5 +56,35 @@ for doc in "${DOCS[@]}"; do
   fi
 done
 [[ $fail -ne 0 ]] || ok 'RD4 all four entry docs state findings path, verdicts, cap, and terminal rule'
+
+# RD5: Codex gets no parallel directive, and every doc says so. A doc that still promises
+# spawn_agent to a codex child sends the reader looking for behavior that was removed.
+rd5=0
+for doc in "${DOCS[@]}"; do
+  rel="${doc#"$ROOT/"}"
+  flat=$(tr '\n' ' ' < "$doc" | tr -s ' ')
+  # 主張そのものを探す: 「codex には並列を指示しない」と読める一文があること
+  if [[ "$flat" == *'並列を指示しない'* || "$flat" == *'並列レビューを指示しない'* \
+     || "$flat" == *'prints nothing and exits 0'* || "$flat" == *'空出力'* ]]; then
+    :
+  else
+    bad "RD5 $rel does not state that codex receives no parallel directive"; rd5=1
+  fi
+  # 起動プロンプトに spawn_agent が届くと読める記述が残っていないこと
+  if grep -qE 'codex (には|sessions are told to use) .{0,20}(spawn_agent|`spawn_agent`)' "$doc"; then
+    bad "RD5 $rel still promises spawn_agent to codex children"; rd5=1
+  fi
+done
+[[ $rd5 -ne 0 ]] || ok 'RD5 all four entry docs agree that codex receives no parallel directive'
+
+# RD6: the stall-detection contract (work signal + one nudge) is stated everywhere.
+rd6=0
+for doc in "${DOCS[@]}"; do
+  rel="${doc#"$ROOT/"}"
+  flat=$(tr '\n' ' ' < "$doc" | tr -s ' ')
+  [[ "$flat" == *'work-signal'* ]] || { bad "RD6 $rel omits work-signal"; rd6=1; }
+  [[ "$flat" == *'dispatch-nudge'* ]] || { bad "RD6 $rel omits the dispatch-nudge label"; rd6=1; }
+done
+[[ $rd6 -ne 0 ]] || ok 'RD6 all four entry docs state the work-signal / dispatch-nudge contract'
 
 exit "$fail"

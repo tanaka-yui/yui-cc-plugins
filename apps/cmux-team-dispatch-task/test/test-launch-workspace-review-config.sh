@@ -148,7 +148,8 @@ runner_with_config() {
   local runner="$1" config="$2" name="$3"
   local output
   # --no-parallel で起動プロンプト側のディレクティブを止め、レビュー依頼文への
-  # 注入だけを切り分けて検査する
+  # 注入だけを切り分けて検査する。実装者が codex のケースは起動プロンプトに
+  # そもそも注入されないので、この切り分けは engine を問わず成立する。
   output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
     AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode execute --runner "$runner" --plan-file "$TMP/plan.md" \
@@ -345,16 +346,22 @@ assert_die 'T11b --parent-notify-surface は削除済みなので拒否される
 # --- PR1: reviewer_runner / reviewer_engine を明示した固定レビュー設定では、
 #     実装者 engine の反対側を計算せず JSON の reviewer_engine をそのまま使う ---
 codex_reviewer=$(runner_with_config claude "$TMP/status/review/code-review-codex-reviewer.json" review-cfg-codex-rev)
-assert_contains "$codex_reviewer" 'PARALLEL EXECUTION, mandatory' 'PR1 reviewer_engine=codex でディレクティブが入る'
-assert_contains "$codex_reviewer" 'spawn_agent' 'PR1 codex レビュアーには spawn_agent が届く'
-assert_contains "$codex_reviewer" 'Give each review lens its own child agent' 'PR1 review モードの文面が使われる'
+assert_not_contains "$codex_reviewer" 'PARALLEL EXECUTION, mandatory' 'PR1 reviewer_engine=codex ではディレクティブが入らない'
+assert_not_contains "$codex_reviewer" 'spawn_agent' 'PR1 codex レビュアーに spawn_agent は届かない'
+# PR1b: directive が空になったとき、囲みの一文ごと消えること。囲みだけが残ると実装者が
+# 中身のない「reviewer 宛の指示」をレビュー依頼へ転記してしまう。
+assert_not_contains "$codex_reviewer" 'Also include this in the message to the reviewer' \
+  'PR1b codex レビュアーでは空の reviewer 囲みが残らない'
 
 claude_reviewer=$(runner_with_config codex "$TMP/status/review/code-review-claude-reviewer.json" review-cfg-claude-rev)
 assert_contains "$claude_reviewer" 'Task subagents' 'PR1 claude レビュアーには Task サブエージェント指示が届く'
 assert_not_contains "$claude_reviewer" 'spawn_agent' 'PR1 claude レビュアーに spawn_agent は届かない'
+assert_contains "$claude_reviewer" 'Give each review lens its own child agent' 'PR1 review モードの文面が使われる'
+assert_contains "$claude_reviewer" 'Also include this in the message to the reviewer' \
+  'PR1b claude レビュアーでは reviewer 囲みが付く'
 
 # --- PR3: ディレクティブを足しても REVIEW_INSTRUCTION はクォートフリーのまま ---
-pr3_segment=$(grep -o 'MANDATORY CODE REVIEW.*in the PR body and proceed\.' "$codex_reviewer" | head -1)
+pr3_segment=$(grep -o 'MANDATORY CODE REVIEW.*in the PR body and proceed\.' "$claude_reviewer" | head -1)
 if [[ -z "$pr3_segment" ]]; then
   echo 'FAIL: PR3 review segment not extractable'
   fail=1

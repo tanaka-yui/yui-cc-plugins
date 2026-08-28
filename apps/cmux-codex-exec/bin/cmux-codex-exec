@@ -15,13 +15,8 @@ set -euo pipefail
 #   --parent <agent>                通知先の親 agent 名
 #   --plan-mode <inline|path>       plan をプロンプトへ全文埋め込むかパス参照か (default: path)
 #   --list-targets                  plan 候補を TSV で列挙して終了 (cmux 不要)
-#   --no-parallel                   並列実行ディレクティブを注入しない
-#   --agents <N>                    同時実行する子エージェントの上限 2..8 (default: 4)
 
 CMUX_BIN="${CMUX_BIN:-cmux}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=./codex-parallel-lib.sh
-source "$SCRIPT_DIR/codex-parallel-lib.sh"
 
 # plan 候補の列挙。docs/superpowers/plans の直近 md を TSV で出す。
 # 列: target<TAB>kind<TAB>value<TAB>label
@@ -45,7 +40,6 @@ list_targets() {
 DIR="right"; MODEL="gpt-5.6-sol"; EFFORT="xhigh"
 TEAM=""; PARENT=""; PLAN=""; PLAN_MODE="path"
 LIST_TARGETS=0
-NO_PARALLEL=0; MAX_AGENTS=4
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -d|--dir)    DIR="$2"; shift 2 ;;
@@ -55,8 +49,11 @@ while [[ $# -gt 0 ]]; do
     --parent)    PARENT="$2"; shift 2 ;;
     --plan-mode) PLAN_MODE="$2"; shift 2 ;;
     --list-targets) LIST_TARGETS=1; shift ;;
-    --no-parallel)  NO_PARALLEL=1; shift ;;
-    --agents)       MAX_AGENTS="$2"; shift 2 ;;
+    --no-parallel|--agents)
+      # 並列実行は撤廃済み。黙って無視すると *) の分岐へ落ちて plan パスとして扱われ、
+      # 「効いていない」ことに気づけないまま codex が起動してしまう。明示的に落とす。
+      echo "エラー: $1 は削除されました（codex への並列指示は撤廃）" >&2
+      exit 1 ;;
     right|left|up|down) DIR="$1"; shift ;;
     *)           PLAN="$1"; shift ;;
   esac
@@ -77,9 +74,6 @@ fi
 [[ "$MODEL" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "エラー: --model に使用できない文字が含まれています" >&2; exit 1; }
 [[ "$EFFORT" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "エラー: --effort に使用できない文字が含まれています" >&2; exit 1; }
 
-# --agents はプロンプトへ埋め込まれる。範囲外・非数値はペイン分割前に弾く
-[[ "$MAX_AGENTS" =~ ^[2-8]$ ]] || { echo "エラー: --agents は 2〜8 の整数で指定してください" >&2; exit 1; }
-
 # plan 解決: 引数優先、無ければ docs/superpowers/plans/ の最新 md
 if [[ -z "$PLAN" ]]; then
   PLAN=$(ls -t docs/superpowers/plans/*.md 2>/dev/null | head -1 || true)
@@ -94,19 +88,27 @@ SNUM=$(printf '%s' "$S" | grep -oE '[0-9]+' | head -1)
 TOKEN="codex-exec-$SNUM"
 CODEX_AGENT="cxexec-$SNUM"
 
-# 完了通知指示（--team/--parent 両方あるときのみ注入）
+# 受信配線と完了通知指示（--team/--parent 両方あるときのみ注入）
+#
+# join.sh は送信側の登録でしかない。codex ペインが親からの追撃（停滞時の nudge）を
+# 受け取るには bridge seat が要る。seat が無いと send.sh は成功するのにメッセージは
+# 未読で滞留し、親からは「送った」codex からは「何も来ていない」という食い違いになる
+# （docs/notification-gaps.md の R2）。だから作業を始める前に seat を記録させる。
+REACHABLE=""
 NOTIFY=""
 if [[ -n "$TEAM" && -n "$PARENT" ]]; then
-  AGENTS_SUFFIX=""; AGENTS_NOTE=""
-  if [[ $NO_PARALLEL -eq 0 ]]; then
-    AGENTS_SUFFIX=" agents=<N>"
-    AGENTS_NOTE="
-その際 agents=<N> の <N> は、実際に spawn した子エージェントの総数（整数）に置き換えよ。"
-  fi
+  REACHABLE="まず最初に、親からの追加指示を受け取れる状態を作れ。次を1回だけ実行せよ:
+~/.agents/skills/agmsg/scripts/drivers/types/codex/codex-record-session.sh $TEAM $CODEX_AGENT
+
+watch.sh を自分で起動してはならない（バックグラウンド端末でも不可）。自前の watcher は
+読んだかどうかに関わらずメッセージを既読にするため、idle 中に届いたものが誰にも読まれずに
+消える。起動しなければ未読のまま残り、あとから回復できる。
+
+"
   NOTIFY="
 
 作業がすべて完了したら、最後に必ず次を1回だけ実行して完了を通知せよ:
-~/.agents/skills/agmsg/scripts/send.sh $TEAM $CODEX_AGENT $PARENT 'DONE $TOKEN: $PLAN_NAME 実装完了$AGENTS_SUFFIX'$AGENTS_NOTE"
+~/.agents/skills/agmsg/scripts/send.sh $TEAM $CODEX_AGENT $PARENT 'DONE $TOKEN: $PLAN_NAME 実装完了'"
 fi
 
 # plan 本文 or パス参照
@@ -118,22 +120,7 @@ else
   TASK="plan ファイル $PLAN を読み、このリポジトリに実装せよ。"
 fi
 
-# 並列実行ディレクティブ。実装本体（ファイル編集）は同一 worktree の競合を避けるため
-# 親エージェントに逐次でやらせ、書き込みの無い調査と実装後の検証だけを並列化させる。
-PARALLEL=""
-if [[ $NO_PARALLEL -eq 0 ]]; then
-  EXEC_PHASES="このタスクでは次のとおり分担せよ:
-
-- plan を読んだ直後、影響範囲 / 既存実装パターン / テスト構成 / 関連ドキュメントの調査を
-  読み取り専用の子エージェントに分割して並列実行し、結果を集約してから実装に入れ。
-- 実装本体（ファイル編集）は親エージェントが逐次で行え。複数の子エージェントに同一
-  worktree のファイルを同時編集させてはならない。
-- 実装完了後、型チェック / lint / テスト / ドキュメント整合の検証を子エージェントに
-  分けて並列実行せよ。"
-  PARALLEL=$(build_parallel_directive "$MAX_AGENTS" "$EXEC_PHASES")
-fi
-
-PROMPT="$TASK$PARALLEL$NOTIFY"
+PROMPT="$REACHABLE$TASK$NOTIFY"
 # PROMPT 内の単一引用符を '\'' 方式でエスケープしてから外側を単一引用符で包む。
 # cmux send でペインへ送られ、ペインのシェルが再パースするため必須。NOTIFY は
 # 'DONE ...' の単一引用符を含むので、この処理が無いとコマンドが壊れて codex に届かない。

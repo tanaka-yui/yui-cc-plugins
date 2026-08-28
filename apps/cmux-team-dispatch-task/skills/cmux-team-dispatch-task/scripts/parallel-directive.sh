@@ -13,9 +13,23 @@ set -euo pipefail
 # 含めてはならない (-i は対話モードなので history 展開が効き ! も特殊文字になる)。
 #
 # Usage: parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|review> [--agents <N>]
-#   --agents <N>  同時に走らせる子エージェントの上限 2..8 (default: 4)
+#   --agents <N>  同時に走らせる子エージェントの上限 2..8 (default: 4)。claude にだけ効く
 #
 # standby モードは実行系なので、呼び出し側が --mode execute を渡すこと。
+#
+# **codex には並列を指示しない** (--engine codex は空出力で exit 0)。codex の子エージェントは
+# shared local app-server daemon 上の別スレッドで走り、ペインに一切映らないため、親からも
+# ユーザーからも「動いているのか止まっているのか」を判別できなくなる。claude の Task
+# サブエージェントは親セッションから経過が追えるので従来どおり指示する。
+#
+# これは「codex が絶対に spawn しない」という保証ではない。collaboration tools は
+# features.multi_agent_v2=false でも登録されており (codex 0.149.1 で実測。config からは
+# 無効化できない)、codex が自発的に使う余地は残る。ここで止められるのは「こちらから
+# 指示すること」だけで、停滞そのものの検知は work-signal.sh が担う。
+#
+# 方針をこの 1 箇所に閉じ込めるため、呼び出し側に engine 分岐を書かないこと。
+# --engine codex を die にしないのは、呼び出し側が解決済み engine をそのまま渡す
+# 形になっており、die にすると codex ロールの dispatch が落ちるため。
 
 ENGINE=""; MODE=""; AGENTS=4
 while [[ $# -gt 0 ]]; do
@@ -45,12 +59,12 @@ esac
 [[ "$AGENTS" =~ ^[2-8]$ ]] \
   || { echo "parallel-directive: --agents must be an integer from 2 to 8" >&2; exit 1; }
 
-# engine ごとの並列化機構
+# codex には指示しない (理由は冒頭コメント)。検証を通したうえで何も出さずに終える。
 if [[ "$ENGINE" == "codex" ]]; then
-  MECHANISM="you MUST fan them out with spawn_agent and collect them with wait_agent"
-else
-  MECHANISM="you MUST fan them out by launching several Task subagents in a single message"
+  exit 0
 fi
+
+MECHANISM="you MUST fan them out by launching several Task subagents in a single message"
 
 # mode ごとの分担
 case "$MODE" in

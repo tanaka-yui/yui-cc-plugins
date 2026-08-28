@@ -12,8 +12,12 @@
 #   M4. 両プラグインの commands/*.md に単発タイマー保険の手順がある
 #       (run_in_background の Bash タスク + sleep。--surface による即時 gone 検知を
 #        失う代償の受け皿。spec の R1)
-#   M5. codex-parallel-lib.sh が review / exec 2 プラグインで同一内容
-#       (削除する test-cmux-codex-wait.sh の W8 を引き継ぐ)
+#   M5. 並列実行 (spawn_agent) が両プラグインから完全に消えている (否定的不変条件)。
+#       codex-parallel-lib.sh が存在せず、commands/** / skills/** / bin/** に
+#       並列の契約語彙が 1 つも残っていないこと。かつては 2 コピーの同一性を検査して
+#       いたが、機能ごと撤廃したので「同一であること」ではなく「無いこと」を固定する。
+#       codex の子エージェントは app-server daemon 上の別スレッドで走りペインに映らず、
+#       「動いているのか止まっているのか」を判別できなくするため再導入を禁じる
 #   M6. 両プラグインの commands/** / skills/** / bin/** に旧ポーリング watcher の
 #       契約語彙が残っていない (否定的不変条件)。M2 は具体名 1 つしか grep しないため、
 #       自己矛盾した記述が 7 コミットと承認済みレビューを通過した (F5)
@@ -74,11 +78,26 @@ for f in "$REVIEW/commands/codex-review.md" "$EXEC/commands/codex-exec.md"; do
   fi
 done
 
-# --- M5: codex-parallel-lib.sh の同一性 (旧 W8 の引き継ぎ) ---
-if diff -q "$REVIEW/bin/codex-parallel-lib.sh" "$EXEC/bin/codex-parallel-lib.sh" >/dev/null 2>&1; then
-  echo "PASS M5: codex-parallel-lib.sh が 2 プラグインで同一"
+# --- M5: 並列実行が両プラグインから完全に消えている ---
+m5=1
+for plugin in "$REVIEW" "$EXEC"; do
+  if [[ -e "$plugin/bin/codex-parallel-lib.sh" ]]; then
+    echo "  codex-parallel-lib.sh が残っている: $plugin"
+    m5=0
+  fi
+  for word in spawn_agent wait_agent build_parallel_directive list_codex_agent_types \
+              '--no-parallel を注入' 'PARALLEL EXECUTION'; do
+    hits=$(grep -rl -- "$word" "$plugin/commands" "$plugin/skills" "$plugin/bin" 2>/dev/null || true)
+    if [[ -n "$hits" ]]; then
+      echo "  並列の契約語彙 [$word] が残っている: $hits"
+      m5=0
+    fi
+  done
+done
+if [[ $m5 -eq 1 ]]; then
+  echo "PASS M5: 並列実行 (spawn_agent) が両プラグインから消えている"
 else
-  echo "FAIL M5: codex-parallel-lib.sh が乖離している"
+  echo "FAIL M5: 並列実行の痕跡が残っている"
   fail=1
 fi
 

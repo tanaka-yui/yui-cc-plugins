@@ -22,11 +22,20 @@
 「見落としの発見」に価値があり、多少遅くても深く考えさせる方が費用対効果が高いため。
 新ペインで対話起動するのは、ユーザーが指摘を目で追いながら必要なら追質問できるようにするため。
 
-並列化は裁量ではなく義務にしている。プロンプトはレビュー観点（バグ・正確性 / セキュリティ /
-設計・可読性 / テスト網羅）ごとに子エージェントを spawn させ、diff だけでは判断できない背景
-（呼び出し元、既存規約、変更経緯）も別の子エージェントに並列で集めさせる。親エージェントは
-それらを重複除去のうえ重要度順に 1 本へまとめる。`agent_type` の候補は `.codex/agents/*.toml`
-から検出し、無ければ省略させる。
+レビューは可視ペイン 1 枚のフォアグラウンドで走る。このプラグインは codex に作業を子エージェントへ
+分割させない。子エージェントは shared local app-server daemon 上の別スレッドとして走り、覗けるのは
+`codex agents` という別 TUI だけなので、ペインからは「4 体が動いている」のか「1 体も動いていない」のか
+区別できない。見られないレビューでは、わざわざ対話で起動する意味がなくなる。
+
+これは**依頼しない**という限定であって、codex が**できない**という保証ではない。collaboration tools は
+`features.multi_agent_v2 = false` でも登録されたままである（codex-cli 0.149.1 で実測。
+`codex debug prompt-input` に `functions.collaboration.*` のブロックが残り、`list_agents` の実呼び出しも
+成功する）。`multi_agent_v2.enabled=false` / `--disable multi_agent` / `--disable collaboration_modes` /
+`non_code_mode_only=true` のいずれでも消えない。
+
+`/codex-exec` と違い、レビューの停滞は自動検知しない。作業信号はコミットとファイル mtime を見るが、
+レビューは何も書かないので、作業中のレビュアーと止まったレビュアーが同じに見えてしまう。ここでは
+Step 3 のタイマー分岐だけが保険である。
 
 ## 前提
 
@@ -71,8 +80,6 @@ bin スクリプトを実行する。cmux ペインを分割し、そのペイ�
 | `-m <model>` / `-e <effort>` | モデル / effort の上書き（default: gpt-5.6-sol / xhigh） |
 | `-- <指示>` | codex へのカスタムレビュー指示 |
 | `--team <team> --reviewer <name> --parent <agent>` | レビュー完了の agmsg 通知配線 |
-| `--no-parallel` | 並列実行ディレクティブを注入しない |
-| `--agents <N>` | 子エージェントの同時実行上限。2〜8 の整数のみ（default: 4） |
 
 bin は `surface=` / `token=` を出力する。通知配線時はこの `token` がどの依頼への完了通知かを
 識別するラベルになる。親を起こすのは agmsg の Monitor ストリームであり、watcher ではない。

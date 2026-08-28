@@ -10,12 +10,17 @@
 #   E1. plan を明示指定すると、そのパスが prompt へ無傷で届き、prompt は 1 引数
 #   E2. --list-targets は cmux を呼ばずに plan 候補を mtime 降順で TSV 出力する
 #   E3. 候補ゼロ（git リポジトリ外・plan ディレクトリ無し）でも空出力・終了コード 0 で終わる
-#   E4. 既定でプロンプトに並列実行ディレクティブが入り、prompt は 1 引数のまま
-#   E5. --no-parallel でディレクティブを一切注入しない
-#   E6. .codex/agents/*.toml があれば agent_type 候補が載り、無ければフォールバック文言になる
-#   E7. description に ' が含まれても prompt は 1 引数のまま
-#   E8-E8b. 通知配線時、send.sh の本文に agents= が入る（--no-parallel では付かない）
-#   E9. --agents の不正値は非ゼロ終了し、ペインを分割しない
+#   E4. プロンプトに並列実行の語彙が 1 つも入らない（否定的不変条件）
+#   E5. 削除済みフラグ --no-parallel / --agents は非ゼロ終了し、ペインを分割しない
+#   E6. 通知配線時、send.sh の本文に agents= が入らず、prompt は 1 引数のまま
+#   E7. 通知配線時、codex に bridge seat を記録させる指示が入り、watch.sh の自前起動を禁じる
+#       (seat が無いと親からの nudge は未読で滞留する。notification-gaps の R2)
+#       通知配線が無いときはこの指示も入らない
+#
+# E4-E6 が否定形なのは、codex に並列を指示しなくなったため。codex の子エージェントは
+# app-server daemon 上の別スレッドで走りペインに一切映らないので、指示すると
+# 「動いているのか止まっているのか」を判別できない状態を自分で作ることになる。
+# 語彙が 1 つでも復活したら落ちる形にして、うっかりの再導入を防ぐ。
 
 set -uo pipefail
 
@@ -101,102 +106,65 @@ else
   fail=1
 fi
 
-# --- E4: 既定で並列実行ディレクティブが入り、prompt は 1 引数のまま ---
+# --- E4: プロンプトに並列実行の語彙が 1 つも入らない ---
 CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" >/dev/null 2>&1
 reparse
-if [[ "$(argc)" == "6" ]] \
-  && prompt | grep -q 'spawn_agent' \
-  && prompt | grep -q 'wait_agent' \
-  && prompt | grep -q '最大 4 体'; then
-  echo "PASS E4: 既定で並列実行ディレクティブが prompt に入る、argc=6"
+e4=1
+for word in spawn_agent wait_agent 並列実行 子エージェント agent_type; do
+  if prompt | grep -q "$word"; then
+    echo "  並列語彙が残っている: $word"
+    e4=0
+  fi
+done
+if [[ "$(argc)" == "6" && $e4 -eq 1 ]]; then
+  echo "PASS E4: プロンプトに並列実行の語彙が入らない、argc=6"
 else
   echo "FAIL E4: argc=$(argc) / prompt=[$(prompt)]"
   fail=1
 fi
 
-# --- E5: --no-parallel でディレクティブを注入しない ---
-CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --no-parallel >/dev/null 2>&1
-reparse
-if [[ "$(argc)" == "6" ]] && ! prompt | grep -q 'spawn_agent'; then
-  echo "PASS E5: --no-parallel でディレクティブ非注入、argc=6"
-else
-  echo "FAIL E5: argc=$(argc) / prompt=[$(prompt)]"
-  fail=1
-fi
-
-# --- E6: .codex/agents/*.toml があれば agent_type 候補が載る / 無ければフォールバック文言 ---
-AGENTREPO="$TMP/agentrepo"
-mkdir -p "$AGENTREPO/.codex/agents"
-cp "$TMP/my-plan.md" "$AGENTREPO/plan.md"
-cat > "$AGENTREPO/.codex/agents/my-coder.toml" <<'TOML'
-description = "Implements backend code"
-developer_instructions = """
-body
-"""
-TOML
-(cd "$AGENTREPO" && CMUX_BIN="$TMP/bin/cmux" "$BIN" plan.md >/dev/null 2>&1)
-reparse
-has_type=0
-prompt | grep -q 'my-coder — Implements backend code' && has_type=1
-
-NOAGENT="$TMP/noagent"
-mkdir -p "$NOAGENT"
-cp "$TMP/my-plan.md" "$NOAGENT/plan.md"
-(cd "$NOAGENT" && CMUX_BIN="$TMP/bin/cmux" "$BIN" plan.md >/dev/null 2>&1)
-reparse
-has_fallback=0
-prompt | grep -q 'agent_type の定義が無い' && has_fallback=1
-
-if [[ $has_type -eq 1 && $has_fallback -eq 1 ]]; then
-  echo "PASS E6: agent_type 候補の列挙とフォールバック文言が切り替わる"
-else
-  echo "FAIL E6: has_type=$has_type / has_fallback=$has_fallback"
-  fail=1
-fi
-
-# --- E7: description に ' が含まれても prompt は 1 引数のまま ---
-cat > "$AGENTREPO/.codex/agents/quoter.toml" <<'TOML'
-description = "It's a quality checker"
-TOML
-(cd "$AGENTREPO" && CMUX_BIN="$TMP/bin/cmux" "$BIN" plan.md >/dev/null 2>&1)
-reparse
-if [[ "$(argc)" == "6" ]] && prompt | grep -q "It's a quality checker"; then
-  echo "PASS E7: description の ' がエスケープされ、argc=6 のまま"
-else
-  echo "FAIL E7: argc=$(argc) / prompt=[$(prompt)]"
-  fail=1
-fi
-
-# --- E8: 通知配線時、send.sh の本文に agents= が入る ---
-CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --team t --parent parent >/dev/null 2>&1
-reparse
-if prompt | grep -q '実装完了 agents=' && prompt | grep -q 'spawn した子エージェントの総数'; then
-  echo "PASS E8: 通知本文に agents= と置換指示が入る"
-else
-  echo "FAIL E8: prompt=[$(prompt)]"
-  fail=1
-fi
-
-# --- E8b: --no-parallel では agents= を付けない ---
-CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --no-parallel --team t --parent parent >/dev/null 2>&1
-reparse
-if prompt | grep -q '実装完了' && ! prompt | grep -q 'agents='; then
-  echo "PASS E8b: --no-parallel では通知本文に agents= を付けない"
-else
-  echo "FAIL E8b: prompt=[$(prompt)]"
-  fail=1
-fi
-
-# --- E9: --agents の不正値は非ゼロ終了し、ペインを分割しない ---
+# --- E5: 削除済みフラグは非ゼロ終了し、ペインを分割しない ---
+# 黙って無視されるより、消えたフラグだと分かる方が良い。arg parser の *) は位置引数
+# （plan パス）へ落ちるので、存在しないパスとして plan 解決前に弾かれる。
 rm -f "$TMP/split.log"
 bad=0
-SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --agents 9 >/dev/null 2>&1 && bad=1
-SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --agents 1 >/dev/null 2>&1 && bad=1
-SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --agents abc >/dev/null 2>&1 && bad=1
+SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --no-parallel >/dev/null 2>&1 && bad=1
+SPLIT_LOG="$TMP/split.log" CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --agents 4 >/dev/null 2>&1 && bad=1
 if [[ $bad -eq 0 && ! -f "$TMP/split.log" ]]; then
-  echo "PASS E9: --agents の不正値を拒否し、ペインを分割しない"
+  echo "PASS E5: 削除済みフラグを拒否し、ペインを分割しない"
 else
-  echo "FAIL E9: bad=$bad / split.log=$( [[ -f "$TMP/split.log" ]] && echo exists || echo none )"
+  echo "FAIL E5: bad=$bad / split.log=$( [[ -f "$TMP/split.log" ]] && echo exists || echo none )"
+  fail=1
+fi
+
+# --- E6: 通知本文に agents= が入らず、prompt は 1 引数のまま ---
+# NOTIFY は 'DONE ...' の単一引用符を含むので、argc の検査がエスケープの回帰も兼ねる。
+CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --team t --parent parent >/dev/null 2>&1
+reparse
+if [[ "$(argc)" == "6" ]] && prompt | grep -q '実装完了' && ! prompt | grep -q 'agents='; then
+  echo "PASS E6: 通知本文に agents= が入らず argc=6 のまま"
+else
+  echo "FAIL E6: argc=$(argc) / prompt=[$(prompt)]"
+  fail=1
+fi
+
+# --- E7: 受信配線 (bridge seat) の指示 ---
+# join.sh は送信側の登録でしかないので、これが無いと親からの追撃指示が codex に届かない。
+CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" --team t --parent parent >/dev/null 2>&1
+reparse
+with_seat=0
+prompt | grep -q 'codex-record-session.sh t cxexec-' \
+  && prompt | grep -q 'watch.sh を自分で起動してはならない' && with_seat=1
+
+CMUX_BIN="$TMP/bin/cmux" "$BIN" "$TMP/my-plan.md" >/dev/null 2>&1
+reparse
+without_seat=0
+prompt | grep -q 'codex-record-session.sh' || without_seat=1
+
+if [[ $with_seat -eq 1 && $without_seat -eq 1 ]]; then
+  echo "PASS E7: 通知配線時だけ bridge seat の記録を指示し、watch.sh の自前起動を禁じる"
+else
+  echo "FAIL E7: with_seat=$with_seat / without_seat=$without_seat"
   fail=1
 fi
 

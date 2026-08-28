@@ -638,19 +638,26 @@ marker を作り、phase-a-task: を 1 通送る。review readiness の prune �
 parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|review> [--agents <N>]
 ```
 
-- codex セッションには `spawn_agent` / `wait_agent` を、claude セッションには
-  1 メッセージで複数の Task サブエージェントを起動することを指示する
+- **claude セッション限定**。1 メッセージで複数の Task サブエージェントを起動することを指示する。
+  `--engine codex` は空出力で exit 0 する（codex には並列を指示しない）。codex の子エージェントは shared local app-server
+  daemon 上の別スレッドで走りペインに一切映らないため、分散を指示した codex 子は「止まっている」
+  のと区別がつかなくなるからである。この判断はスクリプトの中に閉じ込める — 呼び出し側は解決済みの
+  engine をそのまま渡すだけで、自分で分岐してはならない
+- これは**依頼しない**という限定であって、codex が**できない**という保証ではない。collaboration
+  tools は `features.multi_agent_v2 = false` でも登録されたままである（codex-cli 0.149.1 で実測。
+  設定キーでは消せない）。黙り込んだ codex 子は Step 3 の `scripts/work-signal.sh` が捕まえる
 - ファイル編集は常に親エージェントで逐次に保つ。実装の順序を制御するスキル
   （superpowers subagent-driven-development の「実装者は同時に 1 体」）は上書きしない
 - 分散してよいのは**読み取り専用の検証だけ**。auto-fix / write モード
   （formatter や linter を write フラグ付きで走らせるもの）はファイルと共有ビルドキャッシュを
   書き換えるため、親エージェントで逐次に実行する
-- `--agents` が同時実行の上限。2〜8 の整数のみで既定は 4
+- `--agents` が同時実行の上限。2〜8 の整数のみで既定は 4。範囲検証は両 engine で働く —
+  出力が空になったからといって、codex への `--agents 9` を素通しさせない
 - `standby` モードは存在しない。standby ペインは実行系なので `--mode execute` を渡す
-- `--agents` / `--no-parallel` は `launch-workspace.sh` のフラグ。このスキルは
-  どちらも渡さないので、スキル経由のディスパッチには常に既定値が適用される
+- `--agents` / `--no-parallel` は `launch-workspace.sh` のフラグで、**効くのは claude だけ**に
+  なった。このスキルはどちらも渡さないので、スキル経由のディスパッチには常に既定値が適用される
 
-注入箇所:
+注入箇所（5 箇所すべてが同じスクリプトを呼ぶので、宛先が codex ならどこでも空になる）:
 
 | 対象 | 注入する側 |
 |------|-----------|
@@ -658,11 +665,13 @@ parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|r
 | standby ペインへ送る Phase B 実行指示 | このスキル（スクリプト経由） |
 | Phase A-R のレビュー依頼 | このスキル（スクリプト経由） |
 | Phase B-R のレビュー依頼（prewarm 経路） | このスキル（スクリプト経由） |
+| Phase B-R のレビュー依頼（spawn 経路） | `launch-workspace.sh --mode execute --review-config` |
 
 ある engine 向けに生成したディレクティブを、別 engine のセッション宛のテキストの中に
 埋め込むとき（実装者のプロンプトに同梱するレビュアー向けディレクティブがこれにあたる）は、
-宛先を明示的にマークする。位置だけでは境界にならず、claude セッションに `spawn_agent` を
-指示してもそのツールは存在しない。
+宛先を明示的にマークする。位置だけでは境界にならない。**ディレクティブが空で返ってきたときは
+囲みの一文ごと落とす**こと。中身のない「reviewer-only directive」の囲みだけが残ると、
+実装者がそれを空の指示としてレビュー依頼へ転記してしまう。
 
 ## Step 3: 監視と完了
 
@@ -801,13 +810,42 @@ done
   すると健全な子を殺す。** history にも `[ready]` が無いことを確認して初めて、そのペインを
   到達不能として扱ってよい。
 
-  そのうえで terminal でない各タスクについて、ペインにまだ動きがあれば
-  （`cmux read-screen --surface <id>`。何かを結論づける前に **1 回リトライ**する — cmux の
-  一時的なソケット障害をペイン死亡と読んではならない）同じタイマーを再武装してターンを閉じる
-  （上の再武装上限まで）。本当にペインが消えていればそのタスクを理由付きで `error` にして
-  報告する。codex ペインでは
-  `bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name <agent>`
-  で「seat 未記録」と「ペイン死亡」を切り分ける。
+  そのうえで terminal でない各タスクについて、「動いていて黙っている」のか「止まっている」のかを
+  判定する。ペインが生きていることはその判断材料にならない（対話 codex のペインは終了しない）ので、
+  セッションの自己申告ではなく**作業そのものが残す痕跡**を読む:
+
+  ```bash
+  bash <SKILL_DIR>/scripts/work-signal.sh "<worktree>" \
+    --state ".dispatch/<slug>/.work-signal" --surface <surface_id>
+  ```
+
+  HEAD のコミット / dirty なパスの集合 / それらの mtime / ペインの画面をハッシュ化し、前回の
+  起床時と比較する。`changed=` で分岐する:
+
+  - **`yes`（または `first`）** — 子は動いていて、報告していないだけ。同じタイマーを再武装して
+    ターンを閉じる。このとき**再武装カウンタを増やさない** — 目に見えて進んでいるタスクに、
+    停滞したタスクのための予算を使わせない
+  - **`no`** — 何も動いていない。停滞とみなし、1 回だけ再開を試みる。まず本当に受信できるかを
+    確認する: `bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name <agent>`
+    （codex ペインの場合。`[ready]` を報告済みの claude 子は定義上到達可能）
+    - **到達可能** — nudge をちょうど 1 通送り、カウンタを増やして再武装する:
+      ```bash
+      ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" parent <agent> \
+        'dispatch-nudge: no progress detected since the last check. Continue the task, and when it is done write status.json and send the dispatch-notify: completion exactly as instructed.'
+      ```
+      **1 タスクにつき nudge は 1 回まで。** 送ったことを記録し
+      （`.dispatch/<slug>/.nudged-<agent>`）、その後の起床でまだ `no` なら nudge をやめて
+      `read-screen` の抜粋を添えてユーザーへ報告する。応答しないセッションを繰り返し突ついても、
+      増えるのはノイズだけで情報は増えない
+    - **seat 未記録** — nudge しない。`send.sh` は成功するのに row は未読で滞留する
+      （`docs/notification-gaps.md` の R2）。「止まっていて、かつ届かない」という別の問題として
+      報告し、そのペインに `codex-record-session.sh` を再実行させる
+  - **`unknown`** — 画面が読めず比較が無意味。推測せず下のペイン確認へ回す
+
+  ペイン確認: `cmux read-screen --surface <id>`。何かを結論づける前に **1 回リトライ**する —
+  cmux の一時的なソケット障害をペイン死亡と読んではならない。本当にペインが消えていれば
+  そのタスクを理由付きで `error` にして報告する。codex ペインでは
+  `verify-agmsg-ready.sh --codex` で「seat 未記録」と「ペイン死亡」を切り分ける。
 
 
 ### ステータスファイルのポーリング（手動確認）

@@ -34,13 +34,8 @@ started by its SessionStart hook, and a message delivered through it wakes the p
 even while idle (verified 2026-08-21; the earlier finding to the contrary predates
 this harness exposing the Monitor tool).
 
-Parallelism is not left to codex's discretion. The launched prompt carries a
-mandatory directive: whenever two or more pieces of work are independent, codex
-MUST fan them out with `spawn_agent` and collect them with `wait_agent`. Only
-read-only investigation and post-implementation verification are parallelized —
-file edits stay sequential in the parent agent, because this plugin runs in the
-current directory without worktree isolation and concurrent writers would
-clobber each other.
+This plugin never asks codex to run work in parallel. Everything it is told to
+do happens in the visible pane, in the foreground.
 
 ## Prerequisites
 
@@ -49,21 +44,44 @@ clobber each other.
 - The parent session has already joined the agmsg team (if not joined, the command
   guides through join).
 
-## Parallel execution
+## Foreground-only execution
 
-The prompt is built with a directive that caps concurrent child agents (default
-4) and asks codex to close with a summary table of what it spawned. Available
-`agent_type` values are discovered from `.codex/agents/*.toml` in the current
-directory and listed with their descriptions; if none exist, codex is told to
-omit `agent_type`.
+Codex sub-agents do not run in the pane. They run as separate threads on the
+shared local app-server daemon, visible only through the separate `codex agents`
+TUI. From the pane you cannot tell whether four of them are working or none are,
+which is why this plugin stopped asking for them.
 
-| Argument | Meaning |
-|------|------|
-| `--no-parallel` | Do not inject the directive (identical to the previous behavior) |
-| `--agents <N>` | Concurrency cap. Integers 2-8 only; anything else exits non-zero before splitting a pane (default: 4) |
+This is a limit on what is *asked for*, not a guarantee about what codex *can*
+do. The collaboration tools stay registered even with
+`features.multi_agent_v2 = false` — measured on codex-cli 0.149.1, where
+`codex debug prompt-input` still carries the `functions.collaboration.*` block
+and `list_agents` answers a real call. None of `multi_agent_v2.enabled=false`,
+`--disable multi_agent`, `--disable collaboration_modes`, or
+`non_code_mode_only=true` removes it. So codex may still spawn on its own
+initiative; detecting a session that went quiet is `bin/work-signal`'s job, not
+this one's.
 
-When notification wiring is on, codex appends `agents=<N>` to the completion
-message, and the agmsg Monitor line carries it through unchanged.
+`--no-parallel` and `--agents` were removed. Passing either exits non-zero
+before a pane is split, rather than being silently absorbed as a plan path.
+
+## Stall detection and auto-resume
+
+An interactive codex pane never exits, so its liveness proves nothing. On a timer
+wake, `bin/work-signal` answers the question the pane cannot: it hashes the HEAD
+commit, the set of dirty paths, their mtimes, and the pane's screen, and compares
+that against the previous wake. Progress means codex is working and merely quiet;
+no progress across a wake means it stopped.
+
+A stopped session that is still reachable gets exactly one `dispatch-nudge:`
+message and then keeps waiting. This adds no polling loop: the single-shot timer
+that already existed is the only thing that schedules the check.
+
+`bin/cmux-codex-exec` therefore has the launched codex record a bridge seat with
+`codex-record-session.sh` before it starts work. `join.sh` alone registers the
+sender only, and a nudge to a seatless pane is written to the DB and never read
+(`docs/notification-gaps.md` R2). Step 5 of `commands/codex-exec.md` checks the
+seat before nudging so that "stalled" and "stalled and unreachable" stay
+distinguishable.
 
 ## Procedure
 

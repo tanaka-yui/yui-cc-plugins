@@ -1023,21 +1023,33 @@ and verification out across child agents instead of doing them one at a time.
 parallel-directive.sh --engine <claude|codex> --mode <plan|superpowers|execute|review> [--agents <N>]
 ```
 
-- codex sessions are told to use `spawn_agent` / `wait_agent`; claude sessions are
-  told to launch several Task subagents in one message.
+- **claude sessions only.** They are told to launch several Task subagents in one
+  message. `--engine codex` prints nothing and exits 0: codex sub-agents run as
+  separate threads on the shared local app-server daemon and never appear in the
+  pane, so a codex child told to fan out becomes impossible to tell apart from one
+  that has stopped. Keep that decision inside the script — callers pass their
+  resolved engine through and must not branch on it themselves.
+- This limits what is asked for, not what codex can do: the collaboration tools stay
+  registered even with `features.multi_agent_v2 = false` (measured on codex-cli
+  0.149.1; no config key removes them). A codex child that goes quiet is caught by
+  `scripts/work-signal.sh` in Step 3, not here.
 - File edits always stay sequential in the parent agent, and the directive never
   overrides a skill that sequences implementation (superpowers
   subagent-driven-development keeps its one-implementer-at-a-time rule).
 - Only read-only verification may be fanned out. Auto-fix and write modes (a
   formatter or linter invoked with its write flag) stay sequential in the parent
   agent, because they mutate files and shared build caches.
-- `--agents` caps concurrency. Integers 2-8 only; the default is 4.
+- `--agents` caps concurrency. Integers 2-8 only; the default is 4. The range is
+  validated for both engines — a codex call still rejects `--agents 9` rather than
+  waving bad input through just because its output is empty.
 - There is no `standby` mode — a standby pane is an execution pane, so pass
   `--mode execute` for it.
-- `--agents` and `--no-parallel` are `launch-workspace.sh` flags. This skill never
-  passes them, so the defaults apply to every dispatch it launches.
+- `--agents` and `--no-parallel` are `launch-workspace.sh` flags and now only affect
+  claude. This skill never passes them, so the defaults apply to every dispatch it
+  launches.
 
-Where the directive is injected:
+Where the directive is injected (all five sites call the same script, so a codex
+addressee yields nothing at every one of them):
 
 | Target | Injected by |
 |--------|-------------|
@@ -1045,11 +1057,14 @@ Where the directive is injected:
 | Phase B execution request sent to a standby pane | this skill, via the script |
 | Phase A-R review request | this skill, via the script |
 | Phase B-R review request (prewarm path) | this skill, via the script |
+| Phase B-R review request (spawn path) | `launch-workspace.sh --mode execute --review-config` |
 
 Whenever a directive computed for one engine is embedded in text addressed to a
 session running the other engine — the reviewer directive carried inside the
 implementer's prompt — mark the addressee explicitly. Position alone is not a
-boundary, and a claude session told to call `spawn_agent` has no such tool.
+boundary. **When the directive comes back empty, drop the surrounding sentence
+too**: a "reviewer-only directive" wrapper with nothing inside it gets transcribed
+into the review request as an empty instruction.
 
 ## Step 3: Monitor and Complete
 
@@ -1191,13 +1206,46 @@ Then branch on what woke you:
   stolen kills a healthy child.** Only after the history also shows no `[ready]` may you
   treat the pane as unreachable.
 
-  Then, for each non-terminal task: if its pane still shows activity
-  (`cmux read-screen --surface <id>`, **retried once** before you conclude anything — a
-  transient cmux socket failure must not be read as a dead pane), re-arm the same timer
-  and end your turn, up to the re-arm bound above. If a pane is really gone, mark that
-  task `error` with the reason and report it. Use
-  `bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name <agent>`
-  on codex panes to separate "seat never recorded" from "pane died".
+  Then, for each non-terminal task, decide whether it is *working quietly* or *stopped*.
+  A live pane does not settle that — an interactive codex pane never exits — so read the
+  work signal, which is what the work itself leaves behind rather than what the session
+  says about it:
+
+  ```bash
+  bash <SKILL_DIR>/scripts/work-signal.sh "<worktree>" \
+    --state ".dispatch/<slug>/.work-signal" --surface <surface_id>
+  ```
+
+  It hashes the HEAD commit, the set of dirty paths, their mtimes and the pane's screen,
+  and compares that with the previous wake. Branch on `changed=`:
+
+  - **`yes` (or `first`)** — the child is working and merely quiet. Re-arm the same timer
+    and end your turn **without incrementing the re-arm count**: a task that is visibly
+    progressing must not burn the budget meant for stalled ones.
+  - **`no`** — nothing moved. Treat it as stalled and try to resume it once. Check the
+    child can actually receive a message first:
+    `bash <SKILL_DIR>/scripts/verify-agmsg-ready.sh --codex --team "$TEAM" --name <agent>`
+    (codex panes; a claude child that reported `[ready]` is reachable by definition).
+    - **Reachable** — send exactly one nudge and re-arm, incrementing the count:
+      ```bash
+      ~/.agents/skills/agmsg/scripts/send.sh "$TEAM" parent <agent> \
+        'dispatch-nudge: no progress detected since the last check. Continue the task, and when it is done write status.json and send the dispatch-notify: completion exactly as instructed.'
+      ```
+      **At most one nudge per task.** Record it (`.dispatch/<slug>/.nudged-<agent>`) and
+      if a later wake is still `no` after that nudge, stop nudging: report to the user
+      with a `read-screen` excerpt. Poking an unresponsive session repeatedly adds noise,
+      not information.
+    - **Seat never recorded** — do NOT nudge. `send.sh` would succeed and the row would
+      sit unread (`docs/notification-gaps.md` R2). Report "stalled and unreachable" as
+      the distinct problem it is, and have that pane re-run `codex-record-session.sh`.
+  - **`unknown`** — the screen could not be read, so the comparison means nothing. Fall
+    through to the pane check below instead of guessing.
+
+  Pane check: `cmux read-screen --surface <id>`, **retried once** before you conclude
+  anything — a transient cmux socket failure must not be read as a dead pane. If a pane
+  is really gone, mark that task `error` with the reason and report it. Use
+  `verify-agmsg-ready.sh --codex` on codex panes to separate "seat never recorded" from
+  "pane died".
 
 ### Polling Status Files (Manual Check)
 

@@ -174,8 +174,7 @@ Then end the turn.
   on the task id from Step 4: a surviving `sleep` exits 90 minutes later and injects a
   useless wake into whatever conversation the user has moved on to. Then ask the user
   whether to review the uncommitted changes with codex-review, noting that codex-exec
-  has finished (including which plan). If the line also carries `agents=<N>`, report
-  that number as how many child agents codex ran in parallel. If yes, launch
+  has finished (including which plan). If yes, launch
   `/codex-review --uncommitted`. Respond to the user in Japanese.
 - **Woken by the timer task** — this does **not** mean the implementation is
   unfinished. The completion row may exist in the DB while the push never reached this
@@ -202,14 +201,50 @@ Then end the turn.
   - **A `DONE <token>` line exists** → treat it as the completion. `TaskStop` the timer
     and report exactly as the Monitor branch does (the notification was lost; the work
     was not).
-  - **No such line** → check whether the pane is still alive with
-    `cmux read-screen --surface <surface>`. **If it fails, retry once** before
-    concluding anything: a transient cmux socket failure must not be read as a dead
-    pane. If both attempts fail, tell the user the implementation pane `<surface>` is
-    gone and completion could not be detected. Respond to the user in Japanese.
-  - **Pane alive** → re-arm the same timer, increment the arm count, and end the turn
-    again — **but only while the count is at most 3**. On the 4th wake with no
-    completion line and no visible progress in `read-screen`, stop re-arming: report to
-    the user with the `read-screen` excerpt and ask how to proceed. "The pane is alive"
-    is not evidence of progress — an interactive codex pane never exits, so an unbounded
-    re-arm is an infinite loop with no escalation. Respond to the user in Japanese.
+  - **No such line** → ask whether the pane is *working quietly* or *stopped*. Do not
+    answer that from the pane's existence: an interactive codex pane never exits, so
+    "the pane is alive" says nothing about progress. Read the work signal instead —
+    what the work itself leaves behind, not what the session says about it:
+
+    ```bash
+    "${CLAUDE_PLUGIN_ROOT}/bin/work-signal" "$(pwd)" \
+      --state "${TMPDIR:-/tmp}/cmux-codex-exec/<token>.work-signal" --surface <surface>
+    ```
+
+    It reports `changed=first|yes|no|unknown` by comparing the current HEAD commit, the
+    set of dirty paths, their mtimes, and the pane's screen against the previous wake.
+    Branch on it:
+
+    - `changed=yes` (or `first`, the first wake) → codex is working and has simply not
+      reported yet. Re-arm the same timer and end the turn **without incrementing the
+      arm count**: a session that is visibly progressing must not burn through the
+      re-arm budget. Say in one line that it is still working.
+    - `changed=no` → nothing moved since the last wake. Treat it as stalled and try to
+      resume it once. First confirm the pane can actually receive a message:
+      `~/.agents/skills/agmsg/scripts/verify-agmsg-ready.sh --codex --team <TEAM> --name <codex_agent>`.
+      - **Seat recorded** → send exactly one nudge and re-arm, incrementing the count:
+        ```bash
+        ~/.agents/skills/agmsg/scripts/send.sh <TEAM> <PARENT> <codex_agent> \
+          'dispatch-nudge: no progress detected since the last check. Continue the implementation, and when it is done send the completion notification exactly as instructed.'
+        ```
+        Send it **at most once per implementation**. Record that you sent it (a marker
+        such as `${TMPDIR:-/tmp}/cmux-codex-exec/<token>.nudged`) and, if a later wake
+        is still `changed=no` after that nudge, stop nudging and report to the user with
+        a `read-screen` excerpt. Repeatedly poking a session that is not responding adds
+        noise without adding information.
+      - **Seat missing** → do NOT nudge; it would be written to the DB and never read
+        (`docs/notification-gaps.md` R2: `send.sh` succeeds while the row sits unread).
+        Report that distinction to the user — "the pane is stalled and unreachable"
+        is a different problem from "the pane is stalled" — and say the pane needs
+        `codex-record-session.sh` re-run.
+    - `changed=unknown` → the screen could not be read, so the comparison is meaningless.
+      Fall through to the pane-death check below rather than guessing.
+
+    Pane-death check: `cmux read-screen --surface <surface>`. **If it fails, retry once**
+    before concluding anything — a transient cmux socket failure must not be read as a
+    dead pane. If both attempts fail, tell the user the implementation pane `<surface>`
+    is gone and completion could not be detected.
+
+    Cap re-arming at 3 increments. On the 4th wake with no completion line, stop
+    re-arming: report with the `read-screen` excerpt and ask how to proceed. Respond to
+    the user in Japanese.

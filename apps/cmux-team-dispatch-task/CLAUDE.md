@@ -14,7 +14,8 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 | `skills/cmux-team-dispatch-task/scripts/verify-agmsg-ready.sh` | agmsg の到達性を**確認するだけ**の read-only チェッカー。`--self`（claude セッションの watcher）/ `--codex --team <t> --name <n>`（codex の bridge seat）を持ち、exit 0 = 到達可能 / 1 = 到達不能 / 2 = 使用法エラー。stdout は `ready=yes|no reason=<slug> …`。watcher を起動しない（起動するのは SessionStart hook が要求する `Monitor` tool 自身） |
 | `skills/cmux-team-dispatch-task/scripts/report-status.sh` | 子セッションが status.json を終端へ遷移させる入口（既存フィールドを保存。クォート不要なので inner prompt から安全に呼べる） |
 | `skills/cmux-team-dispatch-task/scripts/terminal-wait.sh` | シェル起動検知と `shell_ready_ms` 学習を行う共通ヘルパー（source 専用） |
-| `skills/cmux-team-dispatch-task/scripts/parallel-directive.sh` | 子セッションへ渡す並列実行ディレクティブの生成（文面の単一情報源） |
+| `skills/cmux-team-dispatch-task/scripts/parallel-directive.sh` | 子セッションへ渡す並列実行ディレクティブの生成（文面の単一情報源）。**claude 専用**で、`--engine codex` は空出力 exit 0 |
+| `skills/cmux-team-dispatch-task/scripts/work-signal.sh` | worktree の作業信号（HEAD コミット / dirty パス / mtime / 任意でペイン画面）を出し、前回起床時との変化を `changed=first\|yes\|no\|unknown` で返す停滞検知用スクリプト。`apps/cmux-codex-exec/bin/work-signal` に同一内容のコピーがある（`test-work-signal.sh` の WS7 が同一性を検証） |
 | `skills/cmux-team-dispatch-task/scripts/config-lib.sh` | config パス、4 ロール、engine 別既定値と値検証の共通関数（source 専用） |
 | `skills/cmux-team-dispatch-task/scripts/config-resolve.sh` | 4 レイヤーを `(role, field)` 単位で合成し roles.json を出力する resolver |
 | `skills/cmux-team-dispatch-task/scripts/config-edit.sh` | config.json への唯一の書き込み口（キー/値検証・置換ではなくマージ・writer 固有 mktemp + jq 成功時のみ mv） |
@@ -140,7 +141,7 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - verdict の**記録**はファイル（`<STATUS_DIR>/review/<point>-round-<N>.md` 末尾の `VERDICT: approve|needs_work`）、**起床**はメッセージ。依頼配送は本文接頭辞 `review-plan:` の agmsg `send.sh` 1 回呼び出しで、宛先はレビューペインの **agent 名**（`REVIEW_PANE_AGENT`）であり surface ID ではない。依頼文には「findings ファイルを書いた直後に `review-verdict:` を依頼元へ 1 通送る」ことを必ず含める。待機側はポーリングせず、ターンを閉じる。`phase-a-review-wait.sh` が実配送 prompt を生成し、waiter engine は timer の有無、reviewer engine は liveness 検査を独立に決める。Codex reviewer は `verify-agmsg-ready.sh --codex`、Claude reviewer は検証済み workspace / surface への `cmux read-screen`（1 回 retry）を使う。**claude 待機者だけが単発 safety timer（`sleep $((30 * 60))` 1 回。ループ禁止。Bash tool の `run_in_background`）を武装できる**。**codex 待機者には保険が無く、張ったふりをしてはならない**（自分宛の遅延タイマーは D-T2 で不発と実測）— 待機に入る前に依頼相手の到達性を確認し、「保険の無い待機に入った」ことを親へ `dispatch-notify:` で 1 通報告すること。claude 待機者は verdict を処理したらタイマーを止める（`TaskStop`）。メッセージの識別は接頭辞 **＋ round id の部分一致**で行い、行全体の完全一致にしない。**どの起床でも先に findings ファイルを読み直す**（失われうるのはメッセージだけ）。`review-verdict:` メッセージが来たのに verdict 行が無ければ `needs_work` 扱い、**verdict 行の無いタイマー起床は verdict ではない**。タイマーが verdict 無しで発火したら reviewer engine 別の liveness を確認 → 作業中なら同じタイマーを再武装（同一ラウンド最大 3 回）→ そうでなければ同一ラウンド 1 回再依頼して再武装 → それでも出ない、または 3 回使い切ったら AskUserQuestion
     - design と同じ engine を許可し、同一 `design_review` ペインを全ポイントで再利用する。launch/readiness 失敗時は警告して Phase B へ
 15. **配送の agmsg `send.sh` 一本化**が SKILL.md / guide-ja.md / README.md / CLAUDE.md で一致しているか確認:
-    - 指示を送る全箇所（Phase A design タスク `phase-a-task` / Phase B claude executor・codex executor・codex 設計 variant の委譲 `phase-b-exec` / Phase A-R review 依頼 `review-plan` / Phase B-R コードレビュー依頼 `review-code` / レビュアー → 依頼元の verdict 通知 `review-verdict` / レビュアーへの abort 通知 `abort-reviewer`（実装者からも runner wrapper の `notify_reviewer_once` からも同じ label を使う。`dispatch-abort` は廃止）/ 親への完了・abort 通知 `dispatch-notify`）が **agmsg `send.sh` の 1 回呼び出し**になっており、`cmux send` + `cmux send-key return` の 2 行ペアが残っていないこと。label は上記のとおり固定（1 メッセージクラス = 1 label）で、**フラグではなく本文の接頭辞**（`<label>: <本文>`）であること。退役した監視ループ用の label が残っていないこと
+    - 指示を送る全箇所（Phase A design タスク `phase-a-task` / Phase B claude executor・codex executor・codex 設計 variant の委譲 `phase-b-exec` / Phase A-R review 依頼 `review-plan` / Phase B-R コードレビュー依頼 `review-code` / レビュアー → 依頼元の verdict 通知 `review-verdict` / レビュアーへの abort 通知 `abort-reviewer`（実装者からも runner wrapper の `notify_reviewer_once` からも同じ label を使う。`dispatch-abort` は廃止）/ 親への完了・abort 通知 `dispatch-notify` / 停滞した子への追撃 `dispatch-nudge`）が **agmsg `send.sh` の 1 回呼び出し**になっており、`cmux send` + `cmux send-key return` の 2 行ペアが残っていないこと。label は上記のとおり固定（1 メッセージクラス = 1 label）で、**フラグではなく本文の接頭辞**（`<label>: <本文>`）であること。退役した監視ループ用の label が残っていないこと
     - 契約が 4 ファイルで一致すること: 宛先は **agmsg の agent 名**であり surface / workspace ID ではない（`REVIEWER_SURFACE` などの surface 値は `cmux read-screen` の生存確認専用で、配送先に使わない）/ ペインは `[ready] <name>` を報告してはじめて到達可能で、それ以前に送ったメッセージは inbox に未読で残る / 回避すべき長さ制限も outbox も無く本文はそのまま渡す / Enter 検証も再送も無く、`send.sh` は共有 SQLite DB へ書くか非ゼロ終了するかのどちらかで、**非ゼロ終了は未配送**なので必ず報告する
     - Phase A-R は `design_review`、Phase B-R は `exec_review` の agent を宛先に使い、surface id は liveness 確認以外へ使わないこと
     - **`prewarm-panes.sh` に配線されない variant は存在しない**こと: `--agmsg-team` が必須、`launch-workspace.sh` は `--status-dir` があるとき `--agmsg-team` / `--agmsg-from` が必須、`join.sh` / `delivery.sh set` の失敗はペインを 1 つも作る前に die。4 ロールとも同じ形のプロンプト（readiness 確立句 + 「idle で待て。タスクは agmsg メッセージで届く」）で起動し、「タイプ入力で届く」とは書かないこと。`/agmsg actas` は現行プロトコルに存在しない
@@ -205,6 +206,9 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
 
 27. **タスク内の並列実行**が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
     - 文面の単一情報源は `scripts/parallel-directive.sh`。`--engine <claude|codex>` × `--mode <plan|superpowers|execute|review>` で 1 行を出力し、`--agents <N>`（2〜8、既定 4）で同時実行の上限を変える。`standby` モードは存在せず、standby ペインには `--mode execute` を渡す
+    - **`--engine codex` は空出力で exit 0**。codex の子エージェントは shared local app-server daemon 上の別スレッドで走りペインに一切映らないため、分散を指示すると「動いているのか止まっているのか」を判別できない状態を自分で作ることになる。判断はスクリプトの中に閉じ込め、**呼び出し側に engine 分岐を書かない**（呼び出し側は解決済み engine をそのまま渡す。die にしないのは codex ロールの dispatch を落とさないため）。`--agents` の範囲検証は engine を問わず働くこと — 出力が空になったからといって不正値を素通しさせない
+    - これは「指示しない」限定であって「codex が spawn しない」保証ではない。collaboration tools は `features.multi_agent_v2 = false` でも登録されたまま（codex-cli 0.149.1 で実測。`codex debug prompt-input` に `functions.collaboration.*` が残り `list_agents` の実呼び出しも成功する。`multi_agent_v2.enabled=false` / `--disable multi_agent` / `--disable collaboration_modes` / `non_code_mode_only=true` などのいずれでも消えない）。設定でフォアグラウンド専用を強制する手段は無いので、黙り込んだ codex 子の検知は項目 48 の停滞検知が担う
+    - **ディレクティブが空で返るとき、囲みの一文ごと落とすこと**。`launch-workspace.sh` の `REVIEWER_PARALLEL` と `phase-b-deliver.sh` の `REVIEWER_ONLY_BLOCK` がそれで、無条件に連結すると中身のない「reviewer-only directive」の囲みだけが残り、実装者がそれを空の指示としてレビュー依頼へ転記する。素の連結（`phase-b-deliver.sh` の base directive）は `${PARALLEL:+$PARALLEL }` にする。`launch-workspace.sh` の `PARALLEL_INSTRUCTION` は既に `${VAR:+...}` なので変更不要。回帰は `test-launch-workspace-codex.sh` の PL10b と `test-launch-workspace-review-config.sh` の PR1b が固定する
     - **出力に `'` `"` `` ` `` `$` `!` `\` を 1 文字も含めてはならない**。composed command は `zsh -ic "... '<prompt>' ..."` で二重に引用され、`launch-workspace.sh` はエスケープしない（`-i` は対話モードなので history 展開が効き `!` も特殊文字になる）。回帰は `bash test/test-parallel-directive.sh` の PD4 で検証する
     - superpowers への譲歩文（subagent-driven-development の「実装者は同時に 1 体」を上書きしない旨）は engine / mode で出し分けず常に出力する。codex も `superpowers:brainstorming` 前置でパイプラインを辿るため
     - **適用範囲の一文（「調査と検証にだけ適用する」）は同時編集の禁止文より前に置き、直前の並列化ディレクティブに係らせる**。禁止文の後ろに置くと最近接先行詞が禁止文になり「同時編集の禁止は調査と検証にだけ適用される = 実装中は同時に編集してよい」と読めてしまい、guardrail が防ぎたい事故そのものを許可する
@@ -213,8 +217,8 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - **注入点は 5 箇所**（起動プロンプト / Phase B 実行指示 / Phase A-R レビュー依頼 / Phase B-R レビュー依頼（prewarm 経路）/ Phase B-R レビュー依頼（spawn 経路））。この 5 行の表が SKILL.md と guide-ja.md で一致し、かつ**全行が実在すること**を確認する。特に prewarm 経路は、レビューペイン自身が `--mode review` 起動でディレクティブを持たないため、「共通プロトコル a」の拡張 REQUEST_TEXT に `--mode review`（engine は実装者の逆）のディレクティブを含め、実装者がレビュー依頼文へ転記する形でしか届かない
     - **レビュアー宛ディレクティブを引用するときは宛先を語彙で明示する**。engine は `reviewer_engine` の明示値を使い、実装者との関係から計算しない
     - Phase B-R の spawn 経路は `review/code-review.json` の `reviewer_engine`（`claude` / `codex`）から依頼文へ埋め込む。欠落時（旧スキーマ）は注入しない。`--no-parallel` は起動プロンプト専用のスイッチで、レビュー依頼文の注入判定には使わない
-    - **`--no-parallel` はテスト基盤としても load-bearing**。`test/test-launch-workspace-review-config.sh` が起動プロンプト側の注入を止めてレビュー依頼文側の注入だけを切り分けるために渡している（`PARALLEL EXECUTION` が見つかったら必ずレビュー依頼文由来と言える状態を作っている）。フラグを削るなら同等の切り分け手段を別途用意すること
-    - `--agents` / `--no-parallel` は `launch-workspace.sh` のスクリプトレベルのフラグで、SKILL.md の起動例はどちらも渡さない。対応する `config.json` キーも無い。README にはスキルが公開していない旨と、手動起動が唯一の手段である旨を書く
+    - **`--no-parallel` はテスト基盤としても load-bearing**。`test/test-launch-workspace-review-config.sh` が起動プロンプト側の注入を止めてレビュー依頼文側の注入だけを切り分けるために渡している（`PARALLEL EXECUTION` が見つかったら必ずレビュー依頼文由来と言える状態を作っている）。フラグを削るなら同等の切り分け手段を別途用意すること。実装者を codex にする経路でも同じ切り分けが成立する（codex の起動プロンプトには元から注入されない）が、claude 実装者の検査には引き続きフラグが要る
+    - `--agents` / `--no-parallel` は `launch-workspace.sh` のスクリプトレベルのフラグで、**効くのは claude だけ**（codex は生成器が空を返すので自然に no-op）。SKILL.md の起動例はどちらも渡さない。対応する `config.json` キーも無い。README にはスキルが公開していない旨と、手動起動が唯一の手段である旨、および claude 専用である旨を書く。`README.md` はこの 2 つをトークン消費の抑制手段として公開案内しているので、削除するなら破壊的変更として扱うこと
     - 回帰は `bash test/test-parallel-directive.sh`（PD1-PD7）、`bash test/test-launch-workspace-codex.sh`（PL1-PL10）、`bash test/test-launch-workspace-review-config.sh`（PR1-PR3）で検証する
 
 28. **設定の明示 setup / reset**が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
@@ -252,6 +256,17 @@ cmux ワークスペースを活用した並列タスクディスパッチスキ
     - `--parent-notify-surface` はこの表からは外れた: `launch-workspace.sh` / `prewarm-panes.sh` とも `was removed` を含む die で明示的に拒否するようになり、`NOTIFY_SURFACE` / `NOTIFY_SF` への読み手なし配線は無くなった。SKILL.md の起動例にも残っていない。`--parent-notify-workspace` は `cmux notify --workspace` のために引き続き必須で現役
     - `prewarm-panes.sh` の `[[ -n "$AGMSG_TEAM" ]]` 分岐: `--agmsg-team` 必須化（引数パース直後の die）以降、後続 9 箇所のこの条件は**常に真**。挙動を変えない純粋なリファクタなので、まとめて外すのは別タスクで行う。die の直後と 9 箇所それぞれに 1 行コメントを置いてある
     - **現地コメントは必ず本項目を参照させること**（`# 退役候補 (CLAUDE.md 項目 47)`）。参照が無いと、次に読んだ人が「消し忘れ」なのか「意図して残した」のか判別できず、勝手に消すか永遠に残すかのどちらかになる
+
+48. **停滞検知と自動再開**が SKILL.md / guide-ja.md / README.md / CLAUDE.md の 4 ファイルで一致しているか確認:
+    - 判定の単一情報源は `scripts/work-signal.sh`。`<worktree> --state <file> [--surface <id>]` を取り、`signal=` / `commit=` / `mtime=` / `screen=` / `changed=<first|yes|no|unknown>` の 1 行を出す。exit 契約は 0 = 判定できた / 1 = worktree を読めない / 2 = 使用法エラーで、他のスクリプトと揃える
+    - 信号は **4 成分の合成**である: HEAD の hash と author date / `git status --porcelain` 全文 / dirty な各パスの mtime / `--surface` 指定時はペインの画面。**mtime 成分を落としてはならない** — porcelain だけでは既に modified なファイルの再編集を取りこぼす。**画面成分を落としてはならない** — 1〜3 だけだと「90 分ずっと読んで考えていた」セッションを停滞と誤判定し、作業中のエージェントを突つく
+    - **`--surface` を渡したのに `read-screen` が失敗したら `changed=unknown` を返し、state を更新しない**。画面成分が欠けた信号は前回値と必ず食い違うので、素直に比較すると「ペインが死んだ」を「動いている」と読み違える。判断不能を判断不能のまま返し、ペイン死亡の断定は既存手順（1 回リトライ）に任せる。state を更新しないのは欠けた値を次回の基準にしないため
+    - 起床時の分岐は「完了 row → 作業信号 → seat 確認 → ペイン確認」の順。**`changed=yes` では再武装カウンタを増やさない**（目に見えて進んでいるタスクに、停滞用の予算を使わせない）。`changed=no` かつ受信可能なら `dispatch-nudge:` を **1 タスクにつき 1 回だけ**送り（`.dispatch/<slug>/.nudged-<agent>` で冪等化）、その後も `no` なら nudge をやめて `read-screen` の抜粋付きで報告する
+    - **seat 未記録のときは nudge しない**。`send.sh` は成功するのに row は未読で滞留する（`docs/notification-gaps.md` の R2）。「止まっている」と「止まっていて届かない」を別の結論として報告する
+    - **新しいポーリングループを足さないこと**。契機は元からある単発タイマーの起床だけである。ここにループを戻すと v2.0.0 のポーリング全廃が巻き戻る
+    - `cmux-codex-exec` は `bin/work-signal` に**同一内容のコピー**を持つ（プラグインは独立にインストールされるため）。同一性は `test/test-work-signal.sh` の WS7 が検証する。**`cmux-codex-review` は対象外** — レビューは何も書かないので作業信号が常に `changed=no` になり、作業中と停滞が区別できない
+    - `cmux-codex-exec` の起動プロンプトは作業開始前に `codex-record-session.sh` を実行させること。`join.sh` は送信側の登録でしかなく、seat が無いペインへの nudge は届かない（`test-cmux-codex-exec.sh` の E7 が固定）
+    - 回帰は `bash test/test-work-signal.sh`（WS1-WS7）で検証する
 
 ## テスト方法
 
@@ -307,11 +322,13 @@ ls -la skills/cmux-team-dispatch-task/scripts/
 37. **review role 脱落**: launch または readiness で脱落した review role を警告・回収・prune し、その role の gate だけを省略すること。design / exec の脱落とは混同しないこと
 39. **codex 起動安全性**: superpowers は bypass で approval prompt を出さず、review は `--sandbox workspace-write` + `-c approval_policy='never'` に加え `--add-dir <STATUS_DIR>/review` / `--add-dir <AGMSG_SKILL_DIR>/run` / `--add-dir <AGMSG_SKILL_DIR>/db` の3本だけを条件付きで併用すること
 40. **pane close の誤通知**: 全タスク完了後のクリーンアップで standby / 実装ペインを閉じたとき、`[dispatch] task ... finished (status: error)` が親へ飛ばないこと、`status.json` の `done` が保持されること。`executing` 中の pane を閉じた場合は従来どおり `error` 通知が飛ぶこと。`bash test/test-runner-signal-exit.sh` の動的検査を実行すること
-41. **タスク内の並列実行**: plan / superpowers / execute で起動した子セッションのプロンプトに `PARALLEL EXECUTION, mandatory` が含まれること。codex には `spawn_agent`、claude には Task サブエージェントの指示が届くこと。standby / review の起動コマンドには含まれず、親が送る実行指示・レビュー依頼側に含まれること。`--no-parallel` で起動プロンプトから消えること
+41. **タスク内の並列実行**: **claude** の plan / superpowers / execute で起動した子セッションのプロンプトにだけ `PARALLEL EXECUTION, mandatory` と Task サブエージェントの指示が含まれること。**codex には届かないこと**（`spawn_agent` / `wait_agent` が 1 箇所も出ないこと）。standby / review の起動コマンドには含まれず、親が送る実行指示・レビュー依頼側に含まれること。`--no-parallel` で claude の起動プロンプトから消えること。codex レビュアー宛のとき「reviewer-only directive」の空の囲みが残らないこと
 42. **最終クリーンアップの pane close**: `cmux close-surface --workspace` が、検証済み `prewarm.json` に記録された 2 または 4 ロールの surface だけを閉じること
 43. **`--setup` / `--reset`**: どちらもディスパッチしないこと。config target は `review_mode` と 4 ロールを multiSelect し、各ロールの runner / model / effort を 1 コールで質問すること。registry target は追加 / 作り直す / そのままの 3 択だけで、model / effort を編集しないこと。config の更新は `config-edit.sh` だけを使い、reset は `review_mode` と `runner` の 2 キーを消すこと
 45. **`--override`**: タスク一覧 → 対象タスク → 役割 → runner/model/effort の順に質問が出て、
     review 有効時だけ review 2 ロールを表示し、各ロールの runner / model / effort を 1 コールで質問すること。pending tuple を再検証し、override → project → global → built-in の順で field ごとに合成すること。dispatch 後に両 `config.json` と registry が変化せず、`config-edit.sh` を呼ばないこと
+47. **停滞検知**: 実装ペインを意図的に idle にしてタイマー起床を待ち、`work-signal.sh` が `changed=no` を返して `dispatch-nudge:` が 1 通だけ届き、子が作業を再開すること。作業中に起床させると `changed=yes` になり再武装カウンタが増えないこと。`run/codex-bridge.<team>.<agent>.thread` を退避して seat 未記録を作ると、nudge を送らずに「止まっていて届かない」と切り分けて報告すること
+
 46. **readiness と fail-fast**: agmsg 未インストール、または親の watcher / bridge seat が無い状態でスキルを起動すると、ペインを 1 つも作らずエラーで止まること。ペインは `[ready] <name>` を送ってはじめて配送対象になり、親は `[ready]` の起床で初めて Phase A タスクを送ること（`[ready]` をポーリングしないこと）。claude 子の readiness は親から観測できず `[ready]` が唯一の手段であること、codex 子は `verify-agmsg-ready.sh --codex` で seat を確認できることを実機で確かめる
 # GitHub issue 自動ループの保守
 

@@ -42,14 +42,24 @@ missed" than implementation does, and letting it think deeply is worth the cost 
 if it's a bit slower. It launches interactively in a new pane so the user can follow
 the findings visually and ask follow-up questions if needed.
 
-Parallelism is mandatory rather than discretionary. The prompt instructs codex to
-spawn one child agent per review lens (bugs/correctness, security,
-design/readability, test coverage) and to gather background that a diff alone
-cannot settle — call sites, existing conventions, change history — with
-additional child agents in parallel. The parent agent then merges the findings
-into a single deduplicated, severity-ordered review. Available `agent_type`
-values are discovered from `.codex/agents/*.toml`; if none exist, codex omits
-`agent_type`.
+The review runs in the foreground, in that one visible pane. This plugin never
+asks codex to split the work across child agents: those run as separate threads
+on the shared local app-server daemon, visible only through the separate
+`codex agents` TUI, so from the pane you cannot tell whether four of them are
+working or none are. A review you cannot watch defeats the point of launching it
+interactively.
+
+This limits what is *asked for*, not what codex *can* do. The collaboration
+tools stay registered even with `features.multi_agent_v2 = false` — measured on
+codex-cli 0.149.1, where `codex debug prompt-input` still carries the
+`functions.collaboration.*` block and `list_agents` answers a real call, and
+none of `multi_agent_v2.enabled=false`, `--disable multi_agent`,
+`--disable collaboration_modes`, or `non_code_mode_only=true` removes it.
+
+Unlike `/codex-exec`, a stalled review is not auto-detected: the work-signal
+check keys off commits and file mtimes, and a review writes nothing, so a
+working reviewer and a stopped one look identical to it. The timer branch in
+Step 3 stays the only backstop here.
 
 ## Prerequisites
 
@@ -99,8 +109,6 @@ Main arguments (all optional; see the bin's header comment for details):
 | `-m <model>` / `-e <effort>` | Override model / effort (default: gpt-5.6-sol / xhigh) |
 | `-- <instructions>` | Custom review instructions for codex |
 | `--team <team> --reviewer <name> --parent <agent>` | Wires up the agmsg completion notification |
-| `--no-parallel` | Do not inject the parallel-execution directive |
-| `--agents <N>` | Concurrency cap for child agents. Integers 2-8 only (default: 4) |
 
 The bin outputs `surface=` / `token=`. When notification wiring is enabled, the
 token identifies which request a completion line belongs to; the parent is woken by

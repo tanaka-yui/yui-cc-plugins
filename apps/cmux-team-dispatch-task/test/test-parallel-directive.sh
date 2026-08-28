@@ -2,14 +2,19 @@
 # parallel-directive.sh の回帰テスト。
 #
 # 守っている不変条件:
-#   PD1. codex 向けは spawn_agent / wait_agent を指示する
+#   PD1. codex 向けは全 mode で空出力・exit 0 (codex には並列を指示しない)
 #   PD2. claude 向けは Task サブエージェントを指示し、spawn_agent を含まない
-#   PD3. 全 engine × 全 mode で superpowers の逐次規則を上書きしない旨を含む
+#   PD3. claude の全 mode で superpowers の逐次規則を上書きしない旨を含む
 #   PD4. 全 engine × 全 mode の出力に ' " ` $ ! \ が 1 文字も含まれない
 #        (出力は zsh -ic "... '<prompt>' ..." の内側に素で置かれ、エスケープされない)
-#   PD5. 全モードでファイル編集を逐次に保つ禁止文を含む
-#   PD6. --agents が出力に反映され、2..8 以外はエラー終了する
+#   PD5. claude の全 mode でファイル編集を逐次に保つ禁止文を含む
+#   PD6. --agents が claude 出力に反映され、2..8 以外は engine を問わずエラー終了する
+#        (codex は空出力だが、検証は素通しにしない)
 #   PD7. 不正な --engine / --mode / 値なしフラグはエラー終了し stderr メッセージを出す
+#
+# PD3 / PD5 / PD6 が claude 限定なのは、codex に並列を指示しなくなったため。codex の
+# 子エージェントは app-server daemon 上の別スレッドで走りペインに映らないので、
+# 「動いているか分からない」状態を作らないよう指示そのものを出さない方針にした。
 
 set -uo pipefail
 
@@ -23,12 +28,16 @@ MODES=(plan superpowers execute review)
 
 emit() { bash "$BIN" --engine "$1" --mode "$2" ${3:+--agents "$3"}; }
 
-# --- PD1: codex 向けは spawn_agent / wait_agent ---
-o=$(emit codex execute)
-if grep -q 'spawn_agent' <<<"$o" && grep -q 'wait_agent' <<<"$o"; then
-  echo "PASS PD1: codex 向けは spawn_agent / wait_agent を指示する"
+# --- PD1: codex 向けは全 mode で空出力 ---
+pd1=1
+for m in "${MODES[@]}"; do
+  o=$(emit codex "$m") || { echo "  non-zero exit: codex/$m"; pd1=0; }
+  [[ -z "$o" ]] || { echo "  non-empty output: codex/$m -> [$o]"; pd1=0; }
+done
+if [[ $pd1 -eq 1 ]]; then
+  echo "PASS PD1: codex 向けは全 mode で空出力・exit 0"
 else
-  echo "FAIL PD1: [$o]"; fail=1
+  echo "FAIL PD1: codex に並列ディレクティブが残っている"; fail=1
 fi
 
 # --- PD2: claude 向けは Task サブエージェント、spawn_agent を含まない ---
@@ -39,19 +48,17 @@ else
   echo "FAIL PD2: [$o]"; fail=1
 fi
 
-# --- PD3: superpowers 譲歩文が全 engine × 全 mode に入る ---
+# --- PD3: superpowers 譲歩文が claude の全 mode に入る ---
 pd3=1
-for e in "${ENGINES[@]}"; do
-  for m in "${MODES[@]}"; do
-    o=$(emit "$e" "$m")
-    grep -q 'subagent-driven-development' <<<"$o" || { echo "  missing SDD clause: $e/$m"; pd3=0; }
-    grep -q 'one-implementer-at-a-time' <<<"$o" || { echo "  missing one-implementer clause: $e/$m"; pd3=0; }
-  done
+for m in "${MODES[@]}"; do
+  o=$(emit claude "$m")
+  grep -q 'subagent-driven-development' <<<"$o" || { echo "  missing SDD clause: claude/$m"; pd3=0; }
+  grep -q 'one-implementer-at-a-time' <<<"$o" || { echo "  missing one-implementer clause: claude/$m"; pd3=0; }
 done
 if [[ $pd3 -eq 1 ]]; then
-  echo "PASS PD3: 全 engine × 全 mode に superpowers 譲歩文が入る"
+  echo "PASS PD3: claude の全 mode に superpowers 譲歩文が入る"
 else
-  echo "FAIL PD3: 譲歩文が欠けている組み合わせがある"; fail=1
+  echo "FAIL PD3: 譲歩文が欠けている mode がある"; fail=1
 fi
 
 # --- PD4: 禁止文字が 1 文字も含まれない ---
@@ -76,27 +83,29 @@ else
   echo "FAIL PD4: 禁止文字または改行が混入している"; fail=1
 fi
 
-# --- PD5: ファイル編集を逐次に保つ禁止文 ---
+# --- PD5: ファイル編集を逐次に保つ禁止文 (claude) ---
 pd5=1
-for e in "${ENGINES[@]}"; do
-  for m in "${MODES[@]}"; do
-    o=$(emit "$e" "$m")
-    grep -q 'File edits stay in the parent agent and stay sequential' <<<"$o" || { echo "  missing guardrail: $e/$m"; pd5=0; }
-  done
+for m in "${MODES[@]}"; do
+  o=$(emit claude "$m")
+  grep -q 'File edits stay in the parent agent and stay sequential' <<<"$o" || { echo "  missing guardrail: claude/$m"; pd5=0; }
 done
 if [[ $pd5 -eq 1 ]]; then
-  echo "PASS PD5: 全組み合わせでファイル編集の逐次維持を指示する"
+  echo "PASS PD5: claude の全 mode でファイル編集の逐次維持を指示する"
 else
-  echo "FAIL PD5: 逐次維持の禁止文が欠けている組み合わせがある"; fail=1
+  echo "FAIL PD5: 逐次維持の禁止文が欠けている mode がある"; fail=1
 fi
 
 # --- PD6: --agents の反映と範囲チェック ---
-o=$(emit codex execute 5)
+# 反映を見るのは claude だけ (codex は空出力)。ただし範囲検証は engine を問わず働くこと:
+# codex が空出力になったからといって不正値を素通しさせない。
+o=$(emit claude execute 5)
 bad=0
 grep -q 'at most 5 child agents' <<<"$o" || bad=1
-bash "$BIN" --engine codex --mode execute --agents 1 >/dev/null 2>&1 && bad=1
-bash "$BIN" --engine codex --mode execute --agents 9 >/dev/null 2>&1 && bad=1
-bash "$BIN" --engine codex --mode execute --agents abc >/dev/null 2>&1 && bad=1
+for e in "${ENGINES[@]}"; do
+  bash "$BIN" --engine "$e" --mode execute --agents 1 >/dev/null 2>&1 && bad=1
+  bash "$BIN" --engine "$e" --mode execute --agents 9 >/dev/null 2>&1 && bad=1
+  bash "$BIN" --engine "$e" --mode execute --agents abc >/dev/null 2>&1 && bad=1
+done
 if [[ $bad -eq 0 ]]; then
   echo "PASS PD6: --agents 5 が反映され 1 / 9 / abc は拒否される"
 else

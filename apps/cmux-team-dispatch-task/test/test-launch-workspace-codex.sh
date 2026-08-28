@@ -468,32 +468,25 @@ else
   echo 'SKIP: dynamic Codex writable-root test (set RUN_CODEX_DYNAMIC_TEST=1 in an authenticated Codex environment).'
 fi
 
-# --- PL1: plan / superpowers / execute の起動プロンプトにディレクティブが入る ---
-assert_contains "$plan_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex plan で並列ディレクティブが入る'
-assert_contains "$superpowers_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex superpowers で並列ディレクティブが入る'
-assert_contains "$execute_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex execute で並列ディレクティブが入る'
-assert_contains "$execute_runner" 'spawn_agent' 'PL1 codex には spawn_agent が届く'
+# --- PL1: codex の起動プロンプトにはディレクティブを入れない ---
+# codex の子エージェントは app-server daemon 上の別スレッドで走りペインに映らないため、
+# 「動いているのか止まっているのか」を判別できなくなる。だから指示そのものを出さない。
+assert_not_contains "$plan_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex plan にディレクティブは入らない'
+assert_not_contains "$superpowers_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex superpowers にディレクティブは入らない'
+assert_not_contains "$execute_runner" 'PARALLEL EXECUTION, mandatory' 'PL1 codex execute にディレクティブは入らない'
+assert_not_contains "$execute_runner" 'spawn_agent' 'PL1 codex には spawn_agent が届かない'
 
-# --- PL2: --no-parallel でディレクティブが入らない ---
-np_execute=$(runner_for_flags execute --no-parallel)
-assert_not_contains "$np_execute" 'PARALLEL EXECUTION, mandatory' 'PL2 --no-parallel でディレクティブ非注入'
+# --- PL2: --no-parallel は claude のディレクティブを止める ---
+# codex はそもそも注入されないので、このフラグの効き目は claude でしか観測できない。
+np_claude_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode execute --runner claude --plan-file "$TMP/plan.md" --no-parallel claude-no-parallel)
+np_claude_runner=$(jq -r '.runner_file' <<<"$np_claude_output")
+assert_not_contains "$np_claude_runner" 'PARALLEL EXECUTION, mandatory' 'PL2 --no-parallel でディレクティブ非注入 (claude)'
 
 # --- PL3: standby / review の起動プロンプトにはディレクティブを入れない ---
 # (両モードはプロンプト無し / idle 待機文のみで起動し、指示は後から cmux send で届く)
 assert_not_contains "$standby_runner" 'PARALLEL EXECUTION, mandatory' 'PL3 standby はディレクティブ非注入'
 assert_not_contains "$review_runner" 'PARALLEL EXECUTION, mandatory' 'PL3 review はディレクティブ非注入'
-
-# --- PL4: execute では EXIT_INSTRUCTION がディレクティブより後ろに来る ---
-# (exit 指示の後ろに別の指示が続くと優先順位が曖昧になる)
-# アンカーは codex の新しい exit 文言。旧文言 (end this codex session) は実行不能な
-# 要求だったため削除済み。grep 失敗で set -e が走らないよう || true で受ける。
-pl4_line=$(grep -o 'PARALLEL EXECUTION, mandatory.*stop and stay idle' "$execute_runner" | head -1 || true)
-if [[ -n "$pl4_line" ]]; then
-  echo 'PASS: PL4 exit 指示がディレクティブより後ろにある'
-else
-  echo 'FAIL: PL4 exit 指示がディレクティブより前にある、または片方が欠けている'
-  fail=1
-fi
 
 # --- PL5: --agents の不正値は非ゼロ終了する ---
 # 単なる非ゼロ終了だけでは launch-workspace.sh 自身の範囲チェック (line ~442) を検証したことに
@@ -550,6 +543,18 @@ claude_exec_runner=$(jq -r '.runner_file' <<<"$claude_exec_output")
 assert_contains "$claude_exec_runner" 'Task subagents' 'PL6 claude execute には Task サブエージェント指示が届く'
 assert_not_contains "$claude_exec_runner" 'spawn_agent' 'PL6 claude には spawn_agent が届かない'
 
+# --- PL4: execute では EXIT_INSTRUCTION がディレクティブより後ろに来る ---
+# (exit 指示の後ろに別の指示が続くと優先順位が曖昧になる)
+# codex にはディレクティブが入らなくなったので、順序を観測できるのは claude だけ。
+# grep 失敗で set -e が走らないよう || true で受ける。
+pl4_line=$(grep -o 'PARALLEL EXECUTION, mandatory.*run /exit to close this Claude session' "$claude_exec_runner" | head -1 || true)
+if [[ -n "$pl4_line" ]]; then
+  echo 'PASS: PL4 exit 指示がディレクティブより後ろにある (claude)'
+else
+  echo 'FAIL: PL4 exit 指示がディレクティブより前にある、または片方が欠けている'
+  fail=1
+fi
+
 # --- PL8/PL9/PL10: prewarmed Phase B helper の parallel directive 挿入を固定する ---
 # SKILL.md の手組み REQUEST_TEXT は helper へ集約した。実際に配送本文を作る script を検査し、
 # base / review の両 directive と reviewer-only 境界が失われないことを固定する。
@@ -560,8 +565,13 @@ assert_contains "$PHASE_B_DELIVER" \
   'REVIEW_PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh"' \
   'PL9 delivery helper computes the reviewer parallel directive'
 assert_contains "$PHASE_B_DELIVER" \
-  'Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive.' \
+  'REVIEWER_ONLY_BLOCK="Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive. "' \
   'PL10 delivery helper marks the reviewer-only parallel directive boundary'
+# PL10b: その囲みは directive が空 (codex reviewer) のとき丸ごと落ちること。無条件に連結すると
+# 中身のない reviewer-only directive を実装者がレビュー依頼へ転記してしまう。
+assert_contains "$PHASE_B_DELIVER" \
+  'if [[ -n "$REVIEW_PARALLEL" ]]; then' \
+  'PL10b reviewer-only の囲みは directive が空なら出さない'
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

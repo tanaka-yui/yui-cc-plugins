@@ -36,7 +36,7 @@
       "name": "cmux-team-dispatch-task",
       "description": "cmux ワークスペースによる並列タスクディスパッチ。タスクごとに分離した git worktree と設定可能なエージェントセッションを起動し、親セッションがオーケストレーション。",
       "source": "./apps/cmux-team-dispatch-task",
-      "version": "3.6.2",
+      "version": "3.7.0",
       "license": "MIT",
       "category": "development",
       "tags": [
@@ -110,7 +110,7 @@
       "name": "cmux-codex-review",
       "description": "agmsg の inbox を確認したうえで、新しい cmux ペインで codex (gpt-5.6-sol / reasoning effort xhigh) によるコードレビューを起動するプラグイン。",
       "source": "./apps/cmux-codex-review",
-      "version": "2.0.0",
+      "version": "3.0.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [
@@ -124,7 +124,7 @@
       "name": "cmux-codex-exec",
       "description": "claude/superpowers の plan を対話 codex にカレントdir で実装させ、完了を親セッションが agmsg 経由で検知してレビューへ繋ぐプラグイン。",
       "source": "./apps/cmux-codex-exec",
-      "version": "2.0.0",
+      "version": "3.0.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [

@@ -277,4 +277,23 @@ else
   bad 'PB14b Claude-to-Codex review wait uses the wrong liveness protocol'
 fi
 
+# PB15b: a Codex reviewer gets no parallel directive, so the sentence that would have
+# carried it must disappear with it. An empty "reviewer-only directive" wrapper is worse
+# than none: the implementer transcribes it into the review request as an empty order.
+# $mixed_body is still the Claude-implementer / Codex-reviewer body from PB14b.
+if [[ "$mixed_body" != *'reviewer-only directive'* ]]; then
+  ok 'PB15b Codex reviewer leaves no empty reviewer-only directive wrapper'
+else
+  bad 'PB15b empty reviewer-only directive wrapper survived for a Codex reviewer'
+fi
+
+# PB15a: a Codex implementer gets no base directive either, and dropping it must not
+# leave a doubled separator behind (the base concatenation uses ${PARALLEL:+...}).
+codex_impl_body=$(deliver_mixed_body "$TMP/prewarm-codex-claude.json" "$TMP/status-codex-impl")
+if [[ "$codex_impl_body" != *'PARALLEL EXECUTION, mandatory: whenever two or more pieces of work are independent, you MUST fan them out with spawn_agent'*    && "$codex_impl_body" == *"Read and execute the plan at $TMP/plan.md. MANDATORY STATUS PROTOCOL"* ]]; then
+  ok 'PB15a Codex implementer gets no directive and no doubled separator'
+else
+  bad 'PB15a Codex implementer body kept a directive or a doubled separator'
+fi
+
 exit "$fail"
