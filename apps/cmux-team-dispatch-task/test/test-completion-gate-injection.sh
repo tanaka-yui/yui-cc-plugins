@@ -171,6 +171,12 @@ done
 # 不具合の核心。settings.local.json は worktree に 1 本しか無いので gate も 1 本になり、
 # ロールは runner script ごとの環境変数で分かれていなければならない。
 run_launch_role() { # $1=runner $2=workspace-name $3=mode $4=role $5=agent
+  # CMUX_BIN と RUNNERS_CONFIG_PATH は run_launch と同じく必須である。落とすと
+  # launch-workspace.sh が PATH 上の**実物の cmux** を叩き、ユーザーの cmux に本物の
+  # workspace を 2 つ作って本物の claude セッションを起動する。TUI は終了しないので
+  # スイートはそこで止まり、EXIT trap が $TMP を消したあとにはペインだけが cwd を
+  # 失った状態で残る (getcwd: cannot access parent directories)。
+  CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
   AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
     --cwd "$TMP/repo" --mode "$3" --runner "$1" --role "$4" \
     --plan-file "$TMP/plan.md" --agmsg-team demo-team --agmsg-from "$5" \
