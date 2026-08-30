@@ -418,7 +418,11 @@ prewarm.json は必須で、内容を 1 回だけ読み、全体を検証して�
 失敗または readiness prune 後の gate skip を示す。
 
 Phase A-R は design_review pane を spec と plan の 2 checkpoint で再利用する。review-plan:
-を 1 通送り、reviewer は findings の VERDICT と review-verdict: を返す。wake のたびに findings
+を 1 通送り、reviewer は findings の VERDICT と review-verdict: を返す。**レビューペインに
+assignment marker を作らない** — `.assigned-{{DESIGN_REVIEW_AGENT}}` をはじめ review ロールの
+`.assigned-*` は 1 つも touch しない。レビューペインは standby で起動しており、runner wrapper は
+そのマーカーを「このペインがタスクを引き受けた」と読むため、作ると共有 status.json（他ロールの
+結果）を自分の終端状態として親へ通知し、さらに abort-reviewer: まで送る。wake のたびに findings
 を再読する。needs_work は修正して最大 5 round。waiter engine は timer の有無だけを決め、
 reviewer engine は到達性検査を独立に決める。Codex reviewer は bridge seat、Claude reviewer は
 {{DESIGN_REVIEW_WORKSPACE}} / {{DESIGN_REVIEW_SURFACE}} の `cmux read-screen` を 1 回 retry して検査する。
@@ -448,7 +452,10 @@ send.sh を 1 回だけ呼ぶ。成功後だけ `.deferred` を作る。
 review config が空なら base request だけを送る。非空なら helper が canonical review directory 内の
 regular JSON を 1 回読み、exec_review tuple / workspace と一致することを証明した後、実際の
 prewarmed exec request へ Phase B-R protocol を 1 回だけ埋め込む。implementer は各 round で
-verified exec_review agent だけへ review-code: を送り、reviewer は
+verified exec_review agent だけへ review-code: を送る。**送信前に同じ依頼文を
+`<EXISTING_STATUS_DIR>/review/code-round-N-request.md` へ書く**（Phase A-R の checkpoint と同じ扱い）。
+completion gate はディスクしか読まないので、このファイルだけが「作業の途中で止まっている」のではなく
+「verdict を待っている」ことの証拠になる。reviewer は
 `<EXISTING_STATUS_DIR>/review/code-round-N.md` の末尾へ `VERDICT: approve` または
 `VERDICT: needs_work` を書いて review-verdict: を 1 回返す。最大 5 ラウンドとし、第 6 ラウンドは
 開始しない。round 5 が needs_work なら未解決指摘を PR 本文へ記録して進む。design pane を
@@ -571,6 +578,38 @@ round ファイルの選択から除外するのは正しいが、そのまま�
 「依頼が findings より新しい」を答え待ちとみなす。両側はこの 1 つの条件を逆向きに読む —
 依頼側は停止を許され、レビュアーは block される。レビュアー側を入れないと、レビューを一度も
 書かないまま止まれてしまう。
+
+**ディスクに一度も触れないレビューラウンドはゲートから見えず、最終判定が待機者へ出口を渡す。**
+Phase B-R は当初 `review-code:` 依頼を agmsg メッセージだけで送り、request ファイルを書いて
+いなかった。そのため round N+1 の verdict を待つ実装者は、最新の request が Phase A-R の
+古い依頼文のまま、最新の round ファイルが承認済み round N の findings のままになり、
+「VERDICT がまだ無い」にも「依頼が findings より新しい」にも当たらなかった。最終判定へ落ち、
+その reason が唯一提示していた出口が `error` だったため、codex の `exec` がレビュー依頼の
+110 秒後にその出口を取った（同じディスパッチの round 1 は 17 分かかっていた）。2026-08-28 に
+実測。ここから 2 つが要り、どちらも欠かせない。**すべてのレビュー依頼は送信前に
+`<point>-round-<N>-request.md` として materialize する**（Phase B-R も Phase A-R と同じ形にする）。
+**最終判定の reason は「verdict 待ちは block でも error でもない」と述べ、待機を表す手段として
+request ファイルを名指しする** — 別経路でそこへ落ちた待機者を、terminal status へ追い込まず
+引き戻すためである。`error` を「作業そのものが失敗したとき」に限ることが、その reason を
+嘘にしないための条件になる。
+
+**打ち切った依頼側が、レビュアーの findings パスへ書き込んではならない。** 中断プロトコルは
+停止理由を `<point>-round-<N>.md` に `VERDICT:` 行付きで記録させていた。目的は親への記録と、
+「VERDICT の無い findings で block される」レビュアーのゲート解放の 2 つである。しかしその
+パスはレビュアー自身の出力先であり、2 人の書き手のあいだに順序保証が無い。2026-08-28 に
+実測: 中断メモが進行中のレビューの出力先を潰し、親が `-final.md` へ退避させて救出した。
+そこで停止理由は `<point>-round-<N>-abort.md` へ書き、解放はゲートが引き受ける。request と
+findings の両方より新しい abort ファイルは「そのラウンドは終わった」ことを意味し、書きかけの
+レビュアーも停止を許される。abort ファイルは findings として読まない。
+
+**レビューペインは共有 status.json を所有できないので、所有しているように見せてもならない。**
+4 ロールは 1 つの status dir を共有し、runner wrapper は standby ペインの所有権を
+`.assigned-<slug>` だけで判定する。Phase A-R がレビュアー用の assignment marker を touch して
+いたため、レビュアーの wrapper が共有 status.json から実装者の `error` を読み、自分の結果として
+報告した — 1 ロールの失敗が親に 3 件として届き、まだ作業中のレビュアーへ `abort-reviewer:` まで
+送られた（2026-08-28 実測）。どのロールも review ペインの `.assigned-*` を作らない。それとは
+独立に、runner は mode が `review` のとき status の書き込みも通知も一切行わない — 所有できない
+ことは静的に分かるからである。
 
 **ゲートの identity は command 文字列ではなくプロセス環境から来る。** 4 ロールは 1 つの
 worktree を共有し、engine ごとの hook ファイルは 1 本しか無い（`.claude/settings.local.json` /

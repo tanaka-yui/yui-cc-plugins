@@ -38,6 +38,16 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 同じ「`VERDICT:` 行が無い」状態でも、依頼側は待たせ、レビュアーは継続させます（後者は
 自分がまだ書き終えていないという意味だからです）。
 
+**「待っている」はディスクに現れていなければ見えません。** レビュー依頼は Phase A-R も
+Phase B-R も、送信前に `<point>-round-<N>-request.md` として書き出します。これが無いと、
+verdict を待っているだけの子が「作業の途中で止まろうとしている」と判定され、毎ターン
+継続を迫られたあげく、その文面が示す `error` を書いて中断します（2026-08-28 に実測。
+レビュー依頼の 110 秒後でした）。継続を迫る文面自身にも「verdict 待ちは中断ではない」と
+書いてあり、request ファイルを書いて待ち続けるよう案内します。
+
+中断するときの停止理由は `<point>-round-<N>-abort.md` に書きます。レビュアーの出力先
+（`<point>-round-<N>.md`）へは書きません — 進行中のレビュー結果を潰すためです。
+
 連続 block に既定の上限はありません。有限の上限は、まだ終わっていない長いタスクを永久に
 止めてしまうためです（上限に達したゲートはカウンタを保持したまま諦めるので、実装中の exec は
 どの allow 判定にも当たらず以後毎ターン停止します）。暴走が怖い場面では
@@ -406,6 +416,12 @@ Phase A-R の findings は `.dispatch/<slug>/review/<point>-round-<N>.md`、Phas
 `VERDICT: needs_work` にします。Phase B-R は最大 5 ラウンドで、第 6 ラウンドは開始しません。
 round 5 が needs_work なら未解決指摘を PR 本文へ記録して進みます。レビュアーは書き込み直後に
 `review-verdict:` を 1 通送信し、待機側はファイルをポーリングしません。
+
+レビューペインには **assignment marker（`.assigned-*`）を作りません**。4 ロールは 1 つの
+status dir を共有し、runner wrapper は standby ペインの所有権をそのマーカーだけで判定するため、
+作るとレビューペインが他ロールの `status.json` を自分の結果として親へ通知します（1 ロールの
+失敗が 3 ロールの失敗として届きます）。runner 側も `--mode review` のペインでは status の
+書き込みと通知を一切行いません。
 
 Codex review ペインは `--sandbox workspace-write` と `-c approval_policy='never'` に加え、
 `--add-dir <canonical-status-dir>/review`、`--add-dir <AGMSG_SKILL_DIR>/run`、

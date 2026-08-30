@@ -39,6 +39,14 @@
 #  CG23. 次ラウンドの依頼中も依頼側は許される (findings は前ラウンドの VERDICT 付き)
 #  CG24. 同じ状態でレビュアーは block される (書く側なので判定が逆になる)
 #  CG25. 次ラウンドの依頼が来たらレビュアーは再び block される
+#  CG26. コードレビューの依頼中も実装者は許される (Phase A-R と同じ扱い)
+#        (2026-08-28 実測: Phase B-R が request ファイルを書かないため、verdict を待つ
+#         exec が判定 7 に落ち、110 秒で block 文面が勧める error を書いて中断した)
+#  CG27. 判定 7 の reason が「待機は error ではない」ことと待機の materialize 手順を持つ
+#        (request ファイルを書き忘れた待機者に error の逃げ道だけを見せない保険)
+#  CG28. 依頼側が打ち切ったラウンド (-abort.md が最新) ではレビュアーの停止を許す
+#        (中断記録を findings のパスへ書かせるのをやめる代わりに、解放をゲートが担う)
+#  CG29. -abort.md を findings として拾わない (拾うと verdict 済みに見える)
 #        ラウンド上限に達した子は .assigned が残り最新 round に VERDICT があるため、
 #        この sentinel が無いと判定 7 に落ち、done/error のどちらを書いても虚偽になる
 
@@ -316,6 +324,66 @@ touch -t 202608260900 "$d/review/plan-round-2-request.md"
 out=$(bash "$BIN" --status-dir "$d" --role design_review --agent task-design-review 2>/dev/null)
 [[ -n "$out" ]] && pass 'CG25: 次ラウンド依頼でレビュアーは再び block される' \
   || bad "CG25: 前ラウンドの VERDICT で allow された"
+
+# --- CG26: コードレビュー依頼中の実装者を許す ---
+# 2026-08-28 実測: Phase B-R は依頼を agmsg メッセージだけで送り、request ファイルを
+# 一切書かなかった。そのため round 2 以降の verdict を待つ exec は ROUND_FILE が前ラウンドの
+# VERDICT 付き findings を指したままになり、REQUEST_FILE は設計フェーズの古い依頼文のまま
+# 動かず、判定 7 に落ちて毎ターン block された。依頼から 110 秒で子は block 文面が勧める
+# error を書いて中断した。依頼が request ファイルとして materialize されていれば許される。
+d=$(mkdir_case cg26); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'request\n' > "$d/review/plan-round-4-request.md"
+printf 'findings\nVERDICT: needs_work\n' > "$d/review/code-round-2.md"
+printf 'request\n' > "$d/review/code-round-3-request.md"
+touch -t 202608281644 "$d/review/plan-round-4-request.md"
+touch -t 202608281936 "$d/review/code-round-2.md"
+touch -t 202608282133 "$d/review/code-round-3-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG26: コードレビュー依頼中の実装者を許す' \
+  || bad "CG26: verdict 待ちなのに block された: [$out]"
+
+# --- CG27: 判定 7 は待機を error と取り違えさせない ---
+# 判定 7 の reason は「詰まっているなら error を書け」と教える。request ファイルを書き忘れた
+# 待機者はこの逃げ道を取って中断する (2026-08-28 の事故そのもの)。reason 自身が、待機は
+# error ではないことと、待機を materialize する手順を持たなければならない。
+d=$(mkdir_case cg27); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'findings\nVERDICT: needs_work\n' > "$d/review/code-round-2.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+reason=$(jq -r '.reason // empty' <<< "$out" 2>/dev/null)
+if [[ "$reason" == *'-request.md'* && "$reason" == *'not'*'error'* ]]; then
+  pass 'CG27: 判定 7 の reason が待機と error を切り分ける'
+else
+  bad "CG27: reason に待機の逃がし方が無い: [$reason]"
+fi
+
+# --- CG28: 依頼側が打ち切ったラウンドはレビュアーを縛らない ---
+# 中断記録を findings のパス (code-round-N.md) へ書かせていたのは、レビュアーのゲートを
+# 解放するためでもあった。記録を -abort.md へ逃がすなら、その解放をゲート側が引き受ける
+# 必要がある。引き受けないと、書きかけの findings を抱えたレビュアーが永久に block される。
+d=$(mkdir_case cg28); set_status "$d" executing
+printf 'request\n' > "$d/review/code-round-3-request.md"
+printf 'partial findings\n' > "$d/review/code-round-3.md"
+printf 'requester stopped\n' > "$d/review/code-round-3-abort.md"
+touch -t 202608282133 "$d/review/code-round-3-request.md"
+touch -t 202608282134 "$d/review/code-round-3.md"
+touch -t 202608282135 "$d/review/code-round-3-abort.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec_review --agent task-exec-review 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG28: 打ち切られたラウンドのレビュアーを許す' \
+  || bad "CG28: 打ち切り後も block された: [$out]"
+
+# --- CG29: 中断記録を findings として読まない ---
+# -abort.md を round ファイルとして拾うと、依頼側が打ち切っただけで「verdict が出た」
+# ことになり、次ラウンドの待機判定が壊れる。
+d=$(mkdir_case cg29); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'findings\nVERDICT: needs_work\n' > "$d/review/code-round-2.md"
+printf 'stopped\n' > "$d/review/code-round-2-abort.md"
+printf 'request\n' > "$d/review/code-round-3-request.md"
+touch -t 202608281936 "$d/review/code-round-2.md"
+touch -t 202608281937 "$d/review/code-round-2-abort.md"
+touch -t 202608282133 "$d/review/code-round-3-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG29: 中断記録を findings と取り違えない' \
+  || bad "CG29: 依頼中なのに block された: [$out]"
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

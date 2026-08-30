@@ -226,13 +226,42 @@ latest_request() {
 }
 REQUEST_FILE=$(latest_request)
 
+# 依頼側が打ち切ったラウンドの記録。findings とは別のファイルにする。
+# 以前は中断理由を findings のパス (<point>-round-<N>.md) へ VERDICT 行付きで書かせていた。
+# 目的は 2 つで、親への記録と、レビュアーのゲート解放 (VERDICT があれば判定 6 を抜ける) で
+# あった。しかしそのパスはレビュアーの出力先そのものなので、2 人の書き手が 1 つのパスを
+# 順序保証なしに奪い合う。2026-08-28 に実測: 打ち切った実装者の 246 バイトの中断メモが、
+# 進行中だったレビューの出力先を潰した (親が手作業で -final.md へ退避させた)。
+# 記録は -abort.md へ逃がし、レビュアーの解放はこのゲートが引き受ける。
+latest_abort() {
+  local f base last=""
+  shopt -s nullglob
+  for f in "$STATUS_DIR"/review/*round*-abort.md; do
+    base=${f##*/}
+    [[ "$base" =~ round-[0-9]+-abort\.md$ ]] || continue
+    [[ -z "$last" || "$f" -nt "$last" ]] && last="$f"
+  done
+  [[ -n "$last" ]] && printf '%s' "$last"
+}
+ABORT_FILE=$(latest_abort)
+
 # 最新の依頼に対する答えがまだ無い、を両側で共有する判定。依頼が findings より新しければ、
 # その依頼はまだ処理されていない。依頼側にとっては「待て」、レビュアーにとっては「書け」と
 # 正反対の意味になるので、判定そのものは 1 か所に置き、使う側で向きを決める。
 answer_pending() {
   [[ -n "$REQUEST_FILE" ]] || return 1
+  # 依頼を出したあとに打ち切ったなら、答えはもう待っていない。
+  [[ -n "$ABORT_FILE" && "$ABORT_FILE" -nt "$REQUEST_FILE" ]] && return 1
   [[ -z "$ROUND_FILE" ]] && return 0
   [[ "$REQUEST_FILE" -nt "$ROUND_FILE" ]]
+}
+
+# そのラウンドで最後に起きたことが打ち切りである。
+round_aborted() {
+  [[ -n "$ABORT_FILE" ]] || return 1
+  [[ -n "$REQUEST_FILE" && ! "$ABORT_FILE" -nt "$REQUEST_FILE" ]] && return 1
+  [[ -n "$ROUND_FILE" && ! "$ABORT_FILE" -nt "$ROUND_FILE" ]] && return 1
+  return 0
 }
 
 case "$ROLE" in
@@ -257,6 +286,12 @@ case "$ROLE" in
     #     foreign assignment と誤認されて status 書き込みが抑止される)。
     #    依頼文だけが先に届く区間があるので、findings と依頼文のどちらも無いときだけ許す。
     [[ -n "$ROUND_FILE" || -n "$REQUEST_FILE" ]] || allow
+    # 4b. 依頼側がそのラウンドを打ち切った。書きかけの findings を抱えていても、答える相手は
+    #     もう待っていないので縛らない。中断記録を findings のパスへ書かせるのをやめた分、
+    #     レビュアーの解放はここが担う。
+    if round_aborted; then
+      allow
+    fi
     # 6. 最新の依頼に答え終えていない = 自分の仕事が途中。依頼側 (判定 5/5b) とは逆になる。
     #    依頼文しか無い区間で許してしまうと、レビューを一度も書かないまま止まれてしまう。
     if answer_pending; then
@@ -270,4 +305,15 @@ case "$ROLE" in
 esac
 
 # 7. 作業の途中で止まろうとしている
-block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet. Continue the work. To finish, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done if you are blocked), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."
+#
+# reason は次ターンのガイダンスとして届き、モデルはそれに従う。したがってこの文面は
+# 「terminal status を書け」だけであってはならない。判定 5/5b は依頼がディスク上の
+# <point>-round-<N>-request.md として materialize されていることを前提にしており、それを
+# 書き忘れた待機者はここへ落ちる。2026-08-28 に実測: レビュー依頼の 110 秒後、毎ターン
+# block された codex の exec が、この文面が唯一提示していた逃げ道 (error) を取り、
+# 進行中だったレビューを「verdict が返らない」として中断した。
+#
+# したがって待機の逃がし方をここに書く。待機は障害ではないので error は虚偽であり、
+# 正しい出口は request ファイルを書いて待機をディスクへ現すことである。これは指示の
+# 書き忘れを gate 自身が自己修復する層でもある (次ターンで判定 5b が成立して停止できる)。
+block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet. Continue the work. Waiting for a review verdict is NOT being blocked and is NOT an error: if you are waiting, do not write a terminal status. Instead write the request text you already sent to $STATUS_DIR/review/<point>-round-<N>-request.md for the round you requested, which is how this gate sees a wait, then keep waiting. To finish real work, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done only when the work itself failed), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."

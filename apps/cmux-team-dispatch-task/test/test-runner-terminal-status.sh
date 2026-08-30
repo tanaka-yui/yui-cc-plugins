@@ -450,5 +450,31 @@ wait_for_content "$STATUS_DIR/.notified-reviewer-task-rv5" error 20 && r5=yes ||
 release_case
 assert_eq "$r5" 'yes' 'R5 reviewer 送信は復旧後に再試行される'
 
+# R6: review ペインは status.json の所有者にならない。
+# 2026-08-28 実測: Phase A-R の指示 (SKILL.md) が設計ペインにレビュアーの
+# .assigned-<reviewer> を作らせていたため、standby の所有権判定 (.assigned-$SLUG があれば
+# 所有者) が review ペインでも成立し、共有 status.json に書かれていた exec の error を
+# 自分の終端状態として親へ通知し、さらに exec_review へ abort-reviewer: まで送っていた。
+# 1 ロールの失敗が 3 ロールの失敗として拡散する。マーカーが何であれ、review ペインは
+# タスクの所有者になり得ないので、runner 側で無条件に黙らせる。
+STATUS_DIR="$TMP/status-rv6"; rm -rf "$STATUS_DIR"; mkdir -p "$STATUS_DIR"
+jq -n '{status:"error", message:"other role failed"}' > "$STATUS_DIR/status.json"
+touch "$STATUS_DIR/.assigned-task-rv6"
+seed_review_config "$STATUS_DIR" '{"reviewer_surface":"surface:78","reviewer_workspace":"workspace:7","reviewer_agent":"rv6-review","review_dir":"x"}'
+rm -f "$TMP/cmux-calls.log" "$TMP/cmux-attempts.log"
+rv6_out=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" \
+  AGMSG_SEND="$TMP/bin/agmsg-send.sh" bash "$LAUNCH" \
+  --cwd "$TMP/repo" --mode review --role exec_review --runner stub \
+  --status-dir "$STATUS_DIR" --agmsg-team demo-team --agmsg-from task-rv6 \
+  --parent-notify-workspace 'workspace:9' task-rv6)
+rv6_runner=$(jq -r '.runner_file' <<<"$rv6_out")
+ZDOTDIR="$TMP/zdot" STUB_EXIT_CODE=0 PATH="$TMP/bin:$PATH" \
+  CMUX_DISPATCH_WATCH_INTERVAL=1 STUB_STATUS_DIR="$STATUS_DIR" \
+  bash "$rv6_runner" >/dev/null 2>&1 || true
+rv6_notified=$(grep -c 'task-rv6' "$TMP/cmux-calls.log" 2>/dev/null || true)
+assert_eq "${rv6_notified:-0}" '0' 'R6 review ペインは共有 status.json を自分の結果として通知しない'
+assert_eq "$(jq -r '.message' "$STATUS_DIR/status.json")" 'other role failed' \
+  'R6 review ペインは共有 status.json を書き換えない'
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

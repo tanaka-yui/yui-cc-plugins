@@ -87,4 +87,29 @@ for doc in "${DOCS[@]}"; do
 done
 [[ $rd6 -ne 0 ]] || ok 'RD6 all four entry docs state the work-signal / dispatch-nudge contract'
 
+# RD7: レビューペインに assignment marker を作らせない。
+# runner wrapper の standby 所有権判定は `.assigned-<slug>` の存在だけを見るので、
+# レビュアーの marker を作ると review ペインが共有 status.json の所有者に化ける。
+# 2026-08-28 実測: Phase A-R の指示でレビュアー marker が作られ、exec の error を
+# design_review が自分の終端状態として親へ通知し、exec_review へ abort まで送った。
+# 禁止側は SKILL.md の命令文だけを見る。guide-ja.md にはこの命令が元から無く、緩い
+# 語彙一致にすると事故の事後解説そのものが引っかかる (実際に引っかかった)。
+rd7=0
+skill_flat=$(tr '\n' ' ' < "$SKILL" | tr -s ' ')
+if [[ "$skill_flat" == *'touch the assignment marker, and send exactly one review-plan'* ]]; then
+  bad "RD7 SKILL.md still tells the requester to create an assignment marker for the review pane"
+  rd7=1
+fi
+for doc in "$SKILL" "$GUIDE"; do
+  rel="${doc#"$ROOT/"}"
+  flat=$(tr '\n' ' ' < "$doc" | tr -s ' ')
+  if [[ "$flat" == *'never'*'assignment marker'*'review'* \
+     || "$flat" == *'レビューペインに assignment marker を作らない'* ]]; then
+    :
+  else
+    bad "RD7 $rel does not state that review panes get no assignment marker"; rd7=1
+  fi
+done
+[[ $rd7 -ne 0 ]] || ok 'RD7 review panes are documented as never receiving an assignment marker'
+
 exit "$fail"

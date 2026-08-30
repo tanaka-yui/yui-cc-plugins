@@ -78,6 +78,17 @@ if [[ $(grep -Fo "$review_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
 else
   bad 'PB4b actual delivery is missing or duplicates the complete wait protocol'
 fi
+# completion-gate.sh は「レビュー待ち」をディスクだけで判定し、その材料は
+# <point>-round-<N>-request.md である。Phase A-R は依頼文を書くのでこれが成立するが、
+# Phase B-R は依頼を agmsg メッセージだけで送っていたため、verdict を待つ実装者が判定 7 に
+# 落ちて毎ターン block され、block 文面が勧める error を書いて中断した (2026-08-28 実測)。
+# 依頼を送る前に request ファイルを書かせることが、その待機を materialize する唯一の手段。
+if [[ "$body" == *"$review_dir_real/code-round-N-request.md"* \
+   && "$body" == *'before that send'* ]]; then
+  ok 'PB4e review request is materialized on disk before the send'
+else
+  bad 'PB4e delivery does not make the implementer write code-round-N-request.md'
+fi
 status_file="$TMP/status/status.json"
 result_file="$TMP/status/result.md"
 done_command="bash $S_REAL/report-status.sh $TMP/status done"
@@ -92,8 +103,12 @@ if [[ "$body" == *"write $status_file with status executing"* \
 else
   bad 'PB4c actual delivery omits part of the status/result/notification protocol'
 fi
-if [[ "$body" == *"write the stop reason to $review_dir_real/code-round-N.md"* \
-   && "$body" == *'VERDICT: needs_work'* && "$body" == *'abort-reviewer: [abort]'* \
+# 中断記録は reviewer の出力先を奪ってはならない。2026-08-28 に実測: 打ち切った実装者が
+# code-round-3.md へ中断メモを書き、進行中だったレビューの出力先を潰した (親が手作業で
+# code-round-3-final.md へ退避させた)。記録の宛先は -abort.md で、findings は reviewer のもの。
+if [[ "$body" == *"write the stop reason to $review_dir_real/code-round-N-abort.md"* \
+   && "$body" != *"write the stop reason to $review_dir_real/code-round-N.md"* \
+   && "$body" == *'abort-reviewer: [abort]'* \
    && "$body" == *"$error_command"* && "$body" == *'finished (status: error)'* ]]; then
   ok 'PB4d actual delivery embeds the review-abort terminal protocol'
 else

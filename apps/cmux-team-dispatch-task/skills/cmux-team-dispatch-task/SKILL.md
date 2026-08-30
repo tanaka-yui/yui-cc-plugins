@@ -688,8 +688,12 @@ readiness pruning.
 **Phase A-R.** When design_review is present, reuse its one pane for two checkpoints:
 the clarified specification before planning and the completed plan before execution.
 For each checkpoint, write the request and findings files under
-<EXISTING_STATUS_DIR>/review, touch the assignment marker, and send exactly one
-review-plan: message to {{DESIGN_REVIEW_AGENT}}. The reviewer writes a VERDICT line and
+<EXISTING_STATUS_DIR>/review and send exactly one
+review-plan: message to {{DESIGN_REVIEW_AGENT}}. **A review pane never gets an
+assignment marker.** Do not touch `.assigned-{{DESIGN_REVIEW_AGENT}}`, or any other
+`.assigned-*` for a review role: a review pane is standby, and the runner wrapper reads
+that marker as "this pane accepted the task", which makes it report the shared
+`status.json` — another role's result — as its own. The reviewer writes a VERDICT line and
 sends one review-verdict: message back. On every wake, re-read the findings file. Fix
 needs_work findings and repeat for at most five rounds. A Claude waiter may arm one
 single-shot safety timer; a Codex waiter has no timer. Reviewer liveness always branches
@@ -749,7 +753,11 @@ launch and readiness. The helper reads that regular JSON file once, proves that 
 the canonical review directory and matches the verified exec_review tuple and workspace,
 then embeds the following protocol into the actual prewarmed exec request exactly once.
 After all changes are committed and BEFORE creating the PR, the implementer sends one
-`review-code:` request per round only to the verified exec_review agent. The reviewer
+`review-code:` request per round only to the verified exec_review agent. Before that send,
+it writes the same request text to `<EXISTING_STATUS_DIR>/review/code-round-N-request.md`,
+exactly as Phase A-R does for its checkpoints: the completion gate reads only the disk, so
+that file is the sole evidence that the implementer is waiting for a verdict rather than
+idling mid-task. The reviewer
 writes `<EXISTING_STATUS_DIR>/review/code-round-N.md`; its last line is `VERDICT: approve`
 or `VERDICT: needs_work`, followed by one `review-verdict:` send.sh call back to the
 implementer. On needs_work, fix valid findings and request the next round; on approve,
@@ -897,6 +905,39 @@ the requester is told to write a terminal status it must not write. Measured on 
 "request newer than findings" as the answer still being pending. The two sides read that one
 condition in opposite directions: the requester is allowed to stop, and the reviewer is blocked —
 without the reviewer half, a reviewer could stop having never written a review at all.
+
+**A review round that never touches disk is invisible to the gate, and the final decision then
+hands the waiter an exit.** Phase B-R originally sent its `review-code:` request as an agmsg
+message only, writing no request file, so an implementer waiting for round N+1 kept a stale
+Phase A-R request as its newest request and the approved round N findings as its newest round
+file — neither the "no verdict yet" rule nor "request newer than findings" matched. It fell
+through to the final decision, whose reason offered `error` as the way out, and a Codex `exec`
+took that exit 110 seconds after asking for a review that was still running (round 1 of the same
+dispatch had taken 17 minutes). Measured on 2026-08-28. Two things follow, and both are needed:
+every review request materializes as `<point>-round-<N>-request.md` before its send, in Phase B-R
+exactly as in Phase A-R; and the final decision's reason states that waiting for a verdict is
+neither being blocked nor an error, and names the request file as the way to express the wait —
+so a waiter that reaches it by any other route is guided back instead of pushed to a terminal
+status. Reserving `error` for work that actually failed is what keeps that reason honest.
+
+**A requester that gives up must not write into the reviewer's findings path.** The abort
+protocol used to record the stop reason in `<point>-round-<N>.md` with a `VERDICT:` line —
+partly as a record, partly to release the reviewer, whose gate blocks on a findings file with
+no verdict. But that path is the reviewer's own output, and the two writers have no ordering
+between them: on 2026-08-28 an abort note replaced the output of a review that was still
+running, and the parent had to redirect the reviewer to a `-final.md` path to save it. The stop
+reason therefore goes to `<point>-round-<N>-abort.md`, and this gate takes over the release: an
+abort file that is newer than both the request and the findings means that round is over, so
+the reviewer is allowed to stop even mid-write. Abort files are never read as findings.
+
+**A review pane cannot own the shared `status.json`, so nothing may make it look like it does.**
+All four roles share one status directory, and the runner wrapper decides ownership of a standby
+pane from `.assigned-<slug>` alone. Phase A-R used to touch an assignment marker for its
+reviewer; the reviewer's wrapper then read the implementer's `error` out of the shared
+`status.json` and reported it as its own — one role's failure arriving at the parent as three,
+with an `abort-reviewer:` sent to a reviewer that was still working (measured 2026-08-28). No
+role writes an `.assigned-*` for a review pane, and independently of that the runner refuses to
+write status or notify anything when its mode is `review`, because that is knowable statically.
 
 **A child waiting on the parent is not a stalled child.** When a review hits its round cap, the
 child can neither start another round nor proceed, so it hands the decision to the parent and

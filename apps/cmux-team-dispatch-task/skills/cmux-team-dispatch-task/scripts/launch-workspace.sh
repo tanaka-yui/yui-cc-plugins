@@ -1009,7 +1009,7 @@ if [[ "$MODE" == "execute" ]]; then
   if [[ -n "$STATUS_DIR" ]]; then
     ABORT_REVIEW_STEP=""
     if [[ -n "$REVIEW_CONFIG" ]]; then
-      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N.md for the current round N, using N=1 if you never sent a review request, with the LAST line being exactly VERDICT: needs_work; this is only a record for the parent because nobody watches that file, so it cannot wake the reviewer. Then tell the reviewer with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: the team $AGMSG_TEAM, the sender $AGMSG_FROM, the recipient $REVIEWER_AGENT, and as a single quoted argument a message that starts with the prefix abort-reviewer: followed by [abort] and then a one line reason for stopping. A non-zero exit means the reviewer was NOT told, so report it. Next "
+      ABORT_REVIEW_STEP="First write the reason to $REVIEW_DIR/code-round-N-abort.md for the current round N, using N=1 if you never sent a review request; never write it to code-round-N.md, which belongs to the reviewer and may be mid-write. This is only a record because nobody watches that file, so it cannot wake the reviewer. Then tell the reviewer with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: the team $AGMSG_TEAM, the sender $AGMSG_FROM, the recipient $REVIEWER_AGENT, and as a single quoted argument a message that starts with the prefix abort-reviewer: followed by [abort] and then a one line reason for stopping. A non-zero exit means the reviewer was NOT told, so report it. Next "
     fi
     ABORT_PARENT_STEP=""
     # 宛先は parent という agmsg agent 名。agmsg の識別子 (team + from) が無いペインは
@@ -1184,6 +1184,16 @@ CODEX_MODEL_FLAG=""
 STANDBY_FLAG=0
 [[ "$MODE" == "standby" || "$MODE" == "review" ]] && STANDBY_FLAG=1
 
+# review ペインはタスクの所有者に「なれない」。4 ロールが 1 つの STATUS_DIR を共有するため、
+# 所有権判定が .assigned-<slug> の有無だけだと、誰かがレビュアーの marker を作った瞬間に
+# review ペインが共有 status.json の所有者に化ける。2026-08-28 に実測: Phase A-R の指示で
+# 作られた .assigned-<design-review> により、exec が書いた error を design_review が自分の
+# 終端状態として親へ通知し、さらに exec_review へ abort-reviewer: まで送った。1 ロールの
+# 失敗が 3 ロールの失敗として拡散する。marker を作らせない修正 (SKILL.md) と独立に、
+# runner 側でも無条件に黙らせる — 所有できないことは MODE から静的に分かる。
+REVIEW_ROLE_FLAG=0
+[[ "$MODE" == "review" ]] && REVIEW_ROLE_FLAG=1
+
 RUNNER_FILE="$CWD/$RUNNER_SCRIPT_NAME"
 cat > "$RUNNER_FILE" <<EOF
 #!/bin/bash
@@ -1202,6 +1212,7 @@ export DISPATCH_GATE_AGENT="${AGMSG_FROM}"
 export DISPATCH_GATE_TEAM="${AGMSG_TEAM}"
 DEFER_STATUS="${DEFER_STATUS}"
 STANDBY="${STANDBY_FLAG}"
+REVIEW_ROLE="${REVIEW_ROLE_FLAG}"
 AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
 AGMSG_FROM="${AGMSG_FROM}"
@@ -1309,7 +1320,8 @@ fi
 # 通知に失敗しても marker を更新しないので、次の poll がそのまま再試行になる。
 WATCH_INTERVAL="\${CMUX_DISPATCH_WATCH_INTERVAL:-15}"
 WATCHER_PID=""
-if [[ -n "\$STATUS_DIR" ]]; then
+# review ロールは共有 status.json の所有者になれないので watcher ごと起動しない。
+if [[ -n "\$STATUS_DIR" && "\$REVIEW_ROLE" != "1" ]]; then
   (
     while true; do
       # 停止要求への追随を 1 秒以内にするため、待機は 1 秒刻みに分割する。
@@ -1379,6 +1391,13 @@ fi
 # Child 側 Claude は exit 前に "<STATUS_DIR>/.deferred" を touch することで意思表示する。
 if [[ "\$DEFER_STATUS" == "1" && -n "\$STATUS_DIR" && -f "\$STATUS_DIR/.deferred" ]]; then
   echo "[runner] status update deferred (.deferred sentinel found at \$STATUS_DIR/.deferred)" >&2
+  exit 0
+fi
+
+# review: レビューペインはどんな marker があってもタスクを所有しない。共有 status.json は
+# 他ロールのものなので、書き換えも通知もしない (理由は REVIEW_ROLE_FLAG の comment)。
+if [[ "\$REVIEW_ROLE" == "1" ]]; then
+  echo "[runner] review role never owns the shared status.json; exiting without status update" >&2
   exit 0
 fi
 

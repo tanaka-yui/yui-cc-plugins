@@ -166,6 +166,15 @@ if [[ -n "$REVIEW_CONFIG" ]]; then
     REVIEWER_ONLY_BLOCK="Include this reviewer-only directive in the review request: $REVIEW_PARALLEL End reviewer-only directive. "
   fi
   FINDINGS_PATH="$REVIEW_DIR/code-round-N.md"
+  # 依頼をディスクへ materialize させる。completion-gate.sh の「レビュー待ちなら停止を許す」
+  # 判定はディスクだけを読み、その材料は <point>-round-<N>-request.md である。Phase A-R は
+  # 依頼文を書くので成立するが、Phase B-R は依頼を agmsg メッセージだけで送っていた。その結果
+  # round 2 以降の verdict を待つ実装者は、最新 round ファイルが前ラウンドの VERDICT 付き
+  # findings を指したまま、最新 request が設計フェーズの古い依頼文のままになり、判定 7 に落ちて
+  # 毎ターン block された。block の reason は「詰まっているなら error を書け」と教えるので、
+  # 2026-08-28 に codex の exec が依頼の 110 秒後に error を書いて中断した (レビューは
+  # 進行中で、round 1 は約 17 分、round 2 は約 10 分かかっていた)。
+  REQUEST_PATH="$REVIEW_DIR/code-round-N-request.md"
   case "$REVIEWER_ENGINE" in
     codex)
       REVIEWER_LIVENESS="run bash $SCRIPT_DIR/verify-agmsg-ready.sh --codex --team $TEAM --name $REVIEWER_AGENT once"
@@ -182,8 +191,11 @@ if [[ -n "$REVIEW_CONFIG" ]]; then
       WAIT_PROTOCOL="After each successful review-code: send, stop and wait for the review-verdict: push. You have NO safety net for this wait and must not create a timer. Before stopping, $REVIEWER_LIVENESS, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient parent, and one dispatch-notify: body reporting an unbacked code review wait; the body must say dispatch-notify: $EXEC_AGENT waiting for code review verdict; this engine has no timer. On every wake, re-read $FINDINGS_PATH before deciding anything."
       ;;
   esac
-  REVIEW_ABORT="REVIEW ABORT PROTOCOL: if you stop before completing the work, write the stop reason to $FINDINGS_PATH and make its last line VERDICT: needs_work, then call $AGMSG_SEND once with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and a body starting abort-reviewer: [abort] followed by the one line reason. Next follow the error branch of the mandatory status protocol, including the result file, bash $SCRIPT_DIR/report-status.sh $STATUS_DIR error, and the parent notification ending finished (status: error), before ending the session."
-  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and the whole review-code: message as one argument. For round N, that message tells the reviewer to inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $REVIEWER_AGENT, recipient $EXEC_AGENT, and the whole review-verdict: message as one argument. ${REVIEWER_ONLY_BLOCK}$WAIT_PROTOCOL A non-zero send exit means the recipient was not told, so report it instead of waiting. Do not poll the findings file. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed. $REVIEW_ABORT"
+    # 中断記録は $FINDINGS_PATH (レビュアーの出力先) へ書かせない。詳細は completion-gate.sh の
+  # latest_abort() の comment を参照。ゲートの解放はそちらが -abort.md を見て行う。
+  ABORT_PATH="$REVIEW_DIR/code-round-N-abort.md"
+  REVIEW_ABORT="REVIEW ABORT PROTOCOL: if you stop before completing the work, write the stop reason to $ABORT_PATH, never to $FINDINGS_PATH which belongs to the reviewer and may be mid-write, then call $AGMSG_SEND once with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and a body starting abort-reviewer: [abort] followed by the one line reason. Next follow the error branch of the mandatory status protocol, including the result file, bash $SCRIPT_DIR/report-status.sh $STATUS_DIR error, and the parent notification ending finished (status: error), before ending the session."
+  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and the whole review-code: message as one argument. For round N, write that same message text to $REQUEST_PATH before that send: the completion gate reads only the disk, and this file is the sole proof that you are waiting for a verdict instead of idling mid-task. Without it the gate stops you every turn and offers a terminal error you must not take. For round N, that message tells the reviewer to inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $REVIEWER_AGENT, recipient $EXEC_AGENT, and the whole review-verdict: message as one argument. ${REVIEWER_ONLY_BLOCK}$WAIT_PROTOCOL A non-zero send exit means the recipient was not told, so report it instead of waiting. Do not poll the findings file. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed. $REVIEW_ABORT"
 fi
 
 case "$EXEC_ENGINE" in
