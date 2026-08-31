@@ -134,15 +134,33 @@ elif [[ -n "$TEAM" ]]; then
   NOTIFY_HINT=" (team $TEAM)"
 fi
 
+# 待機の連続性を記録するファイル。判定 5 / 5b の「待って良い状態」で allow するたびに
+# 現在時刻を置き、次の呼び出しがどれだけ近かったかを測る。詳細は wait_guard() を参照。
+WAIT_STAMP_FILE="$STATUS_DIR/.gate-wait-$ROLE"
+# この実行が待機経路 (wait_guard) を通ったか。通ったなら allow はスタンプを消さない。
+# 消してしまうと自分が今書いた時刻が毎回消え、次の呼び出しが永久に「1 回目」になる。
+WAIT_STAMPED=0
+
 # 停止を許す。stdout へ何も出さない。
 # 待機から復帰したあとに前の回数を持ち越さないよう、必ずカウンタを消す。数えているのは
 # 「ターンが進んだ回数」ではなく「連続して block した回数」である。
-allow() { rm -f "$BLOCK_COUNT_FILE" 2>/dev/null || true; exit 0; }
+# 待機スタンプは「待機ではない停止」でだけ消す。待機が終わった (verdict が来た /
+# 仕事が終わった) あとに古い時刻が残っていると、次の待機の 1 回目が「自動再開」と
+# 誤判定される。逆にこの実行が待機経路を通っているなら、消してよいのは自分が今書いた
+# 時刻だけになってしまうので触らない。
+allow() {
+  rm -f "$BLOCK_COUNT_FILE" 2>/dev/null || true
+  [[ "$WAIT_STAMPED" -eq 1 ]] || rm -f "$WAIT_STAMP_FILE" 2>/dev/null || true
+  exit 0
+}
 
 # 継続させる。上限が設定されている (MAX_BLOCKS > 0) ときだけ数え、達したら諦めて停止を許す。
 # 既定の無制限ではカウンタに触れない — 数える相手が居ないので、ファイル I/O ごと不要である。
+# 待機経路を通らずにここへ来たなら、この停止は待機ではない (判定 7 やレビュアー側の
+# 判定 6 など)。allow と同じ理由で古いスタンプを残さない。
 block() {
   local n
+  [[ "$WAIT_STAMPED" -eq 1 ]] || rm -f "$WAIT_STAMP_FILE" 2>/dev/null || true
   if [[ "$MAX_BLOCKS" -gt 0 ]]; then
     n=$(cat "$BLOCK_COUNT_FILE" 2>/dev/null || echo 0)
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
@@ -159,6 +177,69 @@ block() {
   fi
   jq -nc --arg r "$1" '{decision:"block",reason:$r}'
   exit 0
+}
+
+# macOS (BSD) と Linux (GNU) で stat のフラグが違う。work-signal.sh と同じ形にしておく。
+if stat -f %m . >/dev/null 2>&1; then
+  mtime_of() { stat -f %m "$1" 2>/dev/null; }
+else
+  mtime_of() { stat -c %Y "$1" 2>/dev/null; }
+fi
+
+# 待機防衛。
+#
+# codex の goal 継続機能 (feature flag `goals`) は、ターン終了の数十ミリ秒後に
+# <codex_internal_context source="goal"> を注入して新しいターンを始める。待機中はこれが
+# 7〜10 秒周期で回る。そしてその注入文自体が codex の blocked audit を含んでいる:
+# 「同じ blocker が 3 連続の goal ターン (自動継続を含めて数える) で続いたら
+# update_goal(status:"blocked") を呼べ」。レビュー待ちは同じ blocker に見えるので、
+# この閾値は待機開始から 30 秒足らずで満たされる。
+#
+# 2026-08-31 に 2 件の実ペインで実測した。どちらも exec は正常に待機へ入り、この gate は
+# 毎回正しく allow していた:
+#   - pr-490-fix-blockers: review-code 送信の 81 秒後に abort。goal 継続 6 回
+#   - 2026-08-28 の別 dispatch: 111 秒後に abort。goal 継続 13 回
+# どちらも abort 直後に update_goal({status:"blocked"}) を実際に実行しており、モデルが
+# 従っていたのは skill の文面ではなく codex の注入文だった。同じセッションの別ラウンドで
+# goal が非アクティブだった区間では、同じ待機構造が 90 分そのまま継続している。したがって
+# 「codex は構造的に待てない」のではなく「goal 継続が待機を潰していた」が正しい。
+#
+# allow は stdout へ何も出さないので、この gate は待機中のターンに一言も持てない。そこで
+# 「自動再開が起きている待機」だけ block へ倒し、reason で反論する。reason は次ターンの
+# ガイダンスとして届き、モデルがそれに従うことは実測済みである (spec §6 G-T1 / G-T2。
+# 2026-08-28 には判定 7 の文面が提示した唯一の逃げ道を実際に取った)。
+#
+# 素の待機まで block しないための判別はスタンプの間隔で行う。自動再開が無ければ、次の Stop は
+# verdict が届くまで来ないので 2 回目の呼び出しがそもそも存在しない。1 回目は必ず allow し、
+# 前回から WAIT_RESTART_SECONDS 以内に再訪したときだけ「何かがターンを刻んでいる」と見なす。
+# ここに新しいポーリングループは無い — 数えているのは engine が勝手に起こしたターンである。
+WAIT_MINUTES="${DISPATCH_GATE_WAIT_MINUTES:-30}"
+[[ "$WAIT_MINUTES" =~ ^[0-9]+$ ]] || die "DISPATCH_GATE_WAIT_MINUTES must be a whole number"
+WAIT_RESTART_SECONDS="${DISPATCH_GATE_WAIT_RESTART_SECONDS:-90}"
+[[ "$WAIT_RESTART_SECONDS" =~ ^[0-9]+$ ]] || die "DISPATCH_GATE_WAIT_RESTART_SECONDS must be a whole number"
+
+# $1 = 待機の起点として時刻を測るファイル (依頼文。無いときは空文字)
+# 猶予が残っていて自動再開が起きているときだけ block し、それ以外は呼び出し元へ返して
+# 従来どおり allow させる。WAIT_MINUTES=0 は防衛の無効化 (常に allow) を意味する。
+wait_guard() {
+  local ref="$1" now prev started elapsed_min
+  [[ "$WAIT_MINUTES" -gt 0 ]] || return 0
+  now=$(date +%s)
+  prev=$(cat "$WAIT_STAMP_FILE" 2>/dev/null || echo "")
+  echo "$now" > "$WAIT_STAMP_FILE" 2>/dev/null || true
+  WAIT_STAMPED=1
+  # 1 回目。ここで止まれるなら自動再開は無い。素直に待たせる。
+  [[ "$prev" =~ ^[0-9]+$ ]] || return 0
+  # 前回が遠い = 自動再開ではなく、正常に眠っていて別の理由で起きた。
+  (( now - prev <= WAIT_RESTART_SECONDS )) || return 0
+  # 経過は依頼文の mtime から測る。gate だけが時計を持てる — モデルは自動再開を
+  # 「タイマーが鳴った」と写像するので、経過時間を数字で渡すことに意味がある。
+  started=$(mtime_of "$ref")
+  [[ "$started" =~ ^[0-9]+$ ]] || started="$prev"
+  elapsed_min=$(( (now - started) / 60 ))
+  # 猶予を使い切った。従来どおり allow して、既存の打ち切り手順へ道を開ける。
+  (( elapsed_min >= WAIT_MINUTES )) && return 0
+  block "you are waiting for a review verdict and that is the correct state, not a failure. About $elapsed_min minute(s) of the $WAIT_MINUTES minute wait budget have passed, and reviews of this size normally take 10 to 30 minutes. Do NOT write an abort file, do NOT write a terminal status, and do NOT call update_goal with status blocked: a review that is still running is not an impasse. If an automatic goal continuation restarted you, that is NOT a timer firing and NOT part of any wake budget, so do not count these turns against a re-arm limit or a consecutive-blocker rule — they are seconds apart, not minutes. Do not re-read the findings file and do not check the reviewer pane again this turn. Say in one short sentence that you are still waiting, then end the turn. Only a review-verdict: message, or an instruction from parent, ends this wait."
 }
 
 # 1. 仕事が終わっている
@@ -269,7 +350,10 @@ case "$ROLE" in
     # 3. タスク未着。待つのが正しい状態。
     [[ -f "$STATUS_DIR/.assigned-$AGENT" ]] || allow
     # 5. verdict 待ち。相手が書くまで待つのが正しい状態。
+    #    wait_guard は「猶予が残っていて、かつ engine が待機ターンを自動再開している」
+    #    ときだけ block へ倒す。それ以外は戻ってきて従来どおり allow する。
     if [[ -n "$ROUND_FILE" ]] && ! grep -q '^VERDICT:' "$ROUND_FILE" 2>/dev/null; then
+      wait_guard "${REQUEST_FILE:-$ROUND_FILE}"
       allow
     fi
     # 5b. 依頼は出したが、その依頼に対する findings がまだ無い = 相手待ち。
@@ -277,6 +361,7 @@ case "$ROLE" in
     #     (findings 未作成) と round N+1 の依頼中 (findings は round N のもので VERDICT 済み)
     #     を拾えない。ここで拾う。
     if answer_pending; then
+      wait_guard "$REQUEST_FILE"
       allow
     fi
     ;;

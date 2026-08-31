@@ -930,6 +930,29 @@ reason therefore goes to `<point>-round-<N>-abort.md`, and this gate takes over 
 abort file that is newer than both the request and the findings means that round is over, so
 the reviewer is allowed to stop even mid-write. Abort files are never read as findings.
 
+**Allowing a wait is not enough when the engine restarts the turn by itself.** Codex has a goal
+continuation feature (feature flag `goals`): tens of milliseconds after a turn ends, it injects
+`<codex_internal_context source="goal">` and starts another turn, so a waiting pane cycles every
+7 to 10 seconds. That injected text carries Codex's own blocked audit — declare
+`update_goal(status:"blocked")` once the same blocking condition has repeated for three
+consecutive goal turns, *counting automatic continuations* — so a review wait satisfies it in
+under 30 seconds. Measured on 2026-08-31 across two dispatches: `exec` sent `review-code:` and
+wrote an abort 81 seconds later after 6 continuations, and 111 seconds later after 13, each
+immediately calling `update_goal({status:"blocked"})`; both reviewers were healthy and finished
+afterwards. The gate allowed correctly on every one of those turns, and allowing is exactly what
+let the next continuation fire. The same session waited 90 minutes on an identical request while
+its goal was inactive, which is what rules out "a codex waiter cannot wait" as the explanation.
+Since `allow` writes nothing, the gate has no voice during a wait, so it flips to `block` for
+waits that are being auto-restarted and argues in the `reason`: it names the elapsed minutes
+(only the gate has a clock; the model maps continuations onto timer firings), forbids the abort
+file, the terminal status and `update_goal(status:"blocked")`, and states that a continuation is
+neither a timer nor a wake. A plain wait is untouched: with nothing restarting the pane the next
+`Stop` never comes, so the gate records the time in `<status-dir>/.gate-wait-<role>` and only
+treats a return within `DISPATCH_GATE_WAIT_RESTART_SECONDS` (90) as an auto-restart. The defence
+expires after `DISPATCH_GATE_WAIT_MINUTES` (30) measured from the request file's mtime, which
+keeps the existing give-up path reachable; `0` disables it. This adds no polling loop — the
+turns being counted are ones the engine started on its own.
+
 **A review pane cannot own the shared `status.json`, so nothing may make it look like it does.**
 All four roles share one status directory, and the runner wrapper decides ownership of a standby
 pane from `.assigned-<slug>` alone. Phase A-R used to touch an assignment marker for its

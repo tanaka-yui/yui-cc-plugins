@@ -385,5 +385,70 @@ out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
 [[ -z "$out" ]] && pass 'CG29: 中断記録を findings と取り違えない' \
   || bad "CG29: 依頼中なのに block された: [$out]"
 
+# --- CG30: 待機の 1 回目は必ず許す (素の待機を block へ倒さない) ---
+# engine が自動再開しない環境では、待機中の Stop は verdict が届くまで 1 回しか来ない。
+# その 1 回を block すると、正しく眠れていたペインを起こして回すことになる。
+d=$(mkdir_case cg30); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'request\n' > "$d/review/code-round-1-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG30: 待機の 1 回目は許す' \
+  || bad "CG30: 1 回目から block された: [$out]"
+
+# --- CG31: 自動再開された待機は block し、abort ではなく待機を指示する ---
+# codex の goal 継続はターン終了の数十ミリ秒後に新しいターンを注入する。2026-08-31 の実測で
+# 待機が 81 秒 / 111 秒で abort に化けた。ゲートが待機中のターンに発言できる唯一の形が block。
+d=$(mkdir_case cg31); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'request\n' > "$d/review/code-round-1-request.md"
+bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+reason=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null)
+if [[ -n "$reason" ]] \
+  && echo "$reason" | grep -q 'update_goal' \
+  && echo "$reason" | grep -q 'NOT a timer firing' \
+  && echo "$reason" | grep -qi 'do not write an abort file'; then
+  pass 'CG31: 自動再開された待機を block し abort を禁じる'
+else
+  bad "CG31: reason が待機防衛になっていない: [$out]"
+fi
+
+# --- CG32: 猶予を使い切ったら従来どおり許す ---
+# 防衛は無期限の拘束ではない。既存の打ち切り手順へ道を残す。
+d=$(mkdir_case cg32); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'request\n' > "$d/review/code-round-1-request.md"
+touch -t 202601010000 "$d/review/code-round-1-request.md"
+bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG32: 猶予切れの待機は許す' \
+  || bad "CG32: 猶予切れでも block された: [$out]"
+
+# --- CG33: 間隔が空いた再訪は自動再開と見なさない ---
+# 正常に眠っていて別の理由 (verdict 以外のメッセージなど) で起きた場合まで縛らない。
+d=$(mkdir_case cg33); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'request\n' > "$d/review/code-round-1-request.md"
+bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+echo $(( $(date +%s) - 600 )) > "$d/.gate-wait-exec"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG33: 間隔の空いた再訪は許す' \
+  || bad "CG33: 自動再開でないのに block された: [$out]"
+
+# --- CG34: 待機防衛は無効化できる ---
+d=$(mkdir_case cg34); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'request\n' > "$d/review/code-round-1-request.md"
+DISPATCH_GATE_WAIT_MINUTES=0 bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+out=$(DISPATCH_GATE_WAIT_MINUTES=0 bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG34: DISPATCH_GATE_WAIT_MINUTES=0 で待機防衛を切れる' \
+  || bad "CG34: 無効化しても block された: [$out]"
+
+# --- CG35: 待機が終わればスタンプが消える ---
+# 消し忘れると、次の待機の 1 回目が「自動再開」と誤判定される。
+d=$(mkdir_case cg35); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'request\n' > "$d/review/code-round-1-request.md"
+bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+[[ -f "$d/.gate-wait-exec" ]] || bad 'CG35: 待機中にスタンプが作られない'
+printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-1.md"
+bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+[[ ! -f "$d/.gate-wait-exec" ]] && pass 'CG35: 待機終了でスタンプが消える' \
+  || bad 'CG35: 待機終了後もスタンプが残る'
+
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

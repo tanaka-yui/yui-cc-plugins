@@ -602,6 +602,26 @@ request ファイルを名指しする** — 別経路でそこへ落ちた待�
 findings の両方より新しい abort ファイルは「そのラウンドは終わった」ことを意味し、書きかけの
 レビュアーも停止を許される。abort ファイルは findings として読まない。
 
+**engine が自分でターンを再開するなら、待機を許すだけでは足りない。** codex には goal 継続機能
+（feature flag `goals`）があり、ターン終了の数十ミリ秒後に `<codex_internal_context source="goal">`
+を注入して次のターンを始めるため、待機中のペインは 7〜10 秒周期で回り続ける。しかもその注入文
+自体が codex の blocked audit を含む — 「同じ blocking condition が**自動継続を含めて**3 連続の
+goal ターンで続いたら `update_goal(status:"blocked")` を宣言せよ」。レビュー待ちはこれを 30 秒
+足らずで満たす。2026-08-31 に 2 つの dispatch で実測: `exec` が `review-code:` を送った 81 秒後
+（継続 6 回）と 111 秒後（継続 13 回）に abort を書き、どちらも直後に
+`update_goal({status:"blocked"})` を実行していた。レビュアーは 2 件とも正常に動いており、あとから
+完走している。ゲートはその全ターンで正しく allow しており、**その allow こそが次の継続を許す状態
+だった**。同じセッションで goal が非アクティブだった区間では、同一の依頼に対して 90 分そのまま
+待てている。これが「codex の待機者は構造的に待てない」という説明を否定する。`allow` は何も書かない
+ので、ゲートは待機中に発言できない。そこで**自動再開されている待機だけ** `block` へ倒し、`reason`
+で反論する: 経過分を数字で渡し（時計を持てるのはゲートだけで、モデルは継続を「タイマーが鳴った」と
+写像する）、abort ファイル・terminal status・`update_goal(status:"blocked")` を禁じ、継続はタイマー
+でも wake でもないと述べる。素の待機は縛らない — 再開する者が居なければ次の `Stop` は来ないので、
+ゲートは時刻を `<status-dir>/.gate-wait-<role>` へ記録し、`DISPATCH_GATE_WAIT_RESTART_SECONDS`
+（90 秒）以内の再訪だけを自動再開と見なす。防衛は依頼ファイルの mtime から
+`DISPATCH_GATE_WAIT_MINUTES`（30 分）で失効し、既存の打ち切り経路へ道を残す。`0` で無効化できる。
+**新しいポーリングループは足していない** — 数えているのは engine が勝手に起こしたターンである。
+
 **レビューペインは共有 status.json を所有できないので、所有しているように見せてもならない。**
 4 ロールは 1 つの status dir を共有し、runner wrapper は standby ペインの所有権を
 `.assigned-<slug>` だけで判定する。Phase A-R がレビュアー用の assignment marker を touch して
