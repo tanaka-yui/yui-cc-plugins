@@ -401,4 +401,29 @@ esac
 # したがって待機の逃がし方をここに書く。待機は障害ではないので error は虚偽であり、
 # 正しい出口は request ファイルを書いて待機をディスクへ現すことである。これは指示の
 # 書き忘れを gate 自身が自己修復する層でもある (次ターンで判定 5b が成立して停止できる)。
-block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet. Continue the work. Waiting for a review verdict is NOT being blocked and is NOT an error: if you are waiting, do not write a terminal status. Instead write the request text you already sent to $STATUS_DIR/review/<point>-round-<N>-request.md for the round you requested, which is how this gate sees a wait, then keep waiting. To finish real work, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done only when the work itself failed), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."
+# 必須コードレビューが配線されているのに、まだ一度も依頼していない実装者への追記。
+#
+# Phase B-R の配線はこれまで phase-b-deliver.sh が組み立てる `phase-b-exec:` の本文にしか
+# 存在せず、設計ペインが正規経路を通らず自作の引き継ぎ文を送ると情報ごと消えていた。
+# 2026-08-31 実測 (lead-psp-liff の member): 手書きの引き継ぎ文には review-code の手順も
+# レビュアーの agent 名も無く、代わりに「進捗と blocker は parent へ報告せよ」と書かれて
+# いた。実装者は指示どおり parent へレビューを依頼し、レビュアーの inbox は参加以来 0 通、
+# code-round-* は 1 つも生まれなかった。
+#
+# code-review.json はディスク上にあり、そこにレビュアーの agent 名が入っている。この gate は
+# それを読めるので、実装者が仕事の途中で止まろうとした瞬間に名指しで渡す。「知っているものは
+# reason に入れる」という既存の方針そのものである。
+REVIEW_HINT=""
+REVIEW_CONFIG="$STATUS_DIR/review/code-review.json"
+if [[ "$ROLE" == exec && -r "$REVIEW_CONFIG" ]]; then
+  reviewer=$(jq -r '.reviewer_agent // empty' "$REVIEW_CONFIG" 2>/dev/null || echo "")
+  # 依頼済みかどうかは request ファイルの有無で見る。1 つでもあれば実装者は経路を知っている。
+  code_requested=""
+  shopt -s nullglob
+  for f in "$STATUS_DIR"/review/code-round-*-request.md; do code_requested="$f"; break; done
+  if [[ -n "$reviewer" && -z "$code_requested" ]]; then
+    REVIEW_HINT=" A mandatory code review is wired for this task and you have not requested it once: the reviewer is the agent $reviewer, and its findings belong in $STATUS_DIR/review/code-round-<N>.md. Address the request to that agent name — never to parent, and never to a surface or workspace id. If your handoff message did not mention any of this, the wiring is still real: this pane also has $STATUS_DIR/review/code-review.json and a pointer to it in .dispatch-handoff.json at the root of your worktree. Before the review, write your request text to $STATUS_DIR/review/code-round-<N>-request.md, then send it with one call whose body starts with review-code:."
+  fi
+fi
+
+block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet.$REVIEW_HINT Continue the work. Waiting for a review verdict is NOT being blocked and is NOT an error: if you are waiting, do not write a terminal status. Instead write the request text you already sent to $STATUS_DIR/review/<point>-round-<N>-request.md for the round you requested, which is how this gate sees a wait, then keep waiting. To finish real work, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done only when the work itself failed), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."

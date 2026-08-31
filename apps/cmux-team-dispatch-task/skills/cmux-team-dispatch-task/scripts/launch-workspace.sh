@@ -170,12 +170,57 @@ ensure_claude_exclusions() {
   mkdir -p "$(dirname "$exclude_file")" 2>/dev/null || true
   # .codex/hooks.json も対象にする。worktree ごとに生成され、放っておくと git 差分として
   # 現れて実装ペインへ「コミットするな」と口頭で伝える運用になっていた。
-  for entry in '.claude/settings.local.json' '.claude/plans/' '.codex/hooks.json'; do
+  for entry in '.claude/settings.local.json' '.claude/plans/' '.codex/hooks.json' '.dispatch-handoff.json'; do
     grep -qxF "$entry" "$exclude_file" 2>/dev/null \
       || echo "$entry" >> "$exclude_file" 2>/dev/null \
       || log "warn" "failed to append $entry to $exclude_file"
   done
   return 0
+}
+
+# ペインが自分の配線をディスクから引ける 1 ファイルを worktree に置く。
+#
+# Phase B-R の配線 (レビュアーの agent 名・review dir・依頼の出し方) は、これまで
+# phase-b-deliver.sh が組み立てる `phase-b-exec:` メッセージの **本文にしか存在しなかった**。
+# 設計ペインが正規経路を通らず自作の引き継ぎ文を送ると、その情報ごと消える。
+# 2026-08-31 に実測: lead-psp-liff の member タスクで、設計ペインが phase-b-deliver.sh を
+# 使わず手書きの PHASE B 引き継ぎを送った。本文には review-code の手順も
+# member-exec-review という名前も無く、代わりに「進捗と blocker は parent へ報告せよ」と
+# 書かれていた。実装者は指示どおり parent へレビューを依頼し、レビュアーの inbox は参加以来
+# 0 通のままだった (code-round-* は 1 つも生まれていない)。
+# 同じ引き継ぎ文には「.dispatch/** はこの worktree に存在しないので参照するな」とも
+# 書かれており、ディスク側の発見経路まで塞がれていた — 事実として worktree には
+# .dispatch/ が無い (本体チェックアウトにある) ので、その一文自体は正しい。
+#
+# したがって「本体チェックアウトの status dir を指す 1 ファイル」を worktree の中に置く。
+# worktree の中なので、引き継ぎ文が何と言おうと実装者は必ず到達できる。完走ゲートの
+# reason (判定 7) もこの配線を読んで名指しするので、経路は 2 つになる。
+# ベストエフォート: 失敗しても dispatch は止めない (ゲートの reason が残る)。
+write_dispatch_handoff() {
+  local file="$CWD/.dispatch-handoff.json" tmp
+  [[ -n "$STATUS_DIR" ]] || return 0
+  tmp=$(mktemp "$CWD/.dispatch-handoff.json.XXXXXX" 2>/dev/null) || {
+    log "warn" "could not create a temp file for $file; skipping the handoff pointer"
+    return 1
+  }
+  if jq -n \
+    --arg status_dir "$STATUS_DIR" \
+    --arg review_dir "$STATUS_DIR/review" \
+    --arg review_config "$STATUS_DIR/review/code-review.json" \
+    --arg team "$AGMSG_TEAM" \
+    --arg agent "$AGMSG_FROM" \
+    --arg role "$MODEL_ROLE" \
+    --arg send_command "$AGMSG_SEND" \
+    '{status_dir:$status_dir, review_dir:$review_dir, review_config:$review_config,
+      team:$team, agent:$agent, role:$role, send_command:$send_command,
+      note:"This dispatch pane owns the status directory above. It lives in the main checkout, not in this worktree. When a mandatory code review is wired, review_config names the reviewer agent; request the review with one send_command call addressed to that agent name, never to parent and never to a surface id."}' \
+    > "$tmp" 2>/dev/null && mv "$tmp" "$file" 2>/dev/null; then
+    log "handoff" "wrote $file"
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  log "warn" "failed to write $file; the completion gate reason remains the only wiring path"
+  return 1
 }
 
 # gate へ渡す送信コマンドは hook のコマンド文字列ではなく STATUS_DIR のファイルで
@@ -945,6 +990,11 @@ else
   # `|| true` は必須 (非 git な --cwd で launch ごと死ぬのを防ぐ)。
   ensure_claude_exclusions || true
 fi
+
+# --- Step 2d: 配線ポインタ (worktree 内の .dispatch-handoff.json) ---
+# 引き継ぎメッセージの本文が唯一の情報源である状態を解消する。詳細は
+# write_dispatch_handoff() の comment を参照。`|| true` は必須 (ベストエフォート契約)。
+write_dispatch_handoff || true
 
 # --- Step 3: Build runner command ---
 # Build the launch command per (engine × MODE) and wrap with `zsh -ic` so that

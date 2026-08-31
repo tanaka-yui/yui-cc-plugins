@@ -486,5 +486,34 @@ assert_prompt_quote_free() {
 assert_prompt_quote_free "$abort_runner" 'Q1 review + abort 入りの inner prompt はクォートフリー'
 assert_prompt_quote_free "$runner_file" 'Q1 review 入りの inner prompt はクォートフリー'
 
+# --- HO: 配線ポインタ (.dispatch-handoff.json) ---
+# Phase B-R の配線が phase-b-exec メッセージの本文にしか無いと、設計ペインが自作の
+# 引き継ぎ文を送った瞬間に消える。2026-08-31 実測 (lead-psp-liff の member): 手書きの
+# 引き継ぎ文にはレビュアーの agent 名が無く、さらに「.dispatch/** はこの worktree に
+# 存在しないので参照するな」と書かれていて、ディスク側の発見経路も塞がれていた。
+# worktree の中に置けば、引き継ぎ文が何と言おうと実装者は到達できる。
+HANDOFF="$TMP/repo/.dispatch-handoff.json"
+if [[ -f "$HANDOFF" ]]; then
+  echo "PASS: HO1 worktree に .dispatch-handoff.json が書かれる"
+else
+  echo "FAIL: HO1 .dispatch-handoff.json が無い"; fail=1
+fi
+for key in status_dir review_dir review_config team agent send_command; do
+  v=$(jq -r --arg k "$key" '.[$k] // empty' "$HANDOFF" 2>/dev/null)
+  [[ -n "$v" ]] && echo "PASS: HO2 handoff が $key を持つ" \
+    || { echo "FAIL: HO2 handoff に $key が無い"; fail=1; }
+done
+hstatus=$(jq -r '.status_dir // empty' "$HANDOFF" 2>/dev/null)
+[[ "$hstatus" == "$TMP/status" ]] \
+  && echo 'PASS: HO3 handoff の status_dir が本体チェックアウトの実パスを指す' \
+  || { echo "FAIL: HO3 status_dir=[$hstatus]"; fail=1; }
+# 誤コミット防止。worktree に置く以上 git status に出てはならない。
+EXCLUDE=$(git -C "$TMP/repo" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
+if [[ -n "$EXCLUDE" ]] && grep -qxF '.dispatch-handoff.json' "$EXCLUDE" 2>/dev/null; then
+  echo 'PASS: HO4 handoff が info/exclude に入る'
+else
+  echo 'FAIL: HO4 handoff が info/exclude に入っていない'; fail=1
+fi
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

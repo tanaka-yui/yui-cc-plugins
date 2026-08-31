@@ -748,6 +748,21 @@ agent. Pass the gate path to this call, not to a launcher:
 succeeds. A send failure is not retried by this ownership layer and leaves `.deferred`
 absent. The design pane exits only after helper success.
 
+**This helper is the only way to hand Phase B over. Never hand-write the handoff.** The
+Phase B-R wiring — the reviewer's agent name, the review directory, the round-file
+convention — exists nowhere else: the helper composes it into the `phase-b-exec:` body, and
+a design pane that writes its own handoff message deletes all of it without noticing. Even a
+handoff that is otherwise excellent, with the plan, the gates and the order of work spelled
+out, leaves the executor unable to learn that a reviewer exists. Measured on 2026-08-31
+(`lead-psp-liff`, task `member`): the design pane sent a long hand-written "PHASE B" message
+that named no reviewer, carried no `review-code:` procedure, told the executor to report to
+`parent` instead, and added that `.dispatch/**` does not exist in the worktree — so the
+executor asked `parent` for its code review, the `exec_review` agent received nothing at all
+from the moment it joined, and not one `code-round-*` file was ever created, while Phase A-R
+had run 55 rounds normally in the same task. `.assigned-<exec agent>`, `.deferred` and the
+`executing` status were all absent too, because only the helper writes them. Adding context
+in a separate message afterwards is fine; replacing the helper's message is not.
+
 **Phase B-R extension.** A non-empty `REVIEW_CONFIG_PATH` means that exec_review survived
 launch and readiness. The helper reads that regular JSON file once, proves that it is in
 the canonical review directory and matches the verified exec_review tuple and workspace,
@@ -1200,6 +1215,20 @@ messages only tell you when to look.
 
 You do not keep a monitoring loop, so treat each wake as stateless: read all of
 `.dispatch/*/status.json` and decide from that, not from what you remember.
+
+**Check for a Phase B handed over outside the helper.** For every task where
+`.dispatch/<slug>/review/code-review.json` exists, `.dispatch/<slug>/.assigned-<exec agent>`
+must exist too — only `phase-b-deliver.sh` writes both, and it writes the marker before it
+sends. A task with the review config but no marker means the design pane hand-wrote its own
+handoff, so the executor never received the reviewer's name and cannot request the mandatory
+review; `.deferred` and an `executing` status will be missing for the same reason. Confirm it
+is not simply a task that has not reached Phase B, by checking whether the exec pane is
+working at all — `work-signal.sh` reporting `changed=yes`, or any `code-round-*` file being
+absent while the executor has been messaging `parent`. Report it as a wiring failure, not as a
+stalled child, and send the executor one message naming the reviewer agent from
+`code-review.json`. Measured on 2026-08-31 (`lead-psp-liff`, task `member`): the reviewer sat
+with an empty inbox for a full day while the executor sent its review requests to `parent`,
+and nothing in the dispatch noticed.
 
 **Re-verify your own inbound channel on every wake and on every timer firing**, not just
 once at launch. Use the same one-line `--parent` call Step 1g uses; each wake is stateless,

@@ -450,5 +450,59 @@ bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
 [[ ! -f "$d/.gate-wait-exec" ]] && pass 'CG35: 待機終了でスタンプが消える' \
   || bad 'CG35: 待機終了後もスタンプが残る'
 
+# --- CG36: 未依頼のコードレビューを判定 7 の reason が名指しする ---
+# Phase B-R の配線が phase-b-exec メッセージの本文にしか無いと、設計ペインが自作の
+# 引き継ぎ文を送った瞬間に消える。2026-08-31 実測 (lead-psp-liff の member): 実装者は
+# レビュアーの存在を知る手段が無く、parent へレビューを依頼した。ゲートは
+# code-review.json を読めるので、止まろうとした瞬間に agent 名を渡す。
+d=$(mkdir_case cg36); set_status "$d" executing; : > "$d/.assigned-task-exec"
+jq -n '{reviewer_agent:"task-exec-review", reviewer_engine:"claude"}' > "$d/review/code-review.json"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+reason=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null)
+if [[ -n "$reason" ]] \
+  && echo "$reason" | grep -q 'task-exec-review' \
+  && echo "$reason" | grep -q 'never to parent' \
+  && echo "$reason" | grep -q 'review-code:'; then
+  pass 'CG36: 未依頼のコードレビューでレビュアー名を渡す'
+else
+  bad "CG36: reason がレビュアーを名指ししない: [$out]"
+fi
+
+# --- CG37: 依頼済みなら追記しない (経路は既に伝わっている) ---
+d=$(mkdir_case cg37); set_status "$d" executing; : > "$d/.assigned-task-exec"
+jq -n '{reviewer_agent:"task-exec-review"}' > "$d/review/code-review.json"
+printf 'request\n' > "$d/review/code-round-1-request.md"
+printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-1.md"
+touch -t 202608311000 "$d/review/code-round-1-request.md"
+touch -t 202608311001 "$d/review/code-round-1.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+reason=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null)
+if [[ -n "$reason" ]] && ! echo "$reason" | grep -q 'have not requested it once'; then
+  pass 'CG37: 依頼済みならレビュー追記を出さない'
+else
+  bad "CG37: 依頼済みなのに未依頼扱いされた: [$out]"
+fi
+
+# --- CG38: レビュー未配線なら追記しない ---
+d=$(mkdir_case cg38); set_status "$d" executing; : > "$d/.assigned-task-exec"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+reason=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null)
+if [[ -n "$reason" ]] && ! echo "$reason" | grep -q 'mandatory code review is wired'; then
+  pass 'CG38: review_mode=off 相当ではレビュー追記を出さない'
+else
+  bad "CG38: 配線が無いのにレビューを迫った: [$out]"
+fi
+
+# --- CG39: design ロールへは出さない (コードレビューは実装者の義務) ---
+d=$(mkdir_case cg39); set_status "$d" executing; : > "$d/.assigned-task-design"
+jq -n '{reviewer_agent:"task-exec-review"}' > "$d/review/code-review.json"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+reason=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null)
+if [[ -n "$reason" ]] && ! echo "$reason" | grep -q 'mandatory code review is wired'; then
+  pass 'CG39: design ロールにはコードレビューを迫らない'
+else
+  bad "CG39: design にコードレビューを迫った: [$out]"
+fi
+
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

@@ -449,6 +449,19 @@ send.sh を 1 回だけ呼ぶ。成功後だけ `.deferred` を作る。
       --plan-file "<PLAN_FILE_PATH>" --status-dir "<EXISTING_STATUS_DIR>" \
       --team "$TEAM" --slug "<slug>" "${PHASE_B_REVIEW_ARGS[@]}" || exit 1
 
+**Phase B の引き継ぎはこの helper だけで行う。引き継ぎ文を自作してはならない。** Phase B-R の
+配線（レビュアーの agent 名・review dir・round ファイルの規約）は他のどこにも存在せず、helper が
+`phase-b-exec:` の本文へ組み立てるだけである。設計ペインが自分で引き継ぎ文を書くと、その情報が
+気づかれないまま丸ごと消える。計画・ゲート・作業順序が丁寧に書かれた優れた引き継ぎ文であっても、
+実装者はレビュアーの存在を知る手段を失う。2026-08-31 実測（`lead-psp-liff` の `member` タスク）:
+設計ペインが長文の手書き「PHASE B」を送り、そこにはレビュアー名も `review-code:` の手順も無く、
+代わりに「進捗と blocker は `parent` へ報告せよ」、さらに「`.dispatch/**` はこの worktree に
+存在しないので参照するな」と書かれていた。結果、実装者は `parent` へコードレビューを依頼し、
+`exec_review` の inbox は参加した瞬間から 0 通のまま、`code-round-*` は 1 つも生まれなかった
+（同じタスクで Phase A-R は 55 ラウンド正常に回っていた）。`.assigned-<exec agent>` /
+`.deferred` / `executing` status も揃って欠けていた — それらを書くのは helper だけだからである。
+あとから別メッセージで補足するのは構わない。helper のメッセージを置き換えるのが禁止である。
+
 review config が空なら base request だけを送る。非空なら helper が canonical review directory 内の
 regular JSON を 1 回読み、exec_review tuple / workspace と一致することを証明した後、実際の
 prewarmed exec request へ Phase B-R protocol を 1 回だけ埋め込む。implementer は各 round で
@@ -802,6 +815,18 @@ agmsg Monitor ストリームを保持しているので、子からのメッセ
 
 監視ループを持たないので、どの起床もステートレスに扱う: `.dispatch/*/status.json` をすべて
 読み、記憶ではなくそこから判断する。
+
+**helper を通さずに引き継がれた Phase B を検知する。** `.dispatch/<slug>/review/code-review.json`
+が存在するタスクでは、`.dispatch/<slug>/.assigned-<exec agent>` も存在していなければならない。
+両方を書くのは `phase-b-deliver.sh` だけで、しかも marker は送信より前に書かれるからである。
+review config があるのに marker が無いタスクは、設計ペインが引き継ぎ文を自作したことを意味し、
+実装者はレビュアー名を受け取っていないので必須レビューを依頼できない。同じ理由で `.deferred` と
+`executing` status も欠ける。単に Phase B へ到達していないだけのタスクと取り違えないよう、exec
+ペインが実際に動いているかを確認する（`work-signal.sh` が `changed=yes` を返す、あるいは
+`code-round-*` が 1 つも無いのに実装者が `parent` へメッセージを送り続けている、など）。停滞では
+なく**配線の失敗**として報告し、`code-review.json` のレビュアー agent 名を添えたメッセージを
+実装者へ 1 通送る。2026-08-31 実測（`lead-psp-liff` の `member`）: レビュアーは丸 1 日 inbox が
+空のまま、実装者はレビュー依頼を `parent` へ送り続け、ディスパッチ内の誰も気づかなかった。
 
 **自分自身の受信チャネルを、起動時だけでなく起床のたび・タイマー発火のたびに再検証する。**
 Step 1g とまったく同じ `--parent` の 1 行を使う。起床はステートレスなので `TEAM` は記憶せず

@@ -419,6 +419,17 @@ design は実装指示の配送後に `.deferred` を作って終了し、レビ
 Phase B は `phase-b-deliver.sh` が検証済み `prewarm.json.exec` の固定 tuple から agent / engine を使い、
 同 agent へ `phase-b-exec:` を 1 通だけ送ります。新しい execute session は起動しません。
 
+**引き継ぎ文を自作してはいけません。** Phase B-R の配線（レビュアーの agent 名・review dir・
+round ファイルの規約）は他のどこにも無く、helper が `phase-b-exec:` の本文へ組み立てるだけです。
+設計ペインが自分で引き継ぎ文を書くと、その情報ごと消えます。2026-08-31 に実測した例では、
+設計ペインの手書き「PHASE B」にレビュアー名も `review-code:` の手順も無く、代わりに
+「進捗と blocker は `parent` へ報告せよ」と書かれていたため、実装者は `parent` へコードレビューを
+依頼し続け、`exec_review` の inbox は丸 1 日空のままでした。多重防御として (1) 各 worktree の
+`.dispatch-handoff.json` が本体チェックアウトの status dir と `review/code-review.json` を指し、
+(2) 完走ゲートが「レビューが配線済みなのに 1 度も依頼していない」実装者へレビュアー名と依頼手順を
+渡し、(3) 親が起床のたびに「`code-review.json` があるのに `.assigned-<exec agent>` が無い」タスクを
+配線の失敗として検出します。
+
 - `review_mode=off`: `design` と `exec` の 2 ペイン。Phase A-R / B-R は行いません。
 - `review_mode=on`: 4 ペイン。Phase A-R は `design_review`、B-R は `exec_review` を再利用します。
 - Phase A-R の wait protocol は `phase-a-review-wait.sh` が生成します。design engine は timer の
