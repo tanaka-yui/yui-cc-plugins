@@ -625,6 +625,26 @@ log "runner" "applying reasoning effort=$EFFORT ($RUNNER_ENGINE $MODEL_ROLE)"
 # hook trust には作用しないので、専用フラグを全 codex 経路に付ける。
 CODEX_HOOK_TRUST_FLAG=" --dangerously-bypass-hook-trust"
 
+# codex の goal 継続機能を切る。ターン終了の数十ミリ秒後に
+# <codex_internal_context source="goal"> を注入して次のターンを始める機能で、待機中のペインを
+# 7〜10 秒周期で回し続ける。しかもその注入文自体が codex の blocked audit を含む:
+# 「同じ blocking condition が自動継続を含めて 3 連続 goal ターン続いたら
+# update_goal(status:"blocked") を宣言せよ」。レビュー待ちはこれを 30 秒足らずで満たす。
+#
+# 2026-08-31 に rollout から実測: exec が review-code を送った 81 秒後 (継続 6 回) と、別
+# dispatch の 111 秒後 (継続 13 回) に abort を書き、どちらも直後に
+# update_goal({status:"blocked"}) を実行した。レビュアーは 2 件とも正常で、あとから完走した。
+# 同一セッションで goal が非アクティブだった区間では、同じ待機が 90 分そのまま続いている。
+#
+# このスキルの子ペインは agmsg メッセージと親の nudge で再開する設計なので、goal 継続は
+# 待機を潰す以外の役目を持たない。完走ゲートの待機防衛 (completion-gate.sh の wait_guard) は
+# 注入文と議論して勝つ形の防御だが、こちらは駆動源そのものを消すので確定的である。両方を
+# 残すのは、goal が別経路 (ユーザーが TUI で設定するなど) で復活しうるための多重防御。
+#
+# 代償: 止まった codex ペインが自力で再開しなくなる。復帰は agmsg 経由の nudge に一本化される
+# (停滞検知は work-signal.sh が担う)。復活させたいときは CODEX_GOALS_FLAG を空にすること。
+CODEX_GOALS_FLAG=" -c features.goals=false"
+
 # claude-plugins-official の security-guidance は Claude Code の出力契約に合わせて
 # stdout に {"metrics": ...} / rewakeSummary / async を書く。codex の hook 出力スキーマは
 # additionalProperties: false なので未知キーで必ず parse error になり、
@@ -1081,14 +1101,14 @@ CODEX_MODEL_FLAG=""
     if [[ "$MODE" == "execute" ]]; then
       # codex execute: plan モードと同じく bypass フラグを付与。
       # --model (明示指定) があれば付与、無ければ codex 側デフォルト
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG$CODEX_GOALS_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
     elif [[ "$MODE" == "standby" ]]; then
       # codex standby: prompt なしで idle 起動。実行指示は常に cmux send で届く
       # (prewarm.json の delivery=agmsg のときは加えて agmsg inbox にも記録される)。
       if [[ -n "$PROMPT_TEXT" ]]; then
-        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
+        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG$CODEX_GOALS_FLAG --dangerously-bypass-approvals-and-sandbox '$PROMPT_TEXT'"
       else
-        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox"
+        CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG$CODEX_GOALS_FLAG --dangerously-bypass-approvals-and-sandbox"
       fi
     elif [[ "$MODE" == "review" ]]; then
       # review は workspace-write に限定し、approval prompt は抑止する。findings は
@@ -1129,14 +1149,14 @@ CODEX_MODEL_FLAG=""
         [[ -d "$AGMSG_SKILL_DIR/run" ]] && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/run'"
         [[ -d "$AGMSG_SKILL_DIR/db" ]]  && REVIEW_WRITABLE_FLAG+=" --add-dir '$AGMSG_SKILL_DIR/db'"
       fi
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG$CODEX_GOALS_FLAG --sandbox workspace-write -c approval_policy='never'$REVIEW_WRITABLE_FLAG${PROMPT_TEXT:+ '$PROMPT_TEXT'}"
     elif [[ "$MODE" == "superpowers" ]]; then
       # codex superpowers: $superpowers:brainstorming プレフィックスで brainstorming skill を発動
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '\$superpowers:brainstorming $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG$CODEX_GOALS_FLAG --dangerously-bypass-approvals-and-sandbox '\$superpowers:brainstorming $PROMPT_TEXT'"
     else
       # codex plan: claude の --dangerously-skip-permissions に相当するのは
       # --dangerously-bypass-approvals-and-sandbox。/plan slash command は codex でも有効
-      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG --dangerously-bypass-approvals-and-sandbox '/plan $PROMPT_TEXT'"
+      CORE_CMD="$RUNNER_COMMAND$CODEX_EFFORT_FLAG$CODEX_MODEL_FLAG$CODEX_HOOK_TRUST_FLAG$CODEX_GOALS_FLAG --dangerously-bypass-approvals-and-sandbox '/plan $PROMPT_TEXT'"
     fi
   else
     # claude engine (default)

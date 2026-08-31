@@ -953,6 +953,15 @@ expires after `DISPATCH_GATE_WAIT_MINUTES` (30) measured from the request file's
 keeps the existing give-up path reachable; `0` disables it. This adds no polling loop — the
 turns being counted are ones the engine started on its own.
 
+**The driver itself is switched off at launch, and the gate defence stays as the second layer.**
+Every codex pane is started with `-c features.goals=false`, which removes the continuation rather
+than arguing with it. That is the deterministic half of the fix; the gate's `reason` is the half
+that still works if a goal is set through another route, such as a person setting one in the TUI
+of a running pane. The cost is that a codex pane which stops no longer restarts itself — recovery
+is exactly the agmsg path this skill already relies on (a `review-verdict:` message, or the
+parent's `dispatch-nudge:` driven by `work-signal.sh`), which is what the design assumes anyway.
+Clearing `CODEX_GOALS_FLAG` in `launch-workspace.sh` restores the old behaviour.
+
 **A review pane cannot own the shared `status.json`, so nothing may make it look like it does.**
 All four roles share one status directory, and the runner wrapper decides ownership of a standby
 pane from `.assigned-<slug>` alone. Phase A-R used to touch an assignment marker for its

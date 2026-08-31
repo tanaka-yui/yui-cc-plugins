@@ -622,6 +622,14 @@ goal ターンで続いたら `update_goal(status:"blocked")` を宣言せよ」
 `DISPATCH_GATE_WAIT_MINUTES`（30 分）で失効し、既存の打ち切り経路へ道を残す。`0` で無効化できる。
 **新しいポーリングループは足していない** — 数えているのは engine が勝手に起こしたターンである。
 
+**駆動源そのものは起動時に切り、ゲートの防衛は第 2 層として残す。** codex ペインは全経路で
+`-c features.goals=false` を付けて起動する。注入文と議論するのではなく継続機能を消すので、
+こちらが確定的な側である。ゲートの `reason` は、goal が別経路（動いているペインの TUI で人が
+設定するなど）で復活したときに効く側として残る。代償は、止まった codex ペインが自力で
+再開しなくなること。復帰はこのスキルが元から依存している agmsg 経路（`review-verdict:` メッセージ、
+または `work-signal.sh` による親の `dispatch-nudge:`）に一本化される — 設計上もともとそれを
+前提にしている。`launch-workspace.sh` の `CODEX_GOALS_FLAG` を空にすれば元の挙動へ戻せる。
+
 **レビューペインは共有 status.json を所有できないので、所有しているように見せてもならない。**
 4 ロールは 1 つの status dir を共有し、runner wrapper は standby ペインの所有権を
 `.assigned-<slug>` だけで判定する。Phase A-R がレビュアー用の assignment marker を touch して

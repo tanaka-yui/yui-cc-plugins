@@ -290,6 +290,20 @@ assert_contains "$execute_runner" '--dangerously-bypass-hook-trust' 'T8 codex + 
 assert_contains "$standby_runner" '--dangerously-bypass-hook-trust' 'T8 codex + standby hook trust bypass'
 assert_contains "$review_runner" '--dangerously-bypass-hook-trust' 'T8 codex + review hook trust bypass'
 
+# --- goal 継続の無効化: codex はターン終了の数十ミリ秒後に
+# <codex_internal_context source="goal"> を注入して次のターンを始める。その注入文自体が
+# 「同じ blocking condition が自動継続を含めて 3 連続 goal ターン続いたら blocked を宣言せよ」
+# という codex の blocked audit を含むため、レビュー待ちが 30 秒足らずでその閾値に達する。
+# 2026-08-31 実測: review-code 送信の 81 秒後 / 111 秒後に exec が abort し、どちらも直後に
+# update_goal({status:"blocked"}) を実行した (レビュアーは 2 件とも正常に完走)。
+# 子ペインは agmsg メッセージと親の nudge で再開する設計なので、この機能は待機を潰す以外の
+# 役目を持たない。全 codex 経路で切る。 ---
+assert_contains "$superpowers_runner" '-c features.goals=false' 'T16 codex + superpowers disables goal continuation'
+assert_contains "$plan_runner" '-c features.goals=false' 'T16 codex + plan disables goal continuation'
+assert_contains "$execute_runner" '-c features.goals=false' 'T16 codex + execute disables goal continuation'
+assert_contains "$standby_runner" '-c features.goals=false' 'T16 codex + standby disables goal continuation'
+assert_contains "$review_runner" '-c features.goals=false' 'T16 codex + review disables goal continuation'
+
 # Exit instruction must be engine-aware: codex ends its own session (it does not
 # act on /exit), claude runs /exit. If the codex execute path stopped baking the
 # codex-appropriate exit instruction, the codex TUI would stay idle after the work
@@ -315,6 +329,7 @@ for mode in superpowers plan execute standby review; do
   assert_not_contains "$claude_runner_file" '--sandbox workspace-write' "T6 claude + $mode has no codex sandbox flag"
   assert_not_contains "$claude_runner_file" '--dangerously-bypass-approvals-and-sandbox' "T6 claude + $mode has no codex bypass"
   assert_not_contains "$claude_runner_file" '--dangerously-bypass-hook-trust' "T9 claude + $mode has no codex hook trust flag"
+  assert_not_contains "$claude_runner_file" '-c features.goals=false' "T16b claude + $mode has no codex goals flag"
   [[ "$mode" == "execute" ]] \
     && assert_contains "$claude_runner_file" 'run /exit' 'T6b claude execute bakes /exit exit instruction'
 done
