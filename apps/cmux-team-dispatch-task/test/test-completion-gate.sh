@@ -60,7 +60,10 @@ pass() { echo "PASS $1"; }
 bad() { echo "FAIL $1"; fail=1; }
 
 mkdir_case() { local d="$TMP/$1"; mkdir -p "$d/review"; echo "$d"; }
-set_status() { jq -n --arg s "$2" '{status:$s}' > "$1/status.json"; }
+set_status() {
+  jq -n --arg s "$2" '{status:$s}' > "$1/status.json"
+  jq -n '{exec:{agent:"task-exec"}}' > "$1/prewarm.json"
+}
 
 # --- CG1: 終端 status は許す ---
 for st in done error; do
@@ -630,6 +633,24 @@ printf 'a\n' > "$d/review/spec-round-1-abort.md"
 out=$(bash "$BIN" --status-dir "$d" --role design_review --agent task-review 2>/dev/null)
 [[ -z "$out" ]] && pass 'CG61: レビュアー側は abort で allow (従来どおり)' \
   || bad "CG61: レビュアが block された: [$out]"
+
+# --- CG62–CG64: 判定 7 の進捗 lease ---
+d=$(mkdir_case cg62); set_status "$d" executing; : > "$d/.assigned-task-exec"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+if [[ -n "$out" ]] && jq -e '.generation == "progress|exec|task-exec"' "$d/.gate-wait-exec" >/dev/null 2>&1; then
+  pass 'CG62: 判定 7 で進捗 lease を張る'
+else
+  bad "CG62: lease=[$(cat "$d/.gate-wait-exec" 2>/dev/null)]"
+fi
+d1=$(jq -r '.deadline_epoch' "$d/.gate-wait-exec"); sleep 1
+bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+d2=$(jq -r '.deadline_epoch' "$d/.gate-wait-exec")
+[[ "$d2" -gt "$d1" ]] && pass 'CG63: 判定 7 のたびに deadline が延びる' || bad "CG63: $d1 -> $d2"
+d=$(mkdir_case cg64); set_status "$d" executing; : > "$d/.assigned-task-exec"
+printf 'req\n' > "$d/review/code-round-1-request.md"
+bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
+gen=$(jq -r '.generation' "$d/.gate-wait-exec")
+[[ "$gen" == 'code|1|exec|task-exec' ]] && pass 'CG64: 待機中は待機 lease が優先される' || bad "CG64: generation=[$gen]"
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

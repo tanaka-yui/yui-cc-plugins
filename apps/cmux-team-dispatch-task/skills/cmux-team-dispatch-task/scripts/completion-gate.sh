@@ -149,11 +149,14 @@ next_lease_seq() {
   printf '%s' "$n"
 }
 arm_lease() {
-  local seq gen tmp deadline
+  local gen="${1:-}" seq tmp deadline
   [[ "$WAIT_MINUTES" -gt 0 ]] || { clear_lease; return 0; }
-  [[ -n "$POINT" && -n "$ROUND_NO" ]] || return 0
+  if [[ -z "$gen" ]]; then
+    [[ -n "$POINT" && -n "$ROUND_NO" ]] || return 0
+    gen="$POINT|$ROUND_NO|$ROLE|$AGENT"
+  fi
   seq=$(next_lease_seq) || { clear_lease; return 1; }
-  gen="$POINT|$ROUND_NO|$ROLE|$AGENT"; deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+  deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
   tmp=$(mktemp "$STATUS_DIR/.gate-wait.XXXXXX" 2>/dev/null) || { clear_lease; return 1; }
   jq -nc --arg g "$gen" --argjson s "$seq" --argjson d "$deadline" '{generation:$g,lease_seq:$s,deadline_epoch:$d}' > "$tmp" \
     && mv -f "$tmp" "$LEASE_FILE" || { rm -f "$tmp"; clear_lease; return 1; }
@@ -387,4 +390,6 @@ if [[ "$ROLE" == exec && -r "$REVIEW_CONFIG" ]]; then
   fi
 fi
 
+arm_lease "progress|$ROLE|$AGENT" || true
+WAIT_STAMPED=1
 block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet.$REVIEW_HINT Continue the work. Waiting for a review verdict is NOT being blocked and is NOT an error: if you are waiting, do not write a terminal status. Instead write the request text you already sent to $STATUS_DIR/review/<point>-round-<N>-request.md for the round you requested, which is how this gate sees a wait, then keep waiting. To finish real work, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done only when the work itself failed), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."
