@@ -522,5 +522,52 @@ else
   pass 'CG40: zsh が無いので skip'
 fi
 
+# --- CG41: 新しい point の request 待ちを allow する ---
+d=$(mkdir_case cg41)
+set_status "$d" executing
+: > "$d/.assigned-task-design"
+printf 'findings\nVERDICT: approve\n' > "$d/review/spec-round-1.md"
+sleep 1
+printf 'request\n' > "$d/review/plan-round-1-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG41: 新しい point の request 待ちを allow する' \
+  || bad "CG41: block された: [$out]"
+
+# --- CG42: 古い未応答 request は、新しい他 point の findings に負けない ---
+d=$(mkdir_case cg42)
+set_status "$d" executing
+: > "$d/.assigned-task-design"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
+sleep 1
+printf 'findings\nVERDICT: approve\n' > "$d/review/plan-round-1.md"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG42: 古い未応答 request の待機を allow する' \
+  || bad "CG42: 待機なのに block された: [$out]"
+
+# --- CG60: abort + VERDICT 無し findings で依頼側は待機を終える ---
+d=$(mkdir_case cg60)
+set_status "$d" executing
+: > "$d/.assigned-task-design"
+printf 'req\n' > "$d/review/spec-round-1-request.md"
+printf 'f only\n' > "$d/review/spec-round-1.md"
+sleep 1
+printf 'a\n' > "$d/review/spec-round-1-abort.md"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -n "$out" ]] && pass 'CG60: abort 済みなら依頼側は待機しない' \
+  || bad 'CG60: abort 済みなのに待機として allow した (tick と逆転する)'
+[[ ! -f "$d/.gate-wait-design" ]] && pass 'CG60b: abort 済みでは lease を arm しない' \
+  || bad 'CG60b: lease を arm した'
+
+# --- CG61: レビュアー側は従来どおり abort で allow する ---
+d=$(mkdir_case cg61)
+set_status "$d" executing
+printf 'req\n' > "$d/review/spec-round-1-request.md"
+printf 'f only\n' > "$d/review/spec-round-1.md"
+sleep 1
+printf 'a\n' > "$d/review/spec-round-1-abort.md"
+out=$(bash "$BIN" --status-dir "$d" --role design_review --agent task-review 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG61: レビュアー側は abort で allow (従来どおり)' \
+  || bad "CG61: レビュアが block された: [$out]"
+
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

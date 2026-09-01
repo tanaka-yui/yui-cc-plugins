@@ -29,6 +29,7 @@
 #
 # 使用法エラーで stdout へ何も出さないのは意図的である。壊れた JSON を hook へ返すと
 # engine 側が毎ターン parse error を報告し、本来の停止理由が見えなくなる。
+[[ -n "${BASH_VERSION:-}" ]] || exec bash "$0" "$@"
 set -uo pipefail
 
 die() { echo "completion-gate: $1" >&2; exit 2; }
@@ -265,85 +266,16 @@ if [[ -f "$STATUS_DIR/.escalated" ]]; then
   allow
 fi
 
-# 最新の review ラウンドファイル。checkpoint 名は spec / plan / design / code など複数あるので
-# glob で拾うが、選び方には 2 つの落とし穴がある。どちらも実測で踏んだ (2026-08-24)。
-#
-# 1. 依頼文 (<point>-round-<N>-request.md) も同じ glob に一致する。依頼文は findings では
-#    ないうえ、レビュアーへの手順説明として "VERDICT: approve" という行を含むのが普通なので、
-#    拾うと「verdict 済み」と誤判定する。findings の形 (末尾が round-<数字>.md) だけを取る。
-# 2. 「名前順の最後」は checkpoint をまたぐと壊れる。spec が approve 済みで plan が進行中の
-#    とき、辞書順では plan-round-1.md < spec-round-5.md なので完了済みの spec を選んでしまい、
-#    判定 5 の「verdict 待ちなら allow」が成立せず、正しく待っている依頼側が毎回 block される。
-#    要求側もレビュアー側も欲しいのは「最後に依頼されたラウンド」なので mtime で選ぶ。
-#    ついでに round-10 が round-2 より前に来る辞書順の問題も同時に消える。
-latest_round() {
-  local f base last=""
-  shopt -s nullglob
-  for f in "$STATUS_DIR"/review/*round*.md; do
-    base=${f##*/}
-    [[ "$base" =~ round-[0-9]+\.md$ ]] || continue
-    [[ -z "$last" || "$f" -nt "$last" ]] && last="$f"
-  done
-  [[ -n "$last" ]] && printf '%s' "$last"
-}
-ROUND_FILE=$(latest_round)
-
-# 最新の依頼文。findings と対で見る必要がある。findings だけでは「依頼を出して待っている」
-# 状態を表現できないからである。round-<N>.md フィルタが依頼文を除外した結果、依頼直後は
-# ROUND_FILE が空になり、round 2 以降は ROUND_FILE が前ラウンドの VERDICT 付き findings を
-# 指したままになる。どちらも「答えがまだ来ていない」のに、findings だけを見ると
-# 「待っていない」と判定されてしまう。
-# 2026-08-26 に実ペインで観測: レビュー依頼中の design が毎ターン判定 7 に落ち、
-# 「terminal status を書け」と迫られ続けた (上限が無制限だったので停止はしなかった)。
-latest_request() {
-  local f base last=""
-  shopt -s nullglob
-  for f in "$STATUS_DIR"/review/*round*-request.md; do
-    base=${f##*/}
-    [[ "$base" =~ round-[0-9]+-request\.md$ ]] || continue
-    [[ -z "$last" || "$f" -nt "$last" ]] && last="$f"
-  done
-  [[ -n "$last" ]] && printf '%s' "$last"
-}
-REQUEST_FILE=$(latest_request)
-
-# 依頼側が打ち切ったラウンドの記録。findings とは別のファイルにする。
-# 以前は中断理由を findings のパス (<point>-round-<N>.md) へ VERDICT 行付きで書かせていた。
-# 目的は 2 つで、親への記録と、レビュアーのゲート解放 (VERDICT があれば判定 6 を抜ける) で
-# あった。しかしそのパスはレビュアーの出力先そのものなので、2 人の書き手が 1 つのパスを
-# 順序保証なしに奪い合う。2026-08-28 に実測: 打ち切った実装者の 246 バイトの中断メモが、
-# 進行中だったレビューの出力先を潰した (親が手作業で -final.md へ退避させた)。
-# 記録は -abort.md へ逃がし、レビュアーの解放はこのゲートが引き受ける。
-latest_abort() {
-  local f base last=""
-  shopt -s nullglob
-  for f in "$STATUS_DIR"/review/*round*-abort.md; do
-    base=${f##*/}
-    [[ "$base" =~ round-[0-9]+-abort\.md$ ]] || continue
-    [[ -z "$last" || "$f" -nt "$last" ]] && last="$f"
-  done
-  [[ -n "$last" ]] && printf '%s' "$last"
-}
-ABORT_FILE=$(latest_abort)
-
-# 最新の依頼に対する答えがまだ無い、を両側で共有する判定。依頼が findings より新しければ、
-# その依頼はまだ処理されていない。依頼側にとっては「待て」、レビュアーにとっては「書け」と
-# 正反対の意味になるので、判定そのものは 1 か所に置き、使う側で向きを決める。
-answer_pending() {
-  [[ -n "$REQUEST_FILE" ]] || return 1
-  # 依頼を出したあとに打ち切ったなら、答えはもう待っていない。
-  [[ -n "$ABORT_FILE" && "$ABORT_FILE" -nt "$REQUEST_FILE" ]] && return 1
-  [[ -z "$ROUND_FILE" ]] && return 0
-  [[ "$REQUEST_FILE" -nt "$ROUND_FILE" ]]
-}
-
-# そのラウンドで最後に起きたことが打ち切りである。
-round_aborted() {
-  [[ -n "$ABORT_FILE" ]] || return 1
-  [[ -n "$REQUEST_FILE" && ! "$ABORT_FILE" -nt "$REQUEST_FILE" ]] && return 1
-  [[ -n "$ROUND_FILE" && ! "$ABORT_FILE" -nt "$ROUND_FILE" ]] && return 1
-  return 0
-}
+# review の状態は review-state.sh に一本化する。gate は述語を消費するだけで、
+# closure の規則を再実装しない。
+# shellcheck disable=SC1090
+. "$SCRIPT_DIR/review-state.sh"
+review_select_active "$STATUS_DIR"
+POINT="$RS_POINT"; ROUND_NO="$RS_ROUND"
+ROUND_FILE="$RS_ROUND_FILE"; REQUEST_FILE="$RS_REQUEST_FILE"; ABORT_FILE="$RS_ABORT_FILE"
+answer_pending() { [[ "$RS_ANSWER_PENDING" == 1 ]]; }
+round_aborted() { [[ "$RS_ROUND_ABORTED" == 1 ]]; }
+findings_unfinished() { [[ "$RS_FINDINGS_UNFINISHED" == 1 ]]; }
 
 case "$ROLE" in
   design|exec)
@@ -352,17 +284,16 @@ case "$ROLE" in
     # 5. verdict 待ち。相手が書くまで待つのが正しい状態。
     #    wait_guard は「猶予が残っていて、かつ engine が待機ターンを自動再開している」
     #    ときだけ block へ倒す。それ以外は戻ってきて従来どおり allow する。
-    if [[ -n "$ROUND_FILE" ]] && ! grep -q '^VERDICT:' "$ROUND_FILE" 2>/dev/null; then
-      wait_guard "${REQUEST_FILE:-$ROUND_FILE}"
-      allow
-    fi
-    # 5b. 依頼は出したが、その依頼に対する findings がまだ無い = 相手待ち。
-    #     判定 5 は findings が存在することを前提にしているので、round 1 の依頼直後
-    #     (findings 未作成) と round N+1 の依頼中 (findings は round N のもので VERDICT 済み)
-    #     を拾えない。ここで拾う。
-    if answer_pending; then
-      wait_guard "$REQUEST_FILE"
-      allow
+    if ! round_aborted; then
+      if findings_unfinished; then
+        wait_guard "${REQUEST_FILE:-$ROUND_FILE}"
+        allow
+      fi
+      # 5b. 依頼は出したが、その依頼に対する findings がまだ無い = 相手待ち。
+      if answer_pending; then
+        wait_guard "$REQUEST_FILE"
+        allow
+      fi
     fi
     ;;
   design_review|exec_review)
@@ -382,7 +313,7 @@ case "$ROLE" in
     if answer_pending; then
       block "the review requested in ${REQUEST_FILE:-the request file} has no findings file yet. Write your findings to the path that request names, whose LAST line must be VERDICT: approve or VERDICT: needs_work, then send one review-verdict: message from $AGENT to whoever requested it$NOTIFY_HINT."
     fi
-    if [[ -n "$ROUND_FILE" ]] && ! grep -q '^VERDICT:' "$ROUND_FILE" 2>/dev/null; then
+    if findings_unfinished; then
       block "review round file $ROUND_FILE has no VERDICT line yet. Finish the review, write VERDICT: approve or VERDICT: needs_work as its last line, then send one review-verdict: message from $AGENT to whoever requested it$NOTIFY_HINT."
     fi
     allow
