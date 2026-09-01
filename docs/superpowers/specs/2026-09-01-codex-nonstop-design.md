@@ -4,7 +4,7 @@
 - 対象: `apps/cmux-team-dispatch-task`
 - ブランチ: `feat/codex-nonstop`
 - 種別: 設計仕様
-- 改訂: round 4（round 3 の needs_work を反映）
+- 改訂: round 5（round 4 の needs_work を反映）
 
 ## 1. 発注
 
@@ -194,66 +194,132 @@ gate はディスクを読み、エージェントはディスクを書ける。
 （`launch-workspace.sh:1391-1432`、15 秒ポーリング、セッション寿命、停止要求に 1 秒以内で追随）。
 **これはエージェントではなくプロセスである。** 新しいループは作らない（I10）。
 
-#### C1-1: ファイルを分けて単一書き手にする
+#### C1-0: 判断は loop-free な 1 tick ヘルパーへ切り出す（round 4 の Q3）
 
-| ファイル | 唯一の書き手 | 唯一の削除者 | 読み手 | 内容 |
-|---|---|---|---|---|
-| `.gate-wait-<role>` | **gate** | **gate** | watcher | `{generation, lease_seq, deadline_epoch}` |
-| `.gate-nudge-<role>` | **watcher** | **watcher** | watcher | `{generation, lease_seq_at_send, nudges, state, ack_deadline, notified}` |
+状態遷移が 15 を超えるため、判断ロジックを runner のヒアドキュメントに埋め込まない。
 
-**削除も書き込みである。** round 3 の指摘 2 に従い、削除者も片側に固定する。
-watcher は lease を削除しない。gate は nudge 記録に触れない。
-両ファイルとも同一ディレクトリ内 `mktemp` + `mv` で原子的に置換する。
+    scripts/recovery-tick.sh --status-dir <dir> --role <role> --agent <name> \
+                             --team <team> --send-command <path>
 
-#### C1-2: generation と lease_seq
+- **ループを持たない。** 1 回呼ばれて 1 手だけ進め、終了する
+- 既存の runner ループが 15 秒ごとにこれを呼ぶ。ループの寿命・停止・所有権は runner に残る（I10）
+- テストは合成 STATUS_DIR と stub `send.sh` に対して直接実行できる
 
-    generation = (point, round, request_mtime, role, agent)
+#### C1-1: ファイルと単一書き手
 
-- `lease_seq` は gate が lease を書くたびに **必ず変わる**単調増加の整数。
-  同一 generation の再武装でも変わる
-- 同一 generation では `nudges` は単調増加のみ。generation が変わったときだけ 0 から
+| ファイル | 唯一の書き手 | 唯一の削除者 | 内容 |
+|---|---|---|---|
+| `.gate-seq-<role>` | **gate** | **誰も削除しない** | 単調増加カウンタ（下記 C1-2） |
+| `.gate-wait-<role>` | **gate** | **gate** | `{generation, lease_seq, deadline_epoch}` |
+| `.gate-nudge-<role>` | **recovery-tick** | **recovery-tick** | `{generation, lease_seq_at_send, nudges, state, ack_deadline, notified}` |
 
-#### C1-3: acknowledgement は mtime ではなく `lease_seq`（round 3 の指摘 1）
+**削除も書き込みである**（I16）。両ファイルとも同一ディレクトリ内 `mktemp` + `mv` で
+原子的に置換する。
 
-round 3 は「`mtime_of()` は秒精度なので、同一秒に lease を 2 回置換しても `%m` が変わらず、
-届いた nudge を不達と誤判定する」と指摘した。**実測して確認した。**
+#### C1-2: ABA を排除した `lease_seq`（round 4 の指摘 1）
+
+round 4 は「lease を削除して作り直すと `lease_seq` が 0 へ戻り、ack baseline と同じ値へ戻る
+ABA が起きる」と指摘した。正しい。round 4 の記述は「単調増加」と「削除で 0 へ戻る」が
+矛盾していた。
+
+**カウンタを lease から分離する。**
+
+- `.gate-seq-<role>` は gate だけが書き、**誰も削除しない**。gate が lease を書くたびに
+  読んで +1 して書き戻す
+- `lease_seq` はその値のスナップショットである
+- lease を削除して作り直しても、カウンタは継続する。**値は status dir × role の寿命全体で
+  再利用されない**（I20）
+
+ack は「`lease_seq` が `lease_seq_at_send` と異なること」で判定する。大小比較はしないが、
+値が再利用されないので ABA は起きない。
+
+#### C1-3: generation から `request_mtime` を外す（round 4 の指摘 1 後半）
+
+round 4 は「同じ request の再保存・rsync・touch という意味を変えない操作で予算が 0 に戻る」と
+指摘した。正しい。
+
+    generation = (point, round, role, agent)
+
+**同一 round の request ファイルは immutable として扱う。** 本文を変えたければ round を
+上げる。これは既存プロトコル（round ごとに request / findings / abort を分ける）と一致する。
+
+#### C1-4: acknowledgement は mtime ではなく `lease_seq`
+
+round 3 の指摘どおり `mtime_of()` は秒精度で、同一秒の 2 回置換を区別できない。実測した。
 
     1 回目: mtime=1788231903 inode=284084367
     2 回目: mtime=1788231903 inode=284084368   <- mtime 同一、inode のみ変化
 
-`ack_grace` を延ばしても分解能不足は解消しない。**mtime を correctness の根拠にしない。**
+**mtime を correctness の根拠にしない**（I15）。診断情報としてのみ残す。
 
-> **ack = watcher が nudge 直前に記録した `lease_seq_at_send` から、lease の `lease_seq` が
-> 変化したこと。**
+#### C1-5: tick ごとの評価順（round 4 の指摘 2）
 
-mtime は診断情報としてのみ残す。
+round 4 は「複数事象が同じ poll で成立する場合の優先順位が無く、新 generation の seq 変化を
+旧 `ack_pending` の ack と誤認し得る」と指摘した。正しい。
 
-#### C1-4: 状態機械（round 3 の指摘 1 後半）
+**1 tick の評価は必ずこの順で行い、最初に成立したところで打ち切る。**
 
-`.gate-nudge-<role>.state` の遷移を全定義する。
+| 順 | 条件 | 動作 |
+|---|---|---|
+| 1 | `WAIT_MINUTES == 0` | **何もしない**（C1-8） |
+| 2 | closure: 当該 point/round の findings に `VERDICT:` / abort ファイル / `status` が done か error | nudge 記録を削除して終了 |
+| 3 | lease が無い | nudge 記録を削除して終了（待機ではない） |
+| 4 | lease の generation が nudge 記録と異なる | **新 generation を初期化**（C1-7） |
+| 5 | `.escalated` が在る | C1b へ移る |
+| 6 | 上記以外 | state 別の処理（C1-6） |
 
-| From | 事象 | To | 動作 |
-|---|---|---|---|
-| （無） | lease 出現、generation が新規 | `waiting` | `nudges=0` |
-| `waiting` | `now > deadline_epoch` | `ack_pending` | **送信直前に lease を再読して generation と `lease_seq` を再検証**。変わっていれば中止して `waiting` へ戻る。一致すれば self-nudge を送り、`lease_seq_at_send` と `ack_deadline = now + ack_grace` を記録し `nudges += 1` |
-| `waiting` | `nudges` が上限（既定 2）に到達 | `terminal(pending)` | `.escalated` を書き、parent 通知へ |
-| `ack_pending` | `lease_seq` が変化 | `waiting` | **ack 成功**。gate が書いた新しい `deadline_epoch` を次の期限として待つ |
-| `ack_pending` | `now > ack_deadline` かつ `lease_seq` 不変 | `terminal(pending)` | **配送不達**。この nudge を `nudges` から戻す（予算を消費しない） |
-| `waiting` / `ack_pending` | `send.sh` が非ゼロ | `terminal(pending)` | **`ack_grace` を待たず直ちに** fallback。予算を消費しない |
-| `ack_pending` | VERDICT 出現 / abort / terminal status / generation 変化 | （削除） | **正常終了**。不達通知に変換しない |
-| `ack_pending` | lease が消えた | （closure 判定） | VERDICT / abort / terminal status / generation を**先に**評価する。該当すれば正常終了。該当しなくても、待機でなくなった以上 closure として扱い、不達通知しない |
-| `terminal(pending)` | parent 通知が成功 | `terminal(done)` | `notified` を立て、二度と通知しない |
-| `terminal(pending)` | parent 通知が非ゼロ | `terminal(pending)` | **terminal(done) にしない。** 次の周回で再試行する |
+**closure と generation 変化を ack より先に評価する**ので、新 generation の `lease_seq` 変化を
+旧 `ack_pending` の ack と取り違えない（I21）。
 
-最後の 2 行は `notify_parent_once()`（`launch-workspace.sh:1338-1348`、
-「通知に成功したときだけ marker を更新するので、失敗したら次の参加者が再試行する」）と
-同じ意味論である。これを守らないと fallback 自体が失われる。
+#### C1-6: state 別の処理（排他的 guard）
 
-**deadline の更新規則**: gate は待機を ALLOW するたびに
-`deadline_epoch = now + WAIT_MINUTES*60` を書き、`lease_seq` を進める。したがって ack 直後は
-期限が必ず先へ動いており、**ack した直後に再 nudge されることはない。**
+round 4 は「`waiting` の 2 事象が独立して並んでおり、2 回目の nudge が ack された直後に
+『上限到達』が成立して、新しい deadline を待たずに escalation する」と指摘した。正しい。
 
-#### C1-5: gate 側の 3 分岐（`wait_guard` の修正）
+**`waiting` の guard を排他にする。**
+
+| state | 条件（排他） | 動作 |
+|---|---|---|
+| `waiting` | `now <= deadline_epoch` | **no-op**（`nudges` の値によらない） |
+| `waiting` | `now > deadline_epoch` かつ `nudges < max` | 送信直前に lease を再読して generation と `lease_seq` を再検証。変わっていれば中止。一致すれば self-nudge を送り、`lease_seq_at_send` と `ack_deadline = now + ack_grace` を記録し `nudges += 1` → `ack_pending` |
+| `waiting` | `now > deadline_epoch` かつ `nudges >= max` | `.escalated` を書き `terminal(pending)` へ |
+| `ack_pending` | `lease_seq != lease_seq_at_send` | **ack 成功** → `waiting`。gate が書いた**新しい** `deadline_epoch` まで待つ |
+| `ack_pending` | `now > ack_deadline` かつ `lease_seq` 不変 | **配送不達**。`nudges` を戻す（予算を消費しない）→ `terminal(pending)` |
+| `ack_pending` | `now <= ack_deadline` | **no-op**（二重送信しない） |
+| `terminal(pending)` | — | parent へ 1 回送る。成功なら `terminal(done)`、非ゼロなら `terminal(pending)` のまま次 tick で再試行 |
+| `terminal(done)` | — | no-op |
+
+`send.sh` が非ゼロを返した場合は、`ack_grace` を待たず**直ちに** `terminal(pending)` へ移り、
+`nudges` を消費しない。
+
+これにより escalation は「2 回目の nudge を送った瞬間」ではなく、**「2 回目が届き、新しい
+期限まで待っても完了しなかった時点」**で起きる（I22）。
+
+#### C1-7: generation 変化時の扱い（round 4 の Q4）
+
+新 generation を初期化するとき、旧 state が `terminal(pending)`（parent へ未送信の通知が
+残っている）だった場合の規則を一意に定める。
+
+1. 旧 generation の parent 通知を **1 回だけ**試みる
+2. 成功・失敗にかかわらず、新 generation を `waiting` / `nudges=0` で初期化する
+3. 失敗した場合は新記録に `superseded_from=<旧 generation>` を残す
+
+旧通知を無期限に持ち越さない。新 generation が生まれたということは、そのペインが実際に
+前進したということであり、旧 escalation の前提は既に失われている。
+
+#### C1-8: `WAIT_MINUTES=0` は watcher にも効く（round 4 の指摘 3）
+
+`completion-gate.sh:222` は `[[ "$WAIT_MINUTES" -gt 0 ]] || return 0` で、`0` を
+「待機防衛の無効化（常に allow）」として固定している（CG34）。
+
+round 4 は「round 4 仕様の deadline 規則をそのまま適用すると `deadline_epoch = now + 0` に
+なり、watcher が次の poll で self-nudge を始めて既存契約を逆転させる」と指摘した。正しい。
+
+- `WAIT_MINUTES == 0` のとき、**gate は lease を arm しない**。既存の lease があれば削除する
+- `recovery-tick.sh` は評価順 1 で `WAIT_MINUTES == 0` を見て**何もしない**
+- **self-nudge も parent 通知も一度も行わない**（I23）
+
+#### C1-9: gate 側の 3 分岐（`wait_guard` の修正）
 
 | 予算 | rapid restart | 判定 |
 |---|---|---|
@@ -261,16 +327,19 @@ mtime は診断情報としてのみ残す。
 | 予算内 | 有り | **BLOCK**（`ce948cd` の goal continuation 暴走防止。従来どおり） |
 | 予算切れ | — | **BLOCK**（有限の回復手順へ） |
 
-第 3 分岐に到達するのは、外部（C1 の nudge を含む）でこのペインが起きたときである。
-**期限そのものを発火させるのは watcher であり、gate ではない。** §2.3 により block は
-実際に次ターンを駆動するので、この reason は実効的である。
+gate は待機を ALLOW するたびに `deadline_epoch = now + WAIT_MINUTES*60` を書き、
+`.gate-seq-<role>` を進めて `lease_seq` を更新する。§2.3 により block は実際に次ターンを
+駆動するので、第 3 分岐の reason は実効的である。
 
 ### C1b: `.escalated` は self-nudge と別扱いにする
 
-`.escalated` の owner と waker は parent であって本人ではない。watcher は:
+`.escalated` の owner と waker は parent であって本人ではない。self-nudge しない（I14）。
 
-1. parent へ **1 通だけ** 通知する（成功時のみ `notified` を立てる。失敗は次周回で再試行）
-2. `state=terminal` にして、以後この generation では何もしない
+C1-6 の表と同じ語彙に統一する。
+
+- `.escalated` を見つけたら `terminal(pending)` へ移る
+- `terminal(pending)` では parent へ 1 回送り、**成功したときだけ** `terminal(done)` にする
+- 非ゼロなら `terminal(pending)` のまま次 tick で再試行する（I18）
 
 `.escalated` は §3 のとおり保証の対象外であり、これで閉じる。
 
@@ -279,56 +348,37 @@ mtime は診断情報としてのみ残す。
 判別を **受け手（exec）から委譲側（design）へ移す。** exec の判定 3 には触れないので、
 standby exec を block しない（I4）。
 
-#### C2-1: 委譲の完了は 2 条件（round 3 の指摘 3 後半）
+#### C2-1: design ロールの評価順（round 4 の指摘 3 後半）
+
+round 4 は「C2-2 の prewarm fail-closed と C2-3 の `status=error` ALLOW が矛盾する」と
+指摘した。正しい。**評価順を明示して解消する。**
+
+| 順 | 条件 | 判定 |
+|---|---|---|
+| 1 | `status == error` | **ALLOW**（prewarm が欠けていても。I9 を守る） |
+| 2 | `.escalated` が在る | ALLOW（A3。従来どおり） |
+| 3 | `prewarm.json` が欠落・破損、または `.exec.agent` が空 | **BLOCK**（fail-closed。I19） |
+| 4 | `status == done` | `.deferred` と exact marker の**両方**が在れば ALLOW、無ければ BLOCK |
+| 5 | `.deferred` が在る | exact marker が在れば ALLOW、無ければ BLOCK |
+| 6 | 上記以外 | 従来どおり判定 5 / 5b / 7 へ |
+
+`status == error` を最優先にするのは、`c70a690` の「逃げ道が無くて虚偽を書く」事故を
+再発させないためである。**作業が本当に失敗したペインを、snapshot が壊れているという理由で
+閉じ込めてはならない。**
+
+#### C2-2: 委譲の完了は 2 条件
 
 `phase-b-deliver.sh:206-211` の順序を確認した。
 
-    : > "$STATUS_DIR/.assigned-$EXEC_AGENT"      # 送信の
-    bash "$AGMSG_SEND" ... || die                #   前
+    : > "$STATUS_DIR/.assigned-$EXEC_AGENT"      # 送信の前
+    bash "$AGMSG_SEND" ... || die
     : > "$STATUS_DIR/.deferred"                  # 送信成功の後
 
-したがって **`.assigned-<exec agent>` だけが在り `.deferred` が無い状態は、送信が失敗した
-half-transition** である。これを完了扱いしてはならない。
+**marker だけが在り `.deferred` が無い状態は、送信が失敗した half-transition** である。
+完了扱いしてはならない。marker は `prewarm.json` の `.exec.agent` と**完全一致**で照合する
+（前方一致は使わない。`codex-nonstop` と `codex-nonstop-exec` を取り違えないため）。
 
-design が停止してよいのは次を**両方**満たすときとする。
-
-- `$STATUS_DIR/.deferred` が在る
-- `$STATUS_DIR/.assigned-<prewarm.json の .exec.agent>` が在る（**完全一致**）
-
-前方一致は使わない（`codex-nonstop` と `codex-nonstop-exec` を取り違えないため）。
-
-#### C2-2: prewarm 欠落は fail-closed（round 3 の指摘 3 前半）
-
-round 3 は「`prewarm.json` が読めないときの fail-open は、現行の必須契約と、仕様自身の
-脅威モデルに反する」と指摘した。**引用を確認した。**
-
-`SKILL.md:682-686`:
-
-> prewarm.json is mandatory and prewarm is always on in workspace mode. There is no spawn
-> fallback when the file or a required role is absent. A missing design or exec key is a
-> fatal snapshot error.
-
-守るべき「レビュー無しの後方互換」は存在しない。**missing / corrupt prewarm は偽造ではなく
-「記録の欠落」であり、本仕様が防ぐと宣言した対象そのものである。**
-
-- `DISPATCH_GATE_*` を持つ（＝ managed な）ペインでは、`prewarm.json` の欠落・破損・
-  `.exec.agent` が空はすべて **BLOCK**（fail-closed）とする
-- reason は「snapshot が壊れている。parent へ報告せよ」と指示する
-- managed でないペインは A0（identity 欠落）で既に fail-open なので、ここに legacy 経路は
-  入り込まない。**単なる parse failure で fail-open してはならない**
-
-#### C2-3: design の `done` も 2 条件を要求する
-
-このプロトコルでは design は必ず Phase B へ委譲する。design ロールに限り、`status=done` は
-C2-1 の **2 条件を両方**満たすときだけ許す。
-
-- `done` + marker + `.deferred` 無し → **BLOCK**（送信失敗の half-transition）
-- `done` + 両方あり → ALLOW
-
-`status=error` は変更しない。作業が本当に失敗した場合の正当な終端であり、塞ぐと
-`c70a690` の「逃げ道が無くて虚偽を書く」事故を再発させる（I9）。
-
-#### C2-4: 残る経路（脅威モデルの外側）
+#### C2-3: 残る経路（脅威モデルの外側）
 
 design が `.assigned-<exec agent>` と `.deferred` を**手で作る**場合は依然として通る。
 これは欠落ではなく偽造であり、§3 の脅威モデルの外側である（§7 に将来課題として記録）。
@@ -361,40 +411,63 @@ request / findings / abort を **同一 point に束ねて**選ぶ。
 
 ## 5. 回帰テストで固定すること
 
-すべて **修正前に赤くなることを確認してから**実装する。既存の `test/test-completion-gate.sh`
-の形式（`bash "$BIN"` を副プロセスで起動、`mktemp -d` の合成 STATUS_DIR、`pass`/`bad`）に
-合わせ、実 cmux・実 agmsg・ネットワークに触れない（`382ed4e` の hermetic 規約）。
-watcher 側は生成 runner script から該当ブロックを取り出して実行する
-（`test-launch-workspace-ownership.sh` の `awk` + `eval` 方式）。
+すべて **修正前に赤くなることを確認してから**実装する。gate 側は既存
+`test/test-completion-gate.sh` の形式（`bash "$BIN"` を副プロセスで起動、`mktemp -d` の
+合成 STATUS_DIR、`pass`/`bad`）に合わせる。
 
-### lease と予算（round 2 の指摘 1）
+**watcher 側は `recovery-tick.sh` を直接実行する**（C1-0）。round 4 の Q3 への回答どおり、
+`launch-workspace.sh` の heredoc 断片を `awk` + `eval` する方式は escape 後の生成物を
+検証できないので採らない。runner への配線は別途 1 件（T44）で、**実際に生成された runner
+artifact** に対して固定する。実 cmux・実 agmsg・ネットワークには触れない（`382ed4e`）。
 
-| # | ケース | 期待 |
-|---|---|---|
-| T1 | gate が同一 generation の lease を 3 回書き直す間に watcher が 2 回期限到達 | `nudges` は 2 で上限に達し `terminal`（巻き戻らない） |
-| T2 | 新しい request で generation が変わる | `nudges` が 0 から再開する |
-| T5 | findings に `VERDICT:` が現れる | gate が lease を、watcher が nudge 記録を削除する |
-| T6 | abort ファイルが現れる | 同上 |
-| T7 | `.escalated` が在る | self-nudge せず parent へ 1 通のみ、以後無音 |
-
-### acknowledgement と競合（round 3 の指摘 1・2）
+### 識別子（round 4 の指摘 1）
 
 | # | ケース | 期待 |
 |---|---|---|
-| T20 | **同一秒**に lease を原子的置換する | `lease_seq` の変化で ack できる（mtime が同一でも成立） |
-| T3 | nudge 後 `ack_grace` 内に `lease_seq` が進む | ack 成功。`waiting` へ戻り、**更新後の** `deadline_epoch` まで待つ |
-| T4 | nudge 後 `ack_grace` を過ぎても `lease_seq` 不変 | 不達。`nudges` を消費せず parent へ通知し `terminal` |
+| T35 | lease を削除して同一 generation で作り直す | `lease_seq` が**再利用されない**（ABA が起きない） |
+| T36 | `ack_pending` 中に lease 削除 → 同一 generation で再作成 | ack と誤認しない。closure 判定が先に走る |
+| T37 | request ファイルを touch し直す（内容同一） | generation は変わらず、`nudges` はリセットされない |
+| T2 | round を上げて新しい request を書く | generation が変わり `nudges` が 0 から再開する |
+| T20 | **同一秒**に lease を原子的置換する | `lease_seq` の変化で ack できる（mtime 同一でも成立） |
+
+### 評価順と排他 guard（round 4 の指摘 2）
+
+| # | ケース | 期待 |
+|---|---|---|
+| T38 | `nudges == max` かつ `now <= deadline_epoch` | **no-op**（escalation しない） |
+| T1 | 期限超過が 2 回起き、いずれも ack される | 2 回目の ack 後は**新しい deadline まで待つ**。その時点では escalation しない |
+| T39 | 2 回目 ack 後、新しい deadline も超過する | ここで初めて `.escalated` + parent 通知 |
+| T40 | 同一 tick で generation 変化と `lease_seq` 変化が同時成立 | generation 変化として扱う（ack と誤認しない） |
+| T23 | `ack_pending` 中に VERDICT / abort / terminal status | 正常終了。不達通知しない |
+| T24 | `ack_pending` 中に lease が消える（closure 証拠なし） | closure 扱い。不達通知しない |
 | T21 | nudge 送信直前に lease が削除される | stale nudge を送らない |
 | T22 | nudge 送信直前に lease が別 generation へ置換される | stale nudge を送らない |
-| T23 | `ack_pending` 中に VERDICT / abort / terminal status / generation 変化 | 正常終了。不達通知しない |
-| T24 | `ack_pending` 中に lease が消える（closure 証拠なし） | closure 扱い。不達通知しない |
 | T25 | `ack_pending` 中は二重送信しない | `ack_deadline` まで再送 0 回 |
-| T26 | self-nudge の `send.sh` が非ゼロ | `ack_grace` を待たず直ちに fallback。`nudges` を消費しない |
-| T27 | parent 通知が非ゼロ | `terminal(done)` にせず、次周回で再試行する |
-| T28 | parent 通知が成功した後 | 再通知しない |
-| T29 | 120 秒を超えるターンで ack が遅れる | parent へ escalate されても、通知失敗で永久 terminal にならない |
+| T41 | `waiting` 中に `.escalated` が現れる | self-nudge せず C1b の `terminal(pending)` へ |
+| T42 | `terminal(pending)` 中に generation が変わる | 旧通知を 1 回だけ試み、新 generation を `nudges=0` で初期化する |
+| T43 | `terminal(done)` 中に同一 generation の tick | no-op（再通知しない） |
 
-### 委譲と terminal（round 3 の指摘 3）
+### 配送失敗と fallback
+
+| # | ケース | 期待 |
+|---|---|---|
+| T3 | nudge 後 `ack_grace` 内に `lease_seq` が進む | ack 成功。`waiting` へ戻り更新後の期限まで待つ |
+| T4 | nudge 後 `ack_grace` を過ぎても `lease_seq` 不変 | 不達。`nudges` を消費せず parent へ通知し `terminal(pending)` |
+| T26 | self-nudge の `send.sh` が非ゼロ | `ack_grace` を待たず直ちに fallback。`nudges` を消費しない |
+| T27 | parent 通知が非ゼロ | `terminal(done)` にせず次 tick で再試行 |
+| T28 | parent 通知が成功した後 | 再通知しない |
+| T29 | `ack_grace` を超えるターン | parent へ escalate されても、通知失敗で永久 terminal にならない |
+| T7 | `.escalated` が在る | self-nudge せず parent へ 1 通のみ、以後無音 |
+
+### `WAIT_MINUTES=0`（round 4 の指摘 3 前半）
+
+| # | ケース | 期待 |
+|---|---|---|
+| T45 | `DISPATCH_GATE_WAIT_MINUTES=0` で gate を走らせる | lease を arm しない。既存 lease があれば削除する |
+| T46 | `WAIT_MINUTES=0` で `recovery-tick.sh` を何度呼んでも | self-nudge も parent 通知も **一度も**行わない |
+| CG34 | 既存: `WAIT_MINUTES=0` で待機防衛が切れる | 維持（回帰させない） |
+
+### 委譲と terminal（round 3・4 の指摘 3）
 
 | # | ケース | 期待 |
 |---|---|---|
@@ -406,9 +479,10 @@ watcher 側は生成 runner script から該当ブロックを取り出して実
 | T30 | design + `done` + marker 在り + `.deferred` 無し | **BLOCK**（送信失敗の half-transition） |
 | T31 | design + `done` + marker 在り + `.deferred` 在り | ALLOW |
 | T13 | design + `error` + marker 無し | ALLOW（I9） |
-| T32 | managed（identity 在り）+ `prewarm.json` 欠落 | **BLOCK**（fail-closed） |
-| T33 | managed + `prewarm.json` が壊れた JSON | **BLOCK** |
-| T34 | managed + `.exec.agent` が空 | **BLOCK** |
+| T47 | **managed design + `error` + `prewarm.json` 欠落** | **ALLOW**（評価順 1 が 3 より先。I9） |
+| T32 | managed design + 非終端 + `prewarm.json` 欠落 | **BLOCK**（fail-closed） |
+| T33 | managed design + `prewarm.json` が壊れた JSON | **BLOCK** |
+| T34 | managed design + `.exec.agent` が空 | **BLOCK** |
 
 ### その他
 
@@ -419,9 +493,11 @@ watcher 側は生成 runner script から該当ブロックを取り出して実
 | T17 | 逆順（plan の findings が spec の request より新しい） | 同上、point で束ねて判定 |
 | T18 | identity 欠落 + `.dispatch-handoff.json` 在り | ALLOW かつ `.gate-open` が 1 ファイルだけ更新される |
 | T19 | identity 欠落 + `.dispatch-handoff.json` 無し | ALLOW かつ何も書かない |
+| T44 | 生成された runner artifact | 既存ループから `recovery-tick.sh` が正しい引数で呼ばれる（実生成物を実行して検証） |
+| T5 | findings に `VERDICT:` が現れる | gate が lease を、tick が nudge 記録を削除する |
+| T6 | abort ファイルが現れる | 同上 |
 
-**T14 は削除した。** round 3 の指摘どおり、prewarm 欠落時の fail-open は誤りであり、
-T32 で BLOCK に置き換えた。
+**T14 は削除した**（round 3 の指摘どおり prewarm 欠落時の fail-open は誤りで、T32 に置換）。
 
 ## 6. 不変条件（回帰させてはならないもの）
 
@@ -446,7 +522,12 @@ T32 で BLOCK に置き換えた。
 | I16 | 削除も書き込みであり、削除者も片側に固定する | round 3 の指摘 2 |
 | I17 | 送信直前に lease を再検証し、stale nudge を送らない | round 3 の指摘 2 |
 | I18 | 通知は成功したときだけ済み扱いにする（失敗は次周回で再試行） | `notify_parent_once()` |
-| I19 | managed ペインでの snapshot 欠落・破損は fail-closed | round 3 の指摘 3、`SKILL.md:682-686` |
+| I19 | managed ペインでの snapshot 欠落・破損は fail-closed。ただし `status=error` より後に評価する | round 3 の指摘 3 / round 4 の指摘 3 |
+| I20 | `lease_seq` は status dir × role の寿命全体で再利用しない（ABA を作らない） | round 4 の指摘 1 |
+| I21 | closure と generation 変化は ack より先に評価する | round 4 の指摘 2 |
+| I22 | escalation は「新しい期限まで待っても完了しなかった時点」で起きる（送信した瞬間ではない） | round 4 の指摘 2 |
+| I23 | `WAIT_MINUTES=0` は gate だけでなく watcher も無効化する | round 4 の指摘 3、`completion-gate.sh:222` / CG34 |
+| I24 | recovery の判断はループを持たない 1 tick ヘルパーに置く | round 4 の Q3 |
 
 I10 について: C1 は新しいループを作らず、**既存の runner watcher に条件を 1 つ足す**。
 このループは `98860e5` の「復帰は agmsg 経路へ一本化する」という方針の実装先でもある。
@@ -489,3 +570,6 @@ runner / gate の 4 者にまたがる変更になり、本件（停止を止め
 | lease の mtime 前進を acknowledgement にする（round 3 の C1-4） | `stat` が秒精度で、同一秒の 2 回置換を区別できない。実測で確認。round 3 の指摘 1 で却下 |
 | `prewarm.json` が読めないとき `.deferred` だけで許す（round 3 の T14） | 現行の必須契約（`SKILL.md:682-686`）に反し、欠落を偽造と同列に扱っていた。round 3 の指摘 3 で却下 |
 | design の `done` を marker だけで許す（round 3 の C2-2） | `.deferred` は送信成功後に書かれるので、marker のみは送信失敗の half-transition である |
+| `lease_seq` を lease ファイル内で完結させる（round 4 の C1-2） | lease の削除・再作成で値が再利用され ABA が起きる。round 4 の指摘 1 で却下 |
+| generation に `request_mtime` を含める（round 4 の C1-2） | 意味を変えない再保存・touch で回復予算がリセットされる。round 4 の指摘 1 で却下 |
+| watcher のロジックを runner の heredoc に埋め込む（round 4 の C1） | escape 後の生成物をテストできず、状態遷移が 15 を超える。round 4 の Q3 で却下 |
