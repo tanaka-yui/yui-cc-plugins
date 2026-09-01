@@ -4,7 +4,7 @@
 - 対象: `apps/cmux-team-dispatch-task`
 - ブランチ: `feat/codex-nonstop`
 - 種別: 設計仕様
-- 改訂: round 5（round 4 の needs_work を反映）
+- 改訂: round 6（round 5 の needs_work を反映。レビュー上限に達したため parent へエスカレーション中）
 
 ## 1. 発注
 
@@ -252,24 +252,39 @@ round 3 の指摘どおり `mtime_of()` は秒精度で、同一秒の 2 回置�
 
 **mtime を correctness の根拠にしない**（I15）。診断情報としてのみ残す。
 
-#### C1-5: tick ごとの評価順（round 4 の指摘 2）
+#### C1-5: tick ごとの評価順（round 4 の指摘 2 / round 5 の指摘）
 
-round 4 は「複数事象が同じ poll で成立する場合の優先順位が無く、新 generation の seq 変化を
-旧 `ack_pending` の ack と誤認し得る」と指摘した。正しい。
+round 5 は「`.escalated` が closure と lease 欠落に負けて C1b へ到達しない」と指摘した。
+**実測で再現した。**
 
-**1 tick の評価は必ずこの順で行い、最初に成立したところで打ち切る。**
+    合成 STATUS_DIR: status=executing / .assigned / VERDICT 済み findings / .escalated / lease
+    -> gate は ALLOW し、**lease を削除した**
+
+原因は 2 つある。
+
+1. 既存契約では、ラウンド上限に達した子は **findings に `VERDICT:` が書かれた後に**
+   `.escalated` を touch する（`SKILL.md:989-994`）。round 5 の評価順では closure（順 2）が
+   先に成立し、`.escalated`（順 5）へ到達しない
+2. `.escalated` の判定は `allow()` を直接呼ぶ（`completion-gate.sh:264-266`）。`allow()` は
+   wait 経路でない限り lease を削除する（`:151-154`）。したがって次の tick は
+   「lease 欠落」で終了し、やはり C1b へ到達しない
+
+**closure を 1 つに畳んだことが誤りだった。** hard closure と soft closure を分け、
+`.escalated` をその間に置く。
 
 | 順 | 条件 | 動作 |
 |---|---|---|
-| 1 | `WAIT_MINUTES == 0` | **何もしない**（C1-8） |
-| 2 | closure: 当該 point/round の findings に `VERDICT:` / abort ファイル / `status` が done か error | nudge 記録を削除して終了 |
-| 3 | lease が無い | nudge 記録を削除して終了（待機ではない） |
-| 4 | lease の generation が nudge 記録と異なる | **新 generation を初期化**（C1-7） |
-| 5 | `.escalated` が在る | C1b へ移る |
-| 6 | 上記以外 | state 別の処理（C1-6） |
+| 1 | `WAIT_MINUTES == 0` | 何もしない（C1-8） |
+| 2 | **hard closure**: `status` が done か error | 記録を削除して終了（task は本当に終わっている） |
+| 3 | **`.escalated` が在る** | **C1b へ**（lease の有無によらない） |
+| 4 | **soft closure**: 当該 point/round の findings に `VERDICT:` / abort ファイル | 記録を削除して終了 |
+| 5 | lease が無い | 記録を削除して終了（待機ではない） |
+| 6 | lease の generation が記録と異なる | 新 generation を初期化（C1-7） |
+| 7 | 上記以外 | state 別の処理（C1-6） |
 
-**closure と generation 変化を ack より先に評価する**ので、新 generation の `lease_seq` 変化を
-旧 `ack_pending` の ack と取り違えない（I21）。
+- **hard closure が `.escalated` に勝つ**: task が終わっているならエスカレーションは無意味である
+- **`.escalated` が soft closure と lease 欠落に勝つ**: これがラウンド上限の実運用順序である（I25）
+- closure と generation 変化は依然として ack より先である（I21）
 
 #### C1-6: state 別の処理（排他的 guard）
 
@@ -331,15 +346,31 @@ gate は待機を ALLOW するたびに `deadline_epoch = now + WAIT_MINUTES*60`
 `.gate-seq-<role>` を進めて `lease_seq` を更新する。§2.3 により block は実際に次ターンを
 駆動するので、第 3 分岐の reason は実効的である。
 
-### C1b: `.escalated` は self-nudge と別扱いにする
+### C1b: `.escalated` は lease に依存しない独立経路にする
 
-`.escalated` の owner と waker は parent であって本人ではない。self-nudge しない（I14）。
+`.escalated` の **sentinel を書く/消すのは子**（回復予算の超過時は tick も書く）だが、
+**判断する owner と waker は parent** である。この 2 つを混同しない（round 5 の指摘 4、I26）。
+self-nudge はしない（I14）。
 
-C1-6 の表と同じ語彙に統一する。
+#### lease も記録も無い状態から始められること（round 5 の指摘 2）
 
-- `.escalated` を見つけたら `terminal(pending)` へ移る
-- `terminal(pending)` では parent へ 1 回送り、**成功したときだけ** `terminal(done)` にする
-- 非ゼロなら `terminal(pending)` のまま次 tick で再試行する（I18）
+`.escalated` は gate が `allow()` を直接呼ぶ経路なので、C1b が動くとき **lease は既に消えて
+いる**。したがって C1b は lease にも `lease_seq` にも generation にも依存してはならない。
+
+**identity は sentinel の有無の遷移そのものとする。** mtime も seq も使わない（I15 と整合）。
+
+`.gate-nudge-<role>` に `mode` を持たせ、`wait` と `escalated` を区別する。
+
+| 現在の記録 | `.escalated` | 動作 |
+|---|---|---|
+| 無い | 在る | `mode=escalated, state=terminal(pending)` で**新規作成** |
+| `mode=wait` | 在る | `mode=escalated, state=terminal(pending)` へ切り替える（待機予算は破棄する。エスカレーションが上書きする） |
+| `mode=escalated, terminal(pending)` | 在る | parent へ **1 回**送る。成功なら `terminal(done)`、非ゼロなら pending のまま次 tick で再試行（I18） |
+| `mode=escalated, terminal(done)` | 在る | **no-op**（dedupe） |
+| `mode=escalated`（任意の state） | **無い** | 記録を**削除**する（エスカレーション解決。次に現れるものは別の escalation） |
+
+子が `.escalated` を消して再開し、後で再び touch した場合、記録は一度削除されているので
+**新しいエスカレーションとして再通知される**。これが正しい。
 
 `.escalated` は §3 のとおり保証の対象外であり、これで閉じる。
 
@@ -457,7 +488,13 @@ artifact** に対して固定する。実 cmux・実 agmsg・ネットワーク�
 | T27 | parent 通知が非ゼロ | `terminal(done)` にせず次 tick で再試行 |
 | T28 | parent 通知が成功した後 | 再通知しない |
 | T29 | `ack_grace` を超えるターン | parent へ escalate されても、通知失敗で永久 terminal にならない |
-| T7 | `.escalated` が在る | self-nudge せず parent へ 1 通のみ、以後無音 |
+| T7 | **ラウンド上限の実運用順序**: findings に `VERDICT:` + 子が `.escalated` を touch + **lease も記録も無い** | parent へ **1 通**送る（soft closure に負けない） |
+| T48 | 同上で parent 送信が非ゼロ | 次 tick で再試行する |
+| T49 | 同上で送信成功後、`.escalated` が残っている | **再送しない**（dedupe） |
+| T50 | `.escalated` が削除される | C1b の記録を削除する（次に現れるものは別の escalation） |
+| T51 | `.escalated` 削除 → 再 touch | **新しい escalation として再通知する** |
+| T52 | `status=done` と `.escalated` が同時に在る | hard closure が勝つ。parent 通知しない |
+| T53 | `mode=wait` の記録がある状態で `.escalated` が現れる | `mode=escalated` へ切り替わり、待機予算は破棄される |
 
 ### `WAIT_MINUTES=0`（round 4 の指摘 3 前半）
 
@@ -528,6 +565,8 @@ artifact** に対して固定する。実 cmux・実 agmsg・ネットワーク�
 | I22 | escalation は「新しい期限まで待っても完了しなかった時点」で起きる（送信した瞬間ではない） | round 4 の指摘 2 |
 | I23 | `WAIT_MINUTES=0` は gate だけでなく watcher も無効化する | round 4 の指摘 3、`completion-gate.sh:222` / CG34 |
 | I24 | recovery の判断はループを持たない 1 tick ヘルパーに置く | round 4 の Q3 |
+| I25 | `.escalated` は soft closure（VERDICT / abort）と lease 欠落より先に評価する | round 5 の指摘（実測で再現） |
+| I26 | sentinel の writer と、判断 owner / waker を混同しない | round 5 の指摘 4 |
 
 I10 について: C1 は新しいループを作らず、**既存の runner watcher に条件を 1 つ足す**。
 このループは `98860e5` の「復帰は agmsg 経路へ一本化する」という方針の実装先でもある。
@@ -573,3 +612,5 @@ runner / gate の 4 者にまたがる変更になり、本件（停止を止め
 | `lease_seq` を lease ファイル内で完結させる（round 4 の C1-2） | lease の削除・再作成で値が再利用され ABA が起きる。round 4 の指摘 1 で却下 |
 | generation に `request_mtime` を含める（round 4 の C1-2） | 意味を変えない再保存・touch で回復予算がリセットされる。round 4 の指摘 1 で却下 |
 | watcher のロジックを runner の heredoc に埋め込む（round 4 の C1） | escape 後の生成物をテストできず、状態遷移が 15 を超える。round 4 の Q3 で却下 |
+| closure を 1 つに畳む（round 5 の C1-5） | ラウンド上限では VERDICT の後に `.escalated` が書かれるので、closure が先に成立して C1b へ到達しない。実測で再現し round 5 の指摘で却下 |
+| C1b が lease や `lease_seq` に依存する（round 5 の C1b） | `.escalated` の判定は `allow()` を直接呼び、`allow()` が lease を削除するので、C1b が動くとき lease は存在しない。round 5 の指摘で却下 |
