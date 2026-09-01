@@ -73,6 +73,21 @@ done
 # であって「何もしない」ではない。fail-open にしたいなら exit 0 かつ stdout 無出力である。
 # 診断は stderr に出す — stdout は engine が JSON として読むので混ぜられない。
 if [[ -z "$STATUS_DIR" || -z "$ROLE" || -z "$AGENT" ]]; then
+  # 判定は fail-open のままにする。ただし dispatch の handoff が辿れるときは、親が
+  # identity 欠落を検出できるよう status dir に固定名の記録を残す。worktree に増分ファイルを
+  # 作ると work-signal.sh の入力を攪乱するため、置き場所は handoff が指す status dir に限る。
+  if [[ -r .dispatch-handoff.json ]]; then
+    _status_dir=$(jq -r '.status_dir // empty' .dispatch-handoff.json 2>/dev/null || echo "")
+    if [[ -n "$_status_dir" && -d "$_status_dir" ]]; then
+      _count=$(jq -r '.count // 0' "$_status_dir/.gate-open" 2>/dev/null || echo 0)
+      [[ "$_count" =~ ^[0-9]+$ ]] || _count=0
+      _tmp=$(mktemp "$_status_dir/.gate-open.XXXXXX" 2>/dev/null) && {
+        jq -nc --argjson last_seen "$(date +%s)" --argjson count "$((_count + 1))" \
+          '{last_seen:$last_seen, count:$count}' > "$_tmp" 2>/dev/null \
+          && mv -f "$_tmp" "$_status_dir/.gate-open" 2>/dev/null || rm -f "$_tmp"
+      }
+    fi
+  fi
   echo "completion-gate: no dispatch identity in args or environment; letting the session stop" >&2
   exit 0
 fi

@@ -630,6 +630,32 @@ out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
 [[ -z "$out" ]] && pass 'CG52: 割り当て前の standby exec を止めない' \
   || bad "CG52: standby を block した: [$out]"
 
+# --- CG53–CG55: identity 欠落時の fail-open 痕跡 ---
+d=$(mkdir_case cg53); mkdir -p "$TMP/wt53"
+jq -n --arg s "$d" '{status_dir:$s}' > "$TMP/wt53/.dispatch-handoff.json"
+out=$(cd "$TMP/wt53" && env -u DISPATCH_GATE_STATUS_DIR -u DISPATCH_GATE_ROLE \
+  -u DISPATCH_GATE_AGENT bash "$BIN" --gate-id cmux-team-dispatch-task 2>/dev/null)
+rc=$?
+if [[ $rc -eq 0 && -z "$out" ]] && jq -e '(.count | type) == "number"' "$d/.gate-open" >/dev/null 2>&1; then
+  pass 'CG53: fail-open の痕跡を status dir に残す'
+else
+  bad "CG53: rc=$rc out=[$out] gate-open=[$(cat "$d/.gate-open" 2>/dev/null)]"
+fi
+
+(cd "$TMP/wt53" && env -u DISPATCH_GATE_STATUS_DIR -u DISPATCH_GATE_ROLE \
+  -u DISPATCH_GATE_AGENT bash "$BIN" --gate-id cmux-team-dispatch-task >/dev/null 2>&1)
+n=$(jq -r '.count' "$d/.gate-open" 2>/dev/null)
+files=$(find "$d" -maxdepth 1 -name '.gate-open*' -type f | wc -l | tr -d ' ')
+[[ "$n" == 2 && "$files" == 1 ]] && pass 'CG54: 痕跡は増えず count だけ進む' \
+  || bad "CG54: count=$n files=$files"
+
+mkdir -p "$TMP/wt55"
+(cd "$TMP/wt55" && env -u DISPATCH_GATE_STATUS_DIR -u DISPATCH_GATE_ROLE \
+  -u DISPATCH_GATE_AGENT bash "$BIN" --gate-id cmux-team-dispatch-task >/dev/null 2>&1)
+[[ -z "$(find "$TMP/wt55" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
+  && pass 'CG55: handoff が無ければ何も書かない' \
+  || bad "CG55: 無関係な worktree を汚した: $(find "$TMP/wt55" -mindepth 1 -maxdepth 1 -print)"
+
 # --- CG56: 予算切れの待機は block して回復手順へ誘導する ---
 d=$(mkdir_case cg56)
 set_status "$d" executing

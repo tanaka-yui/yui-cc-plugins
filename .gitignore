@@ -52,3 +52,4 @@ settings.local.json
 .cmux-e2e-results/
 .codex/hooks.json
 .codex/hooks.json.bak.*
+.dispatch/
