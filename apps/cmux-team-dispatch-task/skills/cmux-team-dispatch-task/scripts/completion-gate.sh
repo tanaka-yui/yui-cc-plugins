@@ -137,7 +137,28 @@ fi
 
 # 待機の連続性を記録するファイル。判定 5 / 5b の「待って良い状態」で allow するたびに
 # 現在時刻を置き、次の呼び出しがどれだけ近かったかを測る。詳細は wait_guard() を参照。
-WAIT_STAMP_FILE="$STATUS_DIR/.gate-wait-$ROLE"
+LEASE_FILE="$STATUS_DIR/.gate-wait-$ROLE"
+SEQ_FILE="$STATUS_DIR/.gate-seq-$ROLE"
+SEEN_FILE="$STATUS_DIR/.gate-seen-$ROLE"
+clear_lease() { rm -f "$LEASE_FILE" "$SEEN_FILE" 2>/dev/null || true; }
+next_lease_seq() {
+  local n tmp
+  n=$(cat "$SEQ_FILE" 2>/dev/null || echo 0); [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  n=$((n + 1)); tmp=$(mktemp "$STATUS_DIR/.gate-seq.XXXXXX" 2>/dev/null) || return 1
+  printf '%s\n' "$n" > "$tmp" && mv -f "$tmp" "$SEQ_FILE" || { rm -f "$tmp"; return 1; }
+  printf '%s' "$n"
+}
+arm_lease() {
+  local seq gen tmp deadline
+  [[ "$WAIT_MINUTES" -gt 0 ]] || { clear_lease; return 0; }
+  [[ -n "$POINT" && -n "$ROUND_NO" ]] || return 0
+  seq=$(next_lease_seq) || { clear_lease; return 1; }
+  gen="$POINT|$ROUND_NO|$ROLE|$AGENT"; deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+  tmp=$(mktemp "$STATUS_DIR/.gate-wait.XXXXXX" 2>/dev/null) || { clear_lease; return 1; }
+  jq -nc --arg g "$gen" --argjson s "$seq" --argjson d "$deadline" '{generation:$g,lease_seq:$s,deadline_epoch:$d}' > "$tmp" \
+    && mv -f "$tmp" "$LEASE_FILE" || { rm -f "$tmp"; clear_lease; return 1; }
+}
+lease_failure_block() { block "the recovery lease under $STATUS_DIR could not be written, so nothing outside this pane can time out your wait. Send exactly one message to parent reporting that the status directory is not writable$NOTIFY_HINT, then continue working if you can."; }
 # この実行が待機経路 (wait_guard) を通ったか。通ったなら allow はスタンプを消さない。
 # 消してしまうと自分が今書いた時刻が毎回消え、次の呼び出しが永久に「1 回目」になる。
 WAIT_STAMPED=0
@@ -151,7 +172,7 @@ WAIT_STAMPED=0
 # 時刻だけになってしまうので触らない。
 allow() {
   rm -f "$BLOCK_COUNT_FILE" 2>/dev/null || true
-  [[ "$WAIT_STAMPED" -eq 1 ]] || rm -f "$WAIT_STAMP_FILE" 2>/dev/null || true
+  [[ "$WAIT_STAMPED" -eq 1 ]] || clear_lease
   exit 0
 }
 
@@ -161,7 +182,7 @@ allow() {
 # 判定 6 など)。allow と同じ理由で古いスタンプを残さない。
 block() {
   local n
-  [[ "$WAIT_STAMPED" -eq 1 ]] || rm -f "$WAIT_STAMP_FILE" 2>/dev/null || true
+  [[ "$WAIT_STAMPED" -eq 1 ]] || clear_lease
   if [[ "$MAX_BLOCKS" -gt 0 ]]; then
     n=$(cat "$BLOCK_COUNT_FILE" 2>/dev/null || echo 0)
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
@@ -224,22 +245,29 @@ WAIT_RESTART_SECONDS="${DISPATCH_GATE_WAIT_RESTART_SECONDS:-90}"
 # 従来どおり allow させる。WAIT_MINUTES=0 は防衛の無効化 (常に allow) を意味する。
 wait_guard() {
   local ref="$1" now prev started elapsed_min
-  [[ "$WAIT_MINUTES" -gt 0 ]] || return 0
+  [[ "$WAIT_MINUTES" -gt 0 ]] || { clear_lease; return 0; }
   now=$(date +%s)
-  prev=$(cat "$WAIT_STAMP_FILE" 2>/dev/null || echo "")
-  echo "$now" > "$WAIT_STAMP_FILE" 2>/dev/null || true
+  prev=$(cat "$SEEN_FILE" 2>/dev/null || echo "")
+  echo "$now" > "$SEEN_FILE" 2>/dev/null || true
   WAIT_STAMPED=1
   # 1 回目。ここで止まれるなら自動再開は無い。素直に待たせる。
-  [[ "$prev" =~ ^[0-9]+$ ]] || return 0
+  [[ "$prev" =~ ^[0-9]+$ ]] || { arm_lease || lease_failure_block; return 0; }
   # 前回が遠い = 自動再開ではなく、正常に眠っていて別の理由で起きた。
-  (( now - prev <= WAIT_RESTART_SECONDS )) || return 0
+  (( now - prev <= WAIT_RESTART_SECONDS )) || { arm_lease || lease_failure_block; return 0; }
   # 経過は依頼文の mtime から測る。gate だけが時計を持てる — モデルは自動再開を
   # 「タイマーが鳴った」と写像するので、経過時間を数字で渡すことに意味がある。
   started=$(mtime_of "$ref")
   [[ "$started" =~ ^[0-9]+$ ]] || started="$prev"
   elapsed_min=$(( (now - started) / 60 ))
-  # 猶予を使い切った。従来どおり allow して、既存の打ち切り手順へ道を開ける。
-  (( elapsed_min >= WAIT_MINUTES )) && return 0
+  if (( elapsed_min >= WAIT_MINUTES )); then
+    local reviewer abort_file
+    reviewer=$(jq -r '.reviewer_agent // empty' "$STATUS_DIR/review/code-review.json" 2>/dev/null || echo "")
+    abort_file="$STATUS_DIR/review/$POINT-round-$ROUND_NO-abort.md"
+    if [[ -n "$reviewer" && -n "$TEAM" ]]; then
+      block "you have been waiting on $POINT round $ROUND_NO for about $elapsed_min minute(s), which is past the $WAIT_MINUTES minute budget. Run $SCRIPT_DIR/verify-agmsg-ready.sh --codex --team $TEAM --name $reviewer once; if reachable, re-send the same round request once. Otherwise write $abort_file or touch $STATUS_DIR/.escalated and tell parent$NOTIFY_HINT. Do NOT write a terminal status."
+    fi
+    block "you have been waiting on $POINT round $ROUND_NO for about $elapsed_min minute(s), which is past the $WAIT_MINUTES minute budget. Write $abort_file or touch $STATUS_DIR/.escalated and tell parent$NOTIFY_HINT. Do NOT write a terminal status."
+  fi
   block "you are waiting for a review verdict and that is the correct state, not a failure. About $elapsed_min minute(s) of the $WAIT_MINUTES minute wait budget have passed, and reviews of this size normally take 10 to 30 minutes. Do NOT write an abort file, do NOT write a terminal status, and do NOT call update_goal with status blocked: a review that is still running is not an impasse. If an automatic goal continuation restarted you, that is NOT a timer firing and NOT part of any wake budget, so do not count these turns against a re-arm limit or a consecutive-blocker rule — they are seconds apart, not minutes. Do not re-read the findings file and do not check the reviewer pane again this turn. Say in one short sentence that you are still waiting, then end the turn. Only a review-verdict: message, or an instruction from parent, ends this wait."
 }
 

@@ -544,6 +544,68 @@ out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/nul
 [[ -z "$out" ]] && pass 'CG42: 古い未応答 request の待機を allow する' \
   || bad "CG42: 待機なのに block された: [$out]"
 
+# --- CG43: 待機を allow するとき lease を書く ---
+d=$(mkdir_case cg43)
+set_status "$d" executing
+: > "$d/.assigned-task-design"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+if [[ -z "$out" ]] && jq -e '.generation == "spec|1|design|task-design" and (.lease_seq | type) == "number" and (.deadline_epoch | type) == "number"' \
+  "$d/.gate-wait-design" >/dev/null 2>&1; then
+  pass 'CG43: 待機の allow で lease を書く'
+else
+  bad "CG43: lease が無いか形が違う: [$(cat "$d/.gate-wait-design" 2>/dev/null)]"
+fi
+
+# --- CG44: lease_seq は lease を消して作り直しても再利用されない ---
+d=$(mkdir_case cg44)
+set_status "$d" executing
+: > "$d/.assigned-task-design"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
+bash "$BIN" --status-dir "$d" --role design --agent task-design >/dev/null 2>&1
+s1=$(jq -r '.lease_seq' "$d/.gate-wait-design")
+rm -f "$d/.gate-wait-design"
+bash "$BIN" --status-dir "$d" --role design --agent task-design >/dev/null 2>&1
+s2=$(jq -r '.lease_seq' "$d/.gate-wait-design")
+[[ "$s1" != "$s2" ]] && pass 'CG44: 削除→再作成でも lease_seq が再利用されない' \
+  || bad "CG44: lease_seq が再利用された: s1=$s1 s2=$s2"
+
+# --- CG45: WAIT_MINUTES=0 では lease を arm せず、既存 lease を消す ---
+d=$(mkdir_case cg45)
+set_status "$d" executing
+: > "$d/.assigned-task-design"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
+printf '{"generation":"x","lease_seq":1,"deadline_epoch":1}\n' > "$d/.gate-wait-design"
+out=$(DISPATCH_GATE_WAIT_MINUTES=0 bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+if [[ -z "$out" && ! -f "$d/.gate-wait-design" ]]; then
+  pass 'CG45: WAIT_MINUTES=0 では lease を arm せず既存 lease を消す'
+else
+  bad "CG45: out=[$out] lease=[$(cat "$d/.gate-wait-design" 2>/dev/null)]"
+fi
+
+# --- CG56: 予算切れの待機は block して回復手順へ誘導する ---
+d=$(mkdir_case cg56)
+set_status "$d" executing
+: > "$d/.assigned-task-design"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
+touch -t "$(date -v-40M +%Y%m%d%H%M 2>/dev/null || date -d '40 minutes ago' +%Y%m%d%H%M)" "$d/review/spec-round-1-request.md"
+printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/.gate-seen-design"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+reason=$(jq -r '.reason // empty' <<< "$out" 2>/dev/null)
+if [[ "$reason" == *'spec round 1'* && "$reason" == *"$d/review/spec-round-1-abort.md"* ]]; then
+  pass 'CG56: 予算切れで block し、実値で回復手順を示す'
+else
+  bad "CG56: reason が回復手順を欠く: [$reason]"
+fi
+
+# --- CG57: 予算内かつ rapid restart なしは allow ---
+d=$(mkdir_case cg57)
+set_status "$d" executing
+: > "$d/.assigned-task-design"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG57: 素の待機は従来どおり allow' || bad "CG57: block された: [$out]"
+
 # --- CG60: abort + VERDICT 無し findings で依頼側は待機を終える ---
 d=$(mkdir_case cg60)
 set_status "$d" executing
