@@ -28,8 +28,9 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 
 ### 途中で止まったら自動で再開する
 
-子セッションが仕事の途中で停止すると、ペインごとに注入された Stop hook
-（`completion-gate.sh`）が継続させます。人が「続けて」と打ち直す必要はありません。
+Stop hook（`completion-gate.sh`）は Stop 時の判定だけを担うため、既に止まったペインをそれ自体では
+起こせません。runner が既に持つ watcher から `recovery-tick.sh` を呼び、途中停止した runner 所有ペインを
+自動で回復します。人が「続けて」と打ち直す必要はありません。
 
 判定は**ディスクだけ**を読みます（`status.json` / `.deferred` / `review/*round*.md`）。
 モデルに「終わったか」を推測させないので、**待って良い状態を邪魔しません** — タスクがまだ
@@ -37,6 +38,17 @@ cmux ワークスペースを活用した並列タスクディスパッチプラ
 
 同じ「`VERDICT:` 行が無い」状態でも、依頼側は待たせ、レビュアーは継続させます（後者は
 自分がまだ書き終えていないという意味だからです）。
+
+回復の猶予は `DISPATCH_RECOVERY_ACK_GRACE`、nudge 回数の上限は
+`DISPATCH_RECOVERY_MAX_NUDGES` で調整できます。`DISPATCH_GATE_WAIT_MINUTES=0` は Stop hook の
+wait 防衛と recovery tick の両方を無効にします。tick は hard closure → `.escalated` → soft closure →
+lease 欠落 → generation 変化 → state の順に判定し、`.escalated` では自分自身を nudge しません。
+
+親の判断待ちを表すときは `.escalated` を直接 touch せず
+`<SKILL_DIR>/scripts/escalate.sh <STATUS_DIR>` を 1 回実行します。原子的な固有 token により、tick は
+poll 間の解消・再エスカレーションを区別できます。素の touch も停止を許す互換入力として残りますが、その
+再作成は区別できません。通知を送れた後に status directory への記録が失敗した場合は、書けるようになるまで
+tick ごとに同じ通知を再送します。この間は重複排除の保証対象外です。
 
 **「待っている」はディスクに現れていなければ見えません。** レビュー依頼は Phase A-R も
 Phase B-R も、送信前に `<point>-round-<N>-request.md` として書き出します。これが無いと、

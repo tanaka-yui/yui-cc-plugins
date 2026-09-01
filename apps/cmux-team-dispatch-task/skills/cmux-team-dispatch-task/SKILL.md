@@ -989,11 +989,33 @@ write status or notify anything when its mode is `review`, because that is knowa
 **A child waiting on the parent is not a stalled child.** When a review hits its round cap, the
 child can neither start another round nor proceed, so it hands the decision to the parent and
 waits. `status.json` cannot express that — `report-status.sh` takes only `done` or `error`, and
-both would be false. The child therefore touches `<STATUS_DIR>/.escalated` before it stops, and
-the gate allows on that sentinel for **every** role. The child removes it when the parent's
-answer arrives and it resumes, exactly like `.deferred`. Without it the child is pushed toward
-writing a terminal status it knows to be a lie — measured on 2026-08-24, when a design pane at
-its 5-round cap was blocked on every stop attempt.
+both would be false. The child runs `<SKILL_DIR>/scripts/escalate.sh <STATUS_DIR>` once instead
+of touching `<STATUS_DIR>/.escalated`. It writes a unique token atomically, so
+`recovery-tick.sh` can distinguish one escalation from a remove-then-recreate escalation between
+two 15-second checks. A bare `touch` remains compatible and still allows the pane to stop, but
+the tick cannot distinguish that cycle without a token. The gate only tests the sentinel's
+presence and allows on it for **every** role. Without it the child is pushed toward writing a
+terminal status it knows to be a lie — measured on 2026-08-24, when a design pane at its 5-round
+cap was blocked on every stop attempt.
+
+**The gate only runs at Stop, so it cannot impose a deadline on a pane that already stopped.**
+`scripts/recovery-tick.sh`, called by the runner's existing watcher, enforces deadlines for the
+runner-owned pane. The gate is the sole writer of `.gate-seq-<role>` (which it never deletes) and
+`.gate-wait-<role>`; the tick is the sole writer and deleter of `.gate-nudge-<role>`. Deletion is
+a write too. The tick evaluates hard closure, `.escalated`, soft closure, a missing lease,
+generation change, and then state, in that order. In particular, `.escalated` precedes soft
+closure because a child can reach the round cap after findings already contain `VERDICT:`.
+
+`DISPATCH_GATE_WAIT_MINUTES=0` disables both the gate's wait defence and the tick. A `design`
+pane may stop for `.deferred` or `done` only after the assignment marker for the exact `exec`
+agent named in `prewarm.json` exists; `status=error` remains allowed before that check. The
+guarantee covers panes launched through the runner with `DISPATCH_GATE_*`: it defends against
+missing records and drift, not deliberate forgery of guard state.
+
+If a parent notification succeeds but recording that success in the status directory fails, the
+next tick sends the same notification again, and keeps doing so until the directory is writable.
+The usual deduplication guarantees — including I18 and T49 — therefore require a writable status
+directory; an unwritable directory is outside that guarantee boundary.
 
 **Blocking is unbounded by default.** A finite cap kills a long task that simply has not
 finished yet: the gate keeps its counter when it gives up, and only a genuine allow (decisions

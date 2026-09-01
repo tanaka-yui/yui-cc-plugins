@@ -652,6 +652,27 @@ goal ターンで続いたら `update_goal(status:"blocked")` を宣言せよ」
 独立に、runner は mode が `review` のとき status の書き込みも通知も一切行わない — 所有できない
 ことは静的に分かるからである。
 
+**親の判断を待つ子は停滞ではない。** review の上限に達した子は、`.escalated` を touch する代わりに
+`<SKILL_DIR>/scripts/escalate.sh <STATUS_DIR>` を 1 回実行する。スクリプトは固有 token を原子的に書くので、
+`recovery-tick.sh` は 15 秒の確認間に解消・再エスカレーションした別の事象を識別できる。素の `touch` も
+互換のため許され、ゲートは従来どおり存在だけを見て停止を許すが、token の無い remove→recreate は tick が
+区別できない。
+
+**ゲートは Stop 時にしか動かないため、既に止まったペインへ期限を課せない。** runner が既に持つ watcher
+から呼ばれる `scripts/recovery-tick.sh` が、runner 所有ペインの期限を執行する。`.gate-seq-<role>`（削除しない）と
+`.gate-wait-<role>` の唯一の writer は gate、`.gate-nudge-<role>` の唯一の writer/deleter は tick である。削除も
+書き込みである。tick の評価順は hard closure → `.escalated` → soft closure → lease 欠落 → generation 変化 → state。
+findings が既に `VERDICT:` を持つ後で上限に達し得るため、`.escalated` は soft closure より先でなければならない。
+
+`DISPATCH_GATE_WAIT_MINUTES=0` は gate の wait 防衛だけでなく tick も無効化する。`design` が `.deferred` または
+`done` で停止できるのは、`prewarm.json` が名前を示す**正確な** `exec` agent の assignment marker もあるときだけで、
+`status=error` はその確認より先に許可される。保証対象は `DISPATCH_GATE_*` 付き runner から起動したペインであり、
+欠落した記録や drift は防ぐが guard state の意図的な偽造は防がない。
+
+親通知が成功した後、その成功を status directory へ記録できなければ、次の tick は同じ通知を再送し、書けるまで
+繰り返す。I18 と T49 を含む通常の重複排除保証は status directory が書き込み可能であることを前提とし、書けない
+状態は保証境界の外である。
+
 **ゲートの identity は command 文字列ではなくプロセス環境から来る。** 4 ロールは 1 つの
 worktree を共有し、engine ごとの hook ファイルは 1 本しか無い（`.claude/settings.local.json` /
 `.codex/hooks.json`）ので、command は必然的に共有される。ここに `--role` / `--agent` を焼き込むと、

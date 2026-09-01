@@ -639,3 +639,11 @@ runner / gate の 4 者にまたがる変更になり、本件（停止を止め
 | watcher のロジックを runner の heredoc に埋め込む（round 4 の C1） | escape 後の生成物をテストできず、状態遷移が 15 を超える。round 4 の Q3 で却下 |
 | closure を 1 つに畳む（round 5 の C1-5） | ラウンド上限では VERDICT の後に `.escalated` が書かれるので、closure が先に成立して C1b へ到達しない。実測で再現し round 5 の指摘で却下 |
 | C1b が lease や `lease_seq` に依存する（round 5 の C1b） | `.escalated` の判定は `allow()` を直接呼び、`allow()` が lease を削除するので、C1b が動くとき lease は存在しない。round 5 の指摘で却下 |
+
+## 9. Errata（実装計画で確定した変更）
+
+| # | 仕様の記述 | 変更後 | 理由 |
+|---|---|---|---|
+| E1 | §4 C5 の point 選択（最新の round ファイル） | 未応答 request を権威とし、無ければ最新 round。共通ヘルパー `review-state.sh` に一本化 | 古い未応答 request が新しい別 point の findings に負けて待機が見えなくなる |
+| E2 | §4 C1b の identity（sentinel の presence） | `escalate.sh` が作成時に原子的に書く**内容の token**。読み手は read-only | presence では poll 間の remove→recreate を識別できない。`stat` の inode/ctime 案は GNU の `-f` が filesystem 情報を stdout へ出して token を汚染し、inode も unlink 後に再利用され得るため否決した |
+| E3 | §3 の保証境界（post-send の記録失敗が未記載） | 通知の送信に成功した後に記録を永続化できない場合を保証対象外に追加 | status dir が書けない間、その通知は tick ごとに再送される。「1 回だけ」ではない。RT25 で挙動を固定する |
