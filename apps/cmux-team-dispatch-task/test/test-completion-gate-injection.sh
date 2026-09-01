@@ -234,5 +234,87 @@ else
   bad "CI12 command が環境から解決できない: [$out]"
 fi
 
+# --- CI14–CI22: existing watcher invokes exactly one recovery tick for its owner ---
+resolve_baked() { bash -c "$(grep -m1 '^RECOVERY_TICK=' "$1"); printf '%s' \"\$RECOVERY_TICK\"" 2>/dev/null; }
+run_watcher() {
+  local status_dir="$1"
+  awk '/^# BEGIN RECOVERY WATCHER$/{keep=1} /^# END RECOVERY WATCHER$/{keep=0} keep' "$RUNNER14" > "$TMP/watcher.sh"
+  bash -n "$TMP/watcher.sh" || { bad 'CI14 watcher fragment の構文が壊れている'; return 1; }
+  (
+    export STATUS_DIR="$status_dir" SLUG=t REVIEW_ROLE=0 WATCH_INTERVAL=1 CMUX_DISPATCH_WATCH_INTERVAL=1
+    export TIMEOUT_SENTINEL="${TIMEOUT_SENTINEL:-}" DEFER_STATUS="${DEFER_STATUS:-0}" STANDBY="${STANDBY:-0}"
+    export DISPATCH_GATE_ROLE=exec AGMSG_FROM=task-exec AGMSG_TEAM=demo-team AGMSG_SEND="$TMP/bin/agmsg-send.sh"
+    export RECOVERY_TICK="$(resolve_baked "$RUNNER14")" TICK_LOG
+    bash "$TMP/watcher.sh" & watcher_pid=$!
+    sleep 3; : > "$status_dir/.stop-watcher-t"; sleep 1
+    kill "$watcher_pid" 2>/dev/null || true; wait "$watcher_pid" 2>/dev/null || true
+  )
+}
+
+mkdir -p "$TMP/recovery-bin" "$TMP/recovery bin"
+cat > "$TMP/recovery-bin/recovery-tick.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TICK_LOG"
+STUB
+chmod +x "$TMP/recovery-bin/recovery-tick.sh"
+cp "$TMP/recovery-bin/recovery-tick.sh" "$TMP/recovery bin/recovery-tick.sh"
+
+run_launch_role claude ci-15-review review exec_review task-exec-review
+runner="$TMP/repo/.cmux-team-dispatch-task-run-ci-15-review.sh"
+if grep -q '^# BEGIN RECOVERY WATCHER$' "$runner" 2>/dev/null && grep -q 'REVIEW_ROLE" != "1"' "$runner" 2>/dev/null; then
+  pass 'CI15 review runner は watcher 起動条件を持つ'
+else
+  bad 'CI15 review runner の watcher 条件が無い'
+fi
+
+run_launch_role claude ci-20 execute exec task-exec
+runner="$TMP/repo/.cmux-team-dispatch-task-run-ci-20.sh"
+baked=$(resolve_baked "$runner")
+if [[ -n "$baked" && "$baked" == */recovery-tick.sh && -x "$baked" ]]; then
+  pass 'CI20 default recovery tick path が焼かれる'
+else
+  bad "CI20 path が不正: [$baked]"
+fi
+
+DISPATCH_RECOVERY_TICK="$TMP/recovery-bin/recovery-tick.sh" run_launch_role claude ci-14 execute exec task-exec
+RUNNER14="$TMP/repo/.cmux-team-dispatch-task-run-ci-14.sh"
+[[ "$(resolve_baked "$RUNNER14")" == "$TMP/recovery-bin/recovery-tick.sh" ]] \
+  && pass 'CI21 env seam は焼き込み path を差し替える' || bad 'CI21 override が焼かれない'
+
+TICK_LOG="$TMP/tick-owner.log"; : > "$TICK_LOG"; status_dir="$TMP/owner"; mkdir -p "$status_dir/review"; : > "$status_dir/.assigned-t"
+run_watcher "$status_dir"
+line=$(head -1 "$TICK_LOG" 2>/dev/null || echo "")
+if [[ "$line" == *"--status-dir $status_dir"* && "$line" == *'--role exec'* && "$line" == *'--agent task-exec'* && "$line" == *'--team demo-team'* ]]; then
+  pass 'CI14 owner runner は recovery tick を正しい引数で呼ぶ'
+else
+  bad "CI14 tick 呼び出しが不正: [$line]"
+fi
+
+for case_name in standby deferred foreign timeout; do
+  TICK_LOG="$TMP/tick-$case_name.log"; : > "$TICK_LOG"; status_dir="$TMP/$case_name"; mkdir -p "$status_dir/review"
+  TIMEOUT_SENTINEL=""; DEFER_STATUS=0; STANDBY=0
+  case "$case_name" in
+    standby) STANDBY=1 ;;
+    deferred) : > "$status_dir/.assigned-t"; : > "$status_dir/.deferred"; DEFER_STATUS=1 ;;
+    foreign) : > "$status_dir/.assigned-other"; DEFER_STATUS=1 ;;
+    timeout) : > "$status_dir/.assigned-t"; TIMEOUT_SENTINEL="$TMP/timeout-sentinel"; : > "$TIMEOUT_SENTINEL" ;;
+  esac
+  run_watcher "$status_dir"
+  [[ ! -s "$TICK_LOG" ]] && pass "CI${case_name}: non-owner は tick を呼ばない" \
+    || bad "CI${case_name}: tick が呼ばれた"
+done
+
+DISPATCH_RECOVERY_TICK="$TMP/recovery bin/recovery-tick.sh" run_launch_role claude ci-22 execute exec task-exec
+RUNNER14="$TMP/repo/.cmux-team-dispatch-task-run-ci-22.sh"
+if bash -n "$RUNNER14" && [[ "$(resolve_baked "$RUNNER14")" == "$TMP/recovery bin/recovery-tick.sh" ]]; then
+  pass 'CI22a 空白を含む recovery path を安全に焼き込む'
+else
+  bad 'CI22a 空白 path の焼き込みが壊れた'
+fi
+TICK_LOG="$TMP/tick-space.log"; : > "$TICK_LOG"; status_dir="$TMP/space"; mkdir -p "$status_dir/review"; : > "$status_dir/.assigned-t"
+TIMEOUT_SENTINEL=""; DEFER_STATUS=0; STANDBY=0
+run_watcher "$status_dir"
+[[ -s "$TICK_LOG" ]] && pass 'CI22b 空白 path の tick を実行する' || bad 'CI22b 空白 path の tick が呼ばれない'
+
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

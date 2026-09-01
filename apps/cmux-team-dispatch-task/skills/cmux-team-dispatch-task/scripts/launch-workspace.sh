@@ -103,6 +103,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 完走ゲートの entry を識別する印。command は 4 ロールで共有される 1 本なので、
 # 「誰の entry か」を role ではなくこの印で判定する。
 GATE_MARKER="cmux-team-dispatch-task"
+RECOVERY_TICK_BIN="${DISPATCH_RECOVERY_TICK:-$SCRIPT_DIR/recovery-tick.sh}"
 source "$SCRIPT_DIR/config-lib.sh"
 RUNNERS_CONFIG_PATH="$(dispatch_runners_file)"
 
@@ -1265,6 +1266,7 @@ REVIEW_ROLE_FLAG=0
 [[ "$MODE" == "review" ]] && REVIEW_ROLE_FLAG=1
 
 RUNNER_FILE="$CWD/$RUNNER_SCRIPT_NAME"
+RECOVERY_TICK=$(printf '%q' "$RECOVERY_TICK_BIN")
 cat > "$RUNNER_FILE" <<EOF
 #!/bin/bash
 set -uo pipefail
@@ -1287,6 +1289,7 @@ AGMSG_SEND="${AGMSG_SEND}"
 AGMSG_TEAM="${AGMSG_TEAM}"
 AGMSG_FROM="${AGMSG_FROM}"
 TIMEOUT_SENTINEL="${TIMEOUT_SENTINEL}"
+RECOVERY_TICK=${RECOVERY_TICK}
 
 # Resolve the workspace / surface IDs we are running inside.
 # cmux normally exports CMUX_WORKSPACE_ID and CMUX_SURFACE_ID into spawned shells;
@@ -1391,6 +1394,7 @@ fi
 WATCH_INTERVAL="\${CMUX_DISPATCH_WATCH_INTERVAL:-15}"
 WATCHER_PID=""
 # review ロールは共有 status.json の所有者になれないので watcher ごと起動しない。
+# BEGIN RECOVERY WATCHER
 if [[ -n "\$STATUS_DIR" && "\$REVIEW_ROLE" != "1" ]]; then
   (
     while true; do
@@ -1419,6 +1423,11 @@ if [[ -n "\$STATUS_DIR" && "\$REVIEW_ROLE" != "1" ]]; then
         (( _foreign )) && continue
       fi
 
+      # Deadline enforcement lives outside the stopped pane. This is one tick only; the
+      # existing watcher owns the loop and has already established this runner's ownership.
+      bash "\$RECOVERY_TICK" --status-dir "\$STATUS_DIR" --role "\$DISPATCH_GATE_ROLE" \
+        --agent "\$AGMSG_FROM" --team "\$AGMSG_TEAM" --send-command "\$AGMSG_SEND" 2>/dev/null || true
+
       [[ -f "\$STATUS_DIR/status.json" ]] || continue
       _st=\$(jq -r '.status // empty' "\$STATUS_DIR/status.json" 2>/dev/null || echo "")
       [[ "\$_st" == "done" || "\$_st" == "error" ]] || continue
@@ -1430,6 +1439,7 @@ if [[ -n "\$STATUS_DIR" && "\$REVIEW_ROLE" != "1" ]]; then
   ) &
   WATCHER_PID=\$!
 fi
+# END RECOVERY WATCHER
 
 SESSION_EXIT=0
 ${SESSION_CMD}
