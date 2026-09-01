@@ -272,14 +272,16 @@ wait_guard() {
 }
 
 # 1. 仕事が終わっている
-if [[ -f "$STATUS_DIR/status.json" ]]; then
-  st=$(jq -r '.status // empty' "$STATUS_DIR/status.json" 2>/dev/null || echo "")
-  case "$st" in done|error) allow ;; esac
-fi
-
-# 2. design は Phase B を委譲した時点で終わり
-if [[ "$ROLE" == design && -f "$STATUS_DIR/.deferred" ]]; then
-  allow
+expected_exec_agent() { local value; [[ -r "$STATUS_DIR/prewarm.json" ]] || return 1; value=$(jq -r '.exec.agent // empty' "$STATUS_DIR/prewarm.json" 2>/dev/null) || return 1; [[ -n "$value" ]] || return 1; printf '%s' "$value"; }
+delegation_recorded() { local expected; expected=$(expected_exec_agent) || return 1; [[ -f "$STATUS_DIR/.deferred" && -f "$STATUS_DIR/.assigned-$expected" ]]; }
+DELEGATE_HINT=" Delegate with one call to $SCRIPT_DIR/phase-b-deliver.sh; do not write delegation markers by hand."
+st=$(jq -r '.status // empty' "$STATUS_DIR/status.json" 2>/dev/null || echo "")
+[[ "$st" == error ]] && allow
+[[ "$st" == done && "$ROLE" != design ]] && allow
+if [[ "$ROLE" == design ]]; then
+  expected_exec_agent >/dev/null || block "the prewarm snapshot at $STATUS_DIR/prewarm.json is missing, unreadable, or has no exec agent. Report this to parent$NOTIFY_HINT and wait; do not write a terminal status."
+  if [[ "$st" == done ]]; then delegation_recorded || block "status says done but delegation is not recorded.$DELEGATE_HINT"; allow; fi
+  if [[ -f "$STATUS_DIR/.deferred" ]]; then delegation_recorded || block "the deferred marker lacks the expected exec assignment.$DELEGATE_HINT"; allow; fi
 fi
 
 # 2b. parent へ判断を引き渡して待っている。待つのが正しい状態である。
