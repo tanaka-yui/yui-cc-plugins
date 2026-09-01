@@ -223,5 +223,17 @@ reset_log; d=$(mkdir_case rt27); set_status "$d" executing
 write_lease "$d" 'progress|design|task-design' 1 "$PAST"; tick "$d"
 [[ "$(sends)" == 1 ]] && pass 'RT27: 進捗 lease の期限切れで nudge する' || bad "RT27: sends=$(sends)"
 
+# --- RT28: progress lease は完了済み review の閉包に従属しない ---
+reset_log; d=$(mkdir_case rt28); set_status "$d" executing
+printf 'request\n' > "$d/review/spec-round-1-request.md"
+printf 'findings\nVERDICT: approve\n' > "$d/review/spec-round-1.md"
+write_lease "$d" 'progress|design|task-design' 1 "$PAST"; tick "$d"
+if [[ "$(sends)" == 1 ]] && grep -q 'resume the interrupted work' "$TMP/send.log" \
+  && ! grep -q 'findings file\|abort procedure' "$TMP/send.log"; then
+  pass 'RT28: 完了済み review 後の進捗 lease を nudge し、作業再開だけを指示する'
+else
+  bad "RT28: sends=$(sends) body=[$(cat "$TMP/send.log" 2>/dev/null)]"
+fi
+
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

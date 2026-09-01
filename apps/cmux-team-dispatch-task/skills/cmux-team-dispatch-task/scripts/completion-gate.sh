@@ -155,7 +155,9 @@ fi
 LEASE_FILE="$STATUS_DIR/.gate-wait-$ROLE"
 SEQ_FILE="$STATUS_DIR/.gate-seq-$ROLE"
 SEEN_FILE="$STATUS_DIR/.gate-seen-$ROLE"
-clear_lease() { rm -f "$LEASE_FILE" "$SEEN_FILE" 2>/dev/null || true; }
+clear_wait_lease() { rm -f "$LEASE_FILE" 2>/dev/null || true; }
+clear_seen() { rm -f "$SEEN_FILE" 2>/dev/null || true; }
+clear_lease() { clear_wait_lease; clear_seen; }
 next_lease_seq() {
   local n tmp
   n=$(cat "$SEQ_FILE" 2>/dev/null || echo 0); [[ "$n" =~ ^[0-9]+$ ]] || n=0
@@ -180,6 +182,8 @@ lease_failure_block() { block "the recovery lease under $STATUS_DIR could not be
 # この実行が待機経路 (wait_guard) を通ったか。通ったなら allow はスタンプを消さない。
 # 消してしまうと自分が今書いた時刻が毎回消え、次の呼び出しが永久に「1 回目」になる。
 WAIT_STAMPED=0
+# 判定 7 の progress lease は残すが、次の素の待機を auto-restart と誤認しないよう seen は消す。
+PRESERVE_LEASE=0
 
 # 停止を許す。stdout へ何も出さない。
 # 待機から復帰したあとに前の回数を持ち越さないよう、必ずカウンタを消す。数えているのは
@@ -200,7 +204,10 @@ allow() {
 # 判定 6 など)。allow と同じ理由で古いスタンプを残さない。
 block() {
   local n
-  [[ "$WAIT_STAMPED" -eq 1 ]] || clear_lease
+  if [[ "$WAIT_STAMPED" -ne 1 ]]; then
+    clear_seen
+    [[ "$PRESERVE_LEASE" -eq 1 ]] || clear_wait_lease
+  fi
   if [[ "$MAX_BLOCKS" -gt 0 ]]; then
     n=$(cat "$BLOCK_COUNT_FILE" 2>/dev/null || echo 0)
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
@@ -278,13 +285,17 @@ wait_guard() {
   [[ "$started" =~ ^[0-9]+$ ]] || started="$prev"
   elapsed_min=$(( (now - started) / 60 ))
   if (( elapsed_min >= WAIT_MINUTES )); then
-    local reviewer abort_file
+    local reviewer reviewer_engine abort_file
     reviewer=$(jq -r '.reviewer_agent // empty' "$STATUS_DIR/review/code-review.json" 2>/dev/null || echo "")
+    reviewer_engine=$(jq -r '.reviewer_engine // empty' "$STATUS_DIR/review/code-review.json" 2>/dev/null || echo "")
     abort_file="$STATUS_DIR/review/$POINT-round-$ROUND_NO-abort.md"
     if [[ -n "$reviewer" && -n "$TEAM" ]]; then
-      block "you have been waiting on $POINT round $ROUND_NO for about $elapsed_min minute(s), which is past the $WAIT_MINUTES minute budget. Run $SCRIPT_DIR/verify-agmsg-ready.sh --codex --team $TEAM --name $reviewer once; if reachable, re-send the same round request once. Otherwise write $abort_file or touch $STATUS_DIR/.escalated and tell parent$NOTIFY_HINT. Do NOT write a terminal status."
+      if [[ "$reviewer_engine" == codex ]]; then
+        block "you have been waiting on $POINT round $ROUND_NO for about $elapsed_min minute(s), which is past the $WAIT_MINUTES minute budget. Run $SCRIPT_DIR/verify-agmsg-ready.sh --codex --team $TEAM --name $reviewer once; if reachable, re-send the same round request once. Otherwise write $abort_file or run bash $SCRIPT_DIR/escalate.sh $STATUS_DIR and tell parent$NOTIFY_HINT. Do NOT write a terminal status."
+      fi
+      block "you have been waiting on $POINT round $ROUND_NO for about $elapsed_min minute(s), which is past the $WAIT_MINUTES minute budget. The claude reviewer $reviewer reported [ready] and is reachable by definition; re-send the same round request once. Otherwise write $abort_file or run bash $SCRIPT_DIR/escalate.sh $STATUS_DIR and tell parent$NOTIFY_HINT. Do NOT write a terminal status."
     fi
-    block "you have been waiting on $POINT round $ROUND_NO for about $elapsed_min minute(s), which is past the $WAIT_MINUTES minute budget. Write $abort_file or touch $STATUS_DIR/.escalated and tell parent$NOTIFY_HINT. Do NOT write a terminal status."
+    block "you have been waiting on $POINT round $ROUND_NO for about $elapsed_min minute(s), which is past the $WAIT_MINUTES minute budget. Write $abort_file or run bash $SCRIPT_DIR/escalate.sh $STATUS_DIR and tell parent$NOTIFY_HINT. Do NOT write a terminal status."
   fi
   block "you are waiting for a review verdict and that is the correct state, not a failure. About $elapsed_min minute(s) of the $WAIT_MINUTES minute wait budget have passed, and reviews of this size normally take 10 to 30 minutes. Do NOT write an abort file, do NOT write a terminal status, and do NOT call update_goal with status blocked: a review that is still running is not an impasse. If an automatic goal continuation restarted you, that is NOT a timer firing and NOT part of any wake budget, so do not count these turns against a re-arm limit or a consecutive-blocker rule — they are seconds apart, not minutes. Do not re-read the findings file and do not check the reviewer pane again this turn. Say in one short sentence that you are still waiting, then end the turn. Only a review-verdict: message, or an instruction from parent, ends this wait."
 }
@@ -296,6 +307,10 @@ DELEGATE_HINT=" Delegate with one call to $SCRIPT_DIR/phase-b-deliver.sh; do not
 st=$(jq -r '.status // empty' "$STATUS_DIR/status.json" 2>/dev/null || echo "")
 [[ "$st" == error ]] && allow
 [[ "$st" == done && "$ROLE" != design ]] && allow
+
+# parent へ判断を引き渡している状態は prewarm の破損より先に解放する。
+[[ -f "$STATUS_DIR/.escalated" ]] && allow
+
 if [[ "$ROLE" == design ]]; then
   expected_exec_agent >/dev/null || block "the prewarm snapshot at $STATUS_DIR/prewarm.json is missing, unreadable, or has no exec agent. Report this to parent$NOTIFY_HINT and wait; do not write a terminal status."
   if [[ "$st" == done ]]; then delegation_recorded || block "status says done but delegation is not recorded.$DELEGATE_HINT"; allow; fi
@@ -308,11 +323,8 @@ fi
 # この sentinel が無いと判定 7 に落ちて「terminal status を書け」と迫られる。ところが
 # report-status.sh が受け付けるのは done か error だけで、どちらも虚偽になる —
 # done は未完了、error は指示どおりの正常な引き渡しであって障害ではない。
-# 子は引き渡し時に touch し、parent の回答を受けて再開するときに自分で消す (.deferred と同じ扱い)。
+# 子は引き渡し時に escalate.sh で token を原子的に書き、parent の回答を受けて再開するときに自分で消す。
 # 2026-08-24 に実測: 5 ラウンド上限に達した design ペインが停止のたびに block された。
-if [[ -f "$STATUS_DIR/.escalated" ]]; then
-  allow
-fi
 
 # review の状態は review-state.sh に一本化する。gate は述語を消費するだけで、
 # closure の規則を再実装しない。
@@ -406,5 +418,5 @@ if [[ "$ROLE" == exec && -r "$REVIEW_CONFIG" ]]; then
 fi
 
 arm_lease "progress|$ROLE|$AGENT" || true
-WAIT_STAMPED=1
+PRESERVE_LEASE=1
 block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet.$REVIEW_HINT Continue the work. Waiting for a review verdict is NOT being blocked and is NOT an error: if you are waiting, do not write a terminal status. Instead write the request text you already sent to $STATUS_DIR/review/<point>-round-<N>-request.md for the round you requested, which is how this gate sees a wait, then keep waiting. To finish real work, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done only when the work itself failed), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."

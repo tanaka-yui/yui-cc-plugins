@@ -58,6 +58,12 @@ notify_body() {
     superseded) printf 'dispatch-notify: [recovery] %s superseded %s. A newer review generation started before the earlier recovery notice was delivered.' "$agent" "$2" ;;
   esac
 }
+nudge_body() {
+  case "$1" in
+    progress\|*) printf 'dispatch-nudge: you appear to be stopped during work; resume the interrupted work and continue from where you left off.' ;;
+    *) printf 'dispatch-nudge: you appear to be stopped while waiting on %s. Re-check the findings file for a VERDICT line and continue; if the reviewer is unreachable, follow the abort procedure.' "$1" ;;
+  esac
+}
 escalation_identity() {
   local token
   [[ -f "$status_dir/.escalated" ]] || return 1
@@ -92,14 +98,19 @@ fi
 # shellcheck disable=SC1090
 . "$script_dir/review-state.sh"
 review_select_active "$status_dir"
-[[ "$RS_SOFT_CLOSED" == 1 ]] && { record_clear; exit 0; }
+
+# A progress lease protects active work, not a review generation. It deliberately survives a
+# completed review round; only a review-wait lease is closed or superseded by review state.
+progress_lease=0
+[[ -f "$LEASE" && "$(lease_get generation)" == progress\|* ]] && progress_lease=1
+[[ "$RS_SOFT_CLOSED" == 1 && "$progress_lease" != 1 ]] && { record_clear; exit 0; }
 
 [[ -f "$LEASE" ]] || { record_clear; exit 0; }
 generation=$(lease_get generation)
 lease_seq=$(lease_get lease_seq)
 deadline=$(lease_get deadline_epoch)
 [[ -n "$generation" && "$lease_seq" =~ ^[0-9]+$ && "$deadline" =~ ^[0-9]+$ ]] || exit 0
-if [[ -n "$RS_POINT" && "$generation" != "$RS_POINT|$RS_ROUND|$role|$agent" ]]; then
+if [[ "$progress_lease" != 1 && -n "$RS_POINT" && "$generation" != "$RS_POINT|$RS_ROUND|$role|$agent" ]]; then
   exit 0
 fi
 
@@ -169,7 +180,7 @@ case "$state" in
     lease_unchanged "$generation" "$lease_seq" || { [[ -f "$LEASE" ]] || record_clear; exit 0; }
     put ack_pending "$((nudges + 1))" "$lease_seq" "$((now + ack_grace))" \
       || { echo 'recovery-tick: cannot persist nudge record; not sending' >&2; exit 0; }
-    if ! send_to "$agent" "dispatch-nudge: you appear to be stopped while waiting on $generation. Re-check the findings file for a VERDICT line and continue; if the reviewer is unreachable, follow the abort procedure."; then
+    if ! send_to "$agent" "$(nudge_body "$generation")"; then
       put terminal_pending "$nudges" "$lease_seq" 0 \
         || echo 'recovery-tick: cannot persist fallback record' >&2
     fi

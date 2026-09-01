@@ -456,6 +456,12 @@ bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
 [[ "$(jq -r '.generation // empty' "$d/.gate-wait-exec" 2>/dev/null)" == 'progress|exec|task-exec' ]] \
   && pass 'CG35: 待機終了後は進捗 lease へ切り替わる' \
   || bad "CG35: 進捗 lease へ切り替わらない: [$(cat "$d/.gate-wait-exec" 2>/dev/null)]"
+[[ ! -f "$d/.gate-seen-exec" ]] && pass 'CG35b: 判定 7 は古い待機スタンプを消す' \
+  || bad 'CG35b: 次の待機を自動再開と誤判定する stamp が残った'
+printf 'request 2\n' > "$d/review/code-round-2-request.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG35c: 直後の新規待機も最初は allow' \
+  || bad "CG35c: 素の待機を block した: [$out]"
 
 # --- CG36: 未依頼のコードレビューを判定 7 の reason が名指しする ---
 # Phase B-R の配線が phase-b-exec メッセージの本文にしか無いと、設計ペインが自作の
@@ -624,6 +630,11 @@ out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/nul
 [[ -n "$out" ]] && pass 'CG51: prewarm 欠落で fail-closed' \
   || bad 'CG51: snapshot が無いのに通した'
 
+d=$(mkdir_case cg51b); set_status "$d" executing; : > "$d/.assigned-task-design"; : > "$d/.escalated"; rm -f "$d/prewarm.json"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG51b: escalation は prewarm 欠落より先に allow' \
+  || bad "CG51b: parent 判断待ちを閉じ込めた: [$out]"
+
 d=$(mkdir_case cg52); set_status "$d" executing
 jq -n '{reviewer_agent:"task-exec-review"}' > "$d/review/code-review.json"
 out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
@@ -665,10 +676,26 @@ touch -t "$(date -v-40M +%Y%m%d%H%M 2>/dev/null || date -d '40 minutes ago' +%Y%
 printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/.gate-seen-design"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
 reason=$(jq -r '.reason // empty' <<< "$out" 2>/dev/null)
-if [[ "$reason" == *'spec round 1'* && "$reason" == *"$d/review/spec-round-1-abort.md"* ]]; then
+if [[ "$reason" == *'spec round 1'* && "$reason" == *"$d/review/spec-round-1-abort.md"* \
+  && "$reason" == *'escalate.sh'* && "$reason" != *"touch $d/.escalated"* ]]; then
   pass 'CG56: 予算切れで block し、実値で回復手順を示す'
 else
   bad "CG56: reason が回復手順を欠く: [$reason]"
+fi
+
+d=$(mkdir_case cg56b)
+set_status "$d" executing
+: > "$d/.assigned-task-exec"
+printf 'request\n' > "$d/review/code-round-1-request.md"
+touch -t "$(date -v-40M +%Y%m%d%H%M 2>/dev/null || date -d '40 minutes ago' +%Y%m%d%H%M)" "$d/review/code-round-1-request.md"
+printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/.gate-seen-exec"
+jq -n '{reviewer_agent:"task-exec-review", reviewer_engine:"claude"}' > "$d/review/code-review.json"
+out=$(DISPATCH_GATE_TEAM=demo-team bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+reason=$(jq -r '.reason // empty' <<< "$out" 2>/dev/null)
+if [[ "$reason" == *'claude reviewer task-exec-review'* && "$reason" != *'verify-agmsg-ready.sh --codex'* ]]; then
+  pass 'CG56b: claude reviewer に codex seat 確認を指示しない'
+else
+  bad "CG56b: reviewer engine を取り違えた: [$reason]"
 fi
 
 # --- CG57: 予算内かつ rapid restart なしは allow ---
