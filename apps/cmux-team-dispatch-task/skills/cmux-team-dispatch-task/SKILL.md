@@ -784,10 +784,13 @@ Append the same engine-specific final instruction used by the base request: Clau
 
 After sending each `review-code:` request, a Claude implementer arms one single-shot
 safety timer with the Bash tool using `run_in_background`. A Codex implementer has NO
-safety net: it runs `verify-agmsg-ready.sh --codex` for {{EXEC_REVIEW_AGENT}} and sends one
-`dispatch-notify:` message to parent before ending the turn. On every wake, re-read the
-findings file; a timer wake without a VERDICT is not a verdict. A missing or pruned
-`exec_review` omits only Phase B-R and never leaves a `code-review.json` file behind.
+safety net. If {{EXEC_REVIEW_ENGINE}} is codex, it runs
+`verify-agmsg-ready.sh --codex` for {{EXEC_REVIEW_AGENT}}; if it is claude, that reviewer is
+reachable by definition after its `[ready]` report and needs no seat check. In either case the
+Codex implementer sends one `dispatch-notify:` message to parent before ending the turn. On
+every wake, re-read the findings file; a timer wake without a VERDICT is not a verdict. A
+missing or pruned `exec_review` omits only Phase B-R and never leaves a `code-review.json` file
+behind.
 
 The design pane is never selected as code reviewer. design_review never performs code
 review, and exec_review never performs design review. Do not compare engines to choose a

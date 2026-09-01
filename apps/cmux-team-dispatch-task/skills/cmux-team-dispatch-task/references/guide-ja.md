@@ -474,6 +474,13 @@ completion gate はディスクしか読まないので、このファイルだ�
 開始しない。round 5 が needs_work なら未解決指摘を PR 本文へ記録して進む。design pane を
 reviewer にせず、design_review と exec_review の担当を混ぜない。
 
+各 `review-code:` 送信後、Claude implementer は Bash tool の `run_in_background` で single-shot
+safety timer を 1 本だけ武装する。Codex implementer には safety net が無い。`{{EXEC_REVIEW_ENGINE}}`
+が codex のときだけ `{{EXEC_REVIEW_AGENT}}` に対して `verify-agmsg-ready.sh --codex` を実行する。
+claude のときは、その reviewer が返した `[ready]` が定義上到達可能の証拠であり seat 確認をしない。
+いずれの場合も Codex implementer はターンを閉じる前に `dispatch-notify:` を親へ 1 通送る。wake の
+たびに findings を再読し、VERDICT の無い timer wake を verdict とみなさない。
+
 全 child は executing を書いてから作業し、成功時は result.md + done、失敗時は error を書く。
 既存 pr_url を保持し、terminal status の直後に dispatch-notify: を親へ送る。委譲済み design
 session は .deferred を作り、exec role の terminal status を上書きしない。
