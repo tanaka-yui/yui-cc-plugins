@@ -73,10 +73,11 @@ for st in done error; do
     || bad "CG1($st): rc=$rc out=[$out]"
 done
 
-# --- CG2: design の .deferred ---
-d=$(mkdir_case cg2); set_status "$d" executing; : > "$d/.deferred"
-out=$(bash "$BIN" --status-dir "$d" --role design --agent task); rc=$?
-[[ $rc -eq 0 && -z "$out" ]] && pass 'CG2: design は .deferred で停止を許す' \
+# --- CG2: design は委譲が記録されていれば .deferred で停止を許す ---
+d=$(mkdir_case cg2); set_status "$d" executing
+: > "$d/.assigned-task-design"; : > "$d/.assigned-task-exec"; : > "$d/.deferred"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design); rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && pass 'CG2: 委譲が記録された design は停止できる' \
   || bad "CG2: rc=$rc out=[$out]"
 
 # --- CG3: タスク未着 ---
@@ -204,7 +205,7 @@ out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null); 
 # --- CG15: checkpoint をまたぐとき最後に依頼されたラウンドを選ぶ ---
 # spec が approve 済み、plan が進行中。辞書順なら spec-round-5.md が最後になるが、
 # 実際に待っているのは plan-round-1.md である。
-d=$(mkdir_case cg15); touch "$d/.assigned-task-design"
+d=$(mkdir_case cg15); set_status "$d" executing; touch "$d/.assigned-task-design"
 printf 'findings\nVERDICT: approve\n' > "$d/review/spec-round-5.md"
 sleep 1   # mtime を確実に分ける (秒単位の精度しか無い環境があるため)
 printf '（レビュー結果をここに記入）\n' > "$d/review/plan-round-1.md"
@@ -221,7 +222,7 @@ echo "$out" | grep -q 'plan-round-1.md' \
 # --- CG16: parent へ引き渡して判断待ちなら許す ---
 # ラウンド上限に達した状態を再現する: .assigned あり / 最新 round に VERDICT あり /
 # .deferred 無し。sentinel が無ければ判定 7 で block されることまで対で確認する。
-d=$(mkdir_case cg16); touch "$d/.assigned-task-design"
+d=$(mkdir_case cg16); set_status "$d" executing; touch "$d/.assigned-task-design"
 printf 'findings\nVERDICT: needs_work\n' > "$d/review/plan-round-5.md"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
 [[ -n "$out" ]] && pass 'CG16a: sentinel 無しなら block する (判定 7)' \
@@ -414,22 +415,24 @@ else
   bad "CG31: reason が待機防衛になっていない: [$out]"
 fi
 
-# --- CG32: 猶予を使い切ったら従来どおり許す ---
-# 防衛は無期限の拘束ではない。既存の打ち切り手順へ道を残す。
+# --- CG32: 猶予を使い切った待機は block して回復手順を示す ---
+# 3.8.0 では、goals=false の待機を allow に戻して黙らない。
 d=$(mkdir_case cg32); set_status "$d" executing; : > "$d/.assigned-task-exec"
 printf 'request\n' > "$d/review/code-round-1-request.md"
 touch -t 202601010000 "$d/review/code-round-1-request.md"
 bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
 out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
-[[ -z "$out" ]] && pass 'CG32: 猶予切れの待機は許す' \
-  || bad "CG32: 猶予切れでも block された: [$out]"
+reason=$(jq -r '.reason // empty' <<< "$out" 2>/dev/null)
+[[ "$reason" == *'past the'* && "$reason" == *"$d/review/code-round-1-abort.md"* ]] \
+  && pass 'CG32: 猶予切れの待機は block して回復手順を示す' \
+  || bad "CG32: 回復手順を示す block でない: [$out]"
 
 # --- CG33: 間隔が空いた再訪は自動再開と見なさない ---
 # 正常に眠っていて別の理由 (verdict 以外のメッセージなど) で起きた場合まで縛らない。
 d=$(mkdir_case cg33); set_status "$d" executing; : > "$d/.assigned-task-exec"
 printf 'request\n' > "$d/review/code-round-1-request.md"
 bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
-echo $(( $(date +%s) - 600 )) > "$d/.gate-wait-exec"
+echo $(( $(date +%s) - 600 )) > "$d/.gate-seen-exec"
 out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
 [[ -z "$out" ]] && pass 'CG33: 間隔の空いた再訪は許す' \
   || bad "CG33: 自動再開でないのに block された: [$out]"
@@ -450,8 +453,9 @@ bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
 [[ -f "$d/.gate-wait-exec" ]] || bad 'CG35: 待機中にスタンプが作られない'
 printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-1.md"
 bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
-[[ ! -f "$d/.gate-wait-exec" ]] && pass 'CG35: 待機終了でスタンプが消える' \
-  || bad 'CG35: 待機終了後もスタンプが残る'
+[[ "$(jq -r '.generation // empty' "$d/.gate-wait-exec" 2>/dev/null)" == 'progress|exec|task-exec' ]] \
+  && pass 'CG35: 待機終了後は進捗 lease へ切り替わる' \
+  || bad "CG35: 進捗 lease へ切り替わらない: [$(cat "$d/.gate-wait-exec" 2>/dev/null)]"
 
 # --- CG36: 未依頼のコードレビューを判定 7 の reason が名指しする ---
 # Phase B-R の配線が phase-b-exec メッセージの本文にしか無いと、設計ペインが自作の
@@ -568,6 +572,8 @@ printf 'request\n' > "$d/review/spec-round-1-request.md"
 bash "$BIN" --status-dir "$d" --role design --agent task-design >/dev/null 2>&1
 s1=$(jq -r '.lease_seq' "$d/.gate-wait-design")
 rm -f "$d/.gate-wait-design"
+# rapid restart では lease を再武装しない。別の wake で再び待機に入った条件を作る。
+echo $(( $(date +%s) - 600 )) > "$d/.gate-seen-design"
 bash "$BIN" --status-dir "$d" --role design --agent task-design >/dev/null 2>&1
 s2=$(jq -r '.lease_seq' "$d/.gate-wait-design")
 [[ "$s1" != "$s2" ]] && pass 'CG44: 削除→再作成でも lease_seq が再利用されない' \
@@ -585,6 +591,44 @@ if [[ -z "$out" && ! -f "$d/.gate-wait-design" ]]; then
 else
   bad "CG45: out=[$out] lease=[$(cat "$d/.gate-wait-design" 2>/dev/null)]"
 fi
+
+# --- CG46–CG52: design の委譲記録と評価順 ---
+d=$(mkdir_case cg46); set_status "$d" executing; : > "$d/.assigned-task-design"; : > "$d/.deferred"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+jq -e '.reason | test("phase-b-deliver.sh")' >/dev/null 2>&1 <<< "$out" \
+  && pass 'CG46: marker 無しの .deferred を block する' \
+  || bad "CG46: block されないか reason が誘導しない: [$out]"
+
+d=$(mkdir_case cg47); set_status "$d" executing; : > "$d/.assigned-task-design"; : > "$d/.deferred"; : > "$d/.assigned-task"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -n "$out" ]] && pass 'CG47: 似た名前の marker では通さない' \
+  || bad 'CG47: 前方一致で通ってしまった'
+
+d=$(mkdir_case cg48); set_status "$d" executing; : > "$d/.assigned-task-design"; : > "$d/.assigned-task-exec"; : > "$d/.deferred"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG48: .deferred と exact marker の両方で allow' \
+  || bad "CG48: block された: [$out]"
+
+d=$(mkdir_case cg49); set_status "$d" done; : > "$d/.assigned-task-design"; : > "$d/.assigned-task-exec"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -n "$out" ]] && pass 'CG49: half-transition の done を block する' \
+  || bad 'CG49: 送信失敗を完了扱いした'
+
+d=$(mkdir_case cg50); set_status "$d" error; : > "$d/.assigned-task-design"; printf 'not json' > "$d/prewarm.json"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG50: error は prewarm 破損でも allow する' \
+  || bad "CG50: 失敗したペインを閉じ込めた: [$out]"
+
+d=$(mkdir_case cg51); set_status "$d" executing; : > "$d/.assigned-task-design"; : > "$d/.deferred"; rm -f "$d/prewarm.json"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+[[ -n "$out" ]] && pass 'CG51: prewarm 欠落で fail-closed' \
+  || bad 'CG51: snapshot が無いのに通した'
+
+d=$(mkdir_case cg52); set_status "$d" executing
+jq -n '{reviewer_agent:"task-exec-review"}' > "$d/review/code-review.json"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+[[ -z "$out" ]] && pass 'CG52: 割り当て前の standby exec を止めない' \
+  || bad "CG52: standby を block した: [$out]"
 
 # --- CG56: 予算切れの待機は block して回復手順へ誘導する ---
 d=$(mkdir_case cg56)
@@ -620,8 +664,9 @@ printf 'a\n' > "$d/review/spec-round-1-abort.md"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
 [[ -n "$out" ]] && pass 'CG60: abort 済みなら依頼側は待機しない' \
   || bad 'CG60: abort 済みなのに待機として allow した (tick と逆転する)'
-[[ ! -f "$d/.gate-wait-design" ]] && pass 'CG60b: abort 済みでは lease を arm しない' \
-  || bad 'CG60b: lease を arm した'
+[[ "$(jq -r '.generation // empty' "$d/.gate-wait-design" 2>/dev/null)" == 'progress|design|task-design' ]] \
+  && pass 'CG60b: abort 後は進捗 lease へ切り替わる' \
+  || bad "CG60b: 進捗 lease へ切り替わらない: [$(cat "$d/.gate-wait-design" 2>/dev/null)]"
 
 # --- CG61: レビュアー側は従来どおり abort で allow する ---
 d=$(mkdir_case cg61)
