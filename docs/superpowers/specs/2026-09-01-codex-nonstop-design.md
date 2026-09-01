@@ -3,7 +3,8 @@
 - 日付: 2026-09-01
 - 対象: `apps/cmux-team-dispatch-task`
 - ブランチ: `feat/codex-nonstop`
-- 種別: 設計仕様（チェックポイント 1）
+- 種別: 設計仕様
+- 改訂: round 2（round 1 の needs_work を反映）
 
 ## 1. 発注
 
@@ -13,16 +14,13 @@
 残さなかった」であった。**この自己申告を対策として採用してはならない。** 「以後は途中で final を
 送らず継続します」はエージェントの判断に委ねる約束であり、今回の原因そのものだからである。
 
-したがって本仕様が満たすべき条件は 1 つに集約される。
-
 > **ペインが停止してよいかどうかは、ディスク上の状態から機械的に決まらなければならない。**
 
 ## 2. 調査で確定した事実
 
 ### 2.1 gate は「executing なのに止まる」を既に止めている
 
-発注の仮説 1 は「status=executing かつレビュー待ちでもない状態が allow に落ちているのでは」で
-あった。**これは偽である。** gate を隔離した合成 STATUS_DIR に対して直接実行し、ロール × ディスク
+発注の仮説 1 は偽である。gate を隔離した合成 STATUS_DIR に対して直接実行し、ロール × ディスク
 状態の全数を実測した。
 
 | STATE | design | design_review | exec | exec_review |
@@ -44,52 +42,81 @@
 ### 2.2 ALLOW は goals=false 以後「恒久的な死」になった
 
 `98860e5` が `-c features.goals=false` を全 codex 起動点に入れ、codex の自己再開経路を消した。
-結果、**ALLOW された codex ペインは agmsg メッセージが来るまで二度と動かない。**
+**ALLOW された codex ペインは agmsg メッセージが来るまで二度と動かない。**
 
-これは意図された代償として記録されている（`launch-workspace.sh:689-690`）。しかし同時に、
-gate の設計が前提としていた力学を変えている。**以前は誤 ALLOW のコストが「1 サイクル遅れる」で
-あったが、今は「永久停止」である。** 既存の ALLOW 集合はこのコスト変化を反映して見直されていない。
+これは意図された代償として記録されている（`launch-workspace.sh:689-690`）。しかし誤 ALLOW の
+コストは「1 サイクル遅れ」から「永久停止」へ変わった。既存の ALLOW 集合はこの変化を反映して
+見直されていない。
 
-### 2.3 `wait_guard` は事実上死んでいる
+### 2.3 V1 決着: block は goals と独立に codex を再駆動する（実測）
 
-`ce948cd` が入れた `wait_guard` は「auto-restart された待機だけを block する」層である。block に
-到達する条件は 3 つの同時成立である（`completion-gate.sh:226-242`）。
+round 1 で最大の未確定事項だった点を、対象バイナリ `codex-cli 0.149.1` で実測した。
 
-1. 直前の stamp が存在する
-2. `now - prev <= 90s`（＝直前のターン終了から 90 秒以内に再び Stop が来た）
-3. `elapsed_min < 30`
+隔離した一時ディレクトリに `.codex/hooks.json` を置き、Stop hook を「1 回目だけ
+`{"decision":"block","reason":"…marker に BANANA と書いてターンを終えよ…"}` を返し、2 回目
+以降は無出力（allow）」とした。`-c features.goals=false` 付きで実行した。
 
-条件 2 は **auto-restart が起きているときにしか成立しない**。`98860e5` がその auto-restart を
-消したので、`wait_guard` はもはや発火しない。
+**`codex exec`（非対話）と対話 TUI の両方**で測定した。対話側は dispatch と同じ経路
+（cmux ペイン + `zsh -ic` + 同じフラグ）で起動した。
 
-帰結は重大である。`wait_guard` の 30 分予算は、予算切れ時に **allow を返す**（`:241`）。つまり
-現在の設計では **待機に上限が無い**。レビュアーが死んでも、依頼者は永久に待てる。
+| 観測 | `codex exec` | 対話 TUI |
+|---|---|---|
+| Stop hook 発火回数 | **2** | **2** |
+| 発火間隔 | 23 秒 | 26 秒 |
+| `marker` の内容 | **`BANANA`** | **`BANANA`** |
 
-### 2.4 `.assigned-<agent>` 欠落による素通しは実際に起きている
+対話側は画面上でも確認した。block の reason を受けた次ターンで
+`printf %s BANANA > …/marker` を実行している。
+
+**`decision:block` は goal continuation とは独立にターンを再駆動し、モデルは reason の指示を
+実行した。** レビュアーが Context7 の `/openai/codex` source で確認した「同期 Stop hook の
+block は continuation prompt を注入する」という記述が、対象バイナリ上で裏付けられた。
+
+したがって **gate の block は単なるガイダンスではなく実効的な強制力を持つ。**
+これはレビュー再条件 3 を満たす。
+
+### 2.4 しかし gate は「停止したペイン」に期限を課せない
+
+round 1 のレビューで指摘された、本設計の中心的な制約である。
+
+**gate は Stop のときにしか実行されない。** ALLOW した瞬間にそのペインは静止し、次の Stop は
+発生しない。したがって gate 内にどんな期限を書いても、その期限時刻に gate が呼ばれることは
+ない。「予算切れ → block」は原理的に到達不能である。
+
+これは `wait_guard` の現状を説明する。block 到達には「直前の Stop から 90 秒以内に再び Stop が
+来る」ことが必要で、これは auto-restart 中にしか起きない。`98860e5` がその auto-restart を
+消した以上、`wait_guard` はもう発火しない。**待機に上限が無い。**
+
+> **期限を課せるのは、停止したペインの外側で動き続けている実体だけである。**
+
+### 2.5 `.assigned-<agent>` 欠落による素通しは実際に起きている
 
 `5ed0dcf` のコミット本文に実測が記録されている（lead-psp-liff の member、2026-08-31）。
 手書きの引き継ぎ文で実装が始まり、`.assigned-member-exec` が作られなかった。gate は
 判定 3 で毎回素通りし、実装ペインは一度も拘束されなかった。
 
-`5ed0dcf` が入れた 3 層（`.dispatch-handoff.json` / 判定 7 の `REVIEW_HINT` / 親側の検出）は
-いずれも**素通し自体を止めていない**。判定 3 に到達すれば今も無条件 ALLOW である。
+`5ed0dcf` が入れた 3 層はいずれも素通し自体を止めていない。判定 3 に到達すれば今も無条件
+ALLOW である。
 
-### 2.5 identity が無ければ gate は存在しない
+**ただし受け手側（exec）でこれを判別することはできない。** `review/code-review.json` は
+`review-gate.sh` が exec_review の readiness 確認直後、**設計タスクを開始する前に**書く
+（`SKILL.md:469-488`）。実際、本 dispatch の STATUS_DIR には Phase A の現時点で既に
+`code-review.json` が在り、`.assigned-<exec agent>` は無い。**正常な standby exec が
+Phase A の全期間この状態にある。** `.dispatch-handoff.json` も `--status-dir` 付きペインへ
+事前配置されるポインタであり、Phase B 到達の証拠ではない。
+
+### 2.6 identity が無ければ gate は存在しない
 
 `completion-gate.sh:74-77` は `DISPATCH_GATE_{STATUS_DIR,ROLE,AGENT}` のいずれかが空なら
-stdout 無出力で `exit 0`（＝ ALLOW）する。この env を export するのは **生成 runner script だけ**
-である（`launch-workspace.sh:1279-1282`）。
+stdout 無出力で `exit 0`（ALLOW）する。この env を export するのは **生成 runner script だけ**
+である（`launch-workspace.sh:1279-1282`）。runner を経由しない起動では env が失われ、
+そのペインは毎ターン黙って通る。
 
-runner を経由しない起動（人手の `codex resume`、ペイン再接続、shell 入れ替え）では env が失われ、
-そのペインは**毎ターン黙って通る**。goals=false と組み合わさると、そこで永久に停止する。
+fail-open 自体は正しい（無関係な手動セッションを無期限拘束してはならず、Stop hook の
+`exit 2` は blocking error であって no-op ではない）。問題は **fail-open が観測不能である**
+ことである。
 
-fail-open 自体は正しい判断である（同じ worktree を開いた無関係の手動セッションを無期限拘束しては
-ならない、かつ Stop hook の `exit 2` は blocking error であって no-op ではない）。問題は
-**fail-open が観測不能である**ことにある。
-
-### 2.6 claude ペインでは脱出手段の案内が壊れている（実測）
-
-注入されるコマンドがエンジンで異なる。
+### 2.7 claude ペインでは脱出手段の案内が壊れている（実測）
 
 | engine | Stop hook |
 |---|---|
@@ -102,162 +129,197 @@ fail-open 自体は正しい判断である（同じ worktree を開いた無関
 - `bash <file>` → スクリプト実体のディレクトリ（正）
 - `zsh <file>` → `BASH_SOURCE[0]: parameter not set` を stderr に出し、**cwd に化ける**（誤）
 
-結果、claude ペインが受け取る判定 7 の reason は `bash <worktree>/report-status.sh …` という
-存在しないパスを指す。実体は `apps/cmux-team-dispatch-task/skills/…/scripts/report-status.sh`。
-本設計セッション自身がこの誤った reason を受け取って確認した。
+結果、claude ペインが受け取る判定 7 の reason は存在しない `report-status.sh` を指す。
+本設計セッション自身がこの誤った reason を受け取って確認した。案内どおり実行すると ENOENT と
+なり終端ステータスを書けず、次ターンも同じ block が返る。**指示に忠実なエージェントほど
+block ループに嵌まる。**
 
-`SCRIPT_DIR` の参照は reason 生成の 1 行のみなので判定ロジックは無傷。壊れているのは
-**唯一の脱出手段の案内**である。案内どおり実行すると ENOENT となり終端ステータスを書けず、
-次ターンも同じ block が返る。**指示に忠実なエージェントほど block ループに嵌まる。**
+## 3. 全 ALLOW 状態の再列挙
 
-### 2.7 未解決の最重要問題: block は本当に codex を再駆動するか
+レビュー再条件 4 に対応する。gate が停止を許すすべての状態を、
+**owner（その状態の責任者）/ waker（起こす主体）/ deadline / terminal** で列挙する。
 
-gate は block しか持たない。「reason が次ターンのガイダンスとして届き、モデルがそれに従う」ことの
-根拠は 2026-08-22 の実測（spec §6 G-T1/G-T2）である。しかし `features.goals=false` は
-2026-08-31 の変更である。
+| # | ALLOW 状態 | gate の行 | owner | waker | 現状の deadline | 本仕様後 |
+|---|---|---|---|---|---|---|
+| A1 | status done/error | `:246-249` | 本人 | 不要（terminal） | — | 変更なし |
+| A2 | `.deferred`（design のみ） | `:252-254` | design | 不要（terminal） | — | **C2: 委譲が記録されている場合のみ** |
+| A3 | `.escalated` | `:264-266` | parent | parent | **無し** | **C1: lease + 有界 nudge** |
+| A4 | `.assigned` 欠落（design/exec） | `:351` | design/parent | phase-b-deliver | **無し** | 変更なし（C2 で上流を閉じる） |
+| A5 | findings に VERDICT 無し | `:355-358` | reviewer | reviewer | 名目 30 分 / **到達不能** | **C1: lease + 有界 nudge** |
+| A5b | request 未応答 | `:363-366` | reviewer | reviewer | 同上 | **C1: lease + 有界 nudge** |
+| A6 | review 側: round も request も無い | `:373` | design/exec | 依頼者 | **無し** | 変更なし（後述の境界） |
+| A6b | `round_aborted()` | `:377-379` | 依頼者 | 依頼者 | — | 変更なし |
+| A7 | review 側 fall-through | `:388` | — | — | — | 変更なし |
+| A8 | `MAX_BLOCKS` 到達（既定では無効） | `:167-174` | 設定者 | 無し | **無し** | **保証の対象外と明記** |
+| A0 | identity 欠落（fail-open） | `:74-77` | 起動経路 | 無し | **無し** | **C3: 観測可能にする** |
 
-**当時観測された「codex が reason に従った」が、block による再駆動なのか goal continuation に
-よる再駆動なのかが切り分けられていない。** 後者なら、goals を切った時点で gate の強制力そのものが
-消えている。
+### 保証の境界（明示）
 
-`ce948cd` のコミット本文には示唆的な記述がある。
+本仕様が「絶対に止まらない」を保証するのは、**runner script 経由で起動され、
+`DISPATCH_GATE_*` を持つ design / exec ロールのペイン**である。以下は保証の対象外であり、
+それぞれ理由がある。
 
-> 完走ゲートはこの 6 ターンすべてで正しく allow していた。allow は stdout へ何も書かないので、
-> ゲートは待機中のターンに発言できず、その allow こそが次の継続を許す状態だった。
+- **A0（identity 欠落）**: 保証できない。gate が自分の管轄を知らないため。
+  ただし C3 で「gate が一度も効かなかったペイン」を親から検出可能にする。
+- **A8（`MAX_BLOCKS > 0`）**: 明示設定で保証を放棄する経路。既定は無制限なので通常は無効。
+  設定した時点で本仕様の保証が外れることをドキュメントに書く。
+- **A6（割り当て前の review standby）**: レビューペインは依頼が来るまで止まってよい。
+  依頼者側（design/exec）が C1 の lease で守られるため、依頼が消えることは無い。
+- **A4（割り当て前の exec standby）**: 受け手側では判別不能（§2.5）。上流の A2 を閉じることで
+  「委譲したのに記録が無い」状態を作れなくする。
 
-これは「継続の駆動源は goals であった」と読める。実ペインでの再検証が必須である。
+## 4. 変更
 
-## 3. 問題の定式化
+### C1: 期限の執行者を gate の外に置く
 
-現在の gate の ALLOW 集合を、「停止後、**誰が**そのペインを起こすのか」という観点で並べ直す。
+**gate は期限を課せない（§2.4）。したがって期限は、停止したペインの外側で動き続けている
+実体が執行する。**
 
-| ALLOW 状態 | 起こす主体 | 期限 | 期限切れの扱い |
-|---|---|---|---|
-| status done/error | 不要 | — | — |
-| `.deferred`（design） | 不要 | — | — |
-| `.escalated` | parent | **無し** | **無し** |
-| `.assigned` 欠落 | design / parent | **無し** | **無し** |
-| 待機（request 未応答） | reviewer | 名目 30 分 / **到達不能** | **allow（＝放置）** |
-| 待機（findings に VERDICT 無し） | reviewer | 同上 | 同上 |
+その実体は既に存在する。生成 runner script は、子セッションと並行して `status.json` を
+15 秒間隔で poll する常駐サブシェルを持つ（`launch-workspace.sh:1391-1432`）。
+セッションの寿命だけ生き、停止要求に 1 秒以内で追随する。**これはエージェントではなく
+プロセスである。**
 
-**下 4 行が構造的な穴である。** いずれも「外部の誰かが起こしてくれる」ことに賭けており、
-その誰かが来なかった場合の期限も回復手段も、ディスク上に存在しない。
+新しいポーリングループを足すのではなく、**この既存ループに条件を 1 つ足す**。
 
-そして「その誰か」を実際に動かしているのは、親セッションが `work-signal.sh` を回して
-`dispatch-nudge:` を送るという **SKILL.md の散文指示** である。これはまさに発注が禁じた
-「エージェントの自主性への依存」である。
+#### lease の書き手 = gate
 
-したがって本件の原因は 1 つのバグではない。
+gate が待機（A5 / A5b）または `.escalated`（A3）を ALLOW する瞬間、
+`.gate-wait-<role>`（既存の stamp ファイル）を lease レコードへ拡張して書く。
 
-> **gate は「止まってよい状態」を列挙しているが、「止まったあと誰がいつ起こすか」を
-> 列挙していない。前者だけでは、goals を切った世界で ALLOW は静かな死になる。**
+    { point, round, request_mtime, deadline_epoch, agent, nudges }
 
-## 4. 設計方針
+#### lease の執行者 = runner watcher
 
-### 原則
+既存ループの各周回で、lease が在り `now > deadline_epoch` かつ当該ラウンドが未応答
+（point スコープの round ファイルに `VERDICT:` が無い）なら:
 
-> **ペインが停止してよいのは、「ディスク上に名指しされた起こし手」と「期限」が両方
-> 存在するときに限る。期限が切れたら、gate は必ず発言する。**
+1. `dispatch-nudge:` を **1 通だけ** agmsg でその待機者へ送る（agmsg 配送はペインを起こす）
+2. `nudges` を加算し、deadline を延長する
+3. `nudges` が上限（既定 2）に達したら `.escalated` を書き、parent へ 1 通通知して終わる
 
-`allow` は stdout に何も書かないため、gate は allow したターンで発言できない。発言できる唯一の
-手段が block である。したがって「期限切れ」は block として表現するしかない。ただし
-**block の reason は必ず有限手数で終わる出口を提示しなければならない**（過去の誤 block 事故の
-再発防止）。
+**agent の判断は 1 つも介在しない。**
 
-### 変更 C1: 待機に到達可能な期限を入れる（`wait_guard` の反転）
+#### gate 側の 3 分岐（`wait_guard` の修正）
 
-現行は「予算切れ → allow」。これを **「予算内 → allow（静かな待機）、予算切れ → block」** に
-反転する。auto-restart 判定（条件 2）は予算内の早期 block を抑えるためだけに残す。
+レビュー指摘 1 のとおり、現行の rapid-restart 防衛は残す。
 
-block の reason は有限手数の出口を示す。
+| 予算 | rapid restart | 判定 |
+|---|---|---|
+| 予算内 | 無し | **ALLOW**（静かな待機。従来どおり） |
+| 予算内 | 有り | **BLOCK**（`ce948cd` の goal continuation 暴走防止。従来どおり） |
+| 予算切れ | — | **BLOCK**（有限の回復手順へ。到達するのは外部起床後） |
 
-1. `verify-agmsg-ready.sh` でレビュアーの到達性を 1 回確認する
-2. 同じラウンドを 1 回だけ再送する
-3. それでも予算 2 周目が切れたら `<point>-round-<N>-abort.md` を書く（`round_aborted()` が
-   レビュアーを解放する）か `.escalated` を touch する
+第 3 分岐は「次に何らかの外部入力でこのペインが起きたとき、期限切れを検出して発言する」層で
+ある。**期限そのものを発火させるのは runner watcher であり、gate ではない。** 両者の役割を
+分離することで、レビュー指摘 1 の「到達不能な期限」を解消する。
 
-`.escalated` は既に全ロール ALLOW なので、ループは必ず終端する。
+`§2.3` により block は実際に次ターンを駆動するので、第 3 分岐の reason は実効的である。
 
-- 既定 `DISPATCH_GATE_WAIT_MINUTES=30` は据え置き
-- `0` で無効化できる性質も据え置き
-- **auto-restart 中の待機を早期 block しない**という `ce948cd` の不変条件は維持する
+### C2: 委譲が記録されていない design を停止させない
 
-### 変更 C2: 割り当て欠落の素通しを止める
+レビュー指摘 2 のとおり、**受け手（exec）側では正常な standby と配線failure を区別できない。**
+したがって判別を **委譲する側（design）** へ移す。
 
-判定 3（`.assigned-<agent>` 欠落 → 無条件 ALLOW）を、**「まだ割り当てられていない standby」と
-「割り当てられたのに marker が無い配線failure」を区別する**形に変える。
+現行の判定 2 は「`.deferred` が在れば design は停止してよい」である。`.deferred` は
+`phase-b-deliver.sh` が書くが、**design agent が自分で touch することもできる。** 手書きの
+引き継ぎ文を送って `.deferred` を touch すれば、記録の無い委譲が成立してしまう。
 
-区別材料はディスク上に既にある。
+変更: **判定 2 を「`.deferred` が在り、かつ自分以外の `.assigned-*` が在る」に絞る。**
 
-- `review/code-review.json` が在る＝この task には exec レビューが配線済み
-- `.dispatch-handoff.json` が worktree 直下に在る＝この worktree は dispatch 配下
+- `.assigned-<exec agent>` を書けるのは `phase-b-deliver.sh:207` だけである
+- レビューペインには `.assigned-*` を作らせない規約（I5）があるので、自分以外の
+  `.assigned-*` の存在は「実装ロールへ委譲した」ことと一意に対応する
+- 条件を満たさない design は block され、reason が `phase-b-deliver.sh` の実行を指示する
 
-配線済みなのに `.assigned-<exec agent>` が無い状態は、`5ed0dcf` が「親が検出せよ」と書いた
-**配線failure そのもの**である。gate 自身がこれを検出し、素通しではなく block して
-「配線failure を parent へ報告し、`.escalated` を書け」と指示する。
+これは **exec 側の判定 3 に一切触れない**ので、正常な standby exec を block しない（I4 を保つ）。
 
-standby（配線前）は `code-review.json` が無いか、あってもまだ Phase B に入っていないので
-従来どおり ALLOW を維持する。**standby を止め続けない**という不変条件は維持する。
+#### 残る限界（明記）
 
-### 変更 C3: fail-open を観測可能にする
+C2 は「委譲したのに記録が無い」を塞ぐが、次の 2 経路は塞がない。
 
-identity 欠落時の ALLOW は維持する（無関係な手動セッションを拘束しないため）。ただし
-**黙って通すのをやめる**。`.dispatch-handoff.json` が worktree に在る場合に限り、その隣へ
-`.gate-open-<timestamp>` の痕跡を残す。
+1. **design が `.assigned-<exec agent>` を手で touch する。** `phase-b-deliver.sh` を通らずに
+   マーカーだけ作れば素通る。
+2. **design が委譲せずに `done` を書く。** 判定 1（A1）が先に ALLOW するため C2 に到達しない。
 
-これにより「gate が一度も効いていないペイン」が親から検出可能になる。判定は変えないので
-誤 block のリスクは無い。
+いずれも「Phase B 遷移の所有権が agent の任意操作にある」ことに由来する。完全に塞ぐには
+遷移を機械的な境界へ移す必要があり、本仕様の範囲を超える。**この限界を仕様に残し、
+将来の課題として記録する。** レビュー指摘 2 が求めた「限界の明記」に対応する。
 
-### 変更 C4: `SCRIPT_DIR` を zsh でも正しく解決する
+### C3: fail-open を有界かつ非自己攪乱に観測可能化
 
-`BASH_SOURCE` に依存しない形へ変える。`$0` は `bash <file>` / `zsh <file>` の双方で
-スクリプトパスになるため、`${BASH_SOURCE[0]:-$0}` で両対応できる。あわせて注入側を
-`zsh` から `bash` へ揃えることも検討する（gate の shebang は `#!/usr/bin/env bash`）。
+判定は変えない（ALLOW を維持）。痕跡だけ残す。
 
-**回帰テストは「zsh で起動したとき reason が実在するパスを指すこと」を直接検査する。**
+レビュー指摘 4 のとおり、Stop ごとに worktree へ新しい未追跡ファイルを作ると
+`work-signal.sh` の入力（`git status --porcelain` と dirty パスの mtime）を自分で変え続け、
+停滞検知を壊す。したがって:
 
-### 変更 C5: `latest_round` を point でスコープする
+- 置き場所は **worktree ではなく `.dispatch-handoff.json` が指す status dir**
+- 名前は **固定** の 1 ファイル（`.gate-open`）
+- 内容は「最終観測時刻と累計回数」。原子的に置換し、**増えない**
+- `.dispatch-handoff.json` が無ければ何も書かない（無関係な手動セッションを汚さない）
+
+### C4: `SCRIPT_DIR` を zsh でも正しく解決する
+
+`${BASH_SOURCE[0]:-$0}` にする。`$0` は `bash <file>` / `zsh <file>` の双方でスクリプトパスに
+なる。あわせて claude 注入を `zsh` から `bash` へ揃えることを検討する（gate の shebang は
+`#!/usr/bin/env bash`）。
+
+回帰テストは **zsh で起動したとき reason が実在するパスを指すこと**を直接検査する。
+
+### C5: round ファイルを point でスコープする
 
 `latest_round` は `review/*round*.md` を mtime 最新で 1 個選ぶだけで、`spec-` / `plan-` /
 `code-` を区別しない。前フェーズの古い round ファイルが最新だと、実装中の exec が
 「待機中」と誤判定され ALLOW される。
 
-判定に使う round ファイルを、対応する request の point に限定する。
+request / findings / abort を **同一 point に束ねて**選ぶ規則にする。回帰ケースは
+「`spec-round-1.md`（VERDICT 済み）より新しい `plan-round-1-request.md` が在るとき、
+判定に使われるのは plan 側であること」および逆順を含める。
 
-## 5. 検証しなければならない未解決事項
+## 5. 残る検証事項
 
-### V1（最優先）: block は codex のターンを再駆動するか
+### V1 / V1b: 決着済み
 
-実ペインで確認する。確認できるまで、本設計は「block が再駆動する」ことに賭けない。
+§2.3 のとおり、非対話・対話の両モードで実測し確定した。未解決事項ではなくなった。
 
-- **再駆動する場合**: C1/C2 の block はそのまま継続の駆動力になる
-- **再駆動しない場合**: block は「次に何か入力が来たときのガイダンス」でしかなく、
-  停止したペインを起こすのは agmsg のみになる。この場合 C1/C2 の価値は
-  「期限切れを親から検出可能にする」ことに縮退し、**別途 agmsg 経路での起こし手が必要**になる
+### 実装時に確認すること（設計の骨格には影響しない）
 
-**この分岐を実装フェーズの最初のタスクとし、結果を計画に反映する。**
+- **自己宛 nudge が届くか**: C1 の runner watcher は、同一ペインの待機者へ agmsg を送る。
+  codex では bridge seat（`run/codex-bridge.<team>.<agent>.thread`）が古いと send は成功
+  するのにメッセージが読まれない（記録済みの R2）。watcher は送信前に
+  `verify-agmsg-ready.sh --codex` を 1 回実行する。
+- **watcher の早期 `continue` を跨ぐこと**: 既存ループは `.deferred` / 未割り当て standby /
+  他ペインの `.assigned-*` で `continue` する。lease 判定はこれらの手前に置く。
+- **`.assigned-<SLUG>` と `.assigned-<AGENT>` の一致**: runner は `$SLUG`、gate は `$AGENT` を
+  見ている。C2 は「自分以外の `.assigned-*`」を完全一致で除外して判定する
+  （`codex-nonstop` と `codex-nonstop-exec` を前方一致で取り違えないこと）。
 
 ### V2: `.escalated` の期限
 
-`.escalated` は全ロール無条件 ALLOW で期限が無い。parent が来なければ永久停止する。
-本仕様では変更しない（明示的に記録された hand-off であり、5 ラウンド上限などの正当な
-終端状態として使われている）が、V1 の結果次第では期限が必要になる可能性がある。
+C1 の lease 機構を `.escalated` にも適用する（A3）。parent が来なければ有界回数の通知の後、
+`error` ではなく `.escalated` のまま留まる。**エスカレーションは正当な終端状態であり、
+「止まらない」保証の対象外であることを明記する。**
 
 ## 6. 不変条件（回帰させてはならないもの）
 
-過去の実測事故から、以下は絶対に壊さない。
-
 | # | 不変条件 | 根拠 |
 |---|---|---|
-| I1 | 素の待機（auto-restart でない）を早期 block しない | `ce948cd` |
+| I1 | 素の待機（auto-restart でない）を予算内に block しない | `ce948cd` |
+| I1b | 予算内の rapid restart は従来どおり block する | `ce948cd` |
 | I2 | 連続 block に既定の上限を設けない | `74e9c70`（2026-08-25 実ペイン） |
 | I3 | `block()` は諦めるとき `allow()` を呼ばない | `a8a2707` |
-| I4 | 割り当て前の standby を止め続けない | `launch-workspace.sh:1478` |
+| I4 | 割り当て前の standby（exec / review）を止め続けない | `launch-workspace.sh:1478` |
 | I5 | レビューペインに `.assigned-*` を作らせない | `c70a690` |
 | I6 | 出力キーは `decision` / `reason` の 2 つだけ | codex hook schema |
 | I7 | identity 欠落時は `exit 0`（`exit 2` は blocking error） | `0a13479` |
-| I8 | 判定はディスクのみ。cmux / network / モデル評価を使わない | 設計の中核 |
+| I8 | gate の判定はディスクのみ。cmux / network / モデル評価を使わない | 設計の中核 |
 | I9 | block の reason は必ず有限手数の出口を含む | `c70a690`（110 秒で error を書いた事故） |
+| I10 | gate にも親スキルにも新しいポーリングループを足さない | `CLAUDE.md` item 33 / 48 |
+| I11 | 痕跡ファイルが `work-signal.sh` の入力を攪乱しない | 本レビュー指摘 4 |
+
+I10 について: C1 は新しいループを作らず、**既存の runner watcher に条件を 1 つ足す**。
+このループは `98860e5` の「復帰は agmsg 経路へ一本化する」という方針の実装先でもある。
 
 ## 7. スコープ
 
@@ -268,12 +330,15 @@ identity 欠落時の ALLOW は維持する（無関係な手動セッション�
 - バージョンを上げるなら plugin.json 2 つと marketplace.json を同期する
 - PR は作らない。`feat/codex-nonstop` にコミットを積み、parent がマージする
 
-## 8. 本仕様が採用しなかった案
+## 8. 採用しなかった案
 
 | 案 | 却下理由 |
 |---|---|
 | プロンプトに「止まるな」と書き足す | 発注が明示的に禁じている。今回の原因そのもの |
-| gate から `work-signal.sh` を呼ぶ | cmux IPC にタイムアウトが無く Stop hook でハングし得る。gate の「ディスクのみ」不変条件（I8）も壊す。親の比較基準ファイルも汚す |
-| `DISPATCH_GATE_MAX_BLOCKS` に既定の上限を戻す | `74e9c70` が実ペインで踏んだ「長い作業が永久に毎ターン停止する」事故の再現 |
+| 待機を常に block して回し続ける | `ce948cd` が消した abort 暴走の再現。トークンも焼く |
+| gate 内に期限を持たせる（round 1 の C1） | **原理的に到達不能**（§2.4）。本レビューで却下 |
+| `code-review.json` を Phase B 到達の証拠に使う（round 1 の C2） | Phase A 全期間で成立し、正常な standby を block する（§2.5）。本レビューで却下 |
+| gate から `work-signal.sh` を呼ぶ | cmux IPC にタイムアウトが無く Stop hook でハングし得る。I8 を壊す |
+| `DISPATCH_GATE_MAX_BLOCKS` に既定の上限を戻す | `74e9c70` が踏んだ「長い作業が永久に毎ターン停止する」事故の再現 |
 | goals を再有効化する | `ce948cd` の abort 事故（81 秒 / 111 秒）の再現 |
-| gate にポーリングループを足す | `CLAUDE.md` item 33 / 48 が明示的に禁止 |
+| 親スキルにポーリングを足す | `CLAUDE.md` item 33 / 48 が明示的に禁止 |
