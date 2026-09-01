@@ -136,7 +136,7 @@ done
 [[ $cg12 -eq 1 ]] && pass 'CG12: reason が status dir / report-status.sh / agent / team を含む'
 
 # --- CG13: team が無いときは team を騙らせない ---
-out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
+out=$(env -u DISPATCH_GATE_TEAM bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
 reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
 [[ "$reason" != *"team "* ]] && pass 'CG13: team 未指定なら reason で team に触れない' \
   || bad "CG13 team を捏造させうる文面がある: [$reason]"
@@ -502,6 +502,24 @@ if [[ -n "$reason" ]] && ! echo "$reason" | grep -q 'mandatory code review is wi
   pass 'CG39: design ロールにはコードレビューを迫らない'
 else
   bad "CG39: design にコードレビューを迫った: [$out]"
+fi
+
+# --- CG40: zsh で起動しても reason の report-status.sh が実在する ---
+if command -v zsh >/dev/null 2>&1; then
+  d=$(mkdir_case cg40)
+  set_status "$d" executing
+  : > "$d/.assigned-task-exec"
+  out=$(cd "$TMP" && DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=exec \
+    DISPATCH_GATE_AGENT=task-exec zsh "$BIN" --gate-id cmux-team-dispatch-task 2>/dev/null)
+  reason=$(jq -r '.reason // empty' <<< "$out" 2>/dev/null)
+  rs=$(sed -n 's/.*bash \([^ ]*report-status\.sh\).*/\1/p' <<< "$reason")
+  if [[ -n "$rs" && -f "$rs" ]]; then
+    pass 'CG40: zsh 起動でも reason の report-status.sh が実在する'
+  else
+    bad "CG40: 解決されたパスが実在しない: [$rs]"
+  fi
+else
+  pass 'CG40: zsh が無いので skip'
 fi
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'

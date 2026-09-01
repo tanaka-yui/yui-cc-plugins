@@ -258,7 +258,7 @@ inject_completion_gate() {
   # DISPATCH_GATE_* として export し、gate がプロセス環境から読む。
   # command 文字列に '$VAR' を書いて実行時展開させることはできない — シングルクォート内は
   # hook 実行時も展開されず、\$VAR も同じである。
-  cmd="zsh '$script' --gate-id '$GATE_MARKER'"
+  cmd="bash '$script' --gate-id '$GATE_MARKER'"
   # 既存の gate entry を取り除いてから 1 本足す。worktree 再利用時の二重注入防止と、
   # 3.5.0 以前の「値を焼き込んだ entry」の migration が、これ 1 つで同時に済む。
   # 古い entry を残したままだと、そちらが先発ロールの値で全ペインを縛り続ける。

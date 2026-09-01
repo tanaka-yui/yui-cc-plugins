@@ -79,6 +79,11 @@ n=$(gate_count "$TMP/repo/.claude/settings.local.json")
 
 cmd=$(jq -r '[.hooks.Stop[]?.hooks[]? | select(.command | test("completion-gate.sh"))][0].command' \
   "$TMP/repo/.claude/settings.local.json" 2>/dev/null || echo "")
+[[ "$cmd" == bash\ * ]] && pass 'CI13 claude 注入も bash で起動する' \
+  || bad "CI13 zsh のまま: [$cmd]"
+
+cmd=$(jq -r '[.hooks.Stop[]?.hooks[]? | select(.command | test("completion-gate.sh"))][0].command' \
+  "$TMP/repo/.claude/settings.local.json" 2>/dev/null || echo "")
 # command は 4 ロールで共有される 1 本なので、ロールを焼き込んではならない。
 # 焼き込むと後発ロールが先発ロールのゲートを実行する (2026-08-25 実測)。
 if [[ "$cmd" != *"--role"* && "$cmd" != *"--agent"* && "$cmd" != *"--status-dir"* \

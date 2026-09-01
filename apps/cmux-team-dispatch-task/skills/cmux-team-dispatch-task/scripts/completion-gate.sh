@@ -121,7 +121,7 @@ BLOCK_COUNT_FILE="$STATUS_DIR/.gate-blocks-$ROLE"
 # パスを書かなかったために block されたセッションが status dir を ls で探し、
 # completion-gate.sh と report-status.sh を読み、team 名を find で探す、という考古学に
 # まる 1 ターンを費やした。知っているものを渡さないのは単なる取りこぼしである。
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # team はディスパッチ配下でのみ渡る。無いときに send.sh の 4 引数を埋めさせようとすると
 # 存在しない team 名を捏造させることになるので、そのときは触れない。
 # 送信コマンドまで書けるのは team と send-command の両方が揃ったときだけ。片方でも欠けたら
