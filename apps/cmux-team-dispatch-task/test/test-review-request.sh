@@ -120,14 +120,25 @@ else
 fi
 
 # --- RQ8 ---
+# 一時ファイルは review/*.md に現れない。review-state.sh は review/*.md を glob して
+# <point>-round-<N>[-request|-abort].md として名前を解釈するので、書きかけの一時ファイルが
+# そこへ現れると gate のレビュー状態判定が汚れる。事後条件だけでは素朴な直接書き込み実装と
+# 区別できないため、mktemp の テンプレート自体も検査する。
+tmpl=$(grep -o 'mktemp "[^"]*"' "$BIN" | head -1)
+if [[ "$tmpl" == *'/.'* && "$tmpl" != *'.md'* ]]; then
+  pass "RQ8a: mktemp テンプレートがドット始まりで .md を含まない ($tmpl)"
+else
+  bad "RQ8a: 一時ファイル名が review/*.md に混入しうる: $tmpl"
+fi
+
 rd=$(mkrd rq8)
 printf 'body\n' | run --review-dir "$rd" --point code --round 1 --team t1 --from ex --to rev
 shopt -s nullglob
 mds=("$rd"/*.md)
 if [[ ${#mds[@]} -eq 1 ]]; then
-  pass "RQ8: *.md にマッチするのは request ファイルだけ"
+  pass "RQ8b: *.md にマッチするのは request ファイルだけ"
 else
-  bad "RQ8: *.md が ${#mds[@]} 個ある: ${mds[*]}"
+  bad "RQ8b: *.md が ${#mds[@]} 個ある: ${mds[*]}"
 fi
 shopt -u nullglob
 
