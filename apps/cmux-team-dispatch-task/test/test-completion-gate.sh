@@ -790,11 +790,16 @@ grep -q '"decision":"block"' <<<"$out" \
   || bad "CG-P2: out=[$out]"
 
 # CG-P3: 逆向き。design が自分の point で待機しているとき、より新しい code の
-#        VERDICT 付き findings に隠されない (F1 の design 側)。
+#        VERDICT 付き findings に隠されない (F1 の design 側)。design 側を pending
+#        (request だけ) にすると best_pending がそれを無条件で勝たせてしまい、
+#        masking が実際に起きる best_any の経路を通らない。そこで design 側にも
+#        VERDICT 無しの findings を置いて pending を外し、best_any 経由の選択が
+#        code 側の新しい VERDICT に負けないことを検証する。
 d=$(mkdir_case cgp3); set_status "$d" executing
 : > "$d/.assigned-task"
 printf 'req\n' > "$d/review/plan-round-1-request.md"; sleep 1
-printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-1.md"
+printf 'partial findings\n' > "$d/review/plan-round-1.md"; sleep 1
+printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-2.md"
 out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=task \
   bash "$BIN" 2>/dev/null); rc=$?
 [[ $rc -eq 0 && -z "$out" ]] \
