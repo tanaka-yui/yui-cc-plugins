@@ -12,7 +12,7 @@
 # 壊れるため使わない。
 #
 # Usage:
-#   review-request.sh --review-dir <dir> --point <design|code> --round <N> \
+#   review-request.sh --review-dir <dir> --point <name> --round <N> \
 #                     --team <team> --from <agent> --to <agent> < body
 #
 # Exit: 0 = 書いて送った / 1 = 送信失敗 (request ファイルは削除済み) / 2 = 使用法エラー
@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$POINT" in design|code) ;; *) die 'point must be design or code' ;; esac
+[[ "$POINT" =~ ^[A-Za-z0-9._-]+$ ]] || die 'point must match [A-Za-z0-9._-]+'
 [[ "$ROUND" =~ ^[1-5]$ ]] || die 'round must be 1..5'
 [[ "$TEAM" =~ ^[A-Za-z0-9._-]+$ ]] || die 'team must match [A-Za-z0-9._-]+'
 [[ "$FROM" =~ ^[A-Za-z0-9._-]+$ ]] || die 'from must match [A-Za-z0-9._-]+'
@@ -63,10 +63,11 @@ if ! printf '%s\n' "$BODY" > "$TMP"; then
 fi
 mv -- "$TMP" "$TARGET" || { rm -f "$TMP"; fail "cannot publish $TARGET"; }
 
-case "$POINT" in
-  design) PREFIX='review-plan: ' ;;
-  code)   PREFIX='review-code: ' ;;
-esac
+# code だけが固定名で、Phase B-R の point である (phase-b-deliver.sh と
+# launch-workspace.sh に焼き込まれている)。design 側の checkpoint 名は固定ではなく
+# (superpowers モードは spec と plan の 2 点、無人ループは design)、SKILL.md は
+# ファイル名を規定していない。したがって code 以外はすべて設計側のレビュー依頼である。
+if [[ "$POINT" == code ]]; then PREFIX='review-code: '; else PREFIX='review-plan: '; fi
 
 # 送れなかったらファイルを消す。残すと「始まっていない待機」を gate が待機として読み、
 # 相手が居ないまま WAIT_MINUTES を丸ごと溶かす。

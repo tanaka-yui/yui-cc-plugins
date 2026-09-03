@@ -711,6 +711,7 @@ reviewer engine independently controls liveness:
       --reviewer-workspace "{{DESIGN_REVIEW_WORKSPACE}}" \
       --reviewer-surface "{{DESIGN_REVIEW_SURFACE}}" \
       --findings-path "<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md" \
+      --review-dir "<EXISTING_STATUS_DIR>/review" \
       --send-command "$AGMSG_SEND") || exit 1
 
 Always append the protocol:

@@ -64,10 +64,13 @@ body="${SEND[4]-}"
   && "$body" == *'VERDICT: approve'* && "$body" == *'t-exec-review'* ]] \
   && ok 'PB4 concrete findings path, verdict, cap, terminal rule, and reviewer are embedded' \
   || bad 'PB4 incomplete Phase B-R protocol'
-review_send_contract="passing exactly four arguments in this order: team tm, sender t-exec, recipient t-exec-review, and the whole review-code: message as one argument"
+# タスク 3: レビュー依頼は review-request.sh 経由に一本化された。送信は AGMSG_SEND への
+# 4 引数呼び出しではなく、ヘルパー 1 コールに置き換わっている (旧 review_send_contract は
+# 2 手順の旧文面が固定していた defect そのものなので更新した)。
+review_request_contract="request the review with ONE call to bash $S_REAL/review-request.sh --review-dir $review_dir_real --point code --round N --team tm --from t-exec --to t-exec-review, piping the whole request text into it on standard input with a here-document"
 verdict_send_contract="passing exactly four arguments in this order: team tm, sender t-exec-review, recipient t-exec, and the whole review-verdict: message as one argument"
 claude_liveness='cmux read-screen --workspace workspace:1 --surface surface:4'
-if [[ $(grep -Fo "$review_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
+if [[ $(grep -Fo "$review_request_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo "$verdict_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo 'After each successful review-code: send, stop and wait for the review-verdict: push.' <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo 'On every wake, re-read' <<< "$body" | wc -l | tr -d ' ') == 1 \
@@ -82,12 +85,14 @@ fi
 # <point>-round-<N>-request.md である。Phase A-R は依頼文を書くのでこれが成立するが、
 # Phase B-R は依頼を agmsg メッセージだけで送っていたため、verdict を待つ実装者が判定 7 に
 # 落ちて毎ターン block され、block 文面が勧める error を書いて中断した (2026-08-28 実測)。
-# 依頼を送る前に request ファイルを書かせることが、その待機を materialize する唯一の手段。
-if [[ "$body" == *"$review_dir_real/code-round-N-request.md"* \
-   && "$body" == *'before that send'* ]]; then
-  ok 'PB4e review request is materialized on disk before the send'
+# タスク 3 以降は review-request.sh が「書いてから送る」を 1 コールへ folded し、実装者が
+# 手で request ファイルを書く手順も、素の AGMSG_SEND を review 依頼へ使う経路も禁じている。
+if [[ "$body" == *"--review-dir $review_dir_real"* \
+   && "$body" == *'do NOT write the request file by hand'* \
+   && "$body" == *"do NOT call $TMP/bin/send.sh yourself for a review request"* ]]; then
+  ok 'PB4e review request is materialized on disk via review-request.sh, never by hand or raw send.sh'
 else
-  bad 'PB4e delivery does not make the implementer write code-round-N-request.md'
+  bad 'PB4e delivery does not route the review request through review-request.sh'
 fi
 status_file="$TMP/status/status.json"
 result_file="$TMP/status/result.md"

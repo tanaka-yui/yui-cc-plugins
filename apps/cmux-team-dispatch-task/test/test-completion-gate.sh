@@ -360,12 +360,14 @@ out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
 # --- CG27: 判定 7 は待機を error と取り違えさせない ---
 # 判定 7 の reason は「詰まっているなら error を書け」と教える。request ファイルを書き忘れた
 # 待機者はこの逃げ道を取って中断する (2026-08-28 の事故そのもの)。reason 自身が、待機は
-# error ではないことと、待機を materialize する手順を持たなければならない。
+# error ではないことと、待機を review-request.sh で materialize する手順を持たなければ
+# ならない (タスク 3 で review-request.sh 一本化に変更。旧文面は request ファイルのパスを
+# 手書きさせる 2 手順の指示だった)。
 d=$(mkdir_case cg27); set_status "$d" executing; : > "$d/.assigned-task-exec"
 printf 'findings\nVERDICT: needs_work\n' > "$d/review/code-round-2.md"
 out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
 reason=$(jq -r '.reason // empty' <<< "$out" 2>/dev/null)
-if [[ "$reason" == *'-request.md'* && "$reason" == *'not'*'error'* ]]; then
+if [[ "$reason" == *'review-request.sh'* && "$reason" == *'not'*'error'* ]]; then
   pass 'CG27: 判定 7 の reason が待機と error を切り分ける'
 else
   bad "CG27: reason に待機の逃がし方が無い: [$reason]"
@@ -486,7 +488,7 @@ reason=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null)
 if [[ -n "$reason" ]] \
   && echo "$reason" | grep -q 'task-exec-review' \
   && echo "$reason" | grep -q 'never to parent' \
-  && echo "$reason" | grep -q 'review-code:'; then
+  && echo "$reason" | grep -q 'review-request.sh'; then
   pass 'CG36: 未依頼のコードレビューでレビュアー名を渡す'
 else
   bad "CG36: reason がレビュアーを名指ししない: [$out]"

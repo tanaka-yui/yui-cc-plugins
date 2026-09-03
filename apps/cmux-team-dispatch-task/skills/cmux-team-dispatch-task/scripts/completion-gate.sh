@@ -427,10 +427,26 @@ if [[ "$ROLE" == exec && -r "$REVIEW_CONFIG" ]]; then
   shopt -s nullglob
   for f in "$STATUS_DIR"/review/code-round-*-request.md; do code_requested="$f"; break; done
   if [[ -n "$reviewer" && -z "$code_requested" ]]; then
-    REVIEW_HINT=" A mandatory code review is wired for this task and you have not requested it once: the reviewer is the agent $reviewer, and its findings belong in $STATUS_DIR/review/code-round-<N>.md. Address the request to that agent name — never to parent, and never to a surface or workspace id. If your handoff message did not mention any of this, the wiring is still real: this pane also has $STATUS_DIR/review/code-review.json and a pointer to it in .dispatch-handoff.json at the root of your worktree. Before the review, write your request text to $STATUS_DIR/review/code-round-<N>-request.md, then send it with one call whose body starts with review-code:."
+    REVIEW_HINT_PREFIX=" A mandatory code review is wired for this task and you have not requested it once: the reviewer is the agent $reviewer, and its findings belong in $STATUS_DIR/review/code-round-<N>.md. Address the request to that agent name — never to parent, and never to a surface or workspace id. If your handoff message did not mention any of this, the wiring is still real: this pane also has $STATUS_DIR/review/code-review.json and a pointer to it in .dispatch-handoff.json at the root of your worktree."
+    # TEAM は通常 STATUS_DIR/ROLE/AGENT と一緒に export されるが、この hook の identity 判定は
+    # TEAM を必須にしていない。TEAM が無いまま --team を埋めると空文字の壊れた呼び出し例を
+    # 提示してしまうので、その場合はコマンド行を出さない。
+    if [[ -n "$TEAM" ]]; then
+      REVIEW_HINT="$REVIEW_HINT_PREFIX Make the request with one call to bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point code --round <N> --team $TEAM --from $AGENT --to $reviewer, piping the request text into it on standard input; that single call writes the request file this gate reads and sends the message."
+    else
+      REVIEW_HINT="$REVIEW_HINT_PREFIX Materialize the request with bash $SCRIPT_DIR/review-request.sh before sending; that single call writes the request file this gate reads and sends the message."
+    fi
   fi
+fi
+
+# TEAM が既知のときだけ、実行可能な review-request.sh の呼び出し例を reason に埋める。
+# 上の REVIEW_HINT と同じ理由: 空文字の --team を提示しない。
+if [[ -n "$TEAM" ]]; then
+  WAIT_REISSUE="Instead re-issue the same round through bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point <point> --round <N> --team $TEAM --from $AGENT --to <the reviewer agent>, using the same <point> as the round you requested, piping the same request text into it on standard input; that is how this gate sees a wait. Then keep waiting."
+else
+  WAIT_REISSUE="Instead re-issue the same round through bash $SCRIPT_DIR/review-request.sh, using the same <point> as the round you requested and piping the same request text into it on standard input; that is how this gate sees a wait. Then keep waiting."
 fi
 
 arm_lease "progress|$ROLE|$AGENT" || true
 PRESERVE_LEASE=1
-block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet.$REVIEW_HINT Continue the work. Waiting for a review verdict is NOT being blocked and is NOT an error: if you are waiting, do not write a terminal status. Instead write the request text you already sent to $STATUS_DIR/review/<point>-round-<N>-request.md for the round you requested, which is how this gate sees a wait, then keep waiting. To finish real work, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done only when the work itself failed), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."
+block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet.$REVIEW_HINT Continue the work. Waiting for a review verdict is NOT being blocked and is NOT an error: if you are waiting, do not write a terminal status. $WAIT_REISSUE To finish real work, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done only when the work itself failed), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."

@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  echo 'usage: phase-a-review-wait.sh --waiter-engine <claude|codex> --reviewer-engine <claude|codex> --team <team> --waiter-agent <agent> --reviewer-agent <agent> --reviewer-workspace <workspace:N> --reviewer-surface <surface:N> --findings-path <path> --send-command <path>' >&2
+  echo 'usage: phase-a-review-wait.sh --waiter-engine <claude|codex> --reviewer-engine <claude|codex> --team <team> --waiter-agent <agent> --reviewer-agent <agent> --reviewer-workspace <workspace:N> --reviewer-surface <surface:N> --findings-path <path> --review-dir <path> --send-command <path>' >&2
   exit 2
 }
 
@@ -19,6 +19,7 @@ REVIEWER_AGENT=''
 REVIEWER_WORKSPACE=''
 REVIEWER_SURFACE=''
 FINDINGS_PATH=''
+REVIEW_DIR=''
 SEND_COMMAND=''
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --reviewer-workspace) [[ $# -ge 2 ]] || usage; REVIEWER_WORKSPACE="$2"; shift 2 ;;
     --reviewer-surface) [[ $# -ge 2 ]] || usage; REVIEWER_SURFACE="$2"; shift 2 ;;
     --findings-path) [[ $# -ge 2 ]] || usage; FINDINGS_PATH="$2"; shift 2 ;;
+    --review-dir) [[ $# -ge 2 ]] || usage; REVIEW_DIR="$2"; shift 2 ;;
     --send-command) [[ $# -ge 2 ]] || usage; SEND_COMMAND="$2"; shift 2 ;;
     *) usage ;;
   esac
@@ -43,7 +45,14 @@ case "$REVIEWER_ENGINE" in claude|codex) ;; *) usage ;; esac
 [[ "$REVIEWER_AGENT" =~ ^[A-Za-z0-9._-]+$ ]] || usage
 [[ "$REVIEWER_WORKSPACE" =~ ^workspace:[0-9]+$ ]] || usage
 [[ "$REVIEWER_SURFACE" =~ ^surface:[0-9]+$ ]] || usage
-[[ -n "$FINDINGS_PATH" && -n "$SEND_COMMAND" ]] || usage
+[[ -n "$FINDINGS_PATH" && -n "$REVIEW_DIR" && -n "$SEND_COMMAND" ]] || usage
+
+# 依頼の出し方は待機の仕方より先に書く。依頼がディスクへ現れないと、そのあとの待機は
+# gate から見えず、判定 7 の「terminal status を書け」に落ちる (2026-09-02 の F1)。
+# design 側の checkpoint 名は固定ではない (superpowers モードは spec と plan の 2 点) ため、
+# --point の値はここでは決め打ちにせず、findings path に現れる <point> をそのまま使わせる。
+printf 'Request each design review round with ONE call to bash %s/review-request.sh --review-dir %s --point POINT --round N --team %s --from %s --to %s, where POINT is the same checkpoint name that appears in your findings path %s such as spec or plan, piping the whole request text into it on standard input with a here-document. That single call writes the request to disk and sends it. Do NOT send a review request with agmsg send.sh and do NOT write the request file by hand; a non-zero exit means the reviewer was NOT told and the file was removed, so report it instead of waiting.\n' \
+  "$SCRIPT_DIR" "$REVIEW_DIR" "$TEAM" "$WAITER_AGENT" "$REVIEWER_AGENT" "$FINDINGS_PATH"
 
 case "$REVIEWER_ENGINE" in
   codex)

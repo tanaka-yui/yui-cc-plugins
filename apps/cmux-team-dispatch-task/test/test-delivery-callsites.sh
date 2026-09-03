@@ -22,6 +22,10 @@
 #   CS6. レビュー依頼文に verdict 通知 (review-verdict: の送信指示) が含まれる
 #   CS7. verdict を待つ側の手順に単発タイマー (single-shot safety timer) がある
 #        — これが無いと review-verdict が失われた瞬間に待つ側が永久に眠る
+#   CS9. レビュー依頼は review-request.sh 経由に一本化されている。
+#        依頼側の 4 つの生成元と 2 つの無人ブロックが helper を名指ししており、かつ
+#        「request ファイルを書いてから send.sh を呼べ」という 2 手順の旧文面が残らない。
+#        2 手順のままだと 4/7 の頻度で書き込みだけが落ちる (2026-09-02 実測)。
 #
 # 免除の仕組み:
 #   `cmux send` はシェルにコマンドを打ち込む用途（TUI へのメッセージ配送ではない）でも
@@ -413,12 +417,14 @@ PHASE_A_WAIT="$SCRIPTS/phase-a-review-wait.sh"
 codex_claude=$(bash "$PHASE_A_WAIT" --waiter-engine codex --reviewer-engine claude \
   --team tm --waiter-agent task --reviewer-agent task-design-review \
   --reviewer-workspace workspace:1 --reviewer-surface surface:2 \
-  --findings-path /dispatch/review/spec-round-1.md --send-command /agmsg/send.sh 2>/dev/null)
+  --findings-path /dispatch/review/spec-round-1.md --review-dir /dispatch/review \
+  --send-command /agmsg/send.sh 2>/dev/null)
 codex_claude_rc=$?
 claude_codex=$(bash "$PHASE_A_WAIT" --waiter-engine claude --reviewer-engine codex \
   --team tm --waiter-agent task --reviewer-agent task-design-review \
   --reviewer-workspace workspace:1 --reviewer-surface surface:2 \
-  --findings-path /dispatch/review/plan-round-1.md --send-command /agmsg/send.sh 2>/dev/null)
+  --findings-path /dispatch/review/plan-round-1.md --review-dir /dispatch/review \
+  --send-command /agmsg/send.sh 2>/dev/null)
 claude_codex_rc=$?
 skill_flat=$(tr '\n' ' ' < "$SKILL_DIR/SKILL.md" | tr -s ' ')
 if [[ $codex_claude_rc -eq 0 \
@@ -437,6 +443,30 @@ if [[ $codex_claude_rc -eq 0 \
 else
   echo 'FAIL CS8: Phase A-R 実配送 prompt が waiter/reviewer engine を独立に扱っていない'
   fail=1
+fi
+
+
+# --- CS9: レビュー依頼は review-request.sh 経由に一本化されている ---
+CS9_SOURCES=(
+  "$SCRIPTS/phase-b-deliver.sh"
+  "$SCRIPTS/phase-a-review-wait.sh"
+  "$SCRIPTS/launch-workspace.sh"
+  "$SCRIPTS/completion-gate.sh"
+  "$SKILL_DIR/references/unattended/review-block.md"
+  "$SKILL_DIR/references/unattended/code-review-block.md"
+)
+cs9=0
+for f in "${CS9_SOURCES[@]}"; do
+  grep -q 'review-request\.sh' "$f" || { echo "  CS9: $f に review-request.sh が無い"; cs9=1; }
+done
+# 旧文面の残骸。request ファイルのパスと send を同じ文で語る指示は消えていること。
+if grep -rn 'write that same message text to' "${CS9_SOURCES[@]}" >/dev/null 2>&1; then
+  echo "  CS9: 2 手順の旧文面が残っている"; cs9=1
+fi
+if [[ $cs9 -eq 0 ]]; then
+  echo 'PASS CS9: レビュー依頼が review-request.sh へ一本化されている'
+else
+  echo 'FAIL CS9: レビュー依頼の一本化が未完了'; fail=1
 fi
 
 exit $fail

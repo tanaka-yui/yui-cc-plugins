@@ -4,7 +4,7 @@
 # 守っている不変条件:
 #   RQ1. 本文を stdin から受け、<point>-round-<N>-request.md へ書く
 #   RQ2. 同じ本文を review-code: プレフィックス付きで send.sh へ 4 引数で渡す
-#   RQ3. point=design なら review-plan: プレフィックス
+#   RQ3. point=design/spec/plan (code 以外) は review-plan: プレフィックス (R-T2-6)
 #   RQ4. send.sh が非ゼロなら request ファイルを削除して exit 1
 #        (残すと gate が「始まっていない待機」を待機と読む)
 #   RQ5. 空 stdin は exit 2 で、ファイルを 1 つも作らない
@@ -67,6 +67,27 @@ else
   bad "RQ3: design の経路が違う"
 fi
 
+# R-T2-6: --point は design|code の 2 値許可リストではなくなった。superpowers モードの
+# Phase A-R は spec / plan という 2 つの checkpoint 名を使うので、code 以外のあらゆる
+# 安全な point 名が受理され、review-plan: プレフィックスになることを確認する。
+rd=$(mkrd rq3-spec)
+: > "$SEND_LOG"
+printf 'spec review\n' | run --review-dir "$rd" --point spec --round 1 --team t1 --from d --to dr
+if [[ -f "$rd/spec-round-1-request.md" ]] && sed -n 5p "$SEND_LOG" | grep -q '^review-plan: spec review'; then
+  pass "RQ3b: point=spec も review-plan: プレフィックス"
+else
+  bad "RQ3b: spec の経路が違う"
+fi
+
+rd=$(mkrd rq3-plan)
+: > "$SEND_LOG"
+printf 'plan checkpoint review\n' | run --review-dir "$rd" --point plan --round 1 --team t1 --from d --to dr
+if [[ -f "$rd/plan-round-1-request.md" ]] && sed -n 5p "$SEND_LOG" | grep -q '^review-plan: plan checkpoint review'; then
+  pass "RQ3c: point=plan も review-plan: プレフィックス"
+else
+  bad "RQ3c: plan の経路が違う"
+fi
+
 # --- RQ4 ---
 rd=$(mkrd rq4)
 printf 'body\n' | SEND_EXIT=1 AGMSG_SEND="$SEND" SEND_LOG="$SEND_LOG" \
@@ -91,7 +112,11 @@ fi
 # --- RQ6 ---
 rd=$(mkrd rq6)
 bad6=0
-printf 'b\n' | run --review-dir "$rd" --point spec --round 1 --team t1 --from ex --to rev
+# R-T2-6: point の許可リストは廃止されたが、[A-Za-z0-9._-]+ 以外の文字 (シェルメタ文字や
+# 空白) は依然として拒否されなければならない。
+printf 'b\n' | run --review-dir "$rd" --point 'spec;rm' --round 1 --team t1 --from ex --to rev
+[[ $? -eq 2 ]] || bad6=1
+printf 'b\n' | run --review-dir "$rd" --point 'spec point' --round 1 --team t1 --from ex --to rev
 [[ $? -eq 2 ]] || bad6=1
 printf 'b\n' | run --review-dir "$rd" --point code --round 6 --team t1 --from ex --to rev
 [[ $? -eq 2 ]] || bad6=1
