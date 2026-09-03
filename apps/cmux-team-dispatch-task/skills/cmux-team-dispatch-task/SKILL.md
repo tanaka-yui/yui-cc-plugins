@@ -1105,6 +1105,18 @@ also run the normal design launch:
       --agmsg-team "$TEAM" \
       --parent-notify-workspace "$CMUX_WORKSPACE_ID")
 
+When the integration strategy is PR per task, resolve the target repository from `origin`
+once, in the parent, and pass it to every `prewarm-panes.sh` call:
+
+    PR_REPO=$(git remote get-url origin | sed -E 's#(git@github\.com:|https://github\.com/)##; s#\.git$##')
+    PR_BASE=$(git symbolic-ref --short HEAD)
+    prewarm-panes.sh ... --integration pr --pr-repo "$PR_REPO" --pr-base "$PR_BASE"
+
+Add `--pr-issue <N>` in loop mode. Never let a child pick the remote: measured on
+2026-09-02, a child in a three-remote repository pushed to a personal fork and opened the
+PR inside that fork, where the issue does not exist. For wait-and-merge, pass
+`--integration merge` or omit it.
+
 prewarm-panes.sh creates or reuses the worktree, joins all configured role agents, wires
 delivery with delivery.sh set before launch, starts each pane with its own readiness clause, and writes the
 initial launched status.json. It records only successfully launched panes.

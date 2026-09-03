@@ -86,6 +86,7 @@ NOTIFY_WORKSPACE=""
 UNATTENDED=0
 TIMEOUT_SENTINEL=""
 ROLES_FILE=""
+INTEGRATION=merge; PR_REPO=''; PR_BASE=''; PR_ISSUE=''
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -110,6 +111,18 @@ while [[ $# -gt 0 ]]; do
     --roles)
       [[ $# -ge 2 ]] || die "--roles requires a path argument"
       ROLES_FILE="$2"; shift 2 ;;
+    --integration)
+      [[ $# -ge 2 ]] || die "--integration requires pr or merge"
+      INTEGRATION="$2"; shift 2 ;;
+    --pr-repo)
+      [[ $# -ge 2 ]] || die "--pr-repo requires owner/repo"
+      PR_REPO="$2"; shift 2 ;;
+    --pr-base)
+      [[ $# -ge 2 ]] || die "--pr-base requires a branch name"
+      PR_BASE="$2"; shift 2 ;;
+    --pr-issue)
+      [[ $# -ge 2 ]] || die "--pr-issue requires an issue number"
+      PR_ISSUE="$2"; shift 2 ;;
     --with-design|--with-opus)
       WITH_DESIGN=1; shift ;;
     --unattended)
@@ -166,6 +179,46 @@ validate_publish_destination() {
       || die "status target must be a regular non-symlink file"
   fi
 }
+
+# PR の作成先は親が解決して status dir へ置く。子 (design ペイン) に remote を選ばせない。
+# 2026-09-02 に、remote が 3 つある環境で子が個人フォークへ push し、フォーク内 PR を作った
+# (issue は origin 側にあるので Closes も効かない)。値をコマンドライン経由で子へ渡す方式は
+# 採らない — 子がフラグを落とせば静かに元の挙動へ戻るためである。
+write_integration_config() {
+  local tmp
+  case "$INTEGRATION" in
+    merge|pr) ;;
+    *) die "--integration must be pr or merge (got: $INTEGRATION)" ;;
+  esac
+  if [[ "$INTEGRATION" == pr ]]; then
+    [[ -n "$PR_REPO" ]] || die "--pr-repo is required when --integration is pr"
+    [[ -n "$PR_BASE" ]] || die "--pr-base is required when --integration is pr"
+    # この 2 値は子のプロンプトへ埋まり、その全体が zsh -ic "..." で包まれる。
+    # 引用を破れる文字は fail-closed で弾く。
+    [[ "$PR_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
+      || die "--pr-repo must be owner/repo"
+    [[ "$PR_BASE" =~ ^[A-Za-z0-9._/-]+$ ]] || die "--pr-base has invalid characters"
+    [[ -z "$PR_ISSUE" || "$PR_ISSUE" =~ ^[0-9]+$ ]] || die "--pr-issue must be a number"
+  fi
+  mkdir -p "$STATUS_DIR" || die "cannot create status directory at $STATUS_DIR"
+  # status dir が symlink に差し替えられていないことを、書く前に既存の検証で確かめる。
+  validate_publish_destination
+  tmp=$(mktemp "$STATUS_DIR/.integration.json.XXXXXX") \
+    || die "cannot create temporary integration artifact"
+  if [[ "$INTEGRATION" == pr ]]; then
+    jq -n --arg repo "$PR_REPO" --arg base "$PR_BASE" --arg head "feat/$SLUG" \
+      --arg issue "$PR_ISSUE" \
+      '{integration:"pr", repo:$repo, base:$base, head:$head}
+       + (if $issue == "" then {} else {issue: ($issue | tonumber)} end)' > "$tmp" \
+      || { rm -f "$tmp"; die "cannot write integration.json"; }
+  else
+    jq -n '{integration:"merge"}' > "$tmp" \
+      || { rm -f "$tmp"; die "cannot write integration.json"; }
+  fi
+  mv -- "$tmp" "$STATUS_DIR/integration.json" \
+    || { rm -f "$tmp"; die "cannot publish $STATUS_DIR/integration.json"; }
+}
+write_integration_config
 
 # Read the resolver output exactly once. All validation and extraction below use
 # this immutable in-process snapshot, never ROLES_FILE again.

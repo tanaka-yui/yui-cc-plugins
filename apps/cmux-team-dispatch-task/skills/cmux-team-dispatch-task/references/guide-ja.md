@@ -732,6 +732,18 @@ launch した worktree / branch / team member / surface だけを rollback し�
       --agmsg-team "$TEAM" \
       --parent-notify-workspace "$CMUX_WORKSPACE_ID")
 
+integration 戦略がタスクごとの PR のときは、`origin` から解決した対象リポジトリを親側で 1 回
+だけ求め、`prewarm-panes.sh` の呼び出しすべてへ渡す:
+
+    PR_REPO=$(git remote get-url origin | sed -E 's#(git@github\.com:|https://github\.com/)##; s#\.git$##')
+    PR_BASE=$(git symbolic-ref --short HEAD)
+    prewarm-panes.sh ... --integration pr --pr-repo "$PR_REPO" --pr-base "$PR_BASE"
+
+loop モードでは `--pr-issue <N>` も足す。remote を子に選ばせてはならない: 2026-09-02 の実測で、
+remote が 3 つある環境で子が個人フォークへ push し、フォーク内で PR を開いてしまった (issue は
+origin 側にあるので Closes も効かない)。wait-and-merge のときは `--integration merge` を渡すか
+省略する。
+
 script は worktree 作成 / 再利用、全 role agent の join、launch 前 delivery wiring、readiness
 clause 付き pane 起動、初期 launched status を担当する。prewarm.json は workspace_id /
 review_mode と、design / design_review / exec / exec_review の明示 key を持つ。各 tuple は
