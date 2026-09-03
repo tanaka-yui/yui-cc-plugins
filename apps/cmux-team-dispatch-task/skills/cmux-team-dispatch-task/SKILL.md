@@ -809,6 +809,17 @@ Every child status protocol includes:
        failure in status.json.
     5. A delegated design session touches .deferred and must not overwrite the exec
        role's terminal status.
+    6. `report-status.sh` refuses `done` when `integration.json` says `pr` and
+       `status.json` has no `pr_url`, and when a `design` role writes `done` while
+       `.deferred` exists. It never refuses `error`.
+    7. `done` with a missing or empty `result.md` still writes, but records
+       `result_missing: true`.
+
+On every wake, treat a completion notification as a claim, not a fact. Re-derive from
+disk: `result_missing: true` means the child reported a result file it did not write, and
+for PR integration the PR must exist on the repository named in `integration.json`.
+Measured on 2026-09-02: three children reported files that were never written, and one
+reported `done` with no branch on the remote at all.
 
 The PR-per-task variant pushes the branch to `origin`, creates the PR on the repository
 named in `integration.json`, and records `pr_url` through `record-pr.sh`, which fails when

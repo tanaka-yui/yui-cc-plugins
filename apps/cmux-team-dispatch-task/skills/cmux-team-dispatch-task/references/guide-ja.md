@@ -491,7 +491,15 @@ claude のときは、その reviewer が返した `[ready]` が定義上到達�
 
 全 child は executing を書いてから作業し、成功時は result.md + done、失敗時は error を書く。
 既存 pr_url を保持し、terminal status の直後に dispatch-notify: を親へ送る。委譲済み design
-session は .deferred を作り、exec role の terminal status を上書きしない。
+session は .deferred を作り、exec role の terminal status を上書きしない。`report-status.sh` は
+`integration.json` が `pr` を示し `status.json` に `pr_url` が無い done、および `design` role が
+`.deferred` の存在下で書く done を拒否する。`error` は決して拒否しない。`result.md` が欠けているか
+空の done は書き込みを通すが、`result_missing: true` を記録する。
+
+起床のたびに完了通知を事実ではなく申告として扱い、ディスクから再導出すること。
+`result_missing: true` は子が書いていない result ファイルを報告したことを意味し、PR 統合では
+PR が `integration.json` に記載されたリポジトリ上に存在しなければならない。2026-09-02 の実測:
+3 件の child が書いていないファイルを報告し、1 件はリモートにブランチが無いまま done を報告した。
 
 PR per task 版は `origin` へブランチを push し、`integration.json` に記載されたリポジトリ上に
 PR を作成し、`record-pr.sh` を通じて `pr_url` を記録する。そのリポジトリに PR が無ければ
