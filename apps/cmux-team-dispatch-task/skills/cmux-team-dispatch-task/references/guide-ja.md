@@ -762,7 +762,15 @@ origin 側にあるので Closes も効かない)。wait-and-merge のときは 
 省略する。
 
 script は worktree 作成 / 再利用、全 role agent の join、launch 前 delivery wiring、readiness
-clause 付き pane 起動、初期 launched status を担当する。prewarm.json は workspace_id /
+clause 付き pane 起動、初期 launched status を担当する。
+
+`prewarm-panes.sh` は最初のペイン起動より前に `<status-dir>/.wiring` を作り、prewarm.json の
+publish 時 (および全 rollback 経路) に削除する。ペインはこのスナップショットが存在する前に
+起動し、その区間で Stop hook が発火する。sentinel が無いと、gate は design ペインへスナップショット
+不在を親へ報告するよう指示してしまう。2026-09-02 の実測では全 8 タスクでこの報告が発生し、
+最多で 9 通連続、2 件は escalate まで進んだ。
+
+prewarm.json は workspace_id /
 review_mode と、design / design_review / exec / exec_review の明示 key を持つ。各 tuple は
 surface_id / agent / runner / engine / optional model / effort / wired=true であり、入れ子の
 executor や汎用 review container は無い。

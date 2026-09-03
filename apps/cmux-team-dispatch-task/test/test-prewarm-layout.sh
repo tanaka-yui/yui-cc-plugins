@@ -344,5 +344,24 @@ else
   bad "PW21 late status failure (rc=$rc launches=$launches leaves=$leaves closes=$closes)"
 fi
 
+# PW-W1: .wiring は最初のペイン起動より前に作られ、prewarm.json の publish 後に消える。
+# 起動より前であることは、cmux スタブが呼ばれた時点の sentinel 有無で見る。
+# (実装は「引数検証の直後・launch_role の前」に touch を置くこと)
+run_pw "$ROLES_ON" >/dev/null 2>&1
+if [[ -f "$STATUS/prewarm.json" && ! -e "$STATUS/.wiring" ]]; then
+  pass "PW-W1a: 正常終了後は prewarm.json があり .wiring は残らない"
+else
+  bad "PW-W1a: prewarm=$([[ -f $STATUS/prewarm.json ]] && echo yes || echo no) wiring=$([[ -e $STATUS/.wiring ]] && echo yes || echo no)"
+fi
+
+# PW-W1b: design ペインの起動に失敗した経路でも sentinel を残さない。
+# 残すと completion-gate が「配線中」と読み続け、壊れた prewarm を永久に見逃す。
+make_launch_stub design
+run_pw "$ROLES_ON" >/dev/null 2>&1
+[[ ! -e "$STATUS/.wiring" ]] \
+  && pass "PW-W1b: die 経路でも .wiring を残さない" \
+  || bad "PW-W1b: .wiring が残っている"
+make_launch_stub ''
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

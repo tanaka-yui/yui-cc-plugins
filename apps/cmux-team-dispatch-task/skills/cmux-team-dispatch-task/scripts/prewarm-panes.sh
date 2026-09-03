@@ -69,6 +69,11 @@ rollback_owned_resources() {
 
 die() {
   echo "Error: $1" >&2
+  # rollback_owned_resources は ROLLBACK_ACTIVE=1 になってから初めて動く。引数検証など
+  # 資源所有前の die でも sentinel だけは必ず消す (残ると gate が壊れた prewarm を永久に
+  # 「配線中」と誤認する)。set -u 下で die は WIRING_SENTINEL 代入前にも呼ばれうるため
+  # 未定義を許容する形で参照する。
+  [[ -z "${WIRING_SENTINEL:-}" ]] || rm -f "$WIRING_SENTINEL"
   rollback_owned_resources
   exit 2
 }
@@ -219,6 +224,12 @@ write_integration_config() {
     || { rm -f "$tmp"; die "cannot publish $STATUS_DIR/integration.json"; }
 }
 write_integration_config
+
+# 配線中であることをディスクへ出す。completion-gate.sh はこれを見て、prewarm.json が
+# まだ無い design ペインを黙って停止させる (誤報告の抑止)。publish 後と die/rollback で消す。
+mkdir -p "$STATUS_DIR" || die "cannot create status directory at $STATUS_DIR"
+WIRING_SENTINEL="$STATUS_DIR/.wiring"
+: > "$WIRING_SENTINEL" || die "cannot write $WIRING_SENTINEL"
 
 # Read the resolver output exactly once. All validation and extraction below use
 # this immutable in-process snapshot, never ROLES_FILE again.
@@ -566,6 +577,8 @@ fi
 mv -- "$PREWARM_TMP" "$STATUS_DIR/prewarm.json" \
   || die "cannot publish $STATUS_DIR/prewarm.json"
 PREWARM_TMP=""
+rm -f "$WIRING_SENTINEL"
+WIRING_SENTINEL=""
 ROLLBACK_ACTIVE=0
 PUBLISHED_INITIAL_STATUS=0
 

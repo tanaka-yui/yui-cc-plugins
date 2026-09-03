@@ -1134,6 +1134,13 @@ prewarm-panes.sh creates or reuses the worktree, joins all configured role agent
 delivery with delivery.sh set before launch, starts each pane with its own readiness clause, and writes the
 initial launched status.json. It records only successfully launched panes.
 
+`prewarm-panes.sh` writes `<status-dir>/.wiring` before it launches the first pane and
+removes it when `prewarm.json` is published (and on every rollback path). Panes start
+before that snapshot exists, and their Stop hooks fire in that window; without the
+sentinel the gate tells a design pane to report a missing snapshot to the parent. Measured
+on 2026-09-02: all eight tasks produced such reports, one of them nine in a row, and two
+panes escalated.
+
 The resulting prewarm.json has workspace_id, review_mode, and explicit role keys. Each
 role tuple contains surface_id, agent, runner, engine, optional model, effort, and
 wired=true. There are no nested executor or generic review containers:

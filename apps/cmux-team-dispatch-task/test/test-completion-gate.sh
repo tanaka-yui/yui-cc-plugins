@@ -808,5 +808,28 @@ out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGEN
   && pass 'CG-P3: design の待機は新しい code の VERDICT に隠されない' \
   || bad "CG-P3: rc=$rc out=[$out]"
 
+# CG-W1: 配線中 (prewarm.json 不在 + .wiring 存在) の design ペインは静かに allow される。
+# 2026-09-02 には全 8 タスクでここが block へ倒れ、gate 自身の文面が「親へ報告せよ」と
+# 指示したため、誤報告が最多 9 通連続で親のインボックスを埋めた。2 件は .escalated まで書いた。
+d=$(mkdir_case cgw1)
+printf '{"status":"executing"}\n' > "$d/status.json"   # prewarm.json は意図的に作らない
+: > "$d/.wiring"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null); rc=$?
+if [[ $rc -eq 0 && -z "$out" ]]; then
+  pass "CG-W1: 配線中の design は静かに allow"
+else
+  bad "CG-W1: rc=$rc out=[$out]"
+fi
+
+# CG-W2: .wiring が無ければ従来どおり block する (本当に壊れた prewarm を見逃さない)。
+d=$(mkdir_case cgw2)
+printf '{"status":"executing"}\n' > "$d/status.json"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+if grep -q '"decision":"block"' <<<"$out"; then
+  pass "CG-W2: .wiring 無しなら従来どおり block"
+else
+  bad "CG-W2: out=[$out]"
+fi
+
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

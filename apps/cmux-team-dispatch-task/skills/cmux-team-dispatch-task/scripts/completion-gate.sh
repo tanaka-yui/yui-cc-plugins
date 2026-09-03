@@ -312,7 +312,15 @@ st=$(jq -r '.status // empty' "$STATUS_DIR/status.json" 2>/dev/null || echo "")
 [[ -f "$STATUS_DIR/.escalated" ]] && allow
 
 if [[ "$ROLE" == design ]]; then
-  expected_exec_agent >/dev/null || block "the prewarm snapshot at $STATUS_DIR/prewarm.json is missing, unreadable, or has no exec agent. Report this to parent$NOTIFY_HINT and wait; do not write a terminal status."
+  # prewarm.json は全ペインの起動と配線が終わってから publish される。それより前に
+  # 起動済みペインの Stop hook が発火する区間があり、そこを block へ倒すと、この文面が
+  # 「親へ報告せよ」と指示してしまう。2026-09-02 には全 8 タスクで誤報告が発生し、最多で
+  # 9 通連続、2 件は .escalated まで書いた。配線中のペインは「タスク到着を待つ idle」で
+  # あって停止して良い状態なので、sentinel があるあいだは黙って許す。
+  if ! expected_exec_agent >/dev/null; then
+    [[ -f "$STATUS_DIR/.wiring" ]] && allow
+    block "the prewarm snapshot at $STATUS_DIR/prewarm.json is missing, unreadable, or has no exec agent. Report this to parent$NOTIFY_HINT and wait; do not write a terminal status."
+  fi
   if [[ "$st" == done ]]; then delegation_recorded || block "status says done but delegation is not recorded.$DELEGATE_HINT"; allow; fi
   if [[ -f "$STATUS_DIR/.deferred" ]]; then delegation_recorded || block "the deferred marker lacks the expected exec assignment.$DELEGATE_HINT"; allow; fi
 fi
