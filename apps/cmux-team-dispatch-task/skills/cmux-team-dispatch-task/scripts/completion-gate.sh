@@ -430,21 +430,23 @@ if [[ "$ROLE" == exec && -r "$REVIEW_CONFIG" ]]; then
     REVIEW_HINT_PREFIX=" A mandatory code review is wired for this task and you have not requested it once: the reviewer is the agent $reviewer, and its findings belong in $STATUS_DIR/review/code-round-<N>.md. Address the request to that agent name — never to parent, and never to a surface or workspace id. If your handoff message did not mention any of this, the wiring is still real: this pane also has $STATUS_DIR/review/code-review.json and a pointer to it in .dispatch-handoff.json at the root of your worktree."
     # TEAM は通常 STATUS_DIR/ROLE/AGENT と一緒に export されるが、この hook の identity 判定は
     # TEAM を必須にしていない。TEAM が無いまま --team を埋めると空文字の壊れた呼び出し例を
-    # 提示してしまうので、その場合はコマンド行を出さない。
+    # 提示してしまうので、その場合は --team の 1 引数だけを省く。review-dir / point / round /
+    # from / to は既知なので、埋められる引数まで削るのは 141-145 行目の原則より過剰である。
     if [[ -n "$TEAM" ]]; then
       REVIEW_HINT="$REVIEW_HINT_PREFIX Make the request with one call to bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point code --round <N> --team $TEAM --from $AGENT --to $reviewer, piping the request text into it on standard input; that single call writes the request file this gate reads and sends the message."
     else
-      REVIEW_HINT="$REVIEW_HINT_PREFIX Materialize the request with bash $SCRIPT_DIR/review-request.sh before sending; that single call writes the request file this gate reads and sends the message."
+      REVIEW_HINT="$REVIEW_HINT_PREFIX Make the request with one call to bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point code --round <N> --from $AGENT --to $reviewer, piping the request text into it on standard input; that single call writes the request file this gate reads and sends the message."
     fi
   fi
 fi
 
-# TEAM が既知のときだけ、実行可能な review-request.sh の呼び出し例を reason に埋める。
-# 上の REVIEW_HINT と同じ理由: 空文字の --team を提示しない。
+# review-dir / point / round / from / to は常に既知なので、TEAM の有無にかかわらず出す。
+# 空文字の --team だけを避けるため、TEAM が無いときはその 1 引数だけを省く
+# (141-145 行目の原則: 埋められない引数だけを見せない。埋められる引数まで削らない)。
 if [[ -n "$TEAM" ]]; then
   WAIT_REISSUE="Instead re-issue the same round through bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point <point> --round <N> --team $TEAM --from $AGENT --to <the reviewer agent>, using the same <point> as the round you requested, piping the same request text into it on standard input; that is how this gate sees a wait. Then keep waiting."
 else
-  WAIT_REISSUE="Instead re-issue the same round through bash $SCRIPT_DIR/review-request.sh, using the same <point> as the round you requested and piping the same request text into it on standard input; that is how this gate sees a wait. Then keep waiting."
+  WAIT_REISSUE="Instead re-issue the same round through bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point <point> --round <N> --from $AGENT --to <the reviewer agent>, using the same <point> as the round you requested, piping the same request text into it on standard input; that is how this gate sees a wait. Then keep waiting."
 fi
 
 arm_lease "progress|$ROLE|$AGENT" || true

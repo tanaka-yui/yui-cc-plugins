@@ -417,8 +417,10 @@ prewarm.json は必須で、内容を 1 回だけ読み、全体を検証して�
 ファイル欠落時の spawn fallback は無い。design / exec 欠落は fatal、review key 欠落は launch
 失敗または readiness prune 後の gate skip を示す。
 
-Phase A-R は design_review pane を spec と plan の 2 checkpoint で再利用する。review-plan:
-を 1 通送り、reviewer は findings の VERDICT と review-verdict: を返す。**レビューペインに
+Phase A-R は design_review pane を spec と plan の 2 checkpoint で再利用する。各 checkpoint は
+`review-request.sh` への 1 コールで依頼する。helper が request ファイルの書き込みと review-plan:
+の送信をまとめて行い、reviewer の findings は同じ review ディレクトリへ置かれる。reviewer は
+findings の VERDICT と review-verdict: を返す。**レビューペインに
 assignment marker を作らない** — `.assigned-{{DESIGN_REVIEW_AGENT}}` をはじめ review ロールの
 `.assigned-*` は 1 つも touch しない。レビューペインは standby で起動しており、runner wrapper は
 そのマーカーを「このペインがタスクを引き受けた」と読むため、作ると共有 status.json（他ロールの
@@ -464,9 +466,10 @@ send.sh を 1 回だけ呼ぶ。成功後だけ `.deferred` を作る。
 
 review config が空なら base request だけを送る。非空なら helper が canonical review directory 内の
 regular JSON を 1 回読み、exec_review tuple / workspace と一致することを証明した後、実際の
-prewarmed exec request へ Phase B-R protocol を 1 回だけ埋め込む。implementer は各 round で
-verified exec_review agent だけへ review-code: を送る。**送信前に同じ依頼文を
-`<EXISTING_STATUS_DIR>/review/code-round-N-request.md` へ書く**（Phase A-R の checkpoint と同じ扱い）。
+prewarmed exec request へ Phase B-R protocol を 1 回だけ埋め込む。implementer は各 round を
+`review-request.sh --point code` への 1 コールで verified exec_review agent だけへ依頼する。
+**その 1 コールが `<EXISTING_STATUS_DIR>/review/code-round-N-request.md` への書き込みと
+review-code: の送信をまとめて行う**（Phase A-R の checkpoint と同じ扱い）。
 completion gate はディスクしか読まないので、このファイルだけが「作業の途中で止まっている」のではなく
 「verdict を待っている」ことの証拠になる。reviewer は
 `<EXISTING_STATUS_DIR>/review/code-round-N.md` の末尾へ `VERDICT: approve` または

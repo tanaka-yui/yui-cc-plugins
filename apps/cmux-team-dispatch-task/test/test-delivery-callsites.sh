@@ -23,9 +23,13 @@
 #   CS7. verdict を待つ側の手順に単発タイマー (single-shot safety timer) がある
 #        — これが無いと review-verdict が失われた瞬間に待つ側が永久に眠る
 #   CS9. レビュー依頼は review-request.sh 経由に一本化されている。
-#        依頼側の 4 つの生成元と 2 つの無人ブロックが helper を名指ししており、かつ
-#        「request ファイルを書いてから send.sh を呼べ」という 2 手順の旧文面が残らない。
-#        2 手順のままだと 4/7 の頻度で書き込みだけが落ちる (2026-09-02 実測)。
+#        依頼側の 4 つの生成元・SKILL.md 本体・2 つの無人ブロックが helper をコメント以外の
+#        箇所で名指ししており (行頭からコメントの # より前に出現する場合だけ合格とする)、
+#        かつ「request ファイルを書いてから send.sh を呼べ」という 2 手順の旧文面や、
+#        helper が付けるはずの review-code:/review-plan: prefix をエージェントへ供給させる
+#        文面が残らない。2 手順のままだと 4/7 の頻度で書き込みだけが落ちる
+#        (2026-09-02 実測)。prefix の二重付与は review-code: review-code: … という
+#        壊れたメッセージと request ファイルを生む (fix round 1 の finding 2)。
 #
 # 免除の仕組み:
 #   `cmux send` はシェルにコマンドを打ち込む用途（TUI へのメッセージ配送ではない）でも
@@ -452,16 +456,26 @@ CS9_SOURCES=(
   "$SCRIPTS/phase-a-review-wait.sh"
   "$SCRIPTS/launch-workspace.sh"
   "$SCRIPTS/completion-gate.sh"
+  "$SKILL_DIR/SKILL.md"
   "$SKILL_DIR/references/unattended/review-block.md"
   "$SKILL_DIR/references/unattended/code-review-block.md"
 )
 cs9=0
 for f in "${CS9_SOURCES[@]}"; do
-  grep -q 'review-request\.sh' "$f" || { echo "  CS9: $f に review-request.sh が無い"; cs9=1; }
+  # コメント行 (# 始まり) に review-request.sh の名前だけ残っていても、実際の生成文が
+  # 退行していれば検出できなければならない。よって行頭から最初の # より前に出現する
+  # 場合だけを合格とし、コメント中の言及だけでは合格させない。
+  grep -q '^[^#]*review-request\.sh' "$f" || { echo "  CS9: $f に review-request.sh が無い (コメント以外に)"; cs9=1; }
 done
 # 旧文面の残骸。request ファイルのパスと send を同じ文で語る指示は消えていること。
 if grep -rn 'write that same message text to' "${CS9_SOURCES[@]}" >/dev/null 2>&1; then
   echo "  CS9: 2 手順の旧文面が残っている"; cs9=1
+fi
+# Finding 2 の再発防止: helper が持つはずの review-code: / review-plan: prefix を
+# エージェントに供給させる文面が残っていないこと。review-verdict: / dispatch-notify: /
+# abort-reviewer: は引き続き素の send.sh 経由なので対象外。
+if grep -rn 'starts with the prefix review-code:\|starts with the prefix review-plan:' "${CS9_SOURCES[@]}" >/dev/null 2>&1; then
+  echo "  CS9: review-code:/review-plan: prefix をエージェントに供給させる文面が残っている"; cs9=1
 fi
 if [[ $cs9 -eq 0 ]]; then
   echo 'PASS CS9: レビュー依頼が review-request.sh へ一本化されている'

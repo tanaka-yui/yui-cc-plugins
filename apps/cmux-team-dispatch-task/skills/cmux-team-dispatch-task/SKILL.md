@@ -687,10 +687,11 @@ readiness pruning.
 
 **Phase A-R.** When design_review is present, reuse its one pane for two checkpoints:
 the clarified specification before planning and the completed plan before execution.
-For each checkpoint, write the request and findings files under
-<EXISTING_STATUS_DIR>/review and send exactly one
-review-plan: message to {{DESIGN_REVIEW_AGENT}}. **A review pane never gets an
-assignment marker.** Do not touch `.assigned-{{DESIGN_REVIEW_AGENT}}`, or any other
+For each checkpoint, request the review with one call to
+`<SKILL_DIR>/scripts/review-request.sh`, which writes the request file under
+<EXISTING_STATUS_DIR>/review and sends exactly one review-plan: message to
+{{DESIGN_REVIEW_AGENT}} together; the reviewer's findings land in that same directory.
+**A review pane never gets an assignment marker.** Do not touch `.assigned-{{DESIGN_REVIEW_AGENT}}`, or any other
 `.assigned-*` for a review role: a review pane is standby, and the runner wrapper reads
 that marker as "this pane accepted the task", which makes it report the shared
 `status.json` — another role's result — as its own. The reviewer writes a VERDICT line and
@@ -768,12 +769,13 @@ in a separate message afterwards is fine; replacing the helper's message is not.
 launch and readiness. The helper reads that regular JSON file once, proves that it is in
 the canonical review directory and matches the verified exec_review tuple and workspace,
 then embeds the following protocol into the actual prewarmed exec request exactly once.
-After all changes are committed and BEFORE creating the PR, the implementer sends one
-`review-code:` request per round only to the verified exec_review agent. Before that send,
-it writes the same request text to `<EXISTING_STATUS_DIR>/review/code-round-N-request.md`,
-exactly as Phase A-R does for its checkpoints: the completion gate reads only the disk, so
-that file is the sole evidence that the implementer is waiting for a verdict rather than
-idling mid-task. The reviewer
+After all changes are committed and BEFORE creating the PR, the implementer requests each
+round with one call to `<SKILL_DIR>/scripts/review-request.sh --point code`, addressed only
+to the verified exec_review agent. That single call writes the request to
+`<EXISTING_STATUS_DIR>/review/code-round-N-request.md` and sends the review-code: message
+together, exactly as Phase A-R does for its checkpoints: the completion gate reads only the
+disk, so that file is the sole evidence that the implementer is waiting for a verdict rather
+than idling mid-task. The reviewer
 writes `<EXISTING_STATUS_DIR>/review/code-round-N.md`; its last line is `VERDICT: approve`
 or `VERDICT: needs_work`, followed by one `review-verdict:` send.sh call back to the
 implementer. On needs_work, fix valid findings and request the next round; on approve,
