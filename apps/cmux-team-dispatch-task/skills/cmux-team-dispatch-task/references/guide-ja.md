@@ -113,7 +113,7 @@ slug にこれらが混入しないようにする。
 
 選択に基づいて:
 
-- **PR per task** — 親が `origin` を 1 回だけ解決し、`--integration pr --pr-repo <owner/repo> --pr-base <branch>` を `prewarm-panes.sh` へ渡す。これが `<status-dir>/integration.json` を書く。`phase-b-deliver.sh` はそのファイルを読み、正確な `git push -u origin <head>` と `gh pr create --repo <owner/repo> --base <base> --head <head>` のコマンドを子のプロトコルへ埋め込み、続けて `record-pr.sh` を呼ぶ。`record-pr.sh` は `pr_url` を書く前に、そのリポジトリ上に PR が実在することを確認する。子は remote を選ばない。
+- **PR per task** — 親が `origin` を 1 回だけ解決し、`--integration pr --pr-repo <owner/repo> --pr-base <branch>` を `prewarm-panes.sh` へ渡す。これが `<status-dir>/integration.json` を書く。loop モードでは driver がそのタスクの issue 番号を持つ `--pr-issue <N>` も渡し、これが PR 本文の `Closes #NNN` 行になる。`phase-b-deliver.sh` はそのファイルを読み、正確な `git push -u origin <head>` と `gh pr create --repo <owner/repo> --base <base> --head <head>` のコマンドを子のプロトコルへ埋め込み、続けて `record-pr.sh` を呼ぶ。`record-pr.sh` は `pr_url` を書く前に、そのリポジトリ上に PR が実在することを確認する。子は remote を選ばない。
 - **Wait and merge** — 従来どおり（全タスク完了後にローカルマージ）
 
 ### 1f. ロールを解決する（Resolve Roles）

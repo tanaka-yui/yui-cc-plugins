@@ -50,8 +50,10 @@ JSON
 
 export CLEANUP_HARNESS_CALLS="$CLEANUP_HARNESS_ROOT/calls.log"
 export CLEANUP_HARNESS_WORKSPACES="$CLEANUP_HARNESS_ROOT/workspaces.txt"
+export CLEANUP_HARNESS_STDERR="$CLEANUP_HARNESS_ROOT/stderr.log"
 : > "$CLEANUP_HARNESS_CALLS"
 : > "$CLEANUP_HARNESS_WORKSPACES"
+: > "$CLEANUP_HARNESS_STDERR"
 
 cleanup_stub_workspace() { # $1=workspace id, optional $2=slug
   local workspace_id="$1" slug="${2:-t}"
@@ -64,10 +66,12 @@ run_cleanup_for_slug() { # $1=slug $2=dispatch dir [$3=status] [$4=integration]
   local state="$CLEANUP_HARNESS_ROOT/state.json"
   jq -n --arg slug "$slug" --arg status "$status" \
     '{issues:{"1":{slug:$slug,status:$status,batch:1}},batches:[],leaked:[]}' > "$state"
+  : > "$CLEANUP_HARNESS_STDERR"
   HOME="$CLEANUP_HARNESS_HOME" DISPATCH_CONFIG_HOME="$CLEANUP_HARNESS_CONFIG" \
     PATH="$CLEANUP_HARNESS_BIN:$PATH" \
     bash "$CLEANUP_HARNESS_SCRIPT" --state-file "$state" --batch 1 --integration "$integration" \
-      --dispatch-dir "$dispatch_dir" --repo-root "$CLEANUP_HARNESS_REPO" --agmsg-team demo
+      --dispatch-dir "$dispatch_dir" --repo-root "$CLEANUP_HARNESS_REPO" --agmsg-team demo \
+      2> "$CLEANUP_HARNESS_STDERR"
 }
 
 run_cleanup_with_prewarm() { # $1=prewarm path (may be a FIFO)

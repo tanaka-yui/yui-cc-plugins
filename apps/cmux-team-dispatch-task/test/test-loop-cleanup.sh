@@ -16,6 +16,8 @@ EOF
 chmod +x "$TMP/bin/gh"; export GH_LOG="$TMP/gh.log"
 bash "$FETCH" --state-file "$STATE" lock-acquire --lease-min 30 >/dev/null
 fail=0; check() { if eval "$1"; then echo "PASS: $2"; else echo "FAIL: $2"; fail=1; fi; }
+pass() { echo "PASS: $1"; }
+bad() { echo "FAIL: $1"; fail=1; }
 make_task() { local slug="$1"; git -C "$REPO" worktree add -q "$REPO/.worktrees/$slug" -b "feat/$slug"; mkdir -p "$DISP/$slug"; echo "$slug" > "$REPO/.worktrees/$slug/$slug.txt"; git -C "$REPO/.worktrees/$slug" add .; git -C "$REPO/.worktrees/$slug" commit -qm work; }
 state() { jq -n --arg i "$1" --arg s "$2" --arg slug "$3" '{issues:{($i):{slug:$slug,status:$s,batch:1}},batches:[{n:1,issues:[$i|tonumber]}],leaked:[]}' > "$STATE"; }
 run() { bash "$CLEANUP" --state-file "$STATE" --batch 1 --integration "$1" --repo-root "$REPO" ${2:+--agmsg-team "$2"}; }
@@ -88,7 +90,9 @@ check '[[ $(grep -c "leave.sh" "$CLEANUP_HARNESS_CALLS" 2>/dev/null || true) == 
 write_prewarm on
 cleanup_stub_workspace 'workspace:1'
 run_cleanup_for_slug t "$ROLE_DISPATCH" done merge >/dev/null
-check '[[ ! -d "$ROLE_DISPATCH/t" ]] && [[ $(grep -c "leave.sh" "$CLEANUP_HARNESS_CALLS" 2>/dev/null || true) == 4 ]] && [[ $(sort "$CLEANUP_HARNESS_CALLS" | uniq | wc -l | tr -d " ") == 4 ]]' 'C10 done が prewarm を削除しても snapshot 済みの実在 4 role を各 1 回 leave する'
+# close-surface / close-workspace が同じログへ加わるようになったため、重複チェックは
+# leave.sh の行だけへ絞る (close 呼び出し自体は LC-C1 で別途検査する)。
+check '[[ ! -d "$ROLE_DISPATCH/t" ]] && [[ $(grep -c "leave.sh" "$CLEANUP_HARNESS_CALLS" 2>/dev/null || true) == 4 ]] && [[ $(grep "leave.sh" "$CLEANUP_HARNESS_CALLS" | sort | uniq | wc -l | tr -d " ") == 4 ]]' 'C10 done が prewarm を削除しても snapshot 済みの実在 4 role を各 1 回 leave する'
 
 write_prewarm on
 jq '.design.agent = "t-exec"' "$ROLE_DISPATCH/t/prewarm.json" > "$ROLE_DISPATCH/t/bad.json"
@@ -101,5 +105,38 @@ rm -f "$ROLE_DISPATCH/t/prewarm.json"
 cleanup_stub_workspace 'workspace:1'
 run_cleanup_for_slug t "$ROLE_DISPATCH" >/dev/null
 check '[[ $(grep -c "leave.sh" "$CLEANUP_HARNESS_CALLS" 2>/dev/null || true) == 0 ]]' 'C12 prewarm 欠落でも cleanup は継続し旧 agent を合成しない'
+
+# ハーネスの正常系 1 タスク実行 (review on、実在 4 role が揃った状態)。
+write_prewarm on
+cleanup_stub_workspace 'workspace:1'
+run_cleanup_for_slug t "$ROLE_DISPATCH" >/dev/null
+
+# LC-C1: タスクごとに close-surface と close-workspace を呼ぶ。
+# ドキュメント (loop-mode.md) は cleanup が閉じると書いていたが、実装は leave.sh だけを
+# 呼んでいた。5 分でタイムアウトした 2026-09-02 の batch 2 では、workspace が開いたまま
+# 残った。閉じるのが cleanup の責任であることを、ここで実装側に固定する。
+# (ハーネスの正常系 1 タスク実行のあとに評価する)
+if grep -q "^cmux close-surface .*--workspace " "$CLEANUP_HARNESS_CALLS" \
+   && grep -q "^cmux close-workspace " "$CLEANUP_HARNESS_CALLS"; then
+  pass "LC-C1: cleanup が surface と workspace を閉じる"
+else
+  bad "LC-C1: close 呼び出しが無い: $(cat "$CLEANUP_HARNESS_CALLS")"
+fi
+
+# LC-C2: 各タスクの段階が stderr に出る。どこまで終わったかが外から分かること。
+if grep -qE '^\[step\] ' "$CLEANUP_HARNESS_STDERR"; then
+  pass "LC-C2: 段階ログが出る"
+else
+  bad "LC-C2: 段階ログが無い"
+fi
+
+# LC-C3: verify_done の PR 検索に --repo が入る。
+# 入っていないと gh は現在の remote 設定から推測し、fork 側の PR を完了の証拠として拾う。
+if grep -q 'gh pr list --repo' \
+   "$SCRIPT_DIR/../skills/cmux-team-dispatch-task/scripts/loop-cleanup.sh"; then
+  pass "LC-C3: verify_done が --repo を渡す"
+else
+  bad "LC-C3: gh pr list に --repo が無い"
+fi
 
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || exit 1

@@ -198,7 +198,7 @@ Ask the user how completed tasks should be integrated:
 
 Based on the selection:
 
-- **PR per task** → the parent resolves `origin` once and passes `--integration pr --pr-repo <owner/repo> --pr-base <branch>` to `prewarm-panes.sh`, which writes `<status-dir>/integration.json`. `phase-b-deliver.sh` reads that file and embeds the exact `git push -u origin <head>` and `gh pr create --repo <owner/repo> --base <base> --head <head>` commands into the child's protocol, followed by `record-pr.sh`, which verifies the PR exists on that repository before writing `pr_url`. The child never chooses a remote.
+- **PR per task** → the parent resolves `origin` once and passes `--integration pr --pr-repo <owner/repo> --pr-base <branch>` to `prewarm-panes.sh`, which writes `<status-dir>/integration.json`. In loop mode, the driver also passes `--pr-issue <N>` with that task's issue number, which becomes the PR body's `Closes #NNN` line. `phase-b-deliver.sh` reads that file and embeds the exact `git push -u origin <head>` and `gh pr create --repo <owner/repo> --base <base> --head <head>` commands into the child's protocol, followed by `record-pr.sh`, which verifies the PR exists on that repository before writing `pr_url`. The child never chooses a remote.
 - **Wait and merge** → current behavior (local merge after all tasks complete)
 
 ### 1f. Resolve Roles

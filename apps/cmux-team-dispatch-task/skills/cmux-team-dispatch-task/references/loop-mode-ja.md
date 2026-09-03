@@ -96,7 +96,11 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 
 設定確定後、`lock-acquire --lease-min <lock_lease_min>`、`init --config-json <json> --filter-json <json>`、`reconcile`、通常 dispatch の stale 痕跡検査、`ensure-labels` の順に実行する。`reconcile` が abort なら `lock-release` して中止する。
 
-各 batch は `fetch --limit <concurrency> --batch <N>` で claim する。`fetch` の `[]`、exit 3（claim 全滅）、exit 4（exhaustion unknown）はいずれも次 batch を開始せず終了する。各 issue では `prewarm-panes.sh --unattended` を起動し、`[ready]` を収集し、`prune-not-ready.sh` で ownership を検証して ready にならなかった optional review role を削除してから、検証済み snapshot を renderer に渡す。
+各 batch は `fetch --limit <concurrency> --batch <N>` で claim する。`fetch` の `[]`、exit 3（claim 全滅）、exit 4（exhaustion unknown）はいずれも次 batch を開始せず終了する。各 issue では `prewarm-panes.sh --unattended` を起動する。
+
+loop の integration strategy が `pr` のとき、driver は `origin` から対象リポジトリを 1 回だけ解決し、各タスクの `prewarm-panes.sh --unattended` 呼び出しへ `--integration pr --pr-repo <owner/repo> --pr-base <branch> --pr-issue <N>` を渡す。`--pr-issue` にはそのタスク自身の issue 番号を渡す。`merge` のときは `--integration merge` を渡すか、フラグ自体を省略する。子に remote を選ばせてはならない: 2026-09-02 の実測で、remote が 3 つある環境で子が個人フォークへ push し、フォーク内で PR を開いてしまった。issue はそのフォークに存在しないため PR 本文の `Closes #NNN` は効かず、後にそのフォーク PR が完了の証拠として受理されてしまった。
+
+`[ready]` を収集し、`prune-not-ready.sh` で ownership を検証して ready にならなかった optional review role を削除してから、検証済み snapshot を renderer に渡す。
 
 ```bash
 render-loop-prompt.sh ... --prewarm <STATUS_DIR>/prewarm.json
@@ -118,9 +122,11 @@ batch が完了するのは、その中の全 issue が terminal status にな�
 
 各 batch 後に `loop-cleanup.sh --state-file <path> --batch <N> --integration <pr|merge>` を実行する。ラベルは claim 時の `dispatch/in-progress` から、完了検証後の `dispatch/done`、または failed/timeout/conflict の `dispatch/failed` へ、terminal を先に付けて遷移する。
 
-成功時だけ worktree、branch、task の `.dispatch` を削除する。merge conflict、WIP 保全失敗、terminal label 失敗、PR 未検証ではすべて温存する。merge では検証済みの issue を `gh issue close --reason completed` で閉じ、正常 cleanup 時だけ agmsg の `leave.sh` で team から除籍する。`leaked[]` と stale lock は手動確認後に削除する。
+成功時だけ worktree、branch、task の `.dispatch` を削除する。merge conflict、WIP 保全失敗、terminal label 失敗、PR 未検証ではすべて温存する。フォールバックの PR 検索（`status.json` に `pr_url` が無いとき）は常に `gh pr list` へ `--repo` を渡し、値はタスクの `integration.json` から読む。`integration.json` に `repo` が無いタスクは、repo 無しで検索するのではなく未検証として扱う。これを渡さないと `gh` はカレントディレクトリの remote 設定から推測してしまい、個人フォークに作られた PR が完了の証拠として受理された事故がかつて起きている。merge では検証済みの issue を `gh issue close --reason completed` で閉じ、正常 cleanup 時だけ agmsg の `leave.sh` で team から除籍する。`leaked[]` と stale lock は手動確認後に削除する。
 
-cleanup は sparse な `prewarm.json` に実在する `surface_id` / `agent` を再帰列挙して重複除去する。`close-surface` には必ず task workspace を渡し、`status.json` に `workspace_id` が無ければ workspace 名で引き直す。`prewarm.json` に無い role へ cleanup / timeout 操作を送らない。
+cleanup は sparse な `prewarm.json` に実在する `surface_id` / `agent` を列挙して重複除去し、それらの surface とタスク workspace を閉じてから team を抜ける — 1 タスクの後片付けが完結してから次のタスクへ進むため、cleanup が中断されても全タスクが中途半端になるのではなく、タスク単位で完了/未完了が分かれる。`close-surface` には必ず task workspace を渡し、snapshot が検証を通り、その `workspace_id` が名前で見つけた workspace と一致するときだけ close する。`prewarm.json` に無い role へ cleanup / timeout 操作を送らない。
+
+`loop-cleanup.sh` は各タスクの段階を stderr へ記録する（`[step] <slug>: ...`）ので、中断した実行がどこまで終わっていたかが分かる。所要時間の目安: 1 タスクあたり `gh` 呼び出しが 3〜5 回、worktree 削除が加わるため、4 タスクの batch は秒単位ではなく分単位で走る。呼び出し前に Bash tool のタイムアウトを明示的に伸ばすこと — 既定値は短すぎ、batch 途中の SIGTERM は残りのタスクをそのまま放置する。
 
 `loop.task_timeout_min` は `config.json` の第三者キーであり、`--reset config` では削除されない。
 
