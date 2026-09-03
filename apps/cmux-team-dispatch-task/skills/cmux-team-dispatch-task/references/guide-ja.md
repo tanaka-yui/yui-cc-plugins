@@ -111,6 +111,11 @@ slug にこれらが混入しないようにする。
 - **PR per task** — 各子タスクがブランチを push して GitHub PR を作成。親は PR を監視
 - **Wait and merge** (デフォルト) — 全タスク完了後に親がローカルマージ
 
+選択に基づいて:
+
+- **PR per task** — 親が `origin` を 1 回だけ解決し、`--integration pr --pr-repo <owner/repo> --pr-base <branch>` を `prewarm-panes.sh` へ渡す。これが `<status-dir>/integration.json` を書く。`phase-b-deliver.sh` はそのファイルを読み、正確な `git push -u origin <head>` と `gh pr create --repo <owner/repo> --base <base> --head <head>` のコマンドを子のプロトコルへ埋め込み、続けて `record-pr.sh` を呼ぶ。`record-pr.sh` は `pr_url` を書く前に、そのリポジトリ上に PR が実在することを確認する。子は remote を選ばない。
+- **Wait and merge** — 従来どおり（全タスク完了後にローカルマージ）
+
 ### 1f. ロールを解決する（Resolve Roles）
 
 全ロールは config で固定する。ディスパッチ時の対話解決は行わない。
@@ -487,6 +492,10 @@ claude のときは、その reviewer が返した `[ready]` が定義上到達�
 全 child は executing を書いてから作業し、成功時は result.md + done、失敗時は error を書く。
 既存 pr_url を保持し、terminal status の直後に dispatch-notify: を親へ送る。委譲済み design
 session は .deferred を作り、exec role の terminal status を上書きしない。
+
+PR per task 版は `origin` へブランチを push し、`integration.json` に記載されたリポジトリ上に
+PR を作成し、`record-pr.sh` を通じて `pr_url` を記録する。そのリポジトリに PR が無ければ
+`record-pr.sh` は失敗する。wait-and-merge 版は検証済みブランチを親のマージに委ねる。
 
 ### plan モードの遵守ゲート（ExitPlanMode hook）
 

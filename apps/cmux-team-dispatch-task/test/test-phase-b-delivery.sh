@@ -15,6 +15,9 @@ ok() { echo "PASS $1"; }
 
 export DISPATCH_CONFIG_HOME="$TMP/home"
 mkdir -p "$DISPATCH_CONFIG_HOME" "$TMP/status" "$TMP/bin"
+# phase-b-deliver.sh は integration.json の不在を die にする。既存ケースはこれを書かないので、
+# bash "$DELIVER" を直接呼ぶ全ケースの --status-dir へ既定 (merge) を先に置く。
+[[ -f "$TMP/status/integration.json" ]] || printf '%s\n' '{"integration":"merge"}' > "$TMP/status/integration.json"
 cat > "$DISPATCH_CONFIG_HOME/runners.json" <<'JSON'
 {"default":"ccf","runners":[{"name":"ccf","command":"ccf","engine":"claude"},
                                   {"name":"cx","command":"codex","engine":"codex"}]}
@@ -269,10 +272,19 @@ deliver_mixed_body() { # $1=prewarm $2=status dir
   printf '%s' "${SEND[4]-}"
 }
 
+pb_pr_body() { # $1=ケース名 $2=integration.json の中身 (空文字なら作らない)
+  local d="$TMP/$1"
+  mkdir -p "$d"
+  [[ -z "$2" ]] || printf '%s\n' "$2" > "$d/integration.json"
+  deliver_mixed_body "$TMP/prewarm.json" "$d"
+}
+
 # Codex implementer + Claude reviewer: Claude has no Codex bridge seat. The verified
 # surface must be checked once, and the Codex-only seat helper must not appear.
 jq '.exec.runner = "cx" | .exec.engine = "codex" | .exec.model = "gpt-5.6-sol"' \
   "$TMP/prewarm.json" > "$TMP/prewarm-codex-claude.json"
+mkdir -p "$TMP/status-codex-claude"
+printf '%s\n' '{"integration":"merge"}' > "$TMP/status-codex-claude/integration.json"
 mixed_body=$(deliver_mixed_body "$TMP/prewarm-codex-claude.json" "$TMP/status-codex-claude")
 codex_liveness="bash $S_REAL/verify-agmsg-ready.sh --codex --team tm --name t-exec-review"
 if [[ $(grep -Fo "$claude_liveness" <<< "$mixed_body" | wc -l | tr -d ' ') == 1 \
@@ -287,6 +299,8 @@ fi
 # while the Claude implementer still owns exactly one single-shot timer.
 jq '.exec_review.runner = "cx" | .exec_review.engine = "codex" | .exec_review.model = "gpt-5.6-sol"' \
   "$TMP/prewarm.json" > "$TMP/prewarm-claude-codex.json"
+mkdir -p "$TMP/status-claude-codex"
+printf '%s\n' '{"integration":"merge"}' > "$TMP/status-claude-codex/integration.json"
 mixed_body=$(deliver_mixed_body "$TMP/prewarm-claude-codex.json" "$TMP/status-claude-codex")
 if [[ $(grep -Fo "$codex_liveness" <<< "$mixed_body" | wc -l | tr -d ' ') == 1 \
    && "$mixed_body" != *"$claude_liveness"* \
@@ -309,11 +323,40 @@ fi
 
 # PB15a: a Codex implementer gets no base directive either, and dropping it must not
 # leave a doubled separator behind (the base concatenation uses ${PARALLEL:+...}).
+mkdir -p "$TMP/status-codex-impl"
+printf '%s\n' '{"integration":"merge"}' > "$TMP/status-codex-impl/integration.json"
 codex_impl_body=$(deliver_mixed_body "$TMP/prewarm-codex-claude.json" "$TMP/status-codex-impl")
 if [[ "$codex_impl_body" != *'PARALLEL EXECUTION, mandatory: whenever two or more pieces of work are independent, you MUST fan them out with spawn_agent'*    && "$codex_impl_body" == *"Read and execute the plan at $TMP/plan.md. MANDATORY STATUS PROTOCOL"* ]]; then
   ok 'PB15a Codex implementer gets no directive and no doubled separator'
 else
   bad 'PB15a Codex implementer body kept a directive or a doubled separator'
 fi
+
+# PB-PR1: integration=pr のとき、push 先と PR 作成先が本文に逐語で入る。
+# 「PR を作れ」だけを指示していた時期に、子が push せず done を書き (F2)、
+# 別の子がフォークへ PR を作った (F3)。どちらも 2026-09-02 に実測。
+body=$(pb_pr_body pbpr1 '{"integration":"pr","repo":"o/r","base":"main","head":"feat/pbpr1","issue":117}')
+pbpr=0
+grep -q 'git push -u origin feat/pbpr1' <<<"$body" || { echo "  PB-PR1: push 手順が無い"; pbpr=1; }
+grep -q 'gh pr create --repo o/r --base main --head feat/pbpr1' <<<"$body" \
+  || { echo "  PB-PR1: PR 作成手順が無い"; pbpr=1; }
+grep -q 'Closes #117' <<<"$body" || { echo "  PB-PR1: Closes が無い"; pbpr=1; }
+grep -q 'record-pr.sh' <<<"$body" || { echo "  PB-PR1: record-pr.sh の呼び出しが無い"; pbpr=1; }
+[[ $pbpr -eq 0 ]] && ok "PB-PR1: pr の手順が逐語で入る" || bad "PB-PR1"
+
+# PB-PR2: issue が無ければ Closes 行を出さない (存在しない issue 番号を捏造させない)。
+body=$(pb_pr_body pbpr2 '{"integration":"pr","repo":"o/r","base":"main","head":"feat/pbpr2"}')
+grep -q 'Closes #' <<<"$body" && bad "PB-PR2: issue 無しで Closes を出した" \
+  || ok "PB-PR2: issue 無しなら Closes を出さない"
+
+# PB-PR3: integration=merge では PR の文言を 1 つも出さない。
+body=$(pb_pr_body pbpr3 '{"integration":"merge"}')
+grep -qE 'gh pr create|record-pr\.sh' <<<"$body" && bad "PB-PR3: merge で PR 文言が出た" \
+  || ok "PB-PR3: merge では PR 文言を出さない"
+
+# PB-PR4: integration.json が無ければ die する。黙って merge 扱いにすると F2 が再発する。
+pb_pr_body pbpr4 '' >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "PB-PR4: integration.json 不在で die する" \
+  || bad "PB-PR4: 不在を黙って通した"
 
 exit "$fail"

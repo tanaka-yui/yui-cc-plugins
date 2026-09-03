@@ -198,7 +198,7 @@ Ask the user how completed tasks should be integrated:
 
 Based on the selection:
 
-- **PR per task** → child prompts include push + `gh pr create` instructions in the status protocol
+- **PR per task** → the parent resolves `origin` once and passes `--integration pr --pr-repo <owner/repo> --pr-base <branch>` to `prewarm-panes.sh`, which writes `<status-dir>/integration.json`. `phase-b-deliver.sh` reads that file and embeds the exact `git push -u origin <head>` and `gh pr create --repo <owner/repo> --base <base> --head <head>` commands into the child's protocol, followed by `record-pr.sh`, which verifies the PR exists on that repository before writing `pr_url`. The child never chooses a remote.
 - **Wait and merge** → current behavior (local merge after all tasks complete)
 
 ### 1f. Resolve Roles
@@ -810,8 +810,10 @@ Every child status protocol includes:
     5. A delegated design session touches .deferred and must not overwrite the exec
        role's terminal status.
 
-The PR-per-task variant also pushes the branch, creates the PR, and records pr_url. The
-wait-and-merge variant leaves the verified branch for the parent to merge.
+The PR-per-task variant pushes the branch to `origin`, creates the PR on the repository
+named in `integration.json`, and records `pr_url` through `record-pr.sh`, which fails when
+no PR exists there. The wait-and-merge variant leaves the verified branch for the parent to
+merge.
 
 ### Plan-mode Enforcement Hook (ExitPlanMode)
 
