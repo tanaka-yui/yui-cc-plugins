@@ -344,6 +344,21 @@ else
   bad "PW21 late status failure (rc=$rc launches=$launches leaves=$leaves closes=$closes)"
 fi
 
+# PW-W1c: sentinel はペイン起動より前に作られる。
+#         事後の不在検査だけでは、sentinel を一度も作らない実装と区別できない。
+#         launch stub が呼ばれた時点の有無を記録し、全 launch がそれを見たことを見る。
+#         このファイル冒頭で launch-workspace.sh を CALLS_LOG 依存の別スタブへ差し替えて
+#         おり、run_pw() はその環境変数を渡さないため、harness 本来のスタブへ戻してから使う。
+make_launch_stub ''
+run_pw "$ROLES_ON" >/dev/null 2>&1
+launches=$(grep -c '^launch ' "$TMP/calls.log" 2>/dev/null || echo 0)
+witnessed=$(grep -c '^wiring-present$' "$TMP/calls.log" 2>/dev/null || echo 0)
+if [[ "$launches" -gt 0 && "$witnessed" -eq "$launches" ]]; then
+  pass "PW-W1c: 全 launch が .wiring を見ている (launches=$launches)"
+else
+  bad "PW-W1c: launches=$launches witnessed=$witnessed"
+fi
+
 # PW-W1: .wiring は最初のペイン起動より前に作られ、prewarm.json の publish 後に消える。
 # 起動より前であることは、cmux スタブが呼ばれた時点の sentinel 有無で見る。
 # (実装は「引数検証の直後・launch_role の前」に touch を置くこと)
