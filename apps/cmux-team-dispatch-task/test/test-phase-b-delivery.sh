@@ -345,18 +345,37 @@ grep -q 'record-pr.sh' <<<"$body" || { echo "  PB-PR1: record-pr.sh の呼び出
 [[ $pbpr -eq 0 ]] && ok "PB-PR1: pr の手順が逐語で入る" || bad "PB-PR1"
 
 # PB-PR2: issue が無ければ Closes 行を出さない (存在しない issue 番号を捏造させない)。
+# 空の body でも両方の grep -v 相当条件を満たしてしまうので、MANDATORY STATUS PROTOCOL
+# という配送成功時に必ず出る文言をアンカーにし、空虚な PASS を防ぐ。
 body=$(pb_pr_body pbpr2 '{"integration":"pr","repo":"o/r","base":"main","head":"feat/pbpr2"}')
-grep -q 'Closes #' <<<"$body" && bad "PB-PR2: issue 無しで Closes を出した" \
-  || ok "PB-PR2: issue 無しなら Closes を出さない"
+if grep -q 'Closes #' <<<"$body"; then
+  bad "PB-PR2: issue 無しで Closes を出した"
+elif grep -q 'MANDATORY STATUS PROTOCOL' <<<"$body"; then
+  ok "PB-PR2: issue 無しなら Closes を出さない"
+else
+  bad "PB-PR2: body が空、または配送に失敗した"
+fi
 
 # PB-PR3: integration=merge では PR の文言を 1 つも出さない。
+# 同じ理由で MANDATORY STATUS PROTOCOL の存在を確認し、空 body での空虚な PASS を防ぐ。
 body=$(pb_pr_body pbpr3 '{"integration":"merge"}')
-grep -qE 'gh pr create|record-pr\.sh' <<<"$body" && bad "PB-PR3: merge で PR 文言が出た" \
-  || ok "PB-PR3: merge では PR 文言を出さない"
+if grep -qE 'gh pr create|record-pr\.sh' <<<"$body"; then
+  bad "PB-PR3: merge で PR 文言が出た"
+elif grep -q 'MANDATORY STATUS PROTOCOL' <<<"$body"; then
+  ok "PB-PR3: merge では PR 文言を出さない"
+else
+  bad "PB-PR3: body が空、または配送に失敗した"
+fi
 
 # PB-PR4: integration.json が無ければ die する。黙って merge 扱いにすると F2 が再発する。
+# rc の非ゼロだけだと review-gate.sh や配送側の無関係な将来の破損でも green になり、
+# integration.json の die を消しても検知できない。die が実際に出す文言まで固定する。
 pb_pr_body pbpr4 '' >/dev/null 2>&1
-[[ $? -ne 0 ]] && ok "PB-PR4: integration.json 不在で die する" \
-  || bad "PB-PR4: 不在を黙って通した"
+pbpr4_rc=$?
+if [[ $pbpr4_rc -ne 0 ]] && grep -q 'integration.json not found' "$TMP/pbpr4/deliver.err"; then
+  ok "PB-PR4: integration.json 不在で die する"
+else
+  bad "PB-PR4: 不在を黙って通した、または die 理由が integration.json ではなかった"
+fi
 
 exit "$fail"
