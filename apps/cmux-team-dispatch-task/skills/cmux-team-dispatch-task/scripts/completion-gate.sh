@@ -330,7 +330,15 @@ fi
 # closure の規則を再実装しない。
 # shellcheck disable=SC1090
 . "$SCRIPT_DIR/review-state.sh"
-review_select_active "$STATUS_DIR"
+# role ごとに自分の review point だけを見る。design ペインは Phase A-R の依頼者、exec は
+# Phase B-R の依頼者であり、それぞれの相手が design_review / exec_review である。
+# 全 point を混ぜて最新 1 件を選ぶと、design 点の VERDICT 付き findings が exec の未完了
+# レビューをマスクし、待機中の実装者が判定 7 へ落ちる (2026-09-02 に 4/7 のタスクで発生)。
+case "$ROLE" in
+  design|design_review) GATE_POINT=design ;;
+  exec|exec_review)     GATE_POINT=code ;;
+esac
+review_select_active "$STATUS_DIR" "$GATE_POINT"
 POINT="$RS_POINT"; ROUND_NO="$RS_ROUND"
 ROUND_FILE="$RS_ROUND_FILE"; REQUEST_FILE="$RS_REQUEST_FILE"; ABORT_FILE="$RS_ABORT_FILE"
 answer_pending() { [[ "$RS_ANSWER_PENDING" == 1 ]]; }

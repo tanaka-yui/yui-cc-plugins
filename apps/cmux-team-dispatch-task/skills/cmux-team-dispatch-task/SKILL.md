@@ -913,6 +913,13 @@ picks by mtime, not by name: checkpoint names differ per phase (`spec`, `plan`, 
 name-ordered pick returns the finished checkpoint and strands the live one. Both were measured
 on 2026-08-24.
 
+The gate scopes the review state to the role's own review point: `design` and
+`design_review` see only `design-round-*`, `exec` and `exec_review` see only
+`code-round-*`. There is no fallback to an unscoped scan. Mixing both points and taking
+the newest file lets a finished design review mask an unfinished code review, which sends
+a waiting implementer into the "task is not finished" branch; measured on 2026-09-02 in 4
+of 7 tasks.
+
 **A findings file alone cannot express "I asked and nobody has answered".** Excluding request
 files from the round-file pick is right, but it leaves two windows where the requester looks
 idle: right after round 1 is requested (no findings exist yet, so the pick returns nothing) and
