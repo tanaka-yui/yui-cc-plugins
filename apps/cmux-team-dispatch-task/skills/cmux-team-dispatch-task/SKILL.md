@@ -913,12 +913,17 @@ picks by mtime, not by name: checkpoint names differ per phase (`spec`, `plan`, 
 name-ordered pick returns the finished checkpoint and strands the live one. Both were measured
 on 2026-08-24.
 
-The gate scopes the review state to the role's own review point: `design` and
-`design_review` see only `design-round-*`, `exec` and `exec_review` see only
-`code-round-*`. There is no fallback to an unscoped scan. Mixing both points and taking
-the newest file lets a finished design review mask an unfinished code review, which sends
-a waiting implementer into the "task is not finished" branch; measured on 2026-09-02 in 4
-of 7 tasks.
+The gate scopes the review state to the role's own review point, and there is no fallback to
+an unscoped scan. Mixing points and taking the newest file lets a finished review at one point
+mask an unfinished review at the other, which sends a waiting implementer into the "task is not
+finished" branch; measured on 2026-09-02 in 4 of 7 tasks. Only Phase B-R's point name is fixed:
+`phase-b-deliver.sh` and `launch-workspace.sh` hardcode `code`, so `exec` and `exec_review` scope
+by inclusion, to `code-round-*` alone. Phase A-R's checkpoint name is not fixed — superpowers mode
+reuses the `design_review` pane for two checkpoints, `spec` then `plan`, while the unattended loop
+uses `design` (see `references/unattended/review-block.md`) — so scoping `design` and
+`design_review` to a literal name would strand a superpowers-mode design pane on its own
+`spec-round-*` or `plan-round-*` files the same way the unscoped scan used to strand `exec`.
+Those two roles therefore scope by exclusion instead: every point except `code`.
 
 **A findings file alone cannot express "I asked and nobody has answered".** Excluding request
 files from the round-file pick is right, but it leaves two windows where the requester looks

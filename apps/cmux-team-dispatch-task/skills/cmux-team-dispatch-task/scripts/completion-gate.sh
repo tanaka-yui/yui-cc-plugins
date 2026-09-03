@@ -334,8 +334,14 @@ fi
 # Phase B-R の依頼者であり、それぞれの相手が design_review / exec_review である。
 # 全 point を混ぜて最新 1 件を選ぶと、design 点の VERDICT 付き findings が exec の未完了
 # レビューをマスクし、待機中の実装者が判定 7 へ落ちる (2026-09-02 に 4/7 のタスクで発生)。
+# code は固定名で書ける (phase-b-deliver.sh と launch-workspace.sh に code と焼き込まれて
+# いる) が、design 側の checkpoint 名は固定ではない (superpowers モードは spec と plan の
+# 2 点、無人ループは design)。design 側を literal な point 名へ包含スコープすると、
+# superpowers モードの design ペインが自分の spec-round-*/plan-round-* を見失い、この
+# タスクが直そうとしているのと同じ症状が design 側で再発する。そこで design 側は
+# 「code 以外すべて」という除外スコープで表す。
 case "$ROLE" in
-  design|design_review) GATE_POINT=design ;;
+  design|design_review) GATE_POINT='!code' ;;
   exec|exec_review)     GATE_POINT=code ;;
 esac
 review_select_active "$STATUS_DIR" "$GATE_POINT"

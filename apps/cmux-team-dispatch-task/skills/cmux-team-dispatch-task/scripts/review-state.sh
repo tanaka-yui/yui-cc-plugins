@@ -2,11 +2,20 @@
 # review-state.sh — review ディレクトリの状態を 1 か所で計算する。
 
 review_select_active() {
-  # $2 = 省略可能な point。渡すとその point のキーだけを候補にする。
-  # role ごとに自分の review point だけを見るためのもので、フォールバックは持たない。
-  # 「スコープが空振りしたら全体を見る」にすると、design 点の VERDICT 付き findings が
-  # exec の未完了レビューをマスクする経路 (2026-09-02 の F1) がそのまま戻る。
+  # $2 = 省略可能な point マッチ指定。"<name>" はその point だけを候補にし、
+  # "!<name>" はその point だけを除外する。フォールバックは持たない。
+  # role ごとに自分の review point だけを見るためのものだが、包含で書けるのは
+  # code 側だけである: Phase B-R の point 名は phase-b-deliver.sh と
+  # launch-workspace.sh に code と焼き込まれている。design 側の checkpoint 名は
+  # 固定ではなく (superpowers モードは spec と plan の 2 点、無人ループは design)、
+  # 特定の名前へ包含スコープすると設計ペインが自分の findings を見失う。
+  # そこで design 側は「code 以外すべて」として表す。
   local sd="$1" want_point="${2:-}" f base p n key
+  local exclude_point=""
+  if [[ "$want_point" == '!'* ]]; then
+    exclude_point="${want_point#!}"
+    want_point=""
+  fi
   RS_POINT=""; RS_ROUND=""; RS_ROUND_FILE=""; RS_REQUEST_FILE=""; RS_ABORT_FILE=""
   RS_HAS_ACTIVITY=0; RS_ANSWER_PENDING=0; RS_ROUND_ABORTED=0
   RS_FINDINGS_UNFINISHED=0; RS_SOFT_CLOSED=0
@@ -29,6 +38,7 @@ review_select_active() {
     base=${f##*/}
     [[ "$base" =~ ^(.+)-round-([0-9]+)(-request|-abort)?\.md$ ]] || continue
     [[ -z "$want_point" || "${BASH_REMATCH[1]}" == "$want_point" ]] || continue
+    [[ -z "$exclude_point" || "${BASH_REMATCH[1]}" != "$exclude_point" ]] || continue
     key="${BASH_REMATCH[1]}|${BASH_REMATCH[2]}"
     [[ " ${keys[*]-} " == *" $key "* ]] || keys+=("$key")
   done

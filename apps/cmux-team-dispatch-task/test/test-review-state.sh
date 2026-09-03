@@ -120,5 +120,19 @@ d=$(mk rsp3)
 printf 'req\n' > "$d/review/code-round-1-request.md"
 review_select_active "$d"; chk RS-P3 "$RS_POINT|$RS_ROUND" 'code|1'
 
+# RS-P4: design 側は "code 以外すべて" で選ぶ。point 名は固定ではないため
+#        (superpowers モードは spec / plan の 2 checkpoint)、literal "design" へ
+#        包含スコープすると設計ペインが自分の findings を見失う。
+d=$(mk rsp4)
+printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-1.md"; sleep 1
+printf 'req\n' > "$d/review/plan-round-2-request.md"
+review_select_active "$d" '!code'; chk RS-P4 "$RS_POINT|$RS_ROUND" 'plan|2'
+
+# RS-P5: 除外スコープは code を候補から外す。
+d=$(mk rsp5)
+printf 'req\n' > "$d/review/spec-round-1-request.md"; sleep 1
+printf 'req\n' > "$d/review/code-round-1-request.md"
+review_select_active "$d" '!code'; chk RS-P5 "$RS_POINT|$RS_ROUND" 'spec|1'
+
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

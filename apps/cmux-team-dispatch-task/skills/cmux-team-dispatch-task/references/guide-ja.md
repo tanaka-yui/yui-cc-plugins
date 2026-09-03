@@ -589,11 +589,18 @@ prewarm-panes.sh には検証済み resolver 出力を --roles "$ROLES_JSON" 1 �
 果たした。team か送信コマンドが欠けているときは通知の手順を書かない — 埋められない引数を持つ
 コマンドを見せると、セッションは値を捏造するか探し回るかのどちらかになる。
 
-gate は review の状態を role 自身の review point へスコープする。`design` と `design_review`
-は `design-round-*` だけを、`exec` と `exec_review` は `code-round-*` だけを見る。未スコープ
-走査へのフォールバックは無い。両 point を混ぜて最新ファイルを取ると、完了した design review が
-未完了の code review をマスクし、待機中の実装者を「タスクが終わっていない」分岐へ落とす
-（2026-09-02 に 7 タスク中 4 件で実測）。
+gate は review の状態を role 自身の review point へスコープし、未スコープ走査への
+フォールバックは無い。point を混ぜて最新ファイルを取ると、一方の point の完了した review が
+もう一方の未完了 review をマスクし、待機中の実装者を「タスクが終わっていない」分岐へ落とす
+（2026-09-02 に 7 タスク中 4 件で実測）。固定名で書けるのは Phase B-R の point だけである —
+`phase-b-deliver.sh` と `launch-workspace.sh` に `code` が焼き込まれているので、`exec` と
+`exec_review` は `code-round-*` だけを候補にする包含スコープで書ける。Phase A-R の checkpoint
+名は固定ではない — superpowers モードは `design_review` pane を spec 後・plan 後の 2
+checkpoint (`spec`、`plan`) で再利用し、無人ループは `design` を使う
+（`references/unattended/review-block.md` 参照）。そのため `design` と `design_review` を
+literal な point 名へ包含スコープすると、superpowers モードの設計ペインが自分の
+`spec-round-*` / `plan-round-*` を見失う — かつて未スコープ走査が `exec` を迷子にしたのと
+同じ経路である。この 2 ロールは代わりに「`code` 以外すべて」という除外スコープで書く。
 
 **findings ファイルだけでは「依頼したが答えが来ていない」を表現できない。** 依頼文を
 round ファイルの選択から除外するのは正しいが、そのままだと依頼側が待機中に見えなくなる区間が

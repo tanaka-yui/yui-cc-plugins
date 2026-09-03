@@ -49,6 +49,11 @@
 #  CG29. -abort.md を findings として拾わない (拾うと verdict 済みに見える)
 #        ラウンド上限に達した子は .assigned が残り最新 round に VERDICT があるため、
 #        この sentinel が無いと判定 7 に落ち、done/error のどちらを書いても虚偽になる
+#  CG-P2. design ロールは code point のファイルで待機しない
+#        (code のレビューは exec の仕事である。design がそれを自分の待機と誤読すると、
+#         委譲後の設計ペインが exec のレビュー中ずっと停止できてしまう)
+#  CG-P3. design が自分の point で待機しているとき、より新しい code の VERDICT 付き
+#        findings に隠されない (2026-09-02 の F1 の design 側)
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -193,6 +198,9 @@ done
 # これを findings と取り違えると、verdict を待っているだけの依頼側が「作業途中」と
 # 判定されて block される。依頼文が mtime でも名前順でも「最後」になる配置にして、
 # 除外フィルタ単独を検証する (CG15 の mtime 修正に助けられて通らないようにする)。
+# point は role の scope (ここでは exec なので code) と一致させる — exec は design 側の
+# point 名を持たないので、fixture を design 側の名前で書くと scope 済みの gate では
+# そもそも候補に入らず、この不変条件を検証できなくなる。
 d=$(mkdir_case cg14); touch "$d/.assigned-task-exec"
 printf '（レビュー結果をここに記入）\n' > "$d/review/code-round-1.md"
 sleep 1
@@ -203,21 +211,21 @@ out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null); 
   || bad "CG14: block された (rc=$rc out=[$out])"
 
 # --- CG15: checkpoint をまたぐとき最後に依頼されたラウンドを選ぶ ---
-# round 5 が approve 済み、round 1 (別ラウンド) が進行中。辞書順なら design-round-5.md が
-# 最後になるが、実際に待っているのは design-round-1.md である。
+# spec が approve 済み、plan が進行中。辞書順なら spec-round-5.md が最後になるが、
+# 実際に待っているのは plan-round-1.md である。
 d=$(mkdir_case cg15); set_status "$d" executing; touch "$d/.assigned-task-design"
-printf 'findings\nVERDICT: approve\n' > "$d/review/design-round-5.md"
+printf 'findings\nVERDICT: approve\n' > "$d/review/spec-round-5.md"
 sleep 1   # mtime を確実に分ける (秒単位の精度しか無い環境があるため)
-printf '（レビュー結果をここに記入）\n' > "$d/review/design-round-1.md"
+printf '（レビュー結果をここに記入）\n' > "$d/review/plan-round-1.md"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null); rc=$?
-[[ $rc -eq 0 && -z "$out" ]] && pass 'CG15: 進行中の round 1 を選び verdict 待ちとして許す' \
-  || bad "CG15: 完了済みの round 5 を選んで block した (rc=$rc out=[$out])"
+[[ $rc -eq 0 && -z "$out" ]] && pass 'CG15: 進行中の plan ラウンドを選び verdict 待ちとして許す' \
+  || bad "CG15: 完了済みの spec を選んで block した (rc=$rc out=[$out])"
 
 # 逆向き: レビュアー側は同じ状態で block される (まだ VERDICT を書いていない)
 out=$(bash "$BIN" --status-dir "$d" --role design_review --agent task-design-review 2>/dev/null)
-echo "$out" | grep -q 'design-round-1.md' \
-  && pass 'CG15b: レビュアーは進行中の round 1 を指して block する' \
-  || bad "CG15b: reason が design-round-1.md を指していない: [$out]"
+echo "$out" | grep -q 'plan-round-1.md' \
+  && pass 'CG15b: レビュアーは進行中の plan ラウンドを指して block する' \
+  || bad "CG15b: reason が plan-round-1.md を指していない: [$out]"
 
 # --- CG16: parent へ引き渡して判断待ちなら許す ---
 # ラウンド上限に達した状態を再現する: .assigned あり / 最新 round に VERDICT あり /
@@ -273,19 +281,18 @@ out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=exec DISPATCH_GATE_AGENT=
 
 # --- CG20: 同じ status dir でもロールごとに別の判定になる ---
 # これが不具合の核心である。1 本の共有 command で 2 ロールが正しく分岐すること。
-# design は自分の point (design) の request 待ちで allow、exec_review は code point の
-# 未完了 findings で block する — point スコープが無いと design 側が code-round-1.md を
-# 拾って block してしまう (2026-09-02 の F1 と同じ経路)。
+# 依頼側 (design) と レビュアー側 (design_review) は同じ point を共有するので、この対比
+# (依頼側は未完了 findings で待てる / レビュアーは block される) はロールが point を
+# 共有するペアでなければ検証できない。design と exec_review は point を共有しない。
 d=$(mkdir_case cg20); set_status "$d" executing
 : > "$d/.assigned-task"
-printf 'request\n' > "$d/review/design-round-1-request.md"
-printf 'findings\n' > "$d/review/code-round-1.md"
+printf 'findings\n' > "$d/review/plan-round-1.md"
 out_d=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=task \
   bash "$BIN" 2>/dev/null)
-out_r=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=exec_review DISPATCH_GATE_AGENT=task-exec-review \
+out_r=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design_review DISPATCH_GATE_AGENT=task-design-review \
   bash "$BIN" 2>/dev/null)
 [[ -z "$out_d" && -n "$out_r" ]] && pass 'CG20: 共有 command でもロールごとに分岐する' \
-  || bad "CG20: design=[$out_d] exec_review=[$out_r] (期待 allow/block)"
+  || bad "CG20: design=[$out_d] design_review=[$out_r] (期待 allow/block)"
 
 # --- CG21: 引数は環境変数より優先される ---
 d=$(mkdir_case cg21); set_status "$d" executing; : > "$d/.assigned-task-exec"
@@ -299,7 +306,7 @@ reason=$(jq -r '.reason // ""' <<< "$out" 2>/dev/null)
 # round-<N>.md フィルタが依頼文を除外するので ROUND_FILE は空になる。判定 5 は findings が
 # 存在する前提なのでここを拾えず、判定 7 に落ちて「terminal status を書け」と迫られていた。
 d=$(mkdir_case cg22); set_status "$d" executing; : > "$d/.assigned-task"
-printf 'request\n' > "$d/review/design-round-1-request.md"
+printf 'request\n' > "$d/review/plan-round-1-request.md"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task 2>/dev/null)
 [[ -z "$out" ]] && pass 'CG22: 依頼直後は依頼側を許す' \
   || bad "CG22: 依頼待ちなのに block された: [$out]"
@@ -307,10 +314,10 @@ out=$(bash "$BIN" --status-dir "$d" --role design --agent task 2>/dev/null)
 # --- CG23: 次ラウンドの依頼中も依頼側を許す ---
 # ROUND_FILE は round 1 の findings (VERDICT 済み) を指すため、判定 5 も成立しない。
 d=$(mkdir_case cg23); set_status "$d" executing; : > "$d/.assigned-task"
-printf 'findings\nVERDICT: needs_work\n' > "$d/review/design-round-1.md"
-printf 'request\n' > "$d/review/design-round-2-request.md"
-touch -t 202608260800 "$d/review/design-round-1.md"
-touch -t 202608260900 "$d/review/design-round-2-request.md"
+printf 'findings\nVERDICT: needs_work\n' > "$d/review/plan-round-1.md"
+printf 'request\n' > "$d/review/plan-round-2-request.md"
+touch -t 202608260800 "$d/review/plan-round-1.md"
+touch -t 202608260900 "$d/review/plan-round-2-request.md"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task 2>/dev/null)
 [[ -z "$out" ]] && pass 'CG23: 次ラウンド依頼中も依頼側を許す' \
   || bad "CG23: 依頼待ちなのに block された: [$out]"
@@ -318,17 +325,17 @@ out=$(bash "$BIN" --status-dir "$d" --role design --agent task 2>/dev/null)
 # --- CG24: 同じ状態でレビュアーは block される ---
 # 依頼文しか無い区間で許すと、レビューを一度も書かないまま止まれてしまう。
 d=$(mkdir_case cg24); set_status "$d" executing
-printf 'request\n' > "$d/review/design-round-1-request.md"
+printf 'request\n' > "$d/review/plan-round-1-request.md"
 out=$(bash "$BIN" --status-dir "$d" --role design_review --agent task-design-review 2>/dev/null)
 [[ -n "$out" ]] && pass 'CG24: 依頼直後のレビュアーは block される' \
   || bad "CG24: レビュー未着手なのに allow された"
 
 # --- CG25: 次ラウンドの依頼が来たらレビュアーは再び block される ---
 d=$(mkdir_case cg25); set_status "$d" executing
-printf 'findings\nVERDICT: needs_work\n' > "$d/review/design-round-1.md"
-printf 'request\n' > "$d/review/design-round-2-request.md"
-touch -t 202608260800 "$d/review/design-round-1.md"
-touch -t 202608260900 "$d/review/design-round-2-request.md"
+printf 'findings\nVERDICT: needs_work\n' > "$d/review/plan-round-1.md"
+printf 'request\n' > "$d/review/plan-round-2-request.md"
+touch -t 202608260800 "$d/review/plan-round-1.md"
+touch -t 202608260900 "$d/review/plan-round-2-request.md"
 out=$(bash "$BIN" --status-dir "$d" --role design_review --agent task-design-review 2>/dev/null)
 [[ -n "$out" ]] && pass 'CG25: 次ラウンド依頼でレビュアーは再び block される' \
   || bad "CG25: 前ラウンドの VERDICT で allow された"
@@ -539,24 +546,24 @@ else
   pass 'CG40: zsh が無いので skip'
 fi
 
-# --- CG41: 新しいラウンドの request 待ちを allow する ---
+# --- CG41: 新しい point の request 待ちを allow する ---
 d=$(mkdir_case cg41)
 set_status "$d" executing
 : > "$d/.assigned-task-design"
-printf 'findings\nVERDICT: approve\n' > "$d/review/design-round-1.md"
+printf 'findings\nVERDICT: approve\n' > "$d/review/spec-round-1.md"
 sleep 1
-printf 'request\n' > "$d/review/design-round-2-request.md"
+printf 'request\n' > "$d/review/plan-round-1-request.md"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
-[[ -z "$out" ]] && pass 'CG41: 新しいラウンドの request 待ちを allow する' \
+[[ -z "$out" ]] && pass 'CG41: 新しい point の request 待ちを allow する' \
   || bad "CG41: block された: [$out]"
 
-# --- CG42: 古い未応答 request は、新しい別ラウンドの approve 済み findings に負けない ---
+# --- CG42: 古い未応答 request は、新しい他 point の findings に負けない ---
 d=$(mkdir_case cg42)
 set_status "$d" executing
 : > "$d/.assigned-task-design"
-printf 'request\n' > "$d/review/design-round-1-request.md"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
 sleep 1
-printf 'findings\nVERDICT: approve\n' > "$d/review/design-round-2.md"
+printf 'findings\nVERDICT: approve\n' > "$d/review/plan-round-1.md"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
 [[ -z "$out" ]] && pass 'CG42: 古い未応答 request の待機を allow する' \
   || bad "CG42: 待機なのに block された: [$out]"
@@ -565,9 +572,9 @@ out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/nul
 d=$(mkdir_case cg43)
 set_status "$d" executing
 : > "$d/.assigned-task-design"
-printf 'request\n' > "$d/review/design-round-1-request.md"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
-if [[ -z "$out" ]] && jq -e '.generation == "design|1|design|task-design" and (.lease_seq | type) == "number" and (.deadline_epoch | type) == "number"' \
+if [[ -z "$out" ]] && jq -e '.generation == "spec|1|design|task-design" and (.lease_seq | type) == "number" and (.deadline_epoch | type) == "number"' \
   "$d/.gate-wait-design" >/dev/null 2>&1; then
   pass 'CG43: 待機の allow で lease を書く'
 else
@@ -593,7 +600,7 @@ s2=$(jq -r '.lease_seq' "$d/.gate-wait-design")
 d=$(mkdir_case cg45)
 set_status "$d" executing
 : > "$d/.assigned-task-design"
-printf 'request\n' > "$d/review/design-round-1-request.md"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
 printf '{"generation":"x","lease_seq":1,"deadline_epoch":1}\n' > "$d/.gate-wait-design"
 out=$(DISPATCH_GATE_WAIT_MINUTES=0 bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
 if [[ -z "$out" && ! -f "$d/.gate-wait-design" ]]; then
@@ -675,12 +682,12 @@ mkdir -p "$TMP/wt55"
 d=$(mkdir_case cg56)
 set_status "$d" executing
 : > "$d/.assigned-task-design"
-printf 'request\n' > "$d/review/design-round-1-request.md"
-touch -t "$(date -v-40M +%Y%m%d%H%M 2>/dev/null || date -d '40 minutes ago' +%Y%m%d%H%M)" "$d/review/design-round-1-request.md"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
+touch -t "$(date -v-40M +%Y%m%d%H%M 2>/dev/null || date -d '40 minutes ago' +%Y%m%d%H%M)" "$d/review/spec-round-1-request.md"
 printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/.gate-seen-design"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
 reason=$(jq -r '.reason // empty' <<< "$out" 2>/dev/null)
-if [[ "$reason" == *'design round 1'* && "$reason" == *"$d/review/design-round-1-abort.md"* \
+if [[ "$reason" == *'spec round 1'* && "$reason" == *"$d/review/spec-round-1-abort.md"* \
   && "$reason" == *'escalate.sh'* && "$reason" != *"touch $d/.escalated"* ]]; then
   pass 'CG56: 予算切れで block し、実値で回復手順を示す'
 else
@@ -706,7 +713,7 @@ fi
 d=$(mkdir_case cg57)
 set_status "$d" executing
 : > "$d/.assigned-task-design"
-printf 'request\n' > "$d/review/design-round-1-request.md"
+printf 'request\n' > "$d/review/spec-round-1-request.md"
 out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
 [[ -z "$out" ]] && pass 'CG57: 素の待機は従来どおり allow' || bad "CG57: block された: [$out]"
 
@@ -769,6 +776,30 @@ if [[ $rc -eq 0 && -z "$out" ]]; then
 else
   bad "CG-P1: rc=$rc out=[$out]"
 fi
+
+# CG-P2: design ロールは code point のファイルで待機しない。
+#        code のレビューは exec の仕事であり、design がそれを自分の待機と読むと
+#        委譲後の設計ペインが exec のレビュー中ずっと停止できてしまう。
+d=$(mkdir_case cgp2); set_status "$d" executing
+: > "$d/.assigned-task"
+printf 'findings\n' > "$d/review/code-round-1.md"
+out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=task \
+  bash "$BIN" 2>/dev/null)
+grep -q '"decision":"block"' <<<"$out" \
+  && pass 'CG-P2: design は code point の findings で待機しない' \
+  || bad "CG-P2: out=[$out]"
+
+# CG-P3: 逆向き。design が自分の point で待機しているとき、より新しい code の
+#        VERDICT 付き findings に隠されない (F1 の design 側)。
+d=$(mkdir_case cgp3); set_status "$d" executing
+: > "$d/.assigned-task"
+printf 'req\n' > "$d/review/plan-round-1-request.md"; sleep 1
+printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-1.md"
+out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=task \
+  bash "$BIN" 2>/dev/null); rc=$?
+[[ $rc -eq 0 && -z "$out" ]] \
+  && pass 'CG-P3: design の待機は新しい code の VERDICT に隠されない' \
+  || bad "CG-P3: rc=$rc out=[$out]"
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail
