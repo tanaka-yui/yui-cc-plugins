@@ -116,13 +116,23 @@ review-request.sh --review-dir <dir> --point <design|code> --round <N> \
 4-2 だけでは R5 の経路は閉じない。ヘルパーを呼ばない子が残る可能性に加え、**design 点の
 VERDICT が exec の状態をマスクする**という判定の欠陥そのものが残るためである。
 
-`review_select_active <status-dir> [point]` に省略可能な第 2 引数を足し、指定時はその point の
-キーだけを候補にする。`completion-gate.sh` は role から point を固定して渡す。
+`review_select_active <status-dir> [point-spec]` に省略可能な第 2 引数を足す。`<name>` は
+その point だけを候補にし、`!<name>` はその point だけを除外する。`completion-gate.sh` は
+role から固定して渡す。
 
-| role | point |
-|------|-------|
-| `design` / `design_review` | `design` |
-| `exec` / `exec_review` | `code` |
+| role | point-spec | 意味 |
+|------|-----------|------|
+| `design` / `design_review` | `!code` | `code` 以外のすべて |
+| `exec` / `exec_review` | `code` | `code` のみ |
+
+**包含で書けるのは code 側だけである。** design 側を literal `design` へ包含スコープする案を
+一度採ったが、これは誤りだった（実装中に発覚。ruling R-T2-1）。Phase A-R は **checkpoint を
+2 つ持ち**（spec 後・plan 後。`SKILL.md:688-689` / `apps/cmux-team-dispatch-task/CLAUDE.md`
+項目 14）、point 名は固定ではない — `SKILL.md:911` は実測された checkpoint 名を
+`spec` / `plan` / `design` / `code` と明記している。固定名で包含すると superpowers モードの
+design ペインが自分の `spec-round-*` / `plan-round-*` を見失い、**いま塞いでいる masking が
+design 側へ移る**。`code` だけが固定名である（`phase-b-deliver.sh:168,177,196` と
+`launch-workspace.sh:1071` に焼き込まれている）ため、design 側は「`code` 以外」として表す。
 
 **未スコープへのフォールバックは設けない。** 空振り時に全体走査へ退避すると、いま塞ごうと
 している masking を再現するだけである。スコープが空振りした exec は判定 7 に落ち、既存の
