@@ -100,6 +100,8 @@ bash scripts/issue-fetch.sh --state-file .dispatch-loop/loop-state.json lock-che
 
 loop の integration strategy が `pr` のとき、driver は `origin` から対象リポジトリを 1 回だけ解決し、各タスクの `prewarm-panes.sh --unattended` 呼び出しへ `--integration pr --pr-repo <owner/repo> --pr-base <branch> --pr-issue <N>` を渡す。`--pr-issue` にはそのタスク自身の issue 番号を渡す。`merge` のときは `--integration merge` を渡すか、フラグ自体を省略する。子に remote を選ばせてはならない: 2026-09-02 の実測で、remote が 3 つある環境で子が個人フォークへ push し、フォーク内で PR を開いてしまった。issue はそのフォークに存在しないため PR 本文の `Closes #NNN` は効かず、後にそのフォーク PR が完了の証拠として受理されてしまった。
 
+loop の Phase B 引き継ぎと終端 status は、依然として design ペインが手で組み立てている（`render-loop-prompt.sh` 参照）。`phase-b-deliver.sh` や `report-status.sh` を経由していない。そのため上記のとおり `integration.json` は書かれるものの、push / `gh pr create` / `record-pr.sh` の一連の流れと `report-status.sh` の各ガードは loop の子タスクにはまだ届いていない。`loop-cleanup.sh` の `verify_done` が、事後的に PR の欠落を検出する backstop であり続ける。
+
 `[ready]` を収集し、`prune-not-ready.sh` で ownership を検証して ready にならなかった optional review role を削除してから、検証済み snapshot を renderer に渡す。
 
 ```bash

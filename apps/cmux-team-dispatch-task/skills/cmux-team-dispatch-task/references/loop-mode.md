@@ -124,6 +124,13 @@ omits the flag entirely. The child must never resolve the remote itself: measure
 PR inside that fork, where the issue does not exist, so the PR body's `Closes #NNN` line
 had no effect and the fork PR was later accepted as proof of completion.
 
+The loop's Phase B handoff and terminal status are still hand-composed by the design
+pane (see `render-loop-prompt.sh`), not delivered through `phase-b-deliver.sh` or
+`report-status.sh`. So while `integration.json` is written as described above, the
+push / `gh pr create` / `record-pr.sh` sequence and the `report-status.sh` guards are
+not yet delivered to loop children. `loop-cleanup.sh`'s `verify_done` remains the
+backstop that detects a missing PR after the fact.
+
 Collect `[ready]` reports, then run `prune-not-ready.sh` to validate ownership and remove
 optional review roles that did not become ready, and invoke the renderer with the
 validated snapshot:

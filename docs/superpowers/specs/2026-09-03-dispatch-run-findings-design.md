@@ -410,3 +410,6 @@ R10 / R11 のとおり `--add-dir` は実在し、実際に渡っている。し
   design review の内容、`review-gate.sh` の `code-review.json` 発行、agmsg 配送）
 - `report-status.sh` の位置引数契約の変更（R16）
 - PR 作成先の config 化（D3 で不採用）
+- **未着手のフォローアップ**: loop の Phase B 引き継ぎを `phase-b-deliver.sh` へ、終端 status を
+  `report-status.sh` へ配線すること。これには `review-gate.sh` を loop へ配線し直す作業も追加で
+  必要になる。ユーザーが別途判断する
