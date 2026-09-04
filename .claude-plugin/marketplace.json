@@ -153,7 +153,7 @@
       "name": "orca-team-dispatch-task",
       "description": "Orca の worktree で 1 つのタスクを worker に実行させる",
       "source": "./apps/orca-team-dispatch-task",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "license": "MIT",
       "category": "terminal",
       "tags": [
