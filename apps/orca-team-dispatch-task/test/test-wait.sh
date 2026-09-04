@@ -81,6 +81,7 @@ w >/dev/null 2>&1
   || fail "WT11 pending なのに ack した"; teardown
 setup; dn; msg
 echo '{"ok":true,"result":{"state":"release_unknown"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
 out=$(w 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *"release result is unknown; not acknowledging"* ]] \
   && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" && ok "WT11b unknown で ack せず盲目的に再試行しない" \
@@ -134,22 +135,32 @@ setup; dn; msg succeeded; w >/dev/null 2>&1
   && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT16 逆 outcome は fail-closed" || fail "WT16 (rc=$rc)"; teardown
 
-# WT17: check transport failure は worker health を証明できないため 4。副作用を持たない
+# WT17: check transport failure は worker health を証明できないため 4。理由を出し、副作用を持たない
 setup; dn; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_check"
-w >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 4 && ! -e "$SD/received.json" ]] \
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$out" == *"check receipt was not ok"* && ! -e "$SD/received.json" ]] \
   && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
-  && ok "WT17 check ok:false は副作用なし" || fail "WT17 (rc=$rc)"; teardown
+  && ok "WT17 check ok:false を診断して副作用なし" || fail "WT17 (rc=$rc out=$out)"; teardown
 
 # WT18: release / worker-show transport failure は 4、ack しない
 setup; dn; msg; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-release"
 w >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 4 && -e "$SD/received.json" ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT18a release ok:false は ack しない" || fail "WT18a (rc=$rc)"; teardown
+
+# WT18a1: release_unknown 以外の非 0 receipt は transport/state 不明として 4 に分類し、理由を出す。
+setup; dn; msg
+echo '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+echo 7 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
+wout=$(w 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$wout" == *"worker-release failed (rc=7 state='retained')"* ]] \
+  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT18a1 release の非 0 receipt を診断して 4" || fail "WT18a1 (rc=$rc out=$wout)"; teardown
+
 setup; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-show"
-w 1 >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 4 ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
-  && ok "WT18b worker-show ok:false は受信失敗" || fail "WT18b (rc=$rc)"; teardown
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$out" == *"worker-show receipt was not ok"* ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT18b worker-show ok:false を診断して受信失敗" || fail "WT18b (rc=$rc out=$out)"; teardown
 
 # WT18c: ack 側の transport failure も判定不能（4）。batch は replay される。
 setup; dn; msg

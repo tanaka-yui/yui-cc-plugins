@@ -56,13 +56,24 @@ record_outcome() {
     || { log "could not record the worker outcome; it is not acknowledged"; return 1; }
 }
 
-drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）
-  local out res n i m d t tid did oc batch_oc existing record_needed REL RST ACK
-  out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || return 2
-  jq -e '.ok == true and (.result | type == "object")' <<<"$out" >/dev/null 2>&1 || return 2
-  res=$(jq -c '.result // {}' <<<"$out" 2>/dev/null) || return 2
-  n=$(jq -r '.messages | if type == "array" then length else -1 end' <<<"$res" 2>/dev/null) || return 2
-  [[ "$n" =~ ^[0-9]+$ ]] || return 2
+drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
+  local out res n i m d t tid did oc batch_oc existing record_needed REL RELRC RST ACK CHECKRC
+  CHECKRC=0
+  out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || CHECKRC=$?
+  [[ "$CHECKRC" -eq 0 ]] || { log "check failed (rc=$CHECKRC); the batch is not acknowledged"; return 2; }
+  jq -e '.ok == true and (.result | type == "object")' <<<"$out" >/dev/null 2>&1 || {
+    log "check receipt was not ok; the batch is not acknowledged"
+    return 2
+  }
+  res=$(jq -c '.result // {}' <<<"$out" 2>/dev/null) || {
+    log "check receipt result could not be read; the batch is not acknowledged"
+    return 2
+  }
+  n=$(jq -r '.messages | if type == "array" then length else -1 end' <<<"$res" 2>/dev/null) || {
+    log "check receipt messages could not be read; the batch is not acknowledged"
+    return 2
+  }
+  [[ "$n" =~ ^[0-9]+$ ]] || { log "check receipt messages are invalid; the batch is not acknowledged"; return 2; }
   [[ "$n" -gt 0 ]] || return 0
   d=$(jq -r '.deliveryId // empty' <<<"$res")
   [[ -n "$d" ]] || { log "a non-empty batch has no deliveryId"; return 1; }
@@ -101,17 +112,26 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
   #   場合」の例外である。この版はその依頼を取らないので release を使う。
   #   **exit 0 は「完了した」の証明ではない。**pending / unknown では ack しない
   [[ "$record_needed" -eq 0 ]] || record_outcome "$batch_oc" || return 1
-  REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || return 2
-  jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || return 2
+  RELRC=0
+  REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
+  jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+    log "worker-release receipt was not ok (rc=$RELRC); the batch is not acknowledged"
+    return 2
+  }
   RST=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null || echo "")
+  if [[ "$RST" == release_unknown ]]; then
+    log "release result is unknown; not acknowledging (rc=$RELRC). Do not retry, acknowledge, or merge from this parent terminal; inspect with the user"
+    return 1
+  fi
+  if [[ "$RELRC" -ne 0 ]]; then
+    log "worker-release failed (rc=$RELRC state='${RST:-none}'); the batch is not acknowledged"
+    return 2
+  fi
   case "$RST" in
     retained|already_released) ;;
-    release_unknown)
-      log "release result is unknown; not acknowledging. Do not retry blindly; inspect the result and continue with merge only when its guards pass"
-      return 1
-      ;;
+    release_pending) log "worker-release is pending; not acknowledging. Retry the canonical wait"; return 1 ;;
     *)
-      log "worker-release reported '${RST:-none}'; not acknowledging (it will be retried)"
+      log "worker-release reported '${RST:-none}'; not acknowledging"
       return 1
       ;;
   esac
@@ -140,9 +160,14 @@ finish() {
   [[ "$oc" == succeeded ]] && exit 0 || exit 5
 }
 healthy() {   # **人の入力待ちは healthy である**（CLI help）
-  local show st wait
-  show=$("$ORCA_BIN" orchestration worker-show --dispatch "$DID" --json 2>/dev/null) || return 2
-  jq -e '.ok == true and (.result | type == "object")' <<<"$show" >/dev/null 2>&1 || return 2
+  local show st wait SHOWRC
+  SHOWRC=0
+  show=$("$ORCA_BIN" orchestration worker-show --dispatch "$DID" --json 2>/dev/null) || SHOWRC=$?
+  [[ "$SHOWRC" -eq 0 ]] || { log "worker-show failed (rc=$SHOWRC)"; return 2; }
+  jq -e '.ok == true and (.result | type == "object")' <<<"$show" >/dev/null 2>&1 || {
+    log "worker-show receipt was not ok"
+    return 2
+  }
   wait=$(jq -r '.result.observation.agentWait // empty' <<<"$show")
   [[ -n "$wait" && "$wait" != null ]] && return 0
   st=$(jq -r '.result.worker.state // empty' <<<"$show")
@@ -156,8 +181,9 @@ drain || { drc=$?; [[ "$drc" -eq 2 ]] && exit 4 || exit 1; }
 oc=$(outcome_of) && finish "$oc"
 n=0
 while :; do
-  WAIT=$("$ORCA_BIN" orchestration check --terminal "$PH" --wait --timeout-ms "$TMO" --json 2>/dev/null) || exit 4
-  jq -e '.ok == true' <<<"$WAIT" >/dev/null 2>&1 || exit 4
+  WRC=0; WAIT=$("$ORCA_BIN" orchestration check --terminal "$PH" --wait --timeout-ms "$TMO" --json 2>/dev/null) || WRC=$?
+  [[ "$WRC" -eq 0 ]] || { log "check --wait failed (rc=$WRC)"; exit 4; }
+  jq -e '.ok == true' <<<"$WAIT" >/dev/null 2>&1 || { log "check --wait receipt was not ok"; exit 4; }
   drain || { drc=$?; [[ "$drc" -eq 2 ]] && exit 4 || exit 1; }
   oc=$(outcome_of) && finish "$oc"
   healthy || exit 4

@@ -65,17 +65,16 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
 exit 1 では **自分で `--ack` を実行しない**。まず error を読む。`worker_done` の receipt は release
 前に記録されるため、`release_pending` は安全に再試行できる。`orca-wait.sh` を再実行すると release を
 再試行してから acknowledge を判断する。`release_unknown` は異なり、再試行しても前回の release 結果を
-証明できない。端末と worktree を保持し、acknowledge せず、`result.md` を読んで Step 4 へ進む。
-`orca-merge.sh` は記録済みの outcome と worker status を独立に検証する。その後は Step 5 [C1] が
-cleanup を閉じたままにする。未対応・矛盾 batch または不正 receipt は cursor を進めずに確認して、
-ユーザーの指示を待つ。
+証明できない。端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。acknowledge されない
+batch はこの親端末の queue の先頭に残るため、ユーザーと確認し、解決方法を決めるまで後続の dispatch は
+別の親端末で行う。未対応・矛盾 batch または不正 receipt は cursor を進めずに確認して、ユーザーの指示を待つ。
 
 ```bash
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 [[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
 "$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
 # Retry the canonical wait only when its error said release_pending.
-# For release_unknown, continue with the inspected result as described above; never ack by hand.
+# For release_unknown, do not retry or merge; never ack by hand.
 ```
 
 確認したメッセージと、それが `release_pending`、`release_unknown`、未対応・矛盾メッセージのどれかを
@@ -83,7 +82,7 @@ PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 
 ## Step 4: 成果を持ち帰る
 
-exit 0、または Step 3 で文書化された `release_unknown` の経路のときに実行する。
+exit 0 のときだけ実行する。
 
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
@@ -143,13 +142,21 @@ WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
-REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+RELRC=0; REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
+[[ "$RELRC" -eq 0 ]] && jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+  echo "could not confirm the release; do not close anything" >&2
+  exit 1
+}
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 case "$STATE" in
   retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
 esac
-SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null)
+SHRC=0; SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
+  echo "could not verify the terminal identity; do not close anything" >&2
+  exit 1
+}
 if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
    && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
   printf '%s terminal close --terminal %q --json\n' "$ORCA_BIN" "$TH"
@@ -175,13 +182,21 @@ KNOWN=$(jq -c '.worktree_terminals // empty' "$SD/workers.json" 2>/dev/null)
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
-REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+RELRC=0; REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
+[[ "$RELRC" -eq 0 ]] && jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+  echo "could not confirm the release; do not remove anything" >&2
+  exit 1
+}
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 case "$STATE" in
   retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
 esac
-SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null)
+SHRC=0; SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
+  echo "could not verify the terminal identity; do not remove anything" >&2
+  exit 1
+}
 IDENTITY_OK=no
 if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
    && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
@@ -193,13 +208,13 @@ DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
 # **Failing to list them is not the same as there being none** — if either side of the
 # comparison is unknown, the answer is "cannot tell", and cannot-tell closes the gate.
 TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT" --json 2>/dev/null) || TLRC=$?
-if [[ "$TLRC" -eq 0 ]] && jq -e '.result.terminals | type == "array"' <<<"$TL" >/dev/null 2>&1 \
-   && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1; then
-  ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
-                    --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
-else
-  ACCOUNTED=unknown
-fi
+[[ "$TLRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminals | type == "array")' <<<"$TL" >/dev/null 2>&1 \
+  && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1 || {
+  echo "could not verify the worktree terminals; do not remove anything" >&2
+  exit 1
+}
+ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
+                  --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
 
 if [[ "$MERGED" == true && "$OWNED" == true && "$DRC" -eq 0 && -z "$DIRTY" \
       && "$IDENTITY_OK" == yes && "$ACCOUNTED" == yes ]]; then
@@ -219,7 +234,8 @@ else
 fi
 ```
 
-`IDENTITY_OK` は [C2] の結果である。handle と worktree が一致したときだけ `yes` にする。
+`IDENTITY_OK` は [C3] の中で計算する。[C2] から shell 変数を持ち込まない。この block 内で handle と
+worktree が一致したときだけ `yes` になる。
 worker が Step 3 で exit 5 を返したときは `MERGED` が false であり、削除を提示しない。
 これは意図した動作であって欠落ではない。
 

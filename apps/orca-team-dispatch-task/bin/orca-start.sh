@@ -216,6 +216,11 @@ TCJ=0; TJ=$("$ORCA_BIN" orchestration task-create --spec "$SPEC" --task-title "$
               --from "$PH" --json 2>/dev/null) || TCJ=$?
 TID=$(jq -r '.result.task.id // empty' <<<"$TJ" 2>/dev/null || echo "")
 if [[ "$TCJ" -ne 0 ]]; then
+  if [[ -n "$TID" ]]; then
+    kept "task-create failed (rc=$TCJ) but returned task id $TID; a Task may exist. Resources are KEPT."
+    log "task=$TID  inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
+    exit 1
+  fi
   kept "task-create failed (rc=$TCJ); no Task was created"
   cleanup_before_task
   exit 1

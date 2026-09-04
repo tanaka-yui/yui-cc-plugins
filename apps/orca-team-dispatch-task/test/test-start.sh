@@ -172,13 +172,13 @@ setup; out=$(ORCA_FAIL_WRITE_AT=workers-after-task start 2>&1); rc=$?
   && ! grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST9b Task 成立後は KEPT で何も消さない" || fail "ST9b (rc=$rc out=$out)"; teardown
 
-# ST9a: task-create failure も同じ cleanup guarantee。identity と各 cleanup の結果を出す。
+# ST9a: task-create が task id を返したなら、rc 非 0 でも Task の不在を断定せず、何も削除しない。
 setup; echo 1 > "$ORCA_STUB_DIR/orchestration_task-create.rc"
 out=$(start 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *"worktree=wt_1"* && "$out" == *"terminal=term_w"* \
-  && "$out" == *"the terminal was closed"* && "$out" == *"worktree this call created was removed"* ]] \
-  && grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" && grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
-  && ok "ST9a task-create 失敗も identity と truthful cleanup" || fail "ST9a (rc=$rc out=$out)"; teardown
+[[ "$rc" -eq 1 && "$out" == *"task-create failed (rc=1) but returned task id task_x"* \
+  && "$out" == *"Resources are KEPT"* && "$out" == *"task=task_x"* ]] \
+  && ! grep -q 'terminal close\|worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST9a task id 付きの task-create 失敗は KEPT" || fail "ST9a (rc=$rc out=$out)"; teardown
 
 # ST9a2: rc 0 で task id が無い receipt は Task 不在を証明しない。何も cleanup しない。
 setup; echo '{"ok":true,"result":{"task":{}}}' > "$ORCA_STUB_DIR/orchestration_task-create"

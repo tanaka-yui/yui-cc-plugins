@@ -77,17 +77,18 @@ On exit 1, **do not run `--ack` yourself**. Read the error first. A `worker_done
 recorded before release is attempted, so `release_pending` is safe to retry: run
 `orca-wait.sh` again and it will retry release before acknowledging. `release_unknown` is
 different: a retry cannot prove the prior release result. Keep the terminal and worktree,
-do not acknowledge, read `result.md`, then proceed to Step 4; `orca-merge.sh` independently
-verifies the recorded outcome and worker status. After that, Step 5 [C1] keeps cleanup closed.
-For an unsupported or contradictory batch, or an invalid receipt, inspect without moving the
-cursor and stop for user direction; do not discard a message this version cannot handle:
+do not acknowledge, and **do not proceed to Step 4**. That unacknowledged batch stays at the
+front of this parent terminal's queue, so inspect it with the user and use a different parent
+terminal for later dispatches until they decide how to resolve it. For an unsupported or
+contradictory batch, or an invalid receipt, inspect without moving the cursor and stop for user
+direction; do not discard a message this version cannot handle:
 
 ```bash
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 [[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
 "$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
 # Retry the canonical wait only when its error said release_pending.
-# For release_unknown, continue with the inspected result as described above; never ack by hand.
+# For release_unknown, do not retry or merge; never ack by hand.
 ```
 
 Show the user the inspected message and whether it is `release_pending`, `release_unknown`,
@@ -96,7 +97,7 @@ invitation to recover a batch manually.
 
 ## Step 4: Bring the result home
 
-On exit 0, or after the documented `release_unknown` path from Step 3.
+On exit 0 only.
 
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
@@ -156,13 +157,21 @@ WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
-REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+RELRC=0; REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
+[[ "$RELRC" -eq 0 ]] && jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+  echo "could not confirm the release; do not close anything" >&2
+  exit 1
+}
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 case "$STATE" in
   retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
 esac
-SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null)
+SHRC=0; SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
+  echo "could not verify the terminal identity; do not close anything" >&2
+  exit 1
+}
 if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
    && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
   printf '%s terminal close --terminal %q --json\n' "$ORCA_BIN" "$TH"
@@ -188,13 +197,21 @@ KNOWN=$(jq -c '.worktree_terminals // empty' "$SD/workers.json" 2>/dev/null)
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
-REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+RELRC=0; REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
+[[ "$RELRC" -eq 0 ]] && jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+  echo "could not confirm the release; do not remove anything" >&2
+  exit 1
+}
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 case "$STATE" in
   retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
 esac
-SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null)
+SHRC=0; SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
+  echo "could not verify the terminal identity; do not remove anything" >&2
+  exit 1
+}
 IDENTITY_OK=no
 if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
    && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
@@ -206,13 +223,13 @@ DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
 # **Failing to list them is not the same as there being none** — if either side of the
 # comparison is unknown, the answer is "cannot tell", and cannot-tell closes the gate.
 TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT" --json 2>/dev/null) || TLRC=$?
-if [[ "$TLRC" -eq 0 ]] && jq -e '.result.terminals | type == "array"' <<<"$TL" >/dev/null 2>&1 \
-   && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1; then
-  ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
-                    --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
-else
-  ACCOUNTED=unknown
-fi
+[[ "$TLRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminals | type == "array")' <<<"$TL" >/dev/null 2>&1 \
+  && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1 || {
+  echo "could not verify the worktree terminals; do not remove anything" >&2
+  exit 1
+}
+ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
+                  --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
 
 if [[ "$MERGED" == true && "$OWNED" == true && "$DRC" -eq 0 && -z "$DIRTY" \
       && "$IDENTITY_OK" == yes && "$ACCOUNTED" == yes ]]; then
@@ -232,7 +249,8 @@ else
 fi
 ```
 
-`IDENTITY_OK` comes from [C2]: set it to `yes` only when the handle and worktree matched.
+`IDENTITY_OK` is calculated inside [C3]; do not carry a shell variable from [C2]. It is `yes`
+only when the handle and worktree matched in this block.
 When the worker failed (Step 3 exit 5) `MERGED` is false, so no removal is offered — that
 is the intended behaviour, not a gap.
 
