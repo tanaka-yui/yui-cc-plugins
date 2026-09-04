@@ -1646,7 +1646,10 @@ apps/orca-team-dispatch-task/
 **`accepted` も `merge_ready` も無い。**親の「検証」は `result.md` を読んでユーザーへ
 報告することであり、内容が不十分なら**ユーザーが投げ直す**。二相コミットは **F-d** である。
 
-#### Stage 1 の既知の制限（SKILL.md と README に同じ文言で書く）
+#### Stage 1 の既知の制限（**正本は SKILL.md 1 つ**）
+
+`references/guide-ja.md` は訳の mirror、`README.md` は正本を指すだけで内容を持たない。
+同じ文を 3 箇所へ書くと drift するので単一 owner にする（plan2 round 2 finding 8）。
 
 | 制限 | ユーザーがすること |
 |---|---|
