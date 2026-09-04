@@ -105,4 +105,47 @@ l=$(grep 'worker-show' "$ORCA_STUB_DIR/calls.log" | head -1)
 [[ "$rc" -eq 3 && "$l" == *--dispatch* && "$l" != *--worker* ]] \
   && ok "WT14 停止・待機・時間切れ・argv" || fail "WT14 (rc=$rc l=$l)"; teardown
 
+# WT15: deliveryId が無い batch は不正。受信記録・release・ack の副作用を持たない
+setup; dn
+jq -nc '{ok:true,result:{runId:"run_x",count:1,messages:[
+  {id:"m1",type:"worker_done",payload:{taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"},body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && ! -e "$SD/received.json" ]] \
+  && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT15 deliveryId 欠落は副作用なし" || fail "WT15 (rc=$rc)"; teardown
+
+# WT16: 同じ task/dispatch の逆 outcome は 2 件目の完了として消費せず、ack しない
+setup; dn; msg succeeded; w >/dev/null 2>&1
+: > "$ORCA_STUB_DIR/calls.log"; msg failed m2; w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && "$(jq 'length' "$SD/received.json")" == "1" ]] \
+  && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT16 逆 outcome は fail-closed" || fail "WT16 (rc=$rc)"; teardown
+
+# WT17: check の ok:false は受信失敗で、ack・release・受信記録を行わない
+setup; dn; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_check"
+w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && ! -e "$SD/received.json" ]] \
+  && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT17 check ok:false は副作用なし" || fail "WT17 (rc=$rc)"; teardown
+
+# WT18: release / worker-show の ok:false は受信失敗で ack しない
+setup; dn; msg; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && ! -e "$SD/received.json" ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT18a release ok:false は ack しない" || fail "WT18a (rc=$rc)"; teardown
+setup; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-show"
+w 1 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT18b worker-show ok:false は受信失敗" || fail "WT18b (rc=$rc)"; teardown
+
+# WT19: null parent handle と非正の待機値は使用法エラー
+setup; echo '{"run_id":"run_x","parent_handle":null,"repo_root":"/tmp"}' > "$SD/run.json"
+w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 2 ]] && ok "WT19a null handle は使用法エラー" || fail "WT19a (rc=$rc)"; teardown
+setup; bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 0 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 2 ]] && ok "WT19b max-waits を検証" || fail "WT19b (rc=$rc)"; teardown
+setup; bash "$P/bin/orca-wait.sh" --status-dir "$SD" --timeout-ms nope >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 2 ]] && ok "WT19c timeout-ms を検証" || fail "WT19c (rc=$rc)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

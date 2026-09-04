@@ -21,25 +21,48 @@ while [[ $# -gt 0 ]]; do case "$1" in
   *) die "unknown option: $1" ;;
 esac; done
 [[ -n "$SD" ]] || die "--status-dir is required"
+[[ "$MAXW" =~ ^[1-9][0-9]*$ ]] || die "--max-waits must be a positive integer"
+[[ "$TMO" =~ ^[1-9][0-9]*$ ]] || die "--timeout-ms must be a positive integer"
 [[ -r "$SD/run.json" && -r "$SD/workers.json" ]] || die "cannot read the dispatch state in $SD"
-PH=$(jq -r '.parent_handle' "$SD/run.json")
+PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 TID=$(jq -r '.design.task // empty' "$SD/workers.json")
 DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json")
 [[ -n "$PH" && -n "$TID" && -n "$DID" ]] || die "the dispatch identity is incomplete"
-RECV="$SD/received.json"; [[ -f "$RECV" ]] || printf '[]\n' > "$RECV"
+RECV="$SD/received.json"
 write() {
   local t
   t=$(mktemp "$SD/.tmp.XXXXXX") || return 1
   printf '%s\n' "$2" > "$t" && mv -f "$t" "$1" || { rm -f "$t"; return 1; }
 }
+stored_outcome() {
+  local matches count
+  [[ -f "$RECV" ]] || return 0
+  matches=$(jq -c --arg task "$TID" --arg dispatch "$DID" \
+    '[.[] | select(.task_id == $task and .dispatch_id == $dispatch)]' "$RECV" 2>/dev/null) || return 1
+  count=$(jq 'length' <<<"$matches") || return 1
+  [[ "$count" -le 1 ]] || return 1
+  [[ "$count" -eq 0 ]] || jq -r '.[0].outcome' <<<"$matches"
+}
+record_outcome() {
+  local records
+  records='[]'
+  if [[ -f "$RECV" ]]; then
+    records=$(jq -c . "$RECV") || return 1
+  fi
+  write "$RECV" "$(jq -c --arg task "$TID" --arg dispatch "$DID" --arg outcome "$1" \
+    '. + [{task_id: $task, dispatch_id: $dispatch, outcome: $outcome}]' <<<"$records")"
+}
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）
-  local out res n i m d t tid did oc REL RST
+  local out res n i m d t tid did oc batch_oc existing record_needed REL RST ACK
   out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || return 1
+  jq -e '.ok == true and (.result | type == "object")' <<<"$out" >/dev/null 2>&1 || return 1
   res=$(jq -c '.result // {}' <<<"$out" 2>/dev/null) || return 1
-  n=$(jq -r '.messages | length // 0' <<<"$res" 2>/dev/null || echo 0)
+  n=$(jq -r '.messages | if type == "array" then length else -1 end' <<<"$res" 2>/dev/null) || return 1
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
   [[ "$n" -gt 0 ]] || return 0
   d=$(jq -r '.deliveryId // empty' <<<"$res")
+  [[ -n "$d" ]] || { log "a non-empty batch has no deliveryId"; return 1; }
   for ((i = 0; i < n; i++)); do
     m=$(jq -c ".messages[$i]" <<<"$res")
     t=$(jq -r '.type // empty' <<<"$m")
@@ -57,30 +80,39 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       succeeded|failed) ;;
       *) log "worker_done has outcome '${oc:-none}'"; return 1 ;;
     esac
-    # 冪等: 同じ (task, dispatch, outcome) は 1 度だけ。message id は再送で変わる
-    if ! jq -e --arg k "worker_done|$tid|$did|$oc" 'index($k) != null' "$RECV" >/dev/null 2>&1; then
-      write "$RECV" "$(jq --arg k "worker_done|$tid|$did|$oc" '. + [$k]' "$RECV")" || return 1
-    fi
-    # ★ **ack より前に owner を決める** (Orca guide)。accepted な worker_done のあとは
-    #   `worker-release` が既定であり、retain は「ユーザーが明示的にデバッグ保持を依頼した
-    #   場合」の例外である。この版はその依頼を取らないので release を使う。
-    #   この端末は terminal create 済みの external/reused なので、release は閉じずに
-    #   `retained` を返す — 手動 cleanup まで残るのはそのためであって、retain の結果ではない。
-    #   **exit 0 は「完了した」の証明ではない。**pending / unknown では ack しない
-    REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
-    RST=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null || echo "")
-    case "$RST" in
-      retained|already_released) ;;
-      *)
-        log "worker-release reported '${RST:-none}'; not acknowledging (it will be retried)"
-        return 1
-        ;;
-    esac
+    [[ -z "${batch_oc:-}" || "$batch_oc" == "$oc" ]] || {
+      log "batch $d has contradictory outcomes for task '$TID' dispatch '$DID'"
+      return 1
+    }
+    batch_oc="$oc"
   done
-  [[ -z "$d" ]] || "$ORCA_BIN" orchestration check --terminal "$PH" --ack "$d" --json >/dev/null 2>&1 || {
+  existing=$(stored_outcome) || return 1
+  if [[ -n "$existing" && "$existing" != "$batch_oc" ]]; then
+    log "received outcome '$existing' contradicts batch outcome '$batch_oc' for task '$TID' dispatch '$DID'"
+    return 1
+  fi
+  record_needed=0
+  [[ -n "$existing" ]] || record_needed=1
+  # ★ **ack より前に owner を決める** (Orca guide)。accepted な worker_done のあとは
+  #   `worker-release` が既定であり、retain は「ユーザーが明示的にデバッグ保持を依頼した
+  #   場合」の例外である。この版はその依頼を取らないので release を使う。
+  #   **exit 0 は「完了した」の証明ではない。**pending / unknown では ack しない
+  REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || return 1
+  jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || return 1
+  RST=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null || echo "")
+  case "$RST" in
+    retained|already_released) ;;
+    *)
+      log "worker-release reported '${RST:-none}'; not acknowledging (it will be retried)"
+      return 1
+      ;;
+  esac
+  [[ "$record_needed" -eq 0 ]] || record_outcome "$batch_oc" || return 1
+  ACK=$("$ORCA_BIN" orchestration check --terminal "$PH" --ack "$d" --json 2>/dev/null) || {
     log "ack failed; the batch will replay"
     return 1
   }
+  jq -e '.ok == true' <<<"$ACK" >/dev/null 2>&1 || { log "ack receipt was not ok"; return 1; }
   return 0
 }
 outcome_of() {   # 受信済みと status が一致した結論を返す。無ければ空
@@ -91,7 +123,10 @@ outcome_of() {   # 受信済みと status が一致した結論を返す。無�
     error) oc=failed ;;
     *) return 1 ;;
   esac
-  jq -e --arg k "worker_done|$TID|$DID|$oc" 'index($k) != null' "$RECV" >/dev/null 2>&1 || return 1
+  [[ -f "$RECV" ]] || return 1
+  jq -e --arg task "$TID" --arg dispatch "$DID" --arg outcome "$oc" \
+    '[.[] | select(.task_id == $task and .dispatch_id == $dispatch)] | length == 1 and .[0].outcome == $outcome' \
+    "$RECV" >/dev/null 2>&1 || return 1
   printf '%s' "$oc"
 }
 finish() {
@@ -101,8 +136,8 @@ finish() {
 }
 healthy() {   # **人の入力待ちは healthy である**（CLI help）
   local show st wait
-  show=$("$ORCA_BIN" orchestration worker-show --dispatch "$DID" --json 2>/dev/null) || return 1
-  jq -e . <<<"$show" >/dev/null 2>&1 || return 1
+  show=$("$ORCA_BIN" orchestration worker-show --dispatch "$DID" --json 2>/dev/null) || return 2
+  jq -e '.ok == true and (.result | type == "object")' <<<"$show" >/dev/null 2>&1 || return 2
   wait=$(jq -r '.result.observation.agentWait // empty' <<<"$show")
   [[ -n "$wait" && "$wait" != null ]] && return 0
   st=$(jq -r '.result.worker.state // empty' <<<"$show")
@@ -116,10 +151,11 @@ drain || exit 1
 oc=$(outcome_of) && finish "$oc"
 n=0
 while :; do
-  "$ORCA_BIN" orchestration check --terminal "$PH" --wait --timeout-ms "$TMO" --json >/dev/null 2>&1 || true
+  WAIT=$("$ORCA_BIN" orchestration check --terminal "$PH" --wait --timeout-ms "$TMO" --json 2>/dev/null) || exit 1
+  jq -e '.ok == true' <<<"$WAIT" >/dev/null 2>&1 || exit 1
   drain || exit 1
   oc=$(outcome_of) && finish "$oc"
-  healthy || exit 4
+  healthy || { hrc=$?; [[ "$hrc" -eq 1 ]] && exit 4 || exit 1; }
   n=$((n + 1))
   [[ "$n" -lt "$MAXW" ]] || { log "reached --max-waits ($MAXW); inspect and decide"; exit 3; }
 done
