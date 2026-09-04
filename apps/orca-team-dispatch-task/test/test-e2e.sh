@@ -45,7 +45,7 @@ git -C "$WT" -c user.email=t@e -c user.name=t commit -q -m work
 printf 'appended %s\n' "$MARK" > "$SD/roles/design/result.md"
 echo '{"status":"done"}' > "$SD/roles/design/status.json"
 jq -nc '{ok:true,result:{runId:"run_e",deliveryId:"d1",count:1,messages:[
-  {id:"m1",type:"worker_done",payload:{taskId:"task_e",dispatchId:"ctx_e",outcome:"succeeded"},body:""}]}}' \
+  {id:"m1",type:"worker_done",payload:({taskId:"task_e",dispatchId:"ctx_e",outcome:"succeeded"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"
 out=$(bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 --timeout-ms 1 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* ]] && ok "E6 成功で完了" || fail "E6 (rc=$rc)"

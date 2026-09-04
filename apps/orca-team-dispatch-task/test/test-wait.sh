@@ -17,11 +17,17 @@ setup() {
 teardown() { rm -rf "$ORCA_STUB_DIR" "$SD"; unset ORCA_BIN; }
 msg() { jq -nc --arg o "${1:-succeeded}" --arg i "${2:-m1}" --arg t "${3:-task_x}" \
   '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
-    {id:$i,type:"worker_done",payload:{taskId:$t,dispatchId:"ctx_x",outcome:$o},body:""}]}}' \
+    {id:$i,type:"worker_done",payload:({taskId:$t,dispatchId:"ctx_x",outcome:$o}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+object_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
+    {id:"msg_object",type:"worker_done",payload:{taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"},body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+real_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
+    {id:"msg_real",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded",filesModified:["README.md"],reportPath:"/tmp/roles/design/result.md"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"; }
 mixed() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d2",count:2,messages:[
-    {id:"q1",type:"question",payload:{taskId:"task_x",dispatchId:"ctx_x"},body:"?"},
-    {id:"m1",type:"worker_done",payload:{taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"},body:""}]}}' \
+    {id:"q1",type:"question",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"?"},
+    {id:"m1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"; }
 w() { bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits "${1:-1}" --timeout-ms 1; }
 dn() { echo '{"status":"done"}' > "$SD/roles/design/status.json"; }
@@ -41,6 +47,16 @@ setup; dn; w >/dev/null 2>&1
 # WT4: succeeded は exit 0 で outcome を stdout に出す
 setup; dn; msg; out=$(w 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* ]] && ok "WT4 成功で 0" || fail "WT4 (rc=$rc out=$out)"; teardown
+
+# WT4b: 実 Orca の worker_done.payload は JSON object ではなく JSON 文字列で返る。
+setup; dn; real_msg; out=$(w 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* ]] && ok "WT4b 実 receipt の string payload" \
+  || fail "WT4b (rc=$rc out=$out)"; teardown
+
+# WT4c: 過去の object receipt も受け続ける。
+setup; dn; object_msg; out=$(w 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* ]] && ok "WT4c object payload 互換" \
+  || fail "WT4c (rc=$rc out=$out)"; teardown
 
 # WT5: **failed は exit 5。**merge へ進ませない
 setup; er; msg failed; out=$(w 2>/dev/null); rc=$?
@@ -121,7 +137,7 @@ l=$(grep 'worker-show' "$ORCA_STUB_DIR/calls.log" | head -1)
 # WT15: deliveryId が無い batch は不正。受信記録・release・ack の副作用を持たない
 setup; dn
 jq -nc '{ok:true,result:{runId:"run_x",count:1,messages:[
-  {id:"m1",type:"worker_done",payload:{taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"},body:""}]}}' \
+  {id:"m1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"
 w >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 1 && ! -e "$SD/received.json" ]] \
