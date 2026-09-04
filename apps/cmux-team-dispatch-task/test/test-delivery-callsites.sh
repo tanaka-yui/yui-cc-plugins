@@ -451,6 +451,11 @@ fi
 
 
 # --- CS9: レビュー依頼は review-request.sh 経由に一本化されている ---
+# CLAUDE.md も対象に含める (項目 14 / 33 の旧手順記述の再発防止)。CLAUDE.md は Markdown
+# なので `#` は見出しマーカーであってシェルのコメント開始ではないが、`^[^#]*review-request\.sh`
+# は行頭からの文字列一致でしか判定しない。対象の記述はいずれも見出し行ではなく箇条書きの
+# 本文行にあり、同じ行内に `#` が先行しないことを確認済みなので、シェルスクリプト向けの
+# パターンをそのまま流用しても false negative にならない。
 CS9_SOURCES=(
   "$SCRIPTS/phase-b-deliver.sh"
   "$SCRIPTS/phase-a-review-wait.sh"
@@ -459,6 +464,7 @@ CS9_SOURCES=(
   "$SKILL_DIR/SKILL.md"
   "$SKILL_DIR/references/unattended/review-block.md"
   "$SKILL_DIR/references/unattended/code-review-block.md"
+  "$PLUGIN_DIR/CLAUDE.md"
 )
 cs9=0
 for f in "${CS9_SOURCES[@]}"; do
