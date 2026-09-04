@@ -304,6 +304,17 @@ git commit -m "feat(dispatch): レビュー依頼を原子的に送る review-re
 
 ### Task 2: `review-state.sh` の point スコープ化と gate への配線
 
+> **このタスクの role→point 対応は実装中に誤りと判明し、ruling R-T2-1 で差し替えた。**
+> 以下の本文と Step 3 / Step 7 のコードは `design` / `design_review` を literal `design` へ
+> 包含スコープしているが、これは誤りである。Phase A-R は checkpoint を 2 つ持ち
+> (spec 後・plan 後)、point 名は固定ではない (`SKILL.md:911` の実測名は
+> `spec` / `plan` / `design` / `code`)。固定名で包含すると superpowers モードの design ペインが
+> 自分の findings を見失う。**正しい対応は `design` / `design_review` → `!code`（`code` 以外
+> すべて）、`exec` / `exec_review` → `code`** で、`review_select_active` の第 2 引数は
+> `<name>`（包含）と `!<name>`（除外）を受ける。詳細は spec の 4-4 節を参照。
+> 併せて ruling R-T2-3 / R-T2-4 が CG14 / CG20 のフィクスチャを、R-T2-5 が CG-P2 / CG-P3 を
+> 追加している。
+
 **Files:**
 - Modify: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/review-state.sh`
 - Modify: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/completion-gate.sh`

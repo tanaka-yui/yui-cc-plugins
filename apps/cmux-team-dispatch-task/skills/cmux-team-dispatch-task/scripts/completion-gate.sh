@@ -312,7 +312,15 @@ st=$(jq -r '.status // empty' "$STATUS_DIR/status.json" 2>/dev/null || echo "")
 [[ -f "$STATUS_DIR/.escalated" ]] && allow
 
 if [[ "$ROLE" == design ]]; then
-  expected_exec_agent >/dev/null || block "the prewarm snapshot at $STATUS_DIR/prewarm.json is missing, unreadable, or has no exec agent. Report this to parent$NOTIFY_HINT and wait; do not write a terminal status."
+  # prewarm.json は全ペインの起動と配線が終わってから publish される。それより前に
+  # 起動済みペインの Stop hook が発火する区間があり、そこを block へ倒すと、この文面が
+  # 「親へ報告せよ」と指示してしまう。2026-09-02 には全 8 タスクで誤報告が発生し、最多で
+  # 9 通連続、2 件は .escalated まで書いた。配線中のペインは「タスク到着を待つ idle」で
+  # あって停止して良い状態なので、sentinel があるあいだは黙って許す。
+  if ! expected_exec_agent >/dev/null; then
+    [[ -f "$STATUS_DIR/.wiring" ]] && allow
+    block "the prewarm snapshot at $STATUS_DIR/prewarm.json is missing, unreadable, or has no exec agent. Report this to parent$NOTIFY_HINT and wait; do not write a terminal status."
+  fi
   if [[ "$st" == done ]]; then delegation_recorded || block "status says done but delegation is not recorded.$DELEGATE_HINT"; allow; fi
   if [[ -f "$STATUS_DIR/.deferred" ]]; then delegation_recorded || block "the deferred marker lacks the expected exec assignment.$DELEGATE_HINT"; allow; fi
 fi
@@ -330,7 +338,21 @@ fi
 # closure の規則を再実装しない。
 # shellcheck disable=SC1090
 . "$SCRIPT_DIR/review-state.sh"
-review_select_active "$STATUS_DIR"
+# role ごとに自分の review point だけを見る。design ペインは Phase A-R の依頼者、exec は
+# Phase B-R の依頼者であり、それぞれの相手が design_review / exec_review である。
+# 全 point を混ぜて最新 1 件を選ぶと、design 点の VERDICT 付き findings が exec の未完了
+# レビューをマスクし、待機中の実装者が判定 7 へ落ちる (2026-09-02 に 4/7 のタスクで発生)。
+# code は固定名で書ける (phase-b-deliver.sh と launch-workspace.sh に code と焼き込まれて
+# いる) が、design 側の checkpoint 名は固定ではない (superpowers モードは spec と plan の
+# 2 点、無人ループは design)。design 側を literal な point 名へ包含スコープすると、
+# superpowers モードの design ペインが自分の spec-round-*/plan-round-* を見失い、この
+# タスクが直そうとしているのと同じ症状が design 側で再発する。そこで design 側は
+# 「code 以外すべて」という除外スコープで表す。
+case "$ROLE" in
+  design|design_review) GATE_POINT='!code' ;;
+  exec|exec_review)     GATE_POINT=code ;;
+esac
+review_select_active "$STATUS_DIR" "$GATE_POINT"
 POINT="$RS_POINT"; ROUND_NO="$RS_ROUND"
 ROUND_FILE="$RS_ROUND_FILE"; REQUEST_FILE="$RS_REQUEST_FILE"; ABORT_FILE="$RS_ABORT_FILE"
 answer_pending() { [[ "$RS_ANSWER_PENDING" == 1 ]]; }
@@ -413,10 +435,28 @@ if [[ "$ROLE" == exec && -r "$REVIEW_CONFIG" ]]; then
   shopt -s nullglob
   for f in "$STATUS_DIR"/review/code-round-*-request.md; do code_requested="$f"; break; done
   if [[ -n "$reviewer" && -z "$code_requested" ]]; then
-    REVIEW_HINT=" A mandatory code review is wired for this task and you have not requested it once: the reviewer is the agent $reviewer, and its findings belong in $STATUS_DIR/review/code-round-<N>.md. Address the request to that agent name — never to parent, and never to a surface or workspace id. If your handoff message did not mention any of this, the wiring is still real: this pane also has $STATUS_DIR/review/code-review.json and a pointer to it in .dispatch-handoff.json at the root of your worktree. Before the review, write your request text to $STATUS_DIR/review/code-round-<N>-request.md, then send it with one call whose body starts with review-code:."
+    REVIEW_HINT_PREFIX=" A mandatory code review is wired for this task and you have not requested it once: the reviewer is the agent $reviewer, and its findings belong in $STATUS_DIR/review/code-round-<N>.md. Address the request to that agent name — never to parent, and never to a surface or workspace id. If your handoff message did not mention any of this, the wiring is still real: this pane also has $STATUS_DIR/review/code-review.json and a pointer to it in .dispatch-handoff.json at the root of your worktree."
+    # TEAM は通常 STATUS_DIR/ROLE/AGENT と一緒に export されるが、この hook の identity 判定は
+    # TEAM を必須にしていない。TEAM が無いまま --team を埋めると空文字の壊れた呼び出し例を
+    # 提示してしまうので、その場合は --team の 1 引数だけを省く。review-dir / point / round /
+    # from / to は既知なので、埋められる引数まで削るのは 141-145 行目の原則より過剰である。
+    if [[ -n "$TEAM" ]]; then
+      REVIEW_HINT="$REVIEW_HINT_PREFIX Make the request with one call to bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point code --round <N> --team $TEAM --from $AGENT --to $reviewer, piping the request text into it on standard input; that single call writes the request file this gate reads and sends the message."
+    else
+      REVIEW_HINT="$REVIEW_HINT_PREFIX Make the request with one call to bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point code --round <N> --from $AGENT --to $reviewer, piping the request text into it on standard input; that single call writes the request file this gate reads and sends the message."
+    fi
   fi
+fi
+
+# review-dir / point / round / from / to は常に既知なので、TEAM の有無にかかわらず出す。
+# 空文字の --team だけを避けるため、TEAM が無いときはその 1 引数だけを省く
+# (141-145 行目の原則: 埋められない引数だけを見せない。埋められる引数まで削らない)。
+if [[ -n "$TEAM" ]]; then
+  WAIT_REISSUE="Instead re-issue the same round through bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point <point> --round <N> --team $TEAM --from $AGENT --to <the reviewer agent>, using the same <point> as the round you requested, piping the same request text into it on standard input; that is how this gate sees a wait. Then keep waiting."
+else
+  WAIT_REISSUE="Instead re-issue the same round through bash $SCRIPT_DIR/review-request.sh --review-dir $STATUS_DIR/review --point <point> --round <N> --from $AGENT --to <the reviewer agent>, using the same <point> as the round you requested, piping the same request text into it on standard input; that is how this gate sees a wait. Then keep waiting."
 fi
 
 arm_lease "progress|$ROLE|$AGENT" || true
 PRESERVE_LEASE=1
-block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet.$REVIEW_HINT Continue the work. Waiting for a review verdict is NOT being blocked and is NOT an error: if you are waiting, do not write a terminal status. Instead write the request text you already sent to $STATUS_DIR/review/<point>-round-<N>-request.md for the round you requested, which is how this gate sees a wait, then keep waiting. To finish real work, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done only when the work itself failed), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."
+block "the task is not finished: $STATUS_DIR/status.json has no terminal status yet.$REVIEW_HINT Continue the work. Waiting for a review verdict is NOT being blocked and is NOT an error: if you are waiting, do not write a terminal status. $WAIT_REISSUE To finish real work, write the terminal status with: bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done <message> (use error instead of done only when the work itself failed), then send one dispatch-notify: message to parent as $AGENT$NOTIFY_HINT."

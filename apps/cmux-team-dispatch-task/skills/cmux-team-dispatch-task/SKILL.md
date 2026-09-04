@@ -198,7 +198,7 @@ Ask the user how completed tasks should be integrated:
 
 Based on the selection:
 
-- **PR per task** → child prompts include push + `gh pr create` instructions in the status protocol
+- **PR per task** → the parent resolves `origin` once and passes `--integration pr --pr-repo <owner/repo> --pr-base <branch>` to `prewarm-panes.sh`, which writes `<status-dir>/integration.json`. In loop mode, the driver also passes `--pr-issue <N>` with that task's issue number, which becomes the PR body's `Closes #NNN` line. This chain — `phase-b-deliver.sh` reading that file and embedding the exact `git push -u origin <head>` and `gh pr create --repo <owner/repo> --base <base> --head <head>` commands into the child's protocol, followed by `record-pr.sh`, which verifies the PR exists on that repository before writing `pr_url` — applies to the interactive and superpowers dispatch paths, where the Phase B handoff goes through `phase-b-deliver.sh`. The unattended loop path currently hand-delivers Phase B and does not yet embed those PR commands or route its terminal status through `report-status.sh`, so `report-status.sh`'s guards do not apply there. The child never chooses a remote.
 - **Wait and merge** → current behavior (local merge after all tasks complete)
 
 ### 1f. Resolve Roles
@@ -687,10 +687,11 @@ readiness pruning.
 
 **Phase A-R.** When design_review is present, reuse its one pane for two checkpoints:
 the clarified specification before planning and the completed plan before execution.
-For each checkpoint, write the request and findings files under
-<EXISTING_STATUS_DIR>/review and send exactly one
-review-plan: message to {{DESIGN_REVIEW_AGENT}}. **A review pane never gets an
-assignment marker.** Do not touch `.assigned-{{DESIGN_REVIEW_AGENT}}`, or any other
+For each checkpoint, request the review with one call to
+`<SKILL_DIR>/scripts/review-request.sh`, which writes the request file under
+<EXISTING_STATUS_DIR>/review and sends exactly one review-plan: message to
+{{DESIGN_REVIEW_AGENT}} together; the reviewer's findings land in that same directory.
+**A review pane never gets an assignment marker.** Do not touch `.assigned-{{DESIGN_REVIEW_AGENT}}`, or any other
 `.assigned-*` for a review role: a review pane is standby, and the runner wrapper reads
 that marker as "this pane accepted the task", which makes it report the shared
 `status.json` — another role's result — as its own. The reviewer writes a VERDICT line and
@@ -711,6 +712,7 @@ reviewer engine independently controls liveness:
       --reviewer-workspace "{{DESIGN_REVIEW_WORKSPACE}}" \
       --reviewer-surface "{{DESIGN_REVIEW_SURFACE}}" \
       --findings-path "<EXISTING_STATUS_DIR>/review/<point>-round-<N>.md" \
+      --review-dir "<EXISTING_STATUS_DIR>/review" \
       --send-command "$AGMSG_SEND") || exit 1
 
 Always append the protocol:
@@ -767,12 +769,13 @@ in a separate message afterwards is fine; replacing the helper's message is not.
 launch and readiness. The helper reads that regular JSON file once, proves that it is in
 the canonical review directory and matches the verified exec_review tuple and workspace,
 then embeds the following protocol into the actual prewarmed exec request exactly once.
-After all changes are committed and BEFORE creating the PR, the implementer sends one
-`review-code:` request per round only to the verified exec_review agent. Before that send,
-it writes the same request text to `<EXISTING_STATUS_DIR>/review/code-round-N-request.md`,
-exactly as Phase A-R does for its checkpoints: the completion gate reads only the disk, so
-that file is the sole evidence that the implementer is waiting for a verdict rather than
-idling mid-task. The reviewer
+After all changes are committed and BEFORE creating the PR, the implementer requests each
+round with one call to `<SKILL_DIR>/scripts/review-request.sh --point code`, addressed only
+to the verified exec_review agent. That single call writes the request to
+`<EXISTING_STATUS_DIR>/review/code-round-N-request.md` and sends the review-code: message
+together, exactly as Phase A-R does for its checkpoints: the completion gate reads only the
+disk, so that file is the sole evidence that the implementer is waiting for a verdict rather
+than idling mid-task. The reviewer
 writes `<EXISTING_STATUS_DIR>/review/code-round-N.md`; its last line is `VERDICT: approve`
 or `VERDICT: needs_work`, followed by one `review-verdict:` send.sh call back to the
 implementer. On needs_work, fix valid findings and request the next round; on approve,
@@ -806,9 +809,22 @@ Every child status protocol includes:
        failure in status.json.
     5. A delegated design session touches .deferred and must not overwrite the exec
        role's terminal status.
+    6. `report-status.sh` refuses `done` when `integration.json` says `pr` and
+       `status.json` has no `pr_url`, and when a `design` role writes `done` while
+       `.deferred` exists. It never refuses `error`.
+    7. `done` with a missing or empty `result.md` still writes, but records
+       `result_missing: true`.
 
-The PR-per-task variant also pushes the branch, creates the PR, and records pr_url. The
-wait-and-merge variant leaves the verified branch for the parent to merge.
+On every wake, treat a completion notification as a claim, not a fact. Re-derive from
+disk: `result_missing: true` means the child reported a result file it did not write, and
+for PR integration the PR must exist on the repository named in `integration.json`.
+Measured on 2026-09-02: three children reported files that were never written, and one
+reported `done` with no branch on the remote at all.
+
+The PR-per-task variant pushes the branch to `origin`, creates the PR on the repository
+named in `integration.json`, and records `pr_url` through `record-pr.sh`, which fails when
+no PR exists there. The wait-and-merge variant leaves the verified branch for the parent to
+merge.
 
 ### Plan-mode Enforcement Hook (ExitPlanMode)
 
@@ -912,6 +928,18 @@ picks by mtime, not by name: checkpoint names differ per phase (`spec`, `plan`, 
 `code`), and `plan-round-1.md` sorts *before* an already-approved `spec-round-5.md`, so a
 name-ordered pick returns the finished checkpoint and strands the live one. Both were measured
 on 2026-08-24.
+
+The gate scopes the review state to the role's own review point, and there is no fallback to
+an unscoped scan. Mixing points and taking the newest file lets a finished review at one point
+mask an unfinished review at the other, which sends a waiting implementer into the "task is not
+finished" branch; measured on 2026-09-02 in 4 of 7 tasks. Only Phase B-R's point name is fixed:
+`phase-b-deliver.sh` and `launch-workspace.sh` hardcode `code`, so `exec` and `exec_review` scope
+by inclusion, to `code-round-*` alone. Phase A-R's checkpoint name is not fixed — superpowers mode
+reuses the `design_review` pane for two checkpoints, `spec` then `plan`, while the unattended loop
+uses `design` (see `references/unattended/review-block.md`) — so scoping `design` and
+`design_review` to a literal name would strand a superpowers-mode design pane on its own
+`spec-round-*` or `plan-round-*` files the same way the unscoped scan used to strand `exec`.
+Those two roles therefore scope by exclusion instead: every point except `code`.
 
 **A findings file alone cannot express "I asked and nobody has answered".** Excluding request
 files from the round-file pick is right, but it leaves two windows where the requester looks
@@ -1090,9 +1118,28 @@ also run the normal design launch:
       --agmsg-team "$TEAM" \
       --parent-notify-workspace "$CMUX_WORKSPACE_ID")
 
+When the integration strategy is PR per task, resolve the target repository from `origin`
+once, in the parent, and pass it to every `prewarm-panes.sh` call:
+
+    PR_REPO=$(git remote get-url origin | sed -E 's#(git@github\.com:|https://github\.com/)##; s#\.git$##')
+    PR_BASE=$(git symbolic-ref --short HEAD)
+    prewarm-panes.sh ... --integration pr --pr-repo "$PR_REPO" --pr-base "$PR_BASE"
+
+Add `--pr-issue <N>` in loop mode. Never let a child pick the remote: measured on
+2026-09-02, a child in a three-remote repository pushed to a personal fork and opened the
+PR inside that fork, where the issue does not exist. For wait-and-merge, pass
+`--integration merge` or omit it.
+
 prewarm-panes.sh creates or reuses the worktree, joins all configured role agents, wires
 delivery with delivery.sh set before launch, starts each pane with its own readiness clause, and writes the
 initial launched status.json. It records only successfully launched panes.
+
+`prewarm-panes.sh` writes `<status-dir>/.wiring` before it launches the first pane and
+removes it when `prewarm.json` is published (and on every rollback path). Panes start
+before that snapshot exists, and their Stop hooks fire in that window; without the
+sentinel the gate tells a design pane to report a missing snapshot to the parent. Measured
+on 2026-09-02: all eight tasks produced such reports, one of them nine in a row, and two
+panes escalated.
 
 The resulting prewarm.json has workspace_id, review_mode, and explicit role keys. Each
 role tuple contains surface_id, agent, runner, engine, optional model, effort, and
@@ -1230,6 +1277,15 @@ messages only tell you when to look.
    **Bound the re-arming.** After 3 re-arms with no message and no visible progress,
    stop re-arming: report with the `cmux read-screen` excerpt and ask the user how to
    proceed. "The pane is alive" is not evidence of progress.
+
+   **Stop re-arming when the timer itself keeps dying.** If the background `sleep` is
+   killed before it fires twice in a row — it disappears minutes into a 90-minute wait
+   rather than waking you — do not arm a third one. Say plainly in your next report that
+   this dispatch is running without a backstop, so a silent child needs the user's eyes,
+   and continue monitoring through agmsg messages alone. Measured on 2026-09-02: arms 2
+   through 5 were all killed within minutes to half an hour, and the parent ran the rest
+   of the batch with no timer. Re-arming a timer that never survives costs a wake each
+   time and buys nothing.
 
 2. Report the launch summary using Template A with concrete surface IDs.
 3. Tell the user: "Monitoring N tasks. Waiting for agmsg notifications."

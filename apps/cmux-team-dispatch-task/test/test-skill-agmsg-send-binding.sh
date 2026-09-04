@@ -61,7 +61,7 @@ else
     --waiter-engine claude --reviewer-engine codex
     --team t --waiter-agent w --reviewer-agent r
     --reviewer-workspace workspace:1 --reviewer-surface surface:1
-    --findings-path /tmp/f.md
+    --findings-path /tmp/f.md --review-dir /tmp
   )
 
   # AB3: 空の --send-command は usage error (2)

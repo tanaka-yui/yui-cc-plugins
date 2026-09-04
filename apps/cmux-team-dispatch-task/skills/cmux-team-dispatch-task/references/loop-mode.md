@@ -114,6 +114,23 @@ Each batch is claimed with `fetch --limit <concurrency> --batch <N>`. `fetch` re
 `[]`, exit 3 (all claims failed), or exit 4 (exhaustion unknown) all end the loop without
 starting the next batch. For each issue, start prewarm with
 `prewarm-panes.sh --unattended`.
+
+When the loop's integration strategy is `pr`, the driver resolves the target repository
+from `origin` once and passes `--integration pr --pr-repo <owner/repo> --pr-base <branch>
+--pr-issue <N>` to `prewarm-panes.sh --unattended` for each task, with `--pr-issue`
+carrying that task's own issue number. For `merge`, it passes `--integration merge` or
+omits the flag entirely. The child must never resolve the remote itself: measured on
+2026-09-02, a child in a three-remote repository pushed to a personal fork and opened the
+PR inside that fork, where the issue does not exist, so the PR body's `Closes #NNN` line
+had no effect and the fork PR was later accepted as proof of completion.
+
+The loop's Phase B handoff and terminal status are still hand-composed by the design
+pane (see `render-loop-prompt.sh`), not delivered through `phase-b-deliver.sh` or
+`report-status.sh`. So while `integration.json` is written as described above, the
+push / `gh pr create` / `record-pr.sh` sequence and the `report-status.sh` guards are
+not yet delivered to loop children. `loop-cleanup.sh`'s `verify_done` remains the
+backstop that detects a missing PR after the fact.
+
 Collect `[ready]` reports, then run `prune-not-ready.sh` to validate ownership and remove
 optional review roles that did not become ready, and invoke the renderer with the
 validated snapshot:
@@ -158,14 +175,28 @@ failed/timeout/conflict), adding `terminal` first.
 
 Delete the worktree, branch, and the task's `.dispatch` only on success. Merge conflict,
 WIP preservation failure, terminal label failure, and unverified PRs are all preserved.
-On merge, close verified issues with `gh issue close --reason completed`, and only on
+The fallback PR search (when `status.json` has no `pr_url`) always scopes `gh pr list`
+with `--repo`, read from the task's `integration.json`; a task whose `integration.json`
+has no `repo` is treated as unverified rather than searched without a repository. Without
+this, `gh` infers the repository from the current directory's remotes, which is how a PR
+created in a personal fork was once accepted as proof of completion. On merge, close
+verified issues with `gh issue close --reason completed`, and only on
 normal cleanup remove the agent from the team via agmsg's `leave.sh`. `leaked[]` and
 stale locks are deleted only after manual confirmation.
 
 Cleanup enumerates and de-duplicates the actual `surface_id` and `agent` values in the
-task's sparse `prewarm.json`. Every `close-surface` call includes the task workspace, with
-workspace-name lookup as the fallback when `status.json` lacks `workspace_id`. No cleanup
+task's sparse `prewarm.json`, then closes those surfaces and the task workspace before
+leaving the team — one task's teardown finishes before the next one starts, so an
+interrupted cleanup leaves whole tasks done rather than every task half-done. Every
+`close-surface` call includes the task workspace, and nothing is closed unless the
+snapshot validates and its `workspace_id` matches the workspace found by name. No cleanup
 or timeout operation targets a role absent from `prewarm.json`.
+
+`loop-cleanup.sh` logs each task's stage to stderr (`[step] <slug>: ...`), so an
+interrupted run shows exactly how far it got. Budget for it: each task makes three to five
+`gh` calls plus a worktree removal, so a four-task batch runs for minutes, not seconds.
+Raise the Bash tool timeout explicitly before calling it — the default is far too short and
+a SIGTERM mid-batch leaves the remaining tasks untouched.
 
 `loop.task_timeout_min` is a third-party key in `config.json`; `--reset config` does not
 remove it.

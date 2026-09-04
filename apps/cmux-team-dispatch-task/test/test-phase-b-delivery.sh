@@ -15,6 +15,9 @@ ok() { echo "PASS $1"; }
 
 export DISPATCH_CONFIG_HOME="$TMP/home"
 mkdir -p "$DISPATCH_CONFIG_HOME" "$TMP/status" "$TMP/bin"
+# phase-b-deliver.sh は integration.json の不在を die にする。既存ケースはこれを書かないので、
+# bash "$DELIVER" を直接呼ぶ全ケースの --status-dir へ既定 (merge) を先に置く。
+[[ -f "$TMP/status/integration.json" ]] || printf '%s\n' '{"integration":"merge"}' > "$TMP/status/integration.json"
 cat > "$DISPATCH_CONFIG_HOME/runners.json" <<'JSON'
 {"default":"ccf","runners":[{"name":"ccf","command":"ccf","engine":"claude"},
                                   {"name":"cx","command":"codex","engine":"codex"}]}
@@ -64,10 +67,13 @@ body="${SEND[4]-}"
   && "$body" == *'VERDICT: approve'* && "$body" == *'t-exec-review'* ]] \
   && ok 'PB4 concrete findings path, verdict, cap, terminal rule, and reviewer are embedded' \
   || bad 'PB4 incomplete Phase B-R protocol'
-review_send_contract="passing exactly four arguments in this order: team tm, sender t-exec, recipient t-exec-review, and the whole review-code: message as one argument"
+# タスク 3: レビュー依頼は review-request.sh 経由に一本化された。送信は AGMSG_SEND への
+# 4 引数呼び出しではなく、ヘルパー 1 コールに置き換わっている (旧 review_send_contract は
+# 2 手順の旧文面が固定していた defect そのものなので更新した)。
+review_request_contract="request the review with ONE call to bash $S_REAL/review-request.sh --review-dir $review_dir_real --point code --round N --team tm --from t-exec --to t-exec-review, piping the whole request text into it on standard input with a here-document"
 verdict_send_contract="passing exactly four arguments in this order: team tm, sender t-exec-review, recipient t-exec, and the whole review-verdict: message as one argument"
 claude_liveness='cmux read-screen --workspace workspace:1 --surface surface:4'
-if [[ $(grep -Fo "$review_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
+if [[ $(grep -Fo "$review_request_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo "$verdict_send_contract" <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo 'After each successful review-code: send, stop and wait for the review-verdict: push.' <<< "$body" | wc -l | tr -d ' ') == 1 \
    && $(grep -Fo 'On every wake, re-read' <<< "$body" | wc -l | tr -d ' ') == 1 \
@@ -82,12 +88,14 @@ fi
 # <point>-round-<N>-request.md である。Phase A-R は依頼文を書くのでこれが成立するが、
 # Phase B-R は依頼を agmsg メッセージだけで送っていたため、verdict を待つ実装者が判定 7 に
 # 落ちて毎ターン block され、block 文面が勧める error を書いて中断した (2026-08-28 実測)。
-# 依頼を送る前に request ファイルを書かせることが、その待機を materialize する唯一の手段。
-if [[ "$body" == *"$review_dir_real/code-round-N-request.md"* \
-   && "$body" == *'before that send'* ]]; then
-  ok 'PB4e review request is materialized on disk before the send'
+# タスク 3 以降は review-request.sh が「書いてから送る」を 1 コールへ folded し、実装者が
+# 手で request ファイルを書く手順も、素の AGMSG_SEND を review 依頼へ使う経路も禁じている。
+if [[ "$body" == *"--review-dir $review_dir_real"* \
+   && "$body" == *'do NOT write the request file by hand'* \
+   && "$body" == *"do NOT call $TMP/bin/send.sh yourself for a review request"* ]]; then
+  ok 'PB4e review request is materialized on disk via review-request.sh, never by hand or raw send.sh'
 else
-  bad 'PB4e delivery does not make the implementer write code-round-N-request.md'
+  bad 'PB4e delivery does not route the review request through review-request.sh'
 fi
 status_file="$TMP/status/status.json"
 result_file="$TMP/status/result.md"
@@ -264,10 +272,19 @@ deliver_mixed_body() { # $1=prewarm $2=status dir
   printf '%s' "${SEND[4]-}"
 }
 
+pb_pr_body() { # $1=ケース名 $2=integration.json の中身 (空文字なら作らない)
+  local d="$TMP/$1"
+  mkdir -p "$d"
+  [[ -z "$2" ]] || printf '%s\n' "$2" > "$d/integration.json"
+  deliver_mixed_body "$TMP/prewarm.json" "$d"
+}
+
 # Codex implementer + Claude reviewer: Claude has no Codex bridge seat. The verified
 # surface must be checked once, and the Codex-only seat helper must not appear.
 jq '.exec.runner = "cx" | .exec.engine = "codex" | .exec.model = "gpt-5.6-sol"' \
   "$TMP/prewarm.json" > "$TMP/prewarm-codex-claude.json"
+mkdir -p "$TMP/status-codex-claude"
+printf '%s\n' '{"integration":"merge"}' > "$TMP/status-codex-claude/integration.json"
 mixed_body=$(deliver_mixed_body "$TMP/prewarm-codex-claude.json" "$TMP/status-codex-claude")
 codex_liveness="bash $S_REAL/verify-agmsg-ready.sh --codex --team tm --name t-exec-review"
 if [[ $(grep -Fo "$claude_liveness" <<< "$mixed_body" | wc -l | tr -d ' ') == 1 \
@@ -282,6 +299,8 @@ fi
 # while the Claude implementer still owns exactly one single-shot timer.
 jq '.exec_review.runner = "cx" | .exec_review.engine = "codex" | .exec_review.model = "gpt-5.6-sol"' \
   "$TMP/prewarm.json" > "$TMP/prewarm-claude-codex.json"
+mkdir -p "$TMP/status-claude-codex"
+printf '%s\n' '{"integration":"merge"}' > "$TMP/status-claude-codex/integration.json"
 mixed_body=$(deliver_mixed_body "$TMP/prewarm-claude-codex.json" "$TMP/status-claude-codex")
 if [[ $(grep -Fo "$codex_liveness" <<< "$mixed_body" | wc -l | tr -d ' ') == 1 \
    && "$mixed_body" != *"$claude_liveness"* \
@@ -304,11 +323,59 @@ fi
 
 # PB15a: a Codex implementer gets no base directive either, and dropping it must not
 # leave a doubled separator behind (the base concatenation uses ${PARALLEL:+...}).
+mkdir -p "$TMP/status-codex-impl"
+printf '%s\n' '{"integration":"merge"}' > "$TMP/status-codex-impl/integration.json"
 codex_impl_body=$(deliver_mixed_body "$TMP/prewarm-codex-claude.json" "$TMP/status-codex-impl")
 if [[ "$codex_impl_body" != *'PARALLEL EXECUTION, mandatory: whenever two or more pieces of work are independent, you MUST fan them out with spawn_agent'*    && "$codex_impl_body" == *"Read and execute the plan at $TMP/plan.md. MANDATORY STATUS PROTOCOL"* ]]; then
   ok 'PB15a Codex implementer gets no directive and no doubled separator'
 else
   bad 'PB15a Codex implementer body kept a directive or a doubled separator'
+fi
+
+# PB-PR1: integration=pr のとき、push 先と PR 作成先が本文に逐語で入る。
+# 「PR を作れ」だけを指示していた時期に、子が push せず done を書き (F2)、
+# 別の子がフォークへ PR を作った (F3)。どちらも 2026-09-02 に実測。
+body=$(pb_pr_body pbpr1 '{"integration":"pr","repo":"o/r","base":"main","head":"feat/pbpr1","issue":117}')
+pbpr=0
+grep -q 'git push -u origin feat/pbpr1' <<<"$body" || { echo "  PB-PR1: push 手順が無い"; pbpr=1; }
+grep -q 'gh pr create --repo o/r --base main --head feat/pbpr1' <<<"$body" \
+  || { echo "  PB-PR1: PR 作成手順が無い"; pbpr=1; }
+grep -q 'Closes #117' <<<"$body" || { echo "  PB-PR1: Closes が無い"; pbpr=1; }
+grep -q 'record-pr.sh' <<<"$body" || { echo "  PB-PR1: record-pr.sh の呼び出しが無い"; pbpr=1; }
+[[ $pbpr -eq 0 ]] && ok "PB-PR1: pr の手順が逐語で入る" || bad "PB-PR1"
+
+# PB-PR2: issue が無ければ Closes 行を出さない (存在しない issue 番号を捏造させない)。
+# 空の body でも両方の grep -v 相当条件を満たしてしまうので、MANDATORY STATUS PROTOCOL
+# という配送成功時に必ず出る文言をアンカーにし、空虚な PASS を防ぐ。
+body=$(pb_pr_body pbpr2 '{"integration":"pr","repo":"o/r","base":"main","head":"feat/pbpr2"}')
+if grep -q 'Closes #' <<<"$body"; then
+  bad "PB-PR2: issue 無しで Closes を出した"
+elif grep -q 'MANDATORY STATUS PROTOCOL' <<<"$body"; then
+  ok "PB-PR2: issue 無しなら Closes を出さない"
+else
+  bad "PB-PR2: body が空、または配送に失敗した"
+fi
+
+# PB-PR3: integration=merge では PR の文言を 1 つも出さない。
+# 同じ理由で MANDATORY STATUS PROTOCOL の存在を確認し、空 body での空虚な PASS を防ぐ。
+body=$(pb_pr_body pbpr3 '{"integration":"merge"}')
+if grep -qE 'gh pr create|record-pr\.sh' <<<"$body"; then
+  bad "PB-PR3: merge で PR 文言が出た"
+elif grep -q 'MANDATORY STATUS PROTOCOL' <<<"$body"; then
+  ok "PB-PR3: merge では PR 文言を出さない"
+else
+  bad "PB-PR3: body が空、または配送に失敗した"
+fi
+
+# PB-PR4: integration.json が無ければ die する。黙って merge 扱いにすると F2 が再発する。
+# rc の非ゼロだけだと review-gate.sh や配送側の無関係な将来の破損でも green になり、
+# integration.json の die を消しても検知できない。die が実際に出す文言まで固定する。
+pb_pr_body pbpr4 '' >/dev/null 2>&1
+pbpr4_rc=$?
+if [[ $pbpr4_rc -ne 0 ]] && grep -q 'integration.json not found' "$TMP/pbpr4/deliver.err"; then
+  ok "PB-PR4: integration.json 不在で die する"
+else
+  bad "PB-PR4: 不在を黙って通した、または die 理由が integration.json ではなかった"
 fi
 
 exit "$fail"

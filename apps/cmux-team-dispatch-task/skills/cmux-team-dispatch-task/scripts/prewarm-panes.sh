@@ -69,6 +69,11 @@ rollback_owned_resources() {
 
 die() {
   echo "Error: $1" >&2
+  # rollback_owned_resources は ROLLBACK_ACTIVE=1 になってから初めて動く。引数検証など
+  # 資源所有前の die でも sentinel だけは必ず消す (残ると gate が壊れた prewarm を永久に
+  # 「配線中」と誤認する)。set -u 下で die は WIRING_SENTINEL 代入前にも呼ばれうるため
+  # 未定義を許容する形で参照する。
+  [[ -z "${WIRING_SENTINEL:-}" ]] || rm -f "$WIRING_SENTINEL"
   rollback_owned_resources
   exit 2
 }
@@ -86,6 +91,7 @@ NOTIFY_WORKSPACE=""
 UNATTENDED=0
 TIMEOUT_SENTINEL=""
 ROLES_FILE=""
+INTEGRATION=merge; PR_REPO=''; PR_BASE=''; PR_ISSUE=''
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -110,6 +116,18 @@ while [[ $# -gt 0 ]]; do
     --roles)
       [[ $# -ge 2 ]] || die "--roles requires a path argument"
       ROLES_FILE="$2"; shift 2 ;;
+    --integration)
+      [[ $# -ge 2 ]] || die "--integration requires pr or merge"
+      INTEGRATION="$2"; shift 2 ;;
+    --pr-repo)
+      [[ $# -ge 2 ]] || die "--pr-repo requires owner/repo"
+      PR_REPO="$2"; shift 2 ;;
+    --pr-base)
+      [[ $# -ge 2 ]] || die "--pr-base requires a branch name"
+      PR_BASE="$2"; shift 2 ;;
+    --pr-issue)
+      [[ $# -ge 2 ]] || die "--pr-issue requires an issue number"
+      PR_ISSUE="$2"; shift 2 ;;
     --with-design|--with-opus)
       WITH_DESIGN=1; shift ;;
     --unattended)
@@ -166,6 +184,73 @@ validate_publish_destination() {
       || die "status target must be a regular non-symlink file"
   fi
 }
+
+# PR の作成先は親が解決して status dir へ置く。子 (design ペイン) に remote を選ばせない。
+# 2026-09-02 に、remote が 3 つある環境で子が個人フォークへ push し、フォーク内 PR を作った
+# (issue は origin 側にあるので Closes も効かない)。値をコマンドライン経由で子へ渡す方式は
+# 採らない — 子がフラグを落とせば静かに元の挙動へ戻るためである。
+write_integration_config() {
+  local tmp
+  case "$INTEGRATION" in
+    merge|pr) ;;
+    *) die "--integration must be pr or merge (got: $INTEGRATION)" ;;
+  esac
+  if [[ "$INTEGRATION" == pr ]]; then
+    [[ -n "$PR_REPO" ]] || die "--pr-repo is required when --integration is pr"
+    [[ -n "$PR_BASE" ]] || die "--pr-base is required when --integration is pr"
+    # この 2 値は子のプロンプトへ埋まり、その全体が zsh -ic "..." で包まれる。
+    # 引用を破れる文字は fail-closed で弾く。
+    [[ "$PR_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
+      || die "--pr-repo must be owner/repo"
+    [[ "$PR_BASE" =~ ^[A-Za-z0-9._/-]+$ ]] || die "--pr-base has invalid characters"
+    [[ -z "$PR_ISSUE" || "$PR_ISSUE" =~ ^[0-9]+$ ]] || die "--pr-issue must be a number"
+  fi
+  mkdir -p "$STATUS_DIR" || die "cannot create status directory at $STATUS_DIR"
+  # status dir が symlink に差し替えられていないことを、書く前に既存の検証で確かめる。
+  validate_publish_destination
+  tmp=$(mktemp "$STATUS_DIR/.integration.json.XXXXXX") \
+    || die "cannot create temporary integration artifact"
+  if [[ "$INTEGRATION" == pr ]]; then
+    jq -n --arg repo "$PR_REPO" --arg base "$PR_BASE" --arg head "feat/$SLUG" \
+      --arg issue "$PR_ISSUE" \
+      '{integration:"pr", repo:$repo, base:$base, head:$head}
+       + (if $issue == "" then {} else {issue: ($issue | tonumber)} end)' > "$tmp" \
+      || { rm -f "$tmp"; die "cannot write integration.json"; }
+  else
+    jq -n '{integration:"merge"}' > "$tmp" \
+      || { rm -f "$tmp"; die "cannot write integration.json"; }
+  fi
+  mv -- "$tmp" "$STATUS_DIR/integration.json" \
+    || { rm -f "$tmp"; die "cannot publish $STATUS_DIR/integration.json"; }
+}
+write_integration_config
+
+# 配線中であることをディスクへ出す。completion-gate.sh はこれを見て、prewarm.json が
+# まだ無い design ペインを黙って停止させる (誤報告の抑止)。publish 後と die/rollback で消す。
+mkdir -p "$STATUS_DIR" || die "cannot create status directory at $STATUS_DIR"
+WIRING_SENTINEL="$STATUS_DIR/.wiring"
+: > "$WIRING_SENTINEL" || die "cannot write $WIRING_SENTINEL"
+# SIGTERM/SIGINT や set -e 下の予期しない非 0 終了でも sentinel を必ず消す。die() の
+# 明示的な rm と publish 後の rm -f (下方) は成功パスで WIRING_SENTINEL を "" に戻すため、
+# この trap は EXIT のたびに走っても二重実行として無害 (rm -f は対象無しで成功する)。
+# signal 側の trap は必ず exit すること。INT/TERM に handler を登録すると既定の
+# 「即終了」動作を上書きしてしまい、handler が exit しないと launch_role の command
+# substitution でブロック中でもそのまま走り切って prewarm.json を publish し、
+# rollback_owned_resources も一切通らない (die() 経由でしか呼ばれないため)。exit すれば
+# EXIT trap が動いて sentinel を消し、130/143 は SIGINT/SIGTERM の慣例的な終了コード。
+# 関数を EXIT trap に登録すると、スクリプト本体に明示 exit が無い場合、bash は
+# 「最後に実行したコマンド」としてこの関数自身の最終コマンドの終了コードを
+# プロセス全体の終了コードへ採用してしまう (script 本体の最後のコマンドが成功していても
+# 上書きされる)。sentinel が既に空 (成功パスで publish 後にクリア済み) だと
+# `[[ -n "" ]]` は偽になり、この関数はそのまま何もせず 1 を返し、成功終了のはずの実行が
+# exit 1 に化ける (実測: 標準の三者揃い launch で確認)。明示 `return 0` で切り離す。
+cleanup_wiring_sentinel() {
+  [[ -n "${WIRING_SENTINEL:-}" ]] && rm -f -- "$WIRING_SENTINEL"
+  return 0
+}
+trap cleanup_wiring_sentinel EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Read the resolver output exactly once. All validation and extraction below use
 # this immutable in-process snapshot, never ROLES_FILE again.
@@ -513,6 +598,8 @@ fi
 mv -- "$PREWARM_TMP" "$STATUS_DIR/prewarm.json" \
   || die "cannot publish $STATUS_DIR/prewarm.json"
 PREWARM_TMP=""
+rm -f "$WIRING_SENTINEL"
+WIRING_SENTINEL=""
 ROLLBACK_ACTIVE=0
 PUBLISHED_INITIAL_STATUS=0
 

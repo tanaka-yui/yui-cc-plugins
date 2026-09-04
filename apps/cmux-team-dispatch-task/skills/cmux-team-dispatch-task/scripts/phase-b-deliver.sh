@@ -119,8 +119,36 @@ fi
 
 PARALLEL=$(bash "$SCRIPT_DIR/parallel-directive.sh" \
   --engine "$EXEC_ENGINE" --mode execute --agents "$MAX_AGENTS")
+# PR の作成先は親が integration.json へ書いている (prewarm-panes.sh)。子に remote を
+# 選ばせない。不在なら die する — 黙って merge 扱いにすると、integration=pr のはずの
+# タスクが PR 無しで done になる (2026-09-02 の F2)。
+INTEGRATION_CONFIG="$STATUS_DIR/integration.json"
+[[ -f "$INTEGRATION_CONFIG" && ! -L "$INTEGRATION_CONFIG" ]] \
+  || die "integration.json not found at $INTEGRATION_CONFIG"
+INTEGRATION_DOC=$(cat "$INTEGRATION_CONFIG") || die 'cannot read integration.json'
+jq -e 'type == "object"' >/dev/null 2>&1 <<< "$INTEGRATION_DOC" \
+  || die 'integration.json is not a JSON object'
+INTEGRATION=$(jq -r '.integration // empty' <<< "$INTEGRATION_DOC")
+case "$INTEGRATION" in
+  merge|pr) ;;
+  *) die "integration.json has an unknown integration: ${INTEGRATION:-<empty>}" ;;
+esac
+
+PR_PROTOCOL=""
+if [[ "$INTEGRATION" == pr ]]; then
+  PR_REPO=$(jq -r '.repo // empty' <<< "$INTEGRATION_DOC")
+  PR_BASE=$(jq -r '.base // empty' <<< "$INTEGRATION_DOC")
+  PR_HEAD=$(jq -r '.head // empty' <<< "$INTEGRATION_DOC")
+  PR_ISSUE=$(jq -r '.issue // empty' <<< "$INTEGRATION_DOC")
+  [[ -n "$PR_REPO" && -n "$PR_BASE" && -n "$PR_HEAD" ]] \
+    || die 'integration.json is missing repo, base or head'
+  PR_CLOSES=""
+  [[ -z "$PR_ISSUE" ]] || PR_CLOSES=" The PR body must contain the line Closes #$PR_ISSUE."
+  PR_PROTOCOL="MANDATORY PR PROTOCOL: this task integrates as a pull request. After the code review approves, push with exactly git push -u origin $PR_HEAD and create the pull request with exactly gh pr create --repo $PR_REPO --base $PR_BASE --head $PR_HEAD plus your title and body. Never push to any other remote and never omit --repo: this repository may have several remotes, and a PR created anywhere but $PR_REPO is not a deliverable.$PR_CLOSES Then record the URL with one call to bash $SCRIPT_DIR/record-pr.sh --status-dir $STATUS_DIR, which verifies the pull request exists on $PR_REPO before writing pr_url; do not write pr_url by hand. A non-zero exit from that helper means there is no PR on $PR_REPO yet, so fix that instead of reporting done. Run it before the terminal status: report-status.sh refuses done while pr_url is missing. "
+fi
+
 STATUS_PROTOCOL="MANDATORY STATUS PROTOCOL: before doing any work, write $STATUS_DIR/status.json with status executing, preserve all existing fields, and preserve an existing pr_url. Every terminal path must write $STATUS_DIR/result.md. On success, write the result summary, run bash $SCRIPT_DIR/report-status.sh $STATUS_DIR done followed by a one line summary, then immediately call $AGMSG_SEND with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient parent, and the body dispatch-notify: [dispatch] task $EXEC_AGENT finished (status: done). On any failure or blocking error, write the reason to the result file, run bash $SCRIPT_DIR/report-status.sh $STATUS_DIR error followed by that reason, then immediately call $AGMSG_SEND with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient parent, and the body dispatch-notify: [dispatch] task $EXEC_AGENT finished (status: error). A non-zero terminal notification means the parent was not told; retry once and, if the second send also fails, record that notification failure in status.json."
-REQUEST_TEXT="Read and execute the plan at $PLAN_FILE. ${PARALLEL:+$PARALLEL }$STATUS_PROTOCOL"
+REQUEST_TEXT="Read and execute the plan at $PLAN_FILE. ${PARALLEL:+$PARALLEL }$PR_PROTOCOL$STATUS_PROTOCOL"
 
 if [[ -n "$REVIEW_CONFIG" ]]; then
   [[ -f "$REVIEW_CONFIG" && ! -L "$REVIEW_CONFIG" ]] \
@@ -174,7 +202,9 @@ if [[ -n "$REVIEW_CONFIG" ]]; then
   # 毎ターン block された。block の reason は「詰まっているなら error を書け」と教えるので、
   # 2026-08-28 に codex の exec が依頼の 110 秒後に error を書いて中断した (レビューは
   # 進行中で、round 1 は約 17 分、round 2 は約 10 分かかっていた)。
-  REQUEST_PATH="$REVIEW_DIR/code-round-N-request.md"
+  # 書き込みと送信を 2 手順として指示すると、実測 4/7 の頻度で書き込みだけが落ちた
+  # (2026-09-02)。review-request.sh は両方を 1 コマンドで行い、送信に失敗したらファイルを消す。
+  REVIEW_REQUEST_CMD="bash $SCRIPT_DIR/review-request.sh"
   case "$REVIEWER_ENGINE" in
     codex)
       REVIEWER_LIVENESS="run bash $SCRIPT_DIR/verify-agmsg-ready.sh --codex --team $TEAM --name $REVIEWER_AGENT once"
@@ -195,7 +225,7 @@ if [[ -n "$REVIEW_CONFIG" ]]; then
   # latest_abort() の comment を参照。ゲートの解放はそちらが -abort.md を見て行う。
   ABORT_PATH="$REVIEW_DIR/code-round-N-abort.md"
   REVIEW_ABORT="REVIEW ABORT PROTOCOL: if you stop before completing the work, write the stop reason to $ABORT_PATH, never to $FINDINGS_PATH which belongs to the reviewer and may be mid-write, then call $AGMSG_SEND once with exactly four arguments: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and a body starting abort-reviewer: [abort] followed by the one line reason. Next follow the error branch of the mandatory status protocol, including the result file, bash $SCRIPT_DIR/report-status.sh $STATUS_DIR error, and the parent notification ending finished (status: error), before ending the session."
-  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request the review with ONE call to $AGMSG_SEND, passing exactly four arguments in this order: team $TEAM, sender $EXEC_AGENT, recipient $REVIEWER_AGENT, and the whole review-code: message as one argument. For round N, write that same message text to $REQUEST_PATH before that send: the completion gate reads only the disk, and this file is the sole proof that you are waiting for a verdict instead of idling mid-task. Without it the gate stops you every turn and offers a terminal error you must not take. For round N, that message tells the reviewer to inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $REVIEWER_AGENT, recipient $EXEC_AGENT, and the whole review-verdict: message as one argument. ${REVIEWER_ONLY_BLOCK}$WAIT_PROTOCOL A non-zero send exit means the recipient was not told, so report it instead of waiting. Do not poll the findings file. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed. $REVIEW_ABORT"
+  REQUEST_TEXT="$REQUEST_TEXT MANDATORY CODE REVIEW: after all changes are committed and before creating the PR, request the review with ONE call to $REVIEW_REQUEST_CMD --review-dir $REVIEW_DIR --point code --round N --team $TEAM --from $EXEC_AGENT --to $REVIEWER_AGENT, piping the whole request text into it on standard input with a here-document. That single call writes the request to disk and sends it; do NOT call $AGMSG_SEND yourself for a review request, and do NOT write the request file by hand. The completion gate reads only the disk, and that file is the sole proof that you are waiting for a verdict instead of idling mid-task; a non-zero exit from the helper means the reviewer was NOT told and the file was removed, so report it instead of waiting. The request text tells the reviewer to inspect the committed implementation, write findings to $FINDINGS_PATH whose last line is VERDICT: approve or VERDICT: needs_work, then call $AGMSG_SEND once, passing exactly four arguments in this order: team $TEAM, sender $REVIEWER_AGENT, recipient $EXEC_AGENT, and the whole review-verdict: message as one argument. ${REVIEWER_ONLY_BLOCK}$WAIT_PROTOCOL A non-zero send exit means the recipient was not told, so report it instead of waiting. Do not poll the findings file. Run a maximum of 5 rounds. On needs_work, fix valid findings and request N plus 1. On approve, proceed. Do not start round 6; if round 5 is needs_work, record unresolved findings in the PR body and proceed. $REVIEW_ABORT"
 fi
 
 case "$EXEC_ENGINE" in

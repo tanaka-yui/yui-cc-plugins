@@ -35,6 +35,14 @@ make_launch_stub() { # $1=role to fail, empty means success
   cat > "$FAKE/launch-workspace.sh" <<STUB
 #!/bin/sh
 printf '%s\n' "launch \$*" >> "$TMP/calls.log"
+sd=""; prev=""
+for a in "\$@"; do
+  [ "\$prev" = "--status-dir" ] && sd="\$a"
+  prev="\$a"
+done
+if [ -n "\$sd" ] && [ -e "\$sd/.wiring" ]; then
+  printf '%s\n' "wiring-present" >> "$TMP/calls.log"
+fi
 if [ -n "$1" ]; then
   case "\$*" in *"--role $1"*) exit 1 ;; esac
 fi

@@ -344,5 +344,94 @@ else
   bad "PW21 late status failure (rc=$rc launches=$launches leaves=$leaves closes=$closes)"
 fi
 
+# PW-W1c: sentinel はペイン起動より前に作られる。
+#         事後の不在検査だけでは、sentinel を一度も作らない実装と区別できない。
+#         launch stub が呼ばれた時点の有無を記録し、全 launch がそれを見たことを見る。
+#         このファイル冒頭で launch-workspace.sh を CALLS_LOG 依存の別スタブへ差し替えて
+#         おり、run_pw() はその環境変数を渡さないため、harness 本来のスタブへ戻してから使う。
+make_launch_stub ''
+run_pw "$ROLES_ON" >/dev/null 2>&1
+launches=$(grep -c '^launch ' "$TMP/calls.log" 2>/dev/null || echo 0)
+witnessed=$(grep -c '^wiring-present$' "$TMP/calls.log" 2>/dev/null || echo 0)
+if [[ "$launches" -gt 0 && "$witnessed" -eq "$launches" ]]; then
+  pass "PW-W1c: 全 launch が .wiring を見ている (launches=$launches)"
+else
+  bad "PW-W1c: launches=$launches witnessed=$witnessed"
+fi
+
+# PW-W1: .wiring は最初のペイン起動より前に作られ、prewarm.json の publish 後に消える。
+# 起動より前であることは、cmux スタブが呼ばれた時点の sentinel 有無で見る。
+# (実装は「引数検証の直後・launch_role の前」に touch を置くこと)
+run_pw "$ROLES_ON" >/dev/null 2>&1
+if [[ -f "$STATUS/prewarm.json" && ! -e "$STATUS/.wiring" ]]; then
+  pass "PW-W1a: 正常終了後は prewarm.json があり .wiring は残らない"
+else
+  bad "PW-W1a: prewarm=$([[ -f $STATUS/prewarm.json ]] && echo yes || echo no) wiring=$([[ -e $STATUS/.wiring ]] && echo yes || echo no)"
+fi
+
+# PW-W1b: design ペインの起動に失敗した経路でも sentinel を残さない。
+# 残すと completion-gate が「配線中」と読み続け、壊れた prewarm を永久に見逃す。
+make_launch_stub design
+run_pw "$ROLES_ON" >/dev/null 2>&1
+[[ ! -e "$STATUS/.wiring" ]] \
+  && pass "PW-W1b: die 経路でも .wiring を残さない" \
+  || bad "PW-W1b: .wiring が残っている"
+make_launch_stub ''
+
+# PW-W1d: 起動中に SIGTERM を受けたら実際にプロセスが終了し、.wiring を残さず、
+# かつ作業を完走しない (trap の回帰)。
+# .wiring の不在だけを見る検査は、シグナルを飲み込んで最後まで走り切り成功したふりを
+# する実装 (INT/TERM に handler を登録すると既定の即終了動作を上書きし、handler が
+# exit しなければそのまま publish まで進んでしまう) も通してしまう — 実際にこの回で
+# 混入した regression がまさにそれだった。したがって「sentinel が消えている」に加え、
+# 「プロセスが signal 由来の終了コードで実際に終わっている」ことと「4 role 全部は
+# launch されていない/publish されていない」ことも見る。design を先頭に固定した role
+# 順のおかげで、launch-workspace.sh を 1 回呼んだ時点でブロックさせれば残り 3 role は
+# 呼ばれようがない。
+cat > "$FAKE/launch-workspace.sh" <<STUB
+#!/bin/sh
+printf '%s\n' "launch \$*" >> "$TMP/calls.log"
+touch "$TMP/w1d-started"
+while [ -e "$TMP/w1d-hold" ]; do sleep 0.05; done
+printf '{"surface_id":"s","workspace_id":"workspace:1"}\n'
+STUB
+chmod +x "$FAKE/launch-workspace.sh"
+
+STATUS=$(mktemp -d "$TMP/status-case.XXXXXX")
+: > "$TMP/calls.log"
+rm -f "$TMP/w1d-started"
+touch "$TMP/w1d-hold"
+bash "$PW" --with-design --cwd "$TMP/wt" --slug t --status-dir "$STATUS" \
+  --agmsg-team team --roles "$ROLES_ON" >/dev/null 2>&1 &
+w1d_pid=$!
+
+started=0
+for _ in $(seq 1 100); do
+  if [[ -f "$TMP/w1d-started" ]]; then started=1; break; fi
+  sleep 0.05
+done
+
+if [[ "$started" -eq 1 && -e "$STATUS/.wiring" ]]; then
+  kill -TERM "$w1d_pid" 2>/dev/null
+  # 1 回目の launch がブロックしたままなので、bash はまだ死ねない (シグナル trap の
+  # 実行自体、ブロック中の command substitution が戻るまで遅延される — bash の既知の
+  # 挙動。hold を外して解放するまでプロセスは生き続ける)。
+  rm -f "$TMP/w1d-hold"
+  wait "$w1d_pid" 2>/dev/null
+  w1d_rc=$?
+  w1d_launches=$(grep -c '^launch ' "$TMP/calls.log" 2>/dev/null || echo 0)
+  if [[ ! -e "$STATUS/.wiring" ]] && [[ ! -e "$STATUS/prewarm.json" ]] \
+     && [[ "$w1d_launches" -lt 4 ]] && [[ "$w1d_rc" -eq 143 ]]; then
+    pass "PW-W1d: SIGTERM で実際に終了し (rc=$w1d_rc) .wiring も残さず作業も完走しない (launches=$w1d_launches)"
+  else
+    bad "PW-W1d: rc=$w1d_rc launches=$w1d_launches wiring=$([[ -e $STATUS/.wiring ]] && echo yes || echo no) prewarm=$([[ -e $STATUS/prewarm.json ]] && echo yes || echo no)"
+  fi
+else
+  rm -f "$TMP/w1d-hold"
+  wait "$w1d_pid" 2>/dev/null
+  bad "PW-W1d: mid-flight window に到達できなかった (started=$started wiring=$([[ -e $STATUS/.wiring ]] && echo yes || echo no))"
+fi
+make_launch_stub ''
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"

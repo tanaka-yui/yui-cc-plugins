@@ -51,9 +51,14 @@ verify_done() {
   local slug="$1" wt="$REPO_ROOT/.worktrees/$slug"
   [[ $(git -C "$REPO_ROOT" rev-list --count "$base_branch..feat/$slug" 2>/dev/null || echo 0) -gt 0 ]] || return 1
   if [[ "$INTEGRATION" == pr ]]; then
-    local pr; pr=$(jq -r '.pr_url // empty' "$DISPATCH_DIR/$slug/status.json" 2>/dev/null || echo "")
+    local pr repo; pr=$(jq -r '.pr_url // empty' "$DISPATCH_DIR/$slug/status.json" 2>/dev/null || echo "")
     [[ -n "$pr" ]] && gh pr view "$pr" --json state >/dev/null 2>&1 && return 0
-    [[ $(gh pr list --head "feat/$slug" --json url 2>/dev/null | jq length 2>/dev/null || echo 0) -gt 0 ]]
+    # --repo は必須である。省くと gh は現在のディレクトリの remote 設定から推測し、
+    # 個人フォークに作られた PR を完了の証拠として拾う (2026-09-02 の F3)。
+    # 探すべきリポジトリは親が integration.json へ書いている。
+    repo=$(jq -r '.repo // empty' "$DISPATCH_DIR/$slug/integration.json" 2>/dev/null || echo "")
+    [[ -n "$repo" ]] || { log warn "$slug: integration.json に repo が無いため PR 検証をスキップ"; return 1; }
+    [[ $(gh pr list --repo "$repo" --head "feat/$slug" --json url 2>/dev/null | jq length 2>/dev/null || echo 0) -gt 0 ]]
   else
     [[ ! -d "$wt" || -z "$(git -C "$wt" status --porcelain)" ]]
   fi
@@ -134,6 +139,7 @@ validate_prewarm_snapshot() { # $1=slug; reads PREWARM_DOC only
 for issue in $(jq -r --argjson batch "$BATCH" '.issues | to_entries[] | select(.value.batch == $batch) | .key' "$STATE_FILE"); do
   bash "$FETCH" --state-file "$STATE_FILE" heartbeat >/dev/null || die "loop lock owner check failed mid-cleanup"
   slug=$(jq -r --arg issue "$issue" '.issues[$issue].slug' "$STATE_FILE"); status=$(jq -r --arg issue "$issue" '.issues[$issue].status' "$STATE_FILE"); wt="$REPO_ROOT/.worktrees/$slug"; dir="$DISPATCH_DIR/$slug"
+  log step "$slug: start (status=$status)"
   # Snapshot and validate before any done branch can remove $dir. Later leave logic
   # consumes only PREWARM_AGENTS, never the original path.
   PREWARM_FILE="$dir/prewarm.json"; PREWARM_DOC=""; PREWARM_AGENTS=""; PREWARM_CAN_LEAVE=no
@@ -167,7 +173,11 @@ for issue in $(jq -r --argjson batch "$BATCH" '.issues | to_entries[] | select(.
   if [[ "$status" == done && "$INTEGRATION" == merge ]]; then
     if git -C "$REPO_ROOT" merge "feat/$slug" --no-edit >/dev/null 2>&1; then merged_count=$((merged_count+1)); close_issue=yes; else git -C "$REPO_ROOT" merge --abort >/dev/null 2>&1 || true; status=error; conflicted_count=$((conflicted_count+1)); conflicted=yes; fi
   fi
-  if [[ "$status" != done ]]; then preserve_wip "$slug" || { record_leak "$slug: WIP 保全に失敗"; continue; }; fi
+  if [[ "$status" != done ]]; then
+    log step "$slug: preserving WIP"
+    preserve_wip "$slug" || { record_leak "$slug: WIP 保全に失敗"; continue; }
+  fi
+  log step "$slug: finalize + labels"
   bash "$FETCH" --state-file "$STATE_FILE" finalize --issue "$issue" --status "$status" || die "finalize failed; destructive cleanup stopped"
   if ! apply_labels "$issue" "$status" "$slug" "$close_issue"; then record_leak "$slug: terminal ラベル付与に失敗"; continue; fi
   if [[ "$conflicted" == yes ]]; then
@@ -181,9 +191,25 @@ for issue in $(jq -r --argjson batch "$BATCH" '.issues | to_entries[] | select(.
     continue
   fi
   case "$status" in done) done_count=$((done_count+1)); rm -rf "$dir" ;; timeout) timeout_count=$((timeout_count+1)) ;; *) error_count=$((error_count+1)) ;; esac
+  log step "$slug: removing worktree"
   git -C "$REPO_ROOT" worktree remove "$wt" --force >/dev/null 2>&1 || record_leak "$slug: worktree 削除に失敗"
   [[ "$status" == done ]] && git -C "$REPO_ROOT" branch -D "feat/$slug" >/dev/null 2>&1 || true
+  # surface と workspace を閉じるのは cleanup の責任である。references/loop-mode.md は
+  # 以前からそう書いていたが、実装は leave.sh しか呼んでいなかった。閉じる処理が別の
+  # ステップにあると、cleanup が途中で中断されたとき workspace だけが開いたまま残る
+  # (2026-09-02 の batch 2)。ここへ置くと、タスクごとの後片付けが 1 か所で完結する。
+  if [[ "$PREWARM_CAN_LEAVE" == yes ]]; then
+    log step "$slug: closing surfaces"
+    while IFS= read -r sf; do
+      [[ -n "$sf" ]] || continue
+      cmux close-surface --workspace "$cleanup_workspace" --surface "$sf" >/dev/null 2>&1 || true
+    done < <(jq -r '. as $d | ["design","design_review","exec","exec_review"]
+      | map(select($d[.] != null) | $d[.].surface_id) | .[]' <<< "$PREWARM_DOC" \
+      | awk 'NF && !seen[$0]++')
+    cmux close-workspace --workspace "$cleanup_workspace" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$AGMSG_TEAM" && "$PREWARM_CAN_LEAVE" == yes ]]; then
+    log step "$slug: leaving team"
     while IFS= read -r agent; do
       [[ -n "$agent" ]] || continue
       "$HOME/.agents/skills/agmsg/scripts/leave.sh" "$AGMSG_TEAM" "$agent" >/dev/null 2>&1 || true

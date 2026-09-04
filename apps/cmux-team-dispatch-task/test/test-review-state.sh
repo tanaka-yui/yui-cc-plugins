@@ -92,5 +92,47 @@ review_select_active "$d"; chk RS10 "$RS_ANSWER_PENDING|$RS_ROUND_ABORTED" '1|0'
 d=$(mk rs8); printf 'VERDICT: approve\n' > "$d/review/spec-round-1-request.md"
 review_select_active "$d"; chk RS8 "$RS_ROUND_FILE|$RS_ANSWER_PENDING" '|1'
 
+# RS-P1: point を渡すと、その point のキーだけが候補になる。
+# exec が code の request を書かないまま、design 側が新しい VERDICT 付き findings を持つ状況。
+# スコープ無しだと design が選ばれて「レビューは終わっている」に見える (2026-09-02 の F1)。
+d=$(mk rsp1)
+printf 'findings\n' > "$d/review/code-round-1.md"; sleep 1
+printf 'findings\nVERDICT: approve\n' > "$d/review/design-round-2.md"
+review_select_active "$d"; chk RS-P1a "$RS_POINT|$RS_ROUND" 'design|2'
+review_select_active "$d" code; chk RS-P1b "$RS_POINT|$RS_ROUND" 'code|1'
+review_select_active "$d" code
+[[ "$RS_FINDINGS_UNFINISHED" == 1 ]] \
+  && pass "RS-P1c: code へスコープすると VERDICT 未達を検出する" \
+  || bad "RS-P1c: RS_FINDINGS_UNFINISHED=$RS_FINDINGS_UNFINISHED"
+
+# RS-P2: スコープした point のファイルが 1 つも無ければ、何も選ばずに戻る。
+# 別 point へ退避しない — 退避は RS-P1 で塞いだ masking を再現するだけである。
+d=$(mk rsp2)
+printf 'findings\nVERDICT: approve\n' > "$d/review/design-round-1.md"
+review_select_active "$d" code
+chk RS-P2a "$RS_POINT|$RS_ROUND" '|'
+[[ "$RS_HAS_ACTIVITY" == 0 ]] \
+  && pass "RS-P2b: スコープ空振りは activity なし" \
+  || bad "RS-P2b: RS_HAS_ACTIVITY=$RS_HAS_ACTIVITY"
+
+# RS-P3: point 省略時の挙動は変わらない (既存の呼び出し元を壊さない)。
+d=$(mk rsp3)
+printf 'req\n' > "$d/review/code-round-1-request.md"
+review_select_active "$d"; chk RS-P3 "$RS_POINT|$RS_ROUND" 'code|1'
+
+# RS-P4: design 側は "code 以外すべて" で選ぶ。point 名は固定ではないため
+#        (superpowers モードは spec / plan の 2 checkpoint)、literal "design" へ
+#        包含スコープすると設計ペインが自分の findings を見失う。
+d=$(mk rsp4)
+printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-1.md"; sleep 1
+printf 'req\n' > "$d/review/plan-round-2-request.md"
+review_select_active "$d" '!code'; chk RS-P4 "$RS_POINT|$RS_ROUND" 'plan|2'
+
+# RS-P5: 除外スコープは code を候補から外す。
+d=$(mk rsp5)
+printf 'req\n' > "$d/review/spec-round-1-request.md"; sleep 1
+printf 'req\n' > "$d/review/code-round-1-request.md"
+review_select_active "$d" '!code'; chk RS-P5 "$RS_POINT|$RS_ROUND" 'spec|1'
+
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail

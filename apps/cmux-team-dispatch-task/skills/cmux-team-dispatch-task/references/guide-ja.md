@@ -111,6 +111,11 @@ slug にこれらが混入しないようにする。
 - **PR per task** — 各子タスクがブランチを push して GitHub PR を作成。親は PR を監視
 - **Wait and merge** (デフォルト) — 全タスク完了後に親がローカルマージ
 
+選択に基づいて:
+
+- **PR per task** — 親が `origin` を 1 回だけ解決し、`--integration pr --pr-repo <owner/repo> --pr-base <branch>` を `prewarm-panes.sh` へ渡す。これが `<status-dir>/integration.json` を書く。loop モードでは driver がそのタスクの issue 番号を持つ `--pr-issue <N>` も渡し、これが PR 本文の `Closes #NNN` 行になる。`phase-b-deliver.sh` がそのファイルを読み、正確な `git push -u origin <head>` と `gh pr create --repo <owner/repo> --base <base> --head <head>` のコマンドを子のプロトコルへ埋め込み、続けて `record-pr.sh` を呼ぶ ── この連鎖は、Phase B の引き継ぎが `phase-b-deliver.sh` を通る interactive / superpowers dispatch path に適用される。`record-pr.sh` は `pr_url` を書く前に、そのリポジトリ上に PR が実在することを確認する。子は remote を選ばない。無人 loop path は現状 Phase B を design ペインが手渡しで配送しており、上記の PR コマンドをまだ埋め込まず、終端 status も `report-status.sh` を経由しないため、`report-status.sh` の各ガードはそこには適用されない。
+- **Wait and merge** — 従来どおり（全タスク完了後にローカルマージ）
+
 ### 1f. ロールを解決する（Resolve Roles）
 
 全ロールは config で固定する。ディスパッチ時の対話解決は行わない。
@@ -417,8 +422,10 @@ prewarm.json は必須で、内容を 1 回だけ読み、全体を検証して�
 ファイル欠落時の spawn fallback は無い。design / exec 欠落は fatal、review key 欠落は launch
 失敗または readiness prune 後の gate skip を示す。
 
-Phase A-R は design_review pane を spec と plan の 2 checkpoint で再利用する。review-plan:
-を 1 通送り、reviewer は findings の VERDICT と review-verdict: を返す。**レビューペインに
+Phase A-R は design_review pane を spec と plan の 2 checkpoint で再利用する。各 checkpoint は
+`review-request.sh` への 1 コールで依頼する。helper が request ファイルの書き込みと review-plan:
+の送信をまとめて行い、reviewer の findings は同じ review ディレクトリへ置かれる。reviewer は
+findings の VERDICT と review-verdict: を返す。**レビューペインに
 assignment marker を作らない** — `.assigned-{{DESIGN_REVIEW_AGENT}}` をはじめ review ロールの
 `.assigned-*` は 1 つも touch しない。レビューペインは standby で起動しており、runner wrapper は
 そのマーカーを「このペインがタスクを引き受けた」と読むため、作ると共有 status.json（他ロールの
@@ -464,9 +471,10 @@ send.sh を 1 回だけ呼ぶ。成功後だけ `.deferred` を作る。
 
 review config が空なら base request だけを送る。非空なら helper が canonical review directory 内の
 regular JSON を 1 回読み、exec_review tuple / workspace と一致することを証明した後、実際の
-prewarmed exec request へ Phase B-R protocol を 1 回だけ埋め込む。implementer は各 round で
-verified exec_review agent だけへ review-code: を送る。**送信前に同じ依頼文を
-`<EXISTING_STATUS_DIR>/review/code-round-N-request.md` へ書く**（Phase A-R の checkpoint と同じ扱い）。
+prewarmed exec request へ Phase B-R protocol を 1 回だけ埋め込む。implementer は各 round を
+`review-request.sh --point code` への 1 コールで verified exec_review agent だけへ依頼する。
+**その 1 コールが `<EXISTING_STATUS_DIR>/review/code-round-N-request.md` への書き込みと
+review-code: の送信をまとめて行う**（Phase A-R の checkpoint と同じ扱い）。
 completion gate はディスクしか読まないので、このファイルだけが「作業の途中で止まっている」のではなく
 「verdict を待っている」ことの証拠になる。reviewer は
 `<EXISTING_STATUS_DIR>/review/code-round-N.md` の末尾へ `VERDICT: approve` または
@@ -483,7 +491,19 @@ claude のときは、その reviewer が返した `[ready]` が定義上到達�
 
 全 child は executing を書いてから作業し、成功時は result.md + done、失敗時は error を書く。
 既存 pr_url を保持し、terminal status の直後に dispatch-notify: を親へ送る。委譲済み design
-session は .deferred を作り、exec role の terminal status を上書きしない。
+session は .deferred を作り、exec role の terminal status を上書きしない。`report-status.sh` は
+`integration.json` が `pr` を示し `status.json` に `pr_url` が無い done、および `design` role が
+`.deferred` の存在下で書く done を拒否する。`error` は決して拒否しない。`result.md` が欠けているか
+空の done は書き込みを通すが、`result_missing: true` を記録する。
+
+起床のたびに完了通知を事実ではなく申告として扱い、ディスクから再導出すること。
+`result_missing: true` は子が書いていない result ファイルを報告したことを意味し、PR 統合では
+PR が `integration.json` に記載されたリポジトリ上に存在しなければならない。2026-09-02 の実測:
+3 件の child が書いていないファイルを報告し、1 件はリモートにブランチが無いまま done を報告した。
+
+PR per task 版は `origin` へブランチを push し、`integration.json` に記載されたリポジトリ上に
+PR を作成し、`record-pr.sh` を通じて `pr_url` を記録する。そのリポジトリに PR が無ければ
+`record-pr.sh` は失敗する。wait-and-merge 版は検証済みブランチを親のマージに委ねる。
 
 ### plan モードの遵守ゲート（ExitPlanMode hook）
 
@@ -588,6 +608,19 @@ prewarm-panes.sh には検証済み resolver 出力を --roles "$ROLES_JSON" 1 �
 正確な呼び出し形を reason に入れたところ、同じ状況がツール呼び出し 3 回で完了契約を丸ごと
 果たした。team か送信コマンドが欠けているときは通知の手順を書かない — 埋められない引数を持つ
 コマンドを見せると、セッションは値を捏造するか探し回るかのどちらかになる。
+
+gate は review の状態を role 自身の review point へスコープし、未スコープ走査への
+フォールバックは無い。point を混ぜて最新ファイルを取ると、一方の point の完了した review が
+もう一方の未完了 review をマスクし、待機中の実装者を「タスクが終わっていない」分岐へ落とす
+（2026-09-02 に 7 タスク中 4 件で実測）。固定名で書けるのは Phase B-R の point だけである —
+`phase-b-deliver.sh` と `launch-workspace.sh` に `code` が焼き込まれているので、`exec` と
+`exec_review` は `code-round-*` だけを候補にする包含スコープで書ける。Phase A-R の checkpoint
+名は固定ではない — superpowers モードは `design_review` pane を spec 後・plan 後の 2
+checkpoint (`spec`、`plan`) で再利用し、無人ループは `design` を使う
+（`references/unattended/review-block.md` 参照）。そのため `design` と `design_review` を
+literal な point 名へ包含スコープすると、superpowers モードの設計ペインが自分の
+`spec-round-*` / `plan-round-*` を見失う — かつて未スコープ走査が `exec` を迷子にしたのと
+同じ経路である。この 2 ロールは代わりに「`code` 以外すべて」という除外スコープで書く。
 
 **findings ファイルだけでは「依頼したが答えが来ていない」を表現できない。** 依頼文を
 round ファイルの選択から除外するのは正しいが、そのままだと依頼側が待機中に見えなくなる区間が
@@ -716,8 +749,28 @@ launch した worktree / branch / team member / surface だけを rollback し�
       --agmsg-team "$TEAM" \
       --parent-notify-workspace "$CMUX_WORKSPACE_ID")
 
+integration 戦略がタスクごとの PR のときは、`origin` から解決した対象リポジトリを親側で 1 回
+だけ求め、`prewarm-panes.sh` の呼び出しすべてへ渡す:
+
+    PR_REPO=$(git remote get-url origin | sed -E 's#(git@github\.com:|https://github\.com/)##; s#\.git$##')
+    PR_BASE=$(git symbolic-ref --short HEAD)
+    prewarm-panes.sh ... --integration pr --pr-repo "$PR_REPO" --pr-base "$PR_BASE"
+
+loop モードでは `--pr-issue <N>` も足す。remote を子に選ばせてはならない: 2026-09-02 の実測で、
+remote が 3 つある環境で子が個人フォークへ push し、フォーク内で PR を開いてしまった (issue は
+origin 側にあるので Closes も効かない)。wait-and-merge のときは `--integration merge` を渡すか
+省略する。
+
 script は worktree 作成 / 再利用、全 role agent の join、launch 前 delivery wiring、readiness
-clause 付き pane 起動、初期 launched status を担当する。prewarm.json は workspace_id /
+clause 付き pane 起動、初期 launched status を担当する。
+
+`prewarm-panes.sh` は最初のペイン起動より前に `<status-dir>/.wiring` を作り、prewarm.json の
+publish 時 (および全 rollback 経路) に削除する。ペインはこのスナップショットが存在する前に
+起動し、その区間で Stop hook が発火する。sentinel が無いと、gate は design ペインへスナップショット
+不在を親へ報告するよう指示してしまう。2026-09-02 の実測では全 8 タスクでこの報告が発生し、
+最多で 9 通連続、2 件は escalate まで進んだ。
+
+prewarm.json は workspace_id /
 review_mode と、design / design_review / exec / exec_review の明示 key を持つ。各 tuple は
 surface_id / agent / runner / engine / optional model / effort / wired=true であり、入れ子の
 executor や汎用 review container は無い。
@@ -833,6 +886,13 @@ agmsg Monitor ストリームを保持しているので、子からのメッセ
    **再武装には上限を設ける。** メッセージも目に見える進捗も無いまま 3 回再武装したら、
    再武装をやめて `cmux read-screen` の抜粋を添えて報告し、どうするかをユーザーに聞く。
    「ペインは生きている」は進捗の証拠ではない。
+
+   **timer 自体が死に続けるなら再アームをやめる。** background の `sleep` が発火前に 2 回
+   連続で kill されたら（90 分待つはずが数分で消える）、3 回目を張らない。次の報告で
+   「この dispatch は backstop 無しで動いている」とはっきり述べ、沈黙した子はユーザーの目が
+   要ると伝えたうえで、agmsg のメッセージだけで監視を続ける。2026-09-02 の実測では arm 2〜5
+   がすべて数分〜30 分で kill され、親は残りの batch を timer 無しで回した。生き残らない
+   timer を張り直すのは、毎回 wake を消費して何も得ない。
 
 2. Template A で起動サマリーを具体的な surface ID 付きで報告する。
 3. ユーザーへ「N 件のタスクを監視中。agmsg の通知を待っています」と伝える。

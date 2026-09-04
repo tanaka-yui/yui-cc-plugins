@@ -49,6 +49,11 @@
 #  CG29. -abort.md を findings として拾わない (拾うと verdict 済みに見える)
 #        ラウンド上限に達した子は .assigned が残り最新 round に VERDICT があるため、
 #        この sentinel が無いと判定 7 に落ち、done/error のどちらを書いても虚偽になる
+#  CG-P2. design ロールは code point のファイルで待機しない
+#        (code のレビューは exec の仕事である。design がそれを自分の待機と誤読すると、
+#         委譲後の設計ペインが exec のレビュー中ずっと停止できてしまう)
+#  CG-P3. design が自分の point で待機しているとき、より新しい code の VERDICT 付き
+#        findings に隠されない (2026-09-02 の F1 の design 側)
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -193,11 +198,14 @@ done
 # これを findings と取り違えると、verdict を待っているだけの依頼側が「作業途中」と
 # 判定されて block される。依頼文が mtime でも名前順でも「最後」になる配置にして、
 # 除外フィルタ単独を検証する (CG15 の mtime 修正に助けられて通らないようにする)。
+# point は role の scope (ここでは exec なので code) と一致させる — exec は design 側の
+# point 名を持たないので、fixture を design 側の名前で書くと scope 済みの gate では
+# そもそも候補に入らず、この不変条件を検証できなくなる。
 d=$(mkdir_case cg14); touch "$d/.assigned-task-exec"
-printf '（レビュー結果をここに記入）\n' > "$d/review/plan-round-1.md"
+printf '（レビュー結果をここに記入）\n' > "$d/review/code-round-1.md"
 sleep 1
 printf '最終行を次のいずれかにすること:\nVERDICT: approve\n' \
-  > "$d/review/spec-round-5-request.md"
+  > "$d/review/code-round-5-request.md"
 out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null); rc=$?
 [[ $rc -eq 0 && -z "$out" ]] && pass 'CG14: 依頼文を拾わず verdict 待ちとして許す' \
   || bad "CG14: block された (rc=$rc out=[$out])"
@@ -273,15 +281,18 @@ out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=exec DISPATCH_GATE_AGENT=
 
 # --- CG20: 同じ status dir でもロールごとに別の判定になる ---
 # これが不具合の核心である。1 本の共有 command で 2 ロールが正しく分岐すること。
+# 依頼側 (design) と レビュアー側 (design_review) は同じ point を共有するので、この対比
+# (依頼側は未完了 findings で待てる / レビュアーは block される) はロールが point を
+# 共有するペアでなければ検証できない。design と exec_review は point を共有しない。
 d=$(mkdir_case cg20); set_status "$d" executing
 : > "$d/.assigned-task"
-printf 'findings\n' > "$d/review/code-round-1.md"
+printf 'findings\n' > "$d/review/plan-round-1.md"
 out_d=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=task \
   bash "$BIN" 2>/dev/null)
-out_r=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=exec_review DISPATCH_GATE_AGENT=task-exec-review \
+out_r=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design_review DISPATCH_GATE_AGENT=task-design-review \
   bash "$BIN" 2>/dev/null)
 [[ -z "$out_d" && -n "$out_r" ]] && pass 'CG20: 共有 command でもロールごとに分岐する' \
-  || bad "CG20: design=[$out_d] exec_review=[$out_r] (期待 allow/block)"
+  || bad "CG20: design=[$out_d] design_review=[$out_r] (期待 allow/block)"
 
 # --- CG21: 引数は環境変数より優先される ---
 d=$(mkdir_case cg21); set_status "$d" executing; : > "$d/.assigned-task-exec"
@@ -349,12 +360,14 @@ out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
 # --- CG27: 判定 7 は待機を error と取り違えさせない ---
 # 判定 7 の reason は「詰まっているなら error を書け」と教える。request ファイルを書き忘れた
 # 待機者はこの逃げ道を取って中断する (2026-08-28 の事故そのもの)。reason 自身が、待機は
-# error ではないことと、待機を materialize する手順を持たなければならない。
+# error ではないことと、待機を review-request.sh で materialize する手順を持たなければ
+# ならない (タスク 3 で review-request.sh 一本化に変更。旧文面は request ファイルのパスを
+# 手書きさせる 2 手順の指示だった)。
 d=$(mkdir_case cg27); set_status "$d" executing; : > "$d/.assigned-task-exec"
 printf 'findings\nVERDICT: needs_work\n' > "$d/review/code-round-2.md"
 out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null)
 reason=$(jq -r '.reason // empty' <<< "$out" 2>/dev/null)
-if [[ "$reason" == *'-request.md'* && "$reason" == *'not'*'error'* ]]; then
+if [[ "$reason" == *'review-request.sh'* && "$reason" == *'not'*'error'* ]]; then
   pass 'CG27: 判定 7 の reason が待機と error を切り分ける'
 else
   bad "CG27: reason に待機の逃がし方が無い: [$reason]"
@@ -475,7 +488,7 @@ reason=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null)
 if [[ -n "$reason" ]] \
   && echo "$reason" | grep -q 'task-exec-review' \
   && echo "$reason" | grep -q 'never to parent' \
-  && echo "$reason" | grep -q 'review-code:'; then
+  && echo "$reason" | grep -q 'review-request.sh'; then
   pass 'CG36: 未依頼のコードレビューでレビュアー名を渡す'
 else
   bad "CG36: reason がレビュアーを名指ししない: [$out]"
@@ -749,6 +762,74 @@ printf 'req\n' > "$d/review/code-round-1-request.md"
 bash "$BIN" --status-dir "$d" --role exec --agent task-exec >/dev/null 2>&1
 gen=$(jq -r '.generation' "$d/.gate-wait-exec")
 [[ "$gen" == 'code|1|exec|task-exec' ]] && pass 'CG64: 待機中は待機 lease が優先される' || bad "CG64: generation=[$gen]"
+
+# CG-P1: exec が code のレビュー待ちである間、design 側の新しい VERDICT に隠されない。
+# 2026-09-02 の F1 の再現: reviewer は code-round-1.md を書き始めているが VERDICT はまだ無く、
+# design-round-2.md (VERDICT 付き) の方が新しい。スコープ前はここで判定 7 に落ち、
+# 実装者に error を勧めていた。
+d=$(mkdir_case cgp1); set_status "$d" executing
+: > "$d/.assigned-task-exec"
+printf 'req\n' > "$d/review/code-round-1-request.md"; sleep 1
+printf 'partial findings\n' > "$d/review/code-round-1.md"; sleep 1
+printf 'findings\nVERDICT: approve\n' > "$d/review/design-round-2.md"
+out=$(bash "$BIN" --status-dir "$d" --role exec --agent task-exec 2>/dev/null); rc=$?
+if [[ $rc -eq 0 && -z "$out" ]]; then
+  pass "CG-P1: code へスコープした exec は待機として allow される"
+else
+  bad "CG-P1: rc=$rc out=[$out]"
+fi
+
+# CG-P2: design ロールは code point のファイルで待機しない。
+#        code のレビューは exec の仕事であり、design がそれを自分の待機と読むと
+#        委譲後の設計ペインが exec のレビュー中ずっと停止できてしまう。
+d=$(mkdir_case cgp2); set_status "$d" executing
+: > "$d/.assigned-task"
+printf 'findings\n' > "$d/review/code-round-1.md"
+out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=task \
+  bash "$BIN" 2>/dev/null)
+grep -q '"decision":"block"' <<<"$out" \
+  && pass 'CG-P2: design は code point の findings で待機しない' \
+  || bad "CG-P2: out=[$out]"
+
+# CG-P3: 逆向き。design が自分の point で待機しているとき、より新しい code の
+#        VERDICT 付き findings に隠されない (F1 の design 側)。design 側を pending
+#        (request だけ) にすると best_pending がそれを無条件で勝たせてしまい、
+#        masking が実際に起きる best_any の経路を通らない。そこで design 側にも
+#        VERDICT 無しの findings を置いて pending を外し、best_any 経由の選択が
+#        code 側の新しい VERDICT に負けないことを検証する。
+d=$(mkdir_case cgp3); set_status "$d" executing
+: > "$d/.assigned-task"
+printf 'req\n' > "$d/review/plan-round-1-request.md"; sleep 1
+printf 'partial findings\n' > "$d/review/plan-round-1.md"; sleep 1
+printf 'findings\nVERDICT: approve\n' > "$d/review/code-round-2.md"
+out=$(DISPATCH_GATE_STATUS_DIR="$d" DISPATCH_GATE_ROLE=design DISPATCH_GATE_AGENT=task \
+  bash "$BIN" 2>/dev/null); rc=$?
+[[ $rc -eq 0 && -z "$out" ]] \
+  && pass 'CG-P3: design の待機は新しい code の VERDICT に隠されない' \
+  || bad "CG-P3: rc=$rc out=[$out]"
+
+# CG-W1: 配線中 (prewarm.json 不在 + .wiring 存在) の design ペインは静かに allow される。
+# 2026-09-02 には全 8 タスクでここが block へ倒れ、gate 自身の文面が「親へ報告せよ」と
+# 指示したため、誤報告が最多 9 通連続で親のインボックスを埋めた。2 件は .escalated まで書いた。
+d=$(mkdir_case cgw1)
+printf '{"status":"executing"}\n' > "$d/status.json"   # prewarm.json は意図的に作らない
+: > "$d/.wiring"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null); rc=$?
+if [[ $rc -eq 0 && -z "$out" ]]; then
+  pass "CG-W1: 配線中の design は静かに allow"
+else
+  bad "CG-W1: rc=$rc out=[$out]"
+fi
+
+# CG-W2: .wiring が無ければ従来どおり block する (本当に壊れた prewarm を見逃さない)。
+d=$(mkdir_case cgw2)
+printf '{"status":"executing"}\n' > "$d/status.json"
+out=$(bash "$BIN" --status-dir "$d" --role design --agent task-design 2>/dev/null)
+if grep -q '"decision":"block"' <<<"$out"; then
+  pass "CG-W2: .wiring 無しなら従来どおり block"
+else
+  bad "CG-W2: out=[$out]"
+fi
 
 [[ $fail -eq 0 ]] && echo '--- all passed ---' || echo '--- failures ---'
 exit $fail
