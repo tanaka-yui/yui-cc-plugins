@@ -85,6 +85,17 @@ w >/dev/null 2>&1
 ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" && ok "WT11b unknown で ack しない" \
   || fail "WT11b unknown なのに ack した"; teardown
 
+# WT11c: release_pending でも receipt は残す。ack はせず、release が通った再試行で完了する。
+setup; dn; msg
+echo '{"ok":true,"result":{"state":"release_pending"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+w >/dev/null 2>&1; rc=$?
+first=$(jq -c . "$SD/received.json" 2>/dev/null)
+echo '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+out=$(w 2>/dev/null); retry_rc=$?
+[[ "$rc" -eq 1 && "$first" == '["worker_done|task_x|ctx_x|succeeded"]' && "$retry_rc" -eq 0 \
+  && "$out" == *"outcome=succeeded"* ]] && ok "WT11c pending の receipt を再試行で完了" \
+  || fail "WT11c (first=$rc receipt=$first retry=$retry_rc)"; teardown
+
 # WT12: **処理できない型を含む batch は ack しない。**見ただけでは処理ではない (O11)
 setup; dn; mixed; w >/dev/null 2>&1; rc=$?
 ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" && [[ "$rc" -eq 1 ]] \
@@ -122,21 +133,21 @@ setup; dn; msg succeeded; w >/dev/null 2>&1
   && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT16 逆 outcome は fail-closed" || fail "WT16 (rc=$rc)"; teardown
 
-# WT17: check の ok:false は受信失敗で、ack・release・受信記録を行わない
+# WT17: check transport failure は worker health を証明できないため 4。副作用を持たない
 setup; dn; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_check"
 w >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 1 && ! -e "$SD/received.json" ]] \
+[[ "$rc" -eq 4 && ! -e "$SD/received.json" ]] \
   && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT17 check ok:false は副作用なし" || fail "WT17 (rc=$rc)"; teardown
 
-# WT18: release / worker-show の ok:false は受信失敗で ack しない
+# WT18: release / worker-show transport failure は 4、ack しない
 setup; dn; msg; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-release"
 w >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 1 && ! -e "$SD/received.json" ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+[[ "$rc" -eq 4 && -e "$SD/received.json" ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT18a release ok:false は ack しない" || fail "WT18a (rc=$rc)"; teardown
 setup; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-show"
 w 1 >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 1 ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+[[ "$rc" -eq 4 ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT18b worker-show ok:false は受信失敗" || fail "WT18b (rc=$rc)"; teardown
 
 # WT19: null parent handle と非正の待機値は使用法エラー

@@ -2,7 +2,7 @@
 # 全テストを走らせ、**1 件でも失敗したら非 0 で終わる。**
 set -uo pipefail
 cd "$(dirname "$0")/.."
-SUITE="test-start test-wait test-merge test-docs test-e2e"
+SUITE="test-start test-wait test-merge test-report-status test-docs test-e2e"
 rc=0
 for f in test/test-*.sh; do n=$(basename "$f" .sh)
   grep -qw "$n" <<<"$SUITE" || { echo "MISSING FROM SUITE: $n"; rc=1; }; done

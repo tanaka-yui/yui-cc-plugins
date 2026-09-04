@@ -35,12 +35,30 @@ grep -qE 'worktree rm --worktree \$WT( |$)' "$S" && bad="$bad [raw-id]"
 grep -q 'terminal close --terminal %q' "$S" || bad="$bad [quoted-terminal]"
 [[ -z "$bad" ]] && ok "SK6 値入り・id: 付き・引用済みの片付けコマンド" || fail "SK6:$bad"
 
+# SK6b: request は固定 heredoc へ入れない。C2 は空 state で閉じない。
+bad=""
+grep -q "file-write tool.*\$REQ" "$S" || bad="$bad [file-write-request]"
+grep -q "shell heredoc" "$S" || bad="$bad [request-collision-explained]"
+grep -q "cat > \"\$REQ\" <<" "$S" && bad="$bad [fixed-request-delimiter]"
+grep -q '\[\[ -z "\$WT" || -z "\$TH" || -z "\$DID" || -z "\$WP" || -z "\$ORCA_BIN" \]\]' "$S" \
+  || bad="$bad [C2-required-state]"
+body=$'first line\nREQUEST\nlast line'; captured=$(mktemp)
+printf '%s' "$body" > "$captured"
+[[ -z "$bad" && "$(cat "$captured")" == "$body" ]] && ok "SK6b REQUEST 本文と空 identity で fail closed" \
+  || fail "SK6b:$bad"
+rm -f "$captured"
+
 # SK7: 片付けの安全条件（release の state 分類 / merged / clean / --force）
 miss=""
 for n in 'release_pending' 'release_unknown' 'retained' 'already_released' \
          'merged' 'dirty' '--force' 'worktreeId'; do
   grep -qi -- "$n" "$S" || miss="$miss [$n]"; done
 [[ -z "$miss" ]] && ok "SK7 安全条件" || fail "SK7 欠落:$miss"
+
+# SK7a: runner は permission prompt を飛ばすことを、dispatch 前に判断できる文書へ明記する。
+grep -q 'claude --dangerously-skip-permissions' "$S" \
+  && grep -q 'claude --dangerously-skip-permissions' "$G" \
+  && ok "SK7a runner の権限無効化を開示" || fail "SK7a 権限無効化の開示なし"
 
 # SK7b: **列挙できないことを「0 個」にしない** (round 4 finding 1)。
 #       gate は unknown を持ち、rc と schema を検査していること

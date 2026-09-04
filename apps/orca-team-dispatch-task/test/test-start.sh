@@ -150,6 +150,14 @@ setup; out=$(ORCA_FAIL_WRITE_AT=workers-after-task start 2>&1); rc=$?
   && ! grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST9b Task 成立後は KEPT で何も消さない" || fail "ST9b (rc=$rc out=$out)"; teardown
 
+# ST9a: task-create failure も同じ cleanup guarantee。identity と各 cleanup の結果を出す。
+setup; echo 1 > "$ORCA_STUB_DIR/orchestration_task-create.rc"
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"worktree=wt_1"* && "$out" == *"terminal=term_w"* \
+  && "$out" == *"the terminal was closed"* && "$out" == *"worktree this call created was removed"* ]] \
+  && grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" && grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST9a task-create 失敗も identity と truthful cleanup" || fail "ST9a (rc=$rc out=$out)"; teardown
+
 # ST9b2: **Dispatch 成立後の write 失敗も同じ**
 setup; out=$(ORCA_FAIL_WRITE_AT=workers-after-dispatch start 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] && [[ "$out" == *"dispatch=ctx_x"* && "$out" == *KEPT* ]] \

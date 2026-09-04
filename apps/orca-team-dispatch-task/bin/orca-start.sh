@@ -137,10 +137,7 @@ H=$(jq -r '.result.terminal.handle // empty' <<<"$TCJ2" 2>/dev/null || echo "")
 # ★ **資源を作った後の write 失敗は、identity を出してから止める**（round 2 finding 5）。
 #   Task はまだ無いので、この呼び出しが作った端末と worktree は戻してよい
 kept() { log "$1"; log "run=$RUN worktree=$WT_ID path=$WT_PATH branch=$BR terminal=$H"; }
-postwrite() {   # $1=site $2=path $3=content
-  write "$1" "$2" "$3" && return 0
-  kept "cannot write $2"
-  # ★ **実行した cleanup の結果を偽らない** (round 3 finding 7)
+cleanup_before_task() {
   local cr=0 wr=0
   "$ORCA_BIN" terminal close --terminal "$H" --json >/dev/null 2>&1 || cr=$?
   if [[ -n "$CREATED" ]]; then
@@ -150,6 +147,11 @@ postwrite() {   # $1=site $2=path $3=content
   if [[ -z "$CREATED" ]]; then log "the worktree was reused, so it is kept"
   elif [[ "$wr" -eq 0 ]]; then log "the worktree this call created was removed"
   else log "worktree rm FAILED (rc=$wr); it is KEPT"; fi
+}
+postwrite() {   # $1=site $2=path $3=content
+  write "$1" "$2" "$3" && return 0
+  kept "cannot write $2"
+  cleanup_before_task
   exit 1
 }
 postwrite status "$SD/roles/design/status.json" '{"status":"starting"}'
@@ -209,8 +211,9 @@ TCJ=0; TJ=$("$ORCA_BIN" orchestration task-create --spec "$SPEC" --task-title "$
               --from "$PH" --json 2>/dev/null) || TCJ=$?
 TID=$(jq -r '.result.task.id // empty' <<<"$TJ" 2>/dev/null || echo "")
 if [[ "$TCJ" -ne 0 || -z "$TID" ]]; then
-  undo; "$ORCA_BIN" terminal close --terminal "$H" --json >/dev/null 2>&1
-  log "task-create failed (rc=$TCJ)"; exit 1
+  kept "task-create failed (rc=$TCJ); no Task was created"
+  cleanup_before_task
+  exit 1
 fi
 # Task が実在するので、ここから先は削除しない。identity を出して止める
 write workers-after-task "$SD/workers.json" "$(jq -c --arg t "$TID" '.design.task = $t' "$SD/workers.json")" || {

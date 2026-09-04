@@ -33,9 +33,8 @@ user's actual instructions get lost.
 ```bash
 SLUG=<lowercase, digits and hyphens, 1-30 chars>
 REQ=$(mktemp)
-cat > "$REQ" <<'REQUEST'
-<the user's request, copied verbatim>
-REQUEST
+# Use the coding environment's file-write tool to write the user's request verbatim to "$REQ".
+# Do not use a shell heredoc: a request may contain REQUEST (or any delimiter) on its own line.
 ```
 
 ## Step 2: Start
@@ -66,22 +65,26 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
 | 0 | The worker finished and reported success | Read `$SD/roles/design/result.md`, tell the user, go to Step 4 |
 | 5 | The worker finished and reported failure | Read `result.md`, tell the user what failed, go to Step 5. **Do not merge** |
 | 3 | Still running | Report progress, then call it again |
-| 4 | The worker is stopped or failed to run | Inspect and tell the user; do not delete anything |
-| 1 | A message arrived that this version cannot handle | It was not acknowledged, so nothing is lost. Follow the recovery below |
+| 4 | Worker health or Orca transport could not be verified | Inspect and tell the user; do not delete anything |
+| 1 | A batch is unsupported, contradictory, or release is still pending | It was not acknowledged. Do not acknowledge it by hand; inspect and retry safely below |
 
-On exit 1 the batch stays unacknowledged, so waiting again returns the same batch and
-never progresses. Recovering is manual and deliberate:
+On exit 1, **do not run `--ack` yourself**. A `worker_done` receipt is recorded before
+release is attempted, so `release_pending` is safe to retry: run `orca-wait.sh` again and
+it will retry release before acknowledging. For an unsupported batch, inspect without
+moving the cursor and stop for user direction; do not discard a message this version cannot
+handle:
 
 ```bash
-PH=$(jq -r '.parent_handle' "$SD/run.json")
-# 1. Read the batch. The default check (not --peek) returns its deliveryId.
-"$ORCA_BIN" orchestration check --terminal "$PH" --json
-# 2. Deal with every message in it yourself, then acknowledge that exact batch.
-"$ORCA_BIN" orchestration check --terminal "$PH" --ack <deliveryId> --json
-# 3. Run orca-wait.sh again.
+PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
+[[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
+"$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
+# For release_pending only, retry the canonical wait; it alone decides whether to ack.
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
 ```
 
-Show the user what the message was and what you did about it before acknowledging.
+Show the user the inspected message and whether it is a retryable release state or an
+unsupported message. A transport/health failure is exit 4, not an invitation to recover a
+batch manually.
 
 ## Step 4: Bring the result home
 
@@ -110,6 +113,11 @@ TH=$(jq -r '.design.terminal' "$SD/workers.json")
 DID=$(jq -r '.design.dispatch' "$SD/workers.json")
 WP=$(jq -r '.worktree_path' "$SD/workers.json")
 MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
+IDENTITY_OK=no
+if [[ -z "$WT" || -z "$TH" || -z "$DID" || -z "$WP" || -z "$ORCA_BIN" ]]; then
+  echo "required cleanup state is missing; do not close or remove anything" >&2
+  exit 1
+fi
 DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null)
 echo "merged=$MERGED  worker checkout dirty=[${DIRTY:-clean}]"
 
@@ -209,7 +217,7 @@ State these when they apply. Do not work around them silently.
 | If this session dies mid-dispatch, nothing recovers automatically | Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 |
 | If the worker stops without reporting, waiting times out | Same inspection; the state is on disk under `.dispatch/<slug>/` |
 | The worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
-| The runner is fixed and cannot be configured | Not available yet |
+| The runner is fixed and cannot be configured; it runs `claude --dangerously-skip-permissions` | Dispatch only a task you trust: the worker receives no permission prompts |
 | Repositories that need setup hooks are out of scope | The worktree is created with setup skipped |
 
 ## State on disk

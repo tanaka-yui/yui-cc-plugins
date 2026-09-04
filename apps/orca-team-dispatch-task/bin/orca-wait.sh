@@ -57,11 +57,11 @@ record_outcome() {
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）
   local out res n i m d t tid did oc batch_oc existing record_needed REL RST ACK
-  out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || return 1
-  jq -e '.ok == true and (.result | type == "object")' <<<"$out" >/dev/null 2>&1 || return 1
-  res=$(jq -c '.result // {}' <<<"$out" 2>/dev/null) || return 1
-  n=$(jq -r '.messages | if type == "array" then length else -1 end' <<<"$res" 2>/dev/null) || return 1
-  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || return 2
+  jq -e '.ok == true and (.result | type == "object")' <<<"$out" >/dev/null 2>&1 || return 2
+  res=$(jq -c '.result // {}' <<<"$out" 2>/dev/null) || return 2
+  n=$(jq -r '.messages | if type == "array" then length else -1 end' <<<"$res" 2>/dev/null) || return 2
+  [[ "$n" =~ ^[0-9]+$ ]] || return 2
   [[ "$n" -gt 0 ]] || return 0
   d=$(jq -r '.deliveryId // empty' <<<"$res")
   [[ -n "$d" ]] || { log "a non-empty batch has no deliveryId"; return 1; }
@@ -99,8 +99,9 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
   #   `worker-release` が既定であり、retain は「ユーザーが明示的にデバッグ保持を依頼した
   #   場合」の例外である。この版はその依頼を取らないので release を使う。
   #   **exit 0 は「完了した」の証明ではない。**pending / unknown では ack しない
-  REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || return 1
-  jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || return 1
+  [[ "$record_needed" -eq 0 ]] || record_outcome "$batch_oc" || return 1
+  REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || return 2
+  jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || return 2
   RST=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null || echo "")
   case "$RST" in
     retained|already_released) ;;
@@ -109,7 +110,6 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       return 1
       ;;
   esac
-  [[ "$record_needed" -eq 0 ]] || record_outcome "$batch_oc" || return 1
   ACK=$("$ORCA_BIN" orchestration check --terminal "$PH" --ack "$d" --json 2>/dev/null) || {
     log "ack failed; the batch will replay"
     return 1
@@ -147,15 +147,15 @@ healthy() {   # **人の入力待ちは healthy である**（CLI help）
   esac
 }
 
-drain || exit 1
+drain || { drc=$?; [[ "$drc" -eq 2 ]] && exit 4 || exit 1; }
 oc=$(outcome_of) && finish "$oc"
 n=0
 while :; do
-  WAIT=$("$ORCA_BIN" orchestration check --terminal "$PH" --wait --timeout-ms "$TMO" --json 2>/dev/null) || exit 1
-  jq -e '.ok == true' <<<"$WAIT" >/dev/null 2>&1 || exit 1
-  drain || exit 1
+  WAIT=$("$ORCA_BIN" orchestration check --terminal "$PH" --wait --timeout-ms "$TMO" --json 2>/dev/null) || exit 4
+  jq -e '.ok == true' <<<"$WAIT" >/dev/null 2>&1 || exit 4
+  drain || { drc=$?; [[ "$drc" -eq 2 ]] && exit 4 || exit 1; }
   oc=$(outcome_of) && finish "$oc"
-  healthy || { hrc=$?; [[ "$hrc" -eq 1 ]] && exit 4 || exit 1; }
+  healthy || exit 4
   n=$((n + 1))
   [[ "$n" -lt "$MAXW" ]] || { log "reached --max-waits ($MAXW); inspect and decide"; exit 3; }
 done

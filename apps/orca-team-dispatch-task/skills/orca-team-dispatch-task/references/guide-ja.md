@@ -23,9 +23,8 @@ worker は依頼をファイルから読む。逐語で写し、要約しない�
 ```bash
 SLUG=<lowercase, digits and hyphens, 1-30 chars>
 REQ=$(mktemp)
-cat > "$REQ" <<'REQUEST'
-<the user's request, copied verbatim>
-REQUEST
+# Use the coding environment's file-write tool to write the user's request verbatim to "$REQ".
+# Do not use a shell heredoc: a request may contain REQUEST (or any delimiter) on its own line.
 ```
 
 ## Step 2: 開始
@@ -55,22 +54,23 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
 | 0 | worker が成功を報告して完了 | `$SD/roles/design/result.md` を読み、ユーザーへ伝えて Step 4 へ進む |
 | 5 | worker が失敗を報告して完了 | `result.md` を読み、失敗内容を伝えて Step 5 へ進む。**merge しない** |
 | 3 | まだ実行中 | 進捗を報告してから、もう一度呼ぶ |
-| 4 | worker が停止した、または起動に失敗した | 調べてユーザーへ伝える。何も削除しない |
-| 1 | この版が扱えないメッセージが届いた | acknowledge していないため何も失われていない。次の復旧手順に従う |
+| 4 | worker の health または Orca transport を検証できない | 調べてユーザーへ伝える。何も削除しない |
+| 1 | batch が未対応・矛盾、または release が pending | acknowledge していない。手動 acknowledge はせず、次の安全な確認・再試行に従う |
 
-exit 1 では batch は未 acknowledge のまま残る。待ち直しても同じ batch が返り、前へ進まない。
-復旧は意図的に手動で行う。
+exit 1 では **自分で `--ack` を実行しない**。`worker_done` の receipt は release 前に記録されるため、
+`release_pending` は安全に再試行できる。`orca-wait.sh` を再実行すると release を再試行してから
+acknowledge を判断する。未対応 batch は cursor を進めずに確認して、ユーザーの指示を待つ。
 
 ```bash
-PH=$(jq -r '.parent_handle' "$SD/run.json")
-# 1. Read the batch. The default check (not --peek) returns its deliveryId.
-"$ORCA_BIN" orchestration check --terminal "$PH" --json
-# 2. Deal with every message in it yourself, then acknowledge that exact batch.
-"$ORCA_BIN" orchestration check --terminal "$PH" --ack <deliveryId> --json
-# 3. Run orca-wait.sh again.
+PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
+[[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
+"$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
+# For release_pending only, retry the canonical wait; it alone decides whether to ack.
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
 ```
 
-acknowledge する前に、届いたメッセージとそのために行ったことをユーザーへ見せる。
+確認したメッセージと、それが再試行できる release 状態か未対応メッセージかをユーザーへ見せる。
+transport/health の失敗は exit 4 であり、batch を手作業で復旧する合図ではない。
 
 ## Step 4: 成果を持ち帰る
 
@@ -99,6 +99,11 @@ TH=$(jq -r '.design.terminal' "$SD/workers.json")
 DID=$(jq -r '.design.dispatch' "$SD/workers.json")
 WP=$(jq -r '.worktree_path' "$SD/workers.json")
 MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
+IDENTITY_OK=no
+if [[ -z "$WT" || -z "$TH" || -z "$DID" || -z "$WP" || -z "$ORCA_BIN" ]]; then
+  echo "required cleanup state is missing; do not close or remove anything" >&2
+  exit 1
+fi
 DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null)
 echo "merged=$MERGED  worker checkout dirty=[${DIRTY:-clean}]"
 
@@ -195,7 +200,7 @@ worker が Step 3 で exit 5 を返したときは `MERGED` が false であり�
 | セッションが dispatch の途中で終了しても、自動回復しない | `$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と同様に片付ける |
 | worker が報告せずに停止すると、待機は timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` にある |
 | worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
-| runner は固定で、設定できない | まだ提供していない |
+| runner は固定で設定できず、`claude --dangerously-skip-permissions` で実行される | 信頼できるタスクだけを dispatch する。worker は permission prompt を出さない |
 | setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
 
 ## ディスク上の状態
