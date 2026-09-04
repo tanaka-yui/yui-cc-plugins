@@ -230,6 +230,10 @@ write_integration_config
 mkdir -p "$STATUS_DIR" || die "cannot create status directory at $STATUS_DIR"
 WIRING_SENTINEL="$STATUS_DIR/.wiring"
 : > "$WIRING_SENTINEL" || die "cannot write $WIRING_SENTINEL"
+# SIGTERM/SIGINT や set -e 下の予期しない非 0 終了でも sentinel を必ず消す。die() の
+# 明示的な rm と publish 後の rm -f (下方) は成功パスで WIRING_SENTINEL を "" に戻すため、
+# この trap は EXIT のたびに走っても二重実行として無害 (rm -f は対象無しで成功する)。
+trap '[[ -n "${WIRING_SENTINEL:-}" ]] && rm -f -- "$WIRING_SENTINEL"' EXIT INT TERM
 
 # Read the resolver output exactly once. All validation and extraction below use
 # this immutable in-process snapshot, never ROLES_FILE again.

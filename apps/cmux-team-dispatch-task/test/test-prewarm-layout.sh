@@ -378,5 +378,52 @@ run_pw "$ROLES_ON" >/dev/null 2>&1
   || bad "PW-W1b: .wiring が残っている"
 make_launch_stub ''
 
+# PW-W1d: 起動中に SIGTERM を受けても .wiring を残さない (trap の回帰)。
+# launch-workspace.sh を「started マーカーを touch してから hold ファイルが消えるまで
+# ループする」スタブへ差し替え、prewarm-panes.sh をバックグラウンドで起動して
+# started マーカーの出現を bounded loop で待つ (固定 sleep に頼らない)。この時点で
+# 本体は launch_role の command substitution でブロック中であり、SIGTERM は
+# trap を持たない bash ではここで即座にプロセスを終了させる (別途確認済み: trap
+# 無しだと .wiring が残ったまま死ぬ)。trap があると即死せず、hold 解除でブロックが
+# 解けた直後に trap が走って sentinel を消してから正常終了する。
+cat > "$FAKE/launch-workspace.sh" <<STUB
+#!/bin/sh
+printf '%s\n' "launch \$*" >> "$TMP/calls.log"
+touch "$TMP/w1d-started"
+while [ -e "$TMP/w1d-hold" ]; do sleep 0.05; done
+printf '{"surface_id":"s","workspace_id":"workspace:1"}\n'
+STUB
+chmod +x "$FAKE/launch-workspace.sh"
+
+STATUS=$(mktemp -d "$TMP/status-case.XXXXXX")
+: > "$TMP/calls.log"
+rm -f "$TMP/w1d-started"
+touch "$TMP/w1d-hold"
+bash "$PW" --with-design --cwd "$TMP/wt" --slug t --status-dir "$STATUS" \
+  --agmsg-team team --roles "$ROLES_ON" >/dev/null 2>&1 &
+w1d_pid=$!
+
+started=0
+for _ in $(seq 1 100); do
+  if [[ -f "$TMP/w1d-started" ]]; then started=1; break; fi
+  sleep 0.05
+done
+
+if [[ "$started" -eq 1 && -e "$STATUS/.wiring" ]]; then
+  kill -TERM "$w1d_pid" 2>/dev/null
+  rm -f "$TMP/w1d-hold"
+  wait "$w1d_pid" 2>/dev/null
+  if [[ ! -e "$STATUS/.wiring" ]]; then
+    pass 'PW-W1d: SIGTERM 起動中でも .wiring を残さない (trap 回帰)'
+  else
+    bad 'PW-W1d: SIGTERM 後も .wiring が残っている'
+  fi
+else
+  rm -f "$TMP/w1d-hold"
+  wait "$w1d_pid" 2>/dev/null
+  bad "PW-W1d: mid-flight window に到達できなかった (started=$started wiring=$([[ -e $STATUS/.wiring ]] && echo yes || echo no))"
+fi
+make_launch_stub ''
+
 [[ $fail -eq 0 ]] && echo '--- all tests passed ---' || echo '--- failures ---'
 exit "$fail"
