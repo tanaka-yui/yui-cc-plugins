@@ -148,6 +148,19 @@
         "cmux",
         "auth"
       ]
+    },
+    {
+      "name": "orca-team-dispatch-task",
+      "description": "Orca の worktree で 1 つのタスクを worker に実行させる",
+      "source": "./apps/orca-team-dispatch-task",
+      "version": "1.0.0",
+      "license": "MIT",
+      "category": "terminal",
+      "tags": [
+        "orca",
+        "worktree",
+        "dispatch"
+      ]
     }
   ]
 }
