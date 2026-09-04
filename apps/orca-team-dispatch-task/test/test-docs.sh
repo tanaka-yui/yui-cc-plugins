@@ -70,6 +70,32 @@ ns=$(awk '/^## Known limitations$/,/^## State on disk$/' "$S" | grep -c '^| .* |
 ng=$(awk '/^## 既知の制限$/,/^## ディスク上の状態$/' "$G" | grep -c '^| .* | .* |$')
 [[ "$ns" -eq "$ng" && "$ns" -ge 6 ]] && ok "SK8c 制限が $ns 件で一致" || fail "SK8c 件数 (S=$ns G=$ng)"
 
+# SK8d: 訳は正本の操作手順を省略しない。すべての bash block を順序どおり完全に写す。
+#         本文は翻訳してよいが、実行するコマンドを別物にしてはいけない。
+extract_bash_blocks() {
+  awk '/^```bash$/ { in_block=1; next }
+       in_block && /^```$/ { printf "\\034"; in_block=0; next }
+       in_block { print }' "$1"
+}
+blocks_s=$(mktemp); blocks_g=$(mktemp)
+extract_bash_blocks "$S" >"$blocks_s"; extract_bash_blocks "$G" >"$blocks_g"
+if cmp -s "$blocks_s" "$blocks_g"; then
+  ok "SK8d bash block が完全一致"
+else
+  fail "SK8d guide-ja.md が操作 block を省略または変更している"
+fi
+rm -f "$blocks_s" "$blocks_g"
+
+# SK8e: 節・表・安全規則を同じ構造で持ち、訳にだけある補足節を持たない。
+sections_s=$(grep -c '^## ' "$S"); sections_g=$(grep -c '^## ' "$G")
+tables_s=$(grep -c '^|' "$S"); tables_g=$(grep -c '^|' "$G")
+if [[ "$sections_s" -eq "$sections_g" && "$tables_s" -eq "$tables_g" ]] \
+  && ! grep -q '対応セクションなし' "$G"; then
+  ok "SK8e guide-ja.md の構造が正本と一致"
+else
+  fail "SK8e guide-ja.md の節・表・補足が正本と一致しない"
+fi
+
 # SK9: **README は運用手順を持たない**（正本は 1 つ）
 if grep -qE 'worker-release|worktree rm|terminal close|task-list --run' "$P/README.md"; then
   fail "SK9 README が片付け手順を重複して持っている"

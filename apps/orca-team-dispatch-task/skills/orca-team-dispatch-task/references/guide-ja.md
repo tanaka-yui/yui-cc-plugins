@@ -1,104 +1,208 @@
 # Orca Team Dispatch
 
-## Output Language の訳
+## 出力言語
 
-ユーザーへ提示する質問・選択肢ラベル・表・進捗報告はすべて日本語で描画する。
-SKILL.md 本文が英語なのは規約による統一であって、表示言語を変えるものではない。
+ユーザーへ提示する質問、選択肢ラベル、表、進捗報告はすべて日本語で表示する。
+この SKILL.md 本文は規約上の統一のため英語で書かれているだけであり、ユーザーへの
+表示言語を変えるものではない。
 
-Orca CLI は PATH に無い。**ユーザーへ見せるコマンドも含め、常に `$ORCA_BIN` 経由で呼ぶ。**
+# Orca Team Dispatch
+
+1 つのタスクを 1 worker 専用の Orca worktree で実行し、成果を親へ持ち帰る。
+
+```bash
+PLUGIN="${CLAUDE_PLUGIN_ROOT:?the plugin root is not set; reinstall the plugin}"
+ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+```
+
+Orca CLI は PATH に無い。ユーザーへ見せるコマンドも含め、常に `$ORCA_BIN` 経由で呼ぶ。
 
 ## Step 1: 依頼を書き出す
 
-worker は依頼をファイルから読む。**逐語で写す。要約しない** —
-ここで要約すると、ユーザーが実際に出した指示が失われる。
+worker は依頼をファイルから読む。逐語で写し、要約しない。要約するとユーザーが実際に
+出した指示が失われる。
+
+```bash
+SLUG=<lowercase, digits and hyphens, 1-30 chars>
+REQ=$(mktemp)
+cat > "$REQ" <<'REQUEST'
+<the user's request, copied verbatim>
+REQUEST
+```
 
 ## Step 2: 開始
 
-exit 1 は worker が起動しなかったことを意味する。「資源は保持した (KEPT)」とあれば
-Task は既に実在する。**何も削除せず**、表示された inspection コマンドを実行する。
+```bash
+OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
+        --objective "<one line naming the outcome>") || { echo "$OUT"; exit 1; }
+SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
+```
+
+exit 1 は worker が起動しなかったことを意味する。メッセージに resources are KEPT と
+あれば Task はすでに実在する。何も削除せず、表示された inspection コマンドを実行する。
 
 ## Step 3: 待つ
 
-先にユーザーへ伝える: worker が終わると、この skill は ack の前に dispatch を release する。
-端末はこちらで `terminal create` して `worker-start` へ渡した再利用端末なので、Orca は
-`retained` を返して閉じない — 端末と worktree が Step 5 の片付けまで残るのはそのためであって、
-この skill が retention を要求したからではない。
+先にユーザーへ伝える。worker が終わると、この skill はメッセージを acknowledge する前に
+dispatch を release する。端末はこちらで作って `worker-start` へ渡した再利用端末なので、
+Orca は `retained` と報告して閉じない。端末と worktree は Step 5 でユーザーが片付けるまで
+残る。これは Orca の再利用端末の規則であり、この skill が retention を要求したためではない。
 
-exit code がプロトコルそのものである。
+```bash
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
+```
 
-| exit | 意味 | すること |
+| Exit | 意味 | すること |
 |---|---|---|
-| 0 | 成功で完了 | `result.md` を読んでユーザーへ報告し Step 4 へ |
-| 5 | 失敗で完了 | `result.md` を読んで何が失敗したか伝え、Step 5 へ。**merge しない** |
-| 3 | 実行中 | 進捗を報告して呼び直す |
-| 4 | worker が停止・起動失敗 | 調べて報告する。**何も削除しない** |
-| 1 | この版が扱えない message が届いた | ack していないので何も失われていない。下の復旧手順に従う |
+| 0 | worker が成功を報告して完了 | `$SD/roles/design/result.md` を読み、ユーザーへ伝えて Step 4 へ進む |
+| 5 | worker が失敗を報告して完了 | `result.md` を読み、失敗内容を伝えて Step 5 へ進む。**merge しない** |
+| 3 | まだ実行中 | 進捗を報告してから、もう一度呼ぶ |
+| 4 | worker が停止した、または起動に失敗した | 調べてユーザーへ伝える。何も削除しない |
+| 1 | この版が扱えないメッセージが届いた | acknowledge していないため何も失われていない。次の復旧手順に従う |
 
-exit 1 では batch が未 ack のまま残るので、待ち直しても同じ batch が返って前に進まない。
-復旧は意図的に手動である: 既定の `check`（`--peek` ではない）で deliveryId を得て、
-中の message を自分で処理し、**その exact な batch を `--ack` してから** `orca-wait.sh` を
-呼び直す。何が届いて何をしたかをユーザーへ見せてから ack する。
+exit 1 では batch は未 acknowledge のまま残る。待ち直しても同じ batch が返り、前へ進まない。
+復旧は意図的に手動で行う。
+
+```bash
+PH=$(jq -r '.parent_handle' "$SD/run.json")
+# 1. Read the batch. The default check (not --peek) returns its deliveryId.
+"$ORCA_BIN" orchestration check --terminal "$PH" --json
+# 2. Deal with every message in it yourself, then acknowledge that exact batch.
+"$ORCA_BIN" orchestration check --terminal "$PH" --ack <deliveryId> --json
+# 3. Run orca-wait.sh again.
+```
+
+acknowledge する前に、届いたメッセージとそのために行ったことをユーザーへ見せる。
 
 ## Step 4: 成果を持ち帰る
 
-**exit 0 のときだけ。**dispatch を始めたときに居たブランチへ merge する。
-worker が成功を報告し、`result.md` が非空で、checkout がそのブランチのままで、
-clean であること。どれか欠ければ拒否する。コンフリクトのときは merge を中断して
-何も消さないので、解決方法をユーザーへ伝える。
+exit 0 のときだけ実行する。
 
-## Step 5: 片付けの exact なコマンドをユーザーへ渡す
+```bash
+bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
+```
 
-**この版は何も消さない。**値を埋めたコマンドを表示して、ユーザーに判断させる。
-**placeholder を見せない。**`worker-release` を実行し、**その `state` で分類する** —
-exit code だけでは端末を閉じてよいかは決まらない。
+dispatch を始めたときにいたブランチへ worker のブランチを merge する。worker が成功を
+報告していること、`result.md` が空でないこと、checkout が開始時のブランチのままであること、
+checkout が clean であることのすべてを満たさなければ拒否する。競合時は merge を中断して
+すべてを残すので、ユーザーへ解決方法を伝える。
 
-- **[C1]** `release_pending` / `release_unknown` は**そこで止まる**。exit 0 は
-  「閉じてよい」の証明ではない。receipt と `worker-show --dispatch` を見せ、
-  端末も worktree も意図的に残していると伝える
-- **[C2]** `retained` / `already_released` のときだけ端末が手元に残る。
-  **handle と worktreeId が記録した state と一致することを確かめてから**閉じる。
-  一致しなければ、もう誰か他の所有物である
-- **[C3]** worktree の削除は破壊的なので、**条件が実際に揃ったときだけコマンドを出す**。
-  条件は「merge 済み」「**この dispatch が作った worktree である**」「checkout が
-  読めてかつ clean」「[C2] の identity が一致した」「**その worktree に残る端末が
-  すべて記録済みのものである**」の 5 つ。**再利用した worktree は決して削除対象に
-  しない** — 元からこちらのものではない。selector には `id:` の接頭辞が要る。
-  **端末を列挙できなかったときは「0 個」ではなく「判断不能」であり、コマンドを出さない。**
-  worker が失敗した場合は `merged` が false なので削除は提示されない（意図した動作）
-- **[C4]** `worktree rm` はブランチ削除も試みる。**merge 済みと証明できないブランチは
-  Orca が残す**ので、ブランチが残るのは異常ではなく合図である。
-  dirty なファイルをユーザーが見て失ってよいと判断するまで `--force` を足さない
+## Step 5: ユーザーへ正確な片付けコマンドを渡す
+
+この版は何も削除しない。実際の値を埋めたコマンドを表示し、ユーザーに判断させる。
+placeholder を見せない。
+
+release は自分で実行し、その結果の state で分類する。exit code だけでは端末を閉じてよいか
+判断できない。
+
+```bash
+WT=$(jq -r '.worktree_id' "$SD/workers.json")
+TH=$(jq -r '.design.terminal' "$SD/workers.json")
+DID=$(jq -r '.design.dispatch' "$SD/workers.json")
+WP=$(jq -r '.worktree_path' "$SD/workers.json")
+MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
+DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null)
+echo "merged=$MERGED  worker checkout dirty=[${DIRTY:-clean}]"
+
+REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+STATE=$(jq -r '.result.state // empty' <<<"$REL")
+```
+
+[C1] `release_pending` または `release_unknown`: **ここで止まる。**exit 0 は何かを閉じる
+権限ではない。receipt と次の inspection コマンドをユーザーへ見せ、端末と worktree は意図的に
+保持していると伝える。
+
+```bash
+echo "$REL"; echo "$ORCA_BIN orchestration worker-show --dispatch $DID --json"
+```
+
+[C2] `retained` または `already_released`: Orca が端末をこちらに残した。閉じる前に、
+handle と端末が属する worktree が記録済み state と一致することを確認し、所有物であると証明する。
+
+```bash
+SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null)
+if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
+   && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
+  IDENTITY_OK=yes
+  printf '%s terminal close --terminal %q --json\n' "$ORCA_BIN" "$TH"
+else
+  IDENTITY_OK=no
+  echo "the terminal no longer matches our state; leave it alone"
+fi
+```
+
+[C3] worktree の削除は破壊的である。次の条件がすべて実際に成り立つ場合だけ削除コマンドを
+表示する。条件を説明するだけで済ませない。
+
+```bash
+OWNED=$(jq -r '.worktree_created_by_this_run // false' "$SD/workers.json")
+DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
+
+# Every terminal Orca still has in that worktree must be one we recorded.
+# **Failing to list them is not the same as there being none** — if either side of the
+# comparison is unknown, the answer is "cannot tell", and cannot-tell closes the gate.
+KNOWN=$(jq -c '.worktree_terminals' "$SD/workers.json")   # null when the inventory failed
+TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT" --json 2>/dev/null) || TLRC=$?
+if [[ "$TLRC" -eq 0 ]] && jq -e '.result.terminals | type == "array"' <<<"$TL" >/dev/null 2>&1 \
+   && [[ "$KNOWN" != null ]]; then
+  ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
+                    --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
+else
+  ACCOUNTED=unknown
+fi
+
+if [[ "$MERGED" == true && "$OWNED" == true && "$DRC" -eq 0 && -z "$DIRTY" \
+      && "$IDENTITY_OK" == yes && "$ACCOUNTED" == yes ]]; then
+  printf '%s worktree rm --worktree %q --json\n' "$ORCA_BIN" "id:$WT"
+else
+  echo "not offering to remove the worktree:"
+  [[ "$MERGED" == true ]]      || echo "  - the work is not merged yet"
+  [[ "$OWNED" == true ]]       || echo "  - this dispatch reused an existing worktree; it is not ours to remove"
+  [[ "$DRC" -eq 0 ]]           || echo "  - the worker checkout could not be inspected"
+  [[ -z "$DIRTY" ]]            || echo "  - the worker checkout has uncommitted changes"
+  [[ "$IDENTITY_OK" == yes ]]  || echo "  - the terminal identity did not match our state"
+  case "$ACCOUNTED" in
+    yes) ;;
+    no)      echo "  - a terminal in that worktree is not one we recorded" ;;
+    unknown) echo "  - the terminals in that worktree could not be listed, so nothing is proven" ;;
+  esac
+fi
+```
+
+`IDENTITY_OK` は [C2] の結果である。handle と worktree が一致したときだけ `yes` にする。
+worker が Step 3 で exit 5 を返したときは `MERGED` が false であり、削除を提示しない。
+これは意図した動作であって欠落ではない。
+
+ユーザーへ、次を平易な言葉で伝える。
+
+- [C1] `release_pending` と `release_unknown` は release が完了していない状態である。手作業で
+  端末を閉じて補おうとせず、後で release を再実行するか inspection する。
+- [C2] handle と worktree が記録済み state に一致する端末だけを閉じてよい。一致しなければ、
+  すでに他者の所有物である。
+- [C3] 削除コマンドは、成果が merge 済み、この dispatch が worktree を作成した、checkout が
+  読めて clean、端末 identity が一致、worktree にまだ残る端末すべてが記録済み、の全条件を
+  満たすときだけ表示する。再利用 worktree は最初からこちらのものではないため、削除を提示しない。
+  **端末を列挙できないことは「存在しない」ことではない。何も証明されないのでコマンドを表示しない。**
+- [C4] `worktree rm` は branch の削除も試みる。Orca は変更が merge 済みと証明できない branch を
+  残すので、branch が残ることは失敗ではなく合図である。ユーザーが dirty なファイルを見て失っても
+  よいと判断するまで、`--force` を加えない。
 
 ## 既知の制限
 
-**黙って回避しない。**該当する場面ではユーザーへ伝える。
+該当するときは、黙って回避せずユーザーへ伝える。
 
 | 制限 | ユーザーがすること |
 |---|---|
-| 何も自動では片付けない | Step 5 のコマンドを実行する |
-| セッションが途中で落ちても自動回復しない | `task-list --run <run_id>` と `worker-show --dispatch <id>` で調べ、Step 5 の要領で片付ける |
-| worker が報告せずに止まると待ちが時間切れになる | 同じ inspection。状態は `.dispatch/<slug>/` にある |
-| worker は質問できない | 代わりに `result.md` に理由を書いて失敗で閉じるよう指示してある。読んで投げ直す |
-| runner は固定で設定できない | まだ無い |
-| setup hook を要する repo は対象外 | worktree は setup を skip して作る |
+| 自動で片付けるものはない | Step 5 のコマンドを実行する |
+| セッションが dispatch の途中で終了しても、自動回復しない | `$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と同様に片付ける |
+| worker が報告せずに停止すると、待機は timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` にある |
+| worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
+| runner は固定で、設定できない | まだ提供していない |
+| setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
 
 ## ディスク上の状態
 
-`.dispatch/<slug>/`: `request.md` / `run.json` / `workers.json` / `received.json` /
-`integration-result.json` / `run-design.sh` / `roles/design/{status.json,result.md}`。
-手で再開・片付けするのに必要なものはすべてここにある。`.dispatch/` は repo の
-`info/exclude` へ入れるので、ユーザーの `git status` には現れない。
-
-SKILL.md がユーザーへ提示する CLI はこの 8 つで、この訳もそれに一致する:
-`orchestration worker-release` / `orchestration worker-show` / `orchestration task-list` /
-`orchestration check` / `terminal show` / `terminal list` / `terminal close` / `worktree rm`。
-
----
-
-## 補足（SKILL.md に対応セクションなし）
-
-### なぜ recovery 機構も自動片付けも無いのか
-
-親の裁定（2026-09-04）による。**一度も走っていない系のために crash recovery を
-設計しても、直せるのは想像した failure mode だけである。**自動片付けも
-「閉じてよいか」の identity 検証を伴うので、同じ理由で後回しにした（spec 18-1 の F-i）。
+`.dispatch/<slug>/` には `request.md`、`run.json`、`workers.json`、`received.json`、
+`integration-result.json`、`run-design.sh`、`roles/design/{status.json,result.md}` がある。
+手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は repository の
+`info/exclude` に加えるため、ユーザーの `git status` には現れない。
