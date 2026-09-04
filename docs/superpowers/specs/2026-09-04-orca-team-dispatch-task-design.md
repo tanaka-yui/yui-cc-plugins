@@ -1565,9 +1565,46 @@ Stage 1 の完了後に、独立した spec の follow-up として順に実装�
 | F-f | **issue ループ** | 12 | issue 1 件が自動で dispatch され cleanup まで通る |
 | F-g | **setup / reset / override** | 13 | 各モードが対話で設定を変更できる |
 
-**Stage 1 は F-d の簡易形を含む**: 1 ロールなので親の検証は「`result.md` が実在すること」
-だけで足り、`accepted` の往復も 1 回で済む。完全形（nonce / 4 phase / crash 境界 7 行）は
-F-d で入れる。**簡易形であることを SKILL.md にも明記し、宣言と実装を乖離させない**（16-1）。
+### Stage 1 の簡易二相コミット（正本）
+
+**Stage 1 も二相コミットを通る。**1 ロールなので簡易形で足りるが、**省略はしない** —
+省略すると `result.md` が欠けていても Dispatch が settled になり、remediation できなくなる
+（spec 10 が排除した split-brain の再導入。plan round 2 finding 3）。
+
+| 相 | 実行者 | 内容 |
+|---|---|---|
+| 1 | worker | 作業して `result.md` を書く |
+| 2 | worker | `completion.json` を `prepared`（nonce つき）で書く → **`merge_ready`** を親へ → ターンを閉じる |
+| 3 | 親 | `result.md` の実在と非空を検証する |
+| 4a | 親 | 受理 → **active な Dispatch へ `accepted`(nonce)** を送る |
+| 4b | 親 | 不受理 → 同じ active Dispatch へ差し戻す（相 1 へ） |
+| 5 | worker | nonce 一致を確認 → `report-status.sh <role-dir> done|error <要約>` |
+| 6 | worker | `worker_done --outcome succeeded|failed`（**`report-status` と同じ結論**） |
+| 7 | worker | 成立を確認してから `completion.json` を `settled` にし ack |
+
+**`--outcome` は `status.json` の結論と一致させる。**`status=error` を書きながら
+`--outcome succeeded` を送ってはならない。
+
+省略するのは**完全形の一部だけ**である: 4 phase の全部ではなく
+`prepared` / `accepted` / `settled` の 3 つ、crash 境界は 10-3 の 7 行のうち
+`merge_ready` 前後と `worker_done` 前後の 4 行。残りは F-d で入れる。
+
+**簡易形であることを SKILL.md にも明記し、宣言と実装を乖離させない**（16-1）。
+
+### Stage 1 の成果の受け渡し（local merge）
+
+**worker は独立した worktree で作業するので、成果は自動では親 checkout に現れない。**
+`integration=merge` を宣言する以上、**親が検証済みブランチを親の統合ブランチへ merge し、
+成功を永続化してから cleanup する**（plan round 2 finding 6）。
+
+- merge するブランチは **journal / receipt が持つ identity** を使う。`feat/<slug>` を
+  推測しない
+- conflict したら **worktree もブランチも保持**し、cleanup を行わない
+- **merge が成功して初めて cleanup してよい。**順序を逆にすると成果が消える
+- E2E は「cleanup 後も親 checkout に固有 marker が残ること」まで検査する
+
+merge しない設計を選ぶなら、機能を「成果 worktree を保持して返す」に変え、
+**cleanup で削除してはならない。**
 
 ## 18. 本 spec が扱わないもの
 
