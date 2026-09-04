@@ -25,6 +25,11 @@ object_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,me
 real_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
     {id:"msg_real",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded",filesModified:["README.md"],reportPath:"/tmp/roles/design/result.md"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"; }
+rejected_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
+    {id:"msg_rejected",subject:"Rejected worker_done: spike done",type:"worker_done",payload:({taskId:"task_f2917652a612",dispatchId:"ctx_22efecad4b84",outcome:"succeeded",_orcaLifecycleRejection:{code:"dispatch_capability_invalid",reason:"The Dispatch capability is missing."}}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+status_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
+    {id:"msg_status",type:"status",payload:null,body:""}]}}' > "$ORCA_STUB_DIR/orchestration_check"; }
 mixed() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d2",count:2,messages:[
     {id:"q1",type:"question",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"?"},
     {id:"m1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
@@ -57,6 +62,22 @@ setup; dn; real_msg; out=$(w 2>/dev/null); rc=$?
 setup; dn; object_msg; out=$(w 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* ]] && ok "WT4c object payload 互換" \
   || fail "WT4c (rc=$rc out=$out)"; teardown
+
+# WT4d: Orca が reject した worker_done は outcome が succeeded でも完了ではない。
+setup; dn
+echo '{"design":{"terminal":"term_w","task":"task_f2917652a612","dispatch":"ctx_22efecad4b84"}}' > "$SD/workers.json"
+rejected_msg; out=$(w 2>&1); rc=$?
+release_or_ack=$(grep -c 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" || true)
+[[ "$rc" -eq 1 && "$out" == *"dispatch_capability_invalid"* && "$out" == *"The Dispatch capability is missing."* \
+  && ! -e "$SD/received.json" && "$release_or_ack" -eq 0 ]] \
+  && ok "WT4d rejected worker_done を消費しない" || fail "WT4d (rc=$rc out=$out)"; teardown
+
+# WT4e: null payload の status は誤って payload schema の問題と説明せず、未 ack で残す。
+setup; status_msg; out=$(w 2>&1); rc=$?
+release_or_ack=$(grep -c 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" || true)
+[[ "$rc" -eq 1 && "$out" == *"this version handles only worker_done messages; the message was left unacknowledged"* \
+  && ! -e "$SD/received.json" && "$release_or_ack" -eq 0 ]] \
+  && ok "WT4e status message を未 ack で残す" || fail "WT4e (rc=$rc out=$out)"; teardown
 
 # WT5: **failed は exit 5。**merge へ進ませない
 setup; er; msg failed; out=$(w 2>/dev/null); rc=$?
