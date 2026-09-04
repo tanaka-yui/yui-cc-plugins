@@ -116,11 +116,18 @@ run_cleanup_for_slug t "$ROLE_DISPATCH" >/dev/null
 # 呼んでいた。5 分でタイムアウトした 2026-09-02 の batch 2 では、workspace が開いたまま
 # 残った。閉じるのが cleanup の責任であることを、ここで実装側に固定する。
 # (ハーネスの正常系 1 タスク実行のあとに評価する)
+# 1 行 grep -q だけだと、単一の決め打ち surface しか閉じない実装や、
+# awk 'NF && !seen[$0]++' の重複排除を失った実装も素通りしてしまう。この fixture
+# (review_mode=on, s1-s4 の 4 role 分固定 surface) では実在 4 role が重複なく
+# 1 回ずつ閉じられることまで見る (C10 が leave.sh 側で行う検査の close-surface 版)。
+close_raw=$(grep -c '^cmux close-surface ' "$CLEANUP_HARNESS_CALLS" 2>/dev/null || echo 0)
+close_uniq=$(grep '^cmux close-surface ' "$CLEANUP_HARNESS_CALLS" | sort | uniq | wc -l | tr -d ' ')
 if grep -q "^cmux close-surface .*--workspace " "$CLEANUP_HARNESS_CALLS" \
-   && grep -q "^cmux close-workspace " "$CLEANUP_HARNESS_CALLS"; then
-  pass "LC-C1: cleanup が surface と workspace を閉じる"
+   && grep -q "^cmux close-workspace " "$CLEANUP_HARNESS_CALLS" \
+   && [[ "$close_raw" == 4 ]] && [[ "$close_uniq" == "$close_raw" ]]; then
+  pass "LC-C1: cleanup が surface と workspace を閉じる (実在 4 role を重複無く各 1 回)"
 else
-  bad "LC-C1: close 呼び出しが無い: $(cat "$CLEANUP_HARNESS_CALLS")"
+  bad "LC-C1: close 呼び出しが無いか件数不正 (raw=$close_raw uniq=$close_uniq): $(cat "$CLEANUP_HARNESS_CALLS")"
 fi
 
 # LC-C2: 各タスクの段階が stderr に出る。どこまで終わったかが外から分かること。
