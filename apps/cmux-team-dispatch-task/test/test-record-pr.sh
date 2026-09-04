@@ -9,6 +9,9 @@
 #   RP4. gh が非ゼロなら exit 1 で pr_url を書かない
 #   RP5. integration=merge のときは何もせず exit 0 (PR を要求しないモード)
 #   RP6. integration.json が無ければ exit 2
+#   RP7. gh へ --state open と --json url,state を渡す
+#   RP8. closed のみの PR しか無ければ「PR 無し」として exit 1 / pr_url を書かない
+#        (loop retry が同じ branch 名を再利用したとき、旧 PR で完了を偽装させない)
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +29,14 @@ cat > "$BIN_DIR/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_LOG"
 [[ -n "${GH_FAIL:-}" ]] && exit 1
+if [[ -n "${GH_CLOSED_ONLY:-}" ]]; then
+  # closed PR は実際の gh なら --state open で server 側フィルタされ結果に出ない。
+  case "$*" in
+    *'--state open'*) printf ''; exit 0 ;;
+  esac
+  printf '%s' "${GH_CLOSED_URL:-https://github.com/CyberAgentAI/influencer-platform/pull/1}"
+  exit 0
+fi
 printf '%s' "${GH_URL:-}"
 exit 0
 STUB
@@ -95,6 +106,25 @@ fi
 d="$TMP/rp6"; mkdir -p "$d"
 run --status-dir "$d"
 [[ $? -eq 2 ]] && pass "RP6: integration.json 不在は exit 2" || bad "RP6: exit 2 にならない"
+
+# --- RP7 ---
+d=$(setup rp7 "$PRJSON"); : > "$GH_LOG"
+GH_URL='https://github.com/CyberAgentAI/influencer-platform/pull/118' run --status-dir "$d"
+if grep -q -- '--state open' "$GH_LOG" && grep -q -- '--json url,state' "$GH_LOG"; then
+  pass "RP7: gh へ --state open と --json url,state を渡す"
+else
+  bad "RP7: gh の引数: $(cat "$GH_LOG")"
+fi
+
+# --- RP8 ---
+d=$(setup rp8 "$PRJSON")
+GH_CLOSED_ONLY=1 run --status-dir "$d"
+rc=$?
+if [[ $rc -eq 1 ]] && jq -e '.pr_url | not' "$d/status.json" >/dev/null; then
+  pass "RP8: closed のみの PR は「PR 無し」扱いで exit 1 / pr_url を書かない"
+else
+  bad "RP8: rc=$rc url=$(jq -c '.pr_url' "$d/status.json")"
+fi
 
 [[ $fail -eq 0 ]] && echo "--- すべて PASS ---" || echo "--- FAIL あり ---"
 exit $fail

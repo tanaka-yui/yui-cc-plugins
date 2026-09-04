@@ -44,10 +44,18 @@ command -v gh >/dev/null 2>&1 || fail 'gh is not installed'
 
 # --repo を必ず付ける。付けないと gh は現在のディレクトリの remote 設定から推測し、
 # fork 側に作られた PR を拾う (2026-09-02 の F3 がまさにその形で成立した)。
-URL=$(gh pr list --repo "$REPO" --head "$HEAD" --json url --jq '.[0].url // empty' 2>/dev/null) \
-  || fail "gh pr list failed for $REPO ($HEAD)"
+# --state open も必須: 無いと closed/abandoned な旧 PR が .[0] として拾われ、loop の
+# retry が同じ branch 名を再利用したときに「PR 実在」を偽装してしまう。
+GH_STDERR=$(mktemp) || fail 'mktemp failed for gh stderr capture'
+URL=$(gh pr list --repo "$REPO" --head "$HEAD" --state open --json url,state \
+  --jq '.[0].url // empty' 2>"$GH_STDERR")
+GH_RC=$?
+GH_ERR_TEXT=$(cat "$GH_STDERR" 2>/dev/null)
+rm -f "$GH_STDERR"
+[[ $GH_RC -eq 0 ]] \
+  || fail "gh pr list failed for $REPO ($HEAD): ${GH_ERR_TEXT:-<no stderr output>}"
 [[ -n "$URL" ]] \
-  || fail "no pull request for $HEAD on $REPO; push the branch to origin and create the PR with --repo $REPO before recording it"
+  || fail "no open pull request for $HEAD on $REPO; push the branch to origin and create the PR with --repo $REPO before recording it"
 
 FILE="$STATUS_DIR/status.json"
 BASE='{}'
