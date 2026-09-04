@@ -137,6 +137,22 @@ if [[ "$rc" -eq 0 || "$out" != *'could not confirm the release; do not close any
    || "$out" == *'worker-show'* ]]; then
   bad="$bad [C1-release-failed-receipt]"
 fi
+
+# SK6g: Orca の正当な release_unknown receipt は exit 1 を返す。C1 は rc より receipt を
+#        先に分類し、保持を示す receipt と inspection command を出さなければならない。
+printf '%s\n' '{"ok":true,"result":{"state":"release_unknown"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+printf '%s\n' 1 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
+block="$scratch/C1-release-unknown.sh"; extract_cleanup_block C1 "$S" > "$block"
+out=$(bash "$block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'"state":"release_unknown"'* \
+   || "$out" != *'orchestration worker-show --dispatch ctx_w --json'* \
+   || "$out" == *'could not confirm the release'* ]]; then
+  bad="$bad [C1-release-unknown-receipt]"
+fi
+
+printf '%s\n' '{"ok":false,"error":"unavailable","result":{"state":"retained"}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-release"
+printf '%s\n' 7 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
 block="$scratch/C2-release-receipt.sh"; extract_cleanup_block C2 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
 if [[ "$rc" -eq 0 || "$out" == *'terminal close'* ]]; then

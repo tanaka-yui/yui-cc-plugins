@@ -133,18 +133,20 @@ DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
   exit 1
 }
 RELRC=0; REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
-[[ "$RELRC" -eq 0 ]] && jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
   echo "could not confirm the release; do not close anything" >&2
   exit 1
 }
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
-case "$STATE" in
-  release_pending|release_unknown)
-    printf '%s\n' "$REL"
-    printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
-    ;;
-  *) echo "release state '${STATE:-unknown}' does not authorise C1" >&2; exit 1 ;;
-esac
+if [[ "$STATE" == release_unknown ]]; then
+  printf '%s\n' "$REL"
+  printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
+  exit 0
+fi
+[[ "$RELRC" -eq 0 ]] || { echo "could not confirm the release; do not close anything" >&2; exit 1; }
+[[ "$STATE" == release_pending ]] || { echo "release state '${STATE:-unknown}' does not authorise C1" >&2; exit 1; }
+printf '%s\n' "$REL"
+printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
 ```
 
 [C2] `retained` または `already_released`: Orca が端末をこちらに残した。閉じる前に、
@@ -162,11 +164,12 @@ WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
   exit 1
 }
 RELRC=0; REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
-[[ "$RELRC" -eq 0 ]] && jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
   echo "could not confirm the release; do not close anything" >&2
   exit 1
 }
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
+[[ "$RELRC" -eq 0 ]] || { echo "could not confirm the release; do not close anything" >&2; exit 1; }
 case "$STATE" in
   retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
@@ -202,11 +205,12 @@ KNOWN=$(jq -c '.worktree_terminals // null' "$SD/workers.json" 2>/dev/null)
   exit 1
 }
 RELRC=0; REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
-[[ "$RELRC" -eq 0 ]] && jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
   echo "could not confirm the release; do not remove anything" >&2
   exit 1
 }
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
+[[ "$RELRC" -eq 0 ]] || { echo "could not confirm the release; do not remove anything" >&2; exit 1; }
 case "$STATE" in
   retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;

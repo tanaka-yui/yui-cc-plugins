@@ -965,8 +965,9 @@ cmux 版はこれを `.deferred` + V2 ガード + 「review ロールに `.assig
 「`--mode review` の runner は status を書かない」の 4 層で防いでいた。per-role dir は
 その 4 層すべてを 1 つの構造で置き換える。
 
-`report-status.sh` / `record-pr.sh` / `escalate.sh` は `<status-dir>` 相対なので、
-role_status_dir を渡すだけで動く（`record-pr.sh` は exec の、`escalate.sh` は呼び出し元ロールの role dir）。
+`report-status.sh` / `record-pr.sh` / `escalate.sh` は渡された `<status-dir>` にそのまま書くため、
+worker は **絶対 path の** role_status_dir を渡さなければならない。相対 path は worker checkout から解決され、
+親が読む canonical directory とは別の成功状態を作ってしまう（`record-pr.sh` は exec の、`escalate.sh` は呼び出し元ロールの role dir）。
 **`recovery-tick.sh` は例外である** — `dispatch_root` と `send_command` も要る（5-5）。
 `completion-gate.sh` も同じく 4 入力すべてを要求する。
 
