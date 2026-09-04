@@ -1,8 +1,9 @@
 # orca-team-dispatch-task — cmux 版ワークフローを Orca ネイティブの上に再構築する
 
 作成: 2026-09-04
-改訂: 2026-09-04 (Phase A-R round 1 の findings 1-8 を反映)
-状態: **設計。未実装。Phase 0 contract spike は実施済み（U1-U4 / U6 解決、U5 のみ未測定）。**
+改訂: 2026-09-04 (spec2 round 4 で承認。詳細は 0 節の改訂履歴)
+状態: **設計。承認済み（Phase A-R spec checkpoint）。未実装。**
+      Phase 0 contract spike は実施済み（U1-U4 / U6 解決、U5 のみ未測定・非ブロッカー）。
 対象: 新規プラグイン `apps/orca-team-dispatch-task`
 移植元: `apps/cmux-team-dispatch-task` 3.9.0
 実測環境: Orca 1.4.196 (`/Applications/Orca.app/Contents/Resources/bin/orca`)
