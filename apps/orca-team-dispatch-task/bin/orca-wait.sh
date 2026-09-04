@@ -57,7 +57,7 @@ record_outcome() {
 }
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
-  local out res n i m d t tid did oc batch_oc existing record_needed REL RELRC RST ACK CHECKRC
+  local out res n i m payload d t tid did oc rcode rreason batch_oc existing record_needed REL RELRC RST ACK CHECKRC
   CHECKRC=0
   out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || CHECKRC=$?
   [[ "$CHECKRC" -eq 0 ]] || { log "check failed (rc=$CHECKRC); the batch is not acknowledged"; return 2; }
@@ -80,8 +80,21 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
   for ((i = 0; i < n; i++)); do
     m=$(jq -c ".messages[$i]" <<<"$res")
     t=$(jq -r '.type // empty' <<<"$m")
-    tid=$(jq -r '.payload.taskId // empty' <<<"$m")
-    did=$(jq -r '.payload.dispatchId // empty' <<<"$m")
+    # 実 Orca の payload は JSON を文字列化して返す。object 形式も後方互換で受ける。
+    payload=$(jq -ce '.payload
+      | if type == "string" then fromjson? else . end
+      | select(type == "object")' <<<"$m") || {
+      log "this version handles only worker_done messages; the message was left unacknowledged"
+      return 1
+    }
+    tid=$(jq -r '.taskId // empty' <<<"$payload")
+    did=$(jq -r '.dispatchId // empty' <<<"$payload")
+    if [[ "$(jq -r 'has("_orcaLifecycleRejection")' <<<"$payload")" == true ]]; then
+      rcode=$(jq -r '._orcaLifecycleRejection | if type == "object" then .code // "unknown" else "unknown" end' <<<"$payload")
+      rreason=$(jq -r '._orcaLifecycleRejection | if type == "object" then .reason // "unknown" else "unknown" end' <<<"$payload")
+      log "worker_done was rejected by Orca (code='$rcode' reason='$rreason'); the batch is not acknowledged"
+      return 1
+    fi
     # ★ **処理できない message は捨てない。**捨てて ack すると cursor だけ進んで内容が消える
     if [[ "$t" != worker_done ]] || [[ "$tid" != "$TID" || "$did" != "$DID" ]]; then
       log "batch $d carries a message this version cannot handle (type='$t' task='$tid' dispatch='$did')"
@@ -89,7 +102,7 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       log "  $ORCA_BIN orchestration check --terminal $PH --peek --json"
       return 1
     fi
-    oc=$(jq -r '.payload.outcome // empty' <<<"$m")
+    oc=$(jq -r '.outcome // empty' <<<"$payload")
     case "$oc" in
       succeeded|failed) ;;
       *) log "worker_done has outcome '${oc:-none}'"; return 1 ;;
