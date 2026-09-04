@@ -289,6 +289,7 @@ worker が Step 3 で exit 5 を返したときは `MERGED` が false であり�
 | runner は固定で設定できず、`claude --dangerously-skip-permissions` で実行される | 信頼できるタスクだけを dispatch する。worker は permission prompt を出さない |
 | setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
 | `release_unknown` batch は元の親 terminal の queue を block する | acknowledge しない。`received.json` と `result.md` を確認する。guarded manual integration でも queue は解消されない。後続の dispatch は別の Orca terminal から開始し、launch 時にはその `ORCA_TERMINAL_HANDLE` が使われる |
+| failure / edge receipt fixture の一部は simulated のままである | 実機 E2E が証明したのは worker 1 本の成功経路だけである。Stage 2 で、依存する前に `check` の wait/ack、`worker-show` の wait state、`worker-release` の別 state、terminal/worktree cleanup の実機 receipt を capture する |
 
 ## ディスク上の状態
 
