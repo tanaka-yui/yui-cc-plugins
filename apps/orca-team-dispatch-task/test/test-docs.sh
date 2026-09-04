@@ -226,6 +226,24 @@ if grep -qE 'worker-release|worktree rm|terminal close|task-list --run' "$P/READ
 else ok "SK9 README は非 normative"; fi
 
 # SK10: doc-lang
-node "$ROOT/scripts/check-doc-lang.mjs" apps/orca-team-dispatch-task >/dev/null 2>&1 \
+if [[ "${DOC_LANG_REGRESSION:-}" != 1 ]]; then
+  skill_backup=$(mktemp)
+  cp "$S" "$skill_backup"
+  restore_skill() { cp "$skill_backup" "$S"; rm -f "$skill_backup"; }
+  trap restore_skill EXIT
+  printf '%s\n' 'これは一時的な SK10 回帰検証です。' >> "$S"
+  regression_out=$(DOC_LANG_REGRESSION=1 bash "$P/test/run-all.sh" 2>&1)
+  regression_rc=$?
+  restore_skill
+  trap - EXIT
+  if [[ "$regression_rc" -ne 0 && "$regression_out" == *"!!! test-docs FAILED"* ]]; then
+    ok "SK10 回帰: run-all が日本語混入を検出"
+  else
+    fail "SK10 回帰: run-all が日本語混入を検出できない"
+  fi
+fi
+
+APP_FILTER="${P#"$ROOT"/}"
+(cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"
 echo "---"; echo "failures: $fails"; exit "$fails"
