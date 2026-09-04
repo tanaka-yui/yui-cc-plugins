@@ -1589,14 +1589,71 @@ apps/orca-team-dispatch-task/
 
 ### Stage 1 — 最小の実働 dispatch
 
-**範囲**: `review_mode=off` / `integration=merge` / **1 ロール**（`design` のみ）/
-loop なし / setup・reset・override なし。
+> **親の裁定（2026-09-04、plan checkpoint 撤回時）**
+>
+> plan は 5 ラウンドで収束せず、tagged blocking は 9 → 10 → 9 と横ばいだった。
+> round 5 で見つかったのは磨きではなく canonical path の correctness defect である。
+> 原因は「一度も走っていない系のために crash recovery と exactly-once の層を
+> 設計し続けたこと」であり、**扱う価値のある failure mode は観測したものであって
+> 想像したものではない。**
+>
+> したがって **Stage 1 から recovery 機構を全部外す。**本 spec の該当節
+> （**5-1 の WAL / 10 の二相コミット / 10-5 の generation transition /
+> 12-1 の replacement / 6-5 の ledger と再 emit**）は **Stage 2 以降の契約**であって
+> Stage 1 の契約ではない。spec は書き換えず、範囲だけをここで宣言する。
 
-ユーザーが skill を呼ぶと、preflight → Run 作成 → worktree → 端末 1 つ →
-Task → Dispatch → worker が作業 → 完了の確定 → 親が受信 → cleanup まで通る。
+**Stage 1 が含むもの**:
 
-**marketplace への登録は Stage 1 の最後**に行う。SKILL.md と launch driver が
-揃うまで登録しない。
+- タスク 1 件、**ロール 1 つ**（`design`）、`review_mode=off`、loop なし、PR なし、
+  レビュープロトコルなし、setup / reset / override なし
+- ユーザーが skill を task description つきで呼ぶ
+- worktree を**作るか再利用する**
+- Orca 上に worker を 1 つ起動し、タスクを届ける
+- `worker_done` を待つ
+- 終端 status を書く
+- 止まる
+- **ユーザーが実際に呼べる SKILL.md**
+- **成果を壊さない cleanup**（merge してから worktree を消す）
+
+**Stage 1 が含まないもの**（明示的な除外）:
+
+- nonce
+- write-ahead log / journal
+- generation archive
+- remediation ループ
+- pending replay
+- **exactly-once の機構全般**
+
+**配送は at-least-once、消費は `task_id` + `dispatch_id` で冪等**（裁定 1 のとおり）。
+
+**coordinator が dispatch の途中で落ちた場合の挙動は「ユーザーが状態を調べて手で
+片づける」である。**これを既知の制限として、実行するコマンドつきで文書に書く。
+**これが誠実な Stage 1 であり、一度も実行されていない精巧な recovery 設計より良い。**
+
+**marketplace への登録は Stage 1 の最後**に行う。SKILL.md と driver が揃うまで登録しない。
+
+#### Stage 1 の worker protocol（正本。簡易でも二相でもない）
+
+| 手順 | 実行者 | 内容 |
+|---|---|---|
+| 1 | worker | `status.json` を `executing` で書く |
+| 2 | worker | worktree で作業し、そのブランチへ commit する |
+| 3 | worker | `result.md` を書く |
+| 4 | worker | `report-status.sh <role-dir> done\|error <要約>` |
+| 5 | worker | `worker_done --outcome succeeded\|failed`（**status と同じ結論**） |
+| 6 | worker | ターンを終えて待つ。親が端末を閉じる |
+
+**`accepted` も `merge_ready` も無い。**親の「検証」は `result.md` を読んでユーザーへ
+報告することであり、内容が不十分なら**ユーザーが投げ直す**。二相コミットは **F-d** である。
+
+#### Stage 1 の既知の制限（SKILL.md と README に同じ文言で書く）
+
+| 制限 | ユーザーがすること |
+|---|---|
+| coordinator が途中で落ちたら自動回復しない | `orca orchestration task-list --run <run_id> --json` と `worker-show --dispatch <id>` で状態を見て、`terminal close` / `worktree rm` を手で行う |
+| worker が `worker_done` を送らずに止まったら wait が時間切れになる | 同上。`worker-show` で state を見る |
+| runner は固定（`claude`）で設定できない | F-g まで待つ |
+| repo の setup hook を必要とする repo は対象外 | F-h まで待つ |
 
 ### Stage 2 以降（named follow-ups）
 
@@ -1611,42 +1668,29 @@ Stage 1 の完了後に、独立した spec の follow-up として順に実装�
 | F-d | **二相コミットの完全形** | 10 全体 | `merge_ready` → 親の検証 → `accepted` → `worker_done` が通る |
 | F-e | **generation transition と owner replacement** | 5-1 の transaction / 10-5 / 12-1 の replacement branch | 不受理からの差し戻しと worker 消失からの回復が通る |
 | F-f | **issue ループ** | 12 | issue 1 件が自動で dispatch され cleanup まで通る |
-| F-g | **setup / reset / override** | 13 | 各モードが対話で設定を変更できる |
+| F-g | **setup / reset / override**（runner / model / effort の設定） | 13 | 各モードが対話で設定を変更できる |
+| F-h | **repo setup hook 対応**（`worktree create --setup run` と補助端末の ownership 管理） | 11 | setup hook を要する repo で dispatch が通り、cleanup が補助端末を正しく判断する |
 
-### Stage 1 の簡易二相コミット（正本）
+### 撤回した節（2026-09-04 の裁定）
 
-**Stage 1 も二相コミットを通る。**1 ロールなので簡易形で足りるが、**省略はしない** —
-省略すると `result.md` が欠けていても Dispatch が settled になり、remediation できなくなる
-（spec 10 が排除した split-brain の再導入。plan round 2 finding 3）。
+**「Stage 1 の簡易二相コミット」節は撤回した。**Stage 1 に二相コミットは無い
+（上の worker protocol が正本）。`merge_ready` / `accepted` / nonce / `completion.json` の
+phase 遷移はすべて **F-d** の契約である。
 
-| 相 | 実行者 | 内容 |
-|---|---|---|
-| 1 | worker | 作業して `result.md` を書く |
-| 2 | worker | `completion.json` を `prepared`（nonce つき）で書く → **`merge_ready`** を親へ → ターンを閉じる |
-| 3 | 親 | `result.md` の実在と非空を検証する |
-| 4a | 親 | 受理 → **active な Dispatch へ `accepted`(nonce)** を送る |
-| 4b | 親 | 不受理 → 同じ active Dispatch へ差し戻す（相 1 へ） |
-| 5 | worker | nonce 一致を確認 → `report-status.sh <role-dir> done|error <要約>` |
-| 6 | worker | `worker_done --outcome succeeded|failed`（**`report-status` と同じ結論**） |
-| 7 | worker | 成立を確認してから `completion.json` を `settled` にし ack |
-
-**`--outcome` は `status.json` の結論と一致させる。**`status=error` を書きながら
-`--outcome succeeded` を送ってはならない。
-
-省略するのは**完全形の一部だけ**である: 4 phase の全部ではなく
-`prepared` / `accepted` / `settled` の 3 つ、crash 境界は 10-3 の 7 行のうち
-`merge_ready` 前後と `worker_done` 前後の 4 行。残りは F-d で入れる。
-
-**簡易形であることを SKILL.md にも明記し、宣言と実装を乖離させない**（16-1）。
+理由: 簡易形であっても、nonce 一致の selector、Delivery の ack 順序、差し戻し後の
+再送経路、判断待ちの再発見という 4 つの機構が付いてくる。**一度も走っていない系に対して
+これを設計しても、直せるのは想像した failure mode だけである。**plan の 5 ラウンドは
+すべてこの層から findings を生み続けた。
 
 ### Stage 1 の成果の受け渡し（local merge）
 
 **worker は独立した worktree で作業するので、成果は自動では親 checkout に現れない。**
-`integration=merge` を宣言する以上、**親が検証済みブランチを親の統合ブランチへ merge し、
-成功を永続化してから cleanup する**（plan round 2 finding 6）。
+`integration=merge` を宣言する以上、**親が worker のブランチを親の統合ブランチへ merge し、
+成功を永続化してから cleanup する**。
 
-- merge するブランチは **journal / receipt が持つ identity** を使う。`feat/<slug>` を
-  推測しない
+- merge するブランチは **`worktree create` の receipt が返した identity** を使う。
+  `feat/<slug>` を推測しない。receipt は `refs/heads/<name>` を返すので
+  **short name を正本にする**（実測 O36）
 - conflict したら **worktree もブランチも保持**し、cleanup を行わない
 - **merge が成功して初めて cleanup してよい。**順序を逆にすると成果が消える
 - E2E は「cleanup 後も親 checkout に固有 marker が残ること」まで検査する
