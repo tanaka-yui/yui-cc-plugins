@@ -86,15 +86,72 @@ else
 fi
 rm -f "$blocks_s" "$blocks_g"
 
-# SK8e: 節・表・安全規則を同じ構造で持ち、訳にだけある補足節を持たない。
-sections_s=$(grep -c '^## ' "$S"); sections_g=$(grep -c '^## ' "$G")
-tables_s=$(grep -c '^|' "$S"); tables_g=$(grep -c '^|' "$G")
-if [[ "$sections_s" -eq "$sections_g" && "$tables_s" -eq "$tables_g" ]] \
+# SK8e: 訳は順序付きの見出し・表構造を正本と共有し、訳だけの運用節を持たない。
+# 見出しは翻訳の差を canonical name に写してから順序まで比較する。未知の見出しは
+# unknown として残るため、改名・置換・追加を同じ構造と取り違えない。
+normalise_headings() {
+  local mode="$1" file="$2" line
+  while IFS= read -r line; do
+    case "$mode:$line" in
+      skill:'# Orca Team Dispatch'|guide:'# Orca Team Dispatch') echo 'h1:orca-team-dispatch' ;;
+      skill:'## Output Language'|guide:'## 出力言語') echo 'h2:output-language' ;;
+      skill:'## Step 1: Write the request down'|guide:'## Step 1: 依頼を書き出す') echo 'h2:step-1' ;;
+      skill:'## Step 2: Start'|guide:'## Step 2: 開始') echo 'h2:step-2' ;;
+      skill:'## Step 3: Wait'|guide:'## Step 3: 待つ') echo 'h2:step-3' ;;
+      skill:'## Step 4: Bring the result home'|guide:'## Step 4: 成果を持ち帰る') echo 'h2:step-4' ;;
+      skill:'## Step 5: Give the user the exact cleanup commands'|guide:'## Step 5: ユーザーへ正確な片付けコマンドを渡す') echo 'h2:step-5' ;;
+      skill:'## Known limitations'|guide:'## 既知の制限') echo 'h2:known-limitations' ;;
+      skill:'## State on disk'|guide:'## ディスク上の状態') echo 'h2:state-on-disk' ;;
+      *) printf 'unknown:%s\n' "$line" ;;
+    esac
+  done < <(grep -E '^#{1,2} ' "$file")
+}
+heading_structure_matches() {
+  [[ "$(normalise_headings skill "$1")" == "$(normalise_headings guide "$2")" ]]
+}
+normalise_table_structure() {
+  awk '
+    /^\|/ {
+      if (!in_table) { table += 1; in_table = 1; }
+      fields = split($0, cell, "|");
+      kind = (cell[2] ~ /^---/) ? "separator" : "row";
+      printf "table:%d:%s:columns:%d\\n", table, kind, fields - 2;
+      next
+    }
+    { in_table = 0 }
+  ' "$1"
+}
+table_structure_matches() {
+  [[ "$(normalise_table_structure "$1")" == "$(normalise_table_structure "$2")" ]]
+}
+if heading_structure_matches "$S" "$G" && table_structure_matches "$S" "$G" \
   && ! grep -q '対応セクションなし' "$G"; then
   ok "SK8e guide-ja.md の構造が正本と一致"
 else
-  fail "SK8e guide-ja.md の節・表・補足が正本と一致しない"
+  fail "SK8e guide-ja.md の構造が正本と一致しない"
 fi
+
+# SK8f: 同じ見出し数でも、名前の差し替えは構造一致として受け入れてはいけない。
+fixture_s=$(mktemp); fixture_g=$(mktemp)
+printf '%s\n' '# Orca Team Dispatch' '## Output Language' '## Step 1: Write the request down' >"$fixture_s"
+printf '%s\n' '# Orca Team Dispatch' '## 出力言語' '## Step 9: 置換された見出し' >"$fixture_g"
+if heading_structure_matches "$fixture_s" "$fixture_g"; then
+  fail "SK8f 同数の見出し drift を受け入れた"
+else
+  ok "SK8f 同数の見出し drift を拒否"
+fi
+rm -f "$fixture_s" "$fixture_g"
+
+# SK8g: 訳だけに運用節を足しても、同じ構造として受け入れてはいけない。
+fixture_s=$(mktemp); fixture_g=$(mktemp)
+printf '%s\n' '# Orca Team Dispatch' '## Output Language' >"$fixture_s"
+printf '%s\n' '# Orca Team Dispatch' '## 出力言語' '## Step 1: 依頼を書き出す' >"$fixture_g"
+if heading_structure_matches "$fixture_s" "$fixture_g"; then
+  fail "SK8g guide-only の運用節を受け入れた"
+else
+  ok "SK8g guide-only の運用節を拒否"
+fi
+rm -f "$fixture_s" "$fixture_g"
 
 # SK9: **README は運用手順を持たない**（正本は 1 つ）
 if grep -qE 'worker-release|worktree rm|terminal close|task-list --run' "$P/README.md"; then
