@@ -1666,6 +1666,12 @@ real success-path receipts: `check`'s accepted and rejected `worker_done` messag
 `payload` is a JSON string), `worker-show`, and `worker-release: retained`. It does **not**
 claim byte-for-byte captures of every omitted field.
 
+The observed side, per command, is: `status` (`runtime.reachable`); `terminal show`
+(handle and cleanup identity fields); `run-create` and `run-current` (`run.id`,
+`run.coordinator_handle`); `worktree list/create`, `terminal create/list`, `task-create`,
+and `worker-start` (the fields the implementation reads); `worker-show` (`worker.state`);
+and `worker-release` (`state: retained`). The stubs deliberately model only those fields.
+
 The following variants remain **simulated / inferred**, not observed Orca receipts:
 
 - empty-batch, `--wait`, and acknowledgement replies from `check`;
@@ -1683,6 +1689,12 @@ variants match Orca.
 `worker_done` message（`payload` は JSON string）、`worker-show`、および
 `worker-release: retained` の成功経路で必要な field である。省略した field まで
 byte-for-byte で capture したという主張ではない。
+
+コマンド単位の実測範囲は次のとおり。`status`（`runtime.reachable`）、`terminal show`
+（handle と cleanup identity field）、`run-create` / `run-current`（`run.id`、
+`run.coordinator_handle`）、`worktree list/create`、`terminal create/list`、`task-create`、
+`worker-start`（実装が読む field）、`worker-show`（`worker.state`）、`worker-release`
+（`state: retained`）。stub はこれらの field だけを意図的に表現している。
 
 次は実機 receipt ではなく **simulated / inferred** のままである。
 
