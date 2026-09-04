@@ -233,7 +233,24 @@ WIRING_SENTINEL="$STATUS_DIR/.wiring"
 # SIGTERM/SIGINT や set -e 下の予期しない非 0 終了でも sentinel を必ず消す。die() の
 # 明示的な rm と publish 後の rm -f (下方) は成功パスで WIRING_SENTINEL を "" に戻すため、
 # この trap は EXIT のたびに走っても二重実行として無害 (rm -f は対象無しで成功する)。
-trap '[[ -n "${WIRING_SENTINEL:-}" ]] && rm -f -- "$WIRING_SENTINEL"' EXIT INT TERM
+# signal 側の trap は必ず exit すること。INT/TERM に handler を登録すると既定の
+# 「即終了」動作を上書きしてしまい、handler が exit しないと launch_role の command
+# substitution でブロック中でもそのまま走り切って prewarm.json を publish し、
+# rollback_owned_resources も一切通らない (die() 経由でしか呼ばれないため)。exit すれば
+# EXIT trap が動いて sentinel を消し、130/143 は SIGINT/SIGTERM の慣例的な終了コード。
+# 関数を EXIT trap に登録すると、スクリプト本体に明示 exit が無い場合、bash は
+# 「最後に実行したコマンド」としてこの関数自身の最終コマンドの終了コードを
+# プロセス全体の終了コードへ採用してしまう (script 本体の最後のコマンドが成功していても
+# 上書きされる)。sentinel が既に空 (成功パスで publish 後にクリア済み) だと
+# `[[ -n "" ]]` は偽になり、この関数はそのまま何もせず 1 を返し、成功終了のはずの実行が
+# exit 1 に化ける (実測: 標準の三者揃い launch で確認)。明示 `return 0` で切り離す。
+cleanup_wiring_sentinel() {
+  [[ -n "${WIRING_SENTINEL:-}" ]] && rm -f -- "$WIRING_SENTINEL"
+  return 0
+}
+trap cleanup_wiring_sentinel EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Read the resolver output exactly once. All validation and extraction below use
 # this immutable in-process snapshot, never ROLES_FILE again.

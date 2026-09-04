@@ -378,14 +378,16 @@ run_pw "$ROLES_ON" >/dev/null 2>&1
   || bad "PW-W1b: .wiring が残っている"
 make_launch_stub ''
 
-# PW-W1d: 起動中に SIGTERM を受けても .wiring を残さない (trap の回帰)。
-# launch-workspace.sh を「started マーカーを touch してから hold ファイルが消えるまで
-# ループする」スタブへ差し替え、prewarm-panes.sh をバックグラウンドで起動して
-# started マーカーの出現を bounded loop で待つ (固定 sleep に頼らない)。この時点で
-# 本体は launch_role の command substitution でブロック中であり、SIGTERM は
-# trap を持たない bash ではここで即座にプロセスを終了させる (別途確認済み: trap
-# 無しだと .wiring が残ったまま死ぬ)。trap があると即死せず、hold 解除でブロックが
-# 解けた直後に trap が走って sentinel を消してから正常終了する。
+# PW-W1d: 起動中に SIGTERM を受けたら実際にプロセスが終了し、.wiring を残さず、
+# かつ作業を完走しない (trap の回帰)。
+# .wiring の不在だけを見る検査は、シグナルを飲み込んで最後まで走り切り成功したふりを
+# する実装 (INT/TERM に handler を登録すると既定の即終了動作を上書きし、handler が
+# exit しなければそのまま publish まで進んでしまう) も通してしまう — 実際にこの回で
+# 混入した regression がまさにそれだった。したがって「sentinel が消えている」に加え、
+# 「プロセスが signal 由来の終了コードで実際に終わっている」ことと「4 role 全部は
+# launch されていない/publish されていない」ことも見る。design を先頭に固定した role
+# 順のおかげで、launch-workspace.sh を 1 回呼んだ時点でブロックさせれば残り 3 role は
+# 呼ばれようがない。
 cat > "$FAKE/launch-workspace.sh" <<STUB
 #!/bin/sh
 printf '%s\n' "launch \$*" >> "$TMP/calls.log"
@@ -411,12 +413,18 @@ done
 
 if [[ "$started" -eq 1 && -e "$STATUS/.wiring" ]]; then
   kill -TERM "$w1d_pid" 2>/dev/null
+  # 1 回目の launch がブロックしたままなので、bash はまだ死ねない (シグナル trap の
+  # 実行自体、ブロック中の command substitution が戻るまで遅延される — bash の既知の
+  # 挙動。hold を外して解放するまでプロセスは生き続ける)。
   rm -f "$TMP/w1d-hold"
   wait "$w1d_pid" 2>/dev/null
-  if [[ ! -e "$STATUS/.wiring" ]]; then
-    pass 'PW-W1d: SIGTERM 起動中でも .wiring を残さない (trap 回帰)'
+  w1d_rc=$?
+  w1d_launches=$(grep -c '^launch ' "$TMP/calls.log" 2>/dev/null || echo 0)
+  if [[ ! -e "$STATUS/.wiring" ]] && [[ ! -e "$STATUS/prewarm.json" ]] \
+     && [[ "$w1d_launches" -lt 4 ]] && [[ "$w1d_rc" -eq 143 ]]; then
+    pass "PW-W1d: SIGTERM で実際に終了し (rc=$w1d_rc) .wiring も残さず作業も完走しない (launches=$w1d_launches)"
   else
-    bad 'PW-W1d: SIGTERM 後も .wiring が残っている'
+    bad "PW-W1d: rc=$w1d_rc launches=$w1d_launches wiring=$([[ -e $STATUS/.wiring ]] && echo yes || echo no) prewarm=$([[ -e $STATUS/prewarm.json ]] && echo yes || echo no)"
   fi
 else
   rm -f "$TMP/w1d-hold"
