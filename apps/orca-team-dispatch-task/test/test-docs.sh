@@ -73,6 +73,26 @@ for label in C1 C2 C3; do
   fi
   : > "$ORCA_STUB_DIR/calls.log"
 done
+
+# SK6d: C3 は inventory=null を「端末 0 件」と取り違えず、実行しても rm を表示しない。
+cleanup_repo="$scratch/repo"; mkdir -p "$cleanup_repo"
+git -C "$cleanup_repo" init -q -b main .
+printf '%s\n' seed > "$cleanup_repo/README.md"
+git -C "$cleanup_repo" add -A
+git -C "$cleanup_repo" -c user.email=t@e -c user.name=t commit -q -m seed
+jq -nc --arg p "$cleanup_repo" \
+  '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:null,
+    design:{terminal:"term_w",dispatch:"ctx_w"}}' > "$cleanup_state/workers.json"
+printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
+printf '%s\n' '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
+  > "$ORCA_STUB_DIR/terminal_show"
+printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+block="$scratch/C3-null.sh"; extract_cleanup_block C3 "$S" > "$block"
+out=$(bash "$block" 2>&1); rc=$?
+if [[ "$rc" -eq 0 || "$out" == *'worktree rm'* || $(grep -c 'worktree rm' "$ORCA_STUB_DIR/calls.log") -ne 0 ]]; then
+  bad="$bad [C3-null-inventory]"
+fi
 unset ORCA_STUB_DIR ORCA_BIN SD
 rm -rf "$scratch"
 [[ -z "$bad" ]] && ok "SK6c 各 cleanup block が空/null state で閉じる" || fail "SK6c:$bad"

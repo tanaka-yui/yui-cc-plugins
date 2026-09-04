@@ -7,7 +7,7 @@
 # 診断を出して止まる（Task spec 側で ask / escalation を禁じてある）。
 # **ledger も再 emit も pending replay も無い**（Stage 1。spec 18-1）。
 # Usage: orca-wait.sh --status-dir <d> [--max-waits <n>] [--timeout-ms <n>]
-# Exit: 0 成功 / 5 失敗 / 1 受信失敗 / 2 使用法 / 3 時間切れ / 4 worker が不健全
+# Exit: 0 成功 / 5 失敗 / 1 batch を処理できない / 2 使用法 / 3 時間切れ / 4 transport または worker state が不明
 set -uo pipefail
 die() { echo "orca-wait: $1" >&2; exit 2; }
 log() { echo "orca-wait: $1" >&2; }
@@ -40,19 +40,20 @@ stored_outcome() {
   matches=$(jq -c --arg task "$TID" --arg dispatch "$DID" \
     'if type != "array" or any(.[]; type != "string" or (split("|") | length) != 4) then error("invalid receipts")
      else [.[] | split("|") | select(.[0] == "worker_done" and .[1] == $task and .[2] == $dispatch)]
-     end' "$RECV" 2>/dev/null) || return 1
-  count=$(jq 'length' <<<"$matches") || return 1
-  [[ "$count" -le 1 ]] || return 1
+     end' "$RECV" 2>/dev/null) || { log "received outcome record is invalid or unreadable; it is not acknowledged"; return 1; }
+  count=$(jq 'length' <<<"$matches") || { log "received outcome record is invalid or unreadable; it is not acknowledged"; return 1; }
+  [[ "$count" -le 1 ]] || { log "received outcome record has duplicate receipts; it is not acknowledged"; return 1; }
   [[ "$count" -eq 0 ]] || jq -r '.[0][3]' <<<"$matches"
 }
 record_outcome() {
   local records receipt
   records='[]'
   if [[ -f "$RECV" ]]; then
-    records=$(jq -c . "$RECV") || return 1
+    records=$(jq -c . "$RECV") || { log "received outcome record is invalid or unreadable; it is not acknowledged"; return 1; }
   fi
   receipt="worker_done|$TID|$DID|$1"
-  write "$RECV" "$(jq -c --arg receipt "$receipt" '. + [$receipt]' <<<"$records")"
+  write "$RECV" "$(jq -c --arg receipt "$receipt" '. + [$receipt]' <<<"$records")" \
+    || { log "could not record the worker outcome; it is not acknowledged"; return 1; }
 }
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）
@@ -105,16 +106,20 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
   RST=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null || echo "")
   case "$RST" in
     retained|already_released) ;;
+    release_unknown)
+      log "release result is unknown; not acknowledging. Do not retry blindly; inspect the result and continue with merge only when its guards pass"
+      return 1
+      ;;
     *)
       log "worker-release reported '${RST:-none}'; not acknowledging (it will be retried)"
       return 1
       ;;
   esac
   ACK=$("$ORCA_BIN" orchestration check --terminal "$PH" --ack "$d" --json 2>/dev/null) || {
-    log "ack failed; the batch will replay"
-    return 1
+    log "ack transport failed; the batch will replay"
+    return 2
   }
-  jq -e '.ok == true' <<<"$ACK" >/dev/null 2>&1 || { log "ack receipt was not ok"; return 1; }
+  jq -e '.ok == true' <<<"$ACK" >/dev/null 2>&1 || { log "ack receipt was not ok; the batch will replay"; return 2; }
   return 0
 }
 outcome_of() {   # 受信済みと status が一致した結論を返す。無ければ空

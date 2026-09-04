@@ -5,6 +5,7 @@ P="$(cd "$(dirname "$0")/.." && pwd)"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 setup() {
   ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
+  : > "$ORCA_STUB_DIR/calls.log"
   export ORCA_TERMINAL_HANDLE=term_p
   R=$(mktemp -d); git -C "$R" init -q -b main .
   echo seed > "$R/README.md"; git -C "$R" add -A
@@ -35,6 +36,12 @@ reuse_fixture() { printf '{"ok":true,"result":{"worktrees":[{"id":"wt_old","name
 
 setup; bash "$P/bin/orca-start.sh" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "ST1 使用法エラー" || fail "ST1"; teardown
+
+# ST1b: **0 byte の依頼は worker へ送らない。**本文を失った dispatch を開始しない。
+setup; : > "$REQ"; out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 2 && "$out" == *"--request-file must not be empty"* \
+  ]] && ! grep -q 'run-create' "$ORCA_STUB_DIR/calls.log" 2>/dev/null \
+  && ok "ST1b 空の依頼を拒否" || fail "ST1b (rc=$rc out=$out)"; teardown
 
 # ST2: **親の handle が無ければ何も作らない。**候補が 1 つでも推測しない (O26)
 setup; unset ORCA_TERMINAL_HANDLE; start >/dev/null 2>&1
@@ -103,6 +110,17 @@ setup; echo 1 > "$ORCA_STUB_DIR/terminal_create.rc"; start >/dev/null 2>&1
 [[ $? -eq 1 ]] && ! grep -q 'task-create' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST6g terminal create の rc を見る" || fail "ST6g rc を無視した"; teardown
 
+# ST6h: rc 0 なのに handle が無い terminal create は、cleanup identity と rc を隠さない。
+setup; echo '{"ok":true,"result":{"terminal":{}}}' > "$ORCA_STUB_DIR/terminal_create"
+echo 8 > "$ORCA_STUB_DIR/worktree_rm.rc"
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"worktree=wt_1"* && "$out" == *"terminal=none"* \
+  && "$out" == *"no terminal handle was returned, so no terminal close was attempted"* \
+  && "$out" == *"worktree rm FAILED (rc=8); it is KEPT"* ]] \
+  && ! grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST6h terminal create の不完全 receipt も identity と cleanup rc を報告" \
+  || fail "ST6h (rc=$rc out=$out)"; teardown
+
 # ST6b: 同名が複数返ったら曖昧として止まる（勝手に 1 件目を選ばない）
 setup; printf '{"ok":true,"result":{"worktrees":[{"id":"a","name":"s","path":"%s","branch":"refs/heads/orca/s"},{"id":"b","name":"s","path":"/tmp/other","branch":"refs/heads/x"}]}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_list"; start >/dev/null 2>&1
@@ -132,6 +150,10 @@ setup; echo '{"ok":true,"result":{"state":"outcome_unknown","dispatchId":"ctx_x"
   > "$ORCA_STUB_DIR/orchestration_worker-start"; start >/dev/null 2>&1
 [[ $? -eq 1 ]] && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST8b outcome_unknown も同じ" || fail "ST8b unknown を成功にした"; teardown
+setup; echo '{"ok":true,"result":{"state":"ready"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+start >/dev/null 2>&1
+[[ $? -eq 1 ]] && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST8c ready でも dispatch id が無ければ KEPT" || fail "ST8c dispatch id 欠落を成功にした"; teardown
 
 # ST9: **Task 未作成の段の write 失敗 → identity を出し、自分が作った分だけ戻す**
 setup; out=$(ORCA_FAIL_WRITE_AT=workers-initial start 2>&1); rc=$?
@@ -157,6 +179,16 @@ out=$(start 2>&1); rc=$?
   && "$out" == *"the terminal was closed"* && "$out" == *"worktree this call created was removed"* ]] \
   && grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" && grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST9a task-create 失敗も identity と truthful cleanup" || fail "ST9a (rc=$rc out=$out)"; teardown
+
+# ST9a2: rc 0 で task id が無い receipt は Task 不在を証明しない。何も cleanup しない。
+setup; echo '{"ok":true,"result":{"task":{}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"task-create returned success but no task id"* && "$out" == *KEPT* \
+  && "$out" == *"worktree=wt_1"* && "$out" == *"terminal=term_w"* \
+  && "$out" == *"task-list --run run_x"* ]] \
+  && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ! grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST9a2 曖昧な task-create は KEPT" || fail "ST9a2 (rc=$rc out=$out)"; teardown
 
 # ST9b2: **Dispatch 成立後の write 失敗も同じ**
 setup; out=$(ORCA_FAIL_WRITE_AT=workers-after-dispatch start 2>&1); rc=$?

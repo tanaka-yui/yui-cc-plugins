@@ -18,6 +18,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   *) die "unknown option: $1" ;; esac; done
 [[ -n "$RF" && -n "$SLUG" && -n "$OBJ" ]] || die "--request-file, --slug and --objective are required"
 [[ -r "$RF" ]] || die "--request-file is not readable: $RF"
+[[ -s "$RF" ]] || die "--request-file must not be empty: $RF"
 # ★ slug は path になるので **fail closed に検証する**。../ で .dispatch の外へ出さない
 [[ "$SLUG" =~ ^[a-z0-9][a-z0-9-]{0,29}$ ]] || die "invalid slug: $SLUG (use ^[a-z0-9][a-z0-9-]{0,29}$)"
 [[ -n "$RR" ]] || RR=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repo"
@@ -111,8 +112,24 @@ if [[ -z "$CREATED" ]]; then
   [[ "$SRC" -eq 0 ]] || { log "cannot read the status of the existing worktree $WT_PATH"; exit 1; }
   [[ -z "$PORC" ]] || { log "the existing worktree $WT_PATH is dirty; commit or clean it first"; exit 1; }
 fi
-# **再利用した worktree は消さない**
-undo() { [[ -n "$CREATED" ]] && "$ORCA_BIN" worktree rm --worktree "id:$CREATED" --force --json >/dev/null 2>&1; }
+# Task 前の cleanup は、この call が作成した resource だけを対象にし、結果を隠さない。
+H=""
+kept() { log "$1"; log "run=$RUN worktree=$WT_ID path=$WT_PATH branch=$BR terminal=${H:-none}"; }
+cleanup_before_task() {
+  local cr=0 wr=0
+  if [[ -n "$H" ]]; then
+    "$ORCA_BIN" terminal close --terminal "$H" --json >/dev/null 2>&1 || cr=$?
+    [[ "$cr" -eq 0 ]] && log "the terminal was closed" || log "terminal close FAILED (rc=$cr); it is KEPT"
+  else
+    log "no terminal handle was returned, so no terminal close was attempted"
+  fi
+  if [[ -z "$CREATED" ]]; then log "the worktree was reused, so it is kept"
+  else
+    "$ORCA_BIN" worktree rm --worktree "id:$CREATED" --force --json >/dev/null 2>&1 || wr=$?
+    [[ "$wr" -eq 0 ]] && log "the worktree this call created was removed" \
+      || log "worktree rm FAILED (rc=$wr); it is KEPT"
+  fi
+}
 
 # ★ runner は **worker checkout の外**（status dir）に置く。中に置くと checkout が dirty になり、
 #   worker の成果 commit に混ざるか、後の worktree rm で消える
@@ -121,7 +138,7 @@ RUNNER="$SD/run-design.sh"
   printf 'export ORCA_BIN=%q\n' "$ORCA_BIN"
   # 権限プロンプトで止まらないようにする。Stage 1 の runner は claude 固定
   printf 'exec claude --dangerously-skip-permissions\n'
-} > "$RUNNER" && chmod +x "$RUNNER" || { undo; log "cannot write the runner"; exit 1; }
+} > "$RUNNER" && chmod +x "$RUNNER" || { kept "cannot write the runner"; cleanup_before_task; exit 1; }
 
 # ★ **command string の中で runner path を shell quote する** (round 3 finding 4)。
 #   `$RR/.dispatch/...` に空白があると別 argv に割れる
@@ -130,24 +147,12 @@ printf -v RUN_CMD 'bash %q' "$RUNNER"
 TCR=0; TCJ2=$("$ORCA_BIN" terminal create --worktree "id:$WT_ID" --title "$SLUG-design" \
                 --command "$RUN_CMD" --json 2>/dev/null) || TCR=$?
 H=$(jq -r '.result.terminal.handle // empty' <<<"$TCJ2" 2>/dev/null || echo "")
-[[ "$TCR" -eq 0 && -n "$H" ]] || { undo; log "terminal create failed (rc=$TCR)"; exit 1; }
+[[ "$TCR" -eq 0 && -n "$H" ]] || { kept "terminal create failed (rc=$TCR)"; cleanup_before_task; exit 1; }
 "$ORCA_BIN" terminal wait --terminal "$H" --for tui-idle --timeout-ms 120000 --json >/dev/null 2>&1 \
   || log "tui-idle wait timed out (continuing)"
 
 # ★ **資源を作った後の write 失敗は、identity を出してから止める**（round 2 finding 5）。
 #   Task はまだ無いので、この呼び出しが作った端末と worktree は戻してよい
-kept() { log "$1"; log "run=$RUN worktree=$WT_ID path=$WT_PATH branch=$BR terminal=$H"; }
-cleanup_before_task() {
-  local cr=0 wr=0
-  "$ORCA_BIN" terminal close --terminal "$H" --json >/dev/null 2>&1 || cr=$?
-  if [[ -n "$CREATED" ]]; then
-    "$ORCA_BIN" worktree rm --worktree "id:$CREATED" --force --json >/dev/null 2>&1 || wr=$?
-  fi
-  [[ "$cr" -eq 0 ]] && log "the terminal was closed" || log "terminal close FAILED (rc=$cr); it is KEPT"
-  if [[ -z "$CREATED" ]]; then log "the worktree was reused, so it is kept"
-  elif [[ "$wr" -eq 0 ]]; then log "the worktree this call created was removed"
-  else log "worktree rm FAILED (rc=$wr); it is KEPT"; fi
-}
 postwrite() {   # $1=site $2=path $3=content
   write "$1" "$2" "$3" && return 0
   kept "cannot write $2"
@@ -210,9 +215,14 @@ and the --from handle. Use that set. The Orca CLI is at \$ORCA_BIN, already expo
 TCJ=0; TJ=$("$ORCA_BIN" orchestration task-create --spec "$SPEC" --task-title "$SLUG/design" \
               --from "$PH" --json 2>/dev/null) || TCJ=$?
 TID=$(jq -r '.result.task.id // empty' <<<"$TJ" 2>/dev/null || echo "")
-if [[ "$TCJ" -ne 0 || -z "$TID" ]]; then
+if [[ "$TCJ" -ne 0 ]]; then
   kept "task-create failed (rc=$TCJ); no Task was created"
   cleanup_before_task
+  exit 1
+fi
+if [[ -z "$TID" ]]; then
+  kept "task-create returned success but no task id; a Task may exist. Resources are KEPT."
+  log "inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
   exit 1
 fi
 # Task が実在するので、ここから先は削除しない。identity を出して止める

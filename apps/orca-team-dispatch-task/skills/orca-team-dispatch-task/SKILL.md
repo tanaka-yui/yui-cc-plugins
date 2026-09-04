@@ -70,30 +70,33 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
 | 0 | The worker finished and reported success | Read `$SD/roles/design/result.md`, tell the user, go to Step 4 |
 | 5 | The worker finished and reported failure | Read `result.md`, tell the user what failed, go to Step 5. **Do not merge** |
 | 3 | Still running | Report progress, then call it again |
-| 4 | Worker health or Orca transport could not be verified | Inspect and tell the user; do not delete anything |
-| 1 | A batch is unsupported, contradictory, or release is still pending | It was not acknowledged. Do not acknowledge it by hand; inspect and retry safely below |
+| 4 | The worker stopped or failed, or Orca transport could not be verified | Inspect and tell the user; do not delete anything. If receipt recording succeeded before a release transport failure, rerun the canonical wait; do not recover a batch by hand |
+| 1 | A batch is unsupported or contradictory, the receipt cannot be read or written, or release did not complete | It was not acknowledged. Do not acknowledge it by hand; use the state-specific action below |
 
-On exit 1, **do not run `--ack` yourself**. A `worker_done` receipt is recorded before
-release is attempted, so `release_pending` is safe to retry: run `orca-wait.sh` again and
-it will retry release before acknowledging. For an unsupported batch, inspect without
-moving the cursor and stop for user direction; do not discard a message this version cannot
-handle:
+On exit 1, **do not run `--ack` yourself**. Read the error first. A `worker_done` receipt is
+recorded before release is attempted, so `release_pending` is safe to retry: run
+`orca-wait.sh` again and it will retry release before acknowledging. `release_unknown` is
+different: a retry cannot prove the prior release result. Keep the terminal and worktree,
+do not acknowledge, read `result.md`, then proceed to Step 4; `orca-merge.sh` independently
+verifies the recorded outcome and worker status. After that, Step 5 [C1] keeps cleanup closed.
+For an unsupported or contradictory batch, or an invalid receipt, inspect without moving the
+cursor and stop for user direction; do not discard a message this version cannot handle:
 
 ```bash
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 [[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
 "$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
-# For release_pending only, retry the canonical wait; it alone decides whether to ack.
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
+# Retry the canonical wait only when its error said release_pending.
+# For release_unknown, continue with the inspected result as described above; never ack by hand.
 ```
 
-Show the user the inspected message and whether it is a retryable release state or an
-unsupported message. A transport/health failure is exit 4, not an invitation to recover a
-batch manually.
+Show the user the inspected message and whether it is `release_pending`, `release_unknown`,
+or an unsupported/contradictory message. A transport/health failure is exit 4, not an
+invitation to recover a batch manually.
 
 ## Step 4: Bring the result home
 
-Only on exit 0.
+On exit 0, or after the documented `release_unknown` path from Step 3.
 
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"

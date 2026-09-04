@@ -59,27 +59,31 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
 | 0 | worker が成功を報告して完了 | `$SD/roles/design/result.md` を読み、ユーザーへ伝えて Step 4 へ進む |
 | 5 | worker が失敗を報告して完了 | `result.md` を読み、失敗内容を伝えて Step 5 へ進む。**merge しない** |
 | 3 | まだ実行中 | 進捗を報告してから、もう一度呼ぶ |
-| 4 | worker の health または Orca transport を検証できない | 調べてユーザーへ伝える。何も削除しない |
-| 1 | batch が未対応・矛盾、または release が pending | acknowledge していない。手動 acknowledge はせず、次の安全な確認・再試行に従う |
+| 4 | worker が停止・失敗した、または Orca transport を検証できない | 調べてユーザーへ伝える。何も削除しない。release transport failure の前に receipt が保存されていれば canonical wait を再実行し、batch を手で復旧しない |
+| 1 | batch が未対応・矛盾、receipt を読めない・書けない、または release が完了していない | acknowledge していない。手動 acknowledge はせず、下の状態別の手順に従う |
 
-exit 1 では **自分で `--ack` を実行しない**。`worker_done` の receipt は release 前に記録されるため、
-`release_pending` は安全に再試行できる。`orca-wait.sh` を再実行すると release を再試行してから
-acknowledge を判断する。未対応 batch は cursor を進めずに確認して、ユーザーの指示を待つ。
+exit 1 では **自分で `--ack` を実行しない**。まず error を読む。`worker_done` の receipt は release
+前に記録されるため、`release_pending` は安全に再試行できる。`orca-wait.sh` を再実行すると release を
+再試行してから acknowledge を判断する。`release_unknown` は異なり、再試行しても前回の release 結果を
+証明できない。端末と worktree を保持し、acknowledge せず、`result.md` を読んで Step 4 へ進む。
+`orca-merge.sh` は記録済みの outcome と worker status を独立に検証する。その後は Step 5 [C1] が
+cleanup を閉じたままにする。未対応・矛盾 batch または不正 receipt は cursor を進めずに確認して、
+ユーザーの指示を待つ。
 
 ```bash
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 [[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
 "$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
-# For release_pending only, retry the canonical wait; it alone decides whether to ack.
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
+# Retry the canonical wait only when its error said release_pending.
+# For release_unknown, continue with the inspected result as described above; never ack by hand.
 ```
 
-確認したメッセージと、それが再試行できる release 状態か未対応メッセージかをユーザーへ見せる。
-transport/health の失敗は exit 4 であり、batch を手作業で復旧する合図ではない。
+確認したメッセージと、それが `release_pending`、`release_unknown`、未対応・矛盾メッセージのどれかを
+ユーザーへ見せる。transport/health の失敗は exit 4 であり、batch を手作業で復旧する合図ではない。
 
 ## Step 4: 成果を持ち帰る
 
-exit 0 のときだけ実行する。
+exit 0、または Step 3 で文書化された `release_unknown` の経路のときに実行する。
 
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"

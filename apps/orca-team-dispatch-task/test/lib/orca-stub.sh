@@ -13,7 +13,7 @@ printf '%q ' "$@" >> "$ORCA_STUB_DIR/calls.log"; printf '\n' >> "$ORCA_STUB_DIR/
 printf '%s\037' "$@" >> "$ORCA_STUB_DIR/argv.log"; printf '\n' >> "$ORCA_STUB_DIR/argv.log"
 key=""
 for a in "$@"; do case "$a" in --*) break ;; esac; key="${key:+${key}_}$a"; done
-[[ -x "$ORCA_STUB_DIR/$key.hook" ]] && "$ORCA_STUB_DIR/$key.hook" "$@" >/dev/null 2>&1
+[[ -x "$ORCA_STUB_DIR/$key.hook" ]] && "$ORCA_STUB_DIR/$key.hook" "$@"
 [[ -f "$ORCA_STUB_DIR/$key" ]] && cat "$ORCA_STUB_DIR/$key" || printf '{"ok":true,"result":{}}\n'
 [[ -f "$ORCA_STUB_DIR/$key.rc" ]] && exit "$(cat "$ORCA_STUB_DIR/$key.rc")"
 exit 0

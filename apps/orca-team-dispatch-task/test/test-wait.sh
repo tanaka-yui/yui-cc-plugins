@@ -81,9 +81,10 @@ w >/dev/null 2>&1
   || fail "WT11 pending なのに ack した"; teardown
 setup; dn; msg
 echo '{"ok":true,"result":{"state":"release_unknown"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
-w >/dev/null 2>&1
-! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" && ok "WT11b unknown で ack しない" \
-  || fail "WT11b unknown なのに ack した"; teardown
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"release result is unknown; not acknowledging"* ]] \
+  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" && ok "WT11b unknown で ack せず盲目的に再試行しない" \
+  || fail "WT11b (rc=$rc out=$out)"; teardown
 
 # WT11c: release_pending でも receipt は残す。ack はせず、release が通った再試行で完了する。
 setup; dn; msg
@@ -149,6 +150,31 @@ setup; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration
 w 1 >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 4 ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT18b worker-show ok:false は受信失敗" || fail "WT18b (rc=$rc)"; teardown
+
+# WT18c: ack 側の transport failure も判定不能（4）。batch は replay される。
+setup; dn; msg
+printf '%s\n' '#!/usr/bin/env bash' \
+  'for arg in "$@"; do [[ "$arg" == --ack ]] && printf "1\n" > "$ORCA_STUB_DIR/orchestration_check.rc"; done' \
+  > "$ORCA_STUB_DIR/orchestration_check.hook"
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$out" == *"ack transport failed; the batch will replay"* ]] \
+  && ok "WT18c ack transport failure は 4" || fail "WT18c (rc=$rc out=$out)"; teardown
+
+# WT18d: 壊れた receipt は原因を示して止め、ack しない。
+setup; dn; msg; printf '%s\n' '{not-json' > "$SD/received.json"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"received outcome record is invalid or unreadable"* ]] \
+  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT18d 壊れた receipt を無言で返さない" || fail "WT18d (rc=$rc out=$out)"; teardown
+
+# WT18e: keepalive は stderr に混ざっても check JSON を壊さない (O10)。
+setup; dn; msg
+printf '%s\n' '#!/usr/bin/env bash' 'printf "keepalive\\n" >&2' > "$ORCA_STUB_DIR/orchestration_check.hook"
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* && "$out" != *keepalive* ]] \
+  && ok "WT18e keepalive stderr を JSON に混ぜない" || fail "WT18e (rc=$rc out=$out)"; teardown
 
 # WT19: null parent handle と非正の待機値は使用法エラー
 setup; echo '{"run_id":"run_x","parent_handle":null,"repo_root":"/tmp"}' > "$SD/run.json"
