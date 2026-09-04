@@ -77,18 +77,34 @@ On exit 1, **do not run `--ack` yourself**. Read the error first. A `worker_done
 recorded before release is attempted, so `release_pending` is safe to retry: run
 `orca-wait.sh` again and it will retry release before acknowledging. `release_unknown` is
 different: a retry cannot prove the prior release result. Keep the terminal and worktree,
-do not acknowledge, and **do not proceed to Step 4**. That unacknowledged batch stays at the
-front of this parent terminal's queue, so inspect it with the user and use a different parent
-terminal for later dispatches until they decide how to resolve it. For an unsupported or
-contradictory batch, or an invalid receipt, inspect without moving the cursor and stop for user
-direction; do not discard a message this version cannot handle:
+do not acknowledge, and **do not proceed to Step 4**. Inspect the recorded receipt and result
+with the user. If they show a successful worker outcome, the user may explicitly choose the
+manual integration command below; it does not acknowledge the batch. That unacknowledged batch
+stays at the front of this parent terminal's queue, and manual integration does not unblock that
+queue. Start every later dispatch by opening another Orca terminal and invoking this skill
+there. `orca-start.sh` has no parent-terminal flag: it reads `ORCA_TERMINAL_HANDLE` from the
+Orca terminal that runs it, so it uses the new terminal's handle. Do not copy or set the blocked
+handle. For an unsupported or contradictory batch, or an invalid receipt, inspect without moving
+the cursor and stop for user direction; do not discard a message this version cannot handle:
 
 ```bash
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 [[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
 "$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
 # Retry the canonical wait only when its error said release_pending.
-# For release_unknown, do not retry or merge; never ack by hand.
+# For release_unknown, do not retry or use normal Step 4; never ack by hand.
+```
+
+For `release_unknown` only, after the preceding inspection, show the user the recorded outcome
+and result. If they explicitly decide to integrate a successful result, they may run this safe
+merge command. It performs the normal receipt, status, result, branch, and clean-checkout
+guards; it does not acknowledge the blocked batch:
+
+```bash
+cat "$SD/received.json"
+sed -n '1,240p' "$SD/roles/design/result.md"
+# Only after the user has inspected both files and chosen manual integration:
+bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
 
 Show the user the inspected message and whether it is `release_pending`, `release_unknown`,
@@ -132,7 +148,11 @@ DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
-REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+RELRC=0; REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
+[[ "$RELRC" -eq 0 ]] && jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+  echo "could not confirm the release; do not close anything" >&2
+  exit 1
+}
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 case "$STATE" in
   release_pending|release_unknown)
@@ -192,7 +212,7 @@ DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
 OWNED=$(jq -r '.worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)
-KNOWN=$(jq -c '.worktree_terminals // empty' "$SD/workers.json" 2>/dev/null)
+KNOWN=$(jq -c '.worktree_terminals // null' "$SD/workers.json" 2>/dev/null)
 [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$ORCA_BIN" && -n "$KNOWN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
@@ -219,17 +239,15 @@ if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
 fi
 DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
 
-# Every terminal Orca still has in that worktree must be one we recorded.
-# **Failing to list them is not the same as there being none** — if either side of the
-# comparison is unknown, the answer is "cannot tell", and cannot-tell closes the gate.
+# Every terminal Orca still has in that worktree must be one we recorded. Keep all three
+# states: yes is proven, no is disproven, and unknown is not enough authority to remove.
+ACCOUNTED=unknown
 TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT" --json 2>/dev/null) || TLRC=$?
-[[ "$TLRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminals | type == "array")' <<<"$TL" >/dev/null 2>&1 \
-  && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1 || {
-  echo "could not verify the worktree terminals; do not remove anything" >&2
-  exit 1
-}
-ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
-                  --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
+if [[ "$TLRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminals | type == "array")' <<<"$TL" >/dev/null 2>&1 \
+   && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1; then
+  ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
+                    --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
+fi
 
 if [[ "$MERGED" == true && "$OWNED" == true && "$DRC" -eq 0 && -z "$DIRTY" \
       && "$IDENTITY_OK" == yes && "$ACCOUNTED" == yes ]]; then
@@ -257,7 +275,9 @@ is the intended behaviour, not a gap.
 Say these things to the user in plain language:
 
 - [C1] `release_pending` and `release_unknown` mean the release did not finish. Do not
-  close the terminal by hand to make up for it; re-run the release later or inspect.
+  close the terminal or acknowledge by hand. Retry only `release_pending`; for
+  `release_unknown`, inspect the receipt and result, then leave the original parent queue
+  blocked even if the user explicitly chooses the guarded manual integration.
 - [C2] Only a terminal whose handle and worktree still match our recorded state may be
   closed. If they do not match, someone else owns it now.
 - [C3] The removal command is printed only when the work is merged, **this dispatch
@@ -283,6 +303,7 @@ State these when they apply. Do not work around them silently.
 | The worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
 | The runner is fixed and cannot be configured; it runs `claude --dangerously-skip-permissions` | Dispatch only a task you trust: the worker receives no permission prompts |
 | Repositories that need setup hooks are out of scope | The worktree is created with setup skipped |
+| A `release_unknown` batch blocks its original parent terminal's queue | Do not acknowledge it. Inspect `received.json` and `result.md`; guarded manual integration does not unblock that queue. Start later dispatches from another Orca terminal, whose `ORCA_TERMINAL_HANDLE` is used at launch |
 
 ## State on disk
 

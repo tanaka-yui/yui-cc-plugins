@@ -74,7 +74,7 @@ for label in C1 C2 C3; do
   : > "$ORCA_STUB_DIR/calls.log"
 done
 
-# SK6d: C3 は inventory=null を「端末 0 件」と取り違えず、実行しても rm を表示しない。
+# SK6d: C3 は inventory=null を「端末 0 件」と取り違えず、理由を示して rm を表示しない。
 cleanup_repo="$scratch/repo"; mkdir -p "$cleanup_repo"
 git -C "$cleanup_repo" init -q -b main .
 printf '%s\n' seed > "$cleanup_repo/README.md"
@@ -90,11 +90,36 @@ printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"
 printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
 block="$scratch/C3-null.sh"; extract_cleanup_block C3 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -eq 0 || "$out" == *'worktree rm'* || $(grep -c 'worktree rm' "$ORCA_STUB_DIR/calls.log") -ne 0 ]]; then
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
+   || "$out" != *'the terminals in that worktree could not be listed, so nothing is proven'* \
+   || "$out" == *'worktree rm'* || $(grep -c 'worktree rm' "$ORCA_STUB_DIR/calls.log") -ne 0 ]]; then
   bad="$bad [C3-null-inventory]"
 fi
 
-# SK6e: cleanup は各 Orca receipt の rc、ok、result schema を検査する。失敗 receipt に
+# SK6e: すべての先行確認が通っても、未記録 terminal があれば C3 は削除を提案しない。
+#        これが ACCOUNTED=yes を破壊的 gate に要求する実行上の証明である。
+jq -nc --arg p "$cleanup_repo" \
+  '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"],
+    design:{terminal:"term_w",dispatch:"ctx_w"}}' > "$cleanup_state/workers.json"
+printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
+printf '%s\n' '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
+  > "$ORCA_STUB_DIR/terminal_show"
+printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"},{"handle":"term_foreign"}]}}' \
+  > "$ORCA_STUB_DIR/terminal_list"
+: > "$ORCA_STUB_DIR/calls.log"
+block="$scratch/C3-unaccounted.sh"; extract_cleanup_block C3 "$S" > "$block"
+out=$(bash "$block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
+   || "$out" != *'a terminal in that worktree is not one we recorded'* \
+   || "$out" == *'worktree rm'* || $(grep -c 'worktree rm' "$ORCA_STUB_DIR/calls.log") -ne 0 ]] \
+   || ! grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log" \
+   || ! grep -q 'terminal show' "$ORCA_STUB_DIR/calls.log" \
+   || ! grep -q 'terminal list' "$ORCA_STUB_DIR/calls.log"; then
+  bad="$bad [C3-unaccounted-terminal]"
+fi
+
+# SK6f: cleanup は各 Orca receipt の rc、ok、result schema を検査する。失敗 receipt に
 # 古い成功 state が残っていても、破壊的コマンドを表示してはならない。
 jq -nc --arg p "$cleanup_repo" \
   '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"],
@@ -106,6 +131,12 @@ printf '%s\n' 7 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
 printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
   > "$ORCA_STUB_DIR/terminal_show"
 printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+block="$scratch/C1-release-receipt.sh"; extract_cleanup_block C1 "$S" > "$block"
+out=$(bash "$block" 2>&1); rc=$?
+if [[ "$rc" -eq 0 || "$out" != *'could not confirm the release; do not close anything'* \
+   || "$out" == *'worker-show'* ]]; then
+  bad="$bad [C1-release-failed-receipt]"
+fi
 block="$scratch/C2-release-receipt.sh"; extract_cleanup_block C2 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
 if [[ "$rc" -eq 0 || "$out" == *'terminal close'* ]]; then
@@ -138,7 +169,9 @@ printf '%s\n' '{"ok":false,"error":"stale","result":{"terminals":[{"handle":"ter
   > "$ORCA_STUB_DIR/terminal_list"
 block="$scratch/C3-list-receipt.sh"; extract_cleanup_block C3 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -eq 0 || "$out" == *'worktree rm'* ]]; then
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
+   || "$out" != *'the terminals in that worktree could not be listed, so nothing is proven'* \
+   || "$out" == *'worktree rm'* ]]; then
   bad="$bad [C3-list-failed-receipt]"
 fi
 unset ORCA_STUB_DIR ORCA_BIN SD
@@ -158,10 +191,13 @@ grep -q 'claude --dangerously-skip-permissions' "$S" \
   && ok "SK7a runner の権限無効化を開示" || fail "SK7a 権限無効化の開示なし"
 
 # SK7b: **列挙できないことを「0 個」にしない** (round 4 finding 1)。
-#       gate は rc / ok / schema を検査し、確認不能なら削除前に停止すること
+#       ACCOUNTED は yes / no / unknown を保ち、yes 以外では削除を提示しないこと
 miss=""
 grep -q '.ok == true and (.result.terminals | type == "array")' "$S" || miss="$miss [ok-and-schema-check]"
-grep -q 'could not verify the worktree terminals; do not remove anything' "$S" || miss="$miss [fail-closed-diagnostic]"
+grep -q 'the terminals in that worktree could not be listed, so nothing is proven' "$S" \
+  || miss="$miss [unknown-diagnostic]"
+grep -q 'ACCOUNTED=unknown' "$S" || miss="$miss [unknown-state]"
+grep -q '&& "$ACCOUNTED" == yes' "$S" || miss="$miss [gate-requires-yes]"
 # 旧 fail-open の形が残っていないこと
 grep -q 'LEFT:-\[\]' "$S" && miss="$miss [fail-open-default]"
 [[ -z "$miss" ]] && ok "SK7b 列挙失敗で gate が閉じる" || fail "SK7b:$miss"
@@ -272,13 +308,21 @@ if grep -qE 'worker-release|worktree rm|terminal close|task-list --run' "$P/READ
   fail "SK9 README が片付け手順を重複して持っている"
 else ok "SK9 README は非 normative"; fi
 
-# SK9b: release_unknown は未 ack batch を親端末の先頭へ残す。通常の merge 経路として示さない。
+# SK9b: release_unknown は手動 ack せず、receipt/result を確認したうえでだけ手動統合できる。
+#       元の親端末の queue は残るため、次回 dispatch は別の Orca terminal から開始する。
 if grep -q 'do not proceed to Step 4' "$S" \
    && grep -q 'Step 4 へ進まない' "$G" \
-   && ! grep -q 'documented `release_unknown` path from Step 3' "$S"; then
-  ok "SK9b release_unknown を通常の merge 経路にしない"
+   && grep -q '\$SD/received.json' "$S" \
+   && grep -q '\$SD/roles/design/result.md' "$S" \
+   && grep -q 'manual integration does not unblock that queue' "$S" \
+   && grep -q 'ORCA_TERMINAL_HANDLE' "$S" \
+   && grep -q '手動統合で queue は解消されない' "$G" \
+   && grep -q 'ORCA_TERMINAL_HANDLE' "$G" \
+   && awk '/^## Known limitations$/,/^## State on disk$/' "$S" | grep -q 'release_unknown' \
+   && awk '/^## 既知の制限$/,/^## ディスク上の状態$/' "$G" | grep -q 'release_unknown'; then
+  ok "SK9b release_unknown の成果導線と親端末制限を明示"
 else
-  fail "SK9b release_unknown を通常の merge 経路としている"
+  fail "SK9b release_unknown の成果導線または親端末制限が不足"
 fi
 
 # SK9c: C3 は C2 の shell 変数を受け取らず、自身で terminal identity を証明する。
@@ -289,21 +333,25 @@ else
   fail "SK9c C3 が C2 の変数を要求している"
 fi
 
-# SK10: doc-lang
+# SK10: コピーした plugin の本番呼び出しを plugin cwd から実行する。checker を直接呼ぶだけでは、
+#       SK10 自身の cwd / ROOT 解決が壊れた回帰を検出できない。
 if [[ "${DOC_LANG_REGRESSION:-}" != 1 ]]; then
   regression_root=$(mktemp -d)
+  regression_root=$(cd "$regression_root" && pwd -P)
   mkdir -p "$regression_root/apps" "$regression_root/scripts"
   cp -R "$P" "$regression_root/apps/orca-team-dispatch-task"
   cp "$ROOT/scripts/check-doc-lang.mjs" "$regression_root/scripts/check-doc-lang.mjs"
   regression_skill="$regression_root/apps/orca-team-dispatch-task/skills/orca-team-dispatch-task/SKILL.md"
   printf '%s\n' 'これは一時的な SK10 回帰検証です。' >> "$regression_skill"
-  regression_out=$(cd "$regression_root" && node scripts/check-doc-lang.mjs apps/orca-team-dispatch-task 2>&1)
+  regression_out=$(cd "$regression_root/apps/orca-team-dispatch-task" \
+    && DOC_LANG_REGRESSION=1 bash test/test-docs.sh 2>&1)
   regression_rc=$?
   rm -rf "$regression_root"
-  if [[ "$regression_rc" -ne 0 && "$regression_out" == *"japanese-in-english-doc"* ]]; then
-    ok "SK10 回帰: doc-lang が日本語混入を検出"
+  if [[ "$regression_rc" -ne 0 && "$regression_out" == *"FAIL: SK10 doc-lang"* \
+     && "$regression_out" == *"failures: 1"* ]]; then
+    ok "SK10 回帰: plugin cwd の本番呼び出しが日本語混入を検出"
   else
-    fail "SK10 回帰: doc-lang が日本語混入を検出できない"
+    fail "SK10 回帰: plugin cwd の本番呼び出しが日本語混入を検出できない"
   fi
 fi
 

@@ -65,16 +65,31 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
 exit 1 では **自分で `--ack` を実行しない**。まず error を読む。`worker_done` の receipt は release
 前に記録されるため、`release_pending` は安全に再試行できる。`orca-wait.sh` を再実行すると release を
 再試行してから acknowledge を判断する。`release_unknown` は異なり、再試行しても前回の release 結果を
-証明できない。端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。acknowledge されない
-batch はこの親端末の queue の先頭に残るため、ユーザーと確認し、解決方法を決めるまで後続の dispatch は
-別の親端末で行う。未対応・矛盾 batch または不正 receipt は cursor を進めずに確認して、ユーザーの指示を待つ。
+証明できない。端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。記録済み receipt と
+result をユーザーと確認する。成功した worker outcome が示されていれば、ユーザーは下の手動統合コマンドを
+明示的に選べるが、それで batch を acknowledge することはない。acknowledge されない batch はこの親端末の
+queue の先頭に残り、手動統合で queue は解消されない。後続の dispatch は別の Orca terminal を開き、そこで
+この skill を呼び出して開始する。`orca-start.sh` に親端末を指定する flag はなく、実行した Orca terminal の
+`ORCA_TERMINAL_HANDLE` を読むため、新しい terminal の handle が使われる。blocked な handle をコピーまたは
+設定してはならない。未対応・矛盾 batch または不正 receipt は cursor を進めずに確認して、ユーザーの指示を待つ。
 
 ```bash
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 [[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
 "$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
 # Retry the canonical wait only when its error said release_pending.
-# For release_unknown, do not retry or merge; never ack by hand.
+# For release_unknown, do not retry or use normal Step 4; never ack by hand.
+```
+
+`release_unknown` のときだけ、前の inspection の後で記録済み outcome と result をユーザーへ見せる。
+ユーザーが成功した result を統合すると明示的に決めた場合、次の安全な merge コマンドを実行できる。receipt、
+status、result、branch、clean checkout の通常の guard はすべて実行し、blocked な batch を acknowledge しない。
+
+```bash
+cat "$SD/received.json"
+sed -n '1,240p' "$SD/roles/design/result.md"
+# Only after the user has inspected both files and chosen manual integration:
+bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
 
 確認したメッセージと、それが `release_pending`、`release_unknown`、未対応・矛盾メッセージのどれかを
@@ -117,7 +132,11 @@ DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
-REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+RELRC=0; REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
+[[ "$RELRC" -eq 0 ]] && jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
+  echo "could not confirm the release; do not close anything" >&2
+  exit 1
+}
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 case "$STATE" in
   release_pending|release_unknown)
@@ -177,7 +196,7 @@ DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
 OWNED=$(jq -r '.worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)
-KNOWN=$(jq -c '.worktree_terminals // empty' "$SD/workers.json" 2>/dev/null)
+KNOWN=$(jq -c '.worktree_terminals // null' "$SD/workers.json" 2>/dev/null)
 [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$ORCA_BIN" && -n "$KNOWN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
@@ -204,17 +223,15 @@ if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
 fi
 DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
 
-# Every terminal Orca still has in that worktree must be one we recorded.
-# **Failing to list them is not the same as there being none** — if either side of the
-# comparison is unknown, the answer is "cannot tell", and cannot-tell closes the gate.
+# Every terminal Orca still has in that worktree must be one we recorded. Keep all three
+# states: yes is proven, no is disproven, and unknown is not enough authority to remove.
+ACCOUNTED=unknown
 TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT" --json 2>/dev/null) || TLRC=$?
-[[ "$TLRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminals | type == "array")' <<<"$TL" >/dev/null 2>&1 \
-  && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1 || {
-  echo "could not verify the worktree terminals; do not remove anything" >&2
-  exit 1
-}
-ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
-                  --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
+if [[ "$TLRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminals | type == "array")' <<<"$TL" >/dev/null 2>&1 \
+   && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1; then
+  ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
+                    --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
+fi
 
 if [[ "$MERGED" == true && "$OWNED" == true && "$DRC" -eq 0 && -z "$DIRTY" \
       && "$IDENTITY_OK" == yes && "$ACCOUNTED" == yes ]]; then
@@ -241,8 +258,10 @@ worker が Step 3 で exit 5 を返したときは `MERGED` が false であり�
 
 ユーザーへ、次を平易な言葉で伝える。
 
-- [C1] `release_pending` と `release_unknown` は release が完了していない状態である。手作業で
-  端末を閉じて補おうとせず、後で release を再実行するか inspection する。
+- [C1] `release_pending` と `release_unknown` は release が完了していない状態である。端末を閉じたり
+  手動 acknowledge したりして補おうとしない。再試行するのは `release_pending` だけであり、
+  `release_unknown` では receipt と result を確認しても、ユーザーが guarded manual integration を選んだ
+  場合を含め、元の親 queue は blocked のままにする。
 - [C2] handle と worktree が記録済み state に一致する端末だけを閉じてよい。一致しなければ、
   すでに他者の所有物である。
 - [C3] 削除コマンドは、成果が merge 済み、この dispatch が worktree を作成した、checkout が
@@ -265,6 +284,7 @@ worker が Step 3 で exit 5 を返したときは `MERGED` が false であり�
 | worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
 | runner は固定で設定できず、`claude --dangerously-skip-permissions` で実行される | 信頼できるタスクだけを dispatch する。worker は permission prompt を出さない |
 | setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
+| `release_unknown` batch は元の親 terminal の queue を block する | acknowledge しない。`received.json` と `result.md` を確認する。guarded manual integration でも queue は解消されない。後続の dispatch は別の Orca terminal から開始し、launch 時にはその `ORCA_TERMINAL_HANDLE` が使われる |
 
 ## ディスク上の状態
 
