@@ -15,7 +15,8 @@
 | rev2 (20c6746) | Phase A-R round 1 の findings 1-8 を反映。**8 節のスクリプト分類を全面的に作り直し**（親の訂正「バイトではなく判断を再利用せよ」を受け、14 本を個別監査した）。**5 節のライフサイクルを 1 本の状態機械へ統一**。**9 節に per-role status dir と二相コミットを導入**。**11 節に terminal cleanup の decision table を追加**。**6-6 に Delivery ack の順序契約を追加**。**15 節に Phase 0 contract spike を新設**。loop / setup / reset / override の節を追加 |
 | rev3 (3ed9528) | Phase A-R round 2 の findings 1-5 を反映。**5-5 に 4 つの入力（role_status_dir / dispatch_root / review_dir / send_command）の分離を追加**（per-role dir が recovery 層を壊していた）。**5-1 に `assignment_state` を導入**（Task 注入と disk publish の race）。**6-5 の `emitted-ledger.json` を永久 tombstone から再 emit レート制限へ**（wake 消失）。**10 節を全面改稿し design も二相コミットを通す / crash 境界 5 行 / remediation の状態再オープンを定義**。**12 節を全面改稿し Delivery 台帳を Run 単位へ移して mixed batch を routing、issue ごとの durable journal を導入**（「worktree の有無で進捗が一意」は不成立） |
 | rev4 (a94f93c) | Phase A-R round 3 の findings 1-3 と文書整合 3 件を反映。**5-1 に `starting` の親側 sweep（4 crash 境界）と generation ごとの role dir archive を追加**。**10 節を `completion.json` の 5 phase journal へ作り直し、`worker_done` の exactly-once 回復と sentinel 内部の crash gap を閉じた**。**12-1 に index.json の write-ahead publish 順序と routing 不能の quarantine を追加**。6-5 に親の再開時 drain を追加。15 節に U3 の acceptance criterion 4 点を追加 |
-| 本版 | Phase A-R round 4 の findings 1-5 と clarification 1 件を反映。**5-1 に mutation identity の 2 分割（`local_operation_id` / `orca_request_id`）と U6 分岐を追加** — round 3 版の「送信前に Orca request id を write-ahead する」は初回に request id を渡すフラグが存在せず実装不能だった。**generation transition を `.generation-transition` による durable transaction 化**（複数 `mv` の途中 crash）。**12-1 の write-ahead 順序を journal 先頭へ並べ替え、index / workers を materialized view と再定義**。**quarantine に mailbox 非依存の自己再駆動と bounded backoff を追加**。**失敗系も `failure_prepared` → `worker_done_pending` → `settled` の journal を通す**。`starting_at` を時刻源として明記し、watcher escalation は best-effort、親 sweep が correctness path と位置づけ |
+| rev5 (13ac04f) | Phase A-R round 4 の findings 1-5 と clarification 1 件を反映。**5-1 に mutation identity の 2 分割（`local_operation_id` / `orca_request_id`）と U6 分岐を追加** — round 3 版の「送信前に Orca request id を write-ahead する」は初回に request id を渡すフラグが存在せず実装不能だった。**generation transition を `.generation-transition` による durable transaction 化**（複数 `mv` の途中 crash）。**12-1 の write-ahead 順序を journal 先頭へ並べ替え、index / workers を materialized view と再定義**。**quarantine に mailbox 非依存の自己再駆動と bounded backoff を追加**。**失敗系も `failure_prepared` → `worker_done_pending` → `settled` の journal を通す**。`starting_at` を時刻源として明記し、watcher escalation は best-effort、親 sweep が correctness path と位置づけ |
+| 本版 | **親の裁定 1-3（2026-09-04）と Phase 0 spike の実測を反映。**配送規律を **at-least-once + `task_id`+`dispatch_id` による冪等消費**へ転換し、request identity の write-ahead / `worker_done_pending` / 失敗系 journal / quarantine 機構を撤回した（round 4 findings 1 と 5 が消滅）。spike 実測を O21〜O26 として記録し、**U3 の測定で round 3 finding 3 と round 4 finding 4 も消滅**。U1 / U2 は repo 登録が取り消せないため未測定であることを理由つきで明記 |
 
 ## 1. 解こうとしている問題
 
@@ -63,6 +64,12 @@ Phase A-R round 1 の finding 1 で否決された。
 | O17 | `skills get orchestration` と `--full` の出力は同一（440 行、diff 空） | 実測 |
 | O18 | Orca に workspace 概念は無い。`--no-parent` は Orca の lineage だけを決め、git の base は `--base-branch` が別に決める | `orca --help` / ガイド |
 | O19 | `worker-start` の非 0 は 2 種を含む。`failed` / `stopped` は `--retry-of` + 明示 placement で replacement、`outcome_unknown` は receipt の recovery action に従い `worker-stop` で再検査するか `worker-abandon`（資源が生存し得ることを受け入れる）。**無条件の削除は認められていない** | ガイド Recovery 節 |
+| O21 | **`--retry-request <caller 生成 id>` は初回呼び出しで受け付けられ、その id が operation identity として確立する。**`orca orchestration run-create --objective "…" --retry-request spike-1788501727-98882 --json` → `result.mutation = {"requestId":"spike-1788501727-98882","replayed":false}`。同じ id で再実行 → `{"replayed":true}` かつ `run.id` は同一（Run は重複しない）。`request-show --request spike-1788501727-98882 --json` → `{"state":"completed","method":"orchestration.runCreate","receipt":{…}}` | Phase 0 spike 実測（2026-09-04） |
+| O22 | **`check` の consuming 読みは message を `--peek` から隠さない。**3 通送って `check --peek` → `count=3` / `read=0`、`check --json` → `deliveryId=delivery_b4618940d9e6` / `count=3` / `read` は依然 0、直後の `check --peek` → **`count=3` のまま**。`check --ack delivery_b4618940d9e6` の後は peek も check も `count=0`。**cursor を進めるのは ack だけ** | Phase 0 spike 実測 |
+| O23 | ack しない限り `check` は同じ Delivery を replay する。連続 2 回の `check --json` がともに `deliveryId=delivery_fb8315632097` / 同一 message を返した | Phase 0 spike 実測（O11 の確認） |
+| O24 | `check --json` の `result` キーは `acknowledged` / `cancelled` / `connectionLost` / `count` / `deliveryId` / `messages` / `mutation` / `replayed` / `runId` / `timedOut`。`--peek` は `acknowledged` / `count` / `messages` / `runId` のみで **`deliveryId` を返さない**。message のフィールドは `id` / `run_id` / `delivery_contract` / `from_handle` / `to_handle` / `subject` / `body` / `type` / `priority` / `thread_id` / `payload` / `read` / `sequence` / `created_at` / `delivered_at` / `sender_pane_key` | Phase 0 spike 実測 |
+| O25 | `workspace-window-closed`（O2）でも orchestration の読み書きと `run-create` は動く。ただし `worktree create` は**登録済み repo を要求する**。このマシンで Orca に登録されている repo は `influencer-platform` の 1 件だけで、`yui-cc-plugins` は未登録（`--repo name:yui-cc-plugins` → `repo_not_found`）。**`orca repo` に `remove` サブコマンドは無い**ので、repo 登録は取り消せない | Phase 0 spike 実測 |
+| O26 | `run-create` は `coordinator_handle` を「現在の端末」に束縛する。cmux シェルから実行したところ、Orca が唯一の live 端末（influencer-platform の `✳ Claude Code`）を coordinator として束縛した。**呼び出し元が Orca 端末でないとき、束縛先は意図しない端末になり得る** | Phase 0 spike 実測（副作用として観測） |
 | O20 | codex の interactive session では `--add-dir` が seatbelt policy に届かない。`-c sandbox_workspace_write.writable_roots=[...]`（single-quoted TOML literal 形式なら `zsh -ic` を通る）は効く | 親が 3 プローブで実測（2026-09-04T05:11:29Z）。2026-09-03 spec 9-1 節 F7 の root cause |
 
 ### 2-2. 移植元（cmux 版）側 — 14 本の個別監査
@@ -185,9 +192,9 @@ escalation sentinel / 既定で無制限の block。**変えるのは cmux 時�
 [T5] design: Phase A → Phase A-R（design_review と直接 send/check）→ plan 保存
         → completion.json=prepared(nonce) → merge_ready → merge_ready_sent → ターンを閉じる
 [T5b] 親: plan ファイルの実在を検証 → accepted(nonce) を design の active Dispatch へ
-[T5c] design: accepted → report-status.sh done → worker_done_pending
-        → worker_done --outcome succeeded --report-path <plan>
-        → 0 を確認してから settled を書き Delivery を ack
+[T5c] design: accepted → report-status.sh done
+        → worker_done --outcome succeeded --report-path <plan> (at-least-once)
+        → settled を書き Delivery を ack
 [T6] 親: design の worker_done を受理 → 11 節で design の端末を accounted にする
         → render-phase-b-spec.sh → task-create
         → workers.json の exec を {task, assignment_state:"starting"} へ ★注入より前
@@ -200,8 +207,8 @@ escalation sentinel / 既定で無制限の block。**変えるのは cmux 時�
 [T8] 親: result.md 実在 / result_missing / pr_url / gh pr view を検証
         受理 → accepted(nonce) を同じ active Dispatch へ
         不受理 → 同じ active Dispatch へ remediation を送る（10-5 へ）
-[T9] exec: accepted → report-status.sh done → worker_done_pending → worker_done
-        → 0 を確認してから settled を書き ack
+[T9] exec: accepted → report-status.sh done → worker_done (at-least-once)
+        → settled を書き ack
 [T10] 親: review ロールへ終了を通知 → 各 review ロールも 10-4 の相を通る
 [T11] 親: 11 節の cleanup decision table で全 Dispatch / terminal を accounted にする
         → worktree rm → branch → .dispatch 掃き出し
@@ -243,44 +250,47 @@ disk へ materialize し、ready receipt を得てから `dispatch` と `assignm
 review ロールの Task は「このタスクの Phase A-R / B-R を担当する」というレビュー期間全体を
 覆う 1 つの Task とする。
 
-#### mutation identity は 2 つある（round 4 finding 1）
+#### 配送規律 — at-least-once + 冪等消費（親の裁定 1 / 2026-09-04）
 
-round 3 版は「`worker-start` / `worker_done` を送る**前**に Orca の request id を
-journal へ write-ahead する」と書いていた。**これは実装できない。**確認済み CLI 面に
-初回呼び出しへ request id を渡すフラグは無く、あるのは `--retry-request <id>` だけである
-（`worker-start --help` / `send --help` 実測）。`request-show --request <id>` は
-「失われた応答からしか得られない id」を要求するので、そのままでは循環する。
+round 3/4 版は「mutation を送る前に durable な identity を write-ahead し、exactly-once を
+自前で作る」設計だった。**これは撤回する。**この系にその層の exactly-once は要らない。
 
-したがって identity を 2 つに分ける。
+理由は 3 つあり、どれも独立している。
 
-| 名前 | 生成者 | いつ確定するか | 用途 |
-|---|---|---|---|
-| `local_operation_id` | 呼び出し側（UUID） | **送信前**。journal へ write-ahead できる | 自分の journal 上で「どの操作か」を一意に指す |
-| `orca_request_id` | Orca | 応答に含まれる。**応答を失うと得られない** | `request-show` / `--retry-request` |
+1. **Orca が既に効果を keying している。**有効な `worker_done`（active な taskId + dispatchId）は
+   Task と Dispatch を自動で completed にする（O9）。既に completed な Dispatch への 2 通目は
+   2 つ目の効果ではない。**dedup key は送信前に手元にあるデータ**であって、応答から学ぶものではない
+2. **Orca 自身の文書化された回復手順は replay identity ではなく state inspection である。**
+   `request-show` の `absent` は「何も起きなかった証拠ではない。affected state を inspect してから
+   retry を判断せよ」（実測 O21 の Notes）。`--retry-request` は**応答を受け取って request id を
+   実際に持っている**場合のための、より狭い機構である
+3. **移植元が逆の選択を意図的にしており、それが機能している。**cmux 版は「同じ完了通知が
+   複数回届くのは正常。冪等に扱い status ファイルを信じよ」と明記する。2026-09-02 に
+   カタログ化された 9 件の本番障害に、**重複通知は 1 件も含まれない**
 
-**`--retry-request` が初回呼び出しで caller 生成 id を idempotency key として受け付けるか**は
-未確認である。flag の意味論（「completed なら記録済みの結果を replay し、2 つ目を開始しない」）は
-そう読めるが、実測していない。**仮定してはならない。**これを spike の測定項目 **U6** とする。
+したがって:
 
-| U6 の結果 | 設計 |
+| 項目 | 規律 |
 |---|---|
-| **受け付ける** | 初回から `--retry-request <local_operation_id>` を渡す。identity が送信前に確定するので、journal の write-ahead が素直に成立し、回復は `request-show --request <local_operation_id>` で足りる |
-| **受け付けない** | 初回呼び出しを wrapper で包み、**stdout/stderr の receipt を副作用の前に durable capture** する。capture 前に落ちた場合は `orca_request_id` が無いので、**同じ mutation を新規実行しない**。`task-list` / `dispatch-show` / `worker-show` の**観測可能な状態からのみ**再構成する（下の保守的規則） |
+| 送信 | **at-least-once。**失敗したら再送してよい |
+| 消費の冪等化 | **`task_id` + `dispatch_id` を key にする**（message id も併用する）。どちらも送信前に手元にある |
+| ローカルの真実 | disk（`status.json` ほか）。cmux 版の `status.json` と同じ位置づけ |
+| 撤回するもの | request identity の write-ahead、`worker_done_pending` phase、それを支えるためだけに存在した journal phase |
+| 残すもの | `completion.json` のうち**自分のファイルのローカル crash 回復に本当に関わる部分**だけ |
 
-**capture 前 crash の保守的規則**（U6 が「受け付けない」場合）:
+**実測との関係**（O21）: `--retry-request` に caller 生成 id を渡す方式は**実際には動く**。
+それでも採らないのは、上の理由 1 と 3 が実装可能性とは独立に成立するからである。
+O21 は事実として記録するが、設計はこれに依存しない。
 
-1. journal の `*_pending` に `local_operation_id` と **spec fingerprint**（Task なら
-   `--spec` のハッシュ、`worker_done` なら task_id + dispatch_id + outcome）がある
-2. 再開時は fingerprint で実体を照会する。`task-list` に同 fingerprint の Task があれば
-   「成立済み」、`dispatch-show --task` に Dispatch があれば「成立済み」、
-   `worker-show --dispatch` が settled を返せば `worker_done` は「成立済み」
-3. **観測できなければ「未成立」と断定しない。**`orca_request_id` 無しで
-   `worker_done` を再送しない（exactly once。O9 / ガイド）。親へ escalation を上げ、
-   人の判断を仰ぐ。**ここだけは自動回復しない**と明記する
+**この転換で解消される round 4 findings**:
 
-`worker-start` は `worker_done` ほど厳しくない（`--retry-of <dispatch_id>` で
-replacement を作る正規経路があり、二重起動は端末が 1 つ余るだけで検出可能）。
-`worker_done` だけが exactly-once の厳格さを要求する。
+- **finding 5（`--outcome failed` が journal を迂回する）は消滅する。**迂回すべき
+  exactly-once journal がそもそも無くなる。失敗は `result.md` に理由を書いてから
+  `worker_done --outcome failed` を at-least-once で送るだけである
+- **finding 1 は消滅する。**送信前に identity を得る必要が無い
+- finding 2（generation transition）と finding 3（journal の write-ahead 順序）は**残る**が、
+  request identity を持たない分だけ小さくなる。どちらも「自分の disk ファイルの
+  ローカル crash 回復」に属するので、裁定 1 が残せと言っている側である
 
 #### `starting` の所有者は親である（round 3 finding 1）
 
@@ -300,15 +310,14 @@ replacement を作る正規経路があり、二重起動は端末が 1 つ余�
 **親の起動時・再開時に `starting` を必ず sweep する**（6-5 の drain と同じ位置）。
 
 1. journal の `launching` から slug / role / task_id / terminal / generation /
-   `local_operation_id` / spec fingerprint（および得られていれば `orca_request_id`）を読む
+   spec fingerprint を読む
 2. `dispatch-show --task <task_id>` / `worker-show` / `request-show --request <id>` で
    実際の成否を判定する
 3. 成立済み → `active` を publish（index にも `dispatch_id` を追加）/
    確定 failed → `failed` / outcome_unknown → O19 の経路へ
-4. **「応答が無いから同じ `worker-start` を新規実行」は禁止**する。`orca_request_id` が
-   あれば `request-show` と `--retry-request`、無ければ上の保守的規則で観測から再構成する。
-   `request-show` の `absent` は「何も起きなかった証拠ではない」（ガイド実測）ので、
-   affected state を必ず inspect する
+4. **判断は観測から行う。**`task-list` を spec fingerprint で、`dispatch-show --task` を
+   task_id で照会し、実体があれば成立済みとする。`worker-start` の重複は端末が 1 つ余るだけで
+   `worker-list` から検出・回収できるので、`worker_done` ほど厳格さを要さない
 
 `recovery-tick.sh` は `starting` が `DISPATCH_STARTING_DEADLINE`（既定 10 分）を超えたら
 親へ escalation を送る。**起点は `workers.json` の `starting_at`**（親が publish 時に書く
@@ -620,14 +629,16 @@ Monitor（背景・wake 信号。ack は一切しない）:
   <run-dir>/deliveries/<delivery_id>.json へ batch 全体を保存   ★ 先に永続化
   for m in out.messages:                     # 目的の label 以外も捨てずに処理する
     if m.id in <run-dir>/processed.json: continue
-    route(m) → <slug>/<role>                 # 12-1。routing 不能は quarantine
+    route(m) → <slug>/<role>                 # 12-1。routing 不能なら ack しない
     handle(m)                                # 冪等。message id / task id / dispatch id で識別
     <run-dir>/processed.json へ m.id を追記（原子的置換）
-  ★ lifecycle message が 1 通でも未処理（quarantine 含む）なら ack しない
+  ★ lifecycle message が 1 通でも未処理なら ack しない（次の check で同じ batch が返る。O23）
   check --ack <delivery_id> --json           # 全部処理してから
 ```
 
-**`emitted-ledger.json` を永久 tombstone にしてはならない**（round 2 finding 3）。
+**`emitted-ledger.json` は再 emit のレート制限であって tombstone ではない**（round 2 finding 3）。
+O22 により message は ack まで `--peek` に現れ続けるので、ledger が無いと毎ループ再 emit してしまう。
+逆に永久抑止にすると wake が消える。したがってレート制限が正しい。
 emit した直後・親が foreground check に入る前にプロセスやターンが失われると、
 Delivery は Orca 側に未 ack で残るのに Monitor は二度と emit せず、**wake が永久に消失する**。
 message は失われていないが、外から見れば永久待機と区別がつかない。
@@ -805,102 +816,68 @@ gate は停止を許し（判定 1）、`recovery-tick.sh:75-78` も `done` を�
 | 4a | 親 | 受理 → `accepted`(同じ nonce) を **active な** Dispatch へ | — |
 | 4b | 親 | 不受理 → 同じ active Dispatch へ remediation を送る（相 1 へ戻る） | — |
 | 5 | worker | nonce 一致を確認 → `accepted` を書く → `report-status.sh <role-dir> done <要約>`（exec は V1 が `pr_url` を要求） | `completion.json = accepted` / `status.json = done` |
-| 6 | worker | `worker_done_pending`(request id) を書いてから `worker_done --outcome succeeded` | `completion.json = worker_done_pending` |
+| 6 | worker | `worker_done --outcome succeeded` を送る（at-least-once。失敗したら再送する） | — |
 | 7 | worker | **`worker_done` が 0 で返ってから** `settled` を書き、当該 Delivery を ack。`completion.json` は**削除しない**（完了記録かつ nonce の保管場所） | `completion.json = settled` |
 
-#### 失敗系も journal を通る（round 4 finding 5）
+#### 失敗の出口（裁定 1 で簡素化）
 
-**失敗の出口は塞がない。**しかし journal を迂回させてもいけない。`--outcome failed` でも
-Orca は Task と Dispatch を terminal にするので、exactly-once と資源 accounting の必要性は
-成功系と同じである。迂回させると `worker_done_pending` の write-ahead が無く、応答喪失後の
-receipt / retry 状態も無く、`settled` も書かれないため、8-2 / 10-3 の契約により
-`recovery-tick.sh` が **settled 済みの failed Dispatch へ nudge / escalation を送り続ける**。
+`--outcome failed` は相 1 / 相 2 から直接送ってよい。**失敗の出口は塞がない。**
+`result.md` に理由を書いてから `worker_done --outcome failed` を at-least-once で送るだけである。
 
-失敗系の phase は成功系より 2 段短い（親の受理を要求しない）:
+round 4 finding 5 は「失敗系が completion journal を迂回すると settled 済み Dispatch へ
+`recovery-tick.sh` が nudge を送り続ける」と指摘した。**裁定 1 でこの finding は消滅する** —
+迂回すべき exactly-once journal がそもそも無くなり、`recovery-tick.sh` は
+`worker-show` で Dispatch が settled であることを確認できれば outcome を問わず回復を止める。
 
-```
-failure_prepared → worker_done_pending → settled(outcome:"failed")
-```
+### 10-2. `completion.json` — ローカル crash 回復のためだけの小さな journal
 
-- `failure_prepared` は失敗 report（理由）を `result.md` へ書いた直後に書く
-- `merge_ready` と `accepted` は通らない。**親の受理は失敗には要らない**
-- `worker_done_pending` 以降の crash 規則は成功系と同一（10-3）。
-  とくに **`worker_done` 成立後・`settled` 前は再送しない**
-- `recovery-tick.sh` は outcome を問わず `phase == settled` で回復を止める
-
-### 10-2. `completion.json` — phase を 1 つの journal で表す（round 3 finding 2）
-
-初版の `.awaiting-acceptance` は**有無**しか表せず、相の内部にある非原子的な境界を区別できない。
-sentinel を書いた直後と `merge_ready` 送信後は同じ「sentinel あり」であり、
-`worker_done` 成立後・sentinel 削除前も同じである。しかも sentinel を消すと
-nonce まで消えるので、replay された `accepted` を何と照合するのかが決まらない。
-
-したがって role dir に **`completion.json`** を置き、write-ahead で phase を進める。
+裁定 1 により、この journal は **exactly-once のためではなく、自分の disk ファイルの
+crash 回復のため**だけに存在する。`worker_done_pending` と request identity の記録は撤回した。
 
 ```json
-{
-  "phase": "prepared|merge_ready_sent|accepted|failure_prepared|worker_done_pending|settled",
-  "generation": 1,
-  "nonce": "…",
-  "accepted_delivery_id": "…",
-  "local_operation_id": "…",
-  "orca_request_id": "…",
-  "spec_fingerprint": "…",
-  "updated_at": 1234567890
-}
+{"phase":"prepared|merge_ready_sent|accepted|settled","generation":1,"nonce":"…"}
 ```
-
-**書いてから副作用を起こす**（write-ahead）。各遷移は同一ディレクトリの `mktemp` + `mv`。
 
 | phase | 書く時点 | 次の副作用 |
 |---|---|---|
-| `prepared` | 成果を検証可能にした直後 | `merge_ready` を送る |
-| `failure_prepared` | 失敗 report を `result.md` へ書いた直後 | `worker_done_pending` へ進む（親の受理は経ない） |
+| `prepared` | 成果を検証可能にした直後（exec は `record-pr.sh` まで） | `merge_ready` を送る |
 | `merge_ready_sent` | 送信が 0 で返った直後 | 親の `accepted` を待つ（ターンを閉じる） |
-| `accepted` | nonce 一致の `accepted` を受け、delivery id とともに記録 | `report-status.sh done` |
-| `worker_done_pending` | `worker_done` を送る**前**。`local_operation_id` と spec fingerprint を記録（5-1 の identity 規則） | `worker_done` を送る |
+| `accepted` | nonce 一致の `accepted` を受けた直後 | `report-status.sh done` → `worker_done` |
 | `settled` | `worker_done` が 0 で返った直後 | Delivery を ack |
 
-`completion.json` は**削除しない**。`settled` が完了記録そのものであり、
-nonce が残るので replay された `accepted` を照合して no-op にできる。
+**失敗系は journal を通さない。**`result.md` に理由を書き、
+`worker_done --outcome failed` を at-least-once で送るだけである。
+`recovery-tick.sh` は outcome を問わず、Dispatch が settled になったことを
+`worker-show` で確認できれば回復を止める。
 
-### 10-3. crash 境界
+### 10-3. crash 境界（すべて at-least-once の再送で閉じる）
 
 | crash の位置 | phase | 回復 |
 |---|---|---|
 | `prepared` 書き込み前 | 無し | 未完了。worker は作業を続ける |
-| `prepared` 直後（`merge_ready` 未送信） | `prepared` | **再送してよい。** 親の `processed.json` が重複を吸収する。at-least-once が方針である（round 3 finding 2a） |
-| `merge_ready` 送信後 | `merge_ready_sent` | 親が検証して `accepted` を送る。Delivery は未 ack なので replay される |
-| `accepted` 受領後、`done` 書き込み前 | `accepted` | `accepted` の replay で相を再実行。`report-status.sh` は冪等 |
-| `done` 後、`worker_done` 送信前 | `worker_done_pending` | 下記の settled 判定を経て `worker_done` を送る |
-| **`worker_done` 成立後、`settled` 書き込み前** | `worker_done_pending` | **再送してはならない**（round 3 finding 2b）。Orca ガイドは `worker_done` を exactly once と定める。settled への二重送信が冪等である保証は無く、本 spec も未検証である。再開時はまず `dispatch-show --task` / `worker-show --dispatch` で settled を確認し、settled なら送らず `settled` を書いて ack する。応答を失った場合は 5-1 の mutation identity 規則に従う（`orca_request_id` があれば `request-show` と `--retry-request`、無ければ観測からの再構成と escalation） |
-| `settled` 書き込み後、ack 前 | `settled` | `accepted` が replay されるが、`completion.json.nonce` と照合して no-op にし、ack する（round 3 finding 2c。**nonce が残っているのはファイルを消さないからである**） |
+| `prepared` 直後 | `prepared` | **`merge_ready` を再送する。**親の消費が冪等（`task_id`+`dispatch_id`）なので重複は害にならない |
+| `merge_ready` 送信後 | `merge_ready_sent` | 親が `accepted` を送る。未 ack なので replay される（O23） |
+| `accepted` 受領後、`done` 書き込み前 | `accepted` | `accepted` の replay で再実行。`report-status.sh` は冪等 |
+| `done` 後、`worker_done` 送信前 | `accepted` | `worker_done` を送る |
+| **`worker_done` 成立後、`settled` 書き込み前** | `accepted` | **再送してよい。**Orca が taskId + dispatchId で効果を keying しており（O9）、completed な Dispatch への 2 通目は 2 つ目の効果ではない。round 3/4 版はここで「再送禁止」の重い機構を作ったが、裁定 1 で不要になった |
+| `settled` 書き込み後、ack 前 | `settled` | `accepted` の replay を nonce 照合で no-op にして ack する |
 
-gate は `phase` がどの値でも **allow** する（`failure_prepared` を含む）。親の受理と Orca の確定を待つのは正しい状態である。
-`recovery-tick.sh` は **`phase == settled` になるまで回復を止めない**。これが 8-2 の改変契約である。
+gate は `completion.json` があれば phase を問わず **allow** する。
+`recovery-tick.sh` は `phase == settled` になるまで回復を止めない。
 
-### 10-4. review ロールの完了（round 3 finding 2d）
+### 10-4. review ロールの完了
 
-10-1 を「全ロール共通」と書いた以上、review ロールも同じ相を通す。T10 を展開する:
+review ロールも同じ相を通す。親の検証内容は「担当した全ラウンドの
+`<point>-round-<N>.md` に `VERDICT:` 行がある」ことである。**例外にしない** —
+例外にすると review 成果の受理時点が未定義のまま端末が閉じられ、findings の欠落に
+誰も気づかない。
 
-1. 親が全ラウンドの `<point>-round-<N>.md` に `VERDICT:` 行があることを検証する
-2. review ロールが `prepared` → `merge_ready` → 親の検証 → `accepted` → `report-status.sh done`
-   → `worker_done_pending` → `worker_done` → `settled`
-3. 親の検証内容は「担当した全ラウンドの findings が materialize されている」ことである
+### 10-5. remediation
 
-**例外にはしない。** 例外にすると「review 成果がいつ受理されたか」が定義されないまま
-端末が閉じられ、findings の欠落に誰も気づかない。
-
-### 10-5. remediation（round 2 finding 4c / round 3 finding 1）
-
-不受理（10-1 の相 4b）と、worker が相 2 を飛ばして `worker_done` を送った場合の両方を扱う。
-
-1. **5-1 の generation transition transaction を実行する**（manifest の定義も 5-1 が持つ。
-   ここで列挙を書き直さない）。完了時点で role dir は新 generation として初期化され、
-   `workers.json` は `{generation: n+1, assignment_state: "starting", starting_at}` になっている
+1. **5-1 の generation transition transaction を実行する**（manifest の定義も 5-1 が持つ）
 2. 12-1 の write-ahead 順序で新 `task_id` を journal → index → workers の順に publish する
 3. `worker-start --task <remediation> --terminal <handle>`（settled 済みの場合）、
-   または既存 active Dispatch へ remediation メッセージ（相 4b の場合）
+   または既存 active Dispatch へ remediation メッセージ（不受理の場合）
 4. ready receipt で `{dispatch, assignment_state: "active"}` と index の `dispatch_id` を publish
 
 **worktree は検証が通るまで削除しない。**
@@ -963,14 +940,14 @@ journal を先頭に置き直す。
 
 ```
  1. journal: launch_planned
-      {slug, role, generation, spec_fingerprint, local_operation_id}   ★ 副作用の前
+      {slug, role, generation, spec_fingerprint}                ★ 副作用の前
  2. task-create
  3. journal: task_created {task_id}                    ← receipt を確定してから
  4. index.json:  task_id → {slug, role, generation}    ← journal から派生
  5. workers.json: {task, assignment_state:"starting", starting_at}   ← journal から派生
- 6. journal: worker_start_pending {local_operation_id}  ★ 副作用の前
+ 6. journal: worker_start_pending                       ★ 副作用の前
  7. worker-start
- 8. journal: worker_started {dispatch_id, orca_request_id?}
+ 8. journal: worker_started {dispatch_id}
  9. workers.json: {dispatch, assignment_state:"active"}
 10. index.json:  dispatch_id → {slug, role, generation}
 11. journal: active
@@ -988,7 +965,7 @@ authority ではあっても durable な真実ではない。
 | 1 と 2 の間 | `launch_planned` | `task-list` を `spec_fingerprint` で照会。**同じ Task があれば重複作成しない**。無ければ作る |
 | 2 の応答喪失 | `launch_planned` | 同上。これが round 4 finding 3 が指摘した境界である |
 | 3〜5 の間 | `task_created` | index / workers を journal から再 publish する |
-| 6 と 7 の間 | `worker_start_pending` | 5-1 の mutation identity 規則で成否を判定する |
+| 6 と 7 の間 | `worker_start_pending` | `dispatch-show --task` で成否を判定する。重複起動は端末が 1 つ余るだけで `worker-list` から回収できる |
 | 7 の応答喪失 | `worker_start_pending` | 同上 |
 | 8〜10 の間 | `worker_started` | index / workers を journal から再 publish する |
 
@@ -1003,41 +980,33 @@ routing に失敗した message を即 `processed.json` へ落としてはなら
 1. `index.json` を読み直す（親の別処理が publish した直後かもしれない）
 2. `task-list` / `dispatch-show` で Orca 側の実体を照会する
 3. journal の `launch_planned` / `task_created` / `worker_start_pending` と突き合わせる
-4. **一時的な publish race と判定できたら quarantine** し、
-   `<run-dir>/quarantine/<message_id>.json` へ退避する
+4. **一時的な publish race と判定できたら、その batch を ack しない**。次の `check` で
+   同じ Delivery が返るので（O23）、そこで再 routing を試みる
 5. 真に foreign / malformed と確定した message だけを diagnostic として
-   `processed.json` へ落とす
+   `processed.json` へ落とし、その batch を ack してよい
 
-**quarantine に lifecycle message が 1 通でも残っているあいだは batch を ack しない。**
+**routing 不能な lifecycle message が 1 通でもあるあいだは batch を ack しない。**
 
-##### quarantine は自分で再駆動する（round 4 finding 4）
+##### 未 ack が再駆動そのものである（Phase 0 spike で解消）
 
-「後で handler 実行」の「後で」を起こすイベントが無いと、その message が唯一の wake 源
-だった場合に永久に進まない。consuming check で unread cursor が進めば Monitor の
-次の `--peek` にも現れない可能性がある（U3 の未検証境界そのもの）。したがって
-**mailbox の新着に依存しない再駆動**を持たせる。
+round 4 finding 4 は「quarantine を再処理する契機が無い」ことを問題にし、
+mailbox 非依存の backoff timer を要求した。**Phase 0 の実測でこれは不要になった。**
 
-quarantine entry:
+O22 / O23 のとおり、**cursor を進めるのは ack だけ**である。routing できない message を
+含む batch を ack しなければ、`check` は次回も同じ Delivery を返す。したがって
+「後で再処理する契機」は**次の `check` そのもの**であり、別の timer も ledger も要らない。
 
-```json
-{"message_id":"…","delivery_id":"…","retry_count":2,
- "next_retry_at":1234567890,"last_reason":"index has no mapping for task_x"}
-```
+- routing 不能な lifecycle message があれば **ack しない**
+- 次の `check`（Monitor の wake、親の起動時 drain、他の message の到着、いずれでも）で
+  同じ batch が返るので、そこで index を読み直して再 routing を試みる
+- 再試行のたびに index / journal / Orca inspection で解決を試みる
+- **真に foreign / malformed と確定した message だけ**を diagnostic として記録し、
+  その batch を ack してよい
 
-再駆動の契機は 4 つ。**どれも mailbox 非依存**である。
+`<run-dir>/quarantine/` も `next_retry_at` も `retry_count` も置かない。
+**未 ack であること自体が retry 状態である。**
 
-1. **quarantine 作成の直後に、親が同期的に 1 回**再 reconciliation して再処理を試みる
-2. index / journal を更新した直後（新しい mapping が入った可能性がある）
-3. 親の起動時・再開時（6-5 の drain と同じ位置）
-4. **ack の直前に必ず** drain する
-
-それでも未解決なら **bounded backoff の明示的な scheduled wake**（`run_in_background` の
-単発 `sleep`）で再試行する。`retry_count` と `next_retry_at` を entry に持つので、
-**busy loop にならない**。起動時 drain も「空になるまで即座に繰り返す」のではなく、
-`next_retry_at` を尊重する。
-
-成功時の順序は **handler → `processed.json` → quarantine から除去** の順（durable 順）。
-逆にすると、除去後・processed 記録前の crash で二重実行になる。
+親の起動時 drain（6-5）は、この replay を必ず 1 回引くための入口として残す。
 
 ### 12-2. issue ごとの durable state
 
@@ -1123,43 +1092,68 @@ not_started → launching → active → verifying → cleanup_pending → compl
 | 90 分タイマーの連続 kill で backstop が消える | タイマーを張らない（6-5） |
 | codex 待機者に safety timer が無い | `check --wait` は engine 非依存 |
 
-## 15. Phase 0 — contract spike（finding 6）
+## 15. Phase 0 — contract spike（実施済み / 一部未測定）
 
-round 1 の finding 6 は「U1-U3 を実測してから spec を確定せよ、未検証のままでは approve しない」
-とする。**この spike はユーザーの起動中 Orca アプリに可視の状態（Run / Task / terminal）を作る**ため、
-親の承認を得てから実行する。承認が得られない場合は、その制約を明記したうえで reviewer と再交渉する。
+親の裁定 2（2026-09-04）で bounded な実測が許可され、実施した。結果は 2-1 節へ
+O21〜O26 として「確認済みの事実」に移してある。本節はその要約と、**測れなかったものと
+その理由**を記録する。
 
-| ID | 測ること | 外れたときの影響 |
+| ID | 状態 | 内容 |
 |---|---|---|
-| U1 | worker A から worker B の `dispatch:<id>` へ `--type status` を送り、B の `check` で受信・ack できるか | D3（worker 間直接レビュー）の土台。外れると親が中継する設計へ変更（D3 の変更なので親の判断が要る） |
-| U2 | `terminal create --command "bash <runner>"` で作った端末を `worker-start --terminal` が supervised にできるか。settle 後の `worker-release` receipt が `retained` / `no_owned_resource` になるか | S6 と 11 節の土台。外れると `worker-start --agent --model --effort` へ切り替えざるを得ず、gate identity（C12）の受け渡し手段を作り直す必要がある |
-| U3 | `check --wait --json` の実 schema（`delivery_id` / `messages[]` / message id フィールド名）、`--types` フィルタと「最古の全 batch」の関係、`--peek` の unread cursor と `--ack` の unacked cursor の関係 | 6-5 の Monitor / 親 / worker の 3 ループすべての実装入力 |
+| U3 | **測定済み（O22 / O23 / O24）** | consuming `check` は message を `--peek` から隠さない。cursor を進めるのは ack だけ。ack しなければ同じ Delivery が replay される。schema も確定 |
+| U6 | **測定済み（O21）** | `--retry-request <caller 生成 id>` は初回で受け付けられ idempotency key として機能する。**ただし裁定 1 により設計はこれに依存しない**（5-1 の配送規律） |
+| U4 | **部分的に測定済み（O25）** | `workspace-window-closed` でも orchestration の読み書きと `run-create` は動く。`worktree create` は登録済み repo を要求する |
+| U1 | **未測定。**理由あり | 下記 |
+| U2 | **未測定。**理由は U1 と同じ | 下記 |
+| U5 | **未測定。**非ブロッカー | `worker_done --report-path` の親側での見え方。`--body` の規約行（`PLAN: <path>`）という fallback が設計済み |
 
-**U3 の acceptance criterion**（round 3 finding 4）。次の 4 点を明示的に測り、
-結果を 6-5 の疑似コードへ反映してから確定する。
+**U3 の測定が解消した findings**: round 3 finding 3（Monitor の wake 消失）と
+round 4 finding 4（quarantine の再駆動）。どちらも「consuming check の後に message が
+`--peek` から消える」という**実際には起きない**前提に立っていた。ack しない限り
+同じ batch が返るので、**未 ack であること自体が retry 状態**である（12-1）。
 
-1. `--peek` しただけの message のその後の可視性
-2. 既定の `check` で取得したが ack していない message の可視性
-3. 2 の状態で別の `check` / `--peek` / `--wait` を行ったときの見え方
-4. **coordinator の再開時に、wake を待たずに最古の未 ack batch を drain できるか**
+### U1 / U2 を測れなかった理由
 
-**危険な境界**は「親の foreground `check --json` が返った後、`deliveries/<id>.json` を
-書く前の crash」である。この時点で message は未 ack だが unread cursor 上は既読になり、
-`--peek` から消える可能性がある。そうなると Monitor は rate interval を過ぎても
-再 emit できない。**未実測なので推測で結論を出さない。**
+測定には worktree が要り、worktree には**登録済み repo** が要る（O25）。
+このマシンで Orca に登録されている repo は無関係な production repo
+（`influencer-platform`。live な `✳ Claude Code` 端末が動いている）1 件だけで、
+`yui-cc-plugins` は未登録である。そして **`orca repo` に `remove` サブコマンドが無い**。
 
-設計上の保険として、6-5 は既に「親の起動時・再開時に wake を待たず drain する」を
-必須にしてある。U3 の結果次第では Monitor が `--peek` だけを使う設計自体の見直しが要る。
-| U6 | **`--retry-request <caller 生成 id>` を初回呼び出しに渡すと、その id が operation identity として確立するか。**確認済み CLI 面に初回 request id を渡すフラグは無く、`request-show` は応答からしか得られない id を要求するので、この一点が exactly-once 回復の成否を決める | 5-1 の mutation identity 全体、ひいては `worker_done` の exactly-once 回復（round 4 finding 1）。受け付けないなら wrapper による receipt capture と保守的規則へ切り替える |
-| U4 | `graph_not_ready` / `workspace-window-closed`（O2）のままで `worktree create` / `terminal create` が動くか | 局所的。動かなければ preflight に「ワークスペースウィンドウが開いていること」を足し、`orca open` を案内する。**非ブロッカー** |
-| U5 | `worker_done --report-path` が親の `check` にどう見えるか | 局所的。見えなければ `--body` の規約行（`PLAN: <path>`）へ退避する。**非ブロッカー** |
+したがって U1 / U2 を測るには、(a) 無関係な production repo に spike の worktree と
+端末を作るか、(b) repo を登録して**取り消せない残留物**を残すかのどちらかになる。
+どちらも親の制約「throwaway な worktree を使い、後で消せ」を満たさないので**測っていない**。
 
-U1-U3 と **U6** は spec 確定のブロッカー、U4 / U5 は非ブロッカーだが同時に測る。
-結果は 2-1 節の O 系へ「確認済みの事実」として移し、該当節を実測値へ書き換える。
+必要な操作は次のとおりで、親が repo 登録を許可すれば数分で測れる。
 
-spike の後片付け: 作った Run / Task / Dispatch / terminal / worktree は
-11 節の decision table に従って回収し、`orchestration reset` は**使わない**
-（他のディスパッチの状態を巻き込むため）。
+```
+orca repo add --path /Users/yui/Documents/workspace/tanaka-yui/yui-cc-plugins
+orca worktree create --repo name:yui-cc-plugins --name orca-spike --no-parent --setup skip --json
+orca terminal create --worktree id:<wt> --title spike-a --command "bash" --json
+orca terminal create --worktree id:<wt> --title spike-b --command "bash" --json
+orca orchestration task-create --spec "spike A" --json     # ×2
+orca orchestration worker-start --task <ta> --terminal <ha> --worktree id:<wt> --json
+orca orchestration worker-start --task <tb> --terminal <hb> --worktree id:<wt> --json
+# U1: terminal send で A の端末から orchestration send --to dispatch:<db>
+#     B の端末から orchestration check --peek で着信を確認
+# U2: worker-show が supervised を返すか / settle 後の worker-release receipt
+orca orchestration worker-release / worker-abandon → terminal close → worktree rm
+```
+
+**外れたときの代替**（設計に既に書いてある）:
+
+- U1 が外れる → 親が中継する。D3 の変更なので親の判断が要る
+- U2 が外れる → `worker-start --agent --model --effort` へ切り替え、gate identity（C12）の
+  受け渡し手段を作り直す。11 節の cleanup decision table も `settled + reused` の行が変わる
+
+### spike の残留物
+
+Run `run_aa8c318af020` が 1 つ。mailbox は drain 済み（peek / check とも count 0）、
+Task 0 / worker 0 / terminal 0 / worktree 0 / repo 追加 0。
+
+**ただし O26 のとおり、この Run の `coordinator_handle` は無関係な live 端末に
+束縛されてしまった。**cmux シェルから `run-create` したところ、Orca が唯一の live 端末を
+coordinator として選んだためである。`run-delete` が無いので取り消せない。実害は低いが、
+**本番設計では親が必ず自分の Orca 端末から `run-create` することを要件とする**（5-2 に追記）。
 
 ## 16. ファイル構成
 
@@ -1214,11 +1208,11 @@ apps/orca-team-dispatch-task/
 | `test-generation-transition.sh` | 5-1 の transaction。`.generation-transition` があるあいだ gate が block すること、manifest の各 `mv` 直後の crash から phase 再開できること、`mv` が src のみ / dst のみ / 両方 / 不在の 4 状態で冪等なこと、manifest 全件完了前に新 `status.json` と `generation:n+1` を publish しないこと（round 4 finding 2） |
 | `test-starting-sweep.sh` | 5-1 の crash 境界 4 種（`starting` publish 後 / receipt 反映前 / failed 反映前 / 応答喪失）で親の sweep が `dispatch-show` / `worker-show` / `request-show` から state を再導出すること。**同じ `worker-start` を新規実行せず `--retry-request` を使うこと**。`starting` 滞留で `recovery-tick.sh` が親へ escalation を送ること |
 | `test-run-index.sh` | 12-1 の write-ahead 順序 11 段のどこで落ちても journal から収束すること。**`task-create` の応答喪失で Task を重複作成しないこと**（`spec_fingerprint` 照会）。`task_id` だけで routing できること |
-| `test-quarantine.sh` | routing 不能を即 tombstone にせず quarantine すること、quarantine が残るあいだ ack しないこと、**作成直後の同期再処理**、index 更新後・起動時・ack 直前の drain、`next_retry_at` を尊重して busy loop にならないこと、**唯一の lifecycle message が quarantine されその後 message が来ないケースで backoff timer が進めること**、永続 unresolved が hot loop しないこと、成功時が handler → processed → 除去の順であること（round 4 finding 4） |
+| `test-routing-retry.sh` | routing 不能な lifecycle message を含む batch を **ack しない**こと、次の `check` で同じ Delivery が返って再 routing されること（O23）、真に foreign な message だけ diagnostic 記録のうえ ack してよいこと |
 | `test-worker-launch.sh` | T1-T4b の順序（**integration.json publish が Task 注入より前**、**review 2 ロールが design より先**）、`assignment_state: starting` が `worker-start` の**前**に disk へ出ること、`--terminal` に `--worktree` を併記、`--model` と `--terminal` を併用しない（O5）、`worker-start` の `failed` / `outcome_unknown` で O19 の分岐に入り**無条件削除しない**、`.wiring` の生成と削除。**`worker-start` スタブが Task 注入直後・receipt 返却前に Stop hook を発火するケース**（round 2 finding 2） |
 | `test-recovery-wiring.sh` | role dir と dispatch root が分かれた状態で `recovery-tick.sh` が review wait を認識し、nudge と escalation を送れること（round 2 finding 1）。`--send-command` / `--dispatch-root` を渡さない旧呼び出しでは失敗することも固定する |
 | `test-delivery-ack.sh` | crash-before-ack で handler が再実行されない、crash-after-ack、無関係 message が先頭、複数 message batch、emit と ack の順序、**emit/ledger 更新後・foreground check 前の crash で再 emit されること**、emit 直前/直後の crash（round 2 finding 3）、**issue 横断の mixed batch と handler 部分失敗**（round 2 finding 5） |
-| `test-two-phase-commit.sh` | **失敗系が `failure_prepared` → `worker_done_pending` → `settled(failed)` を通り、settled 後に nudge/escalation が止まること**（round 4 finding 5）、**design も相 2-7 を通ること**（round 2 finding 4a）、**review ロールも 10-4 の相を通ること**、10-3 の crash 境界 7 行それぞれ: `prepared` 直後（`merge_ready` 未送信）で**再送してよい**こと / **`worker_done` 成立後・`settled` 前は再送しない**こと（settled を先に確認する）/ `settled` 後・ack 前の `accepted` replay が nonce 照合で no-op になること / nonce 不一致の stale `accepted` を受理も ack もしないこと、10-5 の remediation で role dir が `attempt-<n>/` へ archive され旧 `done` が gate を開けないこと |
+| `test-two-phase-commit.sh` | **失敗系が `result.md` + `worker_done --outcome failed` だけで完結し、settled 後に nudge/escalation が止まること**、**design も相 1-7 を通ること**、**review ロールも 10-4 の相を通ること**、10-3 の crash 境界 7 行それぞれ（**`worker_done` 成立後・`settled` 前は再送してよい** — O9 により 2 通目は 2 つ目の効果ではない）、`settled` 後・ack 前の `accepted` replay が nonce 照合で no-op になること、消費の冪等化が `task_id`+`dispatch_id` を key にしていること、10-5 の remediation で role dir が `attempt-<n>/` へ archive され旧 `done` が gate を開けないこと |
 | `test-integration-resolve.sh` | 3 remote、origin 不在、GitHub 形式でない origin、PR 不在、`merge` でも必ず書く |
 | `test-cleanup.sh` | 11 節の decision table 全行。reused terminal で `worker-release` の後に `terminal close`、`release_pending` で close を代用しない、全 accounted 後にのみ worktree 除去、再実行の冪等性、中断後の再開 |
 | `test-runner-wrapper.sh` | agent 終了後に watcher が残らない（`trap` 回収）、gate identity の export、codex に `features.goals=false` |
