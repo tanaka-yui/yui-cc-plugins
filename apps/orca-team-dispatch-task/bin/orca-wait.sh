@@ -38,19 +38,21 @@ stored_outcome() {
   local matches count
   [[ -f "$RECV" ]] || return 0
   matches=$(jq -c --arg task "$TID" --arg dispatch "$DID" \
-    '[.[] | select(.task_id == $task and .dispatch_id == $dispatch)]' "$RECV" 2>/dev/null) || return 1
+    'if type != "array" or any(.[]; type != "string" or (split("|") | length) != 4) then error("invalid receipts")
+     else [.[] | split("|") | select(.[0] == "worker_done" and .[1] == $task and .[2] == $dispatch)]
+     end' "$RECV" 2>/dev/null) || return 1
   count=$(jq 'length' <<<"$matches") || return 1
   [[ "$count" -le 1 ]] || return 1
-  [[ "$count" -eq 0 ]] || jq -r '.[0].outcome' <<<"$matches"
+  [[ "$count" -eq 0 ]] || jq -r '.[0][3]' <<<"$matches"
 }
 record_outcome() {
-  local records
+  local records receipt
   records='[]'
   if [[ -f "$RECV" ]]; then
     records=$(jq -c . "$RECV") || return 1
   fi
-  write "$RECV" "$(jq -c --arg task "$TID" --arg dispatch "$DID" --arg outcome "$1" \
-    '. + [{task_id: $task, dispatch_id: $dispatch, outcome: $outcome}]' <<<"$records")"
+  receipt="worker_done|$TID|$DID|$1"
+  write "$RECV" "$(jq -c --arg receipt "$receipt" '. + [$receipt]' <<<"$records")"
 }
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）
@@ -116,17 +118,15 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
   return 0
 }
 outcome_of() {   # 受信済みと status が一致した結論を返す。無ければ空
-  local st oc
+  local st oc existing
   st=$(jq -r '.status // empty' "$SD/roles/design/status.json" 2>/dev/null || echo "")
   case "$st" in
     done) oc=succeeded ;;
     error) oc=failed ;;
     *) return 1 ;;
   esac
-  [[ -f "$RECV" ]] || return 1
-  jq -e --arg task "$TID" --arg dispatch "$DID" --arg outcome "$oc" \
-    '[.[] | select(.task_id == $task and .dispatch_id == $dispatch)] | length == 1 and .[0].outcome == $outcome' \
-    "$RECV" >/dev/null 2>&1 || return 1
+  existing=$(stored_outcome) || return 1
+  [[ "$existing" == "$oc" ]] || return 1
   printf '%s' "$oc"
 }
 finish() {

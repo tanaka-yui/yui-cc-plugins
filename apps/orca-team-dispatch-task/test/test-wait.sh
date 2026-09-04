@@ -148,4 +148,9 @@ setup; bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 0 >/dev/null 2>
 setup; bash "$P/bin/orca-wait.sh" --status-dir "$SD" --timeout-ms nope >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 2 ]] && ok "WT19c timeout-ms を検証" || fail "WT19c (rc=$rc)"; teardown
 
+# WT20: Task 3 consumer 契約の string receipt をそのまま保存する
+setup; dn; msg; w >/dev/null 2>&1
+[[ "$(jq -c . "$SD/received.json")" == '["worker_done|task_x|ctx_x|succeeded"]' ]] \
+  && ok "WT20 string receipt 互換" || fail "WT20"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
