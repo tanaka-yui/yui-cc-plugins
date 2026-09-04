@@ -1278,6 +1278,15 @@ messages only tell you when to look.
    stop re-arming: report with the `cmux read-screen` excerpt and ask the user how to
    proceed. "The pane is alive" is not evidence of progress.
 
+   **Stop re-arming when the timer itself keeps dying.** If the background `sleep` is
+   killed before it fires twice in a row — it disappears minutes into a 90-minute wait
+   rather than waking you — do not arm a third one. Say plainly in your next report that
+   this dispatch is running without a backstop, so a silent child needs the user's eyes,
+   and continue monitoring through agmsg messages alone. Measured on 2026-09-02: arms 2
+   through 5 were all killed within minutes to half an hour, and the parent ran the rest
+   of the batch with no timer. Re-arming a timer that never survives costs a wake each
+   time and buys nothing.
+
 2. Report the launch summary using Template A with concrete surface IDs.
 3. Tell the user: "Monitoring N tasks. Waiting for agmsg notifications."
 4. **End your turn.** Do not block and do not poll — not for `[ready]`, not for
