@@ -13,7 +13,8 @@
 |---|---|
 | 初版 (627a5b5) | 設計の骨子 |
 | rev2 (20c6746) | Phase A-R round 1 の findings 1-8 を反映。**8 節のスクリプト分類を全面的に作り直し**（親の訂正「バイトではなく判断を再利用せよ」を受け、14 本を個別監査した）。**5 節のライフサイクルを 1 本の状態機械へ統一**。**9 節に per-role status dir と二相コミットを導入**。**11 節に terminal cleanup の decision table を追加**。**6-6 に Delivery ack の順序契約を追加**。**15 節に Phase 0 contract spike を新設**。loop / setup / reset / override の節を追加 |
-| 本版 | Phase A-R round 2 の findings 1-5 を反映。**5-5 に 4 つの入力（role_status_dir / dispatch_root / review_dir / send_command）の分離を追加**（per-role dir が recovery 層を壊していた）。**5-1 に `assignment_state` を導入**（Task 注入と disk publish の race）。**6-5 の `emitted-ledger.json` を永久 tombstone から再 emit レート制限へ**（wake 消失）。**10 節を全面改稿し design も二相コミットを通す / crash 境界 5 行 / remediation の状態再オープンを定義**。**12 節を全面改稿し Delivery 台帳を Run 単位へ移して mixed batch を routing、issue ごとの durable journal を導入**（「worktree の有無で進捗が一意」は不成立） |
+| rev3 (3ed9528) | Phase A-R round 2 の findings 1-5 を反映。**5-5 に 4 つの入力（role_status_dir / dispatch_root / review_dir / send_command）の分離を追加**（per-role dir が recovery 層を壊していた）。**5-1 に `assignment_state` を導入**（Task 注入と disk publish の race）。**6-5 の `emitted-ledger.json` を永久 tombstone から再 emit レート制限へ**（wake 消失）。**10 節を全面改稿し design も二相コミットを通す / crash 境界 5 行 / remediation の状態再オープンを定義**。**12 節を全面改稿し Delivery 台帳を Run 単位へ移して mixed batch を routing、issue ごとの durable journal を導入**（「worktree の有無で進捗が一意」は不成立） |
+| 本版 | Phase A-R round 3 の findings 1-3 と文書整合 3 件を反映。**5-1 に `starting` の親側 sweep（4 crash 境界）と generation ごとの role dir archive を追加**。**10 節を `completion.json` の 5 phase journal へ作り直し、`worker_done` の exactly-once 回復と sentinel 内部の crash gap を閉じた**。**12-1 に index.json の write-ahead publish 順序と routing 不能の quarantine を追加**。6-5 に親の再開時 drain を追加。15 節に U3 の acceptance criterion 4 点を追加 |
 
 ## 1. 解こうとしている問題
 
@@ -181,10 +182,11 @@ escalation sentinel / 既定で無制限の block。**変えるのは cmux 時�
         → .wiring 削除
         ※ exec は端末だけ。workers.json の exec に task も dispatch も無い
 [T5] design: Phase A → Phase A-R（design_review と直接 send/check）→ plan 保存
-        → .awaiting-acceptance(nonce) を書く → merge_ready を親へ → ターンを閉じる
+        → completion.json=prepared(nonce) → merge_ready → merge_ready_sent → ターンを閉じる
 [T5b] 親: plan ファイルの実在を検証 → accepted(nonce) を design の active Dispatch へ
-[T5c] design: report-status.sh done → worker_done --outcome succeeded --report-path <plan>
-        → worker_done が 0 で返ってから .awaiting-acceptance を削除し Delivery を ack
+[T5c] design: accepted → report-status.sh done → worker_done_pending
+        → worker_done --outcome succeeded --report-path <plan>
+        → 0 を確認してから settled を書き Delivery を ack
 [T6] 親: design の worker_done を受理 → 11 節で design の端末を accounted にする
         → render-phase-b-spec.sh → task-create
         → workers.json の exec を {task, assignment_state:"starting"} へ ★注入より前
@@ -193,13 +195,13 @@ escalation sentinel / 既定で無制限の block。**変えるのは cmux 時�
         → addressbook へ exec を追加
 [T7] exec: Phase B → Phase B-R（exec_review と直接 send/check）→ commit
         → (pr) push → gh pr create → record-pr.sh
-        → .awaiting-acceptance(nonce) を書く → merge_ready → ターンを閉じる
+        → completion.json=prepared(nonce) → merge_ready → merge_ready_sent → ターンを閉じる
 [T8] 親: result.md 実在 / result_missing / pr_url / gh pr view を検証
         受理 → accepted(nonce) を同じ active Dispatch へ
-        不受理 → 同じ active Dispatch へ remediation を送る（10-3 へ）
-[T9] exec: report-status.sh done → worker_done → 0 を確認してから
-        .awaiting-acceptance を削除し ack
-[T10] 親: review ロールへ終了を通知 → 各 review ロールが worker_done
+        不受理 → 同じ active Dispatch へ remediation を送る（10-5 へ）
+[T9] exec: accepted → report-status.sh done → worker_done_pending → worker_done
+        → 0 を確認してから settled を書き ack
+[T10] 親: review ロールへ終了を通知 → 各 review ロールも 10-4 の相を通る
 [T11] 親: 11 節の cleanup decision table で全 Dispatch / terminal を accounted にする
         → worktree rm → branch → .dispatch 掃き出し
 ```
@@ -239,6 +241,57 @@ disk へ materialize し、ready receipt を得てから `dispatch` と `assignm
 
 review ロールの Task は「このタスクの Phase A-R / B-R を担当する」というレビュー期間全体を
 覆う 1 つの Task とする。
+
+#### `starting` の所有者は親である（round 3 finding 1）
+
+`assignment_state: starting` は通常起動の race を閉じるが、**親が receipt を disk へ
+反映する前に落ちると gate が無期限 block する**。gate の block は recovery 機構ではない。
+`starting` が滞留したときの所有者は worker ではなく親である。
+
+覆うべき crash 境界:
+
+| # | 位置 | 残る状態 |
+|---|---|---|
+| 1 | `starting` publish 直後、`worker-start` 呼び出し前 | Task はあるが Dispatch 無し |
+| 2 | `worker-start` が Orca 側で成立、親が receipt を反映する前 | Dispatch はあるが disk は `starting` |
+| 3 | `worker-start` が failed / outcome_unknown を返し、親が state を更新する前 | disk は `starting` |
+| 4 | `worker-start` の応答自体を失った | 成否が不明 |
+
+**親の起動時・再開時に `starting` を必ず sweep する**（6-5 の drain と同じ位置）。
+
+1. journal の `launching` から slug / role / task_id / terminal / generation /
+   `worker-start` の **request id** を読む
+2. `dispatch-show --task <task_id>` / `worker-show` / `request-show --request <id>` で
+   実際の成否を判定する
+3. 成立済み → `active` を publish（index にも `dispatch_id` を追加）/
+   確定 failed → `failed` / outcome_unknown → O19 の経路へ
+4. **「応答が無いから同じ `worker-start` を新規実行」は禁止**する。Orca が返した
+   recovery action と `--retry-request <id>` を使う。`request-show` の `absent` は
+   「何も起きなかった証拠ではない」（ガイド）ので、affected state を必ず inspect する
+
+`recovery-tick.sh` は `starting` が `DISPATCH_STARTING_DEADLINE`（既定 10 分）を超えたら
+親へ escalation を送る。worker の block を待つのではなく、**親に気づかせる**のが目的である。
+
+#### generation は role-local な transient artifact も巻き取る（round 3 finding 1）
+
+`generation` を `workers.json` に持つだけでは、remediation 後の新試行が旧試行の
+`.escalated` / `.gate-*` / nudge record / wait lease を現在のものとして読み得る。
+
+したがって **generation を上げるときは role dir の transient set をまとめて archive する**。
+
+```
+roles/<role>/attempt-<n>/     ← 旧 generation の一式をここへ mv
+  status.json  result.md  completion.json  .escalated  .gate-*  .gate-nudge-*
+```
+
+移動後の role dir は空の新 generation として初期化し、親が `status.json` に
+`{"generation": n+1}` を書く。`report-status.sh` は既存フィールドを jq マージで
+保存する（`report-status.sh:78-88`）ので、`generation` は byte 一致のまま生き残る。
+
+**個々の artifact に generation を埋め込むより、世代ごとにディレクトリを分けるほうが
+確実である** — 埋め込みは全 artifact の書き手を変える必要があり、byte 一致で残す
+スクリプトを巻き込む。remediation（10-5）の退避もこの archive に一本化する。
+
 
 ### 5-2. Preflight（`bin/orca-preflight.sh`）
 
@@ -320,7 +373,7 @@ role dir を 1 つ渡すだけでは動かない。実測で確認した破綻�
 
 | 入力 | 値 | 用途 |
 |---|---|---|
-| `role_status_dir` | `<status-dir>/roles/<role>` | `status.json` / `result.md` / `.escalated` / `.gate-*` / `.awaiting-acceptance` |
+| `role_status_dir` | `<status-dir>/roles/<role>` | `status.json` / `result.md` / `completion.json` / `.escalated` / `.gate-*` / `attempt-<n>/` |
 | `dispatch_root` | `<status-dir>` | `review_select_active` に渡す root（`review-state.sh` は自分で `/review` を足す） |
 | `review_dir` | `<status-dir>/review` | `review-request.sh --review-dir` |
 | `send_command` | `<plugin>/bin/orca-send.sh` | `recovery-tick.sh --send-command` / gate の reason |
@@ -476,21 +529,35 @@ PR 手順 / parallel directive は helper の出力にしか存在せず、手�
 emit は処理ではない。
 
 ```
-Monitor（背景・wake 信号）:
+Monitor（背景・wake 信号。ack は一切しない）:
   loop:
     out = check --wait --peek --types worker_done,escalation,question,merge_ready,status \
             --timeout-ms 600000 --json      # stdout のみ。2>&1 禁止（O10）
+    now = 現在時刻
     for m in out.messages:
-      if m.id not in <run-dir>/emitted-ledger.json:
-        emit 1 行; ledger へ m.id を追記
+      if m.id in <run-dir>/processed.json:        # 唯一の tombstone は親が書く
+        continue
+      e = <run-dir>/emitted-ledger.json[m.id]
+      if e is None:
+        emit 1 行; ledger[m.id] = {first_emitted: now, last_emitted: now}
+      elif now - e.last_emitted >= REEMIT_INTERVAL:   # 既定 120 秒
+        emit 1 行; e.last_emitted = now              # at-least-once の再 emit
+      # それ以外は rate limit により黙る（永久抑止ではない）
+
+親（起動時・再開時に必ず 1 回。wake を待たない）:
+  drain: check --json が空を返すまで、未 ack Delivery を下の手順で処理し切る
+         ★ Monitor の wake に依存しない reconciliation（round 3 finding 4）
+
 親（前景・各 wake で）:
   out = check --json                         # 最古の未 ack batch を消費読み
-  <run-dir>/deliveries/<delivery_id>.json へ batch 全体を保存
+  <run-dir>/deliveries/<delivery_id>.json へ batch 全体を保存   ★ 先に永続化
   for m in out.messages:                     # 目的の label 以外も捨てずに処理する
     if m.id in <run-dir>/processed.json: continue
+    route(m) → <slug>/<role>                 # 12-1。routing 不能は quarantine
     handle(m)                                # 冪等。message id / task id / dispatch id で識別
-    processed.json へ m.id を追記（原子的置換）
-  check --ack <delivery_id> --json           # ★ 全部処理してから
+    <run-dir>/processed.json へ m.id を追記（原子的置換）
+  ★ lifecycle message が 1 通でも未処理（quarantine 含む）なら ack しない
+  check --ack <delivery_id> --json           # 全部処理してから
 ```
 
 **`emitted-ledger.json` を永久 tombstone にしてはならない**（round 2 finding 3）。
@@ -565,11 +632,11 @@ review dir は**タスク単位で共有**する（`<status-dir>/review/`）。�
 
 | script | 改変内容 |
 |---|---|
-| `completion-gate.sh` | `prewarm.json` → `workers.json`（`DISPATCH_WORKERS_FILE`）。「タスク未着」判定を `.assigned-*` から `assignment_state` へ（C3 / S11 / round 2 finding 2）。`--dispatch-root` を新設し `review_select_active` へはそれを渡す。send command の取得元を `DISPATCH_GATE_STATUS_DIR` ではなく引数 / `AGMSG_SEND` / role dir の `.send-command` の順にする（round 2 finding 1）。`.awaiting-acceptance` があれば allow（10-2）。`generation` 変化で旧終端状態を無効とみなす。`.deferred` 分岐を削除（D2）。`DELEGATE_HINT` を削除。最終 reason の完了手順を `report-status.sh` + `merge_ready`（S10）へ。liveness 案内を `worker-show` へ。review dir を `DISPATCH_REVIEW_DIR` から読む。**判定 1-7 の論理と block/allow の非対称性は保存する** |
+| `completion-gate.sh` | `prewarm.json` → `workers.json`（`DISPATCH_WORKERS_FILE`）。「タスク未着」判定を `.assigned-*` から `assignment_state` へ（C3 / S11 / round 2 finding 2）。`--dispatch-root` を新設し `review_select_active` へはそれを渡す。send command の取得元を `DISPATCH_GATE_STATUS_DIR` ではなく引数 / `AGMSG_SEND` / role dir の `.send-command` の順にする（round 2 finding 1）。`completion.json` があれば phase を問わず allow（10-3）。generation は role dir の archive で分離されるので、gate は現 role dir だけを見ればよい（5-1）。`.deferred` 分岐を削除（D2）。`DELEGATE_HINT` を削除。最終 reason の完了手順を `report-status.sh` + `merge_ready`（S10）へ。liveness 案内を `worker-show` へ。review dir を `DISPATCH_REVIEW_DIR` から読む。**判定 1-7 の論理と block/allow の非対称性は保存する** |
 | `prewarm-snapshot.sh` → `workers-snapshot.sh` | スキーマを 5-7 の形へ。検証の構えは保存 |
 | `config-lib.sh` | config home を `orca-team-dispatch-task` へ。`dispatch_valid_workspace_id` / `dispatch_valid_surface_id` を `dispatch_valid_terminal_handle` / `dispatch_valid_dispatch_id` / `dispatch_valid_run_id` へ置換 |
 | `report-status.sh` | V2 ガード（`.deferred`）を**削除**する。per-role status dir（S7）により design が他ロールの status を書く経路が構造的に無くなるため、ガードが守るべき不変条件そのものが消える。V1（`pr_url`）と V3（`result_missing`）は保存 |
-| `recovery-tick.sh` | `--dispatch-root` を新設し `review_select_active` へはそれを渡す（round 2 finding 1）。`--send-command` は runner が明示的に渡す。disk `done` で回復を止める分岐（C6）を「`done` **かつ** `.awaiting-acceptance` が無い」ときだけに変更する（10-2） |
+| `recovery-tick.sh` | `--dispatch-root` を新設し `review_select_active` へはそれを渡す（round 2 finding 1）。`--send-command` は runner が明示的に渡す。disk `done` で回復を止める分岐（C6）を「`completion.json.phase == settled`」のときだけに変更する（10-3）。`starting` が既定 10 分を超えたら親へ escalation を送る（5-1） |
 | `review-request.sh` | `AGMSG_SEND` の既定値を `orca-send.sh` へ。ラベル選択（`code` → `review-code:` / それ以外 → `review-plan:`）と補償ロジックは保存 |
 | `issue-fetch.sh` | evidence の `prewarm.json` を `workers.json` へ（C10）。死んだ `CMUX` 変数を削除する（byte 一致を守る理由が無くなったため） |
 | `review-gate.sh` | surface / workspace の検証を terminal / dispatch の検証へ |
@@ -616,7 +683,8 @@ byte 一致 7 本は `test-upstream-sync.sh` が cmux 版との一致を検査�
     review/                 # タスク単位で共有（7 節）
     roles/
       design/        status.json  result.md  .send-command  .escalated
-                     .awaiting-acceptance  .gate-*  status-attempt-<n>.json
+                     completion.json  .gate-*
+                     attempt-<n>/  ← 旧 generation の一式を archive
       design_review/ 同上
       exec/          同上 + integration.json
       exec_review/   同上
@@ -627,8 +695,10 @@ cmux 版はこれを `.deferred` + V2 ガード + 「review ロールに `.assig
 「`--mode review` の runner は status を書かない」の 4 層で防いでいた。per-role dir は
 その 4 層すべてを 1 つの構造で置き換える。
 
-`report-status.sh` / `record-pr.sh` / `escalate.sh` / `recovery-tick.sh` はすべて
-`<status-dir>` 相対なので、ロール別 dir を渡すだけで動く。
+`report-status.sh` / `record-pr.sh` / `escalate.sh` は `<status-dir>` 相対なので、
+role_status_dir を渡すだけで動く（`record-pr.sh` は exec の、`escalate.sh` は呼び出し元ロールの role dir）。
+**`recovery-tick.sh` は例外である** — `dispatch_root` と `send_command` も要る（5-5）。
+`completion-gate.sh` も同じく 4 入力すべてを要求する。
 
 ### 9-2. `integration.json` の生成契約（finding 7）
 
@@ -663,52 +733,90 @@ gate は停止を許し（判定 1）、`recovery-tick.sh:75-78` も `done` を�
 | 相 | 実行者 | 内容 | disk |
 |---|---|---|---|
 | 1 | worker | 成果を検証可能な状態にする（exec は `record-pr.sh` まで） | — |
-| 2 | worker | `.awaiting-acceptance` を書く（nonce を含む） → `merge_ready`(nonce) を親へ → **ターンを閉じる** | `.awaiting-acceptance` |
+| 2 | worker | `completion.json` を `prepared`(nonce) で書く → `merge_ready`(nonce) を親へ → `merge_ready_sent` へ → **ターンを閉じる** | `completion.json` |
 | 3 | 親 | 検証する。design = plan ファイルの実在。exec = `result.md` 実在 / `result_missing` / `pr_url` / `gh pr view` による PR 実在 | — |
 | 4a | 親 | 受理 → `accepted`(同じ nonce) を **active な** Dispatch へ | — |
 | 4b | 親 | 不受理 → 同じ active Dispatch へ remediation を送る（相 1 へ戻る） | — |
-| 5 | worker | nonce 一致を確認 → `report-status.sh <role-dir> done <要約>`（exec は V1 が `pr_url` を要求） | `status.json = done` |
-| 6 | worker | `worker_done --outcome succeeded` | — |
-| 7 | worker | **`worker_done` が 0 で返ってから** `.awaiting-acceptance` を削除し、当該 Delivery を ack | `.awaiting-acceptance` 削除 |
+| 5 | worker | nonce 一致を確認 → `accepted` を書く → `report-status.sh <role-dir> done <要約>`（exec は V1 が `pr_url` を要求） | `completion.json = accepted` / `status.json = done` |
+| 6 | worker | `worker_done_pending`(request id) を書いてから `worker_done --outcome succeeded` | `completion.json = worker_done_pending` |
+| 7 | worker | **`worker_done` が 0 で返ってから** `settled` を書き、当該 Delivery を ack。`completion.json` は**削除しない**（完了記録かつ nonce の保管場所） | `completion.json = settled` |
 
 `--outcome failed` は相 1 / 相 2 から直接送ってよい。**失敗の出口は塞がない。**
 
-### 10-2. crash 境界（round 2 finding 4b）
+### 10-2. `completion.json` — phase を 1 つの journal で表す（round 3 finding 2）
 
-順序を「disk → 送信 → 確認 → disk」に固定し、各 gap を replay で吸収する。
+初版の `.awaiting-acceptance` は**有無**しか表せず、相の内部にある非原子的な境界を区別できない。
+sentinel を書いた直後と `merge_ready` 送信後は同じ「sentinel あり」であり、
+`worker_done` 成立後・sentinel 削除前も同じである。しかも sentinel を消すと
+nonce まで消えるので、replay された `accepted` を何と照合するのかが決まらない。
 
-| crash の位置 | 残る状態 | 回復 |
+したがって role dir に **`completion.json`** を置き、write-ahead で phase を進める。
+
+```json
+{
+  "phase": "prepared|merge_ready_sent|accepted|worker_done_pending|settled",
+  "generation": 1,
+  "nonce": "…",
+  "accepted_delivery_id": "…",
+  "worker_done_request_id": "…",
+  "updated_at": 1234567890
+}
+```
+
+**書いてから副作用を起こす**（write-ahead）。各遷移は同一ディレクトリの `mktemp` + `mv`。
+
+| phase | 書く時点 | 次の副作用 |
 |---|---|---|
-| 相 2 の直前 | `.awaiting-acceptance` 無し | gate は「未完了」と読み、worker は作業を続ける。何も壊れない |
-| 相 2 の直後（`merge_ready` 送信後） | `.awaiting-acceptance` あり、Dispatch active | 親が検証して `accepted` を送る。Delivery は未 ack なので replay される |
-| 相 5 の直後（`done` 書き込み後、`worker_done` 前） | `.awaiting-acceptance` **あり**、disk `done`、Dispatch active | `.awaiting-acceptance` が残っているので `recovery-tick.sh` は回復を止めない。`accepted` Delivery が未 ack で replay され、worker は相 5 を冪等に再実行して相 6 へ進む |
-| 相 6 が非 0 で返った | 同上 | 同上。**`.awaiting-acceptance` を消さないことが唯一の防壁**である |
-| 相 7 の直後 | `.awaiting-acceptance` 無し、Dispatch settled | 完了 |
+| `prepared` | 成果を検証可能にした直後 | `merge_ready` を送る |
+| `merge_ready_sent` | 送信が 0 で返った直後 | 親の `accepted` を待つ（ターンを閉じる） |
+| `accepted` | nonce 一致の `accepted` を受け、delivery id とともに記録 | `report-status.sh done` |
+| `worker_done_pending` | `worker_done` を送る**前**。request id を記録 | `worker_done` を送る |
+| `settled` | `worker_done` が 0 で返った直後 | Delivery を ack |
 
-**`.awaiting-acceptance` が「Orca lifecycle がまだ確定していない」ことの disk 上の表現**である。
-これが `recovery-tick.sh` の改変契約でもある（8-2）: disk が `done` でも
-`.awaiting-acceptance` が残っているあいだは `record_clear` して回復を止めてはならない。
+`completion.json` は**削除しない**。`settled` が完了記録そのものであり、
+nonce が残るので replay された `accepted` を照合して no-op にできる。
 
-gate は `.awaiting-acceptance` があるとき **allow** する。親の受理を待つのは正しい状態であり、
-worker には何もすることが無いからである。
+### 10-3. crash 境界
 
-`accepted` の重複配送は nonce 一致 + `.awaiting-acceptance` 不在で no-op になる。
-`merge_ready` の重複は親側の `processed.json` が吸収する。
+| crash の位置 | phase | 回復 |
+|---|---|---|
+| `prepared` 書き込み前 | 無し | 未完了。worker は作業を続ける |
+| `prepared` 直後（`merge_ready` 未送信） | `prepared` | **再送してよい。** 親の `processed.json` が重複を吸収する。at-least-once が方針である（round 3 finding 2a） |
+| `merge_ready` 送信後 | `merge_ready_sent` | 親が検証して `accepted` を送る。Delivery は未 ack なので replay される |
+| `accepted` 受領後、`done` 書き込み前 | `accepted` | `accepted` の replay で相を再実行。`report-status.sh` は冪等 |
+| `done` 後、`worker_done` 送信前 | `worker_done_pending` | 下記の settled 判定を経て `worker_done` を送る |
+| **`worker_done` 成立後、`settled` 書き込み前** | `worker_done_pending` | **再送してはならない**（round 3 finding 2b）。Orca ガイドは `worker_done` を exactly once と定める。settled への二重送信が冪等である保証は無く、本 spec も未検証である。再開時はまず `dispatch-show --task` / `worker-show --dispatch` で settled を確認し、settled なら送らず `settled` を書いて ack する。応答を失った場合は `request-show --request <worker_done_request_id>` と `--retry-request` を使う |
+| `settled` 書き込み後、ack 前 | `settled` | `accepted` が replay されるが、`completion.json.nonce` と照合して no-op にし、ack する（round 3 finding 2c。**nonce が残っているのはファイルを消さないからである**） |
 
-### 10-3. remediation（round 2 finding 4c）
+gate は `phase` が `prepared` / `merge_ready_sent` / `accepted` / `worker_done_pending` /
+`settled` のいずれでも **allow** する（親の受理と Orca の確定を待つのは正しい状態）。
+`recovery-tick.sh` は **`phase == settled` になるまで回復を止めない**。これが 8-2 の改変契約である。
 
-不受理（相 4b）と、worker が相 2 を飛ばして `worker_done` を送ってしまった場合の両方を扱う。
-**T6 と同型の明示的な状態遷移**とし、再開可能な 1 つの契約にする。
+### 10-4. review ロールの完了（round 3 finding 2d）
 
-1. 親が `roles/<role>/status.json` を `roles/<role>/status-attempt-<generation>.json` へ
-   `mv` する。**旧 `done` が gate を開けないようにするのはこれである**（ファイルを消さず
-   履歴として残すので監査もできる）
-2. `.awaiting-acceptance` を削除する
-3. `workers.json` の当該ロールを
-   `{task: <new>, assignment_state: "starting", generation: <n+1>}` へ原子的に更新する
-4. `worker-start --task <remediation> --terminal <handle>`（Dispatch が settled 済みの場合）、
-   または既存 active Dispatch へ remediation メッセージを送る（相 4b の場合）
-5. ready receipt で `{dispatch, assignment_state: "active"}` へ、addressbook も更新する
+10-1 を「全ロール共通」と書いた以上、review ロールも同じ相を通す。T10 を展開する:
+
+1. 親が全ラウンドの `<point>-round-<N>.md` に `VERDICT:` 行があることを検証する
+2. review ロールが `prepared` → `merge_ready` → 親の検証 → `accepted` → `report-status.sh done`
+   → `worker_done_pending` → `worker_done` → `settled`
+3. 親の検証内容は「担当した全ラウンドの findings が materialize されている」ことである
+
+**例外にはしない。** 例外にすると「review 成果がいつ受理されたか」が定義されないまま
+端末が閉じられ、findings の欠落に誰も気づかない。
+
+### 10-5. remediation（round 2 finding 4c / round 3 finding 1）
+
+不受理（10-1 の相 4b）と、worker が相 2 を飛ばして `worker_done` を送った場合の両方を扱う。
+
+1. 親が role dir の transient set を `roles/<role>/attempt-<generation>/` へ archive する
+   （5-1 の generation 節。`status.json` / `completion.json` / `.escalated` / `.gate-*` /
+   nudge record / wait lease を**まとめて**移す。旧 `done` も旧 lease も一緒に消える）
+2. role dir を新 generation として初期化し、`status.json` に `{"generation": n+1}` を書く
+3. Run index へ新 `task_id` の mapping を publish する（12-1 の write-ahead 順序）
+4. `workers.json` を `{task: <new>, assignment_state: "starting", generation: n+1}` へ更新
+5. `worker-start --task <remediation> --terminal <handle>`（settled 済みの場合）、
+   または既存 active Dispatch へ remediation メッセージ（相 4b の場合）
+6. ready receipt で `{dispatch, assignment_state: "active"}` と index の `dispatch_id` を publish
 
 **worktree は検証が通るまで削除しない。**
 
@@ -757,9 +865,47 @@ signal 降格事故が消える」は成立しない。
 5. issue A が成功し issue B の handler が落ちた場合、ack しない。replay で
    `processed.json` により A は再実行されず、B だけがやり直される
 
-routing に失敗した message（未知の task/dispatch）も**捨てない**。
-`deliveries/` に残したうえで `processed.json` に「routing 不能」として記録し、
-親のレポートに 1 行出す。捨てると原因調査ができなくなる。
+#### index.json の write-ahead publish 順序（round 3 finding 3）
+
+速い worker は、親が `dispatch_id` の mapping を書く前に `merge_ready` / `worker_done` /
+`escalation` を送れる。したがって **`task_id` の mapping を Task 注入より前に publish** し、
+**message は `task_id` だけで routing できる**ようにする。
+
+write-ahead の順序（5-1 の T4a / T4b / T6 / 10-5 すべてに適用する）:
+
+```
+1. task-create
+2. index.json  へ task_id → {slug, role, generation}        ★ 注入前
+3. journal.json へ launching（request identity を含む）      ★ 注入前
+4. workers.json へ {task, assignment_state:"starting"}       ★ 注入前
+5. worker-start                                              ← ここで注入が起きる
+6. workers.json へ {dispatch, assignment_state:"active"}
+7. index.json  へ dispatch_id → {slug, role, generation}
+8. journal.json へ active
+```
+
+3 ファイルを 1 つの atomic transaction にはできない。したがってこの**部分順序のどこで
+落ちても再開時に収束する**ことを要件とし、親の sweep（5-1）が journal を起点に
+index と workers を突き合わせて欠けを埋める。**index は derived cache ではなく
+authoritative な routing 表**であり、journal がその write-ahead log である。
+
+#### routing 不能を tombstone にしない（round 3 finding 3）
+
+routing に失敗した message を即 `processed.json` へ落としてはならない。起動直後の
+正当な `worker_done` を tombstone 化すると、Orca 上では Task が settled なのに
+親は Phase B にも cleanup にも進まず、replay も二度と起きない。
+
+段階を踏む。
+
+1. `index.json` を読み直す（親の別処理が publish した直後かもしれない）
+2. `task-list` / `dispatch-show` で Orca 側の実体を照会する
+3. journal の `launching` / `starting` と突き合わせる
+4. **一時的な publish race と判定できたら quarantine** し、
+   `<run-dir>/quarantine/<message_id>.json` へ退避して handler を後で実行する
+5. 真に foreign / malformed と確定した message だけを diagnostic として
+   `processed.json` へ落とす
+
+**quarantine に lifecycle message が 1 通でも残っているあいだは batch を ack しない。**
 
 ### 12-2. issue ごとの durable state
 
@@ -790,9 +936,10 @@ not_started → launching → active → verifying → cleanup_pending → compl
 **進捗の真実は journal であって worktree の有無ではない。**
 再開時は journal を読んで state ごとに続きから始める。
 
-cleanup は**逐次・順序固定**とし、「次の issue を開始する前に前件を durable に
-`completed` / `retained` / `failed` のいずれかへ落とす」。並行 cleanup は採らない
-（prefix 前提が崩れ、reconciliation が集合演算になって再開が難しくなるため）。
+**cleanup だけ**を逐次・順序固定にする。すなわち「ある issue の cleanup を開始する前に、
+前件の cleanup 結果を durable に `completed` / `retained` / `failed` のいずれかへ落とす」。
+**issue の実行そのものは従来どおり並行である**（12-3 の worktree 群）。cleanup を並行にすると
+どこまで終わったかが集合演算になり、再開が難しくなるため、後片付けだけを直列化する。
 
 ### 12-3. 対応表
 
@@ -832,7 +979,7 @@ cleanup は**逐次・順序固定**とし、「次の issue を開始する前�
 | F3 | 3 remote 環境で fork へ push し fork 内 PR を作った | `resolve-integration.sh` が親側で origin を厳格解決し、曖昧なら dispatch を止める。子は remote を選ばない。`record-pr.sh` が指定リポジトリ上の実在を検証する |
 | F4 | 委譲済みの design ペインが exec の terminal status を上書きした | **per-role status dir（S7）により共有 `status.json` が存在しない。** D2 で design が委譲もしなくなる。cmux 版の 4 層防御を 1 つの構造が置き換える |
 | F5 | `result.md` を書いたと報告しながら実ファイルが無かった | `report-status.sh` の V3（`result_missing`）を保存。**加えて**親が相 2 で `result.md` の実在を検証してからでないと受理しない（10 節） |
-| F6 | 配線中に発火した Stop hook が「prewarm.json が無い」を親へ連投した | `.wiring` sentinel を維持し、gate の「静かに allow」分岐を保存する。参照先を `workers.json` へ差し替える（8-2）。**T3 の publish が T4 の Task 注入より前**なので、window そのものが短くなる |
+| F6 | 配線中に発火した Stop hook が「prewarm.json が無い」を親へ連投した | 防壁は 2 層である。(1) 端末はあるが Task がまだ無い区間は `.wiring` sentinel + gate の「静かに allow」（参照先を `workers.json` へ差し替え）。(2) **Task 注入中の区間は `assignment_state: starting` とその block 判定が主要な防壁**（5-1 / round 2 finding 2）。`.wiring` だけでは注入中の誤判定を閉じられない。加えて T3 の publish が Task 注入より前なので window 自体が短い |
 | F7 | codex reviewer が review dir へ書けない | O20 の root cause に基づき `-c sandbox_workspace_write.writable_roots=[...]` を使う（5-4）。`--add-dir` は使わない |
 
 **Orca 化そのものが消す failure mode**:
@@ -855,6 +1002,22 @@ round 1 の finding 6 は「U1-U3 を実測してから spec を確定せよ、�
 | U1 | worker A から worker B の `dispatch:<id>` へ `--type status` を送り、B の `check` で受信・ack できるか | D3（worker 間直接レビュー）の土台。外れると親が中継する設計へ変更（D3 の変更なので親の判断が要る） |
 | U2 | `terminal create --command "bash <runner>"` で作った端末を `worker-start --terminal` が supervised にできるか。settle 後の `worker-release` receipt が `retained` / `no_owned_resource` になるか | S6 と 11 節の土台。外れると `worker-start --agent --model --effort` へ切り替えざるを得ず、gate identity（C12）の受け渡し手段を作り直す必要がある |
 | U3 | `check --wait --json` の実 schema（`delivery_id` / `messages[]` / message id フィールド名）、`--types` フィルタと「最古の全 batch」の関係、`--peek` の unread cursor と `--ack` の unacked cursor の関係 | 6-5 の Monitor / 親 / worker の 3 ループすべての実装入力 |
+
+**U3 の acceptance criterion**（round 3 finding 4）。次の 4 点を明示的に測り、
+結果を 6-5 の疑似コードへ反映してから確定する。
+
+1. `--peek` しただけの message のその後の可視性
+2. 既定の `check` で取得したが ack していない message の可視性
+3. 2 の状態で別の `check` / `--peek` / `--wait` を行ったときの見え方
+4. **coordinator の再開時に、wake を待たずに最古の未 ack batch を drain できるか**
+
+**危険な境界**は「親の foreground `check --json` が返った後、`deliveries/<id>.json` を
+書く前の crash」である。この時点で message は未 ack だが unread cursor 上は既読になり、
+`--peek` から消える可能性がある。そうなると Monitor は rate interval を過ぎても
+再 emit できない。**未実測なので推測で結論を出さない。**
+
+設計上の保険として、6-5 は既に「親の起動時・再開時に wake を待たず drain する」を
+必須にしてある。U3 の結果次第では Monitor が `--peek` だけを使う設計自体の見直しが要る。
 | U4 | `graph_not_ready` / `workspace-window-closed`（O2）のままで `worktree create` / `terminal create` が動くか | 局所的。動かなければ preflight に「ワークスペースウィンドウが開いていること」を足し、`orca open` を案内する。**非ブロッカー** |
 | U5 | `worker_done --report-path` が親の `check` にどう見えるか | 局所的。見えなければ `--body` の規約行（`PLAN: <path>`）へ退避する。**非ブロッカー** |
 
@@ -911,14 +1074,16 @@ apps/orca-team-dispatch-task/
 |---|---|
 | `test-upstream-sync.sh` | byte 一致 7 本が cmux 版と一致 |
 | `test-upstream-drift.sh` | 改変 9 本の上流ハッシュが記録値と一致（ドリフト検出。自動追従しない） |
-| `test-completion-gate.sh` | 判定 1-7 を Orca artifact 名で再検証。**F4**（ロール別 dir で他ロールの status を書けない）、**F6**（`.wiring` 中の静かな allow、参照先が `workers.json`）、`assignment_state` の 4 値それぞれの判定（特に `starting` が allow にならないこと）、`.awaiting-acceptance` があるときの allow、`generation` 変化で旧 `done` が gate を開けないこと |
+| `test-completion-gate.sh` | 判定 1-7 を Orca artifact 名で再検証。**F4**（ロール別 dir で他ロールの status を書けない）、**F6**（`.wiring` 中の静かな allow、参照先が `workers.json`）、`assignment_state` の 4 値それぞれの判定（特に `starting` が allow にならないこと）、`completion.json` の 5 phase すべてで allow、**旧 generation の `done` / escalation / wait lease / nudge が archive され新試行を開放・停止・即時 escalation しないこと**（round 3 finding 1） |
 | `test-workers-snapshot.sh` | 5-7 スキーマの受理と、cmux 形状 / 未知キー / `dispatch` 型不正の拒否 |
 | `test-orca-send.sh` | 4 位置引数、addressbook 解決、未登録 `to` で exit 1、ラベル抽出、`--from` を渡さないこと、`orca` スタブへの argv 検証 |
 | `test-orca-preflight.sh` | exit 0/1/2 の分離。`orca` 不在 / `status` 非 ok / `run-list` 失敗 |
+| `test-starting-sweep.sh` | 5-1 の crash 境界 4 種（`starting` publish 後 / receipt 反映前 / failed 反映前 / 応答喪失）で親の sweep が `dispatch-show` / `worker-show` / `request-show` から state を再導出すること。**同じ `worker-start` を新規実行せず `--retry-request` を使うこと**。`starting` 滞留で `recovery-tick.sh` が親へ escalation を送ること |
+| `test-run-index.sh` | 12-1 の write-ahead 順序 8 段のどこで落ちても再開時に収束すること。`task_id` だけで routing できること。**routing 不能を即 tombstone にせず quarantine すること**、quarantine が残るあいだ ack しないこと、真に foreign な message だけ diagnostic として processed へ落ちること |
 | `test-worker-launch.sh` | T1-T4b の順序（**integration.json publish が Task 注入より前**、**review 2 ロールが design より先**）、`assignment_state: starting` が `worker-start` の**前**に disk へ出ること、`--terminal` に `--worktree` を併記、`--model` と `--terminal` を併用しない（O5）、`worker-start` の `failed` / `outcome_unknown` で O19 の分岐に入り**無条件削除しない**、`.wiring` の生成と削除。**`worker-start` スタブが Task 注入直後・receipt 返却前に Stop hook を発火するケース**（round 2 finding 2） |
 | `test-recovery-wiring.sh` | role dir と dispatch root が分かれた状態で `recovery-tick.sh` が review wait を認識し、nudge と escalation を送れること（round 2 finding 1）。`--send-command` / `--dispatch-root` を渡さない旧呼び出しでは失敗することも固定する |
 | `test-delivery-ack.sh` | crash-before-ack で handler が再実行されない、crash-after-ack、無関係 message が先頭、複数 message batch、emit と ack の順序、**emit/ledger 更新後・foreground check 前の crash で再 emit されること**、emit 直前/直後の crash（round 2 finding 3）、**issue 横断の mixed batch と handler 部分失敗**（round 2 finding 5） |
-| `test-two-phase-commit.sh` | **design も相 2-7 を通ること**（round 2 finding 4a）、10-2 の crash 境界 5 行それぞれ、`worker_done` 非 0 で `.awaiting-acceptance` を消さないこと、`accepted` 重複が no-op、nonce 不一致の拒否、10-3 の remediation で `status.json` が `status-attempt-<n>.json` へ退避され旧 `done` が gate を開けないこと |
+| `test-two-phase-commit.sh` | **design も相 2-7 を通ること**（round 2 finding 4a）、**review ロールも 10-4 の相を通ること**、10-3 の crash 境界 7 行それぞれ: `prepared` 直後（`merge_ready` 未送信）で**再送してよい**こと / **`worker_done` 成立後・`settled` 前は再送しない**こと（settled を先に確認する）/ `settled` 後・ack 前の `accepted` replay が nonce 照合で no-op になること / nonce 不一致の stale `accepted` を受理も ack もしないこと、10-5 の remediation で role dir が `attempt-<n>/` へ archive され旧 `done` が gate を開けないこと |
 | `test-integration-resolve.sh` | 3 remote、origin 不在、GitHub 形式でない origin、PR 不在、`merge` でも必ず書く |
 | `test-cleanup.sh` | 11 節の decision table 全行。reused terminal で `worker-release` の後に `terminal close`、`release_pending` で close を代用しない、全 accounted 後にのみ worktree 除去、再実行の冪等性、中断後の再開 |
 | `test-runner-wrapper.sh` | agent 終了後に watcher が残らない（`trap` 回収）、gate identity の export、codex に `features.goals=false` |
