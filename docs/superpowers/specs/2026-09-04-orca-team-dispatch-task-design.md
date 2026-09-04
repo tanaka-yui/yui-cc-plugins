@@ -1659,6 +1659,44 @@ apps/orca-team-dispatch-task/
 | runner は固定（`claude`）で設定できない | F-g まで待つ |
 | repo の setup hook を必要とする repo は対象外 | F-h まで待つ |
 
+#### Receipt-fixture provenance / receipt fixture の実測範囲
+
+**English canonical record.** The successful Stage 1 E2E captured the relevant fields of
+real success-path receipts: `check`'s accepted and rejected `worker_done` messages (whose
+`payload` is a JSON string), `worker-show`, and `worker-release: retained`. It does **not**
+claim byte-for-byte captures of every omitted field.
+
+The following variants remain **simulated / inferred**, not observed Orca receipts:
+
+- empty-batch, `--wait`, and acknowledgement replies from `check`;
+- `worker-show`'s `agentWait` observation;
+- `worker-release` `release_pending`, `already_released`, and `release_unknown` states,
+  non-zero exits, and `ok: false` replies; and
+- generic success bodies for terminal wait/close and worktree removal.
+
+Stage 2 must capture these variants from real receipts before relying on code paths that
+consume them. Two production defects were found by real runs while all stub suites were
+green; a green Stage 1 rerun proves one worker's success path, not that these simulated
+variants match Orca.
+
+**日本語 mirror.** Stage 1 の成功 E2E で実測したのは、`check` の accept/reject された
+`worker_done` message（`payload` は JSON string）、`worker-show`、および
+`worker-release: retained` の成功経路で必要な field である。省略した field まで
+byte-for-byte で capture したという主張ではない。
+
+次は実機 receipt ではなく **simulated / inferred** のままである。
+
+- `check` の empty batch、`--wait`、acknowledgement reply;
+- `worker-show` の `agentWait` observation;
+- `worker-release` の `release_pending`、`already_released`、`release_unknown`、
+  non-zero exit、`ok: false` reply; および
+- terminal wait/close と worktree removal の generic success body。
+
+これらを consume する code path に依存する前に、Stage 2 で実機 receipt を capture
+しなければならない。stub suite がすべて green でも実機 run で production defect が 2 件
+見つかった。green な Stage 1 rerun が証明するのは worker 1 本の成功経路であり、これらの
+simulated variant が Orca と一致することではない。
+
 ### Stage 2 以降（named follow-ups）
 
 Stage 1 の完了後に、独立した spec の follow-up として順に実装する。
