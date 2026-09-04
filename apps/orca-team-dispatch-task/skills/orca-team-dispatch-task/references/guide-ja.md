@@ -25,11 +25,16 @@ SLUG=<lowercase, digits and hyphens, 1-30 chars>
 REQ=$(mktemp)
 # Use the coding environment's file-write tool to write the user's request verbatim to "$REQ".
 # Do not use a shell heredoc: a request may contain REQUEST (or any delimiter) on its own line.
+printf 'request_file=%s\n' "$REQ"
 ```
+
+表示された `request_file` path を file-write tool へ渡す。shell 変数は tool call を跨がないため、
+Step 2 を別 call で実行するときは、その正確な path を `REQ` へ設定する。
 
 ## Step 2: 開始
 
 ```bash
+: "${REQ:?set REQ to the exact request_file path printed in Step 1}"
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
         --objective "<one line naming the outcome>") || { echo "$OUT"; exit 1; }
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
@@ -93,43 +98,58 @@ placeholder を見せない。
 release は自分で実行し、その結果の state で分類する。exit code だけでは端末を閉じてよいか
 判断できない。
 
-```bash
-WT=$(jq -r '.worktree_id' "$SD/workers.json")
-TH=$(jq -r '.design.terminal' "$SD/workers.json")
-DID=$(jq -r '.design.dispatch' "$SD/workers.json")
-WP=$(jq -r '.worktree_path' "$SD/workers.json")
-MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
-IDENTITY_OK=no
-if [[ -z "$WT" || -z "$TH" || -z "$DID" || -z "$WP" || -z "$ORCA_BIN" ]]; then
-  echo "required cleanup state is missing; do not close or remove anything" >&2
-  exit 1
-fi
-DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null)
-echo "merged=$MERGED  worker checkout dirty=[${DIRTY:-clean}]"
-
-REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
-STATE=$(jq -r '.result.state // empty' <<<"$REL")
-```
+各 cleanup block は別の tool call である。block を実行する前に `SD` へ Step 2 が出した正確な
+`status_dir` を設定する。各 block は state を自分で読み直し、state がなければ fail closed する。
+作り物の handle、dispatch、worktree id を代入してはならない。
 
 [C1] `release_pending` または `release_unknown`: **ここで止まる。**exit 0 は何かを閉じる
 権限ではない。receipt と次の inspection コマンドをユーザーへ見せ、端末と worktree は意図的に
 保持していると伝える。
 
 ```bash
-echo "$REL"; echo "$ORCA_BIN orchestration worker-show --dispatch $DID --json"
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
+[[ -n "$DID" && -n "$ORCA_BIN" ]] || {
+  echo "required cleanup state is missing; do not close or remove anything" >&2
+  exit 1
+}
+REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
+case "$STATE" in
+  release_pending|release_unknown)
+    printf '%s\n' "$REL"
+    printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
+    ;;
+  *) echo "release state '${STATE:-unknown}' does not authorise C1" >&2; exit 1 ;;
+esac
 ```
 
 [C2] `retained` または `already_released`: Orca が端末をこちらに残した。閉じる前に、
 handle と端末が属する worktree が記録済み state と一致することを確認し、所有物であると証明する。
 
 ```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
+TH=$(jq -r '.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
+DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
+WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
+[[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$ORCA_BIN" ]] || {
+  echo "required cleanup state is missing; do not close or remove anything" >&2
+  exit 1
+}
+REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
+case "$STATE" in
+  retained|already_released) ;;
+  *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
+esac
 SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null)
 if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
    && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
-  IDENTITY_OK=yes
   printf '%s terminal close --terminal %q --json\n' "$ORCA_BIN" "$TH"
 else
-  IDENTITY_OK=no
   echo "the terminal no longer matches our state; leave it alone"
 fi
 ```
@@ -138,16 +158,39 @@ fi
 表示する。条件を説明するだけで済ませない。
 
 ```bash
-OWNED=$(jq -r '.worktree_created_by_this_run // false' "$SD/workers.json")
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
+TH=$(jq -r '.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
+DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
+WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
+MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
+OWNED=$(jq -r '.worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)
+KNOWN=$(jq -c '.worktree_terminals // empty' "$SD/workers.json" 2>/dev/null)
+[[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$ORCA_BIN" && -n "$KNOWN" ]] || {
+  echo "required cleanup state is missing; do not close or remove anything" >&2
+  exit 1
+}
+REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null)
+STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
+case "$STATE" in
+  retained|already_released) ;;
+  *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
+esac
+SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null)
+IDENTITY_OK=no
+if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
+   && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
+  IDENTITY_OK=yes
+fi
 DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
 
 # Every terminal Orca still has in that worktree must be one we recorded.
 # **Failing to list them is not the same as there being none** — if either side of the
 # comparison is unknown, the answer is "cannot tell", and cannot-tell closes the gate.
-KNOWN=$(jq -c '.worktree_terminals' "$SD/workers.json")   # null when the inventory failed
 TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT" --json 2>/dev/null) || TLRC=$?
 if [[ "$TLRC" -eq 0 ]] && jq -e '.result.terminals | type == "array"' <<<"$TL" >/dev/null 2>&1 \
-   && [[ "$KNOWN" != null ]]; then
+   && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1; then
   ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
                     --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
 else

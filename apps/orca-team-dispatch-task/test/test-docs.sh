@@ -35,18 +35,47 @@ grep -qE 'worktree rm --worktree \$WT( |$)' "$S" && bad="$bad [raw-id]"
 grep -q 'terminal close --terminal %q' "$S" || bad="$bad [quoted-terminal]"
 [[ -z "$bad" ]] && ok "SK6 値入り・id: 付き・引用済みの片付けコマンド" || fail "SK6:$bad"
 
-# SK6b: request は固定 heredoc へ入れない。C2 は空 state で閉じない。
+# SK6b: request は固定 heredoc へ入れず、次の tool call へ実パスを渡す。
 bad=""
 grep -q "file-write tool.*\$REQ" "$S" || bad="$bad [file-write-request]"
 grep -q "shell heredoc" "$S" || bad="$bad [request-collision-explained]"
-grep -q "cat > \"\$REQ\" <<" "$S" && bad="$bad [fixed-request-delimiter]"
-grep -q '\[\[ -z "\$WT" || -z "\$TH" || -z "\$DID" || -z "\$WP" || -z "\$ORCA_BIN" \]\]' "$S" \
-  || bad="$bad [C2-required-state]"
-body=$'first line\nREQUEST\nlast line'; captured=$(mktemp)
-printf '%s' "$body" > "$captured"
-[[ -z "$bad" && "$(cat "$captured")" == "$body" ]] && ok "SK6b REQUEST 本文と空 identity で fail closed" \
-  || fail "SK6b:$bad"
-rm -f "$captured"
+step1=$(mktemp)
+awk '/^## Step 1: Write the request down$/ { section=1; next }
+     section && /^```bash$/ { block=1; next }
+     block && /^```$/ { exit }
+     block { print }' "$S" | sed 's/^SLUG=.*/SLUG=test/' > "$step1"
+handoff=$(bash "$step1" 2>/dev/null); req_path="${handoff#request_file=}"
+[[ "$handoff" == request_file=* && -n "$req_path" && -f "$req_path" ]] \
+  || bad="$bad [printed-request-handoff]"
+grep -q '<<' "$step1" && bad="$bad [request-heredoc]"
+rm -f "$step1" "$req_path"
+[[ -z "$bad" ]] && ok "SK6b REQ を安全に実パスで引き継ぐ" || fail "SK6b:$bad"
+
+# SK6c: [C1]/[C2]/[C3] は別々の tool call でも空/null state で fail closed する。
+#        旧実装は C1 が空の dispatch を表示し、C2 が空 handle の close を表示した。
+extract_cleanup_block() {
+  local label="$1" file="$2"
+  awk -v label="$label" '$0 ~ "^\\[" label "\\]" { section=1; next }
+       section && /^```bash$/ { block=1; next }
+       block && /^```$/ { exit }
+       block { print }' "$file"
+}
+scratch=$(mktemp -d); cleanup_state="$scratch/state"; mkdir -p "$cleanup_state"
+printf '%s\n' '{}' > "$cleanup_state/workers.json"
+printf '%s\n' '{}' > "$cleanup_state/integration-result.json"
+export ORCA_STUB_DIR="$scratch/orca" ORCA_BIN="$P/test/lib/orca-stub.sh" SD="$cleanup_state"
+mkdir -p "$ORCA_STUB_DIR"; : > "$ORCA_STUB_DIR/calls.log"
+for label in C1 C2 C3; do
+  block="$scratch/$label.sh"; extract_cleanup_block "$label" "$S" > "$block"
+  out=$(bash "$block" 2>&1); rc=$?
+  if [[ "$rc" -eq 0 || -s "$ORCA_STUB_DIR/calls.log" ]]; then
+    bad="$bad [$label-not-self-contained]"
+  fi
+  : > "$ORCA_STUB_DIR/calls.log"
+done
+unset ORCA_STUB_DIR ORCA_BIN SD
+rm -rf "$scratch"
+[[ -z "$bad" ]] && ok "SK6c 各 cleanup block が空/null state で閉じる" || fail "SK6c:$bad"
 
 # SK7: 片付けの安全条件（release の state 分類 / merged / clean / --force）
 miss=""
