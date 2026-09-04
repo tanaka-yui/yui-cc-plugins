@@ -1527,6 +1527,48 @@ apps/orca-team-dispatch-task/
 | `test-skill-script-refs.sh` | SKILL.md が参照する全スクリプトが実在 |
 | `test-doc-lang.sh` | `pnpm check:doc-lang` 相当をプラグイン単体でも検査 |
 
+## 18-1. 段階的な出荷計画（named follow-ups）
+
+本 spec は完成形を記述している。**実装は縦に切り、各段階が「ユーザーが呼べて実際に動く」
+状態で終わる**（親の受け入れ基準 2026-09-04）。
+
+> **判定基準**: ある段階が完了したとき、ユーザーが skill を呼んで Orca 上で
+> 何かが dispatch され terminal state へ到達するのを見られるか。見られないなら
+> その段階は何も出荷していない。**SKILL.md も launch driver も無いプラグインを
+> marketplace へ登録するのは、登録しないより悪い** — 存在しない機能を宣伝するからである。
+> これは cmux 版が 2 回捕まった defect class と同じである（`SKILL.md:201` が
+> 実装の無い PR パイプラインを宣言し、`loop-mode.md` が走らない cleanup を宣言していた）。
+
+### Stage 1 — 最小の実働 dispatch
+
+**範囲**: `review_mode=off` / `integration=merge` / **1 ロール**（`design` のみ）/
+loop なし / setup・reset・override なし。
+
+ユーザーが skill を呼ぶと、preflight → Run 作成 → worktree → 端末 1 つ →
+Task → Dispatch → worker が作業 → 完了の確定 → 親が受信 → cleanup まで通る。
+
+**marketplace への登録は Stage 1 の最後**に行う。SKILL.md と launch driver が
+揃うまで登録しない。
+
+### Stage 2 以降（named follow-ups）
+
+Stage 1 の完了後に、独立した spec の follow-up として順に実装する。
+**各 follow-up も「完了時点で動く」単位で切る。**
+
+| # | follow-up | 本 spec の該当節 | 「動く」の定義 |
+|---|---|---|---|
+| F-a | **Phase B の委譲**（design → 親 → exec の 2 ロール） | 5-1 T5-T9 / 6-4 | design の plan を親が受け取り exec が実装まで進む |
+| F-b | **レビュー 2 ロール**（Phase A-R / B-R） | 7 / 6-2 の adapter / `review-request.sh` / `review-gate.sh` | verdict のやり取りが 1 往復通る |
+| F-c | **PR 統合** | 9-2 / `resolve-integration.sh` / `record-pr.sh` | PR が origin 上に作られ `pr_url` が記録される |
+| F-d | **二相コミットの完全形** | 10 全体 | `merge_ready` → 親の検証 → `accepted` → `worker_done` が通る |
+| F-e | **generation transition と owner replacement** | 5-1 の transaction / 10-5 / 12-1 の replacement branch | 不受理からの差し戻しと worker 消失からの回復が通る |
+| F-f | **issue ループ** | 12 | issue 1 件が自動で dispatch され cleanup まで通る |
+| F-g | **setup / reset / override** | 13 | 各モードが対話で設定を変更できる |
+
+**Stage 1 は F-d の簡易形を含む**: 1 ロールなので親の検証は「`result.md` が実在すること」
+だけで足り、`accepted` の往復も 1 回で済む。完全形（nonce / 4 phase / crash 境界 7 行）は
+F-d で入れる。**簡易形であることを SKILL.md にも明記し、宣言と実装を乖離させない**（16-1）。
+
 ## 18. 本 spec が扱わないもの
 
 - cmux 版の変更。ただし **O20 の root cause は cmux 版 F7 の恒久対応でもある**ので、
