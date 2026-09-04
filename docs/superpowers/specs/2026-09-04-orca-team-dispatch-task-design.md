@@ -19,7 +19,8 @@
 | rev6 (63c4214) | **親の裁定 1-3（2026-09-04）と Phase 0 spike の実測を反映。**配送規律を **at-least-once + `task_id`+`dispatch_id` による冪等消費**へ転換し、request identity の write-ahead / `worker_done_pending` / 失敗系 journal / quarantine 機構を撤回した（round 4 findings 1 と 5 が消滅）。spike 実測を O21〜O26 として記録し、**U3 の測定で round 3 finding 3 と round 4 finding 4 も消滅**。U1 / U2 は repo 登録が取り消せないため未測定であることを理由つきで明記 |
 | rev7 (84988b0) | spec round 5 の findings 1-8 と文書整合 7 件を反映。**spike 第 2 回を実施し U1 / U2 / U4 を解決**（O27-O37）。U1 = yes（worker 間 dispatch 送信）、U2 = yes（非 exec wrapper でも `agentIdentity` が付く）。**`worker_done` が `--dispatch-capability` を要求する事実（O33）と、`worker-stop` が reused terminal を閉じない事実（O34）を新たに発見**。5-1 に送信側の収束規則と handler 別 dedup key、`recovery-tick.sh` の停止条件の単一定義、generation transition の freeze 契約と src/dst 衝突の安全化を追加。12-1 の launch WAL に caller 生成 identity（`launch_id` / `start_id`）を導入。10-5 の remediation を active / settled の 2 経路へ分離。preflight に `--from` の明示解決を追加。**「repo 登録は取り消せない」は誤りだったと訂正**（O35） |
 | rev8 (d21d85c) | spec2 round 1 の findings 1-5 と文書整合 8 件を反映。**6-4b に worker lifecycle コマンドの正本を新設**（O33 の capability を含む identity 一式を preamble から一組で取る / adapter は lifecycle に使わない / preamble は世代ごとに使い捨てる）。**5-2 の preflight 本文に親 handle の確定と `--from` の明示を実装**（改訂履歴だけ先行して本文が追従していなかった）。**5-6 の canonical command に `--from` と `--retry-request` を追加**。**generation transition に `commit_target` を持たせ `starting` 固定を解消**。**失敗系に `status.json = error` を durable intent として与えた**。**cleanup table に `stop_unknown` の 4 行を追加**。10 節の無条件再送を 5-1 の inspection-first 収束規則へ統一 |
-| 本版 | spec2 round 2 の findings 1-5 を反映。**capability / preamble の寿命を generation 単位から Dispatch 単位へ訂正**（経路 A は新 preamble が届かないので旧 tuple を無効化すると worker が capability を失う）。**`check` に `--from` が存在しない CLI 不一致を修正し、adapter の sender 解決を `ORCA_TERMINAL_HANDLE` からの明示取得 + 取得不能なら exit 1 に変更**。**durable intent を実行できる owner の回復契約を 4 分岐で新設**（O33 により親は代理送信できないため、worker 消失時に誰が送るかが未定義だった。成功系にも同じ穴があった）。**`commit_target` を対象 role の complete post-state と定義し、step 6 が他 role の同時更新を巻き戻さないことを明記**。10-1 相 7 の「rc 0 のときだけ settled」を inspection 込みへ統一。cleanup table を分断していた散文を表の後ろへ移動 |
+| rev9 (67aa173) | spec2 round 2 の findings 1-5 を反映。**capability / preamble の寿命を generation 単位から Dispatch 単位へ訂正**（経路 A は新 preamble が届かないので旧 tuple を無効化すると worker が capability を失う）。**`check` に `--from` が存在しない CLI 不一致を修正し、adapter の sender 解決を `ORCA_TERMINAL_HANDLE` からの明示取得 + 取得不能なら exit 1 に変更**。**durable intent を実行できる owner の回復契約を 4 分岐で新設**（O33 により親は代理送信できないため、worker 消失時に誰が送るかが未定義だった。成功系にも同じ穴があった）。**`commit_target` を対象 role の complete post-state と定義し、step 6 が他 role の同時更新を巻き戻さないことを明記**。10-1 相 7 の「rc 0 のときだけ settled」を inspection 込みへ統一。cleanup table を分断していた散文を表の後ろへ移動 |
+| 本版 | spec2 round 3 の findings 1-3 を反映。**6-2 の adapter 本文と 6-5 の check 疑似コードを実際に更新**（前ラウンドは 5-2 の表とテストだけが更新され正本が旧記述のまま残っていた）。**12-1 に owner replacement 専用の WAL branch を新設**（通常の 11 段は `task-create` を含むので同じ Task への replacement に適用すると不要な Task を作る。generation を上げず disk intent を archive しないことも明記）。失敗系の旧説明 2 箇所を 10-2 の正本への参照へ置換 |
 
 ## 1. 解こうとしている問題
 
@@ -332,8 +333,9 @@ O21 は事実として記録するが、設計はこれに依存しない。
 **この転換で解消される round 4 findings**:
 
 - **finding 5（`--outcome failed` が journal を迂回する）は消滅する。**迂回すべき
-  exactly-once journal がそもそも無くなる。失敗は `result.md` に理由を書いてから
-  `worker_done --outcome failed` を at-least-once で送るだけである
+  exactly-once journal がそもそも無くなる。**ただし失敗系にも durable intent は要る** —
+  手順の正本は 10-2 の「失敗の出口」である（`result.md` → `report-status.sh error` →
+  inspection → send）。ここでは繰り返さない
 - **finding 1 は消滅する。**送信前に identity を得る必要が無い
 - finding 2（generation transition）と finding 3（journal の write-ahead 順序）は**残る**が、
   request identity を持たない分だけ小さくなる。どちらも「自分の disk ファイルの
@@ -400,6 +402,7 @@ roles/<role>/attempt-<n>/     ← 旧 generation の一式
       manifest:[...実ファイル名の全列挙...],
       commit_target:{...対象 role の **complete post-state**...}}
       ★ commit_target は「対象 role の完全な事後状態」である（patch ではない）。
+        下の例示は変化する field の略記であり、record 自体は complete である。
         5-7 の role entry が持つ terminal / agent / runner / engine / model /
         effort / wired も含めた全 field を持つ（spec2r2 finding 5）
 2. **他の writer を凍結する**（round 5 finding 4）:
@@ -660,10 +663,15 @@ orca-send.sh <team> <from> <to> <body>
 ```
 
 1. `<team>` を Run id として扱い、addressbook の `run` と照合する
-2. `<from>` は無視する（Orca が現在の端末から自動解決する）
+2. **sender handle を自分で解決する**（spec2r3 finding 1）。`<from>` の論理 agent 名を
+   terminal handle として使わない。`ORCA_TERMINAL_HANDLE`（Orca が端末へ入れる。O28）
+   または runner が明示 export した env から**自分の terminal handle** を取り、
+   `--from` に渡す。**取得できなければ Orca の暗黙推定へ落ちず exit 1** —
+   O28 のとおり候補が 1 つのときは誤った端末へ暗黙束縛され得るためである。
+   lifecycle message の preamble identity（6-4b）とは**別契約**である
 3. `<to>` を addressbook で解決する。未登録なら exit 1
 4. `<body>` 先頭のラベルを切り出して `--subject` に、残りを `--body` に載せる
-5. `orca orchestration send --to <addr> --subject <label> --body <rest> --type status --json`
+5. `orca orchestration send --from <自分の handle> --to <addr> --subject <label> --body <rest> --type status --json`
 6. 非 0 終了は**未配送**
 
 exit: 0 / 1（未配送）/ 2（使用法）。
@@ -761,7 +769,8 @@ emit は処理ではない。
 ```
 Monitor（背景・wake 信号。ack は一切しない）:
   loop:
-    out = check --wait --peek --types worker_done,escalation,question,merge_ready,status \
+    out = check --terminal <parent_handle> --wait --peek \
+            --types worker_done,escalation,question,merge_ready,status \
             --timeout-ms 600000 --json      # stdout のみ。2>&1 禁止（O10）
     now = 現在時刻
     for m in out.messages:
@@ -775,7 +784,7 @@ Monitor（背景・wake 信号。ack は一切しない）:
       # それ以外は rate limit により黙る（永久抑止ではない）
 
 親（起動時・再開時に必ず 1 回。wake を待たない）:
-  drain: 未 ack Delivery を下の手順で処理し切る。**停止条件は 2 つ**（round 5 finding 6）:
+  drain: `check --terminal <parent_handle> --json` で未 ack Delivery を処理し切る。**停止条件は 2 つ**（round 5 finding 6）:
          (a) check が空を返した、または
          (b) 最古の batch が一時 routing-blocked になった
          → (b) では **その drain pass を終了**し、Monitor の rate-limited 再 emit と
@@ -783,7 +792,7 @@ Monitor（背景・wake 信号。ack は一切しない）:
          ★ Monitor の wake に依存しない reconciliation
 
 親（前景・各 wake で）:
-  out = check --json                         # 最古の未 ack batch を消費読み
+  out = check --terminal <parent_handle> --json   # 最古の未 ack batch を消費読み
   <run-dir>/deliveries/<delivery_id>.json へ batch 全体を保存   ★ 先に永続化
   for m in out.messages:                     # 目的の label 以外も捨てずに処理する
     if m.id in <run-dir>/processed.json: continue
@@ -791,7 +800,7 @@ Monitor（背景・wake 信号。ack は一切しない）:
     handle(m)                                # 冪等。message id / task id / dispatch id で識別
     <run-dir>/processed.json へ m.id を追記（原子的置換）
   ★ lifecycle message が 1 通でも未処理なら ack しない（次の check で同じ batch が返る。O23）
-  check --ack <delivery_id> --json           # 全部処理してから
+  check --terminal <parent_handle> --ack <delivery_id> --json   # 全部処理してから
 ```
 
 **`emitted-ledger.json` は再 emit のレート制限であって tombstone ではない**（round 2 finding 3）。
@@ -820,9 +829,10 @@ message は失われていないが、外から見れば永久待機と区別が
 worker 側の待機も同じ規律に従う:
 
 ```
-check --wait --types status --timeout-ms 600000 --json
+check --terminal <自分の handle> --wait --types status --timeout-ms 600000 --json
   → batch 全体を処理（目的外の message も捨てない）
-  → 次の待機は check --ack <previous delivery_id> --wait ... で 1 コールにまとめる
+  → 次の待機は check --terminal <自分の handle> --ack <previous delivery_id> --wait ...
+    で 1 コールにまとめる
 ```
 
 **どの起床でも先に findings ファイルを読み直す**（失われうるのはメッセージだけ）。
@@ -1008,7 +1018,7 @@ O33 により **親は `worker_done` を代理送信できない**。したが�
 | 観測 | 行動 |
 |---|---|
 | 元 Dispatch が active で worker が到達可能 | exact Dispatch へ nudge する。worker は**同じ current preamble**（6-4b。経路 A なら generation を跨いでも同一）で 5-1 の inspection-first 規則を続ける |
-| `worker-show` が `failed` / `stopped` を証明 | 同じ Task に `worker-start --retry-of <old-dispatch>` + **明示 placement**（`--terminal` / `--worktree` / `--from`）で replacement を作る。新しい worker は**新しい preamble**を得て、disk の intent（`status.json` の `done` / `error`）を読み、期待 outcome を報告する。更新順は 12-1 の WAL に従う（journal → index → workers → addressbook） |
+| `worker-show` が `failed` / `stopped` を証明 | 同じ Task に `worker-start --retry-of <old-dispatch>` + **明示 placement**（`--terminal` / `--worktree` / `--from`）で replacement を作る。新しい worker は**新しい preamble**を得て、disk の intent（`status.json` の `done` / `error`）を読み、期待 outcome を報告する。更新順は **12-1 の owner replacement WAL branch** に従う（通常の 11 段ではない。`task-create` を走らせない） |
 | active だが process / authority を確認できない、または `outcome_unknown` | O19 に従い fence して再検査、または `worker-abandon` して `retained`。**旧 capability と新 capability が同時に lifecycle を進めないことを保証する**（fence が先） |
 | Orca 側が既に terminal | **送らない。**ローカルを reconcile して終わる |
 
@@ -1041,10 +1051,11 @@ crash 回復のため**だけに存在する。`worker_done_pending` と request
 | `accepted` | nonce 一致の `accepted` を受けた直後 | `report-status.sh done` → `worker_done` |
 | `settled` | `worker_done` の成立を**確認できた**直後（rc 0、または inspection で Orca が terminal と分かったとき） | Delivery を ack |
 
-**失敗系は journal を通さない。**`result.md` に理由を書き、
-`worker_done --outcome failed` を at-least-once で送るだけである。
+**失敗系は `completion.json` を通さない。**ただし手順の正本は 10-2 の「失敗の出口」であり、
+`result.md` → **`report-status.sh <role-dir> error <理由>`（durable intent）** →
+5-1 の inspection-first 収束規則 → send の順を通る。ここでは繰り返さない。
 `recovery-tick.sh` は outcome を問わず、Dispatch が settled になったことを
-`worker-show` で確認できれば回復を止める。
+`worker-show` で確認できれば回復を止める（停止条件の唯一の定義は 10-3）。
 
 ### 10-3. crash 境界（すべて at-least-once の再送で閉じる）
 
@@ -1212,6 +1223,39 @@ authority ではあっても durable な真実ではない。
 | 6 と 7 の間 | `worker_start_pending` | `request-show --request <start_id>` と `dispatch-show --task` で判定する。**本設計は `--terminal` で既存 handle を使うので「端末が 1 つ余るだけ」という round 4 版の記述は誤りだった**（新しい端末は作られない）。同一 Task / terminal への重複呼び出しの挙動は未実測なので、identity で回避する |
 | 7 の応答喪失 | `worker_start_pending` | 同上 |
 | 8〜10 の間 | `worker_started` | index / workers を journal から再 publish する |
+
+#### owner replacement の WAL branch（spec2r3 finding 2）
+
+10-2 の「`failed` / `stopped` を証明したら `worker-start --retry-of`」は**同じ Task への
+replacement** であって新規 launch ではない。上の 11 段をそのまま適用すると
+`task-create` が走って**不要な Task を作る**。専用 branch を定義する。
+
+```
+ 1. journal: replacement_planned                              ★ 副作用の前
+      {task_id, old_dispatch_id, expected_outcome, placement:{terminal, worktree},
+       start_id, generation}   ← generation は据え置き（下記）
+ 2. 旧 Dispatch が lifecycle authority を失ったことを確認する
+      worker-show が failed / stopped を証明、または fence（worker-stop / worker-abandon）
+      が成立したこと。**fence RPC の結果自体が unknown なら新 Dispatch を作らない**
+ 3. addressbook から旧 Dispatch を active 宛先として外す
+ 4. workers.json を replacement の starting として publish する
+ 5. worker-start --task <same-task> --retry-of <old_dispatch_id> \
+      --retry-request <start_id> --terminal <handle> --worktree <wt> --from <parent_handle>
+ 6. receipt 後: journal → workers → index → addressbook を新 Dispatch へ収束させる
+```
+
+各 crash 境界は `start_id` の `request-show` と `dispatch-show` / `worker-show` の
+inspection で再開する（12-1 の通常経路と同じ規律）。
+
+**generation を上げない。`status.json` と `completion.json` を archive しない。**
+これは成果の review をやり直す経路ではなく、**既に確定した disk intent を別の owner が
+実行する経路**である。generation transition を通して intent を archive すると、
+新しい worker が読むべき状態（`status.json = done|error` と `completion.json = accepted`）が
+current role dir から消えてしまう。intent は current role dir に残したまま owner だけを
+差し替える。
+
+**旧新 capability の排他は step 2 の fence が担保する。**fence の成立を確認するまで
+step 5 へ進まないので、2 つの Dispatch が同時に lifecycle を進めることはない。
 
 #### routing 不能を tombstone にしない（round 3 finding 3 / round 4 finding 4）
 
@@ -1432,6 +1476,7 @@ apps/orca-team-dispatch-task/
 | `test-orca-send.sh` | 4 位置引数、addressbook 解決、未登録 `to` で exit 1、ラベル抽出、`orca` スタブへの argv 検証、**扱うのは 6 ラベルだけで `worker_done` / `merge_ready` には使われないこと**（6-4b）。**`ORCA_TERMINAL_HANDLE` から handle を取って `--from` に渡すこと、handle が無ければ暗黙推定へ落ちず exit 1 になること、sender handle が `workers.json` の当該 role の terminal と一致すること**（spec2r2 finding 2） |
 | `test-orca-preflight.sh` | exit 0/1/2 の分離。`orca` 不在 / `status` 非 ok / `run-list` 失敗。**5 番目の項目（親 handle の確定）を含む 5 項目すべて**。handle を確定できないとき dispatch を止めること、`run-create --from <handle>` の応答の `coordinator_handle` が一致しないとき止めること、`parent_handle` が `run.json` に保存され再開時に推定へ戻らないこと、**親の `check` が `--terminal` を使い `--from` を渡さないこと**（O26 / O28 / spec2r2 finding 2） |
 | `test-generation-transition.sh` | 5-1 の transaction。**`commit_target` が対象 role の complete post-state であり、step 6 が最新 `workers.json` の他 role を保持して対象 role だけを置換すること**（transition 中の別 role の更新を巻き戻さないこと。非 transition field も失わないこと。spec2r2 finding 5）、**親 sweep が `commit_target` を読み active 経路を `starting` へ誤復旧しないこと**（spec2 finding 4）、`.generation-transition` があるあいだ gate が block し **`recovery-tick.sh` も no-op になること**（freeze）、**移動済み artifact を watcher が再生成したケース**、**dst に内容の異なる既存ファイルがあるケースで削除せず escalation すること**、manifest の各 `mv` 直後の crash から phase 再開できること、`mv` が src のみ / dst のみ / 両方 / 不在の 4 状態で冪等なこと、manifest 全件完了前に新 `status.json` と `generation:n+1` を publish しないこと（round 4 finding 2） |
+| `test-replacement-wal.sh` | 12-1 の replacement branch。**`task-create` を走らせないこと**、fence が unknown なら新 Dispatch を作らないこと、旧 Dispatch が addressbook から外れること、**generation を上げず `status.json` / `completion.json` を archive しないこと**（新 worker が intent を読めること）、6 段の各 crash から `start_id` で再開できること（spec2r3 finding 2） |
 | `test-intent-owner.sh` | 10-2 の 4 分岐（active + 到達可能 → nudge / `failed`・`stopped` → `--retry-of` で replacement し新 preamble が disk intent を読む / `outcome_unknown` → fence 先行で旧新 capability が同時に進まない / Orca が既に terminal → 送らず reconcile）。**成功系（`accepted` 後に worker 消失）でも同じ分岐が働くこと**（spec2r2 finding 3） |
 | `test-starting-sweep.sh` | 5-1 の crash 境界 4 種（`starting` publish 後 / receipt 反映前 / failed 反映前 / 応答喪失）で親の sweep が `dispatch-show` / `worker-show` / `request-show` から state を再導出すること。**`task-create` の応答喪失で `launch_id` と `task-title` の 2 系統から一意に解決すること**。**同じ mutation を新規実行せず `request-show` と `--retry-request <launch_id>` / `<start_id>` を使うこと**。`starting` 滞留で `recovery-tick.sh` が親へ escalation を送ること |
 | `test-run-index.sh` | 12-1 の write-ahead 順序 11 段のどこで落ちても journal から収束すること。**`task-create` の応答喪失で Task を重複作成しないこと**（`launch_id` の `request-show` + `task-title` の 2 系統）。`task_id` だけで routing できること |
