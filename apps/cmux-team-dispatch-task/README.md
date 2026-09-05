@@ -470,8 +470,9 @@ status dir を共有し、runner wrapper は standby ペインの所有権をそ
 書き込みと通知を一切行いません。
 
 Codex review ペインは `--sandbox workspace-write` と `-c approval_policy='never'` に加え、
-`--add-dir <canonical-status-dir>/review`、`--add-dir <AGMSG_SKILL_DIR>/run`、
-`--add-dir <AGMSG_SKILL_DIR>/db` を条件付きで使います。findings 以外の status 領域は書き込み許可へ
+`-c sandbox_workspace_write.writable_roots=[...]` に `<canonical-status-dir>/review`、
+`<AGMSG_SKILL_DIR>/run`、`<AGMSG_SKILL_DIR>/db` を条件付きで載せます
+（codex の対話セッションでは `--add-dir` が seatbelt policy に届かないため）。findings 以外の status 領域は書き込み許可へ
 含めません。
 
 ### plan モードの Phase A-R / B 遵守ゲート

@@ -40,10 +40,14 @@ render() {
     --skill-dir "$S/.." 2> "$TMP/err"
 }
 
-if grep -q "add-dir '\$REVIEW_SANDBOX_DIR'" "$S/launch-workspace.sh" \
+# F7: codex の対話セッションでは --add-dir が seatbelt policy に届かないため、
+# reviewer への追加許可は -c sandbox_workspace_write.writable_roots で与える。
+if grep -Fq "REVIEW_WRITABLE_ROOTS+=\"'\$REVIEW_SANDBOX_DIR'\"" "$S/launch-workspace.sh" \
+   && grep -q 'sandbox_workspace_write.writable_roots=\[' "$S/launch-workspace.sh" \
    && grep -q 'prepare_review_directory' "$S/launch-workspace.sh" \
-   && ! grep -q "add-dir '\$STATUS_DIR'" "$S/launch-workspace.sh"; then
-  ok 'SC1: reviewer add-dir uses the canonical validated review directory'
+   && ! grep -q "writable_roots.*\$STATUS_DIR" "$S/launch-workspace.sh" \
+   && ! grep -Fq -- "--add-dir '" "$S/launch-workspace.sh"; then
+  ok 'SC1: reviewer writable_roots uses the canonical validated review directory'
 else
   bad 'SC1'
 fi

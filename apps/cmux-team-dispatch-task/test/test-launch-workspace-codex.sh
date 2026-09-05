@@ -150,25 +150,27 @@ assert_not_contains "$execute_runner" 'Claude session starting' 'EN3 no Claude s
 assert_contains "$standby_runner" '--dangerously-bypass-approvals-and-sandbox' 'T4 codex + standby bypass'
 assert_contains "$review_runner" '--sandbox workspace-write' 'T5 review sandbox workspace-write'
 assert_contains "$review_runner" "-c approval_policy='never'" 'T5 review approval policy never'
-assert_contains "$review_runner" "--add-dir '$STATUS_REVIEW_REAL'" 'T5 canonical review findings directory writable'
+assert_contains "$review_runner" 'sandbox_workspace_write.writable_roots=[' 'T5 review grants writable roots via -c'
+assert_contains "$review_runner" "'$STATUS_REVIEW_REAL'" 'T5 canonical review findings directory writable'
+assert_not_contains "$review_runner" '--add-dir' 'T5 must not rely on --add-dir (F7: it never reaches the seatbelt policy)'
 assert_not_contains "$review_runner" '--dangerously-bypass-approvals-and-sandbox' 'T5 review does not disable sandbox'
 
-# --- CR1 / CR1b: codex review の --add-dir (agmsg run/db は writable, scripts は不可) ---
+# --- CR1 / CR1b: codex review の writable_roots (agmsg run/db は writable, scripts は不可) ---
 FAKE_AGMSG="$TMP/fake-agmsg"; mkdir -p "$FAKE_AGMSG/run" "$FAKE_AGMSG/db" "$FAKE_AGMSG/scripts"
 cr1_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex \
   --agmsg-team demo-team --agmsg-from rv1 --status-dir "$TMP/status" rv1 prompt)
 cr1_runner=$(jq -r '.runner_file' <<<"$cr1_output")
-assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1 agmsg run must be writable'
-assert_contains "$cr1_runner" "--add-dir '$FAKE_AGMSG/db'"  'CR1 agmsg db must be writable'
+assert_contains "$cr1_runner" "'$FAKE_AGMSG/run'" 'CR1 agmsg run must be writable'
+assert_contains "$cr1_runner" "'$FAKE_AGMSG/db'"  'CR1 agmsg db must be writable'
 assert_not_contains "$cr1_runner" "$FAKE_AGMSG/scripts"     'CR1 agmsg scripts must NOT be writable'
 
 cr1b_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FAKE_AGMSG" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv2 prompt)
 cr1b_runner=$(jq -r '.runner_file' <<<"$cr1b_output")
-assert_contains "$cr1b_runner" "--add-dir '$FAKE_AGMSG/run'" 'CR1b must add agmsg dirs without STATUS_DIR'
+assert_contains "$cr1b_runner" "'$FAKE_AGMSG/run'" 'CR1b must add agmsg dirs without STATUS_DIR'
 
-# --- CR1c: 新規インストール (run/ db/ が未作成) でも --add-dir が付く ---
+# --- CR1c: 新規インストール (run/ db/ が未作成) でも writable_roots に載る ---
 # CR1/CR1b は fixture が mkdir -p 済みなのでこの分岐を踏まない。実 watch.sh は run/ を
 # 初回起動時に自分で作るが、codex reviewer は workspace-write サンドボックスなので
 # 中からは作れない。launch-workspace.sh 側がサンドボックス外で先に作る必要がある。
@@ -176,8 +178,8 @@ FRESH_AGMSG="$TMP/fresh-agmsg"; mkdir -p "$FRESH_AGMSG/scripts"
 cr1c_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$FRESH_AGMSG" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv3 prompt)
 cr1c_runner=$(jq -r '.runner_file' <<<"$cr1c_output")
-assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/run'" 'CR1c fresh install must still grant agmsg run'
-assert_contains "$cr1c_runner" "--add-dir '$FRESH_AGMSG/db'"  'CR1c fresh install must still grant agmsg db'
+assert_contains "$cr1c_runner" "'$FRESH_AGMSG/run'" 'CR1c fresh install must still grant agmsg run'
+assert_contains "$cr1c_runner" "'$FRESH_AGMSG/db'"  'CR1c fresh install must still grant agmsg db'
 
 # --- CR1d: agmsg 未インストールならツリーを勝手に作らない ---
 MISSING_AGMSG="$TMP/no-agmsg"
@@ -190,22 +192,27 @@ else
   echo 'PASS: CR1d must not create an agmsg tree when agmsg is not installed'
 fi
 
-# --- CR1e: AGMSG_SKILL_DIR にシェルメタ文字があれば --add-dir を付けない ---
-# composed command は `zsh -ic "... --add-dir '<path>' ..."` の二重引用で、
+# --- CR1e: AGMSG_SKILL_DIR にシェルメタ文字があれば writable_roots に載せない ---
+# composed command は `zsh -ic "... writable_roots=['<path>'] ..."` の二重引用で、
 # launch-workspace.sh はエスケープしない。`'` を含むパスをそのまま埋めると引用符が
 # 破れて後続が別トークンになる。B8 の mkdir -p もこの未検証値を引数に取るので、
-# 検出したときは --add-dir もツリー作成もしない (fail-closed)。
+# 検出したときは許可付与もツリー作成もしない (fail-closed)。
 QUOTED_AGMSG="$TMP/qu'ote-agmsg"; mkdir -p "$QUOTED_AGMSG/run" "$QUOTED_AGMSG/db"
 cr1e_output=$(CMUX_BIN="$TMP/bin/cmux" RUNNERS_CONFIG_PATH="$TMP/runners.json" AGMSG_SKILL_DIR="$QUOTED_AGMSG" \
   bash "$LAUNCH" --cwd "$TMP/repo" --mode review --role design_review --runner codex rv5 prompt 2>/dev/null)
 cr1e_runner=$(jq -r '.runner_file' <<<"$cr1e_output")
 assert_not_contains "$cr1e_runner" "qu'ote-agmsg" 'CR1e a quoted AGMSG_SKILL_DIR must not be injected'
 
-# CR1f: review ペインの --add-dir は検証・canonicalize 済みの review directory だけ
-if grep -q "add-dir '\$REVIEW_SANDBOX_DIR'" "$LAUNCH" && ! grep -q "add-dir '\$STATUS_DIR'" "$LAUNCH"; then
+# CR1f: review ペインの writable_roots は検証・canonicalize 済みの review directory だけ。
+# F7: codex の対話セッションでは --add-dir が seatbelt policy に届かないため、付与は
+# -c sandbox_workspace_write.writable_roots 経由でなければならない。
+if grep -Fq "REVIEW_WRITABLE_ROOTS+=\"'\$REVIEW_SANDBOX_DIR'\"" "$LAUNCH" \
+   && grep -q 'sandbox_workspace_write.writable_roots=\[' "$LAUNCH" \
+   && ! grep -q "writable_roots.*\$STATUS_DIR" "$LAUNCH" \
+   && ! grep -Fq -- "--add-dir '" "$LAUNCH"; then
   echo 'PASS: CR1f review pane write permission uses the validated canonical review directory'
 else
-  echo 'FAIL: CR1f --add-dir is not restricted to the validated review directory'
+  echo 'FAIL: CR1f writable_roots is not restricted to the validated review directory'
   fail=1
 fi
 # CR1g: helper が directory 型・symlink・canonical containment を検証してから付与する
@@ -477,11 +484,9 @@ assert_not_contains "$TMP/h2.log" "$HOOK_WARN" 'H2 security-guidance 無効時�
 assert_not_contains "$TMP/h3.log" "$HOOK_WARN" 'H3 codex config が無い環境では警告しない'
 assert_not_contains "$TMP/h4.log" "$HOOK_WARN" 'H4 claude engine では警告しない'
 
-if command -v codex >/dev/null 2>&1 && [[ "${RUN_CODEX_DYNAMIC_TEST:-0}" == "1" ]]; then
-  echo 'INFO: dynamic Codex writable-root test is enabled externally.'
-else
-  echo 'SKIP: dynamic Codex writable-root test (set RUN_CODEX_DYNAMIC_TEST=1 in an authenticated Codex environment).'
-fi
+# writable_root の動的検査は test-codex-review-sandbox.sh が実 codex CLI に対して行う。
+# ここには INFO/SKIP を出すだけで何も検証しないブロックがあったが、実機挙動を確かめて
+# いる外観だけを与えていたので除去した。
 
 # --- PL1: codex の起動プロンプトにはディレクティブを入れない ---
 # codex の子エージェントは app-server daemon 上の別スレッドで走りペインに映らないため、
