@@ -340,6 +340,30 @@ R10 / R11 のとおり `--add-dir` は実在し、実際に渡っている。し
 #77 では request も findings も**どの命名でもディスクに現れず**、Phase B-R 全体が agmsg
 メッセージのみで進行した。この事象が同じ原因かは切り分けが必要である。
 
+#### 調査結果（2026-09-05 実測・確定）
+
+上の選択肢の 1 つ目が正しかった。**`--add-dir` は codex の対話セッションの seatbelt
+policy に届かない。** 実 codex CLI へのプローブ:
+
+| プローブ | 条件 | 結果 |
+|---------|------|------|
+| A | `-c sandbox_mode=workspace-write` のみ | **拒否** |
+| B | 加えて `-c sandbox_workspace_write.writable_roots=['<dir>']` | **許可** |
+| C | B を `zsh -ic "..."` で包む（composed command と同じ形） | **許可** |
+
+補足として、現行の `codex sandbox --help` には `--add-dir` 自体が存在しない。
+
+**プローブ先の選定に注意**: workspace-write は `TMPDIR` と `/tmp` を既定で書き込み可能に
+する。`mktemp -d` 配下で試すとプローブ A が「許可」になり、B は何も証明しない。実際に
+一度この誤りを踏んだ。`test-codex-review-sandbox.sh` は S1 が「許可」になったら
+**テスト自身が無意味である**として FAIL する。
+
+対処: `launch-workspace.sh` の `REVIEW_WRITABLE_FLAG` を 3 本の `--add-dir` から
+`-c sandbox_workspace_write.writable_roots=[...]` の 1 本へ置き換えた。値域検証と
+fail-closed の性質は変えていない。回帰は `test-launch-workspace-codex.sh` の
+T5/CR1/CR1b/CR1c/CR1f、`test-snapshot-contract.sh` の SC1、および実 CLI を叩く
+`test-codex-review-sandbox.sh` の S1〜S4。
+
 ### 9-2. F8 — 親の 90 分 safety timer が連続 kill される
 
 `sleep $((90 * 60))` を `run_in_background` で張ったが、arm 2〜5 が 4 回連続で killed
@@ -356,6 +380,17 @@ R10 / R11 のとおり `--add-dir` は実在し、実際に渡っている。し
 > ユーザーへ明示する。
 
 今回の運用では親が手動でこの判断を下した。判断を文書化して機構の一部にする。
+
+#### 調査結果（2026-09-05 実測・確定）
+
+原因は**メモリ逼迫によるバックグラウンドタスクの回収**である。kill の通知文は
+`system is running low on memory` で、親と子が同一の文言を独立に観測した。timer 固有の
+問題ではなく、`run_in_background` で張った待機一般が対象になる。実際、本 spec の後続
+作業中にも状態監視の待機が同じ理由で 1 度 kill された。
+
+したがって「timer の担体を Monitor に替える」だけでは解決しない。上記の**再アーム停止
+とユーザーへの明示**を機構として入れる方針は変えない。加えて、監視の主経路は push 型の
+agmsg 通知に置き、`run_in_background` の待機は**あくまで補助**として扱う。
 
 ## 10. 影響範囲
 
