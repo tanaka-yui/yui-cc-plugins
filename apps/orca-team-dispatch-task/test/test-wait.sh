@@ -119,6 +119,15 @@ out=$(w 2>&1); rc=$?
   && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT11 retain 失敗で ack しない" || fail "WT11 (rc=$rc out=$out)"; teardown
 
+# WT11a: receipt が ok:true でも rc が非 0 なら信用せず ack しない
+setup; dn; msg
+echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/orchestration_worker-retain"
+echo 7 > "$ORCA_STUB_DIR/orchestration_worker-retain.rc"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$out" == *"worker-retain failed (rc=7)"* ]] \
+  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT11a retain の ok:true でも非 0 rc は信用しない" || fail "WT11a (rc=$rc out=$out)"; teardown
+
 # WT12: **処理できない型を含む batch は ack しない。**見ただけでは処理ではない (O11)
 setup; dn; mixed; w >/dev/null 2>&1; rc=$?
 ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" && [[ "$rc" -eq 1 ]] \
