@@ -276,6 +276,37 @@ only when the handle and worktree matched in this block.
 When the worker failed (Step 3 exit 5) `MERGED` is false, so no removal is offered — that
 is the intended behaviour, not a gap.
 
+[C7] `worker-retain` records a durable exception, so a session that died mid-dispatch
+leaves retained terminals behind. Before removing anything for this Run, ask Orca what it
+actually still holds and compare it against what we recorded. A retention we did not record
+is someone else's — or our own from a previous run — and either way it is not ours to step
+on:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
+KNOWN=$(jq -c '[.roles[]?.dispatch // empty]' "$SD/workers.json" 2>/dev/null)
+[[ -n "$RUN" && -n "$KNOWN" && -n "$ORCA_BIN" ]] || {
+  echo "required cleanup state is missing; do not close or remove anything" >&2
+  exit 1
+}
+WLRC=0; WL=$("$ORCA_BIN" orchestration worker-list --run "$RUN" --terminal-state retained --json 2>/dev/null) || WLRC=$?
+[[ "$WLRC" -eq 0 ]] && jq -e '.ok == true and (.result.workers | type == "array")' <<<"$WL" >/dev/null 2>&1 || {
+  echo "could not list what Orca still holds for this Run; do not remove anything" >&2
+  exit 1
+}
+GHOSTS=$(jq -c --argjson k "$KNOWN" '[.result.workers[].dispatchId] - $k' <<<"$WL")
+if [[ "$(jq 'length' <<<"$GHOSTS")" -eq 0 ]]; then
+  echo "every retained worker in this Run is one we recorded"
+else
+  echo "Orca still holds retained workers we did not record:" >&2
+  jq -r '.[]' <<<"$GHOSTS" >&2
+  echo "do not remove any worktree or dispatch record for this Run" >&2
+  exit 1
+fi
+```
+
 [C5] The dispatch record under `.dispatch/<slug>` holds the only local copy of the request
 and the worker's result, so it is offered for removal only once the work is merged. This
 block calls no Orca command, so it classifies no release; it proves instead that `$SD` really
@@ -315,6 +346,9 @@ Say these things to the user in plain language:
   worktree is never offered for removal: it was not ours to begin with. **If the
   terminals cannot be listed at all, that is not "none" — nothing is proven, so the
   command is not printed.**
+- [C7] Before any removal, what Orca still holds for this Run must match what we recorded.
+  A retained worker we cannot account for stops the whole Run's cleanup, not just its own
+  task.
 - [C4] `worktree rm` also tries to delete the branch. Orca keeps any branch whose changes
   it cannot prove are already merged, so a surviving branch is a signal, not a failure.
   Do not add `--force` unless the user has looked at the dirty files and accepted losing

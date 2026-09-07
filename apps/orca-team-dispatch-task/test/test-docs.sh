@@ -65,7 +65,7 @@ printf '%s\n' '{}' > "$cleanup_state/workers.json"
 printf '%s\n' '{}' > "$cleanup_state/integration-result.json"
 export ORCA_STUB_DIR="$scratch/orca" ORCA_BIN="$P/test/lib/orca-stub.sh" SD="$cleanup_state"
 mkdir -p "$ORCA_STUB_DIR"; : > "$ORCA_STUB_DIR/calls.log"
-for label in C1 C2 C3 C5; do
+for label in C1 C2 C3 C5 C7; do
   block="$scratch/$label.sh"; extract_cleanup_block "$label" "$S" > "$block"
   out=$(bash "$block" 2>&1); rc=$?
   if [[ "$rc" -eq 0 || -s "$ORCA_STUB_DIR/calls.log" ]]; then
@@ -401,6 +401,30 @@ grep -q 'Never offer an action Step 5 declined to print' "$S" || miss="$miss [no
 awk '/^## Step 6: /,/^## Known limitations$/' "$S" | grep -q -- '--force' || miss="$miss [no-force]"
 awk '/^## Step 6: /,/^## 既知の制限$/' "$G" | grep -q -- '--force' || miss="$miss [no-force-ja]"
 [[ -z "$miss" ]] && ok "SK12 Step 6 の実行規則" || fail "SK12:$miss"
+
+# SK13: [C7] は記録に無い保持中 dispatch を見つけたら止める
+c7_scratch=$(mktemp -d); c7="$c7_scratch/C7.sh"
+extract_cleanup_block C7 "$S" > "$c7"
+c7_sd=$(mktemp -d)
+echo '{"run_id":"run_x","parent_handle":"term_p","repo_root":"/tmp"}' > "$c7_sd/run.json"
+echo '{"roles":{"design":{"dispatch":"ctx_w","retained":true}}}' > "$c7_sd/workers.json"
+
+ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
+printf '%s\n' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_w"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+out=$(SD="$c7_sd" bash "$c7" 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] && ok "SK13a 記録どおりなら通す" || fail "SK13a (rc=$rc out=$out)"
+
+printf '%s\n' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_w"},{"dispatchId":"ctx_ghost"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+out=$(SD="$c7_sd" bash "$c7" 2>&1); rc=$?
+[[ "$rc" -ne 0 && "$out" == *ctx_ghost* ]] && ok "SK13b 記録に無い保持で止まる" \
+  || fail "SK13b (rc=$rc out=$out)"
+
+printf '%s\n' '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-list"
+out=$(SD="$c7_sd" bash "$c7" 2>&1); rc=$?
+[[ "$rc" -ne 0 ]] && ok "SK13c 列挙できなければ止まる" || fail "SK13c (rc=$rc out=$out)"
+rm -rf "$c7_sd" "$c7_scratch" "$ORCA_STUB_DIR"; unset ORCA_BIN
 
 # SK10: コピーした plugin の本番呼び出しを plugin cwd から実行する。checker を直接呼ぶだけでは、
 #       SK10 自身の cwd / ROOT 解決が壊れた回帰を検出できない。

@@ -261,6 +261,36 @@ worktree が一致したときだけ `yes` になる。
 worker が Step 3 で exit 5 を返したときは `MERGED` が false であり、削除を提示しない。
 これは意図した動作であって欠落ではない。
 
+[C7] `worker-retain` は durable な例外を記録するため、中断したセッションの保持が
+残りうる。この Run について何かを消す前に、Orca が実際に何を保持しているか尋ね、
+自分たちの記録と突き合わせる。記録に無い保持は他者のもの、あるいは前回の Run の
+自分たちのものであり、いずれにせよ手を出してよいものではない:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
+KNOWN=$(jq -c '[.roles[]?.dispatch // empty]' "$SD/workers.json" 2>/dev/null)
+[[ -n "$RUN" && -n "$KNOWN" && -n "$ORCA_BIN" ]] || {
+  echo "required cleanup state is missing; do not close or remove anything" >&2
+  exit 1
+}
+WLRC=0; WL=$("$ORCA_BIN" orchestration worker-list --run "$RUN" --terminal-state retained --json 2>/dev/null) || WLRC=$?
+[[ "$WLRC" -eq 0 ]] && jq -e '.ok == true and (.result.workers | type == "array")' <<<"$WL" >/dev/null 2>&1 || {
+  echo "could not list what Orca still holds for this Run; do not remove anything" >&2
+  exit 1
+}
+GHOSTS=$(jq -c --argjson k "$KNOWN" '[.result.workers[].dispatchId] - $k' <<<"$WL")
+if [[ "$(jq 'length' <<<"$GHOSTS")" -eq 0 ]]; then
+  echo "every retained worker in this Run is one we recorded"
+else
+  echo "Orca still holds retained workers we did not record:" >&2
+  jq -r '.[]' <<<"$GHOSTS" >&2
+  echo "do not remove any worktree or dispatch record for this Run" >&2
+  exit 1
+fi
+```
+
 [C5] `.dispatch/<slug>` の dispatch 記録は、依頼と worker の結果の唯一のローカル控えである。
 そのため、成果が merge 済みになったときだけ削除を提示する。この block は Orca コマンドを
 呼ばないので release の分類も行わない。代わりに `$SD` が本当にこの dispatch の記録であり、
@@ -298,6 +328,9 @@ fi
   読めて clean、端末 identity が一致、worktree にまだ残る端末すべてが記録済み、の全条件を
   満たすときだけ表示する。再利用 worktree は最初からこちらのものではないため、削除を提示しない。
   **端末を列挙できないことは「存在しない」ことではない。何も証明されないのでコマンドを表示しない。**
+- [C7] 何かを消す前に、この Run について Orca が実際に保持しているものが、こちらの記録と
+  一致していなければならない。記録に無い保持が 1 つでもあれば、その worker だけでなく
+  Run 全体の片付けを止める。
 - [C4] `worktree rm` は branch の削除も試みる。Orca は変更が merge 済みと証明できない branch を
   残すので、branch が残ることは失敗ではなく合図である。ユーザーが dirty なファイルを見て失っても
   よいと判断するまで、`--force` を加えない。
