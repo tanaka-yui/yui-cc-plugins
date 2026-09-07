@@ -67,6 +67,53 @@ jq -e '.worktree_created_by_this_run == true
 # 親の checkout は clean のまま（.dispatch/ が除外されている）
 [[ -z "$(git -C "$R" status --porcelain)" ]] && ok "E10 親が clean" || fail "E10 親が dirty"
 
+# --- 2 タスクを 1 つの Run で並列に流す ---
+WT2=$(mktemp -d)/wt2; git -C "$R" worktree add -q -b orca/e2e-b "$WT2" >/dev/null 2>&1
+REQ2=$(mktemp); printf 'second task\n' > "$REQ2"
+: > "$ORCA_STUB_DIR/calls.log"
+
+# 1 本目（Run を作る）
+echo '{"ok":true,"result":{"task":{"id":"task_a"}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
+echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_a","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_a"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-start"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_a","path":"%s","branch":"refs/heads/orca/e2e"}}}\n' \
+  "$WT" > "$ORCA_STUB_DIR/worktree_create"
+OUTA=$(bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug pa --objective o --repo-root "$R" 2>&1)
+SDA=$(sed -n 's/^status_dir=//p' <<<"$OUTA"); RUNID=$(sed -n 's/^run_id=//p' <<<"$OUTA")
+
+# 2 本目（同じ Run に相乗り）
+echo '{"ok":true,"result":{"task":{"id":"task_b"}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
+echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_b","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_b"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-start"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_b","path":"%s","branch":"refs/heads/orca/e2e-b"}}}\n' \
+  "$WT2" > "$ORCA_STUB_DIR/worktree_create"
+OUTB=$(bash "$P/bin/orca-start.sh" --request-file "$REQ2" --slug pb --objective o --repo-root "$R" \
+         --run "$RUNID" 2>&1)
+SDB=$(sed -n 's/^status_dir=//p' <<<"$OUTB")
+
+[[ -n "$SDA" && -n "$SDB" && "$(grep -c 'run-create' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && ok "E12 2 タスクが 1 つの Run に載る" || fail "E12 (a=$SDA b=$SDB)"
+
+# 1 batch に 2 件の worker_done が同居する
+echo '{"status":"done"}' > "$SDA/roles/design/status.json"
+echo '{"status":"done"}' > "$SDB/roles/design/status.json"
+jq -nc '{ok:true,result:{runId:"run_e",deliveryId:"de",count:2,messages:[
+  {id:"e1",type:"worker_done",payload:({taskId:"task_a",dispatchId:"ctx_a",outcome:"succeeded"}|tojson),body:""},
+  {id:"e2",type:"worker_done",payload:({taskId:"task_b",dispatchId:"ctx_b",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+: > "$ORCA_STUB_DIR/calls.log"
+bash "$P/bin/orca-wait.sh" --status-dir "$SDA" --status-dir "$SDB" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+rc=$?
+[[ "$rc" -eq 0 \
+   && "$(jq -c . "$SDA/received.json")" == '["worker_done|task_a|ctx_a|succeeded"]' \
+   && "$(jq -c . "$SDB/received.json")" == '["worker_done|task_b|ctx_b|succeeded"]' \
+   && "$(grep -c 'worker-retain' "$ORCA_STUB_DIR/calls.log")" -eq 2 \
+   && "$(grep -c -- '--ack' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && ok "E13 1 batch で 2 件を振り分け、retain 2 回・ack 1 回" || fail "E13 (rc=$rc)"
+
+git -C "$R" worktree remove --force "$WT2" >/dev/null 2>&1
+rm -rf "$REQ2" "$(dirname "$WT2")"
+
 git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
 rm -rf "$ORCA_STUB_DIR" "$R" "$REQ" "$(dirname "$WT")"
 echo "---"; echo "failures: $fails"; exit "$fails"
