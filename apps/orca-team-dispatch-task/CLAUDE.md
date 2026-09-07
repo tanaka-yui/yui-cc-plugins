@@ -1,6 +1,6 @@
 # orca-team-dispatch-task 開発ガイド
 
-Orca の worktree で 1 つのタスクを worker に実行させるプラグイン。
+Orca の worktree で N タスクを worker に並列実行させるプラグイン。
 
 ## 正本先行の原則
 
@@ -15,13 +15,15 @@ Orca の worktree で 1 つのタスクを worker に実行させるプラグイ
 
 ## 構成
 
-`bin/orca-start.sh`（worktree + 端末 + Task + Dispatch）/ `bin/orca-wait.sh`
+`bin/orca-start.sh`（worktree + Task を用意し、`worker-start` で Orca に端末起動を依頼する。
+端末自体はこのプラグインではなく Orca が作る）/ `bin/orca-wait.sh`
 （`worker_done` を待つ。成功 0 / 失敗 5）/ `bin/orca-merge.sh`（成果を親ブランチへ。
 **資源は消さない**）/ `skills/.../scripts/report-status.sh`（worker が status を書く口。移植）。
 
 ## 範囲
 
-Stage 1 は 1 ロール・レビュー無し・PR 無し・ループ無し・設定無し。
-**片付けが勝手に走ることはない** — Step 5 が削除してよいものを判定し、Step 6 が一度だけ
-尋ねて、承認されたものだけを実行する。recovery 機構は意図的に持たない（設計 spec 18-1 の
-裁定）。テストは `bash test/run-all.sh`。
+Stage A は **1 タスク = 1 役（design）**。レビュー無し・PR 無し・ループ無し・設定無し。
+**N タスクを 1 つの Run で並列に dispatch できる**（既定上限 4）。worker のセッションは
+`worker-retain` で最後まで保持し、解放は Step 6 の承認後だけ。片付けが勝手に走ることは
+ない — Step 5 が削除してよいものを判定し、Step 6 が尋ねて、承認されたものだけを実行する。
+recovery 機構は意図的に持たない（設計 spec 18-1 の裁定）。テストは `bash test/run-all.sh`。
