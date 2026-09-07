@@ -1,2 +1,2 @@
-{"name":"orca-team-dispatch-task","version":"1.0.1",
- "description":"Orca の worktree で 1 つのタスクを worker に実行させる","author":{"name":"yui"}}
+{"name":"orca-team-dispatch-task","version":"2.0.0",
+ "description":"Orca の worktree で 1 つ以上のタスクを worker に並列実行させ、成果を親ブランチへ取り込む","author":{"name":"yui"}}

@@ -27,12 +27,14 @@ else ok "SK5 常に \$ORCA_BIN 経由"; fi
 # SK6: **placeholder を見せない。**片付け手順は state から値を埋め、selector は id: を付ける
 bad=""
 grep -q '<the worker terminal>' "$S" && bad="$bad [placeholder]"
-grep -q 'worker-release --dispatch "\$DID"' "$S" || bad="$bad [release]"
+# Step 5 は release を **実行せず**、Step 6 が実行するコマンドとして印字する (CR-1)
+grep -q 'worker-release --dispatch %q' "$S" || bad="$bad [release-printed]"
+grep -q '"$ORCA_BIN" orchestration worker-release' "$S" && bad="$bad [release-executed]"
 # selector は id: 接頭辞つきで、**%q で引用して**表示する（空白を含む path でも copy-paste 可）
 grep -q '"id:\$WT"' "$S" || bad="$bad [id-prefix]"
 grep -q "worktree rm --worktree %q" "$S" || bad="$bad [quoted-selector]"
 grep -qE 'worktree rm --worktree \$WT( |$)' "$S" && bad="$bad [raw-id]"
-grep -q 'terminal close --terminal %q' "$S" || bad="$bad [quoted-terminal]"
+grep -q "worker-release --dispatch %q --json" "$S" || bad="$bad [quoted-dispatch]"
 [[ -z "$bad" ]] && ok "SK6 値入り・id: 付き・引用済みの片付けコマンド" || fail "SK6:$bad"
 
 # SK6b: request は固定 heredoc へ入れず、次の tool call へ実パスを渡す。
@@ -60,12 +62,13 @@ extract_cleanup_block() {
        block && /^```$/ { exit }
        block { print }' "$file"
 }
+bad=""
 scratch=$(mktemp -d); cleanup_state="$scratch/state"; mkdir -p "$cleanup_state"
 printf '%s\n' '{}' > "$cleanup_state/workers.json"
 printf '%s\n' '{}' > "$cleanup_state/integration-result.json"
 export ORCA_STUB_DIR="$scratch/orca" ORCA_BIN="$P/test/lib/orca-stub.sh" SD="$cleanup_state"
 mkdir -p "$ORCA_STUB_DIR"; : > "$ORCA_STUB_DIR/calls.log"
-for label in C1 C2 C3; do
+for label in C1 C2 C3 C5 C7; do
   block="$scratch/$label.sh"; extract_cleanup_block "$label" "$S" > "$block"
   out=$(bash "$block" 2>&1); rc=$?
   if [[ "$rc" -eq 0 || -s "$ORCA_STUB_DIR/calls.log" ]]; then
@@ -73,6 +76,16 @@ for label in C1 C2 C3; do
   fi
   : > "$ORCA_STUB_DIR/calls.log"
 done
+
+# Step 5 は **mutate せずに** 分類する。release state は worker-list の非破壊 receipt から読む。
+wl_fixture() {   # $1=releaseState
+  jq -nc --arg s "$1" \
+    '{ok:true,result:{workers:[{dispatchId:"ctx_w",taskId:"task_w",agentTerminalHandle:"term_w",
+       terminalState:$s,resource:{ownershipState:$s,releaseState:$s,retainedReason:null,
+       terminalHandle:"term_w",worktreeId:"wt_1"}}],counts:{}}}' \
+    > "$ORCA_STUB_DIR/orchestration_worker-list"
+}
+printf '%s\n' '{"run_id":"run_x","parent_handle":"term_p"}' > "$cleanup_state/run.json"
 
 # SK6d: C3 は inventory=null を「端末 0 件」と取り違えず、理由を示して rm を表示しない。
 cleanup_repo="$scratch/repo"; mkdir -p "$cleanup_repo"
@@ -82,9 +95,9 @@ git -C "$cleanup_repo" add -A
 git -C "$cleanup_repo" -c user.email=t@e -c user.name=t commit -q -m seed
 jq -nc --arg p "$cleanup_repo" \
   '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:null,
-    design:{terminal:"term_w",dispatch:"ctx_w"}}' > "$cleanup_state/workers.json"
+    roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false}}}' > "$cleanup_state/workers.json"
 printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
-printf '%s\n' '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+wl_fixture retained
 printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
   > "$ORCA_STUB_DIR/terminal_show"
 printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
@@ -98,11 +111,12 @@ fi
 
 # SK6e: すべての先行確認が通っても、未記録 terminal があれば C3 は削除を提案しない。
 #        これが ACCOUNTED=yes を破壊的 gate に要求する実行上の証明である。
+#        併せて **C3 が worker-release を呼ばない**（分類は非破壊）ことも固定する。
 jq -nc --arg p "$cleanup_repo" \
   '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"],
-    design:{terminal:"term_w",dispatch:"ctx_w"}}' > "$cleanup_state/workers.json"
+    roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false}}}' > "$cleanup_state/workers.json"
 printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
-printf '%s\n' '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+wl_fixture retained
 printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
   > "$ORCA_STUB_DIR/terminal_show"
 printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"},{"handle":"term_foreign"}]}}' \
@@ -113,9 +127,10 @@ out=$(bash "$block" 2>&1); rc=$?
 if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
    || "$out" != *'a terminal in that worktree is not one we recorded'* \
    || "$out" == *'worktree rm'* || $(grep -c 'worktree rm' "$ORCA_STUB_DIR/calls.log") -ne 0 ]] \
-   || ! grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log" \
+   || ! grep -q 'worker-list' "$ORCA_STUB_DIR/calls.log" \
    || ! grep -q 'terminal show' "$ORCA_STUB_DIR/calls.log" \
-   || ! grep -q 'terminal list' "$ORCA_STUB_DIR/calls.log"; then
+   || ! grep -q 'terminal list' "$ORCA_STUB_DIR/calls.log" \
+   || grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log"; then
   bad="$bad [C3-unaccounted-terminal]"
 fi
 
@@ -123,54 +138,76 @@ fi
 # 古い成功 state が残っていても、破壊的コマンドを表示してはならない。
 jq -nc --arg p "$cleanup_repo" \
   '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"],
-    design:{terminal:"term_w",dispatch:"ctx_w"}}' > "$cleanup_state/workers.json"
+    roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false}}}' > "$cleanup_state/workers.json"
 printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
-printf '%s\n' '{"ok":false,"error":"unavailable","result":{"state":"retained"}}' \
-  > "$ORCA_STUB_DIR/orchestration_worker-release"
-printf '%s\n' 7 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
+printf '%s\n' '{"ok":false,"error":"unavailable","result":{"workers":[]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+printf '%s\n' 7 > "$ORCA_STUB_DIR/orchestration_worker-list.rc"
 printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
   > "$ORCA_STUB_DIR/terminal_show"
 printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
-block="$scratch/C1-release-receipt.sh"; extract_cleanup_block C1 "$S" > "$block"
+block="$scratch/C1-state-receipt.sh"; extract_cleanup_block C1 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -eq 0 || "$out" != *'could not confirm the release; do not close anything'* \
+if [[ "$rc" -eq 0 || "$out" != *'could not read the release state; do not close anything'* \
    || "$out" == *'worker-show'* ]]; then
-  bad="$bad [C1-release-failed-receipt]"
+  bad="$bad [C1-state-failed-receipt]"
 fi
-
-# SK6g: Orca の正当な release_unknown receipt は exit 1 を返す。C1 は rc より receipt を
-#        先に分類し、保持を示す receipt と inspection command を出さなければならない。
-printf '%s\n' '{"ok":true,"result":{"state":"release_unknown"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
-printf '%s\n' 1 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
-block="$scratch/C1-release-unknown.sh"; extract_cleanup_block C1 "$S" > "$block"
+block="$scratch/C2-state-receipt.sh"; extract_cleanup_block C2 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -ne 0 || "$out" != *'"state":"release_unknown"'* \
-   || "$out" != *'orchestration worker-show --dispatch ctx_w --json'* \
-   || "$out" == *'could not confirm the release'* ]]; then
-  bad="$bad [C1-release-unknown-receipt]"
+if [[ "$rc" -eq 0 || "$out" == *'worker-release --dispatch'* ]]; then
+  bad="$bad [C2-state-failed-receipt]"
 fi
-
-printf '%s\n' '{"ok":false,"error":"unavailable","result":{"state":"retained"}}' \
-  > "$ORCA_STUB_DIR/orchestration_worker-release"
-printf '%s\n' 7 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
-block="$scratch/C2-release-receipt.sh"; extract_cleanup_block C2 "$S" > "$block"
-out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -eq 0 || "$out" == *'terminal close'* ]]; then
-  bad="$bad [C2-release-failed-receipt]"
-fi
-block="$scratch/C3-release-receipt.sh"; extract_cleanup_block C3 "$S" > "$block"
+block="$scratch/C3-state-receipt.sh"; extract_cleanup_block C3 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
 if [[ "$rc" -eq 0 || "$out" == *'worktree rm'* ]]; then
-  bad="$bad [C3-release-failed-receipt]"
+  bad="$bad [C3-state-failed-receipt]"
 fi
+rm -f "$ORCA_STUB_DIR/orchestration_worker-list.rc"
 
-rm -f "$ORCA_STUB_DIR/orchestration_worker-release.rc"
-printf '%s\n' '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+# SK6f2: receipt は ok でも **この dispatch が Orca の報告に無い**なら分類できない。止まる。
+printf '%s\n' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_other"}],"counts":{}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+out=$(bash "$scratch/C1-state-receipt.sh" 2>&1); rc=$?
+[[ "$rc" -ne 0 && "$out" == *'could not read the release state'* ]] || bad="$bad [C1-dispatch-absent]"
+out=$(bash "$scratch/C2-state-receipt.sh" 2>&1); rc=$?
+[[ "$rc" -ne 0 && "$out" != *'worker-release --dispatch'* ]] || bad="$bad [C2-dispatch-absent]"
+out=$(bash "$scratch/C3-state-receipt.sh" 2>&1); rc=$?
+[[ "$rc" -ne 0 && "$out" != *'worktree rm'* ]] || bad="$bad [C3-dispatch-absent]"
+
+# SK6g: `release_unknown` は **止まる**合図であり、C1 だけが exit 0 で受け取る。
+#        C1 は報告された worker entry と inspection command を出し、C2 / C3 は何も提示しない。
+wl_fixture release_unknown
+: > "$ORCA_STUB_DIR/calls.log"
+block="$scratch/C1-release-unknown.sh"; extract_cleanup_block C1 "$S" > "$block"
+out=$(bash "$block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'"releaseState":"release_unknown"'* \
+   || "$out" != *'orchestration worker-show --dispatch ctx_w --json'* \
+   || "$out" == *'could not read the release state'* ]] \
+   || grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log"; then
+  bad="$bad [C1-release-unknown]"
+fi
+out=$(bash "$scratch/C2-state-receipt.sh" 2>&1); rc=$?
+[[ "$rc" -ne 0 && "$out" == *'does not authorise C2'* ]] || bad="$bad [C2-release-unknown]"
+out=$(bash "$scratch/C3-state-receipt.sh" 2>&1); rc=$?
+[[ "$rc" -ne 0 && "$out" == *'does not authorise C3'* && "$out" != *'worktree rm'* ]] \
+  || bad="$bad [C3-release-unknown]"
+
+# SK6g2: **通常経路の C1 は exit 1 で「止まれ」と言わない。**`expected:` で始まる 1 行だけを出し、
+#         inspection command は出さない。読み手はそのまま [C2] へ進む。
+for st in retained released already_released active reclaimable; do
+  wl_fixture "$st"
+  out=$(bash "$scratch/C1-state-receipt.sh" 2>&1); rc=$?
+  if [[ "$rc" -eq 0 || "$out" != expected:* || "$out" == *'worker-show'* ]]; then
+    bad="$bad [C1-normal-$st]"
+  fi
+done
+
 printf '%s\n' '{"ok":false,"error":"stale","result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
   > "$ORCA_STUB_DIR/terminal_show"
+wl_fixture retained
 block="$scratch/C2-show-receipt.sh"; extract_cleanup_block C2 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -eq 0 || "$out" == *'terminal close'* ]]; then
+if [[ "$rc" -eq 0 || "$out" == *'worker-release --dispatch'* ]]; then
   bad="$bad [C2-show-failed-receipt]"
 fi
 block="$scratch/C3-show-receipt.sh"; extract_cleanup_block C3 "$S" > "$block"
@@ -190,6 +227,134 @@ if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
    || "$out" == *'worktree rm'* ]]; then
   bad="$bad [C3-list-failed-receipt]"
 fi
+
+# SK6h/SK6i/SK6j: 端末が既に閉じている（`released` / `already_released`）なら C2 は提示せず、
+#        C3 は「show できないこと」を identity の証明として扱う。両 state を同じ表で回す。
+printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+block="$scratch/C2-released.sh"; extract_cleanup_block C2 "$S" > "$block"
+c3_block="$scratch/C3-released.sh"; extract_cleanup_block C3 "$S" > "$c3_block"
+for st in released already_released; do
+  wl_fixture "$st"
+  # 端末は既に閉じている。show は引けない
+  printf '%s\n' '{"ok":false,"error":"gone"}' > "$ORCA_STUB_DIR/terminal_show"
+  printf '%s\n' 7 > "$ORCA_STUB_DIR/terminal_show.rc"
+  : > "$ORCA_STUB_DIR/calls.log"
+  out=$(bash "$block" 2>&1); rc=$?
+  if [[ "$rc" -ne 0 || "$out" != *'Orca already closed the worker terminal; nothing to close'* \
+     || "$out" == *'worker-release --dispatch'* ]]; then
+    bad="$bad [C2-$st]"
+  fi
+  : > "$ORCA_STUB_DIR/calls.log"
+  out=$(bash "$c3_block" 2>&1); rc=$?
+  if [[ "$rc" -ne 0 || "$out" != *'worktree rm --worktree id:wt_1 --json'* \
+     || "$out" == *'could not verify the terminal identity'* ]]; then
+    bad="$bad [C3-$st-show-gone]"
+  fi
+  # 端末がまだ見えて記録と一致するなら、identity は証明され削除も提示される
+  rm -f "$ORCA_STUB_DIR/terminal_show.rc"
+  printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
+    > "$ORCA_STUB_DIR/terminal_show"
+  : > "$ORCA_STUB_DIR/calls.log"
+  out=$(bash "$c3_block" 2>&1); rc=$?
+  if [[ "$rc" -ne 0 || "$out" != *'worktree rm --worktree id:wt_1 --json'* ]]; then
+    bad="$bad [C3-$st-show-live]"
+  fi
+done
+
+# SK6l: **identity の脚を実行で固定する。**端末は生きているが記録と違う worktree を報告する。
+#        C3 は理由を述べて rm を出さず、C2 も close を提示しない。この fixture が無いと
+#        `IDENTITY_OK=no` → `IDENTITY_OK=yes` の改変がスイート全体を緑のまま通ってしまう。
+rm -f "$ORCA_STUB_DIR/terminal_show.rc"
+wl_fixture retained
+printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_other"}}}' \
+  > "$ORCA_STUB_DIR/terminal_show"
+printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(bash "$c3_block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
+   || "$out" != *'the terminal identity did not match our state'* \
+   || "$out" == *'worktree rm'* ]]; then
+  bad="$bad [C3-identity-mismatch]"
+fi
+out=$(bash "$block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'the terminal no longer matches our state; leave it alone'* \
+   || "$out" == *'worker-release --dispatch'* ]]; then
+  bad="$bad [C2-identity-mismatch]"
+fi
+
+# SK6k: **1 つの Run に 2 タスクを載せ、文書どおりの順で通しで走らせる。**Step 5 は
+#        release を **1 度も呼ばない**（CR-1）。C2 は release コマンドを *印字* し、
+#        C3 は判定に到達し、C7 は Run 全体を通す。block 単体のテストではこの経路を踏めない。
+unset SD
+two=$(mktemp -d); two=$(cd "$two" && pwd -P)
+two_repo="$two/repo"; mkdir -p "$two_repo"
+git -C "$two_repo" init -q -b main .
+printf '%s\n' seed > "$two_repo/README.md"; git -C "$two_repo" add -A
+git -C "$two_repo" -c user.email=t@e -c user.name=t commit -q -m seed
+for t in a b; do
+  d="$two/.dispatch/task-$t"; mkdir -p "$d"
+  printf '%s\n' '{"run_id":"run_x","parent_handle":"term_p"}' > "$d/run.json"
+  jq -nc --arg p "$two_repo" --arg w "wt_$t" --arg h "term_$t" --arg c "ctx_$t" \
+    '{worktree_id:$w,worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:[$h],
+      roles:{design:{terminal:$h,dispatch:$c,retained:true}}}' > "$d/workers.json"
+  printf '%s\n' '{"merged":true}' > "$d/integration-result.json"
+done
+export ORCA_STUB_DIR="$two/orca"; mkdir -p "$ORCA_STUB_DIR"
+jq -nc '{ok:true,result:{workers:[
+   {dispatchId:"ctx_a",taskId:"task_a",agentTerminalHandle:"term_a",terminalState:"retained",
+    resource:{ownershipState:"retained",releaseState:"retained",retainedReason:"user_requested",
+              terminalHandle:"term_a",worktreeId:"wt_a"}},
+   {dispatchId:"ctx_b",taskId:"task_b",agentTerminalHandle:"term_b",terminalState:"retained",
+    resource:{ownershipState:"retained",releaseState:"retained",retainedReason:"user_requested",
+              terminalHandle:"term_b",worktreeId:"wt_b"}}],counts:{retained:2}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+cat > "$ORCA_STUB_DIR/terminal_show.hook" <<'HOOK'
+#!/usr/bin/env bash
+h=""; while [[ $# -gt 0 ]]; do [[ "$1" == --terminal ]] && h="$2"; shift; done
+case "$h" in
+  term_a) w=wt_a ;; term_b) w=wt_b ;; *) w=unknown ;;
+esac
+printf '{"ok":true,"result":{"terminal":{"handle":"%s","worktreeId":"%s"}}}\n' "$h" "$w" \
+  > "$ORCA_STUB_DIR/terminal_show"
+HOOK
+cat > "$ORCA_STUB_DIR/terminal_list.hook" <<'HOOK'
+#!/usr/bin/env bash
+w=""; while [[ $# -gt 0 ]]; do [[ "$1" == --worktree ]] && w="$2"; shift; done
+case "$w" in
+  id:wt_a) h=term_a ;; id:wt_b) h=term_b ;; *) h=term_unknown ;;
+esac
+printf '{"ok":true,"result":{"terminals":[{"handle":"%s"}]}}\n' "$h" \
+  > "$ORCA_STUB_DIR/terminal_list"
+HOOK
+chmod +x "$ORCA_STUB_DIR/terminal_show.hook" "$ORCA_STUB_DIR/terminal_list.hook"
+: > "$ORCA_STUB_DIR/calls.log"
+for l in C1 C2 C3 C5 C7; do extract_cleanup_block "$l" "$S" > "$two/$l.sh"; done
+sed -i.bak 's|^SDS=("\$SD")|SDS=("$SD" "'"$two/.dispatch/task-b"'")|' "$two/C7.sh"
+two_offered=""
+for t in a b; do
+  d="$two/.dispatch/task-$t"
+  out=$(SD="$d" bash "$two/C1.sh" 2>&1); rc=$?
+  [[ "$rc" -ne 0 && "$out" == expected:* ]] || bad="$bad [two-C1-$t]"
+  out=$(SD="$d" bash "$two/C2.sh" 2>&1); rc=$?
+  [[ "$rc" -eq 0 && "$out" == *"orchestration worker-release --dispatch ctx_$t --json"* ]] \
+    || bad="$bad [two-C2-$t]"
+  two_offered="$two_offered$out"
+  out=$(SD="$d" bash "$two/C3.sh" 2>&1); rc=$?
+  [[ "$rc" -eq 0 && "$out" == *"worktree rm --worktree id:wt_$t --json"* ]] || bad="$bad [two-C3-$t]"
+  out=$(SD="$d" bash "$two/C5.sh" 2>&1); rc=$?
+  [[ "$rc" -eq 0 && "$out" == "rm -rf $d" ]] || bad="$bad [two-C5-$t]"
+done
+out=$(SD="$two/.dispatch/task-a" bash "$two/C7.sh" 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *'every retained worker in this Run is one we recorded'* ]] \
+  || bad="$bad [two-C7]"
+# ★ CR-1 の核心。Step 5 は **どの block でも release を実行しない**
+grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log" && bad="$bad [two-step5-released]"
+# Step 6 が尋ねる選択肢に端末の release が含まれること
+[[ "$two_offered" == *'worker-release --dispatch ctx_a --json'* \
+   && "$two_offered" == *'worker-release --dispatch ctx_b --json'* ]] \
+  || bad="$bad [two-step6-no-terminal-option]"
+rm -rf "$two"
+
 unset ORCA_STUB_DIR ORCA_BIN SD
 rm -rf "$scratch"
 [[ -z "$bad" ]] && ok "SK6c 各 cleanup block が空/null/失敗 receipt で閉じる" || fail "SK6c:$bad"
@@ -200,11 +365,6 @@ for n in 'release_pending' 'release_unknown' 'retained' 'already_released' \
          'merged' 'dirty' '--force' 'worktreeId'; do
   grep -qi -- "$n" "$S" || miss="$miss [$n]"; done
 [[ -z "$miss" ]] && ok "SK7 安全条件" || fail "SK7 欠落:$miss"
-
-# SK7a: runner は permission prompt を飛ばすことを、dispatch 前に判断できる文書へ明記する。
-grep -q 'claude --dangerously-skip-permissions' "$S" \
-  && grep -q 'claude --dangerously-skip-permissions' "$G" \
-  && ok "SK7a runner の権限無効化を開示" || fail "SK7a 権限無効化の開示なし"
 
 # SK7b: **列挙できないことを「0 個」にしない** (round 4 finding 1)。
 #       ACCOUNTED は yes / no / unknown を保ち、yes 以外では削除を提示しないこと
@@ -266,6 +426,7 @@ normalise_headings() {
       skill:'## Step 3: Wait'|guide:'## Step 3: 待つ') echo 'h2:step-3' ;;
       skill:'## Step 4: Bring the result home'|guide:'## Step 4: 成果を持ち帰る') echo 'h2:step-4' ;;
       skill:'## Step 5: Give the user the exact cleanup commands'|guide:'## Step 5: ユーザーへ正確な片付けコマンドを渡す') echo 'h2:step-5' ;;
+      skill:'## Step 6: Ask once, then run what the user approves'|guide:'## Step 6: 一度だけ尋ね、承認されたものを実行する') echo 'h2:step-6' ;;
       skill:'## Known limitations'|guide:'## 既知の制限') echo 'h2:known-limitations' ;;
       skill:'## State on disk'|guide:'## ディスク上の状態') echo 'h2:state-on-disk' ;;
       *) printf 'unknown:%s\n' "$line" ;;
@@ -335,7 +496,14 @@ if grep -q 'do not proceed to Step 4' "$S" \
    && grep -q '手動統合で queue は解消されない' "$G" \
    && grep -q 'ORCA_TERMINAL_HANDLE' "$G" \
    && awk '/^## Known limitations$/,/^## State on disk$/' "$S" | grep -q 'release_unknown' \
-   && awk '/^## 既知の制限$/,/^## ディスク上の状態$/' "$G" | grep -q 'release_unknown'; then
+   && awk '/^## 既知の制限$/,/^## ディスク上の状態$/' "$G" | grep -q 'release_unknown' \
+   && awk '/^## Known limitations$/,/^## State on disk$/' "$S" \
+      | grep -q 'stays unacknowledged and blocks its parent terminal' \
+   && awk '/^## 既知の制限$/,/^## ディスク上の状態$/' "$G" \
+      | grep -q 'acknowledge されないまま親 terminal の queue を block' \
+   && ! grep -q 'A `release_unknown` batch' "$S" \
+   && ! grep -q 'leave the original parent queue' "$S" \
+   && ! grep -q '元の親 queue は blocked のまま' "$G"; then
   ok "SK9b release_unknown の成果導線と親端末制限を明示"
 else
   fail "SK9b release_unknown の成果導線または親端末制限が不足"
@@ -348,6 +516,132 @@ if ! grep -q 'IDENTITY_OK.*comes from \[C2\]' "$S" \
 else
   fail "SK9c C3 が C2 の変数を要求している"
 fi
+
+# SK11: [C5] は merge 済みのときだけ dispatch 記録の削除を提示し、記録でない場所や
+#       .dispatch の外では fail closed する。**破壊コマンドを印字しないことまで見る。**
+bad=""
+c5_scratch=$(mktemp -d); c5_scratch=$(cd "$c5_scratch" && pwd -P)
+c5_block="$c5_scratch/C5.sh"; extract_cleanup_block C5 "$S" > "$c5_block"
+c5_sd="$c5_scratch/.dispatch/demo"; mkdir -p "$c5_sd"
+printf '%s\n' '{}' > "$c5_sd/run.json"
+printf '%s\n' '{}' > "$c5_sd/workers.json"
+
+printf '%s\n' '{"merged":false}' > "$c5_sd/integration-result.json"
+out=$(SD="$c5_sd" bash "$c5_block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the dispatch record:'* \
+   || "$out" != *'the work is not merged yet'* || "$out" == *'rm -rf'* ]]; then
+  bad="$bad [C5-unmerged]"
+fi
+
+printf '%s\n' '{"merged":true}' > "$c5_sd/integration-result.json"
+out=$(SD="$c5_sd" bash "$c5_block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != "rm -rf $c5_sd" ]]; then
+  bad="$bad [C5-merged]"
+fi
+
+c5_outside="$c5_scratch/not-dispatch/demo"; mkdir -p "$c5_outside"
+printf '%s\n' '{}' > "$c5_outside/run.json"
+printf '%s\n' '{}' > "$c5_outside/workers.json"
+printf '%s\n' '{"merged":true}' > "$c5_outside/integration-result.json"
+out=$(SD="$c5_outside" bash "$c5_block" 2>&1); rc=$?
+if [[ "$rc" -eq 0 || "$out" == *'rm -rf'* ]]; then bad="$bad [C5-outside-dispatch]"; fi
+
+c5_bare="$c5_scratch/.dispatch/bare"; mkdir -p "$c5_bare"
+printf '%s\n' '{"merged":true}' > "$c5_bare/integration-result.json"
+out=$(SD="$c5_bare" bash "$c5_block" 2>&1); rc=$?
+if [[ "$rc" -eq 0 || "$out" == *'rm -rf'* ]]; then bad="$bad [C5-not-a-record]"; fi
+rm -rf "$c5_scratch"
+[[ -z "$bad" ]] && ok "SK11 [C5] は merge 済みの dispatch 記録だけを提示" || fail "SK11:$bad"
+
+# SK12: Step 6 は Step 5 の印字だけを実行する。順序・停止条件・非改変・**尋ねない条件**を
+#       正本と訳の両方で明示すること。
+miss=""
+grep -q '^## Step 6: Ask once, then run what the user approves$' "$S" || miss="$miss [step6-heading]"
+grep -q '^## Step 6: 一度だけ尋ね、承認されたものを実行する$' "$G" || miss="$miss [step6-heading-ja]"
+grep -q 'exactly as Step 5 printed it' "$S" || miss="$miss [verbatim]"
+grep -q 'Step 5 が印字したとおりに実行する' "$G" || miss="$miss [verbatim-ja]"
+grep -q 'terminal, then worktree, then dispatch record' "$S" || miss="$miss [order]"
+grep -q '端末 → worktree → dispatch 記録 の順' "$G" || miss="$miss [order-ja]"
+grep -q 'it counted only when `.ok == true`' "$S" || miss="$miss [receipt-gate]"
+grep -q 'there is nothing to approve' "$S" || miss="$miss [no-print-no-ask]"
+grep -q 'Never offer an action Step 5 declined to print' "$S" || miss="$miss [no-extra-option]"
+awk '/^## Step 6: /,/^## Known limitations$/' "$S" | grep -q -- '--force' || miss="$miss [no-force]"
+awk '/^## Step 6: /,/^## 既知の制限$/' "$G" | grep -q -- '--force' || miss="$miss [no-force-ja]"
+[[ -z "$miss" ]] && ok "SK12 Step 6 の実行規則" || fail "SK12:$miss"
+
+# SK13: [C7] は記録に無い保持中 dispatch を見つけたら止める
+c7_scratch=$(mktemp -d); c7="$c7_scratch/C7.sh"
+extract_cleanup_block C7 "$S" > "$c7"
+c7_sd=$(mktemp -d)
+echo '{"run_id":"run_x","parent_handle":"term_p","repo_root":"/tmp"}' > "$c7_sd/run.json"
+echo '{"roles":{"design":{"dispatch":"ctx_w","retained":true}}}' > "$c7_sd/workers.json"
+
+ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
+printf '%s\n' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_w"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+out=$(SD="$c7_sd" bash "$c7" 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] && ok "SK13a 記録どおりなら通す" || fail "SK13a (rc=$rc out=$out)"
+
+printf '%s\n' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_w"},{"dispatchId":"ctx_ghost"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+out=$(SD="$c7_sd" bash "$c7" 2>&1); rc=$?
+[[ "$rc" -ne 0 && "$out" == *ctx_ghost* ]] && ok "SK13b 記録に無い保持で止まる" \
+  || fail "SK13b (rc=$rc out=$out)"
+
+printf '%s\n' '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-list"
+out=$(SD="$c7_sd" bash "$c7" 2>&1); rc=$?
+[[ "$rc" -ne 0 ]] && ok "SK13c 列挙できなければ止まる" || fail "SK13c (rc=$rc out=$out)"
+
+# SK13d/e: SDS は Run 全体の記録を作るための入力である。同じ Run の兄弟を足せば ghost 判定が
+#          狭まらず、**別 Run の dir を混ぜたら既知集合が広がって本物の ghost を隠す**ので止まる。
+c7_sib=$(mktemp -d)
+echo '{"run_id":"run_x","parent_handle":"term_p","repo_root":"/tmp"}' > "$c7_sib/run.json"
+echo '{"roles":{"design":{"dispatch":"ctx_sib","retained":true}}}' > "$c7_sib/workers.json"
+c7_other=$(mktemp -d)
+echo '{"run_id":"run_y","parent_handle":"term_q","repo_root":"/tmp"}' > "$c7_other/run.json"
+echo '{"roles":{"design":{"dispatch":"ctx_other","retained":true}}}' > "$c7_other/workers.json"
+with_sds() {   # $1=追加する status dir → SDS を 2 件にした C7 を stdout
+  sed 's|^SDS=("\$SD")|SDS=("$SD" "'"$1"'")|' "$c7"
+}
+printf '%s\n' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_w"},{"dispatchId":"ctx_sib"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+with_sds "$c7_sib" > "$c7_scratch/C7-sib.sh"
+out=$(SD="$c7_sd" bash "$c7_scratch/C7-sib.sh" 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *'every retained worker in this Run is one we recorded'* ]] \
+  && ok "SK13d 同じ Run の兄弟を SDS に足すと ghost にならない" || fail "SK13d (rc=$rc out=$out)"
+
+: > "$ORCA_STUB_DIR/calls.log"
+with_sds "$c7_other" > "$c7_scratch/C7-other.sh"
+out=$(SD="$c7_sd" bash "$c7_scratch/C7-other.sh" 2>&1); rc=$?
+if [[ "$rc" -ne 0 && "$out" == *'does not belong to Run run_x'* ]] \
+   && ! grep -q 'worker-list' "$ORCA_STUB_DIR/calls.log"; then
+  ok "SK13e 別 Run の dir を SDS に混ぜたら止まる"
+else
+  fail "SK13e (rc=$rc out=$out)"
+fi
+rm -rf "$c7_sib" "$c7_other"
+rm -rf "$c7_sd" "$c7_scratch" "$ORCA_STUB_DIR"; unset ORCA_BIN
+
+# SK14: N 並列の契約が両文書に明記されている
+bad=""
+for f in "$S" "$G"; do
+  grep -q -- '--run' "$f" || bad="$bad [--run:$(basename "$f")]"
+  grep -q -- '--status-dir' "$f" || bad="$bad [--status-dir:$(basename "$f")]"
+done
+for pat in released retained already_released release_pending release_unknown; do
+  grep -q "$pat" "$S" || bad="$bad [$pat]"
+done
+[[ -z "$bad" ]] && ok "SK14 N 並列と release state の契約" || fail "SK14:$bad"
+
+# SK15: 上限 4 タスクと質問の割り方が両文書にある
+grep -q 'at most four tasks at once' "$S" && grep -q 'one question per task' "$S" \
+  && grep -q '一度に 4 タスクまで' "$G" && grep -q 'タスクごとに 1 問' "$G" \
+  && ok "SK15 質問の割り方" || fail "SK15"
+
+# SK16: 消えた記述が残っていない
+! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
+  && ! grep -q 'dangerously-skip-permissions' "$S" \
+  && ok "SK16 消えた経路の記述が残っていない" || fail "SK16"
 
 # SK10: コピーした plugin の本番呼び出しを plugin cwd から実行する。checker を直接呼ぶだけでは、
 #       SK10 自身の cwd / ROOT 解決が壊れた回帰を検出できない。

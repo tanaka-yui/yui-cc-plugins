@@ -151,9 +151,9 @@
     },
     {
       "name": "orca-team-dispatch-task",
-      "description": "Orca の worktree で 1 つのタスクを worker に実行させる",
+      "description": "Orca の worktree で 1 つ以上のタスクを worker に並列実行させ、成果を親ブランチへ取り込む",
       "source": "./apps/orca-team-dispatch-task",
-      "version": "1.0.1",
+      "version": "2.0.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [

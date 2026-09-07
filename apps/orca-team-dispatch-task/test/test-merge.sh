@@ -14,7 +14,7 @@ setup() {
   printf '.dispatch/\n' >> "$R/.git/info/exclude"
   printf '{"run_id":"run_x","parent_handle":"term_p","repo_root":"%s"}\n' "$R" > "$SD/run.json"
   jq -nc --arg w "$WT" '{run_id:"run_x",worktree_id:"wt_1",worktree_path:$w,branch:"orca/s",
-    integration_branch:"main",design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x"}}' > "$SD/workers.json"
+    integration_branch:"main",roles:{design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false}}}' > "$SD/workers.json"
   echo '{"status":"done"}' > "$SD/roles/design/status.json"
   printf 'did the thing\n' > "$SD/roles/design/result.md"
   printf '["worker_done|task_x|ctx_x|succeeded"]\n' > "$SD/received.json"
