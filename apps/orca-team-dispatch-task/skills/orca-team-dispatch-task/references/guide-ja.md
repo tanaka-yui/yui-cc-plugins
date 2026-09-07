@@ -65,8 +65,12 @@ exit 1 はそのタスクの worker が起動しなかったことを意味す�
 名指ししているとき、または `worker-start did not report ready` と言っているとき（受け取った
 dispatch id を印字せずに記録している）、その worker は共有 mailbox へ完了を送りうる。その
 タスクの status dir、すなわち `<repo root>/.dispatch/<slug>` を、それでも Step 3 の待機集合へ
-加える。外すと batch 全体が止まる。待機は知らされていない dispatch のメッセージを処理できず、
-兄弟タスクの成果がすべてその後ろで滞る。
+加える — ただし id が実際に `workers.json` へ届いている場合に限る（上記の 2 つのメッセージは
+いずれも届いている）。メッセージが代わりに dispatch id を記録できなかったと言っている場合、
+id は stderr にしか無いので、そのタスクの dir を加える前に自分で `workers.json` へ書き込む。
+そうしないと待機全体が起動時点で `the dispatch identity is incomplete` として失敗し、兄弟
+タスクも道連れになる。外すと batch 全体が止まる。待機は知らされていない dispatch のメッセージを
+処理できず、兄弟タスクの成果がすべてその後ろで滞る。
 
 ## Step 3: 待つ
 

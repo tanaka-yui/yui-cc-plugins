@@ -74,7 +74,11 @@ that already started are unaffected — wait for them in Step 3 as usual.
 A failed start can still leave a live worker. When the exit-1 message names a `dispatch=<id>`,
 or says `worker-start did not report ready` — which records the dispatch id it did get without
 printing it — that worker may still send its completion to the shared mailbox. Add that task's
-status dir, `<repo root>/.dispatch/<slug>`, to Step 3's wait set anyway. Leaving it out blocks
+status dir, `<repo root>/.dispatch/<slug>`, to Step 3's wait set anyway — but only once the id
+actually reached `workers.json`, which both messages above satisfy; if the message instead says
+the dispatch id could not be recorded, the id exists only on stderr, so write it into
+`workers.json` by hand before adding that dir, or the whole wait fails at startup with `the
+dispatch identity is incomplete` and every sibling task goes down with it. Leaving it out blocks
 the whole batch: the wait cannot process a message for a dispatch it was never told about, and
 every sibling task's result stays stuck behind it.
 
