@@ -178,7 +178,8 @@ fi
 postwrite workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg w "$WT_ID" --arg p "$WT_PATH" \
   --arg b "$BR" --arg h "$H" --arg ib "$IB" --argjson own "$OWNED" --argjson ts "$TERMS" \
   '{run_id:$r,worktree_id:$w,worktree_path:$p,branch:$b,integration_branch:$ib,
-    worktree_created_by_this_run:$own, worktree_terminals:$ts, design:{terminal:$h}}')"
+    worktree_created_by_this_run:$own, worktree_terminals:$ts,
+    roles:{design:{terminal:$h, retained:false}}}')"
 
 RD="$SD/roles/design"
 SPEC="TASK: $SLUG
@@ -231,7 +232,7 @@ if [[ -z "$TID" ]]; then
   exit 1
 fi
 # Task が実在するので、ここから先は削除しない。identity を出して止める
-write workers-after-task "$SD/workers.json" "$(jq -c --arg t "$TID" '.design.task = $t' "$SD/workers.json")" || {
+write workers-after-task "$SD/workers.json" "$(jq -c --arg t "$TID" '.roles.design.task = $t' "$SD/workers.json")" || {
   kept "the task was created but could not be recorded. Resources are KEPT."
   log "task=$TID  inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"; exit 1; }
 
@@ -247,7 +248,7 @@ if [[ "$WRC" -ne 0 || "$WSTATE" != ready || -z "$DID" ]]; then
   log "inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
   exit 1
 fi
-write workers-after-dispatch "$SD/workers.json" "$(jq -c --arg d "$DID" '.design.dispatch = $d' "$SD/workers.json")" || {
+write workers-after-dispatch "$SD/workers.json" "$(jq -c --arg d "$DID" '.roles.design.dispatch = $d' "$SD/workers.json")" || {
   kept "the worker started but the dispatch id could not be recorded. Resources are KEPT."
   log "task=$TID dispatch=$DID"
   log "inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"; exit 1; }

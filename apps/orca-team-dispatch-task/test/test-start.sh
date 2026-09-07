@@ -78,7 +78,7 @@ grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" && fail "ST5 無関係な Run 
 setup; start >/dev/null 2>&1
 jq -e '.run_id=="run_x" and .worktree_id=="wt_1" and .branch=="orca/s"
        and .integration_branch=="main"
-       and .design.terminal=="term_w" and .design.task=="task_x" and .design.dispatch=="ctx_x"' \
+       and .roles.design.terminal=="term_w" and .roles.design.task=="task_x" and .roles.design.dispatch=="ctx_x"' \
   "$R/.dispatch/s/workers.json" >/dev/null 2>&1 || fail "ST5 workers.json"
 ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
 wc_=$(grep 'worktree create' "$ORCA_STUB_DIR/calls.log" | head -1)

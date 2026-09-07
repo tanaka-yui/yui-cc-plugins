@@ -8,7 +8,7 @@ setup() {
   ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
   SD=$(mktemp -d); mkdir -p "$SD/roles/design"
   echo '{"run_id":"run_x","parent_handle":"term_p","repo_root":"/tmp"}' > "$SD/run.json"
-  echo '{"design":{"terminal":"term_w","task":"task_x","dispatch":"ctx_x"}}' > "$SD/workers.json"
+  echo '{"roles":{"design":{"terminal":"term_w","task":"task_x","dispatch":"ctx_x","retained":false}}}' > "$SD/workers.json"
   echo '{"status":"executing"}' > "$SD/roles/design/status.json"
   echo '{"ok":true,"result":{"runId":"run_x","count":0,"messages":[]}}' > "$ORCA_STUB_DIR/orchestration_check"
   echo '{"ok":true,"result":{"worker":{"state":"active"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
@@ -65,7 +65,7 @@ setup; dn; object_msg; out=$(w 2>/dev/null); rc=$?
 
 # WT4d: Orca が reject した worker_done は outcome が succeeded でも完了ではない。
 setup; dn
-echo '{"design":{"terminal":"term_w","task":"task_f2917652a612","dispatch":"ctx_22efecad4b84"}}' > "$SD/workers.json"
+echo '{"roles":{"design":{"terminal":"term_w","task":"task_f2917652a612","dispatch":"ctx_22efecad4b84","retained":false}}}' > "$SD/workers.json"
 rejected_msg; out=$(w 2>&1); rc=$?
 release_or_ack=$(grep -c 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" || true)
 [[ "$rc" -eq 1 && "$out" == *"dispatch_capability_invalid"* && "$out" == *"The Dispatch capability is missing."* \

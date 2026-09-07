@@ -143,7 +143,7 @@ terminal and worktree are being kept on purpose:
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
-DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
+DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 [[ -n "$DID" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
@@ -172,8 +172,8 @@ before closing it** — compare the handle and the worktree it lives in against 
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
 WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
-TH=$(jq -r '.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
-DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
+TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
+DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
@@ -210,8 +210,8 @@ condition below actually holds**. Check them; do not describe them.
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
 WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
-TH=$(jq -r '.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
-DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
+TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
+DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
 OWNED=$(jq -r '.worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)

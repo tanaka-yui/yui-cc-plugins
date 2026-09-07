@@ -46,8 +46,8 @@ jq -e '.merged == true' "$SD/integration-result.json" >/dev/null 2>&1 && {
 RR=$(value '.repo_root' "$SD/run.json") || stop "no repository identity recorded"
 BR=$(value '.branch' "$SD/workers.json") || stop "no branch identity recorded; refusing to guess"
 IB=$(value '.integration_branch' "$SD/workers.json") || stop "no integration branch recorded; refusing to guess"
-TID=$(value '.design.task' "$SD/workers.json") || stop "the dispatch identity is incomplete"
-DID=$(value '.design.dispatch' "$SD/workers.json") || stop "the dispatch identity is incomplete"
+TID=$(value '.roles.design.task' "$SD/workers.json") || stop "the dispatch identity is incomplete"
+DID=$(value '.roles.design.dispatch' "$SD/workers.json") || stop "the dispatch identity is incomplete"
 
 git -C "$RR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || stop "the recorded repository is unavailable"
 

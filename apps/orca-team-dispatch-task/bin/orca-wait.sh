@@ -25,8 +25,8 @@ esac; done
 [[ "$TMO" =~ ^[1-9][0-9]*$ ]] || die "--timeout-ms must be a positive integer"
 [[ -r "$SD/run.json" && -r "$SD/workers.json" ]] || die "cannot read the dispatch state in $SD"
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
-TID=$(jq -r '.design.task // empty' "$SD/workers.json")
-DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json")
+TID=$(jq -r '.roles.design.task // empty' "$SD/workers.json")
+DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json")
 [[ -n "$PH" && -n "$TID" && -n "$DID" ]] || die "the dispatch identity is incomplete"
 RECV="$SD/received.json"
 write() {

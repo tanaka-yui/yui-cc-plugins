@@ -82,7 +82,7 @@ git -C "$cleanup_repo" add -A
 git -C "$cleanup_repo" -c user.email=t@e -c user.name=t commit -q -m seed
 jq -nc --arg p "$cleanup_repo" \
   '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:null,
-    design:{terminal:"term_w",dispatch:"ctx_w"}}' > "$cleanup_state/workers.json"
+    roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false}}}' > "$cleanup_state/workers.json"
 printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
 printf '%s\n' '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
 printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
@@ -100,7 +100,7 @@ fi
 #        これが ACCOUNTED=yes を破壊的 gate に要求する実行上の証明である。
 jq -nc --arg p "$cleanup_repo" \
   '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"],
-    design:{terminal:"term_w",dispatch:"ctx_w"}}' > "$cleanup_state/workers.json"
+    roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false}}}' > "$cleanup_state/workers.json"
 printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
 printf '%s\n' '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
 printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
@@ -123,7 +123,7 @@ fi
 # 古い成功 state が残っていても、破壊的コマンドを表示してはならない。
 jq -nc --arg p "$cleanup_repo" \
   '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"],
-    design:{terminal:"term_w",dispatch:"ctx_w"}}' > "$cleanup_state/workers.json"
+    roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false}}}' > "$cleanup_state/workers.json"
 printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
 printf '%s\n' '{"ok":false,"error":"unavailable","result":{"state":"retained"}}' \
   > "$ORCA_STUB_DIR/orchestration_worker-release"

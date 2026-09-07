@@ -128,7 +128,7 @@ release は自分で実行し、その結果の state で分類する。exit cod
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
-DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
+DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 [[ -n "$DID" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
@@ -157,8 +157,8 @@ handle と端末が属する worktree が記録済み state と一致するこ�
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
 WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
-TH=$(jq -r '.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
-DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
+TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
+DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
@@ -195,8 +195,8 @@ fi
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
 WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
-TH=$(jq -r '.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
-DID=$(jq -r '.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
+TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
+DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
 OWNED=$(jq -r '.worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)
