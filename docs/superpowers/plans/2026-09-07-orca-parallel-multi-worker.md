@@ -848,6 +848,11 @@ record_outcome() {   # $1=status dir $2=task $3=dispatch $4=outcome
 
 outcome の矛盾検査は **同じ `(task, dispatch)` の中だけ**で行う。既存の `batch_oc` は batch 全体で 1 つの outcome を要求しているので、2 タスクが混ざると必ず誤判定する。`batch_oc` を捨て、`(task, dispatch)` → outcome の連想配列にする。
 
+**訂正（実装時に判明）:** この環境の bash は **3.2.57 のみ**で `declare -A` が使えない
+（`declare: -A: invalid option`）。`SETTLED` は `SDS` / `TASKS` / `DISPS` と同じ添字を持つ
+**添字配列**として実装し、`sd_of` は添字を返す `idx_of` にする。`(task, dispatch)` 対と
+1:1 なので意味は同じ。以下の擬似コードは連想配列で書かれているが、実装は添字配列である。
+
 ```bash
   declare -A SETTLED=()
   for ((i = 0; i < n; i++)); do
