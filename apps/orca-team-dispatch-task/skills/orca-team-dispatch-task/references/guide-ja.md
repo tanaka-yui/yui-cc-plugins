@@ -47,8 +47,9 @@ exit 1 は worker が起動しなかったことを意味する。メッセー�
 
 先にユーザーへ伝える。worker が終わると、この skill はメッセージを acknowledge する前に
 dispatch を release する。端末はこちらで作って `worker-start` へ渡した再利用端末なので、
-Orca は `retained` と報告して閉じない。端末と worktree は Step 5 でユーザーが片付けるまで
-残る。これは Orca の再利用端末の規則であり、この skill が retention を要求したためではない。
+Orca は `retained` と報告して閉じない。端末と worktree は Step 5 が削除してよいものを判定し、
+Step 6 がユーザーへ尋ねるまで残る。これは Orca の再利用端末の規則であり、この skill が
+retention を要求したためではない。
 
 ```bash
 bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
@@ -110,8 +111,8 @@ checkout が clean であることのすべてを満たさなければ拒否す�
 
 ## Step 5: ユーザーへ正確な片付けコマンドを渡す
 
-この版は何も削除しない。実際の値を埋めたコマンドを表示し、ユーザーに判断させる。
-placeholder を見せない。
+この step は何も削除しない。削除してよいものを判定し、実際の値を埋めたコマンドを表示する。
+placeholder を見せない。実行してよいかは Step 6 がユーザーへ尋ねる。
 
 release は自分で実行し、その結果の state で分類する。exit code だけでは端末を閉じてよいか
 判断できない。
@@ -260,6 +261,31 @@ worktree が一致したときだけ `yes` になる。
 worker が Step 3 で exit 5 を返したときは `MERGED` が false であり、削除を提示しない。
 これは意図した動作であって欠落ではない。
 
+[C5] `.dispatch/<slug>` の dispatch 記録は、依頼と worker の結果の唯一のローカル控えである。
+そのため、成果が merge 済みになったときだけ削除を提示する。この block は Orca コマンドを
+呼ばないので release の分類も行わない。代わりに `$SD` が本当にこの dispatch の記録であり、
+`.dispatch` ディレクトリの中にあることを証明する。
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
+[[ -f "$SD/run.json" && -f "$SD/workers.json" ]] || {
+  echo "this is not a dispatch status directory; do not remove anything" >&2
+  exit 1
+}
+PARENT=$(cd "$SD/.." 2>/dev/null && pwd -P) || PARENT=""
+[[ "$(basename "${PARENT:-/}")" == .dispatch ]] || {
+  echo "the status directory is not inside .dispatch; do not remove it" >&2
+  exit 1
+}
+if [[ "$MERGED" == true ]]; then
+  printf 'rm -rf %q\n' "$SD"
+else
+  echo "not offering to remove the dispatch record:"
+  echo "  - the work is not merged yet, so this is the only copy of the request and result"
+fi
+```
+
 ユーザーへ、次を平易な言葉で伝える。
 
 - [C1] `release_pending` と `release_unknown` は release が完了していない状態である。端末を閉じたり
@@ -275,6 +301,33 @@ worker が Step 3 で exit 5 を返したときは `MERGED` が false であり�
 - [C4] `worktree rm` は branch の削除も試みる。Orca は変更が merge 済みと証明できない branch を
   残すので、branch が残ることは失敗ではなく合図である。ユーザーが dirty なファイルを見て失っても
   よいと判断するまで、`--force` を加えない。
+- [C5] dispatch 記録は merge 済みになってからだけ提示する。それまでは何を依頼して何が返って
+  きたかの唯一の控えであり、失うと手で調べる・再開する手段も失う。
+
+## Step 6: 一度だけ尋ね、承認されたものを実行する
+
+判定は Step 5 が済ませた。この step は尋ねて実行する。独自の判定は一切行わない。
+Step 5 が実際に印字したコマンドを、印字されたとおりに実行するだけである。
+
+[C6] 尋ね方と実行:
+
+- Step 5 が片付けのコマンドを 1 つも印字しなかったときは、承認するものがない。[C1] の
+  inspection コマンドはこれに数えない。Step 5 が既に印字した理由をそのまま使い、何を、なぜ
+  残すのかをユーザーへ伝えて終わる。尋ねない。
+- 尋ねるのは一度だけ、単一の複数選択の質問で行う。選択肢は Step 5 が印字した対象だけ、すなわち
+  端末を閉じる ([C2])、worktree を削除する ([C3])、dispatch 記録を削除する ([C5]) である。
+  Step 5 が印字を見送った対象を選択肢に出さない。
+- 何も選ばないのは正当な回答である。すべてを残し、何が残ったかを伝える。
+- 承認されたコマンドは、端末 → worktree → dispatch 記録 の順に実行する。端末が開いたままの
+  worktree を Orca は手放さず、記録は最後に失うものだからである。
+- 各コマンドは Step 5 が印字したとおりに実行する。handle や worktree id を打ち直さない、
+  `--force` を加えない、印字を見ていない selector に差し替えない。
+- Orca コマンドごとに receipt を確認する。`.ok == true` のときだけ実行できたとみなす。
+  それ以外ならそこで止め、何が実行されなかったかを報告し、残りには手を付けない。
+  失敗が次の step を authorise することはない。
+- dispatch 記録は端末と worktree の id を保持している。それらと並べて提示するときは、
+  記録だけを削除して他を残すと何を失うのかをその選択肢に書き、承知のうえで選べるようにする。
+- 最後に、削除したものと残したものを報告する。
 
 ## 既知の制限
 
@@ -282,8 +335,8 @@ worker が Step 3 で exit 5 を返したときは `MERGED` が false であり�
 
 | 制限 | ユーザーがすること |
 |---|---|
-| 自動で片付けるものはない | Step 5 のコマンドを実行する |
-| セッションが dispatch の途中で終了しても、自動回復しない | `$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と同様に片付ける |
+| 片付けが勝手に走ることはない | Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る |
+| セッションが dispatch の途中で終了しても、自動回復しない | `$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、待機は timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` にある |
 | worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
 | runner は固定で設定できず、`claude --dangerously-skip-permissions` で実行される | 信頼できるタスクだけを dispatch する。worker は permission prompt を出さない |

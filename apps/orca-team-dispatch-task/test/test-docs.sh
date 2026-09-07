@@ -65,7 +65,7 @@ printf '%s\n' '{}' > "$cleanup_state/workers.json"
 printf '%s\n' '{}' > "$cleanup_state/integration-result.json"
 export ORCA_STUB_DIR="$scratch/orca" ORCA_BIN="$P/test/lib/orca-stub.sh" SD="$cleanup_state"
 mkdir -p "$ORCA_STUB_DIR"; : > "$ORCA_STUB_DIR/calls.log"
-for label in C1 C2 C3; do
+for label in C1 C2 C3 C5; do
   block="$scratch/$label.sh"; extract_cleanup_block "$label" "$S" > "$block"
   out=$(bash "$block" 2>&1); rc=$?
   if [[ "$rc" -eq 0 || -s "$ORCA_STUB_DIR/calls.log" ]]; then
@@ -266,6 +266,7 @@ normalise_headings() {
       skill:'## Step 3: Wait'|guide:'## Step 3: 待つ') echo 'h2:step-3' ;;
       skill:'## Step 4: Bring the result home'|guide:'## Step 4: 成果を持ち帰る') echo 'h2:step-4' ;;
       skill:'## Step 5: Give the user the exact cleanup commands'|guide:'## Step 5: ユーザーへ正確な片付けコマンドを渡す') echo 'h2:step-5' ;;
+      skill:'## Step 6: Ask once, then run what the user approves'|guide:'## Step 6: 一度だけ尋ね、承認されたものを実行する') echo 'h2:step-6' ;;
       skill:'## Known limitations'|guide:'## 既知の制限') echo 'h2:known-limitations' ;;
       skill:'## State on disk'|guide:'## ディスク上の状態') echo 'h2:state-on-disk' ;;
       *) printf 'unknown:%s\n' "$line" ;;
@@ -348,6 +349,58 @@ if ! grep -q 'IDENTITY_OK.*comes from \[C2\]' "$S" \
 else
   fail "SK9c C3 が C2 の変数を要求している"
 fi
+
+# SK11: [C5] は merge 済みのときだけ dispatch 記録の削除を提示し、記録でない場所や
+#       .dispatch の外では fail closed する。**破壊コマンドを印字しないことまで見る。**
+bad=""
+c5_scratch=$(mktemp -d); c5_scratch=$(cd "$c5_scratch" && pwd -P)
+c5_block="$c5_scratch/C5.sh"; extract_cleanup_block C5 "$S" > "$c5_block"
+c5_sd="$c5_scratch/.dispatch/demo"; mkdir -p "$c5_sd"
+printf '%s\n' '{}' > "$c5_sd/run.json"
+printf '%s\n' '{}' > "$c5_sd/workers.json"
+
+printf '%s\n' '{"merged":false}' > "$c5_sd/integration-result.json"
+out=$(SD="$c5_sd" bash "$c5_block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the dispatch record:'* \
+   || "$out" != *'the work is not merged yet'* || "$out" == *'rm -rf'* ]]; then
+  bad="$bad [C5-unmerged]"
+fi
+
+printf '%s\n' '{"merged":true}' > "$c5_sd/integration-result.json"
+out=$(SD="$c5_sd" bash "$c5_block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != "rm -rf $c5_sd" ]]; then
+  bad="$bad [C5-merged]"
+fi
+
+c5_outside="$c5_scratch/not-dispatch/demo"; mkdir -p "$c5_outside"
+printf '%s\n' '{}' > "$c5_outside/run.json"
+printf '%s\n' '{}' > "$c5_outside/workers.json"
+printf '%s\n' '{"merged":true}' > "$c5_outside/integration-result.json"
+out=$(SD="$c5_outside" bash "$c5_block" 2>&1); rc=$?
+if [[ "$rc" -eq 0 || "$out" == *'rm -rf'* ]]; then bad="$bad [C5-outside-dispatch]"; fi
+
+c5_bare="$c5_scratch/.dispatch/bare"; mkdir -p "$c5_bare"
+printf '%s\n' '{"merged":true}' > "$c5_bare/integration-result.json"
+out=$(SD="$c5_bare" bash "$c5_block" 2>&1); rc=$?
+if [[ "$rc" -eq 0 || "$out" == *'rm -rf'* ]]; then bad="$bad [C5-not-a-record]"; fi
+rm -rf "$c5_scratch"
+[[ -z "$bad" ]] && ok "SK11 [C5] は merge 済みの dispatch 記録だけを提示" || fail "SK11:$bad"
+
+# SK12: Step 6 は Step 5 の印字だけを実行する。順序・停止条件・非改変・**尋ねない条件**を
+#       正本と訳の両方で明示すること。
+miss=""
+grep -q '^## Step 6: Ask once, then run what the user approves$' "$S" || miss="$miss [step6-heading]"
+grep -q '^## Step 6: 一度だけ尋ね、承認されたものを実行する$' "$G" || miss="$miss [step6-heading-ja]"
+grep -q 'exactly as Step 5 printed it' "$S" || miss="$miss [verbatim]"
+grep -q 'Step 5 が印字したとおりに実行する' "$G" || miss="$miss [verbatim-ja]"
+grep -q 'terminal, then worktree, then dispatch record' "$S" || miss="$miss [order]"
+grep -q '端末 → worktree → dispatch 記録 の順' "$G" || miss="$miss [order-ja]"
+grep -q 'it counted only when `.ok == true`' "$S" || miss="$miss [receipt-gate]"
+grep -q 'there is nothing to approve' "$S" || miss="$miss [no-print-no-ask]"
+grep -q 'Never offer an action Step 5 declined to print' "$S" || miss="$miss [no-extra-option]"
+awk '/^## Step 6: /,/^## Known limitations$/' "$S" | grep -q -- '--force' || miss="$miss [no-force]"
+awk '/^## Step 6: /,/^## 既知の制限$/' "$G" | grep -q -- '--force' || miss="$miss [no-force-ja]"
+[[ -z "$miss" ]] && ok "SK12 Step 6 の実行規則" || fail "SK12:$miss"
 
 # SK10: コピーした plugin の本番呼び出しを plugin cwd から実行する。checker を直接呼ぶだけでは、
 #       SK10 自身の cwd / ROOT 解決が壊れた回帰を検出できない。

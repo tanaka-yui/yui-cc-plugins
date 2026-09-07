@@ -8,9 +8,10 @@ Orca の worktree で 1 つのタスクを worker に実行させ、成果を親
 
 ## 範囲と制限
 
-Stage 1 は 1 ロールで、レビュー・PR・ループ・設定・**自動片付け**を持たない。
+Stage 1 は 1 ロールで、レビュー・PR・ループ・設定を持たない。
+**片付けが勝手に走ることはない。**確認してから、承認されたものだけを片付ける。
 **制限の一覧と片付け手順の正本は skill 側にある** —
-`skills/orca-team-dispatch-task/SKILL.md` の "Known limitations" と Step 5
+`skills/orca-team-dispatch-task/SKILL.md` の "Known limitations" と Step 5 / Step 6
 （日本語は `references/guide-ja.md`）。ここでは繰り返さない。
 
 ## 使い方

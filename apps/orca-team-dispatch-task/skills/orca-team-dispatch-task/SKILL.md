@@ -58,8 +58,8 @@ already exists: do not delete anything, and run the inspection command it prints
 Tell the user first: when the worker finishes, this skill releases the dispatch before it
 acknowledges the message. The terminal was created here and handed to `worker-start`, so
 Orca reports it `retained` and does not close it — the terminal and worktree survive until
-the user cleans up in Step 5. That is Orca's own rule about reused terminals, not a
-retention this skill asked for.
+Step 5 decides what may go and Step 6 asks the user. That is Orca's own rule about reused
+terminals, not a retention this skill asked for.
 
 ```bash
 bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
@@ -126,8 +126,8 @@ keeps everything, so nothing is lost — tell the user how to resolve it.
 
 ## Step 5: Give the user the exact cleanup commands
 
-**This version removes nothing.** Print the commands with real values filled in, and let
-the user decide. Never show a placeholder.
+**This step removes nothing.** It decides what may go and prints the commands with real
+values filled in. Never show a placeholder. Step 6 asks the user before any of them runs.
 
 Run the release yourself and classify its result — the exit code alone does not tell you
 whether closing the terminal is authorised.
@@ -276,6 +276,31 @@ only when the handle and worktree matched in this block.
 When the worker failed (Step 3 exit 5) `MERGED` is false, so no removal is offered — that
 is the intended behaviour, not a gap.
 
+[C5] The dispatch record under `.dispatch/<slug>` holds the only local copy of the request
+and the worker's result, so it is offered for removal only once the work is merged. This
+block calls no Orca command, so it classifies no release; it proves instead that `$SD` really
+is this dispatch's record and that it sits inside a `.dispatch` directory:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
+[[ -f "$SD/run.json" && -f "$SD/workers.json" ]] || {
+  echo "this is not a dispatch status directory; do not remove anything" >&2
+  exit 1
+}
+PARENT=$(cd "$SD/.." 2>/dev/null && pwd -P) || PARENT=""
+[[ "$(basename "${PARENT:-/}")" == .dispatch ]] || {
+  echo "the status directory is not inside .dispatch; do not remove it" >&2
+  exit 1
+}
+if [[ "$MERGED" == true ]]; then
+  printf 'rm -rf %q\n' "$SD"
+else
+  echo "not offering to remove the dispatch record:"
+  echo "  - the work is not merged yet, so this is the only copy of the request and result"
+fi
+```
+
 Say these things to the user in plain language:
 
 - [C1] `release_pending` and `release_unknown` mean the release did not finish. Do not
@@ -294,6 +319,36 @@ Say these things to the user in plain language:
   it cannot prove are already merged, so a surviving branch is a signal, not a failure.
   Do not add `--force` unless the user has looked at the dirty files and accepted losing
   them.
+- [C5] The dispatch record is offered only after a merge. Until then it holds the only copy
+  of what was asked and what came back, and losing it loses the way to inspect or resume by
+  hand.
+
+## Step 6: Ask once, then run what the user approves
+
+Step 5 decided. This step asks and executes. It derives no decision of its own: it runs only
+a command Step 5 actually printed, exactly as printed.
+
+[C6] The ask and the run:
+
+- If Step 5 printed no cleanup command, there is nothing to approve — [C1]'s inspection
+  command is not one. Tell the user what is being kept and why, using the reasons Step 5
+  already printed, and stop. Do not ask.
+- Ask once, in a single multi-select question, and offer only the actions Step 5 printed:
+  closing the terminal ([C2]), removing the worktree ([C3]), and removing the dispatch
+  record ([C5]). Never offer an action Step 5 declined to print.
+- Selecting nothing is a valid answer. Leave everything and say what remains.
+- Run the approved commands in this order: terminal, then worktree, then dispatch record.
+  Orca does not let go of a worktree whose terminal is still open, and the record is the
+  last thing to lose.
+- Run each command exactly as Step 5 printed it. Do not retype a handle or a worktree id,
+  do not add `--force`, and do not substitute a selector you did not see printed.
+- Check the receipt of each Orca command: it counted only when `.ok == true`. On anything
+  else, stop there, report what did not happen, and leave the rest in place. A failure never
+  authorises the step after it.
+- The dispatch record holds the ids of the terminal and the worktree. When it is offered
+  next to them, say in that option what removing the record while keeping the others costs,
+  so the choice is made knowingly.
+- Finish by reporting what was removed and what was kept.
 
 ## Known limitations
 
@@ -301,8 +356,8 @@ State these when they apply. Do not work around them silently.
 
 | Limitation | What the user does |
 |---|---|
-| Nothing is cleaned up automatically | Run the commands from Step 5 |
-| If this session dies mid-dispatch, nothing recovers automatically | Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 |
+| Cleanup never runs on its own | Answer the Step 6 question; only what you approve is removed, and anything you decline stays |
+| If this session dies mid-dispatch, nothing recovers automatically | Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
 | If the worker stops without reporting, waiting times out | Same inspection; the state is on disk under `.dispatch/<slug>/` |
 | The worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
 | The runner is fixed and cannot be configured; it runs `claude --dangerously-skip-permissions` | Dispatch only a task you trust: the worker receives no permission prompts |
