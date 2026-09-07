@@ -203,6 +203,24 @@ out=$(w 2>&1); rc=$?
 [[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* && "$out" != *keepalive* ]] \
   && ok "WT18e keepalive stderr を JSON に混ぜない" || fail "WT18e (rc=$rc out=$out)"; teardown
 
+# WT18f: **空の received.json を「receipt 0 件」と読まない。**jq は空入力に空を返して 0 で
+#        終わるので、検査しないと空のまま追記して write が成功し、ack が通って message が消える
+setup; dn; msg; : > "$SD/received.json"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"received outcome record in $SD is empty"* && ! -s "$SD/received.json" ]] \
+  && ! grep -q 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT18f 空の receipt 台帳を ack しない" || fail "WT18f (rc=$rc out=$out)"; teardown
+
+# WT18g: receipt を書けなかったのは **retain の記録に失敗したのと同じ種類の事故**である。
+#        ふつうの filesystem エラーなので「再実行しても無駄」の 1 ではなく、
+#        「canonical な wait をやり直せ」の 4 に落とす
+setup; dn; msg; chmod 500 "$SD"
+out=$(w 2>&1); rc=$?
+chmod -R 700 "$SD"
+[[ "$rc" -eq 4 && "$out" == *"could not record the worker outcome for dispatch 'ctx_x'"* ]] \
+  && ! grep -q 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT18g receipt の write 失敗は再実行可能な 4" || fail "WT18g (rc=$rc out=$out)"; teardown
+
 # WT19: null parent handle と非正の待機値は使用法エラー
 setup; echo '{"run_id":"run_x","parent_handle":null,"repo_root":"/tmp"}' > "$SD/run.json"
 w >/dev/null 2>&1; rc=$?
@@ -271,9 +289,27 @@ w2 >/dev/null 2>&1; rc=$?
 setup2; echo '{"run_id":"run_y","parent_handle":"term_p","repo_root":"/tmp"}' > "$SD2/run.json"
 w2 >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 2 ]] && ok "WT25b run 不一致は 2" || fail "WT25b (rc=$rc)"; teardown2
+# WT25c: **同じ (task, dispatch) を 2 つの dir が名乗ったら開始時に閉じる。**idx_of は先頭
+#        しか返さないので、batch は片方だけに記録されたまま ack され、もう片方は永久に
+#        settle しない。他の identity 不一致と同じ扱いにする
+setup2; cp "$SD/workers.json" "$SD2/workers.json"
+out=$(w2 2>&1); rc=$?
+[[ "$rc" -eq 2 && "$out" == *"two status dirs name the same dispatch"* ]] \
+  && ok "WT25c 同一 dispatch の重複は 2" || fail "WT25c (rc=$rc out=$out)"; teardown2
 
-# WT26: 片方だけ終端なら終わらない（もう片方を待ち続けて時間切れ 3）
-setup2; dn; msg; w2 2 >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 3 ]] && ok "WT26 全件終端まで待つ" || fail "WT26 (rc=$rc)"; teardown2
+# WT26: 片方だけ終端なら終わらない（もう片方を待ち続けて時間切れ 3）。
+#       **先に settle した dispatch を health check にかけない** — 実測では決着済みの
+#       worker-show は state 'succeeded' を返し、許容集合の外なので、まだ働いている
+#       兄弟ごと wait を 4 で落としてしまう
+setup2; dn; msg
+printf '%s\n' '#!/usr/bin/env bash' \
+  'st=active; for a in "$@"; do [[ "$a" == ctx_x ]] && st=succeeded; done' \
+  'printf "{\"ok\":true,\"result\":{\"worker\":{\"state\":\"%s\"},\"observation\":{\"agentWait\":null}}}\n" \
+     "$st" > "$ORCA_STUB_DIR/orchestration_worker-show"' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show.hook"
+chmod +x "$ORCA_STUB_DIR/orchestration_worker-show.hook"
+out=$(w2 2 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" != *"is 'succeeded'"* ]] \
+  && ok "WT26 決着済みを health check せず全件終端まで待つ" || fail "WT26 (rc=$rc out=$out)"; teardown2
 
 echo "---"; echo "failures: $fails"; exit "$fails"

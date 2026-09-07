@@ -40,6 +40,13 @@ for sd in "${SDS[@]}"; do
   [[ -n "$h" && -n "$r" && -n "$t" && -n "$d" ]] || die "the dispatch identity is incomplete in $sd"
   [[ -z "$PH"  || "$PH"  == "$h" ]] || die "the status dirs do not share one parent terminal"
   [[ -z "$RUN" || "$RUN" == "$r" ]] || die "the status dirs do not share one Run"
+  # ★ **同じ (task, dispatch) を 2 つの dir が名乗ってはならない。**idx_of は先頭しか返さ
+  #   ないので、batch は 1 つ目だけに記録されたまま ack される。2 つ目は永久に settle せず
+  #   receipt も残らない。他の identity 不一致と同じく **開始時に閉じる**
+  for ((j = 0; j < ${#TASKS[@]}; j++)); do
+    [[ "${TASKS[$j]}" != "$t" || "${DISPS[$j]}" != "$d" ]] \
+      || die "two status dirs name the same dispatch (task '$t' dispatch '$d')"
+  done
   PH="$h"; RUN="$r"; TASKS+=("$t"); DISPS+=("$d")
 done
 
@@ -72,19 +79,27 @@ stored_outcome() {   # $1=status dir。receipt が 1 件なら outcome を stdou
   [[ "$count" -le 1 ]] || { log "received outcome record has duplicate receipts; it is not acknowledged"; return 1; }
   [[ "$count" -eq 0 ]] || jq -r '.[0][3]' <<<"$matches"
 }
-record_outcome() {   # $1=status dir $2=task $3=dispatch $4=outcome
-  local sd="$1" records receipt
+record_outcome() {   # $1=status dir $2=task $3=dispatch $4=outcome。1 = 記録が壊れている / 2 = 書けなかった
+  local sd="$1" records receipt updated
   records='[]'
   if [[ -f "$sd/received.json" ]]; then
-    records=$(jq -c . "$sd/received.json") || { log "received outcome record is invalid or unreadable; it is not acknowledged"; return 1; }
+    # ★ **空を「receipt 0 件」と読まない。**jq は空入力に空を返して 0 で終わるので、
+    #   検査しないまま追記すると空のまま write が成功し、**ack が通って message が消える**
+    [[ -s "$sd/received.json" ]] || {
+      log "the received outcome record in $sd is empty; it is not acknowledged"; return 1; }
+    records=$(jq -c . "$sd/received.json") && [[ -n "$records" ]] || {
+      log "received outcome record is invalid or unreadable; it is not acknowledged"; return 1; }
   fi
   receipt="worker_done|$2|$3|$4"
-  write "$sd" "$sd/received.json" "$(jq -c --arg receipt "$receipt" '. + [$receipt]' <<<"$records")" \
-    || { log "could not record the worker outcome; it is not acknowledged"; return 1; }
+  # ★ jq の出力を **検査せずに write へ渡さない**。空を書けば receipt が消える
+  updated=$(jq -c --arg receipt "$receipt" '. + [$receipt]' <<<"$records") && [[ -n "$updated" ]] || {
+    log "could not build the outcome record for dispatch '$3'; it is not acknowledged"; return 2; }
+  write "$sd" "$sd/received.json" "$updated" \
+    || { log "could not record the worker outcome for dispatch '$3'; it is not acknowledged"; return 2; }
 }
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
-  local out res n i m payload d t tid did oc idx tsd rcode rreason existing RET RETRC ACK CHECKRC
+  local out res n i m payload d t tid did oc idx tsd rcode rreason existing upd RET RETRC ACK CHECKRC
   local -a SETTLED
   CHECKRC=0
   out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || CHECKRC=$?
@@ -156,21 +171,27 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       log "received outcome '$existing' contradicts batch outcome '$oc' for task '$tid' dispatch '$did'"
       return 1
     fi
-    [[ -n "$existing" ]] || record_outcome "$tsd" "$tid" "$did" "$oc" || return 1
+    # ★ 記録できなかったのは **retention の write 失敗と同じ種類の事故**である。
+    #   ふつうの filesystem エラーを 1 (再実行しても無駄) に落としてはならない (return 2)
+    [[ -n "$existing" ]] || record_outcome "$tsd" "$tid" "$did" "$oc" || return $?
     # ★ **ack より前に owner を決める**（Orca guide）。この版の owner は常に「保持」である。
     #   解放は Step 6 のユーザー承認後だけが行う (spec D12)。
     RETRC=0
     RET=$("$ORCA_BIN" orchestration worker-retain --dispatch "$did" --json 2>/dev/null) || RETRC=$?
+    # ★ **どの dispatch で失敗したかを名指しする。**4 件を drain している最中に id の無い
+    #   診断だけ出しても、どれを調べればよいか分からない。
+    #   receipt が問題のときに rc= を出さない — RETRC は process の状態であって receipt ではない
     jq -e '.ok == true' <<<"$RET" >/dev/null 2>&1 || {
-      log "worker-retain receipt was not ok (rc=$RETRC); the batch is not acknowledged"
+      log "worker-retain receipt was not ok for dispatch '$did'; the batch is not acknowledged"
       return 2
     }
     [[ "$RETRC" -eq 0 ]] || {
-      log "worker-retain failed (rc=$RETRC); the batch is not acknowledged"
+      log "worker-retain failed (rc=$RETRC) for dispatch '$did'; the batch is not acknowledged"
       return 2
     }
-    write "$tsd" "$tsd/workers.json" "$(jq -c '.roles.design.retained = true' "$tsd/workers.json")" || {
-      log "could not record the retention; the batch is not acknowledged"
+    upd=$(jq -c '.roles.design.retained = true' "$tsd/workers.json") && [[ -n "$upd" ]] \
+      && write "$tsd" "$tsd/workers.json" "$upd" || {
+      log "could not record the retention for dispatch '$did'; the batch is not acknowledged"
       return 2
     }
   done
@@ -207,8 +228,14 @@ finish() {   # $1 = 集約 outcome。**どのタスクが失敗したかを名�
   [[ "$1" == succeeded ]] && exit 0 || exit 5
 }
 healthy() {   # **人の入力待ちは healthy である**（CLI help）。1 つでも不健全なら非 0
-  local i show st wait SHOWRC
+  local i show st wait SHOWRC settled
   for i in "${!DISPS[@]}"; do
+    # ★ **settle した dispatch を health check にかけない**（実測: 決着済みの dispatch の
+    #   worker-show は state 'succeeded' を返す。許容集合の外である）。かけると、先に
+    #   終わった 1 件が、まだ働いている兄弟ごと wait を 4 で落とす。
+    #   receipt があるなら、その dispatch はもう待つ対象ではない
+    settled=$(stored_outcome "${SDS[$i]}") || settled=""
+    [[ -z "$settled" ]] || continue
     SHOWRC=0
     show=$("$ORCA_BIN" orchestration worker-show --dispatch "${DISPS[$i]}" --json 2>/dev/null) || SHOWRC=$?
     [[ "$SHOWRC" -eq 0 ]] || { log "worker-show failed (rc=$SHOWRC)"; return 2; }

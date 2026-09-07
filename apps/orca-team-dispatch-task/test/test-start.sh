@@ -114,21 +114,26 @@ setup; printf '{"ok":true,"result":{"worktrees":[{"id":"a","name":"s","path":"%s
   && ok "ST6b 曖昧なら止まる" || fail "ST6b 1 件目を勝手に選んだ"; teardown
 
 # ST8: **worker-start は rc 0 + state=ready + dispatch id の 3 つ揃いを要求する。**
-#      failed の receipt に dispatchId が残っていても成功にしない
+#      failed の receipt に dispatchId が残っていても成功にしない。
+#      ただし **返ってきた dispatch id は disk に残す** — 記録しないと、その worker の
+#      worker_done が共有 Delivery に居座り、兄弟タスクの wait が永久に ack できなくなる
+did_on_disk() { jq -r '.roles.design.dispatch // empty' "$R/.dispatch/s/workers.json" 2>/dev/null; }
 setup; echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
 echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_x"}}' \
   > "$ORCA_STUB_DIR/orchestration_worker-start"
-start >/dev/null 2>&1
-[[ $? -eq 1 ]] && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
-  && ok "ST8 failed receipt を成功にせず削除もしない" || fail "ST8 failed を成功にした"; teardown
+start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && "$(did_on_disk)" == "ctx_x" ]] && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST8 failed receipt を成功にせず削除もせず、dispatch は残す" \
+  || fail "ST8 (rc=$rc dispatch='$(did_on_disk)')"; teardown
 setup; echo '{"ok":true,"result":{"state":"outcome_unknown","dispatchId":"ctx_x"}}' \
-  > "$ORCA_STUB_DIR/orchestration_worker-start"; start >/dev/null 2>&1
-[[ $? -eq 1 ]] && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
-  && ok "ST8b outcome_unknown も同じ" || fail "ST8b unknown を成功にした"; teardown
+  > "$ORCA_STUB_DIR/orchestration_worker-start"; start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && "$(did_on_disk)" == "ctx_x" ]] && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST8b outcome_unknown も同じ" || fail "ST8b (rc=$rc dispatch='$(did_on_disk)')"; teardown
 setup; echo '{"ok":true,"result":{"state":"ready"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
-start >/dev/null 2>&1
-[[ $? -eq 1 ]] && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
-  && ok "ST8c ready でも dispatch id が無ければ KEPT" || fail "ST8c dispatch id 欠落を成功にした"; teardown
+start >/dev/null 2>&1; rc=$?
+# dispatch id 自体が返っていないので、記録するものが無い。捏造もしない
+[[ "$rc" -eq 1 && -z "$(did_on_disk)" ]] && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST8c ready でも dispatch id が無ければ KEPT" || fail "ST8c (rc=$rc)"; teardown
 
 # ST9: **Task 未作成の段の write 失敗 → identity を出し、自分が作った分だけ戻す**
 #      端末は worker-start より後にしか生まれないので、この段では terminal=none
@@ -245,13 +250,15 @@ setup; start >/dev/null 2>&1
 [[ "$(jq -r '.roles.design.terminal' "$R/.dispatch/s/workers.json")" == "term_w" ]] \
   && ok "ST22 receipt から handle を取る" || fail "ST22"; teardown
 
-# ST23: rc 0 でも handle が無ければ資源を残して止まる。**推測しない**
+# ST23: rc 0 でも handle が無ければ資源を残して止まる。**推測しない**。
+#       この時点で dispatch は確実に存在する（ready + id あり）ので、**id を捨てない**
 setup; echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x","effects":[]}}' \
   > "$ORCA_STUB_DIR/orchestration_worker-start"
 out=$(start 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *"Resources are KEPT"* ]] \
+[[ "$rc" -eq 1 && "$out" == *"Resources are KEPT"* && "$(did_on_disk)" == "ctx_x" ]] \
   && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
-  && ok "ST23 handle 不明で資源を残す" || fail "ST23 (rc=$rc out=$out)"; teardown
+  && ok "ST23 handle 不明で資源と dispatch を残す" \
+  || fail "ST23 (rc=$rc dispatch='$(did_on_disk)' out=$out)"; teardown
 
 # ST24: --run を渡したら run-create を呼ばず、束縛だけ確かめる
 setup; start --run run_x >/dev/null 2>&1

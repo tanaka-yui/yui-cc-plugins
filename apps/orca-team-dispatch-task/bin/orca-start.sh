@@ -38,6 +38,13 @@ write() {   # $1=site $2=path $3=content
   [[ "${ORCA_FAIL_WRITE_AT:-}" == "$1" ]] && { log "injected write failure at $1"; return 1; }
   mkdir -p "$(dirname "$2")" || return 1; printf '%s\n' "$3" > "$2"
 }
+# ★ **jq の出力を検査せずに write へ渡さない。**入力が空なら jq は空を返して 0 で終わるので、
+#   握り潰すと workers.json を空で上書きし、branch と integration_branch が復元不能に消える
+jq_write() {   # $1=site $2=path $3.. = jq の引数
+  local site="$1" path="$2" content; shift 2
+  content=$(jq "$@") && [[ -n "$content" ]] || return 1
+  write "$site" "$path" "$content"
+}
 
 # --- preflight: 何も作る前に確かめる ---
 [[ -x "$ORCA_BIN" ]] || { log "the Orca CLI is not at $ORCA_BIN"; exit 1; }
@@ -201,7 +208,7 @@ if [[ -z "$TID" ]]; then
   exit 1
 fi
 # Task が実在するので、ここから先は削除しない。identity を出して止める
-write workers-after-task "$SD/workers.json" "$(jq -c --arg t "$TID" '.roles.design.task = $t' "$SD/workers.json")" || {
+jq_write workers-after-task "$SD/workers.json" -c --arg t "$TID" '.roles.design.task = $t' "$SD/workers.json" || {
   kept "the task was created but could not be recorded. Resources are KEPT."
   log "task=$TID  inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"; exit 1; }
 
@@ -214,12 +221,24 @@ WSTATE=$(jq -r '.result.state // empty' <<<"$WJ2" 2>/dev/null || echo "")
 DID=$(jq -r '.result.dispatchId // empty' <<<"$WJ2" 2>/dev/null || echo "")
 H=$(jq -r 'first(.result.effects[]? | select(.kind == "terminal" and .role == "agent") | .id) // empty' \
      <<<"$WJ2" 2>/dev/null || echo "")
+# ★ **生きている dispatch id を捨てない。**記録せずに止めると、その worker はそれでも走って
+#   共有 Delivery へ worker_done を送る。**兄弟タスクの wait はその message を処理できず、
+#   batch を永久に ack できなくなる** — 完了した隣のタスクの成果まで取り出せなくなる。
+#   記録さえ残っていれば、その status dir を wait 集合に入れて drain できる
+record_orphan_dispatch() {
+  [[ -n "$DID" ]] || return 0
+  jq_write workers-orphan-dispatch "$SD/workers.json" -c --arg d "$DID" \
+    '.roles.design.dispatch = $d' "$SD/workers.json" \
+    || log "the dispatch id could not be recorded either; wait on dispatch=$DID by hand"
+}
 if [[ "$WRC" -ne 0 || "$WSTATE" != ready || -z "$DID" ]]; then
+  record_orphan_dispatch
   log "worker-start did not report ready (rc=$WRC state='${WSTATE:-none}'). Resources are KEPT."
   log "inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
   exit 1
 fi
 if [[ -z "$H" ]]; then
+  record_orphan_dispatch
   log "worker-start reported ready but returned no agent terminal handle. Resources are KEPT."
   log "task=$TID dispatch=$DID  inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"
   exit 1
@@ -235,10 +254,9 @@ else
   TERMS=null
   log "could not inventory the terminals in this worktree (rc=$TLRC); cleanup will refuse to remove it"
 fi
-write workers-after-dispatch "$SD/workers.json" \
-  "$(jq -c --arg d "$DID" --arg h "$H" --argjson ts "$TERMS" \
-     '.roles.design.dispatch = $d | .roles.design.terminal = $h | .worktree_terminals = $ts' \
-     "$SD/workers.json")" || {
+jq_write workers-after-dispatch "$SD/workers.json" -c --arg d "$DID" --arg h "$H" --argjson ts "$TERMS" \
+  '.roles.design.dispatch = $d | .roles.design.terminal = $h | .worktree_terminals = $ts' \
+  "$SD/workers.json" || {
   kept "the worker started but the dispatch id could not be recorded. Resources are KEPT."
   log "task=$TID dispatch=$DID"
   log "inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"; exit 1; }
