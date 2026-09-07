@@ -58,7 +58,7 @@ Stage A の到達点は次のとおり:
 - **N16** `bin/orca-start.sh` は `terminal create --command "bash $SD/run-design.sh"` で**自分で端末を作り**、その handle を `worker-start --terminal` に渡している。runner の中身は `exec claude --dangerously-skip-permissions` の決め打ち
 - **N17** その結果、`worker-release` は N13 の「再利用または既存の端末は閉じない」に該当して常に `retained` を返す。**現行 SKILL.md Step 3 の「Orca reports it `retained` and does not close it」は `--terminal` 経路の副作用であって、設計された保持ではない**
 - **N18** `bin/orca-wait.sh` は `worker_done` を受けたら**無条件に `worker-release` してから ack** する。この順序のままレビューを足すと、指摘が返る前に design のセッションが失われる
-- **N19** `bin/orca-merge.sh` は `$SD/received.json` に自分の receipt があるかで取り込みを判断する。receipt がタスクごとに分かれていれば **無改修で成立する**
+- **N19** `bin/orca-merge.sh` は `$SD/received.json` に自分の receipt があるかで取り込みを判断する。receipt がタスクごとに分かれていれば **判断ロジックは無改修で成立する**。ただし identity の読み出しに `.design.task` / `.design.dispatch` を使っているため、`workers.json` の形を変えるならこの 2 行は追随する（6 節）
 
 ## 3. 決定事項
 
@@ -150,7 +150,7 @@ worktree は**タスクごとに 1 つ**。1 タスク内の 4 役（Stage B）�
 
 この形にする理由:
 
-1. **`orca-merge.sh` が完全に無改修で通る**（N19）
+1. **`orca-merge.sh` の判断ロジックが無改修で通る**（N19）。`received.json` / `integration-result.json` / `roles/design/{status.json,result.md}` の意味も位置も変わらないため、受理条件（status が done / receipt が succeeded / `result.md` が非空 / branch と clean checkout）はそのまま成立する。**追随するのは identity の読み出し 2 行だけ**（`.design.task` → `.roles.design.task`、`.design.dispatch` → `.roles.design.dispatch`）
 2. **Step 5 の `[C5]`（status dir が `.dispatch` 直下にあることの証明）もそのまま通る。**バッチ用の中間ディレクトリを挟まないため
 3. **1 タスクだけの dispatch は Stage 1 とバイト単位で同じ状態になる。**既存テストの期待値を壊さない
 
@@ -280,8 +280,12 @@ worktree 削除の条件に **「そのタスクの全役が `released` か `alr
 
 ### 10-1. スタブの更新
 
-- **追加**: `orchestration worker-retain`、`orchestration worker-list`。`worker-start` の receipt に**生成された端末 handle** を載せる
-- **削除**: `terminal create` / `terminal wait` のスタブ経路（D7）。`orca-start.sh` が呼ばなくなるので、残すと呼ばれない経路をテストが支えることになる
+**`test/lib/orca-stub.sh` 自体は変更しない。**応答はサブコマンド名をキーにしたファイルから読む汎用実装なので、`orchestration worker-retain` / `orchestration worker-list` は fixture を置くだけで応答する（fixture が無ければ既定の `{"ok":true,"result":{}}` が返る）。
+
+変えるのは各テストファイルの fixture である:
+
+- **追加**: `orchestration_worker-start` の receipt に**生成された端末 handle** を載せる。`orchestration_worker-retain` / `orchestration_worker-list` の fixture
+- **削除**: `test-start.sh` の `terminal_create` fixture（D7）。`orca-start.sh` が呼ばなくなるので、残すと呼ばれない経路をテストが支えることになる
 
 ### 10-2. スイート別
 
@@ -289,7 +293,7 @@ worktree 削除の条件に **「そのタスクの全役が `released` か `alr
 |---|---|
 | `test-start` | `--run <id>` 指定時に **`run-create` を呼ばない** / 束縛確認に失敗したら停止 / worker-start の receipt から端末 handle が取れなければ「資源は残す」と印字して停止 / 巻き戻し対象が **worktree だけ** / **`calls.log` に `terminal create` が 1 度も現れない** |
 | `test-wait` | **主戦場。** 2 タスクの `worker_done` が 1 batch に同居 → 両方の `received.json` へ正しく振り分け・`worker-retain` を 2 回・`ack` は 1 回 / 未知の dispatch が混ざったら **ack も retain もしない** / retain の receipt が ok でなければ ack しない / 1 成功 1 失敗で exit 5 かつ両方の receipt が正しい / `parent_handle` または `run_id` 不一致で exit 2 / **`worker-release` が 1 度も呼ばれない** |
-| `test-merge` | **無改修で緑であること。**状態レイアウトを変えていないことの回帰証明（MG10「merge しても資源を消さない」を含む） |
+| `test-merge` | **fixture の `workers.json` を `roles` 形に直すだけで、期待値は 1 件も変わらないこと。**受理条件を変えていないことの回帰証明（MG10「merge しても資源を消さない」を含む）。期待値を書き換えたくなったら、それは設計が意図せず壊れた合図である |
 | `test-report-status` | 変更なし |
 | `test-docs` | `[C7]` を含む規則 ID 集合の一致 / SKILL.md ⇔ `guide-ja.md` の bash ブロックのバイト一致・見出し順序 / **Step 6 の質問分割ルール（≤4 はタスクごと、超過は一括）**が両文書に明記 / **release state の 4 分類**が文書化されている / 制限表の件数一致 |
 | `test-e2e` | N=2 の並列シナリオをスタブ上で通す（起動 → 集約待機 → 片方だけ merge → 片付け提示） |
