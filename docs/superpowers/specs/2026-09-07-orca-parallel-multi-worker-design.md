@@ -14,6 +14,7 @@
 | 初版 (5ff3333) | Stage A（並列 dispatch 基盤）を決める。Stage B（レビュー協調）/ Stage C（役ごとの agent 設定）/ Stage D は範囲外として節を分けて記録するだけに留める |
 | rev2 (25d6e6b) | 自己矛盾を 3 件訂正。`roles` 化に伴い `orca-merge.sh` の identity 読み出し 2 行が追随すること、`test-merge` は fixture だけ直して期待値が変わらないこと、`orca-stub.sh` 自体は汎用実装なので変更不要であることを明記 |
 | 本版 | **実機で U1 / U2 を解決し、N20〜N23 を追加。**U1 は (a)（`--agent claude` は権限プロンプトを出さない）。U2 は `result.effects[]` から取る。**9-1 の中核主張（coordinator-owned な端末の release は `released` を返す）を実測で確認した** |
+| rev4 (CR-1) | **Step 5 は release を実行しない、と裁定した。**Orca が端末を作るようになった結果、`[C1]`/`[C2]`/`[C3]` が分類のために呼んでいた `worker-release` は実際に端末を閉じてしまい（N22）、ユーザーに尋ねる前に worker のセッションを破壊していた。4 文書（SKILL.md / guide-ja.md / README.md / CLAUDE.md）と D6 / D12 が「解放は Step 6 の承認後だけ」と述べている以上、**文書が正で block が誤り**とする。Step 5 は `worker-list --run <run_id> --json` の非破壊 receipt（`resource.releaseState`）で分類し、`[C2]` は `orchestration worker-release --dispatch <id>` を **印字するだけ**にする。実行は Step 6。これに伴い 9-1 / 9-3 を改訂 |
 
 ## 1. 解こうとしている問題
 
@@ -255,6 +256,8 @@ N16 / N17 のとおり、Stage 1 で常に `retained` が返っていたのは `
 | `already_released` | 冪等な再呼び出し | 完了 |
 | `release_pending` / `release_unknown` | 未確定 | 現行 `[C1]`。**そこで止める。**worktree も dispatch 記録も触らない |
 
+**rev4 の裁定（CR-1）で、この表は「Step 5 が release を呼んで得る state」ではなく「Step 5 が `worker-list` に尋ねて読む state」の表になった。**Step 5 は何も mutate しない。分類の入力は `worker-list --run <run_id> --json` の `resource.releaseState`（無ければ `terminalState`）であり、そこには D11 の `worker-retain` を反映した `retained`（`retainedReason: "user_requested"`）が正常系として現れる。`released` / `already_released` は「既に閉じている」の意味に変わり、`[C2]` は `retained` / `active` / `reclaimable` のときに identity を証明したうえで `orchestration worker-release --dispatch <id>` を**印字する**。`terminal close` は使わない — `worker-release` は閉じる前に出力を archive し（N13）、identity を証明できない端末や引き取られた端末を閉じることを自ら拒むため、Step 6 が実行するコマンドとして厳密に安全側である。
+
 ### 9-2. 新規ブロック `[C7]` — Orca 実状態との突合
 
 **タスクの資源を消す前に、自前の記録ではなく Orca に聞く**（N15）。
@@ -272,7 +275,7 @@ worker-list --run <run_id> --terminal-state retained --json
 
 `[C4]`（`worktree rm` はブランチ削除も試み、証明できないものは残す。`--force` を足さない）は**変更しない**。
 
-worktree 削除の条件に **「そのタスクの全役が `released` か `already_released`、または証明済みで閉じた」**を足す。既存の `MERGED` / `OWNED` / clean / `IDENTITY_OK` / `ACCOUNTED` は据え置き。`ACCOUNTED`（worktree 内の端末集合 ⊆ 記録した集合）は、記録側に全役の端末を入れれば役が増えても成立する。三値（yes / no / unknown）のうち `unknown` は削除を authorise しない、という性質も維持する。
+**この節が要求していた条件追加は rev4 (CR-1) で撤回する。**「そのタスクの全役が `released` か `already_released`、または証明済みで閉じた」は、**Step 5 が release を実行する前提で書かれていた**。解放が Step 6 へ移った以上、`[C3]` が判定する時点ではどの役も解放されていないのが正常系であり、この条件は決して成立しない — 足せば削除は永久に提示されなくなる。よって `[C3]` の条件は既存の `MERGED` / `OWNED` / clean / `IDENTITY_OK` / `ACCOUNTED` の 5 つに、`worker-list` から読んだ release state が `release_pending` / `release_unknown` でないこと（`[C1]` が止める経路）を加えたものとする。Step 6 は端末 → worktree の順に実行するので、端末がまだ開いたままの worktree が `[C3]` で提示されるのは正常である。`ACCOUNTED`（worktree 内の端末集合 ⊆ 記録した集合）は、記録側に全役の端末を入れれば役が増えても成立する。三値（yes / no / unknown）のうち `unknown` は削除を authorise しない、という性質も維持する。
 
 ### 9-4. Step 6 の質問の割り方
 
