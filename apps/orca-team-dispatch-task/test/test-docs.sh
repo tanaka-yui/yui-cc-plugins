@@ -190,6 +190,41 @@ if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
    || "$out" == *'worktree rm'* ]]; then
   bad="$bad [C3-list-failed-receipt]"
 fi
+
+# SK6h: Orca が作った端末の正常系は state=released である。C2 は閉じるものが無いと述べ、
+#        close コマンドを印字せず、terminal show も引かない。
+printf '%s\n' '{"ok":true,"result":{"state":"released"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
+  > "$ORCA_STUB_DIR/terminal_show"
+printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+: > "$ORCA_STUB_DIR/calls.log"
+block="$scratch/C2-released.sh"; extract_cleanup_block C2 "$S" > "$block"
+out=$(bash "$block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'Orca closed the worker terminal; nothing to close'* \
+   || "$out" == *'terminal close'* ]] \
+   || grep -q 'terminal show' "$ORCA_STUB_DIR/calls.log"; then
+  bad="$bad [C2-released]"
+fi
+
+# SK6i: released でも worktree の削除条件は残りが満たされる。Orca が閉じたことが identity の
+#        証明なので、C3 は削除を提示する。
+: > "$ORCA_STUB_DIR/calls.log"
+block="$scratch/C3-released.sh"; extract_cleanup_block C3 "$S" > "$block"
+out=$(bash "$block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'worktree rm --worktree id:wt_1 --json'* ]]; then
+  bad="$bad [C3-released]"
+fi
+
+# SK6j: released のとき terminal show は閉じた端末を返せない。C3 はそれで止まってはならない。
+printf '%s\n' '{"ok":false,"error":"gone"}' > "$ORCA_STUB_DIR/terminal_show"
+printf '%s\n' 7 > "$ORCA_STUB_DIR/terminal_show.rc"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(bash "$block" 2>&1); rc=$?
+if [[ "$rc" -ne 0 || "$out" != *'worktree rm --worktree id:wt_1 --json'* \
+   || "$out" == *'could not verify the terminal identity'* ]]; then
+  bad="$bad [C3-released-show-gone]"
+fi
+rm -f "$ORCA_STUB_DIR/terminal_show.rc"
 unset ORCA_STUB_DIR ORCA_BIN SD
 rm -rf "$scratch"
 [[ -z "$bad" ]] && ok "SK6c 各 cleanup block が空/null/失敗 receipt で閉じる" || fail "SK6c:$bad"
@@ -200,11 +235,6 @@ for n in 'release_pending' 'release_unknown' 'retained' 'already_released' \
          'merged' 'dirty' '--force' 'worktreeId'; do
   grep -qi -- "$n" "$S" || miss="$miss [$n]"; done
 [[ -z "$miss" ]] && ok "SK7 安全条件" || fail "SK7 欠落:$miss"
-
-# SK7a: runner は permission prompt を飛ばすことを、dispatch 前に判断できる文書へ明記する。
-grep -q 'claude --dangerously-skip-permissions' "$S" \
-  && grep -q 'claude --dangerously-skip-permissions' "$G" \
-  && ok "SK7a runner の権限無効化を開示" || fail "SK7a 権限無効化の開示なし"
 
 # SK7b: **列挙できないことを「0 個」にしない** (round 4 finding 1)。
 #       ACCOUNTED は yes / no / unknown を保ち、yes 以外では削除を提示しないこと
@@ -425,6 +455,27 @@ printf '%s\n' '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestrati
 out=$(SD="$c7_sd" bash "$c7" 2>&1); rc=$?
 [[ "$rc" -ne 0 ]] && ok "SK13c 列挙できなければ止まる" || fail "SK13c (rc=$rc out=$out)"
 rm -rf "$c7_sd" "$c7_scratch" "$ORCA_STUB_DIR"; unset ORCA_BIN
+
+# SK14: N 並列の契約が両文書に明記されている
+bad=""
+for f in "$S" "$G"; do
+  grep -q -- '--run' "$f" || bad="$bad [--run:$(basename "$f")]"
+  grep -q -- '--status-dir' "$f" || bad="$bad [--status-dir:$(basename "$f")]"
+done
+for pat in released retained already_released release_pending release_unknown; do
+  grep -q "$pat" "$S" || bad="$bad [$pat]"
+done
+[[ -z "$bad" ]] && ok "SK14 N 並列と release state の契約" || fail "SK14:$bad"
+
+# SK15: 上限 4 タスクと質問の割り方が両文書にある
+grep -q 'at most four tasks at once' "$S" && grep -q 'one question per task' "$S" \
+  && grep -q '一度に 4 タスクまで' "$G" && grep -q 'タスクごとに 1 問' "$G" \
+  && ok "SK15 質問の割り方" || fail "SK15"
+
+# SK16: 消えた記述が残っていない
+! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
+  && ! grep -q 'dangerously-skip-permissions' "$S" \
+  && ok "SK16 消えた経路の記述が残っていない" || fail "SK16"
 
 # SK10: コピーした plugin の本番呼び出しを plugin cwd から実行する。checker を直接呼ぶだけでは、
 #       SK10 自身の cwd / ROOT 解決が壊れた回帰を検出できない。

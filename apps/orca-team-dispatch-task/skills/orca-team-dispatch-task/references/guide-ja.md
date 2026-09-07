@@ -6,7 +6,8 @@
 
 # Orca Team Dispatch
 
-1 つのタスクを 1 worker 専用の Orca worktree で実行し、成果を親へ持ち帰る。
+各タスクを専用の Orca worktree と専用の worker で、1 つの共有 Run 上で実行し、
+成果を親へ持ち帰る。
 
 ```bash
 PLUGIN="${CLAUDE_PLUGIN_ROOT:?the plugin root is not set; reinstall the plugin}"
@@ -17,8 +18,14 @@ Orca CLI は PATH に無い。ユーザーへ見せるコマンドも含め、�
 
 ## Step 1: 依頼を書き出す
 
+dispatch するのは一度に 4 タスクまでとする。4 タスクは既に 4 本の agent セッションであり、
+Step 6 はタスクごとに 1 問尋ねるが、`AskUserQuestion` が受け取れる質問は最大 4 問である。
+ユーザーがそれ以上を望むときは、タスク件数と起動するセッション本数を示し、4 を超える前に
+明示的な同意を得る。
+
 worker は依頼をファイルから読む。逐語で写し、要約しない。要約するとユーザーが実際に
-出した指示が失われる。
+出した指示が失われる。これはタスクごとに 1 回行い、タスクごとに固有の slug と固有の
+依頼ファイルを与える。
 
 ```bash
 SLUG=<lowercase, digits and hyphens, 1-30 chars>
@@ -33,35 +40,55 @@ Step 2 を別 call で実行するときは、その正確な path を `REQ` へ
 
 ## Step 2: 開始
 
+これをタスクごとに 1 回実行する。**最初の呼び出しが Run を作って `run_id` を印字し、以降の
+呼び出しはその同じ `run_id` を `--run` で渡す。こうして全タスクが 1 つの Run と 1 つの親
+mailbox を共有する。**並列にではなく、順番に呼ぶ。
+
 ```bash
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
+RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
-        --objective "<one line naming the outcome>") || { echo "$OUT"; exit 1; }
+        --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
+RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
+printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
 ```
 
-exit 1 は worker が起動しなかったことを意味する。メッセージに resources are KEPT と
-あれば Task はすでに実在する。何も削除せず、表示された inspection コマンドを実行する。
+ここでも shell 変数は tool call を跨がない。全タスクの `status_dir` と 1 つの `run_id` を
+印字された値のまま控える。Step 3、Step 4、Step 5 はいずれもその正確な値を必要とする。
+
+exit 1 はそのタスクの worker が起動しなかったことを意味する。メッセージに resources are KEPT と
+あれば Task はすでに実在する。何も削除せず、表示された inspection コマンドを実行する。すでに
+起動済みのタスクは影響を受けない。通常どおり Step 3 で待つ。
 
 ## Step 3: 待つ
 
 先にユーザーへ伝える。worker が終わると、この skill はメッセージを acknowledge する前に
-dispatch を release する。端末はこちらで作って `worker-start` へ渡した再利用端末なので、
-Orca は `retained` と報告して閉じない。端末と worktree は Step 5 が削除してよいものを判定し、
-Step 6 がユーザーへ尋ねるまで残る。これは Orca の再利用端末の規則であり、この skill が
-retention を要求したためではない。
+その端末を retain する。ここでは何も解放しない。端末、worktree、dispatch 記録はいずれも、
+Step 5 が削除してよいものを判定し、Step 6 がユーザーへ尋ねるまで残る。保持は意図的である。
+後段の stage が同じセッションへ review の指摘を送り返すためである。
+
+1 回の呼び出しで全タスクを待つ。タスクは 1 つの Run と 1 つの親 mailbox を共有するので、
+1 度の drain ですべてが settle する。`--status-dir` をタスクごとに 1 つ渡す。
 
 ```bash
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
+# One --status-dir per task, in Step 2's order. Repeat the flag for every further task.
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step 2>" \
+                               --status-dir "<task 2 status_dir printed by Step 2>"
 ```
 
 | Exit | 意味 | すること |
 |---|---|---|
-| 0 | worker が成功を報告して完了 | `$SD/roles/design/result.md` を読み、ユーザーへ伝えて Step 4 へ進む |
-| 5 | worker が失敗を報告して完了 | `result.md` を読み、失敗内容を伝えて Step 5 へ進む。**merge しない** |
-| 3 | まだ実行中 | 進捗を報告してから、もう一度呼ぶ |
+| 0 | すべての worker が成功を報告して完了 | 各タスクの `$SD/roles/design/result.md` を読み、ユーザーへ伝えて全タスクを Step 4 へ進める |
+| 5 | 1 件以上の worker が失敗を報告 | 各 `result.md` を読み、どのタスクがなぜ失敗したかを伝える。Step 4 へ進めるのは成功したタスクだけで、Step 5 は全タスクに行う。**失敗したタスクを merge しない** |
+| 3 | まだ実行中 | 進捗を報告してから、同じ `--status-dir` の組でもう一度呼ぶ |
 | 4 | worker が停止・失敗した、または Orca transport を検証できない | 調べてユーザーへ伝える。何も削除しない。release transport failure の前に receipt が保存されていれば canonical wait を再実行し、batch を手で復旧しない |
 | 1 | batch が未対応・矛盾、receipt を読めない・書けない、または release が完了していない | acknowledge していない。手動 acknowledge はせず、下の状態別の手順に従う |
+
+**判断の根拠は exit code であって出力の文字列ではない。**集約行の前に、待機は
+`task=... dispatch=... status_dir=... outcome=...` の行をタスクごとに 1 行印字する。一部だけ
+失敗したときは、それらの行に両方の outcome が同時に現れる。どのタスクが失敗したかを名指しする
+ためにその行を使い、成功判定を出力中の `outcome=` の検索で行ってはならない。
 
 exit 1 では **自分で `--ack` を実行しない**。まず error を読む。`worker_done` の receipt は release
 前に記録されるため、`release_pending` は安全に再試行できる。`orca-wait.sh` を再実行すると release を
@@ -98,7 +125,9 @@ bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 
 ## Step 4: 成果を持ち帰る
 
-exit 0 のときだけ実行する。
+成功したタスクごとに 1 回、`SD` へそのタスクの `status_dir` を設定して実行する。exit 0 なら
+全タスクが対象である。exit 5 なら、自身の `task=...` 行が `outcome=succeeded` で終わっていた
+タスクだけが対象である。
 
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
@@ -107,7 +136,8 @@ bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 dispatch を始めたときにいたブランチへ worker のブランチを merge する。worker が成功を
 報告していること、`result.md` が空でないこと、checkout が開始時のブランチのままであること、
 checkout が clean であることのすべてを満たさなければ拒否する。競合時は merge を中断して
-すべてを残すので、ユーザーへ解決方法を伝える。
+すべてを残すので、ユーザーへ解決方法を伝える。タスクは順番に merge して結果をそれぞれ報告する。
+あるタスクが拒否されても、他のタスクについては何も意味しない。
 
 ## Step 5: ユーザーへ正確な片付けコマンドを渡す
 
@@ -117,13 +147,14 @@ placeholder を見せない。実行してよいかは Step 6 がユーザーへ
 release は自分で実行し、その結果の state で分類する。exit code だけでは端末を閉じてよいか
 判断できない。
 
-各 cleanup block は別の tool call である。block を実行する前に `SD` へ Step 2 が出した正確な
-`status_dir` を設定する。各 block は state を自分で読み直し、state がなければ fail closed する。
+各 cleanup block は別の tool call である。[C1]、[C2]、[C3]、[C5] はタスクごとに 1 回、`SD` へ
+そのタスクの正確な `status_dir` を設定して実行する。[C7] は Run 全体について、いずれかの削除の
+前に 1 回だけ実行する。各 block は state を自分で読み直し、state がなければ fail closed する。
 作り物の handle、dispatch、worktree id を代入してはならない。
 
-[C1] `release_pending` または `release_unknown`: **ここで止まる。**exit 0 は何かを閉じる
-権限ではない。receipt と次の inspection コマンドをユーザーへ見せ、端末と worktree は意図的に
-保持していると伝える。
+[C1] `release_pending` または `release_unknown`: そのタスクは **ここで止まる。**exit 0 は何かを
+閉じる権限ではない。receipt と次の inspection コマンドをユーザーへ見せ、端末と worktree は
+意図的に保持していると伝える。
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
@@ -150,8 +181,11 @@ printf '%s\n' "$REL"
 printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
 ```
 
-[C2] `retained` または `already_released`: Orca が端末をこちらに残した。閉じる前に、
-handle と端末が属する worktree が記録済み state と一致することを確認し、所有物であると証明する。
+[C2] worker を release して state を読む。`released` は Orca が端末を閉じたという意味であり、
+もう何もすることがない。`already_released` は同じ状態に 2 度到達しただけである。`retained` は
+Orca が閉じることを **拒んだ** という意味であり、誰かが引き取ったか、identity を証明できなかった
+かのいずれかである。したがって close コマンドを印字してよいのは handle と worktree が記録済み
+state と一致するときだけで、一致しなければ何を、なぜ残すのかを伝える。
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
@@ -172,16 +206,21 @@ jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 |
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 [[ "$RELRC" -eq 0 ]] || { echo "could not confirm the release; do not close anything" >&2; exit 1; }
 case "$STATE" in
-  retained|already_released) ;;
+  released|retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
 esac
-SHRC=0; SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-  echo "could not verify the terminal identity; do not close anything" >&2
-  exit 1
-}
-if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
-   && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
+SHRC=0; SHOWN=""
+if [[ "$STATE" != released ]]; then
+  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
+    echo "could not verify the terminal identity; do not close anything" >&2
+    exit 1
+  }
+fi
+if [[ "$STATE" == released ]]; then
+  echo "Orca closed the worker terminal; nothing to close"
+elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
+     && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
   printf '%s terminal close --terminal %q --json\n' "$ORCA_BIN" "$TH"
 else
   echo "the terminal no longer matches our state; leave it alone"
@@ -213,17 +252,22 @@ jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 |
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 [[ "$RELRC" -eq 0 ]] || { echo "could not confirm the release; do not remove anything" >&2; exit 1; }
 case "$STATE" in
-  retained|already_released) ;;
+  released|retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
 esac
-SHRC=0; SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-  echo "could not verify the terminal identity; do not remove anything" >&2
-  exit 1
-}
+SHRC=0; SHOWN=""
+if [[ "$STATE" != released ]]; then
+  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
+    echo "could not verify the terminal identity; do not remove anything" >&2
+    exit 1
+  }
+fi
 IDENTITY_OK=no
-if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
-   && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
+if [[ "$STATE" == released ]]; then
+  IDENTITY_OK=yes
+elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
+     && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
   IDENTITY_OK=yes
 fi
 DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
@@ -256,21 +300,26 @@ else
 fi
 ```
 
-`IDENTITY_OK` は [C3] の中で計算する。[C2] から shell 変数を持ち込まない。この block 内で handle と
-worktree が一致したときだけ `yes` になる。
-worker が Step 3 で exit 5 を返したときは `MERGED` が false であり、削除を提示しない。
-これは意図した動作であって欠落ではない。
+`IDENTITY_OK` は [C3] の中で計算する。[C2] から shell 変数を持ち込まない。Orca が自分で端末を
+閉じたとき、あるいはこの block 内で handle と worktree が一致したときにだけ `yes` になる。
+worker が Step 3 で exit 5 を返したタスクは `MERGED` が false であり、そのタスクの削除を
+提示しない。これは意図した動作であって欠落ではない。
 
 [C7] `worker-retain` は durable な例外を記録するため、中断したセッションの保持が
 残りうる。この Run について何かを消す前に、Orca が実際に何を保持しているか尋ね、
 自分たちの記録と突き合わせる。記録に無い保持は他者のもの、あるいは前回の Run の
-自分たちのものであり、いずれにせよ手を出してよいものではない:
+自分たちのものであり、いずれにせよ手を出してよいものではない。この Run のすべての
+タスクが 1 つの答えを共有するので、実行は 1 回だけとし、`SDS` には **すべての** タスクの
+status dir を並べる。Orca は Run 全体を報告するため、`SDS` から漏れた兄弟タスクは ghost に
+見え、全タスクの片付けを止めてしまう:
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+SDS=("$SD")   # append every other status_dir of this Run
+WJ=(); for d in "${SDS[@]}"; do WJ+=("$d/workers.json"); done
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
-KNOWN=$(jq -c '[.roles[]?.dispatch // empty]' "$SD/workers.json" 2>/dev/null)
+KNOWN=$(jq -sc '[.[] | .roles[]?.dispatch // empty]' "${WJ[@]}" 2>/dev/null)
 [[ -n "$RUN" && -n "$KNOWN" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
@@ -292,9 +341,9 @@ fi
 ```
 
 [C5] `.dispatch/<slug>` の dispatch 記録は、依頼と worker の結果の唯一のローカル控えである。
-そのため、成果が merge 済みになったときだけ削除を提示する。この block は Orca コマンドを
-呼ばないので release の分類も行わない。代わりに `$SD` が本当にこの dispatch の記録であり、
-`.dispatch` ディレクトリの中にあることを証明する。
+そのため、そのタスクの成果が merge 済みになったときだけ削除を提示する。この block は Orca
+コマンドを呼ばないので release の分類も行わない。代わりに `$SD` が本当にこの dispatch の
+記録であり、`.dispatch` ディレクトリの中にあることを証明する。
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
@@ -322,8 +371,10 @@ fi
   手動 acknowledge したりして補おうとしない。再試行するのは `release_pending` だけであり、
   `release_unknown` では receipt と result を確認しても、ユーザーが guarded manual integration を選んだ
   場合を含め、元の親 queue は blocked のままにする。
-- [C2] handle と worktree が記録済み state に一致する端末だけを閉じてよい。一致しなければ、
-  すでに他者の所有物である。
+- [C2] `released` と `already_released` は Orca が端末を閉じたことを意味し、そのタスクについて
+  閉じるものは残っていない。`retained` は Orca が端末を残したことを意味し、そのときは handle と
+  worktree が記録済み state に一致する端末だけを閉じてよい。一致しなければ、すでに他者の
+  所有物である。
 - [C3] 削除コマンドは、成果が merge 済み、この dispatch が worktree を作成した、checkout が
   読めて clean、端末 identity が一致、worktree にまだ残る端末すべてが記録済み、の全条件を
   満たすときだけ表示する。再利用 worktree は最初からこちらのものではないため、削除を提示しない。
@@ -344,23 +395,29 @@ Step 5 が実際に印字したコマンドを、印字されたとおりに実�
 
 [C6] 尋ね方と実行:
 
-- Step 5 が片付けのコマンドを 1 つも印字しなかったときは、承認するものがない。[C1] の
-  inspection コマンドはこれに数えない。Step 5 が既に印字した理由をそのまま使い、何を、なぜ
-  残すのかをユーザーへ伝えて終わる。尋ねない。
-- 尋ねるのは一度だけ、単一の複数選択の質問で行う。選択肢は Step 5 が印字した対象だけ、すなわち
-  端末を閉じる ([C2])、worktree を削除する ([C3])、dispatch 記録を削除する ([C5]) である。
-  Step 5 が印字を見送った対象を選択肢に出さない。
+- どのタスクについても Step 5 が片付けのコマンドを 1 つも印字しなかったときは、承認するものが
+  ない。[C1] の inspection コマンドはこれに数えない。Step 5 が既に印字した理由をそのまま使い、
+  何を、なぜ残すのかをユーザーへ伝えて終わる。尋ねない。
+- 質問はタスクごとに 1 問とし、質問の header にはそのタスクの slug を使い、選択肢はそのタスクに
+  ついて Step 5 が印字した対象だけにする。Step 5 が何も印字しなかったタスクは質問から丸ごと
+  外し、そのタスクについて何を、なぜ残すのかを伝える。
+- `AskUserQuestion` が受け取れる質問は最大 4 問である。Step 1 でユーザーが 4 を超えるタスクを
+  承認していた場合は、代わりに単一の質問とし、選択肢を「全タスクの端末」「全タスクの worktree」
+  「全タスクの dispatch 記録」とする。選択肢に出してよいのは、少なくとも 1 つのタスクについて
+  Step 5 がその対象を印字したときだけである。
+- Step 5 が印字を見送った対象を選択肢に出さない。
 - 何も選ばないのは正当な回答である。すべてを残し、何が残ったかを伝える。
-- 承認されたコマンドは、端末 → worktree → dispatch 記録 の順に実行する。端末が開いたままの
-  worktree を Orca は手放さず、記録は最後に失うものだからである。
+- 承認されたコマンドは、タスクを slug 順に、タスク内では 端末 → worktree → dispatch 記録 の順に
+  実行する。端末が開いたままの worktree を Orca は手放さず、記録は最後に失うものだからである。
 - 各コマンドは Step 5 が印字したとおりに実行する。handle や worktree id を打ち直さない、
   `--force` を加えない、印字を見ていない selector に差し替えない。
 - Orca コマンドごとに receipt を確認する。`.ok == true` のときだけ実行できたとみなす。
   それ以外ならそこで止め、何が実行されなかったかを報告し、残りには手を付けない。
-  失敗が次の step を authorise することはない。
+  失敗が次の step を authorise することはなく、あるタスクの失敗が別のタスクの先送りを
+  authorise することもない。
 - dispatch 記録は端末と worktree の id を保持している。それらと並べて提示するときは、
   記録だけを削除して他を残すと何を失うのかをその選択肢に書き、承知のうえで選べるようにする。
-- 最後に、削除したものと残したものを報告する。
+- 最後に、タスクごとに削除したものと残したものを報告する。
 
 ## 既知の制限
 
@@ -370,16 +427,18 @@ Step 5 が実際に印字したコマンドを、印字されたとおりに実�
 |---|---|
 | 片付けが勝手に走ることはない | Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る |
 | セッションが dispatch の途中で終了しても、自動回復しない | `$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
-| worker が報告せずに停止すると、待機は timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` にある |
+| worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
 | worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
-| runner は固定で設定できず、`claude --dangerously-skip-permissions` で実行される | 信頼できるタスクだけを dispatch する。worker は permission prompt を出さない |
+| どの役も Orca が起動する `claude` agent で動き、model と effort はまだ選べない | 信頼できるタスクだけを dispatch し、役ごとの agent 設定を足す stage を待つ |
 | setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
 | `release_unknown` batch は元の親 terminal の queue を block する | acknowledge しない。`received.json` と `result.md` を確認する。guarded manual integration でも queue は解消されない。後続の dispatch は別の Orca terminal から開始し、launch 時にはその `ORCA_TERMINAL_HANDLE` が使われる |
 | failure / edge receipt fixture の一部は simulated のままである | 実機 E2E が証明したのは worker 1 本の成功経路だけである。Stage 2 で、依存する前に `check` の wait/ack、`worker-show` の wait state、`worker-release` の別 state、terminal/worktree cleanup の実機 receipt を capture する |
 
 ## ディスク上の状態
 
-`.dispatch/<slug>/` には `request.md`、`run.json`、`workers.json`、`received.json`、
-`integration-result.json`、`run-design.sh`、`roles/design/{status.json,result.md}` がある。
-手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は repository の
-`info/exclude` に加えるため、ユーザーの `git status` には現れない。
+タスクごとに `.dispatch/<slug>/` が 1 つあり、そこに `request.md`、`run.json`、`workers.json`、
+`received.json`、`integration-result.json`、`roles/design/{status.json,result.md}` がある。
+1 つの Run のタスクは `run.json` に同じ `run_id` を持ち、`workers.json` にそれぞれの worktree を
+持つ。`workers.json` の `roles` map は役ごとに 1 entry を持つので、後段の stage が何も動かさずに
+役を増やせる。手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は
+repository の `info/exclude` に加えるため、ユーザーの `git status` には現れない。

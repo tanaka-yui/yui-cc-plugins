@@ -1,8 +1,8 @@
 ---
 name: orca-team-dispatch-task
 description: >
-  Orca の worktree で 1 つのタスクを worker に実行させる。
-  worker を起動し、完了を待ち、成果を親ブランチへ取り込む。
+  Orca の worktree で 1 つ以上のタスクを worker に並列実行させる。
+  worker を起動し、全件の完了を待ち、成果を親ブランチへ取り込む。
   Use when: "orca dispatch", "orca でタスクを実行", "dispatch on orca".
 argument-hint: "<task description>"
 ---
@@ -15,7 +15,8 @@ not change the language presented to the user.
 
 # Orca Team Dispatch
 
-Run one task in its own Orca worktree with one worker, then bring the result home.
+Run each task in its own Orca worktree with its own worker, all on one shared Run, then
+bring the results home.
 
 ```bash
 PLUGIN="${CLAUDE_PLUGIN_ROOT:?the plugin root is not set; reinstall the plugin}"
@@ -27,8 +28,14 @@ you show the user.
 
 ## Step 1: Write the request down
 
+Dispatch at most four tasks at once. Four tasks is already four live agent sessions, and
+Step 6 asks one question per task — `AskUserQuestion` takes at most four. If the user wants
+more, show them the task count and the number of sessions it will start, and get an explicit
+yes before going past four.
+
 The worker reads the request from a file. Copy it verbatim — summarising it is how the
-user's actual instructions get lost.
+user's actual instructions get lost. Do this once per task, giving each task its own slug
+and its own request file.
 
 ```bash
 SLUG=<lowercase, digits and hyphens, 1-30 chars>
@@ -43,35 +50,55 @@ calls, so set `REQ` to that exact printed path before running Step 2.
 
 ## Step 2: Start
 
+Run this once per task. **The first call creates the Run and prints `run_id`; every later
+call passes that same `run_id` back with `--run`, so all tasks share one Run and one parent
+mailbox.** Call them one after another, not in parallel.
+
 ```bash
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
+RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
-        --objective "<one line naming the outcome>") || { echo "$OUT"; exit 1; }
+        --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
+RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
+printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
 ```
 
-Exit 1 means the worker did not start. If the message says resources are KEPT, the Task
-already exists: do not delete anything, and run the inspection command it prints.
+Shell variables do not cross tool calls here either. Keep the printed `status_dir` of every
+task and the single `run_id`; Step 3, Step 4 and Step 5 all need them by their exact values.
+
+Exit 1 means that task's worker did not start. If the message says resources are KEPT, the
+Task already exists: do not delete anything, and run the inspection command it prints. Tasks
+that already started are unaffected — wait for them in Step 3 as usual.
 
 ## Step 3: Wait
 
-Tell the user first: when the worker finishes, this skill releases the dispatch before it
-acknowledges the message. The terminal was created here and handed to `worker-start`, so
-Orca reports it `retained` and does not close it — the terminal and worktree survive until
-Step 5 decides what may go and Step 6 asks the user. That is Orca's own rule about reused
-terminals, not a retention this skill asked for.
+Tell the user first: when a worker finishes, this skill retains its terminal before it
+acknowledges the message. Nothing is released here. The terminal, the worktree and the
+dispatch record all survive until Step 5 decides what may go and Step 6 asks the user.
+Retention is deliberate — a later stage sends review feedback back to the same session.
+
+One call waits for every task at once: the tasks share one Run and one parent mailbox, so a
+single drain settles all of them. Pass one `--status-dir` per task.
 
 ```bash
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD"
+# One --status-dir per task, in Step 2's order. Repeat the flag for every further task.
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step 2>" \
+                               --status-dir "<task 2 status_dir printed by Step 2>"
 ```
 
 | Exit | Meaning | What you do |
 |---|---|---|
-| 0 | The worker finished and reported success | Read `$SD/roles/design/result.md`, tell the user, go to Step 4 |
-| 5 | The worker finished and reported failure | Read `result.md`, tell the user what failed, go to Step 5. **Do not merge** |
-| 3 | Still running | Report progress, then call it again |
-| 4 | The worker stopped or failed, or Orca transport could not be verified | Inspect and tell the user; do not delete anything. If receipt recording succeeded before a release transport failure, rerun the canonical wait; do not recover a batch by hand |
+| 0 | Every worker finished and reported success | Read each task's `$SD/roles/design/result.md`, tell the user, go to Step 4 for every task |
+| 5 | At least one worker reported failure | Read each `result.md`, tell the user which task failed and why, go to Step 4 only for the tasks that succeeded, and to Step 5 for all of them. **Do not merge a failed task** |
+| 3 | Still running | Report progress, then call it again with the same `--status-dir` set |
+| 4 | A worker stopped or failed, or Orca transport could not be verified | Inspect and tell the user; do not delete anything. If receipt recording succeeded before a release transport failure, rerun the canonical wait; do not recover a batch by hand |
 | 1 | A batch is unsupported or contradictory, the receipt cannot be read or written, or release did not complete | It was not acknowledged. Do not acknowledge it by hand; use the state-specific action below |
+
+**The exit code is the authority, not the text.** Before the aggregate line, the wait prints
+one `task=... dispatch=... status_dir=... outcome=...` line per task; on a partial failure
+those lines carry both outcomes at once. Use them to name which task failed, and never
+decide success by searching the output for `outcome=`.
 
 On exit 1, **do not run `--ack` yourself**. Read the error first. A `worker_done` receipt is
 recorded before release is attempted, so `release_pending` is safe to retry: run
@@ -113,7 +140,9 @@ invitation to recover a batch manually.
 
 ## Step 4: Bring the result home
 
-On exit 0 only.
+Run this once per succeeded task, with `SD` set to that task's `status_dir`. On exit 0 every
+task qualifies. On exit 5 only the tasks whose own `task=...` line ended in
+`outcome=succeeded` do.
 
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
@@ -122,7 +151,8 @@ bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 It merges the worker's branch into the branch you were on when the dispatch started. It
 refuses unless the worker reported success, `result.md` is non-empty, your checkout is
 still on that branch, and the checkout is clean. On a conflict it aborts the merge and
-keeps everything, so nothing is lost — tell the user how to resolve it.
+keeps everything, so nothing is lost — tell the user how to resolve it. Merge the tasks one
+after another and report each result; a refusal for one task says nothing about the others.
 
 ## Step 5: Give the user the exact cleanup commands
 
@@ -132,13 +162,14 @@ values filled in. Never show a placeholder. Step 6 asks the user before any of t
 Run the release yourself and classify its result — the exit code alone does not tell you
 whether closing the terminal is authorised.
 
-Each cleanup block is a separate tool call. Set `SD` to the exact `status_dir` printed by
-Step 2 before running a block; every block reloads its own state and fails closed if that
-state is absent. Never substitute a made-up handle, dispatch, or worktree id.
+Each cleanup block is a separate tool call. Run [C1], [C2], [C3] and [C5] once per task, with
+`SD` set to that task's exact `status_dir`; run [C7] once for the whole Run, before any
+removal. Every block reloads its own state and fails closed if that state is absent. Never
+substitute a made-up handle, dispatch, or worktree id.
 
-[C1] `release_pending` or `release_unknown`: **stop here.** Exiting 0 is not authority to
-close anything. Show the user the receipt and this inspection command, and say the
-terminal and worktree are being kept on purpose:
+[C1] `release_pending` or `release_unknown`: **stop here** for that task. Exiting 0 is not
+authority to close anything. Show the user the receipt and this inspection command, and say
+the terminal and worktree are being kept on purpose:
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
@@ -165,8 +196,11 @@ printf '%s\n' "$REL"
 printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
 ```
 
-[C2] `retained` or `already_released`: Orca left the terminal to us. **Prove it is ours
-before closing it** — compare the handle and the worktree it lives in against the state:
+[C2] Release the worker and read the state. `released` means Orca closed the terminal and
+there is nothing left to do. `already_released` is the same, reached twice. `retained` means
+Orca **refused** to close it — someone took it over, or its identity could not be proven —
+so print a close command only when the handle and worktree still match our recorded state,
+and otherwise say it is being kept and why.
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
@@ -187,16 +221,21 @@ jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 |
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 [[ "$RELRC" -eq 0 ]] || { echo "could not confirm the release; do not close anything" >&2; exit 1; }
 case "$STATE" in
-  retained|already_released) ;;
+  released|retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
 esac
-SHRC=0; SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-  echo "could not verify the terminal identity; do not close anything" >&2
-  exit 1
-}
-if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
-   && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
+SHRC=0; SHOWN=""
+if [[ "$STATE" != released ]]; then
+  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
+    echo "could not verify the terminal identity; do not close anything" >&2
+    exit 1
+  }
+fi
+if [[ "$STATE" == released ]]; then
+  echo "Orca closed the worker terminal; nothing to close"
+elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
+     && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
   printf '%s terminal close --terminal %q --json\n' "$ORCA_BIN" "$TH"
 else
   echo "the terminal no longer matches our state; leave it alone"
@@ -228,17 +267,22 @@ jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 |
 STATE=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null)
 [[ "$RELRC" -eq 0 ]] || { echo "could not confirm the release; do not remove anything" >&2; exit 1; }
 case "$STATE" in
-  retained|already_released) ;;
+  released|retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
 esac
-SHRC=0; SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-  echo "could not verify the terminal identity; do not remove anything" >&2
-  exit 1
-}
+SHRC=0; SHOWN=""
+if [[ "$STATE" != released ]]; then
+  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
+    echo "could not verify the terminal identity; do not remove anything" >&2
+    exit 1
+  }
+fi
 IDENTITY_OK=no
-if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
-   && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
+if [[ "$STATE" == released ]]; then
+  IDENTITY_OK=yes
+elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
+     && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
   IDENTITY_OK=yes
 fi
 DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
@@ -272,21 +316,26 @@ fi
 ```
 
 `IDENTITY_OK` is calculated inside [C3]; do not carry a shell variable from [C2]. It is `yes`
-only when the handle and worktree matched in this block.
-When the worker failed (Step 3 exit 5) `MERGED` is false, so no removal is offered — that
-is the intended behaviour, not a gap.
+when Orca closed the terminal itself, and otherwise only when the handle and worktree matched
+in this block.
+When a worker failed (Step 3 exit 5) that task's `MERGED` is false, so no removal is offered
+for it — that is the intended behaviour, not a gap.
 
 [C7] `worker-retain` records a durable exception, so a session that died mid-dispatch
 leaves retained terminals behind. Before removing anything for this Run, ask Orca what it
 actually still holds and compare it against what we recorded. A retention we did not record
 is someone else's — or our own from a previous run — and either way it is not ours to step
-on:
+on. Every task of this Run shares one answer, so run this once, and list **every** task's
+status dir in `SDS` — Orca reports the whole Run, so a sibling left out of `SDS` looks like
+a ghost and stops the cleanup of every task:
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+SDS=("$SD")   # append every other status_dir of this Run
+WJ=(); for d in "${SDS[@]}"; do WJ+=("$d/workers.json"); done
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
-KNOWN=$(jq -c '[.roles[]?.dispatch // empty]' "$SD/workers.json" 2>/dev/null)
+KNOWN=$(jq -sc '[.[] | .roles[]?.dispatch // empty]' "${WJ[@]}" 2>/dev/null)
 [[ -n "$RUN" && -n "$KNOWN" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
@@ -308,9 +357,9 @@ fi
 ```
 
 [C5] The dispatch record under `.dispatch/<slug>` holds the only local copy of the request
-and the worker's result, so it is offered for removal only once the work is merged. This
-block calls no Orca command, so it classifies no release; it proves instead that `$SD` really
-is this dispatch's record and that it sits inside a `.dispatch` directory:
+and the worker's result, so it is offered for removal only once that task's work is merged.
+This block calls no Orca command, so it classifies no release; it proves instead that `$SD`
+really is this dispatch's record and that it sits inside a `.dispatch` directory:
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
@@ -338,8 +387,10 @@ Say these things to the user in plain language:
   close the terminal or acknowledge by hand. Retry only `release_pending`; for
   `release_unknown`, inspect the receipt and result, then leave the original parent queue
   blocked even if the user explicitly chooses the guarded manual integration.
-- [C2] Only a terminal whose handle and worktree still match our recorded state may be
-  closed. If they do not match, someone else owns it now.
+- [C2] `released` and `already_released` mean Orca closed the terminal, so there is nothing
+  left to close for that task. `retained` means Orca kept it, and only a terminal whose
+  handle and worktree still match our recorded state may then be closed. If they do not
+  match, someone else owns it now.
 - [C3] The removal command is printed only when the work is merged, **this dispatch
   created the worktree**, the checkout is clean and readable, the terminal identity
   matched, and every terminal still in that worktree is one we recorded. A reused
@@ -364,25 +415,31 @@ a command Step 5 actually printed, exactly as printed.
 
 [C6] The ask and the run:
 
-- If Step 5 printed no cleanup command, there is nothing to approve — [C1]'s inspection
-  command is not one. Tell the user what is being kept and why, using the reasons Step 5
-  already printed, and stop. Do not ask.
-- Ask once, in a single multi-select question, and offer only the actions Step 5 printed:
-  closing the terminal ([C2]), removing the worktree ([C3]), and removing the dispatch
-  record ([C5]). Never offer an action Step 5 declined to print.
+- If Step 5 printed no cleanup command for any task, there is nothing to approve — [C1]'s
+  inspection command is not one. Tell the user what is being kept and why, using the reasons
+  Step 5 already printed, and stop. Do not ask.
+- Ask one question per task, with the task's slug as the question header, and offer only the
+  actions Step 5 printed for that task. A task for which Step 5 printed nothing is left out
+  of the question entirely — say what is being kept for it and why.
+- `AskUserQuestion` takes at most four questions. If the user approved more than four tasks
+  in Step 1, ask a single question instead whose options are "every task's terminals",
+  "every task's worktrees" and "every task's dispatch records", and offer an option only when
+  Step 5 printed that action for at least one task.
+- Never offer an action Step 5 declined to print.
 - Selecting nothing is a valid answer. Leave everything and say what remains.
-- Run the approved commands in this order: terminal, then worktree, then dispatch record.
-  Orca does not let go of a worktree whose terminal is still open, and the record is the
-  last thing to lose.
+- Run the approved commands task by task in slug order, and within a task in this order:
+  terminal, then worktree, then dispatch record. Orca does not let go of a worktree whose
+  terminal is still open, and the record is the last thing to lose.
 - Run each command exactly as Step 5 printed it. Do not retype a handle or a worktree id,
   do not add `--force`, and do not substitute a selector you did not see printed.
 - Check the receipt of each Orca command: it counted only when `.ok == true`. On anything
   else, stop there, report what did not happen, and leave the rest in place. A failure never
-  authorises the step after it.
+  authorises the step after it, and a failure in one task never authorises skipping ahead in
+  another.
 - The dispatch record holds the ids of the terminal and the worktree. When it is offered
   next to them, say in that option what removing the record while keeping the others costs,
   so the choice is made knowingly.
-- Finish by reporting what was removed and what was kept.
+- Finish by reporting, per task, what was removed and what was kept.
 
 ## Known limitations
 
@@ -392,16 +449,18 @@ State these when they apply. Do not work around them silently.
 |---|---|
 | Cleanup never runs on its own | Answer the Step 6 question; only what you approve is removed, and anything you decline stays |
 | If this session dies mid-dispatch, nothing recovers automatically | Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
-| If the worker stops without reporting, waiting times out | Same inspection; the state is on disk under `.dispatch/<slug>/` |
-| The worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
-| The runner is fixed and cannot be configured; it runs `claude --dangerously-skip-permissions` | Dispatch only a task you trust: the worker receives no permission prompts |
+| If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
+| A worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
+| Every role runs the `claude` agent Orca launches; the model and effort cannot be chosen yet | Dispatch only a task you trust, and wait for the stage that adds per-role agent settings |
 | Repositories that need setup hooks are out of scope | The worktree is created with setup skipped |
 | A `release_unknown` batch blocks its original parent terminal's queue | Do not acknowledge it. Inspect `received.json` and `result.md`; guarded manual integration does not unblock that queue. Start later dispatches from another Orca terminal, whose `ORCA_TERMINAL_HANDLE` is used at launch |
 | Failure and edge receipt fixtures are partly simulated | The real E2E proves the one-worker success path only. Stage 2 must capture real `check` wait/ack, `worker-show` wait-state, `worker-release` alternate-state, and terminal/worktree cleanup receipts before relying on their consuming paths |
 
 ## State on disk
 
-`.dispatch/<slug>/`: `request.md`, `run.json`, `workers.json`, `received.json`,
-`integration-result.json`, `run-design.sh`, and `roles/design/{status.json,result.md}`.
-Everything needed to resume or clean up by hand is here. `.dispatch/` is added to the
-repository's `info/exclude`, so it never shows up in the user's `git status`.
+One `.dispatch/<slug>/` per task: `request.md`, `run.json`, `workers.json`, `received.json`,
+`integration-result.json`, and `roles/design/{status.json,result.md}`. Tasks of one Run carry
+the same `run_id` in `run.json` and their own worktree in `workers.json`, whose `roles` map
+holds one entry per role so a later stage can add more without moving anything. Everything
+needed to resume or clean up by hand is here. `.dispatch/` is added to the repository's
+`info/exclude`, so it never shows up in the user's `git status`.
