@@ -21,9 +21,9 @@ setup() {
   echo '{"ok":true,"result":{"worktrees":[]}}' > "$ORCA_STUB_DIR/worktree_list"
   printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"}}}\n' \
     "$WT" > "$ORCA_STUB_DIR/worktree_create"
-  echo '{"ok":true,"result":{"terminal":{"handle":"term_w"}}}' > "$ORCA_STUB_DIR/terminal_create"
   echo '{"ok":true,"result":{"task":{"id":"task_x"}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
-  echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+  echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_w"}]}}' \
+    > "$ORCA_STUB_DIR/orchestration_worker-start"
 }
 teardown() { git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
              rm -rf "$ORCA_STUB_DIR" "$R" "$REQ" "$(dirname "$WT")"
@@ -71,7 +71,7 @@ setup; start >/dev/null 2>&1; l=$(spec)
   && ok "ST4b ask/escalation を禁じる" || fail "ST4b 禁止が書かれていない"; teardown
 
 # ST5: Run の束縛先が自分でなければ起動しない (O26)。workers.json が identity を持つ。
-#      --terminal と --model を併用しない (O5)。**--setup skip を渡す**
+#      worker-start は --agent を渡し --model は渡さない。**--setup skip を渡す**
 setup; echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term_o"}}}' \
   > "$ORCA_STUB_DIR/orchestration_run-current"; start >/dev/null 2>&1
 grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" && fail "ST5 無関係な Run で起動した"; teardown
@@ -82,8 +82,8 @@ jq -e '.run_id=="run_x" and .worktree_id=="wt_1" and .branch=="orca/s"
   "$R/.dispatch/s/workers.json" >/dev/null 2>&1 || fail "ST5 workers.json"
 ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
 wc_=$(grep 'worktree create' "$ORCA_STUB_DIR/calls.log" | head -1)
-[[ "$ws" == *--terminal* && "$ws" != *--model* && "$wc_" == *'--setup skip'* ]] \
-  && ok "ST5 束縛・identity・O5・setup skip" || fail "ST5 (ws=$ws wc=$wc_)"; teardown
+[[ "$ws" == *--agent* && "$ws" != *--model* && "$wc_" == *'--setup skip'* ]] \
+  && ok "ST5 束縛・identity・agent・setup skip" || fail "ST5 (ws=$ws wc=$wc_)"; teardown
 
 # ST6: **worktree の再利用は親 repo で絞る**（`--repo` は受け付けない）
 setup; start >/dev/null 2>&1
@@ -99,44 +99,19 @@ setup; echo 1 > "$ORCA_STUB_DIR/worktree_list.rc"; start >/dev/null 2>&1
 
 # ST6e: **再利用先が dirty なら渡さない**（前回の未完了変更を成果へ混ぜない）
 setup; reuse_fixture; echo dirt > "$WT/dirty.txt"; start >/dev/null 2>&1
-[[ $? -eq 1 ]] && ! grep -q 'terminal create' "$ORCA_STUB_DIR/calls.log" \
+[[ $? -eq 1 ]] && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST6e dirty な再利用を拒否" || fail "ST6e dirty を渡した"; teardown
 
 # ST6f: **rc 非 0 なのに receipt らしき JSON を返す create を成功にしない**
 setup; echo 1 > "$ORCA_STUB_DIR/worktree_create.rc"; start >/dev/null 2>&1
-[[ $? -eq 1 ]] && ! grep -q 'terminal create' "$ORCA_STUB_DIR/calls.log" \
+[[ $? -eq 1 ]] && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST6f create の rc を見る" || fail "ST6f rc を無視した"; teardown
-setup; echo 1 > "$ORCA_STUB_DIR/terminal_create.rc"; start >/dev/null 2>&1
-[[ $? -eq 1 ]] && ! grep -q 'task-create' "$ORCA_STUB_DIR/calls.log" \
-  && ok "ST6g terminal create の rc を見る" || fail "ST6g rc を無視した"; teardown
-
-# ST6h: rc 0 なのに handle が無い terminal create は、cleanup identity と rc を隠さない。
-setup; echo '{"ok":true,"result":{"terminal":{}}}' > "$ORCA_STUB_DIR/terminal_create"
-echo 8 > "$ORCA_STUB_DIR/worktree_rm.rc"
-out=$(start 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *"worktree=wt_1"* && "$out" == *"terminal=none"* \
-  && "$out" == *"no terminal handle was returned, so no terminal close was attempted"* \
-  && "$out" == *"worktree rm FAILED (rc=8); it is KEPT"* ]] \
-  && ! grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
-  && ok "ST6h terminal create の不完全 receipt も identity と cleanup rc を報告" \
-  || fail "ST6h (rc=$rc out=$out)"; teardown
 
 # ST6b: 同名が複数返ったら曖昧として止まる（勝手に 1 件目を選ばない）
 setup; printf '{"ok":true,"result":{"worktrees":[{"id":"a","name":"s","path":"%s","branch":"refs/heads/orca/s"},{"id":"b","name":"s","path":"/tmp/other","branch":"refs/heads/x"}]}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_list"; start >/dev/null 2>&1
-[[ $? -eq 1 ]] && ! grep -q 'terminal create' "$ORCA_STUB_DIR/calls.log" \
+[[ $? -eq 1 ]] && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST6b 曖昧なら止まる" || fail "ST6b 1 件目を勝手に選んだ"; teardown
-
-# ST7: 端末作成に失敗したら **自分が作った worktree だけ**を戻す。再利用分は消さない
-setup; echo 1 > "$ORCA_STUB_DIR/terminal_create.rc"; echo '{"ok":false}' > "$ORCA_STUB_DIR/terminal_create"
-start >/dev/null 2>&1
-grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" || fail "ST7 rollback しない"; teardown
-setup; reuse_fixture
-echo 1 > "$ORCA_STUB_DIR/terminal_create.rc"; echo '{"ok":false}' > "$ORCA_STUB_DIR/terminal_create"
-start >/dev/null 2>&1
-! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
-  && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
-  && ok "ST7 自分の分だけ戻し、再利用分は消さない" || fail "ST7 再利用 / 保持が壊れている"; teardown
 
 # ST8: **worker-start は rc 0 + state=ready + dispatch id の 3 つ揃いを要求する。**
 #      failed の receipt に dispatchId が残っていても成功にしない
@@ -156,10 +131,10 @@ start >/dev/null 2>&1
   && ok "ST8c ready でも dispatch id が無ければ KEPT" || fail "ST8c dispatch id 欠落を成功にした"; teardown
 
 # ST9: **Task 未作成の段の write 失敗 → identity を出し、自分が作った分だけ戻す**
+#      端末は worker-start より後にしか生まれないので、この段では terminal=none
 setup; out=$(ORCA_FAIL_WRITE_AT=workers-initial start 2>&1); rc=$?
-[[ "$rc" -eq 1 ]] && [[ "$out" == *"worktree=wt_1"* && "$out" == *"terminal=term_w"* ]] \
+[[ "$rc" -eq 1 ]] && [[ "$out" == *"worktree=wt_1"* && "$out" == *"terminal=none"* ]] \
   && grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
-  && grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST9 identity を出して自分の分だけ戻す" || fail "ST9 (rc=$rc out=$out)"; teardown
 
 # ST9b: **Task 成立後の write 失敗は KEPT。**この境界では何も消してはならない。
@@ -184,7 +159,7 @@ out=$(start 2>&1); rc=$?
 setup; echo '{"ok":true,"result":{"task":{}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
 out=$(start 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *"task-create returned success but no task id"* && "$out" == *KEPT* \
-  && "$out" == *"worktree=wt_1"* && "$out" == *"terminal=term_w"* \
+  && "$out" == *"worktree=wt_1"* && "$out" == *"terminal=none"* \
   && "$out" == *"task-list --run run_x"* ]] \
   && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
   && ! grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
@@ -221,17 +196,11 @@ grep -qxF '.dispatch/' "$R/.git/info/exclude" 2>/dev/null \
   && [[ -z "$(git -C "$R" status --porcelain)" ]] \
   && ok "ST10 .dispatch を除外して親を clean に保つ" || fail "ST10 親が dirty のまま"; teardown
 
-# ST11: **runner を worker checkout の外に置く。**中に置くと checkout が dirty になり、
-#       worker の成果 commit に混ざるか、後の worktree rm で消える
+# ST11: **worker checkout を汚さない。**端末は Orca が作るので、このプロセスは
+#       worker checkout に何も書き込んではならない
 setup; start >/dev/null 2>&1
-[[ ! -e "$WT/.orca-run-design.sh" ]] && [[ -x "$R/.dispatch/s/run-design.sh" ]] \
-  && [[ -z "$(git -C "$WT" status --porcelain)" ]] \
-  && ok "ST11 runner は checkout の外" || fail "ST11 worker checkout を汚した"; teardown
-
-# ST12: terminal create には runner の absolute path を渡す
-setup; start >/dev/null 2>&1
-grep 'terminal create' "$ORCA_STUB_DIR/calls.log" | grep -q "$R/.dispatch/s/run-design.sh" \
-  && ok "ST12 absolute path を渡す" || fail "ST12 相対パスを渡した"; teardown
+[[ -z "$(git -C "$WT" status --porcelain)" ]] \
+  && ok "ST11 worker checkout を汚さない" || fail "ST11 worker checkout を汚した"; teardown
 
 # ST14: **ownership と worktree の端末集合を記録する**（片付けの gate が読む）
 setup; echo '{"ok":true,"result":{"terminals":[{"handle":"term_w"},{"handle":"term_shell"}]}}' \
@@ -256,54 +225,32 @@ start >/dev/null 2>&1
 jq -e '.worktree_terminals == null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST14d 不正 schema も null" || fail "ST14d"; teardown
 
-# ST15: **repo root に空白があっても壊れない。**
-#       `--command` の中で runner path が引用されていること、そして
-#       **生成された runner を実際に実行できること**を見る。
-#       旧実装（`--command "bash $RUNNER"`）ではここが落ちる
-setup_space() {
-  ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
-  export ORCA_TERMINAL_HANDLE=term_p
-  BASE=$(mktemp -d); R="$BASE/repo with space"; mkdir -p "$R"
-  git -C "$R" init -q -b main .; echo seed > "$R/README.md"; git -C "$R" add -A
-  git -C "$R" -c user.email=t@e -c user.name=t commit -q -m seed
-  WT="$BASE/wt with space"; git -C "$R" worktree add -q -b orca/s "$WT" >/dev/null 2>&1
-  REQ=$(mktemp); MARK="MARK-$$"; printf 'do %s\n' "$MARK" > "$REQ"
-  echo '{"ok":true,"result":{"runtime":{"reachable":true}}}' > "$ORCA_STUB_DIR/status"
-  echo '{"ok":true,"result":{"terminal":{"handle":"term_p"}}}' > "$ORCA_STUB_DIR/terminal_show"
-  echo '{"ok":true,"result":{"run":{"id":"run_x"}}}' > "$ORCA_STUB_DIR/orchestration_run-create"
-  echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term_p"}}}' \
-    > "$ORCA_STUB_DIR/orchestration_run-current"
-  echo '{"ok":true,"result":{"worktrees":[]}}' > "$ORCA_STUB_DIR/worktree_list"
-  printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"}}}\n' \
-    "$WT" > "$ORCA_STUB_DIR/worktree_create"
-  echo '{"ok":true,"result":{"terminal":{"handle":"term_w"}}}' > "$ORCA_STUB_DIR/terminal_create"
-  echo '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
-  echo '{"ok":true,"result":{"task":{"id":"task_x"}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
-  echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
-}
-teardown_space() { git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
-                   rm -rf "$ORCA_STUB_DIR" "$BASE" "$REQ"; unset ORCA_TERMINAL_HANDLE ORCA_BIN; }
-setup_space
-bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug s --objective obj --repo-root "$R" >/dev/null 2>&1
-RUNNER="$R/.dispatch/s/run-design.sh"
-# ★ **本当の判別はここ**: Orca は --command を「シェル文字列」として解釈する。
-#   その文字列を語分割したとき **ちょうど 2 語**（bash と path）でなければ、
-#   空白入り path で worker は起動しない。旧形 `--command "bash $RUNNER"` は 3 語以上になる。
-#   値そのものは argv.log（生の 0x1f 区切り）から取る — calls.log は %q 済みで取り出せない
-# preflight の `terminal show` も同じ log に居るので、**create の行だけ**を取る
-CMD=$(grep 'terminal.create' "$ORCA_STUB_DIR/argv.log" | head -1 \
-      | tr '\037' '\n' | awk 'p{print; exit} /^--command$/{p=1}')
-WORDS=$(bash -c 'set -- '"$CMD"'; echo $#' 2>/dev/null || echo 99)
-if [[ -x "$RUNNER" ]] && bash -n "$RUNNER" && [[ "$WORDS" == 2 ]] \
-   && sed 's|^exec claude.*|exec true|' "$RUNNER" > "$RUNNER.t" && bash "$RUNNER.t"; then
-  ok "ST15 空白入り path で command が 2 語、runner も実行できる"
-else
-  fail "ST15 空白入り path で壊れた (words=$WORDS cmd=[$CMD])"
-fi
-teardown_space
-
 # ST13: 既存 slug は上書きしない
 setup; mkdir -p "$R/.dispatch/s"; echo x > "$R/.dispatch/s/keep"; start >/dev/null 2>&1
 [[ $? -ne 0 && -f "$R/.dispatch/s/keep" ]] && ok "ST13 既存 slug を拒否" || fail "ST13 上書きした"; teardown
+
+# ST20: 端末は Orca に作らせる。terminal create / terminal wait を呼ばない
+setup; start >/dev/null 2>&1
+! grep -q 'terminal create' "$ORCA_STUB_DIR/calls.log" \
+  && ! grep -q 'terminal wait' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST20 端末を自分で作らない" || fail "ST20 terminal create を呼んだ"; teardown
+
+# ST21: worker-start は --agent を渡し、--terminal を渡さない
+setup; start >/dev/null 2>&1; l=$(grep 'orchestration worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$l" == *--agent* && "$l" == *claude* && "$l" != *--terminal* ]] \
+  && ok "ST21 worker-start の argv" || fail "ST21 ($l)"; teardown
+
+# ST22: 端末 handle は worker-start の receipt から取る
+setup; start >/dev/null 2>&1
+[[ "$(jq -r '.roles.design.terminal' "$R/.dispatch/s/workers.json")" == "term_w" ]] \
+  && ok "ST22 receipt から handle を取る" || fail "ST22"; teardown
+
+# ST23: rc 0 でも handle が無ければ資源を残して止まる。**推測しない**
+setup; echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x","effects":[]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-start"
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"Resources are KEPT"* ]] \
+  && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST23 handle 不明で資源を残す" || fail "ST23 (rc=$rc out=$out)"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

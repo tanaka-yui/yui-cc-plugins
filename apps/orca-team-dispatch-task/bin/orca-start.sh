@@ -116,13 +116,7 @@ fi
 H=""
 kept() { log "$1"; log "run=$RUN worktree=$WT_ID path=$WT_PATH branch=$BR terminal=${H:-none}"; }
 cleanup_before_task() {
-  local cr=0 wr=0
-  if [[ -n "$H" ]]; then
-    "$ORCA_BIN" terminal close --terminal "$H" --json >/dev/null 2>&1 || cr=$?
-    [[ "$cr" -eq 0 ]] && log "the terminal was closed" || log "terminal close FAILED (rc=$cr); it is KEPT"
-  else
-    log "no terminal handle was returned, so no terminal close was attempted"
-  fi
+  local wr=0
   if [[ -z "$CREATED" ]]; then log "the worktree was reused, so it is kept"
   else
     "$ORCA_BIN" worktree rm --worktree "id:$CREATED" --force --json >/dev/null 2>&1 || wr=$?
@@ -131,28 +125,8 @@ cleanup_before_task() {
   fi
 }
 
-# ★ runner は **worker checkout の外**（status dir）に置く。中に置くと checkout が dirty になり、
-#   worker の成果 commit に混ざるか、後の worktree rm で消える
-RUNNER="$SD/run-design.sh"
-{ printf '%s\n' '#!/usr/bin/env bash'
-  printf 'export ORCA_BIN=%q\n' "$ORCA_BIN"
-  # 権限プロンプトで止まらないようにする。Stage 1 の runner は claude 固定
-  printf 'exec claude --dangerously-skip-permissions\n'
-} > "$RUNNER" && chmod +x "$RUNNER" || { kept "cannot write the runner"; cleanup_before_task; exit 1; }
-
-# ★ **command string の中で runner path を shell quote する** (round 3 finding 4)。
-#   `$RR/.dispatch/...` に空白があると別 argv に割れる
-printf -v RUN_CMD 'bash %q' "$RUNNER"
-# **rc と stdout を分けて持つ**（round 2 finding 3）
-TCR=0; TCJ2=$("$ORCA_BIN" terminal create --worktree "id:$WT_ID" --title "$SLUG-design" \
-                --command "$RUN_CMD" --json 2>/dev/null) || TCR=$?
-H=$(jq -r '.result.terminal.handle // empty' <<<"$TCJ2" 2>/dev/null || echo "")
-[[ "$TCR" -eq 0 && -n "$H" ]] || { kept "terminal create failed (rc=$TCR)"; cleanup_before_task; exit 1; }
-"$ORCA_BIN" terminal wait --terminal "$H" --for tui-idle --timeout-ms 120000 --json >/dev/null 2>&1 \
-  || log "tui-idle wait timed out (continuing)"
-
 # ★ **資源を作った後の write 失敗は、identity を出してから止める**（round 2 finding 5）。
-#   Task はまだ無いので、この呼び出しが作った端末と worktree は戻してよい
+#   Task はまだ無いので、この呼び出しが作った worktree は戻してよい
 postwrite() {   # $1=site $2=path $3=content
   write "$1" "$2" "$3" && return 0
   kept "cannot write $2"
@@ -160,26 +134,14 @@ postwrite() {   # $1=site $2=path $3=content
   exit 1
 }
 postwrite status "$SD/roles/design/status.json" '{"status":"starting"}'
-# ★ **この worktree を誰が作ったか**と、**この worktree に居る端末の集合**を記録する
-#   (round 3 finding 1)。bare な worktree create は最初の fallback terminal も作るので、
-#   design terminal だけを account すると「残留物ゼロ」を証明できない
+# ★ **この worktree を誰が作ったか**を記録する (round 3 finding 1)。端末はまだ存在しないので
+#   端末集合の inventory は worker-start の後（端末が生まれてから）に回す
 OWNED=false; [[ -n "$CREATED" ]] && OWNED=true
-# ★ **inventory の失敗を空配列に化けさせない** (round 4 finding 1)。
-#   列挙できなかったことと「端末が 0 個」は別である。前者を [] にすると、
-#   あとの cleanup gate が「未 account 0」と読んで削除を許してしまう (fail-open)。
-#   確定できなければ null を記録し、gate 側はそれを「判断不能」として閉じる
-TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT_ID" --json 2>/dev/null) || TLRC=$?
-if [[ "$TLRC" -eq 0 ]] && jq -e '.result.terminals | type == "array"' <<<"$TL" >/dev/null 2>&1; then
-  TERMS=$(jq -c '[.result.terminals[].handle]' <<<"$TL")
-else
-  TERMS=null
-  log "could not inventory the terminals in this worktree (rc=$TLRC); cleanup will refuse to remove it"
-fi
 postwrite workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg w "$WT_ID" --arg p "$WT_PATH" \
-  --arg b "$BR" --arg h "$H" --arg ib "$IB" --argjson own "$OWNED" --argjson ts "$TERMS" \
+  --arg b "$BR" --arg ib "$IB" --argjson own "$OWNED" \
   '{run_id:$r,worktree_id:$w,worktree_path:$p,branch:$b,integration_branch:$ib,
-    worktree_created_by_this_run:$own, worktree_terminals:$ts,
-    roles:{design:{terminal:$h, retained:false}}}')"
+    worktree_created_by_this_run:$own, worktree_terminals:null,
+    roles:{design:{retained:false}}}')"
 
 RD="$SD/roles/design"
 SPEC="TASK: $SLUG
@@ -239,16 +201,37 @@ write workers-after-task "$SD/workers.json" "$(jq -c --arg t "$TID" '.roles.desi
 # ★ ここから先は何が起きても資源を削除しない (O19)。
 #   **rc 0 + state=ready + dispatch id の 3 つ揃い**を要求する。
 #   failed / outcome_unknown の receipt にも dispatchId が残ることがある
-WRC=0; WJ2=$("$ORCA_BIN" orchestration worker-start --task "$TID" --terminal "$H" \
-               --worktree "id:$WT_ID" --from "$PH" --json 2>/dev/null) || WRC=$?
+WRC=0; WJ2=$("$ORCA_BIN" orchestration worker-start --task "$TID" --worktree "id:$WT_ID" \
+               --agent claude --from "$PH" --json 2>/dev/null) || WRC=$?
 WSTATE=$(jq -r '.result.state // empty' <<<"$WJ2" 2>/dev/null || echo "")
 DID=$(jq -r '.result.dispatchId // empty' <<<"$WJ2" 2>/dev/null || echo "")
+H=$(jq -r 'first(.result.effects[]? | select(.kind == "terminal" and .role == "agent") | .id) // empty' \
+     <<<"$WJ2" 2>/dev/null || echo "")
 if [[ "$WRC" -ne 0 || "$WSTATE" != ready || -z "$DID" ]]; then
   log "worker-start did not report ready (rc=$WRC state='${WSTATE:-none}'). Resources are KEPT."
   log "inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
   exit 1
 fi
-write workers-after-dispatch "$SD/workers.json" "$(jq -c --arg d "$DID" '.roles.design.dispatch = $d' "$SD/workers.json")" || {
+if [[ -z "$H" ]]; then
+  log "worker-start reported ready but returned no agent terminal handle. Resources are KEPT."
+  log "task=$TID dispatch=$DID  inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"
+  exit 1
+fi
+# ★ **inventory の失敗を空配列に化けさせない** (round 4 finding 1)。
+#   列挙できなかったことと「端末が 0 個」は別である。前者を [] にすると、
+#   あとの cleanup gate が「未 account 0」と読んで削除を許してしまう (fail-open)。
+#   確定できなければ null を記録し、gate 側はそれを「判断不能」として閉じる
+TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT_ID" --json 2>/dev/null) || TLRC=$?
+if [[ "$TLRC" -eq 0 ]] && jq -e '.result.terminals | type == "array"' <<<"$TL" >/dev/null 2>&1; then
+  TERMS=$(jq -c '[.result.terminals[].handle]' <<<"$TL")
+else
+  TERMS=null
+  log "could not inventory the terminals in this worktree (rc=$TLRC); cleanup will refuse to remove it"
+fi
+write workers-after-dispatch "$SD/workers.json" \
+  "$(jq -c --arg d "$DID" --arg h "$H" --argjson ts "$TERMS" \
+     '.roles.design.dispatch = $d | .roles.design.terminal = $h | .worktree_terminals = $ts' \
+     "$SD/workers.json")" || {
   kept "the worker started but the dispatch id could not be recorded. Resources are KEPT."
   log "task=$TID dispatch=$DID"
   log "inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"; exit 1; }

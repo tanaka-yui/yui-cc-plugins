@@ -19,9 +19,9 @@ echo '{"ok":true,"result":{"run":{"id":"run_e","coordinator_handle":"term_p"}}}'
 echo '{"ok":true,"result":{"worktrees":[]}}' > "$ORCA_STUB_DIR/worktree_list"
 printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/e2e"}}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_create"
-echo '{"ok":true,"result":{"terminal":{"handle":"term_w"}}}' > "$ORCA_STUB_DIR/terminal_create"
 echo '{"ok":true,"result":{"task":{"id":"task_e"}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
-echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_e"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_e","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_w"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-start"
 echo '{"ok":true,"result":{"runId":"run_e","count":0,"messages":[]}}' > "$ORCA_STUB_DIR/orchestration_check"
 echo '{"ok":true,"result":{"worker":{"state":"active"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
 echo '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
