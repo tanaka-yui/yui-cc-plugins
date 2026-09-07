@@ -12,7 +12,7 @@ setup() {
   echo '{"status":"executing"}' > "$SD/roles/design/status.json"
   echo '{"ok":true,"result":{"runId":"run_x","count":0,"messages":[]}}' > "$ORCA_STUB_DIR/orchestration_check"
   echo '{"ok":true,"result":{"worker":{"state":"active"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
-  echo '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+  echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/orchestration_worker-retain"
 }
 teardown() { rm -rf "$ORCA_STUB_DIR" "$SD"; unset ORCA_BIN; }
 msg() { jq -nc --arg o "${1:-succeeded}" --arg i "${2:-m1}" --arg t "${3:-task_x}" \
@@ -67,14 +67,14 @@ setup; dn; object_msg; out=$(w 2>/dev/null); rc=$?
 setup; dn
 echo '{"roles":{"design":{"terminal":"term_w","task":"task_f2917652a612","dispatch":"ctx_22efecad4b84","retained":false}}}' > "$SD/workers.json"
 rejected_msg; out=$(w 2>&1); rc=$?
-release_or_ack=$(grep -c 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" || true)
+release_or_ack=$(grep -c 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" || true)
 [[ "$rc" -eq 1 && "$out" == *"dispatch_capability_invalid"* && "$out" == *"The Dispatch capability is missing."* \
   && ! -e "$SD/received.json" && "$release_or_ack" -eq 0 ]] \
   && ok "WT4d rejected worker_done を消費しない" || fail "WT4d (rc=$rc out=$out)"; teardown
 
 # WT4e: null payload の status は誤って payload schema の問題と説明せず、未 ack で残す。
 setup; status_msg; out=$(w 2>&1); rc=$?
-release_or_ack=$(grep -c 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" || true)
+release_or_ack=$(grep -c 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" || true)
 [[ "$rc" -eq 1 && "$out" == *"this version handles only worker_done messages; the message was left unacknowledged"* \
   && ! -e "$SD/received.json" && "$release_or_ack" -eq 0 ]] \
   && ok "WT4e status message を未 ack で残す" || fail "WT4e (rc=$rc out=$out)"; teardown
@@ -102,38 +102,22 @@ setup; dn; msg failed; w >/dev/null 2>&1
 setup; dn; msg succeeded m1; w >/dev/null 2>&1; msg succeeded m2; w >/dev/null 2>&1
 [[ "$(jq 'length' "$SD/received.json")" == "1" ]] && ok "WT9 冪等" || fail "WT9 二重処理"; teardown
 
-# WT10: **worker_done は release してから ack する**（Orca guide の既定。retain は
-#       ユーザーの明示依頼が要る例外なので使わない）
+# WT10: worker_done は retain してから ack する。解放は Step 6 だけの権限（spec D12）
 setup; dn; msg; w >/dev/null 2>&1
-r=$(grep -n 'worker-release' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+r=$(grep -n 'worker-retain' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
 a=$(grep -n -- '--ack' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
-[[ -n "$r" && -n "$a" && "$r" -lt "$a" ]] && ok "WT10 release が ack より前" || fail "WT10 順序 ($r/$a)"
-! grep -q 'worker-retain' "$ORCA_STUB_DIR/calls.log" || fail "WT10b retain を使っている"; teardown
+[[ -n "$r" && -n "$a" && "$r" -lt "$a" ]] && ok "WT10 retain が ack より前" || fail "WT10 順序 ($r/$a)"
+! grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log" || fail "WT10b release を呼んだ"
+[[ "$(jq -r '.roles.design.retained' "$SD/workers.json")" == "true" ]] \
+  && ok "WT10c retained を記録" || fail "WT10c"; teardown
 
-# WT11: **release が pending / unknown なら ack しない**（exit 0 は完了の証明ではない）
+# WT11: retain の receipt が ok でなければ ack しない
 setup; dn; msg
-echo '{"ok":true,"result":{"state":"release_pending"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
-w >/dev/null 2>&1
-! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" && ok "WT11 pending で ack しない" \
-  || fail "WT11 pending なのに ack した"; teardown
-setup; dn; msg
-echo '{"ok":true,"result":{"state":"release_unknown"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
-echo 1 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
+echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-retain"
 out=$(w 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *"release result is unknown; not acknowledging"* ]] \
-  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" && ok "WT11b unknown で ack せず盲目的に再試行しない" \
-  || fail "WT11b (rc=$rc out=$out)"; teardown
-
-# WT11c: release_pending でも receipt は残す。ack はせず、release が通った再試行で完了する。
-setup; dn; msg
-echo '{"ok":true,"result":{"state":"release_pending"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
-w >/dev/null 2>&1; rc=$?
-first=$(jq -c . "$SD/received.json" 2>/dev/null)
-echo '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
-out=$(w 2>/dev/null); retry_rc=$?
-[[ "$rc" -eq 1 && "$first" == '["worker_done|task_x|ctx_x|succeeded"]' && "$retry_rc" -eq 0 \
-  && "$out" == *"outcome=succeeded"* ]] && ok "WT11c pending の receipt を再試行で完了" \
-  || fail "WT11c (first=$rc receipt=$first retry=$retry_rc)"; teardown
+[[ "$rc" -eq 4 && "$out" == *"worker-retain receipt was not ok"* && -e "$SD/received.json" ]] \
+  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT11 retain 失敗で ack しない" || fail "WT11 (rc=$rc out=$out)"; teardown
 
 # WT12: **処理できない型を含む batch は ack しない。**見ただけでは処理ではない (O11)
 setup; dn; mixed; w >/dev/null 2>&1; rc=$?
@@ -155,45 +139,31 @@ l=$(grep 'worker-show' "$ORCA_STUB_DIR/calls.log" | head -1)
 [[ "$rc" -eq 3 && "$l" == *--dispatch* && "$l" != *--worker* ]] \
   && ok "WT14 停止・待機・時間切れ・argv" || fail "WT14 (rc=$rc l=$l)"; teardown
 
-# WT15: deliveryId が無い batch は不正。受信記録・release・ack の副作用を持たない
+# WT15: deliveryId が無い batch は不正。受信記録・retain・ack の副作用を持たない
 setup; dn
 jq -nc '{ok:true,result:{runId:"run_x",count:1,messages:[
   {id:"m1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"
 w >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 1 && ! -e "$SD/received.json" ]] \
-  && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ! grep -q 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT15 deliveryId 欠落は副作用なし" || fail "WT15 (rc=$rc)"; teardown
 
 # WT16: 同じ task/dispatch の逆 outcome は 2 件目の完了として消費せず、ack しない
 setup; dn; msg succeeded; w >/dev/null 2>&1
 : > "$ORCA_STUB_DIR/calls.log"; msg failed m2; w >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 1 && "$(jq 'length' "$SD/received.json")" == "1" ]] \
-  && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ! grep -q 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT16 逆 outcome は fail-closed" || fail "WT16 (rc=$rc)"; teardown
 
 # WT17: check transport failure は worker health を証明できないため 4。理由を出し、副作用を持たない
 setup; dn; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_check"
 out=$(w 2>&1); rc=$?
 [[ "$rc" -eq 4 && "$out" == *"check receipt was not ok"* && ! -e "$SD/received.json" ]] \
-  && ! grep -q 'worker-release\|--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ! grep -q 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT17 check ok:false を診断して副作用なし" || fail "WT17 (rc=$rc out=$out)"; teardown
 
-# WT18: release / worker-show transport failure は 4、ack しない
-setup; dn; msg; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-release"
-w >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 4 && -e "$SD/received.json" ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
-  && ok "WT18a release ok:false は ack しない" || fail "WT18a (rc=$rc)"; teardown
-
-# WT18a1: release_unknown 以外の非 0 receipt は transport/state 不明として 4 に分類し、理由を出す。
-setup; dn; msg
-echo '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
-echo 7 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
-wout=$(w 2>&1); rc=$?
-[[ "$rc" -eq 4 && "$wout" == *"worker-release failed (rc=7 state='retained')"* ]] \
-  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
-  && ok "WT18a1 release の非 0 receipt を診断して 4" || fail "WT18a1 (rc=$rc out=$wout)"; teardown
-
+# WT18: worker-show transport failure は 4、ack しない
 setup; echo '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-show"
 out=$(w 1 2>&1); rc=$?
 [[ "$rc" -eq 4 && "$out" == *"worker-show receipt was not ok"* ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \

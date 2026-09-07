@@ -24,7 +24,7 @@ echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_e","effects":[{"kin
   > "$ORCA_STUB_DIR/orchestration_worker-start"
 echo '{"ok":true,"result":{"runId":"run_e","count":0,"messages":[]}}' > "$ORCA_STUB_DIR/orchestration_check"
 echo '{"ok":true,"result":{"worker":{"state":"active"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
-echo '{"ok":true,"result":{"state":"retained"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/orchestration_worker-retain"
 echo '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
 
 OUT=$(bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug e2e --objective o \
@@ -49,11 +49,11 @@ jq -nc '{ok:true,result:{runId:"run_e",deliveryId:"d1",count:1,messages:[
   > "$ORCA_STUB_DIR/orchestration_check"
 out=$(bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 --timeout-ms 1 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* ]] && ok "E6 成功で完了" || fail "E6 (rc=$rc)"
-# **release してから ack している**（Orca guide の既定。retain は使わない）
-r=$(grep -n 'worker-release' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+# **retain してから ack している**（解放は Step 6 だけの権限。spec D12）
+r=$(grep -n 'worker-retain' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
 a=$(grep -n -- '--ack' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
-[[ -n "$r" && -n "$a" && "$r" -lt "$a" ]] && ! grep -q 'worker-retain' "$ORCA_STUB_DIR/calls.log" \
-  && ok "E7 release が ack より前" || fail "E7 順序 ($r/$a)"
+[[ -n "$r" && -n "$a" && "$r" -lt "$a" ]] && ! grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && ok "E7 retain が ack より前・release しない" || fail "E7 順序 ($r/$a)"
 
 bash "$P/bin/orca-merge.sh" --status-dir "$SD" >/dev/null 2>&1
 git -C "$R" show main:README.md | grep -q "$MARK" && ok "E8 成果が親ブランチへ" || fail "E8 merge されない"

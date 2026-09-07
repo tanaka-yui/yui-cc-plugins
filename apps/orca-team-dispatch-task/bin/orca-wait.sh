@@ -57,7 +57,7 @@ record_outcome() {
 }
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
-  local out res n i m payload d t tid did oc rcode rreason batch_oc existing record_needed REL RELRC RST ACK CHECKRC
+  local out res n i m payload d t tid did oc rcode rreason batch_oc existing record_needed RET RETRC ACK CHECKRC
   CHECKRC=0
   out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || CHECKRC=$?
   [[ "$CHECKRC" -eq 0 ]] || { log "check failed (rc=$CHECKRC); the batch is not acknowledged"; return 2; }
@@ -120,34 +120,23 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
   fi
   record_needed=0
   [[ -n "$existing" ]] || record_needed=1
-  # ★ **ack より前に owner を決める** (Orca guide)。accepted な worker_done のあとは
-  #   `worker-release` が既定であり、retain は「ユーザーが明示的にデバッグ保持を依頼した
-  #   場合」の例外である。この版はその依頼を取らないので release を使う。
-  #   **exit 0 は「完了した」の証明ではない。**pending / unknown では ack しない
   [[ "$record_needed" -eq 0 ]] || record_outcome "$batch_oc" || return 1
-  RELRC=0
-  REL=$("$ORCA_BIN" orchestration worker-release --dispatch "$DID" --json 2>/dev/null) || RELRC=$?
-  jq -e '.ok == true and (.result | type == "object")' <<<"$REL" >/dev/null 2>&1 || {
-    log "worker-release receipt was not ok (rc=$RELRC); the batch is not acknowledged"
+  # ★ **ack より前に owner を決める**（Orca guide）。この版の owner は常に「保持」である。
+  #   解放は Step 6 のユーザー承認後だけが行う (spec D12)。
+  RETRC=0
+  RET=$("$ORCA_BIN" orchestration worker-retain --dispatch "$DID" --json 2>/dev/null) || RETRC=$?
+  jq -e '.ok == true' <<<"$RET" >/dev/null 2>&1 || {
+    log "worker-retain receipt was not ok (rc=$RETRC); the batch is not acknowledged"
     return 2
   }
-  RST=$(jq -r '.result.state // empty' <<<"$REL" 2>/dev/null || echo "")
-  if [[ "$RST" == release_unknown ]]; then
-    log "release result is unknown; not acknowledging (rc=$RELRC). Do not retry, acknowledge, or merge from this parent terminal; inspect with the user"
-    return 1
-  fi
-  if [[ "$RELRC" -ne 0 ]]; then
-    log "worker-release failed (rc=$RELRC state='${RST:-none}'); the batch is not acknowledged"
+  [[ "$RETRC" -eq 0 ]] || {
+    log "worker-retain failed (rc=$RETRC); the batch is not acknowledged"
     return 2
-  fi
-  case "$RST" in
-    retained|already_released) ;;
-    release_pending) log "worker-release is pending; not acknowledging. Retry the canonical wait"; return 1 ;;
-    *)
-      log "worker-release reported '${RST:-none}'; not acknowledging"
-      return 1
-      ;;
-  esac
+  }
+  write "$SD/workers.json" "$(jq -c '.roles.design.retained = true' "$SD/workers.json")" || {
+    log "could not record the retention; the batch is not acknowledged"
+    return 2
+  }
   ACK=$("$ORCA_BIN" orchestration check --terminal "$PH" --ack "$d" --json 2>/dev/null) || {
     log "ack transport failed; the batch will replay"
     return 2
