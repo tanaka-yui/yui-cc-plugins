@@ -9,12 +9,13 @@ log() { echo "orca-start: $1" >&2; }
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." && pwd)"
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
-RF="" SLUG="" OBJ="" RR=""
+RF="" SLUG="" OBJ="" RR="" RUN_IN=""
 while [[ $# -gt 0 ]]; do case "$1" in
-  --request-file) need2 "$1" $#; RF="$2";   shift 2 ;;
-  --slug)         need2 "$1" $#; SLUG="$2"; shift 2 ;;
-  --objective)    need2 "$1" $#; OBJ="$2";  shift 2 ;;
-  --repo-root)    need2 "$1" $#; RR="$2";   shift 2 ;;
+  --request-file) need2 "$1" $#; RF="$2";     shift 2 ;;
+  --slug)         need2 "$1" $#; SLUG="$2";   shift 2 ;;
+  --objective)    need2 "$1" $#; OBJ="$2";    shift 2 ;;
+  --repo-root)    need2 "$1" $#; RR="$2";     shift 2 ;;
+  --run)          need2 "$1" $#; RUN_IN="$2"; shift 2 ;;
   *) die "unknown option: $1" ;; esac; done
 [[ -n "$RF" && -n "$SLUG" && -n "$OBJ" ]] || die "--request-file, --slug and --objective are required"
 [[ -r "$RF" ]] || die "--request-file is not readable: $RF"
@@ -65,13 +66,19 @@ if [[ -n "$EX" ]]; then
 fi
 
 # --- Run ---
-RCJ=0; RJ=$("$ORCA_BIN" orchestration run-create --objective "$OBJ" --from "$PH" --json 2>/dev/null) || RCJ=$?
-RUN=$(jq -r '.result.run.id // empty' <<<"$RJ" 2>/dev/null || echo "")
-[[ "$RCJ" -eq 0 && -n "$RUN" ]] || { log "run-create failed (rc=$RCJ)"; exit 1; }
+if [[ -n "$RUN_IN" ]]; then
+  RUN="$RUN_IN"
+else
+  RCJ=0; RJ=$("$ORCA_BIN" orchestration run-create --objective "$OBJ" --from "$PH" --json 2>/dev/null) || RCJ=$?
+  RUN=$(jq -r '.result.run.id // empty' <<<"$RJ" 2>/dev/null || echo "")
+  [[ "$RCJ" -eq 0 && -n "$RUN" ]] || { log "run-create failed (rc=$RCJ)"; exit 1; }
+fi
 # 束縛先が自分であることを確かめる。候補が 1 つのとき Orca は暗黙に選ぶ (O26)
-CO=$("$ORCA_BIN" orchestration run-current --from "$PH" --json 2>/dev/null \
-     | jq -r '.result.run.coordinator_handle // empty')
+CJ2=$("$ORCA_BIN" orchestration run-current --from "$PH" --json 2>/dev/null)
+CO=$(jq -r '.result.run.coordinator_handle // empty' <<<"$CJ2")
+CI=$(jq -r '.result.run.id // empty' <<<"$CJ2")
 [[ "$CO" == "$PH" ]] || { log "the Run bound to '${CO:-unknown}', not to $PH"; exit 1; }
+[[ "$CI" == "$RUN" ]] || { log "this terminal is bound to Run '${CI:-unknown}', not to $RUN"; exit 1; }
 write run "$SD/run.json" "$(jq -nc --arg r "$RUN" --arg p "$PH" --arg rr "$RR" \
   '{run_id:$r, parent_handle:$p, repo_root:$rr}')" || {
   log "the Run was created but could not be recorded. Nothing else exists yet."

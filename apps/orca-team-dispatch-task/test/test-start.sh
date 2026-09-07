@@ -253,4 +253,29 @@ out=$(start 2>&1); rc=$?
   && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST23 handle 不明で資源を残す" || fail "ST23 (rc=$rc out=$out)"; teardown
 
+# ST24: --run を渡したら run-create を呼ばず、束縛だけ確かめる
+setup; start --run run_x >/dev/null 2>&1
+! grep -q 'run-create' "$ORCA_STUB_DIR/calls.log" \
+  && grep -q 'run-current' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST24 Run に相乗りする" || fail "ST24"; teardown
+
+# ST25: 相乗り先が自分に束縛されていなければ何も作らない
+setup
+echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term_other"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_run-current"
+out=$(start --run run_x 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST25 他人の Run に相乗りしない" || fail "ST25 (rc=$rc out=$out)"; teardown
+
+# ST26: 相乗り先の id が食い違ったら止める
+setup
+echo '{"ok":true,"result":{"run":{"id":"run_other","coordinator_handle":"term_p"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_run-current"
+start --run run_x >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ok "ST26 別 Run への相乗りを拒否" || fail "ST26 (rc=$rc)"; teardown
+
+# ST27: run_id を stdout に印字する（2 本目以降が使う）
+setup; out=$(start 2>/dev/null)
+[[ "$out" == *"run_id=run_x"* ]] && ok "ST27 run_id を印字" || fail "ST27 ($out)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
