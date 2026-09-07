@@ -191,39 +191,76 @@ if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
   bad="$bad [C3-list-failed-receipt]"
 fi
 
-# SK6h: Orca が作った端末の正常系は state=released である。C2 は閉じるものが無いと述べ、
-#        close コマンドを印字せず、terminal show も引かない。
-printf '%s\n' '{"ok":true,"result":{"state":"released"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+# SK6h/SK6i/SK6j: Orca が作った端末は release で閉じられる。**閉じた端末は show できない**ので、
+#        released 系の state では terminal show の失敗が正常であり、止まってはならない。
+#        `released` と `already_released` を同じ表で回し、両方を固定する。
+printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+block="$scratch/C2-released.sh"; extract_cleanup_block C2 "$S" > "$block"
+c3_block="$scratch/C3-released.sh"; extract_cleanup_block C3 "$S" > "$c3_block"
+for st in released already_released; do
+  printf '%s\n' "{\"ok\":true,\"result\":{\"state\":\"$st\"}}" > "$ORCA_STUB_DIR/orchestration_worker-release"
+  # 端末は既に閉じている。show は引けない
+  printf '%s\n' '{"ok":false,"error":"gone"}' > "$ORCA_STUB_DIR/terminal_show"
+  printf '%s\n' 7 > "$ORCA_STUB_DIR/terminal_show.rc"
+  : > "$ORCA_STUB_DIR/calls.log"
+  out=$(bash "$block" 2>&1); rc=$?
+  if [[ "$rc" -ne 0 || "$out" != *'Orca closed the worker terminal; nothing to close'* \
+     || "$out" == *'terminal close'* ]]; then
+    bad="$bad [C2-$st]"
+  fi
+  : > "$ORCA_STUB_DIR/calls.log"
+  out=$(bash "$c3_block" 2>&1); rc=$?
+  if [[ "$rc" -ne 0 || "$out" != *'worktree rm --worktree id:wt_1 --json'* \
+     || "$out" == *'could not verify the terminal identity'* ]]; then
+    bad="$bad [C3-$st-show-gone]"
+  fi
+  # 端末がまだ見えて記録と一致するなら、identity は証明され削除も提示される
+  rm -f "$ORCA_STUB_DIR/terminal_show.rc"
+  printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
+    > "$ORCA_STUB_DIR/terminal_show"
+  : > "$ORCA_STUB_DIR/calls.log"
+  out=$(bash "$c3_block" 2>&1); rc=$?
+  if [[ "$rc" -ne 0 || "$out" != *'worktree rm --worktree id:wt_1 --json'* ]]; then
+    bad="$bad [C3-$st-show-live]"
+  fi
+done
+
+# SK6k: **実際の実行順序を固定する。**release は 1 回目だけ released を返し、以降は
+#        already_released になる（実測 Orca 1.4.197）。Step 5 は [C1] [C2] [C3] を順に走らせる
+#        ので、2 番目以降の block は already_released と「閉じた端末」しか見ない。block を
+#        単体で見るテストではこの経路を踏めない。
+cat > "$ORCA_STUB_DIR/orchestration_worker-release.hook" <<'HOOK'
+#!/usr/bin/env bash
+d="$ORCA_STUB_DIR"
+if [[ -f "$d/released.once" ]]; then
+  printf '%s\n' '{"ok":true,"result":{"state":"already_released"}}' > "$d/orchestration_worker-release"
+else
+  : > "$d/released.once"
+  printf '%s\n' '{"ok":true,"result":{"state":"released"}}' > "$d/orchestration_worker-release"
+  # release が端末を閉じる。以後 terminal show は引けない
+  printf '%s\n' '{"ok":false,"error":"gone"}' > "$d/terminal_show"
+  printf '%s\n' 7 > "$d/terminal_show.rc"
+fi
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_worker-release.hook"
+rm -f "$ORCA_STUB_DIR/released.once" "$ORCA_STUB_DIR/terminal_show.rc"
 printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
   > "$ORCA_STUB_DIR/terminal_show"
-printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+printf '%s\n' '{"ok":true,"result":{"state":"released"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+seq_block="$scratch/C1-seq.sh"; extract_cleanup_block C1 "$S" > "$seq_block"
 : > "$ORCA_STUB_DIR/calls.log"
-block="$scratch/C2-released.sh"; extract_cleanup_block C2 "$S" > "$block"
-out=$(bash "$block" 2>&1); rc=$?
+out=$(bash "$seq_block" 2>&1); rc=$?     # [C1] は released を authorise しない。ここで 1 回消費される
+if [[ "$rc" -eq 0 || "$out" == *'worker-show'* ]]; then bad="$bad [C1-seq]"; fi
+out=$(bash "$block" 2>&1); rc=$?         # [C2] は already_released + 閉じた端末を見る
 if [[ "$rc" -ne 0 || "$out" != *'Orca closed the worker terminal; nothing to close'* \
-   || "$out" == *'terminal close'* ]] \
-   || grep -q 'terminal show' "$ORCA_STUB_DIR/calls.log"; then
-  bad="$bad [C2-released]"
+   || "$out" == *'terminal close'* ]]; then
+  bad="$bad [C2-after-C1]"
 fi
-
-# SK6i: released でも worktree の削除条件は残りが満たされる。Orca が閉じたことが identity の
-#        証明なので、C3 は削除を提示する。
-: > "$ORCA_STUB_DIR/calls.log"
-block="$scratch/C3-released.sh"; extract_cleanup_block C3 "$S" > "$block"
-out=$(bash "$block" 2>&1); rc=$?
+out=$(bash "$c3_block" 2>&1); rc=$?      # [C3] も同じ。削除は提示されなければならない
 if [[ "$rc" -ne 0 || "$out" != *'worktree rm --worktree id:wt_1 --json'* ]]; then
-  bad="$bad [C3-released]"
+  bad="$bad [C3-after-C1-C2]"
 fi
-
-# SK6j: released のとき terminal show は閉じた端末を返せない。C3 はそれで止まってはならない。
-printf '%s\n' '{"ok":false,"error":"gone"}' > "$ORCA_STUB_DIR/terminal_show"
-printf '%s\n' 7 > "$ORCA_STUB_DIR/terminal_show.rc"
-: > "$ORCA_STUB_DIR/calls.log"
-out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -ne 0 || "$out" != *'worktree rm --worktree id:wt_1 --json'* \
-   || "$out" == *'could not verify the terminal identity'* ]]; then
-  bad="$bad [C3-released-show-gone]"
-fi
+rm -f "$ORCA_STUB_DIR/orchestration_worker-release.hook" "$ORCA_STUB_DIR/released.once"
 rm -f "$ORCA_STUB_DIR/terminal_show.rc"
 unset ORCA_STUB_DIR ORCA_BIN SD
 rm -rf "$scratch"
@@ -454,6 +491,35 @@ out=$(SD="$c7_sd" bash "$c7" 2>&1); rc=$?
 printf '%s\n' '{"ok":false,"error":"unavailable"}' > "$ORCA_STUB_DIR/orchestration_worker-list"
 out=$(SD="$c7_sd" bash "$c7" 2>&1); rc=$?
 [[ "$rc" -ne 0 ]] && ok "SK13c 列挙できなければ止まる" || fail "SK13c (rc=$rc out=$out)"
+
+# SK13d/e: SDS は Run 全体の記録を作るための入力である。同じ Run の兄弟を足せば ghost 判定が
+#          狭まらず、**別 Run の dir を混ぜたら既知集合が広がって本物の ghost を隠す**ので止まる。
+c7_sib=$(mktemp -d)
+echo '{"run_id":"run_x","parent_handle":"term_p","repo_root":"/tmp"}' > "$c7_sib/run.json"
+echo '{"roles":{"design":{"dispatch":"ctx_sib","retained":true}}}' > "$c7_sib/workers.json"
+c7_other=$(mktemp -d)
+echo '{"run_id":"run_y","parent_handle":"term_q","repo_root":"/tmp"}' > "$c7_other/run.json"
+echo '{"roles":{"design":{"dispatch":"ctx_other","retained":true}}}' > "$c7_other/workers.json"
+with_sds() {   # $1=追加する status dir → SDS を 2 件にした C7 を stdout
+  sed 's|^SDS=("\$SD")|SDS=("$SD" "'"$1"'")|' "$c7"
+}
+printf '%s\n' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_w"},{"dispatchId":"ctx_sib"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+with_sds "$c7_sib" > "$c7_scratch/C7-sib.sh"
+out=$(SD="$c7_sd" bash "$c7_scratch/C7-sib.sh" 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *'every retained worker in this Run is one we recorded'* ]] \
+  && ok "SK13d 同じ Run の兄弟を SDS に足すと ghost にならない" || fail "SK13d (rc=$rc out=$out)"
+
+: > "$ORCA_STUB_DIR/calls.log"
+with_sds "$c7_other" > "$c7_scratch/C7-other.sh"
+out=$(SD="$c7_sd" bash "$c7_scratch/C7-other.sh" 2>&1); rc=$?
+if [[ "$rc" -ne 0 && "$out" == *'does not belong to Run run_x'* ]] \
+   && ! grep -q 'worker-list' "$ORCA_STUB_DIR/calls.log"; then
+  ok "SK13e 別 Run の dir を SDS に混ぜたら止まる"
+else
+  fail "SK13e (rc=$rc out=$out)"
+fi
+rm -rf "$c7_sib" "$c7_other"
 rm -rf "$c7_sd" "$c7_scratch" "$ORCA_STUB_DIR"; unset ORCA_BIN
 
 # SK14: N 並列の契約が両文書に明記されている

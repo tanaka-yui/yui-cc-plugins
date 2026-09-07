@@ -92,39 +92,38 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 | 0 | Every worker finished and reported success | Read each task's `$SD/roles/design/result.md`, tell the user, go to Step 4 for every task |
 | 5 | At least one worker reported failure | Read each `result.md`, tell the user which task failed and why, go to Step 4 only for the tasks that succeeded, and to Step 5 for all of them. **Do not merge a failed task** |
 | 3 | Still running | Report progress, then call it again with the same `--status-dir` set |
-| 4 | A worker stopped or failed, or Orca transport could not be verified | Inspect and tell the user; do not delete anything. If receipt recording succeeded before a release transport failure, rerun the canonical wait; do not recover a batch by hand |
-| 1 | A batch is unsupported or contradictory, the receipt cannot be read or written, or release did not complete | It was not acknowledged. Do not acknowledge it by hand; use the state-specific action below |
+| 4 | A worker stopped or failed, or an Orca call the wait depends on could not be verified | Inspect and tell the user; do not delete anything. The retention or the acknowledgement did not complete, so rerun the canonical wait; do not recover a batch by hand |
+| 1 | A batch carries a message this version cannot handle, or its outcome contradicts what is recorded | It was not acknowledged. Do not acknowledge it by hand; inspect it as described below |
 
 **The exit code is the authority, not the text.** Before the aggregate line, the wait prints
 one `task=... dispatch=... status_dir=... outcome=...` line per task; on a partial failure
 those lines carry both outcomes at once. Use them to name which task failed, and never
 decide success by searching the output for `outcome=`.
 
-On exit 1, **do not run `--ack` yourself**. Read the error first. A `worker_done` receipt is
-recorded before release is attempted, so `release_pending` is safe to retry: run
-`orca-wait.sh` again and it will retry release before acknowledging. `release_unknown` is
-different: a retry cannot prove the prior release result. Keep the terminal and worktree,
-do not acknowledge, and **do not proceed to Step 4**. Inspect the recorded receipt and result
-with the user. If they show a successful worker outcome, the user may explicitly choose the
+On exit 1, **do not run `--ack` yourself**. Read the error first. Acknowledging a batch
+declares that every message in it was processed, and this batch was not: it either carries a
+message type this version cannot handle, or an outcome that contradicts what is already
+recorded on disk. Neither is repairable by hand, and rerunning the wait cannot help — it will
+read the same batch again. Keep the terminal and worktree, do not acknowledge, and
+**do not proceed to Step 4**. Inspect the recorded receipt and result with the user. If they show a successful worker outcome, the user may explicitly choose the
 manual integration command below; it does not acknowledge the batch. That unacknowledged batch
 stays at the front of this parent terminal's queue, and manual integration does not unblock that
 queue. Start every later dispatch by opening another Orca terminal and invoking this skill
 there. `orca-start.sh` has no parent-terminal flag: it reads `ORCA_TERMINAL_HANDLE` from the
 Orca terminal that runs it, so it uses the new terminal's handle. Do not copy or set the blocked
-handle. For an unsupported or contradictory batch, or an invalid receipt, inspect without moving
-the cursor and stop for user direction; do not discard a message this version cannot handle:
+handle. Inspect without moving the cursor and stop for user direction; do not discard a
+message this version cannot handle:
 
 ```bash
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 [[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
 "$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
-# Retry the canonical wait only when its error said release_pending.
-# For release_unknown, do not retry or use normal Step 4; never ack by hand.
+# Rerun the canonical wait only for exit 4; it retries the retention and the acknowledgement.
+# For an unhandled or contradictory batch, do not rerun it, and never ack by hand.
 ```
 
-For `release_unknown` only, after the preceding inspection, show the user the recorded outcome
-and result. If they explicitly decide to integrate a successful result, they may run this safe
-merge command. It performs the normal receipt, status, result, branch, and clean-checkout
+After that inspection, show the user the recorded outcome and result. If they explicitly
+decide to integrate a successful result, they may run this safe merge command. It performs the normal receipt, status, result, branch, and clean-checkout
 guards; it does not acknowledge the blocked batch:
 
 ```bash
@@ -134,9 +133,9 @@ sed -n '1,240p' "$SD/roles/design/result.md"
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
 
-Show the user the inspected message and whether it is `release_pending`, `release_unknown`,
-or an unsupported/contradictory message. A transport/health failure is exit 4, not an
-invitation to recover a batch manually.
+Show the user the inspected message and why this version could not handle it — an unknown
+message type, or an outcome that contradicts the recorded one. A transport/health failure is
+exit 4, not an invitation to recover a batch manually.
 
 ## Step 4: Bring the result home
 
@@ -197,10 +196,17 @@ printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
 ```
 
 [C2] Release the worker and read the state. `released` means Orca closed the terminal and
-there is nothing left to do. `already_released` is the same, reached twice. `retained` means
-Orca **refused** to close it — someone took it over, or its identity could not be proven —
-so print a close command only when the handle and worktree still match our recorded state,
-and otherwise say it is being kept and why.
+there is nothing left to do. `already_released` is the same, reached twice. Each block below
+releases on its own, so **only the first block you run for a task can ever see `released`;
+the ones after it see `already_released`.** Treat the two the same everywhere. `retained`
+means Orca **refused** to close it — someone took it over, or its identity could not be
+proven — so print a close command only when the handle and worktree still match our recorded
+state, and otherwise say it is being kept and why.
+
+A terminal Orca has already closed cannot be shown, so a failing `terminal show` is only
+fatal under `retained`, where the terminal is supposed to still be there. Under `released`
+and `already_released` it is the expected answer, and it is the proof that the terminal is
+gone.
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
@@ -224,15 +230,15 @@ case "$STATE" in
   released|retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
 esac
-SHRC=0; SHOWN=""
-if [[ "$STATE" != released ]]; then
-  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-    echo "could not verify the terminal identity; do not close anything" >&2
-    exit 1
-  }
+SHRC=0; SHOWN=""; SHOW_OK=no
+SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 \
+  && SHOW_OK=yes
+if [[ "$SHOW_OK" == no && "$STATE" == retained ]]; then
+  echo "could not verify the terminal identity; do not close anything" >&2
+  exit 1
 fi
-if [[ "$STATE" == released ]]; then
+if [[ "$SHOW_OK" == no ]]; then
   echo "Orca closed the worker terminal; nothing to close"
 elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
      && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
@@ -270,16 +276,16 @@ case "$STATE" in
   released|retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
 esac
-SHRC=0; SHOWN=""
-if [[ "$STATE" != released ]]; then
-  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-    echo "could not verify the terminal identity; do not remove anything" >&2
-    exit 1
-  }
+SHRC=0; SHOWN=""; SHOW_OK=no
+SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 \
+  && SHOW_OK=yes
+if [[ "$SHOW_OK" == no && "$STATE" == retained ]]; then
+  echo "could not verify the terminal identity; do not remove anything" >&2
+  exit 1
 fi
 IDENTITY_OK=no
-if [[ "$STATE" == released ]]; then
+if [[ "$SHOW_OK" == no ]]; then
   IDENTITY_OK=yes
 elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
      && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
@@ -316,8 +322,8 @@ fi
 ```
 
 `IDENTITY_OK` is calculated inside [C3]; do not carry a shell variable from [C2]. It is `yes`
-when Orca closed the terminal itself, and otherwise only when the handle and worktree matched
-in this block.
+when the terminal cannot be shown at all under a released state — Orca closed it, which is
+the proof — and otherwise only when the handle and worktree matched in this block.
 When a worker failed (Step 3 exit 5) that task's `MERGED` is false, so no removal is offered
 for it — that is the intended behaviour, not a gap.
 
@@ -327,16 +333,30 @@ actually still holds and compare it against what we recorded. A retention we did
 is someone else's — or our own from a previous run — and either way it is not ours to step
 on. Every task of this Run shares one answer, so run this once, and list **every** task's
 status dir in `SDS` — Orca reports the whole Run, so a sibling left out of `SDS` looks like
-a ghost and stops the cleanup of every task:
+a ghost and stops the cleanup of every task. A dir from a **different** Run would do the
+opposite — widen the known set and hide a real ghost — so each listed dir's `run_id` is
+checked before its dispatches are trusted:
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
 SDS=("$SD")   # append every other status_dir of this Run
-WJ=(); for d in "${SDS[@]}"; do WJ+=("$d/workers.json"); done
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
+[[ -n "$RUN" && -n "$ORCA_BIN" ]] || {
+  echo "required cleanup state is missing; do not close or remove anything" >&2
+  exit 1
+}
+# A dir from another Run would widen the known set and hide the very ghost we look for.
+WJ=()
+for d in "${SDS[@]}"; do
+  [[ "$(jq -r '.run_id // empty' "$d/run.json" 2>/dev/null)" == "$RUN" ]] || {
+    echo "$d does not belong to Run $RUN; do not close or remove anything" >&2
+    exit 1
+  }
+  WJ+=("$d/workers.json")
+done
 KNOWN=$(jq -sc '[.[] | .roles[]?.dispatch // empty]' "${WJ[@]}" 2>/dev/null)
-[[ -n "$RUN" && -n "$KNOWN" && -n "$ORCA_BIN" ]] || {
+[[ -n "$KNOWN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }

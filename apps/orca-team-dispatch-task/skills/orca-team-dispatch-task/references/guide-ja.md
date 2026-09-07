@@ -82,34 +82,36 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 | 0 | すべての worker が成功を報告して完了 | 各タスクの `$SD/roles/design/result.md` を読み、ユーザーへ伝えて全タスクを Step 4 へ進める |
 | 5 | 1 件以上の worker が失敗を報告 | 各 `result.md` を読み、どのタスクがなぜ失敗したかを伝える。Step 4 へ進めるのは成功したタスクだけで、Step 5 は全タスクに行う。**失敗したタスクを merge しない** |
 | 3 | まだ実行中 | 進捗を報告してから、同じ `--status-dir` の組でもう一度呼ぶ |
-| 4 | worker が停止・失敗した、または Orca transport を検証できない | 調べてユーザーへ伝える。何も削除しない。release transport failure の前に receipt が保存されていれば canonical wait を再実行し、batch を手で復旧しない |
-| 1 | batch が未対応・矛盾、receipt を読めない・書けない、または release が完了していない | acknowledge していない。手動 acknowledge はせず、下の状態別の手順に従う |
+| 4 | worker が停止・失敗した、または待機が依存する Orca 呼び出しを検証できない | 調べてユーザーへ伝える。何も削除しない。retention または acknowledgement が完了していないので canonical wait を再実行し、batch を手で復旧しない |
+| 1 | batch がこの版で扱えないメッセージを含む、または outcome が記録と矛盾する | acknowledge していない。手動 acknowledge はせず、下のとおり確認する |
 
 **判断の根拠は exit code であって出力の文字列ではない。**集約行の前に、待機は
 `task=... dispatch=... status_dir=... outcome=...` の行をタスクごとに 1 行印字する。一部だけ
 失敗したときは、それらの行に両方の outcome が同時に現れる。どのタスクが失敗したかを名指しする
 ためにその行を使い、成功判定を出力中の `outcome=` の検索で行ってはならない。
 
-exit 1 では **自分で `--ack` を実行しない**。まず error を読む。`worker_done` の receipt は release
-前に記録されるため、`release_pending` は安全に再試行できる。`orca-wait.sh` を再実行すると release を
-再試行してから acknowledge を判断する。`release_unknown` は異なり、再試行しても前回の release 結果を
-証明できない。端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。記録済み receipt と
+exit 1 では **自分で `--ack` を実行しない**。まず error を読む。batch を acknowledge することは、その
+batch の全メッセージを処理したという宣言である。この batch は処理できていない。この版が扱えない
+メッセージ型を含むか、outcome が既にディスクへ記録された内容と矛盾しているかのいずれかである。
+どちらも手作業で直すものではなく、待機を再実行しても同じ batch を読み直すだけで解決しない。
+端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。記録済み receipt と
 result をユーザーと確認する。成功した worker outcome が示されていれば、ユーザーは下の手動統合コマンドを
 明示的に選べるが、それで batch を acknowledge することはない。acknowledge されない batch はこの親端末の
 queue の先頭に残り、手動統合で queue は解消されない。後続の dispatch は別の Orca terminal を開き、そこで
 この skill を呼び出して開始する。`orca-start.sh` に親端末を指定する flag はなく、実行した Orca terminal の
 `ORCA_TERMINAL_HANDLE` を読むため、新しい terminal の handle が使われる。blocked な handle をコピーまたは
-設定してはならない。未対応・矛盾 batch または不正 receipt は cursor を進めずに確認して、ユーザーの指示を待つ。
+設定してはならない。cursor を進めずに確認して、ユーザーの指示を待つ。この版が扱えないメッセージを
+捨ててはならない。
 
 ```bash
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
 [[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
 "$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
-# Retry the canonical wait only when its error said release_pending.
-# For release_unknown, do not retry or use normal Step 4; never ack by hand.
+# Rerun the canonical wait only for exit 4; it retries the retention and the acknowledgement.
+# For an unhandled or contradictory batch, do not rerun it, and never ack by hand.
 ```
 
-`release_unknown` のときだけ、前の inspection の後で記録済み outcome と result をユーザーへ見せる。
+前の inspection の後で、記録済み outcome と result をユーザーへ見せる。
 ユーザーが成功した result を統合すると明示的に決めた場合、次の安全な merge コマンドを実行できる。receipt、
 status、result、branch、clean checkout の通常の guard はすべて実行し、blocked な batch を acknowledge しない。
 
@@ -120,8 +122,9 @@ sed -n '1,240p' "$SD/roles/design/result.md"
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
 
-確認したメッセージと、それが `release_pending`、`release_unknown`、未対応・矛盾メッセージのどれかを
-ユーザーへ見せる。transport/health の失敗は exit 4 であり、batch を手作業で復旧する合図ではない。
+確認したメッセージと、この版がそれを扱えなかった理由 — 未知のメッセージ型か、記録と矛盾する
+outcome か — をユーザーへ見せる。transport/health の失敗は exit 4 であり、batch を手作業で復旧する
+合図ではない。
 
 ## Step 4: 成果を持ち帰る
 
@@ -182,10 +185,17 @@ printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
 ```
 
 [C2] worker を release して state を読む。`released` は Orca が端末を閉じたという意味であり、
-もう何もすることがない。`already_released` は同じ状態に 2 度到達しただけである。`retained` は
-Orca が閉じることを **拒んだ** という意味であり、誰かが引き取ったか、identity を証明できなかった
-かのいずれかである。したがって close コマンドを印字してよいのは handle と worktree が記録済み
-state と一致するときだけで、一致しなければ何を、なぜ残すのかを伝える。
+もう何もすることがない。`already_released` は同じ状態に 2 度到達しただけである。下の各 block は
+それぞれ自分で release するので、**あるタスクについて `released` を見られるのは最初に実行した
+block だけであり、以降の block は `already_released` を見る。**この 2 つはどこでも同じものとして
+扱う。`retained` は Orca が閉じることを **拒んだ** という意味であり、誰かが引き取ったか、
+identity を証明できなかったかのいずれかである。したがって close コマンドを印字してよいのは
+handle と worktree が記録済み state と一致するときだけで、一致しなければ何を、なぜ残すのかを
+伝える。
+
+Orca が既に閉じた端末は show できない。したがって `terminal show` の失敗が致命的なのは、
+端末がまだ在るはずの `retained` のときだけである。`released` と `already_released` では
+それが期待どおりの答えであり、端末が消えたことの証明そのものである。
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
@@ -209,15 +219,15 @@ case "$STATE" in
   released|retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
 esac
-SHRC=0; SHOWN=""
-if [[ "$STATE" != released ]]; then
-  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-    echo "could not verify the terminal identity; do not close anything" >&2
-    exit 1
-  }
+SHRC=0; SHOWN=""; SHOW_OK=no
+SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 \
+  && SHOW_OK=yes
+if [[ "$SHOW_OK" == no && "$STATE" == retained ]]; then
+  echo "could not verify the terminal identity; do not close anything" >&2
+  exit 1
 fi
-if [[ "$STATE" == released ]]; then
+if [[ "$SHOW_OK" == no ]]; then
   echo "Orca closed the worker terminal; nothing to close"
 elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
      && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
@@ -255,16 +265,16 @@ case "$STATE" in
   released|retained|already_released) ;;
   *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
 esac
-SHRC=0; SHOWN=""
-if [[ "$STATE" != released ]]; then
-  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-    echo "could not verify the terminal identity; do not remove anything" >&2
-    exit 1
-  }
+SHRC=0; SHOWN=""; SHOW_OK=no
+SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 \
+  && SHOW_OK=yes
+if [[ "$SHOW_OK" == no && "$STATE" == retained ]]; then
+  echo "could not verify the terminal identity; do not remove anything" >&2
+  exit 1
 fi
 IDENTITY_OK=no
-if [[ "$STATE" == released ]]; then
+if [[ "$SHOW_OK" == no ]]; then
   IDENTITY_OK=yes
 elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
      && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
@@ -300,8 +310,9 @@ else
 fi
 ```
 
-`IDENTITY_OK` は [C3] の中で計算する。[C2] から shell 変数を持ち込まない。Orca が自分で端末を
-閉じたとき、あるいはこの block 内で handle と worktree が一致したときにだけ `yes` になる。
+`IDENTITY_OK` は [C3] の中で計算する。[C2] から shell 変数を持ち込まない。released 系の state で
+端末を show できないとき（Orca が閉じたことがそのまま証明になる）と、この block 内で handle と
+worktree が一致したときにだけ `yes` になる。
 worker が Step 3 で exit 5 を返したタスクは `MERGED` が false であり、そのタスクの削除を
 提示しない。これは意図した動作であって欠落ではない。
 
@@ -311,16 +322,30 @@ worker が Step 3 で exit 5 を返したタスクは `MERGED` が false であ�
 自分たちのものであり、いずれにせよ手を出してよいものではない。この Run のすべての
 タスクが 1 つの答えを共有するので、実行は 1 回だけとし、`SDS` には **すべての** タスクの
 status dir を並べる。Orca は Run 全体を報告するため、`SDS` から漏れた兄弟タスクは ghost に
-見え、全タスクの片付けを止めてしまう:
+見え、全タスクの片付けを止めてしまう。別の Run の status dir を混ぜると逆に既知集合が広がり、
+本物の ghost を隠してしまう。そのため、並べた各 dir の `run_id` を、その dispatch を信用する
+前に検査する:
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
 SDS=("$SD")   # append every other status_dir of this Run
-WJ=(); for d in "${SDS[@]}"; do WJ+=("$d/workers.json"); done
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
+[[ -n "$RUN" && -n "$ORCA_BIN" ]] || {
+  echo "required cleanup state is missing; do not close or remove anything" >&2
+  exit 1
+}
+# A dir from another Run would widen the known set and hide the very ghost we look for.
+WJ=()
+for d in "${SDS[@]}"; do
+  [[ "$(jq -r '.run_id // empty' "$d/run.json" 2>/dev/null)" == "$RUN" ]] || {
+    echo "$d does not belong to Run $RUN; do not close or remove anything" >&2
+    exit 1
+  }
+  WJ+=("$d/workers.json")
+done
 KNOWN=$(jq -sc '[.[] | .roles[]?.dispatch // empty]' "${WJ[@]}" 2>/dev/null)
-[[ -n "$RUN" && -n "$KNOWN" && -n "$ORCA_BIN" ]] || {
+[[ -n "$KNOWN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
