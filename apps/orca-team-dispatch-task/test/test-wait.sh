@@ -217,4 +217,63 @@ setup; dn; msg; w >/dev/null 2>&1
 [[ "$(jq -c . "$SD/received.json")" == '["worker_done|task_x|ctx_x|succeeded"]' ]] \
   && ok "WT20 string receipt 互換" || fail "WT20"; teardown
 
+# --- 2 タスクの集約待機 ---
+setup2() {
+  setup
+  SD2=$(mktemp -d); mkdir -p "$SD2/roles/design"
+  echo '{"run_id":"run_x","parent_handle":"term_p","repo_root":"/tmp"}' > "$SD2/run.json"
+  echo '{"roles":{"design":{"terminal":"term_w2","task":"task_y","dispatch":"ctx_y","retained":false}}}' \
+    > "$SD2/workers.json"
+  echo '{"status":"executing"}' > "$SD2/roles/design/status.json"
+}
+teardown2() { rm -rf "$SD2"; teardown; }
+w2() { bash "$P/bin/orca-wait.sh" --status-dir "$SD" --status-dir "$SD2" \
+         --max-waits "${1:-1}" --timeout-ms 1; }
+both_msg() { jq -nc --arg o1 "${1:-succeeded}" --arg o2 "${2:-succeeded}" \
+  '{ok:true,result:{runId:"run_x",deliveryId:"d9",count:2,messages:[
+    {id:"n1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:$o1}|tojson),body:""},
+    {id:"n2",type:"worker_done",payload:({taskId:"task_y",dispatchId:"ctx_y",outcome:$o2}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+dn2() { echo '{"status":"done"}' > "$SD2/roles/design/status.json"; }
+er2() { echo '{"status":"error"}' > "$SD2/roles/design/status.json"; }
+
+# WT21: 1 batch に 2 タスクの worker_done が同居しても、両方を正しく振り分ける
+setup2; dn; dn2; both_msg; out=$(w2 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$(jq -c . "$SD/received.json")" == '["worker_done|task_x|ctx_x|succeeded"]' \
+   && "$(jq -c . "$SD2/received.json")" == '["worker_done|task_y|ctx_y|succeeded"]' ]] \
+  && ok "WT21 receipt を振り分ける" || fail "WT21 (rc=$rc out=$out)"; teardown2
+
+# WT22: settle した dispatch すべてを retain してから ack は 1 回
+setup2; dn; dn2; both_msg; w2 >/dev/null 2>&1
+[[ "$(grep -c 'worker-retain' "$ORCA_STUB_DIR/calls.log")" -eq 2 \
+   && "$(grep -c -- '--ack' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && ok "WT22 retain 2 回・ack 1 回" || fail "WT22"; teardown2
+
+# WT23: 1 件成功・1 件失敗は 5。両方の receipt は残る
+setup2; dn; er2; both_msg succeeded failed; w2 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 5 && -s "$SD/received.json" && -s "$SD2/received.json" ]] \
+  && ok "WT23 部分失敗は 5" || fail "WT23 (rc=$rc)"; teardown2
+
+# WT24: 期待集合に無い dispatch が混ざったら ack も retain もしない
+setup2; dn; dn2
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d9",count:2,messages:[
+  {id:"n1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""},
+  {id:"n3",type:"worker_done",payload:({taskId:"task_z",dispatchId:"ctx_z",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+w2 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -q 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT24 未知の dispatch を含む batch を捨てない" || fail "WT24 (rc=$rc)"; teardown2
+
+# WT25: parent_handle が食い違う status-dir を混ぜたら使用法エラー
+setup2; echo '{"run_id":"run_x","parent_handle":"term_q","repo_root":"/tmp"}' > "$SD2/run.json"
+w2 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 2 ]] && ok "WT25a parent 不一致は 2" || fail "WT25a (rc=$rc)"; teardown2
+setup2; echo '{"run_id":"run_y","parent_handle":"term_p","repo_root":"/tmp"}' > "$SD2/run.json"
+w2 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 2 ]] && ok "WT25b run 不一致は 2" || fail "WT25b (rc=$rc)"; teardown2
+
+# WT26: 片方だけ終端なら終わらない（もう片方を待ち続けて時間切れ 3）
+setup2; dn; msg; w2 2 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 ]] && ok "WT26 全件終端まで待つ" || fail "WT26 (rc=$rc)"; teardown2
+
 echo "---"; echo "failures: $fails"; exit "$fails"
