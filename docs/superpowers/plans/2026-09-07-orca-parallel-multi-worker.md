@@ -70,7 +70,7 @@ TID=$(jq -r '.result.task.id' /tmp/u1-task.json)
 jq -r 'paths(scalars) as $p | select($p[-1] | test("handle|Handle")) | "\($p | join(".")) = \(getpath($p))"' /tmp/u1-worker.json
 ```
 
-**Expected:** 端末 handle を含むパスが 1 つ以上出る（`result.worker.agent_terminal_handle` が第一候補）。出たパスを控える。
+**実測（2026-09-07）:** `result.worker.*` には無く、`result.effects[]` の `{"kind":"terminal","role":"agent","action":"created","id":"term_…"}` に入る。**この Task は実行済み。**結果は spec の N20〜N23 にある。
 
 - [ ] **Step 4: U1 を確定する — 権限プロンプトで止まるか**
 
@@ -253,7 +253,11 @@ EOF
 
 ### Task 3: `orca-start.sh` が端末を作るのをやめ、`worker-start --agent` に任せる
 
-**前提:** Task 1 で U1 が **(a)** に確定していること。
+**前提:** Task 1 で U1 が **(a)** に確定した（spec N20）。端末 handle の取り出し方も確定している（spec N21）。
+
+```
+.result.effects[] | select(.kind == "terminal" and .role == "agent") | .id
+```
 
 **Files:**
 - Modify: `apps/orca-team-dispatch-task/bin/orca-start.sh`
@@ -261,7 +265,7 @@ EOF
 - Modify: `apps/orca-team-dispatch-task/test/test-e2e.sh:22`
 
 **Interfaces:**
-- Consumes: Task 1 が確定した端末 handle の JSON パス（以下 `result.worker.agent_terminal_handle` として書く。Task 1 の実測が違えばそちらに合わせる）
+- Consumes: spec N21 が確定した端末 handle の取り出し式（上記）
 - Produces: `worker-start` は `--agent claude --worktree id:<wt>` で呼ばれ、`--terminal` を渡さない。`orca-start.sh` は `terminal create` / `terminal wait` を一切呼ばない
 
 - [ ] **Step 1: 失敗するテストを書く**
@@ -286,7 +290,7 @@ setup; start >/dev/null 2>&1
   && ok "ST22 receipt から handle を取る" || fail "ST22"; teardown
 
 # ST23: rc 0 でも handle が無ければ資源を残して止まる。**推測しない**
-setup; echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x","worker":{}}}' \
+setup; echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x","effects":[]}}' \
   > "$ORCA_STUB_DIR/orchestration_worker-start"
 out=$(start 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *"Resources are KEPT"* ]] \
@@ -357,7 +361,8 @@ WRC=0; WJ2=$("$ORCA_BIN" orchestration worker-start --task "$TID" --worktree "id
                --agent claude --from "$PH" --json 2>/dev/null) || WRC=$?
 WSTATE=$(jq -r '.result.state // empty' <<<"$WJ2" 2>/dev/null || echo "")
 DID=$(jq -r '.result.dispatchId // empty' <<<"$WJ2" 2>/dev/null || echo "")
-H=$(jq -r '.result.worker.agent_terminal_handle // empty' <<<"$WJ2" 2>/dev/null || echo "")
+H=$(jq -r 'first(.result.effects[]? | select(.kind == "terminal" and .role == "agent") | .id) // empty' \
+     <<<"$WJ2" 2>/dev/null || echo "")
 if [[ "$WRC" -ne 0 || "$WSTATE" != ready || -z "$DID" ]]; then
   log "worker-start did not report ready (rc=$WRC state='${WSTATE:-none}'). Resources are KEPT."
   log "inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
@@ -398,7 +403,7 @@ write workers-after-dispatch "$SD/workers.json" \
 `setup()` から `terminal_create` の fixture 行を削除し、`orchestration_worker-start` の fixture に handle を足す。
 
 ```bash
-  echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x","worker":{"agent_terminal_handle":"term_w"}}}' \
+  echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_w"}]}}' \
     > "$ORCA_STUB_DIR/orchestration_worker-start"
 ```
 
@@ -1268,7 +1273,7 @@ REQ2=$(mktemp); printf 'second task\n' > "$REQ2"
 
 # 1 本目（Run を作る）
 echo '{"ok":true,"result":{"task":{"id":"task_a"}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
-echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_a","worker":{"agent_terminal_handle":"term_a"}}}' \
+echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_a","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_a"}]}}' \
   > "$ORCA_STUB_DIR/orchestration_worker-start"
 printf '{"ok":true,"result":{"worktree":{"id":"wt_a","path":"%s","branch":"refs/heads/orca/e2e"}}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_create"
@@ -1277,7 +1282,7 @@ SDA=$(sed -n 's/^status_dir=//p' <<<"$OUTA"); RUNID=$(sed -n 's/^run_id=//p' <<<
 
 # 2 本目（同じ Run に相乗り）
 echo '{"ok":true,"result":{"task":{"id":"task_b"}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
-echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_b","worker":{"agent_terminal_handle":"term_b"}}}' \
+echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_b","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_b"}]}}' \
   > "$ORCA_STUB_DIR/orchestration_worker-start"
 printf '{"ok":true,"result":{"worktree":{"id":"wt_b","path":"%s","branch":"refs/heads/orca/e2e-b"}}}\n' \
   "$WT2" > "$ORCA_STUB_DIR/worktree_create"

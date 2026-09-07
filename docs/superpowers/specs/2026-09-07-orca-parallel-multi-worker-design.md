@@ -11,7 +11,9 @@
 
 | rev | 変更 |
 |---|---|
-| 本版 | 初版。Stage A（並列 dispatch 基盤）を決める。Stage B（レビュー協調）/ Stage C（役ごとの agent 設定）/ Stage D は範囲外として節を分けて記録するだけに留める |
+| 初版 (5ff3333) | Stage A（並列 dispatch 基盤）を決める。Stage B（レビュー協調）/ Stage C（役ごとの agent 設定）/ Stage D は範囲外として節を分けて記録するだけに留める |
+| rev2 (25d6e6b) | 自己矛盾を 3 件訂正。`roles` 化に伴い `orca-merge.sh` の identity 読み出し 2 行が追随すること、`test-merge` は fixture だけ直して期待値が変わらないこと、`orca-stub.sh` 自体は汎用実装なので変更不要であることを明記 |
+| 本版 | **実機で U1 / U2 を解決し、N20〜N23 を追加。**U1 は (a)（`--agent claude` は権限プロンプトを出さない）。U2 は `result.effects[]` から取る。**9-1 の中核主張（coordinator-owned な端末の release は `released` を返す）を実測で確認した** |
 
 ## 1. 解こうとしている問題
 
@@ -53,7 +55,15 @@ Stage A の到達点は次のとおり:
 - **N14** `worker-retain --dispatch <id>` は**プロセスにもファイルにも触らない**。「解放しない」という durable な例外を記録するだけで、後から `worker-release` を呼べば例外が消えて解放される
 - **N15** `worker-list [--run <run_id>] [--terminal-state active|reclaimable|retained|release_pending|release_unknown|released]` が **Orca 側の実際の端末状態**を返す。`Terminal state is process accounting and is reported separately from Task status; a completed Task can still own a live terminal.`
 
-### 2-4. Stage 1 実装の現状（変更の起点）
+### 2-4. 実機で確認した事実（2026-09-07。Orca 1.4.197 / probe worktree で 1 回）
+
+- **N20** `worker-start --task <t> --worktree id:<wt> --agent claude` は **権限プロンプトを出さずにファイルを書いた**。`worker-show` の `observation.agentWait` は `null` のまま、指示したファイルが実際に生成された。**U1 は (a) で確定**であり、`--dangerously-skip-permissions` を自前で渡す必要はない
+- **N21** 端末 handle は `result.worker.*` には**無い**。`result.effects[]` の中の `{"kind":"terminal","role":"agent","action":"created","id":"term_…"}` から取る。jq で書けば `.result.effects[] | select(.kind == "terminal" and .role == "agent") | .id`。`worker-list` の `workers[].agentTerminalHandle` も同じ値を返すので、こちらは第 2 の経路として使える
+- **N22** **`worker-release` は Orca が作った端末に対して `released` を返した**（Stage 1 の `--terminal` 経路では常に `retained` だった）。2 回目の呼び出しは `already_released`。**9-1 の分類はこの実測に基づく**
+- **N23** `worker-retain` の receipt は `{"ok":true,"result":{"dispatchId":…,"state":"retained","reason":"user_requested","processAction":"none","archive":null}}`。`worker-list --run <id> [--terminal-state <s>]` は `{"result":{"workers":[…],"counts":{…}}}` を返し、各要素は `dispatchId` / `taskId` / `agentTerminalHandle` / `terminalState` と `resource.{ownershipState,releaseState,retainedReason,worktreeId}` を持つ。**`[C7]` が読む `.result.workers[].dispatchId` は実在する**
+- `launch.requested` / `launch.effective` は `{"agent":"claude","model":null,"effort":null}` の形で receipt に載る（N9 / U5 の検証点）
+
+### 2-5. Stage 1 実装の現状（変更の起点）
 
 - **N16** `bin/orca-start.sh` は `terminal create --command "bash $SD/run-design.sh"` で**自分で端末を作り**、その handle を `worker-start --terminal` に渡している。runner の中身は `exec claude --dangerously-skip-permissions` の決め打ち
 - **N17** その結果、`worker-release` は N13 の「再利用または既存の端末は閉じない」に該当して常に `retained` を返す。**現行 SKILL.md Step 3 の「Orca reports it `retained` and does not close it」は `--terminal` 経路の副作用であって、設計された保持ではない**
@@ -236,7 +246,7 @@ exit 5 は「全部失敗」ではない。**どのタスクが成功したか�
 
 ### 9-1. release state の読み方が変わる
 
-N16 / N17 のとおり、Stage 1 で常に `retained` が返っていたのは `--terminal` 経路の副作用である。新設計では端末が coordinator-owned になるため、正常系は `released` になる。
+N16 / N17 のとおり、Stage 1 で常に `retained` が返っていたのは `--terminal` 経路の副作用である。新設計では端末が coordinator-owned になるため、正常系は `released` になる。**これは N22 で実測済み**（`--agent` で起こした worker の release が `released`、2 回目が `already_released`）。
 
 | release state | 意味 | 扱い |
 |---|---|---|
@@ -306,8 +316,8 @@ Stage A で丸ごと消える `.sh` は無いが、`orca-start.sh` 内の runner
 
 | # | 内容 | 影響 | 扱い |
 |---|---|---|---|
-| **U1** | **`--agent claude` の argv を制御できない。**Stage 1 の runner は `claude --dangerously-skip-permissions` を明示して権限プロンプトで止まらないようにしていた（N16）。`--agent` 経路では argv は Orca が決める。`worker-show` に `observation.agentWait`（人しか答えられないプロンプトで停まっている worker を *healthy* と報告する）が存在することからも、Orca はプロンプト停止を想定している | 無人 dispatch では停止と同義 | **実機で 1 回確認する。**(a) プロンプトが出なければそのまま採用。(b) 出るなら `terminal create --command 'claude --dangerously-skip-permissions'` + `worker-start --terminal` に戻す。その場合 N9 により `--model` / `--effort` は使えず、Stage C は cmux 同様「コマンド文字列に焼き込む」方式になる |
-| U2 | `worker-start` の receipt のどのフィールドに端末 handle が入るか（`worker.agent_terminal_handle` / `launch.*` / その他） | 起動が成立しない | 実機の receipt を採取して確定する。**取れなければ資源を残して停止**する設計なので、誤動作ではなく停止に倒れる |
+| ~~U1~~ | **解決済み（N20）。**`--agent claude` は権限プロンプトを出さない。**(a) を採用する** | — | 実測 1 回。別 agent（`codex` / `cursor`）は Stage C で同じ確認を行う |
+| ~~U2~~ | **解決済み（N21）。**端末 handle は `result.effects[]` の `kind=="terminal" and role=="agent"` の `.id` | — | — |
 | U3 | 同一 worktree に複数 worker を並べたとき（Stage B）の checkout 競合 | Stage B | Stage A では 1 worktree 1 worker なので発生しない |
 | U4 | 保持した端末が死んでいる場合（ユーザーが閉じた / アプリ再起動 / クラッシュ） | Stage B の差し戻しで、文脈が消えた端末へ投げる | Stage B で `worker-show` による生存と identity の確認を必須にする。**失われていたら黙って新しい端末を作らない** |
 | U5 | `--model` / `--effort` が実際に効いたかは receipt の `launch.effective` でしか判らない（N9）。接続先 worker server が launch-preference 非対応だと無視される | Stage C | Stage C で `launch.requested` と `launch.effective` の一致を検証する |
