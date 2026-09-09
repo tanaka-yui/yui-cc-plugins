@@ -187,10 +187,26 @@ F-f では「merge 固定」として尋ねなかった。実装したので尋�
   repository を解決するだけのもの）が増え、守るべきものが無いのに fail-closed を
   要求して誤検知した。**変数を使う block だけ**を対象にする
 
-## 未了
+## 実機実行（2026-09-09）— **完了**
 
-- **実機での `phase_b=on` と `integration=pr` の実行**。stub では通っているが、
-  実際に worker 2 本を走らせて pull request を作るところは通していない
+`phase_b=on` + `integration=pr` を同時に効かせて通した。**この 2 つが同時に効く経路が
+最も検証価値が高い。**
+
+- design は **計画だけ**を書いた（40 行の plan.md、worktree に commit なし、clean）
+- exec が別 worktree で plan どおりに実装して commit
+- 待機が 2 役を回収（`role=design` / `role=exec` の 2 行、exit 0）
+- pull request #12 が `--repo` / `--base` / `--head` 明示で作られ、本文に result が載った
+
+### 実機でさらに 4 件出た（すべて stub では出ない）
+
+| | 症状 | 修正 |
+|---|---|---|
+| 1 | **役ごとの worktree 名が衝突しうる。**`design` 以外を一律 `-review` にしていたので `exec` が `<slug>-review` を名乗った。`review_mode` と `phase_b` を同時に on にすると `design_review` と衝突する | `<slug>-<role>` へ（ST54） |
+| 2 | **base が remote に無いと `Base ref must be a branch` という読めない GraphQL エラー**になる | 先に `ls-remote` で確かめて理由を言う（PR11） |
+| 3 | **`gh` が成功時にも stderr へ警告を出す**（`Warning: 4 uncommitted changes`）。`2>&1` で受けていたので URL の先頭が警告になり、**PR は作られたのに失敗として記録され、URL も残らなかった。**再実行は 2 つ目の PR を作りうる | stdout と stderr を分け、URL 行だけを取る（PR12） |
+| 4 | 3 の結果、記録が無いまま PR が実在する状態になった。**自分の記録だけを見ると永久に失敗のまま**である | 作成に失敗したら **GitHub に既存 PR を訊く**（PR13/PR14） |
+
+3 と 4 は連鎖している。**「自分の記録」を唯一の真実にしないこと**が要点である。
 
 ## この計画で扱わないもの
 

@@ -634,4 +634,17 @@ out=$(exec_phase 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *'phase_b is off'* ]] \
   && ok "ST53 phase_b=off では exec 段が無い" || fail "ST53 (rc=$rc) $out"; teardown
 
+# ST54: ★ **役ごとに違う worktree 名を使う。**`design` 以外を一律 `-review` にしていたので、
+#       `exec` が `<slug>-review` を名乗り、**review_mode と phase_b を同時に on にすると
+#       design_review と衝突した**（実機で発見）。
+setup; review_on
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"review_mode":"on","phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1
+names=$(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" | grep -A1 -- '--name' | grep -v -- '--name' | grep -v '^--$' | sort -u)
+[[ "$(grep -c 's-design-review' <<<"$names")" -eq 1 ]] \
+  && ! grep -qx 's-review' <<<"$names" \
+  && ok "ST54 役ごとに違う worktree 名（design_review は s-design-review）" || fail "ST54 [$names]"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

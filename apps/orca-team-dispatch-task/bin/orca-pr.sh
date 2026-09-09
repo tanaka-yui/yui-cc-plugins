@@ -70,6 +70,12 @@ if git -C "$RR" rev-parse --quiet --verify "refs/heads/$BASE" >/dev/null 2>&1; t
     || stop "branch $BR has no commits that $BASE does not already have"
 fi
 
+# ★ **base が remote に在ることを先に確かめる。**無いまま `gh pr create` を呼ぶと
+#   `Base ref must be a branch` という GraphQL のエラーになり、**何が悪いのか読めない**
+#   （実機で発見: ローカルだけの一時ブランチから dispatch していた）。
+git -C "$RR" ls-remote --exit-code --heads "$REMOTE" "$BASE" >/dev/null 2>&1 \
+  || stop "the base branch $BASE does not exist on $REMOTE; push it first, or dispatch from a branch that is already there"
+
 # push。**失敗したら PR を作らない** — 中身の無い PR は誤解を生むだけである
 git -C "$RR" push "$REMOTE" "refs/heads/$BR:refs/heads/$BR" >/dev/null 2>&1 \
   || stop "could not push $BR to $REMOTE; no pull request was created"
@@ -84,13 +90,30 @@ BODY_FILE=$(mktemp) || stop "mktemp failed"
   [[ -z "$ISSUE" ]] || { printf '\n'; printf 'Closes #%s\n' "$ISSUE"; }
 } > "$BODY_FILE"
 
-PRC=0
-URL=$(gh pr create --repo "$REPO" --base "$BASE" --head "$BR" \
-        --title "$TITLE" --body-file "$BODY_FILE" 2>&1) || PRC=$?
+# ★ **stdout と stderr を混ぜない。**`gh` は成功時にも stderr へ警告を出す
+#   （実測: `Warning: 4 uncommitted changes`）。`2>&1` で受けると URL の前に警告が付き、
+#   **PR は作られたのに失敗として記録される。**そのとき URL も残らないので、再実行が
+#   **2 つ目の PR を作る。**診断は別に取り、URL は stdout からだけ読む。
+PRC=0; ERRF=$(mktemp) || stop "mktemp failed"
+OUT=$(gh pr create --repo "$REPO" --base "$BASE" --head "$BR" \
+        --title "$TITLE" --body-file "$BODY_FILE" 2>"$ERRF") || PRC=$?
 rm -f "$BODY_FILE"
-if [[ "$PRC" -ne 0 ]] || [[ "$URL" != http* ]]; then
-  log "$URL"
-  stop "gh pr create failed for $BR"
+[[ -s "$ERRF" ]] && log "gh: $(tr '\n' ' ' < "$ERRF")"
+rm -f "$ERRF"
+# 警告が混ざっても URL 行だけを取る
+URL=$(grep -oE 'https://[^[:space:]]+' <<<"$OUT" | tail -1)
+if [[ "$PRC" -ne 0 ]] || [[ -z "$URL" ]]; then
+  # ★ **作れなかったのか、既に在るのかを GitHub に訊く。**自分の記録は失われうる
+  #   (実測: 最初の試行が stderr の警告で失敗扱いになり、PR は在るのに URL を
+  #   記録できなかった)。そこで諦めると、その dispatch は永久に失敗のままになる。
+  # ★ `--jq` に頼らず自分で通す。gh の版差に依存する理由が無い
+  URL=$(gh pr list --repo "$REPO" --head "$BR" --state open --json url 2>/dev/null \
+        | jq -r 'if type == "array" then (.[0].url // empty) else empty end' 2>/dev/null || echo "")
+  if [[ -z "$URL" ]]; then
+    log "$OUT"
+    stop "gh pr create failed for $BR"
+  fi
+  log "a pull request for $BR already exists"
 fi
 write "$SD/integration-result.json" \
   "$(jq -nc --arg u "$URL" --arg b "$BR" --arg base "$BASE" --arg repo "$REPO" \

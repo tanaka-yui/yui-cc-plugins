@@ -390,7 +390,10 @@ SPEC_D
 launch_role() {
   local role="$1" wt_name title
   local WT_ID WT_PATH BR CREATED="" WJ WLJ N CRC CJ H="" TID DID
-  wt_name="$SLUG"; [[ "$role" == design ]] || wt_name="$SLUG-review"
+  # ★ **役ごとに違う名前にする。**`design` 以外を一律 `-review` にしていたので、
+  #   `exec` が `<slug>-review` を名乗り、**review_mode と phase_b を同時に on にすると
+  #   design_review と衝突した**（実機で発見: exec のブランチが `pb-live-review` になった）。
+  wt_name="$SLUG"; [[ "$role" == design ]] || wt_name="$SLUG-${role//_/-}"
   title="$SLUG/$role"
 
   local rd="$SD/roles/$role"

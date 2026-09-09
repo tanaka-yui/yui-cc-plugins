@@ -150,4 +150,53 @@ pr --repo notaslug >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "PR10 owner/repo でなければ 2" || fail "PR10"
 teardown
 
+# PR11: ★ **base が remote に無ければ、そう言って止まる。**無いまま gh を呼ぶと
+#       `Base ref must be a branch` という GraphQL のエラーになり、**何が悪いのか
+#       読めない**（実機で発見: ローカルだけの一時ブランチから dispatch していた）。
+setup
+jq -c '.integration_branch = "never-pushed"' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
+git -C "$R" branch -q never-pushed main
+out=$(pr --repo o/r 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'does not exist on origin'* ]] \
+  && ! grep -q 'pr create' <(ghlog) \
+  && ok "PR11 base が remote に無ければ理由を言って止まる" || fail "PR11 (rc=$rc) $out"
+teardown
+
+# PR12: ★ **`gh` が stderr に警告を出しても、成功は成功である。**`2>&1` で受けると
+#       URL の前に警告が付き、**PR は作られたのに失敗として記録され、URL も残らない**。
+#       そのとき再実行は **2 つ目の PR を作る**（実機で発見:
+#       `Warning: 4 uncommitted changes`）。
+setup
+cat > "$GH_STUB_DIR/pr_create.hook" <<'HOOK'
+#!/usr/bin/env bash
+echo "Warning: 4 uncommitted changes" >&2
+HOOK
+chmod +x "$GH_STUB_DIR/pr_create.hook"
+out=$(pr --repo o/r 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == 'https://github.com/o/r/pull/1' ]] \
+  && [[ "$(jq -r '.pr_url' "$SD/integration-result.json")" == 'https://github.com/o/r/pull/1' ]] \
+  && ok "PR12 stderr の警告を失敗と読まない" || fail "PR12 (rc=$rc out=$out)"
+teardown
+
+# PR13: ★ **記録が無くても、既に PR が在るなら成功として拾う。**自分の記録は失われうる
+#       （実測: 最初の試行が stderr の警告で失敗扱いになり、PR は在るのに URL を記録
+#       できなかった）。そこで諦めると、その dispatch は永久に失敗のままになる。
+setup
+printf '1\n' > "$GH_STUB_DIR/pr_create.rc"
+printf '[{"url":"https://github.com/o/r/pull/9"}]\n' > "$GH_STUB_DIR/pr_list"
+out=$(pr --repo o/r 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == 'https://github.com/o/r/pull/9' ]] \
+  && [[ "$(jq -r '.pr_url' "$SD/integration-result.json")" == 'https://github.com/o/r/pull/9' ]] \
+  && ok "PR13 既存 PR を GitHub に訊いて拾う" || fail "PR13 (rc=$rc out=$out)"
+teardown
+
+# PR14: 既存も無ければ、やはり失敗である（作れていないのに成功と言わない）。
+setup
+printf '1\n' > "$GH_STUB_DIR/pr_create.rc"
+printf '[]\n' > "$GH_STUB_DIR/pr_list"
+pr --repo o/r >/dev/null 2>&1
+[[ $? -eq 1 ]] && [[ "$(jq -r '.pr_url // "none"' "$SD/integration-result.json")" == none ]] \
+  && ok "PR14 既存も無ければ失敗のまま" || fail "PR14"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
