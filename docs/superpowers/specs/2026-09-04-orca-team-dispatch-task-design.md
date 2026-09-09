@@ -86,6 +86,12 @@ Phase A-R round 1 の finding 1 で否決された。
 | O35 | **repo 登録は取り消せる。**`orca repo` に `remove` は無いが、`project setup-delete --setup <setup-id>` の Notes に「Repo-backed setups remove the registered repo compatibility record」とあり、実行後 `repo list` が 2 件から 1 件へ戻ることを確認した。**round 5 時点の「repo 登録は取り消せない」という私の記述は、`orca repo --help` だけを見た誤りだった** | Phase 0 spike 実測 |
 | O36 | `worktree create` は `workspace-window-closed`（O2）でも動く。`--repo name:yui-cc-plugins --name orca-spike-tmp --no-parent --setup skip` → ok、`worktree.id` は `<repo-id>::<path>` 形式、branch は `refs/heads/<git user>/<name>`。**U4 はこれで解消** | Phase 0 spike 実測 |
 | O37 | mutation の失敗応答は `error.data` に `orchestrationRequestId` と `originalCommand`（argv 配列）を含む。**成功応答の `result.mutation.requestId` と合わせ、request id は「応答が返れば」必ず得られる** | Phase 0 spike 実測 |
+| O38 | **worker → worker の `send --to dispatch:<id>` は通る。**worker A が `send --to dispatch:<B> --type status --subject 'review-plan: round 1'` を実行 → ok、receipt の `to_handle` は `dispatch:ctx_...`。worker B は `check --terminal <B の handle> --peek --wait --json` で **subject / body ともに無傷で**受信した。`--help` の Notes は `dispatch:<id>` を "attempt-specific coordinator guidance" としか書いていないが、**coordinator 以外の worker からも届く**。U-B1 / U-B3 が解消 | レビュー spike 実測 (2026-09-09) |
+| O39 | **`--to dispatch:<id>` の message は親の Run メールボックスに現れない。**上記 send の直後、親端末の `check --peek` と `--all` のどちらでも `worker_done` 2 件（seq 60/61）だけが見え、レビュー message（seq 59）は入らなかった。**レビュー往復は親の FIFO Delivery を汚さない**ので、`orca-wait.sh` が未知 type で batch ごと詰まる経路は生じない。U-B2 が解消 | レビュー spike 実測 (2026-09-09) |
+| O40 | **`worktree list` の receipt に `name` フィールドは存在しない。**要素のキーは `displayName` / `displayNameMode` などで、`worktree create --name <n>` が入れた名前は `displayName` に載る（`.name` は全要素で `null`）。`.name` で照合していた `orca-start.sh` の再利用検出は**常に 0 件**で、再利用経路も「同名が複数」の防御も一度も動いていなかった。なお `displayName` は create 由来でない worktree ではブランチ名になる | レビュー spike 実測 (2026-09-09) |
+| O41 | **worker の shell に `ORCA_BIN` は無い。**Orca が端末を作るので親の環境変数は継がれない。worker が「`$ORCA_BIN` was empty in this shell; used `orca-ide` (resolved via PATH)」と自己申告した。Task spec に変数名のまま書くと、STATUS PROTOCOL の `worker_done` が空コマンドになる。**spec には実値を焼き込む** | レビュー spike 実測 (2026-09-09) |
+| O42 | agent 端末を持たない worktree は Orca に回収される。`worktree create` 直後に `worker-start` せず放置したら、数十秒で `worktree list` からもディスクからも消えた。**worktree の作成と worker の起動を離してはならない** | レビュー spike 実測 (2026-09-09) |
+| O43 | **`worker-release` は `ok: true` を返しながら何も解放しないことがある。**receipt は `releaseState: retained` / `ownershipState: user_owned` / `retainedReason: user_takeover` / `releaseCompletedAt: null` のまま（2 回独立に観測: cfg-probe と rv-live）。しかも **`worktree rm` で端末が実際に消えたあとも `worker-list` の記録は `retained` のまま残る** — `terminal list` に居ないのに `terminalState: retained` である。結果として、**同じ Run で後から dispatch すると [C7] がそれを「記録に無い保持中 worker」と読んで Run 全体の片付けを止める**（実測: 捨て status dir で [C7] を回して再現）。回避は Run を使い回さないこと（skill は既定で invocation ごとに Run を作る。`--run` は同一 batch の兄弟タスク専用である） | レビュー実機 E2E (2026-09-09) |
 | O20 | codex の interactive session では `--add-dir` が seatbelt policy に届かない。`-c sandbox_workspace_write.writable_roots=[...]`（single-quoted TOML literal 形式なら `zsh -ic` を通る）は効く | 親が 3 プローブで実測（2026-09-04T05:11:29Z）。2026-09-03 spec 9-1 節 F7 の root cause |
 
 ### 2-2. 移植元（cmux 版）側 — 14 本の個別監査
@@ -1714,16 +1720,19 @@ simulated variant が Orca と一致することではない。
 Stage 1 の完了後に、独立した spec の follow-up として順に実装する。
 **各 follow-up も「完了時点で動く」単位で切る。**
 
-| # | follow-up | 本 spec の該当節 | 「動く」の定義 |
-|---|---|---|---|
-| F-a | **Phase B の委譲**（design → 親 → exec の 2 ロール） | 5-1 T5-T9 / 6-4 | design の plan を親が受け取り exec が実装まで進む |
-| F-b | **レビュー 2 ロール**（Phase A-R / B-R） | 7 / 6-2 の adapter / `review-request.sh` / `review-gate.sh` | verdict のやり取りが 1 往復通る |
-| F-c | **PR 統合** | 9-2 / `resolve-integration.sh` / `record-pr.sh` | PR が origin 上に作られ `pr_url` が記録される |
-| F-d | **二相コミットの完全形** | 10 全体 | `merge_ready` → 親の検証 → `accepted` → `worker_done` が通る |
-| F-e | **generation transition と owner replacement** | 5-1 の transaction / 10-5 / 12-1 の replacement branch | 不受理からの差し戻しと worker 消失からの回復が通る |
-| F-f | **issue ループ** | 12 | issue 1 件が自動で dispatch され cleanup まで通る |
-| F-g | **setup / reset / override**（runner / model / effort の設定） | 13 | 各モードが対話で設定を変更できる |
-| F-h | **repo setup hook 対応**（`worktree create --setup run` と補助端末の ownership 管理） | 11 | setup hook を要する repo で dispatch が通り、cleanup が補助端末を正しく判断する |
+**2026-09-09 時点で F-a 〜 F-h はすべて実装済みである**（実装計画は
+`docs/superpowers/plans/2026-09-09-*.md` の 4 本）。以下の表は各 follow-up の定義として残す。
+
+| # | follow-up | 本 spec の該当節 | 「動く」の定義 | 状態 |
+|---|---|---|---|---|
+| F-a | **Phase B の委譲**（design → 親 → exec の 2 ロール） | 5-1 T5-T9 / 6-4 | design の plan を親が受け取り exec が実装まで進む | **実装済み** |
+| F-b | **レビュー 2 ロール**（Phase A-R / B-R） | 7 / 6-2 の adapter / `review-request.sh` / `review-gate.sh` | verdict のやり取りが 1 往復通る | **実装済み** |
+| F-c | **PR 統合** | 9-2 / `resolve-integration.sh` / `record-pr.sh` | PR が origin 上に作られ `pr_url` が記録される | **実装済み** |
+| F-d | **二相コミットの完全形** | 10 全体 | `merge_ready` → 親の検証 → `accepted` → `worker_done` が通る | **実装済み** |
+| F-e | **generation transition と owner replacement** | 5-1 の transaction / 10-5 / 12-1 の replacement branch | 不受理からの差し戻しと worker 消失からの回復が通る | **実装済み** |
+| F-f | **issue ループ** | 12 | issue 1 件が自動で dispatch され cleanup まで通る | **実装済み** |
+| F-g | **setup / reset / override**（runner / model / effort の設定） | 13 | 各モードが対話で設定を変更できる | **実装済み** |
+| F-h | **repo setup hook 対応**（`worktree create --setup run` と補助端末の ownership 管理） | 11 | setup hook を要する repo で dispatch が通り、cleanup が補助端末を正しく判断する | **実装済み** |
 
 ### 撤回した節（2026-09-04 の裁定）
 

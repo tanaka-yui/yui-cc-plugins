@@ -44,15 +44,22 @@ jq -e '.merged == true' "$SD/integration-result.json" >/dev/null 2>&1 && {
 }
 
 RR=$(value '.repo_root' "$SD/run.json") || stop "no repository identity recorded"
-BR=$(value '.branch' "$SD/workers.json") || stop "no branch identity recorded; refusing to guess"
+# ★ **取り込む役は記録から引く。既定を置かない。**`// "design"` と書くと、記録を書き
+#   損ねた dispatch が黙って design のブランチを取り込む。取り込み先の取り違えは成果の
+#   喪失につながるので、他の identity と同じく「無ければ止まる」。
+IR=$(value '.integration_role' "$SD/workers.json") || stop "no integration role recorded; refusing to guess"
+BR=$(jq -er --arg r "$IR" '.roles[$r].branch // empty' "$SD/workers.json" 2>/dev/null) \
+  || stop "no branch identity recorded for role '$IR'; refusing to guess"
 IB=$(value '.integration_branch' "$SD/workers.json") || stop "no integration branch recorded; refusing to guess"
-TID=$(value '.roles.design.task' "$SD/workers.json") || stop "the dispatch identity is incomplete"
-DID=$(value '.roles.design.dispatch' "$SD/workers.json") || stop "the dispatch identity is incomplete"
+TID=$(jq -er --arg r "$IR" '.roles[$r].task // empty' "$SD/workers.json" 2>/dev/null) \
+  || stop "the dispatch identity is incomplete for role '$IR'"
+DID=$(jq -er --arg r "$IR" '.roles[$r].dispatch // empty' "$SD/workers.json" 2>/dev/null) \
+  || stop "the dispatch identity is incomplete for role '$IR'"
 
 git -C "$RR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || stop "the recorded repository is unavailable"
 
 # 受理の証拠。全て揃わなければ取り込まない。
-ST=$(value '.status' "$SD/roles/design/status.json" 2>/dev/null || true)
+ST=$(value '.status' "$SD/roles/$IR/status.json" 2>/dev/null || true)
 [[ "$ST" == "done" ]] || stop "the worker status is '${ST:-missing}', not done"
 jq -e --arg receipt "worker_done|$TID|$DID|succeeded" \
   'type == "array"
@@ -60,7 +67,7 @@ jq -e --arg receipt "worker_done|$TID|$DID|succeeded" \
       and .[1] != "" and .[2] != "" and (.[3] == "succeeded" or .[3] == "failed")))
    and index($receipt) != null' "$SD/received.json" >/dev/null 2>&1 \
   || stop "no succeeded worker_done was received for this dispatch; run orca-wait.sh first"
-[[ -s "$SD/roles/design/result.md" ]] || stop "result.md is missing or empty"
+[[ -s "$SD/roles/$IR/result.md" ]] || stop "result.md is missing or empty"
 
 # 取り込み先の identity。start 時と同じ checkout / branch に限定する。
 git -C "$RR" show-ref --quiet "refs/heads/$BR" || stop "branch $BR does not exist"

@@ -9,6 +9,9 @@ unset ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND
 setup() {
   ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
   : > "$ORCA_STUB_DIR/calls.log"
+  # ★ **利用者の実 config を読ませない。**隔離しないと、その端末で --setup を一度でも
+  #   走らせた瞬間にテストの期待 (agent=claude / model 無し) が壊れる
+  export ORCA_DISPATCH_CONFIG_HOME="$ORCA_STUB_DIR/config"
   export ORCA_TERMINAL_HANDLE=term_p
   R=$(mktemp -d); git -C "$R" init -q -b main .
   echo seed > "$R/README.md"; git -C "$R" add -A
@@ -30,11 +33,13 @@ setup() {
 }
 teardown() { git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
              rm -rf "$ORCA_STUB_DIR" "$R" "$REQ" "$(dirname "$WT")"
-             unset ORCA_TERMINAL_HANDLE ORCA_BIN; }
+             unset ORCA_TERMINAL_HANDLE ORCA_BIN ORCA_DISPATCH_CONFIG_HOME; }
 start() { bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug "${SLUG:-s}" --objective obj \
             --repo-root "$R" "$@"; }
 spec() { grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1; }
-reuse_fixture() { printf '{"ok":true,"result":{"worktrees":[{"id":"wt_old","name":"s","path":"%s","branch":"refs/heads/orca/s"}]}}\n' \
+# ★ **実機の receipt に `name` は無い**（実測 2026-09-09）。名前は `displayName` に載る。
+#   fixture が `name` を持っていたせいで、再利用経路のテストが全部「嘘の形」で通っていた。
+reuse_fixture() { printf '{"ok":true,"result":{"worktrees":[{"id":"wt_old","displayName":"s","path":"%s","branch":"refs/heads/orca/s"}]}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_list"; }
 
 setup; bash "$P/bin/orca-start.sh" --bogus >/dev/null 2>&1
@@ -62,7 +67,8 @@ setup; SLUG='Bad_Slug' start >/dev/null 2>&1
 #      lifecycle の argv も全部持つ (spec 6-4b)。bare orca は使わせない (O1)
 setup; start >/dev/null 2>&1; l=$(spec); miss=""
 [[ "$l" == *"$MARK"* ]] || miss="$miss [request]"
-for n in 'ORCA_BIN' 'worker_done' '--task-id' '--dispatch-id' '--dispatch-capability' \
+# ★ 'ORCA_BIN' は入れない。**変数名が spec に出ること自体がバグ**である（ST42）。
+for n in 'worker_done' '--task-id' '--dispatch-id' '--dispatch-capability' \
          '--from' '--outcome' 'report-status.sh' 'dispatch-show --task'; do
   [[ "$l" == *"$n"* ]] || miss="$miss [$n]"; done
 [[ "$l" == *' orca orchestration'* ]] && miss="$miss [bare-orca]"
@@ -79,7 +85,7 @@ setup; echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term
   > "$ORCA_STUB_DIR/orchestration_run-current"; start >/dev/null 2>&1
 grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" && fail "ST5 無関係な Run で起動した"; teardown
 setup; start >/dev/null 2>&1
-jq -e '.run_id=="run_x" and .worktree_id=="wt_1" and .branch=="orca/s"
+jq -e '.run_id=="run_x" and .roles.design.worktree_id=="wt_1" and .roles.design.branch=="orca/s"
        and .integration_branch=="main"
        and .roles.design.terminal=="term_w" and .roles.design.task=="task_x" and .roles.design.dispatch=="ctx_x"' \
   "$R/.dispatch/s/workers.json" >/dev/null 2>&1 || fail "ST5 workers.json"
@@ -111,7 +117,7 @@ setup; echo 1 > "$ORCA_STUB_DIR/worktree_create.rc"; start >/dev/null 2>&1
   && ok "ST6f create の rc を見る" || fail "ST6f rc を無視した"; teardown
 
 # ST6b: 同名が複数返ったら曖昧として止まる（勝手に 1 件目を選ばない）
-setup; printf '{"ok":true,"result":{"worktrees":[{"id":"a","name":"s","path":"%s","branch":"refs/heads/orca/s"},{"id":"b","name":"s","path":"/tmp/other","branch":"refs/heads/x"}]}}\n' \
+setup; printf '{"ok":true,"result":{"worktrees":[{"id":"a","displayName":"s","path":"%s","branch":"refs/heads/orca/s"},{"id":"b","displayName":"s","path":"/tmp/other","branch":"refs/heads/x"}]}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_list"; start >/dev/null 2>&1
 [[ $? -eq 1 ]] && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST6b 曖昧なら止まる" || fail "ST6b 1 件目を勝手に選んだ"; teardown
@@ -140,14 +146,21 @@ start >/dev/null 2>&1; rc=$?
 
 # ST9: **Task 未作成の段の write 失敗 → identity を出し、自分が作った分だけ戻す**
 #      端末は worker-start より後にしか生まれないので、この段では terminal=none
-setup; out=$(ORCA_FAIL_WRITE_AT=workers-initial start 2>&1); rc=$?
+setup; out=$(ORCA_FAIL_WRITE_AT=workers-worktree-design start 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] && [[ "$out" == *"worktree=wt_1"* && "$out" == *"terminal=none"* ]] \
   && grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST9 identity を出して自分の分だけ戻す" || fail "ST9 (rc=$rc out=$out)"; teardown
 
+# ST9c: ★ **骨格を書けない段では worktree をまだ作っていない。**tuple の記録は Run の直後
+#       （どの役の資源よりも前）なので、ここで落ちても戻すものが無い。
+setup; out=$(ORCA_FAIL_WRITE_AT=workers-initial start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"Nothing else exists yet"* ]] \
+  && ! grep -qE 'worktree create|worktree rm|task-create' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST9c 骨格を書けない段では何も作っていない" || fail "ST9c (rc=$rc out=$out)"; teardown
+
 # ST9b: **Task 成立後の write 失敗は KEPT。**この境界では何も消してはならない。
 #       failpoint は呼び出し地点 ID で撃つ — basename 比較では Task 前と区別できない
-setup; out=$(ORCA_FAIL_WRITE_AT=workers-after-task start 2>&1); rc=$?
+setup; out=$(ORCA_FAIL_WRITE_AT=workers-after-task-design start 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] \
   && [[ "$out" == *"task=task_x"* && "$out" == *KEPT* ]] \
   && grep -q 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" \
@@ -158,7 +171,7 @@ setup; out=$(ORCA_FAIL_WRITE_AT=workers-after-task start 2>&1); rc=$?
 # ST9a: task-create が task id を返したなら、rc 非 0 でも Task の不在を断定せず、何も削除しない。
 setup; echo 1 > "$ORCA_STUB_DIR/orchestration_task-create.rc"
 out=$(start 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *"task-create failed (rc=1) but returned task id task_x"* \
+[[ "$rc" -eq 1 && "$out" == *"task-create failed for design (rc=1) but returned task id task_x"* \
   && "$out" == *"Resources are KEPT"* && "$out" == *"task=task_x"* ]] \
   && ! grep -q 'terminal close\|worktree rm' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST9a task id 付きの task-create 失敗は KEPT" || fail "ST9a (rc=$rc out=$out)"; teardown
@@ -166,7 +179,7 @@ out=$(start 2>&1); rc=$?
 # ST9a2: rc 0 で task id が無い receipt は Task 不在を証明しない。何も cleanup しない。
 setup; echo '{"ok":true,"result":{"task":{}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
 out=$(start 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *"task-create returned success but no task id"* && "$out" == *KEPT* \
+[[ "$rc" -eq 1 && "$out" == *"task-create returned success but no task id for design"* && "$out" == *KEPT* \
   && "$out" == *"worktree=wt_1"* && "$out" == *"terminal=none"* \
   && "$out" == *"task-list --run run_x"* ]] \
   && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
@@ -174,7 +187,7 @@ out=$(start 2>&1); rc=$?
   && ok "ST9a2 曖昧な task-create は KEPT" || fail "ST9a2 (rc=$rc out=$out)"; teardown
 
 # ST9b2: **Dispatch 成立後の write 失敗も同じ**
-setup; out=$(ORCA_FAIL_WRITE_AT=workers-after-dispatch start 2>&1); rc=$?
+setup; out=$(ORCA_FAIL_WRITE_AT=workers-after-dispatch-design start 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] && [[ "$out" == *"dispatch=ctx_x"* && "$out" == *KEPT* ]] \
   && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST9b2 Dispatch 成立後も KEPT" || fail "ST9b2 (rc=$rc out=$out)"; teardown
@@ -213,24 +226,24 @@ setup; start >/dev/null 2>&1
 # ST14: **ownership と worktree の端末集合を記録する**（片付けの gate が読む）
 setup; echo '{"ok":true,"result":{"terminals":[{"handle":"term_w"},{"handle":"term_shell"}]}}' \
   > "$ORCA_STUB_DIR/terminal_list"; start >/dev/null 2>&1
-jq -e '.worktree_created_by_this_run == true
-       and (.worktree_terminals | length == 2)' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+jq -e '.roles.design.worktree_created_by_this_run == true
+       and (.roles.design.worktree_terminals | length == 2)' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST14 作成 worktree と端末集合" || fail "ST14 ($(jq -c . "$R/.dispatch/s/workers.json"))"; teardown
 setup; reuse_fixture; start >/dev/null 2>&1
-jq -e '.worktree_created_by_this_run == false' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+jq -e '.roles.design.worktree_created_by_this_run == false' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST14b 再利用は owned=false" || fail "ST14b 再利用を owned にした"; teardown
 
 # ST14c: **terminal list に失敗したら空配列ではなく null を記録する** (round 4 finding 1)。
 #        [] にすると、あとの cleanup gate が「未 account 0」と読んで削除を許す
 setup; echo 1 > "$ORCA_STUB_DIR/terminal_list.rc"; start >/dev/null 2>&1
-jq -e '.worktree_terminals == null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+jq -e '.roles.design.worktree_terminals == null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST14c inventory 失敗は null" \
-  || fail "ST14c ($(jq -c '.worktree_terminals' "$R/.dispatch/s/workers.json"))"; teardown
+  || fail "ST14c ($(jq -c '.roles.design.worktree_terminals' "$R/.dispatch/s/workers.json"))"; teardown
 
 # ST14d: schema が配列でないときも null
 setup; echo '{"ok":true,"result":{"terminals":"nope"}}' > "$ORCA_STUB_DIR/terminal_list"
 start >/dev/null 2>&1
-jq -e '.worktree_terminals == null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+jq -e '.roles.design.worktree_terminals == null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST14d 不正 schema も null" || fail "ST14d"; teardown
 
 # ST13: 既存 slug は上書きしない
@@ -328,7 +341,7 @@ fi; teardown_wsl
 # ST28b: **receipt の path を local 形式へ戻す。**戻さないと -d も git -C も落ち、
 #        workers.json に bash が使えない path が残って片付け ([C3] の git -C "$WP") が壊れる
 setup_wsl; start >/dev/null 2>&1
-got=$(jq -r '.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
+got=$(jq -r '.roles.design.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
 [[ "$got" == "$WT" ]] && ok "ST28b receipt の path を local へ戻す" \
   || fail "ST28b workers.json の path=[$got] 期待=[$WT]"; teardown_wsl
 
@@ -347,7 +360,7 @@ if WPD=$(command -v wslpath 2>/dev/null); then
   export PATH
 fi
 start >/dev/null 2>&1
-got=$(jq -r '.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
+got=$(jq -r '.roles.design.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
 PATH="$OLDPATH"; export PATH; unset ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND
 [[ "$got" == "$WT" ]] && ok "ST28d wslpath が無ければ変換しない" \
   || fail "ST28d path=[$got] 期待=[$WT]"; teardown
@@ -363,5 +376,421 @@ start >/dev/null 2>&1; rc=$?
 PATH="$OLDPATH"; export PATH; rm -rf "$STUBBIN"; unset ORCA_CLI_COMMAND
 [[ "$rc" -eq 0 ]] && grep -q 'run-create' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST29 ORCA_CLI_COMMAND を既定にする" || fail "ST29 (rc=$rc)"; teardown
+
+# ST30: **config が worker-start の argv になる。**ここが繋がっていなければ、
+#       config.json はただのファイルであって設定ではない
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+echo '{"roles":{"design":{"agent":"codex","model":"gpt-6-astra","effort":"xhigh"}}}' \
+  > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$ws" == *'--agent codex'* && "$ws" == *'--model gpt-6-astra'* && "$ws" == *'--effort xhigh'* ]] \
+  && ok "ST30 config が --agent/--model/--effort になる" || fail "ST30 [$ws]"; teardown
+
+# ST31: ★ **設定ゼロの挙動を変えない。**`--model` を省けば Orca 側の既定が使われる。
+#       ここで既定を捏造すると、設定していない利用者の dispatch が黙って変わる
+setup; start >/dev/null 2>&1
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$ws" == *'--agent claude'* && "$ws" != *'--model'* && "$ws" != *'--effort'* ]] \
+  && ok "ST31 設定ゼロなら model/effort を渡さない" || fail "ST31 [$ws]"; teardown
+
+# ST32: ★ **壊れた設定では資源を 1 つも作らない。**設定の解決は worktree と Task より前。
+#       あとで落ちると、片付けの要る残骸だけが残る
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; echo '{not json' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -qE 'worktree create|task-create|worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST32 壊れた設定では何も作らない" || fail "ST32 (rc=$rc)"; teardown
+
+# ST33: 解決した tuple を workers.json に残す。receipt 無しで「何で走ったか」に答えるため。
+#       未設定の model/effort は**キーを置かない**（未設定と空文字を混ぜない）
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+echo '{"roles":{"design":{"agent":"claude","model":"sonnet"}}}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1
+d=$(jq -c '.roles.design | {agent,model,effort:(has("effort"))}' "$R/.dispatch/s/workers.json" 2>/dev/null)
+[[ "$d" == '{"agent":"claude","model":"sonnet","effort":false}' ]] \
+  && ok "ST33 解決した tuple を workers.json に残す" || fail "ST33 [$d]"; teardown
+
+# ST34: 1 回きりの上書きは config より強い。config を書き換えずに 1 回だけ別の値で試せる
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+echo '{"roles":{"design":{"agent":"claude","model":"sonnet","effort":"low"}}}' \
+  > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start --model 'opus[1m]' --effort max >/dev/null 2>&1
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+# calls.log は argv を %q で記録するので、期待値も同じ引用を通してから比べる
+printf -v qm '%q' 'opus[1m]'
+[[ "$ws" == *"--model $qm"* && "$ws" == *'--effort max'* ]] \
+  && ok "ST34 1 回きりの上書きが config より強い" || fail "ST34 [$ws]"; teardown
+
+# ST40: ★ **worktree の名前は receipt の `displayName` から引く。**実機の
+#       `worktree list` に `name` は存在せず（実測 2026-09-09）、`.name` で照合していた間
+#       この経路は常に 0 件で、再利用も「同名が複数」の防御も一度も動いていなかった。
+setup; reuse_fixture; start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && ! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
+  && [[ "$(jq -r '.roles.design.worktree_id' "$R/.dispatch/s/workers.json")" == wt_old ]] \
+  && [[ "$(jq -r '.roles.design.worktree_created_by_this_run' "$R/.dispatch/s/workers.json")" == false ]] \
+  && ok "ST40 displayName で既存 worktree を再利用する" || fail "ST40 (rc=$rc)"; teardown
+
+# ST42: ★ **worker へ渡す spec に `$ORCA_BIN` を書かない。**worker の shell にその変数は
+#       無い（実測 2026-09-09: worker が「$ORCA_BIN was empty; used orca-ide」と報告した）。
+#       変数名のまま渡すと、STATUS PROTOCOL の worker_done が空コマンドとして落ちる。
+setup; start >/dev/null 2>&1
+sp=$(spec)
+[[ "$sp" != *'$ORCA_BIN'* ]] && [[ "$sp" == *"$ORCA_BIN"* ]] \
+  && ok "ST42 spec は ORCA_BIN の実値を焼き込む" || fail "ST42 [$(printf '%.200s' "$sp")]"; teardown
+
+# --- review_mode=on の 2 ロール起動 (Stage B) ---
+review_on() {
+  mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+  printf '%s\n' '{"review_mode":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+  # 2 つ目の worktree を create が返せるようにする（1 回目=reviewer, 2 回目=design）
+  WT2=$(mktemp -d)/wt2; git -C "$R" worktree add -q -b orca/s-review "$WT2" >/dev/null 2>&1
+  cat > "$ORCA_STUB_DIR/worktree_create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/n" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/n"
+if [ "\$n" = 1 ]; then
+  printf '{"ok":true,"result":{"worktree":{"id":"wt_r","path":"%s","branch":"refs/heads/orca/s-review"}}}\n' "$WT2" > "$ORCA_STUB_DIR/worktree_create"
+else
+  printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"}}}\n' "$WT" > "$ORCA_STUB_DIR/worktree_create"
+fi
+HOOK
+  chmod +x "$ORCA_STUB_DIR/worktree_create.hook"
+}
+ws_lines() { grep 'worker-start' "$ORCA_STUB_DIR/calls.log"; }
+
+# ST35: ★ **reviewer を先に起こす** (spec 5-1 T4a)。design は起動直後にレビューを依頼しうるので、
+#       その時点で reviewer の dispatch が workers.json に無いと依頼が宛先不明になる。
+setup; review_on; start >/dev/null 2>&1; rc=$?
+first=$(ws_lines | head -1); n=$(ws_lines | wc -l)
+[[ "$rc" -eq 0 && "$n" -eq 2 && "$first" == *'id:wt_r'* ]] \
+  && ok "ST35 review_mode=on は reviewer を先に 2 本起こす" || fail "ST35 (rc=$rc n=$n first=$first)"; teardown
+
+# ST36: ★ **reviewer が起きなければ design を起こさない。**依頼先の無いレビュー要求で
+#       design が待ち続けるより、1 件も起こさないほうが片付けが簡単である。
+setup; review_on; echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && "$(ws_lines | wc -l)" -eq 1 ]] \
+  && ok "ST36 reviewer が起きなければ design を起こさない" || fail "ST36 (rc=$rc n=$(ws_lines | wc -l))"; teardown
+
+# ST37: ★ **design が失敗しても reviewer の資源は消さない** (Task 成立後は削除しない / O19)。
+setup; review_on
+cat > "$ORCA_STUB_DIR/orchestration_worker-start.hook" <<'HOOK'
+#!/usr/bin/env bash
+n=$(cat "$ORCA_STUB_DIR/wsn" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$ORCA_STUB_DIR/wsn"
+if [ "$n" = 2 ]; then echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"; fi
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_worker-start.hook"
+start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && [[ "$(jq -r '.roles.design_review.dispatch' "$R/.dispatch/s/workers.json")" == ctx_x ]] \
+  && ok "ST37 design の失敗で reviewer を消さない" || fail "ST37 (rc=$rc)"; teardown
+
+# ST38: review_mode=off は Stage A のまま worker-start 1 回。
+setup; start >/dev/null 2>&1
+[[ "$(ws_lines | wc -l)" -eq 1 ]] \
+  && [[ "$(jq -r '.roles | keys | join(",")' "$R/.dispatch/s/workers.json")" == design ]] \
+  && ok "ST38 review_mode=off は 1 ロールのまま" || fail "ST38"; teardown
+
+# ST39: ★ **2 ロールは別々の worktree を持つ。**同じ checkout に同居させると、reviewer の
+#       ビルドやテストが design の編集と衝突する（計画 Task 1 の判断）。
+setup; review_on; start >/dev/null 2>&1
+d=$(jq -r '.roles.design.worktree_id' "$R/.dispatch/s/workers.json")
+r=$(jq -r '.roles.design_review.worktree_id' "$R/.dispatch/s/workers.json")
+[[ "$d" == wt_1 && "$r" == wt_r ]] \
+  && ok "ST39 ロールごとに別の worktree" || fail "ST39 (design=$d review=$r)"; teardown
+
+# ST43: reviewer の spec は **実装させない**と明示し、design の spec には往復手順が載る。
+setup; review_on; start >/dev/null 2>&1
+specs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")
+rv=$(head -1 <<<"$specs"); dz=$(tail -1 <<<"$specs")
+miss=""
+[[ "$rv" == *'You do not implement anything'* ]] || miss="$miss [reviewer-no-impl]"
+[[ "$rv" == *'VERDICT:'* ]] || miss="$miss [reviewer-verdict]"
+[[ "$rv" == *'review-plan:'* ]] || miss="$miss [reviewer-waits]"
+[[ "$dz" == *'review-plan:'* ]] || miss="$miss [design-requests]"
+[[ "$dz" == *'abort-reviewer:'* ]] || miss="$miss [design-releases]"
+[[ "$dz" == *'Stop after round 2'* ]] || miss="$miss [round-cap]"
+[[ -z "$miss" ]] && ok "ST43 両ロールの spec に往復手順が載る" || fail "ST43:$miss"; teardown
+
+# ST44: review_mode=off なら design の spec に往復手順を**書かない**（居ない相手を指さない）。
+setup; start >/dev/null 2>&1
+[[ "$(spec)" != *'review-plan:'* ]] && [[ "$(spec)" != *'abort-reviewer:'* ]] \
+  && ok "ST44 off の spec に往復手順を書かない" || fail "ST44"; teardown
+
+# ST45: workers.json は **取り込む役**を記録する。merge も PR も同じ値を読む。
+setup; start >/dev/null 2>&1
+[[ "$(jq -r '.integration_role' "$R/.dispatch/s/workers.json")" == design ]] \
+  && ok "ST45 integration_role を記録する" || fail "ST45"; teardown
+
+# --- Phase B 委譲 (F-a) ---
+phase_b_on() {
+  mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+  printf '%s\n' '{"phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+  WTX=$(mktemp -d)/wtx; git -C "$R" worktree add -q -b orca/s-exec "$WTX" >/dev/null 2>&1
+  cat > "$ORCA_STUB_DIR/worktree_create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/pbn" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/pbn"
+if [ "\$n" = 1 ]; then
+  printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"}}}\n' "$WT" > "$ORCA_STUB_DIR/worktree_create"
+else
+  printf '{"ok":true,"result":{"worktree":{"id":"wt_x","path":"%s","branch":"refs/heads/orca/s-exec"}}}\n' "$WTX" > "$ORCA_STUB_DIR/worktree_create"
+fi
+HOOK
+  chmod +x "$ORCA_STUB_DIR/worktree_create.hook"
+}
+design_done() {
+  mkdir -p "$R/.dispatch/s/roles/design"
+  printf '{"status":"done"}\n' > "$R/.dispatch/s/roles/design/status.json"
+  printf 'the plan\n' > "$R/.dispatch/s/plan.md"
+}
+exec_phase() { bash "$P/bin/orca-start.sh" --slug s --repo-root "$R" --phase exec "$@"; }
+
+# ST46: ★ **phase_b=on の design は実装しない。**実装役が別に居るのに両方が書くと、
+#       同じ変更が 2 つのブランチに載って取り込みが壊れる。
+setup; phase_b_on; start >/dev/null 2>&1
+sp=$(spec); miss=""
+[[ "$sp" == *'PLAN ONLY'* ]] || miss="$miss [plan-only]"
+[[ "$sp" == *'commit nothing'* ]] || miss="$miss [no-commit]"
+[[ "$sp" == *'plan.md'* ]] || miss="$miss [names-plan]"
+[[ -z "$miss" ]] && ok "ST46 phase_b=on の design は計画だけ" || fail "ST46:$miss"
+# 1 段目では exec を起こさない
+[[ "$(grep -c 'worker-start' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  || fail "ST46 1 段目で exec を起こした"
+teardown
+
+# ST47: exec の spec は plan.md の絶対パスを名指しし、**plan を編集するなと言う**。
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+: > "$ORCA_STUB_DIR/calls.log"
+exec_phase >/dev/null 2>&1; rc=$?
+sp=$(spec); miss=""
+[[ "$rc" -eq 0 ]] || miss="$miss [rc=$rc]"
+[[ "$sp" == *"$R/.dispatch/s/plan.md"* ]] || miss="$miss [absolute-plan-path]"
+[[ "$sp" == *'Do not edit'* ]] || miss="$miss [do-not-edit]"
+[[ "$sp" == *'commit it on this branch'* ]] || miss="$miss [implements]"
+[[ -z "$miss" ]] && ok "ST47 exec の spec は plan を名指しする" || fail "ST47:$miss"
+teardown
+
+# ST48: ★ **design が終わっていなければ exec を起こさない。**計画が無いまま実装させない。
+setup; phase_b_on; start >/dev/null 2>&1
+printf '{"status":"error"}\n' > "$R/.dispatch/s/roles/design/status.json"
+printf 'the plan\n' > "$R/.dispatch/s/plan.md"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'not done'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST48 design が done でなければ exec を起こさない" || fail "ST48 (rc=$rc) $out"
+teardown
+
+# ST49: ★ **空の計画で実装させない。**plan.md が無い／空なら exec は何を作るか知らない。
+setup; phase_b_on; start >/dev/null 2>&1
+mkdir -p "$R/.dispatch/s/roles/design"
+printf '{"status":"done"}\n' > "$R/.dispatch/s/roles/design/status.json"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'plan.md is missing or empty'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" || fail "ST49 plan 不在"
+: > "$R/.dispatch/s/plan.md"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'plan.md is missing or empty'* ]] \
+  && ok "ST49 空の計画では exec を起こさない" || fail "ST49 空 plan (rc=$rc)"
+teardown
+
+# ST50: exec は **1 段目の Run を引き継ぎ**、自分の worktree とブランチを持つ。
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+# ★ **1 段目のログを混ぜない。**「exec 段が run-create を呼んでいない」ことを見たいので、
+#   ここで区切らないと 1 段目の run-create を数えてしまう。
+: > "$ORCA_STUB_DIR/calls.log"
+exec_phase >/dev/null 2>&1
+w="$R/.dispatch/s/workers.json"
+[[ "$(jq -r '.roles.exec.worktree_id' "$w")" == wt_x ]] \
+  && [[ "$(jq -r '.roles.exec.branch' "$w")" == orca/s-exec ]] \
+  && [[ "$(jq -r '.roles.design.worktree_id' "$w")" == wt_1 ]] \
+  && [[ "$(jq -r '.run_id' "$w")" == run_x ]] \
+  && ! grep -qE 'run-create|run-current' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST50 exec は Run を引き継ぎ自分の worktree を持つ" || fail "ST50 ($(jq -c '.roles|keys' "$w"))"
+teardown
+
+# ST51: ★ **取り込む役が exec になる。**merge も PR もこの 1 箇所を読む。
+setup; phase_b_on; start >/dev/null 2>&1
+[[ "$(jq -r '.integration_role' "$R/.dispatch/s/workers.json")" == exec ]] \
+  && ok "ST51 phase_b=on なら取り込む役は exec" || fail "ST51"; teardown
+
+# ST52: exec を二重に起こさない（同じ計画から 2 本の実装が走ると取り込みが壊れる）。
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+exec_phase >/dev/null 2>&1
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'already started'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST52 exec を二重に起こさない" || fail "ST52 (rc=$rc) $out"
+teardown
+
+# ST53: phase_b=off で --phase exec を呼んだら、起こす役が無いと言って止まる。
+setup; start >/dev/null 2>&1
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'phase_b is off'* ]] \
+  && ok "ST53 phase_b=off では exec 段が無い" || fail "ST53 (rc=$rc) $out"; teardown
+
+# ST54: ★ **役ごとに違う worktree 名を使う。**`design` 以外を一律 `-review` にしていたので、
+#       `exec` が `<slug>-review` を名乗り、**review_mode と phase_b を同時に on にすると
+#       design_review と衝突した**（実機で発見）。
+setup; review_on
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"review_mode":"on","phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1
+names=$(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" | grep -A1 -- '--name' | grep -v -- '--name' | grep -v '^--$' | sort -u)
+[[ "$(grep -c 's-design-review' <<<"$names")" -eq 1 ]] \
+  && ! grep -qx 's-review' <<<"$names" \
+  && ok "ST54 役ごとに違う worktree 名（design_review は s-design-review）" || fail "ST54 [$names]"
+teardown
+
+# ST55: 既定では `--setup skip` のまま（setup hook を要する repo は今までどおり対象外）。
+setup; start >/dev/null 2>&1
+wc_=$(grep 'worktree create' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$wc_" == *'--setup skip'* ]] && ok "ST55 既定は --setup skip" || fail "ST55 [$wc_]"; teardown
+
+# ST56: ★ **setup が失敗した worktree で作業させない。**依存の無いまま実装すると、
+#       なぜ失敗したか分からない成果ができる。作った worktree は戻して止まる。
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"setup":"run"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"},"setup":{"state":"failed"}}}\n' \
+  "$WT" > "$ORCA_STUB_DIR/worktree_create"
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'setup hook did not succeed'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST56 setup 失敗では worker を起こさず戻す" || fail "ST56 (rc=$rc) $out"; teardown
+
+# ST57: setup=run が成功した receipt では今までどおり起動する。
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"setup":"run"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"},"setup":{"state":"succeeded"}}}\n' \
+  "$WT" > "$ORCA_STUB_DIR/worktree_create"
+start >/dev/null 2>&1; rc=$?
+wc_=$(grep 'worktree create' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$rc" -eq 0 && "$wc_" == *'--setup run'* ]] \
+  && grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST57 setup=run が成功すれば起動する" || fail "ST57 (rc=$rc)"; teardown
+
+# --- Phase B-R (F-b の残り) ---
+four_roles() {
+  mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+  printf '%s\n' '{"review_mode":"on","phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+  for n in 1 2 3 4; do
+    eval "W$n=\$(mktemp -d)/w$n"; eval "git -C \"$R\" worktree add -q -b orca/s-$n \"\$W$n\" >/dev/null 2>&1"
+  done
+  cat > "$ORCA_STUB_DIR/worktree_create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/frn" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/frn"
+eval "p=\\\$W\$n"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_%s","path":"%s","branch":"refs/heads/orca/s-%s"}}}\n' "\$n" "\$p" "\$n" > "$ORCA_STUB_DIR/worktree_create"
+HOOK
+  chmod +x "$ORCA_STUB_DIR/worktree_create.hook"
+  export W1 W2 W3 W4
+}
+
+# ST58: ★ **exec_review は exec より先に起きる。**exec は起動直後にレビューを依頼しうるので、
+#       その時点で宛先が workers.json に無いと詰まる（T4a と同じ理由）。
+setup; four_roles; start >/dev/null 2>&1; design_done
+: > "$ORCA_STUB_DIR/calls.log"
+exec_phase >/dev/null 2>&1; rc=$?
+order=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | sed 's/.*--worktree \([^ ]*\).*/\1/')
+w=$(jq -r '.roles | keys | join(",")' "$R/.dispatch/s/workers.json")
+[[ "$rc" -eq 0 ]] && [[ "$(wc -l <<<"$order")" -eq 2 ]] \
+  && [[ "$w" == "design,design_review,exec,exec_review" ]] \
+  && ok "ST58 2 段目は exec_review → exec の順で 2 本" || fail "ST58 (rc=$rc order=[$order] roles=$w)"
+teardown
+
+# ST59: ★ **依頼のラベルとファイル名を役ごとに分ける。**design は review-plan: / plan-*、
+#       exec は review-code: / code-*。**2 人の reviewer が同じ findings 名を使うと
+#       片方の findings を上書きする。**
+setup; four_roles; start >/dev/null 2>&1
+# review_mode=on の 1 段目は design_review → design の順なので、design の spec は 2 本目
+dsp=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)
+drv=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1)
+design_done; : > "$ORCA_STUB_DIR/calls.log"; exec_phase >/dev/null 2>&1
+specs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")
+xrv=$(head -1 <<<"$specs"); xsp=$(tail -1 <<<"$specs")
+miss=""
+[[ "$dsp" == *'review-plan:'* ]] || miss="$miss [design-label]"
+[[ "$dsp" == *'plan-round-<n>-request.md'* ]] || miss="$miss [design-file]"
+[[ "$drv" == *'plan-round-<n>-findings.md'* ]] || miss="$miss [design-reviewer-file]"
+[[ "$drv" == *'--to design'* ]] || miss="$miss [design-reviewer-target]"
+[[ "$xsp" == *'review-code:'* ]] || miss="$miss [exec-label]"
+[[ "$xsp" == *'code-round-<n>-request.md'* ]] || miss="$miss [exec-file]"
+[[ "$xrv" == *'code-round-<n>-findings.md'* ]] || miss="$miss [exec-reviewer-file]"
+[[ "$xrv" == *'--to exec'* ]] || miss="$miss [exec-reviewer-target]"
+[[ -z "$miss" ]] && ok "ST59 役ごとにラベルとファイル名を分ける" || fail "ST59:$miss"
+teardown
+
+# ST60: ★ **spec に渡すコマンドが、そのまま shell で動く形になっていること。**
+#       ヒアドキュメントとダブルクォート文字列でエスケープの段数が違うので、片方だけ
+#       1 段多いと `"\$ORCA_TERMINAL_HANDLE"` のような**展開されない変数**や、行末に
+#       `\\` が並んだ**壊れた継続行**が worker へ渡る（実際に reviewer 側で起きていた）。
+setup; review_on
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"review_mode":"on","phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; design_done
+mkdir -p "$R/.dispatch/s/plan.md" 2>/dev/null; printf 'plan\n' > "$R/.dispatch/s/plan.md"
+exec_phase >/dev/null 2>&1
+bad=""
+while IFS= read -r sp; do
+  # 変数はそのまま展開される形であること
+  [[ "$sp" == *'\$ORCA_TERMINAL_HANDLE'* ]] && bad="$bad [escaped-var]"
+  # 行末の継続は 1 本のバックスラッシュであること
+  [[ "$sp" == *'\\'*$'\n'* ]] && bad="$bad [double-continuation]"
+done < <(awk -v RS='\037' 'prev == "--spec" { print } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
+[[ -z "$bad" ]] && ok "ST60 spec のコマンドがそのまま動く形になっている" || fail "ST60:$bad"
+teardown
+
+# ST61: 既定 (direct) では取りかかり方の指示を足さない — **現行の挙動を変えない**。
+setup; start >/dev/null 2>&1
+sp=$(spec)
+[[ "$sp" != *'superpowers:brainstorming'* ]] && [[ "$sp" != *'Decide the approach before'* ]] \
+  && ok "ST61 direct は指示を足さない" || fail "ST61"; teardown
+
+# ST62: brainstorm は superpowers の skill を名指しし、**質問の出し方まで指定する**。
+#       ★ 以前ここは「答えが無くても止まるな」を固定していた。**実機がそれを覆した** —
+#       worker は質問を印字して止まるのではなく `orchestration ask` を使い、親は
+#       `orchestration reply` で答えられる。印字しただけの質問は誰にも読まれない。
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"design_mode":"brainstorm"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; sp=$(spec); miss=""
+[[ "$sp" == *'superpowers:brainstorming'* ]] || miss="$miss [skill]"
+[[ "$sp" == *'orchestration ask'* ]] || miss="$miss [ask]"
+[[ "$sp" == *'not by printing a question and stopping'* ]] || miss="$miss [no-print]"
+[[ "$sp" == *'ask once'* ]] || miss="$miss [once]"
+[[ "$sp" == *'not installed'* ]] || miss="$miss [degrade]"
+[[ -z "$miss" ]] && ok "ST62 brainstorm の指示" || fail "ST62:$miss"; teardown
+
+# ST63: ★ **`ask` は許し、escalation は許さない。**親には `reply` の口があるが
+#       escalation を処理する口が無い（実測: 親の queue を永久に塞いだ）。
+#       direct の spec は ask を勧めない（尋ねる相手が居る前提を作らない）。
+setup; start >/dev/null 2>&1; sp=$(spec); miss=""
+[[ "$sp" == *'Do not send escalations'* ]] || miss="$miss [no-escalation]"
+[[ "$sp" == *'when this task told you to ask'* ]] || miss="$miss [conditional-ask]"
+[[ -z "$miss" ]] && ok "ST63 ask は条件付きで許し escalation は許さない" || fail "ST63:$miss"; teardown
+
+# ST64: plan は「触る前に手順を決めて記録せよ」と言う。
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"design_mode":"plan"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1
+[[ "$(spec)" == *'Decide the approach before you touch anything'* ]] \
+  && ok "ST64 plan の指示" || fail "ST64"; teardown
+
+# ST65: ★ **取りかかり方の指示は design にだけ載る。**exec は計画に従う役であり、
+#       reviewer は何も作らない。両方に載せると誰が決めるのか分からなくなる。
+setup; review_on
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"review_mode":"on","phase_b":"on","design_mode":"brainstorm"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; design_done; printf 'plan\n' > "$R/.dispatch/s/plan.md"
+drv=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1)
+: > "$ORCA_STUB_DIR/calls.log"; exec_phase >/dev/null 2>&1
+xs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")
+[[ "$drv" != *'superpowers:brainstorming'* ]] && [[ "$xs" != *'superpowers:brainstorming'* ]] \
+  && ok "ST65 取りかかり方の指示は design にだけ" || fail "ST65"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

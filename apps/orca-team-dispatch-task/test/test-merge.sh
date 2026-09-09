@@ -13,8 +13,9 @@ setup() {
   SD="$R/.dispatch/s"; mkdir -p "$SD/roles/design"
   printf '.dispatch/\n' >> "$R/.git/info/exclude"
   printf '{"run_id":"run_x","parent_handle":"term_p","repo_root":"%s"}\n' "$R" > "$SD/run.json"
-  jq -nc --arg w "$WT" '{run_id:"run_x",worktree_id:"wt_1",worktree_path:$w,branch:"orca/s",
-    integration_branch:"main",roles:{design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false}}}' > "$SD/workers.json"
+  jq -nc --arg w "$WT" '{run_id:"run_x",integration_branch:"main",integration_role:"design",
+    roles:{design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false,
+      worktree_id:"wt_1",worktree_path:$w,branch:"orca/s"}}}' > "$SD/workers.json"
   echo '{"status":"done"}' > "$SD/roles/design/status.json"
   printf 'did the thing\n' > "$SD/roles/design/result.md"
   printf '["worker_done|task_x|ctx_x|succeeded"]\n' > "$SD/received.json"
@@ -53,7 +54,7 @@ setup; git -C "$R" checkout -q -b other; m >/dev/null 2>&1
 [[ $? -eq 1 ]] && ok "MG6 別ブランチへ入れない" || fail "MG6 別ブランチへ merge した"; teardown
 
 # MG7: branch を記録していなければ推測しない
-setup; jq -c 'del(.branch)' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+setup; jq -c 'del(.roles.design.branch)' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
 m >/dev/null 2>&1
 [[ $? -eq 1 ]] && ! in_main && ok "MG7 branch を推測しない" || fail "MG7"; teardown
 
@@ -77,5 +78,24 @@ setup; m >/dev/null 2>&1; m >/dev/null 2>&1; rc=$?
 # MG11: receipt ledger に format 外の値があれば、succeeded の文字列があっても受理しない
 setup; printf '[true,"worker_done|task_x|ctx_x|succeeded"]\n' > "$SD/received.json"; m >/dev/null 2>&1
 [[ $? -eq 1 ]] && ! in_main && ok "MG11 receipt format を検証する" || fail "MG11"; teardown
+
+# MG12: ★ **取り込む役を推測しない。**`// "design"` の既定を置くと、記録を書き損ねた
+#       dispatch が黙って design のブランチを取り込む。取り込み先の取り違えは成果の
+#       喪失につながるので、他の identity と同じく「無ければ止まる」。
+setup; jq -c 'del(.integration_role)' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+bash "$P/bin/orca-merge.sh" --status-dir "$SD" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ! in_main && ok "MG12 integration_role が無ければ止まる" || fail "MG12"; teardown
+
+# MG13: integration_role が指す役のブランチと成果を見る（design 決め打ちではない）。
+setup
+git -C "$R" branch -q other-branch "orca/s"
+jq -c '.integration_role = "other" | .roles.other = (.roles.design | .branch = "other-branch")' \
+  "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
+mkdir -p "$SD/roles/other"
+echo '{"status":"done"}' > "$SD/roles/other/status.json"
+printf 'other role result\n' > "$SD/roles/other/result.md"
+bash "$P/bin/orca-merge.sh" --status-dir "$SD" >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && "$(jq -r '.branch' "$SD/integration-result.json")" == other-branch ]] \
+  && ok "MG13 integration_role の指す役を取り込む" || fail "MG13 (rc=$rc)"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
