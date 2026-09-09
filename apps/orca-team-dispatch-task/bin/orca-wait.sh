@@ -29,32 +29,47 @@ esac; done
 [[ "$TMO" =~ ^[1-9][0-9]*$ ]] || die "--timeout-ms must be a positive integer"
 
 # 期待集合。**1 本の Delivery を共有する以上、親端末と Run は 1 つでなければならない。**
+#
+# ★ **鍵は status dir ではなく (status dir, role) の組である。**レビューモードでは 1 つの
+#   タスクが 2 つの dispatch を持ち、**両方が worker_done を送る**。status dir 単位で
+#   期待集合を作ると reviewer の message が未知になり、`batch carries a message this
+#   version cannot handle` で **batch ごと永久に詰まる**。
 PH="" RUN=""
-TASKS=() DISPS=()
+T_SD=() T_ROLE=() TASKS=() DISPS=()
 for sd in "${SDS[@]}"; do
   [[ -r "$sd/run.json" && -r "$sd/workers.json" ]] || die "cannot read the dispatch state in $sd"
   h=$(jq -r '.parent_handle // empty' "$sd/run.json")
   r=$(jq -r '.run_id // empty' "$sd/run.json")
-  t=$(jq -r '.roles.design.task // empty' "$sd/workers.json")
-  d=$(jq -r '.roles.design.dispatch // empty' "$sd/workers.json")
-  [[ -n "$h" && -n "$r" && -n "$t" && -n "$d" ]] || die "the dispatch identity is incomplete in $sd"
+  [[ -n "$h" && -n "$r" ]] || die "the dispatch identity is incomplete in $sd"
   [[ -z "$PH"  || "$PH"  == "$h" ]] || die "the status dirs do not share one parent terminal"
   [[ -z "$RUN" || "$RUN" == "$r" ]] || die "the status dirs do not share one Run"
-  # ★ **同じ (task, dispatch) を 2 つの dir が名乗ってはならない。**idx_of は先頭しか返さ
-  #   ないので、batch は 1 つ目だけに記録されたまま ack される。2 つ目は永久に settle せず
-  #   receipt も残らない。他の identity 不一致と同じく **開始時に閉じる**
-  for ((j = 0; j < ${#TASKS[@]}; j++)); do
-    [[ "${TASKS[$j]}" != "$t" || "${DISPS[$j]}" != "$d" ]] \
-      || die "two status dirs name the same dispatch (task '$t' dispatch '$d')"
-  done
-  PH="$h"; RUN="$r"; TASKS+=("$t"); DISPS+=("$d")
+  found=0
+  while IFS= read -r role; do
+    t=$(jq -r --arg r "$role" '.roles[$r].task // empty' "$sd/workers.json")
+    d=$(jq -r --arg r "$role" '.roles[$r].dispatch // empty' "$sd/workers.json")
+    # ★ **まだ起動していない役は飛ばす。**片方だけ在るのは記録の破れなので開始時に閉じる —
+    #   dispatch を知らない worker の worker_done は routing できず、batch を詰まらせる。
+    [[ -n "$t" || -n "$d" ]] || continue
+    [[ -n "$t" && -n "$d" ]] || die "the dispatch identity is incomplete for role '$role' in $sd"
+    # ★ **同じ (task, dispatch) を 2 つが名乗ってはならない**（2 つの dir でも、
+    #   1 つの dir の 2 役でも同じ事故である）。idx_of は先頭しか返さない
+    #   ので、batch は 1 つ目だけに記録されたまま ack される。2 つ目は永久に settle せず
+    #   receipt も残らない。他の identity 不一致と同じく **開始時に閉じる**
+    for ((j = 0; j < ${#TASKS[@]}; j++)); do
+      [[ "${TASKS[$j]}" != "$t" || "${DISPS[$j]}" != "$d" ]] \
+        || die "the same dispatch is named twice (task '$t' dispatch '$d')"
+    done
+    T_SD+=("$sd"); T_ROLE+=("$role"); TASKS+=("$t"); DISPS+=("$d"); found=1
+  done < <(jq -r '.roles | keys[]' "$sd/workers.json" 2>/dev/null)
+  [[ "$found" -eq 1 ]] || die "no dispatched role is recorded in $sd"
+  PH="$h"; RUN="$r"
 done
 
-# ★ 添字が (task, dispatch) の鍵である。bash 3.2 に連想配列は無いので、SDS/TASKS/DISPS と
-#   同じ添字で引ける整数を map の key として使う。
+# ★ 添字が (task, dispatch) の鍵である。bash 3.2 に連想配列は無いので、
+#   T_SD/T_ROLE/TASKS/DISPS を同じ添字で引ける整数を map の key として使う。
 idx_of() {   # $1=task $2=dispatch → 添字を stdout。集合に無ければ 1
   local i
-  for i in "${!SDS[@]}"; do
+  for i in "${!TASKS[@]}"; do
     [[ "${TASKS[$i]}" == "$1" && "${DISPS[$i]}" == "$2" ]] || continue
     printf '%s' "$i"; return 0
   done
@@ -65,11 +80,11 @@ write() {   # $1=status dir $2=path $3=content
   t=$(mktemp "$1/.tmp.XXXXXX") || return 1
   printf '%s\n' "$3" > "$t" && mv -f "$t" "$2" || { rm -f "$t"; return 1; }
 }
-stored_outcome() {   # $1=status dir。receipt が 1 件なら outcome を stdout、0 件なら空、壊れていれば 1
-  local sd="$1" recv matches count tid did
+stored_outcome() {   # $1=status dir $2=role。receipt が 1 件なら outcome を stdout、0 件なら空、壊れていれば 1
+  local sd="$1" role="$2" recv matches count tid did
   recv="$sd/received.json"
-  tid=$(jq -r '.roles.design.task // empty' "$sd/workers.json")
-  did=$(jq -r '.roles.design.dispatch // empty' "$sd/workers.json")
+  tid=$(jq -r --arg r "$role" '.roles[$r].task // empty' "$sd/workers.json")
+  did=$(jq -r --arg r "$role" '.roles[$r].dispatch // empty' "$sd/workers.json")
   [[ -f "$recv" ]] || return 0
   matches=$(jq -c --arg task "$tid" --arg dispatch "$did" \
     'if type != "array" or any(.[]; type != "string" or (split("|") | length) != 4) then error("invalid receipts")
@@ -99,7 +114,7 @@ record_outcome() {   # $1=status dir $2=task $3=dispatch $4=outcome。1 = 記録
 }
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
-  local out res n i m payload d t tid did oc idx tsd rcode rreason existing upd RET RETRC ACK CHECKRC
+  local out res n i m payload d t tid did oc idx tsd trole rcode rreason existing upd RET RETRC ACK CHECKRC
   local -a SETTLED
   CHECKRC=0
   out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || CHECKRC=$?
@@ -122,7 +137,7 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
   [[ -n "$d" ]] || { log "a non-empty batch has no deliveryId"; return 1; }
   # SETTLED[添字] = この batch がその dispatch に与えた outcome。空なら未登場
   SETTLED=()
-  for ((i = 0; i < ${#SDS[@]}; i++)); do SETTLED[$i]=""; done
+  for ((i = 0; i < ${#TASKS[@]}; i++)); do SETTLED[$i]=""; done
   for ((i = 0; i < n; i++)); do
     m=$(jq -c ".messages[$i]" <<<"$res")
     t=$(jq -r '.type // empty' <<<"$m")
@@ -163,10 +178,10 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
     SETTLED[$idx]="$oc"
   done
   # settle した dispatch を 1 つずつ記録し retain する。**1 件でも失敗したら ack せずに戻る。**
-  for ((i = 0; i < ${#SDS[@]}; i++)); do
+  for ((i = 0; i < ${#TASKS[@]}; i++)); do
     [[ -n "${SETTLED[$i]}" ]] || continue
-    tsd="${SDS[$i]}"; tid="${TASKS[$i]}"; did="${DISPS[$i]}"; oc="${SETTLED[$i]}"
-    existing=$(stored_outcome "$tsd") || return 1
+    tsd="${T_SD[$i]}"; trole="${T_ROLE[$i]}"; tid="${TASKS[$i]}"; did="${DISPS[$i]}"; oc="${SETTLED[$i]}"
+    existing=$(stored_outcome "$tsd" "$trole") || return 1
     if [[ -n "$existing" && "$existing" != "$oc" ]]; then
       log "received outcome '$existing' contradicts batch outcome '$oc' for task '$tid' dispatch '$did'"
       return 1
@@ -189,7 +204,7 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       log "worker-retain failed (rc=$RETRC) for dispatch '$did'; the batch is not acknowledged"
       return 2
     }
-    upd=$(jq -c '.roles.design.retained = true' "$tsd/workers.json") && [[ -n "$upd" ]] \
+    upd=$(jq -c --arg r "$trole" '.roles[$r].retained = true' "$tsd/workers.json") && [[ -n "$upd" ]] \
       && write "$tsd" "$tsd/workers.json" "$upd" || {
       log "could not record the retention for dispatch '$did'; the batch is not acknowledged"
       return 2
@@ -203,7 +218,16 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
   return 0
 }
 aggregate() {   # 全 dispatch が終端なら集約 outcome を stdout。1 件でも未終端なら 1
+  # ★ **終端の条件は「起動した全 dispatch の receipt が揃うこと」。**reviewer の
+  #   worker_done を待たずに戻ると、その message はあとから来て次の batch を詰まらせる。
   local i sd st oc existing worst=succeeded
+  for i in "${!TASKS[@]}"; do
+    existing=$(stored_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || return 1
+    [[ -n "$existing" ]] || return 1
+  done
+  # ★ **タスクの結末を決めるのは design である。**reviewer が失敗しても、それは
+  #   「レビューが付かなかった」であって成果が失われたわけではない。reviewer の outcome は
+  #   finish が 1 行ずつ出すので、握り潰してはいない。
   for i in "${!SDS[@]}"; do
     sd="${SDS[$i]}"
     st=$(jq -r '.status // empty' "$sd/roles/design/status.json" 2>/dev/null || echo "")
@@ -212,17 +236,17 @@ aggregate() {   # 全 dispatch が終端なら集約 outcome を stdout。1 件�
       error) oc=failed ;;
       *) return 1 ;;
     esac
-    existing=$(stored_outcome "$sd") || return 1
+    existing=$(stored_outcome "$sd" design) || return 1
     [[ "$existing" == "$oc" ]] || return 1
     [[ "$oc" == succeeded ]] || worst=failed
   done
   printf '%s' "$worst"
 }
-finish() {   # $1 = 集約 outcome。**どのタスクが失敗したかを名指しする**
+finish() {   # $1 = 集約 outcome。**どの役のどのタスクが失敗したかを名指しする**
   local i oc
-  for i in "${!SDS[@]}"; do
-    oc=$(stored_outcome "${SDS[$i]}") || oc=""
-    echo "task=${TASKS[$i]} dispatch=${DISPS[$i]} status_dir=${SDS[$i]} outcome=${oc:-unknown}"
+  for i in "${!TASKS[@]}"; do
+    oc=$(stored_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || oc=""
+    echo "task=${TASKS[$i]} role=${T_ROLE[$i]} dispatch=${DISPS[$i]} status_dir=${T_SD[$i]} outcome=${oc:-unknown}"
   done
   echo "outcome=$1"
   [[ "$1" == succeeded ]] && exit 0 || exit 5
@@ -234,7 +258,7 @@ healthy() {   # **人の入力待ちは healthy である**（CLI help）。1 �
     #   worker-show は state 'succeeded' を返す。許容集合の外である）。かけると、先に
     #   終わった 1 件が、まだ働いている兄弟ごと wait を 4 で落とす。
     #   receipt があるなら、その dispatch はもう待つ対象ではない
-    settled=$(stored_outcome "${SDS[$i]}") || settled=""
+    settled=$(stored_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || settled=""
     [[ -z "$settled" ]] || continue
     SHOWRC=0
     show=$("$ORCA_BIN" orchestration worker-show --dispatch "${DISPS[$i]}" --json 2>/dev/null) || SHOWRC=$?

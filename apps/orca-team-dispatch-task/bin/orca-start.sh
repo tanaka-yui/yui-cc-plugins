@@ -97,11 +97,21 @@ RESOLVER="$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh"
 CRC=0; CFG=$(bash "$RESOLVER" --project-root "$RR" ${CFG_SET[@]+"${CFG_SET[@]}"}) || CRC=$?
 [[ "$CRC" -eq 0 ]] && jq -e '.roles.design.agent | type == "string"' <<<"$CFG" >/dev/null 2>&1 \
   || { log "cannot resolve the dispatch configuration (rc=$CRC); nothing was created"; exit 1; }
-AGENT=$(jq -r '.roles.design.agent' <<<"$CFG")
-MODEL=$(jq -r '.roles.design.model  // empty' <<<"$CFG")
-EFFORT=$(jq -r '.roles.design.effort // empty' <<<"$CFG")
+REVIEW_MODE=$(jq -r '.review_mode // "off"' <<<"$CFG")
+# ★ **起動順は reviewer が先** (spec 5-1 T4a)。design は起動直後にレビューを依頼しうるので、
+#   その時点で reviewer の dispatch が workers.json に無いと、依頼が宛先不明で落ちる。
+LAUNCH_ORDER=()
+[[ "$REVIEW_MODE" == on ]] && LAUNCH_ORDER+=(design_review)
+LAUNCH_ORDER+=(design)
 
-mkdir -p "$SD/roles/design" || { log "cannot create $SD"; exit 1; }
+# review dir は **タスク単位で共有する** (spec 7)。ロール別 status dir の外に置く —
+# 依頼側と reviewer の両方が読み書きするためである。両者は別の worktree に居るが、
+# ここは親 repo 側の絶対パスなのでどちらからも届く。
+RVD="$SD/review"
+for role in "${LAUNCH_ORDER[@]}"; do
+  mkdir -p "$SD/roles/$role" || { log "cannot create $SD/roles/$role"; exit 1; }
+done
+mkdir -p "$RVD" || { log "cannot create $RVD"; exit 1; }
 cat "$RF" > "$SD/request.md" || { log "cannot materialize the request"; exit 1; }
 # ★ `.dispatch/` を repo の除外へ入れる（実測: 入れないと親が常に `?? .dispatch/` で
 #   dirty になり、merge の dirty ガードが必ず発火する）。
@@ -132,195 +142,334 @@ write run "$SD/run.json" "$(jq -nc --arg r "$RUN" --arg p "$PH" --arg rr "$RR" \
   log "the Run was created but could not be recorded. Nothing else exists yet."
   log "run=$RUN  inspect with: $ORCA_BIN orchestration run-show --id $RUN --json"; exit 1; }
 
-# --- worktree: 作るか再利用する。**必ず repo で絞る** ---
-CREATED=""
-# ★ **inspection の失敗を「不在」と解釈しない** (round 2 finding 3)。
-#   接続失敗・権限エラー・不正 selector を「作ってよい」と読むと資源が二重になる
-LRC=0; WLJ=$("$ORCA_BIN" worktree list --repo "$REPO" --json 2>/dev/null) || LRC=$?
-[[ "$LRC" -eq 0 ]] && jq -e '.result.worktrees | type == "array"' <<<"$WLJ" >/dev/null 2>&1 \
-  || { log "cannot list worktrees for $REPO (rc=$LRC); refusing to guess whether one exists"; exit 1; }
-# ★ **receipt の名前は `.displayName` である。`.name` は存在しない**（実測 2026-09-09:
-#   `worktree list` の要素キーに `name` は無く、`worktree create --name <n>` が入れた名前は
-#   `displayName` に載る）。`.name` で引いていた間、この照合は**常に 0 件**で、再利用の
-#   経路も「同名が複数」の防御も一度も動いていなかった。
-N=$(jq -r --arg n "$SLUG" '[.result.worktrees[] | select(.displayName == $n)] | length' <<<"$WLJ")
-case "$N" in
-  0) WJ="" ;;
-  1) WJ=$(jq -c --arg n "$SLUG" '[.result.worktrees[] | select(.displayName == $n)][0]' <<<"$WLJ")
-     log "reusing the existing worktree for $SLUG" ;;
-  *) log "$N worktrees are named '$SLUG' in $REPO; refusing to guess which one"; exit 1 ;;
-esac
-if [[ -z "$WJ" ]]; then
-  # ★ --setup skip。repo の setup hook は Stage 1 の対象外だと宣言している以上、走らせない。
-  #   **rc と stdout を分けて持つ** — 非 0 と receipt らしき JSON が同時に返ることがある
-  CRC=0; CJ=$("$ORCA_BIN" worktree create --repo "$REPO" --name "$SLUG" --no-parent \
-                --setup skip --json 2>/dev/null) || CRC=$?
-  WJ=$(jq -c '.result.worktree // empty' <<<"$CJ" 2>/dev/null || echo "")
-  [[ "$CRC" -eq 0 && -n "$WJ" ]] || { log "worktree create failed (rc=$CRC)"; exit 1; }
-  CREATED=$(jq -r '.id // empty' <<<"$WJ")
-fi
-WT_ID=$(jq -r '.id // empty' <<<"$WJ"); WT_PATH=$(jq -r '.path // empty' <<<"$WJ")
-# 戻さないと workers.json に bash が使えない path が残り、[C3] の `git -C "$WP"` が壊れる
-if [[ -n "$WT_PATH" ]]; then WT_PATH=$(to_local "$WT_PATH") || WT_PATH=""; fi
-BR=$(jq -r '.branch // empty' <<<"$WJ"); BR="${BR#refs/heads/}"
-[[ -n "$WT_ID" && -n "$WT_PATH" && -d "$WT_PATH" ]] || { log "the worktree has no usable id/path"; exit 1; }
-# branch は receipt から取る。名前を推測しない（merge が使う）
-[[ -n "$BR" ]] || { log "the worktree receipt has no branch; refusing to guess"; exit 1; }
-# ★ **再利用するなら clean であること** (round 2 finding 4)。dirty な checkout を worker へ
-#   渡すと、前回の未完了変更が成果 commit に混ざる。status 自体が失敗するのも判断不能である
-if [[ -z "$CREATED" ]]; then
-  PORC=$(git -C "$WT_PATH" status --porcelain 2>/dev/null); SRC=$?
-  [[ "$SRC" -eq 0 ]] || { log "cannot read the status of the existing worktree $WT_PATH"; exit 1; }
-  [[ -z "$PORC" ]] || { log "the existing worktree $WT_PATH is dirty; commit or clean it first"; exit 1; }
-fi
-# Task 前の cleanup は、この call が作成した resource だけを対象にし、結果を隠さない。
-H=""
-kept() { log "$1"; log "run=$RUN worktree=$WT_ID path=$WT_PATH branch=$BR terminal=${H:-none}"; }
-cleanup_before_task() {
-  local wr=0
-  if [[ -z "$CREATED" ]]; then log "the worktree was reused, so it is kept"
-  else
-    "$ORCA_BIN" worktree rm --worktree "id:$CREATED" --force --json >/dev/null 2>&1 || wr=$?
-    [[ "$wr" -eq 0 ]] && log "the worktree this call created was removed" \
-      || log "worktree rm FAILED (rc=$wr); it is KEPT"
-  fi
-}
+# ★ **解決した tuple を全ロール分まとめて先に置く。**あとから「この worker は何で
+#   走ったのか」を receipt 無しで答えられるようにする。未設定の model / effort は
+#   キー自体を置かない（config-resolve の出力と同じ形にし、未設定と空文字を混ぜない）。
+write workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg ib "$IB" \
+  --argjson roles "$(jq -c '.roles | map_values(. + {retained:false})' <<<"$CFG")" \
+  '{run_id:$r, integration_branch:$ib, roles:$roles}')" || {
+  log "the Run was created but the dispatch state could not be recorded. Nothing else exists yet."
+  log "run=$RUN  inspect with: $ORCA_BIN orchestration run-show --id $RUN --json"; exit 1; }
 
-# ★ **資源を作った後の write 失敗は、identity を出してから止める**（round 2 finding 5）。
-#   Task はまだ無いので、この呼び出しが作った worktree は戻してよい
-postwrite() {   # $1=site $2=path $3=content
-  write "$1" "$2" "$3" && return 0
-  kept "cannot write $2"
-  cleanup_before_task
-  exit 1
-}
-postwrite status "$SD/roles/design/status.json" '{"status":"starting"}'
-# ★ **この worktree を誰が作ったか**を記録する (round 3 finding 1)。端末はまだ存在しないので
-#   端末集合の inventory は worker-start の後（端末が生まれてから）に回す
-OWNED=false; [[ -n "$CREATED" ]] && OWNED=true
-# ★ **解決した tuple を記録する。**あとから「この worker は何で走ったのか」を
-#   receipt 無しで答えられるようにする。未設定の model / effort はキー自体を置かない
-#   （config-resolve の出力と同じ形にし、「未設定」と「空文字」を混ぜない）。
-# ★ **worktree 系はロール配下に置く。**ロールごとに自分の worktree を持つので、
-#   トップレベルに 1 組しか無い形では 2 ロール目を記録できない。`integration_branch` は
-#   親の checkout の話なのでトップレベルに残す。
-postwrite workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg ib "$IB" \
-  --argjson design "$(jq -c --arg w "$WT_ID" --arg p "$WT_PATH" --arg b "$BR" --argjson own "$OWNED" \
-      '.roles.design + {worktree_id:$w, worktree_path:$p, branch:$b,
-                        worktree_created_by_this_run:$own, worktree_terminals:null,
-                        retained:false}' <<<"$CFG")" \
-  '{run_id:$r, integration_branch:$ib, roles:{design:$design}}')"
+SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
+SENDER="$PLUGIN/bin/orca-send.sh"
+WFILE="$SD/workers.json"
 
-RD="$SD/roles/design"
-SPEC="TASK: $SLUG
+# ── ここから下はロール単位。**先に起動したロールの資源は、後のロールが失敗しても消さない** ──
 
-$(cat "$SD/request.md")
+# $1=role  → 標準出力に spec 本文
+render_spec() {
+  local role="$1" rd="$SD/roles/$role" q_bin q_rd q_rs q_send q_wf q_rvd
+  q_bin=$(printf '%q' "$ORCA_BIN"); q_rd=$(printf '%q' "$rd")
+  q_rs=$(printf '%q' "$SCRIPTS/report-status.sh"); q_send=$(printf '%q' "$SENDER")
+  q_wf=$(printf '%q' "$WFILE"); q_rvd=$(printf '%q' "$RVD")
 
-STATUS PROTOCOL
+  # 全ロール共通の終わり方。**ここだけは 1 箇所で組み立てる** — 役ごとに書き分けると
+  # STATUS PROTOCOL がドリフトする。
+  local closing="STATUS PROTOCOL
 
 Your injected preamble gives you the task id, the dispatch id, the dispatch capability
-and the --from handle. Use that set. The Orca CLI is $(printf '%q' "$ORCA_BIN").
+and the --from handle. Use that set. The Orca CLI is $q_bin.
 
-1. Write $(printf '%q' "$RD/status.json") with status executing.
-2. Do the work in this worktree and commit it on this branch.
-3. Write $(printf '%q' "$RD/result.md") describing what changed.
-4. Run: bash $(printf '%q' "$PLUGIN/skills/orca-team-dispatch-task/scripts/report-status.sh") $(printf '%q' "$RD") done <one line>
+A. Write $q_rd/status.json with status executing when you start.
+B. Write $q_rd/result.md describing what you did.
+C. Run: bash $q_rs $q_rd done <one line>
    (use error instead of done when the work itself failed)
-5. Send worker_done with the SAME conclusion as the status you just wrote:
+D. Send worker_done with the SAME conclusion as the status you just wrote:
 
-     $(printf '%q' "$ORCA_BIN") orchestration send --type worker_done \\
-       --task-id <task id> --dispatch-id <dispatch id> \\
-       --dispatch-capability <capability> --from <handle> \\
+     $q_bin orchestration send --type worker_done \\\\
+       --task-id <task id> --dispatch-id <dispatch id> \\\\
+       --dispatch-capability <capability> --from <handle> \\\\
        --outcome succeeded --subject \"<short status>\" --body \"<what you did>\" --json
 
    Use --outcome failed when you wrote error.
-6. **Do not send any other message type.** Do not send ask, question or escalation:
-   this version's parent has no path to answer them, so they would only be discarded.
-   If you are blocked, write status error, say why in result.md, and send worker_done
-   with --outcome failed. The user will look at result.md and dispatch again.
-7. If the send fails, inspect with
-     $(printf '%q' "$ORCA_BIN") orchestration dispatch-show --task <task id> --json
+E. **Do not send any other message type to the parent.** Do not send ask, question or
+   escalation: this version's parent has no path to answer them, so they would only be
+   discarded. If you are blocked, write status error, say why in result.md, and send
+   worker_done with --outcome failed. The user will look at result.md and dispatch again.
+F. If the send fails, inspect with
+     $q_bin orchestration dispatch-show --task <task id> --json
    before resending. If the dispatch is already terminal, do not resend.
-8. End your turn and stay idle."
+G. End your turn and stay idle."
 
-TCJ=0; TJ=$("$ORCA_BIN" orchestration task-create --spec "$SPEC" --task-title "$SLUG/design" \
-              --from "$PH" --json 2>/dev/null) || TCJ=$?
-TID=$(jq -r '.result.task.id // empty' <<<"$TJ" 2>/dev/null || echo "")
-if [[ "$TCJ" -ne 0 ]]; then
-  if [[ -n "$TID" ]]; then
-    kept "task-create failed (rc=$TCJ) but returned task id $TID; a Task may exist. Resources are KEPT."
-    log "task=$TID  inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
-    exit 1
+  if [[ "$role" == design_review ]]; then
+    cat <<SPEC_R
+REVIEWER FOR TASK: $SLUG
+
+You review. **You do not implement anything and you change no file** except the findings
+files described below. The work itself belongs to another worker.
+
+The request that worker was given is in $(printf '%q' "$SD/request.md"). Read it for context.
+
+REVIEW LOOP
+
+1. Wait for a request:
+
+     $q_bin orchestration check --terminal "\\\$ORCA_TERMINAL_HANDLE" \\\\
+       --peek --wait --timeout-ms 600000 --json
+
+   Use --peek. **Never pass --ack** — the cursor is not yours to advance.
+   A review request has a subject starting \`review-plan:\` and names a round number.
+   A subject starting \`abort-reviewer:\` means the work finished without you; go to step 5.
+   If the wait returns nothing, run it once more. If it returns nothing again, go to step 5.
+
+2. The body names a file under $q_rvd. Read it and review it against the request.
+
+3. Write your findings to $q_rvd/round-<n>-findings.md, where <n> is the round from the
+   subject. **End the file with exactly one line of this form and nothing after it:**
+
+       VERDICT: approved
+
+   or
+
+       VERDICT: needs_work
+
+   Use needs_work when something must change before this is worth building. Say what and
+   why, concretely, above the verdict line. Do not edit the request file.
+
+4. Send the verdict back:
+
+     bash $q_send --workers $q_wf --to design \\\\
+       --subject 'review-verdict: round <n>' --body '<absolute path to your findings file>'
+
+   A non-zero exit means it was NOT delivered. Try once more; if it fails again, leave the
+   findings file in place and go to step 5.
+   Then go back to step 1 for the next round.
+
+5. Finish. Say in result.md which rounds you answered and what each verdict was.
+
+$closing
+SPEC_R
+    return 0
   fi
-  kept "task-create failed (rc=$TCJ); no Task was created"
-  cleanup_before_task
-  exit 1
-fi
-if [[ -z "$TID" ]]; then
-  kept "task-create returned success but no task id; a Task may exist. Resources are KEPT."
-  log "inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
-  exit 1
-fi
-# Task が実在するので、ここから先は削除しない。identity を出して止める
-jq_write workers-after-task "$SD/workers.json" -c --arg t "$TID" '.roles.design.task = $t' "$SD/workers.json" || {
-  kept "the task was created but could not be recorded. Resources are KEPT."
-  log "task=$TID  inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"; exit 1; }
 
-# ★ ここから先は何が起きても資源を削除しない (O19)。
-#   **rc 0 + state=ready + dispatch id の 3 つ揃い**を要求する。
-#   failed / outcome_unknown の receipt にも dispatchId が残ることがある
-# ★ `--effort requires --model` (Orca)。config-resolve が model 無しの effort を既に
-#   落としているが、ここでも組にして渡す — 片方だけが残ると worker-start が使用法で落ちる
-WS_ARGS=(--agent "$AGENT")
-if [[ -n "$MODEL" ]]; then
-  WS_ARGS+=(--model "$MODEL")
-  [[ -n "$EFFORT" ]] && WS_ARGS+=(--effort "$EFFORT")
-fi
-log "design runs agent=$AGENT model=${MODEL:-<orca default>} effort=${EFFORT:-<orca default>}"
-WRC=0; WJ2=$("$ORCA_BIN" orchestration worker-start --task "$TID" --worktree "id:$WT_ID" \
-               "${WS_ARGS[@]}" --from "$PH" --json 2>/dev/null) || WRC=$?
-WSTATE=$(jq -r '.result.state // empty' <<<"$WJ2" 2>/dev/null || echo "")
-DID=$(jq -r '.result.dispatchId // empty' <<<"$WJ2" 2>/dev/null || echo "")
-H=$(jq -r 'first(.result.effects[]? | select(.kind == "terminal" and .role == "agent") | .id) // empty' \
-     <<<"$WJ2" 2>/dev/null || echo "")
-# ★ **生きている dispatch id を捨てない。**記録せずに止めると、その worker はそれでも走って
-#   共有 Delivery へ worker_done を送る。**兄弟タスクの wait はその message を処理できず、
-#   batch を永久に ack できなくなる** — 完了した隣のタスクの成果まで取り出せなくなる。
-#   記録さえ残っていれば、その status dir を wait 集合に入れて drain できる
-record_orphan_dispatch() {
-  [[ -n "$DID" ]] || return 0
-  jq_write workers-orphan-dispatch "$SD/workers.json" -c --arg d "$DID" \
-    '.roles.design.dispatch = $d' "$SD/workers.json" \
-    || log "the dispatch id could not be recorded either; wait on dispatch=$DID by hand"
+  # design
+  local review_block=""
+  if [[ "$REVIEW_MODE" == on ]]; then
+    review_block="REVIEW PROTOCOL (do this before you finish)
+
+A reviewer is already running and waiting for you. Have your plan reviewed before you
+build it.
+
+1. Write what you intend to do to $q_rvd/round-<n>-request.md, starting at n=1. Be
+   concrete enough that someone can disagree with it.
+
+2. Send the request:
+
+     bash $q_send --workers $q_wf --to design_review \\\\
+       --subject 'review-plan: round <n>' --body '<absolute path to your request file>'
+
+   **A non-zero exit means it was NOT delivered.** Delete the request file you just wrote,
+   note in result.md that review was unavailable, and build it without review.
+
+3. Wait for the verdict:
+
+     $q_bin orchestration check --terminal \"\\\$ORCA_TERMINAL_HANDLE\" \\\\
+       --peek --wait --timeout-ms 600000 --json
+
+   Use --peek. **Never pass --ack.** Look for a subject starting \`review-verdict:\`.
+
+4. The body names a findings file. Read it. **Only a line reading exactly
+   \`VERDICT: approved\` means approved.** Anything else, including a missing VERDICT line,
+   is needs_work.
+
+5. On needs_work: revise your plan and repeat from step 1 with the next round number.
+   **Stop after round 2.** Record the unresolved findings in result.md and build the best
+   version you have. Do not keep asking.
+
+6. If no verdict arrives, send the same round once more. If still nothing, note in
+   result.md that review was skipped and proceed.
+
+7. When you are done building, release the reviewer:
+
+     bash $q_send --workers $q_wf --to design_review \\\\
+       --subject 'abort-reviewer: done' --body 'the work is finished'
+
+"
+  fi
+
+  cat <<SPEC_D
+TASK: $SLUG
+
+$(cat "$SD/request.md")
+
+${review_block}Do the work in this worktree and commit it on this branch.
+
+$closing
+SPEC_D
 }
-if [[ "$WRC" -ne 0 || "$WSTATE" != ready || -z "$DID" ]]; then
-  record_orphan_dispatch
-  log "worker-start did not report ready (rc=$WRC state='${WSTATE:-none}'). Resources are KEPT."
-  log "inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
-  exit 1
-fi
-if [[ -z "$H" ]]; then
-  record_orphan_dispatch
-  log "worker-start reported ready but returned no agent terminal handle. Resources are KEPT."
-  log "task=$TID dispatch=$DID  inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"
-  exit 1
-fi
-# ★ **inventory の失敗を空配列に化けさせない** (round 4 finding 1)。
-#   列挙できなかったことと「端末が 0 個」は別である。前者を [] にすると、
-#   あとの cleanup gate が「未 account 0」と読んで削除を許してしまう (fail-open)。
-#   確定できなければ null を記録し、gate 側はそれを「判断不能」として閉じる
-TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT_ID" --json 2>/dev/null) || TLRC=$?
-if [[ "$TLRC" -eq 0 ]] && jq -e '.result.terminals | type == "array"' <<<"$TL" >/dev/null 2>&1; then
-  TERMS=$(jq -c '[.result.terminals[].handle]' <<<"$TL")
-else
-  TERMS=null
-  log "could not inventory the terminals in this worktree (rc=$TLRC); cleanup will refuse to remove it"
-fi
-jq_write workers-after-dispatch "$SD/workers.json" -c --arg d "$DID" --arg h "$H" --argjson ts "$TERMS" \
-  '.roles.design.dispatch = $d | .roles.design.terminal = $h
-   | .roles.design.worktree_terminals = $ts' \
-  "$SD/workers.json" || {
-  kept "the worker started but the dispatch id could not be recorded. Resources are KEPT."
-  log "task=$TID dispatch=$DID"
-  log "inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"; exit 1; }
+
+# $1=role  → その役の worktree を用意し、Task と worker を起こす
+launch_role() {
+  local role="$1" wt_name title
+  local WT_ID WT_PATH BR CREATED="" WJ WLJ N CRC CJ H="" TID DID
+  wt_name="$SLUG"; [[ "$role" == design ]] || wt_name="$SLUG-review"
+  title="$SLUG/$role"
+
+  local rd="$SD/roles/$role"
+  local agent model effort
+  agent=$(jq -r --arg r "$role" '.roles[$r].agent'          <<<"$CFG")
+  model=$(jq -r --arg r "$role" '.roles[$r].model  // empty' <<<"$CFG")
+  effort=$(jq -r --arg r "$role" '.roles[$r].effort // empty' <<<"$CFG")
+  [[ -n "$agent" ]] || { log "role '$role' has no agent resolved"; return 1; }
+
+  # ★ **inspection の失敗を「不在」と解釈しない** (round 2 finding 3)。
+  #   接続失敗・権限エラー・不正 selector を「作ってよい」と読むと資源が二重になる
+  local LRC=0; WLJ=$("$ORCA_BIN" worktree list --repo "$REPO" --json 2>/dev/null) || LRC=$?
+  [[ "$LRC" -eq 0 ]] && jq -e '.result.worktrees | type == "array"' <<<"$WLJ" >/dev/null 2>&1 \
+    || { log "cannot list worktrees for $REPO (rc=$LRC); refusing to guess whether one exists"; return 1; }
+  # ★ **receipt の名前は `.displayName` である。`.name` は存在しない**（実測 O40）。
+  N=$(jq -r --arg n "$wt_name" '[.result.worktrees[] | select(.displayName == $n)] | length' <<<"$WLJ")
+  case "$N" in
+    0) WJ="" ;;
+    1) WJ=$(jq -c --arg n "$wt_name" '[.result.worktrees[] | select(.displayName == $n)][0]' <<<"$WLJ")
+       log "reusing the existing worktree for $wt_name" ;;
+    *) log "$N worktrees are named '$wt_name' in $REPO; refusing to guess which one"; return 1 ;;
+  esac
+  if [[ -z "$WJ" ]]; then
+    # ★ --setup skip。repo の setup hook は対象外だと宣言している以上、走らせない。
+    #   **rc と stdout を分けて持つ** — 非 0 と receipt らしき JSON が同時に返ることがある
+    CRC=0; CJ=$("$ORCA_BIN" worktree create --repo "$REPO" --name "$wt_name" --no-parent \
+                  --setup skip --json 2>/dev/null) || CRC=$?
+    WJ=$(jq -c '.result.worktree // empty' <<<"$CJ" 2>/dev/null || echo "")
+    [[ "$CRC" -eq 0 && -n "$WJ" ]] || { log "worktree create failed for $role (rc=$CRC)"; return 1; }
+    CREATED=$(jq -r '.id // empty' <<<"$WJ")
+  fi
+  WT_ID=$(jq -r '.id // empty' <<<"$WJ"); WT_PATH=$(jq -r '.path // empty' <<<"$WJ")
+  # 戻さないと workers.json に bash が使えない path が残り、[C3] の `git -C "$WP"` が壊れる
+  if [[ -n "$WT_PATH" ]]; then WT_PATH=$(to_local "$WT_PATH") || WT_PATH=""; fi
+  BR=$(jq -r '.branch // empty' <<<"$WJ"); BR="${BR#refs/heads/}"
+  [[ -n "$WT_ID" && -n "$WT_PATH" && -d "$WT_PATH" ]] || { log "the $role worktree has no usable id/path"; return 1; }
+  # branch は receipt から取る。名前を推測しない（merge が使う）
+  [[ -n "$BR" ]] || { log "the $role worktree receipt has no branch; refusing to guess"; return 1; }
+  # ★ **再利用するなら clean であること** (round 2 finding 4)。dirty な checkout を worker へ
+  #   渡すと、前回の未完了変更が成果 commit に混ざる。status 自体が失敗するのも判断不能である
+  if [[ -z "$CREATED" ]]; then
+    local PORC SRC
+    PORC=$(git -C "$WT_PATH" status --porcelain 2>/dev/null); SRC=$?
+    [[ "$SRC" -eq 0 ]] || { log "cannot read the status of the existing worktree $WT_PATH"; return 1; }
+    [[ -z "$PORC" ]] || { log "the existing worktree $WT_PATH is dirty; commit or clean it first"; return 1; }
+  fi
+
+  kept() { log "$1"; log "run=$RUN role=$role worktree=$WT_ID path=$WT_PATH branch=$BR terminal=${H:-none}"; }
+  # **この呼び出しがこの役のために作った worktree だけ**を戻す。先に起動した役のものは触らない。
+  cleanup_before_task() {
+    local wr=0
+    if [[ -z "$CREATED" ]]; then log "the $role worktree was reused, so it is kept"
+    else
+      "$ORCA_BIN" worktree rm --worktree "id:$CREATED" --force --json >/dev/null 2>&1 || wr=$?
+      [[ "$wr" -eq 0 ]] && log "the worktree this call created for $role was removed" \
+        || log "worktree rm FAILED for $role (rc=$wr); it is KEPT"
+    fi
+  }
+  rolewrite() {   # $1=site $2=path $3=content
+    write "$1" "$2" "$3" && return 0
+    kept "cannot write $2"
+    cleanup_before_task
+    return 1
+  }
+
+  rolewrite "status-$role" "$rd/status.json" '{"status":"starting"}' || return 1
+  # ★ **この worktree を誰が作ったか**を記録する (round 3 finding 1)。端末はまだ存在しないので
+  #   端末集合の inventory は worker-start の後（端末が生まれてから）に回す
+  local OWNED=false; [[ -n "$CREATED" ]] && OWNED=true
+  jq_write "workers-worktree-$role" "$WFILE" -c --arg r "$role" --arg w "$WT_ID" --arg p "$WT_PATH" \
+    --arg b "$BR" --argjson own "$OWNED" \
+    '.roles[$r] += {worktree_id:$w, worktree_path:$p, branch:$b,
+                    worktree_created_by_this_run:$own, worktree_terminals:null}' "$WFILE" || {
+    kept "cannot record the $role worktree"; cleanup_before_task; return 1; }
+
+  local SPEC TCJ TJ
+  SPEC=$(render_spec "$role")
+  TCJ=0; TJ=$("$ORCA_BIN" orchestration task-create --spec "$SPEC" --task-title "$title" \
+                --from "$PH" --json 2>/dev/null) || TCJ=$?
+  TID=$(jq -r '.result.task.id // empty' <<<"$TJ" 2>/dev/null || echo "")
+  if [[ "$TCJ" -ne 0 ]]; then
+    if [[ -n "$TID" ]]; then
+      kept "task-create failed for $role (rc=$TCJ) but returned task id $TID; a Task may exist. Resources are KEPT."
+      log "task=$TID  inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
+      return 1
+    fi
+    kept "task-create failed for $role (rc=$TCJ); no Task was created"
+    cleanup_before_task
+    return 1
+  fi
+  if [[ -z "$TID" ]]; then
+    kept "task-create returned success but no task id for $role; a Task may exist. Resources are KEPT."
+    log "inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
+    return 1
+  fi
+  # Task が実在するので、ここから先は削除しない。identity を出して止める
+  jq_write "workers-after-task-$role" "$WFILE" -c --arg r "$role" --arg t "$TID" \
+    '.roles[$r].task = $t' "$WFILE" || {
+    kept "the $role task was created but could not be recorded. Resources are KEPT."
+    log "task=$TID  inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"; return 1; }
+
+  # ★ ここから先は何が起きても資源を削除しない (O19)。
+  #   **rc 0 + state=ready + dispatch id の 3 つ揃い**を要求する。
+  #   failed / outcome_unknown の receipt にも dispatchId が残ることがある
+  # ★ `--effort requires --model` (Orca)。config-resolve が model 無しの effort を既に
+  #   落としているが、ここでも組にして渡す — 片方だけが残ると worker-start が使用法で落ちる
+  local WS_ARGS=(--agent "$agent")
+  if [[ -n "$model" ]]; then
+    WS_ARGS+=(--model "$model")
+    [[ -n "$effort" ]] && WS_ARGS+=(--effort "$effort")
+  fi
+  log "$role runs agent=$agent model=${model:-<orca default>} effort=${effort:-<orca default>}"
+  local WRC=0 WJ2 WSTATE
+  WJ2=$("$ORCA_BIN" orchestration worker-start --task "$TID" --worktree "id:$WT_ID" \
+          "${WS_ARGS[@]}" --from "$PH" --json 2>/dev/null) || WRC=$?
+  WSTATE=$(jq -r '.result.state // empty' <<<"$WJ2" 2>/dev/null || echo "")
+  DID=$(jq -r '.result.dispatchId // empty' <<<"$WJ2" 2>/dev/null || echo "")
+  H=$(jq -r 'first(.result.effects[]? | select(.kind == "terminal" and .role == "agent") | .id) // empty' \
+       <<<"$WJ2" 2>/dev/null || echo "")
+  # ★ **生きている dispatch id を捨てない。**記録せずに止めると、その worker はそれでも走って
+  #   共有 Delivery へ worker_done を送る。**兄弟タスクの wait はその message を処理できず、
+  #   batch を永久に ack できなくなる** — 完了した隣のタスクの成果まで取り出せなくなる。
+  #   記録さえ残っていれば、その status dir を wait 集合に入れて drain できる
+  record_orphan_dispatch() {
+    [[ -n "$DID" ]] || return 0
+    jq_write "workers-orphan-dispatch-$role" "$WFILE" -c --arg r "$role" --arg d "$DID" \
+      '.roles[$r].dispatch = $d' "$WFILE" \
+      || log "the dispatch id could not be recorded either; wait on dispatch=$DID by hand"
+  }
+  if [[ "$WRC" -ne 0 || "$WSTATE" != ready || -z "$DID" ]]; then
+    record_orphan_dispatch
+    log "worker-start did not report ready for $role (rc=$WRC state='${WSTATE:-none}'). Resources are KEPT."
+    log "inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"
+    return 1
+  fi
+  if [[ -z "$H" ]]; then
+    record_orphan_dispatch
+    log "worker-start reported ready for $role but returned no agent terminal handle. Resources are KEPT."
+    log "task=$TID dispatch=$DID  inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"
+    return 1
+  fi
+  # ★ **inventory の失敗を空配列に化けさせない** (round 4 finding 1)。
+  #   列挙できなかったことと「端末が 0 個」は別である。前者を [] にすると、
+  #   あとの cleanup gate が「未 account 0」と読んで削除を許してしまう (fail-open)。
+  #   確定できなければ null を記録し、gate 側はそれを「判断不能」として閉じる
+  local TLRC=0 TL TERMS
+  TL=$("$ORCA_BIN" terminal list --worktree "id:$WT_ID" --json 2>/dev/null) || TLRC=$?
+  if [[ "$TLRC" -eq 0 ]] && jq -e '.result.terminals | type == "array"' <<<"$TL" >/dev/null 2>&1; then
+    TERMS=$(jq -c '[.result.terminals[].handle]' <<<"$TL")
+  else
+    TERMS=null
+    log "could not inventory the terminals in the $role worktree (rc=$TLRC); cleanup will refuse to remove it"
+  fi
+  jq_write "workers-after-dispatch-$role" "$WFILE" -c --arg r "$role" --arg d "$DID" --arg h "$H" \
+    --argjson ts "$TERMS" \
+    '.roles[$r] += {dispatch:$d, terminal:$h, worktree_terminals:$ts}' "$WFILE" || {
+    kept "the $role worker started but the dispatch id could not be recorded. Resources are KEPT."
+    log "task=$TID dispatch=$DID"
+    log "inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"; return 1; }
+  return 0
+}
+
+for role in "${LAUNCH_ORDER[@]}"; do
+  # ★ **reviewer が起きなければ design を起こさない。**依頼先の無いレビュー要求で
+  #   design が待ち続けるより、1 件も起こさないほうが片付けが簡単である。
+  #   逆に design が失敗しても reviewer の資源は消さない（Task 成立後は削除しない / O19）。
+  launch_role "$role" || exit 1
+done
 printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"

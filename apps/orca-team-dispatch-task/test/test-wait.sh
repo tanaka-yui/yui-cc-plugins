@@ -289,12 +289,13 @@ w2 >/dev/null 2>&1; rc=$?
 setup2; echo '{"run_id":"run_y","parent_handle":"term_p","repo_root":"/tmp"}' > "$SD2/run.json"
 w2 >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 2 ]] && ok "WT25b run 不一致は 2" || fail "WT25b (rc=$rc)"; teardown2
-# WT25c: **同じ (task, dispatch) を 2 つの dir が名乗ったら開始時に閉じる。**idx_of は先頭
+# WT25c: **同じ (task, dispatch) を 2 つが名乗ったら開始時に閉じる。**idx_of は先頭
 #        しか返さないので、batch は片方だけに記録されたまま ack され、もう片方は永久に
-#        settle しない。他の identity 不一致と同じ扱いにする
+#        settle しない。他の identity 不一致と同じ扱いにする。
+#        **2 つの dir でも、1 つの dir の 2 役でも同じ事故である**（WT25d が後者）
 setup2; cp "$SD/workers.json" "$SD2/workers.json"
 out=$(w2 2>&1); rc=$?
-[[ "$rc" -eq 2 && "$out" == *"two status dirs name the same dispatch"* ]] \
+[[ "$rc" -eq 2 && "$out" == *"the same dispatch is named twice"* ]] \
   && ok "WT25c 同一 dispatch の重複は 2" || fail "WT25c (rc=$rc out=$out)"; teardown2
 
 # WT26: 片方だけ終端なら終わらない（もう片方を待ち続けて時間切れ 3）。
@@ -311,5 +312,79 @@ chmod +x "$ORCA_STUB_DIR/orchestration_worker-show.hook"
 out=$(w2 2 2>&1); rc=$?
 [[ "$rc" -eq 3 && "$out" != *"is 'succeeded'"* ]] \
   && ok "WT26 決着済みを health check せず全件終端まで待つ" || fail "WT26 (rc=$rc out=$out)"; teardown2
+
+# --- レビューモード: 1 タスクに 2 dispatch (Stage B) ---
+# ★ ここが壊れると **batch ごと永久に詰まる**。reviewer の worker_done を未知として
+#   扱った瞬間、drain は ack せずに戻り、design の成果も取り出せなくなる。
+setup_rv() {
+  setup
+  mkdir -p "$SD/roles/design_review"
+  jq -nc '{roles:{
+      design:       {terminal:"term_d",task:"task_d",dispatch:"ctx_d",retained:false},
+      design_review:{terminal:"term_r",task:"task_r",dispatch:"ctx_r",retained:false}}}' \
+    > "$SD/workers.json"
+  echo '{"status":"executing"}' > "$SD/roles/design_review/status.json"
+}
+both_msg() { jq -nc --arg dz "${1:-succeeded}" --arg rv "${2:-succeeded}" \
+  '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:2,messages:[
+    {id:"m_r",type:"worker_done",payload:({taskId:"task_r",dispatchId:"ctx_r",outcome:$rv}|tojson),body:""},
+    {id:"m_d",type:"worker_done",payload:({taskId:"task_d",dispatchId:"ctx_d",outcome:$dz}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+only_d_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
+    {id:"m_d",type:"worker_done",payload:({taskId:"task_d",dispatchId:"ctx_d",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+only_r_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
+    {id:"m_r",type:"worker_done",payload:({taskId:"task_r",dispatchId:"ctx_r",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+rvdn() { echo '{"status":"done"}' > "$SD/roles/design_review/status.json"; }
+
+# WT30: 1 batch に 2 役の worker_done が同居しても両方を振り分け、ack は 1 回。
+setup_rv; both_msg; dn; rvdn
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] \
+  && [[ "$(grep -c -- '--ack d1' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(grep -c 'worker-retain' "$ORCA_STUB_DIR/calls.log")" -eq 2 ]] \
+  && [[ "$(jq -r '[.roles[].retained] | sort | join(",")' "$SD/workers.json")" == "true,true" ]] \
+  && ok "WT30 2 役の worker_done を振り分け、retain 2 回・ack 1 回" || fail "WT30 (rc=$rc out=$out)"; teardown
+
+# WT31: ★ **reviewer の worker_done を待たずに終わらない。**先に戻ると、その message は
+#       あとから来て次の batch を詰まらせる。design だけ終端でも 3 (継続) である。
+setup_rv; only_d_msg; dn
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 3 ]] && ok "WT31 reviewer の receipt が揃うまで終端にしない" || fail "WT31 (rc=$rc out=$out)"; teardown
+
+# WT32: ★ **タスクの結末を決めるのは design。**reviewer が失敗しても、それは
+#       「レビューが付かなかった」であって成果が失われたわけではない。黙らせもしない。
+setup_rv; both_msg succeeded failed; dn
+echo '{"status":"error"}' > "$SD/roles/design_review/status.json"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *'role=design_review'* && "$out" == *'outcome=failed'* ]] \
+  && ok "WT32 reviewer の失敗はタスクを失敗にしない（が黙らせない）" || fail "WT32 (rc=$rc out=$out)"; teardown
+
+# WT33: design が失敗すればタスクは失敗 (5)。reviewer が成功していても変わらない。
+setup_rv; both_msg failed succeeded; er; rvdn
+w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 5 ]] && ok "WT33 design の失敗はタスクの失敗" || fail "WT33 (rc=$rc)"; teardown
+
+# WT34: 未 dispatch の役は飛ばす。片方だけ task があって dispatch が無いのは
+#       **記録の破れ**なので開始時に閉じる（routing できない worker_done が来る）。
+setup_rv
+jq -nc '{roles:{design:{},design_review:{terminal:"term_r",task:"task_r",dispatch:"ctx_r",retained:false}}}' \
+  > "$SD/workers.json"
+only_r_msg; w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 ]] || fail "WT34 未 dispatch の役を飛ばせていない (rc=$rc)"
+jq -nc '{roles:{design:{task:"task_d"},design_review:{task:"task_r",dispatch:"ctx_r"}}}' \
+  > "$SD/workers.json"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 2 && "$out" == *"incomplete for role 'design'"* ]] \
+  && ok "WT34 未 dispatch は飛ばし、片欠けは開始時に閉じる" || fail "WT34 片欠け (rc=$rc out=$out)"; teardown
+
+# WT35: 1 つの status dir の 2 役が同じ dispatch を名乗ったら開始時に閉じる（WT25c の同型）。
+setup_rv
+jq -nc '{roles:{design:{task:"task_d",dispatch:"ctx_same"},
+                design_review:{task:"task_d",dispatch:"ctx_same"}}}' > "$SD/workers.json"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 2 && "$out" == *"the same dispatch is named twice"* ]] \
+  && ok "WT35 同一 dir の 2 役の重複も 2" || fail "WT35 (rc=$rc out=$out)"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
