@@ -55,6 +55,12 @@ dispatch_valid_phase_b() { case "$1" in on|off) return 0 ;; *) return 1 ;; esac;
 dispatch_default_integration() { printf 'merge\n'; }
 dispatch_valid_integration() { case "$1" in merge|pr) return 0 ;; *) return 1 ;; esac; }
 
+# ★ repo の setup hook を走らせるか。既定は skip（現行）。`run` は repository が定義した
+#   setup を worktree 作成時に走らせる。**失敗したら worker を起こさない** — 依存の無い
+#   まま実装すると、なぜ失敗したか分からない成果ができる。
+dispatch_default_setup() { printf 'skip\n'; }
+dispatch_valid_setup() { case "$1" in skip|run) return 0 ;; *) return 1 ;; esac; }
+
 # 空・前後の空白・シェルメタ文字・制御文字を拒否する。内部の空白は許容する。
 # 前後の空白を黙ってトリムすると「入力した値と違う値が保存される」ので、トリムせず弾く。
 _dispatch_valid_shell_value() {

@@ -52,6 +52,7 @@ role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → pr
 |---|---|---|
 | `phase_b` | `off` — `design` が計画も実装もする | `on` — `design` は計画を書くだけで何も作らず、2 人目の worker `exec` が自分の worktree でそれを作る |
 | `integration` | `merge` — dispatch した元のブランチへ取り込む | `pr` — ブランチを push して pull request を作る |
+| `setup` | `skip` — repository の setup hook を走らせずに worktree を作る | `run` — 走らせる。**setup が失敗した worktree では worker を起こさない** |
 
 **`phase_b` が「どのブランチに成果が載るか」を決める** — off なら `design`、on なら `exec`。
 merge も pull request も記録されたその 1 つの値を読むので、どちらのブランチを取るかで
@@ -867,7 +868,7 @@ release するのはここである。**セッションを閉じることはユ�
 | worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
 | レビューは 2 ラウンドで打ち切り、無言の reviewer への再依頼は 1 回だけ | `design` は未解決の findings を `result.md` に記録し、手元の最良版を作る。merge する前にその節を読む |
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
-| setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
+| setup hook は頼まない限り走らない | `setup` を `run` にする。setup が失敗した worktree には worker が付かないので、失敗は「起動を拒む」形で見える（不可解な成果物としてではなく） |
 | pull request は作るだけで、この skill が merge もレビューもしない | 自分でレビューして merge する。issue は pull request がマージされたときに閉じるのであって、実行が終わったときではない |
 | `phase_b=on` はタスクごとに worker と worktree を 1 つずつ増やす | 計画と実装を分ける価値があるとき以外は off のままにする。計画は書かれたなら `.dispatch/<slug>/plan.md` に残る |
 | `--issue` の実行は crash から自力で再開しない | 次の実行の `reconcile` が claim を見つけ、何も走っていなければ release し、走っているかもしれなければ実行を止める |

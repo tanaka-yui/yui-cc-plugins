@@ -121,6 +121,7 @@ REVIEW_MODE=$(jq -r '.review_mode // "off"' <<<"$CFG")
 # ★ **起動順は reviewer が先** (spec 5-1 T4a)。design は起動直後にレビューを依頼しうるので、
 #   その時点で reviewer の dispatch が workers.json に無いと、依頼が宛先不明で落ちる。
 PHASE_B=$(jq -r '.phase_b // "off"' <<<"$CFG")
+SETUP=$(jq -r '.setup // "skip"' <<<"$CFG")
 LAUNCH_ORDER=()
 if [[ "$PHASE" == exec ]]; then
   # ★ **2 段目。**design が成功していることと、その計画が実在することを確かめてから起こす。
@@ -417,13 +418,31 @@ launch_role() {
     *) log "$N worktrees are named '$wt_name' in $REPO; refusing to guess which one"; return 1 ;;
   esac
   if [[ -z "$WJ" ]]; then
-    # ★ --setup skip。repo の setup hook は対象外だと宣言している以上、走らせない。
+    # ★ setup hook を走らせるかは設定で決まる（既定 skip）。
     #   **rc と stdout を分けて持つ** — 非 0 と receipt らしき JSON が同時に返ることがある
     CRC=0; CJ=$("$ORCA_BIN" worktree create --repo "$REPO" --name "$wt_name" --no-parent \
-                  --setup skip --json 2>/dev/null) || CRC=$?
+                  --setup "$SETUP" --json 2>/dev/null) || CRC=$?
     WJ=$(jq -c '.result.worktree // empty' <<<"$CJ" 2>/dev/null || echo "")
     [[ "$CRC" -eq 0 && -n "$WJ" ]] || { log "worktree create failed for $role (rc=$CRC)"; return 1; }
     CREATED=$(jq -r '.id // empty' <<<"$WJ")
+    # ★ **setup が失敗した worktree で作業させない。**依存の無いまま実装すると、
+    #   なぜ失敗したか分からない成果ができる。receipt が setup の失敗を報告したら、
+    #   この呼び出しが作った worktree を戻して止まる。
+    if [[ "$SETUP" == run ]]; then
+      local SST
+      SST=$(jq -r '.result.setup.state // .result.setup.status
+                   // (first(.result.effects[]? | select(.kind == "setup") | .state)) // empty' \
+              <<<"$CJ" 2>/dev/null || echo "")
+      case "$SST" in
+        ''|succeeded|success|completed|not_applicable|skipped) ;;
+        *)
+          log "the repository setup hook did not succeed for $role (state '$SST'); refusing to start a worker on it"
+          "$ORCA_BIN" worktree rm --worktree "id:$CREATED" --force --json >/dev/null 2>&1 \
+            && log "the worktree this call created for $role was removed" \
+            || log "worktree rm FAILED for $role; it is KEPT"
+          return 1 ;;
+      esac
+    fi
   fi
   WT_ID=$(jq -r '.id // empty' <<<"$WJ"); WT_PATH=$(jq -r '.path // empty' <<<"$WJ")
   # 戻さないと workers.json に bash が使えない path が残り、[C3] の `git -C "$WP"` が壊れる

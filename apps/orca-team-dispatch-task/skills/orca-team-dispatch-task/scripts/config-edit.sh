@@ -11,6 +11,7 @@ set -euo pipefail
 #   review_mode                             on | off
 #   phase_b                                 on | off
 #   integration                             merge | pr
+#   setup                                   skip | run
 #   roles.<role>.agent | .model | .effort   set / unset
 #   roles.<role>                            unset 専用
 #   roles                                   unset 専用
@@ -65,6 +66,7 @@ key_kind() {
     review_mode) printf 'review_mode\n' ;;
     phase_b)     printf 'phase_b\n' ;;
     integration) printf 'integration\n' ;;
+    setup)       printf 'setup\n' ;;
     roles)     printf 'roles\n' ;;
     roles.*.*) parse_role_field "$1" && printf 'field\n' ;;
     roles.*)   parse_role "$1" && printf 'role\n' ;;
@@ -104,8 +106,7 @@ mode_count=$((MUTATE + SHOW))
 
 if [[ -n "$GET_KEY" ]]; then
   kind=$(key_kind "$GET_KEY") || die_usage "unknown key: $GET_KEY"
-  [[ "$kind" == field || "$kind" == review_mode || "$kind" == phase_b || "$kind" == integration ]] \
-    || die_usage "key is unset-only: $GET_KEY"
+  [[ "$kind" != role && "$kind" != roles ]] || die_usage "key is unset-only: $GET_KEY"
   [[ -f "$CONFIG" ]] || exit 0
   if [[ "$kind" != field ]]; then GET_FILTER=".$kind // empty"
   else parse_role_field "$GET_KEY"; GET_FILTER=".roles.$KEY_ROLE.$KEY_FIELD // empty"; fi
@@ -132,8 +133,7 @@ for index in "${!OPS[@]}"; do
   op="${OPS[$index]}"; key="${KEYS[$index]}"; value="${VALUES[$index]}"
   kind=$(key_kind "$key") || die_usage "unknown key: $key"
   [[ "$op" == set ]] || continue
-  [[ "$kind" == field || "$kind" == review_mode || "$kind" == phase_b || "$kind" == integration ]] \
-    || die_usage "key is unset-only: $key"
+  [[ "$kind" != role && "$kind" != roles ]] || die_usage "key is unset-only: $key"
   if [[ "$kind" != field ]]; then
     "dispatch_valid_$kind" "$value" || die_usage "invalid value for $key: $value"
     continue
@@ -191,6 +191,7 @@ for index in "${!OPS[@]}"; do
       review_mode) action='del(.review_mode)' ;;
       phase_b)     action='del(.phase_b)' ;;
       integration) action='del(.integration)' ;;
+      setup)       action='del(.setup)' ;;
       roles) action='del(.roles)' ;;
       role)  parse_role "$key";       action="del(.roles.$KEY_ROLE)" ;;
       field) parse_role_field "$key"; action="del(.roles.$KEY_ROLE.$KEY_FIELD)" ;;

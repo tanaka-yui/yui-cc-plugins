@@ -63,6 +63,7 @@ they existed**.
 |---|---|---|
 | `phase_b` | `off` — `design` plans and builds | `on` — `design` writes a plan and builds nothing; a second worker, `exec`, builds from it in its own worktree |
 | `integration` | `merge` — the work is merged into the branch you dispatched from | `pr` — the branch is pushed and a pull request is opened instead |
+| `setup` | `skip` — the worktree is created without running the repository's setup hooks | `run` — they run, and **a worker is never started on a worktree whose setup failed** |
 
 **`phase_b` decides which branch carries the work** — `design` when off, `exec` when on.
 Both merging and opening a pull request read that one recorded value, so they cannot
@@ -893,7 +894,7 @@ State these when they apply. Do not work around them silently.
 | A worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
 | Review stops after two rounds, and a silent reviewer is retried once | `design` records the unresolved findings in `result.md` and builds the best version it has. Read that section before merging |
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
-| Repositories that need setup hooks are out of scope | The worktree is created with setup skipped |
+| Setup hooks do not run unless you ask for them | Set `setup` to `run`. A worktree whose setup failed never gets a worker, so a failure shows up as a refusal to start rather than as a confusing result |
 | A pull request is opened, never merged or reviewed by this skill | Review and merge it yourself. The issue closes when the pull request merges, not when the run ends |
 | `phase_b=on` costs a second worker and a second worktree per task | Leave it off unless separating planning from building is worth that. The plan is kept at `.dispatch/<slug>/plan.md` either way it is written |
 | An `--issue` run does not resume by itself after a crash | The next run's `reconcile` finds the claim, releases it when nothing is running, and stops the run when something might be |

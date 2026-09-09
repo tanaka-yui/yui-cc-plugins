@@ -331,4 +331,27 @@ bash "$EDIT" --config "$G" --unset roles >/dev/null 2>&1
   && ok "CF33 phase_b の set/get と --unset roles の独立" || fail "CF33"
 teardown
 
+# --- setup hook (F-h) ---
+su_() { bash "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -r '.setup'; }
+
+# CF34: 既定は skip（現行の挙動）。
+setup
+[[ "$(su_)" == skip ]] && ok "CF34 setup の既定は skip" || fail "CF34"
+teardown
+
+# CF35: run を選べる。1 回きりの上書きも効く。
+setup
+echo '{"setup":"run"}' > "$G"
+[[ "$(su_)" == run && "$(su_ --setup skip)" == skip ]] \
+  && ok "CF35 setup=run と 1 回きりの上書き" || fail "CF35"
+teardown
+
+# CF36: skip / run 以外は警告して落とす。
+setup
+echo '{"setup":"maybe"}' > "$G"
+err=$(bash "$RESOLVE" --project-root "$PR" 2>&1 >/dev/null)
+[[ "$(su_)" == skip && "$err" == *"ignoring invalid setup 'maybe'"* ]] \
+  && ok "CF36 不正な setup を警告して落とす" || fail "CF36"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

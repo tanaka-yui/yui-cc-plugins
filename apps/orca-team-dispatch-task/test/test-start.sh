@@ -647,4 +647,32 @@ names=$(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" | grep -A1 -- '--name' | grep
   && ok "ST54 役ごとに違う worktree 名（design_review は s-design-review）" || fail "ST54 [$names]"
 teardown
 
+# ST55: 既定では `--setup skip` のまま（setup hook を要する repo は今までどおり対象外）。
+setup; start >/dev/null 2>&1
+wc_=$(grep 'worktree create' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$wc_" == *'--setup skip'* ]] && ok "ST55 既定は --setup skip" || fail "ST55 [$wc_]"; teardown
+
+# ST56: ★ **setup が失敗した worktree で作業させない。**依存の無いまま実装すると、
+#       なぜ失敗したか分からない成果ができる。作った worktree は戻して止まる。
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"setup":"run"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"},"setup":{"state":"failed"}}}\n' \
+  "$WT" > "$ORCA_STUB_DIR/worktree_create"
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'setup hook did not succeed'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST56 setup 失敗では worker を起こさず戻す" || fail "ST56 (rc=$rc) $out"; teardown
+
+# ST57: setup=run が成功した receipt では今までどおり起動する。
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"setup":"run"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"},"setup":{"state":"succeeded"}}}\n' \
+  "$WT" > "$ORCA_STUB_DIR/worktree_create"
+start >/dev/null 2>&1; rc=$?
+wc_=$(grep 'worktree create' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$rc" -eq 0 && "$wc_" == *'--setup run'* ]] \
+  && grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST57 setup=run が成功すれば起動する" || fail "ST57 (rc=$rc)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
