@@ -20,11 +20,12 @@ bring the results home.
 
 ```bash
 PLUGIN="${CLAUDE_PLUGIN_ROOT:?the plugin root is not set; reinstall the plugin}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 ```
 
-The Orca CLI is not on PATH. Always call it through `$ORCA_BIN`, including in commands
-you show the user.
+Orca exports `ORCA_CLI_COMMAND` with the name of its CLI; on WSL2 that is `orca-ide`,
+which is on PATH, and on macOS the CLI lives inside the app bundle. Never assume either
+shape: always call it through `$ORCA_BIN`, including in commands you show the user.
 
 ## Step 1: Write the request down
 
@@ -194,7 +195,7 @@ say the terminal and worktree are being kept on purpose. On the ordinary path th
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
 [[ -n "$DID" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
@@ -242,7 +243,7 @@ there.
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
 TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
 DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
@@ -285,7 +286,7 @@ condition below actually holds**. Check them; do not describe them.
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
 TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
 DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
@@ -377,7 +378,7 @@ checked before its dispatches are trusted:
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 SDS=("$SD")   # append every other status_dir of this Run
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
 [[ -n "$RUN" && -n "$ORCA_BIN" ]] || {

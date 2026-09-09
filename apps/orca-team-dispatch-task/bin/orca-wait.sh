@@ -15,7 +15,7 @@
 set -uo pipefail
 die() { echo "orca-wait: $1" >&2; exit 2; }
 log() { echo "orca-wait: $1" >&2; }
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 SDS=() MAXW=12 TMO=300000
 while [[ $# -gt 0 ]]; do case "$1" in

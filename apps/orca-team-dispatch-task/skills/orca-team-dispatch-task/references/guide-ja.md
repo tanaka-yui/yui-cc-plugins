@@ -11,10 +11,12 @@
 
 ```bash
 PLUGIN="${CLAUDE_PLUGIN_ROOT:?the plugin root is not set; reinstall the plugin}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 ```
 
-Orca CLI は PATH に無い。ユーザーへ見せるコマンドも含め、常に `$ORCA_BIN` 経由で呼ぶ。
+Orca は自分の CLI 名を `ORCA_CLI_COMMAND` として export する。WSL2 ではそれが PATH 上の
+`orca-ide` で、macOS では app bundle の中に居る。どちらの形も前提にせず、ユーザーへ見せる
+コマンドも含めて常に `$ORCA_BIN` 経由で呼ぶ。
 
 ## Step 1: 依頼を書き出す
 
@@ -182,7 +184,7 @@ placeholder を見せない。実行してよいかは Step 6 がユーザーへ
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
 [[ -n "$DID" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
@@ -228,7 +230,7 @@ identity 検査へ到達する state では、いずれも端末がまだ在る�
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
 TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
 DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
@@ -271,7 +273,7 @@ fi
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
 TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
 DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
@@ -363,7 +365,7 @@ status dir を並べる。Orca は Run 全体を報告するため、`SDS` か�
 
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 SDS=("$SD")   # append every other status_dir of this Run
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
 [[ -n "$RUN" && -n "$ORCA_BIN" ]] || {

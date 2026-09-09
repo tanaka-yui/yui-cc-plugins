@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # canonical path を stub の上で 1 本通す。git と worktree は本物を使う。
 set -uo pipefail
+# ★ テストは **走らせる機械の WSL 状態に依存させない**。実 WSL2 上ではこの変数が
+#   実環境から入っており、既定経路が host path 変換に化ける
+unset ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND
 P="$(cd "$(dirname "$0")/.." && pwd)"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"

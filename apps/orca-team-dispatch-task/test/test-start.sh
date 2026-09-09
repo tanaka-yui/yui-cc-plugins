@@ -3,6 +3,9 @@
 set -uo pipefail
 P="$(cd "$(dirname "$0")/.." && pwd)"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
+# ★ テストは **走らせる機械の WSL 状態に依存させない**。実 WSL2 上ではこの変数が
+#   実環境から入っており、既定経路が host path 変換に化ける。WSL 経路は ST16* が明示的に張る
+unset ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND
 setup() {
   ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
   : > "$ORCA_STUB_DIR/calls.log"
@@ -284,5 +287,81 @@ start --run run_x >/dev/null 2>&1; rc=$?
 # ST27: run_id を stdout に印字する（2 本目以降が使う）
 setup; out=$(start 2>/dev/null)
 [[ "$out" == *"run_id=run_x"* ]] && ok "ST27 run_id を印字" || fail "ST27 ($out)"; teardown
+
+
+# --- WSL2 ---
+# Orca 本体は Windows 側で動くので、CLI 境界で path 形式が変わる（実測）:
+#   送り: `path:` selector が Linux path だと repo_not_found になる
+#   受け: receipt の path は UNC で返り、bash の -d も git -C も解釈できない
+# ここでは wslpath を差し替えて、その両方向の変換だけを見る。
+setup_wsl() {
+  setup
+  STUBBIN=$(mktemp -d)
+  cat > "$STUBBIN/wslpath" <<'WP'
+#!/usr/bin/env bash
+[[ -n "${WSLPATH_BROKEN:-}" ]] && exit 1
+case "$1" in
+  -w) printf '%s%s\n' '\\wsl.localhost\Test' "$(printf '%s' "$2" | tr '/' '\\')" ;;
+  -u) v="$2"; v="${v#'\\wsl.localhost\Test'}"; printf '%s\n' "$v" | tr '\\' '/' ;;
+  *)  exit 2 ;;
+esac
+WP
+  chmod +x "$STUBBIN/wslpath"
+  OLDPATH="$PATH"; PATH="$STUBBIN:$PATH"; export PATH
+  export ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND=wsl
+  WT_WIN=$(wslpath -w "$WT")
+  printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"}}}\n' \
+    "$(printf '%s' "$WT_WIN" | sed 's|\\|\\\\|g')" > "$ORCA_STUB_DIR/worktree_create"
+  echo '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+}
+teardown_wsl() { PATH="$OLDPATH"; export PATH; rm -rf "$STUBBIN"
+                 unset ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND WSLPATH_BROKEN; teardown; }
+
+# ST28: **repo selector を host 形式で送る。**Linux path のままだと Orca は repo_not_found を返す
+setup_wsl; start >/dev/null 2>&1
+if grep -F 'worktree' "$ORCA_STUB_DIR/argv.log" | grep -qF 'path:\\wsl.localhost\Test'; then
+  ok "ST28 repo selector を host path で送る"
+else
+  fail "ST28 repo selector が Linux path のまま ($(grep -F worktree "$ORCA_STUB_DIR/argv.log" | head -1))"
+fi; teardown_wsl
+
+# ST28b: **receipt の path を local 形式へ戻す。**戻さないと -d も git -C も落ち、
+#        workers.json に bash が使えない path が残って片付け ([C3] の git -C "$WP") が壊れる
+setup_wsl; start >/dev/null 2>&1
+got=$(jq -r '.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
+[[ "$got" == "$WT" ]] && ok "ST28b receipt の path を local へ戻す" \
+  || fail "ST28b workers.json の path=[$got] 期待=[$WT]"; teardown_wsl
+
+# ST28c: **変換できなければ何も作らない。**推測した path で他人の repo を触らせない
+setup_wsl; WSLPATH_BROKEN=1 start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -q 'run-create' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST28c 変換失敗なら何も作らない" || fail "ST28c (rc=$rc)"; teardown_wsl
+
+# ST28d: **wslpath が無ければ変換しない。**HOST_KIND だけを根拠に変換すると、
+#        wslpath の無い環境で全 path が空文字になり、誤った checkout を触りうる
+setup; export ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND=wsl
+OLDPATH="$PATH"
+if WPD=$(command -v wslpath 2>/dev/null); then
+  WPD=$(dirname "$WPD")
+  PATH=$(printf '%s' "$OLDPATH" | tr ':' '\n' | grep -vxF "$WPD" | tr '\n' ':'); PATH="${PATH%:}"
+  export PATH
+fi
+start >/dev/null 2>&1
+got=$(jq -r '.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
+PATH="$OLDPATH"; export PATH; unset ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND
+[[ "$got" == "$WT" ]] && ok "ST28d wslpath が無ければ変換しない" \
+  || fail "ST28d path=[$got] 期待=[$WT]"; teardown
+
+# ST29: **ORCA_BIN 未設定なら ORCA_CLI_COMMAND を使う。**WSL2 の Orca は PATH 上の
+#       `orca-ide` を export する。macOS の固定 path 決め打ちでは起動できない
+setup; STUBBIN=$(mktemp -d)
+{ echo '#!/usr/bin/env bash'; printf 'exec %q "$@"\n' "$P/test/lib/orca-stub.sh"; } > "$STUBBIN/orca-ide"
+chmod +x "$STUBBIN/orca-ide"
+OLDPATH="$PATH"; PATH="$STUBBIN:$PATH"; export PATH
+unset ORCA_BIN; export ORCA_CLI_COMMAND=orca-ide
+start >/dev/null 2>&1; rc=$?
+PATH="$OLDPATH"; export PATH; rm -rf "$STUBBIN"; unset ORCA_CLI_COMMAND
+[[ "$rc" -eq 0 ]] && grep -q 'run-create' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST29 ORCA_CLI_COMMAND を既定にする" || fail "ST29 (rc=$rc)"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -6,7 +6,18 @@
 set -uo pipefail
 die() { echo "orca-start: $1" >&2; exit 2; }
 log() { echo "orca-start: $1" >&2; }
-ORCA_BIN="${ORCA_BIN:-/Applications/Orca.app/Contents/Resources/bin/orca}"
+ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
+# ★ WSL2 では Orca 本体が Windows 側に居るので、**CLI 境界で path 形式が変わる**（実測）。
+#   送り: `path:` selector が Linux path のままだと repo_not_found になる
+#   受け: receipt の path は UNC で返り、bash の -d も git -C も解釈できない
+#   HOST_KIND だけを根拠にしない — wslpath の無い環境で変換すると path が空文字になる
+ORCA_WSL=0
+if [[ "${ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND:-}" == wsl ]] \
+   && command -v wslpath >/dev/null 2>&1; then ORCA_WSL=1; fi
+to_host()  { [[ "$ORCA_WSL" -eq 1 ]] || { printf '%s\n' "$1"; return 0; }; wslpath -w "$1"; }
+# 既に local 形式のものは通す。Orca が将来 Linux path を返しても壊さない
+to_local() { case "$1" in /*) printf '%s\n' "$1"; return 0 ;; esac
+             [[ "$ORCA_WSL" -eq 1 ]] || { printf '%s\n' "$1"; return 0; }; wslpath -u "$1"; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." && pwd)"
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 RF="" SLUG="" OBJ="" RR="" RUN_IN=""
@@ -26,7 +37,9 @@ while [[ $# -gt 0 ]]; do case "$1" in
 # ★ repo は **常に親 checkout そのもの**を exact な path selector で指す。
 #   `--repo` は受け付けない (round 2 finding 4): 別 repo を指されると worker はそこで動く
 #   のに merge 先は $RR のままになり、誤 merge か不可解な失敗になる
-REPO="path:$RR"
+RR_HOST=$(to_host "$RR") && [[ -n "$RR_HOST" ]] \
+  || { log "cannot express $RR in the form the Orca CLI expects"; exit 1; }
+REPO="path:$RR_HOST"
 SD="$RR/.dispatch/$SLUG"
 [[ ! -e "$SD" ]] || { log "$SD already exists; pick a different slug"; exit 1; }
 # critical write。**失敗を握り潰さない。**
@@ -47,7 +60,13 @@ jq_write() {   # $1=site $2=path $3.. = jq の引数
 }
 
 # --- preflight: 何も作る前に確かめる ---
-[[ -x "$ORCA_BIN" ]] || { log "the Orca CLI is not at $ORCA_BIN"; exit 1; }
+# ★ ORCA_BIN は path のことも PATH 上の command 名のこともある（WSL2 の `orca-ide`）。
+#   command 名に -x を当てると必ず落ちる
+case "$ORCA_BIN" in
+  */*) [[ -x "$ORCA_BIN" ]] || { log "the Orca CLI is not at $ORCA_BIN"; exit 1; } ;;
+  *) command -v "$ORCA_BIN" >/dev/null 2>&1 \
+       || { log "the Orca CLI '$ORCA_BIN' is not on PATH"; exit 1; } ;;
+esac
 "$ORCA_BIN" status --json 2>/dev/null | jq -e '.result.runtime.reachable == true' >/dev/null 2>&1 \
   || { log "the Orca runtime is not reachable"; exit 1; }
 # 親の identity は環境変数から取る。候補が 1 つでも推測しない (O26)
@@ -115,6 +134,8 @@ if [[ -z "$WJ" ]]; then
   CREATED=$(jq -r '.id // empty' <<<"$WJ")
 fi
 WT_ID=$(jq -r '.id // empty' <<<"$WJ"); WT_PATH=$(jq -r '.path // empty' <<<"$WJ")
+# 戻さないと workers.json に bash が使えない path が残り、[C3] の `git -C "$WP"` が壊れる
+if [[ -n "$WT_PATH" ]]; then WT_PATH=$(to_local "$WT_PATH") || WT_PATH=""; fi
 BR=$(jq -r '.branch // empty' <<<"$WJ"); BR="${BR#refs/heads/}"
 [[ -n "$WT_ID" && -n "$WT_PATH" && -d "$WT_PATH" ]] || { log "the worktree has no usable id/path"; exit 1; }
 # branch は receipt から取る。名前を推測しない（merge が使う）
