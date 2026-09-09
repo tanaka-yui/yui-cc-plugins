@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # orca-issue.sh — claim 済みの issue を 1 件、最後まで運ぶ。
 #
-# Usage: orca-issue.sh --state-file <p> --issue <N> --slug <s> --request-file <f>
-#                      [--run <run_id>] [--repo-root <p>] [--timeout-ms <n>] [--max-waits <n>]
+# Usage: orca-issue.sh --state-file <p> --issue <N> --slug <s> [--phase dispatch|finish|all]
+#                      [--request-file <f>] [--run <run_id>] [--repo-root <p>]
+#                      [--timeout-ms <n>] [--max-waits <n>]
+#
+# ★ **phase を分けられるのは並列のためである。**`all`（既定）は dispatch → wait → finish を
+#   1 件ぶん通すので、バッチで順に呼ぶと **1 件ずつ直列にしか走らない**。バッチでは
+#   `dispatch` を N 件ぶん先に呼び、`orca-wait.sh` を **1 回**で全件待ってから `finish` を
+#   N 件ぶん呼ぶ。Stage A が作った「N タスクを 1 Run に載せて 1 回で待つ」形をそのまま使う。
+#   単件（`--issue <N>`）には並列にするものが無いので `all` でよい。
 # Exit:  0 = done（merge してラベルを遷移し、片付けの判定まで済んだ）
 #        1 = 運べなかった（**資源は保持する**）
 #        2 = 使用法エラー
@@ -25,7 +32,7 @@ need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." && pwd)"
 SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
 
-SF="" NUM="" SLUG="" RF="" RUN="" RR="" TMO=600000 MAXW=60
+SF="" NUM="" SLUG="" RF="" RUN="" RR="" TMO=600000 MAXW=60 PHASE=all
 while [[ $# -gt 0 ]]; do case "$1" in
   --state-file)   need2 "$1" $#; SF="$2";   shift 2 ;;
   --issue)        need2 "$1" $#; NUM="$2";  shift 2 ;;
@@ -35,11 +42,16 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --repo-root)    need2 "$1" $#; RR="$2";   shift 2 ;;
   --timeout-ms)   need2 "$1" $#; TMO="$2";  shift 2 ;;
   --max-waits)    need2 "$1" $#; MAXW="$2"; shift 2 ;;
+  --phase)        need2 "$1" $#; PHASE="$2"; shift 2 ;;
   *) die "unknown option: $1" ;; esac; done
-[[ -n "$SF" && -n "$NUM" && -n "$SLUG" && -n "$RF" ]] \
-  || die "--state-file, --issue, --slug and --request-file are required"
+case "$PHASE" in dispatch|finish|all) ;; *) die "--phase must be dispatch, finish or all: $PHASE" ;; esac
+[[ -n "$SF" && -n "$NUM" && -n "$SLUG" ]] || die "--state-file, --issue and --slug are required"
 [[ "$NUM" =~ ^[0-9]+$ ]] || die "--issue must be a number: $NUM"
-[[ -r "$RF" ]] || die "--request-file is not readable: $RF"
+# finish は既に dispatch 済みの状態を引き継ぐので依頼ファイルを要らない
+if [[ "$PHASE" != finish ]]; then
+  [[ -n "$RF" ]] || die "--request-file is required for phase '$PHASE'"
+  [[ -r "$RF" ]] || die "--request-file is not readable: $RF"
+fi
 [[ -n "$RR" ]] || RR=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repo"
 command -v gh >/dev/null 2>&1 || die "gh is not installed"
 
@@ -97,6 +109,7 @@ fail_out() {   # $1=理由
 }
 
 # --- 1. dispatch ---
+if [[ "$PHASE" != finish ]]; then
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$RF" --slug "$SLUG" \
         --objective "issue #$NUM" --repo-root "$RR" ${RUN:+--run "$RUN"} 2>&1) || {
   log "$OUT"
@@ -108,16 +121,25 @@ RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
 
 bash "$IFETCH" --state-file "$SF" mark-dispatched --issue "$NUM" >/dev/null 2>&1 \
   || log "issue #$NUM: could not mark it dispatched; the wait continues"
+if [[ "$PHASE" == dispatch ]]; then
+  # ★ **待たない。**呼び出し側が全件を 1 回の `orca-wait.sh` で待ち、そのあと finish を呼ぶ。
+  printf 'issue=%s\nslug=%s\nstatus_dir=%s\nrun_id=%s\n' "$NUM" "$SLUG" "$SD" "$RUN"
+  exit 0
+fi
+fi
 
 # --- 2. wait（ブロック）---
 # ★ wake 駆動にしない。落とした通知でジョブが黙って消える失敗様式を持ち込まない。
-WRC=0
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD" --max-waits "$MAXW" --timeout-ms "$TMO" || WRC=$?
-case "$WRC" in
-  0) ;;
-  5) fail_out "issue #$NUM: the worker reported failure; the result is in $SD/roles/design/result.md" ;;
-  *) fail_out "issue #$NUM: waiting ended with $WRC; nothing was merged" ;;
-esac
+if [[ "$PHASE" == all ]]; then
+  WRC=0
+  bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD" --max-waits "$MAXW" --timeout-ms "$TMO" || WRC=$?
+  case "$WRC" in
+    0) ;;
+    5) fail_out "issue #$NUM: the worker reported failure; the result is in $SD/roles/design/result.md" ;;
+    *) fail_out "issue #$NUM: waiting ended with $WRC; nothing was merged" ;;
+  esac
+fi
+[[ -r "$SD/workers.json" ]] || fail_out "issue #$NUM: there is no dispatch state at $SD"
 
 # --- 3. merge。**ここが通って初めて片付けの話になる** ---
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" \

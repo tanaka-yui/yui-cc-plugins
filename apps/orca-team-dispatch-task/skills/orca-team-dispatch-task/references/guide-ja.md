@@ -226,7 +226,8 @@ claim が空なのは隠すべき失敗ではない。**その issue が既に s
 
 1. **ラベル絞り込み** — `gh label list` の上位ラベルに加え、「絞り込まない」と自由入力。
 2. **assignee** — `@me` / 未 assign のみ / 絞り込まない。
-3. **同時に扱う issue 数** — 1〜10 の整数、既定 5。**上限 10 は資源増幅に対する安全弁であり、
+3. **同時に扱う issue 数** — 1〜10 の整数、既定 5。これは**本当に同時に走る** — I3 が
+   バッチ全体を dispatch してから待つ。**上限 10 は資源増幅に対する安全弁であり、
    要求されても上げない。**1 issue が worktree 1 つと worker 1 本を消費し、`review_mode=on`
    では倍になる。
 4. **バッチ数の上限** — 数、または issue が尽きるまで。
@@ -254,7 +255,11 @@ state を手で消してはならない。
 「1 件も claim できなかった」、exit 4 は「尽きたと確認できなかった」であり、**どちらも
 ループし直さずに実行を終える。**
 
-バッチの各 issue について、title と body を依頼ファイルへ書き出して運ぶ:
+**バッチは 3 パスで並列に走らせる。**まず全件を dispatch し、次に **1 回**で全件を待ち、
+最後に 1 件ずつ finish する。1 件を最後まで運んでから次を始めると、**ユーザーが何を選んでも
+issue は 1 件ずつしか走らず**、バッチの大きさが意味を失う。
+
+パス 1、issue ごとに 1 回。title と body を依頼ファイルへ書き出してから:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
@@ -262,8 +267,34 @@ state を手で消してはならない。
 : "${NUM:?set NUM, SLUG and REQ from the claimed issue}"
 : "${SLUG:?set NUM, SLUG and REQ from the claimed issue}"
 : "${REQ:?set NUM, SLUG and REQ from the claimed issue}"
-bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" \
+bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase dispatch \
   --issue "$NUM" --slug "$SLUG" --request-file "$REQ" ${RUN:+--run "$RUN"}
+```
+
+**印字された `run_id` を控え、そのバッチの以降の issue には `--run` で渡す** — バッチ全体が
+1 つの Run と 1 つの親メールボックスを共有するようにする。印字された `status_dir` も全部控える。
+dispatch に失敗した issue は既に `dispatch/failed` が付いて資源が残っている。次へ進み、
+その issue をパス 2 から外す。
+
+パス 2、バッチ全体で 1 回 — dispatch できた issue ごとに `--status-dir` を 1 つ:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>"
+```
+
+exit code の読み方は Step 3 のとおりである。exit 5 は**一部の失敗**であってバッチの失敗では
+ない。自身の `role=design` の行が `succeeded` だった issue についてパス 3 へ進む。
+
+パス 3、dispatch できた issue ごとに 1 回。merge し、ラベルを遷移させ、issue を close する:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${STATE:?run the I0 block first}"
+: "${NUM:?set NUM and SLUG from the issue you dispatched}"
+: "${SLUG:?set NUM and SLUG from the issue you dispatched}"
+bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase finish \
+  --issue "$NUM" --slug "$SLUG"
 ```
 
 exit 1 はその issue を運べなかったことを意味する。ラベルは既に `dispatch/failed` へ動いて

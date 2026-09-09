@@ -239,9 +239,10 @@ Ask a single question with these four parts. An issue run is unattended once it 
 
 1. **Label filter** — the top labels from `gh label list`, plus "no filter" and free text.
 2. **Assignee** — `@me`, unassigned only, or no filter.
-3. **How many issues at once** — an integer from 1 to 10, default 5. **The cap of 10 is a
-   safety valve against resource amplification and is not raised on request**: each issue
-   costs a worktree and a worker, and doubles under `review_mode=on`.
+3. **How many issues at once** — an integer from 1 to 10, default 5. These really do run
+   at the same time: I3 dispatches the whole batch before waiting for any of it. **The cap
+   of 10 is a safety valve against resource amplification and is not raised on request**:
+   each issue costs a worktree and a worker, and doubles under `review_mode=on`.
 4. **How many batches** — a number, or until the issues run out.
 
 Do not ask about `review_mode` or about integration. `review_mode` comes from the
@@ -267,7 +268,12 @@ stop. Do not clear the state by hand.
 assigned. Exit 3 means nothing could be claimed and exit 4 means exhaustion could not be
 confirmed; **both end the run rather than looping again**.
 
-For each issue in the batch, write its title and body to a request file and carry it:
+**The batch runs in parallel, in three passes.** Dispatch every issue first, then wait for
+all of them with **one** call, then finish them one by one. Carrying an issue end to end
+before starting the next would make the batch size meaningless — the issues would run one at
+a time no matter what the user chose.
+
+Pass 1, once per issue. Write its title and body to a request file, then:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
@@ -275,8 +281,34 @@ For each issue in the batch, write its title and body to a request file and carr
 : "${NUM:?set NUM, SLUG and REQ from the claimed issue}"
 : "${SLUG:?set NUM, SLUG and REQ from the claimed issue}"
 : "${REQ:?set NUM, SLUG and REQ from the claimed issue}"
-bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" \
+bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase dispatch \
   --issue "$NUM" --slug "$SLUG" --request-file "$REQ" ${RUN:+--run "$RUN"}
+```
+
+**Keep the `run_id` it prints and pass it as `--run` for every later issue in the batch**, so
+the whole batch shares one Run and one parent mailbox. Keep every printed `status_dir` too.
+An issue that fails to dispatch is already marked `dispatch/failed` with its resources kept;
+carry on with the next one, and leave it out of pass 2.
+
+Pass 2, once for the whole batch — one `--status-dir` per issue that dispatched:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>"
+```
+
+Read its exit code the way Step 3 describes. Exit 5 is a partial failure, not a batch
+failure: go on to pass 3 for every issue whose own `role=design` line said `succeeded`.
+
+Pass 3, once per issue that dispatched. It merges, moves the labels and closes the issue:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${STATE:?run the I0 block first}"
+: "${NUM:?set NUM and SLUG from the issue you dispatched}"
+: "${SLUG:?set NUM and SLUG from the issue you dispatched}"
+bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase finish \
+  --issue "$NUM" --slug "$SLUG"
 ```
 
 Exit 1 means that issue was not carried; its labels are already moved to `dispatch/failed`

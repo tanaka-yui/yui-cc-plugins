@@ -438,13 +438,19 @@ issec=$(mktemp)
 awk '/^## Issue mode$/{s=1} s&&/^## Step 1:/{exit} s' "$S" > "$issec"
 nth_block() { awk -v n="$1" '/^```bash$/{b++; if(b==n){f=1; next}} f&&/^```$/{exit} f{print}' "$issec"; }
 probe=$(mktemp -d)
-for n in 2 3 4 5; do
+# ★ **I0 以外のすべての block を検査する。**block を足したときに検査から漏れないよう、
+#    数え上げは節そのものから取る（数を書き写すと必ずずれる）。
+nblocks=$(grep -c '^```bash$' "$issec")
+[[ "$nblocks" -ge 5 ]] || bad="$bad [issue-blocks-shrank:$nblocks]"
+for ((n = 2; n <= nblocks; n++)); do
   blk="$probe/i$n.sh"; nth_block "$n" > "$blk"
   # block が無ければ検査対象も無い（節を減らしたときに黙って緩まないよう明示する）
   [[ -s "$blk" ]] || { bad="$bad [I$n-missing]"; continue; }
   out=$(env -u SCRIPTS -u STATE -u NUM -u SLUG -u REQ -u PLUGIN bash "$blk" 2>&1); rc=$?
-  # 未設定なら **非 0 で止まる**こと。/issue-fetch.sh を叩いていないこと
-  if [[ "$rc" -eq 0 || "$out" == *'/issue-fetch.sh: No such file'* ]]; then
+  # ★ **「非 0 で終わった」では足りない。**変数が空のまま絶対パスを組み立てて
+  #   `/bin/orca-issue.sh` を叩き、たまたま存在しなくて落ちるのも非 0 である。
+  #   **ガード自身が発火したこと**（`: "${VAR:?...}"` の message）を要求する。
+  if [[ "$rc" -eq 0 || "$out" != *'run the'* ]]; then
     bad="$bad [I$n-not-fail-closed]"
   fi
 done

@@ -191,4 +191,47 @@ m=$(jq -r '.issues["5"].message' "$SF")
   && ok "IS10 成功時に古い失敗理由が残らない" || fail "IS10 (message=$m)"
 teardown
 
+# IS11: ★ **`--phase dispatch` は待たない。**待つと 1 件ずつ直列にしか走らず、
+#       「同時に扱う issue 数」が意味を失う（Stage A の並列 dispatch が使われない）。
+setup; worker_done succeeded done
+out=$(run_issue --phase dispatch 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] \
+  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && [[ ! -f "$R/WORK.md" ]] \
+  && ! grep -q 'issue close' <(ghlog) \
+  && [[ "$(jq -r '.issues["5"].status' "$SF")" == dispatched ]] \
+  && grep -q '^status_dir=' <<<"$out" \
+  && ok "IS11 dispatch phase は待たず merge もしない" || fail "IS11 (rc=$rc) $out"
+teardown
+
+# IS12: `--phase finish` は dispatch し直さず、待機済みの状態から merge して終端へ運ぶ。
+setup; worker_done succeeded done
+run_issue --phase dispatch >/dev/null 2>&1
+# 呼び出し側が 1 回で待つ（バッチではここが全件ぶん 1 回）
+bash "$P/bin/orca-wait.sh" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+: > "$ORCA_STUB_DIR/calls.log"; : > "$GH_STUB_DIR/calls.log"
+out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
+        --repo-root "$R" --phase finish 2>&1); rc=$?
+[[ "$rc" -eq 0 && -f "$R/WORK.md" ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && grep -q 'issue close 5' <(ghlog) \
+  && [[ "$(jq -r '.issues["5"].status' "$SF")" == done ]] \
+  && ok "IS12 finish phase は dispatch し直さず終端へ運ぶ" || fail "IS12 (rc=$rc) $out"
+teardown
+
+# IS13: finish は **dispatch の記録が無ければ運ばない**（何も無いところから成功にしない）。
+setup
+out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
+        --repo-root "$R" --phase finish 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'there is no dispatch state'* ]] \
+  && ok "IS13 記録が無ければ finish しない" || fail "IS13 (rc=$rc) $out"
+teardown
+
+# IS14: 不正な --phase は使用法エラー（2）。
+setup
+bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug s --request-file "$REQ" \
+  --phase bogus >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "IS14 不正な --phase は 2" || fail "IS14"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
