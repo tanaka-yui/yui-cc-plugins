@@ -3,7 +3,7 @@
 # **recovery 機構は無い** (spec 18-1)。worker-start が成立した後は何も削除しない。
 # Usage: orca-start.sh --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
 #          [--run <run_id>] [--agent <id>] [--model <id>] [--effort <level>]
-#          [--phase design|exec]
+#          [--phase design|exec] [--design-mode direct|plan|brainstorm]
 #
 # ★ **exec は design が終わってからでないと起こせない。**計画が無いうちに実装させられない
 #   ので、起動は 2 段に分かれる。`--phase design`（既定）が 1 段目、`--phase exec` が
@@ -29,7 +29,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." &&
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 RF="" SLUG="" OBJ="" RR="" RUN_IN=""
 # 役ごとの agent / model / effort は config.json が正本。ここは 1 回きりの上書き口である
-OV_AGENT="" OV_MODEL="" OV_EFFORT="" PHASE=design
+OV_AGENT="" OV_MODEL="" OV_EFFORT="" OV_DESIGN_MODE="" PHASE=design
 while [[ $# -gt 0 ]]; do case "$1" in
   --request-file) need2 "$1" $#; RF="$2";     shift 2 ;;
   --slug)         need2 "$1" $#; SLUG="$2";   shift 2 ;;
@@ -37,6 +37,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --repo-root)    need2 "$1" $#; RR="$2";     shift 2 ;;
   --run)          need2 "$1" $#; RUN_IN="$2"; shift 2 ;;
   --agent)        need2 "$1" $#; OV_AGENT="$2";  shift 2 ;;
+  --design-mode)  need2 "$1" $#; OV_DESIGN_MODE="$2"; shift 2 ;;
   --model)        need2 "$1" $#; OV_MODEL="$2";  shift 2 ;;
   --effort)       need2 "$1" $#; OV_EFFORT="$2"; shift 2 ;;
   --phase)        need2 "$1" $#; PHASE="$2";     shift 2 ;;
@@ -112,6 +113,7 @@ CFG_SET=()
 [[ -n "$OV_AGENT"  ]] && CFG_SET+=(--set "design.agent=$OV_AGENT")
 [[ -n "$OV_MODEL"  ]] && CFG_SET+=(--set "design.model=$OV_MODEL")
 [[ -n "$OV_EFFORT" ]] && CFG_SET+=(--set "design.effort=$OV_EFFORT")
+[[ -n "$OV_DESIGN_MODE" ]] && CFG_SET+=(--design-mode "$OV_DESIGN_MODE")
 RESOLVER="$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh"
 [[ -r "$RESOLVER" ]] || { log "the config resolver is missing at $RESOLVER"; exit 1; }
 CRC=0; CFG=$(bash "$RESOLVER" --project-root "$RR" ${CFG_SET[@]+"${CFG_SET[@]}"}) || CRC=$?
@@ -122,6 +124,7 @@ REVIEW_MODE=$(jq -r '.review_mode // "off"' <<<"$CFG")
 #   その時点で reviewer の dispatch が workers.json に無いと、依頼が宛先不明で落ちる。
 PHASE_B=$(jq -r '.phase_b // "off"' <<<"$CFG")
 SETUP=$(jq -r '.setup // "skip"' <<<"$CFG")
+DESIGN_MODE=$(jq -r '.design_mode // "direct"' <<<"$CFG")
 LAUNCH_ORDER=()
 if [[ "$PHASE" == exec ]]; then
   # ★ **2 段目。**design が成功していることと、その計画が実在することを確かめてから起こす。
@@ -420,11 +423,35 @@ SPEC_X
   local review_block=""
   [[ "$REVIEW_MODE" == on ]] \
     && review_block=$(render_review_block design_review 'review-plan:' plan 'plan')
-  local design_task="Do the work in this worktree and commit it on this branch."
+  # ★ **取りかかり方の指示は design にだけ載せる。**exec は計画に従う役であり、
+  #   reviewer は何も作らない。
+  local approach=""
+  case "$DESIGN_MODE" in
+    plan)
+      approach="**Decide the approach before you touch anything.** Write down what you are
+going to do and why, in result.md, before the first edit. If what you find while working
+makes that approach wrong, say so there rather than quietly doing something else.
+
+" ;;
+    brainstorm)
+      approach="**Start with the superpowers brainstorming skill.** Invoke
+\`superpowers:brainstorming\` and work through the request with whoever is watching this
+terminal before you plan or build anything.
+
+A person can talk to you here, so questions are worth asking. **If nobody answers, do not
+stall**: after one round with no reply, write in result.md that the brainstorming went
+unanswered, decide the approach yourself, and carry on.
+
+If that skill is not installed in this session, say so in result.md and continue without it
+rather than inventing your own version of it.
+
+" ;;
+  esac
+  local design_task="${approach}Do the work in this worktree and commit it on this branch."
   if [[ "$PHASE_B" == on ]]; then
     # ★ **design は実装しない。**実装役が別に居るのに両方が書くと、同じ変更が 2 つの
     #   ブランチに載って取り込みが壊れる。
-    design_task="PLAN ONLY. **Do not implement anything and commit nothing.**
+    design_task="${approach}PLAN ONLY. **Do not implement anything and commit nothing.**
 
 Another worker will build this from your plan, in a different worktree. Write the plan to
 $(printf '%q' "$SD/plan.md") and leave every other file alone.

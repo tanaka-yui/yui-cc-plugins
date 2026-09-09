@@ -121,8 +121,19 @@ if [[ "$PHASE" != finish ]]; then
 PORC=$(git -C "$RR" status --porcelain 2>/dev/null) || PORC=""
 [[ -z "$PORC" ]] || log "issue #$NUM: the parent checkout is dirty; it must be clean by the time this merges"
 
+# ★ **無人実行で brainstorming は成立しない。**答える人が居ないので、design は 1 往復
+#   待ってから自分で決めることになる。待つだけ無駄なので `plan` へ落とす。cmux 版が
+#   loop-mode で「plan mode に固定」としているのと同じ判断である。
+DM=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR" 2>/dev/null \
+     | jq -r '.design_mode // "direct"' 2>/dev/null || echo direct)
+DM_ARGS=()
+if [[ "$DM" == brainstorm ]]; then
+  log "issue #$NUM: design_mode is 'brainstorm' but an issue run is unattended; using 'plan'"
+  DM_ARGS=(--design-mode plan)
+fi
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$RF" --slug "$SLUG" \
-        --objective "issue #$NUM" --repo-root "$RR" ${RUN:+--run "$RUN"} 2>&1) || {
+        --objective "issue #$NUM" --repo-root "$RR" ${RUN:+--run "$RUN"} \
+        ${DM_ARGS[@]+"${DM_ARGS[@]}"} 2>&1) || {
   log "$OUT"
   fail_out "issue #$NUM: the dispatch did not start"
 }

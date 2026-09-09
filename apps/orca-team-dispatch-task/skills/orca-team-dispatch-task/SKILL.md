@@ -65,6 +65,7 @@ they existed**.
 | `phase_b` | `off` — `design` plans and builds | `on` — `design` writes a plan and builds nothing; a second worker, `exec`, builds from it in its own worktree |
 | `integration` | `merge` — the work is merged into the branch you dispatched from | `pr` — the branch is pushed and a pull request is opened instead |
 | `setup` | `skip` — the worktree is created without running the repository's setup hooks | `run` — they run, and **a worker is never started on a worktree whose setup failed** |
+| `design_mode` | `direct` — `design` is given the request and gets on with it | `plan` — it must decide and record an approach before the first edit. `brainstorm` — it starts with the `superpowers:brainstorming` skill and works the request through with whoever is watching its terminal |
 
 **`phase_b` decides which branch carries the work** — `design` when off, `exec` when on.
 Both merging and opening a pull request read that one recorded value, so they cannot
@@ -168,6 +169,19 @@ bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --unset roles
 ```
 
 Report what changed and offer to continue at S1.
+
+### Choosing how `design` starts
+
+`design_mode` only ever changes the `design` role's instructions. `exec` follows the plan and
+a reviewer builds nothing, so telling them how to start would just blur who decides.
+
+**`brainstorm` needs a person.** The worker's terminal is a real one you can talk to, which
+is what makes it work — and it is also why an `--issue` run silently downgrades it to `plan`
+and says so: an unattended run has nobody to answer, so the worker would only wait a round
+and then decide alone anyway.
+
+A `brainstorm` worker is told not to stall if nobody answers, and to say so in `result.md`
+rather than inventing its own version of the skill when it is not installed.
 
 ### Trying one dispatch without saving
 

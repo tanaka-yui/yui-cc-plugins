@@ -746,4 +746,38 @@ done < <(awk -v RS='\037' 'prev == "--spec" { print } { prev = $0 }' "$ORCA_STUB
 [[ -z "$bad" ]] && ok "ST60 spec のコマンドがそのまま動く形になっている" || fail "ST60:$bad"
 teardown
 
+# ST61: 既定 (direct) では取りかかり方の指示を足さない — **現行の挙動を変えない**。
+setup; start >/dev/null 2>&1
+sp=$(spec)
+[[ "$sp" != *'superpowers:brainstorming'* ]] && [[ "$sp" != *'Decide the approach before'* ]] \
+  && ok "ST61 direct は指示を足さない" || fail "ST61"; teardown
+
+# ST62: brainstorm は superpowers の skill を名指しし、**答えが無くても止まらない**ことまで言う。
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"design_mode":"brainstorm"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; sp=$(spec); miss=""
+[[ "$sp" == *'superpowers:brainstorming'* ]] || miss="$miss [skill]"
+[[ "$sp" == *'If nobody answers, do not'* ]] || miss="$miss [no-stall]"
+[[ "$sp" == *'not installed'* ]] || miss="$miss [degrade]"
+[[ -z "$miss" ]] && ok "ST62 brainstorm の指示" || fail "ST62:$miss"; teardown
+
+# ST63: plan は「触る前に手順を決めて記録せよ」と言う。
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"design_mode":"plan"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1
+[[ "$(spec)" == *'Decide the approach before you touch anything'* ]] \
+  && ok "ST63 plan の指示" || fail "ST63"; teardown
+
+# ST64: ★ **取りかかり方の指示は design にだけ載る。**exec は計画に従う役であり、
+#       reviewer は何も作らない。両方に載せると誰が決めるのか分からなくなる。
+setup; review_on
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"review_mode":"on","phase_b":"on","design_mode":"brainstorm"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; design_done; printf 'plan\n' > "$R/.dispatch/s/plan.md"
+drv=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1)
+: > "$ORCA_STUB_DIR/calls.log"; exec_phase >/dev/null 2>&1
+xs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")
+[[ "$drv" != *'superpowers:brainstorming'* ]] && [[ "$xs" != *'superpowers:brainstorming'* ]] \
+  && ok "ST64 取りかかり方の指示は design にだけ" || fail "ST64"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

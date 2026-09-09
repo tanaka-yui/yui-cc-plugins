@@ -323,4 +323,19 @@ out=$(run_issue 2>&1); rc=$?
   && ok "IS21 pr で --repo が無ければ作らない" || fail "IS21 (rc=$rc) $out"
 teardown
 
+# IS22: ★ **無人実行で brainstorming は成立しない。**答える人が居ないので design は
+#       1 往復待ってから自分で決めることになる。待つだけ無駄なので `plan` へ落とし、
+#       **落としたことを言う**（設定したのに黙って効かない状態を作らない）。
+#       cmux 版が loop-mode で「plan mode に固定」としているのと同じ判断である。
+setup; worker_done succeeded done
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"design_mode":"brainstorm"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+out=$(run_issue --phase dispatch 2>&1)
+sp=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$out" == *'unattended; using'* ]] \
+  && [[ "$sp" != *'superpowers:brainstorming'* ]] \
+  && [[ "$sp" == *'Decide the approach before you touch anything'* ]] \
+  && ok "IS22 issue 実行は brainstorm を plan へ落とし、そう言う" || fail "IS22 ($out)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

@@ -12,6 +12,7 @@ set -euo pipefail
 #   phase_b                                 on | off
 #   integration                             merge | pr
 #   setup                                   skip | run
+#   design_mode                             direct | plan | brainstorm
 #   roles.<role>.agent | .model | .effort   set / unset
 #   roles.<role>                            unset 専用
 #   roles                                   unset 専用
@@ -67,6 +68,7 @@ key_kind() {
     phase_b)     printf 'phase_b\n' ;;
     integration) printf 'integration\n' ;;
     setup)       printf 'setup\n' ;;
+    design_mode) printf 'design_mode\n' ;;
     roles)     printf 'roles\n' ;;
     roles.*.*) parse_role_field "$1" && printf 'field\n' ;;
     roles.*)   parse_role "$1" && printf 'role\n' ;;
@@ -192,6 +194,7 @@ for index in "${!OPS[@]}"; do
       phase_b)     action='del(.phase_b)' ;;
       integration) action='del(.integration)' ;;
       setup)       action='del(.setup)' ;;
+      design_mode) action='del(.design_mode)' ;;
       roles) action='del(.roles)' ;;
       role)  parse_role "$key";       action="del(.roles.$KEY_ROLE)" ;;
       field) parse_role_field "$key"; action="del(.roles.$KEY_ROLE.$KEY_FIELD)" ;;

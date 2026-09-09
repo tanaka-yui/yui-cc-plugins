@@ -369,4 +369,27 @@ err=$(bash "$RESOLVE" --project-root "$PR" 2>&1 >/dev/null)
   && ok "CF36 不正な setup を警告して落とす" || fail "CF36"
 teardown
 
+# --- design_mode (取りかかり方の選択) ---
+dm_() { bash "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -r '.design_mode'; }
+
+# CF39: 既定は direct（現行 = 指示を足さない）。
+setup
+[[ "$(dm_)" == direct ]] && ok "CF39 design_mode の既定は direct" || fail "CF39 ($(dm_))"
+teardown
+
+# CF40: plan / brainstorm を選べる。1 回きりの上書きも効く。
+setup
+echo '{"design_mode":"brainstorm"}' > "$G"
+[[ "$(dm_)" == brainstorm && "$(dm_ --design-mode plan)" == plan ]] \
+  && ok "CF40 design_mode の選択と 1 回きりの上書き" || fail "CF40"
+teardown
+
+# CF41: 3 値以外は警告して落とす。
+setup
+echo '{"design_mode":"vibes"}' > "$G"
+err=$(bash "$RESOLVE" --project-root "$PR" 2>&1 >/dev/null)
+[[ "$(dm_)" == direct && "$err" == *"ignoring invalid design_mode 'vibes'"* ]] \
+  && ok "CF41 不正な design_mode を警告して落とす" || fail "CF41"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

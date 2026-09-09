@@ -63,6 +63,18 @@ dispatch_valid_integration() { case "$1" in merge|pr) return 0 ;; *) return 1 ;;
 dispatch_default_setup() { printf 'skip\n'; }
 dispatch_valid_setup() { case "$1" in skip|run) return 0 ;; *) return 1 ;; esac; }
 
+# ★ design がどうやって取りかかるか。既定は `direct`（現行 = 指示を足さない）。
+#   `plan`      … 先に手順を決めて記録してから触る
+#   `brainstorm`… superpowers の brainstorming skill を先に通す
+#
+#   ★ **`brainstorm` は人が答える前提である。**無人実行（`--issue`）では成立しないので、
+#   そちらは呼び出し側が `plan` へ落とす。cmux 版が loop-mode で「plan mode に固定」と
+#   しているのと同じ理由である。
+dispatch_default_design_mode() { printf 'direct\n'; }
+dispatch_valid_design_mode() {
+  case "$1" in direct|plan|brainstorm) return 0 ;; *) return 1 ;; esac
+}
+
 # 空・前後の空白・シェルメタ文字・制御文字を拒否する。内部の空白は許容する。
 # 前後の空白を黙ってトリムすると「入力した値と違う値が保存される」ので、トリムせず弾く。
 _dispatch_valid_shell_value() {

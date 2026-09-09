@@ -54,6 +54,7 @@ role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → pr
 | `phase_b` | `off` — `design` が計画も実装もする | `on` — `design` は計画を書くだけで何も作らず、2 人目の worker `exec` が自分の worktree でそれを作る |
 | `integration` | `merge` — dispatch した元のブランチへ取り込む | `pr` — ブランチを push して pull request を作る |
 | `setup` | `skip` — repository の setup hook を走らせずに worktree を作る | `run` — 走らせる。**setup が失敗した worktree では worker を起こさない** |
+| `design_mode` | `direct` — `design` は依頼を受けてそのまま取りかかる | `plan` — 最初の編集より前に手順を決めて記録する。`brainstorm` — `superpowers:brainstorming` skill から始め、その端末を見ている人と依頼を詰める |
 
 **`phase_b` が「どのブランチに成果が載るか」を決める** — off なら `design`、on なら `exec`。
 merge も pull request も記録されたその 1 つの値を読むので、どちらのブランチを取るかで
@@ -155,6 +156,19 @@ bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --unset roles
 ```
 
 何が変わったかを報告し、S1 から続けるかを尋ねる。
+
+### `design` の取りかかり方を選ぶ
+
+`design_mode` が変えるのは **`design` の指示だけ**である。`exec` は計画に従う役であり、
+reviewer は何も作らない。両方に取りかかり方を言うと、誰が決めるのかが曖昧になる。
+
+**`brainstorm` は人を要する。**worker の端末は実際に話しかけられる端末であり、それが
+この mode を成立させている。同じ理由で、**`--issue` の実行は黙って `plan` へ落とし、
+落としたことを言う** — 無人実行には答える人が居ないので、worker は 1 往復待ってから
+どのみち自分で決めることになる。
+
+`brainstorm` の worker には、**答えが無くても止まらない**こと、skill が入っていなければ
+自分流の代替を発明せず `result.md` にそう書くことまで指示してある。
 
 ### 保存せずに 1 回だけ試す
 

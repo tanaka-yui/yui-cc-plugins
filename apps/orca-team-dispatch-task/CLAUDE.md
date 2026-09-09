@@ -126,6 +126,10 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - **失われた worker の owner を回復できる**（`bin/orca-recover.sh`）。生きていれば nudge、
   `failed`/`stopped` が証明されたら `--retry-of` で置き換えて generation を上げ、
   **確認できないものには何もしない**（fence が先）
+- **`design_mode` で取りかかり方を選べる**（`direct` 既定 / `plan` / `brainstorm`）。
+  cmux 版の Step 1c 相当だが、**Orca では端末を Orca が作るので起動フラグに触れない** —
+  spec 本文の指示として効かせる。`--issue` は無人なので `brainstorm` を `plan` へ落とす
+  （cmux 版が loop-mode で「plan mode に固定」としているのと同じ理由）
 - spec の follow-up 表は F-a / F-b / F-c / F-d / F-e / F-f / F-g / F-h をすべて実装した。
   `test-docs.sh` の SK4 が `exec_review` / `merge_ready` の語を SKILL.md から締め出して
   「未実装の宣言」を防いでいる
