@@ -191,11 +191,26 @@ merge → ラベル遷移 → close まで実機で通した。merge は使い�
 前段の rv-live ペア（既に解放済みで端末も worktree も不在）を挙げ、Run 全体の片付けを
 止めた。制限表に書いたとおりの挙動である。
 
+## 単件経路の実機実行（issue #9）— **完了**
+
+`--issue <N>` を I0 → I1a → dispatch → merge → ラベル遷移 → close まで実機で通した
+（exit 0）。**前段の 3 つの修正がすべて実機で効いていることも確かめた:**
+
+- 1 度目の実行が親の dirty で merge に失敗し、`dispatch/failed` が付いた状態から
+  再 claim したので、issue には `dispatch/in-progress` と `dispatch/failed` が同時に
+  付いていた。**成功後のラベルは `dispatch/done` の 1 つだけ**になった（IS9 の実機版）
+- state の `message` も `merged and closed` に上書きされた（IS10 の実機版）
+- `terminal` という名前のラベルは 1 度も現れなかった（IS2 の実機版）
+
+**新しい Run を使ったので `[C7]` は通った**（`every retained worker in this Run is one we
+recorded`）。O43 は Run を使い回さなければ踏まない、という記述の裏が取れた。
+
+失敗経路も実機で確認できた。親が dirty のとき `orca-merge.sh` が止め、`orca-issue.sh` は
+`dispatch/failed` を付けて資源を残し rc=1 で終えた。
+
 ## 未了
 
-- `--issue <N>`（1 件指定）は `orca-issue.sh` の口としては在るが、**SKILL.md の I1〜I3 は
-  バッチ経路しか書いていない**。単件の入口を書くこと
-- **複数バッチの実機実行**。通したのは 1 issue / 1 バッチである
+- **複数バッチの実機実行**。通したのは 1 issue ずつ、2 回である
 
 ## この計画で扱わないもの
 
