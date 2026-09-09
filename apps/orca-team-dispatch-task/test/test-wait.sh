@@ -387,4 +387,45 @@ out=$(w 2>&1); rc=$?
 [[ "$rc" -eq 2 && "$out" == *"the same dispatch is named twice"* ]] \
   && ok "WT35 同一 dir の 2 役の重複も 2" || fail "WT35 (rc=$rc out=$out)"; teardown
 
+# WT36: ★ **1 タスクに 3 dispatch（design / design_review / exec）でも取りこぼさない。**
+#       exec は 2 段目で足されるので、待機の期待集合は **そのときの workers.json** から
+#       作られる。集合の作り方が役の数に依存していたら、ここで落ちる。
+setup
+mkdir -p "$SD/roles/design_review" "$SD/roles/exec"
+jq -nc '{integration_role:"exec", roles:{
+    design:       {terminal:"t_d",task:"task_d",dispatch:"ctx_d",retained:false},
+    design_review:{terminal:"t_r",task:"task_r",dispatch:"ctx_r",retained:false},
+    exec:         {terminal:"t_x",task:"task_x2",dispatch:"ctx_x2",retained:false}}}' \
+  > "$SD/workers.json"
+for r in design design_review exec; do echo '{"status":"done"}' > "$SD/roles/$r/status.json"; done
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d3",count:3,messages:[
+  {id:"a",type:"worker_done",payload:({taskId:"task_d",dispatchId:"ctx_d",outcome:"succeeded"}|tojson),body:""},
+  {id:"b",type:"worker_done",payload:({taskId:"task_r",dispatchId:"ctx_r",outcome:"succeeded"}|tojson),body:""},
+  {id:"c",type:"worker_done",payload:({taskId:"task_x2",dispatchId:"ctx_x2",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] \
+  && [[ "$(grep -c 'worker-retain' "$ORCA_STUB_DIR/calls.log")" -eq 3 ]] \
+  && [[ "$(grep -c -- '--ack d3' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(grep -c 'role=' <<<"$out")" -eq 3 ]] \
+  && ok "WT36 3 役を 1 batch で drain し retain 3 回・ack 1 回" || fail "WT36 (rc=$rc) $out"
+teardown
+
+# WT37: ★ **タスクの結末を決めるのは design のままではいけない。**phase_b=on では成果は
+#       exec に載る。design が done でも **exec が失敗していればタスクは失敗**である。
+setup
+mkdir -p "$SD/roles/exec"
+jq -nc '{integration_role:"exec", roles:{
+    design:{terminal:"t_d",task:"task_d",dispatch:"ctx_d",retained:false},
+    exec:  {terminal:"t_x",task:"task_x2",dispatch:"ctx_x2",retained:false}}}' > "$SD/workers.json"
+echo '{"status":"done"}'  > "$SD/roles/design/status.json"
+echo '{"status":"error"}' > "$SD/roles/exec/status.json"
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d4",count:2,messages:[
+  {id:"a",type:"worker_done",payload:({taskId:"task_d",dispatchId:"ctx_d",outcome:"succeeded"}|tojson),body:""},
+  {id:"b",type:"worker_done",payload:({taskId:"task_x2",dispatchId:"ctx_x2",outcome:"failed"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 5 ]] && ok "WT37 phase_b=on では exec の失敗がタスクの失敗" || fail "WT37 (rc=$rc)"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

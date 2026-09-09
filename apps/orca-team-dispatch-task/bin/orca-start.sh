@@ -3,6 +3,12 @@
 # **recovery 機構は無い** (spec 18-1)。worker-start が成立した後は何も削除しない。
 # Usage: orca-start.sh --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
 #          [--run <run_id>] [--agent <id>] [--model <id>] [--effort <level>]
+#          [--phase design|exec]
+#
+# ★ **exec は design が終わってからでないと起こせない。**計画が無いうちに実装させられない
+#   ので、起動は 2 段に分かれる。`--phase design`（既定）が 1 段目、`--phase exec` が
+#   2 段目である。**待ちはこのコマンドに持たせない** — 呼び出し側が `orca-wait.sh` で
+#   待ってから 2 段目を呼ぶ（`orca-issue.sh` の phase 分割と同じ理由）。
 # Exit: 0 / 1 = 起動できなかった / 2 = 使用法エラー
 set -uo pipefail
 die() { echo "orca-start: $1" >&2; exit 2; }
@@ -23,7 +29,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." &&
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 RF="" SLUG="" OBJ="" RR="" RUN_IN=""
 # 役ごとの agent / model / effort は config.json が正本。ここは 1 回きりの上書き口である
-OV_AGENT="" OV_MODEL="" OV_EFFORT=""
+OV_AGENT="" OV_MODEL="" OV_EFFORT="" PHASE=design
 while [[ $# -gt 0 ]]; do case "$1" in
   --request-file) need2 "$1" $#; RF="$2";     shift 2 ;;
   --slug)         need2 "$1" $#; SLUG="$2";   shift 2 ;;
@@ -33,10 +39,19 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --agent)        need2 "$1" $#; OV_AGENT="$2";  shift 2 ;;
   --model)        need2 "$1" $#; OV_MODEL="$2";  shift 2 ;;
   --effort)       need2 "$1" $#; OV_EFFORT="$2"; shift 2 ;;
+  --phase)        need2 "$1" $#; PHASE="$2";     shift 2 ;;
   *) die "unknown option: $1" ;; esac; done
-[[ -n "$RF" && -n "$SLUG" && -n "$OBJ" ]] || die "--request-file, --slug and --objective are required"
-[[ -r "$RF" ]] || die "--request-file is not readable: $RF"
-[[ -s "$RF" ]] || die "--request-file must not be empty: $RF"
+case "$PHASE" in design|exec) ;; *) die "--phase must be design or exec: $PHASE" ;; esac
+# exec 段は 1 段目の記録を引き継ぐので依頼ファイルを要らない
+if [[ "$PHASE" == exec ]]; then
+  [[ -n "$SLUG" ]] || die "--slug is required"
+else
+  [[ -n "$RF" && -n "$SLUG" && -n "$OBJ" ]] || die "--request-file, --slug and --objective are required"
+fi
+if [[ "$PHASE" != exec ]]; then
+  [[ -r "$RF" ]] || die "--request-file is not readable: $RF"
+  [[ -s "$RF" ]] || die "--request-file must not be empty: $RF"
+fi
 # ★ slug は path になるので **fail closed に検証する**。../ で .dispatch の外へ出さない
 [[ "$SLUG" =~ ^[a-z0-9][a-z0-9-]{0,29}$ ]] || die "invalid slug: $SLUG (use ^[a-z0-9][a-z0-9-]{0,29}$)"
 [[ -n "$RR" ]] || RR=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repo"
@@ -47,7 +62,12 @@ RR_HOST=$(to_host "$RR") && [[ -n "$RR_HOST" ]] \
   || { log "cannot express $RR in the form the Orca CLI expects"; exit 1; }
 REPO="path:$RR_HOST"
 SD="$RR/.dispatch/$SLUG"
-[[ ! -e "$SD" ]] || { log "$SD already exists; pick a different slug"; exit 1; }
+# exec 段は既存の status dir の続きである。1 段目と同じ「既にある＝やり直し」判定を当てない
+if [[ "$PHASE" == exec ]]; then
+  [[ -d "$SD" ]] || { log "$SD does not exist; run the design phase first"; exit 1; }
+else
+  [[ ! -e "$SD" ]] || { log "$SD already exists; pick a different slug"; exit 1; }
+fi
 # critical write。**失敗を握り潰さない。**
 # ★ failpoint は **呼び出し地点の ID** で撃つ (round 3 finding 6)。
 #   同じ workers.json でも「Task 前」と「Task 後」は別の境界であり、
@@ -100,9 +120,24 @@ CRC=0; CFG=$(bash "$RESOLVER" --project-root "$RR" ${CFG_SET[@]+"${CFG_SET[@]}"}
 REVIEW_MODE=$(jq -r '.review_mode // "off"' <<<"$CFG")
 # ★ **起動順は reviewer が先** (spec 5-1 T4a)。design は起動直後にレビューを依頼しうるので、
 #   その時点で reviewer の dispatch が workers.json に無いと、依頼が宛先不明で落ちる。
+PHASE_B=$(jq -r '.phase_b // "off"' <<<"$CFG")
 LAUNCH_ORDER=()
-[[ "$REVIEW_MODE" == on ]] && LAUNCH_ORDER+=(design_review)
-LAUNCH_ORDER+=(design)
+if [[ "$PHASE" == exec ]]; then
+  # ★ **2 段目。**design が成功していることと、その計画が実在することを確かめてから起こす。
+  [[ "$PHASE_B" == on ]] || { log "phase_b is off; there is no exec role to start"; exit 1; }
+  DST=$(jq -r '.status // empty' "$SD/roles/design/status.json" 2>/dev/null || echo "")
+  [[ "$DST" == done ]] \
+    || { log "the design role is '${DST:-missing}', not done; refusing to start exec"; exit 1; }
+  # ★ **空の計画で実装させない。**plan.md が無い／空なら、exec は何を作るか知らないまま走る
+  [[ -s "$SD/plan.md" ]] \
+    || { log "$SD/plan.md is missing or empty; refusing to start exec on no plan"; exit 1; }
+  jq -e '.roles.exec.dispatch // empty | length > 0' "$SD/workers.json" >/dev/null 2>&1 \
+    && { log "the exec role has already started for $SLUG"; exit 1; }
+  LAUNCH_ORDER+=(exec)
+else
+  [[ "$REVIEW_MODE" == on ]] && LAUNCH_ORDER+=(design_review)
+  LAUNCH_ORDER+=(design)
+fi
 
 # review dir は **タスク単位で共有する** (spec 7)。ロール別 status dir の外に置く —
 # 依頼側と reviewer の両方が読み書きするためである。両者は別の worktree に居るが、
@@ -112,7 +147,10 @@ for role in "${LAUNCH_ORDER[@]}"; do
   mkdir -p "$SD/roles/$role" || { log "cannot create $SD/roles/$role"; exit 1; }
 done
 mkdir -p "$RVD" || { log "cannot create $RVD"; exit 1; }
-cat "$RF" > "$SD/request.md" || { log "cannot materialize the request"; exit 1; }
+# ★ exec 段は 1 段目の記録の続きである。依頼も Run も上書きしない
+if [[ "$PHASE" != exec ]]; then
+  cat "$RF" > "$SD/request.md" || { log "cannot materialize the request"; exit 1; }
+fi
 # ★ `.dispatch/` を repo の除外へ入れる（実測: 入れないと親が常に `?? .dispatch/` で
 #   dirty になり、merge の dirty ガードが必ず発火する）。
 #   linked worktree では --git-path が絶対パスを返すので、相対のときだけ足す
@@ -124,13 +162,21 @@ if [[ -n "$EX" ]]; then
 fi
 
 # --- Run ---
-if [[ -n "$RUN_IN" ]]; then
+if [[ "$PHASE" == exec ]]; then
+  # 1 段目が記録した Run と親端末をそのまま使う。取り違えると Delivery が別になる
+  RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
+  [[ -n "$RUN" ]] || { log "no run_id recorded in $SD/run.json"; exit 1; }
+  RPH=$(jq -r '.parent_handle // empty' "$SD/run.json" 2>/dev/null)
+  [[ "$RPH" == "$PH" ]] \
+    || { log "this terminal is $PH but the dispatch was started from ${RPH:-unknown}"; exit 1; }
+elif [[ -n "$RUN_IN" ]]; then
   RUN="$RUN_IN"
 else
   RCJ=0; RJ=$("$ORCA_BIN" orchestration run-create --objective "$OBJ" --from "$PH" --json 2>/dev/null) || RCJ=$?
   RUN=$(jq -r '.result.run.id // empty' <<<"$RJ" 2>/dev/null || echo "")
   [[ "$RCJ" -eq 0 && -n "$RUN" ]] || { log "run-create failed (rc=$RCJ)"; exit 1; }
 fi
+if [[ "$PHASE" != exec ]]; then
 # 束縛先が自分であることを確かめる。候補が 1 つのとき Orca は暗黙に選ぶ (O26)
 CJ2=$("$ORCA_BIN" orchestration run-current --from "$PH" --json 2>/dev/null)
 CO=$(jq -r '.result.run.coordinator_handle // empty' <<<"$CJ2")
@@ -148,11 +194,18 @@ write run "$SD/run.json" "$(jq -nc --arg r "$RUN" --arg p "$PH" --arg rr "$RR" \
 # ★ **取り込み先の役を 1 箇所で決める。**merge も PR も同じ値を読む。別々に判断すると
 #   必ずずれる。今は design だけだが、実装役が増えたらここが変わる。
 write workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg ib "$IB" \
-  --arg ir "design" \
+  --arg ir "$(jq -r '.integration_role // "design"' <<<"$CFG")" \
   --argjson roles "$(jq -c '.roles | map_values(. + {retained:false})' <<<"$CFG")" \
   '{run_id:$r, integration_branch:$ib, integration_role:$ir, roles:$roles}')" || {
   log "the Run was created but the dispatch state could not be recorded. Nothing else exists yet."
   log "run=$RUN  inspect with: $ORCA_BIN orchestration run-show --id $RUN --json"; exit 1; }
+else
+  # ★ exec 段は tuple だけを足す。**既存の役の記録を上書きしない**
+  jq_write workers-exec-tuple "$SD/workers.json" -c \
+    --argjson t "$(jq -c '.roles.exec + {retained:false}' <<<"$CFG")" \
+    '.roles.exec = ((.roles.exec // {}) + $t)' "$SD/workers.json" \
+    || { log "cannot record the exec tuple"; exit 1; }
+fi
 
 SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
 SENDER="$PLUGIN/bin/orca-send.sh"
@@ -246,8 +299,39 @@ SPEC_R
     return 0
   fi
 
+  if [[ "$role" == exec ]]; then
+    cat <<SPEC_X
+TASK: $SLUG (implementation)
+
+Another worker has already planned this. **The plan is the specification.** It is at
+$(printf '%q' "$SD/plan.md"). Read it first; the original request is at
+$(printf '%q' "$SD/request.md") for context.
+
+1. Build what the plan describes, in this worktree, and commit it on this branch.
+2. **Follow the plan.** If a step turns out to be wrong or impossible, do the rest, and say
+   in result.md exactly which step you departed from and why. Do not silently redesign it.
+3. Do not edit $(printf '%q' "$SD/plan.md"). It is the record of what was agreed.
+
+$closing
+SPEC_X
+    return 0
+  fi
+
   # design
   local review_block=""
+  local design_task="Do the work in this worktree and commit it on this branch."
+  if [[ "$PHASE_B" == on ]]; then
+    # ★ **design は実装しない。**実装役が別に居るのに両方が書くと、同じ変更が 2 つの
+    #   ブランチに載って取り込みが壊れる。
+    design_task="PLAN ONLY. **Do not implement anything and commit nothing.**
+
+Another worker will build this from your plan, in a different worktree. Write the plan to
+$(printf '%q' "$SD/plan.md") and leave every other file alone.
+
+Make it specific enough to be built from without asking you: name the files to change, what
+each change is for, and how someone would tell it worked. If the request cannot be built as
+asked, say so in the plan rather than inventing a different task."
+  fi
   if [[ "$REVIEW_MODE" == on ]]; then
     review_block="REVIEW PROTOCOL (do this before you finish)
 
@@ -296,7 +380,7 @@ TASK: $SLUG
 
 $(cat "$SD/request.md")
 
-${review_block}Do the work in this worktree and commit it on this branch.
+${review_block}$design_task
 
 $closing
 SPEC_D

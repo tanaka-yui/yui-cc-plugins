@@ -225,18 +225,27 @@ aggregate() {   # 全 dispatch が終端なら集約 outcome を stdout。1 件�
     existing=$(stored_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || return 1
     [[ -n "$existing" ]] || return 1
   done
-  # ★ **タスクの結末を決めるのは design である。**reviewer が失敗しても、それは
-  #   「レビューが付かなかった」であって成果が失われたわけではない。reviewer の outcome は
-  #   finish が 1 行ずつ出すので、握り潰してはいない。
+  # ★ **タスクの結末を決めるのは「成果を載せる役」である。**レビュー役が失敗しても、
+  #   それは「レビューが付かなかった」であって成果が失われたわけではない。その役の
+  #   outcome は finish が 1 行ずつ出すので、握り潰してはいない。
+  #
+  #   ★ 成果を載せる役は `integration_role`（実装役を分けたら design ではなく exec）。
+  #   **記録が無ければ design に落とす。**merge は同じ場面で止まるが (MG12)、あちらは
+  #   取り違えると成果を失う破壊的な操作である。待機は何も壊さないうえ、取り違えても
+  #   merge の厳格な gate が受け止める。ここで止めると、記録の無い古い status dir を
+  #   drain できなくなるほうが害が大きい。
+  local irole
   for i in "${!SDS[@]}"; do
     sd="${SDS[$i]}"
-    st=$(jq -r '.status // empty' "$sd/roles/design/status.json" 2>/dev/null || echo "")
+    irole=$(jq -r '.integration_role // "design"' "$sd/workers.json" 2>/dev/null || echo design)
+    [[ -n "$irole" ]] || irole=design
+    st=$(jq -r '.status // empty' "$sd/roles/$irole/status.json" 2>/dev/null || echo "")
     case "$st" in
       done)  oc=succeeded ;;
       error) oc=failed ;;
       *) return 1 ;;
     esac
-    existing=$(stored_outcome "$sd" design) || return 1
+    existing=$(stored_outcome "$sd" "$irole") || return 1
     [[ "$existing" == "$oc" ]] || return 1
     [[ "$oc" == succeeded ]] || worst=failed
   done

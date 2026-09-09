@@ -525,4 +525,113 @@ setup; start >/dev/null 2>&1
 [[ "$(jq -r '.integration_role' "$R/.dispatch/s/workers.json")" == design ]] \
   && ok "ST45 integration_role を記録する" || fail "ST45"; teardown
 
+# --- Phase B 委譲 (F-a) ---
+phase_b_on() {
+  mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+  printf '%s\n' '{"phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+  WTX=$(mktemp -d)/wtx; git -C "$R" worktree add -q -b orca/s-exec "$WTX" >/dev/null 2>&1
+  cat > "$ORCA_STUB_DIR/worktree_create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/pbn" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/pbn"
+if [ "\$n" = 1 ]; then
+  printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"}}}\n' "$WT" > "$ORCA_STUB_DIR/worktree_create"
+else
+  printf '{"ok":true,"result":{"worktree":{"id":"wt_x","path":"%s","branch":"refs/heads/orca/s-exec"}}}\n' "$WTX" > "$ORCA_STUB_DIR/worktree_create"
+fi
+HOOK
+  chmod +x "$ORCA_STUB_DIR/worktree_create.hook"
+}
+design_done() {
+  mkdir -p "$R/.dispatch/s/roles/design"
+  printf '{"status":"done"}\n' > "$R/.dispatch/s/roles/design/status.json"
+  printf 'the plan\n' > "$R/.dispatch/s/plan.md"
+}
+exec_phase() { bash "$P/bin/orca-start.sh" --slug s --repo-root "$R" --phase exec "$@"; }
+
+# ST46: ★ **phase_b=on の design は実装しない。**実装役が別に居るのに両方が書くと、
+#       同じ変更が 2 つのブランチに載って取り込みが壊れる。
+setup; phase_b_on; start >/dev/null 2>&1
+sp=$(spec); miss=""
+[[ "$sp" == *'PLAN ONLY'* ]] || miss="$miss [plan-only]"
+[[ "$sp" == *'commit nothing'* ]] || miss="$miss [no-commit]"
+[[ "$sp" == *'plan.md'* ]] || miss="$miss [names-plan]"
+[[ -z "$miss" ]] && ok "ST46 phase_b=on の design は計画だけ" || fail "ST46:$miss"
+# 1 段目では exec を起こさない
+[[ "$(grep -c 'worker-start' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  || fail "ST46 1 段目で exec を起こした"
+teardown
+
+# ST47: exec の spec は plan.md の絶対パスを名指しし、**plan を編集するなと言う**。
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+: > "$ORCA_STUB_DIR/calls.log"
+exec_phase >/dev/null 2>&1; rc=$?
+sp=$(spec); miss=""
+[[ "$rc" -eq 0 ]] || miss="$miss [rc=$rc]"
+[[ "$sp" == *"$R/.dispatch/s/plan.md"* ]] || miss="$miss [absolute-plan-path]"
+[[ "$sp" == *'Do not edit'* ]] || miss="$miss [do-not-edit]"
+[[ "$sp" == *'commit it on this branch'* ]] || miss="$miss [implements]"
+[[ -z "$miss" ]] && ok "ST47 exec の spec は plan を名指しする" || fail "ST47:$miss"
+teardown
+
+# ST48: ★ **design が終わっていなければ exec を起こさない。**計画が無いまま実装させない。
+setup; phase_b_on; start >/dev/null 2>&1
+printf '{"status":"error"}\n' > "$R/.dispatch/s/roles/design/status.json"
+printf 'the plan\n' > "$R/.dispatch/s/plan.md"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'not done'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST48 design が done でなければ exec を起こさない" || fail "ST48 (rc=$rc) $out"
+teardown
+
+# ST49: ★ **空の計画で実装させない。**plan.md が無い／空なら exec は何を作るか知らない。
+setup; phase_b_on; start >/dev/null 2>&1
+mkdir -p "$R/.dispatch/s/roles/design"
+printf '{"status":"done"}\n' > "$R/.dispatch/s/roles/design/status.json"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'plan.md is missing or empty'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" || fail "ST49 plan 不在"
+: > "$R/.dispatch/s/plan.md"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'plan.md is missing or empty'* ]] \
+  && ok "ST49 空の計画では exec を起こさない" || fail "ST49 空 plan (rc=$rc)"
+teardown
+
+# ST50: exec は **1 段目の Run を引き継ぎ**、自分の worktree とブランチを持つ。
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+# ★ **1 段目のログを混ぜない。**「exec 段が run-create を呼んでいない」ことを見たいので、
+#   ここで区切らないと 1 段目の run-create を数えてしまう。
+: > "$ORCA_STUB_DIR/calls.log"
+exec_phase >/dev/null 2>&1
+w="$R/.dispatch/s/workers.json"
+[[ "$(jq -r '.roles.exec.worktree_id' "$w")" == wt_x ]] \
+  && [[ "$(jq -r '.roles.exec.branch' "$w")" == orca/s-exec ]] \
+  && [[ "$(jq -r '.roles.design.worktree_id' "$w")" == wt_1 ]] \
+  && [[ "$(jq -r '.run_id' "$w")" == run_x ]] \
+  && ! grep -qE 'run-create|run-current' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST50 exec は Run を引き継ぎ自分の worktree を持つ" || fail "ST50 ($(jq -c '.roles|keys' "$w"))"
+teardown
+
+# ST51: ★ **取り込む役が exec になる。**merge も PR もこの 1 箇所を読む。
+setup; phase_b_on; start >/dev/null 2>&1
+[[ "$(jq -r '.integration_role' "$R/.dispatch/s/workers.json")" == exec ]] \
+  && ok "ST51 phase_b=on なら取り込む役は exec" || fail "ST51"; teardown
+
+# ST52: exec を二重に起こさない（同じ計画から 2 本の実装が走ると取り込みが壊れる）。
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+exec_phase >/dev/null 2>&1
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'already started'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST52 exec を二重に起こさない" || fail "ST52 (rc=$rc) $out"
+teardown
+
+# ST53: phase_b=off で --phase exec を呼んだら、起こす役が無いと言って止まる。
+setup; start >/dev/null 2>&1
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'phase_b is off'* ]] \
+  && ok "ST53 phase_b=off では exec 段が無い" || fail "ST53 (rc=$rc) $out"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
