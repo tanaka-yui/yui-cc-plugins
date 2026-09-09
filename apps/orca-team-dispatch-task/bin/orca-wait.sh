@@ -162,11 +162,7 @@ reply_completion() {   # $1=dispatch $2=nonce $3=accepted|remediation $4=本文
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
   local out res n i m payload d t tid did oc idx tsd trole rcode rreason existing upd RET RETRC ACK CHECKRC
-<<<<<<< Updated upstream
-  local mrn vreason vok
-=======
   local mrn vreason vok esub msub
->>>>>>> Stashed changes
   local -a SETTLED
   CHECKRC=0
   out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || CHECKRC=$?
