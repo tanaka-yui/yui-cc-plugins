@@ -44,8 +44,7 @@ The initial configuration is written only by normal First-run: the initial dispa
 
 `--reset all` has no layer choice: it clears both configuration layers. A reset preserves
 unowned keys. Initial configuration assigns the registry default runner to all four roles,
-omits model and effort unless a required Codex review model was collected, and asks once
-for `review_mode`.
+omits model and effort so the built-in defaults apply, and asks once for `review_mode`.
 
 ## S: `--setup`
 
@@ -87,6 +86,11 @@ the registry preview. It never invokes normal First-run and never writes an init
 For each selected role, make one call containing three questions: runner / model / effort.
 Runner choices are registered `runners[].name` values. If there are **five or more**
 runners, show the first four and use the automatic **Other** input for the rest.
+
+Model choices come from `dispatch_model_choices <engine>` in `config-lib.sh`, in the order
+it prints; the first line is the built-in default. That list is a convenience, **not an
+allowlist** — S5 still validates a free-text answer with `dispatch_valid_model`, so a model
+the list does not name is accepted.
 
 ### S5. Pending tuple validation
 

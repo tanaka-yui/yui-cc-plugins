@@ -107,17 +107,17 @@ override=$(runner_for design claude --model haiku --effort high)
 assert_contains "$override" "--model 'haiku'" 'RM9a explicit model wins'
 assert_contains "$override" "--effort 'high'" 'RM9b explicit effort wins'
 
-# RM10-RM12: codex は model omission を維持し effort だけを engine-specific flag へ入れる。
+# RM10-RM12: codex は 4 ロールとも既定 model を持ち、effort は engine-specific flag へ入る。
 codex_design=$(runner_for design codex)
-assert_not_contains "$codex_design" '--model' 'RM10a codex design omits a default model'
+assert_contains "$codex_design" "--model 'gpt-6-astra'" 'RM10a codex design uses the default model'
 assert_contains "$codex_design" "-c model_reasoning_effort='xhigh'" 'RM10b codex design defaults to xhigh'
 
 codex_exec=$(runner_for exec codex)
-assert_not_contains "$codex_exec" '--model' 'RM11a codex exec omits a default model'
+assert_contains "$codex_exec" "--model 'gpt-6-astra'" 'RM11a codex exec uses the default model'
 assert_contains "$codex_exec" "-c model_reasoning_effort='high'" 'RM11b codex exec defaults to high'
 
 codex_review=$(runner_for design_review codex)
-assert_not_contains "$codex_review" '--model' 'RM12a codex design_review omits a default model'
+assert_contains "$codex_review" "--model 'gpt-6-astra'" 'RM12a codex design_review uses the default model'
 assert_contains "$codex_review" "-c model_reasoning_effort='xhigh'" 'RM12b codex design_review defaults to xhigh'
 
 # RM13-RM14: effort allowlist remains engine-specific.

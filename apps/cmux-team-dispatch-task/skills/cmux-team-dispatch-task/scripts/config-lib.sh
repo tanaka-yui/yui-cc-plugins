@@ -62,13 +62,30 @@ dispatch_valid_effort() {
   esac
 }
 
-# codex には既定 model が無い (codex 側のデフォルトに委ねる)。
+# engine ごとの既定 model。**codex も 4 ロールとも既定を持つ** — 以前は codex 側の
+# デフォルトに委ねて空を返していたが、委ねると review 2 ロールだけ「必須」になり、
+# First-run が毎回モデルを尋ねる必要があった。
 dispatch_default_model() {
-  [[ "$2" == claude ]] || { printf '\n'; return 0; }
+  case "$2" in
+    codex) printf 'gpt-6-astra\n'; return 0 ;;
+    claude) ;;
+    *) printf '\n'; return 0 ;;
+  esac
   case "$1" in
     exec) printf 'sonnet\n' ;;
     design|design_review|exec_review) printf 'opus[1m]\n' ;;
     *) printf '\n' ;;
+  esac
+}
+
+# setup / First-run が model を尋ねるときに出す候補。**allowlist ではない** —
+# 検証は dispatch_valid_model が行い、候補外の値も通る。新しい model が出たときに
+# ここを直さなくても設定できる状態を保つため。1 行 1 候補、先頭が既定。
+dispatch_model_choices() {
+  case "$1" in
+    codex)  printf 'gpt-6-astra\n' ;;
+    claude) printf 'opus[1m]\nsonnet\n' ;;
+    *) ;;
   esac
 }
 

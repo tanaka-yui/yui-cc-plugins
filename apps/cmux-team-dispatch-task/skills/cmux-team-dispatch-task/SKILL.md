@@ -266,7 +266,8 @@ The default field is read only by First-run setup. Normal dispatch resolution ne
 it. launch-workspace.sh receives --role design, --role design_review, --role exec, or
 --role exec_review together with the already-resolved runner/model/effort. Claude effort
 is low, medium, high, xhigh, or max; Codex effort is minimal, low, medium, high, or xhigh.
-A codex design_review or exec_review tuple must contain a model.
+Every engine has a built-in default model for all four roles, so a tuple that omits
+model still resolves; codex resolves to gpt-6-astra.
 
 **First-run setup.** If runners.json is absent, ask whether to use the starter registry or
 build a custom registry. A runner record contains only name, command, and engine; write
@@ -276,10 +277,9 @@ runners.json.
 After writing runners.json, normal setup asks once whether review_mode is on or off and
 creates the initial global config. Set runner.<role>.runner to runners.json default for
 all four roles. Omit every runner.<role>.model and runner.<role>.effort so the built-in
-defaults apply. If the default runner uses the codex engine, ask for the design_review and
-exec_review models together in one AskUserQuestion call and write those two model fields;
-without them the first resolve would fail fast. If the default uses claude, do not ask for
-models. Apply the whole initial config in one config-edit.sh call so unrelated keys survive.
+defaults apply. Do not ask for models: every engine now has a built-in default for all
+four roles, so the first resolve succeeds without them. Apply the whole initial config in
+one config-edit.sh call so unrelated keys survive.
 
 When First-run setup was entered from --reset runners, it is in reset mode: rebuild only
 runners.json. Do not ask about review_mode and do not write either project or global

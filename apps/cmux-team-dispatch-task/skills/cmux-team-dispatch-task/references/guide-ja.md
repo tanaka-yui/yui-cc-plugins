@@ -160,10 +160,11 @@ runners.json は name / command / engine と default だけを持つ。model / e
 初回セットアップでは starter / custom registry を選び、runner レコードへ name / command /
 engine だけを書く。その後、通常モードでのみ review_mode を on / off の 2 択で 1 回聞き、
 4 ロールすべての runner に default を設定した初期 global config を config-edit.sh 1 回で書く。
-model / effort は原則書かない。default が Codex engine の場合だけ design_review と
-exec_review の model を 1 回の AskUserQuestion で同時に聞いて書く。default が Claude なら
-組込み値を使うので聞かない。--reset runners 由来の reset mode では runners.json だけを再生成し、
-review_mode を聞かず、project / global の両 config を変更しない。
+model / effort は書かず、組込み既定値に任せる。**model は聞かない** — どの engine も
+4 ロールぶんの既定 model を持つので、model が無くても最初の resolve は成功する
+（codex は gpt-6-astra に解決される）。--reset runners 由来の reset mode では
+runners.json だけを再生成し、review_mode を聞かず、project / global の両 config を
+変更しない。
 
 ### 1g. 配送とレビューモードを解決する（Resolve Delivery and Review Mode）
 

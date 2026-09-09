@@ -7,13 +7,13 @@
 #   CR3. effort の小文字正規化が解決経路に効く
 #   CR4. 組込み既定値の表
 #   CR5. runner 未設定 / runners.json に不在なら exit 2 (ペインを作らせない)
-#   CR6. codex の review 2 ロールは model 必須、design / exec は省略可
+#   CR6. codex の model 未指定は既定 gpt-6-astra に解決される (4 ロールとも)
 #   CR7. model のメタ文字は読み取り時にも拒否する
 #   CR8. --set が最優先レイヤーとして適用される
 #   CR9. review_mode の終端規則 (無効レイヤーを飛ばして最後は既定 on)
 #  CR10. レイヤー単位 fallback の負例 (不正値が出力に残らない)
 #  CR11. review_mode=off では review 2 ロールを解決しない
-#  CR12. model が決まらないロールはキーごと省略される
+#  CR12. 解決できたロールは必ず model を持つ (claude / codex とも既定があるため)
 #  CR14. 壊れた JSON / 読めないファイルは exit 1 (設定エラーの exit 2 と区別する)
 
 set -uo pipefail
@@ -95,19 +95,26 @@ run_resolve >/dev/null; [[ $? -eq 2 ]] && ok 'CR5a: design の runner 未設定�
 write_global '{"review_mode":"off","runner":{"design":{"runner":"nope"},"exec":{"runner":"ccf"}}}'
 run_resolve >/dev/null; [[ $? -eq 2 ]] && ok 'CR5b: 未登録 runner で exit 2' || bad 'CR5b'
 
-# CR6: codex review の model 必須 / design・exec は省略可
+# CR6: codex は 4 ロールとも既定 model を持つ。**model 未指定でも resolve は成功し**、
+#      値は gpt-6-astra になる。既定が無かった頃の「review 2 ロールだけ必須」は消えた
 clear_project
 write_global '{"review_mode":"on","runner":{
-  "design":{"runner":"cx"},"design_review":{"runner":"cx","model":"gpt-5.6-sol"},
+  "design":{"runner":"cx"},"design_review":{"runner":"cx","model":"gpt-6-astra"},
   "exec":{"runner":"cx"},"exec_review":{"runner":"cx"}}}'
-run_resolve >/dev/null; [[ $? -eq 2 ]] && ok 'CR6a: codex exec_review の model 欠落で exit 2' || bad 'CR6a'
+out=$(run_resolve); rc=$?
+[[ $rc -eq 0 && "$(jq -r '.roles.exec_review.model' <<<"$out")" == 'gpt-6-astra' ]] \
+  && ok 'CR6a: codex exec_review の model 未指定は既定で埋まる' || bad "CR6a (rc=$rc)"
 write_global '{"review_mode":"on","runner":{
   "design":{"runner":"cx"},"design_review":{"runner":"cx"},
-  "exec":{"runner":"cx"},"exec_review":{"runner":"cx","model":"gpt-5.6-sol"}}}'
-run_resolve >/dev/null; [[ $? -eq 2 ]] && ok 'CR6b: codex design_review の model 欠落で exit 2' || bad 'CR6b'
+  "exec":{"runner":"cx"},"exec_review":{"runner":"cx","model":"gpt-6-astra"}}}'
+out=$(run_resolve); rc=$?
+[[ $rc -eq 0 && "$(jq -r '.roles.design_review.model' <<<"$out")" == 'gpt-6-astra' ]] \
+  && ok 'CR6b: codex design_review の model 未指定は既定で埋まる' || bad "CR6b (rc=$rc)"
 write_global '{"review_mode":"off","runner":{"design":{"runner":"cx"},"exec":{"runner":"cx"}}}'
 out=$(run_resolve); rc=$?
-[[ $rc -eq 0 ]] && ok 'CR6c: codex design / exec は model 省略可' || bad "CR6c (rc=$rc)"
+[[ $rc -eq 0 && "$(jq -r '.roles.design.model' <<<"$out")" == 'gpt-6-astra' \
+   && "$(jq -r '.roles.exec.model' <<<"$out")" == 'gpt-6-astra' ]] \
+  && ok 'CR6c: codex design / exec も既定で埋まる' || bad "CR6c (rc=$rc)"
 
 # CR7: model のメタ文字は「当該レイヤーだけ無効化」であって resolver 全体の失敗ではない。
 # 値は必ず jq --arg でデータとして渡す (シェルへ埋めるとテスト自身がコマンドを実行する)。
@@ -188,7 +195,11 @@ write_global '{"review_mode":"off","runner":{"design":{"runner":"cx"},"exec":{"r
 out=$(run_resolve)
 [[ "$(jq -r '.roles | keys | join(",")' <<<"$out")" == 'design,exec' ]] \
   && ok 'CR11: review off では 2 ロールだけ解決する' || bad "CR11: $(jq -c '.roles|keys' <<<"$out")"
-[[ "$(jq -r '.roles.design | has("model")' <<<"$out")" == 'false' ]] \
-  && ok 'CR12: 決まらない model はキーごと省略される' || bad 'CR12'
+# runner_engine が engine を claude / codex に限っており、両方とも 4 ロールぶんの既定を
+# 持つので、**解決できたロールに model 無しは有り得ない**。config-resolve.sh の
+# 「model が空ならキーを足さない」分岐はこの経路からは到達しなくなった
+[[ "$(jq -r '[.roles[] | has("model")] | all' <<<"$out")" == 'true' \
+   && "$(jq -r '.roles.design.model' <<<"$out")" == 'gpt-6-astra' ]] \
+  && ok 'CR12: 解決できたロールは必ず model を持つ' || bad "CR12: $(jq -c '.roles' <<<"$out")"
 
 exit $fail

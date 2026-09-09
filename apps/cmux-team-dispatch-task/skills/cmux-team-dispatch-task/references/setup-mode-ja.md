@@ -41,8 +41,8 @@
 <!-- entry-contract:end -->
 
 `--reset all` にレイヤー選択は無く、両方の設定レイヤーを消す。reset は第三者キーを保持する。
-初期 config は全 4 role に registry default runner を入れ、必要な Codex review model を集めた場合を
-除いて model と effort を省略し、`review_mode` は 1 回だけ尋ねる。
+初期 config は全 4 role に registry default runner を入れ、組込み既定値に任せるため model と
+effort を省略し、`review_mode` は 1 回だけ尋ねる。
 
 ## S: `--setup`
 
@@ -84,6 +84,10 @@ First-run を呼ばず、初期 `config.json` も書かない。`--setup` に re
 選んだ role ごとに runner / model / effort の 3 問を 1 call で尋ねる。runner の選択肢は登録済み
 `runners[].name` である。runner が **5 件以上**なら先頭 4 件を表示し、残りは自動の **Other** 入力で
 受ける。
+
+model の選択肢は `config-lib.sh` の `dispatch_model_choices <engine>` が出す順に並べ、先頭行が
+組込み既定値である。この一覧は補助であって **allowlist ではない** — S5 は自由入力の回答を
+`dispatch_valid_model` で検証するので、一覧に無い model も受理される。
 
 ### S5. pending tuple の検証
 
