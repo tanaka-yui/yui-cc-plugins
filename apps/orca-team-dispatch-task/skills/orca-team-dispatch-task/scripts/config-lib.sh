@@ -49,6 +49,12 @@ dispatch_valid_review_mode() { case "$1" in on|off) return 0 ;; *) return 1 ;; e
 dispatch_default_phase_b() { printf 'off\n'; }
 dispatch_valid_phase_b() { case "$1" in on|off) return 0 ;; *) return 1 ;; esac; }
 
+# ★ 統合方式。既定は merge（現行）。`pr` は push して pull request を作る。
+#   **どちらか一方である。**PR を作ったうえで親へ merge すると、レビューされる前に
+#   成果が入ってしまう。
+dispatch_default_integration() { printf 'merge\n'; }
+dispatch_valid_integration() { case "$1" in merge|pr) return 0 ;; *) return 1 ;; esac; }
+
 # 空・前後の空白・シェルメタ文字・制御文字を拒否する。内部の空白は許容する。
 # 前後の空白を黙ってトリムすると「入力した値と違う値が保存される」ので、トリムせず弾く。
 _dispatch_valid_shell_value() {

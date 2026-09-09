@@ -266,4 +266,57 @@ out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x 
   && ok "IS17 finish は空の run_id を印字しない" || fail "IS17 ($out)"
 teardown
 
+# --- integration=pr (F-c) ---
+pr_mode() {
+  mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+  printf '%s\n' '{"integration":"pr"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+  printf 'https://github.com/o/r/pull/7\n' > "$GH_STUB_DIR/pr_create"
+  # push 先を用意する（orca-pr.sh は本当に push する）
+  REMOTE_DIR="$ORCA_STUB_DIR/remote.git"; git init -q --bare -b main "$REMOTE_DIR"
+  git -C "$R" remote add origin "$REMOTE_DIR" 2>/dev/null || git -C "$R" remote set-url origin "$REMOTE_DIR"
+  git -C "$R" push -q origin main
+}
+
+# IS18: ★ **integration=pr なら merge しない。**PR を作ったうえで親へ merge すると、
+#       レビューされる前に成果が入る。統合はどちらか一方である。
+setup; pr_mode; worker_done succeeded done
+out=$(run_issue --repo o/r 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] \
+  && [[ ! -f "$R/WORK.md" ]] \
+  && [[ "$(jq -r '.merged' "$R/.dispatch/issue-5-x/integration-result.json")" == false ]] \
+  && [[ "$(jq -r '.pr_url' "$R/.dispatch/issue-5-x/integration-result.json")" == 'https://github.com/o/r/pull/7' ]] \
+  && ok "IS18 pr なら merge しない" || fail "IS18 (rc=$rc) $out"
+teardown
+
+# IS19: ★ **pr のとき issue を close しない。**`Closes #N` を本文に入れてあるので、
+#       PR がマージされたときに GitHub が閉じる。先に閉じると PR が却下されても
+#       issue は閉じたままになる。
+setup; pr_mode; worker_done succeeded done
+run_issue --repo o/r >/dev/null 2>&1
+[[ "$(jq -r '.issues["5"].status' "$SF")" == done ]] \
+  && [[ "$(jq -r '.issues["5"].pr_url' "$SF")" == 'https://github.com/o/r/pull/7' ]] \
+  && grep -q -- '--add-label dispatch/done' <(ghlog) \
+  && ! grep -q 'issue close' <(ghlog) \
+  && ok "IS19 pr のとき issue を close しない" || fail "IS19 ($(ghlog))"
+teardown
+
+# IS20: PR が作れなければ dispatch/failed で資源を残す。
+setup; pr_mode; worker_done succeeded done
+printf '1\n' > "$GH_STUB_DIR/pr_create.rc"
+out=$(run_issue --repo o/r 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] \
+  && grep -q -- '--add-label dispatch/failed' <(ghlog) \
+  && [[ -d "$R/.dispatch/issue-5-x" ]] \
+  && ok "IS20 PR が作れなければ failed で残す" || fail "IS20 (rc=$rc) $out"
+teardown
+
+# IS21: ★ **integration=pr なのに --repo が無ければ何もしない。**`gh` に推測させない
+#       （spec 12-2 の実測: 子が remote を解決して fork の中に PR を作った）。
+setup; pr_mode; worker_done succeeded done
+out=$(run_issue 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'--repo <owner/repo> was not given'* ]] \
+  && ! grep -q 'pr create' <(ghlog) \
+  && ok "IS21 pr で --repo が無ければ作らない" || fail "IS21 (rc=$rc) $out"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

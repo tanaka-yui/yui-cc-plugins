@@ -3,7 +3,7 @@
 #
 # Usage: orca-issue.sh --state-file <p> --issue <N> --slug <s> [--phase dispatch|finish|all]
 #                      [--request-file <f>] [--run <run_id>] [--repo-root <p>]
-#                      [--timeout-ms <n>] [--max-waits <n>]
+#                      [--repo <owner/repo>] [--timeout-ms <n>] [--max-waits <n>]
 #
 # ★ **phase を分けられるのは並列のためである。**`all`（既定）は dispatch → wait → finish を
 #   1 件ぶん通すので、バッチで順に呼ぶと **1 件ずつ直列にしか走らない**。バッチでは
@@ -17,9 +17,13 @@
 # ★ **順序が核心である。merge が成功して初めて cleanup してよい**（spec 18-1 の裁定）。
 #   逆にすると worktree を消してから merge に失敗し、成果が消える。
 #
-# ★ **この版は integration=merge だけを実装する。**PR 統合は spec の F-c であり未実装で、
-#   `gh pr create` も fork 誤爆対策（`--repo` スコープ）も持たない。持たないものを
-#   宣言しない。
+# ★ **統合はどちらか一方である。**`integration=merge` は親ブランチへ取り込み、
+#   `integration=pr` は push して pull request を作る。両方はやらない — PR を作ったうえで
+#   親へ merge すると、レビューされる前に成果が入る。
+#
+# ★ **`integration=pr` のとき issue を close しない。**本文に `Closes #N` を入れてあるので、
+#   **PR がマージされたときに GitHub が閉じる。**先に閉じると、PR が却下されても issue は
+#   閉じたままになる。
 #
 # ★ **cleanup は資源を消さない。**Step 5 と同じく「消してよいか」を判定して印字するだけで、
 #   実行はユーザーの承認を経た Step 6 が行う。無人で走る経路が資源を消すと、失敗の証拠が
@@ -32,7 +36,7 @@ need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." && pwd)"
 SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
 
-SF="" NUM="" SLUG="" RF="" RUN="" RR="" TMO=600000 MAXW=60 PHASE=all
+SF="" NUM="" SLUG="" RF="" RUN="" RR="" TMO=600000 MAXW=60 PHASE=all PRREPO=""
 while [[ $# -gt 0 ]]; do case "$1" in
   --state-file)   need2 "$1" $#; SF="$2";   shift 2 ;;
   --issue)        need2 "$1" $#; NUM="$2";  shift 2 ;;
@@ -43,6 +47,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --timeout-ms)   need2 "$1" $#; TMO="$2";  shift 2 ;;
   --max-waits)    need2 "$1" $#; MAXW="$2"; shift 2 ;;
   --phase)        need2 "$1" $#; PHASE="$2"; shift 2 ;;
+  --repo)         need2 "$1" $#; PRREPO="$2"; shift 2 ;;
   *) die "unknown option: $1" ;; esac; done
 case "$PHASE" in dispatch|finish|all) ;; *) die "--phase must be dispatch, finish or all: $PHASE" ;; esac
 [[ -n "$SF" && -n "$NUM" && -n "$SLUG" ]] || die "--state-file, --issue and --slug are required"
@@ -148,22 +153,42 @@ if [[ "$PHASE" == all ]]; then
   esac
 fi
 [[ -r "$SD/workers.json" ]] || fail_out "issue #$NUM: there is no dispatch state at $SD"
+CRC=0; CFG=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR") || CRC=$?
+[[ "$CRC" -eq 0 ]] || fail_out "issue #$NUM: cannot resolve the dispatch configuration"
 
-# --- 3. merge。**ここが通って初めて片付けの話になる** ---
-bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" \
-  || fail_out "issue #$NUM: the work was not merged; the worktree and branch are kept"
+# --- 3. 統合。**ここが通って初めて片付けの話になる** ---
+INTEGRATION=$(jq -r '.integration // "merge"' <<<"$CFG")
+PR_URL=""
+if [[ "$INTEGRATION" == pr ]]; then
+  # ★ **repo は呼び出し側が 1 度だけ解決した値を渡す。**`orca-pr.sh` も自分では見に行かない
+  #   （spec 12-2 の実測: 子が remote を解決して fork の中に PR を作った）。
+  [[ -n "$PRREPO" ]] || fail_out "issue #$NUM: integration is 'pr' but --repo <owner/repo> was not given"
+  PR_URL=$(bash "$PLUGIN/bin/orca-pr.sh" --status-dir "$SD" --repo "$PRREPO" --issue "$NUM") \
+    || fail_out "issue #$NUM: no pull request was opened; the worktree and branch are kept"
+else
+  bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" \
+    || fail_out "issue #$NUM: the work was not merged; the worktree and branch are kept"
+fi
 
 # --- 4. ラベル遷移と issue のクローズ ---
-label_terminal done || fail_out "issue #$NUM: merged, but the labels could not be moved"
-gh issue close "$NUM" --reason completed >/dev/null 2>&1 \
-  || log "issue #$NUM: merged and labelled, but the issue could not be closed"
+label_terminal done || fail_out "issue #$NUM: integrated, but the labels could not be moved"
 # ★ **成功時にも message を書く。**`finalize` は空の message を無視するので、
 #   前回の失敗時に書かれた理由が `done` のまま残る（実機で発見）。上書きする。
-bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done \
-  --message "merged and closed" >/dev/null 2>&1 \
-  || log "issue #$NUM: merged, but the state file could not be updated"
-
-log "issue #$NUM: merged and closed. Resources are kept for the Step 5/6 cleanup at $SD"
+if [[ "$INTEGRATION" == pr ]]; then
+  # ★ **閉じない。**`Closes #$NUM` を本文に入れてあるので、PR がマージされたときに
+  #   GitHub が閉じる。先に閉じると、PR が却下されても issue は閉じたままになる。
+  bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done \
+    --pr-url "$PR_URL" --message "pull request opened" >/dev/null 2>&1 \
+    || log "issue #$NUM: the pull request is at $PR_URL but the state file could not be updated"
+  log "issue #$NUM: $PR_URL is open. The issue closes when that merges. Resources are kept at $SD"
+else
+  gh issue close "$NUM" --reason completed >/dev/null 2>&1 \
+    || log "issue #$NUM: merged and labelled, but the issue could not be closed"
+  bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done \
+    --message "merged and closed" >/dev/null 2>&1 \
+    || log "issue #$NUM: merged, but the state file could not be updated"
+  log "issue #$NUM: merged and closed. Resources are kept for the Step 5/6 cleanup at $SD"
+fi
 # ★ **空の値を印字しない。**finish phase は Run を知らないので `run_id=` を出すと
 #   空文字が渡り、受け取った側が `--run ""` を組み立てて壊れる（実機で気づいた）。
 printf 'issue=%s\nslug=%s\nstatus_dir=%s\n' "$NUM" "$SLUG" "$SD"

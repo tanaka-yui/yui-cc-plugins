@@ -2,6 +2,7 @@
 # config-resolve.sh — global / project / コマンドラインの設定をロール単位で解決し JSON で出す。
 #
 # Usage: config-resolve.sh --project-root <path> [--review-mode <on|off>] [--phase-b <on|off>]
+#                          [--integration <merge|pr>]
 #                          [--set <role>.<field>=<value>]...
 # Exit:  0 = 解決した / 1 = 設定が読めない / 2 = 使用法エラー
 #
@@ -24,6 +25,7 @@ warn()     { echo "[warn] config-resolve: $1" >&2; }
 PROJECT_ROOT=''
 OVERRIDE_review_mode=''
 OVERRIDE_phase_b=''
+OVERRIDE_integration=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-root)
@@ -47,6 +49,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die '--phase-b requires on or off'
       dispatch_valid_phase_b "$2" || die "invalid --phase-b: $2"
       OVERRIDE_phase_b="$2"; shift 2 ;;
+    --integration)
+      [[ $# -ge 2 ]] || die '--integration requires merge or pr'
+      dispatch_valid_integration "$2" || die "invalid --integration: $2"
+      OVERRIDE_integration="$2"; shift 2 ;;
     *) die "unknown argument '$1'" ;;
   esac
 done
@@ -76,7 +82,8 @@ CONFIGURED=0
 # review_mode だけを設定した利用者にも S0 を二度と尋ねない。所有キーのどれかが在れば設定済み。
 has_ours() { [[ -f "$1" ]] && jq -e \
   '((.roles | type) == "object" and (.roles | length) > 0)
-   or (.review_mode | type) == "string" or (.phase_b | type) == "string"' \
+   or (.review_mode | type) == "string" or (.phase_b | type) == "string"
+   or (.integration | type) == "string"' \
   "$1" >/dev/null 2>&1; }
 { has_ours "$GLOBAL_CONFIG" || has_ours "$PROJECT_CONFIG"; } && CONFIGURED=1
 
@@ -198,6 +205,8 @@ REVIEW_MODE="$(resolve_toggle review_mode dispatch_valid_review_mode \
                  dispatch_default_review_mode "$OVERRIDE_review_mode")"
 PHASE_B="$(resolve_toggle phase_b dispatch_valid_phase_b \
              dispatch_default_phase_b "$OVERRIDE_phase_b")"
+INTEGRATION="$(resolve_toggle integration dispatch_valid_integration \
+                 dispatch_default_integration "$OVERRIDE_integration")"
 INTEGRATION_ROLE="$(dispatch_integration_role "$PHASE_B")"
 
 ROLES_JSON='{}'
@@ -228,8 +237,9 @@ jq -n \
   --arg review_mode "$REVIEW_MODE" \
   --arg phase_b "$PHASE_B" \
   --arg integration_role "$INTEGRATION_ROLE" \
+  --arg integration "$INTEGRATION" \
   --argjson roles "$ROLES_JSON" \
   '{config_home:$config_home, global_config:$global_config, project_config:$project_config,
     global_present:($global_present == 1), project_present:($project_present == 1),
     configured:($configured == 1), review_mode:$review_mode, phase_b:$phase_b,
-    integration_role:$integration_role, roles:$roles}'
+    integration_role:$integration_role, integration:$integration, roles:$roles}'
