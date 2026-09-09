@@ -413,6 +413,18 @@ every sibling task's result stays stuck behind it.
 
 ## Step 3: Wait
 
+**Finishing takes two phases, and this wait drives the parent's half.** A worker does not
+report itself done: it offers the work with a `merge_ready` carrying a nonce, and waits. This
+wait checks that the work is actually there — a plan for a planning role, a `result.md` for a
+building one, a `VERDICT:` line for a reviewer — and replies on the same dispatch with either
+`completion-accepted:` or `completion-remediation:`. Only then does the worker report and
+send `worker_done`.
+
+**Reviewers are not exempt from the check.** If they were, the moment their findings became
+official would be undefined, and findings could go missing with nobody noticing.
+
+You do not run anything extra for this: the wait below does it while it waits.
+
 Tell the user first: when a worker finishes, this skill retains its terminal before it
 acknowledges the message. Nothing is released here. The terminal, the worktree and the
 dispatch record all survive until Step 5 decides what may go and Step 6 asks the user.
@@ -893,6 +905,7 @@ State these when they apply. Do not work around them silently.
 | If this session dies mid-dispatch, nothing recovers automatically | Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
 | If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
 | A worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
+| A worker that is sent back for remediation retries in the same session, and this skill does not cap those rounds | Watch the wait's output: each remediation is logged with its reason. A worker that cannot satisfy the check will keep being sent back until it fails or the wait times out |
 | Review stops after two rounds, and a silent reviewer is retried once | The role being reviewed records the unresolved findings in `result.md` and keeps the best version it has. Read that section before integrating |
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Setup hooks do not run unless you ask for them | Set `setup` to `run`. A worktree whose setup failed never gets a worker, so a failure shows up as a refusal to start rather than as a confusing result |

@@ -113,8 +113,56 @@ record_outcome() {   # $1=status dir $2=task $3=dispatch $4=outcome。1 = 記録
     || { log "could not record the worker outcome for dispatch '$3'; it is not acknowledged"; return 2; }
 }
 
+# ★ **相 3 の検証。**役ごとに「成果が検証可能な形で在るか」を見る（spec 10-1 の表）。
+#   ここを緩めると、成果が無いのに受理して端末を閉じ、**欠落に誰も気づかない**。
+verify_role() {   # $1=status dir $2=role → 0 = 受理してよい / 1 = 差し戻す（理由を stdout）
+  local sd="$1" role="$2" rd="$1/roles/$2" ir integ
+  case "$role" in
+    design)
+      ir=$(jq -r '.integration_role // "design"' "$sd/workers.json" 2>/dev/null || echo design)
+      if [[ "$ir" != design ]]; then
+        # 実装役が別に居る = design は計画役である。計画の実在を見る
+        [[ -s "$sd/plan.md" ]] || { echo "plan.md is missing or empty"; return 1; }
+      else
+        [[ -s "$rd/result.md" ]] || { echo "result.md is missing or empty"; return 1; }
+      fi ;;
+    exec)
+      [[ -s "$rd/result.md" ]] || { echo "result.md is missing or empty"; return 1; }
+      integ=$(jq -r '.integration // "merge"' "$sd/integration-result.json" 2>/dev/null || echo merge)
+      # `integration=pr` を選んだ dispatch でも、PR を作るのは親（Step 4）である。
+      # ここで pr_url を要求すると、まだ作っていない段階で必ず差し戻すことになる
+      ;;
+    design_review|exec_review)
+      # ★ **review 役を例外にしない**（spec 10-4）。例外にすると findings の受理時点が
+      #   未定義のまま端末が閉じられ、欠落に誰も気づかない。
+      local pfx=plan; [[ "$role" == exec_review ]] && pfx=code
+      local f found=0
+      for f in "$sd"/review/$pfx-round-*-findings.md; do
+        [[ -e "$f" ]] || continue
+        found=1
+        grep -q '^VERDICT: ' "$f" || { echo "$(basename "$f") has no VERDICT line"; return 1; }
+      done
+      # 1 ラウンドも担当しなかった reviewer は、findings が無いのが正しい
+      [[ "$found" -eq 1 || -s "$rd/result.md" ]] \
+        || { echo "neither findings nor result.md exist"; return 1; } ;;
+    *)
+      [[ -s "$rd/result.md" ]] || { echo "result.md is missing or empty"; return 1; } ;;
+  esac
+  return 0
+}
+
+# ★ **相 4a / 4b。**受理も差し戻しも **同じ active な Dispatch** へ返す。別の宛先へ送ると
+#   worker は待ち続ける。
+reply_completion() {   # $1=dispatch $2=nonce $3=accepted|remediation $4=本文
+  local subject="completion-accepted: $2"
+  [[ "$3" == accepted ]] || subject="completion-remediation: $2"
+  "$ORCA_BIN" orchestration send --to "dispatch:$1" --type status \
+    --subject "$subject" --body "$4" --from "$PH" --json >/dev/null 2>&1
+}
+
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
   local out res n i m payload d t tid did oc idx tsd trole rcode rreason existing upd RET RETRC ACK CHECKRC
+  local mrn vreason vok
   local -a SETTLED
   CHECKRC=0
   out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || CHECKRC=$?
@@ -155,6 +203,28 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       rreason=$(jq -r '._orcaLifecycleRejection | if type == "object" then .reason // "unknown" else "unknown" end' <<<"$payload")
       log "worker_done was rejected by Orca (code='$rcode' reason='$rreason'); the batch is not acknowledged"
       return 1
+    fi
+    # ★ **相 3〜4。**`merge_ready` は worker が「検証してくれ」と言っている状態である。
+    #   検証して受理か差し戻しを **同じ Dispatch** へ返し、この message は処理済みにする。
+    if [[ "$t" == merge_ready ]]; then
+      idx=$(idx_of "$tid" "$did") || idx=""
+      if [[ -z "$idx" ]]; then
+        log "batch $d carries a merge_ready for an unknown dispatch (task='$tid' dispatch='$did')"
+        return 1
+      fi
+      mrn=$(jq -r '.nonce // empty' <<<"$payload")
+      [[ -n "$mrn" ]] || { log "merge_ready from dispatch '$did' carries no nonce"; return 1; }
+      vreason=$(verify_role "${T_SD[$idx]}" "${T_ROLE[$idx]}") && vok=0 || vok=1
+      if [[ "$vok" -eq 0 ]]; then
+        reply_completion "$did" "$mrn" accepted "the work is accepted; finish and report" || {
+          log "could not send the acceptance to dispatch '$did'; the batch is not acknowledged"; return 2; }
+        log "accepted ${T_ROLE[$idx]} (dispatch $did)"
+      else
+        reply_completion "$did" "$mrn" remediation "$vreason" || {
+          log "could not send the remediation to dispatch '$did'; the batch is not acknowledged"; return 2; }
+        log "sent ${T_ROLE[$idx]} back for remediation (dispatch $did): $vreason"
+      fi
+      continue
     fi
     # ★ **処理できない message は捨てない。**捨てて ack すると cursor だけ進んで内容が消える
     idx=""

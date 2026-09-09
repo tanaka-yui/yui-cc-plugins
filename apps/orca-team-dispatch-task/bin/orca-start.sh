@@ -228,31 +228,70 @@ render_spec() {
 
   # 全ロール共通の終わり方。**ここだけは 1 箇所で組み立てる** — 役ごとに書き分けると
   # STATUS PROTOCOL がドリフトする。
+  local q_cmp; q_cmp=$(printf '%q' "$SCRIPTS/completion.sh")
   local closing="STATUS PROTOCOL
 
 Your injected preamble gives you the task id, the dispatch id, the dispatch capability
 and the --from handle. Use that set. The Orca CLI is $q_bin.
 
+**Finishing is two-phase: you offer the work, the parent checks it, then you report.** Do
+not report done before the parent has accepted. Do not skip a step because the work looks
+obviously fine — the point is that the parent, not you, decides that.
+
 A. Write $q_rd/status.json with status executing when you start.
-B. Write $q_rd/result.md describing what you did.
-C. Run: bash $q_rs $q_rd done <one line>
-   (use error instead of done when the work itself failed)
-D. Send worker_done with the SAME conclusion as the status you just wrote:
+B. Do the work, then write $q_rd/result.md describing what you did.
 
-     $q_bin orchestration send --type worker_done \\\\
-       --task-id <task id> --dispatch-id <dispatch id> \\\\
-       --dispatch-capability <capability> --from <handle> \\\\
+C. Offer it. Keep the nonce this prints; you need it in E and F:
+
+     NONCE=\$(bash $q_cmp --role-dir $q_rd prepare)
+
+D. Tell the parent it is ready, then close your turn and wait:
+
+     $q_bin orchestration send --type merge_ready \\
+       --task-id <task id> --dispatch-id <dispatch id> \\
+       --dispatch-capability <capability> --from <handle> \\
+       --payload \"{\\\"nonce\\\":\\\"\$NONCE\\\"}\" \\
+       --subject \"ready: <short status>\" --body \"<what you did>\" --json
+
+   Then run: bash $q_cmp --role-dir $q_rd sent
+   **End your turn here.** The parent replies on this same dispatch.
+
+E. When you are woken, read your mailbox:
+
+     $q_bin orchestration check --terminal \"\\\$ORCA_TERMINAL_HANDLE\" --peek --wait \\
+       --timeout-ms 600000 --json
+
+   Use --peek. **Never pass --ack.**
+   - Subject \`completion-accepted: <nonce>\` -> go to F.
+   - Subject \`completion-remediation: <nonce>\` -> the body says what is missing. Fix it and
+     go back to C. The nonce does not change.
+   - A nonce that is not yours belongs to an older attempt. Ignore it and keep waiting.
+
+F. Record the acceptance, then report:
+
+     bash $q_cmp --role-dir $q_rd accept --nonce \$NONCE
+     bash $q_rs $q_rd done <one line>
+
+G. Send worker_done, then record that it landed:
+
+     $q_bin orchestration send --type worker_done \\
+       --task-id <task id> --dispatch-id <dispatch id> \\
+       --dispatch-capability <capability> --from <handle> \\
        --outcome succeeded --subject \"<short status>\" --body \"<what you did>\" --json
+     bash $q_cmp --role-dir $q_rd settle
 
-   Use --outcome failed when you wrote error.
-E. **Do not send any other message type to the parent.** Do not send ask, question or
-   escalation: this version's parent has no path to answer them, so they would only be
-   discarded. If you are blocked, write status error, say why in result.md, and send
-   worker_done with --outcome failed. The user will look at result.md and dispatch again.
-F. If the send fails, inspect with
+   **Before resending anything, inspect:**
      $q_bin orchestration dispatch-show --task <task id> --json
-   before resending. If the dispatch is already terminal, do not resend.
-G. End your turn and stay idle."
+   If the dispatch is already terminal, **do not resend** — run settle and stop.
+
+H. **If the work itself failed, none of C-G applies.** Write why in result.md, run
+   \`bash $q_rs $q_rd error <reason>\`, and send worker_done with --outcome failed. That
+   status is the record that a failure is still owed; there is nothing to offer.
+
+I. **Do not send any other message type to the parent.** Do not send ask, question or
+   escalation: this version's parent has no path to answer them, so they would only be
+   discarded.
+J. End your turn and stay idle."
 
   if [[ "$role" == design_review || "$role" == exec_review ]]; then
     # ★ 依頼元とラベルは役で決まる。design は計画を、exec は実装をレビューさせる

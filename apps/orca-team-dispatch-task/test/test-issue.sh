@@ -75,6 +75,10 @@ run_issue() {
     --request-file "$REQ" --repo-root "$R" --max-waits 1 --timeout-ms 1 "$@"
 }
 ghlog() { cat "$GH_STUB_DIR/calls.log"; }
+# ★ **spec 文字列ではなく呼び出し行を見る。**worker へ渡す spec に `--ack` の語が
+#   入っているので、calls.log を素で grep すると task-create の 1 行に当たる。
+ack_lines() { grep -E '^orchestration check ' "$ORCA_STUB_DIR/calls.log" | grep -c -- '--ack'; }
+ack_lineno() { grep -nE '^orchestration check ' "$ORCA_STUB_DIR/calls.log" | grep -- '--ack' | head -1 | cut -d: -f1; }
 
 # IS1: 成功経路。merge され、ラベルが遷移し、issue が close される。
 setup; worker_done succeeded done
@@ -196,7 +200,7 @@ teardown
 setup; worker_done succeeded done
 out=$(run_issue --phase dispatch 2>&1); rc=$?
 [[ "$rc" -eq 0 ]] \
-  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && [[ "$(ack_lines)" -eq 0 ]] \
   && [[ ! -f "$R/WORK.md" ]] \
   && ! grep -q 'issue close' <(ghlog) \
   && [[ "$(jq -r '.issues["5"].status' "$SF")" == dispatched ]] \

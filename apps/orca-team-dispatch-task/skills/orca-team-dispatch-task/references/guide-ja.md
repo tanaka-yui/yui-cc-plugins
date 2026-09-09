@@ -398,6 +398,17 @@ id は stderr にしか無いので、そのタスクの dir を加える前に�
 
 ## Step 3: 待つ
 
+**完了は 2 相で行い、この待機が親側の半分を担う。**worker は自分で done を報告しない。
+nonce を載せた `merge_ready` で成果を差し出して待つ。待機は成果が実際に在るかを確かめ —
+計画役なら計画、作る役なら `result.md`、reviewer なら `VERDICT:` 行 — 同じ dispatch へ
+`completion-accepted:` か `completion-remediation:` を返す。worker が報告して `worker_done`
+を送るのはそのあとである。
+
+**reviewer も検査の例外にしない。**例外にすると findings が正式になる時点が未定義になり、
+findings が欠落しても誰も気づかない。
+
+このために追加で走らせるものは無い。下の待機がその中で行う。
+
 先にユーザーへ伝える。worker が終わると、この skill はメッセージを acknowledge する前に
 その端末を retain する。ここでは何も解放しない。端末、worktree、dispatch 記録はいずれも、
 Step 5 が削除してよいものを判定し、Step 6 がユーザーへ尋ねるまで残る。保持は意図的である。
@@ -867,6 +878,7 @@ release するのはここである。**セッションを閉じることはユ�
 | セッションが dispatch の途中で終了しても、自動回復しない | `$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
 | worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
+| 差し戻された worker は同じセッションで作り直す。この skill はそのラウンド数を制限しない | 待機の出力を見る。差し戻しは理由付きで 1 行ずつ出る。検査を満たせない worker は、失敗するか待機が時間切れになるまで差し戻され続ける |
 | レビューは 2 ラウンドで打ち切り、無言の reviewer への再依頼は 1 回だけ | レビューされる側が未解決の findings を `result.md` に記録し、手元の最良版を保つ。統合する前にその節を読む |
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
 | setup hook は頼まない限り走らない | `setup` を `run` にする。setup が失敗した worktree には worker が付かないので、失敗は「起動を拒む」形で見える（不可解な成果物としてではなく） |

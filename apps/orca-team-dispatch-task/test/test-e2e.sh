@@ -32,6 +32,10 @@ echo '{"ok":true,"result":{"worker":{"state":"active"}}}' > "$ORCA_STUB_DIR/orch
 echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/orchestration_worker-retain"
 echo '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
 
+# ★ **spec 文字列ではなく呼び出し行を見る。**worker へ渡す spec に `--ack` の語が
+#   入っているので、calls.log を素で grep すると task-create の 1 行に当たる。
+ack_lines() { grep -E '^orchestration check ' "$ORCA_STUB_DIR/calls.log" | grep -c -- '--ack'; }
+ack_lineno() { grep -nE '^orchestration check ' "$ORCA_STUB_DIR/calls.log" | grep -- '--ack' | head -1 | cut -d: -f1; }
 OUT=$(bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug e2e --objective o \
         --repo-root "$R" 2>&1); rc=$?
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
@@ -56,7 +60,7 @@ out=$(bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 --timeout-ms 1
 [[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* ]] && ok "E6 成功で完了" || fail "E6 (rc=$rc)"
 # **retain してから ack している**（解放は Step 6 だけの権限。spec D12）
 r=$(grep -n 'worker-retain' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
-a=$(grep -n -- '--ack' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+a=$(ack_lineno)
 [[ -n "$r" && -n "$a" && "$r" -lt "$a" ]] && ! grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log" \
   && ok "E7 retain が ack より前・release しない" || fail "E7 順序 ($r/$a)"
 
@@ -113,7 +117,7 @@ rc=$?
    && "$(jq -c . "$SDA/received.json")" == '["worker_done|task_a|ctx_a|succeeded"]' \
    && "$(jq -c . "$SDB/received.json")" == '["worker_done|task_b|ctx_b|succeeded"]' \
    && "$(grep -c 'worker-retain' "$ORCA_STUB_DIR/calls.log")" -eq 2 \
-   && "$(grep -c -- '--ack' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+   && "$(ack_lines)" -eq 1 ]] \
   && ok "E13 1 batch で 2 件を振り分け、retain 2 回・ack 1 回" || fail "E13 (rc=$rc)"
 
 git -C "$R" worktree remove --force "$WT2" >/dev/null 2>&1

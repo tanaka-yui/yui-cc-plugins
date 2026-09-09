@@ -15,10 +15,11 @@ miss=""; while IFS= read -r r; do [[ -f "$P/$r" ]] || miss="$miss $r"; done \
 [[ -z "$miss" ]] && ok "SK3 参照先が実在" || fail "SK3 実在しない参照:$miss"
 
 # SK4: **まだ実装していないものを宣言しない**
-#      `review_mode` / `design_review` / `exec_review` は実装したのでこの集合から外した。
-#      **`merge_ready` / `nonce` / `remediation` は残す** — 二相コミット (F-d) と
-#      generation transition (F-e) は未実装であり、宣言を防ぐガードが要る。
-bad=""; for w in merge_ready nonce journal remediation; do
+#      二相コミット (F-d) を実装したので `merge_ready` / `nonce` / `remediation` も
+#      この集合から外した。**`journal` は残す** — spec 10-2 の裁定どおり、exactly-once の
+#      journal は作らない（`completion.json` は crash 回復のためだけの記録である）。
+#      **`generation` は F-e まで残す。**
+bad=""; for w in journal generation; do
   grep -q -- "$w" "$S" && bad="$bad [$w]"; done
 [[ -z "$bad" ]] && ok "SK4 未実装を宣言しない" || fail "SK4 未実装の宣言:$bad"
 
