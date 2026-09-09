@@ -926,7 +926,7 @@ release するのはここである。**セッションを閉じることはユ�
 | 片付けが勝手に走ることはない | Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る |
 | 回復は自動では走らない。いつ走らせるかは人が決める | `orca-recover.sh`（Step 3）が役ごとに判断し、`--dry-run` を外して実行したときだけ動く。`$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
-| worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
+| worker が人へ尋ねるのは `design_mode` がそう指示したときだけで、答えるまでブロックする | `direct` と `plan` では代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する。`brainstorm` では `orchestration ask` を使い、待機が終了コード 6 で質問と `reply` コマンドを出す。worker が再開するのはそのコマンドを実行したときだけである |
 | 差し戻された worker は同じセッションで作り直す。この skill はそのラウンド数を制限しない | 待機の出力を見る。差し戻しは理由付きで 1 行ずつ出る。検査を満たせない worker は、失敗するか待機が時間切れになるまで差し戻され続ける |
 | レビューは 2 ラウンドで打ち切り、無言の reviewer への再依頼は 1 回だけ | レビューされる側が未解決の findings を `result.md` に記録し、手元の最良版を保つ。統合する前にその節を読む |
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
