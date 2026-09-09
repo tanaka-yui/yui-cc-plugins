@@ -446,6 +446,9 @@ for ((n = 2; n <= nblocks; n++)); do
   blk="$probe/i$n.sh"; nth_block "$n" > "$blk"
   # block が無ければ検査対象も無い（節を減らしたときに黙って緩まないよう明示する）
   [[ -s "$blk" ]] || { bad="$bad [I$n-missing]"; continue; }
+  # ★ **前段の変数を使う block だけが対象。**何も引き継がない block（その場で値を
+  #   決めるだけのもの）には守るべきものが無い。使っているのに守っていないものを捕まえる。
+  grep -qE '\$\{?(SCRIPTS|STATE|PLUGIN|NUM|SLUG|REQ)\b' "$blk" || continue
   out=$(env -u SCRIPTS -u STATE -u NUM -u SLUG -u REQ -u PLUGIN bash "$blk" 2>&1); rc=$?
   # ★ **「非 0 で終わった」では足りない。**変数が空のまま絶対パスを組み立てて
   #   `/bin/orca-issue.sh` を叩き、たまたま存在しなくて落ちるのも非 0 である。

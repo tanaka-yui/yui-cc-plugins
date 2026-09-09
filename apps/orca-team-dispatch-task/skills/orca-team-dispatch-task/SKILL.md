@@ -55,6 +55,19 @@ layers.
 | `off` (default) | `design` | One worker builds the thing. This is what a dispatch did before this setting existed |
 | `on` | `design`, `design_review` | A reviewer starts first and waits; `design` has its plan reviewed before building it |
 
+`phase_b` splits planning from building, and `integration` decides how the work comes back.
+Both resolve through the same three layers, and **both default to what a dispatch did before
+they existed**.
+
+| Setting | Default | The other value |
+|---|---|---|
+| `phase_b` | `off` — `design` plans and builds | `on` — `design` writes a plan and builds nothing; a second worker, `exec`, builds from it in its own worktree |
+| `integration` | `merge` — the work is merged into the branch you dispatched from | `pr` — the branch is pushed and a pull request is opened instead |
+
+**`phase_b` decides which branch carries the work** — `design` when off, `exec` when on.
+Both merging and opening a pull request read that one recorded value, so they cannot
+disagree about which branch to take.
+
 A role's tuple can be configured while its role is switched off, so a reviewer can be set up
 before `review_mode` is turned on. A tuple for a role that is off is not shown to the
 dispatch.
@@ -245,8 +258,9 @@ Ask a single question with these four parts. An issue run is unattended once it 
    each issue costs a worktree and a worker, and doubles under `review_mode=on`.
 4. **How many batches** — a number, or until the issues run out.
 
-Do not ask about `review_mode` or about integration. `review_mode` comes from the
-configuration and is fixed for the run; integration is merge.
+Do not ask about `review_mode`, `phase_b` or `integration`: they come from the configuration
+and are fixed for the run. **Say which ones are in effect** before starting, because they
+change what the run costs and where the work ends up.
 
 ### I2. Reconcile before claiming anything
 
@@ -308,8 +322,19 @@ Pass 3, once per issue that dispatched. It merges, moves the labels and closes t
 : "${NUM:?set NUM and SLUG from the issue you dispatched}"
 : "${SLUG:?set NUM and SLUG from the issue you dispatched}"
 bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase finish \
-  --issue "$NUM" --slug "$SLUG"
+  --issue "$NUM" --slug "$SLUG" ${REPO:+--repo "$REPO"}
 ```
+
+When `integration` is `pr`, resolve the repository **once for the whole run** and pass it as
+`REPO`, for the reason given in Step 4:
+
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
+```
+
+**A run that opens pull requests does not close its issues.** Each pull request body carries
+`Closes #<N>`, so GitHub closes the issue when it merges. Closing it here would leave it
+closed even if the pull request is rejected.
 
 Exit 1 means that issue was not carried; its labels are already moved to `dispatch/failed`
 and **its resources are kept on purpose**. Carry on with the next issue — one issue failing
@@ -458,19 +483,34 @@ exit 4, not an invitation to recover a batch manually.
 ## Step 4: Bring the result home
 
 Run this once per succeeded task, with `SD` set to that task's `status_dir`. On exit 0 every
-task qualifies. On exit 5 only the tasks whose own **`role=design`** line ended in
-`outcome=succeeded` do. It merges the `design` branch; a reviewer's worktree carries no work
-to merge.
+task qualifies. On exit 5 only the tasks whose own line for the **role that carries the
+work** ended in `outcome=succeeded` do — that role is named in `integration_role`. A
+reviewer's worktree carries no work to bring home.
 
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
 
-It merges the worker's branch into the branch you were on when the dispatch started. It
+It merges that role's branch into the branch you were on when the dispatch started. It
 refuses unless the worker reported success, `result.md` is non-empty, your checkout is
 still on that branch, and the checkout is clean. On a conflict it aborts the merge and
 keeps everything, so nothing is lost — tell the user how to resolve it. Merge the tasks one
 after another and report each result; a refusal for one task says nothing about the others.
+
+**When `integration` is `pr`, use this instead of the merge above.** Do not do both: opening
+a pull request and then merging puts the work in before anyone reviews it.
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+: "${PLUGIN:?run the block at the top of this file first}"
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
+bash "$PLUGIN/bin/orca-pr.sh" --status-dir "$SD" --repo "$REPO"
+```
+
+**Resolve the repository once, here, and pass it in.** Measured on 2026-09-02: a worker left
+to resolve its own remote in a three-remote repository pushed to a personal fork and opened
+the pull request inside that fork, where the issue does not exist, so its `Closes` line did
+nothing and the fork's pull request was accepted as proof of completion.
 
 ## Step 5: Give the user the exact cleanup commands
 
@@ -854,7 +894,8 @@ State these when they apply. Do not work around them silently.
 | Review stops after two rounds, and a silent reviewer is retried once | `design` records the unresolved findings in `result.md` and builds the best version it has. Read that section before merging |
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Repositories that need setup hooks are out of scope | The worktree is created with setup skipped |
-| `--issue` merges; it never opens a pull request | Point it at a repository where merging into the current branch is what you want, or dispatch by hand and open the PR yourself |
+| A pull request is opened, never merged or reviewed by this skill | Review and merge it yourself. The issue closes when the pull request merges, not when the run ends |
+| `phase_b=on` costs a second worker and a second worktree per task | Leave it off unless separating planning from building is worth that. The plan is kept at `.dispatch/<slug>/plan.md` either way it is written |
 | An `--issue` run does not resume by itself after a crash | The next run's `reconcile` finds the claim, releases it when nothing is running, and stops the run when something might be |
 | A slow issue holds up the rest of its batch | The wait is per batch. Use a smaller batch size when one issue is expected to be long |
 | A released worker can stay recorded as `retained`, which makes [C7] stop a later dispatch on the same Run | Measured twice: `worker-release` answers `ok` while the receipt keeps `releaseState: retained` with `retainedReason: user_takeover`, and the record survives the terminal itself. Start a fresh Run rather than reusing one whose dispatches are gone; [C7] is scoped to a Run, so a new Run is unaffected |

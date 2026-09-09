@@ -47,14 +47,14 @@ F-a は「どのブランチを取り込むか」を変える。**`orca-merge.sh
 
 ## F-a: Phase B 委譲
 
-### Task A1: `integration_role` を導入する（挙動を変えない）
+### Task A1: `integration_role` を導入する（挙動を変えない）— **完了**
 
 **この Task では役を増やさない。**`workers.json` に `integration_role: "design"` を書き、
 `orca-merge.sh` がそれ経由でブランチを引くようにするだけ。**挙動は 1 つも変わらない。**
 
 **Files:** `bin/orca-start.sh` / `bin/orca-merge.sh` / `test/test-start.sh` / `test/test-merge.sh`
 
-- [ ] **Step 1: 先にテストを書く**
+- [x] **Step 1: 先にテストを書く**
 
 ```bash
 # MG12: integration_role が無ければ **推測せず** 止まる（design を既定にしない）
@@ -66,11 +66,11 @@ F-a は「どのブランチを取り込むか」を変える。**`orca-merge.sh
 書き損ねた dispatch が **黙って design のブランチを取り込む**。取り込み先の取り違えは
 成果の喪失につながるので、`orca-merge.sh` の他の identity と同じく「無ければ止まる」。
 
-### Task A2: `phase_b` 設定と `exec` 役
+### Task A2: `phase_b` 設定と `exec` 役 — **完了**
 
 **Files:** `scripts/config-lib.sh` / `config-resolve.sh` / `config-edit.sh` / `test/test-config.sh`
 
-- [ ] **Step 1: `phase_b` を `review_mode` と同じ構えで足す**
+- [x] **Step 1: `phase_b` を `review_mode` と同じ構えで足す**
 
 ```bash
 # CF26: phase_b の既定は off で、ロールは design（+ review_mode 次第）
@@ -82,11 +82,11 @@ F-a は「どのブランチを取り込むか」を変える。**`orca-merge.sh
 `dispatch_all_role_names` に `exec` を足し、`dispatch_role_names <review_mode> <phase_b>` が
 起動する役を返す。**`exec_review` は足さない。**
 
-### Task A3: design は計画し、exec が実装する
+### Task A3: design は計画し、exec が実装する — **完了**
 
 **Files:** `bin/orca-start.sh` / `bin/orca-wait.sh` / `test/test-start.sh` / `test/test-wait.sh`
 
-- [ ] **Step 1: 起動を 2 段にする**
+- [x] **Step 1: 起動を 2 段にする**
 
 `exec` は **design が終わってから**起動する。design の計画が無いうちに実装させられない。
 
@@ -97,7 +97,7 @@ F-a は「どのブランチを取り込むか」を変える。**`orca-merge.sh
 **`orca-start.sh` は 1 段目までを担う。**2 段目は新しい口（`--phase exec`）にする。
 `orca-issue.sh` の phase 分割と同じ理由で、**待ちを抱えたコマンドを増やさない**。
 
-- [ ] **Step 2: 計画の受け渡し**
+- [x] **Step 2: 計画の受け渡し**
 
 design は `<status-dir>/plan.md` に計画を書く。**親が spec を手書きしない**（spec の裁定）
 ので、exec の spec も `render_spec` が生成し、その中で plan.md の絶対パスを名指しする。
@@ -110,7 +110,7 @@ design は `<status-dir>/plan.md` に計画を書く。**親が spec を手書�
 # WT36: exec の worker_done も期待集合に入る（1 タスク 3 dispatch）
 ```
 
-- [ ] **Step 3: `integration_role` を exec にする**
+- [x] **Step 3: `integration_role` を exec にする**
 
 Task A1 の 1 箇所だけが変わる。`orca-merge.sh` は触らない。
 
@@ -118,11 +118,11 @@ Task A1 の 1 箇所だけが変わる。`orca-merge.sh` は触らない。
 
 ## F-c: PR 統合
 
-### Task C1: `integration` 設定と `bin/orca-pr.sh`
+### Task C1: `integration` 設定と `bin/orca-pr.sh` — **完了**
 
 **Files:** `scripts/config-{lib,resolve,edit}.sh` / `bin/orca-pr.sh` / `test/test-config.sh` / `test/test-pr.sh`
 
-- [ ] **Step 1: repo を **呼び出し側が 1 度だけ解決する****
+- [x] **Step 1: repo を **呼び出し側が 1 度だけ解決する****
 
 spec 12-2 の実測（2026-09-02）: 3 remote の repository で子が remote を自分で解決し、
 **personal fork へ push して fork の中に PR を作った。**issue はそこに無いので
@@ -140,11 +140,11 @@ spec 12-2 の実測（2026-09-02）: 3 remote の repository で子が remote �
 # PR6: --issue <N> が与えられたら本文に "Closes #<N>" を入れる
 ```
 
-### Task C2: `orca-merge.sh` と `orca-issue.sh` を integration で分岐させる
+### Task C2: `orca-issue.sh` を integration で分岐させる — **完了**
 
 **Files:** `bin/orca-issue.sh` / `SKILL.md` / `guide-ja.md` / `test/test-issue.sh`
 
-- [ ] **Step 1: `integration=pr` なら merge しない**
+- [x] **Step 1: `integration=pr` なら merge しない**
 
 **両方やらない。**PR を作ったうえで親へ merge すると、PR がレビューされる前に成果が
 入ってしまう。`integration` はどちらか一方である。
@@ -160,18 +160,37 @@ spec 12-2 の実測（2026-09-02）: 3 remote の repository で子が remote �
 入れてあるので、**PR がマージされたときに GitHub が閉じる。**先に閉じると、PR が
 却下されても issue は閉じたままになる。
 
-### Task C3: 文書と制限
+### Task C3: 文書と制限 — **完了**
 
-- [ ] **Step 1: `--issue` の質問に integration を戻す**
+- [x] **Step 1: `--issue` の質問に integration を戻す**
 
 F-f では「merge 固定」として尋ねなかった。実装したので尋ねる。
 
-- [ ] **Step 2: 制限表を更新する**
+- [x] **Step 2: 制限表を更新する**
 
 「`--issue` は merge する。PR を作らない」の行を消し、代わりに PR 経路の制限を書く
 （fork を持つ repository で `--repo` を明示すること、close は PR のマージに任せること）。
 
 ---
+
+## 実装で分かったこと（計画に無かったもの）
+
+- **待機も `integration_role` 基準でなければならない。**WT37 で見つけた: `aggregate` が
+  `design` を決め打ちしており、**`phase_b=on` で exec が失敗してもタスクを成功と報告して
+  いた**。ただし記録が無い場合は design に落とす — merge は同じ場面で止まるが (MG12)、
+  あちらは取り違えると成果を失う破壊的操作であり、待機は何も壊さず merge の gate が
+  受け止めるためである
+- **テストの偽 PASS を 1 件塞いだ。**PR6b が `body.txt` の不在を「Closes が無い」と読んで
+  通っていた（`gh-stub.sh` に hook が無く写しが取れていなかった）。hook を足し、
+  ファイルが在ることも要求するようにした
+- **SK6n の対象を絞った。**Step 4 / I3 に「前段の変数を使わない block」（その場で
+  repository を解決するだけのもの）が増え、守るべきものが無いのに fail-closed を
+  要求して誤検知した。**変数を使う block だけ**を対象にする
+
+## 未了
+
+- **実機での `phase_b=on` と `integration=pr` の実行**。stub では通っているが、
+  実際に worker 2 本を走らせて pull request を作るところは通していない
 
 ## この計画で扱わないもの
 

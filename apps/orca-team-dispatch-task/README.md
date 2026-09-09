@@ -10,7 +10,7 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 
 ## 範囲と制限
 
-PR は作らない（merge のみ）。`--issue` で GitHub issue を claim して回せる。`review_mode=on` にすると、成果を作る役とは別に**レビュー役**が
+計画役と実装役を分けたり（`phase_b`）、成果を pull request で届けたり（`integration`）できる。`--issue` で GitHub issue を claim して回せる。`review_mode=on` にすると、成果を作る役とは別に**レビュー役**が
 起きて、作る前に計画を 1 往復レビューする（既定は `off`）。役ごとの agent / model / effort は
 `config.json`（global と project の 2 層）で設定でき、`--setup` で対話的に書ける。
 **agent がどのアカウントでサインインするかは選べない** — Orca の CLI にアクティブな

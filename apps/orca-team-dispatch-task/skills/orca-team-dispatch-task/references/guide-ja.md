@@ -45,6 +45,18 @@ role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → pr
 | `off`（既定） | `design` | 1 人の worker が作る。この設定が無かった頃の dispatch と同じである |
 | `on` | `design` / `design_review` | reviewer が先に起きて待ち、`design` は作る前に計画をレビューさせる |
 
+`phase_b` は計画と実装を分け、`integration` は成果の届け方を決める。どちらも同じ 3 層で
+解決し、**どちらも既定はこれらが無かった頃の dispatch と同じ**である。
+
+| 設定 | 既定 | もう一方の値 |
+|---|---|---|
+| `phase_b` | `off` — `design` が計画も実装もする | `on` — `design` は計画を書くだけで何も作らず、2 人目の worker `exec` が自分の worktree でそれを作る |
+| `integration` | `merge` — dispatch した元のブランチへ取り込む | `pr` — ブランチを push して pull request を作る |
+
+**`phase_b` が「どのブランチに成果が載るか」を決める** — off なら `design`、on なら `exec`。
+merge も pull request も記録されたその 1 つの値を読むので、どちらのブランチを取るかで
+食い違うことがない。
+
 役が off の間もその tuple は設定できるので、`review_mode` を on にする前に reviewer を
 用意できる。off の役の tuple は dispatch に見せない。
 
@@ -232,8 +244,8 @@ claim が空なのは隠すべき失敗ではない。**その issue が既に s
    では倍になる。
 4. **バッチ数の上限** — 数、または issue が尽きるまで。
 
-`review_mode` と統合方式は尋ねない。`review_mode` は設定から解決してその実行の間は固定であり、
-統合は merge である。
+`review_mode` / `phase_b` / `integration` は尋ねない。設定から解決し、その実行の間は固定
+である。**どれが効いているかは開始前に伝える** — 実行の費用と成果の行き先が変わるからである。
 
 ### I2. claim の前に整合させる
 
@@ -286,7 +298,7 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<sta
 exit code の読み方は Step 3 のとおりである。exit 5 は**一部の失敗**であってバッチの失敗では
 ない。自身の `role=design` の行が `succeeded` だった issue についてパス 3 へ進む。
 
-パス 3、dispatch できた issue ごとに 1 回。merge し、ラベルを遷移させ、issue を close する:
+パス 3、dispatch できた issue ごとに 1 回。統合し、ラベルを遷移させる:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
@@ -294,8 +306,20 @@ exit code の読み方は Step 3 のとおりである。exit 5 は**一部の�
 : "${NUM:?set NUM and SLUG from the issue you dispatched}"
 : "${SLUG:?set NUM and SLUG from the issue you dispatched}"
 bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase finish \
-  --issue "$NUM" --slug "$SLUG"
+  --issue "$NUM" --slug "$SLUG" ${REPO:+--repo "$REPO"}
 ```
+
+`integration` が `pr` のときは、Step 4 と同じ理由で **repository を実行全体で 1 度だけ**
+解決し、`REPO` として渡す:
+
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
+```
+
+**pull request を作る実行は issue を close しない。**各 pull request の本文に
+`Closes #<N>` が入っているので、それがマージされたときに GitHub が閉じる。ここで閉じると、
+pull request が却下されても閉じたままになる。
+
 
 exit 1 はその issue を運べなかったことを意味する。ラベルは既に `dispatch/failed` へ動いて
 おり、**その資源は意図して残されている。**次の issue へ進む — 1 件の失敗は他の件について
@@ -443,19 +467,34 @@ outcome か — をユーザーへ見せる。transport/health の失敗は exit
 ## Step 4: 成果を持ち帰る
 
 成功したタスクごとに 1 回、`SD` へそのタスクの `status_dir` を設定して実行する。exit 0 なら
-全タスクが対象である。exit 5 なら、自身の **`role=design`** の行が `outcome=succeeded` で
-終わっていたタスクだけが対象である。取り込むのは `design` のブランチであり、reviewer の
-worktree には取り込む成果が無い。
+全タスクが対象である。exit 5 なら、**成果を載せる役**の行が `outcome=succeeded` で終わって
+いたタスクだけが対象である。その役は `integration_role` に記録されている。reviewer の
+worktree には持ち帰る成果が無い。
 
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
 
-dispatch を始めたときにいたブランチへ worker のブランチを merge する。worker が成功を
+dispatch を始めたときにいたブランチへ、その役のブランチを merge する。worker が成功を
 報告していること、`result.md` が空でないこと、checkout が開始時のブランチのままであること、
 checkout が clean であることのすべてを満たさなければ拒否する。競合時は merge を中断して
 すべてを残すので、ユーザーへ解決方法を伝える。タスクは順番に merge して結果をそれぞれ報告する。
 あるタスクが拒否されても、他のタスクについては何も意味しない。
+
+**`integration` が `pr` のときは、上の merge の代わりにこちらを使う。**両方やってはならない
+— pull request を作ったうえで merge すると、誰かがレビューする前に成果が入る。
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+: "${PLUGIN:?run the block at the top of this file first}"
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
+bash "$PLUGIN/bin/orca-pr.sh" --status-dir "$SD" --repo "$REPO"
+```
+
+**repository はここで 1 度だけ解決して渡す。**2026-09-02 の実測: 3 つの remote を持つ
+repository で worker に remote を解決させたところ、personal fork へ push して **その fork の
+中に pull request を作った**。issue はそこに無いので `Closes` 行は何もせず、その fork の
+pull request が完了の証拠として受理された。
 
 ## Step 5: ユーザーへ正確な片付けコマンドを渡す
 
@@ -829,7 +868,8 @@ release するのはここである。**セッションを閉じることはユ�
 | レビューは 2 ラウンドで打ち切り、無言の reviewer への再依頼は 1 回だけ | `design` は未解決の findings を `result.md` に記録し、手元の最良版を作る。merge する前にその節を読む |
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
 | setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
-| `--issue` は merge する。pull request は作らない | 現在のブランチへ merge することが望ましい repository で使うか、手で dispatch して自分で PR を作る |
+| pull request は作るだけで、この skill が merge もレビューもしない | 自分でレビューして merge する。issue は pull request がマージされたときに閉じるのであって、実行が終わったときではない |
+| `phase_b=on` はタスクごとに worker と worktree を 1 つずつ増やす | 計画と実装を分ける価値があるとき以外は off のままにする。計画は書かれたなら `.dispatch/<slug>/plan.md` に残る |
 | `--issue` の実行は crash から自力で再開しない | 次の実行の `reconcile` が claim を見つけ、何も走っていなければ release し、走っているかもしれなければ実行を止める |
 | 遅い 1 件がそのバッチの残りを待たせる | 待ちはバッチ単位である。長くなると分かっている issue があるならバッチを小さくする |
 | 解放したはずの worker が `retained` の記録のまま残り、同じ Run の後の dispatch で [C7] が止まることがある | 2 回独立に観測した: `worker-release` は `ok` を返すのに receipt は `releaseState: retained` / `retainedReason: user_takeover` のままで、その記録は端末そのものより長く残る。dispatch が消えた Run を使い回さず、新しい Run を起こす。[C7] の範囲は Run 単位なので、新しい Run は影響を受けない |

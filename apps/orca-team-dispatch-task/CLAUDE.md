@@ -85,6 +85,23 @@ path は UNC で返り、bash の `-d` も `git -C` も解釈できない）。�
 - **`.dispatch-issue/` を `info/exclude` へ入れる。**入れないと state file と lock で親が
   常に dirty になり、merge の dirty ガードが必ず発火して 1 件も merge できない（実測）
 
+## 取り込み先を 1 箇所で決める
+
+`workers.json` の **`integration_role`** が「成果がどのブランチに載るか」を持つ
+（`phase_b=off` なら design、`on` なら exec）。`orca-merge.sh` も `orca-pr.sh` も
+この 1 つの値を読む。**別々に判断すると必ずずれる。**
+
+**`// "design"` の既定を置かない**（MG12 / PR9）。書き損ねた dispatch が黙って design の
+ブランチを取り込むと、取り込み先の取り違えは成果の喪失につながる。例外は
+`orca-wait.sh` で、あちらは何も壊さないうえ merge の gate が受け止めるので design に落とす。
+
+## PR は repo を推測しない
+
+`orca-pr.sh` は **`--repo <owner/repo>` を必須**にする（PR1）。spec 12-2 の実測: 3 remote の
+repository で子が remote を自分で解決し、**personal fork へ push して fork の中に PR を
+作った**。issue はそこに無いので `Closes` は効かず、その fork PR が完了の証拠として
+受理された。省略を許すと「たまたま origin が正しい環境」でだけ通る。
+
 ## 範囲
 
 Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足した段階。PR 無し・ループ無し。
@@ -97,7 +114,12 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - **`--issue` で GitHub issue を claim して回せる**（merge のみ。PR は作らない）。
   駆動は**バッチ同期** — 1 バッチを dispatch したら `orca-wait.sh` で待ち切ってから次へ進む。
   cmux 版の wake 駆動（`dispatch-notify` + safety timer）は移植していない
-- `exec` / `exec_review` と Phase B-R、PR 統合、二相コミットは未実装。
+- **`phase_b=on` で `design` が計画し `exec` が実装する**（既定 off）。exec は design が
+  終わってからでないと起こせないので **起動は 2 段**（`orca-start.sh --phase exec`）。
+  空の計画では起こさない
+- **`integration=pr` で pull request を作れる**（既定 merge）。**統合はどちらか一方**であり、
+  PR のとき issue は close しない（`Closes #N` で PR のマージ時に GitHub が閉じる）
+- `exec_review` と Phase B-R、二相コミットは未実装。
   `test-docs.sh` の SK4 が `exec_review` / `merge_ready` の語を SKILL.md から締め出して
   「未実装の宣言」を防いでいる
 **N タスクを 1 つの Run で並列に dispatch できる**（既定上限 4）。worker のセッションは
