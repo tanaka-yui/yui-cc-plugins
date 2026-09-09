@@ -10,7 +10,10 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 
 ## 範囲と制限
 
-Stage A は 1 ロールで、レビュー・PR・ループ・設定を持たない。
+Stage A は 1 ロールで、レビュー・PR・ループを持たない。役ごとの agent / model / effort は
+`config.json`（global と project の 2 層）で設定でき、`--setup` で対話的に書ける。
+**agent がどのアカウントでサインインするかは選べない** — Orca の CLI にアクティブな
+アカウントを選ぶ口が無いため、切り替えは Orca アプリ側で行う。
 **片付けが勝手に走ることはない。**確認してから、承認されたものだけを片付ける。
 **制限の一覧と片付け手順の正本は skill 側にある** —
 `skills/orca-team-dispatch-task/SKILL.md` の "Known limitations" と Step 5 / Step 6

@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# config-resolve.sh — global / project / コマンドラインの設定をロール単位で解決し JSON で出す。
+#
+# Usage: config-resolve.sh --project-root <path> [--set <role>.<field>=<value>]...
+# Exit:  0 = 解決した / 1 = 設定が読めない / 2 = 使用法エラー
+#
+# 優先順位は override > project > global。**設定ファイルが 1 つも無いのは正常**で、
+# その場合 agent だけが既定 (claude) になり、model と effort は出力に現れない。
+#
+# ★ **model と effort は設定されたときだけ出す。**未設定を既定値で埋めない。
+#   worker-start は `--model` を省けば Orca 側の既定を使う。ここで既定を捏造すると、
+#   設定していない利用者の挙動が黙って変わる。
+
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./config-lib.sh
+. "$SCRIPT_DIR/config-lib.sh"
+
+die()      { echo "config-resolve: $1" >&2; exit 2; }
+die_read() { echo "config-resolve: $1" >&2; exit 1; }
+warn()     { echo "[warn] config-resolve: $1" >&2; }
+
+PROJECT_ROOT=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project-root)
+      [[ $# -ge 2 ]] || die '--project-root requires a directory'
+      PROJECT_ROOT="$2"; shift 2 ;;
+    --set)
+      [[ $# -ge 2 ]] || die '--set requires <role>.<field>=<value>'
+      [[ "$2" == *=* ]] || die "invalid --set '$2'"
+      ov_key="${2%%=*}"; ov_value="${2#*=}"
+      [[ "$ov_key" == *.* ]] || die "invalid --set '$2'"
+      ov_role="${ov_key%%.*}"; ov_field="${ov_key#*.}"
+      dispatch_role_names | grep -qxF "$ov_role" || die "unknown role in --set: $ov_role"
+      case "$ov_field" in agent|model|effort) ;; *) die "unknown field in --set: $ov_field" ;; esac
+      printf -v "OVERRIDE_${ov_role}_${ov_field}" '%s' "$ov_value"
+      shift 2 ;;
+    *) die "unknown argument '$1'" ;;
+  esac
+done
+
+[[ -n "$PROJECT_ROOT" ]] || die '--project-root is required'
+[[ -d "$PROJECT_ROOT" ]] || die "project root is not a directory: $PROJECT_ROOT"
+
+CONFIG_HOME="$(dispatch_config_home)"
+GLOBAL_CONFIG="$(dispatch_config_file)"
+PROJECT_CONFIG="$(dispatch_project_config_file "$PROJECT_ROOT")"
+
+# ★ **壊れた設定を「無い」と読まない。**握り潰すと、利用者が書いたはずの model が
+#   黙って効かないまま dispatch が走る。読めなければ止める。
+GLOBAL_PRESENT=0; PROJECT_PRESENT=0
+check_layer() {   # $1=path $2=label -> 0=使う 1=無い
+  [[ -e "$1" ]] || return 1
+  [[ -r "$1" ]] || die_read "$2 is not readable at $1"
+  jq -e 'type == "object"' "$1" >/dev/null 2>&1 || die_read "$2 is not a JSON object at $1"
+  return 0
+}
+check_layer "$GLOBAL_CONFIG"  'global config.json'  && GLOBAL_PRESENT=1
+check_layer "$PROJECT_CONFIG" 'project config.json' && PROJECT_PRESENT=1
+
+# ★ **「ファイルが在る」と「設定されている」は別。**第三者キーだけを持つ config.json は
+#   この skill にとって未設定である。First-run の問いかけはこちらで判定する。
+CONFIGURED=0
+has_roles() { [[ -f "$1" ]] && jq -e '(.roles | type) == "object" and (.roles | length) > 0' "$1" >/dev/null 2>&1; }
+{ has_roles "$GLOBAL_CONFIG" || has_roles "$PROJECT_CONFIG"; } && CONFIGURED=1
+
+# 型違いは「その層に無い」ではなく「その層が無効」である。警告して次の層へ落とす。
+# ★ 型と値を別々の jq で取る。1 つの出力に番兵を混ぜると、利用者がその番兵を
+#   そのまま値に書いたときに区別できなくなる。
+layer_type() {   # $1=file $2=role $3=field ; 出力: 型名 / 空 = 不在
+  jq -r --arg role "$2" --arg field "$3" '
+    if (.roles | type) == "object" and (.roles[$role] | type) == "object"
+       and (.roles[$role] | has($field))
+    then (.roles[$role][$field] | type) else empty end' "$1" 2>/dev/null
+}
+layer_string() {   # $1=file $2=role $3=field
+  jq -r --arg role "$2" --arg field "$3" '.roles[$role][$field]' "$1" 2>/dev/null
+}
+
+CANDIDATE_PRESENT=0; CANDIDATE_VALUE=''
+next_candidate() {   # $1=source $2=role $3=field
+  local source="$1" role="$2" field="$3" name file='' vtype
+  CANDIDATE_PRESENT=0; CANDIDATE_VALUE=''
+  case "$source" in
+    override)
+      name="OVERRIDE_${role}_${field}"
+      if [[ -n "${!name+x}" ]]; then CANDIDATE_PRESENT=1; CANDIDATE_VALUE="${!name}"; fi
+      return 0 ;;
+    project) [[ "$PROJECT_PRESENT" -eq 1 ]] || return 0; file="$PROJECT_CONFIG" ;;
+    global)  [[ "$GLOBAL_PRESENT"  -eq 1 ]] || return 0; file="$GLOBAL_CONFIG"  ;;
+  esac
+  vtype="$(layer_type "$file" "$role" "$field")"
+  [[ -n "$vtype" ]] || return 0
+  if [[ "$vtype" != string ]]; then
+    warn "ignoring non-string $field for role '$role' in $source config"
+    return 0
+  fi
+  CANDIDATE_PRESENT=1; CANDIDATE_VALUE="$(layer_string "$file" "$role" "$field")"
+}
+
+resolve_agent() {   # $1=role -> RESOLVED_AGENT (必ず埋まる)
+  local role="$1" source
+  RESOLVED_AGENT=''
+  for source in override project global; do
+    next_candidate "$source" "$role" agent
+    [[ "$CANDIDATE_PRESENT" -eq 1 ]] || continue
+    if ! dispatch_valid_agent "$CANDIDATE_VALUE"; then
+      warn "ignoring invalid agent for role '$role' in $source config"; continue
+    fi
+    # 知らない agent も通す。allowlist は閉じない (config-lib.sh の理由を参照)
+    dispatch_known_agent "$CANDIDATE_VALUE" \
+      || warn "agent '$CANDIDATE_VALUE' for role '$role' is not one this version knows; passing it to Orca as-is"
+    RESOLVED_AGENT="$CANDIDATE_VALUE"; return 0
+  done
+  RESOLVED_AGENT="$(dispatch_default_agent)"
+}
+
+resolve_model() {   # $1=role $2=agent -> RESOLVED_MODEL ('' = 未設定 = flag を渡さない)
+  local role="$1" agent="$2" source owner
+  RESOLVED_MODEL=''
+  for source in override project global; do
+    next_candidate "$source" "$role" model
+    [[ "$CANDIDATE_PRESENT" -eq 1 ]] || continue
+    if ! dispatch_valid_model "$CANDIDATE_VALUE"; then
+      warn "ignoring invalid model for role '$role' in $source config"; continue
+    fi
+    # ★ agent と食い違う model は使わない。層をまたぐと codex + sonnet が成立しうる
+    owner="$(dispatch_model_agent "$CANDIDATE_VALUE")"
+    if [[ -n "$owner" ]] && dispatch_known_agent "$agent" && [[ "$owner" != "$agent" ]]; then
+      warn "ignoring $owner model '$CANDIDATE_VALUE' for role '$role' running agent '$agent' in $source config"
+      continue
+    fi
+    RESOLVED_MODEL="$CANDIDATE_VALUE"; return 0
+  done
+}
+
+resolve_effort() {   # $1=role $2=agent -> RESOLVED_EFFORT ('' = 未設定)
+  local role="$1" agent="$2" source normalized
+  RESOLVED_EFFORT=''
+  for source in override project global; do
+    next_candidate "$source" "$role" effort
+    [[ "$CANDIDATE_PRESENT" -eq 1 ]] || continue
+    normalized="$(dispatch_normalize_effort "$CANDIDATE_VALUE")"
+    if dispatch_known_agent "$agent"; then
+      if ! dispatch_valid_effort "$normalized" "$agent"; then
+        warn "ignoring invalid effort for role '$role' in $source config"; continue
+      fi
+    else
+      # 未知の agent の許容値は分からない。shell-safe であることだけ確かめて素通しし、
+      # 判定は Orca に委ねる（誤りは worker-start の失敗として見える）
+      if ! dispatch_valid_model "$normalized"; then
+        warn "ignoring invalid effort for role '$role' in $source config"; continue
+      fi
+      warn "cannot validate effort for unknown agent '$agent'; Orca will validate it at worker-start"
+    fi
+    RESOLVED_EFFORT="$normalized"; return 0
+  done
+}
+
+ROLES_JSON='{}'
+while IFS= read -r role; do
+  resolve_agent  "$role"; agent="$RESOLVED_AGENT"
+  resolve_model  "$role" "$agent"; model="$RESOLVED_MODEL"
+  resolve_effort "$role" "$agent"; effort="$RESOLVED_EFFORT"
+  # ★ Orca の制約: `--effort requires --model`。model 無しの effort は渡せないので落とす。
+  #   黙って落とすと「設定したのに効かない」になるため警告する。
+  if [[ -n "$effort" && -z "$model" ]]; then
+    warn "role '$role' sets effort but no model; Orca requires --model with --effort, so effort is dropped"
+    effort=''
+  fi
+  role_json="$(jq -nc --arg a "$agent" '{agent:$a}')"
+  [[ -n "$model"  ]] && role_json="$(jq -c --arg m "$model"  '. + {model:$m}'  <<<"$role_json")"
+  [[ -n "$effort" ]] && role_json="$(jq -c --arg e "$effort" '. + {effort:$e}' <<<"$role_json")"
+  ROLES_JSON="$(jq -nc --arg r "$role" --argjson rj "$role_json" --argjson acc "$ROLES_JSON" \
+    '$acc + {($r): $rj}')"
+done < <(dispatch_role_names)
+
+jq -n \
+  --arg config_home "$CONFIG_HOME" \
+  --arg global_config "$GLOBAL_CONFIG" \
+  --arg project_config "$PROJECT_CONFIG" \
+  --argjson global_present "$GLOBAL_PRESENT" \
+  --argjson project_present "$PROJECT_PRESENT" \
+  --argjson configured "$CONFIGURED" \
+  --argjson roles "$ROLES_JSON" \
+  '{config_home:$config_home, global_config:$global_config, project_config:$project_config,
+    global_present:($global_present == 1), project_present:($project_present == 1),
+    configured:($configured == 1), roles:$roles}'

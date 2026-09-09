@@ -2,6 +2,7 @@
 # orca-start.sh — worktree を用意し、worker を 1 つ起動してタスクを届ける。
 # **recovery 機構は無い** (spec 18-1)。worker-start が成立した後は何も削除しない。
 # Usage: orca-start.sh --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
+#          [--run <run_id>] [--agent <id>] [--model <id>] [--effort <level>]
 # Exit: 0 / 1 = 起動できなかった / 2 = 使用法エラー
 set -uo pipefail
 die() { echo "orca-start: $1" >&2; exit 2; }
@@ -21,12 +22,17 @@ to_local() { case "$1" in /*) printf '%s\n' "$1"; return 0 ;; esac
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." && pwd)"
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 RF="" SLUG="" OBJ="" RR="" RUN_IN=""
+# 役ごとの agent / model / effort は config.json が正本。ここは 1 回きりの上書き口である
+OV_AGENT="" OV_MODEL="" OV_EFFORT=""
 while [[ $# -gt 0 ]]; do case "$1" in
   --request-file) need2 "$1" $#; RF="$2";     shift 2 ;;
   --slug)         need2 "$1" $#; SLUG="$2";   shift 2 ;;
   --objective)    need2 "$1" $#; OBJ="$2";    shift 2 ;;
   --repo-root)    need2 "$1" $#; RR="$2";     shift 2 ;;
   --run)          need2 "$1" $#; RUN_IN="$2"; shift 2 ;;
+  --agent)        need2 "$1" $#; OV_AGENT="$2";  shift 2 ;;
+  --model)        need2 "$1" $#; OV_MODEL="$2";  shift 2 ;;
+  --effort)       need2 "$1" $#; OV_EFFORT="$2"; shift 2 ;;
   *) die "unknown option: $1" ;; esac; done
 [[ -n "$RF" && -n "$SLUG" && -n "$OBJ" ]] || die "--request-file, --slug and --objective are required"
 [[ -r "$RF" ]] || die "--request-file is not readable: $RF"
@@ -78,6 +84,22 @@ PH="${ORCA_TERMINAL_HANDLE:-}"
 # merge 先の identity を今のうちに固定する。待機中に checkout が変わっても取り違えない
 IB=$(git -C "$RR" symbolic-ref --short HEAD 2>/dev/null) || IB=""
 [[ -n "$IB" ]] || { log "the parent checkout is in a detached HEAD; cannot fix a merge target"; exit 1; }
+
+# ★ **設定は資源を作る前に解決する。**壊れた config で worktree と Task を作ってから
+#   落ちると、片付けの要る残骸だけが残る。config-resolve は読めない設定で exit 1 を返す。
+#   設定が 1 つも無いのは正常で、そのとき agent は claude、model と effort は付かない。
+CFG_SET=()
+[[ -n "$OV_AGENT"  ]] && CFG_SET+=(--set "design.agent=$OV_AGENT")
+[[ -n "$OV_MODEL"  ]] && CFG_SET+=(--set "design.model=$OV_MODEL")
+[[ -n "$OV_EFFORT" ]] && CFG_SET+=(--set "design.effort=$OV_EFFORT")
+RESOLVER="$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh"
+[[ -r "$RESOLVER" ]] || { log "the config resolver is missing at $RESOLVER"; exit 1; }
+CRC=0; CFG=$(bash "$RESOLVER" --project-root "$RR" ${CFG_SET[@]+"${CFG_SET[@]}"}) || CRC=$?
+[[ "$CRC" -eq 0 ]] && jq -e '.roles.design.agent | type == "string"' <<<"$CFG" >/dev/null 2>&1 \
+  || { log "cannot resolve the dispatch configuration (rc=$CRC); nothing was created"; exit 1; }
+AGENT=$(jq -r '.roles.design.agent' <<<"$CFG")
+MODEL=$(jq -r '.roles.design.model  // empty' <<<"$CFG")
+EFFORT=$(jq -r '.roles.design.effort // empty' <<<"$CFG")
 
 mkdir -p "$SD/roles/design" || { log "cannot create $SD"; exit 1; }
 cat "$RF" > "$SD/request.md" || { log "cannot materialize the request"; exit 1; }
@@ -172,11 +194,15 @@ postwrite status "$SD/roles/design/status.json" '{"status":"starting"}'
 # ★ **この worktree を誰が作ったか**を記録する (round 3 finding 1)。端末はまだ存在しないので
 #   端末集合の inventory は worker-start の後（端末が生まれてから）に回す
 OWNED=false; [[ -n "$CREATED" ]] && OWNED=true
+# ★ **解決した tuple を記録する。**あとから「この worker は何で走ったのか」を
+#   receipt 無しで答えられるようにする。未設定の model / effort はキー自体を置かない
+#   （config-resolve の出力と同じ形にし、「未設定」と「空文字」を混ぜない）。
 postwrite workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg w "$WT_ID" --arg p "$WT_PATH" \
   --arg b "$BR" --arg ib "$IB" --argjson own "$OWNED" \
+  --argjson design "$(jq -c '.roles.design + {retained:false}' <<<"$CFG")" \
   '{run_id:$r,worktree_id:$w,worktree_path:$p,branch:$b,integration_branch:$ib,
     worktree_created_by_this_run:$own, worktree_terminals:null,
-    roles:{design:{retained:false}}}')"
+    roles:{design:$design}}')"
 
 RD="$SD/roles/design"
 SPEC="TASK: $SLUG
@@ -236,8 +262,16 @@ jq_write workers-after-task "$SD/workers.json" -c --arg t "$TID" '.roles.design.
 # ★ ここから先は何が起きても資源を削除しない (O19)。
 #   **rc 0 + state=ready + dispatch id の 3 つ揃い**を要求する。
 #   failed / outcome_unknown の receipt にも dispatchId が残ることがある
+# ★ `--effort requires --model` (Orca)。config-resolve が model 無しの effort を既に
+#   落としているが、ここでも組にして渡す — 片方だけが残ると worker-start が使用法で落ちる
+WS_ARGS=(--agent "$AGENT")
+if [[ -n "$MODEL" ]]; then
+  WS_ARGS+=(--model "$MODEL")
+  [[ -n "$EFFORT" ]] && WS_ARGS+=(--effort "$EFFORT")
+fi
+log "design runs agent=$AGENT model=${MODEL:-<orca default>} effort=${EFFORT:-<orca default>}"
 WRC=0; WJ2=$("$ORCA_BIN" orchestration worker-start --task "$TID" --worktree "id:$WT_ID" \
-               --agent claude --from "$PH" --json 2>/dev/null) || WRC=$?
+               "${WS_ARGS[@]}" --from "$PH" --json 2>/dev/null) || WRC=$?
 WSTATE=$(jq -r '.result.state // empty' <<<"$WJ2" 2>/dev/null || echo "")
 DID=$(jq -r '.result.dispatchId // empty' <<<"$WJ2" 2>/dev/null || echo "")
 H=$(jq -r 'first(.result.effects[]? | select(.kind == "terminal" and .role == "agent") | .id) // empty' \

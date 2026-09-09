@@ -18,6 +18,122 @@ Orca は自分の CLI 名を `ORCA_CLI_COMMAND` として export する。WSL2 �
 `orca-ide` で、macOS では app bundle の中に居る。どちらの形も前提にせず、ユーザーへ見せる
 コマンドも含めて常に `$ORCA_BIN` 経由で呼ぶ。
 
+**まず引数で振り分ける。**`--setup` と `--reset` は設定するだけで dispatch を 1 件も起こさない
+— 設定の節を実行して終わる。それ以外は dispatch であり、その設定を読み、設定が無ければ S0 を一度だけ尋ねてから
+Step 1 を始める。
+
+## 設定
+
+各ロールは Orca の agent で走り、model と reasoning effort を任意で指定できる。機械的な
+入口は `--setup` と `--reset` の 2 つだけで、どちらも dispatch を 1 件も起こさない。
+
+| ファイル | 役割 |
+|---|---|
+| `~/.claude/config/orca-team-dispatch-task/config.json` | グローバルの role tuple |
+| `<repo>/.dispatch/config.json` | プロジェクトの role tuple。グローバルを覆う |
+
+role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → project → global の順に
+**フィールド単位で**解決する。runner のレジストリは無い。`--agent` が Orca の起動するものその
+ものなので、**agent の id が runner である。**存在するのに読めない層は、不在として読まずに
+**dispatch を止める。**
+
+| フィールド | 未設定のときの挙動 |
+|---|---|
+| `agent` | `claude` を既定にする。この設定が無かった頃の dispatch と同じ挙動である |
+| `model` | `--model` を渡さないので Orca 側の既定が使われる |
+| `effort` | `--effort` を渡さない。Orca は `--effort` に `--model` を要求するので、model の無い effort は警告して落とす |
+
+### S0. 設定が無ければ一度だけ尋ねる
+
+dispatch はこの設定を読む。だから **設定が 1 つも無い dispatch は Step 1 の前に一度だけ尋ねる。**
+第三者キーしか持たない層のファイルは、未設定として扱う。
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
+RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
+CFG=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR") || exit 1
+jq -r 'if .configured then "configured" else "not configured" end' <<<"$CFG"
+```
+
+`not configured` と出たら、3 つの答えを持つ質問を 1 問する: 今すぐ設定する（S1 へ）/ Orca の
+既定のまま dispatch する / この 1 回だけ値を指定する。**断ることも正当な答えである** — 既定の
+まま dispatch し、このセッションでは二度と尋ねない。この質問で dispatch を止めてはならず、
+既に `configured` のときに尋ねてもならない。
+
+### S1. 現状を表示する
+
+両方の層、解決後の tuple、Orca が持っているアカウントを表示する。**何も書かない。**
+
+```bash
+printf 'resolved:\n'; jq '.roles' <<<"$CFG"
+printf 'global:\n';   bash "$SCRIPTS/config-edit.sh" --config "$(jq -r .global_config  <<<"$CFG")" --show
+printf 'project:\n';  bash "$SCRIPTS/config-edit.sh" --config "$(jq -r .project_config <<<"$CFG")" --show
+```
+
+agent がどのアカウントでサインインするかは role tuple の一部**ではなく**、この skill から
+変更できない。Orca の CLI には `account add` と `account list` しか無く、アクティブな
+アカウントを選ぶ口が無いので、全ロールが Orca アプリでそのランタイムに対してアクティブに
+なっているアカウントを使う。どのアカウントを消費するかが分かるように表示し、切り替えは
+Orca アプリ側で行う旨を伝える:
+
+```bash
+"$ORCA_BIN" account list --json | jq '.result
+  | {claude: {accounts: [.claude.accounts[]?.id], active: .claude.activeAccountIdsByRuntime},
+     codex:  {accounts: [.codex.accounts[]?.id],  active: .codex.activeAccountIdsByRuntime}}'
+```
+
+### S2. 層を尋ね、次に tuple を尋ねる
+
+書き込み先をグローバル層かプロジェクト層かで 1 問尋ねる。選ばれた層だけを書く。続けて
+`agent` / `model` / `effort` を 1 コールで尋ねる。
+
+agent の候補は `claude` と `codex` を出し、それ以外は自由入力で受ける。この一覧は便宜で
+あって **allowlist ではない** — Orca が agent を増やしてもここを直さずに設定できる状態を
+保つ。model と effort は選ばれた agent に合うものを出し、**常に「未設定のままにする」を
+選べるようにする**（Orca の既定へ戻せる）。
+
+### S3. 書く前に検証する
+
+回答は pending tuple として保持する。空・前後の空白・制御文字と、`'`、`"`、`` ` ``、`$`、
+`\`、`!` を拒否し、**無効だった次元だけ**を再度尋ねる。回答をトリムしてはならない —
+入力された値と違う値が保存されるくらいなら拒否するほうがよい。`config-edit.sh` も再度検証し、
+どこか 1 つでも無効なら何も書かない。
+
+### S4. プレビューし、確認し、1 度だけ書く
+
+選んだファイルの before と after を見せ、書き込みか中止かを選ばせる。書くときは **1 回だけ**
+`config-edit.sh` を呼び、すべての `--set` をそこに載せる。こうすると結果全体が 1 度の
+原子的な mv で入り、値が 1 つでも拒否されればファイルは元のままになる。プロジェクト層なら
+先に `.dispatch` ディレクトリを `mkdir -p` し、以後このリポジトリではグローバル層を覆うことを
+伝える。
+
+```bash
+LAYER=$(jq -r .global_config <<<"$CFG")   # or .project_config for the project layer
+mkdir -p "$(dirname "$LAYER")"
+bash "$SCRIPTS/config-edit.sh" --config "$LAYER" \
+  --set roles.design.agent="$AGENT" --set roles.design.model="$MODEL" --set roles.design.effort="$EFFORT"
+bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --show
+```
+
+未設定のままにする次元は `--set` ごと落とす。既に設定済みのものを消すには `--unset` を使う。
+
+### R. `--reset`
+
+層を尋ね、**この skill が所有するキーだけ**を消す。そのファイルの他のキーは保持し、存在しない
+ファイルは作らない。
+
+```bash
+bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --unset roles
+```
+
+何が変わったかを報告し、S1 から続けるかを尋ねる。
+
+### 保存せずに 1 回だけ試す
+
+Step 2 は `--agent` / `--model` / `--effort` を受け取る。これらはその 1 コールに限り両方の層
+より強く、**何も書かない**ので、保存する前に model を試せる。
+
 ## Step 1: 依頼を書き出す
 
 dispatch するのは一度に 4 タスクまでとする。4 タスクは既に 4 本の agent セッションであり、
@@ -483,6 +599,11 @@ release するのはここである。**セッションを閉じることはユ�
   それ以外ならそこで止め、何が実行されなかったかを報告し、残りには手を付けない。
   失敗が次の step を authorise することはなく、あるタスクの失敗が別のタスクの先送りを
   authorise することもない。
+- **端末の操作については `.ok == true` では足りない。**実機で計測したところ、Orca が端末を
+  user-owned とみなしている場合、`worker-release` は何も解放しないまま `ok` を返す —
+  receipt は `releaseState: retained` と `retainedReason: user_takeover` のままである。
+  セッションを閉じたと言う前に、その state を読み直す。Orca が保持した端末は止まるべき失敗
+  ではなく（worktree の step は続けてよい）、閉じたと報告することだけが誤りである。
 - dispatch 記録は端末と worktree の id を保持している。それらと並べて提示するときは、
   記録だけを削除して他を残すと何を失うのかをその選択肢に書き、承知のうえで選べるようにする。
 - 最後に、タスクごとに削除したものと残したものを報告する。
@@ -497,7 +618,7 @@ release するのはここである。**セッションを閉じることはユ�
 | セッションが dispatch の途中で終了しても、自動回復しない | `$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
 | worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
-| どの役も Orca が起動する `claude` agent で動き、model と effort はまだ選べない | 信頼できるタスクだけを dispatch し、役ごとの agent 設定を足す stage を待つ |
+| agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
 | setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
 | この版が扱えない batch は acknowledge されないまま親 terminal の queue を block する | acknowledge しない。`received.json` と `result.md` を確認する。guarded manual integration でも queue は解消されない。後続の dispatch は別の Orca terminal から開始し、launch 時にはその `ORCA_TERMINAL_HANDLE` が使われる |
 | Orca が `release_pending` / `release_unknown` と報告する dispatch は片付けられない | [C1] がそのタスクを止める。端末・worktree・記録をそのまま残し、`$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べる。`release_pending` は自然に確定しうるが、`release_unknown` は判断が要る |

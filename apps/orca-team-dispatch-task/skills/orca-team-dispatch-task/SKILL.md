@@ -27,6 +27,123 @@ Orca exports `ORCA_CLI_COMMAND` with the name of its CLI; on WSL2 that is `orca-
 which is on PATH, and on macOS the CLI lives inside the app bundle. Never assume either
 shape: always call it through `$ORCA_BIN`, including in commands you show the user.
 
+**Route on the arguments first.** `--setup` and `--reset` configure and dispatch nothing:
+do the Configuration section and stop. Anything else is a dispatch, which reads that
+configuration, asks S0 once when there is none, and starts at Step 1.
+
+## Configuration
+
+Each role runs an Orca agent with an optional model and reasoning effort. `--setup` and
+`--reset` are the only mechanical entry points; both dispatch nothing.
+
+| File | Purpose |
+|---|---|
+| `~/.claude/config/orca-team-dispatch-task/config.json` | Global role tuples |
+| `<repo>/.dispatch/config.json` | Project role tuples, shadowing the global layer |
+
+A role tuple has `agent`, `model` and `effort`, and the three resolve **field by field**
+through override, then project, then global. There is no runner registry: `--agent` is what
+Orca launches, so the agent id is the runner. **A layer that is present but unreadable stops
+the dispatch** rather than being read as absent.
+
+| Field | Unset behaviour |
+|---|---|
+| `agent` | Defaults to `claude`, which is what a dispatch used before this setting existed |
+| `model` | `--model` is not passed, so Orca's own default applies |
+| `effort` | `--effort` is not passed. Orca requires `--model` with `--effort`, so an effort without a model is dropped with a warning |
+
+### S0. Ask once when nothing is configured
+
+A dispatch reads this configuration, so **a dispatch that finds none asks once before
+Step 1**. A layer file holding only third-party keys is not configured.
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
+RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
+CFG=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR") || exit 1
+jq -r 'if .configured then "configured" else "not configured" end' <<<"$CFG"
+```
+
+When it prints `not configured`, ask one question with three answers: configure now (go to
+S1), dispatch on Orca's own defaults, or set values for this one dispatch only. **Declining
+is a real answer** — dispatch on the defaults and do not ask again in this session. Never
+block a dispatch on this question, and never ask it when the answer is already `configured`.
+
+### S1. Show the current state
+
+Show both layers, the resolved tuple, and which accounts Orca holds. This writes nothing.
+
+```bash
+printf 'resolved:\n'; jq '.roles' <<<"$CFG"
+printf 'global:\n';   bash "$SCRIPTS/config-edit.sh" --config "$(jq -r .global_config  <<<"$CFG")" --show
+printf 'project:\n';  bash "$SCRIPTS/config-edit.sh" --config "$(jq -r .project_config <<<"$CFG")" --show
+```
+
+The account an agent signs in as is **not** part of a role tuple, and this skill cannot
+change it. Orca's CLI has only `account add` and `account list`; nothing selects the active
+account, so every role uses whatever the Orca app has active for that runtime. Show it so the
+user knows which account their dispatch will spend, and say that switching happens in the
+Orca app:
+
+```bash
+"$ORCA_BIN" account list --json | jq '.result
+  | {claude: {accounts: [.claude.accounts[]?.id], active: .claude.activeAccountIdsByRuntime},
+     codex:  {accounts: [.codex.accounts[]?.id],  active: .codex.activeAccountIdsByRuntime}}'
+```
+
+### S2. Ask which layer, then ask the tuple
+
+Ask one question for the destination: the global layer or the project layer. The chosen
+layer is the only one written. Then ask `agent`, `model` and `effort` in one call.
+
+Offer `claude` and `codex` as agent choices, and take a free-text answer for anything else —
+the list is a convenience, **not an allowlist**, so Orca gaining an agent does not require a
+change here. Offer models and efforts that match the chosen agent, and always offer "leave
+unset" so the user can fall back to Orca's default.
+
+### S3. Validate before writing
+
+Keep the answers as a pending tuple. Reject an empty answer, leading or trailing whitespace,
+control characters, and `'`, `"`, `` ` ``, `$`, `\`, or `!`; re-ask only the invalid
+dimension. Do not trim an answer — saving a different value than the one typed is worse than
+refusing it. `config-edit.sh` validates again and writes nothing if any part is invalid.
+
+### S4. Preview, confirm, then write once
+
+Show the chosen file before and after, and offer write or abort. On write, make **exactly
+one** `config-edit.sh` call carrying every `--set`, so the whole result lands in a single
+atomic move and a rejected value leaves the file untouched. For the project layer, `mkdir -p`
+its `.dispatch` directory first, and tell the user it now shadows the global layer for this
+repository.
+
+```bash
+LAYER=$(jq -r .global_config <<<"$CFG")   # or .project_config for the project layer
+mkdir -p "$(dirname "$LAYER")"
+bash "$SCRIPTS/config-edit.sh" --config "$LAYER" \
+  --set roles.design.agent="$AGENT" --set roles.design.model="$MODEL" --set roles.design.effort="$EFFORT"
+bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --show
+```
+
+Drop the `--set` for any dimension the user left unset, and use `--unset` to clear one that
+was previously set.
+
+### R. `--reset`
+
+Ask which layer, then clear only the key this skill owns. Other keys in that file are kept,
+and an absent file is not created.
+
+```bash
+bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --unset roles
+```
+
+Report what changed and offer to continue at S1.
+
+### Trying one dispatch without saving
+
+Step 2 accepts `--agent`, `--model` and `--effort`. They outrank both layers for that one
+call and write nothing, so a model can be tried before it is saved.
+
 ## Step 1: Write the request down
 
 Dispatch at most four tasks at once. Four tasks is already four live agent sessions, and
@@ -501,6 +618,12 @@ effect of deciding.
   else, stop there, report what did not happen, and leave the rest in place. A failure never
   authorises the step after it, and a failure in one task never authorises skipping ahead in
   another.
+- **`.ok == true` is not enough for the terminal action.** Measured against a real runtime,
+  `worker-release` answers `ok` while releasing nothing when Orca considers the terminal
+  user-owned: the receipt still reads `releaseState: retained` with
+  `retainedReason: user_takeover`. Read that state back before saying the session was closed.
+  A terminal Orca kept is not a failure to stop on — the worktree step may still proceed —
+  but reporting it as closed would be false.
 - The dispatch record holds the ids of the terminal and the worktree. When it is offered
   next to them, say in that option what removing the record while keeping the others costs,
   so the choice is made knowingly.
@@ -516,7 +639,7 @@ State these when they apply. Do not work around them silently.
 | If this session dies mid-dispatch, nothing recovers automatically | Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
 | If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
 | A worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
-| Every role runs the `claude` agent Orca launches; the model and effort cannot be chosen yet | Dispatch only a task you trust, and wait for the stage that adds per-role agent settings |
+| The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Repositories that need setup hooks are out of scope | The worktree is created with setup skipped |
 | A batch this version cannot handle stays unacknowledged and blocks its parent terminal's queue | Do not acknowledge it. Inspect `received.json` and `result.md`; guarded manual integration does not unblock that queue. Start later dispatches from another Orca terminal, whose `ORCA_TERMINAL_HANDLE` is used at launch |
 | A dispatch Orca reports as `release_pending` or `release_unknown` is never cleaned up | [C1] stops that task. Leave its terminal, worktree and record alone and inspect it with `$ORCA_BIN orchestration worker-show --dispatch <id> --json`; `release_pending` may settle by itself, `release_unknown` needs a decision |

@@ -18,7 +18,32 @@ Orca の worktree で N タスクを worker に並列実行させるプラグイ
 `bin/orca-start.sh`（worktree + Task を用意し、`worker-start` で Orca に端末起動を依頼する。
 端末自体はこのプラグインではなく Orca が作る）/ `bin/orca-wait.sh`
 （`worker_done` を待つ。成功 0 / 失敗 5）/ `bin/orca-merge.sh`（成果を親ブランチへ。
-**資源は消さない**）/ `skills/.../scripts/report-status.sh`（worker が status を書く口。移植）。
+**資源は消さない**）/ `skills/.../scripts/report-status.sh`（worker が status を書く口。移植）/
+`skills/.../scripts/config-{lib,resolve,edit}.sh`（設定層。後述）。
+
+## 設定層に runner レジストリが無い理由
+
+cmux 版の `runner` は `runners.json` に登録した**名前**で、それを engine（claude|codex）へ
+写していた。名前と engine を分けていたのは「同じ engine で別アカウントの runner」を作るため
+だが、**Orca ではそれが作れない**（実測）:
+
+- `orchestration worker-start` の flag は `agent` / `model` / `effort` / `terminal` 等で、
+  アカウント指定口が無い
+- `account` 名前空間は `add` と `list` の 2 つだけ。全 234 コマンドを機械可読スキーマ
+  (`agent-context --json`) で洗っても active を選ぶコマンドは無い。active は
+  `account list` の `activeAccountIdsByRuntime` にランタイム単位で出るが、書くのは GUI だけ
+
+よって runner 名を作る動機が消え、**`--agent <id>` がそのまま runner 兼 engine** になる。
+`runners.json` と `config-edit.sh --runners` / `--engine` は移植しない。
+
+**agent の allowlist は閉じない。**スキーマが `--agent` の値として名指しするのは claude と
+codex だけだが、未知の値も警告付きで通す（Orca が agent を増やしたときにここを直さずに
+設定できる状態を保つため）。判定できないもの（未知 agent の effort）は Orca に委ね、
+誤りは `worker-start` の失敗として見える。
+
+**model と effort に自動既定を持たない。**未設定なら flag ごと渡さず、Orca 側の既定に委ねる。
+既定を捏造すると、設定していない利用者の dispatch が黙って変わる。回帰は `test/test-config.sh`
+の CF1 と `test/test-start.sh` の ST31 が固定する。
 
 ## WSL2 の path 境界
 
@@ -33,7 +58,9 @@ path は UNC で返り、bash の `-d` も `git -C` も解釈できない）。�
 
 ## 範囲
 
-Stage A は **1 タスク = 1 役（design）**。レビュー無し・PR 無し・ループ無し・設定無し。
+Stage A は **1 タスク = 1 役（design）**。レビュー無し・PR 無し・ループ無し。
+**役ごとの agent / model / effort は設定できる**（global と project の 2 層 + 1 回きりの
+コマンドライン上書き）。アカウントは選べない（上記の理由）。
 **N タスクを 1 つの Run で並列に dispatch できる**（既定上限 4）。worker のセッションは
 `worker-retain` で最後まで保持し、解放は Step 6 の承認後だけ。片付けが勝手に走ることは
 ない — Step 5 が削除してよいものを判定し、Step 6 が尋ねて、承認されたものだけを実行する。

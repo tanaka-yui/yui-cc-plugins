@@ -9,6 +9,9 @@ unset ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND
 setup() {
   ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
   : > "$ORCA_STUB_DIR/calls.log"
+  # ★ **利用者の実 config を読ませない。**隔離しないと、その端末で --setup を一度でも
+  #   走らせた瞬間にテストの期待 (agent=claude / model 無し) が壊れる
+  export ORCA_DISPATCH_CONFIG_HOME="$ORCA_STUB_DIR/config"
   export ORCA_TERMINAL_HANDLE=term_p
   R=$(mktemp -d); git -C "$R" init -q -b main .
   echo seed > "$R/README.md"; git -C "$R" add -A
@@ -30,7 +33,7 @@ setup() {
 }
 teardown() { git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
              rm -rf "$ORCA_STUB_DIR" "$R" "$REQ" "$(dirname "$WT")"
-             unset ORCA_TERMINAL_HANDLE ORCA_BIN; }
+             unset ORCA_TERMINAL_HANDLE ORCA_BIN ORCA_DISPATCH_CONFIG_HOME; }
 start() { bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug "${SLUG:-s}" --objective obj \
             --repo-root "$R" "$@"; }
 spec() { grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1; }
@@ -363,5 +366,53 @@ start >/dev/null 2>&1; rc=$?
 PATH="$OLDPATH"; export PATH; rm -rf "$STUBBIN"; unset ORCA_CLI_COMMAND
 [[ "$rc" -eq 0 ]] && grep -q 'run-create' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST29 ORCA_CLI_COMMAND を既定にする" || fail "ST29 (rc=$rc)"; teardown
+
+# ST30: **config が worker-start の argv になる。**ここが繋がっていなければ、
+#       config.json はただのファイルであって設定ではない
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+echo '{"roles":{"design":{"agent":"codex","model":"gpt-6-astra","effort":"xhigh"}}}' \
+  > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$ws" == *'--agent codex'* && "$ws" == *'--model gpt-6-astra'* && "$ws" == *'--effort xhigh'* ]] \
+  && ok "ST30 config が --agent/--model/--effort になる" || fail "ST30 [$ws]"; teardown
+
+# ST31: ★ **設定ゼロの挙動を変えない。**`--model` を省けば Orca 側の既定が使われる。
+#       ここで既定を捏造すると、設定していない利用者の dispatch が黙って変わる
+setup; start >/dev/null 2>&1
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$ws" == *'--agent claude'* && "$ws" != *'--model'* && "$ws" != *'--effort'* ]] \
+  && ok "ST31 設定ゼロなら model/effort を渡さない" || fail "ST31 [$ws]"; teardown
+
+# ST32: ★ **壊れた設定では資源を 1 つも作らない。**設定の解決は worktree と Task より前。
+#       あとで落ちると、片付けの要る残骸だけが残る
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; echo '{not json' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -qE 'worktree create|task-create|worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST32 壊れた設定では何も作らない" || fail "ST32 (rc=$rc)"; teardown
+
+# ST33: 解決した tuple を workers.json に残す。receipt 無しで「何で走ったか」に答えるため。
+#       未設定の model/effort は**キーを置かない**（未設定と空文字を混ぜない）
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+echo '{"roles":{"design":{"agent":"claude","model":"sonnet"}}}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1
+d=$(jq -c '.roles.design | {agent,model,effort:(has("effort"))}' "$R/.dispatch/s/workers.json" 2>/dev/null)
+[[ "$d" == '{"agent":"claude","model":"sonnet","effort":false}' ]] \
+  && ok "ST33 解決した tuple を workers.json に残す" || fail "ST33 [$d]"; teardown
+
+# ST34: 1 回きりの上書きは config より強い。config を書き換えずに 1 回だけ別の値で試せる
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+echo '{"roles":{"design":{"agent":"claude","model":"sonnet","effort":"low"}}}' \
+  > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start --model 'opus[1m]' --effort max >/dev/null 2>&1
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+# calls.log は argv を %q で記録するので、期待値も同じ引用を通してから比べる
+printf -v qm '%q' 'opus[1m]'
+[[ "$ws" == *"--model $qm"* && "$ws" == *'--effort max'* ]] \
+  && ok "ST34 1 回きりの上書きが config より強い" || fail "ST34 [$ws]"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

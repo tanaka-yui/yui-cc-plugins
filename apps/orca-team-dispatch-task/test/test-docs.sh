@@ -421,6 +421,7 @@ normalise_headings() {
     case "$mode:$line" in
       skill:'# Orca Team Dispatch'|guide:'# Orca Team Dispatch') echo 'h1:orca-team-dispatch' ;;
       skill:'## Output Language'|guide:'## 出力言語') echo 'h2:output-language' ;;
+      skill:'## Configuration'|guide:'## 設定') echo 'h2:configuration' ;;
       skill:'## Step 1: Write the request down'|guide:'## Step 1: 依頼を書き出す') echo 'h2:step-1' ;;
       skill:'## Step 2: Start'|guide:'## Step 2: 開始') echo 'h2:step-2' ;;
       skill:'## Step 3: Wait'|guide:'## Step 3: 待つ') echo 'h2:step-3' ;;

@@ -8,6 +8,8 @@ P="$(cd "$(dirname "$0")/.." && pwd)"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
 export ORCA_TERMINAL_HANDLE=term_p
+# ★ 利用者の実 config を読ませない (test-start.sh と同じ理由)
+export ORCA_DISPATCH_CONFIG_HOME="$ORCA_STUB_DIR/config"
 R=$(mktemp -d); git -C "$R" init -q -b main .; echo seed > "$R/README.md"
 git -C "$R" add -A; git -C "$R" -c user.email=t@e -c user.name=t commit -q -m seed
 # worker の worktree は **repo の外**（中に置くと親が常に dirty になる。実測）
