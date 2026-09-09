@@ -438,8 +438,10 @@ issec=$(mktemp)
 awk '/^## Issue mode$/{s=1} s&&/^## Step 1:/{exit} s' "$S" > "$issec"
 nth_block() { awk -v n="$1" '/^```bash$/{b++; if(b==n){f=1; next}} f&&/^```$/{exit} f{print}' "$issec"; }
 probe=$(mktemp -d)
-for n in 2 3 4; do
+for n in 2 3 4 5; do
   blk="$probe/i$n.sh"; nth_block "$n" > "$blk"
+  # block が無ければ検査対象も無い（節を減らしたときに黙って緩まないよう明示する）
+  [[ -s "$blk" ]] || { bad="$bad [I$n-missing]"; continue; }
   out=$(env -u SCRIPTS -u STATE -u NUM -u SLUG -u REQ -u PLUGIN bash "$blk" 2>&1); rc=$?
   # 未設定なら **非 0 で止まる**こと。/issue-fetch.sh を叩いていないこと
   if [[ "$rc" -eq 0 || "$out" == *'/issue-fetch.sh: No such file'* ]]; then

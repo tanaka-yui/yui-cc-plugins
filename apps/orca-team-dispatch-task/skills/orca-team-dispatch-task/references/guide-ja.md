@@ -150,8 +150,8 @@ Step 2 は `--agent` / `--model` / `--effort` を受け取る。これらはそ�
 ## Issue モード
 
 `--issue` は仕事をユーザーの依頼文ではなく GitHub の issue から取る。`--issue <N>` はその
-1 件だけを運び、引数なしの `--issue` は issue を尽きるかバッチ上限に達するまでバッチ単位で
-claim する。
+1 件だけを運び、**I1 を丸ごと飛ばす**。引数なしの `--issue` は I1 を尋ねてから、issue が
+尽きるかバッチ上限に達するまでバッチ単位で claim する。
 
 **1 件の issue は 1 コールで最後まで運ばれる。**それが `bin/orca-issue.sh` である。dispatch し、
 待ち、merge し、ラベルを遷移させ、issue を close する。**資源は 1 つも消さない** — 手書きの
@@ -185,7 +185,41 @@ EX=$(git -C "$RR" rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$EX
 `lock-acquire` は安定した session id を要求する。環境が持っていなければ `LOOP_SESSION_ID` を
 export する。**どの終了経路でも lock を解放する** — 想定していなかった経路も含めて。
 
+### I1a. 単件を指定されたとき
+
+`--issue <N>` は仕事を名指ししているので、**尋ねることが無い** — 絞り込みもバッチ数も
+バッチ上限も要らない。I0 を済ませたら、その issue を claim して運ぶ。**claim は同じ
+`fetch` を通る。**単件では検索を飛ばし、state を書けなかったときにラベルを戻す補償は
+そのまま効く。
+
+```bash
+: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
+: "${NUM:?set NUM to the issue number given on the command line}"
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" init \
+  --config-json '{"concurrency":1}' --filter-json '{"issue":"named"}' || exit 1
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" ensure-labels || exit 1
+CLAIM=$(bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" \
+          fetch --issue "$NUM" --limit 1 --batch 1) || exit 1
+[[ "$(jq 'length' <<<"$CLAIM")" -eq 1 ]] || {
+  echo "issue #$NUM was not claimed; it is already recorded in $STATE" >&2
+  exit 1
+}
+SLUG=$(jq -r '.[0].slug' <<<"$CLAIM")
+REQ=$(mktemp); jq -r '.[0] | "\(.title)\n\n\(.body)"' <<<"$CLAIM" > "$REQ"
+printf 'slug=%s\nrequest_file=%s\n' "$SLUG" "$REQ"
+```
+
+claim が空なのは隠すべき失敗ではない。**その issue が既に state file に載っている**という
+ことであり、今回の実行のものか以前のものかを述べて、二重に claim せずに止まる。
+
+そのあとは I3 のブロックで運び、I4 のブロックで lock を解放する。**I1 と I2 は飛ばす** —
+バッチが無いからである。`init` を上のブロックに入れてあるのは `fetch` が state file を
+要求するためであり、`reconcile` は**意図して外している** — 名指しされた issue は state の
+残りに依存せず、既に記録済みの issue は `fetch --issue` が既に拒む。
+
 ### I1. 一度だけ尋ね、あとは尋ねない
+
+この節は引数なしの `--issue` のためのものである。単件指定はここへ来ない。
 
 次の 4 つを 1 問にまとめて尋ねる。issue の実行は始まったら無人なので、**終わるまで何も
 尋ねてはならない。**

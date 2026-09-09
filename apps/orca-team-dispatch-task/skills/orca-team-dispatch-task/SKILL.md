@@ -162,8 +162,8 @@ call and write nothing, so a model can be tried before it is saved.
 ## Issue mode
 
 `--issue` takes the work from GitHub issues instead of from the user's message. `--issue <N>`
-carries exactly that one issue; bare `--issue` claims issues in batches until it runs out or
-hits the batch limit.
+carries exactly that one issue and skips I1 entirely; bare `--issue` asks I1 and then claims
+issues in batches until it runs out or hits the batch limit.
 
 **One issue is carried end to end by one call**, and `bin/orca-issue.sh` is that call. It
 dispatches, waits, merges, moves the labels and closes the issue. **It removes nothing** —
@@ -198,7 +198,41 @@ EX=$(git -C "$RR" rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$EX
 not already provide one. **Release the lock on every exit path**, including the ones you did
 not plan for.
 
+### I1a. One named issue
+
+`--issue <N>` names the work, so **there is nothing to ask**: no filter, no batch size, no
+batch count. Do I0, then claim that issue and carry it. **Claiming goes through the same
+`fetch`**, which skips the search for a named issue and keeps the compensation that removes
+the label again when the state cannot be written.
+
+```bash
+: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
+: "${NUM:?set NUM to the issue number given on the command line}"
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" init \
+  --config-json '{"concurrency":1}' --filter-json '{"issue":"named"}' || exit 1
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" ensure-labels || exit 1
+CLAIM=$(bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" \
+          fetch --issue "$NUM" --limit 1 --batch 1) || exit 1
+[[ "$(jq 'length' <<<"$CLAIM")" -eq 1 ]] || {
+  echo "issue #$NUM was not claimed; it is already recorded in $STATE" >&2
+  exit 1
+}
+SLUG=$(jq -r '.[0].slug' <<<"$CLAIM")
+REQ=$(mktemp); jq -r '.[0] | "\(.title)\n\n\(.body)"' <<<"$CLAIM" > "$REQ"
+printf 'slug=%s\nrequest_file=%s\n' "$SLUG" "$REQ"
+```
+
+An empty claim is not a failure to hide: it means the issue is already in the state file,
+from this run or an earlier one. Say which, and stop rather than claiming it twice.
+
+Then carry it with the I3 block and release the lock with the I4 block. **Skip I1 and I2**
+— there is no batch. `init` is in the block above because `fetch` needs the state file;
+`reconcile` is deliberately left out, because a named issue does not depend on the rest of
+the state and `fetch --issue` already refuses one that is already recorded.
+
 ### I1. Ask once, then stop asking
+
+This section is for bare `--issue` only. A named issue never reaches it.
 
 Ask a single question with these four parts. An issue run is unattended once it starts, so
 **nothing may ask again until it ends**.

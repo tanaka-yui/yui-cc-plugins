@@ -130,4 +130,41 @@ LOOP_SESSION_ID=other-session run mark-dispatched --issue 1 >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "IF10 owner 以外は state を書けない" || fail "IF10"
 teardown
 
+# IF11: ★ **単件指定は検索を通さない。**ラベルや assignee で絞る意味が無いうえ、
+#       検索から漏れた issue を指定できなくなる。
+setup; acquire; init
+jq -nc '{number:21,title:"one only",body:"b",url:"u21",labels:[]}' > "$GH_STUB_DIR/issue_view"
+: > "$GH_STUB_DIR/issue_edit"
+out=$(run fetch --issue 21 --limit 5 --batch 1 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 ]] \
+  && [[ "$(jq -r '.[0].number' <<<"$out")" == 21 ]] \
+  && [[ "$(jq -r '.[0].slug' <<<"$out")" == issue-21-* ]] \
+  && ! grep -q 'issue list' "$GH_STUB_DIR/calls.log" \
+  && grep -q -- '--add-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && ok "IF11 単件は検索せずに claim する" || fail "IF11 (rc=$rc out=$out)"
+teardown
+
+# IF12: 単件でも **claim の補償は共通経路**を通る。state を書けなければラベルを戻す。
+setup; acquire; init
+jq -nc '{number:22,title:"one only",body:"b",url:"u22",labels:[]}' > "$GH_STUB_DIR/issue_view"
+: > "$GH_STUB_DIR/issue_edit"
+chmod 500 "$LD"
+run fetch --issue 22 --limit 1 --batch 1 >/dev/null 2>&1; rc=$?
+chmod 700 "$LD"
+[[ "$rc" -ne 0 ]] \
+  && grep -q -- '--remove-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && ok "IF12 単件でも claim の補償が働く" || fail "IF12 (rc=$rc)"
+teardown
+
+# IF13: 既に state に載っている issue を単件指定したら **claim し直さない**。
+setup; acquire; init
+jq '.issues["23"] = {slug:"issue-23-x",status:"done"}' "$SF" > "$LD/s" && mv "$LD/s" "$SF"
+jq -nc '{number:23,title:"already",body:"b",url:"u23",labels:[]}' > "$GH_STUB_DIR/issue_view"
+: > "$GH_STUB_DIR/issue_edit"
+out=$(run fetch --issue 23 --limit 1 --batch 1 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == '[]' ]] \
+  && ! grep -q -- '--add-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && ok "IF13 state に載っている issue は claim し直さない" || fail "IF13 (rc=$rc out=$out)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

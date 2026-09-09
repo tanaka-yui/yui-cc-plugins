@@ -10,6 +10,8 @@
 #     3. reconcile の worktree 痕跡が `<repo>/.worktrees/<slug>` の固定パス →
 #        `workers.json` の `roles[].worktree_path` の実在（Orca の worktree は repo の外）
 #     4. `gh label create` の説明文
+#     5. `fetch --issue <N>` を足した（単件指定。検索を通さず、claim と補償は共通経路へ
+#        合流させる）。`--issue` の flag 自体は上流にもある（mark-dispatched などが使う）
 #
 #   **上流が動いたらこの一覧との差分を人が見て判断する。**自動追従はしない。
 # GitHub issue 自動ループの issue 取得・claim・状態管理。
@@ -233,32 +235,49 @@ case "$SUBCOMMAND" in
     command -v gh >/dev/null 2>&1 || die "gh is not installed"
     (( LIMIT > 0 && BATCH > 0 )) || die "fetch requires positive --limit and --batch"
     [[ -f "$STATE_FILE" ]] || die "$STATE_FILE not found; run init first"
-    local_search="-label:dispatch/in-progress -label:dispatch/done -label:dispatch/failed"
-    gh_assignee_flags=()
-    case "$ASSIGNEE" in
-      '') ;;
-      @me) gh_assignee_flags=(--assignee @me) ;;
-      none) local_search="$local_search no:assignee" ;;
-      *) gh_assignee_flags=(--assignee "$ASSIGNEE") ;;
-    esac
-    gh_label_flags=()
-    [[ -n "$LABELS" ]] && gh_label_flags=(--label "$LABELS")
-    window=$(( LIMIT * 2 )); (( window > MAX_WINDOW )) && window=$MAX_WINDOW
-    candidates='[]'
-    exhaustion_known=0
-    while :; do
-      raw=$(gh issue list --state "$ISSUE_STATE" ${gh_label_flags[@]+"${gh_label_flags[@]}"} ${gh_assignee_flags[@]+"${gh_assignee_flags[@]}"} --search "$local_search" --limit "$window" --json number,title,body,url,labels) || die "gh issue list failed"
-      returned=$(jq 'length' <<<"$raw")
-      candidates=$(jq --slurpfile state <(jq '.issues // {}' "$STATE_FILE") '[.[] | (.number | tostring) as $number | select(($state[0] | has($number)) | not)]' <<<"$raw")
-      candidate_count=$(jq 'length' <<<"$candidates")
-      if (( returned < window || candidate_count > 0 )); then exhaustion_known=1; break; fi
-      (( window >= MAX_WINDOW )) && break
-      window=$(( window * 2 )); (( window > MAX_WINDOW )) && window=$MAX_WINDOW
-      log fetch "window全除外につき拡張: --limit $window"
-    done
-    if (( exhaustion_known == 0 )); then
-      log warn "取得窓を上限 $MAX_WINDOW まで広げても候補が尽きたと確認できませんでした"
-      exit 4
+    # ★ **単件指定 (`--issue <N>`) は検索を通さない。**ラベルや assignee で絞る意味が
+    #   無いうえ、検索から漏れた issue を指定できなくなる。**claim とその補償
+    #   （state を書けなければラベルを戻す）は下の共通経路に合流させる** — 2 か所に
+    #   書くと必ず片方だけ直されてドリフトする。
+    if [[ -n "$ISSUE_NUM" ]]; then
+      raw=$(gh issue view "$ISSUE_NUM" --json number,title,body,url,labels) \
+        || die "gh issue view #$ISSUE_NUM failed"
+      candidates=$(jq --slurpfile state <(jq '.issues // {}' "$STATE_FILE") \
+        '[.] | [.[] | (.number | tostring) as $number | select(($state[0] | has($number)) | not)]' \
+        <<<"$raw")
+      if [[ "$(jq 'length' <<<"$candidates")" == 0 ]]; then
+        log warn "issue #$ISSUE_NUM は既に state に載っています"
+        echo '[]'; exit 0
+      fi
+      LIMIT=1
+    else
+      local_search="-label:dispatch/in-progress -label:dispatch/done -label:dispatch/failed"
+      gh_assignee_flags=()
+      case "$ASSIGNEE" in
+        '') ;;
+        @me) gh_assignee_flags=(--assignee @me) ;;
+        none) local_search="$local_search no:assignee" ;;
+        *) gh_assignee_flags=(--assignee "$ASSIGNEE") ;;
+      esac
+      gh_label_flags=()
+      [[ -n "$LABELS" ]] && gh_label_flags=(--label "$LABELS")
+      window=$(( LIMIT * 2 )); (( window > MAX_WINDOW )) && window=$MAX_WINDOW
+      candidates='[]'
+      exhaustion_known=0
+      while :; do
+        raw=$(gh issue list --state "$ISSUE_STATE" ${gh_label_flags[@]+"${gh_label_flags[@]}"} ${gh_assignee_flags[@]+"${gh_assignee_flags[@]}"} --search "$local_search" --limit "$window" --json number,title,body,url,labels) || die "gh issue list failed"
+        returned=$(jq 'length' <<<"$raw")
+        candidates=$(jq --slurpfile state <(jq '.issues // {}' "$STATE_FILE") '[.[] | (.number | tostring) as $number | select(($state[0] | has($number)) | not)]' <<<"$raw")
+        candidate_count=$(jq 'length' <<<"$candidates")
+        if (( returned < window || candidate_count > 0 )); then exhaustion_known=1; break; fi
+        (( window >= MAX_WINDOW )) && break
+        window=$(( window * 2 )); (( window > MAX_WINDOW )) && window=$MAX_WINDOW
+        log fetch "window全除外につき拡張: --limit $window"
+      done
+      if (( exhaustion_known == 0 )); then
+        log warn "取得窓を上限 $MAX_WINDOW まで広げても候補が尽きたと確認できませんでした"
+        exit 4
+      fi
     fi
     if [[ "$(jq 'length' <<<"$candidates")" == 0 ]]; then echo '[]'; exit 0; fi
     if (( DRY_RUN == 1 )); then jq --argjson max "$LIMIT" '.[0:$max]' <<<"$candidates"; exit 0; fi
