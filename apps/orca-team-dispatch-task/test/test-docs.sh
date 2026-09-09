@@ -15,11 +15,11 @@ miss=""; while IFS= read -r r; do [[ -f "$P/$r" ]] || miss="$miss $r"; done \
 [[ -z "$miss" ]] && ok "SK3 参照先が実在" || fail "SK3 実在しない参照:$miss"
 
 # SK4: **まだ実装していないものを宣言しない**
-#      二相コミット (F-d) を実装したので `merge_ready` / `nonce` / `remediation` も
-#      この集合から外した。**`journal` は残す** — spec 10-2 の裁定どおり、exactly-once の
-#      journal は作らない（`completion.json` は crash 回復のためだけの記録である）。
-#      **`generation` は F-e まで残す。**
-bad=""; for w in journal generation; do
+#      spec の follow-up を実装し終えたので、残る禁止語は `journal` だけである。
+#      **`journal` は残す** — spec 10-2 の裁定どおり exactly-once の journal は作らない
+#      (`completion.json` は crash 回復のためだけの記録である)。**この語が SKILL.md に
+#      現れたら、撤回した設計へ戻ろうとしている合図である。**
+bad=""; for w in journal; do
   grep -q -- "$w" "$S" && bad="$bad [$w]"; done
 [[ -z "$bad" ]] && ok "SK4 未実装を宣言しない" || fail "SK4 未実装の宣言:$bad"
 

@@ -47,14 +47,14 @@ F-g / F-b / F-a / F-c は「設定しなければ今までどおり」を守っ�
 
 ---
 
-### Task 1: F-h — repo setup hook
+### Task 1: F-h — repo setup hook — **完了**
 
 現在は `worktree create --setup skip` 決め打ちで、「setup hook を要する repository は対象外」と
 制限表に書いてある。設定で `run` を選べるようにする。
 
 **Files:** `scripts/config-{lib,resolve,edit}.sh` / `bin/orca-start.sh` / `test/test-config.sh` / `test/test-start.sh` / `SKILL.md` / `guide-ja.md`
 
-- [ ] **Step 1: `setup` 設定（`skip` 既定 / `run`）**
+- [x] **Step 1: `setup` 設定（`skip` 既定 / `run`）**
 
 ```bash
 # CF34: setup の既定は skip（現行の挙動）
@@ -63,7 +63,7 @@ F-g / F-b / F-a / F-c は「設定しなければ今までどおり」を守っ�
 # ST55: 既定では --setup skip のまま
 ```
 
-- [ ] **Step 2: setup が失敗したら worker を起こさない**
+- [x] **Step 2: setup が失敗したら worker を起こさない**
 
 setup が失敗した worktree で作業させると、依存の無いまま実装して**なぜ失敗したか分からない
 成果**ができる。`worktree create` の receipt の setup 状態を見て、失敗なら起動しない。
@@ -74,11 +74,11 @@ setup が失敗した worktree で作業させると、依存の無いまま実�
 
 ---
 
-### Task 2: F-b 残り — `exec_review` と Phase B-R
+### Task 2: F-b 残り — `exec_review` と Phase B-R — **完了**
 
 **Files:** `scripts/config-lib.sh` / `bin/orca-start.sh` / `test/test-{config,start,wait}.sh` / 文書
 
-- [ ] **Step 1: 役を足す**
+- [x] **Step 1: 役を足す**
 
 `review_mode=on` かつ `phase_b=on` のとき `exec_review` を起こす。**`phase_b=off` では
 起こさない** — レビューする実装役が居ない。
@@ -89,7 +89,7 @@ setup が失敗した worktree で作業させると、依存の無いまま実�
 # ST57: exec_review は exec より先に起きる（依頼先が居ないと詰まる。T4a と同じ理由）
 ```
 
-- [ ] **Step 2: Phase B-R の往復**
+- [x] **Step 2: Phase B-R の往復**
 
 design 側と同じラベル方式（`review-code:` / `review-verdict:`）。exec の spec に
 往復手順を載せ、`review-plan:` ではなく `review-code:` を使う（spec 6-3 のラベル表）。
@@ -101,26 +101,26 @@ design 側と同じラベル方式（`review-code:` / `review-verdict:`）。exe
 
 ---
 
-### Task 3: F-d — 完了の二相コミット
+### Task 3: F-d — 完了の二相コミット — **完了**
 
 **10-1 の 7 相をそのまま実装する。**
 
 **Files:** `bin/orca-start.sh`（全役の spec）/ `bin/orca-wait.sh`（相 3/4a/4b）/ `scripts/report-status.sh` / `test/*`
 
-- [ ] **Step 1: `completion.json` と nonce**
+- [x] **Step 1: `completion.json` と nonce**
 
 ```json
 {"phase":"prepared|merge_ready_sent|accepted|settled","generation":1,"nonce":"…"}
 ```
 
-- [ ] **Step 2: worker 側の相 1〜2、5〜7 を spec に載せる**
+- [x] **Step 2: worker 側の相 1〜2、5〜7 を spec に載せる**
 
-- [ ] **Step 3: 親側の相 3（検証）・4a（受理）・4b（差し戻し）**
+- [x] **Step 3: 親側の相 3（検証）・4a（受理）・4b（差し戻し）**
 
 検証内容は役ごとに違う（10-1 の表）。design = plan の実在、exec = `result.md` と
 （`integration=pr` なら）`pr_url`、review 役 = 担当ラウンドの findings に `VERDICT:` 行。
 
-- [ ] **Step 4: crash 境界（10-3）を回帰で固定する**
+- [x] **Step 4: crash 境界（10-3）を回帰で固定する**
 
 ```bash
 # CM1: prepared 直後の crash → merge_ready の再送は害にならない
@@ -132,11 +132,11 @@ design 側と同じラベル方式（`review-code:` / `review-verdict:`）。exe
 
 ---
 
-### Task 4: F-e — generation transition と owner replacement
+### Task 4: F-e — generation transition と owner replacement — **完了**
 
 **Files:** `bin/orca-wait.sh` / 新規 `bin/orca-recover.sh` / `test/*`
 
-- [ ] **Step 1: 親 sweep が owner を回復する（10-1 の表）**
+- [x] **Step 1: 親 sweep が owner を回復する（10-1 の表）**
 
 | 観測 | 行動 |
 |---|---|
@@ -145,7 +145,7 @@ design 側と同じラベル方式（`review-code:` / `review-verdict:`）。exe
 | active だが確認できない / `outcome_unknown` | fence して再検査、または `worker-abandon` して `retained` |
 | Orca 側が既に terminal | 送らない。ローカルを reconcile して終わる |
 
-- [ ] **Step 2: generation を上げる**
+- [x] **Step 2: generation を上げる**
 
 replacement は generation を +1 し、**旧 capability と新 capability が同時に lifecycle を
 進めないことを保証する**（fence が先）。
@@ -159,6 +159,27 @@ replacement は generation を +1 し、**旧 capability と新 capability が�
 ```
 
 ---
+
+## 実装で分かったこと（計画に無かったもの）
+
+- **`settle` と `reconcile` を別の口にした**（CM14）。worker の `settle` は accepted を
+  要求する（受理されていない完了を「終わった」と書くと親が永久に待つ）。一方、親は
+  「Orca 側が既に terminal」という**別の証拠**を持つ。同じ口を緩めるのではなく分けたのは、
+  **証拠の出どころが違う**からである
+- **テストが spec 文字列を拾っていた。**worker へ渡す spec に `--ack` の語が入った瞬間、
+  `calls.log` を素で grep していた 2 本が task-create の 1 行に当たって落ちた。
+  **実際の呼び出し行だけ**を見るよう直した
+- **2 人の reviewer が findings ファイル名を共有していた**（ST59）。`design_review` と
+  `exec_review` が同じ review dir を使うので、prefix が無いと片方の findings を上書きする
+- **役ごとの worktree 名が衝突しうる**（ST54、実機で発見）。`design` 以外を一律 `-review`
+  にしていたので `exec` が `design_review` と同じ名前を名乗った
+
+## 到達点
+
+spec の follow-up 表（F-a 〜 F-h）を**すべて実装した**。`test-docs.sh` の SK4 に残る
+禁止語は `journal` だけであり、これは **spec 10-2 が「作らない」と裁定したもの**である
+（`completion.json` は exactly-once の journal ではなく crash 回復のための記録）。
+この語が SKILL.md に現れたら、撤回した設計へ戻ろうとしている合図である。
 
 ## この計画で扱わないもの
 

@@ -428,7 +428,7 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 | 0 | すべての worker が成功を報告して完了 | 各タスクの `$SD/roles/design/result.md` を読み、ユーザーへ伝えて全タスクを Step 4 へ進める |
 | 5 | 1 件以上の worker が失敗を報告 | 各 `result.md` を読み、どのタスクがなぜ失敗したかを伝える。Step 4 へ進めるのは成功したタスクだけで、Step 5 は全タスクに行う。**失敗したタスクを merge しない** |
 | 3 | まだ実行中 | 進捗を報告してから、同じ `--status-dir` の組でもう一度呼ぶ |
-| 4 | worker が停止・失敗した、または待機が依存する Orca 呼び出しを検証できない | 調べてユーザーへ伝える。何も削除しない。retention または acknowledgement が完了していないので canonical wait を再実行し、batch を手で復旧しない |
+| 4 | worker が停止・失敗した、または待機が依存する Orca 呼び出しを検証できない | 調べてユーザーへ伝える。何も削除しない。retention または acknowledgement が完了していないので canonical wait を再実行し、batch を手で復旧しない。完了を負ったまま worker が失われた場合は、下の回復の節を見る |
 | 1 | batch がこの版で扱えないメッセージを含む、または outcome が記録と矛盾する | acknowledge していない。手動 acknowledge はせず、下のとおり確認する |
 
 **判断の根拠は exit code であって出力の文字列ではない。**集約行の前に、待機は
@@ -476,6 +476,33 @@ bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 確認したメッセージと、この版がそれを扱えなかった理由 — 未知のメッセージ型か、記録と矛盾する
 outcome か — をユーザーへ見せる。transport/health の失敗は exit 4 であり、batch を手作業で復旧する
 合図ではない。
+
+### 失われた worker を回復する
+
+成果を差し出した worker、あるいは `error` を書いた worker は、まだ `worker_done` を
+負っている。**Orca は親がそれを代理送信することを許さない**ので、agent の process が
+消えていれば誰も送れない — 仕事は終わっているのにタスクが決着しない。これが、その状況で
+何をするかを役ごとに決める:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+: "${PLUGIN:?run the block at the top of this file first}"
+bash "$PLUGIN/bin/orca-recover.sh" --status-dir "$SD" --dry-run
+```
+
+何をするつもりかを読んでから、`--dry-run` を外してもう一度実行すると実行される。選択肢は
+**意図して狭くしてある**:
+
+- **生きている** → nudge するだけ。生きている worker を置き換えると、2 人が同じ完了を
+  進めることになる。
+- **`failed` / `stopped` が証明された** → **同じ** task に `--retry-of` で replacement を
+  起こし、generation を上げ、旧い完了記録を捨てる。新しい worker は新しい nonce で
+  差し出し直す。
+- **確認できないもの（`outcome_unknown` を含む）** → 何もせず、そう言う。fence が先である。
+  ここで推測すると、2 つの capability が 1 つの lifecycle を進めることになる。
+- **Orca が既に決着させていた** → 何も送らず、ローカルの記録を合わせる。
+
+Step 3 が exit 4 を返したとき、または worker が居ないままタスクが終わらないときに実行する。
 
 ## Step 4: 成果を持ち帰る
 
@@ -875,7 +902,7 @@ release するのはここである。**セッションを閉じることはユ�
 | 制限 | ユーザーがすること |
 |---|---|
 | 片付けが勝手に走ることはない | Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る |
-| セッションが dispatch の途中で終了しても、自動回復しない | `$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
+| 回復は自動では走らない。いつ走らせるかは人が決める | `orca-recover.sh`（Step 3）が役ごとに判断し、`--dry-run` を外して実行したときだけ動く。`$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
 | worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
 | 差し戻された worker は同じセッションで作り直す。この skill はそのラウンド数を制限しない | 待機の出力を見る。差し戻しは理由付きで 1 行ずつ出る。検査を満たせない worker は、失敗するか待機が時間切れになるまで差し戻され続ける |

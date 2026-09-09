@@ -5,6 +5,7 @@
 #        completion.sh --role-dir <d> sent               # 相 2 の後半: merge_ready_sent へ
 #        completion.sh --role-dir <d> accept --nonce <n> # 相 5: nonce 一致なら accepted へ
 #        completion.sh --role-dir <d> settle             # 相 7: settled へ
+#        completion.sh --role-dir <d> reconcile          # 外部の証拠で settled へ（親専用）
 #        completion.sh --role-dir <d> phase              # 現在の phase を出す（無ければ空）
 #        completion.sh --role-dir <d> nonce              # 現在の nonce を出す
 # Exit: 0 / 1 = 進められない（nonce 不一致・記録が読めない）/ 2 = 使用法エラー
@@ -25,7 +26,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --role-dir) [[ $# -ge 2 ]] || die '--role-dir requires a value'; RD="$2"; shift 2 ;;
   --nonce)    [[ $# -ge 2 ]] || die '--nonce requires a value';    NONCE_IN="$2"; shift 2 ;;
   --generation) [[ $# -ge 2 ]] || die '--generation requires a value'; GEN_IN="$2"; shift 2 ;;
-  prepare|sent|accept|settle|phase|nonce) [[ -z "$SUB" ]] || die "one subcommand only"; SUB="$1"; shift ;;
+  prepare|sent|accept|settle|reconcile|phase|nonce) [[ -z "$SUB" ]] || die "one subcommand only"; SUB="$1"; shift ;;
   *) die "unknown argument: $1" ;; esac; done
 [[ -n "$RD" ]] || die "--role-dir is required"
 [[ -n "$SUB" ]] || die "a subcommand is required"
@@ -82,11 +83,24 @@ case "$SUB" in
     write "$(jq -c '.phase = "accepted"' "$CJ")" || { log "cannot write $CJ"; exit 1; } ;;
 
   settle)
+    # ★ **worker の経路は accepted を経る。**受理されていない完了を「終わった」と記録すると、
+    #   親は永久に待つ。
     cur=$(read_field phase)
     case "$cur" in
       accepted) ;;
       settled) exit 0 ;;
       *) log "cannot settle from '${cur:-none}'"; exit 1 ;;
     esac
+    write "$(jq -c '.phase = "settled"' "$CJ")" || { log "cannot write $CJ"; exit 1; } ;;
+
+  reconcile)
+    # ★ **親専用の別経路。**「Orca 側が既に terminal」という**外部の証拠**を持つ者だけが
+    #   使う。worker の `settle` を緩めるのではなく別の口にしてあるのは、**証拠の出どころが
+    #   違う**からである。worker は自分の受理を知らずに settled を書いてはならない。
+    cur=$(read_field phase)
+    [[ "$cur" != settled ]] || exit 0
+    if [[ -z "$cur" ]]; then
+      log "there is no completion record to reconcile"; exit 1
+    fi
     write "$(jq -c '.phase = "settled"' "$CJ")" || { log "cannot write $CJ"; exit 1; } ;;
 esac

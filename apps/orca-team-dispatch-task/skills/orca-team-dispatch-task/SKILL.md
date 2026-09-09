@@ -444,7 +444,7 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 | 0 | Every worker finished and reported success | Read each task's `$SD/roles/design/result.md`, tell the user, go to Step 4 for every task |
 | 5 | At least one worker reported failure | Read each `result.md`, tell the user which task failed and why, go to Step 4 only for the tasks that succeeded, and to Step 5 for all of them. **Do not merge a failed task** |
 | 3 | Still running | Report progress, then call it again with the same `--status-dir` set |
-| 4 | A worker stopped or failed, or an Orca call the wait depends on could not be verified | Inspect and tell the user; do not delete anything. The retention or the acknowledgement did not complete, so rerun the canonical wait; do not recover a batch by hand |
+| 4 | A worker stopped or failed, or an Orca call the wait depends on could not be verified | Inspect and tell the user; do not delete anything. The retention or the acknowledgement did not complete, so rerun the canonical wait; do not recover a batch by hand. If a worker was lost while its completion was still owed, see the recovery block below |
 | 1 | A batch carries a message this version cannot handle, or its outcome contradicts what is recorded | It was not acknowledged. Do not acknowledge it by hand; inspect it as described below |
 
 **The exit code is the authority, not the text.** Before the aggregate line, the wait prints
@@ -493,6 +493,33 @@ bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 Show the user the inspected message and why this version could not handle it — an unknown
 message type, or an outcome that contradicts the recorded one. A transport/health failure is
 exit 4, not an invitation to recover a batch manually.
+
+### Recovering a lost worker
+
+A worker that has offered its work, or written `error`, still owes a `worker_done`. **Orca
+will not let the parent send that on its behalf**, so if the agent process is gone, nobody
+can — the work is finished but the task never settles. This decides what to do about it, one
+role at a time:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+: "${PLUGIN:?run the block at the top of this file first}"
+bash "$PLUGIN/bin/orca-recover.sh" --status-dir "$SD" --dry-run
+```
+
+Read what it says it would do, then run it again without `--dry-run` to act. Its choices are
+narrow on purpose:
+
+- **Alive** → it only nudges. Replacing a live worker would let two of them drive the same
+  completion.
+- **Proven `failed` or `stopped`** → it starts a replacement on the *same* task with
+  `--retry-of`, raises the generation, and drops the old completion record so the new worker
+  offers again with a fresh nonce.
+- **Anything it cannot confirm, including `outcome_unknown`** → it does nothing and says so.
+  Fencing comes first; guessing here is how two capabilities end up driving one lifecycle.
+- **Orca already settled it** → nothing is sent; the local record is brought into line.
+
+Run it when Step 3 reports exit 4, or when a task sits unfinished with no worker left.
 
 ## Step 4: Bring the result home
 
@@ -902,7 +929,7 @@ State these when they apply. Do not work around them silently.
 | Limitation | What the user does |
 |---|---|
 | Cleanup never runs on its own | Answer the Step 6 question; only what you approve is removed, and anything you decline stays |
-| If this session dies mid-dispatch, nothing recovers automatically | Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
+| Recovery is never automatic; you decide when to run it | `orca-recover.sh` (Step 3) decides per role and acts only when you run it without `--dry-run`. Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
 | If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
 | A worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
 | A worker that is sent back for remediation retries in the same session, and this skill does not cap those rounds | Watch the wait's output: each remediation is logged with its reason. A worker that cannot satisfy the check will keep being sent back until it fails or the wait times out |

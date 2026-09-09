@@ -153,4 +153,22 @@ bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev
   && ok "CM13 知らない dispatch の merge_ready は ack しない" || fail "CM13"
 vteardown
 
+# CM14: ★ **`reconcile` は親専用の別経路。**「Orca 側が既に terminal」という外部の証拠を
+#       持つ者だけが使う。worker の `settle` を緩めるのではなく別の口にしてあるのは、
+#       **証拠の出どころが違う**からである（worker は自分の受理を知らずに settled を
+#       書いてはならない = CM6）。
+setup
+bash "$C" --role-dir "$D" prepare >/dev/null
+bash "$C" --role-dir "$D" settle >/dev/null 2>&1
+[[ $? -ne 0 && "$(ph)" == prepared ]] || fail "CM14 settle が緩んでいる"
+bash "$C" --role-dir "$D" reconcile
+[[ "$(ph)" == settled ]] && ok "CM14 reconcile だけが外部の証拠で settled にできる" || fail "CM14"
+teardown
+
+# CM15: 記録が無いところで reconcile しない（何も無いのに完了を作らない）。
+setup
+bash "$C" --role-dir "$D" reconcile >/dev/null 2>&1
+[[ $? -ne 0 && -z "$(ph)" ]] && ok "CM15 記録が無ければ reconcile しない" || fail "CM15"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

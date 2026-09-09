@@ -119,7 +119,14 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
   空の計画では起こさない
 - **`integration=pr` で pull request を作れる**（既定 merge）。**統合はどちらか一方**であり、
   PR のとき issue は close しない（`Closes #N` で PR のマージ時に GitHub が閉じる）
-- `exec_review` と Phase B-R、二相コミットは未実装。
+- **`exec_review` と Phase B-R** も実装済み（`review_mode` と `phase_b` が両方 on のとき）
+- **完了は二相コミット**（spec 10-1 の 7 相）。worker は自分で done を報告せず、nonce を
+  載せた `merge_ready` で差し出し、親が検証して受理か差し戻しを返す。**reviewer も例外に
+  しない**（例外にすると findings が正式になる時点が未定義になる）
+- **失われた worker の owner を回復できる**（`bin/orca-recover.sh`）。生きていれば nudge、
+  `failed`/`stopped` が証明されたら `--retry-of` で置き換えて generation を上げ、
+  **確認できないものには何もしない**（fence が先）
+- spec の follow-up 表は F-a / F-b / F-c / F-d / F-e / F-f / F-g / F-h をすべて実装した。
   `test-docs.sh` の SK4 が `exec_review` / `merge_ready` の語を SKILL.md から締め出して
   「未実装の宣言」を防いでいる
 **N タスクを 1 つの Run で並列に dispatch できる**（既定上限 4）。worker のセッションは
