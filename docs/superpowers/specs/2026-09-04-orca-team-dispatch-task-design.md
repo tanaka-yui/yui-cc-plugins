@@ -1720,16 +1720,19 @@ simulated variant が Orca と一致することではない。
 Stage 1 の完了後に、独立した spec の follow-up として順に実装する。
 **各 follow-up も「完了時点で動く」単位で切る。**
 
-| # | follow-up | 本 spec の該当節 | 「動く」の定義 |
-|---|---|---|---|
-| F-a | **Phase B の委譲**（design → 親 → exec の 2 ロール） | 5-1 T5-T9 / 6-4 | design の plan を親が受け取り exec が実装まで進む |
-| F-b | **レビュー 2 ロール**（Phase A-R / B-R） | 7 / 6-2 の adapter / `review-request.sh` / `review-gate.sh` | verdict のやり取りが 1 往復通る |
-| F-c | **PR 統合** | 9-2 / `resolve-integration.sh` / `record-pr.sh` | PR が origin 上に作られ `pr_url` が記録される |
-| F-d | **二相コミットの完全形** | 10 全体 | `merge_ready` → 親の検証 → `accepted` → `worker_done` が通る |
-| F-e | **generation transition と owner replacement** | 5-1 の transaction / 10-5 / 12-1 の replacement branch | 不受理からの差し戻しと worker 消失からの回復が通る |
-| F-f | **issue ループ** | 12 | issue 1 件が自動で dispatch され cleanup まで通る |
-| F-g | **setup / reset / override**（runner / model / effort の設定） | 13 | 各モードが対話で設定を変更できる |
-| F-h | **repo setup hook 対応**（`worktree create --setup run` と補助端末の ownership 管理） | 11 | setup hook を要する repo で dispatch が通り、cleanup が補助端末を正しく判断する |
+**2026-09-09 時点で F-a 〜 F-h はすべて実装済みである**（実装計画は
+`docs/superpowers/plans/2026-09-09-*.md` の 4 本）。以下の表は各 follow-up の定義として残す。
+
+| # | follow-up | 本 spec の該当節 | 「動く」の定義 | 状態 |
+|---|---|---|---|---|
+| F-a | **Phase B の委譲**（design → 親 → exec の 2 ロール） | 5-1 T5-T9 / 6-4 | design の plan を親が受け取り exec が実装まで進む | **実装済み** |
+| F-b | **レビュー 2 ロール**（Phase A-R / B-R） | 7 / 6-2 の adapter / `review-request.sh` / `review-gate.sh` | verdict のやり取りが 1 往復通る | **実装済み** |
+| F-c | **PR 統合** | 9-2 / `resolve-integration.sh` / `record-pr.sh` | PR が origin 上に作られ `pr_url` が記録される | **実装済み** |
+| F-d | **二相コミットの完全形** | 10 全体 | `merge_ready` → 親の検証 → `accepted` → `worker_done` が通る | **実装済み** |
+| F-e | **generation transition と owner replacement** | 5-1 の transaction / 10-5 / 12-1 の replacement branch | 不受理からの差し戻しと worker 消失からの回復が通る | **実装済み** |
+| F-f | **issue ループ** | 12 | issue 1 件が自動で dispatch され cleanup まで通る | **実装済み** |
+| F-g | **setup / reset / override**（runner / model / effort の設定） | 13 | 各モードが対話で設定を変更できる | **実装済み** |
+| F-h | **repo setup hook 対応**（`worktree create --setup run` と補助端末の ownership 管理） | 11 | setup hook を要する repo で dispatch が通り、cleanup が補助端末を正しく判断する | **実装済み** |
 
 ### 撤回した節（2026-09-04 の裁定）
 
