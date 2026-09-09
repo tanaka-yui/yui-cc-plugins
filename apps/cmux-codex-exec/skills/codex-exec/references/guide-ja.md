@@ -6,7 +6,7 @@
 
 plan を独立した対話 codex に実装させ、完了を agmsg 経由で待って親を wake するスキル。
 
-デフォルト: モデル `gpt-5.6-sol` / effort `xhigh` / カレントdir / 分割方向 right / plan は引数指定を優先し、
+デフォルト: モデル `gpt-6-astra` / effort `xhigh` / カレントdir / 分割方向 right / plan は引数指定を優先し、
 無指定なら `docs/superpowers/plans/` の候補をユーザーに確認する
 （bin 単体実行時のフォールバックは従来どおり mtime 最新）。
 

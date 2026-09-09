@@ -1,7 +1,7 @@
 ---
 name: codex-review
 description: >-
-  agmsg の inbox を確認したうえで、新しい cmux ペインで codex (gpt-5.6-sol / reasoning effort
+  agmsg の inbox を確認したうえで、新しい cmux ペインで codex (gpt-6-astra / reasoning effort
   xhigh = extra high) によるコードレビューを起動するスキル。ユーザーが「codex でレビュー」「codex review」
   「5.6 sol でレビュー」「extra high でレビュー」「agmsg 起動してレビュー」「別ペインでレビューを回して」等と
   言ったとき、または現在の変更を codex に第三者レビューさせたいときに必ず使う。cmux セッション内
@@ -27,7 +27,7 @@ parent session.
 
 Default settings:
 
-- **Model**: `gpt-5.6-sol`
+- **Model**: `gpt-6-astra`
 - **Reasoning effort**: `xhigh` (extra high)
 - **Target**: uncommitted changes (`--uncommitted`). If unspecified, candidates are
   listed and confirmed with the user
@@ -106,7 +106,7 @@ Main arguments (all optional; see the bin's header comment for details):
 | `--commit <sha>` | Review the changes in the specified commit |
 | `--path <file>` | Review the **full contents** of the specified file (repeatable; for spec/plan) |
 | `--list-targets` | List candidates as TSV and exit (cmux not required; for Step 0) |
-| `-m <model>` / `-e <effort>` | Override model / effort (default: gpt-5.6-sol / xhigh) |
+| `-m <model>` / `-e <effort>` | Override model / effort (default: gpt-6-astra / xhigh) |
 | `-- <instructions>` | Custom review instructions for codex |
 | `--team <team> --reviewer <name> --parent <agent>` | Wires up the agmsg completion notification |
 
@@ -136,7 +136,7 @@ Launches by handing the review prompt to interactive codex (does not use the
 
 ```bash
 codex --sandbox workspace-write --ask-for-approval never \
-  -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
+  -c model="gpt-6-astra" -c model_reasoning_effort="xhigh" \
   "$REVIEW_INSTR"
 ```
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # cmux-codex-review — 新しい cmux ペインで対話 codex にコードレビューさせる。
 #
-# デフォルトは gpt-5.6-sol / reasoning effort xhigh で未コミット変更をレビュー。
+# デフォルトは gpt-6-astra / reasoning effort xhigh で未コミット変更をレビュー。
 # サンドボックスは workspace-write。read-only にすると codex が完了通知の send.sh を
 # 実行できない（send.sh は agmsg の SQLite DB へ INSERT する＝書き込みであり、config.toml の
 # [sandbox_workspace_write] writable_roots は workspace-write モードにしか適用されないため）。
@@ -14,7 +14,7 @@ set -euo pipefail
 #
 # Usage: cmux-codex-review [direction] [options] [-- <review instructions>]
 #   -d, --dir <right|down|left|up>  分割方向 (default: right)
-#   -m, --model <model>             codex モデル (default: gpt-5.6-sol)
+#   -m, --model <model>             codex モデル (default: gpt-6-astra)
 #   -e, --effort <effort>           reasoning effort (default: xhigh)
 #   --uncommitted                   未コミット変更をレビュー (default)
 #   --base <branch>                 base ブランチとの差分をレビュー
@@ -53,7 +53,7 @@ list_targets() {
   return 0
 }
 
-DIR="right"; MODEL="gpt-5.6-sol"; EFFORT="xhigh"
+DIR="right"; MODEL="gpt-6-astra"; EFFORT="xhigh"
 TARGET="uncommitted"; TARGET_ARG=""; PATHS_JOINED=""
 PATHS=()
 LIST_TARGETS=0

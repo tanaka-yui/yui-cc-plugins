@@ -5,7 +5,7 @@ description: "plan を対話 codex にカレントdir で実装させ、完了�
 
 # /codex-exec
 
-Has **interactive codex** (gpt-5.6-sol / xhigh) implement, in a new cmux pane, a plan
+Has **interactive codex** (gpt-6-astra / xhigh) implement, in a new cmux pane, a plan
 that claude/superpowers created. codex notifies via agmsg on completion, and that
 message wakes the parent (this session) through its persistent agmsg Monitor stream.
 

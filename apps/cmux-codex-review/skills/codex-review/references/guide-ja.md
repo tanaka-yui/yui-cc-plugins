@@ -10,7 +10,7 @@
 
 デフォルト設定:
 
-- **モデル**: `gpt-5.6-sol`
+- **モデル**: `gpt-6-astra`
 - **reasoning effort**: `xhigh`（extra high）
 - **対象**: 未コミット変更（`--uncommitted`）。無指定時は候補を列挙してユーザーに確認する
 - **分割方向**: `right`
@@ -77,7 +77,7 @@ bin スクリプトを実行する。cmux ペインを分割し、そのペイ�
 | `--commit <sha>` | 指定コミットの変更をレビュー |
 | `--path <file>` | 指定ファイルの**内容全体**をレビュー（繰り返し可。spec/plan 向け） |
 | `--list-targets` | 候補を TSV で列挙して終了（cmux 不要。Step 0 用） |
-| `-m <model>` / `-e <effort>` | モデル / effort の上書き（default: gpt-5.6-sol / xhigh） |
+| `-m <model>` / `-e <effort>` | モデル / effort の上書き（default: gpt-6-astra / xhigh） |
 | `-- <指示>` | codex へのカスタムレビュー指示 |
 | `--team <team> --reviewer <name> --parent <agent>` | レビュー完了の agmsg 通知配線 |
 
@@ -103,7 +103,7 @@ codex 側でレビューが流れ始めるので、このセッションでの�
 
 ```bash
 codex --sandbox workspace-write --ask-for-approval never \
-  -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
+  -c model="gpt-6-astra" -c model_reasoning_effort="xhigh" \
   '未コミットの変更をレビューし、問題点・改善点を具体的に指摘せよ。'
 ```
 

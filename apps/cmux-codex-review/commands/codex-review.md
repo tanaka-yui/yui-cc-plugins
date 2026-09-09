@@ -1,12 +1,12 @@
 ---
 allowed-tools: Bash, TaskStop
-description: "agmsg inbox を確認し、新ペインで対話 codex (gpt-5.6-sol/xhigh) にコードレビューさせる"
+description: "agmsg inbox を確認し、新ペインで対話 codex (gpt-6-astra/xhigh) にコードレビューさせる"
 ---
 
 # /codex-review
 
 Checks the agmsg inbox, then has **interactive codex** perform a code review in a new
-cmux pane. Model **gpt-5.6-sol**, effort **xhigh**, target defaults to **uncommitted
+cmux pane. Model **gpt-6-astra**, effort **xhigh**, target defaults to **uncommitted
 changes**. If no arguments are given, Step 0 presents candidates and confirms with the
 user. If the parent has already joined an agmsg team, this also wires up a completion
 notification back to the parent.

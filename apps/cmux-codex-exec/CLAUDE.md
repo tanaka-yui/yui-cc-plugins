@@ -43,7 +43,7 @@ SessionStart hook は実行中のセッションには発火しないため、�
 
 | 項目 | 値 | 上書き |
 |------|-----|--------|
-| model | `gpt-5.6-sol` | `-m` |
+| model | `gpt-6-astra` | `-m` |
 | effort | `xhigh` | `-e` |
 | plan | 位置引数。無指定ならコマンド層が `--list-targets` の候補を確認（bin 単体では mtime 最新） | 位置引数でパス指定 |
 | 分割方向 | `right` | `down`/`left`/`up` or `-d` |

@@ -9,7 +9,7 @@ set -euo pipefail
 #
 # Usage: cmux-codex-exec [plan-path] [options]
 #   -d, --dir <right|down|left|up>  分割方向 (default: right)
-#   -m, --model <model>             codex モデル (default: gpt-5.6-sol)
+#   -m, --model <model>             codex モデル (default: gpt-6-astra)
 #   -e, --effort <effort>           reasoning effort (default: xhigh)
 #   --team <team>                   通知先 agmsg team（--parent と対で有効）
 #   --parent <agent>                通知先の親 agent 名
@@ -37,7 +37,7 @@ list_targets() {
   return 0
 }
 
-DIR="right"; MODEL="gpt-5.6-sol"; EFFORT="xhigh"
+DIR="right"; MODEL="gpt-6-astra"; EFFORT="xhigh"
 TEAM=""; PARENT=""; PLAN=""; PLAN_MODE="path"
 LIST_TARGETS=0
 while [[ $# -gt 0 ]]; do

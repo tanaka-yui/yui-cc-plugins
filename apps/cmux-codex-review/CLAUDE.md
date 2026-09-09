@@ -14,7 +14,7 @@ agmsg の inbox 確認 → 新 cmux ペインで codex コードレビュー起�
 1. レビュー対象を確定（引数無指定なら `--list-targets` の候補をユーザーに確認）
 2. agmsg を起動して受信箱を確認（非ブロッキング。未参加・未インストールならスキップ）
 3. `cmux new-split <dir>` で新ペインを分割
-4. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox workspace-write --ask-for-approval never -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
+4. 分割先で**対話 codex にレビュープロンプトを送る**（`codex --sandbox workspace-write --ask-for-approval never -c model="gpt-6-astra" -c model_reasoning_effort="xhigh" '<レビュー指示>'`）
 5. `--team/--reviewer/--parent` 指定時は、レビュー指示に完了通知（agmsg `send.sh`）を注入し、親はターンを閉じて
    agmsg Monitor イベントで完了を検知する
 
@@ -124,7 +124,7 @@ codex の子エージェントは shared local app-server daemon 上の別スレ
 
 | 項目 | 値 | 上書き |
 |------|-----|--------|
-| model | `gpt-5.6-sol` | `-m` / `--model` |
+| model | `gpt-6-astra` | `-m` / `--model` |
 | reasoning effort | `xhigh`（extra high） | `-e` / `--effort` |
 | 対象 | `--uncommitted` | `--base <branch>` / `--commit <sha>` / `--path <file>`（繰り返し可） |
 | 分割方向 | `right` | 位置引数 `down`/`left`/`up` or `-d` |
@@ -133,7 +133,7 @@ codex の子エージェントは shared local app-server daemon 上の別スレ
 ## 前提
 
 - cmux セッション内（`CMUX_SOCKET_PATH` が必要）
-- `codex` CLI が PATH 上にあること（`gpt-5.6-sol` / `xhigh` が利用可能な認証済み環境）
+- `codex` CLI が PATH 上にあること（`gpt-6-astra` / `xhigh` が利用可能な認証済み環境）
 
 ## 関連プラグインとの境界
 

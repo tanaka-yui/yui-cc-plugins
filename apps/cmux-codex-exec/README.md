@@ -1,6 +1,6 @@
 # cmux-codex-exec
 
-claude/superpowers が作成した plan を、新しい cmux ペインで**対話 codex**（gpt-5.6-sol / xhigh）に
+claude/superpowers が作成した plan を、新しい cmux ペインで**対話 codex**（gpt-6-astra / xhigh）に
 カレントディレクトリで実装させるプラグイン。codex が完了すると親セッションが agmsg 経由で wake され、
 確認のうえ `cmux-codex-review` でのレビューへ繋がる。
 
@@ -32,7 +32,7 @@ codex には並列実行を指示しない。作業はすべて可視ペイン�
 ## 前提条件
 
 - [cmux](https://github.com/anthropics/cmux) 内で実行（`CMUX_SOCKET_PATH`）
-- `codex` CLI（`gpt-5.6-sol` / `xhigh` が使える認証済み環境）
+- `codex` CLI（`gpt-6-astra` / `xhigh` が使える認証済み環境）
 - agmsg 参加済み（未参加ならコマンドが案内）
 
 ## インストール

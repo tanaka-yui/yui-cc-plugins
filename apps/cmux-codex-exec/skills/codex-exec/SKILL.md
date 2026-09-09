@@ -1,7 +1,7 @@
 ---
 name: codex-exec
 description: >-
-  claude/superpowers が作成した plan を、新しい cmux ペインで対話 codex (gpt-5.6-sol / reasoning
+  claude/superpowers が作成した plan を、新しい cmux ペインで対話 codex (gpt-6-astra / reasoning
   effort xhigh) にカレントディレクトリで実装させ、完了を親セッションが agmsg 経由で検知してレビューへ繋ぐ
   スキル。ユーザーが「この plan を codex に実装させて」「codex で plan を実行」「plan を回して終わったら教えて」
   「codex-exec」等と言ったとき、または書き上げた plan を独立した codex プロセスに実装させたいときに必ず使う。
@@ -20,7 +20,7 @@ not change the language presented to the user.
 A skill that has an independent interactive codex implement a plan, waits for
 completion via agmsg, and wakes the parent session.
 
-Default: model `gpt-5.6-sol` / effort `xhigh` / the current directory / split direction right / the
+Default: model `gpt-6-astra` / effort `xhigh` / the current directory / split direction right / the
 plan is taken from the argument first, and if unspecified, candidates from
 `docs/superpowers/plans/` are confirmed with the user (the bin's standalone fallback
 remains the most recently modified file by mtime, as before).

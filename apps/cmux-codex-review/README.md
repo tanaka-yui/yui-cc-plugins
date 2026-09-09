@@ -2,7 +2,7 @@
 
 agmsg の受信箱を確認したうえで、新しい cmux ペインで **codex** によるコードレビューを起動するプラグイン。
 
-モデルは **gpt-5.6-sol**、reasoning effort は **xhigh（extra high）**、対象はデフォルトで
+モデルは **gpt-6-astra**、reasoning effort は **xhigh（extra high）**、対象はデフォルトで
 **未コミット変更**。実装した本人のセッションとは独立した codex プロセスに、高リーズニングで
 第三者レビューさせたいときに使う。
 
@@ -11,7 +11,7 @@ agmsg の受信箱を確認したうえで、新しい cmux ペインで **codex
 ### スラッシュコマンド（agmsg 確認込み）
 
 ```
-/codex-review              # 右に分割、gpt-5.6-sol/xhigh、未コミット変更をレビュー
+/codex-review              # 右に分割、gpt-6-astra/xhigh、未コミット変更をレビュー
 /codex-review down         # 下に分割
 /codex-review --base main  # main との差分をレビュー
 /codex-review -- セキュリティ観点を重点的に   # カスタム指示付き
@@ -43,7 +43,7 @@ agmsg 確認をスキップし、通知なしの対話レビュー起動だけ�
 
 ```bash
 codex --sandbox workspace-write --ask-for-approval never \
-  -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh" \
+  -c model="gpt-6-astra" -c model_reasoning_effort="xhigh" \
   '未コミットの変更をレビューし、問題点・改善点を具体的に指摘せよ。'
 ```
 
@@ -54,7 +54,7 @@ codex --sandbox workspace-write --ask-for-approval never \
 ## 前提条件
 
 - [cmux](https://github.com/anthropics/cmux) 内で実行すること（`CMUX_SOCKET_PATH` が必要）
-- `codex` CLI がインストール済みで、`gpt-5.6-sol` / `xhigh` が使える認証済み環境であること
+- `codex` CLI がインストール済みで、`gpt-6-astra` / `xhigh` が使える認証済み環境であること
 - agmsg は任意（未参加・未インストールでもレビュー起動は動く）
 
 ## インストール

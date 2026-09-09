@@ -1,7 +1,7 @@
 {
   "name": "cmux-codex-review",
-  "version": "3.0.0",
-  "description": "Start a codex code review (gpt-5.6-sol / xhigh reasoning) in a new cmux pane after checking the agmsg inbox.",
+  "version": "3.1.0",
+  "description": "Start a codex code review (gpt-6-astra / xhigh reasoning) in a new cmux pane after checking the agmsg inbox.",
   "author": {
     "name": "tanaka-yui",
     "url": "https://github.com/tanaka-yui"
