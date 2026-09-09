@@ -292,9 +292,12 @@ H. **If the work itself failed, none of C-G applies.** Write why in result.md, r
    \`bash $q_rs $q_rd error <reason>\`, and send worker_done with --outcome failed. That
    status is the record that a failure is still owed; there is nothing to offer.
 
-I. **Do not send any other message type to the parent.** Do not send ask, question or
-   escalation: this version's parent has no path to answer them, so they would only be
-   discarded.
+I. **Do not invent message types.** The only things you send are the ones above, plus
+   \`orchestration ask\` **when this task told you to ask** (see the brainstorming section, if
+   there is one). Do not send escalations: the parent has no path for them.
+
+   When you do use \`ask\`, expect it to block until a person answers through the parent, and
+   remember it costs someone's attention. Ask once, with everything you need in it.
 J. End your turn and stay idle."
 
   if [[ "$role" == design_review || "$role" == exec_review ]]; then
@@ -435,14 +438,17 @@ makes that approach wrong, say so there rather than quietly doing something else
 " ;;
     brainstorm)
       approach="**Start with the superpowers brainstorming skill.** Invoke
-\`superpowers:brainstorming\` and work through the request with whoever is watching this
-terminal before you plan or build anything.
+\`superpowers:brainstorming\` and settle the open questions before you plan or build anything.
 
-A person can talk to you here, so questions are worth asking. **If nobody answers, do not
-stall**: after one round with no reply, write in result.md that the brainstorming went
-unanswered, decide the approach yourself, and carry on.
+**Ask through \`orchestration ask\`, not by printing a question and stopping.** The parent
+relays it to a person and sends their answer back; a question you only print is read by
+nobody. It blocks until someone answers, so **ask once and put everything you need in it**
+rather than going back and forth.
 
-If that skill is not installed in this session, say so in result.md and continue without it
+If nobody ever answers, that call is where you will be waiting — that is expected, and the
+person watching decides whether to answer or to stop the dispatch.
+
+If the skill is not installed in this session, say so in result.md and carry on without it
 rather than inventing your own version of it.
 
 " ;;

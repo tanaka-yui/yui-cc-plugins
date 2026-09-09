@@ -11,7 +11,7 @@
 # （別タスクが同じ batch で別々に settle するのは正常である）。
 # Usage: orca-wait.sh --status-dir <d> [--status-dir <d> ...] [--max-waits <n>] [--timeout-ms <n>]
 # Exit: 0 全件成功 / 5 1 件以上が失敗 / 1 batch を処理できない / 2 使用法 / 3 時間切れ
-#       / 4 transport または worker state が不明
+#       / 4 transport または worker state が不明 / 6 worker が人へ質問している
 set -uo pipefail
 die() { echo "orca-wait: $1" >&2; exit 2; }
 log() { echo "orca-wait: $1" >&2; }
@@ -162,7 +162,7 @@ reply_completion() {   # $1=dispatch $2=nonce $3=accepted|remediation $4=本文
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
   local out res n i m payload d t tid did oc idx tsd trole rcode rreason existing upd RET RETRC ACK CHECKRC
-  local mrn vreason vok esub msub
+  local mrn vreason vok esub msub qid qbody qseen qnew
   local -a SETTLED
   CHECKRC=0
   out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || CHECKRC=$?
@@ -203,6 +203,40 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       rreason=$(jq -r '._orcaLifecycleRejection | if type == "object" then .reason // "unknown" else "unknown" end' <<<"$payload")
       log "worker_done was rejected by Orca (code='$rcode' reason='$rreason'); the batch is not acknowledged"
       return 1
+    fi
+    # ★ **`question` は詰まりではなく「人へ取り次げ」である。**worker は `ask` で
+    #   ブロックしており、**親は `orchestration reply` で答えられる**。未知として扱って
+    #   batch を止めると、答えれば進む dispatch が永久に止まる（実測で踏んだ）。
+    #
+    #   ★ **初回は ack しない**（答えるまで処理済みではない）が、**2 度目は処理済みとして
+    #   通す。**通さないと、人が答えたあとも同じ質問が queue の先頭に居座り、その worker の
+    #   `merge_ready` が永久に後ろで待つ（実測: 答えたのに count が 2 のまま減らなかった）。
+    if [[ "$t" == question ]]; then
+      idx=$(idx_of "$tid" "$did") || idx=""
+      if [[ -z "$idx" ]]; then
+        log "batch $d carries a question from an unknown dispatch (task='$tid' dispatch='$did')"
+        return 1
+      fi
+      qid=$(jq -r '.id // empty' <<<"$m")
+      qbody=$(jq -r '.body // empty' <<<"$m")
+      qseen="${T_SD[$idx]}/questions.json"
+      # ★ **一度出した質問で二度止まらない。**取り次いだ時点でこの message の用は済んで
+      #   いる（worker が動き出すのは `reply` であって ack ではない）。記録しないと、
+      #   答えたあとも同じ質問で永久に止まり続ける（実測で踏んだ）。
+      if [[ -f "$qseen" ]] && jq -e --arg i "$qid" 'index($i) != null' "$qseen" >/dev/null 2>&1; then
+        log "${T_ROLE[$idx]}'s question was already relayed; treating it as handled"
+        continue
+      fi
+      qnew=$(jq -nc --arg i "$qid" --slurpfile prev <(cat "$qseen" 2>/dev/null || echo '[]') \
+               '($prev[0] // []) + [$i] | unique') || qnew=""
+      [[ -z "$qnew" ]] || write "${T_SD[$idx]}" "$qseen" "$qnew" \
+        || log "could not record that this question was relayed; it may be surfaced again"
+      log "${T_ROLE[$idx]} is asking a question and is blocked until someone answers:"
+      log "  $qbody"
+      log "relay it to the user, then answer with:"
+      log "  $ORCA_BIN orchestration reply --id ${qid:-<message id>} --body '<their answer>' --from $PH"
+      log "then run this wait again"
+      return 6
     fi
     # ★ **相 3〜4。**`merge_ready` は worker が「検証してくれ」と言っている状態である。
     #   検証して受理か差し戻しを **同じ Dispatch** へ返し、この message は処理済みにする。
@@ -364,14 +398,14 @@ healthy() {   # **人の入力待ちは healthy である**（CLI help）。1 �
   return 0
 }
 
-drain || { drc=$?; [[ "$drc" -eq 2 ]] && exit 4 || exit 1; }
+drain || { drc=$?; case "$drc" in 2) exit 4 ;; 6) exit 6 ;; *) exit 1 ;; esac; }
 oc=$(aggregate) && finish "$oc"
 n=0
 while :; do
   WRC=0; WAIT=$("$ORCA_BIN" orchestration check --terminal "$PH" --wait --timeout-ms "$TMO" --json 2>/dev/null) || WRC=$?
   [[ "$WRC" -eq 0 ]] || { log "check --wait failed (rc=$WRC)"; exit 4; }
   jq -e '.ok == true' <<<"$WAIT" >/dev/null 2>&1 || { log "check --wait receipt was not ok"; exit 4; }
-  drain || { drc=$?; [[ "$drc" -eq 2 ]] && exit 4 || exit 1; }
+  drain || { drc=$?; case "$drc" in 2) exit 4 ;; 6) exit 6 ;; *) exit 1 ;; esac; }
   oc=$(aggregate) && finish "$oc"
   healthy || exit 4
   n=$((n + 1))

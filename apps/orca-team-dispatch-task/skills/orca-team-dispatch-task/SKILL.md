@@ -458,8 +458,17 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 | 0 | Every worker finished and reported success | Read each task's `$SD/roles/design/result.md`, tell the user, go to Step 4 for every task |
 | 5 | At least one worker reported failure | Read each `result.md`, tell the user which task failed and why, go to Step 4 only for the tasks that succeeded, and to Step 5 for all of them. **Do not merge a failed task** |
 | 3 | Still running | Report progress, then call it again with the same `--status-dir` set |
+| 6 | A worker asked a person a question and is blocked on the answer | Relay the question to the user verbatim, run the `reply` command the wait printed with their answer, then run the same wait again. Nothing failed; the worker resumes on the reply |
 | 4 | A worker stopped or failed, or an Orca call the wait depends on could not be verified | Inspect and tell the user; do not delete anything. The retention or the acknowledgement did not complete, so rerun the canonical wait; do not recover a batch by hand. If a worker was lost while its completion was still owed, see the recovery block below |
 | 1 | A batch carries a message this version cannot handle, or its outcome contradicts what is recorded | It was not acknowledged. Do not acknowledge it by hand; inspect it as described below |
+
+On exit 6 nothing has gone wrong. A worker used `orchestration ask`, which blocks it until a
+person answers through this parent — so the answer is the only thing that moves it. Show the
+user the question as printed, ask them, and run the printed
+`orchestration reply --id <message id>` with their answer. Then run the same wait again: it
+treats a question it has already relayed as handled, so the batch drains and that worker's
+completion is processed. Do not acknowledge anything by hand, and do not treat the block as
+a failure — the worker is alive and waiting.
 
 **The exit code is the authority, not the text.** Before the aggregate line, the wait prints
 one `task=... role=... dispatch=... status_dir=... outcome=...` line **per dispatched role**,

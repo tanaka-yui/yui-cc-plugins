@@ -442,8 +442,16 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 | 0 | すべての worker が成功を報告して完了 | 各タスクの `$SD/roles/design/result.md` を読み、ユーザーへ伝えて全タスクを Step 4 へ進める |
 | 5 | 1 件以上の worker が失敗を報告 | 各 `result.md` を読み、どのタスクがなぜ失敗したかを伝える。Step 4 へ進めるのは成功したタスクだけで、Step 5 は全タスクに行う。**失敗したタスクを merge しない** |
 | 3 | まだ実行中 | 進捗を報告してから、同じ `--status-dir` の組でもう一度呼ぶ |
+| 6 | worker が人へ質問し、回答待ちでブロックしている | 質問をそのままユーザーへ取り次ぎ、待機が出力した `reply` コマンドに回答を入れて実行し、同じ待機をもう一度走らせる。失敗ではない。worker は reply で再開する |
 | 4 | worker が停止・失敗した、または待機が依存する Orca 呼び出しを検証できない | 調べてユーザーへ伝える。何も削除しない。retention または acknowledgement が完了していないので canonical wait を再実行し、batch を手で復旧しない。完了を負ったまま worker が失われた場合は、下の回復の節を見る |
 | 1 | batch がこの版で扱えないメッセージを含む、または outcome が記録と矛盾する | acknowledge していない。手動 acknowledge はせず、下のとおり確認する |
+
+終了コード 6 では何も壊れていない。worker が `orchestration ask` を使っており、人が
+この親を通して答えるまでブロックする — 動かせるのは回答だけである。出力された質問を
+そのままユーザーへ見せて尋ね、出力された `orchestration reply --id <message id>` に
+回答を入れて実行する。そのあと同じ待機をもう一度走らせる。一度取り次いだ質問は処理済み
+として扱うので、batch が流れてその worker の完了が処理される。手で acknowledge しては
+ならず、ブロックを失敗として扱ってもならない — worker は生きて待っている。
 
 **判断の根拠は exit code であって出力の文字列ではない。**集約行の前に、待機は
 `task=... role=... dispatch=... status_dir=... outcome=...` の行を**起動した役ごとに 1 行**

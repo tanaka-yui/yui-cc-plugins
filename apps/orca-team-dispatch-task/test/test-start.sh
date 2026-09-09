@@ -752,23 +752,36 @@ sp=$(spec)
 [[ "$sp" != *'superpowers:brainstorming'* ]] && [[ "$sp" != *'Decide the approach before'* ]] \
   && ok "ST61 direct は指示を足さない" || fail "ST61"; teardown
 
-# ST62: brainstorm は superpowers の skill を名指しし、**答えが無くても止まらない**ことまで言う。
+# ST62: brainstorm は superpowers の skill を名指しし、**質問の出し方まで指定する**。
+#       ★ 以前ここは「答えが無くても止まるな」を固定していた。**実機がそれを覆した** —
+#       worker は質問を印字して止まるのではなく `orchestration ask` を使い、親は
+#       `orchestration reply` で答えられる。印字しただけの質問は誰にも読まれない。
 setup
 mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"design_mode":"brainstorm"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
 start >/dev/null 2>&1; sp=$(spec); miss=""
 [[ "$sp" == *'superpowers:brainstorming'* ]] || miss="$miss [skill]"
-[[ "$sp" == *'If nobody answers, do not'* ]] || miss="$miss [no-stall]"
+[[ "$sp" == *'orchestration ask'* ]] || miss="$miss [ask]"
+[[ "$sp" == *'not by printing a question and stopping'* ]] || miss="$miss [no-print]"
+[[ "$sp" == *'ask once'* ]] || miss="$miss [once]"
 [[ "$sp" == *'not installed'* ]] || miss="$miss [degrade]"
 [[ -z "$miss" ]] && ok "ST62 brainstorm の指示" || fail "ST62:$miss"; teardown
 
-# ST63: plan は「触る前に手順を決めて記録せよ」と言う。
+# ST63: ★ **`ask` は許し、escalation は許さない。**親には `reply` の口があるが
+#       escalation を処理する口が無い（実測: 親の queue を永久に塞いだ）。
+#       direct の spec は ask を勧めない（尋ねる相手が居る前提を作らない）。
+setup; start >/dev/null 2>&1; sp=$(spec); miss=""
+[[ "$sp" == *'Do not send escalations'* ]] || miss="$miss [no-escalation]"
+[[ "$sp" == *'when this task told you to ask'* ]] || miss="$miss [conditional-ask]"
+[[ -z "$miss" ]] && ok "ST63 ask は条件付きで許し escalation は許さない" || fail "ST63:$miss"; teardown
+
+# ST64: plan は「触る前に手順を決めて記録せよ」と言う。
 setup
 mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"design_mode":"plan"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
 start >/dev/null 2>&1
 [[ "$(spec)" == *'Decide the approach before you touch anything'* ]] \
-  && ok "ST63 plan の指示" || fail "ST63"; teardown
+  && ok "ST64 plan の指示" || fail "ST64"; teardown
 
-# ST64: ★ **取りかかり方の指示は design にだけ載る。**exec は計画に従う役であり、
+# ST65: ★ **取りかかり方の指示は design にだけ載る。**exec は計画に従う役であり、
 #       reviewer は何も作らない。両方に載せると誰が決めるのか分からなくなる。
 setup; review_on
 mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
@@ -778,6 +791,6 @@ drv=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1)
 : > "$ORCA_STUB_DIR/calls.log"; exec_phase >/dev/null 2>&1
 xs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")
 [[ "$drv" != *'superpowers:brainstorming'* ]] && [[ "$xs" != *'superpowers:brainstorming'* ]] \
-  && ok "ST64 取りかかり方の指示は design にだけ" || fail "ST64"; teardown
+  && ok "ST65 取りかかり方の指示は design にだけ" || fail "ST65"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

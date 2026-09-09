@@ -126,6 +126,11 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - **失われた worker の owner を回復できる**（`bin/orca-recover.sh`）。生きていれば nudge、
   `failed`/`stopped` が証明されたら `--retry-of` で置き換えて generation を上げ、
   **確認できないものには何もしない**（fence が先）
+- **worker の質問は親が答えられる**（exit 6）。`brainstorm` の worker は `orchestration ask`
+  でブロックし、親は `orchestration reply --id <msg_id>` で答える。**未知の型として batch を
+  止めてはならない** — 答えれば進む dispatch が永久に止まる（実測）。取り次いだ質問は
+  `questions.json` に記録し、**2 度目は処理済みとして通す**。通さないと、答えたあとも同じ
+  質問が queue の先頭に居座り、その worker の `merge_ready` が後ろで待ち続ける（実測）
 - **`design_mode` で取りかかり方を選べる**（`direct` 既定 / `plan` / `brainstorm`）。
   cmux 版の Step 1c 相当だが、**Orca では端末を Orca が作るので起動フラグに触れない** —
   spec 本文の指示として効かせる。`--issue` は無人なので `brainstorm` を `plan` へ落とす

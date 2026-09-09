@@ -31,7 +31,7 @@ rejected_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,
 status_msg() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
     {id:"msg_status",type:"status",payload:null,body:""}]}}' > "$ORCA_STUB_DIR/orchestration_check"; }
 mixed() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d2",count:2,messages:[
-    {id:"q1",type:"question",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"?"},
+    {id:"g1",type:"gate_request",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"?"},
     {id:"m1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"; }
 w() { bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits "${1:-1}" --timeout-ms 1; }
@@ -450,6 +450,60 @@ out=$(w 2>&1); rc=$?
   && [[ "$(grep -c -- '--ack d5' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
   && [[ "$(grep -c 'role=' <<<"$out")" -eq 4 ]] \
   && ok "WT38 4 役を 1 batch で drain し retain 4 回・ack 1 回" || fail "WT38 (rc=$rc) $out"
+teardown
+
+question_msg() {   # $1=message id
+  jq -nc --arg i "${1:-q1}" '{ok:true,result:{runId:"run_x",deliveryId:"dq",count:1,messages:[
+    {id:$i,type:"question",subject:"Question",body:"which layout?",
+     payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson)}]}}' \
+    > "$ORCA_STUB_DIR/orchestration_check"
+}
+
+# WT41: ★ **`question` は詰まりではなく「人へ取り次げ」である。**worker は `ask` で
+#       ブロックしており、**親は `orchestration reply` で答えられる**。未知として扱って
+#       batch を止めると、答えれば進む dispatch が永久に止まる（実測で踏んだ）。
+setup; question_msg q1
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 6 ]] \
+  && [[ "$out" == *'which layout?'* ]] \
+  && [[ "$out" == *'orchestration reply --id q1'* ]] \
+  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT41 question は exit 6 で中継へ回し、ack しない" || fail "WT41 (rc=$rc) $out"
+teardown
+
+# WT42: ★ **一度出した質問で二度止まらない。**取り次いだ時点で用は済んでいる
+#       （worker が動き出すのは `reply` であって ack ではない）。記録しないと、
+#       答えたあとも同じ質問で永久に止まり続ける。
+setup; question_msg q1
+w >/dev/null 2>&1
+[[ "$(jq -c . "$SD/questions.json" 2>/dev/null)" == '["q1"]' ]] || fail "WT42 記録していない"
+question_msg q1; dn
+out=$(w 2>&1); rc=$?
+[[ "$rc" -ne 6 ]] && [[ "$out" == *'already relayed'* ]] \
+  && ok "WT42 取り次ぎ済みの質問では止まらない" || fail "WT42 (rc=$rc) $out"
+teardown
+
+# WT43: 別の質問なら改めて取り次ぐ（記録は id 単位である）。
+setup; question_msg q1; w >/dev/null 2>&1
+question_msg q2; out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 6 && "$out" == *'--id q2'* ]] \
+  && ok "WT43 別の質問は改めて取り次ぐ" || fail "WT43 (rc=$rc)"
+teardown
+
+# WT44: ★ **答え終えた質問は queue から流れなければならない。**同じ batch に載っている
+#       `worker_done` は、質問が退かない限り永久に後ろで待つ（実測で踏んだ）。
+#       1 回目は取り次いで止まり、2 回目は通って batch ごと ack される。
+setup; dn
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d9",count:2,messages:[
+  {id:"q9",type:"question",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"?"},
+  {id:"m9",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+w >/dev/null 2>&1; rc1=$?
+acked1=$(grep -c 'orchestration check.*--ack' "$ORCA_STUB_DIR/calls.log")
+w >/dev/null 2>&1; rc2=$?
+acked2=$(grep -c 'orchestration check.*--ack' "$ORCA_STUB_DIR/calls.log")
+[[ "$rc1" -eq 6 && "$acked1" -eq 0 && "$rc2" -eq 0 && "$acked2" -ge 1 ]] \
+  && ok "WT44 答えたあと同じ batch が流れる" || fail "WT44 (rc=$rc1/$rc2 ack=$acked1/$acked2)"
 teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
