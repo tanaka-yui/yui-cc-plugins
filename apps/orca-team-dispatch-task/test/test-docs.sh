@@ -94,8 +94,8 @@ printf '%s\n' seed > "$cleanup_repo/README.md"
 git -C "$cleanup_repo" add -A
 git -C "$cleanup_repo" -c user.email=t@e -c user.name=t commit -q -m seed
 jq -nc --arg p "$cleanup_repo" \
-  '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:null,
-    roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false}}}' > "$cleanup_state/workers.json"
+  '{roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false,
+      worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:null}}}' > "$cleanup_state/workers.json"
 printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
 wl_fixture retained
 printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
@@ -113,8 +113,8 @@ fi
 #        これが ACCOUNTED=yes を破壊的 gate に要求する実行上の証明である。
 #        併せて **C3 が worker-release を呼ばない**（分類は非破壊）ことも固定する。
 jq -nc --arg p "$cleanup_repo" \
-  '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"],
-    roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false}}}' > "$cleanup_state/workers.json"
+  '{roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false,
+      worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"]}}}' > "$cleanup_state/workers.json"
 printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
 wl_fixture retained
 printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"wt_1"}}}' \
@@ -137,8 +137,8 @@ fi
 # SK6f: cleanup は各 Orca receipt の rc、ok、result schema を検査する。失敗 receipt に
 # 古い成功 state が残っていても、破壊的コマンドを表示してはならない。
 jq -nc --arg p "$cleanup_repo" \
-  '{worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"],
-    roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false}}}' > "$cleanup_state/workers.json"
+  '{roles:{design:{terminal:"term_w",dispatch:"ctx_w",retained:false,
+      worktree_id:"wt_1",worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:["term_w"]}}}' > "$cleanup_state/workers.json"
 printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
 printf '%s\n' '{"ok":false,"error":"unavailable","result":{"workers":[]}}' \
   > "$ORCA_STUB_DIR/orchestration_worker-list"
@@ -295,8 +295,8 @@ for t in a b; do
   d="$two/.dispatch/task-$t"; mkdir -p "$d"
   printf '%s\n' '{"run_id":"run_x","parent_handle":"term_p"}' > "$d/run.json"
   jq -nc --arg p "$two_repo" --arg w "wt_$t" --arg h "term_$t" --arg c "ctx_$t" \
-    '{worktree_id:$w,worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:[$h],
-      roles:{design:{terminal:$h,dispatch:$c,retained:true}}}' > "$d/workers.json"
+    '{roles:{design:{terminal:$h,dispatch:$c,retained:true,
+      worktree_id:$w,worktree_path:$p,worktree_created_by_this_run:true,worktree_terminals:[$h]}}}' > "$d/workers.json"
   printf '%s\n' '{"merged":true}' > "$d/integration-result.json"
 done
 export ORCA_STUB_DIR="$two/orca"; mkdir -p "$ORCA_STUB_DIR"

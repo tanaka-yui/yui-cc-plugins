@@ -361,10 +361,10 @@ there.
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
-WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
+WT=$(jq -r '.roles.design.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
 TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
 DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
-WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
+WP=$(jq -r '.roles.design.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
 [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
@@ -404,14 +404,14 @@ condition below actually holds**. Check them; do not describe them.
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
-WT=$(jq -r '.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
+WT=$(jq -r '.roles.design.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
 TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
 DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
-WP=$(jq -r '.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
+WP=$(jq -r '.roles.design.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
 MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
-OWNED=$(jq -r '.worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)
-KNOWN=$(jq -c '.worktree_terminals // null' "$SD/workers.json" 2>/dev/null)
+OWNED=$(jq -r '.roles.design.worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)
+KNOWN=$(jq -c '.roles.design.worktree_terminals // null' "$SD/workers.json" 2>/dev/null)
 [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$RUN" && -n "$ORCA_BIN" && -n "$KNOWN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1

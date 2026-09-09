@@ -201,12 +201,15 @@ OWNED=false; [[ -n "$CREATED" ]] && OWNED=true
 # ★ **解決した tuple を記録する。**あとから「この worker は何で走ったのか」を
 #   receipt 無しで答えられるようにする。未設定の model / effort はキー自体を置かない
 #   （config-resolve の出力と同じ形にし、「未設定」と「空文字」を混ぜない）。
-postwrite workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg w "$WT_ID" --arg p "$WT_PATH" \
-  --arg b "$BR" --arg ib "$IB" --argjson own "$OWNED" \
-  --argjson design "$(jq -c '.roles.design + {retained:false}' <<<"$CFG")" \
-  '{run_id:$r,worktree_id:$w,worktree_path:$p,branch:$b,integration_branch:$ib,
-    worktree_created_by_this_run:$own, worktree_terminals:null,
-    roles:{design:$design}}')"
+# ★ **worktree 系はロール配下に置く。**ロールごとに自分の worktree を持つので、
+#   トップレベルに 1 組しか無い形では 2 ロール目を記録できない。`integration_branch` は
+#   親の checkout の話なのでトップレベルに残す。
+postwrite workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg ib "$IB" \
+  --argjson design "$(jq -c --arg w "$WT_ID" --arg p "$WT_PATH" --arg b "$BR" --argjson own "$OWNED" \
+      '.roles.design + {worktree_id:$w, worktree_path:$p, branch:$b,
+                        worktree_created_by_this_run:$own, worktree_terminals:null,
+                        retained:false}' <<<"$CFG")" \
+  '{run_id:$r, integration_branch:$ib, roles:{design:$design}}')"
 
 RD="$SD/roles/design"
 SPEC="TASK: $SLUG
@@ -314,7 +317,8 @@ else
   log "could not inventory the terminals in this worktree (rc=$TLRC); cleanup will refuse to remove it"
 fi
 jq_write workers-after-dispatch "$SD/workers.json" -c --arg d "$DID" --arg h "$H" --argjson ts "$TERMS" \
-  '.roles.design.dispatch = $d | .roles.design.terminal = $h | .worktree_terminals = $ts' \
+  '.roles.design.dispatch = $d | .roles.design.terminal = $h
+   | .roles.design.worktree_terminals = $ts' \
   "$SD/workers.json" || {
   kept "the worker started but the dispatch id could not be recorded. Resources are KEPT."
   log "task=$TID dispatch=$DID"

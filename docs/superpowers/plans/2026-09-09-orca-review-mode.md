@@ -132,12 +132,38 @@ O 番号を採番して 2-1 の表に追記する。`worker-release` → `worktr
 
 ### Task 3: `orca-start.sh` が `review_mode=on` のとき 2 ロールを起動する
 
+> **計画からの逸脱（2026-09-09）:** 当初 Task 8 Step 2 に置いていた **`workers.json` の
+> スキーマ変更（worktree 系フィールドをロール配下へ移す）を、この Task へ前倒しする。**
+> ロールごとに worktree を持つ以上、2 本目を起こす Task 3 の時点で置き場所が要る。
+> 分けると Task 3〜8 の間だけ「トップレベルに 1 組しか無いのに worktree は 2 つ」という
+> 読めない中間状態が残り、cleanup ブロックが壊れたままになる。
+> **スキーマ変更はその読み手全部と同じ commit で入れる。**Task 8 に残るのは
+> 「cleanup がロールを走査する」ことの回帰固定である。
+
+**スキーマ:**
+
+```json
+{ "run_id": "...", "integration_branch": "...",
+  "roles": {
+    "design": { "agent": "...", "model": "...", "effort": "...",
+                "worktree_id": "...", "worktree_path": "...", "branch": "...",
+                "worktree_created_by_this_run": true, "worktree_terminals": ["term_..."],
+                "task": "...", "dispatch": "...", "terminal": "...", "retained": false } } }
+```
+
+`integration_branch` は親の checkout の話なのでトップレベルに残す。`branch` は
+**ロールごと**（worktree ごとに別ブランチ）。`orca-merge.sh` が取り込むのは
+`.roles.design.branch` である。
+
 **Files:**
 - Modify: `apps/orca-team-dispatch-task/bin/orca-start.sh`
-- Modify: `apps/orca-team-dispatch-task/test/test-start.sh`
+- Modify: `apps/orca-team-dispatch-task/bin/orca-merge.sh`（`.branch` → `.roles.design.branch`）
+- Modify: `apps/orca-team-dispatch-task/skills/orca-team-dispatch-task/SKILL.md`（`[C1]`〜`[C7]`）
+- Modify: `apps/orca-team-dispatch-task/skills/orca-team-dispatch-task/references/guide-ja.md`（バイト一致で）
+- Modify: `apps/orca-team-dispatch-task/test/{test-start,test-merge,test-docs,test-e2e}.sh`
 
 **Interfaces:**
-- Produces: `workers.json` の `roles` に `design_review` が増える
+- Produces: 上記スキーマ。`roles` に `design_review` が増える
 
 - [ ] **Step 1: 起動順を T4a → T4b にする（reviewer が先）**
 

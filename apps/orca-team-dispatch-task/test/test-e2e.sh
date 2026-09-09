@@ -66,8 +66,8 @@ git -C "$R" show main:README.md | grep -q "$MARK" && ok "E8 成果が親ブラ�
 [[ -d "$WT" ]] && git -C "$R" show-ref --quiet refs/heads/orca/e2e \
   && ok "E9 資源を消さない" || fail "E9 資源を消した"
 # **ownership と terminal 集合を記録している**（片付けの gate が読む）
-jq -e '.worktree_created_by_this_run == true
-       and (.worktree_terminals | index("term_w") != null)' "$SD/workers.json" >/dev/null 2>&1 \
+jq -e '.roles.design.worktree_created_by_this_run == true
+       and (.roles.design.worktree_terminals | index("term_w") != null)' "$SD/workers.json" >/dev/null 2>&1 \
   && ok "E11 ownership と端末集合を記録" || fail "E11 ($(jq -c . "$SD/workers.json"))"
 # 親の checkout は clean のまま（.dispatch/ が除外されている）
 [[ -z "$(git -C "$R" status --porcelain)" ]] && ok "E10 親が clean" || fail "E10 親が dirty"

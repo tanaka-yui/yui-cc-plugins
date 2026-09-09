@@ -13,8 +13,9 @@ setup() {
   SD="$R/.dispatch/s"; mkdir -p "$SD/roles/design"
   printf '.dispatch/\n' >> "$R/.git/info/exclude"
   printf '{"run_id":"run_x","parent_handle":"term_p","repo_root":"%s"}\n' "$R" > "$SD/run.json"
-  jq -nc --arg w "$WT" '{run_id:"run_x",worktree_id:"wt_1",worktree_path:$w,branch:"orca/s",
-    integration_branch:"main",roles:{design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false}}}' > "$SD/workers.json"
+  jq -nc --arg w "$WT" '{run_id:"run_x",integration_branch:"main",
+    roles:{design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false,
+      worktree_id:"wt_1",worktree_path:$w,branch:"orca/s"}}}' > "$SD/workers.json"
   echo '{"status":"done"}' > "$SD/roles/design/status.json"
   printf 'did the thing\n' > "$SD/roles/design/result.md"
   printf '["worker_done|task_x|ctx_x|succeeded"]\n' > "$SD/received.json"
@@ -53,7 +54,7 @@ setup; git -C "$R" checkout -q -b other; m >/dev/null 2>&1
 [[ $? -eq 1 ]] && ok "MG6 別ブランチへ入れない" || fail "MG6 別ブランチへ merge した"; teardown
 
 # MG7: branch を記録していなければ推測しない
-setup; jq -c 'del(.branch)' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+setup; jq -c 'del(.roles.design.branch)' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
 m >/dev/null 2>&1
 [[ $? -eq 1 ]] && ! in_main && ok "MG7 branch を推測しない" || fail "MG7"; teardown
 

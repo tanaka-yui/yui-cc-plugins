@@ -85,7 +85,7 @@ setup; echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term
   > "$ORCA_STUB_DIR/orchestration_run-current"; start >/dev/null 2>&1
 grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" && fail "ST5 無関係な Run で起動した"; teardown
 setup; start >/dev/null 2>&1
-jq -e '.run_id=="run_x" and .worktree_id=="wt_1" and .branch=="orca/s"
+jq -e '.run_id=="run_x" and .roles.design.worktree_id=="wt_1" and .roles.design.branch=="orca/s"
        and .integration_branch=="main"
        and .roles.design.terminal=="term_w" and .roles.design.task=="task_x" and .roles.design.dispatch=="ctx_x"' \
   "$R/.dispatch/s/workers.json" >/dev/null 2>&1 || fail "ST5 workers.json"
@@ -219,24 +219,24 @@ setup; start >/dev/null 2>&1
 # ST14: **ownership と worktree の端末集合を記録する**（片付けの gate が読む）
 setup; echo '{"ok":true,"result":{"terminals":[{"handle":"term_w"},{"handle":"term_shell"}]}}' \
   > "$ORCA_STUB_DIR/terminal_list"; start >/dev/null 2>&1
-jq -e '.worktree_created_by_this_run == true
-       and (.worktree_terminals | length == 2)' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+jq -e '.roles.design.worktree_created_by_this_run == true
+       and (.roles.design.worktree_terminals | length == 2)' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST14 作成 worktree と端末集合" || fail "ST14 ($(jq -c . "$R/.dispatch/s/workers.json"))"; teardown
 setup; reuse_fixture; start >/dev/null 2>&1
-jq -e '.worktree_created_by_this_run == false' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+jq -e '.roles.design.worktree_created_by_this_run == false' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST14b 再利用は owned=false" || fail "ST14b 再利用を owned にした"; teardown
 
 # ST14c: **terminal list に失敗したら空配列ではなく null を記録する** (round 4 finding 1)。
 #        [] にすると、あとの cleanup gate が「未 account 0」と読んで削除を許す
 setup; echo 1 > "$ORCA_STUB_DIR/terminal_list.rc"; start >/dev/null 2>&1
-jq -e '.worktree_terminals == null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+jq -e '.roles.design.worktree_terminals == null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST14c inventory 失敗は null" \
-  || fail "ST14c ($(jq -c '.worktree_terminals' "$R/.dispatch/s/workers.json"))"; teardown
+  || fail "ST14c ($(jq -c '.roles.design.worktree_terminals' "$R/.dispatch/s/workers.json"))"; teardown
 
 # ST14d: schema が配列でないときも null
 setup; echo '{"ok":true,"result":{"terminals":"nope"}}' > "$ORCA_STUB_DIR/terminal_list"
 start >/dev/null 2>&1
-jq -e '.worktree_terminals == null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+jq -e '.roles.design.worktree_terminals == null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST14d 不正 schema も null" || fail "ST14d"; teardown
 
 # ST13: 既存 slug は上書きしない
@@ -334,7 +334,7 @@ fi; teardown_wsl
 # ST28b: **receipt の path を local 形式へ戻す。**戻さないと -d も git -C も落ち、
 #        workers.json に bash が使えない path が残って片付け ([C3] の git -C "$WP") が壊れる
 setup_wsl; start >/dev/null 2>&1
-got=$(jq -r '.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
+got=$(jq -r '.roles.design.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
 [[ "$got" == "$WT" ]] && ok "ST28b receipt の path を local へ戻す" \
   || fail "ST28b workers.json の path=[$got] 期待=[$WT]"; teardown_wsl
 
@@ -353,7 +353,7 @@ if WPD=$(command -v wslpath 2>/dev/null); then
   export PATH
 fi
 start >/dev/null 2>&1
-got=$(jq -r '.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
+got=$(jq -r '.roles.design.worktree_path // empty' "$R/.dispatch/s/workers.json" 2>/dev/null)
 PATH="$OLDPATH"; export PATH; unset ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND
 [[ "$got" == "$WT" ]] && ok "ST28d wslpath が無ければ変換しない" \
   || fail "ST28d path=[$got] 期待=[$WT]"; teardown
@@ -423,8 +423,8 @@ printf -v qm '%q' 'opus[1m]'
 #       この経路は常に 0 件で、再利用も「同名が複数」の防御も一度も動いていなかった。
 setup; reuse_fixture; start >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 ]] && ! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
-  && [[ "$(jq -r '.worktree_id' "$R/.dispatch/s/workers.json")" == wt_old ]] \
-  && [[ "$(jq -r '.worktree_created_by_this_run' "$R/.dispatch/s/workers.json")" == false ]] \
+  && [[ "$(jq -r '.roles.design.worktree_id' "$R/.dispatch/s/workers.json")" == wt_old ]] \
+  && [[ "$(jq -r '.roles.design.worktree_created_by_this_run' "$R/.dispatch/s/workers.json")" == false ]] \
   && ok "ST40 displayName で既存 worktree を再利用する" || fail "ST40 (rc=$rc)"; teardown
 
 # ST42: ★ **worker へ渡す spec に `$ORCA_BIN` を書かない。**worker の shell にその変数は
