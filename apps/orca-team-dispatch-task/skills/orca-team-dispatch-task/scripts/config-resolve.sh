@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # config-resolve.sh — global / project / コマンドラインの設定をロール単位で解決し JSON で出す。
 #
-# Usage: config-resolve.sh --project-root <path> [--set <role>.<field>=<value>]...
+# Usage: config-resolve.sh --project-root <path> [--review-mode <on|off>]
+#                          [--set <role>.<field>=<value>]...
 # Exit:  0 = 解決した / 1 = 設定が読めない / 2 = 使用法エラー
 #
 # 優先順位は override > project > global。**設定ファイルが 1 つも無いのは正常**で、
@@ -21,6 +22,7 @@ die_read() { echo "config-resolve: $1" >&2; exit 1; }
 warn()     { echo "[warn] config-resolve: $1" >&2; }
 
 PROJECT_ROOT=''
+OVERRIDE_review_mode=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-root)
@@ -32,10 +34,14 @@ while [[ $# -gt 0 ]]; do
       ov_key="${2%%=*}"; ov_value="${2#*=}"
       [[ "$ov_key" == *.* ]] || die "invalid --set '$2'"
       ov_role="${ov_key%%.*}"; ov_field="${ov_key#*.}"
-      dispatch_role_names | grep -qxF "$ov_role" || die "unknown role in --set: $ov_role"
+      dispatch_all_role_names | grep -qxF "$ov_role" || die "unknown role in --set: $ov_role"
       case "$ov_field" in agent|model|effort) ;; *) die "unknown field in --set: $ov_field" ;; esac
       printf -v "OVERRIDE_${ov_role}_${ov_field}" '%s' "$ov_value"
       shift 2 ;;
+    --review-mode)
+      [[ $# -ge 2 ]] || die '--review-mode requires on or off'
+      dispatch_valid_review_mode "$2" || die "invalid --review-mode: $2"
+      OVERRIDE_review_mode="$2"; shift 2 ;;
     *) die "unknown argument '$1'" ;;
   esac
 done
@@ -62,8 +68,11 @@ check_layer "$PROJECT_CONFIG" 'project config.json' && PROJECT_PRESENT=1
 # ★ **「ファイルが在る」と「設定されている」は別。**第三者キーだけを持つ config.json は
 #   この skill にとって未設定である。First-run の問いかけはこちらで判定する。
 CONFIGURED=0
-has_roles() { [[ -f "$1" ]] && jq -e '(.roles | type) == "object" and (.roles | length) > 0' "$1" >/dev/null 2>&1; }
-{ has_roles "$GLOBAL_CONFIG" || has_roles "$PROJECT_CONFIG"; } && CONFIGURED=1
+# review_mode だけを設定した利用者にも S0 を二度と尋ねない。所有キーのどれかが在れば設定済み。
+has_ours() { [[ -f "$1" ]] && jq -e \
+  '((.roles | type) == "object" and (.roles | length) > 0) or (.review_mode | type) == "string"' \
+  "$1" >/dev/null 2>&1; }
+{ has_ours "$GLOBAL_CONFIG" || has_ours "$PROJECT_CONFIG"; } && CONFIGURED=1
 
 # 型違いは「その層に無い」ではなく「その層が無効」である。警告して次の層へ落とす。
 # ★ 型と値を別々の jq で取る。1 つの出力に番兵を混ぜると、利用者がその番兵を
@@ -158,6 +167,30 @@ resolve_effort() {   # $1=role $2=agent -> RESOLVED_EFFORT ('' = 未設定)
   done
 }
 
+# review_mode の解決。tuple と同じ override → project → global。
+resolve_review_mode() {
+  local source file='' vtype value
+  if [[ -n "$OVERRIDE_review_mode" ]]; then
+    printf '%s\n' "$OVERRIDE_review_mode"; return 0
+  fi
+  for source in project global; do
+    case "$source" in
+      project) [[ "$PROJECT_PRESENT" -eq 1 ]] || continue; file="$PROJECT_CONFIG" ;;
+      global)  [[ "$GLOBAL_PRESENT"  -eq 1 ]] || continue; file="$GLOBAL_CONFIG"  ;;
+    esac
+    vtype=$(jq -r 'if has("review_mode") then .review_mode | type else empty end' "$file" 2>/dev/null)
+    [[ -n "$vtype" ]] || continue
+    if [[ "$vtype" != string ]]; then
+      warn "ignoring non-string review_mode in $source config"; continue
+    fi
+    value=$(jq -r '.review_mode' "$file" 2>/dev/null)
+    if dispatch_valid_review_mode "$value"; then printf '%s\n' "$value"; return 0; fi
+    warn "ignoring invalid review_mode '$value' in $source config"
+  done
+  dispatch_default_review_mode
+}
+REVIEW_MODE="$(resolve_review_mode)"
+
 ROLES_JSON='{}'
 while IFS= read -r role; do
   resolve_agent  "$role"; agent="$RESOLVED_AGENT"
@@ -174,7 +207,7 @@ while IFS= read -r role; do
   [[ -n "$effort" ]] && role_json="$(jq -c --arg e "$effort" '. + {effort:$e}' <<<"$role_json")"
   ROLES_JSON="$(jq -nc --arg r "$role" --argjson rj "$role_json" --argjson acc "$ROLES_JSON" \
     '$acc + {($r): $rj}')"
-done < <(dispatch_role_names)
+done < <(dispatch_role_names "$REVIEW_MODE")
 
 jq -n \
   --arg config_home "$CONFIG_HOME" \
@@ -183,7 +216,8 @@ jq -n \
   --argjson global_present "$GLOBAL_PRESENT" \
   --argjson project_present "$PROJECT_PRESENT" \
   --argjson configured "$CONFIGURED" \
+  --arg review_mode "$REVIEW_MODE" \
   --argjson roles "$ROLES_JSON" \
   '{config_home:$config_home, global_config:$global_config, project_config:$project_config,
     global_present:($global_present == 1), project_present:($project_present == 1),
-    configured:($configured == 1), roles:$roles}'
+    configured:($configured == 1), review_mode:$review_mode, roles:$roles}'

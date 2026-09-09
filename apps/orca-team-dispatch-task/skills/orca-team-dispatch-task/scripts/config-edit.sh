@@ -8,6 +8,7 @@ set -euo pipefail
 #        config-edit.sh --config <path> --show
 #
 # 扱えるキー:
+#   review_mode                             on | off
 #   roles.<role>.agent | .model | .effort   set / unset
 #   roles.<role>                            unset 専用
 #   roles                                   unset 専用
@@ -31,7 +32,7 @@ die_usage() {
   exit 2
 }
 
-valid_role() { dispatch_role_names | grep -qxF "$1"; }
+valid_role() { dispatch_all_role_names | grep -qxF "$1"; }
 
 KEY_ROLE=""
 KEY_FIELD=""
@@ -59,6 +60,7 @@ parse_role() {   # roles.<role>
 
 key_kind() {
   case "$1" in
+    review_mode) printf 'review_mode\n' ;;
     roles)     printf 'roles\n' ;;
     roles.*.*) parse_role_field "$1" && printf 'field\n' ;;
     roles.*)   parse_role "$1" && printf 'role\n' ;;
@@ -98,10 +100,11 @@ mode_count=$((MUTATE + SHOW))
 
 if [[ -n "$GET_KEY" ]]; then
   kind=$(key_kind "$GET_KEY") || die_usage "unknown key: $GET_KEY"
-  [[ "$kind" == field ]] || die_usage "key is unset-only: $GET_KEY"
+  [[ "$kind" == field || "$kind" == review_mode ]] || die_usage "key is unset-only: $GET_KEY"
   [[ -f "$CONFIG" ]] || exit 0
-  parse_role_field "$GET_KEY"
-  if ! jq -r ".roles.$KEY_ROLE.$KEY_FIELD // empty" "$CONFIG" 2>/dev/null; then
+  if [[ "$kind" == review_mode ]]; then GET_FILTER='.review_mode // empty'
+  else parse_role_field "$GET_KEY"; GET_FILTER=".roles.$KEY_ROLE.$KEY_FIELD // empty"; fi
+  if ! jq -r "$GET_FILTER" "$CONFIG" 2>/dev/null; then
     echo "config-edit: cannot read $CONFIG (invalid JSON?)" >&2; exit 1
   fi
   exit 0
@@ -124,7 +127,11 @@ for index in "${!OPS[@]}"; do
   op="${OPS[$index]}"; key="${KEYS[$index]}"; value="${VALUES[$index]}"
   kind=$(key_kind "$key") || die_usage "unknown key: $key"
   [[ "$op" == set ]] || continue
-  [[ "$kind" == field ]] || die_usage "key is unset-only: $key"
+  [[ "$kind" == field || "$kind" == review_mode ]] || die_usage "key is unset-only: $key"
+  if [[ "$kind" == review_mode ]]; then
+    dispatch_valid_review_mode "$value" || die_usage "invalid value for $key: $value"
+    continue
+  fi
   parse_role_field "$key"
   case "$KEY_FIELD" in
     agent)
@@ -167,10 +174,15 @@ for index in "${!OPS[@]}"; do
   if [[ "$op" == set ]]; then
     ARG_INDEX=$((ARG_INDEX + 1))
     JQ_ARGS+=(--arg "v$ARG_INDEX" "${VALUES[$index]}")
-    parse_role_field "$key"
-    action=".roles.$KEY_ROLE.$KEY_FIELD = \$v$ARG_INDEX"
+    if [[ "$kind" == review_mode ]]; then
+      action=".review_mode = \$v$ARG_INDEX"
+    else
+      parse_role_field "$key"
+      action=".roles.$KEY_ROLE.$KEY_FIELD = \$v$ARG_INDEX"
+    fi
   else
     case "$kind" in
+      review_mode) action='del(.review_mode)' ;;
       roles) action='del(.roles)' ;;
       role)  parse_role "$key";       action="del(.roles.$KEY_ROLE)" ;;
       field) parse_role_field "$key"; action="del(.roles.$KEY_ROLE.$KEY_FIELD)" ;;

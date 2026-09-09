@@ -22,8 +22,22 @@ dispatch_config_file() { printf '%s/config.json\n' "$(dispatch_config_home)"; }
 
 dispatch_project_config_file() { printf '%s/.dispatch/config.json\n' "$1"; }
 
-# 現段階のロールは design だけ。ロールを増やす段では **ここ 1 行だけ**が変わる。
-dispatch_role_names() { printf 'design\n'; }
+# ★ **「この版が知っているロール」と「今そのタスクで動くロール」は別。**
+#   前者は設定できる集合であり、後者は review_mode が決める。混ぜると、review_mode=off の
+#   間は design_review を設定できず、**on にする前に準備ができない**状態になる。
+dispatch_all_role_names() { printf 'design\ndesign_review\n'; }
+
+# $1=review_mode (既定 off)。dispatch が実際に起動するロールを返す。
+dispatch_role_names() {
+  printf 'design\n'
+  [[ "${1:-off}" == on ]] && printf 'design_review\n'
+  return 0
+}
+
+# ★ 既定は **off**。Stage A の利用者の挙動を変えないため。model / effort に自動既定を
+#   持たせない判断（下記）と同じ理由で、頼まれていないロールを勝手に起こさない。
+dispatch_default_review_mode() { printf 'off\n'; }
+dispatch_valid_review_mode() { case "$1" in on|off) return 0 ;; *) return 1 ;; esac; }
 
 # 空・前後の空白・シェルメタ文字・制御文字を拒否する。内部の空白は許容する。
 # 前後の空白を黙ってトリムすると「入力した値と違う値が保存される」ので、トリムせず弾く。

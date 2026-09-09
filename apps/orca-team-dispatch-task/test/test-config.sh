@@ -186,4 +186,79 @@ rm -f "$G"; echo '{"roles":{"design":{"model":"sonnet"}}}' > "$J"
   && ok "CF17 configured は roles の有無で決まる" || fail "CF17 project に roles"
 teardown
 
+# --- review_mode (Stage B) ---
+rm_() { bash "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -r '.review_mode'; }
+roles_() { bash "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -r '.roles | keys | join(",")'; }
+
+# CF18: ★ **既定は off。**Stage A の利用者に頼んでいないロールを勝手に起こさない。
+#       CF1 / ST31 と同じ「未設定の挙動を変えない」原則である。
+setup
+[[ "$(rm_)" == off && "$(roles_)" == design ]] \
+  && ok "CF18 review_mode の既定は off でロールは design だけ" || fail "CF18 ($(rm_) / $(roles_))"
+teardown
+
+# CF19: on なら design と design_review の 2 ロールになる。
+setup
+echo '{"review_mode":"on"}' > "$G"
+[[ "$(rm_)" == on && "$(roles_)" == "design,design_review" ]] \
+  && ok "CF19 on で design_review が増える" || fail "CF19 ($(rm_) / $(roles_))"
+teardown
+
+# CF20: on / off 以外は警告して次の層へ落とす。型違いも同じ。
+setup
+echo '{"review_mode":"maybe"}' > "$G"
+err=$(bash "$RESOLVE" --project-root "$PR" 2>&1 >/dev/null)
+[[ "$(rm_)" == off && "$err" == *"ignoring invalid review_mode 'maybe'"* ]] || fail "CF20 不正値"
+echo '{"review_mode":true}' > "$G"
+err=$(bash "$RESOLVE" --project-root "$PR" 2>&1 >/dev/null)
+[[ "$(rm_)" == off && "$err" == *'ignoring non-string review_mode'* ]] || fail "CF20 型違い"
+echo '{"review_mode":"maybe"}' > "$G"; echo '{"review_mode":"on"}' > "$J"
+[[ "$(rm_)" == on ]] && ok "CF20 不正な review_mode を警告して落とす" || fail "CF20 層またぎ"
+teardown
+
+# CF21: ★ **使っていないロールの設定を dispatch に見せない。**off のとき
+#       design_review の tuple は解決結果に出さない（設定自体は残る）。
+setup
+echo '{"review_mode":"off","roles":{"design_review":{"agent":"codex","model":"gpt-6-astra"}}}' > "$G"
+[[ "$(roles_)" == design ]] || fail "CF21 off なのに出た"
+[[ "$(bash "$EDIT" --config "$G" --get roles.design_review.agent 2>/dev/null)" == codex ]] \
+  && ok "CF21 off でも設定は残るが解決結果には出ない" || fail "CF21 設定が消えた"
+teardown
+
+# CF22: ★ **off の間も design_review を設定できる。**できないと on にする前に準備ができない。
+#       「この版が知っているロール」と「今動くロール」を分けた理由がこれである。
+setup
+bash "$EDIT" --config "$G" --set roles.design_review.agent=codex \
+  --set roles.design_review.model=gpt-6-astra --set roles.design_review.effort=xhigh >/dev/null 2>&1
+rc=$?
+[[ "$rc" -eq 0 && "$(jq -c .roles.design_review "$G")" == '{"agent":"codex","model":"gpt-6-astra","effort":"xhigh"}' ]] \
+  && ok "CF22 off でも design_review を設定できる" || fail "CF22 (rc=$rc)"
+teardown
+
+# CF23: config-edit が review_mode を扱う。--unset roles は review_mode を消さない。
+setup
+bash "$EDIT" --config "$G" --set review_mode=on --set roles.design.model=sonnet >/dev/null 2>&1
+[[ "$(jq -r .review_mode "$G")" == on ]] || fail "CF23 set"
+[[ "$(bash "$EDIT" --config "$G" --get review_mode 2>/dev/null)" == on ]] || fail "CF23 get"
+bash "$EDIT" --config "$G" --set review_mode=maybe >/dev/null 2>&1
+[[ $? -eq 2 && "$(jq -r .review_mode "$G")" == on ]] || fail "CF23 不正値を書いた"
+bash "$EDIT" --config "$G" --unset roles >/dev/null 2>&1
+[[ "$(jq -r '.review_mode, (.roles|type)' "$G" | tr '\n' ' ')" == "on null " ]] \
+  && ok "CF23 review_mode の set/get と --unset roles の独立" || fail "CF23 ($(cat "$G"))"
+teardown
+
+# CF24: review_mode だけを設定した利用者にも S0 を二度と尋ねない。
+setup
+echo '{"review_mode":"on"}' > "$G"
+[[ "$(bash "$RESOLVE" --project-root "$PR" 2>/dev/null | jq -r .configured)" == true ]] \
+  && ok "CF24 review_mode だけでも configured" || fail "CF24"
+teardown
+
+# CF25: --review-mode は 1 回きりの上書きで、両方の層より強い。
+setup
+echo '{"review_mode":"on"}' > "$G"
+[[ "$(roles_ --review-mode off)" == design ]] \
+  && ok "CF25 --review-mode の 1 回きり上書き" || fail "CF25 ($(roles_ --review-mode off))"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
