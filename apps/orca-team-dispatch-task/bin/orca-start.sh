@@ -139,10 +139,14 @@ CREATED=""
 LRC=0; WLJ=$("$ORCA_BIN" worktree list --repo "$REPO" --json 2>/dev/null) || LRC=$?
 [[ "$LRC" -eq 0 ]] && jq -e '.result.worktrees | type == "array"' <<<"$WLJ" >/dev/null 2>&1 \
   || { log "cannot list worktrees for $REPO (rc=$LRC); refusing to guess whether one exists"; exit 1; }
-N=$(jq -r --arg n "$SLUG" '[.result.worktrees[] | select(.name == $n)] | length' <<<"$WLJ")
+# ★ **receipt の名前は `.displayName` である。`.name` は存在しない**（実測 2026-09-09:
+#   `worktree list` の要素キーに `name` は無く、`worktree create --name <n>` が入れた名前は
+#   `displayName` に載る）。`.name` で引いていた間、この照合は**常に 0 件**で、再利用の
+#   経路も「同名が複数」の防御も一度も動いていなかった。
+N=$(jq -r --arg n "$SLUG" '[.result.worktrees[] | select(.displayName == $n)] | length' <<<"$WLJ")
 case "$N" in
   0) WJ="" ;;
-  1) WJ=$(jq -c --arg n "$SLUG" '[.result.worktrees[] | select(.name == $n)][0]' <<<"$WLJ")
+  1) WJ=$(jq -c --arg n "$SLUG" '[.result.worktrees[] | select(.displayName == $n)][0]' <<<"$WLJ")
      log "reusing the existing worktree for $SLUG" ;;
   *) log "$N worktrees are named '$SLUG' in $REPO; refusing to guess which one"; exit 1 ;;
 esac
@@ -212,7 +216,7 @@ $(cat "$SD/request.md")
 STATUS PROTOCOL
 
 Your injected preamble gives you the task id, the dispatch id, the dispatch capability
-and the --from handle. Use that set. The Orca CLI is at \$ORCA_BIN, already exported.
+and the --from handle. Use that set. The Orca CLI is $(printf '%q' "$ORCA_BIN").
 
 1. Write $(printf '%q' "$RD/status.json") with status executing.
 2. Do the work in this worktree and commit it on this branch.
@@ -221,7 +225,7 @@ and the --from handle. Use that set. The Orca CLI is at \$ORCA_BIN, already expo
    (use error instead of done when the work itself failed)
 5. Send worker_done with the SAME conclusion as the status you just wrote:
 
-     \"\$ORCA_BIN\" orchestration send --type worker_done \\
+     $(printf '%q' "$ORCA_BIN") orchestration send --type worker_done \\
        --task-id <task id> --dispatch-id <dispatch id> \\
        --dispatch-capability <capability> --from <handle> \\
        --outcome succeeded --subject \"<short status>\" --body \"<what you did>\" --json
@@ -232,7 +236,7 @@ and the --from handle. Use that set. The Orca CLI is at \$ORCA_BIN, already expo
    If you are blocked, write status error, say why in result.md, and send worker_done
    with --outcome failed. The user will look at result.md and dispatch again.
 7. If the send fails, inspect with
-     \"\$ORCA_BIN\" orchestration dispatch-show --task <task id> --json
+     $(printf '%q' "$ORCA_BIN") orchestration dispatch-show --task <task id> --json
    before resending. If the dispatch is already terminal, do not resend.
 8. End your turn and stay idle."
 

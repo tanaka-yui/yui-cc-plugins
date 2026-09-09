@@ -4,7 +4,7 @@
 
 **Goal:** `orca-team-dispatch-task` に `review_mode` を実装し、**`design` の成果に対して `design_review` が verdict を返す往復が 1 回通る**ところまでを出荷する。設定は Stage A で入った `config.json`（`roles.<role>.{agent,model,effort}`）にロールを足す形で拡張し、`--setup` が `review_mode` も尋ねるようにする。
 
-**Architecture:** reviewer は **同じ Run 上の 2 本目の worker**（自分の Task と Dispatch を持つ）で、`design` と**同じ worktree**に入る（plan を読むため）。レビュー往復はラウンドごとに Task を作らず、`orchestration send` / `check` の直接やり取りで行う。往復のファイルは**タスク単位で共有する `<status-dir>/review/`** に置き、ロール別 status dir の外に出す。
+**Architecture:** reviewer は **同じ Run 上の 2 本目の worker**（自分の Task と Dispatch を持ち、**自分の worktree**を持つ）。レビュー往復はラウンドごとに Task を作らず、`orchestration send --to dispatch:<id>` / `check` の直接やり取りで行う（実測 O38）。往復のファイルは**タスク単位で共有する `<status-dir>/review/`**（親 repo 側の絶対パス）に置き、ロール別 status dir の外に出す。**2 つの agent を同じ checkout に同居させない** — 理由は下の「U-B4 を測らずに閉じた理由」。
 
 **Tech Stack:** bash + jq、Orca CLI（`$ORCA_BIN`）、テストは自作の bash ランナーと `test/lib/orca-stub.sh`
 
@@ -26,22 +26,36 @@
 - **使わなくなったコード・ファイル・テスト fixture は同じ commit で消す**
 - コミットメッセージは日本語。末尾に `Claude-Session: https://claude.ai/code/session_01EYLFvy1d56wB4ZwoNroYrx` を付ける
 
-## この計画が前提にしていない未知（Task 1 で潰す）
+## Task 1 の結果（実測済み 2026-09-09）
 
-`orchestration send --help` の Notes は `--to dispatch:<id>` を **"attempt-specific coordinator guidance"** と説明している。**coordinator → worker の経路しか明言されていない。**本計画の全体は worker ↔ worker の直接やり取りに乗っているので、Task 1 で実機に当てるまで Task 2 以降を書き換えられる前提として扱う。
+計画時の未知は 4 つとも決着した。spec 2-1 の O38〜O42 が正本である。
 
-| id | 問い | 外れたときの影響 |
+| id | 問い | 結果 | Task 3 以降への影響 |
+|---|---|---|---|
+| U-B1 | worker → worker の `send --to dispatch:<B>` が届き、B が `check` で読めるか | **通る**（O38）。`--help` の Notes は "coordinator guidance" としか書いていないが、worker からも届く | 計画どおり。Task 4 の adapter を書いてよい |
+| U-B2 | その message が親の Run メールボックスにも来るか | **来ない**（O39）。親には `worker_done` だけが入った | **Task 7 は「来ないことを固定する回帰テスト」だけでよい。**`orca-wait.sh` の改修は不要 |
+| U-B3 | `--type status` で subject のラベルが壊れないか | **壊れない**（O38）。subject / body とも無傷 | ラベル方式のまま。`--payload` へ移す必要は無い |
+| U-B4 | 同じ worktree に 2 本目の worker を入れられるか | **測っていない**（下記の判断により不要になった） | reviewer は**自分の worktree**を持つ |
+
+### U-B4 を測らずに閉じた理由
+
+**reviewer と design を同じ worktree に入れない**と決めたため、U-B4 は前提から外れた。
+
+- レビューの受け渡しは spec 7 節のとおり**タスク単位で共有する `<status-dir>/review/`**（親 repo 側の絶対パス）で行う。worker がどの worktree に居ても読み書きできるので、同居する必要が無い
+- 同居させると **2 つの agent が同じ checkout を同時に触る**。reviewer がビルドやテストを走らせると design の編集と衝突する。分けるほうが安全である
+
+worktree が 1 タスクにつき 2 つになるのはコストだが、**同居の危険と引き換えにする理由が無い。**
+
+### スパイクが暴いた出荷済みコードのバグ 2 件（修正済み）
+
+| | 症状 | 修正 |
 |---|---|---|
-| U-B1 | worker A の `send --to dispatch:<B>` が届き、B が `check --terminal <B の handle>` で読めるか | **(b) なら往復を親の中継に変える。**Task 4 の adapter と Task 6 の gate を書き直す |
-| U-B2 | その message は親の Run メールボックスの batch にも現れるか | **(a) なら親が詰まる。**`orca-wait.sh` は worker_done 以外を処理できず exit 1 で batch ごと止まる（Stage A の設計）。Task 7 の対処が必須になる |
-| U-B3 | `--type status` で `--subject` のラベルが往復して壊れないか | 壊れるなら `--payload` へラベルを移す |
-| U-B4 | 同じ worktree に 2 本目の worker を `worker-start --worktree id:<既存>` で入れられるか。`--setup` などの作成系 flag が拒否されないか | 拒否されるなら reviewer を別 worktree にし、plan の受け渡しをファイル共有から message へ変える |
-
-**U-B1 が (b) に倒れた場合、Task 4 以降を実行してはならない。**spec 6-2 と 7 節を書き直し、本計画も作り直す。
+| O40 | `worktree list` の receipt に `.name` は無い（`.displayName`）。`orca-start.sh` の再利用検出が**常に 0 件**で、再利用も「同名が複数」の防御も一度も動いていなかった | `.displayName` で照合。ST40 / ST6b が固定。fixture も実機の形へ直した |
+| O41 | worker の shell に `ORCA_BIN` は無いのに、Task spec が「The Orca CLI is at `$ORCA_BIN`, already exported」と書いていた。STATUS PROTOCOL の `worker_done` が空コマンドになる | spec に**実値を焼き込む**。ST42 が固定。旧 ST4 は「変数名が spec に出ること」を期待していた（バグを固定していた）ので直した |
 
 ---
 
-### Task 1: U-B1〜U-B4 を実機で確定させ、spec に追記する
+### Task 1: U-B1〜U-B4 を実機で確定させ、spec に追記する — **完了**
 
 **コードを 1 行も書かない。**実機に当てて事実を記録する Task である。Stage A の Task 1 と同じ構えで、**測れなかったものは「測れなかった」と書く**（推測で埋めない）。
 
@@ -49,33 +63,27 @@
 - Modify: `docs/superpowers/specs/2026-09-04-orca-team-dispatch-task-design.md`（2-1 の Orca 事実表に O 番号を追記）
 - Modify: 本計画（U-B の結果に応じて Task 2 以降を書き換える）
 
-- [ ] **Step 1: 使い捨ての Run に 2 本の worker を立てる**
+- [x] **Step 1: 使い捨ての Run に 2 本の worker を立てる**
 
-`.dispatch/` を汚さないよう、スパイク専用の slug（`spike-rv-a` / `spike-rv-b`）を使う。2 本目は 1 本目と**同じ worktree**へ入れる（U-B4）。
+スパイク専用の slug（`spike-rv-a` = 送信側 / `spike-rv-b` = 受信側）を使い、同じ Run に相乗りさせた。**同一 worktree は試していない**（U-B4 の項を参照）。モデルは sonnet / effort low — 測るのはメッセージ経路であってモデルの賢さではない。
 
-```bash
-# 1 本目
-bash bin/orca-start.sh --request-file "$REQ_A" --slug spike-rv-a --objective "review spike A"
-# 2 本目（同じ Run・同じ worktree。--worktree id:<A の worktree> を worker-start へ渡す経路を確かめる）
-```
-
-- [ ] **Step 2: worker A から worker B へ送り、B が読めるかを見る（U-B1 / U-B3）**
+- [x] **Step 2: worker A から worker B へ送り、B が読めるかを見る（U-B1 / U-B3）**
 
 A の端末で `send --to dispatch:<B> --type status --subject 'review-plan: round 1' --body ...` を実行し、B の端末で `check --terminal <B の handle> --peek --json` を読む。**`--peek` を使い、cursor を進めない。**
 
-- [ ] **Step 3: 親の Run メールボックスを覗く（U-B2）**
+- [x] **Step 3: 親の Run メールボックスを覗く（U-B2）**
 
 親端末で `check --terminal <親 handle> --peek --json` を読み、Step 2 の message が batch に混ざっているかを確かめる。**ここでも ack しない。**
 
-- [ ] **Step 4: 事実を spec へ書き、スパイクの資源を片付ける**
+- [x] **Step 4: 事実を spec へ書き、スパイクの資源を片付ける**
 
 O 番号を採番して 2-1 の表に追記する。`worker-release` → `worktree rm` → `.dispatch/spike-rv-*` の順で片付け、**残渣ゼロを `terminal list` と `git worktree list` で確認する**。
 
-**Verify:** spec に O 番号が 4 つ増えていること。`git status` にスパイクの残渣が無いこと。
+**Verify:** spec に O38〜O42 の 5 行が増えた。`worker-release` × 2 → `worktree rm` × 2 → `.dispatch/spike-rv-*` 除去で、`worker-list` は `released` × 2、`git worktree list` と `git status` に残渣なしを確認済み。
 
 ---
 
-### Task 2: `config.json` に `review_mode` と `design_review` の tuple を足す
+### Task 2: `config.json` に `review_mode` と `design_review` の tuple を足す — **完了**
 
 ユーザーが `--setup` で**レビューモードを選べる**ようにする。Task 3 以降がこの設定を読む。
 
@@ -94,7 +102,7 @@ O 番号を採番して 2-1 の表に追記する。`worker-release` → `worktr
              "design_review": {"agent":"codex","model":"gpt-6-astra","effort":"xhigh"} } }
 ```
 
-- [ ] **Step 1: `review_mode` の既定を決めて、テストを先に書く**
+- [x] **Step 1: `review_mode` の既定を決めて、テストを先に書く**
 
 **既定は `off`。**Stage A の利用者の挙動を変えないため（Stage A の CF1 / ST31 と同じ理由）。`on` は明示的に設定したときだけである。
 
@@ -106,19 +114,19 @@ O 番号を採番して 2-1 の表に追記する。`worker-release` → `worktr
 #       （設定は残るが「使っていないロールの設定」を dispatch に見せない）
 ```
 
-- [ ] **Step 2: `config-lib.sh` にロールと検証を足す**
+- [x] **Step 2: `config-lib.sh` にロールと検証を足す**
 
 `dispatch_role_names` は `review_mode` を引数に取る形へ変える。**`design_review` を無条件に返してはならない** — `off` のとき `config-edit.sh` が存在しないロールのキーを書けてしまう。
 
-- [ ] **Step 3: `config-resolve.sh` に `review_mode` の解決を足す**
+- [x] **Step 3: `config-resolve.sh` に `review_mode` の解決を足す**
 
 解決順は tuple と同じ override → project → global。`design_review` の既定 agent も `claude`。
 
-- [ ] **Step 4: `config-edit.sh` に `review_mode` を足す**
+- [x] **Step 4: `config-edit.sh` に `review_mode` を足す**
 
 `--set review_mode=on|off` と `--unset review_mode`。**`--unset roles` は `review_mode` を消さない**（別のキーである）。`--reset` は両方消す。
 
-**Verify:** `bash test/test-config.sh` が CF18-21 込みで green。
+**Verify:** CF18-25 の 8 本を追加して green（commit `66a800d`）。`--review-mode` の 1 回きり上書きも足した。
 
 ---
 
@@ -144,7 +152,7 @@ reviewer が起動できなかったら **design を起動しない**。中途�
 # ST36: reviewer の起動に失敗したら design を起動しない
 # ST37: design の起動に失敗しても reviewer の資源は消さない（identity を出して止まる）
 # ST38: review_mode=off なら worker-start は 1 回のまま（Stage A の挙動）
-# ST39: 2 ロールとも同じ worktree に入る（U-B4 の結果に従う）
+# ST39: 2 ロールはそれぞれ自分の worktree を持つ（同じ checkout に同居させない）
 ```
 
 **Verify:** `bash test/test-start.sh` green。ST38 が Stage A の挙動を固定していること。
@@ -222,19 +230,18 @@ spec の裁定（「**親が spec を手書きすることを禁止する**」�
 
 ### Task 7: `orca-wait.sh` がレビュー往復に巻き込まれないようにする
 
-**U-B2 が (a)（レビュー message が親の Run メールボックスにも来る）だったときに必須。**(b) なら Task 7 は「来ないことを固定するテスト」だけになる。
+**U-B2 は (b) だった**（O39: レビュー message は親の Run メールボックスに来ない）。よって **`orca-wait.sh` の改修は不要**で、この Task は「来ないことを固定する回帰テスト」だけになる。
 
 **Files:**
 - Modify: `apps/orca-team-dispatch-task/bin/orca-wait.sh`
 - Modify: `apps/orca-team-dispatch-task/test/test-wait.sh`
 
-- [ ] **Step 1: 既知でない message type で batch ごと止まる挙動を保存したまま、レビュー往復だけ通す**
+- [ ] **Step 1: レビュー往復が親のキューに来ないことを回帰で固定する**
 
-**「知らない message は ack しない」という Stage A の安全性を弱めてはならない。**レビューのラベルを持つ `status` は**既知として処理して捨てる**（親は関与しない）という明示的な分岐にする。未知は今までどおり exit 1 で止まる。
+**`orca-wait.sh` を変更してはならない。**「知らない message は ack しない」という Stage A の安全性はそのまま残す。O39 が将来変わったら気づけるように、実機 E2E（Task 10）でレビュー 1 往復の後に親のキューへ `worker_done` 以外が入らないことを確かめる。
 
 ```bash
-# WT27: レビューラベルの status が混ざった batch でも worker_done を取りこぼさない
-# WT28: レビューラベル以外の未知 type は今までどおり exit 1（安全性を弱めていない）
+# WT27: レビュー往復の後も親の batch は worker_done だけ（O39 の回帰）
 ```
 
 ---
@@ -250,9 +257,11 @@ spec の裁定（「**親が spec を手書きすることを禁止する**」�
 
 現在の各ブロックは `.roles.design.dispatch` を直接読んでいる。**`roles` を全部回す**形にし、ロールが増えてもブロックを書き換えずに済むようにする。
 
-- [ ] **Step 2: worktree 削除の条件に「全ロールの端末が閉じたか」を足す**
+- [ ] **Step 2: ロールごとに worktree を判定する**
 
-2 ロールが同じ worktree に居るので、**片方の端末が残っている worktree を消してはならない**。`[C3]` の `ACCOUNTED` 判定は既に「記録した端末以外が居たら消さない」なので、**記録側に 2 本入ることで自動的に閉まる** — ただし回帰テストで固定する。
+ロールが自分の worktree を持つので、**`[C3]` はロールごとに 1 回ずつ判定する**。`workers.json` の `worktree_id` / `worktree_path` / `worktree_created_by_this_run` / `worktree_terminals` を**ロール配下へ移す**（現在はトップレベルの 1 組しかない）。design が merge 済みでも reviewer の checkout が dirty なら reviewer の worktree は消さない、という判定が要る。
+
+**Step 1 の `roles` 走査と合わせて、`workers.json` のスキーマ変更が本 Task の実体である。**`[C1]` `[C2]` `[C5]` `[C7]` も同じ走査へ揃える。
 
 ---
 

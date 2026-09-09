@@ -37,7 +37,9 @@ teardown() { git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
 start() { bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug "${SLUG:-s}" --objective obj \
             --repo-root "$R" "$@"; }
 spec() { grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1; }
-reuse_fixture() { printf '{"ok":true,"result":{"worktrees":[{"id":"wt_old","name":"s","path":"%s","branch":"refs/heads/orca/s"}]}}\n' \
+# ★ **実機の receipt に `name` は無い**（実測 2026-09-09）。名前は `displayName` に載る。
+#   fixture が `name` を持っていたせいで、再利用経路のテストが全部「嘘の形」で通っていた。
+reuse_fixture() { printf '{"ok":true,"result":{"worktrees":[{"id":"wt_old","displayName":"s","path":"%s","branch":"refs/heads/orca/s"}]}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_list"; }
 
 setup; bash "$P/bin/orca-start.sh" --bogus >/dev/null 2>&1
@@ -65,7 +67,8 @@ setup; SLUG='Bad_Slug' start >/dev/null 2>&1
 #      lifecycle の argv も全部持つ (spec 6-4b)。bare orca は使わせない (O1)
 setup; start >/dev/null 2>&1; l=$(spec); miss=""
 [[ "$l" == *"$MARK"* ]] || miss="$miss [request]"
-for n in 'ORCA_BIN' 'worker_done' '--task-id' '--dispatch-id' '--dispatch-capability' \
+# ★ 'ORCA_BIN' は入れない。**変数名が spec に出ること自体がバグ**である（ST42）。
+for n in 'worker_done' '--task-id' '--dispatch-id' '--dispatch-capability' \
          '--from' '--outcome' 'report-status.sh' 'dispatch-show --task'; do
   [[ "$l" == *"$n"* ]] || miss="$miss [$n]"; done
 [[ "$l" == *' orca orchestration'* ]] && miss="$miss [bare-orca]"
@@ -114,7 +117,7 @@ setup; echo 1 > "$ORCA_STUB_DIR/worktree_create.rc"; start >/dev/null 2>&1
   && ok "ST6f create の rc を見る" || fail "ST6f rc を無視した"; teardown
 
 # ST6b: 同名が複数返ったら曖昧として止まる（勝手に 1 件目を選ばない）
-setup; printf '{"ok":true,"result":{"worktrees":[{"id":"a","name":"s","path":"%s","branch":"refs/heads/orca/s"},{"id":"b","name":"s","path":"/tmp/other","branch":"refs/heads/x"}]}}\n' \
+setup; printf '{"ok":true,"result":{"worktrees":[{"id":"a","displayName":"s","path":"%s","branch":"refs/heads/orca/s"},{"id":"b","displayName":"s","path":"/tmp/other","branch":"refs/heads/x"}]}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_list"; start >/dev/null 2>&1
 [[ $? -eq 1 ]] && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST6b 曖昧なら止まる" || fail "ST6b 1 件目を勝手に選んだ"; teardown
@@ -414,5 +417,22 @@ ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
 printf -v qm '%q' 'opus[1m]'
 [[ "$ws" == *"--model $qm"* && "$ws" == *'--effort max'* ]] \
   && ok "ST34 1 回きりの上書きが config より強い" || fail "ST34 [$ws]"; teardown
+
+# ST40: ★ **worktree の名前は receipt の `displayName` から引く。**実機の
+#       `worktree list` に `name` は存在せず（実測 2026-09-09）、`.name` で照合していた間
+#       この経路は常に 0 件で、再利用も「同名が複数」の防御も一度も動いていなかった。
+setup; reuse_fixture; start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && ! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
+  && [[ "$(jq -r '.worktree_id' "$R/.dispatch/s/workers.json")" == wt_old ]] \
+  && [[ "$(jq -r '.worktree_created_by_this_run' "$R/.dispatch/s/workers.json")" == false ]] \
+  && ok "ST40 displayName で既存 worktree を再利用する" || fail "ST40 (rc=$rc)"; teardown
+
+# ST42: ★ **worker へ渡す spec に `$ORCA_BIN` を書かない。**worker の shell にその変数は
+#       無い（実測 2026-09-09: worker が「$ORCA_BIN was empty; used orca-ide」と報告した）。
+#       変数名のまま渡すと、STATUS PROTOCOL の worker_done が空コマンドとして落ちる。
+setup; start >/dev/null 2>&1
+sp=$(spec)
+[[ "$sp" != *'$ORCA_BIN'* ]] && [[ "$sp" == *"$ORCA_BIN"* ]] \
+  && ok "ST42 spec は ORCA_BIN の実値を焼き込む" || fail "ST42 [$(printf '%.200s' "$sp")]"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
