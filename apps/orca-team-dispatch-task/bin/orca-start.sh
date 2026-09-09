@@ -245,13 +245,14 @@ C. Offer it. Keep the nonce this prints; you need it in E and F:
 
      NONCE=\$(bash $q_cmp --role-dir $q_rd prepare)
 
-D. Tell the parent it is ready, then close your turn and wait:
+D. Tell the parent it is ready, then close your turn and wait. **The subject carries the
+   nonce and nothing else** — Orca builds the payload from the id flags, so a nonce put
+   there would be dropped:
 
      $q_bin orchestration send --type merge_ready \\
        --task-id <task id> --dispatch-id <dispatch id> \\
        --dispatch-capability <capability> --from <handle> \\
-       --payload \"{\\\"nonce\\\":\\\"\$NONCE\\\"}\" \\
-       --subject \"ready: <short status>\" --body \"<what you did>\" --json
+       --subject \"merge_ready: \$NONCE\" --body \"<what you did>\" --json
 
    Then run: bash $q_cmp --role-dir $q_rd sent
    **End your turn here.** The parent replies on this same dispatch.

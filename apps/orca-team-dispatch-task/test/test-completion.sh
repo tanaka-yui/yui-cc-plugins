@@ -79,10 +79,12 @@ vsetup() {
 }
 vteardown() { rm -rf "$SD" "$ORCA_STUB_DIR"; unset ORCA_BIN ORCA_STUB_DIR; }
 # merge_ready を 1 通投げて、親が accepted / remediation のどちらを返すかを見る
+# ★ nonce は **subject** で運ぶ。`--payload` は便宜フラグに上書きされるので届かない（実測）。
 merge_ready_msg() {   # $1=nonce [$2=task $3=dispatch]
   jq -nc --arg n "$1" --arg t "${2:-t}" --arg c "${3:-c}" \
     '{ok:true,result:{runId:"r",deliveryId:"dm",count:1,messages:[
-      {id:"mr",type:"merge_ready",payload:({taskId:$t,dispatchId:$c,nonce:$n}|tojson),body:""}]}}' \
+      {id:"mr",type:"merge_ready",subject:("merge_ready: " + $n),
+       payload:({taskId:$t,dispatchId:$c}|tojson),body:""}]}}' \
     > "$ORCA_STUB_DIR/orchestration_check"
 }
 sent_subject() { tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" 2>/dev/null | grep -E '^completion-(accepted|remediation): ' | tail -1; }
@@ -170,5 +172,17 @@ setup
 bash "$C" --role-dir "$D" reconcile >/dev/null 2>&1
 [[ $? -ne 0 && -z "$(ph)" ]] && ok "CM15 記録が無ければ reconcile しない" || fail "CM15"
 teardown
+
+# CM16: ★ **payload に入った nonce も後方互換で読む。**正本は subject だが、payload に
+#       入って届く経路が将来できたときに落とさない。
+vsetup; printf 'did it\n' > "$SD/roles/design/result.md"
+jq -nc '{ok:true,result:{runId:"r",deliveryId:"dm",count:1,messages:[
+  {id:"mr",type:"merge_ready",subject:"ready: something",
+   payload:({taskId:"t",dispatchId:"c",nonce:"pn"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+wait_once
+[[ "$(sent_subject)" == 'completion-accepted: pn' ]] \
+  && ok "CM16 payload の nonce も読む" || fail "CM16 ($(sent_subject))"
+vteardown
 
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

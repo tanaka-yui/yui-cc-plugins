@@ -162,7 +162,11 @@ reply_completion() {   # $1=dispatch $2=nonce $3=accepted|remediation $4=本文
 
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
   local out res n i m payload d t tid did oc idx tsd trole rcode rreason existing upd RET RETRC ACK CHECKRC
+<<<<<<< Updated upstream
   local mrn vreason vok
+=======
+  local mrn vreason vok esub msub
+>>>>>>> Stashed changes
   local -a SETTLED
   CHECKRC=0
   out=$("$ORCA_BIN" orchestration check --terminal "$PH" --json 2>/dev/null) || CHECKRC=$?
@@ -212,8 +216,15 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
         log "batch $d carries a merge_ready for an unknown dispatch (task='$tid' dispatch='$did')"
         return 1
       fi
-      mrn=$(jq -r '.nonce // empty' <<<"$payload")
-      [[ -n "$mrn" ]] || { log "merge_ready from dispatch '$did' carries no nonce"; return 1; }
+      # ★ **nonce は subject で運ぶ。**`--payload` は `--task-id` などの便宜フラグに
+      #   上書きされるので、そこへ入れても届かない（実測: payload に taskId と dispatchId
+      #   しか残らなかった）。payload 側も一応見るが、正本は subject である。
+      msub=$(jq -r '.subject // empty' <<<"$m")
+      mrn=$(sed -n 's/^merge_ready: *//p' <<<"$msub" | head -1)
+      [[ -n "$mrn" ]] || mrn=$(jq -r '.nonce // empty' <<<"$payload")
+      [[ -n "$mrn" ]] || {
+        log "merge_ready from dispatch '$did' carries no nonce (subject '${msub:-none}')"
+        return 1; }
       vreason=$(verify_role "${T_SD[$idx]}" "${T_ROLE[$idx]}") && vok=0 || vok=1
       if [[ "$vok" -eq 0 ]]; then
         reply_completion "$did" "$mrn" accepted "the work is accepted; finish and report" || {
