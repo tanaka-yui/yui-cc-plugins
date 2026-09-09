@@ -15,10 +15,10 @@ miss=""; while IFS= read -r r; do [[ -f "$P/$r" ]] || miss="$miss $r"; done \
 [[ -z "$miss" ]] && ok "SK3 参照先が実在" || fail "SK3 実在しない参照:$miss"
 
 # SK4: **まだ実装していないものを宣言しない**
-#      `review_mode` と `design_review` は実装したのでこの集合から外した。
-#      **`exec_review` と `merge_ready` は残す** — Phase B 委譲 (spec の F-a) と
-#      二相コミット (F-d) は未実装であり、宣言を防ぐガードが要る。
-bad=""; for w in merge_ready nonce journal remediation exec_review; do
+#      `review_mode` / `design_review` / `exec_review` は実装したのでこの集合から外した。
+#      **`merge_ready` / `nonce` / `remediation` は残す** — 二相コミット (F-d) と
+#      generation transition (F-e) は未実装であり、宣言を防ぐガードが要る。
+bad=""; for w in merge_ready nonce journal remediation; do
   grep -q -- "$w" "$S" && bad="$bad [$w]"; done
 [[ -z "$bad" ]] && ok "SK4 未実装を宣言しない" || fail "SK4 未実装の宣言:$bad"
 

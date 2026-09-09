@@ -134,6 +134,9 @@ if [[ "$PHASE" == exec ]]; then
     || { log "$SD/plan.md is missing or empty; refusing to start exec on no plan"; exit 1; }
   jq -e '.roles.exec.dispatch // empty | length > 0' "$SD/workers.json" >/dev/null 2>&1 \
     && { log "the exec role has already started for $SLUG"; exit 1; }
+  # ★ **reviewer が先**（T4a と同じ理由）。exec は起動直後にレビューを依頼しうるので、
+  #   その時点で exec_review の dispatch が workers.json に無いと宛先不明で落ちる。
+  [[ "$REVIEW_MODE" == on ]] && LAUNCH_ORDER+=(exec_review)
   LAUNCH_ORDER+=(exec)
 else
   [[ "$REVIEW_MODE" == on ]] && LAUNCH_ORDER+=(design_review)
@@ -202,10 +205,12 @@ write workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg ib "$IB"
   log "run=$RUN  inspect with: $ORCA_BIN orchestration run-show --id $RUN --json"; exit 1; }
 else
   # ★ exec 段は tuple だけを足す。**既存の役の記録を上書きしない**
-  jq_write workers-exec-tuple "$SD/workers.json" -c \
-    --argjson t "$(jq -c '.roles.exec + {retained:false}' <<<"$CFG")" \
-    '.roles.exec = ((.roles.exec // {}) + $t)' "$SD/workers.json" \
-    || { log "cannot record the exec tuple"; exit 1; }
+  for r in "${LAUNCH_ORDER[@]}"; do
+    jq_write "workers-tuple-$r" "$SD/workers.json" -c --arg r "$r" \
+      --argjson t "$(jq -c --arg r "$r" '.roles[$r] + {retained:false}' <<<"$CFG")" \
+      '.roles[$r] = ((.roles[$r] // {}) + $t)' "$SD/workers.json" \
+      || { log "cannot record the $r tuple"; exit 1; }
+  done
 fi
 
 SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
@@ -249,7 +254,12 @@ F. If the send fails, inspect with
    before resending. If the dispatch is already terminal, do not resend.
 G. End your turn and stay idle."
 
-  if [[ "$role" == design_review ]]; then
+  if [[ "$role" == design_review || "$role" == exec_review ]]; then
+    # ★ 依頼元とラベルは役で決まる。design は計画を、exec は実装をレビューさせる
+    local rq_role=design rq_label='review-plan:' rq_what=plan rq_noun='plan'
+    if [[ "$role" == exec_review ]]; then
+      rq_role=exec; rq_label='review-code:'; rq_what=code; rq_noun='implementation'
+    fi
     cat <<SPEC_R
 REVIEWER FOR TASK: $SLUG
 
@@ -266,14 +276,15 @@ REVIEW LOOP
        --peek --wait --timeout-ms 600000 --json
 
    Use --peek. **Never pass --ack** — the cursor is not yours to advance.
-   A review request has a subject starting \`review-plan:\` and names a round number.
+   A review request has a subject starting \`$rq_label\` and names a round number.
    A subject starting \`abort-reviewer:\` means the work finished without you; go to step 5.
    If the wait returns nothing, run it once more. If it returns nothing again, go to step 5.
 
-2. The body names a file under $q_rvd. Read it and review it against the request.
+2. The body names a file under $q_rvd. Read it and review the $rq_noun against the request.
 
-3. Write your findings to $q_rvd/round-<n>-findings.md, where <n> is the round from the
-   subject. **End the file with exactly one line of this form and nothing after it:**
+3. Write your findings to $q_rvd/$rq_what-round-<n>-findings.md, where <n> is the round
+   from the subject. **The prefix matters**: two reviewers share this directory, and a
+   shared filename would overwrite the other one's findings. **End the file with exactly one line of this form and nothing after it:**
 
        VERDICT: approved
 
@@ -286,7 +297,7 @@ REVIEW LOOP
 
 4. Send the verdict back:
 
-     bash $q_send --workers $q_wf --to design \\\\
+     bash $q_send --workers $q_wf --to $rq_role \\\\
        --subject 'review-verdict: round <n>' --body '<absolute path to your findings file>'
 
    A non-zero exit means it was NOT delivered. Try once more; if it fails again, leave the
@@ -300,7 +311,54 @@ SPEC_R
     return 0
   fi
 
+  # ★ 依頼側のレビュー手順は design と exec で **ラベルとファイル名だけ**が違う。
+  #   本文を 2 つ書くと必ず片方だけ直されてドリフトするので、1 箇所で組み立てる。
+  render_review_block() {   # $1=reviewer 役 $2=ラベル $3=ファイル prefix $4=何をレビューさせるか
+    printf '%s' "REVIEW PROTOCOL (do this before you finish)
+
+A reviewer is already running and waiting for you. Have your $4 reviewed before you finish.
+
+1. Write your $4 to $q_rvd/$3-round-<n>-request.md, starting at n=1. Be concrete enough
+   that someone can disagree with it.
+
+2. Send the request:
+
+     bash $q_send --workers $q_wf --to $1 \\\\
+       --subject '$2 round <n>' --body '<absolute path to your request file>'
+
+   **A non-zero exit means it was NOT delivered.** Delete the request file you just wrote,
+   note in result.md that review was unavailable, and carry on without it.
+
+3. Wait for the verdict:
+
+     $q_bin orchestration check --terminal \"\\$ORCA_TERMINAL_HANDLE\" \\\\
+       --peek --wait --timeout-ms 600000 --json
+
+   Use --peek. **Never pass --ack.** Look for a subject starting \\`review-verdict:\\`.
+
+4. The body names a findings file. Read it. **Only a line reading exactly
+   \\`VERDICT: approved\\` means approved.** Anything else, including a missing VERDICT line,
+   is needs_work.
+
+5. On needs_work: revise and repeat from step 1 with the next round number.
+   **Stop after round 2.** Record the unresolved findings in result.md and keep the best
+   version you have. Do not keep asking.
+
+6. If no verdict arrives, send the same round once more. If still nothing, note in
+   result.md that review was skipped and proceed.
+
+7. When you are done, release the reviewer:
+
+     bash $q_send --workers $q_wf --to $1 \\\\
+       --subject 'abort-reviewer: done' --body 'the work is finished'
+
+"
+  }
+
   if [[ "$role" == exec ]]; then
+    local exec_review_block=""
+    [[ "$REVIEW_MODE" == on ]] \
+      && exec_review_block=$(render_review_block exec_review 'review-code:' code 'implementation')
     cat <<SPEC_X
 TASK: $SLUG (implementation)
 
@@ -308,7 +366,7 @@ Another worker has already planned this. **The plan is the specification.** It i
 $(printf '%q' "$SD/plan.md"). Read it first; the original request is at
 $(printf '%q' "$SD/request.md") for context.
 
-1. Build what the plan describes, in this worktree, and commit it on this branch.
+${exec_review_block}1. Build what the plan describes, in this worktree, and commit it on this branch.
 2. **Follow the plan.** If a step turns out to be wrong or impossible, do the rest, and say
    in result.md exactly which step you departed from and why. Do not silently redesign it.
 3. Do not edit $(printf '%q' "$SD/plan.md"). It is the record of what was agreed.
@@ -320,6 +378,8 @@ SPEC_X
 
   # design
   local review_block=""
+  [[ "$REVIEW_MODE" == on ]] \
+    && review_block=$(render_review_block design_review 'review-plan:' plan 'plan')
   local design_task="Do the work in this worktree and commit it on this branch."
   if [[ "$PHASE_B" == on ]]; then
     # ★ **design は実装しない。**実装役が別に居るのに両方が書くと、同じ変更が 2 つの
@@ -332,48 +392,6 @@ $(printf '%q' "$SD/plan.md") and leave every other file alone.
 Make it specific enough to be built from without asking you: name the files to change, what
 each change is for, and how someone would tell it worked. If the request cannot be built as
 asked, say so in the plan rather than inventing a different task."
-  fi
-  if [[ "$REVIEW_MODE" == on ]]; then
-    review_block="REVIEW PROTOCOL (do this before you finish)
-
-A reviewer is already running and waiting for you. Have your plan reviewed before you
-build it.
-
-1. Write what you intend to do to $q_rvd/round-<n>-request.md, starting at n=1. Be
-   concrete enough that someone can disagree with it.
-
-2. Send the request:
-
-     bash $q_send --workers $q_wf --to design_review \\\\
-       --subject 'review-plan: round <n>' --body '<absolute path to your request file>'
-
-   **A non-zero exit means it was NOT delivered.** Delete the request file you just wrote,
-   note in result.md that review was unavailable, and build it without review.
-
-3. Wait for the verdict:
-
-     $q_bin orchestration check --terminal \"\\\$ORCA_TERMINAL_HANDLE\" \\\\
-       --peek --wait --timeout-ms 600000 --json
-
-   Use --peek. **Never pass --ack.** Look for a subject starting \`review-verdict:\`.
-
-4. The body names a findings file. Read it. **Only a line reading exactly
-   \`VERDICT: approved\` means approved.** Anything else, including a missing VERDICT line,
-   is needs_work.
-
-5. On needs_work: revise your plan and repeat from step 1 with the next round number.
-   **Stop after round 2.** Record the unresolved findings in result.md and build the best
-   version you have. Do not keep asking.
-
-6. If no verdict arrives, send the same round once more. If still nothing, note in
-   result.md that review was skipped and proceed.
-
-7. When you are done building, release the reviewer:
-
-     bash $q_send --workers $q_wf --to design_review \\\\
-       --subject 'abort-reviewer: done' --body 'the work is finished'
-
-"
   fi
 
   cat <<SPEC_D

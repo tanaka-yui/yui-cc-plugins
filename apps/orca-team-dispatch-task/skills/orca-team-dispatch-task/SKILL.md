@@ -54,6 +54,7 @@ layers.
 |---|---|---|
 | `off` (default) | `design` | One worker builds the thing. This is what a dispatch did before this setting existed |
 | `on` | `design`, `design_review` | A reviewer starts first and waits; `design` has its plan reviewed before building it |
+| `on` with `phase_b=on` | adds `exec_review` | The implementation is reviewed too, the same way. **A reviewer for the builder only exists when there is a separate builder** |
 
 `phase_b` splits planning from building, and `integration` decides how the work comes back.
 Both resolve through the same three layers, and **both default to what a dispatch did before
@@ -892,7 +893,7 @@ State these when they apply. Do not work around them silently.
 | If this session dies mid-dispatch, nothing recovers automatically | Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
 | If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
 | A worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
-| Review stops after two rounds, and a silent reviewer is retried once | `design` records the unresolved findings in `result.md` and builds the best version it has. Read that section before merging |
+| Review stops after two rounds, and a silent reviewer is retried once | The role being reviewed records the unresolved findings in `result.md` and keeps the best version it has. Read that section before integrating |
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Setup hooks do not run unless you ask for them | Set `setup` to `run`. A worktree whose setup failed never gets a worker, so a failure shows up as a refusal to start rather than as a confusing result |
 | A pull request is opened, never merged or reviewed by this skill | Review and merge it yourself. The issue closes when the pull request merges, not when the run ends |

@@ -299,11 +299,26 @@ bash "$EDIT" --config "$G" --set roles.exec.agent=codex --set roles.exec.model=g
   && ok "CF29 off でも exec を設定でき、解決結果には出ない" || fail "CF29"
 teardown
 
-# CF30: review_mode と phase_b は独立に効く。
+# CF30: ★ **両方 on のときだけ 4 役。**`exec_review` は phase_b が on でないと起こさない
+#       — レビューする実装役が居ない。
 setup
 echo '{"review_mode":"on","phase_b":"on"}' > "$G"
-[[ "$(roles_)" == "design,design_review,exec" && "$(ir_)" == exec ]] \
-  && ok "CF30 review_mode と phase_b は独立" || fail "CF30 ($(roles_))"
+[[ "$(roles_)" == "design,design_review,exec,exec_review" && "$(ir_)" == exec ]] \
+  && ok "CF30 両方 on で 4 役" || fail "CF30 ($(roles_))"
+teardown
+
+# CF37: review_mode=on / phase_b=off では exec_review を起こさない。
+setup
+echo '{"review_mode":"on","phase_b":"off"}' > "$G"
+[[ "$(roles_)" == "design,design_review" ]] \
+  && ok "CF37 phase_b=off なら exec_review は起きない" || fail "CF37 ($(roles_))"
+teardown
+
+# CF38: review_mode=off / phase_b=on でも exec_review は起きない。
+setup
+echo '{"review_mode":"off","phase_b":"on"}' > "$G"
+[[ "$(roles_)" == "design,exec" ]] \
+  && ok "CF38 review_mode=off なら exec_review は起きない" || fail "CF38 ($(roles_))"
 teardown
 
 # CF31: --phase-b の 1 回きり上書きは両方の層より強い。

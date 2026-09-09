@@ -44,6 +44,7 @@ role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → pr
 |---|---|---|
 | `off`（既定） | `design` | 1 人の worker が作る。この設定が無かった頃の dispatch と同じである |
 | `on` | `design` / `design_review` | reviewer が先に起きて待ち、`design` は作る前に計画をレビューさせる |
+| `on` かつ `phase_b=on` | `exec_review` が増える | 実装も同じ形でレビューする。**作る役のレビュアーは、作る役が別に居るときだけ存在する** |
 
 `phase_b` は計画と実装を分け、`integration` は成果の届け方を決める。どちらも同じ 3 層で
 解決し、**どちらも既定はこれらが無かった頃の dispatch と同じ**である。
@@ -866,7 +867,7 @@ release するのはここである。**セッションを閉じることはユ�
 | セッションが dispatch の途中で終了しても、自動回復しない | `$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
 | worker は質問できない | 代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する |
-| レビューは 2 ラウンドで打ち切り、無言の reviewer への再依頼は 1 回だけ | `design` は未解決の findings を `result.md` に記録し、手元の最良版を作る。merge する前にその節を読む |
+| レビューは 2 ラウンドで打ち切り、無言の reviewer への再依頼は 1 回だけ | レビューされる側が未解決の findings を `result.md` に記録し、手元の最良版を保つ。統合する前にその節を読む |
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
 | setup hook は頼まない限り走らない | `setup` を `run` にする。setup が失敗した worktree には worker が付かないので、失敗は「起動を拒む」形で見える（不可解な成果物としてではなく） |
 | pull request は作るだけで、この skill が merge もレビューもしない | 自分でレビューして merge する。issue は pull request がマージされたときに閉じるのであって、実行が終わったときではない |

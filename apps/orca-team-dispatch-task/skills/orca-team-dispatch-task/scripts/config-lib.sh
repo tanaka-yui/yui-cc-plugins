@@ -25,15 +25,17 @@ dispatch_project_config_file() { printf '%s/.dispatch/config.json\n' "$1"; }
 # ★ **「この版が知っているロール」と「今そのタスクで動くロール」は別。**
 #   前者は設定できる集合であり、後者は review_mode が決める。混ぜると、review_mode=off の
 #   間は design_review を設定できず、**on にする前に準備ができない**状態になる。
-dispatch_all_role_names() { printf 'design\ndesign_review\nexec\n'; }
+dispatch_all_role_names() { printf 'design\ndesign_review\nexec\nexec_review\n'; }
 
 # $1=review_mode $2=phase_b (どちらも既定 off)。dispatch が実際に起動するロールを返す。
 # ★ **起動順ではなく集合を返す。**exec は design が終わってからでないと起こせないので、
 #   順序は呼び出し側 (orca-start.sh) が持つ。
+# ★ `exec_review` は **両方 on のときだけ**。phase_b が off ならレビューする実装役が居ない。
 dispatch_role_names() {
   printf 'design\n'
   [[ "${1:-off}" == on ]] && printf 'design_review\n'
   [[ "${2:-off}" == on ]] && printf 'exec\n'
+  [[ "${1:-off}" == on && "${2:-off}" == on ]] && printf 'exec_review\n'
   return 0
 }
 

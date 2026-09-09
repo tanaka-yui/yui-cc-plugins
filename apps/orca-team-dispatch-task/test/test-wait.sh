@@ -428,4 +428,28 @@ w >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 5 ]] && ok "WT37 phase_b=on では exec の失敗がタスクの失敗" || fail "WT37 (rc=$rc)"
 teardown
 
+# WT38: ★ **1 タスク 4 dispatch でも取りこぼさない。**期待集合は workers.json から
+#       作られるので、役の数に依存する書き方をしていたらここで落ちる。
+setup
+for r in design_review exec exec_review; do mkdir -p "$SD/roles/$r"; done
+jq -nc '{integration_role:"exec", roles:{
+    design:       {task:"t1",dispatch:"c1",retained:false},
+    design_review:{task:"t2",dispatch:"c2",retained:false},
+    exec:         {task:"t3",dispatch:"c3",retained:false},
+    exec_review:  {task:"t4",dispatch:"c4",retained:false}}}' > "$SD/workers.json"
+for r in design design_review exec exec_review; do echo '{"status":"done"}' > "$SD/roles/$r/status.json"; done
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d5",count:4,messages:[
+  {id:"a",type:"worker_done",payload:({taskId:"t1",dispatchId:"c1",outcome:"succeeded"}|tojson),body:""},
+  {id:"b",type:"worker_done",payload:({taskId:"t2",dispatchId:"c2",outcome:"succeeded"}|tojson),body:""},
+  {id:"c",type:"worker_done",payload:({taskId:"t3",dispatchId:"c3",outcome:"succeeded"}|tojson),body:""},
+  {id:"d",type:"worker_done",payload:({taskId:"t4",dispatchId:"c4",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] \
+  && [[ "$(grep -c 'worker-retain' "$ORCA_STUB_DIR/calls.log")" -eq 4 ]] \
+  && [[ "$(grep -c -- '--ack d5' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(grep -c 'role=' <<<"$out")" -eq 4 ]] \
+  && ok "WT38 4 役を 1 batch で drain し retain 4 回・ack 1 回" || fail "WT38 (rc=$rc) $out"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

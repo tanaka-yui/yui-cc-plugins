@@ -675,4 +675,55 @@ wc_=$(grep 'worktree create' "$ORCA_STUB_DIR/calls.log" | head -1)
   && grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST57 setup=run が成功すれば起動する" || fail "ST57 (rc=$rc)"; teardown
 
+# --- Phase B-R (F-b の残り) ---
+four_roles() {
+  mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+  printf '%s\n' '{"review_mode":"on","phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+  for n in 1 2 3 4; do
+    eval "W$n=\$(mktemp -d)/w$n"; eval "git -C \"$R\" worktree add -q -b orca/s-$n \"\$W$n\" >/dev/null 2>&1"
+  done
+  cat > "$ORCA_STUB_DIR/worktree_create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/frn" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/frn"
+eval "p=\\\$W\$n"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_%s","path":"%s","branch":"refs/heads/orca/s-%s"}}}\n' "\$n" "\$p" "\$n" > "$ORCA_STUB_DIR/worktree_create"
+HOOK
+  chmod +x "$ORCA_STUB_DIR/worktree_create.hook"
+  export W1 W2 W3 W4
+}
+
+# ST58: ★ **exec_review は exec より先に起きる。**exec は起動直後にレビューを依頼しうるので、
+#       その時点で宛先が workers.json に無いと詰まる（T4a と同じ理由）。
+setup; four_roles; start >/dev/null 2>&1; design_done
+: > "$ORCA_STUB_DIR/calls.log"
+exec_phase >/dev/null 2>&1; rc=$?
+order=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | sed 's/.*--worktree \([^ ]*\).*/\1/')
+w=$(jq -r '.roles | keys | join(",")' "$R/.dispatch/s/workers.json")
+[[ "$rc" -eq 0 ]] && [[ "$(wc -l <<<"$order")" -eq 2 ]] \
+  && [[ "$w" == "design,design_review,exec,exec_review" ]] \
+  && ok "ST58 2 段目は exec_review → exec の順で 2 本" || fail "ST58 (rc=$rc order=[$order] roles=$w)"
+teardown
+
+# ST59: ★ **依頼のラベルとファイル名を役ごとに分ける。**design は review-plan: / plan-*、
+#       exec は review-code: / code-*。**2 人の reviewer が同じ findings 名を使うと
+#       片方の findings を上書きする。**
+setup; four_roles; start >/dev/null 2>&1
+# review_mode=on の 1 段目は design_review → design の順なので、design の spec は 2 本目
+dsp=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)
+drv=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1)
+design_done; : > "$ORCA_STUB_DIR/calls.log"; exec_phase >/dev/null 2>&1
+specs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")
+xrv=$(head -1 <<<"$specs"); xsp=$(tail -1 <<<"$specs")
+miss=""
+[[ "$dsp" == *'review-plan:'* ]] || miss="$miss [design-label]"
+[[ "$dsp" == *'plan-round-<n>-request.md'* ]] || miss="$miss [design-file]"
+[[ "$drv" == *'plan-round-<n>-findings.md'* ]] || miss="$miss [design-reviewer-file]"
+[[ "$drv" == *'--to design'* ]] || miss="$miss [design-reviewer-target]"
+[[ "$xsp" == *'review-code:'* ]] || miss="$miss [exec-label]"
+[[ "$xsp" == *'code-round-<n>-request.md'* ]] || miss="$miss [exec-file]"
+[[ "$xrv" == *'code-round-<n>-findings.md'* ]] || miss="$miss [exec-reviewer-file]"
+[[ "$xrv" == *'--to exec'* ]] || miss="$miss [exec-reviewer-target]"
+[[ -z "$miss" ]] && ok "ST59 役ごとにラベルとファイル名を分ける" || fail "ST59:$miss"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
