@@ -661,9 +661,10 @@ release するのはここである。**セッションを閉じることはユ�
 | レビューは 2 ラウンドで打ち切り、無言の reviewer への再依頼は 1 回だけ | `design` は未解決の findings を `result.md` に記録し、手元の最良版を作る。merge する前にその節を読む |
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
 | setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
+| 解放したはずの worker が `retained` の記録のまま残り、同じ Run の後の dispatch で [C7] が止まることがある | 2 回独立に観測した: `worker-release` は `ok` を返すのに receipt は `releaseState: retained` / `retainedReason: user_takeover` のままで、その記録は端末そのものより長く残る。dispatch が消えた Run を使い回さず、新しい Run を起こす。[C7] の範囲は Run 単位なので、新しい Run は影響を受けない |
 | この版が扱えない batch は acknowledge されないまま親 terminal の queue を block する | acknowledge しない。`received.json` と `result.md` を確認する。guarded manual integration でも queue は解消されない。後続の dispatch は別の Orca terminal から開始し、launch 時にはその `ORCA_TERMINAL_HANDLE` が使われる |
 | Orca が `release_pending` / `release_unknown` と報告する dispatch は片付けられない | [C1] がそのタスクを止める。端末・worktree・記録をそのまま残し、`$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べる。`release_pending` は自然に確定しうるが、`release_unknown` は判断が要る |
-| failure / edge receipt fixture の一部は simulated のままである | 実機 E2E が証明したのは worker 1 本の成功経路だけである。Stage 2 で、依存する前に `check` の wait/ack、`worker-show` の wait state、`worker-release` の別 state、terminal/worktree cleanup の実機 receipt を capture する |
+| failure / edge receipt fixture の一部は simulated のままである | 実機 E2E は worker 1 本の成功経路に加え、**レビュー 2 役の成功経路**、`check` の wait/ack、`worker-release` の別 state、terminal/worktree cleanup の実機 receipt まで証明した。**failure と rejection の receipt は依然 simulated** であり、それを消費する経路に依存する前に capture する |
 
 ## ディスク上の状態
 

@@ -130,7 +130,7 @@ O 番号を採番して 2-1 の表に追記する。`worker-release` → `worktr
 
 ---
 
-### Task 3: `orca-start.sh` が `review_mode=on` のとき 2 ロールを起動する
+### Task 3: `orca-start.sh` が `review_mode=on` のとき 2 ロールを起動する — **完了**
 
 > **計画からの逸脱（2026-09-09）:** 当初 Task 8 Step 2 に置いていた **`workers.json` の
 > スキーマ変更（worktree 系フィールドをロール配下へ移す）を、この Task へ前倒しする。**
@@ -185,7 +185,7 @@ reviewer が起動できなかったら **design を起動しない**。中途�
 
 ---
 
-### Task 4: `bin/orca-send.sh`（adapter）と addressbook
+### Task 4: `bin/orca-send.sh`（adapter）と addressbook — **完了**（addressbook は作らない判断）
 
 **U-B1 の結果に依存する。**Task 1 が (b) を返したらこの Task は作り直しである。
 
@@ -215,7 +215,7 @@ spec 6-2 の裁定をそのまま採る: `ORCA_TERMINAL_HANDLE` から**自分�
 
 ---
 
-### Task 5: `review-request.sh` / `review-state.sh` を移植する
+### Task 5: `review-request.sh` / `review-state.sh` を移植する — **未着手**（往復は Task spec 側の手順で通した。cmux 版スクリプトの移植は行っていない）
 
 **Files:**
 - Create: `apps/orca-team-dispatch-task/skills/orca-team-dispatch-task/scripts/review-state.sh`（cmux 版から **byte 一致**）
@@ -238,7 +238,7 @@ spec 8-1 のとおり、**呼び出し側が `dispatch_root` を渡す**契約�
 
 ---
 
-### Task 6: design 側の Phase A-R ループと gate
+### Task 6: design 側の Phase A-R ループと gate — **完了**（gate スクリプトは作らず、Task spec の生成器に載せた）
 
 **Files:**
 - Modify: `apps/orca-team-dispatch-task/bin/orca-start.sh`（design の Task spec に Phase A-R の手順を載せる）
@@ -254,7 +254,7 @@ spec の裁定（「**親が spec を手書きすることを禁止する**」�
 
 ---
 
-### Task 7: `orca-wait.sh` がレビュー往復に巻き込まれないようにする
+### Task 7: `orca-wait.sh` がレビュー往復に巻き込まれないようにする — **完了**
 
 **U-B2 は (b) だった**（O39: レビュー message は親の Run メールボックスに来ない）。よって **`orca-wait.sh` の改修は不要**で、この Task は「来ないことを固定する回帰テスト」だけになる。
 
@@ -272,7 +272,7 @@ spec の裁定（「**親が spec を手書きすることを禁止する**」�
 
 ---
 
-### Task 8: cleanup を 2 ロールへ広げる
+### Task 8: cleanup を 2 ロールへ広げる — **完了**
 
 **Files:**
 - Modify: `skills/orca-team-dispatch-task/SKILL.md`（`[C1]` `[C2]` `[C3]` `[C5]` `[C7]`）
@@ -291,7 +291,7 @@ spec の裁定（「**親が spec を手書きすることを禁止する**」�
 
 ---
 
-### Task 9: SKILL.md / guide-ja.md にレビューモードを書く
+### Task 9: SKILL.md / guide-ja.md にレビューモードを書く — **完了**
 
 **Files:**
 - Modify: `skills/orca-team-dispatch-task/SKILL.md` / `references/guide-ja.md`
@@ -309,7 +309,7 @@ Stage A で入れた S2 の質問に `review_mode` を加える。**`on` を選�
 
 ---
 
-### Task 10: E2E に 1 往復のレビューを足す
+### Task 10: E2E に 1 往復のレビューを足す — **完了**
 
 **Files:**
 - Modify: `apps/orca-team-dispatch-task/test/test-e2e.sh`
@@ -324,6 +324,35 @@ Stage A で入れた S2 の質問に `review_mode` を加える。**`on` を選�
 Stage A の制限表の行「Failure and edge receipt fixtures are partly simulated」は、実機で取れた receipt の分だけ狭める。**取れていないものを取れたことにしない。**
 
 ---
+
+## 実機 E2E の結果（2026-09-09）
+
+`review_mode=on` で `design` + `design_review` を 1 Run に起こし、1 往復を通して片付けた。
+
+| 確かめたこと | 結果 |
+|---|---|
+| 2 役が起き、reviewer が先 | 成立。別 worktree・別ブランチ（`rv-live` / `rv-live-review`） |
+| 1 往復 | `round-1-request.md` → `round-1-findings.md`（`VERDICT: approved`）。design は NOTES.md を commit |
+| 待機 | `role=design` と `role=design_review` の 2 行を出して exit 0 |
+| **O39 の回帰** | 親のキューは全件 `worker_done` のみ。**レビュー往復は 1 件も混ざらない** |
+| Step 5 のロール走査 | `[C2]` が 2 本の release を印字、`[C3]` が役ごとに理由付きで却下 |
+
+**新たに O43 を実測した。**`worker-release` は `ok` を返しながら `releaseState: retained` /
+`retainedReason: user_takeover` を残し、その記録は `worktree rm` で端末が消えたあとも残る。
+結果、**同じ Run で後から dispatch すると [C7] が Run 全体の片付けを止める**（捨て status dir で
+再現）。制限表に追記した。Run を使い回さなければ踏まない。
+
+## Task 5 を実施しなかった理由
+
+cmux 版の `review-request.sh` / `review-state.sh` を移植せず、往復の手順を **Task spec の
+生成器**（`orca-start.sh` の `render_spec`）に載せた。
+
+- 往復は 1 ラウンド 1 ファイル + 1 送信であり、`review-state.sh` が持つ「request が findings
+  より新しい = 回答待ち」の状態機械は、**5 ラウンド・複数フェーズを前提にした仕組み**である。
+  2 ラウンド上限の現段階でそれを持ち込むと、**動かす経路の無いコードが増える**
+- 補償（送信に失敗したら書いたファイルを消す）は spec の文言として design 側に持たせた
+- ラウンド数を増やす、または Phase B-R を足す段（F-a 以降）で、状態機械が要るかを
+  改めて判断する
 
 ## この計画で扱わないもの
 
