@@ -261,4 +261,74 @@ echo '{"review_mode":"on"}' > "$G"
   && ok "CF25 --review-mode の 1 回きり上書き" || fail "CF25 ($(roles_ --review-mode off))"
 teardown
 
+# --- phase_b と integration_role (F-a) ---
+pb_() { bash "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -r '.phase_b'; }
+ir_() { bash "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -r '.integration_role'; }
+
+# CF26: ★ **既定は off。**設定していない利用者の dispatch を 1 ミリも変えない
+#       （CF1 / CF18 / ST31 と同じ原則）。
+setup
+[[ "$(pb_)" == off && "$(roles_)" == design && "$(ir_)" == design ]] \
+  && ok "CF26 phase_b の既定は off で取り込む役は design" || fail "CF26 ($(pb_)/$(roles_)/$(ir_))"
+teardown
+
+# CF27: ★ on で exec が増え、**取り込む役が exec になる**。merge も PR もこの値を読む。
+setup
+echo '{"phase_b":"on"}' > "$G"
+[[ "$(roles_)" == "design,exec" && "$(ir_)" == exec ]] \
+  && ok "CF27 on で exec が増え取り込む役が exec に" || fail "CF27 ($(roles_)/$(ir_))"
+teardown
+
+# CF28: on / off 以外は警告して次の層へ落とす。
+setup
+echo '{"phase_b":"sometimes"}' > "$G"
+err=$(bash "$RESOLVE" --project-root "$PR" 2>&1 >/dev/null)
+[[ "$(pb_)" == off && "$err" == *"ignoring invalid phase_b 'sometimes'"* ]] || fail "CF28 不正値"
+echo '{"phase_b":1}' > "$G"
+err=$(bash "$RESOLVE" --project-root "$PR" 2>&1 >/dev/null)
+[[ "$(pb_)" == off && "$err" == *'ignoring non-string phase_b'* ]] \
+  && ok "CF28 不正な phase_b を警告して落とす" || fail "CF28 型違い"
+teardown
+
+# CF29: ★ off の間も exec の tuple を設定できる（on にする前に準備できる）。CF22 と同型。
+setup
+bash "$EDIT" --config "$G" --set roles.exec.agent=codex --set roles.exec.model=gpt-6-astra \
+  >/dev/null 2>&1
+[[ $? -eq 0 && "$(jq -r '.roles.exec.agent' "$G")" == codex ]] \
+  && [[ "$(roles_)" == design ]] \
+  && ok "CF29 off でも exec を設定でき、解決結果には出ない" || fail "CF29"
+teardown
+
+# CF30: review_mode と phase_b は独立に効く。
+setup
+echo '{"review_mode":"on","phase_b":"on"}' > "$G"
+[[ "$(roles_)" == "design,design_review,exec" && "$(ir_)" == exec ]] \
+  && ok "CF30 review_mode と phase_b は独立" || fail "CF30 ($(roles_))"
+teardown
+
+# CF31: --phase-b の 1 回きり上書きは両方の層より強い。
+setup
+echo '{"phase_b":"on"}' > "$G"
+[[ "$(pb_ --phase-b off)" == off && "$(ir_ --phase-b off)" == design ]] \
+  && ok "CF31 --phase-b の 1 回きり上書き" || fail "CF31"
+teardown
+
+# CF32: phase_b だけを設定した利用者にも S0 を二度と尋ねない。
+setup
+echo '{"phase_b":"on"}' > "$G"
+[[ "$(bash "$RESOLVE" --project-root "$PR" 2>/dev/null | jq -r .configured)" == true ]] \
+  && ok "CF32 phase_b だけでも configured" || fail "CF32"
+teardown
+
+# CF33: config-edit が phase_b を扱い、--unset roles では消えない。
+setup
+bash "$EDIT" --config "$G" --set phase_b=on --set roles.design.model=sonnet >/dev/null 2>&1
+[[ "$(bash "$EDIT" --config "$G" --get phase_b 2>/dev/null)" == on ]] || fail "CF33 get"
+bash "$EDIT" --config "$G" --set phase_b=maybe >/dev/null 2>&1
+[[ $? -eq 2 && "$(jq -r '.phase_b' "$G")" == on ]] || fail "CF33 不正値を書いた"
+bash "$EDIT" --config "$G" --unset roles >/dev/null 2>&1
+[[ "$(jq -r '.phase_b' "$G")" == on ]] \
+  && ok "CF33 phase_b の set/get と --unset roles の独立" || fail "CF33"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

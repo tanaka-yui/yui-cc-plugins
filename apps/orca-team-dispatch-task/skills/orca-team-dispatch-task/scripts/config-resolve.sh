@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # config-resolve.sh — global / project / コマンドラインの設定をロール単位で解決し JSON で出す。
 #
-# Usage: config-resolve.sh --project-root <path> [--review-mode <on|off>]
+# Usage: config-resolve.sh --project-root <path> [--review-mode <on|off>] [--phase-b <on|off>]
 #                          [--set <role>.<field>=<value>]...
 # Exit:  0 = 解決した / 1 = 設定が読めない / 2 = 使用法エラー
 #
@@ -23,6 +23,7 @@ warn()     { echo "[warn] config-resolve: $1" >&2; }
 
 PROJECT_ROOT=''
 OVERRIDE_review_mode=''
+OVERRIDE_phase_b=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-root)
@@ -42,6 +43,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die '--review-mode requires on or off'
       dispatch_valid_review_mode "$2" || die "invalid --review-mode: $2"
       OVERRIDE_review_mode="$2"; shift 2 ;;
+    --phase-b)
+      [[ $# -ge 2 ]] || die '--phase-b requires on or off'
+      dispatch_valid_phase_b "$2" || die "invalid --phase-b: $2"
+      OVERRIDE_phase_b="$2"; shift 2 ;;
     *) die "unknown argument '$1'" ;;
   esac
 done
@@ -70,7 +75,8 @@ check_layer "$PROJECT_CONFIG" 'project config.json' && PROJECT_PRESENT=1
 CONFIGURED=0
 # review_mode だけを設定した利用者にも S0 を二度と尋ねない。所有キーのどれかが在れば設定済み。
 has_ours() { [[ -f "$1" ]] && jq -e \
-  '((.roles | type) == "object" and (.roles | length) > 0) or (.review_mode | type) == "string"' \
+  '((.roles | type) == "object" and (.roles | length) > 0)
+   or (.review_mode | type) == "string" or (.phase_b | type) == "string"' \
   "$1" >/dev/null 2>&1; }
 { has_ours "$GLOBAL_CONFIG" || has_ours "$PROJECT_CONFIG"; } && CONFIGURED=1
 
@@ -167,29 +173,32 @@ resolve_effort() {   # $1=role $2=agent -> RESOLVED_EFFORT ('' = 未設定)
   done
 }
 
-# review_mode の解決。tuple と同じ override → project → global。
-resolve_review_mode() {
-  local source file='' vtype value
-  if [[ -n "$OVERRIDE_review_mode" ]]; then
-    printf '%s\n' "$OVERRIDE_review_mode"; return 0
-  fi
+# on/off のトグルを解決する。tuple と同じ override → project → global。
+# $1=キー名  $2=検証関数  $3=既定値を出す関数  $4=override 値（空なら未指定）
+resolve_toggle() {
+  local key="$1" validate="$2" default_fn="$3" override="$4" source file='' vtype value
+  if [[ -n "$override" ]]; then printf '%s\n' "$override"; return 0; fi
   for source in project global; do
     case "$source" in
       project) [[ "$PROJECT_PRESENT" -eq 1 ]] || continue; file="$PROJECT_CONFIG" ;;
       global)  [[ "$GLOBAL_PRESENT"  -eq 1 ]] || continue; file="$GLOBAL_CONFIG"  ;;
     esac
-    vtype=$(jq -r 'if has("review_mode") then .review_mode | type else empty end' "$file" 2>/dev/null)
+    vtype=$(jq -r --arg k "$key" 'if has($k) then .[$k] | type else empty end' "$file" 2>/dev/null)
     [[ -n "$vtype" ]] || continue
     if [[ "$vtype" != string ]]; then
-      warn "ignoring non-string review_mode in $source config"; continue
+      warn "ignoring non-string $key in $source config"; continue
     fi
-    value=$(jq -r '.review_mode' "$file" 2>/dev/null)
-    if dispatch_valid_review_mode "$value"; then printf '%s\n' "$value"; return 0; fi
-    warn "ignoring invalid review_mode '$value' in $source config"
+    value=$(jq -r --arg k "$key" '.[$k]' "$file" 2>/dev/null)
+    if "$validate" "$value"; then printf '%s\n' "$value"; return 0; fi
+    warn "ignoring invalid $key '$value' in $source config"
   done
-  dispatch_default_review_mode
+  "$default_fn"
 }
-REVIEW_MODE="$(resolve_review_mode)"
+REVIEW_MODE="$(resolve_toggle review_mode dispatch_valid_review_mode \
+                 dispatch_default_review_mode "$OVERRIDE_review_mode")"
+PHASE_B="$(resolve_toggle phase_b dispatch_valid_phase_b \
+             dispatch_default_phase_b "$OVERRIDE_phase_b")"
+INTEGRATION_ROLE="$(dispatch_integration_role "$PHASE_B")"
 
 ROLES_JSON='{}'
 while IFS= read -r role; do
@@ -207,7 +216,7 @@ while IFS= read -r role; do
   [[ -n "$effort" ]] && role_json="$(jq -c --arg e "$effort" '. + {effort:$e}' <<<"$role_json")"
   ROLES_JSON="$(jq -nc --arg r "$role" --argjson rj "$role_json" --argjson acc "$ROLES_JSON" \
     '$acc + {($r): $rj}')"
-done < <(dispatch_role_names "$REVIEW_MODE")
+done < <(dispatch_role_names "$REVIEW_MODE" "$PHASE_B")
 
 jq -n \
   --arg config_home "$CONFIG_HOME" \
@@ -217,7 +226,10 @@ jq -n \
   --argjson project_present "$PROJECT_PRESENT" \
   --argjson configured "$CONFIGURED" \
   --arg review_mode "$REVIEW_MODE" \
+  --arg phase_b "$PHASE_B" \
+  --arg integration_role "$INTEGRATION_ROLE" \
   --argjson roles "$ROLES_JSON" \
   '{config_home:$config_home, global_config:$global_config, project_config:$project_config,
     global_present:($global_present == 1), project_present:($project_present == 1),
-    configured:($configured == 1), review_mode:$review_mode, roles:$roles}'
+    configured:($configured == 1), review_mode:$review_mode, phase_b:$phase_b,
+    integration_role:$integration_role, roles:$roles}'

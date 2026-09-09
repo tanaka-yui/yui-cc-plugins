@@ -25,19 +25,29 @@ dispatch_project_config_file() { printf '%s/.dispatch/config.json\n' "$1"; }
 # ★ **「この版が知っているロール」と「今そのタスクで動くロール」は別。**
 #   前者は設定できる集合であり、後者は review_mode が決める。混ぜると、review_mode=off の
 #   間は design_review を設定できず、**on にする前に準備ができない**状態になる。
-dispatch_all_role_names() { printf 'design\ndesign_review\n'; }
+dispatch_all_role_names() { printf 'design\ndesign_review\nexec\n'; }
 
-# $1=review_mode (既定 off)。dispatch が実際に起動するロールを返す。
+# $1=review_mode $2=phase_b (どちらも既定 off)。dispatch が実際に起動するロールを返す。
+# ★ **起動順ではなく集合を返す。**exec は design が終わってからでないと起こせないので、
+#   順序は呼び出し側 (orca-start.sh) が持つ。
 dispatch_role_names() {
   printf 'design\n'
   [[ "${1:-off}" == on ]] && printf 'design_review\n'
+  [[ "${2:-off}" == on ]] && printf 'exec\n'
   return 0
 }
+
+# ★ **成果がどのブランチに載るかを設定から決める。**merge も PR もこの 1 箇所を読む。
+dispatch_integration_role() { [[ "${1:-off}" == on ]] && printf 'exec\n' || printf 'design\n'; }
 
 # ★ 既定は **off**。Stage A の利用者の挙動を変えないため。model / effort に自動既定を
 #   持たせない判断（下記）と同じ理由で、頼まれていないロールを勝手に起こさない。
 dispatch_default_review_mode() { printf 'off\n'; }
 dispatch_valid_review_mode() { case "$1" in on|off) return 0 ;; *) return 1 ;; esac; }
+
+# phase_b も既定は off。設定していない利用者の dispatch を 1 ミリも変えない。
+dispatch_default_phase_b() { printf 'off\n'; }
+dispatch_valid_phase_b() { case "$1" in on|off) return 0 ;; *) return 1 ;; esac; }
 
 # 空・前後の空白・シェルメタ文字・制御文字を拒否する。内部の空白は許容する。
 # 前後の空白を黙ってトリムすると「入力した値と違う値が保存される」ので、トリムせず弾く。
