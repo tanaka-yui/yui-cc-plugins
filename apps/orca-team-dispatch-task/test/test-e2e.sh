@@ -119,6 +119,110 @@ rc=$?
 git -C "$R" worktree remove --force "$WT2" >/dev/null 2>&1
 rm -rf "$REQ2" "$(dirname "$WT2")"
 
+# ── レビューモード: 2 役を起こし、1 往復を通し、両方を drain する ──────────────
+# ★ **ここが本節の目的。**reviewer の worker_done を未知として扱った瞬間、drain は ack
+#   せずに戻り、**design の成果まで取り出せなくなる**。stub で通しに固定する。
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"review_mode":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+WTD=$(mktemp -d)/wtd; git -C "$R" worktree add -q -b orca/rv "$WTD" >/dev/null 2>&1
+WTR=$(mktemp -d)/wtr; git -C "$R" worktree add -q -b orca/rv-review "$WTR" >/dev/null 2>&1
+cat > "$ORCA_STUB_DIR/worktree_create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/rvn" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/rvn"
+if [ "\$n" = 1 ]; then
+  printf '{"ok":true,"result":{"worktree":{"id":"wt_rv_r","path":"%s","branch":"refs/heads/orca/rv-review"}}}\n' "$WTR" > "$ORCA_STUB_DIR/worktree_create"
+else
+  printf '{"ok":true,"result":{"worktree":{"id":"wt_rv_d","path":"%s","branch":"refs/heads/orca/rv"}}}\n' "$WTD" > "$ORCA_STUB_DIR/worktree_create"
+fi
+HOOK
+chmod +x "$ORCA_STUB_DIR/worktree_create.hook"
+cat > "$ORCA_STUB_DIR/orchestration_task-create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/tcn" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/tcn"
+if [ "\$n" = 1 ]; then t=task_rv_r; else t=task_rv_d; fi
+printf '{"ok":true,"result":{"task":{"id":"%s"}}}\n' "\$t" > "$ORCA_STUB_DIR/orchestration_task-create"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_task-create.hook"
+cat > "$ORCA_STUB_DIR/orchestration_worker-start.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/wsn" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/wsn"
+if [ "\$n" = 1 ]; then d=ctx_rv_r; h=term_rv_r; else d=ctx_rv_d; h=term_rv_d; fi
+printf '{"ok":true,"result":{"state":"ready","dispatchId":"%s","effects":[{"kind":"terminal","role":"agent","action":"created","id":"%s"}]}}\n' \
+  "\$d" "\$h" > "$ORCA_STUB_DIR/orchestration_worker-start"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_worker-start.hook"
+
+REQ3=$(mktemp); MARK3="E2E-RV-$$-$RANDOM"; printf 'Build %s\n' "$MARK3" > "$REQ3"
+: > "$ORCA_STUB_DIR/calls.log"
+OUT3=$(bash "$P/bin/orca-start.sh" --request-file "$REQ3" --slug rv --objective o \
+         --repo-root "$R" --run run_e 2>&1); rc=$?
+SDR=$(sed -n 's/^status_dir=//p' <<<"$OUT3")
+[[ "$rc" -eq 0 && -n "$SDR" ]] && ok "E14 review_mode=on で 2 役が起きる" || fail "E14 ($rc): $OUT3"
+
+# 起動順は reviewer が先（design は起動直後に依頼しうる。spec 5-1 T4a）
+[[ "$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)" == *'id:wt_rv_r'* ]] \
+  && ok "E15 reviewer を先に起こす" || fail "E15"
+
+# 役ごとに別の worktree・別のブランチ
+[[ "$(jq -r '.roles.design.worktree_id' "$SDR/workers.json")" == wt_rv_d \
+   && "$(jq -r '.roles.design_review.worktree_id' "$SDR/workers.json")" == wt_rv_r \
+   && "$(jq -r '.roles.design.branch' "$SDR/workers.json")" == orca/rv \
+   && "$(jq -r '.roles.design_review.branch' "$SDR/workers.json")" == orca/rv-review ]] \
+  && ok "E16 役ごとに別の worktree とブランチ" || fail "E16 ($(jq -c .roles "$SDR/workers.json"))"
+
+# review dir はタスク単位で共有（ロール別 status dir の外）
+[[ -d "$SDR/review" && ! -d "$SDR/roles/design/review" ]] \
+  && ok "E17 review dir はタスク単位で共有" || fail "E17"
+
+# ── 1 往復。design が依頼し、reviewer が verdict を返す ──
+export ORCA_TERMINAL_HANDLE=term_rv_d
+printf '%s\n' '{"ok":true,"result":{"message":{"id":"msg_req"}}}' > "$ORCA_STUB_DIR/orchestration_send"
+printf 'plan for %s\n' "$MARK3" > "$SDR/review/round-1-request.md"
+bash "$P/bin/orca-send.sh" --workers "$SDR/workers.json" --to design_review \
+  --subject 'review-plan: round 1' --body "$SDR/review/round-1-request.md" >/dev/null 2>&1
+sent_rc=$?
+[[ "$sent_rc" -eq 0 ]] \
+  && grep -q 'dispatch:ctx_rv_r' <(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log") \
+  && ok "E18 design の依頼が reviewer の dispatch へ向く" || fail "E18 (rc=$sent_rc)"
+
+export ORCA_TERMINAL_HANDLE=term_rv_r
+printf 'looks fine\n\nVERDICT: approved\n' > "$SDR/review/round-1-findings.md"
+bash "$P/bin/orca-send.sh" --workers "$SDR/workers.json" --to design \
+  --subject 'review-verdict: round 1' --body "$SDR/review/round-1-findings.md" >/dev/null 2>&1
+vrc=$?
+[[ "$vrc" -eq 0 ]] \
+  && grep -q 'dispatch:ctx_rv_d' <(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log") \
+  && [[ "$(tail -1 "$SDR/review/round-1-findings.md")" == 'VERDICT: approved' ]] \
+  && ok "E19 reviewer の verdict が design の dispatch へ返る" || fail "E19 (rc=$vrc)"
+export ORCA_TERMINAL_HANDLE=term_p
+
+# ── 待機。1 batch に 2 役の worker_done が同居しても両方を drain し、ack は 1 回 ──
+mkdir -p "$SDR/roles/design" "$SDR/roles/design_review"
+echo '{"status":"done"}' > "$SDR/roles/design/status.json"
+echo '{"status":"done"}' > "$SDR/roles/design_review/status.json"
+jq -nc '{ok:true,result:{runId:"run_e",deliveryId:"drv",count:2,messages:[
+  {id:"r1",type:"worker_done",payload:({taskId:"task_rv_r",dispatchId:"ctx_rv_r",outcome:"succeeded"}|tojson),body:""},
+  {id:"r2",type:"worker_done",payload:({taskId:"task_rv_d",dispatchId:"ctx_rv_d",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+: > "$ORCA_STUB_DIR/calls.log"
+WOUT=$(bash "$P/bin/orca-wait.sh" --status-dir "$SDR" --max-waits 1 --timeout-ms 1 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] \
+  && [[ "$(grep -c 'worker-retain' "$ORCA_STUB_DIR/calls.log")" -eq 2 ]] \
+  && [[ "$(grep -c -- '--ack drv' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(jq -r 'sort | join(",")' "$SDR/received.json")" \
+        == 'worker_done|task_rv_d|ctx_rv_d|succeeded,worker_done|task_rv_r|ctx_rv_r|succeeded' ]] \
+  && ok "E20 2 役を 1 batch で drain し retain 2 回・ack 1 回" || fail "E20 (rc=$rc) $WOUT"
+
+# 出力は役ごとに 1 行。**どちらが失敗したか名指しできる**ことが Step 3 / Step 4 の前提である
+[[ "$WOUT" == *'role=design '* && "$WOUT" == *'role=design_review '* ]] \
+  && ok "E21 待機の出力が役ごとに 1 行" || fail "E21 ($WOUT)"
+
+rm -f "$ORCA_STUB_DIR/worktree_create.hook" "$ORCA_STUB_DIR/orchestration_task-create.hook" \
+      "$ORCA_STUB_DIR/orchestration_worker-start.hook"
+git -C "$R" worktree remove --force "$WTD" >/dev/null 2>&1
+git -C "$R" worktree remove --force "$WTR" >/dev/null 2>&1
+rm -rf "$REQ3" "$(dirname "$WTD")" "$(dirname "$WTR")"
+
 git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
 rm -rf "$ORCA_STUB_DIR" "$R" "$REQ" "$(dirname "$WT")"
 echo "---"; echo "failures: $fails"; exit "$fails"
