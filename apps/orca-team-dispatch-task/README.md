@@ -10,7 +10,8 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 
 ## 範囲と制限
 
-Stage A は 1 ロールで、レビュー・PR・ループを持たない。役ごとの agent / model / effort は
+PR とループは持たない。`review_mode=on` にすると、成果を作る役とは別に**レビュー役**が
+起きて、作る前に計画を 1 往復レビューする（既定は `off`）。役ごとの agent / model / effort は
 `config.json`（global と project の 2 層）で設定でき、`--setup` で対話的に書ける。
 **agent がどのアカウントでサインインするかは選べない** — Orca の CLI にアクティブな
 アカウントを選ぶ口が無いため、切り替えは Orca アプリ側で行う。

@@ -56,11 +56,32 @@ path は UNC で返り、bash の `-d` も `git -C` も解釈できない）。�
 の存在の両方。`ORCA_BIN` の既定は `$ORCA_CLI_COMMAND`（WSL2 では PATH 上の `orca-ide`）へ
 フォールバックする。回帰は `test/test-start.sh` の ST28*/ST29 が固定する。
 
+## レビュー往復の要点
+
+- 往復は `orchestration send --to dispatch:<id>` / `check` の直接やり取り（実測 O38）。
+  **親の Run メールボックスには来ない**（O39）ので、`orca-wait.sh` を汚さない
+- **`orca-wait.sh` の期待集合の鍵は `(status dir, role)` の組**である。1 タスクが 2 dispatch を
+  持ち両方が `worker_done` を送るので、status dir 単位のままだと reviewer の message が未知に
+  なり **batch ごと永久に詰まる**（回帰は `test-wait.sh` の WT30-35）
+- **タスクの結末を決めるのは `design`。**reviewer の失敗は「レビューが付かなかった」であって
+  成果の喪失ではない。ただし `finish` は役ごとに 1 行出すので握り潰してはいない
+- spec 6-1 の `addressbook.json` は**作らない。**宛先は `workers.json` の
+  `roles.<role>.dispatch` に既に在り、同じ事実を 2 つ置くとドリフトする
+- 往復のファイルは**タスク単位で共有する `<status-dir>/review/`**（親 repo 側の絶対パス）。
+  2 役が別 worktree に居ても、どちらからも届く
+
 ## 範囲
 
-Stage A は **1 タスク = 1 役（design）**。レビュー無し・PR 無し・ループ無し。
-**役ごとの agent / model / effort は設定できる**（global と project の 2 層 + 1 回きりの
-コマンドライン上書き）。アカウントは選べない（上記の理由）。
+Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足した段階。PR 無し・ループ無し。
+
+- **役ごとの agent / model / effort は設定できる**（global と project の 2 層 + 1 回きりの
+  コマンドライン上書き）。アカウントは選べない（上記の理由）
+- **`review_mode=on` で `design_review` が起きる**（既定は `off`）。reviewer は
+  **先に**起動し（design は起動直後に依頼しうるため。spec 5-1 T4a）、**自分の worktree**を
+  持つ（同じ checkout に 2 agent を同居させると reviewer のビルドが design の編集と衝突する）
+- `exec` / `exec_review` と Phase B-R、PR 統合、二相コミット、issue ループは未実装。
+  `test-docs.sh` の SK4 が `exec_review` / `merge_ready` の語を SKILL.md から締め出して
+  「未実装の宣言」を防いでいる
 **N タスクを 1 つの Run で並列に dispatch できる**（既定上限 4）。worker のセッションは
 `worker-retain` で最後まで保持し、解放は Step 6 の承認後だけ。片付けが勝手に走ることは
 ない — Step 5 が削除してよいものを判定し、Step 6 が尋ねて、承認されたものだけを実行する。

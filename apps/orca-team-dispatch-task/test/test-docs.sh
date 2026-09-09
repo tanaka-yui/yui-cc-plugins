@@ -14,8 +14,11 @@ miss=""; while IFS= read -r r; do [[ -f "$P/$r" ]] || miss="$miss $r"; done \
   < <(grep -oE 'bin/[A-Za-z0-9._-]+\.sh' "$S" | sort -u)
 [[ -z "$miss" ]] && ok "SK3 参照先が実在" || fail "SK3 実在しない参照:$miss"
 
-# SK4: **Stage 1 に無いものを宣言しない**
-bad=""; for w in review_mode merge_ready nonce journal remediation design_review exec_review; do
+# SK4: **まだ実装していないものを宣言しない**
+#      `review_mode` と `design_review` は実装したのでこの集合から外した。
+#      **`exec_review` と `merge_ready` は残す** — Phase B 委譲 (spec の F-a) と
+#      二相コミット (F-d) は未実装であり、宣言を防ぐガードが要る。
+bad=""; for w in merge_ready nonce journal remediation exec_review; do
   grep -q -- "$w" "$S" && bad="$bad [$w]"; done
 [[ -z "$bad" ]] && ok "SK4 未実装を宣言しない" || fail "SK4 未実装の宣言:$bad"
 
@@ -103,7 +106,7 @@ printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"
 printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
 block="$scratch/C3-null.sh"; extract_cleanup_block C3 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the design worktree:'* \
    || "$out" != *'the terminals in that worktree could not be listed, so nothing is proven'* \
    || "$out" == *'worktree rm'* || $(grep -c 'worktree rm' "$ORCA_STUB_DIR/calls.log") -ne 0 ]]; then
   bad="$bad [C3-null-inventory]"
@@ -124,7 +127,7 @@ printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"},{"handle":"
 : > "$ORCA_STUB_DIR/calls.log"
 block="$scratch/C3-unaccounted.sh"; extract_cleanup_block C3 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the design worktree:'* \
    || "$out" != *'a terminal in that worktree is not one we recorded'* \
    || "$out" == *'worktree rm'* || $(grep -c 'worktree rm' "$ORCA_STUB_DIR/calls.log") -ne 0 ]] \
    || ! grep -q 'worker-list' "$ORCA_STUB_DIR/calls.log" \
@@ -222,7 +225,7 @@ printf '%s\n' '{"ok":false,"error":"stale","result":{"terminals":[{"handle":"ter
   > "$ORCA_STUB_DIR/terminal_list"
 block="$scratch/C3-list-receipt.sh"; extract_cleanup_block C3 "$S" > "$block"
 out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the design worktree:'* \
    || "$out" != *'the terminals in that worktree could not be listed, so nothing is proven'* \
    || "$out" == *'worktree rm'* ]]; then
   bad="$bad [C3-list-failed-receipt]"
@@ -240,7 +243,7 @@ for st in released already_released; do
   printf '%s\n' 7 > "$ORCA_STUB_DIR/terminal_show.rc"
   : > "$ORCA_STUB_DIR/calls.log"
   out=$(bash "$block" 2>&1); rc=$?
-  if [[ "$rc" -ne 0 || "$out" != *'Orca already closed the worker terminal; nothing to close'* \
+  if [[ "$rc" -ne 0 || "$out" != *'Orca already closed the design terminal; nothing to close'* \
      || "$out" == *'worker-release --dispatch'* ]]; then
     bad="$bad [C2-$st]"
   fi
@@ -271,13 +274,13 @@ printf '%s\n' '{"ok":true,"result":{"terminal":{"handle":"term_w","worktreeId":"
 printf '%s\n' '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DIR/terminal_list"
 : > "$ORCA_STUB_DIR/calls.log"
 out=$(bash "$c3_block" 2>&1); rc=$?
-if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the worktree:'* \
+if [[ "$rc" -ne 0 || "$out" != *'not offering to remove the design worktree:'* \
    || "$out" != *'the terminal identity did not match our state'* \
    || "$out" == *'worktree rm'* ]]; then
   bad="$bad [C3-identity-mismatch]"
 fi
 out=$(bash "$block" 2>&1); rc=$?
-if [[ "$rc" -ne 0 || "$out" != *'the terminal no longer matches our state; leave it alone'* \
+if [[ "$rc" -ne 0 || "$out" != *'the design terminal no longer matches our state; leave it alone'* \
    || "$out" == *'worker-release --dispatch'* ]]; then
   bad="$bad [C2-identity-mismatch]"
 fi
@@ -285,6 +288,74 @@ fi
 # SK6k: **1 つの Run に 2 タスクを載せ、文書どおりの順で通しで走らせる。**Step 5 は
 #        release を **1 度も呼ばない**（CR-1）。C2 は release コマンドを *印字* し、
 #        C3 は判定に到達し、C7 は Run 全体を通す。block 単体のテストではこの経路を踏めない。
+# SK6m: ★ **cleanup は roles を走査する。**レビューモードでは 1 タスクに 2 役が居るので、
+#        design だけを見ると **reviewer の端末と worktree が取り残される**。
+#        片方が merge 済みでも、もう片方の checkout が dirty なら**その役だけ**提示しない。
+two_roles_state() {   # $1=design の dirty(yes/no) $2=review の dirty(yes/no)
+  jq -nc --arg dp "$cleanup_repo" --arg rp "$rv_repo" \
+    '{roles:{
+       design:       {terminal:"term_d",dispatch:"ctx_d",retained:false,
+                      worktree_id:"wt_d",worktree_path:$dp,
+                      worktree_created_by_this_run:true,worktree_terminals:["term_d"]},
+       design_review:{terminal:"term_r",dispatch:"ctx_r",retained:false,
+                      worktree_id:"wt_r",worktree_path:$rp,
+                      worktree_created_by_this_run:true,worktree_terminals:["term_r"]}}}' \
+    > "$cleanup_state/workers.json"
+}
+rv_repo="$scratch/rv"; mkdir -p "$rv_repo"
+git -C "$rv_repo" init -q -b main .
+printf '%s\n' seed > "$rv_repo/README.md"
+git -C "$rv_repo" add -A
+git -C "$rv_repo" -c user.email=t@e -c user.name=t commit -q -m seed
+jq -nc '{ok:true,result:{workers:[
+   {dispatchId:"ctx_d",terminalState:"retained",resource:{releaseState:"retained",terminalHandle:"term_d",worktreeId:"wt_d"}},
+   {dispatchId:"ctx_r",terminalState:"retained",resource:{releaseState:"retained",terminalHandle:"term_r",worktreeId:"wt_r"}}],counts:{}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-list"
+cat > "$ORCA_STUB_DIR/terminal_show.hook" <<'HOOK'
+#!/usr/bin/env bash
+for a in "$@"; do case "$prev" in --terminal) t="$a" ;; esac; prev="$a"; done
+w=wt_d; [ "$t" = term_r ] && w=wt_r
+printf '{"ok":true,"result":{"terminal":{"handle":"%s","worktreeId":"%s"}}}\n' "$t" "$w" \
+  > "$ORCA_STUB_DIR/terminal_show"
+HOOK
+chmod +x "$ORCA_STUB_DIR/terminal_show.hook"
+cat > "$ORCA_STUB_DIR/terminal_list.hook" <<'HOOK'
+#!/usr/bin/env bash
+for a in "$@"; do case "$prev" in --worktree) w="$a" ;; esac; prev="$a"; done
+h=term_d; [ "$w" = "id:wt_r" ] && h=term_r
+printf '{"ok":true,"result":{"terminals":[{"handle":"%s"}]}}\n' "$h" > "$ORCA_STUB_DIR/terminal_list"
+HOOK
+chmod +x "$ORCA_STUB_DIR/terminal_list.hook"
+printf '%s\n' '{"merged":true}' > "$cleanup_state/integration-result.json"
+two_roles_state
+
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(bash "$scratch/C2-state-receipt.sh" 2>&1)
+if [[ "$(grep -c 'worker-release --dispatch ctx_d' <<<"$out")" -ne 1 \
+   || "$(grep -c 'worker-release --dispatch ctx_r' <<<"$out")" -ne 1 ]]; then
+  bad="$bad [C2-two-roles]"
+fi
+
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(bash "$scratch/C3-state-receipt.sh" 2>&1)
+if [[ "$(grep -c 'worktree rm --worktree id:wt_d' <<<"$out")" -ne 1 \
+   || "$(grep -c 'worktree rm --worktree id:wt_r' <<<"$out")" -ne 1 ]]; then
+  bad="$bad [C3-two-roles]"
+fi
+
+# reviewer の checkout だけ dirty にする → **その役だけ**提示されない
+printf '%s\n' dirt > "$rv_repo/dirty.txt"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(bash "$scratch/C3-state-receipt.sh" 2>&1)
+if [[ "$out" != *'worktree rm --worktree id:wt_d'* \
+   || "$out" == *'worktree rm --worktree id:wt_r'* \
+   || "$out" != *'not offering to remove the design_review worktree:'* \
+   || "$out" != *'the worker checkout has uncommitted changes'* ]]; then
+  bad="$bad [C3-per-role-dirty]"
+fi
+rm -f "$rv_repo/dirty.txt" "$ORCA_STUB_DIR/terminal_show.hook" "$ORCA_STUB_DIR/terminal_list.hook"
+
+
 unset SD
 two=$(mktemp -d); two=$(cd "$two" && pwd -P)
 two_repo="$two/repo"; mkdir -p "$two_repo"

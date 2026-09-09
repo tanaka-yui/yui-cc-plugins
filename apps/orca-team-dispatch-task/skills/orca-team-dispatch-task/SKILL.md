@@ -46,6 +46,18 @@ through override, then project, then global. There is no runner registry: `--age
 Orca launches, so the agent id is the runner. **A layer that is present but unreadable stops
 the dispatch** rather than being read as absent.
 
+`review_mode` decides which roles a dispatch starts. It resolves through the same three
+layers.
+
+| `review_mode` | Roles started | What happens |
+|---|---|---|
+| `off` (default) | `design` | One worker builds the thing. This is what a dispatch did before this setting existed |
+| `on` | `design`, `design_review` | A reviewer starts first and waits; `design` has its plan reviewed before building it |
+
+A role's tuple can be configured while its role is switched off, so a reviewer can be set up
+before `review_mode` is turned on. A tuple for a role that is off is not shown to the
+dispatch.
+
 | Field | Unset behaviour |
 |---|---|
 | `agent` | Defaults to `claude`, which is what a dispatch used before this setting existed |
@@ -95,7 +107,9 @@ Orca app:
 ### S2. Ask which layer, then ask the tuple
 
 Ask one question for the destination: the global layer or the project layer. The chosen
-layer is the only one written. Then ask `agent`, `model` and `effort` in one call.
+layer is the only one written. Then ask `review_mode`, and after it `agent`, `model` and
+`effort` for each role that mode actually starts. **Do not ask for a role the chosen mode
+does not start** — a tuple nobody reads is a setting the user cannot verify.
 
 Offer `claude` and `codex` as agent choices, and take a free-text answer for anything else —
 the list is a convenience, **not an allowlist**, so Orca gaining an agent does not require a
@@ -225,9 +239,14 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 | 1 | A batch carries a message this version cannot handle, or its outcome contradicts what is recorded | It was not acknowledged. Do not acknowledge it by hand; inspect it as described below |
 
 **The exit code is the authority, not the text.** Before the aggregate line, the wait prints
-one `task=... dispatch=... status_dir=... outcome=...` line per task; on a partial failure
-those lines carry both outcomes at once. Use them to name which task failed, and never
-decide success by searching the output for `outcome=`.
+one `task=... role=... dispatch=... status_dir=... outcome=...` line **per dispatched role**,
+so a task under review contributes two lines; on a partial failure those lines carry both
+outcomes at once. Use them to name which task failed, and never decide success by searching
+the output for `outcome=`.
+
+**A task's outcome is its `design` line.** A reviewer that failed means the work went
+unreviewed, not that the work was lost, so it does not by itself make the task fail. Say so
+when it happens rather than hiding it — its own line is right there.
 
 On exit 1, **do not run `--ack` yourself**. Read the error first. Acknowledging a batch
 declares that every message in it was processed, and this batch was not: it either carries a
@@ -269,8 +288,9 @@ exit 4, not an invitation to recover a batch manually.
 ## Step 4: Bring the result home
 
 Run this once per succeeded task, with `SD` set to that task's `status_dir`. On exit 0 every
-task qualifies. On exit 5 only the tasks whose own `task=...` line ended in
-`outcome=succeeded` do.
+task qualifies. On exit 5 only the tasks whose own **`role=design`** line ended in
+`outcome=succeeded` do. It merges the `design` branch; a reviewer's worktree carries no work
+to merge.
 
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
@@ -313,9 +333,10 @@ say the terminal and worktree are being kept on purpose. On the ordinary path th
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
-DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
-[[ -n "$DID" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
+ROLES=$(jq -r '.roles | to_entries[] | select((.value.dispatch // "") != "") | .key' \
+  "$SD/workers.json" 2>/dev/null)
+[[ -n "$ROLES" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
@@ -324,21 +345,26 @@ WLRC=0; WL=$("$ORCA_BIN" orchestration worker-list --run "$RUN" --json 2>/dev/nu
   echo "could not read the release state; do not close anything" >&2
   exit 1
 }
-W=$(jq -c --arg d "$DID" 'first(.result.workers[] | select(.dispatchId == $d)) // empty' <<<"$WL" 2>/dev/null)
-[[ -n "$W" ]] || { echo "could not read the release state; do not close anything" >&2; exit 1; }
-STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
-case "$STATE" in
-  release_pending|release_unknown)
-    printf '%s\n' "$W"
-    printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
-    exit 0 ;;
-  released|already_released|retained|active|reclaimable)
-    echo "expected: no hold on this task (release state '$STATE'); continue with [C2]" >&2
-    exit 1 ;;
-  *)
-    echo "could not read the release state; do not close anything" >&2
-    exit 1 ;;
-esac
+HELD=0
+for ROLE in $ROLES; do
+  DID=$(jq -r --arg r "$ROLE" '.roles[$r].dispatch // empty' "$SD/workers.json" 2>/dev/null)
+  W=$(jq -c --arg d "$DID" 'first(.result.workers[] | select(.dispatchId == $d)) // empty' <<<"$WL" 2>/dev/null)
+  [[ -n "$W" ]] || { echo "could not read the release state; do not close anything" >&2; exit 1; }
+  STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
+  case "$STATE" in
+    release_pending|release_unknown)
+      printf '%s\n' "$W"
+      printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
+      HELD=1 ;;
+    released|already_released|retained|active|reclaimable) ;;
+    *)
+      echo "could not read the release state; do not close anything" >&2
+      exit 1 ;;
+  esac
+done
+[[ "$HELD" -eq 0 ]] || exit 0
+echo "expected: no hold on this task; continue with [C2]" >&2
+exit 1
 ```
 
 [C2] Decide whether the worker's terminal may be closed, and print the command that closes it
@@ -361,12 +387,10 @@ there.
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
-WT=$(jq -r '.roles.design.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
-TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
-DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
-WP=$(jq -r '.roles.design.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
-[[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
+ROLES=$(jq -r '.roles | to_entries[] | select((.value.dispatch // "") != "") | .key' \
+  "$SD/workers.json" 2>/dev/null)
+[[ -n "$ROLES" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
@@ -375,27 +399,37 @@ WLRC=0; WL=$("$ORCA_BIN" orchestration worker-list --run "$RUN" --json 2>/dev/nu
   echo "could not read the release state; do not close anything" >&2
   exit 1
 }
-W=$(jq -c --arg d "$DID" 'first(.result.workers[] | select(.dispatchId == $d)) // empty' <<<"$WL" 2>/dev/null)
-[[ -n "$W" ]] || { echo "could not read the release state; do not close anything" >&2; exit 1; }
-STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
-case "$STATE" in
-  released|already_released)
-    echo "Orca already closed the worker terminal; nothing to close"; exit 0 ;;
-  retained|active|reclaimable) ;;
-  *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
-esac
-SHRC=0; SHOWN=""
-SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-  echo "could not verify the terminal identity; do not close anything" >&2
-  exit 1
-}
-if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
-   && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
-  printf '%s orchestration worker-release --dispatch %q --json\n' "$ORCA_BIN" "$DID"
-else
-  echo "the terminal no longer matches our state; leave it alone"
-fi
+for ROLE in $ROLES; do
+  WT=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_id // empty' "$SD/workers.json" 2>/dev/null)
+  TH=$(jq -r --arg r "$ROLE" '.roles[$r].terminal // empty' "$SD/workers.json" 2>/dev/null)
+  DID=$(jq -r --arg r "$ROLE" '.roles[$r].dispatch // empty' "$SD/workers.json" 2>/dev/null)
+  WP=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_path // empty' "$SD/workers.json" 2>/dev/null)
+  [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" ]] || {
+    echo "required cleanup state is missing; do not close or remove anything" >&2
+    exit 1
+  }
+  W=$(jq -c --arg d "$DID" 'first(.result.workers[] | select(.dispatchId == $d)) // empty' <<<"$WL" 2>/dev/null)
+  [[ -n "$W" ]] || { echo "could not read the release state; do not close anything" >&2; exit 1; }
+  STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
+  case "$STATE" in
+    released|already_released)
+      echo "Orca already closed the $ROLE terminal; nothing to close"; continue ;;
+    retained|active|reclaimable) ;;
+    *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
+  esac
+  SHRC=0; SHOWN=""
+  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
+    echo "could not verify the terminal identity; do not close anything" >&2
+    exit 1
+  }
+  if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
+     && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
+    printf '%s orchestration worker-release --dispatch %q --json\n' "$ORCA_BIN" "$DID"
+  else
+    echo "the $ROLE terminal no longer matches our state; leave it alone"
+  fi
+done
 ```
 
 [C3] Removing the worktree is destructive, so **only print that command when every
@@ -404,15 +438,11 @@ condition below actually holds**. Check them; do not describe them.
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
-WT=$(jq -r '.roles.design.worktree_id // empty' "$SD/workers.json" 2>/dev/null)
-TH=$(jq -r '.roles.design.terminal // empty' "$SD/workers.json" 2>/dev/null)
-DID=$(jq -r '.roles.design.dispatch // empty' "$SD/workers.json" 2>/dev/null)
-WP=$(jq -r '.roles.design.worktree_path // empty' "$SD/workers.json" 2>/dev/null)
 RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
 MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
-OWNED=$(jq -r '.roles.design.worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)
-KNOWN=$(jq -c '.roles.design.worktree_terminals // null' "$SD/workers.json" 2>/dev/null)
-[[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$RUN" && -n "$ORCA_BIN" && -n "$KNOWN" ]] || {
+ROLES=$(jq -r '.roles | to_entries[] | select((.value.dispatch // "") != "") | .key' \
+  "$SD/workers.json" 2>/dev/null)
+[[ -n "$ROLES" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
   echo "required cleanup state is missing; do not close or remove anything" >&2
   exit 1
 }
@@ -421,56 +451,68 @@ WLRC=0; WL=$("$ORCA_BIN" orchestration worker-list --run "$RUN" --json 2>/dev/nu
   echo "could not read the release state; do not remove anything" >&2
   exit 1
 }
-W=$(jq -c --arg d "$DID" 'first(.result.workers[] | select(.dispatchId == $d)) // empty' <<<"$WL" 2>/dev/null)
-[[ -n "$W" ]] || { echo "could not read the release state; do not remove anything" >&2; exit 1; }
-STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
-case "$STATE" in
-  released|already_released|retained|active|reclaimable) ;;
-  *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
-esac
-SHRC=0; SHOWN=""; SHOW_OK=no
-SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-[[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 \
-  && SHOW_OK=yes
-if [[ "$SHOW_OK" == no && "$STATE" != released && "$STATE" != already_released ]]; then
-  echo "could not verify the terminal identity; do not remove anything" >&2
-  exit 1
-fi
-IDENTITY_OK=no
-if [[ "$SHOW_OK" == no ]]; then
-  IDENTITY_OK=yes
-elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
-     && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
-  IDENTITY_OK=yes
-fi
-DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
-
-# Every terminal Orca still has in that worktree must be one we recorded. Keep all three
-# states: yes is proven, no is disproven, and unknown is not enough authority to remove.
-ACCOUNTED=unknown
-TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT" --json 2>/dev/null) || TLRC=$?
-if [[ "$TLRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminals | type == "array")' <<<"$TL" >/dev/null 2>&1 \
-   && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1; then
-  ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
-                    --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
-fi
-
-if [[ "$MERGED" == true && "$OWNED" == true && "$DRC" -eq 0 && -z "$DIRTY" \
-      && "$IDENTITY_OK" == yes && "$ACCOUNTED" == yes ]]; then
-  printf '%s worktree rm --worktree %q --json\n' "$ORCA_BIN" "id:$WT"
-else
-  echo "not offering to remove the worktree:"
-  [[ "$MERGED" == true ]]      || echo "  - the work is not merged yet"
-  [[ "$OWNED" == true ]]       || echo "  - this dispatch reused an existing worktree; it is not ours to remove"
-  [[ "$DRC" -eq 0 ]]           || echo "  - the worker checkout could not be inspected"
-  [[ -z "$DIRTY" ]]            || echo "  - the worker checkout has uncommitted changes"
-  [[ "$IDENTITY_OK" == yes ]]  || echo "  - the terminal identity did not match our state"
-  case "$ACCOUNTED" in
-    yes) ;;
-    no)      echo "  - a terminal in that worktree is not one we recorded" ;;
-    unknown) echo "  - the terminals in that worktree could not be listed, so nothing is proven" ;;
+for ROLE in $ROLES; do
+  WT=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_id // empty' "$SD/workers.json" 2>/dev/null)
+  TH=$(jq -r --arg r "$ROLE" '.roles[$r].terminal // empty' "$SD/workers.json" 2>/dev/null)
+  DID=$(jq -r --arg r "$ROLE" '.roles[$r].dispatch // empty' "$SD/workers.json" 2>/dev/null)
+  WP=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_path // empty' "$SD/workers.json" 2>/dev/null)
+  OWNED=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)
+  KNOWN=$(jq -c --arg r "$ROLE" '.roles[$r].worktree_terminals // null' "$SD/workers.json" 2>/dev/null)
+  [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$KNOWN" ]] || {
+    echo "required cleanup state is missing; do not close or remove anything" >&2
+    exit 1
+  }
+  W=$(jq -c --arg d "$DID" 'first(.result.workers[] | select(.dispatchId == $d)) // empty' <<<"$WL" 2>/dev/null)
+  [[ -n "$W" ]] || { echo "could not read the release state; do not remove anything" >&2; exit 1; }
+  STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
+  case "$STATE" in
+    released|already_released|retained|active|reclaimable) ;;
+    *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
   esac
-fi
+  SHRC=0; SHOWN=""; SHOW_OK=no
+  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
+  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 \
+    && SHOW_OK=yes
+  if [[ "$SHOW_OK" == no && "$STATE" != released && "$STATE" != already_released ]]; then
+    echo "could not verify the terminal identity; do not remove anything" >&2
+    exit 1
+  fi
+  IDENTITY_OK=no
+  if [[ "$SHOW_OK" == no ]]; then
+    IDENTITY_OK=yes
+  elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
+       && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
+    IDENTITY_OK=yes
+  fi
+  DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
+
+  # Every terminal Orca still has in that worktree must be one we recorded. Keep all three
+  # states: yes is proven, no is disproven, and unknown is not enough authority to remove.
+  ACCOUNTED=unknown
+  TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT" --json 2>/dev/null) || TLRC=$?
+  if [[ "$TLRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminals | type == "array")' <<<"$TL" >/dev/null 2>&1 \
+     && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1; then
+    ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
+                      --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
+  fi
+
+  if [[ "$MERGED" == true && "$OWNED" == true && "$DRC" -eq 0 && -z "$DIRTY" \
+        && "$IDENTITY_OK" == yes && "$ACCOUNTED" == yes ]]; then
+    printf '%s worktree rm --worktree %q --json\n' "$ORCA_BIN" "id:$WT"
+  else
+    echo "not offering to remove the $ROLE worktree:"
+    [[ "$MERGED" == true ]]      || echo "  - the work is not merged yet"
+    [[ "$OWNED" == true ]]       || echo "  - this dispatch reused an existing worktree; it is not ours to remove"
+    [[ "$DRC" -eq 0 ]]           || echo "  - the worker checkout could not be inspected"
+    [[ -z "$DIRTY" ]]            || echo "  - the worker checkout has uncommitted changes"
+    [[ "$IDENTITY_OK" == yes ]]  || echo "  - the terminal identity did not match our state"
+    case "$ACCOUNTED" in
+      yes) ;;
+      no)      echo "  - a terminal in that worktree is not one we recorded" ;;
+      unknown) echo "  - the terminals in that worktree could not be listed, so nothing is proven" ;;
+    esac
+  fi
+done
 ```
 
 [C3] decides whether the worktree may be removed; like [C2] it removes nothing. Step 6 runs
@@ -639,6 +681,7 @@ State these when they apply. Do not work around them silently.
 | If this session dies mid-dispatch, nothing recovers automatically | Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
 | If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
 | A worker cannot ask questions | It is told to fail with a reason in `result.md` instead. Read it and dispatch again |
+| Review stops after two rounds, and a silent reviewer is retried once | `design` records the unresolved findings in `result.md` and builds the best version it has. Read that section before merging |
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Repositories that need setup hooks are out of scope | The worktree is created with setup skipped |
 | A batch this version cannot handle stays unacknowledged and blocks its parent terminal's queue | Do not acknowledge it. Inspect `received.json` and `result.md`; guarded manual integration does not unblock that queue. Start later dispatches from another Orca terminal, whose `ORCA_TERMINAL_HANDLE` is used at launch |
