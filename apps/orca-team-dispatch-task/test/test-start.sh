@@ -520,4 +520,9 @@ setup; start >/dev/null 2>&1
 [[ "$(spec)" != *'review-plan:'* ]] && [[ "$(spec)" != *'abort-reviewer:'* ]] \
   && ok "ST44 off の spec に往復手順を書かない" || fail "ST44"; teardown
 
+# ST45: workers.json は **取り込む役**を記録する。merge も PR も同じ値を読む。
+setup; start >/dev/null 2>&1
+[[ "$(jq -r '.integration_role' "$R/.dispatch/s/workers.json")" == design ]] \
+  && ok "ST45 integration_role を記録する" || fail "ST45"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

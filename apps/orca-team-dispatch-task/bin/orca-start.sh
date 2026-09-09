@@ -145,9 +145,12 @@ write run "$SD/run.json" "$(jq -nc --arg r "$RUN" --arg p "$PH" --arg rr "$RR" \
 # ★ **解決した tuple を全ロール分まとめて先に置く。**あとから「この worker は何で
 #   走ったのか」を receipt 無しで答えられるようにする。未設定の model / effort は
 #   キー自体を置かない（config-resolve の出力と同じ形にし、未設定と空文字を混ぜない）。
+# ★ **取り込み先の役を 1 箇所で決める。**merge も PR も同じ値を読む。別々に判断すると
+#   必ずずれる。今は design だけだが、実装役が増えたらここが変わる。
 write workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg ib "$IB" \
+  --arg ir "design" \
   --argjson roles "$(jq -c '.roles | map_values(. + {retained:false})' <<<"$CFG")" \
-  '{run_id:$r, integration_branch:$ib, roles:$roles}')" || {
+  '{run_id:$r, integration_branch:$ib, integration_role:$ir, roles:$roles}')" || {
   log "the Run was created but the dispatch state could not be recorded. Nothing else exists yet."
   log "run=$RUN  inspect with: $ORCA_BIN orchestration run-show --id $RUN --json"; exit 1; }
 
