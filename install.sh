@@ -24,6 +24,7 @@ claude plugin install cmux-codex-exec@yui-cc-plugins
 claude plugin install dev-up@yui-cc-plugins
 claude plugin install e2e-test@yui-cc-plugins
 claude plugin install cmux-e2e@yui-cc-plugins
+claude plugin install orca-team-dispatch-task@yui-cc-plugins
 claude plugin install token-meter@yui-cc-plugins
 echo ""
 
