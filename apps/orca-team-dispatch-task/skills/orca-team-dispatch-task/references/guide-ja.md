@@ -19,7 +19,8 @@ Orca は自分の CLI 名を `ORCA_CLI_COMMAND` として export する。WSL2 �
 コマンドも含めて常に `$ORCA_BIN` 経由で呼ぶ。
 
 **まず引数で振り分ける。**`--setup` と `--reset` は設定するだけで dispatch を 1 件も起こさない
-— 設定の節を実行して終わる。それ以外は dispatch であり、その設定を読み、設定が無ければ S0 を一度だけ尋ねてから
+— 設定の節を実行して終わる。`--issue` は仕事をユーザーではなく GitHub から取る — Issue モードの節を
+実行する。それ以外は dispatch であり、その設定を読み、設定が無ければ S0 を一度だけ尋ねてから
 Step 1 を始める。
 
 ## 設定
@@ -145,6 +146,108 @@ bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --unset roles
 
 Step 2 は `--agent` / `--model` / `--effort` を受け取る。これらはその 1 コールに限り両方の層
 より強く、**何も書かない**ので、保存する前に model を試せる。
+
+## Issue モード
+
+`--issue` は仕事をユーザーの依頼文ではなく GitHub の issue から取る。`--issue <N>` はその
+1 件だけを運び、引数なしの `--issue` は issue を尽きるかバッチ上限に達するまでバッチ単位で
+claim する。
+
+**1 件の issue は 1 コールで最後まで運ばれる。**それが `bin/orca-issue.sh` である。dispatch し、
+待ち、merge し、ラベルを遷移させ、issue を close する。**資源は 1 つも消さない** — 手書きの
+dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。
+
+| 性質 | この版 |
+|---|---|
+| 統合 | **merge のみ。**PR の経路は無い。提示してはならない |
+| 駆動 | 1 バッチずつ。終わるまで待ってから次を claim する |
+| 役 | `review_mode` が解決したものを、その実行の全 issue で共通に使う |
+
+### I0. 事前確認
+
+`gh` / `jq` / Orca ランタイムを確かめ、lock を取る。**lock が生きているなら開始しない** —
+2 つのループが同じ issue を claim すると、同じ worktree 名で衝突する。
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
+RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
+STATE="$RR/.dispatch-issue/state.json"
+command -v gh >/dev/null 2>&1 || { echo "gh is not installed" >&2; exit 1; }
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-check || exit 1
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-acquire --lease-min 60 || exit 1
+# The state file and its lock would otherwise leave the parent checkout dirty, and every
+# merge refuses a dirty checkout. Exclude the directory the way `.dispatch/` is excluded.
+EX=$(git -C "$RR" rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$EX")" \
+  && grep -qxF '.dispatch-issue/' "$EX" 2>/dev/null || printf '.dispatch-issue/\n' >> "$EX"
+```
+
+`lock-acquire` は安定した session id を要求する。環境が持っていなければ `LOOP_SESSION_ID` を
+export する。**どの終了経路でも lock を解放する** — 想定していなかった経路も含めて。
+
+### I1. 一度だけ尋ね、あとは尋ねない
+
+次の 4 つを 1 問にまとめて尋ねる。issue の実行は始まったら無人なので、**終わるまで何も
+尋ねてはならない。**
+
+1. **ラベル絞り込み** — `gh label list` の上位ラベルに加え、「絞り込まない」と自由入力。
+2. **assignee** — `@me` / 未 assign のみ / 絞り込まない。
+3. **同時に扱う issue 数** — 1〜10 の整数、既定 5。**上限 10 は資源増幅に対する安全弁であり、
+   要求されても上げない。**1 issue が worktree 1 つと worker 1 本を消費し、`review_mode=on`
+   では倍になる。
+4. **バッチ数の上限** — 数、または issue が尽きるまで。
+
+`review_mode` と統合方式は尋ねない。`review_mode` は設定から解決してその実行の間は固定であり、
+統合は merge である。
+
+### I2. claim の前に整合させる
+
+```bash
+: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" init \
+  --config-json '{"concurrency":5}' --filter-json '{"state":"open"}' || exit 1
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" ensure-labels || exit 1
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" reconcile
+```
+
+**`reconcile` が `abort` を返したら実行を止める。**前回の実行が dispatched のままの issue を
+残しており、その worker はまだ生きているかもしれない。lock を解放し、理由を見せて止まる。
+state を手で消してはならない。
+
+### I3. 1 バッチを claim し、1 件ずつ運ぶ
+
+`fetch` は `--limit` 件まで claim し、割り当てた `slug` 付きの JSON で返す。exit 3 は
+「1 件も claim できなかった」、exit 4 は「尽きたと確認できなかった」であり、**どちらも
+ループし直さずに実行を終える。**
+
+バッチの各 issue について、title と body を依頼ファイルへ書き出して運ぶ:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${STATE:?run the I0 block first}"
+: "${NUM:?set NUM, SLUG and REQ from the claimed issue}"
+: "${SLUG:?set NUM, SLUG and REQ from the claimed issue}"
+: "${REQ:?set NUM, SLUG and REQ from the claimed issue}"
+bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" \
+  --issue "$NUM" --slug "$SLUG" --request-file "$REQ" ${RUN:+--run "$RUN"}
+```
+
+exit 1 はその issue を運べなかったことを意味する。ラベルは既に `dispatch/failed` へ動いて
+おり、**その資源は意図して残されている。**次の issue へ進む — 1 件の失敗は他の件について
+何も言っていない。
+
+### I4. バッチの間
+
+issue ごとに何が起きたかを報告し、次のバッチを claim する。バッチ上限に達したとき、`fetch` が
+何も見つけなかったとき、exit 3 または 4 のときに止める。**最後に lock を解放する:**
+
+```bash
+: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-release
+```
+
+そのうえで、実行が生んだすべての `status_dir` について Step 5 へ進む。片付けは手書きの
+dispatch と同じである — 判定し、ユーザーが承認し、承認されたものだけを消す。
 
 ## Step 1: 依頼を書き出す
 
@@ -661,6 +764,9 @@ release するのはここである。**セッションを閉じることはユ�
 | レビューは 2 ラウンドで打ち切り、無言の reviewer への再依頼は 1 回だけ | `design` は未解決の findings を `result.md` に記録し、手元の最良版を作る。merge する前にその節を読む |
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
 | setup hook を必要とする repository は対象外 | worktree は setup を skip して作る |
+| `--issue` は merge する。pull request は作らない | 現在のブランチへ merge することが望ましい repository で使うか、手で dispatch して自分で PR を作る |
+| `--issue` の実行は crash から自力で再開しない | 次の実行の `reconcile` が claim を見つけ、何も走っていなければ release し、走っているかもしれなければ実行を止める |
+| 遅い 1 件がそのバッチの残りを待たせる | 待ちはバッチ単位である。長くなると分かっている issue があるならバッチを小さくする |
 | 解放したはずの worker が `retained` の記録のまま残り、同じ Run の後の dispatch で [C7] が止まることがある | 2 回独立に観測した: `worker-release` は `ok` を返すのに receipt は `releaseState: retained` / `retainedReason: user_takeover` のままで、その記録は端末そのものより長く残る。dispatch が消えた Run を使い回さず、新しい Run を起こす。[C7] の範囲は Run 単位なので、新しい Run は影響を受けない |
 | この版が扱えない batch は acknowledge されないまま親 terminal の queue を block する | acknowledge しない。`received.json` と `result.md` を確認する。guarded manual integration でも queue は解消されない。後続の dispatch は別の Orca terminal から開始し、launch 時にはその `ORCA_TERMINAL_HANDLE` が使われる |
 | Orca が `release_pending` / `release_unknown` と報告する dispatch は片付けられない | [C1] がそのタスクを止める。端末・worktree・記録をそのまま残し、`$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べる。`release_pending` は自然に確定しうるが、`release_unknown` は判断が要る |

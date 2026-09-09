@@ -223,6 +223,85 @@ git -C "$R" worktree remove --force "$WTD" >/dev/null 2>&1
 git -C "$R" worktree remove --force "$WTR" >/dev/null 2>&1
 rm -rf "$REQ3" "$(dirname "$WTD")" "$(dirname "$WTR")"
 
+# ── issue モード: claim → dispatch → merge → ラベル遷移 → close を 1 本通す ──────
+# ★ **merge が通って初めて close する**という順序が、この節で固定したいことである。
+# 前の節が置いた review_mode=on を引き継がない（この節の stub は 1 役ぶんしか無い）
+rm -f "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+GH_STUB_DIR="$ORCA_STUB_DIR/gh"; mkdir -p "$GH_STUB_DIR"; : > "$GH_STUB_DIR/calls.log"
+IBIN="$ORCA_STUB_DIR/ibin"; mkdir -p "$IBIN"
+{ echo '#!/usr/bin/env bash'; printf 'exec %q "$@"\n' "$P/test/lib/gh-stub.sh"; } > "$IBIN/gh"
+chmod +x "$IBIN/gh"; export GH_STUB_DIR; E2E_OLD_PATH="$PATH"; PATH="$IBIN:$PATH"; export PATH
+export LOOP_SESSION_ID=e2e-issue DISPATCH_DIR="$R/.dispatch" LOOP_REPO_ROOT="$R"
+: > "$GH_STUB_DIR/issue_edit"; : > "$GH_STUB_DIR/issue_close"
+jq -nc '[{name:"dispatch/in-progress"}]' > "$GH_STUB_DIR/label_list"
+jq -nc '[{number:42,title:"Fix the thing",body:"please",url:"u42",labels:[]}]' > "$GH_STUB_DIR/issue_list"
+
+IFS_SH="$P/skills/orca-team-dispatch-task/scripts/issue-fetch.sh"
+ISTATE="$R/.dispatch-issue/state.json"
+bash "$IFS_SH" --state-file "$ISTATE" lock-acquire --lease-min 30 >/dev/null 2>&1
+bash "$IFS_SH" --state-file "$ISTATE" init --config-json '{}' --filter-json '{}' >/dev/null 2>&1
+bash "$IFS_SH" --state-file "$ISTATE" ensure-labels >/dev/null 2>&1
+CLAIM=$(bash "$IFS_SH" --state-file "$ISTATE" fetch --limit 1 --batch 1 2>/dev/null)
+ISLUG=$(jq -r '.[0].slug' <<<"$CLAIM")
+[[ "$(jq -r '.[0].number' <<<"$CLAIM")" == 42 && "$ISLUG" == issue-42-* ]] \
+  && grep -q -- '--add-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && ok "E22 issue を claim して slug を割り当てる" || fail "E22 ($CLAIM)"
+
+# claim した slug の worktree を用意し、成果を commit しておく
+WTI=$(mktemp -d)/wti; git -C "$R" worktree add -q -b "orca/$ISLUG" "$WTI" >/dev/null 2>&1
+echo fixed > "$WTI/FIX.md"; git -C "$WTI" add -A
+git -C "$WTI" -c user.email=t@e -c user.name=t commit -q -m fix
+printf '{"ok":true,"result":{"worktree":{"id":"wt_i","path":"%s","branch":"refs/heads/orca/%s"}}}\n' \
+  "$WTI" "$ISLUG" > "$ORCA_STUB_DIR/worktree_create"
+echo '{"ok":true,"result":{"worktrees":[]}}' > "$ORCA_STUB_DIR/worktree_list"
+echo '{"ok":true,"result":{"task":{"id":"task_i"}}}' > "$ORCA_STUB_DIR/orchestration_task-create"
+rm -f "$ORCA_STUB_DIR/orchestration_task-create.hook" "$ORCA_STUB_DIR/worktree_create.hook"
+cat > "$ORCA_STUB_DIR/orchestration_worker-start.hook" <<HOOK
+#!/usr/bin/env bash
+mkdir -p "$R/.dispatch/$ISLUG/roles/design"
+printf '{"status":"done"}\n' > "$R/.dispatch/$ISLUG/roles/design/status.json"
+printf 'fixed it\n' > "$R/.dispatch/$ISLUG/roles/design/result.md"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_worker-start.hook"
+echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_i","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_i"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-start"
+jq -nc '{ok:true,result:{runId:"run_e",deliveryId:"dis",count:1,messages:[
+  {id:"i1",type:"worker_done",payload:({taskId:"task_i",dispatchId:"ctx_i",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+IREQ=$(mktemp); jq -r '.[0] | "\(.title)\n\n\(.body)"' <<<"$CLAIM" > "$IREQ"
+
+: > "$ORCA_STUB_DIR/calls.log"
+# claim 時の add-label が残っていると「最初の add-label」が別物になる
+: > "$GH_STUB_DIR/calls.log"
+IOUT=$(bash "$P/bin/orca-issue.sh" --state-file "$ISTATE" --issue 42 --slug "$ISLUG" \
+         --request-file "$IREQ" --repo-root "$R" --max-waits 1 --timeout-ms 1 2>&1); irc=$?
+[[ "$irc" -eq 0 && -f "$R/FIX.md" ]] \
+  && [[ "$(jq -r '.merged' "$R/.dispatch/$ISLUG/integration-result.json")" == true ]] \
+  && ok "E23 issue の成果が親へ merge される" || fail "E23 (rc=$irc) $IOUT"
+
+# ラベルは terminal → dispatch/done の順。close は merge のあと
+ghl=$(cat "$GH_STUB_DIR/calls.log")
+first_label=$(grep 'add-label' <<<"$ghl" | head -1)
+[[ "$first_label" == *'add-label terminal'* ]] \
+  && grep -q -- '--add-label dispatch/done' <<<"$ghl" \
+  && grep -q 'issue close 42' <<<"$ghl" \
+  && ok "E24 終端ラベルが先、close は merge のあと" || fail "E24 ($first_label)"
+
+[[ "$(jq -r '.issues["42"].status' "$ISTATE")" == done ]] \
+  && ok "E25 state が終端 done に落ちる" || fail "E25"
+
+# ★ **この経路は資源を消さない。**片付けは Step 5 の判定と Step 6 の承認を経る
+[[ -d "$R/.dispatch/$ISLUG" ]] \
+  && ! grep -qE 'worktree rm|worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && ok "E26 issue モードでも資源は消さない" || fail "E26"
+
+bash "$IFS_SH" --state-file "$ISTATE" lock-release >/dev/null 2>&1
+git -C "$R" worktree remove --force "$WTI" >/dev/null 2>&1
+rm -f "$ORCA_STUB_DIR/orchestration_worker-start.hook"
+PATH="$E2E_OLD_PATH"; export PATH
+unset GH_STUB_DIR LOOP_SESSION_ID DISPATCH_DIR LOOP_REPO_ROOT
+rm -rf "$IREQ" "$(dirname "$WTI")"
+
 git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
 rm -rf "$ORCA_STUB_DIR" "$R" "$REQ" "$(dirname "$WT")"
 echo "---"; echo "failures: $fails"; exit "$fails"

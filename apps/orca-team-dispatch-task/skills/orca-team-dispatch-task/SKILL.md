@@ -28,7 +28,8 @@ which is on PATH, and on macOS the CLI lives inside the app bundle. Never assume
 shape: always call it through `$ORCA_BIN`, including in commands you show the user.
 
 **Route on the arguments first.** `--setup` and `--reset` configure and dispatch nothing:
-do the Configuration section and stop. Anything else is a dispatch, which reads that
+do the Configuration section and stop. `--issue` takes its work from GitHub instead of from
+the user: do the Issue mode section. Anything else is a dispatch, which reads that
 configuration, asks S0 once when there is none, and starts at Step 1.
 
 ## Configuration
@@ -157,6 +158,109 @@ Report what changed and offer to continue at S1.
 
 Step 2 accepts `--agent`, `--model` and `--effort`. They outrank both layers for that one
 call and write nothing, so a model can be tried before it is saved.
+
+## Issue mode
+
+`--issue` takes the work from GitHub issues instead of from the user's message. `--issue <N>`
+carries exactly that one issue; bare `--issue` claims issues in batches until it runs out or
+hits the batch limit.
+
+**One issue is carried end to end by one call**, and `bin/orca-issue.sh` is that call. It
+dispatches, waits, merges, moves the labels and closes the issue. **It removes nothing** —
+Step 5 decides and Step 6 asks, exactly as for a hand-written dispatch.
+
+| Property | This version |
+|---|---|
+| Integration | **Merge only.** There is no PR path; do not offer one |
+| Driving | One batch at a time, waiting for it to finish before claiming the next |
+| Roles | Whatever `review_mode` resolves to, used for every issue in the run |
+
+### I0. Preflight
+
+Check `gh`, `jq` and the Orca runtime, then take the lock. **Do not start if the lock is
+live** — two loops claiming the same issues collide on the same worktree name.
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
+RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
+STATE="$RR/.dispatch-issue/state.json"
+command -v gh >/dev/null 2>&1 || { echo "gh is not installed" >&2; exit 1; }
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-check || exit 1
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-acquire --lease-min 60 || exit 1
+# The state file and its lock would otherwise leave the parent checkout dirty, and every
+# merge refuses a dirty checkout. Exclude the directory the way `.dispatch/` is excluded.
+EX=$(git -C "$RR" rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$EX")" \
+  && grep -qxF '.dispatch-issue/' "$EX" 2>/dev/null || printf '.dispatch-issue/\n' >> "$EX"
+```
+
+`lock-acquire` needs a stable session id; export `LOOP_SESSION_ID` if the environment does
+not already provide one. **Release the lock on every exit path**, including the ones you did
+not plan for.
+
+### I1. Ask once, then stop asking
+
+Ask a single question with these four parts. An issue run is unattended once it starts, so
+**nothing may ask again until it ends**.
+
+1. **Label filter** — the top labels from `gh label list`, plus "no filter" and free text.
+2. **Assignee** — `@me`, unassigned only, or no filter.
+3. **How many issues at once** — an integer from 1 to 10, default 5. **The cap of 10 is a
+   safety valve against resource amplification and is not raised on request**: each issue
+   costs a worktree and a worker, and doubles under `review_mode=on`.
+4. **How many batches** — a number, or until the issues run out.
+
+Do not ask about `review_mode` or about integration. `review_mode` comes from the
+configuration and is fixed for the run; integration is merge.
+
+### I2. Reconcile before claiming anything
+
+```bash
+: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" init \
+  --config-json '{"concurrency":5}' --filter-json '{"state":"open"}' || exit 1
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" ensure-labels || exit 1
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" reconcile
+```
+
+**`reconcile` reporting `abort` stops the run.** It means an earlier run left an issue marked
+as dispatched, and that worker may still be alive. Release the lock, show the reasons, and
+stop. Do not clear the state by hand.
+
+### I3. Claim a batch and carry each issue
+
+`fetch` claims up to `--limit` issues and prints them as JSON, each with the `slug` it
+assigned. Exit 3 means nothing could be claimed and exit 4 means exhaustion could not be
+confirmed; **both end the run rather than looping again**.
+
+For each issue in the batch, write its title and body to a request file and carry it:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${STATE:?run the I0 block first}"
+: "${NUM:?set NUM, SLUG and REQ from the claimed issue}"
+: "${SLUG:?set NUM, SLUG and REQ from the claimed issue}"
+: "${REQ:?set NUM, SLUG and REQ from the claimed issue}"
+bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" \
+  --issue "$NUM" --slug "$SLUG" --request-file "$REQ" ${RUN:+--run "$RUN"}
+```
+
+Exit 1 means that issue was not carried; its labels are already moved to `dispatch/failed`
+and **its resources are kept on purpose**. Carry on with the next issue — one issue failing
+says nothing about the others.
+
+### I4. Between batches
+
+Report what happened per issue, then claim the next batch. Stop when the batch limit is
+reached, when `fetch` finds nothing, or on exit 3 or 4. **Release the lock at the end:**
+
+```bash
+: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
+bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-release
+```
+
+Then go to Step 5 for every `status_dir` the run produced. Cleanup is the same as for a
+hand-written dispatch: it decides, the user approves, and only what they approve is removed.
 
 ## Step 1: Write the request down
 
@@ -684,6 +788,9 @@ State these when they apply. Do not work around them silently.
 | Review stops after two rounds, and a silent reviewer is retried once | `design` records the unresolved findings in `result.md` and builds the best version it has. Read that section before merging |
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Repositories that need setup hooks are out of scope | The worktree is created with setup skipped |
+| `--issue` merges; it never opens a pull request | Point it at a repository where merging into the current branch is what you want, or dispatch by hand and open the PR yourself |
+| An `--issue` run does not resume by itself after a crash | The next run's `reconcile` finds the claim, releases it when nothing is running, and stops the run when something might be |
+| A slow issue holds up the rest of its batch | The wait is per batch. Use a smaller batch size when one issue is expected to be long |
 | A released worker can stay recorded as `retained`, which makes [C7] stop a later dispatch on the same Run | Measured twice: `worker-release` answers `ok` while the receipt keeps `releaseState: retained` with `retainedReason: user_takeover`, and the record survives the terminal itself. Start a fresh Run rather than reusing one whose dispatches are gone; [C7] is scoped to a Run, so a new Run is unaffected |
 | A batch this version cannot handle stays unacknowledged and blocks its parent terminal's queue | Do not acknowledge it. Inspect `received.json` and `result.md`; guarded manual integration does not unblock that queue. Start later dispatches from another Orca terminal, whose `ORCA_TERMINAL_HANDLE` is used at launch |
 | A dispatch Orca reports as `release_pending` or `release_unknown` is never cleaned up | [C1] stops that task. Leave its terminal, worktree and record alone and inspect it with `$ORCA_BIN orchestration worker-show --dispatch <id> --json`; `release_pending` may settle by itself, `release_unknown` needs a decision |

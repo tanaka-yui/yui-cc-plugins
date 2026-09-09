@@ -70,6 +70,21 @@ path は UNC で返り、bash の `-d` も `git -C` も解釈できない）。�
 - 往復のファイルは**タスク単位で共有する `<status-dir>/review/`**（親 repo 側の絶対パス）。
   2 役が別 worktree に居ても、どちらからも届く
 
+## issue モードの要点
+
+- **`issue-fetch.sh` は cmux 版からの移植**で、変えたのは 4 点だけ（先頭コメントに列挙）。
+  lock の in-flight grace / takeover mutex / claim の補償 / fetch の窓拡張は、
+  **失敗様式ごと持ち込む価値がある**のでそのまま
+- **wake 駆動を持ち込まない。**cmux 版は「dispatch したらターンを終え、子の通知で親が
+  起きる」設計で、そのために単発 safety timer と timeout sentinel が要る。Orca では
+  `orca-wait.sh` がブロックして待てるので、**塞ぐべき穴を先に作らない**
+- **merge が通って初めて片付けの話になる。**逆にすると worktree を消してから merge に
+  失敗し、成果が消える（回帰は `test-issue.sh` の IS3 / IS4）
+- **`orca-issue.sh` は資源を消さない**（IS6）。無人で走る側が消すと失敗の証拠がその場で
+  失われる。片付けは Step 5 の判定と Step 6 の承認を経る
+- **`.dispatch-issue/` を `info/exclude` へ入れる。**入れないと state file と lock で親が
+  常に dirty になり、merge の dirty ガードが必ず発火して 1 件も merge できない（実測）
+
 ## 範囲
 
 Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足した段階。PR 無し・ループ無し。
@@ -79,7 +94,10 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - **`review_mode=on` で `design_review` が起きる**（既定は `off`）。reviewer は
   **先に**起動し（design は起動直後に依頼しうるため。spec 5-1 T4a）、**自分の worktree**を
   持つ（同じ checkout に 2 agent を同居させると reviewer のビルドが design の編集と衝突する）
-- `exec` / `exec_review` と Phase B-R、PR 統合、二相コミット、issue ループは未実装。
+- **`--issue` で GitHub issue を claim して回せる**（merge のみ。PR は作らない）。
+  駆動は**バッチ同期** — 1 バッチを dispatch したら `orca-wait.sh` で待ち切ってから次へ進む。
+  cmux 版の wake 駆動（`dispatch-notify` + safety timer）は移植していない
+- `exec` / `exec_review` と Phase B-R、PR 統合、二相コミットは未実装。
   `test-docs.sh` の SK4 が `exec_review` / `merge_ready` の語を SKILL.md から締め出して
   「未実装の宣言」を防いでいる
 **N タスクを 1 つの Run で並列に dispatch できる**（既定上限 4）。worker のセッションは

@@ -46,7 +46,7 @@ PR 統合は spec の **F-c** であり未実装である。`gh pr create` / `re
 
 ---
 
-### Task 1: `issue-fetch.sh` を移植する
+### Task 1: `issue-fetch.sh` を移植する — **完了**
 
 **Files:**
 - Create: `skills/orca-team-dispatch-task/scripts/issue-fetch.sh`（cmux 版から 4 箇所だけ変更）
@@ -62,7 +62,7 @@ PR 統合は spec の **F-c** であり未実装である。`gh pr create` / `re
 | `reconcile` の `$REPO_ROOT/.worktrees/$slug` 痕跡 | **`workers.json` の `roles[].worktree_path` が実在するか**へ。Orca の worktree は repo の外に作られるので固定パスで探せない |
 | `gh label create --description` の文言 | `orca-team-dispatch-task issue mode` |
 
-- [ ] **Step 1: 先に赤いテストを書く**
+- [x] **Step 1: 先に赤いテストを書く**
 
 ```bash
 # IF1: lock は生きている間 lock-check を通さない / lease 切れなら通す
@@ -75,13 +75,13 @@ PR 統合は spec の **F-c** であり未実装である。`gh pr create` / `re
 # IF8: ensure-labels は 3 ラベルを冪等に作る
 ```
 
-- [ ] **Step 2: 移植して 4 点だけ変える**
+- [x] **Step 2: 移植して 4 点だけ変える**
 
 **上流ドリフト検出のため、変更点を先頭コメントに列挙する。**cmux 版が動いたら人が差分を見て判断する（spec 8-4）。
 
 ---
 
-### Task 2: `bin/orca-issue.sh` — 1 件を最後まで運ぶ
+### Task 2: `bin/orca-issue.sh` — 1 件を最後まで運ぶ — **完了**
 
 **1 issue を claim 済みの状態から受け取り、dispatch → wait → merge → ラベル遷移 → cleanup まで運ぶ。**バッチの繰り返しは SKILL.md 側が行う。
 
@@ -95,7 +95,7 @@ PR 統合は spec の **F-c** であり未実装である。`gh pr create` / `re
 orca-issue.sh --state-file <p> --issue <N> --slug <s> --request-file <f> --run <run_id>
 ```
 
-- [ ] **Step 1: 成功経路の順序を固定する**
+- [x] **Step 1: 成功経路の順序を固定する**
 
 **merge が成功して初めて cleanup してよい**（spec 18-1 の裁定）。順序を逆にすると成果が消える。
 
@@ -107,7 +107,7 @@ orca-issue.sh --state-file <p> --issue <N> --slug <s> --request-file <f> --run <
 6. `issue-fetch.sh finalize --status done`
 7. cleanup（Step 5 の判定を通す）
 
-- [ ] **Step 2: 失敗経路を「保持」に倒す**
+- [x] **Step 2: 失敗経路を「保持」に倒す**
 
 ```bash
 # IS1: merge conflict なら worktree もブランチも記録も残し、ラベルは dispatch/failed
@@ -119,24 +119,24 @@ orca-issue.sh --state-file <p> --issue <N> --slug <s> --request-file <f> --run <
 
 ---
 
-### Task 3: SKILL.md に `--issue` を書く
+### Task 3: SKILL.md に `--issue` を書く — **完了**
 
 **Files:**
 - Modify: `SKILL.md` / `references/guide-ja.md`（新 H2 とバイト一致の bash ブロック）
 - Modify: `test/test-docs.sh`（`normalise_headings()` に `h2:issue-mode` を登録）
 
-- [ ] **Step 1: 冒頭の振り分けに `--issue` を足す**
+- [x] **Step 1: 冒頭の振り分けに `--issue` を足す**
 
 現在は「`--setup` / `--reset` は設定、それ以外は dispatch」。ここに `--issue` を足す。
 
-- [ ] **Step 2: 質問を 1 コールに収める**
+- [x] **Step 2: 質問を 1 コールに収める**
 
 cmux 版は 3 コール（AskUserQuestion の 4 問上限のため）だったが、**integration を尋ねない**（merge 固定）ので減る。尋ねるのは label / assignee / 並列数 / 最大バッチ数の 4 つで、**1 コールに収まる**。
 
 - 並列数は 1〜10 の整数。**上限 10 は資源増幅に対する安全弁であり、要求されても上げない**（cmux 版と同じ理由。1 issue が worktree 1〜2 個 + worker 1〜2 本になる）
 - `review_mode` は尋ねない。**設定から解決したものをバッチ全体で共通に使う**（無人実行に尋ねる相手は居ない）
 
-- [ ] **Step 3: 制限を書く**
+- [x] **Step 3: 制限を書く**
 
 - PR 統合は無い（merge のみ）
 - crash からの自動再開は無い。`reconcile` が claim の残骸を検出して release するところまで
@@ -144,17 +144,35 @@ cmux 版は 3 コール（AskUserQuestion の 4 問上限のため）だった�
 
 ---
 
-### Task 4: E2E（stub）
+### Task 4: E2E（stub）— **完了**
 
 **Files:**
 - Modify: `test/test-e2e.sh`
 - Create: `test/lib/gh-stub.sh`
 
-- [ ] **Step 1: `gh` をスタブして 1 issue を通す**
+- [x] **Step 1: `gh` をスタブして 1 issue を通す**
 
 claim → dispatch → wait → merge → ラベル遷移 → cleanup を stub で 1 本通し、**ラベルの遷移順**（`in-progress` → `terminal` を経て `done`）と **merge が cleanup より前**であることを固定する。
 
 ---
+
+## 実装で分かったこと（計画に無かったもの）
+
+- **`.dispatch-issue/` を `info/exclude` へ入れないと 1 件も merge できない。**state file と
+  lock で親が常に dirty になり、`orca-merge.sh` の dirty ガードが必ず発火する。`.dispatch/`
+  と同じ理由なので同じ扱いにした。SKILL.md の I0 と `orca-issue.sh` の両方で入れる
+- **文書の bash ブロックは前の block の変数を前提にできない。**`$SCRIPTS` が空のまま
+  素通しすると `/issue-fetch.sh` を黙って叩き、何も起きていないのに成功して見える。
+  cleanup の SK6c と同じく **fail closed** にし、SK6n で固定した（変異で歯を確認済み）
+- **ラベルを動かせなかったときに state を嘘で上書きしない**という分岐が要った（IS5）。
+  `dispatched` のまま残せば次の `reconcile` が痕跡を見て止まる
+
+## 未了
+
+- **実機での `--issue` 実行**。stub では通っているが、実 issue に対しては走らせていない。
+  `gh` が本物の repository に対してラベルを作り、issue を close する経路である
+- `--issue <N>`（1 件指定）は `orca-issue.sh` の口としては在るが、**SKILL.md の I1〜I3 は
+  バッチ経路しか書いていない**。単件の入口を書くこと
 
 ## この計画で扱わないもの
 

@@ -430,6 +430,25 @@ unset ORCA_STUB_DIR ORCA_BIN SD
 rm -rf "$scratch"
 [[ -z "$bad" ]] && ok "SK6c 各 cleanup block が空/null/失敗 receipt で閉じる" || fail "SK6c:$bad"
 
+# SK6n: ★ **Issue モードの block も、前の block の変数が無ければ fail closed する。**
+#        `$SCRIPTS` が空のまま素通しすると `/issue-fetch.sh` を黙って叩き、何も起きて
+#        いないのに成功したように見える。cleanup の SK6c と同じ不変条件である。
+bad=""
+issec=$(mktemp)
+awk '/^## Issue mode$/{s=1} s&&/^## Step 1:/{exit} s' "$S" > "$issec"
+nth_block() { awk -v n="$1" '/^```bash$/{b++; if(b==n){f=1; next}} f&&/^```$/{exit} f{print}' "$issec"; }
+probe=$(mktemp -d)
+for n in 2 3 4; do
+  blk="$probe/i$n.sh"; nth_block "$n" > "$blk"
+  out=$(env -u SCRIPTS -u STATE -u NUM -u SLUG -u REQ -u PLUGIN bash "$blk" 2>&1); rc=$?
+  # 未設定なら **非 0 で止まる**こと。/issue-fetch.sh を叩いていないこと
+  if [[ "$rc" -eq 0 || "$out" == *'/issue-fetch.sh: No such file'* ]]; then
+    bad="$bad [I$n-not-fail-closed]"
+  fi
+done
+rm -rf "$probe" "$issec"
+[[ -z "$bad" ]] && ok "SK6n Issue モードの block が fail closed" || fail "SK6n:$bad"
+
 # SK7: 片付けの安全条件（release の state 分類 / merged / clean / --force）
 miss=""
 for n in 'release_pending' 'release_unknown' 'retained' 'already_released' \
@@ -493,6 +512,7 @@ normalise_headings() {
       skill:'# Orca Team Dispatch'|guide:'# Orca Team Dispatch') echo 'h1:orca-team-dispatch' ;;
       skill:'## Output Language'|guide:'## 出力言語') echo 'h2:output-language' ;;
       skill:'## Configuration'|guide:'## 設定') echo 'h2:configuration' ;;
+      skill:'## Issue mode'|guide:'## Issue モード') echo 'h2:issue-mode' ;;
       skill:'## Step 1: Write the request down'|guide:'## Step 1: 依頼を書き出す') echo 'h2:step-1' ;;
       skill:'## Step 2: Start'|guide:'## Step 2: 開始') echo 'h2:step-2' ;;
       skill:'## Step 3: Wait'|guide:'## Step 3: 待つ') echo 'h2:step-3' ;;
