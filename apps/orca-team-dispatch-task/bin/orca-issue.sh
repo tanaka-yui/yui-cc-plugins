@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# orca-issue.sh — claim 済みの issue を 1 件、最後まで運ぶ。
+#
+# Usage: orca-issue.sh --state-file <p> --issue <N> --slug <s> --request-file <f>
+#                      [--run <run_id>] [--repo-root <p>] [--timeout-ms <n>] [--max-waits <n>]
+# Exit:  0 = done（merge してラベルを遷移し、片付けの判定まで済んだ）
+#        1 = 運べなかった（**資源は保持する**）
+#        2 = 使用法エラー
+#
+# ★ **順序が核心である。merge が成功して初めて cleanup してよい**（spec 18-1 の裁定）。
+#   逆にすると worktree を消してから merge に失敗し、成果が消える。
+#
+# ★ **この版は integration=merge だけを実装する。**PR 統合は spec の F-c であり未実装で、
+#   `gh pr create` も fork 誤爆対策（`--repo` スコープ）も持たない。持たないものを
+#   宣言しない。
+#
+# ★ **cleanup は資源を消さない。**Step 5 と同じく「消してよいか」を判定して印字するだけで、
+#   実行はユーザーの承認を経た Step 6 が行う。無人で走る経路が資源を消すと、失敗の証拠が
+#   その場で失われる。
+
+set -uo pipefail
+die() { echo "orca-issue: $1" >&2; exit 2; }
+log() { echo "orca-issue: $1" >&2; }
+need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." && pwd)"
+SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
+
+SF="" NUM="" SLUG="" RF="" RUN="" RR="" TMO=600000 MAXW=60
+while [[ $# -gt 0 ]]; do case "$1" in
+  --state-file)   need2 "$1" $#; SF="$2";   shift 2 ;;
+  --issue)        need2 "$1" $#; NUM="$2";  shift 2 ;;
+  --slug)         need2 "$1" $#; SLUG="$2"; shift 2 ;;
+  --request-file) need2 "$1" $#; RF="$2";   shift 2 ;;
+  --run)          need2 "$1" $#; RUN="$2";  shift 2 ;;
+  --repo-root)    need2 "$1" $#; RR="$2";   shift 2 ;;
+  --timeout-ms)   need2 "$1" $#; TMO="$2";  shift 2 ;;
+  --max-waits)    need2 "$1" $#; MAXW="$2"; shift 2 ;;
+  *) die "unknown option: $1" ;; esac; done
+[[ -n "$SF" && -n "$NUM" && -n "$SLUG" && -n "$RF" ]] \
+  || die "--state-file, --issue, --slug and --request-file are required"
+[[ "$NUM" =~ ^[0-9]+$ ]] || die "--issue must be a number: $NUM"
+[[ -r "$RF" ]] || die "--request-file is not readable: $RF"
+[[ -n "$RR" ]] || RR=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repo"
+command -v gh >/dev/null 2>&1 || die "gh is not installed"
+
+IFETCH="$SCRIPTS/issue-fetch.sh"
+[[ -r "$IFETCH" ]] || die "issue-fetch.sh is missing at $IFETCH"
+SD="$RR/.dispatch/$SLUG"
+
+# ★ **state ディレクトリを repo の除外へ入れる。**`.dispatch/` と同じ理由である —
+#   入れないと state file と lock で親が常に dirty になり、`orca-merge.sh` の dirty
+#   ガードが必ず発火して **1 件も merge できない**（実測）。state file の置き場所は
+#   呼び出し側が決めるので、その directory 名を除外する。
+SFD=$(cd "$(dirname "$SF")" 2>/dev/null && pwd -P) || SFD=""
+if [[ -n "$SFD" && "$SFD" == "$RR"/* ]]; then
+  EX=$(git -C "$RR" rev-parse --git-path info/exclude 2>/dev/null || echo "")
+  case "$EX" in /*) ;; ?*) EX="$RR/$EX" ;; esac
+  if [[ -n "$EX" ]]; then
+    mkdir -p "$(dirname "$EX")"
+    ENTRY="${SFD#"$RR"/}/"
+    grep -qxF "$ENTRY" "$EX" 2>/dev/null || printf '%s\n' "$ENTRY" >> "$EX"
+  fi
+fi
+
+# ★ **ラベル遷移は「終端を先に付ける」。**`dispatch/done` を付ける前に落ちても、
+#   `terminal` が付いていれば「この issue はもう回さない」と後から読める。
+#   cmux 版の遷移表と同じ構えである。
+label_terminal() {   # $1=done|failed
+  gh issue edit "$NUM" --add-label terminal >/dev/null 2>&1 || return 1
+  gh issue edit "$NUM" --add-label "dispatch/$1" --remove-label dispatch/in-progress >/dev/null 2>&1
+}
+
+# 失敗して抜けるときは **必ず state を終端へ落とす**。落とさないと reconcile が
+# 「dispatched のまま」と読んで、次のループごと abort させる (IF8)。
+fail_out() {   # $1=理由
+  log "$1"
+  if label_terminal failed; then
+    bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status failed --message "$1" \
+      >/dev/null 2>&1 || log "the state file could not be updated for issue #$NUM"
+  else
+    # ★ ラベルを動かせなかったことを **state に嘘で上書きしない。**次の reconcile が
+    #   痕跡を見て止まるほうが、静かに done にするより良い。
+    log "could not move the labels for issue #$NUM; the state is left as dispatched"
+  fi
+  log "issue #$NUM: resources are KEPT at $SD"
+  exit 1
+}
+
+# --- 1. dispatch ---
+OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$RF" --slug "$SLUG" \
+        --objective "issue #$NUM" --repo-root "$RR" ${RUN:+--run "$RUN"} 2>&1) || {
+  log "$OUT"
+  fail_out "issue #$NUM: the dispatch did not start"
+}
+printf '%s\n' "$OUT" >&2
+RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
+[[ -n "$RUN" ]] || fail_out "issue #$NUM: the dispatch printed no run_id"
+
+bash "$IFETCH" --state-file "$SF" mark-dispatched --issue "$NUM" >/dev/null 2>&1 \
+  || log "issue #$NUM: could not mark it dispatched; the wait continues"
+
+# --- 2. wait（ブロック）---
+# ★ wake 駆動にしない。落とした通知でジョブが黙って消える失敗様式を持ち込まない。
+WRC=0
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD" --max-waits "$MAXW" --timeout-ms "$TMO" || WRC=$?
+case "$WRC" in
+  0) ;;
+  5) fail_out "issue #$NUM: the worker reported failure; the result is in $SD/roles/design/result.md" ;;
+  *) fail_out "issue #$NUM: waiting ended with $WRC; nothing was merged" ;;
+esac
+
+# --- 3. merge。**ここが通って初めて片付けの話になる** ---
+bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" \
+  || fail_out "issue #$NUM: the work was not merged; the worktree and branch are kept"
+
+# --- 4. ラベル遷移と issue のクローズ ---
+label_terminal done || fail_out "issue #$NUM: merged, but the labels could not be moved"
+gh issue close "$NUM" --reason completed >/dev/null 2>&1 \
+  || log "issue #$NUM: merged and labelled, but the issue could not be closed"
+bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done >/dev/null 2>&1 \
+  || log "issue #$NUM: merged, but the state file could not be updated"
+
+log "issue #$NUM: merged and closed. Resources are kept for the Step 5/6 cleanup at $SD"
+printf 'issue=%s\nslug=%s\nstatus_dir=%s\nrun_id=%s\n' "$NUM" "$SLUG" "$SD" "$RUN"
