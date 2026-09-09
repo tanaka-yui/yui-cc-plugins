@@ -164,4 +164,7 @@ bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done \
   || log "issue #$NUM: merged, but the state file could not be updated"
 
 log "issue #$NUM: merged and closed. Resources are kept for the Step 5/6 cleanup at $SD"
-printf 'issue=%s\nslug=%s\nstatus_dir=%s\nrun_id=%s\n' "$NUM" "$SLUG" "$SD" "$RUN"
+# ★ **空の値を印字しない。**finish phase は Run を知らないので `run_id=` を出すと
+#   空文字が渡り、受け取った側が `--run ""` を組み立てて壊れる（実機で気づいた）。
+printf 'issue=%s\nslug=%s\nstatus_dir=%s\n' "$NUM" "$SLUG" "$SD"
+[[ -z "$RUN" ]] || printf 'run_id=%s\n' "$RUN"

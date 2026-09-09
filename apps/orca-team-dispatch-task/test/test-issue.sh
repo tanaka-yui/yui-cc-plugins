@@ -255,4 +255,15 @@ out=$(run_issue --phase dispatch 2>&1); rc=$?
   && ok "IS16 dirty を dispatch 時に警告し、止めはしない" || fail "IS16 (rc=$rc) $out"
 teardown
 
+# IS17: ★ **空の値を印字しない。**finish phase は Run を知らないので `run_id=` を出すと
+#       空文字が渡り、受け取った側が `--run ""` を組み立てて壊れる。
+setup; worker_done succeeded done
+run_issue --phase dispatch >/dev/null 2>&1
+bash "$P/bin/orca-wait.sh" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
+        --repo-root "$R" --phase finish 2>/dev/null)
+[[ "$out" == *'status_dir='* ]] && ! grep -q '^run_id=$' <<<"$out" \
+  && ok "IS17 finish は空の run_id を印字しない" || fail "IS17 ($out)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
