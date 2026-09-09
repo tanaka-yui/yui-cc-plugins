@@ -726,4 +726,24 @@ miss=""
 [[ -z "$miss" ]] && ok "ST59 役ごとにラベルとファイル名を分ける" || fail "ST59:$miss"
 teardown
 
+# ST60: ★ **spec に渡すコマンドが、そのまま shell で動く形になっていること。**
+#       ヒアドキュメントとダブルクォート文字列でエスケープの段数が違うので、片方だけ
+#       1 段多いと `"\$ORCA_TERMINAL_HANDLE"` のような**展開されない変数**や、行末に
+#       `\\` が並んだ**壊れた継続行**が worker へ渡る（実際に reviewer 側で起きていた）。
+setup; review_on
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"review_mode":"on","phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; design_done
+mkdir -p "$R/.dispatch/s/plan.md" 2>/dev/null; printf 'plan\n' > "$R/.dispatch/s/plan.md"
+exec_phase >/dev/null 2>&1
+bad=""
+while IFS= read -r sp; do
+  # 変数はそのまま展開される形であること
+  [[ "$sp" == *'\$ORCA_TERMINAL_HANDLE'* ]] && bad="$bad [escaped-var]"
+  # 行末の継続は 1 本のバックスラッシュであること
+  [[ "$sp" == *'\\'*$'\n'* ]] && bad="$bad [double-continuation]"
+done < <(awk -v RS='\037' 'prev == "--spec" { print } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
+[[ -z "$bad" ]] && ok "ST60 spec のコマンドがそのまま動く形になっている" || fail "ST60:$bad"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

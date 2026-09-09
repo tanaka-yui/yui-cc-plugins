@@ -258,7 +258,7 @@ D. Tell the parent it is ready, then close your turn and wait:
 
 E. When you are woken, read your mailbox:
 
-     $q_bin orchestration check --terminal \"\\\$ORCA_TERMINAL_HANDLE\" --peek --wait \\
+     $q_bin orchestration check --terminal \"\$ORCA_TERMINAL_HANDLE\" --peek --wait \\
        --timeout-ms 600000 --json
 
    Use --peek. **Never pass --ack.**
@@ -311,7 +311,7 @@ REVIEW LOOP
 
 1. Wait for a request:
 
-     $q_bin orchestration check --terminal "\\\$ORCA_TERMINAL_HANDLE" \\\\
+     $q_bin orchestration check --terminal "\$ORCA_TERMINAL_HANDLE" \\
        --peek --wait --timeout-ms 600000 --json
 
    Use --peek. **Never pass --ack** — the cursor is not yours to advance.
@@ -336,7 +336,7 @@ REVIEW LOOP
 
 4. Send the verdict back:
 
-     bash $q_send --workers $q_wf --to $rq_role \\\\
+     bash $q_send --workers $q_wf --to $rq_role \\
        --subject 'review-verdict: round <n>' --body '<absolute path to your findings file>'
 
    A non-zero exit means it was NOT delivered. Try once more; if it fails again, leave the
