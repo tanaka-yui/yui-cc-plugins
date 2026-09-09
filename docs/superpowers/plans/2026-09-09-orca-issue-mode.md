@@ -167,12 +167,35 @@ claim → dispatch → wait → merge → ラベル遷移 → cleanup を stub �
 - **ラベルを動かせなかったときに state を嘘で上書きしない**という分岐が要った（IS5）。
   `dispatched` のまま残せば次の `reconcile` が痕跡を見て止まる
 
+## 実機実行の結果（2026-09-09）— **完了**
+
+`tanaka-yui/yui-cc-plugins` の issue #8 を使い、I0 → I2 → claim → dispatch → wait →
+merge → ラベル遷移 → close まで実機で通した。merge は使い捨てブランチ `tmp/issue-live` へ
+着地させ、作業ブランチは汚していない。
+
+**stub では出なかった 3 つの欠陥が出た。**どれも `gh` のスタブが「存在しないラベル」や
+「既に付いている反対ラベル」を再現しないために隠れていた。
+
+| | 症状 | 修正 |
+|---|---|---|
+| 1 | `orca-issue.sh` が **`terminal` という名前のラベル**を付けようとし、存在しないので `gh issue edit` が落ち、**全 issue の遷移が失敗**した。cmux 版の `terminal` は「終端ラベル」を指す**変数名**であってラベル名ではない — 移植時の読み違い | `dispatch/<done\|failed>` を付けてから `dispatch/in-progress` を外す形へ。IS2 / E24 が `terminal` ラベルを付けないことも固定 |
+| 2 | 1 度失敗して再実行した issue に **`dispatch/done` と `dispatch/failed` が同時に付く**。人が結末を読めない | 反対の終端ラベルも外す。IS9 |
+| 3 | 成功時の `finalize` が **前回の失敗理由を `message` に残す**（`finalize` は空 message を無視する） | 成功時に message を明示して上書き。IS10 |
+
+**設計どおりに動いたことも確かめた。**ラベル遷移に失敗した 1 回目は
+`the state is left as dispatched` で止まり、資源を残した（IS5 の実機版）。merge 済みに
+なった状態で `[C3]` / `[C5]` は削除を提案し、未 merge のときは理由付きで却下していた —
+ガードが両方向に効いている。
+
+**O43 が実際に噛んだ。**Run を使い回したため `[C7]` が「記録に無い保持中 worker」として
+前段の rv-live ペア（既に解放済みで端末も worktree も不在）を挙げ、Run 全体の片付けを
+止めた。制限表に書いたとおりの挙動である。
+
 ## 未了
 
-- **実機での `--issue` 実行**。stub では通っているが、実 issue に対しては走らせていない。
-  `gh` が本物の repository に対してラベルを作り、issue を close する経路である
 - `--issue <N>`（1 件指定）は `orca-issue.sh` の口としては在るが、**SKILL.md の I1〜I3 は
   バッチ経路しか書いていない**。単件の入口を書くこと
+- **複数バッチの実機実行**。通したのは 1 issue / 1 バッチである
 
 ## この計画で扱わないもの
 

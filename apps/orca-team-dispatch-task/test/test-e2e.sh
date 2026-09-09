@@ -279,11 +279,13 @@ IOUT=$(bash "$P/bin/orca-issue.sh" --state-file "$ISTATE" --issue 42 --slug "$IS
   && [[ "$(jq -r '.merged' "$R/.dispatch/$ISLUG/integration-result.json")" == true ]] \
   && ok "E23 issue の成果が親へ merge される" || fail "E23 (rc=$irc) $IOUT"
 
-# ラベルは terminal → dispatch/done の順。close は merge のあと
+# 終端ラベルが先、in-progress の除去はあと。close は merge のあと。
+# **`terminal` という名前のラベルは作らないし付けない**（実機で発見した誤り）。
 ghl=$(cat "$GH_STUB_DIR/calls.log")
-first_label=$(grep 'add-label' <<<"$ghl" | head -1)
-[[ "$first_label" == *'add-label terminal'* ]] \
-  && grep -q -- '--add-label dispatch/done' <<<"$ghl" \
+first_label=$(grep 'label' <<<"$ghl" | head -1)
+[[ "$first_label" == *'--add-label dispatch/done'* ]] \
+  && grep -q -- '--remove-label dispatch/in-progress' <<<"$ghl" \
+  && ! grep -qE -- '--add-label terminal( |$)' <<<"$ghl" \
   && grep -q 'issue close 42' <<<"$ghl" \
   && ok "E24 終端ラベルが先、close は merge のあと" || fail "E24 ($first_label)"
 

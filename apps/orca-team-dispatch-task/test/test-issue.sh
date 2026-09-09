@@ -89,13 +89,21 @@ out=$(run_issue 2>&1); rc=$?
   && ok "IS1 merge → ラベル遷移 → close → state 終端" || fail "IS1 (rc=$rc) $out"
 teardown
 
-# IS2: ★ **終端ラベルを先に付ける。**`dispatch/done` を付ける前に落ちても、`terminal` が
-#      付いていれば「この issue はもう回さない」と後から読める。
+# IS2: ★ **終端ラベルを先に付け、in-progress はそのあとで外す。**間で落ちても issue には
+#      結末が付いた状態で残る。逆順だと「in-progress でも done でもない」宙ぶらりんの
+#      issue ができ、次の実行の候補にも入らない。
+#      ★ **`terminal` という名前のラベルを付けてはならない。**cmux 版の `terminal` は
+#      「終端ラベル」を指す変数名であって、ラベル名ではない。存在しないラベルを付けると
+#      `gh issue edit` が落ち、全 issue の遷移が失敗する（実機で発見）。
 setup; worker_done succeeded done
 run_issue >/dev/null 2>&1
-first=$(grep -n 'add-label' <(ghlog) | head -1)
-[[ "$first" == *'add-label terminal'* ]] \
-  && ok "IS2 終端ラベルを先に付ける" || fail "IS2 ($first)"
+lines=$(grep 'label' <(ghlog))
+first=$(head -1 <<<"$lines")
+[[ "$first" == *'--add-label dispatch/done'* ]] \
+  && [[ "$(grep -n -- '--remove-label dispatch/in-progress' <<<"$lines" | head -1 | cut -d: -f1)" -gt 1 ]] \
+  && ! grep -qE -- '--add-label terminal( |$)' <<<"$lines" \
+  && ok "IS2 終端ラベルが先、in-progress の除去はあと、terminal ラベルは付けない" \
+  || fail "IS2 ($lines)"
 teardown
 
 # IS3: ★ **worker が failed なら merge を試みない。**壊れた成果を親へ入れない。
@@ -158,6 +166,29 @@ bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue abc --slug s --request-fi
 [[ $? -eq 2 ]] || fail "IS8 非数値の --issue"
 bash "$P/bin/orca-issue.sh" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "IS8 使用法エラーは 2" || fail "IS8 unknown option"
+teardown
+
+# IS9: ★ **反対の終端ラベルを外す。**1 度失敗して再実行した issue には
+#      `dispatch/failed` が付いている。外さないと done と failed が同時に付き、
+#      **人が結末を読めなくなる**（実機で発見）。
+setup; worker_done succeeded done
+run_issue >/dev/null 2>&1
+l=$(ghlog)
+[[ "$(grep -c -- '--add-label dispatch/done' <<<"$l")" -eq 1 ]] \
+  && grep -q -- '--remove-label dispatch/failed' <<<"$l" \
+  && ok "IS9 反対の終端ラベルを外す" || fail "IS9 ($l)"
+teardown
+
+# IS10: ★ **成功時にも message を書く。**`finalize` は空 message を無視するので、
+#       前回の失敗理由が `done` のまま残る（実機で発見）。
+setup; worker_done succeeded done
+# 先に失敗の痕跡を state へ入れておく
+bash "$P/skills/orca-team-dispatch-task/scripts/issue-fetch.sh" --state-file "$SF" \
+  finalize --issue 5 --status failed --message "an earlier failure" >/dev/null 2>&1
+run_issue >/dev/null 2>&1
+m=$(jq -r '.issues["5"].message' "$SF")
+[[ "$(jq -r '.issues["5"].status' "$SF")" == done && "$m" != "an earlier failure" ]] \
+  && ok "IS10 成功時に古い失敗理由が残らない" || fail "IS10 (message=$m)"
 teardown
 
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

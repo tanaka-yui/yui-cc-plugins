@@ -62,12 +62,22 @@ if [[ -n "$SFD" && "$SFD" == "$RR"/* ]]; then
   fi
 fi
 
-# ★ **ラベル遷移は「終端を先に付ける」。**`dispatch/done` を付ける前に落ちても、
-#   `terminal` が付いていれば「この issue はもう回さない」と後から読める。
-#   cmux 版の遷移表と同じ構えである。
+# ★ **終端ラベルを先に付け、`dispatch/in-progress` はそのあとで外す。**間で落ちても
+#   issue には結末が付いた状態で残る。逆順にすると「in-progress でも done でもない」
+#   宙ぶらりんの issue ができ、次の実行の候補にも入らない。
+#
+#   ★ **`terminal` という名前のラベルは無い。**cmux 版の `terminal` は「終端ラベル」を
+#   指す変数名であって、ラベル名ではない（実機で発見: 存在しないラベルを付けようとして
+#   全 issue の遷移が失敗した）。作るのも付けるのも `dispatch/*` の 3 つだけである。
 label_terminal() {   # $1=done|failed
-  gh issue edit "$NUM" --add-label terminal >/dev/null 2>&1 || return 1
-  gh issue edit "$NUM" --add-label "dispatch/$1" --remove-label dispatch/in-progress >/dev/null 2>&1
+  local other=failed; [[ "$1" == failed ]] && other=done
+  gh issue edit "$NUM" --add-label "dispatch/$1" >/dev/null 2>&1 || return 1
+  # ★ **反対の終端ラベルも外す。**1 度失敗して再実行した issue には `dispatch/failed` が
+  #   既に付いている。外さないと done と failed が同時に付き、**人が結末を読めなくなる**
+  #   （実機で発見）。`fetch` の検索はどちらでも除外するので取りこぼしはしないが、
+  #   矛盾したラベルを残さない。
+  gh issue edit "$NUM" --remove-label "dispatch/$other" >/dev/null 2>&1
+  gh issue edit "$NUM" --remove-label dispatch/in-progress >/dev/null 2>&1
 }
 
 # 失敗して抜けるときは **必ず state を終端へ落とす**。落とさないと reconcile が
@@ -117,7 +127,10 @@ bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" \
 label_terminal done || fail_out "issue #$NUM: merged, but the labels could not be moved"
 gh issue close "$NUM" --reason completed >/dev/null 2>&1 \
   || log "issue #$NUM: merged and labelled, but the issue could not be closed"
-bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done >/dev/null 2>&1 \
+# ★ **成功時にも message を書く。**`finalize` は空の message を無視するので、
+#   前回の失敗時に書かれた理由が `done` のまま残る（実機で発見）。上書きする。
+bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done \
+  --message "merged and closed" >/dev/null 2>&1 \
   || log "issue #$NUM: merged, but the state file could not be updated"
 
 log "issue #$NUM: merged and closed. Resources are kept for the Step 5/6 cleanup at $SD"
