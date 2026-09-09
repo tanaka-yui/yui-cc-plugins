@@ -234,4 +234,25 @@ bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug s --request-file
 [[ $? -eq 2 ]] && ok "IS14 不正な --phase は 2" || fail "IS14"
 teardown
 
+# IS15: ★ **`2>&1` で受けても機械可読行は 1 組だけ。**呼び出し側は進捗を見るために
+#       stderr を混ぜる。複製されると `--run` に改行入りの値が渡って次の issue が
+#       起動しない（実機で発見）。
+setup; worker_done succeeded done
+out=$(run_issue --phase dispatch 2>&1)
+[[ "$(grep -c '^run_id=' <<<"$out")" -eq 1 ]] \
+  && [[ "$(grep -c '^status_dir=' <<<"$out")" -eq 1 ]] \
+  && ok "IS15 2>&1 でも機械可読行は 1 組" || fail "IS15 ($out)"
+teardown
+
+# IS16: ★ **親が dirty なら dispatch の時点で言う。**merge の dirty ガードは finish まで
+#       発火しないので、黙って進むと **必ず merge できない仕事に worker を 1 本使う**。
+#       止めはしない（間に commit されうる）が、無人実行で気づけるようにする。
+setup; worker_done succeeded done
+echo dirt > "$R/dirty.txt"
+out=$(run_issue --phase dispatch 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] && [[ "$out" == *'the parent checkout is dirty'* ]] \
+  && grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "IS16 dirty を dispatch 時に警告し、止めはしない" || fail "IS16 (rc=$rc) $out"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

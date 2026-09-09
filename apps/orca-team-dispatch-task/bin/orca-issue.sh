@@ -110,12 +110,20 @@ fail_out() {   # $1=理由
 
 # --- 1. dispatch ---
 if [[ "$PHASE" != finish ]]; then
+# ★ **親が dirty なら先に言う。**merge の dirty ガードは finish まで発火しないので、
+#   黙って進むと **必ず merge できない仕事に worker を 1 本使う**。止めはしない
+#   （dispatch と finish の間に commit されうる）が、無人実行で気づけるようにする。
+PORC=$(git -C "$RR" status --porcelain 2>/dev/null) || PORC=""
+[[ -z "$PORC" ]] || log "issue #$NUM: the parent checkout is dirty; it must be clean by the time this merges"
+
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$RF" --slug "$SLUG" \
         --objective "issue #$NUM" --repo-root "$RR" ${RUN:+--run "$RUN"} 2>&1) || {
   log "$OUT"
   fail_out "issue #$NUM: the dispatch did not start"
 }
-printf '%s\n' "$OUT" >&2
+# ★ **機械可読行を stderr へ複製しない。**呼び出し側が `2>&1` で受けると `run_id=` が
+#   2 行になり、`--run` に改行入りの値が渡って壊れる（実機で発見）。診断だけ通す。
+printf '%s\n' "$OUT" | grep -vE '^(status_dir|run_id)=' >&2 || true
 RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
 [[ -n "$RUN" ]] || fail_out "issue #$NUM: the dispatch printed no run_id"
 
