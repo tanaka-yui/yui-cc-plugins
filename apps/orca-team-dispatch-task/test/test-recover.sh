@@ -121,4 +121,23 @@ out=$(rec --dry-run 2>/dev/null)
   && ok "RC10 --dry-run は何もしない" || fail "RC10 ($out)"
 teardown
 
+# RC11: ★ **nudge も届くだけでは起こせない。**`orchestration send` の nudge が効かなかった
+#       のが 2026-09-10 の停止の一因である。生きている worker には端末も叩く。
+setup; owe; show idle
+echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+upd=$(jq -c '.roles.design.terminal = "term_old"' "$SD/workers.json"); printf '%s\n' "$upd" > "$SD/workers.json"
+rec >/dev/null 2>&1
+a=$(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log")
+grep -q 'completion-nudge' <<<"$a" && grep -qxF 'term_old' <<<"$a" \
+  && ok "RC11 nudge のあとに端末を起こす" || fail "RC11"
+teardown
+
+# RC12: 起こせなくても nudge そのものの結末は変わらない。
+setup; owe; show idle
+echo '{"ok":false,"error":{"message":"gone"}}' > "$ORCA_STUB_DIR/terminal_send"
+upd=$(jq -c '.roles.design.terminal = "term_old"' "$SD/workers.json"); printf '%s\n' "$upd" > "$SD/workers.json"
+rec >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && ok "RC12 起床の失敗は nudge を覆さない" || fail "RC12 (rc=$rc)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

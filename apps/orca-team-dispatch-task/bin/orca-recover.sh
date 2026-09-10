@@ -88,6 +88,12 @@ while IFS= read -r role; do
         --from "$PH" --json >/dev/null 2>&1 \
         && log "$role: nudged the live worker" \
         || { log "$role: could not nudge dispatch '$did'"; rc_all=1; }
+      # ★ **nudge も届くだけでは起こせない。**`orchestration send` はメールボックスに
+      #   入れるだけである（実測 2026-09-10: nudge が効かず、端末への直接入力で解けた）。
+      #   **ベストエフォート** — 起こせないことは「回復できなかった」ではないので rc を汚さない。
+      bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orca-wake.sh" \
+        --workers "$SD/workers.json" --role "$role" >/dev/null 2>&1 \
+        || log "$role: could not wake its terminal; the nudge may sit unread"
       continue ;;
     failed|stopped)
       # ★ **失われたことが証明された。**同じ Task へ replacement を作る。

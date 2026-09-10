@@ -47,4 +47,11 @@ if [[ "$RC" -ne 0 ]] || ! jq -e '.ok == true and (.result.message.id | type == "
   log "send to role '$TO' (dispatch=$DID) was not delivered (rc=$RC)"
   exit 1
 fi
+# ★ **配送は起床ではない。**メールボックスに入れても、ターンを終えた相手は動かない
+#   （実測 2026-09-10: `review-verdict:` が未読のまま滞留し、依頼元が止まった）。
+#   **ベストエフォート。**起こせなかったことで配送の成否を変えてはならない — 呼び出し側は
+#   この exit code で「書いたファイルを消す」補償を決めるので、ここを汚すと補償が壊れる。
+bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orca-wake.sh" \
+  --workers "$WF" --role "$TO" >/dev/null 2>&1 \
+  || log "delivered to role '$TO', but its terminal could not be woken; it may sit unread"
 jq -r '.result.message.id' <<<"$OUT"

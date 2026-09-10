@@ -311,8 +311,9 @@ dispatch に失敗した issue は既に `dispatch/failed` が付いて資源が
 bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>"
 ```
 
-exit code の読み方は Step 3 のとおりである。exit 5 は**一部の失敗**であってバッチの失敗では
-ない。自身の `role=design` の行が `succeeded` だった issue についてパス 3 へ進む。
+exit code の読み方は Step 3 のとおりであり、背景で走らせる理由もそこに書いてある。
+exit 5 は**一部の失敗**であってバッチの失敗ではない。自身の `role=design` の行が
+`succeeded` だった issue についてパス 3 へ進む。
 
 パス 3、dispatch できた issue ごとに 1 回。統合し、ラベルを遷移させる:
 
@@ -436,6 +437,17 @@ Step 5 が削除してよいものを判定し、Step 6 がユーザーへ尋ね
 bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step 2>" \
                                --status-dir "<task 2 status_dir printed by Step 2>"
 ```
+
+**背景で走らせる。前景で呼ばない。**最長 24 時間待つ（`--max-waits` の既定 288 × 5 分）
+ので、自分のシェル呼び出しはそのはるか手前で打ち切られる。打ち切られても失われるものは
+無い（batch を処理し切るまで ack しない）が、居ない間はだれも worker に答えていないので、
+その都度また起動する。
+
+走っている間、outcome の収集のほかに 2 つのことをする。`merge_ready` ごとに受理か差し戻しを
+返し、**その worker の端末へ 1 行入力する**。後半は飾りではない — Orca のメールボックスに
+入れたメッセージは、ターンを閉じた worker を起こさないので、**だれも読まない返事はその
+dispatch を永久に止める**。同じ理由で、完了の返事を待ったままの worker には 30 分ごとに
+同じ 1 行を打ち直す。働いている worker には打たない。
 
 | Exit | 意味 | すること |
 |---|---|---|

@@ -81,4 +81,38 @@ bash "$P/bin/orca-send.sh" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "SN8 使用法エラーは 2" || fail "SN8 unknown option"
 teardown
 
+# ── 起床 ─────────────────────────────────────────────────────────────────
+# ★ **メッセージを入れただけでは相手は動かない。**`review-verdict:` も
+#   `abort-reviewer:` も、ターンを終えた相手のメールボックスで滞留する（実測 2026-09-10）。
+#   配送に成功したら、相手の端末も叩く。
+setup
+jq -nc '{roles:{design:{dispatch:"ctx_d",terminal:"term_d"},
+                design_review:{dispatch:"ctx_r",terminal:"term_r"}}}' > "$WF"
+echo '{"ok":true,"result":{"worker":{"state":"idle"},"dispatch":{"status":"running"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+out=$(send --to design_review --subject 'review-plan: round 1' --body 'x' 2>/dev/null); rc=$?
+a=$(argv)
+[[ "$rc" -eq 0 && "$out" == msg_1 ]] && grep -qxF 'term_r' <<<"$a" \
+  && ok "SN9 配送に成功したら相手を起こす" || fail "SN9 (rc=$rc out=$out)"
+teardown
+
+# SN10: ★ **起こせなくても「配送された」は覆らない。**呼び出し側は exit code で
+#       「書いたファイルを消す」補償を決める。起床の失敗でそれを誤らせない。
+setup
+jq -nc '{roles:{design_review:{dispatch:"ctx_r",terminal:"term_r"}}}' > "$WF"
+echo '{"ok":false,"error":{"message":"gone"}}' > "$ORCA_STUB_DIR/terminal_send"
+out=$(send --to design_review --subject 'review-plan: round 1' --body 'x' 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == msg_1 ]] \
+  && ok "SN10 起床の失敗は配送を覆さない" || fail "SN10 (rc=$rc out=$out)"
+teardown
+
+# SN11: 配送できなかったときは端末も叩かない（届いていないものを読ませない）。
+setup
+printf '%s\n' '{"ok":false,"error":{"message":"nope"}}' > "$ORCA_STUB_DIR/orchestration_send"
+send --to design_review --subject 'x' --body 'y' >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -q 'terminal send' "$ORCA_STUB_DIR/calls.log" \
+  && ok "SN11 未配送なら起こさない" || fail "SN11 (rc=$rc)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

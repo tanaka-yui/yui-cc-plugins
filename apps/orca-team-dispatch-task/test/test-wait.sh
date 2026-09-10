@@ -506,4 +506,120 @@ acked2=$(grep -c 'orchestration check.*--ack' "$ORCA_STUB_DIR/calls.log")
   && ok "WT44 答えたあと同じ batch が流れる" || fail "WT44 (rc=$rc1/$rc2 ack=$acked1/$acked2)"
 teardown
 
+# ── 起床（アイドルな worker を動かす）────────────────────────────────────
+# ★ **配送は起床ではない。**`orchestration send` はメールボックスに入れるだけで、ターンを
+#   終えた worker を起こさない（実測 2026-09-10: 1 Run の 4 worker 全員が
+#   `completion-accepted` を未読のまま停止した）。返事を出したら端末も叩く。
+wsetup() {   # merge_ready を 1 通投げて、親が返事を返す場面を作る
+  setup; mkdir -p "$SD/roles/design"; printf 'did it\n' > "$SD/roles/design/result.md"
+  echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+  jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dm",count:1,messages:[
+    {id:"mr",type:"merge_ready",subject:"merge_ready: n1",
+     payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:""}]}}' \
+    > "$ORCA_STUB_DIR/orchestration_check"
+}
+typed() { tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" 2>/dev/null | grep -c '^term_w$'; }
+
+# WT40: 受理を送った直後に、その役の端末を起こす。
+wsetup; w >/dev/null 2>&1
+grep -q 'terminal send' "$ORCA_STUB_DIR/calls.log" && [[ "$(typed)" -ge 1 ]] \
+  && ok "WT60 受理のあとに端末を起こす" || fail "WT60"
+teardown
+
+# WT41: 差し戻しでも同じ。**返事を出した以上、読ませなければ意味が無い。**
+wsetup; rm -f "$SD/roles/design/result.md"; w >/dev/null 2>&1
+a=$(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log")
+grep -q 'completion-remediation' <<<"$a" && grep -qxF 'term_w' <<<"$a" \
+  && ok "WT61 差し戻しのあとも起こす" || fail "WT61"
+teardown
+
+# WT42: ★ **起こせなくても batch を止めない。**配送は send の exit code で確定している。
+#      起床の失敗でそれを覆すと、届いた返事が「届かなかったこと」にされる。
+wsetup; echo '{"ok":false,"error":{"message":"gone"}}' > "$ORCA_STUB_DIR/terminal_send"
+w >/dev/null 2>&1; rc=$?
+[[ "$rc" -ne 4 ]] && grep -q 'completion-accepted' "$ORCA_STUB_DIR/argv.log" \
+  && ok "WT62 起床の失敗は batch を止めない" || fail "WT62 (rc=$rc)"
+teardown
+
+# WT43: ★ **待機中も起こし直す。**返事の直後の 1 回が空振りしたら、24 時間だれも
+#      気づかない。merge_ready_sent のまま返事済みの役だけを、間隔をあけて叩く。
+setup; mkdir -p "$SD/roles/design"
+echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+printf '%s\n' '{"phase":"merge_ready_sent","generation":1,"nonce":"n1"}' \
+  > "$SD/roles/design/completion.json"
+ORCA_WAKE_INTERVAL_SECONDS=0 bash "$P/bin/orca-wait.sh" --status-dir "$SD" \
+  --max-waits 2 --timeout-ms 1 >/dev/null 2>&1
+[[ "$(typed)" -ge 2 ]] && ok "WT63 待機中も起こし直す" || fail "WT63 (typed=$(typed))"
+teardown
+
+# WT44: ★ **間隔をあける。**5 分ごとに叩くと 24 時間で 288 回になる。既定は 30 分。
+setup; mkdir -p "$SD/roles/design"
+echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+printf '%s\n' '{"phase":"merge_ready_sent","generation":1,"nonce":"n1"}' \
+  > "$SD/roles/design/completion.json"
+bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 3 --timeout-ms 1 >/dev/null 2>&1
+[[ "$(typed)" -eq 1 ]] && ok "WT64 起こし直しは間隔をあける" || fail "WT64 (typed=$(typed))"
+teardown
+
+# WT45: 働いている役（merge_ready をまだ出していない）は叩かない。
+setup; mkdir -p "$SD/roles/design"
+echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+printf '%s\n' '{"phase":"prepared","generation":1,"nonce":"n1"}' \
+  > "$SD/roles/design/completion.json"
+ORCA_WAKE_INTERVAL_SECONDS=0 bash "$P/bin/orca-wait.sh" --status-dir "$SD" \
+  --max-waits 2 --timeout-ms 1 >/dev/null 2>&1
+[[ "$(typed)" -eq 0 ]] && ok "WT65 働いている役は叩かない" || fail "WT65 (typed=$(typed))"
+teardown
+
+# ── waiter_exists ────────────────────────────────────────────────────────
+# ★ 段を足すと待機を一度止めて再起動することになるが、**サーバ側の waiter は
+#   すぐには消えない**（実測 2026-09-10: 再起動が waiter_exists で弾かれ、親が降りた）。
+#   これは「壊れた」ではなく「まだ空いていない」なので、待って試し直す。
+# `--wait` のときだけ失敗させる。最初の drain の check は通さないと、待機に入る前に降りる
+fail_on_wait() {   # $1=error code
+  cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<EOS
+#!/usr/bin/env bash
+for a in "\$@"; do
+  [[ "\$a" == --wait ]] || continue
+  printf '%s\\n' '{"ok":false,"error":{"code":"$1"}}' > "\$ORCA_STUB_DIR/orchestration_check"; exit 0
+done
+printf '%s\\n' '{"ok":true,"result":{"runId":"run_x","count":0,"messages":[]}}' \
+  > "\$ORCA_STUB_DIR/orchestration_check"
+EOS
+  chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+}
+waits() { grep -c 'orchestration check .*--wait' "$ORCA_STUB_DIR/calls.log"; }
+
+setup; fail_on_wait waiter_exists
+ORCA_WAITER_RETRY_SECONDS=0 ORCA_WAITER_RETRY_TRIES=3 bash "$P/bin/orca-wait.sh" \
+  --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1; rc=$?
+n=$(waits)
+[[ "$rc" -eq 4 && "$n" -eq 4 ]] && ok "WT66 waiter_exists は試し直す" || fail "WT66 (rc=$rc n=$n)"
+teardown
+
+# WT47: waiter_exists 以外の失敗は今までどおり即 exit 4（無闇に粘らない）。
+setup; fail_on_wait forbidden
+ORCA_WAITER_RETRY_SECONDS=0 bash "$P/bin/orca-wait.sh" --status-dir "$SD" \
+  --max-waits 1 --timeout-ms 1 >/dev/null 2>&1; rc=$?
+n=$(waits)
+[[ "$rc" -eq 4 && "$n" -eq 1 ]] && ok "WT67 他の失敗は粘らない" || fail "WT67 (rc=$rc n=$n)"
+teardown
+
+# WT48: ★ **既定の待機は 24 時間**（5 分 × 288）。worker を 24 時間待たせるのに親が
+#      1 時間で降りたら、待たせた意味が無い。
+grep -q 'MAXW=288' "$P/bin/orca-wait.sh" && ok "WT68 既定の --max-waits は 288" || fail "WT68"
+
+# WT69: ★ **heartbeat で batch を止めない。**Orca の worker preamble は 5 分ごとに
+#      heartbeat を送らせる。未知の型として扱うと、起動した**全 dispatch が永久に詰まる**
+#      （実測 2026-09-10）。捨てても失われる内容は無い — outcome も nonce も質問も運ばない。
+setup; dn
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dh",count:2,messages:[
+  {id:"hb",type:"heartbeat",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:""},
+  {id:"m1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* ]] \
+  && ok "WT69 heartbeat は batch を止めない" || fail "WT69 (rc=$rc out=$out)"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

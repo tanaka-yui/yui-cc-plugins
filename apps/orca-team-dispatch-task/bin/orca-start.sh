@@ -244,36 +244,46 @@ obviously fine — the point is that the parent, not you, decides that.
 A. Write $q_rd/status.json with status executing when you start.
 B. Do the work, then write $q_rd/result.md describing what you did.
 
-C. Offer it. Keep the nonce this prints; you need it in E and F:
+C. Offer it. This records the attempt and prints its nonce:
 
-     NONCE=\$(bash $q_cmp --role-dir $q_rd prepare)
+     bash $q_cmp --role-dir $q_rd prepare
 
-D. Tell the parent it is ready, then close your turn and wait. **The subject carries the
-   nonce and nothing else** — Orca builds the payload from the id flags, so a nonce put
-   there would be dropped:
+D. Tell the parent it is ready. **The subject carries the nonce and nothing else** — Orca
+   builds the payload from the id flags, so a nonce put there would be dropped.
+   **Read the nonce back from the record inside the same command**, as written here: each
+   command you run is a fresh shell, so a variable you set in C is gone by now, and a
+   merge_ready without a nonce jams the parent's whole batch.
 
      $q_bin orchestration send --type merge_ready \\
        --task-id <task id> --dispatch-id <dispatch id> \\
        --dispatch-capability <capability> --from <handle> \\
-       --subject \"merge_ready: \$NONCE\" --body \"<what you did>\" --json
+       --subject \"merge_ready: \$(bash $q_cmp --role-dir $q_rd nonce)\" \\
+       --body \"<what you did>\" --json
 
    Then run: bash $q_cmp --role-dir $q_rd sent
-   **End your turn here.** The parent replies on this same dispatch.
+   The parent replies on this same dispatch.
 
-E. When you are woken, read your mailbox:
+E. Wait for that reply. **Do not end your turn to wait.** A message put in your mailbox
+   does not wake you: a turn closed here is a dispatch that stops for good, and someone has
+   to come and restart you by hand.
 
-     $q_bin orchestration check --terminal \"\$ORCA_TERMINAL_HANDLE\" --peek --wait \\
-       --timeout-ms 600000 --json
+     bash $q_cmp --role-dir $q_rd await
 
-   Use --peek. **Never pass --ack.**
-   - Subject \`completion-accepted: <nonce>\` -> go to F.
-   - Subject \`completion-remediation: <nonce>\` -> the body says what is missing. Fix it and
-     go back to C. The nonce does not change.
-   - A nonce that is not yours belongs to an older attempt. Ignore it and keep waiting.
+   It blocks for up to 10 minutes, reads your mailbox with --peek (never --ack), matches
+   your own nonce, and prints one line:
+   - \`accepted\` -> go to F.
+   - \`remediation <reason>\` -> the reason says what is missing. Fix it and go back to C.
+     The nonce does not change.
+   - \`waiting\` -> nobody has answered yet. **Run it again, in this same turn.** Keep
+     running it. It is normal for this to take several rounds.
+   - \`expired\` -> 24 hours passed with no answer. Write that in result.md, run
+     \`bash $q_rs $q_rd error the parent never answered\`, and stop. Do not report done.
+   A non-zero exit means the mailbox could not be read at all; try once more, then treat it
+   like \`expired\`.
 
-F. Record the acceptance, then report:
+F. Report. \`await\` already checked the nonce and recorded the acceptance, so there is
+   nothing to confirm here:
 
-     bash $q_cmp --role-dir $q_rd accept --nonce \$NONCE
      bash $q_rs $q_rd done <one line>
 
 G. Send worker_done, then record that it landed:
@@ -324,7 +334,11 @@ REVIEW LOOP
    Use --peek. **Never pass --ack** — the cursor is not yours to advance.
    A review request has a subject starting \`$rq_label\` and names a round number.
    A subject starting \`abort-reviewer:\` means the work finished without you; go to step 5.
-   If the wait returns nothing, run it once more. If it returns nothing again, go to step 5.
+
+   **Do not end your turn to wait.** A message put in your mailbox does not wake you, so a
+   turn closed here leaves the worker you review waiting on a verdict that never comes.
+   If the wait returns nothing, run it again, in this same turn. Give up and go to step 5
+   only once it has come back empty six times in a row (one hour).
 
 2. The body names a file under $q_rvd. Read it and review the $rq_noun against the request.
 
@@ -380,18 +394,23 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
      $q_bin orchestration check --terminal \"\\$ORCA_TERMINAL_HANDLE\" \\\\
        --peek --wait --timeout-ms 600000 --json
 
-   Use --peek. **Never pass --ack.** Look for a subject starting \\`review-verdict:\\`.
+   Use --peek. **Never pass --ack.** Look for a subject starting \`review-verdict:\`.
+
+   **Do not end your turn to wait.** A message put in your mailbox does not wake you, so a
+   turn closed here is a dispatch that stops for good. If the wait returns nothing, run it
+   again, in this same turn — reviewing takes longer than one wait.
 
 4. The body names a findings file. Read it. **Only a line reading exactly
-   \\`VERDICT: approved\\` means approved.** Anything else, including a missing VERDICT line,
+   \`VERDICT: approved\` means approved.** Anything else, including a missing VERDICT line,
    is needs_work.
 
 5. On needs_work: revise and repeat from step 1 with the next round number.
    **Stop after round 2.** Record the unresolved findings in result.md and keep the best
    version you have. Do not keep asking.
 
-6. If no verdict arrives, send the same round once more. If still nothing, note in
-   result.md that review was skipped and proceed.
+6. Once the wait has come back empty six times in a row (one hour), send the same round
+   once more. If another hour brings nothing, note in result.md that review was skipped
+   and proceed.
 
 7. When you are done, release the reviewer:
 

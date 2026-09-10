@@ -185,4 +185,102 @@ wait_once
   && ok "CM16 payload の nonce も読む" || fail "CM16 ($(sent_subject))"
 vteardown
 
+# ── await（相 4 の worker 側）─────────────────────────────────────────────
+# ★ **ここが「途中で止まる」の本体だった。**旧手順は merge_ready を送ったあと
+#   「End your turn here」と worker にターンを閉じさせていたが、`orchestration send` は
+#   メールボックスに入れるだけでアイドルな worker を起こさない（実測 2026-09-10)。
+#   nonce の照合を目視から script へ移し、**待ち続ける口**をここに置く。
+asetup() {
+  D=$(mktemp -d)
+  ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
+  export ORCA_TERMINAL_HANDLE=term_w
+  echo '{"ok":true,"result":{"count":0,"messages":[]}}' > "$ORCA_STUB_DIR/orchestration_check"
+  N=$(bash "$C" --role-dir "$D" prepare); bash "$C" --role-dir "$D" sent
+}
+ateardown() { rm -rf "$D" "$ORCA_STUB_DIR"; unset ORCA_STUB_DIR ORCA_BIN ORCA_TERMINAL_HANDLE; }
+reply() {   # $1=accepted|remediation $2=nonce [$3=body]
+  jq -nc --arg s "completion-$1: $2" --arg b "${3:-}" \
+    '{ok:true,result:{count:1,messages:[{id:"r1",type:"status",subject:$s,body:$b}]}}' \
+    > "$ORCA_STUB_DIR/orchestration_check"
+}
+aw() { bash "$C" --role-dir "$D" await; }
+
+# CM17: 自分の nonce の accepted を受けたら accepted と出し、相も accepted へ進める。
+asetup; reply accepted "$N"; out=$(aw 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == "accepted" && "$(bash "$C" --role-dir "$D" phase)" == accepted ]] \
+  && ok "CM17 accepted を受けて相が進む" || fail "CM17 (rc=$rc out=$out)"
+ateardown
+
+# CM18: remediation は本文を出し、相は merge_ready_sent のまま（C からやり直す）。
+asetup; reply remediation "$N" 'result.md is missing'; out=$(aw 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == remediation* && "$out" == *"result.md is missing"* \
+   && "$(bash "$C" --role-dir "$D" phase)" == merge_ready_sent ]] \
+  && ok "CM18 remediation は相を進めない" || fail "CM18 (rc=$rc out=$out)"
+ateardown
+
+# CM19: ★ **他人の nonce で受理しない。**古い試行の accepted を今の完了に使わない。
+asetup; reply accepted "not-my-nonce"; out=$(aw 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == waiting && "$(bash "$C" --role-dir "$D" phase)" == merge_ready_sent ]] \
+  && ok "CM19 別 nonce の accepted は待機のまま" || fail "CM19 (rc=$rc out=$out)"
+ateardown
+
+# CM20: ★ **空振りは「まだ来ていない」であって「来ない」ではない。**waiting を返して
+#      呼び直させる。ここを give-up にしたのが旧版の停止だった。
+asetup; out=$(aw 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == waiting ]] && ok "CM20 空振りは waiting" || fail "CM20 (rc=$rc out=$out)"
+ateardown
+
+# CM20b: 無関係な message（heartbeat など）は読み飛ばして waiting。
+asetup
+jq -nc '{ok:true,result:{count:1,messages:[{id:"h",type:"heartbeat",subject:"tick",body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(aw 2>/dev/null)
+[[ "$out" == waiting ]] && ok "CM20b 無関係な message は読み飛ばす" || fail "CM20b ($out)"
+ateardown
+
+# CM21: ★ **--peek で読み、--ack を絶対に付けない。**cursor は自分のものではない。
+asetup; aw >/dev/null 2>&1
+a=$(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log")
+grep -qxF -- '--peek' <<<"$a" && ! grep -qxF -- '--ack' <<<"$a" \
+  && grep -qxF 'term_w' <<<"$a" && ok "CM21 --peek のみで読む" || fail "CM21"
+ateardown
+
+# CM22: ★ **待つのは 24 時間。**期限は `sent` の時刻から決まり、呼び直しをまたいで残る。
+#      期限を過ぎたら expired を返し、worker は結末を result.md に書いて終われる。
+asetup
+[[ "$(jq -r '.await_deadline // empty' "$D/completion.json")" =~ ^[0-9]+$ ]] \
+  && ok "CM22 sent が期限を記録する" || fail "CM22"
+upd=$(jq -c --argjson t "$(( $(date +%s) - 1 ))" '.await_deadline = $t' "$D/completion.json")
+printf '%s\n' "$upd" > "$D/completion.json"
+out=$(aw 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == expired ]] && ok "CM22b 期限切れは expired" || fail "CM22b (rc=$rc out=$out)"
+ateardown
+
+# CM23: ★ **期限切れでも、届いている accepted は受理する。**時計より事実が優先する。
+asetup; reply accepted "$N"
+upd=$(jq -c --argjson t "$(( $(date +%s) - 1 ))" '.await_deadline = $t' "$D/completion.json")
+printf '%s\n' "$upd" > "$D/completion.json"
+out=$(aw 2>/dev/null)
+[[ "$out" == accepted ]] && ok "CM23 期限切れでも accepted を拾う" || fail "CM23 ($out)"
+ateardown
+
+# CM24: transport が壊れているのは「返事が無い」とは違う。1 で返して待機と区別する。
+asetup; echo 1 > "$ORCA_STUB_DIR/orchestration_check.rc"
+aw >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ok "CM24 transport 障害は 1" || fail "CM24 (rc=$rc)"
+ateardown
+
+# CM25: merge_ready を送る前の await は使用法の誤り（相が違う）。
+asetup; printf '%s\n' '{"phase":"prepared","generation":1,"nonce":"n"}' > "$D/completion.json"
+aw >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ok "CM25 送信前の await は 1" || fail "CM25 (rc=$rc)"
+ateardown
+
+# CM26: ORCA_TERMINAL_HANDLE が無ければ読みに行かない（Orca に推測させない）。
+asetup; unset ORCA_TERMINAL_HANDLE; : > "$ORCA_STUB_DIR/calls.log"
+aw >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && ! -s "$ORCA_STUB_DIR/calls.log" ]] \
+  && ok "CM26 handle が無ければ読まない" || fail "CM26 (rc=$rc)"
+ateardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

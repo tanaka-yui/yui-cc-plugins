@@ -793,4 +793,53 @@ xs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")
 [[ "$drv" != *'superpowers:brainstorming'* ]] && [[ "$xs" != *'superpowers:brainstorming'* ]] \
   && ok "ST65 取りかかり方の指示は design にだけ" || fail "ST65"; teardown
 
+# ── 待ち方（途中で止まらないこと）────────────────────────────────────────
+# ★ **2026-09-10 の停止の本体がここだった。**旧 STATUS PROTOCOL は merge_ready を送った
+#   あと "End your turn here" と worker にターンを閉じさせ、"When you are woken" と
+#   続けていた。だが `orchestration send` はメールボックスに入れるだけで**アイドルな
+#   worker を起こさない** — 1 Run の 4 worker 全員が未読のまま停止した。
+
+# ST66: ★ **ターンを閉じさせない。**この 1 行が入っていた時期の dispatch は必ず止まる。
+setup; start >/dev/null 2>&1; sp=$(spec)
+[[ "$sp" != *'End your turn here'* ]] \
+  && ok "ST66 待つためにターンを閉じさせない" || fail "ST66"; teardown
+
+# ST67: 完了の待機は `completion.sh await` の呼び直しで、その 4 つの答えが spec に載る。
+setup; start >/dev/null 2>&1; sp=$(spec); miss=""
+for w in 'completion.sh --role-dir' ' await' 'accepted' 'remediation' 'waiting' 'expired'; do
+  [[ "$sp" == *"$w"* ]] || miss="$miss [$w]"; done
+[[ -z "$miss" ]] && ok "ST67 await の 4 つの答えが載る" || fail "ST67:$miss"; teardown
+
+# ST68: ★ **`waiting` は呼び直す指示とセットでなければ意味が無い。**「もう一度呼べ」を
+#      書かないと、agent は 1 回空振りしただけで自分の判断で降りる。
+setup; start >/dev/null 2>&1; sp=$(spec)
+[[ "$sp" == *'Run it again'* ]] \
+  && ok "ST68 空振りは呼び直させる" || fail "ST68"; teardown
+
+# ST69: レビューの待機にも同じ歯止めを置く（依頼側・reviewer 側の両方）。
+setup; review_on; start >/dev/null 2>&1
+specs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")
+rv=$(head -1 <<<"$specs"); dz=$(tail -1 <<<"$specs")
+[[ "$rv" == *'Do not end your turn'* ]] && [[ "$dz" == *'Do not end your turn'* ]] \
+  && ok "ST69 レビューの待機も閉じさせない" || fail "ST69"; teardown
+
+# ST70: ★ **shell 変数が turn をまたいで生き残る前提を置かない。**worker の bash 呼び出しは
+#      1 回ごとに別の shell である。`NONCE=$(... prepare)` を C で置いて D で
+#      `$NONCE` を参照する形は、C と D を別々に実行した瞬間に **nonce の無い merge_ready**
+#      になり、親が「nonce が無い」と言って **batch ごと詰まる**。記録から読み直させる。
+setup; start >/dev/null 2>&1; sp=$(spec)
+[[ "$sp" != *'NONCE'* ]] && [[ "$sp" == *' nonce'* ]] \
+  && ok "ST70 nonce は記録から読み直す" || fail "ST70"; teardown
+
+# ST71: ★ **判定に使う文字列がそのまま届くこと。**design の spec は二重引用符の中で
+#      組み立てられるので、バックティックの escape を 1 つ間違えると「バックスラッシュ +
+#      コマンド置換の開始」と読まれ、`review-verdict:` と `VERDICT: approved` が**指示文
+#      から消える**（実測 2026-09-10）。消えると design は verdict を判定できない。
+setup; review_on; start >/dev/null 2>&1
+dz=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1); miss=""
+for w in '`review-verdict:`' '`VERDICT: approved`'; do
+  [[ "$dz" == *"$w"* ]] || miss="$miss [$w]"; done
+[[ "$dz" != *'\`'* ]] || miss="$miss [escaped-backtick-leaked]"
+[[ -z "$miss" ]] && ok "ST71 判定文字列がそのまま載る" || fail "ST71:$miss"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

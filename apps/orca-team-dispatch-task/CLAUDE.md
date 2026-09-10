@@ -17,7 +17,8 @@ Orca の worktree で N タスクを worker に並列実行させるプラグイ
 
 `bin/orca-start.sh`（worktree + Task を用意し、`worker-start` で Orca に端末起動を依頼する。
 端末自体はこのプラグインではなく Orca が作る）/ `bin/orca-wait.sh`
-（`worker_done` を待つ。成功 0 / 失敗 5）/ `bin/orca-merge.sh`（成果を親ブランチへ。
+（`worker_done` を待つ。成功 0 / 失敗 5）/ `bin/orca-wake.sh`（役の端末へ 1 行入力して
+アイドルな worker を起こす。後述）/ `bin/orca-merge.sh`（成果を親ブランチへ。
 **資源は消さない**）/ `skills/.../scripts/report-status.sh`（worker が status を書く口。移植）/
 `skills/.../scripts/config-{lib,resolve,edit}.sh`（設定層。後述）。
 
@@ -55,6 +56,55 @@ path は UNC で返り、bash の `-d` も `git -C` も解釈できない）。�
 なので無関係。判定は `ORCA_ORCHESTRATION_COMPATIBILITY_HOST_KIND=wsl` **かつ** `wslpath`
 の存在の両方。`ORCA_BIN` の既定は `$ORCA_CLI_COMMAND`（WSL2 では PATH 上の `orca-ide`）へ
 フォールバックする。回帰は `test/test-start.sh` の ST28*/ST29 が固定する。
+
+## 配送は起床ではない
+
+**`orchestration send` はメールボックスに入れるだけで、ターンを終えた worker を起こさない。**
+2026-09-10 の実測: 1 Run の 4 worker 全員が `completion-accepted` と `review-verdict` を
+未読のまま停止し、`terminal send` で端末へ直接入力して初めて動き出した。`orca-recover.sh`
+の nudge も `orchestration send` なので同じく効かなかった。**この 1 つの事実から、対策は
+2 層になる。**
+
+- **層 1（源）: worker にターンを閉じさせない。**旧 STATUS PROTOCOL は merge_ready の
+  あとに「End your turn here」「When you are woken」と書いていた。起こす者が居ないので、
+  これは「止まれ」と書いてあるのと同じだった。いまは `completion.sh await` を呼び直させる
+  （1 回 10 分ブロック / 出力は `accepted` `remediation` `waiting` `expired` の 4 つ）。
+  **`waiting` は「まだ来ていない」であって「来ない」ではない** — ここを give-up にすると
+  元に戻る。回帰は `test-start.sh` の ST66-69 と `test-completion.sh` の CM17-26
+- **層 2（保険）: 親が端末を叩く。**`orca-wait.sh` は受理・差し戻しを送った直後に
+  `orca-wake.sh` を呼び、さらに待機ループの各周回で **`merge_ready_sent` のまま返事を
+  待っている役だけ**を 30 分間隔で叩き直す。**働いている worker には打たない** — 人の
+  入力欄に文字列を撃ち込むことになる。`orca-send.sh`（worker 間）と `orca-recover.sh`
+  （nudge）も同じ `orca-wake.sh` を通す。回帰は `test-wake.sh` / `test-wait.sh` の WT60-65
+
+**起床の失敗で配送の成否を覆してはならない。**配送は送信側の exit code で確定しており、
+`orca-send.sh` の呼び出し側はその値で「書いた依頼ファイルを消す」補償を決める。だから
+`orca-wake.sh` は独立した script で、呼び出し側は rc を握り潰す。「止まっている」と
+「止まっていて届かない」を別の結論として報告するのも同じ理由で、端末が記録されていない
+役は 1 で返して**何も打たない**（cmux 版の seat 未記録と同じ切り分け）。
+
+**issue モードの「wake 駆動を持ち込まない」と矛盾しない。**あちらは**親**の駆動方式の話
+（`orca-wait.sh` がブロックして待てるので、cmux 版の単発 safety timer と timeout sentinel
+は要らない）で、こちらは**子**を起こす話である。
+
+## 待つのは 24 時間
+
+**「翌日の仕事までに分かっていればよい」が要件である。**そのうえで、**片側だけ長くしても
+意味が無い**: worker の `await` の期限（`completion.sh` の `sent` が `await_deadline` に
+焼く 24 時間）と、親の `orca-wait.sh --max-waits` の既定 288（5 分 × 288 = 24 時間）は
+**必ず一緒に動かす**。親が 1 時間で降りると、24 時間待つ worker は誰も受理しない返事を
+待ち続ける（これが 2026-09-10 に起きた）。
+
+期限を**ファイルに載せる**のは、agent に回数を数えさせないためである。1 回のブロックは
+10 分（agent の shell の上限）なので、24 時間は呼び直しで作るしかない。
+
+親の側は**背景で走らせる**。24 時間ブロックする呼び出しは、親自身のシェルの上限で必ず
+打ち切られる。打ち切られても失われるものは無い（batch を処理し切るまで ack しない）が、
+**居ない間はだれも worker に答えていない**。
+
+`waiter_exists` は「壊れた」ではなく「まだ空いていない」。段を足すために待機を止めて
+再起動すると、サーバ側の waiter がしばらく残る（実測）。待って試し直す。**他の失敗では
+粘らない**（回帰は WT66 / WT67）。
 
 ## レビュー往復の要点
 

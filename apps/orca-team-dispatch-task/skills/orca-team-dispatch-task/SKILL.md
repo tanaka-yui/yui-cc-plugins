@@ -327,8 +327,9 @@ Pass 2, once for the whole batch — one `--status-dir` per issue that dispatche
 bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>"
 ```
 
-Read its exit code the way Step 3 describes. Exit 5 is a partial failure, not a batch
-failure: go on to pass 3 for every issue whose own `role=design` line said `succeeded`.
+Read its exit code the way Step 3 describes, and run it in the background for the reason
+given there. Exit 5 is a partial failure, not a batch failure: go on to pass 3 for every
+issue whose own `role=design` line said `succeeded`.
 
 Pass 3, once per issue that dispatched. It merges, moves the labels and closes the issue:
 
@@ -452,6 +453,18 @@ single drain settles all of them. Pass one `--status-dir` per task.
 bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step 2>" \
                                --status-dir "<task 2 status_dir printed by Step 2>"
 ```
+
+**Run it in the background, not in the foreground.** It waits up to 24 hours (`--max-waits`
+288 windows of five minutes), and your own shell call is cut off long before that. A wait
+that is cut off does not lose anything — nothing is acknowledged until a batch is fully
+processed — but while it is gone nobody is answering the workers, so start it again.
+
+While it runs it does two things besides collecting outcomes. It answers each `merge_ready`
+with an acceptance or a remediation, and it **types one line into that worker's terminal**.
+That second part is not decoration: a message put in an Orca mailbox does not wake a worker
+that has closed its turn, so a reply nobody reads stops that dispatch for good. For the same
+reason the wait re-types that line every 30 minutes into any worker that is still holding an
+unanswered completion. Workers that are still working are never typed into.
 
 | Exit | Meaning | What you do |
 |---|---|---|

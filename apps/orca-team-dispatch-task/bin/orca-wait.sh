@@ -17,7 +17,16 @@ die() { echo "orca-wait: $1" >&2; exit 2; }
 log() { echo "orca-wait: $1" >&2; }
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
-SDS=() MAXW=12 TMO=300000
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WAKE="$HERE/orca-wake.sh"
+# ★ **既定は 24 時間**（5 分 × 288）。worker 側の待機も 24 時間である（completion.sh の
+#   `await`）。**片方だけ長くしても意味が無い** — 親が 1 時間で降りれば、24 時間待つ
+#   worker はもう誰も受理しない返事を待ち続けることになる。
+SDS=() MAXW=288 TMO=300000
+# 起こし直しの間隔と、waiter_exists の待ち。テストが実時間を使わずに済むよう env で開ける。
+WAKE_INTERVAL="${ORCA_WAKE_INTERVAL_SECONDS:-1800}"
+WAITER_RETRY="${ORCA_WAITER_RETRY_SECONDS:-20}"
+WAITER_TRIES="${ORCA_WAITER_RETRY_TRIES:-15}"
 while [[ $# -gt 0 ]]; do case "$1" in
   --status-dir) need2 "$1" $#; SDS+=("$2"); shift 2 ;;
   --max-waits)  need2 "$1" $#; MAXW="$2";   shift 2 ;;
@@ -160,6 +169,37 @@ reply_completion() {   # $1=dispatch $2=nonce $3=accepted|remediation $4=本文
     --subject "$subject" --body "$4" --from "$PH" --json >/dev/null 2>&1
 }
 
+# ★ **配送と起床は別の事実である。**`orchestration send` はメールボックスに入れるだけで、
+#   ターンを終えた worker を起こさない（実測 2026-09-10: 1 Run の 4 worker 全員が
+#   `completion-accepted` を未読のまま停止し、端末へ直接入力して初めて動き出した）。
+#   **ベストエフォート。**起こせなかったことで配送を無かったことにしてはならないので、
+#   ここの失敗は batch の結末に影響させない。
+wake_role() {   # $1=status dir $2=role
+  local rd="$1/roles/$2"
+  # 間隔の記録は **mtime ではなく中身**。`stat` の flag は GNU と BSD で違う。
+  mkdir -p "$rd" 2>/dev/null && printf '%s\n' "$(date +%s)" > "$rd/.woken" 2>/dev/null
+  bash "$WAKE" --workers "$1/workers.json" --role "$2" >/dev/null 2>&1 \
+    || log "could not wake $2; the reply is delivered but it may be sitting unread"
+}
+
+# ★ **返事の直後の 1 回では足りない。**その 1 回が空振りしたら、24 時間だれも気づかない。
+#   **叩いてよいのは「返事を待っていることが確定している役」だけ** — `merge_ready_sent`
+#   のまま settle していない役である。働いている worker の端末に文字列を撃ち込まない。
+rewake_stalled() {
+  local i rd ph last now settled
+  now=$(date +%s)
+  for i in "${!TASKS[@]}"; do
+    settled=$(stored_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || settled=""
+    [[ -z "$settled" ]] || continue
+    rd="${T_SD[$i]}/roles/${T_ROLE[$i]}"
+    ph=$(jq -r '.phase // empty' "$rd/completion.json" 2>/dev/null || echo "")
+    [[ "$ph" == merge_ready_sent ]] || continue
+    last=$(cat "$rd/.woken" 2>/dev/null || echo 0); [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    [[ $((now - last)) -ge "$WAKE_INTERVAL" ]] || continue
+    wake_role "${T_SD[$i]}" "${T_ROLE[$i]}"
+  done
+}
+
 drain() {   # 0 = batch を処理し切った / 1 = 処理できないものがあった（ack しない）/ 2 = transport または receipt が不明
   local out res n i m payload d t tid did oc idx tsd trole rcode rreason existing upd RET RETRC ACK CHECKRC
   local mrn vreason vok esub msub qid qbody qseen qnew
@@ -189,6 +229,11 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
   for ((i = 0; i < n; i++)); do
     m=$(jq -c ".messages[$i]" <<<"$res")
     t=$(jq -r '.type // empty' <<<"$m")
+    # ★ **heartbeat は liveness signal であって、記録すべき状態を持たない。**Orca が
+    #   worker preamble で 5 分ごとに送らせるので、未知として batch を止めると
+    #   起動した全 dispatch が永久に詰まる（実測）。読み飛ばして ack を通す。
+    #   捨てても失われる内容は無い — outcome も nonce も質問も運ばない。
+    [[ "$t" != heartbeat ]] || continue
     # 実 Orca の payload は JSON を文字列化して返す。object 形式も後方互換で受ける。
     payload=$(jq -ce '.payload
       | if type == "string" then fromjson? else . end
@@ -260,10 +305,12 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
         reply_completion "$did" "$mrn" accepted "the work is accepted; finish and report" || {
           log "could not send the acceptance to dispatch '$did'; the batch is not acknowledged"; return 2; }
         log "accepted ${T_ROLE[$idx]} (dispatch $did)"
+        wake_role "${T_SD[$idx]}" "${T_ROLE[$idx]}"
       else
         reply_completion "$did" "$mrn" remediation "$vreason" || {
           log "could not send the remediation to dispatch '$did'; the batch is not acknowledged"; return 2; }
         log "sent ${T_ROLE[$idx]} back for remediation (dispatch $did): $vreason"
+        wake_role "${T_SD[$idx]}" "${T_ROLE[$idx]}"
       fi
       continue
     fi
@@ -400,14 +447,29 @@ healthy() {   # **人の入力待ちは healthy である**（CLI help）。1 �
 
 drain || { drc=$?; case "$drc" in 2) exit 4 ;; 6) exit 6 ;; *) exit 1 ;; esac; }
 oc=$(aggregate) && finish "$oc"
-n=0
+n=0; wex=0
 while :; do
   WRC=0; WAIT=$("$ORCA_BIN" orchestration check --terminal "$PH" --wait --timeout-ms "$TMO" --json 2>/dev/null) || WRC=$?
-  [[ "$WRC" -eq 0 ]] || { log "check --wait failed (rc=$WRC)"; exit 4; }
-  jq -e '.ok == true' <<<"$WAIT" >/dev/null 2>&1 || { log "check --wait receipt was not ok"; exit 4; }
+  if [[ "$WRC" -ne 0 ]] || ! jq -e '.ok == true' <<<"$WAIT" >/dev/null 2>&1; then
+    # ★ **`waiter_exists` は「壊れた」ではなく「まだ空いていない」。**段を足すために待機を
+    #   止めて再起動すると、サーバ側の waiter がしばらく残って再起動が弾かれる（実測
+    #   2026-09-10: ここで親が降り、worker たちは誰も受理しない返事を待ち続けた）。
+    #   タイムアウトで解放されるので、待って試し直す。**他の失敗では粘らない。**
+    if [[ "$(jq -r '.error.code // empty' <<<"$WAIT" 2>/dev/null || echo "")" == waiter_exists ]] \
+       && [[ "$wex" -lt "$WAITER_TRIES" ]]; then
+      wex=$((wex + 1))
+      log "another waiter still holds this terminal; retrying in ${WAITER_RETRY}s ($wex/$WAITER_TRIES)"
+      [[ "$WAITER_RETRY" -le 0 ]] || sleep "$WAITER_RETRY"
+      continue
+    fi
+    [[ "$WRC" -eq 0 ]] && log "check --wait receipt was not ok" || log "check --wait failed (rc=$WRC)"
+    exit 4
+  fi
+  wex=0
   drain || { drc=$?; case "$drc" in 2) exit 4 ;; 6) exit 6 ;; *) exit 1 ;; esac; }
   oc=$(aggregate) && finish "$oc"
   healthy || exit 4
+  rewake_stalled
   n=$((n + 1))
   [[ "$n" -lt "$MAXW" ]] || { log "reached --max-waits ($MAXW); inspect and decide"; exit 3; }
 done
