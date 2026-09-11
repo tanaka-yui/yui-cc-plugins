@@ -140,4 +140,33 @@ rec >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 ]] && ok "RC12 起床の失敗は nudge を覆さない" || fail "RC12 (rc=$rc)"
 teardown
 
+# ── 待機の生死 ────────────────────────────────────────────────────────────
+# ★ **worker が生きているのに何も進まない最有力の原因は「誰も待っていない」である。**
+#   待機は 24 時間常駐するのでホスト側の都合で外から止められる（実測 2026-09-11、2 回連続:
+#   worker が同じマシンでテストを並列に回し、ハーネスがメモリ逼迫で待機を停止した）。
+#   そのとき要るのは replacement ではなく待機の起動し直しなので、**先に言う**。
+
+# RC13: 鼓動が無ければ「誰も待っていない」と言う。**判断は変えない。**
+setup; owe; show active
+out=$(rec --dry-run 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"no wait has stamped this status dir"* && "$out" == *"design: nudge"* ]] \
+  && ok "RC13 鼓動が無ければ待機の不在を言う" || fail "RC13 (rc=$rc out=$out)"
+teardown
+
+# RC14: 鼓動が古ければ、沈黙した秒数を名指しする。
+setup; owe; show active
+jq -nc --argjson b "$(( $(date +%s) - 4000 ))" '{pid:1,beat:$b,window_ms:300000}' > "$SD/wait.json"
+out=$(rec --dry-run 2>&1)
+[[ "$out" == *"no wait has answered for"* && "$out" == *"design: nudge"* ]] \
+  && ok "RC14 古い鼓動は沈黙の長さを言う" || fail "RC14 (out=$out)"
+teardown
+
+# RC15: 新しい鼓動なら黙る。**正常な回復を警告で汚さない。**
+setup; owe; show active
+jq -nc --argjson b "$(date +%s)" '{pid:1,beat:$b,window_ms:300000}' > "$SD/wait.json"
+out=$(rec --dry-run 2>&1)
+[[ "$out" != *"no wait has"* && "$out" == *"design: nudge"* ]] \
+  && ok "RC15 生きている待機には触れない" || fail "RC15 (out=$out)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

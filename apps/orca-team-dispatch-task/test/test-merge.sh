@@ -98,4 +98,61 @@ bash "$P/bin/orca-merge.sh" --status-dir "$SD" >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 && "$(jq -r '.branch' "$SD/integration-result.json")" == other-branch ]] \
   && ok "MG13 integration_role の指す役を取り込む" || fail "MG13 (rc=$rc)"; teardown
 
+
+# ── 無レビューの成果 ──────────────────────────────────────────────────────
+# ★ **レビューを求めておいて verdict が 1 つも無い成果を黙って取り込まない。**
+#   実測 2026-09-12: reviewer の verdict が未配送のまま捨てられ（3 Run 中 2 Run）、
+#   無レビューの成果が succeeded のまま取り込み待ちになった。worker は差し戻さない
+#   （spec 公認の離脱経路を塞ぐことになる）。人の承認を経るここで閉じる。
+reviewed_setup() {
+  setup
+  upd=$(jq -c '.roles.design_review = {"terminal":"term_r","task":"task_x","dispatch":"ctx_r"}' \
+          "$SD/workers.json"); printf '%s\n' "$upd" > "$SD/workers.json"
+  mkdir -p "$SD/review"
+}
+# reviewer が verdict を **届けられた** 記録。findings がディスクに在ることとは別の事実である
+delivered() { jq -nc '[{to:"design",subject:"review-verdict: round 1",message_id:"m1",at:1}]' \
+                > "$SD/sent.json"; }
+
+# MG14: reviewer が起きていて verdict が無ければ merge しない。理由と逃げ道を言う。
+reviewed_setup; out=$(m 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] && ! in_main && [[ "$out" == *"no delivered verdict exists"* && "$out" == *"--allow-unreviewed"* ]] \
+  && ok "MG14 無レビューは取り込まない" || fail "MG14 (rc=$rc out=$out)"; teardown
+
+# MG15: verdict が在って届いていれば通常どおり取り込む。**正常な往復を止めない。**
+reviewed_setup; printf 'looks fine\nVERDICT: approved\n' > "$SD/review/plan-round-1-findings.md"
+delivered
+m >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && in_main && ok "MG15 verdict が在れば取り込む" || fail "MG15 (rc=$rc)"; teardown
+
+# MG16: **findings が在っても VERDICT 行が無ければ verdict ではない。**
+reviewed_setup; printf 'I started reading and stopped\n' > "$SD/review/plan-round-1-findings.md"
+m >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! in_main && ok "MG16 VERDICT 行の無い findings は verdict ではない" \
+  || fail "MG16 (rc=$rc)"; teardown
+
+# MG17: --allow-unreviewed を明示すれば取り込む。**既定では通らないことが要点である。**
+reviewed_setup
+bash "$P/bin/orca-merge.sh" --status-dir "$SD" --allow-unreviewed >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && in_main && ok "MG17 明示の override は通る" || fail "MG17 (rc=$rc)"; teardown
+
+# MG18: reviewer が起きていなければ何も足さない（review_mode=off の既定を汚さない）。
+setup; mkdir -p "$SD/review"; m >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && in_main && ok "MG18 reviewer 不在なら従来どおり" || fail "MG18 (rc=$rc)"; teardown
+
+# MG19: ★ **findings が在っても、届いていなければレビューではない。**実測 2026-09-12:
+#       依頼側が先に決着したため reviewer の verdict が受け取られず、findings だけが
+#       ディスクに残った。ここを findings の有無で見ていると、届かなかったレビューを
+#       「済み」と数えて無レビューの成果を取り込む。
+reviewed_setup; printf 'needs work\nVERDICT: needs_work\n' > "$SD/review/plan-round-1-findings.md"
+out=$(m 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] && ! in_main && [[ "$out" == *"no delivered verdict exists"* ]] \
+  && ok "MG19 未配送の findings はレビューと数えない" || fail "MG19 (rc=$rc out=$out)"; teardown
+
+# MG20: 配送記録が他の役宛なら、この役のレビューではない。
+reviewed_setup; printf 'ok\nVERDICT: approved\n' > "$SD/review/plan-round-1-findings.md"
+jq -nc '[{to:"exec",subject:"review-verdict: round 1",message_id:"m1",at:1}]' > "$SD/sent.json"
+m >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! in_main && ok "MG20 別の役への配送は数えない" || fail "MG20 (rc=$rc)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

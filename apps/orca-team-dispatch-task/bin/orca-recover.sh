@@ -35,6 +35,27 @@ PH=$(jq -r '.parent_handle // empty' "$SD/run.json" 2>/dev/null)
 
 CMP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/orca-team-dispatch-task/scripts/completion.sh"
 
+# ★ **回復に入る前に「誰か待っているか」を言う。**待機は最大 24 時間常駐するので外から
+#   止められることがあり（`orca-wait.sh` の beat）、止まったままだと worker は生きている
+#   のに誰も受理を返さない。そのとき要るのは replacement ではなく **待機の起動し直し**で
+#   ある。**役ごとの判断は変えない** — 見落とさせないために言うだけである。
+WLIVE="$SD/wait.json"
+if [[ ! -f "$WLIVE" ]]; then
+  log "no wait has stamped this status dir; if a worker is alive, start orca-wait.sh before recovering"
+else
+  wl_beat=$(jq -r '.beat // empty' "$WLIVE" 2>/dev/null || echo "")
+  wl_win=$(jq -r '.window_ms // empty' "$WLIVE" 2>/dev/null || echo "")
+  [[ "$wl_win" =~ ^[0-9]+$ ]] || wl_win=300000
+  if [[ "$wl_beat" =~ ^[0-9]+$ ]]; then
+    # ★ 沈黙 3 窓ぶんで「居ない」とみなす。1 窓は待ちの上限そのものなので、2 窓では
+    #   正常な 1 回の待ちを死んだと呼びかねない
+    wl_max=$(( wl_win / 1000 * 3 )); [[ "$wl_max" -ge 60 ]] || wl_max=60
+    wl_age=$(( $(date +%s) - wl_beat ))
+    [[ "$wl_age" -lt "$wl_max" ]] \
+      || log "no wait has answered for ${wl_age}s (its window is $(( wl_win / 1000 ))s); start orca-wait.sh again before recovering"
+  fi
+fi
+
 rc_all=0
 while IFS= read -r role; do
   [[ -z "$ONLY_ROLE" || "$ONLY_ROLE" == "$role" ]] || continue

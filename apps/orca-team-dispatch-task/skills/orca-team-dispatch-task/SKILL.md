@@ -459,6 +459,35 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 that is cut off does not lose anything — nothing is acknowledged until a batch is fully
 processed — but while it is gone nobody is answering the workers, so start it again.
 
+**Nothing restarts this wait for you, and nothing announces that it stopped.** It is
+resident for up to 24 hours, so the host can stop it for reasons that have nothing to do with
+this run — measured twice on 2026-09-11, when a worker's own test run filled the machine and
+the harness stopped the wait to reclaim memory. Restarting it is always safe; a batch is
+never acknowledged until it has been processed in full. To find out whether anyone is
+waiting, read the stamp the wait leaves for every task it watches:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+jq -r '"age=\(now - .beat | floor)s window=\(.window_ms / 1000)s"' "$SD/wait.json" 2>/dev/null \
+  || echo "no wait has ever stamped this task"
+```
+
+An age above three windows means nobody is answering that task's workers: start the wait
+again with the same `--status-dir` set. `orca-recover.sh` reports the same thing before it
+decides anything, so a lost worker and a lost wait do not get mistaken for each other.
+
+When a host keeps stopping it, the wait can be detached from whatever supervises it. **Decide
+that deliberately**, because it trades one failure for another:
+
+```bash
+setsid nohup bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir>" \
+  >> "$SD/wait.log" 2>&1 < /dev/null &
+```
+
+A detached wait survives, but **its exit codes reach nobody**. Exit 6 is the one that hurts:
+a worker that asked a person a question stays blocked until someone reads `wait.log` and
+answers it. Detach only if you will poll that log.
+
 **When `phase_b` is on, this wait does not return until `exec` has finished — and nothing has
 started `exec` yet.** Its aggregate needs a `status.json` for `integration_role`, which is
 `exec` under `phase_b`, so a wait left alone here polls for the full 24 hours in silence with
@@ -634,6 +663,19 @@ still on that branch, and the checkout is clean. On a conflict it aborts the mer
 keeps everything, so nothing is lost — tell the user how to resolve it. Merge the tasks one
 after another and report each result; a refusal for one task says nothing about the others.
 
+**It also refuses work that asked for a review and never got a verdict.** When a reviewer was
+started for the integrating role, at least one `review/<plan|code>-round-*-findings.md` must
+carry a `VERDICT:` line **and that verdict must have reached the worker it was written for**,
+which `sent.json` records. A findings file on its own proves only that someone wrote it. Measured 2026-09-12: a reviewer's verdict was refused delivery and
+dropped in two runs out of three, and the unreviewed work still reported `succeeded`. The
+worker is never sent back for this — giving up after round 2 is a path this skill allows on
+purpose — so the check lives here, where a person decides. Report the refusal to the user
+with what `result.md` says about the review, and take the work anyway only if they say so:
+
+```bash
+bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" --allow-unreviewed
+```
+
 **When `integration` is `pr`, use this instead of the merge above.** Do not do both: opening
 a pull request and then merging puts the work in before anyone reviews it.
 
@@ -703,7 +745,7 @@ for ROLE in $ROLES; do
       printf '%s\n' "$W"
       printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
       HELD=1 ;;
-    released|already_released|retained|active|reclaimable) ;;
+    released|already_released|not_requested|retained|active|reclaimable) ;;
     *)
       echo "could not read the release state; do not close anything" >&2
       exit 1 ;;
@@ -716,8 +758,11 @@ exit 1
 
 [C2] Decide whether the worker's terminal may be closed, and print the command that closes it
 **without running it**. On the ordinary path the state is `retained`, because Step 3 retained
-this worker on purpose; `active` and `reclaimable` mean the same thing here — the terminal is
-still there and closing it is ours to offer. `released` and `already_released` mean the
+this worker on purpose; `active`, `reclaimable` and `not_requested` mean the same thing here —
+the terminal is still there and closing it is ours to offer. `not_requested` is what a worker
+that failed right after starting reports, alongside `terminalState: reclaimable`, because no
+release was ever asked for; measured 2026-09-11, and treating it as unreadable used to make
+Step 5 refuse to clean up after exactly the failures that most need cleaning up. `released` and `already_released` mean the
 terminal is already gone, so there is nothing to offer. Print the command only when the
 handle and worktree Orca reports still match our recorded state; otherwise say it is being
 kept and why.
@@ -761,7 +806,7 @@ for ROLE in $ROLES; do
   case "$STATE" in
     released|already_released)
       echo "Orca already closed the $ROLE terminal; nothing to close"; continue ;;
-    retained|active|reclaimable) ;;
+    not_requested|retained|active|reclaimable) ;;
     *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
   esac
   SHRC=0; SHOWN=""
@@ -813,7 +858,7 @@ for ROLE in $ROLES; do
   [[ -n "$W" ]] || { echo "could not read the release state; do not remove anything" >&2; exit 1; }
   STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
   case "$STATE" in
-    released|already_released|retained|active|reclaimable) ;;
+    released|already_released|not_requested|retained|active|reclaimable) ;;
     *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
   esac
   SHRC=0; SHOWN=""; SHOW_OK=no
@@ -954,9 +999,10 @@ Say these things to the user in plain language:
   and the inspection command, and leave the terminal, the worktree and the record where they
   are. `release_pending` can settle on its own, so running Step 5 again later may clear it;
   `release_unknown` needs the user to look.
-- [C2] `retained`, `active` and `reclaimable` mean the worker's terminal is still there, and
-  only a terminal whose handle and worktree still match our recorded state is offered for
-  release. If they do not match, someone else owns it now. `released` and `already_released`
+- [C2] `retained`, `active`, `reclaimable` and `not_requested` mean the worker's terminal is
+  still there, and only a terminal whose handle and worktree still match our recorded state is
+  offered for release. `not_requested` simply means nobody has asked for a release yet, which
+  is the normal state of a worker that failed on startup. If they do not match, someone else owns it now. `released` and `already_released`
   mean it is already gone, so there is nothing left to close for that task.
 - [C3] The removal command is printed only when the work is merged, **this dispatch
   created the worktree**, the checkout is clean and readable, the terminal identity
@@ -1033,13 +1079,15 @@ State these when they apply. Do not work around them silently.
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Setup hooks do not run unless you ask for them | Set `setup` to `run`. A worktree whose setup failed never gets a worker, so a failure shows up as a refusal to start rather than as a confusing result |
 | A pull request is opened, never merged or reviewed by this skill | Review and merge it yourself. The issue closes when the pull request merges, not when the run ends |
+| A reviewer's verdict can be refused delivery, leaving the work unreviewed | Measured 2026-09-12 in two runs out of three: the reviewee stopped waiting and settled, so its dispatch no longer accepted the verdict and `orca-send.sh` reported it undelivered. The findings file stays on disk, which is why neither the wait nor Step 4 counts that file as a review — both read `sent.json` for the delivery. The wait says `accepted UNREVIEWED`, and Step 4 refuses to merge until you pass `--allow-unreviewed` |
+| Nothing restarts the wait, and nothing announces that it stopped | It is resident for up to 24 hours, so the host may stop it — measured twice when a worker's own tests exhausted the machine's memory. Read `wait.json` (Step 3), or run `orca-recover.sh`, which says so before deciding anything. Restarting is always safe; detaching it with `setsid` keeps it alive but sends its exit codes nowhere |
 | A wait notices a new stage only once a message from it arrives | It reloads `workers.json` on the first message naming a dispatch it does not know, so Step 3.5 needs no restart. Until that first message the new roles are missing from its progress lines, which is not a sign that the stage failed to start |
 | A worker may be unable to obtain its own review wait | Measured 2026-09-11: `exec` reported that its review wait could not start because Orca had an already-active actionable waiter for the Run, so it offered its work with no verdict. Workers are now told that this refusal means the mailbox is busy, not that review is unavailable, and to run the wait again. When it still ends up unreviewed the wait names it: `accepted UNREVIEWED` in its log, and `review=unreviewed` on that role's final line |
 | `phase_b=on` needs its second stage started by hand, and a wait missing it fails silently | Step 3.5 starts it. A wait whose `integration_role` never writes a `status.json` keeps polling for 24 hours with nothing in its log and every started worker already finished; check `roles/<integration_role>/status.json` before concluding a worker is stuck |
 | `phase_b=on` costs a second worker and a second worktree per task | Leave it off unless separating planning from building is worth that. The plan is kept at `.dispatch/<slug>/plan.md` either way it is written |
 | An `--issue` run does not resume by itself after a crash | The next run's `reconcile` finds the claim, releases it when nothing is running, and stops the run when something might be |
 | A slow issue holds up the rest of its batch | The wait is per batch. Use a smaller batch size when one issue is expected to be long |
-| A released worker can stay recorded as `retained`, which makes [C7] stop a later dispatch on the same Run | Measured twice: `worker-release` answers `ok` while the receipt keeps `releaseState: retained` with `retainedReason: user_takeover`, and the record survives the terminal itself. Start a fresh Run rather than reusing one whose dispatches are gone; [C7] is scoped to a Run, so a new Run is unaffected |
+| A released worker can stay recorded as `retained`, which makes [C7] stop a later dispatch on the same Run | Measured twice: `worker-release` answers `ok` while the receipt keeps `releaseState: retained` with `retainedReason: user_takeover`, and the record survives the terminal itself. Removing the worktree closes the terminal with it — `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` succeeded where the release did not (measured 2026-09-11), so offer that in Step 6 for that task. Otherwise start a fresh Run rather than reusing one whose dispatches are gone; [C7] is scoped to a Run, so a new Run is unaffected |
 | A batch this version cannot handle stays unacknowledged and blocks its parent terminal's queue | Do not acknowledge it. Inspect `received.json` and `result.md`; guarded manual integration does not unblock that queue. Start later dispatches from another Orca terminal, whose `ORCA_TERMINAL_HANDLE` is used at launch |
 | A dispatch Orca reports as `release_pending` or `release_unknown` is never cleaned up | [C1] stops that task. Leave its terminal, worktree and record alone and inspect it with `$ORCA_BIN orchestration worker-show --dispatch <id> --json`; `release_pending` may settle by itself, `release_unknown` needs a decision |
 | Failure and edge receipt fixtures are partly simulated | The real E2E now proves the success path for one worker and for a reviewed pair, plus real `check` wait/ack, `worker-release` alternate-state, and terminal/worktree cleanup receipts. **Failure and rejection receipts are still simulated**; capture them before relying on the paths that consume them |
@@ -1047,7 +1095,9 @@ State these when they apply. Do not work around them silently.
 ## State on disk
 
 One `.dispatch/<slug>/` per task: `request.md`, `run.json`, `workers.json`, `received.json`,
-`integration-result.json`, and `roles/design/{status.json,result.md}`. Tasks of one Run carry
+`integration-result.json`, `wait.json` (the stamp the wait leaves each round),
+`sent.json` (one entry per message this task actually delivered), and
+`roles/design/{status.json,result.md}`. Tasks of one Run carry
 the same `run_id` in `run.json` and their own worktree in `workers.json`, whose `roles` map
 holds one entry per role so a later stage can add more without moving anything. Everything
 needed to resume or clean up by hand is here. `.dispatch/` is added to the repository's

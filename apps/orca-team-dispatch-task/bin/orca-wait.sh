@@ -102,6 +102,20 @@ write() {   # $1=status dir $2=path $3=content
   t=$(mktemp "$1/.tmp.XXXXXX") || return 1
   printf '%s\n' "$3" > "$t" && mv -f "$t" "$2" || { rm -f "$t"; return 1; }
 }
+# ★ **「誰も待っていない」をディスクから分かるようにする。**この待機は最大 24 時間
+#   常駐するので、**ホスト側の都合で外から止められることがある**（実測 2026-09-11、
+#   2 回連続: worker 自身が同じマシンでテストを並列に回してメモリを食い、ハーネスが
+#   メモリ逼迫を理由にこのプロセスを停止した）。ack より前に落ちるので取りこぼしは
+#   無い設計どおりだが、**誰も起動し直さなければ worker は永久に返事を待つ。**
+#   気づくかどうかを人の記憶に賭けない — 鼓動を残し、`orca-recover.sh` に読ませる。
+#   **鼓動の失敗で待機を止めない。**書けないことは、待てないことではない。
+beat() {
+  local sd stamp
+  stamp=$(jq -nc --argjson p "$$" --argjson b "$(date +%s)" --argjson w "$TMO" \
+            '{pid: $p, beat: $b, window_ms: $w}') || return 0
+  for sd in "${SDS[@]}"; do write "$sd" "$sd/wait.json" "$stamp" || true; done
+  return 0
+}
 stored_outcome() {   # $1=status dir $2=role。receipt が 1 件なら outcome を stdout、0 件なら空、壊れていれば 1
   local sd="$1" role="$2" recv matches count tid did
   recv="$sd/received.json"
@@ -141,21 +155,10 @@ record_outcome() {   # $1=status dir $2=task $3=dispatch $4=outcome。1 = 記録
 #   **ここで差し戻してはならない** — 「round 2 で打ち切り」も「1 時間 ×2 で諦めて進む」も
 #   spec が認めた離脱経路であり、ゲートにするとその worker は永久に差し戻され続ける。
 #   受理はする。**そのうえで、そう見えるようにする。**
+#   判定そのものは `review-state.sh` が正本で、`orca-merge.sh` の gate と同じ問いを使う。
+REVSTATE="$HERE/review-state.sh"
 review_state() {   # $1=status dir $2=役 → reviewed / unreviewed / none を stdout
-  local sd="$1" role="$2" pfx f
-  case "$role" in
-    design) pfx=plan ;;
-    exec)   pfx=code ;;
-    *) printf none; return 0 ;;
-  esac
-  # レビュー役が起きていないなら、そもそもレビューを求めていない
-  [[ -n "$(jq -r --arg r "${role}_review" '.roles[$r].dispatch // empty' "$sd/workers.json" 2>/dev/null)" ]] \
-    || { printf none; return 0; }
-  for f in "$sd"/review/$pfx-round-*-findings.md; do
-    [[ -e "$f" ]] || continue
-    grep -q '^VERDICT: ' "$f" && { printf reviewed; return 0; }
-  done
-  printf unreviewed
+  bash "$REVSTATE" --status-dir "$1" --role "$2" 2>/dev/null || printf none
 }
 # ★ **相 3 の検証。**役ごとに「成果が検証可能な形で在るか」を見る（spec 10-1 の表）。
 #   ここを緩めると、成果が無いのに受理して端末を閉じ、**欠落に誰も気づかない**。
@@ -507,10 +510,12 @@ healthy() {   # **人の入力待ちは healthy である**（CLI help）。1 �
   return 0
 }
 
+beat
 drain_batch || { drc=$?; case "$drc" in 2) exit 4 ;; 6) exit 6 ;; *) exit 1 ;; esac; }
 oc=$(aggregate) && finish "$oc"
 n=0; wex=0
 while :; do
+  beat
   WRC=0; WAIT=$("$ORCA_BIN" orchestration check --terminal "$PH" --wait --timeout-ms "$TMO" --json 2>/dev/null) || WRC=$?
   if [[ "$WRC" -ne 0 ]] || ! jq -e '.ok == true' <<<"$WAIT" >/dev/null 2>&1; then
     # ★ **`waiter_exists` は「壊れた」ではなく「まだ空いていない」。**段を足すために待機を

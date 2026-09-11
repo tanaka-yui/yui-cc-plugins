@@ -679,11 +679,19 @@ reviewed_setup; exec_merge_ready; out=$(w 2>&1)
 [[ "$out" == *"accepted exec"* && "$out" == *"UNREVIEWED"* ]] \
   && ok "WT72 無レビューの受理を名指しする" || fail "WT72 (out=$out)"; teardown
 
-# WT73: verdict が在れば黙る。**正常な往復を警告で汚さない。**
+# WT73: verdict が在って届いていれば黙る。**正常な往復を警告で汚さない。**
 reviewed_setup; printf 'ok\nVERDICT: approved\n' > "$SD/review/code-round-1-findings.md"
+jq -nc '[{to:"exec",subject:"review-verdict: round 1",message_id:"m1",at:1}]' > "$SD/sent.json"
 exec_merge_ready; out=$(w 2>&1)
 [[ "$out" == *"accepted exec"* && "$out" != *"UNREVIEWED"* ]] \
   && ok "WT73 verdict が在れば警告しない" || fail "WT73 (out=$out)"; teardown
+
+# WT77: ★ **findings が在っても、届いていなければレビューではない**（実測 2026-09-12:
+#       依頼側が先に決着したため verdict が受け取られず、findings だけが残った）。
+reviewed_setup; printf 'ok\nVERDICT: approved\n' > "$SD/review/code-round-1-findings.md"
+exec_merge_ready; out=$(w 2>&1)
+[[ "$out" == *"accepted exec"* && "$out" == *"UNREVIEWED"* ]] \
+  && ok "WT77 未配送の findings はレビューと数えない" || fail "WT77 (out=$out)"; teardown
 
 # WT74: 最終行にも載せる。result.md を読まなくても無レビューだと分かる。
 reviewed_setup
@@ -701,5 +709,16 @@ l_exec=$(grep 'role=exec ' <<<"$out"); l_design=$(grep 'role=design ' <<<"$out")
 setup; dn; msg; out=$(w 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" != *"review="* ]] \
   && ok "WT75 review_mode=off には足さない" || fail "WT75 (rc=$rc out=$out)"; teardown
+
+# WT76: ★ **「誰も待っていない」をディスクに残す。**この待機は 24 時間常駐するので外から
+#      止められることがある（実測 2026-09-11、2 回連続: worker が同じマシンでテストを
+#      並列に回し、ハーネスがメモリ逼迫で待機を停止した）。ack 前に落ちるので取りこぼしは
+#      無いが、**起動し直す者が居なければ worker は永久に待つ。**気づく手がかりを残す。
+setup; dn; msg; w >/dev/null 2>&1
+[[ -s "$SD/wait.json" ]] \
+  && [[ "$(jq -r '.pid' "$SD/wait.json")" =~ ^[0-9]+$ ]] \
+  && [[ "$(jq -r '.beat' "$SD/wait.json")" =~ ^[0-9]+$ ]] \
+  && [[ "$(jq -r '.window_ms' "$SD/wait.json")" =~ ^[0-9]+$ ]] \
+  && ok "WT76 待機が鼓動を残す" || fail "WT76 ($(cat "$SD/wait.json" 2>/dev/null))"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

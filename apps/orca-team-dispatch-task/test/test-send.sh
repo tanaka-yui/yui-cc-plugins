@@ -73,6 +73,42 @@ send --to design_review --subject 'x' --body 'y' >/dev/null 2>&1
 [[ $? -eq 1 ]] && ok "SN7 CLI の非 0 は未配送" || fail "SN7"
 teardown
 
+# SN14: ★ **配送された事実を残す。**「findings がディスクに在る」と「それが届いた」は
+#       別の事実であり、後段の判定 (`review-state.sh`) はこの記録を読む。
+setup
+send --to design --subject 'review-verdict: round 1' --body '/tmp/f.md' >/dev/null 2>&1
+jq -e 'type == "array" and length == 1 and .[0].to == "design"
+       and (.[0].subject | startswith("review-verdict:")) and .[0].message_id == "msg_1"' \
+  "$ORCA_STUB_DIR/sent.json" >/dev/null 2>&1 \
+  && ok "SN14 配送を記録する" || fail "SN14 ($(cat "$ORCA_STUB_DIR/sent.json" 2>/dev/null))"
+teardown
+
+# SN15: **記録は追記である。**往復が複数ラウンドあるので、上書きすると前の配送が消える。
+setup
+send --to design --subject 'review-verdict: round 1' --body '/tmp/f.md' >/dev/null 2>&1
+send --to design --subject 'review-verdict: round 2' --body '/tmp/g.md' >/dev/null 2>&1
+[[ "$(jq -r 'length' "$ORCA_STUB_DIR/sent.json" 2>/dev/null)" == 2 ]] \
+  && ok "SN15 記録は追記される" || fail "SN15"
+teardown
+
+# SN16: **届かなかったものは記録しない。**記録が配送の証拠でなくなると判定が壊れる。
+setup
+printf '%s\n' '{"ok":false,"error":{"code":"dispatch_not_active"}}' > "$ORCA_STUB_DIR/orchestration_send"
+send --to design --subject 'review-verdict: round 1' --body '/tmp/f.md' >/dev/null 2>&1
+[[ ! -e "$ORCA_STUB_DIR/sent.json" ]] \
+  && ok "SN16 未配送は記録しない" || fail "SN16 ($(cat "$ORCA_STUB_DIR/sent.json" 2>/dev/null))"
+teardown
+
+# SN7b: ★ **届かなかった理由を receipt から拾って言う。**rc だけでは、相手がもう
+#       終わっているのか端末を取り違えたのかが区別できない（実測 2026-09-12）。
+setup
+printf '%s\n' '{"ok":false,"error":{"code":"dispatch_not_active","message":"the dispatch has settled"}}' \
+  > "$ORCA_STUB_DIR/orchestration_send"
+out=$(send --to design --subject 'review-verdict: round 1' --body '/tmp/f.md' 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"dispatch_not_active"* && "$out" == *"the dispatch has settled"* ]] \
+  && ok "SN7b 未配送の理由を receipt から言う" || fail "SN7b (rc=$rc out=$out)"
+teardown
+
 # SN8: 使用法エラーは 2（未配送の 1 と区別する）。呼び出し側の補償が誤爆しないため。
 setup
 bash "$P/bin/orca-send.sh" --workers "$WF" --to design_review >/dev/null 2>&1

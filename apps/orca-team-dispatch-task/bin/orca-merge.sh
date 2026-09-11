@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # orca-merge.sh — worker の成果を親ブランチへ取り込む。資源は消さない。
-# Usage: orca-merge.sh --status-dir <d>
+# Usage: orca-merge.sh --status-dir <d> [--allow-unreviewed]
 # Exit: 0 = merge 済み (冪等) / 1 = 未 merge / 2 = 使用法エラー
 set -uo pipefail
 
@@ -8,10 +8,11 @@ die() { echo "orca-merge: $1" >&2; exit 2; }
 log() { echo "orca-merge: $1" >&2; }
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 
-SD=""
+SD="" ALLOW_UNREVIEWED=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --status-dir) need2 "$1" "$#"; SD="$2"; shift 2 ;;
+    --status-dir)       need2 "$1" "$#"; SD="$2"; shift 2 ;;
+    --allow-unreviewed) ALLOW_UNREVIEWED=1; shift ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -68,6 +69,17 @@ jq -e --arg receipt "worker_done|$TID|$DID|succeeded" \
    and index($receipt) != null' "$SD/received.json" >/dev/null 2>&1 \
   || stop "no succeeded worker_done was received for this dispatch; run orca-wait.sh first"
 [[ -s "$SD/roles/$IR/result.md" ]] || stop "result.md is missing or empty"
+
+# ★ **レビューを求めておいて verdict が 1 つも無い成果を、黙って取り込まない。**
+#   実測 2026-09-12: reviewer の verdict が未配送のまま捨てられ（3 Run 中 2 Run）、
+#   無レビューの成果が succeeded のまま取り込み待ちになった。
+#   **worker を差し戻して閉じてはならない** — 「round 2 で打ち切り」も「諦めて進む」も
+#   spec が認めた離脱経路であり、そこを塞ぐと worker は永久に差し戻される。だから
+#   **人の承認を経る離散的な一手であるここ**で閉じ、明示の override だけを通す。
+RVS=$(bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/review-state.sh" \
+        --status-dir "$SD" --role "$IR" 2>/dev/null) || RVS=none
+[[ "$RVS" != unreviewed || "$ALLOW_UNREVIEWED" -eq 1 ]] \
+  || stop "a reviewer was started for '$IR' but no delivered verdict exists; read $SD/roles/$IR/result.md and $SD/review, then pass --allow-unreviewed to take it anyway"
 
 # 取り込み先の identity。start 時と同じ checkout / branch に限定する。
 git -C "$RR" show-ref --quiet "refs/heads/$BR" || stop "branch $BR does not exist"

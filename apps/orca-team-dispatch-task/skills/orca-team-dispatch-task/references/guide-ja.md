@@ -443,6 +443,34 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 無い（batch を処理し切るまで ack しない）が、居ない間はだれも worker に答えていないので、
 その都度また起動する。
 
+**この待機を起動し直す者は居らず、止まったことを知らせる者も居ない。**最大 24 時間
+常駐するので、この実行とは無関係な理由でホストに止められうる — 2026-09-11 に 2 回観測した。
+worker 自身のテスト実行がマシンを埋め、ハーネスがメモリを取り戻すために待機を停止した。
+起動し直すのは常に安全である。batch は処理し切るまで ack されない。誰か待っているかを
+知るには、待機が見ているタスクごとに残す鼓動を読む:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+jq -r '"age=\(now - .beat | floor)s window=\(.window_ms / 1000)s"' "$SD/wait.json" 2>/dev/null \
+  || echo "no wait has ever stamped this task"
+```
+
+age が 3 窓を超えていれば、そのタスクの worker には誰も答えていない。同じ `--status-dir`
+の組で待機を起動し直す。`orca-recover.sh` も何かを判断する前に同じことを言うので、
+「worker を失った」と「待機を失った」を取り違えずに済む。
+
+ホストが止め続けるなら、待機を監視下から切り離せる。**ただし意識して選ぶこと** —
+一方の失敗をもう一方の失敗と取り替えているからである:
+
+```bash
+setsid nohup bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir>" \
+  >> "$SD/wait.log" 2>&1 < /dev/null &
+```
+
+切り離した待機は生き残るが、**その exit code は誰にも届かない。**効くのは終了コード 6 で
+ある。人へ質問した worker は、誰かが `wait.log` を読んで答えるまでブロックしたままになる。
+そのログを見に行くつもりがあるときだけ切り離す。
+
 **`phase_b` が on のとき、この待機は `exec` が終わるまで戻らない — そしてまだ誰も `exec` を
 起こしていない。**集約には `integration_role` の `status.json` が要り、`phase_b` ではそれは
 `exec` である。ここで放っておいた待機は、見えている worker が全員終わっている状態のまま、
@@ -615,6 +643,19 @@ checkout が clean であることのすべてを満たさなければ拒否す�
 すべてを残すので、ユーザーへ解決方法を伝える。タスクは順番に merge して結果をそれぞれ報告する。
 あるタスクが拒否されても、他のタスクについては何も意味しない。
 
+**レビューを求めておいて verdict を得られなかった成果も拒否する。**取り込む役に reviewer が
+起動されていたなら、`review/<plan|code>-round-*-findings.md` の少なくとも 1 つが `VERDICT:`
+行を持ち、**その verdict が宛先の worker に届いていなければならない**（`sent.json` が記録
+する）。findings ファイルだけでは「誰かが書いた」ことしか証明しない。2026-09-12 に観測: reviewer の verdict が 3 Run 中 2 Run で
+配送を拒まれて捨てられ、無レビューの成果がそれでも `succeeded` を報告した。**この件で
+worker を差し戻すことはしない** — round 2 で諦めるのはこの skill が意図して許している道で
+ある。だから検査は、人が判断するここに置く。拒否されたら、`result.md` がレビューについて
+何と言っているかを添えてユーザーへ報告し、ユーザーがそう言ったときにだけ取り込む:
+
+```bash
+bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" --allow-unreviewed
+```
+
 **`integration` が `pr` のときは、上の merge の代わりにこちらを使う。**両方やってはならない
 — pull request を作ったうえで merge すると、誰かがレビューする前に成果が入る。
 
@@ -683,7 +724,7 @@ for ROLE in $ROLES; do
       printf '%s\n' "$W"
       printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
       HELD=1 ;;
-    released|already_released|retained|active|reclaimable) ;;
+    released|already_released|not_requested|retained|active|reclaimable) ;;
     *)
       echo "could not read the release state; do not close anything" >&2
       exit 1 ;;
@@ -696,8 +737,11 @@ exit 1
 
 [C2] worker の端末を閉じてよいかを判定し、閉じるコマンドを **実行せずに** 印字する。通常の経路
 では state は `retained` である。Step 3 がこの worker を意図的に retain しているためである。
-`active` と `reclaimable` もここでは同じ意味であり、端末はまだ在って、閉じることを提示するのは
-こちらの役目である。`released` と `already_released` は端末が既に無いという意味であり、提示する
+`active`、`reclaimable`、`not_requested` もここでは同じ意味であり、端末はまだ在って、閉じる
+ことを提示するのはこちらの役目である。`not_requested` は、起動直後に失敗した worker が
+`terminalState: reclaimable` と並べて報告する値である。release が一度も要求されていないという
+だけの意味だが（2026-09-11 に観測）、これを「読めない」と扱っていたために、**もっとも片付けを
+必要とする失敗ほど Step 5 が片付けを拒む**状態になっていた。`released` と `already_released` は端末が既に無いという意味であり、提示する
 ものはない。コマンドを印字してよいのは Orca が報告する handle と worktree が記録済み state と
 一致するときだけで、一致しなければ何を、なぜ残すのかを伝える。
 
@@ -739,7 +783,7 @@ for ROLE in $ROLES; do
   case "$STATE" in
     released|already_released)
       echo "Orca already closed the $ROLE terminal; nothing to close"; continue ;;
-    retained|active|reclaimable) ;;
+    not_requested|retained|active|reclaimable) ;;
     *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
   esac
   SHRC=0; SHOWN=""
@@ -791,7 +835,7 @@ for ROLE in $ROLES; do
   [[ -n "$W" ]] || { echo "could not read the release state; do not remove anything" >&2; exit 1; }
   STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
   case "$STATE" in
-    released|already_released|retained|active|reclaimable) ;;
+    released|already_released|not_requested|retained|active|reclaimable) ;;
     *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
   esac
   SHRC=0; SHOWN=""; SHOW_OK=no
@@ -932,9 +976,10 @@ fi
   inspection コマンドを見せ、端末・worktree・記録をそのまま残す。`release_pending` は自然に
   確定しうるので、後で Step 5 をやり直せば解ける場合がある。`release_unknown` はユーザーが
   見る必要がある。
-- [C2] `retained`、`active`、`reclaimable` は worker の端末がまだ在ることを意味し、handle と
-  worktree が記録済み state に一致する端末だけを release の対象として提示する。一致しなければ、
-  すでに他者の所有物である。`released` と `already_released` は端末が既に無いことを意味し、
+- [C2] `retained`、`active`、`reclaimable`、`not_requested` は worker の端末がまだ在ることを
+  意味し、handle と worktree が記録済み state に一致する端末だけを release の対象として提示する。
+  一致しなければ、すでに他者の所有物である。`not_requested` は「まだ誰も release を要求して
+  いない」というだけで、起動時に失敗した worker の通常の状態である。`released` と `already_released` は端末が既に無いことを意味し、
   そのタスクについて閉じるものは残っていない。
 - [C3] 削除コマンドは、成果が merge 済み、この dispatch が worktree を作成した、checkout が
   読めて clean、端末 identity が一致、worktree にまだ残る端末すべてが記録済み、の全条件を
@@ -1004,13 +1049,15 @@ release するのはここである。**セッションを閉じることはユ�
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
 | setup hook は頼まない限り走らない | `setup` を `run` にする。setup が失敗した worktree には worker が付かないので、失敗は「起動を拒む」形で見える（不可解な成果物としてではなく） |
 | pull request は作るだけで、この skill が merge もレビューもしない | 自分でレビューして merge する。issue は pull request がマージされたときに閉じるのであって、実行が終わったときではない |
+| reviewer の verdict が配送を拒まれ、成果が無レビューのまま残ることがある | 2026-09-12 に 3 Run 中 2 Run で観測: 依頼側が待つのをやめて決着したため、その dispatch がもう verdict を受け付けず、`orca-send.sh` が未配送として報告した。findings ファイルはディスクに残る。だから待機も Step 4 もそのファイルをレビューとは数えず、どちらも `sent.json` の配送記録を読む。待機は `accepted UNREVIEWED` と言い、Step 4 は `--allow-unreviewed` を渡すまで merge を拒む |
+| 待機を起動し直す者は居らず、止まったことを知らせる者も居ない | 最大 24 時間常駐するのでホストに止められうる — worker 自身のテストがマシンのメモリを使い切った場面で 2 回観測した。`wait.json` を読む（Step 3）か、`orca-recover.sh` を走らせる。何かを判断する前にそう言う。起動し直すのは常に安全である。`setsid` で切り離せば生き残るが、その exit code はどこにも届かなくなる |
 | 待機が新しい段に気づくのは、そこからの message が届いたときである | 知らない dispatch を名指しする最初の message で `workers.json` を読み直すので、Step 3.5 に再起動は要らない。その最初の message が来るまで新しい役は進捗行に出ないが、それは段の起動に失敗した印ではない |
 | worker が自分のレビュー待ちを取れないことがある | 2026-09-11 に観測: `exec` は、Orca がその Run で既にアクティブな actionable waiter を持っていたためレビュー待ちを開始できないと報告し、verdict の無いまま成果を差し出した。worker には「この拒否はメールボックスが塞がっているという意味であって、レビューが使えないという意味ではない。待ちをもう一度走らせよ」と指示してある。それでも無レビューで終わったときは待機がそう名指しする — log に `accepted UNREVIEWED`、その役の最終行に `review=unreviewed` が出る |
 | `phase_b=on` は 2 段目を人が起こす必要があり、それを欠いた待機は黙って失敗する | Step 3.5 が起こす。`integration_role` が `status.json` を書かないままの待機は、log に何も出さず、起動した worker が全員終わっている状態で 24 時間 polling し続ける。worker が詰まっていると結論する前に `roles/<integration_role>/status.json` を見る |
 | `phase_b=on` はタスクごとに worker と worktree を 1 つずつ増やす | 計画と実装を分ける価値があるとき以外は off のままにする。計画は書かれたなら `.dispatch/<slug>/plan.md` に残る |
 | `--issue` の実行は crash から自力で再開しない | 次の実行の `reconcile` が claim を見つけ、何も走っていなければ release し、走っているかもしれなければ実行を止める |
 | 遅い 1 件がそのバッチの残りを待たせる | 待ちはバッチ単位である。長くなると分かっている issue があるならバッチを小さくする |
-| 解放したはずの worker が `retained` の記録のまま残り、同じ Run の後の dispatch で [C7] が止まることがある | 2 回独立に観測した: `worker-release` は `ok` を返すのに receipt は `releaseState: retained` / `retainedReason: user_takeover` のままで、その記録は端末そのものより長く残る。dispatch が消えた Run を使い回さず、新しい Run を起こす。[C7] の範囲は Run 単位なので、新しい Run は影響を受けない |
+| 解放したはずの worker が `retained` の記録のまま残り、同じ Run の後の dispatch で [C7] が止まることがある | 2 回独立に観測した: `worker-release` は `ok` を返すのに receipt は `releaseState: retained` / `retainedReason: user_takeover` のままで、その記録は端末そのものより長く残る。worktree を消すと端末も一緒に閉じる — release が通らなかった場面で `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` は成功した（2026-09-11 に観測）ので、そのタスクについては Step 6 でそちらを提示する。それ以外では、dispatch が消えた Run を使い回さず新しい Run を起こす。[C7] の範囲は Run 単位なので、新しい Run は影響を受けない |
 | この版が扱えない batch は acknowledge されないまま親 terminal の queue を block する | acknowledge しない。`received.json` と `result.md` を確認する。guarded manual integration でも queue は解消されない。後続の dispatch は別の Orca terminal から開始し、launch 時にはその `ORCA_TERMINAL_HANDLE` が使われる |
 | Orca が `release_pending` / `release_unknown` と報告する dispatch は片付けられない | [C1] がそのタスクを止める。端末・worktree・記録をそのまま残し、`$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べる。`release_pending` は自然に確定しうるが、`release_unknown` は判断が要る |
 | failure / edge receipt fixture の一部は simulated のままである | 実機 E2E は worker 1 本の成功経路に加え、**レビュー 2 役の成功経路**、`check` の wait/ack、`worker-release` の別 state、terminal/worktree cleanup の実機 receipt まで証明した。**failure と rejection の receipt は依然 simulated** であり、それを消費する経路に依存する前に capture する |
@@ -1018,7 +1065,9 @@ release するのはここである。**セッションを閉じることはユ�
 ## ディスク上の状態
 
 タスクごとに `.dispatch/<slug>/` が 1 つあり、そこに `request.md`、`run.json`、`workers.json`、
-`received.json`、`integration-result.json`、`roles/design/{status.json,result.md}` がある。
+`received.json`、`integration-result.json`、`wait.json`（待機が毎周回残す鼓動）、
+`sent.json`（このタスクが実際に配送した message の記録）、
+`roles/design/{status.json,result.md}` がある。
 1 つの Run のタスクは `run.json` に同じ `run_id` を持ち、`workers.json` にそれぞれの worktree を
 持つ。`workers.json` の `roles` map は役ごとに 1 entry を持つので、後段の stage が何も動かさずに
 役を増やせる。手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は

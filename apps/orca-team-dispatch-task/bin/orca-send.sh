@@ -44,8 +44,31 @@ OUT=$("$ORCA_BIN" orchestration send --to "dispatch:$DID" --type status \
 #   応答形が在る (worker-release の user_takeover)。ここも同じ構えで閉じる。
 if [[ "$RC" -ne 0 ]] || ! jq -e '.ok == true and (.result.message.id | type == "string")' \
      <<<"$OUT" >/dev/null 2>&1; then
-  log "send to role '$TO' (dispatch=$DID) was not delivered (rc=$RC)"
+  # ★ **なぜ届かなかったかまで言う。**rc だけでは「相手がもう終わっている」「端末を
+  #   取り違えた」「Orca が落ちている」が同じ 1 行になる（実測 2026-09-12: reviewer の
+  #   verdict が rc=1 で捨てられ、receipt を開くまで理由が分からなかった）。
+  ERR=$(jq -r '[.error.code // empty, .error.message // empty]
+               | map(select(. != "")) | join(": ")' <<<"$OUT" 2>/dev/null || echo "")
+  log "send to role '$TO' (dispatch=$DID) was not delivered (rc=$RC)${ERR:+; $ERR}"
   exit 1
+fi
+# ★ **配送された事実を残す。**「findings がディスクに在る」と「それが相手に届いた」は
+#   別の事実である（実測 2026-09-12: 依頼側が先に決着し、verdict が受け取られなかった）。
+#   後段の判定 (`review-state.sh`) はこの記録を読む。**ベストエフォート** — 記録できな
+#   かったことで配送の成否を覆さない。呼び出し側の補償はこの exit code で決まる。
+SDIR=$(cd "$(dirname "$WF")" 2>/dev/null && pwd) || SDIR=""
+if [[ -n "$SDIR" ]]; then
+  MID=$(jq -r '.result.message.id' <<<"$OUT")
+  PREV=$(jq -c 'if type == "array" then . else [] end' "$SDIR/sent.json" 2>/dev/null) || PREV='[]'
+  [[ -n "$PREV" ]] || PREV='[]'
+  NEW=$(jq -c --arg to "$TO" --arg s "$SUBJECT" --arg id "$MID" --argjson at "$(date +%s)" \
+          '. + [{to: $to, subject: $s, message_id: $id, at: $at}]' <<<"$PREV" 2>/dev/null) || NEW=""
+  if [[ -n "$NEW" ]] && TMP=$(mktemp "$SDIR/.sent.XXXXXX" 2>/dev/null); then
+    printf '%s\n' "$NEW" > "$TMP" && mv -f "$TMP" "$SDIR/sent.json" \
+      || { rm -f "$TMP"; log "delivered to role '$TO', but the delivery could not be recorded"; }
+  else
+    log "delivered to role '$TO', but the delivery could not be recorded"
+  fi
 fi
 # ★ **配送は起床ではない。**メールボックスに入れても、ターンを終えた相手は動かない
 #   （実測 2026-09-10: `review-verdict:` が未読のまま滞留し、依頼元が止まった）。
