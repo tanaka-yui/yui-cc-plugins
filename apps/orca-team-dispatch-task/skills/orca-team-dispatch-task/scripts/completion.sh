@@ -108,6 +108,17 @@ case "$SUB" in
     OUT=$("$ORCA_BIN" orchestration check --terminal "$TH" --peek --wait \
             --timeout-ms "$AWAIT_WINDOW_MS" --json 2>/dev/null) || ORC=$?
     if [[ "$ORC" -ne 0 ]] || ! jq -e '.ok == true' <<<"$OUT" >/dev/null 2>&1; then
+      # ★ **`waiter_exists` は「壊れた」ではなく「まだ空いていない」**（`orca-wait.sh` と同じ
+      #   判断）。1 つの Run で待機が競合すると Orca は待ちを拒むが、返事が来ない
+      #   わけではない。transport の障害として 1 で降りると、受理を取りに行く者が
+      #   居なくなる。**即座に戻すと spin になる**ので、少し置いてから呼び直させる。
+      if [[ "$(jq -r '.error.code // empty' <<<"$OUT" 2>/dev/null || echo "")" == waiter_exists ]]; then
+        DL=$(read_field await_deadline)
+        if [[ "$DL" =~ ^[0-9]+$ ]] && [[ "$(date +%s)" -ge "$DL" ]]; then echo expired; exit 0; fi
+        WR="${ORCA_WAITER_RETRY_SECONDS:-20}"
+        [[ ! "$WR" =~ ^[0-9]+$ || "$WR" -le 0 ]] || sleep "$WR"
+        echo waiting; exit 0
+      fi
       # ★ **transport の障害を「返事が無い」と混ぜない。**混ぜると、壊れた経路を
       #   24 時間叩き続けることになる。
       log "could not read the mailbox (rc=$ORC)"; exit 1

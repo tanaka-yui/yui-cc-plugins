@@ -842,4 +842,23 @@ for w in '`review-verdict:`' '`VERDICT: approved`'; do
 [[ "$dz" != *'\`'* ]] || miss="$miss [escaped-backtick-leaked]"
 [[ -z "$miss" ]] && ok "ST71 判定文字列がそのまま載る" || fail "ST71:$miss"; teardown
 
+
+# ST72: ★ **`waiter_exists` は「レビュー不可」ではない。**Orca は 1 つの Run で待機が
+#       競合すると待ちを拒む。実測 2026-09-11: exec はこれを恒久的な失敗と読んで
+#       verdict 無しで成果を差し出し、**無レビューのまま succeeded になった**。
+#       依頼側にも reviewer 側にも「busy であって不在ではない」を書いておく。
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"review_mode":"on","phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; design_done
+exec_phase >/dev/null 2>&1
+# ★ spec は複数行なので **1 本の文字列として見る**。行ごとに読むと、同じ段落の
+#   別の行に在る 2 つの目印が決して同時に一致しない
+specs=$(awk -v RS='\037' 'prev == "--spec" { print } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
+miss=""
+[[ "$specs" == *'`waiter_exists`'* ]] || miss="$miss [no-code-name]"
+[[ "$specs" == *'It does not count as an empty'* ]] || miss="$miss [reviewer]"
+[[ "$specs" == *'only the empty waits in step 6 justify that'* ]] || miss="$miss [worker]"
+[[ -z "$miss" ]] && ok "ST72 待機の競合は再試行だと両側に書く" || fail "ST72:$miss"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

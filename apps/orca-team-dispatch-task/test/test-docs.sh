@@ -528,6 +528,9 @@ normalise_headings() {
       skill:'## Step 1: Write the request down'|guide:'## Step 1: 依頼を書き出す') echo 'h2:step-1' ;;
       skill:'## Step 2: Start'|guide:'## Step 2: 開始') echo 'h2:step-2' ;;
       skill:'## Step 3: Wait'|guide:'## Step 3: 待つ') echo 'h2:step-3' ;;
+      # Step 3.5 は phase_b=on のときだけの段であり、訳側の題は自由に付けられる。
+      # 固定文字列で綴じると、訳を書いた瞬間に unknown 同士の不一致で落ちる。
+      skill:'## Step 3.5: '*|guide:'## Step 3.5: '*) echo 'h2:step-3-5' ;;
       skill:'## Step 4: Bring the result home'|guide:'## Step 4: 成果を持ち帰る') echo 'h2:step-4' ;;
       skill:'## Step 5: Give the user the exact cleanup commands'|guide:'## Step 5: ユーザーへ正確な片付けコマンドを渡す') echo 'h2:step-5' ;;
       skill:'## Step 6: Ask once, then run what the user approves'|guide:'## Step 6: 一度だけ尋ね、承認されたものを実行する') echo 'h2:step-6' ;;

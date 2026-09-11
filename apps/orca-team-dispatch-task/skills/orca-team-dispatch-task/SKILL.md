@@ -459,6 +459,12 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 that is cut off does not lose anything — nothing is acknowledged until a batch is fully
 processed — but while it is gone nobody is answering the workers, so start it again.
 
+**When `phase_b` is on, this wait does not return until `exec` has finished — and nothing has
+started `exec` yet.** Its aggregate needs a `status.json` for `integration_role`, which is
+`exec` under `phase_b`, so a wait left alone here polls for the full 24 hours in silence with
+every worker it can see already finished. Go to Step 3.5 **while this wait keeps running**,
+then come back to the exit table below.
+
 While it runs it does two things besides collecting outcomes. It answers each `merge_ready`
 with an acceptance or a remediation, and it **types one line into that worker's terminal**.
 That second part is not decoration: a message put in an Orca mailbox does not wake a worker
@@ -556,6 +562,60 @@ narrow on purpose:
 - **Orca already settled it** → nothing is sent; the local record is brought into line.
 
 Run it when Step 3 reports exit 4, or when a task sits unfinished with no worker left.
+
+## Step 3.5: Start the exec phase when `phase_b` is on
+
+Skip this whole step when `phase_b` is `off` — `design` carries the work itself and there is
+no second stage.
+
+`orca-start.sh` starts one stage per call. Step 2 ran `--phase design`; the builder is a
+separate stage, because nobody can implement a plan that does not exist yet. **Nothing else
+starts it** — not Step 2, not the wait, not the workers. Step 3's wait will not return until
+`exec` has run, so a dispatch that skips this step hangs for 24 hours with every worker that
+was started already finished, and says nothing at all while it does.
+
+**Leave Step 3's wait running. Do not stop it.** It reads `workers.json` again whenever a
+message names a dispatch it does not know, so it picks `exec` and `exec_review` up by itself
+once this step has recorded them. The batch that named them is never acknowledged before it
+is understood, so nothing is lost while it reloads.
+
+Stopping it to start a replacement is worse than doing nothing: Orca's waiter outlives the
+process that held it, so the new one is refused for a while, and nobody answers any worker
+during that gap.
+
+Because the wait holds the mailbox, `design`'s own status file is what tells you it is done.
+Look at it, once per task, and check again in a minute if it is not settled yet:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+jq -r '.status // "missing"' "$SD/roles/design/status.json" 2>/dev/null || echo missing
+```
+
+- `done` → start the stage, below.
+- `error` → **do not start it.** There is no plan worth building. Go to Step 5, and tell the
+  user what `$SD/roles/design/result.md` says.
+- anything else → `design` is still working. Look again later.
+
+Then, once per task whose `design` reported `done`:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SLUG:?set SLUG to that task's slug}"
+bash "$PLUGIN/bin/orca-start.sh" --phase exec --slug "$SLUG"
+```
+
+It continues that task's existing Run and status dir, so it takes no `--request-file`, no
+`--objective` and no `--run`. It starts `exec_review` before `exec` when `review_mode` is on,
+for the same reason Step 2 starts a reviewer first: the builder may ask for a review the
+moment it starts.
+
+It refuses, without starting anything, when `design` is not `done`, when `plan.md` is missing
+or empty, or when `exec` already has a dispatch. Those are guards, not failures to retry
+around — read what the message names and fix that.
+
+Then go back to Step 3's exit table. The wait you already have is still the one driving this:
+it now answers `exec` too, and it does not return until `exec` has settled. Its log says
+`a dispatch was added after this wait started` at the moment it picks the new stage up.
 
 ## Step 4: Bring the result home
 
@@ -973,6 +1033,9 @@ State these when they apply. Do not work around them silently.
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Setup hooks do not run unless you ask for them | Set `setup` to `run`. A worktree whose setup failed never gets a worker, so a failure shows up as a refusal to start rather than as a confusing result |
 | A pull request is opened, never merged or reviewed by this skill | Review and merge it yourself. The issue closes when the pull request merges, not when the run ends |
+| A wait notices a new stage only once a message from it arrives | It reloads `workers.json` on the first message naming a dispatch it does not know, so Step 3.5 needs no restart. Until that first message the new roles are missing from its progress lines, which is not a sign that the stage failed to start |
+| A worker may be unable to obtain its own review wait | Measured 2026-09-11: `exec` reported that its review wait could not start because Orca had an already-active actionable waiter for the Run, so it offered its work with no verdict. Workers are now told that this refusal means the mailbox is busy, not that review is unavailable, and to run the wait again. When it still ends up unreviewed the wait names it: `accepted UNREVIEWED` in its log, and `review=unreviewed` on that role's final line |
+| `phase_b=on` needs its second stage started by hand, and a wait missing it fails silently | Step 3.5 starts it. A wait whose `integration_role` never writes a `status.json` keeps polling for 24 hours with nothing in its log and every started worker already finished; check `roles/<integration_role>/status.json` before concluding a worker is stuck |
 | `phase_b=on` costs a second worker and a second worktree per task | Leave it off unless separating planning from building is worth that. The plan is kept at `.dispatch/<slug>/plan.md` either way it is written |
 | An `--issue` run does not resume by itself after a crash | The next run's `reconcile` finds the claim, releases it when nothing is running, and stops the run when something might be |
 | A slow issue holds up the rest of its batch | The wait is per batch. Use a smaller batch size when one issue is expected to be long |

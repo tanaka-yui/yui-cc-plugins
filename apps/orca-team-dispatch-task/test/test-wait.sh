@@ -622,4 +622,84 @@ out=$(w 2>/dev/null); rc=$?
   && ok "WT69 heartbeat は batch を止めない" || fail "WT69 (rc=$rc out=$out)"
 teardown
 
+
+# WT70: ★ **起動後に増えた段の dispatch で batch を落とさない。**`--phase exec` は、この
+#      待機が走っている最中に workers.json へ 2 段目を足す（実測 2026-09-11: exec の
+#      merge_ready が unknown dispatch として exit 1 になり、wait を作り直すまで drain
+#      できなかった）。ack していない以上 batch は残っているので、読み直して処理する。
+setup; dn
+mkdir -p "$SD/roles/exec"; echo 'built' > "$SD/roles/exec/result.md"
+export WT70_SD="$SD"
+cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<'HOOK'
+#!/usr/bin/env bash
+jq -c '.roles.exec = {"terminal":"term_e","task":"task_x","dispatch":"ctx_e","retained":false}' \
+  "$WT70_SD/workers.json" > "$WT70_SD/w.tmp" && mv "$WT70_SD/w.tmp" "$WT70_SD/workers.json"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d70",count:1,messages:[
+  {id:"mr70",type:"merge_ready",subject:"merge_ready: n70",payload:({taskId:"task_x",dispatchId:"ctx_e"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -ne 1 && "$out" == *"accepted exec"* ]] \
+  && ok "WT70 待機中に増えた dispatch を読み直して処理する" || fail "WT70 (rc=$rc out=$out)"
+unset WT70_SD; teardown
+
+# WT71: **読み直しても増えていなければ、それは本当に未知である。**ack せずに 1 で止まる。
+setup; dn
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d71",count:1,messages:[
+  {id:"mr71",type:"merge_ready",subject:"merge_ready: n71",payload:({taskId:"task_x",dispatchId:"ctx_zzz"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 2>&1); rc=$?
+acks=$(grep -c -- '--ack' "$ORCA_STUB_DIR/calls.log" || true)
+[[ "$rc" -eq 1 && "$acks" -eq 0 && "$out" == *"does not know"* ]] \
+  && ok "WT71 読み直しても未知なら ack せずに止まる" || fail "WT71 (rc=$rc acks=$acks out=$out)"
+teardown
+
+
+# ── 無レビューの可視化 ────────────────────────────────────────────────────
+# ★ レビュー役が起きているのに verdict が 1 つも残らないまま終わることが起きる
+#   （実測 2026-09-11: exec の review 待ちが waiter_exists で始められず、verdict 無しで
+#   成果を差し出して succeeded になった）。**差し戻さない。見えるようにする。**
+reviewed_setup() {
+  setup
+  cat > "$SD/workers.json" <<'JSON'
+{"integration_role":"exec","roles":{
+  "design":{"terminal":"term_d","task":"task_x","dispatch":"ctx_x","retained":false},
+  "exec":{"terminal":"term_e","task":"task_x","dispatch":"ctx_e","retained":false},
+  "exec_review":{"terminal":"term_er","task":"task_x","dispatch":"ctx_er","retained":false}}}
+JSON
+  mkdir -p "$SD/roles/exec" "$SD/review"; printf 'built\n' > "$SD/roles/exec/result.md"
+}
+exec_merge_ready() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dm",count:1,messages:[
+  {id:"mr",type:"merge_ready",subject:"merge_ready: nx",payload:({taskId:"task_x",dispatchId:"ctx_e"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+
+# WT72: verdict が 1 つも無ければ、受理はするが UNREVIEWED と言う。
+reviewed_setup; exec_merge_ready; out=$(w 2>&1)
+[[ "$out" == *"accepted exec"* && "$out" == *"UNREVIEWED"* ]] \
+  && ok "WT72 無レビューの受理を名指しする" || fail "WT72 (out=$out)"; teardown
+
+# WT73: verdict が在れば黙る。**正常な往復を警告で汚さない。**
+reviewed_setup; printf 'ok\nVERDICT: approved\n' > "$SD/review/code-round-1-findings.md"
+exec_merge_ready; out=$(w 2>&1)
+[[ "$out" == *"accepted exec"* && "$out" != *"UNREVIEWED"* ]] \
+  && ok "WT73 verdict が在れば警告しない" || fail "WT73 (out=$out)"; teardown
+
+# WT74: 最終行にも載せる。result.md を読まなくても無レビューだと分かる。
+reviewed_setup
+printf '{"status":"done"}\n' > "$SD/roles/exec/status.json"
+jq -nc '["worker_done|task_x|ctx_x|succeeded","worker_done|task_x|ctx_e|succeeded","worker_done|task_x|ctx_er|succeeded"]' \
+  > "$SD/received.json"
+out=$(w 2>/dev/null); rc=$?
+# ★ **行ごとに見る。**文字列全体への glob は行をまたいで一致するので、design の行に
+#   載っていないことを確かめたつもりで exec の行の語を拾ってしまう
+l_exec=$(grep 'role=exec ' <<<"$out"); l_design=$(grep 'role=design ' <<<"$out")
+[[ "$rc" -eq 0 && "$l_exec" == *"review=unreviewed"* && "$l_design" != *"review=unreviewed"* ]] \
+  && ok "WT74 最終行に review=unreviewed が載る" || fail "WT74 (rc=$rc out=$out)"; teardown
+
+# WT75: **レビュー役が起きていなければ何も足さない**（review_mode=off の既定を汚さない）。
+setup; dn; msg; out=$(w 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" != *"review="* ]] \
+  && ok "WT75 review_mode=off には足さない" || fail "WT75 (rc=$rc out=$out)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

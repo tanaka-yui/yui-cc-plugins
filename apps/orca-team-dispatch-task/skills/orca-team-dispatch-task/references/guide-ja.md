@@ -443,6 +443,12 @@ bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step
 無い（batch を処理し切るまで ack しない）が、居ない間はだれも worker に答えていないので、
 その都度また起動する。
 
+**`phase_b` が on のとき、この待機は `exec` が終わるまで戻らない — そしてまだ誰も `exec` を
+起こしていない。**集約には `integration_role` の `status.json` が要り、`phase_b` ではそれは
+`exec` である。ここで放っておいた待機は、見えている worker が全員終わっている状態のまま、
+24 時間だまって polling し続ける。**この待機を走らせたまま** Step 3.5 へ行き、そのあと下の
+exit 表へ戻る。
+
 走っている間、outcome の収集のほかに 2 つのことをする。`merge_ready` ごとに受理か差し戻しを
 返し、**その worker の端末へ 1 行入力する**。後半は飾りではない — Orca のメールボックスに
 入れたメッセージは、ターンを閉じた worker を起こさないので、**だれも読まない返事はその
@@ -537,6 +543,60 @@ bash "$PLUGIN/bin/orca-recover.sh" --status-dir "$SD" --dry-run
 - **Orca が既に決着させていた** → 何も送らず、ローカルの記録を合わせる。
 
 Step 3 が exit 4 を返したとき、または worker が居ないままタスクが終わらないときに実行する。
+
+## Step 3.5: `phase_b` が on のときに exec 段を起こす
+
+`phase_b` が `off` のときはこの節をまるごと飛ばす — `design` が自分で成果を運ぶので、
+2 段目は存在しない。
+
+`orca-start.sh` は 1 回の呼び出しで 1 段だけを起こす。Step 2 が `--phase design` を走らせた。
+実装役が別の段なのは、まだ存在しない計画を実装できる者が居ないからである。**ほかに起こす
+主体は居ない** — Step 2 でもなく、待機でもなく、worker でもない。Step 3 の待機は `exec` が
+走り切るまで戻らないので、この節を飛ばした dispatch は、起動した worker が全員終わっている
+状態のまま 24 時間ハングし、そのあいだ何ひとつ言わない。
+
+**Step 3 の待機は走らせたままにする。止めてはならない。**知らない dispatch を名指しする
+message が来るたびに `workers.json` を読み直すので、この節が `exec` と `exec_review` を
+記録すれば、待機は自分でそれらを拾う。名指しした batch は理解されるまで ack されないので、
+読み直しのあいだに失われるものは無い。
+
+止めて起動し直すのは、何もしないより悪い。Orca の waiter は、それを握っていたプロセスより
+長く生き残るので、新しい待機はしばらく弾かれ、その隙間のあいだ誰も worker に答えない。
+
+待機がメールボックスを握っている以上、`design` が終わったことを教えてくれるのは `design`
+自身の status ファイルである。タスクごとに 1 回見て、まだ決着していなければ 1 分後にもう
+一度見る:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+jq -r '.status // "missing"' "$SD/roles/design/status.json" 2>/dev/null || echo missing
+```
+
+- `done` → 下の手順で段を起こす。
+- `error` → **起こしてはならない。**建てる価値のある計画が無い。Step 5 へ進み、
+  `$SD/roles/design/result.md` が何と言っているかをユーザーへ伝える。
+- それ以外 → `design` はまだ working である。あとでもう一度見る。
+
+そのうえで、`design` が `done` を報告したタスクごとに 1 回:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SLUG:?set SLUG to that task's slug}"
+bash "$PLUGIN/bin/orca-start.sh" --phase exec --slug "$SLUG"
+```
+
+これはそのタスクの既存の Run と status dir を引き継ぐので、`--request-file` も `--objective`
+も `--run` も取らない。`review_mode` が on なら `exec` より先に `exec_review` を起こす。
+Step 2 が reviewer を先に起こすのと同じ理由である — 実装役は起動した瞬間にレビューを
+求めうる。
+
+`design` が `done` でないとき、`plan.md` が無いか空のとき、`exec` に既に dispatch が在るとき
+は、**何も起こさずに拒否する**。これらは guard であって、回避して再試行する種類の失敗では
+ない — message が名指しするものを読んで、それを直す。
+
+そのあとは Step 3 の exit 表へ戻る。駆動しているのは既に在る待機のままである。いまは `exec`
+にも答え、`exec` が決着するまで戻らない。新しい段を拾った瞬間、その log に
+`a dispatch was added after this wait started` と出る。
 
 ## Step 4: 成果を持ち帰る
 
@@ -944,6 +1004,9 @@ release するのはここである。**セッションを閉じることはユ�
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
 | setup hook は頼まない限り走らない | `setup` を `run` にする。setup が失敗した worktree には worker が付かないので、失敗は「起動を拒む」形で見える（不可解な成果物としてではなく） |
 | pull request は作るだけで、この skill が merge もレビューもしない | 自分でレビューして merge する。issue は pull request がマージされたときに閉じるのであって、実行が終わったときではない |
+| 待機が新しい段に気づくのは、そこからの message が届いたときである | 知らない dispatch を名指しする最初の message で `workers.json` を読み直すので、Step 3.5 に再起動は要らない。その最初の message が来るまで新しい役は進捗行に出ないが、それは段の起動に失敗した印ではない |
+| worker が自分のレビュー待ちを取れないことがある | 2026-09-11 に観測: `exec` は、Orca がその Run で既にアクティブな actionable waiter を持っていたためレビュー待ちを開始できないと報告し、verdict の無いまま成果を差し出した。worker には「この拒否はメールボックスが塞がっているという意味であって、レビューが使えないという意味ではない。待ちをもう一度走らせよ」と指示してある。それでも無レビューで終わったときは待機がそう名指しする — log に `accepted UNREVIEWED`、その役の最終行に `review=unreviewed` が出る |
+| `phase_b=on` は 2 段目を人が起こす必要があり、それを欠いた待機は黙って失敗する | Step 3.5 が起こす。`integration_role` が `status.json` を書かないままの待機は、log に何も出さず、起動した worker が全員終わっている状態で 24 時間 polling し続ける。worker が詰まっていると結論する前に `roles/<integration_role>/status.json` を見る |
 | `phase_b=on` はタスクごとに worker と worktree を 1 つずつ増やす | 計画と実装を分ける価値があるとき以外は off のままにする。計画は書かれたなら `.dispatch/<slug>/plan.md` に残る |
 | `--issue` の実行は crash から自力で再開しない | 次の実行の `reconcile` が claim を見つけ、何も走っていなければ release し、走っているかもしれなければ実行を止める |
 | 遅い 1 件がそのバッチの残りを待たせる | 待ちはバッチ単位である。長くなると分かっている issue があるならバッチを小さくする |

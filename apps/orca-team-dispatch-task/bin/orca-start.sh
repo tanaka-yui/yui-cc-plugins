@@ -337,6 +337,11 @@ REVIEW LOOP
 
    **Do not end your turn to wait.** A message put in your mailbox does not wake you, so a
    turn closed here leaves the worker you review waiting on a verdict that never comes.
+   **An error naming an existing waiter is not a failure.** Orca refuses a wait while
+   another one is active on this Run; the message says so (\`waiter_exists\`, or an
+   already-active actionable waiter). That means the mailbox is busy, not that the work is
+   gone. Wait a few seconds and run the same command again. It does not count as an empty
+   wait.
    If the wait returns nothing, run it again, in this same turn. Give up and go to step 5
    only once it has come back empty six times in a row (one hour).
 
@@ -399,6 +404,11 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
    **Do not end your turn to wait.** A message put in your mailbox does not wake you, so a
    turn closed here is a dispatch that stops for good. If the wait returns nothing, run it
    again, in this same turn — reviewing takes longer than one wait.
+
+   **An error naming an existing waiter is not "review is unavailable".** Orca refuses a
+   wait while another one is active on this Run (\`waiter_exists\`, or an already-active
+   actionable waiter). Wait a few seconds and run the same command again. **Do not record
+   the review as skipped because of it** — only the empty waits in step 6 justify that.
 
 4. The body names a findings file. Read it. **Only a line reading exactly
    \`VERDICT: approved\` means approved.** Anything else, including a missing VERDICT line,

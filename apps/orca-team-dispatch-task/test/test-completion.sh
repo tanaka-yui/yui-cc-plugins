@@ -283,4 +283,24 @@ aw >/dev/null 2>&1; rc=$?
   && ok "CM26 handle が無ければ読まない" || fail "CM26 (rc=$rc)"
 ateardown
 
+# CM27: ★ **`waiter_exists` は transport の障害ではない。**1 つの Run で待機が競合すると
+#       Orca は待ちを拒むが、返事が来ないわけではない（実測 2026-09-11: exec がこれを
+#       恒久的な失敗と読み、レビュー無しで成果を差し出した）。waiting を返して呼び直させる。
+asetup
+printf '%s\n' '{"ok":false,"error":{"code":"waiter_exists","message":"a waiter is already active"}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(ORCA_WAITER_RETRY_SECONDS=0 aw 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == waiting ]] && ok "CM27 waiter_exists は waiting" || fail "CM27 (rc=$rc out=$out)"
+ateardown
+
+# CM27b: waiter_exists が続いたまま期限を越えたら、待ち続けずに expired を返す。
+asetup
+printf '%s\n' '{"ok":false,"error":{"code":"waiter_exists","message":"a waiter is already active"}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+upd=$(jq -c --argjson t "$(( $(date +%s) - 1 ))" '.await_deadline = $t' "$D/completion.json")
+printf '%s\n' "$upd" > "$D/completion.json"
+out=$(ORCA_WAITER_RETRY_SECONDS=0 aw 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == expired ]] && ok "CM27b 期限を越えれば expired" || fail "CM27b (rc=$rc out=$out)"
+ateardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
