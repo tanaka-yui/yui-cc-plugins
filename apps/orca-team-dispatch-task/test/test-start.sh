@@ -861,4 +861,38 @@ miss=""
 [[ "$specs" == *'only the empty waits in step 6 justify that'* ]] || miss="$miss [worker]"
 [[ -z "$miss" ]] && ok "ST72 待機の競合は再試行だと両側に書く" || fail "ST72:$miss"; teardown
 
+# ── worktree の基点 ──────────────────────────────────────────────────────
+# ★ **`worktree create` に基点を渡す口が無い。**基点を決めるのは Orca であり、実測では
+#   先のタスクを親へ取り込んで HEAD が進んだあとに切った worktree が、取り込み前の base の
+#   ままだった。そこで実装させると、既に入っている変更を知らないまま働くので持ち帰りで衝突する。
+advance() {   # 親 checkout を 1 commit 進める
+  printf 'more\n' >> "$R/README.md"; git -C "$R" add -A
+  git -C "$R" -c user.email=t@e -c user.name=t commit -q -m advance
+}
+
+# ST73: 親が進んでいたら、作った worktree を親の HEAD まで早送りしてから起動する。
+setup; advance
+start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && "$(git -C "$WT" rev-parse HEAD)" == "$(git -C "$R" rev-parse HEAD)" ]] \
+  && ok "ST73 古い基点を親の HEAD まで早送りする" \
+  || fail "ST73 (rc=$rc wt=$(git -C "$WT" rev-parse --short HEAD) rr=$(git -C "$R" rev-parse --short HEAD))"
+teardown
+
+# ST74: **祖先関係が無ければ混ぜない。**別の歴史を早送りで繋ぐことはできない。
+setup
+printf 'theirs\n' > "$WT/OTHER.md"; git -C "$WT" add -A
+git -C "$WT" -c user.email=t@e -c user.name=t commit -q -m diverge
+advance
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"unrelated to the parent checkout"* ]] \
+  && grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST74 別の歴史では起動せず、作った worktree を戻す" || fail "ST74 (rc=$rc out=$out)"
+teardown
+
+# ST75: **一致していれば何もしない。**正常な起動に余計な操作を足さない。
+setup; out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" != *"fast-forwarded"* ]] \
+  && ok "ST75 一致していれば触らない" || fail "ST75 (rc=$rc out=$out)"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -598,6 +598,35 @@ launch_role() {
     return 1
   }
 
+  # ★ **作った worktree が、親の「いまの」HEAD から切られているかを確かめる。**
+  #   `worktree create` に基点を渡す口が無いので、基点を決めるのは Orca である。実測:
+  #   先のタスクを親へ取り込んで HEAD が進んだあとに切った worktree が、**取り込み前の
+  #   base のまま**だった。そこで実装させると、既に入っている変更を知らないまま働くので、
+  #   持ち帰りで必ず衝突する。**古い基点で黙って働かせない。**
+  #   **再利用した worktree には触らない** — 進行中の作業を巻き戻しかねない。
+  if [[ -n "$CREATED" ]]; then
+    local HRR HWT
+    HRR=$(git -C "$RR" rev-parse HEAD 2>/dev/null) || HRR=""
+    HWT=$(git -C "$WT_PATH" rev-parse HEAD 2>/dev/null) || HWT=""
+    if [[ -z "$HRR" || -z "$HWT" ]]; then
+      # ★ **読めないことを「一致している」と読まない。**判断できないなら作らない。
+      kept "cannot compare the $role worktree's base with the parent checkout"
+      cleanup_before_task; return 1
+    fi
+    if [[ "$HWT" != "$HRR" ]]; then
+      if git -C "$WT_PATH" merge-base --is-ancestor "$HWT" "$HRR" 2>/dev/null; then
+        # 親のほうが進んでいる = これが実測した状態。**早送りだけで直す** — commit は作らない
+        git -C "$WT_PATH" merge --ff-only "$HRR" >/dev/null 2>&1 || {
+          kept "the $role worktree is behind the parent checkout and cannot be fast-forwarded"
+          cleanup_before_task; return 1; }
+        log "fast-forwarded the $role worktree to the parent checkout ($HRR)"
+      elif ! git -C "$WT_PATH" merge-base --is-ancestor "$HRR" "$HWT" 2>/dev/null; then
+        # 祖先関係がどちらにも無い = 別の歴史。**推測で混ぜない**
+        kept "the $role worktree's base ($HWT) is unrelated to the parent checkout ($HRR)"
+        cleanup_before_task; return 1
+      fi
+    fi
+  fi
   rolewrite "status-$role" "$rd/status.json" '{"status":"starting"}' || return 1
   # ★ **この worktree を誰が作ったか**を記録する (round 3 finding 1)。端末はまだ存在しないので
   #   端末集合の inventory は worker-start の後（端末が生まれてから）に回す
