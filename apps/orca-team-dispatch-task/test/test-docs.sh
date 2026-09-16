@@ -526,6 +526,7 @@ normalise_headings() {
       skill:'## Configuration'|guide:'## 設定') echo 'h2:configuration' ;;
       skill:'## Issue mode'|guide:'## Issue モード') echo 'h2:issue-mode' ;;
       skill:'## Step 1: Write the request down'|guide:'## Step 1: 依頼を書き出す') echo 'h2:step-1' ;;
+      skill:'## Step 1b: Ask how each task starts'|guide:'## Step 1b: 各タスクの取りかかり方を尋ねる') echo 'h2:step-1b' ;;
       skill:'## Step 2: Start'|guide:'## Step 2: 開始') echo 'h2:step-2' ;;
       skill:'## Step 3: Wait'|guide:'## Step 3: 待つ') echo 'h2:step-3' ;;
       # Step 3.5 は phase_b=on のときだけの段であり、訳側の題は自由に付けられる。
@@ -742,8 +743,30 @@ done
 
 # SK15: 上限 4 タスクと質問の割り方が両文書にある
 grep -q 'at most four tasks at once' "$S" && grep -q 'one question per task' "$S" \
+  && grep -q 'Step 1b and Step 6 each ask' "$S" \
   && grep -q '一度に 4 タスクまで' "$G" && grep -q 'タスクごとに 1 問' "$G" \
+  && grep -q 'Step 1b と Step 6 がそれぞれタスクごとに 1 問' "$G" \
   && ok "SK15 質問の割り方" || fail "SK15"
+
+# SK17: 取りかかり方は設定から黙って読まれず、dispatch ごとにタスク単位で尋ねられる。
+#       散文の「尋ねよ」は守られないので、Step 2 のガードが省略を実行不能にすることまで固定する。
+bad=""
+grep -q '^## Step 1b: Ask how each task starts' "$S" || bad="$bad [step-1b:SKILL]"
+grep -q '^## Step 1b: 各タスクの取りかかり方を尋ねる' "$G" || bad="$bad [step-1b:guide]"
+step1b_s=$(sed -n '/^## Step 1b: /,/^## Step 2: /p' "$S")
+step1b_g=$(sed -n '/^## Step 1b: /,/^## Step 2: /p' "$G")
+for section in "$step1b_s" "$step1b_g"; do
+  grep -q 'brainstorm' <<<"$section" || bad="$bad [brainstorm]"
+  grep -q '`plan`'     <<<"$section" || bad="$bad [plan]"
+  grep -q 'superpowers:brainstorming' <<<"$section" || bad="$bad [superpowers]"
+  grep -q 'direct'     <<<"$section" || bad="$bad [direct]"
+  grep -q -- '--issue' <<<"$section" || bad="$bad [issue]"
+done
+for f in "$S" "$G"; do
+  grep -q 'DESIGN_MODE:?' "$f" || bad="$bad [guard:$(basename "$f")]"
+  grep -q -- '--design-mode "\$DESIGN_MODE"' "$f" || bad="$bad [flag:$(basename "$f")]"
+done
+[[ -z "$bad" ]] && ok "SK17 取りかかり方をタスクごとに尋ねる" || fail "SK17:$bad"
 
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \

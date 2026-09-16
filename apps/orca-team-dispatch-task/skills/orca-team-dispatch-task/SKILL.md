@@ -175,18 +175,23 @@ Report what changed and offer to continue at S1.
 `design_mode` only ever changes the `design` role's instructions. `exec` follows the plan and
 a reviewer builds nothing, so telling them how to start would just blur who decides.
 
+**The configured value is a default, not a decision.** A dispatch never starts a worker on it
+unasked: Step 1b asks for every task and Step 2 carries the answer. `direct` is therefore
+reachable only through the configuration and through `--issue`; a dispatch someone is watching
+is always told `brainstorm` or `plan`.
+
 **`brainstorm` needs a person.** The worker's terminal is a real one you can talk to, which
 is what makes it work — and it is also why an `--issue` run silently downgrades it to `plan`
 and says so: an unattended run has nobody to answer, so the worker would only wait a round
-and then decide alone anyway.
+and then decide alone anyway. That run asks nothing, so it has no Step 1b.
 
 A `brainstorm` worker is told not to stall if nobody answers, and to say so in `result.md`
 rather than inventing its own version of the skill when it is not installed.
 
 ### Trying one dispatch without saving
 
-Step 2 accepts `--agent`, `--model` and `--effort`. They outrank both layers for that one
-call and write nothing, so a model can be tried before it is saved.
+Step 2 accepts `--agent`, `--model`, `--effort` and `--design-mode`. They outrank both layers
+for that one call and write nothing, so a model can be tried before it is saved.
 
 ## Issue mode
 
@@ -373,9 +378,9 @@ hand-written dispatch: it decides, the user approves, and only what they approve
 ## Step 1: Write the request down
 
 Dispatch at most four tasks at once. Four tasks is already four live agent sessions, and
-Step 6 asks one question per task — `AskUserQuestion` takes at most four. If the user wants
-more, show them the task count and the number of sessions it will start, and get an explicit
-yes before going past four.
+Step 1b and Step 6 each ask one question per task — `AskUserQuestion` takes at most four. If
+the user wants more, show them the task count and the number of sessions it will start, and get
+an explicit yes before going past four.
 
 The worker reads the request from a file. Copy it verbatim — summarising it is how the
 user's actual instructions get lost. Do this once per task, giving each task its own slug
@@ -392,6 +397,38 @@ printf 'request_file=%s\n' "$REQ"
 Give the file-write tool the printed `request_file` path. Shell variables do not cross tool
 calls, so set `REQ` to that exact printed path before running Step 2.
 
+## Step 1b: Ask how each task starts
+
+**Ask this before Step 2, once for every task, every time.** A configured `design_mode` is the
+answer this question starts on, never a reason to skip it — how a task is best started differs
+task by task, and a batch of four is four separate decisions.
+
+Read the configured value first:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
+bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --project-root "$RR" \
+  | jq -r .design_mode
+```
+
+Then ask one question per task, naming that task's slug, with two answers:
+
+| Answer | What the `design` worker is told |
+|---|---|
+| `brainstorm` | Start with the `superpowers:brainstorming` skill and settle the open questions with whoever is watching its terminal, before planning or building anything |
+| `plan` | Decide the approach and record it in `result.md` before the first edit |
+
+Offer the configured value first when it is one of those two, and `plan` first when it is
+`direct`. **`direct` is not an answer here** — a dispatch someone is watching is a dispatch
+that can be asked about, so the choice is between talking it through and writing it down.
+
+Keep each task's answer as that task's `DESIGN_MODE` and pass it in Step 2. Step 2 refuses to
+run without it, so a task nobody was asked about cannot be started.
+
+**`--issue` has no Step 1b.** An unattended run has nobody to ask, so it takes `design_mode`
+from the configuration and downgrades `brainstorm` to `plan`.
+
 ## Step 2: Start
 
 Run this once per task. **The first call creates the Run and prints `run_id`; every later
@@ -400,16 +437,19 @@ mailbox.** Call them one after another, not in parallel.
 
 ```bash
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
+: "${DESIGN_MODE:?set DESIGN_MODE to this task's Step 1b answer: brainstorm or plan}"
 RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
+        --design-mode "$DESIGN_MODE" \
         --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
 RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
 printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
 ```
 
-Shell variables do not cross tool calls here either. Keep the printed `status_dir` of every
-task and the single `run_id`; Step 3, Step 4 and Step 5 all need them by their exact values.
+Shell variables do not cross tool calls here either, and `DESIGN_MODE` is one of them: set it
+in this call from that task's Step 1b answer. Keep the printed `status_dir` of every task and
+the single `run_id`; Step 3, Step 4 and Step 5 all need them by their exact values.
 
 Exit 1 means that task's worker did not start. If the message says resources are KEPT, the
 Task already exists: do not delete anything, and run the inspection command it prints. Tasks

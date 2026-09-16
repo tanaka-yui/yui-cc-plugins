@@ -162,18 +162,23 @@ bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --unset roles
 `design_mode` が変えるのは **`design` の指示だけ**である。`exec` は計画に従う役であり、
 reviewer は何も作らない。両方に取りかかり方を言うと、誰が決めるのかが曖昧になる。
 
+**設定値は既定であって決定ではない。**dispatch がそれを尋ねずに worker へ適用することは
+無い。Step 1b がタスクごとに尋ね、Step 2 がその答えを運ぶ。したがって `direct` へ到達できるのは
+設定と `--issue` の経路だけであり、**人が見ている dispatch には必ず `brainstorm` か `plan` の
+どちらかが渡る**。
+
 **`brainstorm` は人を要する。**worker の端末は実際に話しかけられる端末であり、それが
 この mode を成立させている。同じ理由で、**`--issue` の実行は黙って `plan` へ落とし、
 落としたことを言う** — 無人実行には答える人が居ないので、worker は 1 往復待ってから
-どのみち自分で決めることになる。
+どのみち自分で決めることになる。その実行は何も尋ねないので、Step 1b を持たない。
 
 `brainstorm` の worker には、**答えが無くても止まらない**こと、skill が入っていなければ
 自分流の代替を発明せず `result.md` にそう書くことまで指示してある。
 
 ### 保存せずに 1 回だけ試す
 
-Step 2 は `--agent` / `--model` / `--effort` を受け取る。これらはその 1 コールに限り両方の層
-より強く、**何も書かない**ので、保存する前に model を試せる。
+Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` を受け取る。これらはその 1 コールに
+限り両方の層より強く、**何も書かない**ので、保存する前に model を試せる。
 
 ## Issue モード
 
@@ -358,9 +363,9 @@ dispatch と同じである — 判定し、ユーザーが承認し、承認さ
 ## Step 1: 依頼を書き出す
 
 dispatch するのは一度に 4 タスクまでとする。4 タスクは既に 4 本の agent セッションであり、
-Step 6 はタスクごとに 1 問尋ねるが、`AskUserQuestion` が受け取れる質問は最大 4 問である。
-ユーザーがそれ以上を望むときは、タスク件数と起動するセッション本数を示し、4 を超える前に
-明示的な同意を得る。
+Step 1b と Step 6 がそれぞれタスクごとに 1 問尋ねるが、`AskUserQuestion` が受け取れる質問は
+最大 4 問である。ユーザーがそれ以上を望むときは、タスク件数と起動するセッション本数を示し、
+4 を超える前に明示的な同意を得る。
 
 worker は依頼をファイルから読む。逐語で写し、要約しない。要約するとユーザーが実際に
 出した指示が失われる。これはタスクごとに 1 回行い、タスクごとに固有の slug と固有の
@@ -377,6 +382,38 @@ printf 'request_file=%s\n' "$REQ"
 表示された `request_file` path を file-write tool へ渡す。shell 変数は tool call を跨がないため、
 Step 2 を別 call で実行するときは、その正確な path を `REQ` へ設定する。
 
+## Step 1b: 各タスクの取りかかり方を尋ねる
+
+**これは Step 2 より前に、タスクごとに 1 回、毎回尋ねる。**設定済みの `design_mode` は
+この質問が始まる位置であって、質問を省く理由ではない — 取りかかり方の適切さはタスクごとに
+異なり、4 件のバッチは 4 つの別々の判断である。
+
+まず設定値を読む:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
+bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --project-root "$RR" \
+  | jq -r .design_mode
+```
+
+そのうえで、タスクごとに 1 問、そのタスクの slug を示して 2 択で尋ねる:
+
+| 答え | `design` の worker に渡る指示 |
+|---|---|
+| `brainstorm` | `superpowers:brainstorming` skill から始め、計画や実装の前に、端末を見ている人と未解決の論点を詰める |
+| `plan` | 最初の編集より前に取りかかり方を決め、`result.md` に記録する |
+
+設定値がこの 2 つのいずれかならそれを先頭に置き、`direct` なら `plan` を先頭に置く。
+**ここでは `direct` は答えにならない** — 人が見ている dispatch は尋ねられる dispatch なので、
+選択は「話して詰める」か「書いて決める」かの間にある。
+
+各タスクの答えをそのタスクの `DESIGN_MODE` として保持し、Step 2 で渡す。Step 2 はそれが
+無ければ実行を拒むので、**誰にも尋ねられていないタスクは起動できない。**
+
+**`--issue` は Step 1b を持たない。**無人実行には尋ねる相手が居ないので、`design_mode` は
+設定から取り、`brainstorm` は `plan` へ落とす。
+
 ## Step 2: 開始
 
 これをタスクごとに 1 回実行する。**最初の呼び出しが Run を作って `run_id` を印字し、以降の
@@ -385,15 +422,18 @@ mailbox を共有する。**並列にではなく、順番に呼ぶ。
 
 ```bash
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
+: "${DESIGN_MODE:?set DESIGN_MODE to this task's Step 1b answer: brainstorm or plan}"
 RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
+        --design-mode "$DESIGN_MODE" \
         --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
 RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
 printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
 ```
 
-ここでも shell 変数は tool call を跨がない。全タスクの `status_dir` と 1 つの `run_id` を
+ここでも shell 変数は tool call を跨がず、`DESIGN_MODE` もその 1 つである。この call の中で、
+そのタスクの Step 1b の答えから設定する。全タスクの `status_dir` と 1 つの `run_id` を
 印字された値のまま控える。Step 3、Step 4、Step 5 はいずれもその正確な値を必要とする。
 
 exit 1 はそのタスクの worker が起動しなかったことを意味する。メッセージに resources are KEPT と
