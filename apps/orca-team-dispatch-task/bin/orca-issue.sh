@@ -68,13 +68,17 @@ SD="$RR/.dispatch/$SLUG"
 #   入れないと state file と lock で親が常に dirty になり、`orca-merge.sh` の dirty
 #   ガードが必ず発火して **1 件も merge できない**（実測）。state file の置き場所は
 #   呼び出し側が決めるので、その directory 名を除外する。
+#   ★ **両辺を同じ形に揃えてから比べる。**片方だけ `pwd -P` で symlink を解決すると、
+#   macOS の `/var` → `/private/var` のように **repo root が symlink 越しのとき必ず外れる**
+#   （実測: fixture の親が `?? .dispatch-issue/` のままになり merge が 1 件も通らない）。
 SFD=$(cd "$(dirname "$SF")" 2>/dev/null && pwd -P) || SFD=""
-if [[ -n "$SFD" && "$SFD" == "$RR"/* ]]; then
+RRP=$(cd "$RR" 2>/dev/null && pwd -P) || RRP="$RR"
+if [[ -n "$SFD" && "$SFD" == "$RRP"/* ]]; then
   EX=$(git -C "$RR" rev-parse --git-path info/exclude 2>/dev/null || echo "")
   case "$EX" in /*) ;; ?*) EX="$RR/$EX" ;; esac
   if [[ -n "$EX" ]]; then
     mkdir -p "$(dirname "$EX")"
-    ENTRY="${SFD#"$RR"/}/"
+    ENTRY="${SFD#"$RRP"/}/"
     grep -qxF "$ENTRY" "$EX" 2>/dev/null || printf '%s\n' "$ENTRY" >> "$EX"
   fi
 fi

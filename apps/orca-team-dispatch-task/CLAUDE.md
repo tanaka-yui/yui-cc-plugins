@@ -133,7 +133,10 @@ path は UNC で返り、bash の `-d` も `git -C` も解釈できない）。�
 - **`orca-issue.sh` は資源を消さない**（IS6）。無人で走る側が消すと失敗の証拠がその場で
   失われる。片付けは Step 5 の判定と Step 6 の承認を経る
 - **`.dispatch-issue/` を `info/exclude` へ入れる。**入れないと state file と lock で親が
-  常に dirty になり、merge の dirty ガードが必ず発火して 1 件も merge できない（実測）
+  常に dirty になり、merge の dirty ガードが必ず発火して 1 件も merge できない（実測）。
+  **除外するか否かの判定は両辺を `pwd -P` で揃えてから比べる。**`--state-file` 側だけ解決すると
+  macOS の `/var` → `/private/var` のように **repo root が symlink 越しのとき必ず外れ**、
+  除外が書かれないまま上の失敗が起きる（回帰は `test-issue.sh` の IS23）
 
 ## 取り込み先を 1 箇所で決める
 

@@ -85,7 +85,7 @@ setup; worker_done succeeded done
 out=$(run_issue 2>&1); rc=$?
 [[ "$rc" -eq 0 ]] \
   && [[ "$(jq -r '.merged' "$R/.dispatch/issue-5-x/integration-result.json")" == true ]] \
-  && git -C "$R" log --oneline | grep -q . \
+  && [[ -n "$(git -C "$R" log --oneline)" ]] \
   && [[ -f "$R/WORK.md" ]] \
   && grep -q -- '--add-label dispatch/done' <(ghlog) \
   && grep -q 'issue close 5' <(ghlog) \
@@ -336,6 +336,21 @@ sp=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1)
   && [[ "$sp" != *'superpowers:brainstorming'* ]] \
   && [[ "$sp" == *'Decide the approach before you touch anything'* ]] \
   && ok "IS22 issue 実行は brainstorm を plan へ落とし、そう言う" || fail "IS22 ($out)"
+teardown
+
+# IS23: ★ **state ディレクトリの除外は、repo root が symlink 越しでも書かれる。**
+#       除外を決める比較が `pwd -P` で解決した側と解決していない `--repo-root` を
+#       突き合わせていると、macOS の `/var` → `/private/var` のような symlink 越しの
+#       repo で **常に外れる**。外れると親は `?? .dispatch-issue/` で dirty のままになり、
+#       `orca-merge.sh` の dirty ガードが発火して **1 件も merge できない**（実測）。
+setup; worker_done succeeded done
+run_issue >/dev/null 2>&1
+EXF=$(git -C "$R" rev-parse --git-path info/exclude)
+case "$EXF" in /*) ;; ?*) EXF="$R/$EXF" ;; esac
+grep -qxF '.dispatch-issue/' "$EXF" 2>/dev/null \
+  && [[ -z "$(git -C "$R" status --porcelain)" ]] \
+  && ok "IS23 symlink 越しの repo でも state dir を除外し、親を dirty にしない" \
+  || fail "IS23 (exclude=$(tr '\n' ' ' < "$EXF" | sed 's/^.*# \*~ //')) (porcelain=$(git -C "$R" status --porcelain | tr '\n' ' '))"
 teardown
 
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
