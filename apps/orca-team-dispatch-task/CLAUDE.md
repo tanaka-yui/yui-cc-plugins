@@ -188,12 +188,17 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
   cmux 版の Step 1c 相当だが、**Orca では端末を Orca が作るので起動フラグに触れない** —
   spec 本文の指示として効かせる。`--issue` は無人なので `brainstorm` を `plan` へ落とす
   （cmux 版が loop-mode で「plan mode に固定」としているのと同じ理由）
-- **取りかかり方は dispatch ごとにタスク単位で尋ねる**（SKILL.md の Step 1b）。設定値は
-  「最初に提示する答え」であって黙って使われる値ではない。**散文の「尋ねよ」では守られない**
+- **取りかかり方は dispatch ごとに 1 回の質問でまとめて尋ねる**（SKILL.md の Step 1b。cmux 版 1c
+  と同じ「brainstorming で始めるタスクを選ぶ」形）。1 問 4 タスク × 最大 4 問で 1 回に 16 件まで。
+  設定値は「推奨として示す答え」であって黙って使われる値ではない。**散文の「尋ねよ」では守られない**
   （cmux 版の 1c は MUST もテストも無く、実際に飛ばされる）ので、Step 2 の block に
   `: "${DESIGN_MODE:?...}"` を置き、**尋ねていないタスクを起動不能にする**ことで担保する。
   2 択（`brainstorm` / `plan`）なので、**`direct` に到達できるのは設定と `--issue` だけ**。
-  回帰は `test-docs.sh` の SK17（両文書に Step 1b があること、ガードとフラグがあること）
+  回帰は `test-docs.sh` の SK17（両文書に Step 1b があること、1 回にまとめること、ガードとフラグがあること）
+- **親は設計しない**（cmux 版の当初の思想）。親の仕事はタスク分割と Step 1b の 1 問だけで、
+  brainstorming・計画・要件の質問・設計のためのコード調査は worker が自分の worktree で並列に行う。
+  宣言が無いと親が superpowers:brainstorming を自分で走らせてから dispatch してしまうので、
+  description・本文冒頭・Step 1 の 3 箇所に書く。回帰は `test-docs.sh` の SK18
 - spec の follow-up 表は F-a / F-b / F-c / F-d / F-e / F-f / F-g / F-h をすべて実装した。
   `test-docs.sh` の SK4 が `exec_review` / `merge_ready` の語を SKILL.md から締め出して
   「未実装の宣言」を防いでいる

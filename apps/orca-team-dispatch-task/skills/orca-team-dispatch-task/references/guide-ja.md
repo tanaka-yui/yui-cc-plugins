@@ -9,6 +9,10 @@
 各タスクを専用の Orca worktree と専用の worker で、1 つの共有 Run 上で実行し、
 成果を親へ持ち帰る。
 
+**親は設計しない。**親は依頼をタスクに分け、Step 1b の質問を 1 回だけ尋ね、すぐ dispatch する。
+brainstorming、計画、要件についての確認の質問、取りかかり方を決めるためのコード調査は、すべて
+各 worker が自分の worktree で並列に行う。親は dispatch 前にそのどれも行わない。
+
 ```bash
 PLUGIN="${CLAUDE_PLUGIN_ROOT:?the plugin root is not set; reinstall the plugin}"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
@@ -163,7 +167,7 @@ bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --unset roles
 reviewer は何も作らない。両方に取りかかり方を言うと、誰が決めるのかが曖昧になる。
 
 **設定値は既定であって決定ではない。**dispatch がそれを尋ねずに worker へ適用することは
-無い。Step 1b がタスクごとに尋ね、Step 2 がその答えを運ぶ。したがって `direct` へ到達できるのは
+無い。Step 1b が全タスクについて尋ね、Step 2 がその答えを運ぶ。したがって `direct` へ到達できるのは
 設定と `--issue` の経路だけであり、**人が見ている dispatch には必ず `brainstorm` か `plan` の
 どちらかが渡る**。
 
@@ -363,9 +367,14 @@ dispatch と同じである — 判定し、ユーザーが承認し、承認さ
 ## Step 1: 依頼を書き出す
 
 dispatch するのは一度に 4 タスクまでとする。4 タスクは既に 4 本の agent セッションであり、
-Step 1b と Step 6 がそれぞれタスクごとに 1 問尋ねるが、`AskUserQuestion` が受け取れる質問は
+Step 6 がタスクごとに 1 問尋ねるが、`AskUserQuestion` が受け取れる質問は
 最大 4 問である。ユーザーがそれ以上を望むときは、タスク件数と起動するセッション本数を示し、
 4 を超える前に明示的な同意を得る。
+
+**分けるだけで、設計しない。**依頼をタスクに分けることが、親が中身について下す唯一の判断である。
+`superpowers:brainstorming` を自分で呼ばず、要件についてユーザーに尋ねず、タスクを形作るために
+コードを調べない — `brainstorm` で起動した worker が、それを自分の端末でユーザーと行う。
+分け方そのものが不明なときは、分け方だけを尋ねる。
 
 worker は依頼をファイルから読む。逐語で写し、要約しない。要約するとユーザーが実際に
 出した指示が失われる。これはタスクごとに 1 回行い、タスクごとに固有の slug と固有の
@@ -384,9 +393,10 @@ Step 2 を別 call で実行するときは、その正確な path を `REQ` へ
 
 ## Step 1b: 各タスクの取りかかり方を尋ねる
 
-**これは Step 2 より前に、タスクごとに 1 回、毎回尋ねる。**設定済みの `design_mode` は
-この質問が始まる位置であって、質問を省く理由ではない — 取りかかり方の適切さはタスクごとに
-異なり、4 件のバッチは 4 つの別々の判断である。
+**これは Step 2 より前に、毎回、1 回の `AskUserQuestion` 呼び出しで尋ねる。**全タスクを
+一度に扱う。`cmux-team-dispatch-task` の Step 1c と同じ尋ね方である。設定済みの `design_mode` は
+この質問が推奨として示す値であって、質問を省く理由ではない — 取りかかり方の適切さはタスクごとに
+異なる。
 
 まず設定値を読む:
 
@@ -397,16 +407,20 @@ bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --projec
   | jq -r .design_mode
 ```
 
-そのうえで、タスクごとに 1 問、そのタスクの slug を示して 2 択で尋ねる:
+そのうえで、brainstorming から始めるタスクはどれかを尋ねる。各質問は `multiSelect` で選択肢は
+タスクの slug なので、1 問に 4 タスクまで入れる。タスクを順に区切り、その質問を 1 回の呼び出しに
+最大 4 問入れる。16 タスクを超えるときは、次の 16 件を別の呼び出しで尋ねる。選ばれたタスクは
+`brainstorm`、それ以外のタスクは `plan` になる:
 
 | 答え | `design` の worker に渡る指示 |
 |---|---|
-| `brainstorm` | `superpowers:brainstorming` skill から始め、計画や実装の前に、端末を見ている人と未解決の論点を詰める |
-| `plan` | 最初の編集より前に取りかかり方を決め、`result.md` に記録する |
+| `brainstorm`（選ばれた） | `superpowers:brainstorming` skill から始め、計画や実装の前に、端末を見ている人と未解決の論点を詰める |
+| `plan`（選ばれなかった） | 最初の編集より前に取りかかり方を決め、`result.md` に記録する |
 
-設定値がこの 2 つのいずれかならそれを先頭に置き、`direct` なら `plan` を先頭に置く。
+設定値を推奨として質問文に書く。`brainstorm` なら全タスク、`plan` か `direct` なら無し。
 **ここでは `direct` は答えにならない** — 人が見ている dispatch は尋ねられる dispatch なので、
-選択は「話して詰める」か「書いて決める」かの間にある。
+選択は「話して詰める」か「書いて決める」かの間にある。UI が空の選択を拒むことがあるので、
+自由記述の選択肢で「なし」と答えれば全タスクが `plan` で始まることを質問文に書いておく。
 
 各タスクの答えをそのタスクの `DESIGN_MODE` として保持し、Step 2 で渡す。Step 2 はそれが
 無ければ実行を拒むので、**誰にも尋ねられていないタスクは起動できない。**
@@ -431,6 +445,8 @@ SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
 RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
 printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
 ```
+
+`--objective` は依頼そのものの言葉から取る。成果を名指すだけで、先に詰めるべき設計ではない。
 
 ここでも shell 変数は tool call を跨がず、`DESIGN_MODE` もその 1 つである。この call の中で、
 そのタスクの Step 1b の答えから設定する。全タスクの `status_dir` と 1 つの `run_id` を

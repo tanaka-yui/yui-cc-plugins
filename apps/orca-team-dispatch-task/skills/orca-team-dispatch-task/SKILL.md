@@ -3,6 +3,8 @@ name: orca-team-dispatch-task
 description: >
   Orca の worktree で 1 つ以上のタスクを worker に並列実行させる。
   worker を起動し、全件の完了を待ち、成果を親ブランチへ取り込む。
+  親は設計しない — タスク分割と取りかかり方 (brainstorm / plan) だけを尋ねてすぐ dispatch し、
+  brainstorming や計画は各 worker が自分の worktree で並列に行う。
   Use when: "orca dispatch", "orca でタスクを実行", "dispatch on orca".
 argument-hint: "<task description>"
 ---
@@ -17,6 +19,11 @@ not change the language presented to the user.
 
 Run each task in its own Orca worktree with its own worker, all on one shared Run, then
 bring the results home.
+
+**No parent-side design.** The parent splits the request into tasks, asks Step 1b's single
+question, and dispatches immediately. Brainstorming, planning, clarifying questions about the
+requirements, and reading code to decide an approach all belong to each worker, in parallel,
+in its own worktree. The parent does none of them before dispatching.
 
 ```bash
 PLUGIN="${CLAUDE_PLUGIN_ROOT:?the plugin root is not set; reinstall the plugin}"
@@ -176,7 +183,7 @@ Report what changed and offer to continue at S1.
 a reviewer builds nothing, so telling them how to start would just blur who decides.
 
 **The configured value is a default, not a decision.** A dispatch never starts a worker on it
-unasked: Step 1b asks for every task and Step 2 carries the answer. `direct` is therefore
+unasked: Step 1b asks about every task and Step 2 carries the answer. `direct` is therefore
 reachable only through the configuration and through `--issue`; a dispatch someone is watching
 is always told `brainstorm` or `plan`.
 
@@ -378,9 +385,15 @@ hand-written dispatch: it decides, the user approves, and only what they approve
 ## Step 1: Write the request down
 
 Dispatch at most four tasks at once. Four tasks is already four live agent sessions, and
-Step 1b and Step 6 each ask one question per task — `AskUserQuestion` takes at most four. If
+Step 6 asks one question per task — `AskUserQuestion` takes at most four. If
 the user wants more, show them the task count and the number of sessions it will start, and get
 an explicit yes before going past four.
+
+**Split, do not design.** Splitting the request into tasks is the parent's only decision about
+its content. Do not invoke `superpowers:brainstorming` yourself, do not ask the user about the
+requirements, and do not explore the code to shape a task — a worker started with `brainstorm`
+does all of that with the user in its own terminal. When the split itself is unclear, ask only
+how to split it.
 
 The worker reads the request from a file. Copy it verbatim — summarising it is how the
 user's actual instructions get lost. Do this once per task, giving each task its own slug
@@ -399,9 +412,10 @@ calls, so set `REQ` to that exact printed path before running Step 2.
 
 ## Step 1b: Ask how each task starts
 
-**Ask this before Step 2, once for every task, every time.** A configured `design_mode` is the
-answer this question starts on, never a reason to skip it — how a task is best started differs
-task by task, and a batch of four is four separate decisions.
+**Ask this before Step 2, every time, in one `AskUserQuestion` call.** It covers every task at
+once, the way `cmux-team-dispatch-task` asks its Step 1c. A configured `design_mode` is the
+recommendation this question starts on, never a reason to skip it — how a task is best started
+differs task by task.
 
 Read the configured value first:
 
@@ -412,16 +426,21 @@ bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --projec
   | jq -r .design_mode
 ```
 
-Then ask one question per task, naming that task's slug, with two answers:
+Then ask which tasks should start with brainstorming. Each question is `multiSelect` and its
+options are task slugs, so put up to four tasks per question; group the tasks in order and put
+up to four such questions in the one call. Past sixteen tasks, ask the next sixteen in a further
+call. A selected task gets `brainstorm`, every other task gets `plan`:
 
 | Answer | What the `design` worker is told |
 |---|---|
-| `brainstorm` | Start with the `superpowers:brainstorming` skill and settle the open questions with whoever is watching its terminal, before planning or building anything |
-| `plan` | Decide the approach and record it in `result.md` before the first edit |
+| `brainstorm` (selected) | Start with the `superpowers:brainstorming` skill and settle the open questions with whoever is watching its terminal, before planning or building anything |
+| `plan` (not selected) | Decide the approach and record it in `result.md` before the first edit |
 
-Offer the configured value first when it is one of those two, and `plan` first when it is
-`direct`. **`direct` is not an answer here** — a dispatch someone is watching is a dispatch
-that can be asked about, so the choice is between talking it through and writing it down.
+Name the configured value in the question text as the recommendation: all tasks when it is
+`brainstorm`, none when it is `plan` or `direct`. **`direct` is not an answer here** — a
+dispatch someone is watching is a dispatch that can be asked about, so the choice is between
+talking it through and writing it down. The interface may refuse an empty selection, so say in
+the question that answering "none" through the free-text option starts every task on `plan`.
 
 Keep each task's answer as that task's `DESIGN_MODE` and pass it in Step 2. Step 2 refuses to
 run without it, so a task nobody was asked about cannot be started.
@@ -447,7 +466,8 @@ RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
 printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
 ```
 
-Shell variables do not cross tool calls here either, and `DESIGN_MODE` is one of them: set it
+Take `--objective` from the request's own words; it names the outcome, it is not a design to
+work out first. Shell variables do not cross tool calls here either, and `DESIGN_MODE` is one of them: set it
 in this call from that task's Step 1b answer. Keep the printed `status_dir` of every task and
 the single `run_id`; Step 3, Step 4 and Step 5 all need them by their exact values.
 

@@ -741,11 +741,11 @@ for pat in released retained already_released release_pending release_unknown; d
 done
 [[ -z "$bad" ]] && ok "SK14 N 並列と release state の契約" || fail "SK14:$bad"
 
-# SK15: 上限 4 タスクと質問の割り方が両文書にある
-grep -q 'at most four tasks at once' "$S" && grep -q 'one question per task' "$S" \
-  && grep -q 'Step 1b and Step 6 each ask' "$S" \
-  && grep -q '一度に 4 タスクまで' "$G" && grep -q 'タスクごとに 1 問' "$G" \
-  && grep -q 'Step 1b と Step 6 がそれぞれタスクごとに 1 問' "$G" \
+# SK15: 上限 4 タスクと質問の割り方が両文書にある。Step 1b は 1 回にまとめたので、上限の理由は Step 6 だけ
+grep -q 'at most four tasks at once' "$S" && grep -q 'Step 6 asks one question per task' "$S" \
+  && ! grep -q 'Step 1b and Step 6 each ask' "$S" \
+  && grep -q '一度に 4 タスクまで' "$G" && grep -q 'Step 6 がタスクごとに 1 問' "$G" \
+  && ! grep -q 'Step 1b と Step 6 がそれぞれタスクごとに 1 問' "$G" \
   && ok "SK15 質問の割り方" || fail "SK15"
 
 # SK17: 取りかかり方は設定から黙って読まれず、dispatch ごとにタスク単位で尋ねられる。
@@ -761,12 +761,28 @@ for section in "$step1b_s" "$step1b_g"; do
   grep -q 'superpowers:brainstorming' <<<"$section" || bad="$bad [superpowers]"
   grep -q 'direct'     <<<"$section" || bad="$bad [direct]"
   grep -q -- '--issue' <<<"$section" || bad="$bad [issue]"
+  grep -q 'multiSelect' <<<"$section" || bad="$bad [multiSelect]"
 done
+# 取りかかり方は 1 回の AskUserQuestion にまとめて尋ねる（cmux 版 1c と同じ形）。タスクごとの 1 問へ戻さない
+grep -q 'one `AskUserQuestion` call' <<<"$step1b_s" || bad="$bad [one-call:SKILL]"
+grep -q 'four tasks per question' <<<"$step1b_s" || bad="$bad [four-per-q:SKILL]"
+grep -q '1 回の `AskUserQuestion`' <<<"$step1b_g" || bad="$bad [one-call:guide]"
+grep -q '1 問に 4 タスクまで' <<<"$step1b_g" || bad="$bad [four-per-q:guide]"
+grep -q 'once for every task' <<<"$step1b_s" && bad="$bad [per-task:SKILL]"
 for f in "$S" "$G"; do
   grep -q 'DESIGN_MODE:?' "$f" || bad="$bad [guard:$(basename "$f")]"
   grep -q -- '--design-mode "\$DESIGN_MODE"' "$f" || bad="$bad [flag:$(basename "$f")]"
 done
-[[ -z "$bad" ]] && ok "SK17 取りかかり方をタスクごとに尋ねる" || fail "SK17:$bad"
+[[ -z "$bad" ]] && ok "SK17 取りかかり方を 1 回にまとめて尋ねる" || fail "SK17:$bad"
+
+# SK18: 親は設計しない（cmux 版の当初の思想）。宣言が description・本文・訳の全部にある
+bad=""
+sed -n '/^---$/,/^---$/p' "$S" | grep -q '親は設計しない' || bad="$bad [description]"
+grep -q '^\*\*No parent-side design\.\*\*' "$S" || bad="$bad [body:SKILL]"
+grep -q '^\*\*親は設計しない。\*\*' "$G" || bad="$bad [body:guide]"
+step1_s=$(sed -n '/^## Step 1: /,/^## Step 1b: /p' "$S")
+grep -q 'superpowers:brainstorming' <<<"$step1_s" || bad="$bad [step1-no-brainstorm]"
+[[ -z "$bad" ]] && ok "SK18 親は設計せずすぐ dispatch する" || fail "SK18:$bad"
 
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
