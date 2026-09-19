@@ -663,6 +663,17 @@ launch_role() {
     kept "the $role task was created but could not be recorded. Resources are KEPT."
     log "task=$TID  inspect with: $ORCA_BIN orchestration task-list --run $RUN --json"; return 1; }
 
+  # ★ **`worktree create` が作った空の最初の端末を覚えておく**（実測 2026-09-19）。
+  #   worker-start は既存 worktree に agent 端末を別に作るので、放っておくと空のシェルが残る。
+  #   receipt は handle を返さない（startupTerminal=null）ため、agent 端末が生まれる前に列挙する。
+  #   **この呼び出しが作り、setup を走らせず、端末がちょうど 1 枚のときだけ**それと確定する。
+  #   それ以外（再利用 / setup 端末 / repo 設定のタブ / 列挙失敗）は区別できないので触らない
+  local ST="" STL
+  if [[ -n "$CREATED" && "$SETUP" != run ]]; then
+    STL=$("$ORCA_BIN" terminal list --worktree "id:$WT_ID" --json 2>/dev/null) \
+      && ST=$(jq -r '.result.terminals | if type == "array" and length == 1 then .[0].handle // "" else "" end' \
+                <<<"$STL" 2>/dev/null) || ST=""
+  fi
   # ★ ここから先は何が起きても資源を削除しない (O19)。
   #   **rc 0 + state=ready + dispatch id の 3 つ揃い**を要求する。
   #   failed / outcome_unknown の receipt にも dispatchId が残ることがある
@@ -702,6 +713,12 @@ launch_role() {
     log "worker-start reported ready for $role but returned no agent terminal handle. Resources are KEPT."
     log "task=$TID dispatch=$DID  inspect with: $ORCA_BIN orchestration worker-show --dispatch $DID --json"
     return 1
+  fi
+  # 空の最初の端末を**ペイン単位で**閉じる。`--tab` だと agent が同じタブに split で
+  # 置かれる設定のとき agent ごと閉じる。閉じられなくても見た目だけの問題なので止めない
+  if [[ -n "$ST" && "$ST" != "$H" ]]; then
+    "$ORCA_BIN" terminal close --terminal "$ST" --json >/dev/null 2>&1 \
+      || log "could not close the empty startup terminal $ST in the $role worktree; it is left open"
   fi
   # ★ **inventory の失敗を空配列に化けさせない** (round 4 finding 1)。
   #   列挙できなかったことと「端末が 0 個」は別である。前者を [] にすると、

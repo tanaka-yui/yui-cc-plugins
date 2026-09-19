@@ -895,4 +895,42 @@ setup; out=$(start 2>&1); rc=$?
   && ok "ST75 一致していれば触らない" || fail "ST75 (rc=$rc out=$out)"
 teardown
 
+# ★ **`worktree create` は最初の端末（空のシェル）を必ず 1 枚作る**（実測 2026-09-19）。
+#   worker-start は既存 worktree に agent 端末を**別に**作るので、閉じないと空端末が残る。
+#   receipt は handle を返さない（startupTerminal=null）ので、worker-start の前に列挙する。
+startup_term() { echo '{"ok":true,"result":{"terminals":[{"handle":"term_s"}]}}' > "$ORCA_STUB_DIR/terminal_list"; }
+closes() { grep 'terminal close' "$ORCA_STUB_DIR/calls.log" | head -1; }
+
+# ST76: 作った worktree の空端末を、worker が ready になった後にペイン単位で閉じる。
+#       `--tab` は付けない — agent が同じタブに split で置かれる設定だと agent ごと閉じる
+setup; startup_term; start >/dev/null 2>&1; rc=$?
+c=$(closes); ws_n=$(grep -n 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+cl_n=$(grep -n 'terminal close' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+[[ "$rc" -eq 0 && "$c" == *term_s* && "$c" != *--tab* && -n "$cl_n" && "$cl_n" -gt "$ws_n" ]] \
+  && ok "ST76 空の最初の端末を worker-start の後に閉じる" || fail "ST76 (rc=$rc close=$c)"; teardown
+
+# ST77: **再利用した worktree の端末には触らない。**人が使っている端末かもしれない
+setup; reuse_fixture; startup_term; start >/dev/null 2>&1
+[[ -z "$(closes)" ]] && ok "ST77 再利用 worktree の端末は閉じない" || fail "ST77 ($(closes))"; teardown
+
+# ST78: **setup=run では閉じない。**setup hook がどの端末で走るかを証明できない
+setup; startup_term
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"setup":"run"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"},"setup":{"state":"succeeded"}}}\n' \
+  "$WT" > "$ORCA_STUB_DIR/worktree_create"
+start >/dev/null 2>&1
+[[ -z "$(closes)" ]] && ok "ST78 setup=run では閉じない" || fail "ST78 ($(closes))"; teardown
+
+# ST79: **1 枚でなければ閉じない。**repo 設定のタブ等と区別できない。列挙失敗も同じ
+setup; echo '{"ok":true,"result":{"terminals":[{"handle":"term_s"},{"handle":"term_t"}]}}' \
+  > "$ORCA_STUB_DIR/terminal_list"; start >/dev/null 2>&1; a=$(closes); teardown
+setup; echo 1 > "$ORCA_STUB_DIR/terminal_list.rc"; start >/dev/null 2>&1; b=$(closes)
+[[ -z "$a" && -z "$b" ]] && ok "ST79 1 枚と確定できなければ閉じない" || fail "ST79 (a=$a b=$b)"; teardown
+
+# ST80: **閉じられなくても dispatch は成功のまま。**見た目の問題で worker を失敗扱いにしない
+setup; startup_term; echo 1 > "$ORCA_STUB_DIR/terminal_close.rc"; out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 0 && -n "$(closes)" && "$out" == *"could not close"* ]] \
+  && jq -e '.roles.design.dispatch == "ctx_x"' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+  && ok "ST80 close 失敗でも成功を返す" || fail "ST80 (rc=$rc out=$out)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
