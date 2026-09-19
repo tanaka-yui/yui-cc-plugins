@@ -456,6 +456,12 @@ exit 1 はそのタスクの worker が起動しなかったことを意味す�
 あれば Task はすでに実在する。何も削除せず、表示された inspection コマンドを実行する。すでに
 起動済みのタスクは影響を受けない。通常どおり Step 3 で待つ。
 
+起動が、そのタスクの reviewer を起こしたあと `design` を起こす前に失敗したときは、status dir が
+既にあるので Step 2 は同じ slug を拒否する。代わりに
+`bash "$PLUGIN/bin/orca-start.sh" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE"` で続きから
+起動する。記録済みの依頼と Run を使い、まだ dispatch の無い役だけを起こす。`design` に dispatch が
+既にあれば拒否する。
+
 起動に失敗しても worker が生きていることがある。exit 1 のメッセージが `dispatch=<id>` を
 名指ししているとき、または `worker-start did not report ready` と言っているとき（受け取った
 dispatch id を印字せずに記録している）、その worker は共有 mailbox へ完了を送りうる。その

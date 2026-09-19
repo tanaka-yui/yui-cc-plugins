@@ -475,6 +475,12 @@ Exit 1 means that task's worker did not start. If the message says resources are
 Task already exists: do not delete anything, and run the inspection command it prints. Tasks
 that already started are unaffected — wait for them in Step 3 as usual.
 
+When the start failed after the task's reviewer started but before its `design` did, the
+status dir already exists, so Step 2 refuses the same slug. Continue it instead with
+`bash "$PLUGIN/bin/orca-start.sh" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE"`. It
+uses the recorded request and Run, starts only the roles that have no dispatch yet, and
+refuses when `design` already has one.
+
 A failed start can still leave a live worker. When the exit-1 message names a `dispatch=<id>`,
 or says `worker-start did not report ready` — which records the dispatch id it did get without
 printing it — that worker may still send its completion to the shared mailbox. Add that task's

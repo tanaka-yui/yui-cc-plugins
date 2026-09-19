@@ -4,6 +4,10 @@
 # Usage: orca-start.sh --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
 #          [--run <run_id>] [--agent <id>] [--model <id>] [--effort <level>]
 #          [--phase design|exec] [--design-mode direct|plan|brainstorm]
+#        orca-start.sh --slug <s> --resume [--repo-root <p>] [--design-mode ...]
+#
+# ★ `--resume` は **design 段の起動が途中で落ちた status dir を続ける。**記録済みの依頼と
+#   Run を使い、dispatch の無い役だけを起こす（exec 段は元から続きなので付けない）。
 #
 # ★ **exec は design が終わってからでないと起こせない。**計画が無いうちに実装させられない
 #   ので、起動は 2 段に分かれる。`--phase design`（既定）が 1 段目、`--phase exec` が
@@ -29,8 +33,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." &&
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 RF="" SLUG="" OBJ="" RR="" RUN_IN=""
 # 役ごとの agent / model / effort は config.json が正本。ここは 1 回きりの上書き口である
-OV_AGENT="" OV_MODEL="" OV_EFFORT="" OV_DESIGN_MODE="" PHASE=design
+OV_AGENT="" OV_MODEL="" OV_EFFORT="" OV_DESIGN_MODE="" PHASE=design RESUME=0
 while [[ $# -gt 0 ]]; do case "$1" in
+  --resume)       RESUME=1; shift ;;
   --request-file) need2 "$1" $#; RF="$2";     shift 2 ;;
   --slug)         need2 "$1" $#; SLUG="$2";   shift 2 ;;
   --objective)    need2 "$1" $#; OBJ="$2";    shift 2 ;;
@@ -43,13 +48,20 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --phase)        need2 "$1" $#; PHASE="$2";     shift 2 ;;
   *) die "unknown option: $1" ;; esac; done
 case "$PHASE" in design|exec) ;; *) die "--phase must be design or exec: $PHASE" ;; esac
-# exec 段は 1 段目の記録を引き継ぐので依頼ファイルを要らない
-if [[ "$PHASE" == exec ]]; then
+if [[ "$RESUME" -eq 1 ]]; then
+  [[ "$PHASE" == design ]] || die "--resume continues the design phase; the exec phase always continues"
+  # 依頼と Run は記録済みのものを使う。別のものを渡されても黙って捨てない
+  [[ -z "$RF" && -z "$RUN_IN" ]] || die "--resume uses the recorded request and Run; do not pass --request-file or --run"
+fi
+# ★ **続きの起動**（exec 段と --resume）は既存の status dir の記録を引き継ぐ
+CONT=0; [[ "$PHASE" == exec || "$RESUME" -eq 1 ]] && CONT=1
+# 続きの起動は記録を引き継ぐので依頼ファイルを要らない
+if [[ "$CONT" -eq 1 ]]; then
   [[ -n "$SLUG" ]] || die "--slug is required"
 else
   [[ -n "$RF" && -n "$SLUG" && -n "$OBJ" ]] || die "--request-file, --slug and --objective are required"
 fi
-if [[ "$PHASE" != exec ]]; then
+if [[ "$CONT" -eq 0 ]]; then
   [[ -r "$RF" ]] || die "--request-file is not readable: $RF"
   [[ -s "$RF" ]] || die "--request-file must not be empty: $RF"
 fi
@@ -66,6 +78,8 @@ SD="$RR/.dispatch/$SLUG"
 # exec 段は既存の status dir の続きである。1 段目と同じ「既にある＝やり直し」判定を当てない
 if [[ "$PHASE" == exec ]]; then
   [[ -d "$SD" ]] || { log "$SD does not exist; run the design phase first"; exit 1; }
+elif [[ "$RESUME" -eq 1 ]]; then
+  [[ -d "$SD" ]] || { log "$SD does not exist; there is nothing to resume"; exit 1; }
 else
   [[ ! -e "$SD" ]] || { log "$SD already exists; pick a different slug"; exit 1; }
 fi
@@ -126,6 +140,8 @@ PHASE_B=$(jq -r '.phase_b // "off"' <<<"$CFG")
 SETUP=$(jq -r '.setup // "skip"' <<<"$CFG")
 DESIGN_MODE=$(jq -r '.design_mode // "direct"' <<<"$CFG")
 LAUNCH_ORDER=()
+# $1=role → その役の dispatch が workers.json に記録済みなら 0
+started() { jq -e --arg r "$1" '.roles[$r].dispatch // empty | length > 0' "$SD/workers.json" >/dev/null 2>&1; }
 if [[ "$PHASE" == exec ]]; then
   # ★ **2 段目。**design が成功していることと、その計画が実在することを確かめてから起こす。
   [[ "$PHASE_B" == on ]] || { log "phase_b is off; there is no exec role to start"; exit 1; }
@@ -139,10 +155,33 @@ if [[ "$PHASE" == exec ]]; then
     && { log "the exec role has already started for $SLUG"; exit 1; }
   # ★ **reviewer が先**（T4a と同じ理由）。exec は起動直後にレビューを依頼しうるので、
   #   その時点で exec_review の dispatch が workers.json に無いと宛先不明で落ちる。
-  [[ "$REVIEW_MODE" == on ]] && LAUNCH_ORDER+=(exec_review)
+  #   **やり直しでは起きている reviewer を起こし直さない**（実測 2026-09-19: exec_review が
+  #   起きたあと exec の worktree create だけが落ちた）。起こし直すと先の reviewer が
+  #   workers.json から外れ、誰にも使われないまま retained で残る。
+  if [[ "$REVIEW_MODE" == on ]]; then
+    if started exec_review; then
+      log "exec_review has already started for $SLUG; starting exec only"
+    else
+      LAUNCH_ORDER+=(exec_review)
+    fi
+  fi
   LAUNCH_ORDER+=(exec)
 else
-  [[ "$REVIEW_MODE" == on ]] && LAUNCH_ORDER+=(design_review)
+  if [[ "$RESUME" -eq 1 ]]; then
+    # ★ **続ける元が揃っていなければ何も起こさない。**依頼か記録が無いまま起こすと、
+    #   何を頼まれたか分からない worker ができる
+    [[ -s "$SD/request.md" && -s "$SD/workers.json" ]] \
+      || { log "$SD has no recorded request or dispatch state; there is nothing to resume"; exit 1; }
+    started design && { log "the design role has already started for $SLUG"; exit 1; }
+  fi
+  # exec 段と同じ理由で、再開では起きている reviewer を起こし直さない
+  if [[ "$REVIEW_MODE" == on ]]; then
+    if [[ "$RESUME" -eq 1 ]] && started design_review; then
+      log "design_review has already started for $SLUG; starting design only"
+    else
+      LAUNCH_ORDER+=(design_review)
+    fi
+  fi
   LAUNCH_ORDER+=(design)
 fi
 
@@ -154,8 +193,8 @@ for role in "${LAUNCH_ORDER[@]}"; do
   mkdir -p "$SD/roles/$role" || { log "cannot create $SD/roles/$role"; exit 1; }
 done
 mkdir -p "$RVD" || { log "cannot create $RVD"; exit 1; }
-# ★ exec 段は 1 段目の記録の続きである。依頼も Run も上書きしない
-if [[ "$PHASE" != exec ]]; then
+# ★ 続きの起動（exec 段と --resume）は記録の続きである。依頼も Run も上書きしない
+if [[ "$CONT" -eq 0 ]]; then
   cat "$RF" > "$SD/request.md" || { log "cannot materialize the request"; exit 1; }
 fi
 # ★ `.dispatch/` を repo の除外へ入れる（実測: 入れないと親が常に `?? .dispatch/` で
@@ -169,7 +208,7 @@ if [[ -n "$EX" ]]; then
 fi
 
 # --- Run ---
-if [[ "$PHASE" == exec ]]; then
+if [[ "$CONT" -eq 1 ]]; then
   # 1 段目が記録した Run と親端末をそのまま使う。取り違えると Delivery が別になる
   RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
   [[ -n "$RUN" ]] || { log "no run_id recorded in $SD/run.json"; exit 1; }
@@ -183,7 +222,7 @@ else
   RUN=$(jq -r '.result.run.id // empty' <<<"$RJ" 2>/dev/null || echo "")
   [[ "$RCJ" -eq 0 && -n "$RUN" ]] || { log "run-create failed (rc=$RCJ)"; exit 1; }
 fi
-if [[ "$PHASE" != exec ]]; then
+if [[ "$CONT" -eq 0 ]]; then
 # 束縛先が自分であることを確かめる。候補が 1 つのとき Orca は暗黙に選ぶ (O26)
 CJ2=$("$ORCA_BIN" orchestration run-current --from "$PH" --json 2>/dev/null)
 CO=$(jq -r '.result.run.coordinator_handle // empty' <<<"$CJ2")
@@ -207,7 +246,7 @@ write workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg ib "$IB"
   log "the Run was created but the dispatch state could not be recorded. Nothing else exists yet."
   log "run=$RUN  inspect with: $ORCA_BIN orchestration run-show --id $RUN --json"; exit 1; }
 else
-  # ★ exec 段は tuple だけを足す。**既存の役の記録を上書きしない**
+  # ★ 続きの起動は tuple だけを足す。**既存の役の記録を上書きしない**
   for r in "${LAUNCH_ORDER[@]}"; do
     jq_write "workers-tuple-$r" "$SD/workers.json" -c --arg r "$r" \
       --argjson t "$(jq -c --arg r "$r" '.roles[$r] + {retained:false}' <<<"$CFG")" \
@@ -507,6 +546,27 @@ $closing
 SPEC_D
 }
 
+# ★ **接続が切れた create は、Orca 側では作り終えていることがある**（実測 2026-09-19:
+#   runtime_unavailable が 3 回続き、どれも同名の worktree が後から現れた）。待つ長さは
+#   env で変えられる（テストが 2 分待たずに済むように）。
+SETTLE_SECS="${ORCA_CREATE_SETTLE_SECS:-120}"; SETTLE_INTERVAL="${ORCA_CREATE_SETTLE_INTERVAL:-5}"
+# $1=worktree 名 → 現れたら標準出力にその entry。**1 つに決まらなければ採らない**
+await_created() {
+  local name="$1" waited=0 L n
+  while [[ "$waited" -lt "$SETTLE_SECS" ]]; do
+    sleep "$SETTLE_INTERVAL"; waited=$((waited + SETTLE_INTERVAL))
+    L=$("$ORCA_BIN" worktree list --repo "$REPO" --json 2>/dev/null) || continue
+    n=$(jq -r --arg n "$name" '[.result.worktrees[]? | select(.displayName == $n)] | length' <<<"$L" 2>/dev/null) \
+      || continue
+    case "$n" in
+      0) ;;
+      1) jq -c --arg n "$name" '[.result.worktrees[] | select(.displayName == $n)][0]' <<<"$L"; return 0 ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
+}
+
 # $1=role  → その役の worktree を用意し、Task と worker を起こす
 launch_role() {
   local role="$1" wt_name title
@@ -543,11 +603,38 @@ launch_role() {
     CRC=0; CJ=$("$ORCA_BIN" worktree create --repo "$REPO" --name "$wt_name" --no-parent \
                   --setup "$SETUP" --json 2>/dev/null) || CRC=$?
     WJ=$(jq -c '.result.worktree // empty' <<<"$CJ" 2>/dev/null || echo "")
-    [[ "$CRC" -eq 0 && -n "$WJ" ]] || { log "worktree create failed for $role (rc=$CRC)"; return 1; }
+    local ADOPTED=0
+    if [[ "$CRC" -ne 0 || -z "$WJ" ]]; then
+      # ★ **なぜ作れなかったかまで言う**（実測 2026-09-19: rc だけでは原因が残らなかった）
+      local CERR CCODE
+      CERR=$(jq -r '[.error.code // empty, .error.message // empty]
+                    | map(select(. != "")) | join(": ")' <<<"$CJ" 2>/dev/null || echo "")
+      CCODE=$(jq -r '.error.code // empty' <<<"$CJ" 2>/dev/null || echo "")
+      # ★ 接続切れだけは待つ。作る前に同名が無いことを確かめてあるので、後から現れた
+      #   ものはこの呼び出しが作ったものである。**それ以外の失敗は Orca が作れなかったと
+      #   答えているので待たない**
+      if [[ "$CCODE" == runtime_unavailable ]]; then
+        WJ=$(await_created "$wt_name") || WJ=""
+        [[ -n "$WJ" ]] || {
+          log "worktree create failed for $role (rc=$CRC)${CERR:+; $CERR}; the worktree $wt_name did not appear within ${SETTLE_SECS}s"
+          return 1; }
+        log "worktree create for $role reported $CCODE, but Orca created $wt_name afterwards; adopting it"
+        ADOPTED=1
+      else
+        log "worktree create failed for $role (rc=$CRC)${CERR:+; $CERR}"; return 1
+      fi
+    fi
     CREATED=$(jq -r '.id // empty' <<<"$WJ")
     # ★ **setup が失敗した worktree で作業させない。**依存の無いまま実装すると、
     #   なぜ失敗したか分からない成果ができる。receipt が setup の失敗を報告したら、
     #   この呼び出しが作った worktree を戻して止まる。
+    #   **拾った worktree には receipt が無く、setup の成否を証明できない。**消す根拠も
+    #   無いので残して止まる
+    if [[ "$SETUP" == run && "$ADOPTED" -eq 1 ]]; then
+      log "cannot verify that the repository setup hook succeeded for $role (no receipt); refusing to start a worker on it. The worktree is KEPT"
+      log "worktree=$CREATED  inspect with: $ORCA_BIN worktree list --repo $REPO --json"
+      return 1
+    fi
     if [[ "$SETUP" == run ]]; then
       local SST
       SST=$(jq -r '.result.setup.state // .result.setup.status

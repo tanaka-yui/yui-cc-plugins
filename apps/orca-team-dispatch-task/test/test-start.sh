@@ -933,4 +933,145 @@ setup; startup_term; echo 1 > "$ORCA_STUB_DIR/terminal_close.rc"; out=$(start 2>
   && jq -e '.roles.design.dispatch == "ctx_x"' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
   && ok "ST80 close 失敗でも成功を返す" || fail "ST80 (rc=$rc out=$out)"; teardown
 
+# ST81: ★ **exec 段のやり直しで exec_review を二重に起こさない。**exec_review が起きたあと
+#       exec の worktree create だけが落ちた（実測 2026-09-19）。やり直しが exec_review から
+#       起こし直すと、先に起きた reviewer が workers.json から外れて取り残される。
+setup; four_roles; start >/dev/null 2>&1; design_done
+cat > "$ORCA_STUB_DIR/worktree_create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/frn" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/frn"
+rm -f "$ORCA_STUB_DIR/worktree_create.rc"
+if [ "\$n" = 4 ]; then
+  printf '{"ok":false,"error":{"code":"git_failed","message":"boom"}}\n' > "$ORCA_STUB_DIR/worktree_create"
+  echo 1 > "$ORCA_STUB_DIR/worktree_create.rc"; exit 0
+fi
+[ "\$n" -gt 4 ] && n=4
+eval "p=\\\$W\$n"
+printf '{"ok":true,"result":{"worktree":{"id":"wt_%s","path":"%s","branch":"refs/heads/orca/s-%s"}}}\n' "\$n" "\$p" "\$n" > "$ORCA_STUB_DIR/worktree_create"
+HOOK
+exec_phase >/dev/null 2>&1; rc1=$?
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc2=$?
+w="$R/.dispatch/s/workers.json"
+[[ "$rc1" -eq 1 && "$rc2" -eq 0 ]] \
+  && [[ "$(grep -c 'worker-start' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(grep -c 'worktree create' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(jq -r '.roles.exec_review.worktree_id' "$w")" == wt_3 ]] \
+  && [[ "$(jq -r '.roles.exec.worktree_id' "$w")" == wt_4 ]] \
+  && [[ "$out" == *'exec_review has already started'* ]] \
+  && ok "ST81 exec 段のやり直しは exec だけを起こす" || fail "ST81 (rc1=$rc1 rc2=$rc2) $out"
+teardown
+
+# ST82: **worktree create の失敗理由を言う。**rc だけでは原因が残らない（実測 2026-09-19:
+#       stderr を捨てていたので、何が起きたかを誰も読めなかった）。
+setup
+echo '{"ok":false,"error":{"code":"git_failed","message":"boom"}}' > "$ORCA_STUB_DIR/worktree_create"
+echo 1 > "$ORCA_STUB_DIR/worktree_create.rc"
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'worktree create failed for design (rc=1); git_failed: boom'* ]] \
+  && ok "ST82 worktree create の失敗理由を出す" || fail "ST82 (rc=$rc) $out"; teardown
+
+# --- runtime_unavailable の後で現れた worktree (実測 2026-09-19、3 回続けて) ---
+settle_fast() { export ORCA_CREATE_SETTLE_SECS=3 ORCA_CREATE_SETTLE_INTERVAL=1; }
+unavailable() {
+  echo '{"ok":false,"error":{"code":"runtime_unavailable","message":"The Orca runtime closed the connection before responding."}}' \
+    > "$ORCA_STUB_DIR/worktree_create"
+  echo 1 > "$ORCA_STUB_DIR/worktree_create.rc"
+}
+# 1 回目の list（作る前の確認）は空、2 回目以降は後から現れた worktree を返す
+late_list() {
+  cat > "$ORCA_STUB_DIR/worktree_list.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/ln" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/ln"
+if [ "\$n" -ge 2 ]; then
+  printf '{"ok":true,"result":{"worktrees":[{"id":"wt_late","displayName":"s","path":"%s","branch":"refs/heads/orca/s"}]}}\n' "$WT" > "$ORCA_STUB_DIR/worktree_list"
+fi
+HOOK
+  chmod +x "$ORCA_STUB_DIR/worktree_list.hook"
+}
+
+# ST83: ★ **接続が切れても、Orca が作り終えた worktree は自分のものとして使う。**作る前に
+#       同名が無いことを確かめてあるので、後から現れたものはこの呼び出しが作ったものである。
+setup; settle_fast; unavailable; late_list
+out=$(start 2>&1); rc=$?
+w="$R/.dispatch/s/workers.json"
+[[ "$rc" -eq 0 && "$out" == *'adopting it'* ]] \
+  && [[ "$(jq -r '.roles.design.worktree_id' "$w")" == wt_late ]] \
+  && [[ "$(jq -r '.roles.design.worktree_created_by_this_run' "$w")" == true ]] \
+  && grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST83 runtime_unavailable の後に現れた worktree を使う" || fail "ST83 (rc=$rc) $out"
+teardown
+
+# ST84: 待っても現れなければ、今までどおり起動しない。
+setup; settle_fast; unavailable
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'runtime_unavailable'* && "$out" == *'did not appear'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST84 現れなければ起動しない" || fail "ST84 (rc=$rc) $out"; teardown
+
+# ST85: ★ **setup=run では拾わない。**receipt が無いので setup hook の成否を証明できない。
+#       拾った worktree は消さずに残す（Orca が作り終えたものを勝手に消さない）。
+setup; settle_fast; unavailable; late_list
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"setup":"run"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'cannot verify'* && "$out" == *'KEPT'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST85 setup=run では拾わず残す" || fail "ST85 (rc=$rc) $out"; teardown
+
+# ST86: 接続切れ以外の失敗は待たない（作れなかったと Orca が答えている）。
+setup; settle_fast
+echo '{"ok":false,"error":{"code":"git_failed","message":"boom"}}' > "$ORCA_STUB_DIR/worktree_create"
+echo 1 > "$ORCA_STUB_DIR/worktree_create.rc"
+start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && "$(grep -c 'worktree list' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && ok "ST86 接続切れ以外の失敗では待たない" || fail "ST86 (rc=$rc)"; teardown
+unset ORCA_CREATE_SETTLE_SECS ORCA_CREATE_SETTLE_INTERVAL
+
+# --- design 段の再開 ---
+resume() { bash "$P/bin/orca-start.sh" --slug s --repo-root "$R" --resume "$@"; }
+
+# ST87: ★ **design 段を再開できる。**reviewer が起きたあと design の起動だけが落ちると、
+#       status dir が残るので同じ slug では始め直せない（実測 2026-09-19）。--resume は
+#       記録済みの依頼と Run を使い、dispatch の無い役だけを起こす。
+setup; review_on
+cat > "$ORCA_STUB_DIR/worktree_create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/n" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/n"
+rm -f "$ORCA_STUB_DIR/worktree_create.rc"
+case "\$n" in
+  1) printf '{"ok":true,"result":{"worktree":{"id":"wt_r","path":"%s","branch":"refs/heads/orca/s-review"}}}\n' "$WT2" > "$ORCA_STUB_DIR/worktree_create" ;;
+  2) printf '{"ok":false,"error":{"code":"git_failed","message":"boom"}}\n' > "$ORCA_STUB_DIR/worktree_create"
+     echo 1 > "$ORCA_STUB_DIR/worktree_create.rc" ;;
+  *) printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"}}}\n' "$WT" > "$ORCA_STUB_DIR/worktree_create" ;;
+esac
+HOOK
+start >/dev/null 2>&1; rc1=$?
+req_before=$(cat "$R/.dispatch/s/request.md")
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(resume 2>&1); rc2=$?
+w="$R/.dispatch/s/workers.json"
+[[ "$rc1" -eq 1 && "$rc2" -eq 0 ]] \
+  && [[ "$(ws_lines | wc -l)" -eq 1 && "$(ws_lines)" == *'id:wt_1'* ]] \
+  && [[ "$(jq -r '.roles.design_review.worktree_id' "$w")" == wt_r ]] \
+  && [[ "$(jq -r '.roles.design.worktree_id' "$w")" == wt_1 ]] \
+  && [[ "$(cat "$R/.dispatch/s/request.md")" == "$req_before" ]] \
+  && ! grep -qE 'run-create|run-current' "$ORCA_STUB_DIR/calls.log" \
+  && [[ "$out" == *'design_review has already started'* ]] \
+  && ok "ST87 --resume は dispatch の無い役だけを起こす" || fail "ST87 (rc1=$rc1 rc2=$rc2) $out"
+teardown
+
+# ST88: 再開するものが無ければ何も起こさない。design が起動済み / status dir が無い /
+#       exec 段に付けた、のいずれでも止まる。
+setup; out=$(resume 2>&1); rc=$?
+a=""; [[ "$rc" -eq 1 && "$out" == *'nothing to resume'* ]] && a=y; teardown
+setup; start >/dev/null 2>&1; : > "$ORCA_STUB_DIR/calls.log"
+out=$(resume 2>&1); rc=$?
+b=""; [[ "$rc" -eq 1 && "$out" == *'design role has already started'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" && b=y
+out=$(resume --phase exec 2>&1); rc=$?
+c=""; [[ "$rc" -eq 2 ]] && c=y
+[[ -n "$a" && -n "$b" && -n "$c" ]] && ok "ST88 再開するものが無ければ止まる" || fail "ST88 (a=$a b=$b c=$c)"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
