@@ -483,8 +483,16 @@ finish() {   # $1 = 集約 outcome。**どの役のどのタスクが失敗し�
   echo "outcome=$1"
   [[ "$1" == succeeded ]] && exit 0 || exit 5
 }
+# ★ **報告済みで記録前の worker を停止と読み違えない**（実測 2026-09-19、2 回）。worker は
+#   `worker_done` を送った直後に Orca 側で終端状態になるが、こちらがそれを drain して
+#   receipt にするのは次の周回である。その隙間で 4 を返すと、**まだ働いている兄弟タスクごと
+#   待機が落ちる。**そこで、自分で報告して終わる状態（succeeded / failed）に限り、receipt が
+#   来るまで数周だけ待つ。**待つのは数周だけ** — 送れずに終わった worker は猶予を使い切った
+#   ところで今までどおり 4 になり、recovery の入口を塞がない。
+SETTLE_GRACE="${ORCA_WAIT_SETTLE_GRACE:-3}"
+declare -A SETTLE_SEEN=()
 healthy() {   # **人の入力待ちは healthy である**（CLI help）。1 つでも不健全なら非 0
-  local i show st wait SHOWRC settled
+  local i show st wait SHOWRC settled seen
   for i in "${!DISPS[@]}"; do
     # ★ **settle した dispatch を health check にかけない**（実測: 決着済みの dispatch の
     #   worker-show は state 'succeeded' を返す。許容集合の外である）。かけると、先に
@@ -503,7 +511,15 @@ healthy() {   # **人の入力待ちは healthy である**（CLI help）。1 �
     [[ -n "$wait" && "$wait" != null ]] && continue
     st=$(jq -r '.result.worker.state // empty' <<<"$show")
     case "$st" in
-      active|ready|starting|idle) ;;
+      active|ready|starting|idle) SETTLE_SEEN["${DISPS[$i]}"]=0 ;;
+      succeeded|failed)
+        seen=$(( ${SETTLE_SEEN["${DISPS[$i]}"]:-0} + 1 ))
+        SETTLE_SEEN["${DISPS[$i]}"]=$seen
+        if [[ "$seen" -le "$SETTLE_GRACE" ]]; then
+          log "dispatch '${DISPS[$i]}' reports '$st' but its worker_done has not arrived yet ($seen/$SETTLE_GRACE)"
+        else
+          log "the worker for dispatch '${DISPS[$i]}' is '$st'"; return 1
+        fi ;;
       *) log "the worker for dispatch '${DISPS[$i]}' is '$st'"; return 1 ;;
     esac
   done

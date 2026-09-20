@@ -721,4 +721,22 @@ setup; dn; msg; w >/dev/null 2>&1
   && [[ "$(jq -r '.window_ms' "$SD/wait.json")" =~ ^[0-9]+$ ]] \
   && ok "WT76 待機が鼓動を残す" || fail "WT76 ($(cat "$SD/wait.json" 2>/dev/null))"; teardown
 
+# WT78: ★ **報告済みで記録前の worker を停止と読み違えない**（実測 2026-09-19、2 回）。
+#       worker は worker_done を送った直後に Orca 側で 'succeeded' になるが、その
+#       メッセージを drain するのは次の周回である。ここで 4 で降りると、**まだ働いている
+#       兄弟タスクごと待機が落ちる。**receipt が来るまで数周だけ待つ。
+setup; echo '{"ok":true,"result":{"worker":{"state":"succeeded"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(w 2 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'has not arrived yet'* ]] \
+  && ok "WT78 報告済み・記録前は数周待つ" || fail "WT78 (rc=$rc) $out"; teardown
+
+# WT79: ★ **待つのは数周だけ。**worker_done を送れずに終わった worker は、猶予を使い切った
+#       ところで今までどおり 4 になる（recovery の入口を塞がない）。
+setup; echo '{"ok":true,"result":{"worker":{"state":"failed"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(ORCA_WAIT_SETTLE_GRACE=1 w 3 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$out" == *"is 'failed'"* ]] \
+  && ok "WT79 猶予を使い切れば 4" || fail "WT79 (rc=$rc) $out"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
