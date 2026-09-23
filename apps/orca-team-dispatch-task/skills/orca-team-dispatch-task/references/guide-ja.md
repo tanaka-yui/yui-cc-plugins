@@ -67,11 +67,19 @@ merge も pull request も記録されたその 1 つの値を読むので、ど
 役が off の間もその tuple は設定できるので、`review_mode` を on にする前に reviewer を
 用意できる。off の役の tuple は dispatch に見せない。
 
-| フィールド | 未設定のときの挙動 |
-|---|---|
-| `agent` | `claude` を既定にする。この設定が無かった頃の dispatch と同じ挙動である |
-| `model` | `--model` を渡さないので Orca 側の既定が使われる |
-| `effort` | `--effort` を渡さない。Orca は `--effort` に `--model` を要求するので、model の無い effort は警告して落とす |
+どの層にも無いフィールドは、そのロールの組み込み既定を使う:
+
+| ロール | `agent` | `model` | `effort` |
+|---|---|---|---|
+| `design` | `claude` | `claude-opus-5-5[1m]` | `max` |
+| `design_review` | `codex` | `gpt-6-astra` | `xhigh` |
+| `exec` | `codex` | `gpt-6-sol` | `high` |
+| `exec_review` | `claude` | `claude-opus-5-5[1m]` | `max` |
+
+**既定の `model` と `effort` は、そのロールが既定の agent で走るときだけ使う。**ある agent 向けの
+model を別の agent へ渡さないためである。model を指定せずに別の agent へ切り替えたロールには
+`--model` を渡さず、Orca 側の既定が使われる。Orca は `--effort` に `--model` を要求するので、
+model の無い effort は警告して落とす。
 
 ### S0. 設定が無ければ一度だけ尋ねる
 
@@ -86,7 +94,7 @@ CFG=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR") || exit 1
 jq -r 'if .configured then "configured" else "not configured" end' <<<"$CFG"
 ```
 
-`not configured` と出たら、3 つの答えを持つ質問を 1 問する: 今すぐ設定する（S1 へ）/ Orca の
+`not configured` と出たら、3 つの答えを持つ質問を 1 問する: 今すぐ設定する（S1 へ）/ 組み込みの
 既定のまま dispatch する / この 1 回だけ値を指定する。**断ることも正当な答えである** — 既定の
 まま dispatch し、このセッションでは二度と尋ねない。この質問で dispatch を止めてはならず、
 既に `configured` のときに尋ねてもならない。
@@ -123,7 +131,7 @@ Orca アプリ側で行う旨を伝える:
 agent の候補は `claude` と `codex` を出し、それ以外は自由入力で受ける。この一覧は便宜で
 あって **allowlist ではない** — Orca が agent を増やしてもここを直さずに設定できる状態を
 保つ。model と effort は選ばれた agent に合うものを出し、**常に「未設定のままにする」を
-選べるようにする**（Orca の既定へ戻せる）。
+選べるようにする**（ロールの既定へ戻せる）。
 
 ### S3. 書く前に検証する
 

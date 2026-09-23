@@ -162,7 +162,7 @@ for index in "${!OPS[@]}"; do
   if [[ -z "$agent" && -f "$CONFIG" ]]; then
     agent=$(jq -r --arg r "$KEY_ROLE" '.roles[$r].agent // empty' "$CONFIG" 2>/dev/null || true)
   fi
-  [[ -n "$agent" ]] || agent="$(dispatch_default_agent)"
+  [[ -n "$agent" ]] || agent="$(dispatch_default_agent "$KEY_ROLE")"
   effort=$(dispatch_normalize_effort "${VALUES[$index]}")
   if dispatch_known_agent "$agent"; then
     dispatch_valid_effort "$effort" "$agent" || die_usage "invalid value for $key: ${VALUES[$index]}"

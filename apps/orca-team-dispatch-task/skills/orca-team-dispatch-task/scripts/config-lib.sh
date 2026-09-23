@@ -42,8 +42,7 @@ dispatch_role_names() {
 # ★ **成果がどのブランチに載るかを設定から決める。**merge も PR もこの 1 箇所を読む。
 dispatch_integration_role() { [[ "${1:-off}" == on ]] && printf 'exec\n' || printf 'design\n'; }
 
-# ★ 既定は **off**。Stage A の利用者の挙動を変えないため。model / effort に自動既定を
-#   持たせない判断（下記）と同じ理由で、頼まれていないロールを勝手に起こさない。
+# ★ 既定は **off**。Stage A の利用者の挙動を変えないため。頼まれていないロールを勝手に起こさない。
 dispatch_default_review_mode() { printf 'off\n'; }
 dispatch_valid_review_mode() { case "$1" in on|off) return 0 ;; *) return 1 ;; esac; }
 
@@ -118,20 +117,30 @@ dispatch_valid_effort() {
   esac
 }
 
-# ★ **model と effort に自動既定を持たない。**設定されたときだけ渡す。
-#   cmux 版が既定 model を持っていたのは、cmux が CLI を自分で起動するので必ず値が要ったため。
-#   Orca は agent を自分で起動するので、`--model` を省けば Orca 側の既定が使われる。
-#   ここで勝手に既定を入れると、未設定の利用者の挙動が黙って変わり、Orca の設定とも競合する。
-#   したがって未設定 = flag を渡さない。agent だけは worker-start の必須なので claude を既定にする
-#   （現行の `--agent claude` 決め打ちと同じ挙動を保つ）。
-dispatch_default_agent() { printf 'claude\n'; }
+# ★ `opus[1m]` の alias は provider によって Opus 5.5 より古い版を指すので、フルネームで固定する。
+DISPATCH_OPUS_MODEL='claude-opus-5-5[1m]'
+
+# ★ **ロールごとの既定 tuple。**どの層にも無いフィールドはここで埋める。1 行 "agent model effort"。
+#   model と effort は **解決した agent が既定 agent と一致するときだけ**使う（config-resolve.sh）。
+#   agent だけ別のものに変えた設定へ、別 agent 用の model を混ぜないため。
+dispatch_default_tuple() {
+  case "$1" in
+    design|exec_review) printf 'claude %s max\n' "$DISPATCH_OPUS_MODEL" ;;
+    design_review)      printf 'codex gpt-6-astra xhigh\n' ;;
+    exec)               printf 'codex gpt-6-sol high\n' ;;
+    *) ;;
+  esac
+}
+dispatch_default_agent()  { local a m e; read -r a m e < <(dispatch_default_tuple "$1"); printf '%s\n' "$a"; }
+dispatch_default_model()  { local a m e; read -r a m e < <(dispatch_default_tuple "$1"); printf '%s\n' "$m"; }
+dispatch_default_effort() { local a m e; read -r a m e < <(dispatch_default_tuple "$1"); printf '%s\n' "$e"; }
 
 # setup が model を尋ねるときの候補。**allowlist ではない** — 検証は
 # dispatch_valid_model が行い、候補外の値も通る。1 行 1 候補。
 dispatch_model_choices() {
   case "$1" in
-    codex)  printf 'gpt-6-astra\n' ;;
-    claude) printf 'opus[1m]\nsonnet\n' ;;
+    codex)  printf 'gpt-6-sol\ngpt-6-astra\ngpt-6-luna\n' ;;
+    claude) printf '%s\nsonnet\n' "$DISPATCH_OPUS_MODEL" ;;
     *) ;;
   esac
 }

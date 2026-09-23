@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 設定層。**未設定の挙動を変えない**ことと、**設定したのに黙って効かない状態を作らない**こと。
+# 設定層。**未設定はロール既定で埋める**ことと、**設定したのに黙って効かない状態を作らない**こと。
 set -uo pipefail
 P="$(cd "$(dirname "$0")/.." && pwd)"
 S="$P/skills/orca-team-dispatch-task/scripts"
@@ -15,11 +15,19 @@ teardown() { rm -rf "$H" "$PR"; unset ORCA_DISPATCH_CONFIG_HOME; }
 res() { bash "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -c '.roles.design'; }
 res_err() { bash "$RESOLVE" --project-root "$PR" "$@" 2>&1 >/dev/null; }
 
-# CF1: **設定ゼロは現行挙動のまま。**agent だけが埋まり、model と effort は出さない。
-#      ここが崩れると、設定していない利用者の dispatch が黙って別のモデルで走る。
+# CF1: **設定ゼロは各ロールの既定 tuple で走る。**4 ロールすべてを起こして確かめる。
 setup
-[[ "$(res)" == '{"agent":"claude"}' ]] && ok "CF1 設定ゼロで agent=claude / model・effort 無し" \
-  || fail "CF1 ($(res))"
+out=$(bash "$RESOLVE" --project-root "$PR" --review-mode on --phase-b on 2>/dev/null | jq -c '.roles')
+[[ "$out" == '{"design":{"agent":"claude","model":"claude-opus-5-5[1m]","effort":"max"},"design_review":{"agent":"codex","model":"gpt-6-astra","effort":"xhigh"},"exec":{"agent":"codex","model":"gpt-6-sol","effort":"high"},"exec_review":{"agent":"claude","model":"claude-opus-5-5[1m]","effort":"max"}}' ]] \
+  && ok "CF1 設定ゼロで各ロールが既定 tuple になる" || fail "CF1 ($out)"
+teardown
+
+# CF1b: ★ **既定 agent 以外へ変えたロールには既定の model / effort を混ぜない。**
+#       codex へ claude の model を渡すと worker-start まで気づけない。
+setup
+echo '{"roles":{"design":{"agent":"codex"}}}' > "$G"
+[[ "$(res)" == '{"agent":"codex"}' ]] && ok "CF1b 別 agent には既定 model/effort を付けない" \
+  || fail "CF1b ($(res))"
 teardown
 
 # CF2: 優先順位は override > project > global。
@@ -53,21 +61,24 @@ teardown
 
 # CF5: ★ Orca は `--effort requires --model`。model 無しの effort は**渡せない**ので落とす。
 #      黙って落とすと「設定したのに効かない」になるため、必ず理由を出す。
+#      既定 agent なら既定 model が埋まるので、agent を変えたロールで確かめる。
 setup
-echo '{"roles":{"design":{"effort":"high"}}}' > "$G"
+echo '{"roles":{"design":{"agent":"codex","effort":"high"}}}' > "$G"
 out=$(res); err=$(res_err)
-[[ "$out" == '{"agent":"claude"}' && "$err" == *'Orca requires --model with --effort'* ]] \
+[[ "$out" == '{"agent":"codex"}' && "$err" == *'Orca requires --model with --effort'* ]] \
   && ok "CF5 model 無しの effort を理由付きで落とす" || fail "CF5 ($out / $err)"
 teardown
 
 # CF6: effort の許容値は agent ごとに違う。claude の max / codex の minimal は互いに無効。
+#      無効な値は次の層へ落ちる（claude の design なら既定の max、codex の design なら未設定）。
 setup
 echo '{"roles":{"design":{"agent":"claude","model":"sonnet","effort":"minimal"}}}' > "$G"
-[[ "$(res)" == '{"agent":"claude","model":"sonnet"}' ]] || fail "CF6 claude が minimal を受けた"
+[[ "$(res)" == '{"agent":"claude","model":"sonnet","effort":"max"}' && "$(res_err)" == *'ignoring invalid effort'* ]] \
+  || fail "CF6 claude が minimal を受けた"
 echo '{"roles":{"design":{"agent":"codex","model":"gpt-6-astra","effort":"max"}}}' > "$G"
 [[ "$(res)" == '{"agent":"codex","model":"gpt-6-astra"}' ]] || fail "CF6 codex が max を受けた"
-echo '{"roles":{"design":{"agent":"claude","model":"sonnet","effort":"max"}}}' > "$G"
-[[ "$(res)" == '{"agent":"claude","model":"sonnet","effort":"max"}' ]] || fail "CF6 claude の max を落とした"
+echo '{"roles":{"design":{"agent":"claude","model":"sonnet","effort":"low"}}}' > "$G"
+[[ "$(res)" == '{"agent":"claude","model":"sonnet","effort":"low"}' ]] || fail "CF6 claude の low を落とした"
 ok "CF6 effort の許容値は agent ごと"
 teardown
 
@@ -82,7 +93,7 @@ teardown
 setup
 echo '{"roles":{"design":{"agent":123,"model":["x"]}}}' > "$G"
 out=$(res); err=$(res_err)
-[[ "$out" == '{"agent":"claude"}' && "$err" == *'ignoring non-string agent'* ]] \
+[[ "$out" == '{"agent":"claude","model":"claude-opus-5-5[1m]","effort":"max"}' && "$err" == *'ignoring non-string agent'* ]] \
   && ok "CF8 型違いを警告して落とす" || fail "CF8 ($out / $err)"
 teardown
 
@@ -137,6 +148,13 @@ bash "$EDIT" --config "$G" --set roles.bogus.agent=claude >/dev/null 2>&1
 [[ $? -eq 2 && "$(cat "$G")" == "$before" ]] || fail "CF13 未知ロール"
 bash "$EDIT" --config "$G" --set 'roles.design.model=a"b' >/dev/null 2>&1
 [[ $? -eq 2 && "$(cat "$G")" == "$before" ]] || fail "CF13 シェルメタ文字"
+teardown
+
+# CF13b: agent 未設定の effort は**そのロールの既定 agent** で検証する。exec の既定は codex。
+setup
+bash "$EDIT" --config "$G" --set roles.exec.effort=minimal >/dev/null 2>&1
+[[ $? -eq 0 && "$(jq -r .roles.exec.effort "$G")" == minimal ]] \
+  && ok "CF13b ロール既定 agent で effort を検証" || fail "CF13b ($(cat "$G" 2>/dev/null))"
 teardown
 
 # CF14: unset は指定したキーだけを消す。

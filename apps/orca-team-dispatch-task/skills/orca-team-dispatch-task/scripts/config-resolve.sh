@@ -7,12 +7,11 @@
 #                          [--set <role>.<field>=<value>]...
 # Exit:  0 = 解決した / 1 = 設定が読めない / 2 = 使用法エラー
 #
-# 優先順位は override > project > global。**設定ファイルが 1 つも無いのは正常**で、
-# その場合 agent だけが既定 (claude) になり、model と effort は出力に現れない。
+# 優先順位は override > project > global > ロール既定 (config-lib.sh の dispatch_default_tuple)。
+# **設定ファイルが 1 つも無いのは正常**で、その場合は各ロールが既定 tuple で走る。
 #
-# ★ **model と effort は設定されたときだけ出す。**未設定を既定値で埋めない。
-#   worker-start は `--model` を省けば Orca 側の既定を使う。ここで既定を捏造すると、
-#   設定していない利用者の挙動が黙って変わる。
+# ★ **model と effort の既定は、agent が既定 agent と一致するときだけ使う。**agent を別のものに
+#   変えた設定では未設定のまま出さず、worker-start は Orca 側の既定を使う。
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -147,7 +146,7 @@ resolve_agent() {   # $1=role -> RESOLVED_AGENT (必ず埋まる)
       || warn "agent '$CANDIDATE_VALUE' for role '$role' is not one this version knows; passing it to Orca as-is"
     RESOLVED_AGENT="$CANDIDATE_VALUE"; return 0
   done
-  RESOLVED_AGENT="$(dispatch_default_agent)"
+  RESOLVED_AGENT="$(dispatch_default_agent "$role")"
 }
 
 resolve_model() {   # $1=role $2=agent -> RESOLVED_MODEL ('' = 未設定 = flag を渡さない)
@@ -167,6 +166,8 @@ resolve_model() {   # $1=role $2=agent -> RESOLVED_MODEL ('' = 未設定 = flag 
     fi
     RESOLVED_MODEL="$CANDIDATE_VALUE"; return 0
   done
+  [[ "$agent" == "$(dispatch_default_agent "$role")" ]] && RESOLVED_MODEL="$(dispatch_default_model "$role")"
+  return 0
 }
 
 resolve_effort() {   # $1=role $2=agent -> RESOLVED_EFFORT ('' = 未設定)
@@ -190,6 +191,8 @@ resolve_effort() {   # $1=role $2=agent -> RESOLVED_EFFORT ('' = 未設定)
     fi
     RESOLVED_EFFORT="$normalized"; return 0
   done
+  [[ "$agent" == "$(dispatch_default_agent "$role")" ]] && RESOLVED_EFFORT="$(dispatch_default_effort "$role")"
+  return 0
 }
 
 # on/off のトグルを解決する。tuple と同じ override → project → global。

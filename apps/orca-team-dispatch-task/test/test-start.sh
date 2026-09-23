@@ -80,7 +80,7 @@ setup; start >/dev/null 2>&1; l=$(spec)
   && ok "ST4b ask/escalation を禁じる" || fail "ST4b 禁止が書かれていない"; teardown
 
 # ST5: Run の束縛先が自分でなければ起動しない (O26)。workers.json が identity を持つ。
-#      worker-start は --agent を渡し --model は渡さない。**--setup skip を渡す**
+#      worker-start は --agent を渡す。**--setup skip を渡す**
 setup; echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term_o"}}}' \
   > "$ORCA_STUB_DIR/orchestration_run-current"; start >/dev/null 2>&1
 grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" && fail "ST5 無関係な Run で起動した"; teardown
@@ -91,7 +91,7 @@ jq -e '.run_id=="run_x" and .roles.design.worktree_id=="wt_1" and .roles.design.
   "$R/.dispatch/s/workers.json" >/dev/null 2>&1 || fail "ST5 workers.json"
 ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
 wc_=$(grep 'worktree create' "$ORCA_STUB_DIR/calls.log" | head -1)
-[[ "$ws" == *--agent* && "$ws" != *--model* && "$wc_" == *'--setup skip'* ]] \
+[[ "$ws" == *--agent* && "$wc_" == *'--setup skip'* ]] \
   && ok "ST5 束縛・identity・agent・setup skip" || fail "ST5 (ws=$ws wc=$wc_)"; teardown
 
 # ST6: **worktree の再利用は親 repo で絞る**（`--repo` は受け付けない）
@@ -388,12 +388,13 @@ ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
 [[ "$ws" == *'--agent codex'* && "$ws" == *'--model gpt-6-astra'* && "$ws" == *'--effort xhigh'* ]] \
   && ok "ST30 config が --agent/--model/--effort になる" || fail "ST30 [$ws]"; teardown
 
-# ST31: ★ **設定ゼロの挙動を変えない。**`--model` を省けば Orca 側の既定が使われる。
-#       ここで既定を捏造すると、設定していない利用者の dispatch が黙って変わる
+# ST31: ★ **設定ゼロなら design は既定 tuple で起動する。**config-lib.sh の既定が
+#       worker-start の argv まで届いていることを固定する
 setup; start >/dev/null 2>&1
 ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
-[[ "$ws" == *'--agent claude'* && "$ws" != *'--model'* && "$ws" != *'--effort'* ]] \
-  && ok "ST31 設定ゼロなら model/effort を渡さない" || fail "ST31 [$ws]"; teardown
+printf -v qm '%q' 'claude-opus-5-5[1m]'
+[[ "$ws" == *'--agent claude'* && "$ws" == *"--model $qm"* && "$ws" == *'--effort max'* ]] \
+  && ok "ST31 設定ゼロなら既定の model/effort を渡す" || fail "ST31 [$ws]"; teardown
 
 # ST32: ★ **壊れた設定では資源を 1 つも作らない。**設定の解決は worktree と Task より前。
 #       あとで落ちると、片付けの要る残骸だけが残る
@@ -407,10 +408,11 @@ start >/dev/null 2>&1; rc=$?
 #       未設定の model/effort は**キーを置かない**（未設定と空文字を混ぜない）
 setup
 mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
-echo '{"roles":{"design":{"agent":"claude","model":"sonnet"}}}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+#      （既定 agent 以外なら effort の既定は付かない）
+echo '{"roles":{"design":{"agent":"codex","model":"gpt-6-sol"}}}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
 start >/dev/null 2>&1
 d=$(jq -c '.roles.design | {agent,model,effort:(has("effort"))}' "$R/.dispatch/s/workers.json" 2>/dev/null)
-[[ "$d" == '{"agent":"claude","model":"sonnet","effort":false}' ]] \
+[[ "$d" == '{"agent":"codex","model":"gpt-6-sol","effort":false}' ]] \
   && ok "ST33 解決した tuple を workers.json に残す" || fail "ST33 [$d]"; teardown
 
 # ST34: 1 回きりの上書きは config より強い。config を書き換えずに 1 回だけ別の値で試せる

@@ -122,7 +122,7 @@ IB=$(git -C "$RR" symbolic-ref --short HEAD 2>/dev/null) || IB=""
 
 # ★ **設定は資源を作る前に解決する。**壊れた config で worktree と Task を作ってから
 #   落ちると、片付けの要る残骸だけが残る。config-resolve は読めない設定で exit 1 を返す。
-#   設定が 1 つも無いのは正常で、そのとき agent は claude、model と effort は付かない。
+#   設定が 1 つも無いのは正常で、そのとき各ロールは既定 tuple (config-lib.sh) で走る。
 CFG_SET=()
 [[ -n "$OV_AGENT"  ]] && CFG_SET+=(--set "design.agent=$OV_AGENT")
 [[ -n "$OV_MODEL"  ]] && CFG_SET+=(--set "design.model=$OV_MODEL")

@@ -82,11 +82,19 @@ A role's tuple can be configured while its role is switched off, so a reviewer c
 before `review_mode` is turned on. A tuple for a role that is off is not shown to the
 dispatch.
 
-| Field | Unset behaviour |
-|---|---|
-| `agent` | Defaults to `claude`, which is what a dispatch used before this setting existed |
-| `model` | `--model` is not passed, so Orca's own default applies |
-| `effort` | `--effort` is not passed. Orca requires `--model` with `--effort`, so an effort without a model is dropped with a warning |
+A field left unset in every layer takes its role's built-in default:
+
+| Role | `agent` | `model` | `effort` |
+|---|---|---|---|
+| `design` | `claude` | `claude-opus-5-5[1m]` | `max` |
+| `design_review` | `codex` | `gpt-6-astra` | `xhigh` |
+| `exec` | `codex` | `gpt-6-sol` | `high` |
+| `exec_review` | `claude` | `claude-opus-5-5[1m]` | `max` |
+
+**The default `model` and `effort` apply only while the role runs its default agent**, so a
+model meant for one agent is never handed to another. A role switched to another agent without
+a model gets no `--model`, and Orca's own default applies. Orca requires `--model` with
+`--effort`, so an effort without a model is dropped with a warning.
 
 ### S0. Ask once when nothing is configured
 
@@ -102,7 +110,7 @@ jq -r 'if .configured then "configured" else "not configured" end' <<<"$CFG"
 ```
 
 When it prints `not configured`, ask one question with three answers: configure now (go to
-S1), dispatch on Orca's own defaults, or set values for this one dispatch only. **Declining
+S1), dispatch on the built-in defaults, or set values for this one dispatch only. **Declining
 is a real answer** — dispatch on the defaults and do not ask again in this session. Never
 block a dispatch on this question, and never ask it when the answer is already `configured`.
 
@@ -138,7 +146,7 @@ does not start** — a tuple nobody reads is a setting the user cannot verify.
 Offer `claude` and `codex` as agent choices, and take a free-text answer for anything else —
 the list is a convenience, **not an allowlist**, so Orca gaining an agent does not require a
 change here. Offer models and efforts that match the chosen agent, and always offer "leave
-unset" so the user can fall back to Orca's default.
+unset" so the user can fall back to the role's default.
 
 ### S3. Validate before writing
 
