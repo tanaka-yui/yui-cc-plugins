@@ -65,15 +65,64 @@ st --snooze >/dev/null 2>&1; rc=$?
   && jq -e 'has("detected_at") | not' "$SD/stall.json" >/dev/null \
   && ok "SP6 snooze" || fail "SP6 (rc=$rc)"; teardown
 
-# SP7: 作る役を止めても review-skipped は送らない（送る相手が居ない）
+# SP7: ★ **作る役を止めたら、その reviewer に abort-reviewer を送る。**送らないと reviewer は
+#      来ない依頼を待ち続け、同じタスクがまた停滞として尋ねられる。review-skipped は送らない
 setup; st --role design >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 && -f "$SD/roles/design/stopped.json" ]] \
-  && ! grep -q 'orchestration send' "$ORCA_STUB_DIR/calls.log" \
-  && ok "SP7 作る役を止めても review-skipped を送らない" || fail "SP7 (rc=$rc)"; teardown
+  && argv | grep -qx 'abort-reviewer: stopped by the user' \
+  && argv | grep -qx 'dispatch:ctx_r' \
+  && ! argv | grep -q '^review-skipped:' \
+  && ok "SP7 作る役を止めたら reviewer を終わらせる" || fail "SP7 (rc=$rc)"; teardown
 
 # SP8: dispatch の記録が無い役は止められない（何を止めるか分からない）
 setup; st --role exec >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 1 && ! -e "$SD/roles/exec/stopped.json" ]] \
   && ok "SP8 記録の無い役は止めない" || fail "SP8 (rc=$rc)"; teardown
+
+# SP9: ★ **決着済みの reviewer を止めても、依頼側はまだ verdict を待っている。**verdict を
+#      届けられずに終えた reviewer は worker_done を送って決着する。依頼側が決着していなければ
+#      review-skipped を送る。記録も閉じることもしない（止める対象がもう無い）
+setup; echo '["worker_done|task_r|ctx_r|succeeded"]' > "$SD/received.json"
+st --role design_review >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && ! -e "$SD/roles/design_review/stopped.json" ]] \
+  && ! grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
+  && argv | grep -qx 'review-skipped: stopped by the user' && argv | grep -qx 'dispatch:ctx_x' \
+  && ok "SP9 決着済みの reviewer でも依頼側を進ませる" || fail "SP9 (rc=$rc)"; teardown
+
+# SP10: 依頼側も決着済みなら何も送らない（待っている者が居ない）
+setup; echo '["worker_done|task_r|ctx_r|succeeded","worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
+st --role design_review >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && ! grep -q 'orchestration send' "$ORCA_STUB_DIR/calls.log" \
+  && ok "SP10 依頼側も決着済みなら送らない" || fail "SP10 (rc=$rc)"; teardown
+
+# SP11: 決着済みの reviewer には abort-reviewer を送らない（読む者が居ない）
+setup; echo '["worker_done|task_r|ctx_r|succeeded"]' > "$SD/received.json"
+st --role design >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && -f "$SD/roles/design/stopped.json" ]] \
+  && ! grep -q 'orchestration send' "$ORCA_STUB_DIR/calls.log" \
+  && ok "SP11 決着済みの reviewer には送らない" || fail "SP11 (rc=$rc)"; teardown
+
+# SP12: ★ **止めた役をもう一度止めても失敗にしない。**記録は上書きせず、閉じ直しもしない。
+#       依頼側への知らせは今回も送る（前回届かなかったかもしれない）
+setup; mkdir -p "$SD/roles/design_review"; echo '{"stopped_at":1,"by":"user"}' > "$SD/roles/design_review/stopped.json"
+echo 1 > "$ORCA_STUB_DIR/terminal_close.rc"
+err=$(st --role design_review 2>&1 >/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$(jq -r '.stopped_at' "$SD/roles/design_review/stopped.json")" == 1 \
+   && "$err" == *"already stopped"* ]] \
+  && ! grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
+  && argv | grep -qx 'review-skipped: stopped by the user' \
+  && ok "SP12 止めた役を止め直しても 0" || fail "SP12 (rc=$rc err=$err)"; teardown
+
+# SP13: exec を止めたら exec_review へ abort-reviewer（design の組と同じ）
+setup
+jq -nc '{integration_role:"exec",roles:{
+  design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x"},
+  exec:{terminal:"term_e",task:"task_e",dispatch:"ctx_e"},
+  exec_review:{terminal:"term_q",task:"task_q",dispatch:"ctx_q"}}}' > "$SD/workers.json"
+echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
+st --role exec >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && -f "$SD/roles/exec/stopped.json" ]] \
+  && argv | grep -qx 'abort-reviewer: stopped by the user' && argv | grep -qx 'dispatch:ctx_q' \
+  && ok "SP13 exec を止めたら exec_review を終わらせる" || fail "SP13 (rc=$rc)"; teardown
 
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
