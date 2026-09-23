@@ -739,4 +739,66 @@ out=$(ORCA_WAIT_SETTLE_GRACE=1 w 3 2>&1); rc=$?
 [[ "$rc" -eq 4 && "$out" == *"is 'failed'"* ]] \
   && ok "WT79 猶予を使い切れば 4" || fail "WT79 (rc=$rc) $out"; teardown
 
+# ── ユーザーが止めた役（orca-stop.sh が stopped.json を書く）──
+two_roles() {
+  jq -nc '{integration_role:"design",roles:{
+    design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false},
+    design_review:{terminal:"term_r",task:"task_r",dispatch:"ctx_r",retained:false}}}' > "$SD/workers.json"
+  mkdir -p "$SD/roles/design_review"
+}
+stop_role() { mkdir -p "$SD/roles/$1"; echo '{"stopped_at":1,"by":"user"}' > "$SD/roles/$1/stopped.json"; }
+# 閉じた端末の worker-show は stopped を返す。reviewer（ctx_r）だけそう返す stub
+reviewer_closed() {
+  cat > "$ORCA_STUB_DIR/orchestration_worker-show.hook" <<'HOOK'
+#!/usr/bin/env bash
+case "$*" in *ctx_r*) s=stopped ;; *) s=active ;; esac
+printf '{"ok":true,"result":{"worker":{"state":"%s"}}}\n' "$s" > "$ORCA_STUB_DIR/orchestration_worker-show"
+HOOK
+  chmod +x "$ORCA_STUB_DIR/orchestration_worker-show.hook"
+}
+
+# WT80: ★ **成果を載せる役を止めたら、そのタスクは失敗で終わる。**status は書きかけの
+#      executing のまま残るので、status を待つと永久に終わらない。
+setup; stop_role design
+echo '{"ok":true,"result":{"worker":{"state":"stopped"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(w 2>/dev/null); rc=$?
+[[ "$rc" -eq 5 && "$out" == *"role=design dispatch=ctx_x status_dir=$SD outcome=stopped"* \
+   && "$out" == *"outcome=failed"* ]] \
+  && ok "WT80 止めた作る役は失敗で終わる" || fail "WT80 (rc=$rc out=$out)"; teardown
+
+# WT81: ★ **止めた役に worker-show をかけない。**閉じた端末は stopped を返し、かけると
+#      まだ働いている兄弟ごと exit 4 で落ちる。
+setup; two_roles; stop_role design_review; reviewer_closed
+w 1 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 ]] && ok "WT81 止めた役を health check にかけない" || fail "WT81 (rc=$rc)"; teardown
+
+# WT82: reviewer を止めても、成果が成功ならタスクは成功。その役の行は outcome=stopped。
+setup; two_roles; stop_role design_review; reviewer_closed; dn
+echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
+out=$(w 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"role=design_review dispatch=ctx_r status_dir=$SD outcome=stopped"* ]] \
+  && ok "WT82 止めた reviewer はタスクを失敗にしない" || fail "WT82 (rc=$rc out=$out)"; teardown
+
+# WT83: ★ **止めた役の merge_ready には返事をしない**（端末は閉じている）。batch は処理済みにする。
+setup; two_roles; stop_role design_review; reviewer_closed
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dmr",count:1,messages:[
+  {id:"mr",type:"merge_ready",subject:"merge_ready: n1",
+   payload:({taskId:"task_r",dispatchId:"ctx_r"}|tojson),body:""}]}}' > "$ORCA_STUB_DIR/orchestration_check"
+w 1 >/dev/null 2>&1
+! tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" | grep -q '^completion-' \
+  && grep -q -- '--ack dmr' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT83 止めた役の merge_ready に答えない" || fail "WT83"; teardown
+
+# WT83b: ★ **閉じる直前に届いた worker_done は記録するが、retain しない。**閉じた端末に
+#       retain をかけると失敗し、batch が永久に ack されない。
+setup; two_roles; stop_role design_review; reviewer_closed
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dwd",count:1,messages:[
+  {id:"wd",type:"worker_done",payload:({taskId:"task_r",dispatchId:"ctx_r",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+w 1 >/dev/null 2>&1
+grep -q 'worker_done|task_r|ctx_r|succeeded' "$SD/received.json" 2>/dev/null \
+  && ! grep 'worker-retain' "$ORCA_STUB_DIR/calls.log" | grep -q ctx_r \
+  && grep -q -- '--ack dwd' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT83b 止めた役の receipt は記録し retain しない" || fail "WT83b"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

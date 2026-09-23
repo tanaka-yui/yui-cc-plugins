@@ -130,6 +130,15 @@ stored_outcome() {   # $1=status dir $2=role。receipt が 1 件なら outcome �
   [[ "$count" -le 1 ]] || { log "received outcome record has duplicate receipts; it is not acknowledged"; return 1; }
   [[ "$count" -eq 0 ]] || jq -r '.[0][3]' <<<"$matches"
 }
+# ★ **ユーザーが止めた役は決着済みとして扱う**（`orca-stop.sh`）。止めた端末は閉じてあり、
+#   worker_done は二度と来ない。**receipt が在ればそれが優先する**（閉じる直前に送られた場合）。
+is_stopped() { [[ -f "$1/roles/$2/stopped.json" ]]; }
+role_outcome() {   # $1=status dir $2=role → receipt の outcome、無ければ止めた役は stopped。壊れていれば 1
+  local oc
+  oc=$(stored_outcome "$1" "$2") || return 1
+  if [[ -z "$oc" ]] && is_stopped "$1" "$2"; then oc=stopped; fi
+  printf '%s' "$oc"
+}
 record_outcome() {   # $1=status dir $2=task $3=dispatch $4=outcome。1 = 記録が壊れている / 2 = 書けなかった
   local sd="$1" records receipt updated
   records='[]'
@@ -227,7 +236,7 @@ rewake_stalled() {
   local i rd ph last now settled
   now=$(date +%s)
   for i in "${!TASKS[@]}"; do
-    settled=$(stored_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || settled=""
+    settled=$(role_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || settled=""
     [[ -z "$settled" ]] || continue
     rd="${T_SD[$i]}/roles/${T_ROLE[$i]}"
     ph=$(jq -r '.phase // empty' "$rd/completion.json" 2>/dev/null || echo "")
@@ -327,6 +336,11 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       if [[ -z "$idx" ]]; then
         UNK_TYPE=merge_ready UNK_T="$tid" UNK_D="$did" UNK_BATCH="$d"; return 7
       fi
+      # ★ **止めた役には返事をしない。**端末は閉じており、受理を送っても読む者は居ない
+      if is_stopped "${T_SD[$idx]}" "${T_ROLE[$idx]}"; then
+        log "ignoring merge_ready from ${T_ROLE[$idx]} (dispatch $did): the user stopped it"
+        continue
+      fi
       # ★ **nonce は subject で運ぶ。**`--payload` は `--task-id` などの便宜フラグに
       #   上書きされるので、そこへ入れても届かない（実測: payload に taskId と dispatchId
       #   しか残らなかった）。payload 側も一応見るが、正本は subject である。
@@ -388,6 +402,9 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
     # ★ 記録できなかったのは **retention の write 失敗と同じ種類の事故**である。
     #   ふつうの filesystem エラーを 1 (再実行しても無駄) に落としてはならない (return 2)
     [[ -n "$existing" ]] || record_outcome "$tsd" "$tid" "$did" "$oc" || return $?
+    # ★ 止めた役は端末を閉じてある。保持する資源が無いので retain をかけない
+    #   （かけると失敗して batch が ack されず、同じ batch を永久に読み直す）
+    is_stopped "$tsd" "$trole" && continue
     # ★ **ack より前に owner を決める**（Orca guide）。この版の owner は常に「保持」である。
     #   解放は Step 6 のユーザー承認後だけが行う (spec D12)。
     RETRC=0
@@ -443,7 +460,7 @@ aggregate() {   # 全 dispatch が終端なら集約 outcome を stdout。1 件�
   #   worker_done を待たずに戻ると、その message はあとから来て次の batch を詰まらせる。
   local i sd st oc existing worst=succeeded
   for i in "${!TASKS[@]}"; do
-    existing=$(stored_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || return 1
+    existing=$(role_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || return 1
     [[ -n "$existing" ]] || return 1
   done
   # ★ **タスクの結末を決めるのは「成果を載せる役」である。**レビュー役が失敗しても、
@@ -460,6 +477,11 @@ aggregate() {   # 全 dispatch が終端なら集約 outcome を stdout。1 件�
     sd="${SDS[$i]}"
     irole=$(jq -r '.integration_role // "design"' "$sd/workers.json" 2>/dev/null || echo design)
     [[ -n "$irole" ]] || irole=design
+    # ★ 成果を載せる役をユーザーが止めたら、そのタスクは失敗である。status は書きかけの
+    #   まま残るので、status を待つと永久に終わらない
+    if is_stopped "$sd" "$irole" && [[ -z "$(stored_outcome "$sd" "$irole" 2>/dev/null)" ]]; then
+      worst=failed; continue
+    fi
     st=$(jq -r '.status // empty' "$sd/roles/$irole/status.json" 2>/dev/null || echo "")
     case "$st" in
       done)  oc=succeeded ;;
@@ -475,7 +497,7 @@ aggregate() {   # 全 dispatch が終端なら集約 outcome を stdout。1 件�
 finish() {   # $1 = 集約 outcome。**どの役のどのタスクが失敗したかを名指しする**
   local i oc rv
   for i in "${!TASKS[@]}"; do
-    oc=$(stored_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || oc=""
+    oc=$(role_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || oc=""
     # ★ **無レビューのときだけ足す。**常に出すと、読む側が探す語が 1 つ増えるだけになる
     rv=""; [[ "$(review_state "${T_SD[$i]}" "${T_ROLE[$i]}")" != unreviewed ]] || rv=" review=unreviewed"
     echo "task=${TASKS[$i]} role=${T_ROLE[$i]} dispatch=${DISPS[$i]} status_dir=${T_SD[$i]} outcome=${oc:-unknown}$rv"
@@ -498,7 +520,7 @@ healthy() {   # **人の入力待ちは healthy である**（CLI help）。1 �
     #   worker-show は state 'succeeded' を返す。許容集合の外である）。かけると、先に
     #   終わった 1 件が、まだ働いている兄弟ごと wait を 4 で落とす。
     #   receipt があるなら、その dispatch はもう待つ対象ではない
-    settled=$(stored_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || settled=""
+    settled=$(role_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || settled=""
     [[ -z "$settled" ]] || continue
     SHOWRC=0
     show=$("$ORCA_BIN" orchestration worker-show --dispatch "${DISPS[$i]}" --json 2>/dev/null) || SHOWRC=$?
