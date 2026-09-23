@@ -145,6 +145,10 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan <file> --approve <slug>:<terminal|
 - 依存の少ないものから移す（`config-lib` → `config-resolve` → `review-state` → `orca-send` / `orca-wake` → ... → `orca-wait` / `orca-start`）
 - worker が呼ぶもの（`completion` / `report-status` / `orca-send`）は、指示文の呼び出しも `node` に替える
 - **実機で確かめること**: exec を担う codex の worker の sandbox から `node` が呼べるか。呼べなければ、worker 向けの 3 本だけ別の扱いを考える
+  - 2026-09-23 の P1 の dispatch で確認済み: codex の exec が `node` でテスト（`node --test`、`tsc`）を回して完了した
+- **P1 の dispatch（2026-09-23、Run `run_e0a9df065849`）で見つかった問題。P2 で直す**
+  - **`orca-stop.sh` の `terminal close` は、片付けを止める。**端末を直接閉じると、Orca はその worker を `retained` / `retainedReason: user_takeover` として残し、`worker-release` でも解放できない。その結果、[C7] は「記録にない保持中 worker」（記録から外した場合）として Run 全体の片付けを止めるか、記録が残っていても解放できない端末として残る。役を止めるときは `worker-release`（出力を保存してから閉じる）を使い、閉じられないときだけ別の手段にする。回帰テストを足す
+  - **起動に失敗した exec をやり直す手段が無い。**`worker-start` が `agent_readiness` で `terminal_handle_stale` になって `failed` を返した（codex は起動してプロンプトで待っていた）。`orca-start --phase exec` は「exec にはもう dispatch がある」として拒み、`orca-recover.sh` は完了を負っていない役に何もしない。手で `workers.json` から exec を外して再実行したが、それが上の `user_takeover` と合わさって [C7] を止めた。失敗した dispatch を `--retry-of` で置き換える正式な口を `orca-start`（または `orca-recover`）に用意する
 
 ## 6. P3: SKILL.md の残りのブロック（方針のみ）
 
