@@ -1163,4 +1163,15 @@ xs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1); mis
 setup; start >/dev/null 2>&1
 [[ "$(spec)" != *'Ask once'* ]] && ok "ST98 ask を 1 回に縛らない" || fail "ST98"; teardown
 
+# ST99: ★ **phase_b=off の brainstorm は finishing-a-development-branch を走らせない。**Subagent-driven は
+#      最後にそれを呼び、merge / PR / 破棄を尋ねる。取り込み方は Step 1b でユーザーが選んでおり、
+#      取り込むのは親である。phase_b=on は実装しないので書かない
+setup; bs_config off; start >/dev/null 2>&1; sp=$(spec); miss=""
+for w in 'Do not run' 'superpowers:finishing-a-development-branch' 'stop after committing; the parent brings the branch home'; do
+  [[ "$sp" == *"$w"* ]] || miss="$miss [$w]"; done
+teardown
+setup; phase_b_on; bs_config on; start >/dev/null 2>&1
+[[ "$(spec)" == *'finishing-a-development-branch'* ]] && miss="$miss [phase_b=on]"
+[[ -z "$miss" ]] && ok "ST99 brainstorm は取り込みを親に残す" || fail "ST99:$miss"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -524,8 +524,11 @@ makes that approach wrong, say so there rather than quietly doing something else
       #   1 本書いて終えた。**skill 自身の保存先と commit の手順はここで上書きする** — spec と
       #   plan は status dir に置き、merge に混ぜない。phase_b=off の実装は Subagent-driven に
       #   固定する（ユーザーの決定。実行方法の質問を 1 回減らす）。
+      #   ★ **finishing-a-development-branch は走らせない。**Subagent-driven は最後にそれを呼び、
+      #   merge / PR / 破棄を尋ねる。取り込み方は Step 1b でユーザーが選んでおり、取り込むのは親である
       local after_plan="Then build it in this worktree with \`superpowers:subagent-driven-development\`,
-   following the plan, and commit the work on this branch. Do not ask how to execute the plan."
+   following the plan, and commit the work on this branch. Do not ask how to execute the plan.
+   Do not run \`superpowers:finishing-a-development-branch\`: stop after committing; the parent brings the branch home."
       [[ "$PHASE_B" == on ]] && after_plan="Stop once the plan is written and self-reviewed: another worker builds it. Do not
    ask how to execute it, and do not start implementing."
       approach="**Work through the superpowers skills in this order.**
