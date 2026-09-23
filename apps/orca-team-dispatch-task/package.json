@@ -1,0 +1,16 @@
+{
+  "name": "@tanaka-yui/orca-team-dispatch-task",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit && biome check ./bin ./lib ./skills ./test",
+    "check:fix": "biome check --write ./bin ./lib ./skills ./test",
+    "format": "biome format ./bin ./lib ./skills ./test",
+    "format:fix": "biome format --write ./bin ./lib ./skills ./test",
+    "lint": "biome lint ./bin ./lib ./skills ./test",
+    "lint:fix": "biome lint --write ./bin ./lib ./skills ./test"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3"
+  }
+}
