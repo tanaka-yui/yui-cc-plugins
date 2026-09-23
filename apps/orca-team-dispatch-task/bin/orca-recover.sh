@@ -64,6 +64,13 @@ while IFS= read -r role; do
   [[ -n "$did" && -n "$tid" ]] || continue
   rd="$SD/roles/$role"
 
+  # ★ **ユーザーが止めた役には何もしない**（`orca-stop.sh`）。置き換えると、止めた役が
+  #   別の端末で生き返る。
+  if [[ -f "$rd/stopped.json" ]]; then
+    log "$role: stopped by the user; not recovering it"
+    continue
+  fi
+
   # ★ **その役に「まだ送るべきもの」があるか。**無いなら回復するものも無い。
   #   成功系は completion.json が settled でないこと、失敗系は status.json = error である。
   ph=$(bash "$CMP" --role-dir "$rd" phase 2>/dev/null || echo "")

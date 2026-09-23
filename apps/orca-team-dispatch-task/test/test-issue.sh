@@ -353,4 +353,8 @@ grep -qxF '.dispatch-issue/' "$EXF" 2>/dev/null \
   || fail "IS23 (exclude=$(tr '\n' ' ' < "$EXF" | sed 's/^.*# \*~ //')) (porcelain=$(git -C "$R" status --porcelain | tr '\n' ' '))"
 teardown
 
+# IS24: ★ **無人の実行は停滞で止まって尋ねない。**尋ねる相手が居ないので、記録だけ残して待ち続ける
+grep -q -- '--on-stall report' "$P/bin/orca-issue.sh" \
+  && ok "IS24 --issue は停滞を記録して待ち続ける" || fail "IS24"
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

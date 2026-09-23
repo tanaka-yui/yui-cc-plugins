@@ -158,9 +158,11 @@ fi
 
 # --- 2. wait（ブロック）---
 # ★ wake 駆動にしない。落とした通知でジョブが黙って消える失敗様式を持ち込まない。
+# ★ **停滞で止まって尋ねない。**無人なので尋ねる相手が居ない。stall.json に残して待ち続ける。
 if [[ "$PHASE" == all ]]; then
   WRC=0
-  bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD" --max-waits "$MAXW" --timeout-ms "$TMO" || WRC=$?
+  bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD" --max-waits "$MAXW" --timeout-ms "$TMO" \
+    --on-stall report || WRC=$?
   case "$WRC" in
     0) ;;
     5) fail_out "issue #$NUM: the worker reported failure; the result is in $SD/roles/design/result.md" ;;

@@ -169,4 +169,13 @@ out=$(rec --dry-run 2>&1)
   && ok "RC15 生きている待機には触れない" || fail "RC15 (out=$out)"
 teardown
 
+# RC16: ★ **ユーザーが止めた役を生き返らせない。**置き換えると、止めた役が別の端末で走り出す
+setup; owe; show failed
+echo '{"stopped_at":1,"by":"user"}' > "$SD/roles/design/stopped.json"
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"stopped by the user"* ]] \
+  && ! grep -q 'worker-start\|orchestration send' "$ORCA_STUB_DIR/calls.log" \
+  && ok "RC16 止めた役は回復しない" || fail "RC16 (rc=$rc out=$out)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
