@@ -21,7 +21,35 @@ Orca の worktree で N タスクを worker に並列実行させるプラグイ
 アイドルな worker を起こす。後述）/ `bin/orca-stop.sh`（ユーザーが選んだ役を記録してから
 止める。停滞の時計の数え直しも）/ `bin/orca-merge.sh`（成果を親ブランチへ。
 **資源は消さない**）/ `skills/.../scripts/report-status.sh`（worker が status を書く口。移植）/
-`skills/.../scripts/config-{lib,resolve,edit}.sh`（設定層。後述）。
+`skills/.../scripts/config-{lib,resolve,edit}.sh`（設定層。後述）/ `bin/orca-cleanup.ts`（Step 5 の
+判定 `plan` と Step 6 の実行 `run`。TypeScript を node で直接走らせる。後述）。
+
+## TypeScript（node）で書く部分
+
+設計は `docs/superpowers/specs/2026-09-23-orca-ts-migration-design.md`。**SKILL.md の複数行の bash
+ブロックは、呼び出し側のシェル（mac も WSL も zsh）で実行される。**2026-09-23 に、zsh が
+`for ROLE in $ROLES` を単語に分けず、Step 5 の [C1] が誤停止した。判定は文書に書かず、入口の
+1 行呼び出しにする（P1 で Step 5 / Step 6 を `bin/orca-cleanup.ts` に移した。残りは P2 / P3）。
+
+- 実行は `node <path>.ts`（型除去で直接走らせる。**Node 22.18 以上**）。プラグインはファイルの
+  まま入り `npm install` は走らないので、**実行時の npm 依存はゼロ**（`node:` の組み込みだけ）。
+  `typescript` はルート、`@types/node`（22.15.3。下限の 22 系に合わせる）はこの package の
+  devDependencies で、どちらも型検査専用
+- `tsconfig.json` の `erasableSyntaxOnly` は enum / namespace / 引数プロパティを弾く（node の
+  型除去が扱えない）。`verbatimModuleSyntax` は型だけの import に `import type` を強いる
+  （付け忘れると node が実行時に SyntaxError で落ちる）
+- `lib/` は入口から import する共通部品。`orca.ts` は Orca CLI を**標準入力を渡さずに**呼ぶ
+  （`bash <<EOF` で流したとき、途中の CLI がスクリプトの残りを読んで判定を黙って飛ばした）。
+  `any` / `unknown` / `class` は書かない。JSON は `lib/json.ts` の `Json` 型と `asObject` などで絞る
+- 入口は stdout をまとめて書き、`process.exitCode` で終える。`process.exit` は使用法の誤り
+  （`die`）だけに使う — パイプへの書き込みが途中で切れうる
+- 型検査と lint は `pnpm --filter @tanaka-yui/orca-team-dispatch-task check`。単体テストは
+  `node --test 'test/unit/*.test.ts'`（**ディレクトリを渡すと node はそれをモジュールとして読んで
+  失敗する**）で、`test/run-all.sh` が最後に走らせる
+- `orca-cleanup.ts plan` は計画を `<repo>/.dispatch/cleanup-<run_id>.json` に書き、`run` は
+  **その計画の提示しか実行しない**。argv が計画を書いたときの形と違えば（`--force` の追加など）
+  計画ごと拒む。`worker-release` のあとは `worker-list` から state を読み直す（receipt の `ok` だけ
+  では「閉じた」と言えない。実測 O43）。回帰は `test/test-cleanup.sh`
 
 ## 設定層に runner レジストリが無い理由
 
