@@ -951,4 +951,21 @@ setup; old "$SD/run.json" "$SD/roles/design/status.json"; echo spec > "$SD/spec.
 ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 3 ]] && ok "WT99 spec.md の変化で停滞としない" || fail "WT99 (rc=$rc)"; teardown
 
+# WT100: ★ **決着済みの reviewer でも、依頼側がまだ待っていれば停滞の行に載せる。**verdict を
+#       届けられずに終えた reviewer を止める（依頼側へ review-skipped を送る）選択肢が、
+#       この行からしか作られない
+setup; two_roles; echo '["worker_done|task_r|ctx_r|succeeded"]' > "$SD/received.json"
+old "$SD/run.json" "$SD/roles/design/status.json"
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL w 2>/dev/null); rc=$?
+b=$(basename "$SD")
+[[ "$rc" -eq 8 && "$out" == *"stalled_role task=$b role=design_review "* \
+   && "$out" == *"stalled_role task=$b role=design "* ]] \
+  && ok "WT100 決着済みの reviewer も依頼側が待つ間は載せる" || fail "WT100 (rc=$rc out=$out)"; teardown
+
+# WT101: 計画役がまだ働いている間は unstarted_role を出さない（Step 3.5 はまだ早い）
+setup; planner_only; old "$SD/run.json" "$SD/roles/design/status.json"
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL w 2>/dev/null); rc=$?
+[[ "$rc" -eq 8 && "$out" == *"role=design phase=executing"* && "$out" != *unstarted_role* ]] \
+  && ok "WT101 計画役が働く間は unstarted_role を出さない" || fail "WT101 (rc=$rc out=$out)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -219,18 +219,37 @@ task_settled() {   # $1=status dir → dispatch の在る役が全部決着し�
   # ★ **成果を載せる役がまだ起動されていなければ決着していない**（Step 3.5 の飛ばし）
   role_settled "$sd" "$(integration_role_of "$sd")"
 }
+# ★ 依頼側がまだ待っている = dispatch が在り、receipt も stopped.json も無い（orca-stop.sh の waiting と同じ問い）
+role_waiting() {   # $1=status dir $2=role
+  jq -e --arg r "$2" '(.roles[$r].dispatch // "") != ""' "$1/workers.json" >/dev/null 2>&1 \
+    && ! role_settled "$1" "$2"
+}
 stall_lines() {   # $1=status dir $2=止まっている分 → 報告行を stdout
-  local sd="$1" role ph th slug ir
+  local sd="$1" role ph th slug ir open=0
   slug=$(basename "$sd")
   echo "stalled task=$slug status_dir=$sd idle_min=$2"
-  # ★ **決着済み・止めた役は載せない。**載せると、止めたのに同じ役をまた尋ねる
+  # ★ **決着済み・止めた役は載せない。**載せると、止めたのに同じ役をまた尋ねる。
+  #   ★ **例外は決着済みの reviewer で、依頼側がまだ待っているとき。**verdict を届けられずに
+  #   終えた reviewer を止めれば依頼側へ review-skipped が届くが、止める選択肢はこの行からしか
+  #   作られない。載せないと、ユーザーは待ち続けるか依頼側を止めるかしか選べない
   while IFS= read -r role; do
-    role_settled "$sd" "$role" && continue
+    if role_settled "$sd" "$role"; then
+      case "$role" in
+        design_review) is_stopped "$sd" "$role" || ! role_waiting "$sd" design && continue ;;
+        exec_review)   is_stopped "$sd" "$role" || ! role_waiting "$sd" exec && continue ;;
+        *) continue ;;
+      esac
+    else
+      open=1
+    fi
     ph=$(jq -r '.phase // empty' "$sd/roles/$role/completion.json" 2>/dev/null || echo "")
     [[ -n "$ph" ]] || ph=$(jq -r '.status // empty' "$sd/roles/$role/status.json" 2>/dev/null || echo "")
     th=$(jq -r --arg r "$role" '.roles[$r].terminal // empty' "$sd/workers.json" 2>/dev/null || echo "")
     echo "stalled_role task=$slug role=$role phase=${ph:-none} terminal=${th:-none}"
   done < <(dispatched_roles "$sd")
+  # ★ 起動されていない成果の役を知らせるのは、起動済みの役が全部決着してから（計画役がまだ
+  #   働いている間に Step 3.5 へ送らない）
+  [[ "$open" -eq 0 ]] || return 0
   ir=$(integration_role_of "$sd")
   jq -e --arg r "$ir" '(.roles[$r].dispatch // "") != ""' "$sd/workers.json" >/dev/null 2>&1 \
     || task_given_up "$sd" || echo "unstarted_role task=$slug role=$ir"
