@@ -174,7 +174,12 @@ CRC=0; CFG=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR") || CRC=$?
 [[ "$CRC" -eq 0 ]] || fail_out "issue #$NUM: cannot resolve the dispatch configuration"
 
 # --- 3. 統合。**ここが通って初めて片付けの話になる** ---
-INTEGRATION=$(jq -r '.integration // "merge"' <<<"$CFG")
+# ★ **取り込み方は記録した値を読む。**dispatch と finish の間には待機バッチが挟まり、
+#   その間に設定が変わりうる。orca-merge.sh / orca-pr.sh は起動時に記録した値を基準に
+#   もう一方を拒むので、finish もそこと同じ値を読む。記録が無い（旧版の status dir）
+#   ときだけ、いま解決した設定へ従来どおり落ちる。
+INTEGRATION=$(jq -r '.integration // empty' "$SD/workers.json" 2>/dev/null || echo "")
+[[ -n "$INTEGRATION" ]] || INTEGRATION=$(jq -r '.integration // "merge"' <<<"$CFG")
 PR_URL=""
 if [[ "$INTEGRATION" == pr ]]; then
   # ★ **repo は呼び出し側が 1 度だけ解決した値を渡す。**`orca-pr.sh` も自分では見に行かない

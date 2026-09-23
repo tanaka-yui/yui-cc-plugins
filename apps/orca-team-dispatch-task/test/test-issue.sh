@@ -357,4 +357,23 @@ teardown
 grep -q -- '--on-stall report' "$P/bin/orca-issue.sh" \
   && ok "IS24 --issue は停滞を記録して待ち続ける" || fail "IS24"
 
+# IS25: ★ **finish は記録した取り込み方を読む。**dispatch と finish の間には待機バッチが
+#       挟まり、その間に設定が変わりうる。記録が merge のまま設定だけ pr に変わっても、
+#       finish は記録に従って merge し、orca-pr.sh は呼ばない（呼べば新設したガードに拒まれる）。
+setup; worker_done succeeded done
+run_issue --phase dispatch >/dev/null 2>&1
+bash "$P/bin/orca-wait.sh" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+jq -c '.integration = "merge"' "$R/.dispatch/issue-5-x/workers.json" > "$R/.dispatch/issue-5-x/w" \
+  && mv "$R/.dispatch/issue-5-x/w" "$R/.dispatch/issue-5-x/workers.json"
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"integration":"pr"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+: > "$ORCA_STUB_DIR/calls.log"; : > "$GH_STUB_DIR/calls.log"
+out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
+        --repo-root "$R" --phase finish 2>&1); rc=$?
+[[ "$rc" -eq 0 && -f "$R/WORK.md" ]] \
+  && ! grep -q 'pr create' <(ghlog) \
+  && [[ "$(jq -r '.merged' "$R/.dispatch/issue-5-x/integration-result.json")" == true ]] \
+  && ok "IS25 finish は設定でなく記録した取り込み方を読む" || fail "IS25 (rc=$rc) $out"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
