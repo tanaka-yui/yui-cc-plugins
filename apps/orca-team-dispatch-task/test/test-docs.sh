@@ -784,6 +784,44 @@ step1_s=$(sed -n '/^## Step 1: /,/^## Step 1b: /p' "$S")
 grep -q 'superpowers:brainstorming' <<<"$step1_s" || bad="$bad [step1-no-brainstorm]"
 [[ -z "$bad" ]] && ok "SK18 親は設計せずすぐ dispatch する" || fail "SK18:$bad"
 
+# SK19: 取り込み方は Step 1b の同じ呼び出しで毎回尋ね、Step 2 のガードが省略を実行不能にする。
+#       Step 4 は記録された値を読む（cmux 版の 1e と同じく、設定は推奨であって省く理由ではない）
+bad=""
+step1b_s=$(sed -n '/^## Step 1b: /,/^## Step 2: /p' "$S")
+step1b_g=$(sed -n '/^## Step 1b: /,/^## Step 2: /p' "$G")
+for section in "$step1b_s" "$step1b_g"; do
+  grep -q 'Wait and merge' <<<"$section" || bad="$bad [wait-and-merge]"
+  grep -q 'PR per task' <<<"$section" || bad="$bad [pr-per-task]"
+  grep -q 'INTEGRATION' <<<"$section" || bad="$bad [integration-var]"
+done
+for f in "$S" "$G"; do
+  grep -q 'INTEGRATION:?' "$f" || bad="$bad [guard:$(basename "$f")]"
+  grep -q -- '--integration "\$INTEGRATION"' "$f" || bad="$bad [flag:$(basename "$f")]"
+  sed -n '/^## Step 4: /,/^## Step 5: /p' "$f" | grep -q "jq -r '.integration" \
+    || bad="$bad [step4-reads-record:$(basename "$f")]"
+done
+[[ -z "$bad" ]] && ok "SK19 取り込み方を毎回尋ねて記録する" || fail "SK19:$bad"
+
+# SK20: 停滞は exit 8 で知らされ、止めるかどうかはユーザーが決める。無人の --issue は尋ねない
+bad=""
+for f in "$S" "$G"; do
+  grep -q '^| 8 |' "$f" || bad="$bad [exit8:$(basename "$f")]"
+  grep -q 'orca-stop.sh" --status-dir "\$SD" --snooze' "$f" || bad="$bad [snooze:$(basename "$f")]"
+  grep -q 'orca-stop.sh" --status-dir "\$SD" --role "\$ROLE"' "$f" || bad="$bad [stop:$(basename "$f")]"
+  grep -q -- '--on-stall report' "$f" || bad="$bad [issue-report:$(basename "$f")]"
+  grep -q 'stopped.json' "$f" || bad="$bad [state:$(basename "$f")]"
+done
+[[ -z "$bad" ]] && ok "SK20 停滞はユーザーが決める" || fail "SK20:$bad"
+
+# SK21: brainstorm は brainstorming → spec.md → writing-plans の順で、両文書の表がそう言う
+bad=""
+for f in "$S" "$G"; do
+  grep -q 'superpowers:writing-plans' "$f" || bad="$bad [writing-plans:$(basename "$f")]"
+  grep -q 'superpowers:subagent-driven-development' "$f" || bad="$bad [sdd:$(basename "$f")]"
+  grep -q 'spec.md' "$f" || bad="$bad [spec:$(basename "$f")]"
+done
+[[ -z "$bad" ]] && ok "SK21 brainstorm は writing-plans まで進む" || fail "SK21:$bad"
+
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
   && ! grep -q 'dangerously-skip-permissions' "$S" \

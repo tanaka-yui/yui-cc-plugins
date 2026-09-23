@@ -58,7 +58,7 @@ role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → pr
 | `phase_b` | `off` — `design` が計画も実装もする | `on` — `design` は計画を書くだけで何も作らず、2 人目の worker `exec` が自分の worktree でそれを作る |
 | `integration` | `merge` — dispatch した元のブランチへ取り込む | `pr` — ブランチを push して pull request を作る |
 | `setup` | `skip` — repository の setup hook を走らせずに worktree を作る | `run` — 走らせる。**setup が失敗した worktree では worker を起こさない** |
-| `design_mode` | `direct` — `design` は依頼を受けてそのまま取りかかる | `plan` — 最初の編集より前に手順を決めて記録する。`brainstorm` — `superpowers:brainstorming` skill から始め、その端末を見ている人と依頼を詰める |
+| `design_mode` | `direct` — `design` は依頼を受けてそのまま取りかかる | `plan` — 最初の編集より前に手順を決めて記録する。`brainstorm` — `superpowers:brainstorming` skill から始め、その端末を見ている人と依頼を詰める、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装する |
 
 **`phase_b` が「どのブランチに成果が載るか」を決める** — off なら `design`、on なら `exec`。
 merge も pull request も記録されたその 1 つの値を読むので、どちらのブランチを取るかで
@@ -325,8 +325,13 @@ dispatch に失敗した issue は既に `dispatch/failed` が付いて資源が
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>"
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>" \
+  --on-stall report
 ```
+
+`--on-stall report` は、無人の実行が停滞で止まって尋ねるのを防ぐ。停滞したタスクは
+`stall.json` と log に書かれ、待機は続く。人が戻ってきたら、`detected_at` を持つ `stall.json`
+のタスクを Step 3 の終了コード 8 の手順にかける。
 
 exit code の読み方は Step 3 のとおりであり、背景で走らせる理由もそこに書いてある。
 exit 5 は**一部の失敗**であってバッチの失敗ではない。自身の `role=design` の行が
@@ -412,17 +417,18 @@ Step 2 を別 call で実行するときは、その正確な path を `REQ` へ
 : "${PLUGIN:?run the block at the top of this file first}"
 RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
 bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --project-root "$RR" \
-  | jq -r .design_mode
+  | jq -r '"design_mode=\(.design_mode) integration=\(.integration)"'
 ```
 
 そのうえで、brainstorming から始めるタスクはどれかを尋ねる。各質問は `multiSelect` で選択肢は
 タスクの slug なので、1 問に 4 タスクまで入れる。タスクを順に区切り、その質問を 1 回の呼び出しに
-最大 4 問入れる。16 タスクを超えるときは、次の 16 件を別の呼び出しで尋ねる。選ばれたタスクは
+最大 4 問入れる（下の取り込み方の質問と同じ呼び出しに入れるときは 3 問）。それを超えるタスクは
+別の呼び出しで尋ねる。選ばれたタスクは
 `brainstorm`、それ以外のタスクは `plan` になる:
 
 | 答え | `design` の worker に渡る指示 |
 |---|---|
-| `brainstorm`（選ばれた） | `superpowers:brainstorming` skill から始め、計画や実装の前に、端末を見ている人と未解決の論点を詰める |
+| `brainstorm`（選ばれた） | `superpowers:brainstorming` skill から始め、計画や実装の前に、端末を見ている人と未解決の論点を詰め、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装し、`phase_b=on` なら計画で終える |
 | `plan`（選ばれなかった） | 最初の編集より前に取りかかり方を決め、`result.md` に記録する |
 
 設定値を推奨として質問文に書く。`brainstorm` なら全タスク、`plan` か `direct` なら無し。
@@ -430,11 +436,21 @@ bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --projec
 選択は「話して詰める」か「書いて決める」かの間にある。UI が空の選択を拒むことがあるので、
 自由記述の選択肢で「なし」と答えれば全タスクが `plan` で始まることを質問文に書いておく。
 
+**同じ呼び出しで、完了した成果の取り込み方も尋ねる。**`cmux-team-dispatch-task` の Step 1e
+と同じ尋ね方である。単一選択の質問を 1 つ足し、答えは 2 つ: **Wait and merge** — 全タスクの
+完了を待ち、各ブランチを dispatch したときのブランチへ merge する — と **PR per task** —
+各タスクのブランチを push し、代わりに pull request を作る。設定済みの `integration` を推奨と
+して示す。上の質問と同じく毎回尋ねる。設定は推奨であって、質問を省く理由ではない。
+
+答えは dispatch の全タスクに共通である。`INTEGRATION`（`merge` か `pr`）として保持し、
+Step 2 で全タスクに渡す。この質問が呼び出しの 4 枠のうち 1 つを使うので、最初の呼び出しに
+入るタスクの質問は 3 問、12 タスクまでになる。
+
 各タスクの答えをそのタスクの `DESIGN_MODE` として保持し、Step 2 で渡す。Step 2 はそれが
 無ければ実行を拒むので、**誰にも尋ねられていないタスクは起動できない。**
 
 **`--issue` は Step 1b を持たない。**無人実行には尋ねる相手が居ないので、`design_mode` は
-設定から取り、`brainstorm` は `plan` へ落とす。
+設定から取り、`brainstorm` は `plan` へ落とす。`integration` は設定の値をそのまま使う。
 
 ## Step 2: 開始
 
@@ -445,9 +461,10 @@ mailbox を共有する。**並列にではなく、順番に呼ぶ。
 ```bash
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
 : "${DESIGN_MODE:?set DESIGN_MODE to this task's Step 1b answer: brainstorm or plan}"
+: "${INTEGRATION:?set INTEGRATION to the Step 1b answer: merge or pr}"
 RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
-        --design-mode "$DESIGN_MODE" \
+        --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
         --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
 RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
@@ -456,8 +473,9 @@ printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
 
 `--objective` は依頼そのものの言葉から取る。成果を名指すだけで、先に詰めるべき設計ではない。
 
-ここでも shell 変数は tool call を跨がず、`DESIGN_MODE` もその 1 つである。この call の中で、
-そのタスクの Step 1b の答えから設定する。全タスクの `status_dir` と 1 つの `run_id` を
+ここでも shell 変数は tool call を跨がず、`DESIGN_MODE` と `INTEGRATION` もそうである。
+この call の中で、Step 1b の答えから設定する。`INTEGRATION` はタスクの起動時に `workers.json`
+へ記録され、`--resume` と `--phase exec` は記録された値を引き継ぎ、新しい値を拒む。全タスクの `status_dir` と 1 つの `run_id` を
 印字された値のまま控える。Step 3、Step 4、Step 5 はいずれもその正確な値を必要とする。
 
 exit 1 はそのタスクの worker が起動しなかったことを意味する。メッセージに resources are KEPT と
@@ -559,6 +577,7 @@ dispatch を永久に止める**。同じ理由で、完了の返事を待った
 | 5 | 1 件以上の worker が失敗を報告 | 各 `result.md` を読み、どのタスクがなぜ失敗したかを伝える。Step 4 へ進めるのは成功したタスクだけで、Step 5 は全タスクに行う。**失敗したタスクを merge しない** |
 | 3 | まだ実行中 | 進捗を報告してから、同じ `--status-dir` の組でもう一度呼ぶ |
 | 6 | worker が人へ質問し、回答待ちでブロックしている | 質問をそのままユーザーへ取り次ぎ、待機が出力した `reply` コマンドに回答を入れて実行し、同じ待機をもう一度走らせる。失敗ではない。worker は reply で再開する |
+| 8 | あるタスクが 2 時間進んでおらず、そのどの役も人を待っていない | 何も止めていない。下の停滞時の手順に従う: 各役の端末に何が出ているかをユーザーに見せ、1 回尋ね、選ばれたことを実行し、同じ待機をもう一度走らせる |
 | 4 | worker が停止・失敗した、または待機が依存する Orca 呼び出しを検証できない | 調べてユーザーへ伝える。何も削除しない。retention または acknowledgement が完了していないので canonical wait を再実行し、batch を手で復旧しない。完了を負ったまま worker が失われた場合は、下の回復の節を見る |
 | 1 | batch がこの版で扱えないメッセージを含む、または outcome が記録と矛盾する | acknowledge していない。手動 acknowledge はせず、下のとおり確認する |
 
@@ -568,6 +587,46 @@ dispatch を永久に止める**。同じ理由で、完了の返事を待った
 回答を入れて実行する。そのあと同じ待機をもう一度走らせる。一度取り次いだ質問は処理済み
 として扱うので、batch が流れてその worker の完了が処理される。手で acknowledge しては
 ならず、ブロックを失敗として扱ってもならない — worker は生きて待っている。
+
+終了コード 8 でも何も止めていない。待機が、worker の書くもの — status、result、完了の記録、
+計画、レビューのファイル、worktree のファイルと commit — が `--stall-after-min` 分（既定 120）
+変わらず、しかもどの役も人を待っていないタスクを見つけたということである。**worker は自分から
+待機をやめない**ので、詰まったタスクに気づけるのはここだけであり、**何かを止めるかどうかは
+ユーザーが決める。親が決めてはならない。**
+
+待機が出力した `stalled_role` の行ごとに、その端末の今の表示を読む:
+
+```bash
+: "${TERM_HANDLE:?set TERM_HANDLE to the terminal= value of one stalled_role line}"
+"$ORCA_BIN" terminal read --terminal "$TERM_HANDLE" --screen --json
+```
+
+各タスクがどれだけ止まっているかと、各役の画面の最後の数行をユーザーに見せ、1 回の
+`AskUserQuestion` で尋ねる: 停滞したタスクごとに `multiSelect` の質問を 1 つ置き、選択肢は
+**Keep waiting** と、そのタスクの `stalled_role` の行の役 1 つずつ。**Keep waiting** だけが
+選ばれたタスクは、停滞の時計を数え直す:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the status_dir= value of the stalled task line}"
+bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --snooze
+```
+
+ユーザーが止めると選んだ役ごとに、`ROLE` をその役にして 1 回ずつ実行する:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the status_dir= value of the stalled task line}"
+: "${ROLE:?set ROLE to one role the user chose to stop}"
+bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --role "$ROLE"
+```
+
+これは端末を閉じる前に停止を記録するので、待機はその役を失われた worker として報告せず
+`outcome=stopped` として決着させ、`orca-recover.sh` もその役に触らない。停滞の時計も数え直す。
+reviewer を止めると、レビューされる側の worker にレビュー無しで進むよう伝える。その成果は
+無レビューになり、Step 4 の gate が今までどおり働く。成果を載せる役を止めるとタスクは失敗する。
+持ち帰らず、Step 5 へ回す。exit 1 は停止を記録できなかったか端末を閉じられなかったことを表し、
+どちらかはメッセージが言う。ユーザーへ伝える。そのあと同じ待機をもう一度走らせる。
 
 **判断の根拠は exit code であって出力の文字列ではない。**集約行の前に、待機は
 `task=... role=... dispatch=... status_dir=... outcome=...` の行を**起動した役ごとに 1 行**
@@ -703,6 +762,17 @@ Step 2 が reviewer を先に起こすのと同じ理由である — 実装役�
 いたタスクだけが対象である。その役は `integration_role` に記録されている。reviewer の
 worktree には持ち帰る成果が無い。
 
+まず、この dispatch がどう持ち帰るよう頼まれたか — 起動時に記録した Step 1b の答え — を読む:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+jq -r '.integration // "not recorded"' "$SD/workers.json"
+```
+
+`merge` なら下の merge。`pr` ならさらに下の pull request の block。`not recorded` は古い版が
+起動した dispatch なので、設定の `integration` に従う。両スクリプトは相手側の記録値を拒むので、
+取り違えることはない。
+
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
@@ -726,7 +796,7 @@ worker を差し戻すことはしない** — round 2 で諦めるのはこの 
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" --allow-unreviewed
 ```
 
-**`integration` が `pr` のときは、上の merge の代わりにこちらを使う。**両方やってはならない
+**それが `pr` のときは、上の merge の代わりにこちらを使う。**両方やってはならない
 — pull request を作ったうえで merge すると、誰かがレビューする前に成果が入る。
 
 ```bash
@@ -1115,7 +1185,7 @@ release するのはここである。**セッションを閉じることはユ�
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
 | worker が人へ尋ねるのは `design_mode` がそう指示したときだけで、答えるまでブロックする | `direct` と `plan` では代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する。`brainstorm` では `orchestration ask` を使い、待機が終了コード 6 で質問と `reply` コマンドを出す。worker が再開するのはそのコマンドを実行したときだけである |
 | 差し戻された worker は同じセッションで作り直す。この skill はそのラウンド数を制限しない | 待機の出力を見る。差し戻しは理由付きで 1 行ずつ出る。検査を満たせない worker は、失敗するか待機が時間切れになるまで差し戻され続ける |
-| レビューは 2 ラウンドで打ち切り、無言の reviewer への再依頼は 1 回だけ | レビューされる側が未解決の findings を `result.md` に記録し、手元の最良版を保つ。統合する前にその節を読む |
+| レビューは 2 ラウンドで打ち切り | レビューされる側が未解決の findings を `result.md` に記録し、手元の最良版を保つ。統合する前にその節を読む |
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
 | setup hook は頼まない限り走らない | `setup` を `run` にする。setup が失敗した worktree には worker が付かないので、失敗は「起動を拒む」形で見える（不可解な成果物としてではなく） |
 | pull request は作るだけで、この skill が merge もレビューもしない | 自分でレビューして merge する。issue は pull request がマージされたときに閉じるのであって、実行が終わったときではない |
@@ -1132,13 +1202,16 @@ release するのはここである。**セッションを閉じることはユ�
 | この版が扱えない batch は acknowledge されないまま親 terminal の queue を block する | acknowledge しない。`received.json` と `result.md` を確認する。guarded manual integration でも queue は解消されない。後続の dispatch は別の Orca terminal から開始し、launch 時にはその `ORCA_TERMINAL_HANDLE` が使われる |
 | Orca が `release_pending` / `release_unknown` と報告する dispatch は片付けられない | [C1] がそのタスクを止める。端末・worktree・記録をそのまま残し、`$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べる。`release_pending` は自然に確定しうるが、`release_unknown` は判断が要る |
 | failure / edge receipt fixture の一部は simulated のままである | 実機 E2E は worker 1 本の成功経路に加え、**レビュー 2 役の成功経路**、`check` の wait/ack、`worker-release` の別 state、terminal/worktree cleanup の実機 receipt まで証明した。**failure と rejection の receipt は依然 simulated** であり、それを消費する経路に依存する前に capture する |
+| 停滞したタスクは知らされるだけで、ユーザーが言わない限り何も止まらない | worker は期限なしで待つ。待機は進捗の無いまま 2 時間経つと終了コード 8 で抜け、Step 3 が待ち続けるか役を止めるかを尋ねる。`--issue` の実行は `stall.json` に記録するだけで待ち続ける |
 
 ## ディスク上の状態
 
 タスクごとに `.dispatch/<slug>/` が 1 つあり、そこに `request.md`、`run.json`、`workers.json`、
 `received.json`、`integration-result.json`、`wait.json`（待機が毎周回残す鼓動）、
-`sent.json`（このタスクが実際に配送した message の記録）、
-`roles/design/{status.json,result.md}` がある。
+`sent.json`（このタスクが実際に配送した message の記録）、`stall.json`（停滞を見つけた時刻と、
+ユーザーが待ち続けると答えた時刻）、`human.json`（役が人を待っているのを待機が最後に見た時刻）、
+`roles/design/{status.json,result.md}`、ユーザーが止めた役には `roles/<role>/stopped.json`、
+`brainstorm` の design が書いたときは `spec.md` / `plan.md` がある。
 1 つの Run のタスクは `run.json` に同じ `run_id` を持ち、`workers.json` にそれぞれの worktree を
 持つ。`workers.json` の `roles` map は役ごとに 1 entry を持つので、後段の stage が何も動かさずに
 役を増やせる。手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は

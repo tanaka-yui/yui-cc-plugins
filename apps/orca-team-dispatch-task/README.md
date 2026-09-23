@@ -16,6 +16,8 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 **agent がどのアカウントでサインインするかは選べない** — Orca の CLI にアクティブな
 アカウントを選ぶ口が無いため、切り替えは Orca アプリ側で行う。
 **片付けが勝手に走ることはない。**確認してから、承認されたものだけを片付ける。
+worker は待機に期限を持たず、進んでいないタスクは待ち続けるか止めるかをユーザーに尋ねる。
+取り込み方（merge / PR）は dispatch の前に毎回尋ねる。
 **制限の一覧と片付け手順の正本は skill 側にある** —
 `skills/orca-team-dispatch-task/SKILL.md` の "Known limitations" と Step 5 / Step 6
 （日本語は `references/guide-ja.md`）。ここでは繰り返さない。

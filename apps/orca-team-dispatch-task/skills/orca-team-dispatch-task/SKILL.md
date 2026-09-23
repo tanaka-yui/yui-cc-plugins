@@ -72,7 +72,7 @@ they existed**.
 | `phase_b` | `off` — `design` plans and builds | `on` — `design` writes a plan and builds nothing; a second worker, `exec`, builds from it in its own worktree |
 | `integration` | `merge` — the work is merged into the branch you dispatched from | `pr` — the branch is pushed and a pull request is opened instead |
 | `setup` | `skip` — the worktree is created without running the repository's setup hooks | `run` — they run, and **a worker is never started on a worktree whose setup failed** |
-| `design_mode` | `direct` — `design` is given the request and gets on with it | `plan` — it must decide and record an approach before the first edit. `brainstorm` — it starts with the `superpowers:brainstorming` skill and works the request through with whoever is watching its terminal |
+| `design_mode` | `direct` — `design` is given the request and gets on with it | `plan` — it must decide and record an approach before the first edit. `brainstorm` — it starts with the `superpowers:brainstorming` skill and works the request through with whoever is watching its terminal, writes the agreed design to `spec.md`, then plans with `superpowers:writing-plans` into `plan.md`; with `phase_b=off` it then builds with `superpowers:subagent-driven-development` |
 
 **`phase_b` decides which branch carries the work** — `design` when off, `exec` when on.
 Both merging and opening a pull request read that one recorded value, so they cannot
@@ -344,8 +344,13 @@ Pass 2, once for the whole batch — one `--status-dir` per issue that dispatche
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>"
+bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>" \
+  --on-stall report
 ```
+
+`--on-stall report` keeps an unattended run from stopping to ask: a stalled task is written to
+its `stall.json` and the log, and the wait goes on. When someone comes back, a `stall.json` with
+`detected_at` names the task to take through Step 3's exit 8 steps.
 
 Read its exit code the way Step 3 describes, and run it in the background for the reason
 given there. Exit 5 is a partial failure, not a batch failure: go on to pass 3 for every
@@ -431,17 +436,17 @@ Read the configured value first:
 : "${PLUGIN:?run the block at the top of this file first}"
 RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
 bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --project-root "$RR" \
-  | jq -r .design_mode
+  | jq -r '"design_mode=\(.design_mode) integration=\(.integration)"'
 ```
 
 Then ask which tasks should start with brainstorming. Each question is `multiSelect` and its
 options are task slugs, so put up to four tasks per question; group the tasks in order and put
-up to four such questions in the one call. Past sixteen tasks, ask the next sixteen in a further
-call. A selected task gets `brainstorm`, every other task gets `plan`:
+up to four such questions in the one call — three when the integration question below shares it.
+Past that many tasks, ask the rest in a further call. A selected task gets `brainstorm`, every other task gets `plan`:
 
 | Answer | What the `design` worker is told |
 |---|---|
-| `brainstorm` (selected) | Start with the `superpowers:brainstorming` skill and settle the open questions with whoever is watching its terminal, before planning or building anything |
+| `brainstorm` (selected) | Start with the `superpowers:brainstorming` skill and settle the open questions with whoever is watching its terminal, write the agreed design to `spec.md`, then plan with `superpowers:writing-plans` into `plan.md`. With `phase_b=off` it then builds with `superpowers:subagent-driven-development`; with `phase_b=on` it stops at the plan |
 | `plan` (not selected) | Decide the approach and record it in `result.md` before the first edit |
 
 Name the configured value in the question text as the recommendation: all tasks when it is
@@ -450,11 +455,22 @@ dispatch someone is watching is a dispatch that can be asked about, so the choic
 talking it through and writing it down. The interface may refuse an empty selection, so say in
 the question that answering "none" through the free-text option starts every task on `plan`.
 
+**The same call also asks how the finished work comes home**, the way
+`cmux-team-dispatch-task` asks its Step 1e. Add one single-select question with two answers:
+**Wait and merge** — every task is waited for and its branch merged into the branch you
+dispatched from — and **PR per task** — each task's branch is pushed and a pull request is
+opened instead. Mark the configured `integration` as the recommendation. It is asked every time,
+like the question above: the configuration is the recommendation, never a reason to skip it.
+
+The answer covers every task in the dispatch. Keep it as `INTEGRATION`, `merge` or `pr`, and
+pass it in Step 2 for every task. Because this question takes one of the four places in the
+call, the first call carries at most three task questions — twelve tasks.
+
 Keep each task's answer as that task's `DESIGN_MODE` and pass it in Step 2. Step 2 refuses to
 run without it, so a task nobody was asked about cannot be started.
 
 **`--issue` has no Step 1b.** An unattended run has nobody to ask, so it takes `design_mode`
-from the configuration and downgrades `brainstorm` to `plan`.
+from the configuration and downgrades `brainstorm` to `plan`. It takes `integration` from the configuration as it is.
 
 ## Step 2: Start
 
@@ -465,9 +481,10 @@ mailbox.** Call them one after another, not in parallel.
 ```bash
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
 : "${DESIGN_MODE:?set DESIGN_MODE to this task's Step 1b answer: brainstorm or plan}"
+: "${INTEGRATION:?set INTEGRATION to the Step 1b answer: merge or pr}"
 RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
 OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
-        --design-mode "$DESIGN_MODE" \
+        --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
         --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
 RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
@@ -475,8 +492,10 @@ printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
 ```
 
 Take `--objective` from the request's own words; it names the outcome, it is not a design to
-work out first. Shell variables do not cross tool calls here either, and `DESIGN_MODE` is one of them: set it
-in this call from that task's Step 1b answer. Keep the printed `status_dir` of every task and
+work out first. Shell variables do not cross tool calls here either, and `DESIGN_MODE` and
+`INTEGRATION` are among them: set them in this call from the Step 1b answers.
+`INTEGRATION` is recorded in `workers.json` when the task starts; `--resume` and
+`--phase exec` keep the recorded value and refuse a new one. Keep the printed `status_dir` of every task and
 the single `run_id`; Step 3, Step 4 and Step 5 all need them by their exact values.
 
 Exit 1 means that task's worker did not start. If the message says resources are KEPT, the
@@ -581,6 +600,7 @@ unanswered completion. Workers that are still working are never typed into.
 | 5 | At least one worker reported failure | Read each `result.md`, tell the user which task failed and why, go to Step 4 only for the tasks that succeeded, and to Step 5 for all of them. **Do not merge a failed task** |
 | 3 | Still running | Report progress, then call it again with the same `--status-dir` set |
 | 6 | A worker asked a person a question and is blocked on the answer | Relay the question to the user verbatim, run the `reply` command the wait printed with their answer, then run the same wait again. Nothing failed; the worker resumes on the reply |
+| 8 | A task has made no progress for two hours, and none of its roles is waiting on a person | Nothing was stopped. Follow the stalled-task steps below: show the user what each role's terminal shows, ask once, run what they chose, then run the same wait again |
 | 4 | A worker stopped or failed, or an Orca call the wait depends on could not be verified | Inspect and tell the user; do not delete anything. The retention or the acknowledgement did not complete, so rerun the canonical wait; do not recover a batch by hand. If a worker was lost while its completion was still owed, see the recovery block below |
 | 1 | A batch carries a message this version cannot handle, or its outcome contradicts what is recorded | It was not acknowledged. Do not acknowledge it by hand; inspect it as described below |
 
@@ -591,6 +611,48 @@ user the question as printed, ask them, and run the printed
 treats a question it has already relayed as handled, so the batch drains and that worker's
 completion is processed. Do not acknowledge anything by hand, and do not treat the block as
 a failure — the worker is alive and waiting.
+
+On exit 8 nothing has been stopped either. The wait found a task where nothing a worker
+writes — its status, result, completion record, plan, review files, or the files and commits
+in its worktree — has changed for `--stall-after-min` minutes (120 by default), while no role
+was waiting on a person. **Workers never give up waiting by themselves**, so this is the only
+place a stuck task is noticed, and **whether to stop anything is the user's decision, never
+yours.**
+
+For every `stalled_role` line the wait printed, read what that terminal shows now:
+
+```bash
+: "${TERM_HANDLE:?set TERM_HANDLE to the terminal= value of one stalled_role line}"
+"$ORCA_BIN" terminal read --terminal "$TERM_HANDLE" --screen --json
+```
+
+Show the user how long each task has been idle and the last lines of each role's screen, then
+ask in one `AskUserQuestion` call: one `multiSelect` question per stalled task, whose options
+are **Keep waiting** and one option per role on that task's `stalled_role` lines. For a task
+where only **Keep waiting** was chosen, restart its stall clock:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the status_dir= value of the stalled task line}"
+bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --snooze
+```
+
+For every role the user chose to stop, run this once, with `ROLE` set to that role:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the status_dir= value of the stalled task line}"
+: "${ROLE:?set ROLE to one role the user chose to stop}"
+bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --role "$ROLE"
+```
+
+It records the stop before it closes the terminal, so the wait settles that role as
+`outcome=stopped` instead of reporting a lost worker, and `orca-recover.sh` leaves it alone.
+It restarts the stall clock too. Stopping a reviewer tells the worker it reviews to carry on
+without review: that work is then unreviewed, and Step 4's gate applies as usual. Stopping the
+role that carries the work fails the task: do not bring it home, and take it to Step 5. Exit 1
+means the stop could not be recorded or the terminal could not be closed, and the message says
+which; tell the user. Then run the same wait again.
 
 **The exit code is the authority, not the text.** Before the aggregate line, the wait prints
 one `task=... role=... dispatch=... status_dir=... outcome=...` line **per dispatched role**,
@@ -727,6 +789,18 @@ task qualifies. On exit 5 only the tasks whose own line for the **role that carr
 work** ended in `outcome=succeeded` do — that role is named in `integration_role`. A
 reviewer's worktree carries no work to bring home.
 
+First read how this dispatch was asked to come home — Step 1b's answer, recorded when it
+started:
+
+```bash
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+jq -r '.integration // "not recorded"' "$SD/workers.json"
+```
+
+`merge` means the merge below. `pr` means the pull request block further down. `not recorded`
+means an older version started the dispatch: use the configured `integration`. Each script
+refuses the other's recorded value, so the two cannot be mixed up.
+
 ```bash
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
@@ -750,7 +824,7 @@ with what `result.md` says about the review, and take the work anyway only if th
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" --allow-unreviewed
 ```
 
-**When `integration` is `pr`, use this instead of the merge above.** Do not do both: opening
+**When it is `pr`, use this instead of the merge above.** Do not do both: opening
 a pull request and then merging puts the work in before anyone reviews it.
 
 ```bash
@@ -1149,7 +1223,7 @@ State these when they apply. Do not work around them silently.
 | If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
 | A worker asks a person only when its `design_mode` told it to, and it blocks until you answer | Under `direct` and `plan` it is told to fail with a reason in `result.md` instead; read it and dispatch again. Under `brainstorm` it uses `orchestration ask`, the wait exits 6 with the question and the `reply` command, and the worker resumes only once you run that command |
 | A worker that is sent back for remediation retries in the same session, and this skill does not cap those rounds | Watch the wait's output: each remediation is logged with its reason. A worker that cannot satisfy the check will keep being sent back until it fails or the wait times out |
-| Review stops after two rounds, and a silent reviewer is retried once | The role being reviewed records the unresolved findings in `result.md` and keeps the best version it has. Read that section before integrating |
+| Review stops after two rounds | The role being reviewed records the unresolved findings in `result.md` and keeps the best version it has. Read that section before integrating |
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Setup hooks do not run unless you ask for them | Set `setup` to `run`. A worktree whose setup failed never gets a worker, so a failure shows up as a refusal to start rather than as a confusing result |
 | A pull request is opened, never merged or reviewed by this skill | Review and merge it yourself. The issue closes when the pull request merges, not when the run ends |
@@ -1166,13 +1240,17 @@ State these when they apply. Do not work around them silently.
 | A batch this version cannot handle stays unacknowledged and blocks its parent terminal's queue | Do not acknowledge it. Inspect `received.json` and `result.md`; guarded manual integration does not unblock that queue. Start later dispatches from another Orca terminal, whose `ORCA_TERMINAL_HANDLE` is used at launch |
 | A dispatch Orca reports as `release_pending` or `release_unknown` is never cleaned up | [C1] stops that task. Leave its terminal, worktree and record alone and inspect it with `$ORCA_BIN orchestration worker-show --dispatch <id> --json`; `release_pending` may settle by itself, `release_unknown` needs a decision |
 | Failure and edge receipt fixtures are partly simulated | The real E2E now proves the success path for one worker and for a reviewed pair, plus real `check` wait/ack, `worker-release` alternate-state, and terminal/worktree cleanup receipts. **Failure and rejection receipts are still simulated**; capture them before relying on the paths that consume them |
+| A stalled task is only reported; nothing stops it unless you say so | Workers wait with no time limit. The wait exits 8 after two hours without progress, and Step 3 asks you whether to keep waiting or stop a role. An `--issue` run only records it in `stall.json` and keeps waiting |
 
 ## State on disk
 
 One `.dispatch/<slug>/` per task: `request.md`, `run.json`, `workers.json`, `received.json`,
 `integration-result.json`, `wait.json` (the stamp the wait leaves each round),
-`sent.json` (one entry per message this task actually delivered), and
-`roles/design/{status.json,result.md}`. Tasks of one Run carry
+`sent.json` (one entry per message this task actually delivered), `stall.json` (when the
+task was found stalled, and when the user chose to keep waiting), `human.json` (the last time
+the wait saw a role waiting on a person), and
+`roles/design/{status.json,result.md}`, plus `roles/<role>/stopped.json` for a role the user
+stopped, and `spec.md` / `plan.md` when a `brainstorm` design wrote them. Tasks of one Run carry
 the same `run_id` in `run.json` and their own worktree in `workers.json`, whose `roles` map
 holds one entry per role so a later stage can add more without moving anything. Everything
 needed to resume or clean up by hand is here. `.dispatch/` is added to the repository's

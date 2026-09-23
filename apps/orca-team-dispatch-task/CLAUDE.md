@@ -18,7 +18,8 @@ Orca の worktree で N タスクを worker に並列実行させるプラグイ
 `bin/orca-start.sh`（worktree + Task を用意し、`worker-start` で Orca に端末起動を依頼する。
 端末自体はこのプラグインではなく Orca が作る）/ `bin/orca-wait.sh`
 （`worker_done` を待つ。成功 0 / 失敗 5）/ `bin/orca-wake.sh`（役の端末へ 1 行入力して
-アイドルな worker を起こす。後述）/ `bin/orca-merge.sh`（成果を親ブランチへ。
+アイドルな worker を起こす。後述）/ `bin/orca-stop.sh`（ユーザーが選んだ役を記録してから
+止める。停滞の時計の数え直しも）/ `bin/orca-merge.sh`（成果を親ブランチへ。
 **資源は消さない**）/ `skills/.../scripts/report-status.sh`（worker が status を書く口。移植）/
 `skills/.../scripts/config-{lib,resolve,edit}.sh`（設定層。後述）。
 
@@ -71,7 +72,7 @@ path は UNC で返り、bash の `-d` も `git -C` も解釈できない）。�
 - **層 1（源）: worker にターンを閉じさせない。**旧 STATUS PROTOCOL は merge_ready の
   あとに「End your turn here」「When you are woken」と書いていた。起こす者が居ないので、
   これは「止まれ」と書いてあるのと同じだった。いまは `completion.sh await` を呼び直させる
-  （1 回 10 分ブロック / 出力は `accepted` `remediation` `waiting` `expired` の 4 つ）。
+  （1 回 10 分ブロック / 出力は `accepted` `remediation` `waiting` の 3 つ。期限は無い）。
   **`waiting` は「まだ来ていない」であって「来ない」ではない** — ここを give-up にすると
   元に戻る。回帰は `test-start.sh` の ST66-69 と `test-completion.sh` の CM17-26
 - **層 2（保険）: 親が端末を叩く。**`orca-wait.sh` は受理・差し戻しを送った直後に
@@ -90,16 +91,28 @@ path は UNC で返り、bash の `-d` も `git -C` も解釈できない）。�
 （`orca-wait.sh` がブロックして待てるので、cmux 版の単発 safety timer と timeout sentinel
 は要らない）で、こちらは**子**を起こす話である。
 
-## 待つのは 24 時間
+## 子は待ち続け、止めるのはユーザー
 
-**「翌日の仕事までに分かっていればよい」が要件である。**そのうえで、**片側だけ長くしても
-意味が無い**: worker の `await` の期限（`completion.sh` の `sent` が `await_deadline` に
-焼く 24 時間）と、親の `orca-wait.sh --max-waits` の既定 288（5 分 × 288 = 24 時間）は
-**必ず一緒に動かす**。親が 1 時間で降りると、24 時間待つ worker は誰も受理しない返事を
-待ち続ける（これが 2026-09-10 に起きた）。
+**子は待機に期限を持たない。**2026-09-23 の実測: design が brainstorm でユーザーの回答を
+待つ間に、reviewer が「1 時間依頼なし」で自分から終了し、そのタスクはレビューされなかった。
+子は待っている相手の事情（人の回答待ちなど）を知らないので、「来ない」を判断できない。
+reviewer・依頼側のレビュー待ち・`completion.sh await` のどれも、自分から待機をやめる経路を
+持たない（回帰は `test-start.sh` の ST67 / ST89 / ST90、`test-completion.sh` の CM22 / CM22b /
+CM27b）。
 
-期限を**ファイルに載せる**のは、agent に回数を数えさせないためである。1 回のブロックは
-10 分（agent の shell の上限）なので、24 時間は呼び直しで作るしかない。
+**停滞を見つけるのは親、止めるかを決めるのはユーザー。**`orca-wait.sh` はタスク単位で
+「子が書くもの」（status / result / completion / plan / review / worktree の変更と commit）の
+最終変化時刻を見て、`--stall-after-min`（既定 120）を越えたら exit 8 で抜ける。**親が書く
+ファイル（`wait.json` / `.woken` / `received.json` / `questions.json` / `stall.json`）は
+数えない** — 数えると親の鼓動で常に「変化あり」になる。人を待っている間（`agentWait` と
+質問の取り次ぎ）は `human.json` に時刻を残して時計を戻す。`questions.json` は答えた時刻を
+持たないので、取り次ぎ済みとして通した時点（人が答えた直後）でも戻す。止めるのは
+`orca-stop.sh` で、**記録してから端末を閉じる**（記録の無い停止は worker の消失に見え、
+exit 4 と recovery に回る）。`--issue` は `--on-stall report` で止まらずに記録だけ残す
+（回帰は `test-wait.sh` の WT80-92、`test-stop.sh`、`test-recover.sh` の RC16）。
+
+親の `--max-waits` の既定 288（5 分 × 288 = 24 時間）は残す。子の期限と揃える意味は
+無くなり、24 時間ごとに exit 3 で状況を報告して呼び直す区切りになった。
 
 親の側は**背景で走らせる**。24 時間ブロックする呼び出しは、親自身のシェルの上限で必ず
 打ち切られる。打ち切られても失われるものは無い（batch を処理し切るまで ack しない）が、
@@ -187,10 +200,19 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
   止めてはならない** — 答えれば進む dispatch が永久に止まる（実測）。取り次いだ質問は
   `questions.json` に記録し、**2 度目は処理済みとして通す**。通さないと、答えたあとも同じ
   質問が queue の先頭に居座り、その worker の `merge_ready` が後ろで待ち続ける（実測）
+- **取り込み方（merge / PR）は Step 1b の同じ呼び出しで毎回尋ねる**（cmux 版の 1e と同じ）。
+  答えは `orca-start.sh --integration` で `workers.json` に記録し、Step 4 はそれを読む。
+  `orca-merge.sh` は `pr` の記録を、`orca-pr.sh` は `merge` の記録を拒む（記録が無い旧版は通す）。
+  回帰は `test-docs.sh` の SK19、`test-start.sh` の ST91-93、MG21 / MG22、PR15 / PR16
 - **`design_mode` で取りかかり方を選べる**（`direct` 既定 / `plan` / `brainstorm`）。
   cmux 版の Step 1c 相当だが、**Orca では端末を Orca が作るので起動フラグに触れない** —
   spec 本文の指示として効かせる。`--issue` は無人なので `brainstorm` を `plan` へ落とす
   （cmux 版が loop-mode で「plan mode に固定」としているのと同じ理由）
+  **`brainstorm` だけは brainstorming → `spec.md` → writing-plans → `plan.md` の順を指示文で
+  固定する**（2026-09-23 の実測: 次の段を書いていなかったので writing-plans を呼ばず、spec と
+  plan を混ぜた plan.md を 1 本書いて終えた）。skill 自身の保存先と commit は上書きし、spec と
+  plan は status dir に置く。`phase_b=off` の実装は Subagent-driven に固定する。
+  回帰は `test-start.sh` の ST62 / ST94-98、`test-docs.sh` の SK21
 - **取りかかり方は dispatch ごとに 1 回の質問でまとめて尋ねる**（SKILL.md の Step 1b。cmux 版 1c
   と同じ「brainstorming で始めるタスクを選ぶ」形）。1 問 4 タスク × 最大 4 問で 1 回に 16 件まで。
   設定値は「推奨として示す答え」であって黙って使われる値ではない。**散文の「尋ねよ」では守られない**
