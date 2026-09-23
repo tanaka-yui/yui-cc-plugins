@@ -801,4 +801,80 @@ grep -q 'worker_done|task_r|ctx_r|succeeded' "$SD/received.json" 2>/dev/null \
   && grep -q -- '--ack dwd' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT83b 止めた役の receipt は記録し retain しない" || fail "WT83b"; teardown
 
+# ── 停滞の検知（子は期限を持たないので、見つけるのは親である）──
+old() { touch -t 202001010000 "$@"; }
+STALL=3600
+
+# WT84: 子が書くものが閾値を越えて変わらなければ exit 8。タスクと役を名指しする
+setup; old "$SD/run.json" "$SD/roles/design/status.json"
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL w 2>/dev/null); rc=$?
+b=$(basename "$SD")
+[[ "$rc" -eq 8 && "$out" == *"stalled task=$b status_dir=$SD idle_min="* \
+   && "$out" == *"stalled_role task=$b role=design phase=executing terminal=term_w"* ]] \
+  && ok "WT84 停滞で 8" || fail "WT84 (rc=$rc out=$out)"; teardown
+
+# WT85: 動いているタスクは停滞ではない（run.json も status.json も新しい）
+setup; ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 ]] && ok "WT85 動いていれば 8 にしない" || fail "WT85 (rc=$rc)"; teardown
+
+# WT86: ★ **親が書くファイルは変化に数えない。**数えると親の鼓動で常に「変化あり」になる
+setup; old "$SD/run.json" "$SD/roles/design/status.json"
+echo '[]' > "$SD/received.json"; echo '[]' > "$SD/questions.json"; echo 1 > "$SD/roles/design/.woken"
+ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 8 ]] && ok "WT86 親の書き込みで時計を戻さない" || fail "WT86 (rc=$rc)"; teardown
+
+# WT87: ★ **人を待っている役が居れば停滞ではない**（agentWait）。その時点を human.json に残す
+setup; old "$SD/run.json" "$SD/roles/design/status.json"
+echo '{"ok":true,"result":{"worker":{"state":"active"},"observation":{"agentWait":{"evidence":"hook"}}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 && "$(jq -r '.last_human_at' "$SD/human.json" 2>/dev/null)" =~ ^[0-9]+$ ]] \
+  && ok "WT87 人の入力待ちで時計を戻す" || fail "WT87 (rc=$rc)"; teardown
+
+# WT88: ★ **答えるのに何時間かかっても、呼び直した直後に停滞としない。**取り次ぎ済みの
+#      質問を通した時点（人が答えた直後）で時計を戻す。
+setup; old "$SD/run.json" "$SD/roles/design/status.json"
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dq",count:1,messages:[
+  {id:"q1",type:"question",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"which?"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+echo '["q1"]' > "$SD/questions.json"
+ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 && -f "$SD/human.json" ]] && ok "WT88 答えた直後に停滞としない" || fail "WT88 (rc=$rc)"; teardown
+
+# WT89: snoozed_at（「待ち続ける」と答えた時刻）から数え直す
+setup; old "$SD/run.json" "$SD/roles/design/status.json"
+printf '{"snoozed_at":%s}\n' "$(date +%s)" > "$SD/stall.json"
+ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 ]] && ok "WT89 snooze から数え直す" || fail "WT89 (rc=$rc)"; teardown
+
+# WT90: ★ **report は抜けずに記録する。同じ停滞を毎周出さない。**動き出したら記録を消す
+setup; old "$SD/run.json" "$SD/roles/design/status.json"
+err=$(ORCA_STALL_AFTER_SECONDS=$STALL bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 3 \
+        --timeout-ms 1 --on-stall report 2>&1 >/dev/null); rc=$?
+n=$(grep -c 'stalled task=' <<<"$err")
+d1=$(jq -r '.detected_at // empty' "$SD/stall.json" 2>/dev/null)
+echo '{"status":"executing"}' > "$SD/roles/design/status.json"   # 動き出した
+ORCA_STALL_AFTER_SECONDS=$STALL bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 \
+  --timeout-ms 1 --on-stall report >/dev/null 2>&1
+[[ "$rc" -eq 3 && "$n" -eq 1 && "$d1" =~ ^[0-9]+$ ]] \
+  && jq -e 'has("detected_at") | not' "$SD/stall.json" >/dev/null 2>&1 \
+  && ok "WT90 report は 1 回だけ記録し、動けば消す" || fail "WT90 (rc=$rc n=$n d1=$d1)"; teardown
+
+# WT91: ★ **決着済みのタスクを停滞として報告しない**（兄弟がまだ動いているだけ）
+setup; dn; echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
+SD2=$(mktemp -d); mkdir -p "$SD2/roles/design"; cp "$SD/run.json" "$SD2/run.json"
+echo '{"roles":{"design":{"terminal":"term_y","task":"task_y","dispatch":"ctx_y","retained":false}}}' > "$SD2/workers.json"
+echo '{"status":"executing"}' > "$SD2/roles/design/status.json"
+old "$SD/run.json" "$SD/roles/design/status.json" "$SD/received.json"
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL bash "$P/bin/orca-wait.sh" --status-dir "$SD" --status-dir "$SD2" \
+        --max-waits 1 --timeout-ms 1 2>/dev/null); rc=$?
+[[ "$rc" -eq 3 && "$out" != *stalled* ]] && ok "WT91 決着済みは停滞ではない" || fail "WT91 (rc=$rc out=$out)"
+rm -rf "$SD2"; teardown
+
+# WT92: 引数の検査
+setup
+bash "$P/bin/orca-wait.sh" --status-dir "$SD" --on-stall bogus >/dev/null 2>&1; a=$?
+bash "$P/bin/orca-wait.sh" --status-dir "$SD" --stall-after-min 0 >/dev/null 2>&1; b=$?
+[[ "$a" -eq 2 && "$b" -eq 2 ]] && ok "WT92 停滞の引数を検査する" || fail "WT92 ($a/$b)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

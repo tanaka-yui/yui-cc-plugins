@@ -10,8 +10,10 @@
 # 照らして drain する。**outcome の矛盾検査は dispatch ごと**であり batch 全体ではない
 # （別タスクが同じ batch で別々に settle するのは正常である）。
 # Usage: orca-wait.sh --status-dir <d> [--status-dir <d> ...] [--max-waits <n>] [--timeout-ms <n>]
+#                     [--stall-after-min <n>] [--on-stall ask|report]
 # Exit: 0 全件成功 / 5 1 件以上が失敗 / 1 batch を処理できない / 2 使用法 / 3 時間切れ
 #       / 4 transport または worker state が不明 / 6 worker が人へ質問している
+#       / 8 進んでいないタスクがある（--on-stall ask のとき。止めるかはユーザーが決める）
 set -uo pipefail
 die() { echo "orca-wait: $1" >&2; exit 2; }
 log() { echo "orca-wait: $1" >&2; }
@@ -19,10 +21,10 @@ ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resour
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WAKE="$HERE/orca-wake.sh"
-# ★ **既定は 24 時間**（5 分 × 288）。worker 側の待機も 24 時間である（completion.sh の
-#   `await`）。**片方だけ長くしても意味が無い** — 親が 1 時間で降りれば、24 時間待つ
-#   worker はもう誰も受理しない返事を待ち続けることになる。
-SDS=() MAXW=288 TMO=300000
+# ★ **既定は 24 時間**（5 分 × 288）。子は待機に期限を持たないので、これは子を見捨てる期限では
+#   ない。24 時間ごとに exit 3 で状況を報告し、親が呼び直すための区切りである。
+# ★ **停滞の既定は 120 分。**子が書くものがそれだけ変わらなければ知らせる（止めはしない）。
+SDS=() MAXW=288 TMO=300000 STALL_MIN=120 ON_STALL=ask
 # 起こし直しの間隔と、waiter_exists の待ち。テストが実時間を使わずに済むよう env で開ける。
 WAKE_INTERVAL="${ORCA_WAKE_INTERVAL_SECONDS:-1800}"
 WAITER_RETRY="${ORCA_WAITER_RETRY_SECONDS:-20}"
@@ -31,11 +33,17 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --status-dir) need2 "$1" $#; SDS+=("$2"); shift 2 ;;
   --max-waits)  need2 "$1" $#; MAXW="$2";   shift 2 ;;
   --timeout-ms) need2 "$1" $#; TMO="$2";    shift 2 ;;
+  --stall-after-min) need2 "$1" $#; STALL_MIN="$2"; shift 2 ;;
+  --on-stall)        need2 "$1" $#; ON_STALL="$2";  shift 2 ;;
   *) die "unknown option: $1" ;;
 esac; done
 [[ "${#SDS[@]}" -ge 1 ]] || die "--status-dir is required"
 [[ "$MAXW" =~ ^[1-9][0-9]*$ ]] || die "--max-waits must be a positive integer"
 [[ "$TMO" =~ ^[1-9][0-9]*$ ]] || die "--timeout-ms must be a positive integer"
+[[ "$STALL_MIN" =~ ^[1-9][0-9]*$ ]] || die "--stall-after-min must be a positive integer"
+case "$ON_STALL" in ask|report) ;; *) die "--on-stall must be ask or report: $ON_STALL" ;; esac
+# テストが実時間を使わずに済むよう、秒で上書きできる（他の間隔と同じ構え）
+STALL_SECONDS="${ORCA_STALL_AFTER_SECONDS:-$((STALL_MIN * 60))}"
 
 # 期待集合。**1 本の Delivery を共有する以上、親端末と Run は 1 つでなければならない。**
 #
@@ -138,6 +146,94 @@ role_outcome() {   # $1=status dir $2=role → receipt の outcome、無けれ�
   oc=$(stored_outcome "$1" "$2") || return 1
   if [[ -z "$oc" ]] && is_stopped "$1" "$2"; then oc=stopped; fi
   printf '%s' "$oc"
+}
+
+# ★ **停滞は親が見つけ、止めるかどうかは人が決める。**子は待機に期限を持たない（待っている
+#   相手の事情を知らないので「来ない」を判断できない）。タスク単位で「子が書くもの」が一定時間
+#   どれも変わらなければ知らせる。**親が書くもの（wait.json / .woken / received.json /
+#   questions.json / stall.json）は数えない** — 数えると親の鼓動で常に「変化あり」になる。
+file_mtime() {   # $1=path → epoch。**GNU と BSD の stat の違いはここ 1 箇所で吸収する**
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+LATEST=0
+newer() { [[ "$1" =~ ^[0-9]+$ ]] && [[ "$1" -gt "$LATEST" ]] && LATEST="$1"; return 0; }
+task_last_change() {   # $1=status dir → 子が最後に何かを変えた時刻（epoch）を stdout
+  local sd="$1" f wt
+  LATEST=0
+  # 下限は dispatch の開始（run.json は起動時に 1 度だけ書かれる）
+  newer "$(file_mtime "$sd/run.json")"
+  # human.json は親が書くが、人とのやりとりの記録なので数える（人を待つ間は停滞ではない）
+  for f in "$sd"/roles/*/status.json "$sd"/roles/*/result.md "$sd"/roles/*/completion.json \
+           "$sd/plan.md" "$sd"/review/* "$sd/human.json"; do
+    [[ -e "$f" ]] || continue
+    newer "$(file_mtime "$f")"
+  done
+  while IFS= read -r wt; do
+    [[ -n "$wt" && -d "$wt" ]] || continue
+    newer "$(git -C "$wt" log -1 --format=%ct 2>/dev/null || echo 0)"
+    while IFS= read -r f; do
+      [[ -e "$wt/$f" ]] || continue
+      newer "$(file_mtime "$wt/$f")"
+    done < <(git -C "$wt" status --porcelain 2>/dev/null | cut -c4-)
+  done < <(jq -r '.roles[].worktree_path // empty' "$sd/workers.json" 2>/dev/null)
+  printf '%s' "$LATEST"
+}
+# ★ **人を待っている間は停滞ではない。**人とのやりとりを見た時点を残し、時計をそこから戻す。
+#   書けなくても待機は止めない（最悪、ユーザーに 1 回余計に尋ねるだけで、誤って止めはしない）
+mark_human() {   # $1=status dir
+  write "$1" "$1/human.json" "$(jq -nc --argjson t "$(date +%s)" '{last_human_at: $t}')" || true
+}
+task_settled() {   # $1=status dir → その status dir の役が全部決着していれば 0
+  local i oc
+  for i in "${!TASKS[@]}"; do
+    [[ "${T_SD[$i]}" == "$1" ]] || continue
+    oc=$(role_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || return 1
+    [[ -n "$oc" ]] || return 1
+  done
+  return 0
+}
+stall_lines() {   # $1=status dir $2=止まっている分 → 報告行を stdout
+  local sd="$1" i ph th slug
+  slug=$(basename "$sd")
+  echo "stalled task=$slug status_dir=$sd idle_min=$2"
+  for i in "${!TASKS[@]}"; do
+    [[ "${T_SD[$i]}" == "$sd" ]] || continue
+    ph=$(jq -r '.phase // empty' "$sd/roles/${T_ROLE[$i]}/completion.json" 2>/dev/null || echo "")
+    [[ -n "$ph" ]] || ph=$(jq -r '.status // empty' "$sd/roles/${T_ROLE[$i]}/status.json" 2>/dev/null || echo "")
+    th=$(jq -r --arg r "${T_ROLE[$i]}" '.roles[$r].terminal // empty' "$sd/workers.json" 2>/dev/null || echo "")
+    echo "stalled_role task=$slug role=${T_ROLE[$i]} phase=${ph:-none} terminal=${th:-none}"
+  done
+}
+check_stall() {   # 0 = 尋ねるべき停滞は無い / 1 = ask で停滞を stdout に出した（呼び出し側が 8 で抜ける）
+  local sd now last snz idle cur upd l found=0
+  now=$(date +%s)
+  for sd in "${SDS[@]}"; do
+    task_settled "$sd" && continue
+    last=$(task_last_change "$sd")
+    snz=$(jq -r '.snoozed_at // 0' "$sd/stall.json" 2>/dev/null || echo 0)
+    [[ "$snz" =~ ^[0-9]+$ ]] && [[ "$snz" -gt "$last" ]] && last="$snz"
+    cur=$(jq -c 'if type == "object" then . else {} end' "$sd/stall.json" 2>/dev/null) || cur='{}'
+    [[ -n "$cur" ]] || cur='{}'
+    if [[ $((now - last)) -lt "$STALL_SECONDS" ]]; then
+      # 動き出したら、次の停滞をまた報告できるよう記録を消す
+      if jq -e 'has("detected_at")' <<<"$cur" >/dev/null 2>&1; then
+        upd=$(jq -c 'del(.detected_at, .idle_min)' <<<"$cur") && [[ -n "$upd" ]] \
+          && write "$sd" "$sd/stall.json" "$upd" || true
+      fi
+      continue
+    fi
+    idle=$(( (now - last) / 60 ))
+    if [[ "$ON_STALL" == ask ]]; then
+      stall_lines "$sd" "$idle"; found=1; continue
+    fi
+    # ★ report は抜けない（無人の --issue）。**同じ停滞で毎周書かない**
+    jq -e 'has("detected_at")' <<<"$cur" >/dev/null 2>&1 && continue
+    while IFS= read -r l; do log "$l"; done < <(stall_lines "$sd" "$idle")
+    upd=$(jq -c --argjson t "$now" --argjson m "$idle" '.detected_at = $t | .idle_min = $m' <<<"$cur") \
+      && [[ -n "$upd" ]] && write "$sd" "$sd/stall.json" "$upd" \
+      || log "could not record the stall in $sd/stall.json"
+  done
+  [[ "$found" -eq 0 ]]
 }
 record_outcome() {   # $1=status dir $2=task $3=dispatch $4=outcome。1 = 記録が壊れている / 2 = 書けなかった
   local sd="$1" records receipt updated
@@ -316,6 +412,8 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       #   答えたあとも同じ質問で永久に止まり続ける（実測で踏んだ）。
       if [[ -f "$qseen" ]] && jq -e --arg i "$qid" 'index($i) != null' "$qseen" >/dev/null 2>&1; then
         log "${T_ROLE[$idx]}'s question was already relayed; treating it as handled"
+        # 取り次ぎ済みとして通すのは、人が答えたあとの呼び直しである。そこで時計を戻す
+        mark_human "${T_SD[$idx]}"
         continue
       fi
       qnew=$(jq -nc --arg i "$qid" --slurpfile prev <(cat "$qseen" 2>/dev/null || echo '[]') \
@@ -327,6 +425,7 @@ drain() {   # 0 = batch を処理し切った / 1 = 処理できないものが�
       log "relay it to the user, then answer with:"
       log "  $ORCA_BIN orchestration reply --id ${qid:-<message id>} --body '<their answer>' --from $PH"
       log "then run this wait again"
+      mark_human "${T_SD[$idx]}"
       return 6
     fi
     # ★ **相 3〜4。**`merge_ready` は worker が「検証してくれ」と言っている状態である。
@@ -530,7 +629,7 @@ healthy() {   # **人の入力待ちは healthy である**（CLI help）。1 �
       return 2
     }
     wait=$(jq -r '.result.observation.agentWait // empty' <<<"$show")
-    [[ -n "$wait" && "$wait" != null ]] && continue
+    if [[ -n "$wait" && "$wait" != null ]]; then mark_human "${T_SD[$i]}"; continue; fi
     st=$(jq -r '.result.worker.state // empty' <<<"$show")
     case "$st" in
       active|ready|starting|idle) SETTLE_SEEN["${DISPS[$i]}"]=0 ;;
@@ -575,6 +674,11 @@ while :; do
   oc=$(aggregate) && finish "$oc"
   healthy || exit 4
   rewake_stalled
+  check_stall || {
+    log "a task has made no progress for $(( STALL_SECONDS / 60 )) minutes or more and nobody is waiting on a person;"
+    log "ask the user whether to keep waiting or stop a role (orca-stop.sh), then run this wait again"
+    exit 8
+  }
   n=$((n + 1))
   [[ "$n" -lt "$MAXW" ]] || { log "reached --max-waits ($MAXW); inspect and decide"; exit 3; }
 done
