@@ -871,10 +871,19 @@ out=$(ORCA_STALL_AFTER_SECONDS=$STALL bash "$P/bin/orca-wait.sh" --status-dir "$
 [[ "$rc" -eq 3 && "$out" != *stalled* ]] && ok "WT91 決着済みは停滞ではない" || fail "WT91 (rc=$rc out=$out)"
 rm -rf "$SD2"; teardown
 
-# WT92: 引数の検査
+# WT92: 引数の検査。**rc 2 だけでは未知オプションと区別できない**ので、理由の文言も見る
 setup
-bash "$P/bin/orca-wait.sh" --status-dir "$SD" --on-stall bogus >/dev/null 2>&1; a=$?
-bash "$P/bin/orca-wait.sh" --status-dir "$SD" --stall-after-min 0 >/dev/null 2>&1; b=$?
-[[ "$a" -eq 2 && "$b" -eq 2 ]] && ok "WT92 停滞の引数を検査する" || fail "WT92 ($a/$b)"; teardown
+aerr=$(bash "$P/bin/orca-wait.sh" --status-dir "$SD" --on-stall bogus 2>&1 >/dev/null); a=$?
+berr=$(bash "$P/bin/orca-wait.sh" --status-dir "$SD" --stall-after-min 0 2>&1 >/dev/null); b=$?
+[[ "$a" -eq 2 && "$aerr" == *"--on-stall must be ask or report"* \
+   && "$b" -eq 2 && "$berr" == *"--stall-after-min must be a positive integer"* ]] \
+  && ok "WT92 停滞の引数を検査する" || fail "WT92 (a=$a aerr=$aerr b=$b berr=$berr)"; teardown
+
+# WT93: env override 無しで `--stall-after-min` を受け付け、分を秒へ変換する
+setup; old "$SD/run.json" "$SD/roles/design/status.json"
+out=$(env -u ORCA_STALL_AFTER_SECONDS bash "$P/bin/orca-wait.sh" --status-dir "$SD" \
+        --max-waits 1 --timeout-ms 1 --stall-after-min 60 2>/dev/null); rc=$?
+[[ "$rc" -eq 8 && "$out" == *"stalled task="* ]] \
+  && ok "WT93 stall-after-min を分から秒へ変換して受け付ける" || fail "WT93 (rc=$rc out=$out)"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
