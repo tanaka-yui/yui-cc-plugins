@@ -446,7 +446,7 @@ Past that many tasks, ask the rest in a further call. A selected task gets `brai
 
 | Answer | What the `design` worker is told |
 |---|---|
-| `brainstorm` (selected) | Start with the `superpowers:brainstorming` skill and settle the open questions with whoever is watching its terminal, write the agreed design to `spec.md`, then plan with `superpowers:writing-plans` into `plan.md`. With `phase_b=off` it then builds with `superpowers:subagent-driven-development`; with `phase_b=on` it stops at the plan |
+| `brainstorm` (selected) | Start with the `superpowers:brainstorming` skill and settle the open questions with whoever is watching its terminal, write the agreed design to `spec.md`, then plan with `superpowers:writing-plans` into `plan.md`. With `phase_b=off` it then builds with `superpowers:subagent-driven-development` and stops after committing, without `superpowers:finishing-a-development-branch`: the parent brings the branch home; with `phase_b=on` it stops at the plan |
 | `plan` (not selected) | Decide the approach and record it in `result.md` before the first edit |
 
 Name the configured value in the question text as the recommendation: all tasks when it is
@@ -574,17 +574,21 @@ that deliberately**, because it trades one failure for another:
 
 ```bash
 setsid nohup bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir>" \
-  >> "$SD/wait.log" 2>&1 < /dev/null &
+  --on-stall report >> "$SD/wait.log" 2>&1 < /dev/null &
 ```
 
 A detached wait survives, but **its exit codes reach nobody**. Exit 6 is the one that hurts:
 a worker that asked a person a question stays blocked until someone reads `wait.log` and
 answers it. Detach only if you will poll that log.
+It passes `--on-stall report` because a stall would otherwise end it with exit 8, which nobody
+sees, and after that no worker's completion is answered; with `report` the stall is only
+written to `wait.log`.
 
 **When `phase_b` is on, this wait does not return until `exec` has finished — and nothing has
 started `exec` yet.** Its aggregate needs a `status.json` for `integration_role`, which is
-`exec` under `phase_b`, so a wait left alone here polls for the full 24 hours in silence with
-every worker it can see already finished. Go to Step 3.5 **while this wait keeps running**,
+`exec` under `phase_b`, so a wait left alone here keeps polling with every worker it can see
+already finished, until two hours later it reports the task as stalled with `exec` never
+started. Go to Step 3.5 **while this wait keeps running**,
 then come back to the exit table below.
 
 While it runs it does two things besides collecting outcomes. It answers each `merge_ready`
@@ -613,7 +617,7 @@ completion is processed. Do not acknowledge anything by hand, and do not treat t
 a failure — the worker is alive and waiting.
 
 On exit 8 nothing has been stopped either. The wait found a task where nothing a worker
-writes — its status, result, completion record, plan, review files, or the files and commits
+writes — its status, result, completion record, spec, plan, review files, or the files and commits
 in its worktree — has changed for `--stall-after-min` minutes (120 by default), while no role
 was waiting on a person. **Workers never give up waiting by themselves**, so this is the only
 place a stuck task is noticed, and **whether to stop anything is the user's decision, never
@@ -626,10 +630,15 @@ For every `stalled_role` line the wait printed, read what that terminal shows no
 "$ORCA_BIN" terminal read --terminal "$TERM_HANDLE" --screen --json
 ```
 
+An `unstarted_role` line names the role that carries the work but was never started. For
+`exec` it means Step 3.5 was skipped for that task: do not ask about it, go to Step 3.5.
+
 Show the user how long each task has been idle and the last lines of each role's screen, then
 ask in one `AskUserQuestion` call: one `multiSelect` question per stalled task, whose options
-are **Keep waiting** and one option per role on that task's `stalled_role` lines. For a task
-where only **Keep waiting** was chosen, restart its stall clock:
+are **Keep waiting** and one option per role on that task's `stalled_role` lines. One call
+holds at most four questions; past four stalled tasks, ask the rest in a further call. While
+the user is being asked, the wait is not running, so no worker's completion is answered until
+you start it again. For a task where only **Keep waiting** was chosen, restart its stall clock:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
@@ -649,8 +658,11 @@ bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --role "$ROLE"
 It records the stop before it closes the terminal, so the wait settles that role as
 `outcome=stopped` instead of reporting a lost worker, and `orca-recover.sh` leaves it alone.
 It restarts the stall clock too. Stopping a reviewer tells the worker it reviews to carry on
-without review: that work is then unreviewed, and Step 4's gate applies as usual. Stopping the
-role that carries the work fails the task: do not bring it home, and take it to Step 5. Exit 1
+without review: that work is then unreviewed, and Step 4's gate applies as usual. It does so
+even for a reviewer that has already finished, since one that could not deliver its verdict
+leaves that worker waiting. Stopping `design` or `exec` tells its reviewer there is nothing
+left to review, so the reviewer finishes, and it fails the task: do not bring it home, and take
+it to Step 5. Exit 1
 means the stop could not be recorded or the terminal could not be closed, and the message says
 which; tell the user. Then run the same wait again.
 
@@ -697,6 +709,9 @@ sed -n '1,240p' "$SD/roles/design/result.md"
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
 
+A dispatch recorded as `pr` uses `orca-pr.sh` instead, as Step 4 shows; `orca-merge.sh`
+refuses it.
+
 Show the user the inspected message and why this version could not handle it — an unknown
 message type, or an outcome that contradicts the recorded one. A transport/health failure is
 exit 4, not an invitation to recover a batch manually.
@@ -736,8 +751,8 @@ no second stage.
 `orca-start.sh` starts one stage per call. Step 2 ran `--phase design`; the builder is a
 separate stage, because nobody can implement a plan that does not exist yet. **Nothing else
 starts it** — not Step 2, not the wait, not the workers. Step 3's wait will not return until
-`exec` has run, so a dispatch that skips this step hangs for 24 hours with every worker that
-was started already finished, and says nothing at all while it does.
+`exec` has run, so a dispatch that skips this step hangs with every worker that was started
+already finished, until the stall report two hours later names `exec` as never started.
 
 **Leave Step 3's wait running. Do not stop it.** It reads `workers.json` again whenever a
 message names a dispatch it does not know, so it picks `exec` and `exec_review` up by itself
@@ -756,6 +771,8 @@ Look at it, once per task, and check again in a minute if it is not settled yet:
 jq -r '.status // "missing"' "$SD/roles/design/status.json" 2>/dev/null || echo missing
 ```
 
+- `$SD/roles/design/stopped.json` exists → the user stopped `design`: **do not start it**,
+  whatever the status says. Go to Step 5; the wait settles this task as failed.
 - `done` → start the stage, below.
 - `error` → **do not start it.** There is no plan worth building. Go to Step 5, and tell the
   user what `$SD/roles/design/result.md` says.

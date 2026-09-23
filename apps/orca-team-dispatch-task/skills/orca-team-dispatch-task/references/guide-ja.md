@@ -428,7 +428,7 @@ bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --projec
 
 | 答え | `design` の worker に渡る指示 |
 |---|---|
-| `brainstorm`（選ばれた） | `superpowers:brainstorming` skill から始め、計画や実装の前に、端末を見ている人と未解決の論点を詰め、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装し、`phase_b=on` なら計画で終える |
+| `brainstorm`（選ばれた） | `superpowers:brainstorming` skill から始め、計画や実装の前に、端末を見ている人と未解決の論点を詰め、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装し、`superpowers:finishing-a-development-branch` は走らせず commit で止まる（取り込むのは親である）。`phase_b=on` なら計画で終える |
 | `plan`（選ばれなかった） | 最初の編集より前に取りかかり方を決め、`result.md` に記録する |
 
 設定値を推奨として質問文に書く。`brainstorm` なら全タスク、`plan` か `direct` なら無し。
@@ -552,17 +552,20 @@ age が 3 窓を超えていれば、そのタスクの worker には誰も答�
 
 ```bash
 setsid nohup bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir>" \
-  >> "$SD/wait.log" 2>&1 < /dev/null &
+  --on-stall report >> "$SD/wait.log" 2>&1 < /dev/null &
 ```
 
 切り離した待機は生き残るが、**その exit code は誰にも届かない。**効くのは終了コード 6 で
 ある。人へ質問した worker は、誰かが `wait.log` を読んで答えるまでブロックしたままになる。
 そのログを見に行くつもりがあるときだけ切り離す。
+`--on-stall report` を渡すのは、渡さないと停滞が誰にも見えない exit 8 で待機を終わらせ、
+それ以降どの worker の完了にも誰も答えなくなるからである。`report` なら停滞は `wait.log` に
+書かれるだけで済む。
 
 **`phase_b` が on のとき、この待機は `exec` が終わるまで戻らない — そしてまだ誰も `exec` を
 起こしていない。**集約には `integration_role` の `status.json` が要り、`phase_b` ではそれは
-`exec` である。ここで放っておいた待機は、見えている worker が全員終わっている状態のまま、
-24 時間だまって polling し続ける。**この待機を走らせたまま** Step 3.5 へ行き、そのあと下の
+`exec` である。ここで放っておいた待機は、見えている worker が全員終わっている状態のまま
+polling し続け、2 時間後に `exec` が起動されていない停滞としてそのタスクを知らせる。**この待機を走らせたまま** Step 3.5 へ行き、そのあと下の
 exit 表へ戻る。
 
 走っている間、outcome の収集のほかに 2 つのことをする。`merge_ready` ごとに受理か差し戻しを
@@ -589,7 +592,7 @@ dispatch を永久に止める**。同じ理由で、完了の返事を待った
 ならず、ブロックを失敗として扱ってもならない — worker は生きて待っている。
 
 終了コード 8 でも何も止めていない。待機が、worker の書くもの — status、result、完了の記録、
-計画、レビューのファイル、worktree のファイルと commit — が `--stall-after-min` 分（既定 120）
+spec、計画、レビューのファイル、worktree のファイルと commit — が `--stall-after-min` 分（既定 120）
 変わらず、しかもどの役も人を待っていないタスクを見つけたということである。**worker は自分から
 待機をやめない**ので、詰まったタスクに気づけるのはここだけであり、**何かを止めるかどうかは
 ユーザーが決める。親が決めてはならない。**
@@ -601,10 +604,15 @@ dispatch を永久に止める**。同じ理由で、完了の返事を待った
 "$ORCA_BIN" terminal read --terminal "$TERM_HANDLE" --screen --json
 ```
 
+`unstarted_role` の行は、成果を載せる役なのに起動されていない役を名指しする。`exec` なら、
+そのタスクで Step 3.5 が飛ばされたということである。そのタスクについては尋ねず、Step 3.5 へ行く。
+
 各タスクがどれだけ止まっているかと、各役の画面の最後の数行をユーザーに見せ、1 回の
 `AskUserQuestion` で尋ねる: 停滞したタスクごとに `multiSelect` の質問を 1 つ置き、選択肢は
-**Keep waiting** と、そのタスクの `stalled_role` の行の役 1 つずつ。**Keep waiting** だけが
-選ばれたタスクは、停滞の時計を数え直す:
+**Keep waiting** と、そのタスクの `stalled_role` の行の役 1 つずつ。1 回の呼び出しに入る質問は
+最大 4 つで、停滞したタスクが 4 つを超えたら残りは別の呼び出しで尋ねる。ユーザーに尋ねている
+あいだ待機は走っていないので、起動し直すまでどの worker の完了にも誰も答えない。**Keep waiting**
+だけが選ばれたタスクは、停滞の時計を数え直す:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
@@ -624,8 +632,10 @@ bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --role "$ROLE"
 これは端末を閉じる前に停止を記録するので、待機はその役を失われた worker として報告せず
 `outcome=stopped` として決着させ、`orca-recover.sh` もその役に触らない。停滞の時計も数え直す。
 reviewer を止めると、レビューされる側の worker にレビュー無しで進むよう伝える。その成果は
-無レビューになり、Step 4 の gate が今までどおり働く。成果を載せる役を止めるとタスクは失敗する。
-持ち帰らず、Step 5 へ回す。exit 1 は停止を記録できなかったか端末を閉じられなかったことを表し、
+無レビューになり、Step 4 の gate が今までどおり働く。reviewer が既に終わっていても伝える —
+verdict を届けられずに終えた reviewer は、その worker を待たせたままにするからである。
+`design` か `exec` を止めると、その reviewer にもうレビューするものが無いと伝えるので reviewer は
+終わり、タスクは失敗する。持ち帰らず、Step 5 へ回す。exit 1 は停止を記録できなかったか端末を閉じられなかったことを表し、
 どちらかはメッセージが言う。ユーザーへ伝える。そのあと同じ待機をもう一度走らせる。
 
 **判断の根拠は exit code であって出力の文字列ではない。**集約行の前に、待機は
@@ -670,6 +680,9 @@ sed -n '1,240p' "$SD/roles/design/result.md"
 bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
 ```
 
+`pr` と記録された dispatch は、Step 4 のとおり代わりに `orca-pr.sh` を使う。`orca-merge.sh` は
+それを拒む。
+
 確認したメッセージと、この版がそれを扱えなかった理由 — 未知のメッセージ型か、記録と矛盾する
 outcome か — をユーザーへ見せる。transport/health の失敗は exit 4 であり、batch を手作業で復旧する
 合図ではない。
@@ -710,7 +723,8 @@ Step 3 が exit 4 を返したとき、または worker が居ないままタス
 実装役が別の段なのは、まだ存在しない計画を実装できる者が居ないからである。**ほかに起こす
 主体は居ない** — Step 2 でもなく、待機でもなく、worker でもない。Step 3 の待機は `exec` が
 走り切るまで戻らないので、この節を飛ばした dispatch は、起動した worker が全員終わっている
-状態のまま 24 時間ハングし、そのあいだ何ひとつ言わない。
+状態のままハングし、2 時間後の停滞の報告が `exec` を起動されていない役として名指しするまで
+何も言わない。
 
 **Step 3 の待機は走らせたままにする。止めてはならない。**知らない dispatch を名指しする
 message が来るたびに `workers.json` を読み直すので、この節が `exec` と `exec_review` を
@@ -729,6 +743,8 @@ message が来るたびに `workers.json` を読み直すので、この節が `
 jq -r '.status // "missing"' "$SD/roles/design/status.json" 2>/dev/null || echo missing
 ```
 
+- `$SD/roles/design/stopped.json` が在る → ユーザーが `design` を止めた。status が何であれ
+  **起こしてはならない。**Step 5 へ進む。待機はこのタスクを失敗として決着させる。
 - `done` → 下の手順で段を起こす。
 - `error` → **起こしてはならない。**建てる価値のある計画が無い。Step 5 へ進み、
   `$SD/roles/design/result.md` が何と言っているかをユーザーへ伝える。

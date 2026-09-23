@@ -101,7 +101,7 @@ reviewer・依頼側のレビュー待ち・`completion.sh await` のどれも�
 CM27b）。
 
 **停滞を見つけるのは親、止めるかを決めるのはユーザー。**`orca-wait.sh` はタスク単位で
-「子が書くもの」（status / result / completion / plan / review / worktree の変更と commit）の
+「子が書くもの」（status / result / completion / spec / plan / review / worktree の変更と commit）の
 最終変化時刻を見て、`--stall-after-min`（既定 120）を越えたら exit 8 で抜ける。**親が書く
 ファイル（`wait.json` / `.woken` / `received.json` / `questions.json` / `stall.json`）は
 数えない** — 数えると親の鼓動で常に「変化あり」になる。人を待っている間（`agentWait` と
@@ -110,6 +110,15 @@ CM27b）。
 `orca-stop.sh` で、**記録してから端末を閉じる**（記録の無い停止は worker の消失に見え、
 exit 4 と recovery に回る）。`--issue` は `--on-stall report` で止まらずに記録だけ残す
 （回帰は `test-wait.sh` の WT80-92、`test-stop.sh`、`test-recover.sh` の RC16）。
+
+**停滞の判定は `workers.json` をその都度読む。**期待集合は知らない dispatch の message が
+来たときしか読み直さないので、それを使うと `--phase exec` で足された exec が最初の message
+まで見えない。成果を載せる役（`integration_role`）が起動されていなければ決着していないとし、
+`unstarted_role` として知らせる（Step 3.5 の飛ばし）。作る役（計画役の design を含む）を
+止めたか計画役が失敗したタスクは、exec を待たずに失敗で決着する。**止めたら相方へ知らせる** —
+reviewer を止めたら（決着済みでも）依頼側へ `review-skipped:`、作る役を止めたら reviewer へ
+`abort-reviewer:`。どちらも自分からは待機を抜けないので、知らせないと永久に待つ
+（回帰は WT94-99、`test-stop.sh` の SP7 / SP9-13）。
 
 親の `--max-waits` の既定 288（5 分 × 288 = 24 時間）は残す。子の期限と揃える意味は
 無くなり、24 時間ごとに exit 3 で状況を報告して呼び直す区切りになった。
@@ -211,8 +220,9 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
   **`brainstorm` だけは brainstorming → `spec.md` → writing-plans → `plan.md` の順を指示文で
   固定する**（2026-09-23 の実測: 次の段を書いていなかったので writing-plans を呼ばず、spec と
   plan を混ぜた plan.md を 1 本書いて終えた）。skill 自身の保存先と commit は上書きし、spec と
-  plan は status dir に置く。`phase_b=off` の実装は Subagent-driven に固定する。
-  回帰は `test-start.sh` の ST62 / ST94-98、`test-docs.sh` の SK21
+  plan は status dir に置く。`phase_b=off` の実装は Subagent-driven に固定し、最後の
+  finishing-a-development-branch は走らせない（取り込み方は Step 1b で決まっており、取り込むのは親）。
+  回帰は `test-start.sh` の ST62 / ST94-99、`test-docs.sh` の SK21
 - **取りかかり方は dispatch ごとに 1 回の質問でまとめて尋ねる**（SKILL.md の Step 1b。cmux 版 1c
   と同じ「brainstorming で始めるタスクを選ぶ」形）。1 問 4 タスク × 最大 4 問で 1 回に 16 件まで。
   設定値は「推奨として示す答え」であって黙って使われる値ではない。**散文の「尋ねよ」では守られない**

@@ -822,6 +822,20 @@ for f in "$S" "$G"; do
 done
 [[ -z "$bad" ]] && ok "SK21 brainstorm は writing-plans まで進む" || fail "SK21:$bad"
 
+# SK22: 停滞と止めた役の後始末が両文書にある。切り離した待機は exit 8 で黙って終わらない
+bad=""
+for f in "$S" "$G"; do
+  b=$(basename "$f")
+  grep -q -- '--on-stall report >> "\$SD/wait.log"' "$f" || bad="$bad [detached-report:$b]"
+  grep -q 'unstarted_role' "$f" || bad="$bad [unstarted:$b]"
+  sed -n '/^## Step 3\.5: /,/^## Step 4: /p' "$f" | grep -q 'roles/design/stopped.json' \
+    || bad="$bad [3.5-stopped:$b]"
+  sed -n '/^## Step 3: /,/^### /p' "$f" | grep -q 'orca-pr.sh' || bad="$bad [manual-pr:$b]"
+done
+grep -q 'past four stalled tasks' "$S" || bad="$bad [four:SKILL]"
+grep -q '4 つを超えたら' "$G" || bad="$bad [four:guide]"
+[[ -z "$bad" ]] && ok "SK22 停滞と止めた役の後始末" || fail "SK22:$bad"
+
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
   && ! grep -q 'dangerously-skip-permissions' "$S" \
