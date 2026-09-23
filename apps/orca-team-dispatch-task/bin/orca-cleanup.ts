@@ -368,6 +368,26 @@ const readPlan = (file: string): CleanupPlan | null => {
     // run が使うのは止めた理由だけ。reported / inspect は Step 5 の要約で既に示している
     const reasons = stringArray(get(item, 'stopped', 'reasons'))
     const stopped = reasons === null ? null : { reasons, reported: [], inspect: [] }
+    if (basename(statusDir) !== slug || runOf(statusDir) !== run) return null
+    if (offers.record.some((offer) => offer.path !== statusDir)) return null
+    if (stopped !== null && (offers.terminal.length > 0 || offers.worktree.length > 0 || offers.record.length > 0)) {
+      return null
+    }
+    const workers = asObject(readJson(join(statusDir, 'workers.json')))
+    if (workers === null) return null
+    const roles = asObject(workers.roles)
+    for (const offer of offers.terminal) {
+      if (get(roles?.[offer.role], 'dispatch') !== offer.dispatch) return null
+    }
+    for (const offer of offers.worktree) {
+      const role = roles?.[offer.role]
+      if (get(role, 'worktree_id') !== offer.worktree_id || get(role, 'worktree_created_by_this_run') !== true) {
+        return null
+      }
+    }
+    if (offers.record.length > 0 && get(readJson(join(statusDir, 'integration-result.json')), 'merged') !== true) {
+      return null
+    }
     plan.tasks.push({ slug, status_dir: statusDir, stopped, offers, kept })
   }
   return plan
@@ -420,6 +440,9 @@ const removeWorktree = (label: string, offer: WorktreeOffer): { ok: boolean; lin
 const removeRecord = (label: string, offer: RecordOffer): { ok: boolean; line: string } => {
   const refusal = recordRefusal(offer.path)
   if (refusal !== null) return { ok: false, line: `  failed: ${label}: ${refusal}` }
+  if (get(readJson(join(offer.path, 'integration-result.json')), 'merged') !== true) {
+    return { ok: false, line: `  failed: ${label}: the work is not merged yet` }
+  }
   try {
     rmSync(offer.path, { recursive: true })
     return { ok: true, line: `  removed: ${label}` }

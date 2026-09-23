@@ -993,8 +993,9 @@ What `run` does, so you can report it truthfully:
   lose.
 - It runs each one exactly as Step 5 printed it, from the plan file: it never retypes a handle
   or a worktree id, never adds `--force`, and never substitutes a selector. A plan whose
-  commands were edited is refused as a whole. An `--approve` the plan does not offer is a usage
-  error (exit 2), and then nothing runs.
+  argv or offered targets differ from the expected form and that task's recorded roles is
+  refused as a whole. `run` also checks a record's path and merged state before removing it.
+  An `--approve` the plan does not offer is a usage error (exit 2), and then nothing runs.
 - It checks the receipt of each Orca command: it counted only when `.ok == true`. On anything
   else it stops that task there, reports what did not happen, and leaves the rest of that task
   in place. A failure never authorises the step after it, and a failure in one task never

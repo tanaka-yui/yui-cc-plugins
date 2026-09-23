@@ -99,6 +99,9 @@ if [[ -e "$d/worktrees/$w.fail" ]]; then
 else
   printf '%s\n' '{"ok":true,"result":{}}' > "$out"
 fi
+if [[ -f "$d/flip-merged" ]]; then
+  printf '%s\n' '{"merged":false}' > "$(cat "$d/flip-merged")/integration-result.json"
+fi
 HOOK
   chmod +x "$d"/*.hook
 }
@@ -194,6 +197,24 @@ plan --status-dir "$(sd a)" --status-dir "$(sd b)"
       == '["design_review",["the worker checkout has uncommitted changes"]]' \
    && "$OUT" == *'not offering to remove the design_review worktree:'* ]] \
   && ok "CL4 dirty な役の worktree だけ残す" || fail "CL4 (out=$OUT)"
+teardown
+
+# CL4b: この dispatch が作っていない worktree は、ほかの条件が揃っても提示しない
+world; task a; edit a '.roles.design.worktree_created_by_this_run = false'
+plan --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].offers.worktree')" == '[]' \
+   && "$(pj '.tasks[0].kept[] | select(.kind == "worktree") | .reasons')" \
+      == '["this dispatch reused an existing worktree; it is not ours to remove"]' ]] \
+  && ok "CL4b 再利用 worktree は残す" || fail "CL4b (out=$OUT)"
+teardown
+
+# CL4c: checkout を git で読めなければ、clean と決めつけて提示しない
+world; task a; mkdir -p "$T/not-a-checkout"; edit a ".roles.design.worktree_path = \"$T/not-a-checkout\""
+plan --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].offers.worktree')" == '[]' \
+   && "$(pj '.tasks[0].kept[] | select(.kind == "worktree") | .reasons')" \
+      == '["the worker checkout could not be inspected"]' ]] \
+  && ok "CL4c 読めない checkout は残す" || fail "CL4c (out=$OUT)"
 teardown
 
 # CL5 (旧 SK6d): 記録した端末一覧が null なら「端末 0 件」と取り違えず、削除を提示しない
@@ -453,13 +474,25 @@ done
 [[ -z "$bad" && -z "$(mutations)" && -d "$(sd a)" ]] && ok "CL23 提示されていない承認では何も実行しない" || fail "CL23:$bad"
 teardown
 
-# CL24: 記録を消す直前に [C5] の検査をもう一度行う
-world; task a; mkdir -p "$T/elsewhere/x"; cp "$(sd a)"/{run.json,workers.json} "$T/elsewhere/x/"
+# CL24: plan 後に .dispatch が外部へ移されたら、記録を消す直前の場所の検査で止める
+world; task a
 plan --status-dir "$(sd a)"
-jq --arg p "$T/elsewhere/x" '.tasks[0].offers.record[0].path = $p' "$PLAN_FILE" > "$T/p" && mv "$T/p" "$PLAN_FILE"
-run --plan "$PLAN_FILE" --approve a:record
-[[ "$RC" -eq 1 && -d "$T/elsewhere/x" && "$OUT" == *'the status directory is not inside .dispatch; do not remove it'* ]] \
+cp "$PLAN_FILE" "$T/plan.json"
+mv "$REPO/.dispatch" "$T/elsewhere"
+ln -s "$T/elsewhere" "$REPO/.dispatch"
+run --plan "$T/plan.json" --approve a:record
+[[ "$RC" -eq 1 && -d "$T/elsewhere/a" && "$OUT" == *'the status directory is not inside .dispatch; do not remove it'* ]] \
   && ok "CL24 .dispatch の外は消さない" || fail "CL24 (rc=$RC out=$OUT)"
+teardown
+
+# CL24b: plan と run の間だけでなく、worktree の操作後に merge 状態が変わっても記録を消さない
+world; task a
+plan --status-dir "$(sd a)"
+printf '%s\n' "$(sd a)" > "$ORCA_STUB_DIR/flip-merged"
+run --plan "$PLAN_FILE" --approve a:worktree --approve a:record
+[[ "$RC" -eq 1 && -d "$(sd a)" && "$OUT" == *'failed: dispatch record'* \
+   && "$OUT" == *'the work is not merged yet'* && "$(mutations | grep -c 'worktree rm')" -eq 1 ]] \
+  && ok "CL24b 削除直前に merge 状態を読み直す" || fail "CL24b (rc=$RC out=$OUT)"
 teardown
 
 # CL25: 計画の argv を書き換えたら（--force の追加）、計画ごと拒んで何も実行しない
@@ -469,6 +502,54 @@ jq '.tasks[0].offers.worktree[0].argv += ["--force"]' "$PLAN_FILE" > "$T/p" && m
 run --plan "$PLAN_FILE" --approve a:worktree
 [[ "$RC" -eq 1 && "$ERR" == *'could not read the cleanup plan'* && -z "$(mutations)" ]] \
   && ok "CL25 書き換えた argv は実行しない" || fail "CL25 (rc=$RC err=$ERR)"
+teardown
+
+# CL25b: terminal 側の argv も同じ形の検査を受ける
+world; task a
+plan --status-dir "$(sd a)"
+jq '.tasks[0].offers.terminal[0].argv += ["--force"]' "$PLAN_FILE" > "$T/p" && mv "$T/p" "$PLAN_FILE"
+run --plan "$PLAN_FILE" --approve a:terminal
+[[ "$RC" -eq 1 && "$ERR" == *'could not read the cleanup plan'* && -z "$(mutations)" ]] \
+  && ok "CL25b 書き換えた terminal argv は実行しない" || fail "CL25b (rc=$RC err=$ERR)"
+teardown
+
+# CL25c: 別タスクの記録へ path を向けても、承認されたタスクの記録として消せない
+world; task a; task b false
+plan --status-dir "$(sd a)" --status-dir "$(sd b)"
+jq --arg p "$(sd b)" '.tasks[0].offers.record[0].path = $p' "$PLAN_FILE" > "$T/p" && mv "$T/p" "$PLAN_FILE"
+run --plan "$PLAN_FILE" --approve a:record
+[[ "$RC" -eq 1 && "$ERR" == *'could not read the cleanup plan'* && -d "$(sd a)" && -d "$(sd b)" \
+   && -z "$(mutations)" ]] \
+  && ok "CL25c 別タスクへの記録の付け替えを拒む" || fail "CL25c (rc=$RC err=$ERR)"
+teardown
+
+# CL25d: 未 merge のタスクへ記録 offer を足しても消せない
+world; task a false
+plan --status-dir "$(sd a)"
+jq --arg p "$(sd a)" '.tasks[0].offers.record = [{path:$p}]' "$PLAN_FILE" > "$T/p" && mv "$T/p" "$PLAN_FILE"
+run --plan "$PLAN_FILE" --approve a:record
+[[ "$RC" -eq 1 && "$ERR" == *'could not read the cleanup plan'* && -d "$(sd a)" && -z "$(mutations)" ]] \
+  && ok "CL25d 未 merge の記録 offer を拒む" || fail "CL25d (rc=$RC err=$ERR)"
+teardown
+
+# CL25e: dispatch と argv を揃えて変えても、その役の記録に無い端末は release しない
+world; task a
+plan --status-dir "$(sd a)"
+jq '.tasks[0].offers.terminal[0].dispatch = "ctx_other" | .tasks[0].offers.terminal[0].argv[3] = "ctx_other"' \
+  "$PLAN_FILE" > "$T/p" && mv "$T/p" "$PLAN_FILE"
+run --plan "$PLAN_FILE" --approve a:terminal
+[[ "$RC" -eq 1 && "$ERR" == *'could not read the cleanup plan'* && -z "$(mutations)" ]] \
+  && ok "CL25e 別 dispatch への付け替えを拒む" || fail "CL25e (rc=$RC err=$ERR)"
+teardown
+
+# CL25f: 止まったタスクに offer を後から足しても実行しない
+world; task a; printf 'release_unknown\n' > "$ORCA_STUB_DIR/workers/ctx_a-design"
+plan --status-dir "$(sd a)"
+jq '.tasks[0].offers.worktree = [{role:"design",worktree_id:"wt_a-design",argv:["worktree","rm","--worktree","id:wt_a-design","--json"]}]' \
+  "$PLAN_FILE" > "$T/p" && mv "$T/p" "$PLAN_FILE"
+run --plan "$PLAN_FILE" --approve a:worktree
+[[ "$RC" -eq 1 && "$ERR" == *'could not read the cleanup plan'* && -d "$(sd a)" && -z "$(mutations)" ]] \
+  && ok "CL25f 停止したタスクへの offer 追加を拒む" || fail "CL25f (rc=$RC err=$ERR)"
 teardown
 
 # CL26: zsh から呼んでも同じ結果になる（設計 3-5。呼び出し側のシェルに依存しない）

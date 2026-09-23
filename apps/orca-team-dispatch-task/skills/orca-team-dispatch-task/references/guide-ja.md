@@ -950,7 +950,8 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
   終わらせるのはこれである。端末が開いたままの worktree を Orca は手放さず、記録は最後に失う
   ものだからである。
 - 各コマンドは計画ファイルから、Step 5 が印字したとおりに実行する。handle や worktree id を
-  打ち直さず、`--force` を加えず、selector を差し替えない。コマンドを書き換えた計画は丸ごと拒む。
+  打ち直さず、`--force` を加えず、selector を差し替えない。argv の形や提示先が、そのタスクの
+  記録した役と合わない計画は丸ごと拒む。記録の削除前には path と merge 済みであることも確かめる。
   計画が提示していない `--approve` は使用法の誤り（exit 2）であり、そのときは何も実行しない。
 - Orca コマンドごとに receipt を確認する。`.ok == true` のときだけ実行できたとみなす。
   それ以外ならそのタスクはそこで止め、何が実行されなかったかを報告し、そのタスクの残りには
