@@ -314,11 +314,12 @@ E. Wait for that reply. **Do not end your turn to wait.** A message put in your 
    - \`remediation <reason>\` -> the reason says what is missing. Fix it and go back to C.
      The nonce does not change.
    - \`waiting\` -> nobody has answered yet. **Run it again, in this same turn.** Keep
-     running it. It is normal for this to take several rounds.
-   - \`expired\` -> 24 hours passed with no answer. Write that in result.md, run
-     \`bash $q_rs $q_rd error the parent never answered\`, and stop. Do not report done.
-   A non-zero exit means the mailbox could not be read at all; try once more, then treat it
-   like \`expired\`.
+     running it. It is normal for this to take several rounds. **This wait has no time limit:**
+     whether a stalled task should stop is decided by the user through the parent, not by
+     you.
+   A non-zero exit means the mailbox could not be read at all; try once more. If it fails
+   again, write that in result.md, run
+   \`bash $q_rs $q_rd error the mailbox could not be read\`, and stop. Do not report done.
 
 F. Report. \`await\` already checked the nonce and recorded the acceptance, so there is
    nothing to confirm here:
@@ -381,8 +382,10 @@ REVIEW LOOP
    already-active actionable waiter). That means the mailbox is busy, not that the work is
    gone. Wait a few seconds and run the same command again. It does not count as an empty
    wait.
-   If the wait returns nothing, run it again, in this same turn. Give up and go to step 5
-   only once it has come back empty six times in a row (one hour).
+   If the wait returns nothing, run it again, in this same turn. **This wait has no time limit.**
+   Keep waiting until a request or \`abort-reviewer:\` arrives, however long that takes: the
+   worker you review may be waiting on a person. Whether a stalled task should stop is
+   decided by the user through the parent, not by you.
 
 2. The body names a file under $q_rvd. Read it and review the $rq_noun against the request.
 
@@ -439,15 +442,17 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
        --peek --wait --timeout-ms 600000 --json
 
    Use --peek. **Never pass --ack.** Look for a subject starting \`review-verdict:\`.
+   A subject starting \`review-skipped:\` means the parent stopped your reviewer: go to step 6.
 
    **Do not end your turn to wait.** A message put in your mailbox does not wake you, so a
    turn closed here is a dispatch that stops for good. If the wait returns nothing, run it
-   again, in this same turn — reviewing takes longer than one wait.
+   again, in this same turn — reviewing takes longer than one wait. **This wait has no time limit.**
+   Do not skip the review because nothing has arrived yet.
 
    **An error naming an existing waiter is not "review is unavailable".** Orca refuses a
    wait while another one is active on this Run (\`waiter_exists\`, or an already-active
    actionable waiter). Wait a few seconds and run the same command again. **Do not record
-   the review as skipped because of it** — only the empty waits in step 6 justify that.
+   the review as skipped because of it** — only a \`review-skipped:\` message justifies that.
 
 4. The body names a findings file. Read it. **Only a line reading exactly
    \`VERDICT: approved\` means approved.** Anything else, including a missing VERDICT line,
@@ -457,9 +462,8 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
    **Stop after round 2.** Record the unresolved findings in result.md and keep the best
    version you have. Do not keep asking.
 
-6. Once the wait has come back empty six times in a row (one hour), send the same round
-   once more. If another hour brings nothing, note in result.md that review was skipped
-   and proceed.
+6. On \`review-skipped:\`, your reviewer is gone. Note in result.md that round <n> was not
+   reviewed because the reviewer was stopped, and proceed without review. Skip step 7.
 
 7. When you are done, release the reviewer:
 

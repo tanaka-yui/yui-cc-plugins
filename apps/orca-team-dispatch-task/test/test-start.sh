@@ -806,11 +806,13 @@ setup; start >/dev/null 2>&1; sp=$(spec)
 [[ "$sp" != *'End your turn here'* ]] \
   && ok "ST66 待つためにターンを閉じさせない" || fail "ST66"; teardown
 
-# ST67: 完了の待機は `completion.sh await` の呼び直しで、その 4 つの答えが spec に載る。
+# ST67: 完了の待機は `completion.sh await` の呼び直しで、その 3 つの答えが spec に載る。
+#      **`expired` は載せない** — worker は自分の時計で待機をやめない。
 setup; start >/dev/null 2>&1; sp=$(spec); miss=""
-for w in 'completion.sh --role-dir' ' await' 'accepted' 'remediation' 'waiting' 'expired'; do
+for w in 'completion.sh --role-dir' ' await' 'accepted' 'remediation' 'waiting'; do
   [[ "$sp" == *"$w"* ]] || miss="$miss [$w]"; done
-[[ -z "$miss" ]] && ok "ST67 await の 4 つの答えが載る" || fail "ST67:$miss"; teardown
+[[ "$sp" == *'expired'* ]] && miss="$miss [expired-present]"
+[[ -z "$miss" ]] && ok "ST67 await の 3 つの答えが載る" || fail "ST67:$miss"; teardown
 
 # ST68: ★ **`waiting` は呼び直す指示とセットでなければ意味が無い。**「もう一度呼べ」を
 #      書かないと、agent は 1 回空振りしただけで自分の判断で降りる。
@@ -860,7 +862,7 @@ specs=$(awk -v RS='\037' 'prev == "--spec" { print } { prev = $0 }' "$ORCA_STUB_
 miss=""
 [[ "$specs" == *'`waiter_exists`'* ]] || miss="$miss [no-code-name]"
 [[ "$specs" == *'It does not count as an empty'* ]] || miss="$miss [reviewer]"
-[[ "$specs" == *'only the empty waits in step 6 justify that'* ]] || miss="$miss [worker]"
+[[ "$specs" == *'only a `review-skipped:` message justifies that'* ]] || miss="$miss [worker]"
 [[ -z "$miss" ]] && ok "ST72 待機の競合は再試行だと両側に書く" || fail "ST72:$miss"; teardown
 
 # ── worktree の基点 ──────────────────────────────────────────────────────
@@ -1075,5 +1077,23 @@ out=$(resume --phase exec 2>&1); rc=$?
 c=""; [[ "$rc" -eq 2 ]] && c=y
 [[ -n "$a" && -n "$b" && -n "$c" ]] && ok "ST88 再開するものが無ければ止まる" || fail "ST88 (a=$a b=$b c=$c)"
 teardown
+
+# ST89: ★ **子に待機の期限を持たせない。**2026-09-23: design が brainstorm でユーザーの回答を
+#      待つ間に、reviewer が「1 時間依頼なし」で自分から終了し、レビューが付かなかった。
+setup; review_on; start >/dev/null 2>&1
+specs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")
+rv=$(head -1 <<<"$specs"); dz=$(tail -1 <<<"$specs"); bad=""
+for s in "$rv" "$dz"; do
+  for w in 'six times' 'one hour' 'another hour' '24 hours'; do
+    [[ "$s" == *"$w"* ]] && bad="$bad [$w]"; done
+  [[ "$s" == *'no time limit'* ]] || bad="$bad [no-time-limit]"
+done
+[[ -z "$bad" ]] && ok "ST89 待機に期限を書かない" || fail "ST89:$bad"; teardown
+
+# ST90: 依頼側は `review-skipped:` を「reviewer が止められた」と読み、レビュー無しで進む。
+setup; review_on; start >/dev/null 2>&1
+dz=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)
+[[ "$dz" == *'review-skipped:'* && "$dz" == *'Skip step 7'* ]] \
+  && ok "ST90 review-skipped の扱いが載る" || fail "ST90"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
