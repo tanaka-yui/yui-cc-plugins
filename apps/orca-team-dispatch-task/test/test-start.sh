@@ -1096,4 +1096,22 @@ dz=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)
 [[ "$dz" == *'review-skipped:'* && "$dz" == *'Skip step 7'* ]] \
   && ok "ST90 review-skipped の扱いが載る" || fail "ST90"; teardown
 
+# ST91: 取り込み方は起動時に workers.json へ記録する。省略すれば設定値（既定 merge）
+setup; start --integration pr >/dev/null 2>&1
+a=$(jq -r '.integration // empty' "$R/.dispatch/s/workers.json" 2>/dev/null); teardown
+setup; start >/dev/null 2>&1
+b=$(jq -r '.integration // empty' "$R/.dispatch/s/workers.json" 2>/dev/null); teardown
+[[ "$a" == pr && "$b" == merge ]] && ok "ST91 取り込み方を記録する" || fail "ST91 (a=$a b=$b)"
+
+# ST92: ★ **続きの起動で取り込み方を変えさせない。**記録と違う値で 2 段目を起こすと、merge と PR が食い違う
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+exec_phase --integration pr >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 2 && "$(jq -r '.integration' "$R/.dispatch/s/workers.json")" == merge ]] \
+  && ok "ST92 続きの起動は取り込み方を受け取らない" || fail "ST92 (rc=$rc)"; teardown
+
+# ST93: 不正な値では何も作らない（設定の解決で止まる）
+setup; start --integration squash >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -q 'worktree create\|worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST93 不正な取り込み方で何も作らない" || fail "ST93 (rc=$rc)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -39,6 +39,12 @@ value() {
   jq -er "$1 // empty" "$2" 2>/dev/null
 }
 
+# ★ **PR と決めた dispatch を merge しない。**両方やるとレビュー前に成果が入る。記録が無い
+#   （旧版で起動した）dispatch は今までどおり通す。`stop` は integration-result.json を書くので
+#   使わない — PR 側の記録を汚さない。
+[[ "$(jq -r '.integration // empty' "$SD/workers.json" 2>/dev/null)" != pr ]] || {
+  log "this dispatch was started to open a pull request; use orca-pr.sh instead"; exit 1; }
+
 jq -e '.merged == true' "$SD/integration-result.json" >/dev/null 2>&1 && {
   log "already merged"
   exit 0

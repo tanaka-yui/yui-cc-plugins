@@ -44,6 +44,10 @@ stop() {
   log "$1"; exit 1
 }
 
+# ★ **merge と決めた dispatch で PR を作らない。**記録が無い（旧版）dispatch は今までどおり通す。
+[[ "$(jq -r '.integration // empty' "$SD/workers.json" 2>/dev/null)" != merge ]] || {
+  log "this dispatch was started to merge; use orca-merge.sh instead"; exit 1; }
+
 # ★ 既に PR があるなら作り直さない。**同じ成果に 2 つの PR を作らない。**
 EXISTING=$(jq -r '.pr_url // empty' "$SD/integration-result.json" 2>/dev/null || echo "")
 if [[ -n "$EXISTING" ]]; then

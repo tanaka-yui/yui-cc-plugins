@@ -155,4 +155,17 @@ jq -nc '[{to:"exec",subject:"review-verdict: round 1",message_id:"m1",at:1}]' > 
 m >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 1 ]] && ! in_main && ok "MG20 別の役への配送は数えない" || fail "MG20 (rc=$rc)"; teardown
 
+# MG21: ★ **PR と記録された dispatch を merge しない。**両方やると、レビュー前に成果が入る
+setup; jq -c '.integration = "pr"' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
+out=$(m 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'orca-pr.sh'* ]] && ! in_main && [[ ! -e "$SD/integration-result.json" ]] \
+  && ok "MG21 PR の dispatch を merge しない" || fail "MG21 (rc=$rc out=$out)"; teardown
+
+# MG22: merge と記録されていても、記録が無くても（旧版）今までどおり merge する
+setup; jq -c '.integration = "merge"' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
+m >/dev/null 2>&1; x=$?; in_main; y=$?; teardown
+setup; m >/dev/null 2>&1; u=$?; in_main; v=$?; teardown
+[[ "$x" -eq 0 && "$y" -eq 0 && "$u" -eq 0 && "$v" -eq 0 ]] \
+  && ok "MG22 merge の記録・記録無しは merge する" || fail "MG22 ($x/$y/$u/$v)"
+
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -3,7 +3,7 @@
 # **recovery 機構は無い** (spec 18-1)。worker-start が成立した後は何も削除しない。
 # Usage: orca-start.sh --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
 #          [--run <run_id>] [--agent <id>] [--model <id>] [--effort <level>]
-#          [--phase design|exec] [--design-mode direct|plan|brainstorm]
+#          [--phase design|exec] [--design-mode direct|plan|brainstorm] [--integration merge|pr]
 #        orca-start.sh --slug <s> --resume [--repo-root <p>] [--design-mode ...]
 #
 # ★ `--resume` は **design 段の起動が途中で落ちた status dir を続ける。**記録済みの依頼と
@@ -33,7 +33,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; PLUGIN="$(cd "$HERE/.." &&
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 RF="" SLUG="" OBJ="" RR="" RUN_IN=""
 # 役ごとの agent / model / effort は config.json が正本。ここは 1 回きりの上書き口である
-OV_AGENT="" OV_MODEL="" OV_EFFORT="" OV_DESIGN_MODE="" PHASE=design RESUME=0
+OV_AGENT="" OV_MODEL="" OV_EFFORT="" OV_DESIGN_MODE="" OV_INTEGRATION="" PHASE=design RESUME=0
 while [[ $# -gt 0 ]]; do case "$1" in
   --resume)       RESUME=1; shift ;;
   --request-file) need2 "$1" $#; RF="$2";     shift 2 ;;
@@ -46,6 +46,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --model)        need2 "$1" $#; OV_MODEL="$2";  shift 2 ;;
   --effort)       need2 "$1" $#; OV_EFFORT="$2"; shift 2 ;;
   --phase)        need2 "$1" $#; PHASE="$2";     shift 2 ;;
+  --integration)  need2 "$1" $#; OV_INTEGRATION="$2"; shift 2 ;;
   *) die "unknown option: $1" ;; esac; done
 case "$PHASE" in design|exec) ;; *) die "--phase must be design or exec: $PHASE" ;; esac
 if [[ "$RESUME" -eq 1 ]]; then
@@ -55,6 +56,10 @@ if [[ "$RESUME" -eq 1 ]]; then
 fi
 # ★ **続きの起動**（exec 段と --resume）は既存の status dir の記録を引き継ぐ
 CONT=0; [[ "$PHASE" == exec || "$RESUME" -eq 1 ]] && CONT=1
+# ★ **取り込み方は起動時に 1 度だけ決める。**続きの起動で変えると、記録と実際の取り込みが
+#   食い違い、merge と PR の両方が走りうる
+[[ "$CONT" -eq 0 || -z "$OV_INTEGRATION" ]] \
+  || die "--integration is fixed when the dispatch starts; the recorded value is kept"
 # 続きの起動は記録を引き継ぐので依頼ファイルを要らない
 if [[ "$CONT" -eq 1 ]]; then
   [[ -n "$SLUG" ]] || die "--slug is required"
@@ -128,6 +133,7 @@ CFG_SET=()
 [[ -n "$OV_MODEL"  ]] && CFG_SET+=(--set "design.model=$OV_MODEL")
 [[ -n "$OV_EFFORT" ]] && CFG_SET+=(--set "design.effort=$OV_EFFORT")
 [[ -n "$OV_DESIGN_MODE" ]] && CFG_SET+=(--design-mode "$OV_DESIGN_MODE")
+[[ -n "$OV_INTEGRATION" ]] && CFG_SET+=(--integration "$OV_INTEGRATION")
 RESOLVER="$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh"
 [[ -r "$RESOLVER" ]] || { log "the config resolver is missing at $RESOLVER"; exit 1; }
 CRC=0; CFG=$(bash "$RESOLVER" --project-root "$RR" ${CFG_SET[@]+"${CFG_SET[@]}"}) || CRC=$?
@@ -239,10 +245,12 @@ write run "$SD/run.json" "$(jq -nc --arg r "$RUN" --arg p "$PH" --arg rr "$RR" \
 #   キー自体を置かない（config-resolve の出力と同じ形にし、未設定と空文字を混ぜない）。
 # ★ **取り込み先の役を 1 箇所で決める。**merge も PR も同じ値を読む。別々に判断すると
 #   必ずずれる。今は design だけだが、実装役が増えたらここが変わる。
+#   取り込み方（merge / pr）も同じく起動時に記録し、Step 4 と merge / PR の両スクリプトが読む。
 write workers-initial "$SD/workers.json" "$(jq -nc --arg r "$RUN" --arg ib "$IB" \
   --arg ir "$(jq -r '.integration_role // "design"' <<<"$CFG")" \
+  --arg ig "$(jq -r '.integration' <<<"$CFG")" \
   --argjson roles "$(jq -c '.roles | map_values(. + {retained:false})' <<<"$CFG")" \
-  '{run_id:$r, integration_branch:$ib, integration_role:$ir, roles:$roles}')" || {
+  '{run_id:$r, integration_branch:$ib, integration_role:$ir, integration:$ig, roles:$roles}')" || {
   log "the Run was created but the dispatch state could not be recorded. Nothing else exists yet."
   log "run=$RUN  inspect with: $ORCA_BIN orchestration run-show --id $RUN --json"; exit 1; }
 else
