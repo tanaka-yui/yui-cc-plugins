@@ -114,11 +114,12 @@ exit 4 と recovery に回る）。`--issue` は `--on-stall report` で止ま�
 **停滞の判定は `workers.json` をその都度読む。**期待集合は知らない dispatch の message が
 来たときしか読み直さないので、それを使うと `--phase exec` で足された exec が最初の message
 まで見えない。成果を載せる役（`integration_role`）が起動されていなければ決着していないとし、
-`unstarted_role` として知らせる（Step 3.5 の飛ばし）。作る役（計画役の design を含む）を
+`unstarted_role` として知らせる（Step 3.5 の飛ばし。起動済みの役が全部決着してから）。
+決着済みの reviewer も、依頼側が待つ間は停滞の行に残す。作る役（計画役の design を含む）を
 止めたか計画役が失敗したタスクは、exec を待たずに失敗で決着する。**止めたら相方へ知らせる** —
 reviewer を止めたら（決着済みでも）依頼側へ `review-skipped:`、作る役を止めたら reviewer へ
 `abort-reviewer:`。どちらも自分からは待機を抜けないので、知らせないと永久に待つ
-（回帰は WT94-99、`test-stop.sh` の SP7 / SP9-13）。
+（回帰は WT94-101、`test-stop.sh` の SP7 / SP9-13）。
 
 親の `--max-waits` の既定 288（5 分 × 288 = 24 時間）は残す。子の期限と揃える意味は
 無くなり、24 時間ごとに exit 3 で状況を報告して呼び直す区切りになった。

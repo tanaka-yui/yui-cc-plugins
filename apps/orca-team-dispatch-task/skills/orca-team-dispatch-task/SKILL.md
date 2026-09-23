@@ -631,7 +631,8 @@ For every `stalled_role` line the wait printed, read what that terminal shows no
 ```
 
 An `unstarted_role` line names the role that carries the work but was never started. For
-`exec` it means Step 3.5 was skipped for that task: do not ask about it, go to Step 3.5.
+`exec` it means Step 3.5 was skipped for that task: do not ask about it, go to Step 3.5,
+then run the same wait again so that `exec`'s completion is answered.
 
 Show the user how long each task has been idle and the last lines of each role's screen, then
 ask in one `AskUserQuestion` call: one `multiSelect` question per stalled task, whose options
@@ -658,9 +659,10 @@ bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --role "$ROLE"
 It records the stop before it closes the terminal, so the wait settles that role as
 `outcome=stopped` instead of reporting a lost worker, and `orca-recover.sh` leaves it alone.
 It restarts the stall clock too. Stopping a reviewer tells the worker it reviews to carry on
-without review: that work is then unreviewed, and Step 4's gate applies as usual. It does so
-even for a reviewer that has already finished, since one that could not deliver its verdict
-leaves that worker waiting. Stopping `design` or `exec` tells its reviewer there is nothing
+without review: that work is then unreviewed, and Step 4's gate applies as usual. A reviewer
+that has already finished is still listed while the worker it reviews is waiting, since one
+that could not deliver its verdict leaves that worker waiting; stopping it tells that worker
+to carry on. Stopping `design` or `exec` tells its reviewer there is nothing
 left to review, so the reviewer finishes, and it fails the task: do not bring it home, and take
 it to Step 5. Exit 1
 means the stop could not be recorded or the terminal could not be closed, and the message says

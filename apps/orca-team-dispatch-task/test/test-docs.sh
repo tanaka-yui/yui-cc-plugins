@@ -832,6 +832,8 @@ for f in "$S" "$G"; do
     || bad="$bad [3.5-stopped:$b]"
   sed -n '/^## Step 3: /,/^### /p' "$f" | grep -q 'orca-pr.sh' || bad="$bad [manual-pr:$b]"
 done
+grep -q 'go to Step 3.5,$' "$S" && grep -q '^then run the same wait again' "$S" || bad="$bad [rerun:SKILL]"
+grep -q 'そのあと同じ待機をもう一度走らせて' "$G" || bad="$bad [rerun:guide]"
 grep -q 'past four stalled tasks' "$S" || bad="$bad [four:SKILL]"
 grep -q '4 つを超えたら' "$G" || bad="$bad [four:guide]"
 [[ -z "$bad" ]] && ok "SK22 停滞と止めた役の後始末" || fail "SK22:$bad"
