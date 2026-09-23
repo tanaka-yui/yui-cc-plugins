@@ -158,6 +158,8 @@ orca-stop.sh --status-dir <sd> --snooze
 4. 止めた役が `design_review` なら `design` へ、`exec_review` なら `exec` へ、`orca-send.sh` で `review-skipped: stopped by the user` を送る（`orca-send.sh` は `orca-wake.sh` で起こす）。送れなかったことは出力するが、1〜3 は覆さない
 
 `--snooze` は `stall.json` に `snoozed_at` を書き、`detected_at` を消す。
+**`--role` も 2 のあとに同じことをする。**止めた直後はタスクの最終変化時刻がまだ古いので、
+数え直さないと、次の周回で同じタスクがすぐ exit 8 に戻ってしまう。
 
 ### 4-6. `orca-wait.sh` の stopped の扱い
 
