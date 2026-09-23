@@ -374,8 +374,10 @@ issue ごとに何が起きたかを報告し、次のバッチを claim する�
 bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-release
 ```
 
-そのうえで、実行が生んだすべての `status_dir` について Step 5 へ進む。片付けは手書きの
-dispatch と同じである — 判定し、ユーザーが承認し、承認されたものだけを消す。
+そのうえで、実行が生んだすべての `status_dir` について Step 5 へ進む。`orca-cleanup.ts plan` は
+Run ごとに 1 回、その `run_id` を印字したすべての `status_dir` を渡して呼ぶ — `plan` は Run の
+混じった一覧を拒む。片付けは手書きの dispatch と同じである — 判定し、ユーザーが承認し、承認された
+ものだけを消す。
 
 ## Step 1: 依頼を書き出す
 
@@ -834,363 +836,139 @@ pull request が完了の証拠として受理された。
 この step は何も削除しない。削除してよいものを判定し、実際の値を埋めたコマンドを表示する。
 placeholder を見せない。実行してよいかは Step 6 がユーザーへ尋ねる。
 
-ここでは worker を release しない。`orchestration worker-list --run <run_id> --json` で Orca が
-すでに保持しているものを尋ね、その答えで分類する。worker の端末を閉じる release は Step 6 が
-尋ねるアクションの 1 つであり、ユーザーが判断している間、worker のセッションはそのまま残る。
+ここでは worker を release しない。`orca-cleanup.ts plan` が、`orchestration worker-list --run <run_id> --json`、
+`terminal show`、`terminal list`（すべて読み取り）で Orca がすでに保持しているものを尋ね、その答えで
+分類する。worker の端末を閉じる release は Step 6 が尋ねるアクションの 1 つであり、ユーザーが判断して
+いる間、worker のセッションはそのまま残る。
 
-各 cleanup block は別の tool call である。[C1]、[C2]、[C3]、[C5] はタスクごとに 1 回、`SD` へ
-そのタスクの正確な `status_dir` を設定して実行する。[C7] は Run 全体について、いずれかの削除の
-前に 1 回だけ実行する。各 block は state を自分で読み直し、state がなければ fail closed する。
-作り物の handle、dispatch、worktree id を代入してはならない。
-
-**exit code は数字ではなくメッセージで読む。**[C1] が exit 0 になるのは止まる理由を見つけたとき
-だけなので、通常の経路では `expected:` で始まるメッセージを出して exit 1 になる。これは停止では
-なく、そのまま [C2] へ進む。それ以外の非 0 終了はすべて停止である。メッセージは
-`required cleanup state is missing`、`could not …`、`release state … does not authorise` の
-いずれかで始まり、そのタスクについて何も閉じても消してもならないことを意味する。[C2] や [C3] が
-コマンドを印字せずに exit 0 になるのも停止ではない。提示するものが無いと判定しただけであり、
-その理由を述べている。
-
-[C1] `release_pending` または `release_unknown`: そのタスクは **ここで止まる。**exit 0 は何かを
-閉じる権限ではない。報告された state と次の inspection コマンドをユーザーへ見せ、端末と worktree は
-意図的に保持していると伝える。通常の経路ではこの block は `expected: no hold on this task …` を
-印字して exit 1 になる。そのまま [C2] へ進む。
+Run 全体について 1 回だけ、**すべての** タスクの正確な `status_dir` を渡して実行する。Orca は Run 全体を
+報告するため、渡し漏れたタスクは誰も記録していない保持中の worker に見え、全タスクの片付けを止めて
+しまう。作り物の handle、dispatch、worktree id を代入してはならない。計画はそれらを dispatch 記録から
+読む。
 
 ```bash
-: "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
-RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
-ROLES=$(jq -r '.roles | to_entries[] | select((.value.dispatch // "") != "") | .key' \
-  "$SD/workers.json" 2>/dev/null)
-[[ -n "$ROLES" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
-  echo "required cleanup state is missing; do not close or remove anything" >&2
-  exit 1
-}
-WLRC=0; WL=$("$ORCA_BIN" orchestration worker-list --run "$RUN" --json 2>/dev/null) || WLRC=$?
-[[ "$WLRC" -eq 0 ]] && jq -e '.ok == true and (.result.workers | type == "array")' <<<"$WL" >/dev/null 2>&1 || {
-  echo "could not read the release state; do not close anything" >&2
-  exit 1
-}
-HELD=0
-for ROLE in $ROLES; do
-  DID=$(jq -r --arg r "$ROLE" '.roles[$r].dispatch // empty' "$SD/workers.json" 2>/dev/null)
-  W=$(jq -c --arg d "$DID" 'first(.result.workers[] | select(.dispatchId == $d)) // empty' <<<"$WL" 2>/dev/null)
-  [[ -n "$W" ]] || { echo "could not read the release state; do not close anything" >&2; exit 1; }
-  STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
-  case "$STATE" in
-    release_pending|release_unknown)
-      printf '%s\n' "$W"
-      printf '%q orchestration worker-show --dispatch %q --json\n' "$ORCA_BIN" "$DID"
-      HELD=1 ;;
-    released|already_released|not_requested|retained|active|reclaimable) ;;
-    *)
-      echo "could not read the release state; do not close anything" >&2
-      exit 1 ;;
-  esac
-done
-[[ "$HELD" -eq 0 ]] || exit 0
-echo "expected: no hold on this task; continue with [C2]" >&2
-exit 1
+: "${PLUGIN:?run the block at the top of this file first}"
+# One --status-dir per task of this Run, in Step 2's order. Repeat the flag for every further task.
+node "$PLUGIN/bin/orca-cleanup.ts" plan --status-dir "<task 1 status_dir printed by Step 2>" \
+                                        --status-dir "<task 2 status_dir printed by Step 2>"
 ```
 
-[C2] worker の端末を閉じてよいかを判定し、閉じるコマンドを **実行せずに** 印字する。通常の経路
-では state は `retained` である。Step 3 がこの worker を意図的に retain しているためである。
-`active`、`reclaimable`、`not_requested` もここでは同じ意味であり、端末はまだ在って、閉じる
-ことを提示するのはこちらの役目である。`not_requested` は、起動直後に失敗した worker が
-`terminalState: reclaimable` と並べて報告する値である。release が一度も要求されていないという
-だけの意味だが（2026-09-11 に観測）、これを「読めない」と扱っていたために、**もっとも片付けを
-必要とする失敗ほど Step 5 が片付けを拒む**状態になっていた。`released` と `already_released` は端末が既に無いという意味であり、提示する
-ものはない。コマンドを印字してよいのは Orca が報告する handle と worktree が記録済み state と
-一致するときだけで、一致しなければ何を、なぜ残すのかを伝える。
+TypeScript のファイルを直接実行するので、Node 22.18 以上が要る。`node` が無いか古ければ、何も読まない
+うちに失敗する。そのことをユーザーへ伝え、手作業の片付けで代用しない。
 
-印字するのは raw な端末 close ではなく `orchestration worker-release --dispatch <id>` である。
-閉じる前に worker の出力を archive するので、閉じた後も `worker-read` が読める。そして identity を
-証明できない端末や、誰かが引き取った端末を閉じることを拒む。この拒否は、この block が適用する
-gate の下にあるもう 1 つの gate である。
+**exit code を読む:**
 
-Orca が既に閉じた端末は show できない。したがってここでは `terminal show` の失敗は致命的である。
-identity 検査へ到達する state では、いずれも端末がまだ在るはずだからである。
+- `0` — 計画を書いた。最後の行が `plan_file=<path>` で、Step 6 はそのファイルを渡す。出力には
+  タスクごとに、提示するコマンド、残すものとその理由、タスクが止まったかどうかが並ぶ。提示するものが
+  無い計画でも exit 0 である。
+- `1` — Run 全体を止め、計画は書いていない。理由は stderr にある。どのタスクについても何も閉じても
+  消してもならない。理由をユーザーへ見せる。
+- `2` — 呼び出し方の誤り。引数を直す。
 
-```bash
-: "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
-RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
-ROLES=$(jq -r '.roles | to_entries[] | select((.value.dispatch // "") != "") | .key' \
-  "$SD/workers.json" 2>/dev/null)
-[[ -n "$ROLES" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
-  echo "required cleanup state is missing; do not close or remove anything" >&2
-  exit 1
-}
-WLRC=0; WL=$("$ORCA_BIN" orchestration worker-list --run "$RUN" --json 2>/dev/null) || WLRC=$?
-[[ "$WLRC" -eq 0 ]] && jq -e '.ok == true and (.result.workers | type == "array")' <<<"$WL" >/dev/null 2>&1 || {
-  echo "could not read the release state; do not close anything" >&2
-  exit 1
-}
-for ROLE in $ROLES; do
-  WT=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_id // empty' "$SD/workers.json" 2>/dev/null)
-  TH=$(jq -r --arg r "$ROLE" '.roles[$r].terminal // empty' "$SD/workers.json" 2>/dev/null)
-  DID=$(jq -r --arg r "$ROLE" '.roles[$r].dispatch // empty' "$SD/workers.json" 2>/dev/null)
-  WP=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_path // empty' "$SD/workers.json" 2>/dev/null)
-  [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" ]] || {
-    echo "required cleanup state is missing; do not close or remove anything" >&2
-    exit 1
-  }
-  W=$(jq -c --arg d "$DID" 'first(.result.workers[] | select(.dispatchId == $d)) // empty' <<<"$WL" 2>/dev/null)
-  [[ -n "$W" ]] || { echo "could not read the release state; do not close anything" >&2; exit 1; }
-  STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
-  case "$STATE" in
-    released|already_released)
-      echo "Orca already closed the $ROLE terminal; nothing to close"; continue ;;
-    not_requested|retained|active|reclaimable) ;;
-    *) echo "release state '${STATE:-unknown}' does not authorise C2" >&2; exit 1 ;;
-  esac
-  SHRC=0; SHOWN=""
-  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 || {
-    echo "could not verify the terminal identity; do not close anything" >&2
-    exit 1
-  }
-  if [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
-     && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
-    printf '%s orchestration worker-release --dispatch %q --json\n' "$ORCA_BIN" "$DID"
-  else
-    echo "the $ROLE terminal no longer matches our state; leave it alone"
-  fi
-done
-```
-
-[C3] worktree の削除は破壊的である。次の条件がすべて実際に成り立つ場合だけ削除コマンドを
-表示する。条件を説明するだけで済ませない。
-
-```bash
-: "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
-RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
-MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
-ROLES=$(jq -r '.roles | to_entries[] | select((.value.dispatch // "") != "") | .key' \
-  "$SD/workers.json" 2>/dev/null)
-[[ -n "$ROLES" && -n "$RUN" && -n "$ORCA_BIN" ]] || {
-  echo "required cleanup state is missing; do not close or remove anything" >&2
-  exit 1
-}
-WLRC=0; WL=$("$ORCA_BIN" orchestration worker-list --run "$RUN" --json 2>/dev/null) || WLRC=$?
-[[ "$WLRC" -eq 0 ]] && jq -e '.ok == true and (.result.workers | type == "array")' <<<"$WL" >/dev/null 2>&1 || {
-  echo "could not read the release state; do not remove anything" >&2
-  exit 1
-}
-for ROLE in $ROLES; do
-  WT=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_id // empty' "$SD/workers.json" 2>/dev/null)
-  TH=$(jq -r --arg r "$ROLE" '.roles[$r].terminal // empty' "$SD/workers.json" 2>/dev/null)
-  DID=$(jq -r --arg r "$ROLE" '.roles[$r].dispatch // empty' "$SD/workers.json" 2>/dev/null)
-  WP=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_path // empty' "$SD/workers.json" 2>/dev/null)
-  OWNED=$(jq -r --arg r "$ROLE" '.roles[$r].worktree_created_by_this_run // false' "$SD/workers.json" 2>/dev/null)
-  KNOWN=$(jq -c --arg r "$ROLE" '.roles[$r].worktree_terminals // null' "$SD/workers.json" 2>/dev/null)
-  [[ -n "$WT" && -n "$TH" && -n "$DID" && -n "$WP" && -n "$KNOWN" ]] || {
-    echo "required cleanup state is missing; do not close or remove anything" >&2
-    exit 1
-  }
-  W=$(jq -c --arg d "$DID" 'first(.result.workers[] | select(.dispatchId == $d)) // empty' <<<"$WL" 2>/dev/null)
-  [[ -n "$W" ]] || { echo "could not read the release state; do not remove anything" >&2; exit 1; }
-  STATE=$(jq -r '.resource.releaseState // .terminalState // empty' <<<"$W" 2>/dev/null)
-  case "$STATE" in
-    released|already_released|not_requested|retained|active|reclaimable) ;;
-    *) echo "release state '${STATE:-unknown}' does not authorise C3" >&2; exit 1 ;;
-  esac
-  SHRC=0; SHOWN=""; SHOW_OK=no
-  SHOWN=$("$ORCA_BIN" terminal show --terminal "$TH" --json 2>/dev/null) || SHRC=$?
-  [[ "$SHRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminal | type == "object")' <<<"$SHOWN" >/dev/null 2>&1 \
-    && SHOW_OK=yes
-  if [[ "$SHOW_OK" == no && "$STATE" != released && "$STATE" != already_released ]]; then
-    echo "could not verify the terminal identity; do not remove anything" >&2
-    exit 1
-  fi
-  IDENTITY_OK=no
-  if [[ "$SHOW_OK" == no ]]; then
-    IDENTITY_OK=yes
-  elif [[ "$(jq -r '.result.terminal.handle // empty' <<<"$SHOWN")" == "$TH" \
-       && "$(jq -r '.result.terminal.worktreeId // empty' <<<"$SHOWN")" == "$WT" ]]; then
-    IDENTITY_OK=yes
-  fi
-  DIRTY=$(git -C "$WP" status --porcelain 2>/dev/null); DRC=$?
-
-  # Every terminal Orca still has in that worktree must be one we recorded. Keep all three
-  # states: yes is proven, no is disproven, and unknown is not enough authority to remove.
-  ACCOUNTED=unknown
-  TLRC=0; TL=$("$ORCA_BIN" terminal list --worktree "id:$WT" --json 2>/dev/null) || TLRC=$?
-  if [[ "$TLRC" -eq 0 ]] && jq -e '.ok == true and (.result.terminals | type == "array")' <<<"$TL" >/dev/null 2>&1 \
-     && jq -e 'type == "array"' <<<"$KNOWN" >/dev/null 2>&1; then
-    ACCOUNTED=$(jq -n --argjson l "$(jq -c '[.result.terminals[].handle]' <<<"$TL")" \
-                      --argjson k "$KNOWN" 'if (($l - $k) | length) == 0 then "yes" else "no" end' -r)
-  fi
-
-  if [[ "$MERGED" == true && "$OWNED" == true && "$DRC" -eq 0 && -z "$DIRTY" \
-        && "$IDENTITY_OK" == yes && "$ACCOUNTED" == yes ]]; then
-    printf '%s worktree rm --worktree %q --json\n' "$ORCA_BIN" "id:$WT"
-  else
-    echo "not offering to remove the $ROLE worktree:"
-    [[ "$MERGED" == true ]]      || echo "  - the work is not merged yet"
-    [[ "$OWNED" == true ]]       || echo "  - this dispatch reused an existing worktree; it is not ours to remove"
-    [[ "$DRC" -eq 0 ]]           || echo "  - the worker checkout could not be inspected"
-    [[ -z "$DIRTY" ]]            || echo "  - the worker checkout has uncommitted changes"
-    [[ "$IDENTITY_OK" == yes ]]  || echo "  - the terminal identity did not match our state"
-    case "$ACCOUNTED" in
-      yes) ;;
-      no)      echo "  - a terminal in that worktree is not one we recorded" ;;
-      unknown) echo "  - the terminals in that worktree could not be listed, so nothing is proven" ;;
-    esac
-  fi
-done
-```
-
-[C3] は worktree を削除してよいかを判定する。[C2] と同じく、この block は何も削除しない。
-Step 6 は端末のアクションを先に実行するので、端末がまだ開いたままの worktree がここで正当に
-提示されることがある。
-
-`IDENTITY_OK` は [C3] の中で計算する。[C2] から shell 変数を持ち込まない。released 系の state で
-端末を show できないとき（Orca が閉じたことがそのまま証明になる）と、この block 内で handle と
-worktree が一致したときにだけ `yes` になる。
-worker が Step 3 で exit 5 を返したタスクは `MERGED` が false であり、そのタスクの削除を
-提示しない。これは意図した動作であって欠落ではない。
-
-[C7] `worker-retain` は durable な例外を記録するため、中断したセッションの保持が
-残りうる。この Run について何かを消す前に、Orca が実際に何を保持しているか尋ね、
-自分たちの記録と突き合わせる。記録に無い保持は他者のもの、あるいは前回の Run の
-自分たちのものであり、いずれにせよ手を出してよいものではない。この Run のすべての
-タスクが 1 つの答えを共有するので、実行は 1 回だけとし、`SDS` には **すべての** タスクの
-status dir を並べる。Orca は Run 全体を報告するため、`SDS` から漏れた兄弟タスクは ghost に
-見え、全タスクの片付けを止めてしまう。別の Run の status dir を混ぜると逆に既知集合が広がり、
-本物の ghost を隠してしまう。そのため、並べた各 dir の `run_id` を、その dispatch を信用する
-前に検査する:
-
-```bash
-: "${SD:?set SD to the exact status_dir printed in Step 2}"
-ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
-SDS=("$SD")   # append every other status_dir of this Run
-RUN=$(jq -r '.run_id // empty' "$SD/run.json" 2>/dev/null)
-[[ -n "$RUN" && -n "$ORCA_BIN" ]] || {
-  echo "required cleanup state is missing; do not close or remove anything" >&2
-  exit 1
-}
-# A dir from another Run would widen the known set and hide the very ghost we look for.
-WJ=()
-for d in "${SDS[@]}"; do
-  [[ "$(jq -r '.run_id // empty' "$d/run.json" 2>/dev/null)" == "$RUN" ]] || {
-    echo "$d does not belong to Run $RUN; do not close or remove anything" >&2
-    exit 1
-  }
-  WJ+=("$d/workers.json")
-done
-KNOWN=$(jq -sc '[.[] | .roles[]?.dispatch // empty]' "${WJ[@]}" 2>/dev/null)
-[[ -n "$KNOWN" ]] || {
-  echo "required cleanup state is missing; do not close or remove anything" >&2
-  exit 1
-}
-WLRC=0; WL=$("$ORCA_BIN" orchestration worker-list --run "$RUN" --terminal-state retained --json 2>/dev/null) || WLRC=$?
-[[ "$WLRC" -eq 0 ]] && jq -e '.ok == true and (.result.workers | type == "array")' <<<"$WL" >/dev/null 2>&1 || {
-  echo "could not list what Orca still holds for this Run; do not remove anything" >&2
-  exit 1
-}
-GHOSTS=$(jq -c --argjson k "$KNOWN" '[.result.workers[].dispatchId] - $k' <<<"$WL")
-if [[ "$(jq 'length' <<<"$GHOSTS")" -eq 0 ]]; then
-  echo "every retained worker in this Run is one we recorded"
-else
-  echo "Orca still holds retained workers we did not record:" >&2
-  jq -r '.[]' <<<"$GHOSTS" >&2
-  echo "do not remove any worktree or dispatch record for this Run" >&2
-  exit 1
-fi
-```
-
-[C5] `.dispatch/<slug>` の dispatch 記録は、依頼と worker の結果の唯一のローカル控えである。
-そのため、そのタスクの成果が merge 済みになったときだけ削除を提示する。この block は Orca
-コマンドを呼ばないので release の分類も行わない。代わりに `$SD` が本当にこの dispatch の
-記録であり、`.dispatch` ディレクトリの中にあることを証明する。
-
-```bash
-: "${SD:?set SD to the exact status_dir printed in Step 2}"
-MERGED=$(jq -r '.merged // false' "$SD/integration-result.json" 2>/dev/null)
-[[ -f "$SD/run.json" && -f "$SD/workers.json" ]] || {
-  echo "this is not a dispatch status directory; do not remove anything" >&2
-  exit 1
-}
-PARENT=$(cd "$SD/.." 2>/dev/null && pwd -P) || PARENT=""
-[[ "$(basename "${PARENT:-/}")" == .dispatch ]] || {
-  echo "the status directory is not inside .dispatch; do not remove it" >&2
-  exit 1
-}
-if [[ "$MERGED" == true ]]; then
-  printf 'rm -rf %q\n' "$SD"
-else
-  echo "not offering to remove the dispatch record:"
-  echo "  - the work is not merged yet, so this is the only copy of the request and result"
-fi
-```
+**止まった**タスクは何も提示しない。端末も worktree も記録もそのまま残る。[C1] のほかに、Orca の答えに
+そのタスクの worker が 1 つでも無いとき、この skill の知らない state が報告されたとき、まだ在るはずの
+端末を show できないとき、役の記録が欠けているときにもタスクは止まる。出力はそれぞれの理由を印字する。
 
 ユーザーへ、次を平易な言葉で伝える。
 
 - [C1] `release_pending` と `release_unknown` は、以前の release を Orca が確定できていない状態で
-  ある。そのタスクについては何も閉じても消してもならない。ここに acknowledge するものはない。
-  この worker を報告したメッセージは Step 3 が既に acknowledge している。報告された state と
-  inspection コマンドを見せ、端末・worktree・記録をそのまま残す。`release_pending` は自然に
-  確定しうるので、後で Step 5 をやり直せば解ける場合がある。`release_unknown` はユーザーが
-  見る必要がある。
+  ある。そのタスクは止まり、何も閉じても消してもならない。ここに acknowledge するものはない。
+  この worker を報告したメッセージは Step 3 が既に acknowledge している。報告された state と、計画が
+  印字する inspection コマンド `$ORCA_BIN orchestration worker-show --dispatch <id> --json` を見せ、
+  端末・worktree・記録をそのまま残す。`release_pending` は自然に確定しうるので、後で Step 5 を
+  やり直せば解ける場合がある。`release_unknown` はユーザーが見る必要がある。
 - [C2] `retained`、`active`、`reclaimable`、`not_requested` は worker の端末がまだ在ることを
-  意味し、handle と worktree が記録済み state に一致する端末だけを release の対象として提示する。
-  一致しなければ、すでに他者の所有物である。`not_requested` は「まだ誰も release を要求して
-  いない」というだけで、起動時に失敗した worker の通常の状態である。`released` と `already_released` は端末が既に無いことを意味し、
-  そのタスクについて閉じるものは残っていない。
-- [C3] 削除コマンドは、成果が merge 済み、この dispatch が worktree を作成した、checkout が
+  意味し、`handle` と `worktreeId` が記録済み state に一致する端末だけを release の対象として
+  提示する。通常は `retained` である。Step 3 がこの worker を意図的に retain しているためである。
+  `not_requested` は「まだ誰も release を要求していない」というだけで、起動時に失敗した worker の
+  通常の状態である — 2026-09-11 に観測し、これを「読めない」と扱っていたために、もっとも片付けを
+  必要とする失敗ほど Step 5 が片付けを拒む状態になっていた。一致しなければ、すでに他者の所有物で
+  ある。`released` と `already_released` は端末が既に無いことを意味し、そのタスクについて閉じるものは
+  残っていない。提示するのは raw な端末 close ではなく `orchestration worker-release --dispatch <id>`
+  である。閉じる前に worker の出力を archive するので、閉じた後も `worker-read` が読める。そして
+  identity を証明できない端末や、誰かが引き取った端末を閉じることを拒む。この拒否は、この判定の下に
+  あるもう 1 つの gate である。
+- [C3] 削除コマンドは、成果が merge 済み、**この dispatch が worktree を作成した**、checkout が
   読めて clean、端末 identity が一致、worktree にまだ残る端末すべてが記録済み、の全条件を
-  満たすときだけ表示する。再利用 worktree は最初からこちらのものではないため、削除を提示しない。
-  **端末を列挙できないことは「存在しない」ことではない。何も証明されないのでコマンドを表示しない。**
+  満たすときだけ提示する。再利用 worktree は最初からこちらのものではないため、削除を提示しない。
+  **端末を列挙できないことは「存在しない」ことではない。何も証明されないのでコマンドを提示しない。**
+  released 系の state でもう show できない端末は、一致したものとして数える。Orca が閉じたことが
+  そのまま証明になるからである。Step 6 は端末のアクションを先に実行するので、端末がまだ開いたままの
+  worktree がここで正当に提示されることがある。worker が失敗した（Step 3 が exit 5 を返した）タスクは
+  merge されていないので削除を提示しない。これは意図した動作であって欠落ではない。
 - [C7] 何かを消す前に、この Run について Orca が実際に保持しているものが、こちらの記録と
-  一致していなければならない。記録に無い保持が 1 つでもあれば、その worker だけでなく
-  Run 全体の片付けを止める。
+  一致していなければならない。`worker-retain` は durable な例外を記録するため、中断した
+  セッションの保持が残りうる。記録に無い保持は他者のもの、あるいは前回の Run の自分たちのもので
+  あり、いずれにせよ手を出してよいものではない。記録に無い保持が 1 つでもあれば、その worker だけで
+  なく Run 全体の片付けを止める。**別の** Run の status dir が混じっていても止める。既知集合が
+  広がり、探している ghost そのものを隠してしまうからである。
 - [C4] `worktree rm` は branch の削除も試みる。Orca は変更が merge 済みと証明できない branch を
   残すので、branch が残ることは失敗ではなく合図である。ユーザーが dirty なファイルを見て失っても
   よいと判断するまで、`--force` を加えない。
-- [C5] dispatch 記録は merge 済みになってからだけ提示する。それまでは何を依頼して何が返って
-  きたかの唯一の控えであり、失うと手で調べる・再開する手段も失う。
+- [C5] `.dispatch/<slug>` の dispatch 記録は、依頼と worker の結果の唯一のローカル控えである。
+  そのため、そのタスクの成果が merge 済みになってから、しかも status dir が本当に `.dispatch` の
+  直下にある dispatch 記録のときだけ提示する。それまでは何を依頼して何が返ってきたかの唯一の控えで
+  あり、失うと手で調べる・再開する手段も失う。
 
 ## Step 6: 一度だけ尋ね、承認されたものを実行する
 
-判定は Step 5 が済ませた。この step は尋ねて実行する。独自の判定は一切行わない。
-Step 5 が実際に印字したコマンドを、印字されたとおりに実行するだけである。**worker の端末を
-release するのはここである。**セッションを閉じることはユーザーが承認するアクションの 1 つで
-あって、判定の副作用ではない。
+判定は Step 5 が済ませた。この step は尋ねて実行する。独自の判定は一切行わない。`run` が実行するのは
+計画にある提示だけであり、計画に無いものは実行しない。**worker の端末を release するのはここである。**
+セッションを閉じることはユーザーが承認するアクションの 1 つであって、判定の副作用ではない。
 
 [C6] 尋ね方と実行:
 
-- どのタスクについても Step 5 が片付けのコマンドを 1 つも印字しなかったときは、承認するものが
-  ない。[C1] の inspection コマンドはこれに数えない。Step 5 が既に印字した理由をそのまま使い、
-  何を、なぜ残すのかをユーザーへ伝えて終わる。尋ねない。
+- どのタスクについても計画が片付けのコマンドを 1 つも提示していないときは、承認するものがない。
+  [C1] の inspection コマンドはこれに数えない。Step 5 が既に印字した理由をそのまま使い、何を、
+  なぜ残すのかをユーザーへ伝えて終わる。尋ねない。
 - 質問はタスクごとに 1 問とし、質問の header にはそのタスクの slug を使い、選択肢はそのタスクに
-  ついて Step 5 が印字した対象だけにする。Step 5 が何も印字しなかったタスクは質問から丸ごと
-  外し、そのタスクについて何を、なぜ残すのかを伝える。
+  ついて Step 5 が印字した対象（端末、worktree、dispatch 記録）だけにする。Step 5 が何も印字
+  しなかったタスク（止まったタスクを含む）は質問から丸ごと外し、そのタスクについて何を、なぜ
+  残すのかを伝える。
 - `AskUserQuestion` が受け取れる質問は最大 4 問である。Step 1 でユーザーが 4 を超えるタスクを
   承認していた場合は、代わりに単一の質問とし、選択肢を「全タスクの端末」「全タスクの worktree」
   「全タスクの dispatch 記録」とする。選択肢に出してよいのは、少なくとも 1 つのタスクについて
   Step 5 がその対象を印字したときだけである。
 - Step 5 が印字を見送った対象を選択肢に出さない。
-- 何も選ばないのは正当な回答である。すべてを残し、何が残ったかを伝える。
-- 承認されたコマンドは、タスクを slug 順に、タスク内では 端末 → worktree → dispatch 記録 の順に
+- 何も選ばないのは正当な回答である。`run` を呼ばず、すべてを残し、何が残ったかを伝える。
+- dispatch 記録は端末と worktree の id を保持している。それらと並べて提示するときは、
+  記録だけを削除して他を残すと何を失うのかをその選択肢に書き、承知のうえで選べるようにする。
+- 承認された対象を、Step 5 が印字した `plan_file` と一緒に、`--approve <slug>:<terminal|worktree|record>`
+  として `run` へ渡す。単一の質問の形では、選ばれた対象を、それを提示しているタスクごとに 1 つずつ渡す。
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+# One --approve per approved action; the plan file is the plan_file line Step 5 printed.
+node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
+                                       --approve "<slug>:<terminal|worktree|record>"
+```
+
+`run` が何をするか（ユーザーへ正しく報告するため）:
+
+- 承認された対象を、タスクを slug 順に、タスク内では 端末 → worktree → dispatch 記録 の順に
   実行する。端末のコマンドは Step 5 が印字した `worker-release` であり、worker のセッションを
   終わらせるのはこれである。端末が開いたままの worktree を Orca は手放さず、記録は最後に失う
   ものだからである。
-- 各コマンドは Step 5 が印字したとおりに実行する。handle や worktree id を打ち直さない、
-  `--force` を加えない、印字を見ていない selector に差し替えない。
+- 各コマンドは計画ファイルから、Step 5 が印字したとおりに実行する。handle や worktree id を
+  打ち直さず、`--force` を加えず、selector を差し替えない。コマンドを書き換えた計画は丸ごと拒む。
+  計画が提示していない `--approve` は使用法の誤り（exit 2）であり、そのときは何も実行しない。
 - Orca コマンドごとに receipt を確認する。`.ok == true` のときだけ実行できたとみなす。
-  それ以外ならそこで止め、何が実行されなかったかを報告し、残りには手を付けない。
-  失敗が次の step を authorise することはなく、あるタスクの失敗が別のタスクの先送りを
-  authorise することもない。
+  それ以外ならそのタスクはそこで止め、何が実行されなかったかを報告し、そのタスクの残りには
+  手を付けない。失敗が次の step を authorise することはなく、あるタスクの失敗が別のタスクの
+  先送りを authorise することもない。ほかのタスクはそのまま実行する。
 - **端末の操作については `.ok == true` では足りない。**実機で計測したところ、Orca が端末を
   user-owned とみなしている場合、`worker-release` は何も解放しないまま `ok` を返す —
-  receipt は `releaseState: retained` と `retainedReason: user_takeover` のままである。
-  セッションを閉じたと言う前に、その state を読み直す。Orca が保持した端末は止まるべき失敗
-  ではなく（worktree の step は続けてよい）、閉じたと報告することだけが誤りである。
-- dispatch 記録は端末と worktree の id を保持している。それらと並べて提示するときは、
-  記録だけを削除して他を残すと何を失うのかをその選択肢に書き、承知のうえで選べるようにする。
-- 最後に、タスクごとに削除したものと残したものを報告する。
+  state は `releaseState: retained` と `retainedReason: user_takeover` のままである。
+  `run` はセッションを閉じたと言う前に、その state を `orchestration worker-list` から読み直す。
+  `user_takeover` で保持された端末は止まるべき失敗ではなく（worktree の step は続ける）、閉じたとは
+  報告せず、残したと報告する。それ以外の答えはそのタスクの失敗であり、worktree と記録は残す —
+  state を読み直せない、Orca の一覧にその worker が無い、release がまだ pending / unknown、ほかの理由で
+  保持された、のいずれも。
+- dispatch 記録を消すのは、それが `.dispatch` の直下にある dispatch の status dir であることを
+  もう一度確かめてからである。
+- 最後に、タスクごとに削除したものと残したものを印字する。exit 0 は承認された対象をすべて実行した
+  こと、exit 1 は少なくとも 1 つが失敗したことを意味し、出力にはその対象と、やり残した後続が
+  書かれる。exit 2 は使用法の誤り。タスクごとにユーザーへ報告する。
 
 ## 既知の制限
 
@@ -1232,5 +1010,6 @@ release するのはここである。**セッションを閉じることはユ�
 `brainstorm` の design が書いたときは `spec.md` / `plan.md` がある。
 1 つの Run のタスクは `run.json` に同じ `run_id` を持ち、`workers.json` にそれぞれの worktree を
 持つ。`workers.json` の `roles` map は役ごとに 1 entry を持つので、後段の stage が何も動かさずに
-役を増やせる。手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は
+役を増やせる。Step 5 はその隣に `.dispatch/cleanup-<run_id>.json` を書く。Step 6 の `run` が
+実行するのは、この計画にある提示だけである。手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は
 repository の `info/exclude` に加えるため、ユーザーの `git status` には現れない。
