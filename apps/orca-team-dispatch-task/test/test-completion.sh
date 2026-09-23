@@ -245,23 +245,27 @@ grep -qxF -- '--peek' <<<"$a" && ! grep -qxF -- '--ack' <<<"$a" \
   && grep -qxF 'term_w' <<<"$a" && ok "CM21 --peek のみで読む" || fail "CM21"
 ateardown
 
-# CM22: ★ **待つのは 24 時間。**期限は `sent` の時刻から決まり、呼び直しをまたいで残る。
-#      期限を過ぎたら expired を返し、worker は結末を result.md に書いて終われる。
+# CM22: ★ **待機に期限を置かない。**worker は待っている相手の事情（人の回答待ちなど）を
+#      知らないので、「来ない」を判断させない。`sent` は期限を記録しない。
 asetup
-[[ "$(jq -r '.await_deadline // empty' "$D/completion.json")" =~ ^[0-9]+$ ]] \
-  && ok "CM22 sent が期限を記録する" || fail "CM22"
+[[ -z "$(jq -r '.await_deadline // empty' "$D/completion.json")" ]] \
+  && ok "CM22 sent は期限を記録しない" || fail "CM22"
+ateardown
+
+# CM22b: 旧版が書いた期限が残っていても expired を返さない（待ち続ける）。
+asetup
 upd=$(jq -c --argjson t "$(( $(date +%s) - 1 ))" '.await_deadline = $t' "$D/completion.json")
 printf '%s\n' "$upd" > "$D/completion.json"
 out=$(aw 2>/dev/null); rc=$?
-[[ "$rc" -eq 0 && "$out" == expired ]] && ok "CM22b 期限切れは expired" || fail "CM22b (rc=$rc out=$out)"
+[[ "$rc" -eq 0 && "$out" == waiting ]] && ok "CM22b 古い期限では降りない" || fail "CM22b (rc=$rc out=$out)"
 ateardown
 
-# CM23: ★ **期限切れでも、届いている accepted は受理する。**時計より事実が優先する。
+# CM23: 旧版の期限が残っていても、届いている accepted は受理する。
 asetup; reply accepted "$N"
 upd=$(jq -c --argjson t "$(( $(date +%s) - 1 ))" '.await_deadline = $t' "$D/completion.json")
 printf '%s\n' "$upd" > "$D/completion.json"
 out=$(aw 2>/dev/null)
-[[ "$out" == accepted ]] && ok "CM23 期限切れでも accepted を拾う" || fail "CM23 ($out)"
+[[ "$out" == accepted ]] && ok "CM23 古い期限があっても accepted を拾う" || fail "CM23 ($out)"
 ateardown
 
 # CM24: transport が壊れているのは「返事が無い」とは違う。1 で返して待機と区別する。
@@ -293,14 +297,14 @@ out=$(ORCA_WAITER_RETRY_SECONDS=0 aw 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == waiting ]] && ok "CM27 waiter_exists は waiting" || fail "CM27 (rc=$rc out=$out)"
 ateardown
 
-# CM27b: waiter_exists が続いたまま期限を越えたら、待ち続けずに expired を返す。
+# CM27b: waiter_exists が続き、旧版の期限を越えていても waiting を返す（期限で降りない）。
 asetup
 printf '%s\n' '{"ok":false,"error":{"code":"waiter_exists","message":"a waiter is already active"}}' \
   > "$ORCA_STUB_DIR/orchestration_check"
 upd=$(jq -c --argjson t "$(( $(date +%s) - 1 ))" '.await_deadline = $t' "$D/completion.json")
 printf '%s\n' "$upd" > "$D/completion.json"
 out=$(ORCA_WAITER_RETRY_SECONDS=0 aw 2>/dev/null); rc=$?
-[[ "$rc" -eq 0 && "$out" == expired ]] && ok "CM27b 期限を越えれば expired" || fail "CM27b (rc=$rc out=$out)"
+[[ "$rc" -eq 0 && "$out" == waiting ]] && ok "CM27b 期限では降りない" || fail "CM27b (rc=$rc out=$out)"
 ateardown
 
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

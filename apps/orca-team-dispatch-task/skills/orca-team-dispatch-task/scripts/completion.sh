@@ -35,12 +35,11 @@ GEN_IN="${GEN_IN:-1}"
 CJ="$RD/completion.json"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 
-# ★ **待つのは 24 時間。**「翌日の仕事までに分かっていればよい」が要件である。1 回の
-#   ブロックは 10 分（agent の shell の上限）なので、24 時間は呼び直しで作る。期限は
-#   `sent` の時刻から決まり、**ファイルに載るので呼び直しをまたいで残る** — agent に
-#   回数を数えさせない。
+# ★ **待機に期限を置かない。**worker は待っている相手の事情（人の回答待ちなど）を知らない
+#   ので、「来ない」を判断できない。止めるかどうかは親がタスク全体を見て、ユーザーに尋ねる
+#   （`orca-wait.sh` の停滞検知と `orca-stop.sh`）。1 回のブロックは 10 分（agent の shell の
+#   上限）なので、待機は呼び直しで続ける。
 AWAIT_WINDOW_MS="${ORCA_AWAIT_WINDOW_MS:-600000}"
-AWAIT_TOTAL_SECONDS="${ORCA_AWAIT_TOTAL_SECONDS:-86400}"
 
 write() {   # $1=content
   local t
@@ -74,10 +73,7 @@ case "$SUB" in
       merge_ready_sent|accepted|settled) exit 0 ;;   # 前進済み。戻さない
       *) log "cannot move to merge_ready_sent from '${cur:-none}'"; exit 1 ;;
     esac
-    # ★ **待機の期限はここで決まる。**merge_ready が出た瞬間が待ち始めた時刻である。
-    #   `sent` は前進済みなら早期 return するので、再入しても期限は伸びない。
-    write "$(jq -c --argjson d "$(( $(date +%s) + AWAIT_TOTAL_SECONDS ))" \
-      '.phase = "merge_ready_sent" | .await_deadline = $d' "$CJ")" \
+    write "$(jq -c '.phase = "merge_ready_sent"' "$CJ")" \
       || { log "cannot write $CJ"; exit 1; } ;;
 
   await)
@@ -89,7 +85,7 @@ case "$SUB" in
     # ★ **nonce の照合を目視から外す。**「自分のでない nonce は無視して待て」は、目で
     #   やらせると必ずどこかで取り違える。
     #
-    # 出力は 1 行: accepted / remediation <本文> / waiting / expired
+    # 出力は 1 行: accepted / remediation <本文> / waiting
     cur=$(read_field phase)
     case "$cur" in
       merge_ready_sent) ;;
@@ -113,14 +109,12 @@ case "$SUB" in
       #   わけではない。transport の障害として 1 で降りると、受理を取りに行く者が
       #   居なくなる。**即座に戻すと spin になる**ので、少し置いてから呼び直させる。
       if [[ "$(jq -r '.error.code // empty' <<<"$OUT" 2>/dev/null || echo "")" == waiter_exists ]]; then
-        DL=$(read_field await_deadline)
-        if [[ "$DL" =~ ^[0-9]+$ ]] && [[ "$(date +%s)" -ge "$DL" ]]; then echo expired; exit 0; fi
         WR="${ORCA_WAITER_RETRY_SECONDS:-20}"
         [[ ! "$WR" =~ ^[0-9]+$ || "$WR" -le 0 ]] || sleep "$WR"
         echo waiting; exit 0
       fi
       # ★ **transport の障害を「返事が無い」と混ぜない。**混ぜると、壊れた経路を
-      #   24 時間叩き続けることになる。
+      #   際限なく叩き続けることになる。
       log "could not read the mailbox (rc=$ORC)"; exit 1
     fi
     # ★ 自分の nonce の返事だけを拾う。**他人の nonce は古い試行のものであり、無視する。**
@@ -140,9 +134,6 @@ case "$SUB" in
            | startswith("completion-remediation: " + $n))) | .body // ""' <<<"$OUT" 2>/dev/null || echo "")
       echo "remediation ${BODY}"; exit 0
     fi
-    # ★ **期限の判定は返事を探したあと。**時計より届いている事実が優先する。
-    DL=$(read_field await_deadline)
-    if [[ "$DL" =~ ^[0-9]+$ ]] && [[ "$(date +%s)" -ge "$DL" ]]; then echo expired; exit 0; fi
     # ★ **空振りは「まだ来ていない」であって「来ない」ではない。**ここを give-up にした
     #   のが旧版の停止だった。呼び直させる。
     echo waiting ;;
