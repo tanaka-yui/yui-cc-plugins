@@ -26,7 +26,7 @@ requirements, and reading code to decide an approach all belong to each worker, 
 in its own worktree. The parent does none of them before dispatching.
 
 ```bash
-PLUGIN="${CLAUDE_PLUGIN_ROOT:?the plugin root is not set; reinstall the plugin}"
+PLUGIN="${CLAUDE_PLUGIN_ROOT}"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 ```
 

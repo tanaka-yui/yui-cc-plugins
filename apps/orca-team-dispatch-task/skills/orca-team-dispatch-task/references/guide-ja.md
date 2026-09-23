@@ -14,7 +14,7 @@ brainstorming、計画、要件についての確認の質問、取りかかり�
 各 worker が自分の worktree で並列に行う。親は dispatch 前にそのどれも行わない。
 
 ```bash
-PLUGIN="${CLAUDE_PLUGIN_ROOT:?the plugin root is not set; reinstall the plugin}"
+PLUGIN="${CLAUDE_PLUGIN_ROOT}"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 ```
 
