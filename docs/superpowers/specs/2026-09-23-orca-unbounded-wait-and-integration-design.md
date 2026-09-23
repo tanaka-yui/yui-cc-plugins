@@ -206,6 +206,33 @@ orca-stop.sh --status-dir <sd> --snooze
 - `orca-merge.sh` は `integration` が `pr` と記録されていれば拒否する。`orca-pr.sh` は `merge` と記録されていれば拒否する。**記録が無い古い status dir はどちらも通す**（今までどおり）
 - `orca-issue.sh` は変えない（設定の値で動く）
 
+## 5b. 設計 C: brainstorm の design worker を brainstorming → writing-plans の順にする
+
+### 起きたこと（2026-09-23、influencer-platform の Run `run_786b0578f3dc`）
+
+`design_mode=brainstorm` / `phase_b=on` の design worker が `superpowers:brainstorming` だけを呼び、
+`superpowers:writing-plans` を一度も呼ばずに、spec と plan を混ぜた `plan.md`（872 行）を 1 本書いて終えた。
+原因は `orca-start.sh` の design 役の指示文である。
+
+1. brainstorm の指示に writing-plans へ進むことが書かれていない
+2. `phase_b=on` の「PLAN ONLY / commit nothing / plan.md 以外に触れるな」が、skill の「spec を docs に書いて commit」「plan を docs に保存」と衝突し、worker は指示を優先して skill の手順を飛ばした
+3. 「ask once」が brainstorming の「1 問ずつ尋ねる」と衝突した
+
+### 決定
+
+**writing-plans を呼ぶのは `brainstorm` のときだけ。**`direct`（`--issue` の既定）と `plan` は、`phase_b` によらず今のまま。
+
+| `design_mode` | `phase_b=off` | `phase_b=on` |
+|---|---|---|
+| `direct` / `plan` | 今のまま | 今のまま |
+| `brainstorm` | brainstorming → `<status-dir>/spec.md` → writing-plans で `<status-dir>/plan.md` → `superpowers:subagent-driven-development` で実装し、このブランチに commit | brainstorming → `spec.md` → writing-plans で `plan.md`。そこで終える。commit しない |
+
+- skill 自身の保存先（`docs/superpowers/specs|plans`）と commit の手順は、指示文で上書きする。spec と plan は status dir に置き、merge に混ぜない
+- writing-plans の最後の「実行方法をユーザーに尋ねる」は飛ばさせる。`phase_b=off` は **Subagent-driven に固定**（ユーザーの決定）、`phase_b=on` は計画を書いたら終える（作るのは exec）
+- 「ask once」を消し、「skill のとおり 1 問ずつ `orchestration ask` で尋ねる」にする。共通の STATUS PROTOCOL の I も同じく直す。子の待機に期限が無くなったので、1 回にまとめる理由が無い
+- skill が無いときは `result.md` に書いて続ける（今の縮退を writing-plans にも当てる）
+- exec 役は「plan が作るものを決める。`spec.md` があれば plan の元になった設計として読む」。exec の起動ガード（`plan.md` が非空）と design の完了判定は変えない（`spec.md` は任意）
+
 ## 6. 文書
 
 - SKILL.md と `references/guide-ja.md`: Step 1b（質問の追加）/ Step 2（ガードとフラグ）/ Step 3（exit 8 の行と、停滞時の手順）/ Step 4（記録された値で選ぶ）/ I3（`--on-stall report`）

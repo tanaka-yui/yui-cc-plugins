@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** orca-team-dispatch-task の子が自分から待機をやめないようにし、停滞は親が検知してユーザーに止めるかを尋ね、取り込み方（merge / PR）を dispatch 前に毎回尋ねる。
+**Goal:** orca-team-dispatch-task の子が自分から待機をやめないようにし、停滞は親が検知してユーザーに止めるかを尋ね、取り込み方（merge / PR）を dispatch 前に毎回尋ね、brainstorm の design worker を brainstorming → writing-plans の順に進ませる。
 
 **Architecture:** 子の指示文（`orca-start.sh`）と `completion.sh` から期限を外す。`orca-wait.sh` がタスク単位の無変化時間を見て exit 8 で抜け、新設の `orca-stop.sh` がユーザーの選んだ役を「記録してから閉じる」。止めた役は `stopped.json` で決着済みとして集約する。取り込み方は `orca-start.sh --integration` で `workers.json` に記録し、merge / PR の両スクリプトが記録と違う方を拒む。
 
@@ -1172,7 +1172,172 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 8: 文書（SKILL.md / guide-ja.md / CLAUDE.md / README.md）とバージョン
+### Task 8: brainstorm の design worker を brainstorming → writing-plans の順にする
+
+**Files:**
+- Modify: `bin/orca-start.sh:349`（STATUS PROTOCOL の I）、`:476-488`（`SPEC_X`）、`:507-535`（design の `brainstorm)` と `PHASE_B == on` の `design_task`）
+- Test: `test/test-start.sh:762-772`（ST62 を書き換え）、末尾に ST94〜ST98
+
+**Interfaces:**
+- Produces: brainstorm の design worker が `<status-dir>/spec.md` と `<status-dir>/plan.md` を書く。exec 役は `spec.md` があれば読む。`direct` / `plan` の指示文は変えない
+- Consumes: Task 2 で変えた STATUS PROTOCOL（同じ `closing` 変数の中の別の行を変える）
+
+- [ ] **Step 1: 失敗するテストを書く**
+
+`test/test-start.sh` の ST62 の `[[ "$sp" == *'ask once'* ]] || miss="$miss [once]"` の行を次の 3 行で置き換える:
+
+```bash
+[[ "$sp" == *'one question at a time'* ]] || miss="$miss [one-at-a-time]"
+[[ "$sp" == *'ask once'* ]] && miss="$miss [ask-once-present]"
+[[ "$sp" == *'superpowers:writing-plans'* ]] || miss="$miss [writing-plans]"
+```
+
+ファイル末尾の `echo "failures: $fails"` の直前に足す:
+
+```bash
+# ── brainstorm は brainstorming → writing-plans の順（2026-09-23: writing-plans を呼ばず、
+#    spec と plan を混ぜた plan.md を 1 本書いて終えた）──
+bs_config() {   # $1=phase_b
+  mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+  printf '{"phase_b":"%s","design_mode":"brainstorm"}\n' "$1" > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+}
+
+# ST94: phase_b=on は spec.md と plan.md を status dir に書いて終える。skill の保存先と commit を上書きする
+setup; phase_b_on; bs_config on; start >/dev/null 2>&1; sp=$(spec); miss=""
+for w in 'superpowers:brainstorming' 'superpowers:writing-plans' "$R/.dispatch/s/spec.md" \
+         "$R/.dispatch/s/plan.md" 'not under docs/' 'commit nothing' 'Stop once the plan is written' \
+         "apart from $R/.dispatch/s/spec.md"; do
+  [[ "$sp" == *"$w"* ]] || miss="$miss [$w]"; done
+[[ "$sp" == *'subagent-driven-development'* ]] && miss="$miss [builds]"
+[[ -z "$miss" ]] && ok "ST94 brainstorm × phase_b=on は計画まで" || fail "ST94:$miss"; teardown
+
+# ST95: phase_b=off は計画のあと Subagent-driven で実装し、実行方法を尋ねない
+setup; bs_config off; start >/dev/null 2>&1; sp=$(spec); miss=""
+for w in 'superpowers:writing-plans' 'superpowers:subagent-driven-development' \
+         'commit the work on this branch' 'Do not ask how to execute'; do
+  [[ "$sp" == *"$w"* ]] || miss="$miss [$w]"; done
+[[ -z "$miss" ]] && ok "ST95 brainstorm × phase_b=off は Subagent-driven で作る" || fail "ST95:$miss"; teardown
+
+# ST96: ★ **writing-plans は brainstorm だけ。**direct（--issue の既定）と plan は phase_b=on でも今のまま
+bad=""
+for m in direct plan; do
+  setup; phase_b_on
+  printf '{"phase_b":"on","design_mode":"%s"}\n' "$m" > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+  start >/dev/null 2>&1; sp=$(spec)
+  [[ "$sp" == *'writing-plans'* || "$sp" == *'spec.md'* ]] && bad="$bad [$m]"
+  [[ "$sp" == *'PLAN ONLY'* ]] || bad="$bad [$m:plan-only]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "ST96 direct と plan は writing-plans を呼ばない" || fail "ST96:$bad"
+
+# ST97: exec は spec.md があれば読む。skill は名指ししない
+setup; phase_b_on; bs_config on; start >/dev/null 2>&1; design_done
+: > "$ORCA_STUB_DIR/calls.log"; exec_phase >/dev/null 2>&1
+xs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1); miss=""
+[[ "$xs" == *"$R/.dispatch/s/spec.md"* ]] || miss="$miss [spec]"
+[[ "$xs" == *'superpowers:'* ]] && miss="$miss [skill]"
+[[ -z "$miss" ]] && ok "ST97 exec は spec.md を読む" || fail "ST97:$miss"; teardown
+
+# ST98: 共通の STATUS PROTOCOL も「1 回にまとめて尋ねよ」と言わない
+setup; start >/dev/null 2>&1
+[[ "$(spec)" != *'Ask once'* ]] && ok "ST98 ask を 1 回に縛らない" || fail "ST98"; teardown
+```
+
+- [ ] **Step 2: 失敗を確かめる**
+
+Run: `bash test/test-start.sh 2>&1 | grep -E 'ST62|ST9[4-8]|failures'`
+Expected: ST62 / ST94 / ST95 / ST97 / ST98 が FAIL（ST96 は既存の動作で通る）
+
+- [ ] **Step 3: 実装する**
+
+`bin/orca-start.sh` の STATUS PROTOCOL の I の `   remember it costs someone's attention. Ask once, with everything you need in it.` を次にする:
+
+```
+   remember it costs someone's attention. Ask only what you need answered.
+```
+
+`SPEC_X` の本文の先頭 3 行と項目 3 を次にする:
+
+```
+Another worker has already planned this. **The plan says what to build.** It is at
+$(printf '%q' "$SD/plan.md"). Read it first. If $(printf '%q' "$SD/spec.md") exists, it is the
+design the plan was written from: read it too. The original request is at
+$(printf '%q' "$SD/request.md") for context.
+```
+
+```
+3. Do not edit $(printf '%q' "$SD/plan.md") or $(printf '%q' "$SD/spec.md"). They are the record
+   of what was agreed.
+```
+
+design の `brainstorm)` の分岐全体（`approach="**Start with the superpowers brainstorming skill.**` から `" ;;` まで）を次で置き換える:
+
+```bash
+    brainstorm)
+      # ★ **brainstorming のあとに writing-plans まで進ませる。**2026-09-23 の実測: 次の段を
+      #   書いていなかったので、worker は brainstorming だけで spec と plan を混ぜた plan.md を
+      #   1 本書いて終えた。**skill 自身の保存先と commit の手順はここで上書きする** — spec と
+      #   plan は status dir に置き、merge に混ぜない。phase_b=off の実装は Subagent-driven に
+      #   固定する（ユーザーの決定。実行方法の質問を 1 回減らす）。
+      local after_plan="Then build it in this worktree with \`superpowers:subagent-driven-development\`,
+   following the plan, and commit the work on this branch. Do not ask how to execute the plan."
+      [[ "$PHASE_B" == on ]] && after_plan="Stop once the plan is written and self-reviewed: another worker builds it. Do not
+   ask how to execute it, and do not start implementing."
+      approach="**Work through the superpowers skills in this order.**
+
+1. Invoke \`superpowers:brainstorming\` and settle the open questions with the user before you
+   plan or build anything.
+2. Write the agreed design to $(printf '%q' "$SD/spec.md"). This replaces the skill's own spec
+   location and commit step: **write it there, not under docs/, and do not commit it.**
+3. Invoke \`superpowers:writing-plans\` and write the plan to $(printf '%q' "$SD/plan.md"), again
+   instead of the skill's own location and without committing it.
+   ${after_plan}
+
+**Ask through \`orchestration ask\`, not by printing a question and stopping.** The parent
+relays it to a person and sends their answer back; a question you only print is read by
+nobody. Ask one question at a time, as the skill does: each call blocks until someone answers.
+The skill's request for the user to review the written spec goes through the same call.
+
+If nobody ever answers, that call is where you will be waiting — that is expected, and the
+person watching decides whether to answer or to stop the dispatch.
+
+If either skill is not installed in this session, say so in result.md and carry on without it
+rather than inventing your own version of it.
+
+" ;;
+```
+
+`PHASE_B == on` の `design_task` の `$(printf '%q' "$SD/plan.md") and leave every other file alone.` を、brainstorm のときだけ spec.md を許す形にする。`if [[ "$PHASE_B" == on ]]; then` の直後に足す:
+
+```bash
+    local others="leave every other file alone."
+    [[ "$DESIGN_MODE" == brainstorm ]] \
+      && others="leave every other file alone apart from $(printf '%q' "$SD/spec.md")."
+```
+
+そのうえで該当行を次にする:
+
+```
+$(printf '%q' "$SD/plan.md") and ${others}
+```
+
+- [ ] **Step 4: 通ることを確かめる**
+
+Run: `bash test/test-start.sh 2>&1 | tail -1`
+Expected: `failures: 0`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add bin/orca-start.sh test/test-start.sh
+git commit -m "fix(orca-dispatch): brainstorm の design を brainstorming から writing-plans へ進ませる
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 9: 文書（SKILL.md / guide-ja.md / CLAUDE.md / README.md）とバージョン
 
 **Files:**
 - Modify: `skills/orca-team-dispatch-task/SKILL.md`（Step 1b / Step 2 / Step 3 / Step 4 / I3 / Known limitations / State on disk）
@@ -1182,7 +1347,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Test: `test/test-docs.sh`（SK19 / SK20 を SK18 の直後に追加）
 
 **Interfaces:**
-- Consumes: Task 1〜7 のすべて（exit 8、`orca-stop.sh --role/--snooze`、`--on-stall report`、`--integration`、`workers.json` の `integration`）
+- Consumes: Task 1〜8 のすべて（exit 8、`orca-stop.sh --role/--snooze`、`--on-stall report`、`--integration`、`workers.json` の `integration`、brainstorm の `spec.md` / writing-plans / Subagent-driven）
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -1217,16 +1382,37 @@ for f in "$S" "$G"; do
   grep -q 'stopped.json' "$f" || bad="$bad [state:$(basename "$f")]"
 done
 [[ -z "$bad" ]] && ok "SK20 停滞はユーザーが決める" || fail "SK20:$bad"
+
+# SK21: brainstorm は brainstorming → spec.md → writing-plans の順で、両文書の表がそう言う
+bad=""
+for f in "$S" "$G"; do
+  grep -q 'superpowers:writing-plans' "$f" || bad="$bad [writing-plans:$(basename "$f")]"
+  grep -q 'superpowers:subagent-driven-development' "$f" || bad="$bad [sdd:$(basename "$f")]"
+  grep -q 'spec.md' "$f" || bad="$bad [spec:$(basename "$f")]"
+done
+[[ -z "$bad" ]] && ok "SK21 brainstorm は writing-plans まで進む" || fail "SK21:$bad"
 ```
 
 - [ ] **Step 2: 失敗を確かめる**
 
-Run: `bash test/test-docs.sh 2>&1 | grep -E 'SK19|SK20'`
-Expected: `FAIL: SK19: ...`、`FAIL: SK20: ...`
+Run: `bash test/test-docs.sh 2>&1 | grep -E 'SK19|SK20|SK21'`
+Expected: `FAIL: SK19: ...`、`FAIL: SK20: ...`、`FAIL: SK21: ...`
 
 - [ ] **Step 3: SKILL.md を書き換える**
 
-**Step 1b** — 設定値を読む bash block の最後の行 `  | jq -r .design_mode` を次に変える（両方の推奨値を 1 回で読む）:
+**Configuration の設定表** — `design_mode` の行の `` `brainstorm` — it starts with the `superpowers:brainstorming` skill and works the request through with whoever is watching its terminal `` を次にする:
+
+```
+`brainstorm` — it starts with the `superpowers:brainstorming` skill and works the request through with whoever is watching its terminal, writes the agreed design to `spec.md`, then plans with `superpowers:writing-plans` into `plan.md`; with `phase_b=off` it then builds with `superpowers:subagent-driven-development`
+```
+
+**Step 1b** — 答えの表の `brainstorm` の行の右欄を次にする:
+
+```
+Start with the `superpowers:brainstorming` skill and settle the open questions with whoever is watching its terminal, write the agreed design to `spec.md`, then plan with `superpowers:writing-plans` into `plan.md`. With `phase_b=off` it then builds with `superpowers:subagent-driven-development`; with `phase_b=on` it stops at the plan
+```
+
+**Step 1b（続き）** — 設定値を読む bash block の最後の行 `  | jq -r .design_mode` を次に変える（両方の推奨値を 1 回で読む）:
 
 ```bash
   | jq -r '"design_mode=\(.design_mode) integration=\(.integration)"'
@@ -1395,14 +1581,22 @@ the wait saw a role waiting on a person), and
 
 ```
 `roles/design/{status.json,result.md}`, plus `roles/<role>/stopped.json` for a role the user
-stopped. Tasks of one Run carry
+stopped, and `spec.md` / `plan.md` when a `brainstorm` design wrote them. Tasks of one Run carry
 ```
 
 - [ ] **Step 4: guide-ja.md を同じ箇所で書き換える**
 
 bash block は Step 3 の SKILL.md と**一字一句同じ**ものを同じ順で入れる（SK8d）。文は次の訳を使う。
 
-**Step 1b** — bash block の最後の行を SKILL.md と同じ `  | jq -r '"design_mode=\(.design_mode) integration=\(.integration)"'` にする。`最大 4 問入れる。16 タスクを超えるときは、次の 16 件を別の呼び出しで尋ねる。` を `最大 4 問入れる（下の取り込み方の質問と同じ呼び出しに入れるときは 3 問）。それを超えるタスクは別の呼び出しで尋ねる。` にする。`各タスクの答えをそのタスクの \`DESIGN_MODE\` として保持し` の段落の直前に足す:
+**設定の表** — `design_mode` の行の `brainstorm` の説明の末尾に `、合意した設計を \`spec.md\` に書き、\`superpowers:writing-plans\` で \`plan.md\` に計画する。\`phase_b=off\` ならそのあと \`superpowers:subagent-driven-development\` で実装する` を足す。
+
+**Step 1b の答えの表** — `brainstorm`（選ばれた）の行の右欄を次にする:
+
+```
+`superpowers:brainstorming` skill から始め、計画や実装の前に、端末を見ている人と未解決の論点を詰め、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装し、`phase_b=on` なら計画で終える
+```
+
+**Step 1b（続き）** — bash block の最後の行を SKILL.md と同じ `  | jq -r '"design_mode=\(.design_mode) integration=\(.integration)"'` にする。`最大 4 問入れる。16 タスクを超えるときは、次の 16 件を別の呼び出しで尋ねる。` を `最大 4 問入れる（下の取り込み方の質問と同じ呼び出しに入れるときは 3 問）。それを超えるタスクは別の呼び出しで尋ねる。` にする。`各タスクの答えをそのタスクの \`DESIGN_MODE\` として保持し` の段落の直前に足す:
 
 ```markdown
 **同じ呼び出しで、完了した成果の取り込み方も尋ねる。**`cmux-team-dispatch-task` の Step 1e
@@ -1507,7 +1701,7 @@ jq -r '.integration // "not recorded"' "$SD/workers.json"
 | 停滞したタスクは知らされるだけで、ユーザーが言わない限り何も止まらない | worker は期限なしで待つ。待機は進捗の無いまま 2 時間経つと終了コード 8 で抜け、Step 3 が待ち続けるか役を止めるかを尋ねる。`--issue` の実行は `stall.json` に記録するだけで待ち続ける |
 ```
 
-**ディスク上の状態** — `` `sent.json`（このタスクが実際に配送した message の記録）、`` の後ろに `` `stall.json`（停滞を見つけた時刻と、ユーザーが待ち続けると答えた時刻）、`human.json`（役が人を待っているのを待機が最後に見た時刻）、`` を足し、`` `roles/design/{status.json,result.md}` がある。`` を `` `roles/design/{status.json,result.md}`、ユーザーが止めた役には `roles/<role>/stopped.json` がある。`` にする。
+**ディスク上の状態** — `` `sent.json`（このタスクが実際に配送した message の記録）、`` の後ろに `` `stall.json`（停滞を見つけた時刻と、ユーザーが待ち続けると答えた時刻）、`human.json`（役が人を待っているのを待機が最後に見た時刻）、`` を足し、`` `roles/design/{status.json,result.md}` がある。`` を `` `roles/design/{status.json,result.md}`、ユーザーが止めた役には `roles/<role>/stopped.json`、`brainstorm` の design が書いたときは `spec.md` / `plan.md` がある。`` にする。
 
 - [ ] **Step 5: CLAUDE.md と README.md を書き換える**
 
@@ -1549,6 +1743,16 @@ exit 4 と recovery に回る）。`--issue` は `--on-stall report` で止ま�
   答えは `orca-start.sh --integration` で `workers.json` に記録し、Step 4 はそれを読む。
   `orca-merge.sh` は `pr` の記録を、`orca-pr.sh` は `merge` の記録を拒む（記録が無い旧版は通す）。
   回帰は `test-docs.sh` の SK19、`test-start.sh` の ST91-93、MG21 / MG22、PR15 / PR16
+```
+
+同じ `## 範囲` の `- **\`design_mode\` で取りかかり方を選べる**` の項の末尾（`（cmux 版が loop-mode で「plan mode に固定」としているのと同じ理由）` の後ろ）に足す:
+
+```markdown
+  **`brainstorm` だけは brainstorming → `spec.md` → writing-plans → `plan.md` の順を指示文で
+  固定する**（2026-09-23 の実測: 次の段を書いていなかったので writing-plans を呼ばず、spec と
+  plan を混ぜた plan.md を 1 本書いて終えた）。skill 自身の保存先と commit は上書きし、spec と
+  plan は status dir に置く。`phase_b=off` の実装は Subagent-driven に固定する。
+  回帰は `test-start.sh` の ST62 / ST94-98、`test-docs.sh` の SK21
 ```
 
 `README.md` の `## 範囲と制限` の段落末尾 `（日本語は \`references/guide-ja.md\`）。ここでは繰り返さない。` の直前の文として、`**片付けが勝手に走ることはない。**確認してから、承認されたものだけを片付ける。` の直後に足す:
