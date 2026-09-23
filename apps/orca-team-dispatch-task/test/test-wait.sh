@@ -886,4 +886,69 @@ out=$(env -u ORCA_STALL_AFTER_SECONDS bash "$P/bin/orca-wait.sh" --status-dir "$
 [[ "$rc" -eq 8 && "$out" == *"stalled task="* ]] \
   && ok "WT93 stall-after-min を分から秒へ変換して受け付ける" || fail "WT93 (rc=$rc out=$out)"; teardown
 
+# ── phase_b=on の 2 段目と停滞（待機が読み直すのは message が来たときだけ）──
+exec_json() {   # 2 段目 exec を記録した workers.json
+  jq -nc '{integration_role:"exec",roles:{
+    design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:true},
+    exec:{terminal:"term_e",task:"task_e",dispatch:"ctx_e",retained:false}}}'
+}
+planner_only() {   # 計画役だけが起動済み（exec はまだ）
+  jq -nc '{integration_role:"exec",roles:{design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false}}}' \
+    > "$SD/workers.json"
+}
+
+# WT94: ★ **待機の途中で足された exec も停滞の対象にする。**exec の最初の message までは期待集合が
+#      読み直されないので、design が決着済みなだけでタスクを決着済みと数えていた。
+#      決着済みの design は停滞の行に載せない
+setup; planner_only; dn; echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
+mkdir -p "$SD/roles/exec"; echo '{"status":"executing"}' > "$SD/roles/exec/status.json"
+cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<HOOK
+#!/usr/bin/env bash
+case "\$*" in *--wait*) echo '$(exec_json)' > "$SD/workers.json" ;; esac
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+old "$SD/run.json" "$SD"/roles/*/status.json "$SD/received.json"
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL w 3 2>/dev/null); rc=$?
+b=$(basename "$SD")
+[[ "$rc" -eq 8 && "$out" == *"stalled_role task=$b role=exec phase=executing terminal=term_e"* \
+   && "$out" != *"role=design "* ]] \
+  && ok "WT94 待機中に足された exec も停滞を見る" || fail "WT94 (rc=$rc out=$out)"; teardown
+
+# WT95: ★ **Step 3.5 を飛ばしたら黙って 24 時間待たない。**成果を載せる役が起動されていない
+#      タスクは決着していないので、閾値を越えたら知らせる（起動されていない役として名指しする）
+setup; planner_only; dn; echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
+old "$SD/run.json" "$SD/roles/design/status.json" "$SD/received.json"
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL w 2 2>/dev/null); rc=$?
+b=$(basename "$SD")
+[[ "$rc" -eq 8 && "$out" == *"unstarted_role task=$b role=exec"* && "$out" != *"stalled_role"* ]] \
+  && ok "WT95 起動されていない exec を停滞として知らせる" || fail "WT95 (rc=$rc out=$out)"; teardown
+
+# WT96: ★ **計画役を止めたら、exec を待たずにタスクは失敗で終わる。**exec は起こされないので、
+#      integration_role=exec の status を待つと永久に終わらない
+setup; planner_only; stop_role design
+echo '{"ok":true,"result":{"worker":{"state":"stopped"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(w 2 2>/dev/null); rc=$?
+[[ "$rc" -eq 5 && "$out" == *"role=design dispatch=ctx_x status_dir=$SD outcome=stopped"* \
+   && "$out" == *"outcome=failed"* ]] \
+  && ok "WT96 止めた計画役は失敗で終わる" || fail "WT96 (rc=$rc out=$out)"; teardown
+
+# WT97: 計画役が失敗して終えたら、exec は起こされない（Step 3.5）。同じくタスクは失敗で終わる
+setup; planner_only; er; echo '["worker_done|task_x|ctx_x|failed"]' > "$SD/received.json"
+out=$(w 2 2>/dev/null); rc=$?
+[[ "$rc" -eq 5 && "$out" == *"outcome=failed"* ]] \
+  && ok "WT97 失敗した計画役は exec を待たない" || fail "WT97 (rc=$rc out=$out)"; teardown
+
+# WT98: ★ **止めた役を停滞の行に載せない。**載せると、止めたのに同じ役をまた尋ねる
+setup; two_roles; stop_role design
+echo '{"status":"executing"}' > "$SD/roles/design_review/status.json"
+old "$SD/run.json" "$SD"/roles/*/status.json
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL w 2>/dev/null); rc=$?
+[[ "$rc" -eq 8 && "$out" == *"role=design_review "* && "$out" != *"role=design "* ]] \
+  && ok "WT98 止めた役は停滞の行に出ない" || fail "WT98 (rc=$rc out=$out)"; teardown
+
+# WT99: brainstorm の design が書く spec.md も子の変化に数える
+setup; old "$SD/run.json" "$SD/roles/design/status.json"; echo spec > "$SD/spec.md"
+ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 ]] && ok "WT99 spec.md の変化で停滞としない" || fail "WT99 (rc=$rc)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

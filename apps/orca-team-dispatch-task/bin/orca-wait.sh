@@ -164,7 +164,7 @@ task_last_change() {   # $1=status dir → 子が最後に何かを変えた時�
   newer "$(file_mtime "$sd/run.json")"
   # human.json は親が書くが、人とのやりとりの記録なので数える（人を待つ間は停滞ではない）
   for f in "$sd"/roles/*/status.json "$sd"/roles/*/result.md "$sd"/roles/*/completion.json \
-           "$sd/plan.md" "$sd"/review/* "$sd/human.json"; do
+           "$sd/spec.md" "$sd/plan.md" "$sd"/review/* "$sd/human.json"; do
     [[ -e "$f" ]] || continue
     newer "$(file_mtime "$f")"
   done
@@ -183,26 +183,57 @@ task_last_change() {   # $1=status dir → 子が最後に何かを変えた時�
 mark_human() {   # $1=status dir
   write "$1" "$1/human.json" "$(jq -nc --argjson t "$(date +%s)" '{last_human_at: $t}')" || true
 }
-task_settled() {   # $1=status dir → その status dir の役が全部決着していれば 0
-  local i oc
-  for i in "${!TASKS[@]}"; do
-    [[ "${T_SD[$i]}" == "$1" ]] || continue
-    oc=$(role_outcome "${T_SD[$i]}" "${T_ROLE[$i]}") || return 1
-    [[ -n "$oc" ]] || return 1
+# ★ **停滞の判定は workers.json をその都度読む。**期待集合（TASKS）が読み直されるのは知らない
+#   dispatch の message が来たときだけなので、`--phase exec` で足された exec は最初の message
+#   まで見えない。そこで決着済みの design だけを見てタスクを決着済みと数えると、exec が何時間
+#   黙っていても誰にも知らされない。
+dispatched_roles() {   # $1=status dir → dispatch の記録が在る役を 1 行ずつ
+  jq -r '.roles // {} | to_entries[] | select((.value.dispatch // "") != "") | .key' "$1/workers.json" 2>/dev/null
+}
+integration_role_of() {   # $1=status dir。記録が無ければ design に落とす（aggregate の注記を参照）
+  local ir
+  ir=$(jq -r '.integration_role // "design"' "$1/workers.json" 2>/dev/null || echo design)
+  printf '%s' "${ir:-design}"
+}
+role_settled() {   # $1=status dir $2=role → receipt か stopped.json が在れば 0
+  local oc
+  oc=$(role_outcome "$1" "$2" 2>/dev/null) || return 1
+  [[ -n "$oc" ]]
+}
+# ★ **成果が載る見込みの無くなったタスクは失敗で決着する。**作る役（design / exec）を
+#   ユーザーが止めた（receipt 無し）か、計画役の design が失敗した。どちらも exec は起こされない
+#   （Step 3.5）ので、integration_role=exec の status を待つと永久に終わらない。
+task_given_up() {   # $1=status dir
+  local sd="$1" r
+  for r in design exec; do
+    is_stopped "$sd" "$r" && [[ -z "$(stored_outcome "$sd" "$r" 2>/dev/null)" ]] && return 0
   done
-  return 0
+  [[ "$(integration_role_of "$sd")" != design && "$(stored_outcome "$sd" design 2>/dev/null)" == failed ]]
+}
+task_settled() {   # $1=status dir → dispatch の在る役が全部決着し、成果を載せる役も決着していれば 0
+  local sd="$1" role
+  while IFS= read -r role; do
+    role_settled "$sd" "$role" || return 1
+  done < <(dispatched_roles "$sd")
+  task_given_up "$sd" && return 0
+  # ★ **成果を載せる役がまだ起動されていなければ決着していない**（Step 3.5 の飛ばし）
+  role_settled "$sd" "$(integration_role_of "$sd")"
 }
 stall_lines() {   # $1=status dir $2=止まっている分 → 報告行を stdout
-  local sd="$1" i ph th slug
+  local sd="$1" role ph th slug ir
   slug=$(basename "$sd")
   echo "stalled task=$slug status_dir=$sd idle_min=$2"
-  for i in "${!TASKS[@]}"; do
-    [[ "${T_SD[$i]}" == "$sd" ]] || continue
-    ph=$(jq -r '.phase // empty' "$sd/roles/${T_ROLE[$i]}/completion.json" 2>/dev/null || echo "")
-    [[ -n "$ph" ]] || ph=$(jq -r '.status // empty' "$sd/roles/${T_ROLE[$i]}/status.json" 2>/dev/null || echo "")
-    th=$(jq -r --arg r "${T_ROLE[$i]}" '.roles[$r].terminal // empty' "$sd/workers.json" 2>/dev/null || echo "")
-    echo "stalled_role task=$slug role=${T_ROLE[$i]} phase=${ph:-none} terminal=${th:-none}"
-  done
+  # ★ **決着済み・止めた役は載せない。**載せると、止めたのに同じ役をまた尋ねる
+  while IFS= read -r role; do
+    role_settled "$sd" "$role" && continue
+    ph=$(jq -r '.phase // empty' "$sd/roles/$role/completion.json" 2>/dev/null || echo "")
+    [[ -n "$ph" ]] || ph=$(jq -r '.status // empty' "$sd/roles/$role/status.json" 2>/dev/null || echo "")
+    th=$(jq -r --arg r "$role" '.roles[$r].terminal // empty' "$sd/workers.json" 2>/dev/null || echo "")
+    echo "stalled_role task=$slug role=$role phase=${ph:-none} terminal=${th:-none}"
+  done < <(dispatched_roles "$sd")
+  ir=$(integration_role_of "$sd")
+  jq -e --arg r "$ir" '(.roles[$r].dispatch // "") != ""' "$sd/workers.json" >/dev/null 2>&1 \
+    || task_given_up "$sd" || echo "unstarted_role task=$slug role=$ir"
 }
 check_stall() {   # 0 = 尋ねるべき停滞は無い / 1 = ask で停滞を stdout に出した（呼び出し側が 8 で抜ける）
   local sd now last snz idle cur upd l found=0
@@ -576,9 +607,10 @@ aggregate() {   # 全 dispatch が終端なら集約 outcome を stdout。1 件�
     sd="${SDS[$i]}"
     irole=$(jq -r '.integration_role // "design"' "$sd/workers.json" 2>/dev/null || echo design)
     [[ -n "$irole" ]] || irole=design
-    # ★ 成果を載せる役をユーザーが止めたら、そのタスクは失敗である。status は書きかけの
-    #   まま残るので、status を待つと永久に終わらない
-    if is_stopped "$sd" "$irole" && [[ -z "$(stored_outcome "$sd" "$irole" 2>/dev/null)" ]]; then
+    # ★ 作る役をユーザーが止めたら（計画役を含む）、そのタスクは失敗である。status は書きかけの
+    #   まま残り、止めた計画役のあとに exec は起こされないので、status を待つと永久に終わらない。
+    #   計画役が失敗した場合も同じく exec は起こされない（task_given_up）
+    if task_given_up "$sd"; then
       worst=failed; continue
     fi
     st=$(jq -r '.status // empty' "$sd/roles/$irole/status.json" 2>/dev/null || echo "")
