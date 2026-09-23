@@ -355,7 +355,7 @@ I. **Do not invent message types.** The only things you send are the ones above,
    there is one). Do not send escalations: the parent has no path for them.
 
    When you do use \`ask\`, expect it to block until a person answers through the parent, and
-   remember it costs someone's attention. Ask once, with everything you need in it.
+   remember it costs someone's attention. Ask only what you need answered.
 J. End your turn and stay idle."
 
   if [[ "$role" == design_review || "$role" == exec_review ]]; then
@@ -488,14 +488,16 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
     cat <<SPEC_X
 TASK: $SLUG (implementation)
 
-Another worker has already planned this. **The plan is the specification.** It is at
-$(printf '%q' "$SD/plan.md"). Read it first; the original request is at
+Another worker has already planned this. **The plan says what to build.** It is at
+$(printf '%q' "$SD/plan.md"). Read it first. If $(printf '%q' "$SD/spec.md") exists, it is the
+design the plan was written from: read it too. The original request is at
 $(printf '%q' "$SD/request.md") for context.
 
 ${exec_review_block}1. Build what the plan describes, in this worktree, and commit it on this branch.
 2. **Follow the plan.** If a step turns out to be wrong or impossible, do the rest, and say
    in result.md exactly which step you departed from and why. Do not silently redesign it.
-3. Do not edit $(printf '%q' "$SD/plan.md"). It is the record of what was agreed.
+3. Do not edit $(printf '%q' "$SD/plan.md") or $(printf '%q' "$SD/spec.md"). They are the record
+   of what was agreed.
 
 $closing
 SPEC_X
@@ -517,18 +519,34 @@ makes that approach wrong, say so there rather than quietly doing something else
 
 " ;;
     brainstorm)
-      approach="**Start with the superpowers brainstorming skill.** Invoke
-\`superpowers:brainstorming\` and settle the open questions before you plan or build anything.
+      # ★ **brainstorming のあとに writing-plans まで進ませる。**2026-09-23 の実測: 次の段を
+      #   書いていなかったので、worker は brainstorming だけで spec と plan を混ぜた plan.md を
+      #   1 本書いて終えた。**skill 自身の保存先と commit の手順はここで上書きする** — spec と
+      #   plan は status dir に置き、merge に混ぜない。phase_b=off の実装は Subagent-driven に
+      #   固定する（ユーザーの決定。実行方法の質問を 1 回減らす）。
+      local after_plan="Then build it in this worktree with \`superpowers:subagent-driven-development\`,
+   following the plan, and commit the work on this branch. Do not ask how to execute the plan."
+      [[ "$PHASE_B" == on ]] && after_plan="Stop once the plan is written and self-reviewed: another worker builds it. Do not
+   ask how to execute it, and do not start implementing."
+      approach="**Work through the superpowers skills in this order.**
+
+1. Invoke \`superpowers:brainstorming\` and settle the open questions with the user before you
+   plan or build anything.
+2. Write the agreed design to $(printf '%q' "$SD/spec.md"). This replaces the skill's own spec
+   location and commit step: **write it there, not under docs/, and do not commit it.**
+3. Invoke \`superpowers:writing-plans\` and write the plan to $(printf '%q' "$SD/plan.md"), again
+   instead of the skill's own location and without committing it.
+   ${after_plan}
 
 **Ask through \`orchestration ask\`, not by printing a question and stopping.** The parent
 relays it to a person and sends their answer back; a question you only print is read by
-nobody. It blocks until someone answers, so **ask once and put everything you need in it**
-rather than going back and forth.
+nobody. Ask one question at a time, as the skill does: each call blocks until someone answers.
+The skill's request for the user to review the written spec goes through the same call.
 
 If nobody ever answers, that call is where you will be waiting — that is expected, and the
 person watching decides whether to answer or to stop the dispatch.
 
-If the skill is not installed in this session, say so in result.md and carry on without it
+If either skill is not installed in this session, say so in result.md and carry on without it
 rather than inventing your own version of it.
 
 " ;;
@@ -537,10 +555,13 @@ rather than inventing your own version of it.
   if [[ "$PHASE_B" == on ]]; then
     # ★ **design は実装しない。**実装役が別に居るのに両方が書くと、同じ変更が 2 つの
     #   ブランチに載って取り込みが壊れる。
+    local others="leave every other file alone."
+    [[ "$DESIGN_MODE" == brainstorm ]] \
+      && others="leave every other file alone apart from $(printf '%q' "$SD/spec.md")."
     design_task="${approach}PLAN ONLY. **Do not implement anything and commit nothing.**
 
 Another worker will build this from your plan, in a different worktree. Write the plan to
-$(printf '%q' "$SD/plan.md") and leave every other file alone.
+$(printf '%q' "$SD/plan.md") and ${others}
 
 Make it specific enough to be built from without asking you: name the files to change, what
 each change is for, and how someone would tell it worked. If the request cannot be built as

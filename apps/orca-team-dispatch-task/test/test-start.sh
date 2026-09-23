@@ -764,7 +764,9 @@ start >/dev/null 2>&1; sp=$(spec); miss=""
 [[ "$sp" == *'superpowers:brainstorming'* ]] || miss="$miss [skill]"
 [[ "$sp" == *'orchestration ask'* ]] || miss="$miss [ask]"
 [[ "$sp" == *'not by printing a question and stopping'* ]] || miss="$miss [no-print]"
-[[ "$sp" == *'ask once'* ]] || miss="$miss [once]"
+[[ "$sp" == *'one question at a time'* ]] || miss="$miss [one-at-a-time]"
+[[ "$sp" == *'ask once'* ]] && miss="$miss [ask-once-present]"
+[[ "$sp" == *'superpowers:writing-plans'* ]] || miss="$miss [writing-plans]"
 [[ "$sp" == *'not installed'* ]] || miss="$miss [degrade]"
 [[ -z "$miss" ]] && ok "ST62 brainstorm の指示" || fail "ST62:$miss"; teardown
 
@@ -1113,5 +1115,52 @@ exec_phase --integration pr >/dev/null 2>&1; rc=$?
 setup; start --integration squash >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 1 ]] && ! grep -q 'worktree create\|worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST93 不正な取り込み方で何も作らない" || fail "ST93 (rc=$rc)"; teardown
+
+# ── brainstorm は brainstorming → writing-plans の順（2026-09-23: writing-plans を呼ばず、
+#    spec と plan を混ぜた plan.md を 1 本書いて終えた）──
+bs_config() {   # $1=phase_b
+  mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+  printf '{"phase_b":"%s","design_mode":"brainstorm"}\n' "$1" > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+}
+
+# ST94: phase_b=on は spec.md と plan.md を status dir に書いて終える。skill の保存先と commit を上書きする
+setup; phase_b_on; bs_config on; start >/dev/null 2>&1; sp=$(spec); miss=""
+for w in 'superpowers:brainstorming' 'superpowers:writing-plans' "$R/.dispatch/s/spec.md" \
+         "$R/.dispatch/s/plan.md" 'not under docs/' 'commit nothing' 'Stop once the plan is written' \
+         "apart from $R/.dispatch/s/spec.md"; do
+  [[ "$sp" == *"$w"* ]] || miss="$miss [$w]"; done
+[[ "$sp" == *'subagent-driven-development'* ]] && miss="$miss [builds]"
+[[ -z "$miss" ]] && ok "ST94 brainstorm × phase_b=on は計画まで" || fail "ST94:$miss"; teardown
+
+# ST95: phase_b=off は計画のあと Subagent-driven で実装し、実行方法を尋ねない
+setup; bs_config off; start >/dev/null 2>&1; sp=$(spec); miss=""
+for w in 'superpowers:writing-plans' 'superpowers:subagent-driven-development' \
+         'commit the work on this branch' 'Do not ask how to execute'; do
+  [[ "$sp" == *"$w"* ]] || miss="$miss [$w]"; done
+[[ -z "$miss" ]] && ok "ST95 brainstorm × phase_b=off は Subagent-driven で作る" || fail "ST95:$miss"; teardown
+
+# ST96: ★ **writing-plans は brainstorm だけ。**direct（--issue の既定）と plan は phase_b=on でも今のまま
+bad=""
+for m in direct plan; do
+  setup; phase_b_on
+  printf '{"phase_b":"on","design_mode":"%s"}\n' "$m" > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+  start >/dev/null 2>&1; sp=$(spec)
+  [[ "$sp" == *'writing-plans'* || "$sp" == *'spec.md'* ]] && bad="$bad [$m]"
+  [[ "$sp" == *'PLAN ONLY'* ]] || bad="$bad [$m:plan-only]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "ST96 direct と plan は writing-plans を呼ばない" || fail "ST96:$bad"
+
+# ST97: exec は spec.md があれば読む。skill は名指ししない
+setup; phase_b_on; bs_config on; start >/dev/null 2>&1; design_done
+: > "$ORCA_STUB_DIR/calls.log"; exec_phase >/dev/null 2>&1
+xs=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1); miss=""
+[[ "$xs" == *"$R/.dispatch/s/spec.md"* ]] || miss="$miss [spec]"
+[[ "$xs" == *'superpowers:'* ]] && miss="$miss [skill]"
+[[ -z "$miss" ]] && ok "ST97 exec は spec.md を読む" || fail "ST97:$miss"; teardown
+
+# ST98: 共通の STATUS PROTOCOL も「1 回にまとめて尋ねよ」と言わない
+setup; start >/dev/null 2>&1
+[[ "$(spec)" != *'Ask once'* ]] && ok "ST98 ask を 1 回に縛らない" || fail "ST98"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
