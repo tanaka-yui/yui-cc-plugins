@@ -240,12 +240,12 @@ export LOOP_SESSION_ID=e2e-issue DISPATCH_DIR="$R/.dispatch" LOOP_REPO_ROOT="$R"
 jq -nc '[{name:"dispatch/in-progress"}]' > "$GH_STUB_DIR/label_list"
 jq -nc '[{number:42,title:"Fix the thing",body:"please",url:"u42",labels:[]}]' > "$GH_STUB_DIR/issue_list"
 
-IFS_SH="$P/skills/orca-team-dispatch-task/scripts/issue-fetch.sh"
+IFS_SH="$P/skills/orca-team-dispatch-task/scripts/issue-fetch.ts"
 ISTATE="$R/.dispatch-issue/state.json"
-bash "$IFS_SH" --state-file "$ISTATE" lock-acquire --lease-min 30 >/dev/null 2>&1
-bash "$IFS_SH" --state-file "$ISTATE" init --config-json '{}' --filter-json '{}' >/dev/null 2>&1
-bash "$IFS_SH" --state-file "$ISTATE" ensure-labels >/dev/null 2>&1
-CLAIM=$(bash "$IFS_SH" --state-file "$ISTATE" fetch --limit 1 --batch 1 2>/dev/null)
+node "$IFS_SH" --state-file "$ISTATE" lock-acquire --lease-min 30 >/dev/null 2>&1
+node "$IFS_SH" --state-file "$ISTATE" init --config-json '{}' --filter-json '{}' >/dev/null 2>&1
+node "$IFS_SH" --state-file "$ISTATE" ensure-labels >/dev/null 2>&1
+CLAIM=$(node "$IFS_SH" --state-file "$ISTATE" fetch --limit 1 --batch 1 2>/dev/null)
 ISLUG=$(jq -r '.[0].slug' <<<"$CLAIM")
 [[ "$(jq -r '.[0].number' <<<"$CLAIM")" == 42 && "$ISLUG" == issue-42-* ]] \
   && grep -q -- '--add-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
@@ -301,7 +301,7 @@ first_label=$(grep 'label' <<<"$ghl" | head -1)
   && ! grep -qE 'worktree rm|worker-release' "$ORCA_STUB_DIR/calls.log" \
   && ok "E26 issue モードでも資源は消さない" || fail "E26"
 
-bash "$IFS_SH" --state-file "$ISTATE" lock-release >/dev/null 2>&1
+node "$IFS_SH" --state-file "$ISTATE" lock-release >/dev/null 2>&1
 git -C "$R" worktree remove --force "$WTI" >/dev/null 2>&1
 rm -f "$ORCA_STUB_DIR/orchestration_worker-start.hook"
 PATH="$E2E_OLD_PATH"; export PATH

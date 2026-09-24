@@ -235,8 +235,8 @@ SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
 RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
 STATE="$RR/.dispatch-issue/state.json"
 command -v gh >/dev/null 2>&1 || { echo "gh is not installed" >&2; exit 1; }
-bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-check || exit 1
-bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-acquire --lease-min 60 || exit 1
+node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" lock-check || exit 1
+node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" lock-acquire --lease-min 60 || exit 1
 # The state file and its lock would otherwise leave the parent checkout dirty, and every
 # merge refuses a dirty checkout. Exclude the directory the way `.dispatch/` is excluded.
 EX=$(git -C "$RR" rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$EX")" \
@@ -257,10 +257,10 @@ the label again when the state cannot be written.
 ```bash
 : "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
 : "${NUM:?set NUM to the issue number given on the command line}"
-bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" init \
+node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" init \
   --config-json '{"concurrency":1}' --filter-json '{"issue":"named"}' || exit 1
-bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" ensure-labels || exit 1
-CLAIM=$(bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" \
+node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" ensure-labels || exit 1
+CLAIM=$(node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" \
           fetch --issue "$NUM" --limit 1 --batch 1) || exit 1
 [[ "$(jq 'length' <<<"$CLAIM")" -eq 1 ]] || {
   echo "issue #$NUM was not claimed; it is already recorded in $STATE" >&2
@@ -302,10 +302,10 @@ change what the run costs and where the work ends up.
 
 ```bash
 : "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
-bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" init \
+node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" init \
   --config-json '{"concurrency":5}' --filter-json '{"state":"open"}' || exit 1
-bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" ensure-labels || exit 1
-bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" reconcile
+node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" ensure-labels || exit 1
+node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" reconcile
 ```
 
 **`reconcile` reporting `abort` stops the run.** It means an earlier run left an issue marked
@@ -389,7 +389,7 @@ reached, when `fetch` finds nothing, or on exit 3 or 4. **Release the lock at th
 
 ```bash
 : "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
-bash "$SCRIPTS/issue-fetch.sh" --state-file "$STATE" lock-release
+node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" lock-release
 ```
 
 Then go to Step 5 for every `status_dir` the run produced, calling `orca-cleanup.ts plan` once

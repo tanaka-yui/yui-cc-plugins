@@ -28,9 +28,9 @@ setup() {
 
   LD="$R/.dispatch-issue"; mkdir -p "$LD"; SF="$LD/state.json"
   export LOOP_SESSION_ID=sess-issue DISPATCH_DIR="$R/.dispatch" LOOP_REPO_ROOT="$R"
-  bash "$P/skills/orca-team-dispatch-task/scripts/issue-fetch.sh" --state-file "$SF" \
+  node "$P/skills/orca-team-dispatch-task/scripts/issue-fetch.ts" --state-file "$SF" \
     lock-acquire --lease-min 30 >/dev/null 2>&1
-  bash "$P/skills/orca-team-dispatch-task/scripts/issue-fetch.sh" --state-file "$SF" \
+  node "$P/skills/orca-team-dispatch-task/scripts/issue-fetch.ts" --state-file "$SF" \
     init --config-json '{}' --filter-json '{}' >/dev/null 2>&1
   jq '.issues["5"] = {slug:"issue-5-x",status:"claimed"}' "$SF" > "$LD/s" && mv "$LD/s" "$SF"
 
@@ -187,7 +187,7 @@ teardown
 #       前回の失敗理由が `done` のまま残る（実機で発見）。
 setup; worker_done succeeded done
 # 先に失敗の痕跡を state へ入れておく
-bash "$P/skills/orca-team-dispatch-task/scripts/issue-fetch.sh" --state-file "$SF" \
+node "$P/skills/orca-team-dispatch-task/scripts/issue-fetch.ts" --state-file "$SF" \
   finalize --issue 5 --status failed --message "an earlier failure" >/dev/null 2>&1
 run_issue >/dev/null 2>&1
 m=$(jq -r '.issues["5"].message' "$SF")

@@ -3,7 +3,7 @@
 # 移植元は cmux 版。変えた 4 点（IF6 が見る痕跡がその 1 つ）以外は失敗様式ごと持ち込んでいる。
 set -uo pipefail
 P="$(cd "$(dirname "$0")/.." && pwd)"
-IF="$P/skills/orca-team-dispatch-task/scripts/issue-fetch.sh"
+IF="$P/skills/orca-team-dispatch-task/scripts/issue-fetch.ts"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 
 setup() {
@@ -22,7 +22,7 @@ teardown() {
   PATH="${PATH#"$BIN":}"; export PATH
   rm -rf "$W"; unset GH_STUB_DIR LOOP_SESSION_ID DISPATCH_DIR LOOP_REPO_ROOT
 }
-run() { bash "$IF" --state-file "$SF" "$@"; }
+run() { node "$IF" --state-file "$SF" "$@"; }
 acquire() { run lock-acquire --lease-min 30 >/dev/null 2>&1; }
 init() { run init --config-json '{"concurrency":2}' --filter-json '{"state":"open"}' >/dev/null 2>&1; }
 
@@ -167,4 +167,14 @@ out=$(run fetch --issue 23 --limit 1 --batch 1 2>/dev/null); rc=$?
   && ok "IF13 state に載っている issue は claim し直さない" || fail "IF13 (rc=$rc out=$out)"
 teardown
 
+# IF14: zsh から呼んでも同じ結果になる（設計 3-5。SKILL.md の I0〜I4 は呼び出し側のシェルで走る）
+if command -v zsh >/dev/null 2>&1; then
+  setup; acquire
+  zsh -c 'node "$1" --state-file "$2" lock-check' zsh "$IF" "$SF" >/dev/null 2>&1; z=$?
+  bash -c 'node "$1" --state-file "$2" lock-check' bash "$IF" "$SF" >/dev/null 2>&1; b=$?
+  [[ "$z" -eq 1 && "$b" -eq 1 ]] && ok "IF14 zsh から呼んでも同じ結果" || fail "IF14 ($z/$b)"
+  teardown
+else
+  echo "SKIP: IF14 zsh が無い"
+fi
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

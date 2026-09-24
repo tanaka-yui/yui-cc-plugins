@@ -60,8 +60,8 @@ fi
 [[ -n "$RR" ]] || RR=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repo"
 command -v gh >/dev/null 2>&1 || die "gh is not installed"
 
-IFETCH="$SCRIPTS/issue-fetch.sh"
-[[ -r "$IFETCH" ]] || die "issue-fetch.sh is missing at $IFETCH"
+IFETCH="$SCRIPTS/issue-fetch.ts"
+[[ -r "$IFETCH" ]] || die "issue-fetch.ts is missing at $IFETCH"
 SD="$RR/.dispatch/$SLUG"
 
 # ★ **state ディレクトリを repo の除外へ入れる。**`.dispatch/` と同じ理由である —
@@ -106,7 +106,7 @@ label_terminal() {   # $1=done|failed
 fail_out() {   # $1=理由
   log "$1"
   if label_terminal failed; then
-    bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status failed --message "$1" \
+    node "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status failed --message "$1" \
       >/dev/null 2>&1 || log "the state file could not be updated for issue #$NUM"
   else
     # ★ ラベルを動かせなかったことを **state に嘘で上書きしない。**次の reconcile が
@@ -147,7 +147,7 @@ printf '%s\n' "$OUT" | grep -vE '^(status_dir|run_id)=' >&2 || true
 RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
 [[ -n "$RUN" ]] || fail_out "issue #$NUM: the dispatch printed no run_id"
 
-bash "$IFETCH" --state-file "$SF" mark-dispatched --issue "$NUM" >/dev/null 2>&1 \
+node "$IFETCH" --state-file "$SF" mark-dispatched --issue "$NUM" >/dev/null 2>&1 \
   || log "issue #$NUM: could not mark it dispatched; the wait continues"
 if [[ "$PHASE" == dispatch ]]; then
   # ★ **待たない。**呼び出し側が全件を 1 回の `orca-wait.sh` で待ち、そのあと finish を呼ぶ。
@@ -199,14 +199,14 @@ label_terminal done || fail_out "issue #$NUM: integrated, but the labels could n
 if [[ "$INTEGRATION" == pr ]]; then
   # ★ **閉じない。**`Closes #$NUM` を本文に入れてあるので、PR がマージされたときに
   #   GitHub が閉じる。先に閉じると、PR が却下されても issue は閉じたままになる。
-  bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done \
+  node "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done \
     --pr-url "$PR_URL" --message "pull request opened" >/dev/null 2>&1 \
     || log "issue #$NUM: the pull request is at $PR_URL but the state file could not be updated"
   log "issue #$NUM: $PR_URL is open. The issue closes when that merges. Resources are kept at $SD"
 else
   gh issue close "$NUM" --reason completed >/dev/null 2>&1 \
     || log "issue #$NUM: merged and labelled, but the issue could not be closed"
-  bash "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done \
+  node "$IFETCH" --state-file "$SF" finalize --issue "$NUM" --status done \
     --message "merged and closed" >/dev/null 2>&1 \
     || log "issue #$NUM: merged, but the state file could not be updated"
   log "issue #$NUM: merged and closed. Resources are kept for the Step 5/6 cleanup at $SD"

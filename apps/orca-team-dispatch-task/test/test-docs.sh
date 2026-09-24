@@ -53,7 +53,7 @@ rm -f "$step1" "$req_path"
 [[ -z "$bad" ]] && ok "SK6b REQ を安全に実パスで引き継ぐ" || fail "SK6b:$bad"
 
 # SK6n: ★ **Issue モードの block も、前の block の変数が無ければ fail closed する。**
-#        `$SCRIPTS` が空のまま素通しすると `/issue-fetch.sh` を黙って叩き、何も起きて
+#        `$SCRIPTS` が空のまま素通しすると `/issue-fetch.ts` を黙って叩き、何も起きて
 #        いないのに成功したように見える。cleanup の SK6c と同じ不変条件である。
 bad=""
 issec=$(mktemp)
