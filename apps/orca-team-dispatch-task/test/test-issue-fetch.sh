@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # issue の claim / lock / state。**claim したのに記録できていない状態を作らない**ことが全部である。
-# 移植元は cmux 版。変えた 4 点（IF6 が見る痕跡がその 1 つ）以外は失敗様式ごと持ち込んでいる。
+# 移植元は cmux 版。変えた点（IF6 が見る痕跡も含む）以外は失敗様式ごと持ち込んでいる。
 set -uo pipefail
 P="$(cd "$(dirname "$0")/.." && pwd)"
 IF="$P/skills/orca-team-dispatch-task/scripts/issue-fetch.ts"
@@ -177,4 +177,17 @@ if command -v zsh >/dev/null 2>&1; then
 else
   echo "SKIP: IF14 zsh が無い"
 fi
+# IF15: 数字でない lease は生きた lock を期限切れと誤認するので受け付けない。
+setup; acquire
+out=$(run lock-check --lease-min abc 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'--lease-min requires a number'* ]] \
+  && ok "IF15 不正な lease を拒否" || fail "IF15 (rc=$rc out=$out)"
+teardown
+
+# IF16: 読めない既存の state は新規 state で上書きしない。
+setup; acquire; printf 'broken\n' > "$SF"
+out=$(run init --config-json '{}' --filter-json '{}' 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'failed to update state'* && "$(cat "$SF")" == broken ]] \
+  && ok "IF16 壊れた state を上書きしない" || fail "IF16 (rc=$rc out=$out)"
+teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

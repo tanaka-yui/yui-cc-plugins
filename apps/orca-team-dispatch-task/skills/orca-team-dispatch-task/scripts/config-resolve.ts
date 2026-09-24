@@ -1,4 +1,4 @@
-// global / project / コマンドラインの設定をロール単位で解決し JSON で出す（config-resolve.sh の移植）。
+// global / project / コマンドラインの設定をロール単位で解決し JSON で出す（旧版の設定解決から移植）。
 //
 // Usage: node config-resolve.ts --project-root <path> [--review-mode <on|off>] [--phase-b <on|off>]
 //                               [--integration <merge|pr>] [--setup <skip|run>]

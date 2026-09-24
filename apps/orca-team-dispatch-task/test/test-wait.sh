@@ -1007,4 +1007,37 @@ out=$(w 1 2>&1); rc=$?
   && ! grep -qE '^orchestration send|worker-retain' "$ORCA_STUB_DIR/calls.log" \
   && [[ ! -e "$SD/received.json" ]] \
   && ok "WT103 待機中に置き換えられた試行の message は現行として扱わない" || fail "WT103 (rc=$rc out=$out)"; teardown
+
+# WT104: ★ retain 中に workers.json が読めなくなっても、空の記録で上書きせず batch を ack しない。
+setup; dn; msg
+cat > "$ORCA_STUB_DIR/orchestration_worker-retain.hook" <<HOOK
+#!/usr/bin/env bash
+: > "$SD/workers.json"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_worker-retain.hook"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$out" == *'could not record the retention'* && ! -s "$SD/workers.json" ]] \
+  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT104 読めない記録を上書きせず ack しない" || fail "WT104 (rc=$rc out=$out)"; teardown
+
+# WT105: ★ 読めない workers.json は superseded ではない。receipt 無しで ack してはならない。
+setup; dn; msg
+cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<HOOK
+#!/usr/bin/env bash
+case " \$* " in *" --ack "*) ;; *) : > "$SD/workers.json" ;; esac
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$out" == *'cannot read workers.json'* && ! -e "$SD/received.json" ]] \
+  && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT105 読めない記録を superseded と扱わない" || fail "WT105 (rc=$rc out=$out)"; teardown
+
+# WT106: 読めない findings を verdict が有るものとして受理しない。
+reviewed_setup; mkdir "$SD/review/code-round-1-findings.md"
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dm",count:1,messages:[
+  {id:"mr",type:"merge_ready",subject:"merge_ready: nx",payload:({taskId:"task_x",dispatchId:"ctx_er"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 2>&1)
+[[ "$out" == *'has no VERDICT line'* && "$out" == *'back for remediation'* && "$out" != *'accepted exec_review'* ]] \
+  && ok "WT106 読めない findings は差し戻す" || fail "WT106 (out=$out)"; teardown
 echo "---"; echo "failures: $fails"; exit "$fails"

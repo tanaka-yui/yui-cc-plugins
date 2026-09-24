@@ -6,10 +6,37 @@ import { readJson, writeAtomic } from '../../../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../../../lib/json.ts'
 import { nowIso, nowSeconds, run, which } from '../../../lib/sys.ts'
 
-import { mkdirSync, renameSync, rmdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmdirSync, rmSync, statSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 
+// 移植元の理由（skills/orca-team-dispatch-task/scripts/issue-fetch.sh）:
+// ★ **移植元: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/issue-fetch.sh`**
+//   上流から変えたのは次の 6 点である。元のロック・claim・fetch の失敗処理は保っている
+//   （lock の in-flight grace / takeover mutex / claim の補償 / fetch の窓拡張と
+//   exhaustion 判定は、失敗様式ごと持ち込む価値があるのでそのまま）。
+//
+//     1. 死んだ `CMUX` 変数を削除した
+//     2. reconcile の痕跡が `prewarm.json` → `workers.json`
+//     3. reconcile の worktree 痕跡が `<repo>/.worktrees/<slug>` の固定パス →
+//        `workers.json` の `roles[].worktree_path` の実在（Orca の worktree は repo の外）
+//     4. `gh label create` の説明文
+//     5. `fetch --issue <N>` を足した（単件指定。検索を通さず、claim と補償は共通経路へ
+//        合流させる）。`--issue` の flag 自体は上流にもある（mark-dispatched などが使う）
+//     6. TypeScript へ移した（2026-09 の P2）
+//
+//   **上流が動いたらこの一覧との差分を人が見て判断する。**自動追従はしない。
+// ★ **単件指定 (`--issue <N>`) は検索を通さない。**ラベルや assignee で絞る意味が
+//   無いうえ、検索から漏れた issue を指定できなくなる。**claim とその補償
+//   （state を書けなければラベルを戻す）は下の共通経路に合流させる** — 2 か所に
+//   書くと必ず片方だけ直されてドリフトする。
+//
+// ★ cmux 版の `prewarm.json` は Orca では `workers.json` である。
+//
+// ★ **Orca の worktree は repo の外に作られる**ので、`<repo>/.worktrees/<slug>` の
+//   固定パスでは探せない（実測: `~/workspace/<repo>/<slug>`）。記録された
+//   `worktree_path` が実在するかを見る。**列挙できないことを「不在」と読まない** —
+//   workers.json が読めなければ上の行が既に痕跡として立っている。
 const MAX_WINDOW = 1000
 const LOCK_INFLIGHT_GRACE_SEC = 60
 const TAKEOVER_MUTEX_GRACE_SEC = 120
@@ -233,7 +260,8 @@ const parseOptions = (argv: string[]): Options => {
       if (i + 1 >= argv.length) fatal(`${arg} requires ${required[arg]}`)
       const value = argv[++i] ?? ''
       if (field === 'leaseMin' || field === 'limit' || field === 'batch') {
-        options[field] = Number.parseInt(value, 10)
+        if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(Number(value))) fatal(`${arg} requires a number`)
+        options[field] = Number(value)
       } else if (field !== 'dryRun') {
         options[field] = value
       }
@@ -497,6 +525,7 @@ const main = (argv: string[]): number => {
       if (config === null || config === false) fatal('--config-json is not valid JSON')
       if (filter === null || filter === false) fatal('--filter-json is not valid JSON')
       const prior = asObject(readJson(paths.stateFile))
+      if (existsSync(paths.stateFile) && prior === null) fatal('failed to update state')
       const state: JsonObject =
         prior === null
           ? { started_at: nowIso(), filter, config, issues: {}, batches: [], leaked: [] }

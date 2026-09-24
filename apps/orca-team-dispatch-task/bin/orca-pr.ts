@@ -46,6 +46,41 @@ const textFile = (file: string): string => {
   }
 }
 
+// 移植元の理由（bin/orca-pr.sh）:
+// ★ **`--repo` は必須である。自分で remote を見に行かない。**spec 12-2 の実測
+//   (2026-09-02): 3 つの remote を持つ repository で子が remote を自分で解決し、
+//   **personal fork へ push して fork の中に PR を作った。**issue はそこに無いので
+//   `Closes #NNN` は効かず、その fork PR が完了の証拠として受理された。
+//   呼び出し側が 1 度だけ解決した値を渡す。`gh` にも推測させない。
+//
+// ★ **merge はしない。**PR を作ったうえで親へ merge すると、レビューされる前に成果が
+//   入る。統合はどちらか一方である。
+//
+// ★ ここを任意にしない。省略を許すと「たまたま origin が正しい環境」でだけ通り、
+//   fork を持つ環境で静かに壊れる。
+//
+// ★ **merge と決めた dispatch で PR を作らない。**記録が無い（旧版）dispatch は今までどおり通す。
+//
+// ★ 既に PR があるなら作り直さない。**同じ成果に 2 つの PR を作らない。**
+//
+// ★ base と同じ内容なら PR は作れない。空の PR を作って「届いた」と言わない
+//
+// ★ **base が remote に在ることを先に確かめる。**無いまま `gh pr create` を呼ぶと
+//   `Base ref must be a branch` という GraphQL のエラーになり、**何が悪いのか読めない**
+//   （実機で発見: ローカルだけの一時ブランチから dispatch していた）。
+//
+// ★ **`Closes #N` は issue が同じ repository にあるときだけ効く。**`--repo` を必須に
+//   しているのはこれを効かせるためである。
+//
+// ★ **stdout と stderr を混ぜない。**`gh` は成功時にも stderr へ警告を出す
+//   （実測: `Warning: 4 uncommitted changes`）。`2>&1` で受けると URL の前に警告が付き、
+//   **PR は作られたのに失敗として記録される。**そのとき URL も残らないので、再実行が
+//   **2 つ目の PR を作る。**診断は別に取り、URL は stdout からだけ読む。
+//
+// ★ **作れなかったのか、既に在るのかを GitHub に訊く。**自分の記録は失われうる
+//   (実測: 最初の試行が stderr の警告で失敗扱いになり、PR は在るのに URL を
+//   記録できなかった)。そこで諦めると、その dispatch は永久に失敗のままになる。
+// ★ `--jq` に頼らず自分で通す。gh の版差に依存する理由が無い
 const main = (argv: string[]): number => {
   let statusDir = ''
   let repo = ''
@@ -121,8 +156,11 @@ const main = (argv: string[]): number => {
 
   const firstLine = textFile(join(statusDir, 'request.md')).split('\n')[0] ?? ''
   const title = [...firstLine].slice(0, 72).join('') || branch
-  const resultLines = textFile(resultFile).split('\n').slice(0, 200)
-  const body = resultLines.join('\n') + (issue === '' ? '' : `\nCloses #${issue}\n`)
+  const resultLines =
+    textFile(resultFile)
+      .match(/[^\n]*\n|[^\n]+$/g)
+      ?.slice(0, 200) ?? []
+  const body = resultLines.join('') + (issue === '' ? '' : `\nCloses #${issue}\n`)
   let temporary = ''
   try {
     temporary = mkdtempSync(join(tmpdir(), 'orca-pr-'))

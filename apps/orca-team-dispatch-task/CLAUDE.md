@@ -47,7 +47,7 @@ Orca の worktree で N タスクを worker に並列実行させるプラグイ
 - 共通部品は `lib/sys.ts`（子プロセス・PATH・sleep・時刻）、`lib/config.ts`（設定の定義）、
   `lib/dispatch.ts`（`startIncomplete`）
 - 入口は stdout をまとめて書き、`process.exitCode` で終える。`process.exit` は使用法の誤り
-  （`die`）だけに使う — パイプへの書き込みが途中で切れうる
+  （`die`）と `issue-fetch.ts` の `fatal` で使う — パイプへの書き込みが途中で切れうる
 - 型検査と lint は `pnpm --filter @tanaka-yui/orca-team-dispatch-task check`。単体テストは
   `node --test 'test/unit/*.test.ts'`（**ディレクトリを渡すと node はそれをモジュールとして読んで
   失敗する**）で、`test/run-all.sh` が最後に走らせる
@@ -182,7 +182,7 @@ reviewer を止めたら（決着済みでも）依頼側へ `review-skipped:`�
 
 ## issue モードの要点
 
-- **`issue-fetch.ts` は cmux 版からの移植**で、挙動の変更は先頭コメントに列挙した 4 点だけ。
+- **`issue-fetch.ts` は cmux 版からの移植**で、挙動の変更は先頭コメントに列挙した点に限る。
   lock の in-flight grace / takeover mutex / claim の補償 / fetch の窓拡張は、
   **失敗様式ごと持ち込む価値がある**のでそのまま
 - **wake 駆動を持ち込まない。**cmux 版は「dispatch したらターンを終え、子の通知で親が

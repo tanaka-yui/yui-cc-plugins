@@ -1,4 +1,4 @@
-// config.json を原子的に読み書きする（config-edit.sh の移植）。**手で JSON を組み立ててはならない。**
+// config.json を原子的に読み書きする（旧版の設定編集から移植）。**手で JSON を組み立ててはならない。**
 //
 // Usage: node config-edit.ts --config <path> [--set <key>=<value>]... [--unset <key>]...
 //        node config-edit.ts --config <path> --get <key>
@@ -41,7 +41,7 @@ const USAGE = [
   '       config-edit.ts --config <path> --show',
 ]
 
-// 使用法の誤りは理由と Usage を出して exit 2（config-edit.sh の die_usage と同じ）
+// 使用法の誤りは理由と Usage を出して exit 2（旧版の die_usage と同じ）
 const dieUsage = (message: string): never => {
   process.stderr.write(`${NAME}: ${message}\n${USAGE.join('\n')}\n`)
   process.exit(2)

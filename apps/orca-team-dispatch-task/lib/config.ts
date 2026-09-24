@@ -1,4 +1,4 @@
-// 設定のパスと値の検証を 1 箇所に集める（skills/.../scripts/config-lib.sh の移植）。
+// 設定のパスと値の検証を 1 箇所に集める（旧版の設定共通部品から移植）。
 //
 // ★ cmux 版との最大の差: **runner という次元が無い。**Orca には「同じ engine で別アカウント」を作る口が
 //   無い（`worker-start` に account の指定口が無く、`account` は add / list だけ）ので、
@@ -99,7 +99,7 @@ export const modelAgent = (model: string): string | null => {
   return null
 }
 
-// setup が尋ねるときの候補。**どれも allowlist ではない**（config-lib.sh にあったものを写した。
+// setup が尋ねるときの候補。**どれも allowlist ではない**（旧版の設定共通部品にあったものを写した。
 // 2026-09-24 の時点で呼び出し元は無い）
 export const AGENT_CHOICES = ['claude', 'codex']
 export const MODEL_CHOICES: { [agent: string]: string[] } = {

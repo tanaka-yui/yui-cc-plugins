@@ -1214,4 +1214,14 @@ a=$(jq -r '.roles.design.start_incomplete // "absent"' "$R/.dispatch/s/workers.j
 setup; start >/dev/null 2>&1
 b=$(jq -r '.roles.design.start_incomplete // "absent"' "$R/.dispatch/s/workers.json")
 [[ "$a" == true && "$b" == absent ]] && ok "ST102 ready にならなかった起動に印を付ける" || fail "ST102 ($a/$b)"; teardown
+
+# ST103: ★ request 本文の置換は文字列をそのまま渡す。replaceAll の置換文字列は $& / $$ / $' / $` を解釈する。
+setup
+cat > "$REQ" <<'REQUEST'
+REQUEST-TOKENS: $'\n' $$ $& $`
+REQUEST
+expected=$(cat "$REQ")
+start >/dev/null 2>&1
+sp=$(awk -v RS='\037' 'prev == "--spec" { print $0; exit } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
+[[ "$sp" == *"$expected"* ]] && ok "ST103 依頼文のドル記号をそのまま渡す" || fail "ST103 依頼文が書き換わった"; teardown
 echo "---"; echo "failures: $fails"; exit "$fails"

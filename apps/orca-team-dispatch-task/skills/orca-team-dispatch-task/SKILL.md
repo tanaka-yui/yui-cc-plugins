@@ -672,7 +672,7 @@ It records the stop first, so the wait settles that role as `outcome=stopped` in
 reporting a lost worker, and `orca-recover.ts` leaves it alone. Then it has Orca end the worker:
 `orchestration worker-release` when Orca already reports that worker settled, which archives its
 output before closing, and `orchestration worker-stop` otherwise, which fences the dispatch and
-closes only that worker's terminal. It never closes the terminal directly: a terminal closed by
+closes only that worker's terminal. It never closes the terminal directly (`terminal close` is not used): a terminal closed by
 hand stays recorded as `retained` with `retainedReason: user_takeover`, no release can clear it,
 and it stops Step 5 for the whole Run. It restarts the stall clock too. Stopping a reviewer tells
 the worker it reviews to carry on without review: that work is then unreviewed, and Step 4's gate

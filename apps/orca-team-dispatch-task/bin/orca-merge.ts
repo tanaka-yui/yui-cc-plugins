@@ -48,6 +48,21 @@ const received = (file: string, task: string, dispatch: string): boolean => {
   return valid && entries.includes(`worker_done|${task}|${dispatch}|succeeded`)
 }
 
+// 移植元の理由（bin/orca-merge.sh）:
+// ★ **PR と決めた dispatch を merge しない。**両方やるとレビュー前に成果が入る。記録が無い
+//   （旧版で起動した）dispatch は今までどおり通す。`stop` は integration-result.json を書くので
+//   使わない — PR 側の記録を汚さない。
+//
+// ★ **取り込む役は記録から引く。既定を置かない。**`// "design"` と書くと、記録を書き
+//   損ねた dispatch が黙って design のブランチを取り込む。取り込み先の取り違えは成果の
+//   喪失につながるので、他の identity と同じく「無ければ止まる」。
+//
+// ★ **レビューを求めておいて verdict が 1 つも無い成果を、黙って取り込まない。**
+//   実測 2026-09-12: reviewer の verdict が未配送のまま捨てられ（3 Run 中 2 Run）、
+//   無レビューの成果が succeeded のまま取り込み待ちになった。
+//   **worker を差し戻して閉じてはならない** — 「round 2 で打ち切り」も「諦めて進む」も
+//   spec が認めた離脱経路であり、そこを塞ぐと worker は永久に差し戻される。だから
+//   **人の承認を経る離散的な一手であるここ**で閉じ、明示の override だけを通す。
 const main = (argv: string[]): number => {
   let statusDir = ''
   let allowUnreviewed = false
