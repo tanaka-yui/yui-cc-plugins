@@ -297,7 +297,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - **`review_mode=on` で `design_review` が起きる**（既定は `off`）。reviewer は
   **先に**起動し（design は起動直後に依頼しうるため。spec 5-1 T4a）、**自分の worktree**を
   持つ（同じ checkout に 2 agent を同居させると reviewer のビルドが design の編集と衝突する）
-- **`--issue` で GitHub issue を claim して回せる**（merge のみ。PR は作らない）。
+- **`--issue` で GitHub issue を claim して回せる**（取り込み方は設定の `integration` に従う。`pr` なら issue ごとに PR を作る）。
   駆動は**バッチ同期** — 1 バッチを dispatch したら `orca-wait.ts` で待ち切ってから次へ進む。
   cmux 版の wake 駆動（`dispatch-notify` + safety timer）は移植していない
 - **`phase_b=on` で `design` が計画し `exec` が実装する**（既定 off）。exec は design が

@@ -511,6 +511,25 @@ for f in "$S" "$G"; do
 done
 [[ -z "$bad" ]] && ok "SK28 端末を閉じない理由を ownership で書き、user_requested の実例を持つ" || fail "SK28:$bad"
 
+# SK29: ★ **モデル名の `[..]` を引用符なしで書かない。**zsh は `claude-opus-5-5[1m]` の `[1m]` をファイル名の
+#       パターンとして展開し、`no matches found` で呼び出しごと落ちる。bash ブロックに裸のまま置かず、
+#       1 回だけ試す節は引用した例と理由を示す
+bad=""
+for f in "$S" "$G"; do
+  awk '/^```bash$/{b=1;next} /^```$/{b=0} b' "$f" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g" \
+    | grep -qE '[A-Za-z0-9._-]\[[0-9a-z]+\]' && bad="$bad [unquoted:$(basename "$f")]"
+  grep -q "'claude-opus-5-5\[1m\]'" "$f" || bad="$bad [quoted-example:$(basename "$f")]"
+  grep -q 'no matches found' "$f" || bad="$bad [why:$(basename "$f")]"
+done
+[[ -z "$bad" ]] && ok "SK29 モデル名の [..] を引用する" || fail "SK29:$bad"
+
+# SK30: Issue モードの表は PR の経路を否定しない。I3 と orca-issue.ts は integration=pr で pull request を作る
+bad=""
+grep -q 'There is no PR path' "$S" && bad="$bad [merge-only:SKILL]"
+grep -q 'PR の経路は無い' "$G" && bad="$bad [merge-only:guide]"
+grep -q 'merge のみ。PR は作らない' "$P/CLAUDE.md" && bad="$bad [merge-only:CLAUDE]"
+[[ -z "$bad" ]] && ok "SK30 Issue モードも integration に従う" || fail "SK30:$bad"
+
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
   && ! grep -q 'dangerously-skip-permissions' "$S" \

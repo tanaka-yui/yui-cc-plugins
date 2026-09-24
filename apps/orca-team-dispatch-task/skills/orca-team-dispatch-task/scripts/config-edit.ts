@@ -260,6 +260,10 @@ const main = (argv: string[]): number => {
     values[index] = effort
   }
 
+  // ★ **消すだけの呼び出しは、無いファイルを作らない**（SKILL.md の R: `--reset` は無いファイルを作らない）。
+  //   消す物が無いので、書けば `{}` だけのファイルとディレクトリが増えるだけになる
+  if (!existsSync(config) && ops.every(({ op }) => op === 'unset')) return 0
+
   // 反映は 1 回。途中で既存の形が壊れていれば（object であるべき所に別の値）、何も書かない
   const updated: JsonObject = structuredClone(existing)
   for (const [index, { op }] of ops.entries()) {

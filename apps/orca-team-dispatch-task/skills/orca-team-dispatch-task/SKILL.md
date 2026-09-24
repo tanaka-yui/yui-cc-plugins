@@ -219,6 +219,10 @@ rather than inventing its own version of the skill when it is not installed.
 Step 2 accepts `--agent`, `--model`, `--effort` and `--design-mode`. They outrank both layers
 for that one call and write nothing, so a model can be tried before it is saved.
 
+**Quote a model id that contains brackets**, here and in S4: write `--model 'claude-opus-5-5[1m]'`,
+not the bare id. zsh reads an unquoted `[1m]` as a filename pattern and stops the whole call with
+`no matches found` before the script ever runs.
+
 ## Issue mode
 
 `--issue` takes the work from GitHub issues instead of from the user's message. `--issue <N>`
@@ -231,7 +235,7 @@ Step 5 decides and Step 6 asks, exactly as for a hand-written dispatch.
 
 | Property | This version |
 |---|---|
-| Integration | **Merge only.** There is no PR path; do not offer one |
+| Integration | The configured `integration`, `merge` or `pr`, fixed for the run and never asked. With `pr`, I3 opens a pull request per issue instead of merging |
 | Driving | One batch at a time, waiting for it to finish before claiming the next |
 | Roles | Whatever `review_mode` resolves to, used for every issue in the run |
 

@@ -475,4 +475,15 @@ else
   echo "SKIP: CF47 zsh が無い"
 fi
 
+# CF48: ★ **--reset は無いファイルを作らない**（SKILL.md の R）。unset だけの呼び出しは、ファイルが無ければ
+#       何も書かずに 0 で終わる。ディレクトリも作らない。set があれば今までどおり作る
+T48=$(mktemp -d)
+node "$EDIT" --config "$T48/sub/config.json" --unset roles >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && ! -e "$T48/sub" ]] \
+  && ok "CF48 unset だけなら無いファイルを作らない" || fail "CF48 (rc=$rc)"
+node "$EDIT" --config "$T48/sub/config.json" --set review_mode=on >/dev/null 2>&1
+[[ "$(jq -r .review_mode "$T48/sub/config.json" 2>/dev/null)" == on ]] \
+  && ok "CF48b set は無いファイルを作る" || fail "CF48b"
+rm -rf "$T48"
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

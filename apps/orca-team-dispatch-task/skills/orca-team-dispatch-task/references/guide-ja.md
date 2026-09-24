@@ -203,6 +203,10 @@ reviewer は何も作らない。両方に取りかかり方を言うと、誰�
 Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` を受け取る。これらはその 1 コールに
 限り両方の層より強く、**何も書かない**ので、保存する前に model を試せる。
 
+**角括弧を含む model id は引用符で囲む。**ここでも S4 でも、裸の id ではなく `--model 'claude-opus-5-5[1m]'`
+と書く。zsh は引用符なしの `[1m]` をファイル名のパターンとして読み、スクリプトが動く前に
+`no matches found` で呼び出しごと止める。
+
 ## Issue モード
 
 `--issue` は仕事をユーザーの依頼文ではなく GitHub の issue から取る。`--issue <N>` はその
@@ -215,7 +219,7 @@ dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。
 
 | 性質 | この版 |
 |---|---|
-| 統合 | **merge のみ。**PR の経路は無い。提示してはならない |
+| 統合 | 設定の `integration`（`merge` か `pr`）。その実行の間は固定で、尋ねない。`pr` なら I3 は merge の代わりに issue ごとに pull request を作る |
 | 駆動 | 1 バッチずつ。終わるまで待ってから次を claim する |
 | 役 | `review_mode` が解決したものを、その実行の全 issue で共通に使う |
 
