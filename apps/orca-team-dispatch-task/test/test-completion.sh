@@ -3,66 +3,66 @@
 # **crash から再入しても二重に進めないこと**が全部である。
 set -uo pipefail
 P="$(cd "$(dirname "$0")/.." && pwd)"
-C="$P/skills/orca-team-dispatch-task/scripts/completion.sh"
+C="$P/skills/orca-team-dispatch-task/scripts/completion.ts"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 
 setup() { D=$(mktemp -d); }
 teardown() { rm -rf "$D"; }
-ph() { bash "$C" --role-dir "$D" phase; }
+ph() { node "$C" --role-dir "$D" phase; }
 
 # CM1: ★ **prepared 直後の crash から再入しても nonce を振り直さない。**振り直すと、
 #      飛んでいる merge_ready への accepted が照合で落ちて**永久に進めなくなる**。
 setup
-n1=$(bash "$C" --role-dir "$D" prepare); n2=$(bash "$C" --role-dir "$D" prepare)
+n1=$(node "$C" --role-dir "$D" prepare); n2=$(node "$C" --role-dir "$D" prepare)
 [[ -n "$n1" && "$n1" == "$n2" && "$(ph)" == prepared ]] \
   && ok "CM1 prepare は冪等で nonce を振り直さない" || fail "CM1 ($n1/$n2)"
 teardown
 
 # CM2: 相は前進のみ。送信済みから prepared へ戻らない。
 setup
-bash "$C" --role-dir "$D" prepare >/dev/null
-bash "$C" --role-dir "$D" sent
-bash "$C" --role-dir "$D" prepare >/dev/null 2>&1
+node "$C" --role-dir "$D" prepare >/dev/null
+node "$C" --role-dir "$D" sent
+node "$C" --role-dir "$D" prepare >/dev/null 2>&1
 [[ "$(ph)" == merge_ready_sent ]] && ok "CM2 相は後退しない" || fail "CM2 ($(ph))"
 teardown
 
 # CM3: ★ **nonce が一致しない accepted で受理しない。**古い試行や別 generation の
 #      受理を、今の完了の受理として使わない。
 setup
-n=$(bash "$C" --role-dir "$D" prepare); bash "$C" --role-dir "$D" sent
-bash "$C" --role-dir "$D" accept --nonce "not-$n" >/dev/null 2>&1
+n=$(node "$C" --role-dir "$D" prepare); node "$C" --role-dir "$D" sent
+node "$C" --role-dir "$D" accept --nonce "not-$n" >/dev/null 2>&1
 [[ $? -ne 0 && "$(ph)" == merge_ready_sent ]] || fail "CM3 不一致で進めた"
-bash "$C" --role-dir "$D" accept --nonce "$n"
+node "$C" --role-dir "$D" accept --nonce "$n"
 [[ "$(ph)" == accepted ]] && ok "CM3 nonce 照合で受理を分ける" || fail "CM3 ($(ph))"
 teardown
 
 # CM4: accepted の replay は no-op（10-3 の「accepted 受領後・done 前」の再入）。
 setup
-n=$(bash "$C" --role-dir "$D" prepare); bash "$C" --role-dir "$D" sent
-bash "$C" --role-dir "$D" accept --nonce "$n"
-bash "$C" --role-dir "$D" accept --nonce "$n"; rc=$?
+n=$(node "$C" --role-dir "$D" prepare); node "$C" --role-dir "$D" sent
+node "$C" --role-dir "$D" accept --nonce "$n"
+node "$C" --role-dir "$D" accept --nonce "$n"; rc=$?
 [[ "$rc" -eq 0 && "$(ph)" == accepted ]] && ok "CM4 accepted の replay は no-op" || fail "CM4"
 teardown
 
 # CM5: settled 後の accepted も no-op（「settled 書き込み後、ack 前」の再入）。
 setup
-n=$(bash "$C" --role-dir "$D" prepare); bash "$C" --role-dir "$D" sent
-bash "$C" --role-dir "$D" accept --nonce "$n"; bash "$C" --role-dir "$D" settle
-bash "$C" --role-dir "$D" accept --nonce "$n"; rc=$?
+n=$(node "$C" --role-dir "$D" prepare); node "$C" --role-dir "$D" sent
+node "$C" --role-dir "$D" accept --nonce "$n"; node "$C" --role-dir "$D" settle
+node "$C" --role-dir "$D" accept --nonce "$n"; rc=$?
 [[ "$rc" -eq 0 && "$(ph)" == settled ]] && ok "CM5 settled 後の replay は no-op" || fail "CM5"
 teardown
 
 # CM6: ★ **受理していないものを settle できない。**worker_done を送っていない完了を
 #      「終わった」と記録すると、親は永久に待つ。
 setup
-bash "$C" --role-dir "$D" prepare >/dev/null
-bash "$C" --role-dir "$D" settle >/dev/null 2>&1
+node "$C" --role-dir "$D" prepare >/dev/null
+node "$C" --role-dir "$D" settle >/dev/null 2>&1
 [[ $? -ne 0 && "$(ph)" == prepared ]] && ok "CM6 accepted を経ずに settle しない" || fail "CM6"
 teardown
 
 # CM7: 記録が無いところで accept しない（何も無いのに受理を作らない）。
 setup
-bash "$C" --role-dir "$D" accept --nonce whatever >/dev/null 2>&1
+node "$C" --role-dir "$D" accept --nonce whatever >/dev/null 2>&1
 [[ $? -ne 0 && -z "$(ph)" ]] && ok "CM7 記録が無ければ受理しない" || fail "CM7"
 teardown
 
@@ -160,16 +160,16 @@ vteardown
 #       **証拠の出どころが違う**からである（worker は自分の受理を知らずに settled を
 #       書いてはならない = CM6）。
 setup
-bash "$C" --role-dir "$D" prepare >/dev/null
-bash "$C" --role-dir "$D" settle >/dev/null 2>&1
+node "$C" --role-dir "$D" prepare >/dev/null
+node "$C" --role-dir "$D" settle >/dev/null 2>&1
 [[ $? -ne 0 && "$(ph)" == prepared ]] || fail "CM14 settle が緩んでいる"
-bash "$C" --role-dir "$D" reconcile
+node "$C" --role-dir "$D" reconcile
 [[ "$(ph)" == settled ]] && ok "CM14 reconcile だけが外部の証拠で settled にできる" || fail "CM14"
 teardown
 
 # CM15: 記録が無いところで reconcile しない（何も無いのに完了を作らない）。
 setup
-bash "$C" --role-dir "$D" reconcile >/dev/null 2>&1
+node "$C" --role-dir "$D" reconcile >/dev/null 2>&1
 [[ $? -ne 0 && -z "$(ph)" ]] && ok "CM15 記録が無ければ reconcile しない" || fail "CM15"
 teardown
 
@@ -195,7 +195,7 @@ asetup() {
   ORCA_STUB_DIR=$(mktemp -d); export ORCA_STUB_DIR ORCA_BIN="$P/test/lib/orca-stub.sh"
   export ORCA_TERMINAL_HANDLE=term_w
   echo '{"ok":true,"result":{"count":0,"messages":[]}}' > "$ORCA_STUB_DIR/orchestration_check"
-  N=$(bash "$C" --role-dir "$D" prepare); bash "$C" --role-dir "$D" sent
+  N=$(node "$C" --role-dir "$D" prepare); node "$C" --role-dir "$D" sent
 }
 ateardown() { rm -rf "$D" "$ORCA_STUB_DIR"; unset ORCA_STUB_DIR ORCA_BIN ORCA_TERMINAL_HANDLE; }
 reply() {   # $1=accepted|remediation $2=nonce [$3=body]
@@ -203,24 +203,24 @@ reply() {   # $1=accepted|remediation $2=nonce [$3=body]
     '{ok:true,result:{count:1,messages:[{id:"r1",type:"status",subject:$s,body:$b}]}}' \
     > "$ORCA_STUB_DIR/orchestration_check"
 }
-aw() { bash "$C" --role-dir "$D" await; }
+aw() { node "$C" --role-dir "$D" await; }
 
 # CM17: 自分の nonce の accepted を受けたら accepted と出し、相も accepted へ進める。
 asetup; reply accepted "$N"; out=$(aw 2>/dev/null); rc=$?
-[[ "$rc" -eq 0 && "$out" == "accepted" && "$(bash "$C" --role-dir "$D" phase)" == accepted ]] \
+[[ "$rc" -eq 0 && "$out" == "accepted" && "$(node "$C" --role-dir "$D" phase)" == accepted ]] \
   && ok "CM17 accepted を受けて相が進む" || fail "CM17 (rc=$rc out=$out)"
 ateardown
 
 # CM18: remediation は本文を出し、相は merge_ready_sent のまま（C からやり直す）。
 asetup; reply remediation "$N" 'result.md is missing'; out=$(aw 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == remediation* && "$out" == *"result.md is missing"* \
-   && "$(bash "$C" --role-dir "$D" phase)" == merge_ready_sent ]] \
+   && "$(node "$C" --role-dir "$D" phase)" == merge_ready_sent ]] \
   && ok "CM18 remediation は相を進めない" || fail "CM18 (rc=$rc out=$out)"
 ateardown
 
 # CM19: ★ **他人の nonce で受理しない。**古い試行の accepted を今の完了に使わない。
 asetup; reply accepted "not-my-nonce"; out=$(aw 2>/dev/null); rc=$?
-[[ "$rc" -eq 0 && "$out" == waiting && "$(bash "$C" --role-dir "$D" phase)" == merge_ready_sent ]] \
+[[ "$rc" -eq 0 && "$out" == waiting && "$(node "$C" --role-dir "$D" phase)" == merge_ready_sent ]] \
   && ok "CM19 別 nonce の accepted は待機のまま" || fail "CM19 (rc=$rc out=$out)"
 ateardown
 
@@ -307,4 +307,15 @@ out=$(ORCA_WAITER_RETRY_SECONDS=0 aw 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == waiting ]] && ok "CM27b 期限では降りない" || fail "CM27b (rc=$rc out=$out)"
 ateardown
 
+# CM28: zsh から呼んでも同じ結果になる（設計 3-5。worker の端末は zsh のことがある）
+if command -v zsh >/dev/null 2>&1; then
+  setup
+  n1=$(zsh -c 'node "$1" --role-dir "$2" prepare' zsh "$C" "$D" 2>/dev/null); zrc=$?
+  n2=$(bash -c 'node "$1" --role-dir "$2" nonce' bash "$C" "$D" 2>/dev/null)
+  [[ "$zrc" -eq 0 && -n "$n1" && "$n1" == "$n2" && "$(ph)" == prepared ]] \
+    && ok "CM28 zsh から呼んでも同じ結果" || fail "CM28 ($zrc $n1/$n2)"
+  teardown
+else
+  echo "SKIP: CM28 zsh が無い"
+fi
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

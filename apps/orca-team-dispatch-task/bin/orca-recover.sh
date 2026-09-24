@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
 PH=$(jq -r '.parent_handle // empty' "$SD/run.json" 2>/dev/null)
 [[ -n "$PH" ]] || die "no parent handle recorded"
 
-CMP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/orca-team-dispatch-task/scripts/completion.sh"
+CMP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/orca-team-dispatch-task/scripts/completion.ts"
 
 # ★ **回復に入る前に「誰か待っているか」を言う。**待機は最大 24 時間常駐するので外から
 #   止められることがあり（`orca-wait.sh` の beat）、止まったままだと worker は生きている
@@ -73,7 +73,7 @@ while IFS= read -r role; do
 
   # ★ **その役に「まだ送るべきもの」があるか。**無いなら回復するものも無い。
   #   成功系は completion.json が settled でないこと、失敗系は status.json = error である。
-  ph=$(bash "$CMP" --role-dir "$rd" phase 2>/dev/null || echo "")
+  ph=$(node "$CMP" --role-dir "$rd" phase 2>/dev/null || echo "")
   st=$(jq -r '.status // empty' "$rd/status.json" 2>/dev/null || echo "")
   if [[ "$ph" == settled ]]; then
     log "$role: already settled locally; nothing is owed"
@@ -98,7 +98,7 @@ while IFS= read -r role; do
       # ★ **Orca 側が既に terminal。送らない。**ローカルを合わせて終わる。
       if [[ "$DRY" -eq 1 ]]; then echo "$role: reconcile (orca is terminal)"; continue; fi
       if [[ -n "$ph" && "$ph" != settled ]]; then
-        bash "$CMP" --role-dir "$rd" reconcile >/dev/null 2>&1 \
+        node "$CMP" --role-dir "$rd" reconcile >/dev/null 2>&1 \
           || log "$role: could not reconcile the local record to settled"
       fi
       log "$role: Orca already settled this dispatch; reconciled locally"

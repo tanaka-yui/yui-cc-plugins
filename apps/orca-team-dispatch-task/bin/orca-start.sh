@@ -273,12 +273,12 @@ WFILE="$SD/workers.json"
 render_spec() {
   local role="$1" rd="$SD/roles/$role" q_bin q_rd q_rs q_send q_wf q_rvd
   q_bin=$(printf '%q' "$ORCA_BIN"); q_rd=$(printf '%q' "$rd")
-  q_rs=$(printf '%q' "$SCRIPTS/report-status.sh"); q_send=$(printf '%q' "$SENDER")
+  q_rs=$(printf '%q' "$SCRIPTS/report-status.ts"); q_send=$(printf '%q' "$SENDER")
   q_wf=$(printf '%q' "$WFILE"); q_rvd=$(printf '%q' "$RVD")
 
   # 全ロール共通の終わり方。**ここだけは 1 箇所で組み立てる** — 役ごとに書き分けると
   # STATUS PROTOCOL がドリフトする。
-  local q_cmp; q_cmp=$(printf '%q' "$SCRIPTS/completion.sh")
+  local q_cmp; q_cmp=$(printf '%q' "$SCRIPTS/completion.ts")
   local closing="STATUS PROTOCOL
 
 Your injected preamble gives you the task id, the dispatch id, the dispatch capability
@@ -293,7 +293,7 @@ B. Do the work, then write $q_rd/result.md describing what you did.
 
 C. Offer it. This records the attempt and prints its nonce:
 
-     bash $q_cmp --role-dir $q_rd prepare
+     node $q_cmp --role-dir $q_rd prepare
 
 D. Tell the parent it is ready. **The subject carries the nonce and nothing else** — Orca
    builds the payload from the id flags, so a nonce put there would be dropped.
@@ -304,17 +304,17 @@ D. Tell the parent it is ready. **The subject carries the nonce and nothing else
      $q_bin orchestration send --type merge_ready \\
        --task-id <task id> --dispatch-id <dispatch id> \\
        --dispatch-capability <capability> --from <handle> \\
-       --subject \"merge_ready: \$(bash $q_cmp --role-dir $q_rd nonce)\" \\
+       --subject \"merge_ready: \$(node $q_cmp --role-dir $q_rd nonce)\" \\
        --body \"<what you did>\" --json
 
-   Then run: bash $q_cmp --role-dir $q_rd sent
+   Then run: node $q_cmp --role-dir $q_rd sent
    The parent replies on this same dispatch.
 
 E. Wait for that reply. **Do not end your turn to wait.** A message put in your mailbox
    does not wake you: a turn closed here is a dispatch that stops for good, and someone has
    to come and restart you by hand.
 
-     bash $q_cmp --role-dir $q_rd await
+     node $q_cmp --role-dir $q_rd await
 
    It blocks for up to 10 minutes, reads your mailbox with --peek (never --ack), matches
    your own nonce, and prints one line:
@@ -327,12 +327,12 @@ E. Wait for that reply. **Do not end your turn to wait.** A message put in your 
      you.
    A non-zero exit means the mailbox could not be read at all; try once more. If it fails
    again, write that in result.md, run
-   \`bash $q_rs $q_rd error the mailbox could not be read\`, and stop. Do not report done.
+   \`node $q_rs $q_rd error the mailbox could not be read\`, and stop. Do not report done.
 
 F. Report. \`await\` already checked the nonce and recorded the acceptance, so there is
    nothing to confirm here:
 
-     bash $q_rs $q_rd done <one line>
+     node $q_rs $q_rd done <one line>
 
 G. Send worker_done, then record that it landed:
 
@@ -340,14 +340,14 @@ G. Send worker_done, then record that it landed:
        --task-id <task id> --dispatch-id <dispatch id> \\
        --dispatch-capability <capability> --from <handle> \\
        --outcome succeeded --subject \"<short status>\" --body \"<what you did>\" --json
-     bash $q_cmp --role-dir $q_rd settle
+     node $q_cmp --role-dir $q_rd settle
 
    **Before resending anything, inspect:**
      $q_bin orchestration dispatch-show --task <task id> --json
    If the dispatch is already terminal, **do not resend** — run settle and stop.
 
 H. **If the work itself failed, none of C-G applies.** Write why in result.md, run
-   \`bash $q_rs $q_rd error <reason>\`, and send worker_done with --outcome failed. That
+   \`node $q_rs $q_rd error <reason>\`, and send worker_done with --outcome failed. That
    status is the record that a failure is still owed; there is nothing to offer.
 
 I. **Do not invent message types.** The only things you send are the ones above, plus

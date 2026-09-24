@@ -69,7 +69,7 @@ setup; start >/dev/null 2>&1; l=$(spec); miss=""
 [[ "$l" == *"$MARK"* ]] || miss="$miss [request]"
 # ★ 'ORCA_BIN' は入れない。**変数名が spec に出ること自体がバグ**である（ST42）。
 for n in 'worker_done' '--task-id' '--dispatch-id' '--dispatch-capability' \
-         '--from' '--outcome' 'report-status.sh' 'dispatch-show --task'; do
+         '--from' '--outcome' 'report-status.ts' 'dispatch-show --task'; do
   [[ "$l" == *"$n"* ]] || miss="$miss [$n]"; done
 [[ "$l" == *' orca orchestration'* ]] && miss="$miss [bare-orca]"
 [[ -z "$miss" ]] && ok "ST4 依頼と lifecycle argv" || fail "ST4 欠落:$miss"; teardown
@@ -812,10 +812,10 @@ setup; start >/dev/null 2>&1; sp=$(spec)
 [[ "$sp" != *'End your turn here'* ]] \
   && ok "ST66 待つためにターンを閉じさせない" || fail "ST66"; teardown
 
-# ST67: 完了の待機は `completion.sh await` の呼び直しで、その 3 つの答えが spec に載る。
+# ST67: 完了の待機は `completion.ts await` の呼び直しで、その 3 つの答えが spec に載る。
 #      **`expired` は載せない** — worker は自分の時計で待機をやめない。
 setup; start >/dev/null 2>&1; sp=$(spec); miss=""
-for w in 'completion.sh --role-dir' ' await' 'accepted' 'remediation' 'waiting'; do
+for w in 'completion.ts --role-dir' ' await' 'accepted' 'remediation' 'waiting'; do
   [[ "$sp" == *"$w"* ]] || miss="$miss [$w]"; done
 [[ "$sp" == *'expired'* ]] && miss="$miss [expired-present]"
 [[ -z "$miss" ]] && ok "ST67 await の 3 つの答えが載る" || fail "ST67:$miss"; teardown

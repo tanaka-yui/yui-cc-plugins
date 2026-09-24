@@ -4,7 +4,7 @@
 set -uo pipefail
 P="$(cd "$(dirname "$0")/.." && pwd)"
 R="$P/bin/orca-recover.sh"
-CMP="$P/skills/orca-team-dispatch-task/scripts/completion.sh"
+CMP="$P/skills/orca-team-dispatch-task/scripts/completion.ts"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 
 setup() {
@@ -25,7 +25,7 @@ show() {   # $1=worker state  $2=dispatch status
     '{ok:true,result:{worker:{state:$s},dispatch:{status:$d}}}' \
     > "$ORCA_STUB_DIR/orchestration_worker-show"
 }
-owe() { bash "$CMP" --role-dir "$SD/roles/design" prepare >/dev/null; }
+owe() { node "$CMP" --role-dir "$SD/roles/design" prepare >/dev/null; }
 rec() { bash "$R" --status-dir "$SD" "$@"; }
 gen() { jq -r '.roles.design.generation' "$SD/workers.json"; }
 did_() { jq -r '.roles.design.dispatch' "$SD/workers.json"; }
@@ -63,7 +63,7 @@ teardown
 # RC4: ★ **Orca 側が既に terminal なら送らない。**ローカルを合わせて終わる。
 setup; owe; show failed completed
 rec >/dev/null 2>&1
-[[ "$(bash "$CMP" --role-dir "$SD/roles/design" phase)" == settled ]] \
+[[ "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == settled ]] \
   && ! grep -qE 'worker-start|orchestration send' "$ORCA_STUB_DIR/calls.log" \
   && ok "RC4 Orca が terminal ならローカルを合わせて終わる" || fail "RC4"
 teardown
@@ -71,9 +71,9 @@ teardown
 # RC5: ★ **replacement は新しい nonce で offer し直す。**旧 generation の accepted は
 #      照合で落ちる（CM3 と同じ理由）。
 setup; owe
-old_nonce=$(bash "$CMP" --role-dir "$SD/roles/design" nonce)
+old_nonce=$(node "$CMP" --role-dir "$SD/roles/design" nonce)
 show failed; rec >/dev/null 2>&1
-new_nonce=$(bash "$CMP" --role-dir "$SD/roles/design" prepare)
+new_nonce=$(node "$CMP" --role-dir "$SD/roles/design" prepare)
 [[ -n "$old_nonce" && -n "$new_nonce" && "$old_nonce" != "$new_nonce" ]] \
   && ok "RC5 置き換え後は新しい nonce になる" || fail "RC5 ($old_nonce/$new_nonce)"
 teardown
@@ -96,10 +96,10 @@ teardown
 
 # RC8: settled 済みは触らない（完了している）。
 setup; owe
-bash "$CMP" --role-dir "$SD/roles/design" sent
-n=$(bash "$CMP" --role-dir "$SD/roles/design" nonce)
-bash "$CMP" --role-dir "$SD/roles/design" accept --nonce "$n"
-bash "$CMP" --role-dir "$SD/roles/design" settle
+node "$CMP" --role-dir "$SD/roles/design" sent
+n=$(node "$CMP" --role-dir "$SD/roles/design" nonce)
+node "$CMP" --role-dir "$SD/roles/design" accept --nonce "$n"
+node "$CMP" --role-dir "$SD/roles/design" settle
 show failed; rec >/dev/null 2>&1
 ! grep -qE 'worker-start|orchestration send' "$ORCA_STUB_DIR/calls.log" \
   && ok "RC8 settled は触らない" || fail "RC8"
