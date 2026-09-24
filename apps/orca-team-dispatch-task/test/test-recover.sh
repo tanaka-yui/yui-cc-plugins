@@ -251,12 +251,14 @@ teardown
 
 # RC23: ★ **置き換えが ready にならなくても、発行された dispatch は捨てない。**記録しないと次の回復は
 #       古い dispatch を --retry-of に渡し直し、新しい試行は誰にも追われない（orca-start の orphan と同じ）。
-#       ready でないので端末は記録せず、完了の記録も残す
+#       ready でないので端末は記録しない。**置き換えた試行の完了の記録は残さない** — 新しい worker を起こす前に退避し、
+#       記録できたら消す。ready を報告しない試行も動いていることがあり、残すと前の試行の nonce と受理を引き継ぐ
+#       （round 1・2 のレビュー F1。RC40〜RC43）
 setup; owe; show failed
 echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
 echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_retry"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
 out=$(rec 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *'ctx_retry'* && -f "$SD/roles/design/completion.json" ]] \
+[[ "$rc" -eq 1 && "$out" == *'ctx_retry'* && ! -e "$SD/roles/design/completion.json" ]] \
   && jq -e '.roles.design | .dispatch == "ctx_retry" and .terminal == "" and .generation == 2
             and .superseded == ["ctx_old"] and .start_incomplete == true' "$SD/workers.json" >/dev/null \
   && ok "RC23 ready にならない置き換えも dispatch を記録する" || fail "RC23 (rc=$rc out=$out)"
@@ -325,15 +327,283 @@ ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
   && ok "RC26 完了を負う役でも、次の回復は最新の試行を置き換える" || fail "RC26 ($first/$second ws=$ws out=$out)"
 teardown
 
-# RC27: 最新の試行が outcome_unknown の間は置き換えず、記録（ctx_retry と印、古い completion）もそのまま残す
+# RC27: 最新の試行が outcome_unknown の間は置き換えず、記録（ctx_retry と印）もそのまま残す。前の試行の完了の記録は
+#       置き換えの前に退避して消してあり、settled に化けることもない
 setup; owed_accepted; show failed; retry_fails
 rec >/dev/null 2>&1
 show outcome_unknown; : > "$ORCA_STUB_DIR/calls.log"
 out=$(rec 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *'its start did not complete'* ]] \
   && ! grep -qE 'worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
-  && [[ "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == accepted ]] \
+  && [[ -z "$(node "$CMP" --role-dir "$SD/roles/design" phase)" ]] \
   && jq -e '.roles.design | .dispatch == "ctx_retry" and .start_incomplete == true' "$SD/workers.json" >/dev/null \
   && ok "RC27 最新の試行が確認できない間は何もしない" || fail "RC27 (rc=$rc out=$out)"
+teardown
+
+# ── Orca が start_unknown と言う起動（2026-09-24、influencer-platform）──────────────────────────────
+# ★ Orca は依頼を入力したが agent のターン開始を観測できなかった。生死のどちらの証拠でもない（動いている reviewer にも、
+#   シェルへ戻って死んだ exec にも出た）。以前は「not replacing anything」で何もせず、スキルの手順では先へ進めなかった。
+#   引数なしでは画面と 2 つの手段を見せて止まり、選ぶのはユーザー（--adopt / --restart）
+screen() {   # terminal read --screen の応答。引数が画面の行
+  jq -nc '{ok:true,result:{terminal:{source:"screen",tail:$ARGS.positional}}}' --args "$@" > "$ORCA_STUB_DIR/terminal_read"
+}
+unconfirmed() {   # $1 = worker-show が出す端末（'' なら出さない）。起動が終わらなかった design を Orca が start_unknown と言う
+  failed_start
+  upd=$(jq -c '.roles.design.start_incomplete = true' "$SD/workers.json"); printf '%s\n' "$upd" > "$SD/workers.json"
+  jq -nc --arg t "${1-term_u}" '{ok:true,result:{worker:({state:"start_unknown",stage:"turn_start_unobserved"}
+      + (if $t == "" then {} else {agentTerminalHandle:$t} end)),dispatch:{status:"pending"},
+      terminal:{preview:"preview-line"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
+  screen 'codex is reviewing' 'waiting for a review request' '' ''
+}
+stops_after() {   # worker-stop のあと、Orca は $1 と言う
+  printf '#!/usr/bin/env bash\necho %q > "$ORCA_STUB_DIR/orchestration_worker-show"\n' \
+    "{\"ok\":true,\"result\":{\"worker\":{\"state\":\"$1\"},\"dispatch\":{\"status\":\"failed\"}}}" \
+    > "$ORCA_STUB_DIR/orchestration_worker-stop.hook"
+  chmod +x "$ORCA_STUB_DIR/orchestration_worker-stop.hook"
+}
+acted() { grep -E 'worker-start|worker-stop|worker-release|orchestration send' "$ORCA_STUB_DIR/calls.log"; }
+
+# RC28: ★ **引数なしでは、画面の最後の数行と 2 つの手段を見せて止まる。**勝手に置き換えも記録もしない
+setup; unconfirmed; before=$(jq -c . "$SD/workers.json")
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"'start_unknown'"* && "$out" == *'  | waiting for a review request'* \
+   && "$out" == *'--role design --adopt'* && "$out" == *'--role design --restart'* && -z "$(acted)" \
+   && "$(jq -c . "$SD/workers.json")" == "$before" ]] \
+  && grep 'terminal read' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--terminal term_u' \
+  && ok "RC28 start_unknown は画面と 2 つの手段を見せて止まる" || fail "RC28 (rc=$rc out=$out)"
+teardown
+
+# RC28b: --dry-run でも同じものを見せ、判断の行（stdout）は出さない
+setup; unconfirmed
+so=$(rec --dry-run 2>/dev/null); rc=$?; se=$(rec --dry-run 2>&1 >/dev/null)
+[[ "$rc" -eq 1 && -z "$so" && "$se" == *'--role design --adopt'* && -z "$(acted)" ]] \
+  && ok "RC28b --dry-run でも画面と手段を見せるだけ" || fail "RC28b (rc=$rc so=$so)"
+teardown
+
+# RC29: 見せるのは画面の最後の数行だけ（末尾の空行は落とす）。画面が読めなければ worker-show の preview に落とす
+setup; unconfirmed; screen $(seq -f 'row-%g' 1 40) '' ''
+a=$(rec 2>&1)
+teardown
+setup; unconfirmed
+printf '%s\n' '{"ok":false,"error":{"code":"terminal_not_found"}}' > "$ORCA_STUB_DIR/terminal_read"
+echo 1 > "$ORCA_STUB_DIR/terminal_read.rc"
+b=$(rec 2>&1); rc=$?
+[[ "$a" == *'  | row-40'* && "$a" == *'  | row-26'* && "$a" != *'  | row-25'* \
+   && "$rc" -eq 1 && "$b" == *'  | preview-line'* && "$b" == *'--adopt'* ]] \
+  && ok "RC29 画面の最後の数行だけを見せ、読めなければ preview" || fail "RC29 (a=$a b=$b)"
+teardown
+
+# RC30: ★ **--adopt は端末を記録して start_incomplete を外し、端末の inventory を取り直す。**同じ試行を続けるので
+#       dispatch・generation・完了の記録には触らず、何も起こさない。以後は「起動が終わらなかった役」ではない
+setup; unconfirmed; owe
+out=$(rec --role design --adopt 2>&1); rc=$?
+next=$(rec 2>&1); rc2=$?
+[[ "$rc" -eq 0 && "$out" == *'adopted dispatch ctx_old'* && -z "$(acted)" && -f "$SD/roles/design/completion.json" \
+   && "$rc2" -eq 1 && "$next" != *'its start did not complete'* ]] \
+  && jq -e '.roles.design | .dispatch == "ctx_old" and .terminal == "term_u" and .generation == 1
+            and (has("start_incomplete") | not) and (has("superseded") | not)
+            and .worktree_terminals == ["term_old","term_new"]' "$SD/workers.json" >/dev/null \
+  && ok "RC30 --adopt は端末を記録し印を外す" || fail "RC30 (rc=$rc rc2=$rc2 out=$out next=$next)"
+teardown
+
+# RC30b: 待機がすでに端末を埋めていても、--adopt は印を外す（Review Focus 1）
+setup; unconfirmed
+upd=$(jq -c '.roles.design.terminal = "term_u"' "$SD/workers.json"); printf '%s\n' "$upd" > "$SD/workers.json"
+rec --role design --adopt >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && jq -e '.roles.design | .terminal == "term_u" and (has("start_incomplete") | not)' \
+  "$SD/workers.json" >/dev/null \
+  && ok "RC30b 待機が埋めた端末があっても引き受けられる" || fail "RC30b (rc=$rc)"
+teardown
+
+# RC31: --adopt が効かないものは、何も変えずに 1。起動が完了した役・失敗が証明された起動・端末の出ない起動
+setup; show start_unknown
+upd=$(jq -c '.roles.design.terminal = "term_old"' "$SD/workers.json"); printf '%s\n' "$upd" > "$SD/workers.json"
+before=$(jq -c . "$SD/workers.json"); ea=$(rec --role design --adopt 2>&1); a=$?
+[[ "$(jq -c . "$SD/workers.json")" == "$before" ]] || a=99; teardown
+setup; failed_start; show failed failed
+before=$(jq -c . "$SD/workers.json"); rec --role design --adopt >/dev/null 2>&1; b=$?
+[[ "$(jq -c . "$SD/workers.json")" == "$before" && -z "$(acted)" ]] || b=99; teardown
+setup; unconfirmed ''
+before=$(jq -c . "$SD/workers.json"); ec=$(rec --role design --adopt 2>&1); c=$?
+[[ "$(jq -c . "$SD/workers.json")" == "$before" ]] || c=99
+[[ "$a" -eq 1 && "$ea" == *'does not apply'* && "$b" -eq 1 && "$c" -eq 1 && "$ec" == *'names no terminal'* ]] \
+  && ok "RC31 --adopt が効かないものは何も変えない" || fail "RC31 ($a/$b/$c ea=$ea ec=$ec)"
+teardown
+
+# RC32: 使用法。--adopt / --restart は --role で 1 役を名指しし、同時には渡せない。記録に無い役は 1
+setup; unconfirmed
+rec --adopt >/dev/null 2>&1; a=$?
+rec --role design --adopt --restart >/dev/null 2>&1; b=$?
+rec --role nope --restart >/dev/null 2>&1; c=$?
+[[ "$a" -eq 2 && "$b" -eq 2 && "$c" -eq 1 && -z "$(acted)" ]] \
+  && ok "RC32 --adopt / --restart の使用法" || fail "RC32 ($a/$b/$c)"
+teardown
+
+# RC33: ★ **--restart は先に worker-stop で fence し、Orca が stopped と言ってから置き換える。**止めずに置き換えると、
+#       生きていた場合に 2 つの capability が 1 つの lifecycle を進める。stopped.json は書かない（ユーザーの停止ではない）
+setup; unconfirmed; stops_after stopped
+out=$(rec --role design --restart 2>&1); rc=$?
+st=$(grep -n 'worker-stop' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+sl=$(grep -n 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$rc" -eq 0 && -n "$st" && -n "$sl" && "$st" -lt "$sl" && "$ws" == *'--retry-of ctx_old'* \
+   && ! -e "$SD/roles/design/stopped.json" ]] \
+  && grep 'worker-stop' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_old' \
+  && jq -e '.roles.design | .dispatch == "ctx_new" and .terminal == "term_new" and .generation == 2
+            and .superseded == ["ctx_old"] and (has("start_incomplete") | not)' "$SD/workers.json" >/dev/null \
+  && ok "RC33 --restart は止めてから置き換える" || fail "RC33 (rc=$rc out=$out)"
+teardown
+
+# RC34: 止められなければ置き換えない（fence が先）。記録も印もそのまま
+setup; unconfirmed
+printf '%s\n' '{"ok":false,"error":{"code":"dispatch_not_found","message":"stub"}}' > "$ORCA_STUB_DIR/orchestration_worker-stop"
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-stop.rc"
+out=$(rec --role design --restart 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'did not stop'* && "$(did_)" == ctx_old ]] \
+  && ! grep -qE 'worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && jq -e '.roles.design.start_incomplete == true' "$SD/workers.json" >/dev/null \
+  && ok "RC34 止められなければ置き換えない" || fail "RC34 (rc=$rc out=$out)"
+teardown
+
+# RC35: ★ **stop が通っても、Orca がまだ start_unknown と言う間は置き換えない**（Review Focus 4）。次の回復は、
+#       stopped と証明された起動をふつうに置き換える
+setup; unconfirmed
+out=$(rec --role design --restart 2>&1); first=$?
+first_start=$(grep -c 'worker-start' "$ORCA_STUB_DIR/calls.log")
+show stopped failed; : > "$ORCA_STUB_DIR/calls.log"
+rec >/dev/null 2>&1; second=$?
+[[ "$first" -eq 1 && "$first_start" -eq 0 && "$out" == *'Run this again'* && "$second" -eq 0 && "$(did_)" == ctx_new ]] \
+  && ok "RC35 stopped と証明されるまで置き換えない" || fail "RC35 ($first/$second out=$out)"
+teardown
+
+# RC36: Orca が後から live と言った起動は、--adopt できて --restart はしない（Review Focus 3）
+setup; failed_start
+upd=$(jq -c '.roles.design.start_incomplete = true' "$SD/workers.json"); printf '%s\n' "$upd" > "$SD/workers.json"
+echo '{"ok":true,"result":{"worker":{"state":"active","agentTerminalHandle":"term_u"},"dispatch":{"status":"dispatched"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+rec --role design --restart >/dev/null 2>&1; a=$?; a_acted=$(acted)
+rec --role design --adopt >/dev/null 2>&1; b=$?
+[[ "$a" -eq 1 && -z "$a_acted" && "$b" -eq 0 ]] \
+  && jq -e '.roles.design | .terminal == "term_u" and (has("start_incomplete") | not)' "$SD/workers.json" >/dev/null \
+  && ok "RC36 live の起動は引き受けられ、止めない" || fail "RC36 ($a/$b)"
+teardown
+
+# RC37: --dry-run は --adopt / --restart でも判断だけを出す
+setup; unconfirmed; before=$(jq -c . "$SD/workers.json")
+a=$(rec --role design --adopt --dry-run 2>/dev/null); ra=$?
+b=$(rec --role design --restart --dry-run 2>/dev/null); rb=$?
+[[ "$ra" -eq 0 && "$a" == 'design: adopt the start (terminal term_u)' && "$rb" -eq 0 \
+   && "$b" == 'design: stop the start, then replace it' && -z "$(acted)" \
+   && "$(jq -c . "$SD/workers.json")" == "$before" ]] \
+  && ok "RC37 --dry-run は判断だけ" || fail "RC37 ($ra/$rb a=$a b=$b)"
+teardown
+
+# ── codex のフォルダの信頼（agent-trust-workspace）────────────────────────────────────────────
+trust_show() {   # 起動が codex の「Trust this folder?」で止まったと Orca が言う
+  jq -nc '{ok:true,result:{worker:{state:"failed",stage:"agent_readiness",agentTerminalHandle:"term_old",
+      lastError:"Agent startup blocked: agent-trust-workspace"},
+      dispatch:{status:"failed",lastFailure:"Agent startup blocked: agent-trust-workspace"}}}' \
+    > "$ORCA_STUB_DIR/orchestration_worker-show"
+}
+
+# RC38: ★ **信頼で止まった起動は、--dry-run で解き方を見せる**（信頼しないまま置き換えると同じ画面で止まる）。
+#       ふつうの失敗には出さない
+setup; failed_start; trust_show
+so=$(rec --dry-run 2>/dev/null); se=$(rec --dry-run 2>&1 >/dev/null)
+teardown
+setup; failed_start; show failed failed
+plain=$(rec --dry-run 2>&1)
+[[ "$so" == *'design: replace the failed start'* && "$se" == *'agent-trust-workspace'* && "$se" == *'term_old'* \
+   && "$se" == *'[projects."/tmp"]'* && "$se" == *'trust_level = "trusted"'* && "$plain" != *'trust_level'* ]] \
+  && ok "RC38 信頼で止まった起動は解き方を見せる" || fail "RC38 (so=$so se=$se)"
+teardown
+
+# RC39: ★ **置き換えも信頼で止まったら、その場で解き方を言う。**置き換えた試行の worker-show を読む
+setup; failed_start; trust_show
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_retry"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'ctx_retry'* && "$out" == *'trust_level = "trusted"'* \
+   && "$out" == *'orca-recover.ts --status-dir'* ]] \
+  && grep 'worker-show' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_retry' \
+  && ok "RC39 置き換えが信頼で止まれば解き方を言う" || fail "RC39 (rc=$rc out=$out)"
+teardown
+
+# ── 置き換えた試行の完了の記録（round 1・2 のレビュー F1）─────────────────────────────────────────
+# ★ 新しい worker は ready を報告する前から動いていることがあり（start_unknown）、worker-start が返る前に prepare / await を
+#   走らせうる。前の試行の記録は、新しい worker を起こす**前に**退避する。起こしたあとは completion.json に触らない
+starting_worker() {   # worker-start の最中に、新しい worker が完了の口を走らせる（$1 = await まで走らせるなら 1）
+  cat > "$ORCA_STUB_DIR/orchestration_worker-start.hook" <<HOOK
+#!/usr/bin/env bash
+node "$CMP" --role-dir "$SD/roles/design" prepare > "\$ORCA_STUB_DIR/new-nonce"
+node "$CMP" --role-dir "$SD/roles/design" sent
+[[ "${1:-}" == 1 ]] && ORCA_TERMINAL_HANDLE=term_u node "$CMP" --role-dir "$SD/roles/design" await > "\$ORCA_STUB_DIR/new-await" 2>/dev/null
+exit 0
+HOOK
+  chmod +x "$ORCA_STUB_DIR/orchestration_worker-start.hook"
+}
+unready_retry() {   # 置き換えは ready を報告しない（dispatch は返る）
+  echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+  echo '{"ok":false,"result":{"state":"outcome_unknown","dispatchId":"ctx_retry"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+}
+
+# RC40: ★ **起動の最中に動き出した新しい worker は、前の試行の受理を読まない。**前の試行は accepted（worker_done を
+#       送れずに失われた）。新しい worker は自分の nonce で offer し、親の受理を待つ（await は waiting）。回復が終わっても
+#       その記録は残り、退避した前の試行の記録は消える
+setup; owed_accepted; old_nonce=$(node "$CMP" --role-dir "$SD/roles/design" nonce); show failed
+unready_retry; starting_worker 1
+rec >/dev/null 2>&1; rc=$?
+new_nonce=$(cat "$ORCA_STUB_DIR/new-nonce" 2>/dev/null)
+[[ "$rc" -eq 1 && -n "$new_nonce" && "$new_nonce" != "$old_nonce" \
+   && "$(cat "$ORCA_STUB_DIR/new-await" 2>/dev/null)" == waiting \
+   && "$(node "$CMP" --role-dir "$SD/roles/design" nonce)" == "$new_nonce" \
+   && "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == merge_ready_sent \
+   && ! -e "$SD/roles/design/completion.superseded-ctx_old.json" && "$(did_)" == ctx_retry ]] \
+  && ok "RC40 起動中に動いた新しい worker は前の試行の受理を読まない" || fail "RC40 (rc=$rc new=$new_nonce old=$old_nonce)"
+teardown
+
+# RC41: ★ **起動の最中に新しい worker が書いた記録を、回復は消さない。**前の試行に記録の無い（起動が終わらなかった）
+#       役でも同じ。消すと、送った merge_ready の nonce と作り直す nonce が食い違い、await は記録無しで失敗する
+setup; failed_start; show failed failed; unready_retry; starting_worker
+rec >/dev/null 2>&1; rc=$?
+new_nonce=$(cat "$ORCA_STUB_DIR/new-nonce" 2>/dev/null)
+[[ "$rc" -eq 1 && -n "$new_nonce" && "$(node "$CMP" --role-dir "$SD/roles/design" nonce)" == "$new_nonce" \
+   && "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == merge_ready_sent ]] \
+  && ok "RC41 新しい worker が書いた記録は消さない" || fail "RC41 (rc=$rc new=$new_nonce)"
+teardown
+
+# RC42: 置き換えが dispatch を返さなければ、退避した記録を戻す。役はまだ前の試行を負っているので、次の回復が同じ判断をする
+setup; owed_accepted; old_nonce=$(node "$CMP" --role-dir "$SD/roles/design" nonce); show failed
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"error":{"code":"runtime_unavailable"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+rec >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && "$(did_)" == ctx_old && "$(node "$CMP" --role-dir "$SD/roles/design" nonce)" == "$old_nonce" \
+   && "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == accepted \
+   && ! -e "$SD/roles/design/completion.superseded-ctx_old.json" ]] \
+  && ok "RC42 dispatch が返らなければ退避した記録を戻す" || fail "RC42 (rc=$rc)"
+teardown
+
+# RC43: 退避できなければ、新しい worker を起こさない（前の試行の記録を読む worker を作らない）
+setup; owed_accepted; show failed
+mkdir -p "$SD/roles/design/completion.superseded-ctx_old.json/x"   # 退避先に空でない dir を置き、rename を失敗させる
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'could not move the completion record'* && "$(did_)" == ctx_old \
+   && "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == accepted ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "RC43 退避できなければ起こさない" || fail "RC43 (rc=$rc out=$out)"
+teardown
+
+# RC44: replacement が ready にならなくても、worker-show の端末を残して cleanup に渡す
+setup; failed_start; show failed failed; unready_retry
+cat > "$ORCA_STUB_DIR/orchestration_worker-start.hook" <<'HOOK'
+#!/usr/bin/env bash
+echo '{"ok":true,"result":{"worker":{"state":"start_unknown","agentTerminalHandle":"term_retry"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_worker-start.hook"
+rec >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && jq -e '.roles.design | .dispatch == "ctx_retry" and .terminal == "term_retry" and .start_incomplete == true' \
+  "$SD/workers.json" >/dev/null \
+  && ok "RC44 未 ready の replacement も Orca の端末を記録する" || fail "RC44 (rc=$rc)"
 teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
