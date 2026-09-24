@@ -758,12 +758,11 @@ sp=$(spec)
 [[ "$sp" != *'superpowers:brainstorming'* ]] && [[ "$sp" != *'Decide the approach before'* ]] \
   && ok "ST61 direct は指示を足さない" || fail "ST61"; teardown
 
-# ST62: brainstorm は superpowers の skill を名指しし、**質問の出し方まで指定する**。
-#       ★ 以前ここは「答えが無くても止まるな」を固定していた。**実機がそれを覆した** —
+# ST62: brainstorm × ask_via=parent は superpowers の skill を名指しし、**質問の出し方まで指定する**。
 #       worker は質問を印字して止まるのではなく `orchestration ask` を使い、親は
-#       `orchestration reply` で答えられる。印字しただけの質問は誰にも読まれない。
+#       `orchestration reply` で答える。既定の terminal は ST109 が固定する
 setup
-mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"design_mode":"brainstorm"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '%s\n' '{"design_mode":"brainstorm","ask_via":"parent"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
 start >/dev/null 2>&1; sp=$(spec); miss=""
 [[ "$sp" == *'superpowers:brainstorming'* ]] || miss="$miss [skill]"
 [[ "$sp" == *'orchestration ask'* ]] || miss="$miss [ask]"
@@ -1281,5 +1280,44 @@ if command -v zsh >/dev/null 2>&1; then
 else
   echo "SKIP: ST108 zsh が無い"
 fi
+
+# ── brainstorm の質問先（ask_via）──────────────────────────────────────
+# ★ 2026-09-24 の logi-app: 指示文が `orchestration ask` を指示していたので、brainstorming の質問が全部
+#   exit 6 で親に届き、親が中継していた。文書の意図は「worker の端末で直接尋ねる」だった
+bs_only() { mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+            printf '%s\n' '{"design_mode":"brainstorm"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"; }
+
+# ST109: 既定（terminal）は端末で尋ね、印を書いてからターンを終える。ask は使わせない
+setup; bs_only; start >/dev/null 2>&1; sp=$(spec); miss=""
+[[ "$sp" == *'Ask the user in this terminal'* ]] || miss="$miss [terminal]"
+[[ "$sp" == *'awaiting-user.ts'* ]] || miss="$miss [marker]"
+[[ "$sp" == *"--role-dir $R/.dispatch/s/roles/design"* ]] || miss="$miss [role-dir]"
+[[ "$sp" == *'only place where you end your turn to wait'* ]] || miss="$miss [only-here]"
+[[ "$sp" == *'Do not use `orchestration ask`'* ]] || miss="$miss [no-ask]"
+[[ "$sp" == *'Ask through `orchestration ask`'* ]] && miss="$miss [parent-text]"
+[[ "$sp" == *'one question at a time'* ]] || miss="$miss [one-at-a-time]"
+[[ -z "$miss" ]] && ok "ST109 brainstorm × terminal は端末で尋ねる" || fail "ST109:$miss"; teardown
+
+# ST110: --ask-via parent は 1 回きりの上書きとして今の文面に戻す
+setup; bs_only; start --ask-via parent >/dev/null 2>&1; sp=$(spec); miss=""
+[[ "$sp" == *'Ask through `orchestration ask`'* ]] || miss="$miss [parent-text]"
+[[ "$sp" == *'awaiting-user.ts'* ]] && miss="$miss [marker]"
+[[ "$sp" == *'Ask the user in this terminal'* ]] && miss="$miss [terminal]"
+[[ -z "$miss" ]] && ok "ST110 --ask-via parent は親経由で尋ねる" || fail "ST110:$miss"; teardown
+
+# ST111: ★ **ask_via は brainstorm の design にだけ効く。**plan と direct の指示文は変わらない
+bad=""
+for mode in plan direct; do
+  setup; start --design-mode "$mode" --ask-via terminal >/dev/null 2>&1; sp=$(spec)
+  [[ -n "$sp" ]] || bad="$bad [$mode:not-started]"
+  [[ "$sp" == *'awaiting-user.ts'* || "$sp" == *'Ask the user in this terminal'* ]] && bad="$bad [$mode]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "ST111 ask_via は plan と direct を変えない" || fail "ST111:$bad"
+
+# ST112: 不正な値では何も作らない（設定の解決で止まる）
+setup; start --ask-via slack >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -q 'worktree create\|worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST112 不正な ask_via で何も作らない" || fail "ST112 (rc=$rc)"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -1,8 +1,9 @@
 // worktree を用意し、worker を 1 つ起動してタスクを届ける。
 // Usage: node orca-start.ts --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
 //        [--run <id>] [--agent <id>] [--model <id>] [--effort <level>]
-//        [--phase design|exec] [--design-mode direct|plan|brainstorm] [--integration merge|pr]
-//        node orca-start.ts --slug <s> --resume [--repo-root <p>] [--design-mode ...]
+//        [--phase design|exec] [--design-mode direct|plan|brainstorm] [--ask-via terminal|parent]
+//        [--integration merge|pr]
+//        node orca-start.ts --slug <s> --resume [--repo-root <p>] [--design-mode ...] [--ask-via ...]
 // Exit: 0 / 1 起動できなかった / 2 使用法
 import { die, log } from '../lib/cli.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
@@ -107,6 +108,7 @@ type Context = {
   phaseB: string
   setup: string
   designMode: string
+  askVia: string
 }
 // 移植元の理由（bin/orca-start.sh）:
 // ★ 依頼元とラベルは役で決まる。design は計画を、exec は実装をレビューさせる
@@ -135,6 +137,7 @@ const renderSpec = (context: Context, role: string): string => {
   const qWorkersFile = shellQuote(join(context.statusDir, 'workers.json'))
   const qCompletion = shellQuote(join(SCRIPTS, 'completion.ts'))
   const qReportStatus = shellQuote(join(SCRIPTS, 'report-status.ts'))
+  const qAwaiting = shellQuote(join(SCRIPTS, 'awaiting-user.ts'))
   const qOrcaBin = shellQuote(orcaBin())
   const qSender = shellQuote(SENDER)
   const qReviewDir = shellQuote(context.reviewDir)
@@ -367,6 +370,35 @@ makes that approach wrong, say so there rather than quietly doing something else
         : `Then build it in this worktree with \`superpowers:subagent-driven-development\`,
    following the plan, and commit the work on this branch. Do not ask how to execute the plan.
    Do not run \`superpowers:finishing-a-development-branch\`: stop after committing; the parent brings the branch home.`
+    // ★ 2026-09-24: 質問の出し方は ask_via で決める。terminal（既定）は worker 自身の端末で尋ね、印を書いてから
+    //   ターンを終える（Orca の agentWait はこの待ちを拾わないので、印が orca-wait の停滞の時計を戻す）。
+    //   ターンを終えてよいのはここだけ — 完了の申告以降とレビューの verdict 待ちはターン内で待ち続ける
+    const asking =
+      context.askVia === 'parent'
+        ? `**Ask through \`orchestration ask\`, not by printing a question and stopping.** The parent
+relays it to a person and sends their answer back; a question you only print is read by
+nobody. Ask one question at a time, as the skill does: each call blocks until someone answers.
+The skill's request for the user to review the written spec goes through the same call.
+
+If nobody ever answers, that call is where you will be waiting — that is expected, and the
+person watching decides whether to answer or to stop the dispatch.`
+        : `**Ask the user in this terminal.** A person is watching it. Whenever you need an answer —
+each question the brainstorming skill asks, and its request for the user to review the
+written spec — first record that you are waiting:
+
+     node ${qAwaiting} --role-dir ${qRoleDir}
+
+then put the question at the end of your reply and end your turn. The answer arrives as the
+next message typed into this terminal. Ask one question at a time, as the skill does.
+
+Do not use \`orchestration ask\`: in this dispatch the parent does not relay questions.
+
+**This is the only place where you end your turn to wait.** From step C of the STATUS
+PROTOCOL on, and while you wait for a review verdict, keep waiting inside your turn as
+those steps say.
+
+If nobody answers, that is expected: the person watching decides whether to answer or to
+stop the dispatch.`
     approach = `**Work through the superpowers skills in this order.**
 
 1. Invoke \`superpowers:brainstorming\` and settle the open questions with the user before you
@@ -377,13 +409,7 @@ makes that approach wrong, say so there rather than quietly doing something else
    instead of the skill's own location and without committing it.
    ${afterPlan}
 
-**Ask through \`orchestration ask\`, not by printing a question and stopping.** The parent
-relays it to a person and sends their answer back; a question you only print is read by
-nobody. Ask one question at a time, as the skill does: each call blocks until someone answers.
-The skill's request for the user to review the written spec goes through the same call.
-
-If nobody ever answers, that call is where you will be waiting — that is expected, and the
-person watching decides whether to answer or to stop the dispatch.
+${asking}
 
 If either skill is not installed in this session, say so in result.md and carry on without it
 rather than inventing your own version of it.
@@ -906,6 +932,7 @@ const main = (argv: string[]): number => {
   let model = ''
   let effort = ''
   let designMode = ''
+  let askVia = ''
   let integration = ''
   let phase = 'design'
   let resume = false
@@ -926,6 +953,7 @@ const main = (argv: string[]): number => {
         '--model',
         '--effort',
         '--design-mode',
+        '--ask-via',
         '--integration',
         '--phase',
       ].includes(flag ?? '')
@@ -941,6 +969,7 @@ const main = (argv: string[]): number => {
       if (flag === '--model') model = value
       if (flag === '--effort') effort = value
       if (flag === '--design-mode') designMode = value
+      if (flag === '--ask-via') askVia = value
       if (flag === '--integration') integration = value
       if (flag === '--phase') phase = value
     } else die(NAME, `unknown option: ${flag}`)
@@ -1028,6 +1057,7 @@ const main = (argv: string[]): number => {
   if (model !== '') overrides.push('--set', `design.model=${model}`)
   if (effort !== '') overrides.push('--set', `design.effort=${effort}`)
   if (designMode !== '') overrides.push('--design-mode', designMode)
+  if (askVia !== '') overrides.push('--ask-via', askVia)
   if (integration !== '') overrides.push('--integration', integration)
   if (!readable(RESOLVER)) {
     log(NAME, `the config resolver is missing at ${RESOLVER}`)
@@ -1044,6 +1074,7 @@ const main = (argv: string[]): number => {
   const phaseB = string(config.phase_b) || 'off'
   const setup = string(config.setup) || 'skip'
   const mode = string(config.design_mode) || 'direct'
+  const ask = string(config.ask_via) || 'terminal'
   const workersFile = join(statusDir, 'workers.json')
   const started = (role: string): boolean => string(get(readJson(workersFile), 'roles', role, 'dispatch')) !== ''
   const launchOrder: string[] = []
@@ -1209,6 +1240,7 @@ const main = (argv: string[]): number => {
     phaseB,
     setup,
     designMode: mode,
+    askVia: ask,
   }
   for (const role of launchOrder) if (!launchRole(context, role)) return 1
   process.stdout.write(`status_dir=${statusDir}\nrun_id=${runId}\n`)
