@@ -14,7 +14,16 @@
 import { die, log } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type JsonObject } from '../lib/json.ts'
-import { failureDetail, GONE_STATES, listWorkers, receiptOk, releaseState, runOrca } from '../lib/orca.ts'
+import {
+  dispatchSettled,
+  failureDetail,
+  GONE_STATES,
+  listWorkers,
+  receiptOk,
+  releaseState,
+  runOrca,
+  workerStateClass,
+} from '../lib/orca.ts'
 import { nowSeconds, runNode } from '../lib/sys.ts'
 
 import { accessSync, constants, existsSync, mkdirSync } from 'node:fs'
@@ -23,11 +32,6 @@ import { fileURLToPath } from 'node:url'
 
 const NAME = 'orca-stop'
 const SEND = join(dirname(fileURLToPath(import.meta.url)), 'orca-send.ts')
-// worker-show がこれを返したら、Orca 側では決着している（worker_done は届いたが、親がまだ drain していない）
-const SETTLED_STATUSES = ['completed', 'failed', 'settled', 'terminated']
-const SETTLED_STATES = ['succeeded', 'failed']
-// こちらは走っている証拠（orca-wait の healthy() と orca-wake の許容集合と同じ）
-const RUNNING_STATES = ['active', 'ready', 'starting', 'idle']
 
 // 相方への知らせ。reviewer を止めたら依頼側へ review-skipped、作る役を止めたら reviewer へ abort-reviewer
 const PEERS: { [role: string]: { peer: string; subject: string; body: (role: string) => string } } = {
@@ -80,10 +84,15 @@ const stopWorker = (run: string, dispatch: string, role: string): { ok: boolean;
   }
   const status = asString(get(shown.json, 'result', 'dispatch', 'status')) ?? ''
   const state = asString(get(shown.json, 'result', 'worker', 'state')) ?? ''
-  // ★ **どちらへ進めるかの証拠が揃ったときだけ打つ。**決着の証拠があれば release、走っている証拠があれば stop。
-  //   state / status が無い・知らない値（outcome_unknown など）は「読めない」と同じく、何も打たない
-  const settled = SETTLED_STATUSES.includes(status) || SETTLED_STATES.includes(state)
-  const running = !settled && RUNNING_STATES.includes(state)
+  // ★ **どちらへ進めるかの証拠が揃ったときだけ打つ。**決着の証拠があれば release、走っている証拠があれば stop
+  //   （分類は lib/orca.ts）。state / status が無い・知らない値（outcome_unknown など）は「読めない」と同じく、何も打たない
+  //   ★ **未確認（start_unknown）には stop を打つ。**生死のどちらの証拠でもないが、worker-stop は dispatch を fence して
+  //   その worker の端末だけを閉じるので、生きていても死んでいても「止める」として正しい。決着していれば dispatch の
+  //   status が先に決着を言うので、出力を保存せずに閉じることもない。Orca は start_unknown の worker への worker-stop を
+  //   受け付ける（2026-09-24 に手で確認）。以前はここで何も打たず、止めると決めた役が止まらなかった
+  const kind = workerStateClass(state)
+  const settled = dispatchSettled(status) || kind === 'settled'
+  const running = !settled && (kind === 'live' || kind === 'unconfirmed')
   if (!settled && !running) {
     return {
       ok: false,

@@ -1,4 +1,5 @@
 import {
+  dispatchSettled,
   failureDetail,
   orcaBin,
   receiptArray,
@@ -7,6 +8,8 @@ import {
   releaseState,
   runOrca,
   terminalHandles,
+  workerStateClass,
+  workerTerminal,
 } from '../../lib/orca.ts'
 
 import assert from 'node:assert/strict'
@@ -131,4 +134,25 @@ test('terminalHandles は列挙できなければ null で、0 件とは区別�
   chmodSync(list, 0o755)
   withEnv({ ORCA_BIN: list }, () => assert.deepEqual(terminalHandles('wt_1'), ['term_a', 'term_b']))
   withEnv({ ORCA_BIN: list, STUB_FAIL: '1' }, () => assert.equal(terminalHandles('wt_1'), null))
+})
+
+// ★ start_unknown はどの入口の「知っている状態」にも無く、待機・停止・回復の 3 つの行き止まりになった（2026-09-24）
+test('workerStateClass は走っている・未確認・決着済みを分け、残りを other にする', () => {
+  for (const state of ['active', 'ready', 'starting', 'idle']) assert.equal(workerStateClass(state), 'live')
+  assert.equal(workerStateClass('start_unknown'), 'unconfirmed')
+  for (const state of ['succeeded', 'failed']) assert.equal(workerStateClass(state), 'settled')
+  // stopped / outcome_unknown は各入口が今までどおり扱う。stage の値や Object の既定の key を分類に化けさせない
+  for (const state of ['stopped', 'outcome_unknown', '', 'turn_start_unobserved', 'constructor'])
+    assert.equal(workerStateClass(state), 'other')
+})
+
+test('dispatchSettled は Orca 側で決着した dispatch の status だけを真にする', () => {
+  for (const status of ['completed', 'failed', 'settled', 'terminated']) assert.equal(dispatchSettled(status), true)
+  for (const status of ['dispatched', 'pending', '']) assert.equal(dispatchSettled(status), false)
+})
+
+test('workerTerminal は worker.agentTerminalHandle を読み、無ければ空文字', () => {
+  assert.equal(workerTerminal({ ok: true, result: { worker: { agentTerminalHandle: 'term_u' } } }), 'term_u')
+  assert.equal(workerTerminal({ ok: true, result: { terminal: { handle: 'term_u' } } }), '')
+  assert.equal(workerTerminal(null), '')
 })

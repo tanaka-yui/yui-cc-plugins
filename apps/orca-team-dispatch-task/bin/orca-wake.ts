@@ -15,7 +15,7 @@
 import { die, log } from '../lib/cli.ts'
 import { readJson } from '../lib/fs.ts'
 import { asObject, asString, get } from '../lib/json.ts'
-import { receiptOk, runOrca } from '../lib/orca.ts'
+import { dispatchSettled, receiptOk, runOrca, workerStateClass } from '../lib/orca.ts'
 
 import { accessSync, constants } from 'node:fs'
 
@@ -25,8 +25,6 @@ const NAME = 'orca-wake'
 // ★ **1 行でなければならない。**`--enter` は末尾に Enter を足すだけなので、改行があるとそこで送信される
 const DEFAULT_TEXT =
   'A message is waiting in your mailbox. Read it the way your task instructions say (--peek, never --ack) and continue from where you stopped.'
-const TERMINAL_STATUSES = ['completed', 'failed', 'settled', 'terminated']
-const RUNNING_STATES = ['active', 'ready', 'starting', 'idle']
 
 const readable = (file: string): boolean => {
   try {
@@ -71,13 +69,15 @@ const main = (argv: string[]): number => {
       return 1
     }
     const status = asString(get(shown.json, 'result', 'dispatch', 'status')) ?? ''
-    if (TERMINAL_STATUSES.includes(status)) {
+    if (dispatchSettled(status)) {
       log(NAME, `dispatch '${dispatch}' is already terminal; nothing was typed`)
       return 1
     }
-    // ★ 許容集合は orca-wait の healthy() と同じ。**settle 済みの worker-show は 'succeeded' を返す**
+    // ★ **走っている worker にだけ打つ**（lib/orca.ts の live）。settle 済みの worker-show は 'succeeded' を返す。
+    //   **start_unknown にも打たない** — 生死が分からず、死んでいれば端末はシェルに戻っていることがある（2026-09-24 の
+    //   P2 の exec: codex が自動更新のあとシェルへ戻っていた）。そこへ打つと、この文章がコマンドとして実行される
     const state = asString(get(shown.json, 'result', 'worker', 'state')) ?? ''
-    if (!RUNNING_STATES.includes(state)) {
+    if (workerStateClass(state) !== 'live') {
       log(NAME, `the worker for dispatch '${dispatch}' is not running; nothing was typed`)
       return 1
     }

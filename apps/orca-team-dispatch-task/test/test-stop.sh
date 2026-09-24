@@ -194,4 +194,16 @@ else
   echo "SKIP: SP18 zsh が無い"
 fi
 
+# SP19: ★ **Orca が start_unknown と言う worker も止める。**生死のどちらの証拠でもないが、worker-stop は dispatch を
+#       fence するので、生きていても死んでいても「止める」として正しい。以前は何も打たず、止めると決めた役が
+#       止まらなかった（2026-09-24）。Orca は start_unknown の worker への worker-stop を受け付ける（手で確認）
+setup; echo '{"ok":true,"result":{"worker":{"state":"start_unknown"},"dispatch":{"status":"pending"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+st --role design_review >/dev/null 2>&1; rc=$?
+ws=$(grep 'orchestration worker-stop' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$rc" -eq 0 && "$ws" == *'--dispatch ctx_r'* && -f "$SD/roles/design_review/stopped.json" ]] \
+  && ! grep -qE 'worker-release|terminal close' "$ORCA_STUB_DIR/calls.log" \
+  && argv | grep -qx 'review-skipped: stopped by the user' \
+  && ok "SP19 start_unknown の worker も止める" || fail "SP19 (rc=$rc ws=$ws)"; teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

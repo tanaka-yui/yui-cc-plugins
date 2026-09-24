@@ -86,5 +86,15 @@ node "$P/bin/orca-wake.ts" --workers "$ORCA_STUB_DIR/nope.json" --role design >/
 [[ $? -eq 1 ]] && ok "WK8 読めない workers.json は 1" || fail "WK8"
 teardown
 
+# WK9: ★ **start_unknown には打たない。**生死が分からず、死んでいれば端末はシェルに戻っていることがある
+#      （2026-09-24 の P2 の exec: codex が自動更新のあとシェルへ戻っていた）。そこへ打つと文章がコマンドとして走る
+setup
+echo '{"ok":true,"result":{"worker":{"state":"start_unknown"},"dispatch":{"status":"pending"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+wake --role design >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -q 'terminal send' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WK9 start_unknown には打たない" || fail "WK9 (rc=$rc)"
+teardown
+
 echo "---"; [[ "$fails" -eq 0 ]] && echo "test-wake: ALL PASS" || echo "test-wake: $fails FAILED"
 exit $(( fails > 0 ))

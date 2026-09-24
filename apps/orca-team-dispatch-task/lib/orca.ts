@@ -43,6 +43,35 @@ export const LIVE_STATES = ['not_requested', 'retained', 'active', 'reclaimable'
 export const releaseState = (worker: Json | undefined): string =>
   asString(get(worker, 'resource', 'releaseState')) ?? asString(get(worker, 'terminalState')) ?? ''
 
+// ★ **worker-show の `result.worker.state` の分類はここだけに置く。**orca-wait / orca-stop / orca-recover / orca-wake が
+//   それぞれ同じ配列を持っていた頃、`start_unknown` はどれにも無く、待機は exit 4、停止は何も打たず、回復は何もしない、の
+//   3 つの行き止まりになった（2026-09-24、influencer-platform の Run）。
+//   - live: 走っている証拠
+//   - unconfirmed: **生死のどちらの証拠でもない。**Orca は依頼を入力したが、agent のターン開始を観測できなかった
+//     （worker.stage は turn_start_unobserved）。2026-09-24 の実測で、influencer-platform の reviewer（codex）は動いて
+//     依頼を待っていたのに 15 分以上この state のままで、yui-cc-plugins の P2 の exec（codex）は同じ state のまま、自動更新の
+//     あとシェルへ戻って死んでいた。どちらも端末は connected だった
+//   - settled: 自分で報告して終わった（worker_done を送った）。Orca 側では決着している
+//   - other: それ以外（stopped / outcome_unknown / 空 / 知らない値）。各入口が今までどおり扱う
+export type WorkerStateClass = 'live' | 'unconfirmed' | 'settled' | 'other'
+const LIVE_WORKER_STATES = ['active', 'ready', 'starting', 'idle']
+const UNCONFIRMED_WORKER_STATES = ['start_unknown']
+const SETTLED_WORKER_STATES = ['succeeded', 'failed']
+export const workerStateClass = (state: string): WorkerStateClass => {
+  if (LIVE_WORKER_STATES.includes(state)) return 'live'
+  if (UNCONFIRMED_WORKER_STATES.includes(state)) return 'unconfirmed'
+  if (SETTLED_WORKER_STATES.includes(state)) return 'settled'
+  return 'other'
+}
+
+// worker-show の `result.dispatch.status` が、Orca 側で dispatch が決着したと言っているか
+const SETTLED_DISPATCH_STATUSES = ['completed', 'failed', 'settled', 'terminated']
+export const dispatchSettled = (status: string): boolean => SETTLED_DISPATCH_STATUSES.includes(status)
+
+// その dispatch の agent 端末。ready にならなかった試行にも Orca は handle を出す（2026-09-24 実測）
+export const workerTerminal = (shown: Json | null): string =>
+  asString(get(shown, 'result', 'worker', 'agentTerminalHandle')) ?? ''
+
 // 失敗した receipt を 1 行で言う。rc と、あれば error.code / error.message
 export const failureDetail = (result: OrcaResult): string => {
   const code = asString(get(result.json, 'error', 'code'))
