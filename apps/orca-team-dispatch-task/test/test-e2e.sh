@@ -182,7 +182,7 @@ SDR=$(sed -n 's/^status_dir=//p' <<<"$OUT3")
 export ORCA_TERMINAL_HANDLE=term_rv_d
 printf '%s\n' '{"ok":true,"result":{"message":{"id":"msg_req"}}}' > "$ORCA_STUB_DIR/orchestration_send"
 printf 'plan for %s\n' "$MARK3" > "$SDR/review/round-1-request.md"
-bash "$P/bin/orca-send.sh" --workers "$SDR/workers.json" --to design_review \
+node "$P/bin/orca-send.ts" --workers "$SDR/workers.json" --to design_review \
   --subject 'review-plan: round 1' --body "$SDR/review/round-1-request.md" >/dev/null 2>&1
 sent_rc=$?
 [[ "$sent_rc" -eq 0 ]] \
@@ -191,7 +191,7 @@ sent_rc=$?
 
 export ORCA_TERMINAL_HANDLE=term_rv_r
 printf 'looks fine\n\nVERDICT: approved\n' > "$SDR/review/round-1-findings.md"
-bash "$P/bin/orca-send.sh" --workers "$SDR/workers.json" --to design \
+node "$P/bin/orca-send.ts" --workers "$SDR/workers.json" --to design \
   --subject 'review-verdict: round 1' --body "$SDR/review/round-1-findings.md" >/dev/null 2>&1
 vrc=$?
 [[ "$vrc" -eq 0 ]] \

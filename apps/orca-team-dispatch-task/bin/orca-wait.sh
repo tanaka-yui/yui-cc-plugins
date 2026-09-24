@@ -20,7 +20,7 @@ log() { echo "orca-wait: $1" >&2; }
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 need2() { [[ "$2" -ge 2 ]] || die "$1 requires a value"; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WAKE="$HERE/orca-wake.sh"
+WAKE="$HERE/orca-wake.ts"
 # ★ **既定は 24 時間**（5 分 × 288）。子は待機に期限を持たないので、これは子を見捨てる期限では
 #   ない。24 時間ごとに exit 3 で状況を報告し、親が呼び直すための区切りである。
 # ★ **停滞の既定は 120 分。**子が書くものがそれだけ変わらなければ知らせる（止めはしない）。
@@ -371,7 +371,7 @@ wake_role() {   # $1=status dir $2=role
   local rd="$1/roles/$2"
   # 間隔の記録は **mtime ではなく中身**。`stat` の flag は GNU と BSD で違う。
   mkdir -p "$rd" 2>/dev/null && printf '%s\n' "$(date +%s)" > "$rd/.woken" 2>/dev/null
-  bash "$WAKE" --workers "$1/workers.json" --role "$2" >/dev/null 2>&1 \
+  node "$WAKE" --workers "$1/workers.json" --role "$2" >/dev/null 2>&1 \
     || log "could not wake $2; the reply is delivered but it may be sitting unread"
 }
 

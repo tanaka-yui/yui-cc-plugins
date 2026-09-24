@@ -264,7 +264,7 @@ else
 fi
 
 SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
-SENDER="$PLUGIN/bin/orca-send.sh"
+SENDER="$PLUGIN/bin/orca-send.ts"
 WFILE="$SD/workers.json"
 
 # ── ここから下はロール単位。**先に起動したロールの資源は、後のロールが失敗しても消さない** ──
@@ -412,7 +412,7 @@ REVIEW LOOP
 
 4. Send the verdict back:
 
-     bash $q_send --workers $q_wf --to $rq_role \\
+     node $q_send --workers $q_wf --to $rq_role \\
        --subject 'review-verdict: round <n>' --body '<absolute path to your findings file>'
 
    A non-zero exit means it was NOT delivered. Try once more; if it fails again, leave the
@@ -438,7 +438,7 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
 
 2. Send the request:
 
-     bash $q_send --workers $q_wf --to $1 \\
+     node $q_send --workers $q_wf --to $1 \\
        --subject '$2 round <n>' --body '<absolute path to your request file>'
 
    **A non-zero exit means it was NOT delivered.** Delete the request file you just wrote,
@@ -475,7 +475,7 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
 
 7. When you are done, release the reviewer:
 
-     bash $q_send --workers $q_wf --to $1 \\
+     node $q_send --workers $q_wf --to $1 \\
        --subject 'abort-reviewer: done' --body 'the work is finished'
 
 "

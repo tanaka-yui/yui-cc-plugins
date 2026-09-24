@@ -119,7 +119,7 @@ while IFS= read -r role; do
       # ★ **nudge も届くだけでは起こせない。**`orchestration send` はメールボックスに
       #   入れるだけである（実測 2026-09-10: nudge が効かず、端末への直接入力で解けた）。
       #   **ベストエフォート** — 起こせないことは「回復できなかった」ではないので rc を汚さない。
-      bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orca-wake.sh" \
+      node "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orca-wake.ts" \
         --workers "$SD/workers.json" --role "$role" >/dev/null 2>&1 \
         || log "$role: could not wake its terminal; the nudge may sit unread"
       continue ;;

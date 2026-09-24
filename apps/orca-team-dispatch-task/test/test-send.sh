@@ -15,7 +15,7 @@ setup() {
     > "$ORCA_STUB_DIR/orchestration_send"
 }
 teardown() { rm -rf "$ORCA_STUB_DIR"; unset ORCA_STUB_DIR ORCA_BIN ORCA_TERMINAL_HANDLE; }
-send() { bash "$P/bin/orca-send.sh" --workers "$WF" "$@"; }
+send() { node "$P/bin/orca-send.ts" --workers "$WF" "$@"; }
 argv() { tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log"; }
 
 # SN1: ロール名を dispatch: 宛先へ解決し、自分の handle を --from に載せる。
@@ -111,9 +111,9 @@ teardown
 
 # SN8: 使用法エラーは 2（未配送の 1 と区別する）。呼び出し側の補償が誤爆しないため。
 setup
-bash "$P/bin/orca-send.sh" --workers "$WF" --to design_review >/dev/null 2>&1
+node "$P/bin/orca-send.ts" --workers "$WF" --to design_review >/dev/null 2>&1
 [[ $? -eq 2 ]] || fail "SN8 --subject 欠落"
-bash "$P/bin/orca-send.sh" --bogus >/dev/null 2>&1
+node "$P/bin/orca-send.ts" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "SN8 使用法エラーは 2" || fail "SN8 unknown option"
 teardown
 
@@ -151,4 +151,15 @@ send --to design_review --subject 'x' --body 'y' >/dev/null 2>&1; rc=$?
   && ok "SN11 未配送なら起こさない" || fail "SN11 (rc=$rc)"
 teardown
 
+# SN17: zsh から呼んでも同じ結果になる（設計 3-5。worker の端末は zsh のことがある）
+if command -v zsh >/dev/null 2>&1; then
+  setup
+  out=$(zsh -c 'node "$1" --workers "$2" --to design_review --subject "review-plan: round 1" --body "x y"' \
+          zsh "$P/bin/orca-send.ts" "$WF" 2>/dev/null); rc=$?
+  [[ "$rc" -eq 0 && "$out" == msg_1 ]] && tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" | grep -qxF 'x y' \
+    && ok "SN17 zsh から呼んでも同じ結果" || fail "SN17 (rc=$rc out=$out)"
+  teardown
+else
+  echo "SKIP: SN17 zsh が無い"
+fi
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

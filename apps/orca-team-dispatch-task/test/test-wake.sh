@@ -16,7 +16,7 @@ setup() {
   echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
 }
 teardown() { rm -rf "$ORCA_STUB_DIR"; unset ORCA_STUB_DIR ORCA_BIN; }
-wake() { bash "$P/bin/orca-wake.sh" --workers "$WF" "$@"; }
+wake() { node "$P/bin/orca-wake.ts" --workers "$WF" "$@"; }
 argv() { tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log"; }
 
 # WK1: 役の端末へ --enter 付きで 1 行入力する。
@@ -77,12 +77,12 @@ teardown
 # WK7: 使用法エラーは 2。
 setup; wake --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "WK7 使用法エラー" || fail "WK7"; teardown
-setup; bash "$P/bin/orca-wake.sh" --role design >/dev/null 2>&1
+setup; node "$P/bin/orca-wake.ts" --role design >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "WK7b --workers は必須" || fail "WK7b"; teardown
 
 # WK8: 読めない workers.json は起こせなかったとして 1（使用法エラーにしない）。
 setup
-bash "$P/bin/orca-wake.sh" --workers "$ORCA_STUB_DIR/nope.json" --role design >/dev/null 2>&1
+node "$P/bin/orca-wake.ts" --workers "$ORCA_STUB_DIR/nope.json" --role design >/dev/null 2>&1
 [[ $? -eq 1 ]] && ok "WK8 読めない workers.json は 1" || fail "WK8"
 teardown
 

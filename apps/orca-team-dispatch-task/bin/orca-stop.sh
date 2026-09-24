@@ -123,7 +123,7 @@ esac
 if [[ -n "$PEER" ]] && waiting "$PEER"; then
   if [[ "$SUBJ" == review-skipped:* ]]; then BODY="the $ROLE reviewer was stopped by the user; continue without review"
   else BODY="the $ROLE worker was stopped by the user; there is nothing more to review"; fi
-  if bash "$HERE/orca-send.sh" --workers "$SD/workers.json" --to "$PEER" --subject "$SUBJ" --body "$BODY" >/dev/null; then
+  if node "$HERE/orca-send.ts" --workers "$SD/workers.json" --to "$PEER" --subject "$SUBJ" --body "$BODY" >/dev/null; then
     ACTED=1
   else
     log "could not tell $PEER that $ROLE was stopped; it may keep waiting"
