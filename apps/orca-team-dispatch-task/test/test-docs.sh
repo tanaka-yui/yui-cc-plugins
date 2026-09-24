@@ -305,7 +305,7 @@ grep -q 'superpowers:brainstorming' <<<"$step1_s" || bad="$bad [step1-no-brainst
 [[ -z "$bad" ]] && ok "SK18 親は設計せずすぐ dispatch する" || fail "SK18:$bad"
 
 # SK19: 取り込み方は Step 1b の同じ呼び出しで毎回尋ね、Step 2 のガードが省略を実行不能にする。
-#       Step 4 は記録された値を読む（cmux 版の 1e と同じく、設定は推奨であって省く理由ではない）
+#       Step 4 は記録された値を `orca-state.ts integration` で読む（設計 6 章で jq の block から入口へ移した）
 bad=""
 step1b_s=$(sed -n '/^## Step 1b: /,/^## Step 2: /p' "$S")
 step1b_g=$(sed -n '/^## Step 1b: /,/^## Step 2: /p' "$G")
@@ -317,7 +317,7 @@ done
 for f in "$S" "$G"; do
   grep -q 'INTEGRATION:?' "$f" || bad="$bad [guard:$(basename "$f")]"
   grep -q -- '--integration "\$INTEGRATION"' "$f" || bad="$bad [flag:$(basename "$f")]"
-  sed -n '/^## Step 4: /,/^## Step 5: /p' "$f" | grep -q "jq -r '.integration" \
+  sed -n '/^## Step 4: /,/^## Step 5: /p' "$f" | grep -qF 'orca-state.ts" integration --status-dir "$SD"' \
     || bad="$bad [step4-reads-record:$(basename "$f")]"
 done
 [[ -z "$bad" ]] && ok "SK19 取り込み方を毎回尋ねて記録する" || fail "SK19:$bad"
@@ -402,10 +402,96 @@ rm -f "$probe"
 #       文書も .sh の入口を名指ししない（呼べない入口を教えると、呼び出し側が bash で .ts を叩いて落ちる）
 bad=""
 for f in "$P"/bin/*.sh "$P"/skills/orca-team-dispatch-task/scripts/*.sh; do [[ -e "$f" ]] && bad="$bad [$(basename "$f")]"; done
-names='orca-(wait|start|stop|merge|pr|issue|recover|send|wake)|review-state|completion|report-status|config-(lib|resolve|edit)|issue-fetch'
+names='orca-(wait|start|stop|merge|pr|issue|issue-loop|recover|send|wake|state)|review-state|completion|report-status|config-(lib|resolve|edit)|issue-fetch'
 hits=$(grep -nE "(^|[^[:alnum:]_-])($names)\.sh" "$S" "$G" "$P/README.md" "$P/CLAUDE.md" | head -3)
 [[ -z "$hits" ]] || bad="$bad [$hits]"
 [[ -z "$bad" ]] && ok "SK25 入口は全部 .ts で、文書もそれを名指しする" || fail "SK25:$bad"
+
+# SK26: ★ **文書の bash block に判定を書かない**（設計 1 章・6 章）。block は呼び出し側のシェル（mac も WSL も
+#       zsh）で走り、shell 変数は tool call を跨がない。置いてよいのは空行、コメント、ガード `: "${VAR:?...}"`
+#       （1 行に 1 つ。文言に `'`、`$`、バッククォートを書かない — bash は `"${VAR:?...'...}"` の `'` を引用の開始と読み、block 全体が
+#       構文エラーになる）、入口の呼び出し（`node "$PLUGIN/...`・`"$ORCA_BIN" ...`・`gh repo view ...`）とその続きの
+#       行だけ。呼び出しの行は `$(`・バッククォート・`${` を持たず、`"..."` の外は英数字と `-_./=:,@%+` と空白だけ。
+#       例外は 1 行目で見分ける 3 つ: 冒頭の PLUGIN / ORCA_BIN の定義、Step 1 の依頼ファイル（SK6b が走らせる）、
+#       切り離した待機（SK22 が固定する）。awk は gawk / mawk / BSD awk で同じに動く形（`[$]` など）で書く
+block_logic() {   # $1 = file。違反した行を「<block 番号>: <行>」で出す
+  awk -v q="'" '
+    BEGIN { guard = "^: \"[$][{][A-Za-z_][A-Za-z0-9_]*:[?][^\"$`" q "]*[}]\"$" }
+    /^```bash$/ { k = 1; b++; n = 0; exempt = 0; cont = 0; next }
+    k && /^```$/ { k = 0; next }
+    !k { next }
+    {
+      n++
+      if (n == 1 && ($0 ~ /^PLUGIN="[$][{]CLAUDE_PLUGIN_ROOT[}]"$/ || $0 ~ /^SLUG=</ || $0 ~ /^setsid nohup /)) exempt = 1
+      if (exempt || $0 ~ /^[[:space:]]*(#|$)/) next
+      if (!cont && $0 ~ guard) next
+      bare = $0; gsub(/"[^"]*"/, "", bare); sub(/\\$/, "", bare)
+      start = cont || $0 ~ /^(node "[$]PLUGIN\/|"[$]ORCA_BIN" |gh repo view )/
+      if (!start || $0 ~ /[$][(]|`|[$][{]/ || bare ~ /[^-A-Za-z0-9_.\/=:,@%+ ]/) print b ": " $0
+      cont = ($0 ~ /\\$/)
+    }' "$1"
+}
+bad=""
+for f in "$S" "$G"; do
+  hits=$(block_logic "$f")
+  [[ -z "$hits" ]] || bad="$bad [$(basename "$f"): $(head -3 <<<"$hits" | tr '\n' ' ')]"
+done
+# 検査そのものが効くこと。規則を緩めたり壊したりしたら、ここで落ちる
+probe=$(mktemp)
+printf '%s\n' '```bash' ': "${PLUGIN:?run the block at the top of this file first}"' \
+  'node "$PLUGIN/bin/x.ts" --run "$RUN" \' '  --slug "<slug printed above>"' '```' \
+  '```bash' 'node "$PLUGIN/bin/x.ts" ${RUN:+--run "$RUN"}' '```' \
+  '```bash' 'OUT=$(node "$PLUGIN/bin/x.ts")' '```' \
+  '```bash' 'jq -r .integration "$SD/workers.json"' '```' \
+  '```bash' '"$ORCA_BIN" account list --json | jq .result' '```' \
+  '```bash' ": \"\${SLUG:?set SLUG to that task's slug}\"" 'node "$PLUGIN/bin/x.ts" --slug "$SLUG"' '```' \
+  '```bash' ': "${SD:?$(touch /tmp/x)}"' 'node "$PLUGIN/bin/x.ts" --status-dir "$SD"' '```' > "$probe"
+[[ "$(block_logic "$probe" | cut -d: -f1 | tr '\n' ' ')" == '2 3 4 5 6 7 ' ]] || bad="$bad [checker]"
+rm -f "$probe"
+[[ -z "$bad" ]] && ok "SK26 bash block は判定を持たず入口を呼ぶだけ" || fail "SK26:$bad"
+
+# SK27: ★ **block を zsh で走らせても、入口に届く argv が bash と同じ**（設計 3-5）。2026-09-23 の [C1] 誤停止と
+#       同じ種類の違い — zsh は `${RUN:+--run "$RUN"}` を 1 語にし、入口は `unknown option` で落ちる。bash は
+#       ガードの `'` で構文エラーになる — を、block そのものを両方のシェルで走らせて捕まえる。入口・Orca CLI・gh は
+#       argv を印字するだけのスタブに替える。例外は SK26 と同じ 3 つ。zsh は -f で起動し、走らせる機械の起動
+#       ファイルに結果を左右させない
+if command -v zsh >/dev/null 2>&1; then
+  bad=""; ran=0
+  stub=$(mktemp -d); blk=$(mktemp)
+  for f in "$P"/bin/*.ts "$P"/skills/orca-team-dispatch-task/scripts/*.ts; do
+    rel="${f#"$P"/}"; mkdir -p "$stub/$(dirname "$rel")"
+    printf "process.stdout.write('%s ' + JSON.stringify(process.argv.slice(2)) + String.fromCharCode(10))\n" "$rel" \
+      > "$stub/$rel"
+  done
+  mkdir -p "$stub/path"
+  for x in "$stub/orca" "$stub/path/gh"; do
+    printf '%s\n' '#!/usr/bin/env bash' 'printf "%s" "$(basename "$0")"; printf " [%s]" "$@"; echo' > "$x"
+    chmod +x "$x"
+  done
+  envs=(PLUGIN="$stub" ORCA_BIN="$stub/orca" PATH="$stub/path:$PATH" SD=/sd SLUG=s REQ=/req NUM=7
+        DESIGN_MODE=plan INTEGRATION=merge ROLE=design TERM_HANDLE=term_x AGENT=claude
+        MODEL='claude-opus-5-5[1m]' EFFORT=max)
+  total=$(grep -c '^```bash$' "$S")
+  for ((n = 1; n <= total; n++)); do
+    awk -v n="$n" '/^```bash$/ { b++; if (b == n) { f = 1; next } } f && /^```$/ { exit } f { print }' "$S" > "$blk"
+    case "$(head -1 "$blk")" in 'PLUGIN="${CLAUDE_PLUGIN_ROOT}"'|'SLUG=<'*|'setsid nohup '*) continue ;; esac
+    # 値のあるとき: 両方とも成功し、同じ argv を渡す
+    b=$(env "${envs[@]}" RUN=run_x REPO=o/r bash "$blk" 2>/dev/null); brc=$?
+    z=$(env "${envs[@]}" RUN=run_x REPO=o/r zsh -f "$blk" 2>/dev/null); zrc=$?
+    [[ "$brc" -eq 0 && "$zrc" -eq 0 && -n "$b" && "$b" == "$z" ]] || bad="$bad [block $n: bash=$brc zsh=$zrc]"
+    # 空のとき（最初のタスクの RUN、merge の REPO）: 同じ argv を渡すか、両方ともガードで止まる
+    # （ガードの exit code は bash と zsh で違うので、成否だけを比べる）
+    b=$(env "${envs[@]}" RUN= REPO= bash "$blk" 2>/dev/null); brc=$?
+    z=$(env "${envs[@]}" RUN= REPO= zsh -f "$blk" 2>/dev/null); zrc=$?
+    [[ "$b" == "$z" && $((brc == 0)) -eq $((zrc == 0)) ]] || bad="$bad [block $n empty: bash=$brc zsh=$zrc]"
+    ran=$((ran + 1))
+  done
+  rm -rf "$stub" "$blk"
+  [[ "$ran" -ge 25 ]] || bad="$bad [ran:$ran]"
+  [[ -z "$bad" ]] && ok "SK27 block は zsh でも bash と同じ argv を入口へ渡す ($ran blocks)" || fail "SK27:$bad"
+else
+  echo "SKIP: SK27 zsh が無い"
+fi
 
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \

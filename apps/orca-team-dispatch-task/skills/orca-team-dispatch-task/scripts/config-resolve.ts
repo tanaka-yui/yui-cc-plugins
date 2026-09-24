@@ -1,10 +1,11 @@
 // global / project / コマンドラインの設定をロール単位で解決し JSON で出す（旧版の設定解決から移植）。
 //
-// Usage: node config-resolve.ts --project-root <path> [--review-mode <on|off>] [--phase-b <on|off>]
+// Usage: node config-resolve.ts [--project-root <path>] [--review-mode <on|off>] [--phase-b <on|off>]
 //                               [--integration <merge|pr>] [--setup <skip|run>]
 //                               [--design-mode <direct|plan|brainstorm>]
 //                               [--set <role>.<field>=<value>]...
 // Exit:  0 = 解決した / 1 = 設定が読めない / 2 = 使用法エラー
+// --project-root の既定は git rev-parse --show-toplevel（git の外なら exit 2）
 //
 // 優先順位は override > project > global > ロール既定（lib/config.ts の DEFAULT_TUPLES）。
 // **設定ファイルが 1 つも無いのは正常**で、その場合は各ロールが既定 tuple で走る。
@@ -33,6 +34,7 @@ import {
   validToggle,
 } from '../../../lib/config.ts'
 import { asObject, get, type JsonObject, parseJson } from '../../../lib/json.ts'
+import { run } from '../../../lib/sys.ts'
 
 import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
 
@@ -125,7 +127,13 @@ const main = (argv: string[]): number => {
       return die(NAME, `unknown argument '${flag}'`)
     }
   }
-  if (projectRoot === '') return die(NAME, '--project-root is required')
+  // ★ 省けば、いま居る checkout の toplevel（orca-start.ts / orca-issue.ts の --repo-root と同じ既定）。
+  //   SKILL.md の S0 / S1 / Step 1b は `RR=$(git rev-parse --show-toplevel)` を block に書かない
+  if (projectRoot === '') {
+    const found = run('git', ['rev-parse', '--show-toplevel'])
+    if (found.rc !== 0) return die(NAME, 'not in a git repo')
+    projectRoot = found.stdout.trim()
+  }
   let isDirectory = false
   try {
     isDirectory = statSync(projectRoot).isDirectory()

@@ -1,8 +1,12 @@
 // config.json を原子的に読み書きする（旧版の設定編集から移植）。**手で JSON を組み立ててはならない。**
 //
-// Usage: node config-edit.ts --config <path> [--set <key>=<value>]... [--unset <key>]...
-//        node config-edit.ts --config <path> --get <key>
-//        node config-edit.ts --config <path> --show
+// Usage: node config-edit.ts (--config <path> | --layer <global|project> [--project-root <dir>])
+//                            [--set <key>=<value>]... [--unset <key>]...
+//        node config-edit.ts (--config <path> | --layer ...) --get <key>
+//        node config-edit.ts (--config <path> | --layer ...) --show
+//
+// --layer は層のファイルを lib/config.ts から決める（global = 設定ホームの config.json、project = <root>/.dispatch/config.json）。
+// project の --project-root の既定は git rev-parse --show-toplevel。SKILL.md の S1 / S4 / R は層の path を block で運ばない
 //
 // 扱えるキー:
 //   review_mode / phase_b / integration / setup / design_mode   set / unset
@@ -17,10 +21,12 @@
 
 import {
   DEFAULT_TUPLES,
+  globalConfigFile,
   isRole,
   isToggle,
   knownAgent,
   normalizeEffort,
+  projectConfigFile,
   type Role,
   type Toggle,
   validAgent,
@@ -30,15 +36,16 @@ import {
 } from '../../../lib/config.ts'
 import { writeAtomic } from '../../../lib/fs.ts'
 import { asObject, asString, get, type Json, type JsonObject, parseJson } from '../../../lib/json.ts'
+import { run } from '../../../lib/sys.ts'
 
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 const NAME = 'config-edit'
 const USAGE = [
-  'Usage: config-edit.ts --config <path> [--set <key>=<value>]... [--unset <key>]...',
-  '       config-edit.ts --config <path> --get <key>',
-  '       config-edit.ts --config <path> --show',
+  'Usage: config-edit.ts (--config <path> | --layer <global|project> [--project-root <dir>]) [--set <key>=<value>]... [--unset <key>]...',
+  '       config-edit.ts (--config <path> | --layer ...) --get <key>',
+  '       config-edit.ts (--config <path> | --layer ...) --show',
 ]
 
 // 使用法の誤りは理由と Usage を出して exit 2（旧版の die_usage と同じ）
@@ -127,6 +134,8 @@ const readConfig = (file: string): Json | null => {
 
 const main = (argv: string[]): number => {
   let config = ''
+  let layer = ''
+  let projectRoot = ''
   let getKey = ''
   let show = false
   const ops: Op[] = []
@@ -141,6 +150,12 @@ const main = (argv: string[]): number => {
     if (flag === '--config') {
       if (value === undefined) return dieUsage('--config requires a value')
       config = value
+    } else if (flag === '--layer') {
+      if (value === undefined) return dieUsage('--layer requires global or project')
+      layer = value
+    } else if (flag === '--project-root') {
+      if (value === undefined) return dieUsage('--project-root requires a directory')
+      projectRoot = value
     } else if (flag === '--set') {
       if (value === undefined) return dieUsage('--set requires <key>=<value>')
       const at = value.indexOf('=')
@@ -158,7 +173,18 @@ const main = (argv: string[]): number => {
     }
     index += 2
   }
-  if (config === '') return dieUsage('--config is required')
+  if (config !== '' && layer !== '') return dieUsage('specify --config or --layer, not both')
+  if (projectRoot !== '' && layer !== 'project') return dieUsage('--project-root goes with --layer project')
+  if (layer === 'global') config = globalConfigFile()
+  else if (layer === 'project') {
+    if (projectRoot === '') {
+      const found = run('git', ['rev-parse', '--show-toplevel'])
+      if (found.rc !== 0) return dieUsage('not in a git repo')
+      projectRoot = found.stdout.trim()
+    }
+    config = projectConfigFile(projectRoot)
+  } else if (layer !== '') return dieUsage(`--layer must be global or project: ${layer}`)
+  if (config === '') return dieUsage('--config or --layer is required')
   const modes = (ops.length > 0 ? 1 : 0) + (show ? 1 : 0) + (getKey !== '' ? 1 : 0)
   if (modes !== 1) return dieUsage('specify exactly one of --set/--unset, --get, or --show')
   const unreadable = `cannot read ${config} (invalid JSON?)`

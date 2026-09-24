@@ -376,4 +376,33 @@ out=$(node "$P/bin/orca-issue.ts" --state-file "$SF" --issue 5 --slug issue-5-x 
   && ok "IS25 finish は設定でなく記録した取り込み方を読む" || fail "IS25 (rc=$rc) $out"
 teardown
 
+# IS26: --state-file を省けば <repo-root>/.dispatch-issue/state.json を使う。SKILL.md の I3 は STATE を block から
+#       block へ運ばない（shell 変数は tool call を跨がない）。場所は orca-issue-loop.ts と同じく lib/issue.ts が決める
+setup; worker_done succeeded done
+out=$(node "$P/bin/orca-issue.ts" --issue 5 --slug issue-5-x --request-file "$REQ" --repo-root "$R" \
+        --max-waits 1 --timeout-ms 1 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$(jq -r '.issues["5"].status' "$SF")" == done ]] \
+  && ok "IS26 --state-file の既定は repo の .dispatch-issue/state.json" || fail "IS26 (rc=$rc) $out"
+teardown
+
+# IS27: `--run ''` は --run を渡さないのと同じく Run を作る。I3 のパス 1 は最初の issue で RUN を空のまま渡す
+#       （`${RUN:+--run "$RUN"}` は zsh では 1 語になり、`unknown option: --run run_x` で落ちた）
+setup; worker_done succeeded done
+run_issue --phase dispatch --run '' >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && grep -q '^orchestration run-create ' "$ORCA_STUB_DIR/calls.log" \
+  && ok "IS27 空の --run は Run を作る" || fail "IS27 (rc=$rc)"
+teardown
+
+# IS28: `--repo ''` は merge では使われず、pr では IS21 と同じく「渡されていない」として止まる。
+#       I3 のパス 3 は merge の実行で REPO を空のまま渡す
+setup; worker_done succeeded done
+run_issue --repo '' >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && -f "$R/WORK.md" ]] || fail "IS28 merge (rc=$rc)"
+teardown
+setup; pr_mode; worker_done succeeded done
+out=$(run_issue --repo '' 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'--repo <owner/repo> was not given'* ]] && ! grep -q 'pr create' <(ghlog) \
+  && ok "IS28 空の --repo は merge では無害で、pr では渡されていないのと同じ" || fail "IS28 pr (rc=$rc) $out"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

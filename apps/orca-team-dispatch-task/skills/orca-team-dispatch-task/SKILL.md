@@ -107,26 +107,30 @@ Step 1**. A layer file holding only third-party keys is not configured.
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
-RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-CFG=$(node "$SCRIPTS/config-resolve.ts" --project-root "$RR") || exit 1
-jq -r 'if .configured then "configured" else "not configured" end' <<<"$CFG"
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
 ```
 
-When it prints `not configured`, ask one question with three answers: configure now (go to
-S1), dispatch on the built-in defaults, or set values for this one dispatch only. **Declining
-is a real answer** — dispatch on the defaults and do not ask again in this session. Never
-block a dispatch on this question, and never ask it when the answer is already `configured`.
+It prints the resolved configuration of the repository you are in as JSON. Exit 1 means a layer
+is present but unreadable, and exit 2 means you are not inside a git repository; either way, stop
+and tell the user. When its `configured` field is `false`, ask one question with three answers:
+configure now (go to S1), dispatch on the built-in defaults, or set values for this one dispatch
+only. **Declining is a real answer** — dispatch on the defaults and do not ask again in this
+session. Never block a dispatch on this question, and never ask it when `configured` is already
+`true`.
 
 ### S1. Show the current state
 
 Show both layers, the resolved tuple, and which accounts Orca holds. This writes nothing.
 
 ```bash
-printf 'resolved:\n'; jq '.roles' <<<"$CFG"
-printf 'global:\n';   node "$SCRIPTS/config-edit.ts" --config "$(jq -r .global_config  <<<"$CFG")" --show
-printf 'project:\n';  node "$SCRIPTS/config-edit.ts" --config "$(jq -r .project_config <<<"$CFG")" --show
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer global --show
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer project --show
 ```
+
+It prints three JSON documents in this order: the resolved configuration, whose `roles` field is
+the resolved tuple, then the global layer, then the project layer. A layer with no file prints `{}`.
 
 The account an agent signs in as is **not** part of a role tuple, and this skill cannot
 change it. Orca's CLI has only `account add` and `account list`; nothing selects the active
@@ -135,10 +139,12 @@ user knows which account their dispatch will spend, and say that switching happe
 Orca app:
 
 ```bash
-"$ORCA_BIN" account list --json | jq '.result
-  | {claude: {accounts: [.claude.accounts[]?.id], active: .claude.activeAccountIdsByRuntime},
-     codex:  {accounts: [.codex.accounts[]?.id],  active: .codex.activeAccountIdsByRuntime}}'
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-state.ts" accounts
 ```
+
+It prints, for `claude` and `codex`, the ids of the accounts Orca holds and the active account for
+each runtime.
 
 ### S2. Ask which layer, then ask the tuple
 
@@ -163,16 +169,15 @@ refusing it. `config-edit.ts` validates again and writes nothing if any part is 
 
 Show the chosen file before and after, and offer write or abort. On write, make **exactly
 one** `config-edit.ts` call carrying every `--set`, so the whole result lands in a single
-atomic move and a rejected value leaves the file untouched. For the project layer, `mkdir -p`
-its `.dispatch` directory first, and tell the user it now shadows the global layer for this
-repository.
+atomic move and a rejected value leaves the file untouched. `--layer` names the file, and the call creates its directory when there is none yet. For the
+project layer, tell the user it now shadows the global layer for this repository.
 
 ```bash
-LAYER=$(jq -r .global_config <<<"$CFG")   # or .project_config for the project layer
-mkdir -p "$(dirname "$LAYER")"
-node "$SCRIPTS/config-edit.ts" --config "$LAYER" \
+: "${PLUGIN:?run the block at the top of this file first}"
+# --layer global, or --layer project for the project layer, in both calls.
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer global \
   --set roles.design.agent="$AGENT" --set roles.design.model="$MODEL" --set roles.design.effort="$EFFORT"
-node "$SCRIPTS/config-edit.ts" --config "$LAYER" --show
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer global --show
 ```
 
 Drop the `--set` for any dimension the user left unset, and use `--unset` to clear one that
@@ -184,7 +189,9 @@ Ask which layer, then clear only the key this skill owns. Other keys in that fil
 and an absent file is not created.
 
 ```bash
-node "$SCRIPTS/config-edit.ts" --config "$LAYER" --unset roles
+: "${PLUGIN:?run the block at the top of this file first}"
+# --layer global, or --layer project for the project layer.
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer global --unset roles
 ```
 
 Report what changed and offer to continue at S1.
@@ -230,24 +237,19 @@ Step 5 decides and Step 6 asks, exactly as for a hand-written dispatch.
 
 ### I0. Preflight
 
-Check `gh`, `jq` and the Orca runtime, then take the lock. **Do not start if the lock is
+Check `gh` and the Orca runtime, then take the lock. **Do not start if the lock is
 live** — two loops claiming the same issues collide on the same worktree name.
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
-RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-STATE="$RR/.dispatch-issue/state.json"
-command -v gh >/dev/null 2>&1 || { echo "gh is not installed" >&2; exit 1; }
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" lock-check || exit 1
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" lock-acquire --lease-min 60 || exit 1
-# The state file and its lock would otherwise leave the parent checkout dirty, and every
-# merge refuses a dirty checkout. Exclude the directory the way `.dispatch/` is excluded.
-EX=$(git -C "$RR" rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$EX")" \
-  && grep -qxF '.dispatch-issue/' "$EX" 2>/dev/null || printf '.dispatch-issue/\n' >> "$EX"
+node "$PLUGIN/bin/orca-issue-loop.ts" start
 ```
 
-`lock-acquire` needs a stable session id; export `LOOP_SESSION_ID` if the environment does
+It takes the lock next to the state file, `<repo root>/.dispatch-issue/state.json`, and prints that
+path as `state_file=`. It also adds `.dispatch-issue/` to the repository's `info/exclude` the way
+`.dispatch/` is excluded: the state and its lock would otherwise leave the parent checkout dirty, and
+every merge refuses a dirty checkout. Exit 1 means a check failed or the lock is live, and nothing was
+taken. Taking the lock needs a stable session id; export `LOOP_SESSION_ID` if the environment does
 not already provide one. **Release the lock on every exit path**, including the ones you did
 not plan for.
 
@@ -259,29 +261,19 @@ batch count. Do I0, then claim that issue and carry it. **Claiming goes through 
 the label again when the state cannot be written.
 
 ```bash
-: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${NUM:?set NUM to the issue number given on the command line}"
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" init \
-  --config-json '{"concurrency":1}' --filter-json '{"issue":"named"}' || exit 1
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" ensure-labels || exit 1
-CLAIM=$(node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" \
-          fetch --issue "$NUM" --limit 1 --batch 1) || exit 1
-[[ "$(jq 'length' <<<"$CLAIM")" -eq 1 ]] || {
-  echo "issue #$NUM was not claimed; it is already recorded in $STATE" >&2
-  exit 1
-}
-SLUG=$(jq -r '.[0].slug' <<<"$CLAIM")
-REQ=$(mktemp); jq -r '.[0] | "\(.title)\n\n\(.body)"' <<<"$CLAIM" > "$REQ"
-printf 'slug=%s\nrequest_file=%s\n' "$SLUG" "$REQ"
+node "$PLUGIN/bin/orca-issue-loop.ts" claim --issue "$NUM"
 ```
 
-An empty claim is not a failure to hide: it means the issue is already in the state file,
-from this run or an earlier one. Say which, and stop rather than claiming it twice.
+It prints `slug=` and `request_file=`, a file holding the issue's title and body; pass 1 of I3 takes
+both. Exit 1 with `was not claimed` is not a failure to hide: it means the issue is already in the
+state file, from this run or an earlier one. Say which, and stop rather than claiming it twice.
 
-Then carry it with the I3 block and release the lock with the I4 block. **Skip I1 and I2**
-— there is no batch. `init` is in the block above because `fetch` needs the state file;
-`reconcile` is deliberately left out, because a named issue does not depend on the rest of
-the state and `fetch --issue` already refuses one that is already recorded.
+Then carry it with the I3 blocks, with `RUN` empty in pass 1, and release the lock with the I4
+block. **Skip I1 and I2** — there is no batch. `claim` runs `init` first because `fetch` needs the
+state file; `reconcile` is deliberately left out, because a named issue does not depend on the rest
+of the state and `fetch --issue` already refuses one that is already recorded.
 
 ### I1. Ask once, then stop asking
 
@@ -305,21 +297,18 @@ change what the run costs and where the work ends up.
 ### I2. Reconcile before claiming anything
 
 ```bash
-: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" init \
-  --config-json '{"concurrency":5}' --filter-json '{"state":"open"}' || exit 1
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" ensure-labels || exit 1
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" reconcile
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-issue-loop.ts" reconcile
 ```
 
-**`reconcile` reporting `abort` stops the run.** It means an earlier run left an issue marked
+It prints JSON whose `action` is `ok` or `abort`, with the `reasons`. **`reconcile` reporting `abort` stops the run.** It means an earlier run left an issue marked
 as dispatched, and that worker may still be alive. Release the lock, show the reasons, and
 stop. Do not clear the state by hand.
 
 ### I3. Claim a batch and carry each issue
 
-`fetch` claims up to `--limit` issues and prints them as JSON, each with the `slug` it
-assigned. Exit 3 means nothing could be claimed and exit 4 means exhaustion could not be
+`fetch` — `issue-fetch.ts` in the skill's `scripts/` directory, given the `state_file` I0 printed as
+`--state-file` — claims up to `--limit` issues and prints them as JSON, each with the `slug` it assigned. Exit 3 means nothing could be claimed and exit 4 means exhaustion could not be
 confirmed; **both end the run rather than looping again**.
 
 **The batch runs in parallel, in three passes.** Dispatch every issue first, then wait for
@@ -331,15 +320,15 @@ Pass 1, once per issue. Write its title and body to a request file, then:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-: "${STATE:?run the I0 block first}"
 : "${NUM:?set NUM, SLUG and REQ from the claimed issue}"
 : "${SLUG:?set NUM, SLUG and REQ from the claimed issue}"
 : "${REQ:?set NUM, SLUG and REQ from the claimed issue}"
-node "$PLUGIN/bin/orca-issue.ts" --state-file "$STATE" --phase dispatch \
-  --issue "$NUM" --slug "$SLUG" --request-file "$REQ" ${RUN:+--run "$RUN"}
+# RUN is empty for the first issue and the run_id it printed for every later one.
+node "$PLUGIN/bin/orca-issue.ts" --phase dispatch --issue "$NUM" --slug "$SLUG" \
+  --request-file "$REQ" --run "$RUN"
 ```
 
-**Keep the `run_id` it prints and pass it as `--run` for every later issue in the batch**, so
+**Keep the `run_id` it prints and set `RUN` to it for every later issue in the batch**, so
 the whole batch shares one Run and one parent mailbox. Keep every printed `status_dir` too.
 An issue that fails to dispatch is already marked `dispatch/failed` with its resources kept;
 carry on with the next one, and leave it out of pass 2.
@@ -364,18 +353,17 @@ Pass 3, once per issue that dispatched. It merges, moves the labels and closes t
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-: "${STATE:?run the I0 block first}"
 : "${NUM:?set NUM and SLUG from the issue you dispatched}"
 : "${SLUG:?set NUM and SLUG from the issue you dispatched}"
-node "$PLUGIN/bin/orca-issue.ts" --state-file "$STATE" --phase finish \
-  --issue "$NUM" --slug "$SLUG" ${REPO:+--repo "$REPO"}
+# REPO is the owner/repo printed below when integration is pr, and empty when it is merge.
+node "$PLUGIN/bin/orca-issue.ts" --phase finish --issue "$NUM" --slug "$SLUG" --repo "$REPO"
 ```
 
-When `integration` is `pr`, resolve the repository **once for the whole run** and pass it as
-`REPO`, for the reason given in Step 4:
+When `integration` is `pr`, resolve the repository **once for the whole run** and set `REPO` to
+what this prints, for the reason given in Step 4. If it fails, stop rather than guess the repository:
 
 ```bash
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
+gh repo view --json nameWithOwner -q .nameWithOwner
 ```
 
 **A run that opens pull requests does not close its issues.** Each pull request body carries
@@ -392,8 +380,8 @@ Report what happened per issue, then claim the next batch. Stop when the batch l
 reached, when `fetch` finds nothing, or on exit 3 or 4. **Release the lock at the end:**
 
 ```bash
-: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" lock-release
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-issue-loop.ts" release
 ```
 
 Then go to Step 5 for every `status_dir` the run produced, calling `orca-cleanup.ts plan` once
@@ -436,13 +424,12 @@ once, the way `cmux-team-dispatch-task` asks its Step 1c. A configured `design_m
 recommendation this question starts on, never a reason to skip it — how a task is best started
 differs task by task.
 
-Read the configured value first:
+Read the configured values first; they are the `design_mode` and `integration` fields of what this
+prints:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts" --project-root "$RR" \
-  | jq -r '"design_mode=\(.design_mode) integration=\(.integration)"'
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
 ```
 
 Then ask which tasks should start with brainstorming. Each question is `multiSelect` and its
@@ -485,24 +472,23 @@ call passes that same `run_id` back with `--run`, so all tasks share one Run and
 mailbox.** Call them one after another, not in parallel.
 
 ```bash
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
-: "${DESIGN_MODE:?set DESIGN_MODE to this task's Step 1b answer: brainstorm or plan}"
+: "${DESIGN_MODE:?set DESIGN_MODE to the Step 1b answer for this task: brainstorm or plan}"
 : "${INTEGRATION:?set INTEGRATION to the Step 1b answer: merge or pr}"
-RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
-OUT=$(node "$PLUGIN/bin/orca-start.ts" --request-file "$REQ" --slug "$SLUG" \
-        --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
-        --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
-SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
-RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
-printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
+# RUN is empty for the first task and the run_id it printed for every task after it.
+node "$PLUGIN/bin/orca-start.ts" --request-file "$REQ" --slug "$SLUG" \
+  --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
+  --objective "<one line naming the outcome>" --run "$RUN"
 ```
 
 Take `--objective` from the request's own words; it names the outcome, it is not a design to
-work out first. Shell variables do not cross tool calls here either, and `DESIGN_MODE` and
-`INTEGRATION` are among them: set them in this call from the Step 1b answers.
-`INTEGRATION` is recorded in `workers.json` when the task starts; `--resume` and
-`--phase exec` keep the recorded value and refuse a new one. Keep the printed `status_dir` of every task and
-the single `run_id`; Step 3, Step 4 and Step 5 all need them by their exact values.
+work out first. Shell variables do not cross tool calls here either, and `DESIGN_MODE`,
+`INTEGRATION` and `RUN` are among them: set them in this call from the Step 1b answers and, after
+the first task, from the `run_id` it printed. `INTEGRATION` is recorded in `workers.json` when the
+task starts; `--resume` and `--phase exec` keep the recorded value and refuse a new one. It prints
+`status_dir=` and `run_id=`; keep the printed `status_dir` of every task and the single `run_id`.
+Step 3, Step 4 and Step 5 all need them by their exact values.
 
 Exit 1 means that task's worker did not start. If the message says resources are KEPT, the
 Task already exists: do not delete anything, and run the inspection command it prints. Tasks
@@ -579,10 +565,12 @@ never acknowledged until it has been processed in full. To find out whether anyo
 waiting, read the stamp the wait leaves for every task it watches:
 
 ```bash
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-jq -r '"age=\(now - .beat | floor)s window=\(.window_ms / 1000)s"' "$SD/wait.json" 2>/dev/null \
-  || echo "no wait has ever stamped this task"
+node "$PLUGIN/bin/orca-state.ts" wait-stamp --status-dir "$SD"
 ```
+
+It prints `age=<seconds>s window=<seconds>s`, or `no wait has ever stamped this task`.
 
 An age above three windows means nobody is answering that task's workers: start the wait
 again with the same `--status-dir` set. `orca-recover.ts` reports the same thing before it
@@ -717,20 +705,23 @@ handle. Inspect without moving the cursor and stop for user direction; do not di
 message this version cannot handle:
 
 ```bash
-PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
-[[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
-"$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
 # Rerun the canonical wait only for exit 4; it retries the retention and the acknowledgement.
 # For an unhandled or contradictory batch, do not rerun it, and never ack by hand.
+node "$PLUGIN/bin/orca-state.ts" mailbox --status-dir "$SD"
 ```
 
-After that inspection, show the user the recorded outcome and result. If they explicitly
+It runs `orchestration check --peek` against the parent terminal recorded in `$SD/run.json`, which
+acknowledges nothing, and refuses when no parent terminal is recorded. If the check itself fails,
+it exits 1 and prints the reason on stderr. After that inspection, show the user the recorded outcome
+and result: read `$SD/received.json` and `$SD/roles/design/result.md`. If they explicitly
 decide to integrate a successful result, they may run this safe merge command. It performs the normal receipt, status, result, branch, and clean-checkout
 guards; it does not acknowledge the blocked batch:
 
 ```bash
-cat "$SD/received.json"
-sed -n '1,240p' "$SD/roles/design/result.md"
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
 # Only after the user has inspected both files and chosen manual integration:
 node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD"
 ```
@@ -829,12 +820,15 @@ Because the wait holds the mailbox, `design`'s own status file is what tells you
 Look at it, once per task, and check again in a minute if it is not settled yet:
 
 ```bash
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-jq -r '.status // "missing"' "$SD/roles/design/status.json" 2>/dev/null || echo missing
+node "$PLUGIN/bin/orca-state.ts" design-status --status-dir "$SD"
 ```
 
-- `$SD/roles/design/stopped.json` exists → the user stopped `design`: **do not start it**,
-  whatever the status says. Go to Step 5; the wait settles this task as failed.
+It prints one word:
+
+- `stopped` → the user stopped `design` (`$SD/roles/design/stopped.json` exists): **do not start
+  it**, whatever its status file says. Go to Step 5; the wait settles this task as failed.
 - `done` → start the stage, below.
 - `error` → **do not start it.** There is no plan worth building. Go to Step 5, and tell the
   user what `$SD/roles/design/result.md` says.
@@ -844,7 +838,7 @@ Then, once per task whose `design` reported `done`:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-: "${SLUG:?set SLUG to that task's slug}"
+: "${SLUG:?set SLUG to the slug of that task}"
 node "$PLUGIN/bin/orca-start.ts" --phase exec --slug "$SLUG"
 ```
 
@@ -874,13 +868,16 @@ First read how this dispatch was asked to come home — Step 1b's answer, record
 started:
 
 ```bash
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-jq -r '.integration // "not recorded"' "$SD/workers.json"
+node "$PLUGIN/bin/orca-state.ts" integration --status-dir "$SD"
 ```
 
 `merge` means the merge below. `pr` means the pull request block further down. `not recorded`
 means an older version started the dispatch: use the configured `integration`. Each script
-refuses the other's recorded value, so the two cannot be mixed up.
+refuses the other's recorded value, so the two cannot be mixed up. Exit 1 means
+`$SD/workers.json` cannot be read or records something other than `merge` or `pr`: do not bring that
+task home; inspect it.
 
 ```bash
 node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD"
@@ -906,12 +903,18 @@ node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD" --allow-unreviewed
 ```
 
 **When it is `pr`, use this instead of the merge above.** Do not do both: opening
-a pull request and then merging puts the work in before anyone reviews it.
+a pull request and then merging puts the work in before anyone reviews it. First resolve the repository, and stop if this fails rather than guess it:
 
 ```bash
-: "${SD:?set SD to the exact status_dir printed in Step 2}"
+gh repo view --json nameWithOwner -q .nameWithOwner
+```
+
+Then open the pull request with the `owner/repo` it printed:
+
+```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+: "${REPO:?set REPO to the owner/repo printed by gh repo view}"
 node "$PLUGIN/bin/orca-pr.ts" --status-dir "$SD" --repo "$REPO"
 ```
 

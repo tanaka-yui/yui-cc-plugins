@@ -92,26 +92,29 @@ dispatch はこの設定を読む。だから **設定が 1 つも無い dispatc
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
-RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-CFG=$(node "$SCRIPTS/config-resolve.ts" --project-root "$RR") || exit 1
-jq -r 'if .configured then "configured" else "not configured" end' <<<"$CFG"
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
 ```
 
-`not configured` と出たら、3 つの答えを持つ質問を 1 問する: 今すぐ設定する（S1 へ）/ 組み込みの
-既定のまま dispatch する / この 1 回だけ値を指定する。**断ることも正当な答えである** — 既定の
-まま dispatch し、このセッションでは二度と尋ねない。この質問で dispatch を止めてはならず、
-既に `configured` のときに尋ねてもならない。
+いま居るリポジトリの設定を解決し、JSON で表示する。exit 1 は存在するのに読めない層があること、
+exit 2 は git リポジトリの中に居ないことを表す。どちらでも止まってユーザーへ伝える。`configured` が
+`false` なら、3 つの答えを持つ質問を 1 問する: 今すぐ設定する（S1 へ）/ 組み込みの既定のまま
+dispatch する / この 1 回だけ値を指定する。**断ることも正当な答えである** — 既定のまま dispatch し、
+このセッションでは二度と尋ねない。この質問で dispatch を止めてはならず、`configured` が既に `true`
+のときに尋ねてもならない。
 
 ### S1. 現状を表示する
 
 両方の層、解決後の tuple、Orca が持っているアカウントを表示する。**何も書かない。**
 
 ```bash
-printf 'resolved:\n'; jq '.roles' <<<"$CFG"
-printf 'global:\n';   node "$SCRIPTS/config-edit.ts" --config "$(jq -r .global_config  <<<"$CFG")" --show
-printf 'project:\n';  node "$SCRIPTS/config-edit.ts" --config "$(jq -r .project_config <<<"$CFG")" --show
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer global --show
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer project --show
 ```
+
+JSON を 3 つ、この順に表示する: 解決後の設定（その `roles` が解決後の tuple）、グローバル層、
+プロジェクト層。ファイルの無い層は `{}` と表示される。
 
 agent がどのアカウントでサインインするかは role tuple の一部**ではなく**、この skill から
 変更できない。Orca の CLI には `account add` と `account list` しか無く、アクティブな
@@ -120,10 +123,12 @@ agent がどのアカウントでサインインするかは role tuple の一�
 Orca アプリ側で行う旨を伝える:
 
 ```bash
-"$ORCA_BIN" account list --json | jq '.result
-  | {claude: {accounts: [.claude.accounts[]?.id], active: .claude.activeAccountIdsByRuntime},
-     codex:  {accounts: [.codex.accounts[]?.id],  active: .codex.activeAccountIdsByRuntime}}'
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-state.ts" accounts
 ```
+
+`claude` と `codex` のそれぞれについて、Orca が持つアカウントの id と、ランタイムごとのアクティブな
+アカウントを表示する。
 
 ### S2. 層を尋ね、次に tuple を尋ねる
 
@@ -149,15 +154,15 @@ agent の候補は `claude` と `codex` を出し、それ以外は自由入力�
 選んだファイルの before と after を見せ、書き込みか中止かを選ばせる。書くときは **1 回だけ**
 `config-edit.ts` を呼び、すべての `--set` をそこに載せる。こうすると結果全体が 1 度の
 原子的な mv で入り、値が 1 つでも拒否されればファイルは元のままになる。プロジェクト層なら
-先に `.dispatch` ディレクトリを `mkdir -p` し、以後このリポジトリではグローバル層を覆うことを
-伝える。
+`--layer` がファイルを決め、ディレクトリがまだ無ければその呼び出しが作る。プロジェクト層なら、以後
+このリポジトリではグローバル層を覆うことを伝える。
 
 ```bash
-LAYER=$(jq -r .global_config <<<"$CFG")   # or .project_config for the project layer
-mkdir -p "$(dirname "$LAYER")"
-node "$SCRIPTS/config-edit.ts" --config "$LAYER" \
+: "${PLUGIN:?run the block at the top of this file first}"
+# --layer global, or --layer project for the project layer, in both calls.
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer global \
   --set roles.design.agent="$AGENT" --set roles.design.model="$MODEL" --set roles.design.effort="$EFFORT"
-node "$SCRIPTS/config-edit.ts" --config "$LAYER" --show
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer global --show
 ```
 
 未設定のままにする次元は `--set` ごと落とす。既に設定済みのものを消すには `--unset` を使う。
@@ -168,7 +173,9 @@ node "$SCRIPTS/config-edit.ts" --config "$LAYER" --show
 ファイルは作らない。
 
 ```bash
-node "$SCRIPTS/config-edit.ts" --config "$LAYER" --unset roles
+: "${PLUGIN:?run the block at the top of this file first}"
+# --layer global, or --layer project for the project layer.
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-edit.ts" --layer global --unset roles
 ```
 
 何が変わったかを報告し、S1 から続けるかを尋ねる。
@@ -214,25 +221,20 @@ dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。
 
 ### I0. 事前確認
 
-`gh` / `jq` / Orca ランタイムを確かめ、lock を取る。**lock が生きているなら開始しない** —
+`gh` と Orca ランタイムを確かめ、lock を取る。**lock が生きているなら開始しない** —
 2 つのループが同じ issue を claim すると、同じ worktree 名で衝突する。
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
-RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-STATE="$RR/.dispatch-issue/state.json"
-command -v gh >/dev/null 2>&1 || { echo "gh is not installed" >&2; exit 1; }
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" lock-check || exit 1
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" lock-acquire --lease-min 60 || exit 1
-# The state file and its lock would otherwise leave the parent checkout dirty, and every
-# merge refuses a dirty checkout. Exclude the directory the way `.dispatch/` is excluded.
-EX=$(git -C "$RR" rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$EX")" \
-  && grep -qxF '.dispatch-issue/' "$EX" 2>/dev/null || printf '.dispatch-issue/\n' >> "$EX"
+node "$PLUGIN/bin/orca-issue-loop.ts" start
 ```
 
-`lock-acquire` は安定した session id を要求する。環境が持っていなければ `LOOP_SESSION_ID` を
-export する。**どの終了経路でも lock を解放する** — 想定していなかった経路も含めて。
+state file（`<repo root>/.dispatch-issue/state.json`）の隣に lock を取り、その path を `state_file=`
+として表示する。あわせて `.dispatch-issue/` を、`.dispatch/` と同じくリポジトリの `info/exclude` へ
+入れる — 入れないと state と lock で親の checkout が dirty になり、どの merge も dirty な checkout を
+拒む。exit 1 は確認のどれかが通らなかったか lock が生きていたことを表し、何も取っていない。lock の
+取得は安定した session id を要求する。環境が持っていなければ `LOOP_SESSION_ID` を export する。
+**どの終了経路でも lock を解放する** — 想定していなかった経路も含めて。
 
 ### I1a. 単件を指定されたとき
 
@@ -242,28 +244,18 @@ export する。**どの終了経路でも lock を解放する** — 想定し�
 そのまま効く。
 
 ```bash
-: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${NUM:?set NUM to the issue number given on the command line}"
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" init \
-  --config-json '{"concurrency":1}' --filter-json '{"issue":"named"}' || exit 1
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" ensure-labels || exit 1
-CLAIM=$(node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" \
-          fetch --issue "$NUM" --limit 1 --batch 1) || exit 1
-[[ "$(jq 'length' <<<"$CLAIM")" -eq 1 ]] || {
-  echo "issue #$NUM was not claimed; it is already recorded in $STATE" >&2
-  exit 1
-}
-SLUG=$(jq -r '.[0].slug' <<<"$CLAIM")
-REQ=$(mktemp); jq -r '.[0] | "\(.title)\n\n\(.body)"' <<<"$CLAIM" > "$REQ"
-printf 'slug=%s\nrequest_file=%s\n' "$SLUG" "$REQ"
+node "$PLUGIN/bin/orca-issue-loop.ts" claim --issue "$NUM"
 ```
 
-claim が空なのは隠すべき失敗ではない。**その issue が既に state file に載っている**という
-ことであり、今回の実行のものか以前のものかを述べて、二重に claim せずに止まる。
+`slug=` と `request_file=`（issue の title と body を書いたファイル）を表示する。I3 のパス 1 がその
+両方を受け取る。`was not claimed` を伴う exit 1 は隠すべき失敗ではない。**その issue が既に state file
+に載っている**ということであり、今回の実行のものか以前のものかを述べて、二重に claim せずに止まる。
 
-そのあとは I3 のブロックで運び、I4 のブロックで lock を解放する。**I1 と I2 は飛ばす** —
-バッチが無いからである。`init` を上のブロックに入れてあるのは `fetch` が state file を
-要求するためであり、`reconcile` は**意図して外している** — 名指しされた issue は state の
+そのあとは I3 のブロックで運び（パス 1 の `RUN` は空にする）、I4 のブロックで lock を解放する。
+**I1 と I2 は飛ばす** — バッチが無いからである。`claim` が先に `init` を走らせるのは `fetch` が
+state file を要求するためであり、`reconcile` は**意図して外している** — 名指しされた issue は state の
 残りに依存せず、既に記録済みの issue は `fetch --issue` が既に拒む。
 
 ### I1. 一度だけ尋ね、あとは尋ねない
@@ -287,20 +279,17 @@ claim が空なのは隠すべき失敗ではない。**その issue が既に s
 ### I2. claim の前に整合させる
 
 ```bash
-: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" init \
-  --config-json '{"concurrency":5}' --filter-json '{"state":"open"}' || exit 1
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" ensure-labels || exit 1
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" reconcile
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-issue-loop.ts" reconcile
 ```
 
-**`reconcile` が `abort` を返したら実行を止める。**前回の実行が dispatched のままの issue を
+`action`（`ok` か `abort`）と `reasons` を持つ JSON を表示する。**`reconcile` が `abort` を返したら実行を止める。**前回の実行が dispatched のままの issue を
 残しており、その worker はまだ生きているかもしれない。lock を解放し、理由を見せて止まる。
 state を手で消してはならない。
 
 ### I3. 1 バッチを claim し、1 件ずつ運ぶ
 
-`fetch` は `--limit` 件まで claim し、割り当てた `slug` 付きの JSON で返す。exit 3 は
+`fetch`（skill の `scripts/` にある `issue-fetch.ts` に、I0 が表示した `state_file` を `--state-file` として渡す）は `--limit` 件まで claim し、割り当てた `slug` 付きの JSON で返す。exit 3 は
 「1 件も claim できなかった」、exit 4 は「尽きたと確認できなかった」であり、**どちらも
 ループし直さずに実行を終える。**
 
@@ -312,15 +301,15 @@ issue は 1 件ずつしか走らず**、バッチの大きさが意味を失う
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-: "${STATE:?run the I0 block first}"
 : "${NUM:?set NUM, SLUG and REQ from the claimed issue}"
 : "${SLUG:?set NUM, SLUG and REQ from the claimed issue}"
 : "${REQ:?set NUM, SLUG and REQ from the claimed issue}"
-node "$PLUGIN/bin/orca-issue.ts" --state-file "$STATE" --phase dispatch \
-  --issue "$NUM" --slug "$SLUG" --request-file "$REQ" ${RUN:+--run "$RUN"}
+# RUN is empty for the first issue and the run_id it printed for every later one.
+node "$PLUGIN/bin/orca-issue.ts" --phase dispatch --issue "$NUM" --slug "$SLUG" \
+  --request-file "$REQ" --run "$RUN"
 ```
 
-**印字された `run_id` を控え、そのバッチの以降の issue には `--run` で渡す** — バッチ全体が
+**印字された `run_id` を控え、そのバッチの以降の issue では `RUN` にそれを設定する** — バッチ全体が
 1 つの Run と 1 つの親メールボックスを共有するようにする。印字された `status_dir` も全部控える。
 dispatch に失敗した issue は既に `dispatch/failed` が付いて資源が残っている。次へ進み、
 その issue をパス 2 から外す。
@@ -345,18 +334,17 @@ exit 5 は**一部の失敗**であってバッチの失敗ではない。自身
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-: "${STATE:?run the I0 block first}"
 : "${NUM:?set NUM and SLUG from the issue you dispatched}"
 : "${SLUG:?set NUM and SLUG from the issue you dispatched}"
-node "$PLUGIN/bin/orca-issue.ts" --state-file "$STATE" --phase finish \
-  --issue "$NUM" --slug "$SLUG" ${REPO:+--repo "$REPO"}
+# REPO is the owner/repo printed below when integration is pr, and empty when it is merge.
+node "$PLUGIN/bin/orca-issue.ts" --phase finish --issue "$NUM" --slug "$SLUG" --repo "$REPO"
 ```
 
 `integration` が `pr` のときは、Step 4 と同じ理由で **repository を実行全体で 1 度だけ**
-解決し、`REPO` として渡す:
+解決し、これが表示したものを `REPO` に設定する。失敗したら repository を推測せずに止まる:
 
 ```bash
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
+gh repo view --json nameWithOwner -q .nameWithOwner
 ```
 
 **pull request を作る実行は issue を close しない。**各 pull request の本文に
@@ -374,8 +362,8 @@ issue ごとに何が起きたかを報告し、次のバッチを claim する�
 何も見つけなかったとき、exit 3 または 4 のときに止める。**最後に lock を解放する:**
 
 ```bash
-: "${SCRIPTS:?run the I0 block first}"; : "${STATE:?run the I0 block first}"
-node "$SCRIPTS/issue-fetch.ts" --state-file "$STATE" lock-release
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-issue-loop.ts" release
 ```
 
 そのうえで、実行が生んだすべての `status_dir` について Step 5 へ進む。`orca-cleanup.ts plan` は
@@ -417,13 +405,11 @@ Step 2 を別 call で実行するときは、その正確な path を `REQ` へ
 この質問が推奨として示す値であって、質問を省く理由ではない — 取りかかり方の適切さはタスクごとに
 異なる。
 
-まず設定値を読む:
+まず設定値を読む。これが表示するものの `design_mode` と `integration` がそれである:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts" --project-root "$RR" \
-  | jq -r '"design_mode=\(.design_mode) integration=\(.integration)"'
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
 ```
 
 そのうえで、brainstorming から始めるタスクはどれかを尋ねる。各質問は `multiSelect` で選択肢は
@@ -465,24 +451,23 @@ Step 2 で全タスクに渡す。この質問が呼び出しの 4 枠のうち 
 mailbox を共有する。**並列にではなく、順番に呼ぶ。
 
 ```bash
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
-: "${DESIGN_MODE:?set DESIGN_MODE to this task's Step 1b answer: brainstorm or plan}"
+: "${DESIGN_MODE:?set DESIGN_MODE to the Step 1b answer for this task: brainstorm or plan}"
 : "${INTEGRATION:?set INTEGRATION to the Step 1b answer: merge or pr}"
-RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
-OUT=$(node "$PLUGIN/bin/orca-start.ts" --request-file "$REQ" --slug "$SLUG" \
-        --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
-        --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
-SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
-RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
-printf 'status_dir=%s\nrun_id=%s\n' "$SD" "$RUN"
+# RUN is empty for the first task and the run_id it printed for every task after it.
+node "$PLUGIN/bin/orca-start.ts" --request-file "$REQ" --slug "$SLUG" \
+  --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
+  --objective "<one line naming the outcome>" --run "$RUN"
 ```
 
 `--objective` は依頼そのものの言葉から取る。成果を名指すだけで、先に詰めるべき設計ではない。
 
-ここでも shell 変数は tool call を跨がず、`DESIGN_MODE` と `INTEGRATION` もそうである。
-この call の中で、Step 1b の答えから設定する。`INTEGRATION` はタスクの起動時に `workers.json`
-へ記録され、`--resume` と `--phase exec` は記録された値を引き継ぎ、新しい値を拒む。全タスクの `status_dir` と 1 つの `run_id` を
-印字された値のまま控える。Step 3、Step 4、Step 5 はいずれもその正確な値を必要とする。
+ここでも shell 変数は tool call を跨がず、`DESIGN_MODE`・`INTEGRATION`・`RUN` もそうである。
+この call の中で、Step 1b の答えと、2 タスク目からは最初のタスクが印字した `run_id` から設定する。
+`INTEGRATION` はタスクの起動時に `workers.json` へ記録され、`--resume` と `--phase exec` は記録された
+値を引き継ぎ、新しい値を拒む。`status_dir=` と `run_id=` を印字するので、全タスクの `status_dir` と
+1 つの `run_id` を印字された値のまま控える。Step 3、Step 4、Step 5 はいずれもその正確な値を必要とする。
 
 exit 1 はそのタスクの worker が起動しなかったことを意味する。メッセージに resources are KEPT と
 あれば Task はすでに実在する。何も削除せず、表示された inspection コマンドを実行する。すでに
@@ -556,10 +541,12 @@ worker 自身のテスト実行がマシンを埋め、ハーネスがメモリ�
 知るには、待機が見ているタスクごとに残す鼓動を読む:
 
 ```bash
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-jq -r '"age=\(now - .beat | floor)s window=\(.window_ms / 1000)s"' "$SD/wait.json" 2>/dev/null \
-  || echo "no wait has ever stamped this task"
+node "$PLUGIN/bin/orca-state.ts" wait-stamp --status-dir "$SD"
 ```
+
+`age=<秒>s window=<秒>s` か、`no wait has ever stamped this task` を表示する。
 
 age が 3 窓を超えていれば、そのタスクの worker には誰も答えていない。同じ `--status-dir`
 の組で待機を起動し直す。`orca-recover.ts` も何かを判断する前に同じことを言うので、
@@ -687,20 +674,22 @@ queue の先頭に残り、手動統合で queue は解消されない。後続�
 捨ててはならない。
 
 ```bash
-PH=$(jq -r '.parent_handle // empty' "$SD/run.json")
-[[ -n "$PH" ]] || { echo "missing parent handle; do not acknowledge anything" >&2; exit 1; }
-"$ORCA_BIN" orchestration check --terminal "$PH" --peek --json
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
 # Rerun the canonical wait only for exit 4; it retries the retention and the acknowledgement.
 # For an unhandled or contradictory batch, do not rerun it, and never ack by hand.
+node "$PLUGIN/bin/orca-state.ts" mailbox --status-dir "$SD"
 ```
 
-前の inspection の後で、記録済み outcome と result をユーザーへ見せる。
+これは `$SD/run.json` に記録された親端末に対して `orchestration check --peek` を走らせるだけで、
+何も acknowledge しない。親端末が記録されていなければ拒む。check 自体が失敗したときは、理由を
+stderr に出して exit 1 で終わる。前の inspection の後で、記録済み outcome と result — `$SD/received.json` と `$SD/roles/design/result.md` — を読んでユーザーへ見せる。
 ユーザーが成功した result を統合すると明示的に決めた場合、次の安全な merge コマンドを実行できる。receipt、
 status、result、branch、clean checkout の通常の guard はすべて実行し、blocked な batch を acknowledge しない。
 
 ```bash
-cat "$SD/received.json"
-sed -n '1,240p' "$SD/roles/design/result.md"
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
 # Only after the user has inspected both files and chosen manual integration:
 node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD"
 ```
@@ -796,12 +785,15 @@ message が来るたびに `workers.json` を読み直すので、この節が `
 一度見る:
 
 ```bash
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-jq -r '.status // "missing"' "$SD/roles/design/status.json" 2>/dev/null || echo missing
+node "$PLUGIN/bin/orca-state.ts" design-status --status-dir "$SD"
 ```
 
-- `$SD/roles/design/stopped.json` が在る → ユーザーが `design` を止めた。status が何であれ
-  **起こしてはならない。**Step 5 へ進む。待機はこのタスクを失敗として決着させる。
+1 語で表示する:
+
+- `stopped` → ユーザーが `design` を止めた（`$SD/roles/design/stopped.json` が在る）。status ファイルが
+  何であれ **起こしてはならない。**Step 5 へ進む。待機はこのタスクを失敗として決着させる。
 - `done` → 下の手順で段を起こす。
 - `error` → **起こしてはならない。**建てる価値のある計画が無い。Step 5 へ進み、
   `$SD/roles/design/result.md` が何と言っているかをユーザーへ伝える。
@@ -811,7 +803,7 @@ jq -r '.status // "missing"' "$SD/roles/design/status.json" 2>/dev/null || echo 
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-: "${SLUG:?set SLUG to that task's slug}"
+: "${SLUG:?set SLUG to the slug of that task}"
 node "$PLUGIN/bin/orca-start.ts" --phase exec --slug "$SLUG"
 ```
 
@@ -840,13 +832,14 @@ worktree には持ち帰る成果が無い。
 まず、この dispatch がどう持ち帰るよう頼まれたか — 起動時に記録した Step 1b の答え — を読む:
 
 ```bash
+: "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
-jq -r '.integration // "not recorded"' "$SD/workers.json"
+node "$PLUGIN/bin/orca-state.ts" integration --status-dir "$SD"
 ```
 
 `merge` なら下の merge。`pr` ならさらに下の pull request の block。`not recorded` は古い版が
 起動した dispatch なので、設定の `integration` に従う。両スクリプトは相手側の記録値を拒むので、
-取り違えることはない。
+取り違えることはない。exit 1 は `$SD/workers.json` が読めないか、`merge` / `pr` 以外の値を記録していることを表す。そのタスクは持ち帰らず、調べる。
 
 ```bash
 node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD"
@@ -872,12 +865,18 @@ node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD" --allow-unreviewed
 ```
 
 **それが `pr` のときは、上の merge の代わりにこちらを使う。**両方やってはならない
-— pull request を作ったうえで merge すると、誰かがレビューする前に成果が入る。
+— pull request を作ったうえで merge すると、誰かがレビューする前に成果が入る。まず repository を解決する。失敗したら推測せずに止まる:
 
 ```bash
-: "${SD:?set SD to the exact status_dir printed in Step 2}"
+gh repo view --json nameWithOwner -q .nameWithOwner
+```
+
+そのうえで、表示された `owner/repo` で pull request を作る:
+
+```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+: "${REPO:?set REPO to the owner/repo printed by gh repo view}"
 node "$PLUGIN/bin/orca-pr.ts" --status-dir "$SD" --repo "$REPO"
 ```
 

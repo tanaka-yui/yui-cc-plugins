@@ -1,16 +1,18 @@
 // claim 済みの issue を 1 件、最後まで運ぶ。
-// Usage: node orca-issue.ts --state-file <p> --issue <N> --slug <s> [--phase dispatch|finish|all]
+// Usage: node orca-issue.ts --issue <N> --slug <s> [--state-file <p>] [--phase dispatch|finish|all]
 //        [--request-file <f>] [--run <id>] [--repo-root <p>] [--repo <owner/repo>]
 //        [--timeout-ms <n>] [--max-waits <n>]
+//        --state-file の既定は <repo-root>/.dispatch-issue/state.json。空の --run / --repo は渡さないのと同じ
 // Exit: 0 done / 1 運べなかった（資源は保持）/ 2 使用法
 // ★ dispatch → wait → finish。merge が成功してから cleanup の判断を始める。
 import { die, log } from '../lib/cli.ts'
 import { readJson } from '../lib/fs.ts'
+import { defaultStateFile, excludeStateDir } from '../lib/issue.ts'
 import { asString, get, parseJson } from '../lib/json.ts'
 import { run, runNode, which } from '../lib/sys.ts'
 
-import { appendFileSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const NAME = 'orca-issue'
@@ -83,8 +85,7 @@ const parse = (argv: string[]): Options => {
     else if (field === 'maxWaits') options.maxWaits = value
     else if (field === 'repo') options.repo = value
   }
-  if (options.stateFile === '' || options.issue === '' || options.slug === '')
-    die(NAME, '--state-file, --issue and --slug are required')
+  if (options.issue === '' || options.slug === '') die(NAME, '--issue and --slug are required')
   if (options.phase !== 'dispatch' && options.phase !== 'finish' && options.phase !== 'all')
     die(NAME, `--phase must be dispatch, finish or all: ${options.phase}`)
   if (!/^\d+$/.test(options.issue)) die(NAME, `--issue must be a number: ${options.issue}`)
@@ -97,43 +98,11 @@ const parse = (argv: string[]): Options => {
     if (found.rc !== 0) die(NAME, 'not in a git repo')
     options.repoRoot = found.stdout.trim()
   }
+  // ★ 省けば repo の .dispatch-issue/state.json（orca-issue-loop.ts の start が lock を取った場所と同じ）
+  if (options.stateFile === '') options.stateFile = defaultStateFile(options.repoRoot)
   if (which('gh') === null) die(NAME, 'gh is not installed')
   if (!readable(ISSUE_FETCH)) die(NAME, `issue-fetch.ts is missing at ${ISSUE_FETCH}`)
   return options
-}
-// 移植元の理由（bin/orca-issue.sh）:
-// ★ **state ディレクトリを repo の除外へ入れる。**`.dispatch/` と同じ理由である —
-//   入れないと state file と lock で親が常に dirty になり、`orca-merge.ts` の dirty
-//   ガードが必ず発火して **1 件も merge できない**（実測）。state file の置き場所は
-//   呼び出し側が決めるので、その directory 名を除外する。
-//   ★ **両辺を同じ形に揃えてから比べる。**片方だけ `pwd -P` で symlink を解決すると、
-//   macOS の `/var` → `/private/var` のように **repo root が symlink 越しのとき必ず外れる**
-//   （実測: fixture の親が `?? .dispatch-issue/` のままになり merge が 1 件も通らない）。
-const excludeStateDir = (options: Options): void => {
-  let stateDir = ''
-  let repoDir = options.repoRoot
-  try {
-    stateDir = realpathSync(dirname(options.stateFile))
-  } catch {
-    /* 見つからないなら追加しない */
-  }
-  try {
-    repoDir = realpathSync(repoDir)
-  } catch {
-    /* 元の値で比べる */
-  }
-  if (stateDir === '' || !stateDir.startsWith(`${repoDir}/`)) return
-  const exclude = git(options.repoRoot, 'rev-parse', '--git-path', 'info/exclude')
-  if (exclude.rc !== 0 || exclude.stdout.trim() === '') return
-  const entry = `${relative(repoDir, stateDir)}/`
-  const path = isAbsolute(exclude.stdout.trim()) ? exclude.stdout.trim() : join(options.repoRoot, exclude.stdout.trim())
-  try {
-    mkdirSync(dirname(path), { recursive: true })
-    const current = readable(path) ? readFileSync(path, 'utf8') : ''
-    if (!current.split('\n').includes(entry)) appendFileSync(path, `${entry}\n`)
-  } catch {
-    /* 除外に失敗しても dispatch は続ける */
-  }
 }
 // 移植元の理由（bin/orca-issue.sh）:
 // ★ **終端ラベルを先に付け、`dispatch/in-progress` はそのあとで外す。**間で落ちても
@@ -236,7 +205,7 @@ const failOut = (options: Options, statusDir: string, reason: string): number =>
 const main = (argv: string[]): number => {
   const options = parse(argv)
   const statusDir = join(options.repoRoot, '.dispatch', options.slug)
-  excludeStateDir(options)
+  excludeStateDir(options.stateFile, options.repoRoot)
   if (options.phase !== 'finish') {
     const porcelain = git(options.repoRoot, 'status', '--porcelain')
     if (porcelain.rc === 0 && porcelain.stdout !== '') {
