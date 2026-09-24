@@ -398,6 +398,15 @@ printf '%s\n' '```bash' 'for ROLE in $ROLES; do :; done' '```' '```bash' 'for d 
 rm -f "$probe"
 [[ -z "$bad" ]] && ok "SK24 bash block は単語分割に頼らない" || fail "SK24:$bad"
 
+# SK25: 入口は全部 TypeScript（設計 3-4「同じ振る舞いを 2 つ置かない」）。bin/ と scripts/ に .sh を置かず、
+#       文書も .sh の入口を名指ししない（呼べない入口を教えると、呼び出し側が bash で .ts を叩いて落ちる）
+bad=""
+for f in "$P"/bin/*.sh "$P"/skills/orca-team-dispatch-task/scripts/*.sh; do [[ -e "$f" ]] && bad="$bad [$(basename "$f")]"; done
+names='orca-(wait|start|stop|merge|pr|issue|recover|send|wake)|review-state|completion|report-status|config-(lib|resolve|edit)|issue-fetch'
+hits=$(grep -nE "(^|[^[:alnum:]_-])($names)\.sh" "$S" "$G" "$P/README.md" "$P/CLAUDE.md" | head -3)
+[[ -z "$hits" ]] || bad="$bad [$hits]"
+[[ -z "$bad" ]] && ok "SK25 入口は全部 .ts で、文書もそれを名指しする" || fail "SK25:$bad"
+
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
   && ! grep -q 'dangerously-skip-permissions' "$S" \

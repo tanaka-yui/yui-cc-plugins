@@ -34,6 +34,10 @@ Orca exports `ORCA_CLI_COMMAND` with the name of its CLI; on WSL2 that is `orca-
 which is on PATH, and on macOS the CLI lives inside the app bundle. Never assume either
 shape: always call it through `$ORCA_BIN`, including in commands you show the user.
 
+Every script this skill runs is TypeScript that `node` runs directly, which needs Node 22.18 or
+later. If `node` is missing or older, each call fails before it does anything: tell the user, and
+do not fall back to doing a step by hand.
+
 **Route on the arguments first.** `--setup` and `--reset` configure and dispatch nothing:
 do the Configuration section and stop. `--issue` takes its work from GitHub instead of from
 the user: do the Issue mode section. Anything else is a dispatch, which reads that
