@@ -7,14 +7,14 @@
 // ★ **止めるかどうかを決めるのはユーザーである。**子は待機に期限を持たず、親（orca-wait.ts）は停滞を
 //   見つけて exit 8 で知らせるだけで、自分では何も止めない。これはユーザーが選んだあとに親が呼ぶ口である。
 //
-// ★ **止まっている子が協力してくれる前提を置かない。**message で「終われ」と頼むのではなく、端末を閉じる。
+// ★ **止まっている子が協力してくれる前提を置かない。**message で「終われ」と頼むのではなく、Orca に止めさせる。
 //
-// ★ **記録してから閉じる。**`stopped.json` の無いまま止めると、orca-wait.ts からは worker が消えたように
-//   見え、exit 4 と orca-recover の置き換えに回ってしまう。
+// ★ **記録してから止める。**`stopped.json` の無いまま止めると、orca-wait.ts からは worker が消えたように
+//   見え、exit 4 と orca-recover.ts の置き換えに回ってしまう。
 import { die, log } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type JsonObject } from '../lib/json.ts'
-import { receiptOk, runOrca } from '../lib/orca.ts'
+import { failureDetail, GONE_STATES, listWorkers, receiptOk, releaseState, runOrca } from '../lib/orca.ts'
 import { nowSeconds, runNode } from '../lib/sys.ts'
 
 import { accessSync, constants, existsSync, mkdirSync } from 'node:fs'
@@ -23,6 +23,11 @@ import { fileURLToPath } from 'node:url'
 
 const NAME = 'orca-stop'
 const SEND = join(dirname(fileURLToPath(import.meta.url)), 'orca-send.ts')
+// worker-show がこれを返したら、Orca 側では決着している（worker_done は届いたが、親がまだ drain していない）
+const SETTLED_STATUSES = ['completed', 'failed', 'settled', 'terminated']
+const SETTLED_STATES = ['succeeded', 'failed']
+// こちらは走っている証拠（orca-wait の healthy() と orca-wake の許容集合と同じ）
+const RUNNING_STATES = ['active', 'ready', 'starting', 'idle']
 
 // 相方への知らせ。reviewer を止めたら依頼側へ review-skipped、作る役を止めたら reviewer へ abort-reviewer
 const PEERS: { [role: string]: { peer: string; subject: string; body: (role: string) => string } } = {
@@ -58,19 +63,56 @@ const snooze = (statusDir: string): boolean => {
   return writeAtomic(file, `${JSON.stringify(current)}\n`)
 }
 
-// 3. 端末を閉じる。閉じられなくても 2 の記録は残す（待機は止めた役として扱える）
-const closeTerminal = (terminal: string, role: string): { ok: boolean; line: string } => {
-  if (terminal === '') {
-    return { ok: false, line: `${role} has no terminal recorded; it is recorded as stopped, but nothing was closed` }
-  }
-  const closed = runOrca(['terminal', 'close', '--terminal', terminal, '--json'])
-  if (!receiptOk(closed)) {
+// ★ Orca に worker を止めさせる。**端末を直接閉じない**（`terminal close` で閉じると、Orca はその worker を
+//   retained / retainedReason: user_takeover として残し、worker-release でも解放できない。記録から外せば
+//   [C7] が Run 全体の片付けを止める。2026-09-23 の P1 の dispatch で実測）。
+//   Orca が決着済みと言う worker は worker-release（出力を保存してから閉じる）。決着していない worker には
+//   release が効かない（Orca は active な端末を保持する）ので worker-stop（dispatch を fence して、その worker の
+//   端末だけを閉じる）。**状態が読めなければどちらも打たない** — 生死の分からないものには触らない
+const stopWorker = (run: string, dispatch: string, role: string): { ok: boolean; line: string } => {
+  const kept = `${role} is recorded as stopped`
+  const shown = runOrca(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'])
+  if (!receiptOk(shown) || asObject(get(shown.json, 'result')) === null) {
     return {
       ok: false,
-      line: `could not close the terminal of ${role} (${terminal}, rc=${closed.rc}); it is recorded as stopped, so close it by hand`,
+      line: `cannot read the worker state for dispatch ${dispatch}; ${kept}, but nothing was stopped`,
     }
   }
-  return { ok: true, line: `stopped ${role} (terminal ${terminal})` }
+  const status = asString(get(shown.json, 'result', 'dispatch', 'status')) ?? ''
+  const state = asString(get(shown.json, 'result', 'worker', 'state')) ?? ''
+  // ★ **どちらへ進めるかの証拠が揃ったときだけ打つ。**決着の証拠があれば release、走っている証拠があれば stop。
+  //   state / status が無い・知らない値（outcome_unknown など）は「読めない」と同じく、何も打たない
+  const settled = SETTLED_STATUSES.includes(status) || SETTLED_STATES.includes(state)
+  const running = !settled && RUNNING_STATES.includes(state)
+  if (!settled && !running) {
+    return {
+      ok: false,
+      line: `cannot tell whether the worker for dispatch ${dispatch} has settled (state '${state || 'none'}', status '${status || 'none'}'); ${kept}, but nothing was stopped`,
+    }
+  }
+  const verb = settled ? 'worker-release' : 'worker-stop'
+  const result = runOrca(['orchestration', verb, '--dispatch', dispatch, '--json'])
+  if (!receiptOk(result)) {
+    return { ok: false, line: `${verb} failed for ${role} (dispatch ${dispatch}, ${failureDetail(result)}); ${kept}` }
+  }
+  // ★ receipt の ok だけでは「閉じた」と言えない（実測 O43）。orca-cleanup.ts と同じ worker-list から読み直す
+  const worker = (run === '' ? null : listWorkers(run))?.find((entry) => get(entry, 'dispatchId') === dispatch)
+  if (worker === undefined) {
+    return {
+      ok: false,
+      line: `${verb} was accepted for ${role} (dispatch ${dispatch}), but its state could not be read back; ${kept}`,
+    }
+  }
+  const release = releaseState(worker)
+  if (GONE_STATES.includes(release)) {
+    return { ok: true, line: `stopped ${role} (dispatch ${dispatch}; ${verb} closed its terminal)` }
+  }
+  const reason = asString(get(worker, 'resource', 'retainedReason'))
+  const why = `releaseState: ${release || 'unknown'}${reason === null ? '' : `, retainedReason: ${reason}`}`
+  return {
+    ok: false,
+    line: `${verb} was accepted for ${role} (dispatch ${dispatch}), but Orca still holds its terminal (${why}); ${kept}, and Step 5 decides what happens to that terminal`,
+  }
 }
 
 const main = (argv: string[]): number => {
@@ -136,13 +178,13 @@ const main = (argv: string[]): number => {
   let rc = 0
   let acted = false
   if (settled(role)) {
-    // 1. 決着済みなら記録も閉じることもしない。止める対象がもう無い
+    // 1. 決着済みなら記録も止めることもしない。止める対象がもう無い
     log(NAME, `${role} has already settled; nothing to stop`)
   } else if (existsSync(stoppedFile(role))) {
-    // ★ **止め直しを失敗にしない。**記録を上書きせず、閉じた端末を閉じ直さない
+    // ★ **止め直しを失敗にしない。**記録を上書きせず、止めた worker を止め直さない
     log(NAME, `${role} was already stopped; nothing to stop`)
   } else {
-    // 2. 記録する。**書けなければ閉じない**
+    // 2. 記録する。**書けなければ止めない**
     let recorded = false
     try {
       mkdirSync(join(statusDir, 'roles', role), { recursive: true })
@@ -151,11 +193,13 @@ const main = (argv: string[]): number => {
       recorded = false
     }
     if (!recorded) {
-      log(NAME, `could not record that ${role} was stopped; its terminal was left open`)
+      log(NAME, `could not record that ${role} was stopped; its worker was left running`)
       return 1
     }
     acted = true
-    const outcome = closeTerminal(field(role, 'terminal'), role)
+    // 3. Orca に止めさせる。止め切れなくても 2 の記録は残す（待機は止めた役として扱える）
+    const run = asString(get(readJson(join(statusDir, 'run.json')), 'run_id')) ?? ''
+    const outcome = stopWorker(run, dispatch, role)
     log(NAME, outcome.line)
     if (!outcome.ok) rc = 1
   }

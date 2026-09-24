@@ -658,17 +658,22 @@ For every role the user chose to stop, run this once, with `ROLE` set to that ro
 node "$PLUGIN/bin/orca-stop.ts" --status-dir "$SD" --role "$ROLE"
 ```
 
-It records the stop before it closes the terminal, so the wait settles that role as
-`outcome=stopped` instead of reporting a lost worker, and `orca-recover.ts` leaves it alone.
-It restarts the stall clock too. Stopping a reviewer tells the worker it reviews to carry on
-without review: that work is then unreviewed, and Step 4's gate applies as usual. A reviewer
-that has already finished is still listed while the worker it reviews is waiting, since one
-that could not deliver its verdict leaves that worker waiting; stopping it tells that worker
-to carry on. Stopping `design` or `exec` tells its reviewer there is nothing
-left to review, so the reviewer finishes, and it fails the task: do not bring it home, and take
-it to Step 5. Exit 1
-means the stop could not be recorded or the terminal could not be closed, and the message says
-which; tell the user. Then run the same wait again.
+It records the stop first, so the wait settles that role as `outcome=stopped` instead of
+reporting a lost worker, and `orca-recover.ts` leaves it alone. Then it has Orca end the worker:
+`orchestration worker-release` when Orca already reports that worker settled, which archives its
+output before closing, and `orchestration worker-stop` otherwise, which fences the dispatch and
+closes only that worker's terminal. It never closes the terminal directly: a terminal closed by
+hand stays recorded as `retained` with `retainedReason: user_takeover`, no release can clear it,
+and it stops Step 5 for the whole Run. It restarts the stall clock too. Stopping a reviewer tells
+the worker it reviews to carry on without review: that work is then unreviewed, and Step 4's gate
+applies as usual. A reviewer that has already finished is still listed while the worker it
+reviews is waiting, since one that could not deliver its verdict leaves that worker waiting;
+stopping it tells that worker to carry on. Stopping `design` or `exec` tells its reviewer there is
+nothing left to review, so the reviewer finishes, and it fails the task: do not bring it home, and
+take it to Step 5. Exit 1 means the stop could not be recorded, the worker's state could not be
+read, or Orca did not confirm that the terminal closed; the message says which, and a role whose
+stop was recorded stays stopped. Tell the user: Step 5 decides what happens to a terminal Orca
+kept. Then run the same wait again.
 
 **The exit code is the authority, not the text.** Before the aggregate line, the wait prints
 one `task=... role=... dispatch=... status_dir=... outcome=...` line **per dispatched role**,

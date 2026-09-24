@@ -632,15 +632,20 @@ node "$PLUGIN/bin/orca-stop.ts" --status-dir "$SD" --snooze
 node "$PLUGIN/bin/orca-stop.ts" --status-dir "$SD" --role "$ROLE"
 ```
 
-これは端末を閉じる前に停止を記録するので、待機はその役を失われた worker として報告せず
-`outcome=stopped` として決着させ、`orca-recover.ts` もその役に触らない。停滞の時計も数え直す。
-reviewer を止めると、レビューされる側の worker にレビュー無しで進むよう伝える。その成果は
-無レビューになり、Step 4 の gate が今までどおり働く。既に終わった reviewer も、レビューされる
-側の worker が待っている間は行に載る — verdict を届けられずに終えた reviewer は、その worker を
-待たせたままにするからである。それを止めると、その worker に進むよう伝える。
-`design` か `exec` を止めると、その reviewer にもうレビューするものが無いと伝えるので reviewer は
-終わり、タスクは失敗する。持ち帰らず、Step 5 へ回す。exit 1 は停止を記録できなかったか端末を閉じられなかったことを表し、
-どちらかはメッセージが言う。ユーザーへ伝える。そのあと同じ待機をもう一度走らせる。
+これは先に停止を記録するので、待機はその役を失われた worker として報告せず `outcome=stopped` として
+決着させ、`orca-recover.ts` もその役に触らない。そのうえで Orca に worker を終わらせる: Orca がその
+worker を決着済みと報告していれば `orchestration worker-release`（出力を保存してから閉じる）、そうで
+なければ `orchestration worker-stop`（dispatch を fence し、その worker の端末だけを閉じる）。端末を
+直接閉じることはしない（`terminal close` を使わない）— 手で閉じた端末は `retained` / `retainedReason: user_takeover` の記録のまま
+残り、どの release でも消えず、Run 全体の Step 5 を止める。停滞の時計も数え直す。reviewer を止めると、
+レビューされる側の worker にレビュー無しで進むよう伝える。その成果は無レビューになり、Step 4 の
+gate が今までどおり働く。既に終わった reviewer も、レビューされる側の worker が待っている間は行に
+載る — verdict を届けられずに終えた reviewer は、その worker を待たせたままにするからである。それを
+止めると、その worker に進むよう伝える。`design` か `exec` を止めると、その reviewer にもうレビュー
+するものが無いと伝えるので reviewer は終わり、タスクは失敗する。持ち帰らず、Step 5 へ回す。exit 1 は、
+停止を記録できなかった・worker の状態を読めなかった・端末が閉じたことを Orca が確かめられなかった、
+のいずれかを表し、どれかはメッセージが言う。停止を記録できた役は止めたままになる。ユーザーへ伝える。
+Orca が残した端末をどうするかは Step 5 が決める。そのあと同じ待機をもう一度走らせる。
 
 **判断の根拠は exit code であって出力の文字列ではない。**集約行の前に、待機は
 `task=... role=... dispatch=... status_dir=... outcome=...` の行を**起動した役ごとに 1 行**
