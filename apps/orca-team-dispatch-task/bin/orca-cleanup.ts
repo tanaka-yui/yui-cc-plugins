@@ -11,7 +11,18 @@
 import { die, log, parseFlags } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject } from '../lib/json.ts'
-import { type OrcaResult, orcaBin, receiptArray, receiptObject, receiptOk, runOrca } from '../lib/orca.ts'
+import {
+  failureDetail,
+  GONE_STATES,
+  HELD_STATES,
+  LIVE_STATES,
+  orcaBin,
+  receiptArray,
+  receiptObject,
+  receiptOk,
+  releaseState,
+  runOrca,
+} from '../lib/orca.ts'
 
 import { spawnSync } from 'node:child_process'
 import { realpathSync, rmSync, statSync } from 'node:fs'
@@ -27,10 +38,6 @@ const UNREADABLE = 'could not read the release state; do not close anything'
 const UNVERIFIED = 'could not verify the terminal identity; do not close anything'
 const NOT_A_RECORD = 'this is not a dispatch status directory; do not remove anything'
 const OUTSIDE_DISPATCH = 'the status directory is not inside .dispatch; do not remove it'
-
-const HELD_STATES = ['release_pending', 'release_unknown']
-const GONE_STATES = ['released', 'already_released']
-const LIVE_STATES = ['not_requested', 'retained', 'active', 'reclaimable']
 
 type Kind = 'terminal' | 'worktree' | 'record'
 type TerminalOffer = { role: string; dispatch: string; argv: string[] }
@@ -60,10 +67,6 @@ const stopRun = (lines: string[]): number => {
   for (const line of lines) log(NAME, line)
   return 1
 }
-
-// jq の `.resource.releaseState // .terminalState // empty` と同じ読み方
-const releaseState = (worker: Json | undefined): string =>
-  asString(get(worker, 'resource', 'releaseState')) ?? asString(get(worker, 'terminalState')) ?? ''
 
 const runOf = (dir: string): string => asString(get(readJson(join(dir, 'run.json')), 'run_id')) ?? ''
 
@@ -391,12 +394,6 @@ const readPlan = (file: string): CleanupPlan | null => {
     plan.tasks.push({ slug, status_dir: statusDir, stopped, offers, kept })
   }
   return plan
-}
-
-const failureDetail = (result: OrcaResult): string => {
-  const code = asString(get(result.json, 'error', 'code'))
-  const message = asString(get(result.json, 'error', 'message')) ?? asString(get(result.json, 'error'))
-  return [`rc=${result.rc}`, code, message].filter((part) => part !== null && part !== '').join('; ')
 }
 
 // ★ worker-release は ok を返しながら何も解放しないことがある（実測 O43: releaseState retained /

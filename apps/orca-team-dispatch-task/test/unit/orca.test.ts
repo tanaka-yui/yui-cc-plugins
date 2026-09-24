@@ -1,4 +1,13 @@
-import { orcaBin, receiptArray, receiptObject, receiptOk, runOrca } from '../../lib/orca.ts'
+import {
+  failureDetail,
+  orcaBin,
+  receiptArray,
+  receiptObject,
+  receiptOk,
+  releaseState,
+  runOrca,
+  terminalHandles,
+} from '../../lib/orca.ts'
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -93,4 +102,33 @@ test('receipt は exit 0 かつ ok: true で、result の形が合うときだ�
   assert.equal(receiptArray({ rc: 0, json, stdout: '' }, 'terminal'), null)
   assert.equal(receiptObject({ rc: 0, json, stdout: '' }, 'workers'), null)
   assert.equal(receiptOk({ rc: 0, json: null, stdout: '' }), false)
+})
+
+test('releaseState は resource.releaseState を先に、無ければ terminalState を読む', () => {
+  assert.equal(releaseState({ resource: { releaseState: 'released' }, terminalState: 'retained' }), 'released')
+  assert.equal(releaseState({ terminalState: 'retained' }), 'retained')
+  assert.equal(releaseState(undefined), '')
+})
+
+test('failureDetail は rc と error.code / error.message を 1 行にする', () => {
+  const json = { ok: false, error: { code: 'release_unknown', message: 'stub' } }
+  assert.equal(failureDetail({ rc: 1, json, stdout: '' }), 'rc=1; release_unknown; stub')
+  assert.equal(failureDetail({ rc: 0, json: { ok: false, error: 'gone' }, stdout: '' }), 'rc=0; gone')
+  assert.equal(failureDetail({ rc: 7, json: null, stdout: '' }), 'rc=7')
+})
+
+test('terminalHandles は列挙できなければ null で、0 件とは区別する', () => {
+  const list = join(dir, 'list-orca')
+  writeFileSync(
+    list,
+    [
+      '#!/bin/sh',
+      '[ -n "$STUB_FAIL" ] && { echo \'{"ok":false}\'; exit 7; }',
+      'echo \'{"ok":true,"result":{"terminals":[{"handle":"term_a"},{"handle":"term_b"}]}}\'',
+      '',
+    ].join('\n'),
+  )
+  chmodSync(list, 0o755)
+  withEnv({ ORCA_BIN: list }, () => assert.deepEqual(terminalHandles('wt_1'), ['term_a', 'term_b']))
+  withEnv({ ORCA_BIN: list, STUB_FAIL: '1' }, () => assert.equal(terminalHandles('wt_1'), null))
 })
