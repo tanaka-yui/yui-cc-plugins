@@ -646,7 +646,7 @@ you start it again. For a task where only **Keep waiting** was chosen, restart i
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the status_dir= value of the stalled task line}"
-bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --snooze
+node "$PLUGIN/bin/orca-stop.ts" --status-dir "$SD" --snooze
 ```
 
 For every role the user chose to stop, run this once, with `ROLE` set to that role:
@@ -655,7 +655,7 @@ For every role the user chose to stop, run this once, with `ROLE` set to that ro
 : "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the status_dir= value of the stalled task line}"
 : "${ROLE:?set ROLE to one role the user chose to stop}"
-bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --role "$ROLE"
+node "$PLUGIN/bin/orca-stop.ts" --status-dir "$SD" --role "$ROLE"
 ```
 
 It records the stop before it closes the terminal, so the wait settles that role as

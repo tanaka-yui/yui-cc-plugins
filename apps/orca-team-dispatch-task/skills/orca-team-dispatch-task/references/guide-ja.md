@@ -620,7 +620,7 @@ spec、計画、レビューのファイル、worktree のファイルと commit
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the status_dir= value of the stalled task line}"
-bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --snooze
+node "$PLUGIN/bin/orca-stop.ts" --status-dir "$SD" --snooze
 ```
 
 ユーザーが止めると選んだ役ごとに、`ROLE` をその役にして 1 回ずつ実行する:
@@ -629,7 +629,7 @@ bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --snooze
 : "${PLUGIN:?run the block at the top of this file first}"
 : "${SD:?set SD to the status_dir= value of the stalled task line}"
 : "${ROLE:?set ROLE to one role the user chose to stop}"
-bash "$PLUGIN/bin/orca-stop.sh" --status-dir "$SD" --role "$ROLE"
+node "$PLUGIN/bin/orca-stop.ts" --status-dir "$SD" --role "$ROLE"
 ```
 
 これは端末を閉じる前に停止を記録するので、待機はその役を失われた worker として報告せず

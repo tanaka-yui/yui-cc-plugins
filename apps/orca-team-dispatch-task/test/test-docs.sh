@@ -326,8 +326,8 @@ done
 bad=""
 for f in "$S" "$G"; do
   grep -q '^| 8 |' "$f" || bad="$bad [exit8:$(basename "$f")]"
-  grep -q 'orca-stop.sh" --status-dir "\$SD" --snooze' "$f" || bad="$bad [snooze:$(basename "$f")]"
-  grep -q 'orca-stop.sh" --status-dir "\$SD" --role "\$ROLE"' "$f" || bad="$bad [stop:$(basename "$f")]"
+  grep -q 'orca-stop.ts" --status-dir "\$SD" --snooze' "$f" || bad="$bad [snooze:$(basename "$f")]"
+  grep -q 'orca-stop.ts" --status-dir "\$SD" --role "\$ROLE"' "$f" || bad="$bad [stop:$(basename "$f")]"
   grep -q -- '--on-stall report' "$f" || bad="$bad [issue-report:$(basename "$f")]"
   grep -q 'stopped.json' "$f" || bad="$bad [state:$(basename "$f")]"
 done

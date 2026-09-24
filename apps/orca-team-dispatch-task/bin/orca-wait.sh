@@ -138,7 +138,7 @@ stored_outcome() {   # $1=status dir $2=role。receipt が 1 件なら outcome �
   [[ "$count" -le 1 ]] || { log "received outcome record has duplicate receipts; it is not acknowledged"; return 1; }
   [[ "$count" -eq 0 ]] || jq -r '.[0][3]' <<<"$matches"
 }
-# ★ **ユーザーが止めた役は決着済みとして扱う**（`orca-stop.sh`）。止めた端末は閉じてあり、
+# ★ **ユーザーが止めた役は決着済みとして扱う**（`orca-stop.ts`）。止めた端末は閉じてあり、
 #   worker_done は二度と来ない。**receipt が在ればそれが優先する**（閉じる直前に送られた場合）。
 is_stopped() { [[ -f "$1/roles/$2/stopped.json" ]]; }
 role_outcome() {   # $1=status dir $2=role → receipt の outcome、無ければ止めた役は stopped。壊れていれば 1
@@ -219,7 +219,7 @@ task_settled() {   # $1=status dir → dispatch の在る役が全部決着し�
   # ★ **成果を載せる役がまだ起動されていなければ決着していない**（Step 3.5 の飛ばし）
   role_settled "$sd" "$(integration_role_of "$sd")"
 }
-# ★ 依頼側がまだ待っている = dispatch が在り、receipt も stopped.json も無い（orca-stop.sh の waiting と同じ問い）
+# ★ 依頼側がまだ待っている = dispatch が在り、receipt も stopped.json も無い（orca-stop.ts の waiting と同じ問い）
 role_waiting() {   # $1=status dir $2=role
   jq -e --arg r "$2" '(.roles[$r].dispatch // "") != ""' "$1/workers.json" >/dev/null 2>&1 \
     && ! role_settled "$1" "$2"
@@ -727,7 +727,7 @@ while :; do
   rewake_stalled
   check_stall || {
     log "a task has made no progress for $(( STALL_SECONDS / 60 )) minutes or more and nobody is waiting on a person;"
-    log "ask the user whether to keep waiting or stop a role (orca-stop.sh), then run this wait again"
+    log "ask the user whether to keep waiting or stop a role (orca-stop.ts), then run this wait again"
     exit 8
   }
   n=$((n + 1))

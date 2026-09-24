@@ -739,7 +739,7 @@ out=$(ORCA_WAIT_SETTLE_GRACE=1 w 3 2>&1); rc=$?
 [[ "$rc" -eq 4 && "$out" == *"is 'failed'"* ]] \
   && ok "WT79 猶予を使い切れば 4" || fail "WT79 (rc=$rc) $out"; teardown
 
-# ── ユーザーが止めた役（orca-stop.sh が stopped.json を書く）──
+# ── ユーザーが止めた役（orca-stop.ts が stopped.json を書く）──
 two_roles() {
   jq -nc '{integration_role:"design",roles:{
     design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false},

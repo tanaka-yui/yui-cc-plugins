@@ -64,7 +64,7 @@ while IFS= read -r role; do
   [[ -n "$did" && -n "$tid" ]] || continue
   rd="$SD/roles/$role"
 
-  # ★ **ユーザーが止めた役には何もしない**（`orca-stop.sh`）。置き換えると、止めた役が
+  # ★ **ユーザーが止めた役には何もしない**（`orca-stop.ts`）。置き換えると、止めた役が
   #   別の端末で生き返る。
   if [[ -f "$rd/stopped.json" ]]; then
     log "$role: stopped by the user; not recovering it"

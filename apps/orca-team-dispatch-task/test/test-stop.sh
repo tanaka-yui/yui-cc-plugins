@@ -3,7 +3,7 @@
 # 止め切れなかったと言う**ことが全部である。
 set -uo pipefail
 P="$(cd "$(dirname "$0")/.." && pwd)"
-S="$P/bin/orca-stop.sh"
+S="$P/bin/orca-stop.ts"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 
 setup() {
@@ -20,12 +20,12 @@ setup() {
     > "$ORCA_STUB_DIR/orchestration_worker-show"
 }
 teardown() { rm -rf "$ORCA_STUB_DIR" "$SD"; unset ORCA_BIN ORCA_STUB_DIR ORCA_TERMINAL_HANDLE; }
-st() { bash "$S" --status-dir "$SD" "$@"; }
+st() { node "$S" --status-dir "$SD" "$@"; }
 argv() { tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log"; }
 
 # SP1: 使用法。--role と --snooze はどちらか 1 つだけ
 setup; st >/dev/null 2>&1; a=$?; st --role design --snooze >/dev/null 2>&1; b=$?
-bash "$S" --role design >/dev/null 2>&1; c=$?
+node "$S" --role design >/dev/null 2>&1; c=$?
 [[ "$a" -eq 2 && "$b" -eq 2 && "$c" -eq 2 ]] && ok "SP1 使用法エラー" || fail "SP1 ($a/$b/$c)"; teardown
 
 # SP2: ★ **reviewer を止める。**記録 → 端末を閉じる → 依頼側へ review-skipped。時計も数え直す
@@ -125,4 +125,13 @@ st --role exec >/dev/null 2>&1; rc=$?
   && argv | grep -qx 'abort-reviewer: stopped by the user' && argv | grep -qx 'dispatch:ctx_q' \
   && ok "SP13 exec を止めたら exec_review を終わらせる" || fail "SP13 (rc=$rc)"; teardown
 
+# SP18: zsh から呼んでも同じ結果になる（設計 3-5。呼び出し側のシェルに依存しない）
+if command -v zsh >/dev/null 2>&1; then
+  setup; echo '{"detected_at":5}' > "$SD/stall.json"
+  zsh -c 'node "$1" --status-dir "$2" --snooze' zsh "$S" "$SD" >/dev/null 2>&1; rc=$?
+  [[ "$rc" -eq 0 ]] && jq -e 'has("snoozed_at") and (has("detected_at") | not)' "$SD/stall.json" >/dev/null \
+    && ok "SP18 zsh から呼んでも同じ結果" || fail "SP18 (rc=$rc)"; teardown
+else
+  echo "SKIP: SP18 zsh が無い"
+fi
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
