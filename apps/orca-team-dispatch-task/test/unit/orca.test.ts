@@ -8,6 +8,7 @@ import {
   releaseState,
   runOrca,
   terminalHandles,
+  userOwned,
   workerStateClass,
   workerTerminal,
 } from '../../lib/orca.ts'
@@ -111,6 +112,17 @@ test('releaseState は resource.releaseState を先に、無ければ terminalSt
   assert.equal(releaseState({ resource: { releaseState: 'released' }, terminalState: 'retained' }), 'released')
   assert.equal(releaseState({ terminalState: 'retained' }), 'retained')
   assert.equal(releaseState(undefined), '')
+})
+
+// ★ Orca が端末を閉じない理由は ownership にある。retainedReason は Step 3 の worker-retain が付けた user_requested の
+//   ままのことがある（2026-09-23 と 24 に 4 Run の design で実測）
+test('userOwned は resource.ownershipState が user_owned のときだけ真にする', () => {
+  assert.equal(userOwned({ resource: { ownershipState: 'user_owned', retainedReason: 'user_requested' } }), true)
+  for (const state of ['owned', 'released', '']) assert.equal(userOwned({ resource: { ownershipState: state } }), false)
+  // resource の外の同名フィールドや retainedReason では判定しない。欠けていれば所有していない
+  assert.equal(userOwned({ ownershipState: 'user_owned', resource: {} }), false)
+  assert.equal(userOwned({ resource: { retainedReason: 'user_takeover' } }), false)
+  assert.equal(userOwned(undefined), false)
 })
 
 test('failureDetail は rc と error.code / error.message を 1 行にする', () => {

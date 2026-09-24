@@ -12,6 +12,7 @@ export ORCA_BIN="$P/test/lib/orca-stub.sh"
 # Orca の状態は 1 件 1 ファイルで持ち、hook が呼び出しごとに応答を組み立てる。
 #   workers/<dispatch>        その worker の releaseState（terminalState も同じ値にする）
 #   workers/<dispatch>.reason retainedReason / .fail = release が失敗する
+#   workers/<dispatch>.owner  ownershipState（無ければ null）。user_owned = ユーザーが操作した端末
 #   workers/<dispatch>.after  release のあとの状態「state [retainedReason]」（無ければ released）。
 #                             gone = 一覧から消える / listfail = 次の読み直し 1 回だけ一覧が読めない
 #   terminals/<handle>        その端末が居る worktree id（無ければ端末は閉じている）/ .stale = show が rc 0 の ok:false
@@ -34,9 +35,11 @@ for f in "$d"/workers/*; do
   [[ -f "$f" && "$(basename "$f")" != *.* ]] || continue
   st=$(cat "$f"); [[ -z "$filter" || "$st" == "$filter" ]] || continue
   rs=""; [[ -f "$f.reason" ]] && rs=$(cat "$f.reason")
-  rows=$(jq -c --arg id "$(basename "$f")" --arg st "$st" --arg rs "$rs" \
+  ow=""; [[ -f "$f.owner" ]] && ow=$(cat "$f.owner")
+  rows=$(jq -c --arg id "$(basename "$f")" --arg st "$st" --arg rs "$rs" --arg ow "$ow" \
     '. + [{dispatchId:$id,terminalState:$st,
-           resource:{releaseState:$st,retainedReason:(if $rs == "" then null else $rs end)}}]' <<<"$rows")
+           resource:{releaseState:$st,retainedReason:(if $rs == "" then null else $rs end),
+                     ownershipState:(if $ow == "" then null else $ow end)}}]' <<<"$rows")
 done
 jq -nc --argjson w "$rows" '{ok:true,result:{workers:$w,counts:{}}}' > "$out"
 HOOK
@@ -417,7 +420,7 @@ run --plan "$PLAN_FILE" --approve a:terminal
   && ok "CL19 承認されていないものは残す" || fail "CL19 (out=$OUT)"
 teardown
 
-# CL20: 失敗はそのタスクの後続を止めるが、他のタスクには影響しない
+# CL20: 失敗はそのタスクの依存する手順（その役の worktree と記録）を止めるが、他のタスクには影響しない
 world; task a; task b; : > "$ORCA_STUB_DIR/workers/ctx_a-design.fail"
 plan --status-dir "$(sd a)" --status-dir "$(sd b)"
 run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record \
@@ -425,7 +428,7 @@ run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:re
 [[ "$RC" -eq 1 && -d "$(sd a)" && ! -e "$(sd b)" \
    && "$(mutations | grep -c 'id:wt_a-design')" -eq 0 && "$(mutations | grep -c 'id:wt_b-design')" -eq 1 \
    && "$OUT" == *'failed: design terminal: rc=1; release_unknown; stub refused'* \
-   && "$OUT" == *'not run: design worktree id:wt_a-design (an earlier step for this task failed)'* ]] \
+   && "$OUT" == *'not run: design worktree id:wt_a-design (the design terminal step failed)'* ]] \
   && ok "CL20 失敗はそのタスクだけを止める" || fail "CL20 (rc=$RC out=$OUT)"
 teardown
 
@@ -451,7 +454,7 @@ for after in release_pending release_unknown active 'retained no_owned_resource'
   [[ "$RC" -eq 1 && -d "$(sd a)" && ! -e "$(sd b)" \
      && "$(mutations | grep -c 'id:wt_a-design')" -eq 0 && "$(mutations | grep -c 'id:wt_b-design')" -eq 1 \
      && "$OUT" == *'failed: design terminal: '* && "$OUT" == *'removed: design terminal'* \
-     && "$OUT" == *'not run: design worktree id:wt_a-design (an earlier step for this task failed)'* ]] \
+     && "$OUT" == *'not run: design worktree id:wt_a-design (the design terminal step failed)'* ]] \
     || bad="$bad [$after]"
   teardown
 done
@@ -603,6 +606,125 @@ plan --status-dir "$(sd a)"
 [[ "$RC" -eq 0 && "$(pj '.tasks[0].stopped')" == null && "$(pj '.tasks[0].offers.record | length')" == 1 \
    && "$(pj '[.tasks[0].kept[] | select(.kind == "terminal")] | length')" == 0 ]] \
   && ok "CL30 閉じ終えた置き換え元は記録の提示を止めない" || fail "CL30 (rc=$RC out=$OUT)"
+teardown
+# CL31: ★ **ユーザーが操作した端末（ownershipState: user_owned）には release を提示しない。**Orca はそれを閉じず、
+#       retainedReason は Step 3 の user_requested のままのことがある（2026-09-24、influencer-platform と P2 / P3 の design）。
+#       理由を示して残し、worktree と記録は今までどおりの条件で提示する。同じタスクのほかの役はそのまま提示する
+world; task a; role a design_review
+printf 'user_requested\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.reason"
+printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.owner"
+plan --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].stopped')" == null \
+   && "$(pj '[.tasks[0].offers.terminal[].role]')" == '["design_review"]' \
+   && "$(pj '[.tasks[0].offers.worktree[].role]')" == '["design","design_review"]' \
+   && "$(pj '.tasks[0].offers.record | length')" == 1 \
+   && "$(pj '.tasks[0].kept[] | select(.kind == "terminal") | [.role, .reasons]')" \
+      == '["design",["the user owns the design terminal (ownershipState: user_owned), so Orca will not release it; removing the design worktree closes it"]]' \
+   && "$OUT" == *'keep terminal (design): the user owns the design terminal (ownershipState: user_owned)'* \
+   && -z "$(mutations)" ]] \
+  && ok "CL31 ユーザー所有の端末は release を提示せず、worktree は提示する" || fail "CL31 (rc=$RC out=$OUT)"
+teardown
+
+# CL32: 所有の判定は [C1] と identity の判定を追い越さない。release が未確定ならタスクは止まり、
+#       端末が記録と合わなければ「記録と合わない」として端末も worktree も提示しない
+bad=""
+for st in release_pending release_unknown; do
+  world; task a; printf '%s\n' "$st" > "$ORCA_STUB_DIR/workers/ctx_a-design"
+  printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.owner"
+  plan --status-dir "$(sd a)"
+  [[ "$RC" -eq 0 && "$(pj '.tasks[0].stopped.reasons[0]')" == *"the worker is $st"* \
+     && "$(pj '.tasks[0].offers | [.terminal, .worktree, .record] | map(length) | add')" == 0 ]] || bad="$bad [$st]"
+  teardown
+done
+world; task a; printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.owner"
+printf 'wt_other\n' > "$ORCA_STUB_DIR/terminals/term_a-design"
+plan --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].offers.terminal')" == '[]' && "$(pj '.tasks[0].offers.worktree')" == '[]' \
+   && "$(pj '.tasks[0].kept[] | select(.kind == "terminal") | .reasons')" \
+      == '["the design terminal no longer matches our state; leave it alone"]' ]] || bad="$bad [identity]"
+teardown
+[[ -z "$bad" ]] && ok "CL32 所有の判定は [C1] と identity を追い越さない" || fail "CL32:$bad"
+
+
+# CL33: ★ **報告された不具合（2026-09-24、influencer-platform の run_da468ac5993f）。**Step 5 のあとでユーザーが design の
+#       端末を操作し、worker-release は ok を返しながら何も閉じなかった（retained / user_owned / user_requested）。旧版は
+#       user_takeover 以外の保持を失敗にして、同じタスクの残り 3 本の端末と 4 つの worktree を 1 つも実行しなかった。
+#       保持として報告し、失敗にせず、残りを全部実行する。修正前の版が書いた計画で run したときも同じ経路を通る
+world; task a; role a design_review; role a exec; role a exec_review
+plan --status-dir "$(sd a)"
+printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.owner"
+printf 'retained user_requested\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.after"
+run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record
+[[ "$RC" -eq 0 && ! -e "$(sd a)" \
+   && "$(mutations | grep -c 'worker-release')" -eq 4 && "$(mutations | grep -c 'worktree rm')" -eq 4 \
+   && "$OUT" == *'kept: design terminal: the user owns it (ownershipState: user_owned, releaseState: retained, retainedReason: user_requested), so Orca did not close it; removing its worktree closes it'* \
+   && "$OUT" != *'removed: design terminal'* && "$OUT" != *'failed:'* && "$OUT" != *'not run:'* \
+   && "$OUT" == *'removed: exec_review terminal'* && "$OUT" == *'removed: design worktree id:wt_a-design'* ]] \
+  && ok "CL33 Step 5 のあとユーザーが操作した端末は保持として報告し、残りを実行する" || fail "CL33 (rc=$RC out=$OUT)"
+teardown
+
+# CL33b: 所有は未確定の release を覆さない。読み直しが release_pending / release_unknown なら、user_owned でも
+#        その役の失敗（[C1] と同じく、Orca が確定させていない release の上に worktree の削除を積まない）
+bad=""
+for after in release_pending release_unknown; do
+  world; task a; plan --status-dir "$(sd a)"
+  printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.owner"
+  printf '%s\n' "$after" > "$ORCA_STUB_DIR/workers/ctx_a-design.after"
+  run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record
+  [[ "$RC" -eq 1 && -d "$(sd a)" && "$(mutations | grep -c 'worktree rm')" -eq 0 \
+     && "$OUT" == *"failed: design terminal: the release was accepted, but its state reads '$after'"* ]] || bad="$bad [$after]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL33b 所有は未確定の release を覆さない" || fail "CL33b:$bad"
+# CL34: ★ **失敗が止めるのは、それに依存する手順だけ。**design の端末の解放が失敗しても（receipt の失敗でも、
+#       ok のあとに閉じたと確かめられない保持でも）、ほかの役の端末と worktree は実行する。止めるのは design の
+#       worktree とタスクの記録（最後の手順）。ほかのタスクは影響を受けない（2026-09-24: 旧版は残り 3 本の端末と
+#       4 つの worktree を 1 つも実行しなかった）
+bad=""
+for how in fail 'retained no_owned_resource'; do
+  world; task a; role a design_review; role a exec; task b
+  if [[ "$how" == fail ]]; then : > "$ORCA_STUB_DIR/workers/ctx_a-design.fail"
+  else printf '%s\n' "$how" > "$ORCA_STUB_DIR/workers/ctx_a-design.after"; fi
+  plan --status-dir "$(sd a)" --status-dir "$(sd b)"
+  run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record \
+      --approve b:terminal --approve b:worktree --approve b:record
+  [[ "$RC" -eq 1 && -d "$(sd a)" && ! -e "$(sd b)" \
+     && "$(mutations | grep -c 'worker-release --dispatch ctx_a-')" -eq 3 \
+     && "$(mutations | grep -cE 'id:wt_a-design( |$)')" -eq 0 \
+     && "$(mutations | grep -cE 'id:wt_a-design_review( |$)')" -eq 1 \
+     && "$(mutations | grep -cE 'id:wt_a-exec( |$)')" -eq 1 \
+     && "$OUT" == *'failed: design terminal: '* \
+     && "$OUT" == *'removed: design_review terminal'* && "$OUT" == *'removed: exec terminal'* \
+     && "$OUT" == *'not run: design worktree id:wt_a-design (the design terminal step failed)'* \
+     && "$OUT" == *"not run: dispatch record $(sd a) (an earlier step for this task failed)"* ]] \
+    || bad="$bad [$how]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL34 端末の失敗はその役の worktree と記録だけを止める" || fail "CL34:$bad"
+
+# CL35: worktree の削除の失敗も同じ。止めるのはタスクの記録だけで、ほかの役の worktree は実行する
+world; task a; role a design_review; : > "$ORCA_STUB_DIR/worktrees/wt_a-design.fail"
+plan --status-dir "$(sd a)"
+run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record
+[[ "$RC" -eq 1 && -d "$(sd a)" && "$(mutations | grep -c 'worker-release')" -eq 2 \
+   && "$(mutations | grep -cE 'id:wt_a-design_review( |$)')" -eq 1 \
+   && "$OUT" == *'failed: design worktree id:wt_a-design'* \
+   && "$OUT" == *'removed: design_review worktree id:wt_a-design_review'* \
+   && "$OUT" == *"not run: dispatch record $(sd a) (an earlier step for this task failed)"* ]] \
+  && ok "CL35 worktree の失敗は記録だけを止める" || fail "CL35 (rc=$RC out=$OUT)"
+teardown
+# CL36: ★ **直したあとの流れ全体。**Step 5 の時点で design がユーザー所有なら release は提示されず、run は design に
+#       worker-release を打たずに、残り 3 本の端末・4 つの worktree・記録を片付ける（2026-09-24 の Run と同じ 4 役）
+world; task a; role a design_review; role a exec; role a exec_review
+printf 'user_requested\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.reason"
+printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.owner"
+plan --status-dir "$(sd a)"
+run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record
+[[ "$RC" -eq 0 && ! -e "$(sd a)" \
+   && "$(mutations | grep -cE 'worker-release --dispatch ctx_a-design( |$)')" -eq 0 \
+   && "$(mutations | grep -c 'worker-release')" -eq 3 && "$(mutations | grep -c 'worktree rm')" -eq 4 \
+   && "$OUT" == *'kept: design terminal: the user owns the design terminal (ownershipState: user_owned)'* ]] \
+  && ok "CL36 ユーザー所有の端末には release を打たず、残りを片付ける" || fail "CL36 (rc=$RC out=$OUT)"
 teardown
 # CL26: zsh から呼んでも同じ結果になる（設計 3-5。呼び出し側のシェルに依存しない）
 if command -v zsh >/dev/null 2>&1; then

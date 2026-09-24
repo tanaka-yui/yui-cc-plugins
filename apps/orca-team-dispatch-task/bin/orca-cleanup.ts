@@ -22,6 +22,7 @@ import {
   receiptOk,
   releaseState,
   runOrca,
+  userOwned,
 } from '../lib/orca.ts'
 
 import { spawnSync } from 'node:child_process'
@@ -49,7 +50,7 @@ type Stopped = { reasons: string[]; reported: Json[]; inspect: string[][] }
 type TaskPlan = { slug: string; status_dir: string; stopped: Stopped | null; offers: Offers; kept: Kept[] }
 type CleanupPlan = { run_id: string; tasks: TaskPlan[] }
 type Sink = { offers: Offers; kept: Kept[]; stopped: Stopped }
-type Step = { kind: Kind; label: string; act: () => { ok: boolean; line: string } }
+type Step = { kind: Kind; role: string | null; label: string; act: () => { ok: boolean; line: string } }
 
 const isKind = (value: string): value is Kind => value === 'terminal' || value === 'worktree' || value === 'record'
 const terminalArgv = (dispatch: string): string[] => [
@@ -167,17 +168,28 @@ const planRole = (role: string, record: Json, listed: Json[], merged: boolean, s
     return
   }
   const identity = shown === null || (get(shown, 'handle') === terminal && get(shown, 'worktreeId') === worktreeId)
-  // [C2] 提示するのは raw な terminal close ではなく worker-release（出力を archive してから閉じる）
+  // [C2] 提示するのは raw な terminal close ではなく worker-release（出力を archive してから閉じる）。
+  //   ★ **ユーザーが操作した端末（ownershipState: user_owned）は提示しない。**Orca はそれを release で閉じず、ok を
+  //   返して何も閉じない（retainedReason は Step 3 の user_requested のままのことがある。2026-09-23 と 24 に 4 Run で実測）。
+  //   worktree を消せば端末も閉じるので、worktree は [C3] の条件どおりに提示する
   if (gone) {
     sink.kept.push({ kind: 'terminal', role, reasons: [`Orca already closed the ${role} terminal; nothing to close`] })
-  } else if (identity) {
-    sink.offers.terminal.push({ role, dispatch, argv: terminalArgv(dispatch) })
-  } else {
+  } else if (!identity) {
     sink.kept.push({
       kind: 'terminal',
       role,
       reasons: [`the ${role} terminal no longer matches our state; leave it alone`],
     })
+  } else if (userOwned(worker)) {
+    sink.kept.push({
+      kind: 'terminal',
+      role,
+      reasons: [
+        `the user owns the ${role} terminal (ownershipState: user_owned), so Orca will not release it; removing the ${role} worktree closes it`,
+      ],
+    })
+  } else {
+    sink.offers.terminal.push({ role, dispatch, argv: terminalArgv(dispatch) })
   }
   const reasons = worktreeReasons(record, worktreeId, worktreePath, merged, identity)
   if (reasons.length === 0) {
@@ -447,9 +459,11 @@ const readPlan = (file: string): CleanupPlan | null => {
 }
 
 // ★ worker-release は ok を返しながら何も解放しないことがある（実測 O43: releaseState retained /
-//   retainedReason user_takeover）。Step 5 と同じ worker-list から state を読み直して確かめる。
-//   後続へ進めてよいのは、閉じたと確かめられたときと、user_takeover で Orca が保持したとき（spec 4-2）だけ。
-//   読み直せない・未確定・ほかの理由での保持は、そのタスクの失敗として後続（worktree・記録）を止める
+//   retainedReason user_takeover。2026-09-23 と 24 には ownershipState user_owned / retainedReason user_requested で
+//   4 Run の design）。Step 5 と同じ worker-list から state を読み直して確かめる。
+//   その役の worktree へ進めてよいのは、閉じたと確かめられたときと、Orca が retained のまま保持した理由がユーザーの
+//   所有（ownershipState: user_owned。retainedReason は問わない）か user_takeover（spec 4-2）のときだけ。
+//   読み直せない・未確定・ほかの理由での保持は、その役の失敗として、その役の worktree とタスクの記録を止める
 const release = (run: string, offer: TerminalOffer): { ok: boolean; line: string } => {
   const label = `${offer.role} terminal`
   const result = runOrca(offer.argv)
@@ -466,6 +480,12 @@ const release = (run: string, offer: TerminalOffer): { ok: boolean; line: string
   if (GONE_STATES.includes(state)) return { ok: true, line: `  removed: ${label}` }
   if (state === 'retained') {
     const reason = asString(get(worker, 'resource', 'retainedReason')) ?? 'unknown'
+    if (userOwned(worker)) {
+      return {
+        ok: true,
+        line: `  kept: ${label}: the user owns it (ownershipState: user_owned, releaseState: retained, retainedReason: ${reason}), so Orca did not close it; removing its worktree closes it`,
+      }
+    }
     const kept = `Orca kept it (releaseState: retained, retainedReason: ${reason}); it was not closed`
     return reason === 'user_takeover'
       ? { ok: true, line: `  kept: ${label}: ${kept}` }
@@ -501,30 +521,52 @@ const removeRecord = (label: string, offer: RecordOffer): { ok: boolean; line: s
 // タスク内の順は 端末 → worktree → 記録。端末が開いたままの worktree を Orca は手放さず、記録は最後に失うもの
 const stepsOf = (run: string, task: TaskPlan): Step[] => [
   ...task.offers.terminal.map(
-    (offer): Step => ({ kind: 'terminal', label: `${offer.role} terminal`, act: () => release(run, offer) }),
+    (offer): Step => ({
+      kind: 'terminal',
+      role: offer.role,
+      label: `${offer.role} terminal`,
+      act: () => release(run, offer),
+    }),
   ),
   ...task.offers.worktree.map((offer): Step => {
     const label = `${offer.role} worktree id:${offer.worktree_id}`
-    return { kind: 'worktree', label, act: () => removeWorktree(label, offer) }
+    return { kind: 'worktree', role: offer.role, label, act: () => removeWorktree(label, offer) }
   }),
   ...task.offers.record.map((offer): Step => {
     const label = `dispatch record ${offer.path}`
-    return { kind: 'record', label, act: () => removeRecord(label, offer) }
+    return { kind: 'record', role: null, label, act: () => removeRecord(label, offer) }
   }),
 ]
+
+// ★ **失敗が止めるのは、それに依存する手順だけ。**役の worktree はその役の端末に依存し（役ごとに worktree は別で、
+//   [C3] はその worktree の端末がその役の記録どおりのときだけ提示する）、記録はタスクの全手順に依存する（最後に
+//   失うもの）。ほかの役の端末と worktree は続ける。2026-09-24 に、design の端末 1 本が閉じなかっただけで、同じ
+//   タスクの残り 3 本の端末と 4 つの worktree が 1 つも実行されなかった。返り値は止める理由（依存が無事なら null）
+const blockedBy = (step: Step, failed: boolean, failedRoles: Set<string>): string | null => {
+  if (step.kind === 'record') return failed ? 'an earlier step for this task failed' : null
+  if (step.kind === 'worktree' && step.role !== null && failedRoles.has(step.role)) {
+    return `the ${step.role} terminal step failed`
+  }
+  return null
+}
 
 const runTask = (run: string, task: TaskPlan, approved: Set<Kind>): { lines: string[]; failed: boolean } => {
   const lines = [task.slug]
   let failed = false
+  const failedRoles = new Set<string>()
   for (const step of stepsOf(run, task)) {
+    const blocker = blockedBy(step, failed, failedRoles)
     if (!approved.has(step.kind)) {
       lines.push(`  kept: ${step.label} (not approved)`)
-    } else if (failed) {
-      // ★ 失敗は後続を authorise しない。そのタスクの残りには手を付けない
-      lines.push(`  not run: ${step.label} (an earlier step for this task failed)`)
+    } else if (blocker !== null) {
+      // ★ 失敗は、それに依存する手順を authorise しない
+      lines.push(`  not run: ${step.label} (${blocker})`)
     } else {
       const outcome = step.act()
-      failed = !outcome.ok
+      if (!outcome.ok) {
+        failed = true
+        if (step.role !== null) failedRoles.add(step.role)
+      }
       lines.push(outcome.line)
     }
   }

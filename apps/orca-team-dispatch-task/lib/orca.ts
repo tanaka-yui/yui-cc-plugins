@@ -43,6 +43,13 @@ export const LIVE_STATES = ['not_requested', 'retained', 'active', 'reclaimable'
 export const releaseState = (worker: Json | undefined): string =>
   asString(get(worker, 'resource', 'releaseState')) ?? asString(get(worker, 'terminalState')) ?? ''
 
+// ★ **ユーザーが操作した端末は、Orca が worker-release で閉じない。**worker-list の `resource.ownershipState` が
+//   `user_owned` になり、release は ok を返しながら何も閉じず、出力の archive も作らない。`retainedReason` は
+//   `user_takeover` とは限らず、Step 3 の worker-retain が付けた `user_requested` のまま残る（2026-09-23 と 24 に
+//   4 Run の design で実測）。だから retainedReason ではなく ownership を見る
+export const userOwned = (worker: Json | undefined): boolean =>
+  get(worker, 'resource', 'ownershipState') === 'user_owned'
+
 // ★ **worker-show の `result.worker.state` の分類はここだけに置く。**orca-wait / orca-stop / orca-recover / orca-wake が
 //   それぞれ同じ配列を持っていた頃、`start_unknown` はどれにも無く、待機は exit 4、停止は何も打たず、回復は何もしない、の
 //   3 つの行き止まりになった（2026-09-24、influencer-platform の Run）。
