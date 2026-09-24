@@ -572,22 +572,25 @@ new_nonce=$(cat "$ORCA_STUB_DIR/new-nonce" 2>/dev/null)
   && ok "RC41 新しい worker が書いた記録は消さない" || fail "RC41 (rc=$rc new=$new_nonce)"
 teardown
 
-# RC42: 置き換えが dispatch を返さなければ、退避した記録を戻す。役はまだ前の試行を負っているので、次の回復が同じ判断をする
-setup; owed_accepted; old_nonce=$(node "$CMP" --role-dir "$SD/roles/design" nonce); show failed
+# RC42: dispatch ID が返らなくても起動されたかもしれないので、旧 nonce を戻さず退避先を残す
+setup; owed_accepted; show failed
 echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
 echo '{"ok":false,"error":{"code":"runtime_unavailable"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
-rec >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 1 && "$(did_)" == ctx_old && "$(node "$CMP" --role-dir "$SD/roles/design" nonce)" == "$old_nonce" \
-   && "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == accepted \
-   && ! -e "$SD/roles/design/completion.superseded-ctx_old.json" ]] \
-  && ok "RC42 dispatch が返らなければ退避した記録を戻す" || fail "RC42 (rc=$rc)"
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$(did_)" == ctx_old && ! -e "$SD/roles/design/completion.json" \
+   && -f "$SD/roles/design/completion.superseded-ctx_old.json" && "$out" == *'worker-list --run run_x --json'* \
+   && "$out" == *'if no new dispatch exists'* && "$out" == *'has a dispatch outside that known set'* ]] \
+  && ok "RC42 応答が無ければ旧 nonce を戻さない" || fail "RC42 (rc=$rc out=$out)"
+rec >/dev/null 2>&1; again=$?
+[[ "$again" -eq 1 && "$(grep -c 'worker-start' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && ok "RC42b 次の回復も退避先で止まる" || fail "RC42b (rc=$again)"
 teardown
 
 # RC43: 退避先が既にあれば、新しい worker を起こさない（前の試行の記録を読む worker を作らない）
 setup; owed_accepted; show failed
 mkdir -p "$SD/roles/design/completion.superseded-ctx_old.json/x"   # 退避先に空でない dir を置き、rename を失敗させる
 out=$(rec 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *'prior recovery stopped after parking its completion record'* && "$(did_)" == ctx_old \
+[[ "$rc" -eq 1 && "$out" == *'recovery stopped with its completion record parked'* && "$(did_)" == ctx_old \
    && "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == accepted ]] \
   && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "RC43 退避できなければ起こさない" || fail "RC43 (rc=$rc out=$out)"
@@ -631,8 +634,24 @@ setup; owed_accepted; show failed
 mv "$SD/roles/design/completion.json" "$SD/roles/design/completion.superseded-ctx_old.json"
 out=$(rec 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *'completion.superseded-ctx_old.json'* && "$out" == *'worker-list --run run_x --json'* \
+   && "$out" == *'move '*'/completion.superseded-ctx_old.json to '*'/completion.json'* \
+   && "$out" == *'record the new ID as roles.design.dispatch'* \
    && -f "$SD/roles/design/completion.superseded-ctx_old.json" ]] \
   && ! grep -qE 'worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
   && ok "RC47 退避中断は推測して再開しない" || fail "RC47 (rc=$rc out=$out)"
+teardown
+
+# RC48: guard の無い退避失敗でも、新しい worker を起こさない
+setup; owed_accepted; show failed
+chmod a-w "$SD/roles/design"
+if [[ -w "$SD/roles/design" ]]; then
+  ok "RC48 権限で rename を失敗させられない環境は省略"
+else
+  out=$(rec 2>&1); rc=$?
+  [[ "$rc" -eq 1 && "$out" == *'could not move the completion record'* \
+     && -f "$SD/roles/design/completion.json" ]] && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+    && ok "RC48 退避に失敗したら起動しない" || fail "RC48 (rc=$rc out=$out)"
+fi
+chmod u+w "$SD/roles/design"
 teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

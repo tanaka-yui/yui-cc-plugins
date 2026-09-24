@@ -790,11 +790,17 @@ A replaced dispatch is kept in that role's `superseded` list in `workers.json`, 
 replacement that Orca does not report ready is still recorded as the role's dispatch, so running
 this again replaces the latest attempt, not the first. Before it starts a replacement, it moves
 the replaced attempt's completion record aside, so a replacement that runs before or without
-reporting ready offers its own work and waits for its own acceptance; the record is put back when
-Orca starts nothing. Step 5 checks what Orca still holds for every replaced attempt, and the wait
-neither answers nor records a message from one.
-If recovery was interrupted after moving that record aside, it stops and shows the parked file and
-an Orca worker-list command. Check whether a new dispatch was issued before deciding what to restore.
+reporting ready offers its own work and waits for its own acceptance. An absent dispatch ID in the
+startup response does not prove that Orca started nothing: the record stays parked. Step 5 checks
+what Orca still holds for every replaced attempt, and the wait neither answers nor records a
+message from one.
+If recovery was interrupted after moving that record aside, or startup returned no dispatch ID,
+it stops and shows the parked file and an Orca worker-list command. If that task has no new
+dispatch and `completion.json` is absent, move the parked file back to `completion.json`, then
+rerun recover. If the task has a new dispatch, leave the parked file aside: record the new ID in
+`roles.<role>.dispatch`, set `start_incomplete: true` and `retained: false`, increment `generation`,
+append the old ID to `superseded`, record its agent terminal from Orca, and put only that known
+handle in `worktree_terminals`. Then remove the parked file, rerun recover, and restart the wait.
 
 Run it when Step 3 reports exit 4, when a task sits unfinished with no worker left, when Step 2
 or Step 3.5 says a start did not complete, or when the wait says a worker is `start_unknown`.

@@ -758,10 +758,15 @@ node "$PLUGIN/bin/orca-recover.ts" --status-dir "$SD" --dry-run
 しなかった replacement もその役の dispatch として記録するので、もう一度実行すると最初の試行ではなく
 最新の試行を置き換える。replacement を起こす前に、置き換える試行の完了の記録を脇へ退避するので、
 ready を報告する前から、あるいは報告しないまま動く replacement も、自分の成果を差し出して自分の受理を待つ。
-Orca が何も起こさなかったときは記録を戻す。Step 5 は置き換えた試行ごとに Orca がまだ何を持っているかを
-確かめ、待機はそこから届いた message に返事も記録もしない。
-記録の退避後に回復が中断された場合は、退避先の path と Orca の worker-list コマンドを示して止まる。
-新しい dispatch が発行されたかを確かめてから、記録を戻すか判断する。
+起動の応答に dispatch ID が無くても、Orca が何も起こさなかった証拠にはならず、記録は退避したままにする。
+Step 5 は置き換えた試行ごとに Orca がまだ何を持っているかを確かめ、待機はそこから届いた message に返事も記録もしない。
+退避後に回復が中断されたとき、または起動が dispatch ID を返さなかったときは、退避先の path と Orca の
+worker-list コマンドを示して止まる。その task に新しい dispatch が無く、`completion.json` も無ければ、
+退避した記録を `completion.json` に戻して回復をもう一度実行する。新しい dispatch があれば退避記録は戻さず、
+その ID を `roles.<role>.dispatch` に記録する。`start_incomplete: true`、`retained: false` を設定し、
+`generation` を 1 増やし、旧 ID を `superseded` に足し、Orca が示す agent 端末を記録する。
+`worktree_terminals` には、その確かな agent 端末だけを入れる。
+そのあと退避記録を消し、回復と待機を起動し直す。
 
 Step 3 が exit 4 を返したとき、worker が居ないままタスクが終わらないとき、Step 2 か Step 3.5 が
 起動が終わらなかったと言ったとき、または待機がある worker を `start_unknown` と言ったときに実行する。

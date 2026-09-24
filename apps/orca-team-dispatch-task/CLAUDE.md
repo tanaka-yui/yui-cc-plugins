@@ -188,7 +188,7 @@ settled / other）、待機・停止・回復・起床が同じ表を読む:
   確かめて置き換える。起動が完了した役（完了を負う役）には効かない — その経路は Orca の dispatch が終端になると
   reconcile へ入るので、自分で打った fence を決着と読み違える
 - 起床は打たない。死んでいれば端末はシェルに戻っていることがあり、そこへ打つと文章がコマンドとして走る。
-だから `--adopt` のあとも、Orca が start_unknown と言う間は誰もその端末に打たない
+  だから `--adopt` のあとも、Orca が start_unknown と言う間は誰もその端末に打たない
 
 orca-start / orca-recover は ready にならない起動でも、Orca が端末を返せば `terminal` として記録する。
 待機は、その時点で端末が空なら Orca の `agentTerminalHandle` から補い、`worker_done` の受領後にも補う。
@@ -200,11 +200,15 @@ orca-start / orca-recover は ready にならない起動でも、Orca が端末
 動いていることがあり（start_unknown — worker-start はターン開始の観測を待ってから返る）、記録が残っていれば
 `completion.ts prepare`（冪等）が前の試行の nonce を返し、前の試行が accepted / settled まで進んでいれば `await` は親の検証を
 待たずに accepted を返す。起こしたあとで消すと、今度は起動中に新しい worker が書いた記録を消す（計画のレビューの round 1・2 で
-見つかった）。だから境界は起こす前に置き（`completion.superseded-<前の dispatch>.json` へ rename。できなければ起こさない）、
-dispatch が返らなければ戻し、記録できたら消し、起こしたあとは `completion.json` に触らない。`--adopt` も完了の記録に触らない —
-そこにあるのは引き受ける試行が自分で書いたものだけである。
-退避後に回復プロセスが中断されたときは、新しい dispatch の有無が分からない。次の回復は退避先と
-`worker-list` の確認コマンドを示して止まり、古い nonce を自動で戻さない。
+見つかった）。だから境界は起こす前に置く（`completion.superseded-<前の dispatch>.json` へ rename。
+できなければ起こさない）。起動の応答に dispatch ID が無くても、発行されなかった証明にはならないので
+旧記録は戻さない。新 dispatch を記録できたら退避先を消し、起こしたあとは `completion.json` に触らない。
+`--adopt` も完了の記録に触らない — そこにあるのは引き受ける試行が自分で書いたものだけである。
+退避後に回復プロセスが中断されたときも、次の回復は退避先と `worker-list` の確認コマンドを示して止まる。
+新 dispatch が無く `completion.json` も無ければ旧記録を戻す。新 dispatch があれば旧記録を戻さず、
+その ID を役の dispatch に記録し、`start_incomplete`・`retained`・`generation`・`superseded` を
+置き換え後の値にする。Orca が示す agent 端末を記録し、端末一覧にはその端末だけを入れて退避先を消す。
+どちらもそのあと回復と待機を起動し直す。
 
 codex がフォルダの信頼（「Trust this folder?」）で止まった起動は、Orca が `agent-trust-workspace` で failed にする。
 orca-start と orca-recover はその解き方を案内する（`lib/trust.ts`）。判定は `worker.lastError` と

@@ -94,6 +94,28 @@ const reportWait = (statusDir: string): void => {
 
 type Role = { name: string; dispatch: string; task: string; record: JsonObject }
 
+// 置き換えの発行と記録の間に応答を失ったら、新 dispatch の有無が分かるまで旧 nonce を戻さない
+const reportParked = (statusDir: string, role: Role, parked: string): void => {
+  const run = asString(get(readJson(join(statusDir, 'run.json')), 'run_id')) ?? ''
+  const completion = join(statusDir, 'roles', role.name, 'completion.json')
+  const retry = `node ${SELF} --status-dir ${statusDir} --role ${role.name}`
+  const superseded = (asArray(role.record.superseded) ?? []).filter((id) => typeof id === 'string')
+  log(NAME, `${role.name}: recovery stopped with its completion record parked at ${parked}; nothing was changed`)
+  log(
+    NAME,
+    `  inspect task ${role.task}: ${orcaBin()} orchestration worker-list${run === '' ? '' : ` --run ${run}`} --json`,
+  )
+  log(NAME, `  known dispatch: ${role.dispatch}; superseded dispatches: ${superseded.join(', ') || '(none)'}`)
+  log(
+    NAME,
+    `  if no new dispatch exists and ${completion} is absent, move ${parked} to ${completion}; then run ${retry}`,
+  )
+  log(
+    NAME,
+    `  if task ${role.task} has a dispatch outside that known set, do not restore ${parked}: record the new ID as roles.${role.name}.dispatch in ${join(statusDir, 'workers.json')}, set start_incomplete=true and retained=false, increment generation, append ${role.dispatch} to superseded, set terminal to Orca's agent handle and worktree_terminals to only that handle; then remove ${parked}, rerun ${retry}, and restart orca-wait.ts`,
+  )
+}
+
 // ★ codex がフォルダの信頼を求めて止まった起動なら、その解き方を言う（lib/trust.ts）。案内する path は worker の worktree
 //   から求める（codex はそこから本体の checkout の root を信頼の鍵にする）。記録に無ければ親の checkout で代える
 const sayTrust = (statusDir: string, role: Role, shown: Json | null): void => {
@@ -247,15 +269,9 @@ const replace = (statusDir: string, parent: string, role: Role): boolean => {
   const state = asString(get(started.json, 'result', 'state')) ?? ''
   const ready = started.rc === 0 && state === 'ready' && next !== ''
   if (next === '') {
-    // ★ 何も発行されなかった。役はまだ前の試行を負っているので、退避した記録を戻す（次の回復が同じ判断をできるように）
-    if (parking === 'parked' && !existsSync(completion)) {
-      try {
-        renameSync(parked, completion)
-      } catch {
-        log(NAME, `${role.name}: could not put the completion record back; it is at ${parked}`)
-      }
-    }
+    // 応答に ID が無くても Orca は置き換えを起こしているかもしれない。旧 nonce は戻さない
     log(NAME, `${role.name}: could not start a replacement (rc=${started.rc}); the old resources are KEPT`)
+    if (parking === 'parked') reportParked(statusDir, role, parked)
     return false
   }
   const shownResult = ready ? null : runOrca(['orchestration', 'worker-show', '--dispatch', next, '--json'])
@@ -405,15 +421,7 @@ const main = (argv: string[]): number => {
     // worker-start 中の中断なら、置き換えを発行済みか分からない。旧 nonce を戻さず、確認を求める
     const parked = join(roleDir, `completion.superseded-${role.dispatch}.json`)
     if (existsSync(parked)) {
-      const run = asString(get(readJson(join(statusDir, 'run.json')), 'run_id')) ?? ''
-      log(
-        NAME,
-        `${name}: a prior recovery stopped after parking its completion record at ${parked}; not deciding anything`,
-      )
-      log(
-        NAME,
-        `  inspect dispatches with: ${orcaBin()} orchestration worker-list${run === '' ? '' : ` --run ${run}`} --json`,
-      )
+      reportParked(statusDir, role, parked)
       rc = 1
       continue
     }
