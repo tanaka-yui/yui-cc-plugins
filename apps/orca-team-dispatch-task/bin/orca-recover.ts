@@ -11,9 +11,10 @@
 // ★ **fence が先。**旧 capability と新 capability が同時に lifecycle を進めてはならない。だから
 //   `outcome_unknown` では replacement を作らない（O19）。
 import { die, log } from '../lib/cli.ts'
+import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject } from '../lib/json.ts'
-import { orcaBin, receiptOk, runOrca } from '../lib/orca.ts'
+import { failureDetail, orcaBin, receiptOk, runOrca, terminalHandles } from '../lib/orca.ts'
 import { nowSeconds, runNode } from '../lib/sys.ts'
 
 import { accessSync, constants, rmSync, statSync } from 'node:fs'
@@ -99,43 +100,83 @@ const replace = (statusDir: string, parent: string, role: Role): boolean => {
   }
   const started = runOrca(['orchestration', 'worker-start', ...args, '--json'])
   const next = asString(get(started.json, 'result', 'dispatchId')) ?? ''
-  const terminal =
-    asString(
-      get(
-        (asArray(get(started.json, 'result', 'effects')) ?? []).find(
-          (effect) => get(effect, 'kind') === 'terminal' && get(effect, 'role') === 'agent',
-        ),
-        'id',
-      ),
-    ) ?? ''
-  if (started.rc !== 0 || asString(get(started.json, 'result', 'state')) !== 'ready' || next === '') {
+  const state = asString(get(started.json, 'result', 'state')) ?? ''
+  const ready = started.rc === 0 && state === 'ready' && next !== ''
+  if (next === '') {
     log(NAME, `${role.name}: could not start a replacement (rc=${started.rc}); the old resources are KEPT`)
     return false
   }
+  const terminal = ready
+    ? (asString(
+        get(
+          (asArray(get(started.json, 'result', 'effects')) ?? []).find(
+            (effect) => get(effect, 'kind') === 'terminal' && get(effect, 'role') === 'agent',
+          ),
+          'id',
+        ),
+      ) ?? '')
+    : ''
   const generation = (count(role.record.generation) ?? 1) + 1
+  const superseded = (asArray(role.record.superseded) ?? []).filter((id) => typeof id === 'string')
   const workersFile = join(statusDir, 'workers.json')
   const workers = asObject(readJson(workersFile))
   const roles = asObject(get(workers, 'roles'))
   const current = asObject(get(workers, 'roles', role.name))
+  // ★ **発行された dispatch は ready でなくても記録する**（orca-start の record_orphan_dispatch と同じ理由）。
+  //   捨てると、次の回復は古い dispatch を --retry-of に渡し直し、新しい試行は誰にも追われないまま残る。
+  //   ready でなければ端末は記録しない — その役は「起動が終わらなかった」まま、次の回復がこの試行を見る
   const updated: JsonObject = {
     ...(current ?? {}),
     dispatch: next,
     terminal,
     generation,
     retained: false,
+    superseded: [...superseded, role.dispatch],
+    worktree_terminals: terminalHandles(worktreeId),
   }
+  if (ready) delete updated.start_incomplete
+  else updated.start_incomplete = true
+  const inspect = `  ${orcaBin()} orchestration worker-show --dispatch ${next} --json`
   if (
     workers === null ||
     roles === null ||
     !writeAtomic(workersFile, `${JSON.stringify({ ...workers, roles: { ...roles, [role.name]: updated } })}\n`)
   ) {
-    log(NAME, `${role.name}: the replacement started as ${next} but could not be recorded`)
+    log(
+      NAME,
+      `${role.name}: dispatch ${next} was issued but could not be recorded in ${workersFile}; record it there as the ${role.name} dispatch before running this again. Inspect with:`,
+    )
+    log(NAME, inspect)
+    return false
+  }
+  if (!ready) {
+    log(
+      NAME,
+      `${role.name}: the replacement did not report ready (rc=${started.rc} state='${state || 'none'}'); dispatch ${next} is recorded in place of ${role.dispatch}. Run this again once Orca reports it failed or stopped. Inspect with:`,
+    )
+    log(NAME, inspect)
     return false
   }
   // 旧試行の完了記録は捨てる。新しい worker は新しい nonce で offer し直す
   rmSync(join(statusDir, 'roles', role.name, 'completion.json'), { force: true })
   log(NAME, `${role.name}: replaced dispatch ${role.dispatch} with ${next} (generation ${generation})`)
   return true
+}
+
+// ★ **起動が終わらなかった試行の端末は、その dispatch が持ったまま `reclaimable` で残る**（Orca の
+//   recovery-and-cleanup）。Orca の勧めどおり release で閉じる（出力は保存される）。手で閉じると
+//   user_takeover として残る。**閉じられなくても置き換えは止めない** — その dispatch は superseded として
+//   記録に残るので、[C7] は止まらない
+const releaseFailedStart = (role: Role): void => {
+  const released = runOrca(['orchestration', 'worker-release', '--dispatch', role.dispatch, '--json'])
+  if (receiptOk(released)) {
+    log(NAME, `${role.name}: asked Orca to release the terminal of the failed start (dispatch ${role.dispatch})`)
+  } else {
+    log(
+      NAME,
+      `${role.name}: could not release the terminal of the failed start (dispatch ${role.dispatch}, ${failureDetail(released)}); it stays recorded as superseded`,
+    )
+  }
 }
 
 const main = (argv: string[]): number => {
@@ -192,17 +233,21 @@ const main = (argv: string[]): number => {
       log(NAME, `${name}: stopped by the user; not recovering it`)
       continue
     }
-    // ★ **その役に「まだ送るべきもの」があるか。**無いなら回復するものも無い。
-    //   成功系は completion.json が settled でないこと、失敗系は status.json = error である
-    const phase = phaseOf(roleDir)
-    const status = asString(get(readJson(join(roleDir, 'status.json')), 'status')) ?? ''
-    if (phase === 'settled') {
-      log(NAME, `${name}: already settled locally; nothing is owed`)
-      continue
-    }
-    if (phase === '' && status !== 'error') {
-      log(NAME, `${name}: nothing is owed yet (phase '${phase || 'none'}', status '${status || 'none'}')`)
-      continue
+    // ★ **起動が終わらなかった役は「起動」を負っている。**完了を負っているかの判定より先に見る
+    const incomplete = startIncomplete(statusDir, name)
+    const phase = incomplete ? '' : phaseOf(roleDir)
+    if (!incomplete) {
+      // ★ **その役に「まだ送るべきもの」があるか。**無いなら回復するものも無い。
+      //   成功系は completion.json が settled でないこと、失敗系は status.json = error である
+      const status = asString(get(readJson(join(roleDir, 'status.json')), 'status')) ?? ''
+      if (phase === 'settled') {
+        log(NAME, `${name}: already settled locally; nothing is owed`)
+        continue
+      }
+      if (phase === '' && status !== 'error') {
+        log(NAME, `${name}: nothing is owed yet (phase '${phase || 'none'}', status '${status || 'none'}')`)
+        continue
+      }
     }
     const shown = runOrca(['orchestration', 'worker-show', '--dispatch', role.dispatch, '--json'])
     if (!receiptOk(shown) || asObject(get(shown.json, 'result')) === null) {
@@ -214,6 +259,27 @@ const main = (argv: string[]): number => {
     const dispatchStatus = asString(get(shown.json, 'result', 'dispatch', 'status')) ?? ''
     const inspect = (): void => {
       log(NAME, `  ${orcaBin()} orchestration worker-show --dispatch ${role.dispatch} --json`)
+    }
+
+    if (incomplete) {
+      // ★ **置き換えてよいのは、失敗か停止が証明された試行だけ**（Orca の recovery-and-cleanup）。
+      //   それ以外（まだ起動中・outcome_unknown など）は見るだけにする
+      if (state !== 'failed' && state !== 'stopped') {
+        log(
+          NAME,
+          `${name}: its start did not complete and Orca reports the worker as '${state || 'unknown'}'; not replacing anything. Inspect with:`,
+        )
+        inspect()
+        rc = 1
+        continue
+      }
+      if (dryRun) {
+        say(`${name}: replace the failed start`)
+        continue
+      }
+      releaseFailedStart(role)
+      if (!replace(statusDir, parent, role)) rc = 1
+      continue
     }
 
     if (TERMINAL_STATUSES.includes(dispatchStatus)) {

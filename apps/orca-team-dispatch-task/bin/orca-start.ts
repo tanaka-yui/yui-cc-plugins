@@ -5,6 +5,7 @@
 //        node orca-start.ts --slug <s> --resume [--repo-root <p>] [--design-mode ...]
 // Exit: 0 / 1 起動できなかった / 2 使用法
 import { die, log } from '../lib/cli.ts'
+import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
 import { orcaBin, runOrca, terminalHandles } from '../lib/orca.ts'
@@ -180,6 +181,9 @@ const roleUpdate = (site: string, file: string, role: string, additions: JsonObj
     const roles = object(workers.roles)
     workers.roles = { ...roles, [role]: { ...object(roles[role]), ...additions } }
   })
+// ★ 起動が終わらなかった試行は、失敗・停止が証明されてから同じ Task に置き換える。
+const incompleteStart = (statusDir: string, slug: string, role: string, dispatch: string): string =>
+  `the ${role} start did not complete for ${slug} (dispatch ${dispatch}); once Orca reports that worker failed or stopped, replace it with: node ${join(PLUGIN, 'bin', 'orca-recover.ts')} --status-dir ${statusDir} --role ${role}`
 
 const launchRole = (context: Context, role: string): boolean => {
   const name = role === 'design' ? context.slug : `${context.slug}-${role.replaceAll('_', '-')}`
@@ -430,7 +434,7 @@ const launchRole = (context: Context, role: string): boolean => {
   )
   const recordOrphan = (): void => {
     if (dispatch === '') return
-    if (!roleUpdate(`workers-orphan-dispatch-${role}`, workersFile, role, { dispatch })) {
+    if (!roleUpdate(`workers-orphan-dispatch-${role}`, workersFile, role, { dispatch, start_incomplete: true })) {
       log(NAME, `the dispatch id could not be recorded either; wait on dispatch=${dispatch} by hand`)
     }
   }
@@ -644,7 +648,13 @@ const main = (argv: string[]): number => {
       return 1
     }
     if (started('exec')) {
-      log(NAME, `the exec role has already started for ${slug}`)
+      const dispatch = string(get(readJson(workersFile), 'roles', 'exec', 'dispatch'))
+      log(
+        NAME,
+        startIncomplete(statusDir, 'exec')
+          ? incompleteStart(statusDir, slug, 'exec', dispatch)
+          : `the exec role has already started for ${slug}`,
+      )
       return 1
     }
     if (reviewMode === 'on') {
@@ -659,7 +669,13 @@ const main = (argv: string[]): number => {
         return 1
       }
       if (started('design')) {
-        log(NAME, `the design role has already started for ${slug}`)
+        const dispatch = string(get(readJson(workersFile), 'roles', 'design', 'dispatch'))
+        log(
+          NAME,
+          startIncomplete(statusDir, 'design')
+            ? incompleteStart(statusDir, slug, 'design', dispatch)
+            : `the design role has already started for ${slug}`,
+        )
         return 1
       }
     }

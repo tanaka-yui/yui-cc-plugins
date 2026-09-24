@@ -178,6 +178,39 @@ const planRole = (role: string, record: Json, listed: Json[], merged: boolean, s
   }
 }
 
+// ★ **置き換えた試行（orca-recover の --retry-of。役の `superseded`）も判定に入れる。**[C1] と同じく、以前の
+//   release を Orca が確定できていない試行があれば、そのタスクは何も閉じない・消さない。一覧に無い・知らない
+//   state も同じく止まる。Orca がまだ保持していれば、その端末と理由を示し、記録は残す — 記録を消すと、どの保持が
+//   自分たちのものかを失い、次の [C7] が ghost と読む。返り値は「まだ Orca が保持している試行があるか」
+const planSuperseded = (role: string, record: Json, listed: Json[], sink: Sink): boolean => {
+  let held = false
+  for (const id of asArray(get(record, 'superseded')) ?? []) {
+    const dispatch = asString(id)
+    if (dispatch === null) continue
+    const worker = listed.find((entry) => get(entry, 'dispatchId') === dispatch)
+    const state = worker === undefined ? '' : releaseState(worker)
+    if (worker !== undefined && HELD_STATES.includes(state)) {
+      sink.stopped.reasons.push(
+        `${role}: the replaced attempt ${dispatch} is ${state}; Orca has not settled an earlier release, so nothing may be closed or removed for this task`,
+      )
+      sink.stopped.reported.push(worker)
+      sink.stopped.inspect.push(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'])
+    } else if (worker === undefined || (!GONE_STATES.includes(state) && !LIVE_STATES.includes(state))) {
+      sink.stopped.reasons.push(`${role}: the replaced attempt ${dispatch}: ${UNREADABLE}`)
+    } else if (LIVE_STATES.includes(state)) {
+      held = true
+      sink.kept.push({
+        kind: 'terminal',
+        role,
+        reasons: [
+          `Orca still holds the terminal of the replaced attempt ${dispatch} (releaseState: ${state}); it is not offered here`,
+        ],
+      })
+    }
+  }
+  return held
+}
+
 const planTask = (dir: string, workers: JsonObject, listed: Json[]): TaskPlan => {
   const merged = get(readJson(join(dir, 'integration-result.json')), 'merged') === true
   // ★ 役を全部走査する。レビューモードでは 1 タスクに複数の役（端末と worktree）が居る
@@ -186,19 +219,24 @@ const planTask = (dir: string, workers: JsonObject, listed: Json[]): TaskPlan =>
   )
   const sink: Sink = { offers: emptyOffers(), kept: [], stopped: { reasons: [], reported: [], inspect: [] } }
   if (roles.length === 0) sink.stopped.reasons.push(MISSING)
-  for (const [role, record] of roles) planRole(role, record, listed, merged, sink)
-  const refusal = recordRefusal(dir)
-  if (refusal !== null) {
-    sink.kept.push({ kind: 'record', role: null, reasons: [refusal] })
-  } else if (merged) {
-    sink.offers.record.push({ path: dir })
-  } else {
-    sink.kept.push({
-      kind: 'record',
-      role: null,
-      reasons: ['the work is not merged yet, so this is the only copy of the request and result'],
-    })
+  let held = false
+  for (const [role, record] of roles) {
+    planRole(role, record, listed, merged, sink)
+    held = planSuperseded(role, record, listed, sink) || held
   }
+  const refusal = recordRefusal(dir)
+  const reasons: string[] = []
+  if (refusal !== null) reasons.push(refusal)
+  if (refusal === null && !merged) {
+    reasons.push('the work is not merged yet, so this is the only copy of the request and result')
+  }
+  if (refusal === null && held) {
+    reasons.push(
+      'Orca still holds a replaced attempt of this task, and this record is what tells a later Step 5 that it is ours',
+    )
+  }
+  if (reasons.length === 0) sink.offers.record.push({ path: dir })
+  else sink.kept.push({ kind: 'record', role: null, reasons })
   const slug = basename(dir)
   // ★ タスクの停止は「そのタスクの何も閉じない・消さない」。提示を全部取り下げる
   if (sink.stopped.reasons.length > 0) {
@@ -267,10 +305,13 @@ const planCommand = (args: string[]): number => {
   }
 
   // [C7] 後半。worker-retain は durable な例外を残す。記録に無い保持は他者のものか前回の自分たちのもの
+  // ★ 置き換えた試行（orca-recover の --retry-of）も記録のうちである。Orca がそれを retained のまま
+  //   持っていても、他者や前回の保持ではない
   const known = new Set(
     inputs.flatMap(({ workers }) =>
       Object.values(asObject(workers.roles) ?? {})
-        .map((record) => asString(get(record, 'dispatch')))
+        .flatMap((record) => [get(record, 'dispatch'), ...(asArray(get(record, 'superseded')) ?? [])])
+        .map((id) => asString(id))
         .filter((id) => id !== null),
     ),
   )

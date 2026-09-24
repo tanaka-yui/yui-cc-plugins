@@ -1178,4 +1178,40 @@ setup; phase_b_on; bs_config on; start >/dev/null 2>&1
 [[ "$(spec)" == *'finishing-a-development-branch'* ]] && miss="$miss [phase_b=on]"
 [[ -z "$miss" ]] && ok "ST99 brainstorm は取り込みを親に残す" || fail "ST99:$miss"; teardown
 
+# ST100: ★ **起動が終わらなかった exec を「もう起きている」と言わない。**やり直す口（orca-recover.ts）を
+#        名指しする（2026-09-23 の P1 の dispatch: worker-start が terminal_handle_stale で failed を返し、
+#        exec を起こし直す手段が無かった）。自分では何も起こさない
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_e"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+exec_phase >/dev/null 2>&1
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'the exec start did not complete'* && "$out" == *'orca-recover.ts --status-dir'* \
+   && "$out" == *'--role exec'* && "$out" != *'already started'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST100 起動が終わらなかった exec はやり直しの口を名指しする" || fail "ST100 (rc=$rc) $out"
+teardown
+
+# ST101: 起動が終わらなかった design も同じ（--resume は「もう起きている」ではなく回復を名指しする）
+setup
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_x"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+start >/dev/null 2>&1
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(resume 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'the design start did not complete'* && "$out" == *'--role design'* ]] \
+  && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST101 起動が終わらなかった design は回復を名指しする" || fail "ST101 (rc=$rc) $out"
+teardown
+
+# ST102: ★ **ready にならなかった起動には `start_incomplete` の印を付ける。**次の回復（orca-recover.ts）は、
+#        役の status や古い completion より先にこの印で「最新の試行が起きていない」を読む。ready になった起動には付けない
+setup; echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_x"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+start >/dev/null 2>&1
+a=$(jq -r '.roles.design.start_incomplete // "absent"' "$R/.dispatch/s/workers.json"); teardown
+setup; start >/dev/null 2>&1
+b=$(jq -r '.roles.design.start_incomplete // "absent"' "$R/.dispatch/s/workers.json")
+[[ "$a" == true && "$b" == absent ]] && ok "ST102 ready にならなかった起動に印を付ける" || fail "ST102 ($a/$b)"; teardown
 echo "---"; echo "failures: $fails"; exit "$fails"

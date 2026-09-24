@@ -501,6 +501,12 @@ id は stderr にしか無いので、そのタスクの dir を加える前に�
 タスクも道連れになる。外すと batch 全体が止まる。待機は知らされていない dispatch のメッセージを
 処理できず、兄弟タスクの成果がすべてその後ろで滞る。
 
+メッセージが `worker-start did not report ready` と言っているときは、そのタスクを Step 2 や
+Step 3.5 で起動し直さない — タスクがその dispatch を既に持っているので、どちらも拒否する。Orca が
+その worker を `failed` か `stopped` と報告したら、Step 3 の回復の block のとおり `orca-recover.ts` で
+失敗した起動を置き換える。失敗した起動がまだ持っている端末を release し、同じ Task と worktree に
+replacement を起こす。
+
 ## Step 3: 待つ
 
 **完了は 2 相で行い、この待機が親側の半分を担う。**worker は自分で done を報告しない。
@@ -717,11 +723,23 @@ node "$PLUGIN/bin/orca-recover.ts" --status-dir "$SD" --dry-run
 - **`failed` / `stopped` が証明された** → **同じ** task に `--retry-of` で replacement を
   起こし、generation を上げ、旧い完了記録を捨てる。新しい worker は新しい nonce で
   差し出し直す。
+- **起動が終わらなかった** — 役の最新の試行が ready にならなかった。dispatch はあるが端末が記録
+  されておらず、Step 2・Step 3.5・この block のどれかが `start_incomplete` の印を付けている →
+  Orca が `failed` か `stopped` と証明したら、その起動がまだ持っている端末を
+  `orchestration worker-release` で閉じ、同じやり方で replacement を起こす。それ以外の状態では
+  報告するだけで、置き換えない。役が負っている完了のことより先にこれを見る — 役の status と
+  完了の記録は、前の試行が残したものだからである。
 - **確認できないもの（`outcome_unknown` を含む）** → 何もせず、そう言う。fence が先である。
   ここで推測すると、2 つの capability が 1 つの lifecycle を進めることになる。
 - **Orca が既に決着させていた** → 何も送らず、ローカルの記録を合わせる。
 
-Step 3 が exit 4 を返したとき、または worker が居ないままタスクが終わらないときに実行する。
+置き換えた dispatch は `workers.json` のその役の `superseded` に古い順で残る。Orca が ready と報告
+しなかった replacement もその役の dispatch として記録するので、もう一度実行すると最初の試行ではなく
+最新の試行を置き換える。Step 5 は置き換えた試行ごとに Orca がまだ何を持っているかを確かめ、待機は
+そこから届いた message に返事も記録もしない。
+
+Step 3 が exit 4 を返したとき、worker が居ないままタスクが終わらないとき、または Step 2 か
+Step 3.5 が起動が終わらなかったと言ったときに実行する。
 
 ## Step 3.5: `phase_b` が on のときに exec 段を起こす
 
@@ -775,6 +793,8 @@ Step 2 が reviewer を先に起こすのと同じ理由である — 実装役�
 `design` が `done` でないとき、`plan.md` が無いか空のとき、`exec` に既に dispatch が在るとき
 は、**何も起こさずに拒否する**。これらは guard であって、回避して再試行する種類の失敗では
 ない — message が名指しするものを読んで、それを直す。
+その dispatch が起動の終わらなかったものなら、メッセージはそう言い、置き換えるための
+`orca-recover.ts` の呼び出しを名指しする。
 
 そのあとは Step 3 の exit 表へ戻る。駆動しているのは既に在る待機のままである。いまは `exec`
 にも答え、`exec` が決着するまで戻らない。新しい段を拾った瞬間、その log に
@@ -907,6 +927,10 @@ TypeScript のファイルを直接実行するので、Node 22.18 以上が要�
   あり、いずれにせよ手を出してよいものではない。記録に無い保持が 1 つでもあれば、その worker だけで
   なく Run 全体の片付けを止める。**別の** Run の status dir が混じっていても止める。既知集合が
   広がり、探している ghost そのものを隠してしまうからである。
+  `orca-recover.ts` が置き換えた dispatch は、その役の `superseded` に並び、記録したものとして数える。
+  ただしその試行の状態も見る: Orca が以前の release を確定できていない試行や、一覧に載っていない試行が
+  あれば、[C1] と同じくそのタスクを止める。Orca がまだ保持している試行があれば、そのタスクの dispatch
+  記録は残す — 後の Step 5 にそれが自分たちのものだと教えるのはこの記録だからである。
 - [C4] `worktree rm` は branch の削除も試みる。Orca は変更が merge 済みと証明できない branch を
   残すので、branch が残ることは失敗ではなく合図である。ユーザーが dirty なファイルを見て失っても
   よいと判断するまで、`--force` を加えない。
@@ -1016,6 +1040,11 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 `brainstorm` の design が書いたときは `spec.md` / `plan.md` がある。
 1 つの Run のタスクは `run.json` に同じ `run_id` を持ち、`workers.json` にそれぞれの worktree を
 持つ。`workers.json` の `roles` map は役ごとに 1 entry を持つので、後段の stage が何も動かさずに
-役を増やせる。Step 5 はその隣に `.dispatch/cleanup-<run_id>.json` を書く。Step 6 の `run` が
+役を増やせる。
+
+`orca-recover.ts` が置き換えた役は、置き換えた dispatch を `superseded` に並べる。最新の起動が
+ready にならなかった役には `start_incomplete` の印が付く。
+
+Step 5 はその隣に `.dispatch/cleanup-<run_id>.json` を書く。Step 6 の `run` が
 実行するのは、この計画にある提示だけである。手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は
 repository の `info/exclude` に加えるため、ユーザーの `git status` には現れない。

@@ -521,6 +521,12 @@ dispatch identity is incomplete` and every sibling task goes down with it. Leavi
 the whole batch: the wait cannot process a message for a dispatch it was never told about, and
 every sibling task's result stays stuck behind it.
 
+When the message says `worker-start did not report ready`, do not start that task again with
+Step 2 or Step 3.5: both refuse, because the task already has that dispatch. Once Orca reports
+that worker `failed` or `stopped`, replace the failed start with `orca-recover.ts` as Step 3's
+recovery block shows. It releases the terminal the failed start still owns and starts a
+replacement on the same Task and worktree.
+
 ## Step 3: Wait
 
 **Finishing takes two phases, and this wait drives the parent's half.** A worker does not
@@ -746,11 +752,24 @@ narrow on purpose:
 - **Proven `failed` or `stopped`** → it starts a replacement on the *same* task with
   `--retry-of`, raises the generation, and drops the old completion record so the new worker
   offers again with a fresh nonce.
+- **A start that did not complete** — the role's latest attempt never became ready: it has a
+  dispatch but no terminal recorded, and Step 2, Step 3.5 or this block marked it
+  `start_incomplete` → once Orca proves it `failed` or `stopped`, it releases the terminal that
+  start still owns with `orchestration worker-release` and starts a replacement the same way. Any
+  other state of that start is only reported, never replaced. This comes before anything about
+  the completion the role owes, because the role's status and completion record belong to an
+  earlier attempt.
 - **Anything it cannot confirm, including `outcome_unknown`** → it does nothing and says so.
   Fencing comes first; guessing here is how two capabilities end up driving one lifecycle.
 - **Orca already settled it** → nothing is sent; the local record is brought into line.
 
-Run it when Step 3 reports exit 4, or when a task sits unfinished with no worker left.
+A replaced dispatch is kept in that role's `superseded` list in `workers.json`, oldest first. A
+replacement that Orca does not report ready is still recorded as the role's dispatch, so running
+this again replaces the latest attempt, not the first. Step 5 checks what Orca still holds for
+every replaced attempt, and the wait neither answers nor records a message from one.
+
+Run it when Step 3 reports exit 4, when a task sits unfinished with no worker left, or when Step 2
+or Step 3.5 says a start did not complete.
 
 ## Step 3.5: Start the exec phase when `phase_b` is on
 
@@ -803,6 +822,8 @@ moment it starts.
 It refuses, without starting anything, when `design` is not `done`, when `plan.md` is missing
 or empty, or when `exec` already has a dispatch. Those are guards, not failures to retry
 around — read what the message names and fix that.
+When that dispatch is a start that did not complete, the message says so and names the
+`orca-recover.ts` call that replaces it.
 
 Then go back to Step 3's exit table. The wait you already have is still the one driving this:
 it now answers `exec` too, and it does not return until `exec` has settled. Its log says
@@ -943,6 +964,10 @@ Say these things to the user in plain language:
   run, and either way not ours to step on. A retained worker we cannot account for stops the
   whole Run's cleanup, not just its own task. A status dir from a **different** Run stops it
   too, because it would widen the known set and hide the very ghost this looks for.
+  A dispatch that `orca-recover.ts` replaced is listed under its role's `superseded` and counts as
+  recorded. Its own state still matters: a replaced attempt whose release Orca has not settled, or
+  that Orca no longer lists, stops that task as [C1] does, and while Orca still holds one, that
+  task's dispatch record is kept, because the record is what tells a later Step 5 that it is ours.
 - [C4] `worktree rm` also tries to delete the branch. Orca keeps any branch whose changes
   it cannot prove are already merged, so a surviving branch is a signal, not a failure.
   Do not add `--force` unless the user has looked at the dirty files and accepted losing
@@ -1060,7 +1085,12 @@ the wait saw a role waiting on a person), and
 `roles/design/{status.json,result.md}`, plus `roles/<role>/stopped.json` for a role the user
 stopped, and `spec.md` / `plan.md` when a `brainstorm` design wrote them. Tasks of one Run carry
 the same `run_id` in `run.json` and their own worktree in `workers.json`, whose `roles` map
-holds one entry per role so a later stage can add more without moving anything. Step 5 writes
+holds one entry per role so a later stage can add more without moving anything.
+
+A role that `orca-recover.ts` replaced lists the dispatches it replaced under `superseded`, and a
+role whose latest start did not become ready is marked `start_incomplete`.
+
+Step 5 writes
 `.dispatch/cleanup-<run_id>.json` next to them: Step 6's `run` executes only the offers in that
 plan. Everything
 needed to resume or clean up by hand is here. `.dispatch/` is added to the repository's

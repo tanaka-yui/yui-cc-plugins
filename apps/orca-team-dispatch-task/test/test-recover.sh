@@ -178,4 +178,162 @@ out=$(rec 2>&1); rc=$?
   && ok "RC16 止めた役は回復しない" || fail "RC16 (rc=$rc out=$out)"
 teardown
 
+# ── 起動が終わらなかった役（TS 移行 spec 5 章。2026-09-23 の P1 の dispatch で見つかった）────
+# ★ worker-start が ready を返さなかった役は、dispatch だけが記録され（兄弟の待機を詰まらせないため）、
+#   端末は記録されず、status は `starting` のまま残る。`orca-start --phase exec` は「もう dispatch がある」と
+#   断り、完了を負っていないので回復の対象にもならず、**やり直す口が無かった。**
+failed_start() {   # 起動が終わらなかった design（端末の記録なし・status は starting）
+  echo '{"status":"starting"}' > "$SD/roles/design/status.json"
+  echo '{"ok":true,"result":{"terminals":[{"handle":"term_old"},{"handle":"term_new"}]}}' \
+    > "$ORCA_STUB_DIR/terminal_list"
+}
+
+# RC17: ★ **失敗が証明された起動は、同じ Task に --retry-of で置き換える。**先に失敗した試行の端末を
+#       worker-release で閉じ（手で閉じると user_takeover で残る）、置き換えた dispatch は superseded に残す
+setup; failed_start; show failed failed
+rec >/dev/null 2>&1; rc=$?
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+rl=$(grep -n 'worker-release' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+sl=$(grep -n 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+[[ "$rc" -eq 0 && "$ws" == *'--retry-of ctx_old'* && "$ws" == *'--task task_x'* && "$ws" == *'--worktree id:wt_1'* \
+   && -n "$rl" && "$rl" -lt "$sl" ]] \
+  && grep 'worker-release' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_old' \
+  && ! grep -q 'task-create' "$ORCA_STUB_DIR/calls.log" \
+  && jq -e '.roles.design | .dispatch == "ctx_new" and .terminal == "term_new" and .generation == 2
+            and .superseded == ["ctx_old"] and .worktree_terminals == ["term_old","term_new"]' \
+       "$SD/workers.json" >/dev/null \
+  && ok "RC17 起動が終わらなかった役を retry-of で置き換える" || fail "RC17 (rc=$rc ws=$ws)"
+teardown
+
+# RC18: ★ **失敗が証明されていなければ置き換えない。**起動中・outcome_unknown は見るだけ
+setup; failed_start; show ready
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"its start did not complete"* && "$out" == *"worker-show --dispatch ctx_old"* ]] \
+  && ! grep -qE 'worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && ok "RC18 失敗が証明されない起動は置き換えない" || fail "RC18 (rc=$rc out=$out)"
+teardown
+
+# RC19: --dry-run は判断だけを出す
+setup; failed_start; show failed failed
+out=$(rec --dry-run 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == *'design: replace the failed start'* ]] \
+  && ! grep -qE 'worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && ok "RC19 --dry-run は起動のやり直しも実行しない" || fail "RC19 (rc=$rc out=$out)"
+teardown
+
+# RC20: 失敗した試行の端末を閉じられなくても、置き換えは止めない（superseded として記録に残る）
+setup; failed_start; show failed failed
+printf '%s\n' '{"ok":false,"error":{"code":"release_unknown","message":"stub"}}' > "$ORCA_STUB_DIR/orchestration_worker-release"
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-release.rc"
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$(did_)" == ctx_new && "$out" == *'could not release the terminal of the failed start'* ]] \
+  && jq -e '.roles.design.superseded == ["ctx_old"]' "$SD/workers.json" >/dev/null \
+  && ok "RC20 release の失敗は置き換えを止めない" || fail "RC20 (rc=$rc out=$out)"
+teardown
+
+# RC21: 完了を負った役の置き換え（RC2 の経路）も、置き換えた dispatch と端末の inventory を記録する。
+#       記録しないと、旧 dispatch が retained のままなら [C7] が止まり、新しい端末は [C3] が「記録に無い」と読む
+setup; owe; show failed
+echo '{"ok":true,"result":{"terminals":[{"handle":"term_new"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+rec >/dev/null 2>&1
+jq -e '.roles.design | .superseded == ["ctx_old"] and .worktree_terminals == ["term_new"]' "$SD/workers.json" >/dev/null \
+  && ! grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && ok "RC21 置き換えは superseded と端末の inventory を残す" || fail "RC21 ($(jq -c .roles.design "$SD/workers.json"))"
+teardown
+
+# RC22: status が `starting` でない役（status.json の無い役を含む）は「起動が終わらなかった」と読まない
+#       （RC6 と同じく、何も託していない役は回復しない）
+setup; show failed failed
+rec >/dev/null 2>&1
+! grep -qE 'worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && ok "RC22 status の無い役は起動のやり直しにしない" || fail "RC22"
+teardown
+
+# RC23: ★ **置き換えが ready にならなくても、発行された dispatch は捨てない。**記録しないと次の回復は
+#       古い dispatch を --retry-of に渡し直し、新しい試行は誰にも追われない（orca-start の orphan と同じ）。
+#       ready でないので端末は記録せず、完了の記録も残す
+setup; owe; show failed
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_retry"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'ctx_retry'* && -f "$SD/roles/design/completion.json" ]] \
+  && jq -e '.roles.design | .dispatch == "ctx_retry" and .terminal == "" and .generation == 2
+            and .superseded == ["ctx_old"] and .start_incomplete == true' "$SD/workers.json" >/dev/null \
+  && ok "RC23 ready にならない置き換えも dispatch を記録する" || fail "RC23 (rc=$rc out=$out)"
+teardown
+
+# RC24: outcome_unknown で dispatch が返った置き換えも同じ（確認できないまま捨てない）
+setup; failed_start; show failed failed
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"result":{"state":"outcome_unknown","dispatchId":"ctx_retry"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+rec >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 && "$(did_)" == ctx_retry ]] \
+  && jq -e '.roles.design.superseded == ["ctx_old"] and .roles.design.terminal == ""' "$SD/workers.json" >/dev/null \
+  && ok "RC24 outcome_unknown の置き換えも dispatch を記録する" || fail "RC24 (rc=$rc)"
+teardown
+
+# RC25: ★ **次の回復は最新の試行を見る。**RC24 のあと、その試行が failed と証明されたら、--retry-of には
+#       最新の dispatch を渡し、superseded は古い順に積む
+setup; failed_start; show failed failed
+echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_retry"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+rec >/dev/null 2>&1
+rm -f "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_new","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_new"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-start"
+: > "$ORCA_STUB_DIR/calls.log"
+rec >/dev/null 2>&1; rc=$?
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$rc" -eq 0 && "$ws" == *'--retry-of ctx_retry'* ]] \
+  && grep 'worker-release' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_retry' \
+  && jq -e '.roles.design | .dispatch == "ctx_new" and .terminal == "term_new" and .generation == 3
+            and .superseded == ["ctx_old","ctx_retry"] and (has("start_incomplete") | not)' "$SD/workers.json" >/dev/null \
+  && ok "RC25 次の回復は最新の試行を置き換える" || fail "RC25 (rc=$rc ws=$ws)"
+teardown
+
+# ── 完了を負う役の置き換えが ready にならなかったあと（round 2 のレビューで見つかった経路）──────────
+# ★ 役の status（done / error）と古い completion は前の試行が残したもので、最新の試行が起きたかは言わない。
+#   status だけで「起動が終わらなかった」を判定すると、次の回復は ctx_retry の failed を「Orca が決着させた」と
+#   読み、古い completion を settled にして終わる（以後ずっと already settled locally）。
+owed_accepted() {   # 成果を報告済み（status done / completion accepted）で、worker_done を送れずに失われた design
+  owe; n=$(node "$CMP" --role-dir "$SD/roles/design" nonce)
+  node "$CMP" --role-dir "$SD/roles/design" sent; node "$CMP" --role-dir "$SD/roles/design" accept --nonce "$n"
+  echo '{"status":"done"}' > "$SD/roles/design/status.json"
+}
+retry_fails() {     # 次の worker-start は failed で ctx_retry を返す
+  echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+  echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_retry"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+}
+retry_succeeds() {
+  rm -f "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+  echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_new","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_new"}]}}' \
+    > "$ORCA_STUB_DIR/orchestration_worker-start"
+}
+
+# RC26: ★ **次の回復は、古い completion を settled にせず、最新の試行（ctx_retry）を確かめて置き換える。**
+#       ctx_retry の worker-show が failed / failed でも「Orca が決着させた」とは読まない
+setup; owed_accepted; show failed; retry_fails
+rec >/dev/null 2>&1; first=$?
+show failed failed; retry_succeeds; : > "$ORCA_STUB_DIR/calls.log"
+out=$(rec 2>&1); second=$?
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$first" -eq 1 && "$second" -eq 0 && "$ws" == *'--retry-of ctx_retry'* && "$out" != *'reconciled locally'* ]] \
+  && grep 'worker-release' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_retry' \
+  && [[ ! -f "$SD/roles/design/completion.json" ]] \
+  && jq -e '.roles.design | .dispatch == "ctx_new" and .superseded == ["ctx_old","ctx_retry"]
+            and (has("start_incomplete") | not)' "$SD/workers.json" >/dev/null \
+  && ok "RC26 完了を負う役でも、次の回復は最新の試行を置き換える" || fail "RC26 ($first/$second ws=$ws out=$out)"
+teardown
+
+# RC27: 最新の試行が outcome_unknown の間は置き換えず、記録（ctx_retry と印、古い completion）もそのまま残す
+setup; owed_accepted; show failed; retry_fails
+rec >/dev/null 2>&1
+show outcome_unknown; : > "$ORCA_STUB_DIR/calls.log"
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'its start did not complete'* ]] \
+  && ! grep -qE 'worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && [[ "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == accepted ]] \
+  && jq -e '.roles.design | .dispatch == "ctx_retry" and .start_incomplete == true' "$SD/workers.json" >/dev/null \
+  && ok "RC27 最新の試行が確認できない間は何もしない" || fail "RC27 (rc=$rc out=$out)"
+teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

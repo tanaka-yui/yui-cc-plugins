@@ -552,6 +552,56 @@ run --plan "$PLAN_FILE" --approve a:worktree
   && ok "CL25f 停止したタスクへの offer 追加を拒む" || fail "CL25f (rc=$RC err=$ERR)"
 teardown
 
+# CL27: ★ **置き換えた試行は「記録に無い保持」ではない。**orca-recover が --retry-of で置き換えた dispatch は
+#       `superseded` に残る。Orca がそれを retained のまま持っていても、Run 全体を止めない
+#       （2026-09-23 の P1 の dispatch: 手で workers.json から外した exec が [C7] を止めた）。
+#       ★ ただし**その端末と理由を示し、記録は提示しない** — 記録を消すと、次の [C7] がそれを ghost と読む
+world; task a; printf 'retained\n' > "$ORCA_STUB_DIR/workers/ctx_old"
+plan --status-dir "$(sd a)"; before=$RC
+edit a '.roles.design.superseded = ["ctx_old"]'
+plan --status-dir "$(sd a)"
+[[ "$before" -eq 1 && "$RC" -eq 0 && "$(pj '.tasks[0].stopped')" == null \
+   && "$(pj '.tasks[0].offers.record | length')" == 0 \
+   && "$(pj '.tasks[0].offers.terminal | length')" == 1 && "$(pj '.tasks[0].offers.worktree | length')" == 1 \
+   && "$(pj '[.tasks[0].kept[] | select(.kind == "terminal") | .reasons[0]] | first')" == *'replaced attempt ctx_old (releaseState: retained)'* \
+   && "$(pj '[.tasks[0].kept[] | select(.kind == "record") | .reasons[]] | join(" ")')" == *'replaced attempt'* ]] \
+  && ok "CL27 置き換えた試行は [C7] を止めず、保持されている間は記録を残す" || fail "CL27 (before=$before rc=$RC out=$OUT)"
+teardown
+
+# CL28: ★ **置き換えた試行の release が確定していなければ、そのタスクは何も閉じない・消さない**（[C1] と同じ）。
+#       新しい試行が正常でも同じ。inspection の argv を載せる。Run のほかのタスクは続ける
+bad=""
+for st in release_pending release_unknown; do
+  world; task a; task b; printf '%s\n' "$st" > "$ORCA_STUB_DIR/workers/ctx_old"
+  edit a '.roles.design.superseded = ["ctx_old"]'
+  plan --status-dir "$(sd a)" --status-dir "$(sd b)"
+  [[ "$RC" -eq 0 && "$(pj '.tasks[0].stopped.reasons[0]')" == *"replaced attempt ctx_old is $st"* \
+     && "$(pj '.tasks[0].stopped.inspect[0]')" == '["orchestration","worker-show","--dispatch","ctx_old","--json"]' \
+     && "$(pj '.tasks[0].offers | [.terminal, .worktree, .record] | map(length) | add')" == 0 \
+     && "$(pj '.tasks[1].stopped')" == null ]] || bad="$bad [$st]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL28 置き換えた試行の release が確定していなければタスクを止める" || fail "CL28:$bad"
+
+# CL29: 置き換えた試行を Orca が一覧に載せていない・知らない state を返すときも、確かめられないので止める
+bad=""
+world; task a; edit a '.roles.design.superseded = ["ctx_gone"]'
+plan --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].stopped.reasons[0]')" == *'replaced attempt ctx_gone'* ]] || bad="$bad [unlisted]"
+teardown
+world; task a; printf 'weird\n' > "$ORCA_STUB_DIR/workers/ctx_old"; edit a '.roles.design.superseded = ["ctx_old"]'
+plan --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].stopped.reasons[0]')" == *'replaced attempt ctx_old'* ]] || bad="$bad [unknown-state]"
+teardown
+[[ -z "$bad" ]] && ok "CL29 置き換えた試行が確かめられなければ止める" || fail "CL29:$bad"
+
+# CL30: 置き換えた試行を Orca が閉じ終えていれば、いつもどおり記録も提示する
+world; task a; printf 'released\n' > "$ORCA_STUB_DIR/workers/ctx_old"; edit a '.roles.design.superseded = ["ctx_old"]'
+plan --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].stopped')" == null && "$(pj '.tasks[0].offers.record | length')" == 1 \
+   && "$(pj '[.tasks[0].kept[] | select(.kind == "terminal")] | length')" == 0 ]] \
+  && ok "CL30 閉じ終えた置き換え元は記録の提示を止めない" || fail "CL30 (rc=$RC out=$OUT)"
+teardown
 # CL26: zsh から呼んでも同じ結果になる（設計 3-5。呼び出し側のシェルに依存しない）
 if command -v zsh >/dev/null 2>&1; then
   world; task a; task b; role b design_review

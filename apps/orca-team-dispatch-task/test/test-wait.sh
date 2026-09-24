@@ -968,4 +968,43 @@ out=$(ORCA_STALL_AFTER_SECONDS=$STALL w 2>/dev/null); rc=$?
 [[ "$rc" -eq 8 && "$out" == *"role=design phase=executing"* && "$out" != *unstarted_role* ]] \
   && ok "WT101 計画役が働く間は unstarted_role を出さない" || fail "WT101 (rc=$rc out=$out)"; teardown
 
+# WT102: ★ **置き換えた試行（superseded）からの message で batch を止めない。**orca-recover が --retry-of で
+#        置き換えた dispatch は、役の `dispatch` から外れて `superseded` に残る。その dispatch の message が
+#        あとから届いても未知として batch を詰まらせない（処理済みとして通し、receipt にはしない）
+setup
+jq -c '.roles.design.superseded = ["ctx_old"]' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:2,messages:[
+  {id:"o1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_old",outcome:"failed"}|tojson),body:""},
+  {id:"m1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+dn
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *'superseded'* ]] \
+  && [[ "$(grep -c -- '--ack d1' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(jq -c . "$SD/received.json")" == '["worker_done|task_x|ctx_x|succeeded"]' ]] \
+  && ok "WT102 superseded の message は batch を止めない" || fail "WT102 (rc=$rc out=$out)"; teardown
+
+# WT103: ★ **待機が読み込んだあとで置き換えられた試行の message を、現行として扱わない。**待機の途中で
+#        orca-recover が dispatch を置き換え（古いものを `superseded` へ移し）、そのあとで古い試行の merge_ready /
+#        worker_done が届いても、返信も receipt も retain もしない。batch は処理済みとして通し、新しい試行を待ち続ける
+setup
+cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<HOOK
+#!/usr/bin/env bash
+case " \$* " in *" --wait "*) ;; *) exit 0 ;; esac
+[[ -e "$ORCA_STUB_DIR/replaced" ]] && exit 0
+: > "$ORCA_STUB_DIR/replaced"
+jq -c '.roles.design.dispatch = "ctx_new" | .roles.design.superseded = ["ctx_x"]' "$SD/workers.json" > "$SD/w" \
+  && mv "$SD/w" "$SD/workers.json"
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:2,messages:[
+  {id:"mr",type:"merge_ready",subject:"merge_ready: n1",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:""},
+  {id:"o1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"failed"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'superseded'* ]] \
+  && [[ "$(grep -c -- '--ack d1' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && ! grep -qE '^orchestration send|worker-retain' "$ORCA_STUB_DIR/calls.log" \
+  && [[ ! -e "$SD/received.json" ]] \
+  && ok "WT103 待機中に置き換えられた試行の message は現行として扱わない" || fail "WT103 (rc=$rc out=$out)"; teardown
 echo "---"; echo "failures: $fails"; exit "$fails"

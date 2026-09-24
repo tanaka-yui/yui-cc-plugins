@@ -93,6 +93,29 @@ const rolesKey = (state: State): string =>
   state.expected.entries.map((entry) => `${entry.task}|${entry.dispatch}`).join('\n')
 const indexOf = (state: State, task: string, dispatch: string): number =>
   state.expected.entries.findIndex((entry) => entry.task === task && entry.dispatch === dispatch)
+// ★ lifecycle の副作用より先に、ディスク上の現行 dispatch を確かめる。
+const stillCurrent = (entry: Entry): boolean =>
+  string(get(readJson(join(entry.statusDir, 'workers.json')), 'roles', entry.role, 'dispatch')) === entry.dispatch
+const supersededBy = (statusDirs: string[], dispatch: string): { statusDir: string; role: string } | null => {
+  for (const statusDir of statusDirs) {
+    const roles = object(get(readJson(join(statusDir, 'workers.json')), 'roles'))
+    for (const [role, record] of Object.entries(roles)) {
+      if ((array(get(record, 'superseded')) ?? []).includes(dispatch)) return { statusDir, role }
+    }
+  }
+  return null
+}
+type Resolved =
+  | { kind: 'current'; index: number }
+  | { kind: 'superseded'; statusDir: string; role: string }
+  | { kind: 'unknown' }
+const resolveDispatch = (state: State, task: string, dispatch: string): Resolved => {
+  const index = indexOf(state, task, dispatch)
+  const entry = state.expected.entries[index]
+  if (entry !== undefined) return stillCurrent(entry) ? { kind: 'current', index } : { kind: 'unknown' }
+  const replaced = supersededBy(state.statusDirs, dispatch)
+  return replaced === null ? { kind: 'unknown' } : { kind: 'superseded', ...replaced }
+}
 const beat = (state: State): void => {
   for (const statusDir of state.statusDirs)
     write(statusDir, 'wait.json', { pid: process.pid, beat: nowSeconds(), window_ms: state.timeoutMs })
@@ -388,8 +411,16 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       return 1
     }
     if (type === 'question') {
-      const index = indexOf(state, task, dispatch)
-      if (index < 0) return unknown(state, type, task, dispatch, batch)
+      const resolved = resolveDispatch(state, task, dispatch)
+      if (resolved.kind === 'superseded') {
+        log(
+          NAME,
+          `ignoring ${type} from dispatch '${dispatch}': it was replaced (superseded) for ${resolved.role} in ${resolved.statusDir}`,
+        )
+        continue
+      }
+      if (resolved.kind === 'unknown') return unknown(state, type, task, dispatch, batch)
+      const index = resolved.index
       const entry = state.expected.entries[index]
       if (entry === undefined) return 1
       const id = string(message.id)
@@ -416,8 +447,16 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       return 6
     }
     if (type === 'merge_ready') {
-      const index = indexOf(state, task, dispatch)
-      if (index < 0) return unknown(state, type, task, dispatch, batch)
+      const resolved = resolveDispatch(state, task, dispatch)
+      if (resolved.kind === 'superseded') {
+        log(
+          NAME,
+          `ignoring ${type} from dispatch '${dispatch}': it was replaced (superseded) for ${resolved.role} in ${resolved.statusDir}`,
+        )
+        continue
+      }
+      if (resolved.kind === 'unknown') return unknown(state, type, task, dispatch, batch)
+      const index = resolved.index
       const entry = state.expected.entries[index]
       if (entry === undefined) return 1
       if (isStopped(entry.statusDir, entry.role)) {
@@ -450,8 +489,16 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       wakeRole(entry.statusDir, entry.role)
       continue
     }
-    const index = type === 'worker_done' ? indexOf(state, task, dispatch) : -1
-    if (type === 'worker_done' && index < 0) return unknown(state, type, task, dispatch, batch)
+    const resolved = type === 'worker_done' ? resolveDispatch(state, task, dispatch) : { kind: 'unknown' as const }
+    if (resolved.kind === 'superseded') {
+      log(
+        NAME,
+        `ignoring ${type} from dispatch '${dispatch}': it was replaced (superseded) for ${resolved.role} in ${resolved.statusDir}`,
+      )
+      continue
+    }
+    if (type === 'worker_done' && resolved.kind === 'unknown') return unknown(state, type, task, dispatch, batch)
+    const index = resolved.kind === 'current' ? resolved.index : -1
     if (index < 0) {
       log(
         NAME,
@@ -476,6 +523,10 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
   for (const [index, outcome] of settled) {
     const entry = state.expected.entries[index]
     if (entry === undefined) return 1
+    if (!stillCurrent(entry)) {
+      log(NAME, `not recording dispatch '${entry.dispatch}': it was replaced while this batch was read`)
+      continue
+    }
     const previous = storedOutcome(entry.statusDir, entry.role)
     if (previous === null) return 1
     if (previous !== '' && previous !== outcome) {
