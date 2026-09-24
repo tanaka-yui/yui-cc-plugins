@@ -214,7 +214,7 @@ for that one call and write nothing, so a model can be tried before it is saved.
 carries exactly that one issue and skips I1 entirely; bare `--issue` asks I1 and then claims
 issues in batches until it runs out or hits the batch limit.
 
-**One issue is carried end to end by one call**, and `bin/orca-issue.sh` is that call. It
+**One issue is carried end to end by one call**, and `bin/orca-issue.ts` is that call. It
 dispatches, waits, merges, moves the labels and closes the issue. **It removes nothing** —
 Step 5 decides and Step 6 asks, exactly as for a hand-written dispatch.
 
@@ -331,7 +331,7 @@ Pass 1, once per issue. Write its title and body to a request file, then:
 : "${NUM:?set NUM, SLUG and REQ from the claimed issue}"
 : "${SLUG:?set NUM, SLUG and REQ from the claimed issue}"
 : "${REQ:?set NUM, SLUG and REQ from the claimed issue}"
-bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase dispatch \
+node "$PLUGIN/bin/orca-issue.ts" --state-file "$STATE" --phase dispatch \
   --issue "$NUM" --slug "$SLUG" --request-file "$REQ" ${RUN:+--run "$RUN"}
 ```
 
@@ -363,7 +363,7 @@ Pass 3, once per issue that dispatched. It merges, moves the labels and closes t
 : "${STATE:?run the I0 block first}"
 : "${NUM:?set NUM and SLUG from the issue you dispatched}"
 : "${SLUG:?set NUM and SLUG from the issue you dispatched}"
-bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase finish \
+node "$PLUGIN/bin/orca-issue.ts" --state-file "$STATE" --phase finish \
   --issue "$NUM" --slug "$SLUG" ${REPO:+--repo "$REPO"}
 ```
 

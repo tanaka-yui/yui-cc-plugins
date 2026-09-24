@@ -277,7 +277,7 @@ IREQ=$(mktemp); jq -r '.[0] | "\(.title)\n\n\(.body)"' <<<"$CLAIM" > "$IREQ"
 : > "$ORCA_STUB_DIR/calls.log"
 # claim 時の add-label が残っていると「最初の add-label」が別物になる
 : > "$GH_STUB_DIR/calls.log"
-IOUT=$(bash "$P/bin/orca-issue.sh" --state-file "$ISTATE" --issue 42 --slug "$ISLUG" \
+IOUT=$(node "$P/bin/orca-issue.ts" --state-file "$ISTATE" --issue 42 --slug "$ISLUG" \
          --request-file "$IREQ" --repo-root "$R" --max-waits 1 --timeout-ms 1 2>&1); irc=$?
 [[ "$irc" -eq 0 && -f "$R/FIX.md" ]] \
   && [[ "$(jq -r '.merged' "$R/.dispatch/$ISLUG/integration-result.json")" == true ]] \

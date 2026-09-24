@@ -73,7 +73,7 @@ for ((n = 2; n <= nblocks; n++)); do
   grep -qE '\$\{?(SCRIPTS|STATE|PLUGIN|NUM|SLUG|REQ)\b' "$blk" || continue
   out=$(env -u SCRIPTS -u STATE -u NUM -u SLUG -u REQ -u PLUGIN bash "$blk" 2>&1); rc=$?
   # ★ **「非 0 で終わった」では足りない。**変数が空のまま絶対パスを組み立てて
-  #   `/bin/orca-issue.sh` を叩き、たまたま存在しなくて落ちるのも非 0 である。
+  #   `/bin/orca-issue.ts` を叩き、たまたま存在しなくて落ちるのも非 0 である。
   #   **ガード自身が発火したこと**（`: "${VAR:?...}"` の message）を要求する。
   if [[ "$rc" -eq 0 || "$out" != *'run the'* ]]; then
     bad="$bad [I$n-not-fail-closed]"

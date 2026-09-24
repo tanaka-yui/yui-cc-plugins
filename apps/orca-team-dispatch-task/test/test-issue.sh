@@ -71,7 +71,7 @@ HOOK
     > "$ORCA_STUB_DIR/orchestration_check"
 }
 run_issue() {
-  bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
+  node "$P/bin/orca-issue.ts" --state-file "$SF" --issue 5 --slug issue-5-x \
     --request-file "$REQ" --repo-root "$R" --max-waits 1 --timeout-ms 1 "$@"
 }
 ghlog() { cat "$GH_STUB_DIR/calls.log"; }
@@ -166,9 +166,9 @@ teardown
 
 # IS8: 使用法エラーは 2（運べなかった 1 と区別する）。
 setup
-bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue abc --slug s --request-file "$REQ" >/dev/null 2>&1
+node "$P/bin/orca-issue.ts" --state-file "$SF" --issue abc --slug s --request-file "$REQ" >/dev/null 2>&1
 [[ $? -eq 2 ]] || fail "IS8 非数値の --issue"
-bash "$P/bin/orca-issue.sh" --bogus >/dev/null 2>&1
+node "$P/bin/orca-issue.ts" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "IS8 使用法エラーは 2" || fail "IS8 unknown option"
 teardown
 
@@ -214,7 +214,7 @@ run_issue --phase dispatch >/dev/null 2>&1
 # 呼び出し側が 1 回で待つ（バッチではここが全件ぶん 1 回）
 node "$P/bin/orca-wait.ts" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
 : > "$ORCA_STUB_DIR/calls.log"; : > "$GH_STUB_DIR/calls.log"
-out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
+out=$(node "$P/bin/orca-issue.ts" --state-file "$SF" --issue 5 --slug issue-5-x \
         --repo-root "$R" --phase finish 2>&1); rc=$?
 [[ "$rc" -eq 0 && -f "$R/WORK.md" ]] \
   && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
@@ -225,7 +225,7 @@ teardown
 
 # IS13: finish は **dispatch の記録が無ければ運ばない**（何も無いところから成功にしない）。
 setup
-out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
+out=$(node "$P/bin/orca-issue.ts" --state-file "$SF" --issue 5 --slug issue-5-x \
         --repo-root "$R" --phase finish 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *'there is no dispatch state'* ]] \
   && ok "IS13 記録が無ければ finish しない" || fail "IS13 (rc=$rc) $out"
@@ -233,7 +233,7 @@ teardown
 
 # IS14: 不正な --phase は使用法エラー（2）。
 setup
-bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug s --request-file "$REQ" \
+node "$P/bin/orca-issue.ts" --state-file "$SF" --issue 5 --slug s --request-file "$REQ" \
   --phase bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "IS14 不正な --phase は 2" || fail "IS14"
 teardown
@@ -264,7 +264,7 @@ teardown
 setup; worker_done succeeded done
 run_issue --phase dispatch >/dev/null 2>&1
 node "$P/bin/orca-wait.ts" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
-out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
+out=$(node "$P/bin/orca-issue.ts" --state-file "$SF" --issue 5 --slug issue-5-x \
         --repo-root "$R" --phase finish 2>/dev/null)
 [[ "$out" == *'status_dir='* ]] && ! grep -q '^run_id=$' <<<"$out" \
   && ok "IS17 finish は空の run_id を印字しない" || fail "IS17 ($out)"
@@ -354,7 +354,7 @@ grep -qxF '.dispatch-issue/' "$EXF" 2>/dev/null \
 teardown
 
 # IS24: ★ **無人の実行は停滞で止まって尋ねない。**尋ねる相手が居ないので、記録だけ残して待ち続ける
-grep -q -- '--on-stall report' "$P/bin/orca-issue.sh" \
+tr -d ' \n' < "$P/bin/orca-issue.ts" | grep -q "'--on-stall','report'" \
   && ok "IS24 --issue は停滞を記録して待ち続ける" || fail "IS24"
 
 # IS25: ★ **finish は記録した取り込み方を読む。**dispatch と finish の間には待機バッチが
@@ -368,7 +368,7 @@ jq -c '.integration = "merge"' "$R/.dispatch/issue-5-x/workers.json" > "$R/.disp
 mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
 printf '%s\n' '{"integration":"pr"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
 : > "$ORCA_STUB_DIR/calls.log"; : > "$GH_STUB_DIR/calls.log"
-out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
+out=$(node "$P/bin/orca-issue.ts" --state-file "$SF" --issue 5 --slug issue-5-x \
         --repo-root "$R" --phase finish 2>&1); rc=$?
 [[ "$rc" -eq 0 && -f "$R/WORK.md" ]] \
   && ! grep -q 'pr create' <(ghlog) \

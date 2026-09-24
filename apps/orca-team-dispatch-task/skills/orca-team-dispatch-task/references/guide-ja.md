@@ -198,7 +198,7 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` を受け取る�
 1 件だけを運び、**I1 を丸ごと飛ばす**。引数なしの `--issue` は I1 を尋ねてから、issue が
 尽きるかバッチ上限に達するまでバッチ単位で claim する。
 
-**1 件の issue は 1 コールで最後まで運ばれる。**それが `bin/orca-issue.sh` である。dispatch し、
+**1 件の issue は 1 コールで最後まで運ばれる。**それが `bin/orca-issue.ts` である。dispatch し、
 待ち、merge し、ラベルを遷移させ、issue を close する。**資源は 1 つも消さない** — 手書きの
 dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。
 
@@ -312,7 +312,7 @@ issue は 1 件ずつしか走らず**、バッチの大きさが意味を失う
 : "${NUM:?set NUM, SLUG and REQ from the claimed issue}"
 : "${SLUG:?set NUM, SLUG and REQ from the claimed issue}"
 : "${REQ:?set NUM, SLUG and REQ from the claimed issue}"
-bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase dispatch \
+node "$PLUGIN/bin/orca-issue.ts" --state-file "$STATE" --phase dispatch \
   --issue "$NUM" --slug "$SLUG" --request-file "$REQ" ${RUN:+--run "$RUN"}
 ```
 
@@ -344,7 +344,7 @@ exit 5 は**一部の失敗**であってバッチの失敗ではない。自身
 : "${STATE:?run the I0 block first}"
 : "${NUM:?set NUM and SLUG from the issue you dispatched}"
 : "${SLUG:?set NUM and SLUG from the issue you dispatched}"
-bash "$PLUGIN/bin/orca-issue.sh" --state-file "$STATE" --phase finish \
+node "$PLUGIN/bin/orca-issue.ts" --state-file "$STATE" --phase finish \
   --issue "$NUM" --slug "$SLUG" ${REPO:+--repo "$REPO"}
 ```
 
