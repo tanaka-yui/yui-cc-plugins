@@ -1158,9 +1158,11 @@ jq -c '.roles.design.terminal = "" | .roles.design.start_incomplete = true | .ro
   && mv "$SD/w" "$SD/workers.json"
 echo '{"ok":true,"result":{"worker":{"state":"succeeded","agentTerminalHandle":"term_finished"}}}' \
   > "$ORCA_STUB_DIR/orchestration_worker-show"
-echo '{"ok":true,"result":{"terminals":[{"handle":"term_finished"}]}}' > "$ORCA_STUB_DIR/terminal_list"
+echo '{"ok":true,"result":{"terminals":[{"handle":"term_finished"},{"handle":"term_user"}]}}' \
+  > "$ORCA_STUB_DIR/terminal_list"
 w >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 0 ]] && jq -e '.roles.design | .terminal == "term_finished" and .start_incomplete == true and .worktree_terminals == ["term_finished"]' \
+[[ "$rc" -eq 0 ]] && jq -e '.roles.design | .terminal == "term_finished" and (has("start_incomplete") | not) and .worktree_terminals == ["term_finished"]' \
   "$SD/workers.json" >/dev/null \
-  && ok "WT113 決着後の空の端末を Orca から補う" || fail "WT113 (rc=$rc)"; teardown
+  && ! grep -q 'terminal list' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT113 決着後の端末と印を補い、所有不明の端末は記録しない" || fail "WT113 (rc=$rc)"; teardown
 echo "---"; echo "failures: $fails"; exit "$fails"

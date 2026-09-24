@@ -769,6 +769,8 @@ narrow on purpose:
   and starts a replacement the same way. `start_unknown` is the next item; any other state of
   that start is only reported, never replaced. This comes before anything about the completion
   the role owes, because the role's status and completion record belong to an earlier attempt.
+  If Orca reports a terminal for this attempt, start/recover record it even without `ready`.
+  Once the wait receives this attempt's `worker_done`, it clears `start_incomplete`.
 - **A start that Orca reports as `start_unknown`** — Orca typed the task in but never saw the
   agent's turn begin, and it keeps saying so while the worker works. That proves neither that
   the worker runs nor that it died: measured 2026-09-24, one such codex worker was waiting for
@@ -791,6 +793,8 @@ the replaced attempt's completion record aside, so a replacement that runs befor
 reporting ready offers its own work and waits for its own acceptance; the record is put back when
 Orca starts nothing. Step 5 checks what Orca still holds for every replaced attempt, and the wait
 neither answers nor records a message from one.
+If recovery was interrupted after moving that record aside, it stops and shows the parked file and
+an Orca worker-list command. Check whether a new dispatch was issued before deciding what to restore.
 
 Run it when Step 3 reports exit 4, when a task sits unfinished with no worker left, when Step 2
 or Step 3.5 says a start did not complete, or when the wait says a worker is `start_unknown`.

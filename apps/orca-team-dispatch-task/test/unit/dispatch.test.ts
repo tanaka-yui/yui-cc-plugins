@@ -42,3 +42,15 @@ test('start_incomplete の印は、役の status や端末の記録より先に�
   assert.equal(startIncomplete(marked('f', 'done'), 'exec'), true)
   assert.equal(startIncomplete(marked('g', null), 'exec'), true)
 })
+
+test('現在の dispatch の worker_done 受領は起動未完了の印より先に効く', () => {
+  const sd = statusDir('received', { dispatch: 'ctx_retry', task: 'task_e' }, 'done')
+  writeFileSync(
+    join(sd, 'workers.json'),
+    JSON.stringify({ roles: { exec: { dispatch: 'ctx_retry', task: 'task_e', start_incomplete: true } } }),
+  )
+  writeFileSync(join(sd, 'received.json'), JSON.stringify(['worker_done|task_e|ctx_old|failed']))
+  assert.equal(startIncomplete(sd, 'exec'), true)
+  writeFileSync(join(sd, 'received.json'), JSON.stringify(['worker_done|task_e|ctx_retry|failed']))
+  assert.equal(startIncomplete(sd, 'exec'), false)
+})

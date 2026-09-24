@@ -8,7 +8,7 @@ import { die, log } from '../lib/cli.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
-import { orcaBin, receiptOk, runOrca, terminalHandles, workerStateClass, workerTerminal } from '../lib/orca.ts'
+import { orcaBin, receiptOk, runOrca, workerStateClass, workerTerminal } from '../lib/orca.ts'
 import { envCount, nowSeconds, run, runNode, sleepSeconds } from '../lib/sys.ts'
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -747,9 +747,11 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       log(NAME, `could not record the retention for dispatch '${entry.dispatch}'; the batch is not acknowledged`)
       return 2
     }
+    const nextRole: JsonObject = { ...role, retained: true }
+    delete nextRole.start_incomplete
     const next = {
       ...record,
-      roles: { ...roles, [entry.role]: { ...role, retained: true } },
+      roles: { ...roles, [entry.role]: nextRole },
     }
     if (!write(entry.statusDir, 'workers.json', next)) {
       log(NAME, `could not record the retention for dispatch '${entry.dispatch}'; the batch is not acknowledged`)
@@ -849,13 +851,15 @@ const finish = (state: State, outcome: 'succeeded' | 'failed'): number => {
   process.stdout.write(`${lines.join('\n')}\n`)
   return outcome === 'succeeded' ? 0 : 5
 }
-// ★ **記録に端末が無ければ、Orca が見せている端末で埋める。**ready にならなかった起動は端末を記録しない
-//   （orca-start / orca-recover の start_incomplete）が、Orca はその dispatch の agentTerminalHandle を出している。
+// ★ **記録に端末が無ければ、Orca が見せている端末で埋める。**ready にならなかった起動でも Orca が
+//   handle を返せば orca-start / orca-recover は記録するが、後で見つかることもある。
 //   埋めないと停滞（exit 8）の stalled_role 行が terminal=none になって画面を読めず、Orca が live と言っても
 //   orca-wake.ts が叩けない。**起動が終わらなかった役は、埋めても起動が終わらなかった役のまま残す** — 印を外すのは
 //   画面を見たユーザーの判断（orca-recover.ts --adopt）である。印の無い旧形式の記録は「端末なし・status が starting」で
 //   読まれる（lib/dispatch.ts）ので、端末だけ埋めると起動が終わったことになり、--adopt / --restart が効かなくなる。
-//   同じ書き込みで印を明示する（round 1 のレビュー F2）。書けなくても待機は止めない
+//   同じ書き込みで印を明示する（round 1 のレビュー F2）。worker_done を受領したら印を外す。
+//   inventory を後から列挙するとユーザーの端末まで所有したように記録するので、確かな agent 端末だけを補う。
+//   書けなくても待機は止めない
 const recordTerminal = (entry: Entry, shown: Json | null): void => {
   const handle = workerTerminal(shown)
   if (handle === '') return
@@ -866,8 +870,7 @@ const recordTerminal = (entry: Entry, shown: Json | null): void => {
   if (string(role.dispatch) !== entry.dispatch || string(role.terminal) !== '') return
   const next: JsonObject = { ...role, terminal: handle }
   const worktreeId = string(role.worktree_id)
-  if (worktreeId !== '' && asArray(role.worktree_terminals) === null)
-    next.worktree_terminals = terminalHandles(worktreeId)
+  if (worktreeId !== '' && asArray(role.worktree_terminals) === null) next.worktree_terminals = [handle]
   if (startIncomplete(entry.statusDir, entry.role)) next.start_incomplete = true
   if (write(entry.statusDir, 'workers.json', { ...workers, roles: { ...roles, [entry.role]: next } })) {
     log(NAME, `recorded terminal ${handle} for ${entry.role} (dispatch ${entry.dispatch}) as Orca reports it`)

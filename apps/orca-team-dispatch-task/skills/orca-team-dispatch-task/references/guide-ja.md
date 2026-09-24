@@ -738,6 +738,8 @@ node "$PLUGIN/bin/orca-recover.ts" --status-dir "$SD" --dry-run
   起動がまだ持っている端末を `orchestration worker-release` で閉じ、同じやり方で replacement を
   起こす。`start_unknown` は次の項目で扱う。それ以外の状態では報告するだけで、置き換えない。役が
   負っている完了のことより先にこれを見る — 役の status と完了の記録は、前の試行が残したものだからである。
+  Orca がこの試行の端末を返せば、ready でなくても start/recover は記録する。待機がこの試行の
+  `worker_done` を受領したら、`start_incomplete` の印を外す。
 - **Orca が `start_unknown` と報告する起動** — Orca は依頼を入力したが agent のターン開始を観測
   できず、worker が働いている間もそう言い続ける。worker が動いている証拠にも、死んだ証拠にもならない —
   2026-09-24 に観測: そうした codex の worker の 1 つはレビュー依頼を待っており、もう 1 つは自動更新の
@@ -758,6 +760,8 @@ node "$PLUGIN/bin/orca-recover.ts" --status-dir "$SD" --dry-run
 ready を報告する前から、あるいは報告しないまま動く replacement も、自分の成果を差し出して自分の受理を待つ。
 Orca が何も起こさなかったときは記録を戻す。Step 5 は置き換えた試行ごとに Orca がまだ何を持っているかを
 確かめ、待機はそこから届いた message に返事も記録もしない。
+記録の退避後に回復が中断された場合は、退避先の path と Orca の worker-list コマンドを示して止まる。
+新しい dispatch が発行されたかを確かめてから、記録を戻すか判断する。
 
 Step 3 が exit 4 を返したとき、worker が居ないままタスクが終わらないとき、Step 2 か Step 3.5 が
 起動が終わらなかったと言ったとき、または待機がある worker を `start_unknown` と言ったときに実行する。

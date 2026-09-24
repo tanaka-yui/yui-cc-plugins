@@ -179,7 +179,8 @@ settled / other）、待機・停止・回復・起床が同じ表を読む:
 
 - 待機は止まらず、dispatch ごとに 1 回言って待ち続ける。死んでいれば子が何も書かないので停滞（exit 8）で見つかる。
   記録に端末が無ければ worker-show の `agentTerminalHandle` で埋める（stalled_role 行が画面の読み先を名指しできる）。
-  人を待っている（agentWait）worker にも埋める。`start_incomplete` の印は外さない — 外すのはユーザーの判断（`--adopt`）。
+  人を待っている（agentWait）worker にも埋める。`start_incomplete` の印は worker が動いている間は外さない。
+  外すのはユーザーの `--adopt`、または当該 dispatch の `worker_done` を受領したときである。
   印の無い旧形式の記録は「端末なし・status が starting」で読まれるので、埋める書き込みで印を明示する
 - 停止は worker-stop を打つ。fence なので生死どちらでも正しい（Orca は受け付ける。2026-09-24 に手で確認）
 - 回復は、起動が終わらなかった役なら画面の最後の数行と 2 つの手段を見せて止まる。**選ぶのはユーザー**:
@@ -187,7 +188,13 @@ settled / other）、待機・停止・回復・起床が同じ表を読む:
   確かめて置き換える。起動が完了した役（完了を負う役）には効かない — その経路は Orca の dispatch が終端になると
   reconcile へ入るので、自分で打った fence を決着と読み違える
 - 起床は打たない。死んでいれば端末はシェルに戻っていることがあり、そこへ打つと文章がコマンドとして走る。
-  だから `--adopt` のあとも、Orca が start_unknown と言う間は誰もその端末に打たない
+だから `--adopt` のあとも、Orca が start_unknown と言う間は誰もその端末に打たない
+
+orca-start / orca-recover は ready にならない起動でも、Orca が端末を返せば `terminal` として記録する。
+待機は、その時点で端末が空なら Orca の `agentTerminalHandle` から補い、`worker_done` の受領後にも補う。
+後から端末の inventory を列挙するとユーザーが開いた端末まで所有した記録になるため、待機が補う inventory は
+その agent の端末だけに限る。片付けで `terminal` が空なら、orca-cleanup は欠けたフィールド名と
+`worker-show` の `result.worker.agentTerminalHandle` から補う手順を示して止まる。
 
 **置き換える試行の完了の記録は、新しい worker を起こす前に退避する。**新しい worker は ready を報告する前から
 動いていることがあり（start_unknown — worker-start はターン開始の観測を待ってから返る）、記録が残っていれば
@@ -196,6 +203,8 @@ settled / other）、待機・停止・回復・起床が同じ表を読む:
 見つかった）。だから境界は起こす前に置き（`completion.superseded-<前の dispatch>.json` へ rename。できなければ起こさない）、
 dispatch が返らなければ戻し、記録できたら消し、起こしたあとは `completion.json` に触らない。`--adopt` も完了の記録に触らない —
 そこにあるのは引き受ける試行が自分で書いたものだけである。
+退避後に回復プロセスが中断されたときは、新しい dispatch の有無が分からない。次の回復は退避先と
+`worker-list` の確認コマンドを示して止まり、古い nonce を自動で戻さない。
 
 codex がフォルダの信頼（「Trust this folder?」）で止まった起動は、Orca が `agent-trust-workspace` で failed にする。
 orca-start と orca-recover はその解き方を案内する（`lib/trust.ts`）。判定は `worker.lastError` と
@@ -203,8 +212,9 @@ orca-start と orca-recover はその解き方を案内する（`lib/trust.ts`�
 出しているだけの worker を取り違える。codex は信頼を worktree ではなく本体の checkout の root に記録する（codex-rs の
 `resolve_root_git_project_for_trust`）ので、案内する path は worktree から `git rev-parse --git-common-dir` で求める。
 
-回帰は test-wait.sh の WT107-112、test-stop.sh の SP19、test-recover.sh の RC23 / RC27 / RC28-43、test-wake.sh の WK9、
-test-start.sh の ST104 / ST105、`test/unit/orca.test.ts` と `test/unit/trust.test.ts`。
+回帰は test-wait.sh の WT107-113、test-stop.sh の SP19、test-recover.sh の RC23 / RC27 / RC28-47、
+test-wake.sh の WK9、test-start.sh の ST104-106、test-cleanup.sh の CL8c、`test/unit/orca.test.ts`・
+`test/unit/trust.test.ts`・`test/unit/dispatch.test.ts`。
 
 ## レビュー往復の要点
 

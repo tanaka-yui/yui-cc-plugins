@@ -179,8 +179,8 @@ out=$(rec 2>&1); rc=$?
 teardown
 
 # ── 起動が終わらなかった役（TS 移行 spec 5 章。2026-09-23 の P1 の dispatch で見つかった）────
-# ★ worker-start が ready を返さなかった役は、dispatch だけが記録され（兄弟の待機を詰まらせないため）、
-#   端末は記録されず、status は `starting` のまま残る。`orca-start --phase exec` は「もう dispatch がある」と
+# ★ worker-start が ready を返さなかった役は、dispatch が記録され、Orca が返したときは端末も記録される。
+#   status は `starting` のまま残る。`orca-start --phase exec` は「もう dispatch がある」と
 #   断り、完了を負っていないので回復の対象にもならず、**やり直す口が無かった。**
 failed_start() {   # 起動が終わらなかった design（端末の記録なし・status は starting）
   echo '{"status":"starting"}' > "$SD/roles/design/status.json"
@@ -251,7 +251,7 @@ teardown
 
 # RC23: ★ **置き換えが ready にならなくても、発行された dispatch は捨てない。**記録しないと次の回復は
 #       古い dispatch を --retry-of に渡し直し、新しい試行は誰にも追われない（orca-start の orphan と同じ）。
-#       ready でないので端末は記録しない。**置き換えた試行の完了の記録は残さない** — 新しい worker を起こす前に退避し、
+#       Orca が端末を返せば ready でなくても記録する。**置き換えた試行の完了の記録は残さない** — 新しい worker を起こす前に退避し、
 #       記録できたら消す。ready を報告しない試行も動いていることがあり、残すと前の試行の nonce と受理を引き継ぐ
 #       （round 1・2 のレビュー F1。RC40〜RC43）
 setup; owe; show failed
@@ -583,11 +583,11 @@ rec >/dev/null 2>&1; rc=$?
   && ok "RC42 dispatch が返らなければ退避した記録を戻す" || fail "RC42 (rc=$rc)"
 teardown
 
-# RC43: 退避できなければ、新しい worker を起こさない（前の試行の記録を読む worker を作らない）
+# RC43: 退避先が既にあれば、新しい worker を起こさない（前の試行の記録を読む worker を作らない）
 setup; owed_accepted; show failed
 mkdir -p "$SD/roles/design/completion.superseded-ctx_old.json/x"   # 退避先に空でない dir を置き、rename を失敗させる
 out=$(rec 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *'could not move the completion record'* && "$(did_)" == ctx_old \
+[[ "$rc" -eq 1 && "$out" == *'prior recovery stopped after parking its completion record'* && "$(did_)" == ctx_old \
    && "$(node "$CMP" --role-dir "$SD/roles/design" phase)" == accepted ]] \
   && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "RC43 退避できなければ起こさない" || fail "RC43 (rc=$rc out=$out)"
@@ -605,5 +605,34 @@ rec >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 1 ]] && jq -e '.roles.design | .dispatch == "ctx_retry" and .terminal == "term_retry" and .start_incomplete == true' \
   "$SD/workers.json" >/dev/null \
   && ok "RC44 未 ready の replacement も Orca の端末を記録する" || fail "RC44 (rc=$rc)"
+teardown
+
+# RC45: 受領済みの失敗は起動失敗ではなく、その dispatch の決着として扱う
+setup; failed_start; show failed failed
+echo '{"status":"error"}' > "$SD/roles/design/status.json"
+jq -c '.roles.design.start_incomplete = true' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
+echo '["worker_done|task_x|ctx_old|failed"]' > "$SD/received.json"
+rec >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && ! grep -qE 'worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && ok "RC45 受領済みの失敗を置き換えない" || fail "RC45 (rc=$rc)"
+teardown
+
+# RC46: 受領済みの未確認 worker に --restart を付けても fence しない
+setup; failed_start; show start_unknown pending
+jq -c '.roles.design.start_incomplete = true' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
+echo '["worker_done|task_x|ctx_old|succeeded"]' > "$SD/received.json"
+rec --role design --restart >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ! grep -qE 'worker-stop|worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && ok "RC46 受領済みの worker を再起動しない" || fail "RC46 (rc=$rc)"
+teardown
+
+# RC47: 退避後に前の回復が中断されたなら、dispatch の有無を推測せず手で調べる
+setup; owed_accepted; show failed
+mv "$SD/roles/design/completion.json" "$SD/roles/design/completion.superseded-ctx_old.json"
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'completion.superseded-ctx_old.json'* && "$out" == *'worker-list --run run_x --json'* \
+   && -f "$SD/roles/design/completion.superseded-ctx_old.json" ]] \
+  && ! grep -qE 'worker-start|worker-release' "$ORCA_STUB_DIR/calls.log" \
+  && ok "RC47 退避中断は推測して再開しない" || fail "RC47 (rc=$rc out=$out)"
 teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

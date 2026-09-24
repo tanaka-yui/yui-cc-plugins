@@ -402,6 +402,21 @@ const main = (argv: string[]): number => {
       log(NAME, `${name}: stopped by the user; not recovering it`)
       continue
     }
+    // worker-start 中の中断なら、置き換えを発行済みか分からない。旧 nonce を戻さず、確認を求める
+    const parked = join(roleDir, `completion.superseded-${role.dispatch}.json`)
+    if (existsSync(parked)) {
+      const run = asString(get(readJson(join(statusDir, 'run.json')), 'run_id')) ?? ''
+      log(
+        NAME,
+        `${name}: a prior recovery stopped after parking its completion record at ${parked}; not deciding anything`,
+      )
+      log(
+        NAME,
+        `  inspect dispatches with: ${orcaBin()} orchestration worker-list${run === '' ? '' : ` --run ${run}`} --json`,
+      )
+      rc = 1
+      continue
+    }
     // ★ **起動が終わらなかった役は「起動」を負っている。**完了を負っているかの判定より先に見る
     const incomplete = startIncomplete(statusDir, name)
     // ★ --adopt / --restart は起動が終わらなかった役だけのもの。起動が終わった役に付けたら、何もせずに言う
