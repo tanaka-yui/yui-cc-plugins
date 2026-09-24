@@ -22,10 +22,10 @@ setup() {
 }
 teardown() { git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
              rm -rf "$R" "$(dirname "$WT")"; }
-m() { bash "$P/bin/orca-merge.sh" --status-dir "$SD"; }
+m() { node "$P/bin/orca-merge.ts" --status-dir "$SD"; }
 in_main() { git -C "$R" show main:README.md 2>/dev/null | grep -q "$MARK"; }
 
-setup; bash "$P/bin/orca-merge.sh" --bogus >/dev/null 2>&1
+setup; node "$P/bin/orca-merge.ts" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "MG1 使用法エラー" || fail "MG1"; teardown
 
 # MG2: 証拠が揃えば merge し、成功を永続化する
@@ -83,7 +83,7 @@ setup; printf '[true,"worker_done|task_x|ctx_x|succeeded"]\n' > "$SD/received.js
 #       dispatch が黙って design のブランチを取り込む。取り込み先の取り違えは成果の
 #       喪失につながるので、他の identity と同じく「無ければ止まる」。
 setup; jq -c 'del(.integration_role)' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
-bash "$P/bin/orca-merge.sh" --status-dir "$SD" >/dev/null 2>&1
+node "$P/bin/orca-merge.ts" --status-dir "$SD" >/dev/null 2>&1
 [[ $? -eq 1 ]] && ! in_main && ok "MG12 integration_role が無ければ止まる" || fail "MG12"; teardown
 
 # MG13: integration_role が指す役のブランチと成果を見る（design 決め打ちではない）。
@@ -94,7 +94,7 @@ jq -c '.integration_role = "other" | .roles.other = (.roles.design | .branch = "
 mkdir -p "$SD/roles/other"
 echo '{"status":"done"}' > "$SD/roles/other/status.json"
 printf 'other role result\n' > "$SD/roles/other/result.md"
-bash "$P/bin/orca-merge.sh" --status-dir "$SD" >/dev/null 2>&1; rc=$?
+node "$P/bin/orca-merge.ts" --status-dir "$SD" >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 && "$(jq -r '.branch' "$SD/integration-result.json")" == other-branch ]] \
   && ok "MG13 integration_role の指す役を取り込む" || fail "MG13 (rc=$rc)"; teardown
 
@@ -133,7 +133,7 @@ m >/dev/null 2>&1; rc=$?
 
 # MG17: --allow-unreviewed を明示すれば取り込む。**既定では通らないことが要点である。**
 reviewed_setup
-bash "$P/bin/orca-merge.sh" --status-dir "$SD" --allow-unreviewed >/dev/null 2>&1; rc=$?
+node "$P/bin/orca-merge.ts" --status-dir "$SD" --allow-unreviewed >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 ]] && in_main && ok "MG17 明示の override は通る" || fail "MG17 (rc=$rc)"; teardown
 
 # MG18: reviewer が起きていなければ何も足さない（review_mode=off の既定を汚さない）。
@@ -158,7 +158,7 @@ m >/dev/null 2>&1; rc=$?
 # MG21: ★ **PR と記録された dispatch を merge しない。**両方やると、レビュー前に成果が入る
 setup; jq -c '.integration = "pr"' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
 out=$(m 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *'orca-pr.sh'* ]] && ! in_main && [[ ! -e "$SD/integration-result.json" ]] \
+[[ "$rc" -eq 1 && "$out" == *'orca-pr.ts'* ]] && ! in_main && [[ ! -e "$SD/integration-result.json" ]] \
   && ok "MG21 PR の dispatch を merge しない" || fail "MG21 (rc=$rc out=$out)"; teardown
 
 # MG22: merge と記録されていても、記録が無くても（旧版）今までどおり merge する

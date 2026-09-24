@@ -65,7 +65,7 @@ IFETCH="$SCRIPTS/issue-fetch.sh"
 SD="$RR/.dispatch/$SLUG"
 
 # ★ **state ディレクトリを repo の除外へ入れる。**`.dispatch/` と同じ理由である —
-#   入れないと state file と lock で親が常に dirty になり、`orca-merge.sh` の dirty
+#   入れないと state file と lock で親が常に dirty になり、`orca-merge.ts` の dirty
 #   ガードが必ず発火して **1 件も merge できない**（実測）。state file の置き場所は
 #   呼び出し側が決めるので、その directory 名を除外する。
 #   ★ **両辺を同じ形に揃えてから比べる。**片方だけ `pwd -P` で symlink を解決すると、
@@ -175,20 +175,20 @@ CRC=0; CFG=$(node "$SCRIPTS/config-resolve.ts" --project-root "$RR") || CRC=$?
 
 # --- 3. 統合。**ここが通って初めて片付けの話になる** ---
 # ★ **取り込み方は記録した値を読む。**dispatch と finish の間には待機バッチが挟まり、
-#   その間に設定が変わりうる。orca-merge.sh / orca-pr.sh は起動時に記録した値を基準に
+#   その間に設定が変わりうる。orca-merge.ts / orca-pr.ts は起動時に記録した値を基準に
 #   もう一方を拒むので、finish もそこと同じ値を読む。記録が無い（旧版の status dir）
 #   ときだけ、いま解決した設定へ従来どおり落ちる。
 INTEGRATION=$(jq -r '.integration // empty' "$SD/workers.json" 2>/dev/null || echo "")
 [[ -n "$INTEGRATION" ]] || INTEGRATION=$(jq -r '.integration // "merge"' <<<"$CFG")
 PR_URL=""
 if [[ "$INTEGRATION" == pr ]]; then
-  # ★ **repo は呼び出し側が 1 度だけ解決した値を渡す。**`orca-pr.sh` も自分では見に行かない
+  # ★ **repo は呼び出し側が 1 度だけ解決した値を渡す。**`orca-pr.ts` も自分では見に行かない
   #   （spec 12-2 の実測: 子が remote を解決して fork の中に PR を作った）。
   [[ -n "$PRREPO" ]] || fail_out "issue #$NUM: integration is 'pr' but --repo <owner/repo> was not given"
-  PR_URL=$(bash "$PLUGIN/bin/orca-pr.sh" --status-dir "$SD" --repo "$PRREPO" --issue "$NUM") \
+  PR_URL=$(node "$PLUGIN/bin/orca-pr.ts" --status-dir "$SD" --repo "$PRREPO" --issue "$NUM") \
     || fail_out "issue #$NUM: no pull request was opened; the worktree and branch are kept"
 else
-  bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" \
+  node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD" \
     || fail_out "issue #$NUM: the work was not merged; the worktree and branch are kept"
 fi
 

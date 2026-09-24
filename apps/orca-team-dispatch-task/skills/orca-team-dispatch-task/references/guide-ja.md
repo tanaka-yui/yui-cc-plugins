@@ -681,10 +681,10 @@ status、result、branch、clean checkout の通常の guard はすべて実行�
 cat "$SD/received.json"
 sed -n '1,240p' "$SD/roles/design/result.md"
 # Only after the user has inspected both files and chosen manual integration:
-bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
+node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD"
 ```
 
-`pr` と記録された dispatch は、Step 4 のとおり代わりに `orca-pr.sh` を使う。`orca-merge.sh` は
+`pr` と記録された dispatch は、Step 4 のとおり代わりに `orca-pr.ts` を使う。`orca-merge.ts` は
 それを拒む。
 
 確認したメッセージと、この版がそれを扱えなかった理由 — 未知のメッセージ型か、記録と矛盾する
@@ -794,7 +794,7 @@ jq -r '.integration // "not recorded"' "$SD/workers.json"
 取り違えることはない。
 
 ```bash
-bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
+node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD"
 ```
 
 dispatch を始めたときにいたブランチへ、その役のブランチを merge する。worker が成功を
@@ -813,7 +813,7 @@ worker を差し戻すことはしない** — round 2 で諦めるのはこの 
 何と言っているかを添えてユーザーへ報告し、ユーザーがそう言ったときにだけ取り込む:
 
 ```bash
-bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" --allow-unreviewed
+node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD" --allow-unreviewed
 ```
 
 **それが `pr` のときは、上の merge の代わりにこちらを使う。**両方やってはならない
@@ -823,7 +823,7 @@ bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" --allow-unreviewed
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 : "${PLUGIN:?run the block at the top of this file first}"
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
-bash "$PLUGIN/bin/orca-pr.sh" --status-dir "$SD" --repo "$REPO"
+node "$PLUGIN/bin/orca-pr.ts" --status-dir "$SD" --repo "$REPO"
 ```
 
 **repository はここで 1 度だけ解決して渡す。**2026-09-02 の実測: 3 つの remote を持つ

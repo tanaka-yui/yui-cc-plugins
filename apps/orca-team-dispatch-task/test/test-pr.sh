@@ -35,7 +35,7 @@ setup() {
   printf 'changed WORK.md\n' > "$SD/roles/design/result.md"
 }
 teardown() { PATH="$OLD_PATH"; export PATH; rm -rf "$W"; unset GH_STUB_DIR; }
-pr() { bash "$P/bin/orca-pr.sh" --status-dir "$SD" "$@"; }
+pr() { node "$P/bin/orca-pr.ts" --status-dir "$SD" "$@"; }
 ghlog() { cat "$GH_STUB_DIR/calls.log"; }
 
 # PR1: ★ **`--repo` は必須。**省略を許すと「たまたま origin が正しい環境」でだけ通り、
@@ -202,7 +202,7 @@ teardown
 # PR15: ★ **merge と記録された dispatch で PR を作らない。**
 setup; jq -c '.integration = "merge"' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
 out=$(pr --repo o/r 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *'orca-merge.sh'* ]] && ! ghlog | grep -q 'pr create' \
+[[ "$rc" -eq 1 && "$out" == *'orca-merge.ts'* ]] && ! ghlog | grep -q 'pr create' \
   && ok "PR15 merge の dispatch で PR を作らない" || fail "PR15 (rc=$rc out=$out)"; teardown
 
 # PR16: pr と記録されていれば今までどおり作る

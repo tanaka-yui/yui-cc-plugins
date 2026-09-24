@@ -275,7 +275,7 @@ pr_mode() {
   mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
   printf '%s\n' '{"integration":"pr"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
   printf 'https://github.com/o/r/pull/7\n' > "$GH_STUB_DIR/pr_create"
-  # push 先を用意する（orca-pr.sh は本当に push する）
+  # push 先を用意する（orca-pr.ts は本当に push する）
   REMOTE_DIR="$ORCA_STUB_DIR/remote.git"; git init -q --bare -b main "$REMOTE_DIR"
   git -C "$R" remote add origin "$REMOTE_DIR" 2>/dev/null || git -C "$R" remote set-url origin "$REMOTE_DIR"
   git -C "$R" push -q origin main
@@ -342,7 +342,7 @@ teardown
 #       除外を決める比較が `pwd -P` で解決した側と解決していない `--repo-root` を
 #       突き合わせていると、macOS の `/var` → `/private/var` のような symlink 越しの
 #       repo で **常に外れる**。外れると親は `?? .dispatch-issue/` で dirty のままになり、
-#       `orca-merge.sh` の dirty ガードが発火して **1 件も merge できない**（実測）。
+#       `orca-merge.ts` の dirty ガードが発火して **1 件も merge できない**（実測）。
 setup; worker_done succeeded done
 run_issue >/dev/null 2>&1
 EXF=$(git -C "$R" rev-parse --git-path info/exclude)
@@ -359,7 +359,7 @@ grep -q -- '--on-stall report' "$P/bin/orca-issue.sh" \
 
 # IS25: ★ **finish は記録した取り込み方を読む。**dispatch と finish の間には待機バッチが
 #       挟まり、その間に設定が変わりうる。記録が merge のまま設定だけ pr に変わっても、
-#       finish は記録に従って merge し、orca-pr.sh は呼ばない（呼べば新設したガードに拒まれる）。
+#       finish は記録に従って merge し、orca-pr.ts は呼ばない（呼べば新設したガードに拒まれる）。
 setup; worker_done succeeded done
 run_issue --phase dispatch >/dev/null 2>&1
 bash "$P/bin/orca-wait.sh" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1

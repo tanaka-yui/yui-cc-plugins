@@ -710,10 +710,10 @@ guards; it does not acknowledge the blocked batch:
 cat "$SD/received.json"
 sed -n '1,240p' "$SD/roles/design/result.md"
 # Only after the user has inspected both files and chosen manual integration:
-bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
+node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD"
 ```
 
-A dispatch recorded as `pr` uses `orca-pr.sh` instead, as Step 4 shows; `orca-merge.sh`
+A dispatch recorded as `pr` uses `orca-pr.ts` instead, as Step 4 shows; `orca-merge.ts`
 refuses it.
 
 Show the user the inspected message and why this version could not handle it — an unknown
@@ -823,7 +823,7 @@ means an older version started the dispatch: use the configured `integration`. E
 refuses the other's recorded value, so the two cannot be mixed up.
 
 ```bash
-bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD"
+node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD"
 ```
 
 It merges that role's branch into the branch you were on when the dispatch started. It
@@ -842,7 +842,7 @@ purpose — so the check lives here, where a person decides. Report the refusal 
 with what `result.md` says about the review, and take the work anyway only if they say so:
 
 ```bash
-bash "$PLUGIN/bin/orca-merge.sh" --status-dir "$SD" --allow-unreviewed
+node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD" --allow-unreviewed
 ```
 
 **When it is `pr`, use this instead of the merge above.** Do not do both: opening
@@ -852,7 +852,7 @@ a pull request and then merging puts the work in before anyone reviews it.
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 : "${PLUGIN:?run the block at the top of this file first}"
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1
-bash "$PLUGIN/bin/orca-pr.sh" --status-dir "$SD" --repo "$REPO"
+node "$PLUGIN/bin/orca-pr.ts" --status-dir "$SD" --repo "$REPO"
 ```
 
 **Resolve the repository once, here, and pass it in.** Measured on 2026-09-02: a worker left

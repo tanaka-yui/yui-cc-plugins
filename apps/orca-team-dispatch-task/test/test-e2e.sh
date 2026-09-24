@@ -64,7 +64,7 @@ a=$(ack_lineno)
 [[ -n "$r" && -n "$a" && "$r" -lt "$a" ]] && ! grep -q 'worker-release' "$ORCA_STUB_DIR/calls.log" \
   && ok "E7 retain が ack より前・release しない" || fail "E7 順序 ($r/$a)"
 
-bash "$P/bin/orca-merge.sh" --status-dir "$SD" >/dev/null 2>&1
+node "$P/bin/orca-merge.ts" --status-dir "$SD" >/dev/null 2>&1
 git -C "$R" show main:README.md | grep -q "$MARK" && ok "E8 成果が親ブランチへ" || fail "E8 merge されない"
 # **merge しても資源は消さない**（Stage 1 は片付けを自動化しない）
 [[ -d "$WT" ]] && git -C "$R" show-ref --quiet refs/heads/orca/e2e \

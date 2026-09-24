@@ -350,7 +350,7 @@ for f in "$S" "$G"; do
   grep -q 'unstarted_role' "$f" || bad="$bad [unstarted:$b]"
   sed -n '/^## Step 3\.5: /,/^## Step 4: /p' "$f" | grep -q 'roles/design/stopped.json' \
     || bad="$bad [3.5-stopped:$b]"
-  sed -n '/^## Step 3: /,/^### /p' "$f" | grep -q 'orca-pr.sh' || bad="$bad [manual-pr:$b]"
+  sed -n '/^## Step 3: /,/^### /p' "$f" | grep -q 'orca-pr.ts' || bad="$bad [manual-pr:$b]"
 done
 grep -q 'go to Step 3.5,$' "$S" && grep -q '^then run the same wait again' "$S" || bad="$bad [rerun:SKILL]"
 grep -q 'そのあと同じ待機をもう一度走らせて' "$G" || bad="$bad [rerun:guide]"
