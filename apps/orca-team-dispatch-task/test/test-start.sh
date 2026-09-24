@@ -1246,4 +1246,17 @@ out=$(start 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *'did not report ready'* && "$out" != *'trust_level'* ]] \
   && ok "ST105 ふつうの起動失敗には信頼の案内を出さない" || fail "ST105 (rc=$rc) $out"
 teardown
+
+# ST106: ready を返さなくても、Orca が示す端末を dispatch とともに記録する
+setup
+echo '{"ok":true,"result":{"state":"start_unknown","dispatchId":"ctx_x"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+echo '{"ok":true,"result":{"worker":{"state":"start_unknown","agentTerminalHandle":"term_unconfirmed"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+echo '{"ok":true,"result":{"terminals":[{"handle":"term_unconfirmed"}]}}' \
+  > "$ORCA_STUB_DIR/terminal_list"
+start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && jq -e '.roles.design | .dispatch == "ctx_x" and .terminal == "term_unconfirmed" and .start_incomplete == true and .worktree_terminals == ["term_unconfirmed"]' \
+  "$R/.dispatch/s/workers.json" >/dev/null \
+  && ok "ST106 起動未完了でも Orca の端末を記録する" || fail "ST106 (rc=$rc)"
+teardown
 echo "---"; echo "failures: $fails"; exit "$fails"

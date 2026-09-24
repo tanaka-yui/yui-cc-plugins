@@ -147,7 +147,16 @@ const planRole = (role: string, record: Json, listed: Json[], merged: boolean, s
     return
   }
   if (terminal === '' || worktreeId === '' || worktreePath === '') {
-    sink.stopped.reasons.push(`${role}: ${MISSING}`)
+    const fields = [
+      terminal === '' ? 'terminal' : '',
+      worktreeId === '' ? 'worktree_id' : '',
+      worktreePath === '' ? 'worktree_path' : '',
+    ].filter(Boolean)
+    const repair =
+      terminal === ''
+        ? `; inspect ${show(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'])} and, if reported, copy result.worker.agentTerminalHandle to roles.${role}.terminal in workers.json`
+        : ''
+    sink.stopped.reasons.push(`${role}: ${MISSING} (${fields.join(', ')} in workers.json)${repair}`)
     return
   }
   // ★ released 系で show できないのは、Orca が閉じたことの証明になる。それ以外の state では

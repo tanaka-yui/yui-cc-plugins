@@ -8,7 +8,7 @@ import { die, log } from '../lib/cli.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
-import { orcaBin, receiptOk, runOrca, workerStateClass, workerTerminal } from '../lib/orca.ts'
+import { orcaBin, receiptOk, runOrca, terminalHandles, workerStateClass, workerTerminal } from '../lib/orca.ts'
 import { envCount, nowSeconds, run, runNode, sleepSeconds } from '../lib/sys.ts'
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -834,6 +834,11 @@ const aggregate = (state: State): 'succeeded' | 'failed' | null => {
 const finish = (state: State, outcome: 'succeeded' | 'failed'): number => {
   const lines: string[] = []
   for (const entry of state.expected.entries) {
+    // worker_done 後は healthy() の対象外になる。空の端末 ID は決着時にも Orca から補う
+    if (string(get(read(entry.statusDir, 'workers.json'), 'roles', entry.role, 'terminal')) === '') {
+      const shown = runOrca(['orchestration', 'worker-show', '--dispatch', entry.dispatch, '--json'])
+      if (receiptOk(shown)) recordTerminal(entry, shown.json)
+    }
     const roleResult = roleOutcome(entry.statusDir, entry.role) || 'unknown'
     const review = reviewState(entry.statusDir, entry.role) === 'unreviewed' ? ' review=unreviewed' : ''
     lines.push(
@@ -860,6 +865,9 @@ const recordTerminal = (entry: Entry, shown: Json | null): void => {
   if (workers === null || roles === null || role === null) return
   if (string(role.dispatch) !== entry.dispatch || string(role.terminal) !== '') return
   const next: JsonObject = { ...role, terminal: handle }
+  const worktreeId = string(role.worktree_id)
+  if (worktreeId !== '' && asArray(role.worktree_terminals) === null)
+    next.worktree_terminals = terminalHandles(worktreeId)
   if (startIncomplete(entry.statusDir, entry.role)) next.start_incomplete = true
   if (write(entry.statusDir, 'workers.json', { ...workers, roles: { ...roles, [entry.role]: next } })) {
     log(NAME, `recorded terminal ${handle} for ${entry.role} (dispatch ${entry.dispatch}) as Orca reports it`)

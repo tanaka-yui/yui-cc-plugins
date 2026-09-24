@@ -8,7 +8,7 @@ import { die, log } from '../lib/cli.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
-import { orcaBin, runOrca, terminalHandles, workerTerminal } from '../lib/orca.ts'
+import { orcaBin, receiptOk, runOrca, terminalHandles, workerTerminal } from '../lib/orca.ts'
 import { envCount, run, runNode, sleepSeconds, which } from '../lib/sys.ts'
 import { trustBlocked, trustHint } from '../lib/trust.ts'
 
@@ -760,14 +760,25 @@ const launchRole = (context: Context, role: string): boolean => {
       'id',
     ),
   )
-  const recordOrphan = (): void => {
+  const recordOrphan = (shown: Json | null): void => {
     if (dispatch === '') return
-    if (!roleUpdate(`workers-orphan-dispatch-${role}`, workersFile, role, { dispatch, start_incomplete: true })) {
+    const terminal = agentTerminal || workerTerminal(shown)
+    if (
+      !roleUpdate(`workers-orphan-dispatch-${role}`, workersFile, role, {
+        dispatch,
+        terminal,
+        start_incomplete: true,
+        worktree_terminals: terminalHandles(worktreeId),
+      })
+    ) {
       log(NAME, `the dispatch id could not be recorded either; wait on dispatch=${dispatch} by hand`)
     }
   }
   if (started.rc !== 0 || state !== 'ready' || dispatch === '') {
-    recordOrphan()
+    const shownResult =
+      dispatch === '' ? null : runOrca(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'])
+    const shown = shownResult !== null && receiptOk(shownResult) ? shownResult.json : null
+    recordOrphan(shown)
     log(
       NAME,
       `worker-start did not report ready for ${role} (rc=${started.rc} state='${state || 'none'}'). Resources are KEPT.`,
@@ -776,7 +787,6 @@ const launchRole = (context: Context, role: string): boolean => {
     // ★ **codex がフォルダの信頼を求めて止まった起動なら、解き方をその場で言う**（lib/trust.ts）。2026-09-24 の
     //   influencer-platform: agent-trust-workspace で落ち、worker-show を読むまで原因が分からなかった
     if (dispatch !== '') {
-      const shown = runOrca(['orchestration', 'worker-show', '--dispatch', dispatch, '--json']).json
       if (trustBlocked(shown)) {
         const retry = recoverCommand(context.statusDir, role)
         for (const line of trustHint(role, workerTerminal(shown), worktreePath, retry)) log(NAME, line)
@@ -785,7 +795,8 @@ const launchRole = (context: Context, role: string): boolean => {
     return false
   }
   if (agentTerminal === '') {
-    recordOrphan()
+    const shown = runOrca(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'])
+    recordOrphan(receiptOk(shown) ? shown.json : null)
     log(NAME, `worker-start reported ready for ${role} but returned no agent terminal handle. Resources are KEPT.`)
     log(
       NAME,

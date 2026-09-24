@@ -271,9 +271,11 @@ teardown
 # CL8c (旧 [C2]/[C3] の欠落検査): 役の記録に端末が無ければ、そのタスクだけ止まる
 world; task a; edit a '.roles.design.terminal = null'
 plan --status-dir "$(sd a)"
-[[ "$RC" -eq 0 && "$(pj '.tasks[0].stopped.reasons')" \
-      == '["design: required cleanup state is missing; do not close or remove anything"]' ]] \
-  && ok "CL8c 役の記録が欠けていれば止まる" || fail "CL8c (out=$OUT)"
+reason=$(pj '.tasks[0].stopped.reasons[0]')
+[[ "$RC" -eq 0 && "$reason" == *'required cleanup state is missing'* \
+   && "$reason" == *'terminal in workers.json'* && "$reason" == *'worker-show --dispatch ctx_a-design'* \
+   && "$reason" == *'result.worker.agentTerminalHandle to roles.design.terminal'* ]] \
+  && ok "CL8c 欠けた terminal と Orca からの補い方を示して止まる" || fail "CL8c (out=$OUT)"
 teardown
 
 # CL9 (旧 SK6g): release_pending / release_unknown は止まる合図。報告された worker と

@@ -258,7 +258,8 @@ const replace = (statusDir: string, parent: string, role: Role): boolean => {
     log(NAME, `${role.name}: could not start a replacement (rc=${started.rc}); the old resources are KEPT`)
     return false
   }
-  const shown = ready ? null : runOrca(['orchestration', 'worker-show', '--dispatch', next, '--json']).json
+  const shownResult = ready ? null : runOrca(['orchestration', 'worker-show', '--dispatch', next, '--json'])
+  const shown = shownResult !== null && receiptOk(shownResult) ? shownResult.json : null
   const terminal =
     asString(
       get(
