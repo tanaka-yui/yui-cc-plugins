@@ -22,14 +22,16 @@ Orca の worktree で N タスクを worker に並列実行させるプラグイ
 **資源は消さない**）/ `bin/orca-cleanup.ts`（Step 5 の判定 `plan` と Step 6 の実行 `run`）/
 `skills/.../scripts/report-status.ts`（worker が status を書く口）/
 `skills/.../scripts/config-resolve.ts` と `config-edit.ts`（設定の入口）。設定の定義は `lib/config.ts`。
+SKILL.md の block が読む状態は `bin/orca-state.ts`（wait-stamp / design-status / integration / mailbox /
+accounts。読むだけ）、issue モードの実行の前後は `bin/orca-issue-loop.ts`（start / claim / reconcile /
+release）が受け持つ。issue の state file の場所と除外は `lib/issue.ts`（`orca-issue.ts` と共有）。
 
 ## TypeScript（node）で書く部分
 
 設計は `docs/superpowers/specs/2026-09-23-orca-ts-migration-design.md`。**SKILL.md の複数行の bash
 ブロックは、呼び出し側のシェル（mac も WSL も zsh）で実行される。**2026-09-23 に、zsh が
 `for ROLE in $ROLES` を単語に分けず、Step 5 の [C1] が誤停止した。判定は文書に書かず、入口の
-1 行呼び出しにする（P1 で Step 5 / Step 6 を `bin/orca-cleanup.ts` に、P2 で残りの入口を
-全部 .ts に移した。SKILL.md に残る複数行のブロックは P3）。
+1 行呼び出しにする（P1 で Step 5 / Step 6 を `bin/orca-cleanup.ts` に、P2 で残りの入口を全部 .ts に、P3 で SKILL.md の残りのブロックを入口の 1 行呼び出しに移した）。
 
 - 実行は `node <path>.ts`（型除去で直接走らせる。**Node 22.18 以上**）。プラグインはファイルの
   まま入り `npm install` は走らないので、**実行時の npm 依存はゼロ**（`node:` の組み込みだけ）。
@@ -55,6 +57,17 @@ Orca の worktree で N タスクを worker に並列実行させるプラグイ
   **その計画の提示しか実行しない**。argv が計画を書いたときの形と違えば（`--force` の追加など）
   計画ごと拒む。`worker-release` のあとは `worker-list` から state を読み直す（receipt の `ok` だけ
   では「閉じた」と言えない。実測 O43）。回帰は `test/test-cleanup.sh`
+
+- **SKILL.md の bash block に判定を書かない。**置いてよいのはコメント、ガード `: "${VAR:?...}"`、入口の
+  呼び出し（`node "$PLUGIN/..."` / `"$ORCA_BIN" ...` / `gh repo view`）だけ。block の間で shell 変数を運ばせ
+  ない（Bash ツールは tool call を跨いで変数を持たない）— 値は入口が `key=value` で印字し、次の block が
+  ガード付きの変数か `"<... printed by ...>"` で受ける。repo root・state file・層のファイルは入口が自分で決める。
+  例外は冒頭の PLUGIN / ORCA_BIN の定義、Step 1 の依頼ファイル、切り離した待機の 3 つ。
+  **ガードの文言に `'` を書かない** — bash は `"${VAR:?...'...}"` の `'` を引用の開始と読み、block 全体が構文
+  エラーになる（2026-09-24、Step 2 と Step 3.5 で見つけた。zsh は通すので気づかれなかった）。
+  **`${VAR:+--flag "$VAR"}` を書かない** — zsh は 1 語にし、入口は `unknown option` で落ちる（同日、Step 2 と
+  I3。空の値は入口が「渡されていない」と同じに扱う）。回帰は `test-docs.sh` の SK26（判定を書かない）と
+  SK27（各 block を bash と zsh で走らせ、入口に届く argv が一致する）
 
 ## 設定層に runner レジストリが無い理由
 
