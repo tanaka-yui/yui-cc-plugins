@@ -310,10 +310,10 @@ record_outcome() {   # $1=status dir $2=task $3=dispatch $4=outcome。1 = 記録
 #   **ここで差し戻してはならない** — 「round 2 で打ち切り」も「1 時間 ×2 で諦めて進む」も
 #   spec が認めた離脱経路であり、ゲートにするとその worker は永久に差し戻され続ける。
 #   受理はする。**そのうえで、そう見えるようにする。**
-#   判定そのものは `review-state.sh` が正本で、`orca-merge.sh` の gate と同じ問いを使う。
-REVSTATE="$HERE/review-state.sh"
+#   判定そのものは `review-state.ts` が正本で、`orca-merge.sh` の gate と同じ問いを使う。
+REVSTATE="$HERE/review-state.ts"
 review_state() {   # $1=status dir $2=役 → reviewed / unreviewed / none を stdout
-  bash "$REVSTATE" --status-dir "$1" --role "$2" 2>/dev/null || printf none
+  node "$REVSTATE" --status-dir "$1" --role "$2" 2>/dev/null || printf none
 }
 # ★ **相 3 の検証。**役ごとに「成果が検証可能な形で在るか」を見る（spec 10-1 の表）。
 #   ここを緩めると、成果が無いのに受理して端末を閉じ、**欠落に誰も気づかない**。

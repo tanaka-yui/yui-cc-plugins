@@ -74,7 +74,7 @@ send --to design_review --subject 'x' --body 'y' >/dev/null 2>&1
 teardown
 
 # SN14: ★ **配送された事実を残す。**「findings がディスクに在る」と「それが届いた」は
-#       別の事実であり、後段の判定 (`review-state.sh`) はこの記録を読む。
+#       別の事実であり、後段の判定 (`review-state.ts`) はこの記録を読む。
 setup
 send --to design --subject 'review-verdict: round 1' --body '/tmp/f.md' >/dev/null 2>&1
 jq -e 'type == "array" and length == 1 and .[0].to == "design"

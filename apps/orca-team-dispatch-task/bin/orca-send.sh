@@ -54,7 +54,7 @@ if [[ "$RC" -ne 0 ]] || ! jq -e '.ok == true and (.result.message.id | type == "
 fi
 # ★ **配送された事実を残す。**「findings がディスクに在る」と「それが相手に届いた」は
 #   別の事実である（実測 2026-09-12: 依頼側が先に決着し、verdict が受け取られなかった）。
-#   後段の判定 (`review-state.sh`) はこの記録を読む。**ベストエフォート** — 記録できな
+#   後段の判定 (`review-state.ts`) はこの記録を読む。**ベストエフォート** — 記録できな
 #   かったことで配送の成否を覆さない。呼び出し側の補償はこの exit code で決まる。
 SDIR=$(cd "$(dirname "$WF")" 2>/dev/null && pwd) || SDIR=""
 if [[ -n "$SDIR" ]]; then

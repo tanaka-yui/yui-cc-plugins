@@ -82,7 +82,7 @@ jq -e --arg receipt "worker_done|$TID|$DID|succeeded" \
 #   **worker を差し戻して閉じてはならない** — 「round 2 で打ち切り」も「諦めて進む」も
 #   spec が認めた離脱経路であり、そこを塞ぐと worker は永久に差し戻される。だから
 #   **人の承認を経る離散的な一手であるここ**で閉じ、明示の override だけを通す。
-RVS=$(bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/review-state.sh" \
+RVS=$(node "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/review-state.ts" \
         --status-dir "$SD" --role "$IR" 2>/dev/null) || RVS=none
 [[ "$RVS" != unreviewed || "$ALLOW_UNREVIEWED" -eq 1 ]] \
   || stop "a reviewer was started for '$IR' but no delivered verdict exists; read $SD/roles/$IR/result.md and $SD/review, then pass --allow-unreviewed to take it anyway"
