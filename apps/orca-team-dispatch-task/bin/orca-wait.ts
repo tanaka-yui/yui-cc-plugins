@@ -5,9 +5,10 @@
 //       / 6 worker の質問 / 8 停滞
 // ★ cursor は ack だけで進む。batch を全件処理できなければ ack しない。
 import { die, log } from '../lib/cli.ts'
+import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
-import { orcaBin, receiptOk, runOrca } from '../lib/orca.ts'
+import { orcaBin, receiptOk, runOrca, workerStateClass, workerTerminal } from '../lib/orca.ts'
 import { envCount, nowSeconds, run, runNode, sleepSeconds } from '../lib/sys.ts'
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -37,6 +38,7 @@ type State = {
   settleGrace: number
   expected: Expected
   settleSeen: Map<string, number>
+  unconfirmedSeen: Set<string>
   unknown: { type: string; task: string; dispatch: string; batch: string }
 }
 const string = (value: Json | undefined): string => asString(value) ?? ''
@@ -842,6 +844,44 @@ const finish = (state: State, outcome: 'succeeded' | 'failed'): number => {
   process.stdout.write(`${lines.join('\n')}\n`)
   return outcome === 'succeeded' ? 0 : 5
 }
+// ★ **記録に端末が無ければ、Orca が見せている端末で埋める。**ready にならなかった起動は端末を記録しない
+//   （orca-start / orca-recover の start_incomplete）が、Orca はその dispatch の agentTerminalHandle を出している。
+//   埋めないと停滞（exit 8）の stalled_role 行が terminal=none になって画面を読めず、Orca が live と言っても
+//   orca-wake.ts が叩けない。**起動が終わらなかった役は、埋めても起動が終わらなかった役のまま残す** — 印を外すのは
+//   画面を見たユーザーの判断（orca-recover.ts --adopt）である。印の無い旧形式の記録は「端末なし・status が starting」で
+//   読まれる（lib/dispatch.ts）ので、端末だけ埋めると起動が終わったことになり、--adopt / --restart が効かなくなる。
+//   同じ書き込みで印を明示する（round 1 のレビュー F2）。書けなくても待機は止めない
+const recordTerminal = (entry: Entry, shown: Json | null): void => {
+  const handle = workerTerminal(shown)
+  if (handle === '') return
+  const workers = asObject(read(entry.statusDir, 'workers.json'))
+  const roles = asObject(workers?.roles)
+  const role = asObject(roles?.[entry.role])
+  if (workers === null || roles === null || role === null) return
+  if (string(role.dispatch) !== entry.dispatch || string(role.terminal) !== '') return
+  const next: JsonObject = { ...role, terminal: handle }
+  if (startIncomplete(entry.statusDir, entry.role)) next.start_incomplete = true
+  if (write(entry.statusDir, 'workers.json', { ...workers, roles: { ...roles, [entry.role]: next } })) {
+    log(NAME, `recorded terminal ${handle} for ${entry.role} (dispatch ${entry.dispatch}) as Orca reports it`)
+  } else log(NAME, `could not record terminal ${handle} for ${entry.role}; a stall report will show terminal=none`)
+}
+// ★ **start_unknown で待機を落とさない**（lib/orca.ts の unconfirmed）。Orca がターン開始を観測できなかっただけで、
+//   生死のどちらの証拠でもない。以前はここで 4 を返し、動いている reviewer が依頼を待っているのに Step 3 が
+//   起動直後に止まった（2026-09-24、influencer-platform）。**死んでいれば子が何も書かないので、停滞（exit 8）で
+//   見つかる。**同じ dispatch で毎周言わない。起動が終わらなかった役なら、画面を見て選ぶ回復の 1 行も添える
+const noteUnconfirmed = (state: State, entry: Entry): void => {
+  if (state.unconfirmedSeen.has(entry.dispatch)) return
+  state.unconfirmedSeen.add(entry.dispatch)
+  log(
+    NAME,
+    `${entry.role} (dispatch ${entry.dispatch}) is 'start_unknown': Orca never saw its turn start, which proves neither that it runs nor that it died; this wait keeps waiting on it, and a dead one is reported as a stall`,
+  )
+  if (!startIncomplete(entry.statusDir, entry.role)) return
+  log(
+    NAME,
+    `its start did not complete; to see its screen and adopt or restart it, run: node ${join(HERE, 'orca-recover.ts')} --status-dir ${entry.statusDir} --role ${entry.role}`,
+  )
+}
 // ★ worker_done 送信後の Orca の終端 state を、receipt 到着前に停止と読まない。
 // 移植元の理由（bin/orca-wait.sh）:
 // ★ **報告済みで記録前の worker を停止と読み違えない**（実測 2026-09-19、2 回）。worker は
@@ -867,15 +907,22 @@ const healthy = (state: State): boolean => {
       log(NAME, 'worker-show receipt was not ok')
       return false
     }
+    const status = string(get(shown.json, 'result', 'worker', 'state'))
+    const kind = workerStateClass(status)
+    // ★ 端末の補完と未確認の通知は、人を待っている worker にも行う（round 1 のレビュー F3）。agentWait で先に
+    //   読み飛ばすと、入力待ちの start_unknown の worker の端末がいつまでも埋まらない
+    if (kind === 'live' || kind === 'unconfirmed') {
+      recordTerminal(entry, shown.json)
+      if (kind === 'unconfirmed') noteUnconfirmed(state, entry)
+    }
     const agentWait = get(shown.json, 'result', 'observation', 'agentWait')
     if (agentWait !== undefined && agentWait !== null && agentWait !== false && agentWait !== '') {
       markHuman(entry.statusDir)
       continue
     }
-    const status = string(get(shown.json, 'result', 'worker', 'state'))
-    if (['active', 'ready', 'starting', 'idle'].includes(status)) {
+    if (kind === 'live' || kind === 'unconfirmed') {
       state.settleSeen.set(entry.dispatch, 0)
-    } else if (status === 'succeeded' || status === 'failed') {
+    } else if (kind === 'settled') {
       const seen = (state.settleSeen.get(entry.dispatch) ?? 0) + 1
       state.settleSeen.set(entry.dispatch, seen)
       if (seen <= state.settleGrace) {
@@ -945,6 +992,7 @@ const main = (argv: string[]): number => {
     settleGrace: envCount('ORCA_WAIT_SETTLE_GRACE', 3),
     expected: loadRoles(statusDirs),
     settleSeen: new Map(),
+    unconfirmedSeen: new Set(),
     unknown: { type: '', task: '', dispatch: '', batch: '' },
   }
   beat(state)

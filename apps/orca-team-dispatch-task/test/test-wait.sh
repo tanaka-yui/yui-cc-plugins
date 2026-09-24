@@ -1065,4 +1065,90 @@ jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dm",count:1,messages:[
 out=$(w 2>&1)
 [[ "$out" == *'has no VERDICT line'* && "$out" == *'back for remediation'* && "$out" != *'accepted exec_review'* ]] \
   && ok "WT106 読めない findings は差し戻す" || fail "WT106 (out=$out)"; teardown
+
+# ── Orca が start_unknown と言う worker（2026-09-24、influencer-platform）────────────────────────────
+# ★ Orca は依頼を入力したが agent のターン開始を観測できなかった。生死のどちらの証拠でもなく、動いている reviewer にも
+#   出続けた。以前はここで exit 4 になり、Step 3 が起動直後に止まった
+unconfirmed_show() {   # $1 = worker-show が出す端末
+  jq -nc --arg t "$1" '{ok:true,result:{worker:{state:"start_unknown",stage:"turn_start_unobserved",agentTerminalHandle:$t},
+    dispatch:{status:"pending"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
+}
+unrecorded() {   # 起動が終わらなかった役の記録（端末なし・start_incomplete）
+  jq -c '.roles.design.terminal = "" | .roles.design.start_incomplete = true' "$SD/workers.json" > "$SD/w" \
+    && mv "$SD/w" "$SD/workers.json"
+}
+
+# WT107: ★ **start_unknown では待ち続け、dispatch ごとに 1 回だけ言う。**毎周言うと 24 時間で 288 行になる
+setup; unconfirmed_show term_w
+out=$(w 2 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$(grep -c "is 'start_unknown'" <<<"$out")" -eq 1 ]] \
+  && ok "WT107 start_unknown では待ち続け、1 回だけ言う" || fail "WT107 (rc=$rc out=$out)"; teardown
+
+# WT108: ★ **記録に端末が無ければ Orca が見せている端末で埋める。**start_incomplete の印は外さない（外すのは
+#        ユーザーの判断 = orca-recover.ts --adopt）。起動が終わらなかった役には回復の 1 行も添える
+setup; unrecorded; unconfirmed_show term_u
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'orca-recover.ts --status-dir'* && "$out" == *'--role design'* ]] \
+  && jq -e '.roles.design | .terminal == "term_u" and .start_incomplete == true and .dispatch == "ctx_x"' \
+       "$SD/workers.json" >/dev/null \
+  && ok "WT108 記録に無い端末を埋め、印は外さない" || fail "WT108 (rc=$rc out=$out)"; teardown
+
+# WT108b: 記録にある端末は上書きしない
+setup; echo '{"ok":true,"result":{"worker":{"state":"active","agentTerminalHandle":"term_u"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(w 1 2>&1)
+[[ "$(jq -r '.roles.design.terminal' "$SD/workers.json")" == term_w && "$out" != *'recorded terminal'* ]] \
+  && ok "WT108b 記録にある端末は上書きしない" || fail "WT108b (out=$out)"; teardown
+
+# WT108c: 走っている worker でも、記録に端末が無ければ埋める（Orca が後から動いていると認めた起動）
+setup; unrecorded; echo '{"ok":true,"result":{"worker":{"state":"active","agentTerminalHandle":"term_u"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+w 1 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 && "$(jq -r '.roles.design.terminal' "$SD/workers.json")" == term_u ]] \
+  && ok "WT108c 走っている worker の端末も埋める" || fail "WT108c (rc=$rc)"; teardown
+
+# WT109: ★ **死んだ start_unknown の worker は停滞（exit 8）で見つかる。**埋めた端末を stalled_role 行が名指しするので、
+#        Step 3 はその画面を読める
+setup; unrecorded; unconfirmed_show term_u; old "$SD/run.json" "$SD/roles/design/status.json"
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL w 2>/dev/null); rc=$?
+b=$(basename "$SD")
+[[ "$rc" -eq 8 && "$out" == *"stalled_role task=$b role=design phase=executing terminal=term_u"* ]] \
+  && ok "WT109 死んだ start_unknown は停滞として埋めた端末を名指しする" || fail "WT109 (rc=$rc out=$out)"; teardown
+
+# WT110: 緩めたのは start_unknown だけ。outcome_unknown などは今までどおり 4
+setup; echo '{"ok":true,"result":{"worker":{"state":"outcome_unknown"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(w 3 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$out" == *"is 'outcome_unknown'"* ]] \
+  && ok "WT110 outcome_unknown は今までどおり 4" || fail "WT110 (rc=$rc out=$out)"; teardown
+
+# WT111: ★ **印の無い旧形式の記録でも、端末を埋めたあと起動が終わらなかった役のまま残す**（round 1 のレビュー F2）。
+#        旧形式は「端末なし・status が starting」で読まれる（lib/dispatch.ts）ので、端末だけ埋めると起動が終わったことに
+#        なり、--adopt / --restart が効かなくなる。埋める書き込みで印を明示する（引き受ける側は RC30b がこの状態から見る）
+setup
+jq -c '.roles.design.terminal = ""' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
+echo '{"status":"starting"}' > "$SD/roles/design/status.json"
+unconfirmed_show term_u
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'orca-recover.ts --status-dir'* && "$out" == *'--role design'* ]] \
+  && jq -e '.roles.design | .terminal == "term_u" and .start_incomplete == true' "$SD/workers.json" >/dev/null \
+  && ok "WT111 旧形式の起動未完了は端末を埋めても起動未完了のまま" || fail "WT111 (rc=$rc out=$out)"; teardown
+
+# WT112: ★ **人を待っている worker でも、端末を埋めて start_unknown を 1 回だけ言う**（round 1 のレビュー F3）。
+#        agentWait で先に読み飛ばすと、入力待ちの start_unknown の worker の端末がいつまでも埋まらない。
+#        人を待つ間は停滞と数えない（human.json）のは今までどおり
+setup; unrecorded
+jq -nc '{ok:true,result:{worker:{state:"start_unknown",agentTerminalHandle:"term_u"},observation:{agentWait:"prompt"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(w 2 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$(grep -c "is 'start_unknown'" <<<"$out")" -eq 1 && -f "$SD/human.json" ]] \
+  && jq -e '.roles.design.terminal == "term_u"' "$SD/workers.json" >/dev/null \
+  && ok "WT112 人を待つ start_unknown も端末を埋め、1 回だけ言う" || fail "WT112 (rc=$rc out=$out)"; teardown
+
+# WT112b: 走っていて人を待っている worker も、記録に端末が無ければ埋める
+setup; unrecorded
+echo '{"ok":true,"result":{"worker":{"state":"idle","agentTerminalHandle":"term_u"},"observation":{"agentWait":"prompt"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+w 1 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 && "$(jq -r '.roles.design.terminal' "$SD/workers.json")" == term_u ]] \
+  && ok "WT112b 人を待つ live の worker の端末も埋める" || fail "WT112b (rc=$rc)"; teardown
 echo "---"; echo "failures: $fails"; exit "$fails"
