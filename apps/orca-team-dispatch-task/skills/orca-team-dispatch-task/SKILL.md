@@ -76,7 +76,8 @@ they existed**.
 | `phase_b` | `off` — `design` plans and builds | `on` — `design` writes a plan and builds nothing; a second worker, `exec`, builds from it in its own worktree |
 | `integration` | `merge` — the work is merged into the branch you dispatched from | `pr` — the branch is pushed and a pull request is opened instead |
 | `setup` | `skip` — the worktree is created without running the repository's setup hooks | `run` — they run, and **a worker is never started on a worktree whose setup failed** |
-| `design_mode` | `direct` — `design` is given the request and gets on with it | `plan` — it must decide and record an approach before the first edit. `brainstorm` — it starts with the `superpowers:brainstorming` skill and works the request through with whoever is watching its terminal, writes the agreed design to `spec.md`, then plans with `superpowers:writing-plans` into `plan.md`; with `phase_b=off` it then builds with `superpowers:subagent-driven-development` |
+| `design_mode` | `direct` — `design` is given the request and gets on with it | `plan` — it must decide and record an approach before the first edit. `brainstorm` — it starts with the `superpowers:brainstorming` skill and works the request through with a person (in its own terminal or through you, as `ask_via` says), writes the agreed design to `spec.md`, then plans with `superpowers:writing-plans` into `plan.md`; with `phase_b=off` it then builds with `superpowers:subagent-driven-development` |
+| `ask_via` | `terminal` — a `brainstorm` design asks its questions, and its request to review the written spec, in its own terminal and waits there for the answer | `parent` — it asks through `orchestration ask`, and the wait exits 6 so that you relay the question. **The one default that is not the old behaviour**: `terminal` is what these documents always described |
 
 **`phase_b` decides which branch carries the work** — `design` when off, `exec` when on.
 Both merging and opening a pull request read that one recorded value, so they cannot
@@ -211,8 +212,16 @@ is what makes it work — and it is also why an `--issue` run silently downgrade
 and says so: an unattended run has nobody to answer, so the worker would only wait a round
 and then decide alone anyway. That run asks nothing, so it has no Step 1b.
 
-A `brainstorm` worker is told not to stall if nobody answers, and to say so in `result.md`
-rather than inventing its own version of the skill when it is not installed.
+**`ask_via` decides where that person is.** With `terminal`, the worker writes each question
+into its own terminal and ends its turn; whoever answers types into that terminal, and nothing
+goes through you. Before it ends such a turn it runs `awaiting-user.ts`, which leaves
+`roles/design/awaiting-user.json`: while that is the newest thing the task's workers wrote,
+the wait counts the task as waiting on a person, never as stalled. With `parent`, the worker
+asks through `orchestration ask` and the wait exits 6 so that you can relay it.
+
+A `brainstorm` worker waits for as long as nobody answers — whether to answer or to stop it is
+the user's decision — and when a skill is not installed it says so in `result.md` rather than
+inventing its own version of it.
 
 ### Trying one dispatch without saving
 
@@ -403,7 +412,7 @@ an explicit yes before going past four.
 **Split, do not design.** Splitting the request into tasks is the parent's only decision about
 its content. Do not invoke `superpowers:brainstorming` yourself, do not ask the user about the
 requirements, and do not explore the code to shape a task — a worker started with `brainstorm`
-does all of that with the user in its own terminal. When the split itself is unclear, ask only
+does all of that with the user, in its own terminal or through you as `ask_via` says. When the split itself is unclear, ask only
 how to split it.
 
 The worker reads the request from a file. Copy it verbatim — summarising it is how the
@@ -428,7 +437,7 @@ once, the way `cmux-team-dispatch-task` asks its Step 1c. A configured `design_m
 recommendation this question starts on, never a reason to skip it — how a task is best started
 differs task by task.
 
-Read the configured values first; they are the `design_mode` and `integration` fields of what this
+Read the configured values first; they are the `design_mode`, `integration` and `ask_via` fields of what this
 prints:
 
 ```bash
@@ -438,12 +447,12 @@ node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
 
 Then ask which tasks should start with brainstorming. Each question is `multiSelect` and its
 options are task slugs, so put up to four tasks per question; group the tasks in order and put
-up to four such questions in the one call — three when the integration question below shares it.
+up to four such questions in the one call — two, since the integration and `ask_via` questions below share it.
 Past that many tasks, ask the rest in a further call. A selected task gets `brainstorm`, every other task gets `plan`:
 
 | Answer | What the `design` worker is told |
 |---|---|
-| `brainstorm` (selected) | Start with the `superpowers:brainstorming` skill and settle the open questions with whoever is watching its terminal, write the agreed design to `spec.md`, then plan with `superpowers:writing-plans` into `plan.md`. With `phase_b=off` it then builds with `superpowers:subagent-driven-development` and stops after committing, without `superpowers:finishing-a-development-branch`: the parent brings the branch home; with `phase_b=on` it stops at the plan |
+| `brainstorm` (selected) | Start with the `superpowers:brainstorming` skill and settle the open questions with the user where `ask_via` says, write the agreed design to `spec.md`, then plan with `superpowers:writing-plans` into `plan.md`. With `phase_b=off` it then builds with `superpowers:subagent-driven-development` and stops after committing, without `superpowers:finishing-a-development-branch`: the parent brings the branch home; with `phase_b=on` it stops at the plan |
 | `plan` (not selected) | Decide the approach and record it in `result.md` before the first edit |
 
 Name the configured value in the question text as the recommendation: all tasks when it is
@@ -460,8 +469,18 @@ opened instead. Mark the configured `integration` as the recommendation. It is a
 like the question above: the configuration is the recommendation, never a reason to skip it.
 
 The answer covers every task in the dispatch. Keep it as `INTEGRATION`, `merge` or `pr`, and
-pass it in Step 2 for every task. Because this question takes one of the four places in the
-call, the first call carries at most three task questions — twelve tasks.
+pass it in Step 2 for every task.
+
+**The same call also asks where `brainstorm` tasks ask their questions.** Add one single-select
+question with two answers: **In each worker's terminal** — the worker writes its questions,
+and its request to review the written spec, into its own terminal and waits there, so you
+answer each task in its terminal — and **Through the parent** — the worker asks through
+`orchestration ask`, the wait exits 6, and the question is relayed here. Mark the configured
+`ask_via` as the recommendation. Keep the answer as `ASK_VIA`, `terminal` or `parent`, and pass
+it in Step 2 for every task; it changes nothing for a task started on `plan`.
+
+Because these two questions take two of the four places in the call, the first call carries at
+most two task questions — eight tasks.
 
 Keep each task's answer as that task's `DESIGN_MODE` and pass it in Step 2. Step 2 refuses to
 run without it, so a task nobody was asked about cannot be started.
@@ -480,15 +499,16 @@ mailbox.** Call them one after another, not in parallel.
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
 : "${DESIGN_MODE:?set DESIGN_MODE to the Step 1b answer for this task: brainstorm or plan}"
 : "${INTEGRATION:?set INTEGRATION to the Step 1b answer: merge or pr}"
+: "${ASK_VIA:?set ASK_VIA to the Step 1b answer: terminal or parent}"
 # RUN is empty for the first task and the run_id it printed for every task after it.
 node "$PLUGIN/bin/orca-start.ts" --request-file "$REQ" --slug "$SLUG" \
-  --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
+  --design-mode "$DESIGN_MODE" --ask-via "$ASK_VIA" --integration "$INTEGRATION" \
   --objective "<one line naming the outcome>" --run "$RUN"
 ```
 
 Take `--objective` from the request's own words; it names the outcome, it is not a design to
 work out first. Shell variables do not cross tool calls here either, and `DESIGN_MODE`,
-`INTEGRATION` and `RUN` are among them: set them in this call from the Step 1b answers and, after
+`ASK_VIA`, `INTEGRATION` and `RUN` are among them: set them in this call from the Step 1b answers and, after
 the first task, from the `run_id` it printed. `INTEGRATION` is recorded in `workers.json` when the
 task starts; `--resume` and `--phase exec` keep the recorded value and refuse a new one. It prints
 `status_dir=` and `run_id=`; keep the printed `status_dir` of every task and the single `run_id`.
@@ -500,7 +520,7 @@ that already started are unaffected — wait for them in Step 3 as usual.
 
 When the start failed after the task's reviewer started but before its `design` did, the
 status dir already exists, so Step 2 refuses the same slug. Continue it instead with
-`node "$PLUGIN/bin/orca-start.ts" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE"`. It
+`node "$PLUGIN/bin/orca-start.ts" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE" --ask-via "$ASK_VIA"`. It
 uses the recorded request and Run, starts only the roles that have no dispatch yet, and
 refuses when `design` already has one.
 
@@ -614,10 +634,16 @@ unanswered completion. Workers that are still working are never typed into.
 | 0 | Every worker finished and reported success | Read each task's `$SD/roles/design/result.md`, tell the user, go to Step 4 for every task |
 | 5 | At least one worker reported failure | Read each `result.md`, tell the user which task failed and why, go to Step 4 only for the tasks that succeeded, and to Step 5 for all of them. **Do not merge a failed task** |
 | 3 | Still running | Report progress, then call it again with the same `--status-dir` set |
-| 6 | A worker asked a person a question and is blocked on the answer | Relay the question to the user verbatim, run the `reply` command the wait printed with their answer, then run the same wait again. Nothing failed; the worker resumes on the reply |
-| 8 | A task has made no progress for two hours, and none of its roles is waiting on a person | Nothing was stopped. Follow the stalled-task steps below: show the user what each role's terminal shows, ask once, run what they chose, then run the same wait again |
+| 6 | A worker asked a person through `orchestration ask` and is blocked on the answer — under `ask_via=parent`, or a worker that asked that way although it was not told to | Relay the question to the user verbatim, run the `reply` command the wait printed with their answer, then run the same wait again. Nothing failed; the worker resumes on the reply |
+| 8 | A task has made no progress for two hours, and none of its roles is waiting on a person — through Orca's own observation or its `awaiting-user.json` | Nothing was stopped. Follow the stalled-task steps below: show the user what each role's terminal shows, ask once, run what they chose, then run the same wait again |
 | 4 | A worker stopped or failed, or an Orca call the wait depends on could not be verified | Inspect and tell the user; do not delete anything. The retention or the acknowledgement did not complete, so rerun the canonical wait; do not recover a batch by hand. If a worker was lost while its completion was still owed, see the recovery block below |
 | 1 | A batch carries a message this version cannot handle, or its outcome contradicts what is recorded | It was not acknowledged. Do not acknowledge it by hand; inspect it as described below |
+
+A `brainstorm` worker under `ask_via=terminal` asks in its own terminal, so its questions never
+reach this wait. The wait logs `<role> of <slug> is waiting for an answer in its terminal
+<handle>` once per question; when you report progress on exit 3, tell the user which terminals
+are waiting for them. Nothing is typed into a worker that is waiting for an answer: the wait
+re-types only into a worker holding an unanswered completion.
 
 On exit 6 nothing has gone wrong. A worker used `orchestration ask`, which blocks it until a
 person answers through this parent — so the answer is the only thing that moves it. Show the
@@ -1112,7 +1138,7 @@ State these when they apply. Do not work around them silently.
 | Cleanup never runs on its own | Answer the Step 6 question; only what you approve is removed, and anything you decline stays |
 | Recovery is never automatic; you decide when to run it | `orca-recover.ts` (Step 3) decides per role and acts only when you run it without `--dry-run`. Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
 | If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
-| A worker asks a person only when its `design_mode` told it to, and it blocks until you answer | Under `direct` and `plan` it is told to fail with a reason in `result.md` instead; read it and dispatch again. Under `brainstorm` it uses `orchestration ask`, the wait exits 6 with the question and the `reply` command, and the worker resumes only once you run that command |
+| A worker asks a person only when its `design_mode` told it to, and it waits until someone answers | Under `direct` and `plan` it is told to fail with a reason in `result.md` instead; read it and dispatch again. Under `brainstorm` with `ask_via=terminal` it asks in its own terminal and waits there: answer it in that terminal. With `ask_via=parent` it uses `orchestration ask`, the wait exits 6 with the question and the `reply` command, and the worker resumes only once you run that command |
 | A worker that is sent back for remediation retries in the same session, and this skill does not cap those rounds | Watch the wait's output: each remediation is logged with its reason. A worker that cannot satisfy the check will keep being sent back until it fails or the wait times out |
 | Review stops after two rounds | The role being reviewed records the unresolved findings in `result.md` and keeps the best version it has. Read that section before integrating |
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
@@ -1143,7 +1169,7 @@ One `.dispatch/<slug>/` per task: `request.md`, `run.json`, `workers.json`, `rec
 task was found stalled, and when the user chose to keep waiting), `human.json` (the last time
 the wait saw a role waiting on a person), and
 `roles/design/{status.json,result.md}`, plus `roles/<role>/stopped.json` for a role the user
-stopped, and `spec.md` / `plan.md` when a `brainstorm` design wrote them. Tasks of one Run carry
+stopped, `roles/design/awaiting-user.json` when a `brainstorm` design last asked in its terminal, and `spec.md` / `plan.md` when a `brainstorm` design wrote them. Tasks of one Run carry
 the same `run_id` in `run.json` and their own worktree in `workers.json`, whose `roles` map
 holds one entry per role so a later stage can add more without moving anything.
 

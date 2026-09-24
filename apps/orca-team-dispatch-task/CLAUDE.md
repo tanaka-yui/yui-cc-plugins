@@ -164,6 +164,15 @@ CM27b）。
 Step 5 を Run ごと止める。回帰は test-stop.sh の SP14-17）。`--issue` は `--on-stall report` で
 止まらずに記録だけ残す（回帰は `test-wait.sh` の WT80-92、`test-recover.sh` の RC16）。
 
+**`agentWait` はターンを終えて端末で人を待つ状態を拾わない**（2026-09-24、logi-app の実測: 端末に質問を書いて
+`❯` で待つ design の worker-show は `state=ready`・`agentWait=null`）。そこで `ask_via=terminal` の worker は
+尋ねる前に `awaiting-user.ts` で `roles/design/awaiting-user.json` を書き、待機はそれが**タスクで子が最後に書いた
+もの**である間を人待ちとして扱う（`workerLastChange` は human.json を含めない — 含めると 2 周目から最新でなくなる）。
+消す手順は無く、答えのあとの書き込みで自然に外れる。劣化は 2 方向: 答えのあと何も書かずに黙ると停滞が見つからず、
+worktree の無関係なファイルが動くと印が外れて今までどおり exit 8 になる。どちらも誤って止めはしない。
+催促の行が回答欄に入らないのは、打ち直しが `merge_ready_sent` の役だけだからである（回帰は `test-wait.sh` の
+WT114-117）
+
 **停滞の判定は `workers.json` をその都度読む。**期待集合は知らない dispatch の message が
 来たときしか読み直さないので、それを使うと `--phase exec` で足された exec が最初の message
 まで見えない。成果を載せる役（`integration_role`）が起動されていなければ決着していないとし、
@@ -314,11 +323,16 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
   **確認できないものには何もしない**（fence が先）。起動が終わらなかった役も、失敗が証明されたら
   同じ Task へ置き換え、置き換えた dispatch を superseded に残す（[C7] と待機がそれを既知として扱う。
   回帰は test-recover.sh の RC17-22、test-cleanup.sh の CL27、test-wait.sh の WT102）
-- **worker の質問は親が答えられる**（exit 6）。`brainstorm` の worker は `orchestration ask`
-  でブロックし、親は `orchestration reply --id <msg_id>` で答える。**未知の型として batch を
-  止めてはならない** — 答えれば進む dispatch が永久に止まる（実測）。取り次いだ質問は
-  `questions.json` に記録し、**2 度目は処理済みとして通す**。通さないと、答えたあとも同じ
-  質問が queue の先頭に居座り、その worker の `merge_ready` が後ろで待ち続ける（実測）
+- **brainstorm の質問先は `ask_via` で選ぶ**（既定 `terminal`）。`terminal` の design は自分の端末に質問を書いて
+  ターンを終え、ユーザーはその端末で答える。`parent` は `orchestration ask` でブロックし、親が
+  `orchestration reply --id <msg_id>` で答える（exit 6）。2026-09-24 の logi-app で、文書は「端末で尋ねる」、
+  コード（a7d1eb5 以降）は「親に取り次がせる」と食い違い、質問が全部親に届いていた。**既定だけは「設定より前の
+  挙動」ではなく文書の意図に揃えた。**Step 1b で毎回尋ね、Step 2 の `: "${ASK_VIA:?...}"` で尋ねていない
+  dispatch を起動不能にする。**exit 6 の取り次ぎは残す** — `parent` の経路であり、指示に反して ask した worker を
+  未知の型として batch ごと止めないための保険でもある（答えれば進む dispatch が永久に止まる。実測）。取り次いだ
+  質問は `questions.json` に記録し、**2 度目は処理済みとして通す**（通さないと、答えたあとも同じ質問が queue の
+  先頭に居座り、その worker の `merge_ready` が後ろで待ち続ける。実測）。回帰は `test-start.sh` の ST62 /
+  ST109-112、`test-config.sh` の CF49-52、`test-docs.sh` の SK31
 - **取り込み方（merge / PR）は Step 1b の同じ呼び出しで毎回尋ねる**（cmux 版の 1e と同じ）。
   答えは `orca-start.ts --integration` で `workers.json` に記録し、Step 4 はそれを読む。
   `orca-merge.ts` は `pr` の記録を、`orca-pr.ts` は `merge` の記録を拒む（記録が無い旧版は通す）。

@@ -469,7 +469,7 @@ if command -v zsh >/dev/null 2>&1; then
     chmod +x "$x"
   done
   envs=(PLUGIN="$stub" ORCA_BIN="$stub/orca" PATH="$stub/path:$PATH" SD=/sd SLUG=s REQ=/req NUM=7
-        DESIGN_MODE=plan INTEGRATION=merge ROLE=design TERM_HANDLE=term_x AGENT=claude
+        DESIGN_MODE=plan ASK_VIA=terminal INTEGRATION=merge ROLE=design TERM_HANDLE=term_x AGENT=claude
         MODEL='claude-opus-5-5[1m]' EFFORT=max)
   total=$(grep -c '^```bash$' "$S")
   for ((n = 1; n <= total; n++)); do
@@ -529,6 +529,21 @@ grep -q 'There is no PR path' "$S" && bad="$bad [merge-only:SKILL]"
 grep -q 'PR の経路は無い' "$G" && bad="$bad [merge-only:guide]"
 grep -q 'merge のみ。PR は作らない' "$P/CLAUDE.md" && bad="$bad [merge-only:CLAUDE]"
 [[ -z "$bad" ]] && ok "SK30 Issue モードも integration に従う" || fail "SK30:$bad"
+
+# SK31: brainstorm の質問先（ask_via）は Step 1b で毎回尋ね、Step 2 のガードが省略を実行不能にする。
+#       2026-09-24 の logi-app: 文書は「端末で尋ねる」、コードは「親に取り次がせる」と食い違っていた
+bad=""
+for f in "$S" "$G"; do
+  n=$(basename "$f")
+  sed -n '/^## Step 1b: /,/^## Step 2: /p' "$f" | grep -q 'ASK_VIA' || bad="$bad [step1b:$n]"
+  grep -q 'ASK_VIA:?' "$f" || bad="$bad [guard:$n]"
+  grep -q -- '--ask-via "\$ASK_VIA"' "$f" || bad="$bad [flag:$n]"
+  grep -q '^| `ask_via` |' "$f" || bad="$bad [config-row:$n]"
+  grep -q 'awaiting-user.json' "$f" || bad="$bad [marker:$n]"
+  grep -q 'is waiting for an answer in its terminal' "$f" || bad="$bad [log-line:$n]"
+done
+grep -q 'Under `brainstorm` it uses `orchestration ask`' "$S" && bad="$bad [old-limitation]"
+[[ -z "$bad" ]] && ok "SK31 brainstorm の質問先を毎回尋ねる" || fail "SK31:$bad"
 
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \

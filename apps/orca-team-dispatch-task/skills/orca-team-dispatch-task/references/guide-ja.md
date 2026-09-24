@@ -62,7 +62,8 @@ role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → pr
 | `phase_b` | `off` — `design` が計画も実装もする | `on` — `design` は計画を書くだけで何も作らず、2 人目の worker `exec` が自分の worktree でそれを作る |
 | `integration` | `merge` — dispatch した元のブランチへ取り込む | `pr` — ブランチを push して pull request を作る |
 | `setup` | `skip` — repository の setup hook を走らせずに worktree を作る | `run` — 走らせる。**setup が失敗した worktree では worker を起こさない** |
-| `design_mode` | `direct` — `design` は依頼を受けてそのまま取りかかる | `plan` — 最初の編集より前に手順を決めて記録する。`brainstorm` — `superpowers:brainstorming` skill から始め、その端末を見ている人と依頼を詰める、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装する |
+| `design_mode` | `direct` — `design` は依頼を受けてそのまま取りかかる | `plan` — 最初の編集より前に手順を決めて記録する。`brainstorm` — `superpowers:brainstorming` skill から始め、`ask_via` に従い、自分の端末かあなた経由で人と依頼を詰め、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装する |
+| `ask_via` | `terminal` — `brainstorm` の design は質問と、書いた spec のレビュー依頼を自分の端末で行い、そこで答えを待つ | `parent` — `orchestration ask` で尋ね、待機が終了コード 6 で抜けてあなたが質問を取り次ぐ。**既定が以前の挙動でない唯一の設定**: `terminal` はこれらの文書が一貫して書いてきた挙動である |
 
 **`phase_b` が「どのブランチに成果が載るか」を決める** — off なら `design`、on なら `exec`。
 merge も pull request も記録されたその 1 つの値を読むので、どちらのブランチを取るかで
@@ -195,8 +196,14 @@ reviewer は何も作らない。両方に取りかかり方を言うと、誰�
 落としたことを言う** — 無人実行には答える人が居ないので、worker は 1 往復待ってから
 どのみち自分で決めることになる。その実行は何も尋ねないので、Step 1b を持たない。
 
-`brainstorm` の worker には、**答えが無くても止まらない**こと、skill が入っていなければ
-自分流の代替を発明せず `result.md` にそう書くことまで指示してある。
+**その人がどこに居るかは `ask_via` が決める。**`terminal` では、worker は質問を自分の端末に書いてターンを
+終える。答える人はその端末に打ち込み、あなたを経由するものは無い。そのようなターンを終える前に worker は
+`awaiting-user.ts` を実行して `roles/design/awaiting-user.json` を残す。それがタスクの worker が最後に書いた
+ものである間、待機はそのタスクを人待ちとして数え、停滞とはしない。`parent` では、worker は
+`orchestration ask` で尋ね、待機が終了コード 6 で抜けてあなたが取り次ぐ。
+
+`brainstorm` の worker は、誰も答えない間はいつまでも待つ（答えるか止めるかはユーザーが決める）。skill が
+入っていなければ、自分流の代替を発明せず `result.md` にそう書く。
 
 ### 保存せずに 1 回だけ試す
 
@@ -384,7 +391,7 @@ Step 6 がタスクごとに 1 問尋ねるが、`AskUserQuestion` が受け取�
 
 **分けるだけで、設計しない。**依頼をタスクに分けることが、親が中身について下す唯一の判断である。
 `superpowers:brainstorming` を自分で呼ばず、要件についてユーザーに尋ねず、タスクを形作るために
-コードを調べない — `brainstorm` で起動した worker が、それを自分の端末でユーザーと行う。
+コードを調べない — `brainstorm` で起動した worker が、それを `ask_via` に従い、自分の端末かあなた経由でユーザーと行う。
 分け方そのものが不明なときは、分け方だけを尋ねる。
 
 worker は依頼をファイルから読む。逐語で写し、要約しない。要約するとユーザーが実際に
@@ -409,7 +416,7 @@ Step 2 を別 call で実行するときは、その正確な path を `REQ` へ
 この質問が推奨として示す値であって、質問を省く理由ではない — 取りかかり方の適切さはタスクごとに
 異なる。
 
-まず設定値を読む。これが表示するものの `design_mode` と `integration` がそれである:
+まず設定値を読む。これが表示するものの `design_mode`・`integration`・`ask_via` がそれである:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
@@ -418,13 +425,13 @@ node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
 
 そのうえで、brainstorming から始めるタスクはどれかを尋ねる。各質問は `multiSelect` で選択肢は
 タスクの slug なので、1 問に 4 タスクまで入れる。タスクを順に区切り、その質問を 1 回の呼び出しに
-最大 4 問入れる（下の取り込み方の質問と同じ呼び出しに入れるときは 3 問）。それを超えるタスクは
+最大 4 問入れる（下の取り込み方と `ask_via` の質問が同じ呼び出しに入るので 2 問）。それを超えるタスクは
 別の呼び出しで尋ねる。選ばれたタスクは
 `brainstorm`、それ以外のタスクは `plan` になる:
 
 | 答え | `design` の worker に渡る指示 |
 |---|---|
-| `brainstorm`（選ばれた） | `superpowers:brainstorming` skill から始め、計画や実装の前に、端末を見ている人と未解決の論点を詰め、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装し、`superpowers:finishing-a-development-branch` は走らせず commit で止まる（取り込むのは親である）。`phase_b=on` なら計画で終える |
+| `brainstorm`（選ばれた） | `superpowers:brainstorming` skill から始め、計画や実装の前に、`ask_via` が示す場所でユーザーと未解決の論点を詰め、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装し、`superpowers:finishing-a-development-branch` は走らせず commit で止まる（取り込むのは親である）。`phase_b=on` なら計画で終える |
 | `plan`（選ばれなかった） | 最初の編集より前に取りかかり方を決め、`result.md` に記録する |
 
 設定値を推奨として質問文に書く。`brainstorm` なら全タスク、`plan` か `direct` なら無し。
@@ -439,8 +446,15 @@ node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
 して示す。上の質問と同じく毎回尋ねる。設定は推奨であって、質問を省く理由ではない。
 
 答えは dispatch の全タスクに共通である。`INTEGRATION`（`merge` か `pr`）として保持し、
-Step 2 で全タスクに渡す。この質問が呼び出しの 4 枠のうち 1 つを使うので、最初の呼び出しに
-入るタスクの質問は 3 問、12 タスクまでになる。
+Step 2 で全タスクに渡す。
+
+**同じ呼び出しで、`brainstorm` のタスクがどこで質問するかも尋ねる。**2 つの答えを持つ単一選択の質問を
+1 つ足す: **各 worker の端末** — worker は質問と、書いた spec のレビュー依頼を自分の端末に書いてそこで待つので、
+各タスクにはその端末で答える — と **親経由** — worker は `orchestration ask` で尋ね、待機が終了コード 6 で
+抜けて、ここで取り次ぐ。設定の `ask_via` を推奨として示す。答えは `ASK_VIA`（`terminal` か `parent`）として
+持ち、Step 2 で全タスクに渡す。`plan` で始めるタスクには何も変えない。
+
+この 2 問が呼び出しの 4 枠のうち 2 つを使うので、最初の呼び出しに入るタスクの質問は 2 問、8 タスクまでになる。
 
 各タスクの答えをそのタスクの `DESIGN_MODE` として保持し、Step 2 で渡す。Step 2 はそれが
 無ければ実行を拒むので、**誰にも尋ねられていないタスクは起動できない。**
@@ -459,15 +473,16 @@ mailbox を共有する。**並列にではなく、順番に呼ぶ。
 : "${REQ:?set REQ to the exact request_file path printed in Step 1}"
 : "${DESIGN_MODE:?set DESIGN_MODE to the Step 1b answer for this task: brainstorm or plan}"
 : "${INTEGRATION:?set INTEGRATION to the Step 1b answer: merge or pr}"
+: "${ASK_VIA:?set ASK_VIA to the Step 1b answer: terminal or parent}"
 # RUN is empty for the first task and the run_id it printed for every task after it.
 node "$PLUGIN/bin/orca-start.ts" --request-file "$REQ" --slug "$SLUG" \
-  --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
+  --design-mode "$DESIGN_MODE" --ask-via "$ASK_VIA" --integration "$INTEGRATION" \
   --objective "<one line naming the outcome>" --run "$RUN"
 ```
 
 `--objective` は依頼そのものの言葉から取る。成果を名指すだけで、先に詰めるべき設計ではない。
 
-ここでも shell 変数は tool call を跨がず、`DESIGN_MODE`・`INTEGRATION`・`RUN` もそうである。
+ここでも shell 変数は tool call を跨がず、`DESIGN_MODE`・`ASK_VIA`・`INTEGRATION`・`RUN` もそうである。
 この call の中で、Step 1b の答えと、2 タスク目からは最初のタスクが印字した `run_id` から設定する。
 `INTEGRATION` はタスクの起動時に `workers.json` へ記録され、`--resume` と `--phase exec` は記録された
 値を引き継ぎ、新しい値を拒む。`status_dir=` と `run_id=` を印字するので、全タスクの `status_dir` と
@@ -479,7 +494,7 @@ exit 1 はそのタスクの worker が起動しなかったことを意味す�
 
 起動が、そのタスクの reviewer を起こしたあと `design` を起こす前に失敗したときは、status dir が
 既にあるので Step 2 は同じ slug を拒否する。代わりに
-`node "$PLUGIN/bin/orca-start.ts" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE"` で続きから
+`node "$PLUGIN/bin/orca-start.ts" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE" --ask-via "$ASK_VIA"` で続きから
 起動する。記録済みの依頼と Run を使い、まだ dispatch の無い役だけを起こす。`design` に dispatch が
 既にあれば拒否する。
 
@@ -588,10 +603,15 @@ dispatch を永久に止める**。同じ理由で、完了の返事を待った
 | 0 | すべての worker が成功を報告して完了 | 各タスクの `$SD/roles/design/result.md` を読み、ユーザーへ伝えて全タスクを Step 4 へ進める |
 | 5 | 1 件以上の worker が失敗を報告 | 各 `result.md` を読み、どのタスクがなぜ失敗したかを伝える。Step 4 へ進めるのは成功したタスクだけで、Step 5 は全タスクに行う。**失敗したタスクを merge しない** |
 | 3 | まだ実行中 | 進捗を報告してから、同じ `--status-dir` の組でもう一度呼ぶ |
-| 6 | worker が人へ質問し、回答待ちでブロックしている | 質問をそのままユーザーへ取り次ぎ、待機が出力した `reply` コマンドに回答を入れて実行し、同じ待機をもう一度走らせる。失敗ではない。worker は reply で再開する |
-| 8 | あるタスクが 2 時間進んでおらず、そのどの役も人を待っていない | 何も止めていない。下の停滞時の手順に従う: 各役の端末に何が出ているかをユーザーに見せ、1 回尋ね、選ばれたことを実行し、同じ待機をもう一度走らせる |
+| 6 | worker が `orchestration ask` で人へ質問し、回答待ちでブロックしている — `ask_via=parent` のとき、または指示されていないのにその方法で尋ねた worker | 質問をそのままユーザーへ取り次ぎ、待機が出力した `reply` コマンドに回答を入れて実行し、同じ待機をもう一度走らせる。失敗ではない。worker は reply で再開する |
+| 8 | あるタスクが 2 時間進んでおらず、そのどの役も人を待っていない（Orca 自身の観測でも `awaiting-user.json` でも） | 何も止めていない。下の停滞時の手順に従う: 各役の端末に何が出ているかをユーザーに見せ、1 回尋ね、選ばれたことを実行し、同じ待機をもう一度走らせる |
 | 4 | worker が停止・失敗した、または待機が依存する Orca 呼び出しを検証できない | 調べてユーザーへ伝える。何も削除しない。retention または acknowledgement が完了していないので canonical wait を再実行し、batch を手で復旧しない。完了を負ったまま worker が失われた場合は、下の回復の節を見る |
 | 1 | batch がこの版で扱えないメッセージを含む、または outcome が記録と矛盾する | acknowledge していない。手動 acknowledge はせず、下のとおり確認する |
+
+`ask_via=terminal` の `brainstorm` の worker は自分の端末で尋ねるので、その質問がこの待機に届くことは無い。
+待機は質問ごとに 1 回、`<role> of <slug> is waiting for an answer in its terminal <handle>` を log に出す。
+終了コード 3 で進捗を報告するときは、どの端末がユーザーの答えを待っているかを伝える。答えを待っている
+worker には何も打ち込まない — 待機が打ち直すのは、返事の無い完了の申告を抱えた worker だけである。
 
 終了コード 6 では何も壊れていない。worker が `orchestration ask` を使っており、人が
 この親を通して答えるまでブロックする — 動かせるのは回答だけである。出力された質問を
@@ -1055,7 +1075,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | 片付けが勝手に走ることはない | Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る |
 | 回復は自動では走らない。いつ走らせるかは人が決める | `orca-recover.ts`（Step 3）が役ごとに判断し、`--dry-run` を外して実行したときだけ動く。`$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
-| worker が人へ尋ねるのは `design_mode` がそう指示したときだけで、答えるまでブロックする | `direct` と `plan` では代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する。`brainstorm` では `orchestration ask` を使い、待機が終了コード 6 で質問と `reply` コマンドを出す。worker が再開するのはそのコマンドを実行したときだけである |
+| worker が人へ尋ねるのは `design_mode` がそう指示したときだけで、誰かが答えるまで待つ | `direct` と `plan` では代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する。`brainstorm` で `ask_via=terminal` なら自分の端末で尋ねてそこで待つので、その端末で答える。`ask_via=parent` なら `orchestration ask` を使い、待機が終了コード 6 で質問と `reply` コマンドを出す。worker が再開するのはそのコマンドを実行したときだけである |
 | 差し戻された worker は同じセッションで作り直す。この skill はそのラウンド数を制限しない | 待機の出力を見る。差し戻しは理由付きで 1 行ずつ出る。検査を満たせない worker は、失敗するか待機が時間切れになるまで差し戻され続ける |
 | レビューは 2 ラウンドで打ち切り | レビューされる側が未解決の findings を `result.md` に記録し、手元の最良版を保つ。統合する前にその節を読む |
 | agent がどのアカウントでサインインするかは選べない | Orca の CLI には `account add` と `account list` しか無く、アクティブなアカウントを選ぶ口が無い。切り替えは Orca アプリで行い、現状は `$ORCA_BIN account list --json` で読む |
@@ -1085,6 +1105,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 `sent.json`（このタスクが実際に配送した message の記録）、`stall.json`（停滞を見つけた時刻と、
 ユーザーが待ち続けると答えた時刻）、`human.json`（役が人を待っているのを待機が最後に見た時刻）、
 `roles/design/{status.json,result.md}`、ユーザーが止めた役には `roles/<role>/stopped.json`、
+`brainstorm` の design が最後に端末で尋ねたときの `roles/design/awaiting-user.json`、
 `brainstorm` の design が書いたときは `spec.md` / `plan.md` がある。
 1 つの Run のタスクは `run.json` に同じ `run_id` を持ち、`workers.json` にそれぞれの worktree を
 持つ。`workers.json` の `roles` map は役ごとに 1 entry を持つので、後段の stage が何も動かさずに
