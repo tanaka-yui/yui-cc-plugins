@@ -729,25 +729,29 @@ miss=""
 teardown
 
 # ST60: ★ **spec に渡すコマンドが、そのまま shell で動く形になっていること。**
-#       ヒアドキュメントとダブルクォート文字列でエスケープの段数が違うので、片方だけ
-#       1 段多いと `"\$ORCA_TERMINAL_HANDLE"` のような**展開されない変数**や、行末に
-#       `\\` が並んだ**壊れた継続行**が worker へ渡る（実際に reviewer 側で起きていた）。
-setup; review_on
-mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
-printf '%s\n' '{"review_mode":"on","phase_b":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
-start >/dev/null 2>&1; design_done
-mkdir -p "$R/.dispatch/s/plan.md" 2>/dev/null; printf 'plan\n' > "$R/.dispatch/s/plan.md"
-exec_phase >/dev/null 2>&1
-bad=""
-while IFS= read -r sp; do
-  # 変数はそのまま展開される形であること
+#       ヒアドキュメントとダブルクォート文字列でエスケープの段数が違うので、片方だけ 1 段多いと
+#       `"\$ORCA_TERMINAL_HANDLE"` のような**展開されない変数**や、行末に `\\` が並んだ**壊れた継続行**が
+#       worker へ渡る。★ **spec は複数行なので、1 行ずつではなく spec 全体を見る**（以前の版は `read` で
+#       1 行ずつ読んでいたので、行をまたぐ `\\` + 改行を一度も検出できなかった。2026-09-24 に design の
+#       レビュー手順で 3 件見つかった: 行末の `\\`、描画時に展開された親の handle（`"\term_..."`）、
+#       レビュー手順の最後の行と次の段落が改行なしで繋がる）
+setup; four_roles; start >/dev/null 2>&1; design_done; exec_phase >/dev/null 2>&1
+bad=""; n=0
+while IFS= read -r -d $'\036' sp; do
+  n=$((n + 1))
   [[ "$sp" == *'\$ORCA_TERMINAL_HANDLE'* ]] && bad="$bad [escaped-var]"
-  # 行末の継続は 1 本のバックスラッシュであること
-  [[ "$sp" == *'\\'*$'\n'* ]] && bad="$bad [double-continuation]"
-done < <(awk -v RS='\037' 'prev == "--spec" { print } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
-[[ -z "$bad" ]] && ok "ST60 spec のコマンドがそのまま動く形になっている" || fail "ST60:$bad"
+  [[ "$sp" == *'\\'$'\n'* ]] && bad="$bad [double-continuation]"
+  [[ "$sp" == *'--terminal "\'* ]] && bad="$bad [expanded-handle]"
+  if [[ "$sp" == *"the work is finished'"* && "$sp" != *"the work is finished'"$'\n\n'* ]]; then
+    bad="$bad [glued-paragraph]"
+  fi
+  # 依頼側のレビュー手順は、worker 自身のメールボックスを待つ（親の handle を埋め込まない）
+  if [[ "$sp" == *'REVIEW PROTOCOL'* && "$sp" != *'check --terminal "$ORCA_TERMINAL_HANDLE" \'$'\n'* ]]; then
+    bad="$bad [own-mailbox]"
+  fi
+done < <(awk -v RS='\037' 'prev == "--spec" { printf "%s\036", $0 } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
+[[ "$n" -eq 4 && -z "$bad" ]] && ok "ST60 spec のコマンドがそのまま動く形になっている" || fail "ST60 (n=$n):$bad"
 teardown
-
 # ST61: 既定 (direct) では取りかかり方の指示を足さない — **現行の挙動を変えない**。
 setup; start >/dev/null 2>&1
 sp=$(spec)

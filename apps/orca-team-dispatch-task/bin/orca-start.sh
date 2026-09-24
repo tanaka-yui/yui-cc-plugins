@@ -438,7 +438,7 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
 
 2. Send the request:
 
-     bash $q_send --workers $q_wf --to $1 \\\\
+     bash $q_send --workers $q_wf --to $1 \\
        --subject '$2 round <n>' --body '<absolute path to your request file>'
 
    **A non-zero exit means it was NOT delivered.** Delete the request file you just wrote,
@@ -446,7 +446,7 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
 
 3. Wait for the verdict:
 
-     $q_bin orchestration check --terminal \"\\$ORCA_TERMINAL_HANDLE\" \\\\
+     $q_bin orchestration check --terminal \"\$ORCA_TERMINAL_HANDLE\" \\
        --peek --wait --timeout-ms 600000 --json
 
    Use --peek. **Never pass --ack.** Look for a subject starting \`review-verdict:\`.
@@ -475,7 +475,7 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
 
 7. When you are done, release the reviewer:
 
-     bash $q_send --workers $q_wf --to $1 \\\\
+     bash $q_send --workers $q_wf --to $1 \\
        --subject 'abort-reviewer: done' --body 'the work is finished'
 
 "
@@ -484,7 +484,7 @@ A reviewer is already running and waiting for you. Have your $4 reviewed before 
   if [[ "$role" == exec ]]; then
     local exec_review_block=""
     [[ "$REVIEW_MODE" == on ]] \
-      && exec_review_block=$(render_review_block exec_review 'review-code:' code 'implementation')
+      && exec_review_block="$(render_review_block exec_review 'review-code:' code 'implementation')"$'\n\n'
     cat <<SPEC_X
 TASK: $SLUG (implementation)
 
@@ -507,7 +507,7 @@ SPEC_X
   # design
   local review_block=""
   [[ "$REVIEW_MODE" == on ]] \
-    && review_block=$(render_review_block design_review 'review-plan:' plan 'plan')
+    && review_block="$(render_review_block design_review 'review-plan:' plan 'plan')"$'\n\n'
   # ★ **取りかかり方の指示は design にだけ載せる。**exec は計画に従う役であり、
   #   reviewer は何も作らない。
   local approach=""
