@@ -154,7 +154,8 @@ const resolveDispatch = (state: State, task: string, dispatch: string): Resolved
     const current = currentState(entry)
     if (current === 'current') return { kind: 'current', index }
     if (current === 'unreadable') return { kind: 'unreadable' }
-    if (current === 'superseded') return { kind: 'superseded', statusDir: entry.statusDir, role: entry.role }
+    // 期待集合に残る旧 dispatch は読み直しへ渡す。ここで無視すると health check が旧試行を見続ける。
+    if (current === 'superseded') return { kind: 'unknown' }
     return { kind: 'unknown' }
   }
   const replaced = supersededBy(state.statusDirs, dispatch)

@@ -1008,6 +1008,31 @@ out=$(w 1 2>&1); rc=$?
   && [[ ! -e "$SD/received.json" ]] \
   && ok "WT103 待機中に置き換えられた試行の message は現行として扱わない" || fail "WT103 (rc=$rc out=$out)"; teardown
 
+# WT103b: 置換済みの message を通した後は期待集合を読み直し、新しい dispatch の health を見る。
+setup
+cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<HOOK
+#!/usr/bin/env bash
+[[ -e "$ORCA_STUB_DIR/replaced" ]] && exit 0
+: > "$ORCA_STUB_DIR/replaced"
+jq -c '.roles.design.dispatch = "ctx_new" | .roles.design.superseded = ["ctx_x"]' "$SD/workers.json" > "$SD/w" \
+  && mv "$SD/w" "$SD/workers.json"
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:1,messages:[
+  {id:"o1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"failed"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+HOOK
+cat > "$ORCA_STUB_DIR/orchestration_worker-show.hook" <<HOOK
+#!/usr/bin/env bash
+case " \$* " in
+  *" --dispatch ctx_x "*) echo '{"ok":true,"result":{"worker":{"state":"failed"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show" ;;
+  *) echo '{"ok":true,"result":{"worker":{"state":"active"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show" ;;
+esac
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook" "$ORCA_STUB_DIR/orchestration_worker-show.hook"
+out=$(ORCA_WAIT_SETTLE_GRACE=1 w 4 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'superseded'* && "$out" != *"the worker for dispatch 'ctx_x' is 'failed'"* ]] \
+  && [[ ! -e "$SD/received.json" ]] \
+  && ok "WT103b 置換後は新しい dispatch の health を見る" || fail "WT103b (rc=$rc out=$out)"; teardown
+
 # WT104: ★ retain 中に workers.json が読めなくなっても、空の記録で上書きせず batch を ack しない。
 setup; dn; msg
 cat > "$ORCA_STUB_DIR/orchestration_worker-retain.hook" <<HOOK
