@@ -485,7 +485,7 @@ mailbox.** Call them one after another, not in parallel.
 : "${DESIGN_MODE:?set DESIGN_MODE to this task's Step 1b answer: brainstorm or plan}"
 : "${INTEGRATION:?set INTEGRATION to the Step 1b answer: merge or pr}"
 RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
-OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
+OUT=$(node "$PLUGIN/bin/orca-start.ts" --request-file "$REQ" --slug "$SLUG" \
         --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
         --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
@@ -506,7 +506,7 @@ that already started are unaffected — wait for them in Step 3 as usual.
 
 When the start failed after the task's reviewer started but before its `design` did, the
 status dir already exists, so Step 2 refuses the same slug. Continue it instead with
-`bash "$PLUGIN/bin/orca-start.sh" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE"`. It
+`node "$PLUGIN/bin/orca-start.ts" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE"`. It
 uses the recorded request and Run, starts only the roles that have no dispatch yet, and
 refuses when `design` already has one.
 
@@ -689,7 +689,7 @@ read the same batch again. Keep the terminal and worktree, do not acknowledge, a
 manual integration command below; it does not acknowledge the batch. That unacknowledged batch
 stays at the front of this parent terminal's queue, and manual integration does not unblock that
 queue. Start every later dispatch by opening another Orca terminal and invoking this skill
-there. `orca-start.sh` has no parent-terminal flag: it reads `ORCA_TERMINAL_HANDLE` from the
+there. `orca-start.ts` has no parent-terminal flag: it reads `ORCA_TERMINAL_HANDLE` from the
 Orca terminal that runs it, so it uses the new terminal's handle. Do not copy or set the blocked
 handle. Inspect without moving the cursor and stop for user direction; do not discard a
 message this version cannot handle:
@@ -752,7 +752,7 @@ Run it when Step 3 reports exit 4, or when a task sits unfinished with no worker
 Skip this whole step when `phase_b` is `off` — `design` carries the work itself and there is
 no second stage.
 
-`orca-start.sh` starts one stage per call. Step 2 ran `--phase design`; the builder is a
+`orca-start.ts` starts one stage per call. Step 2 ran `--phase design`; the builder is a
 separate stage, because nobody can implement a plan that does not exist yet. **Nothing else
 starts it** — not Step 2, not the wait, not the workers. Step 3's wait will not return until
 `exec` has run, so a dispatch that skips this step hangs with every worker that was started
@@ -787,7 +787,7 @@ Then, once per task whose `design` reported `done`:
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
 : "${SLUG:?set SLUG to that task's slug}"
-bash "$PLUGIN/bin/orca-start.sh" --phase exec --slug "$SLUG"
+node "$PLUGIN/bin/orca-start.ts" --phase exec --slug "$SLUG"
 ```
 
 It continues that task's existing Run and status dir, so it takes no `--request-file`, no

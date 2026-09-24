@@ -36,7 +36,7 @@ echo '{"ok":true,"result":{"terminals":[{"handle":"term_w"}]}}' > "$ORCA_STUB_DI
 #   入っているので、calls.log を素で grep すると task-create の 1 行に当たる。
 ack_lines() { grep -E '^orchestration check ' "$ORCA_STUB_DIR/calls.log" | grep -c -- '--ack'; }
 ack_lineno() { grep -nE '^orchestration check ' "$ORCA_STUB_DIR/calls.log" | grep -- '--ack' | head -1 | cut -d: -f1; }
-OUT=$(bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug e2e --objective o \
+OUT=$(node "$P/bin/orca-start.ts" --request-file "$REQ" --slug e2e --objective o \
         --repo-root "$R" 2>&1); rc=$?
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
 [[ "$rc" -eq 0 && -n "$SD" ]] && ok "E1 start" || { fail "E1 start ($rc): $OUT"; SD="$R/.dispatch/e2e"; }
@@ -87,7 +87,7 @@ echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_a","effects":[{"kin
   > "$ORCA_STUB_DIR/orchestration_worker-start"
 printf '{"ok":true,"result":{"worktree":{"id":"wt_a","path":"%s","branch":"refs/heads/orca/e2e"}}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_create"
-OUTA=$(bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug pa --objective o --repo-root "$R" 2>&1)
+OUTA=$(node "$P/bin/orca-start.ts" --request-file "$REQ" --slug pa --objective o --repo-root "$R" 2>&1)
 SDA=$(sed -n 's/^status_dir=//p' <<<"$OUTA"); RUNID=$(sed -n 's/^run_id=//p' <<<"$OUTA")
 
 # 2 本目（同じ Run に相乗り）
@@ -96,7 +96,7 @@ echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_b","effects":[{"kin
   > "$ORCA_STUB_DIR/orchestration_worker-start"
 printf '{"ok":true,"result":{"worktree":{"id":"wt_b","path":"%s","branch":"refs/heads/orca/e2e-b"}}}\n' \
   "$WT2" > "$ORCA_STUB_DIR/worktree_create"
-OUTB=$(bash "$P/bin/orca-start.sh" --request-file "$REQ2" --slug pb --objective o --repo-root "$R" \
+OUTB=$(node "$P/bin/orca-start.ts" --request-file "$REQ2" --slug pb --objective o --repo-root "$R" \
          --run "$RUNID" 2>&1)
 SDB=$(sed -n 's/^status_dir=//p' <<<"$OUTB")
 
@@ -158,7 +158,7 @@ chmod +x "$ORCA_STUB_DIR/orchestration_worker-start.hook"
 
 REQ3=$(mktemp); MARK3="E2E-RV-$$-$RANDOM"; printf 'Build %s\n' "$MARK3" > "$REQ3"
 : > "$ORCA_STUB_DIR/calls.log"
-OUT3=$(bash "$P/bin/orca-start.sh" --request-file "$REQ3" --slug rv --objective o \
+OUT3=$(node "$P/bin/orca-start.ts" --request-file "$REQ3" --slug rv --objective o \
          --repo-root "$R" --run run_e 2>&1); rc=$?
 SDR=$(sed -n 's/^status_dir=//p' <<<"$OUT3")
 [[ "$rc" -eq 0 && -n "$SDR" ]] && ok "E14 review_mode=on で 2 役が起きる" || fail "E14 ($rc): $OUT3"

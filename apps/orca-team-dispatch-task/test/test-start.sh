@@ -34,7 +34,7 @@ setup() {
 teardown() { git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
              rm -rf "$ORCA_STUB_DIR" "$R" "$REQ" "$(dirname "$WT")"
              unset ORCA_TERMINAL_HANDLE ORCA_BIN ORCA_DISPATCH_CONFIG_HOME; }
-start() { bash "$P/bin/orca-start.sh" --request-file "$REQ" --slug "${SLUG:-s}" --objective obj \
+start() { node "$P/bin/orca-start.ts" --request-file "$REQ" --slug "${SLUG:-s}" --objective obj \
             --repo-root "$R" "$@"; }
 spec() { grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1; }
 # ★ **実機の receipt に `name` は無い**（実測 2026-09-09）。名前は `displayName` に載る。
@@ -42,7 +42,7 @@ spec() { grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1; 
 reuse_fixture() { printf '{"ok":true,"result":{"worktrees":[{"id":"wt_old","displayName":"s","path":"%s","branch":"refs/heads/orca/s"}]}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_list"; }
 
-setup; bash "$P/bin/orca-start.sh" --bogus >/dev/null 2>&1
+setup; node "$P/bin/orca-start.ts" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "ST1 使用法エラー" || fail "ST1"; teardown
 
 # ST1b: **0 byte の依頼は worker へ送らない。**本文を失った dispatch を開始しない。
@@ -548,7 +548,7 @@ design_done() {
   printf '{"status":"done"}\n' > "$R/.dispatch/s/roles/design/status.json"
   printf 'the plan\n' > "$R/.dispatch/s/plan.md"
 }
-exec_phase() { bash "$P/bin/orca-start.sh" --slug s --repo-root "$R" --phase exec "$@"; }
+exec_phase() { node "$P/bin/orca-start.ts" --slug s --repo-root "$R" --phase exec "$@"; }
 
 # ST46: ★ **phase_b=on の design は実装しない。**実装役が別に居るのに両方が書くと、
 #       同じ変更が 2 つのブランチに載って取り込みが壊れる。
@@ -1039,7 +1039,7 @@ start >/dev/null 2>&1; rc=$?
 unset ORCA_CREATE_SETTLE_SECS ORCA_CREATE_SETTLE_INTERVAL
 
 # --- design 段の再開 ---
-resume() { bash "$P/bin/orca-start.sh" --slug s --repo-root "$R" --resume "$@"; }
+resume() { node "$P/bin/orca-start.ts" --slug s --repo-root "$R" --resume "$@"; }
 
 # ST87: ★ **design 段を再開できる。**reviewer が起きたあと design の起動だけが落ちると、
 #       status dir が残るので同じ slug では始め直せない（実測 2026-09-19）。--resume は

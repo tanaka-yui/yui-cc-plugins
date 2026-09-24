@@ -135,7 +135,7 @@ if [[ "$DM" == brainstorm ]]; then
   log "issue #$NUM: design_mode is 'brainstorm' but an issue run is unattended; using 'plan'"
   DM_ARGS=(--design-mode plan)
 fi
-OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$RF" --slug "$SLUG" \
+OUT=$(node "$PLUGIN/bin/orca-start.ts" --request-file "$RF" --slug "$SLUG" \
         --objective "issue #$NUM" --repo-root "$RR" ${RUN:+--run "$RUN"} \
         ${DM_ARGS[@]+"${DM_ARGS[@]}"} 2>&1) || {
   log "$OUT"

@@ -465,7 +465,7 @@ mailbox を共有する。**並列にではなく、順番に呼ぶ。
 : "${DESIGN_MODE:?set DESIGN_MODE to this task's Step 1b answer: brainstorm or plan}"
 : "${INTEGRATION:?set INTEGRATION to the Step 1b answer: merge or pr}"
 RUN="${RUN:-}"   # empty for the first task; the printed run_id for every task after it
-OUT=$(bash "$PLUGIN/bin/orca-start.sh" --request-file "$REQ" --slug "$SLUG" \
+OUT=$(node "$PLUGIN/bin/orca-start.ts" --request-file "$REQ" --slug "$SLUG" \
         --design-mode "$DESIGN_MODE" --integration "$INTEGRATION" \
         --objective "<one line naming the outcome>" ${RUN:+--run "$RUN"}) || { echo "$OUT"; exit 1; }
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
@@ -486,7 +486,7 @@ exit 1 はそのタスクの worker が起動しなかったことを意味す�
 
 起動が、そのタスクの reviewer を起こしたあと `design` を起こす前に失敗したときは、status dir が
 既にあるので Step 2 は同じ slug を拒否する。代わりに
-`bash "$PLUGIN/bin/orca-start.sh" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE"` で続きから
+`node "$PLUGIN/bin/orca-start.ts" --slug "$SLUG" --resume --design-mode "$DESIGN_MODE"` で続きから
 起動する。記録済みの依頼と Run を使い、まだ dispatch の無い役だけを起こす。`design` に dispatch が
 既にあれば拒否する。
 
@@ -660,7 +660,7 @@ batch の全メッセージを処理したという宣言である。この batc
 result をユーザーと確認する。成功した worker outcome が示されていれば、ユーザーは下の手動統合コマンドを
 明示的に選べるが、それで batch を acknowledge することはない。acknowledge されない batch はこの親端末の
 queue の先頭に残り、手動統合で queue は解消されない。後続の dispatch は別の Orca terminal を開き、そこで
-この skill を呼び出して開始する。`orca-start.sh` に親端末を指定する flag はなく、実行した Orca terminal の
+この skill を呼び出して開始する。`orca-start.ts` に親端末を指定する flag はなく、実行した Orca terminal の
 `ORCA_TERMINAL_HANDLE` を読むため、新しい terminal の handle が使われる。blocked な handle をコピーまたは
 設定してはならない。cursor を進めずに確認して、ユーザーの指示を待つ。この版が扱えないメッセージを
 捨ててはならない。
@@ -723,7 +723,7 @@ Step 3 が exit 4 を返したとき、または worker が居ないままタス
 `phase_b` が `off` のときはこの節をまるごと飛ばす — `design` が自分で成果を運ぶので、
 2 段目は存在しない。
 
-`orca-start.sh` は 1 回の呼び出しで 1 段だけを起こす。Step 2 が `--phase design` を走らせた。
+`orca-start.ts` は 1 回の呼び出しで 1 段だけを起こす。Step 2 が `--phase design` を走らせた。
 実装役が別の段なのは、まだ存在しない計画を実装できる者が居ないからである。**ほかに起こす
 主体は居ない** — Step 2 でもなく、待機でもなく、worker でもない。Step 3 の待機は `exec` が
 走り切るまで戻らないので、この節を飛ばした dispatch は、起動した worker が全員終わっている
@@ -759,7 +759,7 @@ jq -r '.status // "missing"' "$SD/roles/design/status.json" 2>/dev/null || echo 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
 : "${SLUG:?set SLUG to that task's slug}"
-bash "$PLUGIN/bin/orca-start.sh" --phase exec --slug "$SLUG"
+node "$PLUGIN/bin/orca-start.ts" --phase exec --slug "$SLUG"
 ```
 
 これはそのタスクの既存の Run と status dir を引き継ぐので、`--request-file` も `--objective`
