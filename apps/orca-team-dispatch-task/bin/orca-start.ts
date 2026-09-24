@@ -8,8 +8,9 @@ import { die, log } from '../lib/cli.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
-import { orcaBin, runOrca, terminalHandles } from '../lib/orca.ts'
+import { orcaBin, runOrca, terminalHandles, workerTerminal } from '../lib/orca.ts'
 import { envCount, run, runNode, sleepSeconds, which } from '../lib/sys.ts'
+import { trustBlocked, trustHint } from '../lib/trust.ts'
 
 import {
   accessSync,
@@ -439,9 +440,13 @@ const roleUpdate = (site: string, file: string, role: string, additions: JsonObj
     const roles = object(workers.roles)
     workers.roles = { ...roles, [role]: { ...object(roles[role]), ...additions } }
   })
-// ★ 起動が終わらなかった試行は、失敗・停止が証明されてから同じ Task に置き換える。
+// 起動が終わらなかった役を回復する 1 行（incompleteStart と codex の信頼の案内が同じものを示す）
+const recoverCommand = (statusDir: string, role: string): string =>
+  `node ${join(PLUGIN, 'bin', 'orca-recover.ts')} --status-dir ${statusDir} --role ${role}`
+// ★ 起動が終わらなかった試行は、失敗・停止が証明されてから同じ Task に置き換える。Orca が start_unknown と言う
+//   試行は生死が分からないので、回復はその画面を見せて、ユーザーに --adopt か --restart を選ばせる
 const incompleteStart = (statusDir: string, slug: string, role: string, dispatch: string): string =>
-  `the ${role} start did not complete for ${slug} (dispatch ${dispatch}); once Orca reports that worker failed or stopped, replace it with: node ${join(PLUGIN, 'bin', 'orca-recover.ts')} --status-dir ${statusDir} --role ${role}`
+  `the ${role} start did not complete for ${slug} (dispatch ${dispatch}); run ${recoverCommand(statusDir, role)}: it replaces that start once Orca reports it failed or stopped, and when Orca reports it start_unknown it shows that worker's screen so that you can adopt or restart it`
 
 // 移植元の理由（bin/orca-start.sh）:
 // ★ **役ごとに違う名前にする。**`design` 以外を一律 `-review` にしていたので、
@@ -768,6 +773,15 @@ const launchRole = (context: Context, role: string): boolean => {
       `worker-start did not report ready for ${role} (rc=${started.rc} state='${state || 'none'}'). Resources are KEPT.`,
     )
     log(NAME, `inspect with: ${orcaBin()} orchestration task-list --run ${context.run} --json`)
+    // ★ **codex がフォルダの信頼を求めて止まった起動なら、解き方をその場で言う**（lib/trust.ts）。2026-09-24 の
+    //   influencer-platform: agent-trust-workspace で落ち、worker-show を読むまで原因が分からなかった
+    if (dispatch !== '') {
+      const shown = runOrca(['orchestration', 'worker-show', '--dispatch', dispatch, '--json']).json
+      if (trustBlocked(shown)) {
+        const retry = recoverCommand(context.statusDir, role)
+        for (const line of trustHint(role, workerTerminal(shown), worktreePath, retry)) log(NAME, line)
+      }
+    }
     return false
   }
   if (agentTerminal === '') {

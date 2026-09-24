@@ -1224,4 +1224,26 @@ expected=$(cat "$REQ")
 start >/dev/null 2>&1
 sp=$(awk -v RS='\037' 'prev == "--spec" { print $0; exit } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
 [[ "$sp" == *"$expected"* ]] && ok "ST103 依頼文のドル記号をそのまま渡す" || fail "ST103 依頼文が書き換わった"; teardown
+
+# ST104: ★ **codex がフォルダの信頼を求めて止まった起動は、解き方をその場で言う。**2026-09-24 の influencer-platform:
+#        起動が agent-trust-workspace で failed になり、worker-show を読むまで原因が分からなかった。codex は信頼を
+#        worktree ではなく本体の checkout の root に記録する（resolve_root_git_project_for_trust）ので、そこを名指しする
+setup; echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_x"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+echo '{"ok":true,"result":{"worker":{"state":"failed","agentTerminalHandle":"term_w","lastError":"Agent startup blocked: agent-trust-workspace"},"dispatch":{"status":"failed"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(start 2>&1); rc=$?
+root=$(dirname "$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir)")
+[[ "$rc" -eq 1 && "$root" != "$WT" && "$out" == *"[projects.\"$root\"]"* && "$out" == *'trust_level = "trusted"'* \
+   && "$out" == *'term_w'* && "$out" == *'orca-recover.ts --status-dir'* && "$out" == *'--role design'* ]] \
+  && ok "ST104 信頼で止まった起動は本体の checkout を名指しして案内する" || fail "ST104 (rc=$rc root=$root) $out"
+teardown
+
+# ST105: ふつうの起動失敗には信頼の案内を出さない
+setup; echo 1 > "$ORCA_STUB_DIR/orchestration_worker-start.rc"
+echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_x"}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+out=$(start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'did not report ready'* && "$out" != *'trust_level'* ]] \
+  && ok "ST105 ふつうの起動失敗には信頼の案内を出さない" || fail "ST105 (rc=$rc) $out"
+teardown
 echo "---"; echo "failures: $fails"; exit "$fails"
