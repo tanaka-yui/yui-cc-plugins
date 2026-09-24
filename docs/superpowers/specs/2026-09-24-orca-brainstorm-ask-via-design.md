@@ -89,8 +89,12 @@ Step 1、Step 1b の表）。一方、`bin/orca-start.ts` の brainstorm 指示�
 ### 催促の行と回復
 
 - wait が打ち直すのは `merge_ready_sent` の役だけ、recover の nudge は completion が始まった役か status=error の
-  役だけ、`orca-send` の起床は design がレビューを依頼したあとだけ。質問の段階（completion より前）の worker の
-  入力欄に催促の行が入ることは無い。コードは変えず、回帰テストで固定する
+  役だけ
+- **（実装後の最終レビューで訂正）**`orca-send` の起床は design がレビューを依頼したあとだけ、という当初の見立ては
+  誤りだった。ユーザーが reviewer を止めると、orca-stop が `review-skipped:` を design へ送り、orca-send が
+  orca-wake で design の入力欄に 1 行を打つ。そこで判定を `lib/awaiting.ts` の `awaitingSince` に移し、
+  **orca-wake は印が最新の役に打たない**（メッセージはメールボックスに残る）。orca-wait も同じ関数を使い、
+  止めた・決着した役の印は数えない
 
 ## 6. 文書
 

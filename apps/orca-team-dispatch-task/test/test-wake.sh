@@ -96,5 +96,24 @@ wake --role design >/dev/null 2>&1; rc=$?
   && ok "WK9 start_unknown には打たない" || fail "WK9 (rc=$rc)"
 teardown
 
+# WK10: ★ **端末で人の答えを待つ役には打たない。**打った 1 行がそのまま brainstorming の質問への答えになる
+#       （最終レビューの指摘: 答えを待つ design の reviewer を止めると、review-skipped の起床が入力欄に入った）。
+#       印（awaiting-user.json）がその status dir で子が最後に書いたものなら、答えを待っている
+setup; mkdir -p "$ORCA_STUB_DIR/roles/design"; echo '{"asked_at":1}' > "$ORCA_STUB_DIR/roles/design/awaiting-user.json"
+out=$(wake --role design 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"waiting for an answer in its terminal"* ]] \
+  && ! grep -q 'terminal send' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WK10 答えを待つ役には打たない" || fail "WK10 (rc=$rc out=$out)"
+teardown
+
+# WK11: 印のあとに子の書き込みがあれば、答えはもう届いている。今までどおり起こす
+setup; mkdir -p "$ORCA_STUB_DIR/roles/design"; echo '{"asked_at":1}' > "$ORCA_STUB_DIR/roles/design/awaiting-user.json"
+touch -t 202001010000 "$ORCA_STUB_DIR/roles/design/awaiting-user.json"
+echo '{"status":"executing"}' > "$ORCA_STUB_DIR/roles/design/status.json"
+wake --role design >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && grep -q 'terminal send' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WK11 古い印の役は起こす" || fail "WK11 (rc=$rc)"
+teardown
+
 echo "---"; [[ "$fails" -eq 0 ]] && echo "test-wake: ALL PASS" || echo "test-wake: $fails FAILED"
 exit $(( fails > 0 ))

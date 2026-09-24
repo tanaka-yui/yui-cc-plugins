@@ -206,4 +206,13 @@ ws=$(grep 'orchestration worker-stop' "$ORCA_STUB_DIR/calls.log" | head -1)
   && argv | grep -qx 'review-skipped: stopped by the user' \
   && ok "SP19 start_unknown の worker も止める" || fail "SP19 (rc=$rc ws=$ws)"; teardown
 
+# SP20: ★ **reviewer を止めても、端末で答えを待つ design の入力欄には打たない。**review-skipped は届け、
+#       design は答えを受けたあとの verdict 待ちでそれを読む（最終レビューの指摘）
+setup; echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+echo '{"asked_at":1}' > "$SD/roles/design/awaiting-user.json"
+st --role design_review >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && argv | grep -qx 'review-skipped: stopped by the user' \
+  && ! argv | grep -qx 'term_w' \
+  && ok "SP20 答えを待つ design には打たない" || fail "SP20 (rc=$rc)"; teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

@@ -170,8 +170,12 @@ Step 5 を Run ごと止める。回帰は test-stop.sh の SP14-17）。`--issu
 もの**である間を人待ちとして扱う（`workerLastChange` は human.json を含めない — 含めると 2 周目から最新でなくなる）。
 消す手順は無く、答えのあとの書き込みで自然に外れる。劣化は 2 方向: 答えのあと何も書かずに黙ると停滞が見つからず、
 worktree の無関係なファイルが動くと印が外れて今までどおり exit 8 になる。どちらも誤って止めはしない。
-催促の行が回答欄に入らないのは、打ち直しが `merge_ready_sent` の役だけだからである（回帰は `test-wait.sh` の
-WT114-117）
+**止めた・決着した役の印は数えない**（止めた design の印が最新のまま残ると、reviewer が決着しない限り停滞が
+二度と知らされない）。**催促の行は回答欄に入れない** — 判定は `lib/awaiting.ts` の `awaitingSince` 1 箇所に置き、
+`orca-wake.ts` は印が最新の役に打たない。打ち直しが `merge_ready_sent` の役だけでも足りなかった: 最終レビューで、
+reviewer を止めたときの `review-skipped:` の起床（orca-stop → orca-send → orca-wake）が答えを待つ design に
+打ち込む経路が見つかった。メッセージはメールボックスに残り、答えを受けた worker が読む（回帰は `test-wait.sh` の
+WT114-118、`test-wake.sh` の WK10 / WK11、`test-stop.sh` の SP20）
 
 **停滞の判定は `workers.json` をその都度読む。**期待集合は知らない dispatch の message が
 来たときしか読み直さないので、それを使うと `--phase exec` で足された exec が最初の message

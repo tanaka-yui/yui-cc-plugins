@@ -642,8 +642,10 @@ unanswered completion. Workers that are still working are never typed into.
 A `brainstorm` worker under `ask_via=terminal` asks in its own terminal, so its questions never
 reach this wait. The wait logs `<role> of <slug> is waiting for an answer in its terminal
 <handle>` once per question; when you report progress on exit 3, tell the user which terminals
-are waiting for them. Nothing is typed into a worker that is waiting for an answer: the wait
-re-types only into a worker holding an unanswered completion.
+are waiting for them. Nothing is typed into a worker that is waiting for an answer: every line
+typed into a worker goes through `orca-wake.ts`, which refuses while that worker's
+`awaiting-user.json` is the newest thing its task's workers wrote, so a message sent meanwhile,
+such as `review-skipped:`, waits in its mailbox until the worker reads it.
 
 On exit 6 nothing has gone wrong. A worker used `orchestration ask`, which blocks it until a
 person answers through this parent — so the answer is the only thing that moves it. Show the

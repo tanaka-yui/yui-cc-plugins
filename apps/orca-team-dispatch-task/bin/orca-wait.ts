@@ -4,12 +4,13 @@
 // Exit: 0 全件成功 / 5 失敗 / 1 batch 不明 / 2 使用法 / 3 時間切れ / 4 transport 不明
 //       / 6 worker の質問 / 8 停滞
 // ★ cursor は ack だけで進む。batch を全件処理できなければ ack しない。
+import { awaitingSince, fileMtime, workerLastChange } from '../lib/awaiting.ts'
 import { die, log } from '../lib/cli.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
 import { orcaBin, receiptOk, runOrca, workerStateClass, workerTerminal } from '../lib/orca.ts'
-import { envCount, nowSeconds, run, runNode, sleepSeconds } from '../lib/sys.ts'
+import { envCount, nowSeconds, runNode, sleepSeconds } from '../lib/sys.ts'
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -207,60 +208,10 @@ const roleOutcome = (statusDir: string, role: string): string | null => {
   const outcome = storedOutcome(statusDir, role)
   return outcome === '' && isStopped(statusDir, role) ? 'stopped' : outcome
 }
-const fileMtime = (file: string): number => {
-  try {
-    return Math.floor(statSync(file).mtimeMs / 1000)
-  } catch {
-    return 0
-  }
-}
-// 移植元の理由（bin/orca-wait.sh）:
-// ★ **停滞は親が見つけ、止めるかどうかは人が決める。**子は待機に期限を持たない（待っている
-//   相手の事情を知らないので「来ない」を判断できない）。タスク単位で「子が書くもの」が一定時間
-//   どれも変わらなければ知らせる。**親が書くもの（wait.json / .woken / received.json /
-//   questions.json / stall.json）は数えない** — 数えると親の鼓動で常に「変化あり」になる。
-// ★ 子の最後の書き込み。**human.json は含めない** — 親が毎周書くので、含めると awaiting-user.json が
-//   2 周目から「最新」でなくなる。awaiting-user.json は子が書くので含める
-const workerLastChange = (statusDir: string): number => {
-  let latest = fileMtime(join(statusDir, 'run.json'))
-  const newer = (file: string): void => {
-    latest = Math.max(latest, fileMtime(file))
-  }
-  const rolesDir = join(statusDir, 'roles')
-  try {
-    for (const role of readdirSync(rolesDir)) {
-      for (const name of ['status.json', 'result.md', 'completion.json', 'awaiting-user.json'])
-        newer(join(rolesDir, role, name))
-    }
-  } catch {
-    /* 子のファイルがまだ無い */
-  }
-  for (const name of ['spec.md', 'plan.md']) newer(join(statusDir, name))
-  try {
-    for (const name of readdirSync(join(statusDir, 'review'))) newer(join(statusDir, 'review', name))
-  } catch {
-    /* review はまだ無い */
-  }
-  const roles = object(get(read(statusDir, 'workers.json'), 'roles'))
-  for (const role of Object.values(roles)) {
-    const worktree = string(get(role, 'worktree_path'))
-    if (worktree === '' || !existsSync(worktree)) continue
-    const last = run('git', ['-C', worktree, 'log', '-1', '--format=%ct'])
-    latest = Math.max(latest, Number(last.stdout.trim()) || 0)
-    const changed = run('git', ['-C', worktree, 'status', '--porcelain'])
-    for (const line of changed.stdout.split('\n')) {
-      if (line.length < 4) continue
-      newer(join(worktree, line.slice(3)))
-    }
-  }
-  return latest
-}
 // 停滞の時計の起点。人とのやりとり（human.json）は親が書くが、4-2 の例外として数える
 const taskLastChange = (statusDir: string): number =>
   Math.max(workerLastChange(statusDir), fileMtime(join(statusDir, 'human.json')))
-// ★ **端末で人の答えを待つ役。**Orca の agentWait はターンを終えて端末で待つ状態を拾わない（実測 2026-09-24、
-//   logi-app: state=ready・agentWait=null）。ask_via=terminal の worker は尋ねる前に awaiting-user.json を書く。
-//   それがタスクで子が最後に書いたものである間は人を待っている。答えのあとに何か書けば自然に外れる
+// 端末で人の答えを待つ役のうち最も新しく尋ねたもの（判定は lib/awaiting.ts の awaitingSince）
 const awaitingUser = (statusDir: string): { role: string; at: number } | null => {
   let roles: string[] = []
   try {
@@ -271,8 +222,11 @@ const awaitingUser = (statusDir: string): { role: string; at: number } | null =>
   const latest = workerLastChange(statusDir)
   let found: { role: string; at: number } | null = null
   for (const role of roles) {
-    const at = fileMtime(join(statusDir, 'roles', role, 'awaiting-user.json'))
-    if (at > 0 && at >= latest && (found === null || at > found.at)) found = { role, at }
+    // ★ 決着した役・止めた役の印は数えない。止めた design の印が最新のまま残ると、reviewer が決着しない限り
+    //   停滞が二度と知らされない（最終レビューの指摘）
+    if (roleSettled(statusDir, role)) continue
+    const at = awaitingSince(statusDir, role, latest)
+    if (at > 0 && (found === null || at > found.at)) found = { role, at }
   }
   return found
 }

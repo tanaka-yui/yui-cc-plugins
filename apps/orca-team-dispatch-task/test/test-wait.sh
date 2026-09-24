@@ -1195,4 +1195,19 @@ setup; marker; echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
 ORCA_WAKE_INTERVAL_SECONDS=0 node "$P/bin/orca-wait.ts" --status-dir "$SD" \
   --max-waits 2 --timeout-ms 1 >/dev/null 2>&1
 [[ "$(typed)" -eq 0 ]] && ok "WT117 答えを待つ役は叩かない" || fail "WT117 (typed=$(typed))"; teardown
+
+# WT118: ★ **止めた役の印は数えない。**答えを待つ design を止めたあと reviewer が決着しなければ、
+#        印が最新のまま残り、停滞が二度と知らされない（最終レビューの指摘）
+setup; old "$SD/run.json" "$SD/roles/design/status.json"; marker
+mkdir -p "$SD/roles/design_review"; echo '{"status":"executing"}' > "$SD/roles/design_review/status.json"
+echo '{"stopped_at":1,"by":"user"}' > "$SD/roles/design/stopped.json"
+old "$SD/roles/design_review/status.json" "$SD/roles/design/stopped.json" "$SD/roles/design/awaiting-user.json"
+jq -nc '{roles:{design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false},
+  design_review:{terminal:"term_r",task:"task_r",dispatch:"ctx_r",retained:false}}}' > "$SD/workers.json"
+old "$SD/workers.json"
+err=$(ORCA_STALL_AFTER_SECONDS=$STALL node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 1 \
+        --timeout-ms 1 2>&1 >/dev/null); rc=$?
+[[ "$rc" -eq 8 && "$err" != *"is waiting for an answer"* ]] \
+  && ok "WT118 止めた役の印は数えない" || fail "WT118 (rc=$rc)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

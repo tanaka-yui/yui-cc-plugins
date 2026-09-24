@@ -12,12 +12,14 @@
 //
 // Usage: node orca-wake.ts --workers <workers.json> --role <role> [--text <text>]
 // Exit:  0 = 入力した / 1 = 起こせなかった / 2 = 使用法エラー
+import { awaitingSince } from '../lib/awaiting.ts'
 import { die, log } from '../lib/cli.ts'
 import { readJson } from '../lib/fs.ts'
 import { asObject, asString, get } from '../lib/json.ts'
 import { dispatchSettled, receiptOk, runOrca, workerStateClass } from '../lib/orca.ts'
 
 import { accessSync, constants } from 'node:fs'
+import { dirname } from 'node:path'
 
 const NAME = 'orca-wake'
 
@@ -57,6 +59,13 @@ const main = (argv: string[]): number => {
   const terminal = asString(get(workers, 'roles', role, 'terminal')) ?? ''
   if (terminal === '') {
     log(NAME, `role '${role}' has no terminal recorded; it cannot be woken`)
+    return 1
+  }
+  // ★ **端末で人の答えを待つ役には打たない。**打った 1 行がそのまま質問への答えになる（最終レビューの指摘:
+  //   reviewer を止めたときの review-skipped の起床が、brainstorm で答えを待つ design の入力欄に入った）。
+  //   メッセージはメールボックスに残り、答えを受けた worker が次の --peek で読む
+  if (awaitingSince(dirname(workersFile), role) > 0) {
+    log(NAME, `role '${role}' is waiting for an answer in its terminal; nothing was typed`)
     return 1
   }
   // ★ **終端した dispatch を叩かない。**人がその端末を引き取っていれば、その人の入力欄に文字列を

@@ -611,7 +611,9 @@ dispatch を永久に止める**。同じ理由で、完了の返事を待った
 `ask_via=terminal` の `brainstorm` の worker は自分の端末で尋ねるので、その質問がこの待機に届くことは無い。
 待機は質問ごとに 1 回、`<role> of <slug> is waiting for an answer in its terminal <handle>` を log に出す。
 終了コード 3 で進捗を報告するときは、どの端末がユーザーの答えを待っているかを伝える。答えを待っている
-worker には何も打ち込まない — 待機が打ち直すのは、返事の無い完了の申告を抱えた worker だけである。
+worker には何も打ち込まない — worker へ打ち込む行はすべて `orca-wake.ts` を通り、それはその worker の
+`awaiting-user.json` がタスクの worker が最後に書いたものである間は打つのを拒む。その間に送られたメッセージ
+（`review-skipped:` など）は、worker が読むまでメールボックスで待つ。
 
 終了コード 6 では何も壊れていない。worker が `orchestration ask` を使っており、人が
 この親を通して答えるまでブロックする — 動かせるのは回答だけである。出力された質問を
