@@ -23,4 +23,16 @@ if command -v zsh >/dev/null 2>&1; then
 else
   echo "SKIP: RS3 zsh が無い"
 fi
+# AW1: 端末で人に尋ねる worker が、答えを待つ印を書く（orca-wait が停滞の時計を戻す根拠）
+AW="$P/skills/orca-team-dispatch-task/scripts/awaiting-user.ts"
+node "$AW" --role-dir "$SD/roles/design" >/dev/null 2>&1; rc=$?
+jq -e '.asked_at | type == "number"' "$SD/roles/design/awaiting-user.json" >/dev/null 2>&1 && [[ "$rc" -eq 0 ]] \
+  && ok "AW1 答えを待つ印を書く" || fail "AW1 (rc=$rc)"
+# AW2: 引数が無い・未知のオプションは使用法の誤り
+node "$AW" >/dev/null 2>&1; a=$?
+node "$AW" --bogus x >/dev/null 2>&1; b=$?
+[[ "$a" -eq 2 && "$b" -eq 2 ]] && ok "AW2 使用法の誤り" || fail "AW2 (a=$a b=$b)"
+# AW3: 書けない場所では 1（黙って成功しない）
+node "$AW" --role-dir /dev/null/x >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] && ok "AW3 書けなければ 1" || fail "AW3 (rc=$rc)"
 echo "---"; echo "failures: $fails"; exit "$fails"
