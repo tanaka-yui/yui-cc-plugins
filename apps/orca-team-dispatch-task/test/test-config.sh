@@ -421,4 +421,58 @@ if command -v zsh >/dev/null 2>&1; then
 else
   echo "SKIP: CF42 zsh が無い"
 fi
+# CF43: --project-root を省けば、いまの git の toplevel を project root にする。SKILL.md の S0 / S1 / Step 1b は
+#       `RR=$(git rev-parse --show-toplevel)` を block に書かない。サブディレクトリから呼んでも toplevel
+setup; git -C "$PR" init -q; mkdir -p "$PR/sub"
+echo '{"roles":{"design":{"model":"sonnet"}}}' > "$J"
+top=$(git -C "$PR" rev-parse --show-toplevel)
+a=$(cd "$PR" && node "$RESOLVE" 2>/dev/null | jq -r '.roles.design.model, .project_config' | tr '\n' ' ')
+b=$(cd "$PR/sub" && node "$RESOLVE" 2>/dev/null | jq -r '.roles.design.model, .project_config' | tr '\n' ' ')
+[[ "$a" == "sonnet $top/.dispatch/config.json " && "$b" == "$a" ]] \
+  && ok "CF43 --project-root を省けば git の toplevel" || fail "CF43 ($a / $b)"
+teardown
+
+# CF44: git の外で --project-root を省いたら exit 2（何も解決しない）
+setup
+out=$(cd "$H" && node "$RESOLVE" 2>&1); rc=$?
+[[ "$rc" -eq 2 && "$out" == *'not in a git repo'* ]] && ok "CF44 git の外では 2" || fail "CF44 (rc=$rc)"
+teardown
+
+# CF45: config-edit の --layer は、S1 / S4 / R の block が jq で取り出していた層のファイルを自分で決める。
+#       project 層の .dispatch が無ければ書くときに作る（S4 の `mkdir -p` を block に書かない）
+setup; git -C "$PR" init -q; rm -rf "$PR/.dispatch"
+node "$EDIT" --layer global --set roles.design.model=sonnet >/dev/null 2>&1 || fail "CF45 global set"
+(cd "$PR" && node "$EDIT" --layer project --set review_mode=on >/dev/null 2>&1) || fail "CF45 project set"
+node "$EDIT" --layer project --project-root "$PR" --set phase_b=on >/dev/null 2>&1 || fail "CF45 project-root"
+g=$(node "$EDIT" --layer global --get roles.design.model 2>/dev/null)
+p=$(cd "$PR" && node "$EDIT" --layer project --show 2>/dev/null | jq -c .)
+(cd "$PR" && node "$EDIT" --layer project --unset review_mode >/dev/null 2>&1)
+[[ "$g" == sonnet && "$(jq -r .roles.design.model "$G")" == sonnet \
+   && "$p" == '{"review_mode":"on","phase_b":"on"}' && "$(jq -c . "$J")" == '{"phase_b":"on"}' ]] \
+  && ok "CF45 --layer global / project" || fail "CF45 ($g / $p / $(cat "$J" 2>/dev/null))"
+teardown
+
+# CF46: --config と --layer はどちらか 1 つ。不正な層・どちらも無い・git の外の project 層は使用法の誤り（2）
+setup; bad=""
+node "$EDIT" --config "$G" --layer global --show >/dev/null 2>&1; [[ $? -eq 2 ]] || bad="$bad [both]"
+node "$EDIT" --layer bogus --show >/dev/null 2>&1; [[ $? -eq 2 ]] || bad="$bad [bogus]"
+node "$EDIT" --show >/dev/null 2>&1; [[ $? -eq 2 ]] || bad="$bad [neither]"
+node "$EDIT" --config "$G" --project-root "$PR" --show >/dev/null 2>&1; [[ $? -eq 2 ]] || bad="$bad [root-with-config]"
+out=$(cd "$H" && node "$EDIT" --layer project --show 2>&1); rc=$?
+[[ "$rc" -eq 2 && "$out" == *'not in a git repo'* ]] || bad="$bad [project-outside-git:$rc]"
+[[ -z "$bad" ]] && ok "CF46 --config と --layer の使用法" || fail "CF46:$bad"
+teardown
+
+# CF47: zsh から S0 / S1 の block と同じ形で呼んでも同じ結果になる（設計 3-5）
+if command -v zsh >/dev/null 2>&1; then
+  setup; git -C "$PR" init -q; echo '{"review_mode":"on"}' > "$G"
+  b=$(cd "$PR" && bash -c 'node "$1"; node "$2" --layer global --show' bash "$RESOLVE" "$EDIT" 2>&1); brc=$?
+  z=$(cd "$PR" && zsh -c 'node "$1"; node "$2" --layer global --show' zsh "$RESOLVE" "$EDIT" 2>&1); zrc=$?
+  [[ "$brc" -eq 0 && "$zrc" -eq 0 && -n "$b" && "$b" == "$z" ]] \
+    && ok "CF47 zsh から呼んでも同じ結果" || fail "CF47 ($brc/$zrc)"
+  teardown
+else
+  echo "SKIP: CF47 zsh が無い"
+fi
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
