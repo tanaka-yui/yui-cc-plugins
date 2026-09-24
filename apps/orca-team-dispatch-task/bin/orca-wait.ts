@@ -39,6 +39,7 @@ type State = {
   expected: Expected
   settleSeen: Map<string, number>
   unconfirmedSeen: Set<string>
+  awaitingSeen: Map<string, number>
   unknown: { type: string; task: string; dispatch: string; batch: string }
 }
 const string = (value: Json | undefined): string => asString(value) ?? ''
@@ -218,7 +219,9 @@ const fileMtime = (file: string): number => {
 //   相手の事情を知らないので「来ない」を判断できない）。タスク単位で「子が書くもの」が一定時間
 //   どれも変わらなければ知らせる。**親が書くもの（wait.json / .woken / received.json /
 //   questions.json / stall.json）は数えない** — 数えると親の鼓動で常に「変化あり」になる。
-const taskLastChange = (statusDir: string): number => {
+// ★ 子の最後の書き込み。**human.json は含めない** — 親が毎周書くので、含めると awaiting-user.json が
+//   2 周目から「最新」でなくなる。awaiting-user.json は子が書くので含める
+const workerLastChange = (statusDir: string): number => {
   let latest = fileMtime(join(statusDir, 'run.json'))
   const newer = (file: string): void => {
     latest = Math.max(latest, fileMtime(file))
@@ -226,12 +229,13 @@ const taskLastChange = (statusDir: string): number => {
   const rolesDir = join(statusDir, 'roles')
   try {
     for (const role of readdirSync(rolesDir)) {
-      for (const name of ['status.json', 'result.md', 'completion.json']) newer(join(rolesDir, role, name))
+      for (const name of ['status.json', 'result.md', 'completion.json', 'awaiting-user.json'])
+        newer(join(rolesDir, role, name))
     }
   } catch {
     /* 子のファイルがまだ無い */
   }
-  for (const name of ['spec.md', 'plan.md', 'human.json']) newer(join(statusDir, name))
+  for (const name of ['spec.md', 'plan.md']) newer(join(statusDir, name))
   try {
     for (const name of readdirSync(join(statusDir, 'review'))) newer(join(statusDir, 'review', name))
   } catch {
@@ -251,11 +255,40 @@ const taskLastChange = (statusDir: string): number => {
   }
   return latest
 }
+// 停滞の時計の起点。人とのやりとり（human.json）は親が書くが、4-2 の例外として数える
+const taskLastChange = (statusDir: string): number =>
+  Math.max(workerLastChange(statusDir), fileMtime(join(statusDir, 'human.json')))
+// ★ **端末で人の答えを待つ役。**Orca の agentWait はターンを終えて端末で待つ状態を拾わない（実測 2026-09-24、
+//   logi-app: state=ready・agentWait=null）。ask_via=terminal の worker は尋ねる前に awaiting-user.json を書く。
+//   それがタスクで子が最後に書いたものである間は人を待っている。答えのあとに何か書けば自然に外れる
+const awaitingUser = (statusDir: string): { role: string; at: number } | null => {
+  let roles: string[] = []
+  try {
+    roles = readdirSync(join(statusDir, 'roles'))
+  } catch {
+    return null
+  }
+  const latest = workerLastChange(statusDir)
+  let found: { role: string; at: number } | null = null
+  for (const role of roles) {
+    const at = fileMtime(join(statusDir, 'roles', role, 'awaiting-user.json'))
+    if (at > 0 && at >= latest && (found === null || at > found.at)) found = { role, at }
+  }
+  return found
+}
 // 移植元の理由（bin/orca-wait.sh）:
 // ★ **人を待っている間は停滞ではない。**人とのやりとりを見た時点を残し、時計をそこから戻す。
 //   書けなくても待機は止めない（最悪、ユーザーに 1 回余計に尋ねるだけで、誤って止めはしない）
 const markHuman = (statusDir: string): void => {
   write(statusDir, 'human.json', { last_human_at: nowSeconds() })
+}
+// 端末で待っている役を、印ごとに 1 回だけ言う（exit 3 の進捗報告で、親がどの端末に答えるかを伝えられるように）
+const noteAwaiting = (state: State, statusDir: string, asking: { role: string; at: number }): void => {
+  const key = `${statusDir}|${asking.role}`
+  if (state.awaitingSeen.get(key) === asking.at) return
+  state.awaitingSeen.set(key, asking.at)
+  const terminal = string(get(read(statusDir, 'workers.json'), 'roles', asking.role, 'terminal')) || 'none'
+  log(NAME, `${asking.role} of ${basename(statusDir)} is waiting for an answer in its terminal ${terminal}`)
 }
 // 移植元の理由（bin/orca-wait.sh）:
 // ★ **停滞の判定は workers.json をその都度読む。**期待集合（TASKS）が読み直されるのは知らない
@@ -332,6 +365,11 @@ const checkStall = (state: State): boolean => {
   const now = nowSeconds()
   for (const statusDir of state.statusDirs) {
     if (taskSettled(statusDir)) continue
+    const asking = awaitingUser(statusDir)
+    if (asking !== null) {
+      markHuman(statusDir)
+      noteAwaiting(state, statusDir, asking)
+    }
     let last = taskLastChange(statusDir)
     const current = object(read(statusDir, 'stall.json'))
     const snoozed = typeof current.snoozed_at === 'number' ? current.snoozed_at : 0
@@ -1004,6 +1042,7 @@ const main = (argv: string[]): number => {
     expected: loadRoles(statusDirs),
     settleSeen: new Map(),
     unconfirmedSeen: new Set(),
+    awaitingSeen: new Map(),
     unknown: { type: '', task: '', dispatch: '', batch: '' },
   }
   beat(state)

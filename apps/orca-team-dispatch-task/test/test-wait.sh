@@ -1165,4 +1165,34 @@ w >/dev/null 2>&1; rc=$?
   "$SD/workers.json" >/dev/null \
   && ! grep -q 'terminal list' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT113 決着後の端末と印を補い、所有不明の端末は記録しない" || fail "WT113 (rc=$rc)"; teardown
+# ── 端末で人の答えを待つ役（ask_via=terminal の brainstorm）──
+# ★ Orca の agentWait はターンを終えて端末で待つ状態を拾わない（実測 2026-09-24、logi-app）。
+#   worker が書く awaiting-user.json が、タスクで子が最後に書いたものである間は人を待っているとみなす
+marker() { echo '{"asked_at":1}' > "$SD/roles/design/awaiting-user.json"; }
+
+# WT114: 印が最新なら停滞ではない。human.json を残し、どの端末が待っているかを 1 回だけ言う
+setup; old "$SD/run.json" "$SD/roles/design/status.json"; marker
+err=$(ORCA_STALL_AFTER_SECONDS=$STALL node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 2 \
+        --timeout-ms 1 2>&1 >/dev/null); rc=$?
+b=$(basename "$SD")
+n=$(grep -c "design of $b is waiting for an answer in its terminal term_w" <<<"$err")
+[[ "$rc" -eq 3 && "$n" -eq 1 && "$(jq -r '.last_human_at' "$SD/human.json" 2>/dev/null)" =~ ^[0-9]+$ ]] \
+  && ok "WT114 端末で答えを待つ役は停滞ではない" || fail "WT114 (rc=$rc n=$n)"; teardown
+
+# WT115: ★ 印のあとに子の書き込みがあれば印は古い。今までどおり停滞として知らせる
+setup; marker; old "$SD/run.json" "$SD/roles/design/awaiting-user.json"
+touch -t 202001010100 "$SD/roles/design/status.json"
+ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 8 ]] && ok "WT115 印より新しい書き込みがあれば停滞" || fail "WT115 (rc=$rc)"; teardown
+
+# WT116: ★ 答えに何時間かかっても停滞にしない（印が古くても、最新である限り人を待っている）
+setup; marker; old "$SD/run.json" "$SD/roles/design/status.json" "$SD/roles/design/awaiting-user.json"
+ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 3 ]] && ok "WT116 古い印でも最新なら停滞ではない" || fail "WT116 (rc=$rc)"; teardown
+
+# WT117: ★ 答えを待つ役（completion がまだ無い）には催促の行を打たない。打てば回答欄に入る
+setup; marker; echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+ORCA_WAKE_INTERVAL_SECONDS=0 node "$P/bin/orca-wait.ts" --status-dir "$SD" \
+  --max-waits 2 --timeout-ms 1 >/dev/null 2>&1
+[[ "$(typed)" -eq 0 ]] && ok "WT117 答えを待つ役は叩かない" || fail "WT117 (typed=$(typed))"; teardown
 echo "---"; echo "failures: $fails"; exit "$fails"
