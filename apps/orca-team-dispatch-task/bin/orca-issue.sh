@@ -128,7 +128,7 @@ PORC=$(git -C "$RR" status --porcelain 2>/dev/null) || PORC=""
 # ★ **無人実行で brainstorming は成立しない。**答える人が居ないので、design は 1 往復
 #   待ってから自分で決めることになる。待つだけ無駄なので `plan` へ落とす。cmux 版が
 #   loop-mode で「plan mode に固定」としているのと同じ判断である。
-DM=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR" 2>/dev/null \
+DM=$(node "$SCRIPTS/config-resolve.ts" --project-root "$RR" 2>/dev/null \
      | jq -r '.design_mode // "direct"' 2>/dev/null || echo direct)
 DM_ARGS=()
 if [[ "$DM" == brainstorm ]]; then
@@ -170,7 +170,7 @@ if [[ "$PHASE" == all ]]; then
   esac
 fi
 [[ -r "$SD/workers.json" ]] || fail_out "issue #$NUM: there is no dispatch state at $SD"
-CRC=0; CFG=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR") || CRC=$?
+CRC=0; CFG=$(node "$SCRIPTS/config-resolve.ts" --project-root "$RR") || CRC=$?
 [[ "$CRC" -eq 0 ]] || fail_out "issue #$NUM: cannot resolve the dispatch configuration"
 
 # --- 3. 統合。**ここが通って初めて片付けの話になる** ---

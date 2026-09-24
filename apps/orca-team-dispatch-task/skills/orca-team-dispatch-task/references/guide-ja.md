@@ -90,7 +90,7 @@ dispatch はこの設定を読む。だから **設定が 1 つも無い dispatc
 : "${PLUGIN:?run the block at the top of this file first}"
 SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
 RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-CFG=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR") || exit 1
+CFG=$(node "$SCRIPTS/config-resolve.ts" --project-root "$RR") || exit 1
 jq -r 'if .configured then "configured" else "not configured" end' <<<"$CFG"
 ```
 
@@ -105,8 +105,8 @@ jq -r 'if .configured then "configured" else "not configured" end' <<<"$CFG"
 
 ```bash
 printf 'resolved:\n'; jq '.roles' <<<"$CFG"
-printf 'global:\n';   bash "$SCRIPTS/config-edit.sh" --config "$(jq -r .global_config  <<<"$CFG")" --show
-printf 'project:\n';  bash "$SCRIPTS/config-edit.sh" --config "$(jq -r .project_config <<<"$CFG")" --show
+printf 'global:\n';   node "$SCRIPTS/config-edit.ts" --config "$(jq -r .global_config  <<<"$CFG")" --show
+printf 'project:\n';  node "$SCRIPTS/config-edit.ts" --config "$(jq -r .project_config <<<"$CFG")" --show
 ```
 
 agent がどのアカウントでサインインするかは role tuple の一部**ではなく**、この skill から
@@ -137,13 +137,13 @@ agent の候補は `claude` と `codex` を出し、それ以外は自由入力�
 
 回答は pending tuple として保持する。空・前後の空白・制御文字と、`'`、`"`、`` ` ``、`$`、
 `\`、`!` を拒否し、**無効だった次元だけ**を再度尋ねる。回答をトリムしてはならない —
-入力された値と違う値が保存されるくらいなら拒否するほうがよい。`config-edit.sh` も再度検証し、
+入力された値と違う値が保存されるくらいなら拒否するほうがよい。`config-edit.ts` も再度検証し、
 どこか 1 つでも無効なら何も書かない。
 
 ### S4. プレビューし、確認し、1 度だけ書く
 
 選んだファイルの before と after を見せ、書き込みか中止かを選ばせる。書くときは **1 回だけ**
-`config-edit.sh` を呼び、すべての `--set` をそこに載せる。こうすると結果全体が 1 度の
+`config-edit.ts` を呼び、すべての `--set` をそこに載せる。こうすると結果全体が 1 度の
 原子的な mv で入り、値が 1 つでも拒否されればファイルは元のままになる。プロジェクト層なら
 先に `.dispatch` ディレクトリを `mkdir -p` し、以後このリポジトリではグローバル層を覆うことを
 伝える。
@@ -151,9 +151,9 @@ agent の候補は `claude` と `codex` を出し、それ以外は自由入力�
 ```bash
 LAYER=$(jq -r .global_config <<<"$CFG")   # or .project_config for the project layer
 mkdir -p "$(dirname "$LAYER")"
-bash "$SCRIPTS/config-edit.sh" --config "$LAYER" \
+node "$SCRIPTS/config-edit.ts" --config "$LAYER" \
   --set roles.design.agent="$AGENT" --set roles.design.model="$MODEL" --set roles.design.effort="$EFFORT"
-bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --show
+node "$SCRIPTS/config-edit.ts" --config "$LAYER" --show
 ```
 
 未設定のままにする次元は `--set` ごと落とす。既に設定済みのものを消すには `--unset` を使う。
@@ -164,7 +164,7 @@ bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --show
 ファイルは作らない。
 
 ```bash
-bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --unset roles
+node "$SCRIPTS/config-edit.ts" --config "$LAYER" --unset roles
 ```
 
 何が変わったかを報告し、S1 から続けるかを尋ねる。
@@ -418,7 +418,7 @@ Step 2 を別 call で実行するときは、その正確な path を `REQ` へ
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
 RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --project-root "$RR" \
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts" --project-root "$RR" \
   | jq -r '"design_mode=\(.design_mode) integration=\(.integration)"'
 ```
 

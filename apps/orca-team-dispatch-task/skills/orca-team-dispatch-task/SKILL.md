@@ -105,7 +105,7 @@ Step 1**. A layer file holding only third-party keys is not configured.
 : "${PLUGIN:?run the block at the top of this file first}"
 SCRIPTS="$PLUGIN/skills/orca-team-dispatch-task/scripts"
 RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-CFG=$(bash "$SCRIPTS/config-resolve.sh" --project-root "$RR") || exit 1
+CFG=$(node "$SCRIPTS/config-resolve.ts" --project-root "$RR") || exit 1
 jq -r 'if .configured then "configured" else "not configured" end' <<<"$CFG"
 ```
 
@@ -120,8 +120,8 @@ Show both layers, the resolved tuple, and which accounts Orca holds. This writes
 
 ```bash
 printf 'resolved:\n'; jq '.roles' <<<"$CFG"
-printf 'global:\n';   bash "$SCRIPTS/config-edit.sh" --config "$(jq -r .global_config  <<<"$CFG")" --show
-printf 'project:\n';  bash "$SCRIPTS/config-edit.sh" --config "$(jq -r .project_config <<<"$CFG")" --show
+printf 'global:\n';   node "$SCRIPTS/config-edit.ts" --config "$(jq -r .global_config  <<<"$CFG")" --show
+printf 'project:\n';  node "$SCRIPTS/config-edit.ts" --config "$(jq -r .project_config <<<"$CFG")" --show
 ```
 
 The account an agent signs in as is **not** part of a role tuple, and this skill cannot
@@ -153,12 +153,12 @@ unset" so the user can fall back to the role's default.
 Keep the answers as a pending tuple. Reject an empty answer, leading or trailing whitespace,
 control characters, and `'`, `"`, `` ` ``, `$`, `\`, or `!`; re-ask only the invalid
 dimension. Do not trim an answer — saving a different value than the one typed is worse than
-refusing it. `config-edit.sh` validates again and writes nothing if any part is invalid.
+refusing it. `config-edit.ts` validates again and writes nothing if any part is invalid.
 
 ### S4. Preview, confirm, then write once
 
 Show the chosen file before and after, and offer write or abort. On write, make **exactly
-one** `config-edit.sh` call carrying every `--set`, so the whole result lands in a single
+one** `config-edit.ts` call carrying every `--set`, so the whole result lands in a single
 atomic move and a rejected value leaves the file untouched. For the project layer, `mkdir -p`
 its `.dispatch` directory first, and tell the user it now shadows the global layer for this
 repository.
@@ -166,9 +166,9 @@ repository.
 ```bash
 LAYER=$(jq -r .global_config <<<"$CFG")   # or .project_config for the project layer
 mkdir -p "$(dirname "$LAYER")"
-bash "$SCRIPTS/config-edit.sh" --config "$LAYER" \
+node "$SCRIPTS/config-edit.ts" --config "$LAYER" \
   --set roles.design.agent="$AGENT" --set roles.design.model="$MODEL" --set roles.design.effort="$EFFORT"
-bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --show
+node "$SCRIPTS/config-edit.ts" --config "$LAYER" --show
 ```
 
 Drop the `--set` for any dimension the user left unset, and use `--unset` to clear one that
@@ -180,7 +180,7 @@ Ask which layer, then clear only the key this skill owns. Other keys in that fil
 and an absent file is not created.
 
 ```bash
-bash "$SCRIPTS/config-edit.sh" --config "$LAYER" --unset roles
+node "$SCRIPTS/config-edit.ts" --config "$LAYER" --unset roles
 ```
 
 Report what changed and offer to continue at S1.
@@ -437,7 +437,7 @@ Read the configured value first:
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
 RR=$(git rev-parse --show-toplevel) || { echo "not in a git repo" >&2; exit 1; }
-bash "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh" --project-root "$RR" \
+node "$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts" --project-root "$RR" \
   | jq -r '"design_mode=\(.design_mode) integration=\(.integration)"'
 ```
 

@@ -388,7 +388,7 @@ ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
 [[ "$ws" == *'--agent codex'* && "$ws" == *'--model gpt-6-astra'* && "$ws" == *'--effort xhigh'* ]] \
   && ok "ST30 config が --agent/--model/--effort になる" || fail "ST30 [$ws]"; teardown
 
-# ST31: ★ **設定ゼロなら design は既定 tuple で起動する。**config-lib.sh の既定が
+# ST31: ★ **設定ゼロなら design は既定 tuple で起動する。**lib/config.ts の既定が
 #       worker-start の argv まで届いていることを固定する
 setup; start >/dev/null 2>&1
 ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)

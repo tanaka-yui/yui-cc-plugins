@@ -127,16 +127,16 @@ IB=$(git -C "$RR" symbolic-ref --short HEAD 2>/dev/null) || IB=""
 
 # ★ **設定は資源を作る前に解決する。**壊れた config で worktree と Task を作ってから
 #   落ちると、片付けの要る残骸だけが残る。config-resolve は読めない設定で exit 1 を返す。
-#   設定が 1 つも無いのは正常で、そのとき各ロールは既定 tuple (config-lib.sh) で走る。
+#   設定が 1 つも無いのは正常で、そのとき各ロールは既定 tuple (lib/config.ts) で走る。
 CFG_SET=()
 [[ -n "$OV_AGENT"  ]] && CFG_SET+=(--set "design.agent=$OV_AGENT")
 [[ -n "$OV_MODEL"  ]] && CFG_SET+=(--set "design.model=$OV_MODEL")
 [[ -n "$OV_EFFORT" ]] && CFG_SET+=(--set "design.effort=$OV_EFFORT")
 [[ -n "$OV_DESIGN_MODE" ]] && CFG_SET+=(--design-mode "$OV_DESIGN_MODE")
 [[ -n "$OV_INTEGRATION" ]] && CFG_SET+=(--integration "$OV_INTEGRATION")
-RESOLVER="$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.sh"
+RESOLVER="$PLUGIN/skills/orca-team-dispatch-task/scripts/config-resolve.ts"
 [[ -r "$RESOLVER" ]] || { log "the config resolver is missing at $RESOLVER"; exit 1; }
-CRC=0; CFG=$(bash "$RESOLVER" --project-root "$RR" ${CFG_SET[@]+"${CFG_SET[@]}"}) || CRC=$?
+CRC=0; CFG=$(node "$RESOLVER" --project-root "$RR" ${CFG_SET[@]+"${CFG_SET[@]}"}) || CRC=$?
 [[ "$CRC" -eq 0 ]] && jq -e '.roles.design.agent | type == "string"' <<<"$CFG" >/dev/null 2>&1 \
   || { log "cannot resolve the dispatch configuration (rc=$CRC); nothing was created"; exit 1; }
 REVIEW_MODE=$(jq -r '.review_mode // "off"' <<<"$CFG")
