@@ -37,15 +37,19 @@ export const integrationRole = (phaseB: string): Role => (phaseB === 'on' ? 'exe
 //   setup       … skip（run は repo の setup hook を走らせ、**失敗したら worker を起こさない**）
 //   design_mode … direct（plan は先に手順を記録、brainstorm は superpowers の brainstorming を先に通す。
 //                 **brainstorm は人が答える前提**なので、無人の `--issue` は呼び出し側が plan へ落とす）
+//   ask_via     … terminal（brainstorm の design は自分の端末で尋ね、ターンを終えて答えを待つ。parent は
+//                 `orchestration ask` で親に取り次がせる。**既定だけ例外** — 設定より前のコードは parent だったが、
+//                 文書が意図していた terminal を既定にする）
 export const TOGGLES = {
   review_mode: { values: ['on', 'off'], fallback: 'off' },
   phase_b: { values: ['on', 'off'], fallback: 'off' },
   integration: { values: ['merge', 'pr'], fallback: 'merge' },
   setup: { values: ['skip', 'run'], fallback: 'skip' },
   design_mode: { values: ['direct', 'plan', 'brainstorm'], fallback: 'direct' },
+  ask_via: { values: ['terminal', 'parent'], fallback: 'terminal' },
 } as const
 export type Toggle = keyof typeof TOGGLES
-export const TOGGLE_KEYS: Toggle[] = ['review_mode', 'phase_b', 'integration', 'setup', 'design_mode']
+export const TOGGLE_KEYS: Toggle[] = ['review_mode', 'phase_b', 'integration', 'setup', 'design_mode', 'ask_via']
 export const isToggle = (key: string): key is Toggle => TOGGLE_KEYS.some((toggle) => toggle === key)
 export const validToggle = (key: Toggle, value: string): boolean =>
   TOGGLES[key].values.some((allowed) => allowed === value)

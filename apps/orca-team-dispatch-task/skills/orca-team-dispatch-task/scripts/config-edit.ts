@@ -9,7 +9,7 @@
 // project の --project-root の既定は git rev-parse --show-toplevel。SKILL.md の S1 / S4 / R は層の path を block で運ばない
 //
 // 扱えるキー:
-//   review_mode / phase_b / integration / setup / design_mode   set / unset
+//   review_mode / phase_b / integration / setup / design_mode / ask_via   set / unset
 //   roles.<role>.agent | .model | .effort                          set / unset
 //   roles.<role> / roles                                           unset 専用
 //

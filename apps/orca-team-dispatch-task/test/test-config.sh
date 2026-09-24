@@ -486,4 +486,36 @@ node "$EDIT" --config "$T48/sub/config.json" --set review_mode=on >/dev/null 2>&
   && ok "CF48b set は無いファイルを作る" || fail "CF48b"
 rm -rf "$T48"
 
+# --- ask_via (brainstorm の質問先) ---
+av_() { node "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -r '.ask_via'; }
+
+# CF49: 既定は terminal（brainstorm の worker は自分の端末で尋ねる。文書が意図していた挙動）
+setup
+[[ "$(av_)" == terminal ]] && ok "CF49 ask_via の既定は terminal" || fail "CF49 ($(av_))"
+teardown
+
+# CF50: parent を選べる。1 回きりの上書きは両方の層より強い
+setup
+echo '{"ask_via":"parent"}' > "$G"
+[[ "$(av_)" == parent && "$(av_ --ask-via terminal)" == terminal ]] \
+  && ok "CF50 ask_via の選択と 1 回きりの上書き" || fail "CF50"
+teardown
+
+# CF51: 2 値以外は警告して落とす。不正な上書きは使用法の誤り
+setup
+echo '{"ask_via":"slack"}' > "$G"
+err=$(node "$RESOLVE" --project-root "$PR" 2>&1 >/dev/null)
+node "$RESOLVE" --project-root "$PR" --ask-via slack >/dev/null 2>&1; rc=$?
+[[ "$(av_)" == terminal && "$err" == *"ignoring invalid ask_via 'slack'"* && "$rc" -eq 2 ]] \
+  && ok "CF51 不正な ask_via を落とす" || fail "CF51 (rc=$rc err=$err)"
+teardown
+
+# CF52: config-edit が ask_via を書き、ask_via だけの利用者にも S0 を二度と尋ねない
+setup
+node "$EDIT" --config "$G" --set ask_via=parent >/dev/null 2>&1
+[[ "$(jq -r '.ask_via' "$G")" == parent \
+   && "$(node "$RESOLVE" --project-root "$PR" 2>/dev/null | jq -r '.configured')" == true ]] \
+  && ok "CF52 config-edit が ask_via を扱う" || fail "CF52"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
