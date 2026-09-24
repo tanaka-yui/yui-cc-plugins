@@ -88,6 +88,11 @@ out=$(st mailbox --status-dir "$SD"); rc=$?
 line=$(grep '^orchestration check ' "$ORCA_STUB_DIR/calls.log")
 [[ "$rc" -eq 0 && "$out" == *'"m1"'* && "$line" == 'orchestration check --terminal term_p --peek --json ' ]] \
   || fail "OS7 覗き見 (rc=$rc line=$line)"
+echo 1 > "$ORCA_STUB_DIR/orchestration_check.rc"
+out=$(st mailbox --status-dir "$SD" 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'orchestration check failed'* && "$out" != *'missing parent handle'* ]] \
+  || fail "OS7 check 失敗の理由 (rc=$rc out=$out)"
+rm -f "$ORCA_STUB_DIR/orchestration_check.rc"
 printf '{"run_id":"run_x"}\n' > "$SD/run.json"; : > "$ORCA_STUB_DIR/calls.log"
 out=$(st mailbox --status-dir "$SD" 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *'missing parent handle; do not acknowledge anything'* && ! -s "$ORCA_STUB_DIR/calls.log" ]] \

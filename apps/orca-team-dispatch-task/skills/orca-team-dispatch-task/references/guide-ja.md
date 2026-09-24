@@ -676,8 +676,8 @@ node "$PLUGIN/bin/orca-state.ts" mailbox --status-dir "$SD"
 ```
 
 これは `$SD/run.json` に記録された親端末に対して `orchestration check --peek` を走らせるだけで、
-何も acknowledge しない。親端末が記録されていなければ拒む。前の inspection の後で、記録済み outcome と
-result — `$SD/received.json` と `$SD/roles/design/result.md` — を読んでユーザーへ見せる。
+何も acknowledge しない。親端末が記録されていなければ拒む。check 自体が失敗したときは、理由を
+stderr に出して exit 1 で終わる。前の inspection の後で、記録済み outcome と result — `$SD/received.json` と `$SD/roles/design/result.md` — を読んでユーザーへ見せる。
 ユーザーが成功した result を統合すると明示的に決めた場合、次の安全な merge コマンドを実行できる。receipt、
 status、result、branch、clean checkout の通常の guard はすべて実行し、blocked な batch を acknowledge しない。
 

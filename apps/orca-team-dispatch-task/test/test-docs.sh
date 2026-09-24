@@ -409,14 +409,14 @@ hits=$(grep -nE "(^|[^[:alnum:]_-])($names)\.sh" "$S" "$G" "$P/README.md" "$P/CL
 
 # SK26: ★ **文書の bash block に判定を書かない**（設計 1 章・6 章）。block は呼び出し側のシェル（mac も WSL も
 #       zsh）で走り、shell 変数は tool call を跨がない。置いてよいのは空行、コメント、ガード `: "${VAR:?...}"`
-#       （1 行に 1 つ。文言に `'` を書かない — bash は `"${VAR:?...'...}"` の `'` を引用の開始と読み、block 全体が
+#       （1 行に 1 つ。文言に `'`、`$`、バッククォートを書かない — bash は `"${VAR:?...'...}"` の `'` を引用の開始と読み、block 全体が
 #       構文エラーになる）、入口の呼び出し（`node "$PLUGIN/...`・`"$ORCA_BIN" ...`・`gh repo view ...`）とその続きの
 #       行だけ。呼び出しの行は `$(`・バッククォート・`${` を持たず、`"..."` の外は英数字と `-_./=:,@%+` と空白だけ。
 #       例外は 1 行目で見分ける 3 つ: 冒頭の PLUGIN / ORCA_BIN の定義、Step 1 の依頼ファイル（SK6b が走らせる）、
 #       切り離した待機（SK22 が固定する）。awk は gawk / mawk / BSD awk で同じに動く形（`[$]` など）で書く
 block_logic() {   # $1 = file。違反した行を「<block 番号>: <行>」で出す
   awk -v q="'" '
-    BEGIN { guard = "^: \"[$][{][A-Za-z_][A-Za-z0-9_]*:[?][^\"" q "]*[}]\"$" }
+    BEGIN { guard = "^: \"[$][{][A-Za-z_][A-Za-z0-9_]*:[?][^\"$`" q "]*[}]\"$" }
     /^```bash$/ { k = 1; b++; n = 0; exempt = 0; cont = 0; next }
     k && /^```$/ { k = 0; next }
     !k { next }
@@ -444,8 +444,9 @@ printf '%s\n' '```bash' ': "${PLUGIN:?run the block at the top of this file firs
   '```bash' 'OUT=$(node "$PLUGIN/bin/x.ts")' '```' \
   '```bash' 'jq -r .integration "$SD/workers.json"' '```' \
   '```bash' '"$ORCA_BIN" account list --json | jq .result' '```' \
-  '```bash' ": \"\${SLUG:?set SLUG to that task's slug}\"" 'node "$PLUGIN/bin/x.ts" --slug "$SLUG"' '```' > "$probe"
-[[ "$(block_logic "$probe" | cut -d: -f1 | tr '\n' ' ')" == '2 3 4 5 6 ' ]] || bad="$bad [checker]"
+  '```bash' ": \"\${SLUG:?set SLUG to that task's slug}\"" 'node "$PLUGIN/bin/x.ts" --slug "$SLUG"' '```' \
+  '```bash' ': "${SD:?$(touch /tmp/x)}"' 'node "$PLUGIN/bin/x.ts" --status-dir "$SD"' '```' > "$probe"
+[[ "$(block_logic "$probe" | cut -d: -f1 | tr '\n' ' ')" == '2 3 4 5 6 7 ' ]] || bad="$bad [checker]"
 rm -f "$probe"
 [[ -z "$bad" ]] && ok "SK26 bash block は判定を持たず入口を呼ぶだけ" || fail "SK26:$bad"
 

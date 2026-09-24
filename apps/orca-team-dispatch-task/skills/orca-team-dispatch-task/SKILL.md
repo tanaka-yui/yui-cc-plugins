@@ -706,8 +706,9 @@ node "$PLUGIN/bin/orca-state.ts" mailbox --status-dir "$SD"
 ```
 
 It runs `orchestration check --peek` against the parent terminal recorded in `$SD/run.json`, which
-acknowledges nothing, and refuses when no parent terminal is recorded. After that inspection, show
-the user the recorded outcome and result: read `$SD/received.json` and `$SD/roles/design/result.md`. If they explicitly
+acknowledges nothing, and refuses when no parent terminal is recorded. If the check itself fails,
+it exits 1 and prints the reason on stderr. After that inspection, show the user the recorded outcome
+and result: read `$SD/received.json` and `$SD/roles/design/result.md`. If they explicitly
 decide to integrate a successful result, they may run this safe merge command. It performs the normal receipt, status, result, branch, and clean-checkout
 guards; it does not acknowledge the blocked batch:
 

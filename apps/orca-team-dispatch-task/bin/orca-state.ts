@@ -94,7 +94,11 @@ const mailbox = (statusDir: string): number => {
   }
   const checked = runOrca(['orchestration', 'check', '--terminal', parent, '--peek', '--json'])
   process.stdout.write(checked.stdout)
-  return checked.rc === 0 ? 0 : 1
+  if (!receiptOk(checked)) {
+    log(NAME, `orchestration check failed (${failureDetail(checked)})`)
+    return 1
+  }
+  return 0
 }
 
 // S1 の jq と同じ射影。receipt には rate limit や既定アカウントの email も載るので、id とアクティブだけを出す

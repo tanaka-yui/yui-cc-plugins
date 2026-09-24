@@ -1224,13 +1224,13 @@ expected=$(cat "$REQ")
 start >/dev/null 2>&1
 sp=$(awk -v RS='\037' 'prev == "--spec" { print $0; exit } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
 [[ "$sp" == *"$expected"* ]] && ok "ST103 依頼文のドル記号をそのまま渡す" || fail "ST103 依頼文が書き換わった"; teardown
-# ST104: `--run ''` は --run を渡さないのと同じく Run を作る。SKILL.md の Step 2 は最初のタスクで RUN を空のまま
+# ST107: `--run ''` は --run を渡さないのと同じく Run を作る。SKILL.md の Step 2 は最初のタスクで RUN を空のまま
 #        `--run "$RUN"` で渡す（`${RUN:+--run "$RUN"}` は zsh では 1 語になり、`unknown option` で落ちた）
 setup; out=$(start --run '' 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *'run_id=run_x'* ]] && grep -q 'run-create' "$ORCA_STUB_DIR/calls.log" \
-  && ok "ST104 空の --run は Run を作る" || fail "ST104 (rc=$rc out=$out)"; teardown
+  && ok "ST107 空の --run は Run を作る" || fail "ST107 (rc=$rc out=$out)"; teardown
 
-# ST105: zsh から Step 2 の形（--run "$RUN"）で呼んでも bash と同じく相乗りする（設計 3-5）
+# ST108: zsh から Step 2 の形（--run "$RUN"）で呼んでも bash と同じく相乗りする（設計 3-5）
 if command -v zsh >/dev/null 2>&1; then
   bad=""
   for shell in bash zsh; do
@@ -1241,9 +1241,9 @@ if command -v zsh >/dev/null 2>&1; then
     grep -q 'run-current' "$ORCA_STUB_DIR/calls.log" || bad="$bad [$shell-unbound]"
     teardown
   done
-  [[ -z "$bad" ]] && ok "ST105 zsh からも --run の値が別の引数で届く" || fail "ST105:$bad"
+  [[ -z "$bad" ]] && ok "ST108 zsh からも --run の値が別の引数で届く" || fail "ST108:$bad"
 else
-  echo "SKIP: ST105 zsh が無い"
+  echo "SKIP: ST108 zsh が無い"
 fi
 
 echo "---"; echo "failures: $fails"; exit "$fails"
