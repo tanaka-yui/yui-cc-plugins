@@ -344,7 +344,7 @@ Pass 2, once for the whole batch — one `--status-dir` per issue that dispatche
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>" \
+node "$PLUGIN/bin/orca-wait.ts" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>" \
   --on-stall report
 ```
 
@@ -545,7 +545,7 @@ single drain settles all of them. Pass one `--status-dir` per task.
 
 ```bash
 # One --status-dir per task, in Step 2's order. Repeat the flag for every further task.
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step 2>" \
+node "$PLUGIN/bin/orca-wait.ts" --status-dir "<task 1 status_dir printed by Step 2>" \
                                --status-dir "<task 2 status_dir printed by Step 2>"
 ```
 
@@ -575,7 +575,7 @@ When a host keeps stopping it, the wait can be detached from whatever supervises
 that deliberately**, because it trades one failure for another:
 
 ```bash
-setsid nohup bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir>" \
+setsid nohup node "$PLUGIN/bin/orca-wait.ts" --status-dir "<task 1 status_dir>" \
   --on-stall report >> "$SD/wait.log" 2>&1 < /dev/null &
 ```
 

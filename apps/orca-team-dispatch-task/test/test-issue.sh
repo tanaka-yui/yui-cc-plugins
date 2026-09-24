@@ -212,7 +212,7 @@ teardown
 setup; worker_done succeeded done
 run_issue --phase dispatch >/dev/null 2>&1
 # 呼び出し側が 1 回で待つ（バッチではここが全件ぶん 1 回）
-bash "$P/bin/orca-wait.sh" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+node "$P/bin/orca-wait.ts" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
 : > "$ORCA_STUB_DIR/calls.log"; : > "$GH_STUB_DIR/calls.log"
 out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
         --repo-root "$R" --phase finish 2>&1); rc=$?
@@ -263,7 +263,7 @@ teardown
 #       空文字が渡り、受け取った側が `--run ""` を組み立てて壊れる。
 setup; worker_done succeeded done
 run_issue --phase dispatch >/dev/null 2>&1
-bash "$P/bin/orca-wait.sh" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+node "$P/bin/orca-wait.ts" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
 out=$(bash "$P/bin/orca-issue.sh" --state-file "$SF" --issue 5 --slug issue-5-x \
         --repo-root "$R" --phase finish 2>/dev/null)
 [[ "$out" == *'status_dir='* ]] && ! grep -q '^run_id=$' <<<"$out" \
@@ -362,7 +362,7 @@ grep -q -- '--on-stall report' "$P/bin/orca-issue.sh" \
 #       finish は記録に従って merge し、orca-pr.ts は呼ばない（呼べば新設したガードに拒まれる）。
 setup; worker_done succeeded done
 run_issue --phase dispatch >/dev/null 2>&1
-bash "$P/bin/orca-wait.sh" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+node "$P/bin/orca-wait.ts" --status-dir "$R/.dispatch/issue-5-x" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
 jq -c '.integration = "merge"' "$R/.dispatch/issue-5-x/workers.json" > "$R/.dispatch/issue-5-x/w" \
   && mv "$R/.dispatch/issue-5-x/w" "$R/.dispatch/issue-5-x/workers.json"
 mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"

@@ -7,7 +7,7 @@
 #
 # ★ **phase を分けられるのは並列のためである。**`all`（既定）は dispatch → wait → finish を
 #   1 件ぶん通すので、バッチで順に呼ぶと **1 件ずつ直列にしか走らない**。バッチでは
-#   `dispatch` を N 件ぶん先に呼び、`orca-wait.sh` を **1 回**で全件待ってから `finish` を
+#   `dispatch` を N 件ぶん先に呼び、`orca-wait.ts` を **1 回**で全件待ってから `finish` を
 #   N 件ぶん呼ぶ。Stage A が作った「N タスクを 1 Run に載せて 1 回で待つ」形をそのまま使う。
 #   単件（`--issue <N>`）には並列にするものが無いので `all` でよい。
 # Exit:  0 = done（merge してラベルを遷移し、片付けの判定まで済んだ）
@@ -150,7 +150,7 @@ RUN=$(sed -n 's/^run_id=//p' <<<"$OUT")
 node "$IFETCH" --state-file "$SF" mark-dispatched --issue "$NUM" >/dev/null 2>&1 \
   || log "issue #$NUM: could not mark it dispatched; the wait continues"
 if [[ "$PHASE" == dispatch ]]; then
-  # ★ **待たない。**呼び出し側が全件を 1 回の `orca-wait.sh` で待ち、そのあと finish を呼ぶ。
+  # ★ **待たない。**呼び出し側が全件を 1 回の `orca-wait.ts` で待ち、そのあと finish を呼ぶ。
   printf 'issue=%s\nslug=%s\nstatus_dir=%s\nrun_id=%s\n' "$NUM" "$SLUG" "$SD" "$RUN"
   exit 0
 fi
@@ -161,7 +161,7 @@ fi
 # ★ **停滞で止まって尋ねない。**無人なので尋ねる相手が居ない。stall.json に残して待ち続ける。
 if [[ "$PHASE" == all ]]; then
   WRC=0
-  bash "$PLUGIN/bin/orca-wait.sh" --status-dir "$SD" --max-waits "$MAXW" --timeout-ms "$TMO" \
+  node "$PLUGIN/bin/orca-wait.ts" --status-dir "$SD" --max-waits "$MAXW" --timeout-ms "$TMO" \
     --on-stall report || WRC=$?
   case "$WRC" in
     0) ;;

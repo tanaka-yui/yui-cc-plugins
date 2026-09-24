@@ -45,7 +45,7 @@ grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | grep -q "$MARK" \
 grep -q "$MARK" "$SD/request.md" 2>/dev/null && ok "E3 materialize" || fail "E3 materialize されない"
 # **launch が worker checkout を汚さない**
 [[ -z "$(git -C "$WT" status --porcelain)" ]] && ok "E4 checkout を汚さない" || fail "E4 checkout が dirty"
-bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "E5 黙っていれば完了しない" || fail "E5 早すぎる完了"
 
 # worker がやることを再現する
@@ -56,7 +56,7 @@ echo '{"status":"done"}' > "$SD/roles/design/status.json"
 jq -nc '{ok:true,result:{runId:"run_e",deliveryId:"d1",count:1,messages:[
   {id:"m1",type:"worker_done",payload:({taskId:"task_e",dispatchId:"ctx_e",outcome:"succeeded"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"
-out=$(bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 --timeout-ms 1 2>/dev/null); rc=$?
+out=$(node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 1 --timeout-ms 1 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *"outcome=succeeded"* ]] && ok "E6 成功で完了" || fail "E6 (rc=$rc)"
 # **retain してから ack している**（解放は Step 6 だけの権限。spec D12）
 r=$(grep -n 'worker-retain' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
@@ -111,7 +111,7 @@ jq -nc '{ok:true,result:{runId:"run_e",deliveryId:"de",count:2,messages:[
   {id:"e2",type:"worker_done",payload:({taskId:"task_b",dispatchId:"ctx_b",outcome:"succeeded"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"
 : > "$ORCA_STUB_DIR/calls.log"
-bash "$P/bin/orca-wait.sh" --status-dir "$SDA" --status-dir "$SDB" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+node "$P/bin/orca-wait.ts" --status-dir "$SDA" --status-dir "$SDB" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
 rc=$?
 [[ "$rc" -eq 0 \
    && "$(jq -c . "$SDA/received.json")" == '["worker_done|task_a|ctx_a|succeeded"]' \
@@ -209,7 +209,7 @@ jq -nc '{ok:true,result:{runId:"run_e",deliveryId:"drv",count:2,messages:[
   {id:"r2",type:"worker_done",payload:({taskId:"task_rv_d",dispatchId:"ctx_rv_d",outcome:"succeeded"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"
 : > "$ORCA_STUB_DIR/calls.log"
-WOUT=$(bash "$P/bin/orca-wait.sh" --status-dir "$SDR" --max-waits 1 --timeout-ms 1 2>&1); rc=$?
+WOUT=$(node "$P/bin/orca-wait.ts" --status-dir "$SDR" --max-waits 1 --timeout-ms 1 2>&1); rc=$?
 [[ "$rc" -eq 0 ]] \
   && [[ "$(grep -c 'worker-retain' "$ORCA_STUB_DIR/calls.log")" -eq 2 ]] \
   && [[ "$(grep -c -- '--ack drv' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \

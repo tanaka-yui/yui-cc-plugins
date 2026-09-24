@@ -88,7 +88,7 @@ merge_ready_msg() {   # $1=nonce [$2=task $3=dispatch]
     > "$ORCA_STUB_DIR/orchestration_check"
 }
 sent_subject() { tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" 2>/dev/null | grep -E '^completion-(accepted|remediation): ' | tail -1; }
-wait_once() { bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1; }
+wait_once() { node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1; }
 
 # CM8: ★ **result.md が無ければ差し戻す。**成果の無い完了を受理しない。
 vsetup; merge_ready_msg n1; wait_once
@@ -139,7 +139,7 @@ vsetup
 jq -nc '{ok:true,result:{runId:"r",deliveryId:"dm",count:1,messages:[
   {id:"mr",type:"merge_ready",payload:({taskId:"t",dispatchId:"c"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"
-bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
 rc=$?
 [[ "$rc" -ne 0 ]] && [[ "$(grep -cE '^orchestration check .*--ack' "$ORCA_STUB_DIR/calls.log")" -eq 0 ]] \
   && ok "CM12 nonce の無い merge_ready は ack しない" || fail "CM12 (rc=$rc)"
@@ -150,7 +150,7 @@ vsetup
 jq -nc '{ok:true,result:{runId:"r",deliveryId:"dm",count:1,messages:[
   {id:"mr",type:"merge_ready",payload:({taskId:"other",dispatchId:"nope",nonce:"n"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"
-bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
+node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1
 [[ $? -ne 0 ]] && [[ "$(grep -cE '^orchestration check .*--ack' "$ORCA_STUB_DIR/calls.log")" -eq 0 ]] \
   && ok "CM13 知らない dispatch の merge_ready は ack しない" || fail "CM13"
 vteardown

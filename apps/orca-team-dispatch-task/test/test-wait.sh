@@ -34,11 +34,11 @@ mixed() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d2",count:2,message
     {id:"g1",type:"gate_request",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"?"},
     {id:"m1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
   > "$ORCA_STUB_DIR/orchestration_check"; }
-w() { bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits "${1:-1}" --timeout-ms 1; }
+w() { node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits "${1:-1}" --timeout-ms 1; }
 dn() { echo '{"status":"done"}' > "$SD/roles/design/status.json"; }
 er() { echo '{"status":"error"}' > "$SD/roles/design/status.json"; }
 
-setup; bash "$P/bin/orca-wait.sh" --bogus >/dev/null 2>&1
+setup; node "$P/bin/orca-wait.ts" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "WT1 使用法エラー" || fail "WT1"; teardown
 
 # WT2: check は --terminal を取る。--from は無い
@@ -225,9 +225,9 @@ chmod -R 700 "$SD"
 setup; echo '{"run_id":"run_x","parent_handle":null,"repo_root":"/tmp"}' > "$SD/run.json"
 w >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 2 ]] && ok "WT19a null handle は使用法エラー" || fail "WT19a (rc=$rc)"; teardown
-setup; bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 0 >/dev/null 2>&1; rc=$?
+setup; node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 0 >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 2 ]] && ok "WT19b max-waits を検証" || fail "WT19b (rc=$rc)"; teardown
-setup; bash "$P/bin/orca-wait.sh" --status-dir "$SD" --timeout-ms nope >/dev/null 2>&1; rc=$?
+setup; node "$P/bin/orca-wait.ts" --status-dir "$SD" --timeout-ms nope >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 2 ]] && ok "WT19c timeout-ms を検証" || fail "WT19c (rc=$rc)"; teardown
 
 # WT20: Task 3 consumer 契約の string receipt をそのまま保存する
@@ -245,7 +245,7 @@ setup2() {
   echo '{"status":"executing"}' > "$SD2/roles/design/status.json"
 }
 teardown2() { rm -rf "$SD2"; teardown; }
-w2() { bash "$P/bin/orca-wait.sh" --status-dir "$SD" --status-dir "$SD2" \
+w2() { node "$P/bin/orca-wait.ts" --status-dir "$SD" --status-dir "$SD2" \
          --max-waits "${1:-1}" --timeout-ms 1; }
 both_msg() { jq -nc --arg o1 "${1:-succeeded}" --arg o2 "${2:-succeeded}" \
   '{ok:true,result:{runId:"run_x",deliveryId:"d9",count:2,messages:[
@@ -547,7 +547,7 @@ setup; mkdir -p "$SD/roles/design"
 echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
 printf '%s\n' '{"phase":"merge_ready_sent","generation":1,"nonce":"n1"}' \
   > "$SD/roles/design/completion.json"
-ORCA_WAKE_INTERVAL_SECONDS=0 bash "$P/bin/orca-wait.sh" --status-dir "$SD" \
+ORCA_WAKE_INTERVAL_SECONDS=0 node "$P/bin/orca-wait.ts" --status-dir "$SD" \
   --max-waits 2 --timeout-ms 1 >/dev/null 2>&1
 [[ "$(typed)" -ge 2 ]] && ok "WT63 待機中も起こし直す" || fail "WT63 (typed=$(typed))"
 teardown
@@ -557,7 +557,7 @@ setup; mkdir -p "$SD/roles/design"
 echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
 printf '%s\n' '{"phase":"merge_ready_sent","generation":1,"nonce":"n1"}' \
   > "$SD/roles/design/completion.json"
-bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 3 --timeout-ms 1 >/dev/null 2>&1
+node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 3 --timeout-ms 1 >/dev/null 2>&1
 [[ "$(typed)" -eq 1 ]] && ok "WT64 起こし直しは間隔をあける" || fail "WT64 (typed=$(typed))"
 teardown
 
@@ -566,7 +566,7 @@ setup; mkdir -p "$SD/roles/design"
 echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
 printf '%s\n' '{"phase":"prepared","generation":1,"nonce":"n1"}' \
   > "$SD/roles/design/completion.json"
-ORCA_WAKE_INTERVAL_SECONDS=0 bash "$P/bin/orca-wait.sh" --status-dir "$SD" \
+ORCA_WAKE_INTERVAL_SECONDS=0 node "$P/bin/orca-wait.ts" --status-dir "$SD" \
   --max-waits 2 --timeout-ms 1 >/dev/null 2>&1
 [[ "$(typed)" -eq 0 ]] && ok "WT65 働いている役は叩かない" || fail "WT65 (typed=$(typed))"
 teardown
@@ -591,7 +591,7 @@ EOS
 waits() { grep -c 'orchestration check .*--wait' "$ORCA_STUB_DIR/calls.log"; }
 
 setup; fail_on_wait waiter_exists
-ORCA_WAITER_RETRY_SECONDS=0 ORCA_WAITER_RETRY_TRIES=3 bash "$P/bin/orca-wait.sh" \
+ORCA_WAITER_RETRY_SECONDS=0 ORCA_WAITER_RETRY_TRIES=3 node "$P/bin/orca-wait.ts" \
   --status-dir "$SD" --max-waits 1 --timeout-ms 1 >/dev/null 2>&1; rc=$?
 n=$(waits)
 [[ "$rc" -eq 4 && "$n" -eq 4 ]] && ok "WT66 waiter_exists は試し直す" || fail "WT66 (rc=$rc n=$n)"
@@ -599,7 +599,7 @@ teardown
 
 # WT47: waiter_exists 以外の失敗は今までどおり即 exit 4（無闇に粘らない）。
 setup; fail_on_wait forbidden
-ORCA_WAITER_RETRY_SECONDS=0 bash "$P/bin/orca-wait.sh" --status-dir "$SD" \
+ORCA_WAITER_RETRY_SECONDS=0 node "$P/bin/orca-wait.ts" --status-dir "$SD" \
   --max-waits 1 --timeout-ms 1 >/dev/null 2>&1; rc=$?
 n=$(waits)
 [[ "$rc" -eq 4 && "$n" -eq 1 ]] && ok "WT67 他の失敗は粘らない" || fail "WT67 (rc=$rc n=$n)"
@@ -607,7 +607,7 @@ teardown
 
 # WT48: ★ **既定の待機は 24 時間**（5 分 × 288）。worker を 24 時間待たせるのに親が
 #      1 時間で降りたら、待たせた意味が無い。
-grep -q 'MAXW=288' "$P/bin/orca-wait.sh" && ok "WT68 既定の --max-waits は 288" || fail "WT68"
+grep -q 'DEFAULT_MAX_WAITS = 288' "$P/bin/orca-wait.ts" && ok "WT68 既定の --max-waits は 288" || fail "WT68"
 
 # WT69: ★ **heartbeat で batch を止めない。**Orca の worker preamble は 5 分ごとに
 #      heartbeat を送らせる。未知の型として扱うと、起動した**全 dispatch が永久に詰まる**
@@ -849,12 +849,12 @@ ORCA_STALL_AFTER_SECONDS=$STALL w >/dev/null 2>&1; rc=$?
 
 # WT90: ★ **report は抜けずに記録する。同じ停滞を毎周出さない。**動き出したら記録を消す
 setup; old "$SD/run.json" "$SD/roles/design/status.json"
-err=$(ORCA_STALL_AFTER_SECONDS=$STALL bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 3 \
+err=$(ORCA_STALL_AFTER_SECONDS=$STALL node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 3 \
         --timeout-ms 1 --on-stall report 2>&1 >/dev/null); rc=$?
 n=$(grep -c 'stalled task=' <<<"$err")
 d1=$(jq -r '.detected_at // empty' "$SD/stall.json" 2>/dev/null)
 echo '{"status":"executing"}' > "$SD/roles/design/status.json"   # 動き出した
-ORCA_STALL_AFTER_SECONDS=$STALL bash "$P/bin/orca-wait.sh" --status-dir "$SD" --max-waits 1 \
+ORCA_STALL_AFTER_SECONDS=$STALL node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 1 \
   --timeout-ms 1 --on-stall report >/dev/null 2>&1
 [[ "$rc" -eq 3 && "$n" -eq 1 && "$d1" =~ ^[0-9]+$ ]] \
   && jq -e 'has("detected_at") | not' "$SD/stall.json" >/dev/null 2>&1 \
@@ -866,22 +866,22 @@ SD2=$(mktemp -d); mkdir -p "$SD2/roles/design"; cp "$SD/run.json" "$SD2/run.json
 echo '{"roles":{"design":{"terminal":"term_y","task":"task_y","dispatch":"ctx_y","retained":false}}}' > "$SD2/workers.json"
 echo '{"status":"executing"}' > "$SD2/roles/design/status.json"
 old "$SD/run.json" "$SD/roles/design/status.json" "$SD/received.json"
-out=$(ORCA_STALL_AFTER_SECONDS=$STALL bash "$P/bin/orca-wait.sh" --status-dir "$SD" --status-dir "$SD2" \
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL node "$P/bin/orca-wait.ts" --status-dir "$SD" --status-dir "$SD2" \
         --max-waits 1 --timeout-ms 1 2>/dev/null); rc=$?
 [[ "$rc" -eq 3 && "$out" != *stalled* ]] && ok "WT91 決着済みは停滞ではない" || fail "WT91 (rc=$rc out=$out)"
 rm -rf "$SD2"; teardown
 
 # WT92: 引数の検査。**rc 2 だけでは未知オプションと区別できない**ので、理由の文言も見る
 setup
-aerr=$(bash "$P/bin/orca-wait.sh" --status-dir "$SD" --on-stall bogus 2>&1 >/dev/null); a=$?
-berr=$(bash "$P/bin/orca-wait.sh" --status-dir "$SD" --stall-after-min 0 2>&1 >/dev/null); b=$?
+aerr=$(node "$P/bin/orca-wait.ts" --status-dir "$SD" --on-stall bogus 2>&1 >/dev/null); a=$?
+berr=$(node "$P/bin/orca-wait.ts" --status-dir "$SD" --stall-after-min 0 2>&1 >/dev/null); b=$?
 [[ "$a" -eq 2 && "$aerr" == *"--on-stall must be ask or report"* \
    && "$b" -eq 2 && "$berr" == *"--stall-after-min must be a positive integer"* ]] \
   && ok "WT92 停滞の引数を検査する" || fail "WT92 (a=$a aerr=$aerr b=$b berr=$berr)"; teardown
 
 # WT93: env override 無しで `--stall-after-min` を受け付け、分を秒へ変換する
 setup; old "$SD/run.json" "$SD/roles/design/status.json"
-out=$(env -u ORCA_STALL_AFTER_SECONDS bash "$P/bin/orca-wait.sh" --status-dir "$SD" \
+out=$(env -u ORCA_STALL_AFTER_SECONDS node "$P/bin/orca-wait.ts" --status-dir "$SD" \
         --max-waits 1 --timeout-ms 1 --stall-after-min 60 2>/dev/null); rc=$?
 [[ "$rc" -eq 8 && "$out" == *"stalled task="* ]] \
   && ok "WT93 stall-after-min を分から秒へ変換して受け付ける" || fail "WT93 (rc=$rc out=$out)"; teardown

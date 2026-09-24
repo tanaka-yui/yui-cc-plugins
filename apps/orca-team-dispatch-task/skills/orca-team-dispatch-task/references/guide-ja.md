@@ -325,7 +325,7 @@ dispatch に失敗した issue は既に `dispatch/failed` が付いて資源が
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>" \
+node "$PLUGIN/bin/orca-wait.ts" --status-dir "<status_dir 1>" --status-dir "<status_dir 2>" \
   --on-stall report
 ```
 
@@ -524,7 +524,7 @@ Step 5 が削除してよいものを判定し、Step 6 がユーザーへ尋ね
 
 ```bash
 # One --status-dir per task, in Step 2's order. Repeat the flag for every further task.
-bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir printed by Step 2>" \
+node "$PLUGIN/bin/orca-wait.ts" --status-dir "<task 1 status_dir printed by Step 2>" \
                                --status-dir "<task 2 status_dir printed by Step 2>"
 ```
 
@@ -553,7 +553,7 @@ age が 3 窓を超えていれば、そのタスクの worker には誰も答�
 一方の失敗をもう一方の失敗と取り替えているからである:
 
 ```bash
-setsid nohup bash "$PLUGIN/bin/orca-wait.sh" --status-dir "<task 1 status_dir>" \
+setsid nohup node "$PLUGIN/bin/orca-wait.ts" --status-dir "<task 1 status_dir>" \
   --on-stall report >> "$SD/wait.log" 2>&1 < /dev/null &
 ```
 
