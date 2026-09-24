@@ -546,7 +546,7 @@ jq -r '"age=\(now - .beat | floor)s window=\(.window_ms / 1000)s"' "$SD/wait.jso
 ```
 
 age が 3 窓を超えていれば、そのタスクの worker には誰も答えていない。同じ `--status-dir`
-の組で待機を起動し直す。`orca-recover.sh` も何かを判断する前に同じことを言うので、
+の組で待機を起動し直す。`orca-recover.ts` も何かを判断する前に同じことを言うので、
 「worker を失った」と「待機を失った」を取り違えずに済む。
 
 ホストが止め続けるなら、待機を監視下から切り離せる。**ただし意識して選ぶこと** —
@@ -633,7 +633,7 @@ node "$PLUGIN/bin/orca-stop.ts" --status-dir "$SD" --role "$ROLE"
 ```
 
 これは端末を閉じる前に停止を記録するので、待機はその役を失われた worker として報告せず
-`outcome=stopped` として決着させ、`orca-recover.sh` もその役に触らない。停滞の時計も数え直す。
+`outcome=stopped` として決着させ、`orca-recover.ts` もその役に触らない。停滞の時計も数え直す。
 reviewer を止めると、レビューされる側の worker にレビュー無しで進むよう伝える。その成果は
 無レビューになり、Step 4 の gate が今までどおり働く。既に終わった reviewer も、レビューされる
 側の worker が待っている間は行に載る — verdict を届けられずに終えた reviewer は、その worker を
@@ -701,7 +701,7 @@ outcome か — をユーザーへ見せる。transport/health の失敗は exit
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 : "${PLUGIN:?run the block at the top of this file first}"
-bash "$PLUGIN/bin/orca-recover.sh" --status-dir "$SD" --dry-run
+node "$PLUGIN/bin/orca-recover.ts" --status-dir "$SD" --dry-run
 ```
 
 何をするつもりかを読んでから、`--dry-run` を外してもう一度実行すると実行される。選択肢は
@@ -978,7 +978,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | 制限 | ユーザーがすること |
 |---|---|
 | 片付けが勝手に走ることはない | Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る |
-| 回復は自動では走らない。いつ走らせるかは人が決める | `orca-recover.sh`（Step 3）が役ごとに判断し、`--dry-run` を外して実行したときだけ動く。`$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
+| 回復は自動では走らない。いつ走らせるかは人が決める | `orca-recover.ts`（Step 3）が役ごとに判断し、`--dry-run` を外して実行したときだけ動く。`$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
 | worker が人へ尋ねるのは `design_mode` がそう指示したときだけで、答えるまでブロックする | `direct` と `plan` では代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する。`brainstorm` では `orchestration ask` を使い、待機が終了コード 6 で質問と `reply` コマンドを出す。worker が再開するのはそのコマンドを実行したときだけである |
 | 差し戻された worker は同じセッションで作り直す。この skill はそのラウンド数を制限しない | 待機の出力を見る。差し戻しは理由付きで 1 行ずつ出る。検査を満たせない worker は、失敗するか待機が時間切れになるまで差し戻され続ける |
@@ -987,7 +987,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | setup hook は頼まない限り走らない | `setup` を `run` にする。setup が失敗した worktree には worker が付かないので、失敗は「起動を拒む」形で見える（不可解な成果物としてではなく） |
 | pull request は作るだけで、この skill が merge もレビューもしない | 自分でレビューして merge する。issue は pull request がマージされたときに閉じるのであって、実行が終わったときではない |
 | reviewer の verdict が配送を拒まれ、成果が無レビューのまま残ることがある | 2026-09-12 に 3 Run 中 2 Run で観測: 依頼側が待つのをやめて決着したため、その dispatch がもう verdict を受け付けず、`orca-send.ts` が未配送として報告した。findings ファイルはディスクに残る。だから待機も Step 4 もそのファイルをレビューとは数えず、どちらも `sent.json` の配送記録を読む。待機は `accepted UNREVIEWED` と言い、Step 4 は `--allow-unreviewed` を渡すまで merge を拒む |
-| 待機を起動し直す者は居らず、止まったことを知らせる者も居ない | 最大 24 時間常駐するのでホストに止められうる — worker 自身のテストがマシンのメモリを使い切った場面で 2 回観測した。`wait.json` を読む（Step 3）か、`orca-recover.sh` を走らせる。何かを判断する前にそう言う。起動し直すのは常に安全である。`setsid` で切り離せば生き残るが、その exit code はどこにも届かなくなる |
+| 待機を起動し直す者は居らず、止まったことを知らせる者も居ない | 最大 24 時間常駐するのでホストに止められうる — worker 自身のテストがマシンのメモリを使い切った場面で 2 回観測した。`wait.json` を読む（Step 3）か、`orca-recover.ts` を走らせる。何かを判断する前にそう言う。起動し直すのは常に安全である。`setsid` で切り離せば生き残るが、その exit code はどこにも届かなくなる |
 | 新しい worktree が親 checkout の「いまの」HEAD から切られない | `worktree create` は基点を取らないので、基点を選ぶのは Orca である。2026-09-12 に観測: 先のタスクを取り込んだあとに切った worktree が取り込み前の base のままで、そこで実装すると既に入っている変更を知らないまま働くことになる。Step 2 は**自分が作った** worktree を親の HEAD まで早送りしてそう言い、両者に祖先関係が無ければ起動そのものを拒む。再利用した worktree には触らない — 動かすと進行中の作業を巻き戻しかねないからである |
 | 待機が新しい段に気づくのは、そこからの message が届いたときである | 知らない dispatch を名指しする最初の message で `workers.json` を読み直すので、Step 3.5 に再起動は要らない。その最初の message が来るまで新しい役は進捗行に出ないが、それは段の起動に失敗した印ではない |
 | worker が自分のレビュー待ちを取れないことがある | 2026-09-11 に観測: `exec` は、Orca がその Run で既にアクティブな actionable waiter を持っていたためレビュー待ちを開始できないと報告し、verdict の無いまま成果を差し出した。worker には「この拒否はメールボックスが塞がっているという意味であって、レビューが使えないという意味ではない。待ちをもう一度走らせよ」と指示してある。それでも無レビューで終わったときは待機がそう名指しする — log に `accepted UNREVIEWED`、その役の最終行に `review=unreviewed` が出る |

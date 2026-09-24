@@ -568,7 +568,7 @@ jq -r '"age=\(now - .beat | floor)s window=\(.window_ms / 1000)s"' "$SD/wait.jso
 ```
 
 An age above three windows means nobody is answering that task's workers: start the wait
-again with the same `--status-dir` set. `orca-recover.sh` reports the same thing before it
+again with the same `--status-dir` set. `orca-recover.ts` reports the same thing before it
 decides anything, so a lost worker and a lost wait do not get mistaken for each other.
 
 When a host keeps stopping it, the wait can be detached from whatever supervises it. **Decide
@@ -659,7 +659,7 @@ node "$PLUGIN/bin/orca-stop.ts" --status-dir "$SD" --role "$ROLE"
 ```
 
 It records the stop before it closes the terminal, so the wait settles that role as
-`outcome=stopped` instead of reporting a lost worker, and `orca-recover.sh` leaves it alone.
+`outcome=stopped` instead of reporting a lost worker, and `orca-recover.ts` leaves it alone.
 It restarts the stall clock too. Stopping a reviewer tells the worker it reviews to carry on
 without review: that work is then unreviewed, and Step 4's gate applies as usual. A reviewer
 that has already finished is still listed while the worker it reviews is waiting, since one
@@ -730,7 +730,7 @@ role at a time:
 ```bash
 : "${SD:?set SD to the exact status_dir printed in Step 2}"
 : "${PLUGIN:?run the block at the top of this file first}"
-bash "$PLUGIN/bin/orca-recover.sh" --status-dir "$SD" --dry-run
+node "$PLUGIN/bin/orca-recover.ts" --status-dir "$SD" --dry-run
 ```
 
 Read what it says it would do, then run it again without `--dry-run` to act. Its choices are
@@ -1022,7 +1022,7 @@ State these when they apply. Do not work around them silently.
 | Limitation | What the user does |
 |---|---|
 | Cleanup never runs on its own | Answer the Step 6 question; only what you approve is removed, and anything you decline stays |
-| Recovery is never automatic; you decide when to run it | `orca-recover.sh` (Step 3) decides per role and acts only when you run it without `--dry-run`. Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
+| Recovery is never automatic; you decide when to run it | `orca-recover.ts` (Step 3) decides per role and acts only when you run it without `--dry-run`. Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
 | If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
 | A worker asks a person only when its `design_mode` told it to, and it blocks until you answer | Under `direct` and `plan` it is told to fail with a reason in `result.md` instead; read it and dispatch again. Under `brainstorm` it uses `orchestration ask`, the wait exits 6 with the question and the `reply` command, and the worker resumes only once you run that command |
 | A worker that is sent back for remediation retries in the same session, and this skill does not cap those rounds | Watch the wait's output: each remediation is logged with its reason. A worker that cannot satisfy the check will keep being sent back until it fails or the wait times out |
@@ -1031,7 +1031,7 @@ State these when they apply. Do not work around them silently.
 | Setup hooks do not run unless you ask for them | Set `setup` to `run`. A worktree whose setup failed never gets a worker, so a failure shows up as a refusal to start rather than as a confusing result |
 | A pull request is opened, never merged or reviewed by this skill | Review and merge it yourself. The issue closes when the pull request merges, not when the run ends |
 | A reviewer's verdict can be refused delivery, leaving the work unreviewed | Measured 2026-09-12 in two runs out of three: the reviewee stopped waiting and settled, so its dispatch no longer accepted the verdict and `orca-send.ts` reported it undelivered. The findings file stays on disk, which is why neither the wait nor Step 4 counts that file as a review — both read `sent.json` for the delivery. The wait says `accepted UNREVIEWED`, and Step 4 refuses to merge until you pass `--allow-unreviewed` |
-| Nothing restarts the wait, and nothing announces that it stopped | It is resident for up to 24 hours, so the host may stop it — measured twice when a worker's own tests exhausted the machine's memory. Read `wait.json` (Step 3), or run `orca-recover.sh`, which says so before deciding anything. Restarting is always safe; detaching it with `setsid` keeps it alive but sends its exit codes nowhere |
+| Nothing restarts the wait, and nothing announces that it stopped | It is resident for up to 24 hours, so the host may stop it — measured twice when a worker's own tests exhausted the machine's memory. Read `wait.json` (Step 3), or run `orca-recover.ts`, which says so before deciding anything. Restarting is always safe; detaching it with `setsid` keeps it alive but sends its exit codes nowhere |
 | A new worktree is not cut from the parent checkout's current HEAD | `worktree create` takes no base, so Orca chooses one: measured 2026-09-12, a worktree created after an earlier task had been merged still started from the pre-merge base, and building there means working without changes that are already in. Step 2 fast-forwards a worktree **it created** to the parent's HEAD and says so, and refuses to start at all when the two histories are unrelated. A reused worktree is left alone, because moving it could undo work in progress |
 | A wait notices a new stage only once a message from it arrives | It reloads `workers.json` on the first message naming a dispatch it does not know, so Step 3.5 needs no restart. Until that first message the new roles are missing from its progress lines, which is not a sign that the stage failed to start |
 | A worker may be unable to obtain its own review wait | Measured 2026-09-11: `exec` reported that its review wait could not start because Orca had an already-active actionable waiter for the Run, so it offered its work with no verdict. Workers are now told that this refusal means the mailbox is busy, not that review is unavailable, and to run the wait again. When it still ends up unreviewed the wait names it: `accepted UNREVIEWED` in its log, and `review=unreviewed` on that role's final line |

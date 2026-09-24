@@ -3,7 +3,7 @@
 # 全部である。旧 capability と新 capability が同時に lifecycle を進めてはならない。
 set -uo pipefail
 P="$(cd "$(dirname "$0")/.." && pwd)"
-R="$P/bin/orca-recover.sh"
+R="$P/bin/orca-recover.ts"
 CMP="$P/skills/orca-team-dispatch-task/scripts/completion.ts"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 
@@ -26,7 +26,7 @@ show() {   # $1=worker state  $2=dispatch status
     > "$ORCA_STUB_DIR/orchestration_worker-show"
 }
 owe() { node "$CMP" --role-dir "$SD/roles/design" prepare >/dev/null; }
-rec() { bash "$R" --status-dir "$SD" "$@"; }
+rec() { node "$R" --status-dir "$SD" "$@"; }
 gen() { jq -r '.roles.design.generation' "$SD/workers.json"; }
 did_() { jq -r '.roles.design.dispatch' "$SD/workers.json"; }
 
