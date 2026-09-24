@@ -985,6 +985,12 @@ Say these things to the user in plain language:
   close: it archives the worker's output before closing, so `worker-read` still works
   afterwards, and it refuses to close a terminal whose identity it cannot prove or that someone
   has taken over. That refusal is a second gate under this one.
+  A terminal Orca reports as `ownershipState: user_owned` is one the user has operated, and
+  `worker-release` never closes it, whatever its `retainedReason` — including the ordinary
+  `user_requested` that Step 3's retention sets. Its release is therefore not offered: the plan
+  keeps it, saying that the user owns it and that removing its worktree closes it, and that
+  worktree is still offered when [C3] holds. Tell the user that its output is not archived
+  either, so anything worth keeping on that screen goes with the worktree.
 - [C3] The removal command is offered only when the work is merged, **this dispatch
   created the worktree**, the checkout is clean and readable, the terminal identity
   matched, and every terminal still in that worktree is one we recorded. A reused
@@ -1040,6 +1046,8 @@ side effect of deciding.
 - The dispatch record holds the ids of the terminal and the worktree. When it is offered
   next to them, say in that option what removing the record while keeping the others costs,
   so the choice is made knowingly.
+- When Step 5 kept a task's terminal because the user owns it, say in the worktree option that
+  covers that task that removing the worktree also closes that terminal.
 - Pass each approved action to `run` as `--approve <slug>:<terminal|worktree|record>`, with the
   `plan_file` Step 5 printed. For the single-question form, pass the chosen action once for
   every task that offers it.
@@ -1064,18 +1072,27 @@ What `run` does, so you can report it truthfully:
   refused as a whole. `run` also checks a record's path and merged state before removing it.
   An `--approve` the plan does not offer is a usage error (exit 2), and then nothing runs.
 - It checks the receipt of each Orca command: it counted only when `.ok == true`. On anything
-  else it stops that task there, reports what did not happen, and leaves the rest of that task
-  in place. A failure never authorises the step after it, and a failure in one task never
-  authorises skipping ahead in another; the other tasks still run.
+  else it reports what did not happen and holds back only the steps that depend on it: a role's
+  worktree depends on that role's terminal, and the dispatch record depends on every step of its
+  task. So a failure keeps the failed role's worktree and the task's record in place, while the
+  other roles' terminals and worktrees still run — measured 2026-09-24, one `design` terminal
+  that would not close used to leave three other terminals and four worktrees untouched. A
+  failure never authorises a step that depends on it, and a failure in one task never authorises
+  skipping ahead in another; the other tasks still run.
 - **`.ok == true` is not enough for the terminal action.** Measured against a real runtime,
   `worker-release` answers `ok` while releasing nothing when Orca considers the terminal
-  user-owned: the state still reads `releaseState: retained` with
-  `retainedReason: user_takeover`. `run` reads the state back from `orchestration worker-list`
-  before it says the session was closed. A terminal kept for `user_takeover` is not a failure to
-  stop on — the worktree step still proceeds — but it is reported as kept, never as closed. Any
-  other answer is that task's failure, so its worktree and record stay: a state that cannot be
-  read back, a worker Orca no longer lists, a release still pending or unknown, or a terminal kept
-  for any other reason.
+  user-owned: the state still reads `releaseState: retained` with `ownershipState: user_owned`,
+  and its `retainedReason` is `user_takeover` or the ordinary `user_requested` that Step 3's
+  retention set — the latter measured on the `design` terminal in four Runs on 2026-09-23 and
+  2026-09-24. `run` reads the state back from `orchestration worker-list` before it says the
+  session was closed. A terminal Orca keeps because the user owns it, whatever its
+  `retainedReason`, or keeps for `user_takeover`, is not a failure to stop on: that role's
+  worktree step still proceeds, and removing the worktree closes the terminal. It is reported as
+  kept, never as closed. Step 5 does not offer the release of a terminal it already sees as
+  user-owned, so this applies to a terminal the user took over after Step 5. Any other answer is
+  that role's failure, so its worktree and the task's record stay: a state that cannot be read
+  back, a worker Orca no longer lists, a release still pending or unknown, or a terminal kept for
+  any other reason.
 - It removes a dispatch record only after checking again that it is a dispatch status directory
   directly inside `.dispatch`.
 - It finishes by printing, per task, what was removed and what was kept. Exit 0 means every
@@ -1106,7 +1123,7 @@ State these when they apply. Do not work around them silently.
 | `phase_b=on` costs a second worker and a second worktree per task | Leave it off unless separating planning from building is worth that. The plan is kept at `.dispatch/<slug>/plan.md` either way it is written |
 | An `--issue` run does not resume by itself after a crash | The next run's `reconcile` finds the claim, releases it when nothing is running, and stops the run when something might be |
 | A slow issue holds up the rest of its batch | The wait is per batch. Use a smaller batch size when one issue is expected to be long |
-| A released worker can stay recorded as `retained`, which makes [C7] stop a later dispatch on the same Run | Measured twice: `worker-release` answers `ok` while the receipt keeps `releaseState: retained` with `retainedReason: user_takeover`, and the record survives the terminal itself. Removing the worktree closes the terminal with it — `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` succeeded where the release did not (measured 2026-09-11), so offer that in Step 6 for that task. Otherwise start a fresh Run rather than reusing one whose dispatches are gone; [C7] is scoped to a Run, so a new Run is unaffected |
+| A terminal the user has operated is never released, and Orca keeps listing its worker as `retained` even after the terminal is gone, which makes [C7] stop a later dispatch on the same Run | Orca marks such a terminal `ownershipState: user_owned`, and `worker-release` then answers `ok` and closes nothing, whatever the `retainedReason`: measured with `user_takeover`, and on the `design` terminal of four Runs on 2026-09-23 and 2026-09-24 with the ordinary `user_requested` that Step 3's retention sets. Its output is not archived either. Step 5 does not offer that release and says why. Removing the worktree closes the terminal with it — `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` succeeded where the release did not (measured 2026-09-11 and 2026-09-24) — so approve that in Step 6 for that task. Orca still lists the worker as `retained` afterwards, so start a fresh Run rather than reusing one whose dispatches are gone; [C7] is scoped to a Run, so a new Run is unaffected |
 | A batch this version cannot handle stays unacknowledged and blocks its parent terminal's queue | Do not acknowledge it. Inspect `received.json` and `result.md`; guarded manual integration does not unblock that queue. Start later dispatches from another Orca terminal, whose `ORCA_TERMINAL_HANDLE` is used at launch |
 | A dispatch Orca reports as `release_pending` or `release_unknown` is never cleaned up | [C1] stops that task. Leave its terminal, worktree and record alone and inspect it with `$ORCA_BIN orchestration worker-show --dispatch <id> --json`; `release_pending` may settle by itself, `release_unknown` needs a decision |
 | Failure and edge receipt fixtures are partly simulated | The real E2E now proves the success path for one worker and for a reviewed pair, plus real `check` wait/ack, `worker-release` alternate-state, and terminal/worktree cleanup receipts. **Failure and rejection receipts are still simulated**; capture them before relying on the paths that consume them |

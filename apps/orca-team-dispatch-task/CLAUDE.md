@@ -57,6 +57,12 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   **その計画の提示しか実行しない**。argv が計画を書いたときの形と違えば（`--force` の追加など）
   計画ごと拒む。`worker-release` のあとは `worker-list` から state を読み直す（receipt の `ok` だけ
   では「閉じた」と言えない。実測 O43）。回帰は `test/test-cleanup.sh`
+- **Orca が端末を閉じない理由は `ownershipState: user_owned`（ユーザーが操作した端末）で見る。**`retainedReason` は
+  Step 3 の worker-retain が付けた `user_requested` のままのことがある（2026-09-23 と 24 に 4 Run の design で実測。
+  `user_takeover` だけを保持扱いにしていた版は、run がそのタスクの残りを 1 つも実行しなかった）。plan はその release を
+  提示せず、run の読み直しでも保持として worktree へ進む（判定は `lib/orca.ts` の `userOwned`）。**失敗が止めるのは
+  依存する手順だけ** — 端末の失敗はその役の worktree と記録を、worktree の失敗は記録を止め、ほかの役の端末と
+  worktree は続ける。回帰は `test/test-cleanup.sh` の CL31-CL36 と `test/test-docs.sh` の SK28
 
 - **SKILL.md の bash block に判定を書かない。**置いてよいのはコメント、ガード `: "${VAR:?...}"`、入口の
   呼び出し（`node "$PLUGIN/..."` / `"$ORCA_BIN" ...` / `gh repo view`）だけ。block の間で shell 変数を運ばせ

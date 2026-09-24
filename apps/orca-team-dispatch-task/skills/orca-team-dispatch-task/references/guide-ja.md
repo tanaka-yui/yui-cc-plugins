@@ -942,6 +942,11 @@ TypeScript のファイルを直接実行するので、Node 22.18 以上が要�
   である。閉じる前に worker の出力を archive するので、閉じた後も `worker-read` が読める。そして
   identity を証明できない端末や、誰かが引き取った端末を閉じることを拒む。この拒否は、この判定の下に
   あるもう 1 つの gate である。
+  Orca が `ownershipState: user_owned` と報告する端末はユーザーが操作した端末であり、`worker-release` は
+  その `retainedReason` が何であっても（Step 3 の retain が付ける通常の `user_requested` でも）閉じない。
+  だから release は提示しない。計画はその端末を残し、ユーザーの所有であることと、worktree を消せば閉じる
+  ことを書く。その worktree は [C3] が成り立てば提示する。その出力も archive されないので、その画面に残して
+  おきたいものは worktree と一緒に失われることをユーザーへ伝える。
 - [C3] 削除コマンドは、成果が merge 済み、**この dispatch が worktree を作成した**、checkout が
   読めて clean、端末 identity が一致、worktree にまだ残る端末すべてが記録済み、の全条件を
   満たすときだけ提示する。再利用 worktree は最初からこちらのものではないため、削除を提示しない。
@@ -991,6 +996,8 @@ TypeScript のファイルを直接実行するので、Node 22.18 以上が要�
 - 何も選ばないのは正当な回答である。`run` を呼ばず、すべてを残し、何が残ったかを伝える。
 - dispatch 記録は端末と worktree の id を保持している。それらと並べて提示するときは、
   記録だけを削除して他を残すと何を失うのかをその選択肢に書き、承知のうえで選べるようにする。
+- ユーザーの所有のため Step 5 が端末を残したタスクでは、そのタスクを含む worktree の選択肢に、worktree を
+  消すとその端末も閉じることを書く。
 - 承認された対象を、Step 5 が印字した `plan_file` と一緒に、`--approve <slug>:<terminal|worktree|record>`
   として `run` へ渡す。単一の質問の形では、選ばれた対象を、それを提示しているタスクごとに 1 つずつ渡す。
 
@@ -1012,17 +1019,23 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
   記録した役と合わない計画は丸ごと拒む。記録の削除前には path と merge 済みであることも確かめる。
   計画が提示していない `--approve` は使用法の誤り（exit 2）であり、そのときは何も実行しない。
 - Orca コマンドごとに receipt を確認する。`.ok == true` のときだけ実行できたとみなす。
-  それ以外ならそのタスクはそこで止め、何が実行されなかったかを報告し、そのタスクの残りには
-  手を付けない。失敗が次の step を authorise することはなく、あるタスクの失敗が別のタスクの
-  先送りを authorise することもない。ほかのタスクはそのまま実行する。
+  それ以外なら、何が実行されなかったかを報告し、それに依存する step だけを止める。役の worktree は
+  その役の端末に依存し、dispatch 記録はそのタスクのすべての step に依存する。だから失敗で残るのは、
+  失敗した役の worktree とタスクの記録であり、ほかの役の端末と worktree はそのまま実行する — 2026-09-24 に
+  観測: `design` の端末 1 本が閉じなかっただけで、ほかの 3 本の端末と 4 つの worktree に手が付かなかった。
+  失敗がそれに依存する step を authorise することはなく、あるタスクの失敗が別のタスクの先送りを
+  authorise することもない。ほかのタスクはそのまま実行する。
 - **端末の操作については `.ok == true` では足りない。**実機で計測したところ、Orca が端末を
   user-owned とみなしている場合、`worker-release` は何も解放しないまま `ok` を返す —
-  state は `releaseState: retained` と `retainedReason: user_takeover` のままである。
-  `run` はセッションを閉じたと言う前に、その state を `orchestration worker-list` から読み直す。
-  `user_takeover` で保持された端末は止まるべき失敗ではなく（worktree の step は続ける）、閉じたとは
-  報告せず、残したと報告する。それ以外の答えはそのタスクの失敗であり、worktree と記録は残す —
-  state を読み直せない、Orca の一覧にその worker が無い、release がまだ pending / unknown、ほかの理由で
-  保持された、のいずれも。
+  state は `releaseState: retained` と `ownershipState: user_owned` のままで、`retainedReason` は
+  `user_takeover` か、Step 3 の retain が付けた通常の `user_requested` である（後者は 2026-09-23 と
+  2026-09-24 に 4 Run の `design` の端末で計測した）。`run` はセッションを閉じたと言う前に、その state を
+  `orchestration worker-list` から読み直す。ユーザーの所有で保持された端末（`retainedReason` は問わない）と
+  `user_takeover` で保持された端末は、止まるべき失敗ではない。その役の worktree の step は続け、worktree を
+  消せば端末も閉じる。閉じたとは報告せず、残したと報告する。Step 5 は既に user-owned と見えている端末の
+  release を提示しないので、これが効くのは Step 5 のあとでユーザーが引き取った端末である。それ以外の答えは
+  その役の失敗であり、その役の worktree とタスクの記録は残す — state を読み直せない、Orca の一覧にその
+  worker が無い、release がまだ pending / unknown、ほかの理由で保持された、のいずれも。
 - dispatch 記録を消すのは、それが `.dispatch` の直下にある dispatch の status dir であることを
   もう一度確かめてからである。
 - 最後に、タスクごとに削除したものと残したものを印字する。exit 0 は承認された対象をすべて実行した
@@ -1053,7 +1066,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | `phase_b=on` はタスクごとに worker と worktree を 1 つずつ増やす | 計画と実装を分ける価値があるとき以外は off のままにする。計画は書かれたなら `.dispatch/<slug>/plan.md` に残る |
 | `--issue` の実行は crash から自力で再開しない | 次の実行の `reconcile` が claim を見つけ、何も走っていなければ release し、走っているかもしれなければ実行を止める |
 | 遅い 1 件がそのバッチの残りを待たせる | 待ちはバッチ単位である。長くなると分かっている issue があるならバッチを小さくする |
-| 解放したはずの worker が `retained` の記録のまま残り、同じ Run の後の dispatch で [C7] が止まることがある | 2 回独立に観測した: `worker-release` は `ok` を返すのに receipt は `releaseState: retained` / `retainedReason: user_takeover` のままで、その記録は端末そのものより長く残る。worktree を消すと端末も一緒に閉じる — release が通らなかった場面で `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` は成功した（2026-09-11 に観測）ので、そのタスクについては Step 6 でそちらを提示する。それ以外では、dispatch が消えた Run を使い回さず新しい Run を起こす。[C7] の範囲は Run 単位なので、新しい Run は影響を受けない |
+| ユーザーが操作した端末は解放されず、端末が無くなったあとも Orca はその worker を `retained` として一覧に残すので、同じ Run の後の dispatch で [C7] が止まる | Orca はそうした端末を `ownershipState: user_owned` にし、`worker-release` は `retainedReason` が何であっても `ok` を返して何も閉じない: `user_takeover` で観測し、Step 3 の retain が付ける通常の `user_requested` でも 2026-09-23 と 2026-09-24 に 4 Run の `design` の端末で観測した。その出力も archive されない。Step 5 はその release を提示せず、理由を示す。worktree を消すと端末も一緒に閉じる — release が通らなかった場面で `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` は成功した（2026-09-11 と 2026-09-24 に観測）ので、そのタスクについては Step 6 でそちらを承認する。その後も Orca はその worker を `retained` として一覧に残すので、dispatch が消えた Run を使い回さず新しい Run を起こす。[C7] の範囲は Run 単位なので、新しい Run は影響を受けない |
 | この版が扱えない batch は acknowledge されないまま親 terminal の queue を block する | acknowledge しない。`received.json` と `result.md` を確認する。guarded manual integration でも queue は解消されない。後続の dispatch は別の Orca terminal から開始し、launch 時にはその `ORCA_TERMINAL_HANDLE` が使われる |
 | Orca が `release_pending` / `release_unknown` と報告する dispatch は片付けられない | [C1] がそのタスクを止める。端末・worktree・記録をそのまま残し、`$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べる。`release_pending` は自然に確定しうるが、`release_unknown` は判断が要る |
 | failure / edge receipt fixture の一部は simulated のままである | 実機 E2E は worker 1 本の成功経路に加え、**レビュー 2 役の成功経路**、`check` の wait/ack、`worker-release` の別 state、terminal/worktree cleanup の実機 receipt まで証明した。**failure と rejection の receipt は依然 simulated** であり、それを消費する経路に依存する前に capture する |

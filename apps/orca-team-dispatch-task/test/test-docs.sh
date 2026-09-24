@@ -493,6 +493,24 @@ else
   echo "SKIP: SK27 zsh が無い"
 fi
 
+# SK28: ★ **Orca が端末を閉じない理由は ownership であって retainedReason ではない。**Step 5・Step 6・既知の制限が、
+#       両文書とも `ownershipState: user_owned` を書き、Step 6 と既知の制限は Step 3 の retain が付ける `user_requested` の
+#       実例も書く（2026-09-24: user_takeover だけを保持扱いにしていたので、run がタスクごと止まった）
+bad=""
+for f in "$S" "$G"; do
+  b=$(basename "$f")
+  step5=$(awk '/^## Step 5: /{s=1} /^## Step 6: /{s=0} s' "$f")
+  step6=$(awk '/^## Step 6: /{s=1; print; next} s && /^## /{exit} s' "$f")
+  limits=$(awk '/^## (Known limitations|既知の制限)$/{s=1; next} s && /^## /{exit} s' "$f")
+  grep -q 'ownershipState: user_owned' <<<"$step5" || bad="$bad [step5:$b]"
+  for part in step6 limits; do
+    text=${!part}
+    { grep -q 'ownershipState: user_owned' <<<"$text" && grep -q 'user_requested' <<<"$text"; } \
+      || bad="$bad [$part:$b]"
+  done
+done
+[[ -z "$bad" ]] && ok "SK28 端末を閉じない理由を ownership で書き、user_requested の実例を持つ" || fail "SK28:$bad"
+
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
   && ! grep -q 'dangerously-skip-permissions' "$S" \
