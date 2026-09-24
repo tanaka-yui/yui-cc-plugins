@@ -166,6 +166,46 @@ reviewer を止めたら（決着済みでも）依頼側へ `review-skipped:`�
 再起動すると、サーバ側の waiter がしばらく残る（実測）。待って試し直す。**他の失敗では
 粘らない**（回帰は WT66 / WT67）。
 
+## 未確認（start_unknown）の worker
+
+**`start_unknown` は生死のどちらの証拠でもない。**Orca は依頼を入力したが、agent のターン開始を観測できなかった
+（`worker.stage` は `turn_start_unobserved`）。2026-09-24 の実測: influencer-platform の reviewer（codex）は動いて
+依頼を待っていたのに、worker-show は 15 分以上 `start_unknown` のままだった。yui-cc-plugins の P2 の exec（codex）は
+同じ state で、自動更新のあとシェルへ戻って死んでいた。どちらも端末は connected だった。
+
+この state がどの入口の「知っている状態」にも無かったので、待機は exit 4、停止は何も打たず、回復は何もしない、の
+3 つの行き止まりになった。**分類は `lib/orca.ts` の `workerStateClass` の 1 箇所に置き**（live / unconfirmed /
+settled / other）、待機・停止・回復・起床が同じ表を読む:
+
+- 待機は止まらず、dispatch ごとに 1 回言って待ち続ける。死んでいれば子が何も書かないので停滞（exit 8）で見つかる。
+  記録に端末が無ければ worker-show の `agentTerminalHandle` で埋める（stalled_role 行が画面の読み先を名指しできる）。
+  人を待っている（agentWait）worker にも埋める。`start_incomplete` の印は外さない — 外すのはユーザーの判断（`--adopt`）。
+  印の無い旧形式の記録は「端末なし・status が starting」で読まれるので、埋める書き込みで印を明示する
+- 停止は worker-stop を打つ。fence なので生死どちらでも正しい（Orca は受け付ける。2026-09-24 に手で確認）
+- 回復は、起動が終わらなかった役なら画面の最後の数行と 2 つの手段を見せて止まる。**選ぶのはユーザー**:
+  `--adopt` は端末を記録して印を外し、`--restart` は worker-stop で fence してから、Orca が stopped と言うのを
+  確かめて置き換える。起動が完了した役（完了を負う役）には効かない — その経路は Orca の dispatch が終端になると
+  reconcile へ入るので、自分で打った fence を決着と読み違える
+- 起床は打たない。死んでいれば端末はシェルに戻っていることがあり、そこへ打つと文章がコマンドとして走る。
+  だから `--adopt` のあとも、Orca が start_unknown と言う間は誰もその端末に打たない
+
+**置き換える試行の完了の記録は、新しい worker を起こす前に退避する。**新しい worker は ready を報告する前から
+動いていることがあり（start_unknown — worker-start はターン開始の観測を待ってから返る）、記録が残っていれば
+`completion.ts prepare`（冪等）が前の試行の nonce を返し、前の試行が accepted / settled まで進んでいれば `await` は親の検証を
+待たずに accepted を返す。起こしたあとで消すと、今度は起動中に新しい worker が書いた記録を消す（計画のレビューの round 1・2 で
+見つかった）。だから境界は起こす前に置き（`completion.superseded-<前の dispatch>.json` へ rename。できなければ起こさない）、
+dispatch が返らなければ戻し、記録できたら消し、起こしたあとは `completion.json` に触らない。`--adopt` も完了の記録に触らない —
+そこにあるのは引き受ける試行が自分で書いたものだけである。
+
+codex がフォルダの信頼（「Trust this folder?」）で止まった起動は、Orca が `agent-trust-workspace` で failed にする。
+orca-start と orca-recover はその解き方を案内する（`lib/trust.ts`）。判定は `worker.lastError` と
+`dispatch.lastFailure` の 2 欄だけを読む — worker-show は画面の preview も返すので、全文を探すとこの語を画面に
+出しているだけの worker を取り違える。codex は信頼を worktree ではなく本体の checkout の root に記録する（codex-rs の
+`resolve_root_git_project_for_trust`）ので、案内する path は worktree から `git rev-parse --git-common-dir` で求める。
+
+回帰は test-wait.sh の WT107-112、test-stop.sh の SP19、test-recover.sh の RC23 / RC27 / RC28-43、test-wake.sh の WK9、
+test-start.sh の ST104 / ST105、`test/unit/orca.test.ts` と `test/unit/trust.test.ts`。
+
 ## レビュー往復の要点
 
 - 往復は `orchestration send --to dispatch:<id>` / `check` の直接やり取り（実測 O38）。

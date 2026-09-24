@@ -526,10 +526,17 @@ the whole batch: the wait cannot process a message for a dispatch it was never t
 every sibling task's result stays stuck behind it.
 
 When the message says `worker-start did not report ready`, do not start that task again with
-Step 2 or Step 3.5: both refuse, because the task already has that dispatch. Once Orca reports
-that worker `failed` or `stopped`, replace the failed start with `orca-recover.ts` as Step 3's
-recovery block shows. It releases the terminal the failed start still owns and starts a
-replacement on the same Task and worktree.
+Step 2 or Step 3.5: both refuse, because the task already has that dispatch. Run
+`orca-recover.ts` for that role as Step 3's recovery block shows. Once Orca reports that worker
+`failed` or `stopped`, it releases the terminal the failed start still owns and starts a
+replacement on the same Task and worktree. When Orca reports it `start_unknown` instead, it
+prints the last lines of that worker's screen and changes nothing: the user chooses between
+`--adopt` and `--restart`, as Step 3 describes.
+
+When the message also says that codex stopped at its `Trust this folder?` screen
+(`agent-trust-workspace`), trust the folder first — on that screen, or with the two lines it
+prints for `~/.codex/config.toml` — and then recover. codex keeps that trust for the
+repository's main checkout, so later worktrees of it start without asking.
 
 ## Step 3: Wait
 
@@ -756,24 +763,37 @@ narrow on purpose:
 - **Proven `failed` or `stopped`** → it starts a replacement on the *same* task with
   `--retry-of`, raises the generation, and drops the old completion record so the new worker
   offers again with a fresh nonce.
-- **A start that did not complete** — the role's latest attempt never became ready: it has a
-  dispatch but no terminal recorded, and Step 2, Step 3.5 or this block marked it
-  `start_incomplete` → once Orca proves it `failed` or `stopped`, it releases the terminal that
-  start still owns with `orchestration worker-release` and starts a replacement the same way. Any
-  other state of that start is only reported, never replaced. This comes before anything about
-  the completion the role owes, because the role's status and completion record belong to an
-  earlier attempt.
+- **A start that did not complete** — the role's latest attempt never became ready, and Step 2,
+  Step 3.5 or this block marked it `start_incomplete` → once Orca proves it `failed` or
+  `stopped`, it releases the terminal that start still owns with `orchestration worker-release`
+  and starts a replacement the same way. `start_unknown` is the next item; any other state of
+  that start is only reported, never replaced. This comes before anything about the completion
+  the role owes, because the role's status and completion record belong to an earlier attempt.
+- **A start that Orca reports as `start_unknown`** — Orca typed the task in but never saw the
+  agent's turn begin, and it keeps saying so while the worker works. That proves neither that
+  the worker runs nor that it died: measured 2026-09-24, one such codex worker was waiting for
+  review requests while another had dropped back to a shell after updating itself. The wait does
+  not stop on it: it says so once and keeps waiting, and a dead one is reported as a stall
+  (exit 8). This block prints the last lines of that worker's screen and changes nothing. Show
+  them to the user and ask. Working → run it again with `--role <role> --adopt`: it records the
+  worker's terminal and clears `start_incomplete`, and the dispatch carries on. Not working →
+  `--role <role> --restart`: it has Orca stop the worker with `orchestration worker-stop` first,
+  which fences the dispatch, and replaces it once Orca reports it stopped. A wait that is
+  running may then exit 4 on the stopped attempt; start it again.
 - **Anything it cannot confirm, including `outcome_unknown`** → it does nothing and says so.
   Fencing comes first; guessing here is how two capabilities end up driving one lifecycle.
 - **Orca already settled it** → nothing is sent; the local record is brought into line.
 
 A replaced dispatch is kept in that role's `superseded` list in `workers.json`, oldest first. A
 replacement that Orca does not report ready is still recorded as the role's dispatch, so running
-this again replaces the latest attempt, not the first. Step 5 checks what Orca still holds for
-every replaced attempt, and the wait neither answers nor records a message from one.
+this again replaces the latest attempt, not the first. Before it starts a replacement, it moves
+the replaced attempt's completion record aside, so a replacement that runs before or without
+reporting ready offers its own work and waits for its own acceptance; the record is put back when
+Orca starts nothing. Step 5 checks what Orca still holds for every replaced attempt, and the wait
+neither answers nor records a message from one.
 
-Run it when Step 3 reports exit 4, when a task sits unfinished with no worker left, or when Step 2
-or Step 3.5 says a start did not complete.
+Run it when Step 3 reports exit 4, when a task sits unfinished with no worker left, when Step 2
+or Step 3.5 says a start did not complete, or when the wait says a worker is `start_unknown`.
 
 ## Step 3.5: Start the exec phase when `phase_b` is on
 
@@ -1078,6 +1098,8 @@ State these when they apply. Do not work around them silently.
 | A dispatch Orca reports as `release_pending` or `release_unknown` is never cleaned up | [C1] stops that task. Leave its terminal, worktree and record alone and inspect it with `$ORCA_BIN orchestration worker-show --dispatch <id> --json`; `release_pending` may settle by itself, `release_unknown` needs a decision |
 | Failure and edge receipt fixtures are partly simulated | The real E2E now proves the success path for one worker and for a reviewed pair, plus real `check` wait/ack, `worker-release` alternate-state, and terminal/worktree cleanup receipts. **Failure and rejection receipts are still simulated**; capture them before relying on the paths that consume them |
 | A stalled task is only reported; nothing stops it unless you say so | Workers wait with no time limit. The wait exits 8 after two hours without progress, and Step 3 asks you whether to keep waiting or stop a role. An `--issue` run only records it in `stall.json` and keeps waiting |
+| Orca can keep reporting a working worker as `start_unknown` | Measured 2026-09-24: Orca could not observe the start of a codex worker's turn and kept that state while the worker went on working. The wait keeps waiting on it and reports a dead one as a stall (exit 8). Nothing types into such a worker to wake it — a dead one may have left a bare shell — so it relies on its own waits. For a start that did not complete, `orca-recover.ts` shows its screen and you choose `--adopt` or `--restart` (Step 3) |
+| codex asks once per repository whether to trust it, and until then a start fails with `agent-trust-workspace` | Trust the folder on that worker's screen, or add `[projects."<main checkout>"]` with `trust_level = "trusted"` to `~/.codex/config.toml`; Step 2 and `orca-recover.ts` print the exact lines. codex keeps the trust for the repository's main checkout, so later worktrees start without asking. Then replace the failed start with `orca-recover.ts` |
 
 ## State on disk
 
