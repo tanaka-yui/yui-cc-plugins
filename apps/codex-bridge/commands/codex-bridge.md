@@ -12,16 +12,28 @@ Codex responds in Japanese).
 
 ## Execution
 
+`<PLUGIN_ROOT>` below is the installed copy of this plugin. No environment variable carries it
+into the Bash tool, so resolve it once and write the literal path in its place:
+
+```bash
+jq -er '.plugins["codex-bridge@yui-cc-plugins"][0].installPath' ~/.claude/plugins/installed_plugins.json
+```
+
+Never pick the newest-looking version directory under the plugin cache (older versions stay there),
+and never fall back to a development checkout of this repository: either runs a copy other than the
+installed one. If the command fails, stop and tell the user the plugin is not installed. Respond to
+the user in Japanese.
+
 No arguments (project generation):
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/bin/codex-bridge.ts"
+bun "<PLUGIN_ROOT>/bin/codex-bridge.ts"
 ```
 
 If `$ARGUMENTS` contains `--global`, generate globally:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/bin/codex-bridge.ts" $ARGUMENTS
+bun "<PLUGIN_ROOT>/bin/codex-bridge.ts" $ARGUMENTS
 ```
 
 `--max-bytes <n>` overrides the size limit for this run. Without it the limit comes

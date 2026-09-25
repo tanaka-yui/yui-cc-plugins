@@ -11,6 +11,18 @@ message wakes the parent (this session) through its persistent agmsg Monitor str
 
 ## Procedure
 
+`<PLUGIN_ROOT>` below is the installed copy of this plugin. No environment variable carries it
+into the Bash tool, so resolve it once and write the literal path in its place:
+
+```bash
+jq -er '.plugins["cmux-codex-exec@yui-cc-plugins"][0].installPath' ~/.claude/plugins/installed_plugins.json
+```
+
+Never pick the newest-looking version directory under the plugin cache (older versions stay there),
+and never fall back to a development checkout of this repository: either runs a copy other than the
+installed one. If the command fails, stop and tell the user the plugin is not installed. Respond to
+the user in Japanese.
+
 ### Step 0: Determine the plan to implement
 
 If `$ARGUMENTS` contains a plan path (a positional argument ending in `.md`), use it.
@@ -19,7 +31,7 @@ If `$ARGUMENTS` contains a plan path (a positional argument ending in `.md`), us
 If not, list candidates:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-exec" --list-targets
+"<PLUGIN_ROOT>/bin/cmux-codex-exec" --list-targets
 ```
 
 The output is one-candidate-per-line TSV (`target<TAB>plan<TAB><path><TAB><label>`).
@@ -129,7 +141,7 @@ Append `--team <TEAM> --parent <PARENT>` to the plan path determined in Step 0 a
 `$ARGUMENTS` (e.g. `-d down`), then run:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-exec" <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>
+"<PLUGIN_ROOT>/bin/cmux-codex-exec" <PLAN> $ARGUMENTS --team <TEAM> --parent <PARENT>
 ```
 
 If Step 0 was skipped (i.e. `$ARGUMENTS` already contains the plan path), omit
@@ -207,7 +219,7 @@ Then end the turn.
     what the work itself leaves behind, not what the session says about it:
 
     ```bash
-    "${CLAUDE_PLUGIN_ROOT}/bin/work-signal" "$(pwd)" \
+    "<PLUGIN_ROOT>/bin/work-signal" "$(pwd)" \
       --state "${TMPDIR:-/tmp}/cmux-codex-exec/<token>.work-signal" --surface <surface>
     ```
 

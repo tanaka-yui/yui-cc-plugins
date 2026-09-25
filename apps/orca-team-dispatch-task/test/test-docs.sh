@@ -422,7 +422,7 @@ block_logic() {   # $1 = file。違反した行を「<block 番号>: <行>」で
     !k { next }
     {
       n++
-      if (n == 1 && ($0 ~ /^PLUGIN="[$][{]CLAUDE_PLUGIN_ROOT[}]"$/ || $0 ~ /^SLUG=</ || $0 ~ /^setsid nohup /)) exempt = 1
+      if (n == 1 && ($0 ~ /^PLUGIN="<PLUGIN_ROOT>"$/ || $0 ~ /^SLUG=</ || $0 ~ /^setsid nohup /)) exempt = 1
       if (exempt || $0 ~ /^[[:space:]]*(#|$)/) next
       if (!cont && $0 ~ guard) next
       bare = $0; gsub(/"[^"]*"/, "", bare); sub(/\\$/, "", bare)
@@ -474,7 +474,7 @@ if command -v zsh >/dev/null 2>&1; then
   total=$(grep -c '^```bash$' "$S")
   for ((n = 1; n <= total; n++)); do
     awk -v n="$n" '/^```bash$/ { b++; if (b == n) { f = 1; next } } f && /^```$/ { exit } f { print }' "$S" > "$blk"
-    case "$(head -1 "$blk")" in 'PLUGIN="${CLAUDE_PLUGIN_ROOT}"'|'SLUG=<'*|'setsid nohup '*) continue ;; esac
+    case "$(head -1 "$blk")" in 'PLUGIN="<PLUGIN_ROOT>"'|'SLUG=<'*|'setsid nohup '*) continue ;; esac
     # 値のあるとき: 両方とも成功し、同じ argv を渡す
     b=$(env "${envs[@]}" RUN=run_x REPO=o/r bash "$blk" 2>/dev/null); brc=$?
     z=$(env "${envs[@]}" RUN=run_x REPO=o/r zsh -f "$blk" 2>/dev/null); zrc=$?
@@ -544,6 +544,18 @@ for f in "$S" "$G"; do
 done
 grep -q 'Under `brainstorm` it uses `orchestration ask`' "$S" && bad="$bad [old-limitation]"
 [[ -z "$bad" ]] && ok "SK31 brainstorm の質問先を毎回尋ねる" || fail "SK31:$bad"
+
+# SK32: plugin root は環境変数から取らない。Bash ツールには入らず、冒頭の block が毎回失敗したので、
+#       エージェントが開発用リポジトリのパスを推測して古い版を走らせた（2026-09-25）
+bad=""
+for f in "$S" "$G"; do
+  n=$(basename "$f")
+  grep -qE 'CLAUDE_PLUGIN_[R]OOT' "$f" && bad="$bad [env:$n]"
+  grep -q '^PLUGIN="<PLUGIN_ROOT>"$' "$f" || bad="$bad [placeholder:$n]"
+  grep -q 'Base directory for this skill' "$f" || bad="$bad [base-dir:$n]"
+  grep -qF '.plugins["orca-team-dispatch-task@yui-cc-plugins"][0].installPath' "$f" || bad="$bad [installed:$n]"
+done
+[[ -z "$bad" ]] && ok "SK32 plugin root を起動時の base directory か installed_plugins.json で解決する" || fail "SK32:$bad"
 
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \

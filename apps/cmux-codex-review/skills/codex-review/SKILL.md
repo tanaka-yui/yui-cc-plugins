@@ -94,8 +94,19 @@ Run the bin script. It splits a cmux pane and sends the review prompt to
 **interactive codex** in that pane.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" [args]
+"<PLUGIN_ROOT>/bin/cmux-codex-review" [args]
 ```
+
+`<PLUGIN_ROOT>` is the installed copy of this plugin. No environment variable carries it into the
+Bash tool, so resolve it once and write the literal path in its place:
+
+- Claude Code: two directories above the `Base directory for this skill` shown when this skill loaded.
+- Codex: two directories above the directory that holds this SKILL.md, as the skill list gives its path.
+- Claude Code without that line: `jq -er '.plugins["cmux-codex-review@yui-cc-plugins"][0].installPath' ~/.claude/plugins/installed_plugins.json`.
+
+Never pick the newest-looking version directory under the plugin cache (older versions stay there),
+and never fall back to a development checkout of this repository: either runs a copy other than the
+installed one. If none of the above resolves, stop and tell the user.
 
 Main arguments (all optional; see the bin's header comment for details):
 

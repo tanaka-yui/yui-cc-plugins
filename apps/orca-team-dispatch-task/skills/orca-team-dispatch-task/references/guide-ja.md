@@ -14,9 +14,20 @@ brainstorming、計画、要件についての確認の質問、取りかかり�
 各 worker が自分の worktree で並列に行う。親は dispatch 前にそのどれも行わない。
 
 ```bash
-PLUGIN="${CLAUDE_PLUGIN_ROOT}"
+PLUGIN="<PLUGIN_ROOT>"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 ```
+
+`<PLUGIN_ROOT>` はこのプラグインのインストール先。Bash ツールへこれを運ぶ環境変数は無いので、一度だけ
+解決し、その実パスを書き込む。
+
+- Claude Code: スキル起動時に表示される `Base directory for this skill` の 2 階層上。
+- Codex: スキル一覧が示すこの SKILL.md の置き場所（ディレクトリ）の 2 階層上。
+- その行が無い Claude Code: `jq -er '.plugins["orca-team-dispatch-task@yui-cc-plugins"][0].installPath' ~/.claude/plugins/installed_plugins.json`。
+
+plugin cache の下から新しそうな版のディレクトリを選ばない（古い版が残っている）。開発用リポジトリの
+checkout へフォールバックしない。どちらもインストール済みとは別の版を走らせる。上のどれでも解決できなければ、
+止まってユーザーへ伝える。
 
 Orca は自分の CLI 名を `ORCA_CLI_COMMAND` として export する。WSL2 ではそれが PATH 上の
 `orca-ide` で、macOS では app bundle の中に居る。どちらの形も前提にせず、ユーザーへ見せる

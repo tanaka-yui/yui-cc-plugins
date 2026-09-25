@@ -21,11 +21,22 @@ cmux の表示中ブラウザを使う E2E テスト実行基盤です。
 スクリプトは `PATH` に追加されない。プラグインのディレクトリから次のように呼び出す。
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/up.sh"
-bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/auth.sh" save admin --check-url "http://localhost:5173/home" --check-selector "#avatar"
-bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/run.sh" login-flow --auth admin
-bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/down.sh"
+bash "<PLUGIN_ROOT>/skills/cmux-e2e/scripts/up.sh"
+bash "<PLUGIN_ROOT>/skills/cmux-e2e/scripts/auth.sh" save admin --check-url "http://localhost:5173/home" --check-selector "#avatar"
+bash "<PLUGIN_ROOT>/skills/cmux-e2e/scripts/run.sh" login-flow --auth admin
+bash "<PLUGIN_ROOT>/skills/cmux-e2e/scripts/down.sh"
 ```
+
+`<PLUGIN_ROOT>` はこのプラグインのインストール先。Bash ツールへこれを運ぶ環境変数は無いので、一度だけ
+解決し、その実パスを書き込む。
+
+- Claude Code: スキル起動時に表示される `Base directory for this skill` の 2 階層上。
+- Codex: スキル一覧が示すこの SKILL.md の置き場所（ディレクトリ）の 2 階層上。
+- その行が無い Claude Code: `jq -er '.plugins["cmux-e2e@yui-cc-plugins"][0].installPath' ~/.claude/plugins/installed_plugins.json`。
+
+plugin cache の下から新しそうな版のディレクトリを選ばない（古い版が残っている）。開発用リポジトリの
+checkout へフォールバックしない。どちらもインストール済みとは別の版を走らせる。上のどれでも解決できなければ、
+止まってユーザーへ伝える。
 
 ## 安全性
 

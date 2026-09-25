@@ -13,6 +13,18 @@ notification back to the parent.
 
 ## Procedure
 
+`<PLUGIN_ROOT>` below is the installed copy of this plugin. No environment variable carries it
+into the Bash tool, so resolve it once and write the literal path in its place:
+
+```bash
+jq -er '.plugins["cmux-codex-review@yui-cc-plugins"][0].installPath' ~/.claude/plugins/installed_plugins.json
+```
+
+Never pick the newest-looking version directory under the plugin cache (older versions stay there),
+and never fall back to a development checkout of this repository: either runs a copy other than the
+installed one. If the command fails, stop and tell the user the plugin is not installed. Respond to
+the user in Japanese.
+
 ### Step 0: Determine the review target
 
 If the part of `$ARGUMENTS` before `--` contains any of `--uncommitted` / `--base` /
@@ -24,7 +36,7 @@ specification). **Without asking anything**, proceed to Step 1.
 If not, list candidates:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" --list-targets
+"<PLUGIN_ROOT>/bin/cmux-codex-review" --list-targets
 ```
 
 The output is one-candidate-per-line TSV (`target<TAB>kind<TAB>value<TAB>label`).
@@ -157,7 +169,7 @@ instructions, and subsequent flags stop being parsed.**
   arguments to the bin.
   ```bash
   # The reviewer name is not yet fixed to a surface, so join it after launch. Launch first:
-  "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" <TARGET_ARGS> --team <TEAM> --reviewer <REVIEWER> --parent <PARENT> $ARGUMENTS
+  "<PLUGIN_ROOT>/bin/cmux-codex-review" <TARGET_ARGS> --team <TEAM> --reviewer <REVIEWER> --parent <PARENT> $ARGUMENTS
   ```
   `<REVIEWER>` is a unique name such as `cxrev-review`. Remember the bin output's
   `token=`/`surface=`. Join the reviewer immediately after launch:
@@ -165,7 +177,7 @@ instructions, and subsequent flags stop being parsed.**
 - Not joined, or `monitor_live=no`: launch without notification (backward
   compatible):
   ```bash
-  "${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" <TARGET_ARGS> $ARGUMENTS
+  "<PLUGIN_ROOT>/bin/cmux-codex-review" <TARGET_ARGS> $ARGUMENTS
   ```
 
 > The reviewer name can be a fixed name decided before launching the bin (e.g.

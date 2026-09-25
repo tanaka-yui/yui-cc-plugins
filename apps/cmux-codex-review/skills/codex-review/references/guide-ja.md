@@ -65,8 +65,19 @@ Step 3 のタイマー分岐だけが保険である。
 bin スクリプトを実行する。cmux ペインを分割し、そのペインで**対話 codex** にレビュープロンプトを送信する。
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cmux-codex-review" [引数]
+"<PLUGIN_ROOT>/bin/cmux-codex-review" [引数]
 ```
+
+`<PLUGIN_ROOT>` はこのプラグインのインストール先。Bash ツールへこれを運ぶ環境変数は無いので、一度だけ
+解決し、その実パスを書き込む。
+
+- Claude Code: スキル起動時に表示される `Base directory for this skill` の 2 階層上。
+- Codex: スキル一覧が示すこの SKILL.md の置き場所（ディレクトリ）の 2 階層上。
+- その行が無い Claude Code: `jq -er '.plugins["cmux-codex-review@yui-cc-plugins"][0].installPath' ~/.claude/plugins/installed_plugins.json`。
+
+plugin cache の下から新しそうな版のディレクトリを選ばない（古い版が残っている）。開発用リポジトリの
+checkout へフォールバックしない。どちらもインストール済みとは別の版を走らせる。上のどれでも解決できなければ、
+止まってユーザーへ伝える。
 
 主な引数（すべて任意、詳細は bin のヘッダコメント参照）:
 

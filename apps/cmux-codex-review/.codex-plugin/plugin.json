@@ -1,6 +1,6 @@
 {
   "name": "cmux-codex-review",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "Start a codex code review (gpt-6-astra / xhigh reasoning) in a new cmux pane after checking the agmsg inbox.",
   "author": {
     "name": "tanaka-yui",

@@ -31,11 +31,22 @@ Use a real visible browser surface for worktree-scoped E2E scenarios.
 The scripts are not installed on `PATH`. Invoke them from this plugin's directory, for example:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/up.sh"
-bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/auth.sh" save admin --check-url "http://localhost:5173/home" --check-selector "#avatar"
-bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/run.sh" login-flow --auth admin
-bash "${CLAUDE_PLUGIN_ROOT}/skills/cmux-e2e/scripts/down.sh"
+bash "<PLUGIN_ROOT>/skills/cmux-e2e/scripts/up.sh"
+bash "<PLUGIN_ROOT>/skills/cmux-e2e/scripts/auth.sh" save admin --check-url "http://localhost:5173/home" --check-selector "#avatar"
+bash "<PLUGIN_ROOT>/skills/cmux-e2e/scripts/run.sh" login-flow --auth admin
+bash "<PLUGIN_ROOT>/skills/cmux-e2e/scripts/down.sh"
 ```
+
+`<PLUGIN_ROOT>` is the installed copy of this plugin. No environment variable carries it into the
+Bash tool, so resolve it once and write the literal path in its place:
+
+- Claude Code: two directories above the `Base directory for this skill` shown when this skill loaded.
+- Codex: two directories above the directory that holds this SKILL.md, as the skill list gives its path.
+- Claude Code without that line: `jq -er '.plugins["cmux-e2e@yui-cc-plugins"][0].installPath' ~/.claude/plugins/installed_plugins.json`.
+
+Never pick the newest-looking version directory under the plugin cache (older versions stay there),
+and never fall back to a development checkout of this repository: either runs a copy other than the
+installed one. If none of the above resolves, stop and tell the user.
 
 ## Safety
 

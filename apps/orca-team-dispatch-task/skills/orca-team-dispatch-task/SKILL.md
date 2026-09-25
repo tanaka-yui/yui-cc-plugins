@@ -26,9 +26,20 @@ requirements, and reading code to decide an approach all belong to each worker, 
 in its own worktree. The parent does none of them before dispatching.
 
 ```bash
-PLUGIN="${CLAUDE_PLUGIN_ROOT}"
+PLUGIN="<PLUGIN_ROOT>"
 ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-/Applications/Orca.app/Contents/Resources/bin/orca}}"
 ```
+
+`<PLUGIN_ROOT>` is the installed copy of this plugin. No environment variable carries it into the
+Bash tool, so resolve it once and write the literal path in its place:
+
+- Claude Code: two directories above the `Base directory for this skill` shown when this skill loaded.
+- Codex: two directories above the directory that holds this SKILL.md, as the skill list gives its path.
+- Claude Code without that line: `jq -er '.plugins["orca-team-dispatch-task@yui-cc-plugins"][0].installPath' ~/.claude/plugins/installed_plugins.json`.
+
+Never pick the newest-looking version directory under the plugin cache (older versions stay there),
+and never fall back to a development checkout of this repository: either runs a copy other than the
+installed one. If none of the above resolves, stop and tell the user.
 
 Orca exports `ORCA_CLI_COMMAND` with the name of its CLI; on WSL2 that is `orca-ide`,
 which is on PATH, and on macOS the CLI lives inside the app bundle. Never assume either
