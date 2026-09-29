@@ -21,9 +21,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `apps/token-meter` | Plugin (skills + hooks) | TypeScript (Bun) | hook 経由で圧縮プラグイン (rtk/caveman/headroom) の効きを観測し JSONL に記録・集計 |
 | `apps/codex-bridge` | Plugin (slash command) | TypeScript (Bun) | `/codex-bridge` で `.claude/rules` / CLAUDE.md を Codex 用 AGENTS.md にネスト生成 |
 | `apps/orca-team-dispatch-task` | Plugin (skill + TS scripts) | TypeScript (node で直接実行) + markdown | Orca の worktree で N タスクを worker に並列実行させ、成果を merge / PR で親ブランチへ取り込む（cmux-team-dispatch-task の Orca 版） |
-| `apps/cmux-remote` | App (PWA) | TypeScript (Vite client + Bun server) | cmux ワークスペースを iPhone から閲覧。`apps/cmux-remote/{client,server}` は **個別の workspace パッケージ** |
 
-`pnpm-workspace.yaml` の packages は `apps/*` と `apps/cmux-remote/*` の両方を列挙している（cmux-remote だけ二段ネスト）ため、新規パッケージを追加するときはこの両方を意識する。
+`pnpm-workspace.yaml` の packages は `apps/*` のみ。新規パッケージは `apps/<name>` に 1 段で置く。
 
 ### プラグイン構造の規約
 
@@ -53,7 +52,7 @@ pnpm sort-package  # package.json のキーを sort（差分があると失敗�
 
 ```bash
 pnpm --filter @tanaka-yui/token-meter check
-pnpm --filter @yui/cmux-remote-client build
+pnpm --filter @tanaka-yui/orca-team-dispatch-task check
 ```
 
 ### テスト
@@ -66,12 +65,6 @@ cd apps/token-meter && bun test
 
 # codex-bridge (Bun)
 cd apps/codex-bridge && bun test
-
-# cmux-remote/client (Vitest)
-cd apps/cmux-remote/client && bun run test
-
-# cmux-remote/server (Bun)
-cd apps/cmux-remote/server && bun test
 
 # orca-team-dispatch-task (bash のテスト群 + node --test の単体テスト。Node 22.18 以上)
 cd apps/orca-team-dispatch-task && bash test/run-all.sh
@@ -95,7 +88,7 @@ bash install.sh    # marketplace add + update でローカルパスを登録・�
   - lint: `noUnusedImports` / `noUnusedVariables` / `noUndeclaredVariables` / `useExhaustiveDependencies` は **error**
   - 緩い: `noExplicitAny: warn`, `noNonNullAssertion: warn`
 - **Node 24.15 / pnpm 10.33** が `engines` で固定。`packageManager` フィールドも一致させる。
-- **TypeScript 6** を使うアプリでも、cmux-remote/server は **Bun ランタイムで実行する** (`bun run` / `bun test`)。Vitest を使うのは cmux-remote/client のみ。
+- **TypeScript 6** は型検査専用で、実行ランタイムはアプリごとに違う: token-meter / codex-bridge は **Bun** (`bun run` / `bun test`)、orca-team-dispatch-task は **node の型除去で直接実行**（Node 22.18 以上。実行時の npm 依存なし）。
 
 ## Codex hook 互換性
 

@@ -365,7 +365,8 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - spec の follow-up 表は F-a / F-b / F-c / F-d / F-e / F-f / F-g / F-h をすべて実装した。
   `test-docs.sh` の SK4 が `exec_review` / `merge_ready` の語を SKILL.md から締め出して
   「未実装の宣言」を防いでいる
-**N タスクを 1 つの Run で並列に dispatch できる**（既定上限 4）。worker のセッションは
-`worker-retain` で最後まで保持し、解放は Step 6 の承認後だけ。片付けが勝手に走ることは
-ない — Step 5 が削除してよいものを判定し、Step 6 が尋ねて、承認されたものだけを実行する。
-recovery 機構は意図的に持たない（設計 spec 18-1 の裁定）。テストは `bash test/run-all.sh`。
+- **N タスクを 1 つの Run で並列に dispatch できる**（既定上限 4）。worker のセッションは
+  `worker-retain` で最後まで保持し、解放は Step 6 の承認後だけ。片付けが勝手に走ることは
+  ない — Step 5 が削除してよいものを判定し、Step 6 が尋ねて、承認されたものだけを実行する。
+  **自動の回復は持たない**（設計 spec 18-1 の裁定）。回復はユーザーが `bin/orca-recover.ts` を
+  走らせたときだけ行う（上記）。テストは `bash test/run-all.sh`。
