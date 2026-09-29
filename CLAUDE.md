@@ -87,7 +87,7 @@ bash install.sh    # marketplace add + update でローカルパスを登録・�
   - JS/TS: single quote, `semicolons: asNeeded`
   - lint: `noUnusedImports` / `noUnusedVariables` / `noUndeclaredVariables` / `useExhaustiveDependencies` は **error**
   - 緩い: `noExplicitAny: warn`, `noNonNullAssertion: warn`
-- **Node 24.15 / pnpm 10.33** が `engines` で固定。`packageManager` フィールドも一致させる。
+- **Node 24.14.1 / pnpm 10.33** が `engines` で固定。`packageManager` フィールドも一致させる。
 - **TypeScript 6** は型検査専用で、実行ランタイムはアプリごとに違う: token-meter / codex-bridge は **Bun** (`bun run` / `bun test`)、orca-team-dispatch-task は **node の型除去で直接実行**（Node 22.18 以上。実行時の npm 依存なし）。
 
 ## Codex hook 互換性
