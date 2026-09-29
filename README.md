@@ -15,7 +15,9 @@ cmux ターミナルマルチプレクサ向けツール集。
 /plugin install dev-up@yui-cc-plugins
 /plugin install e2e-test@yui-cc-plugins
 /plugin install cmux-e2e@yui-cc-plugins
+/plugin install orca-team-dispatch-task@yui-cc-plugins
 /plugin install token-meter@yui-cc-plugins
+/plugin install codex-bridge@yui-cc-plugins
 
 # または一括インストール
 bash install.sh
@@ -48,4 +50,6 @@ bash install.sh
 | dev-up | worktree 分離された dev stack ライフサイクル（compose + 直接コマンド） | [README](apps/dev-up/README.md) |
 | e2e-test | agent-browser ベースの E2E テスト（dev-up と連携） | [README](apps/e2e-test/README.md) |
 | cmux-e2e | cmux 内蔵ブラウザを使う可視 E2E テスト | [README](apps/cmux-e2e/README.md) |
+| orca-team-dispatch-task | Orca の worktree で並列タスクディスパッチ（レビュー役・計画/実装分離・PR・GitHub issue 対応） | [README](apps/orca-team-dispatch-task/README.md) |
 | token-meter | hook 経由で圧縮プラグイン (rtk/caveman/headroom) の効きを観測・JSONL 集計 | [README](apps/token-meter/README.md) |
+| codex-bridge | Claude の rules / CLAUDE.md を Codex 用 AGENTS.md にネスト生成（`/codex-bridge`） | [CLAUDE.md](apps/codex-bridge/CLAUDE.md) |

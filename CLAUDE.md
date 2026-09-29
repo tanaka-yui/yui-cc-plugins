@@ -16,6 +16,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `apps/cmux-codex-review` | Plugin (slash command + skill) | bash | 新 cmux ペインで対話 codex (gpt-6-astra/xhigh) にコードレビューさせる。sandbox は workspace-write（完了通知の `send.sh` が agmsg DB へ書き込むため read-only 不可）。完了を agmsg 経由で親へ通知可 |
 | `apps/cmux-codex-exec` | Plugin (slash command + skill) | bash | plan を対話 codex にカレントdir で実装させ、完了を親が agmsg 経由で検知して cmux-codex-review へ繋ぐ |
 | `apps/cmux-e2e` | Plugin (skill + shell scripts) | bash | cmux 内蔵ブラウザを使う可視 E2E テスト実行基盤 |
+| `apps/dev-up` | Plugin (skill + shell scripts) | bash | worktree ごとに port slot を確保し、`.dev-up.yaml` の dev stack（compose / 直接コマンド）を起動・停止 |
+| `apps/e2e-test` | Plugin (skill + shell scripts) | bash | dev-up が起動した stack に対する agent-browser ベースの E2E テスト |
+| `apps/token-meter` | Plugin (skills + hooks) | TypeScript (Bun) | hook 経由で圧縮プラグイン (rtk/caveman/headroom) の効きを観測し JSONL に記録・集計 |
+| `apps/codex-bridge` | Plugin (slash command) | TypeScript (Bun) | `/codex-bridge` で `.claude/rules` / CLAUDE.md を Codex 用 AGENTS.md にネスト生成 |
+| `apps/orca-team-dispatch-task` | Plugin (skill + TS scripts) | TypeScript (node で直接実行) + markdown | Orca の worktree で N タスクを worker に並列実行させ、成果を merge / PR で親ブランチへ取り込む（cmux-team-dispatch-task の Orca 版） |
 | `apps/cmux-remote` | App (PWA) | TypeScript (Vite client + Bun server) | cmux ワークスペースを iPhone から閲覧。`apps/cmux-remote/{client,server}` は **個別の workspace パッケージ** |
 
 `pnpm-workspace.yaml` の packages は `apps/*` と `apps/cmux-remote/*` の両方を列挙している（cmux-remote だけ二段ネスト）ため、新規パッケージを追加するときはこの両方を意識する。
@@ -59,11 +64,17 @@ pnpm --filter @yui/cmux-remote-client build
 # token-meter (Bun)
 cd apps/token-meter && bun test
 
+# codex-bridge (Bun)
+cd apps/codex-bridge && bun test
+
 # cmux-remote/client (Vitest)
 cd apps/cmux-remote/client && bun run test
 
 # cmux-remote/server (Bun)
 cd apps/cmux-remote/server && bun test
+
+# orca-team-dispatch-task (bash のテスト群 + node --test の単体テスト。Node 22.18 以上)
+cd apps/orca-team-dispatch-task && bash test/run-all.sh
 ```
 
 ### インストール / 配布
@@ -202,5 +213,6 @@ node scripts/check-doc-lang.mjs apps/dev-up  # パス指定で絞り込み
 - `apps/cmux-team-dispatch-task/CLAUDE.md` — 並列ディスパッチ、Display Format Conventions (Box drawing 表), モデル選択フロー (opus/sonnet/codex), agmsg monitor 専用の push 監視 (readiness 3 要件 / 単発 safety timer)
 - `apps/cmux-using/CLAUDE.md` — cmux ターミナル操作スキルの構成
 - `apps/cmux-fork/CLAUDE.md` — `/cfork` の動作と前提
+- `apps/orca-team-dispatch-task/CLAUDE.md` — 正本先行の原則（SKILL.md が正本、`test/test-docs.sh` が固定）、入口を全部 TypeScript にした構成、SKILL.md の bash block に判定を書かない規則、WSL2 の path 境界、配送と起床の分離
 
 cmux 関連プラグインは互いの境界を意識しており、機能の重複を禁止する規約がある（各 CLAUDE.md の「関連プラグインとの境界」表を参照）。新機能を追加するときは、まずどのプラグインの責任範囲かを判断する。
