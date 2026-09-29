@@ -1,9 +1,9 @@
 {
   "name": "@tanaka-yui/token-meter",
   "version": "0.1.0",
+  "private": true,
   "description": "Claude Code の hook 経由で圧縮プラグインの効きを観測・記録する計測機構",
   "type": "module",
-  "private": true,
   "scripts": {
     "check": "tsc --noEmit && biome check ./bin ./lib ./scripts ./__tests__",
     "check:fix": "biome check --write ./bin ./lib ./scripts ./__tests__",
