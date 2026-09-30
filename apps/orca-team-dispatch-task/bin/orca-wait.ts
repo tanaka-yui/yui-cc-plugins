@@ -486,6 +486,20 @@ const unknown = (state: State, type: string, task: string, dispatch: string, bat
   state.unknown = { type, task, dispatch, batch }
   return 7
 }
+// 同じ batch に、同じ dispatch の拒否されていない worker_done があるか（順序は問わない）
+const deliveredNormally = (messages: Json[], task: string, dispatch: string): boolean =>
+  messages.some((rawMessage) => {
+    const message = object(rawMessage)
+    if (string(message.type) !== 'worker_done') return false
+    const rawPayload = message.payload
+    const payload = asObject(typeof rawPayload === 'string' ? parseJson(rawPayload) : rawPayload)
+    return (
+      payload !== null &&
+      !Object.hasOwn(payload, '_orcaLifecycleRejection') &&
+      string(payload.taskId) === task &&
+      string(payload.dispatchId) === dispatch
+    )
+  })
 // ★ 全 message を処理してから ack する。知らない dispatch は集合の読み直しへ渡す。
 // 移植元の理由（bin/orca-wait.sh）:
 // ★ **heartbeat は liveness signal であって、記録すべき状態を持たない。**Orca が
@@ -515,6 +529,12 @@ const unknown = (state: State, type: string, task: string, dispatch: string, bat
 //   しか残らなかった）。payload 側も一応見るが、正本は subject である。
 //
 // ★ **処理できない message は捨てない。**捨てて ack すると cursor だけ進んで内容が消える
+//
+// ★ **Orca が拒否した worker_done（`_orcaLifecycleRejection`）は、その dispatch が決着済みか、同じ batch に
+//   同じ dispatch の正常な worker_done があれば、記録だけして通す。**2026-10-01 の実測: design_review が
+//   worker_done を 2 回送り、capability が失効したあとの 1 回を Orca が拒否した。正常な方は同じ batch に
+//   届いていたのに拒否通知で止まり、その batch が先頭に居座って後ろの merge_ready に誰も答えなかった。
+//   正常な worker_done が 1 度も届いていない dispatch の拒否は、今までどおり止めて人に見せる
 //
 // ★ 矛盾は **同じ (task, dispatch) の中だけ**で見る。別タスクが別 outcome で settle するのは正常
 //
@@ -568,7 +588,33 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
     if (Object.hasOwn(payload, '_orcaLifecycleRejection')) {
       const code = string(get(payload, '_orcaLifecycleRejection', 'code')) || 'unknown'
       const reason = string(get(payload, '_orcaLifecycleRejection', 'reason')) || 'unknown'
-      log(NAME, `worker_done was rejected by Orca (code='${code}' reason='${reason}'); the batch is not acknowledged`)
+      const rejection = `worker_done from dispatch '${dispatch}' was rejected by Orca (code='${code}' reason='${reason}')`
+      const resolved = resolveDispatch(state, task, dispatch)
+      if (resolved.kind === 'unreadable') {
+        log(NAME, `cannot read workers.json for dispatch '${dispatch}'; the batch is not acknowledged`)
+        return 2
+      }
+      if (resolved.kind === 'superseded') {
+        log(
+          NAME,
+          `${rejection}; ignoring it: it was replaced (superseded) for ${resolved.role} in ${resolved.statusDir}`,
+        )
+        continue
+      }
+      if (resolved.kind === 'unknown') return unknown(state, `rejected ${type}`, task, dispatch, batch)
+      const entry = state.expected.entries[resolved.index]
+      if (entry === undefined) return 1
+      const outcome = roleOutcome(entry.statusDir, entry.role)
+      if (outcome === null) return 1
+      if (outcome !== '') {
+        log(NAME, `${rejection}; ignoring it: ${entry.role} is already settled (${outcome})`)
+        continue
+      }
+      if (deliveredNormally(messages, task, dispatch)) {
+        log(NAME, `${rejection}; ignoring it: this batch also carries the worker_done Orca accepted for ${entry.role}`)
+        continue
+      }
+      log(NAME, `${rejection}; the batch is not acknowledged`)
       return 1
     }
     if (type === 'question') {

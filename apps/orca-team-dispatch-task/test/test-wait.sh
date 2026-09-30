@@ -1210,4 +1210,65 @@ err=$(ORCA_STALL_AFTER_SECONDS=$STALL node "$P/bin/orca-wait.ts" --status-dir "$
 [[ "$rc" -eq 8 && "$err" != *"is waiting for an answer"* ]] \
   && ok "WT118 止めた役の印は数えない" || fail "WT118 (rc=$rc)"; teardown
 
+# --- Orca が拒否した worker_done（_orcaLifecycleRejection） ---
+# ★ 拒否通知 1 件で batch を止めると、同じ batch が受信箱の先頭に居座り、再起動しても同じ場所で止まる。
+#   後ろの merge_ready に誰も答えず Run 全体が止まる（2026-10-01、influencer-platform の実測）。
+#   dispatch が決着済みか、同じ batch に同じ dispatch の正常な worker_done があれば、拒否は記録だけして通す。
+rejected() { jq -nc --arg t "$1" --arg d "$2" --arg i "${3:-rj}" \
+  '{id:$i,type:"worker_done",subject:"Rejected worker_done: round 2 approved",
+    payload:({taskId:$t,dispatchId:$d,outcome:"succeeded",
+      _orcaLifecycleRejection:{code:"dispatch_capability_invalid",reason:"The Dispatch capability is invalid."}}|tojson),body:""}'; }
+done_of() { jq -nc --arg t "$1" --arg d "$2" --arg i "$3" \
+  '{id:$i,type:"worker_done",payload:({taskId:$t,dispatchId:$d,outcome:"succeeded"}|tojson),body:""}'; }
+heartbeat() { jq -nc --arg i "$1" '{id:$i,type:"heartbeat",payload:"{}",body:""}'; }
+batch_of() { jq -sc '{ok:true,result:{runId:"run_x",deliveryId:"d1",count:length,messages:.}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+
+# WT119: 実測の batch。reviewer の拒否通知が先頭、同じ dispatch の正常な worker_done と design の worker_done が後ろ
+setup_rv; dn; rvdn
+{ rejected task_r ctx_r msg_rejected; done_of task_r ctx_r m_r; done_of task_d ctx_d m_d
+  heartbeat h1; heartbeat h2; } | batch_of
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"dispatch_capability_invalid"* && "$out" == *"ctx_r"* ]] \
+  && [[ "$(grep -c -- '--ack d1' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(jq -c 'sort' "$SD/received.json")" == '["worker_done|task_d|ctx_d|succeeded","worker_done|task_r|ctx_r|succeeded"]' ]] \
+  && ok "WT119 同じ batch に正常な worker_done があれば拒否通知で止めない" || fail "WT119 (rc=$rc out=$out)"; teardown
+
+# WT120: 正常な worker_done を受領済みの dispatch に、あとから拒否通知だけが届いても止めない
+setup; dn
+echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
+rejected task_x ctx_x | batch_of
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"dispatch_capability_invalid"* ]] \
+  && [[ "$(grep -c -- '--ack d1' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(jq -c . "$SD/received.json")" == '["worker_done|task_x|ctx_x|succeeded"]' ]] \
+  && ok "WT120 受領済みの dispatch の拒否通知は通す" || fail "WT120 (rc=$rc out=$out)"; teardown
+
+# WT121: 止めた役（決着済み）の拒否通知も通す。worker_done は二度と来ない
+setup
+echo '{"stopped_at":1,"by":"user"}' > "$SD/roles/design/stopped.json"
+rejected task_x ctx_x | batch_of
+out=$(w 2>&1); rc=$?
+[[ "$(grep -c -- '--ack d1' "$ORCA_STUB_DIR/calls.log")" -eq 1 && ! -e "$SD/received.json" ]] \
+  && ok "WT121 止めた役の拒否通知は通す" || fail "WT121 (rc=$rc out=$out)"; teardown
+
+# WT122: 置き換えた試行（superseded）の拒否通知も、その試行の worker_done と同じく通す（WT102 の同型）
+setup; dn
+jq -c '.roles.design.superseded = ["ctx_old"]' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
+{ rejected task_x ctx_old; done_of task_x ctx_x m1; } | batch_of
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *'superseded'* ]] \
+  && [[ "$(grep -c -- '--ack d1' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(jq -c . "$SD/received.json")" == '["worker_done|task_x|ctx_x|succeeded"]' ]] \
+  && ok "WT122 superseded の拒否通知は通す" || fail "WT122 (rc=$rc out=$out)"; teardown
+
+# WT123: ★ 同じ batch の正常な worker_done が**別の dispatch** のものなら、拒否された dispatch はまだ決着していない。
+#        今までどおり止めて人に見せ、何も受領しない（WT4d の同型）
+setup_rv; dn; rvdn
+{ rejected task_r ctx_r; done_of task_d ctx_d m_d; } | batch_of
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"dispatch_capability_invalid"* && ! -e "$SD/received.json" ]] \
+  && ! grep -q -- '--ack\|worker-retain' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT123 正常な worker_done が届いていない dispatch の拒否は止める" || fail "WT123 (rc=$rc out=$out)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

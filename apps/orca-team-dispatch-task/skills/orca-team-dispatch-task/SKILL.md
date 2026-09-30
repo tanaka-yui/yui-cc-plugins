@@ -734,9 +734,12 @@ unreviewed, not that the work was lost, so it does not by itself make the task f
 when it happens rather than hiding it — its own line is right there.
 
 On exit 1, **do not run `--ack` yourself**. Read the error first. Acknowledging a batch
-declares that every message in it was processed, and this batch was not: it either carries a
-message type this version cannot handle, or an outcome that contradicts what is already
-recorded on disk. Neither is repairable by hand, and rerunning the wait cannot help — it will
+declares that every message in it was processed, and this batch was not: it carries a
+message type this version cannot handle, an outcome that contradicts what is already
+recorded on disk, or a `worker_done` Orca rejected (`_orcaLifecycleRejection`) for a dispatch
+that has no accepted `worker_done`. A rejection is passed over, not stopped on, when its dispatch
+is already settled or superseded, or when the same batch carries that dispatch's accepted
+`worker_done`. None of these is repairable by hand, and rerunning the wait cannot help — it will
 read the same batch again. Keep the terminal and worktree, do not acknowledge, and
 **do not proceed to Step 4**. Inspect the recorded receipt and result with the user. If they show a successful worker outcome, the user may explicitly choose the
 manual integration command below; it does not acknowledge the batch. That unacknowledged batch
