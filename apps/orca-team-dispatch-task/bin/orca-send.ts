@@ -1,7 +1,7 @@
 // ロール名を宛先にして worker 間メッセージを 1 通送る（旧版 orca-send の移植）。
 //
-// Usage: node orca-send.ts --workers <workers.json> --to <role> --subject <text> --body <text>
-// Exit:  0 = 配送された / 1 = 配送されなかった / 2 = 使用法エラー
+// Usage: node orca-send.ts --workers <workers.json> [--from <handle>] --to <role> --subject <text> --body <text>
+// Exit:  0 = 配送された / 1 = 配送されなかった / 2 = 使用法エラー（送信者の handle が無いときも）
 //
 // ★ **配送されたかどうかだけを exit code にする。**呼び出し側は「送れなかったら書いたファイルを消す」
 //   補償を行うので、ここが曖昧だと補償が壊れる。
@@ -25,7 +25,8 @@ const main = (argv: string[]): number => {
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index] ?? ''
     const value = argv[index + 1]
-    if (!['--workers', '--to', '--subject', '--body'].includes(flag)) return die(NAME, `unknown option: ${flag}`)
+    if (!['--workers', '--from', '--to', '--subject', '--body'].includes(flag))
+      return die(NAME, `unknown option: ${flag}`)
     if (value === undefined) return die(NAME, `${flag} requires a value`)
     values[flag] = value
   }
@@ -44,10 +45,13 @@ const main = (argv: string[]): number => {
   }
   // ★ **sender handle を自分で解決する。推測しない** (spec 6-2)。`--from` を省くと、候補が 1 つのとき
   //   Orca は暗黙に束縛する (O26)。誤った端末から送ったことにされるより、送れないほうがよい
-  const from = process.env.ORCA_TERMINAL_HANDLE ?? ''
+  // ★ **worker は preamble の handle を `--from` で渡す。env は親の呼び出し（orca-stop）のための代替。**
+  //   2026-10-01: shell_environment_policy.inherit=core の codex は ORCA_TERMINAL_HANDLE を shell に渡さない
+  // ★ **handle が無いのは使用法の誤り (2) であって未配送 (1) ではない。**1 は依頼側に「レビューを諦めて
+  //   続行」させる。同日、exec がこの 1 を reviewer 不在と読み、UNREVIEWED のまま受理された
+  const from = values['--from'] || process.env.ORCA_TERMINAL_HANDLE || ''
   if (from === '') {
-    log(NAME, 'ORCA_TERMINAL_HANDLE is not set; refusing to let Orca guess the sender')
-    return 1
+    return die(NAME, 'no sender handle: pass --from <your terminal handle> (ORCA_TERMINAL_HANDLE is not set either)')
   }
   const dispatch = asString(get(readJson(workersFile), 'roles', role, 'dispatch')) ?? ''
   // ★ **未登録の宛先は未配送として返す。**黙って捨てるより、送信側に見えるエラーにする

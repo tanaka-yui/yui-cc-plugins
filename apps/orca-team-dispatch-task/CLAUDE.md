@@ -265,6 +265,14 @@ test-wake.sh の WK9、test-start.sh の ST104-106、test-cleanup.sh の CL8c、
   `roles.<role>.dispatch` に既に在り、同じ事実を 2 つ置くとドリフトする
 - 往復のファイルは**タスク単位で共有する `<status-dir>/review/`**（親 repo 側の絶対パス）。
   2 役が別 worktree に居ても、どちらからも届く
+- **worker の command は env の `ORCA_TERMINAL_HANDLE` に頼らない。**2026-10-01 の実測: codex の
+  `shell_environment_policy.inherit = "core"` は env を shell へ渡さず、exec の `orca-send.ts` が送信者を
+  解決できずに 1 を返した。exec はそれを reviewer 不在と読み、`accepted UNREVIEWED` で受理された。
+  そこで worker への指示は preamble の handle を `<handle>` として明示させる（`orca-send.ts --from`、
+  `completion.ts --terminal`、`check --terminal`）。env は親の呼び出し（`orca-stop.ts` → `orca-send.ts`）の
+  代替として残す。**送信者が無いのは使用法の誤り (2) であって未配送 (1) ではない** — 1 だけが
+  「レビューを諦めて続行」の根拠になる。回帰は `test-send.sh` の SN2 / SN2b / SN2c、
+  `test-completion.sh` の CM26 / CM26b、`test-start.sh` の ST60
 
 ## issue モードの要点
 

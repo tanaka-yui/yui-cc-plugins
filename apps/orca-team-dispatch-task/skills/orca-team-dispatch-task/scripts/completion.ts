@@ -2,7 +2,7 @@
 //
 // Usage: node completion.ts --role-dir <d> prepare            # 相 2 の前半: prepared を書き nonce を出す
 //        node completion.ts --role-dir <d> sent               # 相 2 の後半: merge_ready_sent へ
-//        node completion.ts --role-dir <d> await              # 相 4: 親の返事を 1 回分待つ
+//        node completion.ts --role-dir <d> [--terminal <h>] await  # 相 4: 親の返事を 1 回分待つ
 //        node completion.ts --role-dir <d> accept --nonce <n> # 相 5: nonce 一致なら accepted へ
 //        node completion.ts --role-dir <d> settle             # 相 7: settled へ
 //        node completion.ts --role-dir <d> reconcile          # 外部の証拠で settled へ（親専用）
@@ -31,6 +31,7 @@ const main = (argv: string[]): number => {
   let sub = ''
   let nonceIn = ''
   let generationIn = ''
+  let terminalIn = ''
   for (let index = 0; index < argv.length; ) {
     const argument = argv[index] ?? ''
     if (SUBCOMMANDS.includes(argument)) {
@@ -40,12 +41,13 @@ const main = (argv: string[]): number => {
       continue
     }
     const value = argv[index + 1]
-    if (argument !== '--role-dir' && argument !== '--nonce' && argument !== '--generation') {
+    if (!['--role-dir', '--nonce', '--generation', '--terminal'].includes(argument)) {
       return die(NAME, `unknown argument: ${argument}`)
     }
     if (value === undefined) return die(NAME, `${argument} requires a value`)
     if (argument === '--role-dir') roleDir = value
     else if (argument === '--nonce') nonceIn = value
+    else if (argument === '--terminal') terminalIn = value
     else generationIn = value
     index += 2
   }
@@ -107,10 +109,14 @@ const main = (argv: string[]): number => {
       return 1
     }
     // ★ **selector を省いて Orca に推測させない。**別の端末のメールボックスを読むより、読めないほうがよい
-    const terminal = process.env.ORCA_TERMINAL_HANDLE ?? ''
+    // ★ worker は preamble の handle を `--terminal` で渡す（2026-10-01: codex の shell_environment_policy
+    //   inherit=core で env が落ちた）。無いのは使用法の誤り (2) — 1 は「mailbox が読めない」で、2 回で諦めさせる
+    const terminal = terminalIn || process.env.ORCA_TERMINAL_HANDLE || ''
     if (terminal === '') {
-      log(NAME, 'ORCA_TERMINAL_HANDLE is not set; refusing to guess whose mailbox to read')
-      return 1
+      return die(
+        NAME,
+        'no terminal handle: pass --terminal <your terminal handle> (ORCA_TERMINAL_HANDLE is not set either)',
+      )
     }
     // ★ **待機に期限を置かない。**1 回のブロックは 10 分（agent の shell の上限）なので、呼び直しで続ける
     const windowMs = process.env.ORCA_AWAIT_WINDOW_MS || '600000'

@@ -281,10 +281,20 @@ aw >/dev/null 2>&1; rc=$?
 ateardown
 
 # CM26: ORCA_TERMINAL_HANDLE が無ければ読みに行かない（Orca に推測させない）。
+#       ★ 使用法の誤り (2) として返す。1（mailbox が読めない）は 2 回で諦めて error を報告させる。
 asetup; unset ORCA_TERMINAL_HANDLE; : > "$ORCA_STUB_DIR/calls.log"
 aw >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 1 && ! -s "$ORCA_STUB_DIR/calls.log" ]] \
-  && ok "CM26 handle が無ければ読まない" || fail "CM26 (rc=$rc)"
+[[ "$rc" -eq 2 && ! -s "$ORCA_STUB_DIR/calls.log" ]] \
+  && ok "CM26 handle が無ければ読まず 2 で返す" || fail "CM26 (rc=$rc)"
+ateardown
+
+# CM26b: ★ env が無くても --terminal で渡された handle のメールボックスを読む（2026-10-01: codex の
+#        shell_environment_policy.inherit=core で env が落ち、exec の await が失敗した）。
+asetup; unset ORCA_TERMINAL_HANDLE; : > "$ORCA_STUB_DIR/argv.log"
+node "$C" --role-dir "$D" --terminal term_flag await >/dev/null 2>&1; rc=$?
+a=$(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log")
+[[ "$rc" -eq 0 ]] && grep -qxF 'term_flag' <<<"$a" \
+  && ok "CM26b --terminal で読む" || fail "CM26b (rc=$rc)"
 ateardown
 
 # CM27: ★ **`waiter_exists` は transport の障害ではない。**1 つの Run で待機が競合すると

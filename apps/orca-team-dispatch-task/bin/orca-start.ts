@@ -147,6 +147,10 @@ const renderSpec = (context: Context, role: string): string => {
 Your injected preamble gives you the task id, the dispatch id, the dispatch capability
 and the --from handle. Use that set. The Orca CLI is ${qOrcaBin}.
 
+**That --from handle is your own terminal.** Wherever a command below says \`<handle>\`, write
+that handle out literally. Do not use an environment variable for it: some agents run
+commands in a shell that does not pass it through.
+
 **Finishing is two-phase: you offer the work, the parent checks it, then you report.** Do
 not report done before the parent has accepted. Do not skip a step because the work looks
 obviously fine — the point is that the parent, not you, decides that.
@@ -177,7 +181,7 @@ E. Wait for that reply. **Do not end your turn to wait.** A message put in your 
    does not wake you: a turn closed here is a dispatch that stops for good, and someone has
    to come and restart you by hand.
 
-     node ${qCompletion} --role-dir ${qRoleDir} await
+     node ${qCompletion} --role-dir ${qRoleDir} --terminal <handle> await
 
    It blocks for up to 10 minutes, reads your mailbox with --peek (never --ack), matches
    your own nonce, and prints one line:
@@ -188,7 +192,8 @@ E. Wait for that reply. **Do not end your turn to wait.** A message put in your 
      running it. It is normal for this to take several rounds. **This wait has no time limit:**
      whether a stalled task should stop is decided by the user through the parent, not by
      you.
-   A non-zero exit means the mailbox could not be read at all; try once more. If it fails
+   Exit 2 means the command itself was wrong (for example, --terminal is missing): fix it
+   and run it again. Exit 1 means the mailbox could not be read at all; try once more. If it fails
    again, write that in result.md, run
    \`node ${qReportStatus} ${qRoleDir} error the mailbox could not be read\`, and stop. Do not report done.
 
@@ -236,7 +241,7 @@ REVIEW LOOP
 
 1. Wait for a request:
 
-     ${qOrcaBin} orchestration check --terminal "$ORCA_TERMINAL_HANDLE" \\
+     ${qOrcaBin} orchestration check --terminal <handle> \\
        --peek --wait --timeout-ms 600000 --json
 
    Use --peek. **Never pass --ack** — the cursor is not yours to advance.
@@ -272,11 +277,12 @@ REVIEW LOOP
 
 4. Send the verdict back:
 
-     node ${qSender} --workers ${qWorkersFile} --to ${requester} \\
+     node ${qSender} --workers ${qWorkersFile} --from <handle> --to ${requester} \\
        --subject 'review-verdict: round <n>' --body '<absolute path to your findings file>'
 
-   A non-zero exit means it was NOT delivered. Try once more; if it fails again, leave the
-   findings file in place and go to step 5.
+   Exit 2 means the command itself was wrong (for example, --from is missing) and nothing
+   was sent: fix it and send again. Exit 1 means it was NOT delivered. Try once more; if it
+   fails again, leave the findings file in place and go to step 5.
    Then go back to step 1 for the next round.
 
 5. Finish. Say in result.md which rounds you answered and what each verdict was.`
@@ -294,15 +300,18 @@ A reviewer is already running and waiting for you. Have your ${noun} reviewed be
 
 2. Send the request:
 
-     node ${qSender} --workers ${qWorkersFile} --to ${requester} \\
+     node ${qSender} --workers ${qWorkersFile} --from <handle> --to ${requester} \\
        --subject '${label} round <n>' --body '<absolute path to your request file>'
 
-   **A non-zero exit means it was NOT delivered.** Delete the request file you just wrote,
+   **Exit 2 means the command itself was wrong** (for example, --from is missing) and nothing
+   was sent. That says nothing about the reviewer: fix the command and send again. **Do not
+   skip the review because of it.**
+   **Exit 1 means it was NOT delivered.** Delete the request file you just wrote,
    note in result.md that review was unavailable, and carry on without it.
 
 3. Wait for the verdict:
 
-     ${qOrcaBin} orchestration check --terminal "$ORCA_TERMINAL_HANDLE" \\
+     ${qOrcaBin} orchestration check --terminal <handle> \\
        --peek --wait --timeout-ms 600000 --json
 
    Use --peek. **Never pass --ack.** Look for a subject starting \`review-verdict:\`.
@@ -331,7 +340,7 @@ A reviewer is already running and waiting for you. Have your ${noun} reviewed be
 
 7. When you are done, release the reviewer:
 
-     node ${qSender} --workers ${qWorkersFile} --to ${requester} \\
+     node ${qSender} --workers ${qWorkersFile} --from <handle> --to ${requester} \\
        --subject 'abort-reviewer: done' --body 'the work is finished'
 
 `

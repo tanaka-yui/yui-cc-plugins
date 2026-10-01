@@ -746,9 +746,16 @@ while IFS= read -r -d $'\036' sp; do
     bad="$bad [glued-paragraph]"
   fi
   # 依頼側のレビュー手順は、worker 自身のメールボックスを待つ（親の handle を埋め込まない）
-  if [[ "$sp" == *'REVIEW PROTOCOL'* && "$sp" != *'check --terminal "$ORCA_TERMINAL_HANDLE" \'$'\n'* ]]; then
+  if [[ "$sp" == *'REVIEW PROTOCOL'* && "$sp" != *'check --terminal <handle> \'$'\n'* ]]; then
     bad="$bad [own-mailbox]"
   fi
+  # ★ 2026-10-01: codex の shell_environment_policy.inherit=core で env が落ち、exec がレビュー依頼を
+  #   送れず UNREVIEWED で受理された。**worker の command は env の handle に頼らない** — preamble の
+  #   handle を明示して渡す（orca-send は --from、completion await は --terminal）
+  [[ "$sp" == *'ORCA_TERMINAL_HANDLE'* ]] && bad="$bad [env-handle]"
+  [[ "$sp" == *'--role-dir '*' --terminal <handle> await'* ]] || bad="$bad [await-handle]"
+  [[ "$(grep -c -- '--from <handle> --to ' <<<"$sp")" -eq "$(grep -c 'orca-send.ts' <<<"$sp")" ]] \
+    || bad="$bad [send-handle]"
 done < <(awk -v RS='\037' 'prev == "--spec" { printf "%s\036", $0 } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
 [[ "$n" -eq 4 && -z "$bad" ]] && ok "ST60 spec のコマンドがそのまま動く形になっている" || fail "ST60 (n=$n):$bad"
 teardown

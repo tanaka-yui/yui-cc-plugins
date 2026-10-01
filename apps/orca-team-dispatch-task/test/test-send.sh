@@ -31,10 +31,30 @@ teardown
 
 # SN2: ★ **自分の handle が取れなければ何も送らない** (spec 6-2 / O26)。
 #      `--from` を省くと候補が 1 つのとき Orca は暗黙に束縛する。誤送より未送のほうがよい。
+#      ★ **これは「未配送」(1) ではなく使用法の誤り (2)。**1 は依頼側に「レビューを諦めて続行」させる。
+#      2026-10-01: shell_environment_policy.inherit=core の codex で env が落ち、exec がこの 1 を
+#      reviewer 不在と読んで UNREVIEWED のまま受理された。直せば送れるものを諦めさせない。
 setup; unset ORCA_TERMINAL_HANDLE
 send --to design_review --subject 'x' --body 'y' >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 1 ]] && [[ ! -s "$ORCA_STUB_DIR/calls.log" ]] \
-  && ok "SN2 sender handle が無ければ送らない" || fail "SN2 (rc=$rc)"
+[[ "$rc" -eq 2 ]] && [[ ! -s "$ORCA_STUB_DIR/calls.log" ]] \
+  && ok "SN2 sender handle が無ければ送らず 2 で返す" || fail "SN2 (rc=$rc)"
+teardown
+
+# SN2b: ★ **env が無くても --from で渡された handle で送れる。**agent の shell が env を継がなくても、
+#       worker は preamble で自分の handle を知っている。
+setup; unset ORCA_TERMINAL_HANDLE
+out=$(send --to design_review --subject 'x' --body 'y' --from term_flag 2>/dev/null); rc=$?
+a=$(argv)
+[[ "$rc" -eq 0 && "$out" == msg_1 ]] && grep -qxF 'term_flag' <<<"$a" \
+  && ok "SN2b env が無くても --from で送れる" || fail "SN2b (rc=$rc out=$out)"
+teardown
+
+# SN2c: --from は env より優先する（明示した値を黙って捨てない）。
+setup
+send --to design_review --subject 'x' --body 'y' --from term_flag >/dev/null 2>&1; rc=$?
+a=$(argv)
+[[ "$rc" -eq 0 ]] && grep -qxF 'term_flag' <<<"$a" && ! grep -qxF 'term_me' <<<"$a" \
+  && ok "SN2c --from は env より優先" || fail "SN2c (rc=$rc)"
 teardown
 
 # SN3: 未登録のロールは未配送 (exit 1)。黙って捨てない。
