@@ -1271,4 +1271,56 @@ out=$(w 2>&1); rc=$?
   && ! grep -q -- '--ack\|worker-retain' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT123 正常な worker_done が届いていない dispatch の拒否は止める" || fail "WT123 (rc=$rc out=$out)"; teardown
 
+# ★ 実際に配送される batch は --peek の一覧より小さい。2026-10-01 の実測（3.10.2）: 受け取った batch は
+#   heartbeat と拒否通知の 2 件だけで、正常な worker_done は次の batch に居た。batch の中だけを見ると止まる。
+#   stub の check を 3 つに分ける: --peek は受信箱全体、ack 前は 1 本目の batch、ack 後は 2 本目の batch
+queue_of() { jq -sc --arg b "$2" '{ok:true,result:{runId:"run_x",deliveryId:$b,count:length,messages:.}}' \
+  > "$ORCA_STUB_DIR/$1"; }
+queue_hook() {
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" --ack "*) : > "$ORCA_STUB_DIR/acked"; exit 0 ;; esac' \
+    'if [[ " $* " == *" --peek "* ]]; then src=peek.json' \
+    'elif [[ -e "$ORCA_STUB_DIR/acked" ]]; then src=b2.json; else src=b1.json; fi' \
+    'cp "$ORCA_STUB_DIR/$src" "$ORCA_STUB_DIR/orchestration_check"' \
+    > "$ORCA_STUB_DIR/orchestration_check.hook"
+  chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+}
+
+# WT124: 実測の配送。拒否通知だけの batch は、受信箱に同じ dispatch の正常な worker_done があれば通して ack し、
+#        次の batch でその worker_done を受領する。--peek は cursor を動かさない（--ack と併用しない）
+setup_rv; dn; rvdn
+{ heartbeat h0; rejected task_r ctx_r msg_rejected; } | queue_of b1.json d1
+{ heartbeat h0; rejected task_r ctx_r msg_rejected; done_of task_r ctx_r m_r; done_of task_d ctx_d m_d
+  heartbeat h1; } | queue_of peek.json d1
+{ done_of task_r ctx_r m_r; done_of task_d ctx_d m_d; heartbeat h1; } | queue_of b2.json d2
+queue_hook
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"dispatch_capability_invalid"* && "$out" == *"later batch"* ]] \
+  && [[ "$(grep -c -- '--ack d1' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && [[ "$(grep -c -- '--ack d2' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+  && ! grep -- '--peek' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--ack' \
+  && [[ "$(jq -c 'sort' "$SD/received.json")" == '["worker_done|task_d|ctx_d|succeeded","worker_done|task_r|ctx_r|succeeded"]' ]] \
+  && ok "WT124 後ろの batch に正常な worker_done があれば拒否通知で止めない" || fail "WT124 (rc=$rc out=$out)"; teardown
+
+# WT125: 受信箱のどこにも同じ dispatch の正常な worker_done が無ければ、今までどおり止めて何も受領しない
+setup_rv; dn; rvdn
+{ heartbeat h0; rejected task_r ctx_r msg_rejected; } | queue_of b1.json d1
+{ heartbeat h0; rejected task_r ctx_r msg_rejected; done_of task_d ctx_d m_d; } | queue_of peek.json d1
+cp "$ORCA_STUB_DIR/b1.json" "$ORCA_STUB_DIR/b2.json"
+queue_hook
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *"the batch is not acknowledged"* && ! -e "$SD/received.json" ]] \
+  && ! grep -q -- '--ack\|worker-retain' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT125 受信箱に正常な worker_done が無い拒否は止める" || fail "WT125 (rc=$rc out=$out)"; teardown
+
+# WT126: 受信箱を覗けなければ「無い」と決めつけず、ack せずに transport 不明（4）で返す
+setup_rv; dn; rvdn
+{ heartbeat h0; rejected task_r ctx_r msg_rejected; } | queue_of b1.json d1
+echo '{"ok":false,"error":{"code":"unavailable"}}' > "$ORCA_STUB_DIR/peek.json"
+cp "$ORCA_STUB_DIR/b1.json" "$ORCA_STUB_DIR/b2.json"
+queue_hook
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 4 && ! -e "$SD/received.json" ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT126 受信箱を覗けなければ ack しない" || fail "WT126 (rc=$rc out=$out)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

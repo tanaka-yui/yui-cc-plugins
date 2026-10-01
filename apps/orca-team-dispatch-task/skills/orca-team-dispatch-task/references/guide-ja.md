@@ -701,8 +701,9 @@ exit 1 では **自分で `--ack` を実行しない**。まず error を読む�
 batch の全メッセージを処理したという宣言である。この batch は処理できていない。この版が扱えない
 メッセージ型を含むか、outcome が既にディスクへ記録された内容と矛盾しているか、受理された `worker_done` が
 1 つも無い dispatch について Orca が拒否した `worker_done`（`_orcaLifecycleRejection`）を含むかのいずれかである。
-拒否通知でも、その dispatch が決着済みか置き換え済み（superseded）であるか、同じ batch にその dispatch の
-受理された `worker_done` があれば、止まらずに読み飛ばす。
+拒否通知でも、その dispatch が決着済みか置き換え済み（superseded）であるか、受信箱にその dispatch の
+受理された `worker_done` があれば（同じ batch でも後ろの batch でもよい。後ろは待機が `--peek` で読む）、
+止まらずに読み飛ばす。
 どれも手作業で直すものではなく、待機を再実行しても同じ batch を読み直すだけで解決しない。
 端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。記録済み receipt と
 result をユーザーと確認する。成功した worker outcome が示されていれば、ユーザーは下の手動統合コマンドを

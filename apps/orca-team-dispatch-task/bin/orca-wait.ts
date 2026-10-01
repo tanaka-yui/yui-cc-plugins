@@ -486,7 +486,7 @@ const unknown = (state: State, type: string, task: string, dispatch: string, bat
   state.unknown = { type, task, dispatch, batch }
   return 7
 }
-// 同じ batch に、同じ dispatch の拒否されていない worker_done があるか（順序は問わない）
+// message の並びに、同じ dispatch の拒否されていない worker_done があるか（順序は問わない）
 const deliveredNormally = (messages: Json[], task: string, dispatch: string): boolean =>
   messages.some((rawMessage) => {
     const message = object(rawMessage)
@@ -500,6 +500,13 @@ const deliveredNormally = (messages: Json[], task: string, dispatch: string): bo
       string(payload.dispatchId) === dispatch
     )
   })
+// 受信箱全体（後ろの batch を含む）を --peek で覗く。cursor は動かさない。覗けなければ null
+const queuedNormally = (state: State, task: string, dispatch: string): boolean | null => {
+  const peeked = runOrca(['orchestration', 'check', '--terminal', state.expected.parent, '--peek', '--json'])
+  const queued = array(get(peeked.json, 'result', 'messages'))
+  if (peeked.rc !== 0 || !receiptOk(peeked) || queued === null) return null
+  return deliveredNormally(queued, task, dispatch)
+}
 // ★ 全 message を処理してから ack する。知らない dispatch は集合の読み直しへ渡す。
 // 移植元の理由（bin/orca-wait.sh）:
 // ★ **heartbeat は liveness signal であって、記録すべき状態を持たない。**Orca が
@@ -530,11 +537,15 @@ const deliveredNormally = (messages: Json[], task: string, dispatch: string): bo
 //
 // ★ **処理できない message は捨てない。**捨てて ack すると cursor だけ進んで内容が消える
 //
-// ★ **Orca が拒否した worker_done（`_orcaLifecycleRejection`）は、その dispatch が決着済みか、同じ batch に
+// ★ **Orca が拒否した worker_done（`_orcaLifecycleRejection`）は、その dispatch が決着済みか、受信箱に
 //   同じ dispatch の正常な worker_done があれば、記録だけして通す。**2026-10-01 の実測: design_review が
-//   worker_done を 2 回送り、capability が失効したあとの 1 回を Orca が拒否した。正常な方は同じ batch に
-//   届いていたのに拒否通知で止まり、その batch が先頭に居座って後ろの merge_ready に誰も答えなかった。
-//   正常な worker_done が 1 度も届いていない dispatch の拒否は、今までどおり止めて人に見せる
+//   worker_done を 2 回送り、capability が失効したあとの 1 回を Orca が拒否した。拒否通知で止まると、その
+//   batch が先頭に居座って後ろの merge_ready に誰も答えなかった。
+//   ★ **batch の中だけを見ない。**配送される batch は --peek の一覧より小さい（同日の実測: 届いた batch は
+//   heartbeat と拒否通知の 2 件だけで、正常な worker_done は次の batch に居た）。正常な方は ack のあと通常どおり
+//   受領される。worker の completion.json / status.json は証拠にしない — Orca が唯一の worker_done を拒否
+//   しても settled / done になりうるので、通すと来ない worker_done を待ち続ける。
+//   受信箱のどこにも正常な worker_done が無い dispatch の拒否は、今までどおり止めて人に見せる
 //
 // ★ 矛盾は **同じ (task, dispatch) の中だけ**で見る。別タスクが別 outcome で settle するのは正常
 //
@@ -612,6 +623,18 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       }
       if (deliveredNormally(messages, task, dispatch)) {
         log(NAME, `${rejection}; ignoring it: this batch also carries the worker_done Orca accepted for ${entry.role}`)
+        continue
+      }
+      const queued = queuedNormally(state, task, dispatch)
+      if (queued === null) {
+        log(
+          NAME,
+          `${rejection}; could not peek the mailbox for its accepted worker_done; the batch is not acknowledged`,
+        )
+        return 2
+      }
+      if (queued) {
+        log(NAME, `${rejection}; ignoring it: a later batch carries the worker_done Orca accepted for ${entry.role}`)
         continue
       }
       log(NAME, `${rejection}; the batch is not acknowledged`)
