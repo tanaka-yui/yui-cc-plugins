@@ -899,12 +899,13 @@ planner_only() {   # 計画役だけが起動済み（exec はまだ）
 
 # WT94: ★ **待機の途中で足された exec も停滞の対象にする。**exec の最初の message までは期待集合が
 #      読み直されないので、design が決着済みなだけでタスクを決着済みと数えていた。
-#      決着済みの design は停滞の行に載せない
+#      決着済みの design は停滞の行に載せない。exec は最初の check の間に足す（Step 3.5 が、待機が
+#      段の終わり（9）を見る前に起こした形。起動前に足されないと 9 で返る — WT95）
 setup; planner_only; dn; echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
 mkdir -p "$SD/roles/exec"; echo '{"status":"executing"}' > "$SD/roles/exec/status.json"
 cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<HOOK
 #!/usr/bin/env bash
-case "\$*" in *--wait*) echo '$(exec_json)' > "$SD/workers.json" ;; esac
+echo '$(exec_json)' > "$SD/workers.json"
 HOOK
 chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
 old "$SD/run.json" "$SD"/roles/*/status.json "$SD/received.json"
@@ -914,14 +915,14 @@ b=$(basename "$SD")
    && "$out" != *"role=design "* ]] \
   && ok "WT94 待機中に足された exec も停滞を見る" || fail "WT94 (rc=$rc out=$out)"; teardown
 
-# WT95: ★ **Step 3.5 を飛ばしたら黙って 24 時間待たない。**成果を載せる役が起動されていない
-#      タスクは決着していないので、閾値を越えたら知らせる（起動されていない役として名指しする）
+# WT95: ★ **Step 3.5 を飛ばしたら黙って 24 時間待たない。**成果を載せる役が起動されていないまま
+#      起動済みの役が全部決着したら、停滞の閾値を待たずに段の終わり（9）で返し、その役を名指しする
+#      （2 時間後の停滞で知らせていた版は、--stall-after-min を延ばした呼び出しで 1 時間 25 分黙った）
 setup; planner_only; dn; echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
-old "$SD/run.json" "$SD/roles/design/status.json" "$SD/received.json"
-out=$(ORCA_STALL_AFTER_SECONDS=$STALL w 2 2>/dev/null); rc=$?
+out=$(w 2 2>/dev/null); rc=$?
 b=$(basename "$SD")
-[[ "$rc" -eq 8 && "$out" == *"unstarted_role task=$b role=exec"* && "$out" != *"stalled_role"* ]] \
-  && ok "WT95 起動されていない exec を停滞として知らせる" || fail "WT95 (rc=$rc out=$out)"; teardown
+[[ "$rc" -eq 9 && "$out" == *"unstarted_role task=$b role=exec"* && "$out" != *"stalled_role"* ]] \
+  && ok "WT95 起動されていない exec を段の終わりとして知らせる" || fail "WT95 (rc=$rc out=$out)"; teardown
 
 # WT96: ★ **計画役を止めたら、exec を待たずにタスクは失敗で終わる。**exec は起こされないので、
 #      integration_role=exec の status を待つと永久に終わらない
@@ -1322,5 +1323,84 @@ queue_hook
 out=$(w 2>&1); rc=$?
 [[ "$rc" -eq 4 && ! -e "$SD/received.json" ]] && ! grep -q -- '--ack' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT126 受信箱を覗けなければ ack しない" || fail "WT126 (rc=$rc out=$out)"; teardown
+
+# ── phase_b=on の design の段の終わり（2026-10-11 の実測: design と design_review の worker_done を受けたあと、
+#    roles/exec の無い status dir を待って 1 時間 25 分、何も言わずに回り続けた）──
+design_stage() {   # $1 の status dir を、計画役と reviewer だけが起動済み・両方 done の design の段にする
+  mkdir -p "$1/roles/design" "$1/roles/design_review"
+  jq -nc --arg d "$2" --arg r "$3" '{integration_role:"exec",roles:{
+    design:{terminal:"term_d",task:("task_"+$d),dispatch:("ctx_"+$d),retained:false},
+    design_review:{terminal:"term_r",task:("task_"+$r),dispatch:("ctx_"+$r),retained:false}}}' > "$1/workers.json"
+  for r in design design_review; do echo '{"status":"done"}' > "$1/roles/$r/status.json"; done
+}
+stage_msgs() {   # 引数の (task, dispatch) の接尾辞ごとに succeeded の worker_done を 1 件ずつ
+  jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_stage",count:($ARGS.positional|length),
+    messages:[$ARGS.positional[] as $s | {id:("m_"+$s),type:"worker_done",
+      payload:({taskId:("task_"+$s),dispatchId:("ctx_"+$s),outcome:"succeeded"}|tojson),body:""}]}}' \
+    --args "$@" > "$ORCA_STUB_DIR/orchestration_check"
+}
+
+# WT127: ★ **design の段が終わり exec がまだ無い status dir を待つと、9 で返る。**--max-waits を使い切るまで
+#        黙って回らない。stdout に役ごとの task= 行と、起動されていない役の unstarted_role 行を出す
+setup; design_stage "$SD" d r; stage_msgs d r
+out=$(w 3 2>"$ORCA_STUB_DIR/err"); rc=$?; err=$(cat "$ORCA_STUB_DIR/err")
+b=$(basename "$SD")
+[[ "$rc" -eq 9 && "$out" == *"task=task_d role=design dispatch=ctx_d status_dir=$SD outcome=succeeded"* \
+   && "$out" == *"task=task_r role=design_review dispatch=ctx_r status_dir=$SD outcome=succeeded"* \
+   && "$out" == *"unstarted_role task=$b role=exec"* && "$out" != *"outcome=failed"* \
+   && "$err" == *"exec of $b has not been started"* ]] \
+  && ! grep -q -- '--wait' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT127 design の段の終わりで 9 を返す" || fail "WT127 (rc=$rc out=$out err=$err)"; teardown
+
+# WT128: 実測の形。exec の段の dir と一緒に待っても、両方が終われば 9 で返る（exec の段の dir は
+#        unstarted_role に載せない）
+setup2
+jq -nc '{integration_role:"exec",roles:{
+  design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:true},
+  exec:{terminal:"term_e",task:"task_e",dispatch:"ctx_e",retained:false}}}' > "$SD/workers.json"
+mkdir -p "$SD/roles/exec"; dn; echo '{"status":"done"}' > "$SD/roles/exec/status.json"
+echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
+design_stage "$SD2" d r; stage_msgs e d r
+out=$(w2 3 2>/dev/null); rc=$?
+b=$(basename "$SD"); b2=$(basename "$SD2")
+[[ "$rc" -eq 9 && "$out" == *"task=task_e role=exec dispatch=ctx_e status_dir=$SD outcome=succeeded"* \
+   && "$out" == *"unstarted_role task=$b2 role=exec"* && "$out" != *"unstarted_role task=$b "* ]] \
+  && ok "WT128 exec の段の dir と一緒でも 9 で返る" || fail "WT128 (rc=$rc out=$out)"; teardown2
+
+# WT129: もう一方がまだ働いている間は返さない（全部が終わったら返る）。ただし段の終わりは 1 回だけ log に出す
+setup2; design_stage "$SD2" d r; stage_msgs d r
+out=$(w2 3 2>"$ORCA_STUB_DIR/err"); rc=$?
+n=$(grep -c "exec of $(basename "$SD2") has not been started" "$ORCA_STUB_DIR/err")
+[[ "$rc" -eq 3 && "$n" -eq 1 ]] \
+  && ok "WT129 他の dir が働く間は待ち、段の終わりを 1 回だけ言う" || fail "WT129 (rc=$rc n=$n err=$(cat "$ORCA_STUB_DIR/err"))"; teardown2
+
+# WT130: もう一方が働いたまま閾値を越えたら、停滞の報告が起動されていない役を名指しする（旧 WT95 の経路）
+setup2; design_stage "$SD2" d r; echo '["worker_done|task_d|ctx_d|succeeded","worker_done|task_r|ctx_r|succeeded"]' > "$SD2/received.json"
+old "$SD/run.json" "$SD/roles/design/status.json" "$SD2/run.json" "$SD2"/roles/*/status.json "$SD2/received.json"
+out=$(ORCA_STALL_AFTER_SECONDS=$STALL w2 2 2>/dev/null); rc=$?
+b2=$(basename "$SD2")
+[[ "$rc" -eq 8 && "$out" == *"unstarted_role task=$b2 role=exec"* ]] \
+  && ok "WT130 他の dir が働く間の停滞は unstarted_role を名指しする" || fail "WT130 (rc=$rc out=$out)"; teardown2
+
+# WT131: Step 3.5 が exec を起こしたあと（待機はまだ exec の message を見ていない）は 9 で返らない
+setup; design_stage "$SD" d r; stage_msgs d r
+cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<HOOK
+#!/usr/bin/env bash
+jq -c '.roles.exec = {terminal:"term_e",task:"task_e",dispatch:"ctx_e",retained:false}' "$SD/workers.json" > "$SD/w" \
+  && mv "$SD/w" "$SD/workers.json"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+mkdir -p "$SD/roles/exec"; echo '{"status":"executing"}' > "$SD/roles/exec/status.json"
+out=$(w 3 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" != *unstarted_role* ]] \
+  && ok "WT131 起動済みの exec は待つ" || fail "WT131 (rc=$rc out=$out)"; teardown
+
+# WT132: 全役が決着したのに集約できない（status.json が receipt と食い違う）ときは、理由を 1 回だけ言う
+setup; dn; msg
+echo '{"status":"executing"}' > "$SD/roles/design/status.json"
+out=$(w 3 2>"$ORCA_STUB_DIR/err"); rc=$?
+n=$(grep -c "design of $(basename "$SD") settled as succeeded but its status.json says 'executing'" "$ORCA_STUB_DIR/err")
+[[ "$rc" -eq 3 && "$n" -eq 1 ]] \
+  && ok "WT132 集約できない理由を 1 回だけ言う" || fail "WT132 (rc=$rc n=$n err=$(cat "$ORCA_STUB_DIR/err"))"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

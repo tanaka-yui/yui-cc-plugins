@@ -2,7 +2,9 @@
 // Usage: node orca-wait.ts --status-dir <d> [--status-dir <d> ...] [--max-waits <n>]
 //        [--timeout-ms <n>] [--stall-after-min <n>] [--on-stall ask|report]
 // Exit: 0 全件成功 / 5 失敗 / 1 batch 不明 / 2 使用法 / 3 時間切れ / 4 transport 不明
-//       / 6 worker の質問 / 8 停滞
+//       / 6 worker の質問 / 8 停滞 / 9 段の終わり（phase_b=on で exec がまだ起動されていない）
+// --timeout-ms は 1 回の check --wait の窓の長さ。待機全体の上限は --max-waits × --timeout-ms
+//   （既定 288 × 5 分 = 24 時間）で、窓が明けても何も無ければ黙って次の窓を待つ
 // ★ cursor は ack だけで進む。batch を全件処理できなければ ack しない。
 import { awaitingSince, fileMtime, workerLastChange } from '../lib/awaiting.ts'
 import { die, log } from '../lib/cli.ts'
@@ -41,6 +43,7 @@ type State = {
   settleSeen: Map<string, number>
   unconfirmedSeen: Set<string>
   awaitingSeen: Map<string, number>
+  noted: Set<string>
   unknown: { type: string; task: string; dispatch: string; batch: string }
 }
 const string = (value: Json | undefined): string => asString(value) ?? ''
@@ -875,26 +878,64 @@ const drainBatch = (state: State): 0 | 1 | 2 | 6 => {
 //   計画役が失敗した場合も同じく exec は起こされない（task_given_up）
 //
 // ★ **無レビューのときだけ足す。**常に出すと、読む側が探す語が 1 つ増えるだけになる
-const aggregate = (state: State): 'succeeded' | 'failed' | null => {
-  for (const entry of state.expected.entries) {
-    if ((roleOutcome(entry.statusDir, entry.role) ?? '') === '') return null
-  }
-  let worst: 'succeeded' | 'failed' = 'succeeded'
-  for (const statusDir of state.statusDirs) {
-    if (taskGivenUp(statusDir)) {
-      worst = 'failed'
-      continue
+//
+// ★ **成果を載せる役が起動されていないまま、起動済みの役が全部決着したら、段の終わりとして返す（9）。**
+//   phase_b=on の design の段がこれで、exec を起こすのは Step 3.5 だけである。返さずにいると、その役の
+//   status.json を待って黙って回り続ける（実測 2026-10-11: design と design_review の worker_done を受けた
+//   あと 1 時間 25 分、何も log に出さなかった）。起動済みかは workers.json をその都度読んで決める —
+//   Step 3.5 が起こした exec は、最初の message が来るまで期待集合に居ない。
+//
+// ★ **全役が決着したのに集約できない理由は、1 回だけ言う。**黙って回ると、待っているのか詰まっているのかを
+//   外から見分けられない
+type Outcome = 'succeeded' | 'failed' | 'unstarted'
+const settleDir = (state: State, statusDir: string): { outcome: Outcome | null; reason: string } => {
+  const pending = { outcome: null, reason: '' }
+  const mine = state.expected.entries.filter((entry) => entry.statusDir === statusDir)
+  if (mine.some((entry) => (roleOutcome(entry.statusDir, entry.role) ?? '') === '')) return pending
+  if (taskGivenUp(statusDir)) return { outcome: 'failed', reason: '' }
+  const slug = basename(statusDir)
+  const role = integrationRoleOf(statusDir)
+  const dispatch = string(get(read(statusDir, 'workers.json'), 'roles', role, 'dispatch'))
+  if (dispatch === '') {
+    if (!dispatchedRoles(statusDir).every((started) => roleSettled(statusDir, started))) return pending
+    // design は Step 2 が起こす役で、Step 3.5 の段ではない。段の終わりとは言わず、理由だけを残して待つ
+    if (role === 'design') {
+      return {
+        outcome: null,
+        reason: `design of ${slug} has not been started, and every role started there has settled`,
+      }
     }
-    const role = integrationRoleOf(statusDir)
-    const status = string(get(read(statusDir, `roles/${role}/status.json`), 'status'))
-    if (status !== 'done' && status !== 'error') return null
-    const outcome = status === 'done' ? 'succeeded' : 'failed'
-    if (storedOutcome(statusDir, role) !== outcome) return null
-    if (outcome === 'failed') worst = 'failed'
+    return {
+      outcome: 'unstarted',
+      reason: `${role} of ${slug} has not been started, and every role started there has settled; Step 3.5 starts it`,
+    }
   }
-  return worst
+  // 起動済みでも、まだ期待集合に居なければ最初の message を待つ（drainBatch が読み直す）
+  if (!mine.some((entry) => entry.role === role && entry.dispatch === dispatch)) return pending
+  const status = string(get(read(statusDir, `roles/${role}/status.json`), 'status'))
+  const final = status === 'done' ? 'succeeded' : status === 'error' ? 'failed' : ''
+  const received = storedOutcome(statusDir, role)
+  if (final === '' || received !== final) {
+    return {
+      outcome: null,
+      reason: `${role} of ${slug} settled as ${received ?? 'unreadable'} but its status.json says '${status || 'none'}'`,
+    }
+  }
+  return { outcome: final, reason: '' }
 }
-const finish = (state: State, outcome: 'succeeded' | 'failed'): number => {
+const aggregate = (state: State): Outcome | null => {
+  const verdicts = state.statusDirs.map((statusDir) => settleDir(state, statusDir))
+  for (const { reason } of verdicts) {
+    if (reason === '' || state.noted.has(reason)) continue
+    state.noted.add(reason)
+    log(NAME, reason)
+  }
+  if (verdicts.some((verdict) => verdict.outcome === null)) return null
+  if (verdicts.some((verdict) => verdict.outcome === 'unstarted')) return 'unstarted'
+  return verdicts.some((verdict) => verdict.outcome === 'failed') ? 'failed' : 'succeeded'
+}
+// ★ 段の終わり（9）では集約の outcome= 行を出さない。まだ結末が無いので、起動されていない役を名指しする
+const finish = (state: State, outcome: Outcome): number => {
   const lines: string[] = []
   for (const entry of state.expected.entries) {
     // worker_done 後は healthy() の対象外になる。空の端末 ID は決着時にも Orca から補う
@@ -908,9 +949,14 @@ const finish = (state: State, outcome: 'succeeded' | 'failed'): number => {
       `task=${entry.task} role=${entry.role} dispatch=${entry.dispatch} status_dir=${entry.statusDir} outcome=${roleResult}${review}`,
     )
   }
-  lines.push(`outcome=${outcome}`)
+  if (outcome === 'unstarted') {
+    for (const statusDir of state.statusDirs) {
+      if (settleDir(state, statusDir).outcome !== 'unstarted') continue
+      lines.push(`unstarted_role task=${basename(statusDir)} role=${integrationRoleOf(statusDir)}`)
+    }
+  } else lines.push(`outcome=${outcome}`)
   process.stdout.write(`${lines.join('\n')}\n`)
-  return outcome === 'succeeded' ? 0 : 5
+  return outcome === 'succeeded' ? 0 : outcome === 'failed' ? 5 : 9
 }
 // ★ **記録に端末が無ければ、Orca が見せている端末で埋める。**ready にならなかった起動でも Orca が
 //   handle を返せば orca-start / orca-recover は記録するが、後で見つかることもある。
@@ -1066,6 +1112,7 @@ const main = (argv: string[]): number => {
     settleSeen: new Map(),
     unconfirmedSeen: new Set(),
     awaitingSeen: new Map(),
+    noted: new Set(),
     unknown: { type: '', task: '', dispatch: '', batch: '' },
   }
   beat(state)

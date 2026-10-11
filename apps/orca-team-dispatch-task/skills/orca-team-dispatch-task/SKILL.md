@@ -626,12 +626,11 @@ It passes `--on-stall report` because a stall would otherwise end it with exit 8
 sees, and after that no worker's completion is answered; with `report` the stall is only
 written to `wait.log`.
 
-**When `phase_b` is on, this wait does not return until `exec` has finished — and nothing has
-started `exec` yet.** Its aggregate needs a `status.json` for `integration_role`, which is
-`exec` under `phase_b`, so a wait left alone here keeps polling with every worker it can see
-already finished, until two hours later it reports the task as stalled with `exec` never
-started. Go to Step 3.5 **while this wait keeps running**,
-then come back to the exit table below.
+**When `phase_b` is on, nothing has started `exec` yet, and only Step 3.5 starts it.** Go to
+Step 3.5 **while this wait keeps running**, then come back to the exit table below. If every
+worker this wait can see settles first, it returns 9 with an `unstarted_role` line for each
+task whose `exec` was never started. While another task is still working, it does not return:
+it logs `exec of <slug> has not been started` once and keeps waiting.
 
 While it runs it does two things besides collecting outcomes. It answers each `merge_ready`
 with an acceptance or a remediation, and it **types one line into that worker's terminal**.
@@ -647,6 +646,7 @@ unanswered completion. Workers that are still working are never typed into.
 | 3 | Still running | Report progress, then call it again with the same `--status-dir` set |
 | 6 | A worker asked a person through `orchestration ask` and is blocked on the answer — under `ask_via=parent`, or a worker that asked that way although it was not told to | Relay the question to the user verbatim, run the `reply` command the wait printed with their answer, then run the same wait again. Nothing failed; the worker resumes on the reply |
 | 8 | A task has made no progress for two hours, and none of its roles is waiting on a person — through Orca's own observation or its `awaiting-user.json` | Nothing was stopped. Follow the stalled-task steps below: show the user what each role's terminal shows, ask once, run what they chose, then run the same wait again |
+| 9 | A stage ended: every worker that was started has settled, and each task on an `unstarted_role` line has no `exec` yet (`phase_b=on`) | Nothing failed and nothing is merged yet. Go to Step 3.5 for each task an `unstarted_role` line names, then run the same wait again with the same `--status-dir` set; it returns 0 or 5 once `exec` has settled. If Step 3.5 refuses because `exec` already has a dispatch, it was started meanwhile: run the wait again |
 | 4 | A worker stopped or failed, or an Orca call the wait depends on could not be verified | Inspect and tell the user; do not delete anything. The retention or the acknowledgement did not complete, so rerun the canonical wait; do not recover a batch by hand. If a worker was lost while its completion was still owed, see the recovery block below |
 | 1 | A batch carries a message this version cannot handle, or its outcome contradicts what is recorded | It was not acknowledged. Do not acknowledge it by hand; inspect it as described below |
 
@@ -849,9 +849,10 @@ no second stage.
 
 `orca-start.ts` starts one stage per call. Step 2 ran `--phase design`; the builder is a
 separate stage, because nobody can implement a plan that does not exist yet. **Nothing else
-starts it** — not Step 2, not the wait, not the workers. Step 3's wait will not return until
-`exec` has run, so a dispatch that skips this step hangs with every worker that was started
-already finished, until the stall report two hours later names `exec` as never started.
+starts it** — not Step 2, not the wait, not the workers. Step 3's wait cannot finish a task
+before its `exec` has run: once every worker it can see has settled, it returns 9 and names
+the task on an `unstarted_role` line; while another task is still working, it logs that once
+and keeps waiting.
 
 **Leave Step 3's wait running. Do not stop it.** It reads `workers.json` again whenever a
 message names a dispatch it does not know, so it picks `exec` and `exec_review` up by itself
@@ -899,9 +900,10 @@ around — read what the message names and fix that.
 When that dispatch is a start that did not complete, the message says so and names the
 `orca-recover.ts` call that replaces it.
 
-Then go back to Step 3's exit table. The wait you already have is still the one driving this:
-it now answers `exec` too, and it does not return until `exec` has settled. Its log says
-`a dispatch was added after this wait started` at the moment it picks the new stage up.
+Then go back to Step 3's exit table. If the wait you already have is still running, it is
+still the one driving this: it now answers `exec` too, and it does not return until `exec` has
+settled. Its log says `a dispatch was added after this wait started` at the moment it picks
+the new stage up. If it returned 9, run the same wait again now.
 
 ## Step 4: Bring the result home
 
@@ -1165,7 +1167,7 @@ State these when they apply. Do not work around them silently.
 | A new worktree is not cut from the parent checkout's current HEAD | `worktree create` takes no base, so Orca chooses one: measured 2026-09-12, a worktree created after an earlier task had been merged still started from the pre-merge base, and building there means working without changes that are already in. Step 2 fast-forwards a worktree **it created** to the parent's HEAD and says so, and refuses to start at all when the two histories are unrelated. A reused worktree is left alone, because moving it could undo work in progress |
 | A wait notices a new stage only once a message from it arrives | It reloads `workers.json` on the first message naming a dispatch it does not know, so Step 3.5 needs no restart. Until that first message the new roles are missing from its progress lines, which is not a sign that the stage failed to start |
 | A worker may be unable to obtain its own review wait | Measured 2026-09-11: `exec` reported that its review wait could not start because Orca had an already-active actionable waiter for the Run, so it offered its work with no verdict. Workers are now told that this refusal means the mailbox is busy, not that review is unavailable, and to run the wait again. When it still ends up unreviewed the wait names it: `accepted UNREVIEWED` in its log, and `review=unreviewed` on that role's final line |
-| `phase_b=on` needs its second stage started by hand, and a wait missing it fails silently | Step 3.5 starts it. A wait whose `integration_role` never writes a `status.json` keeps polling for 24 hours with nothing in its log and every started worker already finished; check `roles/<integration_role>/status.json` before concluding a worker is stuck |
+| `phase_b=on` needs its second stage started by hand | Step 3.5 starts it. Once every started worker has settled, the wait returns 9 and names each task whose `exec` was never started on an `unstarted_role` line; while another task is still working, it logs that once and keeps waiting. |
 | `phase_b=on` costs a second worker and a second worktree per task | Leave it off unless separating planning from building is worth that. The plan is kept at `.dispatch/<slug>/plan.md` either way it is written |
 | An `--issue` run does not resume by itself after a crash | The next run's `reconcile` finds the claim, releases it when nothing is running, and stops the run when something might be |
 | A slow issue holds up the rest of its batch | The wait is per batch. Use a smaller batch size when one issue is expected to be long |

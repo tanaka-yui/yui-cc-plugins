@@ -181,6 +181,10 @@ WT114-118、`test-wake.sh` の WK10 / WK11、`test-stop.sh` の SP20）
 来たときしか読み直さないので、それを使うと `--phase exec` で足された exec が最初の message
 まで見えない。成果を載せる役（`integration_role`）が起動されていなければ決着していないとし、
 `unstarted_role` として知らせる（Step 3.5 の飛ばし。起動済みの役が全部決着してから）。
+**待っている全タスクがそうなったら、停滞の閾値を待たずに exit 9（段の終わり）で返す。**停滞にだけ任せていた版は、
+`--stall-after-min 240` の呼び出しで design と design_review の worker_done を受けたあと 1 時間 25 分、何も log に
+出さなかった（2026-10-11）。ほかのタスクが働いている間は返さず、1 回だけ log に出す。全役が決着したのに集約できない
+理由（status.json と receipt の食い違い）も 1 回だけ log に出す（回帰は `test-wait.sh` の WT95 / WT127-132）。
 決着済みの reviewer も、依頼側が待つ間は停滞の行に残す。作る役（計画役の design を含む）を
 止めたか計画役が失敗したタスクは、exec を待たずに失敗で決着する。**止めたら相方へ知らせる** —
 reviewer を止めたら（決着済みでも）依頼側へ `review-skipped:`、作る役を止めたら reviewer へ

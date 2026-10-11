@@ -597,11 +597,11 @@ setsid nohup node "$PLUGIN/bin/orca-wait.ts" --status-dir "<task 1 status_dir>" 
 それ以降どの worker の完了にも誰も答えなくなるからである。`report` なら停滞は `wait.log` に
 書かれるだけで済む。
 
-**`phase_b` が on のとき、この待機は `exec` が終わるまで戻らない — そしてまだ誰も `exec` を
-起こしていない。**集約には `integration_role` の `status.json` が要り、`phase_b` ではそれは
-`exec` である。ここで放っておいた待機は、見えている worker が全員終わっている状態のまま
-polling し続け、2 時間後に `exec` が起動されていない停滞としてそのタスクを知らせる。**この待機を走らせたまま** Step 3.5 へ行き、そのあと下の
-exit 表へ戻る。
+**`phase_b` が on のとき、`exec` はまだ誰も起こしておらず、起こすのは Step 3.5 だけである。**
+**この待機を走らせたまま** Step 3.5 へ行き、そのあと下の exit 表へ戻る。それより先に、この待機から
+見える worker が全員決着したら、待機は 9 で返り、`exec` が起動されていないタスクごとに
+`unstarted_role` の行を出す。ほかのタスクがまだ働いている間は返らず、
+`exec of <slug> has not been started` を 1 回だけ log に出して待ち続ける。
 
 走っている間、outcome の収集のほかに 2 つのことをする。`merge_ready` ごとに受理か差し戻しを
 返し、**その worker の端末へ 1 行入力する**。後半は飾りではない — Orca のメールボックスに
@@ -616,6 +616,7 @@ dispatch を永久に止める**。同じ理由で、完了の返事を待った
 | 3 | まだ実行中 | 進捗を報告してから、同じ `--status-dir` の組でもう一度呼ぶ |
 | 6 | worker が `orchestration ask` で人へ質問し、回答待ちでブロックしている — `ask_via=parent` のとき、または指示されていないのにその方法で尋ねた worker | 質問をそのままユーザーへ取り次ぎ、待機が出力した `reply` コマンドに回答を入れて実行し、同じ待機をもう一度走らせる。失敗ではない。worker は reply で再開する |
 | 8 | あるタスクが 2 時間進んでおらず、そのどの役も人を待っていない（Orca 自身の観測でも `awaiting-user.json` でも） | 何も止めていない。下の停滞時の手順に従う: 各役の端末に何が出ているかをユーザーに見せ、1 回尋ね、選ばれたことを実行し、同じ待機をもう一度走らせる |
+| 9 | 段の終わり: 起動した worker が全員決着し、`unstarted_role` の行のタスクにはまだ `exec` が無い（`phase_b=on`） | 失敗ではなく、まだ何も merge していない。`unstarted_role` の行が名指しするタスクごとに Step 3.5 へ行き、そのあと同じ `--status-dir` の組で同じ待機をもう一度走らせる。`exec` が決着すれば 0 か 5 で返る。`exec` に既に dispatch が在るとして Step 3.5 が拒否したら、その間に起動されている: 待機をもう一度走らせる |
 | 4 | worker が停止・失敗した、または待機が依存する Orca 呼び出しを検証できない | 調べてユーザーへ伝える。何も削除しない。retention または acknowledgement が完了していないので canonical wait を再実行し、batch を手で復旧しない。完了を負ったまま worker が失われた場合は、下の回復の節を見る |
 | 1 | batch がこの版で扱えないメッセージを含む、または outcome が記録と矛盾する | acknowledge していない。手動 acknowledge はせず、下のとおり確認する |
 
@@ -808,10 +809,10 @@ Step 3 が exit 4 を返したとき、worker が居ないままタスクが終�
 
 `orca-start.ts` は 1 回の呼び出しで 1 段だけを起こす。Step 2 が `--phase design` を走らせた。
 実装役が別の段なのは、まだ存在しない計画を実装できる者が居ないからである。**ほかに起こす
-主体は居ない** — Step 2 でもなく、待機でもなく、worker でもない。Step 3 の待機は `exec` が
-走り切るまで戻らないので、この節を飛ばした dispatch は、起動した worker が全員終わっている
-状態のままハングし、2 時間後の停滞の報告が `exec` を起動されていない役として名指しするまで
-何も言わない。
+主体は居ない** — Step 2 でもなく、待機でもなく、worker でもない。Step 3 の待機は、`exec` が
+走るまでそのタスクを終えられない。見えている worker が全員決着したら 9 で返り、そのタスクを
+`unstarted_role` の行で名指しする。ほかのタスクがまだ働いている間は、それを 1 回だけ log に出して
+待ち続ける。
 
 **Step 3 の待機は走らせたままにする。止めてはならない。**知らない dispatch を名指しする
 message が来るたびに `workers.json` を読み直すので、この節が `exec` と `exec_review` を
@@ -859,9 +860,10 @@ Step 2 が reviewer を先に起こすのと同じ理由である — 実装役�
 その dispatch が起動の終わらなかったものなら、メッセージはそう言い、置き換えるための
 `orca-recover.ts` の呼び出しを名指しする。
 
-そのあとは Step 3 の exit 表へ戻る。駆動しているのは既に在る待機のままである。いまは `exec`
-にも答え、`exec` が決着するまで戻らない。新しい段を拾った瞬間、その log に
-`a dispatch was added after this wait started` と出る。
+そのあとは Step 3 の exit 表へ戻る。既に在る待機がまだ走っていれば、駆動しているのはその待機の
+ままである。いまは `exec` にも答え、`exec` が決着するまで戻らない。新しい段を拾った瞬間、その log に
+`a dispatch was added after this wait started` と出る。待機が 9 で返っていたら、いま同じ待機を
+もう一度走らせる。
 
 ## Step 4: 成果を持ち帰る
 
@@ -1103,7 +1105,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | 新しい worktree が親 checkout の「いまの」HEAD から切られない | `worktree create` は基点を取らないので、基点を選ぶのは Orca である。2026-09-12 に観測: 先のタスクを取り込んだあとに切った worktree が取り込み前の base のままで、そこで実装すると既に入っている変更を知らないまま働くことになる。Step 2 は**自分が作った** worktree を親の HEAD まで早送りしてそう言い、両者に祖先関係が無ければ起動そのものを拒む。再利用した worktree には触らない — 動かすと進行中の作業を巻き戻しかねないからである |
 | 待機が新しい段に気づくのは、そこからの message が届いたときである | 知らない dispatch を名指しする最初の message で `workers.json` を読み直すので、Step 3.5 に再起動は要らない。その最初の message が来るまで新しい役は進捗行に出ないが、それは段の起動に失敗した印ではない |
 | worker が自分のレビュー待ちを取れないことがある | 2026-09-11 に観測: `exec` は、Orca がその Run で既にアクティブな actionable waiter を持っていたためレビュー待ちを開始できないと報告し、verdict の無いまま成果を差し出した。worker には「この拒否はメールボックスが塞がっているという意味であって、レビューが使えないという意味ではない。待ちをもう一度走らせよ」と指示してある。それでも無レビューで終わったときは待機がそう名指しする — log に `accepted UNREVIEWED`、その役の最終行に `review=unreviewed` が出る |
-| `phase_b=on` は 2 段目を人が起こす必要があり、それを欠いた待機は黙って失敗する | Step 3.5 が起こす。`integration_role` が `status.json` を書かないままの待機は、log に何も出さず、起動した worker が全員終わっている状態で 24 時間 polling し続ける。worker が詰まっていると結論する前に `roles/<integration_role>/status.json` を見る |
+| `phase_b=on` は 2 段目を人が起こす必要がある | Step 3.5 が起こす。起動した worker が全員決着すると、待機は 9 で返り、`exec` が起動されていないタスクを `unstarted_role` の行で名指しする。ほかのタスクがまだ働いている間は、それを 1 回だけ log に出して待ち続ける |
 | `phase_b=on` はタスクごとに worker と worktree を 1 つずつ増やす | 計画と実装を分ける価値があるとき以外は off のままにする。計画は書かれたなら `.dispatch/<slug>/plan.md` に残る |
 | `--issue` の実行は crash から自力で再開しない | 次の実行の `reconcile` が claim を見つけ、何も走っていなければ release し、走っているかもしれなければ実行を止める |
 | 遅い 1 件がそのバッチの残りを待たせる | 待ちはバッチ単位である。長くなると分かっている issue があるならバッチを小さくする |
