@@ -60,5 +60,5 @@ test('modelAgent は綴りで所属が分かる model だけを答える', () =>
 
 test('既定 tuple はロールごと（Opus はフルネーム）', () => {
   assert.deepEqual(DEFAULT_TUPLES.design, { agent: 'claude', model: 'claude-opus-5-5[1m]', effort: 'max' })
-  assert.deepEqual(DEFAULT_TUPLES.exec, { agent: 'codex', model: 'gpt-6-sol', effort: 'high' })
+  assert.deepEqual(DEFAULT_TUPLES.exec, { agent: 'codex', model: 'gpt-6.1-sol', effort: 'high' })
 })

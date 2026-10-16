@@ -91,7 +91,7 @@ export type Tuple = { agent: string; model: string; effort: string }
 export const DEFAULT_TUPLES: { [role in Role]: Tuple } = {
   design: { agent: 'claude', model: OPUS_MODEL, effort: 'max' },
   design_review: { agent: 'codex', model: 'gpt-6-astra', effort: 'xhigh' },
-  exec: { agent: 'codex', model: 'gpt-6-sol', effort: 'high' },
+  exec: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'high' },
   exec_review: { agent: 'claude', model: OPUS_MODEL, effort: 'max' },
 }
 
@@ -107,7 +107,7 @@ export const modelAgent = (model: string): string | null => {
 // 2026-09-24 の時点で呼び出し元は無い）
 export const AGENT_CHOICES = ['claude', 'codex']
 export const MODEL_CHOICES: { [agent: string]: string[] } = {
-  codex: ['gpt-6-sol', 'gpt-6-astra', 'gpt-6-luna'],
+  codex: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'],
   claude: [OPUS_MODEL, 'sonnet'],
 }
 export const EFFORT_CHOICES: { [agent: string]: string[] } = {

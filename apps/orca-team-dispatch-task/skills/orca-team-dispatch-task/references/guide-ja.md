@@ -89,7 +89,7 @@ merge も pull request も記録されたその 1 つの値を読むので、ど
 |---|---|---|---|
 | `design` | `claude` | `claude-opus-5-5[1m]` | `max` |
 | `design_review` | `codex` | `gpt-6-astra` | `xhigh` |
-| `exec` | `codex` | `gpt-6-sol` | `high` |
+| `exec` | `codex` | `gpt-6.1-sol` | `high` |
 | `exec_review` | `claude` | `claude-opus-5-5[1m]` | `max` |
 
 **既定の `model` と `effort` は、そのロールが既定の agent で走るときだけ使う。**ある agent 向けの

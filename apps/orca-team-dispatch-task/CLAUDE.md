@@ -97,7 +97,7 @@ codex だけだが、未知の値も警告付きで通す（Orca が agent を�
 
 **未設定のフィールドはロールごとの既定 tuple で埋める**（`lib/config.ts` の `DEFAULT_TUPLES`。
 design / exec_review = claude・`claude-opus-5-5[1m]`・max、design_review = codex・gpt-6-astra・xhigh、
-exec = codex・gpt-6-sol・high）。Opus は `opus[1m]` alias だと provider によって古い版を指すので
+exec = codex・gpt-6.1-sol・high）。Opus は `opus[1m]` alias だと provider によって古い版を指すので
 フルネームで固定する。**既定の model / effort は、解決した agent が既定 agent と一致するときだけ
 使う** — agent だけ変えた設定に別 agent 用の model を混ぜないため。その場合は flag ごと渡さず
 Orca 側の既定に委ねる。回帰は `test/test-config.sh` の CF1 / CF1b と `test/test-start.sh` の ST31 が固定する。

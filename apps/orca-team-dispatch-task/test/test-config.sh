@@ -18,7 +18,7 @@ res_err() { node "$RESOLVE" --project-root "$PR" "$@" 2>&1 >/dev/null; }
 # CF1: **設定ゼロは各ロールの既定 tuple で走る。**4 ロールすべてを起こして確かめる。
 setup
 out=$(node "$RESOLVE" --project-root "$PR" --review-mode on --phase-b on 2>/dev/null | jq -c '.roles')
-[[ "$out" == '{"design":{"agent":"claude","model":"claude-opus-5-5[1m]","effort":"max"},"design_review":{"agent":"codex","model":"gpt-6-astra","effort":"xhigh"},"exec":{"agent":"codex","model":"gpt-6-sol","effort":"high"},"exec_review":{"agent":"claude","model":"claude-opus-5-5[1m]","effort":"max"}}' ]] \
+[[ "$out" == '{"design":{"agent":"claude","model":"claude-opus-5-5[1m]","effort":"max"},"design_review":{"agent":"codex","model":"gpt-6-astra","effort":"xhigh"},"exec":{"agent":"codex","model":"gpt-6.1-sol","effort":"high"},"exec_review":{"agent":"claude","model":"claude-opus-5-5[1m]","effort":"max"}}' ]] \
   && ok "CF1 設定ゼロで各ロールが既定 tuple になる" || fail "CF1 ($out)"
 teardown
 
