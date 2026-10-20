@@ -113,6 +113,13 @@ path は UNC で返り、bash の `-d` も `git -C` も解釈できない）。�
 の存在の両方。`ORCA_BIN` の既定は `$ORCA_CLI_COMMAND`（WSL2 では PATH 上の `orca-ide`）へ
 フォールバックする。回帰は `test/test-start.sh` の ST28*/ST29 が固定する。
 
+**worker の helper は env の `ORCA_BIN` に頼らない。**2026-10-20 の実測: WSL2 の codex
+（`shell_environment_policy.inherit = "core"`）は `ORCA_BIN` も `ORCA_CLI_COMMAND` も shell に渡さず、
+`orca-send.ts` / `completion.ts` の `orcaBin()` が macOS の app bundle の path に落ちて exit 1 になった。
+design_review の判定と exec のレビュー依頼が届かず、実装は未レビューのまま受理された。そこで指示文は
+直接の CLI 呼び出しと同じく、helper の呼び出しにも親が解決した値を `ORCA_BIN=<実値> node ...` で焼き込む
+（`orca-start.ts` の `qNode`）。回帰は `test-start.sh` の ST113。
+
 ## 配送は起床ではない
 
 **`orchestration send` はメールボックスに入れるだけで、ターンを終えた worker を起こさない。**

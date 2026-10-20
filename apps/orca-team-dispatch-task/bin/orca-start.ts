@@ -139,13 +139,19 @@ const renderSpec = (context: Context, role: string): string => {
   const qReportStatus = shellQuote(join(SCRIPTS, 'report-status.ts'))
   const qAwaiting = shellQuote(join(SCRIPTS, 'awaiting-user.ts'))
   const qOrcaBin = shellQuote(orcaBin())
+  // ★ helper も Orca CLI を呼ぶので、親が解決した CLI を env の代入で焼き込む。2026-10-20: WSL2 の codex
+  //   （shell_environment_policy.inherit=core）は ORCA_BIN も ORCA_CLI_COMMAND も shell に渡さず、helper の
+  //   orcaBin() が macOS の path に落ちて orca-send.ts / completion.ts が exit 1 になった（回帰は ST113）
+  const qNode = `ORCA_BIN=${qOrcaBin} node`
   const qSender = shellQuote(SENDER)
   const qReviewDir = shellQuote(context.reviewDir)
   const request = readFileSync(join(context.statusDir, 'request.md'), 'utf8').replace(/\n+$/, '')
   const closing = `STATUS PROTOCOL
 
 Your injected preamble gives you the task id, the dispatch id, the dispatch capability
-and the --from handle. Use that set. The Orca CLI is ${qOrcaBin}.
+and the --from handle. Use that set. The Orca CLI is ${qOrcaBin}. Run every \`node\` helper below
+with the \`ORCA_BIN=...\` prefix as written: the helpers call that CLI too, and some agents run
+commands in a shell that does not pass the environment through.
 
 **That --from handle is your own terminal.** Wherever a command below says \`<handle>\`, write
 that handle out literally. Do not use an environment variable for it: some agents run
@@ -160,7 +166,7 @@ B. Do the work, then write ${qRoleDir}/result.md describing what you did.
 
 C. Offer it. This records the attempt and prints its nonce:
 
-     node ${qCompletion} --role-dir ${qRoleDir} prepare
+     ${qNode} ${qCompletion} --role-dir ${qRoleDir} prepare
 
 D. Tell the parent it is ready. **The subject carries the nonce and nothing else** — Orca
    builds the payload from the id flags, so a nonce put there would be dropped.
@@ -171,17 +177,17 @@ D. Tell the parent it is ready. **The subject carries the nonce and nothing else
      ${qOrcaBin} orchestration send --type merge_ready \\
        --task-id <task id> --dispatch-id <dispatch id> \\
        --dispatch-capability <capability> --from <handle> \\
-       --subject "merge_ready: $(node ${qCompletion} --role-dir ${qRoleDir} nonce)" \\
+       --subject "merge_ready: $(${qNode} ${qCompletion} --role-dir ${qRoleDir} nonce)" \\
        --body "<what you did>" --json
 
-   Then run: node ${qCompletion} --role-dir ${qRoleDir} sent
+   Then run: ${qNode} ${qCompletion} --role-dir ${qRoleDir} sent
    The parent replies on this same dispatch.
 
 E. Wait for that reply. **Do not end your turn to wait.** A message put in your mailbox
    does not wake you: a turn closed here is a dispatch that stops for good, and someone has
    to come and restart you by hand.
 
-     node ${qCompletion} --role-dir ${qRoleDir} --terminal <handle> await
+     ${qNode} ${qCompletion} --role-dir ${qRoleDir} --terminal <handle> await
 
    It blocks for up to 10 minutes, reads your mailbox with --peek (never --ack), matches
    your own nonce, and prints one line:
@@ -195,12 +201,12 @@ E. Wait for that reply. **Do not end your turn to wait.** A message put in your 
    Exit 2 means the command itself was wrong (for example, --terminal is missing): fix it
    and run it again. Exit 1 means the mailbox could not be read at all; try once more. If it fails
    again, write that in result.md, run
-   \`node ${qReportStatus} ${qRoleDir} error the mailbox could not be read\`, and stop. Do not report done.
+   \`${qNode} ${qReportStatus} ${qRoleDir} error the mailbox could not be read\`, and stop. Do not report done.
 
 F. Report. \`await\` already checked the nonce and recorded the acceptance, so there is
    nothing to confirm here:
 
-     node ${qReportStatus} ${qRoleDir} done <one line>
+     ${qNode} ${qReportStatus} ${qRoleDir} done <one line>
 
 G. Send worker_done, then record that it landed:
 
@@ -208,14 +214,14 @@ G. Send worker_done, then record that it landed:
        --task-id <task id> --dispatch-id <dispatch id> \\
        --dispatch-capability <capability> --from <handle> \\
        --outcome succeeded --subject "<short status>" --body "<what you did>" --json
-     node ${qCompletion} --role-dir ${qRoleDir} settle
+     ${qNode} ${qCompletion} --role-dir ${qRoleDir} settle
 
    **Before resending anything, inspect:**
      ${qOrcaBin} orchestration dispatch-show --task <task id> --json
    If the dispatch is already terminal, **do not resend** — run settle and stop.
 
 H. **If the work itself failed, none of C-G applies.** Write why in result.md, run
-   \`node ${qReportStatus} ${qRoleDir} error <reason>\`, and send worker_done with --outcome failed. That
+   \`${qNode} ${qReportStatus} ${qRoleDir} error <reason>\`, and send worker_done with --outcome failed. That
    status is the record that a failure is still owed; there is nothing to offer.
 
 I. **Do not invent message types.** The only things you send are the ones above, plus
@@ -277,7 +283,7 @@ REVIEW LOOP
 
 4. Send the verdict back:
 
-     node ${qSender} --workers ${qWorkersFile} --from <handle> --to ${requester} \\
+     ${qNode} ${qSender} --workers ${qWorkersFile} --from <handle> --to ${requester} \\
        --subject 'review-verdict: round <n>' --body '<absolute path to your findings file>'
 
    Exit 2 means the command itself was wrong (for example, --from is missing) and nothing
@@ -300,7 +306,7 @@ A reviewer is already running and waiting for you. Have your ${noun} reviewed be
 
 2. Send the request:
 
-     node ${qSender} --workers ${qWorkersFile} --from <handle> --to ${requester} \\
+     ${qNode} ${qSender} --workers ${qWorkersFile} --from <handle> --to ${requester} \\
        --subject '${label} round <n>' --body '<absolute path to your request file>'
 
    **Exit 2 means the command itself was wrong** (for example, --from is missing) and nothing
@@ -340,7 +346,7 @@ A reviewer is already running and waiting for you. Have your ${noun} reviewed be
 
 7. When you are done, release the reviewer:
 
-     node ${qSender} --workers ${qWorkersFile} --from <handle> --to ${requester} \\
+     ${qNode} ${qSender} --workers ${qWorkersFile} --from <handle> --to ${requester} \\
        --subject 'abort-reviewer: done' --body 'the work is finished'
 
 `
@@ -395,7 +401,7 @@ person watching decides whether to answer or to stop the dispatch.`
 each question the brainstorming skill asks, and its request for the user to review the
 written spec — first record that you are waiting:
 
-     node ${qAwaiting} --role-dir ${qRoleDir}
+     ${qNode} ${qAwaiting} --role-dir ${qRoleDir}
 
 then put the question at the end of your reply and end your turn. The answer arrives as the
 next message typed into this terminal. Ask one question at a time, as the skill does.

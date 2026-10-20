@@ -67,7 +67,8 @@ setup; SLUG='Bad_Slug' start >/dev/null 2>&1
 #      lifecycle の argv も全部持つ (spec 6-4b)。bare orca は使わせない (O1)
 setup; start >/dev/null 2>&1; l=$(spec); miss=""
 [[ "$l" == *"$MARK"* ]] || miss="$miss [request]"
-# ★ 'ORCA_BIN' は入れない。**変数名が spec に出ること自体がバグ**である（ST42）。
+# ★ 'ORCA_BIN' は入れない。**`$ORCA_BIN` の参照が spec に出ること自体がバグ**である（ST42）。
+#   helper の前の `ORCA_BIN=<実値>` の代入は ST113 が固定する
 for n in 'worker_done' '--task-id' '--dispatch-id' '--dispatch-capability' \
          '--from' '--outcome' 'report-status.ts' 'dispatch-show --task'; do
   [[ "$l" == *"$n"* ]] || miss="$miss [$n]"; done
@@ -1326,5 +1327,29 @@ done
 setup; start --ask-via slack >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 1 ]] && ! grep -q 'worktree create\|worker-start' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST112 不正な ask_via で何も作らない" || fail "ST112 (rc=$rc)"; teardown
+
+# ST113: ★ **worker が走らせる helper にも、親が解決した Orca CLI を焼き込む。**2026-10-20 の実測: WSL2 の codex
+#        （shell_environment_policy.inherit=core）は ORCA_BIN も ORCA_CLI_COMMAND も shell に渡さず、helper の
+#        orcaBin() が macOS の app bundle の path に落ちて orca-send.ts / completion.ts が exit 1 で失敗した。
+#        design_review の判定も exec のレビュー依頼も届かず、実装は未レビューのまま受理された。
+#        直接呼ぶ CLI は ST42 で実値になっていたので、helper だけが env に頼っていた
+setup; four_roles; start >/dev/null 2>&1; design_done; exec_phase >/dev/null 2>&1
+echo '{"ok":true,"result":{"message":{"id":"msg_1"}}}' > "$ORCA_STUB_DIR/orchestration_send"
+bad=""; n=0; sent=""
+while IFS= read -r -d $'\036' sp; do
+  n=$((n + 1))
+  [[ "$(grep -oE 'node [^ ]+\.ts' <<<"$sp" | wc -l)" -eq "$(grep -oF "ORCA_BIN=$ORCA_BIN node " <<<"$sp" | wc -l)" ]] \
+    || bad="$bad [unpinned-helper]"
+  # reviewer の step 4 を、env から CLI を消した shell でそのまま走らせる
+  if [[ "$sp" == *'review-plan:'* && "$sp" == *'REVIEWER FOR TASK'* ]]; then
+    cmd=$(awk '/orca-send.ts/ && /review-verdict/ { print; exit } /orca-send.ts/ { line = $0; next }
+               line != "" { print line; print; exit }' <<<"$sp")
+    cmd=${cmd//<handle>/term_r}; cmd=${cmd//<n>/1}; cmd=${cmd//<absolute path to your findings file>/\/tmp\/f.md}
+    env -u ORCA_BIN -u ORCA_CLI_COMMAND bash -c "$cmd" >/dev/null 2>&1 && sent=yes
+  fi
+done < <(awk -v RS='\037' 'prev == "--spec" { printf "%s\036", $0 } { prev = $0 }' "$ORCA_STUB_DIR/argv.log")
+[[ "$n" -eq 4 && -z "$bad" && "$sent" == yes ]] && grep -q 'orchestration send --to dispatch:' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST113 helper は env 無しでも親の Orca CLI を使う" || fail "ST113 (n=$n sent=$sent):$bad"
+teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
