@@ -739,7 +739,7 @@ message type this version cannot handle, an outcome that contradicts what is alr
 recorded on disk, or a `worker_done` Orca rejected (`_orcaLifecycleRejection`) for a dispatch
 that has no accepted `worker_done`. A rejection is passed over, not stopped on, when its dispatch
 is already settled or superseded, or when the mailbox carries that dispatch's accepted
-`worker_done`, in the same batch or a later one (the wait reads the later ones with `--peek`). None of these is repairable by hand, and rerunning the wait cannot help — it will
+`worker_done`, in the same batch or a later one (the wait reads the later ones with `--peek`). An `escalation` Orca sends on its own when a worker ends its turn without `worker_done` ("Worker stopped [on an error] without reporting") is not one of these either: the dispatch is still open, so the wait logs one line, acknowledges it with its batch and keeps waiting; a worker that then stays quiet is reported by the stall check (exit 8). None of these is repairable by hand, and rerunning the wait cannot help — it will
 read the same batch again. Keep the terminal and worktree, do not acknowledge, and
 **do not proceed to Step 4**. Inspect the recorded receipt and result with the user. If they show a successful worker outcome, the user may explicitly choose the
 manual integration command below; it does not acknowledge the batch. That unacknowledged batch

@@ -730,6 +730,35 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       wakeRole(entry.statusDir, entry.role)
       continue
     }
+    // ★ **Orca が自動で出す escalation（「Worker stopped [on an error] without reporting」）は知らせであって決着ではない。**
+    //   worker_done を送らずにターンを終えるたびに来る。ask_via=terminal の design は人に尋ねるたびにターンを終えるので
+    //   毎回来るし、スリープで API が切れたときは on an error の方が来る（2026-11-02、logi-app）。dispatch は開いたままで、
+    //   生死は worker-show、人待ちは awaiting-user.json、黙った worker は停滞（exit 8）がそれぞれ受け持つ。ここで止めると
+    //   batch ごと永久に詰まるので、1 行言って既読にする。起床もしない — 端末で人が答えを打っている最中かもしれない
+    if (type === 'escalation') {
+      const resolved = resolveDispatch(state, task, dispatch)
+      if (resolved.kind === 'unreadable') {
+        log(NAME, `cannot read workers.json for dispatch '${dispatch}'; the batch is not acknowledged`)
+        return 2
+      }
+      if (resolved.kind === 'unknown') return unknown(state, type, task, dispatch, batch)
+      const subject = string(message.subject) || 'none'
+      if (resolved.kind === 'superseded') {
+        log(NAME, `ignoring escalation '${subject}' from dispatch '${dispatch}': it was replaced for ${resolved.role}`)
+        continue
+      }
+      const entry = state.expected.entries[resolved.index]
+      if (entry === undefined) return 1
+      if (awaitingSince(entry.statusDir, entry.role) > 0) {
+        log(NAME, `${entry.role} ended its turn to wait for an answer in its terminal (Orca: '${subject}')`)
+      } else {
+        log(
+          NAME,
+          `${entry.role} (dispatch ${dispatch}) ended its turn without reporting (Orca: '${subject}'); its dispatch is still open, so the wait goes on and the stall check reports it if it stays quiet`,
+        )
+      }
+      continue
+    }
     const resolved = type === 'worker_done' ? resolveDispatch(state, task, dispatch) : { kind: 'unknown' as const }
     if (resolved.kind === 'unreadable') {
       log(NAME, `cannot read workers.json for dispatch '${dispatch}'; the batch is not acknowledged`)

@@ -1413,4 +1413,38 @@ l=$(grep 'worker-show' "$ORCA_STUB_DIR/calls.log" | head -1)
 [[ "$rc" -eq 3 && "$l" == *'--json --full'* && "$out" != *"is ''"* ]] \
   && ok "WT133 簡潔表示の worker-show でも live と読む" || fail "WT133 (rc=$rc l=$l out=$out)"; teardown
 
+# WT134-136: ★ **Orca が自動で出す escalation で止まらない。**worker_done を送らずにターンを終えるたびに来る
+#   （ask_via=terminal の design は尋ねるたびに、スリープで API が切れたときは on an error の方が来る）。
+#   2026-11-02、logi-app: `carries a message this version cannot handle (type='escalation' ...)` で exit 1 になり、
+#   未読の 3 件が queue に残った。dispatch は開いたままなので、1 行言って既読にし、待ち続ける
+esc() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_esc",count:3,messages:[
+    {id:"msg_stop_1",type:"escalation",subject:"Worker stopped without reporting",
+     payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"Worker term_w ended its turn without sending worker_done for task task_x. The Dispatch is still open."},
+    {id:"msg_stop_2",type:"escalation",subject:"Worker stopped on an error without reporting",
+     payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"Worker term_w ended its turn on an error without sending worker_done for task task_x. The Dispatch is still open."},
+    {id:"msg_stop_3",type:"escalation",subject:"Worker stopped without reporting",
+     payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"..."}]}}' > "$ORCA_STUB_DIR/orchestration_check"; }
+setup; esc
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 ]] && grep -q -- '--ack d_esc' "$ORCA_STUB_DIR/calls.log" && [[ ! -e "$SD/received.json" \
+   && "$out" == *"design (dispatch ctx_x) ended its turn without reporting (Orca: 'Worker stopped on an error without reporting')"* \
+   && "$out" != *'cannot handle'* ]] \
+  && ok "WT134 escalation は既読にして待ち続ける" || fail "WT134 (rc=$rc out=$out)"; teardown
+
+setup; esc; echo '{"asked_at":1}' > "$SD/roles/design/awaiting-user.json"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'design ended its turn to wait for an answer in its terminal'* \
+   && "$out" != *'without reporting (Orca'* ]] && grep -q -- '--ack d_esc' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT135 人を待っている役の escalation は人待ちとして言う" || fail "WT135 (rc=$rc out=$out)"; teardown
+
+# WT136: 同じ batch の worker_done は今までどおり受領する
+setup; dn
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_mix",count:2,messages:[
+    {id:"msg_stop_1",type:"escalation",subject:"Worker stopped without reporting",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:""},
+    {id:"m1",type:"worker_done",payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+w 1 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && -e "$SD/received.json" ]] && grep -q -- '--ack d_mix' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT136 escalation と同じ batch の worker_done を受領する" || fail "WT136 (rc=$rc)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

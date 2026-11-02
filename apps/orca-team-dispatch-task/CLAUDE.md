@@ -48,6 +48,12 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   （2026-11-02、logi-app の待機が生きている design の state を '' と読んで exit 4 で止まった）。この plugin の
   読み取りはすべて `--full` の形で書く。worker の state は `lib/orca.ts` の `workerState` で読み、簡潔表示の
   `result.state` にも落ちる。回帰は `test-wait.sh` の WT133 と `test/unit/orca.test.ts`
+- **Orca が自動で出す `escalation`（「Worker stopped [on an error] without reporting」）で待機を止めない。**worker_done を
+  送らずにターンを終えるたびに来る（ask_via=terminal の design は尋ねるたびに、スリープで API が切れたときは on an
+  error の方）。2026-11-02、logi-app で「cannot handle (type='escalation')」の exit 1 になり、未読が queue に残った。
+  dispatch は開いたままなので、`orca-wait.ts` は 1 行言って batch ごと既読にし待ち続ける。人待ちは awaiting-user.json、
+  黙った worker は停滞（exit 8）が受け持つ。**起床はしない** — 端末で人が答えを打っている最中かもしれない。
+  回帰は `test-wait.sh` の WT134-136
 - スクリプト間の呼び出しは `lib/sys.ts` の `runNode` で子プロセスにする。起床の失敗で配送を
   覆さないなど、bash 版の分離を保つため、import して同じプロセスで呼ばない
 - worker への指示文は `node <path>.ts` で completion / report-status / orca-send を呼ぶ
