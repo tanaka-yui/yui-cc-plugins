@@ -1447,4 +1447,56 @@ w 1 >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 && -e "$SD/received.json" ]] && grep -q -- '--ack d_mix' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT136 escalation と同じ batch の worker_done を受領する" || fail "WT136 (rc=$rc)"; teardown
 
+# WT137: ★ Orca の escalation は taskId が空のことがある（2026-11-03、logi-app）。dispatch id だけで引いて既読にする
+setup; jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_notask",count:1,messages:[
+    {id:"msg_stop_9",type:"escalation",subject:"Worker stopped without reporting",
+     payload:({taskId:"",dispatchId:"ctx_x"}|tojson),body:""}]}}' > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'design (dispatch ctx_x) ended its turn without reporting'* && "$out" != *'does not know'* ]] \
+  && grep -q -- '--ack d_notask' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT137 taskId の無い escalation を dispatch で引く" || fail "WT137 (rc=$rc out=$out)"; teardown
+
+# WT138-141: ★ **Orca の consuming check は返した batch をその場で既読にする**（`--ack` は要らない）。
+#   2026-11-02、logi-app: 待機ループの `check --wait`（consuming）が返した batch を捨て、merge_ready が返事なしに
+#   既読になった。止まった batch も queue に残らなかった。待つのは --peek --wait、受け取った batch は
+#   pending-batch.json に残して、処理し切るまで次の drain が読み直す
+setup; w 2 >/dev/null 2>&1
+grep -q '^orchestration check --terminal term_p --peek --wait ' "$ORCA_STUB_DIR/calls.log" \
+  && ! grep -qE '^orchestration check --terminal term_p --wait ' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT138 待つ呼び出しは --peek --wait（batch を既読にしない）" || fail "WT138 ($(grep -- '--wait' "$ORCA_STUB_DIR/calls.log" | head -1))"
+teardown
+
+empty_check() { echo '{"ok":true,"result":{"runId":"run_x","deliveryId":null,"count":0,"messages":[]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"; }
+# WT139: 止まった batch は pending-batch.json に残り、Orca がもう返さなくても次の待機が読み直す。案内は inbox を示す
+setup; jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_odd",count:1,messages:[
+    {id:"x1",type:"handoff",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:""}]}}' > "$ORCA_STUB_DIR/orchestration_check"
+out1=$(w 1 2>&1); rc1=$?
+saved=$(jq -r '.deliveryId' "$SD/pending-batch.json" 2>/dev/null)
+empty_check; out2=$(w 1 2>&1); rc2=$?
+[[ "$rc1" -eq 1 && "$saved" == d_odd && "$out1" == *'orchestration inbox --terminal run:run_x'* && "$out1" != *'--peek --json'* \
+   && "$rc2" -eq 1 && "$out2" == *'reading again batch d_odd'* && "$out2" == *"type='handoff'"* && -e "$SD/pending-batch.json" ]] \
+  && ok "WT139 止まった batch を残して読み直す" || fail "WT139 (rc=$rc1/$rc2 saved=$saved out1=$out1 out2=$out2)"
+teardown
+
+# WT140: ★ 実測の形。merge_ready の前で止まった batch（質問の取り次ぎ）でも、次の待機が merge_ready に答える
+setup; mkdir -p "$SD/roles/design"; printf 'did it\n' > "$SD/roles/design/result.md"
+echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_q",count:2,messages:[
+    {id:"q1",type:"question",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:"which one?"},
+    {id:"mr",type:"merge_ready",subject:"merge_ready: n1",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+w 1 >/dev/null 2>&1; rc1=$?
+sent1=$(grep -c 'completion-accepted' "$ORCA_STUB_DIR/argv.log")
+empty_check; out=$(w 1 2>&1); rc2=$?
+[[ "$rc1" -eq 6 && "$sent1" -eq 0 && "$rc2" -eq 3 && "$out" == *'accepted design (dispatch ctx_x)'* \
+   && ! -e "$SD/pending-batch.json" ]] && grep -q 'completion-accepted' "$ORCA_STUB_DIR/argv.log" \
+  && ok "WT140 止まった batch の merge_ready に次の待機が答える" || fail "WT140 (rc=$rc1/$rc2 sent1=$sent1 out=$out)"
+teardown
+
+# WT141: 処理し切った batch は残さない（次の drain は Orca の新しい batch を読む）
+setup; dn; msg; w 1 >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && ! -e "$SD/pending-batch.json" ]] && ok "WT141 処理し切った batch は消す" || fail "WT141 (rc=$rc)"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

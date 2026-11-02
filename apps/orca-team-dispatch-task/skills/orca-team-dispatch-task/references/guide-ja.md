@@ -709,8 +709,9 @@ worker が `worker_done` を送らずにターンを終えたときに Orca が�
 どれも手作業で直すものではなく、待機を再実行しても同じ batch を読み直すだけで解決しない。
 端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。記録済み receipt と
 result をユーザーと確認する。成功した worker outcome が示されていれば、ユーザーは下の手動統合コマンドを
-明示的に選べるが、それで batch を acknowledge することはない。acknowledge されない batch はこの親端末の
-queue の先頭に残り、手動統合で queue は解消されない。後続の dispatch は別の Orca terminal を開き、そこで
+明示的に選べるが、それで batch を acknowledge することはない。Orca は check が返した時点で batch を既読に
+するので、待機は止まった batch を各 status dir の `pending-batch.json` に残し、以後の待機は先にそれを読む。
+手動統合で queue は解消されない。後続の dispatch は別の Orca terminal を開き、そこで
 この skill を呼び出して開始する。`orca-start.ts` に親端末を指定する flag はなく、実行した Orca terminal の
 `ORCA_TERMINAL_HANDLE` を読むため、新しい terminal の handle が使われる。blocked な handle をコピーまたは
 設定してはならない。cursor を進めずに確認して、ユーザーの指示を待つ。この版が扱えないメッセージを
@@ -724,8 +725,9 @@ queue の先頭に残り、手動統合で queue は解消されない。後続�
 node "$PLUGIN/bin/orca-state.ts" mailbox --status-dir "$SD"
 ```
 
-これは `$SD/run.json` に記録された親端末に対して `orchestration check --peek` を走らせるだけで、
-何も acknowledge しない。親端末が記録されていなければ拒む。check 自体が失敗したときは、理由を
+これは `pending_batch`（待機が止まった batch。`$SD/pending-batch.json` から読む。`--peek` だけではもう
+見えない）と `unread`（`$SD/run.json` に記録された親端末に対する `orchestration check --peek`。何も
+acknowledge しない）を出す。親端末が記録されていなければ拒む。check 自体が失敗したときは、理由を
 stderr に出して exit 1 で終わる。前の inspection の後で、記録済み outcome と result — `$SD/received.json` と `$SD/roles/design/result.md` — を読んでユーザーへ見せる。
 ユーザーが成功した result を統合すると明示的に決めた場合、次の安全な merge コマンドを実行できる。receipt、
 status、result、branch、clean checkout の通常の guard はすべて実行し、blocked な batch を acknowledge しない。

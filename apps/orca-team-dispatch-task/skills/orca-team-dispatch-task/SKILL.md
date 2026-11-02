@@ -742,8 +742,9 @@ is already settled or superseded, or when the mailbox carries that dispatch's ac
 `worker_done`, in the same batch or a later one (the wait reads the later ones with `--peek`). An `escalation` Orca sends on its own when a worker ends its turn without `worker_done` ("Worker stopped [on an error] without reporting") is not one of these either: the dispatch is still open, so the wait logs one line, acknowledges it with its batch and keeps waiting; a worker that then stays quiet is reported by the stall check (exit 8). None of these is repairable by hand, and rerunning the wait cannot help — it will
 read the same batch again. Keep the terminal and worktree, do not acknowledge, and
 **do not proceed to Step 4**. Inspect the recorded receipt and result with the user. If they show a successful worker outcome, the user may explicitly choose the
-manual integration command below; it does not acknowledge the batch. That unacknowledged batch
-stays at the front of this parent terminal's queue, and manual integration does not unblock that
+manual integration command below; it does not acknowledge the batch. Orca marks a batch read the
+moment a check returns it, so the wait keeps the batch it stopped on in `pending-batch.json` of each
+status dir and every later wait reads that file first; manual integration does not unblock that
 queue. Start every later dispatch by opening another Orca terminal and invoking this skill
 there. `orca-start.ts` has no parent-terminal flag: it reads `ORCA_TERMINAL_HANDLE` from the
 Orca terminal that runs it, so it uses the new terminal's handle. Do not copy or set the blocked
@@ -758,8 +759,9 @@ message this version cannot handle:
 node "$PLUGIN/bin/orca-state.ts" mailbox --status-dir "$SD"
 ```
 
-It runs `orchestration check --peek` against the parent terminal recorded in `$SD/run.json`, which
-acknowledges nothing, and refuses when no parent terminal is recorded. If the check itself fails,
+It prints `pending_batch` (the batch the wait stopped on, from `$SD/pending-batch.json`; `--peek`
+alone no longer shows it) and `unread` (an `orchestration check --peek` against the parent terminal
+recorded in `$SD/run.json`, which acknowledges nothing), and refuses when no parent terminal is recorded. If the check itself fails,
 it exits 1 and prints the reason on stderr. After that inspection, show the user the recorded outcome
 and result: read `$SD/received.json` and `$SD/roles/design/result.md`. If they explicitly
 decide to integrate a successful result, they may run this safe merge command. It performs the normal receipt, status, result, branch, and clean-checkout

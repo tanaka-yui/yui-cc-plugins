@@ -98,6 +98,17 @@ out=$(st mailbox --status-dir "$SD" 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *'missing parent handle; do not acknowledge anything'* && ! -s "$ORCA_STUB_DIR/calls.log" ]] \
   && ok "OS7 mailbox は覗くだけで、親端末が無ければ何も呼ばない" || fail "OS7 (rc=$rc out=$out)"; teardown
 
+# OS7b: ★ 待機が止まった batch は Orca の --peek（未読だけ）に出ない。mailbox は pending-batch.json も出す
+#   （2026-11-03、logi-app: 案内の --peek が空を返し、止まった batch を調べられなかった）
+setup
+printf '{"run_id":"run_x","parent_handle":"term_p"}\n' > "$SD/run.json"
+echo '{"ok":true,"result":{"count":0,"messages":[]}}' > "$ORCA_STUB_DIR/orchestration_check"
+echo '{"deliveryId":"d_held","messages":[{"id":"msg_held","type":"escalation"}]}' > "$SD/pending-batch.json"
+out=$(st mailbox --status-dir "$SD"); rc=$?
+[[ "$rc" -eq 0 && "$(jq -r '.pending_batch.messages[0].id' <<<"$out")" == msg_held \
+   && "$(jq -r '.unread.count' <<<"$out")" == 0 ]] \
+  && ok "OS7b mailbox は止まった batch と未読の両方を出す" || fail "OS7b (rc=$rc out=$out)"; teardown
+
 # OS8: accounts は S1 の jq と同じ射影（ランタイムごとのアカウント id とアクティブ）だけを出す。
 #      receipt に載る email や rate limit は出さない。receipt が ok でなければ 1
 setup

@@ -86,6 +86,9 @@ const integration = (statusDir: string): number => {
 
 // ★ **覗くだけ。**`--peek` で読み、`--ack` は決して渡さない。扱えなかった batch を acknowledge すると、
 //   処理していない message を処理したと宣言することになる（Step 3 の exit 1）
+// ★ **止まった batch は pending-batch.json にある。**Orca の consuming check は返した batch をその場で既読にするので
+//   （Orca 1.4.246）、待機が止まった batch は `--peek`（未読だけ）には出ない（2026-11-03、logi-app で案内が空を返した）。
+//   待機が残したその batch と、まだ誰も受け取っていない未読の両方を出す
 const mailbox = (statusDir: string): number => {
   const parent = asString(get(readJson(join(statusDir, 'run.json')), 'parent_handle')) ?? ''
   if (parent === '') {
@@ -93,11 +96,15 @@ const mailbox = (statusDir: string): number => {
     return 1
   }
   const checked = runOrca(['orchestration', 'check', '--terminal', parent, '--peek', '--json'])
-  process.stdout.write(checked.stdout)
   if (!receiptOk(checked)) {
     log(NAME, `orchestration check failed (${failureDetail(checked)})`)
     return 1
   }
+  const view = {
+    pending_batch: readJson(join(statusDir, 'pending-batch.json')),
+    unread: get(checked.json, 'result') ?? null,
+  }
+  process.stdout.write(`${JSON.stringify(view, null, 2)}\n`)
   return 0
 }
 

@@ -14,7 +14,7 @@ import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson
 import { orcaBin, receiptOk, runOrca, workerState, workerStateClass, workerTerminal } from '../lib/orca.ts'
 import { envCount, nowSeconds, runNode, sleepSeconds } from '../lib/sys.ts'
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -45,6 +45,7 @@ type State = {
   awaitingSeen: Map<string, number>
   noted: Set<string>
   unknown: { type: string; task: string; dispatch: string; batch: string }
+  held: string
 }
 const string = (value: Json | undefined): string => asString(value) ?? ''
 const object = (value: Json | undefined): JsonObject => asObject(value) ?? {}
@@ -564,16 +565,53 @@ const queuedNormally = (state: State, task: string, dispatch: string): boolean |
 // ★ **どの dispatch で失敗したかを名指しする。**4 件を drain している最中に id の無い
 //   診断だけ出しても、どれを調べればよいか分からない。
 //   receipt が問題のときに rc= を出さない — RETRC は process の状態であって receipt ではない
-const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
-  const checked = runOrca(['orchestration', 'check', '--terminal', state.expected.parent, '--json'])
-  if (checked.rc !== 0) {
-    log(NAME, `check failed (rc=${checked.rc}); the batch is not acknowledged`)
-    return 2
+// ★ **Orca の consuming check は返した batch をその場で既読にする**（Orca 1.4.246。`--ack` は要らず、既読の batch への
+//   `--ack` は何もしない）。「ack するまで batch は queue の先頭に残る」を前提にしたこの待機は、止まった batch を
+//   失っていた: 2026-11-02 の logi-app で、escalation で exit 1 になった batch と、待機ループの `check --wait`
+//   （これも consuming）が返して捨てた batch の merge_ready が、返事なしに既読になった。そこで drain が受け取った
+//   batch は処理する前に各 status dir の pending-batch.json へ残し、最後まで処理し切ってから消す。次の drain
+//   （起動し直した待機も）は Orca より先にそれを読む — 止まった batch がもう一度読まれる、という元の挙動に戻る
+const PENDING = 'pending-batch.json'
+const pendingBatch = (state: State): JsonObject | null => {
+  for (const statusDir of state.statusDirs) {
+    const saved = asObject(read(statusDir, PENDING))
+    if (saved !== null) return saved
   }
-  const result = asObject(get(checked.json, 'result'))
-  if (!receiptOk(checked) || result === null) {
-    log(NAME, 'check receipt was not ok; the batch is not acknowledged')
-    return 2
+  return null
+}
+const keepBatch = (state: State, result: JsonObject): boolean =>
+  state.statusDirs.map((statusDir) => write(statusDir, PENDING, result)).every(Boolean)
+const dropBatch = (state: State): void => {
+  for (const statusDir of state.statusDirs) rmSync(join(statusDir, PENDING), { force: true })
+  state.held = ''
+}
+// 止まった batch の調べ方。pending-batch.json と、既読も含めた Run のメールボックス
+//   （`--peek` は未読しか返さないので、待機が受け取った batch はもう見えない）
+const inspectBatch = (state: State): void => {
+  log(NAME, `it is kept in ${PENDING} of each status dir and is read again by the next wait. Inspect with:`)
+  log(NAME, `  cat ${join(state.statusDirs[0] ?? '', PENDING)}`)
+  log(NAME, `  ${orcaBin()} orchestration inbox --terminal run:${state.expected.run} --limit 20 --full --json`)
+}
+const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
+  let result = pendingBatch(state)
+  if (result !== null) {
+    if (string(result.deliveryId) !== state.held) {
+      log(
+        NAME,
+        `reading again batch ${string(result.deliveryId)}, kept in ${PENDING} when an earlier wait stopped on it`,
+      )
+    }
+  } else {
+    const checked = runOrca(['orchestration', 'check', '--terminal', state.expected.parent, '--json'])
+    if (checked.rc !== 0) {
+      log(NAME, `check failed (rc=${checked.rc}); the batch is not acknowledged`)
+      return 2
+    }
+    result = asObject(get(checked.json, 'result'))
+    if (!receiptOk(checked) || result === null) {
+      log(NAME, 'check receipt was not ok; the batch is not acknowledged')
+      return 2
+    }
   }
   const messages = array(result.messages)
   if (messages === null) {
@@ -585,6 +623,12 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
   if (batch === '') {
     log(NAME, 'a non-empty batch has no deliveryId')
     return 1
+  }
+  if (batch !== state.held) {
+    state.held = batch
+    if (!keepBatch(state, result)) {
+      log(NAME, `could not keep batch ${batch} in ${PENDING}; it is read now, but is lost if this wait stops on it`)
+    }
   }
   const settled = new Map<number, string>()
   for (const rawMessage of messages) {
@@ -736,12 +780,14 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
     //   生死は worker-show、人待ちは awaiting-user.json、黙った worker は停滞（exit 8）がそれぞれ受け持つ。ここで止めると
     //   batch ごと永久に詰まるので、1 行言って既読にする。起床もしない — 端末で人が答えを打っている最中かもしれない
     if (type === 'escalation') {
-      const resolved = resolveDispatch(state, task, dispatch)
+      // ★ Orca の escalation は taskId が空のことがある（2026-11-03、logi-app）。dispatch id だけで期待集合から引く
+      const owner = task || (state.expected.entries.find((entry) => entry.dispatch === dispatch)?.task ?? '')
+      const resolved = resolveDispatch(state, owner, dispatch)
       if (resolved.kind === 'unreadable') {
         log(NAME, `cannot read workers.json for dispatch '${dispatch}'; the batch is not acknowledged`)
         return 2
       }
-      if (resolved.kind === 'unknown') return unknown(state, type, task, dispatch, batch)
+      if (resolved.kind === 'unknown') return unknown(state, type, owner, dispatch, batch)
       const subject = string(message.subject) || 'none'
       if (resolved.kind === 'superseded') {
         log(NAME, `ignoring escalation '${subject}' from dispatch '${dispatch}': it was replaced for ${resolved.role}`)
@@ -778,8 +824,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
         NAME,
         `batch ${batch} carries a message this version cannot handle (type='${type}' task='${task}' dispatch='${dispatch}')`,
       )
-      log(NAME, 'it is NOT acknowledged, so nothing is lost. Inspect with:')
-      log(NAME, `  ${orcaBin()} orchestration check --terminal ${state.expected.parent} --peek --json`)
+      inspectBatch(state)
       return 1
     }
     const outcome = string(payload.outcome)
@@ -860,6 +905,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
     log(NAME, 'ack receipt was not ok; the batch will replay')
     return 2
   }
+  dropBatch(state)
   return 0
 }
 // 移植元の理由（bin/orca-wait.sh）:
@@ -883,9 +929,8 @@ const drainBatch = (state: State): 0 | 1 | 2 | 6 => {
     NAME,
     `batch ${current.batch} carries a ${current.type} for a dispatch this wait does not know (task='${current.task}' dispatch='${current.dispatch}')`,
   )
-  log(NAME, 'it is NOT acknowledged, so nothing is lost. A stage started later is only visible here')
-  log(NAME, 'once its dispatch is recorded in workers.json. Inspect with:')
-  log(NAME, `  ${orcaBin()} orchestration check --terminal ${state.expected.parent} --peek --json`)
+  log(NAME, 'A stage started later is only visible here once its dispatch is recorded in workers.json.')
+  inspectBatch(state)
   return 1
 }
 // 移植元の理由（bin/orca-wait.sh）:
@@ -1143,6 +1188,7 @@ const main = (argv: string[]): number => {
     awaitingSeen: new Map(),
     noted: new Set(),
     unknown: { type: '', task: '', dispatch: '', batch: '' },
+    held: '',
   }
   beat(state)
   let drained = drainBatch(state)
@@ -1153,11 +1199,15 @@ const main = (argv: string[]): number => {
   let waiterErrors = 0
   while (true) {
     beat(state)
+    // ★ **待つ呼び出しは `--peek --wait`。**`--peek` の無い `--wait` も consuming で、返した batch を既読にする。
+    //   応答はここで捨てるので、その batch は drain に届かなかった（2026-11-02、logi-app の merge_ready が返事なしに
+    //   既読になった）。起こされるだけにして、受け取るのは drain の consuming check に任せる
     const waited = runOrca([
       'orchestration',
       'check',
       '--terminal',
       state.expected.parent,
+      '--peek',
       '--wait',
       '--timeout-ms',
       String(state.timeoutMs),

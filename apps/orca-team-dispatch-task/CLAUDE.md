@@ -54,6 +54,14 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   dispatch は開いたままなので、`orca-wait.ts` は 1 行言って batch ごと既読にし待ち続ける。人待ちは awaiting-user.json、
   黙った worker は停滞（exit 8）が受け持つ。**起床はしない** — 端末で人が答えを打っている最中かもしれない。
   回帰は `test-wait.sh` の WT134-136
+- **Orca の consuming check は返した batch をその場で既読にする**（Orca 1.4.246。`--ack` は要らない）。「ack する
+  まで batch は queue の先頭に残る」を前提にした待機は、止まった batch を失っていた。2026-11-02 の logi-app で、
+  待機ループの `check --wait`（これも consuming）が返して捨てた batch の merge_ready が、返事なしに既読になり、
+  worker が 1 時間返事を待った。待つのは `--peek --wait` にし、drain が受け取った batch は各 status dir の
+  `pending-batch.json` に残して、処理し切ってから消す。次の drain（起動し直した待機も）は Orca より先にそれを読む。
+  止まった batch は `--peek` に出ないので、`orca-state.ts mailbox` と待機の案内はそのファイルと
+  `orchestration inbox --terminal run:<run_id>` を示す。escalation の taskId が空のときは dispatch id だけで引く。
+  回帰は `test-wait.sh` の WT137-141 と `test-state.sh` の OS7b
 - スクリプト間の呼び出しは `lib/sys.ts` の `runNode` で子プロセスにする。起床の失敗で配送を
   覆さないなど、bash 版の分離を保つため、import して同じプロセスで呼ばない
 - worker への指示文は `node <path>.ts` で completion / report-status / orca-send を呼ぶ
