@@ -43,6 +43,11 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
 - `lib/` は入口から import する共通部品。`orca.ts` は Orca CLI を**標準入力を渡さずに**呼ぶ
   （`bash <<EOF` で流したとき、途中の CLI がスクリプトの残りを読んで判定を黙って飛ばした）。
   `any` / `unknown` / `class` は書かない。JSON は `lib/json.ts` の `Json` 型と `asObject` などで絞る
+- **`runOrca` は `orchestration` の呼び出しに `--full` を足す。**Orca 1.4.246 は既定を簡潔表示にし、worker-show の
+  `result.worker` / `result.dispatch` / `observation` と worker-list の `workerState` / `resource` が消えた
+  （2026-11-02、logi-app の待機が生きている design の state を '' と読んで exit 4 で止まった）。この plugin の
+  読み取りはすべて `--full` の形で書く。worker の state は `lib/orca.ts` の `workerState` で読み、簡潔表示の
+  `result.state` にも落ちる。回帰は `test-wait.sh` の WT133 と `test/unit/orca.test.ts`
 - スクリプト間の呼び出しは `lib/sys.ts` の `runNode` で子プロセスにする。起床の失敗で配送を
   覆さないなど、bash 版の分離を保つため、import して同じプロセスで呼ばない
 - worker への指示文は `node <path>.ts` で completion / report-status / orca-send を呼ぶ

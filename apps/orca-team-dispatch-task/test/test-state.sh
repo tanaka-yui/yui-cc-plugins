@@ -86,7 +86,7 @@ printf '{"run_id":"run_x","parent_handle":"term_p"}\n' > "$SD/run.json"
 echo '{"ok":true,"result":{"messages":[{"id":"m1","type":"odd"}]}}' > "$ORCA_STUB_DIR/orchestration_check"
 out=$(st mailbox --status-dir "$SD"); rc=$?
 line=$(grep '^orchestration check ' "$ORCA_STUB_DIR/calls.log")
-[[ "$rc" -eq 0 && "$out" == *'"m1"'* && "$line" == 'orchestration check --terminal term_p --peek --json ' ]] \
+[[ "$rc" -eq 0 && "$out" == *'"m1"'* && "$line" == 'orchestration check --terminal term_p --peek --json --full ' ]] \
   || fail "OS7 覗き見 (rc=$rc line=$line)"
 echo 1 > "$ORCA_STUB_DIR/orchestration_check.rc"
 out=$(st mailbox --status-dir "$SD" 2>&1); rc=$?

@@ -14,8 +14,12 @@ export const orcaBin = (): string => process.env.ORCA_BIN || process.env.ORCA_CL
 //   標準入力から読んでしまい、判定を黙って飛ばした（2026-09-23 実測）。stderr は捨てる。
 //   ★ maxBuffer を広げる。既定の 1 MiB を越える応答（本文の長い mailbox の batch）で子が殺されると、
 //   rc が失われて「Orca が答えなかった」に化ける
+//   ★ **orchestration には `--full` を足す。**Orca 1.4.246 は既定を簡潔表示にし、worker-show の `result.worker` /
+//   `result.dispatch` / `observation`、worker-list の `workerState` / `resource` が消えた（2026-11-02、logi-app の
+//   待機が worker の state を '' と読み、生きている worker で exit 4 になった）。この plugin の読み取りはすべて
+//   `--full` の形で書かれている
 export const runOrca = (args: string[]): OrcaResult => {
-  const child = spawnSync(orcaBin(), args, {
+  const child = spawnSync(orcaBin(), args[0] === 'orchestration' ? [...args, '--full'] : args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     maxBuffer: MAX_BUFFER,
@@ -60,6 +64,10 @@ export const userOwned = (worker: Json | undefined): boolean =>
 //     あとシェルへ戻って死んでいた。どちらも端末は connected だった
 //   - settled: 自分で報告して終わった（worker_done を送った）。Orca 側では決着している
 //   - other: それ以外（stopped / outcome_unknown / 空 / 知らない値）。各入口が今までどおり扱う
+// worker-show の worker の state。`--full` の `result.worker.state` を先に、無ければ簡潔表示の `result.state` を読む
+export const workerState = (shown: Json | null): string =>
+  asString(get(shown, 'result', 'worker', 'state')) ?? asString(get(shown, 'result', 'state')) ?? ''
+
 export type WorkerStateClass = 'live' | 'unconfirmed' | 'settled' | 'other'
 const LIVE_WORKER_STATES = ['active', 'ready', 'starting', 'idle']
 const UNCONFIRMED_WORKER_STATES = ['start_unknown']

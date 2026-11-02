@@ -402,9 +402,9 @@ world; task a; task b
 plan --status-dir "$(sd b)" --status-dir "$(sd a)"
 run --plan "$PLAN_FILE" --approve b:record --approve b:worktree --approve b:terminal \
     --approve a:terminal --approve a:worktree --approve a:record
-expected="orchestration worker-release --dispatch ctx_a-design --json
+expected="orchestration worker-release --dispatch ctx_a-design --json --full
 worktree rm --worktree id:wt_a-design --json
-orchestration worker-release --dispatch ctx_b-design --json
+orchestration worker-release --dispatch ctx_b-design --json --full
 worktree rm --worktree id:wt_b-design --json"
 [[ "$RC" -eq 0 && "$(mutations | sed 's/ $//')" == "$expected" && ! -e "$(sd a)" && ! -e "$(sd b)" \
    && "$OUT" == *'removed: design terminal'* && "$OUT" == *"removed: dispatch record $(sd a)"* ]] \
@@ -415,7 +415,7 @@ teardown
 world; task a
 plan --status-dir "$(sd a)"
 run --plan "$PLAN_FILE" --approve a:terminal
-[[ "$RC" -eq 0 && "$(mutations | sed 's/ $//')" == 'orchestration worker-release --dispatch ctx_a-design --json' \
+[[ "$RC" -eq 0 && "$(mutations | sed 's/ $//')" == 'orchestration worker-release --dispatch ctx_a-design --json --full' \
    && -d "$(sd a)" && "$OUT" == *'kept: design worktree id:wt_a-design (not approved)'* ]] \
   && ok "CL19 承認されていないものは残す" || fail "CL19 (out=$OUT)"
 teardown

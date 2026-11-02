@@ -1403,4 +1403,14 @@ n=$(grep -c "design of $(basename "$SD") settled as succeeded but its status.jso
 [[ "$rc" -eq 3 && "$n" -eq 1 ]] \
   && ok "WT132 集約できない理由を 1 回だけ言う" || fail "WT132 (rc=$rc n=$n err=$(cat "$ORCA_STUB_DIR/err"))"; teardown
 
+# WT133: ★ **Orca 1.4.246 の簡潔表示でも生きている worker を止めない。**worker-show の既定が `result.worker` を持たない
+#   形になり、待機が state を '' と読んで exit 4 で止まった（2026-11-02、logi-app の design）。呼び出しは --full で読み、
+#   それでも簡潔表示が返れば result.state を読む
+setup; echo '{"ok":true,"result":{"dispatchId":"ctx_x","liveness":"live","runId":"run_x","stage":"input_accepted","state":"ready","taskId":"task_x","terminal":"term_w","terminalState":"retained"}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(w 1 2>&1); rc=$?
+l=$(grep 'worker-show' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$rc" -eq 3 && "$l" == *'--json --full'* && "$out" != *"is ''"* ]] \
+  && ok "WT133 簡潔表示の worker-show でも live と読む" || fail "WT133 (rc=$rc l=$l out=$out)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

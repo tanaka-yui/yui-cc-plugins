@@ -11,7 +11,7 @@ import { die, log } from '../lib/cli.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
-import { orcaBin, receiptOk, runOrca, workerStateClass, workerTerminal } from '../lib/orca.ts'
+import { orcaBin, receiptOk, runOrca, workerState, workerStateClass, workerTerminal } from '../lib/orca.ts'
 import { envCount, nowSeconds, runNode, sleepSeconds } from '../lib/sys.ts'
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -1025,7 +1025,7 @@ const healthy = (state: State): boolean => {
       log(NAME, 'worker-show receipt was not ok')
       return false
     }
-    const status = string(get(shown.json, 'result', 'worker', 'state'))
+    const status = workerState(shown.json)
     const kind = workerStateClass(status)
     // ★ 端末の補完と未確認の通知は、人を待っている worker にも行う（round 1 のレビュー F3）。agentWait で先に
     //   読み飛ばすと、入力待ちの start_unknown の worker の端末がいつまでも埋まらない

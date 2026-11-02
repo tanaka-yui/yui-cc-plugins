@@ -22,6 +22,7 @@ import {
   receiptOk,
   releaseState,
   runOrca,
+  workerState,
   workerStateClass,
 } from '../lib/orca.ts'
 import { nowSeconds, runNode } from '../lib/sys.ts'
@@ -83,7 +84,7 @@ const stopWorker = (run: string, dispatch: string, role: string): { ok: boolean;
     }
   }
   const status = asString(get(shown.json, 'result', 'dispatch', 'status')) ?? ''
-  const state = asString(get(shown.json, 'result', 'worker', 'state')) ?? ''
+  const state = workerState(shown.json)
   // ★ **どちらへ進めるかの証拠が揃ったときだけ打つ。**決着の証拠があれば release、走っている証拠があれば stop
   //   （分類は lib/orca.ts）。state / status が無い・知らない値（outcome_unknown など）は「読めない」と同じく、何も打たない
   //   ★ **未確認（start_unknown）には stop を打つ。**生死のどちらの証拠でもないが、worker-stop は dispatch を fence して

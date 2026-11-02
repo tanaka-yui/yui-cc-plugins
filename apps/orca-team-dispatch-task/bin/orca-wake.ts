@@ -16,7 +16,7 @@ import { awaitingSince } from '../lib/awaiting.ts'
 import { die, log } from '../lib/cli.ts'
 import { readJson } from '../lib/fs.ts'
 import { asObject, asString, get } from '../lib/json.ts'
-import { dispatchSettled, receiptOk, runOrca, workerStateClass } from '../lib/orca.ts'
+import { dispatchSettled, receiptOk, runOrca, workerState, workerStateClass } from '../lib/orca.ts'
 
 import { accessSync, constants } from 'node:fs'
 import { dirname } from 'node:path'
@@ -85,7 +85,7 @@ const main = (argv: string[]): number => {
     // ★ **走っている worker にだけ打つ**（lib/orca.ts の live）。settle 済みの worker-show は 'succeeded' を返す。
     //   **start_unknown にも打たない** — 生死が分からず、死んでいれば端末はシェルに戻っていることがある（2026-09-24 の
     //   P2 の exec: codex が自動更新のあとシェルへ戻っていた）。そこへ打つと、この文章がコマンドとして実行される
-    const state = asString(get(shown.json, 'result', 'worker', 'state')) ?? ''
+    const state = workerState(shown.json)
     if (workerStateClass(state) !== 'live') {
       log(NAME, `the worker for dispatch '${dispatch}' is not running; nothing was typed`)
       return 1

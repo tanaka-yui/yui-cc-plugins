@@ -155,7 +155,7 @@ const planRole = (role: string, record: Json, listed: Json[], merged: boolean, s
     ].filter(Boolean)
     const repair =
       terminal === ''
-        ? `; inspect ${show(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'])} and, if reported, copy result.worker.agentTerminalHandle to roles.${role}.terminal in workers.json`
+        ? `; inspect ${show(['orchestration', 'worker-show', '--dispatch', dispatch, '--json', '--full'])} and, if reported, copy result.worker.agentTerminalHandle to roles.${role}.terminal in workers.json`
         : ''
     sink.stopped.reasons.push(`${role}: ${MISSING} (${fields.join(', ')} in workers.json)${repair}`)
     return

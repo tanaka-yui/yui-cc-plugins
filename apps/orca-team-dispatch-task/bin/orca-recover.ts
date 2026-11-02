@@ -26,6 +26,7 @@ import {
   receiptOk,
   runOrca,
   terminalHandles,
+  workerState,
   workerStateClass,
   workerTerminal,
 } from '../lib/orca.ts'
@@ -208,7 +209,7 @@ const stopForRestart = (role: Role): boolean => {
     return false
   }
   const shown = runOrca(['orchestration', 'worker-show', '--dispatch', role.dispatch, '--json'])
-  const state = asString(get(shown.json, 'result', 'worker', 'state')) ?? ''
+  const state = workerState(shown.json)
   if (!receiptOk(shown) || (state !== 'failed' && state !== 'stopped')) {
     log(
       NAME,
@@ -453,7 +454,7 @@ const main = (argv: string[]): number => {
       rc = 1
       continue
     }
-    const state = asString(get(shown.json, 'result', 'worker', 'state')) ?? ''
+    const state = workerState(shown.json)
     const dispatchStatus = asString(get(shown.json, 'result', 'dispatch', 'status')) ?? ''
     const inspect = (): void => {
       log(NAME, `  ${orcaBin()} orchestration worker-show --dispatch ${role.dispatch} --json`)

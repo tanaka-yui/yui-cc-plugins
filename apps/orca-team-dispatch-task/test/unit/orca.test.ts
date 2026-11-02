@@ -1,3 +1,4 @@
+import { get } from '../../lib/json.ts'
 import {
   dispatchSettled,
   failureDetail,
@@ -9,6 +10,7 @@ import {
   runOrca,
   terminalHandles,
   userOwned,
+  workerState,
   workerStateClass,
   workerTerminal,
 } from '../../lib/orca.ts'
@@ -72,6 +74,18 @@ test('runOrca は stdout を JSON として読み、stderr を捨て、終了コ
     assert.deepEqual(result.json, { ok: true, result: { args: 'worker-list --json', input: '' } })
   })
   withEnv({ ORCA_BIN: STUB, STUB_RC: '3' }, () => assert.equal(runOrca([]).rc, 3))
+})
+
+// ★ Orca 1.4.246 の orchestration は既定で簡潔表示を返し、`result.worker` / `result.dispatch` / `resource` が消えた
+//   （2026-11-02、logi-app の待機が state を '' と読んで exit 4 で止まった）。読む形は `--full` で固定する
+test('runOrca は orchestration の呼び出しにだけ --full を足す', () => {
+  withEnv({ ORCA_BIN: STUB }, () => {
+    assert.equal(
+      get(runOrca(['orchestration', 'worker-show', '--dispatch', 'ctx_1', '--json']).json, 'result', 'args'),
+      'orchestration worker-show --dispatch ctx_1 --json --full',
+    )
+    assert.equal(get(runOrca(['terminal', 'list', '--json']).json, 'result', 'args'), 'terminal list --json')
+  })
 })
 
 // ★ `bash <<EOF` で流したとき、途中の Orca CLI がスクリプトの残りを標準入力から読んで判定を
@@ -156,6 +170,17 @@ test('workerStateClass は走っている・未確認・決着済みを分け、
   // stopped / outcome_unknown は各入口が今までどおり扱う。stage の値や Object の既定の key を分類に化けさせない
   for (const state of ['stopped', 'outcome_unknown', '', 'turn_start_unobserved', 'constructor'])
     assert.equal(workerStateClass(state), 'other')
+})
+
+test('workerState は result.worker.state を読み、無ければ簡潔表示の result.state を読む', () => {
+  assert.equal(workerState({ ok: true, result: { worker: { state: 'ready' }, state: 'failed' } }), 'ready')
+  // 簡潔表示の実測（logi-app の design）: state / liveness / stage が result の直下に並ぶ
+  assert.equal(
+    workerState({ ok: true, result: { state: 'ready', liveness: 'live', stage: 'input_accepted' } }),
+    'ready',
+  )
+  assert.equal(workerState({ ok: true, result: {} }), '')
+  assert.equal(workerState(null), '')
 })
 
 test('dispatchSettled は Orca 側で決着した dispatch の status だけを真にする', () => {
