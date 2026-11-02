@@ -62,6 +62,12 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   止まった batch は `--peek` に出ないので、`orca-state.ts mailbox` と待機の案内はそのファイルと
   `orchestration inbox --terminal run:<run_id>` を示す。escalation の taskId が空のときは dispatch id だけで引く。
   回帰は `test-wait.sh` の WT137-141 と `test-state.sh` の OS7b
+- **worker_done だけを失った役は、待機が Orca と親の記録から決着させる**（`orca-wait.ts` の `recoverLost`）。3.10.8 /
+  3.10.9 が捨てた worker_done はもう届かず、待機は猶予（3 周）のあと `is 'succeeded'` で exit 4 を繰り返した
+  （2026-11-03、logi-app の oms-operations-history の design と design_review）。記録するのは 3 つが揃ったときだけ:
+  Orca が worker を succeeded・dispatch を completed と言う、親がその役を受理している（completion.json が accepted か
+  settled）、受信箱（`--peek`）にその worker_done が残っていない。failed や未受理は今までどおり 4。記録と保持は
+  drain と同じ `settleEntry` を通す。回帰は `test-wait.sh` の WT142-146
 - スクリプト間の呼び出しは `lib/sys.ts` の `runNode` で子プロセスにする。起床の失敗で配送を
   覆さないなど、bash 版の分離を保つため、import して同じプロセスで呼ばない
 - worker への指示文は `node <path>.ts` で completion / report-status / orca-send を呼ぶ

@@ -1499,4 +1499,58 @@ setup; dn; msg; w 1 >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 && ! -e "$SD/pending-batch.json" ]] && ok "WT141 処理し切った batch は消す" || fail "WT141 (rc=$rc)"
 teardown
 
+# WT142-146: ★ **worker_done だけを失った役を決着させる。**3.10.8 / 3.10.9 の待機は Orca が既読にした batch を捨て、
+#   その worker_done はもう届かない。Orca が succeeded / completed と言い、親が成果を受理している（completion.json が
+#   accepted か settled）のに、待機は猶予のあと exit 4 を繰り返した（2026-11-03、logi-app の oms-operations-history）
+lost_setup() {   # $1: completion の phase、$2: worker の state、$3: dispatch の status
+  setup; dn; empty_check
+  printf '{"phase":"%s","generation":1,"nonce":"n1"}\n' "$1" > "$SD/roles/design/completion.json"
+  jq -nc --arg w "${2:-succeeded}" --arg d "${3:-completed}" '{ok:true,result:{worker:{state:$w},dispatch:{status:$d}}}' \
+    > "$ORCA_STUB_DIR/orchestration_worker-show"
+}
+wl() { ORCA_WAIT_SETTLE_GRACE=0 w "${1:-2}"; }
+lost_setup settled; out=$(wl 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$(jq -r '.[0]' "$SD/received.json" 2>/dev/null)" == 'worker_done|task_x|ctx_x|succeeded' \
+   && "$(jq -r '.roles.design.retained' "$SD/workers.json")" == true \
+   && "$out" == *'recorded design (dispatch ctx_x) as succeeded'* ]] \
+   && grep -q '^orchestration worker-retain --dispatch ctx_x' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT142 worker_done を失った受理済みの役を決着させる" || fail "WT142 (rc=$rc out=$out)"; teardown
+
+lost_setup accepted; wl >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && -e "$SD/received.json" ]] && ok "WT143 accepted でも決着させる" || fail "WT143 (rc=$rc)"; teardown
+
+# WT144: 親が受理していない役（merge_ready_sent）・Orca が completed と言わない役は、今までどおり 4
+lost_setup merge_ready_sent; wl >/dev/null 2>&1; rc1=$?; r1=$([[ -e "$SD/received.json" ]] && echo y); teardown
+lost_setup settled succeeded pending; wl >/dev/null 2>&1; rc2=$?; r2=$([[ -e "$SD/received.json" ]] && echo y); teardown
+lost_setup settled failed failed; wl >/dev/null 2>&1; rc3=$?; r3=$([[ -e "$SD/received.json" ]] && echo y); teardown
+[[ "$rc1" -eq 4 && "$rc2" -eq 4 && "$rc3" -eq 4 && -z "$r1$r2$r3" ]] \
+  && ok "WT144 証拠が揃わない役は記録せず 4" || fail "WT144 (rc=$rc1/$rc2/$rc3 r=$r1$r2$r3)"
+
+# WT145: ★ 受信箱にまだ worker_done が残っていれば、合成せず drain に任せて待つ
+lost_setup settled
+cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<HOOK
+#!/usr/bin/env bash
+if [[ " \$* " == *" --peek "* && " \$* " != *" --wait "* ]]; then
+  jq -nc '{ok:true,result:{count:1,messages:[{id:"m1",type:"worker_done",
+    payload:({taskId:"task_x",dispatchId:"ctx_x",outcome:"succeeded"}|tojson),body:""}]}}'
+else
+  echo '{"ok":true,"result":{"runId":"run_x","deliveryId":null,"count":0,"messages":[]}}'
+fi > "$ORCA_STUB_DIR/orchestration_check"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+out=$(wl 2 2>&1); rc=$?
+[[ "$rc" -eq 3 && ! -e "$SD/received.json" && "$out" != *'recorded design'* ]] \
+  && ok "WT145 受信箱に残る worker_done は drain に任せる" || fail "WT145 (rc=$rc out=$out)"; teardown
+
+# WT146: 受信箱を覗けなければ合成しない（今までどおり 4）
+lost_setup settled
+cat > "$ORCA_STUB_DIR/orchestration_check.hook" <<HOOK
+#!/usr/bin/env bash
+if [[ " \$* " == *" --peek "* && " \$* " != *" --wait "* ]]; then echo '{"ok":false}'
+else echo '{"ok":true,"result":{"runId":"run_x","deliveryId":null,"count":0,"messages":[]}}'; fi > "$ORCA_STUB_DIR/orchestration_check"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
+wl >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 4 && ! -e "$SD/received.json" ]] && ok "WT146 受信箱を覗けなければ記録しない" || fail "WT146 (rc=$rc)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

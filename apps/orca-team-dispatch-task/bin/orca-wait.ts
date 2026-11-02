@@ -585,6 +585,55 @@ const dropBatch = (state: State): void => {
   for (const statusDir of state.statusDirs) rmSync(join(statusDir, PENDING), { force: true })
   state.held = ''
 }
+// 役の worker_done を記録し、端末を保持する（drain と、worker_done を失った役の回復 recoverLost が使う）。
+// ★ 止めた役は端末を閉じてある。保持する資源が無いので retain をかけない
+const settleEntry = (entry: Entry, outcome: string): 0 | 1 | 2 => {
+  const previous = storedOutcome(entry.statusDir, entry.role)
+  if (previous === null) return 1
+  if (previous !== '' && previous !== outcome) {
+    log(
+      NAME,
+      `received outcome '${previous}' contradicts batch outcome '${outcome}' for task '${entry.task}' dispatch '${entry.dispatch}'`,
+    )
+    return 1
+  }
+  if (previous === '') {
+    const recorded = recordOutcome(entry.statusDir, entry.task, entry.dispatch, outcome)
+    if (recorded !== 0) return recorded
+  }
+  if (isStopped(entry.statusDir, entry.role)) return 0
+  const retained = runOrca(['orchestration', 'worker-retain', '--dispatch', entry.dispatch, '--json'])
+  if (get(retained.json, 'ok') !== true) {
+    log(NAME, `worker-retain receipt was not ok for dispatch '${entry.dispatch}'; the batch is not acknowledged`)
+    return 2
+  }
+  if (retained.rc !== 0) {
+    log(
+      NAME,
+      `worker-retain failed (rc=${retained.rc}) for dispatch '${entry.dispatch}'; the batch is not acknowledged`,
+    )
+    return 2
+  }
+  const workers = read(entry.statusDir, 'workers.json')
+  const record = asObject(workers)
+  const roles = asObject(record?.roles)
+  const role = asObject(roles?.[entry.role])
+  if (record === null || roles === null || role === null || string(role.dispatch) !== entry.dispatch) {
+    log(NAME, `could not record the retention for dispatch '${entry.dispatch}'; the batch is not acknowledged`)
+    return 2
+  }
+  const nextRole: JsonObject = { ...role, retained: true }
+  delete nextRole.start_incomplete
+  const next = {
+    ...record,
+    roles: { ...roles, [entry.role]: nextRole },
+  }
+  if (!write(entry.statusDir, 'workers.json', next)) {
+    log(NAME, `could not record the retention for dispatch '${entry.dispatch}'; the batch is not acknowledged`)
+    return 2
+  }
+  return 0
+}
 // 止まった batch の調べ方。pending-batch.json と、既読も含めた Run のメールボックス
 //   （`--peek` は未読しか返さないので、待機が受け取った batch はもう見えない）
 const inspectBatch = (state: State): void => {
@@ -851,50 +900,8 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       log(NAME, `not recording dispatch '${entry.dispatch}': it was replaced while this batch was read`)
       continue
     }
-    const previous = storedOutcome(entry.statusDir, entry.role)
-    if (previous === null) return 1
-    if (previous !== '' && previous !== outcome) {
-      log(
-        NAME,
-        `received outcome '${previous}' contradicts batch outcome '${outcome}' for task '${entry.task}' dispatch '${entry.dispatch}'`,
-      )
-      return 1
-    }
-    if (previous === '') {
-      const recorded = recordOutcome(entry.statusDir, entry.task, entry.dispatch, outcome)
-      if (recorded !== 0) return recorded
-    }
-    if (isStopped(entry.statusDir, entry.role)) continue
-    const retained = runOrca(['orchestration', 'worker-retain', '--dispatch', entry.dispatch, '--json'])
-    if (get(retained.json, 'ok') !== true) {
-      log(NAME, `worker-retain receipt was not ok for dispatch '${entry.dispatch}'; the batch is not acknowledged`)
-      return 2
-    }
-    if (retained.rc !== 0) {
-      log(
-        NAME,
-        `worker-retain failed (rc=${retained.rc}) for dispatch '${entry.dispatch}'; the batch is not acknowledged`,
-      )
-      return 2
-    }
-    const workers = read(entry.statusDir, 'workers.json')
-    const record = asObject(workers)
-    const roles = asObject(record?.roles)
-    const role = asObject(roles?.[entry.role])
-    if (record === null || roles === null || role === null || string(role.dispatch) !== entry.dispatch) {
-      log(NAME, `could not record the retention for dispatch '${entry.dispatch}'; the batch is not acknowledged`)
-      return 2
-    }
-    const nextRole: JsonObject = { ...role, retained: true }
-    delete nextRole.start_incomplete
-    const next = {
-      ...record,
-      roles: { ...roles, [entry.role]: nextRole },
-    }
-    if (!write(entry.statusDir, 'workers.json', next)) {
-      log(NAME, `could not record the retention for dispatch '${entry.dispatch}'; the batch is not acknowledged`)
-      return 2
-    }
+    const settledEntry = settleEntry(entry, outcome)
+    if (settledEntry !== 0) return settledEntry
   }
   const ack = runOrca(['orchestration', 'check', '--terminal', state.expected.parent, '--ack', batch, '--json'])
   if (ack.rc !== 0) {
@@ -1123,8 +1130,12 @@ const healthy = (state: State): boolean => {
           `dispatch '${entry.dispatch}' reports '${status}' but its worker_done has not arrived yet (${seen}/${state.settleGrace})`,
         )
       } else {
-        log(NAME, `the worker for dispatch '${entry.dispatch}' is '${status}'`)
-        return false
+        const lost = recoverLost(state, entry, shown.json)
+        if (lost === 'waiting') continue
+        if (lost !== 'recovered') {
+          log(NAME, `the worker for dispatch '${entry.dispatch}' is '${status}'`)
+          return false
+        }
       }
     } else {
       log(NAME, `the worker for dispatch '${entry.dispatch}' is '${status}'`)
@@ -1132,6 +1143,28 @@ const healthy = (state: State): boolean => {
     }
   }
   return true
+}
+// ★ **worker_done だけを失った役を、Orca と親自身の記録から決着させる。**3.10.8 / 3.10.9 の待機は、Orca の
+//   consuming check が既読にした batch を捨てていた（3.10.10 で直した）。そこで捨てられた worker_done はもう届かず、
+//   待機は猶予のあと exit 4 を繰り返した（2026-11-03、logi-app の oms-operations-history: design と design_review）。
+//   証拠が 3 つ揃ったときだけ受領として記録する: Orca が worker を succeeded・dispatch を completed と言う（Orca は
+//   その worker_done を受理した）、親がその役の成果を受理している（completion.json が accepted か settled）、
+//   そして受信箱にその worker_done が残っていない（残っていれば drain に任せて待つ）。failed や受理していない役は
+//   今までどおり exit 4 で人に見せる — Orca の failed は起動の失敗でもなりうる
+const recoverLost = (state: State, entry: Entry, shown: Json | null): 'recovered' | 'waiting' | 'no' => {
+  if (workerState(shown) !== 'succeeded') return 'no'
+  if (string(get(shown, 'result', 'dispatch', 'status')) !== 'completed') return 'no'
+  const phase = string(get(read(entry.statusDir, `roles/${entry.role}/completion.json`), 'phase'))
+  if (phase !== 'accepted' && phase !== 'settled') return 'no'
+  const queued = queuedNormally(state, entry.task, entry.dispatch)
+  if (queued === null) return 'no'
+  if (queued) return 'waiting'
+  if (settleEntry(entry, 'succeeded') !== 0) return 'no'
+  log(
+    NAME,
+    `recorded ${entry.role} (dispatch ${entry.dispatch}) as succeeded: Orca completed it and its work was accepted, but its worker_done never reached this wait`,
+  )
+  return 'recovered'
 }
 const positive = (flag: string, value: string): number => {
   if (!/^[1-9][0-9]*$/.test(value)) die(NAME, `${flag} must be a positive integer`)
