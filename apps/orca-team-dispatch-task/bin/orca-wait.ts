@@ -686,6 +686,26 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
     if (type === 'heartbeat') continue
     const rawPayload = message.payload
     const payload = asObject(typeof rawPayload === 'string' ? parseJson(rawPayload) : rawPayload)
+    // ★ **worker が run 宛てに送る status は知らせであって決着ではない。**payload を持たないのが普通で、
+    //   2026-11-03、logi-app の design が依頼者からの追加依頼を知らせたとき「handles only worker_done」の exit 1 になり、
+    //   pending-batch.json の batch を読み直すたびに同じ所で止まった。中身を表示して既読にし、待ち続ける。
+    //   Orca が拒否した送信の通知（_orcaLifecycleRejection を持つ status）は下の拒否の分岐が受け持つ
+    if (type === 'status' && (payload === null || !Object.hasOwn(payload, '_orcaLifecycleRejection'))) {
+      const from = string(message.from_handle)
+      const dispatchId = payload === null ? '' : string(payload.dispatchId)
+      const sender = state.expected.entries.find(
+        (entry) =>
+          (dispatchId !== '' && entry.dispatch === dispatchId) ||
+          (from !== '' && string(get(read(entry.statusDir, 'workers.json'), 'roles', entry.role, 'terminal')) === from),
+      )
+      const who =
+        sender === undefined ? `terminal ${from || 'unknown'}` : `${sender.role} (dispatch ${sender.dispatch})`
+      log(NAME, `${who} sent a status note (${string(message.id) || 'no id'}); the wait goes on:`)
+      log(NAME, `  ${string(message.subject) || '(no subject)'}`)
+      const body = string(message.body)
+      if (body !== '') log(NAME, `  ${body}`)
+      continue
+    }
     if (payload === null) {
       log(NAME, 'this version handles only worker_done messages; the message was left unacknowledged')
       return 1

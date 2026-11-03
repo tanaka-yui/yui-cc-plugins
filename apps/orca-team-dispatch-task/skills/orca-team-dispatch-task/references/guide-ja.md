@@ -706,6 +706,7 @@ batch の全メッセージを処理したという宣言である。この batc
 受理された `worker_done` があれば（同じ batch でも後ろの batch でもよい。後ろは待機が `--peek` で読む）、
 止まらずに読み飛ばす。
 worker が `worker_done` を送らずにターンを終えたときに Orca が自分で出す `escalation`（「Worker stopped [on an error] without reporting」）もこれに当たらない。dispatch は開いたままなので、待機は1 行出して batch ごと acknowledge し、待ち続ける。そのあと黙ったままの worker は停滞の判定（exit 8）が知らせる。
+worker が Run 宛てに送る `status` の知らせ（依頼者から追加の依頼があった、など）もこれに当たらない。待機は件名と本文を表示して batch ごと acknowledge し、待ち続けるので、待機が戻ったらユーザーに伝える。
 どれも手作業で直すものではなく、待機を再実行しても同じ batch を読み直すだけで解決しない。
 端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。記録済み receipt と
 result をユーザーと確認する。成功した worker outcome が示されていれば、ユーザーは下の手動統合コマンドを

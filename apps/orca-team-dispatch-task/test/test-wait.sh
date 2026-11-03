@@ -72,12 +72,12 @@ release_or_ack=$(grep -c 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" || tr
   && ! -e "$SD/received.json" && "$release_or_ack" -eq 0 ]] \
   && ok "WT4d rejected worker_done を消費しない" || fail "WT4d (rc=$rc out=$out)"; teardown
 
-# WT4e: null payload の status は誤って payload schema の問題と説明せず、未 ack で残す。
+# WT4e: null payload の status は知らせとして表示し、既読にして待ち続ける（決着にはしない。WT147 も参照）
 setup; status_msg; out=$(w 2>&1); rc=$?
-release_or_ack=$(grep -c 'worker-retain\|--ack' "$ORCA_STUB_DIR/calls.log" || true)
-[[ "$rc" -eq 1 && "$out" == *"this version handles only worker_done messages; the message was left unacknowledged"* \
-  && ! -e "$SD/received.json" && "$release_or_ack" -eq 0 ]] \
-  && ok "WT4e status message を未 ack で残す" || fail "WT4e (rc=$rc out=$out)"; teardown
+retained=$(grep -c 'worker-retain' "$ORCA_STUB_DIR/calls.log" || true)
+[[ "$rc" -eq 3 && "$out" == *"sent a status note (msg_status)"* && "$out" != *"handles only worker_done"* \
+  && ! -e "$SD/received.json" && "$retained" -eq 0 ]] \
+  && ok "WT4e status message は表示して待ち続ける" || fail "WT4e (rc=$rc out=$out)"; teardown
 
 # WT5: **failed は exit 5。**merge へ進ませない
 setup; er; msg failed; out=$(w 2>/dev/null); rc=$?
@@ -1552,5 +1552,34 @@ HOOK
 chmod +x "$ORCA_STUB_DIR/orchestration_check.hook"
 wl >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 4 && ! -e "$SD/received.json" ]] && ok "WT146 受信箱を覗けなければ記録しない" || fail "WT146 (rc=$rc)"; teardown
+
+# WT147-149: ★ **worker が run 宛てに送る status で止まらない。**2026-11-03、logi-app の design が依頼者からの追加依頼を
+#   `orchestration send --type status` で知らせると「handles only worker_done」の exit 1 になり、pending-batch.json の
+#   batch を読み直すたびに同じ所で止まった。payload の無い status は中身を表示して既読にし、待ち続ける
+st() { jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_st",count:1,messages:[
+    {id:"msg_st1",type:"status",from_handle:"term_w",subject:"追加依頼",payload:null,body:"依頼者から追加の依頼があった"}]}}' \
+    > "$ORCA_STUB_DIR/orchestration_check"; }
+setup; st
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'design (dispatch ctx_x) sent a status note (msg_st1)'* && "$out" == *'依頼者から追加の依頼があった'* \
+   && "$out" != *'handles only worker_done'* && ! -e "$SD/pending-batch.json" && ! -e "$SD/received.json" ]] \
+  && grep -q -- '--ack d_st' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT147 run 宛ての status は表示して待ち続ける" || fail "WT147 (rc=$rc out=$out)"; teardown
+
+# WT148: 止まった 3.10.11 が残した batch も、次の待機が読み直して先へ進み、残さない
+setup; st; cp "$ORCA_STUB_DIR/orchestration_check" "$SD/pending-batch.json"
+jq '.result' "$SD/pending-batch.json" > "$SD/p.tmp" && mv "$SD/p.tmp" "$SD/pending-batch.json"
+empty_check; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'reading again batch d_st'* && "$out" == *'sent a status note'* && ! -e "$SD/pending-batch.json" ]] \
+  && ok "WT148 残った status の batch を読み直して進む" || fail "WT148 (rc=$rc out=$out)"; teardown
+
+# WT149: Orca が拒否した送信の通知（_orcaLifecycleRejection を持つ status）は今までどおり拒否として扱う
+setup; jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_rj",count:1,messages:[
+    {id:"msg_rj",type:"status",from_handle:"term_w",subject:"Rejected worker_done",body:"",
+     payload:({taskId:"task_x",dispatchId:"ctx_x",_orcaLifecycleRejection:{code:"c",reason:"r"}}|tojson)}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 1 2>&1); rc=$?
+[[ "$out" == *'was rejected by Orca'* && "$out" != *'status note'* ]] \
+  && ok "WT149 拒否の通知は status note として扱わない" || fail "WT149 (rc=$rc out=$out)"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
