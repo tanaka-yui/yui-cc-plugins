@@ -739,7 +739,7 @@ message type this version cannot handle, an outcome that contradicts what is alr
 recorded on disk, or a `worker_done` Orca rejected (`_orcaLifecycleRejection`) for a dispatch
 that has no accepted `worker_done`. A rejection is passed over, not stopped on, when its dispatch
 is already settled or superseded, or when the mailbox carries that dispatch's accepted
-`worker_done`, in the same batch or a later one (the wait reads the later ones with `--peek`). An `escalation` Orca sends on its own when a worker ends its turn without `worker_done` ("Worker stopped [on an error] without reporting") is not one of these either: the dispatch is still open, so the wait logs one line, acknowledges it with its batch and keeps waiting; a worker that then stays quiet is reported by the stall check (exit 8). Nor is a `status` note a worker sends to the Run (for example, that the requester asked for more): the wait prints its subject and body, acknowledges it with its batch and keeps waiting, so relay it to the user when the wait returns. None of these is repairable by hand, and rerunning the wait cannot help — it will
+`worker_done`, in the same batch or a later one (the wait reads the later ones with `--peek`). An `escalation` Orca sends on its own when a worker ends its turn without `worker_done` ("Worker stopped [on an error] without reporting") is not one of these either: the dispatch is still open, so the wait logs one line, acknowledges it with its batch and keeps waiting; a worker that then stays quiet is reported by the stall check (exit 8). Nor is a `status` note a worker sends to the Run (for example, that the requester asked for more): the wait prints its subject and body, acknowledges it with its batch and keeps waiting, so relay it to the user when the wait returns. Nor is a message from a follow-up dispatch: Orca starts one, with a new worker in the same worktree, when a `status` reaches a dispatch that has already finished. The wait follows its `followUpOf` back to the role, records it under that role's `follow_ups` in `workers.json`, logs one line and passes over its messages; the role's own dispatch carries the outcome. The wait does not answer a `merge_ready` whose acceptance is already recorded (`completion.json` has the same nonce at `accepted` or `settled`), since that second reply is what starts such a follow-up. None of these is repairable by hand, and rerunning the wait cannot help — it will
 read the same batch again. Keep the terminal and worktree, do not acknowledge, and
 **do not proceed to Step 4**. Inspect the recorded receipt and result with the user. If they show a successful worker outcome, the user may explicitly choose the
 manual integration command below; it does not acknowledge the batch. Orca marks a batch read the
@@ -1058,7 +1058,7 @@ Say these things to the user in plain language:
   whole Run's cleanup, not just its own task. A status dir from a **different** Run stops it
   too, because it would widen the known set and hide the very ghost this looks for.
   A dispatch that `orca-recover.ts` replaced is listed under its role's `superseded` and counts as
-  recorded. Its own state still matters: a replaced attempt whose release Orca has not settled, or
+  recorded, and so is a follow-up dispatch the wait recorded under `follow_ups`. Its own state still matters: a replaced attempt whose release Orca has not settled, or
   that Orca no longer lists, stops that task as [C1] does, and while Orca still holds one, that
   task's dispatch record is kept, because the record is what tells a later Step 5 that it is ours.
 - [C4] `worktree rm` also tries to delete the branch. Orca keeps any branch whose changes
@@ -1194,7 +1194,7 @@ the same `run_id` in `run.json` and their own worktree in `workers.json`, whose 
 holds one entry per role so a later stage can add more without moving anything.
 
 A role that `orca-recover.ts` replaced lists the dispatches it replaced under `superseded`, and a
-role whose latest start did not become ready is marked `start_incomplete`.
+role whose latest start did not become ready is marked `start_incomplete`. A follow-up dispatch Orca started for a finished role is listed under that role's `follow_ups`.
 
 Step 5 writes
 `.dispatch/cleanup-<run_id>.json` next to them: Step 6's `run` executes only the offers in that

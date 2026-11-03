@@ -136,25 +136,25 @@ const currentState = (entry: Entry): 'current' | 'superseded' | 'unreadable' | '
   if ((array(record.superseded) ?? []).includes(entry.dispatch)) return 'superseded'
   return 'mismatch'
 }
-const supersededBy = (
-  statusDirs: string[],
-  dispatch: string,
-): { kind: 'superseded'; statusDir: string; role: string } | { kind: 'unreadable' } | null => {
+// superseded は「この役の今の試行ではない dispatch」。why はそれを読み流す理由として log に出す
+type Superseded = { kind: 'superseded'; statusDir: string; role: string; why: string }
+const followUpWhy = (role: string): string =>
+  `it comes from a follow-up dispatch Orca started for ${role} after its work had finished`
+const supersededBy = (statusDirs: string[], dispatch: string): Superseded | { kind: 'unreadable' } | null => {
   for (const statusDir of statusDirs) {
     const workers = asObject(readJson(join(statusDir, 'workers.json')))
     const roles = asObject(workers?.roles)
     if (roles === null) return { kind: 'unreadable' }
     for (const [role, record] of Object.entries(roles)) {
-      if ((array(get(record, 'superseded')) ?? []).includes(dispatch)) return { kind: 'superseded', statusDir, role }
+      if ((array(get(record, 'superseded')) ?? []).includes(dispatch))
+        return { kind: 'superseded', statusDir, role, why: `it was replaced (superseded) for ${role} in ${statusDir}` }
+      if ((array(get(record, 'follow_ups')) ?? []).includes(dispatch))
+        return { kind: 'superseded', statusDir, role, why: followUpWhy(role) }
     }
   }
   return null
 }
-type Resolved =
-  | { kind: 'current'; index: number }
-  | { kind: 'superseded'; statusDir: string; role: string }
-  | { kind: 'unreadable' }
-  | { kind: 'unknown' }
+type Resolved = { kind: 'current'; index: number } | Superseded | { kind: 'unreadable' } | { kind: 'unknown' }
 const resolveDispatch = (state: State, task: string, dispatch: string): Resolved => {
   const index = indexOf(state, task, dispatch)
   const entry = state.expected.entries[index]
@@ -167,7 +167,52 @@ const resolveDispatch = (state: State, task: string, dispatch: string): Resolved
     return { kind: 'unknown' }
   }
   const replaced = supersededBy(state.statusDirs, dispatch)
-  return replaced ?? { kind: 'unknown' }
+  return replaced ?? followUp(state, dispatch) ?? { kind: 'unknown' }
+}
+// ★ **Orca は終わった dispatch に status / dispatch / handoff が届くと、followUpOf の新しい dispatch を作って
+//   同じ worktree に worker を起動し直す**（Orca 1.4.246 の orchestration.send）。2026-11-03、logi-app: 待機が
+//   読み直した merge_ready にもう一度 completion-accepted を送り、worker_done を送り終えた design に followUp
+//   （ctx_f9ae8ad32373、followUpOf ctx_602497124f12）ができた。その worker は worker_done の権限確認で止まり、
+//   escalation が「does not know」の exit 1 になって pending-batch.json ごと次の待機も止めた。
+//   followUpOf を辿って知っている役に行き着けば、その役の follow_ups に記録して読み流す。決着は元の dispatch が
+//   運ぶので、followUp の worker_done では記録しない。記録は orca-cleanup がこの Run の保持を自分のものと読む根拠になる
+const followUp = (state: State, dispatch: string): Superseded | null => {
+  const seen = new Set<string>([dispatch])
+  let current = dispatch
+  for (;;) {
+    const of = string(
+      get(
+        runOrca(['orchestration', 'worker-show', '--dispatch', current, '--json']).json,
+        'result',
+        'dispatch',
+        'followUpOf',
+      ),
+    )
+    if (of === '' || seen.has(of)) return null
+    seen.add(of)
+    for (const statusDir of state.statusDirs) {
+      const workers = asObject(read(statusDir, 'workers.json'))
+      const roles = asObject(workers?.roles)
+      if (workers === null || roles === null) continue
+      for (const [role, raw] of Object.entries(roles)) {
+        const record = asObject(raw)
+        if (record === null) continue
+        const known = [record.dispatch, ...(array(record.superseded) ?? []), ...(array(record.follow_ups) ?? [])]
+        if (!known.includes(of)) continue
+        const ups = (array(record.follow_ups) ?? []).filter((id): id is string => typeof id === 'string')
+        const next = { ...workers, roles: { ...roles, [role]: { ...record, follow_ups: [...ups, dispatch] } } }
+        if (write(statusDir, 'workers.json', next)) {
+          log(
+            NAME,
+            `dispatch ${dispatch} is a follow-up of ${of} that Orca started for ${role} after its work had finished; recorded it in follow_ups and passing over its messages`,
+          )
+        } else
+          log(NAME, `could not record follow-up dispatch ${dispatch} for ${role}; passing over its messages anyway`)
+        return { kind: 'superseded', statusDir, role, why: followUpWhy(role) }
+      }
+    }
+    current = of
+  }
 }
 // 移植元の理由（bin/orca-wait.sh）:
 // ★ **「誰も待っていない」をディスクから分かるようにする。**この待機は最大 24 時間
@@ -722,10 +767,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
         return 2
       }
       if (resolved.kind === 'superseded') {
-        log(
-          NAME,
-          `${rejection}; ignoring it: it was replaced (superseded) for ${resolved.role} in ${resolved.statusDir}`,
-        )
+        log(NAME, `${rejection}; ignoring it: ${resolved.why}`)
         continue
       }
       if (resolved.kind === 'unknown') return unknown(state, `rejected ${type}`, task, dispatch, batch)
@@ -763,10 +805,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
         return 2
       }
       if (resolved.kind === 'superseded') {
-        log(
-          NAME,
-          `ignoring ${type} from dispatch '${dispatch}': it was replaced (superseded) for ${resolved.role} in ${resolved.statusDir}`,
-        )
+        log(NAME, `ignoring ${type} from dispatch '${dispatch}': ${resolved.why}`)
         continue
       }
       if (resolved.kind === 'unknown') return unknown(state, type, task, dispatch, batch)
@@ -803,10 +842,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
         return 2
       }
       if (resolved.kind === 'superseded') {
-        log(
-          NAME,
-          `ignoring ${type} from dispatch '${dispatch}': it was replaced (superseded) for ${resolved.role} in ${resolved.statusDir}`,
-        )
+        log(NAME, `ignoring ${type} from dispatch '${dispatch}': ${resolved.why}`)
         continue
       }
       if (resolved.kind === 'unknown') return unknown(state, type, task, dispatch, batch)
@@ -822,6 +858,19 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       if (!nonce) {
         log(NAME, `merge_ready from dispatch '${dispatch}' carries no nonce (subject '${subject || 'none'}')`)
         return 1
+      }
+      // ★ **返事済みの merge_ready に二度返さない。**pending-batch.json の読み直しで同じ merge_ready をまた読むと、
+      //   worker_done を送り終えた worker の dispatch に completion-accepted が届き、Orca が followUp の worker を
+      //   起動し直す（上の followUp）。worker は受理を completion.json に記録してから worker_done を送るので、
+      //   同じ nonce で accepted / settled なら、返事はもう届いている
+      const completion = read(entry.statusDir, `roles/${entry.role}/completion.json`)
+      const answered = string(get(completion, 'phase'))
+      if (string(get(completion, 'nonce')) === nonce && (answered === 'accepted' || answered === 'settled')) {
+        log(
+          NAME,
+          `merge_ready from ${entry.role} (dispatch ${dispatch}) is already accepted (${answered}); not answering it again`,
+        )
+        continue
       }
       const reason = verifyRole(entry.statusDir, entry.role)
       if (reason === '') {
@@ -859,7 +908,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       if (resolved.kind === 'unknown') return unknown(state, type, owner, dispatch, batch)
       const subject = string(message.subject) || 'none'
       if (resolved.kind === 'superseded') {
-        log(NAME, `ignoring escalation '${subject}' from dispatch '${dispatch}': it was replaced for ${resolved.role}`)
+        log(NAME, `ignoring escalation '${subject}' from dispatch '${dispatch}': ${resolved.why}`)
         continue
       }
       const entry = state.expected.entries[resolved.index]
@@ -880,10 +929,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       return 2
     }
     if (resolved.kind === 'superseded') {
-      log(
-        NAME,
-        `ignoring ${type} from dispatch '${dispatch}': it was replaced (superseded) for ${resolved.role} in ${resolved.statusDir}`,
-      )
+      log(NAME, `ignoring ${type} from dispatch '${dispatch}': ${resolved.why}`)
       continue
     }
     if (type === 'worker_done' && resolved.kind === 'unknown') return unknown(state, type, task, dispatch, batch)

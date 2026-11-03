@@ -1582,4 +1582,60 @@ out=$(w 1 2>&1); rc=$?
 [[ "$out" == *'was rejected by Orca'* && "$out" != *'status note'* ]] \
   && ok "WT149 拒否の通知は status note として扱わない" || fail "WT149 (rc=$rc out=$out)"; teardown
 
+# WT150-153: ★ **Orca が終わった dispatch に起こした followUp で止まらない。**Orca は終わった dispatch に status が届くと、
+#   followUpOf の新しい dispatch を作って worker を起動し直す。2026-11-03、logi-app: 読み直した merge_ready への 2 度目の
+#   completion-accepted で followUp ができ、その escalation が「does not know」の exit 1 になって pending-batch.json ごと
+#   次の待機も止めた。followUpOf を辿って役に結び付け、follow_ups に記録して読み流す
+fu_show() { cat > "$ORCA_STUB_DIR/orchestration_worker-show.hook" <<'HOOK'
+#!/usr/bin/env bash
+case " $* " in
+  *" --dispatch ctx_fu2 "*) echo '{"ok":true,"result":{"worker":{"state":"blocked"},"dispatch":{"status":"dispatched","followUpOf":"ctx_fu"}}}' ;;
+  *" --dispatch ctx_fu "*) echo '{"ok":true,"result":{"worker":{"state":"blocked"},"dispatch":{"status":"completed","followUpOf":"ctx_x"}}}' ;;
+  *" --dispatch ctx_stray "*) echo '{"ok":true,"result":{"worker":{"state":"active"},"dispatch":{"status":"dispatched"}}}' ;;
+  *) echo '{"ok":true,"result":{"worker":{"state":"active"}}}' ;;
+esac > "$ORCA_STUB_DIR/orchestration_worker-show"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_worker-show.hook"; }
+setup; fu_show; jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_fu",count:1,messages:[
+    {id:"msg_fu",type:"escalation",subject:"Worker stopped without reporting",
+     payload:({taskId:"",dispatchId:"ctx_fu"}|tojson),body:""}]}}' > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'dispatch ctx_fu is a follow-up of ctx_x that Orca started for design'* && "$out" != *'does not know'* \
+   && "$(jq -c '.roles.design.follow_ups' "$SD/workers.json")" == '["ctx_fu"]' && ! -e "$SD/pending-batch.json" ]] \
+  && grep -q -- '--ack d_fu' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT150 followUp の escalation を元の役に結び付けて読み流す" || fail "WT150 (rc=$rc out=$out)"; teardown
+
+# WT151: followUp の followUp も辿る。followUp の worker_done は決着にしない（決着は元の dispatch が運ぶ）
+setup; fu_show; jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_fu2",count:1,messages:[
+    {id:"msg_fu2",type:"worker_done",payload:({taskId:"task_fu2",dispatchId:"ctx_fu2",outcome:"succeeded"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *"ignoring worker_done from dispatch 'ctx_fu2': it comes from a follow-up dispatch"* \
+   && "$(jq -c '.roles.design.follow_ups' "$SD/workers.json")" == '["ctx_fu2"]' && ! -e "$SD/received.json" ]] \
+  && ok "WT151 followUp の followUp を辿り、その worker_done では決着させない" || fail "WT151 (rc=$rc out=$out)"; teardown
+
+# WT152: followUpOf を持たない知らない dispatch は、今までどおり「does not know」で止まる
+setup; fu_show; jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_stray",count:1,messages:[
+    {id:"msg_s",type:"escalation",subject:"Worker stopped without reporting",payload:({taskId:"",dispatchId:"ctx_stray"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'does not know'* && "$(jq -c '.roles.design.follow_ups' "$SD/workers.json")" == null ]] \
+  && ok "WT152 followUp でない知らない dispatch は今までどおり止まる" || fail "WT152 (rc=$rc out=$out)"; teardown
+
+# WT153: ★ 返事済み（completion.json が同じ nonce で accepted / settled）の merge_ready には二度返さない。
+#   読み直した batch の merge_ready に 2 度目の completion-accepted を送ったのが followUp の起点だった
+setup; printf 'did it\n' > "$SD/roles/design/result.md"
+echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
+jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"d_mr",count:1,messages:[
+    {id:"mr",type:"merge_ready",subject:"merge_ready: n1",payload:({taskId:"task_x",dispatchId:"ctx_x"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+echo '{"phase":"settled","generation":1,"nonce":"n1"}' > "$SD/roles/design/completion.json"
+out=$(w 1 2>&1); rc1=$?
+sent1=$(grep -c 'completion-accepted' "$ORCA_STUB_DIR/argv.log" 2>/dev/null); sent1=${sent1:-0}
+echo '{"phase":"settled","generation":1,"nonce":"n0"}' > "$SD/roles/design/completion.json"
+w 1 >/dev/null 2>&1
+sent2=$(grep -c 'completion-accepted' "$ORCA_STUB_DIR/argv.log" 2>/dev/null)
+[[ "$rc1" -eq 3 && "$sent1" -eq 0 && "$out" == *'already accepted (settled); not answering it again'* && "$sent2" -ge 1 ]] \
+  && ok "WT153 返事済みの merge_ready には二度返さない" || fail "WT153 (rc=$rc1 sent1=$sent1 sent2=$sent2 out=$out)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

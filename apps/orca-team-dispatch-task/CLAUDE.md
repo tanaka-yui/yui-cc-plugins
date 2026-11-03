@@ -59,6 +59,14 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   batch を読み直すたびに同じ所で止まった。件名と本文を表示して既読にし、待ち続ける。送り主は payload の dispatchId か
   `from_handle` と workers.json の terminal で引く。`_orcaLifecycleRejection` を持つ status（Orca の拒否通知）は
   今までどおり拒否の分岐が受け持つ。回帰は `test-wait.sh` の WT4e と WT147-149
+- **Orca は終わった dispatch に `status` / `dispatch` / `handoff` が届くと、followUpOf の新しい dispatch を作って同じ
+  worktree に worker を起動し直す**（Orca 1.4.246 の orchestration.send。`bUe` が対象 type）。2026-11-03 の logi-app で、
+  pending-batch.json を読み直した待機が merge_ready にもう一度 completion-accepted を送り、worker_done を送り終えた役に
+  followUp ができた。その worker の escalation は「does not know」の exit 1 になり、次の待機も同じ batch で止まった。
+  `orca-wait.ts` は (1) completion.json が同じ nonce で accepted / settled の merge_ready には返事をしない、(2) 知らない
+  dispatch は worker-show の `result.dispatch.followUpOf` を辿り、知っている役に行き着けばその役の `follow_ups` に
+  記録して読み流す（決着は元の dispatch が運ぶので followUp の worker_done では記録しない）。`orca-cleanup.ts` は
+  `follow_ups` を `superseded` と同じく記録済みとして数える。回帰は `test-wait.sh` の WT150-153 と `test-cleanup.sh` の CL27b
 - **Orca の consuming check は返した batch をその場で既読にする**（Orca 1.4.246。`--ack` は要らない）。「ack する
   まで batch は queue の先頭に残る」を前提にした待機は、止まった batch を失っていた。2026-11-02 の logi-app で、
   待機ループの `check --wait`（これも consuming）が返して捨てた batch の merge_ready が、返事なしに既読になり、

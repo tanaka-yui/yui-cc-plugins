@@ -739,4 +739,16 @@ else
   echo "SKIP: CL26 zsh が無い"
 fi
 
+# CL27b: ★ orca-wait.ts が follow_ups に記録した dispatch（終わった役に届いた message で Orca が起動し直した worker）も
+#        「記録に無い保持」ではない。保持されている間は端末と理由を示し、記録は残す
+world; task a; printf 'retained\n' > "$ORCA_STUB_DIR/workers/ctx_fu"
+plan --status-dir "$(sd a)"; before=$RC
+edit a '.roles.design.follow_ups = ["ctx_fu"]'
+plan --status-dir "$(sd a)"
+[[ "$before" -eq 1 && "$RC" -eq 0 && "$(pj '.tasks[0].stopped')" == null \
+   && "$(pj '.tasks[0].offers.record | length')" == 0 \
+   && "$(pj '[.tasks[0].kept[] | select(.kind == "terminal") | .reasons[0]] | first')" == *'the follow-up ctx_fu (releaseState: retained)'* ]] \
+  && ok "CL27b followUp の保持は [C7] を止めず、記録を残す" || fail "CL27b (before=$before rc=$RC out=$OUT)"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -203,28 +203,34 @@ const planRole = (role: string, record: Json, listed: Json[], merged: boolean, s
 //   release を Orca が確定できていない試行があれば、そのタスクは何も閉じない・消さない。一覧に無い・知らない
 //   state も同じく止まる。Orca がまだ保持していれば、その端末と理由を示し、記録は残す — 記録を消すと、どの保持が
 //   自分たちのものかを失い、次の [C7] が ghost と読む。返り値は「まだ Orca が保持している試行があるか」
+// ★ orca-wait.ts が `follow_ups` に記録した dispatch（終わった役に届いた message で Orca が起動し直した worker）も
+//   同じ扱いにする。同じ worktree に居るので、Orca が保持している間は何も閉じない
 const planSuperseded = (role: string, record: Json, listed: Json[], sink: Sink): boolean => {
   let held = false
-  for (const id of asArray(get(record, 'superseded')) ?? []) {
+  const attempts = [
+    ...(asArray(get(record, 'superseded')) ?? []).map((id) => ({ id, label: 'the replaced attempt' })),
+    ...(asArray(get(record, 'follow_ups')) ?? []).map((id) => ({ id, label: 'the follow-up' })),
+  ]
+  for (const { id, label } of attempts) {
     const dispatch = asString(id)
     if (dispatch === null) continue
     const worker = listed.find((entry) => get(entry, 'dispatchId') === dispatch)
     const state = worker === undefined ? '' : releaseState(worker)
     if (worker !== undefined && HELD_STATES.includes(state)) {
       sink.stopped.reasons.push(
-        `${role}: the replaced attempt ${dispatch} is ${state}; Orca has not settled an earlier release, so nothing may be closed or removed for this task`,
+        `${role}: ${label} ${dispatch} is ${state}; Orca has not settled an earlier release, so nothing may be closed or removed for this task`,
       )
       sink.stopped.reported.push(worker)
       sink.stopped.inspect.push(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'])
     } else if (worker === undefined || (!GONE_STATES.includes(state) && !LIVE_STATES.includes(state))) {
-      sink.stopped.reasons.push(`${role}: the replaced attempt ${dispatch}: ${UNREADABLE}`)
+      sink.stopped.reasons.push(`${role}: ${label} ${dispatch}: ${UNREADABLE}`)
     } else if (LIVE_STATES.includes(state)) {
       held = true
       sink.kept.push({
         kind: 'terminal',
         role,
         reasons: [
-          `Orca still holds the terminal of the replaced attempt ${dispatch} (releaseState: ${state}); it is not offered here`,
+          `Orca still holds the terminal of ${label} ${dispatch} (releaseState: ${state}); it is not offered here`,
         ],
       })
     }
@@ -331,7 +337,11 @@ const planCommand = (args: string[]): number => {
   const known = new Set(
     inputs.flatMap(({ workers }) =>
       Object.values(asObject(workers.roles) ?? {})
-        .flatMap((record) => [get(record, 'dispatch'), ...(asArray(get(record, 'superseded')) ?? [])])
+        .flatMap((record) => [
+          get(record, 'dispatch'),
+          ...(asArray(get(record, 'superseded')) ?? []),
+          ...(asArray(get(record, 'follow_ups')) ?? []),
+        ])
         .map((id) => asString(id))
         .filter((id) => id !== null),
     ),

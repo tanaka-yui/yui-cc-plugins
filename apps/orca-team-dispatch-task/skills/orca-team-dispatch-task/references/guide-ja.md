@@ -707,6 +707,7 @@ batch の全メッセージを処理したという宣言である。この batc
 止まらずに読み飛ばす。
 worker が `worker_done` を送らずにターンを終えたときに Orca が自分で出す `escalation`（「Worker stopped [on an error] without reporting」）もこれに当たらない。dispatch は開いたままなので、待機は1 行出して batch ごと acknowledge し、待ち続ける。そのあと黙ったままの worker は停滞の判定（exit 8）が知らせる。
 worker が Run 宛てに送る `status` の知らせ（依頼者から追加の依頼があった、など）もこれに当たらない。待機は件名と本文を表示して batch ごと acknowledge し、待ち続けるので、待機が戻ったらユーザーに伝える。
+followUp の dispatch からの message もこれに当たらない。Orca は、もう終わった dispatch に `status` が届くと、同じ worktree に新しい worker を起こして followUp の dispatch を作る。待機は `followUpOf` を辿って役に結び付け、`workers.json` のその役の `follow_ups` に記録し、1 行出して読み流す。結末はその役自身の dispatch が運ぶ。受理がすでに記録されている `merge_ready`（`completion.json` が同じ nonce で `accepted` か `settled`）には待機は返事をしない。その 2 度目の返事が followUp を起こすからである。
 どれも手作業で直すものではなく、待機を再実行しても同じ batch を読み直すだけで解決しない。
 端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。記録済み receipt と
 result をユーザーと確認する。成功した worker outcome が示されていれば、ユーザーは下の手動統合コマンドを
@@ -1008,7 +1009,7 @@ TypeScript のファイルを直接実行するので、Node 22.18 以上が要�
   あり、いずれにせよ手を出してよいものではない。記録に無い保持が 1 つでもあれば、その worker だけで
   なく Run 全体の片付けを止める。**別の** Run の status dir が混じっていても止める。既知集合が
   広がり、探している ghost そのものを隠してしまうからである。
-  `orca-recover.ts` が置き換えた dispatch は、その役の `superseded` に並び、記録したものとして数える。
+  `orca-recover.ts` が置き換えた dispatch は、その役の `superseded` に並び、記録したものとして数える。待機が `follow_ups` に記録した followUp の dispatch も同じく数える。
   ただしその試行の状態も見る: Orca が以前の release を確定できていない試行や、一覧に載っていない試行が
   あれば、[C1] と同じくそのタスクを止める。Orca がまだ保持している試行があれば、そのタスクの dispatch
   記録は残す — 後の Step 5 にそれが自分たちのものだと教えるのはこの記録だからである。
@@ -1135,7 +1136,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 役を増やせる。
 
 `orca-recover.ts` が置き換えた役は、置き換えた dispatch を `superseded` に並べる。最新の起動が
-ready にならなかった役には `start_incomplete` の印が付く。
+ready にならなかった役には `start_incomplete` の印が付く。終わった役に Orca が起こした followUp の dispatch は、その役の `follow_ups` に並ぶ。
 
 Step 5 はその隣に `.dispatch/cleanup-<run_id>.json` を書く。Step 6 の `run` が
 実行するのは、この計画にある提示だけである。手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は
