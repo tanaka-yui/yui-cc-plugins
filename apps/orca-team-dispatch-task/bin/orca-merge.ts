@@ -143,6 +143,17 @@ const main = (argv: string[]): number => {
   const porcelain = git(repoRoot, 'status', '--porcelain')
   if (porcelain.rc !== 0) return stop(statusDir, 'cannot inspect the parent checkout')
   if (porcelain.stdout !== '') return stop(statusDir, 'the parent checkout has uncommitted changes')
+  // ★ **衝突を親が手で直して merge したら、もう一度この script で取り込みを記録する。**記録しないと
+  //   integration-result.json が merged:false のまま残り、orca-cleanup.ts plan が worktree も record も offer しない
+  //   （3.10.13、logi-app）。ブランチが親ブランチの祖先なら成果はもう入っているので、merge を打たずに記録する
+  if (git(repoRoot, 'merge-base', '--is-ancestor', branch, 'HEAD').rc === 0) {
+    if (!persist(join(statusDir, 'integration-result.json'), { merged: true, branch, base: current })) {
+      log(NAME, `${current} already contains ${branch}, but the result cannot be persisted`)
+      return 1
+    }
+    log(NAME, `${current} already contains ${branch}; recorded it as merged`)
+    return 0
+  }
   if (git(repoRoot, 'merge', '--no-edit', branch).rc === 0) {
     if (!persist(join(statusDir, 'integration-result.json'), { merged: true, branch, base: current })) {
       log(NAME, 'merged but cannot persist the result')
@@ -152,7 +163,10 @@ const main = (argv: string[]): number => {
     return 0
   }
   git(repoRoot, 'merge', '--abort')
-  return stop(statusDir, 'merge conflict; the worktree and branch are kept for manual resolution')
+  return stop(
+    statusDir,
+    `merge conflict; the worktree and branch are kept for manual resolution. Once ${branch} is merged into ${current} by hand, run this command again to record it`,
+  )
 }
 
 process.exitCode = main(process.argv.slice(2))

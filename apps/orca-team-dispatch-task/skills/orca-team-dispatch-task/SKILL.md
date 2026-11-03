@@ -936,7 +936,10 @@ node "$PLUGIN/bin/orca-merge.ts" --status-dir "$SD"
 It merges that role's branch into the branch you were on when the dispatch started. It
 refuses unless the worker reported success, `result.md` is non-empty, your checkout is
 still on that branch, and the checkout is clean. On a conflict it aborts the merge and
-keeps everything, so nothing is lost — tell the user how to resolve it. Merge the tasks one
+keeps everything, so nothing is lost — tell the user how to resolve it. **Once they have merged
+the branch by hand, run the same command again.** It sees the branch already in your checkout and
+records the task as merged without merging anything; until then Step 5 offers nothing for that
+task, and its plan names this command when the branch is already in. Merge the tasks one
 after another and report each result; a refusal for one task says nothing about the others.
 
 **It also refuses work that asked for a review and never got a verdict.** When a reviewer was

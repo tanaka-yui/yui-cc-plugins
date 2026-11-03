@@ -168,4 +168,27 @@ setup; m >/dev/null 2>&1; u=$?; in_main; v=$?; teardown
 [[ "$x" -eq 0 && "$y" -eq 0 && "$u" -eq 0 && "$v" -eq 0 ]] \
   && ok "MG22 merge の記録・記録無しは merge する" || fail "MG22 ($x/$y/$u/$v)"
 
+# MG23-25: ★ **衝突を親が手で直して merge したら、orca-merge.ts をもう一度走らせて取り込みを記録する。**
+#   3.10.13 の logi-app: 衝突で止まったタスクを手で merge したあとも integration-result.json は merged:false のままで、
+#   orca-cleanup.ts plan が「the work is not merged yet」として worktree も record も offer しなかった。
+#   記録したブランチが親ブランチの祖先なら、merge を打たずに merged:true を記録する
+conflicted() { echo c >> "$R/README.md"; git -C "$R" add -A
+  git -C "$R" -c user.email=t@e -c user.name=t commit -q -m c; m >/dev/null 2>&1; }
+resolve() { git -C "$R" merge -q orca/s >/dev/null 2>&1; printf 'seed\nc\n%s\n' "$MARK" > "$R/README.md"
+  git -C "$R" add -A; git -C "$R" -c user.email=t@e -c user.name=t commit -q -m resolved; }
+setup; conflicted; rc1=$?; resolve; head1=$(git -C "$R" rev-parse HEAD)
+out=$(m 2>&1); rc2=$?
+[[ "$rc1" -eq 1 && "$rc2" -eq 0 && "$(git -C "$R" rev-parse HEAD)" == "$head1" && "$out" == *'already contains orca/s'* ]] \
+  && jq -e '.merged == true and .branch == "orca/s" and .base == "main"' "$SD/integration-result.json" >/dev/null 2>&1 \
+  && ok "MG23 手で解決した merge を記録する" || fail "MG23 (rc=$rc1/$rc2 out=$out)"; teardown
+
+# MG24: 衝突の案内は、手で解決したあと同じコマンドで記録できることを言う
+setup; out=$( { echo c >> "$R/README.md"; git -C "$R" add -A; git -C "$R" -c user.email=t@e -c user.name=t commit -q -m c; m; } 2>&1)
+[[ "$out" == *'run this command again to record it'* ]] && ok "MG24 衝突の案内に記録の手順を出す" || fail "MG24 (out=$out)"; teardown
+
+# MG25: 手で解決していない（ブランチが祖先でない）なら、今までどおり merge を試みて衝突で止まる
+setup; conflicted; out=$(m 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'merge conflict'* ]] && jq -e '.merged == false' "$SD/integration-result.json" >/dev/null 2>&1 \
+  && ok "MG25 未解決なら記録しない" || fail "MG25 (rc=$rc out=$out)"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -67,6 +67,11 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   dispatch は worker-show の `result.dispatch.followUpOf` を辿り、知っている役に行き着けばその役の `follow_ups` に
   記録して読み流す（決着は元の dispatch が運ぶので followUp の worker_done では記録しない）。`orca-cleanup.ts` は
   `follow_ups` を `superseded` と同じく記録済みとして数える。回帰は `test-wait.sh` の WT150-153 と `test-cleanup.sh` の CL27b
+- **衝突を親が手で直して merge したら、`orca-merge.ts` をもう一度走らせて記録する。**3.10.13 の logi-app で、手で merge
+  したタスクの integration-result.json が merged:false のまま残り、`orca-cleanup.ts plan` が worktree も record も
+  offer しなかった。`orca-merge.ts` はブランチが親ブランチの祖先なら merge を打たずに merged:true を記録し、衝突の
+  案内でこの手順を言う。plan は祖先かどうかで merged とみなさない（record を消す根拠は orca-merge.ts の記録だけ）が、
+  祖先なら記録のコマンドを理由に添える。回帰は `test-merge.sh` の MG23-25 と `test-cleanup.sh` の CL15c
 - **Orca の consuming check は返した batch をその場で既読にする**（Orca 1.4.246。`--ack` は要らない）。「ack する
   まで batch は queue の先頭に残る」を前提にした待機は、止まった batch を失っていた。2026-11-02 の logi-app で、
   待機ループの `check --wait`（これも consuming）が返して捨てた batch の merge_ready が、返事なしに既読になり、

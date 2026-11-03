@@ -28,6 +28,7 @@ import {
 import { spawnSync } from 'node:child_process'
 import { realpathSync, rmSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const NAME = 'orca-cleanup'
 const USAGE =
@@ -238,6 +239,21 @@ const planSuperseded = (role: string, record: Json, listed: Json[], sink: Sink):
   return held
 }
 
+// ★ **手で直した merge が記録されていないだけなら、その記録の仕方を言う。**orca-merge.ts が衝突で止まったあと親が手で
+//   merge しても、integration-result.json は merged:false のままで、ここは何も offer しない（3.10.13、logi-app）。
+//   ここで merged とみなさない — record を消す根拠は orca-merge.ts の記録だけにし、祖先かどうかは案内にだけ使う
+const mergedByHand = (dir: string, workers: JsonObject): string => {
+  const role = asString(workers.integration_role) ?? ''
+  const branch = asString(get(workers, 'roles', role, 'branch')) ?? ''
+  const base = asString(workers.integration_branch) ?? ''
+  const repo = asString(get(readJson(join(dir, 'run.json')), 'repo_root')) ?? ''
+  if (role === '' || branch === '' || base === '' || repo === '') return ''
+  const ancestor = spawnSync('git', ['-C', repo, 'merge-base', '--is-ancestor', branch, base], { stdio: 'ignore' })
+  if (ancestor.status !== 0) return ''
+  const merge = join(dirname(fileURLToPath(import.meta.url)), 'orca-merge.ts')
+  return `${branch} is already in ${base}; if it was merged by hand, record it with: node ${merge} --status-dir ${dir}`
+}
+
 const planTask = (dir: string, workers: JsonObject, listed: Json[]): TaskPlan => {
   const merged = get(readJson(join(dir, 'integration-result.json')), 'merged') === true
   // ★ 役を全部走査する。レビューモードでは 1 タスクに複数の役（端末と worktree）が居る
@@ -256,6 +272,8 @@ const planTask = (dir: string, workers: JsonObject, listed: Json[]): TaskPlan =>
   if (refusal !== null) reasons.push(refusal)
   if (refusal === null && !merged) {
     reasons.push('the work is not merged yet, so this is the only copy of the request and result')
+    const hint = mergedByHand(dir, workers)
+    if (hint !== '') reasons.push(hint)
   }
   if (refusal === null && held) {
     reasons.push(

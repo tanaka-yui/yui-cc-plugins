@@ -751,4 +751,24 @@ plan --status-dir "$(sd a)"
   && ok "CL27b followUp の保持は [C7] を止めず、記録を残す" || fail "CL27b (before=$before rc=$RC out=$OUT)"
 teardown
 
+# CL15c: ★ 衝突のあと親が手で merge したタスクは、記録が merged:false のままなので offer しない（record を消す根拠は
+#        orca-merge.ts の記録だけ）。ただしブランチが親ブランチに入っていれば、記録の仕方を理由に添える（3.10.13、logi-app）
+world; task a false
+git -C "$REPO" init -q -b main .; printf 'seed\n' > "$REPO/README.md"; printf '.dispatch/\n' >> "$REPO/.git/info/exclude"
+git -C "$REPO" add -A; git -C "$REPO" -c user.email=t@e -c user.name=t commit -q -m seed
+git -C "$REPO" branch orca/a
+edit a '.integration_role = "design" | .integration_branch = "main" | .roles.design.branch = "orca/a"'
+plan --status-dir "$(sd a)"
+reasons=$(pj '[.tasks[0].kept[] | select(.kind == "record") | .reasons[]] | join(" | ")')
+git -C "$REPO" checkout -q -b orca/b; printf 'x\n' >> "$REPO/README.md"
+git -C "$REPO" -c user.email=t@e -c user.name=t commit -qam x; git -C "$REPO" checkout -q main
+edit a '.roles.design.branch = "orca/b"'
+plan --status-dir "$(sd a)"
+unmerged=$(pj '[.tasks[0].kept[] | select(.kind == "record") | .reasons[]] | join(" | ")')
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].offers.record | length')" == 0 \
+   && "$reasons" == *'orca/a is already in main; if it was merged by hand, record it with: node '*'orca-merge.ts --status-dir '"$(sd a)"* \
+   && "$unmerged" != *'already in'* ]] \
+  && ok "CL15c 手で merge したブランチには記録の仕方を添え、offer はしない" || fail "CL15c (reasons=$reasons unmerged=$unmerged)"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
