@@ -91,11 +91,13 @@ const integration = (statusDir: string): number => {
 //   待機が残したその batch と、まだ誰も受け取っていない未読の両方を出す
 const mailbox = (statusDir: string): number => {
   const parent = asString(get(readJson(join(statusDir, 'run.json')), 'parent_handle')) ?? ''
-  if (parent === '') {
-    log(NAME, 'missing parent handle; do not acknowledge anything')
+  const run = asString(get(readJson(join(statusDir, 'run.json')), 'run_id')) ?? ''
+  if (parent === '' || run === '') {
+    log(NAME, 'missing parent handle or run id; do not acknowledge anything')
     return 1
   }
-  const checked = runOrca(['orchestration', 'check', '--terminal', parent, '--peek', '--json'])
+  // ★ `--run` を付ける。無いと Orca は親端末の「bound Run」（最後に作った Run）の未読を返す（2026-11-04、freelance-jp-app）
+  const checked = runOrca(['orchestration', 'check', '--terminal', parent, '--run', run, '--peek', '--json'])
   if (!receiptOk(checked)) {
     log(NAME, `orchestration check failed (${failureDetail(checked)})`)
     return 1

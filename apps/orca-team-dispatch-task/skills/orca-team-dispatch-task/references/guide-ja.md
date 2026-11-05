@@ -708,6 +708,7 @@ batch の全メッセージを処理したという宣言である。この batc
 worker が `worker_done` を送らずにターンを終えたときに Orca が自分で出す `escalation`（「Worker stopped [on an error] without reporting」）もこれに当たらない。dispatch は開いたままなので、待機は1 行出して batch ごと acknowledge し、待ち続ける。そのあと黙ったままの worker は停滞の判定（exit 8）が知らせる。
 worker が Run 宛てに送る `status` の知らせ（依頼者から追加の依頼があった、など）もこれに当たらない。待機は件名と本文を表示して batch ごと acknowledge し、待ち続けるので、待機が戻ったらユーザーに伝える。
 followUp の dispatch からの message もこれに当たらない。Orca は、もう終わった dispatch に `status` が届くと、同じ worktree に新しい worker を起こして followUp の dispatch を作る。待機は `followUpOf` を辿って役に結び付け、`workers.json` のその役の `follow_ups` に記録し、1 行出して読み流す。結末はその役自身の dispatch が運ぶ。受理がすでに記録されている `merge_ready`（`completion.json` が同じ nonce で `accepted` か `settled`）には待機は返事をしない。その 2 度目の返事が followUp を起こすからである。
+待機は自分の Run のメールだけを読む（`check --run <run_id>`）ので、同じ親端末から起動した複数の Run が互いの batch を取り合わない。それでも Orca が別の Run の batch を返したら、待機はそれを最初の status dir に `foreign-batch-<run_id>.json` として残し、exit 1 で止まる。そのファイルをその Run の status dir の `pending-batch.json` へ移し、その Run の待機を実行する。
 どれも手作業で直すものではなく、待機を再実行しても同じ batch を読み直すだけで解決しない。
 端末と worktree を保持して acknowledge せず、**Step 4 へ進まない**。記録済み receipt と
 result をユーザーと確認する。成功した worker outcome が示されていれば、ユーザーは下の手動統合コマンドを

@@ -1461,8 +1461,8 @@ out=$(w 1 2>&1); rc=$?
 #   既読になった。止まった batch も queue に残らなかった。待つのは --peek --wait、受け取った batch は
 #   pending-batch.json に残して、処理し切るまで次の drain が読み直す
 setup; w 2 >/dev/null 2>&1
-grep -q '^orchestration check --terminal term_p --peek --wait ' "$ORCA_STUB_DIR/calls.log" \
-  && ! grep -qE '^orchestration check --terminal term_p --wait ' "$ORCA_STUB_DIR/calls.log" \
+grep -q '^orchestration check --terminal term_p --run run_x --peek --wait ' "$ORCA_STUB_DIR/calls.log" \
+  && ! grep -qE '^orchestration check --terminal term_p (--run run_x )?--wait ' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT138 待つ呼び出しは --peek --wait（batch を既読にしない）" || fail "WT138 ($(grep -- '--wait' "$ORCA_STUB_DIR/calls.log" | head -1))"
 teardown
 
@@ -1637,5 +1637,24 @@ w 1 >/dev/null 2>&1
 sent2=$(grep -c 'completion-accepted' "$ORCA_STUB_DIR/argv.log" 2>/dev/null)
 [[ "$rc1" -eq 3 && "$sent1" -eq 0 && "$out" == *'already accepted (settled); not answering it again'* && "$sent2" -ge 1 ]] \
   && ok "WT153 返事済みの merge_ready には二度返さない" || fail "WT153 (rc=$rc1 sent1=$sent1 sent2=$sent2 out=$out)"; teardown
+
+# WT154-155: ★ **同じ親端末から 2 つ目の Run を起動しても、自分の Run の message を受け取る。**`--run` の無い check は
+#   親端末の「bound Run」= 最後に作った Run を返す。2026-11-04、freelance-jp-app: run_850837 の待機が run_ac38 の
+#   merge_ready を読んで「does not know」で止まり、自分の exec の merge_ready 2 通を拾えなくなった
+setup; w 2 >/dev/null 2>&1
+n_all=$(grep -c '^orchestration check ' "$ORCA_STUB_DIR/calls.log")
+n_run=$(grep -c '^orchestration check --terminal term_p --run run_x ' "$ORCA_STUB_DIR/calls.log")
+[[ "$n_all" -ge 2 && "$n_all" -eq "$n_run" ]] \
+  && ok "WT154 親の check はすべて --run で自分の Run に絞る" || fail "WT154 (all=$n_all run=$n_run $(grep '^orchestration check' "$ORCA_STUB_DIR/calls.log" | head -3))"
+teardown
+
+# WT155: それでも別の Run の batch が来たら、この Run の pending-batch.json に混ぜず、別名で残して持ち主を言う
+setup; jq -nc '{ok:true,result:{runId:"run_other",deliveryId:"d_other",count:1,messages:[
+    {id:"mr9",type:"merge_ready",subject:"merge_ready: n9",payload:({taskId:"task_o",dispatchId:"ctx_o"}|tojson),body:""}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_check"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'of Run run_other, not this wait'"'"'s Run run_x'* && ! -e "$SD/pending-batch.json" \
+   && "$(jq -r '.deliveryId' "$SD/foreign-batch-run_other.json" 2>/dev/null)" == d_other && "$out" != *'does not know'* ]] \
+  && ok "WT155 別の Run の batch を混ぜず、別名で残す" || fail "WT155 (rc=$rc out=$out)"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

@@ -72,6 +72,12 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   offer しなかった。`orca-merge.ts` はブランチが親ブランチの祖先なら merge を打たずに merged:true を記録し、衝突の
   案内でこの手順を言う。plan は祖先かどうかで merged とみなさない（record を消す根拠は orca-merge.ts の記録だけ）が、
   祖先なら記録のコマンドを理由に添える。回帰は `test-merge.sh` の MG23-25 と `test-cleanup.sh` の CL15c
+- **親の `orchestration check` には必ず `--run <run.json の run_id>` を付ける**（orca-wait.ts の 4 箇所と orca-state.ts の
+  mailbox）。`--run` の無い check は親端末の「bound Run」= その端末が最後に作った Run を返す。2026-11-04 の
+  freelance-jp-app で、同じ親端末から 2 つ目の Run を起動すると、1 つ目の待機が 2 つ目の Run の merge_ready を読んで
+  「does not know」で止まり、pending-batch.json を誤った status dir に残し、自分の Run の merge_ready を拾えなくなった。
+  それでも別の Run の batch が来たら（runId が違う）、この Run の pending-batch.json に混ぜず `foreign-batch-<run_id>.json`
+  に残して exit 1 にする。回帰は `test-wait.sh` の WT138 / WT154-155 と `test-state.sh` の OS7
 - **Orca の consuming check は返した batch をその場で既読にする**（Orca 1.4.246。`--ack` は要らない）。「ack する
   まで batch は queue の先頭に残る」を前提にした待機は、止まった batch を失っていた。2026-11-02 の logi-app で、
   待機ループの `check --wait`（これも consuming）が返して捨てた batch の merge_ready が、返事なしに既読になり、

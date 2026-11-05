@@ -551,7 +551,16 @@ const deliveredNormally = (messages: Json[], task: string, dispatch: string): bo
   })
 // 受信箱全体（後ろの batch を含む）を --peek で覗く。cursor は動かさない。覗けなければ null
 const queuedNormally = (state: State, task: string, dispatch: string): boolean | null => {
-  const peeked = runOrca(['orchestration', 'check', '--terminal', state.expected.parent, '--peek', '--json'])
+  const peeked = runOrca([
+    'orchestration',
+    'check',
+    '--terminal',
+    state.expected.parent,
+    '--run',
+    state.expected.run,
+    '--peek',
+    '--json',
+  ])
   const queued = array(get(peeked.json, 'result', 'messages'))
   if (peeked.rc !== 0 || !receiptOk(peeked) || queued === null) return null
   return deliveredNormally(queued, task, dispatch)
@@ -696,7 +705,15 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       )
     }
   } else {
-    const checked = runOrca(['orchestration', 'check', '--terminal', state.expected.parent, '--json'])
+    const checked = runOrca([
+      'orchestration',
+      'check',
+      '--terminal',
+      state.expected.parent,
+      '--run',
+      state.expected.run,
+      '--json',
+    ])
     if (checked.rc !== 0) {
       log(NAME, `check failed (rc=${checked.rc}); the batch is not acknowledged`)
       return 2
@@ -705,6 +722,26 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
     if (!receiptOk(checked) || result === null) {
       log(NAME, 'check receipt was not ok; the batch is not acknowledged')
       return 2
+    }
+    // ★ **別の Run の batch をこの Run の記録に混ぜない。**`--run` を付ける前は、同じ親端末から 2 つ目の Run を
+    //   起動すると Orca が「bound Run」= 最後に作った Run の batch を返し、1 つ目の待機がそれを読んで「does not know」で
+    //   止まり、pending-batch.json を誤った status dir に残した（2026-11-04、freelance-jp-app）。それでも来たら、
+    //   consuming check で既読になっているので捨てずに別名で残し、持ち主の status dir へ移す手順を言う
+    const owner = string(result.runId)
+    if (owner !== '' && owner !== state.expected.run && (array(result.messages) ?? []).length > 0) {
+      const file = join(state.statusDirs[0] ?? '', `foreign-batch-${owner}.json`)
+      const kept = writeAtomic(file, `${JSON.stringify(result, null, 2)}\n`)
+      log(
+        NAME,
+        `Orca returned batch ${string(result.deliveryId)} of Run ${owner}, not this wait's Run ${state.expected.run}`,
+      )
+      log(
+        NAME,
+        kept
+          ? `it is kept in ${file}; move it to pending-batch.json in a status dir of Run ${owner} and run that Run's wait`
+          : `could not keep it in ${file}; inspect: ${orcaBin()} orchestration inbox --terminal run:${owner} --limit 20 --full --json`,
+      )
+      return 1
     }
   }
   const messages = array(result.messages)
@@ -969,7 +1006,17 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
     const settledEntry = settleEntry(entry, outcome)
     if (settledEntry !== 0) return settledEntry
   }
-  const ack = runOrca(['orchestration', 'check', '--terminal', state.expected.parent, '--ack', batch, '--json'])
+  const ack = runOrca([
+    'orchestration',
+    'check',
+    '--terminal',
+    state.expected.parent,
+    '--run',
+    state.expected.run,
+    '--ack',
+    batch,
+    '--json',
+  ])
   if (ack.rc !== 0) {
     log(NAME, 'ack transport failed; the batch will replay')
     return 2
@@ -1306,6 +1353,8 @@ const main = (argv: string[]): number => {
       'check',
       '--terminal',
       state.expected.parent,
+      '--run',
+      state.expected.run,
       '--peek',
       '--wait',
       '--timeout-ms',

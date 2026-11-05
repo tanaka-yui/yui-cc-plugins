@@ -80,13 +80,14 @@ for broken in '{' '[]' '"broken"' '{"integration":""}' '{"integration":123}' '{"
 done
 [[ -z "$bad" ]] && ok "OS6 integration は未記録と不正な記録を分ける" || fail "OS6:$bad"; teardown
 
-# OS7: ★ **mailbox は記録した親端末を --peek で覗くだけ。--ack は渡さない。**親端末が無ければ Orca を呼ばない
+# OS7: ★ **mailbox は記録した親端末を、記録した Run に絞って --peek で覗くだけ。--ack は渡さない。**親端末が無ければ
+#   Orca を呼ばない。`--run` が無いと Orca は親端末の bound Run（最後に作った Run）を返す（2026-11-04、freelance-jp-app）
 setup
 printf '{"run_id":"run_x","parent_handle":"term_p"}\n' > "$SD/run.json"
 echo '{"ok":true,"result":{"messages":[{"id":"m1","type":"odd"}]}}' > "$ORCA_STUB_DIR/orchestration_check"
 out=$(st mailbox --status-dir "$SD"); rc=$?
 line=$(grep '^orchestration check ' "$ORCA_STUB_DIR/calls.log")
-[[ "$rc" -eq 0 && "$out" == *'"m1"'* && "$line" == 'orchestration check --terminal term_p --peek --json --full ' ]] \
+[[ "$rc" -eq 0 && "$out" == *'"m1"'* && "$line" == 'orchestration check --terminal term_p --run run_x --peek --json --full ' ]] \
   || fail "OS7 覗き見 (rc=$rc line=$line)"
 echo 1 > "$ORCA_STUB_DIR/orchestration_check.rc"
 out=$(st mailbox --status-dir "$SD" 2>&1); rc=$?
@@ -95,7 +96,7 @@ out=$(st mailbox --status-dir "$SD" 2>&1); rc=$?
 rm -f "$ORCA_STUB_DIR/orchestration_check.rc"
 printf '{"run_id":"run_x"}\n' > "$SD/run.json"; : > "$ORCA_STUB_DIR/calls.log"
 out=$(st mailbox --status-dir "$SD" 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *'missing parent handle; do not acknowledge anything'* && ! -s "$ORCA_STUB_DIR/calls.log" ]] \
+[[ "$rc" -eq 1 && "$out" == *'missing parent handle or run id; do not acknowledge anything'* && ! -s "$ORCA_STUB_DIR/calls.log" ]] \
   && ok "OS7 mailbox は覗くだけで、親端末が無ければ何も呼ばない" || fail "OS7 (rc=$rc out=$out)"; teardown
 
 # OS7b: ★ 待機が止まった batch は Orca の --peek（未読だけ）に出ない。mailbox は pending-batch.json も出す
