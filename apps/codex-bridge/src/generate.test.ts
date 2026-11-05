@@ -1,15 +1,18 @@
 import {
-  checkSize,
+  ancestorDirs,
+  checkChains,
   collectGlobalOutput,
   collectProjectOutputs,
   decideWrite,
-  diagnoseOversize,
+  diagnoseChain,
   groupRulesByTarget,
   hasSentinel,
+  main,
   parseFrontmatter,
   parseMaxBytesFlag,
   parseProjectDocMaxBytes,
   renderAgentsFile,
+  resolveSizeLimit,
   SENTINEL,
   suggestLimit,
   writeOutputs,
@@ -93,18 +96,6 @@ test('存在しない/センチネル付きなら write、手書きなら skip-h
   expect(decideWrite('# 手書き\n', generated).action).toBe('skip-handwritten')
 })
 
-test('checkSize は 32768 バイト超過で ok=false', () => {
-  expect(checkSize('a'.repeat(100)).ok).toBe(true)
-  const big = checkSize('a'.repeat(40000))
-  expect(big.ok).toBe(false)
-  expect(big.bytes).toBe(40000)
-})
-
-test('checkSize は limit を渡すとその値で判定する', () => {
-  expect(checkSize('a'.repeat(40000), 65536).ok).toBe(true)
-  expect(checkSize('a'.repeat(40000), 1024).ok).toBe(false)
-})
-
 test('parseMaxBytesFlag は --max-bytes の値を取り出す', () => {
   expect(parseMaxBytesFlag(['--max-bytes', '65536'])).toBe(65536)
   expect(parseMaxBytesFlag(['--max-bytes=65536'])).toBe(65536)
@@ -136,44 +127,90 @@ test('suggestLimit は超過分を収める 2 の冪を返す', () => {
   expect(suggestLimit(100, 32768)).toBe(32768)
 })
 
-test('diagnoseOversize は単一 rule 超過を single-rule-over-limit と判定する', () => {
-  const d = diagnoseOversize(
-    {
-      path: '/repo/go/AGENTS.md',
-      target: 'go/',
-      sources: [
-        { file: '.claude/rules/go-backend.md', bytes: 50777 },
-        { file: '.claude/rules/go-testing.md', bytes: 15405 },
-      ],
-    },
-    65952,
-    32768,
-  )
-  expect(d.kind).toBe('single-rule-over-limit')
-  expect(d.overBy).toBe(65952 - 32768)
-  expect(d.suggestedLimit).toBe(131072)
-  expect(d.offenders.map((o) => o.file)).toEqual(['.claude/rules/go-backend.md'])
-  // codexTargets の付け替えでは解決しないことを明示する
-  expect(d.remedies.join('\n')).toContain('codexTargets')
+test('diagnoseChain は合計が上限内なら null', () => {
+  const chain = [{ path: 'AGENTS.md', bytes: 100, sources: [] }]
+  expect(diagnoseChain({ path: 'AGENTS.md', target: '<root>' }, chain, 32768)).toBeNull()
 })
 
-test('diagnoseOversize は連結超過を concatenation-over-limit と判定する', () => {
-  const d = diagnoseOversize(
-    {
-      path: '/repo/typescript/AGENTS.md',
-      target: 'typescript/',
-      sources: [
-        { file: '.claude/rules/a.md', bytes: 20000 },
-        { file: '.claude/rules/b.md', bytes: 20000 },
-      ],
-    },
-    40200,
+test('diagnoseChain は 1 つの rule が上限を超えると single-rule-over-limit', () => {
+  const d = diagnoseChain(
+    { path: 'go/AGENTS.md', target: 'go/' },
+    [
+      { path: 'AGENTS.md', bytes: 1000, sources: [{ file: 'CLAUDE.md', bytes: 1000 }] },
+      {
+        path: 'go/AGENTS.md',
+        bytes: 66182,
+        sources: [
+          { file: '.claude/rules/go-backend.md', bytes: 50777 },
+          { file: '.claude/rules/go-testing.md', bytes: 15405 },
+        ],
+      },
+    ],
     32768,
   )
-  expect(d.kind).toBe('concatenation-over-limit')
-  expect(d.offenders).toEqual([])
-  // 移動候補として最大の rule を提示する
-  expect(d.remedies.join('\n')).toContain('.claude/rules/a.md')
+  expect(d?.kind).toBe('single-rule-over-limit')
+  expect(d?.bytes).toBe(67182)
+  expect(d?.overBy).toBe(67182 - 32768)
+  expect(d?.suggestedLimit).toBe(131072)
+  expect(d?.offenders.map((o) => o.file)).toEqual(['.claude/rules/go-backend.md'])
+  // codexTargets の付け替えでは解決しないことを明示する
+  expect(d?.remedies.join('\n')).toContain('codexTargets')
+})
+
+test('diagnoseChain は 1 つの AGENTS.md が単体で超えると concatenation-over-limit で最大の rule を挙げる', () => {
+  const d = diagnoseChain(
+    { path: 'typescript/AGENTS.md', target: 'typescript/' },
+    [
+      {
+        path: 'typescript/AGENTS.md',
+        bytes: 40200,
+        sources: [
+          { file: '.claude/rules/a.md', bytes: 20000 },
+          { file: '.claude/rules/b.md', bytes: 19000 },
+        ],
+      },
+    ],
+    32768,
+  )
+  expect(d?.kind).toBe('concatenation-over-limit')
+  expect(d?.offenders).toEqual([])
+  expect(d?.remedies.join('\n')).toContain('.claude/rules/a.md')
+})
+
+test('diagnoseChain はどのファイルも収まるのに合計で超えると chain-over-limit', () => {
+  const d = diagnoseChain(
+    { path: 'go/internal/AGENTS.md', target: 'go/internal/' },
+    [
+      { path: 'AGENTS.md', bytes: 30000, sources: [{ file: 'CLAUDE.md', bytes: 30000 }] },
+      { path: 'go/AGENTS.md', bytes: 20000, sources: [{ file: '.claude/rules/go.md', bytes: 20000 }] },
+      { path: 'go/internal/AGENTS.md', bytes: 10000, sources: [{ file: '.claude/rules/internal.md', bytes: 10000 }] },
+    ],
+    32768,
+  )
+  expect(d?.kind).toBe('chain-over-limit')
+  expect(d?.bytes).toBe(60000)
+  expect(d?.suggestedLimit).toBe(65536)
+  // いちばん大きい root を挙げ、CLAUDE.md の節を rule に移す案と、コミットできる .codex/config.toml の案を出す
+  expect(d?.remedies[0]).toContain('CLAUDE.md')
+  expect(d?.remedies.join('\n')).toContain('リポジトリの .codex/config.toml')
+})
+
+test('diagnoseChain は global の出力にはプロジェクトの .codex/config.toml を勧めない', () => {
+  const d = diagnoseChain(
+    { path: 'AGENTS.md', target: '<global>' },
+    [{ path: 'AGENTS.md', bytes: 40000, sources: [{ file: '~/.claude/CLAUDE.md', bytes: 40000 }] }],
+    32768,
+  )
+  expect(d?.kind).toBe('single-rule-over-limit')
+  const remedies = d?.remedies.join('\n') ?? ''
+  expect(remedies).toContain('~/.codex/config.toml')
+  expect(remedies).not.toContain('リポジトリの .codex/config.toml')
+})
+
+test('ancestorDirs は root から dir までを root 側から返す', () => {
+  expect(ancestorDirs('/repo', '/repo')).toEqual(['/repo'])
+  expect(ancestorDirs('/repo', '/repo/go/internal')).toEqual(['/repo', '/repo/go', '/repo/go/internal'])
+  expect(ancestorDirs('/repo', '/elsewhere')).toEqual(['/repo'])
 })
 
 async function makeTmp(): Promise<string> {
@@ -233,29 +270,85 @@ test('writeOutputs は新規書き込みし、手書きファイルはスキッ�
   expect(await readFileAssert(handwrittenPath, 'utf8')).toBe('# 手書き\n')
 })
 
-test('writeOutputs は 32KB 超過を診断つきで oversize に記録する（書き込みは行う）', async () => {
-  const dir = await makeTmp()
-  const path = join(dir, 'AGENTS.md')
-  const content = renderAgentsFile(['x'], ['a'.repeat(40000)])
-  const report = await writeOutputs([
-    { path, content, target: 'x/', sources: [{ file: '.claude/rules/x.md', bytes: 40000 }] },
+test('checkChains は root からの合計で測り、手書きと override も数える', async () => {
+  const root = await makeTmp()
+  await mkdir(join(root, 'go', 'internal'), { recursive: true })
+  await writeFile(join(root, 'AGENTS.md'), 'r'.repeat(600))
+  // 手書きの AGENTS.md も Codex は読むので数える
+  await writeFile(join(root, 'go', 'AGENTS.md'), 'g'.repeat(300))
+  // AGENTS.override.md があれば AGENTS.md の代わりに読む
+  await writeFile(join(root, 'go', 'AGENTS.override.md'), 'o'.repeat(200))
+  const outputs = [
+    {
+      path: join(root, 'go', 'internal', 'AGENTS.md'),
+      content: 'i'.repeat(300),
+      target: 'go/internal/',
+      sources: [{ file: '.claude/rules/i.md', bytes: 300 }],
+    },
+  ]
+  await writeOutputs(outputs)
+
+  expect(await checkChains(root, outputs, 1100)).toEqual([])
+  const [d] = await checkChains(root, outputs, 1000)
+  expect(d?.path).toBe(join('go', 'internal', 'AGENTS.md'))
+  expect(d?.bytes).toBe(1100)
+  expect(d?.kind).toBe('chain-over-limit')
+  expect(d?.chain.map((f) => [f.path, f.bytes])).toEqual([
+    ['AGENTS.md', 600],
+    [join('go', 'AGENTS.override.md'), 200],
+    [join('go', 'internal', 'AGENTS.md'), 300],
   ])
-  const diagnosis = report.oversize.find((o) => o.path === path)
-  expect(diagnosis).toBeDefined()
-  expect(diagnosis?.kind).toBe('single-rule-over-limit')
-  expect(diagnosis?.suggestedLimit).toBe(65536)
-  expect(await readFileAssert(path, 'utf8')).toBe(content)
+  expect(d?.chain[2]?.sources).toEqual([{ file: '.claude/rules/i.md', bytes: 300 }])
 })
 
-test('writeOutputs は limit を上げれば超過扱いしない', async () => {
-  const dir = await makeTmp()
-  const path = join(dir, 'AGENTS.md')
-  const content = renderAgentsFile(['x'], ['a'.repeat(40000)])
-  const report = await writeOutputs(
-    [{ path, content, target: 'x/', sources: [{ file: '.claude/rules/x.md', bytes: 40000 }] }],
-    131072,
-  )
-  expect(report.oversize).toEqual([])
+test('checkChains は空白だけの AGENTS.md を数えない', async () => {
+  const root = await makeTmp()
+  await mkdir(join(root, 'a'), { recursive: true })
+  await writeFile(join(root, 'AGENTS.md'), '  \n')
+  const outputs = [{ path: join(root, 'a', 'AGENTS.md'), content: 'x'.repeat(10), target: 'a/', sources: [] }]
+  await writeOutputs(outputs)
+  const [d] = await checkChains(root, outputs, 5)
+  expect(d?.chain.map((f) => f.path)).toEqual([join('a', 'AGENTS.md')])
+})
+
+test('checkChains は 各ファイルが上限内でも合計が超えれば超過とする（書き込みは行う）', async () => {
+  const root = await makeTmp()
+  await mkdir(join(root, 'go'), { recursive: true })
+  const rootOut = { path: join(root, 'AGENTS.md'), content: 'r'.repeat(700), target: '<root>', sources: [] }
+  const goOut = { path: join(root, 'go', 'AGENTS.md'), content: 'g'.repeat(700), target: 'go/', sources: [] }
+  const report = await writeOutputs([rootOut, goOut])
+  expect(report.written).toEqual([rootOut.path, goOut.path])
+  const diagnoses = await checkChains(root, [rootOut, goOut], 1000)
+  // root 単体は収まり、go/ までの連なりだけが超える
+  expect(diagnoses.map((d) => [d.path, d.kind])).toEqual([[join('go', 'AGENTS.md'), 'chain-over-limit']])
+})
+
+test('checkChains は global の出力を ~/.codex を root にした単一ファイルとして測る', async () => {
+  const home = await makeTmp()
+  await mkdir(join(home, '.claude'), { recursive: true })
+  await writeFile(join(home, '.claude/CLAUDE.md'), 'a'.repeat(2000))
+  const { outputs } = await collectGlobalOutput(home)
+  await writeOutputs(outputs)
+  const [d] = await checkChains(join(home, '.codex'), outputs, 1000)
+  expect(d?.target).toBe('<global>')
+  expect(d?.chain.map((f) => f.path)).toEqual(['AGENTS.md'])
+  expect(d?.kind).toBe('single-rule-over-limit')
+})
+
+test('resolveSizeLimit は --max-bytes > プロジェクトの .codex > ~/.codex > 既定値 の順に決める', async () => {
+  const home = await makeTmp()
+  const root = await makeTmp()
+  const env = { root, home }
+  expect(await resolveSizeLimit([], env)).toEqual({ limit: 32768, source: 'codex 既定値' })
+  await mkdir(join(home, '.codex'), { recursive: true })
+  await writeFile(join(home, '.codex/config.toml'), 'project_doc_max_bytes = 65536\n')
+  expect(await resolveSizeLimit([], env)).toEqual({ limit: 65536, source: '~/.codex/config.toml' })
+  await mkdir(join(root, '.codex'), { recursive: true })
+  await writeFile(join(root, '.codex/config.toml'), 'project_doc_max_bytes = 131072\n')
+  expect(await resolveSizeLimit([], env)).toEqual({ limit: 131072, source: '.codex/config.toml（プロジェクト）' })
+  expect(await resolveSizeLimit(['--max-bytes', '1024'], env)).toEqual({ limit: 1024, source: '--max-bytes' })
+  // global モードはプロジェクトの設定を見ない
+  expect(await resolveSizeLimit([], { root: null, home })).toEqual({ limit: 65536, source: '~/.codex/config.toml' })
 })
 
 test('collectProjectOutputs は各出力に target と sources を持たせる', async () => {
@@ -274,4 +367,17 @@ test('collectProjectOutputs は各出力に target と sources を持たせる',
   const rootOut = outputs.find((o) => o.path === join(root, 'AGENTS.md'))
   expect(rootOut?.target).toBe('<root>')
   expect(rootOut?.sources.map((s) => s.file)).toEqual(['CLAUDE.md'])
+})
+
+test('main は合計が上限を超える連なりがあれば書き込んだうえで 1 を返す', async () => {
+  const root = await makeTmp()
+  const home = await makeTmp()
+  await mkdir(join(root, '.claude/rules'), { recursive: true })
+  await mkdir(join(root, 'go'), { recursive: true })
+  await writeFile(join(root, '.claude/rules/go.md'), `---\ncodexTargets:\n  - go/\n---\n${'g'.repeat(600)}`)
+  await writeFile(join(root, 'CLAUDE.md'), 'r'.repeat(600))
+  const env = { cwd: root, home }
+  expect(await main(['--max-bytes', '4096'], env)).toBe(0)
+  expect(await main(['--max-bytes', '1000'], env)).toBe(1)
+  expect(await readFileAssert(join(root, 'go', 'AGENTS.md'), 'utf8')).toContain('g'.repeat(600))
 })

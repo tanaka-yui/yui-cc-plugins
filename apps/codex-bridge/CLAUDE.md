@@ -11,12 +11,17 @@ Claude Code の rules / CLAUDE.md を Codex 用 `AGENTS.md` にネスト生成�
 
 ## サイズ上限
 
-有効な上限は `--max-bytes` > `~/.codex/config.toml` の `project_doc_max_bytes` > Codex 既定の 32768 の順に決まる。超過しても書き込みは行い、診断を出す（Codex 側は超過分を黙って切り捨てるため、警告を出さないと末尾が読まれていないことに気づけない）。
+上限は **1 ファイルごとではなく、root から作業ディレクトリまでの AGENTS.md の合計** にかかる。Codex（`codex-rs/core/src/agents_md.rs`）は root 側から順に各ディレクトリの AGENTS.md（`AGENTS.override.md` があればそちら）を読み、共有の残量が尽きたファイルを切り詰め、それより深いファイルは読まない。空白だけのファイルは数えない。そのため生成器は、生成した各出力について root からの連なりをディスクから読み直して合計を測る（手書き・override のファイルも数える）。
+
+有効な上限は `--max-bytes` > リポジトリの `.codex/config.toml` > `~/.codex/config.toml` の `project_doc_max_bytes` > Codex 既定の 32768 の順に決まる。Codex はプロジェクトの `.codex/config.toml` を信頼済みのプロジェクトでだけ読み、ユーザー設定より優先する（`project_doc_max_bytes` はプロジェクト設定の拒否リストに入っていない）。つまり上限の引き上げは **コミットできる**。`--global` は `~/.codex` を root とした 1 ファイルの連なり（`~/.codex/AGENTS.md`）として測り、プロジェクトの設定は見ない。
+
+超過しても書き込みは行い、診断を出したうえで exit 1 を返す（Codex 側は超過分を黙って捨てるため、警告を出さないと末尾が読まれていないことに気づけない）。exit 1 は異常終了ではなく超過の報告で、`commands/codex-bridge.md` は出力を読んで対処するよう指示している。
 
 診断は超過の種類を区別する。ここを取り違えると効かない対処を提案してしまう。
 
-- **連結超過** (`concatenation-over-limit`): 個々の rule は上限内だが結合で超えた。`codexTargets` をより深いディレクトリに割り当て直せば解決する。
-- **単一 rule 超過** (`single-rule-over-limit`): 1 つの rule だけで上限を超えている。**`codexTargets` の付け替えでは解決しない**（同じ本文が別パスに移るだけ）。rule ファイル自体の分割か削減が必要。
+- **合計超過** (`chain-over-limit`): どのファイルも単体では収まるが、root からの合計が超えた。連なりの中でいちばん大きいファイルを削るか、より深い `codexTargets` へ移す（root なら CLAUDE.md の節を範囲を絞った rule に移す）。内容が本当に要るなら `.codex/config.toml` で上限を上げる。
+- **連結超過** (`concatenation-over-limit`): 個々の rule は上限内だが、1 つの AGENTS.md が結合で超えた。`codexTargets` をより深いディレクトリに割り当て直せば解決する。
+- **単一 rule 超過** (`single-rule-over-limit`): 1 つの rule（または CLAUDE.md）だけで上限を超えている。**`codexTargets` の付け替えでは解決しない**（同じ本文が別パスに移るだけ）。rule ファイル自体の分割か削減が必要。
 
 実際の修正は `commands/codex-bridge.md` の手順に従って Claude が対話的に行う。分割位置と `codexTargets` の選定は「どのエージェントがどこで何を読むべきか」という編集判断なので、無人では適用しない。
 
