@@ -267,3 +267,19 @@ Slack に送る。監視したいリポジトリごとに「関係する情報�
 - `--missed-run-grace-minutes` の値、ランチャーがプラグインの場所を解決する方法
 - テストの構成（フィード解析・重複排除・メッセージ分割・秘密の伏せ字は単体テストで固定すること。Slack と
   フィードはローカルの HTTP サーバで偽装する）
+
+## 13. スパイクの結果（2026-11-09）
+
+automation から起動した Claude が無人で最後まで動き、ログイン済みの X を読めることを確かめた（`#AI` の最新検索で 10 件）。
+
+- `orca repo add --path <dir> --kind folder --json` は冪等。2 回目も同じ id（`result.repo.id`）を返す
+- `orca automations create` は `--workspace path:<dir>` を受け付け、`result.automation.id` を返す。既定は
+  `missedRunPolicy: run_once_within_grace`・`missedRunGraceMinutes: 720`。`automations run` は `result.runId` を返す
+- フォルダの `.claude/settings.json` の allow ルールだけで、permission の確認もフォルダの信頼の確認も出ずに完走した。
+  絶対パスのルールは先頭を `//` にする（`Write(//tmp/dd-spike/run/**)` が効いた）
+- ネットワークは通る（`curl https://dev.to/feed` が 200）
+- X の読み方: `orca tab create --url <url> --json` → `orca snapshot --page <id> --compact --urls`。最初の snapshot に約 15 件
+  - ポストの id と URL: `/status/<数字>` へのリンクのうち、子に `time` を持つ最初のもの。投稿者はその URL の handle
+  - 時刻: snapshot には相対時刻しか出ないので、id（Snowflake）から求める: `ms = (id >> 22) + 1288834974657`
+  - 本文: ヘッダの後ろの generic。「Replying to」で始まる要素・「Quote」で始まる引用・カードやメディアは除く
+- 片付け: フォルダのプロジェクトは `orca worktree rm` では外せず、`orca project setup-delete --setup <repoId> --force` で外す
