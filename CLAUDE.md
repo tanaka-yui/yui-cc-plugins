@@ -21,6 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `apps/token-meter` | Plugin (skills + hooks) | TypeScript (Bun) | hook 経由で圧縮プラグイン (rtk/caveman/headroom) の効きを観測し JSONL に記録・集計 |
 | `apps/codex-bridge` | Plugin (slash command) | TypeScript (Bun) | `/codex-bridge` で `.claude/rules` / CLAUDE.md を Codex 用 AGENTS.md にネスト生成 |
 | `apps/orca-team-dispatch-task` | Plugin (skill + TS scripts) | TypeScript (node で直接実行) + markdown | Orca の worktree で N タスクを worker に並列実行させ、成果を merge / PR で親ブランチへ取り込む（cmux-team-dispatch-task の Orca 版） |
+| `apps/dev-digest` | Plugin (skill + TS scripts) | TypeScript (node で直接実行) | 毎朝の開発速報を Slack に送り、履歴を SQLite に残す |
 
 `pnpm-workspace.yaml` の packages は `apps/*` のみ。新規パッケージは `apps/<name>` に 1 段で置く。
 
@@ -207,5 +208,6 @@ node scripts/check-doc-lang.mjs apps/dev-up  # パス指定で絞り込み
 - `apps/cmux-using/CLAUDE.md` — cmux ターミナル操作スキルの構成
 - `apps/cmux-fork/CLAUDE.md` — `/cfork` の動作と前提
 - `apps/orca-team-dispatch-task/CLAUDE.md` — 正本先行の原則（SKILL.md が正本、`test/test-docs.sh` が固定）、入口を全部 TypeScript にした構成、SKILL.md の bash block に判定を書かない規則、WSL2 の path 境界、配送と起床の分離
+- `apps/dev-digest/CLAUDE.md` — 毎朝の手順の正本（references/morning.md）、ランチャーと LAUNCHER_VERSION の許した重複、テスト専用の環境変数、秘密を出さない規則（maskSecrets）、無人の実行の許可ルール
 
 cmux 関連プラグインは互いの境界を意識しており、機能の重複を禁止する規約がある（各 CLAUDE.md の「関連プラグインとの境界」表を参照）。新機能を追加するときは、まずどのプラグインの責任範囲かを判断する。
