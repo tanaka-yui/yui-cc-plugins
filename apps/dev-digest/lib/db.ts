@@ -1,3 +1,4 @@
+import { X_SOURCE } from './defaults.ts'
 import { contentHash } from './feed.ts'
 import { asArray, asString, parseJson } from './json.ts'
 import { atLeast, parseSeverity } from './severity.ts'
@@ -46,7 +47,6 @@ type Row = Record<string, SQLOutputValue>
 
 // FTS5 の trigram は 3 文字未満の検索語を扱えない
 const MIN_MATCH_CHARS = 3
-const X_SOURCE_ID = 'x'
 
 const SCHEMA_V1 = `
 CREATE TABLE items (
@@ -272,7 +272,7 @@ export const latestRun = (db: Db): { runId: number; startedAt: string; finishedA
 
 // X の投稿が最後に取り込まれた時刻
 export const lastXIngest = (db: Db): string | null =>
-  strOrNull(one(db, 'SELECT MAX(first_seen_at) AS at FROM items WHERE source_id = ?', X_SOURCE_ID) ?? {}, 'at')
+  strOrNull(one(db, 'SELECT MAX(first_seen_at) AS at FROM items WHERE source_id = ?', X_SOURCE.storeAs) ?? {}, 'at')
 
 export const undelivered = (
   db: Db,
