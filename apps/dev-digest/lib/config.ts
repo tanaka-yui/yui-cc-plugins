@@ -8,7 +8,8 @@ import { join } from 'node:path'
 
 import type { Json, JsonObject } from './json.ts'
 
-export type Section = 'jvn' | 'aws' | 'gcp' | 'x' | 'devto' | 'releases'
+export const SECTIONS = ['jvn', 'aws', 'gcp', 'x', 'devto', 'releases'] as const
+export type Section = (typeof SECTIONS)[number]
 
 export type FeedSource = {
   id: string
@@ -210,14 +211,16 @@ export const saveRepo = (home: string, repo: RepoConfig): void => {
   writeJson(join(reposDir, slugToFile(repo.slug)), reposDir, repo)
 }
 
+// slug のファイル名に今入っているリポジトリの slug。無い・読めないなら null
+export const storedSlug = (home: string, slug: string): string | null => {
+  const json = readJson(join(homePaths(home).reposDir, slugToFile(slug)))
+  return json === null ? null : asString(asObject(json)?.slug)
+}
+
 export const removeRepo = (home: string, slug: string): boolean => {
-  const file = join(homePaths(home).reposDir, slugToFile(slug))
-  try {
-    readFileSync(file)
-  } catch {
-    return false
-  }
-  rmSync(file)
+  // 同じファイル名の別の slug を消さない
+  if (storedSlug(home, slug) !== slug) return false
+  rmSync(join(homePaths(home).reposDir, slugToFile(slug)))
   return true
 }
 

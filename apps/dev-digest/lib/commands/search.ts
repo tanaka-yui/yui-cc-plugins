@@ -1,5 +1,5 @@
 import { die, parseFlags } from '../cli.ts'
-import { loadConfig, loadRepos, type Section } from '../config.ts'
+import { loadConfig, loadRepos, SECTIONS, type Section } from '../config.ts'
 import { openDb, type SearchQuery, search } from '../db.ts'
 import { digestHome, homePaths } from '../paths.ts'
 import { sectionByStoreAs } from '../pending.ts'
@@ -8,7 +8,6 @@ import { parseSeverity } from '../severity.ts'
 import { existsSync } from 'node:fs'
 
 const NAME = 'dev-digest search'
-const SECTIONS: readonly Section[] = ['jvn', 'aws', 'gcp', 'x', 'devto', 'releases']
 const DEFAULT_LIMIT = 50
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 

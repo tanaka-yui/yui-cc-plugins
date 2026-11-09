@@ -159,3 +159,7 @@ export const releasesFeed = (github: string): FeedSource => ({
 export const WEBHOOK_PROMPT_TEMPLATE = '[{target}] の Slack Incoming Webhook URL を貼り付けてください'
 export const WEBHOOK_DIALOG_TITLE = 'dev-digest'
 export const GLOBAL_TARGET = 'global'
+
+// リポジトリの slug。各区間は英数字で始める（`.` `..` を除く）。`__` は slugToFile で `/` と衝突するので禁止
+export const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)?$/
+export const SLUG_FORBIDDEN = '__'

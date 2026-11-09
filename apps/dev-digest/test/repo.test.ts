@@ -174,3 +174,19 @@ test('RP7 remove は repo と専用 Webhook を消し 0600 を保つ。未登録
   const again = runCli(['repo', 'remove', '--slug', 'o/r'], { DEV_DIGEST_HOME: h })
   assert.equal(again.code, 2)
 })
+
+test('RP8 ファイル名が衝突する slug と . / .. は拒み、既存の repo を壊さない', () => {
+  const h = home()
+  const dir = temp()
+  assert.equal(saveCandidate(h, candidate(dir, { slug: 'a/b' })).code, 0)
+  assert.equal(saveCandidate(h, candidate(dir, { slug: 'a__b' })).code, 2)
+  for (const slug of ['.', '..', 'a/..', 'a/.']) {
+    assert.equal(saveCandidate(h, candidate(dir, { slug })).code, 2, slug)
+  }
+  assert.deepEqual(
+    loadRepos(h).map((r) => r.slug),
+    ['a/b'],
+  )
+  assert.equal(runCli(['repo', 'remove', '--slug', 'a__b'], { DEV_DIGEST_HOME: h }).code, 2)
+  assert.equal(loadRepos(h).length, 1)
+})

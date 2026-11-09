@@ -1,5 +1,6 @@
 import { die, log, parseFlags } from '../cli.ts'
-import { loadRepos, parseRepoConfig, type RepoConfig, removeRepo, saveRepo } from '../config.ts'
+import { loadRepos, parseRepoConfig, type RepoConfig, removeRepo, saveRepo, storedSlug } from '../config.ts'
+import { SLUG_FORBIDDEN, SLUG_PATTERN } from '../defaults.ts'
 import { asObject, type Json, parseJson } from '../json.ts'
 import { digestHome, homePaths } from '../paths.ts'
 import { loadSecrets, maskWebhook, removeRepoWebhook } from '../secrets.ts'
@@ -9,7 +10,6 @@ import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename } from 'node:path'
 
 const NAME = 'dev-digest repo'
-const SLUG_PATTERN = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/
 const GITHUB_PATTERN = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/
 const TAG_PATTERN = /^[a-z0-9]+$/
 // git@host:owner/repo / https://host/owner/repo / ssh://git@host/owner/repo（末尾の .git は除く）
@@ -51,7 +51,8 @@ const validate = (value: Json | null): RepoConfig | string => {
   // addedAt は candidate に含めず、こちらで決める
   const parsed = parseRepoConfig({ ...root, addedAt: '' })
   if (typeof parsed === 'string') return parsed
-  if (!SLUG_PATTERN.test(parsed.slug)) return `slug: ${SLUG_PATTERN} に合いません`
+  if (!SLUG_PATTERN.test(parsed.slug) || parsed.slug.includes(SLUG_FORBIDDEN))
+    return `slug: 英数字で始まる owner/repo の形にし、"${SLUG_FORBIDDEN}" は含めないでください`
   for (const tag of parsed.devtoTags) {
     if (!TAG_PATTERN.test(tag)) return `devtoTags: ${TAG_PATTERN} に合いません: ${tag}`
   }
@@ -82,6 +83,10 @@ const save = (argv: string[]): void => {
   const validated = validate(parseJson(text))
   const candidate = typeof validated === 'string' ? die(name, validated) : validated
   const home = digestHome()
+  // 別の slug が同じファイル名に当たるなら上書きしない
+  const owner = storedSlug(home, candidate.slug)
+  if (owner !== null && owner !== candidate.slug)
+    die(name, '同じファイル名になる別のリポジトリが登録済みです。何も保存していません')
   const existing = loadRepos(home).find((repo) => repo.slug === candidate.slug)
   const repo: RepoConfig = { ...candidate, addedAt: existing?.addedAt ?? new Date().toISOString() }
   saveRepo(home, repo)
@@ -96,7 +101,7 @@ const list = (): void => {
   const home = digestHome()
   const secrets = loadSecrets(homePaths(home).secrets)
   const lines = loadRepos(home).map((repo) => {
-    const own = secrets.repos[repo.slug]
+    const own = Object.hasOwn(secrets.repos, repo.slug) ? secrets.repos[repo.slug] : undefined
     const webhook = own === undefined || own === '' ? 'global' : maskWebhook(own)
     const jvn = repo.jvnMinSeverity ?? 'global'
     return `${repo.slug}\t${repo.path}\twebhook=${webhook}\tjvn=${jvn}\tpackages=${repo.watch.packages.length}\n`
