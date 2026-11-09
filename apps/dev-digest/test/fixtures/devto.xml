@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>DEV Community</title>
+    <description>The most recent home feed on DEV Community.</description>
+    <link>https://dev.to</link>
+    <atom:link rel="self" type="application/rss+xml" href="https://dev.to/feed"/>
+    <language>en</language>
+    <item>
+      <title>LILYGO T-Dongle S3 Plus: ESP32-S3, 8MB PSRAM &amp; Pinout Spec</title>
+      <dc:creator>EmbedSBC</dc:creator>
+      <pubDate>Mon, 09 Nov 2026 11:44:18 +0000</pubDate>
+      <link>https://dev.to/embedsbc/lilygo-t-dongle-s3-plus-esp32-s3-8mb-psram-pinout-spec-1k7a</link>
+      <guid>https://dev.to/embedsbc/lilygo-t-dongle-s3-plus-esp32-s3-8mb-psram-pinout-spec-1k7a</guid>
+      <description>&lt;p&gt;The &lt;strong&gt;LILYGO T-Dongle S3 Plus&lt;/strong&gt; packs an &lt;strong&gt;ESP32-S3&lt;/strong&gt;, a &lt;strong&gt;PDM microphone&lt;/strong&gt;, an &lt;strong&gt;IR transmitter&lt;/strong&gt;, and an optional &lt;strong&gt;ATECC508A crypto chip&lt;/strong&gt; into a standard USB thumb-drive footprint to handle local voice capture and hardware authentication at the edge—though engineers must account for its single-band &lt;strong&gt;2.4GHz Wi-Fi 4&lt;/strong&gt; ceiling and &lt;strong&gt;irreversible ATECC508A configuration locks&lt;/strong&gt;.&lt;/p&gt;
+
+&lt;p&gt;&lt;a href="https://media2.dev.to/dynamic/image/width=800%2Cheight=%2Cfit=scale-down%2Cgravity=auto/https%3A%2F%2Fdev-to-uploads.s3.us-east-2.amazonaws.com%2Fuploads%2Farticles%2Ftezxyn7vs2t7u3anmcao.webp" class="article-body-image-wrapper"&gt;&lt;img src="https://media2.dev.to/dynamic/image/width=800%2Cheight=%2Cfit=scale-down%2Cgravity=auto/https%3A%2F%2Fdev-to-uploads.s3.us-east-2.amazonaws.com%2Fuploads%2Farticles%2Ftezxyn7vs2t7u3anmcao.webp" alt="lilygo-t-dongle-s3-plus" width="764" height="917"&gt;&lt;/a&gt;&lt;/p&gt;
+
+&lt;h2&gt;</description>
+      <category>esp32</category>
+      <category>iot</category>
+      <category>embedded</category>
+      <category>display</category>
+    </item>
+<item>
+      <title>A small business running 8 projects on Claude Code for 30 days: rules ignored, projects crossing into each other, and what finally helped</title>
+      <dc:creator>Small Business Builder</dc:creator>
+      <pubDate>Mon, 09 Nov 2026 11:43:53 +0000</pubDate>
+      <link>https://dev.to/smallbusinessbuilder/a-small-business-running-8-projects-on-claude-code-for-30-days-rules-ignored-projects-crossing-24ol</link>
+      <guid>https://dev.to/smallbusinessbuilder/a-small-business-running-8-projects-on-claude-code-for-30-days-rules-ignored-projects-crossing-24ol</guid>
+      <description>&lt;p&gt;I run a small business. Over the last 30 days Claude Code built and ran about eight projects for me on one Windows office server: an online shop, a CRM, an auction site, a monitoring tool and the server itself. I am not a programmer. I talk to Claude from my phone.&lt;/p&gt;
+
+&lt;h2&gt;
+  
+  
+  What went wrong
+&lt;/h2&gt;
+
+&lt;ol&gt;
+&lt;li&gt;My start-up file, my rules and my answer format were written down and loaded in every chat, and still not followed. The answer format came up in 73 of my messages on 23 different days. Doing research before answering came up in 88 messages on 22 days.&lt;/li&gt;
+&lt;li&gt;Chats in one project did another project's work. A server chat ran a shop test on the live shop and stopped publishing for about seven hours, the third time this happened. Another server chat changed my CRM's sign-in. The server project had made 45 working copies of my other projects.&lt;/li&gt;
+&lt;li&gt;Claude asked again for approvals I had already given, and treated questions as approvals.&lt;/li&gt;
+&lt;li&gt;Claude said work was done when it was not. Its own check of 18 of its claims on one morning found 5 true, 12 partly true and 1 false.&lt;/li&gt;
+&lt;li&gt;</description>
+      <category>claude</category>
+      <category>ai</category>
+      <category>productivity</category>
+    </item>
+<item>
+      <title>Five MCP servers were archived 17 months ago. Their downloads have quadrupled since.</title>
+      <dc:creator>Srinathprasanna N S</dc:creator>
+      <pubDate>Mon, 09 Nov 2026 11:43:19 +0000</pubDate>
+      <link>https://dev.to/neelagiri65/five-mcp-servers-were-archived-17-months-ago-their-downloads-have-quadrupled-since-7ec</link>
+      <guid>https://dev.to/neelagiri65/five-mcp-servers-were-archived-17-months-ago-their-downloads-have-quadrupled-since-7ec</guid>
+      <description>&lt;p&gt;&lt;em&gt;What your agent reads, part 6. You approve an MCP server once. This series is about what happens after.&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;On 29 May 2025, the Model Context Protocol project archived 14 of its reference servers. The commit is titled "Archive unmaintained servers". Five of them, GitHub, Postgres, Slack, Puppeteer and Brave Search, are still among the 30 most-downloaded MCP server packages on npm. Those are the five I followed.&lt;/p&gt;
+
+&lt;p&gt;Their npm packages are still there. Each is marked deprecated, with the same line: "Package no longer supported. Contact Support at &lt;a href="https://www.npmjs.com/support" rel="noopener noreferrer"&gt;https://www.npmjs.com/support&lt;/a&gt; for more info." Each README still shows the &lt;code&gt;npx -y&lt;/code&gt; line to install it.&lt;/p&gt;
+
+&lt;p&gt;So I looked at what happened to them after they stopped.&lt;/p&gt;
+
+&lt;h2&gt;
+  
+  
+  They kept growing
+&lt;/h2&gt;
+
+&lt;p&gt;In June 2025, the month after the archive, the five got 407,645 downloads between them. In July 2026 they got 1,794,602. Since June 2025 the total is about 17.7 million.&lt;/p&gt;
+
+&lt;p&gt;</description>
+      <category>mcp</category>
+      <category>security</category>
+      <category>npm</category>
+      <category>ai</category>
+    </item>
+  </channel>
+</rss>

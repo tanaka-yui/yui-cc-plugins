@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/anthropics/claude-code/releases</id>
+  <link type="text/html" rel="alternate" href="https://github.com/anthropics/claude-code/releases"/>
+  <link type="application/atom+xml" rel="self" href="https://github.com/anthropics/claude-code/releases.atom"/>
+  <title>Release notes from claude-code</title>
+  <updated>2026-11-06T17:03:45Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Repository/937253475/v2.1.319</id>
+    <updated>2026-11-06T17:04:01Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/anthropics/claude-code/releases/tag/v2.1.319"/>
+    <title>v2.1.319</title>
+    <content type="html">&lt;h2&gt;What&#39;s changed&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Changed auto mode with telemetry or feature flags off, including behind LLM gateways: calls the server can&#39;t check are asked about or denied, with no fallback to the built-in classifier; set &lt;code&gt;CLAUDE_CODE_AUTO_MODE_SERVER=0&lt;/code&gt; to keep using it (Bedrock, Vertex and Foundry are unchanged)&lt;/li&gt;
+&lt;li&gt;Changed auto mode behind an LLM gateway: &lt;code&gt;CLAUDE_CODE_AUTO_MODE_SERVER=1&lt;/code&gt; turns on the server-side check even with &lt;code&gt;CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS&lt;/code&gt; set; if managed settings set the latter, they must set the &lt;code&gt;1&lt;/code&gt; too&lt;/li&gt;
+&lt;li&gt;Added support for MCP tasks in the terminal: when an MCP server runs a tool call as a task, Claude Code moves it to the background right away and tells Claude the result when it finishes&lt;/li&gt;
+&lt;li&gt;Added the &lt;code&gt;CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND&lt;/code&gt; environment variable to make Claude Code wait for an MCP task inside its tool call instead of moving it to the background right away&lt;/li&gt;
+&lt;li&gt;Added &lt;code&gt;</content>
+    <author>
+      <name>claude-code-publisher[bot]</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/76263028?s=60&amp;v=4"/>
+  </entry>
+<entry>
+    <id>tag:github.com,2008:Repository/937253475/v2.1.318</id>
+    <updated>2026-11-04T00:01:03Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/anthropics/claude-code/releases/tag/v2.1.318"/>
+    <title>v2.1.318</title>
+    <content type="html">&lt;h2&gt;What&#39;s changed&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Added a record of your answer when Claude Code asks to turn on the mods it writes in a session&lt;/li&gt;
+&lt;li&gt;Added &lt;code&gt;assume_role&lt;/code&gt; on &lt;code&gt;mantle&lt;/code&gt; upstreams of the Claude apps gateway, for a role in another AWS account and for per-developer AWS cost attribution&lt;/li&gt;
+&lt;li&gt;Added an &lt;code&gt;effort&lt;/code&gt; option to a mod&#39;s &lt;code&gt;$.model.fork&lt;/code&gt;, so a quick side job can run at &lt;code&gt;low&lt;/code&gt; whatever effort the session uses; the result reports the effort sent&lt;/li&gt;
+&lt;li&gt;Added the date a stored claude.ai sign-in ends to &lt;code&gt;claude auth status&lt;/code&gt; (&lt;code&gt;loginExpiresAt&lt;/code&gt;) and to &lt;code&gt;claude -p&lt;/code&gt; JSON results (&lt;code&gt;credential_expires_at&lt;/code&gt;)&lt;/li&gt;
+&lt;li&gt;Added a one-line stderr warning to &lt;code&gt;claude -p&lt;/code&gt; text output, starting 10 days before a stored claude.ai sign-in ends&lt;/li&gt;
+&lt;li&gt;Fixed &lt;code&gt;--continue&lt;/code&gt;</content>
+    <author>
+      <name>ashwin-ant</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/178951676?s=60&amp;v=4"/>
+  </entry>
+<entry>
+    <id>tag:github.com,2008:Repository/937253475/v2.1.317</id>
+    <updated>2026-11-03T01:25:46Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/anthropics/claude-code/releases/tag/v2.1.317"/>
+    <title>v2.1.317</title>
+    <content type="html">&lt;h2&gt;What&#39;s changed&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Added a warning to &lt;code&gt;/schedule&lt;/code&gt; when a new cloud scheduled task gets connectors you did not ask for, with how to remove them&lt;/li&gt;
+&lt;li&gt;Added a check that asks before a web or shell tool call sends your account email address to the network&lt;/li&gt;
+&lt;li&gt;Added &lt;code&gt;onFailure: &quot;block&quot;&lt;/code&gt; for Agent SDK hook callbacks, so a callback that fails blocks the action instead of letting it run&lt;/li&gt;
+&lt;li&gt;Added a notice in Claude Desktop&#39;s Code tab when your organization&#39;s remote managed settings haven&#39;t loaded for the session, and another once they do&lt;/li&gt;
+&lt;li&gt;Added a notice when auto mode&#39;s check has no answer for a subagent&#39;s tool call, which used to leave nothing in the main view&lt;/li&gt;
+&lt;li&gt;Added &lt;code&gt;anthropic.plan&lt;/code&gt;, &lt;code&gt;anthropic.seat_type&lt;/code&gt;, &lt;code&gt;anthropic.provider&lt;/code&gt; and &lt;code&gt;anthropic.custom_base_url&lt;/code&gt; to OTel metrics, events and spans&lt;/li&gt;
+&lt;li&gt;Added a cost report to the Claude apps gateway admin API, &lt;code&gt;</content>
+    <author>
+      <name>ashwin-ant</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/178951676?s=60&amp;v=4"/>
+  </entry>
+</feed>

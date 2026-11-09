@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Broken</title>
+<item><guid>b-1</guid><title>First complete</title><link>https://example.com/1</link><description>one</description><pubDate>Mon, 09 Nov 2026 01:00:00 GMT</pubDate></item>
+<item><guid>b-2</guid><title>Title never closed<link>https://example.com/2</link><description>two</description>
+<item><guid>b-3</guid><title>Third complete</title><link>https://example.com/3</link><description>three</description><pubDate>Mon, 09 Nov 2026 03:00:00 GMT</pubDate></item>
+<item><guid>b-4</guid><title>Cut off at the e
