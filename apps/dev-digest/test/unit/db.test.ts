@@ -3,6 +3,7 @@ import {
   hasSource,
   markBaseline,
   openDb,
+  previousIncompleteStart,
   recordDelivery,
   saveNote,
   search,
@@ -163,4 +164,14 @@ test('DB9 search は note と送信先を返し、危険な文字でも落ちな
   assert.equal(search(db, query({ text: 'plain', repo: 'b/b' }), sectionOf).length, 0)
   assert.equal(search(db, query({ text: 'a-b "x" AND' }), sectionOf).length, 0)
   assert.equal(search(db, query({ text: '"' }), sectionOf).length, 0)
+})
+
+test('DB10 previousIncompleteStart は runId より前の最後の未完了を返す', () => {
+  const db = openDb(':memory:')
+  startRun(db, '2026-11-07T00:00:00Z')
+  startRun(db, '2026-11-08T00:00:00Z')
+  finishRun(db, 2, '2026-11-08T00:10:00Z')
+  const { runId } = startRun(db, NOW)
+  assert.equal(previousIncompleteStart(db, runId), '2026-11-07T00:00:00Z')
+  assert.equal(previousIncompleteStart(db, 1), null)
 })

@@ -6,6 +6,7 @@ type Command = { run: (argv: string[]) => Promise<void> | void }
 const COMMANDS: Record<string, () => Promise<Command>> = {
   collect: () => import('../lib/commands/collect.ts'),
   'ingest-x': () => import('../lib/commands/ingest-x.ts'),
+  pending: () => import('../lib/commands/pending.ts'),
 }
 
 const NAME = 'dev-digest'

@@ -299,6 +299,13 @@ export const latestRun = (db: Db): { runId: number; startedAt: string; finishedA
     : { runId: num(row, 'id'), startedAt: str(row, 'started_at'), finishedAt: strOrNull(row, 'finished_at') }
 }
 
+// runId より前の実行のうち、最後の未完了（finished_at が null）の開始時刻
+export const previousIncompleteStart = (db: Db, runId: number): string | null =>
+  strOrNull(
+    one(db, 'SELECT started_at FROM runs WHERE id < ? AND finished_at IS NULL ORDER BY id DESC LIMIT 1', runId) ?? {},
+    'started_at',
+  )
+
 // X の投稿が最後に取り込まれた時刻
 export const lastXIngest = (db: Db): string | null =>
   strOrNull(one(db, 'SELECT MAX(first_seen_at) AS at FROM items WHERE source_id = ?', X_SOURCE.storeAs) ?? {}, 'at')
