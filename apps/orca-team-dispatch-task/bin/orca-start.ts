@@ -2,7 +2,7 @@
 // Usage: node orca-start.ts --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
 //        [--run <id>] [--agent <id>] [--model <id>] [--effort <level>]
 //        [--phase design|exec] [--design-mode direct|plan|brainstorm] [--ask-via terminal|parent]
-//        [--integration merge|pr]
+//        [--integration merge|pr] [--unattended]
 //        node orca-start.ts --slug <s> --resume [--repo-root <p>] [--design-mode ...] [--ask-via ...]
 // Exit: 0 / 1 起動できなかった / 2 使用法
 import { die, log } from '../lib/cli.ts'
@@ -32,6 +32,10 @@ const PLUGIN = resolve(HERE, '..')
 const SCRIPTS = join(PLUGIN, 'skills', 'orca-team-dispatch-task', 'scripts')
 const RESOLVER = join(SCRIPTS, 'config-resolve.ts')
 const SENDER = join(HERE, 'orca-send.ts')
+// レビューの上限の刻み。最初の上限であり、人が認めたときに増やす幅でもある
+const REVIEW_ROUND_STEP = 5
+// `orchestration ask --wait` の 1 回の待ち時間（Orca の上限の 30 分）
+const ASK_WAIT_MS = 1_800_000
 const string = (value: Json | undefined): string => asString(value) ?? ''
 const object = (value: Json | undefined): JsonObject => asObject(value) ?? {}
 const shellQuote = (value: string): string =>
@@ -225,8 +229,8 @@ H. **If the work itself failed, none of C-G applies.** Write why in result.md, r
    status is the record that a failure is still owed; there is nothing to offer.
 
 I. **Do not invent message types.** The only things you send are the ones above, plus
-   \`orchestration ask\` **when this task told you to ask** (see the brainstorming section, if
-   there is one). Do not send escalations: the parent has no path for them.
+   \`orchestration ask\` **when this task told you to ask** (see the brainstorming section and the review protocol, if
+   this task has them). Do not send escalations: the parent has no path for them.
 
    When you do use \`ask\`, expect it to block until a person answers through the parent, and
    remember it costs someone's attention. Ask only what you need answered.
@@ -297,6 +301,38 @@ REVIEW LOOP
   // ★ design と exec のレビュー手順はラベルとファイル名だけ変える。
   const reviewBlock = (reviewer: string, label: string, prefix: string, noun: string): string => {
     const requester = reviewer
+    // ★ 上限に達したら人に尋ねる。尋ね方は ask_via に従う。worker の `ask` は --wait が無いとすぐ返るので付ける。
+    //   無人の実行（none）には尋ねる相手が居ない。端末で尋ねさせると、印が停滞の検知を止めたまま永久に待つ
+    const askHow =
+      context.askVia === 'parent'
+        ? `   Ask through the parent, not by printing a question and stopping:
+
+     ${qOrcaBin} orchestration ask --question '<the round, the open findings, and whether to add more rounds>' \\
+       --dispatch-capability <capability> --from <handle> --wait --timeout-ms ${ASK_WAIT_MS} --json
+
+   That call blocks until a person answers. If it times out, the question is still pending:
+   run the same command with --resume <message id> in place of --question, in this same turn.
+   A timeout is not an answer, and asking again with --question would ask twice.`
+        : `   Ask in this terminal. A person is watching it. First record that you are waiting:
+
+     ${qNode} ${qAwaiting} --role-dir ${qRoleDir}
+
+   then put the question at the end of your reply and end your turn. The answer arrives as the
+   next message typed into this terminal. This is the only question in this protocol that you end your turn for.`
+    const onNeedsWork =
+      context.askVia === 'none'
+        ? `5. On needs_work: revise and repeat from step 1 with the next round number.
+   **Stop at round ${REVIEW_ROUND_STEP}.** Nobody is watching this dispatch, so there is no one to ask. Record the
+   unresolved findings in result.md, keep the best version you have, and go to step 7.`
+        : `5. On needs_work: revise and repeat from step 1 with the next round number.
+   **The round limit starts at ${REVIEW_ROUND_STEP}.** When the round at the limit comes back needs_work, do not revise yet.
+   Ask a person whether to allow up to ${REVIEW_ROUND_STEP} more rounds. Say which round this was and which findings are still open.
+
+${askHow}
+
+   If nobody answers, that is expected: the person watching decides whether to answer or to stop the dispatch.
+   If they say yes, raise the limit by ${REVIEW_ROUND_STEP} (the next question comes at round ${REVIEW_ROUND_STEP * 2}), revise, and repeat from step 1 with the next round number.
+   If they say no, record the unresolved findings in result.md, keep the best version you have, and go to step 7.`
     return `REVIEW PROTOCOL (do this before you finish)
 
 A reviewer is already running and waiting for you. Have your ${noun} reviewed before you finish.
@@ -320,7 +356,9 @@ A reviewer is already running and waiting for you. Have your ${noun} reviewed be
      ${qOrcaBin} orchestration check --terminal <handle> \\
        --peek --wait --timeout-ms 600000 --json
 
-   Use --peek. **Never pass --ack.** Look for a subject starting \`review-verdict:\`.
+   Use --peek. **Never pass --ack.** Look for a subject starting \`review-verdict:\` that names the round you just requested.
+   --peek leaves messages unread, so verdicts of earlier rounds come back too: ignore them.
+   If only earlier rounds came back, this round's verdict has not arrived yet: wait a few seconds and run the same command again.
    A subject starting \`review-skipped:\` means the parent stopped your reviewer: go to step 6.
 
    **Do not end your turn to wait.** A message put in your mailbox does not wake you, so a
@@ -337,9 +375,7 @@ A reviewer is already running and waiting for you. Have your ${noun} reviewed be
    \`VERDICT: approved\` means approved.** Anything else, including a missing VERDICT line,
    is needs_work.
 
-5. On needs_work: revise and repeat from step 1 with the next round number.
-   **Stop after round 2.** Record the unresolved findings in result.md and keep the best
-   version you have. Do not keep asking.
+${onNeedsWork}
 
 6. On \`review-skipped:\`, your reviewer is gone. Note in result.md that round <n> was not
    reviewed because the reviewer was stopped, and proceed without review. Skip step 7.
@@ -387,7 +423,7 @@ makes that approach wrong, say so there rather than quietly doing something else
    Do not run \`superpowers:finishing-a-development-branch\`: stop after committing; the parent brings the branch home.`
     // ★ 2026-09-24: 質問の出し方は ask_via で決める。terminal（既定）は worker 自身の端末で尋ね、印を書いてから
     //   ターンを終える（Orca の agentWait はこの待ちを拾わないので、印が orca-wait の停滞の時計を戻す）。
-    //   ターンを終えてよいのはここだけ — 完了の申告以降とレビューの verdict 待ちはターン内で待ち続ける
+    //   ターンを終えてよいのはこことレビューの上限の質問だけ — 完了の申告以降とレビューの verdict 待ちはターン内で待ち続ける
     const asking =
       context.askVia === 'parent'
         ? `**Ask through \`orchestration ask\`, not by printing a question and stopping.** The parent
@@ -408,7 +444,7 @@ next message typed into this terminal. Ask one question at a time, as the skill 
 
 Do not use \`orchestration ask\`: in this dispatch the parent does not relay questions.
 
-**This is the only place where you end your turn to wait.** From step C of the STATUS
+**Apart from the round-limit question in the review protocol, if this task has one, this is the only place where you end your turn to wait.** From step C of the STATUS
 PROTOCOL on, and while you wait for a review verdict, keep waiting inside your turn as
 those steps say.
 
@@ -951,10 +987,15 @@ const main = (argv: string[]): number => {
   let integration = ''
   let phase = 'design'
   let resume = false
+  let unattended = false
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]
     if (flag === '--resume') {
       resume = true
+      continue
+    }
+    if (flag === '--unattended') {
+      unattended = true
       continue
     }
     if (
@@ -1089,8 +1130,10 @@ const main = (argv: string[]): number => {
   const phaseB = string(config.phase_b) || 'off'
   const setup = string(config.setup) || 'skip'
   const mode = string(config.design_mode) || 'direct'
-  const ask = string(config.ask_via) || 'terminal'
   const workersFile = join(statusDir, 'workers.json')
+  // ★ 1 回きりの --ask-via は設定に残らない。記録しないと、Step 3.5 の --phase exec だけ設定値で尋ねることになる
+  const recordedAsk = continuing && askVia === '' ? string(get(readJson(workersFile), 'ask_via')) : ''
+  const ask = unattended ? 'none' : recordedAsk || string(config.ask_via) || 'terminal'
   const started = (role: string): boolean => string(get(readJson(workersFile), 'roles', role, 'dispatch')) !== ''
   const launchOrder: string[] = []
   if (phase === 'exec') {
@@ -1226,6 +1269,7 @@ const main = (argv: string[]): number => {
       integration_branch: integrationBranch,
       integration_role: string(config.integration_role) || 'design',
       integration: config.integration ?? null,
+      ask_via: ask,
       roles,
     }
     if (!write('workers-initial', workersFile, JSON.stringify(initial))) {

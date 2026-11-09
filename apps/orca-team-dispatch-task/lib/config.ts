@@ -38,8 +38,8 @@ export const integrationRole = (phaseB: string): Role => (phaseB === 'on' ? 'exe
 //   design_mode … direct（plan は先に手順を記録、brainstorm は superpowers の brainstorming を先に通す。
 //                 **brainstorm は人が答える前提**なので、無人の `--issue` は呼び出し側が plan へ落とす）
 //   ask_via     … terminal（brainstorm の design は自分の端末で尋ね、ターンを終えて答えを待つ。parent は
-//                 `orchestration ask` で親に取り次がせる。**既定だけ例外** — 設定より前のコードは parent だったが、
-//                 文書が意図していた terminal を既定にする）
+//                 `orchestration ask` で親に取り次がせる。レビューの上限の質問も同じ場所で尋ねる。
+//                 **既定だけ例外** — 設定より前のコードは parent だったが、文書が意図していた terminal を既定にする）
 export const TOGGLES = {
   review_mode: { values: ['on', 'off'], fallback: 'off' },
   phase_b: { values: ['on', 'off'], fallback: 'off' },

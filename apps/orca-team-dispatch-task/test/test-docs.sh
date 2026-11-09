@@ -557,6 +557,14 @@ for f in "$S" "$G"; do
 done
 [[ -z "$bad" ]] && ok "SK32 plugin root を起動時の base directory か installed_plugins.json で解決する" || fail "SK32:$bad"
 
+# SK33: レビューの上限は 5 ラウンドごとに人へ尋ねる。古い「2 ラウンドで打ち切り」を残さない
+bad=""
+grep -q 'Review pauses every five rounds' "$S" || bad="$bad [limit:SKILL]"
+grep -q 'レビューは 5 ラウンドごとに止まる' "$G" || bad="$bad [limit:guide]"
+grep -qE 'after round 2|after two rounds' "$S" && bad="$bad [old:SKILL]"
+grep -qE 'round 2 で諦める|2 ラウンドで打ち切り' "$G" && bad="$bad [old:guide]"
+[[ -z "$bad" ]] && ok "SK33 レビューの上限の記述" || fail "SK33:$bad"
+
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
   && ! grep -q 'dangerously-skip-permissions' "$S" \

@@ -427,7 +427,7 @@ const recordOutcome = (statusDir: string, task: string, dispatch: string, outcom
 // ★ **無レビューの成果を黙って通さない。**レビュー役が起きているのに verdict が 1 つも
 //   残らないまま終わることが起きる（実測 2026-09-11: exec の review 待ちが waiter_exists で
 //   始められず、verdict 無しで成果を差し出して succeeded になった）。
-//   **ここで差し戻してはならない** — 「round 2 で打ち切り」も「1 時間 ×2 で諦めて進む」も
+//   **ここで差し戻してはならない** — 「レビューの上限で打ち切り」も「1 時間 ×2 で諦めて進む」も
 //   spec が認めた離脱経路であり、ゲートにするとその worker は永久に差し戻され続ける。
 //   受理はする。**そのうえで、そう見えるようにする。**
 //   判定そのものは `review-state.ts` が正本で、`orca-merge.ts` の gate と同じ問いを使う。

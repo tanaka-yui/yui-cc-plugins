@@ -314,6 +314,11 @@ test-wake.sh の WK9、test-start.sh の ST104-106、test-cleanup.sh の CL8c、
 
 ## レビュー往復の要点
 
+- **上限は 5 ラウンドごとに人へ尋ねる**（`orca-start.ts` の `REVIEW_ROUND_STEP`）。尋ね方は brainstorm と同じ `ask_via`
+  に従い、`direct` / `plan` と exec にも効く。1 回きりの `--ask-via` が `--phase exec` まで届くよう `workers.json` の
+  `ask_via` に記録する。**無人の `--issue` は `--unattended` で `none` を記録し、尋ねずに 5 ラウンドで止める** —
+  端末で尋ねさせると awaiting-user.json が停滞の検知を止めたまま永久に待つ。回帰は `test-start.sh` の ST114-118、
+  `test-issue.sh` の IS29、`test-wait.sh` の WT156
 - 往復は `orchestration send --to dispatch:<id>` / `check` の直接やり取り（実測 O38）。
   **親の Run メールボックスには来ない**（O39）ので、`orca-wait.ts` を汚さない
 - **`orca-wait.ts` の期待集合の鍵は `(status dir, role)` の組**である。1 タスクが 2 dispatch を

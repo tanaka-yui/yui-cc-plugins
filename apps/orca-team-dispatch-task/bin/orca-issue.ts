@@ -227,6 +227,7 @@ const main = (argv: string[]): number => {
       `issue #${options.issue}`,
       '--repo-root',
       options.repoRoot,
+      '--unattended',
     ]
     if (options.runId !== '') startArgs.push('--run', options.runId)
     startArgs.push(...modeArgs)

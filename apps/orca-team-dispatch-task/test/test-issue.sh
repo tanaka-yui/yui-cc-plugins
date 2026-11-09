@@ -405,4 +405,11 @@ out=$(run_issue --repo '' 2>&1); rc=$?
   && ok "IS28 空の --repo は merge では無害で、pr では渡されていないのと同じ" || fail "IS28 pr (rc=$rc) $out"
 teardown
 
+# IS29: ★ issue の実行は無人なので、レビューの上限で人に尋ねさせない（ST116 の --unattended を渡す）
+setup; worker_done succeeded done
+run_issue --phase dispatch >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && "$(jq -r '.ask_via' "$R/.dispatch/issue-5-x/workers.json")" == none ]] \
+  && ok "IS29 issue の実行は無人として起動する" || fail "IS29 (rc=$rc)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

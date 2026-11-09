@@ -1211,6 +1211,17 @@ err=$(ORCA_STALL_AFTER_SECONDS=$STALL node "$P/bin/orca-wait.ts" --status-dir "$
 [[ "$rc" -eq 8 && "$err" != *"is waiting for an answer"* ]] \
   && ok "WT118 止めた役の印は数えない" || fail "WT118 (rc=$rc)"; teardown
 
+# WT156: exec がレビューの上限で端末に尋ねている間も停滞にしない（印は exec の role dir に書かれる）
+setup; mkdir -p "$SD/roles/exec"; echo '{"status":"executing"}' > "$SD/roles/exec/status.json"
+jq -nc '{roles:{design:{terminal:"term_w",task:"task_x",dispatch:"ctx_x",retained:false},
+  exec:{terminal:"term_e",task:"task_e",dispatch:"ctx_e",retained:false}}}' > "$SD/workers.json"
+old "$SD/run.json" "$SD/workers.json" "$SD/roles/design/status.json" "$SD/roles/exec/status.json"
+echo '{"asked_at":1}' > "$SD/roles/exec/awaiting-user.json"
+err=$(ORCA_STALL_AFTER_SECONDS=$STALL node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 2 \
+        --timeout-ms 1 2>&1 >/dev/null); rc=$?
+[[ "$rc" -eq 3 && "$err" == *"exec of $(basename "$SD") is waiting for an answer in its terminal term_e"* ]] \
+  && ok "WT156 exec が端末で答えを待つ間は停滞ではない" || fail "WT156 (rc=$rc) $err"; teardown
+
 # --- Orca が拒否した worker_done（_orcaLifecycleRejection） ---
 # ★ 拒否通知 1 件で batch を止めると、同じ batch が受信箱の先頭に居座り、再起動しても同じ場所で止まる。
 #   後ろの merge_ready に誰も答えず Run 全体が止まる（2026-10-01、influencer-platform の実測）。

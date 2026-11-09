@@ -515,7 +515,8 @@ miss=""
 [[ "$rv" == *'review-plan:'* ]] || miss="$miss [reviewer-waits]"
 [[ "$dz" == *'review-plan:'* ]] || miss="$miss [design-requests]"
 [[ "$dz" == *'abort-reviewer:'* ]] || miss="$miss [design-releases]"
-[[ "$dz" == *'Stop after round 2'* ]] || miss="$miss [round-cap]"
+[[ "$dz" == *'The round limit starts at 5'* ]] || miss="$miss [round-cap]"
+[[ "$dz" == *'Stop after round 2'* ]] && miss="$miss [old-round-cap]"
 [[ -z "$miss" ]] && ok "ST43 両ロールの spec に往復手順が載る" || fail "ST43:$miss"; teardown
 
 # ST44: review_mode=off なら design の spec に往復手順を**書かない**（居ない相手を指さない）。
@@ -1351,5 +1352,69 @@ done < <(awk -v RS='\037' 'prev == "--spec" { printf "%s\036", $0 } { prev = $0 
 [[ "$n" -eq 4 && -z "$bad" && "$sent" == yes ]] && grep -q 'orchestration send --to dispatch:' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST113 helper は env 無しでも親の Orca CLI を使う" || fail "ST113 (n=$n sent=$sent):$bad"
 teardown
+
+# ── レビューの上限（5 ラウンドごとに人へ尋ねる）────────────────────────
+# 1 段目の design と 2 段目の exec の spec を取る。引数は 1 段目の start に渡す
+both_specs() {
+  four_roles; start "$@" >/dev/null 2>&1
+  dz=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)
+  design_done; : > "$ORCA_STUB_DIR/calls.log"; exec_phase >/dev/null 2>&1
+  ex=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)
+}
+ASK_CMD='orchestration ask --question'
+
+# ST114: 既定（terminal）は design も exec も 5 ラウンド目で尋ね、役の role dir に印を書いてからターンを終える
+setup; both_specs; miss=""
+for pair in "design:$dz" "exec:$ex"; do
+  role=${pair%%:*}; s=${pair#*:}
+  [[ "$s" == *'The round limit starts at 5'* ]] || miss="$miss [$role:limit]"
+  [[ "$s" == *'up to 5 more rounds'* ]] || miss="$miss [$role:question]"
+  [[ "$s" == *'raise the limit by 5'* ]] || miss="$miss [$role:extend]"
+  [[ "$s" == *'awaiting-user.ts'* ]] || miss="$miss [$role:marker]"
+  [[ "$s" == *"--role-dir $R/.dispatch/s/roles/$role"* ]] || miss="$miss [$role:role-dir]"
+  [[ "$s" == *"$ASK_CMD"* ]] && miss="$miss [$role:parent-text]"
+done
+[[ -z "$miss" ]] && ok "ST114 terminal は design も exec も端末で追加を尋ねる" || fail "ST114:$miss"; teardown
+
+# ST115: ★ ask_via=parent は ask で尋ねる。worker の ask は --wait なしだとすぐ返るので --wait と --resume を載せる。
+#        1 回きりの --ask-via は workers.json に残り、2 段目の exec にも効く（記録が無いと exec だけ既定の terminal になる）
+setup; both_specs --ask-via parent; miss=""
+for pair in "design:$dz" "exec:$ex"; do
+  role=${pair%%:*}; s=${pair#*:}
+  [[ "$s" == *'up to 5 more rounds'* ]] || miss="$miss [$role:question]"
+  [[ "$s" == *"$ASK_CMD"* ]] || miss="$miss [$role:ask]"
+  [[ "$s" == *'--from <handle> --wait --timeout-ms'* ]] || miss="$miss [$role:wait]"
+  [[ "$s" == *'--resume'* ]] || miss="$miss [$role:resume]"
+  [[ "$s" == *'awaiting-user.ts'* ]] && miss="$miss [$role:marker]"
+done
+[[ "$(jq -r '.ask_via' "$R/.dispatch/s/workers.json")" == parent ]] || miss="$miss [recorded]"
+[[ -z "$miss" ]] && ok "ST115 parent は design も exec も ask で追加を尋ねる" || fail "ST115:$miss"; teardown
+
+# ST116: ★ **無人の実行には尋ねる相手が居ない。**terminal で尋ねると、印が停滞の検知を止めたまま永久に待つ
+setup; both_specs --unattended; miss=""
+for pair in "design:$dz" "exec:$ex"; do
+  role=${pair%%:*}; s=${pair#*:}
+  [[ "$s" == *'Stop at round 5'* ]] || miss="$miss [$role:stop]"
+  [[ "$s" == *'up to 5 more rounds'* ]] && miss="$miss [$role:question]"
+  [[ "$s" == *'awaiting-user.ts'* ]] && miss="$miss [$role:marker]"
+  [[ "$s" == *"$ASK_CMD"* ]] && miss="$miss [$role:ask]"
+done
+[[ "$(jq -r '.ask_via' "$R/.dispatch/s/workers.json")" == none ]] || miss="$miss [recorded]"
+[[ -z "$miss" ]] && ok "ST116 無人の実行は尋ねずに 5 ラウンドで止める" || fail "ST116:$miss"; teardown
+
+# ST117: --peek は既読にしないので、前のラウンドの verdict も返る。今のラウンドの verdict を探させる
+setup; both_specs; miss=""
+for s in "$dz" "$ex"; do
+  [[ "$s" == *'names the round you just requested'* ]] || miss="$miss [round]"
+  [[ "$s" == *'has not arrived yet'* ]] || miss="$miss [stale]"
+done
+[[ -z "$miss" ]] && ok "ST117 今のラウンドの verdict を探させる" || fail "ST117:$miss"; teardown
+
+# ST118: 「ターンを終えてよいのはここだけ」と「ask は brainstorm の節だけ」を、上限の質問に合わせて直す
+setup; bs_only; review_on; printf '%s\n' '{"review_mode":"on","design_mode":"brainstorm"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start >/dev/null 2>&1; sp=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1); miss=""
+[[ "$sp" == *'Apart from the round-limit question in the review protocol'* ]] || miss="$miss [turn]"
+[[ "$sp" == *'see the brainstorming section and the review protocol'* ]] || miss="$miss [closing]"
+[[ -z "$miss" ]] && ok "ST118 上限の質問を例外として書く" || fail "ST118:$miss"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

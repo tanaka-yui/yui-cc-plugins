@@ -60,7 +60,7 @@ const received = (file: string, task: string, dispatch: string): boolean => {
 // ★ **レビューを求めておいて verdict が 1 つも無い成果を、黙って取り込まない。**
 //   実測 2026-09-12: reviewer の verdict が未配送のまま捨てられ（3 Run 中 2 Run）、
 //   無レビューの成果が succeeded のまま取り込み待ちになった。
-//   **worker を差し戻して閉じてはならない** — 「round 2 で打ち切り」も「諦めて進む」も
+//   **worker を差し戻して閉じてはならない** — 「レビューの上限で打ち切り」も「諦めて進む」も
 //   spec が認めた離脱経路であり、そこを塞ぐと worker は永久に差し戻される。だから
 //   **人の承認を経る離散的な一手であるここ**で閉じ、明示の override だけを通す。
 const main = (argv: string[]): number => {
