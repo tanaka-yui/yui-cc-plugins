@@ -43,7 +43,8 @@ CLI は `node "$PLUGIN/bin/dev-digest.ts" <subcommand>` で呼ぶ（`PLUGIN` は
    呼ぶので、プラグインを更新しても automation は動き続ける。出力は `launcher=` `automation=`
    `webhook_global=registered|missing`。exit 1 は Orca への登録の失敗で、理由を見せて止まる。
 3. `webhook_global=missing` なら全体の Webhook を登録する。macOS では非表示の入力ダイアログが出る。exit 4 と
-   `fallback=clipboard` はダイアログが出せなかったという意味。ユーザーに Slack の Incoming Webhook URL を
+   `fallback=clipboard` はダイアログが出せなかったという意味（クリップボードの
+   モードでそれ無しの exit 4 は、クリップボードに読める内容が無かったという意味）。ユーザーに Slack の Incoming Webhook URL を
    クリップボードにコピーさせ、このセッションで `!` を付けて
    `! ~/.dev-digest/bin/dev-digest set-webhook --target global --from-clipboard` を実行してもらい、終わるのを待つ。
    終わっても URL はクリップボードに残るので、消すように伝える。exit 1 は入力のキャンセルか Slack の
@@ -87,7 +88,7 @@ CLI は `node "$PLUGIN/bin/dev-digest.ts" <subcommand>` で呼ぶ（`PLUGIN` は
 
 質問から絞り込みを決めて `search` を呼ぶ。フラグはすべて任意: `--q`、`--since` / `--until`（YYYY-MM-DD。設定の
 タイムゾーン）、`--section`（`jvn|aws|gcp|x|devto|releases` の csv）、`--repo`、`--min-severity`、`--limit`（既定 50）。
-3 文字未満の語は全文検索の索引で一致させられないので、ユーザーの語がそれより短ければそう伝える。出力は項目の
+3 文字未満の語は全文検索の索引ではなく部分一致（title・summary・日本語の要約）で探すので、短い語でも使える。出力は項目の
 JSON 配列（`title` `url` `sourceId` `publishedAt` `severity` `summaryJa` `tags` `deliveredTo` など）で、`[]` は
 履歴なし。表（日付・セクション/ソース・タイトル・要約）で答え、タイトルはすべて `url` へのリンクにする。使った
 絞り込みも書く。

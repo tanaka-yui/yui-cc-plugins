@@ -72,7 +72,7 @@ node "$PLUGIN/bin/dev-digest.ts" set-webhook --target global
 ```
 
    On macOS this opens a hidden input dialog for the user. Exit 4 with `fallback=clipboard` means no dialog was
-   possible. Tell the user to copy the Slack Incoming Webhook URL to the clipboard and run, in this session, with
+   possible (exit 4 without it, in clipboard mode, means the clipboard had nothing readable). Tell the user to copy the Slack Incoming Webhook URL to the clipboard and run, in this session, with
    the `!` prefix: `! ~/.dev-digest/bin/dev-digest set-webhook --target global --from-clipboard`. Wait for them
    to finish. Afterwards the URL is still on the clipboard: tell the user to clear it. Exit 1 means the input
    was cancelled or was not a Slack Incoming Webhook URL; nothing was saved.
@@ -168,8 +168,8 @@ node "$PLUGIN/bin/dev-digest.ts" search --q "<words>" --since <YYYY-MM-DD> --unt
 ```
 
 All flags are optional. `--section` takes a csv of `jvn|aws|gcp|x|devto|releases`; dates are in the configured time
-zone; `--limit` defaults to 50. Words of fewer than 3 characters cannot be matched by the full-text index: say
-so if the user's word is that short. The output is a JSON array of items (`title`, `url`, `sourceId`,
+zone; `--limit` defaults to 50. Terms under 3 characters use a substring match (title, summary, Japanese summary) instead of
+the full-text index; they still work. The output is a JSON array of items (`title`, `url`, `sourceId`,
 `publishedAt`, `severity`, `summaryJa`, `tags`, `deliveredTo`, ...); `[]` means no history. Answer with a table
 (date, section/source, title, summary) and make every title a link to its `url`. State the filters you used.
 
