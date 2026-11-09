@@ -13,6 +13,7 @@ const COMMANDS: Record<string, () => Promise<Command>> = {
   procedure: () => import('../lib/commands/procedure.ts'),
   publish: () => import('../lib/commands/publish.ts'),
   'set-webhook': () => import('../lib/commands/set-webhook.ts'),
+  'x-open': () => import('../lib/commands/x-open.ts'),
 }
 
 const NAME = 'dev-digest'

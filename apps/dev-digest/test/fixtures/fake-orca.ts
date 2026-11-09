@@ -3,6 +3,7 @@
 //   FAKE_ORCA_REPO_ADD=exists  repo add を「登録済み」の失敗にする（repo list で引き直す経路のため）
 //   FAKE_ORCA_REPO_PATH        repo list が返す登録済みの path
 //   FAKE_ORCA_NEW_ID           automations create が返す id（既定 auto-1）
+//   FAKE_ORCA_TAB=noid         tab create の応答から browserPageId を外す
 //   FAKE_ORCA_EDIT=gone|fail   automations edit を失敗させる。gone は automations list からも消す（Orca の GUI で消された）
 import { appendFileSync } from 'node:fs'
 
@@ -39,6 +40,8 @@ if (command === 'repo add') {
   if (process.env.FAKE_ORCA_EDIT === 'gone') fail('Automation not found.')
   else if (process.env.FAKE_ORCA_EDIT === 'fail') fail('runtime unavailable')
   else reply({ automation: { id: args[2] ?? '' } })
+} else if (command === 'tab create') {
+  reply(process.env.FAKE_ORCA_TAB === 'noid' ? { url: flag('--url') } : { browserPageId: 'page-1', url: flag('--url') })
 } else if (command === 'automations list') {
   reply({ automations: process.env.FAKE_ORCA_EDIT === 'gone' ? [] : [{ id: 'auto-1', name: 'dev-digest' }] })
 } else {

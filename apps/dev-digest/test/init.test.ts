@@ -1,7 +1,7 @@
 import { loadConfig } from '../lib/config.ts'
 import { homePaths } from '../lib/paths.ts'
 import { saveWebhook } from '../lib/secrets.ts'
-import { runCli, tempHome } from './helpers.ts'
+import { fakeOrca, orcaCalls, runCli, tempHome } from './helpers.ts'
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -15,7 +15,6 @@ after(() => {
 })
 
 const APP_ROOT = join(import.meta.dirname, '..')
-const FAKE_ORCA = join(import.meta.dirname, 'fixtures', 'fake-orca.ts')
 const URL_SECRET = 'https://hooks.slack.com/services/T0/B0/secret-tail'
 const INIT_ARGS = [
   'init',
@@ -42,30 +41,19 @@ const setup = (): Setup => {
   dirs.push(home, work)
   const claudeHome = join(work, 'claude')
   mkdirSync(claudeHome)
-  const orcaLog = join(work, 'orca.log')
-  const orca = join(work, 'orca')
-  writeFileSync(orca, `#!/bin/sh\nexec node "${FAKE_ORCA}" "$@"\n`, { mode: 0o755 })
+  const orca = fakeOrca(work)
   return {
     home,
     claudeHome,
-    orcaLog,
+    orcaLog: orca.FAKE_ORCA_LOG,
     env: {
+      ...orca,
       DEV_DIGEST_HOME: home,
       DEV_DIGEST_CLAUDE_HOME: claudeHome,
-      ORCA_BIN: orca,
-      FAKE_ORCA_LOG: orcaLog,
       FAKE_ORCA_REPO_PATH: homePaths(home).runDir,
     },
   }
 }
-
-const orcaCalls = (log: string): string[][] =>
-  existsSync(log)
-    ? readFileSync(log, 'utf8')
-        .split('\n')
-        .filter((line) => line !== '')
-        .map((line) => JSON.parse(line))
-    : []
 
 const flagValue = (args: string[], flag: string): string | undefined => args[args.indexOf(flag) + 1]
 
@@ -231,7 +219,7 @@ test('IN4 permissions --apply は既存の設定を保ち、重複を足さな�
     `Bash(${launcher} pending)`,
     `Bash(${launcher} ingest-x:*)`,
     `Bash(${launcher} publish:*)`,
-    'Bash(orca tab create --url https://x.com/:*)',
+    `Bash(${launcher} x-open:*)`,
     'Bash(orca tab close:*)',
     'Bash(orca snapshot:*)',
     'Bash(orca scroll:*)',
@@ -246,7 +234,10 @@ test('IN4 permissions --apply は既存の設定を保ち、重複を足さな�
     assert.ok(!allow.some((rule) => rule.startsWith(`Bash(${launcher} ${sub}`)), sub)
   }
   assert.ok(!allow.includes(`Bash(${launcher}:*)`))
-  assert.ok(!allow.some((rule) => /^Bash\(orca (goto|get|wait|tab:|tab list|tab switch|tab profile)/.test(rule)))
+  // tab create は x-open だけが設定から URL を組み立てて呼ぶ（接頭辞一致では後ろに別の --url を足せる）
+  assert.ok(
+    !allow.some((rule) => /^Bash\(orca (goto|get|wait|tab:|tab create|tab list|tab switch|tab profile)/.test(rule)),
+  )
   assert.ok(!allow.some((rule) => /^(Write|Edit)\(.*\*\*\)$/.test(rule)))
   assert.ok(allow.every((rule) => !rule.includes('///')))
 
@@ -270,9 +261,10 @@ test('IN5 procedure は置き換え後に {{ が残らない（init が置いた
   assert.ok(!result.stdout.includes('{{'), result.stdout)
   assert.ok(result.stdout.includes(`${paths.launcher} collect`))
   assert.ok(result.stdout.includes(`${paths.runDir}/digest.json`))
-  // URL は引用符なしで、シェルの特殊文字だけバックスラッシュでエスケープした形（allow の接頭辞に一致させる）
-  assert.ok(result.stdout.includes('orca tab create --url https://x.com/i/lists/1 --json'))
-  assert.ok(result.stdout.includes('orca tab create --url https://x.com/search\\?q=%23LLM\\&f=live --json'))
+  // X のタブは URL を渡さずに x-open で開く
+  assert.ok(result.stdout.includes(`${paths.launcher} x-open --target list`))
+  assert.ok(result.stdout.includes(`# #LLM\n${paths.launcher} x-open --target hashtag --index 1`))
+  assert.ok(!result.stdout.includes('orca tab create'))
   assert.ok(result.stdout.includes(`${paths.launcher} ingest-x --file ${paths.runDir}/x.json`))
   assert.ok(result.stdout.includes(`${paths.launcher} publish --file ${paths.runDir}/digest.json`))
   assert.ok(!result.stderr.includes('ランチャー'), result.stderr)

@@ -115,22 +115,17 @@ export const AUTOMATION_PROVIDER = 'claude'
 // 毎朝の手順（references/morning.md）が runDir に書くファイル。permission の Write / Edit はこの 2 つだけに許す
 export const X_FILE = 'x.json'
 export const DIGEST_FILE = 'digest.json'
-// 毎朝の Claude に許すランチャーのサブコマンド。EXACT は引数なし（ルールが完全一致）、WITH_ARGS は引数付き（接頭辞一致）。
+// 毎朝の Claude に許すランチャーのサブコマンド。EXACT は引数なし（ルールが完全一致）、ARG は引数付き（接頭辞一致）。
 // set-webhook / init / permissions は許さない（読んだ X の本文に仕込まれた指示で Webhook や設定を書き換えさせない）
 export const MORNING_EXACT_SUBCOMMANDS: readonly string[] = ['procedure', 'collect', 'pending']
-export const MORNING_ARG_SUBCOMMANDS: readonly string[] = ['ingest-x', 'publish']
-// X の URL。リストの URL はこれで始まるものだけ受け付け、tab create の allow もこの接頭辞に限る
+export const MORNING_ARG_SUBCOMMANDS: readonly string[] = ['ingest-x', 'publish', 'x-open']
+// 毎朝の Claude に許す Orca のブラウザ操作（`orca ` の後ろの接頭辞）。tab create は許さない — 接頭辞一致では後ろに
+// 別の --url を足して、ログイン済みのブラウザで任意の URL を開けてしまう。タブは x-open が設定の URL だけで開く
+export const ORCA_MORNING_COMMANDS: readonly string[] = ['tab close', 'snapshot', 'scroll']
+// X の URL。リストの URL はこれで始まるものだけ受け付ける
 export const X_URL_PREFIX = 'https://x.com/'
-// 毎朝の Claude に許す Orca のブラウザ操作（`orca ` の後ろの接頭辞）。goto / get / wait や tab の一覧・切り替えは許さない
-export const ORCA_MORNING_COMMANDS: readonly string[] = [
-  `tab create --url ${X_URL_PREFIX}`,
-  'tab close',
-  'snapshot',
-  'scroll',
-]
-// X のハッシュタグの最新順の検索。ハッシュタグを encodeURIComponent して後ろに付け、LIVE_SUFFIX で最新順にする
-export const X_SEARCH_URL = `${X_URL_PREFIX}search?q=`
-export const X_SEARCH_LIVE_SUFFIX = '&f=live'
+// X のハッシュタグの最新順の検索
+export const xHashtagSearchUrl = (tag: string): string => `${X_URL_PREFIX}search?q=${encodeURIComponent(tag)}&f=live`
 // X の id（Snowflake）から投稿時刻を求める: ms = (id >> 22) + 1288834974657（spec §13）
 export const SNOWFLAKE_SHIFT = 22n
 export const SNOWFLAKE_EPOCH_MS = 1288834974657n

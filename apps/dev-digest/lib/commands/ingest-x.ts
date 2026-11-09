@@ -60,7 +60,7 @@ const ingest = (db: Db, posts: Json[], now: string): number => {
   const items: FeedItem[] = []
   for (const post of posts) {
     const item = toItem(post)
-    if (item === null) log(NAME, '取り込めない投稿を飛ばしました（id / url / postedAt が不正）')
+    if (item === null) log(NAME, '取り込めない投稿を飛ばしました（id・url が無いか、postedAt も id も時刻にならない）')
     else items.push(item)
   }
   return ingestFeed(db, X_SOURCE, items, now).added

@@ -1,7 +1,7 @@
 import { type Config, saveConfig } from '../lib/config.ts'
 
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, realpathSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +12,24 @@ export type TestServer = { url: string; requests: RecordedRequest[]; close(): Pr
 export type CliResult = { code: number; stdout: string; stderr: string }
 
 const BIN = join(import.meta.dirname, '..', 'bin', 'dev-digest.ts')
+const FAKE_ORCA = join(import.meta.dirname, 'fixtures', 'fake-orca.ts')
+
+// 偽の orca を dir に置き、ORCA_BIN と呼び出しの記録先を返す。ORCA_BIN は 1 つの実行ファイルしか取らないので
+// `node <fake-orca.ts>` を sh の wrapper で包む
+export const fakeOrca = (dir: string): { ORCA_BIN: string; FAKE_ORCA_LOG: string } => {
+  const orca = join(dir, 'orca')
+  writeFileSync(orca, `#!/bin/sh\nexec node "${FAKE_ORCA}" "$@"\n`, { mode: 0o755 })
+  return { ORCA_BIN: orca, FAKE_ORCA_LOG: join(dir, 'orca.log') }
+}
+
+// 偽の orca が受け取った argv（1 回 1 配列）
+export const orcaCalls = (log: string): string[][] =>
+  existsSync(log)
+    ? readFileSync(log, 'utf8')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => JSON.parse(line))
+    : []
 
 export const tempHome = (): string => realpathSync(mkdtempSync(join(tmpdir(), 'dev-digest-test-')))
 

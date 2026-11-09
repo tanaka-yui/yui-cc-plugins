@@ -304,21 +304,34 @@ test('CO10 X の初回に 24 時間より古い投稿があっても送らない
   )
 })
 
-test('CO11 ingest-x は postedAt が無い投稿の時刻を数字の id（Snowflake）から求める', () => {
+test('CO11 ingest-x は postedAt が無いか読めない投稿の時刻を数字の id（Snowflake）から求める', () => {
   const home = tempHome()
   homes.push(home)
   const now = '2026-11-09T12:00:00.000Z'
   const file = join(home, 'x.json')
-  const id = '2119757882736668924'
-  writeFileSync(file, JSON.stringify({ posts: [{ id, url: `https://x.com/u/status/${id}`, author: 'u', text: 'hi' }] }))
+  // 同じ時刻の 2 件: postedAt が無いものと、postedAt が読めないもの（下位ビットだけ違う id）
+  const missing = '2119757882736668924'
+  const invalid = '2119757882736668925'
+  writeFileSync(
+    file,
+    JSON.stringify({
+      posts: [
+        { id: missing, url: `https://x.com/u/status/${missing}`, author: 'u', text: 'hi' },
+        xPost(invalid, 'not a date'),
+      ],
+    }),
+  )
   const result = runCli(['ingest-x', '--file', file, '--now', now], { DEV_DIGEST_HOME: home })
   assert.equal(result.code, 0, result.stderr)
-  assert.equal(result.stdout, 'new=1\n')
+  assert.equal(result.stdout, 'new=2\n')
   const handle = openDb(homePaths(home).db)
-  const stored = handle.prepare("SELECT published_at FROM items WHERE source_id = 'x'").all()
+  const stored = handle.prepare("SELECT guid, published_at FROM items WHERE source_id = 'x' ORDER BY guid").all()
   handle.close()
   assert.deepEqual(
-    stored.map((row) => row.published_at),
-    ['2026-11-09T11:43:57.098Z'],
+    stored.map((row) => [row.guid, row.published_at]),
+    [
+      [missing, '2026-11-09T11:43:57.098Z'],
+      [invalid, '2026-11-09T11:43:57.098Z'],
+    ],
   )
 })
