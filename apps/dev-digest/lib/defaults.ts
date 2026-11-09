@@ -120,3 +120,8 @@ export const releasesFeed = (github: string): FeedSource => ({
   trackUpdates: false,
   scope: 'repo',
 })
+
+// set-webhook のダイアログに出す文言。`{target}` を対象（global か owner/repo）に置き換える
+export const WEBHOOK_PROMPT_TEMPLATE = '[{target}] の Slack Incoming Webhook URL を貼り付けてください'
+export const WEBHOOK_DIALOG_TITLE = 'dev-digest'
+export const GLOBAL_TARGET = 'global'

@@ -8,6 +8,7 @@ const COMMANDS: Record<string, () => Promise<Command>> = {
   'ingest-x': () => import('../lib/commands/ingest-x.ts'),
   pending: () => import('../lib/commands/pending.ts'),
   publish: () => import('../lib/commands/publish.ts'),
+  'set-webhook': () => import('../lib/commands/set-webhook.ts'),
 }
 
 const NAME = 'dev-digest'
