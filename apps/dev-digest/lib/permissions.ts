@@ -14,7 +14,7 @@ import { CLAUDE_DIRNAME, claudeHome, homePaths } from './paths.ts'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import type { JsonObject } from './json.ts'
+import type { Json, JsonObject } from './json.ts'
 
 export type ProposedRules = {
   project: { file: string; allow: string[] }
@@ -59,23 +59,46 @@ const readSettings = (file: string): JsonObject => {
   return root
 }
 
-// permissions[key] に無いものだけ足し、足した数を返す。ほかのキーと既存のルールの順は保つ
-export const applyRules = (file: string, key: 'allow' | 'deny', rules: string[]): number => {
+type RuleKey = 'allow' | 'deny'
+
+// permissions と permissions[key] を形を確かめて取り出す。形が違えば書き換えずに投げる
+const readRules = (file: string, key: RuleKey): { root: JsonObject; permissions: JsonObject; current: Json[] } => {
   const root = readSettings(file)
   const permissions = root.permissions === undefined ? {} : asObject(root.permissions)
   if (permissions === null) throw new Error(`permissions がオブジェクトではありません: ${file}`)
   const current = permissions[key] === undefined ? [] : asArray(permissions[key])
   if (current === null) throw new Error(`permissions.${key} が配列ではありません: ${file}`)
-  const missing = rules.filter((rule) => !current.includes(rule))
-  if (missing.length === 0) return 0
-  root.permissions = { ...permissions, [key]: [...current, ...missing] }
+  return { root, permissions, current }
+}
 
-  // 一時ファイルに書いてから rename する。既存ファイルの権限は保つ
+// 一時ファイルに書いてから rename する。既存ファイルの権限は保つ
+const writeSettings = (file: string, root: JsonObject): void => {
   const mode = existsSync(file) ? statSync(file).mode & MODE_BITS : SETTINGS_FILE_MODE
   mkdirSync(dirname(file), { recursive: true })
   const temp = `${file}.${process.pid}.tmp`
   rmSync(temp, { force: true })
   writeFileSync(temp, `${JSON.stringify(root, null, 2)}\n`, { mode, flag: 'wx' })
   renameSync(temp, file)
+}
+
+// permissions[key] に無いものだけ足し、足した数を返す。ほかのキーと既存のルールの順は保つ（user の設定に使う）
+export const applyRules = (file: string, key: RuleKey, rules: string[]): number => {
+  const { root, permissions, current } = readRules(file, key)
+  const missing = rules.filter((rule) => !current.includes(rule))
+  if (missing.length === 0) return 0
+  root.permissions = { ...permissions, [key]: [...current, ...missing] }
+  writeSettings(file, root)
   return missing.length
+}
+
+// permissions[key] を rules ちょうどに置き換え、置いた数を返す。ほかのキーと permissions のほかの欄は保つ。
+// 作業フォルダの設定は dev-digest のものなので、前の版が足した広い許可（Bash(<launcher>:*) など）を残さない
+export const replaceRules = (file: string, key: RuleKey, rules: string[]): number => {
+  const { root, permissions, current } = readRules(file, key)
+  const same = current.length === rules.length && rules.every((rule, index) => current[index] === rule)
+  if (!same) {
+    root.permissions = { ...permissions, [key]: [...rules] }
+    writeSettings(file, root)
+  }
+  return rules.length
 }

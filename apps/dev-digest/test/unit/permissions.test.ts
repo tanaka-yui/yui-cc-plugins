@@ -1,4 +1,4 @@
-import { applyRules } from '../../lib/permissions.ts'
+import { applyRules, replaceRules } from '../../lib/permissions.ts'
 import { tempHome } from '../helpers.ts'
 
 import assert from 'node:assert/strict'
@@ -39,4 +39,15 @@ test('PM4 applyRules はファイルが無ければ作る', () => {
   const file = join(dir, 'nested', 'settings.json')
   assert.equal(applyRules(file, 'allow', ['Bash(a)', 'Bash(b)']), 2)
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { permissions: { allow: ['Bash(a)', 'Bash(b)'] } })
+})
+
+test('PM6 replaceRules も読めない設定や形の違う permissions を上書きしない', () => {
+  for (const content of ['{', JSON.stringify({ permissions: [] }), JSON.stringify({ permissions: { allow: 'x' } })]) {
+    const dir = tempHome()
+    dirs.push(dir)
+    const file = join(dir, 'settings.json')
+    writeFileSync(file, content)
+    assert.throws(() => replaceRules(file, 'allow', ['Bash(a)']))
+    assert.equal(readFileSync(file, 'utf8'), content)
+  }
 })

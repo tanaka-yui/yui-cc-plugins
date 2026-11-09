@@ -44,7 +44,7 @@ const parseTrigger = (value: string): Config['schedule']['trigger'] =>
     ? value
     : die(NAME, `--trigger は daily か weekdays にしてください: ${value}`)
 
-// 毎朝の Claude に許す tab create は x.com の URL だけなので、リストもそこに限る
+// リストは毎朝 x-open が設定の URL のまま開くので、x.com の URL に限る（x-open も開く前に同じ接頭辞を確かめる）
 const parseListUrl = (value: string): string | null => {
   if (value === NONE_VALUE) return null
   return value.startsWith(X_URL_PREFIX) && URL.canParse(value)

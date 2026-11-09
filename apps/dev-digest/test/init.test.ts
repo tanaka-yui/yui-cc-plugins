@@ -188,13 +188,16 @@ test('IN3 automation のプロンプトに secrets も Webhook も含まない',
   assert.ok(!prompt.includes('~/.dev-digest'), prompt)
 })
 
-test('IN4 permissions --apply は既存の設定を保ち、重複を足さない', () => {
+test('IN4 permissions --apply は作業フォルダの allow を作り直し、user の設定には足すだけ', () => {
   const { home, claudeHome, env } = setup()
   const paths = homePaths(home)
   const projectFile = join(paths.runDir, '.claude', 'settings.json')
   const userFile = join(claudeHome, 'settings.json')
   mkdirSync(join(paths.runDir, '.claude'), { recursive: true })
-  writeFileSync(projectFile, JSON.stringify({ permissions: { allow: ['Bash(ls:*)'] }, env: { A: '1' } }))
+  writeFileSync(
+    projectFile,
+    JSON.stringify({ permissions: { allow: ['Bash(ls:*)'], deny: ['Bash(rm:*)'] }, env: { A: '1' } }),
+  )
   writeFileSync(userFile, JSON.stringify({ theme: 'dark', permissions: { deny: ['Read(./.env)'] } }), { mode: 0o600 })
 
   const shown = runCli(['permissions', '--show'], env)
@@ -202,18 +205,21 @@ test('IN4 permissions --apply は既存の設定を保ち、重複を足さな�
   assert.ok(shown.stdout.includes(projectFile))
   assert.ok(shown.stdout.includes(userFile))
   assert.ok(shown.stdout.includes(`Read(/${paths.secrets})`))
+  assert.match(shown.stdout, /^project=\S+ mode=replace$/m)
+  assert.match(shown.stdout, /^user=\S+ mode=add$/m)
 
   const first = runCli(['permissions', '--apply'], env)
   assert.equal(first.code, 0, first.stderr)
-  assert.match(first.stdout, /^added project=14 user=2$/m)
+  assert.match(first.stdout, /^replaced project=14 added user=2$/m)
 
   const project = JSON.parse(readFileSync(projectFile, 'utf8'))
+  // allow 以外のキーと、allow 以外の permissions は残す
   assert.deepEqual(project.env, { A: '1' })
+  assert.deepEqual(project.permissions.deny, ['Bash(rm:*)'])
   const launcher = paths.launcher
   const runDir = `/${paths.runDir}`
-  // 無人の実行に許すのは手順が使う操作だけ
+  // 無人の実行に許すのは手順が使う操作だけ（作業フォルダの設定は dev-digest のもの。前からある allow は残さない）
   assert.deepEqual(project.permissions.allow, [
-    'Bash(ls:*)',
     `Bash(${launcher} procedure)`,
     `Bash(${launcher} collect)`,
     `Bash(${launcher} pending)`,
@@ -248,7 +254,41 @@ test('IN4 permissions --apply は既存の設定を保ち、重複を足さな�
 
   const second = runCli(['permissions', '--apply'], env)
   assert.equal(second.code, 0, second.stderr)
-  assert.match(second.stdout, /^added project=0 user=0$/m)
+  assert.match(second.stdout, /^replaced project=14 added user=0$/m)
+})
+
+test('PM5 permissions --apply は前の版が足した広い許可を作業フォルダの設定から消す', () => {
+  const { home, claudeHome, env } = setup()
+  const paths = homePaths(home)
+  const projectFile = join(paths.runDir, '.claude', 'settings.json')
+  const userFile = join(claudeHome, 'settings.json')
+  const obsolete = [
+    'Bash(orca tab create --url https://x.com/:*)',
+    `Bash(${paths.launcher}:*)`,
+    `Write(/${paths.runDir}/**)`,
+  ]
+  mkdirSync(join(paths.runDir, '.claude'), { recursive: true })
+  writeFileSync(projectFile, JSON.stringify({ model: 'opus', permissions: { allow: obsolete } }))
+  const userRules = ['Bash(git status:*)', ...obsolete]
+  writeFileSync(userFile, JSON.stringify({ permissions: { allow: userRules, deny: ['Read(./.env)'] } }))
+
+  const result = runCli(['permissions', '--apply'], env)
+  assert.equal(result.code, 0, result.stderr)
+  assert.match(result.stdout, /^replaced project=14 added user=2$/m)
+
+  const proposed = runCli(['permissions', '--show'], env)
+    .stdout.split('\n')
+    .filter((line) => line.startsWith('  allow '))
+    .map((line) => line.slice('  allow '.length))
+  const project = JSON.parse(readFileSync(projectFile, 'utf8'))
+  assert.equal(project.model, 'opus')
+  assert.deepEqual(project.permissions.allow, proposed)
+  for (const rule of obsolete) assert.ok(!project.permissions.allow.includes(rule), rule)
+
+  // user の設定のルールは消さない（deny を足すだけ）
+  const user = JSON.parse(readFileSync(userFile, 'utf8'))
+  assert.deepEqual(user.permissions.allow, userRules)
+  assert.deepEqual(user.permissions.deny, ['Read(./.env)', `Read(/${paths.secrets})`, `Edit(/${paths.secrets})`])
 })
 
 test('IN5 procedure は置き換え後に {{ が残らない（init が置いたランチャー経由）', () => {
