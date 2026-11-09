@@ -12,6 +12,8 @@ const COMMANDS: Record<string, () => Promise<Command>> = {
   permissions: () => import('../lib/commands/permissions.ts'),
   procedure: () => import('../lib/commands/procedure.ts'),
   publish: () => import('../lib/commands/publish.ts'),
+  repo: () => import('../lib/commands/repo.ts'),
+  search: () => import('../lib/commands/search.ts'),
   'set-webhook': () => import('../lib/commands/set-webhook.ts'),
   'x-open': () => import('../lib/commands/x-open.ts'),
 }

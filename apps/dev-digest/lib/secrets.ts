@@ -39,10 +39,7 @@ export const loadSecrets = (file: string): Secrets => {
 }
 
 // 一時ファイルに 0600 で書いてから rename する。既存ファイルの権限も締め直す
-export const saveWebhook = (file: string, target: 'global' | string, url: string): void => {
-  const current = loadSecrets(file)
-  const next: Secrets =
-    target === 'global' ? { ...current, global: url } : { ...current, repos: { ...current.repos, [target]: url } }
+const writeSecrets = (file: string, next: Secrets): void => {
   const dir = dirname(file)
   mkdirSync(dir, { recursive: true, mode: SECRET_DIR_MODE })
   chmodSync(dir, SECRET_DIR_MODE)
@@ -53,6 +50,23 @@ export const saveWebhook = (file: string, target: 'global' | string, url: string
   chmodSync(temp, SECRET_FILE_MODE)
   renameSync(temp, file)
   chmodSync(file, SECRET_FILE_MODE)
+}
+
+export const saveWebhook = (file: string, target: 'global' | string, url: string): void => {
+  const current = loadSecrets(file)
+  writeSecrets(
+    file,
+    target === 'global' ? { ...current, global: url } : { ...current, repos: { ...current.repos, [target]: url } },
+  )
+}
+
+// リポジトリ専用の Webhook を消す。無ければ何も書かず false
+export const removeRepoWebhook = (file: string, slug: string): boolean => {
+  const current = loadSecrets(file)
+  if (!Object.hasOwn(current.repos, slug)) return false
+  const { [slug]: _removed, ...rest } = current.repos
+  writeSecrets(file, { ...current, repos: rest })
+  return true
 }
 
 const knownUrls = (secrets: Secrets): string[] =>
