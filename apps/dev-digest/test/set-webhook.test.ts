@@ -5,7 +5,7 @@ import { tempHome, writeConfig } from './helpers.ts'
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 
@@ -123,4 +123,72 @@ test('SW8 クリップボードが読めなければ exit 4', () => {
     '',
   )
   assert.equal(result.code, 4)
+})
+
+// ダイアログ経路: 既定の方式が dialog になるのは darwin だけなので darwin でだけ走らせる
+const dialogTest = process.platform === 'darwin' ? test : test.skip
+const PROMPT = '[global] の Slack Incoming Webhook URL を貼り付けてください'
+
+// 本物の osascript の代わりに PATH に置く。動きは環境変数で決める
+const FAKE_OSASCRIPT = `#!/bin/sh
+case "$FAKE_MODE" in
+  cancel) echo 'execution error: User canceled. (-128)' >&2; exit 1 ;;
+  error) echo 'execution error: boom (-1)' >&2; exit 1 ;;
+  ok) for a in "$@"; do printf '%s\\n' "$a"; done > "$FAKE_ARGV"; printf '%s\\n' "$FAKE_URL" ;;
+esac
+`
+const fakeDialog = (home: string): string => {
+  const bin = join(home, 'dialogbin')
+  mkdirSync(bin)
+  const file = join(bin, 'osascript')
+  writeFileSync(file, FAKE_OSASCRIPT)
+  chmodSync(file, 0o755)
+  return bin
+}
+
+dialogTest('SW9 ダイアログのキャンセルは exit 1 で何も保存しない', () => {
+  const { home, env } = setup()
+  const bin = fakeDialog(home)
+  const result = runWith(['set-webhook', '--target', 'global'], { ...env, PATH: bin, FAKE_MODE: 'cancel' }, '')
+  assert.equal(result.code, 1)
+  assert.ok(!existsSync(homePaths(home).secrets))
+})
+
+dialogTest('SW10 osascript の別のエラーは exit 4 と fallback=clipboard', () => {
+  const { home, env } = setup()
+  const bin = fakeDialog(home)
+  const result = runWith(['set-webhook', '--target', 'global'], { ...env, PATH: bin, FAKE_MODE: 'error' }, '')
+  assert.equal(result.code, 4)
+  assert.match(result.stdout, /fallback=clipboard/)
+  assert.ok(!existsSync(homePaths(home).secrets))
+})
+
+dialogTest('SW11 osascript が無ければ exit 4 と fallback=clipboard', () => {
+  const { home, env } = setup()
+  const bin = join(home, 'nobin')
+  mkdirSync(bin)
+  const result = runWith(['set-webhook', '--target', 'global'], { ...env, PATH: bin }, '')
+  assert.equal(result.code, 4)
+  assert.match(result.stdout, /fallback=clipboard/)
+})
+
+dialogTest('SW12 成功時は値を argv に載せず、プロンプトは -- の次に渡す', () => {
+  const { home, env } = setup()
+  const bin = fakeDialog(home)
+  const argvFile = join(home, 'argv.txt')
+  const result = runWith(
+    ['set-webhook', '--target', 'global'],
+    { ...env, PATH: bin, FAKE_MODE: 'ok', FAKE_ARGV: argvFile, FAKE_URL: URL_OK },
+    '',
+  )
+  assert.equal(result.code, 0)
+  assert.equal(loadSecrets(homePaths(home).secrets).global, URL_OK)
+  const dump = readFileSync(argvFile, 'utf8')
+  assert.ok(!dump.includes('B0/xyz'))
+  const argv = dump.split('\n')
+  const at = argv.indexOf('--')
+  assert.ok(at >= 0)
+  assert.equal(argv[at + 1], PROMPT)
+  assert.ok(!result.stdout.includes('B0/xyz'))
+  assert.match(result.stdout, /saved target=global url=https:\/\/hooks\.slack\.com\/services\/T\*\*\*/)
 })

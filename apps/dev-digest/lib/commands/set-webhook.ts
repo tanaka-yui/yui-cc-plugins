@@ -25,7 +25,7 @@ export const run = (argv: string[]): void => {
 
   const home = digestHome()
   if (target !== GLOBAL_TARGET && !loadRepos(home).some((repo) => repo.slug === target))
-    die(NAME, `登録されていないリポジトリです: ${target}`)
+    die(NAME, '--target は global か登録済みのリポジトリの slug を指定してください')
 
   const mode: InputMode = values['from-stdin']
     ? 'stdin'

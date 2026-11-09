@@ -9,7 +9,7 @@ export type InputMode = 'dialog' | 'clipboard' | 'stdin'
 export type SecretResult = { kind: 'value'; value: string } | { kind: 'cancelled' } | { kind: 'unavailable' }
 
 const UNAVAILABLE: SecretResult = { kind: 'unavailable' }
-const OSASCRIPT_CANCEL_CODE = '-128'
+const OSASCRIPT_CANCEL_PATTERN = /\(-128\)/
 const WSL_MARKER = 'microsoft'
 const PROC_VERSION = '/proc/version'
 
@@ -40,10 +40,10 @@ export const isWsl = (): boolean => {
 }
 
 // 標準入力は無視し、出力だけを受け取る。失敗したら null
-const capture = (command: string, args: readonly string[]): { stdout: string; stderr: string } | null => {
+const capture = (command: string, args: readonly string[]): { stdout: string } | null => {
   const result = spawnSync(command, [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   if (result.error !== undefined || result.status !== 0) return null
-  return { stdout: result.stdout, stderr: result.stderr }
+  return { stdout: result.stdout }
 }
 
 const fromValue = (text: string): SecretResult => ({ kind: 'value', value: text.replace(/[\r\n]+$/, '').trim() })
@@ -57,7 +57,7 @@ const readDialog = (prompt: string): SecretResult => {
   if (result.error !== undefined) return UNAVAILABLE
   if (result.status === 0) return fromValue(result.stdout)
   // ユーザーのキャンセルは AppleScript のエラー -128 で終わる
-  return result.stderr.includes(OSASCRIPT_CANCEL_CODE) ? { kind: 'cancelled' } : UNAVAILABLE
+  return OSASCRIPT_CANCEL_PATTERN.test(result.stderr) ? { kind: 'cancelled' } : UNAVAILABLE
 }
 
 const readClipboard = (): SecretResult => {
