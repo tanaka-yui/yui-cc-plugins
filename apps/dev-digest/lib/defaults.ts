@@ -102,6 +102,20 @@ export const FETCH_TIMEOUT_MS = 20000
 export const X_MAX_POSTS_LIST = 50
 export const X_MAX_POSTS_PER_HASHTAG = 20
 export const LAUNCHER_VERSION = 1
+// ランチャーが子に自分の版を渡す環境変数。bin/dev-digest.ts が LAUNCHER_VERSION と比べる
+export const LAUNCHER_VERSION_ENV = 'DEV_DIGEST_LAUNCHER_VERSION'
+// テスト専用: 設定されていれば ~/.claude の代わりに使う（user の settings.json と installed_plugins.json の場所）
+export const CLAUDE_HOME_ENV = 'DEV_DIGEST_CLAUDE_HOME'
+export const LAUNCHER_FILE_MODE = 0o755
+
+// ORCA_BIN と ORCA_CLI_COMMAND が無いときに呼ぶ Orca CLI
+export const ORCA_DEFAULT_BIN = 'orca'
+export const AUTOMATION_PROVIDER = 'claude'
+// 毎朝の Claude が X を読むのに使う Orca のブラウザ系サブコマンド（spec §13）。permission の allow に足す
+export const ORCA_BROWSER_SUBCOMMANDS: readonly string[] = ['tab', 'snapshot', 'scroll', 'goto', 'wait', 'get']
+// X のハッシュタグの最新順の検索。ハッシュタグを encodeURIComponent して後ろに付け、LIVE_SUFFIX で最新順にする
+export const X_SEARCH_URL = 'https://x.com/search?q='
+export const X_SEARCH_LIVE_SUFFIX = '&f=live'
 
 export const devtoTagFeed = (tag: string): FeedSource => ({
   id: `devto-tag:${tag}`,
