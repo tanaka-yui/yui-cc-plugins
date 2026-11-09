@@ -170,6 +170,30 @@ test('SL9 http / https 以外の URL はリンクにしない', () => {
   assert.ok(text.includes('title1（要約なし）') && text.includes('title3'))
 })
 
+test('SL11 要約・タイトルの中の URL らしき文字列は自動リンクにならない', () => {
+  const injected = '詳しくは https://evil.example/x と www.evil.example 、evil.example/login を見て'
+  const items = [
+    entry(1, 'aws', { title: `T1 https://evil.example/t` }),
+    entry(2, 'aws', { url: 'javascript:alert(1)', title: 'see evil.example/z' }),
+    entry(3, 'aws'),
+    entry(4, 'aws'),
+  ]
+  const digest = digestOf({
+    notes: [{ id: 3, summaryJa: injected, tags: [] }],
+    groups: [{ key: 'g', titleJa: 'G http://evil.example', summaryJa: injected, itemIds: [4] }],
+  })
+  const text = renderGlobal(pendingOf(items), digest, '11/9').join('\n')
+  // プログラムが組み立てたリンク以外に、URL・ドメインとして読める並びが残らない
+  const outsideLinks = text.replace(/<https?:\/\/[^|>]*\|[^>]*>/g, '')
+  assert.ok(!/https?:\/\//.test(outsideLinks), outsideLinks)
+  assert.ok(!/www\./i.test(outsideLinks))
+  assert.ok(!/evil\.example/.test(outsideLinks))
+  // 正規のリンクは残る
+  assert.ok(text.includes('<https://example.com/3|title3>'))
+  // 見た目の文字は変わらない（幅ゼロの文字を除けば元の文と同じ）
+  assert.ok(text.replaceAll('​', '').includes(injected))
+})
+
 test('SL10 WEBHOOK_OVERRIDE はループバックのときだけ効く', () => {
   const url = 'https://hooks.slack.com/services/T0/B0/xyz'
   const saved = process.env.DEV_DIGEST_WEBHOOK_OVERRIDE

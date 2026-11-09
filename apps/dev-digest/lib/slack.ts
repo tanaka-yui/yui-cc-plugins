@@ -1,4 +1,4 @@
-import { DEFAULT_TIMEZONE, FETCH_TIMEOUT_MS, LOOPBACK_HOSTS, WEBHOOK_OVERRIDE_ENV } from './defaults.ts'
+import { AUTOLINK_BREAK, DEFAULT_TIMEZONE, FETCH_TIMEOUT_MS, LOOPBACK_HOSTS, WEBHOOK_OVERRIDE_ENV } from './defaults.ts'
 
 import type { Section } from './config.ts'
 import type { DigestFile, DigestGroup } from './digest.ts'
@@ -30,6 +30,13 @@ const sectionTitle = (section: Section, jvnMin: Severity | null): string => {
 export const escapeMrkdwn = (text: string): string =>
   text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 
+// リンクの外に出す自由文（AI の要約・外部のタイトルなど）。Slack は URL やドメインらしき並びを自動でリンクにするので、
+// `://` と「英数字.英字 2 文字以上」の間に幅ゼロの文字を挟んで止める。リンクはプログラムが組み立てた url からしか出さない
+const plainText = (text: string): string =>
+  escapeMrkdwn(text)
+    .replaceAll('://', `:${AUTOLINK_BREAK}//`)
+    .replaceAll(/([A-Za-z0-9])\.(?=[A-Za-z]{2,})/g, `$1${AUTOLINK_BREAK}.`)
+
 const linkTarget = (url: string): string =>
   url.replaceAll('<', '%3C').replaceAll('>', '%3E').replaceAll('|', '%7C').replaceAll(/\s/g, '%20')
 
@@ -45,7 +52,7 @@ const isHttpUrl = (url: string): boolean => {
 
 // 外部由来の URL は必ずここを通す。リンクにできなければエスケープしたラベルだけを返す
 const link = (url: string, label: string): string =>
-  isHttpUrl(url) ? `<${linkTarget(url)}|${escapeMrkdwn(label)}>` : escapeMrkdwn(label)
+  isHttpUrl(url) ? `<${linkTarget(url)}|${escapeMrkdwn(label)}>` : plainText(label)
 
 // ISO 時刻を、指定タイムゾーンの M/D にする
 export const formatMonthDay = (iso: string, timeZone: string = DEFAULT_TIMEZONE): string => {
@@ -98,14 +105,14 @@ const renderBody = (
     const cvss = item.section === 'jvn' && item.severity !== null ? ` [CVSS ${item.severity}]` : ''
     const summary = notes.get(item.id)
     if (summary === undefined) {
-      const head = `• ${mark}${escapeMrkdwn(item.title)}（要約なし）${cvss}`
+      const head = `• ${mark}${plainText(item.title)}（要約なし）${cvss}`
       return isHttpUrl(item.url) ? [head, `  ${link(item.url, linkTarget(item.url))}`] : [head]
     }
-    return [`• ${mark}${link(item.url, item.title)}${cvss} — ${escapeMrkdwn(summary)}`]
+    return [`• ${mark}${link(item.url, item.title)}${cvss} — ${plainText(summary)}`]
   }
 
   const groupLines = ({ group, found }: PlacedGroup): string[] => {
-    const out = [`• ${escapeMrkdwn(group.titleJa)} — ${escapeMrkdwn(group.summaryJa)}`]
+    const out = [`• ${plainText(group.titleJa)} — ${plainText(group.summaryJa)}`]
     for (const item of found.filter((entry) => entry.section !== 'x')) out.push(`  ${link(item.url, item.title)}`)
     const posts = found.filter((entry) => entry.section === 'x')
     // 送信済みにする投稿はすべてリンクを載せる（spec §9）
@@ -146,7 +153,7 @@ export const renderGlobal = (
   lines.push(`☀️ ${date} 開発速報（全体・${body.count} 件）`, ...body.lines)
   if (pending.failures.length > 0) lines.push('')
   for (const failure of pending.failures) {
-    lines.push(`⚠️ 取得できなかったソース: ${escapeMrkdwn(failure.sourceId)}（${escapeMrkdwn(failure.reason)}）`)
+    lines.push(`⚠️ 取得できなかったソース: ${plainText(failure.sourceId)}（${plainText(failure.reason)}）`)
   }
   return lines
 }
@@ -171,7 +178,7 @@ export const renderRepo = (
   if (repo === undefined) return null
   const body = renderBody(pending, digest, new Set(repoItemIds(pending, digest, slug)), options.jvnMin ?? null)
   if (body.count === 0) return null
-  return [`📦 [${escapeMrkdwn(repo.displayName)}] 関連（${body.count} 件）`, ...body.lines]
+  return [`📦 [${plainText(repo.displayName)}] 関連（${body.count} 件）`, ...body.lines]
 }
 
 const continuation = (k: number, n: number): string => `（続き ${k}/${n}）`

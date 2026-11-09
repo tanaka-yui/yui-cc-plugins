@@ -91,6 +91,8 @@ export const FEED_BASE_ENV = 'DEV_DIGEST_FEED_BASE'
 export const WEBHOOK_OVERRIDE_ENV = 'DEV_DIGEST_WEBHOOK_OVERRIDE'
 // 上の差し替えを受け付ける host（URL.hostname の形）
 export const LOOPBACK_HOSTS: readonly string[] = ['127.0.0.1', '[::1]', 'localhost']
+// Slack の自動リンクを止めるために、自由文の URL・ドメインらしき並びに挟む幅ゼロの文字
+export const AUTOLINK_BREAK = '​'
 export const SECRET_DIR_MODE = 0o700
 export const SECRET_FILE_MODE = 0o600
 export const X_TITLE_CHARS = 80
