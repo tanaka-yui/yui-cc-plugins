@@ -28,6 +28,7 @@ const pendingOf = (items: PendingEntry[], overrides: Partial<PendingFile> = {}):
   previousIncomplete: null,
   items,
   globalIds: items.map((i) => i.id),
+  filtered: [],
   repos: [],
   failures: [],
   ...overrides,
@@ -70,7 +71,9 @@ test('SL2 group は公式ソースのセクションに置かれ、X の言及�
   assert.ok(text.indexOf('まとめ') > text.indexOf('☁️ AWS'))
   assert.ok(!text.includes('🤖 X'))
   assert.equal(text.match(/言及:/g)?.length, 1)
-  assert.ok(text.includes('ほか 1 人'))
+  // 投稿はすべて自分のリンクで載る（「ほか n 人」に畳まない）
+  assert.ok(text.includes('言及: <https://example.com/2|@a>, <https://example.com/3|@b>, <https://example.com/4|@c>'))
+  assert.ok(!text.includes('ほか'))
   assert.ok(!text.includes('title2'))
 })
 
@@ -127,6 +130,7 @@ test('SL7 renderRepo は選択 ∪ ownIds を出し、0 件は null', () => {
         watch: { languages: [], packages: [], cloudServices: [], keywords: [] },
         candidateIds: [1, 2],
         ownIds: [3],
+        filtered: [],
       },
     ],
   })

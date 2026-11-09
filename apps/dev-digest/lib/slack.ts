@@ -8,7 +8,6 @@ import type { Severity } from './severity.ts'
 const SECTION_ORDER: readonly Section[] = ['jvn', 'aws', 'gcp', 'releases', 'x', 'devto']
 // group の置き場所の優先順位（公式ソース）。無ければ x、それも無ければ devto
 const OFFICIAL_SECTIONS: readonly Section[] = ['jvn', 'aws', 'gcp', 'releases']
-const MENTION_NAMES = 2
 const ELLIPSIS = '…'
 
 const sectionTitle = (section: Section, jvnMin: Severity | null): string => {
@@ -109,12 +108,10 @@ const renderBody = (
     const out = [`• ${escapeMrkdwn(group.titleJa)} — ${escapeMrkdwn(group.summaryJa)}`]
     for (const item of found.filter((entry) => entry.section !== 'x')) out.push(`  ${link(item.url, item.title)}`)
     const posts = found.filter((entry) => entry.section === 'x')
+    // 送信済みにする投稿はすべてリンクを載せる（spec §9）
     if (posts.length > 0) {
-      const shown = posts
-        .slice(0, MENTION_NAMES)
-        .map((post) => link(post.url, `@${(post.author ?? '?').replace(/^@/, '')}`))
-      const rest = posts.length - shown.length
-      out.push(`  言及: ${shown.join(', ')}${rest > 0 ? ` ほか ${rest} 人` : ''}`)
+      const mentions = posts.map((post) => link(post.url, `@${(post.author ?? '?').replace(/^@/, '')}`))
+      out.push(`  言及: ${mentions.join(', ')}`)
     }
     return out
   }

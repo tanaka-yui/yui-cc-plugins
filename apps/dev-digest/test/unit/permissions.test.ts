@@ -47,7 +47,18 @@ test('PM6 replaceRules も読めない設定や形の違う permissions を上�
     dirs.push(dir)
     const file = join(dir, 'settings.json')
     writeFileSync(file, content)
-    assert.throws(() => replaceRules(file, 'allow', ['Bash(a)']))
+    assert.throws(() => replaceRules(file, 'allow', ['Bash(a)'], 'dontAsk'))
     assert.equal(readFileSync(file, 'utf8'), content)
   }
+})
+
+test('PM7 replaceRules は allow が同じでもモードが違えば書き直す', () => {
+  const dir = tempHome()
+  dirs.push(dir)
+  const file = join(dir, 'settings.json')
+  writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash(a)'] } }))
+  assert.equal(replaceRules(file, 'allow', ['Bash(a)'], 'dontAsk'), 1)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {
+    permissions: { allow: ['Bash(a)'], defaultMode: 'dontAsk' },
+  })
 })

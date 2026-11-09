@@ -33,8 +33,10 @@ const pending: PendingFile = {
       watch: { languages: [], packages: [], cloudServices: [], keywords: [] },
       candidateIds: [1],
       ownIds: [3],
+      filtered: [],
     },
   ],
+  filtered: [],
   failures: [],
 }
 const digest = (overrides: JsonObject = {}): JsonObject => ({

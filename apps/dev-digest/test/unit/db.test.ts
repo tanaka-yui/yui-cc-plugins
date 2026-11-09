@@ -122,6 +122,14 @@ test('DB7 startRun は前回の未完了を返す', () => {
   assert.equal(startRun(db, NOW).previousIncomplete, null)
 })
 
+test('DB7b startRun は直前の実行だけを見る（1 度の未完了を毎朝出し続けない）', () => {
+  const db = openDb(':memory:')
+  startRun(db, NOW)
+  const second = startRun(db, NOW)
+  finishRun(db, second.runId, NOW)
+  assert.equal(startRun(db, NOW).previousIncomplete, null)
+})
+
 test('DB8 search は日本語の部分一致と期間・深刻度で絞る', () => {
   const db = openDb(':memory:')
   upsertItem(db, 's', item({ guid: 'a', title: 'Keycloak における認証回避の脆弱性', severity: 'critical' }), false, NOW)
@@ -166,12 +174,37 @@ test('DB9 search は note と送信先を返し、危険な文字でも落ちな
   assert.equal(search(db, query({ text: '"' }), sectionOf).length, 0)
 })
 
-test('DB10 previousIncompleteStart は runId より前の最後の未完了を返す', () => {
+test('DB10 previousIncompleteStart は直前の実行が未完了のときだけその開始時刻を返す', () => {
   const db = openDb(':memory:')
   startRun(db, '2026-11-07T00:00:00Z')
   startRun(db, '2026-11-08T00:00:00Z')
   finishRun(db, 2, '2026-11-08T00:10:00Z')
   const { runId } = startRun(db, NOW)
-  assert.equal(previousIncompleteStart(db, runId), '2026-11-07T00:00:00Z')
+  assert.equal(previousIncompleteStart(db, runId), null)
+  assert.equal(previousIncompleteStart(db, 2), '2026-11-07T00:00:00Z')
   assert.equal(previousIncompleteStart(db, 1), null)
+})
+
+test('DB11 深刻度が上がったときだけ filtered の記録を消す', () => {
+  const db = openDb(':memory:')
+  upsertItem(db, 's', item({ severity: 'high' }), false, NOW)
+  const stored = undelivered(db, 'global', ['s'], null)[0]
+  assert.ok(stored)
+  const filtered = (destination: 'global' | 'repo:a/a') => ({
+    itemId: stored.id,
+    revision: 1,
+    destination,
+    status: 'filtered' as const,
+    runId: 1,
+  })
+  recordDelivery(db, [filtered('global'), filtered('repo:a/a')], NOW)
+  recordDelivery(db, [{ ...filtered('repo:a/a'), destination: 'repo:b/b', status: 'sent' }], NOW)
+  // 下がったときは残す
+  upsertItem(db, 's', item({ severity: 'medium' }), false, NOW)
+  assert.equal(undelivered(db, 'global', ['s'], null).length, 0)
+  // 上がったら filtered だけ消し、送信済みは残す
+  upsertItem(db, 's', item({ severity: 'critical' }), false, NOW)
+  assert.equal(undelivered(db, 'global', ['s'], null).length, 1)
+  assert.equal(undelivered(db, 'repo:a/a', ['s'], null).length, 1)
+  assert.equal(undelivered(db, 'repo:b/b', ['s'], null).length, 0)
 })

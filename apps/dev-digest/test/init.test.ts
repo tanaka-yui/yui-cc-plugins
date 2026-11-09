@@ -206,6 +206,7 @@ test('IN4 permissions --apply は作業フォルダの allow を作り直し、u
   assert.ok(shown.stdout.includes(userFile))
   assert.ok(shown.stdout.includes(`Read(/${paths.secrets})`))
   assert.match(shown.stdout, /^project=\S+ mode=replace$/m)
+  assert.match(shown.stdout, /^ {2}defaultMode dontAsk$/m)
   assert.match(shown.stdout, /^user=\S+ mode=add$/m)
 
   const first = runCli(['permissions', '--apply'], env)
@@ -216,6 +217,8 @@ test('IN4 permissions --apply は作業フォルダの allow を作り直し、u
   // allow 以外のキーと、allow 以外の permissions は残す
   assert.deepEqual(project.env, { A: '1' })
   assert.deepEqual(project.permissions.deny, ['Bash(rm:*)'])
+  // 許可に無い操作は尋ねずに拒む（user の設定が auto でも、作業フォルダの設定が優先される）
+  assert.equal(project.permissions.defaultMode, 'dontAsk')
   const launcher = paths.launcher
   const runDir = `/${paths.runDir}`
   // 無人の実行に許すのは手順が使う操作だけ（作業フォルダの設定は dev-digest のもの。前からある allow は残さない）
@@ -268,9 +271,15 @@ test('PM5 permissions --apply は前の版が足した広い許可を作業フ�
     `Write(/${paths.runDir}/**)`,
   ]
   mkdirSync(join(paths.runDir, '.claude'), { recursive: true })
-  writeFileSync(projectFile, JSON.stringify({ model: 'opus', permissions: { allow: obsolete } }))
+  writeFileSync(
+    projectFile,
+    JSON.stringify({ model: 'opus', permissions: { allow: obsolete, defaultMode: 'acceptEdits' } }),
+  )
   const userRules = ['Bash(git status:*)', ...obsolete]
-  writeFileSync(userFile, JSON.stringify({ permissions: { allow: userRules, deny: ['Read(./.env)'] } }))
+  writeFileSync(
+    userFile,
+    JSON.stringify({ permissions: { allow: userRules, deny: ['Read(./.env)'], defaultMode: 'auto' } }),
+  )
 
   const result = runCli(['permissions', '--apply'], env)
   assert.equal(result.code, 0, result.stderr)
@@ -284,10 +293,13 @@ test('PM5 permissions --apply は前の版が足した広い許可を作業フ�
   assert.equal(project.model, 'opus')
   assert.deepEqual(project.permissions.allow, proposed)
   for (const rule of obsolete) assert.ok(!project.permissions.allow.includes(rule), rule)
+  assert.equal(project.permissions.defaultMode, 'dontAsk')
 
   // user の設定のルールは消さない（deny を足すだけ）
   const user = JSON.parse(readFileSync(userFile, 'utf8'))
   assert.deepEqual(user.permissions.allow, userRules)
+  // user の設定のモードは変えない
+  assert.equal(user.permissions.defaultMode, 'auto')
   assert.deepEqual(user.permissions.deny, ['Read(./.env)', `Read(/${paths.secrets})`, `Edit(/${paths.secrets})`])
 })
 

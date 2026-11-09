@@ -5,6 +5,7 @@ import {
   MORNING_EXACT_SUBCOMMANDS,
   ORCA_DEFAULT_BIN,
   ORCA_MORNING_COMMANDS,
+  PROJECT_PERMISSION_MODE,
   SETTINGS_FILE_MODE,
   X_FILE,
 } from './defaults.ts'
@@ -17,7 +18,7 @@ import { dirname, join } from 'node:path'
 import type { Json, JsonObject } from './json.ts'
 
 export type ProposedRules = {
-  project: { file: string; allow: string[] }
+  project: { file: string; allow: string[]; defaultMode: string }
   user: { file: string; deny: string[] }
 }
 
@@ -29,6 +30,7 @@ const absolute = (path: string): string => `/${path}`
 // project = 毎朝の Claude が動く runDir の設定。無人の実行は信用できない X の本文を読むので、手順が使う操作だけを許す:
 //   ランチャーは朝のサブコマンドだけ、Orca は x.com のタブを開く・閉じる・読む・スクロールするだけ、
 //   書き込みは手順が書く 2 ファイルだけ（runDir/CLAUDE.md などに指示を残させない）
+//   モードは dontAsk にして、allow に無い操作は尋ねずに拒ませる（user の設定のモードに左右されない）
 // user = 全セッションの設定（secrets.json を読ませない）
 export const proposedRules = (home: string): ProposedRules => {
   const paths = homePaths(home)
@@ -46,6 +48,7 @@ export const proposedRules = (home: string): ProposedRules => {
         ...writable.map((file) => `Write(${file})`),
         ...writable.map((file) => `Edit(${file})`),
       ],
+      defaultMode: PROJECT_PERMISSION_MODE,
     },
     user: { file: join(claudeHome(), CLAUDE_SETTINGS_FILE), deny: [`Read(${secrets})`, `Edit(${secrets})`] },
   }
@@ -91,13 +94,17 @@ export const applyRules = (file: string, key: RuleKey, rules: string[]): number 
   return missing.length
 }
 
-// permissions[key] を rules ちょうどに置き換え、置いた数を返す。ほかのキーと permissions のほかの欄は保つ。
+// permissions[key] を rules ちょうどに、permissions.defaultMode を defaultMode に置き換え、置いた数を返す。
+// ほかのキーと permissions のほかの欄は保つ。
 // 作業フォルダの設定は dev-digest のものなので、前の版が足した広い許可（Bash(<launcher>:*) など）を残さない
-export const replaceRules = (file: string, key: RuleKey, rules: string[]): number => {
+export const replaceRules = (file: string, key: RuleKey, rules: string[], defaultMode: string): number => {
   const { root, permissions, current } = readRules(file, key)
-  const same = current.length === rules.length && rules.every((rule, index) => current[index] === rule)
+  const same =
+    permissions.defaultMode === defaultMode &&
+    current.length === rules.length &&
+    rules.every((rule, index) => current[index] === rule)
   if (!same) {
-    root.permissions = { ...permissions, [key]: [...rules] }
+    root.permissions = { ...permissions, [key]: [...rules], defaultMode }
     writeSettings(file, root)
   }
   return rules.length

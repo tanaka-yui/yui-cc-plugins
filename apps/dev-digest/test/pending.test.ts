@@ -134,12 +134,12 @@ test('PD6 storeAs を共有する JVN の 2 フィードでも 1 度だけ数え
 test('PD7 failures と previousIncomplete を載せる', () => {
   const db = openDb(':memory:')
   startRun(db, '2026-11-07T00:00:00.000Z')
+  finishRun(db, 1, '2026-11-07T00:10:00.000Z')
   startRun(db, '2026-11-08T00:00:00.000Z')
-  finishRun(db, 2, '2026-11-08T00:10:00.000Z')
   const { runId } = startRun(db, NOW)
   recordFailure(db, runId, 'devto', 'timeout')
   const pending = buildPending(db, config, [], runId, NOW)
-  assert.equal(pending.previousIncomplete, '2026-11-07T00:00:00.000Z')
+  assert.equal(pending.previousIncomplete, '2026-11-08T00:00:00.000Z')
   assert.deepEqual(pending.failures, [{ sourceId: 'devto', reason: 'timeout' }])
   assert.equal(buildPending(db, config, [], 1, NOW).previousIncomplete, null)
 })
@@ -193,4 +193,39 @@ test('PD11 parsePending は buildPending の出力を往復でき、欠けた形
   broken.items[0].section = 'nope'
   assert.equal(parsePending(broken), null)
   assert.equal(parsePending('x'), null)
+})
+
+test('PD12 しきい値で外した JVN は送り先ごとに filtered に出し、記録後にしきい値を下げても送らない', () => {
+  const db = memDb()
+  const high = add(db, 'jvn', 'b', 'high')
+  const pending = buildPending(db, config, [repo()], 1, NOW)
+  assert.deepEqual(pending.globalIds, [])
+  assert.deepEqual(pending.filtered, [{ id: high, revision: 1 }])
+  assert.deepEqual(pending.repos[0]?.filtered, [{ id: high, revision: 1 }])
+  assert.deepEqual(pending.items, [])
+  recordDelivery(
+    db,
+    (['global', 'repo:o/r'] as const).map((destination) => ({
+      itemId: high,
+      revision: 1,
+      destination,
+      status: 'filtered',
+      runId: 1,
+    })),
+    NOW,
+  )
+  // 翌朝しきい値を high に下げても、溜まった high を一度に送らない
+  const lowered = buildPending(db, { ...config, jvnMinSeverity: 'high' }, [repo()], 1, NOW)
+  assert.deepEqual(lowered.globalIds, [])
+  assert.deepEqual(lowered.repos[0]?.candidateIds, [])
+  assert.deepEqual(lowered.filtered, [])
+})
+
+test('PD13 filtered にした JVN も、あとで深刻度がしきい値を越えたら送る', () => {
+  const db = memDb()
+  const id = add(db, 'jvn', 'b', 'high')
+  recordDelivery(db, [{ itemId: id, revision: 1, destination: 'global', status: 'filtered', runId: 1 }], NOW)
+  assert.deepEqual(buildPending(db, config, [], 1, NOW).globalIds, [])
+  upsertItem(db, 'jvn', feedItem('b', 'critical'), false, NOW)
+  assert.deepEqual(buildPending(db, config, [], 1, NOW).globalIds, [id])
 })

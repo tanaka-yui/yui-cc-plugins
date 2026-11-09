@@ -21,7 +21,8 @@ export const ingestFeed = (
     if (outcome === 'new') added.push(item.guid)
     else if (outcome === 'updated') updated++
   }
-  if (first) {
+  // 1 件も読めなかった取得（HTML の 200 や空のフィード）は初回に数えない。数えると次の取得の baseline が効かない
+  if (first && items.length > 0) {
     const cutoff = new Date(new Date(now).getTime() - BASELINE_HOURS * MS_PER_HOUR).toISOString()
     markBaselineGuids(db, feed.storeAs, added, cutoff)
     markFeedFetched(db, feed.id, now)

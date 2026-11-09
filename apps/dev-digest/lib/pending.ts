@@ -24,12 +24,16 @@ export type PendingEntry = {
   updated: boolean
 }
 
+// 項目と revision の組。filtered は JVN のしきい値で外した項目で、publish がその送り先に filtered として記録する
+export type ItemRef = { id: number; revision: number }
+
 export type PendingRepo = {
   slug: string
   displayName: string
   watch: RepoConfig['watch']
   candidateIds: number[]
   ownIds: number[]
+  filtered: ItemRef[]
 }
 
 export type PendingFile = {
@@ -38,6 +42,7 @@ export type PendingFile = {
   previousIncomplete: string | null
   items: PendingEntry[]
   globalIds: number[]
+  filtered: ItemRef[]
   repos: PendingRepo[]
   failures: Array<{ sourceId: string; reason: string }>
 }
@@ -68,24 +73,29 @@ export const buildPending = (db: Db, config: Config, repos: RepoConfig[], runId:
     for (const item of items) byId.set(item.id, item)
     return items.map((item) => item.id)
   }
+  // しきい値を越えたものは送る候補に、外れたものは filtered に分ける
+  const split = (items: StoredItem[], threshold: Severity): { ids: number[]; filtered: ItemRef[] } => ({
+    ids: collect(items.filter((item) => keep(item, threshold))),
+    filtered: items.filter((item) => !keep(item, threshold)).map((item) => ({ id: item.id, revision: item.revision })),
+  })
 
-  const globalIds = collect(
-    undelivered(db, 'global', globalStores, null).filter((item) => keep(item, config.jvnMinSeverity)),
-  )
+  const global = split(undelivered(db, 'global', globalStores, null), config.jvnMinSeverity)
   const pendingRepos: PendingRepo[] = repos.map((repo) => {
     const destination = `repo:${repo.slug}` as const
     const ownStores = unique(
       sources.filter((s) => s.scope === 'repo' && s.repoSlugs.includes(repo.slug)).map((s) => s.storeAs),
     )
-    const threshold = repo.jvnMinSeverity ?? config.jvnMinSeverity
+    const candidates = split(
+      undelivered(db, destination, globalStores, repo.addedAt),
+      repo.jvnMinSeverity ?? config.jvnMinSeverity,
+    )
     return {
       slug: repo.slug,
       displayName: repo.displayName,
       watch: repo.watch,
-      candidateIds: collect(
-        undelivered(db, destination, globalStores, repo.addedAt).filter((item) => keep(item, threshold)),
-      ),
+      candidateIds: candidates.ids,
       ownIds: collect(undelivered(db, destination, ownStores, repo.addedAt)),
+      filtered: candidates.filtered,
     }
   })
 
@@ -112,7 +122,8 @@ export const buildPending = (db: Db, config: Config, repos: RepoConfig[], runId:
     generatedAt: now,
     previousIncomplete: previousIncompleteStart(db, runId),
     items,
-    globalIds,
+    globalIds: global.ids,
+    filtered: global.filtered,
     repos: pendingRepos,
     failures: runFailures(db, runId),
   }
@@ -136,6 +147,11 @@ const mapAll = <T>(value: Json | undefined, parse: (entry: Json) => T | null): T
 }
 const intList = (value: Json | undefined): number[] | null => mapAll(value, (entry) => (isInt(entry) ? entry : null))
 const strList = (value: Json | undefined): string[] | null => mapAll(value, asString)
+const filteredList = (value: Json | undefined): ItemRef[] | null =>
+  mapAll(value, (entry) => {
+    const o = asObject(entry)
+    return o !== null && isInt(o.id) && isInt(o.revision) ? { id: o.id, revision: o.revision } : null
+  })
 // string | null のフィールド。キーが無い・別の型なら undefined
 const nullableString = (object: JsonObject, key: string): string | null | undefined => {
   const value = object[key]
@@ -202,8 +218,10 @@ const parsePendingRepo = (value: Json): PendingRepo | null => {
   const watch = parseWatch(o.watch)
   const candidateIds = intList(o.candidateIds)
   const ownIds = intList(o.ownIds)
+  const filtered = filteredList(o.filtered)
   if (slug === null || displayName === null || watch === null || candidateIds === null || ownIds === null) return null
-  return { slug, displayName, watch, candidateIds, ownIds }
+  if (filtered === null) return null
+  return { slug, displayName, watch, candidateIds, ownIds, filtered }
 }
 
 // pending.json を型で絞る。形が違えば null
@@ -214,6 +232,7 @@ export const parsePending = (value: Json): PendingFile | null => {
   const previousIncomplete = nullableString(o, 'previousIncomplete')
   const items = mapAll(o.items, parseEntry)
   const globalIds = intList(o.globalIds)
+  const filtered = filteredList(o.filtered)
   const repos = mapAll(o.repos, parsePendingRepo)
   const failures = mapAll(o.failures, (entry) => {
     const f = asObject(entry)
@@ -222,6 +241,6 @@ export const parsePending = (value: Json): PendingFile | null => {
     return sourceId === null || reason === null ? null : { sourceId, reason }
   })
   if (!isInt(o.runId) || generatedAt === null || previousIncomplete === undefined) return null
-  if (items === null || globalIds === null || repos === null || failures === null) return null
-  return { runId: o.runId, generatedAt, previousIncomplete, items, globalIds, repos, failures }
+  if (items === null || globalIds === null || filtered === null || repos === null || failures === null) return null
+  return { runId: o.runId, generatedAt, previousIncomplete, items, globalIds, filtered, repos, failures }
 }

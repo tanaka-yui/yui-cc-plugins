@@ -1,7 +1,7 @@
 import { X_SOURCE } from './defaults.ts'
 import { contentHash } from './feed.ts'
 import { asArray, asString, parseJson } from './json.ts'
-import { atLeast, parseSeverity } from './severity.ts'
+import { atLeast, parseSeverity, raised } from './severity.ts'
 
 import { DatabaseSync } from 'node:sqlite'
 
@@ -13,6 +13,8 @@ import type { Severity } from './severity.ts'
 export type Db = DatabaseSync
 export type UpsertResult = 'new' | 'updated' | 'unchanged'
 export type Destination = 'global' | `repo:${string}`
+// filtered = JVN のしきい値で外した。しきい値を後から下げても、溜まった項目を一度に送らないために残す
+export type DeliveryStatus = 'sent' | 'irrelevant' | 'filtered'
 
 export type StoredItem = {
   id: number
@@ -227,8 +229,13 @@ export const upsertItem = (
     }
     const id = num(existing, 'id')
     // 深刻度は追跡の有無に関係なく最新の観測値で上書きする。revision は上げない
+    const previous = parseSeverity(str(existing, 'severity'))
     if (strOrNull(existing, 'severity') !== item.severity) {
       db.prepare('UPDATE items SET severity = ? WHERE id = ?').run(item.severity, id)
+    }
+    // 上がったら、しきい値で外した記録を消す（しきい値を越えたら送る。spec §9）
+    if (raised(previous, item.severity)) {
+      db.prepare("DELETE FROM deliveries WHERE item_id = ? AND status = 'filtered'").run(id)
     }
     if (!trackUpdates || str(existing, 'content_hash') === hash) return 'unchanged'
     db.prepare(
@@ -269,12 +276,15 @@ export const startRun = (
   db: Db,
   now: string,
 ): { runId: number; previousIncomplete: { runId: number; startedAt: string } | null } => {
-  const previous = one(db, 'SELECT id, started_at FROM runs WHERE finished_at IS NULL ORDER BY id DESC LIMIT 1')
+  // 直前の実行だけを見る。それより前の未完了を毎朝出し続けない
+  const previous = one(db, 'SELECT id, started_at, finished_at FROM runs ORDER BY id DESC LIMIT 1')
   const result = db.prepare('INSERT INTO runs(started_at) VALUES (?)').run(now)
   return {
     runId: Number(result.lastInsertRowid),
     previousIncomplete:
-      previous === null ? null : { runId: num(previous, 'id'), startedAt: str(previous, 'started_at') },
+      previous === null || strOrNull(previous, 'finished_at') !== null
+        ? null
+        : { runId: num(previous, 'id'), startedAt: str(previous, 'started_at') },
   }
 }
 
@@ -299,12 +309,11 @@ export const latestRun = (db: Db): { runId: number; startedAt: string; finishedA
     : { runId: num(row, 'id'), startedAt: str(row, 'started_at'), finishedAt: strOrNull(row, 'finished_at') }
 }
 
-// runId より前の実行のうち、最後の未完了（finished_at が null）の開始時刻
-export const previousIncompleteStart = (db: Db, runId: number): string | null =>
-  strOrNull(
-    one(db, 'SELECT started_at FROM runs WHERE id < ? AND finished_at IS NULL ORDER BY id DESC LIMIT 1', runId) ?? {},
-    'started_at',
-  )
+// runId の直前の実行が未完了（finished_at が null）なら、その開始時刻
+export const previousIncompleteStart = (db: Db, runId: number): string | null => {
+  const previous = one(db, 'SELECT started_at, finished_at FROM runs WHERE id < ? ORDER BY id DESC LIMIT 1', runId)
+  return previous === null || strOrNull(previous, 'finished_at') !== null ? null : str(previous, 'started_at')
+}
 
 // X の投稿が最後に取り込まれた時刻
 export const lastXIngest = (db: Db): string | null =>
@@ -339,7 +348,7 @@ export const recordDelivery = (
     itemId: number
     revision: number
     destination: Destination
-    status: 'sent' | 'irrelevant'
+    status: DeliveryStatus
     runId: number
   }>,
   now: string,
@@ -350,6 +359,20 @@ export const recordDelivery = (
     )
     for (const row of rows) statement.run(row.itemId, row.revision, row.destination, row.status, row.runId, now)
   })
+}
+
+// refs のうち、その送り先に同じ revision で記録済み（status を問わない）の id
+export const recordedIds = (
+  db: Db,
+  destination: Destination,
+  refs: Array<{ id: number; revision: number }>,
+): Set<number> => {
+  const statement = db.prepare(
+    'SELECT 1 AS found FROM deliveries WHERE item_id = ? AND revision = ? AND destination = ?',
+  )
+  return new Set(
+    refs.filter((ref) => statement.get(ref.id, ref.revision, destination) !== undefined).map((ref) => ref.id),
+  )
 }
 
 export const saveNote = (

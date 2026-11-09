@@ -186,7 +186,7 @@ test('CO6 ingest-x は同じ id を二重に入れない、--failed は失敗と
         xPost('1', '2026-11-09T11:00:00Z'),
         xPost('2', '2026-11-09T11:30:00+09:00'),
         xPost('bad', 'not a date'),
-        { id: '4', text: 'no url', postedAt: '2026-11-09T11:00:00Z' },
+        { id: '4', text: 'no author', postedAt: '2026-11-09T11:00:00Z' },
       ],
     }),
   )
@@ -291,7 +291,8 @@ test('CO10 X の初回に 24 時間より古い投稿があっても送らない
   const file = join(home, 'x.json')
   writeFileSync(
     file,
-    JSON.stringify({ posts: [xPost('old', '2026-11-07T00:00:00Z'), xPost('fresh', '2026-11-09T11:00:00Z')] }),
+    // id は数字だけ（old = 10、fresh = 11）
+    JSON.stringify({ posts: [xPost('10', '2026-11-07T00:00:00Z'), xPost('11', '2026-11-09T11:00:00Z')] }),
   )
   const result = runCli(['ingest-x', '--file', file, '--now', now], { DEV_DIGEST_HOME: home })
   assert.equal(result.code, 0, result.stderr)
@@ -300,7 +301,7 @@ test('CO10 X の初回に 24 時間より古い投稿があっても送らない
   handle.close()
   assert.deepEqual(
     items.map((item) => item.guid),
-    ['fresh'],
+    ['11'],
   )
 })
 
@@ -332,6 +333,41 @@ test('CO11 ingest-x は postedAt が無いか読めない投稿の時刻を数�
     [
       [missing, '2026-11-09T11:43:57.098Z'],
       [invalid, '2026-11-09T11:43:57.098Z'],
+    ],
+  )
+})
+
+test('CO12 ingest-x は与えられた url を使わず、検証した author と数字の id から x.com の url を作る', () => {
+  const home = tempHome()
+  homes.push(home)
+  const now = '2026-11-09T12:00:00.000Z'
+  const postedAt = '2026-11-09T11:00:00Z'
+  const file = join(home, 'x.json')
+  writeFileSync(
+    file,
+    JSON.stringify({
+      posts: [
+        // 投稿に仕込まれた指示で別のサイトの url を書かされた
+        { id: '1', url: 'https://evil.example/phish', author: 'u', text: 'a', postedAt },
+        { id: '2', author: '@Handle_2', text: 'b', postedAt },
+        { id: '3', author: 'evil.example/x', text: 'c', postedAt },
+        { id: '4', author: 'a_very_long_handle', text: 'd', postedAt },
+        { id: 'abc', author: 'u', text: 'e', postedAt },
+        { id: '5', text: 'no author', postedAt },
+      ],
+    }),
+  )
+  const result = runCli(['ingest-x', '--file', file, '--now', now], { DEV_DIGEST_HOME: home })
+  assert.equal(result.code, 0, result.stderr)
+  assert.equal(result.stdout, 'new=2\n')
+  const handle = openDb(homePaths(home).db)
+  const stored = handle.prepare("SELECT guid, url, author FROM items WHERE source_id = 'x' ORDER BY guid").all()
+  handle.close()
+  assert.deepEqual(
+    stored.map((row) => [row.guid, row.url, row.author]),
+    [
+      ['1', 'https://x.com/u/status/1', 'u'],
+      ['2', 'https://x.com/Handle_2/status/2', 'Handle_2'],
     ],
   )
 })

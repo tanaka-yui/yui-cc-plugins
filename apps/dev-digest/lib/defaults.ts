@@ -119,11 +119,17 @@ export const DIGEST_FILE = 'digest.json'
 // set-webhook / init / permissions は許さない（読んだ X の本文に仕込まれた指示で Webhook や設定を書き換えさせない）
 export const MORNING_EXACT_SUBCOMMANDS: readonly string[] = ['procedure', 'collect', 'pending']
 export const MORNING_ARG_SUBCOMMANDS: readonly string[] = ['ingest-x', 'publish', 'x-open']
+// 作業フォルダの permission のモード。allow に無い操作を尋ねずに拒む。user の設定が auto でも、
+// project の設定が優先されるので、allow をそのまま許可リストとして効かせられる
+export const PROJECT_PERMISSION_MODE = 'dontAsk'
 // 毎朝の Claude に許す Orca のブラウザ操作（`orca ` の後ろの接頭辞）。tab create は許さない — 接頭辞一致では後ろに
 // 別の --url を足して、ログイン済みのブラウザで任意の URL を開けてしまう。タブは x-open が設定の URL だけで開く
 export const ORCA_MORNING_COMMANDS: readonly string[] = ['tab close', 'snapshot', 'scroll']
 // X の URL。リストの URL はこれで始まるものだけ受け付ける
 export const X_URL_PREFIX = 'https://x.com/'
+// X の handle（先頭の @ は任意）。ingest-x はこれに合う author からだけ投稿の URL を作る
+export const X_HANDLE_PATTERN = /^@?[A-Za-z0-9_]{1,15}$/
+export const xStatusUrl = (handle: string, id: string): string => `${X_URL_PREFIX}${handle}/status/${id}`
 // X のハッシュタグの最新順の検索
 export const xHashtagSearchUrl = (tag: string): string => `${X_URL_PREFIX}search?q=${encodeURIComponent(tag)}&f=live`
 // X の id（Snowflake）から投稿時刻を求める: ms = (id >> 22) + 1288834974657（spec §13）

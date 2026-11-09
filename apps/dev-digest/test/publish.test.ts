@@ -77,6 +77,7 @@ const setup = async (routes: Record<string, Route>, withRepoHook = true): Promis
       watch: { languages: [], packages: [], cloudServices: [], keywords: [] },
       candidateIds: ids,
       ownIds: [],
+      filtered: [],
     },
   ]
   mkdirSync(paths.runDir, { recursive: true })
@@ -217,4 +218,92 @@ test('PB8 全体の Webhook が無くても要約は保存される（exit 2）'
   const result = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
   assert.equal(result.code, 2)
   assert.equal(s.db.prepare('SELECT summary_ja FROM notes WHERE item_id = ?').get(a)?.summary_ja, '要約A')
+})
+
+test('PB9 JVN のしきい値で外した項目を送り先ごとに filtered として記録し、送らない', async () => {
+  const s = await setup({ [GLOBAL_PATH]: OK, [REPO_PATH]: OK })
+  const [a, b] = s.ids
+  upsertItem(
+    s.db,
+    'jvn',
+    {
+      guid: 'j',
+      url: 'https://example.com/j',
+      title: 'title-j',
+      summary: 'j',
+      author: null,
+      publishedAt: T0,
+      updatedAt: null,
+      severity: 'medium',
+      products: [],
+    },
+    false,
+    NOW,
+  )
+  const j = Number(s.db.prepare('SELECT id FROM items WHERE guid = ?').get('j')?.id)
+  // 設定のしきい値は high。repo の候補も実際の設定から作る
+  const pending = buildPending(s.db, writeConfig(s.home), loadRepos(s.home), 1, NOW)
+  writeFileSync(join(homePaths(s.home).runDir, 'pending.json'), JSON.stringify(pending))
+  const file = writeDigest(s.home, { runId: 1, notes: [], groups: [], repos: [] })
+  const result = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(result.code, 0, result.stderr)
+  assert.ok(!s.server.requests.some((r) => r.body.includes('title-j')))
+  assert.deepEqual(deliveryRows(s.db), [
+    `${a}:global:sent`,
+    `${a}:repo:o/r:irrelevant`,
+    `${b}:global:sent`,
+    `${b}:repo:o/r:irrelevant`,
+    `${j}:global:filtered`,
+    `${j}:repo:o/r:filtered`,
+  ])
+})
+
+test('PB10 送り直しは記録済みの送り先を飛ばし、未送信の送り先だけ送る。完了した実行には送らない', async () => {
+  const routes: Record<string, Route> = {
+    [GLOBAL_PATH]: OK,
+    [REPO_PATH]: { status: 500, body: 'boom', type: 'text/plain' },
+  }
+  const s = await setup(routes)
+  const [a, b] = s.ids
+  const file = writeDigest(s.home, { runId: 1, notes: [], groups: [], repos: [{ slug: 'o/r', itemIds: [a] }] })
+  assert.equal((await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)).code, 1)
+  routes[REPO_PATH] = OK
+  const second = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(second.code, 0, second.stderr)
+  assert.match(second.stdout, /skipped global/)
+  assert.match(second.stdout, /sent repo:o\/r messages=1/)
+  assert.deepEqual(
+    s.server.requests.map((r) => r.path),
+    [GLOBAL_PATH, REPO_PATH, REPO_PATH],
+  )
+  assert.deepEqual(deliveryRows(s.db), [
+    `${a}:global:sent`,
+    `${a}:repo:o/r:sent`,
+    `${b}:global:sent`,
+    `${b}:repo:o/r:irrelevant`,
+  ])
+  assert.ok(finished(s.db))
+  // 完了した実行の pending.json では何も送らない
+  const third = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(third.code, 2)
+  assert.match(third.stderr, /collect/)
+  assert.equal(s.server.requests.length, 3)
+})
+
+test('PB11 最新の実行のものでない pending.json では何も送らず exit 2', async () => {
+  const s = await setup({ [GLOBAL_PATH]: OK, [REPO_PATH]: OK })
+  startRun(s.db, NOW)
+  const a = s.ids[0] ?? -1
+  const file = writeDigest(s.home, {
+    runId: 1,
+    notes: [{ id: a, summaryJa: '要約A', tags: [] }],
+    groups: [],
+    repos: [],
+  })
+  const result = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(result.code, 2)
+  assert.match(result.stderr, /collect/)
+  assert.equal(s.server.requests.length, 0)
+  assert.deepEqual(deliveryRows(s.db), [])
+  assert.equal(s.db.prepare('SELECT summary_ja FROM notes WHERE item_id = ?').get(a), undefined)
 })
