@@ -83,6 +83,11 @@ export const DEFAULT_DEVTO_TAGS = ['aws', 'googlecloud', 'ai', 'security']
 export const DEFAULT_X_HASHTAGS = ['#AI', '#LLM', '#生成AI']
 
 export const BASELINE_HOURS = 24
+export const MS_PER_HOUR = 3_600_000
+export const USER_AGENT = 'dev-digest'
+// テスト専用: 設定されていれば取得先の origin をこの値に置き換える
+export const FEED_BASE_ENV = 'DEV_DIGEST_FEED_BASE'
+export const X_TITLE_CHARS = 80
 export const EXCERPT_CHARS = 500
 // 1 回に読むフィードの上限（文字数）。JVN が約 1MB なので余裕を見る
 export const MAX_FEED_BYTES = 5_000_000

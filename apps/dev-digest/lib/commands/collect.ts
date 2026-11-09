@@ -1,14 +1,12 @@
 import { die, parseFlags, parseNow } from '../cli.ts'
 import { buildSources, loadConfig, loadRepos } from '../config.ts'
-import { hasSource, lastXIngest, markBaseline, openDb, recordFailure, startRun, upsertItem } from '../db.ts'
-import { BASELINE_HOURS, FETCH_TIMEOUT_MS, MAX_FEED_BYTES } from '../defaults.ts'
+import { lastXIngest, openDb, recordFailure, startRun } from '../db.ts'
+import { FEED_BASE_ENV, FETCH_TIMEOUT_MS, MAX_FEED_BYTES, USER_AGENT } from '../defaults.ts'
 import { parseFeed } from '../feed.ts'
+import { ingestFeed } from '../ingest.ts'
 import { digestHome, homePaths } from '../paths.ts'
 
 const NAME = 'dev-digest collect'
-const USER_AGENT = 'dev-digest'
-const FEED_BASE_ENV = 'DEV_DIGEST_FEED_BASE'
-const MS_PER_HOUR = 3_600_000
 
 type Fetched = { ok: true; xml: string } | { ok: false; reason: string }
 
@@ -47,27 +45,20 @@ export const run = async (argv: string[]): Promise<void> => {
   try {
     const { runId, previousIncomplete } = startRun(db, now)
     const xSince = lastXIngest(db)
-    // 初めて見る source は、この回の項目を入れる前に決める（JVN の 2 フィードは 'jvn' を共有する）
-    const firstSeen = new Set(sources.map((source) => source.storeAs).filter((storeAs) => !hasSource(db, storeAs)))
-    const fetched = await Promise.all(sources.map((source) => fetchFeed(source.url)))
+    const fetched = await Promise.all(sources.map(async (source) => ({ source, result: await fetchFeed(source.url) })))
     let added = 0
     let updated = 0
     const failed: string[] = []
-    sources.forEach((source, index) => {
-      const result = fetched[index]
-      if (result === undefined || !result.ok) {
-        recordFailure(db, runId, source.id, result === undefined ? 'network error' : result.reason)
+    for (const { source, result } of fetched) {
+      if (!result.ok) {
+        recordFailure(db, runId, source.id, result.reason)
         failed.push(source.id)
-        return
+        continue
       }
-      for (const item of parseFeed(result.xml)) {
-        const outcome = upsertItem(db, source.storeAs, item, source.trackUpdates, now)
-        if (outcome === 'new') added++
-        else if (outcome === 'updated') updated++
-      }
-    })
-    const cutoff = new Date(new Date(now).getTime() - BASELINE_HOURS * MS_PER_HOUR).toISOString()
-    for (const storeAs of firstSeen) markBaseline(db, storeAs, cutoff)
+      const counts = ingestFeed(db, source, parseFeed(result.xml), now)
+      added += counts.added
+      updated += counts.updated
+    }
     process.stdout.write(
       `${[
         `run_id=${runId}`,

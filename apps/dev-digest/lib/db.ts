@@ -98,6 +98,14 @@ CREATE TABLE run_failures (
 CREATE VIRTUAL TABLE items_fts USING fts5(title, summary, summary_ja, tags, products, tokenize='trigram');
 `
 
+// フィードごとの「初めて取得できた時刻」。storeAs を共有するフィードも別々に初回を判定するため
+const SCHEMA_V2 = `
+CREATE TABLE feeds (
+  feed_id TEXT PRIMARY KEY,
+  first_ok_at TEXT NOT NULL
+);
+`
+
 const str = (row: Row, key: string): string => {
   const value = row[key]
   return typeof value === 'string' ? value : ''
@@ -138,6 +146,12 @@ export const openDb = (file: string): Db => {
     inTransaction(db, () => {
       db.exec(SCHEMA_V1)
       db.exec('PRAGMA user_version = 1')
+    })
+  }
+  if (version < 2) {
+    inTransaction(db, () => {
+      db.exec(SCHEMA_V2)
+      db.exec('PRAGMA user_version = 2')
     })
   }
   return db
@@ -235,6 +249,21 @@ export const markBaseline = (db: Db, sourceId: string, cutoff: string): number =
       .prepare('UPDATE items SET baseline = 1 WHERE source_id = ? AND (published_at IS NULL OR published_at < ?)')
       .run(sourceId, cutoff).changes,
   )
+
+export const isFirstFetch = (db: Db, feedId: string): boolean =>
+  one(db, 'SELECT 1 AS found FROM feeds WHERE feed_id = ?', feedId) === null
+
+export const markFeedFetched = (db: Db, feedId: string, now: string): void => {
+  db.prepare('INSERT OR IGNORE INTO feeds(feed_id, first_ok_at) VALUES (?, ?)').run(feedId, now)
+}
+
+// 指定した guid の項目のうち、cutoff より古いもの（日付無しを含む）だけを baseline にする
+export const markBaselineGuids = (db: Db, sourceId: string, guids: string[], cutoff: string): void => {
+  const statement = db.prepare(
+    'UPDATE items SET baseline = 1 WHERE source_id = ? AND guid = ? AND (published_at IS NULL OR published_at < ?)',
+  )
+  for (const guid of guids) statement.run(sourceId, guid, cutoff)
+}
 
 export const startRun = (
   db: Db,

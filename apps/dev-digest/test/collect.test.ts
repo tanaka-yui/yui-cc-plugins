@@ -251,3 +251,55 @@ test('CO8 未知のコマンドと config 無しは exit 2', () => {
   assert.equal(noConfig.code, 2)
   assert.match(noConfig.stderr, /init/)
 })
+
+test('CO9 共有 storeAs の片方が初回に失敗しても、回復した初回の古い項目は送らない', async () => {
+  const { env, db } = await setup({ '/ja/rss/jvndb_new.rdf': { status: 500, body: 'down' } })
+  const now = plusHours(NEWEST, 1)
+  const first = parseLines((await runCliAsync(['collect', '--now', now], env)).stdout)
+  assert.equal(first.failed, 'jvn-new')
+  const handle = db()
+  const before = undelivered(handle, 'global', ['jvn'], null).map((item) => item.guid)
+  handle.close()
+  // jvn-new を回復させる（古い項目を載せた版）
+  const older = fixture('jvndb_new.rdf')
+    .replaceAll('JVNDB-2026-000163', 'JVNDB-2026-000001')
+    .replaceAll('2026-11-09T14:24+09:00', '2026-10-01T00:00+09:00')
+  const recovered = await startServer(feedRoutes({ '/ja/rss/jvndb_new.rdf': { status: 200, body: older } }))
+  servers.push(recovered)
+  const second = await runCliAsync(['collect', '--now', now], { ...env, DEV_DIGEST_FEED_BASE: recovered.url })
+  assert.equal(second.code, 0, second.stderr)
+  assert.equal(parseLines(second.stdout).failed, 'none')
+  const after = db()
+  const items = undelivered(after, 'global', ['jvn'], null)
+  after.close()
+  const cutoff = plusHours(now, -24)
+  for (const item of items) {
+    if (!before.includes(item.guid)) assert.ok(item.publishedAt !== null && item.publishedAt >= cutoff, item.guid)
+  }
+  for (const guid of before)
+    assert.ok(
+      items.some((item) => item.guid === guid),
+      `${guid} stays undelivered`,
+    )
+  assert.ok(!items.some((item) => item.url.includes('JVNDB-2026-000001')))
+})
+
+test('CO10 X の初回に 24 時間より古い投稿があっても送らない', () => {
+  const home = tempHome()
+  homes.push(home)
+  const now = '2026-11-09T12:00:00.000Z'
+  const file = join(home, 'x.json')
+  writeFileSync(
+    file,
+    JSON.stringify({ posts: [xPost('old', '2026-11-07T00:00:00Z'), xPost('fresh', '2026-11-09T11:00:00Z')] }),
+  )
+  const result = runCli(['ingest-x', '--file', file, '--now', now], { DEV_DIGEST_HOME: home })
+  assert.equal(result.code, 0, result.stderr)
+  const handle = openDb(homePaths(home).db)
+  const items = undelivered(handle, 'global', ['x'], null)
+  handle.close()
+  assert.deepEqual(
+    items.map((item) => item.guid),
+    ['fresh'],
+  )
+})

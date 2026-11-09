@@ -1,6 +1,7 @@
 import { die, log, parseFlags, parseNow } from '../cli.ts'
-import { hasSource, latestRun, markBaseline, openDb, recordFailure, upsertItem } from '../db.ts'
-import { BASELINE_HOURS, X_SOURCE } from '../defaults.ts'
+import { latestRun, openDb, recordFailure } from '../db.ts'
+import { X_SOURCE, X_TITLE_CHARS } from '../defaults.ts'
+import { ingestFeed } from '../ingest.ts'
 import { asArray, asObject, asString, parseJson } from '../json.ts'
 import { digestHome, homePaths } from '../paths.ts'
 
@@ -11,9 +12,7 @@ import type { FeedItem } from '../feed.ts'
 import type { Json } from '../json.ts'
 
 const NAME = 'dev-digest ingest-x'
-const TITLE_CHARS = 80
 const DIR_MODE = 0o700
-const MS_PER_HOUR = 3_600_000
 
 // 投稿 1 件を FeedItem にする。id / url が無い、日付が読めないものは null（取り込まない）
 const toItem = (value: Json): FeedItem | null => {
@@ -29,7 +28,7 @@ const toItem = (value: Json): FeedItem | null => {
   return {
     guid: id,
     url,
-    title: [...text].slice(0, TITLE_CHARS).join(''),
+    title: [...text].slice(0, X_TITLE_CHARS).join(''),
     summary: text,
     author: asString(post.author),
     publishedAt: date.toISOString(),
@@ -51,22 +50,13 @@ const readPosts = (file: string): Json[] => {
 }
 
 const ingest = (db: Db, posts: Json[], now: string): number => {
-  // 初めての x かどうかは、この回の投稿を入れる前に決める
-  const first = !hasSource(db, X_SOURCE.storeAs)
-  let added = 0
+  const items: FeedItem[] = []
   for (const post of posts) {
     const item = toItem(post)
-    if (item === null) {
-      log(NAME, '取り込めない投稿を飛ばしました（id / url / postedAt が不正）')
-      continue
-    }
-    if (upsertItem(db, X_SOURCE.storeAs, item, X_SOURCE.trackUpdates, now) === 'new') added++
+    if (item === null) log(NAME, '取り込めない投稿を飛ばしました（id / url / postedAt が不正）')
+    else items.push(item)
   }
-  if (first) {
-    const cutoff = new Date(new Date(now).getTime() - BASELINE_HOURS * MS_PER_HOUR).toISOString()
-    markBaseline(db, X_SOURCE.storeAs, cutoff)
-  }
-  return added
+  return ingestFeed(db, X_SOURCE, items, now).added
 }
 
 export const run = (argv: string[]): void => {
