@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:sec="http://jvn.jp/rss/mod_sec/" xmlns:sy="http://purl.org/rss/1.0/modules/syndication/" xsi:schemaLocation="http://purl.org/rss/1.0/ https://jvndb.jvn.jp/schema/jvnrss_2.0.xsd" xml:lang="ja">
+  <channel rdf:about="https://jvndb.jvn.jp/ja/rss/jvndb_new.rdf">
+    <title>JVNDB RSS Feed - New Entry</title>
+    <link>https://jvndb.jvn.jp/</link>
+    <description>JVN iPedia 新着情報</description>
+    <dc:creator></dc:creator>
+    <dc:date>2026-11-09T17:00:28+09:00</dc:date>
+    <dcterms:modified>2026-11-09T17:00:28+09:00</dcterms:modified>
+    <items>
+      <rdf:Seq>
+        <rdf:li rdf:resource="https://jvndb.jvn.jp/ja/contents/2026/JVNDB-2026-000169.html"/>
+        <rdf:li rdf:resource="https://jvndb.jvn.jp/ja/contents/2026/JVNDB-2026-000163.html"/>
+        <rdf:li rdf:resource="https://jvndb.jvn.jp/ja/contents/2026/JVNDB-2026-042474.html"/>
+      </rdf:Seq>
+    </items>
+  </channel>
+  <item rdf:about="https://jvndb.jvn.jp/ja/contents/2026/JVNDB-2026-000163.html">
+    <title>WebSAM WinShareにおける複数の脆弱性</title>
+    <link>https://jvndb.jvn.jp/ja/contents/2026/JVNDB-2026-000163.html</link>
+    <description>日本電気株式会社が提供するWebSAM WinShareには、次の複数の脆弱性が存在します。&#13;
+&lt;ul&gt;&lt;li&gt;プログラムフォルダにおけるインストール時の不適切なファイルアクセス権設定（CWE-276）- CVE-2026-113362&lt;/li&gt;&lt;li&gt;危険なメソッドや機能の意図しない公開（CWE-749）- CVE-2026-113363&lt;/li&gt;&lt;li&gt;ヒープベースのバッファオーバーフロー（CWE-122）- CVE-2026-113364&lt;/li&gt;&lt;/ul&gt;&#13;
+この脆弱性情報は、情報セキュリティ早期警戒パートナーシップに基づき下記の方がIPAに報告し、JPCERT/CCが開発者との調整を行いました。&#13;
+報告者：川田 柾浩 氏&#13;
+        富士通株式会社 ルスラン サイフィエフ 氏、デニス ファウストヴ 氏</description>
+    <sec:identifier>JVNDB-2026-000163</sec:identifier>
+    <sec:references source="JVN" id="JVN#89009783">https://jvn.jp/jp/JVN89009783/index.html</sec:references>
+    <sec:references source="CVE" id="CVE-2026-113362">https://www.cve.org/CVERecord?id=CVE-2026-113362</sec:references>
+    <sec:references source="CVE" id="CVE-2026-113363">https://www.cve.org/CVERecord?id=CVE-2026-113363</sec:references>
+    <sec:references source="CVE" id="CVE-2026-113364">https://www.cve.org/CVERecord?id=CVE-2026-113364</sec:references>
+    <sec:references title="バッファエラー(CWE-119)" id="CWE-119">https://jvndb.jvn.jp/ja/cwe/CWE-119.html</sec:references>
+    <sec:references title="その他(CWE-Other)" id="CWE-Other">https://www.ipa.go.jp/security/vuln/scap/cwe.html</sec:references>
+    <sec:cpe version="2.2" vendor="日本電気" product="WebSAM WinShare">cpe:/a:nec:websam_winshare</sec:cpe>
+    <sec:cvss version="3.0" score="9.8" type="Base" severity="Critical" vector="CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"/>
+    <dc:date>2026-11-09T14:24+09:00</dc:date>
+    <dcterms:issued>2026-11-09T14:24+09:00</dcterms:issued>
+    <dcterms:modified>2026-11-09T14:24+09:00</dcterms:modified>
+  </item>
+<item rdf:about="https://jvndb.jvn.jp/ja/contents/2024/JVNDB-2024-030124.html">
+    <title>GetscreenのGetscreen Agentにおける複数の脆弱性</title>
+    <link>https://jvndb.jvn.jp/ja/contents/2024/JVNDB-2024-030124.html</link>
+    <description>Windows上のPoint B Ltd Getscreen Agent バージョン2.19.6および3.9.4までに脆弱性が検出されました。この脆弱性は、MSIインストーラーのコンポーネントである getscreen.msi ファイルの未特定の機能に影響を与えます。この操作により、安全でない権限で一時ファイルが作成されてしまいます。攻撃はローカルアクセスがある場合にのみ可能です。攻撃コードはすでに公開されており、悪用される恐れがあります。本問題の対策として、バージョン3.9.5へのアップグレードを推奨します。影響を受けるコンポーネントのアップグレードを実施してください。&#13;
+</description>
+    <sec:identifier>JVNDB-2024-030124</sec:identifier>
+    <sec:references source="CVE" id="CVE-2024-7358">https://www.cve.org/CVERecord?id=CVE-2024-7358</sec:references>
+    <sec:references source="NVD" id="CVE-2024-7358">https://nvd.nist.gov/vuln/detail/CVE-2024-7358</sec:references>
+    <sec:references source="関連文書" id="Vulnerability/GetScreen at main  SaumyajeetDas/Vulnerability  GitHub">https://github.com/SaumyajeetDas/Vulnerability/tree/main/GetScreen</sec:references>
+    <sec:references source="関連文書" id="Windows Agent Application Changelog - Docs Center">https://docs.getscreen.me/change-log/agent/windows/</sec:references>
+    <sec:references title="安全でない一時ファイル(CWE-377)" id="CWE-377">https://cwe.mitre.org/data/definitions/377.html</sec:references>
+    <sec:references title="不適切なアクセスパーミションでの一時ファイル作成(CWE-378)" id="CWE-378">https://cwe.mitre.org/data/definitions/378.html</sec:references>
+    <sec:cpe version="2.2" vendor="Getscreen" product="Getscreen Agent">cpe:/a:getscreen:getscreen_agent</sec:cpe>
+    <sec:cvss version="2.0" score="6.8" type="Base" severity="Medium" vector="AV:L/AC:L/Au:S/C:C/I:C/A:C"/>
+    <sec:cvss version="3.0" score="7.8" type="Base" severity="High" vector="CVSS:3.0/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"/>
+    <dc:date>2026-11-06T13:09+09:00</dc:date>
+    <dcterms:issued>2026-11-06T13:09+09:00</dcterms:issued>
+    <dcterms:modified>2026-11-06T13:09+09:00</dcterms:modified>
+  </item>
+<item rdf:about="https://jvndb.jvn.jp/ja/contents/2026/JVNDB-2026-042474.html">
+    <title>CISA ICS Advisory / ICS Medical Advisory（2026年11月05日）</title>
+    <link>https://jvndb.jvn.jp/ja/contents/2026/JVNDB-2026-042474.html</link>
+    <description>米国CISAがCISA ICS Advisory / ICS Medical Advisoryを公表しました。&#13;
+&#13;
+更新：1件&lt;ul&gt;&lt;li&gt;&lt;a href='https://www.cisa.gov/news-events/ics-advisories/icsa-26-211-07' target='_blank'&gt;ICSA-26-211-07: Mitsubishi Electric CC-Link IE TSN Communication Protocol (Update B)&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;</description>
+    <sec:identifier>JVNDB-2026-042474</sec:identifier>
+    <sec:references source="JVN" id="JVNVU#90841469">https://jvn.jp/vu/JVNVU90841469/index.html</sec:references>
+    <sec:cpe version="2.2" vendor="（複数のベンダ）" product="（複数の製品）">cpe:/a:misc:multiple_vendors</sec:cpe>
+    <dc:date>2026-11-09T13:34+09:00</dc:date>
+    <dcterms:issued>2026-11-09T13:34+09:00</dcterms:issued>
+    <dcterms:modified>2026-11-09T13:34+09:00</dcterms:modified>
+  </item>
+</rdf:RDF>

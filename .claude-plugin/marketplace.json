@@ -161,6 +161,20 @@
         "worktree",
         "dispatch"
       ]
+    },
+    {
+      "name": "dev-digest",
+      "description": "毎朝、開発ニュースのフィードを集めて Slack に届ける",
+      "source": "./apps/dev-digest",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "productivity",
+      "tags": [
+        "digest",
+        "slack",
+        "rss",
+        "orca"
+      ]
     }
   ]
 }
