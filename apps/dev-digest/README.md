@@ -53,8 +53,17 @@ AI の目に触れない」ことと「うっかり読まない」ことまで�
 **無人の実行の封じ込め**: 毎朝の実行は、信用できないフィードと X の本文を読む。本文に仕込まれた指示に従わされても
 被害が広がらないよう、許可ルールで封じ込める。作業フォルダの allow はランチャーの朝のサブコマンド、
 `orca tab close` / `snapshot` / `scroll`、作業フォルダの読み取り、`x.json` と `digest.json` だけへの書き込みに
-絞る（`permissions --show` で確認できる）。**残るリスク**: `orca snapshot --page <id>` は、タブの id を推測されると
-別のタブを読めてしまう。Orca のブラウザで X 以外の機密ページを開いたままにしないこと。
+絞る（`permissions --show` で確認できる）。
+
+allow に無い操作が拒まれるのは、`permissions --apply` が作業フォルダの設定（`~/.dev-digest/run/.claude/settings.json`）
+の `permissions.defaultMode` を `dontAsk` にするからである。`auto` などのモードでは allow に無い操作も自動で承認され
+うるので、allow だけでは許可リストにならない。作業フォルダの設定は user の設定（`~/.claude/settings.json`）より
+優先されるため、user の設定のモードは変えない。automation の起動のしかたでモードが上書きされると封じ込めは効かない。
+**実際の朝の実行で、allow に無い操作が拒まれることを確かめること。**
+
+**残るリスク**: `orca snapshot --page <id>` は、タブの id を推測されると別のタブを読めてしまう。
+`orca tab close --page <id>` も同じで、id が分かれば X 以外のタブも閉じられる。Orca のブラウザで X 以外の
+機密ページを開いたままにしないこと。
 
 ## 開発
 

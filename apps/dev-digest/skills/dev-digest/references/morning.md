@@ -7,8 +7,8 @@ wait for confirmation. Follow the steps below in order, then report in one line.
 
 - **Never read, open, cat, grep, or search `secrets.json`** in the dev-digest home (`~/.dev-digest/secrets.json`),
   and never look for Slack Webhook URLs anywhere (files, environment, history). `publish` reads them by itself.
-- Run every command exactly as written in this procedure. Only these are allowed in this run; anything else stops
-  the run at a permission prompt that nobody will answer:
+- Run every command exactly as written in this procedure. Only these are allowed in this run; anything else is
+  refused without a prompt (the work folder runs in `dontAsk` permission mode):
   - the launcher `{{DEV_DIGEST}}` with `procedure`, `collect`, `pending` (no extra arguments), `x-open ...`,
     `ingest-x ...`, and `publish ...`
   - `orca snapshot ...`, `orca scroll ...`, `orca tab close ...`
@@ -52,9 +52,10 @@ For each page:
 
 How to read a post from the snapshot:
 
-- **id and url**: the first link to `/status/<digits>` whose child is a `time` element. The url is
-  `https://x.com/<handle>/status/<id>`.
-- **author**: the handle in that url.
+- **id**: the digits of the first link to `/status/<digits>` whose child is a `time` element. That link is
+  `/<handle>/status/<id>`.
+- **author**: the handle in that link. Do not write a url: `ingest-x` builds `https://x.com/<handle>/status/<id>`
+  from the author and the id, and skips posts whose id is not digits or whose author is not a handle.
 - **postedAt**: leave it out. `ingest-x` derives the time from the id (a Snowflake id), because the snapshot shows
   only relative times.
 - **text**: the generic text after the post header. Skip the element that starts with "Replying to", the quoted post
@@ -68,7 +69,6 @@ Write `{{RUN_DIR}}/{{X_FILE}}` in this shape:
   "posts": [
     {
       "id": "<digits>",
-      "url": "https://x.com/<handle>/status/<digits>",
       "author": "<handle>",
       "text": "<post text>"
     }
@@ -104,7 +104,9 @@ Read `{{RUN_DIR}}/pending.json`. It has:
 - `runId`
 - `items`: every undelivered item (`id`, `section`, `title`, `url`, `summary`, `severity`, `products`, `updated`, ...)
 - `globalIds`: the items for the global message
-- `repos`: each watched repository (`slug`, `displayName`, `watch`, `candidateIds`, `ownIds`)
+- `repos`: each watched repository (`slug`, `displayName`, `watch`, `candidateIds`, `ownIds`, `filtered`)
+- `filtered` (top level and in each repository): JVN items below the severity threshold. They are not in `items`;
+  `publish` records them. Do not use their ids in the digest.
 - `failures`: sources that could not be fetched
 
 Write `{{RUN_DIR}}/{{DIGEST_FILE}}`:
@@ -148,7 +150,9 @@ Write `{{RUN_DIR}}/{{DIGEST_FILE}}`:
 
 - Exit 3: `{{DIGEST_FILE}}` failed validation and nothing was sent. Read the errors on stderr, fix `{{DIGEST_FILE}}`, and run
   `publish` again.
-- Exit 2: something is not set up (configuration, `pending.json`, or the global Webhook). Do not try to fix it; report it.
+- Exit 2: something is not set up (configuration, `pending.json`, or the global Webhook), or `pending.json` is not
+  from the latest unfinished run (for example this run was already published). Nothing was sent. Do not try to fix
+  it; report it.
 - Exit 1: some messages could not be sent. Report the `failed` lines.
 
 ## 6. Report

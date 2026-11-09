@@ -59,6 +59,11 @@ project の allow は、置き換えで毎回作り直し（古い広い許可�
   組み立て、`https://x.com/` で始まらない URL を開かない）
 - `Read(<runDir>/**)`、`Write` / `Edit` は `x.json` と `digest.json` だけ（`CLAUDE.md` などに指示を残させない）
 
+allow を許可リストとして効かせるのは、同じ設定の `permissions.defaultMode: "dontAsk"`（`PROJECT_PERMISSION_MODE`）で
+ある。`auto` などでは allow に無い操作も自動で承認されうる。user の設定のモードには触れない（project の設定が優先
+される）。封じ込めは実際の朝の実行で確かめる（allow に無い操作が拒まれること）。
+
 user には `secrets.json` の Read / Edit の deny を**足すだけ**にして、ほかの設定を壊さない。手順で使う操作を
 増やしたら、同じ commit で `lib/defaults.ts` の定数・`lib/permissions.ts`・morning.md・README の説明を揃える。
-残るリスク: `orca snapshot --page <id>` は id を推測されると別のタブを読める。
+残るリスク: `orca snapshot --page <id>` は id を推測されると別のタブを読め、`orca tab close --page <id>` は id が
+分かれば X 以外のタブも閉じられる。

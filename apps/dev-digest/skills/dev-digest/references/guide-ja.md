@@ -52,7 +52,10 @@ CLI は `node "$PLUGIN/bin/dev-digest.ts" <subcommand>` で呼ぶ（`PLUGIN` は
 4. 権限のルールを見せて、適用する前に尋ねる（`permissions --show`）。`project` の一覧は作業フォルダでの無人の
    実行に許す操作: ランチャーの `procedure` / `collect` / `pending`（引数なしの完全一致）、`ingest-x:*`、
    `publish:*`、`x-open:*`、`orca tab close` / `snapshot` / `scroll`、作業フォルダの読み取り、`x.json` と
-   `digest.json` だけへの書き込みと編集。project の allow は**置き換える**。`user` の一覧は、どのセッションも
+   `digest.json` だけへの書き込みと編集。project の allow は**置き換え**、作業フォルダの `permissions.defaultMode` を
+   `dontAsk` にするので、allow に無い操作は尋ねずに拒まれる（`auto` などのモードでは allow に無い操作も自動で承認
+   されうる）。作業フォルダの設定は user の設定より優先され、user の設定のモードは変えない。封じ込めはこのモードに
+   頼るので、最初の実際の朝の実行で allow に無い操作が拒まれることを確かめるようユーザーに伝える。`user` の一覧は、どのセッションも
    `secrets.json` を Read / Edit できないようにする deny で、user の設定には**足すだけ**。ユーザーが承認して
    から `permissions --apply` を実行する。
 5. ユーザーに、Orca の内蔵ブラウザで X に 1 回ログインするよう伝える（毎朝の実行はそのログインを使う）。
@@ -66,7 +69,7 @@ CLI は `node "$PLUGIN/bin/dev-digest.ts" <subcommand>` で呼ぶ（`PLUGIN` は
 監視したいリポジトリの中で実行する。`init` が済んでいること。
 
 1. slug を求める（`repo slug --path "$(pwd -P)"`。`origin` の `owner/repo`、無ければフォルダ名）。slug の規則:
-   英数字で始まり、`owner/repo` の形で、`__` を含まない。あとで `repo save` が拒んだら、ユーザーに伝えて別の
+   英数字で始まり、`owner/repo` か 1 段の名前（`origin` が無いときのフォルダ名）で、`__` を含まない。あとで `repo save` が拒んだら、ユーザーに伝えて別の
    slug を決める。
 2. 依存の定義を読んで候補を作る。対象は、プロジェクトの**直接依存**（package.json、go.mod、pyproject.toml /
    requirements、Cargo.toml、Gemfile、pom.xml / build.gradle など）と**インフラの OSS**（docker-compose の image、

@@ -10,8 +10,8 @@ Orca の automation から無人で実行される。だれも見ていない: �
 
 - 作業フォルダの `secrets.json`（`~/.dev-digest/secrets.json`）を**読まない・開かない・cat しない・grep しない**。
   Slack Webhook URL もどこにも探さない（ファイル・環境変数・履歴）。`publish` が自分で読む。
-- コマンドはこの手順に書かれたとおりに実行する。この実行で許されるのは次だけで、それ以外は許可の確認で止まり、
-  だれも答えない:
+- コマンドはこの手順に書かれたとおりに実行する。この実行で許されるのは次だけで、それ以外は確認なしに拒まれる
+  （作業フォルダは permission の `dontAsk` モードで動く）:
   - ランチャー `{{DEV_DIGEST}}` の `procedure`、`collect`、`pending`（引数なし）、`x-open ...`、`ingest-x ...`、
     `publish ...`
   - `orca snapshot ...`、`orca scroll ...`、`orca tab close ...`
@@ -44,15 +44,16 @@ Orca の automation から無人で実行される。だれも見ていない: �
 
 snapshot からの投稿の読み方:
 
-- **id と url**: `/status/<数字>` への最初のリンクで、子が `time` 要素のもの。url は
-  `https://x.com/<handle>/status/<id>`。
-- **author**: その url の handle。
+- **id**: `/status/<数字>` への最初のリンクで、子が `time` 要素のものの数字。そのリンクは
+  `/<handle>/status/<id>`。
+- **author**: そのリンクの handle。url は書かない。`ingest-x` が author と id から
+  `https://x.com/<handle>/status/<id>` を作り、id が数字でない投稿や author が handle の形でない投稿は飛ばす。
 - **postedAt**: 書かない。snapshot は相対時刻しか出さないので、`ingest-x` が id（Snowflake id）から求める。
 - **text**: 投稿ヘッダの後の一般的なテキスト。「Replying to」で始まる要素、「Quote」で始まる引用ポスト、カードや
   メディアは飛ばす。
 - リストとハッシュタグ検索をまたいで、同じ id は 1 回だけにする。
 
-`{{RUN_DIR}}/{{X_FILE}}` を `{ "posts": [ { id, url, author, text } ] }` の形で書き、
+`{{RUN_DIR}}/{{X_FILE}}` を `{ "posts": [ { id, author, text } ] }` の形で書き、
 `ingest-x --file {{RUN_DIR}}/{{X_FILE}}` で保存する。
 
 X を読めなければ（ログアウト、ページが開かない、投稿が見つからない）、長く再試行せず、失敗を記録して手順 3 へ進む:
@@ -69,7 +70,9 @@ X を読めなければ（ログアウト、ページが開かない、投稿が
 - `runId`
 - `items`: 未送信の全項目（`id`、`section`、`title`、`url`、`summary`、`severity`、`products`、`updated` など）
 - `globalIds`: 全体向けメッセージの項目
-- `repos`: 監視中の各リポジトリ（`slug`、`displayName`、`watch`、`candidateIds`、`ownIds`）
+- `repos`: 監視中の各リポジトリ（`slug`、`displayName`、`watch`、`candidateIds`、`ownIds`、`filtered`）
+- `filtered`（最上位と各リポジトリ）: JVN のしきい値に届かない項目。`items` には入らず、`publish` が記録する。
+  その id は速報に使わない。
 - `failures`: 取得できなかったソース
 
 `{{RUN_DIR}}/{{DIGEST_FILE}}` に `runId` / `notes` / `groups` / `repos` を書く（形は morning.md の JSON のとおり）。
@@ -90,7 +93,8 @@ X を読めなければ（ログアウト、ページが開かない、投稿が
 `publish --file {{RUN_DIR}}/{{DIGEST_FILE}}` を実行する。
 
 - exit 3: `{{DIGEST_FILE}}` の検証に失敗し、何も送られていない。stderr のエラーを読んで直し、もう一度 `publish` する。
-- exit 2: 何かが未設定（設定・`pending.json`・全体の Webhook）。直そうとせず、報告する。
+- exit 2: 何かが未設定（設定・`pending.json`・全体の Webhook）か、`pending.json` が最新の未完了の実行のもので
+  ない（たとえばこの実行はもう送り終えている）。何も送られていない。直そうとせず、報告する。
 - exit 1: 送れなかったメッセージがある。`failed` の行を報告する。
 
 ## 6. 報告

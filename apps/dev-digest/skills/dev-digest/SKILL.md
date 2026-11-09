@@ -85,8 +85,13 @@ node "$PLUGIN/bin/dev-digest.ts" permissions --show
    Present the output to the user. The `project` list is the allow list for the unattended run in the work folder:
    the launcher's `procedure` / `collect` / `pending` (exact), `ingest-x:*`, `publish:*`, `x-open:*`;
    `orca tab close` / `snapshot` / `scroll`; read access to the work folder; write and edit access to only
-   `x.json` and `digest.json`. It **replaces** the project allow list. The `user` list adds deny rules so that no
-   session can Read or Edit `secrets.json`; it only **adds** to the user settings. Only after the user approves:
+   `x.json` and `digest.json`. It **replaces** the project allow list and sets the work folder's
+   `permissions.defaultMode` to `dontAsk`, so anything outside the allow list is refused without a prompt (under modes
+   such as `auto`, actions outside the allow list can still be approved automatically). The work folder's settings
+   take precedence over the user settings, whose mode is not changed. The containment relies on this mode: tell the
+   user to confirm on the first real morning run that an action outside the allow list is refused. The `user` list
+   adds deny rules so that no session can Read or Edit `secrets.json`; it only **adds** to the user settings. Only
+   after the user approves:
 
 ```bash
 node "$PLUGIN/bin/dev-digest.ts" permissions --apply
@@ -113,8 +118,9 @@ Run this inside the repository to watch. It needs `init` to have been done.
 node "$PLUGIN/bin/dev-digest.ts" repo slug --path "$(pwd -P)"
 ```
 
-   Rules for a slug: it starts with a letter or digit, has the `owner/repo` shape, and never contains `__`. If the
-   printed slug is rejected by `repo save` later, tell the user and agree on another slug.
+   Rules for a slug: it starts with a letter or digit, is either `owner/repo` or a single segment (the folder name
+   when there is no `origin` remote), and never contains `__`. If the printed slug is rejected by `repo save` later,
+   tell the user and agree on another slug.
 2. Read the dependency definitions to build a candidate list. Scope: **direct dependencies** of the project
    (package.json, go.mod, pyproject.toml / requirements, Cargo.toml, Gemfile, pom.xml / build.gradle, ...) plus
    **infrastructure OSS**: images in docker-compose files and Dockerfile `FROM`, Helm charts, Kubernetes
