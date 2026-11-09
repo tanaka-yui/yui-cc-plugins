@@ -89,7 +89,12 @@ node "$PLUGIN/bin/dev-digest.ts" permissions --show
    `permissions.defaultMode` to `dontAsk`, so anything outside the allow list is refused without a prompt (under modes
    such as `auto`, actions outside the allow list can still be approved automatically). The work folder's settings
    take precedence over the user settings, whose mode is not changed. The containment relies on this mode: tell the
-   user to confirm on the first real morning run that an action outside the allow list is refused. The `user` list
+   user to confirm on the first real morning run that an action outside the allow list is refused. The `inherited`
+   list is the allow list in the user settings. Allow rules from every scope are merged, and `dontAsk` refuses only
+   actions that no allow rule matches, so these rules also apply to the unattended run: the containment is the
+   project list plus this list, not the project list alone. dev-digest never changes them. Show the list to the user
+   and point out any broad rules (for example `Bash(git commit:*)`, a broad `Bash(...)` prefix, or `WebFetch`); the
+   user decides whether to remove them from their own settings. Do not remove them yourself. The `user` list
    adds deny rules so that no session can Read or Edit `secrets.json`; it only **adds** to the user settings. Only
    after the user approves:
 

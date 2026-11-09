@@ -63,6 +63,11 @@ allow を許可リストとして効かせるのは、同じ設定の `permissio
 ある。`auto` などでは allow に無い操作も自動で承認されうる。user の設定のモードには触れない（project の設定が優先
 される）。封じ込めは実際の朝の実行で確かめる（allow に無い操作が拒まれること）。
 
+**user の allow も朝の実行に効く。**allow は全スコープで合わさり、dontAsk はどの allow にも合わない操作だけを拒む。
+だから封じ込めの範囲は「project の allow ＋ user の allow」で、文書で「project の allow だけ」と言ってはならない。
+user の allow は書き換えず（ユーザーの設定を壊さない）、`permissions --show` が `inherited` として読んで見せる
+（`inheritedAllow`）。回帰は `test/unit/permissions.test.ts` の PM8 と `test/init.test.ts` の IN4。
+
 user には `secrets.json` の Read / Edit の deny を**足すだけ**にして、ほかの設定を壊さない。手順で使う操作を
 増やしたら、同じ commit で `lib/defaults.ts` の定数・`lib/permissions.ts`・morning.md・README の説明を揃える。
 残るリスク: `orca snapshot --page <id>` は id を推測されると別のタブを読め、`orca tab close --page <id>` は id が

@@ -10,8 +10,8 @@ Orca の automation から無人で実行される。だれも見ていない: �
 
 - 作業フォルダの `secrets.json`（`~/.dev-digest/secrets.json`）を**読まない・開かない・cat しない・grep しない**。
   Slack Webhook URL もどこにも探さない（ファイル・環境変数・履歴）。`publish` が自分で読む。
-- コマンドはこの手順に書かれたとおりに実行する。この実行で許されるのは次だけで、それ以外は確認なしに拒まれる
-  （作業フォルダは permission の `dontAsk` モードで動く）:
+- コマンドはこの手順に書かれたとおりに実行し、この実行では次のコマンドだけを使う。ほかのコマンドが許可されて
+  いても使わない（作業フォルダは permission の `dontAsk` モードで動くが、user の設定の allow はここでも効く）:
   - ランチャー `{{DEV_DIGEST}}` の `procedure`、`collect`、`pending`（引数なし）、`x-open ...`、`ingest-x ...`、
     `publish ...`
   - `orca snapshot ...`、`orca scroll ...`、`orca tab close ...`

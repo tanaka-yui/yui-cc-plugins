@@ -55,9 +55,13 @@ CLI は `node "$PLUGIN/bin/dev-digest.ts" <subcommand>` で呼ぶ（`PLUGIN` は
    `digest.json` だけへの書き込みと編集。project の allow は**置き換え**、作業フォルダの `permissions.defaultMode` を
    `dontAsk` にするので、allow に無い操作は尋ねずに拒まれる（`auto` などのモードでは allow に無い操作も自動で承認
    されうる）。作業フォルダの設定は user の設定より優先され、user の設定のモードは変えない。封じ込めはこのモードに
-   頼るので、最初の実際の朝の実行で allow に無い操作が拒まれることを確かめるようユーザーに伝える。`user` の一覧は、どのセッションも
-   `secrets.json` を Read / Edit できないようにする deny で、user の設定には**足すだけ**。ユーザーが承認して
-   から `permissions --apply` を実行する。
+   頼るので、最初の実際の朝の実行で allow に無い操作が拒まれることを確かめるようユーザーに伝える。`inherited` の
+   一覧は user の設定の allow。allow は全スコープのものが合わさり、`dontAsk` が拒むのはどの allow にも合わない操作
+   だけなので、これらは無人の実行にも効く。封じ込めの範囲は project の一覧＋この一覧であって、project の一覧だけ
+   ではない。dev-digest はこれを変えない。ユーザーに一覧を見せ、広いルール（例: `Bash(git commit:*)`、広い
+   `Bash(...)` の接頭辞、`WebFetch`）があれば指摘する。外すかどうかはユーザーが自分の設定で決める。自分では外さない。
+   `user` の一覧は、どのセッションも `secrets.json` を Read / Edit できないようにする deny で、user の設定には
+   **足すだけ**。ユーザーが承認してから `permissions --apply` を実行する。
 5. ユーザーに、Orca の内蔵ブラウザで X に 1 回ログインするよう伝える（毎朝の実行はそのログインを使う）。
    認証情報は尋ねない。
 6. 最初の実行をユーザーが承認したら、init が出した automation を `orca automations run <automation id>` で実行する。

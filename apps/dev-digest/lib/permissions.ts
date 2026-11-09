@@ -84,6 +84,16 @@ const writeSettings = (file: string, root: JsonObject): void => {
   renameSync(temp, file)
 }
 
+// user の設定の allow は作業フォルダの朝の実行にも効く（allow は全スコープで合わさり、dontAsk でも通る）。
+// dev-digest は書き換えず、--show で見せるために読むだけ。読めなければ null
+export const inheritedAllow = (file: string): string[] | null => {
+  try {
+    return readRules(file, 'allow').current.filter((rule): rule is string => typeof rule === 'string')
+  } catch {
+    return null
+  }
+}
+
 // permissions[key] に無いものだけ足し、足した数を返す。ほかのキーと既存のルールの順は保つ（user の設定に使う）
 export const applyRules = (file: string, key: RuleKey, rules: string[]): number => {
   const { root, permissions, current } = readRules(file, key)

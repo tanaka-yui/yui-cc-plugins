@@ -7,8 +7,9 @@ wait for confirmation. Follow the steps below in order, then report in one line.
 
 - **Never read, open, cat, grep, or search `secrets.json`** in the dev-digest home (`~/.dev-digest/secrets.json`),
   and never look for Slack Webhook URLs anywhere (files, environment, history). `publish` reads them by itself.
-- Run every command exactly as written in this procedure. Only these are allowed in this run; anything else is
-  refused without a prompt (the work folder runs in `dontAsk` permission mode):
+- Run every command exactly as written in this procedure, and use only these commands in this run, even when other
+  commands would be permitted (the work folder runs in `dontAsk` permission mode, but allow rules from the user
+  settings still apply here):
   - the launcher `{{DEV_DIGEST}}` with `procedure`, `collect`, `pending` (no extra arguments), `x-open ...`,
     `ingest-x ...`, and `publish ...`
   - `orca snapshot ...`, `orca scroll ...`, `orca tab close ...`

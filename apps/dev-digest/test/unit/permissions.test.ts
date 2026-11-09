@@ -1,4 +1,4 @@
-import { applyRules, replaceRules } from '../../lib/permissions.ts'
+import { applyRules, inheritedAllow, replaceRules } from '../../lib/permissions.ts'
 import { tempHome } from '../helpers.ts'
 
 import assert from 'node:assert/strict'
@@ -61,4 +61,17 @@ test('PM7 replaceRules は allow が同じでもモードが違えば書き直�
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {
     permissions: { allow: ['Bash(a)'], defaultMode: 'dontAsk' },
   })
+})
+
+test('PM8 inheritedAllow は user の設定の allow を読むだけで、無ければ空、読めなければ null', () => {
+  const dir = tempHome()
+  dirs.push(dir)
+  const file = join(dir, 'settings.json')
+  assert.deepEqual(inheritedAllow(file), [])
+  const content = JSON.stringify({ permissions: { allow: ['Bash(rtk:*)', 'WebFetch(domain:github.com)'] } })
+  writeFileSync(file, content)
+  assert.deepEqual(inheritedAllow(file), ['Bash(rtk:*)', 'WebFetch(domain:github.com)'])
+  assert.equal(readFileSync(file, 'utf8'), content)
+  writeFileSync(file, '{')
+  assert.equal(inheritedAllow(file), null)
 })

@@ -1,12 +1,19 @@
 import { die, log, parseFlags } from '../cli.ts'
 import { digestHome } from '../paths.ts'
-import { applyRules, proposedRules, replaceRules } from '../permissions.ts'
+import { applyRules, inheritedAllow, proposedRules, replaceRules } from '../permissions.ts'
 
 const NAME = 'dev-digest permissions'
 const EXIT_FAILED = 1
 
 // --show は書き込み先と書き方とルールを出すだけ（ルールにはパスしか入らず、秘密は含まない）。
-// project（作業フォルダ）の allow はこの一覧で置き換えてモードを決め、user の deny には無いものだけ足す
+// project（作業フォルダ）の allow はこの一覧で置き換えてモードを決め、user の deny には無いものだけ足す。
+// inherited は user の設定の allow で、朝の実行にもそのまま効く（書き換えない。ユーザーが判断するために見せる）
+const inheritedLines = (allow: string[] | null): string[] => {
+  if (allow === null) return ['  unreadable']
+  if (allow.length === 0) return ['  none']
+  return allow.map((rule) => `  inherited-allow ${rule}`)
+}
+
 export const run = (argv: string[]): void => {
   const { values } = parseFlags(NAME, {
     args: argv,
@@ -21,6 +28,8 @@ export const run = (argv: string[]): void => {
       ...rules.project.allow.map((rule) => `  allow ${rule}`),
       `user=${rules.user.file} mode=add`,
       ...rules.user.deny.map((rule) => `  deny ${rule}`),
+      `inherited=${rules.user.file} mode=unchanged`,
+      ...inheritedLines(inheritedAllow(rules.user.file)),
     ]
     process.stdout.write(`${lines.join('\n')}\n`)
     return

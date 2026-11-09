@@ -61,6 +61,13 @@ allow に無い操作が拒まれるのは、`permissions --apply` が作業フ�
 優先されるため、user の設定のモードは変えない。automation の起動のしかたでモードが上書きされると封じ込めは効かない。
 **実際の朝の実行で、allow に無い操作が拒まれることを確かめること。**
 
+**user の allow は朝の実行にも効く**: allow は user・project など全スコープのものが合わさる。dontAsk が拒むのは
+「どのスコープの allow にも無い操作」だけなので、user の設定（`~/.claude/settings.json`）に書いた allow
+（`Bash(git commit:*)` や `WebFetch(domain:...)` など）は、作業フォルダの朝の実行でもそのまま通る。封じ込めの範囲は
+「作業フォルダの allow ＋ user の allow」であって、作業フォルダの allow だけではない。dev-digest は user の allow を
+書き換えない。`permissions --show` の `inherited` にその一覧が出るので、無人の実行に許したくない広いルールが
+あれば、ユーザーが自分で外すか、それを承知で使う。
+
 **残るリスク**: `orca snapshot --page <id>` は、タブの id を推測されると別のタブを読めてしまう。
 `orca tab close --page <id>` も同じで、id が分かれば X 以外のタブも閉じられる。Orca のブラウザで X 以外の
 機密ページを開いたままにしないこと。

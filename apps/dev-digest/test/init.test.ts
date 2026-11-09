@@ -208,6 +208,8 @@ test('IN4 permissions --apply は作業フォルダの allow を作り直し、u
   assert.match(shown.stdout, /^project=\S+ mode=replace$/m)
   assert.match(shown.stdout, /^ {2}defaultMode dontAsk$/m)
   assert.match(shown.stdout, /^user=\S+ mode=add$/m)
+  // user の設定の allow も朝の実行に効くので見せる（この user の設定には allow が無い）
+  assert.match(shown.stdout, /^inherited=\S+ mode=unchanged\n {2}none$/m)
 
   const first = runCli(['permissions', '--apply'], env)
   assert.equal(first.code, 0, first.stderr)
@@ -289,6 +291,9 @@ test('PM5 permissions --apply は前の版が足した広い許可を作業フ�
     .stdout.split('\n')
     .filter((line) => line.startsWith('  allow '))
     .map((line) => line.slice('  allow '.length))
+  // user の設定に残った allow は書き換えず、朝の実行にも効くものとして見せる
+  const shown = runCli(['permissions', '--show'], env).stdout
+  for (const rule of userRules) assert.ok(shown.includes(`  inherited-allow ${rule}\n`), rule)
   const project = JSON.parse(readFileSync(projectFile, 'utf8'))
   assert.equal(project.model, 'opus')
   assert.deepEqual(project.permissions.allow, proposed)

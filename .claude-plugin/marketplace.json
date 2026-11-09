@@ -166,7 +166,7 @@
       "name": "dev-digest",
       "description": "毎朝、開発ニュースのフィードを集めて Slack に届ける",
       "source": "./apps/dev-digest",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "license": "MIT",
       "category": "productivity",
       "tags": [
