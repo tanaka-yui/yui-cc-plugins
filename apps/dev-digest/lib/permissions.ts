@@ -1,4 +1,13 @@
-import { ORCA_BROWSER_SUBCOMMANDS, ORCA_DEFAULT_BIN } from './defaults.ts'
+import {
+  CLAUDE_SETTINGS_FILE,
+  DIGEST_FILE,
+  MORNING_ARG_SUBCOMMANDS,
+  MORNING_EXACT_SUBCOMMANDS,
+  ORCA_DEFAULT_BIN,
+  ORCA_MORNING_COMMANDS,
+  SETTINGS_FILE_MODE,
+  X_FILE,
+} from './defaults.ts'
 import { asArray, asObject, parseJson } from './json.ts'
 import { CLAUDE_DIRNAME, claudeHome, homePaths } from './paths.ts'
 
@@ -12,31 +21,33 @@ export type ProposedRules = {
   user: { file: string; deny: string[] }
 }
 
-const SETTINGS_FILE = 'settings.json'
-const NEW_FILE_MODE = 0o644
 const MODE_BITS = 0o777
 
 // Claude の permission ルールで絶対パスを書くときは先頭を `//` にする（spec §13。`/x` は settings からの相対になる）
 const absolute = (path: string): string => `/${path}`
 
-// project = 毎朝の Claude が動く runDir の設定（ランチャー・Orca のブラウザ・runDir への読み書き）
+// project = 毎朝の Claude が動く runDir の設定。無人の実行は信用できない X の本文を読むので、手順が使う操作だけを許す:
+//   ランチャーは朝のサブコマンドだけ、Orca は x.com のタブを開く・閉じる・読む・スクロールするだけ、
+//   書き込みは手順が書く 2 ファイルだけ（runDir/CLAUDE.md などに指示を残させない）
 // user = 全セッションの設定（secrets.json を読ませない）
 export const proposedRules = (home: string): ProposedRules => {
   const paths = homePaths(home)
   const runDir = absolute(paths.runDir)
   const secrets = absolute(paths.secrets)
+  const writable = [X_FILE, DIGEST_FILE].map((name) => `${runDir}/${name}`)
   return {
     project: {
-      file: join(paths.runDir, CLAUDE_DIRNAME, SETTINGS_FILE),
+      file: join(paths.runDir, CLAUDE_DIRNAME, CLAUDE_SETTINGS_FILE),
       allow: [
-        `Bash(${paths.launcher}:*)`,
-        ...ORCA_BROWSER_SUBCOMMANDS.map((command) => `Bash(${ORCA_DEFAULT_BIN} ${command}:*)`),
+        ...MORNING_EXACT_SUBCOMMANDS.map((command) => `Bash(${paths.launcher} ${command})`),
+        ...MORNING_ARG_SUBCOMMANDS.map((command) => `Bash(${paths.launcher} ${command}:*)`),
+        ...ORCA_MORNING_COMMANDS.map((command) => `Bash(${ORCA_DEFAULT_BIN} ${command}:*)`),
         `Read(${runDir}/**)`,
-        `Write(${runDir}/**)`,
-        `Edit(${runDir}/**)`,
+        ...writable.map((file) => `Write(${file})`),
+        ...writable.map((file) => `Edit(${file})`),
       ],
     },
-    user: { file: join(claudeHome(), SETTINGS_FILE), deny: [`Read(${secrets})`, `Edit(${secrets})`] },
+    user: { file: join(claudeHome(), CLAUDE_SETTINGS_FILE), deny: [`Read(${secrets})`, `Edit(${secrets})`] },
   }
 }
 
@@ -60,7 +71,7 @@ export const applyRules = (file: string, key: 'allow' | 'deny', rules: string[])
   root.permissions = { ...permissions, [key]: [...current, ...missing] }
 
   // 一時ファイルに書いてから rename する。既存ファイルの権限は保つ
-  const mode = existsSync(file) ? statSync(file).mode & MODE_BITS : NEW_FILE_MODE
+  const mode = existsSync(file) ? statSync(file).mode & MODE_BITS : SETTINGS_FILE_MODE
   mkdirSync(dirname(file), { recursive: true })
   const temp = `${file}.${process.pid}.tmp`
   rmSync(temp, { force: true })

@@ -1,13 +1,14 @@
 import {
   CLAUDE_DIRNAME as LAUNCH_CLAUDE_DIRNAME,
   CLAUDE_HOME_ENV as LAUNCH_CLAUDE_HOME_ENV,
+  HOME_ENV as LAUNCH_HOME_ENV,
   LAUNCHER_VERSION as LAUNCH_LAUNCHER_VERSION,
   LAUNCHER_VERSION_ENV as LAUNCH_LAUNCHER_VERSION_ENV,
   PLUGIN_ID as LAUNCH_PLUGIN_ID,
   resolvePluginRoot,
 } from '../../bin/launch.ts'
 import { CLAUDE_HOME_ENV, LAUNCHER_VERSION, LAUNCHER_VERSION_ENV, PLUGIN_ID } from '../../lib/defaults.ts'
-import { CLAUDE_DIRNAME } from '../../lib/paths.ts'
+import { CLAUDE_DIRNAME, HOME_ENV } from '../../lib/paths.ts'
 import { tempHome } from '../helpers.ts'
 
 import assert from 'node:assert/strict'
@@ -63,4 +64,5 @@ test('LA2 ランチャーが持つ定数の写しは lib の値と一致する',
   assert.equal(LAUNCH_CLAUDE_HOME_ENV, CLAUDE_HOME_ENV)
   assert.equal(LAUNCH_LAUNCHER_VERSION_ENV, LAUNCHER_VERSION_ENV)
   assert.equal(LAUNCH_CLAUDE_DIRNAME, CLAUDE_DIRNAME)
+  assert.equal(LAUNCH_HOME_ENV, HOME_ENV)
 })

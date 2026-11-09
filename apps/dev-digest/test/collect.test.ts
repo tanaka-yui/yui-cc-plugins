@@ -185,7 +185,7 @@ test('CO6 ingest-x は同じ id を二重に入れない、--failed は失敗と
       posts: [
         xPost('1', '2026-11-09T11:00:00Z'),
         xPost('2', '2026-11-09T11:30:00+09:00'),
-        xPost('3', 'not a date'),
+        xPost('bad', 'not a date'),
         { id: '4', text: 'no url', postedAt: '2026-11-09T11:00:00Z' },
       ],
     }),
@@ -301,5 +301,24 @@ test('CO10 X の初回に 24 時間より古い投稿があっても送らない
   assert.deepEqual(
     items.map((item) => item.guid),
     ['fresh'],
+  )
+})
+
+test('CO11 ingest-x は postedAt が無い投稿の時刻を数字の id（Snowflake）から求める', () => {
+  const home = tempHome()
+  homes.push(home)
+  const now = '2026-11-09T12:00:00.000Z'
+  const file = join(home, 'x.json')
+  const id = '2119757882736668924'
+  writeFileSync(file, JSON.stringify({ posts: [{ id, url: `https://x.com/u/status/${id}`, author: 'u', text: 'hi' }] }))
+  const result = runCli(['ingest-x', '--file', file, '--now', now], { DEV_DIGEST_HOME: home })
+  assert.equal(result.code, 0, result.stderr)
+  assert.equal(result.stdout, 'new=1\n')
+  const handle = openDb(homePaths(home).db)
+  const stored = handle.prepare("SELECT published_at FROM items WHERE source_id = 'x'").all()
+  handle.close()
+  assert.deepEqual(
+    stored.map((row) => row.published_at),
+    ['2026-11-09T11:43:57.098Z'],
   )
 })

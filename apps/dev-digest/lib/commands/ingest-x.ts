@@ -1,6 +1,6 @@
 import { die, log, parseFlags, parseNow } from '../cli.ts'
 import { latestRun, openDb, recordFailure } from '../db.ts'
-import { X_SOURCE, X_TITLE_CHARS } from '../defaults.ts'
+import { SNOWFLAKE_EPOCH_MS, SNOWFLAKE_SHIFT, X_SOURCE, X_TITLE_CHARS } from '../defaults.ts'
 import { ingestFeed } from '../ingest.ts'
 import { asArray, asObject, asString, parseJson } from '../json.ts'
 import { digestHome, homePaths } from '../paths.ts'
@@ -14,16 +14,23 @@ import type { Json } from '../json.ts'
 const NAME = 'dev-digest ingest-x'
 const DIR_MODE = 0o700
 
-// 投稿 1 件を FeedItem にする。id / url が無い、日付が読めないものは null（取り込まない）
+const DIGITS = /^\d+$/
+
+// X の id は Snowflake で、上位ビットに投稿時刻を持つ（spec §13）。毎朝の Claude は計算の道具を持たないのでここで求める
+const snowflakeDate = (id: string): Date | null =>
+  DIGITS.test(id) ? new Date(Number((BigInt(id) >> SNOWFLAKE_SHIFT) + SNOWFLAKE_EPOCH_MS)) : null
+
+// 投稿 1 件を FeedItem にする。id / url が無いもの、日付が読めず id からも求められないものは null（取り込まない）
 const toItem = (value: Json): FeedItem | null => {
   const post = asObject(value)
   if (post === null) return null
   const id = asString(post.id)
   const url = asString(post.url)
+  if (!id || !url) return null
   const postedAt = asString(post.postedAt)
-  if (!id || !url || postedAt === null) return null
-  const date = new Date(postedAt)
-  if (Number.isNaN(date.getTime())) return null
+  const given = postedAt === null ? null : new Date(postedAt)
+  const date = given !== null && !Number.isNaN(given.getTime()) ? given : snowflakeDate(id)
+  if (date === null || Number.isNaN(date.getTime())) return null
   const text = asString(post.text) ?? ''
   return {
     guid: id,

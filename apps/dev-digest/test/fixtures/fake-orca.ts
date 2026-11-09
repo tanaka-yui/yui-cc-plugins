@@ -2,6 +2,8 @@
 // テストは `#!/bin/sh` の小さな wrapper から `node <このファイル>` で呼ぶ（ORCA_BIN は 1 つの実行ファイルしか取らない）
 //   FAKE_ORCA_REPO_ADD=exists  repo add を「登録済み」の失敗にする（repo list で引き直す経路のため）
 //   FAKE_ORCA_REPO_PATH        repo list が返す登録済みの path
+//   FAKE_ORCA_NEW_ID           automations create が返す id（既定 auto-1）
+//   FAKE_ORCA_EDIT=gone|fail   automations edit を失敗させる。gone は automations list からも消す（Orca の GUI で消された）
 import { appendFileSync } from 'node:fs'
 
 import type { Json } from '../../lib/json.ts'
@@ -32,9 +34,13 @@ if (command === 'repo add') {
 } else if (command === 'repo list') {
   reply({ repos: [{ id: 'repo-1', path: process.env.FAKE_ORCA_REPO_PATH ?? '', kind: 'folder' }] })
 } else if (command === 'automations create') {
-  reply({ automation: { id: 'auto-1', name: flag('--name') } })
+  reply({ automation: { id: process.env.FAKE_ORCA_NEW_ID || 'auto-1', name: flag('--name') } })
 } else if (command === 'automations edit') {
-  reply({ automation: { id: args[2] ?? '' } })
+  if (process.env.FAKE_ORCA_EDIT === 'gone') fail('Automation not found.')
+  else if (process.env.FAKE_ORCA_EDIT === 'fail') fail('runtime unavailable')
+  else reply({ automation: { id: args[2] ?? '' } })
+} else if (command === 'automations list') {
+  reply({ automations: process.env.FAKE_ORCA_EDIT === 'gone' ? [] : [{ id: 'auto-1', name: 'dev-digest' }] })
 } else {
   fail(`fake orca: unknown command: ${args.join(' ')}`)
 }

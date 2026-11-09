@@ -3,7 +3,7 @@ import { CLAUDE_HOME_ENV } from './defaults.ts'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-const HOME_ENV = 'DEV_DIGEST_HOME'
+export const HOME_ENV = 'DEV_DIGEST_HOME'
 export const HOME_DIRNAME = '.dev-digest'
 export const CLAUDE_DIRNAME = '.claude'
 
@@ -36,7 +36,8 @@ export const homePaths = (home: string): HomePaths => {
     db: join(home, 'digest.db'),
     binDir,
     launcher: join(binDir, 'dev-digest'),
-    launcherScript: join(binDir, 'launch.ts'),
+    // 拡張子を .mts にして、置き場所に package.json が無くても必ず ES module として読ませる
+    launcherScript: join(binDir, 'launch.mts'),
     runDir: join(home, 'run'),
   }
 }

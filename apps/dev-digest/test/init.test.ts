@@ -81,7 +81,15 @@ test('IN1 init は設定・ランチャー・workspace・automation を作る', 
   assert.match(result.stdout, /^webhook_global=missing$/m)
 
   assert.ok((statSync(paths.launcher).mode & 0o111) !== 0, 'launcher is executable')
-  assert.equal(readFileSync(paths.launcher, 'utf8'), `#!/bin/sh\nexec node "${paths.launcherScript}" "$@"\n`)
+  // init を走らせた node の絶対パスを焼き込み、実行できなければ PATH の node に落ちる
+  const script = readFileSync(paths.launcher, 'utf8')
+  const nodePath = /^NODE="(\/[^"]+)"$/m.exec(script)?.[1] ?? ''
+  assert.ok((statSync(nodePath).mode & 0o111) !== 0, script)
+  assert.equal(
+    script,
+    `#!/bin/sh\nNODE="${nodePath}"\n[ -x "$NODE" ] || NODE=node\nexec "$NODE" "${paths.launcherScript}" "$@"\n`,
+  )
+  assert.ok(paths.launcherScript.endsWith('.mts'))
   assert.equal(readFileSync(paths.launcherScript, 'utf8'), readFileSync(join(APP_ROOT, 'bin', 'launch.ts'), 'utf8'))
   assert.ok(existsSync(paths.db))
   assert.ok(existsSync(paths.runDir))
@@ -142,6 +150,7 @@ test('IN2 2 回目の init は edit になり create しない', () => {
   assert.equal(flagValue(edit, '--time'), '09:15')
   assert.equal(flagValue(edit, '--trigger'), 'weekdays')
   assert.equal(flagValue(edit, '--timezone'), 'Asia/Tokyo')
+  assert.equal(flagValue(edit, '--workspace'), `path:${homePaths(home).runDir}`)
 
   // 指定しなかったものと Orca の id は保つ
   const config = loadConfig(home)
@@ -150,6 +159,28 @@ test('IN2 2 回目の init は edit になり create しない', () => {
   assert.equal(config.schedule.trigger, 'weekdays')
   assert.deepEqual(config.devtoTags, ['aws', 'ai'])
   assert.equal(config.orca.automationId, 'auto-1')
+})
+
+test('IN2b 記録した automation が Orca から消えていれば作り直して新しい id を記録する', () => {
+  const { home, orcaLog, env } = setup()
+  assert.equal(runCli(INIT_ARGS, env).code, 0)
+  const result = runCli(['init', '--time', '09:15'], { ...env, FAKE_ORCA_EDIT: 'gone', FAKE_ORCA_NEW_ID: 'auto-2' })
+  assert.equal(result.code, 0, result.stderr)
+  assert.match(result.stdout, /^automation=auto-2 \(created\)$/m)
+  assert.equal(loadConfig(home)?.orca.automationId, 'auto-2')
+  const calls = orcaCalls(orcaLog)
+  assert.ok(calls.some((args) => args[0] === 'automations' && args[1] === 'list'))
+  assert.equal(calls.filter((args) => args[0] === 'automations' && args[1] === 'create').length, 2)
+})
+
+test('IN2c edit が別の理由で失敗したら作り直さずに exit 1', () => {
+  const { home, orcaLog, env } = setup()
+  assert.equal(runCli(INIT_ARGS, env).code, 0)
+  const result = runCli(['init', '--time', '09:15'], { ...env, FAKE_ORCA_EDIT: 'fail', FAKE_ORCA_NEW_ID: 'auto-2' })
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /runtime unavailable/)
+  assert.equal(loadConfig(home)?.orca.automationId, 'auto-1')
+  assert.equal(orcaCalls(orcaLog).filter((args) => args[0] === 'automations' && args[1] === 'create').length, 1)
 })
 
 test('IN3 automation のプロンプトに secrets も Webhook も含まない', () => {
@@ -186,15 +217,38 @@ test('IN4 permissions --apply は既存の設定を保ち、重複を足さな�
 
   const first = runCli(['permissions', '--apply'], env)
   assert.equal(first.code, 0, first.stderr)
-  assert.match(first.stdout, /^added project=10 user=2$/m)
+  assert.match(first.stdout, /^added project=14 user=2$/m)
 
   const project = JSON.parse(readFileSync(projectFile, 'utf8'))
   assert.deepEqual(project.env, { A: '1' })
-  assert.equal(project.permissions.allow[0], 'Bash(ls:*)')
-  assert.ok(project.permissions.allow.includes(`Bash(${paths.launcher}:*)`))
-  assert.ok(project.permissions.allow.includes('Bash(orca snapshot:*)'))
-  assert.ok(project.permissions.allow.includes(`Write(/${paths.runDir}/**)`))
-  assert.ok(project.permissions.allow.every((rule: string) => !rule.includes('///')))
+  const launcher = paths.launcher
+  const runDir = `/${paths.runDir}`
+  // 無人の実行に許すのは手順が使う操作だけ
+  assert.deepEqual(project.permissions.allow, [
+    'Bash(ls:*)',
+    `Bash(${launcher} procedure)`,
+    `Bash(${launcher} collect)`,
+    `Bash(${launcher} pending)`,
+    `Bash(${launcher} ingest-x:*)`,
+    `Bash(${launcher} publish:*)`,
+    'Bash(orca tab create --url https://x.com/:*)',
+    'Bash(orca tab close:*)',
+    'Bash(orca snapshot:*)',
+    'Bash(orca scroll:*)',
+    `Read(${runDir}/**)`,
+    `Write(${runDir}/x.json)`,
+    `Write(${runDir}/digest.json)`,
+    `Edit(${runDir}/x.json)`,
+    `Edit(${runDir}/digest.json)`,
+  ])
+  const allow: string[] = project.permissions.allow
+  for (const sub of ['set-webhook', 'init', 'permissions']) {
+    assert.ok(!allow.some((rule) => rule.startsWith(`Bash(${launcher} ${sub}`)), sub)
+  }
+  assert.ok(!allow.includes(`Bash(${launcher}:*)`))
+  assert.ok(!allow.some((rule) => /^Bash\(orca (goto|get|wait|tab:|tab list|tab switch|tab profile)/.test(rule)))
+  assert.ok(!allow.some((rule) => /^(Write|Edit)\(.*\*\*\)$/.test(rule)))
+  assert.ok(allow.every((rule) => !rule.includes('///')))
 
   const user = JSON.parse(readFileSync(userFile, 'utf8'))
   assert.equal(user.theme, 'dark')
@@ -216,9 +270,23 @@ test('IN5 procedure は置き換え後に {{ が残らない（init が置いた
   assert.ok(!result.stdout.includes('{{'), result.stdout)
   assert.ok(result.stdout.includes(`${paths.launcher} collect`))
   assert.ok(result.stdout.includes(`${paths.runDir}/digest.json`))
-  assert.ok(result.stdout.includes('https://x.com/i/lists/1'))
-  assert.ok(result.stdout.includes('https://x.com/search?q=%23LLM&f=live'))
+  // URL は引用符なしで、シェルの特殊文字だけバックスラッシュでエスケープした形（allow の接頭辞に一致させる）
+  assert.ok(result.stdout.includes('orca tab create --url https://x.com/i/lists/1 --json'))
+  assert.ok(result.stdout.includes('orca tab create --url https://x.com/search\\?q=%23LLM\\&f=live --json'))
+  assert.ok(result.stdout.includes(`${paths.launcher} ingest-x --file ${paths.runDir}/x.json`))
+  assert.ok(result.stdout.includes(`${paths.launcher} publish --file ${paths.runDir}/digest.json`))
   assert.ok(!result.stderr.includes('ランチャー'), result.stderr)
+})
+
+test('IN5b init は x.com 以外のリスト URL を拒む', () => {
+  const { home, orcaLog, env } = setup()
+  const args = [...INIT_ARGS]
+  args[args.indexOf('--x-list') + 1] = 'https://example.com/i/lists/1'
+  const result = runCli(args, env)
+  assert.equal(result.code, 2)
+  assert.match(result.stderr, /https:\/\/x\.com\//)
+  assert.equal(loadConfig(home), null)
+  assert.deepEqual(orcaCalls(orcaLog), [])
 })
 
 test('IN6 ランチャーの版が違えば警告を 1 行出して続ける', () => {

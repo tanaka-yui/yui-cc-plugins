@@ -7,6 +7,10 @@ import {
   AUTOMATION_PROVIDER,
   DEFAULT_TIMEZONE,
   LAUNCHER_FILE_MODE,
+  NONE_VALUE,
+  SECRET_DIR_MODE,
+  TIME_PATTERN,
+  X_URL_PREFIX,
 } from '../defaults.ts'
 import { asArray, asString, get } from '../json.ts'
 import { orcaArgv, runOrca } from '../orca.ts'
@@ -14,17 +18,14 @@ import { digestHome, HOME_DIRNAME, homePaths, pluginRoot } from '../paths.ts'
 import { loadSecrets, webhookFor } from '../secrets.ts'
 import { parseSeverity } from '../severity.ts'
 
-import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { Config } from '../config.ts'
 import type { HomePaths } from '../paths.ts'
 
 const NAME = 'dev-digest init'
-const DIR_MODE = 0o700
 const EXIT_FAILED = 1
-const NONE = 'none'
-const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/
 // 初回はすべて要る。2 回目以降は指定したものだけ更新する
 const FLAGS = ['time', 'trigger', 'jvn-min-severity', 'x-list', 'x-hashtags', 'devto-tags'] as const
 // AUTOMATION_PROMPT に書いた `~/.dev-digest` を実パスに置き換える
@@ -43,9 +44,12 @@ const parseTrigger = (value: string): Config['schedule']['trigger'] =>
     ? value
     : die(NAME, `--trigger は daily か weekdays にしてください: ${value}`)
 
+// 毎朝の Claude に許す tab create は x.com の URL だけなので、リストもそこに限る
 const parseListUrl = (value: string): string | null => {
-  if (value === NONE) return null
-  return URL.canParse(value) ? value : die(NAME, `--x-list は URL か ${NONE} にしてください: ${value}`)
+  if (value === NONE_VALUE) return null
+  return value.startsWith(X_URL_PREFIX) && URL.canParse(value)
+    ? value
+    : die(NAME, `--x-list は ${X_URL_PREFIX} で始まる URL か ${NONE_VALUE} にしてください: ${value}`)
 }
 
 // 既存の設定に指定分を重ねる。orca の id は保ち、pluginRoot はいつも今のプラグインにする
@@ -89,46 +93,103 @@ const buildConfig = (flags: Flags, base: Config | null): Config => {
 // --dry-run で argv を読める形にする（空白や引用符を含むものだけ JSON の文字列にする）
 const quote = (arg: string): string => (/^[\w@%+=:,./#-]+$/.test(arg) ? arg : JSON.stringify(arg))
 
-const automationArgs = (config: Config, selector: string, prompt: string): string[] => {
-  const schedule = ['--trigger', config.schedule.trigger, '--time', config.schedule.time]
-  const timezone = ['--timezone', config.schedule.timezone]
-  const id = config.orca.automationId
-  if (id !== null) return ['automations', 'edit', id, ...schedule, ...timezone, '--prompt', prompt]
-  return [
-    'automations',
-    'create',
-    '--name',
-    AUTOMATION_NAME,
-    ...schedule,
-    ...timezone,
-    '--provider',
-    AUTOMATION_PROVIDER,
-    '--workspace',
-    selector,
-    '--fresh-session',
-    '--enabled',
-    '--prompt',
-    prompt,
-  ]
-}
+const scheduleArgs = (config: Config): string[] => [
+  '--trigger',
+  config.schedule.trigger,
+  '--time',
+  config.schedule.time,
+  '--timezone',
+  config.schedule.timezone,
+]
+
+const createArgs = (config: Config, selector: string, prompt: string): string[] => [
+  'automations',
+  'create',
+  '--name',
+  AUTOMATION_NAME,
+  ...scheduleArgs(config),
+  '--provider',
+  AUTOMATION_PROVIDER,
+  '--workspace',
+  selector,
+  '--fresh-session',
+  '--enabled',
+  '--prompt',
+  prompt,
+]
+
+const editArgs = (id: string, config: Config, selector: string, prompt: string): string[] => [
+  'automations',
+  'edit',
+  id,
+  ...scheduleArgs(config),
+  '--workspace',
+  selector,
+  '--prompt',
+  prompt,
+]
+
+const automationArgs = (config: Config, selector: string, prompt: string): string[] =>
+  config.orca.automationId === null
+    ? createArgs(config, selector, prompt)
+    : editArgs(config.orca.automationId, config, selector, prompt)
 
 const repoAddArgs = (runDir: string): string[] => ['repo', 'add', '--path', runDir, '--kind', 'folder']
 
 // repo add は冪等（spec §13）。登録済みの失敗が返る版に備えて、repo list に path があれば登録済みとみなす
+// symlink 越しの path（macOS の /var → /private/var など）でも同じ場所なら一致とみなす
+const realPath = (path: string): string => {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
 const registerRunDir = (runDir: string): string | null => {
   const added = runOrca(repoAddArgs(runDir))
   if (added.ok && asString(get(added.json ?? undefined, 'result', 'repo', 'id'))) return null
   const listed = runOrca(['repo', 'list'])
   const repos = asArray(get(listed.json ?? undefined, 'result', 'repos')) ?? []
-  if (listed.ok && repos.some((repo) => get(repo, 'path') === runDir)) return null
+  const target = realPath(runDir)
+  const registered = repos.some((repo) => {
+    const path = asString(get(repo, 'path'))
+    return path !== null && realPath(path) === target
+  })
+  if (listed.ok && registered) return null
   return `orca repo add に失敗しました: ${added.stderr.trim() || listed.stderr.trim()}`
 }
 
-// ランチャーの本体をコピーし、安定パスの sh を置く
+// ランチャーの本体をコピーし、安定パスの sh を置く。automation のシェルの PATH に node が無いことがあるので、
+// init を走らせた node の絶対パスを焼き込み、それが実行できなくなっていたら PATH の node に落ちる
 const installLauncher = (paths: HomePaths): void => {
   copyFileSync(join(pluginRoot(), 'bin', 'launch.ts'), paths.launcherScript)
-  writeFileSync(paths.launcher, `#!/bin/sh\nexec node "${paths.launcherScript}" "$@"\n`, { mode: LAUNCHER_FILE_MODE })
+  const script = [
+    '#!/bin/sh',
+    `NODE="${process.execPath}"`,
+    '[ -x "$NODE" ] || NODE=node',
+    `exec "$NODE" "${paths.launcherScript}" "$@"`,
+  ]
+  writeFileSync(paths.launcher, `${script.join('\n')}\n`, { mode: LAUNCHER_FILE_MODE })
   chmodSync(paths.launcher, LAUNCHER_FILE_MODE)
+}
+
+// 記録した automation が Orca にもう無い（GUI で消された）ときだけ true。list が読めなければ false（作り直さない）
+const automationGone = (id: string): boolean => {
+  const listed = runOrca(['automations', 'list'])
+  const automations = asArray(get(listed.json ?? undefined, 'result', 'automations'))
+  return listed.ok && automations !== null && !automations.some((automation) => get(automation, 'id') === id)
+}
+
+// automation を作り、id を config に残す。失敗は理由を返す
+const createAutomation = (home: string, config: Config, selector: string, prompt: string): string | null => {
+  const result = runOrca(createArgs(config, selector, prompt))
+  if (!result.ok) return `orca automations create に失敗しました: ${result.stderr.trim()}`
+  const id = asString(get(result.json ?? undefined, 'result', 'automation', 'id'))
+  if (!id) return 'orca automations create の応答に result.automation.id がありません'
+  config.orca.automationId = id
+  saveConfig(home, config)
+  return null
 }
 
 // runDir を Orca に登録し、automation を作るか更新する。id は得たその場で config に残す。失敗は理由を返す
@@ -140,18 +201,19 @@ const registerOrca = (home: string, config: Config, selector: string, prompt: st
   out.push(`workspace=${selector}`)
 
   const existing = config.orca.automationId
-  const result = runOrca(automationArgs(config, selector, prompt))
-  if (!result.ok) {
-    const action = existing === null ? 'create' : `edit ${existing}`
-    return `orca automations ${action} に失敗しました: ${result.stderr.trim()}`
+  let created = existing === null
+  if (existing !== null) {
+    const edited = runOrca(editArgs(existing, config, selector, prompt))
+    if (!edited.ok && !automationGone(existing)) {
+      return `orca automations edit ${existing} に失敗しました: ${edited.stderr.trim()}`
+    }
+    created = !edited.ok
   }
-  if (existing === null) {
-    const id = asString(get(result.json ?? undefined, 'result', 'automation', 'id'))
-    if (!id) return 'orca automations create の応答に result.automation.id がありません'
-    config.orca.automationId = id
-    saveConfig(home, config)
+  if (created) {
+    const error = createAutomation(home, config, selector, prompt)
+    if (error !== null) return error
   }
-  out.push(`automation=${config.orca.automationId} (${existing === null ? 'created' : 'updated'})`)
+  out.push(`automation=${config.orca.automationId} (${created ? 'created' : 'updated'})`)
   return null
 }
 
@@ -182,7 +244,7 @@ export const run = (argv: string[]): void => {
   }
 
   for (const dir of [home, paths.binDir, paths.reposDir, paths.runDir]) {
-    mkdirSync(dir, { recursive: true, mode: DIR_MODE })
+    mkdirSync(dir, { recursive: true, mode: SECRET_DIR_MODE })
   }
   saveConfig(home, config)
   openDb(paths.db).close()

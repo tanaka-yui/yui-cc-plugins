@@ -111,11 +111,36 @@ export const LAUNCHER_FILE_MODE = 0o755
 // ORCA_BIN と ORCA_CLI_COMMAND が無いときに呼ぶ Orca CLI
 export const ORCA_DEFAULT_BIN = 'orca'
 export const AUTOMATION_PROVIDER = 'claude'
-// 毎朝の Claude が X を読むのに使う Orca のブラウザ系サブコマンド（spec §13）。permission の allow に足す
-export const ORCA_BROWSER_SUBCOMMANDS: readonly string[] = ['tab', 'snapshot', 'scroll', 'goto', 'wait', 'get']
+
+// 毎朝の手順（references/morning.md）が runDir に書くファイル。permission の Write / Edit はこの 2 つだけに許す
+export const X_FILE = 'x.json'
+export const DIGEST_FILE = 'digest.json'
+// 毎朝の Claude に許すランチャーのサブコマンド。EXACT は引数なし（ルールが完全一致）、WITH_ARGS は引数付き（接頭辞一致）。
+// set-webhook / init / permissions は許さない（読んだ X の本文に仕込まれた指示で Webhook や設定を書き換えさせない）
+export const MORNING_EXACT_SUBCOMMANDS: readonly string[] = ['procedure', 'collect', 'pending']
+export const MORNING_ARG_SUBCOMMANDS: readonly string[] = ['ingest-x', 'publish']
+// X の URL。リストの URL はこれで始まるものだけ受け付け、tab create の allow もこの接頭辞に限る
+export const X_URL_PREFIX = 'https://x.com/'
+// 毎朝の Claude に許す Orca のブラウザ操作（`orca ` の後ろの接頭辞）。goto / get / wait や tab の一覧・切り替えは許さない
+export const ORCA_MORNING_COMMANDS: readonly string[] = [
+  `tab create --url ${X_URL_PREFIX}`,
+  'tab close',
+  'snapshot',
+  'scroll',
+]
 // X のハッシュタグの最新順の検索。ハッシュタグを encodeURIComponent して後ろに付け、LIVE_SUFFIX で最新順にする
-export const X_SEARCH_URL = 'https://x.com/search?q='
+export const X_SEARCH_URL = `${X_URL_PREFIX}search?q=`
 export const X_SEARCH_LIVE_SUFFIX = '&f=live'
+// X の id（Snowflake）から投稿時刻を求める: ms = (id >> 22) + 1288834974657（spec §13）
+export const SNOWFLAKE_SHIFT = 22n
+export const SNOWFLAKE_EPOCH_MS = 1288834974657n
+
+// init と procedure が使う値
+export const NONE_VALUE = 'none'
+export const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/
+export const CLAUDE_SETTINGS_FILE = 'settings.json'
+// 新しく作る Claude の設定ファイルの権限（既存のファイルは今の権限を保つ）
+export const SETTINGS_FILE_MODE = 0o644
 
 export const devtoTagFeed = (tag: string): FeedSource => ({
   id: `devto-tag:${tag}`,

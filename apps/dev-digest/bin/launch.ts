@@ -1,4 +1,4 @@
-// 安定パスのランチャー。init がこのファイルを ~/.dev-digest/bin/launch.ts へコピーし、~/.dev-digest/bin/dev-digest
+// 安定パスのランチャー。init がこのファイルを ~/.dev-digest/bin/launch.mts へコピーし、~/.dev-digest/bin/dev-digest
 // （`exec node <このファイル>`）から呼ばれる。プラグインの版付きのパスを automation に焼き込まないため、実行のたびに
 // 今のプラグインの場所を解決して bin/dev-digest.ts を起動する。
 // ★ lib を import しない（コピー先に lib は無い）。下の定数は lib/defaults.ts・lib/paths.ts の写しで、
@@ -13,6 +13,7 @@ export const PLUGIN_ID = 'dev-digest@yui-cc-plugins'
 export const LAUNCHER_VERSION_ENV = 'DEV_DIGEST_LAUNCHER_VERSION'
 export const CLAUDE_HOME_ENV = 'DEV_DIGEST_CLAUDE_HOME'
 export const CLAUDE_DIRNAME = '.claude'
+export const HOME_ENV = 'DEV_DIGEST_HOME'
 
 const EXIT_NOT_FOUND = 2
 
@@ -54,7 +55,7 @@ export const resolvePluginRoot = (home: string, claudeHome: string): string | nu
 }
 
 const main = (): void => {
-  // このファイルは <home>/bin/launch.ts に置かれる
+  // このファイルは <home>/bin/launch.mts に置かれる
   const home = dirname(dirname(import.meta.filename))
   const claudeHome = process.env[CLAUDE_HOME_ENV] || join(homedir(), CLAUDE_DIRNAME)
   const root = resolvePluginRoot(home, claudeHome)
@@ -65,7 +66,8 @@ const main = (): void => {
   }
   const child = spawnSync(process.execPath, [join(root, 'bin', 'dev-digest.ts'), ...process.argv.slice(2)], {
     stdio: 'inherit',
-    env: { ...process.env, [LAUNCHER_VERSION_ENV]: String(LAUNCHER_VERSION) },
+    // 子にも同じ home を渡す（ランチャーの置き場所と子の DEV_DIGEST_HOME を食い違わせない）
+    env: { ...process.env, [HOME_ENV]: home, [LAUNCHER_VERSION_ENV]: String(LAUNCHER_VERSION) },
   })
   process.exitCode = child.status ?? 1
 }
