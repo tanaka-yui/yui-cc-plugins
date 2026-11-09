@@ -1,4 +1,4 @@
-import { DEFAULT_TIMEZONE, FETCH_TIMEOUT_MS, WEBHOOK_OVERRIDE_ENV } from './defaults.ts'
+import { DEFAULT_TIMEZONE, FETCH_TIMEOUT_MS, LOOPBACK_HOSTS, WEBHOOK_OVERRIDE_ENV } from './defaults.ts'
 
 import type { Section } from './config.ts'
 import type { DigestFile, DigestGroup } from './digest.ts'
@@ -31,8 +31,22 @@ const sectionTitle = (section: Section, jvnMin: Severity | null): string => {
 export const escapeMrkdwn = (text: string): string =>
   text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 
-const linkTarget = (url: string): string => url.replaceAll('<', '%3C').replaceAll('>', '%3E').replaceAll('|', '%7C')
-const link = (url: string, label: string): string => `<${linkTarget(url)}|${escapeMrkdwn(label)}>`
+const linkTarget = (url: string): string =>
+  url.replaceAll('<', '%3C').replaceAll('>', '%3E').replaceAll('|', '%7C').replaceAll(/\s/g, '%20')
+
+// http / https 以外（javascript: など）や読めない URL はリンクにしない
+const isHttpUrl = (url: string): boolean => {
+  try {
+    const { protocol } = new URL(url)
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+// 外部由来の URL は必ずここを通す。リンクにできなければエスケープしたラベルだけを返す
+const link = (url: string, label: string): string =>
+  isHttpUrl(url) ? `<${linkTarget(url)}|${escapeMrkdwn(label)}>` : escapeMrkdwn(label)
 
 // ISO 時刻を、指定タイムゾーンの M/D にする
 export const formatMonthDay = (iso: string, timeZone: string = DEFAULT_TIMEZONE): string => {
@@ -84,7 +98,10 @@ const renderBody = (
     const mark = item.updated ? '【追記】' : ''
     const cvss = item.section === 'jvn' && item.severity !== null ? ` [CVSS ${item.severity}]` : ''
     const summary = notes.get(item.id)
-    if (summary === undefined) return [`• ${mark}${escapeMrkdwn(item.title)}（要約なし）${cvss}`, `  ${item.url}`]
+    if (summary === undefined) {
+      const head = `• ${mark}${escapeMrkdwn(item.title)}（要約なし）${cvss}`
+      return isHttpUrl(item.url) ? [head, `  ${link(item.url, linkTarget(item.url))}`] : [head]
+    }
     return [`• ${mark}${link(item.url, item.title)}${cvss} — ${escapeMrkdwn(summary)}`]
   }
 
@@ -186,12 +203,15 @@ export const splitMessages = (lines: string[], maxChars: number): string[] => {
   return chunks.map((chunk, index) => (index === 0 ? chunk : `${continuation(index + 1, chunks.length)}\n${chunk}`))
 }
 
-const overrideUrl = (url: string): string => {
+export const overrideUrl = (url: string): string => {
   const base = process.env[WEBHOOK_OVERRIDE_ENV]
   if (base === undefined || base === '') return url
   try {
+    const target = new URL(base)
+    // 環境変数で送信先を外部に向けられないよう、ループバックのときだけ使う
+    if (!LOOPBACK_HOSTS.includes(target.hostname)) return url
     const original = new URL(url)
-    return `${new URL(base).origin}${original.pathname}${original.search}`
+    return `${target.origin}${original.pathname}${original.search}`
   } catch {
     return url
   }

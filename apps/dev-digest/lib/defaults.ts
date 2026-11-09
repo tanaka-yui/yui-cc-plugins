@@ -89,6 +89,10 @@ export const USER_AGENT = 'dev-digest'
 export const FEED_BASE_ENV = 'DEV_DIGEST_FEED_BASE'
 // テスト専用: 設定されていれば Webhook URL の origin をこの値に置き換える（path は残す）
 export const WEBHOOK_OVERRIDE_ENV = 'DEV_DIGEST_WEBHOOK_OVERRIDE'
+// 上の差し替えを受け付ける host（URL.hostname の形）
+export const LOOPBACK_HOSTS: readonly string[] = ['127.0.0.1', '[::1]', 'localhost']
+export const SECRET_DIR_MODE = 0o700
+export const SECRET_FILE_MODE = 0o600
 export const X_TITLE_CHARS = 80
 export const EXCERPT_CHARS = 500
 // 1 回に読むフィードの上限（文字数）。JVN が約 1MB なので余裕を見る

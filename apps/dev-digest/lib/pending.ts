@@ -1,10 +1,12 @@
 import { buildSources } from './config.ts'
 import { previousIncompleteStart, runFailures, undelivered } from './db.ts'
 import { X_SOURCE } from './defaults.ts'
-import { atLeast } from './severity.ts'
+import { asArray, asObject, asString } from './json.ts'
+import { atLeast, parseSeverity } from './severity.ts'
 
 import type { Config, RepoConfig, Section } from './config.ts'
 import type { Db, StoredItem } from './db.ts'
+import type { Json, JsonObject } from './json.ts'
 import type { Severity } from './severity.ts'
 
 export type PendingEntry = {
@@ -114,4 +116,112 @@ export const buildPending = (db: Db, config: Config, repos: RepoConfig[], runId:
     repos: pendingRepos,
     failures: runFailures(db, runId),
   }
+}
+
+const SECTIONS: readonly Section[] = ['jvn', 'aws', 'gcp', 'x', 'devto', 'releases']
+
+const isInt = (value: Json | undefined): value is number => typeof value === 'number' && Number.isInteger(value)
+
+// 要素がすべて条件を満たす配列だけを返す。1 つでも外れれば null
+const mapAll = <T>(value: Json | undefined, parse: (entry: Json) => T | null): T[] | null => {
+  const array = asArray(value)
+  if (array === null) return null
+  const result: T[] = []
+  for (const entry of array) {
+    const parsed = parse(entry)
+    if (parsed === null) return null
+    result.push(parsed)
+  }
+  return result
+}
+const intList = (value: Json | undefined): number[] | null => mapAll(value, (entry) => (isInt(entry) ? entry : null))
+const strList = (value: Json | undefined): string[] | null => mapAll(value, asString)
+// string | null のフィールド。キーが無い・別の型なら undefined
+const nullableString = (object: JsonObject, key: string): string | null | undefined => {
+  const value = object[key]
+  if (value === null) return null
+  return typeof value === 'string' ? value : undefined
+}
+
+const parseEntry = (value: Json): PendingEntry | null => {
+  const o = asObject(value)
+  if (o === null) return null
+  const section = SECTIONS.find((candidate) => candidate === o.section)
+  const author = nullableString(o, 'author')
+  const publishedAt = nullableString(o, 'publishedAt')
+  const severityText = nullableString(o, 'severity')
+  const severity = typeof severityText === 'string' ? parseSeverity(severityText) : null
+  const products = strList(o.products)
+  const sourceId = asString(o.sourceId)
+  const title = asString(o.title)
+  const url = asString(o.url)
+  const summary = asString(o.summary)
+  if (!isInt(o.id) || !isInt(o.revision) || section === undefined || typeof o.updated !== 'boolean') return null
+  if (sourceId === null || title === null || url === null || summary === null || products === null) return null
+  if (author === undefined || publishedAt === undefined || severityText === undefined) return null
+  if (typeof severityText === 'string' && severity === null) return null
+  return {
+    id: o.id,
+    revision: o.revision,
+    section,
+    sourceId,
+    title,
+    url,
+    summary,
+    author,
+    publishedAt,
+    severity,
+    products,
+    updated: o.updated,
+  }
+}
+
+const parseWatch = (value: Json | undefined): PendingRepo['watch'] | null => {
+  const o = asObject(value)
+  if (o === null) return null
+  const languages = strList(o.languages)
+  const cloudServices = strList(o.cloudServices)
+  const keywords = strList(o.keywords)
+  const packages = mapAll(o.packages, (entry) => {
+    const p = asObject(entry)
+    if (p === null) return null
+    const name = asString(p.name)
+    const ecosystem = asString(p.ecosystem)
+    const github = nullableString(p, 'github')
+    return name === null || ecosystem === null || github === undefined ? null : { name, ecosystem, github }
+  })
+  if (languages === null || cloudServices === null || keywords === null || packages === null) return null
+  return { languages, packages, cloudServices, keywords }
+}
+
+const parsePendingRepo = (value: Json): PendingRepo | null => {
+  const o = asObject(value)
+  if (o === null) return null
+  const slug = asString(o.slug)
+  const displayName = asString(o.displayName)
+  const watch = parseWatch(o.watch)
+  const candidateIds = intList(o.candidateIds)
+  const ownIds = intList(o.ownIds)
+  if (slug === null || displayName === null || watch === null || candidateIds === null || ownIds === null) return null
+  return { slug, displayName, watch, candidateIds, ownIds }
+}
+
+// pending.json を型で絞る。形が違えば null
+export const parsePending = (value: Json): PendingFile | null => {
+  const o = asObject(value)
+  if (o === null) return null
+  const generatedAt = asString(o.generatedAt)
+  const previousIncomplete = nullableString(o, 'previousIncomplete')
+  const items = mapAll(o.items, parseEntry)
+  const globalIds = intList(o.globalIds)
+  const repos = mapAll(o.repos, parsePendingRepo)
+  const failures = mapAll(o.failures, (entry) => {
+    const f = asObject(entry)
+    const sourceId = f === null ? null : asString(f.sourceId)
+    const reason = f === null ? null : asString(f.reason)
+    return sourceId === null || reason === null ? null : { sourceId, reason }
+  })
+  if (!isInt(o.runId) || generatedAt === null || previousIncomplete === undefined) return null
+  if (items === null || globalIds === null || repos === null || failures === null) return null
+  return { runId: o.runId, generatedAt, previousIncomplete, items, globalIds, repos, failures }
 }

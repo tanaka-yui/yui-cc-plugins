@@ -1,4 +1,4 @@
-import { type Config, saveRepo } from '../lib/config.ts'
+import { type Config, loadRepos, saveRepo } from '../lib/config.ts'
 import { type Db, openDb, startRun, upsertItem } from '../lib/db.ts'
 import { homePaths } from '../lib/paths.ts'
 import { buildPending } from '../lib/pending.ts'
@@ -154,6 +154,11 @@ test('PB3 全体 200・repo 500 なら全体だけ送信済み', async () => {
   assert.match(result.stdout, /failed repo:o\/r status=500/)
   assert.deepEqual(deliveryRows(s.db), [`${a}:global:sent`, `${b}:global:sent`])
   assert.ok(!finished(s.db))
+  // 2 回目の pending では全体の項目が消え、repo の項目だけが残る
+  const again = buildPending(s.db, writeConfig(s.home), loadRepos(s.home), 1, NOW)
+  assert.deepEqual(again.globalIds, [])
+  assert.deepEqual(again.repos[0]?.candidateIds, [a, b])
+  assert.deepEqual(deliveryRows(s.db), [`${a}:global:sent`, `${b}:global:sent`])
 })
 
 test('PB4 検証に落ちた digest では何も送らない', async () => {
@@ -197,4 +202,19 @@ test('PB7 repo の Webhook が無ければ全体の Webhook で送る', async ()
   assert.equal(result.code, 0, result.stderr)
   assert.equal(s.server.requests.length, 2)
   assert.ok(s.server.requests.every((r) => r.path === GLOBAL_PATH))
+})
+
+test('PB8 全体の Webhook が無くても要約は保存される（exit 2）', async () => {
+  const s = await setup({ [GLOBAL_PATH]: OK })
+  rmSync(homePaths(s.home).secrets)
+  const a = s.ids[0] ?? -1
+  const file = writeDigest(s.home, {
+    runId: 1,
+    notes: [{ id: a, summaryJa: '要約A', tags: [] }],
+    groups: [],
+    repos: [],
+  })
+  const result = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(result.code, 2)
+  assert.equal(s.db.prepare('SELECT summary_ja FROM notes WHERE item_id = ?').get(a)?.summary_ja, '要約A')
 })

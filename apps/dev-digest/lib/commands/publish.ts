@@ -3,8 +3,9 @@ import { loadConfig } from '../config.ts'
 import { finishRun, openDb, recordDelivery, saveNote } from '../db.ts'
 import { MAX_MESSAGE_CHARS } from '../defaults.ts'
 import { validateDigest } from '../digest.ts'
-import { asArray, asObject, parseJson } from '../json.ts'
+import { parseJson } from '../json.ts'
 import { digestHome, homePaths } from '../paths.ts'
+import { parsePending } from '../pending.ts'
 import { loadSecrets, maskSecrets, webhookFor } from '../secrets.ts'
 import { formatMonthDay, postWebhook, renderGlobal, renderRepo, repoItemIds, splitMessages } from '../slack.ts'
 
@@ -12,7 +13,6 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { Destination } from '../db.ts'
-import type { PendingFile } from '../pending.ts'
 
 const NAME = 'dev-digest publish'
 const EXIT_FAILED = 1
@@ -49,17 +49,9 @@ export const run = async (argv: string[]): Promise<void> => {
   const config = loadConfig(home)
   if (config === null) return fail(EXIT_MISSING, '設定がありません。init を先に実行してください')
   const pendingText = readText(join(paths.runDir, 'pending.json'))
-  const pendingJson = pendingText === null ? null : asObject(parseJson(pendingText))
-  if (
-    pendingJson === null ||
-    asArray(pendingJson.items) === null ||
-    asArray(pendingJson.globalIds) === null ||
-    asArray(pendingJson.repos) === null
-  ) {
-    return fail(EXIT_MISSING, 'pending.json がありません。pending を先に実行してください')
-  }
-  // pending.json は pending コマンド自身が書いた形なので、型は PendingFile として扱う
-  const pending: PendingFile = JSON.parse(pendingText ?? '')
+  const pending = pendingText === null ? null : parsePending(parseJson(pendingText) ?? null)
+  if (pending === null)
+    return fail(EXIT_MISSING, 'pending.json がないか、形式が正しくありません。pending を先に実行してください')
 
   const digestText = readText(digestFile)
   const digestJson = digestText === null ? null : parseJson(digestText)
@@ -72,7 +64,6 @@ export const run = async (argv: string[]): Promise<void> => {
   const digest = validation.digest
 
   const globalHook = webhookFor(secrets, null)
-  if (globalHook === null) return fail(EXIT_MISSING, '全体の Webhook が未設定です')
 
   const revisionOf = new Map(pending.items.map((item) => [item.id, item.revision]))
   const deliveries = (ids: number[], destination: Destination, status: 'sent' | 'irrelevant') =>
@@ -100,6 +91,9 @@ export const run = async (argv: string[]): Promise<void> => {
         groupKey: groupKeyOf.get(note.id) ?? null,
       })
     }
+
+    // 要約を残したあとで、全体の Webhook が無ければ送らずに終える
+    if (globalHook === null) return fail(EXIT_MISSING, '全体の Webhook が未設定です')
 
     // 1 つの送り先へ順に送る。1 通でも失敗したらその送り先は失敗
     const send = async (destination: Destination, url: string, lines: string[]): Promise<boolean> => {

@@ -1,4 +1,4 @@
-import { escapeMrkdwn, renderGlobal, renderRepo, splitMessages } from '../../lib/slack.ts'
+import { escapeMrkdwn, overrideUrl, renderGlobal, renderRepo, splitMessages } from '../../lib/slack.ts'
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -136,4 +136,52 @@ test('SL7 renderRepo は選択 ∪ ownIds を出し、0 件は null', () => {
   const text = lines.join('\n')
   assert.ok(text.includes('title1') && text.includes('title3') && !text.includes('title2'))
   assert.equal(renderRepo(pendingOf([]), digestOf(), 'none', '11/9', true), null)
+})
+
+test('SL8 URL に <!channel> や | があっても、メンション・偽リンクにならない', () => {
+  const evil = 'https://evil.example/a|b<!channel>?x=<https://e|t>'
+  const items = [entry(1, 'aws', { url: evil, title: 'T<!here>' }), entry(2, 'aws', { url: evil })]
+  const text = renderGlobal(
+    pendingOf(items),
+    digestOf({ notes: [{ id: 2, summaryJa: '要約', tags: [] }] }),
+    '11/9',
+  ).join('\n')
+  assert.ok(!text.includes('<!channel>') && !text.includes('<!here>'))
+  // リンクの区切りの | は 1 リンクにつき 1 つだけ
+  for (const line of text.split('\n').filter((l) => l.includes('<http'))) {
+    assert.equal(line.replace(/ — .*/, '').match(/\|/g)?.length, 1)
+  }
+  assert.ok(!text.includes('<https://e|t>'))
+})
+
+test('SL9 http / https 以外の URL はリンクにしない', () => {
+  const items = [
+    entry(1, 'aws', { url: 'javascript:alert(1)' }),
+    entry(2, 'aws', { url: 'not a url' }),
+    entry(3, 'aws', { url: 'javascript:alert(2)' }),
+  ]
+  const digest = digestOf({ notes: [{ id: 3, summaryJa: '要約', tags: [] }] })
+  const text = renderGlobal(pendingOf(items), digest, '11/9').join('\n')
+  assert.ok(!text.includes('javascript:') && !text.includes('not a url'))
+  assert.ok(text.includes('title1（要約なし）') && text.includes('title3'))
+})
+
+test('SL10 WEBHOOK_OVERRIDE はループバックのときだけ効く', () => {
+  const url = 'https://hooks.slack.com/services/T0/B0/xyz'
+  const saved = process.env.DEV_DIGEST_WEBHOOK_OVERRIDE
+  try {
+    process.env.DEV_DIGEST_WEBHOOK_OVERRIDE = 'http://127.0.0.1:8123'
+    assert.equal(overrideUrl(url), 'http://127.0.0.1:8123/services/T0/B0/xyz')
+    process.env.DEV_DIGEST_WEBHOOK_OVERRIDE = 'http://[::1]:8123'
+    assert.equal(overrideUrl(url), 'http://[::1]:8123/services/T0/B0/xyz')
+    process.env.DEV_DIGEST_WEBHOOK_OVERRIDE = 'http://localhost:8123'
+    assert.equal(overrideUrl(url), 'http://localhost:8123/services/T0/B0/xyz')
+    process.env.DEV_DIGEST_WEBHOOK_OVERRIDE = 'https://attacker.example'
+    assert.equal(overrideUrl(url), url)
+    process.env.DEV_DIGEST_WEBHOOK_OVERRIDE = 'http://127.0.0.1.attacker.example'
+    assert.equal(overrideUrl(url), url)
+  } finally {
+    if (saved === undefined) delete process.env.DEV_DIGEST_WEBHOOK_OVERRIDE
+    else process.env.DEV_DIGEST_WEBHOOK_OVERRIDE = saved
+  }
 })

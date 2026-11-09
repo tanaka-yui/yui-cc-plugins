@@ -1,7 +1,7 @@
 import { type Config, type RepoConfig, saveRepo } from '../lib/config.ts'
 import { type Db, finishRun, openDb, recordDelivery, recordFailure, startRun, upsertItem } from '../lib/db.ts'
 import { homePaths } from '../lib/paths.ts'
-import { buildPending, sectionByStoreAs } from '../lib/pending.ts'
+import { buildPending, parsePending, sectionByStoreAs } from '../lib/pending.ts'
 import { runCli, tempHome, writeConfig } from './helpers.ts'
 
 import assert from 'node:assert/strict'
@@ -179,4 +179,18 @@ test('PD10 実行記録が無いと exit 2', () => {
   const result = runCli(['pending'], { DEV_DIGEST_HOME: home })
   assert.equal(result.code, 2)
   assert.match(result.stderr, /collect/)
+})
+
+test('PD11 parsePending は buildPending の出力を往復でき、欠けた形は null', () => {
+  const db = memDb()
+  add(db, 'jvn', 'a', 'critical')
+  recordFailure(db, 1, 'devto', 'timeout')
+  const pending = buildPending(db, config, [repo()], 1, NOW)
+  assert.deepEqual(parsePending(JSON.parse(JSON.stringify(pending))), pending)
+  const { failures: _failures, ...withoutFailures } = JSON.parse(JSON.stringify(pending))
+  assert.equal(parsePending(withoutFailures), null)
+  const broken = JSON.parse(JSON.stringify(pending))
+  broken.items[0].section = 'nope'
+  assert.equal(parsePending(broken), null)
+  assert.equal(parsePending('x'), null)
 })

@@ -2,7 +2,7 @@ import { isWebhookUrl, loadSecrets, maskSecrets, maskWebhook, saveWebhook, webho
 import { tempHome } from '../helpers.ts'
 
 import assert from 'node:assert/strict'
-import { chmodSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 
@@ -52,4 +52,17 @@ test('SC4 isWebhookUrl と webhookFor', () => {
   assert.deepEqual(webhookFor(secrets, 'o/r'), { url: secrets.repos['o/r'], viaGlobal: false })
   assert.deepEqual(webhookFor(secrets, 'x/y'), { url: URL_G, viaGlobal: true })
   assert.equal(webhookFor({ global: null, repos: {} }, null), null)
+})
+
+test('SC5 saveWebhook は緩い既存ディレクトリを締め、残った一時ファイルを無視する', () => {
+  const home = tempHome()
+  homes.push(home)
+  const dir = join(home, 'loose')
+  mkdirSync(dir, { mode: 0o755 })
+  chmodSync(dir, 0o755)
+  const file = join(dir, 'secrets.json')
+  writeFileSync(`${file}.${process.pid}.tmp`, 'stale', { mode: 0o644 })
+  saveWebhook(file, 'global', URL_G)
+  assert.equal(statSync(dir).mode & 0o777, 0o700)
+  assert.equal(loadSecrets(file).global, URL_G)
 })

@@ -1,12 +1,11 @@
+import { SECRET_DIR_MODE, SECRET_FILE_MODE } from './defaults.ts'
 import { asObject, asString, parseJson } from './json.ts'
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 export type Secrets = { global: string | null; repos: Record<string, string> }
 
-const DIR_MODE = 0o700
-const FILE_MODE = 0o600
 const WEBHOOK_PATTERN = /^https:\/\/hooks\.slack\.com\/services\/\S+$/
 const WEBHOOK_PARTS = /^https:\/\/hooks\.slack\.com\/services\/([^/\s]+)\/([^/\s]+)\/\S+$/
 const MASKED_ANY = '***'
@@ -44,12 +43,16 @@ export const saveWebhook = (file: string, target: 'global' | string, url: string
   const current = loadSecrets(file)
   const next: Secrets =
     target === 'global' ? { ...current, global: url } : { ...current, repos: { ...current.repos, [target]: url } }
-  mkdirSync(dirname(file), { recursive: true, mode: DIR_MODE })
+  const dir = dirname(file)
+  mkdirSync(dir, { recursive: true, mode: SECRET_DIR_MODE })
+  chmodSync(dir, SECRET_DIR_MODE)
   const temp = `${file}.${process.pid}.tmp`
-  writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { mode: FILE_MODE })
-  chmodSync(temp, FILE_MODE)
+  // 前回の残骸を消してから排他的に作る（他人が置いたファイルを開かない）
+  rmSync(temp, { force: true })
+  writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { mode: SECRET_FILE_MODE, flag: 'wx' })
+  chmodSync(temp, SECRET_FILE_MODE)
   renameSync(temp, file)
-  chmodSync(file, FILE_MODE)
+  chmodSync(file, SECRET_FILE_MODE)
 }
 
 const knownUrls = (secrets: Secrets): string[] =>
