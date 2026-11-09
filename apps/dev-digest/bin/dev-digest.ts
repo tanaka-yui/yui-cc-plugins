@@ -7,6 +7,7 @@ const COMMANDS: Record<string, () => Promise<Command>> = {
   collect: () => import('../lib/commands/collect.ts'),
   'ingest-x': () => import('../lib/commands/ingest-x.ts'),
   pending: () => import('../lib/commands/pending.ts'),
+  publish: () => import('../lib/commands/publish.ts'),
 }
 
 const NAME = 'dev-digest'

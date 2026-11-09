@@ -87,6 +87,8 @@ export const MS_PER_HOUR = 3_600_000
 export const USER_AGENT = 'dev-digest'
 // テスト専用: 設定されていれば取得先の origin をこの値に置き換える
 export const FEED_BASE_ENV = 'DEV_DIGEST_FEED_BASE'
+// テスト専用: 設定されていれば Webhook URL の origin をこの値に置き換える（path は残す）
+export const WEBHOOK_OVERRIDE_ENV = 'DEV_DIGEST_WEBHOOK_OVERRIDE'
 export const X_TITLE_CHARS = 80
 export const EXCERPT_CHARS = 500
 // 1 回に読むフィードの上限（文字数）。JVN が約 1MB なので余裕を見る
