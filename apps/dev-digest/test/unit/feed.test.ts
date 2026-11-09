@@ -1,4 +1,4 @@
-import { EXCERPT_CHARS } from '../../lib/defaults.ts'
+import { EXCERPT_CHARS, MAX_FEED_BYTES } from '../../lib/defaults.ts'
 import { contentHash, parseFeed } from '../../lib/feed.ts'
 
 import assert from 'node:assert/strict'
@@ -139,4 +139,28 @@ test('FD7 contentHash は本文が変われば変わる', () => {
   assert.notEqual(contentHash(sample), contentHash({ ...sample, title: 'other' }))
   assert.notEqual(contentHash(sample), contentHash({ ...sample, updatedAt: '2026-11-10T00:00:00.000Z' }))
   assert.equal(contentHash(sample), contentHash({ ...sample, url: 'https://example.com/other' }))
+})
+
+test('FD8 閉じタグの無い開始タグが大量にあっても線形時間で終わる', () => {
+  const inputs = [
+    `<rss><channel>${'<item><title>x'.repeat(20000)}</channel></rss>`,
+    // 閉じが最後に 1 つだけある場合も遅くならない
+    `<rss><channel>${'<item><title>x'.repeat(20000)}</item></channel></rss>`,
+    `<rss><item><title>t</title><description>${'<![CDATA['.repeat(20000)}${'<a '.repeat(20000)}</description></item></rss>`,
+    `<feed><entry><title>t</title>${'<link '.repeat(20000)}</entry></feed>`,
+  ]
+  for (const input of inputs) {
+    const start = performance.now()
+    const items = parseFeed(input)
+    const elapsed = performance.now() - start
+    assert.ok(elapsed < 1000, `took ${elapsed}ms`)
+    assert.ok(items.length <= 1)
+  }
+  assert.deepEqual(parseFeed(inputs[0] ?? ''), [])
+})
+
+test('FD9 MAX_FEED_BYTES を超える入力は空にする', () => {
+  const item = '<item><guid>1</guid><title>t</title></item>'
+  assert.equal(parseFeed(`<rss>${item}</rss>`).length, 1)
+  assert.deepEqual(parseFeed(`<rss>${item}${' '.repeat(MAX_FEED_BYTES)}</rss>`), [])
 })

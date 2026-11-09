@@ -84,6 +84,8 @@ export const DEFAULT_X_HASHTAGS = ['#AI', '#LLM', '#生成AI']
 
 export const BASELINE_HOURS = 24
 export const EXCERPT_CHARS = 500
+// 1 回に読むフィードの上限（文字数）。JVN が約 1MB なので余裕を見る
+export const MAX_FEED_BYTES = 5_000_000
 export const MAX_MESSAGE_CHARS = 3500
 export const FETCH_TIMEOUT_MS = 20000
 export const X_MAX_POSTS_LIST = 50

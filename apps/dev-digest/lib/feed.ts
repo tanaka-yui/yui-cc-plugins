@@ -1,4 +1,4 @@
-import { EXCERPT_CHARS } from './defaults.ts'
+import { EXCERPT_CHARS, MAX_FEED_BYTES } from './defaults.ts'
 import { maxSeverity, parseSeverity } from './severity.ts'
 
 import { createHash } from 'node:crypto'
@@ -40,26 +40,54 @@ const unescapeOnce = (text: string): string =>
     return NAMED_ENTITIES[name.toLowerCase()] ?? match
   })
 
-const CDATA_PATTERN = /<!\[CDATA\[([\s\S]*?)\]\]>/g
 // 段落や改行になるタグは空白に、それ以外は取り除く（<b>a</b>b が a b にならないように）
-const BLOCK_TAG_PATTERN = /<\/?(?:p|br|li|ul|ol|div|h[1-6]|tr|table|blockquote|pre)(?=[\s/>])[^>]*>/gi
-// `<` の次が英字・`/`・`!` のときだけタグとみなす（`a < b` は残す）
-const TAG_PATTERN = /<[a-zA-Z/!][^>]*>/g
+const BLOCK_TAG_PATTERN = /^<\/?(?:p|br|li|ul|ol|div|h[1-6]|tr|table|blockquote|pre)(?=[\s/>])/i
+const CDATA_OPEN = '<![CDATA['
+const CDATA_CLOSE = ']]>'
+
+// 入力は信頼できないので、ネストした量指定子を持つ正規表現は使わず indexOf で線形に走査する
+
+// `<` の次が英字・`/`・`!` のときだけタグとみなして除く（`a < b` は残す）。閉じの `>` が無ければ以降は本文
+const stripTags = (text: string): string => {
+  let result = ''
+  let position = 0
+  while (position < text.length) {
+    const open = text.indexOf('<', position)
+    if (open === -1) break
+    const next = text[open + 1] ?? ''
+    if (!/[a-zA-Z/!]/.test(next)) {
+      result += text.slice(position, open + 1)
+      position = open + 1
+      continue
+    }
+    const close = text.indexOf('>', open)
+    if (close === -1) break
+    result += text.slice(position, open) + (BLOCK_TAG_PATTERN.test(text.slice(open, open + 16)) ? ' ' : '')
+    position = close + 1
+  }
+  return result + text.slice(position)
+}
+
+// CDATA の中身は XML の実体を戻さず、そのまま通す
+const unescapeOutsideCdata = (raw: string): string => {
+  let result = ''
+  let position = 0
+  while (position < raw.length) {
+    const open = raw.indexOf(CDATA_OPEN, position)
+    const close = open === -1 ? -1 : raw.indexOf(CDATA_CLOSE, open + CDATA_OPEN.length)
+    if (open === -1 || close === -1) break
+    result += unescapeOnce(raw.slice(position, open)) + raw.slice(open + CDATA_OPEN.length, close)
+    position = close + CDATA_CLOSE.length
+  }
+  return result + unescapeOnce(raw.slice(position))
+}
 
 // 復号の順序: XML の実体を 1 段 → HTML タグを除く → HTML の実体を 1 段 → 空白を畳む。
 // CDATA の中身は XML の実体を戻さない（HTML の実体は戻す）
-const decodeText = (raw: string): string => {
-  const parts: string[] = []
-  let last = 0
-  for (const match of raw.matchAll(CDATA_PATTERN)) {
-    parts.push(unescapeOnce(raw.slice(last, match.index)))
-    parts.push(match[1] ?? '')
-    last = match.index + match[0].length
-  }
-  parts.push(unescapeOnce(raw.slice(last)))
-  const stripped = parts.join('').replace(BLOCK_TAG_PATTERN, ' ').replace(TAG_PATTERN, '')
-  return unescapeOnce(stripped).replace(/\s+/g, ' ').trim()
-}
+const decodeText = (raw: string): string =>
+  unescapeOnce(stripTags(unescapeOutsideCdata(raw)))
+    .replace(/\s+/g, ' ')
+    .trim()
 
 const truncate = (text: string, limit: number): string => {
   if (text.length <= limit) return text
@@ -68,12 +96,25 @@ const truncate = (text: string, limit: number): string => {
   return /[\ud800-\udbff]$/.test(cut) ? cut.slice(0, -1) : cut
 }
 
-const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// `<name` の直後が空白・`>`・`/` の開始タグを from 以降から探す（`<titles` は除く）
+const findOpen = (text: string, name: string, from: number): number => {
+  const needle = `<${name}`
+  let position = text.indexOf(needle, from)
+  while (position !== -1) {
+    if (/[\s>/]/.test(text[position + needle.length] ?? '')) return position
+    position = text.indexOf(needle, position + needle.length)
+  }
+  return -1
+}
 
-// 閉じを持つ要素の中身（生）。見つからなければ null
+// 閉じを持つ要素の中身（生）。見つからない・自己終了・閉じが無いときは null
 const rawElement = (block: string, name: string): string | null => {
-  const pattern = new RegExp(`<${escapeRegExp(name)}(?:\\s[^>]*)?>([\\s\\S]*?)</${escapeRegExp(name)}>`)
-  return pattern.exec(block)?.[1] ?? null
+  const start = findOpen(block, name, 0)
+  if (start === -1) return null
+  const end = block.indexOf('>', start)
+  if (end === -1 || block[end - 1] === '/') return null
+  const close = block.indexOf(`</${name}>`, end)
+  return close === -1 ? null : block.slice(end + 1, close)
 }
 
 const textElement = (block: string, name: string): string | null => {
@@ -85,7 +126,7 @@ const textElement = (block: string, name: string): string | null => {
 
 const parseAttributes = (tag: string): Record<string, string> => {
   const attributes: Record<string, string> = {}
-  for (const match of tag.matchAll(/([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+  for (const match of tag.matchAll(/(?<![\w:.-])([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
     const name = match[1]
     if (name !== undefined) attributes[name] = unescapeOnce(match[2] ?? match[3] ?? '')
   }
@@ -93,10 +134,17 @@ const parseAttributes = (tag: string): Record<string, string> => {
 }
 
 // 自己終了または空の要素（<link ... /> や <sec:cvss ... />）の属性を全部集める
-const attributeList = (block: string, name: string): Record<string, string>[] =>
-  [...block.matchAll(new RegExp(`<${escapeRegExp(name)}(?=[\\s/>])([^>]*)>`, 'g'))].map((match) =>
-    parseAttributes(match[1] ?? ''),
-  )
+const attributeList = (block: string, name: string): Record<string, string>[] => {
+  const list: Record<string, string>[] = []
+  let position = findOpen(block, name, 0)
+  while (position !== -1) {
+    const end = block.indexOf('>', position)
+    if (end === -1) break
+    list.push(parseAttributes(block.slice(position + name.length + 1, end)))
+    position = findOpen(block, name, end)
+  }
+  return list
+}
 
 const toIso = (text: string | null): string | null => {
   if (text === null) return null
@@ -106,10 +154,29 @@ const toIso = (text: string | null): string | null => {
 
 const firstOf = (...values: (string | null)[]): string | null => values.find((value) => value !== null) ?? null
 
-// 開きタグの直後から次の開きタグ・閉じタグまでを 1 区間とする。閉じが無い項目は捨てる
+// 開始タグから最初の閉じタグまでを 1 区間とする。閉じるより前に同じ開始タグが来たら、その項目は捨てて
+// 次の開始タグから続ける。閉じが無い項目も捨てる（全体で線形: 閉じタグの位置は使い回す）
 const blocks = (xml: string, tag: 'item' | 'entry'): { open: string; body: string }[] => {
-  const pattern = new RegExp(`<${tag}(?=[\\s>])([^>]*)>((?:(?!<${tag}[\\s>])[\\s\\S])*?)</${tag}>`, 'g')
-  return [...xml.matchAll(pattern)].map((match) => ({ open: match[1] ?? '', body: match[2] ?? '' }))
+  const closeTag = `</${tag}>`
+  const found: { open: string; body: string }[] = []
+  let position = 0
+  let closeAt = -1
+  while (true) {
+    const start = findOpen(xml, tag, position)
+    if (start === -1) break
+    const end = xml.indexOf('>', start)
+    if (end === -1) break
+    if (closeAt < end) closeAt = xml.indexOf(closeTag, end)
+    if (closeAt === -1) break
+    const nextStart = findOpen(xml, tag, end)
+    if (nextStart !== -1 && nextStart < closeAt) {
+      position = nextStart
+      continue
+    }
+    found.push({ open: xml.slice(start + tag.length + 1, end), body: xml.slice(end + 1, closeAt) })
+    position = closeAt + closeTag.length
+  }
+  return found
 }
 
 const itemUrl = (body: string): string | null => {
@@ -180,9 +247,11 @@ const toItem = (open: string, body: string): FeedItem | null => {
 
 // 壊れた XML でも投げない。閉じの無い項目や title の無い項目は捨てて、完全な項目だけを返す
 export const parseFeed = (xml: string): FeedItem[] =>
-  [...blocks(xml, 'item'), ...blocks(xml, 'entry')]
-    .map(({ open, body }) => toItem(open, body))
-    .filter((item): item is FeedItem => item !== null)
+  xml.length > MAX_FEED_BYTES
+    ? []
+    : [...blocks(xml, 'item'), ...blocks(xml, 'entry')]
+        .map(({ open, body }) => toItem(open, body))
+        .filter((item): item is FeedItem => item !== null)
 
 // 本文が変わったかを見る指紋（title + summary + updatedAt）
 export const contentHash = (item: FeedItem): string =>
