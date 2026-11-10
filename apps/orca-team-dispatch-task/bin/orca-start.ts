@@ -9,7 +9,7 @@ import { die, log } from '../lib/cli.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
-import { orcaBin, receiptOk, runOrca, terminalHandles, workerTerminal } from '../lib/orca.ts'
+import { failureDetail, orcaBin, receiptOk, runOrca, terminalHandles, workerTerminal } from '../lib/orca.ts'
 import { envCount, run, runNode, sleepSeconds, which } from '../lib/sys.ts'
 import { trustBlocked, trustHint } from '../lib/trust.ts'
 
@@ -770,6 +770,11 @@ const launchRole = (context: Context, role: string): boolean => {
     return false
   }
   const spec = renderSpec(context, role)
+  // ★ **Run を必ず名指しする**（task-create も worker-start も）。--run の無い呼び出しは、Orca が親端末の current の
+  //   Run（その端末が最後に作った Run）に載せる。2026-11-10（3.10.16）、developer-auth の --phase exec が、あとから
+  //   別の repo で作った terraform-infra の Run に exec と exec_review を作り、自分の待機に通知が一度も届かなかった。
+  //   親端末が coordinate する Run なら current でなくても Orca は受け付ける。run-use で束縛を移さない — run-use は
+  //   その端末の他の Run の束縛を外し、そちらの待機の受信箱を止める
   const taskCreated = runOrca([
     'orchestration',
     'task-create',
@@ -777,6 +782,8 @@ const launchRole = (context: Context, role: string): boolean => {
     spec,
     '--task-title',
     title,
+    '--run',
+    context.run,
     '--from',
     context.parent,
     '--json',
@@ -797,6 +804,16 @@ const launchRole = (context: Context, role: string): boolean => {
   if (task === '') {
     kept(`task-create returned success but no task id for ${role}; a Task may exist. Resources are KEPT.`)
     log(NAME, `inspect with: ${orcaBin()} orchestration task-list --run ${context.run} --json`)
+    return false
+  }
+  // ★ 別の Run の Task に worker を起こさない。その worker の通知はこの dispatch の待機に届かない。
+  //   receipt に Run が無ければ（古い Orca）、--run を渡したことに頼る
+  const taskRun = string(get(taskCreated.json, 'result', 'task', 'run_id'))
+  if (taskRun !== '' && taskRun !== context.run) {
+    kept(
+      `task-create put the ${role} task ${task} in Run ${taskRun}, not in Run ${context.run} recorded for this dispatch; no worker was started. Resources are KEPT.`,
+    )
+    log(NAME, `inspect with: ${orcaBin()} orchestration task-list --run ${taskRun} --json`)
     return false
   }
   if (!roleUpdate(`workers-after-task-${role}`, workersFile, role, { task })) {
@@ -824,12 +841,24 @@ const launchRole = (context: Context, role: string): boolean => {
     '--worktree',
     `id:${worktreeId}`,
     ...args,
+    '--run',
+    context.run,
     '--from',
     context.parent,
     '--json',
   ])
   const state = string(get(started.json, 'result', 'state'))
   const dispatch = string(get(started.json, 'result', 'dispatchId'))
+  // ★ 別の Run に作られた dispatch は役の dispatch として記録しない。記録すると、待機は届かない worker_done を待ち、
+  //   その Run の待機は知らない dispatch の通知で止まる（2026-11-10 の実測と同じ形）。止め方を言って止まる
+  const dispatchRun = string(get(started.json, 'result', 'runId'))
+  if (dispatch !== '' && dispatchRun !== '' && dispatchRun !== context.run) {
+    kept(
+      `worker-start put the ${role} dispatch ${dispatch} in Run ${dispatchRun}, not in Run ${context.run} recorded for this dispatch; it is NOT recorded as the ${role} dispatch. Resources are KEPT.`,
+    )
+    log(NAME, `stop it with: ${orcaBin()} orchestration worker-stop --dispatch ${dispatch} --json`)
+    return false
+  }
   const effects = asArray(get(started.json, 'result', 'effects')) ?? []
   agentTerminal = string(
     get(
@@ -1227,6 +1256,22 @@ const main = (argv: string[]): number => {
     const recordedParent = string(get(prior, 'parent_handle'))
     if (recordedParent !== parent) {
       log(NAME, `this terminal is ${parent} but the dispatch was started from ${recordedParent || 'unknown'}`)
+      return 1
+    }
+    // ★ **続きの段は current の Run ではなく、記録した Run を見る。**この端末があとで別の Run を作っていても、記録した
+    //   Run を coordinate していれば task-create / worker-start の --run がそこへ作る。coordinate していなければ
+    //   （run-use で別の Run に移したなど）Orca も拒むが、worktree を作る前にここで止める
+    const recorded = runOrca(['orchestration', 'run-show', '--id', runId, '--json'])
+    if (!receiptOk(recorded)) {
+      log(NAME, `cannot read Run ${runId} recorded in ${statusDir}/run.json (${failureDetail(recorded)})`)
+      return 1
+    }
+    const coordinator = string(get(recorded.json, 'result', 'run', 'coordinator_handle'))
+    if (coordinator !== parent) {
+      log(
+        NAME,
+        `Run ${runId} recorded for this dispatch is not coordinated by this terminal ${parent} (its coordinator is ${coordinator || 'none'}); nothing was created`,
+      )
       return 1
     }
   } else if (runIn !== '') runId = runIn

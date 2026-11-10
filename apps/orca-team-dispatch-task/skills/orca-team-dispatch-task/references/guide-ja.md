@@ -791,6 +791,11 @@ node "$PLUGIN/bin/orca-recover.ts" --status-dir "$SD" --dry-run
 - **確認できないもの（`outcome_unknown` を含む）** → 何もせず、そう言う。fence が先である。
   ここで推測すると、2 つの capability が 1 つの lifecycle を進めることになる。
 - **Orca が既に決着させていた** → 何も送らず、ローカルの記録を合わせる。
+- **dispatch が `run.json` とは別の Run に在る** → 何もせず、両方の Run を名指しする。3.10.16 までの
+  Step 3.5 は、この端末が最後に起動した Run に `exec` と `exec_review` を作ることがあり（2026-11-10 に
+  観測）、その worker の message はこの dispatch の待機に届かない。ユーザーと調べ、止めるかを決める。
+  replacement は必ず `--run <記録した Run>` で起こし、それでも Orca が別の Run に置いたものは記録しない:
+  メッセージがそれを止める `worker-stop` の呼び出しを名指しする。
 
 置き換えた dispatch は `workers.json` のその役の `superseded` に古い順で残る。Orca が ready と報告
 しなかった replacement もその役の dispatch として記録するので、もう一度実行すると最初の試行ではなく
@@ -860,6 +865,14 @@ node "$PLUGIN/bin/orca-start.ts" --phase exec --slug "$SLUG"
 も `--run` も取らない。`review_mode` が on なら `exec` より先に `exec_review` を起こす。
 Step 2 が reviewer を先に起こすのと同じ理由である — 実装役は起動した瞬間にレビューを
 求めうる。
+
+この端末がそのあと別の Run を（この repository でも別の repository でも）起動していても、両方とも
+`run.json` に記録した Run に作る: `task-create` と `worker-start` は毎回 `--run` で Run を名指しする。
+この端末がもうその Run を coordinate していなければ、何も作る前に拒否する。それでも Orca が task か
+dispatch を別の Run に置いたら、worker を起こさず記録もせずに止まる。メッセージは両方の Run を名指しする。
+**この端末の結びつく Run を変えるために `orchestration run-use` を実行しない**: run-use はこの端末が
+coordinate するほかの Run の結びつきをすべて外し、それらの待機にメールが届かなくなる。`--resume` も
+同じように Run を確かめて名指しする。
 
 `design` が `done` でないとき、`plan.md` が無いか空のとき、`exec` に既に dispatch が在るとき
 は、**何も起こさずに拒否する**。これらは guard であって、回避して再試行する種類の失敗では
@@ -1125,6 +1138,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | failure / edge receipt fixture の一部は simulated のままである | 実機 E2E は worker 1 本の成功経路に加え、**レビュー 2 役の成功経路**、`check` の wait/ack、`worker-release` の別 state、terminal/worktree cleanup の実機 receipt まで証明した。**failure と rejection の receipt は依然 simulated** であり、それを消費する経路に依存する前に capture する |
 | 停滞したタスクは知らされるだけで、ユーザーが言わない限り何も止まらない | worker は期限なしで待つ。待機は進捗の無いまま 2 時間経つと終了コード 8 で抜け、Step 3 が待ち続けるか役を止めるかを尋ねる。`--issue` の実行は `stall.json` に記録するだけで待ち続ける |
 | Orca は、働いている worker を `start_unknown` と言い続けることがある | 2026-09-24 に観測: Orca は codex の worker のターン開始を観測できず、その worker が働き続けている間もこの state のままだった。待機はそれを待ち続け、死んでいれば停滞（終了コード 8）として知らせる。そうした worker を起こすために端末へ入力するものは無い — 死んだ worker はシェルを残していることがある — ので、worker 自身の待ちに頼る。起動が終わらなかった役なら、`orca-recover.ts` が画面を見せ、`--adopt` か `--restart` を選ぶ（Step 3） |
+| 3.10.16 までの `--phase exec` や `--resume` が起動した dispatch は、別の Run に在ることがある | 2026-11-10 に観測: 同じ端末から 2 つの Run を起動すると、`exec` と `exec_review` があとで起動した Run に作られ、記録した Run の待機には何も届かず、もう一方の Run の待機は知らない dispatch のメールで止まった。`$ORCA_BIN orchestration worker-show --dispatch <id> --json` の `result.dispatch.runId` が Run を示す。`orca-recover.ts` はそうした役を拒否し、両方の Run を名指しする。止めるかはユーザーと決める。今の版は起動のたびに Run を名指しする |
 | codex は repository ごとに 1 回、信頼するかを尋ね、それまで起動は `agent-trust-workspace` で失敗する | その worker の画面でフォルダを信頼するか、`trust_level = "trusted"` を持つ `[projects."<本体の checkout>"]` を `~/.codex/config.toml` に足す。Step 2 と `orca-recover.ts` が正確な行を出す。codex はその信頼を repository の本体の checkout に記録するので、以後の worktree は尋ねられずに起動する。そのあと `orca-recover.ts` で失敗した起動を置き換える |
 
 ## ディスク上の状態

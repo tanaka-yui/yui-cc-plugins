@@ -78,6 +78,18 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   「does not know」で止まり、pending-batch.json を誤った status dir に残し、自分の Run の merge_ready を拾えなくなった。
   それでも別の Run の batch が来たら（runId が違う）、この Run の pending-batch.json に混ぜず `foreign-batch-<run_id>.json`
   に残して exit 1 にする。回帰は `test-wait.sh` の WT138 / WT154-155 と `test-state.sh` の OS7
+- **Run を暗黙に決める呼び出しを残さない。`task-create` と `worker-start` には必ず `--run <run.json の run_id>` を付ける**
+  （`orca-start.ts` の新規・`--resume`・`--phase exec`、`orca-recover.ts` の置き換え）。`--run` の無い呼び出しは、Orca が
+  親端末の current の Run（その端末が最後に作った Run）に載せる。2026-11-10（3.10.16）、developer-auth の `--phase exec` が、
+  あとから同じ端末で作った terraform-infra の Run に exec と exec_review を作った。developer-auth の待機には exec の通知が
+  一度も届かず、terraform-infra の待機は知らない dispatch の escalation で exit 1 になった。Orca 1.4.255 は、親の pane が
+  coordinate している Run なら current でなくても `--run` を受け付ける（`getCoordinatedRun`）。**`run-use` で束縛を移さない**
+  — run-use はその端末が coordinate する他の Run の束縛を外し、そちらの受信箱を止める。続きの段は `run-show` で記録した Run の
+  `coordinator_handle` が親端末かを worktree を作る前に確かめ、task-create の `result.task.run_id` と worker-start の
+  `result.runId` が記録した Run と違えば worker を起こさず・記録せずに止まる（receipt に Run が無ければ `--run` に頼る）。
+  `orca-recover.ts` は worker-show の `result.dispatch.runId` が違う役に何もしない。`send --to dispatch:<id>` は dispatch
+  自身の Run を使い、worker 側の `check` は worker の端末で決まるので `--run` は要らない。回帰は `test-start.sh` の
+  ST119-124 と `test-recover.sh` の RC49-51
 - **Orca の consuming check は返した batch をその場で既読にする**（Orca 1.4.246。`--ack` は要らない）。「ack する
   まで batch は queue の先頭に残る」を前提にした待機は、止まった batch を失っていた。2026-11-02 の logi-app で、
   待機ループの `check --wait`（これも consuming）が返して捨てた batch の merge_ready が、返事なしに既読になり、

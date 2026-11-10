@@ -654,4 +654,41 @@ else
 fi
 chmod u+w "$SD/roles/design"
 teardown
+
+# --- Run を明示する（2026-11-10、3.10.16 の実測） ---
+# 置き換えの worker-start も --run を渡さないと、親端末の current の Run（あとで別の repo で作った Run）を使う。
+show_run() {   # $1=worker state  $2=dispatch の Run
+  jq -nc --arg s "$1" --arg r "$2" '{ok:true,result:{worker:{state:$s},dispatch:{status:"dispatched",runId:$r}}}' \
+    > "$ORCA_STUB_DIR/orchestration_worker-show"
+}
+
+# RC49: ★ 置き換えは run.json の Run を名指しする
+setup; owe; show_run failed run_x
+rec >/dev/null 2>&1; rc=$?
+ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
+[[ "$rc" -eq 0 && "$ws" == *'--run run_x'* && "$(did_)" == ctx_new ]] \
+  && ok "RC49 置き換えの worker-start に --run" || fail "RC49 (rc=$rc) [$ws]"
+teardown
+
+# RC50: ★ 記録した dispatch が別の Run にあれば、nudge も置き換えも reconcile もせず、理由を言って止まる
+setup; owe; show_run failed run_other
+out=$(rec 2>&1); rc=$?
+a=""; [[ "$rc" -eq 1 && "$out" == *'run_other'* && "$out" == *'run_x'* ]] \
+  && ! grep -qE 'worker-start|orchestration send' "$ORCA_STUB_DIR/calls.log" \
+  && [[ "$(did_)" == ctx_old && "$(gen)" -eq 1 ]] && a=y
+show_run active run_other; : > "$ORCA_STUB_DIR/calls.log"
+out=$(rec 2>&1); rc=$?
+b=""; [[ "$rc" -eq 1 ]] && ! grep -qE 'worker-start|orchestration send' "$ORCA_STUB_DIR/calls.log" && b=y
+[[ -n "$a" && -n "$b" ]] && ok "RC50 別の Run の dispatch は回復しない" || fail "RC50 (a=$a b=$b) $out"
+teardown
+
+# RC51: ★ 置き換えが別の Run に作られたら、役の dispatch として記録しない
+setup; owe; show_run failed run_x
+echo '{"ok":true,"result":{"runId":"run_other","state":"ready","dispatchId":"ctx_new","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_new"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-start"
+out=$(rec 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'run_other'* && "$out" == *'worker-stop --dispatch ctx_new'* ]] \
+  && [[ "$(did_)" == ctx_old && "$(gen)" -eq 1 ]] \
+  && ok "RC51 別の Run の置き換えを記録しない" || fail "RC51 (rc=$rc) $out"
+teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

@@ -24,6 +24,9 @@ setup() {
   echo '{"ok":true,"result":{"run":{"id":"run_x"}}}' > "$ORCA_STUB_DIR/orchestration_run-create"
   echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term_p"}}}' \
     > "$ORCA_STUB_DIR/orchestration_run-current"
+  # 続きの段（--phase exec / --resume）は記録した Run がこの端末の coordinate する Run かを run-show で確かめる
+  echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term_p"}}}' \
+    > "$ORCA_STUB_DIR/orchestration_run-show"
   echo '{"ok":true,"result":{"worktrees":[]}}' > "$ORCA_STUB_DIR/worktree_list"
   printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"}}}\n' \
     "$WT" > "$ORCA_STUB_DIR/worktree_create"
@@ -1416,5 +1419,99 @@ start >/dev/null 2>&1; sp=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/cal
 [[ "$sp" == *'Apart from the round-limit question in the review protocol'* ]] || miss="$miss [turn]"
 [[ "$sp" == *'see the brainstorming section and the review protocol'* ]] || miss="$miss [closing]"
 [[ -z "$miss" ]] && ok "ST118 上限の質問を例外として書く" || fail "ST118:$miss"; teardown
+
+# --- Run を明示する（2026-11-10、3.10.16 の実測） ---
+# 同じ親端末から別の repo で Run B を作ったあと、Run A の --phase exec が exec と exec_review を Run B に作った。
+# task-create も worker-start も --run を渡さず、Orca は親端末が最後に作った Run（current）に載せていた。
+# Run A の待機には exec の通知が一度も届かず、Run B の待機は知らない dispatch の escalation で exit 1 になった。
+# spec は %q で 8 進のバイト列を含むので、LC_ALL=C で行として読む（UTF-8 のロケールでは照合が外れる）
+run_of() { LC_ALL=C grep "orchestration $1" "$ORCA_STUB_DIR/calls.log"; }
+every_has_run() {   # $1=サブコマンド  $2=run id。呼び出しが 1 つ以上あり、全部に --run <id> が付く
+  local lines; lines=$(run_of "$1"); [[ -n "$lines" ]] || return 1
+  ! LC_ALL=C grep -qv -- "--run $2" <<<"$lines"
+}
+other_current() {   # 親端末の current を別の Run にする（別の repo で Run を作った状態）
+  echo '{"ok":true,"result":{"run":{"id":"run_other","coordinator_handle":"term_p"}}}' \
+    > "$ORCA_STUB_DIR/orchestration_run-current"
+}
+
+# ST119: 新規の起動でも task-create と worker-start に記録する Run を渡す
+setup; review_on; start >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && every_has_run task-create run_x && every_has_run worker-start run_x \
+  && ok "ST119 新規の task-create / worker-start に --run" || fail "ST119 (rc=$rc) $(run_of task-create | head -c 300)"
+teardown
+
+# ST120: ★ --phase exec は、親端末の current が別の Run でも、run.json の Run に exec を作る
+setup; four_roles; start >/dev/null 2>&1; design_done; other_current
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] && every_has_run task-create run_x && every_has_run worker-start run_x \
+  && [[ "$(grep -c 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")" -eq 2 ]] \
+  && ! grep -q -- '--run run_other' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST120 --phase exec は記録した Run に作る" || fail "ST120 (rc=$rc) $out"
+teardown
+
+# ST121: ★ --resume も同じ
+setup; review_on
+cat > "$ORCA_STUB_DIR/worktree_create.hook" <<HOOK
+#!/usr/bin/env bash
+n=\$(cat "$ORCA_STUB_DIR/n" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$ORCA_STUB_DIR/n"
+rm -f "$ORCA_STUB_DIR/worktree_create.rc"
+case "\$n" in
+  1) printf '{"ok":true,"result":{"worktree":{"id":"wt_r","path":"%s","branch":"refs/heads/orca/s-review"}}}\n' "$WT2" > "$ORCA_STUB_DIR/worktree_create" ;;
+  2) printf '{"ok":false,"error":{"code":"git_failed","message":"boom"}}\n' > "$ORCA_STUB_DIR/worktree_create"
+     echo 1 > "$ORCA_STUB_DIR/worktree_create.rc" ;;
+  *) printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/s"}}}\n' "$WT" > "$ORCA_STUB_DIR/worktree_create" ;;
+esac
+HOOK
+chmod +x "$ORCA_STUB_DIR/worktree_create.hook"
+start >/dev/null 2>&1; other_current
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(resume 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] && every_has_run task-create run_x && every_has_run worker-start run_x \
+  && ok "ST121 --resume は記録した Run に作る" || fail "ST121 (rc=$rc) $out"
+teardown
+
+# ST122: ★ 記録した Run をこの端末が coordinate していなければ、続きの段は何も作らずに止まる
+#        （run-use で別の Run に移した端末など。Orca も task-create を拒むが、worktree を作る前に止める）
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":null}}}' \
+  > "$ORCA_STUB_DIR/orchestration_run-show"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+a=""; [[ "$rc" -eq 1 && "$out" == *'run_x'* && "$out" == *'not coordinated by'* ]] \
+  && ! grep -qE 'worktree create|task-create|worker-start' "$ORCA_STUB_DIR/calls.log" && a=y
+echo 1 > "$ORCA_STUB_DIR/orchestration_run-show.rc"
+echo '{"ok":false,"error":{"code":"run_not_found","message":"Run run_x was not found."}}' \
+  > "$ORCA_STUB_DIR/orchestration_run-show"
+out2=$(exec_phase 2>&1); rc2=$?
+b=""; [[ "$rc2" -eq 1 && "$out2" == *'cannot read Run run_x'* ]] \
+  && ! grep -qE 'worktree create|task-create|worker-start' "$ORCA_STUB_DIR/calls.log" && b=y
+[[ -n "$a" && -n "$b" ]] && ok "ST122 coordinate していない Run では続きを作らない" \
+  || fail "ST122 (a=$a b=$b) $out / $out2"
+teardown
+
+# ST123: ★ Task が別の Run に作られたら worker を起こさず、資源を残して理由を言う
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+echo '{"ok":true,"result":{"task":{"id":"task_y","run_id":"run_other"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_task-create"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'run_other'* && "$out" == *'run_x'* && "$out" == *KEPT* ]] \
+  && ! grep -qE 'worker-start|worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST123 別の Run の Task では worker を起こさない" || fail "ST123 (rc=$rc) $out"
+teardown
+
+# ST124: ★ dispatch が別の Run に作られたら、役の dispatch として記録せず、止め方を言って止まる
+setup; phase_b_on; start >/dev/null 2>&1; design_done
+echo '{"ok":true,"result":{"runId":"run_other","state":"ready","dispatchId":"ctx_y","effects":[{"kind":"terminal","role":"agent","action":"created","id":"term_y"}]}}' \
+  > "$ORCA_STUB_DIR/orchestration_worker-start"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'run_other'* && "$out" == *'worker-stop --dispatch ctx_y'* && "$out" == *KEPT* ]] \
+  && [[ "$(jq -r '.roles.exec.dispatch // empty' "$R/.dispatch/s/workers.json")" == '' ]] \
+  && ! grep -q 'worktree rm' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST124 別の Run の dispatch を記録しない" || fail "ST124 (rc=$rc) $out"
+teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"

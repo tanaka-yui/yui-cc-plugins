@@ -229,7 +229,7 @@ const stopForRestart = (role: Role): boolean => {
 //   に残す（Orca がそれを retained のまま持っていても、[C7] が「記録に無い保持」と数えないため）。
 //   新しい agent 端末が同じ worktree に生まれるので、端末の inventory も取り直す（取り直さないと [C3] が
 //   「記録に無い端末が居る」と読み、worktree の片付けを提示できない）
-const replace = (statusDir: string, parent: string, role: Role): boolean => {
+const replace = (statusDir: string, parent: string, run: string, role: Role): boolean => {
   const worktreeId = asString(role.record.worktree_id) ?? ''
   if (worktreeId === '') {
     log(NAME, `${role.name}: no worktree recorded; refusing to place a replacement`)
@@ -239,7 +239,9 @@ const replace = (statusDir: string, parent: string, role: Role): boolean => {
   const model = asString(role.record.model) ?? ''
   const effort = asString(role.record.effort) ?? ''
   const args = ['--task', role.task, '--worktree', `id:${worktreeId}`, '--retry-of', role.dispatch]
-  args.push('--agent', agent, '--from', parent)
+  // ★ **Run を名指しする。**--run の無い worker-start は親端末の current の Run（あとで別の repo で作った Run）を使う
+  //   （2026-11-10、3.10.16 の --phase exec と同じ形）
+  args.push('--agent', agent, '--run', run, '--from', parent)
   if (model !== '') {
     args.push('--model', model)
     if (effort !== '') args.push('--effort', effort)
@@ -273,6 +275,23 @@ const replace = (statusDir: string, parent: string, role: Role): boolean => {
     // 応答に ID が無くても Orca は置き換えを起こしているかもしれない。旧 nonce は戻さない
     log(NAME, `${role.name}: could not start a replacement (rc=${started.rc}); the old resources are KEPT`)
     if (parking === 'parked') reportParked(statusDir, role, parked)
+    return false
+  }
+  // ★ 別の Run に作られた置き換えは役の dispatch として記録しない。その worker_done はこの dispatch の待機に届かない。
+  //   退避した完了の記録は戻さない — 止める前のその worker が、同じ role dir に自分の記録を書きうる
+  const nextRun = asString(get(started.json, 'result', 'runId')) ?? ''
+  if (nextRun !== '' && nextRun !== run) {
+    log(
+      NAME,
+      `${role.name}: the replacement dispatch ${next} was started in Run ${nextRun}, not in Run ${run} recorded for this dispatch; it is NOT recorded and the old resources are KEPT`,
+    )
+    log(NAME, `  stop it with: ${orcaBin()} orchestration worker-stop --dispatch ${next} --json`)
+    if (parking === 'parked') {
+      log(
+        NAME,
+        `  then, if ${completion} is absent, move ${parked} back to ${completion} and run node ${SELF} --status-dir ${statusDir} --role ${role.name}`,
+      )
+    }
     return false
   }
   const shownResult = ready ? null : runOrca(['orchestration', 'worker-show', '--dispatch', next, '--json'])
@@ -385,6 +404,8 @@ const main = (argv: string[]): number => {
   }
   const parent = asString(get(readJson(join(statusDir, 'run.json')), 'parent_handle')) ?? ''
   if (parent === '') return die(NAME, 'no parent handle recorded')
+  const run = asString(get(readJson(join(statusDir, 'run.json')), 'run_id')) ?? ''
+  if (run === '') return die(NAME, 'no run id recorded')
   reportWait(statusDir)
 
   const say = (line: string): void => {
@@ -459,6 +480,19 @@ const main = (argv: string[]): number => {
     const inspect = (): void => {
       log(NAME, `  ${orcaBin()} orchestration worker-show --dispatch ${role.dispatch} --json`)
     }
+    // ★ **別の Run にある dispatch には何もしない。**3.10.16 までの --phase exec は、親端末があとで別の repo で作った
+    //   Run に exec を作った（2026-11-10）。その worker の通知はこの dispatch の待機に届かず、置き換えも nudge も
+    //   この dispatch の決着にならない。止めるか残すかはユーザーが決める
+    const dispatchRun = asString(get(shown.json, 'result', 'dispatch', 'runId')) ?? ''
+    if (dispatchRun !== '' && dispatchRun !== run) {
+      log(
+        NAME,
+        `${name}: dispatch ${role.dispatch} belongs to Run ${dispatchRun}, not to Run ${run} recorded for this dispatch; its messages never reach this dispatch's wait. Nothing was changed. Inspect with:`,
+      )
+      inspect()
+      rc = 1
+      continue
+    }
 
     if (incomplete) {
       const kind = workerStateClass(state)
@@ -511,7 +545,7 @@ const main = (argv: string[]): number => {
         continue
       }
       releaseFailedStart(role)
-      if (!replace(statusDir, parent, role)) rc = 1
+      if (!replace(statusDir, parent, run, role)) rc = 1
       continue
     }
 
@@ -568,7 +602,7 @@ const main = (argv: string[]): number => {
         say(`${name}: replace`)
         continue
       }
-      if (!replace(statusDir, parent, role)) rc = 1
+      if (!replace(statusDir, parent, run, role)) rc = 1
       continue
     }
     // ★ `outcome_unknown` を含め、**確認できないものでは replacement を作らない**（O19）

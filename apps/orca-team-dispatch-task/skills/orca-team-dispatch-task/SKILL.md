@@ -827,6 +827,12 @@ narrow on purpose:
 - **Anything it cannot confirm, including `outcome_unknown`** → it does nothing and says so.
   Fencing comes first; guessing here is how two capabilities end up driving one lifecycle.
 - **Orca already settled it** → nothing is sent; the local record is brought into line.
+- **The dispatch belongs to another Run** than the one in `run.json` → it does nothing and names
+  both Runs. Up to 3.10.16, Step 3.5 could start `exec` and `exec_review` in whichever Run this
+  terminal had started last (measured 2026-11-10), and that worker's messages never reach this
+  dispatch's wait. Inspect it with the user and decide whether to stop it. A replacement is always
+  started with `--run <the recorded Run>`, and one that Orca still puts in another Run is not
+  recorded: the message names the `worker-stop` call for it.
 
 A replaced dispatch is kept in that role's `superseded` list in `workers.json`, oldest first. A
 replacement that Orca does not report ready is still recorded as the role's dispatch, so running
@@ -898,6 +904,14 @@ It continues that task's existing Run and status dir, so it takes no `--request-
 `--objective` and no `--run`. It starts `exec_review` before `exec` when `review_mode` is on,
 for the same reason Step 2 starts a reviewer first: the builder may ask for a review the
 moment it starts.
+
+It creates both in the Run recorded in `run.json`, even when this terminal has since started
+another Run, in this repository or another one: every `task-create` and `worker-start` names the
+Run with `--run`. It refuses before creating anything when this terminal no longer coordinates
+that Run, and it stops without starting or recording a worker when Orca still puts the task or
+the dispatch in another Run; the message names both Runs. **Do not run `orchestration run-use`
+to change which Run this terminal is bound to**: it unbinds every other Run the terminal
+coordinates, and their waits stop receiving mail. `--resume` checks and names the Run the same way.
 
 It refuses, without starting anything, when `design` is not `done`, when `plan.md` is missing
 or empty, or when `exec` already has a dispatch. Those are guards, not failures to retry
@@ -1185,6 +1199,7 @@ State these when they apply. Do not work around them silently.
 | Failure and edge receipt fixtures are partly simulated | The real E2E now proves the success path for one worker and for a reviewed pair, plus real `check` wait/ack, `worker-release` alternate-state, and terminal/worktree cleanup receipts. **Failure and rejection receipts are still simulated**; capture them before relying on the paths that consume them |
 | A stalled task is only reported; nothing stops it unless you say so | Workers wait with no time limit. The wait exits 8 after two hours without progress, and Step 3 asks you whether to keep waiting or stop a role. An `--issue` run only records it in `stall.json` and keeps waiting |
 | Orca can keep reporting a working worker as `start_unknown` | Measured 2026-09-24: Orca could not observe the start of a codex worker's turn and kept that state while the worker went on working. The wait keeps waiting on it and reports a dead one as a stall (exit 8). Nothing types into such a worker to wake it — a dead one may have left a bare shell — so it relies on its own waits. For a start that did not complete, `orca-recover.ts` shows its screen and you choose `--adopt` or `--restart` (Step 3) |
+| A dispatch started by 3.10.16 or earlier with `--phase exec` or `--resume` may sit in another Run | Measured 2026-11-10: with two Runs started from the same terminal, `exec` and `exec_review` were created in the Run started last, so the recorded Run's wait never heard from them and the other Run's wait stopped on mail from a dispatch it did not know. `$ORCA_BIN orchestration worker-show --dispatch <id> --json` shows the Run as `result.dispatch.runId`. `orca-recover.ts` refuses such a role and names both Runs; decide with the user whether to stop it. Current versions name the Run on every start |
 | codex asks once per repository whether to trust it, and until then a start fails with `agent-trust-workspace` | Trust the folder on that worker's screen, or add `[projects."<main checkout>"]` with `trust_level = "trusted"` to `~/.codex/config.toml`; Step 2 and `orca-recover.ts` print the exact lines. codex keeps the trust for the repository's main checkout, so later worktrees start without asking. Then replace the failed start with `orca-recover.ts` |
 
 ## State on disk
