@@ -90,6 +90,11 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   `orca-recover.ts` は worker-show の `result.dispatch.runId` が違う役に何もしない。`send --to dispatch:<id>` は dispatch
   自身の Run を使い、worker 側の `check` は worker の端末で決まるので `--run` は要らない。回帰は `test-start.sh` の
   ST119-124 と `test-recover.sh` の RC49-51
+- **既にある Run に作るときは、current の Run と比べない。**`--run` を受けた新規の起動（Step 2 の 2 タスク目以降と
+  Issue モードのバッチ内の 2 件目以降）も、続きの段と同じく `run-show` の `coordinator_handle` が親端末かだけを見る
+  （`orca-start.ts` の `coordinates`）。current と比べていた版は、間に同じ端末で別の Run を作ると「this terminal is
+  bound to Run ...」で相乗りを拒んだ。`run-current` で確かめるのは、今 `run-create` した Run だけ。回帰は
+  `test-start.sh` の ST24-26b / ST108 と `test-issue.sh` の IS30
 - **Orca の consuming check は返した batch をその場で既読にする**（Orca 1.4.246。`--ack` は要らない）。「ack する
   まで batch は queue の先頭に残る」を前提にした待機は、止まった batch を失っていた。2026-11-02 の logi-app で、
   待機ループの `check --wait`（これも consuming）が返して捨てた batch の merge_ready が、返事なしに既読になり、

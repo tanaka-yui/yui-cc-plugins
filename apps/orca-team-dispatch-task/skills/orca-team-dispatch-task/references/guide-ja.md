@@ -334,6 +334,7 @@ node "$PLUGIN/bin/orca-issue.ts" --phase dispatch --issue "$NUM" --slug "$SLUG" 
 
 **印字された `run_id` を控え、そのバッチの以降の issue では `RUN` にそれを設定する** — バッチ全体が
 1 つの Run と 1 つの親メールボックスを共有するようにする。印字された `status_dir` も全部控える。
+この端末が間に別の Run を起動していても、以降の issue はその Run に相乗りする。
 dispatch に失敗した issue は既に `dispatch/failed` が付いて資源が残っている。次へ進み、
 その issue をパス 2 から外す。
 
@@ -478,7 +479,8 @@ Step 2 で全タスクに渡す。
 
 これをタスクごとに 1 回実行する。**最初の呼び出しが Run を作って `run_id` を印字し、以降の
 呼び出しはその同じ `run_id` を `--run` で渡す。こうして全タスクが 1 つの Run と 1 つの親
-mailbox を共有する。**並列にではなく、順番に呼ぶ。
+mailbox を共有する。**並列にではなく、順番に呼ぶ。この端末が間に別の Run を起動していても、以降の
+呼び出しはその Run に相乗りする。渡された Run をこの端末が coordinate していなければ、何も作る前に拒否する。
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"

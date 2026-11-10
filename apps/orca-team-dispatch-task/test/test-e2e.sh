@@ -21,6 +21,8 @@ echo '{"ok":true,"result":{"terminal":{"handle":"term_p"}}}' > "$ORCA_STUB_DIR/t
 echo '{"ok":true,"result":{"run":{"id":"run_e"}}}' > "$ORCA_STUB_DIR/orchestration_run-create"
 echo '{"ok":true,"result":{"run":{"id":"run_e","coordinator_handle":"term_p"}}}' \
   > "$ORCA_STUB_DIR/orchestration_run-current"
+echo '{"ok":true,"result":{"run":{"id":"run_e","coordinator_handle":"term_p"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_run-show"
 echo '{"ok":true,"result":{"worktrees":[]}}' > "$ORCA_STUB_DIR/worktree_list"
 printf '{"ok":true,"result":{"worktree":{"id":"wt_1","path":"%s","branch":"refs/heads/orca/e2e"}}}\n' \
   "$WT" > "$ORCA_STUB_DIR/worktree_create"

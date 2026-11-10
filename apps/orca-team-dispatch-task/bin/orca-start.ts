@@ -1002,6 +1002,26 @@ const launchRole = (context: Context, role: string): boolean => {
 //   取り込み方（merge / pr）も同じく起動時に記録し、Step 4 と merge / PR の両スクリプトが読む。
 //
 // ★ 続きの起動は tuple だけを足す。**既存の役の記録を上書きしない**
+// ★ **既にある Run に作るときは、current の Run ではなく、その Run をこの端末が coordinate しているかを見る。**
+//   この端末があとで別の Run を作っていても、coordinate していれば task-create / worker-start の --run がそこへ作る
+//   （続きの段、Issue モードの 2 バッチ目以降、Step 2 の 2 タスク目以降）。current と比べていた版は、間に同じ端末で
+//   別の Run を作ると相乗りを拒んだ。coordinate していなければ（run-use で別の Run に移したなど）Orca も拒むが、
+//   worktree を作る前にここで止める
+const coordinates = (runId: string, parent: string, source: string): boolean => {
+  const shown = runOrca(['orchestration', 'run-show', '--id', runId, '--json'])
+  if (!receiptOk(shown)) {
+    log(NAME, `cannot read Run ${runId} ${source} (${failureDetail(shown)})`)
+    return false
+  }
+  const coordinator = string(get(shown.json, 'result', 'run', 'coordinator_handle'))
+  if (coordinator === parent) return true
+  log(
+    NAME,
+    `Run ${runId} ${source} is not coordinated by this terminal ${parent} (its coordinator is ${coordinator || 'none'}); nothing was created`,
+  )
+  return false
+}
+
 const main = (argv: string[]): number => {
   let requestFile = ''
   let slug = ''
@@ -1258,24 +1278,11 @@ const main = (argv: string[]): number => {
       log(NAME, `this terminal is ${parent} but the dispatch was started from ${recordedParent || 'unknown'}`)
       return 1
     }
-    // ★ **続きの段は current の Run ではなく、記録した Run を見る。**この端末があとで別の Run を作っていても、記録した
-    //   Run を coordinate していれば task-create / worker-start の --run がそこへ作る。coordinate していなければ
-    //   （run-use で別の Run に移したなど）Orca も拒むが、worktree を作る前にここで止める
-    const recorded = runOrca(['orchestration', 'run-show', '--id', runId, '--json'])
-    if (!receiptOk(recorded)) {
-      log(NAME, `cannot read Run ${runId} recorded in ${statusDir}/run.json (${failureDetail(recorded)})`)
-      return 1
-    }
-    const coordinator = string(get(recorded.json, 'result', 'run', 'coordinator_handle'))
-    if (coordinator !== parent) {
-      log(
-        NAME,
-        `Run ${runId} recorded for this dispatch is not coordinated by this terminal ${parent} (its coordinator is ${coordinator || 'none'}); nothing was created`,
-      )
-      return 1
-    }
-  } else if (runIn !== '') runId = runIn
-  else {
+    if (!coordinates(runId, parent, `recorded in ${statusDir}/run.json`)) return 1
+  } else if (runIn !== '') {
+    runId = runIn
+    if (!coordinates(runId, parent, 'passed with --run')) return 1
+  } else {
     const created = runOrca(['orchestration', 'run-create', '--objective', objective, '--from', parent, '--json'])
     runId = string(get(created.json, 'result', 'run', 'id'))
     if (created.rc !== 0 || runId === '') {
@@ -1283,7 +1290,8 @@ const main = (argv: string[]): number => {
       return 1
     }
   }
-  if (!continuing) {
+  // ★ 束縛の確認は今作った Run だけ。作った Run は current になっているはずである
+  if (!continuing && runIn === '') {
     const current = runOrca(['orchestration', 'run-current', '--from', parent, '--json'])
     const boundParent = string(get(current.json, 'result', 'run', 'coordinator_handle'))
     const boundRun = string(get(current.json, 'result', 'run', 'id'))
@@ -1295,6 +1303,8 @@ const main = (argv: string[]): number => {
       log(NAME, `this terminal is bound to Run '${boundRun || 'unknown'}', not to ${runId}`)
       return 1
     }
+  }
+  if (!continuing) {
     if (
       !write(
         'run',

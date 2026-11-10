@@ -40,6 +40,12 @@ teardown() { git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
 start() { node "$P/bin/orca-start.ts" --request-file "$REQ" --slug "${SLUG:-s}" --objective obj \
             --repo-root "$R" "$@"; }
 spec() { grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | head -1; }
+# spec は %q で 8 進のバイト列を含むので、LC_ALL=C で行として読む（UTF-8 のロケールでは照合が外れる）
+run_of() { LC_ALL=C grep "orchestration $1" "$ORCA_STUB_DIR/calls.log"; }
+every_has_run() {   # $1=サブコマンド  $2=run id。呼び出しが 1 つ以上あり、全部に --run <id> が付く
+  local lines; lines=$(run_of "$1"); [[ -n "$lines" ]] || return 1
+  ! LC_ALL=C grep -qv -- "--run $2" <<<"$lines"
+}
 # ★ **実機の receipt に `name` は無い**（実測 2026-09-09）。名前は `displayName` に載る。
 #   fixture が `name` を持っていたせいで、再利用経路のテストが全部「嘘の形」で通っていた。
 reuse_fixture() { printf '{"ok":true,"result":{"worktrees":[{"id":"wt_old","displayName":"s","path":"%s","branch":"refs/heads/orca/s"}]}}\n' \
@@ -280,26 +286,40 @@ out=$(start 2>&1); rc=$?
   && ok "ST23 handle 不明で資源と dispatch を残す" \
   || fail "ST23 (rc=$rc dispatch='$(did_on_disk)' out=$out)"; teardown
 
-# ST24: --run を渡したら run-create を呼ばず、束縛だけ確かめる
+# ST24: --run を渡したら run-create を呼ばず、その Run をこの端末が coordinate しているかを run-show で確かめる
 setup; start --run run_x >/dev/null 2>&1
 ! grep -q 'run-create' "$ORCA_STUB_DIR/calls.log" \
-  && grep -q 'run-current' "$ORCA_STUB_DIR/calls.log" \
+  && grep -q 'run-show --id run_x' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST24 Run に相乗りする" || fail "ST24"; teardown
 
-# ST25: 相乗り先が自分に束縛されていなければ何も作らない
+# ST25: 相乗り先を自分が coordinate していなければ何も作らない
 setup
 echo '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term_other"}}}' \
-  > "$ORCA_STUB_DIR/orchestration_run-current"
+  > "$ORCA_STUB_DIR/orchestration_run-show"
 out=$(start --run run_x 2>&1); rc=$?
-[[ "$rc" -eq 1 ]] && ! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
+[[ "$rc" -eq 1 && "$out" == *'not coordinated by'* ]] && ! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
   && ok "ST25 他人の Run に相乗りしない" || fail "ST25 (rc=$rc out=$out)"; teardown
 
-# ST26: 相乗り先の id が食い違ったら止める
+# ST26: ★ 相乗り先が current でなくても、自分が coordinate していれば相乗りし、その Run に作る。
+#       Issue モードの 2 バッチ目以降と Step 2 の 2 タスク目以降は --run を渡す。その間に同じ端末で別の Run を
+#       作っていると、3.10.17 までは「this terminal is bound to Run ...」で止まっていた
 setup
 echo '{"ok":true,"result":{"run":{"id":"run_other","coordinator_handle":"term_p"}}}' \
   > "$ORCA_STUB_DIR/orchestration_run-current"
-start --run run_x >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 1 ]] && ok "ST26 別 Run への相乗りを拒否" || fail "ST26 (rc=$rc)"; teardown
+out=$(start --run run_x 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *'run_id=run_x'* ]] && every_has_run task-create run_x && every_has_run worker-start run_x \
+  && [[ "$(jq -r '.run_id' "$R/.dispatch/s/run.json")" == run_x ]] \
+  && ! grep -qE 'run-create|--run run_other' "$ORCA_STUB_DIR/calls.log" \
+  && ok "ST26 current でない Run にも相乗りする" || fail "ST26 (rc=$rc out=$out)"; teardown
+
+# ST26b: 相乗り先の Run が読めなければ何も作らない
+setup; echo 1 > "$ORCA_STUB_DIR/orchestration_run-show.rc"
+echo '{"ok":false,"error":{"code":"run_not_found","message":"Run run_x was not found."}}' \
+  > "$ORCA_STUB_DIR/orchestration_run-show"
+out=$(start --run run_x 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'cannot read Run run_x'* ]] && ! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
+  && [[ ! -f "$R/.dispatch/s/run.json" ]] \
+  && ok "ST26b 読めない Run に相乗りしない" || fail "ST26b (rc=$rc out=$out)"; teardown
 
 # ST27: run_id を stdout に印字する（2 本目以降が使う）
 setup; out=$(start 2>/dev/null)
@@ -1285,7 +1305,7 @@ if command -v zsh >/dev/null 2>&1; then
     "$shell" -c 'node "$1" --request-file "$2" --slug s --objective obj --repo-root "$3" --run "$4"' \
       "$shell" "$P/bin/orca-start.ts" "$REQ" "$R" run_x >/dev/null 2>&1 || bad="$bad [$shell-rc]"
     grep -q 'run-create' "$ORCA_STUB_DIR/calls.log" && bad="$bad [$shell-created]"
-    grep -q 'run-current' "$ORCA_STUB_DIR/calls.log" || bad="$bad [$shell-unbound]"
+    grep -q 'run-show --id run_x' "$ORCA_STUB_DIR/calls.log" || bad="$bad [$shell-unbound]"
     teardown
   done
   [[ -z "$bad" ]] && ok "ST108 zsh からも --run の値が別の引数で届く" || fail "ST108:$bad"
@@ -1424,12 +1444,6 @@ start >/dev/null 2>&1; sp=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/cal
 # 同じ親端末から別の repo で Run B を作ったあと、Run A の --phase exec が exec と exec_review を Run B に作った。
 # task-create も worker-start も --run を渡さず、Orca は親端末が最後に作った Run（current）に載せていた。
 # Run A の待機には exec の通知が一度も届かず、Run B の待機は知らない dispatch の escalation で exit 1 になった。
-# spec は %q で 8 進のバイト列を含むので、LC_ALL=C で行として読む（UTF-8 のロケールでは照合が外れる）
-run_of() { LC_ALL=C grep "orchestration $1" "$ORCA_STUB_DIR/calls.log"; }
-every_has_run() {   # $1=サブコマンド  $2=run id。呼び出しが 1 つ以上あり、全部に --run <id> が付く
-  local lines; lines=$(run_of "$1"); [[ -n "$lines" ]] || return 1
-  ! LC_ALL=C grep -qv -- "--run $2" <<<"$lines"
-}
 other_current() {   # 親端末の current を別の Run にする（別の repo で Run を作った状態）
   echo '{"ok":true,"result":{"run":{"id":"run_other","coordinator_handle":"term_p"}}}' \
     > "$ORCA_STUB_DIR/orchestration_run-current"

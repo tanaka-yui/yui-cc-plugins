@@ -39,6 +39,8 @@ setup() {
   echo '{"ok":true,"result":{"run":{"id":"run_i"}}}' > "$ORCA_STUB_DIR/orchestration_run-create"
   echo '{"ok":true,"result":{"run":{"id":"run_i","coordinator_handle":"term_p"}}}' \
     > "$ORCA_STUB_DIR/orchestration_run-current"
+  echo '{"ok":true,"result":{"run":{"id":"run_i","coordinator_handle":"term_p"}}}' \
+    > "$ORCA_STUB_DIR/orchestration_run-show"
   echo '{"ok":true,"result":{"worktrees":[]}}' > "$ORCA_STUB_DIR/worktree_list"
   printf '{"ok":true,"result":{"worktree":{"id":"wt_i","path":"%s","branch":"refs/heads/orca/issue-5-x"}}}\n' \
     "$WT" > "$ORCA_STUB_DIR/worktree_create"
@@ -410,6 +412,18 @@ setup; worker_done succeeded done
 run_issue --phase dispatch >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 && "$(jq -r '.ask_via' "$R/.dispatch/issue-5-x/workers.json")" == none ]] \
   && ok "IS29 issue の実行は無人として起動する" || fail "IS29 (rc=$rc)"
+teardown
+
+# IS30: ★ 2 バッチ目以降（--run を渡す）は、その間に同じ端末で別の Run を作っていても、渡した Run に載せる。
+#       3.10.17 までは current の Run と比べたので「this terminal is bound to Run ...」で止まっていた
+setup; worker_done succeeded done
+echo '{"ok":true,"result":{"run":{"id":"run_other","coordinator_handle":"term_p"}}}' \
+  > "$ORCA_STUB_DIR/orchestration_run-current"
+out=$(run_issue --phase dispatch --run run_i 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$(jq -r '.run_id' "$R/.dispatch/issue-5-x/run.json")" == run_i ]] \
+  && ! LC_ALL=C grep -qE 'run-create|--run run_other' "$ORCA_STUB_DIR/calls.log" \
+  && LC_ALL=C grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | LC_ALL=C grep -q -- '--run run_i' \
+  && ok "IS30 2 バッチ目は渡した Run に載せる" || fail "IS30 (rc=$rc) $out"
 teardown
 
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

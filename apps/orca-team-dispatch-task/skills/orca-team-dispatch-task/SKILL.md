@@ -356,6 +356,7 @@ node "$PLUGIN/bin/orca-issue.ts" --phase dispatch --issue "$NUM" --slug "$SLUG" 
 
 **Keep the `run_id` it prints and set `RUN` to it for every later issue in the batch**, so
 the whole batch shares one Run and one parent mailbox. Keep every printed `status_dir` too.
+A later issue joins that Run even when this terminal has started another Run in between.
 An issue that fails to dispatch is already marked `dispatch/failed` with its resources kept;
 carry on with the next one, and leave it out of pass 2.
 
@@ -505,7 +506,9 @@ from the configuration and downgrades `brainstorm` to `plan`. It takes `integrat
 
 Run this once per task. **The first call creates the Run and prints `run_id`; every later
 call passes that same `run_id` back with `--run`, so all tasks share one Run and one parent
-mailbox.** Call them one after another, not in parallel.
+mailbox.** Call them one after another, not in parallel. A later call joins that Run even when
+this terminal has started another Run in between, and it refuses before creating anything when
+this terminal does not coordinate the Run it was given.
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
