@@ -1,8 +1,10 @@
+import { maskSecrets } from './secrets.ts'
+
 import { type ParseArgsConfig, parseArgs } from 'node:util'
 
 // 今の bash スクリプトと同じ `<name>: <message>` の形で stderr に出す
 export const log = (name: string, message: string): void => {
-  process.stderr.write(`${name}: ${message}\n`)
+  process.stderr.write(`${name}: ${maskSecrets(message)}\n`)
 }
 
 // 使用法の誤りは exit 2（既存スクリプトの die と同じ）
