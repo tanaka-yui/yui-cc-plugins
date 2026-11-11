@@ -135,3 +135,12 @@ test('ignores codex limit text the agent merely printed', () => {
   const lines = codexScreen(["• You've hit your usage limit. Try again at 3:45 PM. is the message codex shows"])
   assert.equal(detectLimit('codex', lines, now), null)
 })
+
+test('ignores a codex limit once the agent produced output after it', () => {
+  const lines = codexScreen([
+    "■ You've hit your usage limit. Try again at 3:45 PM.",
+    '› Continue the task',
+    '• Resumed the work',
+  ])
+  assert.equal(detectLimit('codex', lines, now), null)
+})

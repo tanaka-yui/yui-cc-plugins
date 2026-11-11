@@ -1,12 +1,14 @@
+import { PANE_SESSION_LEADER, PANE_SHELLS } from './config.ts'
 import { asNumber, asString, isObject, parseJson } from './json.ts'
 
 import type { AgentKind, AgentProcess } from './types.ts'
 
 // macOS の `ps -E` は、コマンドラインの後ろに環境変数を空白区切りで付ける
-export const PS_ARGS = ['-E', '-ww', '-Ao', 'pid=,command=']
+export const PS_ARGS = ['-E', '-ww', '-Ao', 'pid=,ppid=,tty=,command=']
 
 const HOME_ENV: Record<AgentKind, string> = { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME' }
 const DEFAULT_HOME: Record<AgentKind, string> = { claude: '.claude', codex: '.codex' }
+const AGENTS: AgentKind[] = ['claude', 'codex']
 
 // 最初に ` KEY=`（大文字の環境変数名）が現れる位置を環境変数部分の先頭とみなす。
 // ps は引数をクォートせずに並べるので、prompt に含まれる ' などで区切りを追うことはできない
@@ -27,26 +29,47 @@ const parseEnv = (env: string): Map<string, string> => {
   return vars
 }
 
-export function findAgentProcess(
-  psOutput: string,
-  terminalHandle: string,
-  agent: AgentKind,
-  homeDir: string,
-): AgentProcess | null {
-  const found = psOutput.split('\n').flatMap((line): AgentProcess[] => {
-    const m = /^\s*(\d+) (.*)$/.exec(line)
-    if (!m?.[1] || m[2] === undefined) return []
-    const rest = m[2]
+type PsRow = { pid: number; ppid: number; tty: string; command: string; env: Map<string, string> }
+
+const parsePs = (psOutput: string): Map<number, PsRow> => {
+  const rows = new Map<number, PsRow>()
+  for (const line of psOutput.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line)
+    if (!m?.[1] || !m[2] || !m[3] || m[4] === undefined) continue
+    const rest = m[4]
     const split = envStart(rest)
-    const command = split < 0 ? rest : rest.slice(0, split)
-    const binary = command.split(' ')[0]?.split('/').pop()
-    if (binary !== agent) return []
-    const env = parseEnv(split < 0 ? '' : rest.slice(split + 1))
-    if (env.get('ORCA_TERMINAL_HANDLE') !== terminalHandle) return []
-    const home = env.get(HOME_ENV[agent]) || `${homeDir}/${DEFAULT_HOME[agent]}`
-    return [{ pid: Number(m[1]), agent, command, home, terminalHandle }]
+    rows.set(Number(m[1]), {
+      pid: Number(m[1]),
+      ppid: Number(m[2]),
+      tty: m[3],
+      command: split < 0 ? rest : rest.slice(0, split),
+      env: parseEnv(split < 0 ? '' : rest.slice(split + 1)),
+    })
+  }
+  return rows
+}
+
+// 実行ファイル名。ログインシェルの先頭の `-`（`-/bin/zsh`）は外す
+const binaryOf = (command: string): string => ((command.split(' ')[0] ?? '').split('/').pop() ?? '').replace(/^-/, '')
+
+// ペインのエージェントのプロセスを 1 つに絞る。次の全部を満たすものだけを候補にし、ちょうど 1 つのときだけ返す。
+// - 環境変数 ORCA_TERMINAL_HANDLE がペインのハンドル
+// - 親がシェル（kill した後に resume コマンドを打ち込む相手）
+// - 同じ tty に、Orca がペインを開いた login がいる（tmux や nvim の :terminal は別の pty）
+export function findAgentProcess(psOutput: string, terminalHandle: string, homeDir: string): AgentProcess | null {
+  const rows = parsePs(psOutput)
+  const paneTtys = new Set(
+    [...rows.values()].filter((r) => binaryOf(r.command) === PANE_SESSION_LEADER).map((r) => r.tty),
+  )
+  const candidates = [...rows.values()].flatMap((row): AgentProcess[] => {
+    const agent = AGENTS.find((a) => a === binaryOf(row.command))
+    if (!agent || row.env.get('ORCA_TERMINAL_HANDLE') !== terminalHandle) return []
+    const parent = rows.get(row.ppid)
+    if (!parent || !PANE_SHELLS.includes(binaryOf(parent.command)) || !paneTtys.has(row.tty)) return []
+    const home = row.env.get(HOME_ENV[agent]) || `${homeDir}/${DEFAULT_HOME[agent]}`
+    return [{ pid: row.pid, agent, command: row.command, home, terminalHandle }]
   })
-  return found.reduce<AgentProcess | null>((best, p) => (best === null || p.pid > best.pid ? p : best), null)
+  return candidates.length === 1 ? (candidates[0] ?? null) : null
 }
 
 // `<home>/sessions/<pid>.json`（Claude Code が起動中に書く）から session を読む
@@ -84,15 +107,17 @@ export function parseCodexRollout(lsofOutput: string, home: string): { sessionId
 }
 
 // 本物の limit なら、Claude は transcript の最後のメッセージに API エラー（rate_limit）を記録している。
-// 画面に同じ文言が映っているだけ（ツール出力や本文）のときは、乗り換えない
-export function transcriptEndsWithRateLimit(text: string): boolean {
+// そのエントリの uuid を返す（同じ limit を二度処理しないための目印）。画面に同じ文言が映っているだけ
+// （ツール出力や本文）のときは null
+export function lastRateLimitId(text: string): string | null {
   const lines = text.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
     const entry = parseJson(lines[i] ?? '')
     if (!isObject(entry)) continue
     const type = asString(entry.type)
     if (type !== 'assistant' && type !== 'user') continue
-    return type === 'assistant' && entry.isApiErrorMessage === true && entry.error === 'rate_limit'
+    const isLimit = type === 'assistant' && entry.isApiErrorMessage === true && entry.error === 'rate_limit'
+    return isLimit ? (asString(entry.uuid) ?? asString(entry.timestamp) ?? `line-${i}`) : null
   }
-  return false
+  return null
 }

@@ -1,5 +1,6 @@
 import {
   CLAUDE_LIMIT_PATTERN,
+  CODEX_AGENT_OUTPUT,
   CODEX_ERROR_MARKER,
   CODEX_LIMIT_PATTERN,
   CODEX_RESET_PATTERN,
@@ -66,6 +67,8 @@ export function detectLimit(agent: AgentKind, lines: readonly string[], now: Dat
     const marker = tail.findLastIndex((line) => CODEX_ERROR_MARKER.test(line))
     if (marker < 0) return null
     tail = tail.slice(marker)
+    // ■ の後にエージェントの本文（•）が続いていれば、limit の後に作業が再開している
+    if (tail.slice(1).some((line) => CODEX_AGENT_OUTPUT.test(line))) return null
   }
   const detect = agent === 'claude' ? detectClaude : detectCodex
   return detect(tail.join(' '), now) ?? detect(tail.join(''), now)

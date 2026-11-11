@@ -53,5 +53,12 @@ export const PS_MAX_BUFFER = 256 * 1024 * 1024
 
 // Codex の TUI はエラーを "■ " で始まる行で出す（エージェントの本文は "• "）。本文に書かれた文言を拾わないための印
 export const CODEX_ERROR_MARKER = /^\s*■/
+export const CODEX_AGENT_OUTPUT = /^\s*•/
 // Claude の transcript の末尾を読む量。本物の limit は最後の assistant エントリとして記録される
 export const TRANSCRIPT_TAIL_BYTES = 256 * 1024
+
+// Orca はペインを /usr/bin/login 経由で開く。その tty にいるエージェントだけを、そのペインのものとみなす
+// （tmux や nvim の :terminal は別の pty なので外れる）
+export const PANE_SESSION_LEADER = 'login'
+// エージェントの親として認めるシェル（ペインのシェルか、Orca の claude 関数のサブシェル）
+export const PANE_SHELLS = ['zsh', 'bash', 'fish', 'sh']

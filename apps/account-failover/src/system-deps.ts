@@ -23,6 +23,13 @@ const orcaCli = async (args: string[]): Promise<string> => {
   return result.stdout
 }
 
+// Codex の rollout を乗り換え先へコピーする。古いプロセスは止めてあるので、先にあるファイルは常に上書きする
+// （A → B → A と戻ったときに、A にある古い rollout で resume しないため）
+export async function copyReplacing(from: string, to: string): Promise<void> {
+  await mkdir(dirname(to), { recursive: true })
+  await copyFile(from, to)
+}
+
 export function createSystemDeps(orca: OrcaWorkerApi): Deps {
   const home = homedir()
   return {
@@ -76,17 +83,7 @@ export function createSystemDeps(orca: OrcaWorkerApi): Deps {
       return found.flat()
     },
     lsof: async (pid) => (await run('/usr/sbin/lsof', ['-p', String(pid), '-Fn'])).stdout,
-    copyFile: async (from, to) => {
-      await mkdir(dirname(to), { recursive: true })
-      if (
-        await access(to).then(
-          () => true,
-          () => false,
-        )
-      )
-        return
-      await copyFile(from, to)
-    },
+    copyFile: copyReplacing,
     signal: (pid, sig) => {
       try {
         process.kill(pid, sig)
