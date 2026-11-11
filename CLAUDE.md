@@ -22,6 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `apps/codex-bridge` | Plugin (slash command) | TypeScript (Bun) | `/codex-bridge` で `.claude/rules` / CLAUDE.md を Codex 用 AGENTS.md にネスト生成 |
 | `apps/orca-team-dispatch-task` | Plugin (skill + TS scripts) | TypeScript (node で直接実行) + markdown | Orca の worktree で N タスクを worker に並列実行させ、成果を merge / PR で親ブランチへ取り込む（cmux-team-dispatch-task の Orca 版） |
 | `apps/dev-digest` | Plugin (skill + TS scripts) | TypeScript (node で直接実行) | 毎朝の開発速報を Slack に送り、履歴を SQLite に残す |
+| `apps/account-failover` | **Orca plugin** (trusted-worker) | TypeScript (Orca が読み込み時に変換) | Claude / Codex が利用上限に当たったら Orca の別アカウントへ切り替え、同じペインで会話を resume して続けさせる。Claude Code プラグインではないので marketplace.json には載せない |
 
 `pnpm-workspace.yaml` の packages は `apps/*` のみ。新規パッケージは `apps/<name>` に 1 段で置く。
 
@@ -69,6 +70,9 @@ cd apps/codex-bridge && bun test
 
 # orca-team-dispatch-task (bash のテスト群 + node --test の単体テスト。Node 22.18 以上)
 cd apps/orca-team-dispatch-task && bash test/run-all.sh
+
+# account-failover (orca plugin test。orca CLI が必要)
+cd apps/account-failover && make test
 ```
 
 ### インストール / 配布

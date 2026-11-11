@@ -1,0 +1,10 @@
+{
+  "extends": "./.orca/types/tsconfig.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true,
+    "typeRoots": ["./.orca/types", "../../node_modules/@types"],
+    "types": ["orca", "orca-host", "orca-frame", "orca-worker", "orca-services", "orca-testing", "node"],
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["src"]
+}

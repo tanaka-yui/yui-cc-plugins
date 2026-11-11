@@ -29,6 +29,16 @@ bash install.sh
 > ```
 > `/reload-plugins` はインストール済みプラグインの再読込のみで、マーケットプレイスのカタログは更新しない。
 
+## インストール（Orca プラグイン）
+
+`account-failover` は Claude Code プラグインではなく Orca のプラグインなので、`orca` CLI で入れる（`bash install.sh` からも呼ばれる）:
+
+```bash
+make -C apps/account-failover install
+```
+
+コードを動かすプラグインのため、初回と権限が増えたときに Orca が承認を求める。`install` は与える権限を表示し、`[y/N]` で確認してから `--approve` 付きで再実行する。
+
 > **`cmux-team` は廃止されました。** 既にインストール済みの環境では手動で削除してください:
 > ```bash
 > claude plugin uninstall cmux-team@yui-cc-plugins
@@ -53,3 +63,4 @@ bash install.sh
 | orca-team-dispatch-task | Orca の worktree で並列タスクディスパッチ（レビュー役・計画/実装分離・PR・GitHub issue 対応） | [README](apps/orca-team-dispatch-task/README.md) |
 | token-meter | hook 経由で圧縮プラグイン (rtk/caveman/headroom) の効きを観測・JSONL 集計 | [README](apps/token-meter/README.md) |
 | codex-bridge | Claude の rules / CLAUDE.md を Codex 用 AGENTS.md にネスト生成（`/codex-bridge`） | [CLAUDE.md](apps/codex-bridge/CLAUDE.md) |
+| account-failover（Orca プラグイン） | Claude / Codex が利用上限に当たったら別アカウントへ切り替え、同じペインで resume して続ける | [CLAUDE.md](apps/account-failover/CLAUDE.md) |

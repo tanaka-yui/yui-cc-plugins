@@ -1,0 +1,17 @@
+{
+  "name": "@tanaka-yui/account-failover",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "orca plugin types . >/dev/null && tsc --noEmit && biome check ./src ./orca-plugin.json",
+    "check:fix": "biome check --write ./src ./orca-plugin.json",
+    "format": "biome format ./src ./orca-plugin.json",
+    "format:fix": "biome format --write ./src ./orca-plugin.json",
+    "lint": "biome lint ./src",
+    "lint:fix": "biome lint --write ./src",
+    "test": "orca plugin test ."
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3"
+  }
+}
