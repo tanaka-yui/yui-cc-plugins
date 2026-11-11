@@ -16,3 +16,16 @@ export const CODEX_RESET_PATTERN = /try again at\s+((?:[A-Za-z]{3} \d{1,2}, \d{4
 export const UNKNOWN_RESET_COOLDOWN_MS = 30 * 60_000
 // 解除時刻ちょうどではまだ弾かれることがあるので足す余裕
 export const RESET_GRACE_MS = 60_000
+
+// resume で引き継ぐ起動フラグ。ps のコマンドラインは引数の境界が失われ、prompt など空白を含む引数を
+// 復元できないため、意味の分かるフラグだけを残す
+export const CLAUDE_VALUE_FLAGS = ['--model', '--effort', '--permission-mode']
+export const CLAUDE_SWITCH_FLAGS = ['--dangerously-skip-permissions']
+export const CODEX_VALUE_FLAGS = ['-m', '--model', '-c', '--config', '-s', '--sandbox', '-a', '--ask-for-approval']
+export const CODEX_SWITCH_FLAGS = ['--full-auto', '--dangerously-bypass-approvals-and-sandbox']
+// Orca の codex シェル関数が毎回付け直すもの。引き継ぐと二重になる
+export const CODEX_WRAPPER_CONFIG_PREFIX = 'shell_environment_policy.'
+
+// resume した直後にエージェントへ送る指示
+export const RESUME_PROMPT =
+  'Your previous turn was interrupted by a usage limit. The session has been resumed on another account. Continue the task from where you left off.'
