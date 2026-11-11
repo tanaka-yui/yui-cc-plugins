@@ -29,3 +29,16 @@ export const CODEX_WRAPPER_CONFIG_PREFIX = 'shell_environment_policy.'
 // resume した直後にエージェントへ送る指示
 export const RESUME_PROMPT =
   'Your previous turn was interrupted by a usage limit. The session has been resumed on another account. Continue the task from where you left off.'
+
+// 同じペインでの乗り換えの上限。超えたら通知して止める（乗り換え先でもすぐ limit になる場合の無限ループ防止）
+export const LOOP_WINDOW_MS = 60 * 60_000
+export const MAX_FAILOVERS_PER_WINDOW = 3
+// 古いプロセスの終了待ち
+export const KILL_POLL_MS = 200
+export const KILL_TIMEOUT_MS = 10_000
+// プロセス終了後、シェルがプロンプトに戻るまでの待ち
+export const SHELL_SETTLE_MS = 1_000
+// resume コマンドを送ってから、確認画面で止まっていないかを見るまでの待ち
+export const RESUME_CHECK_MS = 20_000
+// 乗り換え先のアカウントで初めて開いたときに出て、人の判断が要る確認画面
+export const BLOCKING_DIALOG_PATTERNS = [/Is this a project you created or one you trust/, /Hooks need review/]

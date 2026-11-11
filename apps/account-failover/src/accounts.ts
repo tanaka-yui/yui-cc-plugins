@@ -53,8 +53,9 @@ export function pickNextAccount(
   const coolingUntil = (account: AccountRef): number =>
     Math.max(0, ...cooldowns.filter((c) => c.agent === account.agent && c.accountId === account.id).map((c) => c.until))
 
+  // 現在のアカウントは末尾に来る。limit 直後は cooldown 中なので選ばれず、解除後は最後の候補になる
   const rotation = accounts.map((_, i) => accounts[(currentIndex + 1 + i) % accounts.length] as AccountRef)
-  const free = rotation.find((a) => a !== accounts[currentIndex] && coolingUntil(a) <= now)
+  const free = rotation.find((a) => coolingUntil(a) <= now)
   if (free) return { kind: 'switch', account: free }
 
   const earliest = rotation.reduce((best, a) => (coolingUntil(a) < coolingUntil(best) ? a : best))

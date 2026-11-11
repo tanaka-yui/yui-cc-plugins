@@ -114,3 +114,12 @@ test('unknown reset time uses default cooldown', () => {
     now + UNKNOWN_RESET_COOLDOWN_MS,
   )
 })
+
+test('returns the current account once its cooldown expired', () => {
+  const only = [a0, a1]
+  const cooldowns = [
+    { agent: 'claude' as const, accountId: a0.id, until: now - 1 },
+    { agent: 'claude' as const, accountId: a1.id, until: now + 100 },
+  ]
+  assert.deepEqual(pickNextAccount(only, a0.home, cooldowns, now), { kind: 'switch', account: a0 })
+})
