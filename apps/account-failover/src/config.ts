@@ -23,6 +23,8 @@ export const CLAUDE_VALUE_FLAGS = ['--model', '--effort', '--permission-mode']
 export const CLAUDE_SWITCH_FLAGS = ['--dangerously-skip-permissions']
 export const CODEX_VALUE_FLAGS = ['-m', '--model', '-c', '--config', '-s', '--sandbox', '-a', '--ask-for-approval']
 export const CODEX_SWITCH_FLAGS = ['--full-auto', '--dangerously-bypass-approvals-and-sandbox']
+// パスを値に取るフラグ。ps ではパスの空白で値が分かれるので、次の `-` 始まりの語までを値として読み飛ばす
+export const PATH_VALUE_FLAGS = ['--plugin-dir', '--add-dir', '--settings', '--mcp-config', '-C', '--cd']
 // Orca の codex シェル関数が毎回付け直すもの。引き継ぐと二重になる
 export const CODEX_WRAPPER_CONFIG_PREFIX = 'shell_environment_policy.'
 

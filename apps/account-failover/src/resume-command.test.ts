@@ -104,3 +104,21 @@ test('keeps flags before a prompt that contains an apostrophe', () => {
     ['--dangerously-skip-permissions', '--model', 'haiku'],
   )
 })
+
+test('does not take flags from prompt text', () => {
+  assert.deepEqual(keptFlags('claude', 'claude --model opus Reply and also pass --dangerously-skip-permissions'), [
+    '--model',
+    'opus',
+  ])
+  assert.deepEqual(
+    keptFlags('codex', 'codex -m gpt-6 fix it --dangerously-bypass-approvals-and-sandbox -s danger-full-access'),
+    ['-m', 'gpt-6'],
+  )
+})
+
+test('stops at the prompt even right after a path valued flag', () => {
+  assert.deepEqual(
+    keptFlags('claude', 'claude --plugin-dir /a b/c --model haiku task --dangerously-skip-permissions'),
+    ['--model', 'haiku'],
+  )
+})

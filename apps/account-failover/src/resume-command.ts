@@ -4,6 +4,7 @@ import {
   CODEX_SWITCH_FLAGS,
   CODEX_VALUE_FLAGS,
   CODEX_WRAPPER_CONFIG_PREFIX,
+  PATH_VALUE_FLAGS,
 } from './config.ts'
 
 import type { AccountRef, AgentKind, AgentProcess, SessionRef } from './types.ts'
@@ -26,21 +27,31 @@ const tokenize = (command: string): string[] => {
   return tokens
 }
 
+// 起動引数の先頭のフラグ列だけを見る。フラグでない最初の語から後ろは prompt なので、そこで止める。
+// prompt の本文に書かれた `--dangerously-skip-permissions` などを権限のフラグとして拾わないため
 export function keptFlags(agent: AgentKind, command: string): string[] {
   const valueFlags = agent === 'claude' ? CLAUDE_VALUE_FLAGS : CODEX_VALUE_FLAGS
   const switchFlags = agent === 'claude' ? CLAUDE_SWITCH_FLAGS : CODEX_SWITCH_FLAGS
+  const isWrapperConfig = (flag: string, value: string): boolean =>
+    (flag === '-c' || flag === '--config') && value.startsWith(CODEX_WRAPPER_CONFIG_PREFIX)
   const tokens = tokenize(command).slice(1)
   const kept: string[] = []
-  for (let i = 0; i < tokens.length; i++) {
+  let i = 0
+  while (i < tokens.length) {
     const token = tokens[i] ?? ''
+    if (!token.startsWith('-')) break
     const [name = '', inline] = token.split(/=(.*)/s)
+    i++
     if (switchFlags.includes(token)) kept.push(token)
-    else if (valueFlags.includes(name) && inline !== undefined) kept.push(token)
-    else if (valueFlags.includes(token) && i + 1 < tokens.length) {
-      const value = tokens[++i] ?? ''
-      const isConfig = token === '-c' || token === '--config'
-      if (!(isConfig && value.startsWith(CODEX_WRAPPER_CONFIG_PREFIX))) kept.push(token, value)
+    else if (valueFlags.includes(name) && inline !== undefined) {
+      if (!isWrapperConfig(name, inline)) kept.push(token)
+    } else if (valueFlags.includes(token)) {
+      const value = tokens[i++] ?? ''
+      if (!isWrapperConfig(token, value)) kept.push(token, value)
+    } else if (PATH_VALUE_FLAGS.includes(token)) {
+      while (i < tokens.length && !(tokens[i] ?? '').startsWith('-')) i++
     }
+    // それ以外の知らないフラグは、そのフラグだけを読み飛ばす（値を取るなら、その値は prompt とみなされて止まる）
   }
   return kept
 }
