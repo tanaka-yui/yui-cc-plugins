@@ -28,6 +28,10 @@ const config: Config = {
   x: { listUrl: null, hashtags: [] },
   orca: { workspaceSelector: null, automationId: null },
   pluginRoot: '/plugin',
+  disabledSections: [],
+  categories: [],
+  excludeWords: [],
+  categoryExclude: {},
 }
 const repo = (overrides: Partial<RepoConfig> = {}): RepoConfig => ({
   slug: 'o/r',
@@ -97,6 +101,87 @@ test('PD1b jvnKeywords は全体の JVN をタイトルか製品名で絞り、�
   assert.deepEqual(pending.filtered, [{ id: other, revision: 1 }])
   assert.deepEqual(pending.repos[0]?.candidateIds, [byTitle, byProduct, other, aws])
   assert.deepEqual(pending.repos[0]?.filtered, [])
+})
+
+test('PD1c 同じ URL の項目は送り先ごとに 1 件だけ送り、残りは filtered にする', () => {
+  const db = memDb()
+  const url = 'https://dev.to/a/post'
+  const first = add(db, 'devto', 'p', null, NOW, { url })
+  // 別のタグのフィードから来た同じ記事（クエリと末尾の / だけ違う）
+  const copy = add(db, 'devto-tag:ai', 'p', null, NOW, { url: `${url}/?utm_source=rss` })
+  const pending = buildPending(db, { ...config, devtoTags: ['ai'] }, [repo()], 1, NOW)
+  assert.deepEqual(pending.globalIds, [first])
+  assert.deepEqual(pending.filtered, [{ id: copy, revision: 1 }])
+  assert.deepEqual(pending.repos[0]?.candidateIds, [first])
+  assert.deepEqual(pending.repos[0]?.filtered, [{ id: copy, revision: 1 }])
+})
+
+test('PD1d 前の実行で別の項目として送った URL は送らない。同じ項目の更新は送る', () => {
+  const db = memDb()
+  const url = 'https://example.com/same'
+  const sent = add(db, 'aws-whats-new', 'a', null, NOW, { url })
+  recordDelivery(db, [{ itemId: sent, revision: 1, destination: 'global', status: 'sent', runId: 1 }], NOW)
+  const again = add(db, 'aws-news-blog', 'b', null, NOW, { url })
+  assert.deepEqual(buildPending(db, config, [], 1, NOW).filtered, [{ id: again, revision: 1 }])
+  // gcp-release-notes は更新を追う。本文が変わって revision 2 になった自分の項目は【追記】として送る
+  const tracked = add(db, 'gcp-release-notes', 'g', null, NOW, { url: 'https://example.com/notes' })
+  recordDelivery(db, [{ itemId: tracked, revision: 1, destination: 'global', status: 'sent', runId: 1 }], NOW)
+  upsertItem(
+    db,
+    'gcp-release-notes',
+    { ...feedItem('g'), url: 'https://example.com/notes', summary: 'changed' },
+    true,
+    NOW,
+  )
+  assert.deepEqual(buildPending(db, config, [], 1, NOW).globalIds, [tracked])
+})
+
+test('PD1e 除外ワードは共通とカテゴリごとのものが、全体・リポジトリの候補・リポジトリの Releases に効く', () => {
+  const db = memDb()
+  const ad = add(db, 'aws-whats-new', 'a', null, NOW, { title: 'Sponsored: 新サービス' })
+  const tutorial = add(db, 'devto', 'b', null, NOW, { summary: 'A Tutorial for you' })
+  const keep = add(db, 'aws-whats-new', 'c', null, NOW, { title: 'Lambda の更新', summary: 'tutorial を追加' })
+  const release = add(db, 'releases:o/r', 'v1', null, NOW, { title: 'v1.0.0 sponsored build' })
+  const excluding = { ...config, excludeWords: ['sponsored'], categoryExclude: { devto: ['tutorial'] } }
+  const pending = buildPending(db, excluding, [repo()], 1, NOW)
+  assert.deepEqual(pending.globalIds, [keep])
+  assert.deepEqual(
+    pending.filtered.map((ref) => ref.id),
+    [ad, tutorial],
+  )
+  assert.deepEqual(pending.repos[0]?.candidateIds, [keep])
+  assert.deepEqual(pending.repos[0]?.ownIds, [])
+  assert.deepEqual(
+    pending.repos[0]?.filtered.map((ref) => ref.id),
+    [ad, tutorial, release],
+  )
+})
+
+test('PD1f 項目にカテゴリが付き、追加カテゴリのフィードを全体に入れ、X を止めると X を入れない', () => {
+  const db = memDb()
+  const feedUrl = 'https://kubernetes.io/feed.xml'
+  const k8s = add(db, `feed:${feedUrl}`, 'k', null, NOW, { title: 'Kubernetes v1.40' })
+  const llm = add(db, 'aws-news-blog', 'l', null, NOW, { title: 'Bedrock で LLM を使う' })
+  const post = add(db, 'x', 'p1')
+  const withCategories = {
+    ...config,
+    categories: [
+      { id: 'k8s', title: 'Kubernetes', feeds: [feedUrl], keywords: [] },
+      { id: 'ai', title: 'AI', feeds: [], keywords: ['llm'] },
+    ],
+  }
+  const pending = buildPending(db, withCategories, [], 1, NOW)
+  assert.deepEqual(pending.globalIds, [k8s, llm, post])
+  assert.deepEqual(
+    pending.items.map((item) => [item.id, item.section, item.category]),
+    [
+      [k8s, 'feed', 'k8s'],
+      [llm, 'aws', 'ai'],
+      [post, 'x', 'x'],
+    ],
+  )
+  const noX = buildPending(db, { ...withCategories, disabledSections: ['x'] }, [], 1, NOW)
+  assert.deepEqual(noX.globalIds, [k8s, llm])
 })
 
 test('PD2 リポジトリのしきい値が全体を上書きする', () => {

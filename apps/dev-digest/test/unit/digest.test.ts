@@ -10,6 +10,7 @@ const entry = (id: number): PendingEntry => ({
   id,
   revision: 1,
   section: 'aws',
+  category: 'aws',
   sourceId: 'aws-whats-new',
   title: 't',
   url: 'u',

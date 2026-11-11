@@ -94,6 +94,10 @@ export const writeConfig = (home: string, overrides: Partial<Config> = {}): Conf
     x: { listUrl: null, hashtags: ['#AI'] },
     orca: { workspaceSelector: null, automationId: null },
     pluginRoot: '/plugin',
+    disabledSections: [],
+    categories: [],
+    excludeWords: [],
+    categoryExclude: {},
     ...overrides,
   }
   saveConfig(home, config)

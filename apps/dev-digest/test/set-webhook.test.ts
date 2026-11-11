@@ -62,6 +62,20 @@ test('SW1b リポジトリ slug にも保存できる', () => {
   assert.equal(loadSecrets(homePaths(home).secrets).repos['o/r'], URL_OK)
 })
 
+test('SW1c section:<name> に保存でき、--remove で消せる。知らないセクションや global の --remove は拒む', () => {
+  const { home, env } = setup()
+  const saved = runWith(['set-webhook', '--target', 'section:jvn', '--from-stdin'], env, URL_OK)
+  assert.equal(saved.code, 0, saved.stderr)
+  assert.equal(loadSecrets(homePaths(home).secrets).sections.jvn, URL_OK)
+  assert.equal(runWith(['set-webhook', '--target', 'section:releases', '--from-stdin'], env, URL_OK).code, 2)
+  assert.equal(runWith(['set-webhook', '--target', 'global', '--remove'], env, '').code, 2)
+  const removed = runWith(['set-webhook', '--target', 'section:jvn', '--remove'], env, '')
+  assert.equal(removed.code, 0, removed.stderr)
+  assert.match(removed.stdout, /^removed target=section:jvn$/m)
+  assert.equal(loadSecrets(homePaths(home).secrets).sections.jvn, undefined)
+  assert.match(runWith(['set-webhook', '--target', 'section:jvn', '--remove'], env, '').stdout, /^absent /m)
+})
+
 test('SW2 URL でない値は保存しない', () => {
   const { home, env } = setup()
   const result = runWith(['set-webhook', '--target', 'global', '--from-stdin'], env, 'hello')

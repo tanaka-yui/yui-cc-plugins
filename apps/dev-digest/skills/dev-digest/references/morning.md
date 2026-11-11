@@ -103,11 +103,13 @@ It writes `{{RUN_DIR}}/pending.json`.
 Read `{{RUN_DIR}}/pending.json`. It has:
 
 - `runId`
-- `items`: every undelivered item (`id`, `section`, `title`, `url`, `summary`, `severity`, `products`, `updated`, ...)
+- `items`: every undelivered item (`id`, `section`, `category`, `title`, `url`, `summary`, `severity`, `products`,
+  `updated`, ...). `category` is the heading the item is shown under.
 - `globalIds`: the items for the global message
 - `repos`: each watched repository (`slug`, `displayName`, `watch`, `candidateIds`, `ownIds`, `filtered`)
-- `filtered` (top level and in each repository): JVN items below the severity threshold (and, at the top level,
-  items that match none of the configured JVN keywords). They are not in `items`;
+- `filtered` (top level and in each repository): items that are not sent: JVN items below the severity threshold
+  (and, at the top level, JVN items that match none of the configured JVN keywords), items containing a word to
+  exclude, and items whose URL was already sent to that destination. They are not in `items`;
   `publish` records them. Do not use their ids in the digest.
 - `failures`: sources that could not be fetched
 

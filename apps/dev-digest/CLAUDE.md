@@ -6,7 +6,7 @@
 
 入口は `bin/dev-digest.ts`（サブコマンドは `lib/commands/*.ts` を動的 import）。実行は `node <path>.ts`
 （型除去。Node 24.15 以上、実行時の npm 依存なし）。サブコマンドは init / permissions / set-webhook /
-procedure / collect / ingest-x / pending / publish / x-open / repo / search。テストは
+procedure / collect / ingest-x / pending / publish / x-open / repo / search / category。テストは
 `cd apps/dev-digest && bash test/run-all.sh`、型検査と lint は `pnpm --filter @tanaka-yui/dev-digest check`。
 
 ## 毎朝の手順の正本は references/morning.md

@@ -69,6 +69,19 @@ export const BUILTIN_FEEDS: readonly FeedSource[] = [
   },
 ]
 
+// 追加したカテゴリのフィード。同じ URL は複数のカテゴリに書かれても 1 つの取得元にする
+export const CUSTOM_FEED_PREFIX = 'feed:'
+export const customFeed = (url: string): FeedSource => ({
+  id: `${CUSTOM_FEED_PREFIX}${url}`,
+  storeAs: `${CUSTOM_FEED_PREFIX}${url}`,
+  url,
+  section: 'feed',
+  trackUpdates: false,
+  scope: 'global',
+})
+// 追加するカテゴリの id。組み込みのカテゴリ名とは別に isCategoryId が重なりを確かめる
+export const CATEGORY_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/
+
 // X は collect が取得しない。セクション引きと pending のためだけに持つ（BUILTIN_FEEDS には入れない）
 export const X_SOURCE: FeedSource = {
   id: 'x',
@@ -163,10 +176,12 @@ export const releasesFeed = (github: string): FeedSource => ({
   scope: 'repo',
 })
 
-// set-webhook のダイアログに出す文言。`{target}` を対象（global か owner/repo）に置き換える
+// set-webhook のダイアログに出す文言。`{target}` を対象（global・section:<name>・owner/repo）に置き換える
 export const WEBHOOK_PROMPT_TEMPLATE = '[{target}] の Slack Incoming Webhook URL を貼り付けてください'
 export const WEBHOOK_DIALOG_TITLE = 'dev-digest'
 export const GLOBAL_TARGET = 'global'
+// セクション専用チャンネルの Webhook の target は `section:<name>`（slug は `/` を含むので衝突しない）
+export const SECTION_TARGET_PREFIX = 'section:'
 
 // リポジトリの slug。各区間は英数字で始める（`.` `..` を除く）。`__` は slugToFile で `/` と衝突するので禁止
 export const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)?$/

@@ -1,4 +1,12 @@
-import { escapeMrkdwn, overrideUrl, renderGlobal, renderRepo, splitMessages } from '../../lib/slack.ts'
+import {
+  escapeMrkdwn,
+  overrideUrl,
+  placeItems,
+  renderGlobal,
+  renderRepo,
+  renderSection,
+  splitMessages,
+} from '../../lib/slack.ts'
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -11,6 +19,7 @@ const entry = (id: number, section: Section, overrides: Partial<PendingEntry> = 
   id,
   revision: 1,
   section,
+  category: section,
   sourceId: section,
   title: `title${id}`,
   url: `https://example.com/${id}`,
@@ -75,6 +84,50 @@ test('SL2 group は公式ソースのセクションに置かれ、X の言及�
   assert.ok(text.includes('言及: <https://example.com/2|@a>, <https://example.com/3|@b>, <https://example.com/4|@c>'))
   assert.ok(!text.includes('ほか'))
   assert.ok(!text.includes('title2'))
+})
+
+test('SL2b placeItems は group のメンバーを group の置き場所に揃え、renderSection はその項目だけを描く', () => {
+  const items = [entry(1, 'aws'), entry(2, 'x', { author: 'a' }), entry(3, 'x', { author: 'b' }), entry(4, 'jvn')]
+  const digest = digestOf({ groups: [{ key: 'g', titleJa: 'まとめ', summaryJa: '概要', itemIds: [1, 2] }] })
+  const placed = placeItems(pendingOf(items), digest, new Set([1, 2, 3, 4]))
+  assert.deepEqual([...placed.entries()].sort(), [
+    [1, 'aws'],
+    [2, 'aws'],
+    [3, 'x'],
+    [4, 'jvn'],
+  ])
+  const text = renderSection(pendingOf(items), digest, [1, 2], '11/9')?.join('\n') ?? ''
+  assert.ok(text.startsWith('☀️ 11/9 開発速報（2 件）'))
+  assert.ok(text.includes('まとめ') && text.includes('@a'))
+  assert.ok(!text.includes('@b') && !text.includes('title4'))
+  assert.equal(renderSection(pendingOf(items), digest, [], '11/9'), null)
+})
+
+test('SL2c 追加カテゴリの見出しは組み込みの後ろに設定の順で並び、group はメンバーのカテゴリに置かれる', () => {
+  const items = [
+    entry(1, 'aws'),
+    entry(2, 'feed', { category: 'k8s' }),
+    entry(3, 'aws', { category: 'ai' }),
+    entry(4, 'x', { author: 'a', category: 'ai' }),
+    entry(5, 'devto', { category: 'gone' }),
+  ]
+  const digest = digestOf({ groups: [{ key: 'g', titleJa: 'まとめ', summaryJa: '概要', itemIds: [3, 4] }] })
+  const categories = [
+    { id: 'ai', title: 'AI' },
+    { id: 'k8s', title: 'Kubernetes' },
+  ]
+  const text = renderGlobal(pendingOf(items), digest, '11/9', { categories }).join('\n')
+  const order = ['*☁️ AWS*', '*📌 AI*', '*📌 Kubernetes*', '*📌 gone*'].map((heading) => text.indexOf(heading))
+  assert.ok(
+    order.every((at) => at >= 0),
+    text,
+  )
+  assert.deepEqual(
+    [...order].sort((a, b) => a - b),
+    order,
+  )
+  assert.ok(text.indexOf('まとめ') > text.indexOf('*📌 AI*'))
+  assert.ok(!text.includes('🤖 X'))
 })
 
 test('SL3 note の無い項目は要約なしで出る', () => {

@@ -26,3 +26,10 @@ export const parseFlags = <T extends ParseArgsConfig>(name: string, config: T): 
     return die(name, error instanceof Error ? error.message : String(error))
   }
 }
+
+// カンマ区切りの値を、空白を除いた空でない要素の配列にする
+export const csv = (value: string): string[] =>
+  value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '')

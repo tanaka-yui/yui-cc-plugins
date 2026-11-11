@@ -1,10 +1,15 @@
-import { SECRET_DIR_MODE, SECRET_FILE_MODE } from './defaults.ts'
+import { GLOBAL_TARGET, SECRET_DIR_MODE, SECRET_FILE_MODE, SECTION_TARGET_PREFIX } from './defaults.ts'
 import { asObject, asString, parseJson } from './json.ts'
 
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-export type Secrets = { global: string | null; repos: Record<string, string> }
+// sections: 専用チャンネルに分けたカテゴリの id → Webhook
+export type Secrets = {
+  global: string | null
+  sections: Record<string, string>
+  repos: Record<string, string>
+}
 
 const WEBHOOK_PATTERN = /^https:\/\/hooks\.slack\.com\/services\/\S+$/
 const WEBHOOK_PARTS = /^https:\/\/hooks\.slack\.com\/services\/([^/\s]+)\/([^/\s]+)\/\S+$/
@@ -22,8 +27,12 @@ export const maskWebhook = (url: string): string => {
   return `https://hooks.slack.com/services/${team.slice(0, 1)}***/…`
 }
 
+// `section:<id>` のカテゴリ id。そうでなければ null（id が今あるカテゴリかは呼び出し側が確かめる）
+export const sectionOfTarget = (target: string): string | null =>
+  target.startsWith(SECTION_TARGET_PREFIX) ? target.slice(SECTION_TARGET_PREFIX.length) : null
+
 export const loadSecrets = (file: string): Secrets => {
-  const empty: Secrets = { global: null, repos: {} }
+  const empty: Secrets = { global: null, sections: {}, repos: {} }
   try {
     const root = asObject(parseJson(readFileSync(file, 'utf8')))
     if (root === null) return empty
@@ -32,7 +41,13 @@ export const loadSecrets = (file: string): Secrets => {
       const url = asString(value)
       if (url !== null) repos[slug] = url
     }
-    return { global: asString(root.global), repos }
+    // sections より前に作ったファイルには無い
+    const sections: Record<string, string> = {}
+    for (const [id, value] of Object.entries(asObject(root.sections) ?? {})) {
+      const url = asString(value)
+      if (url !== null && url !== '') sections[id] = url
+    }
+    return { global: asString(root.global), sections, repos }
   } catch {
     return empty
   }
@@ -52,12 +67,22 @@ const writeSecrets = (file: string, next: Secrets): void => {
   chmodSync(file, SECRET_FILE_MODE)
 }
 
-export const saveWebhook = (file: string, target: 'global' | string, url: string): void => {
+// target は global・section:<name>・owner/repo のどれか（呼び出し側が確かめてから渡す）
+export const saveWebhook = (file: string, target: string, url: string): void => {
   const current = loadSecrets(file)
-  writeSecrets(
-    file,
-    target === 'global' ? { ...current, global: url } : { ...current, repos: { ...current.repos, [target]: url } },
-  )
+  const section = sectionOfTarget(target)
+  if (target === GLOBAL_TARGET) writeSecrets(file, { ...current, global: url })
+  else if (section !== null) writeSecrets(file, { ...current, sections: { ...current.sections, [section]: url } })
+  else writeSecrets(file, { ...current, repos: { ...current.repos, [target]: url } })
+}
+
+// セクション専用の Webhook を消す（そのセクションは全体のチャンネルに戻る）。無ければ何も書かず false
+export const removeSectionWebhook = (file: string, section: string): boolean => {
+  const current = loadSecrets(file)
+  if (!Object.hasOwn(current.sections, section)) return false
+  const { [section]: _removed, ...rest } = current.sections
+  writeSecrets(file, { ...current, sections: rest })
+  return true
 }
 
 // リポジトリ専用の Webhook を消す。無ければ何も書かず false
@@ -70,7 +95,9 @@ export const removeRepoWebhook = (file: string, slug: string): boolean => {
 }
 
 const knownUrls = (secrets: Secrets): string[] =>
-  [secrets.global, ...Object.values(secrets.repos)].filter((url): url is string => url !== null && url !== '')
+  [secrets.global, ...Object.values(secrets.sections), ...Object.values(secrets.repos)].filter(
+    (url): url is string => url !== null && url !== '',
+  )
 
 export const maskSecrets = (text: string, secrets: Secrets): string => {
   let masked = text

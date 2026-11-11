@@ -13,7 +13,8 @@ import type { Severity } from './severity.ts'
 export type Db = DatabaseSync
 export type UpsertResult = 'new' | 'updated' | 'unchanged'
 export type Destination = 'global' | `repo:${string}`
-// filtered = JVN のしきい値で外した。しきい値を後から下げても、溜まった項目を一度に送らないために残す
+// filtered = 送らないと決めた（JVN のしきい値・キーワード、除外ワード、同じ URL を送り済み）。
+// 条件を後から緩めても、溜まった項目を一度に送らないために残す
 export type DeliveryStatus = 'sent' | 'irrelevant' | 'filtered'
 
 export type StoredItem = {
@@ -341,6 +342,15 @@ export const undelivered = (
     destination,
   ).map(toStored)
 }
+
+// destination に送った項目の id と URL（重複の判定に使う）
+export const sentUrls = (db: Db, destination: Destination): Array<{ id: number; url: string }> =>
+  all(
+    db,
+    `SELECT DISTINCT i.id, i.url FROM deliveries d JOIN items i ON i.id = d.item_id
+     WHERE d.destination = ? AND d.status = 'sent'`,
+    destination,
+  ).map((row) => ({ id: num(row, 'id'), url: str(row, 'url') }))
 
 export const recordDelivery = (
   db: Db,

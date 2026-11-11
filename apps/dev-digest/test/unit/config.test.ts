@@ -1,6 +1,7 @@
 import {
   buildSources,
   type Config,
+  categoryIds,
   loadRepos,
   parseConfig,
   type RepoConfig,
@@ -27,6 +28,10 @@ const baseConfig: Config = {
   x: { listUrl: null, hashtags: ['#AI'] },
   orca: { workspaceSelector: null, automationId: null },
   pluginRoot: '/plugin',
+  disabledSections: [],
+  categories: [],
+  excludeWords: [],
+  categoryExclude: {},
 }
 
 const watchOf = (packages: WatchPackage[]): RepoConfig['watch'] => ({
@@ -60,6 +65,33 @@ test('CF1b jvnKeywords が無い古い設定は空とみなし、配列でなけ
   const bad = parseConfig({ ...baseConfig, jvnKeywords: 'FortiOS' })
   assert.equal(typeof bad, 'string')
   assert.ok(String(bad).includes('jvnKeywords'))
+})
+
+test('CF1c カテゴリの欄は無ければ空とみなし、組み込みと重なる id や知らない組み込み名を拒む', () => {
+  const { disabledSections: _d, categories: _c, excludeWords: _e, categoryExclude: _x, ...legacy } = baseConfig
+  assert.deepEqual(parseConfig(legacy), baseConfig)
+  const custom = { id: 'k8s', title: 'Kubernetes', feeds: ['https://kubernetes.io/feed.xml'], keywords: [] }
+  const full = { ...baseConfig, disabledSections: ['gcp'], categories: [custom], excludeWords: ['ad'] }
+  assert.deepEqual(parseConfig({ ...full, categoryExclude: { k8s: ['old'] } }), {
+    ...full,
+    categoryExclude: { k8s: ['old'] },
+  })
+  assert.ok(String(parseConfig({ ...baseConfig, categories: [{ ...custom, id: 'aws' }] })).includes('categories'))
+  assert.ok(String(parseConfig({ ...baseConfig, disabledSections: ['releases'] })).includes('disabledSections'))
+  assert.ok(String(parseConfig({ ...baseConfig, categoryExclude: { aws: 'x' } })).includes('categoryExclude'))
+})
+
+test('CF1d buildSources は止めたカテゴリのフィードを外し、追加カテゴリのフィードを足す。categoryIds はその順', () => {
+  const feed = 'https://kubernetes.io/feed.xml'
+  const config = {
+    ...baseConfig,
+    disabledSections: ['gcp' as const, 'devto' as const],
+    categories: [{ id: 'k8s', title: 'Kubernetes', feeds: [feed], keywords: [] }],
+  }
+  const ids = buildSources(config, []).map((source) => source.id)
+  assert.ok(!ids.some((id) => id.startsWith('gcp') || id.startsWith('devto')))
+  assert.ok(ids.includes(`feed:${feed}`))
+  assert.deepEqual(categoryIds(config), ['jvn', 'aws', 'x', 'k8s'])
 })
 
 test('CF2 saveRepo / loadRepos / removeRepo の往復', () => {

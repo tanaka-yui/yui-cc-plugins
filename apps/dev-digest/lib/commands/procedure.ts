@@ -21,13 +21,15 @@ export const run = (argv: string[]): void => {
   const home = digestHome()
   const config = loadConfig(home) ?? die(NAME, '設定がありません。init を先に実行してください')
   const paths = homePaths(home)
+  // X のカテゴリを止めていれば読ませない（リストもハッシュタグも none）
+  const xOff = config.disabledSections.includes('x')
   const values: Record<string, string> = {
     DEV_DIGEST: paths.launcher,
     RUN_DIR: paths.runDir,
     X_FILE,
     DIGEST_FILE,
-    X_LIST: config.x.listUrl === null ? NONE_VALUE : `\`${paths.launcher} x-open --target list\``,
-    X_HASHTAGS: hashtagLines(paths.launcher, config.x.hashtags),
+    X_LIST: xOff || config.x.listUrl === null ? NONE_VALUE : `\`${paths.launcher} x-open --target list\``,
+    X_HASHTAGS: hashtagLines(paths.launcher, xOff ? [] : config.x.hashtags),
     X_MAX_POSTS_LIST: String(X_MAX_POSTS_LIST),
     X_MAX_POSTS_PER_HASHTAG: String(X_MAX_POSTS_PER_HASHTAG),
   }

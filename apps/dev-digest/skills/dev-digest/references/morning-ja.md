@@ -68,11 +68,12 @@ X を読めなければ（ログアウト、ページが開かない、投稿が
 `{{RUN_DIR}}/pending.json` を読む。中身:
 
 - `runId`
-- `items`: 未送信の全項目（`id`、`section`、`title`、`url`、`summary`、`severity`、`products`、`updated` など）
+- `items`: 未送信の全項目（`id`、`section`、`category`、`title`、`url`、`summary`、`severity`、`products`、`updated`
+  など）。`category` はその項目が載る見出し
 - `globalIds`: 全体向けメッセージの項目
 - `repos`: 監視中の各リポジトリ（`slug`、`displayName`、`watch`、`candidateIds`、`ownIds`、`filtered`）
-- `filtered`（最上位と各リポジトリ）: JVN のしきい値に届かない項目（最上位は、設定した JVN のキーワードのどれにも
-  合わない項目も）。`items` には入らず、`publish` が記録する。
+- `filtered`（最上位と各リポジトリ）: 送らない項目。JVN のしきい値に届かないもの（最上位は、設定した JVN の
+  キーワードのどれにも合わない JVN も）、除外ワードを含むもの、その送り先に同じ URL を送り済みのもの。`items` には入らず、`publish` が記録する。
   その id は速報に使わない。
 - `failures`: 取得できなかったソース
 

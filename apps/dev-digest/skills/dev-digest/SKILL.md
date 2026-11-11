@@ -2,9 +2,11 @@
 name: dev-digest
 description: >
   毎朝の開発速報（JVN / AWS / Google Cloud / X / dev.to / 監視リポジトリの Releases）を Slack に送り、
-  送った履歴を SQLite に残す。初期設定（init）、リポジトリの監視登録（setup）、履歴の検索（search）を行う。
-  Use when: "開発速報", "dev-digest", "毎朝のダイジェスト", "リポジトリを監視", "履歴を検索".
-argument-hint: "[init | setup | search <question> | list | remove <slug>]"
+  送った履歴を SQLite に残す。初期設定（init）、リポジトリの監視登録（setup）、履歴の検索（search）、
+  カテゴリと除外ワードの管理（categories）を行う。
+  Use when: "開発速報", "dev-digest", "毎朝のダイジェスト", "リポジトリを監視", "履歴を検索", "カテゴリを追加",
+  "除外ワード".
+argument-hint: "[init | setup | search <question> | list | remove <slug> | categories]"
 ---
 
 ## Output Language
@@ -17,7 +19,7 @@ not change the language presented to the user.
 
 Every morning an Orca automation collects dev news feeds and X posts, has Claude summarize them, and posts the
 digest to Slack. Everything sent is kept in a local SQLite history that this skill can search. This skill covers the
-interactive side: `init`, `setup`, `search`, `list`, `remove`. The morning run itself is not described here: its
+interactive side: `init`, `setup`, `search`, `list`, `remove`, `categories`. The morning run itself is not described here: its
 canonical procedure is `references/morning.md`, which the `procedure` subcommand prints with this machine's values.
 
 ```bash
@@ -42,6 +44,7 @@ carry shell variables between blocks.
 - The user asks to watch the current repository: run **setup**.
 - The user asks about past digests: run **search**.
 - The user asks which repositories are watched or wants to stop watching one: **list / remove**.
+- The user wants to add, remove, stop, or resume a category, or change the words to exclude: **categories**.
 
 If the config does not exist yet (`search` or `procedure` says to run init first), start with **init**.
 
@@ -68,8 +71,8 @@ node "$PLUGIN/bin/dev-digest.ts" init --time <HH:MM> --trigger <daily|weekdays> 
    SQLite history, a work folder `run/`), installs a stable launcher `~/.dev-digest/bin/dev-digest`, registers the
    work folder with Orca, and creates or updates the `dev-digest` automation. The unattended morning run calls the
    launcher, not `node "$PLUGIN/..."`, so the automation keeps working across plugin updates. It prints `launcher=`,
-   `automation=` and `webhook_global=registered|missing`. Exit 1 means the Orca registration failed: show the
-   reason and stop.
+   `automation=`, `webhook_global=registered|missing` and `webhook_sections=<csv>|none`. Exit 1 means the Orca
+   registration failed: show the reason and stop.
 3. If `webhook_global=missing`, register the global Webhook:
 
 ```bash
@@ -81,7 +84,27 @@ node "$PLUGIN/bin/dev-digest.ts" set-webhook --target global
    the `!` prefix: `! ~/.dev-digest/bin/dev-digest set-webhook --target global --from-clipboard`. Wait for them
    to finish. Afterwards the URL is still on the clipboard: tell the user to clear it. Exit 1 means the input
    was cancelled or was not a Slack Incoming Webhook URL; nothing was saved.
-4. Show the permission rules and ask before applying:
+4. Ask in one AskUserQuestion (render in Japanese, multiSelect) whether to send some categories of the global
+   message to their own Slack channels. The categories are the enabled ones from `category list` (see
+   **categories**: the built-in `jvn`, `aws`, `gcp`, `x`, `devto` and any added ones); preselect the ones listed in
+   `webhook_sections`, and offer "do not split" as well.
+   Categories without their own channel, and the warnings (previous run incomplete, sources that failed), stay in
+   the global channel. Repository messages are not affected. Items grouped across categories go to the channel of
+   the category the group is shown under. For each newly chosen category, register its Webhook the same way as
+   step 3 (including the clipboard fallback with `--target section:<name>`):
+
+```bash
+node "$PLUGIN/bin/dev-digest.ts" set-webhook --target section:<category id>
+```
+
+   For each category in `webhook_sections` the user no longer wants split, remove its Webhook (the category goes
+   back to the global channel; nothing is asked):
+
+```bash
+node "$PLUGIN/bin/dev-digest.ts" set-webhook --target section:<name> --remove
+```
+
+5. Show the permission rules and ask before applying:
 
 ```bash
 node "$PLUGIN/bin/dev-digest.ts" permissions --show
@@ -107,9 +130,9 @@ node "$PLUGIN/bin/dev-digest.ts" permissions --show
 node "$PLUGIN/bin/dev-digest.ts" permissions --apply
 ```
 
-5. Tell the user to log in to X once in Orca's built-in browser (the morning run reuses that login). Do not ask
+6. Tell the user to log in to X once in Orca's built-in browser (the morning run reuses that login). Do not ask
    for credentials.
-6. When the user approves a first run, run the automation printed by init (`automation=<id>`):
+7. When the user approves a first run, run the automation printed by init (`automation=<id>`):
 
 ```bash
 orca automations run <automation id>
@@ -183,7 +206,8 @@ Decide the filters from the question, then run:
 node "$PLUGIN/bin/dev-digest.ts" search --q "<words>" --since <YYYY-MM-DD> --until <YYYY-MM-DD> --section <csv> --repo <slug> --min-severity <level> --limit <n>
 ```
 
-All flags are optional. `--section` takes a csv of `jvn|aws|gcp|x|devto|releases`; dates are in the configured time
+All flags are optional. `--section` takes a csv of `jvn|aws|gcp|x|devto|releases|feed` (`feed` = feeds of added
+categories); dates are in the configured time
 zone; `--limit` defaults to 50. Terms under 3 characters use a substring match (title, summary, Japanese summary) instead of
 the full-text index; they still work. The output is a JSON array of items (`title`, `url`, `sourceId`,
 `publishedAt`, `severity`, `summaryJa`, `tags`, `deliveredTo`, ...); `[]` means no history. Answer with a table
@@ -200,3 +224,51 @@ node "$PLUGIN/bin/dev-digest.ts" repo remove --slug <slug>
 `list` prints one tab-separated line per repository (slug, path, webhook masked or `global`, jvn threshold,
 package count). `remove` deletes the repository's config and its dedicated Webhook; confirm with the user before
 running it, and say that the history stays.
+
+## categories
+
+A category is a heading in the Slack messages, and the unit that can get its own channel. There are two kinds:
+
+- **Built-in** (`jvn`, `aws`, `gcp`, `x`, `devto`): fed by fixed sources. They cannot be deleted, but can be stopped
+  (not collected, not sent; stopping `x` also stops reading X in the morning run) and resumed.
+- **Added**: fed by the RSS / Atom feeds the user gives, and/or by keywords. An item from any source whose title or
+  summary contains one of the keywords (case-insensitive substring) is shown under that category instead of its
+  source's category. When several added categories match, the first one in `category list` wins. An added category
+  needs at least one feed or one keyword.
+
+Words to exclude: an item whose title or summary contains one of them is not sent (case-insensitive substring). The
+common list applies to every category and to repository messages too; a category's own list applies to the items
+shown under that category. Excluded items are recorded and are not sent later even if the words change.
+
+Items with the same URL (ignoring the host's case, the query, `#...` and a trailing `/`) are sent only once per
+destination, also across runs. An update of the same item (shown with the "updated" mark) is still sent. This needs no setting.
+
+Show the current state first, then ask what to change (render in Japanese):
+
+```bash
+node "$PLUGIN/bin/dev-digest.ts" category list
+```
+
+Each line is tab-separated: id, `builtin` or `custom`, `enabled` or `disabled`, then for added categories `title=`,
+`feeds=`, `keywords=`, and for all `channel=split|global` and `exclude=` (`none` when empty). The last line is
+`exclude_common=`. Present it as a table. Then run what the user chose:
+
+```bash
+# add a category, or change only the given fields of an added one (csv; `none` empties a list)
+node "$PLUGIN/bin/dev-digest.ts" category set --id <id> --title "<title>" --feeds "<csv | none>" --keywords "<csv | none>"
+# delete an added category (also deletes its exclude words and its channel Webhook)
+node "$PLUGIN/bin/dev-digest.ts" category remove --id <id>
+# stop or resume a built-in category (its channel Webhook is kept)
+node "$PLUGIN/bin/dev-digest.ts" category disable --id <jvn|aws|gcp|x|devto>
+node "$PLUGIN/bin/dev-digest.ts" category enable --id <jvn|aws|gcp|x|devto>
+# replace the words to exclude: common without --id, or for one category
+node "$PLUGIN/bin/dev-digest.ts" category exclude [--id <id>] --words "<csv | none>"
+```
+
+- `id` is lowercase letters, digits and hyphens, and must not be a built-in name (`jvn`, `aws`, `gcp`, `x`, `devto`,
+  `releases`, `feed`). Propose one from the title and confirm it.
+- Feeds must be `http` / `https` URLs. Do not guess a feed URL: ask the user, or confirm the one you found.
+- Confirm with the user before `remove`, and say that the history stays.
+- After adding a category, ask whether it gets its own channel; if yes, register it as in init step 4
+  (`set-webhook --target section:<id>`).
+- Changes apply from the next morning run.

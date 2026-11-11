@@ -5,9 +5,11 @@ import type { DigestFile, DigestGroup } from './digest.ts'
 import type { PendingEntry, PendingFile } from './pending.ts'
 import type { Severity } from './severity.ts'
 
-const SECTION_ORDER: readonly Section[] = ['jvn', 'aws', 'gcp', 'releases', 'x', 'devto']
-// group の置き場所の優先順位（公式ソース）。無ければ x、それも無ければ devto
+// 組み込みのカテゴリの並び。追加したカテゴリはこの後ろに設定の順で並ぶ
+const BUILTIN_ORDER: readonly Section[] = ['jvn', 'aws', 'gcp', 'releases', 'x', 'devto']
+// group の置き場所の優先順位（公式ソース）。無ければ x、それも無ければほかのメンバー
 const OFFICIAL_SECTIONS: readonly Section[] = ['jvn', 'aws', 'gcp', 'releases']
+const CUSTOM_MARK = '📌'
 const ELLIPSIS = '…'
 
 const sectionTitle = (section: Section, jvnMin: Severity | null): string => {
@@ -24,6 +26,8 @@ const sectionTitle = (section: Section, jvnMin: Severity | null): string => {
       return '🤖 X'
     case 'devto':
       return '📰 dev.to'
+    case 'feed':
+      return `${CUSTOM_MARK} フィード`
   }
 }
 
@@ -68,36 +72,75 @@ const unique = (ids: number[]): number[] => [...new Set(ids)]
 type Body = { lines: string[]; count: number }
 type PlacedGroup = { group: DigestGroup; found: PendingEntry[] }
 
+// group のうち、対象の項目集合に入っているメンバー
+const groupMembers = (
+  byId: ReadonlyMap<number, PendingEntry>,
+  group: DigestGroup,
+  ids: ReadonlySet<number>,
+): PendingEntry[] =>
+  unique(group.itemIds)
+    .filter((id) => ids.has(id))
+    .map((id) => byId.get(id))
+    .filter((item): item is PendingEntry => item !== undefined)
+
+const placementRank = (item: PendingEntry): number =>
+  OFFICIAL_SECTIONS.includes(item.section) ? 0 : item.section === 'x' ? 1 : 2
+
+// group を載せるカテゴリ。順位のいちばん高いメンバー（同順位なら先のもの）のカテゴリ。found は 1 件以上
+const placeGroup = (found: PendingEntry[]): string =>
+  found.reduce((best, item) => (placementRank(item) < placementRank(best) ? item : best)).category
+
+// 各項目が通知のどのカテゴリに載るか。group のメンバーは group の置き場所に揃える
+export const placeItems = (pending: PendingFile, digest: DigestFile, ids: ReadonlySet<number>): Map<number, string> => {
+  const byId = new Map(pending.items.map((item) => [item.id, item]))
+  const placed = new Map<number, string>()
+  for (const group of digest.groups) {
+    const found = groupMembers(byId, group, ids)
+    if (found.length === 0) continue
+    const category = placeGroup(found)
+    for (const item of found) placed.set(item.id, category)
+  }
+  for (const id of ids) {
+    const item = byId.get(id)
+    if (item !== undefined && !placed.has(id)) placed.set(id, item.category)
+  }
+  return placed
+}
+
+// 見出しの並びと文言。組み込み → 追加したカテゴリ（設定の順）→ 設定に無いカテゴリ（id をそのまま見出しにする）
+const headings = (options: RenderOptions, present: PendingEntry[]): Array<{ id: string; title: string }> => {
+  const jvnMin = options.jvnMin ?? null
+  const known = [
+    ...BUILTIN_ORDER.map((section) => ({ id: section, title: sectionTitle(section, jvnMin) })),
+    ...(options.categories ?? []).map((category) => ({ id: category.id, title: `${CUSTOM_MARK} ${category.title}` })),
+  ]
+  const knownIds = new Set(known.map((heading) => heading.id))
+  const rest = [...new Set(present.map((item) => item.category))].filter((id) => !knownIds.has(id))
+  return [
+    ...known,
+    ...rest.map((id) => ({ id, title: id === 'feed' ? sectionTitle('feed', jvnMin) : `${CUSTOM_MARK} ${id}` })),
+  ]
+}
+
 // 対象の項目集合に対し、セクション順に行を作る。group は集合内のメンバーだけで描く
 const renderBody = (
   pending: PendingFile,
   digest: DigestFile,
   ids: ReadonlySet<number>,
-  jvnMin: Severity | null,
+  options: RenderOptions,
 ): Body => {
   const byId = new Map(pending.items.map((item) => [item.id, item]))
   const notes = new Map<number, string>()
   for (const note of digest.notes) if (!notes.has(note.id)) notes.set(note.id, note.summaryJa)
 
-  const members = (group: DigestGroup): PendingEntry[] =>
-    unique(group.itemIds)
-      .filter((id) => ids.has(id))
-      .map((id) => byId.get(id))
-      .filter((item): item is PendingEntry => item !== undefined)
-  const placeGroup = (found: PendingEntry[]): Section => {
-    const official = found.find((item) => OFFICIAL_SECTIONS.includes(item.section))
-    if (official !== undefined) return official.section
-    return found.some((item) => item.section === 'x') ? 'x' : 'devto'
-  }
-
   const grouped = new Set<number>()
-  const groupsBySection = new Map<Section, PlacedGroup[]>()
+  const groupsByCategory = new Map<string, PlacedGroup[]>()
   for (const group of digest.groups) {
-    const found = members(group)
+    const found = groupMembers(byId, group, ids)
     if (found.length === 0) continue
     for (const item of found) grouped.add(item.id)
-    const section = placeGroup(found)
-    groupsBySection.set(section, [...(groupsBySection.get(section) ?? []), { group, found }])
+    const category = placeGroup(found)
+    groupsByCategory.set(category, [...(groupsByCategory.get(category) ?? []), { group, found }])
   }
 
   const itemLines = (item: PendingEntry): string[] => {
@@ -125,18 +168,23 @@ const renderBody = (
 
   const lines: string[] = []
   const present = pending.items.filter((item) => ids.has(item.id))
-  for (const section of SECTION_ORDER) {
-    const groups = groupsBySection.get(section) ?? []
-    const singles = present.filter((item) => item.section === section && !grouped.has(item.id))
+  for (const heading of headings(options, present)) {
+    const groups = groupsByCategory.get(heading.id) ?? []
+    const singles = present.filter((item) => item.category === heading.id && !grouped.has(item.id))
     if (groups.length === 0 && singles.length === 0) continue
-    lines.push('', `*${sectionTitle(section, jvnMin)}*`)
+    lines.push('', `*${plainText(heading.title)}*`)
     for (const entry of groups) lines.push(...groupLines(entry))
     for (const item of singles) lines.push(...itemLines(item))
   }
   return { lines, count: present.length }
 }
 
-export type RenderOptions = { jvnMin?: Severity | null; timeZone?: string }
+// categories: 追加したカテゴリの id と見出し（設定の順）
+export type RenderOptions = {
+  jvnMin?: Severity | null
+  timeZone?: string
+  categories?: Array<{ id: string; title: string }>
+}
 
 export const renderGlobal = (
   pending: PendingFile,
@@ -144,7 +192,7 @@ export const renderGlobal = (
   date: string,
   options: RenderOptions = {},
 ): string[] => {
-  const body = renderBody(pending, digest, new Set(pending.globalIds), options.jvnMin ?? null)
+  const body = renderBody(pending, digest, new Set(pending.globalIds), options)
   const lines: string[] = []
   if (pending.previousIncomplete !== null) {
     const previous = formatMonthDay(pending.previousIncomplete, options.timeZone)
@@ -156,6 +204,19 @@ export const renderGlobal = (
     lines.push(`⚠️ 取得できなかったソース: ${plainText(failure.sourceId)}（${plainText(failure.reason)}）`)
   }
   return lines
+}
+
+// セクション専用のチャンネルに送る 1 通。ids はそのチャンネルに載る項目（placeItems で振り分けたもの）。0 件なら null
+export const renderSection = (
+  pending: PendingFile,
+  digest: DigestFile,
+  ids: number[],
+  date: string,
+  options: RenderOptions = {},
+): string[] | null => {
+  const body = renderBody(pending, digest, new Set(ids), options)
+  if (body.count === 0) return null
+  return [`☀️ ${date} 開発速報（${body.count} 件）`, ...body.lines]
 }
 
 // リポジトリの対象項目 = digest の選択 ∪ ownIds（重複は 1 件）
@@ -176,7 +237,7 @@ export const renderRepo = (
 ): string[] | null => {
   const repo = pending.repos.find((entry) => entry.slug === slug)
   if (repo === undefined) return null
-  const body = renderBody(pending, digest, new Set(repoItemIds(pending, digest, slug)), options.jvnMin ?? null)
+  const body = renderBody(pending, digest, new Set(repoItemIds(pending, digest, slug)), options)
   if (body.count === 0) return null
   return [`📦 [${plainText(repo.displayName)}] 関連（${body.count} 件）`, ...body.lines]
 }

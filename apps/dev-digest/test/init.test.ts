@@ -93,6 +93,7 @@ test('IN1 init は設定・ランチャー・workspace・automation を作る', 
   assert.deepEqual(config.devtoTags, ['aws', 'ai'])
   // --jvn-keywords は省略でき、そのときは絞らない
   assert.deepEqual(config.jvnKeywords, [])
+  assert.match(result.stdout, /^webhook_sections=none$/m)
 
   const calls = orcaCalls(orcaLog)
   const repoAdd = calls.find((args) => args[0] === 'repo' && args[1] === 'add')

@@ -1,5 +1,5 @@
-import { die, log, parseFlags } from '../cli.ts'
-import { loadConfig, saveConfig } from '../config.ts'
+import { csv, die, log, parseFlags } from '../cli.ts'
+import { categoryIds, loadConfig, saveConfig } from '../config.ts'
 import { openDb } from '../db.ts'
 import {
   AUTOMATION_NAME,
@@ -34,12 +34,6 @@ const OPTIONAL_FLAGS = ['jvn-keywords'] as const
 const PROMPT_HOME = `~/${HOME_DIRNAME}`
 
 type Flags = Partial<Record<(typeof FLAGS)[number] | (typeof OPTIONAL_FLAGS)[number], string>>
-
-const csv = (value: string): string[] =>
-  value
-    .split(',')
-    .map((item) => item.trim())
-    .filter((item) => item !== '')
 
 const parseTrigger = (value: string): Config['schedule']['trigger'] =>
   value === 'daily' || value === 'weekdays'
@@ -90,6 +84,11 @@ const buildConfig = (flags: Flags, base: Config | null): Config => {
     },
     orca: base?.orca ?? { workspaceSelector: null, automationId: null },
     pluginRoot: pluginRoot(),
+    // カテゴリと除外ワードは category コマンドで変える。init は保つ
+    disabledSections: base?.disabledSections ?? [],
+    categories: base?.categories ?? [],
+    excludeWords: base?.excludeWords ?? [],
+    categoryExclude: base?.categoryExclude ?? {},
   }
 }
 
@@ -257,7 +256,11 @@ export const run = (argv: string[]): void => {
   const out = [`config=${paths.config}`, `launcher=${paths.launcher}`]
   const error = registerOrca(home, config, selector, prompt, out)
   // Webhook は登録の有無だけを出す（値は読み出して比べるだけで、どこにも書かない）
-  out.push(`webhook_global=${webhookFor(loadSecrets(paths.secrets), null) === null ? 'missing' : 'registered'}`)
+  const secrets = loadSecrets(paths.secrets)
+  out.push(`webhook_global=${webhookFor(secrets, null) === null ? 'missing' : 'registered'}`)
+  // 専用チャンネルに分けたセクション（名前だけ。URL は出さない）
+  const split = categoryIds(config).filter((id) => secrets.sections[id] !== undefined)
+  out.push(`webhook_sections=${split.length === 0 ? NONE_VALUE : split.join(',')}`)
   process.stdout.write(`${out.join('\n')}\n`)
   if (error !== null) {
     log(NAME, error)

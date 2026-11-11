@@ -23,17 +23,22 @@ const T0 = '2026-11-01T00:00:00.000Z'
 const NOW = '2026-11-09T00:00:00.000Z'
 const GLOBAL_PATH = '/services/T0/B0/xyz'
 const REPO_PATH = '/services/T1/B1/repo'
+const SECTION_PATH = '/services/T2/B2/aws'
 const hookUrl = (path: string): string => `https://hooks.slack.com${path}`
 
 type Setup = { home: string; server: TestServer; db: Db; ids: number[]; env: Record<string, string> }
 
-const setup = async (routes: Record<string, Route>, withRepoHook = true): Promise<Setup> => {
+const setup = async (
+  routes: Record<string, Route>,
+  withRepoHook = true,
+  overrides: Partial<Config> = {},
+): Promise<Setup> => {
   const home = tempHome()
   homes.push(home)
   const server = await startServer(routes)
   servers.push(server)
   const paths = homePaths(home)
-  const config: Config = writeConfig(home)
+  const config: Config = writeConfig(home, overrides)
   saveRepo(home, {
     slug: 'o/r',
     displayName: 'o/r',
@@ -206,6 +211,82 @@ test('PB7 repo の Webhook が無ければ全体の Webhook で送る', async ()
   assert.equal(result.code, 0, result.stderr)
   assert.equal(s.server.requests.length, 2)
   assert.ok(s.server.requests.every((r) => r.path === GLOBAL_PATH))
+})
+
+test('PB7b 専用の Webhook があるセクションの項目はそのチャンネルへ送り、全体には載せない', async () => {
+  const s = await setup({ [GLOBAL_PATH]: OK, [SECTION_PATH]: OK })
+  saveWebhook(homePaths(s.home).secrets, 'section:aws', hookUrl(SECTION_PATH))
+  const [a, b] = s.ids
+  const file = writeDigest(s.home, { runId: 1, notes: [], groups: [], repos: [] })
+  const result = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(result.code, 0, result.stderr)
+  // 項目はすべて aws のチャンネルへ。全体に載せるものも警告も無いので全体には送らない
+  assert.deepEqual(
+    s.server.requests.map((r) => r.path),
+    [SECTION_PATH],
+  )
+  assert.ok((s.server.requests[0]?.body ?? '').includes('title-a'))
+  assert.match(result.stdout, /skipped global items=0/)
+  assert.match(result.stdout, /sent global:aws messages=1/)
+  assert.ok(!result.stdout.includes('B2/aws'))
+  assert.deepEqual(deliveryRows(s.db), [
+    `${a}:global:sent`,
+    `${a}:repo:o/r:irrelevant`,
+    `${b}:global:sent`,
+    `${b}:repo:o/r:irrelevant`,
+  ])
+  assert.ok(finished(s.db))
+})
+
+test('PB7c セクションのチャンネルだけ失敗したら、送り直しでそのチャンネルだけ送る', async () => {
+  const routes: Record<string, Route> = {
+    [GLOBAL_PATH]: OK,
+    [SECTION_PATH]: { status: 500, body: 'boom', type: 'text/plain' },
+  }
+  const s = await setup(routes)
+  saveWebhook(homePaths(s.home).secrets, 'section:aws', hookUrl(SECTION_PATH))
+  const file = writeDigest(s.home, { runId: 1, notes: [], groups: [], repos: [] })
+  const first = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(first.code, 1)
+  assert.match(first.stdout, /failed global:aws status=500/)
+  routes[SECTION_PATH] = OK
+  const second = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(second.code, 0, second.stderr)
+  assert.deepEqual(
+    s.server.requests.map((r) => r.path),
+    [SECTION_PATH, SECTION_PATH],
+  )
+  assert.ok(finished(s.db))
+})
+
+test('PB7e 追加したカテゴリの項目は、そのカテゴリの専用チャンネルへ送る', async () => {
+  const categories = [{ id: 'picked', title: 'Picked', feeds: [], keywords: ['title-a'] }]
+  const s = await setup({ [GLOBAL_PATH]: OK, [SECTION_PATH]: OK }, true, { categories })
+  saveWebhook(homePaths(s.home).secrets, 'section:picked', hookUrl(SECTION_PATH))
+  const file = writeDigest(s.home, { runId: 1, notes: [], groups: [], repos: [] })
+  const result = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(result.code, 0, result.stderr)
+  assert.deepEqual(
+    s.server.requests.map((r) => r.path),
+    [GLOBAL_PATH, SECTION_PATH],
+  )
+  const [main, picked] = s.server.requests.map((r) => r.body)
+  assert.ok(main?.includes('title-b') && !main.includes('title-a'))
+  assert.ok(picked?.includes('title-a') && picked.includes('📌 Picked'))
+  assert.match(result.stdout, /sent global:picked messages=1/)
+})
+
+test('PB7d 項目の無いセクションの Webhook には送らず、項目は全体へ送る', async () => {
+  const s = await setup({ [GLOBAL_PATH]: OK, [SECTION_PATH]: OK })
+  saveWebhook(homePaths(s.home).secrets, 'section:gcp', hookUrl(SECTION_PATH))
+  const file = writeDigest(s.home, { runId: 1, notes: [], groups: [], repos: [] })
+  const result = await runCliAsync(['publish', '--file', file, '--now', NOW], s.env)
+  assert.equal(result.code, 0, result.stderr)
+  assert.deepEqual(
+    s.server.requests.map((r) => r.path),
+    [GLOBAL_PATH],
+  )
+  assert.ok((s.server.requests[0]?.body ?? '').includes('title-a'))
 })
 
 test('PB8 全体の Webhook が無くても要約は保存される（exit 2）', async () => {
