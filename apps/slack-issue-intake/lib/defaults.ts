@@ -162,3 +162,23 @@ export const MSG_FAILED = 'Issue の作成に失敗しました。管理者が�
 export const PROBLEM_MISSING = '{label}がありません'
 export const PROBLEM_INVALID = '{label}が「{options}」のどれでもありません'
 export const PROBLEM_SEPARATOR = '、'
+export const ISSUE_HEADINGS = {
+  summary: '概要',
+  details: '詳細',
+  unresolved: '未確認事項',
+  info: '起票情報',
+  files: '添付ファイル（Slack）',
+  original: '元の投稿とスレッド',
+} as const
+export const ISSUE_TABLE = {
+  key: '項目',
+  value: '内容',
+  category: 'カテゴリ',
+  priority: '優先度',
+  reporter: '起票者',
+  slack: 'Slack',
+  source: '元の投稿',
+} as const
+export const BOT_TRANSCRIPT_NAME = '確認（bot）'
+export const UNKNOWN_REPORTER_NAME = '不明'
+export const SLACK_REPORTER_SUFFIX = '（Slack）'

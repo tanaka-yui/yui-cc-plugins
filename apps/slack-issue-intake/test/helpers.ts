@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 export const tempHome = (): string => mkdtempSync(join(tmpdir(), 'sii-test-'))
@@ -96,3 +96,50 @@ export const repliesHandler =
     if (messages) return { json: { ok: true, messages, response_metadata: { next_cursor: '' } } }
     return { json: { ok: false, error: 'thread_not_found' } }
   }
+
+export const fakeGh = (dir: string): { ghPath: string; log: string; state: string; env: Record<string, string> } => {
+  const { ghPath, log, state } = {
+    ghPath: join(dir, 'gh'),
+    log: join(dir, 'gh.jsonl'),
+    state: join(dir, 'issues.json'),
+  }
+  const quote = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`
+  writeFileSync(
+    ghPath,
+    `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(join(import.meta.dirname, 'fixtures/fake-gh.ts'))} "$@"\n`,
+    { mode: 0o755 },
+  )
+  writeFileSync(log, '')
+  writeFileSync(state, '[]')
+  return { ghPath, log, state, env: { FAKE_GH_LOG: log, FAKE_GH_STATE: state } }
+}
+export const ghCalls = (log: string): Array<{ argv: string[]; body: string | null; pid: number }> =>
+  readFileSync(log, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((s) => JSON.parse(s) as { argv: string[]; body: string | null; pid: number })
+export const seedIssues = (state: string, issues: object[]): void => writeFileSync(state, JSON.stringify(issues))
+export const startIdleProcess = async (): Promise<{
+  pid: number
+  identity: import('../lib/types.ts').ProcessIdentity
+  stop: () => Promise<void>
+}> => {
+  const { identityOf } = await import('../lib/process.ts')
+  const p = spawn(process.execPath, [join(import.meta.dirname, 'fixtures/idle-process.ts')], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  await new Promise<void>((done) => p.stdout.once('data', () => done()))
+  if (!p.pid) throw new Error('プロセスを開始できません')
+  const identity = identityOf(p.pid)
+  if (!identity) throw new Error('プロセスの身元がありません')
+  return {
+    pid: p.pid,
+    identity,
+    stop: () =>
+      new Promise<void>((done) => {
+        p.once('close', () => done())
+        p.kill('SIGKILL')
+      }),
+  }
+}
