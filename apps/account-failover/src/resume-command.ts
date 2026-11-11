@@ -29,7 +29,7 @@ const tokenize = (command: string): string[] => {
 
 // 起動引数の先頭のフラグ列だけを見る。フラグでない最初の語から後ろは prompt なので、そこで止める。
 // prompt の本文に書かれた `--dangerously-skip-permissions` などを権限のフラグとして拾わないため
-export function keptFlags(agent: AgentKind, command: string): string[] {
+export function keptFlags(agent: AgentKind, command: string, pathExists: (path: string) => boolean): string[] {
   const valueFlags = agent === 'claude' ? CLAUDE_VALUE_FLAGS : CODEX_VALUE_FLAGS
   const switchFlags = agent === 'claude' ? CLAUDE_SWITCH_FLAGS : CODEX_SWITCH_FLAGS
   const isWrapperConfig = (flag: string, value: string): boolean =>
@@ -49,7 +49,13 @@ export function keptFlags(agent: AgentKind, command: string): string[] {
       const value = tokens[i++] ?? ''
       if (!isWrapperConfig(token, value)) kept.push(token, value)
     } else if (PATH_VALUE_FLAGS.includes(token)) {
-      while (i < tokens.length && !(tokens[i] ?? '').startsWith('-')) i++
+      // 実在するパスになる最長の語の並びだけを値とする。確かめられなければ prompt との境目が分からないので止める
+      let end = -1
+      for (let j = i; j < tokens.length && !(tokens[j] ?? '').startsWith('-'); j++) {
+        if (pathExists(tokens.slice(i, j + 1).join(' '))) end = j
+      }
+      if (end < 0) break
+      i = end + 1
     }
     // それ以外の知らないフラグは、そのフラグだけを読み飛ばす（値を取るなら、その値は prompt とみなされて止まる）
   }
@@ -64,8 +70,9 @@ export function buildResumeCommand(
   session: SessionRef,
   target: AccountRef,
   prompt: string,
+  pathExists: (path: string) => boolean,
 ): string {
-  const flags = keptFlags(proc.agent, proc.command).map(shellQuote)
+  const flags = keptFlags(proc.agent, proc.command, pathExists).map(shellQuote)
   if (proc.agent === 'claude') {
     return ['claude', ...flags, '--resume', shellQuote(session.transcriptPath), shellQuote(prompt)].join(' ')
   }

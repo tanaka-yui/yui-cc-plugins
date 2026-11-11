@@ -29,6 +29,7 @@ export type Deps = {
   listProcesses(): Promise<string>
   readFile(path: string): Promise<string | null>
   readFileTail(path: string): Promise<string | null>
+  pathExists(path: string): boolean
   globTranscripts(home: string, sessionId: string): Promise<string[]>
   lsof(pid: number): Promise<string>
   copyFile(from: string, to: string): Promise<void>
@@ -119,7 +120,7 @@ export function createFailover(deps: Deps): Failover {
       await deps.copyFile(session.transcriptPath, codexRolloutTarget(session.transcriptPath, proc.home, target.home))
     }
     await deps.sleep(SHELL_SETTLE_MS)
-    await deps.sendText(terminalId, buildResumeCommand(proc, session, target, RESUME_PROMPT))
+    await deps.sendText(terminalId, buildResumeCommand(proc, session, target, RESUME_PROMPT, deps.pathExists))
     history.set(terminalId, [...(history.get(terminalId) ?? []), deps.now()])
 
     await deps.sleep(RESUME_CHECK_MS)

@@ -67,6 +67,7 @@ const makeFake = (agent: 'claude' | 'codex'): Fake => {
         : null,
     globTranscripts: async () => fake.transcripts,
     readFileTail: async () => fake.transcriptTail,
+    pathExists: () => false,
     lsof: async () => `p301\nn${rollout}`,
     copyFile: async (from, to) => {
       fake.calls.push(`copy ${from} -> ${to}`)

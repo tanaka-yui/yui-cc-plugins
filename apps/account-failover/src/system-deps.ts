@@ -3,6 +3,7 @@ import { DEFAULT_ORCA_USER_DATA, PS_MAX_BUFFER, STATUS_BAR_ITEM_ID, TRANSCRIPT_T
 import { asArray, asString, isObject, parseJson } from './json.ts'
 
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { access, copyFile, mkdir, open, readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -44,6 +45,7 @@ export function createSystemDeps(orca: OrcaWorkerApi): Deps {
       (await orca.host.call('terminal.sendText', { terminalId, text, enter: true })).accepted,
     listProcesses: async () => (await run('/bin/ps', PS_ARGS)).stdout,
     readFile: (path) => readFile(path, 'utf8').catch(() => null),
+    pathExists: (path) => existsSync(path),
     readFileTail: async (path) => {
       const file = await open(path, 'r').catch(() => null)
       if (!file) return null
