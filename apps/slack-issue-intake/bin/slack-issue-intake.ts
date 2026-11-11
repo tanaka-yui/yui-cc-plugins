@@ -8,6 +8,9 @@ type Command = { run: (argv: string[]) => Promise<void> | void }
 const COMMANDS: Record<string, () => Promise<Command>> = {
   permissions: () => import('../lib/commands/permissions.ts'),
   enable: () => import('../lib/commands/enable.ts'),
+  status: () => import('../lib/commands/status.ts'),
+  retry: () => import('../lib/commands/retry.ts'),
+  inspect: () => import('../lib/commands/inspect.ts'),
   init: () => import('../lib/commands/init.ts'),
   guide: () => import('../lib/commands/guide.ts'),
   apply: () => import('../lib/commands/apply.ts'),
