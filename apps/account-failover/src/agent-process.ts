@@ -5,19 +5,14 @@ import type { AgentKind, AgentProcess } from './types.ts'
 // macOS の `ps -E` は、コマンドラインの後ろに環境変数を空白区切りで付ける
 export const PS_ARGS = ['-E', '-ww', '-Ao', 'pid=,command=']
 
-const ENV_KEY = /^[A-Z_][A-Z0-9_]*=/
 const HOME_ENV: Record<AgentKind, string> = { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME' }
 const DEFAULT_HOME: Record<AgentKind, string> = { claude: '.claude', codex: '.codex' }
 
-// シングルクォートの外側で、最初に `KEY=` が始まる位置を環境変数部分の先頭とみなす
+// 最初に ` KEY=`（大文字の環境変数名）が現れる位置を環境変数部分の先頭とみなす。
+// ps は引数をクォートせずに並べるので、prompt に含まれる ' などで区切りを追うことはできない
 const envStart = (rest: string): number => {
-  let quoted = false
-  for (let i = 0; i < rest.length; i++) {
-    const ch = rest[i]
-    if (ch === "'") quoted = !quoted
-    else if (ch === ' ' && !quoted && ENV_KEY.test(rest.slice(i + 1))) return i
-  }
-  return -1
+  const m = / [A-Z_][A-Z0-9_]*=/.exec(rest)
+  return m ? m.index : -1
 }
 
 // 値には空白を含むパスが入るので、次の ` KEY=` の手前までを値とする

@@ -97,3 +97,10 @@ test('maps rollout path into target home', () => {
     '/b/home/sessions/2026/11/11/r.jsonl',
   )
 })
+
+test('keeps flags before a prompt that contains an apostrophe', () => {
+  assert.deepEqual(
+    keptFlags('claude', "claude --plugin-dir /a b/c --dangerously-skip-permissions --model haiku Reply: You've hit it"),
+    ['--dangerously-skip-permissions', '--model', 'haiku'],
+  )
+})

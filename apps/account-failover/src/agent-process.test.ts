@@ -119,3 +119,13 @@ test('printed limit text in a tool result is not a limit', () => {
   assert.equal(transcriptEndsWithRateLimit(printed), false)
   assert.equal(transcriptEndsWithRateLimit('{broken'), false)
 })
+
+test('finds the process when its prompt argument contains an apostrophe', () => {
+  const line = `  600 claude --plugin-dir /Users/x/Library/Application Support/orca/agent-view --model haiku Reply: You've hit your limit ORCA_AGENT_PANE=p ORCA_TERMINAL_HANDLE=term_q HOME=/Users/x`
+  const proc = findAgentProcess(line, 'term_q', 'claude', '/Users/x')
+  assert.equal(proc?.pid, 600)
+  assert.equal(
+    proc?.command,
+    "claude --plugin-dir /Users/x/Library/Application Support/orca/agent-view --model haiku Reply: You've hit your limit",
+  )
+})

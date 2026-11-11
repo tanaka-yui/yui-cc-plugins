@@ -81,3 +81,15 @@
 - `orca plugin dev load` は、コードを動かすプラグインでは `--approve ap1-...` を求める。exit 3 の出力に再実行コマンドが含まれる。
 - `codex-session-backfill/` には `audit.jsonl` / `backfill-complete.json` があり、Orca が Codex のセッション一覧を取り込むためのものと見られる。乗り換えには使わない。`rate-limit-pty-cwd/` は空。
 - 検証のため、system の `~/.codex/sessions/2026/11/11/` へ rollout を 1 件コピーした。system の Claude で、このリポジトリのフォルダを信頼済みにした。
+
+## 9. 実装後の実環境確認（Task 7）
+
+- `make dev` で読み込み、`account-failover activated` がログに出た。
+- テスト用の Claude（Haiku 5.5）に、limit の文言をそのまま返答させた。
+  - Claude Code の TUI は、その返答を `⎿  You've hit your session limit · resets 11:59pm` / `/usage-credits to finish what you’re working on.` と、**本物のエラーと同じ見た目**で表示した。
+  - 画面だけで判定すると誤って乗り換える。
+- 1 回目はプロセスを見つけられなかった。起動引数の prompt に含まれる `'` を、クォートの始まりとして扱っていたため。
+  - 修正後は、`ORCA_TERMINAL_HANDLE` でプロセスを特定できた。
+  - transcript の最後の assistant が普通の返答（`isApiErrorMessage` なし）だったので、`transcript には記録がないので無視します` として乗り換えなかった。
+- 本物の limit を起こしての通しの確認はしていない。テスト用の transcript に limit エラーの行を足す操作は、作業環境の安全判定（会話記録の改ざん）で止められた。
+- 確認の後、Claude / Codex のアカウント選択が元のまま（managed）であることを確かめた。
