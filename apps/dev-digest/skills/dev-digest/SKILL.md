@@ -50,13 +50,18 @@ If the config does not exist yet (`search` or `procedure` says to run init first
 1. Ask in one AskUserQuestion round (render in Japanese):
    - run time (HH:MM, 24-hour) and whether it runs `daily` or `weekdays`
    - minimum JVN severity to report (`critical` default; `high`, `medium`, `low`)
+   - JVN keywords for the global message (optional; csv of product or vendor names the user runs, for example
+     `Tomcat,PostgreSQL`). Global JVN items are kept only when the title or a product name contains one of them
+     (case-insensitive substring). `none` or omitting the flag keeps every item above the threshold. Repository
+     messages are not affected.
    - X list URL (must start with `https://x.com/`; `none` to skip the list)
    - X hashtags (offer the defaults `#AI`, `#LLM`, and the Japanese hashtag for "generative AI" (see `DEFAULT_X_HASHTAGS` in `lib/defaults.ts`); csv)
    - dev.to tags (offer the defaults `aws`, `googlecloud`, `ai`, `security`; csv)
-2. Run init. All six flags are required the first time; on later runs only the flags given are updated.
+2. Run init. The six flags other than `--jvn-keywords` are required the first time; on later runs only the flags
+   given are updated.
 
 ```bash
-node "$PLUGIN/bin/dev-digest.ts" init --time <HH:MM> --trigger <daily|weekdays> --jvn-min-severity <critical|high|medium|low> --x-list "<https://x.com/... | none>" --x-hashtags "<csv>" --devto-tags "<csv>"
+node "$PLUGIN/bin/dev-digest.ts" init --time <HH:MM> --trigger <daily|weekdays> --jvn-min-severity <critical|high|medium|low> --x-list "<https://x.com/... | none>" --x-hashtags "<csv>" --devto-tags "<csv>" [--jvn-keywords "<csv | none>"]
 ```
 
    Add `--dry-run` to preview the Orca calls without writing anything. Init creates `~/.dev-digest/` (config,

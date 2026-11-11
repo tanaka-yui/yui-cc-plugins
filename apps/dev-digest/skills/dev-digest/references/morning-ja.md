@@ -71,7 +71,8 @@ X を読めなければ（ログアウト、ページが開かない、投稿が
 - `items`: 未送信の全項目（`id`、`section`、`title`、`url`、`summary`、`severity`、`products`、`updated` など）
 - `globalIds`: 全体向けメッセージの項目
 - `repos`: 監視中の各リポジトリ（`slug`、`displayName`、`watch`、`candidateIds`、`ownIds`、`filtered`）
-- `filtered`（最上位と各リポジトリ）: JVN のしきい値に届かない項目。`items` には入らず、`publish` が記録する。
+- `filtered`（最上位と各リポジトリ）: JVN のしきい値に届かない項目（最上位は、設定した JVN のキーワードのどれにも
+  合わない項目も）。`items` には入らず、`publish` が記録する。
   その id は速報に使わない。
 - `failures`: 取得できなかったソース
 

@@ -22,6 +22,7 @@ const baseConfig: Config = {
   version: 1,
   schedule: { trigger: 'daily', time: '08:00', timezone: 'Asia/Tokyo' },
   jvnMinSeverity: 'high',
+  jvnKeywords: ['FortiOS'],
   devtoTags: ['aws'],
   x: { listUrl: null, hashtags: ['#AI'] },
   orca: { workspaceSelector: null, automationId: null },
@@ -51,6 +52,14 @@ test('CF1 parseConfig は既知の形を通し、jvnMinSeverity の誤りを説�
   const bad = parseConfig({ ...baseConfig, jvnMinSeverity: 'urgent' })
   assert.equal(typeof bad, 'string')
   assert.ok(String(bad).includes('jvnMinSeverity'))
+})
+
+test('CF1b jvnKeywords が無い古い設定は空とみなし、配列でなければ説明する', () => {
+  const { jvnKeywords: _omitted, ...legacy } = baseConfig
+  assert.deepEqual(parseConfig(legacy), { ...baseConfig, jvnKeywords: [] })
+  const bad = parseConfig({ ...baseConfig, jvnKeywords: 'FortiOS' })
+  assert.equal(typeof bad, 'string')
+  assert.ok(String(bad).includes('jvnKeywords'))
 })
 
 test('CF2 saveRepo / loadRepos / removeRepo の往復', () => {

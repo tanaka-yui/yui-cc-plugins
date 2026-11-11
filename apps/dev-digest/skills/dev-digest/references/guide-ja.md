@@ -33,10 +33,12 @@ CLI は `node "$PLUGIN/bin/dev-digest.ts" <subcommand>` で呼ぶ（`PLUGIN` は
 ## init
 
 1. AskUserQuestion で 1 回にまとめて尋ねる（日本語で）: 実行時刻（HH:MM）と `daily` / `weekdays`、JVN の
-   報告しきい値（既定 `critical`）、X のリスト URL（`https://x.com/` で始まること。リストを使わないなら `none`）、
+   報告しきい値（既定 `critical`）、全体向け JVN のキーワード（任意。使っている製品・ベンダー名の csv。例:
+   `Tomcat,PostgreSQL`。タイトルか製品名にどれかを含む項目だけを全体に送る。大文字小文字を区別しない部分一致。
+   `none` かフラグ省略なら、しきい値以上をすべて送る。リポジトリ向けの通知には効かない）、X のリスト URL（`https://x.com/` で始まること。リストを使わないなら `none`）、
    X のハッシュタグ（既定 `#AI` `#LLM` `#生成AI` を提示）、dev.to のタグ（既定 `aws` `googlecloud` `ai`
    `security` を提示）。
-2. init を実行する。初回は 6 つのフラグがすべて要り、2 回目以降は指定したものだけ更新する。`--dry-run` は
+2. init を実行する。初回は `--jvn-keywords` 以外の 6 つのフラグがすべて要り、2 回目以降は指定したものだけ更新する。`--dry-run` は
    何も書かずに Orca の呼び出しだけを見せる。init は `~/.dev-digest/`（設定・SQLite の履歴・作業フォルダ
    `run/`）を作り、安定パスのランチャー `~/.dev-digest/bin/dev-digest` を置き、作業フォルダを Orca に登録し、
    `dev-digest` automation を作成または更新する。無人の毎朝の実行は `node "$PLUGIN/..."` ではなくランチャーを

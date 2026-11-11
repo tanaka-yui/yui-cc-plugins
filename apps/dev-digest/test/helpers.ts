@@ -89,6 +89,7 @@ export const writeConfig = (home: string, overrides: Partial<Config> = {}): Conf
     version: 1,
     schedule: { trigger: 'daily', time: '08:00', timezone: 'Asia/Tokyo' },
     jvnMinSeverity: 'high',
+    jvnKeywords: [],
     devtoTags: [],
     x: { listUrl: null, hashtags: ['#AI'] },
     orca: { workspaceSelector: null, automationId: null },

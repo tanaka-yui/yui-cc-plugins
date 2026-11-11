@@ -141,6 +141,9 @@ test('PB2 digest.json に書かれなかった pending 項目も全体に載る'
   assert.equal(result.code, 0, result.stderr)
   const body = s.server.requests[0]?.body ?? ''
   assert.ok(body.includes('title-a') && body.includes('title-b') && body.includes('要約なし'))
+  // リンクのプレビュー（記事カード・画像）を出させない
+  assert.match(body, /"unfurl_links":false/)
+  assert.match(body, /"unfurl_media":false/)
   // 0 件の repo は送らず、候補を irrelevant にする
   assert.equal(s.server.requests.length, 1)
   assert.match(result.stdout, /skipped repo:o\/r/)

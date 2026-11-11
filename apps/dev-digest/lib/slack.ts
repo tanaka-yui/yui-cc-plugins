@@ -224,12 +224,13 @@ export const overrideUrl = (url: string): string => {
 export type PostResult = { ok: boolean; status: number; error: string | null }
 
 // 応答本文は読まない（URL が混ざりうる）。例外の文面は呼び出し側で maskSecrets する
+// リンクのプレビュー（記事カード・画像）は出さない。速報は件数が多く、プレビューで本文が埋もれるため
 export const postWebhook = async (url: string, text: string): Promise<PostResult> => {
   try {
     const response = await fetch(overrideUrl(url), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, unfurl_links: false, unfurl_media: false }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
     await response.body?.cancel()

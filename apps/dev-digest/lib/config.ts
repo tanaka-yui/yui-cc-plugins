@@ -25,6 +25,8 @@ export type Config = {
   version: 1
   schedule: { trigger: 'daily' | 'weekdays'; time: string; timezone: string }
   jvnMinSeverity: Severity
+  // 全体向けの JVN を、タイトルか製品名にどれかを含むものだけに絞る。空なら絞らない（しきい値だけ）
+  jvnKeywords: string[]
   devtoTags: string[]
   x: { listUrl: string | null; hashtags: string[] }
   orca: { workspaceSelector: string | null; automationId: string | null }
@@ -90,6 +92,9 @@ export const parseConfig = (value: Json): Config | string => {
   }
   const jvnMinSeverity = typeof root.jvnMinSeverity === 'string' ? parseSeverity(root.jvnMinSeverity) : null
   if (jvnMinSeverity === null) return 'config.jvnMinSeverity: low|medium|high|critical のいずれかにしてください'
+  // jvnKeywords より前に作った設定には無いので、無ければ空（絞らない）とみなす
+  const jvnKeywords = root.jvnKeywords === undefined ? [] : strList(root.jvnKeywords)
+  if (jvnKeywords === null) return 'config.jvnKeywords: 文字列の配列にしてください'
   const devtoTags = strList(root.devtoTags)
   if (devtoTags === null) return 'config.devtoTags: 文字列の配列にしてください'
   const x = asObject(root.x)
@@ -109,6 +114,7 @@ export const parseConfig = (value: Json): Config | string => {
     version: 1,
     schedule: { trigger, time, timezone },
     jvnMinSeverity,
+    jvnKeywords,
     devtoTags,
     x: { listUrl, hashtags },
     orca: { workspaceSelector, automationId },

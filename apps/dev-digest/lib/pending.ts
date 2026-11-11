@@ -60,26 +60,40 @@ export const sectionByStoreAs = (config: Config, repos: RepoConfig[]): ((storeAs
   }
 }
 
+// タイトルか製品名にキーワードのどれかを含むか（大文字小文字は区別しない）。キーワードが空なら常に true
+export const matchesKeywords = (item: Pick<StoredItem, 'title' | 'products'>, keywords: string[]): boolean => {
+  if (keywords.length === 0) return true
+  const haystack = [item.title, ...item.products].join('\n').toLowerCase()
+  return keywords.some((keyword) => haystack.includes(keyword.toLowerCase()))
+}
+
 export const buildPending = (db: Db, config: Config, repos: RepoConfig[], runId: number, now: string): PendingFile => {
   const sources = buildSources(config, repos)
   const sectionOf = sectionByStoreAs(config, repos)
   // X は collect の対象ではないが、全体の投稿として扱う
   const globalStores = unique([...sources.filter((s) => s.scope === 'global').map((s) => s.storeAs), X_SOURCE.storeAs])
-  const keep = (item: StoredItem, threshold: Severity): boolean =>
-    sectionOf(item.sourceId) !== 'jvn' || atLeast(item.severity, threshold)
+  const keep = (item: StoredItem, threshold: Severity, keywords: string[]): boolean =>
+    sectionOf(item.sourceId) !== 'jvn' || (atLeast(item.severity, threshold) && matchesKeywords(item, keywords))
 
   const byId = new Map<number, StoredItem>()
   const collect = (items: StoredItem[]): number[] => {
     for (const item of items) byId.set(item.id, item)
     return items.map((item) => item.id)
   }
-  // しきい値を越えたものは送る候補に、外れたものは filtered に分ける
-  const split = (items: StoredItem[], threshold: Severity): { ids: number[]; filtered: ItemRef[] } => ({
-    ids: collect(items.filter((item) => keep(item, threshold))),
-    filtered: items.filter((item) => !keep(item, threshold)).map((item) => ({ id: item.id, revision: item.revision })),
+  // しきい値（とキーワード）を越えたものは送る候補に、外れたものは filtered に分ける
+  const split = (
+    items: StoredItem[],
+    threshold: Severity,
+    keywords: string[] = [],
+  ): { ids: number[]; filtered: ItemRef[] } => ({
+    ids: collect(items.filter((item) => keep(item, threshold, keywords))),
+    filtered: items
+      .filter((item) => !keep(item, threshold, keywords))
+      .map((item) => ({ id: item.id, revision: item.revision })),
   })
 
-  const global = split(undelivered(db, 'global', globalStores, null), config.jvnMinSeverity)
+  // キーワードは全体にだけ効かせる。リポジトリの候補は watch を見て digest で選ぶので、ここでは絞らない
+  const global = split(undelivered(db, 'global', globalStores, null), config.jvnMinSeverity, config.jvnKeywords)
   const pendingRepos: PendingRepo[] = repos.map((repo) => {
     const destination = `repo:${repo.slug}` as const
     const ownStores = unique(

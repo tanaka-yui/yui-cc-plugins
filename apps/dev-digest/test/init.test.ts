@@ -91,6 +91,8 @@ test('IN1 init は設定・ランチャー・workspace・automation を作る', 
   assert.equal(config.jvnMinSeverity, 'critical')
   assert.deepEqual(config.x, { listUrl: 'https://x.com/i/lists/1', hashtags: ['#AI', '#LLM'] })
   assert.deepEqual(config.devtoTags, ['aws', 'ai'])
+  // --jvn-keywords は省略でき、そのときは絞らない
+  assert.deepEqual(config.jvnKeywords, [])
 
   const calls = orcaCalls(orcaLog)
   const repoAdd = calls.find((args) => args[0] === 'repo' && args[1] === 'add')
@@ -147,6 +149,16 @@ test('IN2 2 回目の init は edit になり create しない', () => {
   assert.equal(config.schedule.trigger, 'weekdays')
   assert.deepEqual(config.devtoTags, ['aws', 'ai'])
   assert.equal(config.orca.automationId, 'auto-1')
+})
+
+test('IN2d --jvn-keywords は csv で保存し、指定しなければ保ち、none で空にする', () => {
+  const { home, env } = setup()
+  assert.equal(runCli([...INIT_ARGS, '--jvn-keywords', 'Tomcat, PostgreSQL'], env).code, 0)
+  assert.deepEqual(loadConfig(home)?.jvnKeywords, ['Tomcat', 'PostgreSQL'])
+  assert.equal(runCli(['init', '--time', '09:15'], env).code, 0)
+  assert.deepEqual(loadConfig(home)?.jvnKeywords, ['Tomcat', 'PostgreSQL'])
+  assert.equal(runCli(['init', '--jvn-keywords', 'none'], env).code, 0)
+  assert.deepEqual(loadConfig(home)?.jvnKeywords, [])
 })
 
 test('IN2b 記録した automation が Orca から消えていれば作り直して新しい id を記録する', () => {

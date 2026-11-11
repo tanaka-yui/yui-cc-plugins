@@ -106,7 +106,8 @@ Read `{{RUN_DIR}}/pending.json`. It has:
 - `items`: every undelivered item (`id`, `section`, `title`, `url`, `summary`, `severity`, `products`, `updated`, ...)
 - `globalIds`: the items for the global message
 - `repos`: each watched repository (`slug`, `displayName`, `watch`, `candidateIds`, `ownIds`, `filtered`)
-- `filtered` (top level and in each repository): JVN items below the severity threshold. They are not in `items`;
+- `filtered` (top level and in each repository): JVN items below the severity threshold (and, at the top level,
+  items that match none of the configured JVN keywords). They are not in `items`;
   `publish` records them. Do not use their ids in the digest.
 - `failures`: sources that could not be fetched
 

@@ -28,10 +28,12 @@ const NAME = 'dev-digest init'
 const EXIT_FAILED = 1
 // 初回はすべて要る。2 回目以降は指定したものだけ更新する
 const FLAGS = ['time', 'trigger', 'jvn-min-severity', 'x-list', 'x-hashtags', 'devto-tags'] as const
+// 初回も省略できる（省略すれば全体の JVN をキーワードで絞らない）
+const OPTIONAL_FLAGS = ['jvn-keywords'] as const
 // AUTOMATION_PROMPT に書いた `~/.dev-digest` を実パスに置き換える
 const PROMPT_HOME = `~/${HOME_DIRNAME}`
 
-type Flags = Partial<Record<(typeof FLAGS)[number], string>>
+type Flags = Partial<Record<(typeof FLAGS)[number] | (typeof OPTIONAL_FLAGS)[number], string>>
 
 const csv = (value: string): string[] =>
   value
@@ -58,7 +60,7 @@ const buildConfig = (flags: Flags, base: Config | null): Config => {
     const missing = FLAGS.filter((flag) => flags[flag] === undefined)
     if (missing.length > 0) die(NAME, `初回は ${missing.map((flag) => `--${flag}`).join(' ')} を指定してください`)
   }
-  const pick = <T>(flag: (typeof FLAGS)[number], parse: (value: string) => T, current: T | undefined): T => {
+  const pick = <T>(flag: keyof Flags, parse: (value: string) => T, current: T | undefined): T => {
     const value = flags[flag]
     if (value !== undefined) return parse(value)
     return current === undefined ? die(NAME, `--${flag} を指定してください`) : current
@@ -80,6 +82,7 @@ const buildConfig = (flags: Flags, base: Config | null): Config => {
       (v) => parseSeverity(v) ?? die(NAME, `--jvn-min-severity は low|medium|high|critical にしてください: ${v}`),
       base?.jvnMinSeverity,
     ),
+    jvnKeywords: pick('jvn-keywords', (v) => (v === NONE_VALUE ? [] : csv(v)), base?.jvnKeywords ?? []),
     devtoTags: pick('devto-tags', csv, base?.devtoTags),
     x: {
       listUrl: pick('x-list', parseListUrl, base?.x.listUrl),
@@ -224,6 +227,7 @@ export const run = (argv: string[]): void => {
       time: { type: 'string' },
       trigger: { type: 'string' },
       'jvn-min-severity': { type: 'string' },
+      'jvn-keywords': { type: 'string' },
       'x-list': { type: 'string' },
       'x-hashtags': { type: 'string' },
       'devto-tags': { type: 'string' },

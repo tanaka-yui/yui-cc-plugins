@@ -23,6 +23,7 @@ const config: Config = {
   version: 1,
   schedule: { trigger: 'daily', time: '08:00', timezone: 'Asia/Tokyo' },
   jvnMinSeverity: 'critical',
+  jvnKeywords: [],
   devtoTags: [],
   x: { listUrl: null, hashtags: [] },
   orca: { workspaceSelector: null, automationId: null },
@@ -54,8 +55,15 @@ const feedItem = (guid: string, severity: Severity | null = null): FeedItem => (
   severity,
   products: [],
 })
-const add = (db: Db, sourceId: string, guid: string, severity: Severity | null = null, at = NOW): number => {
-  upsertItem(db, sourceId, feedItem(guid, severity), false, at)
+const add = (
+  db: Db,
+  sourceId: string,
+  guid: string,
+  severity: Severity | null = null,
+  at = NOW,
+  extra: Partial<FeedItem> = {},
+): number => {
+  upsertItem(db, sourceId, { ...feedItem(guid, severity), ...extra }, false, at)
   const row = db.prepare('SELECT id FROM items WHERE source_id = ? AND guid = ?').get(sourceId, guid)
   return Number(row?.id)
 }
@@ -76,6 +84,19 @@ test('PD1 JVN は全体のしきい値で globalIds を絞る', () => {
     pending.items.map((i) => [i.id, i.section]),
     [[critical, 'jvn']],
   )
+})
+
+test('PD1b jvnKeywords は全体の JVN をタイトルか製品名で絞り、リポジトリの候補は絞らない', () => {
+  const db = memDb()
+  const byTitle = add(db, 'jvn', 'a', 'critical', NOW, { title: 'Apache Tomcat における脆弱性' })
+  const byProduct = add(db, 'jvn', 'b', 'critical', NOW, { title: '複数の製品', products: ['PostgreSQL'] })
+  const other = add(db, 'jvn', 'c', 'critical', NOW, { title: 'ある産業用制御機器', summary: 'tomcat を含む' })
+  const aws = add(db, 'aws-whats-new', 'd')
+  const pending = buildPending(db, { ...config, jvnKeywords: ['tomcat', 'postgresql'] }, [repo()], 1, NOW)
+  assert.deepEqual(pending.globalIds, [byTitle, byProduct, aws])
+  assert.deepEqual(pending.filtered, [{ id: other, revision: 1 }])
+  assert.deepEqual(pending.repos[0]?.candidateIds, [byTitle, byProduct, other, aws])
+  assert.deepEqual(pending.repos[0]?.filtered, [])
 })
 
 test('PD2 リポジトリのしきい値が全体を上書きする', () => {
