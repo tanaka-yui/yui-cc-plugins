@@ -138,8 +138,75 @@ export const startIdleProcess = async (): Promise<{
     identity,
     stop: () =>
       new Promise<void>((done) => {
+        if (p.exitCode !== null || p.signalCode !== null) {
+          done()
+          return
+        }
         p.once('close', () => done())
         p.kill('SIGKILL')
       }),
   }
+}
+
+export const setupHome = async (
+  home: string,
+  opts: { apiBase: string; ghPath: string; ghState: string; cursor?: string; acceptAfter?: string },
+): Promise<Record<string, string>> => {
+  const { saveConfig } = await import('../lib/config.ts')
+  const { saveToken } = await import('../lib/secrets.ts')
+  const { homePaths, pluginRoot } = await import('../lib/paths.ts')
+  const { openDb, setMeta } = await import('../lib/db.ts')
+  const f = await import('./fixtures/slack-messages.ts')
+  saveConfig(home, {
+    version: 1,
+    channel: f.CHANNEL,
+    repo: 'acme/app',
+    everyMinutes: 5,
+    ghPath: opts.ghPath,
+    pluginRoot: pluginRoot(),
+    slack: { teamId: f.TEAM_ID, teamUrl: f.TEAM_URL, botUserId: f.BOT_USER, botId: f.BOT_ID },
+    github: { login: 'intake-bot' },
+    orca: { workspaceSelector: null, automationId: null },
+    acceptedPermissions: null,
+  })
+  saveToken(homePaths(home).secrets, 'xoxb-test-token')
+  const db = openDb(homePaths(home).db)
+  setMeta(db, 'cursor_ts', opts.cursor ?? f.tsAt(3600, 0))
+  setMeta(db, 'accept_after_ts', opts.acceptAfter ?? opts.cursor ?? f.tsAt(3600, 0))
+  db.close()
+  return { SLACK_ISSUE_INTAKE_HOME: home, SLACK_ISSUE_INTAKE_API_BASE: opts.apiBase, FAKE_GH_STATE: opts.ghState }
+}
+export const seedSubmission = async (
+  home: string,
+  patch: Partial<import('../lib/db.ts').Submission> & { ts: string; state: import('../lib/types.ts').State },
+): Promise<number> => {
+  const { openDb, insertSubmission, transition } = await import('../lib/db.ts')
+  const { acquireLease, releaseLease } = await import('../lib/lease.ts')
+  const { homePaths } = await import('../lib/paths.ts')
+  const { parseSubmission } = await import('../lib/parse.ts')
+  const f = await import('./fixtures/slack-messages.ts')
+  const db = openDb(homePaths(home).db)
+  const parsed = parseSubmission(f.templateText(), null)
+  if (parsed.kind !== 'ok') throw new Error('fixtureが不正です')
+  const id = insertSubmission(
+    db,
+    {
+      channel: f.CHANNEL,
+      ts: patch.ts,
+      permalink: `${f.TEAM_URL}archives/${f.CHANNEL}/p${patch.ts.replace('.', '')}`,
+      raw: f.textMessage(patch.ts, f.templateText()),
+      fields: parsed.fields,
+      problems: [],
+      reporterId: f.REPORTER,
+      state: 'new',
+    },
+    f.NOW,
+  )
+  if (!id) throw new Error('挿入できません')
+  const lease = acquireLease(db, 'admin', null, new Date(f.NOW), 300000)
+  if (!lease.ok) throw new Error('リースを取得できません')
+  transition(db, lease.token, id, 'new', patch, f.NOW)
+  releaseLease(db, lease.token)
+  db.close()
+  return id
 }
