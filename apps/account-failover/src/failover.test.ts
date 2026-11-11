@@ -34,6 +34,7 @@ type Fake = {
   clock: { t: number }
   timers: { ms: number; fn: () => void }[]
   transcripts: string[]
+  transcriptTail: string
 }
 
 const makeFake = (agent: 'claude' | 'codex'): Fake => {
@@ -49,6 +50,7 @@ const makeFake = (agent: 'claude' | 'codex'): Fake => {
     clock: { t: START },
     timers: [],
     transcripts: [`${claudeHome('c1')}/projects/-repo/s1.jsonl`],
+    transcriptTail: JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'rate_limit' }),
     deps: undefined as never,
   }
   const rollout = `${codexHome('x1')}/sessions/2026/11/11/rollout-2026-11-11T10-00-00-${UUID}.jsonl`
@@ -64,6 +66,7 @@ const makeFake = (agent: 'claude' | 'codex'): Fake => {
         ? JSON.stringify({ pid: 101, sessionId: 's1', cwd: '/repo' })
         : null,
     globTranscripts: async () => fake.transcripts,
+    readFileTail: async () => fake.transcriptTail,
     lsof: async () => `p301\nn${rollout}`,
     copyFile: async (from, to) => {
       fake.calls.push(`copy ${from} -> ${to}`)
@@ -295,4 +298,11 @@ test('ignores the redrawn old message even after its reset time passed', async (
   fake.clock.t = new Date(2026, 10, 11, 16, 0).getTime()
   await failover.onStatus(done)
   assert.equal(fake.calls.filter((c) => c.startsWith('select')).length, 1)
+})
+
+test('ignores a claude limit message the agent merely printed', async () => {
+  const fake = makeFake('claude')
+  fake.transcriptTail = JSON.stringify({ type: 'assistant', message: { content: 'the limit text looks like this' } })
+  await createFailover(fake.deps).onStatus(done)
+  assert.deepEqual(fake.calls, [])
 })

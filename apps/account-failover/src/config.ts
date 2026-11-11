@@ -42,3 +42,14 @@ export const SHELL_SETTLE_MS = 1_000
 export const RESUME_CHECK_MS = 20_000
 // 乗り換え先のアカウントで初めて開いたときに出て、人の判断が要る確認画面
 export const BLOCKING_DIALOG_PATTERNS = [/Is this a project you created or one you trust/, /Hooks need review/]
+
+// worker の環境には ORCA_USER_DATA_PATH が無いので、macOS の既定の場所を使う
+export const DEFAULT_ORCA_USER_DATA = 'Library/Application Support/orca'
+export const STATUS_BAR_ITEM_ID = 'account-failover'
+// ps -E は全プロセスの環境変数を出すので大きい
+export const PS_MAX_BUFFER = 256 * 1024 * 1024
+
+// Codex の TUI はエラーを "■ " で始まる行で出す（エージェントの本文は "• "）。本文に書かれた文言を拾わないための印
+export const CODEX_ERROR_MARKER = /^\s*■/
+// Claude の transcript の末尾を読む量。本物の limit は最後の assistant エントリとして記録される
+export const TRANSCRIPT_TAIL_BYTES = 256 * 1024

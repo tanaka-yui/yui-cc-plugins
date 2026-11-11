@@ -1,6 +1,12 @@
 import { assert, test } from 'orca/testing'
 
-import { claudeTranscriptPath, findAgentProcess, parseClaudeSessionFile, parseCodexRollout } from './agent-process.ts'
+import {
+  claudeTranscriptPath,
+  findAgentProcess,
+  parseClaudeSessionFile,
+  parseCodexRollout,
+  transcriptEndsWithRateLimit,
+} from './agent-process.ts'
 
 const profile = '/Users/x/Library/Application Support/orca/claude-profiles/u1/home'
 const codexHome = '/Users/x/Library/Application Support/orca/codex-accounts/x1/home'
@@ -83,4 +89,33 @@ test('parses codex rollout from lsof', () => {
   ].join('\n')
   assert.deepEqual(parseCodexRollout(lsof, codexHome), { sessionId: uuid, rolloutPath: rollout })
   assert.equal(parseCodexRollout(`p300\nn${codexHome}/state_5.sqlite`, codexHome), null)
+})
+
+const entry = (value: object) => JSON.stringify(value)
+const rateLimit = entry({
+  type: 'assistant',
+  isApiErrorMessage: true,
+  error: 'rate_limit',
+  message: { content: [{ type: 'text', text: "You've hit your session limit · resets 3:45pm" }] },
+})
+
+test('transcript ending with a rate limit error is a real limit', () => {
+  const text = [entry({ type: 'user', message: { content: 'go' } }), rateLimit, entry({ type: 'system' }), ''].join(
+    '\n',
+  )
+  assert.equal(transcriptEndsWithRateLimit(text), true)
+})
+
+test('transcript with a later message is not a limit', () => {
+  const text = [rateLimit, entry({ type: 'user', message: { content: 'continue' } })].join('\n')
+  assert.equal(transcriptEndsWithRateLimit(text), false)
+})
+
+test('printed limit text in a tool result is not a limit', () => {
+  const printed = entry({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', content: "You've hit your session limit · resets 3:45pm" }] },
+  })
+  assert.equal(transcriptEndsWithRateLimit(printed), false)
+  assert.equal(transcriptEndsWithRateLimit('{broken'), false)
 })

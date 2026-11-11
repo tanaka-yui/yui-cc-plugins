@@ -87,3 +87,17 @@ export function parseCodexRollout(lsofOutput: string, home: string): { sessionId
   }
   return null
 }
+
+// 本物の limit なら、Claude は transcript の最後のメッセージに API エラー（rate_limit）を記録している。
+// 画面に同じ文言が映っているだけ（ツール出力や本文）のときは、乗り換えない
+export function transcriptEndsWithRateLimit(text: string): boolean {
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const entry = parseJson(lines[i] ?? '')
+    if (!isObject(entry)) continue
+    const type = asString(entry.type)
+    if (type !== 'assistant' && type !== 'user') continue
+    return type === 'assistant' && entry.isApiErrorMessage === true && entry.error === 'rate_limit'
+  }
+  return false
+}

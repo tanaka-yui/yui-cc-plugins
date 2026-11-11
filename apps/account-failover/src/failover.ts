@@ -1,5 +1,11 @@
 import { cooldownFor, parseAccountList, pickNextAccount } from './accounts.ts'
-import { claudeTranscriptPath, findAgentProcess, parseClaudeSessionFile, parseCodexRollout } from './agent-process.ts'
+import {
+  claudeTranscriptPath,
+  findAgentProcess,
+  parseClaudeSessionFile,
+  parseCodexRollout,
+  transcriptEndsWithRateLimit,
+} from './agent-process.ts'
 import {
   BLOCKING_DIALOG_PATTERNS,
   KILL_POLL_MS,
@@ -22,6 +28,7 @@ export type Deps = {
   sendText(terminalId: string, text: string): Promise<boolean>
   listProcesses(): Promise<string>
   readFile(path: string): Promise<string | null>
+  readFileTail(path: string): Promise<string | null>
   globTranscripts(home: string, sessionId: string): Promise<string[]>
   lsof(pid: number): Promise<string>
   copyFile(from: string, to: string): Promise<void>
@@ -147,6 +154,11 @@ export function createFailover(deps: Deps): Failover {
     const session = await resolveSession(proc)
     if (!session) {
       await fail(`${terminalId}: ${hit.agent} の session を特定できないため、乗り換えませんでした`)
+      return
+    }
+    const tail = proc.agent === 'claude' ? await deps.readFileTail(session.transcriptPath) : null
+    if (proc.agent === 'claude' && !transcriptEndsWithRateLimit(tail ?? '')) {
+      deps.log(`${terminalId}: 画面に limit の文言がありますが、transcript には記録がないので無視します`)
       return
     }
     handled.set(terminalId, { signature: signatureOf(hit), pid: proc.pid })

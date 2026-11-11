@@ -130,3 +130,8 @@ test('parses reset time forms', () => {
   assert.equal(parseResetTime('Wed 11:00am', now), at(10, 11, 11, 0))
   assert.equal(parseResetTime('soon', now), null)
 })
+
+test('ignores codex limit text the agent merely printed', () => {
+  const lines = codexScreen(["• You've hit your usage limit. Try again at 3:45 PM. is the message codex shows"])
+  assert.equal(detectLimit('codex', lines, now), null)
+})

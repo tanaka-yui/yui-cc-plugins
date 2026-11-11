@@ -1,4 +1,10 @@
-import { CLAUDE_LIMIT_PATTERN, CODEX_LIMIT_PATTERN, CODEX_RESET_PATTERN, LIMIT_TAIL_LINES } from './config.ts'
+import {
+  CLAUDE_LIMIT_PATTERN,
+  CODEX_ERROR_MARKER,
+  CODEX_LIMIT_PATTERN,
+  CODEX_RESET_PATTERN,
+  LIMIT_TAIL_LINES,
+} from './config.ts'
 
 import type { AgentKind, LimitHit } from './types.ts'
 
@@ -54,7 +60,13 @@ const detectCodex = (text: string, now: Date): LimitHit | null => {
 // 画面の末尾 LIMIT_TAIL_LINES 行（空行を除く）から limit を判定する。
 // 折り返しで語が分断されることがあるので、空白でつないだものと、そのままつないだものの両方を試す
 export function detectLimit(agent: AgentKind, lines: readonly string[], now: Date): LimitHit | null {
-  const tail = lines.filter((line) => line.trim() !== '').slice(-LIMIT_TAIL_LINES)
+  let tail = lines.filter((line) => line.trim() !== '').slice(-LIMIT_TAIL_LINES)
+  if (agent === 'codex') {
+    // エラー表示（■ の行）から後ろだけを見る
+    const marker = tail.findLastIndex((line) => CODEX_ERROR_MARKER.test(line))
+    if (marker < 0) return null
+    tail = tail.slice(marker)
+  }
   const detect = agent === 'claude' ? detectClaude : detectCodex
   return detect(tail.join(' '), now) ?? detect(tail.join(''), now)
 }
