@@ -85,7 +85,7 @@ export const leaseValid = (db: Db, token: string, now: string): boolean =>
 export const openDb = (file: string): Db => {
   ensurePrivateDir(dirname(file))
   const db = new DatabaseSync(file)
-  db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=${SQLITE_BUSY_TIMEOUT_MS};
+  db.exec(`PRAGMA busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}; PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,name TEXT NOT NULL,fetched_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS lease(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT NOT NULL,token TEXT NOT NULL,run_id TEXT,phase TEXT NOT NULL,pid INTEGER NOT NULL,expires_at TEXT NOT NULL);
