@@ -182,3 +182,5 @@ export const ISSUE_TABLE = {
 export const BOT_TRANSCRIPT_NAME = '確認（bot）'
 export const UNKNOWN_REPORTER_NAME = '不明'
 export const SLACK_REPORTER_SUFFIX = '（Slack）'
+export const PERMISSION_ASSUMPTIONS =
+  'hook と mod によるツール承認は検査・指紋の対象外です。Orca の Claude 起動引数に --permission-mode や --allowedTools などの許可を広げる指定がないことが前提です。--dangerously-skip-permissions は disableBypassPermissionsMode で拒まれる前提ですが、最初の実行で bypass でないことを確認してください。bypass なら automation を無効にして既定引数から外してください。'

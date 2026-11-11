@@ -3,6 +3,7 @@ import { POLL_DEADLINE_MS, POLL_LEASE_MS } from '../defaults.ts'
 import { writeJson } from '../fs.ts'
 import { acquireLease, releaseLease } from '../lease.ts'
 import { homePaths, intakeHome } from '../paths.ts'
+import { permissionFingerprint, safetyProblems } from '../permissions.ts'
 import { openRuntime } from '../runtime.ts'
 import { maskSecrets } from '../secrets.ts'
 import { agentWorkCount, sync } from '../sync.ts'
@@ -50,6 +51,15 @@ export const run = async (argv: string[]): Promise<void> => {
   }
   const rt = opened.runtime
   try {
+    const problems = safetyProblems(home)
+    if (problems.length) {
+      finish('permissions', 1, 0, false, problems, undefined, 'unsafe')
+      return
+    }
+    if (!rt.config.acceptedPermissions || permissionFingerprint(home) !== rt.config.acceptedPermissions) {
+      finish('permissions', 1, 0, false, [], undefined, 'changed')
+      return
+    }
     const now = () => (values.now ? new Date(at) : new Date())
     const lease = acquireLease(rt.db, 'poll', null, now(), POLL_LEASE_MS)
     if (!lease.ok) {

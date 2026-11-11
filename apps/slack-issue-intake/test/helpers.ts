@@ -174,7 +174,30 @@ export const setupHome = async (
   setMeta(db, 'cursor_ts', opts.cursor ?? f.tsAt(3600, 0))
   setMeta(db, 'accept_after_ts', opts.acceptAfter ?? opts.cursor ?? f.tsAt(3600, 0))
   db.close()
-  return { SLACK_ISSUE_INTAKE_HOME: home, SLACK_ISSUE_INTAKE_API_BASE: opts.apiBase, FAKE_GH_STATE: opts.ghState }
+  const { proposedRules, applyProject, applyUserDeny, permissionFingerprint } = await import('../lib/permissions.ts')
+  const { loadConfig } = await import('../lib/config.ts')
+  const previous = process.env.SLACK_ISSUE_INTAKE_CLAUDE_HOME
+  const ch = join(home, 'claude-home')
+  process.env.SLACK_ISSUE_INTAKE_CLAUDE_HOME = ch
+  try {
+    const rules = proposedRules(home)
+    applyProject(rules)
+    applyUserDeny(rules)
+    const c = loadConfig(home)
+    if (c) {
+      c.acceptedPermissions = permissionFingerprint(home)
+      saveConfig(home, c)
+    }
+  } finally {
+    if (previous === undefined) delete process.env.SLACK_ISSUE_INTAKE_CLAUDE_HOME
+    else process.env.SLACK_ISSUE_INTAKE_CLAUDE_HOME = previous
+  }
+  return {
+    SLACK_ISSUE_INTAKE_HOME: home,
+    SLACK_ISSUE_INTAKE_CLAUDE_HOME: ch,
+    SLACK_ISSUE_INTAKE_API_BASE: opts.apiBase,
+    FAKE_GH_STATE: opts.ghState,
+  }
 }
 export const seedSubmission = async (
   home: string,
