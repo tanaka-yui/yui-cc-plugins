@@ -11,3 +11,8 @@ export const CLAUDE_LIMIT_PATTERN =
 // Codex: "You've hit your usage limit. ... or try again at Nov 13, 2026 3:45 PM."
 export const CODEX_LIMIT_PATTERN = /You['’]ve hit your usage limit(?: for ([^\s.,]+(?:\.[^\s.,]+)*))?\./gi
 export const CODEX_RESET_PATTERN = /try again at\s+((?:[A-Za-z]{3} \d{1,2}, \d{4} )?\d{1,2}:\d{2}\s*[AP]M)/i
+
+// 解除時刻を読めなかったときに、そのアカウントを候補から外しておく時間
+export const UNKNOWN_RESET_COOLDOWN_MS = 30 * 60_000
+// 解除時刻ちょうどではまだ弾かれることがあるので足す余裕
+export const RESET_GRACE_MS = 60_000
