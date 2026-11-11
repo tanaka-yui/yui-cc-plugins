@@ -210,3 +210,21 @@ export const seedSubmission = async (
   db.close()
   return id
 }
+export const fakeOrca = (dir: string): { path: string; log: string; env: Record<string, string> } => {
+  const path = join(dir, 'orca')
+  const log = join(dir, 'orca.jsonl')
+  const q = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`
+  writeFileSync(
+    path,
+    `#!/bin/sh\nexec ${q(process.execPath)} ${q(join(import.meta.dirname, 'fixtures/fake-orca.ts'))} "$@"\n`,
+    { mode: 0o755 },
+  )
+  writeFileSync(log, '')
+  return { path, log, env: { ORCA_BIN: path, FAKE_ORCA_LOG: log } }
+}
+export const orcaCalls = (log: string): string[][] =>
+  readFileSync(log, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((s) => JSON.parse(s) as string[])
