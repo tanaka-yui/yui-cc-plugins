@@ -34,6 +34,14 @@ bold "=== token-meter のセットアップ ==="
 green "token-meter の hook 配線が完了しました"
 echo ""
 
+bold "=== account-failover (Orca プラグイン) のインストール ==="
+if command -v orca >/dev/null 2>&1; then
+  make -C "${REPO_DIR}/apps/account-failover" install || echo "account-failover のインストールを飛ばしました (後で: make -C apps/account-failover install)"
+else
+  echo "orca CLI が無いため account-failover のインストールを飛ばしました"
+fi
+echo ""
+
 green "すべてのプラグインのインストールが完了しました。"
 echo ""
 echo "圧縮プラグイン (rtk/caveman/headroom) のインストールは別途必要です:"

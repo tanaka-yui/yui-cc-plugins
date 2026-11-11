@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 2,
+  "id": "account-failover",
+  "name": "Account Failover",
+  "version": "0.1.0",
+  "description": "Claude / Codex が利用上限に当たったら別アカウントへ切り替え、同じペインで会話を resume して作業を続けさせる。",
+  "author": { "name": "tanaka-yui" },
+  "repository": "https://github.com/tanaka-yui/yui-cc-plugins",
+  "license": "MIT",
+  "engines": { "orca": ">=1.4.248" },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "capabilities": [{ "kind": "agent:read" }, { "kind": "terminal:send" }, { "kind": "notifications:show" }],
+  "contributes": {
+    "events": [{ "on": "agent.status.changed" }],
+    "statusBarItems": [{ "id": "account-failover", "text": "failover: idle", "icon": "refresh" }]
+  }
+}
