@@ -6,6 +6,9 @@ type Command = { run: (argv: string[]) => Promise<void> | void }
 
 // サブコマンドを足すときはここに 1 行足す
 const COMMANDS: Record<string, () => Promise<Command>> = {
+  apply: () => import('../lib/commands/apply.ts'),
+  collect: () => import('../lib/commands/collect.ts'),
+  procedure: () => import('../lib/commands/procedure.ts'),
   poll: () => import('../lib/commands/poll.ts'),
   'set-token': () => import('../lib/commands/set-token.ts'),
 }
