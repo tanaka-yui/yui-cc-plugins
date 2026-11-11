@@ -361,6 +361,7 @@ test('PO25 必須リンクだけで本文上限を超える場合は送信せず
   await f.poll()
   assert.equal(f.read(id)?.state, 'creating')
   assert.match(f.read(id)?.lastError ?? '', /上限/)
+  assert.equal(f.read(id)?.inflight, null)
   assert.equal(ghCalls(f.gh.log).filter((c) => c.argv[0] === 'issue').length, 0)
 })
 test('PO21b 死亡確認から90秒待ち、既存Issueが無ければ新しい印で1回だけ作る', async (t) => {

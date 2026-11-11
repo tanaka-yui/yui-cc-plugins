@@ -117,6 +117,12 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
     if (found.issue)
       return success({ state: 'notifying', issueUrl: found.issue.url, issueNumber: found.issue.number, inflight: null })
     if (!s.fields || s.decision?.action !== 'create') return fail('Issue の決定内容がありません')
+    let body: string
+    try {
+      body = buildIssueBody(s, s.decision)
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error))
+    }
     if (
       !setInflight(rt.db, token, s.id, { owner: selfIdentity(), child: null, at: now(), deadConfirmedAt: null }, now())
     )
@@ -127,7 +133,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
     const dir = join(rt.paths.runsDir, bodyRunId)
     const file = join(dir, `issue-${s.id}.md`)
     try {
-      writeAtomic(file, buildIssueBody(s, s.decision))
+      writeAtomic(file, body)
       if (!renew()) return out(ERROR_LEASE_LOST, true)
       const title = [...neutralizeMentions(maskSecrets(s.fields.title))]
       const result = await createIssue(

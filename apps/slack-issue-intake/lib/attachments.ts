@@ -4,13 +4,12 @@ import {
   MAX_FILES_PER_MESSAGE,
   MAX_IMAGE_BYTES,
   MAX_TEXT_BYTES,
-  REMOVED_SLACK_FILE_ERRORS,
   TEXT_MIMETYPE_PREFIX,
 } from './defaults.ts'
 import { ensurePrivateDir, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString } from './json.ts'
 import { maskSecrets } from './secrets.ts'
-import { fileInfo } from './slack-api.ts'
+import { fileInfo, isFatalSlackError, isTransientSlackError } from './slack-api.ts'
 import { messageText } from './slack-text.ts'
 
 import { basename, join } from 'node:path'
@@ -62,7 +61,7 @@ export const resolveFiles = async (c: SlackClient, message: JsonObject, deadline
     if (refs.has(id)) continue
     const response = await fileInfo(c, id, deadline)
     if (!response.ok) {
-      if (REMOVED_SLACK_FILE_ERRORS.includes(response.error)) continue
+      if (!isTransientSlackError(response.error) && !isFatalSlackError(response.error)) continue
       return response
     }
     const ref = fileRef(response.file)

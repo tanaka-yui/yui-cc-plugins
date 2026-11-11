@@ -28,4 +28,6 @@ Issue の作成は、持ち主と子がすべて止まったと確認するま�
 テスト専用の差し替えは SLACK_ISSUE_INTAKE_HOME、SLACK_ISSUE_INTAKE_API_BASE（loopback のみ）、SLACK_ISSUE_INTAKE_CLAUDE_HOME。Orca の呼び先には ORCA_BIN を使えます。本番の設定手順にテスト変数を使いません。
 外部文字列を出力・保存する前に maskSecrets を通します。トークンを argv に置きません。実テストは `bash test/run-all.sh`、型と lint はワークスペースの check です。実サービスへの受け入れ確認は README に分けています。
 
-添付・名前のメタデータ取得は成功と失敗を区別します。一時失敗はその件を skipped にし、記録済みの files・transcript・名前を空で確定しません。--now は検証済みの loopback API を使う試験環境だけで受け付けます。
+添付・名前のメタデータ取得は成功と失敗を区別します。一時失敗はその件を skipped にし、記録済みの files・transcript・名前を空で確定しません。連続スキップは attempts に数え、MAX_ACTION_ATTEMPTS で failed にして lastError を残します。取得が成功したら回数をリセットします。恒久的に見えない名前は以前の値か不明、見えない添付はその1件だけを除外して進めます。認証などの致命エラーは縮退せず停止します。--now は検証済みの loopback API を使う試験環境だけで受け付けます。
+
+プロセスの身元を読む ps は UTC / C ロケールで実行します。実行元の TZ の違いを PID の再利用と取り違えません。

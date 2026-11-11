@@ -100,7 +100,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
 安定パスは `~/.slack-issue-intake/bin/slack-issue-intake`。以後はこのコマンドで操作できます。
 
 - `status`: 件数、返信待ち、失敗、リース、読み取り位置、直近の poll、権限の状態。
-- `retry --id N`: 失敗を直前の状態へ戻す。作成開始時刻・アカウント・作成中の印は残ります。
+- `retry --id N`: 失敗を直前の状態へ戻す。メタデータの一時取得失敗も連続10回で failed になり、状態とエラーを確認できます。作成開始時刻・アカウント・作成中の印は残ります。
 - `inspect [--limit N] [--raw]`: 状態を変えず最新の投稿の解析結果を確認。
 - `set-token`: 隠し入力で登録。会話に値を貼りません。必要に応じて --from-clipboard / --from-stdin（人が操作するパイプ）を使えます。
 - `permissions --show` → 承認して `permissions --apply` → `enable`。継承した allow / additionalDirectories があると明示承認が必要です。

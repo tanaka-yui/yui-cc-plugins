@@ -191,3 +191,21 @@ test('GH10 正規URLとのリポジトリ表記の大小差を成功として扱
   )
   assert.deepEqual(r, { ok: true, url: 'https://github.com/acme/app/issues/42', number: 42 })
 })
+test('PR3 psがエラーを出してexit 1のときも死亡と断定しない', () => {
+  const identity = selfIdentity()
+  const file = join(tempHome(), 'ps')
+  writeFileSync(file, '#!/bin/sh\necho inspection-failed >&2\nexit 1\n', { mode: 0o755 })
+  assert.ok(isAlive(identity, file))
+})
+test('PR4 実行環境のタイムゾーンが変わっても同じPIDを生存と判定する', () => {
+  const previous = process.env.TZ
+  try {
+    process.env.TZ = 'UTC'
+    const identity = selfIdentity()
+    process.env.TZ = 'Asia/Tokyo'
+    assert.ok(isAlive(identity))
+  } finally {
+    if (previous === undefined) delete process.env.TZ
+    else process.env.TZ = previous
+  }
+})

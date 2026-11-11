@@ -187,7 +187,6 @@ export const PERMISSION_ASSUMPTIONS =
 
 export const PS_PATH = '/bin/ps'
 export const PROCESS_PROBE_TIMEOUT_MS = 1000
-export const REMOVED_SLACK_FILE_ERRORS: readonly string[] = ['file_not_found', 'file_deleted']
 export const MSG_IDENTITY_UNAVAILABLE = '実行プロセスの身元を確認できません'
 export const MSG_BODY_OVERSIZE = 'Issue 本文を上限内に収められません。添付リンクを確認してください'
 export const MSG_PUSH_REQUIRED =
@@ -195,3 +194,17 @@ export const MSG_PUSH_REQUIRED =
 export const MSG_CONFIG_BROKEN = '既存の設定を読めません。config.json を復元してから再実行してください'
 export const MSG_CONFIG_CHANGED = '待機中に設定が更新されました。init を再実行してください'
 export const MSG_TEST_CLOCK_ONLY = '--now は loopback API を使うテストでのみ指定できます'
+
+export const TRANSIENT_SLACK_ERRORS: readonly string[] = [
+  ERROR_RATELIMITED,
+  ERROR_DEADLINE,
+  'internal_error',
+  'fatal_error',
+  'request_timeout',
+  'service_unavailable',
+]
+export const TRANSIENT_SLACK_ERROR_PREFIXES: readonly string[] = ['network: ']
+export const TRANSIENT_SLACK_HTTP_ERROR = /^http: 5\d\d(?:\b|$)/
+
+export const PROCESS_TIMEZONE = 'UTC'
+export const PROCESS_LOCALE = 'C'

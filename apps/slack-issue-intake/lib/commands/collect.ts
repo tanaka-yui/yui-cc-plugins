@@ -1,5 +1,5 @@
 import { parseFlags, parseNow } from '../cli.ts'
-import { AGENT_STATES, listByStates } from '../db.ts'
+import { AGENT_STATES, getSubmission, listByStates } from '../db.ts'
 import { COMMAND_DEADLINE_MS, RUN_LEASE_MS } from '../defaults.ts'
 import { writeJson } from '../fs.ts'
 import { acquireLease, markCollected, releaseLease } from '../lease.ts'
@@ -50,7 +50,8 @@ export const run = async (argv: string[]): Promise<void> => {
     }
     const result = await buildWork(ctx, listByStates(rt.db, AGENT_STATES), runId, run.paths)
     for (const skipped of result.skipped) console.log(`skipped id=${skipped.id} reason=${maskSecrets(skipped.reason)}`)
-    for (const id of result.failed) console.log(`failed id=${id} reason=thread_not_found`)
+    for (const id of result.failed)
+      console.log(maskSecrets(`failed id=${id} reason=${getSubmission(rt.db, id)?.lastError ?? 'thread_not_found'}`))
     if (result.stop && isFatalSlackError(result.stop)) {
       console.error(result.stop)
       process.exitCode = 3

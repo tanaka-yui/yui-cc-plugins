@@ -8,6 +8,9 @@ import {
   LOOPBACK_HOSTS,
   SLACK_API_BASE,
   SLACK_FILES_ORIGIN,
+  TRANSIENT_SLACK_ERROR_PREFIXES,
+  TRANSIENT_SLACK_ERRORS,
+  TRANSIENT_SLACK_HTTP_ERROR,
 } from './defaults.ts'
 import { asArray, asObject, asString, get, parseJson } from './json.ts'
 import { maskSecrets } from './secrets.ts'
@@ -51,6 +54,10 @@ export const tokenAllowedFor = (url: string): boolean => {
   }
 }
 export const isFatalSlackError = (error: string): boolean => FATAL_SLACK_ERRORS.includes(error)
+export const isTransientSlackError = (error: string): boolean =>
+  TRANSIENT_SLACK_ERRORS.includes(error) ||
+  TRANSIENT_SLACK_ERROR_PREFIXES.some((prefix) => error.startsWith(prefix)) ||
+  TRANSIENT_SLACK_HTTP_ERROR.test(error)
 const failure = (error: string, retryAfterSeconds: number | null = null): SlackFailure => ({
   ok: false,
   error: maskSecrets(error),
@@ -262,7 +269,7 @@ export const userInfoName = async (
   deadline: number,
 ): Promise<{ ok: true; name: string | null } | SlackFailure> => {
   const r = await c.call('users.info', { user: userId }, deadline)
-  if (!r.ok) return r.error === 'user_not_found' ? { ok: true, name: null } : r
+  if (!r.ok) return isTransientSlackError(r.error) || isFatalSlackError(r.error) ? r : { ok: true, name: null }
   for (const value of [
     get(r.body, 'user', 'profile', 'display_name'),
     get(r.body, 'user', 'profile', 'real_name'),

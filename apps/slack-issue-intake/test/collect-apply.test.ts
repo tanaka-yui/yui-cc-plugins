@@ -444,3 +444,107 @@ test('CA17 本番のapplyから試験用時刻を注入できない', async (t) 
   assert.equal(f.server.requests.length, count)
   assert.equal(f.read(id)?.state, 'new')
 })
+test('CA18 恒久的に見えない名前やファイルでも件を処理対象に入れる', async (t) => {
+  for (const error of ['user_not_visible', 'no_permission', 'access_denied', 'ekm_access_denied']) {
+    const userError = error === 'user_not_visible'
+    const f = await setup(t, (r): SlackReply => {
+      if (r.method === 'conversations.history') return { json: { ok: true, messages: [] } }
+      if (r.method === 'conversations.replies')
+        return { json: { ok: true, messages: userError ? [{ ts: tsAt(500), user: 'U012AB3CD', text: '返信' }] : [] } }
+      if (r.method === 'users.info')
+        return userError
+          ? { json: { ok: false, error } }
+          : { json: { ok: true, user: { profile: { display_name: '山田' } } } }
+      if (r.method === 'files.info') return { json: { ok: false, error } }
+      return { json: { ok: true } }
+    })
+    const previous = [
+      { ts: tsAt(800), from: 'human' as const, userId: 'U012AB3CD', name: '旧名', text: '記録', files: [] },
+    ]
+    const raw = textMessage(
+      tsAt(1000),
+      templateText({ body: userError ? '本文' : 'https://acme.slack.com/files/U1/F2/a.png' }),
+    )
+    await seedSubmission(f.home, { ts: tsAt(1000), state: 'new', raw, reporterName: '旧名', transcript: previous })
+    const c = await f.collect()
+    const work = readWork(c.paths.workFile)
+    assert.equal(work?.items.length, 1)
+    if (userError) {
+      assert.equal(work?.items[0]?.reporter, '旧名')
+      assert.equal(work?.items[0]?.thread[0]?.name, '旧名')
+    } else assert.equal(work?.items[0]?.attachments.length, 0)
+  }
+})
+test('CA19 一時障害の連続スキップも上限でfailedにしてClaudeの起動を止める', async (t) => {
+  const { MAX_ACTION_ATTEMPTS } = await import('../lib/defaults.ts')
+  const f = await setup(
+    t,
+    (r): SlackReply => (r.method === 'files.info' ? { status: 500 } : { json: { ok: true, messages: [] } }),
+  )
+  const id = await seedSubmission(f.home, {
+    ts: tsAt(1000),
+    state: 'new',
+    raw: textMessage(tsAt(1000), templateText({ body: 'https://acme.slack.com/files/U1/F2/a.png' })),
+  })
+  for (let i = 1; i <= MAX_ACTION_ATTEMPTS; i++) {
+    const r = await f.cli(['collect'])
+    assert.equal(r.code, 0, r.stderr)
+    assert.equal(f.read(id)?.attempts, i)
+    if (i < MAX_ACTION_ATTEMPTS) assert.equal(f.read(id)?.state, 'new')
+    else assert.match(r.stdout, new RegExp(`failed id=${id} reason=http: 500`))
+  }
+  assert.equal(f.read(id)?.state, 'failed')
+  assert.equal(f.read(id)?.failedFrom, 'new')
+  assert.equal(f.read(id)?.lastError, 'http: 500')
+  const poll = await f.cli(['poll'])
+  assert.equal(poll.code, 1)
+  assert.match(poll.stdout, /agent_work=0/)
+})
+test('CA20 メタデータ取得が成功したら連続失敗の回数をリセットする', async (t) => {
+  const f = await setup(
+    t,
+    (r): SlackReply =>
+      r.method === 'files.info'
+        ? {
+            json: {
+              ok: true,
+              file: {
+                id: 'F2',
+                name: 'a.mp4',
+                mimetype: 'video/mp4',
+                size: 3,
+                permalink: 'https://acme.slack.com/files/U1/F2/a.mp4',
+              },
+            },
+          }
+        : { json: { ok: true, messages: [] } },
+  )
+  const id = await seedSubmission(f.home, {
+    ts: tsAt(1000),
+    state: 'new',
+    attempts: 9,
+    lastError: 'http: 500',
+    raw: textMessage(tsAt(1000), templateText({ body: 'https://acme.slack.com/files/U1/F2/a.mp4' })),
+  })
+  const c = await f.collect()
+  assert.equal(readWork(c.paths.workFile)?.items.length, 1)
+  assert.equal(f.read(id)?.attempts, 0)
+  assert.equal(f.read(id)?.lastError, null)
+})
+test('CA21 認証などの致命エラーは縮退して続行せず停止する', async (t) => {
+  const f = await setup(
+    t,
+    (r): SlackReply =>
+      r.method === 'files.info' ? { json: { ok: false, error: 'invalid_auth' } } : { json: { ok: true, messages: [] } },
+  )
+  const id = await seedSubmission(f.home, {
+    ts: tsAt(1000),
+    state: 'new',
+    raw: textMessage(tsAt(1000), templateText({ body: 'https://acme.slack.com/files/U1/F2/a.png' })),
+  })
+  const r = await f.cli(['collect'])
+  assert.equal(r.code, 3)
+  assert.equal(f.read(id)?.state, 'new')
+  assert.equal(f.read(id)?.attempts, 1)
+  assert.equal(f.server.requests.at(-1)?.method, 'files.info')
+})

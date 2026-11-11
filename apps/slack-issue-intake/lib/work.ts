@@ -4,6 +4,7 @@ import {
   CATEGORY_KEYS,
   ERROR_LEASE_LOST,
   ERROR_THREAD_NOT_FOUND,
+  MAX_ACTION_ATTEMPTS,
   MAX_ITEMS_PER_RUN,
   MAX_QUESTION_ROUNDS,
 } from './defaults.ts'
@@ -63,8 +64,28 @@ export const buildWork = async (
     failed: [],
     stop: null,
   }
-  const skip = (id: number, error: string): void => {
-    result.skipped.push({ id, reason: maskSecrets(error) })
+  const skip = (submission: Submission, error: string): void => {
+    const attempts = submission.attempts + 1
+    const failed = attempts >= MAX_ACTION_ATTEMPTS
+    if (
+      !transition(
+        rt.db,
+        token,
+        submission.id,
+        submission.state,
+        {
+          attempts,
+          lastError: maskSecrets(error),
+          ...(failed ? { state: 'failed', failedFrom: submission.state } : {}),
+        },
+        ctx.now().toISOString(),
+      )
+    ) {
+      result.stop = ERROR_LEASE_LOST
+      return
+    }
+    if (failed) result.failed.push(submission.id)
+    else result.skipped.push({ id: submission.id, reason: maskSecrets(error) })
     if (stopError(error)) result.stop = error
   }
   const name = async (id: string | null): Promise<{ ok: true; name: string | null } | SlackFailure> => {
@@ -106,7 +127,7 @@ export const buildWork = async (
         result.failed.push(s.id)
         continue
       }
-      skip(s.id, replies.error)
+      skip(s, replies.error)
       if (result.stop) break
       continue
     }
@@ -118,19 +139,19 @@ export const buildWork = async (
       if (!own && (m.bot_id || !userId)) continue
       const files = await resolveFiles(rt.slack, m, ctx.deadline)
       if (!files.ok) {
-        skip(s.id, files.error)
+        skip(s, files.error)
         if (result.stop) break candidateLoop
         continue candidateLoop
       }
       const author = own ? { ok: true as const, name: null } : await name(userId)
       if (!author.ok) {
-        skip(s.id, author.error)
+        skip(s, author.error)
         if (result.stop) break candidateLoop
         continue candidateLoop
       }
       const text = await mentions(messageText(m).text)
       if (!text.ok) {
-        skip(s.id, text.error)
+        skip(s, text.error)
         if (result.stop) break candidateLoop
         continue candidateLoop
       }
@@ -146,19 +167,19 @@ export const buildWork = async (
     }
     const files = await resolveFiles(rt.slack, s.raw, ctx.deadline)
     if (!files.ok) {
-      skip(s.id, files.error)
+      skip(s, files.error)
       if (result.stop) break
       continue
     }
     const reporter = await name(s.reporterId)
     if (!reporter.ok) {
-      skip(s.id, reporter.error)
+      skip(s, reporter.error)
       if (result.stop) break
       continue
     }
     const body = await mentions(s.fields.body)
     if (!body.ok) {
-      skip(s.id, body.error)
+      skip(s, body.error)
       if (result.stop) break
       continue
     }
@@ -169,7 +190,7 @@ export const buildWork = async (
         token,
         s.id,
         s.state,
-        { transcript, files: files.files, reporterName },
+        { transcript, files: files.files, reporterName, attempts: 0, lastError: null },
         ctx.now().toISOString(),
       )
     ) {
