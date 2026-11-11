@@ -45,16 +45,19 @@ test('AT3 files.infoと合流して重複を除き10件まで', async (t) => {
     },
     Date.now() + 5000,
   )
+  assert.ok(refs.ok)
   assert.deepEqual(
-    refs.map((f) => f.id),
+    refs.files.map((f) => f.id),
     ['F1', 'F2', 'F3'],
   )
   assert.equal(server.requests.length, 1)
-  assert.equal(
-    (await resolveFiles(c, { files: Array.from({ length: 12 }, (_, i) => ({ id: `F${i}` })) }, Date.now() + 5000))
-      .length,
-    10,
+  const limited = await resolveFiles(
+    c,
+    { files: Array.from({ length: 12 }, (_, i) => ({ id: `F${i}` })) },
+    Date.now() + 5000,
   )
+  assert.ok(limited.ok)
+  assert.equal(limited.files.length, 10)
 })
 test('AT4 保存名はパストラバーサルと隠しファイルを防ぐ', () => {
   assert.equal(safeFileName(1, '../../etc/passwd'), '1-passwd')
@@ -73,7 +76,7 @@ test('AT5 許された形式とサイズだけ保存し、失敗理由を残す'
     mimetype: 'image/png',
     size: 3,
     permalink: 'https://acme.slack.com/f',
-    downloadUrl: server.url + '/f',
+    downloadUrl: `${server.url}/f`,
   }
   const dir = tempHome()
   const r = await downloadFiles(
@@ -82,13 +85,13 @@ test('AT5 許された形式とサイズだけ保存し、失敗理由を残す'
       base,
       { ...base, mimetype: 'video/mp4' },
       { ...base, size: 6000000 },
-      { ...base, downloadUrl: server.url + '/missing' },
+      { ...base, downloadUrl: `${server.url}/missing` },
     ],
     dir,
     1,
     Date.now() + 5000,
   )
-  assert.equal(r[0]?.localPath, dir + '/1-a.png')
+  assert.equal(r[0]?.localPath, `${dir}/1-a.png`)
   assert.deepEqual([...readFileSync(r[0]?.localPath ?? '')], [1, 2, 3])
   assert.deepEqual(
     r.map((f) => f.note),

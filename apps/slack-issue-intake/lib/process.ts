@@ -1,24 +1,37 @@
+import { MSG_IDENTITY_UNAVAILABLE, PROCESS_PROBE_TIMEOUT_MS, PS_PATH } from './defaults.ts'
+
 import { spawnSync } from 'node:child_process'
 
 import type { ProcessIdentity } from './types.ts'
-export const identityOf = (pid: number): ProcessIdentity | null => {
-  const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+
+type Probe = { kind: 'found'; identity: ProcessIdentity } | { kind: 'missing' } | { kind: 'unavailable' }
+const probe = (pid: number, psPath: string): Probe => {
+  const r = spawnSync(psPath, ['-o', 'lstart=', '-p', String(pid)], {
     encoding: 'utf8',
-    timeout: 1000,
+    timeout: PROCESS_PROBE_TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'ignore'],
   })
-  return r.status === 0 && r.stdout.trim() ? { pid, start: r.stdout.trim() } : null
+  const start = r.stdout?.trim() ?? ''
+  if (r.error || r.signal) return { kind: 'unavailable' }
+  if (r.status === 1 && !start) return { kind: 'missing' }
+  return r.status === 0 && start ? { kind: 'found', identity: { pid, start } } : { kind: 'unavailable' }
+}
+export const identityOf = (pid: number): ProcessIdentity | null => {
+  const result = probe(pid, PS_PATH)
+  return result.kind === 'found' ? result.identity : null
 }
 export const selfIdentity = (): ProcessIdentity => {
   const id = identityOf(process.pid)
-  if (!id) throw new Error('実行プロセスの身元を確認できません')
+  if (!id) throw new Error(MSG_IDENTITY_UNAVAILABLE)
   return id
 }
-export const isAlive = (id: ProcessIdentity): boolean => {
+export const isAlive = (id: ProcessIdentity, psPath = PS_PATH): boolean => {
   try {
     process.kill(id.pid, 0)
-  } catch (e) {
-    if (e instanceof Error && 'code' in e && e.code === 'ESRCH') return false
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ESRCH') return false
   }
-  return identityOf(id.pid)?.start === id.start
+  const result = probe(id.pid, psPath)
+  if (result.kind === 'missing') return false
+  return result.kind === 'unavailable' || result.identity.start === id.start
 }

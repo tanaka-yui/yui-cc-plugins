@@ -20,7 +20,7 @@ Orca precheck: poll（モデルなし）
 
 ## 必要なもの
 
-Slack の有料プランと社内向けカスタムアプリ（配布しない）、同じ Mac の Node 24.15+、認証済みの GitHub CLI（gh）、起動中の Orca と Claude Code が必要です。
+Slack の有料プランと社内向けカスタムアプリ（配布しない）、同じ Mac の Node 24.15+、対象リポジトリの push 権限（WRITE 以上）があるアカウントで認証済みの GitHub CLI（gh）、起動中の Orca と Claude Code が必要です。
 
 ## セットアップ
 
@@ -111,7 +111,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
 
 ## 制約
 
-- 添付バイナリは GitHub に上げません。Issue には Slack の file permalink を載せます。Slack にログインした人だけが開けます。画像5MB、テキスト・JSON 1MBまでを判断用にダウンロードします。各メッセージ10ファイルまで、Issue のリンク一覧は50件までです。
+- 添付バイナリは GitHub に上げません。Issue には Slack の file permalink を載せます。Slack にログインした人だけが開けます。画像5MB、テキスト・JSON 1MBまでを判断用にダウンロードします。各メッセージ10ファイルまで、Issue のリンク一覧は50件までです。本文全体の60,000文字に収まらないときは、リンクを途中で切らず末尾から省き、省略件数を表示します。
 - Mac 1台で、Orca が開き Mac が起きている間だけ動きます。停止中の履歴は起床後にページ単位で追いつきます。init より前は拾いません。
 - precheck の結果は Orca の実行履歴に skipped_precheck として溜まります。5分間隔なら1日288行です。
 - クラッシュの間合いによって Slack の返信がまれに重複します。

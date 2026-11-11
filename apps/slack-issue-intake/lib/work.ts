@@ -20,6 +20,7 @@ import type { WorkAttachment } from './attachments.ts'
 import type { Submission } from './db.ts'
 import type { DriveContext } from './drive.ts'
 import type { RunPaths } from './paths.ts'
+import type { SlackFailure } from './slack-api.ts'
 import type { Category, CategoryKey, Priority, TranscriptEntry } from './types.ts'
 export type WorkThreadEntry = {
   from: 'bot' | 'human'
@@ -62,23 +63,29 @@ export const buildWork = async (
     failed: [],
     stop: null,
   }
-  const name = async (id: string | null): Promise<string | null> => {
-    if (!id) return null
+  const skip = (id: number, error: string): void => {
+    result.skipped.push({ id, reason: maskSecrets(error) })
+    if (stopError(error)) result.stop = error
+  }
+  const name = async (id: string | null): Promise<{ ok: true; name: string | null } | SlackFailure> => {
+    if (!id) return { ok: true, name: null }
     const cached = cachedUserName(rt.db, id, ctx.now().toISOString())
-    if (cached) return cached
+    if (cached) return { ok: true, name: cached }
     const fetched = await userInfoName(rt.slack, id, ctx.deadline)
-    if (fetched) saveUserName(rt.db, id, fetched, ctx.now().toISOString())
+    if (fetched.ok && fetched.name) saveUserName(rt.db, id, fetched.name, ctx.now().toISOString())
     return fetched
   }
-  const mentions = async (text: string): Promise<string> => {
+  const mentions = async (text: string): Promise<{ ok: true; text: string } | SlackFailure> => {
     let output = text
     for (const match of text.matchAll(/<@(U[A-Z0-9]+)(?:\|[^>]+)?>/g)) {
       const id = match[1] ?? ''
-      output = output.replaceAll(match[0], `@${(await name(id)) ?? id}`)
+      const found = await name(id)
+      if (!found.ok) return found
+      output = output.replaceAll(match[0], `@${found.name ?? id}`)
     }
-    return maskSecrets(output)
+    return { ok: true, text: maskSecrets(output) }
   }
-  for (const s of candidates) {
+  candidateLoop: for (const s of candidates) {
     if (result.work.items.length >= MAX_ITEMS_PER_RUN) break
     const replies = await fetchReplies(rt.slack, s.channel, s.ts, null, ctx.deadline)
     if (!replies.ok) {
@@ -99,11 +106,8 @@ export const buildWork = async (
         result.failed.push(s.id)
         continue
       }
-      result.skipped.push({ id: s.id, reason: replies.error })
-      if (stopError(replies.error)) {
-        result.stop = replies.error
-        break
-      }
+      skip(s.id, replies.error)
+      if (result.stop) break
       continue
     }
     if (!s.fields || !['new', 'answered', 'timed_out'].includes(s.state)) continue
@@ -112,25 +116,70 @@ export const buildWork = async (
       const userId = asString(m.user)
       const own = m.bot_id === rt.config.slack.botId || userId === rt.config.slack.botUserId
       if (!own && (m.bot_id || !userId)) continue
+      const files = await resolveFiles(rt.slack, m, ctx.deadline)
+      if (!files.ok) {
+        skip(s.id, files.error)
+        if (result.stop) break candidateLoop
+        continue candidateLoop
+      }
+      const author = own ? { ok: true as const, name: null } : await name(userId)
+      if (!author.ok) {
+        skip(s.id, author.error)
+        if (result.stop) break candidateLoop
+        continue candidateLoop
+      }
+      const text = await mentions(messageText(m).text)
+      if (!text.ok) {
+        skip(s.id, text.error)
+        if (result.stop) break candidateLoop
+        continue candidateLoop
+      }
+      const previous = s.transcript.find((e) => e.userId === userId)?.name ?? null
       transcript.push({
         ts: asString(m.ts) ?? '',
         from: own ? 'bot' : 'human',
         userId,
-        name: own ? null : await name(userId),
-        text: await mentions(messageText(m).text),
-        files: await resolveFiles(rt.slack, m, ctx.deadline),
+        name: author.name ?? previous,
+        text: text.text,
+        files: files.files,
       })
     }
     const files = await resolveFiles(rt.slack, s.raw, ctx.deadline)
-    const reporterName = await name(s.reporterId)
-    if (!transition(rt.db, token, s.id, s.state, { transcript, files, reporterName }, ctx.now().toISOString())) {
+    if (!files.ok) {
+      skip(s.id, files.error)
+      if (result.stop) break
+      continue
+    }
+    const reporter = await name(s.reporterId)
+    if (!reporter.ok) {
+      skip(s.id, reporter.error)
+      if (result.stop) break
+      continue
+    }
+    const body = await mentions(s.fields.body)
+    if (!body.ok) {
+      skip(s.id, body.error)
+      if (result.stop) break
+      continue
+    }
+    const reporterName = reporter.name ?? s.reporterName
+    if (
+      !transition(
+        rt.db,
+        token,
+        s.id,
+        s.state,
+        { transcript, files: files.files, reporterName },
+        ctx.now().toISOString(),
+      )
+    ) {
       result.stop = ERROR_LEASE_LOST
       break
     }
     const dir = join(run.filesDir, String(s.id))
     let index = 1
-    const attachments = await downloadFiles(rt.slack, files, dir, index, ctx.deadline)
-    index += files.length
+    const attachments = await downloadFiles(rt.slack, files.files, dir, index, ctx.deadline)
+    index += files.files.length
     const thread: WorkThreadEntry[] = []
     for (const e of transcript) {
       const attachments = await downloadFiles(rt.slack, e.files, dir, index, ctx.deadline)
@@ -148,7 +197,7 @@ export const buildWork = async (
       categoryKey: CATEGORY_KEYS[s.fields.category],
       priority: s.fields.priority,
       reporter: reporterName,
-      body: await mentions(s.fields.body),
+      body: body.text,
       attachments,
       thread,
     })

@@ -9,6 +9,7 @@ import {
   ISSUE_TABLE,
   MAX_LISTED_FILES,
   MORE_FILES_NOTE,
+  MSG_BODY_OVERSIZE,
   ORIGINAL_MAX_CHARS,
   PRIORITY_LABEL_PREFIX,
   SLACK_REPORTER_SUFFIX,
@@ -28,7 +29,7 @@ import type { Submission } from './db.ts'
 import type { CreateContent, SubmissionFields } from './types.ts'
 export const issueMarker = (channel: string, ts: string): string => `<!-- ${ISSUE_MARKER_PREFIX}:${channel}:${ts} -->`
 export const neutralizeMentions = (text: string): string =>
-  text.replace(/(^|[^A-Za-z0-9_`])@(?=[A-Za-z0-9])/g, `$1@${ZERO_WIDTH_SPACE}`)
+  text.replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9])/g, `$1@${ZERO_WIDTH_SPACE}`)
 export const fenceSafe = (text: string): string => text.replace(/`{3,}/g, (s) => FENCE_SAFE_BACKTICK.repeat(s.length))
 export const fenced = (text: string): string => `\`\`\`text\n${fenceSafe(text)}\n\`\`\``
 export const truncate = (text: string, max: number): string =>
@@ -69,18 +70,21 @@ export const buildIssueBody = (s: Submission, d: CreateContent): string => {
     .map((v) => `- ${clean(v, UNRESOLVED_ITEM_MAX_CHARS)}`)
     .join('\n')
   const files = [...new Map([...s.files, ...s.transcript.flatMap((e) => e.files)].map((f) => [f.id, f])).values()]
-  const listed = files
+  const fileLines = files
     .slice(0, MAX_LISTED_FILES)
     .map((f) => `- [${linkName(clean(f.name, TITLE_IN_BODY_MAX_CHARS))}](${f.permalink})`)
-  if (files.length > MAX_LISTED_FILES)
-    listed.push(MORE_FILES_NOTE.replace('{n}', String(files.length - MAX_LISTED_FILES)))
+  let listedCount = fileLines.length
+  const listed = (): string[] => [
+    ...fileLines.slice(0, listedCount),
+    ...(files.length > listedCount ? [MORE_FILES_NOTE.replace('{n}', String(files.length - listedCount))] : []),
+  ]
   const render = (): string =>
     [
       `## ${h.summary}\n\n${summary}`,
       `## ${h.details}\n\n${details}`,
       ...(unresolved ? [`## ${h.unresolved}\n\n${unresolved}`] : []),
       `## ${h.info}\n\n| ${t.key} | ${t.value} |\n|---|---|\n| ${t.category} | ${fields?.category ?? ''} |\n| ${t.priority} | ${fields?.priority ?? ''} |\n| ${t.reporter} | ${tableSafe(clean(s.reporterName ?? UNKNOWN_REPORTER_NAME, TITLE_IN_BODY_MAX_CHARS))}${SLACK_REPORTER_SUFFIX} |\n| ${t.slack} | [${t.source}](${s.permalink}) |`,
-      ...(listed.length ? [`## ${h.files}\n\n${listed.join('\n')}`] : []),
+      ...(listed().length ? [`## ${h.files}\n\n${listed().join('\n')}`] : []),
       `<details>\n<summary>${h.original}</summary>\n\n${fenced(`${title}\n\n${original}\n\n${thread}`)}\n\n</details>`,
       issueMarker(s.channel, s.ts),
     ].join('\n\n')
@@ -97,5 +101,11 @@ export const buildIssueBody = (s: Submission, d: CreateContent): string => {
     else details = shortened
     body = render()
   }
+  // 可変の本文を縮めても収まらなければ、リンクを途中で切らず一覧の末尾から省く。
+  while (body.length > ISSUE_BODY_MAX_CHARS && listedCount > 0) {
+    listedCount--
+    body = render()
+  }
+  if (body.length > ISSUE_BODY_MAX_CHARS) throw new Error(MSG_BODY_OVERSIZE)
   return body
 }

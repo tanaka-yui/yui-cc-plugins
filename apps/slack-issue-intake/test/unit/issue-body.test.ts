@@ -77,3 +77,40 @@ test('IB3–IB7 本文とラベルの構造を保ち、全体を上限内にす�
   ])
   db.close()
 })
+test('IB8 長い添付リンクが多数あっても本文全体の上限と最終マーカーを保つ', () => {
+  const db = openDb(join(tempHome(), 'db'))
+  const parsed = parseSubmission(templateText(), null)
+  assert.ok(parsed.kind === 'ok')
+  const id = insertSubmission(
+    db,
+    {
+      channel: CHANNEL,
+      ts: '1712345678.000100',
+      permalink: 'https://acme.slack.com/archives/C0123456789/p1712345678000100',
+      raw: textMessage('1', 'x'),
+      fields: parsed.fields,
+      problems: [],
+      reporterId: parsed.fields.reporterId,
+      state: 'new',
+    },
+    NOW,
+  )
+  assert.ok(id)
+  const submission = getSubmission(db, id)
+  assert.ok(submission)
+  submission.files = Array.from({ length: 50 }, (_, i) => ({
+    id: `F${i}`,
+    name: `${i}-${'a'.repeat(1000)}`,
+    mimetype: 'text/plain',
+    size: 1,
+    permalink: `https://acme.slack.com/files/U1/F${i}/${'p'.repeat(1500)}`,
+    downloadUrl: null,
+  }))
+  const body = buildIssueBody(submission, { action: 'create', summary: '要約', details: '詳細', unresolved: [] })
+  assert.ok(body.length <= 60000, `chars=${body.length}`)
+  assert.ok(lastLineIsMarker(body, issueMarker(CHANNEL, submission.ts)))
+  assert.ok(body.includes('ほか '))
+  db.close()
+})
+test('IB9 インラインコードの直後のメンションも無効にする', () =>
+  assert.equal(neutralizeMentions('`x`@alice と `code`@org/team'), '`x`@\u200balice と `code`@\u200borg/team'))

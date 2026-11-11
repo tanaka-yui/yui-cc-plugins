@@ -172,7 +172,7 @@ export const createIssue = async (
   if (r.code !== 0) return { ok: false, error: r.stderr }
   const url = r.stdout.trim().split(/\r?\n/).at(-1) ?? ''
   const number = url.match(/\/issues\/(\d+)$/)?.[1]
-  return number && url.startsWith(`https://github.com/${repo}/issues/`)
+  return number && url.toLowerCase() === `https://github.com/${repo}/issues/${number}`.toLowerCase()
     ? { ok: true, url, number: Number(number) }
     : { ok: false, error: 'Issue URL を読み取れません' }
 }

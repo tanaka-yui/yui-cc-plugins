@@ -21,8 +21,9 @@ const setup = async (t: { after: (fn: () => Promise<void>) => void }) => {
             {
               type: 'rich_text_section',
               elements: [
-                { type: 'text', text: templateText().replace('<@U012AB3CD>', '') },
+                { type: 'text', text: templateText().split('<@U012AB3CD>')[0] ?? '' },
                 { type: 'user', user_id: 'U012AB3CD' },
+                { type: 'text', text: templateText().split('<@U012AB3CD>')[1] ?? '' },
               ],
             },
           ],
@@ -92,7 +93,7 @@ test('IS1 inspectはblocks・text・不備を見せ、DB・cursor・リースを
   db.close()
   const r = await f.cli(['inspect', '--raw'])
   assert.equal(r.code, 0, r.stderr)
-  assert.match(r.stdout, /marker=yes source=blocks .*files=2 .*parse=ok/)
+  assert.match(r.stdout, /marker=yes source=blocks .*files=2 .*parse=ok .*reporter=U012AB3CD/)
   assert.match(r.stdout, /parse=invalid .*problems=カテゴリが/)
   assert.match(r.stdout, /marker=no .*parse=-/)
   const after = openDb(homePaths(f.home).db)

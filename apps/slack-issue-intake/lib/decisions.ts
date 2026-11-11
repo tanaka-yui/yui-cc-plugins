@@ -27,7 +27,7 @@ export const validateDecisions = (
   const seen = new Set<number>()
   const text = (id: number, value: Json | undefined, label: string, max: number): string => {
     const s = asString(value)
-    if (!s || !s.trim() || s.length > max) errors.push(`id=${id} ${label} は1〜${max}文字にしてください`)
+    if (!s?.trim() || s.length > max) errors.push(`id=${id} ${label} は1〜${max}文字にしてください`)
     return s ?? ''
   }
   for (const entry of entries ?? []) {

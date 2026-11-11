@@ -4,6 +4,7 @@ import {
   MAX_FILES_PER_MESSAGE,
   MAX_IMAGE_BYTES,
   MAX_TEXT_BYTES,
+  REMOVED_SLACK_FILE_ERRORS,
   TEXT_MIMETYPE_PREFIX,
 } from './defaults.ts'
 import { ensurePrivateDir, writeAtomic } from './fs.ts'
@@ -15,7 +16,7 @@ import { messageText } from './slack-text.ts'
 import { basename, join } from 'node:path'
 
 import type { JsonObject } from './json.ts'
-import type { SlackClient } from './slack-api.ts'
+import type { SlackClient, SlackFailure } from './slack-api.ts'
 import type { FileRef } from './types.ts'
 export type WorkAttachment = {
   name: string
@@ -32,7 +33,7 @@ const fileRef = (file: JsonObject): FileRef | null => {
     name: maskSecrets(asString(file.name) ?? asString(file.title) ?? id),
     mimetype: asString(file.mimetype) ?? '',
     size: typeof file.size === 'number' ? file.size : 0,
-    permalink: asString(file.permalink) ?? '',
+    permalink: maskSecrets(asString(file.permalink) ?? ''),
     downloadUrl: asString(file.url_private_download) ?? asString(file.url_private),
   }
 }
@@ -53,16 +54,21 @@ export const permalinkFileIds = (message: JsonObject): string[] => [
       .filter(Boolean),
   ),
 ]
-export const resolveFiles = async (c: SlackClient, message: JsonObject, deadline: number): Promise<FileRef[]> => {
+export type FileResolution = { ok: true; files: FileRef[] } | SlackFailure
+export const resolveFiles = async (c: SlackClient, message: JsonObject, deadline: number): Promise<FileResolution> => {
   const refs = new Map(fileRefsFromMessage(message).map((f) => [f.id, f]))
   for (const id of permalinkFileIds(message)) {
     if (refs.size >= MAX_FILES_PER_MESSAGE) break
     if (refs.has(id)) continue
-    const file = await fileInfo(c, id, deadline)
-    const ref = file ? fileRef(file) : null
+    const response = await fileInfo(c, id, deadline)
+    if (!response.ok) {
+      if (REMOVED_SLACK_FILE_ERRORS.includes(response.error)) continue
+      return response
+    }
+    const ref = fileRef(response.file)
     if (ref) refs.set(ref.id, ref)
   }
-  return [...refs.values()].slice(0, MAX_FILES_PER_MESSAGE)
+  return { ok: true, files: [...refs.values()].slice(0, MAX_FILES_PER_MESSAGE) }
 }
 export const safeFileName = (index: number, name: string): string =>
   `${index}-${

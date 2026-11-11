@@ -246,18 +246,28 @@ export const postThread = async (
   )
   return r.ok ? (asString(r.body.ts) ? { ok: true, ts: String(r.body.ts) } : failure('投稿の時刻がありません')) : r
 }
-export const fileInfo = async (c: SlackClient, fileId: string, deadline: number): Promise<JsonObject | null> => {
+export const fileInfo = async (
+  c: SlackClient,
+  fileId: string,
+  deadline: number,
+): Promise<{ ok: true; file: JsonObject } | SlackFailure> => {
   const r = await c.call('files.info', { file: fileId }, deadline)
-  return r.ok ? asObject(r.body.file) : null
+  if (!r.ok) return r
+  const file = asObject(r.body.file)
+  return file ? { ok: true, file } : failure('ファイルの応答が不正です')
 }
-export const userInfoName = async (c: SlackClient, userId: string, deadline: number): Promise<string | null> => {
+export const userInfoName = async (
+  c: SlackClient,
+  userId: string,
+  deadline: number,
+): Promise<{ ok: true; name: string | null } | SlackFailure> => {
   const r = await c.call('users.info', { user: userId }, deadline)
-  if (!r.ok) return null
+  if (!r.ok) return r.error === 'user_not_found' ? { ok: true, name: null } : r
   for (const value of [
     get(r.body, 'user', 'profile', 'display_name'),
     get(r.body, 'user', 'profile', 'real_name'),
     get(r.body, 'user', 'name'),
   ])
-    if (typeof value === 'string' && value.trim()) return maskSecrets(value.trim())
-  return null
+    if (typeof value === 'string' && value.trim()) return { ok: true, name: maskSecrets(value.trim()) }
+  return { ok: true, name: null }
 }

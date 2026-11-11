@@ -1,8 +1,10 @@
 import {
   confirmInflightDead,
   DRIVEN_STATES,
+  forgetRun,
   getSubmission,
   listByStates,
+  registerRun,
   setInflight,
   setInflightChild,
   transition,
@@ -18,12 +20,14 @@ import {
   ERROR_RATELIMITED,
   ERROR_STATE_CHANGED,
   MAX_ACTION_ATTEMPTS,
+  MAX_TITLE_CHARS,
   MSG_CREATED,
   MSG_CREATED_TIMEOUT,
   MSG_FAILED,
   MSG_QUESTION_FOOTER,
   MSG_REJECTED,
   PROBLEM_SEPARATOR,
+  TITLE_ELLIPSIS,
 } from './defaults.ts'
 import { writeAtomic } from './fs.ts'
 import { createIssue, findIssueByMarker } from './github.ts'
@@ -118,22 +122,35 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
     )
       return out(ERROR_LEASE_LOST, true)
     // pollにも独立したrunディレクトリを割り当て、古い持ち主が新しい本文を消せないようにする。
-    const dir = join(rt.paths.runsDir, randomUUID())
+    const bodyRunId = randomUUID()
+    if (registerRun(rt.db, token, bodyRunId, now()) === null) return out(ERROR_LEASE_LOST, true)
+    const dir = join(rt.paths.runsDir, bodyRunId)
     const file = join(dir, `issue-${s.id}.md`)
     try {
       writeAtomic(file, buildIssueBody(s, s.decision))
       if (!renew()) return out(ERROR_LEASE_LOST, true)
+      const title = [...neutralizeMentions(maskSecrets(s.fields.title))]
       const result = await createIssue(
         rt.gh,
         rt.config.repo,
-        { title: neutralizeMentions(maskSecrets(s.fields.title)), bodyFile: file, labels: issueLabels(s.fields) },
+        {
+          title:
+            title.length > MAX_TITLE_CHARS
+              ? title.slice(0, MAX_TITLE_CHARS - 1).join('') + TITLE_ELLIPSIS
+              : title.join(''),
+          bodyFile: file,
+          labels: issueLabels(s.fields),
+        },
         ctx.deadline,
         (child) => setInflightChild(rt.db, s.id, process.pid, child),
       )
       if (!result.ok) return fail(result.error)
       return success({ state: 'notifying', issueUrl: result.url, issueNumber: result.number, inflight: null })
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error))
     } finally {
       rmSync(dir, { recursive: true, force: true })
+      forgetRun(rt.db, bodyRunId)
     }
   }
   if (!DRIVEN_STATES.includes(s.state)) return out()
@@ -141,7 +158,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
   let text = ''
   if (s.state === 'asking') {
     if (s.decision?.action !== 'ask') return fail('質問の決定内容がありません')
-    text = escapeMrkdwn(s.decision.message) + '\n\n' + MSG_QUESTION_FOOTER
+    text = `${escapeMrkdwn(s.decision.message)}\n\n${MSG_QUESTION_FOOTER}`
   } else if (s.state === 'notifying') {
     if (!s.issueUrl) return fail('Issue URL がありません')
     text = (s.timedOutAt ? MSG_CREATED_TIMEOUT : MSG_CREATED).replace('{url}', s.issueUrl)

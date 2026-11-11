@@ -7,6 +7,7 @@ import { intakeHome } from '../paths.ts'
 import { prepareRun, removeRun } from '../runs.ts'
 import { openRuntime } from '../runtime.ts'
 import { maskSecrets } from '../secrets.ts'
+import { isFatalSlackError } from '../slack-api.ts'
 import { sync } from '../sync.ts'
 import { buildWork } from '../work.ts'
 
@@ -50,6 +51,11 @@ export const run = async (argv: string[]): Promise<void> => {
     const result = await buildWork(ctx, listByStates(rt.db, AGENT_STATES), runId, run.paths)
     for (const skipped of result.skipped) console.log(`skipped id=${skipped.id} reason=${maskSecrets(skipped.reason)}`)
     for (const id of result.failed) console.log(`failed id=${id} reason=thread_not_found`)
+    if (result.stop && isFatalSlackError(result.stop)) {
+      console.error(result.stop)
+      process.exitCode = 3
+      return
+    }
     if (result.stop === 'lease lost') {
       console.error(result.stop)
       process.exitCode = 2

@@ -154,3 +154,40 @@ test('GH8 goを送る前に親が終了すると、子はghを起動しない', 
   assert.ok(!isAlive(child))
   assert.equal(readFileSync(fake.state, 'utf8'), '[]')
 })
+test('GH9 タイトルはシェル展開されず1つの引数になる', async () => {
+  const { existsSync } = await import('node:fs')
+  const dir = tempHome()
+  const fake = fakeGh(dir)
+  Object.assign(process.env, fake.env)
+  const sentinel = join(dir, 'injected')
+  const title = `T ' $(touch ${sentinel})`
+  const body = join(dir, 'body.md')
+  writeFileSync(body, '本文')
+  const r = await createIssue(createGh(fake.ghPath), 'acme/app', { title, bodyFile: body, labels: [] }, D(), () => true)
+  assert.ok(r.ok)
+  assert.ok(!existsSync(sentinel))
+  const argv = ghCalls(fake.log)[0]?.argv ?? []
+  assert.equal(argv[argv.indexOf('--title') + 1], title)
+})
+test('PR2 起動時刻の照会が失敗しただけでは生きた送り手を死亡扱いにしない', () => {
+  const identity = selfIdentity()
+  const previous = process.env.PATH
+  process.env.PATH = '/no-such-process-tools'
+  try {
+    assert.ok(isAlive(identity))
+    assert.ok(isAlive(identity, '/no-such-process-tools/ps'))
+  } finally {
+    if (previous === undefined) delete process.env.PATH
+    else process.env.PATH = previous
+  }
+})
+test('GH10 正規URLとのリポジトリ表記の大小差を成功として扱う', async () => {
+  const r = await createIssue(
+    async () => ({ code: 0, stdout: 'https://github.com/acme/app/issues/42\n', stderr: '' }),
+    'Acme/App',
+    { title: 'T', bodyFile: '/unused', labels: [] },
+    D(),
+    () => true,
+  )
+  assert.deepEqual(r, { ok: true, url: 'https://github.com/acme/app/issues/42', number: 42 })
+})

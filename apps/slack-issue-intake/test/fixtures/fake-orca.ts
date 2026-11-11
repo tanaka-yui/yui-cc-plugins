@@ -1,7 +1,7 @@
 import { appendFileSync } from 'node:fs'
 
 const args = process.argv.slice(2)
-appendFileSync(process.env.FAKE_ORCA_LOG ?? '', JSON.stringify(args) + '\n')
+appendFileSync(process.env.FAKE_ORCA_LOG ?? '', `${JSON.stringify(args)}\n`)
 const fail = (s: string): never => {
   console.error(s)
   process.exit(1)

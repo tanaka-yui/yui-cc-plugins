@@ -243,13 +243,23 @@ test('PO16 同じ時間予算を繰り返して大量の区間を必ず読み終
   const handler = historyHandler(all, 3)
   const f = await fixture(t, { handler: (r) => ({ ...handler(r), delayMs: 150 }) })
   let finished = false
+  let previousCount = 0
+  let previousResume: string | null = null
   for (let i = 0; i < 5; i++) {
     const r = await f.poll(NOW, ['--deadline-ms', '400'])
     assert.ok(r.ms < 2000)
     const db = openDb(homePaths(f.home).db)
     const count = countByState(db).new
+    const resume = getScan(db)?.resumeLatest ?? null
+    assert.ok(count > previousCount)
+    if (resume && previousResume) assert.ok(Number(resume) < Number(previousResume))
+    previousCount = count
+    previousResume = resume
     db.close()
     if (count === 15) {
+      const done = openDb(homePaths(f.home).db)
+      assert.equal(getMeta(done, 'cursor_ts'), `${NOW_SEC - 60}.000000`)
+      done.close()
       finished = true
       break
     }
@@ -319,4 +329,52 @@ test('PO22 アカウント変更では照合も作成もしない', async (t) =>
   assert.equal(ghCalls(f.gh.log).length, 1)
   const status = JSON.parse(readFileSync(homePaths(f.home).pollStatus, 'utf8'))
   assert.equal(status.partial, true)
+})
+test('PO24 タイトルはメンション無効化後もGitHubの文字数上限内', async (t) => {
+  const { parseSubmission } = await import('../lib/parse.ts')
+  const parsed = parseSubmission(templateText({ title: '@alice '.repeat(100) }), null)
+  assert.ok(parsed.kind === 'ok')
+  const f = await fixture(t)
+  await seedSubmission(f.home, {
+    ts: tsAt(1000),
+    state: 'creating',
+    fields: parsed.fields,
+    decision: content,
+    createStartedAt: NOW,
+  })
+  await f.poll()
+  const call = ghCalls(f.gh.log).find((c) => c.argv[0] === 'issue')
+  assert.ok(call)
+  const title = call.argv[call.argv.indexOf('--title') + 1] ?? ''
+  assert.ok([...title].length <= 256, `chars=${[...title].length}`)
+  assert.ok(!title.includes('@alice'))
+})
+test('PO25 必須リンクだけで本文上限を超える場合は送信せず失敗を記録', async (t) => {
+  const f = await fixture(t)
+  const id = await seedSubmission(f.home, {
+    ts: tsAt(1000),
+    state: 'creating',
+    permalink: `https://acme.slack.com/${'x'.repeat(70000)}`,
+    decision: content,
+    createStartedAt: NOW,
+  })
+  await f.poll()
+  assert.equal(f.read(id)?.state, 'creating')
+  assert.match(f.read(id)?.lastError ?? '', /上限/)
+  assert.equal(ghCalls(f.gh.log).filter((c) => c.argv[0] === 'issue').length, 0)
+})
+test('PO21b 死亡確認から90秒待ち、既存Issueが無ければ新しい印で1回だけ作る', async (t) => {
+  const f = await fixture(t)
+  const id = await seedSubmission(f.home, {
+    ts: tsAt(1000),
+    state: 'creating',
+    decision: content,
+    createStartedAt: NOW,
+    inflight: { owner: { pid: 2147483647, start: 'dead' }, child: null, at: NOW, deadConfirmedAt: null },
+  })
+  await f.poll()
+  assert.equal(f.read(id)?.lastError, 'create settling')
+  await f.poll('2026-11-12T00:01:40.000Z')
+  assert.equal(f.read(id)?.state, 'created')
+  assert.equal(ghCalls(f.gh.log).filter((c) => c.argv[0] === 'issue').length, 1)
 })

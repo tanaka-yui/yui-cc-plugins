@@ -32,7 +32,7 @@ test('SA1/SA7/SA9 POST form・認証・投稿・名前の優先順位', async (t
     info: { userId: 'UBOT', botId: 'BBOT', teamId: 'T1', teamUrl: 'https://acme.slack.com/', team: 'acme' },
   })
   assert.equal(server.requests[0]?.auth, 'Bearer xoxb-t')
-  assert.equal(await userInfoName(c, 'U1', D()), '山田')
+  assert.deepEqual(await userInfoName(c, 'U1', D()), { ok: true, name: '山田' })
   assert.deepEqual(await postThread(c, 'C1', '1.0', '文', D()), { ok: true, ts: '2.0' })
   assert.deepEqual(server.requests.at(-1)?.params, {
     channel: 'C1',
@@ -122,8 +122,8 @@ test('SA8 バイト数上限と外部hostへの認証送信を拒否', async (t)
   const c = createSlackClient('xoxb-t')
   assert.deepEqual(await c.download('https://evil.example/x', 5, D()), { ok: false, error: 'host_not_allowed' })
   assert.equal(server.requests.length, 0)
-  assert.deepEqual(await c.download(server.url + '/f', 2, D()), { ok: false, error: 'too_large' })
-  const r = await c.download(server.url + '/f', 3, D())
+  assert.deepEqual(await c.download(`${server.url}/f`, 2, D()), { ok: false, error: 'too_large' })
+  const r = await c.download(`${server.url}/f`, 3, D())
   assert.ok(r.ok)
   assert.equal(r.bytes.length, 3)
 })
@@ -138,4 +138,22 @@ test('SA10 締め切りを過ぎたら呼ばず、応答が遅ければ打ち切
   const r = await createSlackClient('xoxb-t').call('x', {}, Date.now() + 100)
   assert.ok(!r.ok && r.error === 'deadline')
   assert.ok(Date.now() - start < 500)
+})
+test('SA2 接続失敗は投稿なしと区別する', async () => {
+  const server = await startSlack(() => ({ json: { ok: true } }))
+  const base = server.url
+  await server.close()
+  process.env.SLACK_ISSUE_INTAKE_API_BASE = base
+  const r = await createSlackClient('xoxb-t').call('auth.test', {}, D())
+  assert.ok(!r.ok && r.error.startsWith('network: '))
+})
+test('SA8 リダイレクト先へ通信と認証を転送しない', async (t) => {
+  const target = await startSlack(() => ({ bytes: new Uint8Array([1]) }))
+  t.after(() => target.close())
+  const source = await startSlack(() => ({ status: 302, headers: { location: `${target.url}/file` } }))
+  t.after(() => source.close())
+  process.env.SLACK_ISSUE_INTAKE_API_BASE = source.url
+  const r = await createSlackClient('xoxb-t').download(`${source.url}/file`, 10, D())
+  assert.ok(!r.ok)
+  assert.equal(target.requests.length, 0)
 })

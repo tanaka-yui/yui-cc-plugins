@@ -1,4 +1,6 @@
+import { MSG_TEST_CLOCK_ONLY, SLACK_API_BASE } from './defaults.ts'
 import { maskSecrets } from './secrets.ts'
+import { slackApiBase } from './slack-api.ts'
 
 import { type ParseArgsConfig, parseArgs } from 'node:util'
 
@@ -15,6 +17,7 @@ export const die = (name: string, message: string): never => {
 
 // `--now <ISO>` の解析。省略時は現在時刻。DB の時刻は UTC の ISO 文字列で揃える
 export const parseNow = (name: string, value: string | undefined): string => {
+  if (value !== undefined && slackApiBase() === SLACK_API_BASE) return die(name, MSG_TEST_CLOCK_ONLY)
   const date = value === undefined ? new Date() : new Date(value)
   if (Number.isNaN(date.getTime())) return die(name, `--now が日付として読めません: ${value}`)
   return date.toISOString()

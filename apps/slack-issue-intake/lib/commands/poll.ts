@@ -15,6 +15,7 @@ export const run = async (argv: string[]): Promise<void> => {
   const at = parseNow('poll', values.now)
   const budget = Number(values['deadline-ms'] ?? POLL_DEADLINE_MS)
   if (!Number.isFinite(budget) || budget <= 0) {
+    console.error('--deadline-ms は正の数にしてください')
     process.exitCode = 2
     return
   }

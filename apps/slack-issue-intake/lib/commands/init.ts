@@ -9,6 +9,9 @@ import {
   DEFAULT_EVERY_MINUTES,
   LABEL_WRITE_PERMISSIONS,
   LAUNCHER_FILE_MODE,
+  MSG_CONFIG_BROKEN,
+  MSG_CONFIG_CHANGED,
+  MSG_PUSH_REQUIRED,
   REPO_PATTERN,
   SLACK_APP_NAME,
 } from '../defaults.ts'
@@ -22,7 +25,7 @@ import { loadToken, maskSecrets } from '../secrets.ts'
 import { authTest, createSlackClient, fetchLatest } from '../slack-api.ts'
 import { formatTs } from '../slack-text.ts'
 
-import { chmodSync, copyFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { Config } from '../config.ts'
@@ -97,6 +100,11 @@ export const run = async (argv: string[]): Promise<void> => {
   const home = intakeHome()
   const paths = homePaths(home)
   const base = loadConfig(home)
+  if (existsSync(paths.config) && !base) {
+    console.error(MSG_CONFIG_BROKEN)
+    process.exitCode = 1
+    return
+  }
   const channel = values.channel ?? base?.channel
   const repo = values.repo ?? base?.repo
   const every = Number(values.every ?? base?.everyMinutes ?? DEFAULT_EVERY_MINUTES)
@@ -150,6 +158,7 @@ export const run = async (argv: string[]): Promise<void> => {
     if (!renewLease(db, lease.token, now(), ADMIN_LEASE_MS)) throw new Error('lease lost')
   }
   try {
+    if (JSON.stringify(loadConfig(home)) !== JSON.stringify(base)) throw new Error(MSG_CONFIG_CHANGED)
     const slack = createSlackClient(token)
     const auth = await authTest(slack, deadline)
     if (!auth.ok) throw new Error(auth.error)
@@ -174,6 +183,7 @@ export const run = async (argv: string[]): Promise<void> => {
     if (!repository.info.hasIssuesEnabled) throw new Error('リポジトリの Issues を有効にしてください')
     if (repository.info.visibility === 'PUBLIC' && !values['allow-public'])
       throw new Error('公開リポジトリです。内容を確認して --allow-public を付けてください')
+    if (!LABEL_WRITE_PERMISSIONS.includes(repository.info.viewerPermission)) throw new Error(MSG_PUSH_REQUIRED)
     guard()
     const labels = await ensureLabels(
       gh,

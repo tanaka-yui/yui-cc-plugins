@@ -129,3 +129,58 @@ test('IN9 稼働中のリースがあれば設定を更新しない', async (t) 
   assert.equal((await f.init(['--every', '10'])).code, 1)
   assert.equal(loadConfig(f.home)?.everyMinutes, 5)
 })
+test('IN5 チャンネルを読めなければ招待を案内して保存しない', async (t) => {
+  const f = await setup(t)
+  const server = await startSlack(
+    (r): SlackReply =>
+      r.method === 'auth.test'
+        ? { json: { ok: true, user_id: BOT_USER, bot_id: BOT_ID, team_id: TEAM_ID, url: TEAM_URL, team: 'acme' } }
+        : { json: { ok: false, error: 'not_in_channel' } },
+  )
+  t.after(() => server.close())
+  const r = await f.init([], { SLACK_ISSUE_INTAKE_API_BASE: server.url })
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /\/invite @Issue Intake/)
+  assert.ok(!loadConfig(f.home))
+  assert.equal(orcaCalls(f.orca.log).length, 0)
+})
+test('IN10 リース取得待ちの間に設定が更新されたら古い送り先で上書きしない', async (t) => {
+  const f = await setup(t)
+  assert.equal((await f.init()).code, 0)
+  const db = openDb(homePaths(f.home).db)
+  const held = acquireLease(db, 'admin', null, new Date(NOW), 300000)
+  assert.ok(held.ok)
+  db.exec('BEGIN IMMEDIATE')
+  const stale = f.init(['--every', '10'])
+  await new Promise((done) => setTimeout(done, 500))
+  const current = loadConfig(f.home)
+  assert.ok(current)
+  current.channel = 'C0999999999'
+  saveConfig(f.home, current)
+  db.prepare('DELETE FROM lease WHERE token=?').run(held.token)
+  db.exec('COMMIT')
+  db.close()
+  const result = await stale
+  assert.equal(result.code, 1, result.stderr)
+  assert.equal(loadConfig(f.home)?.channel, 'C0999999999')
+  assert.equal(loadConfig(f.home)?.everyMinutes, 5)
+})
+test('IN11 壊れた既存設定は新規設定とみなさず保持する', async (t) => {
+  const { writeFileSync } = await import('node:fs')
+  const f = await setup(t)
+  assert.equal((await f.init()).code, 0)
+  const calls = orcaCalls(f.orca.log).length
+  writeFileSync(homePaths(f.home).config, '{')
+  const result = await f.init()
+  assert.equal(result.code, 1)
+  assert.equal(readFileSync(homePaths(f.home).config, 'utf8'), '{')
+  assert.equal(orcaCalls(f.orca.log).length, calls)
+})
+test('IN12 ラベルが既存でもpush権限のないアカウントは受付を有効にしない', async (t) => {
+  const { LABEL_SPECS } = await import('../lib/defaults.ts')
+  const f = await setup(t)
+  const r = await f.init([], { FAKE_GH_PERMISSION: 'READ', FAKE_GH_LABELS: LABEL_SPECS.map((l) => l.name).join(',') })
+  assert.equal(r.code, 1)
+  assert.ok(!loadConfig(f.home))
+  assert.equal(orcaCalls(f.orca.log).length, 0)
+})

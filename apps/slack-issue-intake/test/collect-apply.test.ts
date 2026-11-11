@@ -148,6 +148,27 @@ test('CA7/CA8 不正な決定とrunIdは副作用なく拒否して直せる', a
   assert.equal(ghCalls(f.gh.log).length, 0)
   assert.equal((await f.cli(['apply', '--run', '../x'])).code, 2)
   assert.equal((await f.cli(['apply', '--run', randomUUID()])).code, 2)
+  const otherId = randomUUID()
+  const other = runPaths(homePaths(f.home).runsDir, otherId)
+  mkdirSync(other.dir, { recursive: true })
+  const work = readWork(c.paths.workFile)
+  assert.ok(work)
+  work.runId = otherId
+  writeFileSync(other.workFile, JSON.stringify(work))
+  writeFileSync(
+    other.decisionsFile,
+    JSON.stringify({
+      runId: otherId,
+      decisions: work.items.map((i) => ({ id: i.id, action: 'ask', message: '確認ですか？' })),
+    }),
+  )
+  assert.equal((await f.cli(['apply', '--run', otherId])).code, 2)
+  assert.ok(existsSync(other.workFile))
+  assert.equal(f.server.requests.length, 0)
+  const unchanged = openDb(homePaths(f.home).db)
+  assert.equal(readLease(unchanged)?.runId, c.id)
+  assert.equal(readLease(unchanged)?.phase, 'collected')
+  unchanged.close()
 })
 test('CA9 procedureは値を埋めた許可コマンドと上限を表示', async (t) => {
   const f = await setup(t)
@@ -273,4 +294,153 @@ test('CA12 古いapplyがリースを失っても新しいrunを壊さず、作�
   await runCliAsync(['poll', '--now', '2026-11-12T00:04:00.000Z'], f.env)
   assert.equal(f.read(id)?.state, 'created')
   assert.equal(ghCalls(f.gh.log).filter((c) => c.argv[0] === 'issue').length, 1)
+})
+test('CA1 添付をfilesとpermalinkと返信から集め、連番で保存してIssueへリンク', async (t) => {
+  let base = ''
+  const ref = (id: string, name: string, mimetype: string) => ({
+    id,
+    name,
+    mimetype,
+    size: 3,
+    permalink: `https://acme.slack.com/files/U1/${id}/${name}`,
+    url_private_download: `${base}/download/${id}`,
+  })
+  const f = await setup(t, (r): SlackReply => {
+    if (r.method === 'conversations.history') return { json: { ok: true, messages: [] } }
+    if (r.method === 'conversations.replies')
+      return {
+        json: {
+          ok: true,
+          messages: [
+            { ts: tsAt(500), user: 'U012AB3CD', text: '追加資料', files: [ref('F3', 'thread.txt', 'text/plain')] },
+          ],
+        },
+      }
+    if (r.method === 'users.info') return { json: { ok: true, user: { profile: { display_name: '山田 太郎' } } } }
+    if (r.method === 'files.info') return { json: { ok: true, file: ref('F2', 'second.png', 'image/png') } }
+    if (r.method === 'chat.postMessage') return { json: { ok: true, ts: tsAt(1) } }
+    return { bytes: new Uint8Array([1, 2, 3]) }
+  })
+  base = f.server.url
+  const raw = textMessage(tsAt(1000), templateText({ body: '見て https://acme.slack.com/files/U1/F2/second.png' }), {
+    files: [ref('F1', 'first.png', 'image/png')],
+  })
+  const id = await seedSubmission(f.home, { ts: tsAt(1000), state: 'new', raw })
+  const c = await f.collect()
+  const work = readWork(c.paths.workFile)
+  const item = work?.items[0]
+  assert.equal(item?.attachments.length, 2)
+  assert.equal(item?.thread[0]?.attachments.length, 1)
+  assert.equal(item?.attachments[0]?.localPath, join(c.paths.filesDir, String(id), '1-first.png'))
+  assert.equal(item?.attachments[1]?.localPath, join(c.paths.filesDir, String(id), '2-second.png'))
+  assert.equal(item?.thread[0]?.attachments[0]?.localPath, join(c.paths.filesDir, String(id), '3-thread.txt'))
+  for (const a of [...(item?.attachments ?? []), ...(item?.thread[0]?.attachments ?? [])])
+    assert.ok(a.localPath && existsSync(a.localPath))
+  writeFileSync(
+    c.paths.decisionsFile,
+    JSON.stringify({
+      runId: c.id,
+      decisions: [{ id, action: 'create', summary: '要約', details: '詳細', unresolved: [] }],
+    }),
+  )
+  assert.equal((await f.cli(['apply', '--run', c.id])).code, 0)
+  const body = ghCalls(f.gh.log).find((c) => c.argv[0] === 'issue')?.body ?? ''
+  for (const file of ['first.png', 'second.png', 'thread.txt']) assert.ok(body.includes(file))
+})
+test('CA15 files.infoの一時失敗では添付・やり取り・名前を空で確定しない', async (t) => {
+  for (const status of [500, 429])
+    for (const root of [true, false]) {
+      const f = await setup(t, (r): SlackReply => {
+        if (r.method === 'conversations.history') return { json: { ok: true, messages: [] } }
+        if (r.method === 'conversations.replies')
+          return {
+            json: {
+              ok: true,
+              messages: root
+                ? []
+                : [{ ts: tsAt(500), user: 'U012AB3CD', text: 'https://acme.slack.com/files/U1/F2/a.png' }],
+            },
+          }
+        if (r.method === 'users.info') return { json: { ok: true, user: { profile: { display_name: '山田' } } } }
+        if (r.method === 'files.info') return { status }
+        return { json: { ok: true } }
+      })
+      const oldFile = {
+        id: 'FOLD',
+        name: 'old.png',
+        mimetype: 'image/png',
+        size: 3,
+        permalink: 'https://acme.slack.com/files/U1/FOLD/a.png',
+        downloadUrl: null,
+      }
+      const transcript = [
+        {
+          ts: tsAt(800),
+          from: 'human' as const,
+          userId: 'U012AB3CD',
+          name: '旧名',
+          text: '保存済み',
+          files: [oldFile],
+        },
+      ]
+      const id = await seedSubmission(f.home, {
+        ts: tsAt(1000),
+        state: 'answered',
+        reporterName: '旧名',
+        files: [oldFile],
+        transcript,
+        raw: textMessage(
+          tsAt(1000),
+          templateText({ body: root ? 'https://acme.slack.com/files/U1/F2/a.png' : '本文' }),
+        ),
+      })
+      const r = await f.cli(['collect'])
+      assert.equal(r.code, 0, r.stderr)
+      assert.match(r.stdout, new RegExp(`skipped id=${id} reason=`))
+      assert.match(r.stdout, /items=0/)
+      assert.deepEqual(f.read(id)?.files, [oldFile])
+      assert.deepEqual(f.read(id)?.transcript, transcript)
+      assert.equal(f.read(id)?.reporterName, '旧名')
+      if (status === 429) assert.equal(f.server.requests.at(-1)?.method, 'files.info')
+    }
+})
+test('CA16 users.infoの一時失敗でも既存の名前とやり取りを保持', async (t) => {
+  const f = await setup(
+    t,
+    (r): SlackReply =>
+      r.method === 'users.info'
+        ? { status: 500 }
+        : {
+            json: {
+              ok: true,
+              messages:
+                r.method === 'conversations.replies' ? [{ ts: tsAt(500), user: 'U012AB3CD', text: '返信' }] : [],
+            },
+          },
+  )
+  const transcript = [
+    { ts: tsAt(800), from: 'human' as const, userId: 'U012AB3CD', name: '旧名', text: '保存済み', files: [] },
+  ]
+  const id = await seedSubmission(f.home, { ts: tsAt(1000), state: 'answered', reporterName: '旧名', transcript })
+  const r = await f.cli(['collect'])
+  assert.match(r.stdout, /items=0/)
+  assert.match(r.stdout, /skipped id=/)
+  assert.equal(f.read(id)?.reporterName, '旧名')
+  assert.deepEqual(f.read(id)?.transcript, transcript)
+})
+test('CA17 本番のapplyから試験用時刻を注入できない', async (t) => {
+  const f = await setup(t)
+  const id = await seedSubmission(f.home, { ts: tsAt(1000), state: 'new' })
+  const c = await f.collect()
+  writeFileSync(
+    c.paths.decisionsFile,
+    JSON.stringify({ runId: c.id, decisions: [{ id, action: 'ask', message: '確認ですか？' }] }),
+  )
+  const env = { ...f.env }
+  delete env.SLACK_ISSUE_INTAKE_API_BASE
+  const count = f.server.requests.length
+  const r = await runCliAsync(['apply', '--run', c.id, '--now', '2000-01-01T00:00:00.000Z'], env)
+  assert.equal(r.code, 2)
+  assert.equal(f.server.requests.length, count)
+  assert.equal(f.read(id)?.state, 'new')
 })

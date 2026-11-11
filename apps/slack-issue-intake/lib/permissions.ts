@@ -10,13 +10,12 @@ import {
   RUN_EXACT_SUBCOMMANDS,
   SETTINGS_FILE_MODE,
 } from './defaults.ts'
-import { writeJson } from './fs.ts'
 import { asArray, asObject, parseJson } from './json.ts'
 import { claudeHome, homePaths } from './paths.ts'
 
-import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 import type { Json, JsonObject } from './json.ts'
 export type ProposedRules = {
@@ -60,8 +59,18 @@ const strings = (value: Json | undefined): string[] => {
   if (!array || array.some((v) => typeof v !== 'string')) throw new Error('許可ルールは文字列の配列にしてください')
   return array as string[]
 }
-const writeSettings = (file: string, root: JsonObject): void =>
-  writeJson(file, root, existsSync(file) ? statSync(file).mode & 0o777 : SETTINGS_FILE_MODE)
+const writeSettings = (file: string, root: JsonObject): void => {
+  const mode = existsSync(file) ? statSync(file).mode & 0o777 : SETTINGS_FILE_MODE
+  mkdirSync(dirname(file), { recursive: true })
+  const temp = `${file}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(temp, `${JSON.stringify(root, null, 2)}\n`, { mode, flag: 'wx' })
+    chmodSync(temp, mode)
+    renameSync(temp, file)
+  } finally {
+    rmSync(temp, { force: true })
+  }
+}
 export const applyProject = (rules: ProposedRules): void => {
   const { file, allow, deny, defaultMode, disableBypassPermissionsMode } = rules.project
   const root = settings(file, true)
@@ -73,6 +82,7 @@ export const applyUserDeny = (rules: ProposedRules): number => {
   const p = permissions(root)
   const deny = strings(p.deny)
   const missing = rules.user.deny.filter((r) => !deny.includes(r))
+  if (!missing.length) return 0
   root.permissions = { ...p, deny: [...deny, ...missing] }
   writeSettings(rules.user.file, root)
   return missing.length

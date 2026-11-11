@@ -184,3 +184,14 @@ export const UNKNOWN_REPORTER_NAME = '不明'
 export const SLACK_REPORTER_SUFFIX = '（Slack）'
 export const PERMISSION_ASSUMPTIONS =
   'hook と mod によるツール承認は検査・指紋の対象外です。Orca の Claude 起動引数に --permission-mode や --allowedTools などの許可を広げる指定がないことが前提です。--dangerously-skip-permissions は disableBypassPermissionsMode で拒まれる前提ですが、最初の実行で bypass でないことを確認してください。bypass なら automation を無効にして既定引数から外してください。'
+
+export const PS_PATH = '/bin/ps'
+export const PROCESS_PROBE_TIMEOUT_MS = 1000
+export const REMOVED_SLACK_FILE_ERRORS: readonly string[] = ['file_not_found', 'file_deleted']
+export const MSG_IDENTITY_UNAVAILABLE = '実行プロセスの身元を確認できません'
+export const MSG_BODY_OVERSIZE = 'Issue 本文を上限内に収められません。添付リンクを確認してください'
+export const MSG_PUSH_REQUIRED =
+  'Issue に重複防止用のラベルを付けるため、リポジトリの push 権限（WRITE 以上）が必要です'
+export const MSG_CONFIG_BROKEN = '既存の設定を読めません。config.json を復元してから再実行してください'
+export const MSG_CONFIG_CHANGED = '待機中に設定が更新されました。init を再実行してください'
+export const MSG_TEST_CLOCK_ONLY = '--now は loopback API を使うテストでのみ指定できます'

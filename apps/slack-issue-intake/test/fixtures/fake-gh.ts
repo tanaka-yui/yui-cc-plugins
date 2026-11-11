@@ -11,7 +11,7 @@ const cmd = args.slice(0, 2).join(' ')
 const log = process.env.FAKE_GH_LOG ?? ''
 const state = process.env.FAKE_GH_STATE ?? ''
 const body = args.includes('--body-file') ? readFileSync(value('--body-file'), 'utf8') : null
-appendFileSync(log, JSON.stringify({ argv: args, body, pid: process.pid }) + '\n')
+appendFileSync(log, `${JSON.stringify({ argv: args, body, pid: process.pid })}\n`)
 if (
   process.env.FAKE_GH_SLEEP_MS &&
   (!process.env.FAKE_GH_SLEEP_ON || args.join(' ').startsWith(process.env.FAKE_GH_SLEEP_ON))

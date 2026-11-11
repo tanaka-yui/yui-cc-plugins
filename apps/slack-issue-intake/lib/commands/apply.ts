@@ -14,6 +14,7 @@ export const run = async (argv: string[]): Promise<void> => {
   const { values } = parseFlags('apply', { args: argv, options: { run: { type: 'string' }, now: { type: 'string' } } })
   const runId = values.run
   if (!runId || !RUN_ID_PATTERN.test(runId)) {
+    console.error('--run に今回のUUIDを指定してください')
     process.exitCode = 2
     return
   }
@@ -30,6 +31,7 @@ export const run = async (argv: string[]): Promise<void> => {
     const paths = runPaths(rt.paths.runsDir, runId)
     const work = readWork(paths.workFile)
     if (!work || work.runId !== runId) {
+      console.error('今回の work.json がありません。collect からやり直してください')
       process.exitCode = 2
       return
     }

@@ -16,14 +16,16 @@ Issue の作成は、持ち主と子がすべて止まったと確認するま�
 
 ## run のディレクトリ
 
-各 run は連番付き台帳に登録してから作成します。消せるのは自分の runId と、台帳で自分より前の連番だけです。後から登録された run は消しません。Issue 本文の一時ファイルも独立した run/runs/UUID に置きます。古い処理は新しいファイルを壊せません。
+各 run は連番付き台帳に登録してから作成します。消せるのは自分の runId と、台帳で自分より前の連番だけです。後から登録された run は消しません。Issue 本文の一時ファイルも台帳に登録した独立の run/runs/UUID に置きます。強制終了で残ったものは、次の collect が前の連番として片付けます。古い処理は新しいファイルを壊せません。
 
 ## 締め切り・ランチャー・定数
 
 すべての Slack / gh 呼び出しへ deadline を渡します。残り時間がなければ呼びません。poll の予算は45秒です。
-ランチャーは dev-digest の bin/launch.ts を元にし、lib を読みません。定数の写しと LAUNCHER_VERSION の重複だけを認め、LA2 で一致を確かめます。固定値は lib/defaults.ts にまとめます。
+ランチャーは dev-digest の bin/launch.ts を元にし、lib を読みません。定数の写しと LAUNCHER_VERSION の重複だけを認め、LA2 で一致を確かめます。固定値は lib/defaults.ts にまとめます。添付リンクだけで上限に達する場合は、リンクを丸ごと省いて件数を示します。必須の骨組みすら収まらなければ送信せず失敗を記録します。
 
 ## 試験と秘密
 
 テスト専用の差し替えは SLACK_ISSUE_INTAKE_HOME、SLACK_ISSUE_INTAKE_API_BASE（loopback のみ）、SLACK_ISSUE_INTAKE_CLAUDE_HOME。Orca の呼び先には ORCA_BIN を使えます。本番の設定手順にテスト変数を使いません。
 外部文字列を出力・保存する前に maskSecrets を通します。トークンを argv に置きません。実テストは `bash test/run-all.sh`、型と lint はワークスペースの check です。実サービスへの受け入れ確認は README に分けています。
+
+添付・名前のメタデータ取得は成功と失敗を区別します。一時失敗はその件を skipped にし、記録済みの files・transcript・名前を空で確定しません。--now は検証済みの loopback API を使う試験環境だけで受け付けます。
