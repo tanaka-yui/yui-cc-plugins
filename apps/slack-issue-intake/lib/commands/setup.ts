@@ -232,11 +232,12 @@ const readMeta = (dbFile: string, key: string): string | null => {
     db.close()
   }
 }
-// 3 つのボタンとおすすめがそろい、0.2 の古いボタンが残っていないときだけ済みにする（残っていれば form で片付ける）
+// 3 つのボタンとおすすめがそろい、0.2 の古いボタンが残っていないときだけ済みにする（残っていれば form で片付ける）。
+// 画面で注目にしてもらう印（manual）のときは、form が案内済みなので済みにする（人が注目にしたあと make slack-form で片付ける）
 const formDone = (dbFile: string): boolean =>
   FORM_KINDS.every((kind) => readMeta(dbFile, formMetaKey(FORM_META_TRIGGER_ID, kind))) &&
   Boolean(readMeta(dbFile, FORM_META_FEATURED)) &&
-  !readMeta(dbFile, FORM_META_TRIGGER_ID)
+  (!readMeta(dbFile, FORM_META_TRIGGER_ID) || readMeta(dbFile, FORM_META_FEATURED) === FORM_FEATURED_MANUAL)
 
 // 7・8段目。permissionStatus で飛ばす段を決め、許可と受け継ぐ許可はどちらも内容を見せて y/N で確かめる
 const approve = (p: Prompter, home: string, accepted: string | null): number => {

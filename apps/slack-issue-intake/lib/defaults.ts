@@ -111,6 +111,12 @@ export const ERROR_RESTRICTED_ACTION = 'restricted_action'
 export const FORM_FEATURED_MANUAL = 'manual'
 // 種類ごとのメタのキー（form_trigger_id:bug など）。キーの元の名前だけのもの（form_trigger_id）は 0.2 の 1 つのボタン
 export const formMetaKey = (base: string, kind: FormKind): string => `${base}:${kind.key}`
+// trigger delete の失敗のうち、ボタンがもう無いことを示すもの（手で消した、アプリを作り直したなど）
+export const TRIGGER_NOT_FOUND_PATTERN = /not[_ -]?found|does not exist/i
+export const MSG_FORM_LEGACY_KEPT =
+  '以前の 1 つのボタンは、新しい 3 つのボタンが入力欄の所に出るまで残します。画面で 3 つを注目にしたら、make slack-form をもう一度実行してください。古いボタンを外して消します'
+export const MSG_FORM_STALE_MANIFEST =
+  'Slack に deploy 済みのアプリが、今のフォームの定義と違います（プラグインを更新した直後など）。先に make setup を実行して deploy し直してください'
 export const MSG_FORM_LEGACY_DELETE_FAILED =
   '以前の 1 つのボタン（{trigger}）を消せませんでした（{error}）。新しい 3 つのボタンは使えます。次の実行でもう一度消します'
 // 画面でボタンを入力欄に出す手順。ボットのトークンでは workflows.featured.add が通らないことがあるので、form と setup の最後に示す

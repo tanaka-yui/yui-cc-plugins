@@ -13,9 +13,12 @@ import {
   MSG_FORM_FEATURE_BY_HAND,
   MSG_FORM_FEATURE_FAILED,
   MSG_FORM_LEGACY_DELETE_FAILED,
+  MSG_FORM_LEGACY_KEPT,
   MSG_FORM_NO_APP,
   MSG_FORM_NO_CLI,
   MSG_FORM_REFUSED,
+  MSG_FORM_STALE_MANIFEST,
+  TRIGGER_NOT_FOUND_PATTERN,
 } from '../defaults.ts'
 import { featuredParams, featureSteps, renderFormManifest } from '../form.ts'
 import { acquireLease, releaseLease, renewLease } from '../lease.ts'
@@ -29,6 +32,8 @@ import {
   deployedApp,
   findSlackCli,
   grantTriggerAccess,
+  manifestHash,
+  readDeployedHash,
   slackProject,
   writeProject,
   writeTriggerDef,
@@ -66,6 +71,13 @@ export const run = async (argv: string[]): Promise<void> => {
   }
   // プラグインを更新するとフックのパスが古くなるので、Slack CLI を呼ぶ前に書き直す
   writeProject(project)
+  // deploy 済みのアプリに今のワークフローが無いと、ボタンを作れない。Workflow Builder ではなく make setup へ案内する
+  if (readDeployedHash(project) !== manifestHash()) {
+    console.error(MSG_FORM_STALE_MANIFEST)
+    rt.db.close()
+    process.exitCode = 2
+    return
+  }
   const deadline = Date.now() + COMMAND_DEADLINE_MS
   const lease = acquireLease(rt.db, 'admin', null, new Date(), ADMIN_LEASE_MS)
   if (!lease.ok) {
@@ -124,13 +136,15 @@ export const run = async (argv: string[]): Promise<void> => {
     }
     // 0.2 の 1 つのボタンは、新しい 3 つを出したあとで外して消す。チャンネルからボタンが消える時間を作らない
     const legacy = getMeta(rt.db, FORM_META_TRIGGER_ID)
-    if (legacy) {
+    // 新しい 3 つを画面で注目にしてもらうまでは、古いボタンを残す（チャンネルからボタンが消えないように）
+    if (legacy && featuredState === FORM_FEATURED_MANUAL) console.error(MSG_FORM_LEGACY_KEPT)
+    else if (legacy) {
       guard()
       // すでに外れていることがあるので、失敗しても先へ進む
       await rt.slack.call('workflows.featured.remove', featuredParams(channel, [legacy]), deadline)
       guard()
       const deleted = deleteTrigger(bin, project, app.teamId, legacy)
-      if (deleted.ok) {
+      if (deleted.ok || TRIGGER_NOT_FOUND_PATTERN.test(deleted.error)) {
         deleteMeta(rt.db, FORM_META_TRIGGER_ID)
         deleteMeta(rt.db, FORM_META_URL)
       } else console.error(MSG_FORM_LEGACY_DELETE_FAILED.replace('{trigger}', legacy).replace('{error}', deleted.error))

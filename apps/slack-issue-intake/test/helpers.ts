@@ -275,8 +275,10 @@ export const slackCliCalls = (
     .map((s) => JSON.parse(s))
 // タスク 3 のテスト用。Slack CLI のプロジェクトを作り、デプロイ済みのアプリを置く
 export const seedSlackApp = async (home: string, teamId: string): Promise<void> => {
-  const { slackProject, writeProject } = await import('../lib/slack-cli.ts')
+  const { manifestHash, saveDeployedHash, slackProject, writeProject } = await import('../lib/slack-cli.ts')
   const project = slackProject(home)
   writeProject(project)
   writeFileSync(project.apps, JSON.stringify({ apps: { A0FAKE001: { app_id: 'A0FAKE001', team_id: teamId } } }))
+  // 今のマニフェストを deploy 済みのアプリとして置く
+  saveDeployedHash(project, manifestHash())
 }
