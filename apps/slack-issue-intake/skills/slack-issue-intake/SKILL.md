@@ -3,7 +3,7 @@ name: slack-issue-intake
 description: >
   Use when the user asks about "slack-issue-intake", "Slack から Issue", "Issue 起票フォーム", "起票の状態",
   or needs setup, activation, status, retry, inspection, or token registration for Slack form issue intake.
-argument-hint: "[init | form | enable | status | retry <id> | inspect | token]"
+argument-hint: "[init | form | mention | enable | status | retry <id> | inspect | token]"
 ---
 
 ## Output Language
@@ -39,6 +39,7 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 
 - No argument, or setup requested: **init**.
 - Place the form button in the channel: **form**.
+- Choose or change the user group mentioned in status notifications: **mention**.
 - Activate the automation: **enable**.
 - Check progress or failures: **status**.
 - Retry a failed item: **retry**.
@@ -49,7 +50,8 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 
 Recommend that the user run `make setup` in a terminal from the plugin directory; it is interactive and cannot run in
 the agent's shell. It creates the Slack app through the Slack CLI and then itself resolves the channel, checks the
-repository, runs `init`, places the form button (**form**), asks for the permission approval, and runs **enable**. Use the manual steps below only when the user cannot use the Slack CLI or `make setup` stopped on a step it
+repository, runs `init`, asks for the mention group (**mention**), places the form buttons (**form**), asks for the
+permission approval, and runs **enable**. Use the manual steps below only when the user cannot use the Slack CLI or `make setup` stopped on a step it
 cannot complete.
 
 1. Run `guide`. Explain the Slack app manifest, paid-plan requirement, invitation, and Workflow Builder setup in
@@ -68,7 +70,7 @@ cannot complete.
 
 ## form
 
-1. `make setup` runs `form` as its step 6. Run it by hand only to place the buttons again. There are three forms, one
+1. `make setup` runs `form` as its step 7. Run it by hand only to place the buttons again. There are three forms, one
    per category (bug, request, feature). For each, it creates the workflow's shortcut trigger with
    `slack trigger create` and limits it to members of the configured channel with `slack trigger access`. Then it makes
    all three featured workflows of the channel with one `workflows.featured.add` call, so members see three buttons
@@ -88,6 +90,15 @@ cannot complete.
    `make setup`, or the deployed app is older than the current form definition (right after a plugin update); in that
    case, run `make setup` again.
 3. Form posts from this path are written by the app's own bot, so `inspect` shows `bot=yes` for them.
+
+## mention
+
+`make setup` asks for the group in step 6 and does not ask again once answered (an empty answer means no mention).
+To change it, ask the user for the Slack user group (handle such as `dev-member` or `@dev-member`, display name, or
+an ID starting with `S`) and run `mention --group <value>`; run `mention --none` to stop mentioning. It prints
+`mention=<ID>` or `mention=none`. Exit 1 explains a missing `usergroups:read` scope (common for hand-made apps: add the
+scope and reinstall the app, or enter the group ID instead) or a group that was not found. Exit 2 means no setup or
+wrong flags.
 
 ## enable
 
@@ -139,4 +150,11 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
   duplicate prevention assumes all senders run on that Mac, GitHub settles accepted requests within 90 seconds
   after every sender stops, and the gh account stays unchanged.
 - `skipped_precheck` entries accumulate in Orca history. Rare duplicate Slack replies after crashes are possible.
+- Every poll, after intake and only when at least 10 seconds of its budget remain, reads the `from-slack` issues and
+  writes status label and open/closed changes to the original Slack thread without starting Claude. Labels:
+  Backlog, Ready, Ready_Eng, In progress, In review, Pending, Done, Failed (shared with orca-team-dispatch-task).
+  A change counts as made by AI only when the latest new comment ends with an `orca-auto` marker, its author is an
+  owner, member, collaborator, or the intake gh account, and the marker status equals the current label; only then
+  is the group mentioned (per event) and the comment relayed. Issues that existed before this feature are recorded
+  silently the first time they are seen. Failures show as `partial=true` without changing the exit code.
 - To stop: `orca automations edit <id> --disabled`.

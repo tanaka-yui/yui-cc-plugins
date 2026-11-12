@@ -7,6 +7,7 @@ import {
   LAUNCHER_VERSION_ENV,
   PLUGIN_ID,
   SLACK_BOT_SCOPES,
+  STATUS_LABELS,
 } from '../../lib/defaults.ts'
 import { renderGuide, renderTemplate } from '../../lib/guide.ts'
 import { HOME_ENV } from '../../lib/paths.ts'
@@ -66,4 +67,16 @@ test('LA2 コピー先で独立動作するランチャーの定数が一致', (
   assert.equal(launcher.LAUNCHER_VERSION_ENV, LAUNCHER_VERSION_ENV)
   assert.equal(launcher.CLAUDE_HOME_ENV, CLAUDE_HOME_ENV)
   assert.equal(launcher.HOME_ENV, HOME_ENV)
+})
+test('DO5 README は 8 つのステータスラベル名と usergroups:read と「0.3 からの更新」を含み、版は 0.4.0', () => {
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+  for (const label of STATUS_LABELS) assert.ok(readme.includes(`| ${label.name} |`), label.name)
+  assert.ok(readme.includes('usergroups:read'))
+  assert.ok(readme.includes('### 0.3 からの更新'))
+  const plugin = JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json'), 'utf8')) as { version: string }
+  const market = JSON.parse(readFileSync(join(root, '../../.claude-plugin/marketplace.json'), 'utf8')) as {
+    plugins: { name: string; version: string }[]
+  }
+  assert.equal(plugin.version, '0.4.0')
+  assert.equal(market.plugins.find((p) => p.name === 'slack-issue-intake')?.version, '0.4.0')
 })
