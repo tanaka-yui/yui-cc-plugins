@@ -1,7 +1,16 @@
 import { asObject, get, parseJson } from '../../lib/json.ts'
 import { pluginRoot } from '../../lib/paths.ts'
-import { deployEnv, deployedApp, parseShortcutUrl, slackProject, writeProject } from '../../lib/slack-cli.ts'
-import { runCli, tempHome } from '../helpers.ts'
+import {
+  createTrigger,
+  deployEnv,
+  deployedApp,
+  grantTriggerAccess,
+  parseShortcutUrl,
+  slackProject,
+  writeProject,
+  writeTriggerDef,
+} from '../../lib/slack-cli.ts'
+import { fakeSlackCli, runCli, slackCliCalls, tempHome } from '../helpers.ts'
 
 import assert from 'node:assert/strict'
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -56,4 +65,56 @@ test('SC5 deployedApp は apps.json のアプリを返し、無いか壊れて�
   writeFileSync(p.apps, JSON.stringify({ apps: { A0X: { app_id: 'A0X', team_id: 'T0X' } } }))
   assert.deepEqual(deployedApp(p), { appId: 'A0X', teamId: 'T0X' })
   assert.equal(asObject(get(parseJson(readFileSync(p.apps, 'utf8')) ?? undefined, 'apps')) !== null, true)
+})
+test('SC6 createTrigger / grantTriggerAccess は決まった引数で Slack CLI を呼び、失敗は理由を返す', () => {
+  const dir = tempHome()
+  const cli = fakeSlackCli(dir)
+  process.env.FAKE_SLACK_CLI_LOG = cli.log
+  const p = slackProject(tempHome())
+  writeProject(p)
+  writeTriggerDef(p, 'C0TARGET01')
+  const created = createTrigger(cli.path, p, 'T0TEAM001')
+  assert.deepEqual(created, {
+    ok: true,
+    triggerId: 'Ft0FAKE001',
+    url: 'https://slack.com/shortcuts/Ft0FAKE001/abc123',
+  })
+  assert.deepEqual(grantTriggerAccess(cli.path, p, 'T0TEAM001', 'Ft0FAKE001', 'C0TARGET01'), { ok: true })
+  const [create, access] = slackCliCalls(cli.log)
+  assert.deepEqual(create?.argv, [
+    'trigger',
+    'create',
+    '--trigger-def',
+    p.triggerDef,
+    '--app',
+    'deployed',
+    '--team',
+    'T0TEAM001',
+    '--skip-update',
+    '--no-color',
+  ])
+  assert.deepEqual(access?.argv, [
+    'trigger',
+    'access',
+    '--trigger-id',
+    'Ft0FAKE001',
+    '--channels',
+    'C0TARGET01',
+    '--grant',
+    '--include-app-collaborators=false',
+    '--app',
+    'deployed',
+    '--team',
+    'T0TEAM001',
+    '--skip-update',
+    '--no-color',
+  ])
+  process.env.FAKE_SLACK_CLI_TRIGGER_FAIL = 'boom'
+  try {
+    const failed = createTrigger(cli.path, p, 'T0TEAM001')
+    assert.deepEqual(failed, { ok: false, error: 'boom' })
+  } finally {
+    delete process.env.FAKE_SLACK_CLI_TRIGGER_FAIL
+    delete process.env.FAKE_SLACK_CLI_LOG
+  }
 })

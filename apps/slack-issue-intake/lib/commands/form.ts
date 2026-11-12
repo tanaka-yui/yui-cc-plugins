@@ -6,15 +6,24 @@ import {
   FORM_META_BOOKMARK_ID,
   FORM_META_TRIGGER_ID,
   FORM_META_URL,
+  MSG_FORM_NO_APP,
   MSG_FORM_REFUSED,
 } from '../defaults.ts'
-import { bookmarkParams, permissionParams, renderFormManifest, triggerParams } from '../form.ts'
+import { bookmarkParams, renderFormManifest } from '../form.ts'
 import { asString, get } from '../json.ts'
 import { acquireLease, releaseLease, renewLease } from '../lease.ts'
 import { intakeHome } from '../paths.ts'
 import { openRuntime } from '../runtime.ts'
 import { maskSecrets } from '../secrets.ts'
 import { authTest } from '../slack-api.ts'
+import {
+  createTrigger,
+  deployedApp,
+  findSlackCli,
+  grantTriggerAccess,
+  slackProject,
+  writeTriggerDef,
+} from '../slack-cli.ts'
 
 import type { SlackFailure } from '../slack-api.ts'
 
@@ -35,6 +44,15 @@ export const run = async (argv: string[]): Promise<void> => {
     return
   }
   const rt = opened.runtime
+  const bin = findSlackCli()
+  const project = slackProject(rt.home)
+  const app = deployedApp(project)
+  if (!bin || !app) {
+    console.error(!app ? MSG_FORM_NO_APP : 'Slack CLI が見つかりません。make setup でインストールしてください')
+    rt.db.close()
+    process.exitCode = 2
+    return
+  }
   const deadline = Date.now() + COMMAND_DEADLINE_MS
   const lease = acquireLease(rt.db, 'admin', null, new Date(), ADMIN_LEASE_MS)
   if (!lease.ok) {
@@ -50,27 +68,24 @@ export const run = async (argv: string[]): Promise<void> => {
   try {
     const auth = await authTest(rt.slack, deadline)
     if (!auth.ok) throw new Error(auth.error)
-    if (auth.info.teamId !== rt.config.slack.teamId) throw new Error('トークンのワークスペースが設定と違います')
+    if (auth.info.teamId !== rt.config.slack.teamId || app.teamId !== rt.config.slack.teamId)
+      throw new Error('トークンのワークスペースが設定と違います')
     let triggerId = getMeta(rt.db, FORM_META_TRIGGER_ID)
     let url = getMeta(rt.db, FORM_META_URL)
     if (!triggerId || !url) {
       guard()
-      const created = await rt.slack.call('workflows.triggers.create', triggerParams(channel), deadline)
-      if (!created.ok) throw new Error(MSG_FORM_REFUSED.replace('{error}', reason(created)))
-      triggerId = asString(get(created.body, 'trigger', 'id'))
-      url = asString(get(created.body, 'trigger', 'shortcut_url'))
-      if (!triggerId || !url) throw new Error('ボタンを作った応答に ID か URL がありません')
+      writeTriggerDef(project, channel)
+      const created = createTrigger(bin, project, app.teamId)
+      if (!created.ok) throw new Error(MSG_FORM_REFUSED.replace('{error}', created.error))
+      triggerId = created.triggerId
+      url = created.url
       // 作ったものは、リースを確かめる前にすぐ記録する（ほかの処理とは別のキーなので競合しない）。再実行で重ねないため
       setMeta(rt.db, FORM_META_TRIGGER_ID, triggerId)
       setMeta(rt.db, FORM_META_URL, url)
     }
     guard()
-    const permitted = await rt.slack.call(
-      'workflows.triggers.permissions.set',
-      permissionParams(triggerId, channel),
-      deadline,
-    )
-    if (!permitted.ok) throw new Error(`ボタンを使える人を設定できません（${reason(permitted)}）`)
+    const permitted = grantTriggerAccess(bin, project, app.teamId, triggerId, channel)
+    if (!permitted.ok) throw new Error(`ボタンを使える人を設定できません（${permitted.error}）`)
     let bookmarkId = getMeta(rt.db, FORM_META_BOOKMARK_ID)
     if (!bookmarkId) {
       guard()

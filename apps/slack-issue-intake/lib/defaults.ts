@@ -92,12 +92,13 @@ export const FORM_ATTACHMENTS_TITLE = '添付ファイル（任意）'
 // （ボタンの作成は Slack CLI が受け持つので triggers:write は要らない）
 export const FORM_EXTRA_SCOPES: readonly string[] = ['channels:read', 'groups:read', 'channels:join', 'bookmarks:write']
 // ボタンを使えるのは対象チャンネルのメンバーだけにする
-export const FORM_TRIGGER_PERMISSION = 'named_entities'
 export const FORM_META_TRIGGER_ID = 'form_trigger_id'
 export const FORM_META_URL = 'form_url'
 export const FORM_META_BOOKMARK_ID = 'form_bookmark_id'
 export const MSG_FORM_REFUSED =
-  'Slack がフォームのボタンの作成を受け付けませんでした（{error}）。アプリを form --manifest のマニフェストで作ったか確かめてください。だめなら guide の手順で Workflow Builder から作ってください'
+  'Slack CLI でフォームのボタンを作れませんでした（{error}）。フォームは README の「Workflow Builder で手で作る」の手順で作ってください'
+export const MSG_FORM_NO_APP =
+  'make setup で作ったアプリが見つかりません。フォームは README の「Workflow Builder で手で作る」の手順で作ってください'
 export const CATEGORIES = ['バグ', '新機能', '要望'] as const
 export const PRIORITIES = ['critical', 'high', 'middle', 'low'] as const
 export const CATEGORY_KEYS = { バグ: 'bug', 新機能: 'feature', 要望: 'request' } as const
@@ -168,6 +169,7 @@ export const TOKEN_DIALOG_TITLE = 'slack-issue-intake'
 export const TOKEN_PROMPT = 'Slack の Bot User OAuth Token（xoxb- で始まるもの）を貼り付けてください'
 export const BOT_TOKEN_PATTERN = /^xoxb-[A-Za-z0-9-]+$/
 export const CHANNEL_ID_PATTERN = /^[CG][A-Z0-9]{8,}$/
+export const CHANNEL_PAGE_SIZE = 200
 export const REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
 export const LABEL_WRITE_PERMISSIONS: readonly string[] = ['ADMIN', 'MAINTAIN', 'WRITE']
 // Slack に出す固定文言（{url} {problems} {label} {options} を置き換える）

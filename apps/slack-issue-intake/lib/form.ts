@@ -6,7 +6,6 @@ import {
   FORM_EXTRA_SCOPES,
   FORM_SUBMIT_LABEL,
   FORM_TITLE,
-  FORM_TRIGGER_PERMISSION,
   FORM_WORKFLOW_ID,
   MAX_FILES_PER_MESSAGE,
   PRIORITIES,
@@ -112,24 +111,6 @@ export const triggerDefinition = (channel: string): JsonObject => ({
   },
 })
 
-// 旧: workflows.triggers.create の引数。Slack の SDK と同じく、入れ子の値は JSON 文字列にしてフォーム形式で送る。
-// 投稿先は押した場所によらず設定のチャンネルに固定する
-export const triggerParams = (channel: string): Record<string, string> => ({
-  type: 'shortcut',
-  name: FORM_TITLE,
-  description: FORM_DESCRIPTION,
-  workflow: `#/workflows/${FORM_WORKFLOW_ID}`,
-  inputs: JSON.stringify({
-    [INPUT.interactivity]: { value: '{{data.interactivity}}' },
-    [INPUT.channel]: { value: channel },
-    [INPUT.user]: { value: '{{data.user_id}}' },
-  }),
-})
-export const permissionParams = (triggerId: string, channel: string): Record<string, string> => ({
-  trigger_id: triggerId,
-  permission_type: FORM_TRIGGER_PERMISSION,
-  channel_ids: channel,
-})
 export const bookmarkParams = (channel: string, url: string): Record<string, string> => ({
   channel_id: channel,
   title: FORM_TITLE,
