@@ -2,6 +2,7 @@ import * as launcher from '../../bin/launch.ts'
 import {
   CLAUDE_HOME_ENV,
   FORM_EXTRA_SCOPES,
+  FORM_KINDS,
   LAUNCHER_VERSION,
   LAUNCHER_VERSION_ENV,
   PLUGIN_ID,
@@ -18,7 +19,7 @@ import { test } from 'node:test'
 const root = join(import.meta.dirname, '../..')
 test('DO1 配布文書と生成するSlack設定が一致', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
-  assert.ok(readme.includes(renderTemplate()))
+  for (const kind of FORM_KINDS) assert.ok(readme.includes(renderTemplate(kind)), kind.key)
   for (const scope of SLACK_BOT_SCOPES) assert.ok(readme.includes(scope))
 })
 test('DO4 READMEの案内はguideの出力そのもので、make setupとフォームの権限を載せる', () => {
@@ -29,6 +30,11 @@ test('DO4 READMEの案内はguideの出力そのもので、make setupとフォ�
   const makefile = readFileSync(join(root, 'Makefile'), 'utf8')
   for (const target of ['setup', 'slack-form', 'manifest']) assert.match(makefile, new RegExp(`^${target}:`, 'm'))
   assert.ok(!renderGuide().includes('form --manifest'))
+  for (const kind of FORM_KINDS) {
+    assert.ok(renderGuide().includes(kind.title), kind.title)
+    assert.ok(renderGuide().includes(renderTemplate(kind)), kind.key)
+    for (const item of kind.items) assert.ok(renderGuide().includes(item.label), item.label)
+  }
 })
 test('DO2 手順書のplaceholderをprocedureがすべて置き換えられる', () => {
   const procedure = readFileSync(join(root, 'skills/slack-issue-intake/references/procedure.md'), 'utf8')

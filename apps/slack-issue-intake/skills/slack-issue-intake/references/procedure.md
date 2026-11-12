@@ -85,10 +85,12 @@ Write every text value in Japanese.
   links: the tool adds the mention and a closing line. At most {{QUESTION_MAX_CHARS}} characters.
 - `summary`: what the issue is about, in one to three sentences. At most {{SUMMARY_MAX_CHARS}} characters.
 - `details`: a structured description with `###` headings that uses only what the submission, the thread, and the
-  attachments say. For `bug`: the symptom, the steps or conditions to reproduce, the expected behavior, and the
-  environment, as far as they are known. For `feature` and `request`: the goal, what should become possible, and the
-  background. Describe what an attachment shows when it matters. Do not invent facts. At most
-  {{DETAILS_MAX_CHARS}} characters.
+  attachments say. The submission body lists the category's items, each as a `label:` line followed by its value;
+  empty items are left out. For `bug`: the symptom, the error log, the workaround tried, the screen URL and the source
+  path when given, plus the steps or conditions to reproduce, the expected behavior, and the environment, as far as
+  they are known. For `request`: the current behavior and the ideal behavior, plus the screen URL and the source path
+  when given. For `feature`: the specification, plus the goal and the background. Describe what an attachment shows
+  when it matters. Do not invent facts. At most {{DETAILS_MAX_CHARS}} characters.
 - `unresolved`: points that are still unclear, such as questions that were never answered. Use `[]` when there are
   none. At most {{UNRESOLVED_MAX_ITEMS}} entries of at most {{UNRESOLVED_ITEM_MAX_CHARS}} characters each.
 - The tool adds the title, the labels, the reporter, the links, and the original text. Do not repeat them.

@@ -7,6 +7,7 @@ import {
   isAllowedEvery,
   precheckCommand,
 } from '../../lib/automation.ts'
+import { FORM_KINDS } from '../../lib/defaults.ts'
 import { renderGuide, renderTemplate } from '../../lib/guide.ts'
 import { homePaths } from '../../lib/paths.ts'
 import { tempHome } from '../helpers.ts'
@@ -57,7 +58,7 @@ test('LA1 インストール済みuser scopeを優先、無ければ記録した
 })
 test('GU1 ガイドはフォームと必要scope、前提を含む', () => {
   const g = renderGuide()
-  assert.ok(g.includes(renderTemplate()))
+  for (const kind of FORM_KINDS) assert.ok(g.includes(renderTemplate(kind)), kind.key)
   for (const s of [
     'channels:history',
     'groups:history',
@@ -65,7 +66,7 @@ test('GU1 ガイドはフォームと必要scope、前提を含む', () => {
     'files:read',
     'users:read',
     '"token_rotation_enabled": false',
-    'バグ / 新機能 / 要望',
+    ...FORM_KINDS.map((k) => `「${k.title}」`),
     'critical / high / middle / low',
     '--permission-mode',
   ])
