@@ -1,11 +1,12 @@
 import { parseFlags, parseNow } from '../cli.ts'
-import { POLL_DEADLINE_MS, POLL_LEASE_MS } from '../defaults.ts'
+import { POLL_DEADLINE_MS, POLL_LEASE_MS, STATUS_MIN_REMAINING_MS } from '../defaults.ts'
 import { writeJson } from '../fs.ts'
 import { acquireLease, releaseLease } from '../lease.ts'
 import { homePaths, intakeHome } from '../paths.ts'
 import { permissionFingerprint, safetyProblems } from '../permissions.ts'
 import { openRuntime } from '../runtime.ts'
 import { maskSecrets } from '../secrets.ts'
+import { statusSync } from '../status-sync.ts'
 import { agentWorkCount, sync } from '../sync.ts'
 export const run = async (argv: string[]): Promise<void> => {
   const { values } = parseFlags('poll', {
@@ -28,11 +29,11 @@ export const run = async (argv: string[]): Promise<void> => {
     agentWork = 0,
     partial = false,
     errors: string[] = [],
-    counts = { inserted: 0, rejected: 0, answered: 0, timedOut: 0, driven: 0 },
+    counts = { inserted: 0, rejected: 0, answered: 0, timedOut: 0, driven: 0, notified: 0 },
     reason = '',
   ): void => {
     console.log(
-      `result=${result}${reason ? ` reason=${reason}` : ''} agent_work=${agentWork} inserted=${counts.inserted} rejected=${counts.rejected} answered=${counts.answered} timed_out=${counts.timedOut} driven=${counts.driven} errors=${errors.length} partial=${partial}`,
+      `result=${result}${reason ? ` reason=${reason}` : ''} agent_work=${agentWork} inserted=${counts.inserted} rejected=${counts.rejected} answered=${counts.answered} timed_out=${counts.timedOut} driven=${counts.driven} errors=${errors.length} partial=${partial} notified=${counts.notified}`,
     )
     for (const e of errors) console.error(maskSecrets(e))
     writeJson(homePaths(home).pollStatus, {
@@ -68,12 +69,20 @@ export const run = async (argv: string[]): Promise<void> => {
       return
     }
     try {
-      const report = await sync({ rt, token: lease.token, ttlMs: POLL_LEASE_MS, now, deadline })
+      const ctx = { rt, token: lease.token, ttlMs: POLL_LEASE_MS, now, deadline }
+      const report = await sync(ctx)
+      // ステータスの通知は取り込みのあとに、時間が残っているときだけ行う。失敗しても終了コードと agent_work は変えない
+      const status =
+        !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
+          ? await statusSync(ctx)
+          : { notified: 0, errors: [] }
+      const errors = [...report.errors, ...status.errors]
       const work = agentWorkCount(rt.db)
       const code = report.fatal ? 3 : work ? 0 : 1
-      finish(report.fatal ? 'error' : work ? 'work' : 'idle', code, work, report.partial, report.errors, {
+      finish(report.fatal ? 'error' : work ? 'work' : 'idle', code, work, report.partial || errors.length > 0, errors, {
         ...report,
         driven: report.driven.length,
+        notified: status.notified,
       })
     } finally {
       releaseLease(rt.db, lease.token)

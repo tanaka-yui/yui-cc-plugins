@@ -74,13 +74,35 @@ else if (cmd === 'label create') {
   if (process.env.FAKE_GH_CREATE === 'lost') fail()
   console.log(html_url)
 } else if (args[0] === 'api' && args[1]?.startsWith('repos/')) {
-  const params = new URLSearchParams(args[1].split('?')[1])
+  if (process.env.FAKE_GH_API_FAIL_PATH && args[1].includes(process.env.FAKE_GH_API_FAIL_PATH)) fail()
+  const [path = '', query] = args[1].split('?')
+  const params = new URLSearchParams(query)
   const page = Number(params.get('page'))
   if (page === Number(process.env.FAKE_GH_API_FAIL_PAGE)) fail()
   const per = Number(params.get('per_page'))
-  const label = params.get('labels')
-  const all = issues()
-    .filter((i) => (asArray(i.labels) ?? []).some((l) => asString(get(l, 'name')) === label))
-    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
-  output(all.slice((page - 1) * per, page * per))
+  const since = params.get('since')
+  const after = (iso: string): boolean => !since || Date.parse(iso) >= Date.parse(since)
+  // Issue のコメント（GitHub は id の昇順で返し、since は更新日時で絞る）
+  const comments = path.match(/\/issues\/(\d+)\/comments$/)
+  if (comments) {
+    const issue = issues().find((i) => i.number === Number(comments[1]))
+    const list = (asArray(issue?.comments) ?? [])
+      .flatMap((c) => {
+        const o = asObject(c)
+        return o ? [o] : []
+      })
+      .filter((c) => after(String(c.updated_at ?? c.created_at)))
+      .sort((a, b) => Number(a.id) - Number(b.id))
+    output(list.slice((page - 1) * per, page * per))
+  } else {
+    const label = params.get('labels')
+    const byUpdated = params.get('sort') === 'updated'
+    const key = byUpdated ? 'updated_at' : 'created_at'
+    const all = issues()
+      .filter((i) => (asArray(i.labels) ?? []).some((l) => asString(get(l, 'name')) === label))
+      .filter((i) => !byUpdated || after(String(i.updated_at)))
+      .sort((a, b) => String(b[key]).localeCompare(String(a[key])))
+    if (params.get('direction') === 'asc') all.reverse()
+    output(all.slice((page - 1) * per, page * per))
+  }
 } else fail()

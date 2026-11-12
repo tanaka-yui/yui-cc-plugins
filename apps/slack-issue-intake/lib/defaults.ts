@@ -223,6 +223,13 @@ export const MSG_STATUS_CHANGED = 'ステータスが {from} から {to} に変�
 export const MSG_STATUS_REOPENED = 'Issue が開き直されました（{to}）\n{issue}'
 export const MSG_STATUS_NONE = '（なし）'
 export const STATUS_COMMENT_MAX_CHARS = 3000
+// poll のステータスの処理。取り込みのあと、残り時間がこれ以上あるときだけ走らせる
+export const STATUS_MIN_REMAINING_MS = 10_000
+// 同じ Issue の通知を、Slack の失敗でこの回数まで試したら諦めて記録を進める
+export const STATUS_MAX_ATTEMPTS = 5
+// 一覧を読み直す位置（status_cursor）を、時計のずれに備えてこれだけ戻す
+export const STATUS_CURSOR_OVERLAP_SECONDS = 60
+export const META_STATUS_CURSOR = 'status_cursor'
 // マーカー付きのコメントを信じる書き手（公開リポジトリでは誰でもコメントできるため）
 export const TRUSTED_ASSOCIATIONS: readonly string[] = ['OWNER', 'MEMBER', 'COLLABORATOR']
 export const ORCA_MARKER_PATTERN = /^<!-- orca-auto:([a-z][a-z-]*):(\d+):([a-z][a-z-]*) -->$/
