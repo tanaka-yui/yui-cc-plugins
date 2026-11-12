@@ -1,10 +1,12 @@
 import { isAllowedEvery } from '../automation.ts'
-import { findChannel, joinChannel } from '../channels.ts'
+import { findChannel, joinChannel, normalizeChannelName } from '../channels.ts'
 import { loadConfig } from '../config.ts'
 import { getMeta, openDb } from '../db.ts'
 import {
+  CHANNEL_ID_PATTERN,
   COMMAND_DEADLINE_MS,
   DEFAULT_EVERY_MINUTES,
+  ERROR_MISSING_SCOPE,
   FORM_META_BOOKMARK_ID,
   FORM_META_TRIGGER_ID,
   FORM_TITLE,
@@ -40,8 +42,8 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
-import type { Channel } from '../channels.ts'
 import type { Prompter } from '../prompt.ts'
+import type { SlackClient } from '../slack-api.ts'
 
 const STDIN = 0
 const STDOUT = 1
@@ -101,9 +103,17 @@ const precheck = async (): Promise<Ready> => {
 
 type Picked<T> = { ok: true; value: T } | { ok: false; code: number }
 
-// 見つからなければ招待を案内し、Enter のあと同じ名前（既定値）で探し直す
-const pickChannel = async (p: Prompter, token: string): Promise<Picked<Channel>> => {
-  const slack = createSlackClient(token)
+// 本物のクライアントは channel_not_found や missing_scope で以後の呼び出しをすべて止める。
+// ウィザードは同じ入力で探し直す（findChannel も ID で見つからなければ名前で探す）ので、呼び出しごとに新しく作る
+const perCallClient = (token: string): SlackClient => ({
+  call: (method, params, until) => createSlackClient(token).call(method, params, until),
+  download: (url, maxBytes, until) => createSlackClient(token).download(url, maxBytes, until),
+})
+
+// 見つからなければ招待を案内し、Enter のあと同じ名前（既定値）で探し直す。
+// 手作業で作ったアプリは名前で探す権限（channels:read）を持たないので、チャンネル ID をそのまま使う（init が読めるか確かめる）
+const pickChannel = async (p: Prompter, token: string): Promise<Picked<string>> => {
+  const slack = perCallClient(token)
   let previous: string | undefined
   for (;;) {
     const answer = p.ask(SETUP_TEXT.askChannel, previous)
@@ -111,6 +121,13 @@ const pickChannel = async (p: Prompter, token: string): Promise<Picked<Channel>>
     if (!answer) continue
     previous = answer
     const found = await findChannel(slack, answer, deadline())
+    if (!found.ok && found.error === ERROR_MISSING_SCOPE) {
+      const id = normalizeChannelName(answer).toUpperCase()
+      if (CHANNEL_ID_PATTERN.test(id)) return { ok: true, value: id }
+      say(SETUP_TEXT.channelIdOnly)
+      previous = undefined
+      continue
+    }
     if (!found.ok) return { ok: false, code: fail(fill(SETUP_TEXT.channelFailed, { error: found.error })) }
     if (!found.channel) {
       say(fill(SETUP_TEXT.channelNotFound, { app: SLACK_APP_NAME }))
@@ -123,8 +140,18 @@ const pickChannel = async (p: Prompter, token: string): Promise<Picked<Channel>>
         return { ok: false, code: fail(fill(SETUP_TEXT.joinFailed, { error: joined.error, app: SLACK_APP_NAME })) }
     }
     say(fill(SETUP_TEXT.channelChosen, { name: channel.name, id: channel.id }))
-    return { ok: true, value: channel }
+    return { ok: true, value: channel.id }
   }
+}
+
+// 公開リポジトリは、内容が公開されることを示して y/N で確かめる
+const confirmPublic = (p: Prompter, visibility: string): Picked<boolean> => {
+  if (visibility !== 'PUBLIC') return { ok: true, value: false }
+  say(SETUP_TEXT.publicRepo)
+  const accepted = p.confirm(SETUP_TEXT.confirmPublic)
+  if (accepted === null) return { ok: false, code: exhausted() }
+  if (!accepted) return { ok: false, code: fail(SETUP_TEXT.declined) }
+  return { ok: true, value: true }
 }
 
 type RepoChoice = { repo: string; every: number; allowPublic: boolean }
@@ -148,13 +175,9 @@ const pickRepo = async (p: Prompter, ghPath: string): Promise<Picked<RepoChoice>
     if (!info.info.hasIssuesEnabled) return { ok: false, code: fail(SETUP_TEXT.noIssues) }
     if (!LABEL_WRITE_PERMISSIONS.includes(info.info.viewerPermission))
       return { ok: false, code: fail(MSG_PUSH_REQUIRED) }
-    if (info.info.visibility === 'PUBLIC') {
-      say(SETUP_TEXT.publicRepo)
-      const accepted = p.confirm(SETUP_TEXT.confirmPublic)
-      if (accepted === null) return { ok: false, code: exhausted() }
-      if (!accepted) return { ok: false, code: fail(SETUP_TEXT.declined) }
-      allowPublic = true
-    }
+    const visible = confirmPublic(p, info.info.visibility)
+    if (!visible.ok) return visible
+    allowPublic = visible.value
     repo = answer
     break
   }
@@ -240,11 +263,23 @@ const wizard = async (): Promise<number> => {
   const token = loadToken(paths.secrets)
   if (!token) return fail(SETUP_TEXT.noToken)
 
-  // 3〜5: 設定があれば飛ばす（送り先は変えられない）
-  if (loadConfig(home)) {
+  // 3〜5: 設定と automation がそろっていれば飛ばす（送り先は変えられない）。
+  // init が automation の登録で失敗すると設定だけが残るので、そのときは保存済みの値で init をやり直す
+  const existing = loadConfig(home)
+  if (existing?.orca.automationId) {
     heading(3, SETUP_TEXT.stepChannel, true)
     heading(4, SETUP_TEXT.stepRepo, true)
     heading(5, SETUP_TEXT.stepInit, true)
+  } else if (existing) {
+    heading(3, SETUP_TEXT.stepChannel, true)
+    heading(4, SETUP_TEXT.stepRepo, true)
+    heading(5, SETUP_TEXT.stepInit)
+    const info = await repoInfo(createGh(ready.ghPath), existing.repo, deadline())
+    if (!info.ok) return fail(fill(SETUP_TEXT.repoFailed, { error: info.error }))
+    const visible = confirmPublic(p, info.info.visibility)
+    if (!visible.ok) return visible.code
+    const code = child(['init', ...(visible.value ? ['--allow-public'] : [])])
+    if (code !== 0) return code
   } else {
     heading(3, SETUP_TEXT.stepChannel)
     const channel = await pickChannel(p, token)
@@ -257,7 +292,7 @@ const wizard = async (): Promise<number> => {
     const code = child([
       'init',
       '--channel',
-      channel.value.id,
+      channel.value,
       '--repo',
       repo,
       '--every',

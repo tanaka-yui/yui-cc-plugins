@@ -253,6 +253,7 @@ export const SLACK_CLI_TRIGGER_TIMEOUT_MS = 60_000
 
 // セットアップのウィザード（make setup）
 export const SETUP_STEPS = 8
+export const ERROR_MISSING_SCOPE = 'missing_scope'
 export const NODE_MIN_VERSION: readonly number[] = [24, 15]
 export const PROMPT_READ_CHUNK = 4096
 export const PROMPT_RETRY_MS = 50
@@ -282,6 +283,8 @@ export const SETUP_TEXT = {
   askChannel: 'チャンネル名（#issue-intake の形でも可）またはチャンネル ID',
   channelNotFound:
     'チャンネルが見つかりません。プライベートチャンネルなら、Slack でそのチャンネルに /invite @{app} を送ってから Enter を押してください',
+  channelIdOnly:
+    'このアプリにはチャンネル名で探す権限がありません。チャンネル ID（チャンネル名を右クリック →「チャンネル詳細を表示」の一番下）を入力してください',
   channelFailed: 'チャンネルを探せません（{error}）',
   joinFailed: 'チャンネルに参加できません（{error}）。Slack で /invite @{app} を送ってから再実行してください',
   channelChosen: 'チャンネル: #{name}（{id}）',

@@ -2,7 +2,7 @@ import { loadConfig } from '../lib/config.ts'
 import { asObject, get } from '../lib/json.ts'
 import { homePaths } from '../lib/paths.ts'
 import { permissionStatus } from '../lib/permissions.ts'
-import { loadToken } from '../lib/secrets.ts'
+import { loadToken, saveToken } from '../lib/secrets.ts'
 import { slackProject } from '../lib/slack-cli.ts'
 import { BOT_ID, BOT_USER, TEAM_ID, TEAM_URL } from './fixtures/slack-messages.ts'
 import {
@@ -17,8 +17,8 @@ import {
 } from './helpers.ts'
 
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 
 import type { SlackReply, SlackRequest } from './helpers.ts'
@@ -28,7 +28,10 @@ const OTHER = { id: 'C0OTHER001', name: 'general', is_private: false, is_member:
 const SECRET = { id: 'G0SECRET01', name: 'secret', is_private: true, is_member: true }
 const FULL_INPUT = '#Issue-Intake\nacme/app\n\ny\n'
 
-const fixture = async (t: { after: (fn: () => Promise<void>) => void }) => {
+const fixture = async (
+  t: { after: (fn: () => Promise<void>) => void },
+  override: (r: SlackRequest) => SlackReply | null = () => null,
+) => {
   const home = tempHome()
   const claudeHome = tempHome()
   const gh = fakeGh(tempHome())
@@ -36,6 +39,8 @@ const fixture = async (t: { after: (fn: () => Promise<void>) => void }) => {
   const cli = fakeSlackCli(tempHome())
   let scans = 0
   const server = await startSlack((r: SlackRequest): SlackReply => {
+    const replaced = override(r)
+    if (replaced) return replaced
     if (r.method === 'auth.test')
       return { json: { ok: true, user_id: BOT_USER, bot_id: BOT_ID, team_id: TEAM_ID, url: TEAM_URL, team: 'acme' } }
     if (r.method === 'conversations.list') {
@@ -75,6 +80,7 @@ const fixture = async (t: { after: (fn: () => Promise<void>) => void }) => {
   }
   return {
     home,
+    claudeHome,
     orca,
     cli,
     calls,
@@ -194,4 +200,64 @@ test('SU9 公開リポジトリは内容が公開されると示して確かめ�
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /公開/)
   assert.equal(loadConfig(f.home)?.repo, 'acme/app')
+})
+
+test('SU10 init が automation の登録で失敗したら、次の実行で init からやり直す', async (t) => {
+  const f = await fixture(t)
+  const r = await f.setup(FULL_INPUT, { FAKE_ORCA_CREATE: 'fail' })
+  assert.equal(r.code, 1)
+  assert.equal(loadConfig(f.home)?.orca.automationId, null)
+  const again = await f.setup('y\n')
+  assert.equal(again.code, 0, again.stderr)
+  assert.equal(loadConfig(f.home)?.orca.automationId, 'auto-1')
+  assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
+})
+
+test('SU11 受け継ぐ許可は一覧を見せて確かめ、承認しなければ有効にしない', async (t) => {
+  const f = await fixture(t)
+  mkdirSync(f.claudeHome, { recursive: true })
+  writeFileSync(join(f.claudeHome, 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(git status)'] } }))
+  const r = await f.setup(`${FULL_INPUT}n\n`)
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /inherited-allow Bash\(git status\)/)
+  assert.ok(!orcaCalls(f.orca.log).some((c) => c.includes('--enabled')))
+  const again = await f.setup('y\n')
+  assert.equal(again.code, 0, again.stderr)
+  assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
+})
+
+test('SU12 手作業のアプリ（名前で探す権限なし）は deploy せず、チャンネル ID で進めてフォームは手順を示す', async (t) => {
+  const f = await fixture(t, (r): SlackReply | null =>
+    r.method === 'conversations.list' || r.method === 'conversations.info'
+      ? { json: { ok: false, error: 'missing_scope' } }
+      : null,
+  )
+  saveToken(homePaths(f.home).secrets, 'xoxb-manual-token')
+  const r = await f.setup('issue-intake\nC0TARGET01\nacme/app\n\ny\n')
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /チャンネル ID/)
+  assert.match(r.stdout, /Workflow Builder/)
+  assert.equal(f.cliCalls('deploy').length, 0)
+  assert.equal(f.cliCalls('trigger create').length, 0)
+  assert.equal(loadConfig(f.home)?.channel, 'C0TARGET01')
+  assert.equal(loadToken(homePaths(f.home).secrets), 'xoxb-manual-token')
+})
+
+test('SU13 ID の形に見える名前は、ID で見つからなくても名前で探し直す（本物のクライアントは致命エラーで止まる）', async (t) => {
+  const f = await fixture(t, (r): SlackReply | null =>
+    r.method === 'conversations.info'
+      ? { json: { ok: false, error: 'channel_not_found' } }
+      : r.method === 'conversations.list'
+        ? {
+            json: {
+              ok: true,
+              channels: [{ id: 'C0CUSTOM01', name: 'customers', is_private: false, is_member: true }],
+              response_metadata: { next_cursor: '' },
+            },
+          }
+        : null,
+  )
+  const r = await f.setup('customers\nacme/app\n\ny\n')
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(loadConfig(f.home)?.channel, 'C0CUSTOM01')
 })
