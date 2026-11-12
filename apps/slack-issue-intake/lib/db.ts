@@ -95,7 +95,9 @@ export const openDb = (file: string): Db => {
       raw TEXT NOT NULL,fields TEXT,problems TEXT NOT NULL,reporter_id TEXT,reporter_name TEXT,files TEXT NOT NULL,state TEXT NOT NULL,failed_from TEXT,
       rounds INTEGER NOT NULL,last_question_ts TEXT,asked_at TEXT,timed_out_at TEXT,transcript TEXT NOT NULL,decision TEXT,create_started_at TEXT,create_login TEXT,
       inflight TEXT,issue_url TEXT,issue_number INTEGER,attempts INTEGER NOT NULL,last_error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(channel,ts));
-    CREATE INDEX IF NOT EXISTS submissions_state_ts ON submissions(state,ts_micro);`)
+    CREATE INDEX IF NOT EXISTS submissions_state_ts ON submissions(state,ts_micro);
+    CREATE TABLE IF NOT EXISTS issue_status(issue_number INTEGER PRIMARY KEY,status TEXT,state TEXT NOT NULL,
+      last_comment_id INTEGER NOT NULL,seen_updated_at TEXT,attempts INTEGER NOT NULL,updated_at TEXT NOT NULL);`)
   db.prepare("INSERT OR IGNORE INTO meta VALUES ('schema_version','1')").run()
   return db
 }
@@ -210,6 +212,70 @@ export const transition = (
     patchUpdate(db, id, patch, now)
     return true
   })
+// Issue のステータスの前回の記録。通知はこれとの差だけを出す（submissions の created は書き換えない決まりなので別の表）
+export type IssueStatusRow = {
+  issueNumber: number
+  status: string | null
+  state: 'open' | 'closed'
+  lastCommentId: number
+  seenUpdatedAt: string | null
+  attempts: number
+}
+export const getIssueStatus = (db: Db, issueNumber: number): IssueStatusRow | null => {
+  const r = db.prepare('SELECT * FROM issue_status WHERE issue_number=?').get(issueNumber)
+  return r
+    ? {
+        issueNumber: Number(r.issue_number),
+        status: nullable(r, 'status'),
+        state: String(r.state) === 'closed' ? 'closed' : 'open',
+        lastCommentId: Number(r.last_comment_id),
+        seenUpdatedAt: nullable(r, 'seen_updated_at'),
+        attempts: Number(r.attempts),
+      }
+    : null
+}
+const writeIssueStatus = (db: Db, row: IssueStatusRow, now: string, replace: boolean): void => {
+  db.prepare(
+    `INSERT INTO issue_status VALUES (?,?,?,?,?,?,?) ON CONFLICT(issue_number) DO ${
+      replace
+        ? 'UPDATE SET status=excluded.status,state=excluded.state,last_comment_id=excluded.last_comment_id,seen_updated_at=excluded.seen_updated_at,attempts=excluded.attempts,updated_at=excluded.updated_at'
+        : 'NOTHING'
+    }`,
+  ).run(row.issueNumber, row.status, row.state, row.lastCommentId, row.seenUpdatedAt, row.attempts, now)
+}
+export const saveIssueStatus = (db: Db, token: string, row: IssueStatusRow, now: string): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return false
+    writeIssueStatus(db, row, now, true)
+    return true
+  })
+// 起票（または既存の Issue の採用）と同じトランザクションで、最初の状態を記録する。すでに行があれば残す
+export const transitionWithStatus = (
+  db: Db,
+  token: string,
+  id: number,
+  from: State,
+  patch: SubmissionPatch,
+  seed: IssueStatusRow,
+  now: string,
+): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now) || getSubmission(db, id)?.state !== from) return false
+    patchUpdate(db, id, patch, now)
+    writeIssueStatus(db, seed, now, false)
+    return true
+  })
+export type TrackedIssue = { channel: string; ts: string; reporterId: string | null }
+export const trackedIssues = (db: Db): Map<number, TrackedIssue> =>
+  new Map(
+    db
+      .prepare('SELECT issue_number,channel,ts,reporter_id FROM submissions WHERE issue_number IS NOT NULL')
+      .all()
+      .map((r) => [
+        Number(r.issue_number),
+        { channel: String(r.channel), ts: String(r.ts), reporterId: nullable(r, 'reporter_id') },
+      ]),
+  )
 export const getScan = (db: Db): HistoryScan | null =>
   JSON.parse(getMeta(db, 'history_scan') ?? 'null') as HistoryScan | null
 export const saveScan = (db: Db, token: string, scan: HistoryScan, now: string): boolean =>

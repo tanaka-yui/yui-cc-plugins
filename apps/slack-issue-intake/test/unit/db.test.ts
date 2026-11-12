@@ -4,6 +4,7 @@ import {
   confirmInflightDead,
   countByState,
   forgetRun,
+  getIssueStatus,
   getMeta,
   getScan,
   getSubmission,
@@ -12,12 +13,15 @@ import {
   olderRuns,
   openDb,
   registerRun,
+  saveIssueStatus,
   saveScan,
   saveUserName,
   setInflight,
   setInflightChild,
   setMeta,
+  trackedIssues,
   transition,
+  transitionWithStatus,
 } from '../../lib/db.ts'
 import { acquireLease, claimApply, markCollected, readLease, releaseLease, renewLease } from '../../lib/lease.ts'
 import { parseSubmission } from '../../lib/parse.ts'
@@ -173,4 +177,46 @@ test('LE6 期限切れの同時回収は20回とも1プロセスだけ成功', a
     const outputs = await Promise.all([race(file), race(file)])
     assert.deepEqual(outputs.sort(), ['busy', 'ok'])
   }
+})
+const row = (issueNumber: number, status: string | null) => ({
+  issueNumber,
+  status,
+  state: 'open' as const,
+  lastCommentId: 0,
+  seenUpdatedAt: null,
+  attempts: 0,
+})
+test('DB9 saveIssueStatus はリースが無効なら書かず false、有効なら upsert', () => {
+  const { db, token } = setup()
+  assert.equal(saveIssueStatus(db, 'wrong', row(7, 'Ready'), NOW), false)
+  assert.equal(getIssueStatus(db, 7), null)
+  assert.ok(saveIssueStatus(db, token, row(7, 'Ready'), NOW))
+  assert.ok(saveIssueStatus(db, token, { ...row(7, 'Done'), state: 'closed', lastCommentId: 5, attempts: 2 }, NOW))
+  assert.deepEqual(getIssueStatus(db, 7), {
+    issueNumber: 7,
+    status: 'Done',
+    state: 'closed',
+    lastCommentId: 5,
+    seenUpdatedAt: null,
+    attempts: 2,
+  })
+})
+test('DB10 transitionWithStatus は状態が違えば submissions も issue_status も変えない', () => {
+  const { db, token, id } = setup()
+  const patch = { state: 'notifying' as const, issueUrl: 'https://github.com/acme/app/issues/9', issueNumber: 9 }
+  assert.equal(transitionWithStatus(db, token, id, 'creating', patch, row(9, 'Backlog'), NOW), false)
+  assert.equal(getIssueStatus(db, 9), null)
+  assert.equal(getSubmission(db, id)?.state, 'new')
+  assert.ok(transitionWithStatus(db, token, id, 'new', patch, row(9, 'Backlog'), NOW))
+  assert.equal(getIssueStatus(db, 9)?.status, 'Backlog')
+  assert.equal(getSubmission(db, id)?.issueNumber, 9)
+  assert.deepEqual(trackedIssues(db).get(9), {
+    channel: CHANNEL,
+    ts: '1.0',
+    reporterId: getSubmission(db, id)?.reporterId,
+  })
+  // すでに行があれば上書きしない（最初の記録だけを残す）
+  saveIssueStatus(db, token, row(9, 'Ready'), NOW)
+  assert.ok(transitionWithStatus(db, token, id, 'notifying', { state: 'created' }, row(9, 'Backlog'), NOW))
+  assert.equal(getIssueStatus(db, 9)?.status, 'Ready')
 })

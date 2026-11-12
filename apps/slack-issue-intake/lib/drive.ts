@@ -9,6 +9,7 @@ import {
   setInflight,
   setInflightChild,
   transition,
+  transitionWithStatus,
 } from './db.ts'
 import {
   CREATE_LOOKBACK_MINUTES,
@@ -29,6 +30,7 @@ import {
   MSG_QUESTION_FOOTER,
   MSG_REJECTED,
   PROBLEM_SEPARATOR,
+  STATUS_BACKLOG,
   TITLE_ELLIPSIS,
 } from './defaults.ts'
 import { writeAtomic } from './fs.ts'
@@ -82,6 +84,34 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
   }
   const success = (patch: SubmissionPatch): DriveOutcome =>
     update({ ...patch, attempts: 0, lastError: null }) ? out() : changed()
+  const withStatus = (): boolean => getMeta(rt.db, META_LABELS_HASH) === labelsHash()
+  // Issue ができたら、ステータスの最初の記録も同じトランザクションで残す（通知はこの記録との差で出す）
+  const created = (issue: { url: string; number: number }, backlog: boolean): DriveOutcome =>
+    transitionWithStatus(
+      rt.db,
+      token,
+      s.id,
+      s.state,
+      {
+        state: 'notifying',
+        issueUrl: issue.url,
+        issueNumber: issue.number,
+        inflight: null,
+        attempts: 0,
+        lastError: null,
+      },
+      {
+        issueNumber: issue.number,
+        status: backlog ? STATUS_BACKLOG : null,
+        state: 'open',
+        lastCommentId: 0,
+        seenUpdatedAt: null,
+        attempts: 0,
+      },
+      now(),
+    )
+      ? out()
+      : changed()
   if (Date.now() >= ctx.deadline) return out(ERROR_DEADLINE, true)
   if (!renew()) return out(ERROR_LEASE_LOST, true)
   if (s.state === 'creating') {
@@ -116,8 +146,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
       ctx.deadline,
     )
     if (!found.ok) return fail(found.error)
-    if (found.issue)
-      return success({ state: 'notifying', issueUrl: found.issue.url, issueNumber: found.issue.number, inflight: null })
+    if (found.issue) return created(found.issue, withStatus())
     if (!s.fields || s.decision?.action !== 'create') return fail('Issue の決定内容がありません')
     let body: string
     try {
@@ -132,6 +161,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
     // pollにも独立したrunディレクトリを割り当て、古い持ち主が新しい本文を消せないようにする。
     const bodyRunId = randomUUID()
     if (registerRun(rt.db, token, bodyRunId, now()) === null) return out(ERROR_LEASE_LOST, true)
+    const backlog = withStatus()
     const dir = join(rt.paths.runsDir, bodyRunId)
     const file = join(dir, `issue-${s.id}.md`)
     try {
@@ -147,13 +177,13 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
               ? title.slice(0, MAX_TITLE_CHARS - 1).join('') + TITLE_ELLIPSIS
               : title.join(''),
           bodyFile: file,
-          labels: issueLabels(s.fields, getMeta(rt.db, META_LABELS_HASH) === labelsHash()),
+          labels: issueLabels(s.fields, backlog),
         },
         ctx.deadline,
         (child) => setInflightChild(rt.db, s.id, process.pid, child),
       )
       if (!result.ok) return fail(result.error)
-      return success({ state: 'notifying', issueUrl: result.url, issueNumber: result.number, inflight: null })
+      return created(result, backlog)
     } catch (error) {
       return fail(error instanceof Error ? error.message : String(error))
     } finally {

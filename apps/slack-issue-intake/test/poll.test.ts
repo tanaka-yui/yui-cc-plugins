@@ -1,4 +1,14 @@
-import { ALL_STATES, countByState, getMeta, getScan, getSubmission, listByStates, openDb, setMeta } from '../lib/db.ts'
+import {
+  ALL_STATES,
+  countByState,
+  getIssueStatus,
+  getMeta,
+  getScan,
+  getSubmission,
+  listByStates,
+  openDb,
+  setMeta,
+} from '../lib/db.ts'
 import { META_LABELS_HASH } from '../lib/defaults.ts'
 import { labelsHash } from '../lib/github.ts'
 import { acquireLease } from '../lib/lease.ts'
@@ -73,7 +83,13 @@ const fixture = async (
     db.close()
     return s
   }
-  return { home, gh, server, env, poll, read }
+  const status = (issue: number) => {
+    const db = openDb(homePaths(home).db)
+    const s = getIssueStatus(db, issue)
+    db.close()
+    return s
+  }
+  return { home, gh, server, env, poll, read, status }
 }
 const content = { action: 'create' as const, summary: '要約', details: '詳細', unresolved: [] }
 test('PO1/PO2/PO13/PO19 投稿を受付境界で選別し、cursorを進め、何も無ければ起動しない', async (t) => {
@@ -149,6 +165,15 @@ test('PO6 creatingから同じ回に作成とURL通知', async (t) => {
     f.server.requests.find((r) => r.method === 'chat.postMessage')?.params.text ?? '',
     /Issue を作成しました: https:/,
   )
+  // 作ったときの状態を記録する（ラベルの指紋が無いので Backlog は付けていない）
+  assert.deepEqual(f.status(42), {
+    issueNumber: 42,
+    status: null,
+    state: 'open',
+    lastCommentId: 0,
+    seenUpdatedAt: null,
+    attempts: 0,
+  })
 })
 test('PO27 labels_hash が今と違えば Backlog を付けずに起票し、一致すれば付ける', async (t) => {
   const ORIGINAL = 'bug,feature,request,priority: critical,priority: high,priority: middle,priority: low,from-slack'
@@ -176,6 +201,7 @@ test('PO27 labels_hash が今と違えば Backlog を付けずに起票し、一
   assert.equal((await updated.poll()).code, 1)
   assert.equal(updated.read(b)?.state, 'created')
   assert.ok(labelsOf(updated.gh.log).includes('Backlog'))
+  assert.equal(updated.status(42)?.status, 'Backlog')
 })
 test('PO7/PO23 応答喪失は死活確認から90秒待ち、アカウント復帰後に既存Issueを採用', async (t) => {
   const f = await fixture(t)
@@ -203,6 +229,8 @@ test('PO7/PO23 応答喪失は死活確認から90秒待ち、アカウント復
   await f.poll('2026-11-12T00:02:20.000Z')
   assert.equal(f.read(id)?.state, 'created')
   assert.equal(ghCalls(f.gh.log).filter((c) => c.argv[0] === 'issue').length, 1)
+  // 既存の Issue を採用したときも、状態の記録を作る
+  assert.equal(f.status(f.read(id)?.issueNumber ?? 0)?.state, 'open')
 })
 test('PO8 10回失敗したらfailedにして管理者確認だけを返信', async (t) => {
   const f = await fixture(t)
