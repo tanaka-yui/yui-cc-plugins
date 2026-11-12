@@ -80,6 +80,28 @@ export const FIELD_LABELS = {
   body: '本文',
 } as const
 export const TEMPLATE_REPORTER_HINT = 'フォームを送信した人'
+// フォーム付きマニフェスト（form --manifest）と、チャンネルにボタンを置く form で使う値
+export const FORM_WORKFLOW_ID = 'issue_intake_form'
+export const FORM_TITLE = 'Issue を起票' // open_form の題は半角24字（日本語は1字を3と数えて8字）まで
+export const FORM_TITLE_MAX_UNITS = 24
+export const FORM_FIELD_TITLE_MAX_CHARS = 25
+export const FORM_DESCRIPTION = 'GitHub Issue の起票依頼を送ります'
+export const FORM_SUBMIT_LABEL = '送信'
+export const FORM_ATTACHMENTS_TITLE = '添付ファイル（任意）'
+// send_message は channels:read、ボタンは triggers:write、チャンネルのブックマークは bookmarks:write が要る
+export const FORM_EXTRA_SCOPES: readonly string[] = [
+  'channels:read',
+  'groups:read',
+  'triggers:write',
+  'bookmarks:write',
+]
+// ボタンを使えるのは対象チャンネルのメンバーだけにする
+export const FORM_TRIGGER_PERMISSION = 'named_entities'
+export const FORM_META_TRIGGER_ID = 'form_trigger_id'
+export const FORM_META_URL = 'form_url'
+export const FORM_META_BOOKMARK_ID = 'form_bookmark_id'
+export const MSG_FORM_REFUSED =
+  'Slack がフォームのボタンの作成を受け付けませんでした（{error}）。アプリを form --manifest のマニフェストで作ったか確かめてください。だめなら guide の手順で Workflow Builder から作ってください'
 export const CATEGORIES = ['バグ', '新機能', '要望'] as const
 export const PRIORITIES = ['critical', 'high', 'middle', 'low'] as const
 export const CATEGORY_KEYS = { バグ: 'bug', 新機能: 'feature', 要望: 'request' } as const

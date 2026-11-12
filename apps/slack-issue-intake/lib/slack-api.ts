@@ -17,7 +17,8 @@ import { maskSecrets } from './secrets.ts'
 import { compareTs } from './slack-text.ts'
 
 import type { JsonObject } from './json.ts'
-export type SlackFailure = { ok: false; error: string; retryAfterSeconds: number | null }
+// detail は Slack が errors / response_metadata.messages に返した詳細（伏せ字済み）。不足した引数などの確認に使う
+export type SlackFailure = { ok: false; error: string; retryAfterSeconds: number | null; detail?: string }
 export type SlackResult = { ok: true; body: JsonObject } | SlackFailure
 export type SlackList = { ok: true; messages: JsonObject[] } | SlackFailure
 export type SlackPage = { ok: true; messages: JsonObject[]; hasMore: boolean } | SlackFailure
@@ -58,10 +59,15 @@ export const isTransientSlackError = (error: string): boolean =>
   TRANSIENT_SLACK_ERRORS.includes(error) ||
   TRANSIENT_SLACK_ERROR_PREFIXES.some((prefix) => error.startsWith(prefix)) ||
   TRANSIENT_SLACK_HTTP_ERROR.test(error)
-const failure = (error: string, retryAfterSeconds: number | null = null): SlackFailure => ({
+const failure = (
+  error: string,
+  retryAfterSeconds: number | null = null,
+  detail: string | null = null,
+): SlackFailure => ({
   ok: false,
   error: maskSecrets(error),
   retryAfterSeconds,
+  ...(detail ? { detail: maskSecrets(detail) } : {}),
 })
 export const createSlackClient = (token: string): SlackClient => {
   // 429・締め切り・致命的エラーのあとは、この回の外部通信をすべて止める。
@@ -93,7 +99,16 @@ export const createSlackClient = (token: string): SlackClient => {
         if (!response.ok) return failure(`http: ${response.status}`)
         const body = asObject(parseJson(await response.text()))
         if (!body) return failure('応答をJSONとして読めません')
-        if (body.ok !== true) return remember(failure(asString(body.error) ?? 'Slack API の応答が不正です'))
+        if (body.ok !== true) {
+          const detail = body.errors ?? get(body, 'response_metadata', 'messages')
+          return remember(
+            failure(
+              asString(body.error) ?? 'Slack API の応答が不正です',
+              null,
+              detail === undefined ? null : JSON.stringify(detail),
+            ),
+          )
+        }
         return { ok: true, body }
       } catch (error) {
         return networkFailure(

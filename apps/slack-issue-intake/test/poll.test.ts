@@ -1,7 +1,17 @@
-import { countByState, getMeta, getScan, getSubmission, openDb } from '../lib/db.ts'
+import { ALL_STATES, countByState, getMeta, getScan, getSubmission, listByStates, openDb } from '../lib/db.ts'
 import { acquireLease } from '../lib/lease.ts'
 import { homePaths } from '../lib/paths.ts'
-import { BOT_USER, CHANNEL, NOW, NOW_SEC, templateText, textMessage, tsAt } from './fixtures/slack-messages.ts'
+import {
+  BOT_ID,
+  BOT_USER,
+  CHANNEL,
+  NOW,
+  NOW_SEC,
+  REPORTER,
+  templateText,
+  textMessage,
+  tsAt,
+} from './fixtures/slack-messages.ts'
 import {
   fakeGh,
   ghCalls,
@@ -378,4 +388,23 @@ test('PO21b 死亡確認から90秒待ち、既存Issueが無ければ新しい�
   await f.poll('2026-11-12T00:01:40.000Z')
   assert.equal(f.read(id)?.state, 'created')
   assert.equal(ghCalls(f.gh.log).filter((c) => c.argv[0] === 'issue').length, 1)
+})
+test('PO26 自分のボット（フォームのワークフロー）の投稿はマーカー付きだけ受け付け、起票者はメンションだけから取る', async (t) => {
+  const own = { bot_id: BOT_ID, user: BOT_USER }
+  const f = await fixture(t, {
+    messages: [
+      textMessage(tsAt(300), templateText(), own),
+      textMessage(tsAt(200), templateText({ reporter: '不明' }), own),
+      textMessage(tsAt(100), '自分の雑談', own),
+    ],
+  })
+  const r = await f.poll()
+  assert.equal(r.code, 0, r.stderr)
+  const db = openDb(homePaths(f.home).db)
+  const rows = listByStates(db, ALL_STATES)
+  db.close()
+  assert.deepEqual(rows.map((s) => [s.ts, s.state, s.reporterId]).sort(), [
+    [tsAt(300), 'new', REPORTER],
+    [tsAt(200), 'new', null],
+  ])
 })

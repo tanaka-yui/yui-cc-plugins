@@ -23,6 +23,12 @@ Issue の作成は、持ち主と子がすべて止まったと確認するま�
 すべての Slack / gh 呼び出しへ deadline を渡します。残り時間がなければ呼びません。poll の予算は45秒です。
 ランチャーは dev-digest の bin/launch.ts を元にし、lib を読みません。定数の写しと LAUNCHER_VERSION の重複だけを認め、LA2 で一致を確かめます。固定値は lib/defaults.ts にまとめます。添付リンクだけで上限に達する場合は、リンクを丸ごと省いて件数を示します。必須の骨組みすら収まらなければ送信せず失敗を記録します。
 
+## フォームの自動作成
+
+`form --manifest`（make manifest）は guide のマニフェストに、組み込みの open_form と send_message だけのワークフロー、`org_deploy_enabled: true`、FORM_EXTRA_SCOPES を足して出します。通常のマニフェストは変えません。受け付けられなかったときに手作業の手順へ戻れるようにするためです。
+`form`（make slack-form）はボタン（workflows.triggers.create）、使える人（チャンネルのメンバー）、ブックマークの順に作り、ID を meta に残して再実行で重ねません。workflows.triggers.create のボットトークンでの利用は公式資料に無く、実環境で未確認です。引数は Slack の SDK と同じく、入れ子の値を JSON 文字列にしたフォーム形式で送ります。
+このワークフローは自分のボットとして投稿します。poll と inspect は自分の投稿でもマーカーで始まるものを受け付け、起票者は本文のメンションだけから取ります。自分の返信は常にスレッド内なので履歴には出ません。
+
 ## 試験と秘密
 
 テスト専用の差し替えは SLACK_ISSUE_INTAKE_HOME、SLACK_ISSUE_INTAKE_API_BASE（loopback のみ）、SLACK_ISSUE_INTAKE_CLAUDE_HOME。Orca の呼び先には ORCA_BIN を使えます。本番の設定手順にテスト変数を使いません。
