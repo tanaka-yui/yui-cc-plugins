@@ -89,8 +89,8 @@ export const FORM_DESCRIPTION = 'GitHub Issue の起票依頼を送ります'
 export const FORM_SUBMIT_LABEL = '送信'
 export const FORM_ATTACHMENTS_TITLE = '添付ファイル（任意）'
 // send_message は channels:read と chat:write.public（無いと Slack がマニフェストを invalid_manifest で拒む）、
-// ボタンを使う人のチャンネル参加は channels:join、チャンネルのブックマークは bookmarks:write が要る
-// （ボタンの作成は Slack CLI が受け持つので triggers:write は要らない）
+// ボタンを使う人のチャンネル参加は channels:join、チャンネルのおすすめワークフロー（workflows.featured.add）は
+// bookmarks:write が要る（ボタンのリンクは Slack CLI が作るので triggers:write は要らない）
 export const FORM_EXTRA_SCOPES: readonly string[] = [
   'channels:read',
   'groups:read',
@@ -101,7 +101,8 @@ export const FORM_EXTRA_SCOPES: readonly string[] = [
 // ボタンを使えるのは対象チャンネルのメンバーだけにする
 export const FORM_META_TRIGGER_ID = 'form_trigger_id'
 export const FORM_META_URL = 'form_url'
-export const FORM_META_BOOKMARK_ID = 'form_bookmark_id'
+// おすすめにしたトリガーの ID。前の版が API で足した関連ページ（ブックマーク）はブラウザを開いてしまうので使わない
+export const FORM_META_FEATURED = 'form_featured_trigger_id'
 export const MSG_FORM_REFUSED =
   'Slack CLI でフォームのボタンを作れませんでした（{error}）。フォームは README の「Workflow Builder で手で作る」の手順で作ってください'
 export const MSG_FORM_NO_CLI =
@@ -178,6 +179,7 @@ export const TOKEN_DIALOG_TITLE = 'slack-issue-intake'
 export const TOKEN_PROMPT = 'Slack の Bot User OAuth Token（xoxb- で始まるもの）を貼り付けてください'
 export const BOT_TOKEN_PATTERN = /^xoxb-[A-Za-z0-9-]+$/
 export const CHANNEL_ID_PATTERN = /^[CG][A-Z0-9]{8,}$/
+export const APP_ID_PATTERN = /^A[A-Z0-9]{8,}$/
 export const CHANNEL_PAGE_SIZE = 200
 export const ERROR_CHANNEL_NOT_FOUND = 'channel_not_found'
 export const REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
@@ -286,6 +288,13 @@ export const SETUP_TEXT = {
   deployFailed: 'slack deploy に失敗しました（終了コード {code}）。上の出力を確かめてから再実行してください',
   noToken:
     'トークンを受け取れませんでした。Slack のアプリの設定画面（OAuth & Permissions）で Bot User OAuth Token をコピーし、node bin/slack-issue-intake.ts set-token で登録してから、もう一度 make setup を実行してください',
+  askAppId:
+    'すでにある Slack アプリを使うなら、そのアプリ ID（A で始まる。https://api.slack.com/apps の Basic Information にあります）。空のまま Enter で新しく作ります',
+  badAppId: 'アプリ ID は A で始まる英大文字と数字です。新しく作るなら空のまま Enter を押してください',
+  linking:
+    'Slack CLI でアプリ {app} をつなぎます。ワークスペースを聞かれたら、そのアプリがあるワークスペースを選んでください',
+  linkFailed:
+    'slack app link に失敗しました（終了コード {code}）。アプリ ID とワークスペースを確かめてから再実行してください',
   manualApp: 'トークンは登録済みです。make setup で作ったアプリが無いので、手作業で作ったアプリとして進めます',
   askChannel: 'チャンネル名（#issue-intake の形でも可）またはチャンネル ID',
   channelNotFound:
@@ -303,6 +312,8 @@ export const SETUP_TEXT = {
     '公開リポジトリです。Slack に送られた内容（本文・添付のリンク）が Issue として誰でも見られる形で公開されます',
   confirmPublic: 'この公開リポジトリに起票しますか？',
   askEvery: '確認の間隔（分。60 の約数）',
+  currentConfig:
+    '今の設定: チャンネル {channel}、リポジトリ {repo}、確認の間隔 {every} 分。チャンネルとリポジトリは変えられません。間隔を変えるなら新しい値を入力し、そのままなら Enter を押してください',
   badEvery: '60 の約数（1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60）を入力してください',
   declined:
     '承認されなかったので、この段では何も変えずに止めました。もう一度 make setup を実行すると、ここから再開します',
@@ -312,5 +323,5 @@ export const SETUP_TEXT = {
   confirmInherited: 'これらの許可を受け継いだまま有効にしますか？',
   noInherited: '権限の設定を読めません。~/.claude/settings.json を確かめてから再実行してください',
   finished:
-    'セットアップが終わりました。チャンネルのブックマーク「{title}」から1件送り、数分後に node bin/slack-issue-intake.ts inspect --raw で受け付けたことを確かめてください',
+    'セットアップが終わりました。チャンネルの入力欄の所に出るボタン「{title}」から1件送り、数分後に node bin/slack-issue-intake.ts inspect --raw で受け付けたことを確かめてください',
 } as const

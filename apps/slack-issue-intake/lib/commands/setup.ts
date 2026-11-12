@@ -4,11 +4,12 @@ import { parseFlags } from '../cli.ts'
 import { loadConfig } from '../config.ts'
 import { getMeta, openDb } from '../db.ts'
 import {
+  APP_ID_PATTERN,
   CHANNEL_ID_PATTERN,
   COMMAND_DEADLINE_MS,
   DEFAULT_EVERY_MINUTES,
   ERROR_MISSING_SCOPE,
-  FORM_META_BOOKMARK_ID,
+  FORM_META_FEATURED,
   FORM_META_TRIGGER_ID,
   FORM_TITLE,
   LABEL_WRITE_PERMISSIONS,
@@ -33,6 +34,7 @@ import {
   manifestHash,
   readDeployedHash,
   runDeploy,
+  runLink,
   saveDeployedHash,
   slackLoggedIn,
   slackProject,
@@ -155,6 +157,38 @@ const confirmPublic = (p: Prompter, visibility: string): Picked<boolean> => {
   return { ok: true, value: true }
 }
 
+// 間隔は今の値（初回は既定値）を既定にして聞く
+const pickEvery = (p: Prompter, current: number): Picked<number> => {
+  for (;;) {
+    const answer = p.ask(SETUP_TEXT.askEvery, String(current))
+    if (answer === null) return { ok: false, code: exhausted() }
+    const every = Number(answer)
+    if (isAllowedEvery(every)) return { ok: true, value: every }
+    say(SETUP_TEXT.badEvery)
+  }
+}
+
+// 既存のアプリ ID を聞く。空なら新しく作る（null）
+const pickAppId = (p: Prompter): Picked<string | null> => {
+  for (;;) {
+    const answer = p.ask(SETUP_TEXT.askAppId)
+    if (answer === null) return { ok: false, code: exhausted() }
+    if (!answer) return { ok: true, value: null }
+    const id = answer.toUpperCase()
+    if (APP_ID_PATTERN.test(id)) return { ok: true, value: id }
+    say(SETUP_TEXT.badAppId)
+  }
+}
+
+// 保存済みのリポジトリで init をやり直す。公開リポジトリなら、もう一度確かめる
+const reinit = async (p: Prompter, ghPath: string, repo: string, args: string[]): Promise<number> => {
+  const info = await repoInfo(createGh(ghPath), repo, deadline())
+  if (!info.ok) return fail(fill(SETUP_TEXT.repoFailed, { error: info.error }))
+  const visible = confirmPublic(p, info.info.visibility)
+  if (!visible.ok) return visible.code
+  return child(['init', ...args, ...(visible.value ? ['--allow-public'] : [])])
+}
+
 type RepoChoice = { repo: string; every: number; allowPublic: boolean }
 // リポジトリは先に gh で確かめ、公開なら承認を取ってから間隔を聞く
 const pickRepo = async (p: Prompter, ghPath: string): Promise<Picked<RepoChoice>> => {
@@ -182,20 +216,15 @@ const pickRepo = async (p: Prompter, ghPath: string): Promise<Picked<RepoChoice>
     repo = answer
     break
   }
-  for (;;) {
-    const answer = p.ask(SETUP_TEXT.askEvery, String(DEFAULT_EVERY_MINUTES))
-    if (answer === null) return { ok: false, code: exhausted() }
-    const every = Number(answer)
-    if (isAllowedEvery(every)) return { ok: true, value: { repo, every, allowPublic } }
-    say(SETUP_TEXT.badEvery)
-  }
+  const every = pickEvery(p, DEFAULT_EVERY_MINUTES)
+  return every.ok ? { ok: true, value: { repo, every: every.value, allowPublic } } : every
 }
 
 const formDone = (dbFile: string): boolean => {
   if (!existsSync(dbFile)) return false
   const db = openDb(dbFile)
   try {
-    return Boolean(getMeta(db, FORM_META_TRIGGER_ID) && getMeta(db, FORM_META_BOOKMARK_ID))
+    return Boolean(getMeta(db, FORM_META_TRIGGER_ID) && getMeta(db, FORM_META_FEATURED))
   } finally {
     db.close()
   }
@@ -261,13 +290,25 @@ const wizard = async (): Promise<number> => {
     heading(2, SETUP_TEXT.stepApp, true)
   } else {
     heading(2, SETUP_TEXT.stepApp)
-    say(SETUP_TEXT.deploying)
     writeProject(project)
-    // 指紋はフックが最初に書く。消しておけば、deploy のあとに指紋があることが「フックまで進んだ」印になる
-    rmSync(project.manifestHash, { force: true })
     // 同じチームのアプリを更新する（設定があればそのチーム）。どちらも無い初回は、ワークスペースを Slack CLI に選ばせる。
     // 設定のチームを渡すのは、別のワークスペースのトークンで secrets を上書きしないため
-    const teamId = app?.teamId || existing?.slack.teamId || null
+    let teamId = app?.teamId || existing?.slack.teamId || null
+    // プロジェクトにアプリの記録が無ければ、既存のアプリをつなぐか新しく作るかを聞く（Slack CLI は名前でアプリを探せない）
+    if (!app) {
+      const appId = pickAppId(p)
+      if (!appId.ok) return appId.code
+      if (appId.value) {
+        say(fill(SETUP_TEXT.linking, { app: appId.value }))
+        const linkCode = runLink(ready.slackCli, project, appId.value, teamId)
+        const linked = deployedApp(project)
+        if (linkCode !== 0 || !linked) return fail(fill(SETUP_TEXT.linkFailed, { code: String(linkCode) }))
+        teamId = linked.teamId
+      }
+    }
+    say(SETUP_TEXT.deploying)
+    // 指紋はフックが最初に書く。消しておけば、deploy のあとに指紋があることが「フックまで進んだ」印になる
+    rmSync(project.manifestHash, { force: true })
     const code = runDeploy(ready.slackCli, project, teamId)
     const hookRan = readDeployedHash(project) === hash
     // フックが保存したトークンを読み直す
@@ -278,21 +319,32 @@ const wizard = async (): Promise<number> => {
   }
   if (!token) return fail(SETUP_TEXT.noToken)
 
-  // 3〜5: 設定と automation がそろっていれば飛ばす（送り先は変えられない）。
+  // 3〜5: 設定と automation がそろっていれば、送り先は変えずに今の設定を見せ、間隔だけ聞き直す。
+  // 間隔が変われば init で automation を書き換える。
   // init が automation の登録で失敗すると設定だけが残るので、そのときは保存済みの値で init をやり直す
   if (existing?.orca.automationId) {
     heading(3, SETUP_TEXT.stepChannel, true)
-    heading(4, SETUP_TEXT.stepRepo, true)
-    heading(5, SETUP_TEXT.stepInit, true)
+    heading(4, SETUP_TEXT.stepRepo)
+    say(
+      fill(SETUP_TEXT.currentConfig, {
+        channel: existing.channel,
+        repo: existing.repo,
+        every: String(existing.everyMinutes),
+      }),
+    )
+    const every = pickEvery(p, existing.everyMinutes)
+    if (!every.ok) return every.code
+    if (every.value === existing.everyMinutes) heading(5, SETUP_TEXT.stepInit, true)
+    else {
+      heading(5, SETUP_TEXT.stepInit)
+      const code = await reinit(p, ready.ghPath, existing.repo, ['--every', String(every.value)])
+      if (code !== 0) return code
+    }
   } else if (existing) {
     heading(3, SETUP_TEXT.stepChannel, true)
     heading(4, SETUP_TEXT.stepRepo, true)
     heading(5, SETUP_TEXT.stepInit)
-    const info = await repoInfo(createGh(ready.ghPath), existing.repo, deadline())
-    if (!info.ok) return fail(fill(SETUP_TEXT.repoFailed, { error: info.error }))
-    const visible = confirmPublic(p, info.info.visibility)
-    if (!visible.ok) return visible.code
-    const code = child(['init', ...(visible.value ? ['--allow-public'] : [])])
+    const code = await reinit(p, ready.ghPath, existing.repo, [])
     if (code !== 0) return code
   } else {
     heading(3, SETUP_TEXT.stepChannel)

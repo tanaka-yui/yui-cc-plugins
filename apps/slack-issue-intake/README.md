@@ -54,26 +54,27 @@ make setup
 | 段 | 内容 | あなたがすること |
 |---|---|---|
 | 1 | 事前の確認 | なし。Node、gh（ログイン済み）、Orca、Slack CLI（ログイン済み）を確かめます |
-| 2 | Slack アプリを作ってトークンを登録する | Slack CLI がワークスペースを聞いたら、使うものを選びます。アプリの作成とインストールは自動です。トークンは Slack CLI から受け取って保存します |
+| 2 | Slack アプリを作ってトークンを登録する | まず既存のアプリ ID を聞かれます。新しく作るなら空のまま Enter、作成済みのアプリを使うならその ID（A で始まる）を入力します。Slack CLI がワークスペースを聞いたら、使うものを選びます。アプリの作成（または更新）とインストールは自動です。トークンは Slack CLI から受け取って保存します |
 | 3 | チャンネルを決める | チャンネル名（`#issue-intake` の形でも可）か ID を入力します。公開チャンネルにはボットが自分で参加します。プライベートチャンネルは、Slack で `/invite @Issue Intake` を送ってから Enter を押します |
-| 4 | リポジトリと確認の間隔を決める | `owner/name` と、確認の間隔（分、既定は5）を入力します。公開リポジトリのときは、内容が公開されることを確認して y を答えます |
+| 4 | リポジトリと確認の間隔を決める | `owner/name` と、確認の間隔（分、既定は5）を入力します。公開リポジトリのときは、内容が公開されることを確認して y を答えます。2回目以降は今の設定を表示し、間隔だけ聞き直します |
 | 5 | 設定を保存して automation を登録する（init） | なし。automation は無効で登録されます |
-| 6 | フォームのボタンを置く（form） | なし。チャンネルのブックマーク「Issue を起票」ができます |
+| 6 | フォームのボタンを置く（form） | なし。チャンネルのおすすめワークフローになり、メンバーには入力欄の所にボタン「Issue を起票」が出ます |
 | 7 | Claude に許す操作を承認する（permissions） | 表示された内容を確認し、y を答えます |
 | 8 | automation を有効にする（enable） | 受け継ぐ許可があれば、その一覧を確認して y を答えます |
 
 入力した内容が合わないときは、理由を表示して聞き直します。承認で n を答えると、その段では何も変えずに止まります。
 
-2段目で作るアプリは、通常の権限に加えて channels:read、groups:read、chat:write.public、channels:join、bookmarks:write を持ちます。チャンネル名の検索、フォームの内容の投稿、公開チャンネルへの参加、ブックマークの追加に使います。`make manifest` で、このマニフェストを表示できます。
+2段目で作るアプリは、通常の権限に加えて channels:read、groups:read、chat:write.public、channels:join、bookmarks:write を持ちます。チャンネル名の検索、フォームの内容の投稿、公開チャンネルへの参加、ボタンをおすすめワークフローにすること（workflows.featured.add）に使います。`make manifest` で、このマニフェストを表示できます。
 
 ### 途中で止まったとき
 
 もう一度 `make setup` を実行します。済んだ段は飛ばし、止まった段から再開します。
 
 - アプリとトークンがそろっていれば、deploy はやり直しません。ただし、プラグインの更新でマニフェストが変わったときは、次の実行でもう一度 deploy します。
-- 設定と automation が登録済みなら、チャンネルとリポジトリは聞きません。送り先は変えられません。
+- 設定と automation が登録済みなら、チャンネルとリポジトリは聞きません。送り先は変えられません。今の設定を表示し、確認の間隔だけ今の値を既定にして聞き直します。Enter ならそのまま、別の値を入れると init で automation を書き換えます（公開リポジトリなら、もう一度確認します）。
+- Slack CLI のプロジェクト（`~/.slack-issue-intake-slack-app/`）にアプリの記録が無いときは、2段目で既存のアプリ ID を聞きます。プロジェクトを消した、別の端末で作った、などのときは、そのアプリの ID（https://api.slack.com/apps の Basic Information）を入力すると、`slack app link` でつないで同じアプリを更新します。空のまま Enter を押すと、もう1つアプリができます。
 - 設定は保存されたが automation の登録（Orca）で失敗していたときは、保存済みのチャンネルとリポジトリで init をやり直します。公開リポジトリなら、もう一度確認します。
-- ボタンとブックマークが作成済みなら、作り直しません。
+- ボタンが作成済みで、おすすめワークフローにしてあれば、作り直しません。前の版で関連ページ（ブックマーク）に「Issue を起票」を足していた場合、それは押すとブラウザが開いてしまうので、Slack で手で削除してください。
 - 権限が承認済みなら7段は飛ばし、8段では聞き直さずに enable をやり直します。前回 Orca での有効化に失敗していても、ここで有効になります。
 
 終了コードは、失敗が 1、入力がないときが 2 です。
@@ -82,7 +83,7 @@ Slack CLI で作ったアプリが無く、`node bin/slack-issue-intake.ts set-t
 
 ### 終わったあとの確かめ方
 
-チャンネルのブックマーク「Issue を起票」を押してフォームを1件送り、数分後に次を実行します。
+チャンネルの入力欄の所に出るボタン「Issue を起票」を押してフォームを1件送り、数分後に次を実行します。
 
 ```bash
 node bin/slack-issue-intake.ts inspect --raw
@@ -100,17 +101,17 @@ node bin/slack-issue-intake.ts inspect --raw
 | チャンネルに参加できない | Slack で対象チャンネルに `/invite @Issue Intake` を送ってから再実行します |
 | `このアプリにはチャンネル名で探す権限がありません` と出る | 手作業で作ったアプリは、チャンネル名で探す権限がありません。チャンネル名 → 詳細の最下部にある ID を入力します |
 | `Slack CLI でフォームのボタンを作れませんでした` | 括弧の中の理由を控え、「Workflow Builder で手で作る」でフォームを作ります |
-| `ブックマークを追加できません` | ボタン自体はできています。表示された URL を、チャンネルのブックマークに手で追加します |
+| `ボタンをチャンネルの入力欄に出せません` | ボタン自体はできています。Slack でチャンネルの「ワークフロー」タブを開き、「Issue を起票」をおすすめに設定します |
 | `トークンのワークスペースが設定と違います` | 別のワークスペースのトークンが登録されています。このアプリのトークンで `node bin/slack-issue-intake.ts set-token` をやり直します |
-| ブックマークを消してしまった | `make slack-form` を実行すると `url=` が出るので、手でブックマークに追加します。自動では付け直しません |
+| 入力欄の所のボタンが消えた | おすすめを外した場合は、Slack でチャンネルの「ワークフロー」タブを開き、「Issue を起票」をおすすめに設定します。`make slack-form` は記録済みなので付け直しません |
 | `inspect` で `parse=invalid` になる | `problems=` に、足りない項目や合わない選択肢が出ます。手で作った場合は、テンプレートと選択肢の文字を見直します |
 
 ### 送り先を変えたあとの片付け
 
-送り先（チャンネル、リポジトリ）を変えるには、automation を止め、ホームを退避して `make setup` をやり直します。同じアプリを使い続け、トークンは deploy で取り直します。古いチャンネルのボタンとブックマークは自動では消えないので、手で片付けます。
+送り先（チャンネル、リポジトリ）を変えるには、automation を止め、ホームを退避して `make setup` をやり直します。同じアプリを使い続け、トークンは deploy で取り直します。古いチャンネルのボタンは自動では消えないので、手で片付けます。
 
 1. `slack trigger list --app deployed` で古いボタンの ID（`Ft…`）を調べ、`slack trigger delete --trigger-id <ID> --app deployed` で消します。Slack CLI のプロジェクトは `~/.slack-issue-intake-slack-app/` にあります（`SLACK_ISSUE_INTAKE_HOME` を変えているときは、そのホームの隣の `<ホーム>-slack-app`）。このディレクトリで実行します。
-2. 古いチャンネルで、ブックマーク「Issue を起票」を削除します。
+2. 古いチャンネルの「ワークフロー」タブで、「Issue を起票」のおすすめを外します（トリガーを消していれば消えています）。
 
 ## Slack CLI を使わないセットアップ
 
@@ -170,6 +171,7 @@ Slack CLI にログインしているなら、この手順の代わりに `make 
 本文:
 {本文}
 ```
+公開したら、チャンネルの「ワークフロー」タブでこのワークフローを追加し、おすすめに設定します。メンバーには入力欄の所にボタンが出ます。
 5. チャンネル名 → 詳細の最下部からチャンネルIDを控えます。
 6. `node bin/slack-issue-intake.ts init --channel <ID> --repo <owner/name> --every 5` を実行します。automation は無効で登録されます。
 7. `node bin/slack-issue-intake.ts permissions --show` で内容を確認し、承認してから `node bin/slack-issue-intake.ts permissions --apply` を実行します。
@@ -193,7 +195,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
    | 添付ファイル | ファイルのアップロード | 任意 | 複数可。1個しか受けられない場合は、任意のアップロードの質問を3つ並べます |
 
 3. チャンネルにメッセージを送るステップ（Send a message to a channel）を足し、送り先に対象チャンネルを選びます。メッセージには、上の手順 4 のテンプレートをそのまま使い、`{…}` の所にフォームの変数を差し込みます。添付ファイルの変数もメッセージに付けます。
-4. 公開（Publish）したら、ワークフローのリンクをコピーし、チャンネルのブックマークに追加します。
+4. 公開（Publish）したら、チャンネルの「ワークフロー」タブでこのワークフローを追加し、おすすめに設定します。メンバーには入力欄の所にボタンが出ます。
 5. 1件送り、`node bin/slack-issue-intake.ts inspect --raw` で `marker=yes`、`parse=ok`、`reporter=U…`、添付の数と同じ `files=` を確かめます。
 
 ## 動作確認
@@ -201,7 +203,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
 1. Orca の既定の Claude 起動引数に --permission-mode や --allowedTools など許可を広げるものがないことを確認します。
 2. enable 前は automation が無効、precheck が `<launcher> poll` であることを確かめます。
 3. `node bin/slack-issue-intake.ts enable` のあとに `orca automations run <id>` で最初の回を動かし、permission mode が bypass ではなく、手順外の操作が拒否されることを確認します。bypass なら `orca automations edit <id> --disabled` で止め、既定引数から --dangerously-skip-permissions を外してから試し直します。
-4. `make setup` でフォームを作った場合は、チャンネルのブックマークからフォームが開けることを確かめます。添付付きで送った投稿を `node bin/slack-issue-intake.ts inspect --raw` で見て、marker=yes、parse=ok、起票者の ID、添付の数だけの files があることを確認します。投稿者はこのアプリのボット（bot=yes）です。添付なしでも送れることも確かめます。
+4. `make setup` でフォームを作った場合は、チャンネルの入力欄の所に出るボタンからフォームのダイアログが開けることを確かめます。添付付きで送った投稿を `node bin/slack-issue-intake.ts inspect --raw` で見て、marker=yes、parse=ok、起票者の ID、添付の数だけの files があることを確認します。投稿者はこのアプリのボット（bot=yes）です。添付なしでも送れることも確かめます。
 5. フォームから添付2個以上を投稿し、`node bin/slack-issue-intake.ts inspect --raw` で marker=yes、parse=ok、起票者と添付数を確認します。API 上の text / blocks、files / file permalink の形は実環境で未確認です。Workflow Builder で作った場合、1質問で1ファイルだけなら任意アップロードを3質問にします。
 6. 明確なバグ報告で、ラベル・添付リンク付きの Issue とスレッドの URL を確認します。曖昧な投稿には質問が届き、人が返信したら次の回で拾うことを確認します。Bot トークンの conversations.replies が対象チャンネルで読めるかもここで確認します。
 7. 不正なカテゴリは理由を返信し、何も投稿しない15分間は skipped_precheck だけで Claude が起動しないことを確かめます。
@@ -214,7 +216,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
 - `~/.slack-issue-intake/bin/slack-issue-intake status`: 件数、返信待ち、失敗、リース、読み取り位置、直近の poll、権限の状態。
 - `~/.slack-issue-intake/bin/slack-issue-intake retry --id N`: 失敗を直前の状態へ戻す。メタデータの一時取得失敗も連続10回で failed になり、状態とエラーを確認できます。作成開始時刻・アカウント・作成中の印は残ります。
 - `~/.slack-issue-intake/bin/slack-issue-intake inspect [--limit N] [--raw]`: 状態を変えず最新の投稿の解析結果を確認。
-- `~/.slack-issue-intake/bin/slack-issue-intake form`（`make slack-form`）: フォームのボタンとブックマークを置く。`make setup` の6段目が実行します。`~/.slack-issue-intake/bin/slack-issue-intake form --manifest`（`make manifest`）はフォーム付きのマニフェストを表示します。
+- `~/.slack-issue-intake/bin/slack-issue-intake form`（`make slack-form`）: フォームのボタンを作り、チャンネルのおすすめワークフローにする（入力欄の所にボタンが出る）。`make setup` の6段目が実行します。`~/.slack-issue-intake/bin/slack-issue-intake form --manifest`（`make manifest`）はフォーム付きのマニフェストを表示します。
 - `~/.slack-issue-intake/bin/slack-issue-intake set-token`: トークンを登録し直す。開いたウィンドウに貼り付けます（文字は伏せ字）。`--from-clipboard` はクリップボードから、`--from-stdin` は人がつないだパイプから読みます。
 - `~/.slack-issue-intake/bin/slack-issue-intake permissions --show` → 承認して `~/.slack-issue-intake/bin/slack-issue-intake permissions --apply` → `~/.slack-issue-intake/bin/slack-issue-intake enable`。継承した allow / additionalDirectories があると明示承認が必要です。
 - 停止: `orca automations edit <id> --disabled`。

@@ -25,11 +25,11 @@ Issue の作成は、持ち主と子がすべて止まったと確認するま�
 
 ## セットアップのウィザード
 
-`make setup`（`setup` サブコマンド、lib/commands/setup.ts）は8段で、済んだ段は飛ばして再開します。文言は lib/defaults.ts の SETUP_TEXT と MSG_FORM_* で、README の節名「Slack CLI を使わないセットアップ」「Workflow Builder で手で作る」を指します。名前を変えるときは両方を揃えます。入力は端末だけを読み、子のコマンドには stdin を渡しません。
+`make setup`（`setup` サブコマンド、lib/commands/setup.ts）は8段で、済んだ段は飛ばして再開します。設定と automation がそろっていれば、送り先は変えずに今の設定を見せて間隔だけ聞き直し、変わったときだけ `init --every` で automation を書き換えます。プロジェクトにアプリの記録が無いときは既存のアプリ ID を聞き、入力されたら `slack app link --app <ID> --environment deployed`（チームが分かれば `--team`）でつないでから deploy します（Slack CLI は名前でアプリを探せないため）。文言は lib/defaults.ts の SETUP_TEXT と MSG_FORM_* で、README の節名「Slack CLI を使わないセットアップ」「Workflow Builder で手で作る」を指します。名前を変えるときは両方を揃えます。入力は端末だけを読み、子のコマンドには stdin を渡しません。
 Slack CLI のプロジェクトはホームの隣の `<ホーム>-slack-app`（既定 `~/.slack-issue-intake-slack-app/`、0700）に置きます。Slack CLI が `.slack/apps.json` にアプリ ID を書くので、プラグインのディレクトリ（更新で入れ替わる）にもホーム（退避で一緒に動く）にも置きません。`.slack/hooks.json` と form-trigger.json は毎回書き直します（setup の毎回と form の開始時。プラグインの更新でパスが変わるため）。`.slack/config.json` は Slack CLI が書いた項目を残して manifest.source だけを local にし、apps.json は読むだけです。
 トークンは deploy フックで受け取ります。Slack CLI がインストール後に `SLACK_BOT_TOKEN` を入れてフックを起こすので、`slack-hook deploy` は最初にマニフェストの指紋（SHA-256）を残し、トークンを secrets.json に保存します。setup は deploy の前に指紋を消すので、deploy のあとに指紋が無ければフックまで進まなかった（アプリが無い）とみなし、set-token ではなく deploy の失敗を示します。設定があれば、そのチームを `--team` に渡します。指紋が変わると次の setup で deploy し直します。実装上の動きで、約束された仕様ではありません。受け取れなければ set-token への案内で止まります。
 `slack deploy` には `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `SLACK_USER_TOKEN` を除いた環境を渡します。Slack CLI は環境に既にある値を上書きせず使うので、残すと別のトークンを保存してしまいます。
-`form`（make slack-form）は `slack trigger create` でボタン、`slack trigger access` で使える人（チャンネルのメンバー）、ボットのトークンの bookmarks.add でブックマークを作り、ID を meta に残して再実行で重ねません。`form --manifest`（make manifest）は guide のマニフェストに、組み込みの open_form と send_message だけのワークフロー、`org_deploy_enabled: true`、FORM_EXTRA_SCOPES を足して出します。通常のマニフェストは変えません。
+`form`（make slack-form）は `slack trigger create` でボタン、`slack trigger access` で使える人（チャンネルのメンバー）、ボットのトークンの workflows.featured.add（bookmarks:write）でチャンネルのおすすめワークフローにして入力欄の所にボタンを出し、ID を meta に残して再実行で重ねません。bookmarks.add で関連ページに足したリンクは Slack が外部リンクとして扱いブラウザを開くので使いません。`form --manifest`（make manifest）は guide のマニフェストに、組み込みの open_form と send_message だけのワークフロー、`org_deploy_enabled: true`、FORM_EXTRA_SCOPES を足して出します。通常のマニフェストは変えません。
 このワークフローは自分のボットとして投稿します。poll と inspect は自分の投稿でもマーカーで始まるものを受け付け、起票者は本文のメンションだけから取ります。自分の返信は常にスレッド内なので履歴には出ません。
 Slack CLI の呼び先の差し替えは SLACK_ISSUE_INTAKE_SLACK_CLI（テスト専用）です。実環境では未確認の4点（deploy の受理、フックへのトークン、trigger create、conversations.join）があり、README に書いてあります。
 

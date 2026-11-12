@@ -111,9 +111,9 @@ export const triggerDefinition = (channel: string): JsonObject => ({
   },
 })
 
-export const bookmarkParams = (channel: string, url: string): Record<string, string> => ({
+// workflows.featured.add の引数。おすすめにしたワークフローは、チャンネルの入力欄の代わりにボタンとして出る
+// （リンクを関連ページに API で足すと、Slack は外部リンクとして扱いブラウザを開いてしまう）
+export const featuredParams = (channel: string, triggerId: string): Record<string, string> => ({
   channel_id: channel,
-  title: FORM_TITLE,
-  type: 'link',
-  link: url,
+  trigger_ids: triggerId,
 })

@@ -3,15 +3,15 @@ import { getMeta, setMeta } from '../db.ts'
 import {
   ADMIN_LEASE_MS,
   COMMAND_DEADLINE_MS,
-  FORM_META_BOOKMARK_ID,
+  FORM_META_FEATURED,
   FORM_META_TRIGGER_ID,
   FORM_META_URL,
+  FORM_TITLE,
   MSG_FORM_NO_APP,
   MSG_FORM_NO_CLI,
   MSG_FORM_REFUSED,
 } from '../defaults.ts'
-import { bookmarkParams, renderFormManifest } from '../form.ts'
-import { asString, get } from '../json.ts'
+import { featuredParams, renderFormManifest } from '../form.ts'
 import { acquireLease, releaseLease, renewLease } from '../lease.ts'
 import { intakeHome } from '../paths.ts'
 import { openRuntime } from '../runtime.ts'
@@ -32,7 +32,8 @@ import type { SlackFailure } from '../slack-api.ts'
 const reason = (f: SlackFailure): string => (f.detail ? `${f.error} ${f.detail}` : f.error)
 
 // --manifest: フォーム付きのマニフェストを表示する。引数なし: init のあと、対象チャンネルにフォームのボタンを置く。
-// 作ったボタンとブックマークの ID は DB に残し、再実行しても重ねて作らない
+// ボタンはチャンネルのおすすめワークフローにする（メンバーには入力欄の代わりにボタンが出る）。
+// 作ったリンクとおすすめにしたトリガーの ID は DB に残し、再実行しても重ねて作らない
 export const run = async (argv: string[]): Promise<void> => {
   const { values } = parseFlags('form', { args: argv, options: { manifest: { type: 'boolean' } } })
   if (values.manifest) {
@@ -90,19 +91,16 @@ export const run = async (argv: string[]): Promise<void> => {
     guard()
     const permitted = grantTriggerAccess(bin, project, app.teamId, triggerId, channel)
     if (!permitted.ok) throw new Error(`ボタンを使える人を設定できません（${permitted.error}）`)
-    let bookmarkId = getMeta(rt.db, FORM_META_BOOKMARK_ID)
-    if (!bookmarkId) {
+    if (getMeta(rt.db, FORM_META_FEATURED) !== triggerId) {
       guard()
-      const added = await rt.slack.call('bookmarks.add', bookmarkParams(channel, url), deadline)
-      if (!added.ok)
+      const featured = await rt.slack.call('workflows.featured.add', featuredParams(channel, triggerId), deadline)
+      if (!featured.ok)
         throw new Error(
-          `ブックマークを追加できません（${reason(added)}）。次の URL を手でブックマークに追加してください: ${url}`,
+          `ボタンをチャンネルの入力欄に出せません（${reason(featured)}）。Slack でチャンネルの「ワークフロー」タブを開き、「${FORM_TITLE}」をおすすめに設定してください`,
         )
-      // 応答に ID が無くても追加はされているので、空でない値を残して再実行で重ねない
-      bookmarkId = asString(get(added.body, 'bookmark', 'id')) ?? '-'
-      setMeta(rt.db, FORM_META_BOOKMARK_ID, bookmarkId)
+      setMeta(rt.db, FORM_META_FEATURED, triggerId)
     }
-    console.log(`trigger=${triggerId}\nurl=${url}\nchannel=${channel}\nbookmark=${bookmarkId}`)
+    console.log(`trigger=${triggerId}\nurl=${url}\nchannel=${channel}\nfeatured=${triggerId}`)
   } catch (error) {
     console.error(maskSecrets(error instanceof Error ? error.message : String(error)))
     process.exitCode = 1

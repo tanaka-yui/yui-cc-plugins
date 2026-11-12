@@ -145,6 +145,22 @@ export const runDeploy = (bin: string, project: SlackProject, teamId: string | n
   return r.status ?? 1
 }
 
+// 既存のアプリをプロジェクトにつなぐ（apps.json に書く）。チームが分からなければ Slack CLI が端末で聞く
+export const runLink = (bin: string, project: SlackProject, appId: string, teamId: string | null): number => {
+  const args = [
+    'app',
+    'link',
+    '--app',
+    appId,
+    '--environment',
+    SLACK_APP_ENVIRONMENT,
+    '--skip-update',
+    ...(teamId ? ['--team', teamId] : []),
+  ]
+  const r = spawnSync(bin, args, { cwd: project.dir, stdio: 'inherit', env: deployEnv(process.env) })
+  return r.status ?? 1
+}
+
 export const writeTriggerDef = (project: SlackProject, channel: string): void => {
   ensurePrivateDir(project.dir)
   writeJson(project.triggerDef, triggerDefinition(channel), 0o600)

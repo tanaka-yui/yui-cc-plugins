@@ -52,6 +52,18 @@ if (args[0] === '_fingerprint') {
   else env.SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || 'xoxb-fake-deployed'
   const deployed = spawnSync('/bin/sh', ['-c', hook('deploy')], { env, stdio: 'inherit' })
   process.exit(deployed.status ?? 1)
+} else if (cmd === 'app link') {
+  record()
+  if (process.env.FAKE_SLACK_CLI_LINK_FAIL) {
+    console.error('app not found')
+    process.exit(1)
+  }
+  const appId = value('--app')
+  mkdirSync('.slack', { recursive: true })
+  writeFileSync(
+    '.slack/apps.json',
+    JSON.stringify({ apps: { [appId]: { app_id: appId, team_id: args.includes('--team') ? value('--team') : team } } }),
+  )
 } else if (cmd === 'trigger create') {
   record()
   if (process.env.FAKE_SLACK_CLI_TRIGGER_FAIL) {

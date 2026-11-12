@@ -17,7 +17,7 @@ import {
 } from './helpers.ts'
 
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 
@@ -26,7 +26,8 @@ import type { SlackReply, SlackRequest } from './helpers.ts'
 const TARGET = { id: 'C0TARGET01', name: 'issue-intake', is_private: false, is_member: false }
 const OTHER = { id: 'C0OTHER001', name: 'general', is_private: false, is_member: true }
 const SECRET = { id: 'G0SECRET01', name: 'secret', is_private: true, is_member: true }
-const FULL_INPUT = '#Issue-Intake\nacme/app\n\ny\n'
+// 1行目は既存のアプリ ID（空なら新しく作る）
+const FULL_INPUT = '\n#Issue-Intake\nacme/app\n\ny\n'
 
 const fixture = async (
   t: { after: (fn: () => Promise<void>) => void },
@@ -52,7 +53,6 @@ const fixture = async (
       const channels = scans >= 2 ? [TARGET, SECRET] : [TARGET]
       return { json: { ok: true, channels, response_metadata: { next_cursor: '' } } }
     }
-    if (r.method === 'bookmarks.add') return { json: { ok: true, bookmark: { id: 'Bk0FORM001' } } }
     return { json: { ok: true, messages: [] } }
   })
   t.after(() => server.close())
@@ -113,27 +113,31 @@ test('SU1 質問に答えるだけで、アプリ・トークン・設定・ボ�
   assert.equal(config?.everyMinutes, 5)
   const [created] = f.cliCalls('trigger create')
   assert.equal(get(asObject(get(created?.triggerDef, 'inputs')), 'channel_id', 'value'), 'C0TARGET01')
-  assert.equal(f.calls('bookmarks.add').length, 1)
+  assert.deepEqual(f.calls('workflows.featured.add')[0]?.params, {
+    channel_id: 'C0TARGET01',
+    trigger_ids: 'Ft0FAKE001',
+  })
+  assert.equal(f.calls('bookmarks.add').length, 0)
   assert.notEqual(config?.acceptedPermissions, null)
   assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
 })
 
-test('SU2 もう一度実行すると、済んだ段を飛ばしてアプリ・ボタン・ブックマークを重ねない', async (t) => {
+test('SU2 もう一度実行すると、済んだ段を飛ばしてアプリ・ボタンを重ねない', async (t) => {
   const f = await fixture(t)
   assert.equal((await f.setup(FULL_INPUT)).code, 0)
-  const r = await f.setup('')
+  const r = await f.setup('\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /済み/)
   assert.equal(f.cliCalls('deploy').length, 1)
   assert.equal(f.cliCalls('trigger create').length, 1)
-  assert.equal(f.calls('bookmarks.add').length, 1)
+  assert.equal(f.calls('workflows.featured.add').length, 1)
 })
 
 test('SU3 マニフェストが変わっていれば、同じチームを指定して deploy し直す', async (t) => {
   const f = await fixture(t)
   assert.equal((await f.setup(FULL_INPUT)).code, 0)
   writeFileSync(slackProject(f.home).manifestHash, 'old\n')
-  const r = await f.setup('')
+  const r = await f.setup('\n')
   assert.equal(r.code, 0, r.stderr)
   const deploys = f.cliCalls('deploy')
   assert.equal(deploys.length, 2)
@@ -168,7 +172,7 @@ test('SU5 Slack CLI が無い・未ログインなら、何も作らずに止ま
 
 test('SU6 見つからないチャンネルはボットの招待を待ち、Enter のあとに探し直す', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('secret\n\nacme/app\n\ny\n')
+  const r = await f.setup('\nsecret\n\nacme/app\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /\/invite @Issue Intake/)
   assert.equal(f.calls('conversations.join').length, 0)
@@ -177,11 +181,11 @@ test('SU6 見つからないチャンネルはボットの招待を待ち、Ente
 
 test('SU7 承認しなければ何も変えずに止まり、次の実行で承認から再開する', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('#issue-intake\nacme/app\n\nn\n')
+  const r = await f.setup('\n#issue-intake\nacme/app\n\nn\n')
   assert.equal(r.code, 1)
   assert.equal(f.status(), 'unsafe')
   assert.ok(!orcaCalls(f.orca.log).some((c) => c.includes('--enabled')))
-  const again = await f.setup('y\n')
+  const again = await f.setup('\ny\n')
   assert.equal(again.code, 0, again.stderr)
   assert.equal(f.status(), 'accepted')
   assert.equal(f.cliCalls('deploy').length, 1)
@@ -196,7 +200,7 @@ test('SU8 入力が途中で尽きたら、ターミナルで実行するよう�
 
 test('SU9 公開リポジトリは内容が公開されると示して確かめ、承認したら --allow-public で init する', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('#issue-intake\nacme/app\ny\n\ny\n', { FAKE_GH_VISIBILITY: 'PUBLIC' })
+  const r = await f.setup('\n#issue-intake\nacme/app\ny\n\ny\n', { FAKE_GH_VISIBILITY: 'PUBLIC' })
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /公開/)
   assert.equal(loadConfig(f.home)?.repo, 'acme/app')
@@ -221,7 +225,7 @@ test('SU11 受け継ぐ許可は一覧を見せて確かめ、承認しなけれ
   assert.equal(r.code, 1)
   assert.match(r.stdout, /inherited-allow Bash\(git status\)/)
   assert.ok(!orcaCalls(f.orca.log).some((c) => c.includes('--enabled')))
-  const again = await f.setup('y\n')
+  const again = await f.setup('\ny\n')
   assert.equal(again.code, 0, again.stderr)
   assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
 })
@@ -257,7 +261,7 @@ test('SU13 ID の形に見える名前は、ID で見つからなくても名前
           }
         : null,
   )
-  const r = await f.setup('customers\nacme/app\n\ny\n')
+  const r = await f.setup('\ncustomers\nacme/app\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.equal(loadConfig(f.home)?.channel, 'C0CUSTOM01')
 })
@@ -287,7 +291,7 @@ test('SU16 有効化が Orca で失敗しても、次の実行で聞き直さず
   const r = await f.setup(`${FULL_INPUT}y\n`, { FAKE_ORCA_EDIT: 'fail' })
   assert.equal(r.code, 1)
   assert.equal(f.status(), 'accepted')
-  const again = await f.setup('')
+  const again = await f.setup('\n')
   assert.equal(again.code, 0, again.stderr)
   assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
 })
@@ -305,8 +309,51 @@ test('SU18 設定があってトークンもアプリも無ければ、設定の
   assert.equal((await f.setup(FULL_INPUT)).code, 0)
   rmSync(homePaths(f.home).secrets)
   rmSync(slackProject(f.home).dir, { recursive: true })
-  const r = await f.setup('')
+  const r = await f.setup('\n\n')
   assert.equal(r.code, 0, r.stderr)
   const argv = f.cliCalls('deploy')[1]?.argv ?? []
   assert.equal(argv[argv.indexOf('--team') + 1], TEAM_ID)
+})
+
+test('SU19 既存のアプリ ID を入力すると、slack app link でつないでから同じアプリを deploy する', async (t) => {
+  const f = await fixture(t)
+  const r = await f.setup('bad-id\na0exist0001\n#issue-intake\nacme/app\n\ny\n')
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /A で始まる/)
+  const [linked] = f.cliCalls('app link')
+  assert.deepEqual(linked?.argv.slice(0, 6), ['app', 'link', '--app', 'A0EXIST0001', '--environment', 'deployed'])
+  const deploys = f.cliCalls('deploy')
+  assert.equal(deploys.length, 1)
+  const argv = deploys[0]?.argv ?? []
+  assert.equal(argv[argv.indexOf('--team') + 1], TEAM_ID)
+  const apps = JSON.parse(readFileSync(slackProject(f.home).apps, 'utf8'))
+  assert.deepEqual(Object.keys(apps.apps), ['A0EXIST0001'])
+})
+
+test('SU20 slack app link が失敗したら、deploy せずに止まる', async (t) => {
+  const f = await fixture(t)
+  const r = await f.setup('A0EXIST0001\n', { FAKE_SLACK_CLI_LINK_FAIL: '1' })
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /slack app link に失敗しました/)
+  assert.equal(f.cliCalls('deploy').length, 0)
+})
+
+test('SU21 設定があれば今の設定を見せて間隔だけ聞き直し、変えたら init で automation を書き換える', async (t) => {
+  const f = await fixture(t)
+  assert.equal((await f.setup(FULL_INPUT)).code, 0)
+  const before = orcaCalls(f.orca.log).length
+  const kept = await f.setup('\n')
+  assert.equal(kept.code, 0, kept.stderr)
+  assert.match(kept.stdout, /チャンネル C0TARGET01、リポジトリ acme\/app、確認の間隔 5 分/)
+  assert.ok(
+    !orcaCalls(f.orca.log)
+      .slice(before)
+      .some((c) => c.includes('--trigger')),
+  )
+  const changed = await f.setup('10\n')
+  assert.equal(changed.code, 0, changed.stderr)
+  assert.equal(loadConfig(f.home)?.everyMinutes, 10)
+  const edit = orcaCalls(f.orca.log).find((c) => c[1] === 'edit' && c.includes('--trigger'))
+  assert.equal(edit?.[edit.indexOf('--trigger') + 1], '*/10 * * * *')
+  assert.equal(loadConfig(f.home)?.channel, 'C0TARGET01')
 })

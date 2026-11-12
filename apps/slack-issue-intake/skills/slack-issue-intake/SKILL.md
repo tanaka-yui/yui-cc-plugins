@@ -70,11 +70,14 @@ cannot complete.
 
 1. `make setup` runs `form` as its step 6. Run it by hand only to place the button again. It creates the workflow's
    shortcut trigger with `slack trigger create`, limits it to members of the configured channel with
-   `slack trigger access`, and adds a channel bookmark. It prints `url=`. A rerun reuses the recorded trigger and
-   bookmark. It needs the Slack CLI project that `make setup` created.
+   `slack trigger access`, and makes it a featured workflow of the channel with `workflows.featured.add`, so members
+   see the button where the message field would be. It prints `url=`. A rerun reuses the recorded trigger and
+   featured state. It needs the Slack CLI project that `make setup` created.
 2. On exit 1, explain the printed reason. A refused trigger means the Slack CLI could not create it for this app;
-   fall back to the Workflow Builder steps from `guide`. A failed bookmark prints the URL; ask the user to add it to
-   the channel bookmarks by hand. Exit 2 means there is no setup, no Slack CLI, or no app made by `make setup`.
+   fall back to the Workflow Builder steps from `guide`. If featuring failed, ask the user to open the channel's
+   Workflows tab in Slack and feature the form workflow by hand. Do not suggest adding the link as a channel bookmark;
+   Slack opens such a bookmark in the browser. Exit 2 means there is no setup, no Slack CLI, or no app made by
+   `make setup`.
 3. Form posts from this path are written by the app's own bot, so `inspect` shows `bot=yes` for them.
 
 ## enable

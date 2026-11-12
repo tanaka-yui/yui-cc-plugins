@@ -1,5 +1,5 @@
 import { getMeta, openDb } from '../lib/db.ts'
-import { FORM_META_BOOKMARK_ID, FORM_META_TRIGGER_ID, FORM_META_URL, FORM_TITLE } from '../lib/defaults.ts'
+import { FORM_META_FEATURED, FORM_META_TRIGGER_ID, FORM_META_URL } from '../lib/defaults.ts'
 import { renderFormManifest } from '../lib/form.ts'
 import { asObject, get } from '../lib/json.ts'
 import { homePaths } from '../lib/paths.ts'
@@ -35,13 +35,7 @@ const fixture = async (
   const cli = fakeSlackCli(tempHome())
   if (seed) await seedSlackApp(home, TEAM_ID)
   const server = await startSlack(
-    (r): SlackReply =>
-      handler(r) ??
-      (r.method === 'auth.test'
-        ? auth()
-        : r.method === 'bookmarks.add'
-          ? { json: { ok: true, bookmark: { id: 'Bk0FORM001' } } }
-          : { json: { ok: true } }),
+    (r): SlackReply => handler(r) ?? (r.method === 'auth.test' ? auth() : { json: { ok: true } }),
   )
   t.after(() => server.close())
   const env = {
@@ -61,7 +55,7 @@ const fixture = async (
   return { home, server, meta, calls, cliCalls, form: (args: string[] = []) => runCliAsync(['form', ...args], env) }
 }
 
-test('FO1 Slack CLI でボタンを作り、チャンネルのメンバーに限って使えるようにし、ブックマークを置く。再実行で重ねない', async (t) => {
+test('FO1 Slack CLI でリンクを作ってチャンネルのメンバーに限り、おすすめワークフローにして入力欄にボタンを出す。再実行で重ねない', async (t) => {
   const f = await fixture(t)
   const r = await f.form()
   assert.equal(r.code, 0, r.stderr)
@@ -74,19 +68,15 @@ test('FO1 Slack CLI でボタンを作り、チャンネルのメンバーに限
   const [granted] = f.cliCalls('trigger access')
   const argv = granted?.argv.join(' ') ?? ''
   assert.ok(argv.includes(`--trigger-id ${TRIGGER_ID} --channels ${CHANNEL} --grant --include-app-collaborators=false`))
-  assert.deepEqual(f.calls('bookmarks.add')[0]?.params, {
-    channel_id: CHANNEL,
-    title: FORM_TITLE,
-    type: 'link',
-    link: SHORTCUT,
-  })
+  assert.deepEqual(f.calls('workflows.featured.add')[0]?.params, { channel_id: CHANNEL, trigger_ids: TRIGGER_ID })
+  assert.equal(f.calls('bookmarks.add').length, 0)
   assert.equal(f.meta(FORM_META_TRIGGER_ID), TRIGGER_ID)
   assert.equal(f.meta(FORM_META_URL), SHORTCUT)
-  assert.equal(f.meta(FORM_META_BOOKMARK_ID), 'Bk0FORM001')
+  assert.equal(f.meta(FORM_META_FEATURED), TRIGGER_ID)
   const again = await f.form()
   assert.equal(again.code, 0, again.stderr)
   assert.equal(f.cliCalls('trigger create').length, 1)
-  assert.equal(f.calls('bookmarks.add').length, 1)
+  assert.equal(f.calls('workflows.featured.add').length, 1)
   assert.equal(f.cliCalls('trigger access').length, 2)
 })
 test('FO2 Slack CLI がボタンを作れなければ、Workflow Builder の手順へ案内して何も残さない', async (t) => {
@@ -96,27 +86,28 @@ test('FO2 Slack CLI がボタンを作れなければ、Workflow Builder の手�
   assert.match(r.stderr, /workflow_not_found/)
   assert.match(r.stderr, /Workflow Builder/)
   assert.equal(f.cliCalls('trigger access').length, 0)
-  assert.equal(f.calls('bookmarks.add').length, 0)
+  assert.equal(f.calls('workflows.featured.add').length, 0)
   assert.equal(f.meta(FORM_META_TRIGGER_ID), null)
 })
-test('FO3 ブックマークだけ失敗したら URL を示し、再実行ではボタンを作り直さずにブックマークだけ足す', async (t) => {
+test('FO3 おすすめにできなければ画面での手順を示し、再実行ではリンクを作り直さずにおすすめだけやり直す', async (t) => {
   let refuse = true
   const f = await fixture(t, {
     handler: (r) => {
-      if (r.method !== 'bookmarks.add' || !refuse) return null
+      if (r.method !== 'workflows.featured.add' || !refuse) return null
       refuse = false
       return { json: { ok: false, error: 'not_in_channel' } }
     },
   })
   const r = await f.form()
   assert.equal(r.code, 1)
-  assert.ok(r.stderr.includes(SHORTCUT))
+  assert.match(r.stderr, /not_in_channel/)
+  assert.match(r.stderr, /おすすめ/)
   assert.equal(f.meta(FORM_META_TRIGGER_ID), TRIGGER_ID)
-  assert.equal(f.meta(FORM_META_BOOKMARK_ID), null)
+  assert.equal(f.meta(FORM_META_FEATURED), null)
   const again = await f.form()
   assert.equal(again.code, 0, again.stderr)
   assert.equal(f.cliCalls('trigger create').length, 1)
-  assert.equal(f.meta(FORM_META_BOOKMARK_ID), 'Bk0FORM001')
+  assert.equal(f.meta(FORM_META_FEATURED), TRIGGER_ID)
 })
 test('FO4 トークンのワークスペースが設定と違えば何も作らない', async (t) => {
   const f = await fixture(t, { handler: (r) => (r.method === 'auth.test' ? auth('T0OTHER01') : null) })
