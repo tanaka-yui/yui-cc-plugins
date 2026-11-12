@@ -201,6 +201,30 @@ export const STATUS_LABELS: ReadonlyArray<{ name: string; slug: string; color: s
 export const STATUS_BACKLOG = 'Backlog'
 // init がラベルを確かめたときの、ラベル名の一覧の指紋。今と一致するときだけ起票に Backlog を付ける
 export const META_LABELS_HASH = 'labels_hash'
+// ステータスの通知（spec 5.3）。orca-team-dispatch-task がラベルを動かすときのコメントの event ごとの文言と、メンションするか。
+// {issue} は Issue の URL、{comment} はコメント本文を Slack の形にしたもの。template が null の event はふつうの変化として書く
+export const STATUS_EVENTS: Record<string, { mention: boolean; template: string | null }> = {
+  judged: { mention: true, template: 'エンジニアの対応が必要と判断しました（Ready_Eng）\n{issue}\n\n{comment}' },
+  started: { mention: false, template: null },
+  'needs-review': { mention: true, template: '確認をお願いします（In review）\n{issue}\n\n{comment}' },
+  'partial-merge': {
+    mention: true,
+    template: '一部のリポジトリだけ merge できました。確認をお願いします（In review）\n{issue}\n\n{comment}',
+  },
+  'ai-merged': { mention: true, template: 'AI が修正を merge して完了にしました（Done）\n{issue}\n\n{comment}' },
+  'human-merged': { mention: false, template: 'PR が merge されたので完了にしました（Done）\n{issue}' },
+  failed: { mention: true, template: 'AI の対応が失敗しました（Failed）\n{issue}\n\n{comment}' },
+  stalled: { mention: true, template: 'AI の作業が進んでいません\n{issue}\n\n{comment}' },
+}
+export const STATUS_EVENT_STALLED = 'stalled'
+export const MSG_STATUS_DONE = '完了しました\n{issue}'
+export const MSG_STATUS_CHANGED = 'ステータスが {from} から {to} に変わりました\n{issue}'
+export const MSG_STATUS_REOPENED = 'Issue が開き直されました（{to}）\n{issue}'
+export const MSG_STATUS_NONE = '（なし）'
+export const STATUS_COMMENT_MAX_CHARS = 3000
+// マーカー付きのコメントを信じる書き手（公開リポジトリでは誰でもコメントできるため）
+export const TRUSTED_ASSOCIATIONS: readonly string[] = ['OWNER', 'MEMBER', 'COLLABORATOR']
+export const ORCA_MARKER_PATTERN = /^<!-- orca-auto:([a-z][a-z-]*):(\d+):([a-z][a-z-]*) -->$/
 export const LABEL_SPECS: ReadonlyArray<{ name: string; color: string; description: string }> = [
   { name: 'bug', color: 'd73a4a', description: '不具合（Slack のフォームから）' },
   { name: 'feature', color: 'a2eeef', description: '新機能（Slack のフォームから）' },
