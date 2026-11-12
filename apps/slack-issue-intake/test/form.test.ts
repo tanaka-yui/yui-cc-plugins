@@ -138,3 +138,10 @@ test('FO5 --manifest は設定なしで出し、make setup のアプリが無け
   assert.match(noApp.stderr, /make setup/)
   assert.equal(f.cliCalls('trigger create').length, 0)
 })
+test('FO6 Slack CLI が見つからなければ案内して exit 2 で止まる', async (t) => {
+  const f = await fixture(t, { cliEnv: { SLACK_ISSUE_INTAKE_SLACK_CLI: '', PATH: '/usr/bin:/bin', HOME: tempHome() } })
+  const r = await f.form()
+  assert.equal(r.code, 2)
+  assert.match(r.stderr, /slack login/)
+  assert.equal(f.cliCalls('trigger create').length, 0)
+})

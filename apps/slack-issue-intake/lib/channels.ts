@@ -1,4 +1,4 @@
-import { CHANNEL_ID_PATTERN, CHANNEL_PAGE_SIZE } from './defaults.ts'
+import { CHANNEL_ID_PATTERN, CHANNEL_PAGE_SIZE, ERROR_CHANNEL_NOT_FOUND } from './defaults.ts'
 import { asArray, asObject, asString, get } from './json.ts'
 
 import type { Json } from './json.ts'
@@ -26,7 +26,12 @@ export const findChannel = async (
   const name = normalizeChannelName(input)
   if (CHANNEL_ID_PATTERN.test(name.toUpperCase())) {
     const info = await slack.call('conversations.info', { channel: name.toUpperCase() }, deadline)
-    return info.ok ? { ok: true, channel: toChannel(get(info.body, 'channel')) } : info
+    if (info.ok) {
+      const channel = toChannel(get(info.body, 'channel'))
+      return { ok: true, channel: get(info.body, 'channel', 'is_archived') === true ? null : channel }
+    }
+    // customers のような名前は ID の形に見えるので、ID として見つからなければ名前で探す
+    if (info.error !== ERROR_CHANNEL_NOT_FOUND) return info
   }
   let cursor = ''
   do {

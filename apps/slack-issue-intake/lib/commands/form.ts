@@ -7,6 +7,7 @@ import {
   FORM_META_TRIGGER_ID,
   FORM_META_URL,
   MSG_FORM_NO_APP,
+  MSG_FORM_NO_CLI,
   MSG_FORM_REFUSED,
 } from '../defaults.ts'
 import { bookmarkParams, renderFormManifest } from '../form.ts'
@@ -48,7 +49,7 @@ export const run = async (argv: string[]): Promise<void> => {
   const project = slackProject(rt.home)
   const app = deployedApp(project)
   if (!bin || !app) {
-    console.error(!app ? MSG_FORM_NO_APP : 'Slack CLI が見つかりません。make setup でインストールしてください')
+    console.error(!app ? MSG_FORM_NO_APP : MSG_FORM_NO_CLI)
     rt.db.close()
     process.exitCode = 2
     return

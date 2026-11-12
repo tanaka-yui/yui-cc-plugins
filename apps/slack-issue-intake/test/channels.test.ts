@@ -76,3 +76,26 @@ test('CH5 joinChannel は conversations.join を呼ぶ', async () => {
   const failed: SlackResult = { ok: false, error: 'method_not_supported_for_channel_type', retryAfterSeconds: null }
   assert.deepEqual(await joinChannel(stub(() => failed).client, 'G0PRIVATE1', DEADLINE), failed)
 })
+test('CH6 ID の形に見える名前は、ID として見つからなければ名前で探す', async () => {
+  const s = stub((r) =>
+    r.method === 'conversations.info'
+      ? { ok: false, error: 'channel_not_found', retryAfterSeconds: null }
+      : ok({
+          channels: [{ id: 'C0CUST0001', name: 'customers', is_private: false, is_member: true }],
+          response_metadata: { next_cursor: '' },
+        }),
+  )
+  const found = await findChannel(s.client, 'customers', DEADLINE)
+  assert.deepEqual(found, {
+    ok: true,
+    channel: { id: 'C0CUST0001', name: 'customers', isPrivate: false, isMember: true },
+  })
+  assert.deepEqual(
+    s.requests.map((r) => r.method),
+    ['conversations.info', 'conversations.list'],
+  )
+})
+test('CH7 ID で引いたチャンネルがアーカイブ済みなら null', async () => {
+  const s = stub(() => ok({ channel: { ...TARGET, is_archived: true } }))
+  assert.deepEqual(await findChannel(s.client, 'C0TARGET01', DEADLINE), { ok: true, channel: null })
+})

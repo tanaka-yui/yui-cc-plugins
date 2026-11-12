@@ -97,6 +97,8 @@ export const FORM_META_URL = 'form_url'
 export const FORM_META_BOOKMARK_ID = 'form_bookmark_id'
 export const MSG_FORM_REFUSED =
   'Slack CLI でフォームのボタンを作れませんでした（{error}）。フォームは README の「Workflow Builder で手で作る」の手順で作ってください'
+export const MSG_FORM_NO_CLI =
+  'Slack CLI が見つかりません。Slack CLI を入れて slack login してから make setup を実行するか、README の「Workflow Builder で手で作る」の手順で作ってください'
 export const MSG_FORM_NO_APP =
   'make setup で作ったアプリが見つかりません。フォームは README の「Workflow Builder で手で作る」の手順で作ってください'
 export const CATEGORIES = ['バグ', '新機能', '要望'] as const
@@ -170,6 +172,7 @@ export const TOKEN_PROMPT = 'Slack の Bot User OAuth Token（xoxb- で始まる
 export const BOT_TOKEN_PATTERN = /^xoxb-[A-Za-z0-9-]+$/
 export const CHANNEL_ID_PATTERN = /^[CG][A-Z0-9]{8,}$/
 export const CHANNEL_PAGE_SIZE = 200
+export const ERROR_CHANNEL_NOT_FOUND = 'channel_not_found'
 export const REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
 export const LABEL_WRITE_PERMISSIONS: readonly string[] = ['ADMIN', 'MAINTAIN', 'WRITE']
 // Slack に出す固定文言（{url} {problems} {label} {options} を置き換える）
