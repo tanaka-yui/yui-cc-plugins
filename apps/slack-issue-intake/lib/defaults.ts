@@ -88,9 +88,16 @@ export const FORM_FIELD_TITLE_MAX_CHARS = 25
 export const FORM_DESCRIPTION = 'GitHub Issue の起票依頼を送ります'
 export const FORM_SUBMIT_LABEL = '送信'
 export const FORM_ATTACHMENTS_TITLE = '添付ファイル（任意）'
-// send_message は channels:read、ボタンを使う人のチャンネル参加は channels:join、チャンネルのブックマークは bookmarks:write が要る
+// send_message は channels:read と chat:write.public（無いと Slack がマニフェストを invalid_manifest で拒む）、
+// ボタンを使う人のチャンネル参加は channels:join、チャンネルのブックマークは bookmarks:write が要る
 // （ボタンの作成は Slack CLI が受け持つので triggers:write は要らない）
-export const FORM_EXTRA_SCOPES: readonly string[] = ['channels:read', 'groups:read', 'channels:join', 'bookmarks:write']
+export const FORM_EXTRA_SCOPES: readonly string[] = [
+  'channels:read',
+  'groups:read',
+  'chat:write.public',
+  'channels:join',
+  'bookmarks:write',
+]
 // ボタンを使えるのは対象チャンネルのメンバーだけにする
 export const FORM_META_TRIGGER_ID = 'form_trigger_id'
 export const FORM_META_URL = 'form_url'

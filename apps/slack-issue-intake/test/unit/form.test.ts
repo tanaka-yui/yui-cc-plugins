@@ -38,10 +38,14 @@ test('FM1 通常のマニフェストは変えず、フォーム付きはワー�
     ...SLACK_BOT_SCOPES,
     'channels:read',
     'groups:read',
+    'chat:write.public',
     'channels:join',
     'bookmarks:write',
   ])
-  assert.deepEqual([...FORM_EXTRA_SCOPES], ['channels:read', 'groups:read', 'channels:join', 'bookmarks:write'])
+  assert.deepEqual(
+    [...FORM_EXTRA_SCOPES],
+    ['channels:read', 'groups:read', 'chat:write.public', 'channels:join', 'bookmarks:write'],
+  )
   assert.ok(!renderFormManifest().includes('triggers:write'))
   assert.deepEqual(get(form, 'display_information'), get(manifestObject(), 'display_information'))
   assert.deepEqual(

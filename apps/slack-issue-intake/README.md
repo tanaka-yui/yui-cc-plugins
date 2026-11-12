@@ -64,7 +64,7 @@ make setup
 
 入力した内容が合わないときは、理由を表示して聞き直します。承認で n を答えると、その段では何も変えずに止まります。
 
-2段目で作るアプリは、通常の権限に加えて channels:read、groups:read、channels:join、bookmarks:write を持ちます。チャンネル名の検索、公開チャンネルへの参加、ブックマークの追加に使います。`make manifest` で、このマニフェストを表示できます。
+2段目で作るアプリは、通常の権限に加えて channels:read、groups:read、chat:write.public、channels:join、bookmarks:write を持ちます。チャンネル名の検索、フォームの内容の投稿、公開チャンネルへの参加、ブックマークの追加に使います。`make manifest` で、このマニフェストを表示できます。
 
 ### 途中で止まったとき
 

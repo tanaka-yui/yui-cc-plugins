@@ -1,6 +1,6 @@
 {
   "name": "slack-issue-intake",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Slack のフォーム投稿から GitHub Issue を起票する（Orca automation の precheck で、投稿があるときだけ Claude を起動）",
   "author": {
     "name": "yui"
