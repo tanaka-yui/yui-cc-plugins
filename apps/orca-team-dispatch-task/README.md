@@ -77,9 +77,12 @@ worktree で並列に行う。
 
 ## 開発
 
-開発ガイドは [CLAUDE.md](CLAUDE.md)。テストと型検査:
+開発ガイドは [CLAUDE.md](CLAUDE.md)。テストと型検査は `make` で走らせる（この directory で実行。
+repository root からは `make -C apps/orca-team-dispatch-task <target>`）:
 
 ```bash
-bash test/run-all.sh                                        # この directory で実行
-pnpm --filter @tanaka-yui/orca-team-dispatch-task check     # repository root で実行
+make            # target の一覧を表示
+make test       # 全テスト (bash のテスト群 + node --test の単体テスト)
+make test-unit  # lib/ の単体テストだけ
+make check      # 型チェックと biome
 ```

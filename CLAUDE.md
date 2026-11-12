@@ -70,7 +70,7 @@ cd apps/token-meter && bun test
 cd apps/codex-bridge && bun test
 
 # orca-team-dispatch-task (bash のテスト群 + node --test の単体テスト。Node 22.18 以上)
-cd apps/orca-team-dispatch-task && bash test/run-all.sh
+cd apps/orca-team-dispatch-task && make test
 
 # slack-issue-intake (node --test。Node 24.15 以上)
 cd apps/slack-issue-intake && bash test/run-all.sh
