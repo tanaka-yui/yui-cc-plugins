@@ -111,7 +111,9 @@ export const FORM_FEATURED_MANUAL = 'manual'
 // 種類ごとのメタのキー（form_trigger_id:bug など）。キーの元の名前だけのもの（form_trigger_id）は 0.2 の 1 つのボタン
 export const formMetaKey = (base: string, kind: FormKind): string => `${base}:${kind.key}`
 // trigger delete の失敗のうち、ボタンがもう無いことを示すもの（手で消した、アプリを作り直したなど）
-export const TRIGGER_NOT_FOUND_PATTERN = /not[_ -]?found|does not exist/i
+export const TRIGGER_NOT_FOUND_PATTERN = /trigger[_ -]?not[_ -]?found|trigger\b.*\b(?:not found|does not exist)/i
+// 古いボタンを残すと案内した印。次に form を実行したら（人が画面で注目にしたあと）古いボタンを片付ける
+export const FORM_META_LEGACY_NOTIFIED = 'form_legacy_notified'
 export const MSG_FORM_LEGACY_KEPT =
   '以前の 1 つのボタンは、新しい 3 つのボタンが入力欄の所に出るまで残します。画面で 3 つを注目にしたら、make slack-form をもう一度実行してください。古いボタンを外して消します'
 export const MSG_FORM_STALE_MANIFEST =

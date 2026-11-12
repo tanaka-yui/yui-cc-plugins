@@ -25,8 +25,6 @@ const HEADER_LABELS: readonly string[] = [
   FIELD_LABELS.priority,
   FIELD_LABELS.reporter,
 ]
-// 項目名 → 複数行か。同じ項目名（画面のURL など）はどの種類でも同じ形
-const ITEM_LONG = new Map(FORM_KINDS.flatMap((k) => k.items.map((i) => [i.label, i.long] as const)))
 
 export const formKindByCategory = (category: string): FormKind | undefined => {
   const c = category.normalize('NFKC').trim()
@@ -53,17 +51,6 @@ const splitLabel = (line: string): { label: string; value: string } | null => {
       .trim(),
   }
 }
-const isBoldItemLine = (line: string): boolean => {
-  const m = /^\s*\*([^*:：]+)[:：]\*/.exec(line)
-  return Boolean(m?.[1] && ITEM_LONG.has(m[1].normalize('NFKC').trim()))
-}
-// * の無い形（rich_text を平らにしたもの）での項目の始まり。まだ出ていない項目名で、
-// 複数行の項目なら同じ行に値が無いもの、1 行の項目なら値があってもよい。
-// 値の中の「理想: …」のような行（同じ行に値がある複数行の項目名）は、項目の始まりとみなさない
-const isPlainItemStart = (parts: { label: string; value: string } | null, seen: Map<string, string[]>): boolean =>
-  Boolean(
-    parts && ITEM_LONG.has(parts.label) && !seen.has(parts.label) && (!parts.value || !ITEM_LONG.get(parts.label)),
-  )
 const trimBlankLines = (lines: string[]): string =>
   lines
     .join('\n')
@@ -72,19 +59,42 @@ const trimBlankLines = (lines: string[]): string =>
     .trim()
 
 type Scan = { header: Record<string, string>; legacyBody: string | null; items: Map<string, string[]> }
+type Labeled = { label: string; value: string }
+// 項目の始まりの行か。始まりにできるのは、その種類の項目のうち今の項目より後ろのものだけ。
+// * のある投稿（send_message の mrkdwn そのもの）では、太字の「*項目名:*」の行だけを始まりとする。
+// * の無い投稿（rich_text を平らにしたもの）では、複数行の項目は同じ行に値が無い「項目名:」の行、
+// 1 行の項目は値があってもよい。値の中の「理想: …」のような行は始まりにしない
+const itemStartIndex = (
+  line: string,
+  parts: Labeled | null,
+  kind: FormKind | undefined,
+  starred: boolean,
+  currentIndex: number,
+): number => {
+  if (!parts || !kind) return -1
+  const index = kind.items.findIndex((i) => i.label === parts.label)
+  const item = kind.items[index]
+  if (!item || index <= currentIndex) return -1
+  if (starred) return /^\s*\*[^*:：]+[:：]\*/.test(line) ? index : -1
+  return !parts.value || !item.long ? index : -1
+}
 const scan = (lines: string[]): Scan => {
   const header: Record<string, string> = {}
   const items = new Map<string, string[]>()
+  // カテゴリの行から、投稿の種類と形（* があるか）を先に決める
+  const categoryLine = lines.find((l) => splitLabel(l)?.label === FIELD_LABELS.category) ?? ''
+  const kind = formKindByCategory(splitLabel(categoryLine)?.value ?? '')
+  const starred = /^\s*\*/.test(categoryLine)
   let current: string[] | null = null
-  let currentLong = false
+  let currentIndex = -1
   let inFence = false
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i] ?? ''
     const parts = splitLabel(line)
-    const itemStart = isBoldItemLine(line) || isPlainItemStart(parts, items)
+    const start = itemStartIndex(line, parts, kind, starred, currentIndex)
     // 項目の始まりの行が来たら、値の ``` で枠が崩れていても枠を閉じる
-    if (inFence && itemStart) inFence = false
-    if (current && currentLong && !itemStart && line.includes(FENCE)) {
+    if (inFence && start >= 0) inFence = false
+    if (current && kind?.items[currentIndex]?.long && start < 0 && line.includes(FENCE)) {
       const content = line.split(FENCE).join('')
       if (content.trim()) current.push(content.trim())
       if ((line.split(FENCE).length - 1) % 2 === 1) inFence = !inFence
@@ -98,9 +108,9 @@ const scan = (lines: string[]): Scan => {
       return { header, legacyBody: [parts.value, ...lines.slice(i + 1)].join('\n').trim(), items }
     }
     if (parts && items.size === 0 && HEADER_LABELS.includes(parts.label)) header[parts.label] = parts.value
-    else if (parts && itemStart) {
+    else if (parts && start >= 0) {
       current = parts.value ? [parts.value] : []
-      currentLong = ITEM_LONG.get(parts.label) ?? false
+      currentIndex = start
       items.set(parts.label, current)
     } else current?.push(line)
   }

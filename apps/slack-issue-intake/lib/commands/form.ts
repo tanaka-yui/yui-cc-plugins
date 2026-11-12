@@ -7,6 +7,7 @@ import {
   FORM_FEATURED_MANUAL,
   FORM_KINDS,
   FORM_META_FEATURED,
+  FORM_META_LEGACY_NOTIFIED,
   FORM_META_TRIGGER_ID,
   FORM_META_URL,
   formMetaKey,
@@ -137,8 +138,11 @@ export const run = async (argv: string[]): Promise<void> => {
     // 0.2 の 1 つのボタンは、新しい 3 つを出したあとで外して消す。チャンネルからボタンが消える時間を作らない
     const legacy = getMeta(rt.db, FORM_META_TRIGGER_ID)
     // 新しい 3 つを画面で注目にしてもらうまでは、古いボタンを残す（チャンネルからボタンが消えないように）
-    if (legacy && featuredState === FORM_FEATURED_MANUAL) console.error(MSG_FORM_LEGACY_KEPT)
-    else if (legacy) {
+    // 1 回目は案内だけして印を残し、案内どおり再実行されたら片付ける
+    if (legacy && featuredState === FORM_FEATURED_MANUAL && !getMeta(rt.db, FORM_META_LEGACY_NOTIFIED)) {
+      console.error(MSG_FORM_LEGACY_KEPT)
+      setMeta(rt.db, FORM_META_LEGACY_NOTIFIED, legacy)
+    } else if (legacy) {
       guard()
       // すでに外れていることがあるので、失敗しても先へ進む
       await rt.slack.call('workflows.featured.remove', featuredParams(channel, [legacy]), deadline)
@@ -147,6 +151,7 @@ export const run = async (argv: string[]): Promise<void> => {
       if (deleted.ok || TRIGGER_NOT_FOUND_PATTERN.test(deleted.error)) {
         deleteMeta(rt.db, FORM_META_TRIGGER_ID)
         deleteMeta(rt.db, FORM_META_URL)
+        deleteMeta(rt.db, FORM_META_LEGACY_NOTIFIED)
       } else console.error(MSG_FORM_LEGACY_DELETE_FAILED.replace('{trigger}', legacy).replace('{error}', deleted.error))
     }
     console.log(

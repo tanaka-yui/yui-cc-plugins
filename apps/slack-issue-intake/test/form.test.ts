@@ -241,6 +241,20 @@ test('FO10 新しいボタンをボットでおすすめにできないうちは
   assert.equal(f.cliCalls('trigger delete').length, 0)
   assert.equal(f.meta(FORM_META_TRIGGER_ID), LEGACY_ID)
   assert.match(r.stderr, /make slack-form/)
+  // 案内どおり画面で注目にしてから再実行したら、古いボタンを片付ける
+  const again = await f.form()
+  assert.equal(again.code, 0, again.stderr)
+  assert.equal(f.cliCalls('trigger delete').length, 1)
+  assert.equal(f.meta(FORM_META_TRIGGER_ID), null)
+  assert.equal(f.meta(FORM_META_URL), null)
+})
+test('FO13 trigger 以外の not found（app_not_found など）は、消えたものとみなさず印を残す', async (t) => {
+  const f = await fixture(t, { cliEnv: { FAKE_SLACK_CLI_DELETE_FAIL: 'app_not_found' } })
+  f.seedMeta(FORM_META_TRIGGER_ID, LEGACY_ID)
+  f.seedMeta(FORM_META_URL, shortcut(LEGACY_ID))
+  const r = await f.form()
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(f.meta(FORM_META_TRIGGER_ID), LEGACY_ID)
 })
 test('FO11 古いボタンがもう無ければ（not found）、消えたものとして印を消す', async (t) => {
   const f = await fixture(t, { cliEnv: { FAKE_SLACK_CLI_DELETE_FAIL: 'Error: trigger_not_found' } })

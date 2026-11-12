@@ -128,3 +128,7 @@ test('PA20 項目が始まったあとの「本文:」の行で古い形に切�
   const r = parseSubmission(kindText('バグ', { 事象: 'a ```\n本文: b' }), null)
   assert.ok(r.kind === 'ok' && r.fields.body === '事象:\na\n本文: b')
 })
+test('PA21 * のある形では、値の中の「項目名:」だけの行（ほかの種類の項目名も）を区切りにしない', () => {
+  const r = parseSubmission(kindText('バグ', { 事象: 'a\n現在:\nb\n対応策:', 画面のURL: 'u' }), null)
+  assert.ok(r.kind === 'ok' && r.fields.body === '事象:\na\n現在:\nb\n対応策:\n\n画面のURL:\nu')
+})
