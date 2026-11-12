@@ -6,7 +6,6 @@ import {
   FORM_FEATURE_STEPS,
   FORM_KINDS,
   FORM_SUBMIT_LABEL,
-  FORM_TITLE_SEPARATOR,
   MAX_FILES_PER_MESSAGE,
   PRIORITIES,
   SLACK_APP_NAME,
@@ -107,8 +106,8 @@ export const triggerDefinition = (channel: string, kind: FormKind): JsonObject =
   },
 })
 
-// 3 つのボタンの題を「、」でつないだもの。画面での手順や完了の案内に使う
-export const formTitles = (): string => FORM_KINDS.map((k) => k.title).join(FORM_TITLE_SEPARATOR)
+// 3 つのボタンの題を「」で囲んで並べたもの（「バグを報告」「要望を送る」…）。画面での手順や完了の案内に使う
+export const formTitles = (): string => FORM_KINDS.map((k) => `「${k.title}」`).join('')
 export const featureSteps = (): string =>
   FORM_FEATURE_STEPS.replaceAll('{title}', formTitles()).replaceAll('{app}', SLACK_APP_NAME)
 

@@ -120,7 +120,7 @@ test('SU1 質問に答えるだけで、アプリ・トークン・設定・ボ�
     channel_id: 'C0TARGET01',
     trigger_ids: 'Ft0FAKEBUG,Ft0FAKEREQ,Ft0FAKEFEA',
   })
-  assert.match(r.stdout, /バグを報告、要望を送る、新機能を提案/)
+  assert.match(r.stdout, /ボタン（「バグを報告」「要望を送る」「新機能を提案」）のどれか/)
   assert.equal(f.calls('bookmarks.add').length, 0)
   assert.notEqual(config?.acceptedPermissions, null)
   assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])

@@ -84,7 +84,6 @@ export const FIELD_LABELS = {
 export const TEMPLATE_REPORTER_HINT = 'フォームを送信した人'
 // フォーム付きマニフェスト（form --manifest）と、チャンネルにボタンを置く form で使う値
 // open_form の題は半角24字（日本語は1字を3と数えて8字）まで。題は FORM_KINDS の title
-export const FORM_TITLE_SEPARATOR = '、'
 export const FORM_TITLE_MAX_UNITS = 24
 export const FORM_FIELD_TITLE_MAX_CHARS = 25
 export const FORM_DESCRIPTION = 'GitHub Issue の起票依頼を送ります'
@@ -121,7 +120,7 @@ export const MSG_FORM_LEGACY_DELETE_FAILED =
   '以前の 1 つのボタン（{trigger}）を消せませんでした（{error}）。新しい 3 つのボタンは使えます。次の実行でもう一度消します'
 // 画面でボタンを入力欄に出す手順。ボットのトークンでは workflows.featured.add が通らないことがあるので、form と setup の最後に示す
 export const FORM_FEATURE_STEPS =
-  'ブラウザで Slack の管理画面を開き、ワークフローの一覧から「{title}」（アプリ {app}）の詳細を開いて、右上のメニューから「おすすめアプリに追加」を選んでください。追加したら、チャンネルの入力欄の所にボタン「{title}」が出ることを確かめてください。出ないときは、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で「{title}」を選び、「注目」を押してください'
+  'ブラウザで Slack の管理画面を開き、ワークフローの一覧から {title} のそれぞれについて（アプリ {app}）、詳細を開いて右上のメニューから「おすすめアプリに追加」を選んでください。追加したら、チャンネルの入力欄の所に 3 つのボタンが出ることを確かめてください。出ないときは、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で 3 つを選び、「注目」を押してください'
 export const MSG_FORM_FEATURE_BY_HAND =
   'ボットにはボタンを入力欄に出す権限がありません（restricted_action）。まだ設定していなければ、画面で設定します: {steps}'
 export const MSG_FORM_FEATURE_FAILED = 'ボタンをチャンネルの入力欄に出せません（{error}）。画面で設定します: {steps}'
@@ -396,5 +395,5 @@ export const SETUP_TEXT = {
   noInherited: '権限の設定を読めません。~/.claude/settings.json を確かめてから再実行してください',
   featureByHand: '入力欄の所のボタンは、画面で設定します（まだなら）: {steps}',
   finished:
-    'セットアップが終わりました。チャンネルの入力欄の所に出るボタン「{title}」から1件送り、数分後に node bin/slack-issue-intake.ts inspect --raw で受け付けたことを確かめてください',
+    'セットアップが終わりました。チャンネルの入力欄の所に出るボタン（{title}）のどれかから1件送り、数分後に node bin/slack-issue-intake.ts inspect --raw で受け付けたことを確かめてください',
 } as const

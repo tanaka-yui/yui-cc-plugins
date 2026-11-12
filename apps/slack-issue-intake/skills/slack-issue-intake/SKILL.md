@@ -68,18 +68,25 @@ cannot complete.
 
 ## form
 
-1. `make setup` runs `form` as its step 6. Run it by hand only to place the button again. It creates the workflow's
-   shortcut trigger with `slack trigger create`, limits it to members of the configured channel with
-   `slack trigger access`, and makes it a featured workflow of the channel with `workflows.featured.add`, so members
-   see the button where the message field would be. It prints `url=`. A rerun reuses the recorded trigger and
-   featured state. It needs the Slack CLI project that `make setup` created.
+1. `make setup` runs `form` as its step 6. Run it by hand only to place the buttons again. There are three forms, one
+   per category (bug, request, feature). For each, it creates the workflow's shortcut trigger with
+   `slack trigger create` and limits it to members of the configured channel with `slack trigger access`. Then it makes
+   all three featured workflows of the channel with one `workflows.featured.add` call, so members see three buttons
+   where the message field would be. It prints `trigger.<key>=` and `url.<key>=` for each form, then `channel=` and
+   `featured=`. A rerun reuses the recorded triggers and featured state. It needs the Slack CLI project that
+   `make setup` created.
+   - If a 0.2 single-form button is still recorded, it removes that old button after the three new ones are featured.
+     If deleting it fails, the new buttons still work and the next run retries; a button that no longer exists counts
+     as removed. If featuring had to be done by hand, it keeps the old button and asks the user to rerun
+     `make slack-form` after featuring the three buttons in the Slack admin pages.
 2. On exit 1, explain the printed reason. A refused trigger means the Slack CLI could not create it for this app;
    fall back to the Workflow Builder steps from `guide`. If featuring failed, relay the printed steps: in the Slack
-   admin pages in a browser, open the form workflow's app details from the workflow list and add it to the featured
-   apps from the top-right menu; if the button still does not replace the channel's message field, use the channel's
-   Workflows tab to feature the workflow. Do not suggest adding the link as a channel bookmark;
-   Slack opens such a bookmark in the browser. Exit 2 means there is no setup, no Slack CLI, or no app made by
-   `make setup`.
+   admin pages in a browser, open each of the three form workflows' app details from the workflow list and add them to
+   the featured apps from the top-right menu; if the buttons still do not replace the channel's message field, use the
+   channel's Workflows tab to feature the three workflows. Do not suggest adding the link as a channel bookmark;
+   Slack opens such a bookmark in the browser. Exit 2 means there is no setup, no Slack CLI, no app made by
+   `make setup`, or the deployed app is older than the current form definition (right after a plugin update); in that
+   case, run `make setup` again.
 3. Form posts from this path are written by the app's own bot, so `inspect` shows `bot=yes` for them.
 
 ## enable
