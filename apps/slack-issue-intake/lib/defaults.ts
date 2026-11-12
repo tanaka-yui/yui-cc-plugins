@@ -109,6 +109,10 @@ export const FORM_META_FEATURED = 'form_featured_trigger_id'
 // そのときは画面で設定してもらう印を残して先へ進む（form の再実行では API をもう一度試す）
 export const ERROR_RESTRICTED_ACTION = 'restricted_action'
 export const FORM_FEATURED_MANUAL = 'manual'
+// 種類ごとのメタのキー（form_trigger_id:bug など）。キーの元の名前だけのもの（form_trigger_id）は 0.2 の 1 つのボタン
+export const formMetaKey = (base: string, kind: FormKind): string => `${base}:${kind.key}`
+export const MSG_FORM_LEGACY_DELETE_FAILED =
+  '以前の 1 つのボタン（{trigger}）を消せませんでした（{error}）。新しい 3 つのボタンは使えます。次の実行でもう一度消します'
 // 画面でボタンを入力欄に出す手順。ボットのトークンでは workflows.featured.add が通らないことがあるので、form と setup の最後に示す
 export const FORM_FEATURE_STEPS =
   'ブラウザで Slack の管理画面を開き、ワークフローの一覧から「{title}」（アプリ {app}）の詳細を開いて、右上のメニューから「おすすめアプリに追加」を選んでください。追加したら、チャンネルの入力欄の所にボタン「{title}」が出ることを確かめてください。出ないときは、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で「{title}」を選び、「注目」を押してください'
@@ -304,7 +308,8 @@ export const PROCESS_LOCALE = 'C'
 
 // Slack CLI 用のプロジェクト（ホームの隣に置く）とフック
 export const SLACK_APP_DIR_SUFFIX = '-slack-app'
-export const TRIGGER_DEF_FILE = 'form-trigger.json'
+// フォームの種類ごとのトリガー定義のファイル。<prefix><key>.json
+export const TRIGGER_DEF_PREFIX = 'form-trigger-'
 export const MANIFEST_HASH_FILE = 'manifest.sha256'
 export const SLACK_HOOK_TOKEN_ENV = 'SLACK_BOT_TOKEN'
 export const SLACK_HOOK_COMMAND = 'slack-hook'

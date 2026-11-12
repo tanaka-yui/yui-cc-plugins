@@ -1,4 +1,6 @@
 import { loadConfig } from '../lib/config.ts'
+import { openDb, setMeta } from '../lib/db.ts'
+import { FORM_META_TRIGGER_ID } from '../lib/defaults.ts'
 import { asObject, get } from '../lib/json.ts'
 import { homePaths } from '../lib/paths.ts'
 import { permissionStatus } from '../lib/permissions.ts'
@@ -111,12 +113,14 @@ test('SU1 質問に答えるだけで、アプリ・トークン・設定・ボ�
   assert.equal(config?.channel, 'C0TARGET01')
   assert.equal(config?.repo, 'acme/app')
   assert.equal(config?.everyMinutes, 5)
-  const [created] = f.cliCalls('trigger create')
-  assert.equal(get(asObject(get(created?.triggerDef, 'inputs')), 'channel_id', 'value'), 'C0TARGET01')
+  const created = f.cliCalls('trigger create')
+  assert.equal(created.length, 3)
+  for (const c of created) assert.equal(get(asObject(get(c.triggerDef, 'inputs')), 'channel_id', 'value'), 'C0TARGET01')
   assert.deepEqual(f.calls('workflows.featured.add')[0]?.params, {
     channel_id: 'C0TARGET01',
-    trigger_ids: 'Ft0FAKE001',
+    trigger_ids: 'Ft0FAKEBUG,Ft0FAKEREQ,Ft0FAKEFEA',
   })
+  assert.match(r.stdout, /バグを報告、要望を送る、新機能を提案/)
   assert.equal(f.calls('bookmarks.add').length, 0)
   assert.notEqual(config?.acceptedPermissions, null)
   assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
@@ -129,8 +133,23 @@ test('SU2 もう一度実行すると、済んだ段を飛ばしてアプリ・�
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /済み/)
   assert.equal(f.cliCalls('deploy').length, 1)
-  assert.equal(f.cliCalls('trigger create').length, 1)
+  assert.equal(f.cliCalls('trigger create').length, 3)
   assert.equal(f.calls('workflows.featured.add').length, 1)
+})
+
+test('SU23 0.2 の古いボタンが残っていれば、6 段目で form をもう一度走らせて片付ける', async (t) => {
+  const f = await fixture(t)
+  assert.equal((await f.setup(FULL_INPUT)).code, 0)
+  const db = openDb(homePaths(f.home).db)
+  setMeta(db, FORM_META_TRIGGER_ID, 'Ft0FAKEFOR')
+  db.close()
+  const r = await f.setup('\n')
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(f.cliCalls('trigger create').length, 3)
+  assert.deepEqual(
+    f.cliCalls('trigger delete').map((c) => c.argv[3]),
+    ['Ft0FAKEFOR'],
+  )
 })
 
 test('SU3 マニフェストが変わっていれば、同じチームを指定して deploy し直す', async (t) => {

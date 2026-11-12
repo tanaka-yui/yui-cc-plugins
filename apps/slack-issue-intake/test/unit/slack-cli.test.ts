@@ -1,12 +1,15 @@
+import { FORM_KINDS } from '../../lib/defaults.ts'
 import { asObject, get, parseJson } from '../../lib/json.ts'
 import { pluginRoot } from '../../lib/paths.ts'
 import {
   createTrigger,
+  deleteTrigger,
   deployEnv,
   deployedApp,
   grantTriggerAccess,
   parseShortcutUrl,
   slackProject,
+  triggerDefPath,
   writeProject,
   writeTriggerDef,
 } from '../../lib/slack-cli.ts'
@@ -41,7 +44,10 @@ test('SC3 Slack CLI のプロジェクトはホームの隣に置き、ホーム
   assert.equal(p.dir, '/x/.slack-issue-intake-slack-app')
   assert.equal(p.apps, '/x/.slack-issue-intake-slack-app/.slack/apps.json')
   assert.equal(p.hooks, '/x/.slack-issue-intake-slack-app/.slack/hooks.json')
-  assert.equal(p.triggerDef, '/x/.slack-issue-intake-slack-app/form-trigger.json')
+  assert.deepEqual(
+    FORM_KINDS.map((k) => triggerDefPath(p, k)),
+    ['bug', 'request', 'feature'].map((k) => `/x/.slack-issue-intake-slack-app/form-trigger-${k}.json`),
+  )
   assert.equal(p.manifestHash, '/x/.slack-issue-intake-slack-app/manifest.sha256')
 })
 test('SC4 hooks.json は絶対パスのフックを書き、get-hooks の出力と同じになる', () => {
@@ -79,26 +85,30 @@ test('SC5 deployedApp は apps.json のアプリを返し、無いか壊れて�
   assert.deepEqual(deployedApp(p), { appId: 'A0X', teamId: 'T0X' })
   assert.equal(asObject(get(parseJson(readFileSync(p.apps, 'utf8')) ?? undefined, 'apps')) !== null, true)
 })
-test('SC6 createTrigger / grantTriggerAccess は決まった引数で Slack CLI を呼び、失敗は理由を返す', () => {
+test('SC6 createTrigger / grantTriggerAccess / deleteTrigger は決まった引数で Slack CLI を呼び、失敗は理由を返す', () => {
   const dir = tempHome()
   const cli = fakeSlackCli(dir)
   process.env.FAKE_SLACK_CLI_LOG = cli.log
   const p = slackProject(tempHome())
   writeProject(p)
-  writeTriggerDef(p, 'C0TARGET01')
-  const created = createTrigger(cli.path, p, 'T0TEAM001')
+  const kind = FORM_KINDS[0]
+  if (!kind) throw new Error('no form kind')
+  const defPath = writeTriggerDef(p, 'C0TARGET01', kind)
+  assert.equal(defPath, triggerDefPath(p, kind))
+  const created = createTrigger(cli.path, p, 'T0TEAM001', defPath)
   assert.deepEqual(created, {
     ok: true,
-    triggerId: 'Ft0FAKE001',
-    url: 'https://slack.com/shortcuts/Ft0FAKE001/abc123',
+    triggerId: 'Ft0FAKEBUG',
+    url: 'https://slack.com/shortcuts/Ft0FAKEBUG/abc123',
   })
-  assert.deepEqual(grantTriggerAccess(cli.path, p, 'T0TEAM001', 'Ft0FAKE001', 'C0TARGET01'), { ok: true })
-  const [create, access] = slackCliCalls(cli.log)
+  assert.deepEqual(grantTriggerAccess(cli.path, p, 'T0TEAM001', 'Ft0FAKEBUG', 'C0TARGET01'), { ok: true })
+  assert.deepEqual(deleteTrigger(cli.path, p, 'T0TEAM001', 'Ft0FAKEFOR'), { ok: true })
+  const [create, access, remove] = slackCliCalls(cli.log)
   assert.deepEqual(create?.argv, [
     'trigger',
     'create',
     '--trigger-def',
-    p.triggerDef,
+    defPath,
     '--app',
     'deployed',
     '--team',
@@ -110,7 +120,7 @@ test('SC6 createTrigger / grantTriggerAccess は決まった引数で Slack CLI 
     'trigger',
     'access',
     '--trigger-id',
-    'Ft0FAKE001',
+    'Ft0FAKEBUG',
     '--channels',
     'C0TARGET01',
     '--grant',
@@ -122,12 +132,27 @@ test('SC6 createTrigger / grantTriggerAccess は決まった引数で Slack CLI 
     '--skip-update',
     '--no-color',
   ])
+  assert.deepEqual(remove?.argv, [
+    'trigger',
+    'delete',
+    '--trigger-id',
+    'Ft0FAKEFOR',
+    '--app',
+    'deployed',
+    '--team',
+    'T0TEAM001',
+    '--skip-update',
+    '--no-color',
+  ])
   process.env.FAKE_SLACK_CLI_TRIGGER_FAIL = 'boom'
+  process.env.FAKE_SLACK_CLI_DELETE_FAIL = 'gone'
   try {
-    const failed = createTrigger(cli.path, p, 'T0TEAM001')
+    const failed = createTrigger(cli.path, p, 'T0TEAM001', defPath)
     assert.deepEqual(failed, { ok: false, error: 'boom' })
+    assert.deepEqual(deleteTrigger(cli.path, p, 'T0TEAM001', 'Ft0FAKEFOR'), { ok: false, error: 'gone' })
   } finally {
     delete process.env.FAKE_SLACK_CLI_TRIGGER_FAIL
+    delete process.env.FAKE_SLACK_CLI_DELETE_FAIL
     delete process.env.FAKE_SLACK_CLI_LOG
   }
 })

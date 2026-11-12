@@ -1,5 +1,5 @@
-import { getMeta, openDb } from '../lib/db.ts'
-import { FORM_META_FEATURED, FORM_META_TRIGGER_ID, FORM_META_URL } from '../lib/defaults.ts'
+import { getMeta, openDb, setMeta } from '../lib/db.ts'
+import { FORM_KINDS, FORM_META_FEATURED, FORM_META_TRIGGER_ID, FORM_META_URL, formMetaKey } from '../lib/defaults.ts'
 import { renderFormManifest } from '../lib/form.ts'
 import { asObject, get } from '../lib/json.ts'
 import { homePaths } from '../lib/paths.ts'
@@ -20,8 +20,10 @@ import { test } from 'node:test'
 
 import type { SlackReply, SlackRequest } from './helpers.ts'
 
-const TRIGGER_ID = 'Ft0FAKE001'
-const SHORTCUT = `https://slack.com/shortcuts/${TRIGGER_ID}/abc123`
+const IDS = ['Ft0FAKEBUG', 'Ft0FAKEREQ', 'Ft0FAKEFEA']
+const JOINED = IDS.join(',')
+const LEGACY_ID = 'Ft0FAKEFOR'
+const shortcut = (id: string): string => `https://slack.com/shortcuts/${id}/abc123`
 const auth = (teamId = TEAM_ID): SlackReply => ({
   json: { ok: true, user_id: BOT_USER, bot_id: BOT_ID, team_id: teamId, url: TEAM_URL, team: 'acme' },
 })
@@ -50,34 +52,64 @@ const fixture = async (
     db.close()
     return value
   }
+  const seedMeta = (key: string, value: string): void => {
+    const db = openDb(homePaths(home).db)
+    setMeta(db, key, value)
+    db.close()
+  }
   const calls = (method: string): SlackRequest[] => server.requests.filter((r) => r.method === method)
   const cliCalls = (sub: string) => slackCliCalls(cli.log).filter((c) => c.argv.slice(0, 2).join(' ') === sub)
-  return { home, server, meta, calls, cliCalls, form: (args: string[] = []) => runCliAsync(['form', ...args], env) }
+  return {
+    home,
+    server,
+    meta,
+    seedMeta,
+    calls,
+    cliCalls,
+    form: (args: string[] = []) => runCliAsync(['form', ...args], env),
+  }
 }
 
-test('FO1 Slack CLI でリンクを作ってチャンネルのメンバーに限り、おすすめワークフローにして入力欄にボタンを出す。再実行で重ねない', async (t) => {
+test('FO1 Slack CLI で 3 つのボタンを作ってチャンネルのメンバーに限り、1 回でおすすめにする。再実行で重ねない', async (t) => {
   const f = await fixture(t)
   const r = await f.form()
   assert.equal(r.code, 0, r.stderr)
-  assert.match(r.stdout, new RegExp(`url=${SHORTCUT}`))
-  const [created] = f.cliCalls('trigger create')
-  for (const arg of ['--trigger-def', '--app', 'deployed', '--team', TEAM_ID, '--skip-update', '--no-color'])
-    assert.ok(created?.argv.includes(arg), arg)
-  assert.deepEqual(get(asObject(get(created?.triggerDef, 'inputs')), 'channel_id'), { value: CHANNEL })
-  assert.equal(created?.hadBotToken, false)
-  const [granted] = f.cliCalls('trigger access')
-  const argv = granted?.argv.join(' ') ?? ''
-  assert.ok(argv.includes(`--trigger-id ${TRIGGER_ID} --channels ${CHANNEL} --grant --include-app-collaborators=false`))
-  assert.deepEqual(f.calls('workflows.featured.add')[0]?.params, { channel_id: CHANNEL, trigger_ids: TRIGGER_ID })
+  const created = f.cliCalls('trigger create')
+  assert.deepEqual(
+    created.map((c) => get(c.triggerDef, 'workflow')),
+    FORM_KINDS.map((k) => `#/workflows/${k.workflowId}`),
+  )
+  for (const c of created) {
+    for (const arg of ['--trigger-def', '--app', 'deployed', '--team', TEAM_ID, '--skip-update', '--no-color'])
+      assert.ok(c.argv.includes(arg), arg)
+    assert.deepEqual(get(asObject(get(c.triggerDef, 'inputs')), 'channel_id'), { value: CHANNEL })
+    assert.equal(c.hadBotToken, false)
+  }
+  const granted = f.cliCalls('trigger access').map((c) => c.argv.join(' '))
+  for (const id of IDS)
+    assert.ok(
+      granted.some((a) =>
+        a.includes(`--trigger-id ${id} --channels ${CHANNEL} --grant --include-app-collaborators=false`),
+      ),
+    )
+  assert.deepEqual(
+    f.calls('workflows.featured.add').map((c) => c.params),
+    [{ channel_id: CHANNEL, trigger_ids: JOINED }],
+  )
   assert.equal(f.calls('bookmarks.add').length, 0)
-  assert.equal(f.meta(FORM_META_TRIGGER_ID), TRIGGER_ID)
-  assert.equal(f.meta(FORM_META_URL), SHORTCUT)
-  assert.equal(f.meta(FORM_META_FEATURED), TRIGGER_ID)
+  FORM_KINDS.forEach((kind, i) => {
+    assert.equal(f.meta(formMetaKey(FORM_META_TRIGGER_ID, kind)), IDS[i])
+    assert.equal(f.meta(formMetaKey(FORM_META_URL, kind)), shortcut(IDS[i] ?? ''))
+    assert.match(r.stdout, new RegExp(`trigger.${kind.key}=${IDS[i]}`))
+    assert.match(r.stdout, new RegExp(`url.${kind.key}=${shortcut(IDS[i] ?? '')}`))
+  })
+  assert.equal(f.meta(FORM_META_FEATURED), JOINED)
   const again = await f.form()
   assert.equal(again.code, 0, again.stderr)
-  assert.equal(f.cliCalls('trigger create').length, 1)
+  assert.equal(f.cliCalls('trigger create').length, 3)
   assert.equal(f.calls('workflows.featured.add').length, 1)
-  assert.equal(f.cliCalls('trigger access').length, 2)
+  assert.equal(f.cliCalls('trigger access').length, 6)
+  assert.equal(f.cliCalls('trigger delete').length, 0)
 })
 test('FO2 Slack CLI がボタンを作れなければ、Workflow Builder の手順へ案内して何も残さない', async (t) => {
   const f = await fixture(t, { cliEnv: { FAKE_SLACK_CLI_TRIGGER_FAIL: 'workflow_not_found' } })
@@ -87,7 +119,7 @@ test('FO2 Slack CLI がボタンを作れなければ、Workflow Builder の手�
   assert.match(r.stderr, /Workflow Builder/)
   assert.equal(f.cliCalls('trigger access').length, 0)
   assert.equal(f.calls('workflows.featured.add').length, 0)
-  assert.equal(f.meta(FORM_META_TRIGGER_ID), null)
+  for (const kind of FORM_KINDS) assert.equal(f.meta(formMetaKey(FORM_META_TRIGGER_ID, kind)), null)
 })
 test('FO3 おすすめにできなければ画面での手順を示し、再実行ではリンクを作り直さずにおすすめだけやり直す', async (t) => {
   let refuse = true
@@ -102,12 +134,15 @@ test('FO3 おすすめにできなければ画面での手順を示し、再実�
   assert.equal(r.code, 1)
   assert.match(r.stderr, /not_in_channel/)
   assert.match(r.stderr, /おすすめ/)
-  assert.equal(f.meta(FORM_META_TRIGGER_ID), TRIGGER_ID)
+  assert.deepEqual(
+    FORM_KINDS.map((k) => f.meta(formMetaKey(FORM_META_TRIGGER_ID, k))),
+    IDS,
+  )
   assert.equal(f.meta(FORM_META_FEATURED), null)
   const again = await f.form()
   assert.equal(again.code, 0, again.stderr)
-  assert.equal(f.cliCalls('trigger create').length, 1)
-  assert.equal(f.meta(FORM_META_FEATURED), TRIGGER_ID)
+  assert.equal(f.cliCalls('trigger create').length, 3)
+  assert.equal(f.meta(FORM_META_FEATURED), JOINED)
 })
 test('FO4 トークンのワークスペースが設定と違えば何も作らない', async (t) => {
   const f = await fixture(t, { handler: (r) => (r.method === 'auth.test' ? auth('T0OTHER01') : null) })
@@ -163,5 +198,33 @@ test('FO6 ボットにおすすめにする権限が無ければ、管理画面�
   const again = await f.form()
   assert.equal(again.code, 0, again.stderr)
   assert.equal(f.calls('workflows.featured.add').length, 2)
-  assert.equal(f.cliCalls('trigger create').length, 1)
+  assert.equal(f.cliCalls('trigger create').length, 3)
+})
+test('FO8 0.2 の 1 つのボタンは、新しい 3 つをおすすめにしたあとで外して消す', async (t) => {
+  const f = await fixture(t)
+  f.seedMeta(FORM_META_TRIGGER_ID, LEGACY_ID)
+  f.seedMeta(FORM_META_URL, shortcut(LEGACY_ID))
+  f.seedMeta(FORM_META_FEATURED, LEGACY_ID)
+  const r = await f.form()
+  assert.equal(r.code, 0, r.stderr)
+  const order = f.server.requests.map((q) => q.method).filter((m) => m.startsWith('workflows.featured'))
+  assert.deepEqual(order, ['workflows.featured.add', 'workflows.featured.remove'])
+  assert.deepEqual(f.calls('workflows.featured.remove')[0]?.params, { channel_id: CHANNEL, trigger_ids: LEGACY_ID })
+  const [deleted] = f.cliCalls('trigger delete')
+  assert.ok(deleted?.argv.join(' ').includes(`--trigger-id ${LEGACY_ID} --app deployed --team ${TEAM_ID}`))
+  assert.equal(f.meta(FORM_META_TRIGGER_ID), null)
+  assert.equal(f.meta(FORM_META_URL), null)
+  assert.equal(f.meta(FORM_META_FEATURED), JOINED)
+})
+test('FO9 古いボタンを消せなくても止めずに終わり、印を残して次の実行でやり直す', async (t) => {
+  const f = await fixture(t, { cliEnv: { FAKE_SLACK_CLI_DELETE_FAIL: 'trigger_not_found' } })
+  f.seedMeta(FORM_META_TRIGGER_ID, LEGACY_ID)
+  f.seedMeta(FORM_META_URL, shortcut(LEGACY_ID))
+  const r = await f.form()
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stderr, /trigger_not_found/)
+  assert.equal(f.meta(FORM_META_TRIGGER_ID), LEGACY_ID)
+  const again = await f.form()
+  assert.equal(again.code, 0, again.stderr)
+  assert.equal(f.cliCalls('trigger delete').length, 2)
 })

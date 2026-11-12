@@ -10,8 +10,10 @@ import {
   DEFAULT_EVERY_MINUTES,
   ERROR_MISSING_SCOPE,
   FORM_FEATURED_MANUAL,
+  FORM_KINDS,
   FORM_META_FEATURED,
   FORM_META_TRIGGER_ID,
+  formMetaKey,
   LABEL_WRITE_PERMISSIONS,
   MSG_CONFIG_BROKEN,
   MSG_PUSH_REQUIRED,
@@ -230,8 +232,11 @@ const readMeta = (dbFile: string, key: string): string | null => {
     db.close()
   }
 }
+// 3 つのボタンとおすすめがそろい、0.2 の古いボタンが残っていないときだけ済みにする（残っていれば form で片付ける）
 const formDone = (dbFile: string): boolean =>
-  Boolean(readMeta(dbFile, FORM_META_TRIGGER_ID) && readMeta(dbFile, FORM_META_FEATURED))
+  FORM_KINDS.every((kind) => readMeta(dbFile, formMetaKey(FORM_META_TRIGGER_ID, kind))) &&
+  Boolean(readMeta(dbFile, FORM_META_FEATURED)) &&
+  !readMeta(dbFile, FORM_META_TRIGGER_ID)
 
 // 7・8段目。permissionStatus で飛ばす段を決め、許可と受け継ぐ許可はどちらも内容を見せて y/N で確かめる
 const approve = (p: Prompter, home: string, accepted: string | null): number => {

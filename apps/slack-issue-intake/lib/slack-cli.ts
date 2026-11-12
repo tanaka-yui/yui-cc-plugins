@@ -12,7 +12,7 @@ import {
   SLACK_CLI_TRIGGER_TIMEOUT_MS,
   SLACK_HOOK_COMMAND,
   SLACK_TOKEN_ENV_NAMES,
-  TRIGGER_DEF_FILE,
+  TRIGGER_DEF_PREFIX,
 } from './defaults.ts'
 import { renderFormManifest, triggerDefinition } from './form.ts'
 import { ensurePrivateDir, readJson, writeJson } from './fs.ts'
@@ -27,13 +27,13 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import type { JsonObject } from './json.ts'
+import type { FormKind } from './types.ts'
 
 export type SlackProject = {
   dir: string
   hooks: string
   config: string
   apps: string
-  triggerDef: string
   manifestHash: string
 }
 
@@ -46,7 +46,6 @@ export const slackProject = (home: string): SlackProject => {
     hooks: join(slack, 'hooks.json'),
     config: join(slack, 'config.json'),
     apps: join(slack, 'apps.json'),
-    triggerDef: join(dir, TRIGGER_DEF_FILE),
     manifestHash: join(dir, MANIFEST_HASH_FILE),
   }
 }
@@ -161,9 +160,13 @@ export const runLink = (bin: string, project: SlackProject, appId: string, teamI
   return r.status ?? 1
 }
 
-export const writeTriggerDef = (project: SlackProject, channel: string): void => {
+export const triggerDefPath = (project: SlackProject, kind: FormKind): string =>
+  join(project.dir, `${TRIGGER_DEF_PREFIX}${kind.key}.json`)
+export const writeTriggerDef = (project: SlackProject, channel: string, kind: FormKind): string => {
   ensurePrivateDir(project.dir)
-  writeJson(project.triggerDef, triggerDefinition(channel), 0o600)
+  const path = triggerDefPath(project, kind)
+  writeJson(path, triggerDefinition(channel, kind), 0o600)
+  return path
 }
 
 export const parseShortcutUrl = (output: string): { triggerId: string; url: string } | null => {
@@ -191,12 +194,13 @@ export const createTrigger = (
   bin: string,
   project: SlackProject,
   teamId: string,
+  defPath: string,
 ): { ok: true; triggerId: string; url: string } | CliFailure => {
   const r = capture(bin, project, [
     'trigger',
     'create',
     '--trigger-def',
-    project.triggerDef,
+    defPath,
     '--app',
     SLACK_APP_ENVIRONMENT,
     '--team',
@@ -207,6 +211,27 @@ export const createTrigger = (
   if (!r.ok) return r
   const found = parseShortcutUrl(r.stdout)
   return found ? { ok: true, ...found } : { ok: false, error: 'ボタンの URL を読み取れませんでした' }
+}
+
+export const deleteTrigger = (
+  bin: string,
+  project: SlackProject,
+  teamId: string,
+  triggerId: string,
+): { ok: true } | CliFailure => {
+  const r = capture(bin, project, [
+    'trigger',
+    'delete',
+    '--trigger-id',
+    triggerId,
+    '--app',
+    SLACK_APP_ENVIRONMENT,
+    '--team',
+    teamId,
+    '--skip-update',
+    '--no-color',
+  ])
+  return r.ok ? { ok: true } : r
 }
 
 export const grantTriggerAccess = (

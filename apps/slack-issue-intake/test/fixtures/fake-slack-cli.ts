@@ -70,9 +70,18 @@ if (args[0] === '_fingerprint') {
     console.error(process.env.FAKE_SLACK_CLI_TRIGGER_FAIL)
     process.exit(1)
   }
-  console.log('Trigger successfully created!\n   https://slack.com/shortcuts/Ft0FAKE001/abc123')
+  // ワークフローごとに別の ID を返す（issue_intake_bug → Ft0FAKEBUG）
+  const workflow = asString(get(parseJson(triggerDef ?? 'null') ?? undefined, 'workflow')) ?? ''
+  const id = `Ft0FAKE${(workflow.split('_').at(-1) ?? '').slice(0, 3).toUpperCase()}`
+  console.log(`Trigger successfully created!\n   https://slack.com/shortcuts/${id}/abc123`)
 } else if (cmd === 'trigger access') {
   record()
+} else if (cmd === 'trigger delete') {
+  record()
+  if (process.env.FAKE_SLACK_CLI_DELETE_FAIL) {
+    console.error(process.env.FAKE_SLACK_CLI_DELETE_FAIL)
+    process.exit(1)
+  }
 } else {
   record()
   process.exit(1)
