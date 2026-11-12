@@ -1,0 +1,19 @@
+{
+  "name": "@tanaka-yui/slack-issue-intake",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit && biome check ./bin ./lib ./skills ./test",
+    "check:fix": "biome check --write ./bin ./lib ./skills ./test",
+    "format": "biome format ./bin ./lib ./skills ./test",
+    "format:fix": "biome format --write ./bin ./lib ./skills ./test",
+    "lint": "biome lint ./bin ./lib ./skills ./test",
+    "lint:fix": "biome lint --write ./bin ./lib ./skills ./test"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

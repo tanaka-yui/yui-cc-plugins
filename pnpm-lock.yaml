@@ -50,6 +50,12 @@ importers:
         specifier: 22.15.3
         version: 22.15.3
 
+  apps/slack-issue-intake:
+    devDependencies:
+      '@types/node':
+        specifier: 24.19.2
+        version: 24.19.2
+
   apps/token-meter:
     dependencies:
       '@anthropic-ai/tokenizer':

@@ -63,4 +63,5 @@ make -C apps/account-failover install
 | orca-team-dispatch-task | Orca の worktree で並列タスクディスパッチ（レビュー役・計画/実装分離・PR・GitHub issue 対応） | [README](apps/orca-team-dispatch-task/README.md) |
 | token-meter | hook 経由で圧縮プラグイン (rtk/caveman/headroom) の効きを観測・JSONL 集計 | [README](apps/token-meter/README.md) |
 | codex-bridge | Claude の rules / CLAUDE.md を Codex 用 AGENTS.md にネスト生成（`/codex-bridge`） | [CLAUDE.md](apps/codex-bridge/CLAUDE.md) |
+| slack-issue-intake | Slack のフォーム投稿から GitHub Issue を起票（判断待ちだけ Claude を起動） | [README](apps/slack-issue-intake/README.md) |
 | account-failover（Orca プラグイン） | Claude / Codex が利用上限に当たったら別アカウントへ切り替え、同じペインで resume して続ける | [CLAUDE.md](apps/account-failover/CLAUDE.md) |

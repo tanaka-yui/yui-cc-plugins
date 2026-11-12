@@ -28,6 +28,7 @@ claude plugin install orca-team-dispatch-task@yui-cc-plugins
 claude plugin install token-meter@yui-cc-plugins
 claude plugin install codex-bridge@yui-cc-plugins
 claude plugin install dev-digest@yui-cc-plugins
+claude plugin install slack-issue-intake@yui-cc-plugins
 echo ""
 
 bold "=== token-meter のセットアップ ==="
