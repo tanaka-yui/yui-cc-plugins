@@ -34,7 +34,7 @@ const formSteps = (kind: FormKind): string =>
     ...kind.items.map((i) => `- ${i.label}: ${i.long ? '長い回答' : '短い回答'}、${i.required ? '必須' : '任意'}`),
     `- 添付ファイル: アップロード、任意、複数可。1ファイルだけなら任意のアップロードの質問を3つ並べます。`,
     `「チャンネルへメッセージを送信」のテンプレート:`,
-    `\n\`\`\`text\n${renderTemplate(kind)}\n\`\`\``,
+    `\n~~~text\n${renderTemplate(kind)}\n~~~`,
   ].join('\n')
 const CLI = 'node bin/slack-issue-intake.ts'
 export const renderGuide =

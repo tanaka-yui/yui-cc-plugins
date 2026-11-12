@@ -33,6 +33,8 @@ test('DO4 READMEの案内はguideの出力そのもので、make setupとフォ�
   for (const kind of FORM_KINDS) {
     assert.ok(renderGuide().includes(kind.title), kind.title)
     assert.ok(renderGuide().includes(renderTemplate(kind)), kind.key)
+    // テンプレートは ``` を含むので、外側は ~~~ で囲む（入れ子の ``` で表示が崩れないように）
+    assert.ok(renderGuide().includes(`~~~text\n${renderTemplate(kind)}\n~~~`), kind.key)
     for (const item of kind.items) assert.ok(renderGuide().includes(item.label), item.label)
   }
 })
