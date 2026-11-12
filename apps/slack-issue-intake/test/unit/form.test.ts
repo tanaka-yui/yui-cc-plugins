@@ -10,9 +10,9 @@ import {
   PRIORITIES,
   SLACK_BOT_SCOPES,
 } from '../../lib/defaults.ts'
-import { formManifestObject, renderWorkflowMessage, triggerParams } from '../../lib/form.ts'
+import { formManifestObject, renderFormManifest, renderWorkflowMessage, triggerDefinition } from '../../lib/form.ts'
 import { manifestObject, renderManifest } from '../../lib/guide.ts'
-import { asArray, asObject, asString, get, parseJson } from '../../lib/json.ts'
+import { asArray, asString, get } from '../../lib/json.ts'
 import { parseSubmission } from '../../lib/parse.ts'
 import { CHANNEL, REPORTER } from '../fixtures/slack-messages.ts'
 
@@ -34,7 +34,15 @@ test('FM1 通常のマニフェストは変えず、フォーム付きはワー�
   const form = formManifestObject()
   assert.equal(get(form, 'settings', 'org_deploy_enabled'), true)
   assert.equal(get(form, 'settings', 'token_rotation_enabled'), false)
-  assert.deepEqual(get(form, 'oauth_config', 'scopes', 'bot'), [...SLACK_BOT_SCOPES, ...FORM_EXTRA_SCOPES])
+  assert.deepEqual(get(form, 'oauth_config', 'scopes', 'bot'), [
+    ...SLACK_BOT_SCOPES,
+    'channels:read',
+    'groups:read',
+    'channels:join',
+    'bookmarks:write',
+  ])
+  assert.deepEqual([...FORM_EXTRA_SCOPES], ['channels:read', 'groups:read', 'channels:join', 'bookmarks:write'])
+  assert.ok(!renderFormManifest().includes('triggers:write'))
   assert.deepEqual(get(form, 'display_information'), get(manifestObject(), 'display_information'))
   assert.deepEqual(
     asArray(get(workflow, 'steps'))?.map((s) => get(s, 'function_id')),
@@ -78,14 +86,16 @@ test('FM3 ワークフローの投稿は変数を埋めると解析器がその�
   })
 })
 test('FM4 ボタンは設定のチャンネルへ固定し、押した人と操作の文脈を渡す', () => {
-  const p = triggerParams(CHANNEL)
-  assert.equal(p.type, 'shortcut')
-  assert.equal(p.workflow, `#/workflows/${FORM_WORKFLOW_ID}`)
-  assert.deepEqual(asObject(parseJson(p.inputs ?? '')), {
+  const d = triggerDefinition(CHANNEL)
+  assert.equal(d.type, 'shortcut')
+  assert.equal(d.name, FORM_TITLE)
+  assert.equal(d.workflow, `#/workflows/${FORM_WORKFLOW_ID}`)
+  const inputs = {
     interactivity: { value: '{{data.interactivity}}' },
     channel_id: { value: CHANNEL },
     user_id: { value: '{{data.user_id}}' },
-  })
+  }
+  assert.deepEqual(d.inputs, inputs)
   const required = asArray(get(workflow, 'input_parameters', 'required')) ?? []
-  assert.deepEqual([...required].sort(), Object.keys(asObject(parseJson(p.inputs ?? '')) ?? {}).sort())
+  assert.deepEqual([...required].sort(), Object.keys(inputs).sort())
 })

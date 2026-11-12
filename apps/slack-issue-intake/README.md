@@ -27,7 +27,7 @@ Slack の有料プランと社内向けカスタムアプリ（配布しない�
 先に `claude plugin marketplace update yui-cc-plugins` を実行し、`claude plugin install slack-issue-intake@yui-cc-plugins` で入れます。skill `/slack-issue-intake` から進めるか、`node <plugin>/bin/slack-issue-intake.ts guide` で以下の案内を表示します。フォームの作り方は、下の「フォームの作り方」に順を追って書いてあります。
 
 1. https://api.slack.com/apps の Create New App → From a manifest で社内向けカスタムアプリを作り、ワークスペースにインストールします。配布しません。有料プランが必要です。
-フォームも自動で作る場合は、下のマニフェストの代わりに form --manifest（make manifest）の出力を使います。フォームのワークフローと、ボタンを置くための権限（channels:read、groups:read、triggers:write、bookmarks:write）が加わります。作成済みのアプリは App Manifest の画面で置き換えて保存し、再インストールします。
+フォームも自動で作る場合は、下のマニフェストの代わりに form --manifest（make manifest）の出力を使います。フォームのワークフローと、ボタンを置くための権限（channels:read、groups:read、channels:join、bookmarks:write）が加わります。作成済みのアプリは App Manifest の画面で置き換えて保存し、再インストールします。
 
 マニフェスト:
 ```json
@@ -110,7 +110,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
    make manifest | pbcopy
    ```
 
-   make が無い環境では `node bin/slack-issue-intake.ts form --manifest | pbcopy` でも同じです。このマニフェストは、通常のものにフォームのワークフローと4つの権限を足したものです。足す権限は channels:read、groups:read、triggers:write、bookmarks:write です。
+   make が無い環境では `node bin/slack-issue-intake.ts form --manifest | pbcopy` でも同じです。このマニフェストは、通常のものにフォームのワークフローと4つの権限を足したものです。足す権限は channels:read、groups:read、channels:join、bookmarks:write です。
 
 2. **マニフェストからアプリを作る。** https://api.slack.com/apps で Create New App → From an app manifest を選びます。ワークスペースを選んで Next を押し、JSON タブの中身を消してコピーした内容を貼り、Next → Create と進みます。フォームのワークフローは、このときアプリと一緒に登録されます。
 

@@ -18,6 +18,7 @@ const COMMANDS: Record<string, () => Promise<Command>> = {
   collect: () => import('../lib/commands/collect.ts'),
   procedure: () => import('../lib/commands/procedure.ts'),
   poll: () => import('../lib/commands/poll.ts'),
+  'slack-hook': () => import('../lib/commands/slack-hook.ts'),
   'set-token': () => import('../lib/commands/set-token.ts'),
 }
 

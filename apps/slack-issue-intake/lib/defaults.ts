@@ -88,13 +88,9 @@ export const FORM_FIELD_TITLE_MAX_CHARS = 25
 export const FORM_DESCRIPTION = 'GitHub Issue の起票依頼を送ります'
 export const FORM_SUBMIT_LABEL = '送信'
 export const FORM_ATTACHMENTS_TITLE = '添付ファイル（任意）'
-// send_message は channels:read、ボタンは triggers:write、チャンネルのブックマークは bookmarks:write が要る
-export const FORM_EXTRA_SCOPES: readonly string[] = [
-  'channels:read',
-  'groups:read',
-  'triggers:write',
-  'bookmarks:write',
-]
+// send_message は channels:read、ボタンを使う人のチャンネル参加は channels:join、チャンネルのブックマークは bookmarks:write が要る
+// （ボタンの作成は Slack CLI が受け持つので triggers:write は要らない）
+export const FORM_EXTRA_SCOPES: readonly string[] = ['channels:read', 'groups:read', 'channels:join', 'bookmarks:write']
 // ボタンを使えるのは対象チャンネルのメンバーだけにする
 export const FORM_TRIGGER_PERMISSION = 'named_entities'
 export const FORM_META_TRIGGER_ID = 'form_trigger_id'
@@ -230,3 +226,22 @@ export const TRANSIENT_SLACK_HTTP_ERROR = /^http: 5\d\d(?:\b|$)/
 
 export const PROCESS_TIMEZONE = 'UTC'
 export const PROCESS_LOCALE = 'C'
+
+// Slack CLI 用のプロジェクト（ホームの隣に置く）とフック
+export const SLACK_APP_DIR_SUFFIX = '-slack-app'
+export const TRIGGER_DEF_FILE = 'form-trigger.json'
+export const MANIFEST_HASH_FILE = 'manifest.sha256'
+export const SLACK_HOOK_TOKEN_ENV = 'SLACK_BOT_TOKEN'
+export const SLACK_HOOK_COMMAND = 'slack-hook'
+export const MSG_HOOK_NO_TOKEN = 'Slack CLI からボットのトークンを受け取れませんでした'
+
+// Slack CLI の呼び出し
+export const SLACK_CLI_ENV = 'SLACK_ISSUE_INTAKE_SLACK_CLI' // テスト専用の差し替え
+export const SLACK_CLI_STANDARD_PATH: readonly string[] = ['.slack', 'bin', 'slack']
+export const SLACK_CLI_FINGERPRINT = 'd41d8cd98f00b204e9800998ecf8427e'
+export const SLACK_CLI_LOGGED_OUT_TEXT = 'You are not logged in'
+export const SLACK_APP_ENVIRONMENT = 'deployed'
+export const SLACK_TOKEN_ENV_NAMES: readonly string[] = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_USER_TOKEN']
+export const SHORTCUT_URL_PATTERN = /https:\/\/[a-z0-9.-]*slack\.com\/shortcuts\/(Ft[0-9A-Z]+)\/[0-9A-Za-z]+/
+export const SLACK_CLI_PROBE_TIMEOUT_MS = 10_000
+export const SLACK_CLI_TRIGGER_TIMEOUT_MS = 60_000

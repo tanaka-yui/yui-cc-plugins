@@ -251,3 +251,30 @@ export const orcaCalls = (log: string): string[][] =>
     .split('\n')
     .filter(Boolean)
     .map((s) => JSON.parse(s) as string[])
+export const fakeSlackCli = (dir: string): { path: string; log: string; env: Record<string, string> } => {
+  const path = join(dir, 'slack')
+  const log = join(dir, 'slack-cli.jsonl')
+  const q = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`
+  writeFileSync(
+    path,
+    `#!/bin/sh\nexec ${q(process.execPath)} ${q(join(import.meta.dirname, 'fixtures/fake-slack-cli.ts'))} "$@"\n`,
+    { mode: 0o755 },
+  )
+  writeFileSync(log, '')
+  return { path, log, env: { SLACK_ISSUE_INTAKE_SLACK_CLI: path, FAKE_SLACK_CLI_LOG: log } }
+}
+export const slackCliCalls = (
+  log: string,
+): Array<{ argv: string[]; cwd: string; hadBotToken: boolean; triggerDef?: import('../lib/json.ts').Json }> =>
+  readFileSync(log, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((s) => JSON.parse(s))
+// タスク 3 のテスト用。Slack CLI のプロジェクトを作り、デプロイ済みのアプリを置く
+export const seedSlackApp = async (home: string, teamId: string): Promise<void> => {
+  const { slackProject, writeProject } = await import('../lib/slack-cli.ts')
+  const project = slackProject(home)
+  writeProject(project)
+  writeFileSync(project.apps, JSON.stringify({ apps: { A0FAKE001: { app_id: 'A0FAKE001', team_id: teamId } } }))
+}

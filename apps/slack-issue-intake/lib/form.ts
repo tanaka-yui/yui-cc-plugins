@@ -99,7 +99,20 @@ export const formManifestObject = (): JsonObject => {
 }
 export const renderFormManifest = (): string => JSON.stringify(formManifestObject(), null, 2)
 
-// workflows.triggers.create の引数。Slack の SDK と同じく、入れ子の値は JSON 文字列にしてフォーム形式で送る。
+// Slack CLI の trigger create --trigger-def に渡す定義。投稿先は押した場所によらず設定のチャンネルに固定する
+export const triggerDefinition = (channel: string): JsonObject => ({
+  type: 'shortcut',
+  name: FORM_TITLE,
+  description: FORM_DESCRIPTION,
+  workflow: `#/workflows/${FORM_WORKFLOW_ID}`,
+  inputs: {
+    [INPUT.interactivity]: { value: '{{data.interactivity}}' },
+    [INPUT.channel]: { value: channel },
+    [INPUT.user]: { value: '{{data.user_id}}' },
+  },
+})
+
+// 旧: workflows.triggers.create の引数。Slack の SDK と同じく、入れ子の値は JSON 文字列にしてフォーム形式で送る。
 // 投稿先は押した場所によらず設定のチャンネルに固定する
 export const triggerParams = (channel: string): Record<string, string> => ({
   type: 'shortcut',
