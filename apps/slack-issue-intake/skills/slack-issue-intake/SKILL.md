@@ -47,11 +47,14 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 
 ## init
 
+Recommend that the user run `make setup` in a terminal from the plugin directory; it is interactive and cannot run in
+the agent's shell. It creates the Slack app through the Slack CLI and then runs steps 3 to 6 and **enable** below
+itself. Use the manual steps below only when the user cannot use the Slack CLI or `make setup` stopped on a step it
+cannot complete.
+
 1. Run `guide`. Explain the Slack app manifest, paid-plan requirement, invitation, and Workflow Builder setup in
-   Japanese. Ask whether the form should be created automatically or by hand in Workflow Builder. For automatic
-   creation, run `form --manifest` and have the user create the app from that output (an existing app: replace the
-   manifest on its App Manifest page and reinstall); the hand-made steps are then skipped. Ask whether the Slack
-   preparation is complete. The app must be internal and not distributed.
+   Japanese. The form is built by hand in Workflow Builder. Ask whether the Slack preparation is complete. The app
+   must be internal and not distributed.
 2. Run `status`. If `token=missing`, follow **token** below.
 3. Ask in one AskUserQuestion round for the channel ID, repository (`owner/name`), and interval in minutes.
    The repository default is `gh repo view --json nameWithOwner -q .nameWithOwner` when available. Default interval
@@ -60,17 +63,18 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
    flags or token setup; exit 1 explains invitation, gh authentication, public repository, labels, Orca, changed
    destination, or a busy lease. For a public repository, explain that Slack content would become public and ask
    before retrying with `--allow-public`. A different destination requires backing up the home and setting up again.
-5. If the app was created from the `form --manifest` output, run **form** now.
-6. Run `permissions --show`, display the proposed project rules and secret-file denies, and obtain approval before
+5. Run `permissions --show`, display the proposed project rules and secret-file denies, and obtain approval before
    `permissions --apply`. Then continue to **enable**.
 
 ## form
 
-1. Run `form` after `init`. It creates the workflow's link trigger, limits it to members of the configured channel,
-   and adds a channel bookmark. It prints `url=`. A rerun reuses the recorded trigger and bookmark.
-2. On exit 1, explain the printed reason. A refused trigger means the Slack call is not accepted for this app: the
-   trigger API is undocumented for bot tokens. Fall back to the Workflow Builder steps from `guide`. A failed bookmark
-   prints the URL; ask the user to add it to the channel bookmarks by hand.
+1. `make setup` runs `form` as its step 6. Run it by hand only to place the button again. It creates the workflow's
+   shortcut trigger with `slack trigger create`, limits it to members of the configured channel with
+   `slack trigger access`, and adds a channel bookmark. It prints `url=`. A rerun reuses the recorded trigger and
+   bookmark. It needs the Slack CLI project that `make setup` created.
+2. On exit 1, explain the printed reason. A refused trigger means the Slack CLI could not create it for this app;
+   fall back to the Workflow Builder steps from `guide`. A failed bookmark prints the URL; ask the user to add it to
+   the channel bookmarks by hand. Exit 2 means there is no setup, no Slack CLI, or no app made by `make setup`.
 3. Form posts from this path are written by the app's own bot, so `inspect` shows `bot=yes` for them.
 
 ## enable

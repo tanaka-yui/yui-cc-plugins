@@ -21,15 +21,14 @@ test('DO1 配布文書と生成するSlack設定が一致', () => {
   assert.ok(readme.includes(renderTemplate()))
   for (const scope of SLACK_BOT_SCOPES) assert.ok(readme.includes(scope))
 })
-test('DO4 READMEの案内はguideの出力そのもので、フォームのmakeと追加の権限を載せる', () => {
+test('DO4 READMEの案内はguideの出力そのもので、make setupとフォームの権限を載せる', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
   assert.ok(readme.includes(renderGuide()))
+  assert.ok(readme.includes('make setup'))
   for (const scope of FORM_EXTRA_SCOPES) assert.ok(readme.includes(scope))
   const makefile = readFileSync(join(root, 'Makefile'), 'utf8')
-  for (const target of ['manifest', 'slack-form']) {
-    assert.match(makefile, new RegExp(`^${target}:`, 'm'))
-    assert.ok(readme.includes(`make -s ${target}`) || readme.includes(`make ${target}`))
-  }
+  for (const target of ['setup', 'slack-form', 'manifest']) assert.match(makefile, new RegExp(`^${target}:`, 'm'))
+  assert.ok(!renderGuide().includes('form --manifest'))
 })
 test('DO2 手順書のplaceholderをprocedureがすべて置き換えられる', () => {
   const procedure = readFileSync(join(root, 'skills/slack-issue-intake/references/procedure.md'), 'utf8')

@@ -180,7 +180,7 @@
       "name": "slack-issue-intake",
       "description": "Slack のフォーム投稿から GitHub Issue を起票する（Orca automation の precheck で、投稿があるときだけ Claude を起動）",
       "source": "./apps/slack-issue-intake",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "license": "MIT",
       "category": "productivity",
       "tags": [

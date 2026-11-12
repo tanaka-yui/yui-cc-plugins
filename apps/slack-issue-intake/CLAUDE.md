@@ -23,11 +23,15 @@ Issue の作成は、持ち主と子がすべて止まったと確認するま�
 すべての Slack / gh 呼び出しへ deadline を渡します。残り時間がなければ呼びません。poll の予算は45秒です。
 ランチャーは dev-digest の bin/launch.ts を元にし、lib を読みません。定数の写しと LAUNCHER_VERSION の重複だけを認め、LA2 で一致を確かめます。固定値は lib/defaults.ts にまとめます。添付リンクだけで上限に達する場合は、リンクを丸ごと省いて件数を示します。必須の骨組みすら収まらなければ送信せず失敗を記録します。
 
-## フォームの自動作成
+## セットアップのウィザード
 
-`form --manifest`（make manifest）は guide のマニフェストに、組み込みの open_form と send_message だけのワークフロー、`org_deploy_enabled: true`、FORM_EXTRA_SCOPES を足して出します。通常のマニフェストは変えません。受け付けられなかったときに手作業の手順へ戻れるようにするためです。
-`form`（make slack-form）はボタン（workflows.triggers.create）、使える人（チャンネルのメンバー）、ブックマークの順に作り、ID を meta に残して再実行で重ねません。workflows.triggers.create のボットトークンでの利用は公式資料に無く、実環境で未確認です。引数は Slack の SDK と同じく、入れ子の値を JSON 文字列にしたフォーム形式で送ります。
+`make setup`（`setup` サブコマンド、lib/commands/setup.ts）は8段で、済んだ段は飛ばして再開します。文言は lib/defaults.ts の SETUP_TEXT で、README の節名「Slack CLI を使わないセットアップ」「Workflow Builder で手で作る」を指します。名前を変えるときは両方を揃えます。入力は端末だけを読み、子のコマンドには stdin を渡しません。
+Slack CLI のプロジェクトはホームの隣の `<ホーム>-slack-app`（既定 `~/.slack-issue-intake-slack-app/`、0700）に置きます。Slack CLI が `.slack/apps.json` にアプリ ID を書くので、プラグインのディレクトリ（更新で入れ替わる）にもホーム（退避で一緒に動く）にも置きません。`.slack/hooks.json`、`.slack/config.json`、form-trigger.json は毎回書き直し、apps.json は読むだけです。
+トークンは deploy フックで受け取ります。Slack CLI がインストール後に `SLACK_BOT_TOKEN` を入れてフックを起こすので、`slack-hook deploy` がそれを secrets.json に保存し、マニフェストの指紋（SHA-256）を残します。指紋が変わると次の setup で deploy し直します。実装上の動きで、約束された仕様ではありません。受け取れなければ set-token への案内で止まります。
+`slack deploy` には `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `SLACK_USER_TOKEN` を除いた環境を渡します。Slack CLI は環境に既にある値を上書きせず使うので、残すと別のトークンを保存してしまいます。
+`form`（make slack-form）は `slack trigger create` でボタン、`slack trigger access` で使える人（チャンネルのメンバー）、ボットのトークンの bookmarks.add でブックマークを作り、ID を meta に残して再実行で重ねません。`form --manifest`（make manifest）は guide のマニフェストに、組み込みの open_form と send_message だけのワークフロー、`org_deploy_enabled: true`、FORM_EXTRA_SCOPES を足して出します。通常のマニフェストは変えません。
 このワークフローは自分のボットとして投稿します。poll と inspect は自分の投稿でもマーカーで始まるものを受け付け、起票者は本文のメンションだけから取ります。自分の返信は常にスレッド内なので履歴には出ません。
+Slack CLI の呼び先の差し替えは SLACK_ISSUE_INTAKE_SLACK_CLI（テスト専用）です。実環境では未確認の4点（deploy の受理、フックへのトークン、trigger create、conversations.join）があり、README に書いてあります。
 
 ## 試験と秘密
 

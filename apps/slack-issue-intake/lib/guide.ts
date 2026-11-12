@@ -1,7 +1,6 @@
 import {
   CATEGORIES,
   FIELD_LABELS,
-  FORM_EXTRA_SCOPES,
   PRIORITIES,
   SLACK_APP_NAME,
   SLACK_BOT_SCOPES,
@@ -28,15 +27,16 @@ export const renderTemplate = (): string =>
     `${FIELD_LABELS.body}:`,
     `{${FIELD_LABELS.body}}`,
   ].join('\n')
+const CLI = 'node bin/slack-issue-intake.ts'
 export const renderGuide =
-  (): string => `1. https://api.slack.com/apps の Create New App → From a manifest で社内向けカスタムアプリを作り、ワークスペースにインストールします。配布しません。有料プランが必要です。
-フォームも自動で作る場合は、下のマニフェストの代わりに form --manifest（make manifest）の出力を使います。フォームのワークフローと、ボタンを置くための権限（${FORM_EXTRA_SCOPES.join('、')}）が加わります。作成済みのアプリは App Manifest の画面で置き換えて保存し、再インストールします。
+  (): string => `Slack CLI にログインしているなら、この手順の代わりに \`make setup\` を使えます。
+1. https://api.slack.com/apps の Create New App → From a manifest で社内向けカスタムアプリを作り、ワークスペースにインストールします。配布しません。有料プランが必要です。
 \nマニフェスト:\n\`\`\`json\n${renderManifest()}\n\`\`\`
-2. アプリの設定の OAuth & Permissions を開き、Bot User OAuth Token（xoxb- で始まる文字列）をコピーします。続けて set-token を実行します（skill で進めているときは Claude が実行します）。
+2. アプリの設定の OAuth & Permissions を開き、Bot User OAuth Token（xoxb- で始まる文字列）をコピーします。続けて \`${CLI} set-token\` を実行します（skill で進めているときは Claude が実行します）。
 「${TOKEN_DIALOG_TITLE}」という題の入力ウィンドウが開くので、⌘V で貼り付けて OK を押します。入力欄はパスワード用と同じで、貼った文字は見えません。「saved token=」で始まる行が出れば登録できています。
-トークンは Claude との会話やコマンドの引数に書かないでください。会話に貼るとモデルに送られて記録にも残り、引数に書くとシェルの履歴に残ります。ウィンドウが開かず fallback=clipboard と出たときは、トークンをコピーした状態で set-token --from-clipboard を実行します。
+トークンは Claude との会話やコマンドの引数に書かないでください。会話に貼るとモデルに送られて記録にも残り、引数に書くとシェルの履歴に残ります。ウィンドウが開かず fallback=clipboard と出たときは、トークンをコピーした状態で \`${CLI} set-token --from-clipboard\` を実行します。
 3. 対象チャンネルで /invite @${SLACK_APP_NAME} を実行します。
-4. フォームを手で作る場合（上のマニフェストで作ったとき、または 7 の form が失敗したとき）は、Workflow Builder でチャンネルのボタンから開始するワークフローを作り、「フォームで情報を収集」を追加します。
+4. Workflow Builder で、チャンネルのボタンから開始するワークフローを作り、「フォームで情報を収集」を追加します。
 - ${FIELD_LABELS.title}: 短い回答、必須
 - ${FIELD_LABELS.category}: リスト選択、必須（${CATEGORIES.join(' / ')}）
 - ${FIELD_LABELS.priority}: リスト選択、必須（${PRIORITIES.join(' / ')}）
@@ -45,9 +45,8 @@ export const renderGuide =
 次に「チャンネルへメッセージを送信」を追加し、以下のテンプレートの {…} にフォームの変数を差し込みます。添付ファイルの変数も付けます。
 \n\`\`\`text\n${renderTemplate()}\n\`\`\`
 5. チャンネル名 → 詳細の最下部からチャンネルIDを控えます。
-6. init --channel <ID> --repo <owner/name> --every 5 を実行します。automation は無効で登録されます。
-7. フォーム付きのマニフェストで作った場合は form（make slack-form）を実行し、対象チャンネルにフォームのボタン（ブックマーク）を置きます。
-8. permissions --show で内容を確認し、承認してから permissions --apply を実行します。
-9. enable を実行します。受け継ぐ許可があれば内容を確認し、承認したときだけ --accept-inherited を付けます。
+6. \`${CLI} init --channel <ID> --repo <owner/name> --every 5\` を実行します。automation は無効で登録されます。
+7. \`${CLI} permissions --show\` で内容を確認し、承認してから \`${CLI} permissions --apply\` を実行します。
+8. \`${CLI} enable\` を実行します。受け継ぐ許可があれば内容を確認し、承認したときだけ \`--accept-inherited\` を付けます。
 Orca の Claude 起動引数へ --permission-mode や --allowedTools など許可を広げるものを入れないでください。
 最初の実行で bypass モードになっていないことを確認してください。bypass なら automation を無効にし、既定引数の --dangerously-skip-permissions を外してください。`

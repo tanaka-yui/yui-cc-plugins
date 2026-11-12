@@ -26,17 +26,18 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 
 ## init
 
-1. guide を実行し、有料プラン、社内向けアプリ、招待、Workflow Builder を日本語で案内します。フォームを自動で作るか、Workflow Builder で手で作るかを尋ねます。自動の場合は form --manifest を実行し、その出力でアプリを作ってもらいます（作成済みのアプリは App Manifest の画面で置き換えて再インストール）。このとき手作業の手順は不要です。準備が済んだか尋ねます。アプリは配布しません。
+ターミナルで、プラグインのディレクトリから `make setup` を実行するようユーザーに勧めます。対話式なので、エージェントのシェルでは動きません。make setup は Slack CLI でアプリを作り、続けて下の 3〜6 と enable を自分で進めます。以下の手作業の手順は、Slack CLI を使えないとき、または make setup が自分では進められない段で止まったときだけ使います。
+
+1. guide を実行し、有料プラン、社内向けアプリ、招待、Workflow Builder を日本語で案内します。フォームは Workflow Builder で手で作ります。Slack の準備が済んだか尋ねます。アプリは配布しません。
 2. status が token=missing なら token の手順へ進みます。
 3. AskUserQuestion を1回出し、チャンネル ID、owner/name、間隔を聞きます。リポジトリの既定候補は `gh repo view --json nameWithOwner -q .nameWithOwner`。間隔の既定は5分、選択肢は 1、2、3、4、5、6、10、12、15、20、30、60 です。
 4. init --channel ID --repo owner/name --every 分 を実行します。automation は無効で登録されます。exit 2 は引数・トークン、1 は招待、gh 認証、公開、ラベル、Orca、送り先変更、処理中などの理由を案内します。公開リポジトリへの転記は説明して承認を得てから --allow-public で再実行します。送り先を変えるときはホームの退避と再設定が必要です。
-5. form --manifest の出力でアプリを作った場合は、ここで form を実行します。
-6. permissions --show の内容を示し、承認後に permissions --apply を実行して enable へ進みます。
+5. permissions --show の内容を示し、承認後に permissions --apply を実行して enable へ進みます。
 
 ## form
 
-1. init のあとに form を実行します。ワークフローのリンク（トリガー）を作り、使える人を設定のチャンネルのメンバーに限り、チャンネルにブックマークを置きます。url= を出します。再実行では記録済みのトリガーとブックマークを使い回します。
-2. exit 1 のときは、出力された理由を説明します。トリガーを断られた場合は、この API がボットトークンでの利用について公式資料に無いことを伝え、guide の Workflow Builder の手順に戻ります。ブックマークだけ失敗した場合は表示された URL を手でブックマークに足してもらいます。
+1. make setup は 6 段目で form を実行します。ボタンを付け直すときだけ手で実行します。slack trigger create でワークフローのリンク（ショートカットのトリガー）を作り、slack trigger access で使える人を設定のチャンネルのメンバーに限り、チャンネルにブックマークを置きます。url= を出します。再実行では記録済みのトリガーとブックマークを使い回します。make setup が作った Slack CLI のプロジェクトが必要です。
+2. exit 1 のときは、出力された理由を説明します。トリガーを断られた場合は、Slack CLI がこのアプリのボタンを作れなかったことを伝え、guide の Workflow Builder の手順に戻ります。ブックマークだけ失敗した場合は表示された URL を手でブックマークに足してもらいます。exit 2 は、設定がない、Slack CLI がない、make setup で作ったアプリがない、のいずれかです。
 3. この方法の投稿はアプリ自身のボットが書くため、inspect では bot=yes と出ます。
 
 ## enable
