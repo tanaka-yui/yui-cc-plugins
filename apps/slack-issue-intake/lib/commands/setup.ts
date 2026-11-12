@@ -240,20 +240,20 @@ const formDone = (dbFile: string): boolean =>
   Boolean(readMeta(dbFile, FORM_META_FEATURED)) &&
   (!readMeta(dbFile, FORM_META_TRIGGER_ID) || readMeta(dbFile, FORM_META_FEATURED) === FORM_FEATURED_MANUAL)
 
-// 7・8段目。permissionStatus で飛ばす段を決め、許可と受け継ぐ許可はどちらも内容を見せて y/N で確かめる
+// 8・9段目。permissionStatus で飛ばす段を決め、許可と受け継ぐ許可はどちらも内容を見せて y/N で確かめる
 const approve = (p: Prompter, home: string, accepted: string | null): number => {
   const status = permissionStatus(home, accepted)
   if (status === 'accepted') {
     // enable は Orca を呼ぶ前に承認を保存するので、承認済みでも有効化が失敗していることがある。
     // 指紋が一致しているので受け継ぐ許可も承認済み。聞き直さずに enable をやり直す（有効なものを有効にしても変わらない）
-    heading(7, SETUP_TEXT.stepPermissions, true)
-    heading(8, SETUP_TEXT.stepEnable)
+    heading(8, SETUP_TEXT.stepPermissions, true)
+    heading(9, SETUP_TEXT.stepEnable)
     const inherited = inheritedGrants()
     if (!inherited) return fail(SETUP_TEXT.noInherited)
     return child(['enable', ...(inherited.allow.length || inherited.dirs.length ? ['--accept-inherited'] : [])])
   }
   if (status === 'unsafe') {
-    heading(7, SETUP_TEXT.stepPermissions)
+    heading(8, SETUP_TEXT.stepPermissions)
     const shown = child(['permissions', '--show'])
     if (shown !== 0) return shown
     const ok = p.confirm(SETUP_TEXT.confirmPermissions)
@@ -261,8 +261,8 @@ const approve = (p: Prompter, home: string, accepted: string | null): number => 
     if (!ok) return fail(SETUP_TEXT.declined)
     const applied = child(['permissions', '--apply'])
     if (applied !== 0) return applied
-  } else heading(7, SETUP_TEXT.stepPermissions, true)
-  heading(8, SETUP_TEXT.stepEnable)
+  } else heading(8, SETUP_TEXT.stepPermissions, true)
+  heading(9, SETUP_TEXT.stepEnable)
   const inherited = inheritedGrants()
   if (!inherited) return fail(SETUP_TEXT.noInherited)
   if (inherited.allow.length === 0 && inherited.dirs.length === 0) return child(['enable'])
@@ -380,13 +380,27 @@ const wizard = async (): Promise<number> => {
     if (code !== 0) return code
   }
 
-  // 6: 手作業のアプリには Slack CLI でボタンを作れないので、Workflow Builder を案内する
-  if (manualApp) {
-    heading(6, SETUP_TEXT.stepForm, true)
-    say(SETUP_TEXT.manualForm)
-  } else if (formDone(paths.db)) heading(6, SETUP_TEXT.stepForm, true)
+  // 6: ステータスの通知でメンションするグループ。一度答えたら（空でも）聞き直さない。変えるときは mention を直接実行する
+  const configured = loadConfig(home)
+  if (!configured) return fail(MSG_CONFIG_BROKEN)
+  if (configured.mention.asked) heading(6, SETUP_TEXT.stepMention, true)
   else {
-    heading(6, SETUP_TEXT.stepForm)
+    heading(6, SETUP_TEXT.stepMention)
+    // 見つからない・権限が無いときは、子が理由を示すので聞き直す
+    for (;;) {
+      const answer = p.ask(SETUP_TEXT.askMention)
+      if (answer === null) return exhausted()
+      if (child(answer ? ['mention', '--group', answer] : ['mention', '--none']) === 0) break
+    }
+  }
+
+  // 7: 手作業のアプリには Slack CLI でボタンを作れないので、Workflow Builder を案内する
+  if (manualApp) {
+    heading(7, SETUP_TEXT.stepForm, true)
+    say(SETUP_TEXT.manualForm)
+  } else if (formDone(paths.db)) heading(7, SETUP_TEXT.stepForm, true)
+  else {
+    heading(7, SETUP_TEXT.stepForm)
     const code = child(['form'])
     if (code !== 0) return code
   }
@@ -395,7 +409,7 @@ const wizard = async (): Promise<number> => {
   if (!config) return fail(MSG_CONFIG_BROKEN)
   const approved = approve(p, home, config.acceptedPermissions)
   if (approved !== 0) return approved
-  // ボットでは入力欄にボタンを出せなかったときは、6段目の出力が流れているので、画面での手順をもう一度示す
+  // ボットでは入力欄にボタンを出せなかったときは、7段目の出力が流れているので、画面での手順をもう一度示す
   if (readMeta(paths.db, FORM_META_FEATURED) === FORM_FEATURED_MANUAL)
     say(fill(SETUP_TEXT.featureByHand, { steps: featureSteps() }))
   say(fill(SETUP_TEXT.finished, { title: formTitles() }))

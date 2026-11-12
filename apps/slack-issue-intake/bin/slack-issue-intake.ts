@@ -15,6 +15,7 @@ const COMMANDS: Record<string, () => Promise<Command>> = {
   init: () => import('../lib/commands/init.ts'),
   guide: () => import('../lib/commands/guide.ts'),
   form: () => import('../lib/commands/form.ts'),
+  mention: () => import('../lib/commands/mention.ts'),
   apply: () => import('../lib/commands/apply.ts'),
   collect: () => import('../lib/commands/collect.ts'),
   procedure: () => import('../lib/commands/procedure.ts'),

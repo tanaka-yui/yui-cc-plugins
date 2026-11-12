@@ -65,6 +65,7 @@ test('GU1 ガイドはフォームと必要scope、前提を含む', () => {
     'chat:write',
     'files:read',
     'users:read',
+    'usergroups:read',
     '"token_rotation_enabled": false',
     ...FORM_KINDS.map((k) => `「${k.title}」`),
     'critical / high / middle / low',

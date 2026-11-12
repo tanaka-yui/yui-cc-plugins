@@ -127,6 +127,7 @@ export const run = async (argv: string[]): Promise<void> => {
     github: base?.github ?? { login: '' },
     orca: base?.orca ?? { workspaceSelector: null, automationId: null },
     acceptedPermissions: base?.acceptedPermissions ?? null,
+    mention: base?.mention ?? { asked: false, groupId: null, handle: null },
   }
   if (values['dry-run']) {
     const quote = (arg: string): string => (/^[\w@%+=:,./#-]+$/.test(arg) ? arg : JSON.stringify(arg))

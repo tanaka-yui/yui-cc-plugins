@@ -72,6 +72,7 @@ export const SLACK_BOT_SCOPES: readonly string[] = [
   'chat:write',
   'files:read',
   'users:read',
+  'usergroups:read',
 ]
 export const SUBMISSION_MARKER = '[issue-intake]'
 export const FIELD_LABELS = {
@@ -292,6 +293,7 @@ export const TOKEN_PROMPT = 'Slack の Bot User OAuth Token（xoxb- で始まる
 export const BOT_TOKEN_PATTERN = /^xoxb-[A-Za-z0-9-]+$/
 export const CHANNEL_ID_PATTERN = /^[CG][A-Z0-9]{8,}$/
 export const APP_ID_PATTERN = /^A[A-Z0-9]{8,}$/
+export const USERGROUP_ID_PATTERN = /^S[A-Z0-9]{8,}$/
 export const CHANNEL_PAGE_SIZE = 200
 export const ERROR_CHANNEL_NOT_FOUND = 'channel_not_found'
 export const REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
@@ -373,8 +375,17 @@ export const SHORTCUT_URL_PATTERN = /https:\/\/[a-z0-9.-]*slack\.com\/shortcuts\
 export const SLACK_CLI_PROBE_TIMEOUT_MS = 10_000
 export const SLACK_CLI_TRIGGER_TIMEOUT_MS = 60_000
 
+// メンション先（mention サブコマンド。{group} {error} を置き換える）
+export const MSG_MENTION_NO_SCOPE =
+  'ユーザーグループの一覧を読む権限（usergroups:read）がありません。Slack のアプリの設定画面で usergroups:read を足してアプリを入れ直すか、グループ ID（S で始まる。グループのプロフィールの「…」→「グループ ID をコピー」）を入力してください'
+export const MSG_MENTION_LIST_FAILED =
+  'ユーザーグループの一覧を読めません（{error}）。グループ ID（S で始まる）を入力するか、空のまま進めてください'
+export const MSG_MENTION_NOT_FOUND =
+  'ユーザーグループ「{group}」が見つかりません。ハンドル（@ のあとの名前）か表示名を確かめるか、グループ ID（S で始まる）を入力してください'
+export const MSG_MENTION_USAGE = 'mention --group <ハンドル|表示名|ID> か mention --none を指定してください'
+
 // セットアップのウィザード（make setup）
-export const SETUP_STEPS = 8
+export const SETUP_STEPS = 9
 export const ERROR_MISSING_SCOPE = 'missing_scope'
 export const NODE_MIN_VERSION: readonly number[] = [24, 15]
 export const PROMPT_READ_CHUNK = 4096
@@ -385,6 +396,9 @@ export const SETUP_TEXT = {
   stepChannel: 'チャンネルを決める',
   stepRepo: 'リポジトリと確認の間隔を決める',
   stepInit: '設定を保存して automation を登録する（init）',
+  stepMention: '通知でメンションするグループを決める（mention）',
+  askMention:
+    'Issue のステータスが変わったときにメンションする Slack のユーザーグループ（dev-member や @dev-member の形、または S で始まる ID）。空のまま Enter でメンションしません',
   stepForm: 'フォームのボタンを置く（form）',
   stepPermissions: 'Claude に許す操作を承認する（permissions）',
   stepEnable: 'automation を有効にする（enable）',

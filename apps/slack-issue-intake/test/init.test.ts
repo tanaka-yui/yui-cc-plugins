@@ -86,6 +86,16 @@ test('IN2/IN3/IN13 初回は無効登録と受付境界とラベルの指紋を�
   assert.ok(!last.includes('--disabled') && !last.includes('--enabled'))
   assert.equal(loadConfig(f.home)?.everyMinutes, 10)
 })
+test('IN14 init をやり直しても mention が消えない', async (t) => {
+  const f = await setup(t)
+  assert.equal((await f.init([], { FAKE_GH_LABELS: 'bug' })).code, 0)
+  const c = loadConfig(f.home)
+  assert.ok(c)
+  saveConfig(f.home, { ...c, mention: { asked: true, groupId: 'S0DEV0001', handle: 'dev-member' } })
+  const again = await f.init(['--every', '10'])
+  assert.equal(again.code, 0, again.stderr)
+  assert.deepEqual(loadConfig(f.home)?.mention, { asked: true, groupId: 'S0DEV0001', handle: 'dev-member' })
+})
 test('IN4/IN5/IN6 公開repo・トークン・フラグの検査を副作用前に行う', async (t) => {
   const f = await setup(t)
   const r = await f.init([], { FAKE_GH_VISIBILITY: 'PUBLIC' })

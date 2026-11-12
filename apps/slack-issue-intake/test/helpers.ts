@@ -170,6 +170,7 @@ export const setupHome = async (
     github: { login: 'intake-bot' },
     orca: { workspaceSelector: null, automationId: null },
     acceptedPermissions: null,
+    mention: { asked: false, groupId: null, handle: null },
   })
   saveToken(homePaths(home).secrets, 'xoxb-test-token')
   const db = openDb(homePaths(home).db)

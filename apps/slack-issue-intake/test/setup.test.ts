@@ -30,7 +30,8 @@ const TARGET = { id: 'C0TARGET01', name: 'issue-intake', is_private: false, is_m
 const OTHER = { id: 'C0OTHER001', name: 'general', is_private: false, is_member: true }
 const SECRET = { id: 'G0SECRET01', name: 'secret', is_private: true, is_member: true }
 // 1行目は既存のアプリ ID（空なら新しく作る）
-const FULL_INPUT = '\n#Issue-Intake\nacme/app\n\ny\n'
+// 1行目は既存のアプリ ID、最後の空行の手前はメンションするグループ（空ならメンションしない）
+const FULL_INPUT = '\n#Issue-Intake\nacme/app\n\n\ny\n'
 
 const fixture = async (
   t: { after: (fn: () => Promise<void>) => void },
@@ -98,8 +99,8 @@ test('SU1 質問に答えるだけで、アプリ・トークン・設定・ボ�
   const f = await fixture(t)
   const r = await f.setup(FULL_INPUT, { SLACK_BOT_TOKEN: 'xoxb-from-shell' })
   assert.equal(r.code, 0, r.stderr)
-  assert.match(r.stdout, /\[1\/8\]/)
-  assert.match(r.stdout, /\[8\/8\]/)
+  assert.match(r.stdout, /\[1\/9\]/)
+  assert.match(r.stdout, /\[9\/9\]/)
   const deploys = f.cliCalls('deploy')
   assert.equal(deploys.length, 1)
   assert.equal(deploys[0]?.hadBotToken, false)
@@ -193,7 +194,7 @@ test('SU5 Slack CLI が無い・未ログインなら、何も作らずに止ま
 
 test('SU6 見つからないチャンネルはボットの招待を待ち、Enter のあとに探し直す', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('\nsecret\n\nacme/app\n\ny\n')
+  const r = await f.setup('\nsecret\n\nacme/app\n\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /\/invite @Issue Intake/)
   assert.equal(f.calls('conversations.join').length, 0)
@@ -202,7 +203,7 @@ test('SU6 見つからないチャンネルはボットの招待を待ち、Ente
 
 test('SU7 承認しなければ何も変えずに止まり、次の実行で承認から再開する', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('\n#issue-intake\nacme/app\n\nn\n')
+  const r = await f.setup('\n#issue-intake\nacme/app\n\n\nn\n')
   assert.equal(r.code, 1)
   assert.equal(f.status(), 'unsafe')
   assert.ok(!orcaCalls(f.orca.log).some((c) => c.includes('--enabled')))
@@ -221,7 +222,7 @@ test('SU8 入力が途中で尽きたら、ターミナルで実行するよう�
 
 test('SU9 公開リポジトリは内容が公開されると示して確かめ、承認したら --allow-public で init する', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('\n#issue-intake\nacme/app\ny\n\ny\n', { FAKE_GH_VISIBILITY: 'PUBLIC' })
+  const r = await f.setup('\n#issue-intake\nacme/app\ny\n\n\ny\n', { FAKE_GH_VISIBILITY: 'PUBLIC' })
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /公開/)
   assert.equal(loadConfig(f.home)?.repo, 'acme/app')
@@ -232,7 +233,7 @@ test('SU10 init が automation の登録で失敗したら、次の実行で ini
   const r = await f.setup(FULL_INPUT, { FAKE_ORCA_CREATE: 'fail' })
   assert.equal(r.code, 1)
   assert.equal(loadConfig(f.home)?.orca.automationId, null)
-  const again = await f.setup('y\n')
+  const again = await f.setup('\ny\n')
   assert.equal(again.code, 0, again.stderr)
   assert.equal(loadConfig(f.home)?.orca.automationId, 'auto-1')
   assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
@@ -258,7 +259,7 @@ test('SU12 手作業のアプリ（名前で探す権限なし）は deploy せ�
       : null,
   )
   saveToken(homePaths(f.home).secrets, 'xoxb-manual-token')
-  const r = await f.setup('issue-intake\nC0TARGET01\nacme/app\n\ny\n')
+  const r = await f.setup('issue-intake\nC0TARGET01\nacme/app\n\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /チャンネル ID/)
   assert.match(r.stdout, /Workflow Builder/)
@@ -282,7 +283,7 @@ test('SU13 ID の形に見える名前は、ID で見つからなくても名前
           }
         : null,
   )
-  const r = await f.setup('\ncustomers\nacme/app\n\ny\n')
+  const r = await f.setup('\ncustomers\nacme/app\n\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.equal(loadConfig(f.home)?.channel, 'C0CUSTOM01')
 })
@@ -302,7 +303,7 @@ test('SU15 知らない引数は使用法の誤りとして exit 2 で止まり�
   const f = await fixture(t)
   const r = await runCliAsync(['setup', '--foo'], { SLACK_ISSUE_INTAKE_HOME: f.home }, '')
   assert.equal(r.code, 2)
-  assert.doesNotMatch(r.stdout, /\[1\/8\]/)
+  assert.doesNotMatch(r.stdout, /\[1\/9\]/)
 })
 
 test('SU16 有効化が Orca で失敗しても、次の実行で聞き直さずに有効化をやり直す', async (t) => {
@@ -338,7 +339,7 @@ test('SU18 設定があってトークンもアプリも無ければ、設定の
 
 test('SU19 既存のアプリ ID を入力すると、slack app link でつないでから同じアプリを deploy する', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('bad-id\na0exist0001\n#issue-intake\nacme/app\n\ny\n')
+  const r = await f.setup('bad-id\na0exist0001\n#issue-intake\nacme/app\n\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /A で始まる/)
   const [linked] = f.cliCalls('app link')
@@ -398,14 +399,35 @@ test('SU24 labels_hash が今と違えば、間隔が同じでも 5 段で init 
   assert.match(again.stdout, new RegExp(`\\[5/${SETUP_STEPS}\\] [^\\n]*済み`))
 })
 
+test('SU25 6段: mention.asked が false なら聞き、空なら --none、名前なら --group を呼ぶ。asked なら済み', async (t) => {
+  const f = await fixture(t, (r): SlackReply | null =>
+    r.method === 'usergroups.list'
+      ? { json: { ok: true, usergroups: [{ id: 'S0DEV0001', handle: 'dev-member', name: 'Dev Member' }] } }
+      : null,
+  )
+  // 見つからない名前のあとは聞き直し、2 回目の名前で保存する
+  const r = await f.setup('\n#Issue-Intake\nacme/app\n\nnobody\n@dev-member\ny\n')
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /\[6\/9\] 通知でメンションするグループ/)
+  assert.deepEqual(loadConfig(f.home)?.mention, { asked: true, groupId: 'S0DEV0001', handle: 'dev-member' })
+  assert.equal(f.calls('usergroups.list').length, 2)
+  const again = await f.setup('\n')
+  assert.equal(again.code, 0, again.stderr)
+  assert.match(again.stdout, /\[6\/9\] [^\n]*済み/)
+  assert.equal(f.calls('usergroups.list').length, 2)
+  const empty = await fixture(t)
+  assert.equal((await empty.setup(FULL_INPUT)).code, 0)
+  assert.deepEqual(loadConfig(empty.home)?.mention, { asked: true, groupId: null, handle: null })
+})
+
 test('SU22 ボットで入力欄にボタンを出せなければ、6段目で止めずに進め、最後に管理画面での手順をもう一度示す', async (t) => {
   const f = await fixture(t, (r): SlackReply | null =>
     r.method === 'workflows.featured.add' ? { json: { ok: false, error: 'restricted_action' } } : null,
   )
   const r = await f.setup(FULL_INPUT)
   assert.equal(r.code, 0, r.stderr)
-  assert.match(r.stdout, /\[8\/8\]/)
-  const tail = r.stdout.slice(r.stdout.indexOf('[8/8]'))
+  assert.match(r.stdout, /\[9\/9\]/)
+  const tail = r.stdout.slice(r.stdout.indexOf('[9/9]'))
   assert.match(tail, /おすすめアプリに追加/)
   const again = await f.setup('\n')
   assert.equal(again.code, 0, again.stderr)
