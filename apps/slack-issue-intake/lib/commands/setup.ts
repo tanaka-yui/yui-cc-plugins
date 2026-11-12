@@ -12,7 +12,6 @@ import {
   FORM_FEATURED_MANUAL,
   FORM_META_FEATURED,
   FORM_META_TRIGGER_ID,
-  FORM_TITLE,
   LABEL_WRITE_PERMISSIONS,
   MSG_CONFIG_BROKEN,
   MSG_PUSH_REQUIRED,
@@ -22,7 +21,7 @@ import {
   SETUP_TEXT,
   SLACK_APP_NAME,
 } from '../defaults.ts'
-import { featureSteps } from '../form.ts'
+import { featureSteps, formTitles } from '../form.ts'
 import { createGh, findGhPath, ghAuthOk, repoInfo } from '../github.ts'
 import { runOrca } from '../orca.ts'
 import { homePaths, intakeHome, pluginRoot } from '../paths.ts'
@@ -390,7 +389,7 @@ const wizard = async (): Promise<number> => {
   // ボットでは入力欄にボタンを出せなかったときは、6段目の出力が流れているので、画面での手順をもう一度示す
   if (readMeta(paths.db, FORM_META_FEATURED) === FORM_FEATURED_MANUAL)
     say(fill(SETUP_TEXT.featureByHand, { steps: featureSteps() }))
-  say(fill(SETUP_TEXT.finished, { title: FORM_TITLE }))
+  say(fill(SETUP_TEXT.finished, { title: formTitles() }))
   return 0
 }
 

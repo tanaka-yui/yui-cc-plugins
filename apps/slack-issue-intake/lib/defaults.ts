@@ -83,8 +83,8 @@ export const FIELD_LABELS = {
 } as const
 export const TEMPLATE_REPORTER_HINT = 'フォームを送信した人'
 // フォーム付きマニフェスト（form --manifest）と、チャンネルにボタンを置く form で使う値
-export const FORM_WORKFLOW_ID = 'issue_intake_form'
-export const FORM_TITLE = 'Issue を起票' // open_form の題は半角24字（日本語は1字を3と数えて8字）まで
+// open_form の題は半角24字（日本語は1字を3と数えて8字）まで。題は FORM_KINDS の title
+export const FORM_TITLE_SEPARATOR = '、'
 export const FORM_TITLE_MAX_UNITS = 24
 export const FORM_FIELD_TITLE_MAX_CHARS = 25
 export const FORM_DESCRIPTION = 'GitHub Issue の起票依頼を送ります'
