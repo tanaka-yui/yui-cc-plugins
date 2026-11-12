@@ -1,5 +1,6 @@
 import { isAllowedEvery } from '../automation.ts'
 import { findChannel, joinChannel, normalizeChannelName } from '../channels.ts'
+import { parseFlags } from '../cli.ts'
 import { loadConfig } from '../config.ts'
 import { getMeta, openDb } from '../db.ts'
 import {
@@ -244,11 +245,12 @@ const wizard = async (): Promise<number> => {
   const project = slackProject(home)
   const app = deployedApp(project)
   const hash = manifestHash()
-  const manualApp = Boolean(loadToken(paths.secrets)) && !app
+  let token = loadToken(paths.secrets)
+  const manualApp = Boolean(token) && !app
   if (manualApp) {
     heading(2, SETUP_TEXT.stepApp, true)
     say(SETUP_TEXT.manualApp)
-  } else if (loadToken(paths.secrets) && readDeployedHash(project) === hash) {
+  } else if (token && readDeployedHash(project) === hash) {
     heading(2, SETUP_TEXT.stepApp, true)
   } else {
     heading(2, SETUP_TEXT.stepApp)
@@ -256,11 +258,12 @@ const wizard = async (): Promise<number> => {
     writeProject(project)
     // 2回目以降は同じチームのアプリを更新する。初回はワークスペースを Slack CLI に選ばせる
     const code = runDeploy(ready.slackCli, project, app?.teamId ?? null)
-    if (!loadToken(paths.secrets)) return fail(SETUP_TEXT.noToken)
+    // フックが保存したトークンを読み直す
+    token = loadToken(paths.secrets)
+    if (!token) return fail(SETUP_TEXT.noToken)
     if (code !== 0) return fail(fill(SETUP_TEXT.deployFailed, { code: String(code) }))
     saveDeployedHash(project, hash)
   }
-  const token = loadToken(paths.secrets)
   if (!token) return fail(SETUP_TEXT.noToken)
 
   // 3〜5: 設定と automation がそろっていれば飛ばす（送り先は変えられない）。
@@ -322,6 +325,7 @@ const wizard = async (): Promise<number> => {
 }
 
 // make setup の本体。聞かれたことに答えるだけで、アプリの作成から automation の有効化まで進める
-export const run = async (_argv: string[]): Promise<void> => {
+export const run = async (argv: string[]): Promise<void> => {
+  parseFlags('setup', { args: argv, options: {} })
   process.exitCode = await wizard()
 }

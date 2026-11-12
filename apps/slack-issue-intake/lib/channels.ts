@@ -30,6 +30,8 @@ export const findChannel = async (
       const channel = toChannel(get(info.body, 'channel'))
       return { ok: true, channel: get(info.body, 'channel', 'is_archived') === true ? null : channel }
     }
+    // createSlackClient は channel_not_found を致命エラーとして以後の呼び出しを止める。
+    // この先の名前での探し直しには、止まらないクライアントが要る（setup が呼び出しごとにクライアントを作るのはこのため）
     // customers のような名前は ID の形に見えるので、ID として見つからなければ名前で探す
     if (info.error !== ERROR_CHANNEL_NOT_FOUND) return info
   }

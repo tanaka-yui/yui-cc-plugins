@@ -261,3 +261,21 @@ test('SU13 ID の形に見える名前は、ID で見つからなくても名前
   assert.equal(r.code, 0, r.stderr)
   assert.equal(loadConfig(f.home)?.channel, 'C0CUSTOM01')
 })
+
+test('SU14 フックがトークンを受け取れず set-token で登録したあとは、deploy し直さずに続きから進む', async (t) => {
+  const f = await fixture(t)
+  const noToken = { FAKE_SLACK_CLI_NO_TOKEN: '1' }
+  assert.equal((await f.setup(FULL_INPUT, noToken)).code, 1)
+  saveToken(homePaths(f.home).secrets, 'xoxb-set-by-hand')
+  const r = await f.setup(FULL_INPUT, noToken)
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(f.cliCalls('deploy').length, 1)
+  assert.equal(loadConfig(f.home)?.channel, 'C0TARGET01')
+})
+
+test('SU15 知らない引数は使用法の誤りとして exit 2 で止まり、何も始めない', async (t) => {
+  const f = await fixture(t)
+  const r = await runCliAsync(['setup', '--foo'], { SLACK_ISSUE_INTAKE_HOME: f.home }, '')
+  assert.equal(r.code, 2)
+  assert.doesNotMatch(r.stdout, /\[1\/8\]/)
+})

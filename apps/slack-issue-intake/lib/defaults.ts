@@ -297,7 +297,8 @@ export const SETUP_TEXT = {
   confirmPublic: 'この公開リポジトリに起票しますか？',
   askEvery: '確認の間隔（分。60 の約数）',
   badEvery: '60 の約数（1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60）を入力してください',
-  declined: '承認されなかったので、何も変えずに止めました。もう一度 make setup を実行すると、ここから再開します',
+  declined:
+    '承認されなかったので、この段では何も変えずに止めました。もう一度 make setup を実行すると、ここから再開します',
   manualForm: 'フォームのボタンは作りません。README の「Workflow Builder で手で作る」の手順でフォームを作ってください',
   confirmPermissions: 'この内容で許可しますか？',
   inheritedHeader: '次の許可は、ユーザーや組織の設定から無人の Claude にも受け継がれます:',
