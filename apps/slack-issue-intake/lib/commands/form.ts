@@ -23,6 +23,7 @@ import {
   findSlackCli,
   grantTriggerAccess,
   slackProject,
+  writeProject,
   writeTriggerDef,
 } from '../slack-cli.ts'
 
@@ -54,6 +55,8 @@ export const run = async (argv: string[]): Promise<void> => {
     process.exitCode = 2
     return
   }
+  // プラグインを更新するとフックのパスが古くなるので、Slack CLI を呼ぶ前に書き直す
+  writeProject(project)
   const deadline = Date.now() + COMMAND_DEADLINE_MS
   const lease = acquireLease(rt.db, 'admin', null, new Date(), ADMIN_LEASE_MS)
   if (!lease.ok) {

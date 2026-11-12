@@ -33,6 +33,10 @@ if (args[0] === '_fingerprint') {
   console.log(process.env.FAKE_SLACK_CLI_LOGGED_OUT ? SLACK_CLI_LOGGED_OUT_TEXT : `acme ${team}`)
 } else if (args[0] === 'deploy') {
   record()
+  if (process.env.FAKE_SLACK_CLI_DEPLOY_FAIL) {
+    console.error('manifest rejected')
+    process.exit(1)
+  }
   const manifest = spawnSync('/bin/sh', ['-c', hook('get-manifest')], { encoding: 'utf8' })
   if (manifest.status !== 0 || parseJson(manifest.stdout) === null) {
     console.error('get-manifest failed')

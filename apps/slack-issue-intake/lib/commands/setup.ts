@@ -40,7 +40,7 @@ import {
 } from '../slack-cli.ts'
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, writeSync } from 'node:fs'
+import { existsSync, rmSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { Prompter } from '../prompt.ts'
@@ -205,9 +205,13 @@ const formDone = (dbFile: string): boolean => {
 const approve = (p: Prompter, home: string, accepted: string | null): number => {
   const status = permissionStatus(home, accepted)
   if (status === 'accepted') {
+    // enable は Orca を呼ぶ前に承認を保存するので、承認済みでも有効化が失敗していることがある。
+    // 指紋が一致しているので受け継ぐ許可も承認済み。聞き直さずに enable をやり直す（有効なものを有効にしても変わらない）
     heading(7, SETUP_TEXT.stepPermissions, true)
-    heading(8, SETUP_TEXT.stepEnable, true)
-    return 0
+    heading(8, SETUP_TEXT.stepEnable)
+    const inherited = inheritedGrants()
+    if (!inherited) return fail(SETUP_TEXT.noInherited)
+    return child(['enable', ...(inherited.allow.length || inherited.dirs.length ? ['--accept-inherited'] : [])])
   }
   if (status === 'unsafe') {
     heading(7, SETUP_TEXT.stepPermissions)
@@ -245,8 +249,11 @@ const wizard = async (): Promise<number> => {
   const project = slackProject(home)
   const app = deployedApp(project)
   const hash = manifestHash()
+  const existing = loadConfig(home)
   let token = loadToken(paths.secrets)
   const manualApp = Boolean(token) && !app
+  // プラグインを更新するとフックのパスが古くなるので、アプリがあれば毎回書き直す
+  if (app) writeProject(project)
   if (manualApp) {
     heading(2, SETUP_TEXT.stepApp, true)
     say(SETUP_TEXT.manualApp)
@@ -256,19 +263,23 @@ const wizard = async (): Promise<number> => {
     heading(2, SETUP_TEXT.stepApp)
     say(SETUP_TEXT.deploying)
     writeProject(project)
-    // 2回目以降は同じチームのアプリを更新する。初回はワークスペースを Slack CLI に選ばせる
-    const code = runDeploy(ready.slackCli, project, app?.teamId ?? null)
+    // 指紋はフックが最初に書く。消しておけば、deploy のあとに指紋があることが「フックまで進んだ」印になる
+    rmSync(project.manifestHash, { force: true })
+    // 同じチームのアプリを更新する（設定があればそのチーム）。どちらも無い初回は、ワークスペースを Slack CLI に選ばせる。
+    // 設定のチームを渡すのは、別のワークスペースのトークンで secrets を上書きしないため
+    const teamId = app?.teamId || existing?.slack.teamId || null
+    const code = runDeploy(ready.slackCli, project, teamId)
+    const hookRan = readDeployedHash(project) === hash
     // フックが保存したトークンを読み直す
     token = loadToken(paths.secrets)
-    if (!token) return fail(SETUP_TEXT.noToken)
-    if (code !== 0) return fail(fill(SETUP_TEXT.deployFailed, { code: String(code) }))
+    if (!token && hookRan) return fail(SETUP_TEXT.noToken)
+    if (!token || code !== 0) return fail(fill(SETUP_TEXT.deployFailed, { code: String(code) }))
     saveDeployedHash(project, hash)
   }
   if (!token) return fail(SETUP_TEXT.noToken)
 
   // 3〜5: 設定と automation がそろっていれば飛ばす（送り先は変えられない）。
   // init が automation の登録で失敗すると設定だけが残るので、そのときは保存済みの値で init をやり直す
-  const existing = loadConfig(home)
   if (existing?.orca.automationId) {
     heading(3, SETUP_TEXT.stepChannel, true)
     heading(4, SETUP_TEXT.stepRepo, true)

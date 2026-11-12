@@ -56,6 +56,19 @@ test('SC4 hooks.json は絶対パスのフックを書き、get-hooks の出力�
   assert.deepEqual(parseJson(readFileSync(p.config, 'utf8')), { manifest: { source: 'local' } })
   assert.equal(statSync(p.dir).mode & 0o777, 0o700)
 })
+test('SC4b config.json は Slack CLI が書いた項目を残し、manifest.source だけを local にする', () => {
+  const p = slackProject(tempHome())
+  writeProject(p)
+  writeFileSync(p.config, JSON.stringify({ project_id: 'P-1', manifest: { source: 'remote', extra: 1 } }))
+  writeProject(p)
+  assert.deepEqual(parseJson(readFileSync(p.config, 'utf8')), {
+    project_id: 'P-1',
+    manifest: { source: 'local', extra: 1 },
+  })
+  writeFileSync(p.config, 'not json')
+  writeProject(p)
+  assert.deepEqual(parseJson(readFileSync(p.config, 'utf8')), { manifest: { source: 'local' } })
+})
 test('SC5 deployedApp は apps.json のアプリを返し、無いか壊れていれば null', () => {
   const p = slackProject(tempHome())
   assert.equal(deployedApp(p), null)

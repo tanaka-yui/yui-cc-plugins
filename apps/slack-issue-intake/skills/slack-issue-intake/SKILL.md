@@ -48,8 +48,8 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 ## init
 
 Recommend that the user run `make setup` in a terminal from the plugin directory; it is interactive and cannot run in
-the agent's shell. It creates the Slack app through the Slack CLI and then runs steps 3 to 6 and **enable** below
-itself. Use the manual steps below only when the user cannot use the Slack CLI or `make setup` stopped on a step it
+the agent's shell. It creates the Slack app through the Slack CLI and then itself resolves the channel, checks the
+repository, runs `init`, places the form button (**form**), asks for the permission approval, and runs **enable**. Use the manual steps below only when the user cannot use the Slack CLI or `make setup` stopped on a step it
 cannot complete.
 
 1. Run `guide`. Explain the Slack app manifest, paid-plan requirement, invitation, and Workflow Builder setup in

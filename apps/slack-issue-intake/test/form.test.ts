@@ -58,7 +58,7 @@ const fixture = async (
   }
   const calls = (method: string): SlackRequest[] => server.requests.filter((r) => r.method === method)
   const cliCalls = (sub: string) => slackCliCalls(cli.log).filter((c) => c.argv.slice(0, 2).join(' ') === sub)
-  return { server, meta, calls, cliCalls, form: (args: string[] = []) => runCliAsync(['form', ...args], env) }
+  return { home, server, meta, calls, cliCalls, form: (args: string[] = []) => runCliAsync(['form', ...args], env) }
 }
 
 test('FO1 Slack CLI でボタンを作り、チャンネルのメンバーに限って使えるようにし、ブックマークを置く。再実行で重ねない', async (t) => {
@@ -144,4 +144,15 @@ test('FO6 Slack CLI が見つからなければ案内して exit 2 で止まる'
   assert.equal(r.code, 2)
   assert.match(r.stderr, /slack login/)
   assert.equal(f.cliCalls('trigger create').length, 0)
+})
+
+test('FO7 プラグインの更新で古くなった hooks.json を、ボタンを作る前に書き直す', async (t) => {
+  const f = await fixture(t)
+  const { slackProject } = await import('../lib/slack-cli.ts')
+  const { writeFileSync, readFileSync } = await import('node:fs')
+  const project = slackProject(f.home)
+  writeFileSync(project.hooks, JSON.stringify({ hooks: { deploy: '/old/node /old/bin.ts slack-hook deploy' } }))
+  const r = await f.form()
+  assert.equal(r.code, 0, r.stderr)
+  assert.ok(readFileSync(project.hooks, 'utf8').includes(process.execPath))
 })

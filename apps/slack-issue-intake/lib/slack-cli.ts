@@ -15,7 +15,7 @@ import {
   TRIGGER_DEF_FILE,
 } from './defaults.ts'
 import { renderFormManifest, triggerDefinition } from './form.ts'
-import { ensurePrivateDir, writeJson } from './fs.ts'
+import { ensurePrivateDir, readJson, writeJson } from './fs.ts'
 import { asObject, asString, get } from './json.ts'
 import { pluginRoot } from './paths.ts'
 import { maskSecrets } from './secrets.ts'
@@ -62,12 +62,14 @@ export const hooksInterface = (): JsonObject => {
   }
 }
 
-// 毎回上書きする。manifest は local（get-manifest フック）から取る
+// hooks.json は毎回上書きする（プラグインの更新でパスが変わるため）。
+// config.json は Slack CLI が書いた項目（project_id など）を残し、manifest は local（get-manifest フック）から取る
 export const writeProject = (project: SlackProject): void => {
   ensurePrivateDir(project.dir)
   ensurePrivateDir(join(project.dir, '.slack'))
   writeJson(project.hooks, hooksInterface())
-  writeJson(project.config, { manifest: { source: 'local' } })
+  const config = asObject(readJson(project.config)) ?? {}
+  writeJson(project.config, { ...config, manifest: { ...(asObject(config.manifest) ?? {}), source: 'local' } })
 }
 
 const executable = (file: string): boolean => {

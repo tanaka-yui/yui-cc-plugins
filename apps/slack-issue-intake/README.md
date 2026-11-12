@@ -62,7 +62,7 @@ make setup
 | 7 | Claude に許す操作を承認する（permissions） | 表示された内容を確認し、y を答えます |
 | 8 | automation を有効にする（enable） | 受け継ぐ許可があれば、その一覧を確認して y を答えます |
 
-入力した内容が合わないときは、理由を表示して聞き直します。承認で n を答えると、何も変えずに止まります。
+入力した内容が合わないときは、理由を表示して聞き直します。承認で n を答えると、その段では何も変えずに止まります。
 
 2段目で作るアプリは、通常の権限に加えて channels:read、groups:read、channels:join、bookmarks:write を持ちます。チャンネル名の検索、公開チャンネルへの参加、ブックマークの追加に使います。`make manifest` で、このマニフェストを表示できます。
 
@@ -72,8 +72,9 @@ make setup
 
 - アプリとトークンがそろっていれば、deploy はやり直しません。ただし、プラグインの更新でマニフェストが変わったときは、次の実行でもう一度 deploy します。
 - 設定と automation が登録済みなら、チャンネルとリポジトリは聞きません。送り先は変えられません。
+- 設定は保存されたが automation の登録（Orca）で失敗していたときは、保存済みのチャンネルとリポジトリで init をやり直します。公開リポジトリなら、もう一度確認します。
 - ボタンとブックマークが作成済みなら、作り直しません。
-- 権限が承認済みなら、7・8段は飛ばします。
+- 権限が承認済みなら7段は飛ばし、8段では聞き直さずに enable をやり直します。前回 Orca での有効化に失敗していても、ここで有効になります。
 
 終了コードは、失敗が 1、入力がないときが 2 です。
 
@@ -204,7 +205,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
 5. フォームから添付2個以上を投稿し、`node bin/slack-issue-intake.ts inspect --raw` で marker=yes、parse=ok、起票者と添付数を確認します。API 上の text / blocks、files / file permalink の形は実環境で未確認です。Workflow Builder で作った場合、1質問で1ファイルだけなら任意アップロードを3質問にします。
 6. 明確なバグ報告で、ラベル・添付リンク付きの Issue とスレッドの URL を確認します。曖昧な投稿には質問が届き、人が返信したら次の回で拾うことを確認します。Bot トークンの conversations.replies が対象チャンネルで読めるかもここで確認します。
 7. 不正なカテゴリは理由を返信し、何も投稿しない15分間は skipped_precheck だけで Claude が起動しないことを確かめます。
-8. user の allow を追加すると permissions=changed で止まることを確認し、一覧を承認して enable --accept-inherited で戻します。
+8. user の allow を追加すると permissions=changed で止まることを確認し、一覧を承認して `node bin/slack-issue-intake.ts enable --accept-inherited` で戻します。
 
 ## 運用
 

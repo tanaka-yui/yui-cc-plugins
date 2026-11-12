@@ -17,7 +17,7 @@ import {
 } from './helpers.ts'
 
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 
@@ -278,4 +278,35 @@ test('SU15 知らない引数は使用法の誤りとして exit 2 で止まり�
   const r = await runCliAsync(['setup', '--foo'], { SLACK_ISSUE_INTAKE_HOME: f.home }, '')
   assert.equal(r.code, 2)
   assert.doesNotMatch(r.stdout, /\[1\/8\]/)
+})
+
+test('SU16 有効化が Orca で失敗しても、次の実行で聞き直さずに有効化をやり直す', async (t) => {
+  const f = await fixture(t)
+  mkdirSync(f.claudeHome, { recursive: true })
+  writeFileSync(join(f.claudeHome, 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(git status)'] } }))
+  const r = await f.setup(`${FULL_INPUT}y\n`, { FAKE_ORCA_EDIT: 'fail' })
+  assert.equal(r.code, 1)
+  assert.equal(f.status(), 'accepted')
+  const again = await f.setup('')
+  assert.equal(again.code, 0, again.stderr)
+  assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
+})
+
+test('SU17 フックより前に deploy が失敗したら、set-token ではなく deploy の失敗を示す', async (t) => {
+  const f = await fixture(t)
+  const r = await f.setup(FULL_INPUT, { FAKE_SLACK_CLI_DEPLOY_FAIL: '1' })
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /slack deploy に失敗しました/)
+  assert.doesNotMatch(r.stderr, /set-token/)
+})
+
+test('SU18 設定があってトークンもアプリも無ければ、設定のチームを指定して deploy する', async (t) => {
+  const f = await fixture(t)
+  assert.equal((await f.setup(FULL_INPUT)).code, 0)
+  rmSync(homePaths(f.home).secrets)
+  rmSync(slackProject(f.home).dir, { recursive: true })
+  const r = await f.setup('')
+  assert.equal(r.code, 0, r.stderr)
+  const argv = f.cliCalls('deploy')[1]?.argv ?? []
+  assert.equal(argv[argv.indexOf('--team') + 1], TEAM_ID)
 })

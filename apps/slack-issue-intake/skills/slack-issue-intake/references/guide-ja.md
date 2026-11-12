@@ -26,7 +26,7 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 
 ## init
 
-ターミナルで、プラグインのディレクトリから `make setup` を実行するようユーザーに勧めます。対話式なので、エージェントのシェルでは動きません。make setup は Slack CLI でアプリを作り、続けて下の 3〜6 と enable を自分で進めます。以下の手作業の手順は、Slack CLI を使えないとき、または make setup が自分では進められない段で止まったときだけ使います。
+ターミナルで、プラグインのディレクトリから `make setup` を実行するようユーザーに勧めます。対話式なので、エージェントのシェルでは動きません。make setup は Slack CLI でアプリを作り、続けてチャンネルの解決、リポジトリの確認、`init`、フォームのボタンの設置（**form**）、許可の承認、**enable** を自分で進めます。以下の手作業の手順は、Slack CLI を使えないとき、または make setup が自分では進められない段で止まったときだけ使います。
 
 1. guide を実行し、有料プラン、社内向けアプリ、招待、Workflow Builder を日本語で案内します。フォームは Workflow Builder で手で作ります。Slack の準備が済んだか尋ねます。アプリは配布しません。
 2. status が token=missing なら token の手順へ進みます。
