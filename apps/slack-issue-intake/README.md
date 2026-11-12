@@ -167,7 +167,8 @@ Slack CLI にログインしているなら、この手順の代わりに `make 
         "groups:history",
         "chat:write",
         "files:read",
-        "users:read"
+        "users:read",
+        "usergroups:read"
       ]
     }
   },

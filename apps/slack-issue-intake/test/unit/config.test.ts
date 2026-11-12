@@ -18,7 +18,7 @@ const V03 = {
   orca: { workspaceSelector: null, automationId: 'auto-1' },
   acceptedPermissions: null,
 }
-test('CF1 mention の無い 0.3 の config は asked:false として読め、保存して読み直すと値が残る', () => {
+test('CF3 mention の無い 0.3 の config は asked:false として読め、保存して読み直すと値が残る', () => {
   const home = tempHome()
   writeFileSync(homePaths(home).config, JSON.stringify(V03))
   const c = loadConfig(home)

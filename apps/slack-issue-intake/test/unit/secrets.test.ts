@@ -20,6 +20,7 @@ export const config: Config = {
   github: { login: 'intake-bot' },
   orca: { workspaceSelector: null, automationId: null },
   acceptedPermissions: null,
+  mention: { asked: false, groupId: null, handle: null },
 }
 test('SE1 保存と読み込み、権限 0600/0700', () => {
   const home = tempHome()
