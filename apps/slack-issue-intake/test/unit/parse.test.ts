@@ -116,3 +116,15 @@ test('PA17 値に ``` が混ざって枠が崩れても落ちず、次の項目�
     r.kind === 'ok' && r.fields.body.startsWith('事象:\na\n\nエラーログ:\n') && r.fields.body.endsWith('画面のURL:\nu'),
   )
 })
+test('PA18 * の無い形で値に ``` があっても、後ろの項目を読み落とさない', () => {
+  const r = parseSubmission(kindText('要望', { 現在: 'x ``` y', 理想: 'ok' }).replaceAll('*', ''), null)
+  assert.ok(r.kind === 'ok' && r.fields.body.endsWith('理想:\nok'))
+})
+test('PA19 値に貼ったコードブロックの中の「項目名: 値」の行は、値のまま残す', () => {
+  const r = parseSubmission(kindText('要望', { 現在: '```\n理想: 落ちない\n```', 理想: 'ok' }), null)
+  assert.ok(r.kind === 'ok' && r.fields.body === '現在:\n理想: 落ちない\n\n理想:\nok')
+})
+test('PA20 項目が始まったあとの「本文:」の行で古い形に切り替えない', () => {
+  const r = parseSubmission(kindText('バグ', { 事象: 'a ```\n本文: b' }), null)
+  assert.ok(r.kind === 'ok' && r.fields.body === '事象:\na\n本文: b')
+})
