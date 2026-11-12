@@ -1,3 +1,5 @@
+import type { FormKind } from './types.ts'
+
 export const PLUGIN_ID = 'slack-issue-intake@yui-cc-plugins'
 export const AUTOMATION_NAME = 'slack-issue-intake'
 export const AUTOMATION_PROVIDER = 'claude'
@@ -123,6 +125,55 @@ export const CATEGORIES = ['バグ', '新機能', '要望'] as const
 export const PRIORITIES = ['critical', 'high', 'middle', 'low'] as const
 export const CATEGORY_KEYS = { バグ: 'bug', 新機能: 'feature', 要望: 'request' } as const
 export const PRIORITY_LABEL_PREFIX = 'priority: '
+// カテゴリ別フォームの項目名（投稿の項目名にもなる。解析器はこの名前で項目を見分ける）
+export const FORM_ITEM_LABELS = {
+  symptom: '事象',
+  errorLog: 'エラーログ',
+  workaround: '対応策',
+  screenUrl: '画面のURL',
+  sourcePath: 'ソースコードのパス',
+  current: '現在',
+  ideal: '理想',
+  spec: '仕様',
+} as const
+const L = FORM_ITEM_LABELS
+const screenItems = [
+  { name: 'screen_url', label: L.screenUrl, long: false, required: false },
+  { name: 'source_path', label: L.sourcePath, long: false, required: false },
+] as const
+// ボタンの題は open_form の題の上限（FORM_TITLE_MAX_UNITS）に収める
+export const FORM_KINDS: readonly FormKind[] = [
+  {
+    key: 'bug',
+    category: 'バグ',
+    workflowId: 'issue_intake_bug',
+    title: 'バグを報告',
+    items: [
+      { name: 'symptom', label: L.symptom, long: true, required: true },
+      { name: 'error_log', label: L.errorLog, long: true, required: false },
+      { name: 'workaround', label: L.workaround, long: true, required: false },
+      ...screenItems,
+    ],
+  },
+  {
+    key: 'request',
+    category: '要望',
+    workflowId: 'issue_intake_request',
+    title: '要望を送る',
+    items: [
+      { name: 'current', label: L.current, long: true, required: true },
+      { name: 'ideal', label: L.ideal, long: true, required: true },
+      ...screenItems,
+    ],
+  },
+  {
+    key: 'feature',
+    category: '新機能',
+    workflowId: 'issue_intake_feature',
+    title: '新機能を提案',
+    items: [{ name: 'spec', label: L.spec, long: true, required: true }],
+  },
+]
 export const SOURCE_LABEL = 'from-slack'
 export const LABEL_SPECS: ReadonlyArray<{ name: string; color: string; description: string }> = [
   { name: 'bug', color: 'd73a4a', description: '不具合（Slack のフォームから）' },

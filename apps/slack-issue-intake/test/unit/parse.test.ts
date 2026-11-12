@@ -1,5 +1,5 @@
 import { parseSubmission } from '../../lib/parse.ts'
-import { templateText } from '../fixtures/slack-messages.ts'
+import { kindText, templateText } from '../fixtures/slack-messages.ts'
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -69,5 +69,50 @@ test('PA10 ラベル行そのものが無いときも「がありません」', 
   const r = parseSubmission('[issue-intake]\nタイトル: x\n本文:\ny', null)
   assert.ok(
     r.kind === 'invalid' && r.problems.includes('カテゴリがありません') && r.problems.includes('優先度がありません'),
+  )
+})
+test('PA11 バグの新しい形を読み、空の任意項目は本文に入れない', () => {
+  const r = parseSubmission(kindText('バグ', { 事象: '白くなる\n2行目', 画面のURL: 'https://e.x/a' }), null)
+  assert.deepEqual(r, {
+    kind: 'ok',
+    fields: {
+      title: 'ログインできない',
+      fullTitle: 'ログインできない',
+      category: 'バグ',
+      priority: 'high',
+      body: '事象:\n白くなる\n2行目\n\n画面のURL:\nhttps://e.x/a',
+      reporterId: 'U012AB3CD',
+    },
+  })
+})
+test('PA12 要望の必須項目が無ければ項目名で挙げる', () => {
+  const r = parseSubmission(kindText('要望', {}), null)
+  assert.ok(r.kind === 'invalid' && r.problems.includes('現在がありません') && r.problems.includes('理想がありません'))
+})
+test('PA13 コードブロックの中の項目名らしい行は値のまま', () => {
+  const r = parseSubmission(kindText('要望', { 現在: '理想: 偽物\nタイトル: 偽物', 理想: 'x' }), null)
+  assert.ok(
+    r.kind === 'ok' &&
+      r.fields.body === '現在:\n理想: 偽物\nタイトル: 偽物\n\n理想:\nx' &&
+      r.fields.title === 'ログインできない',
+  )
+})
+test('PA14 rich_text を平らにした形（* なし、``` が独立行）も読む', () => {
+  const r = parseSubmission(kindText('新機能', { 仕様: 'A\nB' }).replaceAll('*', ''), null)
+  assert.ok(r.kind === 'ok' && r.fields.body === '仕様:\nA\nB' && r.fields.category === '新機能')
+})
+test('PA15 1 行に ```値``` と書かれた値も読む', () => {
+  const text = kindText('新機能', { 仕様: 'X' }).replace('*仕様:*\n```\nX\n```', '*仕様:*\n```X```')
+  const r = parseSubmission(text, null)
+  assert.ok(r.kind === 'ok' && r.fields.body === '仕様:\nX')
+})
+test('PA16 カテゴリが不正で本文の行も無ければ、カテゴリの問題だけを挙げる', () => {
+  const r = parseSubmission(kindText('バグ', { 事象: 'x' }).replace('*カテゴリ:* バグ', '*カテゴリ:* その他'), null)
+  assert.deepEqual(r.kind === 'invalid' && r.problems, ['カテゴリが「バグ / 新機能 / 要望」のどれでもありません'])
+})
+test('PA17 値に ``` が混ざって枠が崩れても落ちず、次の項目名の行までを値にする', () => {
+  const r = parseSubmission(kindText('バグ', { 事象: 'a', エラーログ: 'x ``` y\nz', 画面のURL: 'u' }), null)
+  assert.ok(
+    r.kind === 'ok' && r.fields.body.startsWith('事象:\na\n\nエラーログ:\n') && r.fields.body.endsWith('画面のURL:\nu'),
   )
 })

@@ -16,6 +16,38 @@ export const templateText = (
   const c = o.colon ?? ':'
   return `[issue-intake]\nタイトル${c} ${o.title ?? 'ログインできない'}\nカテゴリ${c} ${o.category ?? 'バグ'}\n優先度${c} ${o.priority ?? 'high'}\n起票者${c} ${o.reporter ?? `<@${REPORTER}>`}\n本文${c}\n${o.body ?? '本文1\n本文2'}`
 }
+// カテゴリ別フォームの投稿。項目の並びと複数行かどうかは、本体の FORM_KINDS から引かずにここで固定する（本体の誤りを写さないため）
+const KIND_ITEMS: Record<string, ReadonlyArray<readonly [label: string, long: boolean]>> = {
+  バグ: [
+    ['事象', true],
+    ['エラーログ', true],
+    ['対応策', true],
+    ['画面のURL', false],
+    ['ソースコードのパス', false],
+  ],
+  要望: [
+    ['現在', true],
+    ['理想', true],
+    ['画面のURL', false],
+    ['ソースコードのパス', false],
+  ],
+  新機能: [['仕様', true]],
+}
+export const kindText = (
+  category: string,
+  values: Record<string, string>,
+  o: { title?: string; priority?: string; reporter?: string } = {},
+): string =>
+  [
+    '[issue-intake]',
+    `*タイトル:* ${o.title ?? 'ログインできない'}`,
+    `*カテゴリ:* ${category}`,
+    `*優先度:* ${o.priority ?? 'high'}`,
+    `*起票者:* ${o.reporter ?? `<@${REPORTER}>`}`,
+    ...(KIND_ITEMS[category] ?? []).flatMap(([label, long]) =>
+      long ? ['', `*${label}:*`, '```', values[label] ?? '', '```'] : ['', `*${label}:* ${values[label] ?? ''}`],
+    ),
+  ].join('\n')
 export const textMessage = (ts: string, text: string, extra: JsonObject = {}): JsonObject => ({
   type: 'message',
   subtype: 'bot_message',

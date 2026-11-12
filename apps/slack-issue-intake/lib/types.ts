@@ -49,3 +49,17 @@ export type InflightRecord = {
   deadConfirmedAt: string | null
 }
 export type HistoryScan = { sliceOldest: string; sliceLatest: string; resumeLatest: string | null }
+export type FormItem = {
+  readonly name: string
+  readonly label: string
+  readonly long: boolean
+  readonly required: boolean
+}
+// カテゴリごとのフォーム。ボタン 1 つ、ワークフロー 1 つに対応する
+export type FormKind = {
+  readonly key: CategoryKey
+  readonly category: Category
+  readonly workflowId: string
+  readonly title: string
+  readonly items: readonly FormItem[]
+}
