@@ -771,4 +771,22 @@ unmerged=$(pj '[.tasks[0].kept[] | select(.kind == "record") | .reasons[]] | joi
   && ok "CL15c 手で merge したブランチには記録の仕方を添え、offer はしない" || fail "CL15c (reasons=$reasons unmerged=$unmerged)"
 teardown
 
+# CL15d: ★ pr の dispatch には orca-pr.ts の再実行を、記録した repo を入れて案内する。orca-merge.ts は pr を拒むので
+#        名指ししない。squash のマージでは祖先にならないので、祖先かどうかで案内を絞らない（3.10.17、slack-issue-intake）
+world; task a false
+git -C "$REPO" init -q -b main .; printf 'seed\n' > "$REPO/README.md"; printf '.dispatch/\n' >> "$REPO/.git/info/exclude"
+git -C "$REPO" add -A; git -C "$REPO" -c user.email=t@e -c user.name=t commit -q -m seed
+git -C "$REPO" checkout -q -b orca/b; printf 'x\n' >> "$REPO/README.md"
+git -C "$REPO" -c user.email=t@e -c user.name=t commit -qam x; git -C "$REPO" checkout -q main
+edit a '.integration = "pr" | .integration_role = "design" | .integration_branch = "main" | .roles.design.branch = "orca/b"'
+printf '%s\n' '{"merged":false,"integration":"pr","pr_url":"https://github.com/o/r/pull/7","branch":"orca/b","base":"main","repo":"o/r"}' \
+  > "$(sd a)/integration-result.json"
+plan --status-dir "$(sd a)"
+reasons=$(pj '[.tasks[0].kept[] | select(.kind == "record") | .reasons[]] | join(" | ")')
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].offers.record | length')" == 0 \
+   && "$reasons" == *'once the pull request https://github.com/o/r/pull/7 is merged, record it with: node '*'orca-pr.ts --status-dir '"$(sd a)"' --repo o/r'* \
+   && "$reasons" != *'orca-merge.ts'* ]] \
+  && ok "CL15d pr の dispatch には orca-pr.ts の再実行を案内し、offer はしない" || fail "CL15d (reasons=$reasons)"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

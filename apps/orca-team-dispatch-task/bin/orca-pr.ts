@@ -1,6 +1,7 @@
 // 成果のブランチを push して pull request を作る。
 // Usage: node orca-pr.ts --status-dir <d> --repo <owner/repo> [--issue <N>] [--remote <name>]
 // Exit: 0 = PR がある / 1 = 作れなかった / 2 = 使用法エラー
+// PR が記録済みなら作らずに URL を返し、GitHub が MERGED と言えば merged:true を記録する。
 // ★ --repo は呼び出し側が決める。remote を自分で推測すると fork に成果を送る事故になる。
 import { die, log } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
@@ -81,6 +82,62 @@ const textFile = (file: string): string => {
 //   (実測: 最初の試行が stderr の警告で失敗扱いになり、PR は在るのに URL を
 //   記録できなかった)。そこで諦めると、その dispatch は永久に失敗のままになる。
 // ★ `--jq` に頼らず自分で通す。gh の版差に依存する理由が無い
+//
+// ★ **PR がマージされたら、もう一度この script で取り込みを記録する。**記録しないと integration-result.json が
+//   merged:false のまま残り、orca-cleanup.ts plan が worktree も record も offer しない（3.10.17、yui-cc-plugins
+//   の slack-issue-intake。plan の案内した orca-merge.ts は pr の dispatch を拒んだ）。
+//   マージの証拠は GitHub の `state: MERGED` と、PR の head がローカルのブランチの先端を含むこと。squash / rebase の
+//   マージではブランチが base の祖先にならないので、orca-merge.ts の祖先判定は使えない。
+//   **確かめられなければ記録に触らない**（stop は pr_url を消すので使わない）。
+const recordMerge = (statusDir: string, repo: string): void => {
+  const file = join(statusDir, 'integration-result.json')
+  const prior = readJson(file)
+  if (get(prior, 'merged') === true) {
+    log(NAME, 'the pull request is already recorded as merged')
+    return
+  }
+  const url = asString(get(prior, 'pr_url')) ?? ''
+  const recordedRepo = asString(get(prior, 'repo')) ?? repo
+  const branch = asString(get(prior, 'branch')) ?? ''
+  const base = asString(get(prior, 'base')) ?? ''
+  if (recordedRepo !== repo) {
+    log(NAME, `the pull request was opened on ${recordedRepo}, not ${repo}; its merge is not recorded`)
+    return
+  }
+  // ★ flag を先に置く。URL を前に置くと gh-stub の鍵に URL が混ざる（実 gh はどちらの順でも受ける）
+  const viewed = run('gh', ['pr', 'view', '--repo', repo, '--json', 'state,headRefOid', url])
+  const view = viewed.rc === 0 ? parseJson(viewed.stdout) : null
+  const state = asString(get(view, 'state')) ?? ''
+  const head = asString(get(view, 'headRefOid')) ?? ''
+  if (state === '') {
+    log(NAME, `could not read the state of ${url}; its merge is not recorded`)
+    return
+  }
+  if (state !== 'MERGED') {
+    log(NAME, `${url} is ${state}, not merged`)
+    return
+  }
+  const root = value(join(statusDir, 'run.json'), 'repo_root')
+  if (root === '' || branch === '' || head === '') {
+    log(NAME, `${url} is merged, but the branch it carried cannot be identified; its merge is not recorded`)
+    return
+  }
+  // ★ ブランチが残っていれば、その先端が PR の head に含まれることを確かめる。PR に載らなかったコミットが
+  //   あるのに merged と記録すると、片付けがそれを持つ worktree と record を offer する
+  if (git(root, 'show-ref', '--quiet', `refs/heads/${branch}`).rc === 0) {
+    if (git(root, 'merge-base', '--is-ancestor', `refs/heads/${branch}`, head).rc !== 0) {
+      log(NAME, `${url} is merged, but ${branch} has commits the pull request did not carry; its merge is not recorded`)
+      return
+    }
+  }
+  const result = { merged: true, integration: 'pr', pr_url: url, branch, base, repo }
+  if (!persist(file, result)) {
+    log(NAME, `${url} is merged, but the result cannot be persisted`)
+    return
+  }
+  log(NAME, `${url} is merged; recorded it as merged`)
+}
+
 const main = (argv: string[]): number => {
   let statusDir = ''
   let repo = ''
@@ -121,6 +178,7 @@ const main = (argv: string[]): number => {
   const prior = value(join(statusDir, 'integration-result.json'), 'pr_url')
   if (prior !== '') {
     log(NAME, 'a pull request is already recorded for this dispatch')
+    recordMerge(statusDir, repo)
     process.stdout.write(`${prior}\n`)
     return 0
   }

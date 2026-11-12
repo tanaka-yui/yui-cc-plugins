@@ -996,6 +996,11 @@ to resolve its own remote in a three-remote repository pushed to a personal fork
 the pull request inside that fork, where the issue does not exist, so its `Closes` line did
 nothing and the fork's pull request was accepted as proof of completion.
 
+**Once the pull request is merged, run the same command again.** It opens nothing a second time:
+it asks GitHub for the recorded pull request, and records the task as merged only when GitHub says
+`MERGED` and the pull request carried every commit of the task's branch. Until then Step 5 offers
+nothing for that task, and its plan names this command with the real values.
+
 ## Step 5: Give the user the exact cleanup commands
 
 **This step removes nothing.** It decides what may go and prints the commands with real
@@ -1186,7 +1191,7 @@ State these when they apply. Do not work around them silently.
 | Review pauses every five rounds | When round 5 (then 10, 15, ...) comes back needs_work, the role being reviewed asks a person, where `ask_via` says, whether to add up to five more rounds. An `--issue` run has nobody to ask and stops at round 5. When the answer is no, or an `--issue` run stops, the role records the unresolved findings in `result.md` and keeps the best version it has. Read that section before integrating |
 | The account each agent signs in as cannot be chosen | Orca's CLI has only `account add` and `account list`; nothing selects the active account. Switch it in the Orca app, and read the current one with `$ORCA_BIN account list --json` |
 | Setup hooks do not run unless you ask for them | Set `setup` to `run`. A worktree whose setup failed never gets a worker, so a failure shows up as a refusal to start rather than as a confusing result |
-| A pull request is opened, never merged or reviewed by this skill | Review and merge it yourself. The issue closes when the pull request merges, not when the run ends |
+| A pull request is opened, never merged or reviewed by this skill | Review and merge it yourself. The issue closes when the pull request merges, not when the run ends. Then run Step 4's `orca-pr.ts` command again so that Step 5 can offer the cleanup |
 | A reviewer's verdict can be refused delivery, leaving the work unreviewed | Measured 2026-09-12 in two runs out of three: the reviewee stopped waiting and settled, so its dispatch no longer accepted the verdict and `orca-send.ts` reported it undelivered. The findings file stays on disk, which is why neither the wait nor Step 4 counts that file as a review — both read `sent.json` for the delivery. The wait says `accepted UNREVIEWED`, and Step 4 refuses to merge until you pass `--allow-unreviewed` |
 | Nothing restarts the wait, and nothing announces that it stopped | It is resident for up to 24 hours, so the host may stop it — measured twice when a worker's own tests exhausted the machine's memory. Read `wait.json` (Step 3), or run `orca-recover.ts`, which says so before deciding anything. Restarting is always safe; detaching it with `setsid` keeps it alive but sends its exit codes nowhere |
 | A new worktree is not cut from the parent checkout's current HEAD | `worktree create` takes no base, so Orca chooses one: measured 2026-09-12, a worktree created after an earlier task had been merged still started from the pre-merge base, and building there means working without changes that are already in. Step 2 fast-forwards a worktree **it created** to the parent's HEAD and says so, and refuses to start at all when the two histories are unrelated. A reused worktree is left alone, because moving it could undo work in progress |

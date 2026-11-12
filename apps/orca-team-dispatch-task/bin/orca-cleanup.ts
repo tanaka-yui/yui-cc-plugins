@@ -242,7 +242,18 @@ const planSuperseded = (role: string, record: Json, listed: Json[], sink: Sink):
 // ★ **手で直した merge が記録されていないだけなら、その記録の仕方を言う。**orca-merge.ts が衝突で止まったあと親が手で
 //   merge しても、integration-result.json は merged:false のままで、ここは何も offer しない（3.10.13、logi-app）。
 //   ここで merged とみなさない — record を消す根拠は orca-merge.ts の記録だけにし、祖先かどうかは案内にだけ使う
+// ★ **pr の dispatch には orca-pr.ts の再実行を案内する。**orca-merge.ts は pr の dispatch を拒む（3.10.17 の案内は
+//   そのコマンドを示していた）。squash のマージではブランチが base の祖先にならないので、祖先かどうかで案内を絞らない。
+//   ここで gh に訊かない — マージの判定は orca-pr.ts の記録だけにする
 const mergedByHand = (dir: string, workers: JsonObject): string => {
+  const result = readJson(join(dir, 'integration-result.json'))
+  const prUrl = asString(get(result, 'pr_url')) ?? ''
+  if (workers.integration === 'pr' || prUrl !== '') {
+    const prRepo = asString(get(result, 'repo')) ?? ''
+    if (prUrl === '' || prRepo === '') return ''
+    const pr = join(dirname(fileURLToPath(import.meta.url)), 'orca-pr.ts')
+    return `once the pull request ${prUrl} is merged, record it with: node ${pr} --status-dir ${dir} --repo ${prRepo}`
+  }
   const role = asString(workers.integration_role) ?? ''
   const branch = asString(get(workers, 'roles', role, 'branch')) ?? ''
   const base = asString(workers.integration_branch) ?? ''

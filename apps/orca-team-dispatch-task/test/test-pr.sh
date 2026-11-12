@@ -211,4 +211,59 @@ pr --repo o/r >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 ]] && ghlog | grep -q 'pr create' \
   && ok "PR16 pr の dispatch は PR を作る" || fail "PR16 (rc=$rc)"; teardown
 
+# PR17-PR21: ★ **PR がマージされたら、再実行で取り込みを記録する。**記録しないと片付けが worktree も record も
+#   offer しない（3.10.17、slack-issue-intake。案内の orca-merge.ts は pr を拒んだ）。証拠は GitHub の MERGED と、
+#   PR の head がローカルのブランチの先端を含むこと。**確かめられなければ記録に触らない**（pr_url を消さない）
+opened() { setup; pr --repo o/r >/dev/null 2>&1; : > "$GH_STUB_DIR/calls.log"; }
+view() { printf '{"state":"%s","headRefOid":"%s"}\n' "$1" "$2" > "$GH_STUB_DIR/pr_view"; }
+tip() { git -C "$R" rev-parse refs/heads/work; }
+
+# PR17: MERGED で head がブランチの先端なら merged:true を記録し、URL も PR の記録も保つ
+opened; view MERGED "$(tip)"
+out=$(pr --repo o/r 2>/dev/null); rc=$?
+res=$(cat "$SD/integration-result.json")
+[[ "$rc" -eq 0 && "$out" == 'https://github.com/o/r/pull/1' ]] \
+  && [[ "$(jq -r '[.merged, .integration, .pr_url, .branch, .base, .repo] | join(" ")' <<<"$res")" \
+        == 'true pr https://github.com/o/r/pull/1 work main o/r' ]] \
+  && grep -qF -- 'pr view --repo o/r --json state\,headRefOid https' <(ghlog) && ! grep -q 'pr create' <(ghlog) \
+  && ok "PR17 マージ済みの PR を merged と記録する" || fail "PR17 (rc=$rc out=$out res=$res) $(ghlog)"
+teardown
+
+# PR18: OPEN / CLOSED なら merged:false のまま、URL を返して成功（PR はある）
+bad=""
+for st in OPEN CLOSED; do
+  opened; view "$st" "$(tip)"
+  out=$(pr --repo o/r 2>&1 >/dev/null); rc=$?
+  [[ "$rc" -eq 0 && "$(jq -r '.merged' "$SD/integration-result.json")" == false \
+     && "$(jq -r '.pr_url' "$SD/integration-result.json")" == 'https://github.com/o/r/pull/1' \
+     && "$out" == *"is $st, not merged"* ]] || bad="$bad [$st rc=$rc]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "PR18 マージされていない PR は記録を変えない" || fail "PR18:$bad"
+
+# PR19: gh が状態を返さなければ記録に触らない（stop で pr_url を消さない）
+opened; printf '1\n' > "$GH_STUB_DIR/pr_view.rc"; before=$(cat "$SD/integration-result.json")
+out=$(pr --repo o/r 2>&1 >/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$(cat "$SD/integration-result.json")" == "$before" && "$out" == *'could not read the state'* ]] \
+  && ok "PR19 状態を読めなければ記録に触らない" || fail "PR19 (rc=$rc out=$out)"
+teardown
+
+# PR20: ★ PR に載らなかったコミットがブランチにあれば記録しない（squash でも効くよう、祖先ではなく PR の head と比べる）
+opened; head=$(tip)
+git -C "$WTW" -c user.email=t@e -c user.name=t commit -q --allow-empty -m "after the PR"
+view MERGED "$head"
+out=$(pr --repo o/r 2>&1 >/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$(jq -r '.merged' "$SD/integration-result.json")" == false \
+   && "$out" == *'has commits the pull request did not carry'* ]] \
+  && ok "PR20 PR に載らないコミットがあれば merged と記録しない" || fail "PR20 (rc=$rc out=$out)"
+teardown
+
+# PR21: 記録した repo と違う --repo では記録しない（PR の在る repo にしか訊かない）
+opened; view MERGED "$(tip)"
+out=$(pr --repo o/other 2>&1 >/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$(jq -r '.merged' "$SD/integration-result.json")" == false \
+   && "$out" == *'was opened on o/r, not o/other'* ]] && ! grep -q 'pr view' <(ghlog) \
+  && ok "PR21 別の repo を渡されたら記録しない" || fail "PR21 (rc=$rc out=$out)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

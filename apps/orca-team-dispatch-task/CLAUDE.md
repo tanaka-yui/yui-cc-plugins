@@ -72,6 +72,12 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   offer しなかった。`orca-merge.ts` はブランチが親ブランチの祖先なら merge を打たずに merged:true を記録し、衝突の
   案内でこの手順を言う。plan は祖先かどうかで merged とみなさない（record を消す根拠は orca-merge.ts の記録だけ）が、
   祖先なら記録のコマンドを理由に添える。回帰は `test-merge.sh` の MG23-25 と `test-cleanup.sh` の CL15c
+- **PR がマージされたら、`orca-pr.ts` をもう一度走らせて記録する。**3.10.17 の yui-cc-plugins（slack-issue-intake）で、
+  マージ済みの PR のタスクが merged:false のまま残り、plan の案内した `orca-merge.ts` は pr の dispatch を拒んだ。
+  `orca-pr.ts` は記録済みの PR を `gh pr view` で訊き、`MERGED` かつ PR の head がローカルのブランチの先端を含むときだけ
+  merged:true を記録する（squash / rebase ではブランチが base の祖先にならないので、祖先判定は使わない）。確かめられない
+  ときは記録に触らない（`stop` は pr_url を消すので使わない）。plan は gh に訊かず、pr の dispatch には祖先かどうかに
+  関わらず `orca-pr.ts --repo <記録した repo>` を理由に添える。回帰は `test-pr.sh` の PR17-21 と `test-cleanup.sh` の CL15d
 - **親の `orchestration check` には必ず `--run <run.json の run_id>` を付ける**（orca-wait.ts の 4 箇所と orca-state.ts の
   mailbox）。`--run` の無い check は親端末の「bound Run」= その端末が最後に作った Run を返す。2026-11-04 の
   freelance-jp-app で、同じ親端末から 2 つ目の Run を起動すると、1 つ目の待機が 2 つ目の Run の merge_ready を読んで
