@@ -2,6 +2,7 @@ import {
   confirmInflightDead,
   DRIVEN_STATES,
   forgetRun,
+  getMeta,
   getSubmission,
   listByStates,
   registerRun,
@@ -21,6 +22,7 @@ import {
   ERROR_STATE_CHANGED,
   MAX_ACTION_ATTEMPTS,
   MAX_TITLE_CHARS,
+  META_LABELS_HASH,
   MSG_CREATED,
   MSG_CREATED_TIMEOUT,
   MSG_FAILED,
@@ -30,7 +32,7 @@ import {
   TITLE_ELLIPSIS,
 } from './defaults.ts'
 import { writeAtomic } from './fs.ts'
-import { createIssue, findIssueByMarker } from './github.ts'
+import { createIssue, findIssueByMarker, labelsHash } from './github.ts'
 import { buildIssueBody, issueLabels, issueMarker, neutralizeMentions } from './issue-body.ts'
 import { asString, get, parseJson } from './json.ts'
 import { renewLease } from './lease.ts'
@@ -145,7 +147,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
               ? title.slice(0, MAX_TITLE_CHARS - 1).join('') + TITLE_ELLIPSIS
               : title.join(''),
           bodyFile: file,
-          labels: issueLabels(s.fields),
+          labels: issueLabels(s.fields, getMeta(rt.db, META_LABELS_HASH) === labelsHash()),
         },
         ctx.deadline,
         (child) => setInflightChild(rt.db, s.id, process.pid, child),

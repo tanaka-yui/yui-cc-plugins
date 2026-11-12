@@ -15,6 +15,7 @@ import {
   FORM_META_TRIGGER_ID,
   formMetaKey,
   LABEL_WRITE_PERMISSIONS,
+  META_LABELS_HASH,
   MSG_CONFIG_BROKEN,
   MSG_PUSH_REQUIRED,
   NODE_MIN_VERSION,
@@ -24,7 +25,7 @@ import {
   SLACK_APP_NAME,
 } from '../defaults.ts'
 import { featureSteps, formTitles } from '../form.ts'
-import { createGh, findGhPath, ghAuthOk, repoInfo } from '../github.ts'
+import { createGh, findGhPath, ghAuthOk, labelsHash, repoInfo } from '../github.ts'
 import { runOrca } from '../orca.ts'
 import { homePaths, intakeHome, pluginRoot } from '../paths.ts'
 import { inheritedGrants, permissionStatus } from '../permissions.ts'
@@ -343,7 +344,9 @@ const wizard = async (): Promise<number> => {
     )
     const every = pickEvery(p, existing.everyMinutes)
     if (!every.ok) return every.code
-    if (every.value === existing.everyMinutes) heading(5, SETUP_TEXT.stepInit, true)
+    // プラグインの更新でラベルが増えたときは、間隔が同じでも init でラベルを作り直す
+    const labelsCurrent = readMeta(paths.db, META_LABELS_HASH) === labelsHash()
+    if (every.value === existing.everyMinutes && labelsCurrent) heading(5, SETUP_TEXT.stepInit, true)
     else {
       heading(5, SETUP_TEXT.stepInit)
       const code = await reinit(p, ready.ghPath, existing.repo, ['--every', String(every.value)])

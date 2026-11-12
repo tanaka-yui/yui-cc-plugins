@@ -186,6 +186,21 @@ export const FORM_KINDS: readonly FormKind[] = [
   },
 ]
 export const SOURCE_LABEL = 'from-slack'
+// ステータスラベル（orca-team-dispatch-task と共通。spec 5.1）。並びは、2 つ以上付いているときに使う優先順。
+// slug は Issue のコメントのマーカー（<!-- orca-auto:<slug>:<generation>:<event> -->）に書く形
+export const STATUS_LABELS: ReadonlyArray<{ name: string; slug: string; color: string; description: string }> = [
+  { name: 'Done', slug: 'done', color: '0e8a16', description: '完了' },
+  { name: 'Failed', slug: 'failed', color: 'b60205', description: 'AI が失敗した' },
+  { name: 'In review', slug: 'in-review', color: 'fbca04', description: 'PR を出して人の判断待ち' },
+  { name: 'Ready_Eng', slug: 'ready-eng', color: '5319e7', description: 'エンジニアが対応する' },
+  { name: 'In progress', slug: 'in-progress', color: '1d76db', description: 'AI が実装中' },
+  { name: 'Pending', slug: 'pending', color: 'c2e0c6', description: '後回し' },
+  { name: 'Ready', slug: 'ready', color: '0e8a16', description: 'やる。AI が拾う対象' },
+  { name: 'Backlog', slug: 'backlog', color: 'ededed', description: '起票直後。人の判断待ち' },
+]
+export const STATUS_BACKLOG = 'Backlog'
+// init がラベルを確かめたときの、ラベル名の一覧の指紋。今と一致するときだけ起票に Backlog を付ける
+export const META_LABELS_HASH = 'labels_hash'
 export const LABEL_SPECS: ReadonlyArray<{ name: string; color: string; description: string }> = [
   { name: 'bug', color: 'd73a4a', description: '不具合（Slack のフォームから）' },
   { name: 'feature', color: 'a2eeef', description: '新機能（Slack のフォームから）' },
@@ -195,6 +210,7 @@ export const LABEL_SPECS: ReadonlyArray<{ name: string; color: string; descripti
   { name: 'priority: middle', color: 'fbca04', description: '優先度 middle' },
   { name: 'priority: low', color: '0e8a16', description: '優先度 low' },
   { name: 'from-slack', color: '4a154b', description: 'slack-issue-intake が Slack の投稿から作った Issue' },
+  ...STATUS_LABELS.map(({ name, color, description }) => ({ name, color, description })),
 ]
 export const MAX_TITLE_CHARS = 256
 export const TITLE_ELLIPSIS = '…'

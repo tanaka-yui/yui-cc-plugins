@@ -70,12 +70,18 @@ test('IB3–IB7 本文とラベルの構造を保ち、全体を上限内にす�
   assert.ok(long.includes('## 未確認事項'))
   assert.ok(lastLineIsMarker(long, issueMarker(CHANNEL, s.ts)))
   assert.ok(!lastLineIsMarker(`x\n${issueMarker(CHANNEL, '2')}\nother`, issueMarker(CHANNEL, '2')))
-  assert.deepEqual(issueLabels({ ...p.fields, category: '新機能', priority: 'low' }), [
+  assert.deepEqual(issueLabels({ ...p.fields, category: '新機能', priority: 'low' }, false), [
     'feature',
     'priority: low',
     'from-slack',
   ])
   db.close()
+})
+test('IB10 issueLabels は withStatus のときだけ Backlog を足す', () => {
+  const p = parseSubmission(templateText(), null)
+  assert.ok(p.kind === 'ok')
+  assert.deepEqual(issueLabels(p.fields, true), ['bug', 'priority: high', 'from-slack', 'Backlog'])
+  assert.deepEqual(issueLabels(p.fields, false), ['bug', 'priority: high', 'from-slack'])
 })
 test('IB8 長い添付リンクが多数あっても本文全体の上限と最終マーカーを保つ', () => {
   const db = openDb(join(tempHome(), 'db'))

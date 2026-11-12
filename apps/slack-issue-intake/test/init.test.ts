@@ -1,5 +1,7 @@
 import { loadConfig, saveConfig } from '../lib/config.ts'
 import { getMeta, openDb } from '../lib/db.ts'
+import { LABEL_SPECS, META_LABELS_HASH } from '../lib/defaults.ts'
+import { labelsHash } from '../lib/github.ts'
 import { acquireLease, readLease } from '../lib/lease.ts'
 import { homePaths } from '../lib/paths.ts'
 import { saveToken } from '../lib/secrets.ts'
@@ -54,7 +56,7 @@ test('IN1 dry-runは通信も書き込みもせずargvだけを表示', () => {
   assert.match(r.stdout.split('\n')[1] ?? '', /orca: automations create .*--disabled.*--precheck/)
   assert.deepEqual(readdirSync(home), [])
 })
-test('IN2/IN3 初回は無効登録と受付境界を作り、再実行で境界・有効状態を保つ', async (t) => {
+test('IN2/IN3/IN13 初回は無効登録と受付境界とラベルの指紋を作り、再実行で境界・有効状態を保つ', async (t) => {
   const f = await setup(t)
   const r = await f.init([], { FAKE_GH_LABELS: 'bug' })
   assert.equal(r.code, 0, r.stderr)
@@ -69,8 +71,12 @@ test('IN2/IN3 初回は無効登録と受付境界を作り、再実行で境界
   assert.equal(getMeta(db, 'accept_after_ts'), `${NOW_SEC}.000000`)
   assert.equal(getMeta(db, 'cursor_ts'), `${NOW_SEC}.000000`)
   assert.equal(readLease(db), null)
+  assert.equal(getMeta(db, META_LABELS_HASH), labelsHash())
   db.close()
-  assert.equal(ghCalls(f.gh.log).filter((c) => c.argv.slice(0, 2).join(' ') === 'label create').length, 7)
+  assert.equal(
+    ghCalls(f.gh.log).filter((c) => c.argv.slice(0, 2).join(' ') === 'label create').length,
+    LABEL_SPECS.length - 1,
+  )
   assert.ok(orcaCalls(f.orca.log)[1]?.includes('--disabled'))
   const again = await f.init(['--every', '10'])
   assert.equal(again.code, 0, again.stderr)

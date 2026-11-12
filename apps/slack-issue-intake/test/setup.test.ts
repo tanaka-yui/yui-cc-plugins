@@ -1,6 +1,6 @@
 import { loadConfig } from '../lib/config.ts'
 import { openDb, setMeta } from '../lib/db.ts'
-import { FORM_META_TRIGGER_ID } from '../lib/defaults.ts'
+import { FORM_META_TRIGGER_ID, META_LABELS_HASH, SETUP_STEPS } from '../lib/defaults.ts'
 import { asObject, get } from '../lib/json.ts'
 import { homePaths } from '../lib/paths.ts'
 import { permissionStatus } from '../lib/permissions.ts'
@@ -11,6 +11,7 @@ import {
   fakeGh,
   fakeOrca,
   fakeSlackCli,
+  ghCalls,
   orcaCalls,
   runCliAsync,
   slackCliCalls,
@@ -83,6 +84,7 @@ const fixture = async (
   return {
     home,
     claudeHome,
+    gh,
     orca,
     cli,
     calls,
@@ -375,6 +377,25 @@ test('SU21 設定があれば今の設定を見せて間隔だけ聞き直し、
   const edit = orcaCalls(f.orca.log).find((c) => c[1] === 'edit' && c.includes('--trigger'))
   assert.equal(edit?.[edit.indexOf('--trigger') + 1], '*/10 * * * *')
   assert.equal(loadConfig(f.home)?.channel, 'C0TARGET01')
+})
+
+test('SU24 labels_hash が今と違えば、間隔が同じでも 5 段で init をやり直す', async (t) => {
+  const f = await fixture(t)
+  assert.equal((await f.setup(FULL_INPUT)).code, 0)
+  const db = openDb(homePaths(f.home).db)
+  setMeta(db, META_LABELS_HASH, 'old')
+  db.close()
+  const before = ghCalls(f.gh.log).length
+  const r = await f.setup('\n')
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, new RegExp(`\\[5/${SETUP_STEPS}\\] [^\\n]*init[^\\n…]*\\n`))
+  assert.ok(
+    ghCalls(f.gh.log)
+      .slice(before)
+      .some((c) => c.argv.slice(0, 2).join(' ') === 'label list'),
+  )
+  const again = await f.setup('\n')
+  assert.match(again.stdout, new RegExp(`\\[5/${SETUP_STEPS}\\] [^\\n]*済み`))
 })
 
 test('SU22 ボットで入力欄にボタンを出せなければ、6段目で止めずに進め、最後に管理画面での手順をもう一度示す', async (t) => {

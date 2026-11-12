@@ -16,6 +16,7 @@ import { identityOf } from './process.ts'
 import { maskSecrets } from './secrets.ts'
 
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { accessSync, constants } from 'node:fs'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
 
@@ -127,8 +128,9 @@ export const ensureLabels = async (
   const existing = r.code === 0 ? asArray(parseJson(r.stdout)) : null
   if (!existing)
     return { ok: false, error: r.stderr || 'ラベルの応答が不正です', missing: LABEL_SPECS.map((l) => l.name) }
-  const names = new Set(existing.map((v) => asString(get(v, 'name'))))
-  const missing = LABEL_SPECS.filter((l) => !names.has(l.name))
+  // GitHub のラベル名は大文字小文字を区別しない。backlog があるリポジトリで Backlog を作ろうとすると失敗する
+  const names = new Set(existing.map((v) => asString(get(v, 'name'))?.toLowerCase()))
+  const missing = LABEL_SPECS.filter((l) => !names.has(l.name.toLowerCase()))
   if (missing.length && !canWrite)
     return { ok: false, error: 'ラベルを作成する権限がありません', missing: missing.map((l) => l.name) }
   const created: string[] = []
@@ -147,6 +149,10 @@ export const ensureLabels = async (
   }
   return { ok: true, created }
 }
+export const labelsHash = (): string =>
+  createHash('sha256')
+    .update(LABEL_SPECS.map((l) => l.name).join('\n'))
+    .digest('hex')
 export const createIssue = async (
   gh: Gh,
   repo: string,

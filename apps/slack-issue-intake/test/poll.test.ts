@@ -1,4 +1,6 @@
-import { ALL_STATES, countByState, getMeta, getScan, getSubmission, listByStates, openDb } from '../lib/db.ts'
+import { ALL_STATES, countByState, getMeta, getScan, getSubmission, listByStates, openDb, setMeta } from '../lib/db.ts'
+import { META_LABELS_HASH } from '../lib/defaults.ts'
+import { labelsHash } from '../lib/github.ts'
 import { acquireLease } from '../lib/lease.ts'
 import { homePaths } from '../lib/paths.ts'
 import {
@@ -147,6 +149,33 @@ test('PO6 creatingから同じ回に作成とURL通知', async (t) => {
     f.server.requests.find((r) => r.method === 'chat.postMessage')?.params.text ?? '',
     /Issue を作成しました: https:/,
   )
+})
+test('PO27 labels_hash が今と違えば Backlog を付けずに起票し、一致すれば付ける', async (t) => {
+  const ORIGINAL = 'bug,feature,request,priority: critical,priority: high,priority: middle,priority: low,from-slack'
+  const labelsOf = (log: string) =>
+    (ghCalls(log).find((c) => c.argv[0] === 'issue')?.argv ?? []).flatMap((a, i, all) =>
+      a === '--label' ? [all[i + 1]] : [],
+    )
+  const seed = {
+    ts: tsAt(1000),
+    state: 'creating' as const,
+    decision: content,
+    createStartedAt: NOW,
+    createLogin: 'intake-bot',
+  }
+  const old = await fixture(t)
+  const a = await seedSubmission(old.home, seed)
+  assert.equal((await old.poll(NOW, [], { FAKE_GH_KNOWN_LABELS: ORIGINAL })).code, 1)
+  assert.equal(old.read(a)?.state, 'created')
+  assert.ok(!labelsOf(old.gh.log).includes('Backlog'))
+  const updated = await fixture(t)
+  const db = openDb(homePaths(updated.home).db)
+  setMeta(db, META_LABELS_HASH, labelsHash())
+  db.close()
+  const b = await seedSubmission(updated.home, seed)
+  assert.equal((await updated.poll()).code, 1)
+  assert.equal(updated.read(b)?.state, 'created')
+  assert.ok(labelsOf(updated.gh.log).includes('Backlog'))
 })
 test('PO7/PO23 応答喪失は死活確認から90秒待ち、アカウント復帰後に既存Issueを採用', async (t) => {
   const f = await fixture(t)

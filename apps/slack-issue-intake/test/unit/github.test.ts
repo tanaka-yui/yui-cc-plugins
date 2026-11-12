@@ -1,4 +1,13 @@
-import { createGh, createIssue, ensureLabels, findIssueByMarker, repoInfo, viewerLogin } from '../../lib/github.ts'
+import { LABEL_SPECS, STATUS_LABELS } from '../../lib/defaults.ts'
+import {
+  createGh,
+  createIssue,
+  ensureLabels,
+  findIssueByMarker,
+  labelsHash,
+  repoInfo,
+  viewerLogin,
+} from '../../lib/github.ts'
 import { isAlive, selfIdentity } from '../../lib/process.ts'
 import { fakeGh, ghCalls, seedIssues, startIdleProcess, tempHome } from '../helpers.ts'
 
@@ -99,11 +108,41 @@ test('GH4 無いラベルだけ作り、権限が無ければ作らない', asyn
   process.env.FAKE_GH_LABELS = 'bug'
   const gh = createGh(fake.ghPath)
   const a = await ensureLabels(gh, 'acme/app', false, D())
-  assert.ok(!a.ok && a.missing.length === 7)
+  assert.ok(!a.ok && a.missing.length === LABEL_SPECS.length - 1)
   assert.equal(ghCalls(fake.log).length, 1)
   const b = await ensureLabels(gh, 'acme/app', true, D())
   delete process.env.FAKE_GH_LABELS
-  assert.ok(b.ok && b.created.length === 7)
+  assert.ok(b.ok && b.created.length === LABEL_SPECS.length - 1)
+})
+test('GH11 ensureLabels は既存のラベル名を大文字小文字を区別せずに比べ、ステータスラベル8つを作る', async () => {
+  const fake = fakeGh(tempHome())
+  Object.assign(process.env, fake.env)
+  process.env.FAKE_GH_LABELS = [
+    'backlog',
+    'bug',
+    'feature',
+    'request',
+    'priority: critical',
+    'priority: high',
+    'priority: middle',
+    'priority: low',
+    'from-slack',
+  ].join(',')
+  const r = await ensureLabels(createGh(fake.ghPath), 'acme/app', true, D())
+  delete process.env.FAKE_GH_LABELS
+  assert.ok(r.ok)
+  const created = ghCalls(fake.log)
+    .filter((c) => c.argv.slice(0, 2).join(' ') === 'label create')
+    .map((c) => c.argv[2])
+  assert.deepEqual(
+    created.sort(),
+    ['Done', 'Failed', 'In progress', 'In review', 'Pending', 'Ready', 'Ready_Eng'].sort(),
+  )
+  assert.deepEqual(
+    STATUS_LABELS.map((l) => l.name),
+    ['Done', 'Failed', 'In review', 'Ready_Eng', 'In progress', 'Pending', 'Ready', 'Backlog'],
+  )
+  assert.match(labelsHash(), /^[0-9a-f]{64}$/)
 })
 test('GH6/GH7 期限切れと拒否ゲートは送信せず、遅い子は停止', async () => {
   const fake = fakeGh(tempHome())

@@ -54,6 +54,9 @@ else if (cmd === 'label create') {
   if (process.env.FAKE_GH_LABEL_CREATE === 'fail') fail()
 } else if (cmd === 'issue create') {
   if (process.env.FAKE_GH_CREATE === 'fail') fail()
+  // 本物の gh は、リポジトリに無いラベルを付けると作成に失敗する（名前は大文字小文字を区別しない）
+  const known = process.env.FAKE_GH_KNOWN_LABELS?.split(',').map((l) => l.toLowerCase())
+  if (known && args.some((a, i) => a === '--label' && !known.includes((args[i + 1] ?? '').toLowerCase()))) fail()
   const all = issues()
   const number = all.length
     ? Math.max(...all.map((i) => Number(i.number))) + 1

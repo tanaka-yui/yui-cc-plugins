@@ -14,6 +14,7 @@ import {
   PRIORITY_LABEL_PREFIX,
   SLACK_REPORTER_SUFFIX,
   SOURCE_LABEL,
+  STATUS_BACKLOG,
   SUMMARY_MAX_CHARS,
   THREAD_MAX_CHARS,
   TITLE_IN_BODY_MAX_CHARS,
@@ -38,10 +39,12 @@ export const truncate = (text: string, max: number): string =>
     : max < TRUNCATED_NOTE.length
       ? text.slice(0, Math.max(0, max))
       : text.slice(0, max - TRUNCATED_NOTE.length) + TRUNCATED_NOTE
-export const issueLabels = (fields: SubmissionFields): string[] => [
+// withStatus はステータスラベルがリポジトリにあると確かめたときだけ true にする（無いラベルを付けると作成に失敗する）
+export const issueLabels = (fields: SubmissionFields, withStatus: boolean): string[] => [
   CATEGORY_KEYS[fields.category],
   PRIORITY_LABEL_PREFIX + fields.priority,
   SOURCE_LABEL,
+  ...(withStatus ? [STATUS_BACKLOG] : []),
 ]
 export const lastLineIsMarker = (body: string, marker: string): boolean =>
   body

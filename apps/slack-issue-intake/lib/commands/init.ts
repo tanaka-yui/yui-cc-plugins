@@ -9,6 +9,7 @@ import {
   DEFAULT_EVERY_MINUTES,
   LABEL_WRITE_PERMISSIONS,
   LAUNCHER_FILE_MODE,
+  META_LABELS_HASH,
   MSG_CONFIG_BROKEN,
   MSG_CONFIG_CHANGED,
   MSG_PUSH_REQUIRED,
@@ -16,7 +17,7 @@ import {
   SLACK_APP_NAME,
 } from '../defaults.ts'
 import { ensurePrivateDir } from '../fs.ts'
-import { createGh, ensureLabels, findGhPath, ghAuthOk, repoInfo, viewerLogin } from '../github.ts'
+import { createGh, ensureLabels, findGhPath, ghAuthOk, labelsHash, repoInfo, viewerLogin } from '../github.ts'
 import { asArray, asString, get } from '../json.ts'
 import { acquireLease, releaseLease, renewLease } from '../lease.ts'
 import { orcaArgv, runOrca } from '../orca.ts'
@@ -193,6 +194,7 @@ export const run = async (argv: string[]): Promise<void> => {
     )
     if (!labels.ok) throw new Error(`${labels.error} ${labels.missing.join(',')}`)
     guard()
+    setMeta(db, META_LABELS_HASH, labelsHash())
     config.slack = {
       teamId: auth.info.teamId,
       teamUrl: auth.info.teamUrl,
