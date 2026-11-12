@@ -38,8 +38,8 @@ Slack CLI の呼び先の差し替えは SLACK_ISSUE_INTAKE_SLACK_CLI（テス�
 poll は取り込み（sync）のあと、残りが STATUS_MIN_REMAINING_MS（10秒）以上あるときだけ lib/status-sync.ts の statusSync を呼びます。失敗は errors と partial に足すだけで、終了コードと agent_work は変えません（Claude を起こさない）。致命エラーやリース喪失のあとは呼びません。
 ステータスラベル8つ（STATUS_LABELS、orca-team-dispatch-task と共通。並びは2つ付いたときの優先順）は LABEL_SPECS に入り、init が作ります。init はラベル名の指紋を meta labels_hash に残し、起票は指紋が今と一致するときだけ Backlog を付けます（無いラベルを付けると gh issue create が失敗するため。更新直後で setup 前の poll を守る）。setup の5段は指紋が違えば init をやり直します。ensureLabels は名前を大文字小文字を区別せずに比べます。
 前回の状態は表 issue_status（submissions の created は書き換えないので別の表）に持ちます。起票とマーカーでの採用は transitionWithStatus で同じトランザクションに最初の行を入れます。行の無い Issue（前からあるもの）は、初めて見たときに記録だけします。一覧は sort=updated の昇順で読み、処理し終えた Issue まで meta status_cursor を進めます（次の回は60秒戻して since に使う）。コメントは行の seenUpdatedAt を since にして読み、lastCommentId より大きい id だけを見ます。
-AI が変えたとみなすのは、新しいコメントのうち信じられる書き手（OWNER / MEMBER / COLLABORATOR か config の github.login）の最新のマーカーが、今のラベルの slug と一致するときだけです。文言とメンションの有無は STATUS_EVENTS（event ごと）。コメントは HTML コメントの行を除き、maskSecrets と escapeMrkdwn を通し、太字とリンクだけを Slack の形にして3000字で切ります。マーカーの形と event の名前は部分 C との約束で、例は test/fixtures/orca-auto-comments.json です（C は同じファイルを写して使う）。
-Slack に書いたあとでフェンス付きで行を保存します。thread_not_found なら諦めて記録を進め、ほかの失敗は STATUS_MAX_ATTEMPTS（5）回まで、その Issue で止めて次の回にやり直します。
+AI が変えたとみなすのは、新しいコメントのうち信じられる書き手（OWNER / MEMBER / COLLABORATOR か config の github.login）の最新のマーカーが、今のラベルの slug と一致するときだけです。部分 C はコメントを先に書いてからラベルを動かす約束（spec 5.4）なので、ラベルが変わらず最新のマーカーが合わない回は、行を保存せず（seenUpdatedAt を進めず）次の回に同じコメントを読み直します。完了（Done か閉じた）は、前回すでに完了だったときは書きません。文言とメンションの有無は STATUS_EVENTS（event ごと）。コメントは HTML コメントの行を除き、maskSecrets と escapeMrkdwn を通し、太字とリンクだけを Slack の形にして3000字で切ります。マーカーの形と event の名前は部分 C との約束で、例は test/fixtures/orca-auto-comments.json です（C は同じファイルを写して使う）。
+statusSync の例外は poll が errors に入れ、結果の行と終了コードは変えません。Slack に書いたあとでフェンス付きで行を保存します。thread_not_found なら諦めて記録を進め、ほかの失敗は STATUS_MAX_ATTEMPTS（5）回まで、その Issue で止めて次の回にやり直します。
 メンション先は config.mention（0.3 の config には無いので asked:false として読む）。書くのは mention サブコマンドだけで、init は base.mention を引き継ぎます。usergroups.list（usergroups:read）は mention でだけ呼び、poll では呼びません（poll では missing_scope が致命エラーになるため）。
 
 ## 試験と秘密

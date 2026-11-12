@@ -75,9 +75,10 @@ export const renderStatusMessage = (change: StatusChange, issueUrl: string, ment
     return (event.mention ? mention : '') + text
   }
   if (!changed) return null
-  if ((to.state === 'closed' && from.state !== 'closed') || (to.status === DONE && from.status !== DONE))
-    return fill(MSG_STATUS_DONE, { issue: issueUrl })
   const name = to.status ?? MSG_STATUS_NONE
   if (from.state === 'closed' && to.state === 'open') return fill(MSG_STATUS_REOPENED, { to: name, issue: issueUrl })
+  // Done を付けるのと閉じるのが別の回に分かれても、完了は最初の 1 回だけ書く
+  const finished = (v: { status: string | null; state: string }): boolean => v.status === DONE || v.state === 'closed'
+  if (finished(to)) return finished(from) ? null : fill(MSG_STATUS_DONE, { issue: issueUrl })
   return fill(MSG_STATUS_CHANGED, { from: from.status ?? MSG_STATUS_NONE, to: name, issue: issueUrl })
 }

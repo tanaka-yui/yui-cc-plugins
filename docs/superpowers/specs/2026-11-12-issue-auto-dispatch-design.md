@@ -177,6 +177,8 @@ orca-team-dispatch-task はラベルを動かすたびに、その理由を Issu
 <!-- orca-auto:<status>:<generation>:<event> -->
 ```
 
+**書く順番**: コメントを先に書き、そのあとでラベルを動かす。slack-issue-intake は、ラベルと合わない最新のマーカーを「ラベルがまだ付いていない」とみなして次の回へ回す。逆の順番だと、間に poll が挟まったときに AI の通知が人の変化として流れる（実装時のレビューで追加）。
+
 `<event>` は、通知の行を見分けるための種類（例: `judged`、`started`、`ai-merged`、`human-merged`、`needs-review`、`partial-merge`、`failed`、`stalled`）。名前の細部は builder が決める。人が PR を merge したのを見て AI が Done にした場合は `human-merged` とし、メンションしない（5.3）。
 
 slack-issue-intake は、ステータスが変わった Issue について、このマーカーのある最新のコメントを読む。マーカーがあれば「AI が変えた」とみなし、コメントの中身（判定理由、PR、AI が決めた点、変更の要約）をスレッドへの書き込みに使う。マーカーが無ければ「人が変えた」とみなす。コメントの本文の書式は builder が決める。ただし、両方のプラグインのテストで同じ例を使って固定する。

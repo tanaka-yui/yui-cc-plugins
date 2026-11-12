@@ -130,3 +130,12 @@ test('IS6 マーカー無しの変化は、閉じた・Done なら完了、そ�
     `Issue が開き直されました（Ready）\n${URL}`,
   )
 })
+test('IS7 Done と閉じるが別の回に分かれても、完了は 1 回だけ書く', () => {
+  const doneOpen = { status: 'Done', state: 'open' }
+  const doneClosed = { status: 'Done', state: 'closed' }
+  assert.equal(renderStatusMessage({ from: doneOpen, to: doneClosed, marker: null }, URL, MENTION), null)
+  assert.equal(
+    renderStatusMessage({ from: { status: 'In review', state: 'closed' }, to: doneClosed, marker: null }, URL, MENTION),
+    null,
+  )
+})

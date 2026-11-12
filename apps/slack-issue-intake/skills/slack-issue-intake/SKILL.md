@@ -153,8 +153,10 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
 - Every poll, after intake and only when at least 10 seconds of its budget remain, reads the `from-slack` issues and
   writes status label and open/closed changes to the original Slack thread without starting Claude. Labels:
   Backlog, Ready, Ready_Eng, In progress, In review, Pending, Done, Failed (shared with orca-team-dispatch-task).
-  A change counts as made by AI only when the latest new comment ends with an `orca-auto` marker, its author is an
-  owner, member, collaborator, or the intake gh account, and the marker status equals the current label; only then
-  is the group mentioned (per event) and the comment relayed. Issues that existed before this feature are recorded
+  A change counts as made by AI only when, among the new comments whose author is an owner, member, collaborator, or
+  the intake gh account, the latest one ending with an `orca-auto` marker has a status equal to the current label;
+  only then is the group mentioned (per event) and the comment relayed. The partner plugin writes the comment before
+  moving the label, so a newer marker that does not match an unchanged label is left for the next poll. Done and
+  closing in separate polls produce one completion message. Issues that existed before this feature are recorded
   silently the first time they are seen. Failures show as `partial=true` without changing the exit code.
 - To stop: `orca automations edit <id> --disabled`.

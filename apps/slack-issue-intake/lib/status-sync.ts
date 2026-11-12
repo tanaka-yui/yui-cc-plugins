@@ -134,8 +134,12 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
       })
       .at(-1)
     // マーカーは、今のステータスラベルと一致するときだけ「AI が変えた」とみなす
-    const marker =
-      latest && latest.marker.slug === statusSlug(to.status) ? { event: latest.marker.event, body: latest.body } : null
+    const matches = latest?.marker.slug === statusSlug(to.status)
+    const marker = latest && matches ? { event: latest.marker.event, body: latest.body } : null
+    // orca-team-dispatch-task はコメントを書いてからラベルを動かす。その間に読んだときは（ラベルが変わらず、
+    // 最新のマーカーがまだ合わない）、何も記録せずに次の回へ回す。seenUpdatedAt を進めないので、ラベルが変わった回に
+    // 同じコメントをもう一度読み、AI の変化として知らせる
+    if (latest && !matches && row.status === to.status && row.state === to.state) return true
     const next: IssueStatusRow = {
       issueNumber: issue.number,
       status: to.status,

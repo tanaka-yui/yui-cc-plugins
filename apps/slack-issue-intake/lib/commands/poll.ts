@@ -74,7 +74,7 @@ export const run = async (argv: string[]): Promise<void> => {
       // ステータスの通知は取り込みのあとに、時間が残っているときだけ行う。失敗しても終了コードと agent_work は変えない
       const status =
         !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
-          ? await statusSync(ctx)
+          ? await statusSync(ctx).catch((e: Error) => ({ notified: 0, errors: [String(e?.message ?? e)] }))
           : { notified: 0, errors: [] }
       const errors = [...report.errors, ...status.errors]
       const work = agentWorkCount(rt.db)

@@ -1,6 +1,6 @@
 import { loadConfig, saveConfig } from '../lib/config.ts'
-import { getIssueStatus, openDb } from '../lib/db.ts'
-import { STATUS_MAX_ATTEMPTS } from '../lib/defaults.ts'
+import { getIssueStatus, openDb, setMeta } from '../lib/db.ts'
+import { META_STATUS_CURSOR, STATUS_MAX_ATTEMPTS } from '../lib/defaults.ts'
 import { homePaths } from '../lib/paths.ts'
 import { NOW, templateText, textMessage, tsAt } from './fixtures/slack-messages.ts'
 import {
@@ -250,4 +250,31 @@ test('ST9 残り時間が STATUS_MIN_REMAINING_MS より少なければ、ステ
   const r = await f.poll(['--deadline-ms', '5000'])
   assert.equal(r.code, 1, r.stderr)
   assert.ok(!ghCalls(f.gh.log).some((c) => c.argv.join(' ').includes('sort=updated')))
+})
+test('ST10 コメントが先、ラベルが後でも、間に poll が挟まれば保留し、ラベルが付いた回に AI の通知として書く', async (t) => {
+  const f = await fixture(t)
+  f.mention('S0DEV0001')
+  f.setIssues([issue(42, ['Ready'], 1)])
+  await f.poll()
+  const judged = [comment(10, body('judged'), 3)]
+  // コメントだけ付いた回: ラベルと合わないマーカーは消費しない
+  f.setIssues([issue(42, ['Ready'], 3, { comments: judged })])
+  await f.poll()
+  assert.deepEqual(f.posts(), [])
+  f.setIssues([issue(42, ['Ready_Eng'], 4, { comments: judged })])
+  await f.poll()
+  const [post] = f.posts()
+  assert.ok(post?.text.startsWith(GROUP), post?.text)
+  assert.match(post?.text ?? '', /判定の理由/)
+  assert.equal(f.posts().length, 1)
+})
+test('ST11 ステータスの処理で例外が出ても、poll は結果を出して終了コードを変えない', async (t) => {
+  const f = await fixture(t)
+  f.setIssues([issue(42, ['Ready'], 1)])
+  const db = openDb(homePaths(f.home).db)
+  setMeta(db, META_STATUS_CURSOR, 'broken')
+  db.close()
+  const r = await f.poll()
+  assert.equal(r.code, 1, r.stderr)
+  assert.match(r.stdout, /result=idle .*partial=true notified=0/)
 })
