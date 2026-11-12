@@ -357,3 +357,18 @@ test('SU21 設定があれば今の設定を見せて間隔だけ聞き直し、
   assert.equal(edit?.[edit.indexOf('--trigger') + 1], '*/10 * * * *')
   assert.equal(loadConfig(f.home)?.channel, 'C0TARGET01')
 })
+
+test('SU22 ボットで入力欄にボタンを出せなければ、6段目で止めずに進め、最後に管理画面での手順をもう一度示す', async (t) => {
+  const f = await fixture(t, (r): SlackReply | null =>
+    r.method === 'workflows.featured.add' ? { json: { ok: false, error: 'restricted_action' } } : null,
+  )
+  const r = await f.setup(FULL_INPUT)
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /\[8\/8\]/)
+  const tail = r.stdout.slice(r.stdout.indexOf('[8/8]'))
+  assert.match(tail, /おすすめアプリに追加/)
+  const again = await f.setup('\n')
+  assert.equal(again.code, 0, again.stderr)
+  assert.equal(f.calls('workflows.featured.add').length, 1)
+  assert.match(again.stdout, /おすすめアプリに追加/)
+})

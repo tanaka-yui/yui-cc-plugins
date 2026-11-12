@@ -4,11 +4,13 @@ import {
   FORM_ATTACHMENTS_TITLE,
   FORM_DESCRIPTION,
   FORM_EXTRA_SCOPES,
+  FORM_FEATURE_STEPS,
   FORM_SUBMIT_LABEL,
   FORM_TITLE,
   FORM_WORKFLOW_ID,
   MAX_FILES_PER_MESSAGE,
   PRIORITIES,
+  SLACK_APP_NAME,
   SLACK_BOT_SCOPES,
   SUBMISSION_MARKER,
 } from './defaults.ts'
@@ -110,6 +112,9 @@ export const triggerDefinition = (channel: string): JsonObject => ({
     [INPUT.user]: { value: '{{data.user_id}}' },
   },
 })
+
+export const featureSteps = (): string =>
+  FORM_FEATURE_STEPS.replaceAll('{title}', FORM_TITLE).replaceAll('{app}', SLACK_APP_NAME)
 
 // workflows.featured.add の引数。おすすめにしたワークフローは、チャンネルの入力欄の代わりにボタンとして出る
 // （リンクを関連ページに API で足すと、Slack は外部リンクとして扱いブラウザを開いてしまう）

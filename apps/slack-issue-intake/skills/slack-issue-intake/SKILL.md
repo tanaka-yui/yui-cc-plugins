@@ -74,8 +74,10 @@ cannot complete.
    see the button where the message field would be. It prints `url=`. A rerun reuses the recorded trigger and
    featured state. It needs the Slack CLI project that `make setup` created.
 2. On exit 1, explain the printed reason. A refused trigger means the Slack CLI could not create it for this app;
-   fall back to the Workflow Builder steps from `guide`. If featuring failed, ask the user to open the channel's
-   Workflows tab in Slack and feature the form workflow by hand. Do not suggest adding the link as a channel bookmark;
+   fall back to the Workflow Builder steps from `guide`. If featuring failed, relay the printed steps: in the Slack
+   admin pages in a browser, open the form workflow's app details from the workflow list and add it to the featured
+   apps from the top-right menu; if the button still does not replace the channel's message field, use the channel's
+   Workflows tab to feature the workflow. Do not suggest adding the link as a channel bookmark;
    Slack opens such a bookmark in the browser. Exit 2 means there is no setup, no Slack CLI, or no app made by
    `make setup`.
 3. Form posts from this path are written by the app's own bot, so `inspect` shows `bot=yes` for them.

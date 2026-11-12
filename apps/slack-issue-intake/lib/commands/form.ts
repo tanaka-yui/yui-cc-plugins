@@ -3,15 +3,18 @@ import { getMeta, setMeta } from '../db.ts'
 import {
   ADMIN_LEASE_MS,
   COMMAND_DEADLINE_MS,
+  ERROR_RESTRICTED_ACTION,
+  FORM_FEATURED_MANUAL,
   FORM_META_FEATURED,
   FORM_META_TRIGGER_ID,
   FORM_META_URL,
-  FORM_TITLE,
+  MSG_FORM_FEATURE_BY_HAND,
+  MSG_FORM_FEATURE_FAILED,
   MSG_FORM_NO_APP,
   MSG_FORM_NO_CLI,
   MSG_FORM_REFUSED,
 } from '../defaults.ts'
-import { featuredParams, renderFormManifest } from '../form.ts'
+import { featuredParams, featureSteps, renderFormManifest } from '../form.ts'
 import { acquireLease, releaseLease, renewLease } from '../lease.ts'
 import { intakeHome } from '../paths.ts'
 import { openRuntime } from '../runtime.ts'
@@ -91,16 +94,20 @@ export const run = async (argv: string[]): Promise<void> => {
     guard()
     const permitted = grantTriggerAccess(bin, project, app.teamId, triggerId, channel)
     if (!permitted.ok) throw new Error(`ボタンを使える人を設定できません（${permitted.error}）`)
-    if (getMeta(rt.db, FORM_META_FEATURED) !== triggerId) {
+    let featuredState = getMeta(rt.db, FORM_META_FEATURED)
+    if (featuredState !== triggerId) {
       guard()
       const featured = await rt.slack.call('workflows.featured.add', featuredParams(channel, triggerId), deadline)
-      if (!featured.ok)
-        throw new Error(
-          `ボタンをチャンネルの入力欄に出せません（${reason(featured)}）。Slack でチャンネルの「ワークフロー」タブを開き、「${FORM_TITLE}」をおすすめに設定してください`,
-        )
-      setMeta(rt.db, FORM_META_FEATURED, triggerId)
+      if (featured.ok) featuredState = triggerId
+      else if (featured.error === ERROR_RESTRICTED_ACTION) {
+        // 権限の問題なので再実行しても通らない。画面での手順を示し、setup が先へ進めるよう印を残す
+        console.error(MSG_FORM_FEATURE_BY_HAND.replace('{steps}', featureSteps()))
+        featuredState = FORM_FEATURED_MANUAL
+      } else
+        throw new Error(MSG_FORM_FEATURE_FAILED.replace('{error}', reason(featured)).replace('{steps}', featureSteps()))
+      setMeta(rt.db, FORM_META_FEATURED, featuredState)
     }
-    console.log(`trigger=${triggerId}\nurl=${url}\nchannel=${channel}\nfeatured=${triggerId}`)
+    console.log(`trigger=${triggerId}\nurl=${url}\nchannel=${channel}\nfeatured=${featuredState}`)
   } catch (error) {
     console.error(maskSecrets(error instanceof Error ? error.message : String(error)))
     process.exitCode = 1

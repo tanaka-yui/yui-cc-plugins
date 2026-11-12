@@ -9,6 +9,7 @@ import {
   COMMAND_DEADLINE_MS,
   DEFAULT_EVERY_MINUTES,
   ERROR_MISSING_SCOPE,
+  FORM_FEATURED_MANUAL,
   FORM_META_FEATURED,
   FORM_META_TRIGGER_ID,
   FORM_TITLE,
@@ -21,6 +22,7 @@ import {
   SETUP_TEXT,
   SLACK_APP_NAME,
 } from '../defaults.ts'
+import { featureSteps } from '../form.ts'
 import { createGh, findGhPath, ghAuthOk, repoInfo } from '../github.ts'
 import { runOrca } from '../orca.ts'
 import { homePaths, intakeHome, pluginRoot } from '../paths.ts'
@@ -220,15 +222,17 @@ const pickRepo = async (p: Prompter, ghPath: string): Promise<Picked<RepoChoice>
   return every.ok ? { ok: true, value: { repo, every: every.value, allowPublic } } : every
 }
 
-const formDone = (dbFile: string): boolean => {
-  if (!existsSync(dbFile)) return false
+const readMeta = (dbFile: string, key: string): string | null => {
+  if (!existsSync(dbFile)) return null
   const db = openDb(dbFile)
   try {
-    return Boolean(getMeta(db, FORM_META_TRIGGER_ID) && getMeta(db, FORM_META_FEATURED))
+    return getMeta(db, key)
   } finally {
     db.close()
   }
 }
+const formDone = (dbFile: string): boolean =>
+  Boolean(readMeta(dbFile, FORM_META_TRIGGER_ID) && readMeta(dbFile, FORM_META_FEATURED))
 
 // 7・8段目。permissionStatus で飛ばす段を決め、許可と受け継ぐ許可はどちらも内容を見せて y/N で確かめる
 const approve = (p: Prompter, home: string, accepted: string | null): number => {
@@ -383,6 +387,9 @@ const wizard = async (): Promise<number> => {
   if (!config) return fail(MSG_CONFIG_BROKEN)
   const approved = approve(p, home, config.acceptedPermissions)
   if (approved !== 0) return approved
+  // ボットでは入力欄にボタンを出せなかったときは、6段目の出力が流れているので、画面での手順をもう一度示す
+  if (readMeta(paths.db, FORM_META_FEATURED) === FORM_FEATURED_MANUAL)
+    say(fill(SETUP_TEXT.featureByHand, { steps: featureSteps() }))
   say(fill(SETUP_TEXT.finished, { title: FORM_TITLE }))
   return 0
 }

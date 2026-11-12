@@ -103,6 +103,16 @@ export const FORM_META_TRIGGER_ID = 'form_trigger_id'
 export const FORM_META_URL = 'form_url'
 // おすすめにしたトリガーの ID。前の版が API で足した関連ページ（ブックマーク）はブラウザを開いてしまうので使わない
 export const FORM_META_FEATURED = 'form_featured_trigger_id'
+// ボットに「ワークフローを管理する」権限が無いと workflows.featured.add は restricted_action を返す。
+// そのときは画面で設定してもらう印を残して先へ進む（form の再実行では API をもう一度試す）
+export const ERROR_RESTRICTED_ACTION = 'restricted_action'
+export const FORM_FEATURED_MANUAL = 'manual'
+// 画面でボタンを入力欄に出す手順。ボットのトークンでは workflows.featured.add が通らないことがあるので、form と setup の最後に示す
+export const FORM_FEATURE_STEPS =
+  'ブラウザで Slack の管理画面を開き、ワークフローの一覧から「{title}」（アプリ {app}）の詳細を開いて、右上のメニューから「おすすめアプリに追加」を選んでください。追加したら、チャンネルの入力欄の所にボタン「{title}」が出ることを確かめてください。出ないときは、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で「{title}」を選び、「注目」を押してください'
+export const MSG_FORM_FEATURE_BY_HAND =
+  'ボットにはボタンを入力欄に出す権限がありません（restricted_action）。まだ設定していなければ、画面で設定します: {steps}'
+export const MSG_FORM_FEATURE_FAILED = 'ボタンをチャンネルの入力欄に出せません（{error}）。画面で設定します: {steps}'
 export const MSG_FORM_REFUSED =
   'Slack CLI でフォームのボタンを作れませんでした（{error}）。フォームは README の「Workflow Builder で手で作る」の手順で作ってください'
 export const MSG_FORM_NO_CLI =
@@ -322,6 +332,7 @@ export const SETUP_TEXT = {
   inheritedHeader: '次の許可は、ユーザーや組織の設定から無人の Claude にも受け継がれます:',
   confirmInherited: 'これらの許可を受け継いだまま有効にしますか？',
   noInherited: '権限の設定を読めません。~/.claude/settings.json を確かめてから再実行してください',
+  featureByHand: '入力欄の所のボタンは、画面で設定します（まだなら）: {steps}',
   finished:
     'セットアップが終わりました。チャンネルの入力欄の所に出るボタン「{title}」から1件送り、数分後に node bin/slack-issue-intake.ts inspect --raw で受け付けたことを確かめてください',
 } as const

@@ -147,3 +147,21 @@ test('FO7 プラグインの更新で古くなった hooks.json を、ボタン�
   assert.equal(r.code, 0, r.stderr)
   assert.ok(readFileSync(project.hooks, 'utf8').includes(process.execPath))
 })
+test('FO6 ボットにおすすめにする権限が無ければ、管理画面での手順を示して止めずに終わり、再実行ではもう一度試す', async (t) => {
+  const f = await fixture(t, {
+    handler: (r) =>
+      r.method === 'workflows.featured.add' ? { json: { ok: false, error: 'restricted_action' } } : null,
+  })
+  const r = await f.form()
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stderr, /restricted_action/)
+  assert.match(r.stderr, /おすすめ/)
+  assert.match(r.stderr, /管理画面/)
+  assert.match(r.stderr, /おすすめアプリに追加/)
+  assert.match(r.stdout, /featured=manual/)
+  assert.equal(f.meta(FORM_META_FEATURED), 'manual')
+  const again = await f.form()
+  assert.equal(again.code, 0, again.stderr)
+  assert.equal(f.calls('workflows.featured.add').length, 2)
+  assert.equal(f.cliCalls('trigger create').length, 1)
+})
