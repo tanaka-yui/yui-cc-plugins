@@ -10,13 +10,15 @@ export const runCli = (args: string[], env: Record<string, string>, input?: stri
   const c = spawnSync(process.execPath, [cli, ...args], { env: { ...process.env, ...env }, input, encoding: 'utf8' })
   return { code: c.status ?? -1, stdout: c.stdout, stderr: c.stderr, ms: Date.now() - start }
 }
-export const runCliAsync = (args: string[], env: Record<string, string>): Promise<CliResult> =>
+// input を標準入力へ流し込んで閉じる（省略時は空）。対話の答えを模す。偽の Slack API を同じプロセスで動かすため非同期で待つ
+export const runCliAsync = (args: string[], env: Record<string, string>, input?: string): Promise<CliResult> =>
   new Promise((done) => {
     const start = Date.now()
     const c = spawn(process.execPath, [cli, ...args], {
       env: { ...process.env, ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     })
+    c.stdin.end(input)
     let stdout = ''
     let stderr = ''
     c.stdout.on('data', (b: Buffer) => {

@@ -6,6 +6,7 @@ type Command = { run: (argv: string[]) => Promise<void> | void }
 
 // サブコマンドを足すときはここに 1 行足す
 const COMMANDS: Record<string, () => Promise<Command>> = {
+  setup: () => import('../lib/commands/setup.ts'),
   permissions: () => import('../lib/commands/permissions.ts'),
   enable: () => import('../lib/commands/enable.ts'),
   status: () => import('../lib/commands/status.ts'),

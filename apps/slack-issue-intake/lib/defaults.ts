@@ -250,3 +250,56 @@ export const SLACK_TOKEN_ENV_NAMES: readonly string[] = ['SLACK_BOT_TOKEN', 'SLA
 export const SHORTCUT_URL_PATTERN = /https:\/\/[a-z0-9.-]*slack\.com\/shortcuts\/(Ft[0-9A-Z]+)\/[0-9A-Za-z]+/
 export const SLACK_CLI_PROBE_TIMEOUT_MS = 10_000
 export const SLACK_CLI_TRIGGER_TIMEOUT_MS = 60_000
+
+// セットアップのウィザード（make setup）
+export const SETUP_STEPS = 8
+export const NODE_MIN_VERSION: readonly number[] = [24, 15]
+export const PROMPT_READ_CHUNK = 4096
+export const PROMPT_RETRY_MS = 50
+export const SETUP_TEXT = {
+  stepPrecheck: '事前の確認',
+  stepApp: 'Slack アプリを作ってトークンを登録する',
+  stepChannel: 'チャンネルを決める',
+  stepRepo: 'リポジトリと確認の間隔を決める',
+  stepInit: '設定を保存して automation を登録する（init）',
+  stepForm: 'フォームのボタンを置く（form）',
+  stepPermissions: 'Claude に許す操作を承認する（permissions）',
+  stepEnable: 'automation を有効にする（enable）',
+  done: '済み',
+  noInput: '入力がありません。ターミナルで make setup を実行してください',
+  nodeTooOld: 'Node {min} 以上が必要です（今は {current}）。Node を更新してから再実行してください',
+  noGh: 'gh が見つかりません。GitHub CLI（https://cli.github.com）を入れてから再実行してください',
+  ghLoggedOut: 'gh にログインしていません。gh auth login を実行してから再実行してください',
+  noOrca: 'Orca を呼べません（{error}）。Orca を起動して orca コマンドを使えるようにしてから再実行してください',
+  noSlackCli:
+    'Slack CLI が見つかりません。Slack CLI を入れて slack login してから再実行するか、README の「Slack CLI を使わないセットアップ」で進めてください',
+  slackLoggedOut: 'Slack CLI にログインしていません。slack login を実行してから再実行してください',
+  deploying: 'Slack CLI でアプリを作成・更新します。ワークスペースを聞かれたら、使うワークスペースを選んでください',
+  deployFailed: 'slack deploy に失敗しました（終了コード {code}）。上の出力を確かめてから再実行してください',
+  noToken:
+    'トークンを受け取れませんでした。Slack のアプリの設定画面（OAuth & Permissions）で Bot User OAuth Token をコピーし、node bin/slack-issue-intake.ts set-token で登録してから、もう一度 make setup を実行してください',
+  manualApp: 'トークンは登録済みです。make setup で作ったアプリが無いので、手作業で作ったアプリとして進めます',
+  askChannel: 'チャンネル名（#issue-intake の形でも可）またはチャンネル ID',
+  channelNotFound:
+    'チャンネルが見つかりません。プライベートチャンネルなら、Slack でそのチャンネルに /invite @{app} を送ってから Enter を押してください',
+  channelFailed: 'チャンネルを探せません（{error}）',
+  joinFailed: 'チャンネルに参加できません（{error}）。Slack で /invite @{app} を送ってから再実行してください',
+  channelChosen: 'チャンネル: #{name}（{id}）',
+  askRepo: 'GitHub のリポジトリ（owner/name）',
+  badRepo: 'owner/name の形で入力してください',
+  repoFailed: 'リポジトリを確かめられません（{error}）',
+  noIssues: 'リポジトリの Issues が無効です。GitHub の Settings で Issues を有効にしてから再実行してください',
+  publicRepo:
+    '公開リポジトリです。Slack に送られた内容（本文・添付のリンク）が Issue として誰でも見られる形で公開されます',
+  confirmPublic: 'この公開リポジトリに起票しますか？',
+  askEvery: '確認の間隔（分。60 の約数）',
+  badEvery: '60 の約数（1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60）を入力してください',
+  declined: '承認されなかったので、何も変えずに止めました。もう一度 make setup を実行すると、ここから再開します',
+  manualForm: 'フォームのボタンは作りません。README の「Workflow Builder で手で作る」の手順でフォームを作ってください',
+  confirmPermissions: 'この内容で許可しますか？',
+  inheritedHeader: '次の許可は、ユーザーや組織の設定から無人の Claude にも受け継がれます:',
+  confirmInherited: 'これらの許可を受け継いだまま有効にしますか？',
+  noInherited: '権限の設定を読めません。~/.claude/settings.json を確かめてから再実行してください',
+  finished:
+    'セットアップが終わりました。チャンネルのブックマーク「{title}」から1件送り、数分後に node bin/slack-issue-intake.ts inspect --raw で受け付けたことを確かめてください',
+} as const
