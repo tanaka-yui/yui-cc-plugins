@@ -307,3 +307,14 @@ export const postMessage = async (
   )
   return r.ok ? (asString(r.body.ts) ? { ok: true, ts: String(r.body.ts) } : failure('投稿の時刻がありません')) : r
 }
+
+export const updateMessage = async (
+  c: SlackClient,
+  channel: string,
+  ts: string,
+  text: string,
+  deadline: number,
+): Promise<{ ok: true } | SlackFailure> => {
+  const r = await c.call('chat.update', { channel, ts, text: maskSecrets(text) }, deadline)
+  return r.ok ? { ok: true } : r
+}

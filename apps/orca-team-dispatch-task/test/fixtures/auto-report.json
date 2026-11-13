@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "main",
+  "updatedAt": "2026-11-13T05:30:00Z",
+  "everyMinutes": 5,
+  "running": [
+    {
+      "issue": "orgA/app#42",
+      "title": "ログインできない",
+      "host": "Mac M2max",
+      "startedAt": "2026-11-13T04:55:00Z",
+      "limitMinutes": 60
+    }
+  ],
+  "queue": [{ "issue": "orgA/app#51", "title": "決済が落ちる", "priority": "critical" }],
+  "hosts": [{ "name": "Mac M2max", "used": 2, "max": 2, "reachable": true }]
+}

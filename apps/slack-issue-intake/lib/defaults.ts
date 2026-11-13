@@ -478,3 +478,24 @@ export const adoptCursorKey = (repo: string): string => `adopt_cursor:${repo}`
 export const adoptSweepKey = (repo: string): string => `adopt_sweep:${repo}`
 export const MSG_ADOPTED = '📌 この Issue をスレッドで管理します: {repo}#{number} {title}\n{url}\nステータス: {status}'
 export const ADOPTED_CLOSED_NOTE = '（閉じています）'
+
+export const REPORT_STALE_FACTOR = 3
+export const REPORT_QUEUE_MAX_LINES = 10
+export const META_REPORT_TS = 'report_ts'
+export const META_REPORT_CHANNEL = 'report_channel'
+export const META_REPORT_DAY = 'report_day'
+export const META_REPORT_HASH = 'report_hash'
+export const REPORT_TEXT = {
+  stale: '⚠ `--auto` が止まっています（最後の更新 {time}）',
+  heading: '📋 自動実行の状況（{date} {time}）',
+  running: '実行中 {n}件',
+  runningItem: '  • {issue} {title} … {host}・{elapsed}分 / 上限{limit}分',
+  queue: 'キュー {n}件',
+  queueItem: '  {order}. [{priority}] {issue} {title}',
+  more: '  ほか {n}件',
+  hosts: '空き: ',
+  host: '{name} {free}/{max}',
+  unreachable: '{name} つながらない',
+  none: '（なし）',
+  unreadable: '報告の材料を読めません: {path}',
+}

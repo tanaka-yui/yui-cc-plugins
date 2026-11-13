@@ -21,6 +21,11 @@ const fixture = 'test/fixtures/orca-auto-comments.json'
 if (!readFileSync(join(intake, fixture)).equals(readFileSync(join(dispatch, fixture))))
   problems.push(`${fixture} の 2 つの写しが違います（slack-issue-intake と orca-team-dispatch-task）`)
 
+// slack-thread のラベル名は、orca-team-dispatch-task 側の C2 で定義ができたら比べる対象に足す。
+const reportFixture = 'test/fixtures/auto-report.json'
+if (!readFileSync(join(intake, reportFixture)).equals(readFileSync(join(dispatch, reportFixture))))
+  problems.push(`${reportFixture} の 2 つの写しが違います（slack-issue-intake と orca-team-dispatch-task）`)
+
 if (problems.length) {
   for (const p of problems) console.error(p)
   process.exit(1)
