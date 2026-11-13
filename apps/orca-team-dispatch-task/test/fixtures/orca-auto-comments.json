@@ -1,0 +1,42 @@
+[
+  {
+    "event": "judged",
+    "status": "ready-eng",
+    "body": "**Ready_Eng にしました**\n\n判定の理由: 対象リポジトリが 3 つあり、API の形を変える必要があります。\n推奨の上限時間: 180 分\n\n<!-- orca-auto:ready-eng:1:judged -->"
+  },
+  {
+    "event": "started",
+    "status": "in-progress",
+    "body": "**実装を始めました**\n\n上限時間: 60 分\nブランチ: `auto/issue-42`\n\n<!-- orca-auto:in-progress:1:started -->"
+  },
+  {
+    "event": "needs-review",
+    "status": "in-review",
+    "body": "**確認をお願いします**\n\nPR: [acme/app#101](https://github.com/acme/app/pull/101)\n\nAI が決めた点:\n- エラー時は 400 ではなく 422 を返すようにした\n- 既存の設定値は移行せず、既定値を使う\n\n<!-- orca-auto:in-review:1:needs-review -->"
+  },
+  {
+    "event": "partial-merge",
+    "status": "in-review",
+    "body": "**一部だけ merge しました**\n\nmerge 済み: [acme/api#55](https://github.com/acme/api/pull/55)\nmerge できなかった PR: [acme/web#77](https://github.com/acme/web/pull/77)（CI が失敗）\n\n<!-- orca-auto:in-review:1:partial-merge -->"
+  },
+  {
+    "event": "ai-merged",
+    "status": "done",
+    "body": "**merge して完了にしました**\n\nPR: [acme/app#102](https://github.com/acme/app/pull/102)\n変更の要約: ログイン画面でパスワードの空白を取り除くようにした。\n\n<!-- orca-auto:done:1:ai-merged -->"
+  },
+  {
+    "event": "human-merged",
+    "status": "done",
+    "body": "PR [acme/app#101](https://github.com/acme/app/pull/101) が merge されたので Done にして閉じます。\n\n<!-- orca-auto:done:1:human-merged -->"
+  },
+  {
+    "event": "failed",
+    "status": "failed",
+    "body": "**失敗しました**\n\n理由: 上限時間（60 分）を超えました。\nブランチ: `auto/issue-42`（push 済み）\n\n<!-- orca-auto:failed:2:failed -->"
+  },
+  {
+    "event": "stalled",
+    "status": "in-progress",
+    "body": "**作業が進んでいません**\n\n経過時間: 45 分 / 上限時間: 60 分\n\n<!-- orca-auto:in-progress:1:stalled -->"
+  }
+]
