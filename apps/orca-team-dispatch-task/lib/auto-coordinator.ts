@@ -1,6 +1,7 @@
+import { autoOrca as runOrca } from './auto-paths.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asObject, asString, get } from './json.ts'
-import { receiptOk, runOrca } from './orca.ts'
+import { receiptOk } from './orca.ts'
 
 import { join } from 'node:path'
 
@@ -26,6 +27,7 @@ export const ensureCoordinator = (statusDir: string, worktreePath: string, slug:
   const current = runOrca(['orchestration', 'run-current', '--from', handle, '--json'], {
     ORCA_TERMINAL_HANDLE: handle,
   })
+  if (terminal.stderr?.includes('timed out') || current.stderr?.includes('timed out')) return null
   if (
     receiptOk(terminal) &&
     get(terminal.json, 'result', 'terminal', 'handle') === handle &&

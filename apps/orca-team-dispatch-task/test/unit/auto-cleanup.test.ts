@@ -188,3 +188,42 @@ test('AU58b unequal remote-tracking SHA retains a locally unique branch after wo
     f.cleanup()
   }
 })
+
+test('AU58e settled user-owned role is kept while other released roles are removed', () => {
+  const f = setup()
+  try {
+    const file = join(f.issue.statusDir, 'workers.json')
+    const w = JSON.parse(readFileSync(file, 'utf8'))
+    w.roles.exec = { dispatch: 'ctx_other', branch: 'user/other', worktree_path: join(f.children, 'other') }
+    f.put(file, w)
+    f.git('-C', f.checkout, 'branch', 'user/other')
+    f.respond(
+      'orchestration_worker-list',
+      {
+        ok: true,
+        result: {
+          workers: [row('retained', 'user_owned'), { dispatchId: 'ctx_other', resource: { releaseState: 'released' } }],
+        },
+      },
+      f.orca,
+    )
+    f.respond('orchestration_worker-show', { ok: true, result: { worker: { state: 'succeeded' } } }, f.orca)
+    f.respond(
+      'worktree_list',
+      {
+        ok: true,
+        result: {
+          worktrees: [{ path: join(f.children, 'worktree') }, { path: join(f.children, 'other') }],
+          truncated: false,
+        },
+      },
+      f.orca,
+    )
+    assert.equal(f.clean().ok, true)
+    assert.ok(!f.calls(f.orca).includes(`path:${join(f.children, 'worktree')}`))
+    assert.ok(f.calls(f.orca).includes(`path:${join(f.children, 'other')}`))
+    assert.ok(f.git('-C', f.checkout, 'branch', '--list', f.issue.branch))
+  } finally {
+    f.cleanup()
+  }
+})

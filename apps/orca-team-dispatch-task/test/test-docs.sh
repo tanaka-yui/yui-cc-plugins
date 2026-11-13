@@ -565,6 +565,14 @@ grep -qE 'after round 2|after two rounds' "$S" && bad="$bad [old:SKILL]"
 grep -qE 'round 2 で諦める|2 ラウンドで打ち切り' "$G" && bad="$bad [old:guide]"
 [[ -z "$bad" ]] && ok "SK33 レビューの上限の記述" || fail "SK33:$bad"
 
+# SK34: auto precheck forwards configured model and effort.
+auto_recipe=$(cd "$P" && make -n auto 2>/dev/null)
+bad=""
+for expected in 'orca-auto.ts tick --name main' 'judge-model --name main' 'judge-effort --name main' '--effort'; do
+  [[ "$auto_recipe" == *"$expected"* ]] || bad="$bad [$expected]"
+done
+[[ -z "$bad" ]] && ok SK34 || fail "SK34:$bad"
+
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
   && ! grep -q 'dangerously-skip-permissions' "$S" \

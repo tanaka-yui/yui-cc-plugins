@@ -7,7 +7,7 @@ IF="$P/skills/orca-team-dispatch-task/scripts/issue-fetch.ts"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 
 setup() {
-  W=$(mktemp -d); LD="$W/.dispatch-issue"; mkdir -p "$LD"
+  W=$(mktemp -d); export ORCA_DISPATCH_CONFIG_HOME="$W/config"; LD="$W/.dispatch-issue"; mkdir -p "$LD"
   SF="$LD/state.json"
   GH_STUB_DIR="$W/gh"; mkdir -p "$GH_STUB_DIR"; : > "$GH_STUB_DIR/calls.log"
   BIN="$W/bin"; mkdir -p "$BIN"
@@ -20,7 +20,7 @@ setup() {
 }
 teardown() {
   PATH="${PATH#"$BIN":}"; export PATH
-  rm -rf "$W"; unset GH_STUB_DIR LOOP_SESSION_ID DISPATCH_DIR LOOP_REPO_ROOT
+  rm -rf "$W"; unset GH_STUB_DIR LOOP_SESSION_ID DISPATCH_DIR LOOP_REPO_ROOT ORCA_DISPATCH_CONFIG_HOME
 }
 run() { node "$IF" --state-file "$SF" "$@"; }
 acquire() { run lock-acquire --lease-min 30 >/dev/null 2>&1; }
@@ -264,4 +264,24 @@ out=$(run reconcile 2>/dev/null)
   && grep -qF -- 'issue edit 34 --remove-label In\ progress --add-label Ready' "$GH_STUB_DIR/calls.log" \
   && ok "IF21 claim を戻すときは古いラベルも外し、記録したラベルを戻す" || fail "IF21 ($out)"
 teardown
+for repo in ACME/APP other/api; do
+  setup; acquire; init
+  mkdir -p "$ORCA_DISPATCH_CONFIG_HOME/auto/main"
+  printf '%s' '{"version":1,"sources":[{"repo":"acme/app"}]}' > "$ORCA_DISPATCH_CONFIG_HOME/auto/main/config.json"
+  printf '{"nameWithOwner":"%s"}' "$repo" > "$GH_STUB_DIR/repo_view"
+  echo '[]' > "$GH_STUB_DIR/issue_list"
+  cat > "$GH_STUB_DIR/issue_list.hook" <<'HOOK'
+#!/bin/sh
+printf '%s\n' "$@" > "$GH_STUB_DIR/issue_list.args"
+HOOK
+  chmod +x "$GH_STUB_DIR/issue_list.hook"
+  run fetch --limit 1 --batch 1 --dry-run >/dev/null 2>&1
+  search=$(grep -A1 -x -- '--search' "$GH_STUB_DIR/issue_list.args" | tail -1)
+  if [[ "$repo" == ACME/APP ]]; then
+    [[ "$search" == *'-label:"Ready"'* ]] && ok IF22 || fail "IF22 ($search)"
+  else
+    [[ "$search" != *'-label:"Ready"'* ]] && ok IF23 || fail "IF23 ($search)"
+  fi
+  teardown
+done
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

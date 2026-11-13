@@ -16,11 +16,10 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const AUTO_LOCK_WAIT_MS = 120_000
-export const AUTO_JUDGE_LEASE_MS = 20 * 60_000
 const LOCK_TTL_MS = 160_000
 const main = (argv: string[]): number => {
   const command = argv[0] ?? ''
-  if (!['tick', 'judge-list', 'judge-apply', 'judge-model', 'judge-effort', 'clear-start'].includes(command))
+  if (!['tick', 'status', 'judge-list', 'judge-apply', 'judge-model', 'judge-effort', 'clear-start'].includes(command))
     die('orca-auto', 'command is required: judge-list / judge-apply / judge-model / judge-effort / clear-start')
   const flags = new Map<string, string>()
   for (let i = 1; i < argv.length; i += 2) {
@@ -35,6 +34,15 @@ const main = (argv: string[]): number => {
   if (command === 'judge-apply' && !flags.get('--file')) die('orca-auto', '--file is required')
   if (command === 'clear-start' && !flags.get('--key')) die('orca-auto', '--key is required')
   if (command === 'tick') return runTick(name)
+  if (command === 'status') {
+    const state = readState(name)
+    console.log(`${name}: ${Object.keys(state.issues).length} 件`)
+    for (const issue of Object.values(state.issues))
+      console.log(
+        `${issue.key}: ${issue.phase} / 世代 ${issue.generation}${issue.startAttempt ? ' / 起動の結果が不明（保留）' : ''}${issue.cleanupPending ? ' / 後片付け待ち' : ''}`,
+      )
+    return 0
+  }
   const config = readAutoConfig(name)
   if (!config) {
     console.error('設定を読めません')

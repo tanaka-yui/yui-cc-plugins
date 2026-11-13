@@ -3,27 +3,42 @@ import { renderComment } from './auto-comment.ts'
 import { type AutoConfig, pickSources, readAutoConfig } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, prStatus, readGithub, viewIssue } from './auto-github.ts'
-import { AUTO_FILES, AUTO_WORKTREE_LIST_LIMIT, archiveStatusDir, autoDir, autoNow } from './auto-paths.ts'
+import {
+  AUTO_FILES,
+  AUTO_JUDGE_LEASE_MS,
+  AUTO_TICK_BUDGET_MS,
+  AUTO_WORKTREE_LIST_LIMIT,
+  archiveStatusDir,
+  autoCallErrors,
+  autoDir,
+  autoNow,
+  beginAutoTick,
+  canAutoCall,
+  endAutoTick,
+  autoRun as run,
+  autoOrca as runOrca,
+} from './auto-paths.ts'
 import { orderQueue, syncIssues } from './auto-queue.ts'
+import { buildReport } from './auto-report.ts'
 import { buildRequest, readAutoResult, slugOf } from './auto-request.ts'
 import { type AutoState, type IssueState, readState, releaseLock, takeLock, writeState } from './auto-state.ts'
 import { hasCommentMarker, resumeTransition, transition } from './auto-transition.ts'
 import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asObject, asString, get, type Json, type JsonObject } from './json.ts'
-import { receiptArray, runOrca, userOwned } from './orca.ts'
+import { receiptArray, userOwned } from './orca.ts'
 import { STATUS } from './status.ts'
-import { envCount, run, runNode } from './sys.ts'
+import { envCount, runNode as runProcessNode } from './sys.ts'
 
 import { existsSync, mkdirSync, readFileSync, statfsSync } from 'node:fs'
 import { freemem, hostname } from 'node:os'
 import { join, resolve } from 'node:path'
 
-export const AUTO_TICK_BUDGET_MS = 100_000
 export const AUTO_START_RESERVE_MS = 60_000
 export const AUTO_START_MAX_FAILURES = 3
 export const AUTO_CREATE_SETTLE_SECS = 20
-const JUDGE_LEASE_MS = 20 * 60_000
+const runNode = (script: string, args: string[], inherit = false, env?: Record<string, string>) =>
+  canAutoCall('子の実行') ? runProcessNode(script, args, inherit, env) : { rc: 1, stdout: '', stderr: 'timed out' }
 const ACTIVE = ['dispatching', 'running', 'finishing']
 type Tick = {
   name: string
@@ -115,6 +130,7 @@ const started = (tick: Tick, issue: IssueState, workers: JsonObject): void => {
   )
 }
 const retireStart = (tick: Tick, issue: IssueState): boolean => {
+  if (!canAutoCall('起動の後片付け')) return false
   const list = listedWorkers(issue)
   if (!list || list.length) {
     error(tick, `起動の結果が不明: ${issue.key} — Orca で確かめてください`)
@@ -141,7 +157,7 @@ const retireStart = (tick: Tick, issue: IssueState): boolean => {
   return true
 }
 const start = (tick: Tick, issue: IssueState, args: string[], h: string, fresh: boolean, exec = false): void => {
-  if (tick.startUsed || tick.deadline - Date.now() < AUTO_START_RESERVE_MS) return
+  if (tick.startUsed || !canAutoCall('起動', AUTO_START_RESERVE_MS)) return
   tick.startUsed = true
   issue.startAttempt = { at: autoNow(), pid: process.pid, host: hostname() }
   tick.save()
@@ -174,6 +190,7 @@ const start = (tick: Tick, issue: IssueState, args: string[], h: string, fresh: 
   }
 }
 const recover = (tick: Tick, issue: IssueState): void => {
+  if (!canAutoCall('起動の回復')) return
   if (issue.pendingLabel || issue.failReason || issue.startAttempt || !owns(tick, issue)) return
   if (!existsSync(join(issue.statusDir, 'workers.json'))) {
     retireStart(tick, issue)
@@ -215,7 +232,7 @@ const recover = (tick: Tick, issue: IssueState): void => {
     started(tick, issue, workers)
   }
 }
-const capacity = (tick: Tick): { used: number; readable: boolean } => {
+const capacity = (tick: Tick, log = true): { used: number; readable: boolean } => {
   const active = Object.values(tick.state.issues).filter((i) => ACTIVE.includes(i.phase))
   const reserved = active.reduce((n, i) => n + i.worktrees, 0)
   const owned = new Set(
@@ -235,10 +252,11 @@ const capacity = (tick: Tick): { used: number; readable: boolean } => {
     (w) => asString(get(w, 'displayName'))?.startsWith('auto-') && !owned.has(asString(get(w, 'path'))),
   )
   for (const w of orphans)
-    console.log(`持ち主のいない worktree: ${asString(get(w, 'displayName'))} ${asString(get(w, 'path'))}`)
+    if (log) console.log(`持ち主のいない worktree: ${asString(get(w, 'displayName'))} ${asString(get(w, 'path'))}`)
   return { used: reserved + orphans.length, readable: true }
 }
 const refill = (tick: Tick): void => {
+  if (!canAutoCall('補充')) return
   const available = capacity(tick)
   if (!available.readable) return
   let used = available.used
@@ -256,7 +274,7 @@ const refill = (tick: Tick): void => {
         sources.has(i.repo),
     ),
   )) {
-    if (tick.startUsed || tick.deadline - Date.now() < AUTO_START_RESERVE_MS) break
+    if (tick.startUsed || !canAutoCall('補充の起動', AUTO_START_RESERVE_MS)) break
     if (used + required > tick.config.lanes) {
       console.log(`レーンが足りません: lanes=${tick.config.lanes} 使用中=${used} 1 件の worktree=${required}`)
       break
@@ -352,6 +370,7 @@ const refill = (tick: Tick): void => {
   }
 }
 const stopRoles = (tick: Tick, issue: IssueState): void => {
+  if (!canAutoCall('停止')) return
   if (issue.startAttempt || !owns(tick, issue)) return
   const workers = workersOf(issue)
   if (!workers) return
@@ -387,6 +406,7 @@ const timedOut = (issue: IssueState): boolean =>
       Date.parse(autoNow()) - Date.parse(issue.startedAt) > issue.limitMinutes * 60_000,
   )
 const humanStop = (tick: Tick, issue: IssueState): void => {
+  if (!canAutoCall('人の変更')) return
   issue.phase = 'stopped'
   issue.pendingLabel = null
   issue.failReason = null
@@ -396,6 +416,7 @@ const humanStop = (tick: Tick, issue: IssueState): void => {
   stopRoles(tick, issue)
 }
 const progress = (tick: Tick, issue: IssueState): void => {
+  if (!canAutoCall('進み')) return
   if (issue.pendingLabel || issue.failReason || issue.startAttempt || issue.cleanupPending || !owns(tick, issue)) return
   const h = ensure(tick, issue)
   if (!h) return
@@ -451,6 +472,7 @@ const progress = (tick: Tick, issue: IssueState): void => {
 const AUTO_CI_APPEAR_MINUTES = 30
 const AUTO_PR_RETRY_MINUTES = 30
 const clean = (tick: Tick, issue: IssueState): void => {
+  if (!canAutoCall('後片付け')) return
   if (!issue.cleanupPending || issue.failReason || issue.pendingLabel || issue.startAttempt || !owns(tick, issue))
     return
   const checkout = tick.config.repos[issue.targets[0] ?? '']?.checkout
@@ -476,6 +498,7 @@ const clean = (tick: Tick, issue: IssueState): void => {
   }
 }
 const finishFailure = (tick: Tick, issue: IssueState): void => {
+  if (!canAutoCall('失敗の仕上げ')) return
   if (!issue.failReason || issue.pendingLabel || issue.startAttempt || !owns(tick, issue)) return
   if (!issue.cleanupPending) {
     issue.cleanupPending = true
@@ -545,6 +568,7 @@ const handoverPrs = (issue: IssueState): boolean => {
   return true
 }
 const finish = (tick: Tick, issue: IssueState): void => {
+  if (!canAutoCall('仕上げ')) return
   if (issue.pendingLabel || issue.failReason || issue.startAttempt || !owns(tick, issue)) return
   const view = viewIssue(issue.repo, issue.number)
   if (!view) return
@@ -654,6 +678,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
     tick.finished++
 }
 const watchReview = (tick: Tick, issue: IssueState): void => {
+  if (!canAutoCall('レビューの監視')) return
   const view = viewIssue(issue.repo, issue.number)
   if (!view) return
   if (view.state === 'CLOSED') {
@@ -682,7 +707,11 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
 
 export const runTick = (name: string): number => {
   const budget = envCount('ORCA_AUTO_BUDGET_MS', AUTO_TICK_BUDGET_MS)
-  if (!takeLock(name, budget + 60_000)) return 1
+  const deadline = beginAutoTick(budget)
+  if (!takeLock(name, budget + 60_000)) {
+    endAutoTick()
+    return 1
+  }
   try {
     const config = readAutoConfig(name)
     if (!config) {
@@ -695,7 +724,7 @@ export const runTick = (name: string): number => {
       config,
       state,
       save: () => writeState(name, state),
-      deadline: Date.now() + budget,
+      deadline,
       errors: 0,
       dispatched: 0,
       finished: 0,
@@ -708,13 +737,15 @@ export const runTick = (name: string): number => {
         .map((i) => i.key),
     )
     for (const issue of Object.values(state.issues))
-      if (timedOut(issue)) markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
+      if (timedOut(issue) && canAutoCall('上限時間'))
+        markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
     for (const issue of Object.values(state.issues)) {
       if (
         issue.pendingLabel &&
         !blocked.has(issue.key) &&
         (!issue.failReason || issue.pendingLabel.event === 'failed')
       ) {
+        if (!canAutoCall('ラベル再試行')) break
         const before = issue.phase
         resumeTransition(issue, tick.save)
         if (issue.phase === 'stopped' && before !== 'stopped') stopRoles(tick, issue)
@@ -726,6 +757,7 @@ export const runTick = (name: string): number => {
       config.sources.filter((s) => sources.includes(s.repo)),
     )
     tick.save()
+    for (const key of synced.unreadable) blocked.add(key)
     for (const key of synced.humanChanged) {
       const issue = state.issues[key]
       if (issue && !blocked.has(key)) humanStop(tick, issue)
@@ -743,13 +775,20 @@ export const runTick = (name: string): number => {
     for (const issue of Object.values(state.issues))
       if (issue.phase === 'dispatching' && !blocked.has(issue.key)) recover(tick, issue)
     refill(tick)
+    const used = capacity(tick, false).used
+    if (
+      !writeAtomic(join(autoDir(name), AUTO_FILES.report), JSON.stringify(buildReport(config, state, used, autoNow())))
+    )
+      throw new Error('報告を書けません')
+    tick.errors += autoCallErrors()
     const judging = Object.values(state.issues).filter((i) => i.phase === 'judging' && !i.pendingLabel).length
     console.log(`auto: judge=${judging} dispatched=${tick.dispatched} finished=${tick.finished} errors=${tick.errors}`)
     return judging > 0 &&
-      (!state.judgingSince || Date.parse(autoNow()) - Date.parse(state.judgingSince) > JUDGE_LEASE_MS)
+      (!state.judgingSince || Date.parse(autoNow()) - Date.parse(state.judgingSince) > AUTO_JUDGE_LEASE_MS)
       ? 0
       : 1
   } finally {
     releaseLock(name)
+    endAutoTick()
   }
 }

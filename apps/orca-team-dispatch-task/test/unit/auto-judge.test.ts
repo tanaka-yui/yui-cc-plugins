@@ -193,3 +193,24 @@ test('a non-closing pending label transition yields to a person closing the issu
     f.cleanup()
   }
 })
+
+test('AU29b closed engineering candidates disappear; fresh features are forced to engineering', () => {
+  for (const closed of [true, false]) {
+    const f = setup()
+    try {
+      const state = readState('main')
+      const issue = state.issues['acme/app#7']
+      assert.ok(issue)
+      if (!closed) {
+        issue.category = 'feature'
+        writeState('main', state)
+      } else f.respond('issue_view', { state: 'CLOSED', title: '題', labels: [] })
+      f.apply(f.decision({ route: closed ? 'eng' : 'auto' }))
+      const current = readState('main').issues[issue.key]
+      assert.equal(current?.phase, closed ? undefined : 'eng')
+      if (!closed) assert.ok(current?.reason.includes('新機能'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})

@@ -3,7 +3,7 @@ import { MAX_BUFFER } from './sys.ts'
 
 import { spawnSync } from 'node:child_process'
 
-export type OrcaResult = { rc: number; json: Json | null; stdout: string }
+export type OrcaResult = { rc: number; json: Json | null; stdout: string; stderr?: string }
 
 const APP_BUNDLE_CLI = '/Applications/Orca.app/Contents/Resources/bin/orca'
 
@@ -28,7 +28,12 @@ export const runOrca = (args: string[], env?: Record<string, string>, timeoutMs?
     killSignal: 'SIGKILL',
   })
   const stdout = child.stdout ?? ''
-  return { rc: child.status ?? 1, json: parseJson(stdout), stdout }
+  return {
+    rc: child.status ?? 1,
+    json: parseJson(stdout),
+    stdout,
+    stderr: child.error?.message.includes('ETIMEDOUT') ? 'timed out' : (child.stderr ?? child.error?.message ?? ''),
+  }
 }
 
 // receipt が数えられるのは、exit 0 で、かつ Orca が ok: true と答えたときだけ

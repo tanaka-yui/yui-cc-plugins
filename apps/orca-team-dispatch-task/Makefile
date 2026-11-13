@@ -17,3 +17,13 @@ test: ## 全テストを実行 (bash のテスト群 + node --test の単体テ�
 .PHONY: test-unit
 test-unit: ## lib/ の単体テストだけを実行
 	@node --test 'test/unit/*.test.ts'
+
+NAME ?= main
+.PHONY: auto
+auto: ## --auto を1回まわす。判定が必要なときだけClaudeを起動 (NAME=main)
+	@rc=0; node bin/orca-auto.ts tick --name $(NAME) || rc=$$?; \
+	case $$rc in \
+	  0) claude --model "$$(node bin/orca-auto.ts judge-model --name $(NAME))" --effort "$$(node bin/orca-auto.ts judge-effort --name $(NAME))" "Follow $(CURDIR)/skills/orca-team-dispatch-task/references/auto-judge.md for --auto name $(NAME)." ;; \
+	  1) exit 0 ;; \
+	  *) exit $$rc ;; \
+	esac

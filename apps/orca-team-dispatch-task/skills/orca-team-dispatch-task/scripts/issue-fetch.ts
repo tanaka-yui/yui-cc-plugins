@@ -1,3 +1,4 @@
+import { configHome } from '../../../lib/config.ts'
 // GitHub issue 自動ループの issue 取得・claim・状態管理。
 // Usage: node issue-fetch.ts --state-file <path> <subcommand> [options]
 // ★ cmux 版からの変更: CMUX 変数の削除、workers.json による痕跡確認、記録された
@@ -13,7 +14,7 @@ import {
 } from '../../../lib/status.ts'
 import { nowIso, nowSeconds, run, which } from '../../../lib/sys.ts'
 
-import { existsSync, mkdirSync, renameSync, rmdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, rmSync, statSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 
@@ -326,6 +327,23 @@ const makePaths = (stateFile: string): Paths => {
   }
 }
 
+const autoOwnsReady = (): boolean => {
+  const repos: string[] = []
+  const dir = join(configHome(), 'auto')
+  if (!existsSync(dir)) return false
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    for (const source of array(get(readJson(join(dir, entry.name, 'config.json')), 'sources'))) {
+      const repo = asString(get(source, 'repo'))
+      if (repo) repos.push(repo.toLowerCase())
+    }
+  }
+  if (!repos.length) return false
+  const result = gh('repo', 'view', '--json', 'nameWithOwner')
+  const repo = asString(get(parseJson(result.stdout), 'nameWithOwner'))
+  if (result.rc !== 0 || !repo) fatal('cannot determine whether --auto owns Ready')
+  return repos.includes((repo ?? '').toLowerCase())
+}
 const fetchIssues = (paths: Paths, options: Options): number => {
   requireOwner(paths)
   if (which('gh') === null) fatal('gh is not installed')
@@ -347,7 +365,7 @@ const fetchIssues = (paths: Paths, options: Options): number => {
     }
     limit = 1
   } else {
-    let search = searchExclusion(ISSUE_EXCLUDED_LABELS)
+    let search = searchExclusion(autoOwnsReady() ? [...ISSUE_EXCLUDED_LABELS, STATUS.ready] : ISSUE_EXCLUDED_LABELS)
     const assigneeFlags: string[] = []
     if (options.assignee === 'none') search += ' no:assignee'
     else if (options.assignee !== '') assigneeFlags.push('--assignee', options.assignee)

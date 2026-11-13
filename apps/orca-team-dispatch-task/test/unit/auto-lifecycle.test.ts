@@ -1,4 +1,5 @@
 import { autoDir } from '../../lib/auto-paths.ts'
+import { slugOf } from '../../lib/auto-request.ts'
 import { readState, writeState } from '../../lib/auto-state.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
@@ -314,6 +315,65 @@ test('AU59 worker environment failure is included in the failed comment before c
     f.cli('tick')
     assert.equal(readState('main').issues[issue.key]?.phase, 'failed')
     assert.ok(bodies(f.dir).some((body) => body.includes('環境が原因: 道具が足りません')))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU39b a returned failed start with workers remains dispatching and safely resumes next tick', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.track()
+    const slug = slugOf(issue.key)
+    const sd = join(f.checkout, '.dispatch', slug)
+    const workers = {
+      run_id: 'run_1',
+      integration_branch: 'main',
+      integration_role: 'design',
+      roles: { design: { branch: `user/${slug}` } },
+    }
+    const run = { run_id: 'run_1', parent_handle: 'term_auto', repo_root: f.checkout }
+    writeFileSync(
+      join(f.children, 'orca-start.ts.sh'),
+      `mkdir -p '${sd}'\nprintf '%s' '${JSON.stringify(workers)}' > '${sd}/workers.json'\nprintf '%s' '${JSON.stringify(run)}' > '${sd}/run.json'\n`,
+    )
+    f.respond('orchestration_worker-list', { ok: true, result: { workers: [] } }, f.orca)
+    f.childRc('orca-start', 1)
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'dispatching')
+    f.childRc('orca-start', 0)
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'running')
+    assert.ok(f.childCalls().includes('"--resume"'))
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU58g failed push cleanup finishes before a restored Ready can begin another generation', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.track('running')
+    f.git('-C', f.checkout, 'checkout', issue.branch)
+    writeFileSync(join(f.checkout, 'last-push'), 'x')
+    f.git('-C', f.checkout, 'add', 'last-push')
+    f.git('-C', f.checkout, 'commit', '-m', 'last push')
+    f.git('-C', f.checkout, 'checkout', 'main')
+    f.git('-C', f.checkout, 'remote', 'set-url', '--push', 'origin', join(f.dir, 'missing'))
+    process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'failed')
+    f.respond('issue_list', [
+      { number: 7, title: '題', labels: [{ name: 'Ready' }], updatedAt: '2026-11-13T06:01:00Z' },
+    ])
+    f.respond('issue_view', { state: 'OPEN', title: '題', body: '本文', labels: [{ name: 'Ready' }] })
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.generation, 1)
+    f.git('-C', f.checkout, 'remote', 'set-url', '--push', 'origin', join(f.dir, 'origin.git'))
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.cleanupPending, false)
+    assert.equal(readState('main').issues[issue.key]?.generation, 1)
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.generation, 2)
   } finally {
     f.cleanup()
   }

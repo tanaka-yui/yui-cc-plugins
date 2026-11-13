@@ -1,6 +1,6 @@
+import { autoRun as run } from './auto-paths.ts'
 import { asArray, asObject, asString, type Json, parseJson } from './json.ts'
 import { MANAGED_LABELS } from './status.ts'
-import { run } from './sys.ts'
 
 import type { IssueState } from './auto-state.ts'
 

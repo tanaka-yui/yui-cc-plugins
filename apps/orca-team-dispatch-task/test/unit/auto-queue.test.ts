@@ -100,3 +100,43 @@ test('AU21/AU22b-f generation preserves continuation and waits for cleanup', () 
     f.cleanup()
   }
 })
+
+test('AU22e/AU22f/AU22g stopped generations retain history and cleanup tombstones cannot disappear', () => {
+  const f = fixture()
+  try {
+    const s = empty()
+    const source = f.config().sources[0]
+    assert.ok(source)
+    const row = { number: 7, title: '題', labels: [], updatedAt: '2026-01-01' }
+    f.respond('issue_list', [row])
+    syncIssues(s, [source])
+    const i = s.issues['acme/app#7']
+    assert.ok(i)
+    i.phase = 'queued'
+    i.generation = 2
+    i.prevBranch = 'user/old'
+    f.respond('issue_list', [])
+    f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'Pending' }] })
+    syncIssues(s, [source])
+    assert.equal(i.phase, 'stopped')
+    assert.equal(i.prevBranch, 'user/old')
+    f.respond('issue_list', [row])
+    f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'Ready' }] })
+    syncIssues(s, [source])
+    assert.equal(i.generation, 3)
+    i.phase = 'failed'
+    i.cleanupPending = true
+    i.endedAt = '2026-01-01'
+    syncIssues(s, [source])
+    assert.equal(i.generation, 3)
+    f.respond('issue_list', [])
+    f.respond('issue_view', { state: 'CLOSED', title: '題', labels: [] })
+    syncIssues(s, [source])
+    assert.ok(s.issues[i.key])
+    i.cleanupPending = false
+    syncIssues(s, [source])
+    assert.equal(s.issues[i.key], undefined)
+  } finally {
+    f.cleanup()
+  }
+})

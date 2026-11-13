@@ -1,18 +1,8 @@
 import { closeCoordinator } from './auto-coordinator.ts'
-import { AUTO_WORKTREE_LIST_LIMIT, archiveStatusDir } from './auto-paths.ts'
+import { AUTO_WORKTREE_LIST_LIMIT, archiveStatusDir, autoRun as run, autoOrca as runOrca } from './auto-paths.ts'
 import { readJson } from './fs.ts'
 import { asObject, asString, get, type Json, type JsonObject } from './json.ts'
-import {
-  GONE_STATES,
-  receiptArray,
-  receiptOk,
-  releaseState,
-  runOrca,
-  userOwned,
-  workerState,
-  workerStateClass,
-} from './orca.ts'
-import { run } from './sys.ts'
+import { GONE_STATES, receiptArray, receiptOk, releaseState, userOwned, workerState, workerStateClass } from './orca.ts'
 
 import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'

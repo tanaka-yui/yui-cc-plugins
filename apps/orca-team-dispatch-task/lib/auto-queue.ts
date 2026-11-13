@@ -1,5 +1,5 @@
 import { listReadyManaged, type ReadyIssue, readyAtOf, viewIssue } from './auto-github.ts'
-import { autoNow } from './auto-paths.ts'
+import { autoNow, canAutoCall } from './auto-paths.ts'
 import { FEATURE_LABEL, PRIORITY_LABELS, STATUS } from './status.ts'
 
 import type { AutoState, IssueState, Priority } from './auto-state.ts'
@@ -55,13 +55,22 @@ const makeIssue = (repo: string, row: ReadyIssue, pick: string): IssueState => (
 export const syncIssues = (
   state: AutoState,
   sources: Array<{ repo: string; pick: string }>,
-): { added: string[]; dropped: string[]; humanChanged: string[] } => {
-  const result = { added: [] as string[], dropped: [] as string[], humanChanged: [] as string[] }
+): { added: string[]; dropped: string[]; humanChanged: string[]; unreadable: string[] } => {
+  const result = {
+    added: [] as string[],
+    dropped: [] as string[],
+    humanChanged: [] as string[],
+    unreadable: [] as string[],
+  }
   const existing = new Set(Object.keys(state.issues))
   const failed = new Set<string>()
   const candidates = new Map<string, ReadyIssue>()
   const now = autoNow()
   for (const source of sources) {
+    if (!canAutoCall('同期')) {
+      result.unreadable.push(...Object.keys(state.issues))
+      return result
+    }
     const rows = listReadyManaged(source.repo, source.pick)
     if (!rows) {
       failed.add(source.repo)
@@ -106,8 +115,16 @@ export const syncIssues = (
     }
   }
   for (const key of existing) {
+    if (!canAutoCall('同期')) {
+      result.unreadable.push(...Object.keys(state.issues))
+      return result
+    }
     const issue = state.issues[key]
-    if (!issue || failed.has(issue.repo) || issue.pendingLabel) continue
+    if (!issue || issue.pendingLabel) continue
+    if (failed.has(issue.repo)) {
+      result.unreadable.push(key)
+      continue
+    }
     const pick = sources.find((s) => s.repo === issue.repo)?.pick ?? STATUS.ready
     const tombstone = ['done', 'failed', 'stopped', 'eng'].includes(issue.phase)
     if (
@@ -119,7 +136,10 @@ export const syncIssues = (
       continue
     if (!tombstone && !['judging', 'queued', 'running', 'dispatching', 'finishing'].includes(issue.phase)) continue
     const view = viewIssue(issue.repo, issue.number)
-    if (!view) continue
+    if (!view) {
+      result.unreadable.push(key)
+      continue
+    }
     if (tombstone) {
       issue.checkedAt = now
       if (view.state === 'CLOSED' && !issue.cleanupPending) {
