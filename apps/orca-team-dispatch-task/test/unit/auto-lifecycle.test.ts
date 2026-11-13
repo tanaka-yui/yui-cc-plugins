@@ -41,13 +41,14 @@ test('AU59d/AU59j human change cancels pending started transition and stops all 
     const i = f.track()
     f.put(join(f.gh, 'issue_edit.rc'), 1)
     f.cli('tick')
+    f.liveWorker()
     const before = f.calls()
     f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'Pending' }] })
     f.cli('tick')
     const current = readState('main').issues[i.key]
     assert.equal(current?.phase, 'stopped')
     assert.equal(current?.pendingLabel, null)
-    assert.ok(f.calls(f.orca).includes('orchestration worker-list'))
+    assert.ok(f.calls(f.orca).includes('worker-stop --dispatch ctx_design'))
     assert.ok(!f.calls().slice(before.length).includes('issue edit'))
   } finally {
     f.cleanup()
@@ -98,11 +99,12 @@ test('AU59i started comment failure never suppresses the time limit', () => {
     const i = f.track()
     f.put(join(f.gh, 'issue_comment.rc'), 1)
     f.cli('tick')
+    f.liveWorker()
     process.env.ORCA_AUTO_NOW = '2026-11-13T06:31:00Z'
     f.cli('tick')
     const current = readState('main').issues[i.key]
     assert.ok(current?.failReason?.includes('上限時間'))
-    assert.ok(f.calls(f.orca).includes('orchestration worker-list'))
+    assert.ok(f.calls(f.orca).includes('worker-stop --dispatch ctx_design'))
     assert.notEqual(current?.pendingLabel?.event, 'started')
   } finally {
     f.cleanup()

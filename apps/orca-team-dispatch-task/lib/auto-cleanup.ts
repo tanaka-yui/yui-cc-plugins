@@ -2,7 +2,16 @@ import { closeCoordinator } from './auto-coordinator.ts'
 import { AUTO_WORKTREE_LIST_LIMIT, archiveStatusDir, autoRun as run, autoOrca as runOrca } from './auto-paths.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject } from './json.ts'
-import { GONE_STATES, receiptArray, receiptOk, releaseState, userOwned, workerState, workerStateClass } from './orca.ts'
+import {
+  dispatchSettled,
+  GONE_STATES,
+  receiptArray,
+  receiptOk,
+  releaseState,
+  userOwned,
+  workerState,
+  workerStateClass,
+} from './orca.ts'
 
 import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
@@ -131,14 +140,14 @@ export const confirmStopped = (statusDir: string): { stopped: boolean; kept: str
         } else reasons.push(`人が操作中の worker: ${role}`)
         continue
       }
-      if (state !== 'settled' && state !== 'live' && state !== 'unconfirmed') {
+      const settled =
+        receiptOk(shown) &&
+        (dispatchSettled(asString(get(shown.json, 'result', 'dispatch', 'status')) ?? '') || state === 'settled')
+      if (!settled && state !== 'live' && state !== 'unconfirmed') {
         reasons.push(`worker の停止を確かめられません: ${role}`)
         continue
       }
-      runOrca(
-        ['orchestration', state === 'settled' ? 'worker-release' : 'worker-stop', '--dispatch', dispatch, '--json'],
-        env,
-      )
+      runOrca(['orchestration', settled ? 'worker-release' : 'worker-stop', '--dispatch', dispatch, '--json'], env)
       const after = list()
       if (
         !after ||

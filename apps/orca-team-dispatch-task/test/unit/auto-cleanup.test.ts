@@ -107,7 +107,7 @@ esac > '${f.orca}/orchestration_worker-show'`,
       f.cleanup()
     }
   })
-for (const state of ['active', 'succeeded'])
+for (const state of ['active', 'succeeded', 'stopped'])
   test(`C1-2 user-owned follow-up ${state} retains the shared worktree`, () => {
     const f = setup()
     try {
@@ -131,7 +131,11 @@ for (const state of ['active', 'succeeded'])
         },
         f.orca,
       )
-      f.respond('orchestration_worker-show', { ok: true, result: { worker: { state } } }, f.orca)
+      f.respond(
+        'orchestration_worker-show',
+        { ok: true, result: { worker: { state }, dispatch: { status: 'terminated' } } },
+        f.orca,
+      )
       assert.equal(f.clean().ok, state === 'succeeded')
       const calls = f.calls(f.orca)
       assert.ok(!calls.includes('worker-stop'))

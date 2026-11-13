@@ -144,6 +144,39 @@ test('C1-2 auto stop never notifies a finished reviewer with unread worker_done'
     f.cleanup()
   }
 })
+for (const status of ['completed', 'failed', 'settled', 'terminated', 'dispatched'])
+  test(`C2-1 dispatch ${status} with other worker state ${status === 'dispatched' ? 'holds' : 'releases'}`, () => {
+    const f = runtimeFixture()
+    try {
+      const i = f.track('running')
+      f.liveWorker()
+      f.respond(
+        'orchestration_worker-show',
+        {
+          ok: true,
+          result: {
+            worker: { state: 'stopped' },
+            dispatch: { status },
+          },
+        },
+        f.orca,
+      )
+      f.hook(
+        'orchestration_worker-release',
+        `printf '%s' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_design","resource":{"releaseState":"released"}}]}}' > '${f.orca}/orchestration_worker-list'`,
+        f.orca,
+      )
+      process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+      f.cli('tick')
+      const released = status !== 'dispatched'
+      assert.equal(f.calls(f.orca).includes('worker-release --dispatch ctx_design'), released)
+      assert.ok(!f.calls(f.orca).includes('worker-stop --dispatch ctx_design'))
+      assert.equal(readState('main').issues[i.key]?.phase, released ? 'failed' : 'running')
+      assert.equal(existsSync(i.statusDir), !released)
+    } finally {
+      f.cleanup()
+    }
+  })
 test('AU46 closed coordinator is rebound before waiting', () => {
   const f = runtimeFixture()
   try {
