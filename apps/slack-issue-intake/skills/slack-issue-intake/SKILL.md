@@ -3,7 +3,7 @@ name: slack-issue-intake
 description: >
   Use when the user asks about "slack-issue-intake", "Slack から Issue", "Issue 起票フォーム", "起票の状態",
   or needs setup, activation, status, retry, inspection, or token registration for Slack form issue intake.
-argument-hint: "[init | form | mention | enable | status | retry <id> | inspect | token]"
+argument-hint: "[init | form | mention | report | enable | status | retry <id> | inspect | token]"
 ---
 
 ## Output Language
@@ -40,6 +40,7 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 - No argument, or setup requested: **init**.
 - Place the form button in the channel: **form**.
 - Choose or change the user group mentioned in status notifications: **mention**.
+- Configure or change periodic reports: **report**.
 - Activate the automation: **enable**.
 - Check progress or failures: **status**.
 - Retry a failed item: **retry**.
@@ -50,7 +51,7 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 
 Recommend that the user run `make setup` in a terminal from the plugin directory; it is interactive and cannot run in
 the agent's shell. It creates the Slack app through the Slack CLI and then itself resolves the channel, checks the
-repository, runs `init`, asks for the mention group (**mention**), places the form buttons (**form**), asks for the
+repositories, runs `init`, asks for the mention group (**mention**) and periodic report settings (**report**), places the form buttons (**form**), asks for the
 permission approval, and runs **enable**. Use the manual steps below only when the user cannot use the Slack CLI or `make setup` stopped on a step it
 cannot complete.
 
@@ -58,19 +59,19 @@ cannot complete.
    Japanese. The form is built by hand in Workflow Builder. Ask whether the Slack preparation is complete. The app
    must be internal and not distributed.
 2. Run `status`. If `token=missing`, follow **token** below.
-3. Ask in one AskUserQuestion round for the channel ID, repository (`owner/name`), and interval in minutes.
+3. Ask in one AskUserQuestion round for the channel ID, repository list (`owner/name`), default repository, each repository's form visibility and existing-issue policy (`thread` or `skip`), and interval in minutes.
    The repository default is `gh repo view --json nameWithOwner -q .nameWithOwner` when available. Default interval
    is 5; valid choices are 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60.
-4. Run `init --channel <id> --repo <owner/name> --every <minutes>`. It registers a disabled automation. Exit 2 means
+4. Run `init --channel <id> --repo <owner/name> [--repo <owner/name> ...] --default-repo <owner/name> --existing <owner/name>=<thread|skip> [--hide-form <owner/name>] --every <minutes>`. Repeat `--existing` and `--hide-form` per repository. The default repository is always shown in forms, so `--hide-form` has no effect on it. It registers a disabled automation. Exit 2 means
    flags or token setup; exit 1 explains invitation, gh authentication, public repository, labels, Orca, changed
    destination, or a busy lease. For a public repository, explain that Slack content would become public and ask
-   before retrying with `--allow-public`. A different destination requires backing up the home and setting up again.
+   before retrying with `--allow-public`. Repositories can be added but cannot be removed; the default can change within the list. Changing the channel requires backing up the home and setting up again.
 5. Run `permissions --show`, display the proposed project rules and secret-file denies, and obtain approval before
    `permissions --apply`. Then continue to **enable**.
 
 ## form
 
-1. `make setup` runs `form` as its step 7. Run it by hand only to place the buttons again. There are three forms, one
+1. `make setup` runs `form` as its step 8. Run it by hand only to place the buttons again. There are three forms, one
    per category (bug, request, feature). For each, it creates the workflow's shortcut trigger with
    `slack trigger create` and limits it to members of the configured channel with `slack trigger access`. Then it makes
    all three featured workflows of the channel with one `workflows.featured.add` call, so members see three buttons
@@ -99,6 +100,15 @@ an ID starting with `S`) and run `mention --group <value>`; run `mention --none`
 `mention=<ID>` or `mention=none`. Exit 1 explains a missing `usergroups:read` scope (common for hand-made apps: add the
 scope and reinstall the app, or enter the group ID instead) or a group that was not found. Exit 2 means no setup or
 wrong flags.
+
+## report
+
+Run `report --source <path|none> --channel <ID|name|default> --daily-at HH:MM` to configure periodic reports.
+`--source` is required; `none` disables reports. Omitting the other flags keeps their current values; `default`
+uses the intake channel. The default daily time is 09:00 in the Mac's local time. Setup step 7 offers sources
+found under `~/.claude/config/orca-team-dispatch-task/auto/<name>/report.json`.
+Exit 2 means invalid flags, time, or missing configuration/token; exit 1 explains a missing source, unresolved
+channel, invitation, busy lease, or a changed configuration. Report settings do not change the intake destination.
 
 ## enable
 
@@ -150,7 +160,7 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
   duplicate prevention assumes all senders run on that Mac, GitHub settles accepted requests within 90 seconds
   after every sender stops, and the gh account stays unchanged.
 - `skipped_precheck` entries accumulate in Orca history. Rare duplicate Slack replies after crashes are possible.
-- Every poll, after intake and only when at least 10 seconds of its budget remain, reads the `from-slack` issues and
+- Every poll, after intake and only when at least 10 seconds of its budget remain, reads `from-slack` and `slack-thread` issues from all configured repositories and
   writes status label and open/closed changes to the original Slack thread without starting Claude. Labels:
   Backlog, Ready, Ready_Eng, In progress, In review, Pending, Done, Failed (shared with orca-team-dispatch-task).
   A change counts as made by AI only when, among the new comments whose author is an owner, member, collaborator, or
@@ -159,4 +169,12 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
   moving the label, so a newer marker that does not match an unchanged label is left for the next poll. Done and
   closing in separate polls produce one completion message. Issues that existed before this feature are recorded
   silently the first time they are seen. Failures show as `partial=true` without changing the exit code.
+- Existing-issue policy is per repository: `skip` ignores issues not created from Slack; `thread` creates a
+  top-level management post and adds `slack-thread`. Old issues need a status label; newly created issues do not.
+  Adoption scans updates plus a rotating creation-order sweep, reserving one of five slots for the sweep.
+  Pending posts and labels resume from the database, including closed issues; unreadable rows are retained.
+  Each phase tries at most five rows and moves attempted rows to the back of the wait order.
+- Periodic reports show running issues, the queue, and host capacity. Poll runs reporting before adoption,
+  updates one post only when its rendered content changes, and posts anew once daily. Stale data warns that
+  `--auto` has stopped. `report_channel` keeps old message metadata from being used in a different channel.
 - To stop: `orca automations edit <id> --disabled`.

@@ -54,7 +54,7 @@ export const renderGuide =
 \n${FORM_KINDS.map(formSteps).join('\n\n')}
 \n公開したら、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で${FORM_KINDS.length}つすべてを選び、「注目」を押します。メンバーには入力欄の所にボタンが出ます。
 5. チャンネル名 → 詳細の最下部からチャンネルIDを控えます。
-6. \`${CLI} init --channel <ID> --repo <owner/name> --every 5\` を実行します。automation は無効で登録されます。
+6. \`${CLI} init --channel <ID> --repo <owner/name> --every 5\` を実行します。automation は無効で登録されます。受け付けるリポジトリが 2 つ以上なら \`--repo\` を並べ、\`--default-repo <owner/name>\` で既定の起票先を決めます。Slack から作っていない Issue をスレッドで管理するリポジトリには \`--existing <owner/name>=thread\` を付けます。
 7. \`${CLI} permissions --show\` で内容を確認し、承認してから \`${CLI} permissions --apply\` を実行します。
 8. \`${CLI} enable\` を実行します。受け継ぐ許可があれば内容を確認し、承認したときだけ \`--accept-inherited\` を付けます。
 Orca の Claude 起動引数へ --permission-mode や --allowedTools など許可を広げるものを入れないでください。
