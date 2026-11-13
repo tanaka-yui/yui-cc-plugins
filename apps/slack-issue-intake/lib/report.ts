@@ -17,7 +17,7 @@ import { asArray, asObject } from './json.ts'
 import { renewLease } from './lease.ts'
 import { claudeHome } from './paths.ts'
 import { maskSecrets } from './secrets.ts'
-import { postMessage, updateMessage } from './slack-api.ts'
+import { createSlackClient, postMessage, updateMessage } from './slack-api.ts'
 import { escapeMrkdwn } from './slack-text.ts'
 
 import { createHash } from 'node:crypto'
@@ -127,6 +127,8 @@ export const postReport = async (ctx: DriveContext): Promise<ReportResult> => {
   const report = readReport(setting.source)
   if (!report)
     return { posted: 'failed', errors: [maskSecrets(fill(REPORT_TEXT.unreadable, { path: setting.source }))] }
+  // 報告先だけの失敗を、起票・既存 Issue の取り込みに使うクライアントへ持ち越さない
+  const slack = createSlackClient(rt.token)
   const errors: string[] = []
   const failed = (): ReportResult => ({ posted: 'failed', errors })
   const valid = (): boolean => {
@@ -155,7 +157,7 @@ export const postReport = async (ctx: DriveContext): Promise<ReportResult> => {
   }
   const post = async (): Promise<ReportResult> => {
     if (!valid()) return failed()
-    const r = await postMessage(rt.slack, channel, text, ctx.deadline)
+    const r = await postMessage(slack, channel, text, ctx.deadline)
     if (!r.ok) {
       errors.push(maskSecrets(r.error))
       return failed()
@@ -178,7 +180,7 @@ export const postReport = async (ctx: DriveContext): Promise<ReportResult> => {
     return post()
   if (getMeta(rt.db, META_REPORT_HASH) === hash) return { posted: 'unchanged', errors }
   if (!valid()) return failed()
-  const r = await updateMessage(rt.slack, channel, ts, text, ctx.deadline)
+  const r = await updateMessage(slack, channel, ts, text, ctx.deadline)
   if (r.ok) return save({ [META_REPORT_HASH]: hash }) ? { posted: 'updated', errors } : failed()
   if (r.error === 'message_not_found') return post()
   errors.push(maskSecrets(r.error))

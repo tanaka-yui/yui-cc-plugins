@@ -12,7 +12,7 @@ import {
   SLACK_APP_NAME,
   SLACK_BOT_SCOPES,
 } from './defaults.ts'
-import { REPORTER_SLOT, renderKindMessage } from './form-message.ts'
+import { REPO_SLOT, REPORTER_SLOT, renderKindMessage } from './form-message.ts'
 import { manifestObject } from './guide.ts'
 import { asObject } from './json.ts'
 
@@ -60,7 +60,7 @@ export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObje
             { name: FIELD.title, title: FIELD_LABELS.title, type: 'string' },
             { name: FIELD.priority, title: FIELD_LABELS.priority, type: 'string', enum: [...PRIORITIES] },
             ...(repos.length >= FORM_REPO_FIELD_MIN_REPOS
-              ? [{ name: 'repo', title: FIELD_LABELS.repo, type: 'string', enum: [...repos] }]
+              ? [{ name: REPO_SLOT, title: FIELD_LABELS.repo, type: 'string', enum: [...repos] }]
               : []),
             ...kind.items.map((item) => ({
               name: item.name,

@@ -63,8 +63,8 @@ export const run = async (argv: string[]): Promise<void> => {
         channel = found.id
       }
     }
-    const latest = await fetchLatest(slack, channel ?? rt.config.channel, 1, deadline)
-    if (!latest.ok)
+    const latest = source === null ? null : await fetchLatest(slack, channel ?? rt.config.channel, 1, deadline)
+    if (latest && !latest.ok)
       throw new Error(
         latest.error === 'not_in_channel'
           ? `チャンネルにボットを招待してください: /invite @${SLACK_APP_NAME}`
@@ -77,7 +77,7 @@ export const run = async (argv: string[]): Promise<void> => {
     saveConfig(rt.home, { ...config, report })
     if (!writeMetaFenced(rt.db, lease.token, new Date().toISOString(), { [META_REPORT_ASKED]: '1' }))
       throw new Error('lease lost')
-    console.log(`report=${source ?? 'none'} channel=${channel ?? 'default'} daily_at=${report.dailyAt}`)
+    console.log(maskSecrets(`report=${source ?? 'none'} channel=${channel ?? 'default'} daily_at=${report.dailyAt}`))
   } catch (e) {
     console.error(maskSecrets(e instanceof Error ? e.message : String(e)))
     process.exitCode = 1

@@ -444,6 +444,11 @@ test('SU26 初回に複数のリポジトリを設定し、フォームを deplo
     { name: 'acme/web', form: true, existing: 'thread' },
   ])
   assert.equal(loadConfig(f.home)?.defaultRepo, 'acme/app')
+  const db = openDb(homePaths(f.home).db)
+  assert.ok(db.prepare("SELECT value FROM meta WHERE key='adopt_after:acme/web'").get()?.value)
+  db.close()
+  for (const repo of ['acme/app', 'acme/web'])
+    assert.ok(ghCalls(f.gh.log).some((c) => c.argv[0] === 'label' && c.argv[1] === 'list' && c.argv.includes(repo)))
   assert.equal(f.cliCalls('deploy').length, 2)
   const { manifestHash } = await import('../lib/slack-cli.ts')
   assert.equal(readFileSync(slackProject(f.home).manifestHash, 'utf8').trim(), manifestHash(['acme/app', 'acme/web']))
@@ -474,4 +479,5 @@ test('SU28 報告の材料を見つけて設定し、無ければ案内する', 
   const skipped = await empty.setup(FULL_INPUT)
   assert.equal(skipped.code, 0, skipped.stderr + skipped.stdout)
   assert.ok(skipped.stdout.includes('--auto の報告の材料が見つかりません'))
+  assert.equal(loadConfig(empty.home)?.report.source, null)
 })

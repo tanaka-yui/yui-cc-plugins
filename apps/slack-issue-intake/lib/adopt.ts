@@ -231,11 +231,15 @@ export const adoptExisting = async (ctx: DriveContext): Promise<AdoptReport> => 
     }
     const status =
       (currentStatus(issue.labels) ?? MSG_STATUS_NONE) + (issue.state === 'closed' ? ADOPTED_CLOSED_NOTE : '')
-    const text = MSG_ADOPTED.replace('{repo}', row.repo)
-      .replace('{number}', String(row.issueNumber))
-      .replace('{title}', escapeMrkdwn(maskSecrets(issue.title)))
-      .replace('{url}', issue.url)
-      .replace('{status}', status)
+
+    const values: Record<string, string> = {
+      repo: row.repo,
+      number: String(row.issueNumber),
+      title: escapeMrkdwn(maskSecrets(issue.title)),
+      url: issue.url,
+      status,
+    }
+    const text = MSG_ADOPTED.replace(/\{(\w+)\}/g, (match, key: string) => values[key] ?? match)
     if (!valid()) return report
     const posted = await postMessage(rt.slack, row.channel, text, ctx.deadline)
     if (!posted.ok) {

@@ -7,7 +7,7 @@ import { fakeGh, ghCalls, historyHandler, runCliAsync, seedIssues, setupHome, st
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import type { RepoSetting } from '../lib/config.ts'
+import type { ReportSetting, RepoSetting } from '../lib/config.ts'
 import type { JsonObject } from '../lib/json.ts'
 
 const AFTER = '2026-11-11T23:00:00.000Z'
@@ -26,23 +26,35 @@ const fixture = async (
   t: { after: (fn: () => Promise<void>) => void },
   repos: RepoSetting[] = [{ name: 'acme/app', form: true, existing: 'thread' }],
   after = true,
+  options: {
+    report?: ReportSetting
+    slack?: (r: import('./helpers.ts').SlackRequest) => import('./helpers.ts').SlackReply | null
+  } = {},
 ) => {
   const home = tempHome()
   const gh = fakeGh(tempHome())
   const messages: JsonObject[] = []
   const history = historyHandler(messages, 100)
   let count = 0
-  const server = await startSlack((r): import('./helpers.ts').SlackReply =>
-    r.method === 'chat.postMessage'
-      ? { json: { ok: true, ts: `99.${++count}` } }
-      : r.method === 'conversations.replies'
-        ? { json: { ok: true, messages: [] } }
-        : history(r),
+  const server = await startSlack(
+    (r): import('./helpers.ts').SlackReply =>
+      options.slack?.(r) ??
+      (r.method === 'chat.postMessage'
+        ? { json: { ok: true, ts: `99.${++count}` } }
+        : r.method === 'conversations.replies'
+          ? { json: { ok: true, messages: [] } }
+          : history(r)),
   )
   t.after(() => server.close())
   const env = {
     ...gh.env,
-    ...(await setupHome(home, { apiBase: server.url, ghPath: gh.ghPath, ghState: gh.state, repos })),
+    ...(await setupHome(home, {
+      apiBase: server.url,
+      ghPath: gh.ghPath,
+      ghState: gh.state,
+      repos,
+      ...(options.report ? { report: options.report } : {}),
+    })),
   }
   const db = () => openDb(homePaths(home).db)
   const meta = (key: string, value?: string) => {
@@ -99,7 +111,10 @@ test('AD1/AD5 新しい Issue を管理し、変更はそのスレッドへ通�
   f.messages.push(textMessage(tsAt(1000), post.params.text ?? '', { user: BOT_USER, bot_id: BOT_ID }))
   f.setIssues([{ ...issue(1, ['slack-thread', 'Ready']), updated_at: '2026-11-12T01:00:00Z' }])
   const next = await f.poll()
-  assert.match(next.stdout, /inserted=0/)
+  assert.match(next.stdout, /inserted=0 rejected=0/)
+  const db = f.db()
+  assert.equal(db.prepare('SELECT count(*) AS n FROM submissions').get()?.n, 0)
+  db.close()
   assert.match(f.posts()[1]?.params.text ?? '', /ステータスが （なし） から Ready に変わりました/)
   assert.equal(f.posts()[1]?.params.thread_ts, f.rows()[0]?.ts)
 })
@@ -279,4 +294,51 @@ test('AD13 ラベル失敗が続いても 5 回以下で止め、他の行に順
       .filter((r) => r.repo === 'acme/app')
       .every((r) => r.labeled === 0),
   )
+})
+
+test('AD14 題名のプレースホルダーとドル記号を再解釈しない', async (t) => {
+  const f = await fixture(t)
+  const titles = [
+    ['Show {status} in {url} page', 'Show {status} in {url} page'],
+    ["Quote $' handling", "Quote $' handling"],
+    ['Cost $& fee', 'Cost $&amp; fee'],
+    ['Quote $` handling', 'Quote $` handling'],
+  ]
+  f.setIssues(titles.map(([title], i) => ({ ...issue(i + 1, ['Ready']), title: title ?? '' })))
+  const r = await f.poll()
+  assert.equal(r.code, 1, r.stderr)
+  assert.equal(f.top().length, titles.length)
+  for (const [i, [, expected]] of titles.entries()) {
+    assert.equal(
+      f.top()[i]?.params.text,
+      `📌 この Issue をスレッドで管理します: acme/app#${i + 1} ${expected}\nhttps://github.com/acme/app/issues/${i + 1}\nステータス: Ready`,
+    )
+  }
+})
+test('AD15 報告先の投稿・更新に失敗しても既存 Issue の投稿とラベルを進める', async (t) => {
+  const { join } = await import('node:path')
+  for (const method of ['chat.postMessage', 'chat.update'])
+    for (const error of ['not_in_channel', 'channel_not_found']) {
+      const f = await fixture(t, undefined, true, {
+        report: {
+          channel: 'C0OTHER001',
+          dailyAt: '23:59',
+          source: join(import.meta.dirname, 'fixtures/auto-report.json'),
+        },
+        slack: (r) =>
+          r.method === method && r.params.channel === 'C0OTHER001' ? { json: { ok: false, error } } : null,
+      })
+      if (method === 'chat.update') {
+        f.meta('report_ts', '55.1')
+        f.meta('report_channel', 'C0OTHER001')
+        f.meta('report_hash', 'old')
+      }
+      f.setIssues([issue(1, [], 'acme/app', '2026-11-11T23:30:00Z')])
+      const r = await f.poll()
+      assert.match(r.stdout, /errors=1 partial=true .*adopted=1 report=failed/, r.stderr)
+      assert.equal(r.code, 1)
+      assert.ok(r.stderr.includes(error))
+      assert.equal(f.top().filter((p) => p.params.channel === CHANNEL).length, 1)
+      assert.equal(f.rows()[0]?.labeled, 1)
+    }
 })

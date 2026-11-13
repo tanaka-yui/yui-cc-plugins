@@ -42,7 +42,9 @@ test('RC1/RC2 report は名前・ID・default と source none を保存し、不
   const before = loadConfig(home)
   assert.equal((await report(['--source', source, '--daily-at', '25:00'])).code, 2)
   assert.deepEqual(loadConfig(home), before)
-  assert.equal((await report(['--source', source, '--channel', 'missing'])).code, 1)
+  const missing = await report(['--source', source, '--channel', 'missing'])
+  assert.equal(missing.code, 1)
+  assert.ok(missing.stderr.includes('チャンネルが見つかりません'))
   assert.deepEqual(loadConfig(home), before)
   assert.equal((await report(['--source', source, '--channel', 'issue-report'])).code, 0)
   assert.equal(loadConfig(home)?.report.channel, 'C0REPORT01')
@@ -52,11 +54,28 @@ test('RC1/RC2 report は名前・ID・default と source none を保存し、不
   const rejected = await report(['--source', source, '--channel', 'C0OTHER001'])
   assert.equal(rejected.code, 1)
   assert.ok(rejected.stderr.includes('/invite @Issue Intake'))
-  historyError = false
+  const requestsBeforeDisable = slack.requests.length
   assert.equal((await report(['--source', 'none'])).code, 0)
+  assert.equal(slack.requests.length, requestsBeforeDisable)
+  historyError = false
   assert.equal(loadConfig(home)?.report.source, null)
   assert.equal((await report(['--source', join(home, 'missing')])).code, 1)
   const db = openDb(homePaths(home).db)
   assert.equal(getMeta(db, 'report_asked'), '1')
   db.close()
+})
+
+test('RC3 report の出力ではパス内のトークン形式の文字列を伏せる', async (t) => {
+  const home = tempHome()
+  const gh = fakeGh(tempHome())
+  const source = join(home, 'xoxb-red-test-token.json')
+  writeFileSync(source, '{}')
+  const slack = await startSlack(() => ({ json: { ok: true, messages: [] } }))
+  t.after(() => slack.close())
+  const env = { ...gh.env, ...(await setupHome(home, { apiBase: slack.url, ghPath: gh.ghPath, ghState: gh.state })) }
+  const r = await runCliAsync(['report', '--source', source], env)
+  assert.equal(r.code, 0, r.stderr)
+  assert.ok(!r.stdout.includes('xoxb-red-test-token'))
+  assert.ok(r.stdout.includes('xoxb-***'))
+  assert.equal(loadConfig(home)?.report.source, source)
 })
