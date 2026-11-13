@@ -152,9 +152,18 @@ export const startIdleProcess = async (): Promise<{
 
 export const setupHome = async (
   home: string,
-  opts: { apiBase: string; ghPath: string; ghState: string; cursor?: string; acceptAfter?: string },
+  opts: {
+    apiBase: string
+    ghPath: string
+    ghState: string
+    cursor?: string
+    acceptAfter?: string
+    repos?: import('../lib/config.ts').RepoSetting[]
+    defaultRepo?: string
+    report?: import('../lib/config.ts').ReportSetting
+  },
 ): Promise<Record<string, string>> => {
-  const { saveConfig } = await import('../lib/config.ts')
+  const { saveConfig, DEFAULT_REPORT } = await import('../lib/config.ts')
   const { saveToken } = await import('../lib/secrets.ts')
   const { homePaths, pluginRoot } = await import('../lib/paths.ts')
   const { openDb, setMeta } = await import('../lib/db.ts')
@@ -162,7 +171,9 @@ export const setupHome = async (
   saveConfig(home, {
     version: 1,
     channel: f.CHANNEL,
-    repo: 'acme/app',
+    repos: opts.repos ?? [{ name: 'acme/app', form: true, existing: 'skip' }],
+    defaultRepo: opts.defaultRepo ?? 'acme/app',
+    report: opts.report ?? DEFAULT_REPORT,
     everyMinutes: 5,
     ghPath: opts.ghPath,
     pluginRoot: pluginRoot(),

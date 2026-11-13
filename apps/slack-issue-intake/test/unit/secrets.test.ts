@@ -12,7 +12,9 @@ import type { Config } from '../../lib/config.ts'
 export const config: Config = {
   version: 1,
   channel: 'C0123456789',
-  repo: 'acme/app',
+  repos: [{ name: 'acme/app', form: true, existing: 'skip' }],
+  defaultRepo: 'acme/app',
+  report: { channel: null, dailyAt: '09:00', source: null },
   everyMinutes: 5,
   ghPath: '/bin/gh',
   pluginRoot: '/plugin',

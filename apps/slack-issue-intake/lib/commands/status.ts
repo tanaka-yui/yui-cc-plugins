@@ -15,7 +15,7 @@ export const run = (argv: string[]): void => {
   console.log(`config=${paths.config}`)
   if (config)
     console.log(
-      `channel=${config.channel} repo=${config.repo} every=${config.everyMinutes}m github=${config.github.login}`,
+      `channel=${config.channel} repo=${config.repos.map((r) => r.name).join(',')} every=${config.everyMinutes}m github=${config.github.login}`,
     )
   console.log(
     `token=${loadToken(paths.secrets) ? 'registered' : 'missing'}\nautomation=${config?.orca.automationId ?? 'none'}`,

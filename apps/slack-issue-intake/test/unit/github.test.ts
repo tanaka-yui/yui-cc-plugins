@@ -127,6 +127,7 @@ test('GH11 ensureLabels は既存のラベル名を大文字小文字を区別�
     'priority: middle',
     'priority: low',
     'from-slack',
+    'slack-thread',
   ].join(',')
   const r = await ensureLabels(createGh(fake.ghPath), 'acme/app', true, D())
   delete process.env.FAKE_GH_LABELS

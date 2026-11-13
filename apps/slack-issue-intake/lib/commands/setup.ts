@@ -15,7 +15,7 @@ import {
   FORM_META_TRIGGER_ID,
   formMetaKey,
   LABEL_WRITE_PERMISSIONS,
-  META_LABELS_HASH,
+  labelsHashKey,
   MSG_CONFIG_BROKEN,
   MSG_PUSH_REQUIRED,
   NODE_MIN_VERSION,
@@ -338,25 +338,25 @@ const wizard = async (): Promise<number> => {
     say(
       fill(SETUP_TEXT.currentConfig, {
         channel: existing.channel,
-        repo: existing.repo,
+        repo: existing.repos.map((r) => r.name).join('、'),
         every: String(existing.everyMinutes),
       }),
     )
     const every = pickEvery(p, existing.everyMinutes)
     if (!every.ok) return every.code
     // プラグインの更新でラベルが増えたときは、間隔が同じでも init でラベルを作り直す
-    const labelsCurrent = readMeta(paths.db, META_LABELS_HASH) === labelsHash()
+    const labelsCurrent = existing.repos.every((r) => readMeta(paths.db, labelsHashKey(r.name)) === labelsHash())
     if (every.value === existing.everyMinutes && labelsCurrent) heading(5, SETUP_TEXT.stepInit, true)
     else {
       heading(5, SETUP_TEXT.stepInit)
-      const code = await reinit(p, ready.ghPath, existing.repo, ['--every', String(every.value)])
+      const code = await reinit(p, ready.ghPath, existing.defaultRepo, ['--every', String(every.value)])
       if (code !== 0) return code
     }
   } else if (existing) {
     heading(3, SETUP_TEXT.stepChannel, true)
     heading(4, SETUP_TEXT.stepRepo, true)
     heading(5, SETUP_TEXT.stepInit)
-    const code = await reinit(p, ready.ghPath, existing.repo, [])
+    const code = await reinit(p, ready.ghPath, existing.defaultRepo, [])
     if (code !== 0) return code
   } else {
     heading(3, SETUP_TEXT.stepChannel)

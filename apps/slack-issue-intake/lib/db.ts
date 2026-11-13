@@ -1,4 +1,4 @@
-import { SQLITE_BUSY_TIMEOUT_MS, USER_NAME_TTL_HOURS } from './defaults.ts'
+import { labelsHashKey, META_LABELS_HASH, SQLITE_BUSY_TIMEOUT_MS, USER_NAME_TTL_HOURS } from './defaults.ts'
 import { ensurePrivateDir } from './fs.ts'
 import { maskSecrets } from './secrets.ts'
 import { compareTs, tsMicro } from './slack-text.ts'
@@ -80,6 +80,16 @@ export const inTransaction = <T>(db: Db, fn: () => T): T => {
     throw e
   }
 }
+export const migrateToRepos = (db: Db, token: string, defaultRepo: string, now: string): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return false
+    const old = getMeta(db, META_LABELS_HASH)
+    if (old !== null) {
+      if (getMeta(db, labelsHashKey(defaultRepo)) === null) setMeta(db, labelsHashKey(defaultRepo), old)
+      deleteMeta(db, META_LABELS_HASH)
+    }
+    return true
+  })
 export const leaseValid = (db: Db, token: string, now: string): boolean =>
   Boolean(db.prepare('SELECT 1 FROM lease WHERE id=1 AND token=? AND expires_at>?').get(token, now))
 export const openDb = (file: string): Db => {

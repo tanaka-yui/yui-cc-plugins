@@ -9,7 +9,7 @@ import {
   openDb,
   setMeta,
 } from '../lib/db.ts'
-import { META_LABELS_HASH } from '../lib/defaults.ts'
+import { labelsHashKey, META_LABELS_HASH } from '../lib/defaults.ts'
 import { labelsHash } from '../lib/github.ts'
 import { acquireLease } from '../lib/lease.ts'
 import { homePaths } from '../lib/paths.ts'
@@ -202,6 +202,18 @@ test('PO27 labels_hash が今と違えば Backlog を付けずに起票し、一
   assert.equal(updated.read(b)?.state, 'created')
   assert.ok(labelsOf(updated.gh.log).includes('Backlog'))
   assert.equal(updated.status(42)?.status, 'Backlog')
+  const migrated = openDb(homePaths(updated.home).db)
+  assert.equal(getMeta(migrated, META_LABELS_HASH), null)
+  assert.equal(getMeta(migrated, labelsHashKey('acme/app')), labelsHash())
+  migrated.close()
+  const current = await fixture(t)
+  const currentDb = openDb(homePaths(current.home).db)
+  setMeta(currentDb, labelsHashKey('acme/app'), labelsHash())
+  currentDb.close()
+  const c = await seedSubmission(current.home, seed)
+  assert.equal((await current.poll()).code, 1)
+  assert.equal(current.read(c)?.state, 'created')
+  assert.ok(labelsOf(current.gh.log).includes('Backlog'))
 })
 test('PO7/PO23 応答喪失は死活確認から90秒待ち、アカウント復帰後に既存Issueを採用', async (t) => {
   const f = await fixture(t)

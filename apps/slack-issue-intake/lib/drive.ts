@@ -21,9 +21,9 @@ import {
   ERROR_LEASE_LOST,
   ERROR_RATELIMITED,
   ERROR_STATE_CHANGED,
+  labelsHashKey,
   MAX_ACTION_ATTEMPTS,
   MAX_TITLE_CHARS,
-  META_LABELS_HASH,
   MSG_CREATED,
   MSG_CREATED_TIMEOUT,
   MSG_FAILED,
@@ -84,7 +84,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
   }
   const success = (patch: SubmissionPatch): DriveOutcome =>
     update({ ...patch, attempts: 0, lastError: null }) ? out() : changed()
-  const withStatus = (): boolean => getMeta(rt.db, META_LABELS_HASH) === labelsHash()
+  const withStatus = (): boolean => getMeta(rt.db, labelsHashKey(rt.config.defaultRepo)) === labelsHash()
   // Issue ができたら、ステータスの最初の記録も同じトランザクションで残す（通知はこの記録との差で出す）
   const created = (issue: { url: string; number: number }, backlog: boolean): DriveOutcome =>
     transitionWithStatus(
@@ -139,7 +139,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
     const since = new Date(Date.parse(started) - CREATE_LOOKBACK_MINUTES * 60000).toISOString()
     const found = await findIssueByMarker(
       rt.gh,
-      rt.config.repo,
+      rt.config.defaultRepo,
       issueMarker(s.channel, s.ts),
       since,
       login,
@@ -170,7 +170,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
       const title = [...neutralizeMentions(maskSecrets(s.fields.title))]
       const result = await createIssue(
         rt.gh,
-        rt.config.repo,
+        rt.config.defaultRepo,
         {
           title:
             title.length > MAX_TITLE_CHARS

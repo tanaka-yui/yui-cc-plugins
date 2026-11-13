@@ -90,7 +90,7 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
       const r = await rt.gh(
         [
           'api',
-          `repos/${rt.config.repo}/issues/${n}/comments?per_page=${ISSUE_SCAN_PER_PAGE}&page=${page}${since ? `&since=${since}` : ''}`,
+          `repos/${rt.config.defaultRepo}/issues/${n}/comments?per_page=${ISSUE_SCAN_PER_PAGE}&page=${page}${since ? `&since=${since}` : ''}`,
         ],
         ctx.deadline,
       )
@@ -179,7 +179,7 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
     const r = await rt.gh(
       [
         'api',
-        `repos/${rt.config.repo}/issues?labels=${SOURCE_LABEL}&state=all&sort=updated&direction=asc&per_page=${ISSUE_SCAN_PER_PAGE}&page=${page}${since ? `&since=${since}` : ''}`,
+        `repos/${rt.config.defaultRepo}/issues?labels=${SOURCE_LABEL}&state=all&sort=updated&direction=asc&per_page=${ISSUE_SCAN_PER_PAGE}&page=${page}${since ? `&since=${since}` : ''}`,
       ],
       ctx.deadline,
     )

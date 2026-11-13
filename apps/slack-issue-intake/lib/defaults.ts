@@ -187,6 +187,11 @@ export const FORM_KINDS: readonly FormKind[] = [
   },
 ]
 export const SOURCE_LABEL = 'from-slack'
+export const ADOPTED_LABEL = 'slack-thread'
+export const DEFAULT_DAILY_AT = '09:00'
+export const DAILY_AT_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/
+export const labelsHashKey = (repo: string): string => `${META_LABELS_HASH}:${repo}`
+export const adoptAfterKey = (repo: string): string => `adopt_after:${repo}`
 // ステータスラベル（orca-team-dispatch-task と共通。spec 5.1）。並びは、2 つ以上付いているときに使う優先順。
 // slug は Issue のコメントのマーカー（<!-- orca-auto:<slug>:<generation>:<event> -->）に書く形
 export const STATUS_LABELS: ReadonlyArray<{ name: string; slug: string; color: string; description: string }> = [
@@ -242,6 +247,7 @@ export const LABEL_SPECS: ReadonlyArray<{ name: string; color: string; descripti
   { name: 'priority: middle', color: 'fbca04', description: '優先度 middle' },
   { name: 'priority: low', color: '0e8a16', description: '優先度 low' },
   { name: 'from-slack', color: '4a154b', description: 'slack-issue-intake が Slack の投稿から作った Issue' },
+  { name: ADOPTED_LABEL, color: '6f42c1', description: 'slack-issue-intake が Slack のスレッドで管理している Issue' },
   ...STATUS_LABELS.map(({ name, color, description }) => ({ name, color, description })),
 ]
 export const MAX_TITLE_CHARS = 256

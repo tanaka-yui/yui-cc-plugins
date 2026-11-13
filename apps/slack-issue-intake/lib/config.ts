@@ -1,3 +1,4 @@
+import { CHANNEL_ID_PATTERN, DAILY_AT_PATTERN, DEFAULT_DAILY_AT, REPO_PATTERN } from './defaults.ts'
 import { readJson, writeJson } from './fs.ts'
 import { asObject, asString } from './json.ts'
 import { homePaths } from './paths.ts'
@@ -6,7 +7,9 @@ import type { Json } from './json.ts'
 export type Config = {
   version: 1
   channel: string
-  repo: string
+  repos: RepoSetting[]
+  defaultRepo: string
+  report: ReportSetting
   everyMinutes: number
   ghPath: string
   pluginRoot: string
@@ -17,6 +20,13 @@ export type Config = {
   // ステータスの通知でメンションする Slack のユーザーグループ。asked が false なら setup で聞く（0.3 の config には無い）
   mention: Mention
 }
+export type RepoSetting = { name: string; form: boolean; existing: 'thread' | 'skip' }
+export type ReportSetting = { channel: string | null; dailyAt: string; source: string | null }
+export const DEFAULT_REPORT: ReportSetting = { channel: null, dailyAt: DEFAULT_DAILY_AT, source: null }
+export const formRepos = (config: Config): string[] =>
+  config.repos.filter((r) => r.form || r.name === config.defaultRepo).map((r) => r.name)
+export const repoSetting = (config: Config, name: string): RepoSetting | null =>
+  config.repos.find((r) => r.name.toLowerCase() === name.toLowerCase()) ?? null
 export type Mention = { asked: boolean; groupId: string | null; handle: string | null }
 const NOT_ASKED: Mention = { asked: false, groupId: null, handle: null }
 const readMention = (value: Json | undefined): Mention | null => {
@@ -35,18 +45,55 @@ export const loadConfig = (home: string): Config | null => {
   const github = asObject(o.github)
   const orca = asObject(o.orca)
   if (o.version !== 1 || !slack || !github || !orca || typeof o.everyMinutes !== 'number') return null
-  for (const key of ['channel', 'repo', 'ghPath', 'pluginRoot']) if (!asString(o[key])) return null
+  for (const key of ['channel', 'ghPath', 'pluginRoot']) if (!asString(o[key])) return null
   for (const key of ['teamId', 'teamUrl', 'botUserId', 'botId']) if (!asString(slack[key])) return null
   if (!asString(github.login)) return null
   for (const key of ['workspaceSelector', 'automationId'])
     if (orca[key] !== null && asString(orca[key]) === null) return null
   if (o.acceptedPermissions !== null && asString(o.acceptedPermissions) === null) return null
+  const repos: RepoSetting[] = []
+  if (o.repos !== undefined) {
+    if (!Array.isArray(o.repos) || o.repos.length === 0) return null
+    for (const value of o.repos) {
+      const r = asObject(value)
+      if (
+        !r ||
+        typeof r.name !== 'string' ||
+        !REPO_PATTERN.test(r.name) ||
+        typeof r.form !== 'boolean' ||
+        (r.existing !== 'thread' && r.existing !== 'skip') ||
+        repos.some((old) => old.name.toLowerCase() === String(r.name).toLowerCase())
+      )
+        return null
+      repos.push({ name: r.name, form: r.form, existing: r.existing })
+    }
+  } else {
+    if (typeof o.repo !== 'string' || !REPO_PATTERN.test(o.repo)) return null
+    repos.push({ name: o.repo, form: true, existing: 'skip' })
+  }
+  const defaultRepo = o.repos !== undefined ? asString(o.defaultRepo) : asString(o.repo)
+  if (!defaultRepo || !repos.some((r) => r.name === defaultRepo)) return null
+  let report = DEFAULT_REPORT
+  if (o.report !== undefined) {
+    const r = asObject(o.report)
+    if (
+      !r ||
+      (r.channel !== null && (typeof r.channel !== 'string' || !CHANNEL_ID_PATTERN.test(r.channel))) ||
+      typeof r.dailyAt !== 'string' ||
+      !DAILY_AT_PATTERN.test(r.dailyAt) ||
+      (r.source !== null && (typeof r.source !== 'string' || !r.source.trim()))
+    )
+      return null
+    report = { channel: asString(r.channel), dailyAt: r.dailyAt, source: asString(r.source) }
+  }
   const mention = readMention(o.mention)
   if (!mention) return null
   return {
     version: 1,
     channel: String(o.channel),
-    repo: String(o.repo),
+    repos,
+    defaultRepo,
+    report,
     everyMinutes: o.everyMinutes,
     ghPath: String(o.ghPath),
     pluginRoot: String(o.pluginRoot),

@@ -1,15 +1,16 @@
 import { createArgs, editArgs, isAllowedEvery, repoAddArgs, shellQuote } from '../automation.ts'
 import { die, parseFlags, parseNow } from '../cli.ts'
-import { loadConfig, saveConfig } from '../config.ts'
-import { getMeta, openDb, setMeta } from '../db.ts'
+import { DEFAULT_REPORT, loadConfig, repoSetting, saveConfig } from '../config.ts'
+import { getMeta, migrateToRepos, openDb, setMeta } from '../db.ts'
 import {
   ADMIN_LEASE_MS,
+  adoptAfterKey,
   CHANNEL_ID_PATTERN,
   COMMAND_DEADLINE_MS,
   DEFAULT_EVERY_MINUTES,
   LABEL_WRITE_PERMISSIONS,
   LAUNCHER_FILE_MODE,
-  META_LABELS_HASH,
+  labelsHashKey,
   MSG_CONFIG_BROKEN,
   MSG_CONFIG_CHANGED,
   MSG_PUSH_REQUIRED,
@@ -91,7 +92,10 @@ export const run = async (argv: string[]): Promise<void> => {
     args: argv,
     options: {
       channel: { type: 'string' },
-      repo: { type: 'string' },
+      repo: { type: 'string', multiple: true },
+      'default-repo': { type: 'string' },
+      existing: { type: 'string', multiple: true },
+      'hide-form': { type: 'string', multiple: true },
       every: { type: 'string' },
       'allow-public': { type: 'boolean' },
       'dry-run': { type: 'boolean' },
@@ -107,19 +111,49 @@ export const run = async (argv: string[]): Promise<void> => {
     return
   }
   const channel = values.channel ?? base?.channel
-  const repo = values.repo ?? base?.repo
-  const every = Number(values.every ?? base?.everyMinutes ?? DEFAULT_EVERY_MINUTES)
-  if (!channel || !CHANNEL_ID_PATTERN.test(channel) || !repo || !REPO_PATTERN.test(repo) || !isAllowedEvery(every))
-    return die('init', '--channel、--repo、--every（60の約数）を確認してください')
-  if (base && (channel !== base.channel || repo !== base.repo)) {
+  const names = (values.repo ?? base?.repos.map((r) => r.name) ?? []).map((name) =>
+    base ? (repoSetting(base, name)?.name ?? name) : name,
+  )
+  if (
+    !names.length ||
+    names.some((name) => !REPO_PATTERN.test(name)) ||
+    new Set(names.map((name) => name.toLowerCase())).size !== names.length
+  )
+    return die('init', '--repo を確認してください')
+  if (base && (channel !== base.channel || base.repos.some((r) => !names.includes(r.name)))) {
     console.error(destinationError)
     process.exitCode = 1
     return
   }
+  const wantedDefault = values['default-repo'] ?? base?.defaultRepo ?? (names.length === 1 ? names[0] : null)
+  const defaultRepo = names.find((name) => name.toLowerCase() === wantedDefault?.toLowerCase())
+  if (!defaultRepo) return die('init', '--default-repo を一覧から指定してください')
+  const repos = names.map((name) => ({
+    name,
+    form: base ? (repoSetting(base, name)?.form ?? true) : true,
+    existing: base ? (repoSetting(base, name)?.existing ?? 'skip') : ('skip' as 'thread' | 'skip'),
+  }))
+  for (const input of values.existing ?? []) {
+    const parts = input.split('=')
+    const setting = repos.find((r) => r.name.toLowerCase() === parts[0]?.toLowerCase())
+    if (!setting || parts.length !== 2 || (parts[1] !== 'thread' && parts[1] !== 'skip'))
+      return die('init', '--existing <repo>=<thread|skip> を確認してください')
+    setting.existing = parts[1]
+  }
+  for (const name of values['hide-form'] ?? []) {
+    const setting = repos.find((r) => r.name.toLowerCase() === name.toLowerCase())
+    if (!setting) return die('init', '--hide-form のリポジトリを確認してください')
+    setting.form = false
+  }
+  const every = Number(values.every ?? base?.everyMinutes ?? DEFAULT_EVERY_MINUTES)
+  if (!channel || !CHANNEL_ID_PATTERN.test(channel) || !isAllowedEvery(every))
+    return die('init', '--channel、--repo、--every（60の約数）を確認してください')
   const config: Config = {
     version: 1,
     channel,
-    repo,
+    repos,
+    defaultRepo,
+    report: base?.report ?? DEFAULT_REPORT,
     everyMinutes: every,
     ghPath: base?.ghPath ?? '',
     pluginRoot: pluginRoot(),
@@ -161,6 +195,7 @@ export const run = async (argv: string[]): Promise<void> => {
   }
   try {
     if (JSON.stringify(loadConfig(home)) !== JSON.stringify(base)) throw new Error(MSG_CONFIG_CHANGED)
+    if (base && !migrateToRepos(db, lease.token, base.defaultRepo, now().toISOString())) throw new Error('lease lost')
     const slack = createSlackClient(token)
     const auth = await authTest(slack, deadline)
     if (!auth.ok) throw new Error(auth.error)
@@ -180,22 +215,28 @@ export const run = async (argv: string[]): Promise<void> => {
     const login = await viewerLogin(gh, deadline)
     if (!login) throw new Error('GitHub のログイン名が取れません')
     if (base && login !== base.github.login) throw new Error(destinationError)
-    const repository = await repoInfo(gh, repo, deadline)
-    if (!repository.ok) throw new Error(repository.error)
-    if (!repository.info.hasIssuesEnabled) throw new Error('リポジトリの Issues を有効にしてください')
-    if (repository.info.visibility === 'PUBLIC' && !values['allow-public'])
-      throw new Error('公開リポジトリです。内容を確認して --allow-public を付けてください')
-    if (!LABEL_WRITE_PERMISSIONS.includes(repository.info.viewerPermission)) throw new Error(MSG_PUSH_REQUIRED)
-    guard()
-    const labels = await ensureLabels(
-      gh,
-      repo,
-      LABEL_WRITE_PERMISSIONS.includes(repository.info.viewerPermission),
-      deadline,
-    )
-    if (!labels.ok) throw new Error(`${labels.error} ${labels.missing.join(',')}`)
-    guard()
-    setMeta(db, META_LABELS_HASH, labelsHash())
+    for (const repo of names) {
+      const repository = await repoInfo(gh, repo, deadline)
+      if (!repository.ok) throw new Error(repository.error)
+      if (!repository.info.hasIssuesEnabled) throw new Error('リポジトリの Issues を有効にしてください')
+      if (repository.info.visibility === 'PUBLIC' && !values['allow-public'])
+        throw new Error('公開リポジトリです。内容を確認して --allow-public を付けてください')
+      if (!LABEL_WRITE_PERMISSIONS.includes(repository.info.viewerPermission)) throw new Error(MSG_PUSH_REQUIRED)
+    }
+    const created: string[] = []
+    for (const repo of names) {
+      guard()
+      const labels = await ensureLabels(gh, repo, true, deadline)
+      if (!labels.ok) throw new Error(`${labels.error} ${labels.missing.join(',')}`)
+      guard()
+      setMeta(db, labelsHashKey(repo), labelsHash())
+      created.push(...labels.created)
+    }
+    for (const repo of repos) {
+      guard()
+      if (repo.existing === 'thread' && !getMeta(db, adoptAfterKey(repo.name)))
+        setMeta(db, adoptAfterKey(repo.name), now().toISOString())
+    }
     config.slack = {
       teamId: auth.info.teamId,
       teamUrl: auth.info.teamUrl,
@@ -213,7 +254,7 @@ export const run = async (argv: string[]): Promise<void> => {
     installLauncher(paths)
     const registered = register(home, config, paths, guard)
     console.log(
-      `config=${paths.config}\nlauncher=${paths.launcher}\nchannel=${channel}\nrepo=${repo}\nevery=${every}m\nlabels_created=${labels.created.join(',') || 'none'}\naccept_after=${getMeta(db, 'accept_after_ts')}\nworkspace=path:${paths.runDir}\n${registered}\nnext=permissions --show`,
+      `config=${paths.config}\nlauncher=${paths.launcher}\nchannel=${channel}\nrepo=${names.join(',')}\ndefault_repo=${defaultRepo}\nevery=${every}m\nlabels_created=${created.join(',') || 'none'}\naccept_after=${getMeta(db, 'accept_after_ts')}\nworkspace=path:${paths.runDir}\n${registered}\nnext=permissions --show`,
     )
   } catch (error) {
     console.error(maskSecrets(error instanceof Error ? error.message : String(error)))

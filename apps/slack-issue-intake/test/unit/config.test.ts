@@ -33,3 +33,35 @@ test('CF3 mention の無い 0.3 の config は asked:false として読め、保
   assert.equal(loadConfig(home), null)
   assert.ok(readFileSync(homePaths(home).config, 'utf8').includes('asked'))
 })
+
+test('CF4 0.4 の設定を複数リポジトリの形で保存する', () => {
+  const home = tempHome()
+  writeFileSync(homePaths(home).config, JSON.stringify(V03))
+  const c = loadConfig(home)
+  assert.ok(c)
+  assert.deepEqual(c.repos, [{ name: 'acme/app', form: true, existing: 'skip' }])
+  assert.equal(c.defaultRepo, 'acme/app')
+  assert.deepEqual(c.report, { channel: null, dailyAt: '09:00', source: null })
+  saveConfig(home, c)
+  const saved = JSON.parse(readFileSync(homePaths(home).config, 'utf8'))
+  assert.equal('repo' in saved, false)
+  assert.equal(saved.repos.length, 1)
+})
+test('CF5 不正なリポジトリ一覧と報告設定を受け付けない', () => {
+  const home = tempHome()
+  const repos = [{ name: 'acme/app', form: false, existing: 'skip' }]
+  const base = { ...V03, repos, defaultRepo: 'acme/app' }
+  for (const patch of [
+    { repos: [] },
+    { repos: [...repos, { ...repos[0], name: 'ACME/App' }] },
+    { repos: [{ ...repos[0], name: 'bad' }] },
+    { defaultRepo: 'acme/web' },
+    { defaultRepo: 'ACME/app' },
+    { report: { channel: null, dailyAt: '24:00', source: null } },
+    { report: { channel: 'bad', dailyAt: '09:00', source: null } },
+    { report: { channel: null, dailyAt: '09:00', source: '' } },
+  ]) {
+    writeFileSync(homePaths(home).config, JSON.stringify({ ...base, ...patch }))
+    assert.equal(loadConfig(home), null, JSON.stringify(patch))
+  }
+})

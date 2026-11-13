@@ -1,6 +1,6 @@
 import { loadConfig } from '../lib/config.ts'
 import { openDb, setMeta } from '../lib/db.ts'
-import { FORM_META_TRIGGER_ID, META_LABELS_HASH, SETUP_STEPS } from '../lib/defaults.ts'
+import { FORM_META_TRIGGER_ID, labelsHashKey, SETUP_STEPS } from '../lib/defaults.ts'
 import { asObject, get } from '../lib/json.ts'
 import { homePaths } from '../lib/paths.ts'
 import { permissionStatus } from '../lib/permissions.ts'
@@ -114,7 +114,7 @@ test('SU1 質問に答えるだけで、アプリ・トークン・設定・ボ�
   )
   const config = loadConfig(f.home)
   assert.equal(config?.channel, 'C0TARGET01')
-  assert.equal(config?.repo, 'acme/app')
+  assert.equal(config?.defaultRepo, 'acme/app')
   assert.equal(config?.everyMinutes, 5)
   const created = f.cliCalls('trigger create')
   assert.equal(created.length, 3)
@@ -225,7 +225,7 @@ test('SU9 公開リポジトリは内容が公開されると示して確かめ�
   const r = await f.setup('\n#issue-intake\nacme/app\ny\n\n\ny\n', { FAKE_GH_VISIBILITY: 'PUBLIC' })
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /公開/)
-  assert.equal(loadConfig(f.home)?.repo, 'acme/app')
+  assert.equal(loadConfig(f.home)?.defaultRepo, 'acme/app')
 })
 
 test('SU10 init が automation の登録で失敗したら、次の実行で init からやり直す', async (t) => {
@@ -384,7 +384,7 @@ test('SU24 labels_hash が今と違えば、間隔が同じでも 5 段で init 
   const f = await fixture(t)
   assert.equal((await f.setup(FULL_INPUT)).code, 0)
   const db = openDb(homePaths(f.home).db)
-  setMeta(db, META_LABELS_HASH, 'old')
+  setMeta(db, labelsHashKey('acme/app'), 'old')
   db.close()
   const before = ghCalls(f.gh.log).length
   const r = await f.setup('\n')

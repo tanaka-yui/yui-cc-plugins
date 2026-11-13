@@ -1,5 +1,6 @@
 import { parseFlags, parseNow } from '../cli.ts'
-import { POLL_DEADLINE_MS, POLL_LEASE_MS, STATUS_MIN_REMAINING_MS } from '../defaults.ts'
+import { migrateToRepos } from '../db.ts'
+import { ERROR_LEASE_LOST, POLL_DEADLINE_MS, POLL_LEASE_MS, STATUS_MIN_REMAINING_MS } from '../defaults.ts'
 import { writeJson } from '../fs.ts'
 import { acquireLease, releaseLease } from '../lease.ts'
 import { homePaths, intakeHome } from '../paths.ts'
@@ -69,6 +70,10 @@ export const run = async (argv: string[]): Promise<void> => {
       return
     }
     try {
+      if (!migrateToRepos(rt.db, lease.token, rt.config.defaultRepo, now().toISOString())) {
+        finish('busy', 1, 0, true, [ERROR_LEASE_LOST])
+        return
+      }
       const ctx = { rt, token: lease.token, ttlMs: POLL_LEASE_MS, now, deadline }
       const report = await sync(ctx)
       // ステータスの通知は取り込みのあとに、時間が残っているときだけ行う。失敗しても終了コードと agent_work は変えない

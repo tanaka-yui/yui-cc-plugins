@@ -1,6 +1,6 @@
 import { loadConfig, saveConfig } from '../lib/config.ts'
 import { getMeta, openDb } from '../lib/db.ts'
-import { LABEL_SPECS, META_LABELS_HASH } from '../lib/defaults.ts'
+import { LABEL_SPECS, labelsHashKey } from '../lib/defaults.ts'
 import { labelsHash } from '../lib/github.ts'
 import { acquireLease, readLease } from '../lib/lease.ts'
 import { homePaths } from '../lib/paths.ts'
@@ -71,7 +71,7 @@ test('IN2/IN3/IN13 初回は無効登録と受付境界とラベルの指紋を�
   assert.equal(getMeta(db, 'accept_after_ts'), `${NOW_SEC}.000000`)
   assert.equal(getMeta(db, 'cursor_ts'), `${NOW_SEC}.000000`)
   assert.equal(readLease(db), null)
-  assert.equal(getMeta(db, META_LABELS_HASH), labelsHash())
+  assert.equal(getMeta(db, labelsHashKey('acme/app')), labelsHash())
   db.close()
   assert.equal(
     ghCalls(f.gh.log).filter((c) => c.argv.slice(0, 2).join(' ') === 'label create').length,
@@ -122,11 +122,7 @@ test('IN8 送り先・ワークスペース・アカウントを変更しない'
   const f = await setup(t)
   assert.equal((await f.init()).code, 0)
   const before = readFileSync(homePaths(f.home).config, 'utf8')
-  for (const args of [
-    ['--channel', 'C0999999999'],
-    ['--repo', 'acme/other'],
-  ])
-    assert.equal((await f.init(args)).code, 1)
+  for (const args of [['--channel', 'C0999999999']]) assert.equal((await f.init(args)).code, 1)
   assert.equal(readFileSync(homePaths(f.home).config, 'utf8'), before)
   assert.equal((await f.init([], { FAKE_GH_LOGIN: 'someone' })).code, 1)
   f.changeTeam()
@@ -199,4 +195,57 @@ test('IN12 ラベルが既存でもpush権限のないアカウントは受付�
   assert.equal(r.code, 1)
   assert.ok(!loadConfig(f.home))
   assert.equal(orcaCalls(f.orca.log).length, 0)
+})
+
+test('IN15 複数リポジトリのラベルと指紋を作り、既定の指定を検査する', async (t) => {
+  const f = await setup(t)
+  const missing = await f.init(['--repo', 'acme/web'])
+  assert.equal(missing.code, 2, missing.stderr)
+  const r = await f.init(['--repo', 'acme/web', '--default-repo', 'ACME/APP'])
+  assert.equal(r.code, 0, r.stderr)
+  const db = openDb(homePaths(f.home).db)
+  for (const repo of ['acme/app', 'acme/web']) {
+    assert.equal(getMeta(db, `labels_hash:${repo}`), labelsHash())
+    assert.ok(ghCalls(f.gh.log).some((c) => c.argv[0] === 'label' && c.argv[1] === 'create' && c.argv.includes(repo)))
+  }
+  db.close()
+  assert.equal(loadConfig(f.home)?.defaultRepo, 'acme/app')
+  assert.match(r.stdout, /repo=acme\/app,acme\/web\ndefault_repo=acme\/app/)
+})
+test('IN16 リポジトリは追加できるが削除とチャンネル変更はできない', async (t) => {
+  const f = await setup(t)
+  assert.equal((await f.init()).code, 0)
+  assert.equal((await f.init(['--repo', 'acme/web'])).code, 0)
+  const before = loadConfig(f.home)
+  const removed = await runCliAsync(['init', '--channel', CHANNEL, '--repo', 'acme/web', '--now', NOW], f.env)
+  assert.equal(removed.code, 1, removed.stderr)
+  assert.deepEqual(loadConfig(f.home), before)
+  assert.equal((await f.init(['--channel', 'C0OTHER001'])).code, 1)
+})
+test('IN17 thread の開始時刻は初回だけ記録し、引数を検査する', async (t) => {
+  const f = await setup(t)
+  const args = [
+    '--repo',
+    'acme/web',
+    '--default-repo',
+    'acme/app',
+    '--existing',
+    'acme/web=thread',
+    '--hide-form',
+    'acme/app',
+  ]
+  assert.equal((await f.init(args)).code, 0)
+  assert.equal((await f.init([...args, '--now', '2026-11-12T03:00:00Z'])).code, 0)
+  const db = openDb(homePaths(f.home).db)
+  assert.equal(getMeta(db, 'adopt_after:acme/web'), new Date(NOW).toISOString())
+  assert.equal(getMeta(db, 'adopt_after:acme/app'), null)
+  db.close()
+  for (const bad of [
+    ['--existing', 'acme/missing=thread'],
+    ['--existing', 'acme/app=bad'],
+    ['--hide-form', 'acme/missing'],
+    ['--repo', 'ACME/APP'],
+  ]) {
+    assert.equal((await f.init(['--repo', 'acme/web', ...bad])).code, 2)
+  }
 })
