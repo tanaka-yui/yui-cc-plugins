@@ -74,6 +74,25 @@ test('AU44/AU47 timeout stops all roles using the coordinator before failure fin
     f.cleanup()
   }
 })
+for (const rc of [0, 3, 8, 9])
+  test(`C1-1 consumes completion before the time limit, wait exit ${rc}`, () => {
+    const f = runtimeFixture()
+    try {
+      const i = f.track('running')
+      f.result(i)
+      f.childRc('orca-wait', rc)
+      process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+      f.cli('tick')
+      const calls = f.childCalls()
+      assert.equal(readState('main').issues[i.key]?.phase, rc === 0 ? 'finishing' : 'failed')
+      assert.equal(calls.split('orca-wait.ts ').length - 1, 1)
+      assert.equal(calls.includes('orca-stop.ts'), rc !== 0)
+      assert.ok(!calls.includes('"--phase","exec"'))
+      assert.ok(!f.calls().includes(':stalled -->'))
+    } finally {
+      f.cleanup()
+    }
+  })
 test('AU45 human status change stops the run without any comment or label write', () => {
   const f = runtimeFixture()
   try {

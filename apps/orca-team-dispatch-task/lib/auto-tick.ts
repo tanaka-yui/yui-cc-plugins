@@ -448,6 +448,10 @@ const progress = (tick: Tick, issue: IssueState): void => {
     markFailure(tick, issue, 'worker が失敗を報告しました。')
     finishFailure(tick, issue)
     clean(tick, issue)
+  } else if (timedOut(issue)) {
+    markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
+    finishFailure(tick, issue)
+    clean(tick, issue)
   } else if (waited.rc === 9 && !tick.startUsed) {
     const next = ensure(tick, issue)
     const checkout = tick.config.repos[issue.targets[0] ?? '']?.checkout
@@ -740,7 +744,15 @@ export const runTick = (name: string): number => {
         .map((i) => i.key),
     )
     for (const issue of Object.values(state.issues))
-      if (timedOut(issue) && canAutoCall('上限時間'))
+      if (
+        (issue.phase !== 'running' ||
+          issue.pendingLabel ||
+          issue.failReason ||
+          issue.startAttempt ||
+          issue.cleanupPending) &&
+        timedOut(issue) &&
+        canAutoCall('上限時間')
+      )
         markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
     for (const issue of Object.values(state.issues)) {
       if (
@@ -773,8 +785,15 @@ export const runTick = (name: string): number => {
       else if (issue.phase === 'review') watchReview(tick, issue)
       clean(tick, issue)
     }
-    for (const issue of Object.values(state.issues))
-      if (issue.phase === 'running' && !blocked.has(issue.key)) progress(tick, issue)
+    for (const issue of Object.values(state.issues)) {
+      if (issue.phase !== 'running' || blocked.has(issue.key)) continue
+      progress(tick, issue)
+      if (!issue.failReason && timedOut(issue) && canAutoCall('上限時間')) {
+        markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
+        finishFailure(tick, issue)
+        clean(tick, issue)
+      }
+    }
     for (const issue of Object.values(state.issues))
       if (issue.phase === 'dispatching' && !blocked.has(issue.key)) recover(tick, issue)
     refill(tick)
