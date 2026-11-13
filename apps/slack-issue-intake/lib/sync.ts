@@ -118,6 +118,7 @@ export const sync = async (ctx: DriveContext): Promise<SyncReport> => {
         const id = insertSubmission(
           rt.db,
           {
+            repo: rt.config.defaultRepo,
             channel: rt.config.channel,
             ts,
             permalink: messagePermalink(rt.config.slack.teamUrl, rt.config.channel, ts),

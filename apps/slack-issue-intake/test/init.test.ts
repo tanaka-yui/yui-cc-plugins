@@ -1,15 +1,25 @@
 import { loadConfig, saveConfig } from '../lib/config.ts'
-import { getMeta, openDb } from '../lib/db.ts'
+import { getIssueStatus, getMeta, openDb, trackedIssues } from '../lib/db.ts'
 import { LABEL_SPECS, labelsHashKey } from '../lib/defaults.ts'
 import { labelsHash } from '../lib/github.ts'
 import { acquireLease, readLease } from '../lib/lease.ts'
 import { homePaths } from '../lib/paths.ts'
 import { saveToken } from '../lib/secrets.ts'
 import { BOT_ID, BOT_USER, CHANNEL, NOW, NOW_SEC, TEAM_ID, TEAM_URL } from './fixtures/slack-messages.ts'
-import { fakeGh, fakeOrca, ghCalls, orcaCalls, runCli, runCliAsync, startSlack, tempHome } from './helpers.ts'
+import {
+  fakeGh,
+  fakeOrca,
+  ghCalls,
+  orcaCalls,
+  runCli,
+  runCliAsync,
+  seedLegacyDb,
+  startSlack,
+  tempHome,
+} from './helpers.ts'
 
 import assert from 'node:assert/strict'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { test } from 'node:test'
 
@@ -248,4 +258,26 @@ test('IN17 thread の開始時刻は初回だけ記録し、引数を検査す�
   ]) {
     assert.equal((await f.init(['--repo', 'acme/web', ...bad])).code, 2)
   }
+})
+
+test('IN18 旧設定の既定を変える前に、旧DBのリポジトリを固定する', async (t) => {
+  const f = await setup(t)
+  assert.equal((await f.init()).code, 0)
+  const config = loadConfig(f.home)
+  assert.ok(config)
+  const { repos: _repos, defaultRepo: _default, report: _report, ...legacy } = config
+  writeFileSync(homePaths(f.home).config, JSON.stringify({ ...legacy, repo: 'acme/app' }))
+  const { rmSync } = await import('node:fs')
+  rmSync(homePaths(f.home).db)
+  seedLegacyDb(homePaths(f.home).db, {
+    submissions: [{ ts: '1.0', issueNumber: 42, state: 'created' }],
+    statuses: [{ issueNumber: 42, status: 'Ready' }],
+  })
+  const result = await f.init(['--repo', 'acme/web', '--default-repo', 'acme/web'])
+  assert.equal(result.code, 0, result.stderr)
+  const db = openDb(homePaths(f.home).db)
+  assert.equal(db.prepare('SELECT repo FROM submissions').get()?.repo, 'acme/app')
+  assert.equal(getIssueStatus(db, 'acme/app', 42)?.status, 'Ready')
+  assert.deepEqual([...trackedIssues(db, 'acme/web').keys()], ['acme/app#42'])
+  db.close()
 })

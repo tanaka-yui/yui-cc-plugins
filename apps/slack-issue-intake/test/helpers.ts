@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 export const tempHome = (): string => mkdtempSync(join(tmpdir(), 'sii-test-'))
 export type CliResult = { code: number; stdout: string; stderr: string; ms: number }
 const cli = resolve(import.meta.dirname, '../bin/slack-issue-intake.ts')
@@ -228,6 +229,7 @@ export const seedSubmission = async (
   const id = insertSubmission(
     db,
     {
+      repo: patch.repo ?? 'acme/app',
       channel: f.CHANNEL,
       ts: patch.ts,
       permalink: `${f.TEAM_URL}archives/${f.CHANNEL}/p${patch.ts.replace('.', '')}`,
@@ -293,4 +295,44 @@ export const seedSlackApp = async (home: string, teamId: string): Promise<void> 
   writeFileSync(project.apps, JSON.stringify({ apps: { A0FAKE001: { app_id: 'A0FAKE001', team_id: teamId } } }))
   // 今のマニフェストを deploy 済みのアプリとして置く
   saveDeployedHash(project, manifestHash())
+}
+
+export const seedLegacyDb = (
+  file: string,
+  o: {
+    submissions: Array<{ ts: string; issueNumber: number; state: import('../lib/types.ts').State }>
+    statuses: Array<{ issueNumber: number; status: string | null }>
+    meta?: Record<string, string>
+  },
+): void => {
+  const db = new DatabaseSync(file)
+  db.exec(`
+    CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE TABLE submissions(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,ts TEXT NOT NULL,ts_micro INTEGER NOT NULL,permalink TEXT NOT NULL,
+      raw TEXT NOT NULL,fields TEXT,problems TEXT NOT NULL,reporter_id TEXT,reporter_name TEXT,files TEXT NOT NULL,state TEXT NOT NULL,failed_from TEXT,
+      rounds INTEGER NOT NULL,last_question_ts TEXT,asked_at TEXT,timed_out_at TEXT,transcript TEXT NOT NULL,decision TEXT,create_started_at TEXT,create_login TEXT,
+      inflight TEXT,issue_url TEXT,issue_number INTEGER,attempts INTEGER NOT NULL,last_error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(channel,ts));
+    CREATE TABLE issue_status(issue_number INTEGER PRIMARY KEY,status TEXT,state TEXT NOT NULL,
+      last_comment_id INTEGER NOT NULL,seen_updated_at TEXT,attempts INTEGER NOT NULL,updated_at TEXT NOT NULL);
+  `)
+  for (const s of o.submissions)
+    db.prepare(`INSERT INTO submissions
+    (channel,ts,ts_micro,permalink,raw,fields,problems,files,state,rounds,transcript,issue_number,attempts,created_at,updated_at)
+    VALUES ('C0TARGET01',?,?, 'https://acme.slack.com/x','{}',NULL,'[]','[]',?,0,'[]',?,0,?,?)`).run(
+      s.ts,
+      Math.round(Number(s.ts) * 1000000),
+      s.state,
+      s.issueNumber,
+      '2026-11-12T00:00:00.000Z',
+      '2026-11-12T00:00:00.000Z',
+    )
+  for (const s of o.statuses)
+    db.prepare("INSERT INTO issue_status VALUES (?,?,'open',0,NULL,0,?)").run(
+      s.issueNumber,
+      s.status,
+      '2026-11-12T00:00:00.000Z',
+    )
+  for (const [key, value] of Object.entries(o.meta ?? {})) db.prepare('INSERT INTO meta VALUES (?,?)').run(key, value)
+  db.close()
 }

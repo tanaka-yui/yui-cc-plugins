@@ -28,6 +28,7 @@ test('IB3–IB7 本文とラベルの構造を保ち、全体を上限内にす�
   const id = insertSubmission(
     db,
     {
+      repo: 'acme/app',
       channel: CHANNEL,
       ts: '1712345678.000100',
       permalink: 'https://acme.slack.com/archives/C0123456789/p1712345678000100',
@@ -90,6 +91,7 @@ test('IB8 長い添付リンクが多数あっても本文全体の上限と最�
   const id = insertSubmission(
     db,
     {
+      repo: 'acme/app',
       channel: CHANNEL,
       ts: '1712345678.000100',
       permalink: 'https://acme.slack.com/archives/C0123456789/p1712345678000100',

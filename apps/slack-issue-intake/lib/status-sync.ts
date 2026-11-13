@@ -1,5 +1,14 @@
 import { mentionPrefix } from './config.ts'
-import { getIssueStatus, getMeta, inTransaction, leaseValid, saveIssueStatus, setMeta, trackedIssues } from './db.ts'
+import {
+  getIssueStatus,
+  getMeta,
+  inTransaction,
+  issueKey,
+  leaseValid,
+  saveIssueStatus,
+  setMeta,
+  trackedIssues,
+} from './db.ts'
 import {
   ERROR_DEADLINE,
   ERROR_LEASE_LOST,
@@ -110,11 +119,12 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
   }
   // 1 件を処理する。false はこの回をここで止める（status_cursor をこの Issue より先へ進めない）
   const handle = async (issue: IssueView, thread: TrackedIssue): Promise<boolean> => {
-    const row = getIssueStatus(rt.db, issue.number)
+    const row = getIssueStatus(rt.db, rt.config.defaultRepo, issue.number)
     const to = { status: currentStatus(issue.labels), state: issue.state }
     // 前からある Issue は、最初に見たときは記録するだけで知らせない
     if (!row)
       return save({
+        repo: rt.config.defaultRepo,
         issueNumber: issue.number,
         status: to.status,
         state: to.state,
@@ -141,6 +151,7 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
     // 同じコメントをもう一度読み、AI の変化として知らせる
     if (latest && !matches && row.status === to.status && row.state === to.state) return true
     const next: IssueStatusRow = {
+      repo: rt.config.defaultRepo,
       issueNumber: issue.number,
       status: to.status,
       state: to.state,
@@ -170,7 +181,7 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
     return false
   }
 
-  const tracked = trackedIssues(rt.db)
+  const tracked = trackedIssues(rt.db, rt.config.defaultRepo)
   if (!tracked.size) return report
   const cursor = getMeta(rt.db, META_STATUS_CURSOR)
   const since = cursor ? new Date(Date.parse(cursor) - STATUS_CURSOR_OVERLAP_SECONDS * 1000).toISOString() : null
@@ -199,7 +210,7 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
         return report
       }
       if (issue === 'pull') continue
-      const thread = tracked.get(issue.number)
+      const thread = tracked.get(issueKey(rt.config.defaultRepo, issue.number))
       if (thread && !(await handle(issue, thread))) return report
       if (!advance(issue.updatedAt)) return report
     }

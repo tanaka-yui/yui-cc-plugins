@@ -85,7 +85,7 @@ const fixture = async (
   }
   const status = (issue: number) => {
     const db = openDb(homePaths(home).db)
-    const s = getIssueStatus(db, issue)
+    const s = getIssueStatus(db, 'acme/app', issue)
     db.close()
     return s
   }
@@ -167,6 +167,7 @@ test('PO6 creatingから同じ回に作成とURL通知', async (t) => {
   )
   // 作ったときの状態を記録する（ラベルの指紋が無いので Backlog は付けていない）
   assert.deepEqual(f.status(42), {
+    repo: 'acme/app',
     issueNumber: 42,
     status: null,
     state: 'open',
@@ -476,4 +477,24 @@ test('PO26 自分のボット（フォームのワークフロー）の投稿は
     [tsAt(300), 'new', REPORTER],
     [tsAt(200), 'new', null],
   ])
+})
+
+test('PO29 submission のリポジトリへ起票し、その指紋で Backlog を付ける', async (t) => {
+  const f = await fixture(t)
+  const { loadConfig, saveConfig } = await import('../lib/config.ts')
+  const config = loadConfig(f.home)
+  assert.ok(config)
+  saveConfig(f.home, { ...config, repos: [...config.repos, { name: 'acme/web', form: true, existing: 'skip' }] })
+  const db = openDb(homePaths(f.home).db)
+  setMeta(db, labelsHashKey('acme/web'), labelsHash())
+  db.close()
+  const id = await seedSubmission(f.home, { ts: tsAt(1000), state: 'creating', repo: 'acme/web', decision: content })
+  assert.equal((await f.poll()).code, 1)
+  assert.equal(f.read(id)?.repo, 'acme/web')
+  const args = ghCalls(f.gh.log).find((c) => c.argv[0] === 'issue' && c.argv[1] === 'create')?.argv ?? []
+  assert.equal(args[args.indexOf('--repo') + 1], 'acme/web')
+  assert.ok(args.includes('Backlog'))
+  const saved = openDb(homePaths(f.home).db)
+  assert.equal(getIssueStatus(saved, 'acme/web', 42)?.status, 'Backlog')
+  saved.close()
 })

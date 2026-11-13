@@ -93,7 +93,7 @@ const fixture = async (
     },
     row: (n: number) => {
       const db = openDb(homePaths(home).db)
-      const r = getIssueStatus(db, n)
+      const r = getIssueStatus(db, 'acme/app', n)
       db.close()
       return r
     },

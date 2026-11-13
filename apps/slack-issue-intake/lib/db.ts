@@ -1,4 +1,11 @@
-import { labelsHashKey, META_LABELS_HASH, SQLITE_BUSY_TIMEOUT_MS, USER_NAME_TTL_HOURS } from './defaults.ts'
+import {
+  ADOPTED_LABEL,
+  labelsHashKey,
+  META_LABELS_HASH,
+  SOURCE_LABEL,
+  SQLITE_BUSY_TIMEOUT_MS,
+  USER_NAME_TTL_HOURS,
+} from './defaults.ts'
 import { ensurePrivateDir } from './fs.ts'
 import { maskSecrets } from './secrets.ts'
 import { compareTs, tsMicro } from './slack-text.ts'
@@ -35,6 +42,7 @@ export const ALL_STATES: readonly State[] = [
   'failed',
 ]
 export type Submission = {
+  repo: string | null
   id: number
   channel: string
   ts: string
@@ -65,7 +73,7 @@ export type Submission = {
 }
 export type NewSubmission = Pick<
   Submission,
-  'channel' | 'ts' | 'permalink' | 'raw' | 'fields' | 'problems' | 'reporterId'
+  'repo' | 'channel' | 'ts' | 'permalink' | 'raw' | 'fields' | 'problems' | 'reporterId'
 > & { state: 'new' | 'rejecting' }
 export type SubmissionPatch = Partial<Omit<Submission, 'id' | 'channel' | 'ts' | 'createdAt' | 'updatedAt'>>
 type Row = Record<string, SQLOutputValue>
@@ -83,6 +91,13 @@ export const inTransaction = <T>(db: Db, fn: () => T): T => {
 export const migrateToRepos = (db: Db, token: string, defaultRepo: string, now: string): boolean =>
   inTransaction(db, () => {
     if (!leaseValid(db, token, now)) return false
+    db.prepare('UPDATE submissions SET repo=? WHERE repo IS NULL').run(defaultRepo)
+    if (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='issue_status'").get()) {
+      db.prepare(
+        'INSERT OR IGNORE INTO issue_status2 SELECT ?,issue_number,status,state,last_comment_id,seen_updated_at,attempts,updated_at FROM issue_status',
+      ).run(defaultRepo)
+      db.exec('DROP TABLE issue_status')
+    }
     const old = getMeta(db, META_LABELS_HASH)
     if (old !== null) {
       if (getMeta(db, labelsHashKey(defaultRepo)) === null) setMeta(db, labelsHashKey(defaultRepo), old)
@@ -106,8 +121,19 @@ export const openDb = (file: string): Db => {
       rounds INTEGER NOT NULL,last_question_ts TEXT,asked_at TEXT,timed_out_at TEXT,transcript TEXT NOT NULL,decision TEXT,create_started_at TEXT,create_login TEXT,
       inflight TEXT,issue_url TEXT,issue_number INTEGER,attempts INTEGER NOT NULL,last_error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(channel,ts));
     CREATE INDEX IF NOT EXISTS submissions_state_ts ON submissions(state,ts_micro);
-    CREATE TABLE IF NOT EXISTS issue_status(issue_number INTEGER PRIMARY KEY,status TEXT,state TEXT NOT NULL,
-      last_comment_id INTEGER NOT NULL,seen_updated_at TEXT,attempts INTEGER NOT NULL,updated_at TEXT NOT NULL);`)
+    CREATE TABLE IF NOT EXISTS issue_status2(repo TEXT NOT NULL,issue_number INTEGER NOT NULL,status TEXT,state TEXT NOT NULL,
+      last_comment_id INTEGER NOT NULL,seen_updated_at TEXT,attempts INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(repo,issue_number));
+    CREATE TABLE IF NOT EXISTS adopted(repo TEXT NOT NULL,issue_number INTEGER NOT NULL,channel TEXT NOT NULL,ts TEXT,
+      labeled INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL,url TEXT NOT NULL,created_at TEXT NOT NULL,tried_at TEXT,PRIMARY KEY(repo,issue_number));`)
+  inTransaction(db, () => {
+    if (
+      !db
+        .prepare('PRAGMA table_info(submissions)')
+        .all()
+        .some((r) => r.name === 'repo')
+    )
+      db.exec('ALTER TABLE submissions ADD COLUMN repo TEXT')
+  })
   db.prepare("INSERT OR IGNORE INTO meta VALUES ('schema_version','1')").run()
   return db
 }
@@ -125,6 +151,7 @@ const nullable = (r: Row, key: string): string | null =>
   r[key] === null || r[key] === undefined ? null : String(r[key])
 const decode = (r: Row): Submission => ({
   id: Number(r.id),
+  repo: nullable(r, 'repo'),
   channel: String(r.channel),
   ts: String(r.ts),
   permalink: String(r.permalink),
@@ -155,9 +182,10 @@ const decode = (r: Row): Submission => ({
 export const insertSubmission = (db: Db, input: NewSubmission, now: string): number | null => {
   const r = db
     .prepare(
-      `INSERT OR IGNORE INTO submissions(channel,ts,ts_micro,permalink,raw,fields,problems,reporter_id,files,state,rounds,transcript,attempts,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'[]',?,0,'[]',0,?,?)`,
+      `INSERT OR IGNORE INTO submissions(repo,channel,ts,ts_micro,permalink,raw,fields,problems,reporter_id,files,state,rounds,transcript,attempts,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'[]',?,0,'[]',0,?,?)`,
     )
     .run(
+      input.repo,
       input.channel,
       input.ts,
       tsMicro(input.ts),
@@ -224,6 +252,7 @@ export const transition = (
   })
 // Issue のステータスの前回の記録。通知はこれとの差だけを出す（submissions の created は書き換えない決まりなので別の表）
 export type IssueStatusRow = {
+  repo: string
   issueNumber: number
   status: string | null
   state: 'open' | 'closed'
@@ -231,10 +260,11 @@ export type IssueStatusRow = {
   seenUpdatedAt: string | null
   attempts: number
 }
-export const getIssueStatus = (db: Db, issueNumber: number): IssueStatusRow | null => {
-  const r = db.prepare('SELECT * FROM issue_status WHERE issue_number=?').get(issueNumber)
+export const getIssueStatus = (db: Db, repo: string, issueNumber: number): IssueStatusRow | null => {
+  const r = db.prepare('SELECT * FROM issue_status2 WHERE repo=? AND issue_number=?').get(repo, issueNumber)
   return r
     ? {
+        repo: String(r.repo),
         issueNumber: Number(r.issue_number),
         status: nullable(r, 'status'),
         state: String(r.state) === 'closed' ? 'closed' : 'open',
@@ -246,12 +276,12 @@ export const getIssueStatus = (db: Db, issueNumber: number): IssueStatusRow | nu
 }
 const writeIssueStatus = (db: Db, row: IssueStatusRow, now: string, replace: boolean): void => {
   db.prepare(
-    `INSERT INTO issue_status VALUES (?,?,?,?,?,?,?) ON CONFLICT(issue_number) DO ${
+    `INSERT INTO issue_status2 VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(repo,issue_number) DO ${
       replace
         ? 'UPDATE SET status=excluded.status,state=excluded.state,last_comment_id=excluded.last_comment_id,seen_updated_at=excluded.seen_updated_at,attempts=excluded.attempts,updated_at=excluded.updated_at'
         : 'NOTHING'
     }`,
-  ).run(row.issueNumber, row.status, row.state, row.lastCommentId, row.seenUpdatedAt, row.attempts, now)
+  ).run(row.repo, row.issueNumber, row.status, row.state, row.lastCommentId, row.seenUpdatedAt, row.attempts, now)
 }
 export const saveIssueStatus = (db: Db, token: string, row: IssueStatusRow, now: string): boolean =>
   inTransaction(db, () => {
@@ -275,17 +305,46 @@ export const transitionWithStatus = (
     writeIssueStatus(db, seed, now, false)
     return true
   })
-export type TrackedIssue = { channel: string; ts: string; reporterId: string | null }
-export const trackedIssues = (db: Db): Map<number, TrackedIssue> =>
-  new Map(
-    db
-      .prepare('SELECT issue_number,channel,ts,reporter_id FROM submissions WHERE issue_number IS NOT NULL')
-      .all()
-      .map((r) => [
-        Number(r.issue_number),
-        { channel: String(r.channel), ts: String(r.ts), reporterId: nullable(r, 'reporter_id') },
-      ]),
-  )
+export const issueKey = (repo: string, number: number): string => `${repo}#${number}`
+export type TrackedIssue = {
+  repo: string
+  number: number
+  label: string
+  channel: string
+  ts: string
+  reporterId: string | null
+}
+export const trackedIssues = (db: Db, defaultRepo: string): Map<string, TrackedIssue> => {
+  const result = new Map<string, TrackedIssue>()
+  for (const r of db
+    .prepare('SELECT repo,issue_number,channel,ts,reporter_id FROM submissions WHERE issue_number IS NOT NULL')
+    .all()) {
+    const repo = nullable(r, 'repo') ?? defaultRepo
+    const number = Number(r.issue_number)
+    result.set(issueKey(repo, number), {
+      repo,
+      number,
+      label: SOURCE_LABEL,
+      channel: String(r.channel),
+      ts: String(r.ts),
+      reporterId: nullable(r, 'reporter_id'),
+    })
+  }
+  for (const r of db.prepare('SELECT * FROM adopted WHERE ts IS NOT NULL').all()) {
+    const repo = String(r.repo)
+    const number = Number(r.issue_number)
+    if (!result.has(issueKey(repo, number)))
+      result.set(issueKey(repo, number), {
+        repo,
+        number,
+        label: ADOPTED_LABEL,
+        channel: String(r.channel),
+        ts: String(r.ts),
+        reporterId: null,
+      })
+  }
+  return result
+}
 export const getScan = (db: Db): HistoryScan | null =>
   JSON.parse(getMeta(db, 'history_scan') ?? 'null') as HistoryScan | null
 export const saveScan = (db: Db, token: string, scan: HistoryScan, now: string): boolean =>

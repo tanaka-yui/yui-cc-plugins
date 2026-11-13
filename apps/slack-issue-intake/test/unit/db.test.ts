@@ -10,6 +10,7 @@ import {
   getSubmission,
   insertSubmission,
   listByStates,
+  migrateToRepos,
   olderRuns,
   openDb,
   registerRun,
@@ -26,7 +27,7 @@ import {
 import { acquireLease, claimApply, markCollected, readLease, releaseLease, renewLease } from '../../lib/lease.ts'
 import { parseSubmission } from '../../lib/parse.ts'
 import { CHANNEL, NOW, templateText, textMessage } from '../fixtures/slack-messages.ts'
-import { tempHome } from '../helpers.ts'
+import { seedLegacyDb, tempHome } from '../helpers.ts'
 
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
@@ -38,6 +39,7 @@ const sample = (ts: string): NewSubmission => {
   const p = parseSubmission(templateText(), null)
   assert.ok(p.kind === 'ok')
   return {
+    repo: 'acme/app',
     channel: CHANNEL,
     ts,
     permalink: 'https://acme.slack.com/x',
@@ -179,6 +181,7 @@ test('LE6 期限切れの同時回収は20回とも1プロセスだけ成功', a
   }
 })
 const row = (issueNumber: number, status: string | null) => ({
+  repo: 'acme/app',
   issueNumber,
   status,
   state: 'open' as const,
@@ -189,10 +192,11 @@ const row = (issueNumber: number, status: string | null) => ({
 test('DB9 saveIssueStatus はリースが無効なら書かず false、有効なら upsert', () => {
   const { db, token } = setup()
   assert.equal(saveIssueStatus(db, 'wrong', row(7, 'Ready'), NOW), false)
-  assert.equal(getIssueStatus(db, 7), null)
+  assert.equal(getIssueStatus(db, 'acme/app', 7), null)
   assert.ok(saveIssueStatus(db, token, row(7, 'Ready'), NOW))
   assert.ok(saveIssueStatus(db, token, { ...row(7, 'Done'), state: 'closed', lastCommentId: 5, attempts: 2 }, NOW))
-  assert.deepEqual(getIssueStatus(db, 7), {
+  assert.deepEqual(getIssueStatus(db, 'acme/app', 7), {
+    repo: 'acme/app',
     issueNumber: 7,
     status: 'Done',
     state: 'closed',
@@ -205,12 +209,15 @@ test('DB10 transitionWithStatus は状態が違えば submissions も issue_stat
   const { db, token, id } = setup()
   const patch = { state: 'notifying' as const, issueUrl: 'https://github.com/acme/app/issues/9', issueNumber: 9 }
   assert.equal(transitionWithStatus(db, token, id, 'creating', patch, row(9, 'Backlog'), NOW), false)
-  assert.equal(getIssueStatus(db, 9), null)
+  assert.equal(getIssueStatus(db, 'acme/app', 9), null)
   assert.equal(getSubmission(db, id)?.state, 'new')
   assert.ok(transitionWithStatus(db, token, id, 'new', patch, row(9, 'Backlog'), NOW))
-  assert.equal(getIssueStatus(db, 9)?.status, 'Backlog')
+  assert.equal(getIssueStatus(db, 'acme/app', 9)?.status, 'Backlog')
   assert.equal(getSubmission(db, id)?.issueNumber, 9)
-  assert.deepEqual(trackedIssues(db).get(9), {
+  assert.deepEqual(trackedIssues(db, 'acme/app').get('acme/app#9'), {
+    number: 9,
+    label: 'from-slack',
+    repo: 'acme/app',
     channel: CHANNEL,
     ts: '1.0',
     reporterId: getSubmission(db, id)?.reporterId,
@@ -218,5 +225,67 @@ test('DB10 transitionWithStatus は状態が違えば submissions も issue_stat
   // すでに行があれば上書きしない（最初の記録だけを残す）
   saveIssueStatus(db, token, row(9, 'Ready'), NOW)
   assert.ok(transitionWithStatus(db, token, id, 'notifying', { state: 'created' }, row(9, 'Backlog'), NOW))
-  assert.equal(getIssueStatus(db, 9)?.status, 'Ready')
+  assert.equal(getIssueStatus(db, 'acme/app', 9)?.status, 'Ready')
+})
+
+test('DB11/DB13 旧DBの移行は有効なリースの下だけで行い、再実行できる', () => {
+  const file = join(tempHome(), 'db')
+  seedLegacyDb(file, {
+    submissions: [{ ts: '1.0', issueNumber: 42, state: 'created' }],
+    statuses: [{ issueNumber: 42, status: 'Ready' }],
+    meta: { labels_hash: 'old' },
+  })
+  const db = openDb(file)
+  const unchanged = () => {
+    assert.equal(db.prepare('SELECT repo FROM submissions').get()?.repo, null)
+    assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name='issue_status'").get())
+    assert.equal(getMeta(db, 'labels_hash'), 'old')
+  }
+  assert.equal(migrateToRepos(db, 'missing', 'acme/app', NOW), false)
+  unchanged()
+  const lease = acquireLease(db, 'poll', null, new Date(NOW), 1000)
+  assert.ok(lease.ok)
+  assert.equal(migrateToRepos(db, 'other', 'acme/app', NOW), false)
+  unchanged()
+  assert.equal(migrateToRepos(db, lease.token, 'acme/app', new Date(Date.parse(NOW) + 1001).toISOString()), false)
+  unchanged()
+  assert.equal(migrateToRepos(db, lease.token, 'acme/app', NOW), true)
+  assert.equal(migrateToRepos(db, lease.token, 'acme/web', NOW), true)
+  assert.equal(db.prepare('SELECT repo FROM submissions').get()?.repo, 'acme/app')
+  assert.equal(getIssueStatus(db, 'acme/app', 42)?.status, 'Ready')
+  assert.equal(getIssueStatus(db, 'acme/web', 42), null)
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='issue_status'").get(), undefined)
+  db.close()
+  const again = openDb(file)
+  assert.equal(again.prepare("SELECT name FROM sqlite_master WHERE name='issue_status'").get(), undefined)
+  again.close()
+})
+test('DB12 同じ番号をリポジトリ別に記録し、投稿のある adopted を通知対象に加える', () => {
+  const { db, token } = setup()
+  saveIssueStatus(db, token, { ...row(42, 'Ready'), repo: 'acme/app' }, NOW)
+  saveIssueStatus(db, token, { ...row(42, 'Done'), repo: 'acme/web' }, NOW)
+  assert.equal(getIssueStatus(db, 'acme/app', 42)?.status, 'Ready')
+  assert.equal(getIssueStatus(db, 'acme/web', 42)?.status, 'Done')
+  for (const [repo, ts] of [
+    ['acme/app', '2.0'],
+    ['acme/web', '3.0'],
+    ['acme/none', null],
+  ] as const) {
+    db.prepare('INSERT INTO adopted(repo,issue_number,channel,ts,title,url,created_at) VALUES (?,42,?,?,?, ?,?)').run(
+      repo,
+      CHANNEL,
+      ts,
+      'title',
+      'https://github.com/x',
+      NOW,
+    )
+  }
+  assert.deepEqual([...trackedIssues(db, 'acme/app').keys()], ['acme/app#42', 'acme/web#42'])
+  assert.equal(trackedIssues(db, 'acme/app').get('acme/web#42')?.label, 'slack-thread')
+  const id = insertSubmission(db, { ...sample('4.0'), repo: 'acme/app' }, NOW)
+  assert.ok(id)
+  transition(db, token, id, 'new', { issueNumber: 42 }, NOW)
+  assert.equal(trackedIssues(db, 'acme/app').get('acme/app#42')?.label, 'from-slack')
+  assert.equal(trackedIssues(db, 'acme/app').get('acme/app#42')?.ts, '4.0')
+  db.close()
 })

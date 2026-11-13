@@ -57,6 +57,7 @@ export const stopError = (error: string): boolean =>
   isFatalSlackError(error)
 export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveOutcome> => {
   const { rt, token } = ctx
+  const repo = s.repo ?? rt.config.defaultRepo
   const now = () => ctx.now().toISOString()
   const renew = (): boolean => renewLease(rt.db, token, ctx.now(), ctx.ttlMs)
   const out = (error: string | null = null, stop = false): DriveOutcome => ({
@@ -84,7 +85,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
   }
   const success = (patch: SubmissionPatch): DriveOutcome =>
     update({ ...patch, attempts: 0, lastError: null }) ? out() : changed()
-  const withStatus = (): boolean => getMeta(rt.db, labelsHashKey(rt.config.defaultRepo)) === labelsHash()
+  const withStatus = (): boolean => getMeta(rt.db, labelsHashKey(repo)) === labelsHash()
   // Issue ができたら、ステータスの最初の記録も同じトランザクションで残す（通知はこの記録との差で出す）
   const created = (issue: { url: string; number: number }, backlog: boolean): DriveOutcome =>
     transitionWithStatus(
@@ -101,6 +102,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
         lastError: null,
       },
       {
+        repo,
         issueNumber: issue.number,
         status: backlog ? STATUS_BACKLOG : null,
         state: 'open',
@@ -137,14 +139,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
     const started = s.createStartedAt ?? now()
     if (!update({ createStartedAt: started, createLogin: s.createLogin ?? rt.config.github.login })) return changed()
     const since = new Date(Date.parse(started) - CREATE_LOOKBACK_MINUTES * 60000).toISOString()
-    const found = await findIssueByMarker(
-      rt.gh,
-      rt.config.defaultRepo,
-      issueMarker(s.channel, s.ts),
-      since,
-      login,
-      ctx.deadline,
-    )
+    const found = await findIssueByMarker(rt.gh, repo, issueMarker(s.channel, s.ts), since, login, ctx.deadline)
     if (!found.ok) return fail(found.error)
     if (found.issue) return created(found.issue, withStatus())
     if (!s.fields || s.decision?.action !== 'create') return fail('Issue の決定内容がありません')
@@ -170,7 +165,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
       const title = [...neutralizeMentions(maskSecrets(s.fields.title))]
       const result = await createIssue(
         rt.gh,
-        rt.config.defaultRepo,
+        repo,
         {
           title:
             title.length > MAX_TITLE_CHARS
