@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "main",
+  "intakeConfig": "/tmp/intake.json",
+  "sources": [
+    { "repo": "acme/app", "related": ["acme/app", "other/api"] },
+    { "repo": "other/api", "related": ["other/api"] }
+  ],
+  "repos": {
+    "acme/app": { "checkout": "/tmp/checkout", "verify": ["node --test"], "verified": true, "ci": true },
+    "other/api": { "checkout": "/tmp/checkout2", "verify": [], "verified": false, "ci": false }
+  }
+}

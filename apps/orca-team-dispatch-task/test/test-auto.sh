@@ -42,4 +42,5 @@ done
 echo '{"ok":true,"result":{"run":null}}' > "$ORCA_STUB_DIR/orchestration_run-current"
 coord ensureCoordinator "'$W/sd', '/repo', 'auto-test'" >/dev/null 2>&1
 [[ "$(cat "$W/env.log" 2>/dev/null)" == $'term_c1\nterm_new' ]] && ok AU7 || fail AU7; teardown
+node --test "$P/test/unit/auto-state.test.ts" > /dev/null 2>&1 && ok "AU12-15 lock tests" || fail "AU12-15 lock tests"
 echo "failures: $fails"; exit "$fails"
