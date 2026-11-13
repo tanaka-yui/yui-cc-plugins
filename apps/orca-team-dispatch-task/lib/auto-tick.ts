@@ -2,7 +2,7 @@ import { autoCleanup, confirmStopped, pushBranches } from './auto-cleanup.ts'
 import { renderComment } from './auto-comment.ts'
 import { type AutoConfig, pickSources, readAutoConfig } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
-import { github, prStatus, readGithub, viewIssue } from './auto-github.ts'
+import { continuationOf, github, prStatus, readGithub, viewIssue } from './auto-github.ts'
 import { AUTO_FILES, AUTO_WORKTREE_LIST_LIMIT, archiveStatusDir, autoDir, autoNow } from './auto-paths.ts'
 import { orderQueue, syncIssues } from './auto-queue.ts'
 import { buildRequest, readAutoResult, slugOf } from './auto-request.ts'
@@ -308,7 +308,14 @@ const refill = (tick: Tick): void => {
     if (
       !writeAtomic(
         request,
-        buildRequest(issue, detail.body, repo, tick.config.roles, join(statusDir, 'auto-result.json'), null),
+        buildRequest(
+          issue,
+          detail.body,
+          repo,
+          tick.config.roles,
+          join(statusDir, 'auto-result.json'),
+          continuationOf(issue, issue.endedAt ?? issue.updatedAt),
+        ),
       )
     )
       throw new Error('依頼文を書けません')
@@ -518,6 +525,25 @@ const needsReview = (tick: Tick, issue: IssueState, reason: string): void => {
   )
     tick.finished++
 }
+const handoverPrs = (issue: IssueState): boolean => {
+  if (!issue.prevBranch || issue.prevBranch === issue.branch) return true
+  const current = issue.prs[0]
+  if (!current) return true
+  for (const previous of issue.prevPrs) {
+    if (previous.repo === current.repo && previous.number === current.number) continue
+    const status = prStatus(previous.repo, previous.number)
+    if (!status) return false
+    if (status.state !== 'OPEN') continue
+    const marker = `<!-- orca-auto:handover:${issue.generation}:${slugOf(issue.key)} -->`
+    const posted = hasCommentMarker({ ...issue, repo: previous.repo, number: previous.number }, marker)
+    if (posted === null) return false
+    const body = `${current.repo}#${current.number} に引き継ぎました: ${current.url}\n\n${marker}`
+    if (!posted && github(['pr', 'comment', String(previous.number), '--repo', previous.repo, '--body', body]).rc !== 0)
+      return false
+    if (github(['pr', 'close', String(previous.number), '--repo', previous.repo]).rc !== 0) return false
+  }
+  return true
+}
 const finish = (tick: Tick, issue: IssueState): void => {
   if (issue.pendingLabel || issue.failReason || issue.startAttempt || !owns(tick, issue)) return
   const view = viewIssue(issue.repo, issue.number)
@@ -557,6 +583,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
     issue.prs = [{ repo, number: pr.number, url: pr.url }]
     tick.save()
   }
+  if (!handoverPrs(issue)) return
   const pr = issue.prs[0]
   if (!pr) return
   const status = prStatus(pr.repo, pr.number)
