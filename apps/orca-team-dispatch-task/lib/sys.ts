@@ -11,23 +11,34 @@ export const MAX_BUFFER = 64 * 1024 * 1024
 
 // ★ 標準入力を渡さない（lib/orca.ts の runOrca と同じ理由）。stdout と stderr は分けて受ける。
 //   起動できなかった（ENOENT など）ときは rc 1 で、stderr に理由を入れる
-export const run = (command: string, args: string[], cwd?: string): ProcResult => {
+export const run = (command: string, args: string[], cwd?: string, timeoutMs?: number): ProcResult => {
   const child = spawnSync(command, args, {
     cwd,
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     maxBuffer: MAX_BUFFER,
   })
-  const stderr = child.error === undefined ? (child.stderr ?? '') : child.error.message
+  const stderr =
+    child.error === undefined
+      ? (child.stderr ?? '')
+      : child.error.message.includes('ETIMEDOUT')
+        ? 'timed out'
+        : child.error.message
   return { rc: child.status ?? 1, stdout: child.stdout ?? '', stderr }
 }
 
 // 別の入口（node で走る .ts）を子プロセスで呼ぶ。bash 版の `bash "$HERE/x.sh" ...` に当たる。
 // inherit は出力を受けずに親の stdout / stderr へそのまま流す（長く走る待機の log を溜めないため）
-export const runNode = (script: string, args: string[], inherit = false): ProcResult => {
-  if (!inherit) return run(process.execPath, [script, ...args])
-  const child = spawnSync(process.execPath, [script, ...args], { stdio: ['ignore', 'inherit', 'inherit'] })
-  return { rc: child.status ?? 1, stdout: '', stderr: '' }
+export const runNode = (script: string, args: string[], inherit = false, env?: Record<string, string>): ProcResult => {
+  const child = spawnSync(process.execPath, [script, ...args], {
+    stdio: ['ignore', inherit ? 'inherit' : 'pipe', inherit ? 'inherit' : 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: MAX_BUFFER,
+    env: env ? { ...process.env, ...env } : process.env,
+  })
+  return { rc: child.status ?? 1, stdout: child.stdout ?? '', stderr: child.error?.message ?? child.stderr ?? '' }
 }
 
 // bash の `command -v <name>`。PATH を前から見て、実行できる最初のものを返す

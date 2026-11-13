@@ -91,3 +91,22 @@ test('envCount は空文字を未設定として扱い、整数でなければ�
     if (saved !== undefined) process.env.SYS_UNIT_COUNT = saved
   }
 })
+
+test('run kills a child that ignores SIGTERM at the read deadline', () => {
+  const start = Date.now()
+  const result = run(
+    process.execPath,
+    ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => process.exit(0), 2500)"],
+    undefined,
+    100,
+  )
+  assert.equal(result.rc, 1)
+  assert.match(result.stderr, /timed out/)
+  assert.ok(Date.now() - start < 2000)
+})
+
+test('runNode passes explicit environment to its child', () => {
+  const script = join(dir, 'env.ts')
+  writeFileSync(script, 'process.stdout.write(process.env.AUTO_TEST_ENV)')
+  assert.equal(runNode(script, [], false, { AUTO_TEST_ENV: 'passed' }).stdout, 'passed')
+})

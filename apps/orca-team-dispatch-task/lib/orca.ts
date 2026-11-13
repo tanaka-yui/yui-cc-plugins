@@ -18,11 +18,14 @@ export const orcaBin = (): string => process.env.ORCA_BIN || process.env.ORCA_CL
 //   `result.dispatch` / `observation`、worker-list の `workerState` / `resource` が消えた（2026-11-02、logi-app の
 //   待機が worker の state を '' と読み、生きている worker で exit 4 になった）。この plugin の読み取りはすべて
 //   `--full` の形で書かれている
-export const runOrca = (args: string[]): OrcaResult => {
+export const runOrca = (args: string[], env?: Record<string, string>, timeoutMs?: number): OrcaResult => {
   const child = spawnSync(orcaBin(), args[0] === 'orchestration' ? [...args, '--full'] : args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     maxBuffer: MAX_BUFFER,
+    env: env ? { ...process.env, ...env } : process.env,
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
   })
   const stdout = child.stdout ?? ''
   return { rc: child.status ?? 1, json: parseJson(stdout), stdout }
