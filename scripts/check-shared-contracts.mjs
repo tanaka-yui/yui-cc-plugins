@@ -21,7 +21,13 @@ const fixture = 'test/fixtures/orca-auto-comments.json'
 if (!readFileSync(join(intake, fixture)).equals(readFileSync(join(dispatch, fixture))))
   problems.push(`${fixture} の 2 つの写しが違います（slack-issue-intake と orca-team-dispatch-task）`)
 
-// slack-thread のラベル名は、orca-team-dispatch-task 側の C2 で定義ができたら比べる対象に足す。
+const intakeLabels = await import(join(intake, 'lib/defaults.ts'))
+const dispatchLabels = await import(join(dispatch, 'lib/status.ts'))
+if (!isDeepStrictEqual([intakeLabels.SOURCE_LABEL, intakeLabels.ADOPTED_LABEL], dispatchLabels.MANAGED_LABELS))
+  problems.push('MANAGED_LABELS が違います')
+const names = intakeLabels.LABEL_SPECS.map((label) => label.name)
+for (const name of [...Object.values(dispatchLabels.PRIORITY_LABELS), dispatchLabels.FEATURE_LABEL])
+  if (!names.includes(name)) problems.push(`LABEL_SPECS に ${name} がありません`)
 const reportFixture = 'test/fixtures/auto-report.json'
 if (!readFileSync(join(intake, reportFixture)).equals(readFileSync(join(dispatch, reportFixture))))
   problems.push(`${reportFixture} の 2 つの写しが違います（slack-issue-intake と orca-team-dispatch-task）`)
