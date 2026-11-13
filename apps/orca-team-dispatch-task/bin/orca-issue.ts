@@ -9,6 +9,7 @@ import { die, log } from '../lib/cli.ts'
 import { readJson } from '../lib/fs.ts'
 import { defaultStateFile, excludeStateDir } from '../lib/issue.ts'
 import { asString, get, parseJson } from '../lib/json.ts'
+import { LEGACY_DISPATCH_LABELS, STATUS } from '../lib/status.ts'
 import { run, runNode, which } from '../lib/sys.ts'
 
 import { readFileSync } from 'node:fs'
@@ -105,15 +106,19 @@ const parse = (argv: string[]): Options => {
   return options
 }
 // 移植元の理由（bin/orca-issue.sh）:
-// ★ **終端ラベルを先に付け、`dispatch/in-progress` はそのあとで外す。**間で落ちても
+// ★ ラベルは slack-issue-intake と共通のステータスラベル（lib/status.ts）。3.10 までの `dispatch/*` は
+//   `In progress` / `Done` / `Failed` に置き換えた。3.10 で claim された issue が 3.11 で終わることがあるので、
+//   古い 3 つも外す（失敗は見ない。付いていないのが普通）。
+//
+// ★ **終端ラベルを先に付け、`In progress` はそのあとで外す。**間で落ちても
 //   issue には結末が付いた状態で残る。逆順にすると「in-progress でも done でもない」
 //   宙ぶらりんの issue ができ、次の実行の候補にも入らない。
 //
 //   ★ **`terminal` という名前のラベルは無い。**cmux 版の `terminal` は「終端ラベル」を
 //   指す変数名であって、ラベル名ではない（実機で発見: 存在しないラベルを付けようとして
-//   全 issue の遷移が失敗した）。作るのも付けるのも `dispatch/*` の 3 つだけである。
+//   全 issue の遷移が失敗した）。付けるのは `In progress` / `Done` / `Failed` だけである。
 //
-// ★ **反対の終端ラベルも外す。**1 度失敗して再実行した issue には `dispatch/failed` が
+// ★ **反対の終端ラベルも外す。**1 度失敗して再実行した issue には `Failed` が
 //   既に付いている。外さないと done と failed が同時に付き、**人が結末を読めなくなる**
 //   （実機で発見）。`fetch` の検索はどちらでも除外するので取りこぼしはしないが、
 //   矛盾したラベルを残さない。
@@ -121,10 +126,12 @@ const parse = (argv: string[]): Options => {
 // ★ ラベルを動かせなかったことを **state に嘘で上書きしない。**次の reconcile が
 //   痕跡を見て止まるほうが、静かに done にするより良い。
 const labelTerminal = (issue: string, status: 'done' | 'failed'): boolean => {
-  const other = status === 'done' ? 'failed' : 'done'
-  if (run('gh', ['issue', 'edit', issue, '--add-label', `dispatch/${status}`]).rc !== 0) return false
-  run('gh', ['issue', 'edit', issue, '--remove-label', `dispatch/${other}`])
-  return run('gh', ['issue', 'edit', issue, '--remove-label', 'dispatch/in-progress']).rc === 0
+  const label = status === 'done' ? STATUS.done : STATUS.failed
+  const other = status === 'done' ? STATUS.failed : STATUS.done
+  if (run('gh', ['issue', 'edit', issue, '--add-label', label]).rc !== 0) return false
+  run('gh', ['issue', 'edit', issue, '--remove-label', other])
+  for (const legacy of LEGACY_DISPATCH_LABELS) run('gh', ['issue', 'edit', issue, '--remove-label', legacy])
+  return run('gh', ['issue', 'edit', issue, '--remove-label', STATUS.inProgress]).rc === 0
 }
 const issueFetch = (options: Options, args: string[]) =>
   runNode(ISSUE_FETCH, ['--state-file', options.stateFile, ...args])

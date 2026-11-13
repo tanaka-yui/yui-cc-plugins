@@ -260,6 +260,7 @@ Step 5 decides and Step 6 asks, exactly as for a hand-written dispatch.
 | Integration | The configured `integration`, `merge` or `pr`, fixed for the run and never asked. With `pr`, I3 opens a pull request per issue instead of merging |
 | Driving | One batch at a time, waiting for it to finish before claiming the next |
 | Roles | Whatever `review_mode` resolves to, used for every issue in the run |
+| Labels | The status labels shared with slack-issue-intake: `In progress` on claim, `Done` or `Failed` at the end. An issue that already carries another status label, or an old `dispatch/*` label, is never picked up. A claimed issue loses `Ready`, and gets it back if the claim is undone |
 
 ### I0. Preflight
 
@@ -357,7 +358,7 @@ node "$PLUGIN/bin/orca-issue.ts" --phase dispatch --issue "$NUM" --slug "$SLUG" 
 **Keep the `run_id` it prints and set `RUN` to it for every later issue in the batch**, so
 the whole batch shares one Run and one parent mailbox. Keep every printed `status_dir` too.
 A later issue joins that Run even when this terminal has started another Run in between.
-An issue that fails to dispatch is already marked `dispatch/failed` with its resources kept;
+An issue that fails to dispatch is already marked `Failed` with its resources kept;
 carry on with the next one, and leave it out of pass 2.
 
 Pass 2, once for the whole batch — one `--status-dir` per issue that dispatched:
@@ -397,7 +398,7 @@ gh repo view --json nameWithOwner -q .nameWithOwner
 `Closes #<N>`, so GitHub closes the issue when it merges. Closing it here would leave it
 closed even if the pull request is rejected.
 
-Exit 1 means that issue was not carried; its labels are already moved to `dispatch/failed`
+Exit 1 means that issue was not carried; its labels are already moved to `Failed`
 and **its resources are kept on purpose**. Carry on with the next issue — one issue failing
 says nothing about the others.
 

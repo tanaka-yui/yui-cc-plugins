@@ -289,8 +289,8 @@ IOUT=$(node "$P/bin/orca-issue.ts" --state-file "$ISTATE" --issue 42 --slug "$IS
 # **`terminal` という名前のラベルは作らないし付けない**（実機で発見した誤り）。
 ghl=$(cat "$GH_STUB_DIR/calls.log")
 first_label=$(grep 'label' <<<"$ghl" | head -1)
-[[ "$first_label" == *'--add-label dispatch/done'* ]] \
-  && grep -q -- '--remove-label dispatch/in-progress' <<<"$ghl" \
+[[ "$first_label" == *'--add-label Done'* ]] \
+  && grep -qF -- '--remove-label In\ progress' <<<"$ghl" \
   && ! grep -qE -- '--add-label terminal( |$)' <<<"$ghl" \
   && grep -q 'issue close 42' <<<"$ghl" \
   && ok "E24 終端ラベルが先、close は merge のあと" || fail "E24 ($first_label)"

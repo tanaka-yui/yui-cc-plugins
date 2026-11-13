@@ -241,6 +241,7 @@ dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。
 | 統合 | 設定の `integration`（`merge` か `pr`）。その実行の間は固定で、尋ねない。`pr` なら I3 は merge の代わりに issue ごとに pull request を作る |
 | 駆動 | 1 バッチずつ。終わるまで待ってから次を claim する |
 | 役 | `review_mode` が解決したものを、その実行の全 issue で共通に使う |
+| ラベル | slack-issue-intake と共通のステータスラベル。claim で `In progress`、終わりに `Done` か `Failed` を付ける。ほかのステータスラベルか古い `dispatch/*` が付いた issue は拾わない。claim した issue からは `Ready` を外し、claim を取り消したら戻す |
 
 ### I0. 事前確認
 
@@ -335,7 +336,7 @@ node "$PLUGIN/bin/orca-issue.ts" --phase dispatch --issue "$NUM" --slug "$SLUG" 
 **印字された `run_id` を控え、そのバッチの以降の issue では `RUN` にそれを設定する** — バッチ全体が
 1 つの Run と 1 つの親メールボックスを共有するようにする。印字された `status_dir` も全部控える。
 この端末が間に別の Run を起動していても、以降の issue はその Run に相乗りする。
-dispatch に失敗した issue は既に `dispatch/failed` が付いて資源が残っている。次へ進み、
+dispatch に失敗した issue は既に `Failed` が付いて資源が残っている。次へ進み、
 その issue をパス 2 から外す。
 
 パス 2、バッチ全体で 1 回 — dispatch できた issue ごとに `--status-dir` を 1 つ:
@@ -376,7 +377,7 @@ gh repo view --json nameWithOwner -q .nameWithOwner
 pull request が却下されても閉じたままになる。
 
 
-exit 1 はその issue を運べなかったことを意味する。ラベルは既に `dispatch/failed` へ動いて
+exit 1 はその issue を運べなかったことを意味する。ラベルは既に `Failed` へ動いて
 おり、**その資源は意図して残されている。**次の issue へ進む — 1 件の失敗は他の件について
 何も言っていない。
 
