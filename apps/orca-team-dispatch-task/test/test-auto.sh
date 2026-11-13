@@ -44,4 +44,5 @@ coord ensureCoordinator "'$W/sd', '/repo', 'auto-test'" >/dev/null 2>&1
 [[ "$(cat "$W/env.log" 2>/dev/null)" == $'term_c1\nterm_new' ]] && ok AU7 || fail AU7; teardown
 node --test "$P/test/unit/auto-state.test.ts" > /dev/null 2>&1 && ok "AU12-15 lock tests" || fail "AU12-15 lock tests"
 node --test "$P/test/unit/auto-queue.test.ts" > /dev/null 2>&1 && ok "AU16-22 queue tests" || fail "AU16-22 queue tests"
+node --test "$P/test/unit/auto-judge.test.ts" > /dev/null 2>&1 && ok "AU23-29 judge tests" || fail "AU23-29 judge tests"
 echo "failures: $fails"; exit "$fails"
