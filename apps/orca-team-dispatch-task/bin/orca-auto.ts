@@ -4,6 +4,7 @@ import { readAutoConfig } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
 import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
 import { readState, releaseLock, takeLockWait, writeState } from '../lib/auto-state.ts'
+import { runTick } from '../lib/auto-tick.ts'
 import { transition } from '../lib/auto-transition.ts'
 import { die } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
@@ -19,7 +20,7 @@ export const AUTO_JUDGE_LEASE_MS = 20 * 60_000
 const LOCK_TTL_MS = 160_000
 const main = (argv: string[]): number => {
   const command = argv[0] ?? ''
-  if (!['judge-list', 'judge-apply', 'judge-model', 'judge-effort', 'clear-start'].includes(command))
+  if (!['tick', 'judge-list', 'judge-apply', 'judge-model', 'judge-effort', 'clear-start'].includes(command))
     die('orca-auto', 'command is required: judge-list / judge-apply / judge-model / judge-effort / clear-start')
   const flags = new Map<string, string>()
   for (let i = 1; i < argv.length; i += 2) {
@@ -33,6 +34,7 @@ const main = (argv: string[]): number => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) die('orca-auto', 'invalid name')
   if (command === 'judge-apply' && !flags.get('--file')) die('orca-auto', '--file is required')
   if (command === 'clear-start' && !flags.get('--key')) die('orca-auto', '--key is required')
+  if (command === 'tick') return runTick(name)
   const config = readAutoConfig(name)
   if (!config) {
     console.error('設定を読めません')

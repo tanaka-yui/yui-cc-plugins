@@ -45,4 +45,5 @@ coord ensureCoordinator "'$W/sd', '/repo', 'auto-test'" >/dev/null 2>&1
 node --test "$P/test/unit/auto-state.test.ts" > /dev/null 2>&1 && ok "AU12-15 lock tests" || fail "AU12-15 lock tests"
 node --test "$P/test/unit/auto-queue.test.ts" > /dev/null 2>&1 && ok "AU16-22 queue tests" || fail "AU16-22 queue tests"
 node --test "$P/test/unit/auto-judge.test.ts" > /dev/null 2>&1 && ok "AU23-29 judge tests" || fail "AU23-29 judge tests"
+node --test "$P/test/unit/auto-dispatch.test.ts" > /dev/null 2>&1 && ok "AU30-39 dispatch tests" || fail "AU30-39 dispatch tests"
 echo "failures: $fails"; exit "$fails"
