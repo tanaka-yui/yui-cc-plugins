@@ -2,8 +2,10 @@ import {
   ADOPTED_LABEL,
   labelsHashKey,
   META_LABELS_HASH,
+  META_STATUS_CURSOR,
   SOURCE_LABEL,
   SQLITE_BUSY_TIMEOUT_MS,
+  statusCursorKey,
   USER_NAME_TTL_HOURS,
 } from './defaults.ts'
 import { ensurePrivateDir } from './fs.ts'
@@ -98,11 +100,24 @@ export const migrateToRepos = (db: Db, token: string, defaultRepo: string, now: 
       ).run(defaultRepo)
       db.exec('DROP TABLE issue_status')
     }
+    const cursor = getMeta(db, META_STATUS_CURSOR)
+    if (cursor !== null) {
+      const key = statusCursorKey(defaultRepo, SOURCE_LABEL)
+      if (getMeta(db, key) === null) setMeta(db, key, cursor)
+      deleteMeta(db, META_STATUS_CURSOR)
+    }
     const old = getMeta(db, META_LABELS_HASH)
     if (old !== null) {
       if (getMeta(db, labelsHashKey(defaultRepo)) === null) setMeta(db, labelsHashKey(defaultRepo), old)
       deleteMeta(db, META_LABELS_HASH)
     }
+    return true
+  })
+export const advanceCursor = (db: Db, token: string, key: string, at: string, now: string): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return false
+    const old = getMeta(db, key)
+    if (!old || Date.parse(at) > Date.parse(old)) setMeta(db, key, at)
     return true
   })
 export const leaseValid = (db: Db, token: string, now: string): boolean =>

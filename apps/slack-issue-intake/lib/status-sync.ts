@@ -1,23 +1,15 @@
 import { mentionPrefix } from './config.ts'
+import { advanceCursor, getIssueStatus, getMeta, issueKey, saveIssueStatus, trackedIssues } from './db.ts'
 import {
-  getIssueStatus,
-  getMeta,
-  inTransaction,
-  issueKey,
-  leaseValid,
-  saveIssueStatus,
-  setMeta,
-  trackedIssues,
-} from './db.ts'
-import {
+  ADOPTED_LABEL,
   ERROR_DEADLINE,
   ERROR_LEASE_LOST,
   ERROR_THREAD_NOT_FOUND,
   ISSUE_SCAN_PER_PAGE,
-  META_STATUS_CURSOR,
   SOURCE_LABEL,
   STATUS_CURSOR_OVERLAP_SECONDS,
   STATUS_MAX_ATTEMPTS,
+  statusCursorKey,
 } from './defaults.ts'
 import { stopError } from './drive.ts'
 import { currentStatus, isTrusted, parseMarker, renderStatusMessage, statusSlug } from './issue-status.ts'
@@ -82,24 +74,14 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
     error(ERROR_LEASE_LOST)
     return false
   }
-  const advance = (updatedAt: string): boolean => {
-    const saved = inTransaction(rt.db, () => {
-      if (!leaseValid(rt.db, token, now())) return false
-      const cursor = getMeta(rt.db, META_STATUS_CURSOR)
-      if (!cursor || Date.parse(updatedAt) > Date.parse(cursor)) setMeta(rt.db, META_STATUS_CURSOR, updatedAt)
-      return true
-    })
-    if (!saved) error(ERROR_LEASE_LOST)
-    return saved
-  }
-  const readComments = async (n: number, since: string | null): Promise<CommentView[] | null> => {
+  const readComments = async (repo: string, n: number, since: string | null): Promise<CommentView[] | null> => {
     const all: CommentView[] = []
     for (let page = 1; ; page++) {
       if (!valid()) return null
       const r = await rt.gh(
         [
           'api',
-          `repos/${rt.config.defaultRepo}/issues/${n}/comments?per_page=${ISSUE_SCAN_PER_PAGE}&page=${page}${since ? `&since=${since}` : ''}`,
+          `repos/${repo}/issues/${n}/comments?per_page=${ISSUE_SCAN_PER_PAGE}&page=${page}${since ? `&since=${since}` : ''}`,
         ],
         ctx.deadline,
       )
@@ -119,12 +101,12 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
   }
   // 1 件を処理する。false はこの回をここで止める（status_cursor をこの Issue より先へ進めない）
   const handle = async (issue: IssueView, thread: TrackedIssue): Promise<boolean> => {
-    const row = getIssueStatus(rt.db, rt.config.defaultRepo, issue.number)
+    const row = getIssueStatus(rt.db, thread.repo, issue.number)
     const to = { status: currentStatus(issue.labels), state: issue.state }
     // 前からある Issue は、最初に見たときは記録するだけで知らせない
     if (!row)
       return save({
-        repo: rt.config.defaultRepo,
+        repo: thread.repo,
         issueNumber: issue.number,
         status: to.status,
         state: to.state,
@@ -133,7 +115,7 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
         attempts: 0,
       })
     if (row.seenUpdatedAt && Date.parse(issue.updatedAt) <= Date.parse(row.seenUpdatedAt)) return true
-    const comments = await readComments(issue.number, row.seenUpdatedAt)
+    const comments = await readComments(thread.repo, issue.number, row.seenUpdatedAt)
     if (!comments) return false
     const fresh = comments.filter((c) => c.id > row.lastCommentId)
     const latest = fresh
@@ -151,7 +133,7 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
     // 同じコメントをもう一度読み、AI の変化として知らせる
     if (latest && !matches && row.status === to.status && row.state === to.state) return true
     const next: IssueStatusRow = {
-      repo: rt.config.defaultRepo,
+      repo: thread.repo,
       issueNumber: issue.number,
       status: to.status,
       state: to.state,
@@ -182,38 +164,48 @@ export const statusSync = async (ctx: DriveContext): Promise<StatusReport> => {
   }
 
   const tracked = trackedIssues(rt.db, rt.config.defaultRepo)
-  if (!tracked.size) return report
-  const cursor = getMeta(rt.db, META_STATUS_CURSOR)
-  const since = cursor ? new Date(Date.parse(cursor) - STATUS_CURSOR_OVERLAP_SECONDS * 1000).toISOString() : null
-  for (let page = 1; ; page++) {
-    if (!valid()) return report
-    const r = await rt.gh(
-      [
-        'api',
-        `repos/${rt.config.defaultRepo}/issues?labels=${SOURCE_LABEL}&state=all&sort=updated&direction=asc&per_page=${ISSUE_SCAN_PER_PAGE}&page=${page}${since ? `&since=${since}` : ''}`,
-      ],
-      ctx.deadline,
-    )
-    if (r.code !== 0) {
-      error(r.stderr || 'Issue 一覧を読めません')
-      return report
-    }
-    const items = asArray(parseJson(r.stdout))
-    if (!items) {
-      error('Issue 一覧の応答が不正です')
-      return report
-    }
-    for (const value of items) {
-      const issue = readIssue(value)
-      if (!issue) {
-        error('Issue 一覧の項目が不正です')
-        return report
+  for (const repo of rt.config.repos)
+    for (const label of [SOURCE_LABEL, ADOPTED_LABEL]) {
+      if (![...tracked.values()].some((t) => t.repo === repo.name && t.label === label)) continue
+      const key = statusCursorKey(repo.name, label)
+      const cursor = getMeta(rt.db, key)
+      const since = cursor ? new Date(Date.parse(cursor) - STATUS_CURSOR_OVERLAP_SECONDS * 1000).toISOString() : null
+      for (let page = 1; ; page++) {
+        if (!valid()) return report
+        const r = await rt.gh(
+          [
+            'api',
+            `repos/${repo.name}/issues?labels=${label}&state=all&sort=updated&direction=asc&per_page=${ISSUE_SCAN_PER_PAGE}&page=${page}${since ? `&since=${since}` : ''}`,
+          ],
+          ctx.deadline,
+        )
+        if (r.code !== 0) {
+          error(r.stderr || 'Issue 一覧を読めません')
+          break
+        }
+        const items = asArray(parseJson(r.stdout))
+        if (!items) {
+          error('Issue 一覧の応答が不正です')
+          break
+        }
+        let malformed = false
+        for (const value of items) {
+          const issue = readIssue(value)
+          if (!issue) {
+            error('Issue 一覧の項目が不正です')
+            malformed = true
+            break
+          }
+          if (issue === 'pull') continue
+          const thread = tracked.get(issueKey(repo.name, issue.number))
+          if (thread && !(await handle(issue, thread))) return report
+          if (!advanceCursor(rt.db, token, key, issue.updatedAt, now())) {
+            error(ERROR_LEASE_LOST)
+            return report
+          }
+        }
+        if (malformed || items.length < ISSUE_SCAN_PER_PAGE) break
       }
-      if (issue === 'pull') continue
-      const thread = tracked.get(issueKey(rt.config.defaultRepo, issue.number))
-      if (thread && !(await handle(issue, thread))) return report
-      if (!advance(issue.updatedAt)) return report
     }
-    if (items.length < ISSUE_SCAN_PER_PAGE) return report
-  }
+  return report
 }

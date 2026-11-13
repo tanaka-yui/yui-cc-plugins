@@ -23,6 +23,12 @@ const fail = (): never => {
   process.exit(1)
 }
 const output = (value: object): void => console.log(JSON.stringify(value))
+const repoOf = (issue: JsonObject): string =>
+  (
+    asString(issue.repo) ??
+    String(issue.html_url).match(/^https:\/\/github.com\/([^/]+\/[^/]+)\/issues\//)?.[1] ??
+    ''
+  ).toLowerCase()
 const issues = (): JsonObject[] => {
   try {
     return (asArray(parseJson(readFileSync(state, 'utf8'))) ?? []).flatMap((v) => {
@@ -58,8 +64,9 @@ else if (cmd === 'label create') {
   const known = process.env.FAKE_GH_KNOWN_LABELS?.split(',').map((l) => l.toLowerCase())
   if (known && args.some((a, i) => a === '--label' && !known.includes((args[i + 1] ?? '').toLowerCase()))) fail()
   const all = issues()
-  const number = all.length
-    ? Math.max(...all.map((i) => Number(i.number))) + 1
+  const sameRepo = all.filter((i) => repoOf(i) === value('--repo').toLowerCase())
+  const number = sameRepo.length
+    ? Math.max(...sameRepo.map((i) => Number(i.number))) + 1
     : Number(process.env.FAKE_GH_ISSUE_NUMBER ?? 42)
   const html_url = `https://github.com/${value('--repo')}/issues/${number}`
   all.push({
@@ -76,6 +83,7 @@ else if (cmd === 'label create') {
 } else if (args[0] === 'api' && args[1]?.startsWith('repos/')) {
   if (process.env.FAKE_GH_API_FAIL_PATH && args[1].includes(process.env.FAKE_GH_API_FAIL_PATH)) fail()
   const [path = '', query] = args[1].split('?')
+  const repo = path.split('/').slice(1, 3).join('/').toLowerCase()
   const params = new URLSearchParams(query)
   const page = Number(params.get('page'))
   if (page === Number(process.env.FAKE_GH_API_FAIL_PAGE)) fail()
@@ -85,7 +93,7 @@ else if (cmd === 'label create') {
   // Issue のコメント（GitHub は id の昇順で返し、since は更新日時で絞る）
   const comments = path.match(/\/issues\/(\d+)\/comments$/)
   if (comments) {
-    const issue = issues().find((i) => i.number === Number(comments[1]))
+    const issue = issues().find((i) => repoOf(i) === repo && i.number === Number(comments[1]))
     const list = (asArray(issue?.comments) ?? [])
       .flatMap((c) => {
         const o = asObject(c)
@@ -99,6 +107,7 @@ else if (cmd === 'label create') {
     const byUpdated = params.get('sort') === 'updated'
     const key = byUpdated ? 'updated_at' : 'created_at'
     const all = issues()
+      .filter((i) => repoOf(i) === repo)
       .filter((i) => (asArray(i.labels) ?? []).some((l) => asString(get(l, 'name')) === label))
       .filter((i) => !byUpdated || after(String(i.updated_at)))
       .sort((a, b) => String(b[key]).localeCompare(String(a[key])))

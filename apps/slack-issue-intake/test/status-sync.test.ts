@@ -278,3 +278,68 @@ test('ST11 ステータスの処理で例外が出ても、poll は結果を出�
   assert.equal(r.code, 1, r.stderr)
   assert.match(r.stdout, /result=idle .*partial=true notified=0/)
 })
+
+test('ST12 別リポジトリの同じ番号を別のスレッドへ通知する', async (t) => {
+  const f = await fixture(t)
+  const c = loadConfig(f.home)
+  assert.ok(c)
+  saveConfig(f.home, { ...c, repos: [...c.repos, { name: 'acme/web', form: true, existing: 'skip' }] })
+  const webTs = tsAt(6000)
+  await seedSubmission(f.home, { ts: webTs, state: 'created', repo: 'acme/web', issueNumber: 42 })
+  const web = (labels: string[], minute: number) => ({
+    ...issue(42, labels, minute),
+    repo: 'acme/web',
+    html_url: 'https://github.com/acme/web/issues/42',
+  })
+  f.setIssues([issue(42, [], 1), web([], 1)])
+  await f.poll()
+  f.setIssues([issue(42, [], 1), web(['Ready'], 2)])
+  const r = await f.poll()
+  assert.match(r.stdout, /notified=1/)
+  assert.deepEqual(
+    f.posts().map((p) => p.thread),
+    [webTs],
+  )
+  const db = openDb(homePaths(f.home).db)
+  assert.equal(getIssueStatus(db, 'acme/app', 42)?.status, null)
+  assert.equal(getIssueStatus(db, 'acme/web', 42)?.status, 'Ready')
+  db.close()
+})
+test('ST13 adopted のスレッドへ変更を知らせる', async (t) => {
+  const f = await fixture(t, { issues: [] })
+  const db = openDb(homePaths(f.home).db)
+  db.prepare('INSERT INTO adopted(repo,issue_number,channel,ts,title,url,created_at) VALUES (?,?,?,?,?,?,?)').run(
+    'acme/app',
+    7,
+    'C0123456789',
+    '7.0',
+    'title',
+    REPO_URL + 7,
+    NOW,
+  )
+  db.close()
+  const adopted = (labels: string[], minute: number) => ({
+    ...issue(7, [], minute),
+    labels: ['slack-thread', ...labels].map((name) => ({ name })),
+  })
+  f.setIssues([adopted([], 1)])
+  await f.poll()
+  f.setIssues([adopted(['Ready'], 2)])
+  await f.poll()
+  assert.equal(f.posts()[0]?.thread, '7.0')
+})
+test('ST14 旧カーソルを既定リポジトリの from-slack に移して続ける', async (t) => {
+  const f = await fixture(t)
+  const db = openDb(homePaths(f.home).db)
+  setMeta(db, META_STATUS_CURSOR, at(5))
+  db.close()
+  await f.poll()
+  assert.ok(ghCalls(f.gh.log).some((c) => c.argv.some((a) => a.includes('since=2026-11-12T01:04:00.000Z'))))
+  const after = openDb(homePaths(f.home).db)
+  assert.equal(after.prepare("SELECT value FROM meta WHERE key='status_cursor'").get(), undefined)
+  assert.equal(
+    after.prepare("SELECT value FROM meta WHERE key='status_cursor:acme/app:from-slack'").get()?.value,
+    at(5),
+  )
+  after.close()
+})
