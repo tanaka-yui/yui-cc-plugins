@@ -73,6 +73,24 @@ export const runtimeFixture = () => {
     `const fs=require('fs');const args=process.argv.slice(2);const file=process.env.GH_STUB_DIR+'/issue_view';if(fs.existsSync(process.env.GH_STUB_DIR+'/issue_edit.rc')&&Number(fs.readFileSync(process.env.GH_STUB_DIR+'/issue_edit.rc','utf8'))!==0)process.exit(0);const old=JSON.parse(fs.readFileSync(file));old.labels=[{name:args[args.indexOf('--add-label')+1]}];fs.writeFileSync(file,JSON.stringify(old));`,
   )
   f.hook('issue_edit', `exec '${process.execPath}' '${editHook}' "$@"`)
+  const commentHook = join(f.dir, 'comment-hook.js')
+  writeFileSync(
+    commentHook,
+    "const fs=require('fs');const path=require('path');const args=process.argv.slice(2);const body=args[args.indexOf('--body')+1];fs.appendFileSync(path.join(process.env.GH_STUB_DIR,'../comments.jsonl'),JSON.stringify(body)+'\\n');const rc=path.join(process.env.GH_STUB_DIR,'issue_comment.rc');if(fs.existsSync(rc)&&Number(fs.readFileSync(rc,'utf8'))!==0)process.exit(0);const file=path.join(process.env.GH_STUB_DIR,'api');let list=[];try{list=JSON.parse(fs.readFileSync(file,'utf8'))}catch{};list.push({body});fs.writeFileSync(file,JSON.stringify(list));",
+  )
+  f.hook('issue_comment', `exec '${process.execPath}' '${commentHook}' "$@"`)
+  const closeHook = join(f.dir, 'close-hook.js')
+  writeFileSync(
+    closeHook,
+    "const fs=require('fs');const dir=process.env.GH_STUB_DIR;const rc=dir+'/issue_close.rc';if(fs.existsSync(rc)&&Number(fs.readFileSync(rc,'utf8'))!==0)process.exit(0);const file=dir+'/issue_view';const issue=JSON.parse(fs.readFileSync(file));issue.state='CLOSED';fs.writeFileSync(file,JSON.stringify(issue));",
+  )
+  f.hook('issue_close', `exec '${process.execPath}' '${closeHook}' "$@"`)
+  const removeHook = join(f.dir, 'remove-hook.js')
+  writeFileSync(
+    removeHook,
+    "const fs=require('fs');const dir=process.env.ORCA_STUB_DIR;const rc=dir+'/worktree_rm.rc';if(fs.existsSync(rc)&&Number(fs.readFileSync(rc,'utf8'))!==0)process.exit(0);const args=process.argv.slice(2);const p=args[args.indexOf('--worktree')+1].replace(/^path:/,'');const file=dir+'/worktree_list';const row=JSON.parse(fs.readFileSync(file));row.result.worktrees=row.result.worktrees.filter(w=>w.path!==p);fs.writeFileSync(file,JSON.stringify(row));",
+  )
+  f.hook('worktree_rm', `exec '${process.execPath}' '${removeHook}' "$@"`, f.orca)
   const childCalls = () => {
     try {
       return readFileSync(join(children, 'calls.log'), 'utf8')
@@ -95,13 +113,13 @@ export const runtimeFixture = () => {
       Object.assign(i, {
         slug: slugOf(i.key),
         statusDir: join(checkout, '.dispatch', slugOf(i.key)),
-        branch: 'user/' + slugOf(i.key),
+        branch: `user/${slugOf(i.key)}`,
         coordinator: 'term_auto',
         worktrees: 1,
         startedAt: '2026-11-13T05:00:00Z',
       })
       mkdirSync(i.statusDir, { recursive: true })
-      writeFileSync(join(i.statusDir, 'request.md'), i.key + ' ' + i.title + '\n')
+      writeFileSync(join(i.statusDir, 'request.md'), `${i.key} ${i.title}\n`)
       f.put(join(i.statusDir, 'run.json'), { run_id: 'run_1', parent_handle: 'term_auto', repo_root: checkout })
       f.put(join(i.statusDir, 'workers.json'), {
         run_id: 'run_1',

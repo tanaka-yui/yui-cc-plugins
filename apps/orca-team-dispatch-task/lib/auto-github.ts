@@ -95,3 +95,42 @@ export const readyAtOf = (repo: string, number: number, pick: string, fallback: 
   }
   return latest || fallback
 }
+
+export type PrStatus = {
+  state: 'OPEN' | 'CLOSED' | 'MERGED'
+  mergedAt: string | null
+  checks: 'pass' | 'fail' | 'pending' | 'none'
+}
+export const prStatus = (repo: string, number: number): PrStatus | null => {
+  const value = asObject(
+    readGithub(['pr', 'view', String(number), '--repo', repo, '--json', 'state,mergedAt,statusCheckRollup']),
+  )
+  const rollup = asArray(value?.statusCheckRollup)
+  if (
+    !value ||
+    !['OPEN', 'CLOSED', 'MERGED'].includes(asString(value.state) ?? '') ||
+    (value.mergedAt !== null && typeof value.mergedAt !== 'string') ||
+    !rollup
+  )
+    return null
+  const checks: string[] = []
+  for (const check of rollup) {
+    const row = asObject(check)
+    if (row?.__typename === 'CheckRun' && typeof row.status === 'string')
+      checks.push(
+        row.status !== 'COMPLETED'
+          ? 'pending'
+          : ['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(asString(row.conclusion) ?? '')
+            ? 'pass'
+            : 'fail',
+      )
+    else if (row?.__typename === 'StatusContext' && typeof row.state === 'string')
+      checks.push(row.state === 'SUCCESS' ? 'pass' : ['PENDING', 'EXPECTED'].includes(row.state) ? 'pending' : 'fail')
+    else return null
+  }
+  return {
+    state: value.state as PrStatus['state'],
+    mergedAt: value.mergedAt as string | null,
+    checks: checks.includes('fail') ? 'fail' : checks.includes('pending') ? 'pending' : checks.length ? 'pass' : 'none',
+  }
+}

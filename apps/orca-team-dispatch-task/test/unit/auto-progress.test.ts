@@ -2,7 +2,7 @@ import { readState } from '../../lib/auto-state.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
@@ -65,7 +65,9 @@ test('AU44/AU47 timeout stops all roles using the coordinator before failure fin
     process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
     f.cli('tick')
     const issue = readState('main').issues[i.key]
-    assert.ok(issue?.phase === 'failed' || issue?.failReason?.includes('上限時間'))
+    assert.equal(issue?.phase, 'failed')
+    assert.equal(issue?.cleanupPending, false)
+    assert.ok(!existsSync(i.statusDir))
     assert.ok(f.childCalls().includes('orca-stop.ts'))
     assert.ok(f.childCalls().includes('ORCA_TERMINAL_HANDLE=term_auto'))
   } finally {
@@ -79,6 +81,7 @@ test('AU45 human status change stops the run without any comment or label write'
     f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'Pending' }] })
     f.cli('tick')
     assert.equal(readState('main').issues[i.key]?.phase, 'stopped')
+    assert.ok(!existsSync(i.statusDir))
     assert.ok(f.childCalls().includes('orca-stop.ts'))
     assert.ok(!f.calls().includes('issue comment'))
     assert.ok(!f.calls().includes('issue edit'))

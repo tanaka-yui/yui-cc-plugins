@@ -22,7 +22,7 @@ export const archiveStatusDir = (statusDir: string, archiveDir: string, name: st
   if (!existsSync(statusDir)) return true
   try {
     mkdirSync(archiveDir, { recursive: true })
-    const target = join(archiveDir, existsSync(join(archiveDir, name)) ? name + '-' + Date.now() : name)
+    const target = join(archiveDir, existsSync(join(archiveDir, name)) ? `${name}-${Date.now()}` : name)
     try {
       renameSync(statusDir, target)
     } catch (error) {
@@ -35,3 +35,5 @@ export const archiveStatusDir = (statusDir: string, archiveDir: string, name: st
     return false
   }
 }
+
+export const AUTO_WORKTREE_LIST_LIMIT = 1000

@@ -73,5 +73,5 @@ export const buildRequest = (
     `When you finish (the worker that implements)\nRun every verification command above. Write the Issue link ${issue.key} (https://github.com/${issue.repo}/issues/${issue.number}), a change summary, and the review findings and responses into your integration role's result.md.\nWrite ${resultPath} with this JSON shape: {"decisions":[],"summary":"...","verify":{"passed":true,"ran":[]},"review":{"unresolved":[],"declined":[]},"envFailure":null}. List every command actually run in verify.ran; passed must reflect the result. Put AI decisions, unresolved/declined findings and environment failures in their fields. Write decisions, summary and envFailure in Japanese; never include secrets.`,
     'If your task is PLAN ONLY, copy every requirement of this section into the plan so that the implementer does it.',
   ]
-  return sections.filter(Boolean).join('\n\n') + '\n'
+  return `${sections.filter(Boolean).join('\n\n')}\n`
 }

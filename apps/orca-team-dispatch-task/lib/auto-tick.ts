@@ -1,10 +1,11 @@
+import { autoCleanup, confirmStopped, pushBranches } from './auto-cleanup.ts'
 import { renderComment } from './auto-comment.ts'
 import { type AutoConfig, pickSources, readAutoConfig } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
-import { github, readGithub } from './auto-github.ts'
-import { AUTO_FILES, archiveStatusDir, autoDir, autoNow } from './auto-paths.ts'
+import { github, prStatus, readGithub, viewIssue } from './auto-github.ts'
+import { AUTO_FILES, AUTO_WORKTREE_LIST_LIMIT, archiveStatusDir, autoDir, autoNow } from './auto-paths.ts'
 import { orderQueue, syncIssues } from './auto-queue.ts'
-import { buildRequest, slugOf } from './auto-request.ts'
+import { buildRequest, readAutoResult, slugOf } from './auto-request.ts'
 import { type AutoState, type IssueState, readState, releaseLock, takeLock, writeState } from './auto-state.ts'
 import { hasCommentMarker, resumeTransition, transition } from './auto-transition.ts'
 import { roleNames } from './config.ts'
@@ -21,7 +22,6 @@ import { join, resolve } from 'node:path'
 export const AUTO_TICK_BUDGET_MS = 100_000
 export const AUTO_START_RESERVE_MS = 60_000
 export const AUTO_START_MAX_FAILURES = 3
-export const AUTO_WORKTREE_LIST_LIMIT = 1000
 export const AUTO_CREATE_SETTLE_SECS = 20
 const JUDGE_LEASE_MS = 20 * 60_000
 const ACTIVE = ['dispatching', 'running', 'finishing']
@@ -57,7 +57,7 @@ const listedWorkers = (issue: IssueState): Json[] | null => {
     runOrca(['orchestration', 'worker-list', '--run', id, '--json'], { ORCA_TERMINAL_HANDLE: h }),
     'workers',
   )
-  return listed && listed.every((w) => Boolean(asString(get(w, 'dispatchId')))) ? listed : null
+  return listed?.every((w) => Boolean(asString(get(w, 'dispatchId')))) ? listed : null
 }
 const unknownWorker = (workers: JsonObject, listed: Json[]): string | null => {
   const known = new Set(
@@ -168,6 +168,10 @@ const start = (tick: Tick, issue: IssueState, args: string[], h: string, fresh: 
   tick.save()
   if (result.stderr) console.log(result.stderr.trim())
   if (!existsSync(join(issue.statusDir, 'workers.json'))) retireStart(tick, issue)
+  if (issue.failReason) {
+    finishFailure(tick, issue)
+    clean(tick, issue)
+  }
 }
 const recover = (tick: Tick, issue: IssueState): void => {
   if (issue.pendingLabel || issue.failReason || issue.startAttempt || !owns(tick, issue)) return
@@ -346,7 +350,7 @@ const stopRoles = (tick: Tick, issue: IssueState): void => {
   if (!workers) return
   const list = listedWorkers(issue)
   if (!list || unknownWorker(workers, list)) {
-    error(tick, '停止を確かめられません: ' + issue.key)
+    error(tick, `停止を確かめられません: ${issue.key}`)
     return
   }
   const h = ensure(tick, issue)
@@ -409,8 +413,11 @@ const progress = (tick: Tick, issue: IssueState): void => {
     issue.phase = 'finishing'
     issue.finishingSince = autoNow()
     tick.save()
-  } else if (waited.rc === 5) markFailure(tick, issue, 'worker が失敗を報告しました。')
-  else if (waited.rc === 9 && !tick.startUsed) {
+  } else if (waited.rc === 5) {
+    markFailure(tick, issue, 'worker が失敗を報告しました。')
+    finishFailure(tick, issue)
+    clean(tick, issue)
+  } else if (waited.rc === 9 && !tick.startUsed) {
     const next = ensure(tick, issue)
     const checkout = tick.config.repos[issue.targets[0] ?? '']?.checkout
     if (next && checkout)
@@ -431,7 +438,219 @@ const progress = (tick: Tick, issue: IssueState): void => {
       issue.stalledNotified = true
       tick.save()
     }
-  } else if (![3, 8, 9].includes(waited.rc)) error(tick, '待機を進められません: ' + issue.key + ' rc=' + waited.rc)
+  } else if (![3, 8, 9].includes(waited.rc)) error(tick, `待機を進められません: ${issue.key} rc=${waited.rc}`)
+}
+
+const AUTO_CI_APPEAR_MINUTES = 30
+const AUTO_PR_RETRY_MINUTES = 30
+const clean = (tick: Tick, issue: IssueState): void => {
+  if (!issue.cleanupPending || issue.failReason || issue.pendingLabel || issue.startAttempt || !owns(tick, issue))
+    return
+  const checkout = tick.config.repos[issue.targets[0] ?? '']?.checkout
+  if (!checkout) return
+  if (existsSync(join(issue.statusDir, 'run.json')) && !ensure(tick, issue)) return
+  let merged = issue.phase === 'done'
+  if (!merged && issue.prs.length) {
+    const statuses = issue.prs.map((p) => prStatus(p.repo, p.number))
+    if (statuses.some((s) => s === null)) return
+    merged = statuses.every((s) => s?.state === 'MERGED')
+  }
+  const result = autoCleanup(
+    issue.statusDir,
+    checkout,
+    join(autoDir(tick.name), AUTO_FILES.archive),
+    issue.generation,
+    merged,
+  )
+  for (const reason of result.reasons) console.log(reason)
+  if (result.ok) {
+    issue.cleanupPending = false
+    tick.save()
+  }
+}
+const finishFailure = (tick: Tick, issue: IssueState): void => {
+  if (!issue.failReason || issue.pendingLabel || issue.startAttempt || !owns(tick, issue)) return
+  if (!issue.cleanupPending) {
+    issue.cleanupPending = true
+    tick.save()
+    stopRoles(tick, issue)
+  }
+  const checkout = tick.config.repos[issue.targets[0] ?? '']?.checkout
+  if (!checkout) return
+  if (existsSync(join(issue.statusDir, 'run.json')) && !ensure(tick, issue)) return
+  const stopped = confirmStopped(issue.statusDir)
+  if (!stopped.stopped) {
+    for (const reason of stopped.reasons) error(tick, reason)
+    return
+  }
+  const pushed = pushBranches(issue.statusDir, checkout, null)
+  const result = readAutoResult(join(issue.statusDir, 'auto-result.json'))
+  const reason = issue.failReason + (result?.envFailure ? ` 環境が原因: ${result.envFailure}` : '')
+  const view = viewIssue(issue.repo, issue.number)
+  if (!view) return
+  const from = view.labels.includes(STATUS.inProgress) ? STATUS.inProgress : STATUS.ready
+  if (
+    transition(
+      issue,
+      'failed',
+      { reason, branch: issue.branch, pushed: pushed.pushed },
+      from,
+      STATUS.failed,
+      false,
+      'failed',
+      tick.save,
+    )
+  )
+    tick.finished++
+}
+const needsReview = (tick: Tick, issue: IssueState, reason: string): void => {
+  if (
+    transition(
+      issue,
+      'needs-review',
+      { reason, prs: issue.prs, decisions: issue.decisions },
+      STATUS.inProgress,
+      STATUS.inReview,
+      false,
+      'review',
+      tick.save,
+    )
+  )
+    tick.finished++
+}
+const finish = (tick: Tick, issue: IssueState): void => {
+  if (issue.pendingLabel || issue.failReason || issue.startAttempt || !owns(tick, issue)) return
+  const view = viewIssue(issue.repo, issue.number)
+  if (!view) return
+  if (view.state !== 'OPEN' || !view.labels.includes(STATUS.inProgress)) {
+    humanStop(tick, issue)
+    return
+  }
+  issue.finishingSince ??= autoNow()
+  tick.save()
+  const repo = issue.targets[0] ?? ''
+  const options = tick.config.repos[repo]
+  if (!options) return
+  const result = readAutoResult(join(issue.statusDir, 'auto-result.json'))
+  issue.decisions = result
+    ? [
+        ...result.decisions,
+        ...result.review.unresolved.map((s) => `未解消の指摘: ${s}`),
+        ...result.review.declined.map((s) => `採らなかった指摘: ${s}`),
+      ]
+    : []
+  tick.save()
+  if (!issue.prs.length) {
+    const created = runNode(child('orca-pr.ts'), ['--status-dir', issue.statusDir, '--repo', repo])
+    const pr =
+      created.rc === 0
+        ? asObject(readGithub(['pr', 'view', '--repo', repo, '--json', 'number,url', issue.branch]))
+        : null
+    if (!pr || typeof pr.number !== 'number' || typeof pr.url !== 'string') {
+      if (Date.parse(autoNow()) - Date.parse(issue.finishingSince) >= AUTO_PR_RETRY_MINUTES * 60_000) {
+        const reason =
+          asString(get(readJson(join(issue.statusDir, 'integration-result.json')), 'reason')) || 'PR を作れません'
+        needsReview(tick, issue, reason)
+      }
+      return
+    }
+    issue.prs = [{ repo, number: pr.number, url: pr.url }]
+    tick.save()
+  }
+  const pr = issue.prs[0]
+  if (!pr) return
+  const status = prStatus(pr.repo, pr.number)
+  if (!status) return
+  if (status.state === 'MERGED') {
+    if (
+      transition(
+        issue,
+        'ai-merged',
+        { prs: issue.prs, summary: result?.summary },
+        STATUS.inProgress,
+        STATUS.done,
+        true,
+        'done',
+        tick.save,
+      )
+    )
+      tick.finished++
+    return
+  }
+  if (status.checks === 'pending') return
+  if (status.checks === 'none' && options.ci && status.state === 'OPEN') {
+    if (Date.parse(autoNow()) - Date.parse(issue.finishingSince) >= AUTO_CI_APPEAR_MINUTES * 60_000)
+      needsReview(tick, issue, 'CI が始まりません')
+    return
+  }
+  const reasons: string[] = []
+  if (!result) reasons.push('結果の報告が読めないため確認してください。')
+  if (result && !result.verify.passed) reasons.push('確認コマンドが通っていません。')
+  if (result?.envFailure) reasons.push(`環境が原因: ${result.envFailure}`)
+  if (issue.decisions.length) reasons.push('AI が判断した点があります。')
+  if (status.checks === 'fail') reasons.push('CI が失敗しました。')
+  if (!options.verified) reasons.push('確認できないリポジトリです。')
+  if (options.infra) reasons.push('インフラの変更は確認が必要です。')
+  if (status.state === 'CLOSED') reasons.push('PR が閉じられています。')
+  if (reasons.length) {
+    needsReview(tick, issue, reasons.join(' '))
+    return
+  }
+  const allowed = asObject(
+    readGithub(['repo', 'view', '--json', 'squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed', pr.repo]),
+  )
+  if (!allowed) return
+  const method =
+    allowed.squashMergeAllowed === true
+      ? '--squash'
+      : allowed.mergeCommitAllowed === true
+        ? '--merge'
+        : allowed.rebaseMergeAllowed === true
+          ? '--rebase'
+          : null
+  if (!method || github(['pr', 'merge', String(pr.number), '--repo', pr.repo, method]).rc !== 0) {
+    needsReview(tick, issue, 'PR を merge できませんでした。')
+    return
+  }
+  if (
+    transition(
+      issue,
+      'ai-merged',
+      { prs: issue.prs, summary: result?.summary },
+      STATUS.inProgress,
+      STATUS.done,
+      true,
+      'done',
+      tick.save,
+    )
+  )
+    tick.finished++
+}
+const watchReview = (tick: Tick, issue: IssueState): void => {
+  const view = viewIssue(issue.repo, issue.number)
+  if (!view) return
+  if (view.state === 'CLOSED') {
+    if (issue.cleanupPending) {
+      issue.phase = 'stopped'
+      tick.save()
+    } else {
+      delete tick.state.issues[issue.key]
+      tick.save()
+    }
+    return
+  }
+  if (!view.labels.includes(STATUS.inReview)) {
+    issue.phase = 'stopped'
+    tick.save()
+    return
+  }
+  if (!issue.prs.length) return
+  const statuses = issue.prs.map((p) => prStatus(p.repo, p.number))
+  if (
+    statuses.every((s) => s?.state === 'MERGED') &&
+    transition(issue, 'human-merged', { prs: issue.prs }, STATUS.inReview, STATUS.done, true, 'done', tick.save)
+  )
+    tick.finished++
 }
 
 export const runTick = (name: string): number => {
@@ -463,9 +682,17 @@ export const runTick = (name: string): number => {
     )
     for (const issue of Object.values(state.issues))
       if (timedOut(issue)) markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
-    for (const issue of Object.values(state.issues))
-      if (issue.pendingLabel && !blocked.has(issue.key) && (!issue.failReason || issue.pendingLabel.event === 'failed'))
+    for (const issue of Object.values(state.issues)) {
+      if (
+        issue.pendingLabel &&
+        !blocked.has(issue.key) &&
+        (!issue.failReason || issue.pendingLabel.event === 'failed')
+      ) {
+        const before = issue.phase
         resumeTransition(issue, tick.save)
+        if (issue.phase === 'stopped' && before !== 'stopped') stopRoles(tick, issue)
+      }
+    }
     const sources = pickSources(config)
     const synced = syncIssues(
       state,
@@ -475,6 +702,14 @@ export const runTick = (name: string): number => {
     for (const key of synced.humanChanged) {
       const issue = state.issues[key]
       if (issue && !blocked.has(key)) humanStop(tick, issue)
+    }
+    for (const issue of Object.values(state.issues))
+      if (issue.failReason && !blocked.has(issue.key)) finishFailure(tick, issue)
+    for (const issue of Object.values(state.issues)) {
+      if (blocked.has(issue.key) || issue.pendingLabel || issue.failReason) continue
+      if (issue.phase === 'finishing') finish(tick, issue)
+      else if (issue.phase === 'review') watchReview(tick, issue)
+      clean(tick, issue)
     }
     for (const issue of Object.values(state.issues))
       if (issue.phase === 'running' && !blocked.has(issue.key)) progress(tick, issue)

@@ -47,4 +47,5 @@ node --test "$P/test/unit/auto-queue.test.ts" > /dev/null 2>&1 && ok "AU16-22 qu
 node --test "$P/test/unit/auto-judge.test.ts" > /dev/null 2>&1 && ok "AU23-29 judge tests" || fail "AU23-29 judge tests"
 node --test "$P/test/unit/auto-dispatch.test.ts" > /dev/null 2>&1 && ok "AU30-39 dispatch tests" || fail "AU30-39 dispatch tests"
 node --test "$P/test/unit/auto-progress.test.ts" > /dev/null 2>&1 && ok "AU40-47 progress tests" || fail "AU40-47 progress tests"
+node --test "$P/test/unit/auto-finish.test.ts" "$P/test/unit/auto-cleanup.test.ts" "$P/test/unit/auto-lifecycle.test.ts" > /dev/null 2>&1 && ok "AU50-59 finish and cleanup tests" || fail "AU50-59 finish and cleanup tests"
 echo "failures: $fails"; exit "$fails"
