@@ -5,6 +5,7 @@ import {
   FORM_EXTRA_SCOPES,
   FORM_FEATURE_STEPS,
   FORM_KINDS,
+  FORM_REPO_FIELD_MIN_REPOS,
   FORM_SUBMIT_LABEL,
   MAX_FILES_PER_MESSAGE,
   PRIORITIES,
@@ -23,8 +24,8 @@ const FIELD = { title: 'title', priority: 'priority', attachments: 'attachments'
 const INPUT = { interactivity: 'interactivity', channel: 'channel_id', user: 'user_id' }
 const FORM_STEP = '0'
 const fieldRef = (name: string): string => `{{steps.${FORM_STEP}.fields.${name}}}`
-export const renderWorkflowMessage = (kind: FormKind): string =>
-  renderKindMessage(kind, (name) => (name === REPORTER_SLOT ? `<@{{inputs.${INPUT.user}}}>` : fieldRef(name)))
+export const renderWorkflowMessage = (kind: FormKind, withRepo: boolean): string =>
+  renderKindMessage(kind, (name) => (name === REPORTER_SLOT ? `<@{{inputs.${INPUT.user}}}>` : fieldRef(name)), withRepo)
 
 // 入力は app settings が書き出す形（v1: 名前ごとに type と is_required）で書く。既存のアプリへの deploy では
 // Slack CLI がリモートのマニフェストを土台にマージし、_metadata を落として v1 として検証するため、
@@ -38,7 +39,7 @@ const inputParam = (name: string, type: string, title: string): JsonObject => ({
 })
 
 // open_form で集め、send_message で添付ごと対象チャンネルへ投稿する。どちらも Slack 組み込みの関数
-export const formWorkflow = (kind: FormKind): JsonObject => ({
+export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObject => ({
   title: kind.title,
   description: FORM_DESCRIPTION,
   input_parameters: {
@@ -58,6 +59,9 @@ export const formWorkflow = (kind: FormKind): JsonObject => ({
           elements: [
             { name: FIELD.title, title: FIELD_LABELS.title, type: 'string' },
             { name: FIELD.priority, title: FIELD_LABELS.priority, type: 'string', enum: [...PRIORITIES] },
+            ...(repos.length >= FORM_REPO_FIELD_MIN_REPOS
+              ? [{ name: 'repo', title: FIELD_LABELS.repo, type: 'string', enum: [...repos] }]
+              : []),
             ...kind.items.map((item) => ({
               name: item.name,
               title: item.label,
@@ -81,7 +85,7 @@ export const formWorkflow = (kind: FormKind): JsonObject => ({
       function_id: 'slack#/functions/send_message',
       inputs: {
         channel_id: `{{inputs.${INPUT.channel}}}`,
-        message: renderWorkflowMessage(kind),
+        message: renderWorkflowMessage(kind, repos.length >= FORM_REPO_FIELD_MIN_REPOS),
         files: fieldRef(FIELD.attachments),
       },
     },
@@ -89,16 +93,17 @@ export const formWorkflow = (kind: FormKind): JsonObject => ({
 })
 
 // guide のマニフェストに、フォームのワークフローとボタン用の権限を足す。新規の作成も既存への deploy と同じ v1 で検証させるため _metadata は書かない。workflows を持つアプリは org_deploy_enabled が必須
-export const formManifestObject = (): JsonObject => {
+export const formManifestObject = (repos: readonly string[]): JsonObject => {
   const base = manifestObject()
   return {
     ...base,
     oauth_config: { scopes: { bot: [...SLACK_BOT_SCOPES, ...FORM_EXTRA_SCOPES] } },
     settings: { ...(asObject(base.settings) ?? {}), org_deploy_enabled: true },
-    workflows: Object.fromEntries(FORM_KINDS.map((kind) => [kind.workflowId, formWorkflow(kind)])),
+    workflows: Object.fromEntries(FORM_KINDS.map((kind) => [kind.workflowId, formWorkflow(kind, repos)])),
   }
 }
-export const renderFormManifest = (): string => JSON.stringify(formManifestObject(), null, 2)
+export const renderFormManifest = (repos: readonly string[]): string =>
+  JSON.stringify(formManifestObject(repos), null, 2)
 
 // Slack CLI の trigger create --trigger-def に渡す定義。投稿先は押した場所によらず設定のチャンネルに固定する
 export const triggerDefinition = (channel: string, kind: FormKind): JsonObject => ({

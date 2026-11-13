@@ -36,7 +36,11 @@ export const run = async (argv: string[]): Promise<void> => {
   for (const m of latest.messages) {
     const { text, source } = messageText(m)
     const own = m.user === config.slack.botUserId || m.bot_id === config.slack.botId
-    const parsed = parseSubmission(text, own ? null : asString(m.user))
+    const parsed = parseSubmission(
+      text,
+      own ? null : asString(m.user),
+      config.repos.map((r) => r.name),
+    )
     const f = parsed.kind === 'ok' ? parsed.fields : null
     const reporter =
       parsed.kind === 'ok' ? parsed.fields.reporterId : parsed.kind === 'invalid' ? parsed.reporterId : null

@@ -113,12 +113,16 @@ export const sync = async (ctx: DriveContext): Promise<SyncReport> => {
         // form --manifest のワークフローは自分のボットとして投稿する。自分の投稿はマーカーで始まるものだけを受け付け、
         // 起票者は本文のメンションだけから取る（ボット自身を起票者にしない）。自分の返信は常にスレッド内なので履歴に出ない
         const own = m.user === rt.config.slack.botUserId || m.bot_id === rt.config.slack.botId
-        const parsed = parseSubmission(messageText(m).text, own ? null : asString(m.user))
+        const parsed = parseSubmission(
+          messageText(m).text,
+          own ? null : asString(m.user),
+          rt.config.repos.map((r) => r.name),
+        )
         if (parsed.kind === 'not-submission') continue
         const id = insertSubmission(
           rt.db,
           {
-            repo: rt.config.defaultRepo,
+            repo: parsed.kind === 'ok' ? (parsed.repo ?? rt.config.defaultRepo) : rt.config.defaultRepo,
             channel: rt.config.channel,
             ts,
             permalink: messagePermalink(rt.config.slack.teamUrl, rt.config.channel, ts),

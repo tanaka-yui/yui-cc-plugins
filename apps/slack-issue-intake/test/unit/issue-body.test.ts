@@ -23,7 +23,7 @@ test('IB2 フェンスの脱出と長さの増幅を防ぐ', () => {
 })
 test('IB3–IB7 本文とラベルの構造を保ち、全体を上限内にする', () => {
   const db = openDb(join(tempHome(), 'db'))
-  const p = parseSubmission(templateText(), null)
+  const p = parseSubmission(templateText(), null, [])
   assert.ok(p.kind === 'ok')
   const id = insertSubmission(
     db,
@@ -79,14 +79,14 @@ test('IB3–IB7 本文とラベルの構造を保ち、全体を上限内にす�
   db.close()
 })
 test('IB10 issueLabels は withStatus のときだけ Backlog を足す', () => {
-  const p = parseSubmission(templateText(), null)
+  const p = parseSubmission(templateText(), null, [])
   assert.ok(p.kind === 'ok')
   assert.deepEqual(issueLabels(p.fields, true), ['bug', 'priority: high', 'from-slack', 'Backlog'])
   assert.deepEqual(issueLabels(p.fields, false), ['bug', 'priority: high', 'from-slack'])
 })
 test('IB8 長い添付リンクが多数あっても本文全体の上限と最終マーカーを保つ', () => {
   const db = openDb(join(tempHome(), 'db'))
-  const parsed = parseSubmission(templateText(), null)
+  const parsed = parseSubmission(templateText(), null, [])
   assert.ok(parsed.kind === 'ok')
   const id = insertSubmission(
     db,

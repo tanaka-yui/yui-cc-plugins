@@ -155,7 +155,7 @@ test('FO5 --manifest は設定なしで出し、make setup のアプリが無け
   const env = { SLACK_ISSUE_INTAKE_HOME: tempHome(), SLACK_ISSUE_INTAKE_API_BASE: 'http://127.0.0.1:9/api' }
   const printed = await runCliAsync(['form', '--manifest'], env)
   assert.equal(printed.code, 0, printed.stderr)
-  assert.equal(printed.stdout, `${renderFormManifest()}\n`)
+  assert.equal(printed.stdout, `${renderFormManifest([])}\n`)
   const missing = await runCliAsync(['form'], env)
   assert.equal(missing.code, 2)
   const f = await fixture(t, { seed: false })

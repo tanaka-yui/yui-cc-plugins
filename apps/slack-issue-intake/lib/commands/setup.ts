@@ -1,7 +1,7 @@
 import { isAllowedEvery } from '../automation.ts'
 import { findChannel, joinChannel, normalizeChannelName } from '../channels.ts'
 import { parseFlags } from '../cli.ts'
-import { loadConfig } from '../config.ts'
+import { formRepos, loadConfig } from '../config.ts'
 import { getMeta, openDb } from '../db.ts'
 import {
   APP_ID_PATTERN,
@@ -287,8 +287,8 @@ const wizard = async (): Promise<number> => {
   // 2: トークン・アプリ・マニフェストの指紋がそろっていれば飛ばす。トークンだけなら手作業のアプリとして進む
   const project = slackProject(home)
   const app = deployedApp(project)
-  const hash = manifestHash()
   const existing = loadConfig(home)
+  const hash = manifestHash(existing ? formRepos(existing) : [])
   let token = loadToken(paths.secrets)
   const manualApp = Boolean(token) && !app
   // プラグインを更新するとフックのパスが古くなるので、アプリがあれば毎回書き直す

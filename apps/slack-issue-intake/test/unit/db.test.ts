@@ -36,7 +36,7 @@ import { test } from 'node:test'
 import type { NewSubmission } from '../../lib/db.ts'
 
 const sample = (ts: string): NewSubmission => {
-  const p = parseSubmission(templateText(), null)
+  const p = parseSubmission(templateText(), null, [])
   assert.ok(p.kind === 'ok')
   return {
     repo: 'acme/app',

@@ -27,5 +27,27 @@ test('SH2 トークンが無いか xoxb- でなければ、何も保存せずに
   }
 })
 test('SH3 get-manifest はフォーム付きのマニフェストをそのまま返す', () => {
-  assert.equal(runCli(['slack-hook', 'get-manifest'], {}).stdout, `${renderFormManifest()}\n`)
+  assert.equal(
+    runCli(['slack-hook', 'get-manifest'], { SLACK_ISSUE_INTAKE_HOME: tempHome() }).stdout,
+    `${renderFormManifest([])}\n`,
+  )
+})
+
+test('SH4 設定のリポジトリ一覧からマニフェストと deploy の指紋を作る', async () => {
+  const { setupHome } = await import('./helpers.ts')
+  const { manifestHash, slackProject } = await import('../lib/slack-cli.ts')
+  const { readFileSync } = await import('node:fs')
+  const home = tempHome()
+  const repos = ['acme/app', 'acme/web']
+  const env = await setupHome(home, {
+    apiBase: 'http://127.0.0.1:1/api',
+    ghPath: '/fake/gh',
+    ghState: '/fake/state',
+    repos: repos.map((name) => ({ name, form: true, existing: 'skip' })),
+  })
+  const manifest = runCli(['slack-hook', 'get-manifest'], env)
+  assert.equal(manifest.stdout.trim(), renderFormManifest(repos))
+  const deploy = runCli(['slack-hook', 'deploy'], { ...env, SLACK_BOT_TOKEN: 'xoxb-test-token' })
+  assert.equal(deploy.code, 0, deploy.stderr)
+  assert.equal(readFileSync(slackProject(home).manifestHash, 'utf8').trim(), manifestHash(repos))
 })

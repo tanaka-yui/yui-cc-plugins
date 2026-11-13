@@ -36,13 +36,14 @@ const KIND_ITEMS: Record<string, ReadonlyArray<readonly [label: string, long: bo
 export const kindText = (
   category: string,
   values: Record<string, string>,
-  o: { title?: string; priority?: string; reporter?: string } = {},
+  o: { title?: string; priority?: string; reporter?: string; repo?: string } = {},
 ): string =>
   [
     '[issue-intake]',
     `*タイトル:* ${o.title ?? 'ログインできない'}`,
     `*カテゴリ:* ${category}`,
     `*優先度:* ${o.priority ?? 'high'}`,
+    ...(o.repo !== undefined ? [`*リポジトリ:* ${o.repo}`] : []),
     `*起票者:* ${o.reporter ?? `<@${REPORTER}>`}`,
     ...(KIND_ITEMS[category] ?? []).flatMap(([label, long]) =>
       long ? ['', `*${label}:*`, '```', values[label] ?? '', '```'] : ['', `*${label}:* ${values[label] ?? ''}`],

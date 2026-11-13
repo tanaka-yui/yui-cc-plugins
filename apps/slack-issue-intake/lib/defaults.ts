@@ -76,6 +76,7 @@ export const SLACK_BOT_SCOPES: readonly string[] = [
 ]
 export const SUBMISSION_MARKER = '[issue-intake]'
 export const FIELD_LABELS = {
+  repo: 'リポジトリ',
   title: 'タイトル',
   category: 'カテゴリ',
   priority: '優先度',
@@ -318,6 +319,8 @@ export const MSG_CREATED_TIMEOUT = '回答がなかったため、未確認事�
 export const MSG_REJECTED =
   'フォームの内容を読み取れませんでした（{problems}）。ワークフローのメッセージのテンプレートを確認してください。'
 export const MSG_FAILED = 'Issue の作成に失敗しました。管理者が確認します。'
+export const FORM_REPO_FIELD_MIN_REPOS = 2
+export const PROBLEM_REPO = 'リポジトリは次のどれかにしてください: {options}'
 export const PROBLEM_MISSING = '{label}がありません'
 export const PROBLEM_INVALID = '{label}が「{options}」のどれでもありません'
 export const PROBLEM_SEPARATOR = '、'

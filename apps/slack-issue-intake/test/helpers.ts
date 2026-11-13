@@ -224,7 +224,7 @@ export const seedSubmission = async (
   const { parseSubmission } = await import('../lib/parse.ts')
   const f = await import('./fixtures/slack-messages.ts')
   const db = openDb(homePaths(home).db)
-  const parsed = parseSubmission(f.templateText(), null)
+  const parsed = parseSubmission(f.templateText(), null, [])
   if (parsed.kind !== 'ok') throw new Error('fixtureが不正です')
   const id = insertSubmission(
     db,
@@ -294,7 +294,7 @@ export const seedSlackApp = async (home: string, teamId: string): Promise<void> 
   writeProject(project)
   writeFileSync(project.apps, JSON.stringify({ apps: { A0FAKE001: { app_id: 'A0FAKE001', team_id: teamId } } }))
   // 今のマニフェストを deploy 済みのアプリとして置く
-  saveDeployedHash(project, manifestHash())
+  saveDeployedHash(project, manifestHash([]))
 }
 
 export const seedLegacyDb = (

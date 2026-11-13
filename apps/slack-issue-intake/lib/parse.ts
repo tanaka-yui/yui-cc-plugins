@@ -6,6 +6,7 @@ import {
   PRIORITIES,
   PROBLEM_INVALID,
   PROBLEM_MISSING,
+  PROBLEM_REPO,
   SUBMISSION_MARKER,
   TITLE_ELLIPSIS,
 } from './defaults.ts'
@@ -16,7 +17,7 @@ import type { Category, FormKind, Priority, SubmissionFields } from './types.ts'
 export type ParseResult =
   | { kind: 'not-submission' }
   | { kind: 'invalid'; problems: string[]; reporterId: string | null }
-  | { kind: 'ok'; fields: SubmissionFields }
+  | { kind: 'ok'; fields: SubmissionFields; repo: string | null }
 
 const FENCE = '```'
 const HEADER_LABELS: readonly string[] = [
@@ -24,6 +25,7 @@ const HEADER_LABELS: readonly string[] = [
   FIELD_LABELS.category,
   FIELD_LABELS.priority,
   FIELD_LABELS.reporter,
+  FIELD_LABELS.repo,
 ]
 
 export const formKindByCategory = (category: string): FormKind | undefined => {
@@ -117,13 +119,15 @@ const scan = (lines: string[]): Scan => {
   return { header, legacyBody: null, items }
 }
 
-export const parseSubmission = (text: string, fallbackUserId: string | null): ParseResult => {
+export const parseSubmission = (text: string, fallbackUserId: string | null, repos: readonly string[]): ParseResult => {
   const lines = text.trim().split(/\r?\n/)
   if (lines[0]?.normalize('NFKC').trim() !== SUBMISSION_MARKER) return { kind: 'not-submission' }
   const { header, legacyBody, items } = scan(lines)
   const fullTitle = header[FIELD_LABELS.title] ?? ''
   const category = (header[FIELD_LABELS.category] ?? '').normalize('NFKC').trim()
   const priority = (header[FIELD_LABELS.priority] ?? '').normalize('NFKC').trim().toLowerCase()
+  const repoValue = (header[FIELD_LABELS.repo] ?? '').normalize('NFKC').trim()
+  const repo = repos.find((name) => name.toLowerCase() === repoValue.toLowerCase()) ?? null
   const reporterId = firstUserMention(header[FIELD_LABELS.reporter] ?? '') ?? fallbackUserId
   const formKind = legacyBody === null ? formKindByCategory(category) : undefined
   const sections = (formKind?.items ?? []).map((item) => ({
@@ -140,6 +144,7 @@ export const parseSubmission = (text: string, fallbackUserId: string | null): Pa
     else if (options.length && !(options as readonly string[]).includes(value))
       problems.push(PROBLEM_INVALID.replace('{label}', label).replace('{options}', options.join(' / ')))
   }
+  if (repoValue && !repo) problems.push(PROBLEM_REPO.replace('{options}', repos.join(' / ')))
   if (legacyBody !== null) {
     if (!legacyBody) problems.push(PROBLEM_MISSING.replace('{label}', FIELD_LABELS.body))
   } else
@@ -150,6 +155,7 @@ export const parseSubmission = (text: string, fallbackUserId: string | null): Pa
   const chars = [...fullTitle]
   return {
     kind: 'ok',
+    repo,
     fields: {
       title: chars.length > MAX_TITLE_CHARS ? chars.slice(0, MAX_TITLE_CHARS - 1).join('') + TITLE_ELLIPSIS : fullTitle,
       fullTitle,

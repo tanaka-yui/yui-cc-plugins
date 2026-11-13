@@ -20,17 +20,22 @@ export const manifestObject = (): JsonObject => ({
 export const renderManifest = (): string => JSON.stringify(manifestObject(), null, 2)
 // 手で作るワークフローの「チャンネルへメッセージを送信」に入れるテンプレート。{…} にフォームの変数を差し込む
 export const renderTemplate = (kind: FormKind): string =>
-  renderKindMessage(kind, (name) => {
-    if (name === REPORTER_SLOT) return `{${TEMPLATE_REPORTER_HINT}}`
-    if (name === 'title') return `{${FIELD_LABELS.title}}`
-    if (name === 'priority') return `{${FIELD_LABELS.priority}}`
-    return `{${kind.items.find((i) => i.name === name)?.label ?? name}}`
-  })
+  renderKindMessage(
+    kind,
+    (name) => {
+      if (name === REPORTER_SLOT) return `{${TEMPLATE_REPORTER_HINT}}`
+      if (name === 'title') return `{${FIELD_LABELS.title}}`
+      if (name === 'priority') return `{${FIELD_LABELS.priority}}`
+      return `{${kind.items.find((i) => i.name === name)?.label ?? name}}`
+    },
+    false,
+  )
 const formSteps = (kind: FormKind): string =>
   [
     `「${kind.title}」`,
     `- ${FIELD_LABELS.title}: 短い回答、必須`,
     `- ${FIELD_LABELS.priority}: リスト選択、必須（${PRIORITIES.join(' / ')}）`,
+    `- ${FIELD_LABELS.repo}: リスト選択、任意（受け付けるリポジトリが 2 つ以上のときだけ。選択肢は受け付けるリポジトリ。テンプレートの「${FIELD_LABELS.priority}」の行の次に「*${FIELD_LABELS.repo}:* {${FIELD_LABELS.repo}}」の行を足します）`,
     ...kind.items.map((i) => `- ${i.label}: ${i.long ? '長い回答' : '短い回答'}、${i.required ? '必須' : '任意'}`),
     `- 添付ファイル: アップロード、任意、複数可。1ファイルだけなら任意のアップロードの質問を3つ並べます。`,
     `「チャンネルへメッセージを送信」のテンプレート:`,

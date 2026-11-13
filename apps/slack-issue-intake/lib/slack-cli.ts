@@ -120,7 +120,8 @@ export const deployedApp = (project: SlackProject): { appId: string; teamId: str
   }
 }
 
-export const manifestHash = (): string => createHash('sha256').update(renderFormManifest()).digest('hex')
+export const manifestHash = (repos: readonly string[]): string =>
+  createHash('sha256').update(renderFormManifest(repos)).digest('hex')
 export const readDeployedHash = (project: SlackProject): string | null => {
   try {
     return readFileSync(project.manifestHash, 'utf8').trim() || null

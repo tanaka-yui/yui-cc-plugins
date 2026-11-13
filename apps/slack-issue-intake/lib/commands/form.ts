@@ -1,4 +1,5 @@
 import { parseFlags } from '../cli.ts'
+import { formRepos, loadConfig } from '../config.ts'
 import { deleteMeta, getMeta, setMeta } from '../db.ts'
 import {
   ADMIN_LEASE_MS,
@@ -51,7 +52,8 @@ const reason = (f: SlackFailure): string => (f.detail ? `${f.error} ${f.detail}`
 export const run = async (argv: string[]): Promise<void> => {
   const { values } = parseFlags('form', { args: argv, options: { manifest: { type: 'boolean' } } })
   if (values.manifest) {
-    console.log(renderFormManifest())
+    const config = loadConfig(intakeHome())
+    console.log(renderFormManifest(config ? formRepos(config) : []))
     return
   }
   const opened = openRuntime(intakeHome())
@@ -73,7 +75,7 @@ export const run = async (argv: string[]): Promise<void> => {
   // プラグインを更新するとフックのパスが古くなるので、Slack CLI を呼ぶ前に書き直す
   writeProject(project)
   // deploy 済みのアプリに今のワークフローが無いと、ボタンを作れない。Workflow Builder ではなく make setup へ案内する
-  if (readDeployedHash(project) !== manifestHash()) {
+  if (readDeployedHash(project) !== manifestHash(formRepos(rt.config))) {
     console.error(MSG_FORM_STALE_MANIFEST)
     rt.db.close()
     process.exitCode = 2

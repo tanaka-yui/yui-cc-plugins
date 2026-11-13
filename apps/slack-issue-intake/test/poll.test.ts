@@ -412,7 +412,7 @@ test('PO22 アカウント変更では照合も作成もしない', async (t) =>
 })
 test('PO24 タイトルはメンション無効化後もGitHubの文字数上限内', async (t) => {
   const { parseSubmission } = await import('../lib/parse.ts')
-  const parsed = parseSubmission(templateText({ title: '@alice '.repeat(100) }), null)
+  const parsed = parseSubmission(templateText({ title: '@alice '.repeat(100) }), null, [])
   assert.ok(parsed.kind === 'ok')
   const f = await fixture(t)
   await seedSubmission(f.home, {
@@ -497,4 +497,30 @@ test('PO29 submission のリポジトリへ起票し、その指紋で Backlog �
   const saved = openDb(homePaths(f.home).db)
   assert.equal(getIssueStatus(saved, 'acme/web', 42)?.status, 'Backlog')
   saved.close()
+})
+
+test('PO28/PO30 投稿のリポジトリを記録し、未登録は不備として返信する', async (t) => {
+  const messages = ['acme/web', '', 'acme/missing'].map((repo, i) =>
+    textMessage(tsAt(3500 - i), templateText().replace('優先度: high', `優先度: high\nリポジトリ: ${repo}`)),
+  )
+  const f = await fixture(t, { messages })
+  const { loadConfig, saveConfig } = await import('../lib/config.ts')
+  const config = loadConfig(f.home)
+  assert.ok(config)
+  saveConfig(f.home, { ...config, repos: [...config.repos, { name: 'acme/web', form: true, existing: 'skip' }] })
+  const r = await f.poll()
+  assert.match(r.stdout, /inserted=2 rejected=1/)
+  const db = openDb(homePaths(f.home).db)
+  const rows = listByStates(db, ALL_STATES)
+  assert.deepEqual(
+    rows.map((s) => s.repo),
+    ['acme/web', 'acme/app', 'acme/app'],
+  )
+  assert.equal(rows[2]?.state, 'rejected')
+  db.close()
+  assert.ok(
+    f.server.requests.some(
+      (r) => r.method === 'chat.postMessage' && (r.params.text ?? '').includes('リポジトリは次のどれか'),
+    ),
+  )
 })

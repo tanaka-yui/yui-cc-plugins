@@ -1,3 +1,4 @@
+import { formRepos, loadConfig } from '../config.ts'
 import { MSG_HOOK_NO_TOKEN, SLACK_HOOK_TOKEN_ENV } from '../defaults.ts'
 import { renderFormManifest } from '../form.ts'
 import { homePaths, intakeHome } from '../paths.ts'
@@ -6,15 +7,17 @@ import { hooksInterface, manifestHash, saveDeployedHash, slackProject } from '..
 
 // Slack CLI が呼ぶフック。get-hooks / get-manifest は標準出力に JSON を返し、deploy は今のアプリのボットトークンを保存する
 export const run = (argv: string[]): void => {
+  const config = loadConfig(intakeHome())
+  const repos = config ? formRepos(config) : []
   const [hook] = argv
   if (hook === 'get-hooks') {
     console.log(JSON.stringify(hooksInterface()))
   } else if (hook === 'get-manifest') {
-    console.log(renderFormManifest())
+    console.log(renderFormManifest(repos))
   } else if (hook === 'deploy') {
     // Slack CLI はアプリをマニフェストどおりに作ってインストールしたあとでこのフックを呼ぶ。
     // トークンを受け取れなくても、ここまで来ればアプリは今の版になっているので指紋を残す（set-token のあと deploy し直さない）
-    saveDeployedHash(slackProject(intakeHome()), manifestHash())
+    saveDeployedHash(slackProject(intakeHome()), manifestHash(repos))
     const token = process.env[SLACK_HOOK_TOKEN_ENV]
     if (token && isBotToken(token)) {
       saveToken(homePaths(intakeHome()).secrets, token)

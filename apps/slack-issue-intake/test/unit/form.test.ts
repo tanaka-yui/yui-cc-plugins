@@ -18,6 +18,7 @@ import {
 import { manifestObject, renderManifest } from '../../lib/guide.ts'
 import { asArray, asObject, asString, get } from '../../lib/json.ts'
 import { parseSubmission } from '../../lib/parse.ts'
+import { manifestHash } from '../../lib/slack-cli.ts'
 import { CHANNEL, kindText, REPORTER } from '../fixtures/slack-messages.ts'
 
 import assert from 'node:assert/strict'
@@ -27,7 +28,7 @@ import type { Json } from '../../lib/json.ts'
 import type { FormKind } from '../../lib/types.ts'
 
 const WORKFLOW_IDS = ['issue_intake_bug', 'issue_intake_request', 'issue_intake_feature']
-const workflowOf = (kind: FormKind): Json | undefined => get(formManifestObject(), 'workflows', kind.workflowId)
+const workflowOf = (kind: FormKind): Json | undefined => get(formManifestObject([]), 'workflows', kind.workflowId)
 const step = (kind: FormKind, index: number): Json | undefined => asArray(get(workflowOf(kind), 'steps'))?.[index]
 const elements = (kind: FormKind): Json[] => asArray(get(step(kind, 0), 'inputs', 'fields', 'elements')) ?? []
 const byName = (kind: FormKind, name: string): Json | undefined => elements(kind).find((e) => get(e, 'name') === name)
@@ -44,7 +45,7 @@ test('FM1 通常のマニフェストは変えず、フォーム付きは 3 つ�
   assert.equal(get(manifestObject(), 'settings', 'org_deploy_enabled'), false)
   assert.equal(get(manifestObject(), 'workflows'), undefined)
   assert.ok(!renderManifest().includes('triggers:write'))
-  const form = formManifestObject()
+  const form = formManifestObject([])
   assert.equal(get(form, 'settings', 'org_deploy_enabled'), true)
   assert.equal(get(form, 'settings', 'token_rotation_enabled'), false)
   assert.deepEqual(get(form, 'oauth_config', 'scopes', 'bot'), [
@@ -59,7 +60,7 @@ test('FM1 通常のマニフェストは変えず、フォーム付きは 3 つ�
     [...FORM_EXTRA_SCOPES],
     ['channels:read', 'groups:read', 'chat:write.public', 'channels:join', 'bookmarks:write'],
   )
-  assert.ok(!renderFormManifest().includes('triggers:write'))
+  assert.ok(!renderFormManifest([]).includes('triggers:write'))
   assert.deepEqual(get(form, 'display_information'), get(manifestObject(), 'display_information'))
   assert.deepEqual(Object.keys(asObjectOrEmpty(get(form, 'workflows'))), WORKFLOW_IDS)
   for (const kind of FORM_KINDS)
@@ -96,7 +97,7 @@ test('FM2 3 つのフォームの項目と必須はカテゴリどおりで、Sl
 test('FM3 ワークフローの投稿は変数を埋めると解析器がそのまま読める', () => {
   for (const kind of FORM_KINDS) {
     const message = asString(get(step(kind, 1), 'inputs', 'message')) ?? ''
-    assert.equal(message, renderWorkflowMessage(kind))
+    assert.equal(message, renderWorkflowMessage(kind, false))
     let filled = message
       .replace('{{steps.0.fields.title}}', 'ログインできない')
       .replace('{{steps.0.fields.priority}}', 'high')
@@ -107,7 +108,7 @@ test('FM3 ワークフローの投稿は変数を埋めると解析器がその�
       filled = filled.replace(`{{steps.0.fields.${item.name}}}`, values[item.label] ?? '')
     }
     assert.equal(filled, kindText(kind.category, values))
-    const r = parseSubmission(filled, null)
+    const r = parseSubmission(filled, null, [])
     assert.ok(r.kind === 'ok' && r.fields.category === kind.category && r.fields.reporterId === REPORTER, kind.key)
   }
 })
@@ -134,4 +135,23 @@ test('FM4 ボタンは設定のチャンネルへ固定し、押した人と操�
 })
 test('FM5 おすすめにする ID は , でつないで 1 回で渡す', () => {
   assert.deepEqual(featuredParams(CHANNEL, ['Ft0A', 'Ft0B']), { channel_id: CHANNEL, trigger_ids: 'Ft0A,Ft0B' })
+})
+
+test('FM6/FM7 複数リポジトリだけ任意の選択欄を作り、指紋へ反映する', () => {
+  const repos = ['acme/app', 'acme/web']
+  const manifest = formManifestObject(repos)
+  for (const kind of FORM_KINDS) {
+    const workflow = get(manifest, 'workflows', kind.workflowId)
+    const steps = asArray(get(workflow, 'steps')) ?? []
+    const fields = get(steps[0], 'inputs', 'fields')
+    const elements = asArray(get(fields, 'elements')) ?? []
+    assert.deepEqual(elements[2], { name: 'repo', title: 'リポジトリ', type: 'string', enum: repos })
+    assert.ok(!asArray(get(fields, 'required'))?.includes('repo'))
+    assert.match(String(get(steps[1], 'inputs', 'message')), /\*リポジトリ:\* {{steps.0.fields.repo}}/)
+    assert.equal(get(workflow, 'input_parameters', 'channel_id', 'is_required'), true)
+  }
+  assert.ok(!renderFormManifest([]).includes('"name": "repo"'))
+  assert.ok(!renderFormManifest(['acme/app']).includes('"name": "repo"'))
+  assert.equal(manifestHash([]), manifestHash(['acme/app']))
+  assert.notEqual(manifestHash([]), manifestHash(repos))
 })
