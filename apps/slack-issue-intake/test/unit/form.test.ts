@@ -123,8 +123,13 @@ test('FM4 ボタンは設定のチャンネルへ固定し、押した人と操�
     assert.equal(d.name, kind.title)
     assert.equal(d.workflow, `#/workflows/${kind.workflowId}`)
     assert.deepEqual(d.inputs, inputs)
-    const required = asArray(get(workflowOf(kind), 'input_parameters', 'required')) ?? []
-    assert.deepEqual([...required].sort(), Object.keys(inputs).sort())
+    const params = asObjectOrEmpty(get(workflowOf(kind), 'input_parameters'))
+    assert.deepEqual(Object.keys(params).sort(), Object.keys(inputs).sort())
+    for (const [name, p] of Object.entries(params)) {
+      assert.equal(get(p, 'name'), name)
+      assert.equal(get(p, 'is_required'), true)
+      assert.ok(asString(get(p, 'type'))?.startsWith('slack#/types/'), name)
+    }
   }
 })
 test('FM5 おすすめにする ID は , でつないで 1 回で渡す', () => {

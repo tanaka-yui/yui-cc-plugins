@@ -68,7 +68,7 @@ test('LA2 コピー先で独立動作するランチャーの定数が一致', (
   assert.equal(launcher.CLAUDE_HOME_ENV, CLAUDE_HOME_ENV)
   assert.equal(launcher.HOME_ENV, HOME_ENV)
 })
-test('DO5 README は 8 つのステータスラベル名と usergroups:read と「0.3 からの更新」を含み、版は 0.4.0', () => {
+test('DO5 README は 8 つのステータスラベル名と usergroups:read と「0.3 からの更新」を含み、版は 0.4.1', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
   for (const label of STATUS_LABELS) assert.ok(readme.includes(`| ${label.name} |`), label.name)
   assert.ok(readme.includes('usergroups:read'))
@@ -77,6 +77,6 @@ test('DO5 README は 8 つのステータスラベル名と usergroups:read と�
   const market = JSON.parse(readFileSync(join(root, '../../.claude-plugin/marketplace.json'), 'utf8')) as {
     plugins: { name: string; version: string }[]
   }
-  assert.equal(plugin.version, '0.4.0')
-  assert.equal(market.plugins.find((p) => p.name === 'slack-issue-intake')?.version, '0.4.0')
+  assert.equal(plugin.version, '0.4.1')
+  assert.equal(market.plugins.find((p) => p.name === 'slack-issue-intake')?.version, '0.4.1')
 })

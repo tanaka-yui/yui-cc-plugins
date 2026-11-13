@@ -26,17 +26,25 @@ const fieldRef = (name: string): string => `{{steps.${FORM_STEP}.fields.${name}}
 export const renderWorkflowMessage = (kind: FormKind): string =>
   renderKindMessage(kind, (name) => (name === REPORTER_SLOT ? `<@{{inputs.${INPUT.user}}}>` : fieldRef(name)))
 
+// 入力は app settings が書き出す形（v1: 名前ごとに type と is_required）で書く。既存のアプリへの deploy では
+// Slack CLI がリモートのマニフェストを土台にマージし、_metadata を落として v1 として検証するため、
+// v2 の properties / required の形は通らない。題と説明も書き出しと揃え、次の deploy で差分を出さない
+const inputParam = (name: string, type: string, title: string): JsonObject => ({
+  type,
+  name,
+  description: '',
+  title,
+  is_required: true,
+})
+
 // open_form で集め、send_message で添付ごと対象チャンネルへ投稿する。どちらも Slack 組み込みの関数
 export const formWorkflow = (kind: FormKind): JsonObject => ({
   title: kind.title,
   description: FORM_DESCRIPTION,
   input_parameters: {
-    properties: {
-      [INPUT.interactivity]: { type: 'slack#/types/interactivity' },
-      [INPUT.channel]: { type: 'slack#/types/channel_id' },
-      [INPUT.user]: { type: 'slack#/types/user_id' },
-    },
-    required: [INPUT.interactivity, INPUT.channel, INPUT.user],
+    [INPUT.interactivity]: inputParam(INPUT.interactivity, 'slack#/types/interactivity', 'Interactivity'),
+    [INPUT.channel]: inputParam(INPUT.channel, 'slack#/types/channel_id', 'Channel Id'),
+    [INPUT.user]: inputParam(INPUT.user, 'slack#/types/user_id', 'User Id'),
   },
   steps: [
     {
@@ -80,11 +88,10 @@ export const formWorkflow = (kind: FormKind): JsonObject => ({
   ],
 })
 
-// guide のマニフェストに、フォームのワークフローとボタン用の権限を足す。workflows を持つアプリは org_deploy_enabled が必須
+// guide のマニフェストに、フォームのワークフローとボタン用の権限を足す。新規の作成も既存への deploy と同じ v1 で検証させるため _metadata は書かない。workflows を持つアプリは org_deploy_enabled が必須
 export const formManifestObject = (): JsonObject => {
   const base = manifestObject()
   return {
-    _metadata: { major_version: 2 },
     ...base,
     oauth_config: { scopes: { bot: [...SLACK_BOT_SCOPES, ...FORM_EXTRA_SCOPES] } },
     settings: { ...(asObject(base.settings) ?? {}), org_deploy_enabled: true },
