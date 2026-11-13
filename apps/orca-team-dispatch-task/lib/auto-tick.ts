@@ -96,9 +96,12 @@ const owns = (tick: Tick, issue: IssueState): boolean => {
 }
 const held = (tick: Tick, issue: IssueState): boolean => {
   if (!issue.startAttempt) return false
+  const runId = asString(runRecord(issue)?.run_id) ?? '未記録'
+  const processes = run('ps', ['-axo', 'pid=,command='])
+  const diagnostic = processes.rc === 0 ? (processes.stdout.includes(`--slug ${issue.slug}`) ? 'あり' : 'なし') : '不明'
   error(
     tick,
-    `起動の結果が不明のため保留: ${issue.key} ${issue.slug} ${issue.startAttempt.at} — Orca で確かめてから orca-auto.ts clear-start --key ${issue.key}`,
+    `起動の結果が不明のため保留: ${issue.key} ${issue.slug} ${issue.startAttempt.at} Run=${runId} 起動プロセス=${diagnostic}（診断のみ） — Orca で確かめてから orca-auto.ts clear-start --key ${issue.key}`,
   )
   return true
 }

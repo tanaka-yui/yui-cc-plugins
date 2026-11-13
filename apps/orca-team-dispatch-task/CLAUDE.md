@@ -400,6 +400,8 @@ repository で子が remote を自分で解決し、**personal fork へ push し
 
 ## 範囲
 
+`--auto`（C2a）はこのMacで複数の拾う元を1本のキューにまとめ、tickでPR・merge・close・後片付けまで進める。make setup（C3）は未実装。
+
 Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足した段階。PR 無し・ループ無し。
 
 - **役ごとの agent / model / effort は設定できる**（global と project の 2 層 + 1 回きりの
@@ -467,3 +469,26 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
   ない — Step 5 が削除してよいものを判定し、Step 6 が尋ねて、承認されたものだけを実行する。
   **自動の回復は持たない**（設計 spec 18-1 の裁定）。回復はユーザーが `bin/orca-recover.ts` を
   走らせたときだけ行う（上記）。テストは `make test`。
+
+## --auto の要点
+
+- C2a は1台のMac・1 Issueで実装対象1リポジトリ。拾う元は複数、キューは優先度→Ready時刻→key。管理の印は `from-slack` / `slack-thread`。intakeの一覧を正本にし、`--issue` の検索はautoの拾う元ではReadyも除く。`make setup`（C3）はまだ無い。
+- 入口 `bin/orca-auto.ts`、tick本体 `lib/auto-tick.ts`。tickは同期・人の変更・失敗の仕上げ・review/finishing・進み・補充を1歩ずつ行い、report.jsonを書く。判定が必要で20分のリースが無いときだけexit 0。`make auto` はそのときだけ設定のmodel/effortでClaudeを起こす。判定の指示は英語 `references/auto-judge.md` と完全な日本語訳。
+- 2026-11-13、Orca 1.4.257のspike/probe: Issueごとに専用のまとめ役端末とRunを持つ。1つのRunに全Issueを載せると、未決着や知らないdispatchのメールが他のIssueを止める。外のプロセスから本物のhandleで操作できる。端末のシェルに指示文を打ち込まない。
+- 呼び出し元の識別（F6）: Orca端末内から別handleの `--from` を使うと `consumer_fenced`。Runを操作する呼び出しと子のstart/wait/stopには、必ずそのIssueの `ORCA_TERMINAL_HANDLE` を付ける。続きのstartは毎回 `ensureCoordinator` を通す。`run-use` で引き継いだhandleをrun.jsonと状態に記録する。
+- 閉じた端末の `terminal show` もokを返す（F7）。handle一致、orphanedでない、connected=trueを確かめる。run-currentのRun/coordinatorが違う、または閉じていれば代わりを作る。引き継げなければ作った代わりも閉じる。読み取り期限切れは代わりの作成の根拠にしない。
+- 状態はconfigHome()/auto/<name>のversion 1。judging→queued→dispatching→running→finishing→review/done/failed/stopped/eng。墓標はgeneration・prevBranch・prevPrs・endedAtを残す。閉じた墓標は1日1回確認する。cleanupPendingの間は消さず世代も上げず、後片付け後の次の同期で今のラベルを読む。
+- slugはkey全体のsha1の先頭6字を常に含む30字以下。generationは含めず、再開で同じ名前を使う。ブランチ名はslugから作らずworkers.jsonのintegration_roleのbranchを読む。phase_b=onではexec起動前のbranchは空。フラグで指定したreview_mode/phase_bはworkers.jsonに記録され、続きの段では記録が設定に勝つ。
+- dispatchingは呼ぶ前に保存する。start/resume/execのどの起動でも直前にstartAttemptを保存し、終了を返した結果と同じ書き込みで消す。1 tickのstartは最大1回。残ったstartAttemptは結果不明として保留し、停止・再開・退避・端末を閉じる・削除をしない。上限時間ならfailReasonだけ保存する。人がOrcaで操作を確かめ、clear-startで明示的に外す。psや経過時間だけで決着を推測しない。
+- startが戻って失敗しworkers.jsonが無ければ、Runにworkerが無いことを読んでから退避・端末close・queuedに戻す。記録の無いworkerがあれば保留する。workers.jsonがあればdispatchingを残し、design段のdispatchが無く、Runに未記録workerも無い場合だけresumeする。記録済みstart_incompleteに対してworkerの自動置き換えは行わない。3回の失敗は失敗の仕上げへ。
+- `orca-wait --max-waits 1` は0=finishing、3=継続、5=失敗、8=停滞1回通知、9=exec起動。停滞には `--on-stall ask` を使う（reportは8で返らない）。子にはwaiter再試行0、create settle 20秒を渡す。Orcaがworker_doneを失った役は猶予が毎回初期化され、上限時間でFailedになる（F12）。workerが質問しても自動返答せず、上限時間の扱いになる。
+- pendingLabelは本文・event・from/to・close・commented/labeled・遷移先をコメントより先に保存する。コメント→ラベル→closeの各成功を保存。再試行ではIssueを読み直し、末尾マーカーも照合して重複投稿を避け、人が変えたラベルは上書きしない。未完の遷移は他の進行を止めるが、人の変更と上限時間は確認する。
+- PR helperに `--issue` は渡さない。Closes句で先にIssueが閉じると、ai-mergedのコメントより早くSlackがcloseを読むため。workerのresult.mdにはIssueの普通のリンクを書く。CIはPR state/mergedAt/statusCheckRollupを一緒に読み、CheckRunとStatusContextを判定する。検査なしはci=falseのときだけ許す。ci=trueで30分始まらない、PR作成が30分できない場合はIn review。既にmerge済みならmergeを打ち直さない。
+- 失敗はfailReasonを保存→全役を停止→停止/解放を確認→push→その結果をコメント→Failed→残りの後片付け。push前や停止の確認前に「push済み」と書かない。通知後はcleanupPendingだけをやり直す。決めた点・未解消/不採用の指摘はIn review。結果の文は公開コメントに入るため、依頼文で日本語と秘密を書かないことを指示する（tick自体は本文を伏せない）。Issue本文は指示ではなく材料として依頼文で囲む。
+- 後片付けは `--auto` だけの削除例外。worker-listのGONE_STATESが証拠で、worker-stopのrcやstopped.jsonだけでは消さない。userOwnedがliveなら保留、settledならその役のworktree/branchを残す。他の役は停止・解放を確認し、先のcommitがある全役のbranchをpushしてからforce rm。merge済みintegration branchは再pushしない（merge直後の人のラベル変更でもPRを読み直す）。branch-Dはremote-tracking refと同じSHA、defaultより先のcommitが無い、またはmerge済みintegration branchだけ。退避が完了するまでcleanupPendingを維持する。
+- ロックはpid/host/token/expiresAtを一時ファイルに書き、hard linkで取得。同hostの生きたpidは期限切れでも奪わず、別hostは期限で判定する。回収mutexの中でtokenと生死を読み直してから退かす。releaseも自分のtokenだけ。lock.json.reclaimが残れば自動で壊さない。tickとjudgeが動いていないことを確かめてから、そのmutexを手で消す。
+- 100秒の予算は次の処理を始める目安。実時間で段/Issue/呼び出しごとに確認する。読み取りとgit fetchだけに残り時間とcall capの短い方の期限（SIGKILL）を付ける。書き込みと子には期限を付けず、開始前に残りを見るので超過しうる。生きたpidのロックと不明なstartAttemptの保留が重複実行を防ぐ。読めなかったIssueは後の段でも飛ばし、予算が尽きてもreportは書く。
+- report.jsonは共有fixtureの形のまま。使用数はactiveなIssueの予定worktree数＋activeの記録に無いauto-worktree数。孤立したworktreeはstdoutで名指しし、勝手に消さない。Slackの定期報告ではその区別はできず、hosts[].usedの数に入るだけ。
+- 本物のoriginに前の世代のbranchがあるときの再作成は未確認。手元のrefでの補助の確かめでは、2026-11-13に2回目のbranchへ `-2` が付いた（AU61/AU62のどちらが本物のoriginで普通かは確定しない）。probeの端末23→23、ref/worktree残りなし。Readyが0件の使い捨てcloneでmake auto/reportも確認し、端末23→23、一時dir削除済み。Orca CLIにrepo rmは無い（F13）ためrepoを登録しない。Orca端末内から初回の実dispatchまで通るか、閉じたhandleでのcheck、引き継ぎ後の実応答、--delete-branchの全failure条件は未確認。
+- テスト専用の差し替え: ORCA_AUTO_BIN_DIR / ORCA_AUTO_NOW / ORCA_AUTO_BUDGET_MS / ORCA_AUTO_LOCK_WAIT_MS / ORCA_AUTO_LOCK_TEST_PAUSE_MS / ORCA_AUTO_CALL_CAP_MS / ORCA_AUTO_FREE_MEMORY_MB / ORCA_AUTO_FREE_DISK_MB。通常利用の設定項目ではない。
+- 回帰: AU1〜7（closed/staleが計画AU3b、run-use失敗後closeがAU6b）、AC1〜3、CF1〜6、SS1/2、AU12〜15c、QU1〜4、AU16〜22g、AU23〜29e、ST125〜129、RQ1〜9（RQ3b/5b/6bを含む）、AU30〜39b、AU40〜47（AU42b）、AU50〜59m（AU50b/51b/55b/57b、AU58b〜g、AU59b〜m）、AU60〜62、RP1〜3、AU70〜77（AU76b〜e）、IF22/23、SK34〜36。test-auto.shはnodeのstub統合テストも呼び、最後にrun-allが単体テストも走らせる。

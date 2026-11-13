@@ -49,7 +49,7 @@ Every script this skill runs is TypeScript that `node` runs directly, which need
 later. If `node` is missing or older, each call fails before it does anything: tell the user, and
 do not fall back to doing a step by hand.
 
-**Route on the arguments first.** `--setup` and `--reset` configure and dispatch nothing:
+**Route on the arguments first.** `--auto` follows Auto mode and does not enter Step 1b. `--setup` and `--reset` configure and dispatch nothing:
 do the Configuration section and stop. `--issue` takes its work from GitHub instead of from
 the user: do the Issue mode section. Anything else is a dispatch, which reads that
 configuration, asks S0 once when there is none, and starts at Step 1.
@@ -244,6 +244,73 @@ for that one call and write nothing, so a model can be tried before it is saved.
 **Quote a model id that contains brackets**, here and in S4: write `--model 'claude-opus-5-5[1m]'`,
 not the bare id. zsh reads an unquoted `[1m]` as a filename pattern and stops the whole call with
 `no matches found` before the script ever runs.
+
+## Auto mode
+
+`--auto` maintains one priority queue across the configured repositories managed by slack-issue-intake. It picks open Ready Issues carrying `from-slack` or `slack-thread`. Queued Issues keep Ready until dispatch. It judges difficulty, starts the configured role combination, advances each Issue's Run, creates a PR, merges eligible work or requests review, and cleans up. C2a runs on this Mac and implements one target repository per Issue; judgments selecting multiple targets go to Ready_Eng.
+
+### Configuration and prerequisites
+
+Use a dedicated checkout for each implementation repository, already cloned and registered with Orca. Uncommitted changes prevent dispatch. The settings are in `~/.claude/config/orca-team-dispatch-task/auto/main/config.json` (or under `ORCA_DISPATCH_CONFIG_HOME`). The intake config's repository list is authoritative; `sources` selects its entries and supplies related implementation repositories.
+
+The C3 `make setup` command is not available yet. Create the dedicated checkouts and configuration manually; replace the absolute paths in this example:
+
+```json
+{
+  "version": 1,
+  "name": "main",
+  "intakeConfig": "/absolute/path/to/slack-issue-intake/config.json",
+  "sources": [{ "repo": "acme/app", "related": ["acme/app"], "pick": "Ready" }],
+  "repos": {
+    "acme/app": {
+      "checkout": "/absolute/path/to/auto-checkout",
+      "verify": ["node --test"],
+      "infra": false,
+      "verified": false,
+      "ci": true
+    }
+  },
+  "lanes": 1,
+  "roles": { "review_mode": "off", "phase_b": "off" },
+  "limits": { "defaultMinutes": 60, "maxMinutes": 240, "stallMinutes": 30 },
+  "judge": { "model": "claude-opus-5-5[1m]", "effort": "high" },
+  "minFreeMemoryMb": 4096,
+  "minFreeDiskMb": 10240
+}
+```
+
+Lanes count worktrees. One Issue reserves 1, 2, 2, or 4 worktrees for off/off, on/off, off/on, or on/on respectively, including roles that start later. Orphan worktrees also consume capacity. `verified: false` and infrastructure repositories may run, but their PRs require human review. Set `ci: false` only for a repository without CI.
+
+### Run one tick or judge the queue
+
+Run `make auto` from the plugin directory (`NAME=main` by default). It runs `orca-auto.ts tick`; only when judging is needed does it start Claude with the configured model and effort. The judging agent follows [auto-judge.md](references/auto-judge.md), runs `judge-list`, writes the returned `decisionsFile`, and runs `judge-apply --file <decisionsFile>`. A judgment lease lasts 20 minutes. Tick exits 0 when judging is needed, 1 otherwise, and 2 for usage errors.
+
+To run the precheck directly:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-auto.ts" tick
+```
+
+To inspect state without changing it:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-auto.ts" status
+```
+
+A scheduled precheck can run the same tick entry point; creating and enabling the automation belongs to C3. Each Issue has its own coordinator terminal and Run. Closing that terminal is handled on the next tick by creating a replacement and rebinding only that Issue's Run.
+
+### Completion, recovery, and cleanup
+
+Comments precede label changes and close. Saved transition stages allow retries without posting the comment again; a person's changed status cancels the pending transition. A clean result can merge only after verification and successful CI (or explicitly configured no CI), on a verified non-infrastructure repository. Decisions, unresolved or declined review findings, or failed checks send the work to In review. Worker failures and time limits become Failed. Returning an Issue in review, failed, stopped, or engineering state to Ready creates a new generation after cleanup, retaining the previous branch and PR context.
+
+`--auto` is the resource-deletion exception: after proving all workers stopped or released, it pushes unmerged branches, removes released worktrees and safe local branches, closes its coordinator, and archives the status directory. Merged integration branches are not pushed again. User-owned worktrees are retained; a live user-owned worker blocks cleanup and another generation. Ordinary dispatch and `--issue` still use Steps 5 and 6.
+
+The 100-second tick budget controls starting more work. Reads have kill deadlines; writes and child operations can exceed the budget. A living local lock owner is never displaced. An interrupted start remains held, occupying its lane, until a person verifies the Orca operation and runs `orca-auto.ts clear-start --key <owner/repo#N>`. Process age or absence alone does not prove that operation finished. An unrecorded worker also requires inspection; automatic worker replacement is not performed.
+
+State and `report.json` live alongside the configuration; completed status directories go to `archive/`. Slack reporting is owned by slack-issue-intake, which reads this report and the Issue comments and labels. This plugin does not post to Slack.
+
 
 ## Issue mode
 
@@ -1175,6 +1242,8 @@ What `run` does, so you can report it truthfully:
 
 ## Known limitations
 
+Unless a row names `--auto`, these rows describe ordinary dispatch and `--issue`.
+
 State these when they apply. Do not work around them silently.
 
 | Limitation | What the user does |
@@ -1205,6 +1274,8 @@ State these when they apply. Do not work around them silently.
 | Orca can keep reporting a working worker as `start_unknown` | Measured 2026-09-24: Orca could not observe the start of a codex worker's turn and kept that state while the worker went on working. The wait keeps waiting on it and reports a dead one as a stall (exit 8). Nothing types into such a worker to wake it — a dead one may have left a bare shell — so it relies on its own waits. For a start that did not complete, `orca-recover.ts` shows its screen and you choose `--adopt` or `--restart` (Step 3) |
 | A dispatch started by 3.10.16 or earlier with `--phase exec` or `--resume` may sit in another Run | Measured 2026-11-10: with two Runs started from the same terminal, `exec` and `exec_review` were created in the Run started last, so the recorded Run's wait never heard from them and the other Run's wait stopped on mail from a dispatch it did not know. `$ORCA_BIN orchestration worker-show --dispatch <id> --json` shows the Run as `result.dispatch.runId`. `orca-recover.ts` refuses such a role and names both Runs; decide with the user whether to stop it. Current versions name the Run on every start |
 | codex asks once per repository whether to trust it, and until then a start fails with `agent-trust-workspace` | Trust the folder on that worker's screen, or add `[projects."<main checkout>"]` with `trust_level = "trusted"` to `~/.codex/config.toml`; Step 2 and `orca-recover.ts` print the exact lines. codex keeps the trust for the repository's main checkout, so later worktrees start without asking. Then replace the failed start with `orca-recover.ts` |
+| --auto orphan worktrees are not distinguished in Slack reports | Tick stdout names them; hosts[].used includes their count |
+| --auto cannot settle a worker whose worker_done was lost | --max-waits 1 restarts the grace tracking, so it becomes Failed at its time limit; inspect its Run and archived files |
 
 ## State on disk
 

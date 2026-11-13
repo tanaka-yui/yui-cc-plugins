@@ -37,7 +37,7 @@ Orca は自分の CLI 名を `ORCA_CLI_COMMAND` として export する。WSL2 �
 `node` が無いか古ければ、どの呼び出しも何もしないうちに失敗する。ユーザーへ伝え、段を手作業で
 代わりにやらない。
 
-**まず引数で振り分ける。**`--setup` と `--reset` は設定するだけで dispatch を 1 件も起こさない
+**まず引数で振り分ける。**`--auto` はAutoモードの節を実行し、Step 1bには進まない。`--setup` と `--reset` は設定するだけで dispatch を 1 件も起こさない
 — 設定の節を実行して終わる。`--issue` は仕事をユーザーではなく GitHub から取る — Issue モードの節を
 実行する。それ以外は dispatch であり、その設定を読み、設定が無ければ S0 を一度だけ尋ねてから
 Step 1 を始める。
@@ -225,6 +225,73 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` を受け取る�
 **角括弧を含む model id は引用符で囲む。**ここでも S4 でも、裸の id ではなく `--model 'claude-opus-5-5[1m]'`
 と書く。zsh は引用符なしの `[1m]` をファイル名のパターンとして読み、スクリプトが動く前に
 `no matches found` で呼び出しごと止める。
+
+## Auto モード
+
+`--auto` は slack-issue-intake が管理する設定済みリポジトリの優先度キューを1本にまとめる。開いた Ready の Issue のうち、`from-slack` または `slack-thread` を持つものを拾う。キュー内では Ready のままで、dispatch時に動かす。難易度の判定、設定した役の起動、IssueごとのRunの進行、PR作成、条件を満たす変更のmergeまたは確認依頼、後片付けを行う。C2a はこのMacで動き、実装対象はIssueごとに1リポジトリ。複数対象の判定は Ready_Eng に回す。
+
+### 設定と前提
+
+実装するリポジトリごとに専用checkoutをcloneし、Orcaに登録しておく。未コミットの変更があればdispatchしない。設定は `~/.claude/config/orca-team-dispatch-task/auto/main/config.json`（または `ORCA_DISPATCH_CONFIG_HOME` 配下）。intake設定のリポジトリ一覧を正本とし、`sources` でその項目と関連する実装リポジトリを選ぶ。
+
+C3の `make setup` はまだ無い。専用checkoutと設定は手で用意し、次の例の絶対パスを置き換える。
+
+```json
+{
+  "version": 1,
+  "name": "main",
+  "intakeConfig": "/absolute/path/to/slack-issue-intake/config.json",
+  "sources": [{ "repo": "acme/app", "related": ["acme/app"], "pick": "Ready" }],
+  "repos": {
+    "acme/app": {
+      "checkout": "/absolute/path/to/auto-checkout",
+      "verify": ["node --test"],
+      "infra": false,
+      "verified": false,
+      "ci": true
+    }
+  },
+  "lanes": 1,
+  "roles": { "review_mode": "off", "phase_b": "off" },
+  "limits": { "defaultMinutes": 60, "maxMinutes": 240, "stallMinutes": 30 },
+  "judge": { "model": "claude-opus-5-5[1m]", "effort": "high" },
+  "minFreeMemoryMb": 4096,
+  "minFreeDiskMb": 10240
+}
+```
+
+レーンはworktreeの数で数える。off/off、on/off、off/on、on/onはそれぞれ1件で1、2、2、4worktreeを予約し、後から起動する役も含む。持ち主のいないworktreeも使用数に入る。`verified: false` とインフラのリポジトリも実行するが、PRは人の確認が必要。`ci: false` はCIの無いリポジトリだけに設定する。
+
+### 1回まわす、キューを判定する
+
+プラグインのディレクトリで `make auto` を実行する（既定は `NAME=main`）。`orca-auto.ts tick` を走らせ、判定が要るときだけ設定のmodelとeffortでClaudeを起動する。判定agentは [auto-judge-ja.md](auto-judge-ja.md) に従い、`judge-list` を実行し、返された `decisionsFile` に書いて `judge-apply --file <decisionsFile>` を実行する。判定リースは20分。tickは判定が必要ならexit 0、それ以外は1、使用法の誤りは2。
+
+precheckを直接実行する場合:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-auto.ts" tick
+```
+
+状態を変更せずに確認する場合:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-auto.ts" status
+```
+
+定期precheckにも同じtick入口を使える。automationの作成と有効化はC3の範囲。Issueごとに専用のまとめ役の端末とRunを持ち、その端末が閉じられたら、次のtickで代わりを作り、そのIssueのRunだけを引き継ぐ。
+
+### 完了・回復・後片付け
+
+ラベルの変更とcloseの前にコメントを書く。保存した遷移の段からやり直すため、コメントを再投稿せずに続けられる。人がステータスを変えたら残る遷移を中止する。確認コマンドとCIが成功（またはCI無しを明示）し、確認済みでインフラではないリポジトリの明確な結果だけをmergeする。判断した点、未解消・不採用の指摘、検査の失敗があれば In review。workerの失敗や上限時間超過は Failed。確認待ち・失敗・人の操作で停止・エンジニア対応になったIssueをReadyに戻すと、後片付け完了後に新世代となり、前のブランチとPRの材料を引き継ぐ。
+
+`--auto` は資源を消す例外。全workerの停止・解放を確認してから未mergeのブランチをpushし、解放済みのworktreeと安全なローカルブランチを消し、まとめ役の端末を閉じ、status dirを退避する。merge済みのintegration branchは再pushしない。人が操作したworktreeは残し、そのworkerが動いていれば後片付けと次世代を保留する。通常のdispatchと `--issue` は引き続きStep 5と6を使う。
+
+tickの100秒の予算は、次の仕事を始めるかを決める目安。読み取りには強制終了の期限を付けるが、書き込みと子の操作は予算を超えうる。同じhostで生きているロック所有者から奪わない。途中で終わった起動はレーンを使ったまま保留する。人がOrcaの操作を確かめてから `orca-auto.ts clear-start --key <owner/repo#N>` を実行するまで外れない。経過時間やプロセスが見つからないことだけでは、操作が終わった証拠にならない。記録の無いworkerも調査が必要で、workerの自動置き換えはしない。
+
+状態と `report.json` は設定と同じディレクトリに置き、完了したstatus dirは `archive/` に移す。Slackへの報告はslack-issue-intakeがこのreportとIssueのコメント・ラベルを読んで行う。このプラグインからSlackへは投稿しない。
+
 
 ## Issue モード
 
@@ -1113,6 +1180,8 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 
 ## 既知の制限
 
+`--auto` を名指しする行以外は、通常のdispatchと `--issue` の制限。
+
 該当するときは、黙って回避せずユーザーへ伝える。
 
 | 制限 | ユーザーがすること |
@@ -1143,6 +1212,8 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | Orca は、働いている worker を `start_unknown` と言い続けることがある | 2026-09-24 に観測: Orca は codex の worker のターン開始を観測できず、その worker が働き続けている間もこの state のままだった。待機はそれを待ち続け、死んでいれば停滞（終了コード 8）として知らせる。そうした worker を起こすために端末へ入力するものは無い — 死んだ worker はシェルを残していることがある — ので、worker 自身の待ちに頼る。起動が終わらなかった役なら、`orca-recover.ts` が画面を見せ、`--adopt` か `--restart` を選ぶ（Step 3） |
 | 3.10.16 までの `--phase exec` や `--resume` が起動した dispatch は、別の Run に在ることがある | 2026-11-10 に観測: 同じ端末から 2 つの Run を起動すると、`exec` と `exec_review` があとで起動した Run に作られ、記録した Run の待機には何も届かず、もう一方の Run の待機は知らない dispatch のメールで止まった。`$ORCA_BIN orchestration worker-show --dispatch <id> --json` の `result.dispatch.runId` が Run を示す。`orca-recover.ts` はそうした役を拒否し、両方の Run を名指しする。止めるかはユーザーと決める。今の版は起動のたびに Run を名指しする |
 | codex は repository ごとに 1 回、信頼するかを尋ね、それまで起動は `agent-trust-workspace` で失敗する | その worker の画面でフォルダを信頼するか、`trust_level = "trusted"` を持つ `[projects."<本体の checkout>"]` を `~/.codex/config.toml` に足す。Step 2 と `orca-recover.ts` が正確な行を出す。codex はその信頼を repository の本体の checkout に記録するので、以後の worktree は尋ねられずに起動する。そのあと `orca-recover.ts` で失敗した起動を置き換える |
+| --autoの持ち主のいないworktreeはSlackの定期報告で区別できない | tickのstdoutが名指しし、hosts[].usedには数として含まれる |
+| --autoはworker_doneを失った役を決着できない | --max-waits 1では猶予の時計が毎回初期化されるため、上限時間でFailedになる。Runと退避した記録を調べる |
 
 ## ディスク上の状態
 

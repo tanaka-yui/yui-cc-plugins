@@ -11,7 +11,7 @@ const APP_BUNDLE_CLI = '/Applications/Orca.app/Contents/Resources/bin/orca'
 export const orcaBin = (): string => process.env.ORCA_BIN || process.env.ORCA_CLI_COMMAND || APP_BUNDLE_CLI
 
 // ★ 標準入力を渡さない。`bash <<EOF` で流したとき、途中の Orca CLI がスクリプトの残りを
-//   標準入力から読んでしまい、判定を黙って飛ばした（2026-09-23 実測）。stderr は捨てる。
+//   標準入力から読んでしまい、判定を黙って飛ばした（2026-09-23 実測）。stderr は別に受ける。
 //   ★ maxBuffer を広げる。既定の 1 MiB を越える応答（本文の長い mailbox の batch）で子が殺されると、
 //   rc が失われて「Orca が答えなかった」に化ける
 //   ★ **orchestration には `--full` を足す。**Orca 1.4.246 は既定を簡潔表示にし、worker-show の `result.worker` /

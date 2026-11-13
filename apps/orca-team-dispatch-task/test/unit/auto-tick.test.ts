@@ -120,6 +120,8 @@ test('AU76c/AU76d persisted uncertain starts hold every resource operation until
     f.childRc('orca-wait', 9)
     const r = f.cli('tick')
     assert.ok(r.stdout.includes('保留'))
+    assert.ok(r.stdout.includes('run_1'))
+    assert.ok(r.stdout.includes('起動プロセス'))
     assert.equal(f.childCalls(), '')
     assert.ok(!f.calls(f.orca).includes('worktree rm'))
     assert.ok(!f.calls(f.orca).includes('terminal close'))

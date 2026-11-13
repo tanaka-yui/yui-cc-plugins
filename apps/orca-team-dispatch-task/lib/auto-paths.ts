@@ -73,12 +73,13 @@ const timeout = (): number | undefined =>
 const readAllowed = (stage: string): boolean => remainder() > 0 || skip(stage)
 export const autoRun = (command: string, args: string[], cwd?: string): ProcResult => {
   const action = command === 'git' ? (args[0] === '-C' ? args[2] : args[0]) : args[0]
-  const reading =
-    command === 'git'
-      ? !['push', 'checkout'].includes(action ?? '') && !(action === 'branch' && args.includes('-D'))
-      : command === 'gh' &&
-        ((args[0] === 'api' && args.includes('GET')) ||
-          (['issue', 'repo', 'pr'].includes(args[0] ?? '') && ['list', 'view', 'checks'].includes(args[1] ?? '')))
+  const gitRead =
+    command === 'git' && !['push', 'checkout'].includes(action ?? '') && !(action === 'branch' && args.includes('-D'))
+  const ghRead =
+    command === 'gh' &&
+    ((args[0] === 'api' && args.includes('GET')) ||
+      (['issue', 'repo', 'pr'].includes(args[0] ?? '') && ['list', 'view', 'checks'].includes(args[1] ?? '')))
+  const reading = command === 'ps' || gitRead || ghRead
   const stage = `${command} ${action ?? ''} ${args[1] ?? ''}`
   if (!(reading ? readAllowed(stage) : canAutoCall(stage))) return { rc: 1, stdout: '', stderr: 'timed out' }
   const result = run(command, args, cwd, reading ? timeout() : undefined)

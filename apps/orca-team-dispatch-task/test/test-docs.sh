@@ -133,6 +133,7 @@ normalise_headings() {
       skill:'# Orca Team Dispatch'|guide:'# Orca Team Dispatch') echo 'h1:orca-team-dispatch' ;;
       skill:'## Output Language'|guide:'## 出力言語') echo 'h2:output-language' ;;
       skill:'## Configuration'|guide:'## 設定') echo 'h2:configuration' ;;
+      skill:'## Auto mode'|guide:'## Auto モード') echo 'h2:auto-mode' ;;
       skill:'## Issue mode'|guide:'## Issue モード') echo 'h2:issue-mode' ;;
       skill:'## Step 1: Write the request down'|guide:'## Step 1: 依頼を書き出す') echo 'h2:step-1' ;;
       skill:'## Step 1b: Ask how each task starts'|guide:'## Step 1b: 各タスクの取りかかり方を尋ねる') echo 'h2:step-1b' ;;
@@ -572,6 +573,35 @@ for expected in 'orca-auto.ts tick --name main' 'judge-model --name main' 'judge
   [[ "$auto_recipe" == *"$expected"* ]] || bad="$bad [$expected]"
 done
 [[ -z "$bad" ]] && ok SK34 || fail "SK34:$bad"
+
+# SK35: auto mode names the implemented entry points and real judging references.
+bad=""
+for f in "$S" "$G"; do
+  grep -q -- '--auto' "$f" || bad="$bad [auto:$f]"
+  for expected in 'orca-auto.ts tick' 'judge-list' 'judge-apply' 'make auto'; do
+    grep -qF -- "$expected" "$f" || bad="$bad [$expected:$f]"
+  done
+done
+grep -q '^## Auto mode$' "$S" || bad="$bad [section:skill]"
+grep -q '^## Auto モード$' "$G" || bad="$bad [section:guide]"
+for path in bin/orca-auto.ts lib/auto-config.ts lib/auto-state.ts lib/auto-report.ts skills/orca-team-dispatch-task/references/auto-judge.md skills/orca-team-dispatch-task/references/auto-judge-ja.md; do
+  [[ -f "$P/$path" ]] || bad="$bad [missing:$path]"
+done
+[[ -z "$bad" ]] && ok SK35 || fail "SK35:$bad"
+
+# SK36: no claim that the C3 setup command exists.
+bad=""
+for f in "$S" "$G"; do
+  setup_lines=$(grep -F 'make setup' "$f")
+  [[ -n "$setup_lines" ]] || bad="$bad [setup:$f]"
+  if [[ "$f" == "$S" ]]; then
+    grep -Fv 'not available yet' <<<"$setup_lines" | grep -q . && bad="$bad [implemented:$f]"
+  else
+    grep -Fv 'まだ無い' <<<"$setup_lines" | grep -q . && bad="$bad [implemented:$f]"
+  fi
+done
+[[ -z "$bad" ]] && ok SK36 || fail "SK36:$bad"
+
 
 # SK16: 消えた記述が残っていない
 ! grep -q 'run-design.sh' "$S" && ! grep -q 'run-design.sh' "$G" \
