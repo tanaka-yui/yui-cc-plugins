@@ -62,13 +62,14 @@ test('AU44/AU47 timeout stops all roles using the coordinator before failure fin
   const f = runtimeFixture()
   try {
     const i = f.track('running')
+    f.liveWorker()
     process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
     f.cli('tick')
     const issue = readState('main').issues[i.key]
     assert.equal(issue?.phase, 'failed')
     assert.equal(issue?.cleanupPending, false)
     assert.ok(!existsSync(i.statusDir))
-    assert.ok(f.childCalls().includes('orca-stop.ts'))
+    assert.ok(f.calls(f.orca).includes('worker-stop --dispatch ctx_design'))
     assert.ok(f.childCalls().includes('ORCA_TERMINAL_HANDLE=term_auto'))
   } finally {
     f.cleanup()
@@ -79,6 +80,7 @@ for (const rc of [0, 3, 8, 9])
     const f = runtimeFixture()
     try {
       const i = f.track('running')
+      f.liveWorker()
       f.result(i)
       f.childRc('orca-wait', rc)
       process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
@@ -86,7 +88,7 @@ for (const rc of [0, 3, 8, 9])
       const calls = f.childCalls()
       assert.equal(readState('main').issues[i.key]?.phase, rc === 0 ? 'finishing' : 'failed')
       assert.equal(calls.split('orca-wait.ts ').length - 1, 1)
-      assert.equal(calls.includes('orca-stop.ts'), rc !== 0)
+      assert.equal(f.calls(f.orca).includes('worker-stop --dispatch ctx_design'), rc !== 0)
       assert.ok(!calls.includes('"--phase","exec"'))
       assert.ok(!f.calls().includes(':stalled -->'))
     } finally {
@@ -97,13 +99,47 @@ test('AU45 human status change stops the run without any comment or label write'
   const f = runtimeFixture()
   try {
     const i = f.track('running')
+    f.liveWorker()
     f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'Pending' }] })
     f.cli('tick')
     assert.equal(readState('main').issues[i.key]?.phase, 'stopped')
     assert.ok(!existsSync(i.statusDir))
-    assert.ok(f.childCalls().includes('orca-stop.ts'))
+    assert.ok(f.calls(f.orca).includes('worker-stop --dispatch ctx_design'))
     assert.ok(!f.calls().includes('issue comment'))
     assert.ok(!f.calls().includes('issue edit'))
+  } finally {
+    f.cleanup()
+  }
+})
+test('C1-2 auto stop never notifies a finished reviewer with unread worker_done', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track('running')
+    const file = join(i.statusDir, 'workers.json')
+    const w = JSON.parse(readFileSync(file, 'utf8'))
+    w.review_mode = 'on'
+    w.roles.design_review = { dispatch: 'ctx_review' }
+    f.put(file, w)
+    f.put(join(i.statusDir, 'received.json'), {})
+    f.respond(
+      'orchestration_worker-list',
+      {
+        ok: true,
+        result: {
+          workers: [
+            { dispatchId: 'ctx_design', resource: { releaseState: 'released' } },
+            { dispatchId: 'ctx_review', resource: { releaseState: 'released' } },
+          ],
+        },
+      },
+      f.orca,
+    )
+    process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'failed')
+    assert.equal(readState('main').issues[i.key]?.cleanupPending, false)
+    assert.ok(!f.childCalls().includes('orca-stop.ts'))
+    assert.ok(!f.calls(f.orca).includes('orchestration send'))
   } finally {
     f.cleanup()
   }

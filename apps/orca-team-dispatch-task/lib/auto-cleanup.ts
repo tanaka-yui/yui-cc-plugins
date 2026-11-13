@@ -1,7 +1,7 @@
 import { closeCoordinator } from './auto-coordinator.ts'
 import { AUTO_WORKTREE_LIST_LIMIT, archiveStatusDir, autoRun as run, autoOrca as runOrca } from './auto-paths.ts'
-import { readJson } from './fs.ts'
-import { asObject, asString, get, type Json, type JsonObject } from './json.ts'
+import { readJson, writeAtomic } from './fs.ts'
+import { asArray, asObject, asString, get, type Json, type JsonObject } from './json.ts'
 import { GONE_STATES, receiptArray, receiptOk, releaseState, userOwned, workerState, workerStateClass } from './orca.ts'
 
 import { existsSync } from 'node:fs'
@@ -9,6 +9,45 @@ import { basename, join } from 'node:path'
 
 const readWorkers = (statusDir: string) => asObject(readJson(join(statusDir, 'workers.json')))
 const rolesOf = (workers: JsonObject | null) => asObject(workers?.roles) ?? {}
+const roleDispatches = (data: Json): string[] => {
+  const r = asObject(data)
+  return [r?.dispatch, ...(asArray(r?.superseded) ?? []), ...(asArray(r?.follow_ups) ?? [])].filter(
+    (id): id is string => typeof id === 'string' && id.length > 0,
+  )
+}
+export const unrecordedWorker = (statusDir: string, workers: JsonObject, rows: Json[]): string | null => {
+  const roles = rolesOf(workers)
+  const known = new Map(
+    Object.entries(roles).flatMap(([role, data]) => roleDispatches(data).map((id): [string, string] => [id, role])),
+  )
+  const h = asString(get(readJson(join(statusDir, 'run.json')), 'parent_handle'))
+  for (const row of rows) {
+    const dispatch = asString(get(row, 'dispatchId'))
+    if (!dispatch || known.has(dispatch)) continue
+    if (!h) return dispatch
+    let current = dispatch
+    const seen = new Set([dispatch])
+    for (;;) {
+      const shown = runOrca(['orchestration', 'worker-show', '--dispatch', current, '--json'], {
+        ORCA_TERMINAL_HANDLE: h,
+      })
+      const parent = receiptOk(shown) ? asString(get(shown.json, 'result', 'dispatch', 'followUpOf')) : null
+      if (!parent || seen.has(parent)) return dispatch
+      seen.add(parent)
+      const role = known.get(parent)
+      if (role) {
+        const record = asObject(roles[role]) ?? {}
+        record.follow_ups = [...(asArray(record.follow_ups) ?? []), dispatch]
+        roles[role] = record
+        if (!writeAtomic(join(statusDir, 'workers.json'), `${JSON.stringify(workers)}\n`)) return dispatch
+        known.set(dispatch, role)
+        break
+      }
+      current = parent
+    }
+  }
+  return null
+}
 const git = (checkout: string, ...args: string[]) => run('git', ['-C', checkout, ...args])
 const existsBranch = (checkout: string, branch: string) =>
   git(checkout, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`)
@@ -49,11 +88,7 @@ export const confirmStopped = (statusDir: string): { stopped: boolean; kept: str
   const record = asObject(readJson(join(statusDir, 'run.json')))
   const id = asString(record?.run_id)
   const h = asString(record?.parent_handle)
-  const known = new Set(
-    Object.values(roles)
-      .map((r) => asString(asObject(r)?.dispatch))
-      .filter((d): d is string => Boolean(d)),
-  )
+  const known = new Set(Object.values(roles).flatMap(roleDispatches))
   if (!workers && existsSync(join(statusDir, 'workers.json')))
     return { stopped: false, kept: [], reasons: ['worker の記録を読めません'] }
   if (!id || !h)
@@ -67,9 +102,11 @@ export const confirmStopped = (statusDir: string): { stopped: boolean; kept: str
     const rows = receiptArray(runOrca(['orchestration', 'worker-list', '--run', id, '--json'], env), 'workers')
     return rows?.every((w) => Boolean(asString(get(w, 'dispatchId')))) ? rows : null
   }
-  const unexpected = (rows: Json[]) => rows.some((w) => !known.has(asString(get(w, 'dispatchId')) ?? ''))
+  const unexpected = (rows: Json[]) =>
+    !workers ? rows.length > 0 : Boolean(unrecordedWorker(statusDir, workers, rows))
   let rows = list()
   const kept: string[] = []
+  const keptDispatches = new Set<string>()
   const reasons: string[] = []
   if (!rows || unexpected(rows))
     return {
@@ -78,38 +115,43 @@ export const confirmStopped = (statusDir: string): { stopped: boolean; kept: str
       reasons: [rows ? '起動の結果が不明です（記録の無い worker）' : 'worker の一覧を読めません'],
     }
   for (const [role, data] of Object.entries(roles)) {
-    const dispatch = asString(asObject(data)?.dispatch)
-    if (!dispatch) continue
-    const row = rows.find((w) => get(w, 'dispatchId') === dispatch)
-    if (!row) {
-      reasons.push(`worker の行がありません: ${role}`)
-      continue
+    for (const dispatch of roleDispatches(data)) {
+      const row = rows.find((w) => get(w, 'dispatchId') === dispatch)
+      if (!row) {
+        reasons.push(`worker の行がありません: ${role}`)
+        continue
+      }
+      if (GONE_STATES.includes(releaseState(row))) continue
+      const shown = runOrca(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'], env)
+      const state = receiptOk(shown) ? workerStateClass(workerState(shown.json)) : 'other'
+      if (userOwned(row)) {
+        if (state === 'settled') {
+          kept.push(`${role} ${asString(asObject(data)?.worktree_path) ?? ''}`)
+          keptDispatches.add(dispatch)
+        } else reasons.push(`人が操作中の worker: ${role}`)
+        continue
+      }
+      if (state !== 'settled' && state !== 'live' && state !== 'unconfirmed') {
+        reasons.push(`worker の停止を確かめられません: ${role}`)
+        continue
+      }
+      runOrca(
+        ['orchestration', state === 'settled' ? 'worker-release' : 'worker-stop', '--dispatch', dispatch, '--json'],
+        env,
+      )
+      const after = list()
+      if (
+        !after ||
+        unexpected(after) ||
+        !GONE_STATES.includes(releaseState(after.find((w) => get(w, 'dispatchId') === dispatch)))
+      )
+        reasons.push(`worker が解放されていません: ${role}`)
+      if (after) rows = after
     }
-    if (GONE_STATES.includes(releaseState(row))) continue
-    const shown = runOrca(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'], env)
-    const state = receiptOk(shown) ? workerStateClass(workerState(shown.json)) : 'other'
-    if (userOwned(row)) {
-      if (state === 'settled') kept.push(`${role} ${asString(asObject(data)?.worktree_path) ?? ''}`)
-      else reasons.push(`人が操作中の worker: ${role}`)
-      continue
-    }
-    if (state !== 'settled' && state !== 'live' && state !== 'unconfirmed') {
-      reasons.push(`worker の停止を確かめられません: ${role}`)
-      continue
-    }
-    runOrca(
-      ['orchestration', state === 'settled' ? 'worker-release' : 'worker-stop', '--dispatch', dispatch, '--json'],
-      env,
-    )
-    const after = list()
-    if (
-      !after ||
-      unexpected(after) ||
-      !GONE_STATES.includes(releaseState(after.find((w) => get(w, 'dispatchId') === dispatch)))
-    )
-      reasons.push(`worker が解放されていません: ${role}`)
-    if (after) rows = after
   }
+  for (const row of rows)
+    if (!GONE_STATES.includes(releaseState(row)) && !keptDispatches.has(asString(get(row, 'dispatchId')) ?? ''))
+      reasons.push(`worker が解放されていません: ${asString(get(row, 'dispatchId'))}`)
   return { stopped: reasons.length === 0, kept, reasons }
 }
 export const autoCleanup = (

@@ -47,7 +47,7 @@ test('AU59d/AU59j human change cancels pending started transition and stops all 
     const current = readState('main').issues[i.key]
     assert.equal(current?.phase, 'stopped')
     assert.equal(current?.pendingLabel, null)
-    assert.ok(f.childCalls().includes('orca-stop.ts'))
+    assert.ok(f.calls(f.orca).includes('orchestration worker-list'))
     assert.ok(!f.calls().slice(before.length).includes('issue edit'))
   } finally {
     f.cleanup()
@@ -102,7 +102,7 @@ test('AU59i started comment failure never suppresses the time limit', () => {
     f.cli('tick')
     const current = readState('main').issues[i.key]
     assert.ok(current?.failReason?.includes('上限時間'))
-    assert.ok(f.childCalls().includes('orca-stop.ts'))
+    assert.ok(f.calls(f.orca).includes('orchestration worker-list'))
     assert.notEqual(current?.pendingLabel?.event, 'started')
   } finally {
     f.cleanup()

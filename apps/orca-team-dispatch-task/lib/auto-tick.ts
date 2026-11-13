@@ -1,4 +1,4 @@
-import { autoCleanup, confirmStopped, pushBranches } from './auto-cleanup.ts'
+import { autoCleanup, confirmStopped, pushBranches, unrecordedWorker } from './auto-cleanup.ts'
 import { renderComment } from './auto-comment.ts'
 import { type AutoConfig, pickSources, readAutoConfig } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
@@ -26,7 +26,7 @@ import { hasCommentMarker, resumeTransition, transition } from './auto-transitio
 import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asObject, asString, get, type Json, type JsonObject } from './json.ts'
-import { receiptArray, userOwned } from './orca.ts'
+import { receiptArray } from './orca.ts'
 import { STATUS } from './status.ts'
 import { envCount, runNode as runProcessNode } from './sys.ts'
 
@@ -73,14 +73,6 @@ const listedWorkers = (issue: IssueState): Json[] | null => {
     'workers',
   )
   return listed?.every((w) => Boolean(asString(get(w, 'dispatchId')))) ? listed : null
-}
-const unknownWorker = (workers: JsonObject, listed: Json[]): string | null => {
-  const known = new Set(
-    Object.values(asObject(workers.roles) ?? {})
-      .map((r) => asString(asObject(r)?.dispatch))
-      .filter(Boolean),
-  )
-  return listed.map((w) => asString(get(w, 'dispatchId'))).find((id) => Boolean(id && !known.has(id))) ?? null
 }
 const owns = (tick: Tick, issue: IssueState): boolean => {
   if (!existsSync(issue.statusDir)) return true
@@ -212,7 +204,7 @@ const recover = (tick: Tick, issue: IssueState): void => {
   if (required.some((role) => !asString(get(roles, role, 'dispatch')))) {
     const listed = listedWorkers(issue)
     if (!listed) return
-    const extra = unknownWorker(workers, listed)
+    const extra = unrecordedWorker(issue.statusDir, workers, listed)
     if (extra) {
       error(
         tick,
@@ -374,23 +366,10 @@ const refill = (tick: Tick): void => {
 }
 const stopRoles = (tick: Tick, issue: IssueState): void => {
   if (!canAutoCall('停止')) return
-  if (issue.startAttempt || !owns(tick, issue)) return
-  const workers = workersOf(issue)
-  if (!workers) return
-  const list = listedWorkers(issue)
-  if (!list || unknownWorker(workers, list)) {
-    error(tick, `停止を確かめられません: ${issue.key}`)
-    return
-  }
-  const h = ensure(tick, issue)
-  if (!h) return
-  for (const [role, data] of Object.entries(asObject(workers.roles) ?? {})) {
-    const dispatch = asString(asObject(data)?.dispatch)
-    if (!dispatch || list.some((w) => get(w, 'dispatchId') === dispatch && userOwned(w))) continue
-    runNode(child('orca-stop.ts'), ['--status-dir', issue.statusDir, '--role', role], false, {
-      ORCA_TERMINAL_HANDLE: h,
-    })
-  }
+  if (issue.startAttempt || !owns(tick, issue) || !ensure(tick, issue)) return
+  // 全役を止める auto では相方への通知を送らない（決着済みの役を follow-up として起動しない）。
+  const stopped = confirmStopped(issue.statusDir)
+  for (const reason of stopped.reasons) error(tick, `停止を確かめられません: ${issue.key} ${reason}`)
 }
 const markFailure = (tick: Tick, issue: IssueState, reason: string): void => {
   if (!issue.failReason) {

@@ -99,6 +99,20 @@ export const runtimeFixture = () => {
     }
   }
   const childRc = (name: string, rc: number) => writeFileSync(join(children, `${name}.ts.rc`), String(rc))
+  const liveWorker = () => {
+    f.respond(
+      'orchestration_worker-list',
+      { ok: true, result: { workers: [{ dispatchId: 'ctx_design', resource: { releaseState: 'retained' } }] } },
+      f.orca,
+    )
+    f.respond('orchestration_worker-show', { ok: true, result: { worker: { state: 'active' } } }, f.orca)
+    f.hook(
+      'orchestration_worker-stop',
+      `printf '%s' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_design","resource":{"releaseState":"released"}}]}}' > '${f.orca}/orchestration_worker-list'
+printf 'worker-stop ORCA_TERMINAL_HANDLE=%s\\n' "$ORCA_TERMINAL_HANDLE" >> '${children}/calls.log'`,
+      f.orca,
+    )
+  }
   const track = (phase: Phase = 'queued', number = 7): IssueState => {
     f.respond('issue_list', [{ number, title: '題', labels: [], updatedAt: '2026-01-01' }])
     const s = readState('main')
@@ -147,5 +161,5 @@ export const runtimeFixture = () => {
       envFailure: null,
       ...extra,
     })
-  return { ...f, git, checkout, children, childCalls, childRc, track, result }
+  return { ...f, git, checkout, children, childCalls, childRc, liveWorker, track, result }
 }

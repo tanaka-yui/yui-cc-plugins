@@ -30,6 +30,148 @@ const setup = () => {
     clean: (merged = false) => autoCleanup(issue.statusDir, f.checkout, archive, 1, merged),
   }
 }
+for (const field of ['follow_ups', 'superseded'])
+  for (const state of ['released', 'active', 'succeeded', 'start_unknown'])
+    test(`C1-2 ${field} dispatch ${state} is stopped and released before deleting its worktree`, () => {
+      const f = setup()
+      try {
+        const file = join(f.issue.statusDir, 'workers.json')
+        const w = JSON.parse(readFileSync(file, 'utf8'))
+        w.roles.design[field] = ['ctx_followup']
+        f.put(file, w)
+        const released = [row('released'), { dispatchId: 'ctx_followup', resource: { releaseState: 'released' } }]
+        f.respond(
+          'orchestration_worker-list',
+          {
+            ok: true,
+            result: {
+              workers: [
+                row('released'),
+                {
+                  dispatchId: 'ctx_followup',
+                  resource: { releaseState: state === 'released' ? 'released' : 'retained' },
+                },
+              ],
+            },
+          },
+          f.orca,
+        )
+        f.respond('orchestration_worker-show', { ok: true, result: { worker: { state } } }, f.orca)
+        for (const verb of ['worker-stop', 'worker-release'])
+          f.hook(
+            `orchestration_${verb}`,
+            `printf '%s' '${JSON.stringify({ ok: true, result: { workers: released } })}' > '${f.orca}/orchestration_worker-list'`,
+            f.orca,
+          )
+        assert.equal(f.clean().ok, true)
+        const calls = f.calls(f.orca)
+        const verb = state === 'succeeded' ? 'worker-release' : 'worker-stop'
+        assert.equal(calls.includes(`${verb} --dispatch ctx_followup`), state !== 'released')
+        if (state !== 'released')
+          assert.ok(calls.indexOf(`${verb} --dispatch ctx_followup`) < calls.indexOf('worktree rm'))
+      } finally {
+        f.cleanup()
+      }
+    })
+for (const lineage of ['known', 'unrelated', 'cycle'])
+  test(`C1-2 unrecorded follow-up lineage ${lineage} is ${lineage === 'known' ? 'adopted' : 'held'}`, () => {
+    const f = setup()
+    try {
+      const rows = [row('released'), { dispatchId: 'ctx_followup', resource: { releaseState: 'retained' } }]
+      f.respond('orchestration_worker-list', { ok: true, result: { workers: rows } }, f.orca)
+      const parent = lineage === 'known' ? 'ctx_design' : lineage === 'cycle' ? 'ctx_followup' : 'ctx_unrelated'
+      f.hook(
+        'orchestration_worker-show',
+        `case "$4" in
+ctx_followup) printf '%s' '{"ok":true,"result":{"dispatch":{"followUpOf":"ctx_middle"},"worker":{"state":"active"}}}' ;;
+ctx_middle) printf '%s' '{"ok":true,"result":{"dispatch":{"followUpOf":"${parent}"}}}' ;;
+*) printf '%s' '{"ok":true,"result":{}}' ;;
+esac > '${f.orca}/orchestration_worker-show'`,
+        f.orca,
+      )
+      f.hook(
+        'orchestration_worker-stop',
+        `printf '%s' '${JSON.stringify({ ok: true, result: { workers: rows.map((w) => ({ ...w, resource: { releaseState: 'released' } })) } })}' > '${f.orca}/orchestration_worker-list'`,
+        f.orca,
+      )
+      const r = f.clean()
+      assert.equal(r.ok, lineage === 'known', r.reasons.join('\n'))
+      const calls = f.calls(f.orca)
+      assert.equal(calls.includes('worker-stop --dispatch ctx_followup'), lineage === 'known')
+      assert.equal(calls.includes('worktree rm'), lineage === 'known')
+      assert.equal(existsSync(f.issue.statusDir), lineage !== 'known')
+      const archived = join(f.archive, `${f.issue.slug}-g1`, 'workers.json')
+      if (lineage === 'known')
+        assert.deepEqual(JSON.parse(readFileSync(archived, 'utf8')).roles.design.follow_ups, ['ctx_followup'])
+    } finally {
+      f.cleanup()
+    }
+  })
+for (const state of ['active', 'succeeded'])
+  test(`C1-2 user-owned follow-up ${state} retains the shared worktree`, () => {
+    const f = setup()
+    try {
+      const file = join(f.issue.statusDir, 'workers.json')
+      const w = JSON.parse(readFileSync(file, 'utf8'))
+      w.roles.design.follow_ups = ['ctx_followup']
+      f.put(file, w)
+      f.respond(
+        'orchestration_worker-list',
+        {
+          ok: true,
+          result: {
+            workers: [
+              row('released'),
+              {
+                dispatchId: 'ctx_followup',
+                resource: { releaseState: 'retained', ownershipState: 'user_owned' },
+              },
+            ],
+          },
+        },
+        f.orca,
+      )
+      f.respond('orchestration_worker-show', { ok: true, result: { worker: { state } } }, f.orca)
+      assert.equal(f.clean().ok, state === 'succeeded')
+      const calls = f.calls(f.orca)
+      assert.ok(!calls.includes('worker-stop'))
+      assert.ok(!calls.includes('worker-release'))
+      assert.ok(!calls.includes('worktree rm'))
+      assert.ok(f.git('-C', f.checkout, 'branch', '--list', f.issue.branch))
+    } finally {
+      f.cleanup()
+    }
+  })
+test('C1-2 a follow-up discovered after release prevents deletion until it too is released', () => {
+  const f = setup()
+  try {
+    f.respond('orchestration_worker-list', { ok: true, result: { workers: [row('retained')] } }, f.orca)
+    f.hook(
+      'orchestration_worker-show',
+      `case "$4" in
+ctx_design) printf '%s' '{"ok":true,"result":{"worker":{"state":"succeeded"}}}' ;;
+*) printf '%s' '{"ok":true,"result":{"dispatch":{"followUpOf":"ctx_design"},"worker":{"state":"active"}}}' ;;
+esac > '${f.orca}/orchestration_worker-show'`,
+      f.orca,
+    )
+    f.hook(
+      'orchestration_worker-release',
+      `printf '%s' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_design","resource":{"releaseState":"released"}},{"dispatchId":"ctx_followup","resource":{"releaseState":"retained"}}]}}' > '${f.orca}/orchestration_worker-list'`,
+      f.orca,
+    )
+    assert.equal(f.clean().ok, false)
+    assert.ok(!f.calls(f.orca).includes('worktree rm'))
+    f.hook(
+      'orchestration_worker-stop',
+      `printf '%s' '{"ok":true,"result":{"workers":[{"dispatchId":"ctx_design","resource":{"releaseState":"released"}},{"dispatchId":"ctx_followup","resource":{"releaseState":"released"}}]}}' > '${f.orca}/orchestration_worker-list'`,
+      f.orca,
+    )
+    assert.equal(f.clean().ok, true)
+    assert.ok(f.calls(f.orca).indexOf('worker-stop --dispatch ctx_followup') < f.calls(f.orca).indexOf('worktree rm'))
+  } finally {
+    f.cleanup()
+  }
+})
 test('AU58/AU58b push after release proof, force-remove, delete only saved branch, then archive', () => {
   const f = setup()
   try {
