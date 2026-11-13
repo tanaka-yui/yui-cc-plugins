@@ -2,10 +2,11 @@
 // Usage: node orca-start.ts --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
 //        [--run <id>] [--agent <id>] [--model <id>] [--effort <level>]
 //        [--phase design|exec] [--design-mode direct|plan|brainstorm] [--ask-via terminal|parent]
-//        [--integration merge|pr] [--unattended]
+//        [--integration merge|pr] [--unattended] [--review-mode on|off] [--phase-b on|off]
 //        node orca-start.ts --slug <s> --resume [--repo-root <p>] [--design-mode ...] [--ask-via ...]
 // Exit: 0 / 1 起動できなかった / 2 使用法
 import { die, log } from '../lib/cli.ts'
+import { validToggle } from '../lib/config.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
@@ -1033,6 +1034,8 @@ const main = (argv: string[]): number => {
   let effort = ''
   let designMode = ''
   let askVia = ''
+  let reviewOverride: string | null = null
+  let phaseOverride: string | null = null
   let integration = ''
   let phase = 'design'
   let resume = false
@@ -1059,6 +1062,8 @@ const main = (argv: string[]): number => {
         '--effort',
         '--design-mode',
         '--ask-via',
+        '--review-mode',
+        '--phase-b',
         '--integration',
         '--phase',
       ].includes(flag ?? '')
@@ -1075,10 +1080,14 @@ const main = (argv: string[]): number => {
       if (flag === '--effort') effort = value
       if (flag === '--design-mode') designMode = value
       if (flag === '--ask-via') askVia = value
+      if (flag === '--review-mode') reviewOverride = value
+      if (flag === '--phase-b') phaseOverride = value
       if (flag === '--integration') integration = value
       if (flag === '--phase') phase = value
     } else die(NAME, `unknown option: ${flag}`)
   }
+  if (reviewOverride !== null && !validToggle('review_mode', reviewOverride)) die(NAME, 'invalid --review-mode')
+  if (phaseOverride !== null && !validToggle('phase_b', phaseOverride)) die(NAME, 'invalid --phase-b')
   if (phase !== 'design' && phase !== 'exec') die(NAME, `--phase must be design or exec: ${phase}`)
   if (resume) {
     if (phase !== 'design') die(NAME, '--resume continues the design phase; the exec phase always continues')
@@ -1110,6 +1119,13 @@ const main = (argv: string[]): number => {
   }
   const repo = `path:${hostPath}`
   const statusDir = join(repoRoot, '.dispatch', slug)
+  const workersFile = join(statusDir, 'workers.json')
+  const recordedReview = continuing ? asString(get(readJson(workersFile), 'review_mode')) : null
+  const recordedPhase = continuing ? asString(get(readJson(workersFile), 'phase_b')) : null
+  if (reviewOverride !== null && recordedReview !== null && reviewOverride !== recordedReview)
+    die(NAME, '--review-mode differs from the recorded value')
+  if (phaseOverride !== null && recordedPhase !== null && phaseOverride !== recordedPhase)
+    die(NAME, '--phase-b differs from the recorded value')
   if (phase === 'exec' && !isDir(statusDir)) {
     log(NAME, `${statusDir} does not exist; run the design phase first`)
     return 1
@@ -1158,6 +1174,10 @@ const main = (argv: string[]): number => {
   }
 
   const overrides: string[] = []
+  const chosenReview = reviewOverride ?? recordedReview
+  const chosenPhase = phaseOverride ?? recordedPhase
+  if (chosenReview !== null) overrides.push('--review-mode', chosenReview)
+  if (chosenPhase !== null) overrides.push('--phase-b', chosenPhase)
   if (agent !== '') overrides.push('--set', `design.agent=${agent}`)
   if (model !== '') overrides.push('--set', `design.model=${model}`)
   if (effort !== '') overrides.push('--set', `design.effort=${effort}`)
@@ -1179,7 +1199,6 @@ const main = (argv: string[]): number => {
   const phaseB = string(config.phase_b) || 'off'
   const setup = string(config.setup) || 'skip'
   const mode = string(config.design_mode) || 'direct'
-  const workersFile = join(statusDir, 'workers.json')
   // ★ 1 回きりの --ask-via は設定に残らない。記録しないと、Step 3.5 の --phase exec だけ設定値で尋ねることになる
   const recordedAsk = continuing && askVia === '' ? string(get(readJson(workersFile), 'ask_via')) : ''
   const ask = unattended ? 'none' : recordedAsk || string(config.ask_via) || 'terminal'
@@ -1325,6 +1344,8 @@ const main = (argv: string[]): number => {
       integration_role: string(config.integration_role) || 'design',
       integration: config.integration ?? null,
       ask_via: ask,
+      ...(reviewOverride !== null ? { review_mode: reviewOverride } : {}),
+      ...(phaseOverride !== null ? { phase_b: phaseOverride } : {}),
       roles,
     }
     if (!write('workers-initial', workersFile, JSON.stringify(initial))) {

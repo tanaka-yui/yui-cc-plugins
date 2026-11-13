@@ -1528,4 +1528,33 @@ out=$(exec_phase 2>&1); rc=$?
   && ok "ST124 別の Run の dispatch を記録しない" || fail "ST124 (rc=$rc) $out"
 teardown
 
+# ST125-129: one-shot role switches persist across continued phases.
+setup; review_on
+printf '%s\n' '{"review_mode":"off"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+out=$(start --review-mode on 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$(ws_lines | wc -l | tr -d ' ')" -eq 2 && "$(jq -r .review_mode "$R/.dispatch/s/workers.json")" == on ]] && ok ST125 || fail "ST125 (rc=$rc) $out"
+git -C "$R" worktree remove --force "$WT2" >/dev/null 2>&1; rm -rf "$(dirname "$WT2")"; teardown
+
+setup; out=$(start --phase-b on 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$(jq -r .integration_role "$R/.dispatch/s/workers.json")" == exec && "$(jq -r .phase_b "$R/.dispatch/s/workers.json")" == on ]] && ok ST126 || fail "ST126 (rc=$rc) $out"; teardown
+
+for flag in '--review-mode maybe' '--phase-b yes'; do
+  setup; start $flag >/dev/null 2>&1; rc=$?
+  [[ "$rc" -eq 2 && ! -e "$R/.dispatch/s" ]] && ok "ST127 $flag" || fail "ST127 $flag (rc=$rc)"; teardown
+done
+setup; start >/dev/null 2>&1
+jq -e 'has("review_mode") == false and has("phase_b") == false' "$R/.dispatch/s/workers.json" >/dev/null && ok 'ST127 no switches preserves legacy record' || fail 'ST127 legacy record'; teardown
+
+setup; phase_b_on
+printf '%s\n' '{"phase_b":"off"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+start --phase-b on >/dev/null 2>&1; design_done; : > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] && grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" && ok ST128 || fail "ST128 (rc=$rc) $out"
+git -C "$R" worktree remove --force "$WTX" >/dev/null 2>&1; rm -rf "$(dirname "$WTX")"; teardown
+
+setup; start --phase-b on >/dev/null 2>&1; design_done; : > "$ORCA_STUB_DIR/calls.log"
+out=$(exec_phase --phase-b off 2>&1); rc=$?
+[[ "$rc" -eq 2 ]] && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" && ok ST129 || fail "ST129 (rc=$rc) $out"; teardown
+
+
 echo "---"; echo "failures: $fails"; exit "$fails"
