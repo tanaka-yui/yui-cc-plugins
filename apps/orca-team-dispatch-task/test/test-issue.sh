@@ -437,4 +437,13 @@ current=$(grep -nF -- '--remove-label In\ progress' <<<"$l" | head -1 | cut -d: 
 [[ -n "$add" && -n "$legacy" && -n "$current" && "$add" -lt "$legacy" && "$add" -lt "$current" ]] \
   && ok "IS31 終端では古い dispatch のラベルも外す" || fail "IS31 (add=$add legacy=$legacy current=$current)"
 teardown
+# IS32: ★ **終端では、ほかのステータスラベルも外す。**名指しの issue や、実行中に人が付けたラベルが残ると、
+#       Done と Backlog が並んで結末が読めない。
+setup; worker_done succeeded done
+run_issue >/dev/null 2>&1
+l=$(ghlog)
+grep -qF -- '--remove-label Backlog' <<<"$l" && grep -qF -- '--remove-label Ready_Eng' <<<"$l" \
+  && ! grep -qF -- '--remove-label Done' <<<"$l" \
+  && ok "IS32 終端ではほかのステータスラベルも外す" || fail "IS32 ($l)"
+teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

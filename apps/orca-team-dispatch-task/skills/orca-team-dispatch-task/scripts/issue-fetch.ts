@@ -4,7 +4,13 @@
 //   worktree_path の実在確認、Orca 用ラベルの説明、単件指定の fetch、TypeScript 移植。
 import { readJson, writeAtomic } from '../../../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../../../lib/json.ts'
-import { ISSUE_EXCLUDED_LABELS, STATUS, STATUS_LABELS, searchExclusion } from '../../../lib/status.ts'
+import {
+  ISSUE_EXCLUDED_LABELS,
+  LEGACY_DISPATCH_LABELS,
+  STATUS,
+  STATUS_LABELS,
+  searchExclusion,
+} from '../../../lib/status.ts'
 import { nowIso, nowSeconds, run, which } from '../../../lib/sys.ts'
 
 import { existsSync, mkdirSync, renameSync, rmdirSync, rmSync, statSync } from 'node:fs'
@@ -26,8 +32,8 @@ import { dirname, isAbsolute, join } from 'node:path'
 //        合流させる）。`--issue` の flag 自体は上流にもある（mark-dispatched などが使う）
 //     6. TypeScript へ移した（2026-09 の P2）
 //     7. `dispatch/*` のラベルを slack-issue-intake と共通のステータスラベル（lib/status.ts）にした（3.11）。
-//        claim は `In progress` を付け、Ready があれば同じ呼び出しで外して state の `ready` に記録する。
-//        claim を戻す経路（補償・reconcile・release）は `ready` なら Ready を付け直す。検索は古い 3 つも除外する
+//        claim は `In progress` を付け、付いていたステータスラベルを同じ呼び出しで外して state の `restore` に記録する。
+//        claim を戻す経路（補償・reconcile・release）は `restore` を付け直し、古い dispatch/* も外す。検索は古い 3 つも除外する
 //
 //   **上流が動いたらこの一覧との差分を人が見て判断する。**自動追従はしない。
 // ★ **単件指定 (`--issue <N>`) は検索を通さない。**ラベルや assignee で絞る意味が
@@ -42,17 +48,29 @@ import { dirname, isAbsolute, join } from 'node:path'
 //   `worktree_path` が実在するかを見る。**列挙できないことを「不在」と読まない** —
 //   workers.json が読めなければ上の行が既に痕跡として立っている。
 const MAX_WINDOW = 1000
-// claim を戻す gh の引数。claim で Ready を外していれば付け直す（1 つの issue にステータスラベルは 1 つ）
-const unclaimArgs = (number: string, ready: boolean): string[] => [
+// 1 つの issue にステータスラベルは 1 つ（spec 5.1）。claim はその issue に付いたステータスラベル（検索経由なら Ready だけ、
+// 名指しなら何でも）を外して In progress にし、外したものを state の `restore` に記録する。claim を戻す経路はそれを付け直す
+const statusesOn = (issue: Json): string[] => {
+  const statuses = new Set(STATUS_LABELS.map((l) => l.name.toLowerCase()))
+  return array(get(issue, 'labels'))
+    .map((l) => string(get(l, 'name')))
+    .filter((name) => statuses.has(name.toLowerCase()) && name.toLowerCase() !== STATUS.inProgress.toLowerCase())
+}
+const unclaimArgs = (number: string, restore: string[]): string[] => [
   'issue',
   'edit',
   number,
   '--remove-label',
   STATUS.inProgress,
-  ...(ready ? ['--add-label', STATUS.ready] : []),
+  ...restore.flatMap((name) => ['--add-label', name]),
 ]
-const hasReady = (issue: Json): boolean =>
-  array(get(issue, 'labels')).some((l) => string(get(l, 'name')).toLowerCase() === STATUS.ready.toLowerCase())
+const recordedRestore = (entry: Json | undefined): string[] =>
+  array(get(entry, 'restore')).flatMap((v) => (typeof v === 'string' ? [v] : []))
+// 3.10 で claim した issue には dispatch/in-progress が付いている。残すと検索から永久に外れるので、claim を戻すときに外す。
+// 古いラベルが無いリポジトリでは gh が not found で失敗するので、結果は見ない
+const dropLegacy = (number: string): void => {
+  gh('issue', 'edit', number, ...LEGACY_DISPATCH_LABELS.flatMap((name) => ['--remove-label', name]))
+}
 const LOCK_INFLIGHT_GRACE_SEC = 60
 const TAKEOVER_MUTEX_GRACE_SEC = 120
 let ownerGeneration = ''
@@ -380,9 +398,15 @@ const fetchIssues = (paths: Paths, options: Options): number => {
     if (tasks.length >= limit) break
     const number = issueNumber(get(candidate, 'number'))
     const title = string(get(candidate, 'title'))
-    const ready = hasReady(candidate)
-    const claim = ['issue', 'edit', number, '--add-label', STATUS.inProgress]
-    if (ready) claim.push('--remove-label', STATUS.ready)
+    const restore = statusesOn(candidate)
+    const claim = [
+      'issue',
+      'edit',
+      number,
+      '--add-label',
+      STATUS.inProgress,
+      ...restore.flatMap((n) => ['--remove-label', n]),
+    ]
     if (gh(...claim).rc !== 0) {
       note('warn', `issue #${number} の claim に失敗したため除外します`)
       continue
@@ -391,14 +415,15 @@ const fetchIssues = (paths: Paths, options: Options): number => {
     const recorded = stateWriteSoft(paths, (state) => {
       state.issues = {
         ...stateIssues(state),
-        [number]: { slug, status: 'claimed', batch: options.batch, claimed_at: nowIso(), ready },
+        [number]: { slug, status: 'claimed', batch: options.batch, claimed_at: nowIso(), restore },
       }
       return true
     })
     if (!recorded) {
-      if (gh(...unclaimArgs(number, ready)).rc !== 0) {
+      if (gh(...unclaimArgs(number, restore)).rc !== 0) {
         fatal(`issue #${number}: state 記録と claim 補償の両方に失敗しました`)
       }
+      dropLegacy(number)
       note('warn', `issue #${number} の state 記録に失敗したため claim を取り消しました`)
       continue
     }
@@ -456,10 +481,11 @@ const reconcile = (paths: Paths): number => {
     if (evidence.length > 0) {
       action = 'abort'
       reasons.push(`issue #${number} (${slug}) は生存の痕跡があります (${evidence.join(', ')})`)
-    } else if (which('gh') === null || gh(...unclaimArgs(number, get(issue, 'ready') === true)).rc !== 0) {
+    } else if (which('gh') === null || gh(...unclaimArgs(number, recordedRestore(issue))).rc !== 0) {
       action = 'abort'
       reasons.push(`issue #${number} (${slug}) のラベル除去に失敗しました`)
     } else {
+      dropLegacy(number)
       stateWrite(paths, (state) => {
         const next = { ...stateIssues(state) }
         delete next[number]
@@ -581,9 +607,10 @@ const main = (argv: string[]): number => {
       if (options.issue === '') fatal('--issue is required')
       if (which('gh') === null) fatal('gh is not installed; state is preserved')
       const recorded = get(stateIssues(readJson(paths.stateFile)), options.issue)
-      if (gh(...unclaimArgs(options.issue, get(recorded, 'ready') === true)).rc !== 0) {
+      if (gh(...unclaimArgs(options.issue, recordedRestore(recorded))).rc !== 0) {
         fatal(`issue #${options.issue} のラベル除去に失敗したため state は保持します`)
       }
+      dropLegacy(options.issue)
       stateWrite(paths, (state) => {
         const next = { ...stateIssues(state) }
         delete next[options.issue]

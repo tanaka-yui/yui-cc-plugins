@@ -260,7 +260,7 @@ Step 5 decides and Step 6 asks, exactly as for a hand-written dispatch.
 | Integration | The configured `integration`, `merge` or `pr`, fixed for the run and never asked. With `pr`, I3 opens a pull request per issue instead of merging |
 | Driving | One batch at a time, waiting for it to finish before claiming the next |
 | Roles | Whatever `review_mode` resolves to, used for every issue in the run |
-| Labels | The status labels shared with slack-issue-intake: `In progress` on claim, `Done` or `Failed` at the end. An issue that already carries another status label, or an old `dispatch/*` label, is never picked up. A claimed issue loses `Ready`, and gets it back if the claim is undone |
+| Labels | The status labels shared with slack-issue-intake: `In progress` on claim, `Done` or `Failed` at the end. The search never picks up an issue that already carries another status label or an old `dispatch/*` label; a named issue (`--issue <N>`) is carried whatever it carries. A claim replaces the issue's status labels with `In progress` and puts them back if the claim is undone; the end leaves only `Done` or `Failed` |
 
 ### I0. Preflight
 

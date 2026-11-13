@@ -9,7 +9,7 @@ import { die, log } from '../lib/cli.ts'
 import { readJson } from '../lib/fs.ts'
 import { defaultStateFile, excludeStateDir } from '../lib/issue.ts'
 import { asString, get, parseJson } from '../lib/json.ts'
-import { LEGACY_DISPATCH_LABELS, STATUS } from '../lib/status.ts'
+import { LEGACY_DISPATCH_LABELS, STATUS, STATUS_LABELS } from '../lib/status.ts'
 import { run, runNode, which } from '../lib/sys.ts'
 
 import { readFileSync } from 'node:fs'
@@ -125,12 +125,16 @@ const parse = (argv: string[]): Options => {
 //
 // ★ ラベルを動かせなかったことを **state に嘘で上書きしない。**次の reconcile が
 //   痕跡を見て止まるほうが、静かに done にするより良い。
+// ほかのステータスラベル（反対の終端、名指しの issue に付いていたもの、実行中に人が付けたもの）も外す。
+// 1 つの issue にステータスラベルは 1 つ（spec 5.1）。ensure-labels が 8 つを作っているので 1 回の呼び出しで外せる
+const removeArgs = (labels: readonly string[]): string[] => labels.flatMap((name) => ['--remove-label', name])
 const labelTerminal = (issue: string, status: 'done' | 'failed'): boolean => {
   const label = status === 'done' ? STATUS.done : STATUS.failed
-  const other = status === 'done' ? STATUS.failed : STATUS.done
   if (run('gh', ['issue', 'edit', issue, '--add-label', label]).rc !== 0) return false
-  run('gh', ['issue', 'edit', issue, '--remove-label', other])
-  for (const legacy of LEGACY_DISPATCH_LABELS) run('gh', ['issue', 'edit', issue, '--remove-label', legacy])
+  const others = STATUS_LABELS.map((l) => l.name).filter((name) => name !== label && name !== STATUS.inProgress)
+  run('gh', ['issue', 'edit', issue, ...removeArgs(others)])
+  // 古いラベルが無いリポジトリでは not found で失敗するので、結果は見ない
+  run('gh', ['issue', 'edit', issue, ...removeArgs(LEGACY_DISPATCH_LABELS)])
   return run('gh', ['issue', 'edit', issue, '--remove-label', STATUS.inProgress]).rc === 0
 }
 const issueFetch = (options: Options, args: string[]) =>

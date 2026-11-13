@@ -241,7 +241,7 @@ dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。
 | 統合 | 設定の `integration`（`merge` か `pr`）。その実行の間は固定で、尋ねない。`pr` なら I3 は merge の代わりに issue ごとに pull request を作る |
 | 駆動 | 1 バッチずつ。終わるまで待ってから次を claim する |
 | 役 | `review_mode` が解決したものを、その実行の全 issue で共通に使う |
-| ラベル | slack-issue-intake と共通のステータスラベル。claim で `In progress`、終わりに `Done` か `Failed` を付ける。ほかのステータスラベルか古い `dispatch/*` が付いた issue は拾わない。claim した issue からは `Ready` を外し、claim を取り消したら戻す |
+| ラベル | slack-issue-intake と共通のステータスラベル。claim で `In progress`、終わりに `Done` か `Failed` を付ける。検索は、ほかのステータスラベルか古い `dispatch/*` が付いた issue を拾わない。名指しの issue（`--issue <N>`）は何が付いていても運ぶ。claim はその issue のステータスラベルを `In progress` に置き換え、claim を取り消したら元に戻す。終わったときに残るのは `Done` か `Failed` だけ |
 
 ### I0. 事前確認
 

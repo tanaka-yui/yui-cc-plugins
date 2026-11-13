@@ -361,9 +361,10 @@ test-wake.sh の WK9、test-start.sh の ST104-106、test-cleanup.sh の CL8c、
 - **ラベルは slack-issue-intake と共通のステータスラベル**（`lib/status.ts`。3.11 で `dispatch/*` から置き換えた）。
   プラグインは別々に入るので定義を写して持ち、ルートの `scripts/check-shared-contracts.mjs`（`pnpm check` に入っている）が
   slack-issue-intake の `STATUS_LABELS` とコメントの例 `test/fixtures/orca-auto-comments.json` の一致を確かめる。
-  検索は古い `dispatch/*` も除外する。claim は Ready を外して state の `ready` に記録し、claim を戻す経路は Ready を戻す。
-  終端は古い `dispatch/*` も外す（3.10 で claim した issue が 3.11 で終わるため）。回帰は `test-issue-fetch.sh` の IF17-19 と
-  `test-issue.sh` の IS31
+  検索は古い `dispatch/*` も除外する。claim は付いていたステータスラベル（名指しの issue なら何でも）を外して state の
+  `restore` に記録し、claim を戻す経路（補償・reconcile・release）はそれを付け直して古い `dispatch/*` も外す（rc は見ない）。
+  終端はほかのステータスラベルと古い `dispatch/*` も外す（3.10 で claim した issue が 3.11 で終わる・戻るため）。
+  回帰は `test-issue-fetch.sh` の IF17-21 と `test-issue.sh` の IS31 / IS32
 - **`issue-fetch.ts` は cmux 版からの移植**で、挙動の変更は先頭コメントに列挙した点に限る。
   lock の in-flight grace / takeover mutex / claim の補償 / fetch の窓拡張は、
   **失敗様式ごと持ち込む価値がある**のでそのまま

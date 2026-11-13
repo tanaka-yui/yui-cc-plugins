@@ -217,24 +217,51 @@ search=$(grep -A1 -x -- '--search' "$GH_STUB_DIR/issue_list.args" | tail -1)
   && ok "IF18 検索はステータスラベルと古い dispatch を除外し、Ready は除外しない" || fail "IF18 ($search)"
 teardown
 
-# IF19: ★ **Ready の付いた issue は claim で Ready を外し、claim を戻すときは Ready も戻す。**
+# IF19: ★ **claim は issue に付いたステータスラベルを外して In progress にし、claim を戻すときは元に戻す。**
 #       1 つの issue にステータスラベルは 1 つ。戻さないと、人が「やる」と決めた印が消えたままになる。
 setup; acquire; init
-jq -nc '[{number:31,title:"ready one",body:"b",url:"u31",labels:[{name:"Ready"}]}]' > "$GH_STUB_DIR/issue_list"
+jq -nc '[{number:31,title:"ready one",body:"b",url:"u31",labels:[{name:"ready"}]}]' > "$GH_STUB_DIR/issue_list"
 : > "$GH_STUB_DIR/issue_edit"
 chmod 500 "$LD"
 run fetch --limit 1 --batch 1 >/dev/null 2>&1
 chmod 700 "$LD"
 undo_ok=0
-grep -qF -- 'issue edit 31 --add-label In\ progress --remove-label Ready' "$GH_STUB_DIR/calls.log" \
-  && grep -qF -- 'issue edit 31 --remove-label In\ progress --add-label Ready' "$GH_STUB_DIR/calls.log" && undo_ok=1
+grep -qF -- 'issue edit 31 --add-label In\ progress --remove-label ready' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- 'issue edit 31 --remove-label In\ progress --add-label ready' "$GH_STUB_DIR/calls.log" && undo_ok=1
 : > "$GH_STUB_DIR/calls.log"
 out=$(run fetch --limit 1 --batch 1 2>/dev/null)
-recorded=$(jq -r '.issues["31"].ready' "$SF")
+recorded=$(jq -c '.issues["31"].restore' "$SF")
 : > "$GH_STUB_DIR/calls.log"
 run release --issue 31 >/dev/null 2>&1
-[[ "$undo_ok" -eq 1 && "$recorded" == true ]] \
-  && grep -qF -- 'issue edit 31 --remove-label In\ progress --add-label Ready' "$GH_STUB_DIR/calls.log" \
-  && ok "IF19 claim で Ready を外し、取り消しと release で戻す" || fail "IF19 (undo=$undo_ok ready=$recorded $out)"
+[[ "$undo_ok" -eq 1 && "$recorded" == '["ready"]' ]] \
+  && grep -qF -- 'issue edit 31 --remove-label In\ progress --add-label ready' "$GH_STUB_DIR/calls.log" \
+  && ok "IF19 claim で Ready を外し、取り消しと release で戻す" || fail "IF19 (undo=$undo_ok restore=$recorded $out)"
+teardown
+
+# IF20: ★ **名指しの issue は、どのステータスラベルが付いていても In progress だけにする。**slack-issue-intake が
+#       起票した issue には Backlog が付いている。残すと終わったあとも Backlog と Done が並ぶ。
+setup; acquire; init
+jq -nc '{number:32,title:"named",body:"b",url:"u32",labels:[{name:"Backlog"},{name:"bug"}]}' > "$GH_STUB_DIR/issue_view"
+: > "$GH_STUB_DIR/issue_edit"
+run fetch --issue 32 --limit 1 --batch 1 >/dev/null 2>&1
+restore=$(jq -c '.issues["32"].restore' "$SF")
+[[ "$restore" == '["Backlog"]' ]] \
+  && grep -qF -- 'issue edit 32 --add-label In\ progress --remove-label Backlog' "$GH_STUB_DIR/calls.log" \
+  && ! grep -qF -- '--remove-label bug' "$GH_STUB_DIR/calls.log" \
+  && ok "IF20 名指しの issue のステータスラベルを In progress に置き換えて記録する" || fail "IF20 (restore=$restore)"
+teardown
+
+# IF21: ★ **claim を戻すときは古い dispatch のラベルも外す。**3.10 で claim した issue を 3.11 で release すると、
+#       dispatch/in-progress が残り、検索から永久に外れたうえ state からも消えて痕跡が無くなる。
+#       reconcile は記録した restore も戻す。
+setup; acquire; init
+jq '.issues["33"] = {slug:"issue-33-old",status:"claimed"} | .issues["34"] = {slug:"issue-34-r",status:"claimed",restore:["Ready"]}' \
+  "$SF" > "$LD/s" && mv "$LD/s" "$SF"
+: > "$GH_STUB_DIR/issue_edit"
+out=$(run reconcile 2>/dev/null)
+[[ "$(jq -r '.action' <<<"$out")" == ok ]] \
+  && grep -qF -- 'issue edit 33 --remove-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- 'issue edit 34 --remove-label In\ progress --add-label Ready' "$GH_STUB_DIR/calls.log" \
+  && ok "IF21 claim を戻すときは古いラベルも外し、記録したラベルを戻す" || fail "IF21 ($out)"
 teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
