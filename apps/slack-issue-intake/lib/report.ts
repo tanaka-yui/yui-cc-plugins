@@ -7,17 +7,22 @@ import {
   META_REPORT_HASH,
   META_REPORT_TS,
   REPORT_QUEUE_MAX_LINES,
+  REPORT_SOURCE_DIR,
+  REPORT_SOURCE_FILE,
   REPORT_STALE_FACTOR,
   REPORT_TEXT,
 } from './defaults.ts'
 import { readJson } from './fs.ts'
 import { asArray, asObject } from './json.ts'
 import { renewLease } from './lease.ts'
+import { claudeHome } from './paths.ts'
 import { maskSecrets } from './secrets.ts'
 import { postMessage, updateMessage } from './slack-api.ts'
 import { escapeMrkdwn } from './slack-text.ts'
 
 import { createHash } from 'node:crypto'
+import { existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 
 import type { DriveContext } from './drive.ts'
 import type { Json, JsonObject } from './json.ts'
@@ -178,4 +183,16 @@ export const postReport = async (ctx: DriveContext): Promise<ReportResult> => {
   if (r.error === 'message_not_found') return post()
   errors.push(maskSecrets(r.error))
   return failed()
+}
+
+export const findReportSources = (): string[] => {
+  const root = join(claudeHome(), ...REPORT_SOURCE_DIR)
+  try {
+    return readdirSync(root)
+      .sort()
+      .map((name) => join(root, name, REPORT_SOURCE_FILE))
+      .filter((path) => existsSync(path))
+  } catch {
+    return []
+  }
 }

@@ -1,5 +1,13 @@
-import { CHANNEL_ID_PATTERN, CHANNEL_PAGE_SIZE, ERROR_CHANNEL_NOT_FOUND } from './defaults.ts'
+import {
+  CHANNEL_ID_PATTERN,
+  CHANNEL_PAGE_SIZE,
+  ERROR_CHANNEL_NOT_FOUND,
+  ERROR_MISSING_SCOPE,
+  SETUP_TEXT,
+  SLACK_APP_NAME,
+} from './defaults.ts'
 import { asArray, asObject, asString, get } from './json.ts'
+import { createSlackClient } from './slack-api.ts'
 
 import type { Json } from './json.ts'
 import type { SlackClient, SlackFailure } from './slack-api.ts'
@@ -65,4 +73,33 @@ export const joinChannel = async (
 ): Promise<{ ok: true } | SlackFailure> => {
   const joined = await slack.call('conversations.join', { channel: channelId }, deadline)
   return joined.ok ? { ok: true } : joined
+}
+
+export const perCallClient = (token: string): SlackClient => ({
+  call: (method, params, until) => createSlackClient(token).call(method, params, until),
+  download: (url, maxBytes, until) => createSlackClient(token).download(url, maxBytes, until),
+})
+export const resolveChannel = async (
+  slack: SlackClient,
+  input: string,
+  deadline: number,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> => {
+  const found = await findChannel(slack, input, deadline)
+  if (!found.ok) {
+    if (found.error === ERROR_MISSING_SCOPE) {
+      const id = normalizeChannelName(input).toUpperCase()
+      return CHANNEL_ID_PATTERN.test(id) ? { ok: true, id } : { ok: false, error: SETUP_TEXT.channelIdOnly }
+    }
+    return { ok: false, error: SETUP_TEXT.channelFailed.replace('{error}', found.error) }
+  }
+  if (!found.channel) return { ok: false, error: SETUP_TEXT.channelNotFound.replace('{app}', SLACK_APP_NAME) }
+  if (!found.channel.isPrivate && !found.channel.isMember) {
+    const joined = await joinChannel(slack, found.channel.id, deadline)
+    if (!joined.ok)
+      return {
+        ok: false,
+        error: SETUP_TEXT.joinFailed.replace('{error}', joined.error).replace('{app}', SLACK_APP_NAME),
+      }
+  }
+  return { ok: true, id: found.channel.id }
 }

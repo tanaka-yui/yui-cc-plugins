@@ -402,7 +402,7 @@ export const MSG_MENTION_NOT_FOUND =
 export const MSG_MENTION_USAGE = 'mention --group <ハンドル|表示名|ID> か mention --none を指定してください'
 
 // セットアップのウィザード（make setup）
-export const SETUP_STEPS = 9
+export const SETUP_STEPS = 10
 export const ERROR_MISSING_SCOPE = 'missing_scope'
 export const NODE_MIN_VERSION: readonly number[] = [24, 15]
 export const PROMPT_READ_CHUNK = 4096
@@ -449,6 +449,23 @@ export const SETUP_TEXT = {
   joinFailed: 'チャンネルに参加できません（{error}）。Slack で /invite @{app} を送ってから再実行してください',
   channelChosen: 'チャンネル: #{name}（{id}）',
   askRepo: 'GitHub のリポジトリ（owner/name）',
+  askMoreRepo: 'ほかにも受け付けるリポジトリ（owner/name）。無ければ空のまま Enter',
+  askAddRepo: '足すリポジトリ（owner/name）。無ければ空のまま Enter',
+  duplicateRepo: 'そのリポジトリは入力済みです',
+  askDefaultRepo: '既定の起票先（フォームでリポジトリを選ばなかったときの起票先）',
+  badDefaultRepo: '入力したリポジトリのどれかを入力してください',
+  askShowInForm: '{repo} をフォームのリポジトリの選択肢に出しますか（y/n）',
+  askExisting:
+    '{repo} の Issue のうち Slack から作っていないものを、スレッドを立てて管理する（thread）か、対象外にする（skip）か',
+  badChoice: '{options} のどれかを入力してください',
+  stepReport: '定期報告を決める（report）',
+  reportFound: '--auto の報告の材料が見つかりました:',
+  askReportSource: '定期報告に使う材料の番号（報告しないなら 0）',
+  askReportChannel: '定期報告を投稿するチャンネル（名前か ID。空のまま Enter で起票のチャンネル）',
+  askDailyAt: '1 日 1 回、新しい投稿にする時刻（HH:MM）',
+  badDailyAt: '00:00 から 23:59 の HH:MM で入力してください',
+  reportNotFound:
+    '--auto の報告の材料が見つかりません。--auto を setup したあとで、node bin/slack-issue-intake.ts report --source <path> で有効にできます',
   badRepo: 'owner/name の形で入力してください',
   repoFailed: 'リポジトリを確かめられません（{error}）',
   noIssues: 'リポジトリの Issues が無効です。GitHub の Settings で Issues を有効にしてから再実行してください',
@@ -457,7 +474,7 @@ export const SETUP_TEXT = {
   confirmPublic: 'この公開リポジトリに起票しますか？',
   askEvery: '確認の間隔（分。60 の約数）',
   currentConfig:
-    '今の設定: チャンネル {channel}、リポジトリ {repo}、確認の間隔 {every} 分。チャンネルとリポジトリは変えられません。間隔を変えるなら新しい値を入力し、そのままなら Enter を押してください',
+    '今の設定: チャンネル {channel}、リポジトリ {repos}（既定の起票先 {default}）、確認の間隔 {every} 分。チャンネルは変えられません。リポジトリは足せますが、外せません。間隔を変えるなら新しい値を入力し、そのままなら Enter を押してください',
   badEvery: '60 の約数（1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60）を入力してください',
   declined:
     '承認されなかったので、この段では何も変えずに止めました。もう一度 make setup を実行すると、ここから再開します',
@@ -479,6 +496,9 @@ export const adoptSweepKey = (repo: string): string => `adopt_sweep:${repo}`
 export const MSG_ADOPTED = '📌 この Issue をスレッドで管理します: {repo}#{number} {title}\n{url}\nステータス: {status}'
 export const ADOPTED_CLOSED_NOTE = '（閉じています）'
 
+export const META_REPORT_ASKED = 'report_asked'
+export const REPORT_SOURCE_DIR = ['config', 'orca-team-dispatch-task', 'auto'] as const
+export const REPORT_SOURCE_FILE = 'report.json'
 export const REPORT_STALE_FACTOR = 3
 export const REPORT_QUEUE_MAX_LINES = 10
 export const META_REPORT_TS = 'report_ts'

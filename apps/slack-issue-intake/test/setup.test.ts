@@ -31,7 +31,7 @@ const OTHER = { id: 'C0OTHER001', name: 'general', is_private: false, is_member:
 const SECRET = { id: 'G0SECRET01', name: 'secret', is_private: true, is_member: true }
 // 1行目は既存のアプリ ID（空なら新しく作る）
 // 1行目は既存のアプリ ID、最後の空行の手前はメンションするグループ（空ならメンションしない）
-const FULL_INPUT = '\n#Issue-Intake\nacme/app\n\n\ny\n'
+const FULL_INPUT = '\n#Issue-Intake\nacme/app\n\n\n\n\ny\n'
 
 const fixture = async (
   t: { after: (fn: () => Promise<void>) => void },
@@ -99,8 +99,8 @@ test('SU1 質問に答えるだけで、アプリ・トークン・設定・ボ�
   const f = await fixture(t)
   const r = await f.setup(FULL_INPUT, { SLACK_BOT_TOKEN: 'xoxb-from-shell' })
   assert.equal(r.code, 0, r.stderr)
-  assert.match(r.stdout, /\[1\/9\]/)
-  assert.match(r.stdout, /\[9\/9\]/)
+  assert.match(r.stdout, /\[1\/10\]/)
+  assert.match(r.stdout, /\[10\/10\]/)
   const deploys = f.cliCalls('deploy')
   assert.equal(deploys.length, 1)
   assert.equal(deploys[0]?.hadBotToken, false)
@@ -132,7 +132,7 @@ test('SU1 質問に答えるだけで、アプリ・トークン・設定・ボ�
 test('SU2 もう一度実行すると、済んだ段を飛ばしてアプリ・ボタンを重ねない', async (t) => {
   const f = await fixture(t)
   assert.equal((await f.setup(FULL_INPUT)).code, 0)
-  const r = await f.setup('\n')
+  const r = await f.setup('\n\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /済み/)
   assert.equal(f.cliCalls('deploy').length, 1)
@@ -146,7 +146,7 @@ test('SU23 0.2 の古いボタンが残っていれば、6 段目で form をも
   const db = openDb(homePaths(f.home).db)
   setMeta(db, FORM_META_TRIGGER_ID, 'Ft0FAKEFOR')
   db.close()
-  const r = await f.setup('\n')
+  const r = await f.setup('\n\n')
   assert.equal(r.code, 0, r.stderr)
   assert.equal(f.cliCalls('trigger create').length, 3)
   assert.deepEqual(
@@ -159,7 +159,7 @@ test('SU3 マニフェストが変わっていれば、同じチームを指定�
   const f = await fixture(t)
   assert.equal((await f.setup(FULL_INPUT)).code, 0)
   writeFileSync(slackProject(f.home).manifestHash, 'old\n')
-  const r = await f.setup('\n')
+  const r = await f.setup('\n\n')
   assert.equal(r.code, 0, r.stderr)
   const deploys = f.cliCalls('deploy')
   assert.equal(deploys.length, 2)
@@ -194,7 +194,7 @@ test('SU5 Slack CLI が無い・未ログインなら、何も作らずに止ま
 
 test('SU6 見つからないチャンネルはボットの招待を待ち、Enter のあとに探し直す', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('\nsecret\n\nacme/app\n\n\ny\n')
+  const r = await f.setup('\nsecret\n\nacme/app\n\n\n\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /\/invite @Issue Intake/)
   assert.equal(f.calls('conversations.join').length, 0)
@@ -203,11 +203,11 @@ test('SU6 見つからないチャンネルはボットの招待を待ち、Ente
 
 test('SU7 承認しなければ何も変えずに止まり、次の実行で承認から再開する', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('\n#issue-intake\nacme/app\n\n\nn\n')
+  const r = await f.setup('\n#issue-intake\nacme/app\n\n\n\n\nn\n')
   assert.equal(r.code, 1)
   assert.equal(f.status(), 'unsafe')
   assert.ok(!orcaCalls(f.orca.log).some((c) => c.includes('--enabled')))
-  const again = await f.setup('\ny\n')
+  const again = await f.setup('\n\ny\n')
   assert.equal(again.code, 0, again.stderr)
   assert.equal(f.status(), 'accepted')
   assert.equal(f.cliCalls('deploy').length, 1)
@@ -222,7 +222,7 @@ test('SU8 入力が途中で尽きたら、ターミナルで実行するよう�
 
 test('SU9 公開リポジトリは内容が公開されると示して確かめ、承認したら --allow-public で init する', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('\n#issue-intake\nacme/app\ny\n\n\ny\n', { FAKE_GH_VISIBILITY: 'PUBLIC' })
+  const r = await f.setup('\n#issue-intake\nacme/app\ny\n\n\n\n\ny\n', { FAKE_GH_VISIBILITY: 'PUBLIC' })
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /公開/)
   assert.equal(loadConfig(f.home)?.defaultRepo, 'acme/app')
@@ -247,7 +247,7 @@ test('SU11 受け継ぐ許可は一覧を見せて確かめ、承認しなけれ
   assert.equal(r.code, 1)
   assert.match(r.stdout, /inherited-allow Bash\(git status\)/)
   assert.ok(!orcaCalls(f.orca.log).some((c) => c.includes('--enabled')))
-  const again = await f.setup('\ny\n')
+  const again = await f.setup('\n\ny\n')
   assert.equal(again.code, 0, again.stderr)
   assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
 })
@@ -259,7 +259,7 @@ test('SU12 手作業のアプリ（名前で探す権限なし）は deploy せ�
       : null,
   )
   saveToken(homePaths(f.home).secrets, 'xoxb-manual-token')
-  const r = await f.setup('issue-intake\nC0TARGET01\nacme/app\n\n\ny\n')
+  const r = await f.setup('issue-intake\nC0TARGET01\nacme/app\n\n\n\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /チャンネル ID/)
   assert.match(r.stdout, /Workflow Builder/)
@@ -283,7 +283,7 @@ test('SU13 ID の形に見える名前は、ID で見つからなくても名前
           }
         : null,
   )
-  const r = await f.setup('\ncustomers\nacme/app\n\n\ny\n')
+  const r = await f.setup('\ncustomers\nacme/app\n\n\n\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.equal(loadConfig(f.home)?.channel, 'C0CUSTOM01')
 })
@@ -303,7 +303,7 @@ test('SU15 知らない引数は使用法の誤りとして exit 2 で止まり�
   const f = await fixture(t)
   const r = await runCliAsync(['setup', '--foo'], { SLACK_ISSUE_INTAKE_HOME: f.home }, '')
   assert.equal(r.code, 2)
-  assert.doesNotMatch(r.stdout, /\[1\/9\]/)
+  assert.doesNotMatch(r.stdout, /\[1\/10\]/)
 })
 
 test('SU16 有効化が Orca で失敗しても、次の実行で聞き直さずに有効化をやり直す', async (t) => {
@@ -313,7 +313,7 @@ test('SU16 有効化が Orca で失敗しても、次の実行で聞き直さず
   const r = await f.setup(`${FULL_INPUT}y\n`, { FAKE_ORCA_EDIT: 'fail' })
   assert.equal(r.code, 1)
   assert.equal(f.status(), 'accepted')
-  const again = await f.setup('\n')
+  const again = await f.setup('\n\n')
   assert.equal(again.code, 0, again.stderr)
   assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
 })
@@ -331,7 +331,7 @@ test('SU18 設定があってトークンもアプリも無ければ、設定の
   assert.equal((await f.setup(FULL_INPUT)).code, 0)
   rmSync(homePaths(f.home).secrets)
   rmSync(slackProject(f.home).dir, { recursive: true })
-  const r = await f.setup('\n\n')
+  const r = await f.setup('\n\n\n')
   assert.equal(r.code, 0, r.stderr)
   const argv = f.cliCalls('deploy')[1]?.argv ?? []
   assert.equal(argv[argv.indexOf('--team') + 1], TEAM_ID)
@@ -339,7 +339,7 @@ test('SU18 設定があってトークンもアプリも無ければ、設定の
 
 test('SU19 既存のアプリ ID を入力すると、slack app link でつないでから同じアプリを deploy する', async (t) => {
   const f = await fixture(t)
-  const r = await f.setup('bad-id\na0exist0001\n#issue-intake\nacme/app\n\n\ny\n')
+  const r = await f.setup('bad-id\na0exist0001\n#issue-intake\nacme/app\n\n\n\n\ny\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /A で始まる/)
   const [linked] = f.cliCalls('app link')
@@ -364,15 +364,15 @@ test('SU21 設定があれば今の設定を見せて間隔だけ聞き直し、
   const f = await fixture(t)
   assert.equal((await f.setup(FULL_INPUT)).code, 0)
   const before = orcaCalls(f.orca.log).length
-  const kept = await f.setup('\n')
+  const kept = await f.setup('\n\n')
   assert.equal(kept.code, 0, kept.stderr)
-  assert.match(kept.stdout, /チャンネル C0TARGET01、リポジトリ acme\/app、確認の間隔 5 分/)
+  assert.match(kept.stdout, /チャンネル C0TARGET01、リポジトリ acme\/app（既定の起票先 acme\/app）、確認の間隔 5 分/)
   assert.ok(
     !orcaCalls(f.orca.log)
       .slice(before)
       .some((c) => c.includes('--trigger')),
   )
-  const changed = await f.setup('10\n')
+  const changed = await f.setup('\n10\n')
   assert.equal(changed.code, 0, changed.stderr)
   assert.equal(loadConfig(f.home)?.everyMinutes, 10)
   const edit = orcaCalls(f.orca.log).find((c) => c[1] === 'edit' && c.includes('--trigger'))
@@ -387,7 +387,7 @@ test('SU24 labels_hash が今と違えば、間隔が同じでも 5 段で init 
   setMeta(db, labelsHashKey('acme/app'), 'old')
   db.close()
   const before = ghCalls(f.gh.log).length
-  const r = await f.setup('\n')
+  const r = await f.setup('\n\n')
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, new RegExp(`\\[5/${SETUP_STEPS}\\] [^\\n]*init[^\\n…]*\\n`))
   assert.ok(
@@ -395,7 +395,7 @@ test('SU24 labels_hash が今と違えば、間隔が同じでも 5 段で init 
       .slice(before)
       .some((c) => c.argv.slice(0, 2).join(' ') === 'label list'),
   )
-  const again = await f.setup('\n')
+  const again = await f.setup('\n\n')
   assert.match(again.stdout, new RegExp(`\\[5/${SETUP_STEPS}\\] [^\\n]*済み`))
 })
 
@@ -406,14 +406,14 @@ test('SU25 6段: mention.asked が false なら聞き、空なら --none、名�
       : null,
   )
   // 見つからない名前のあとは聞き直し、2 回目の名前で保存する
-  const r = await f.setup('\n#Issue-Intake\nacme/app\n\nnobody\n@dev-member\ny\n')
+  const r = await f.setup('\n#Issue-Intake\nacme/app\n\n\n\nnobody\n@dev-member\ny\n')
   assert.equal(r.code, 0, r.stderr)
-  assert.match(r.stdout, /\[6\/9\] 通知でメンションするグループ/)
+  assert.match(r.stdout, /\[6\/10\] 通知でメンションするグループ/)
   assert.deepEqual(loadConfig(f.home)?.mention, { asked: true, groupId: 'S0DEV0001', handle: 'dev-member' })
   assert.equal(f.calls('usergroups.list').length, 2)
-  const again = await f.setup('\n')
+  const again = await f.setup('\n\n')
   assert.equal(again.code, 0, again.stderr)
-  assert.match(again.stdout, /\[6\/9\] [^\n]*済み/)
+  assert.match(again.stdout, /\[6\/10\] [^\n]*済み/)
   assert.equal(f.calls('usergroups.list').length, 2)
   const empty = await fixture(t)
   assert.equal((await empty.setup(FULL_INPUT)).code, 0)
@@ -426,11 +426,52 @@ test('SU22 ボットで入力欄にボタンを出せなければ、6段目で�
   )
   const r = await f.setup(FULL_INPUT)
   assert.equal(r.code, 0, r.stderr)
-  assert.match(r.stdout, /\[9\/9\]/)
-  const tail = r.stdout.slice(r.stdout.indexOf('[9/9]'))
+  assert.match(r.stdout, /\[10\/10\]/)
+  const tail = r.stdout.slice(r.stdout.indexOf('[10/10]'))
   assert.match(tail, /おすすめアプリに追加/)
-  const again = await f.setup('\n')
+  const again = await f.setup('\n\n')
   assert.equal(again.code, 0, again.stderr)
   assert.equal(f.calls('workflows.featured.add').length, 1)
   assert.match(again.stdout, /おすすめアプリに追加/)
+})
+
+test('SU26 初回に複数のリポジトリを設定し、フォームを deploy し直す', async (t) => {
+  const f = await fixture(t)
+  const r = await f.setup('\n#Issue-Intake\nacme/app\nacme/web\n\n\n\n\nthread\n\n\ny\n')
+  assert.equal(r.code, 0, r.stderr + r.stdout)
+  assert.deepEqual(loadConfig(f.home)?.repos, [
+    { name: 'acme/app', form: true, existing: 'skip' },
+    { name: 'acme/web', form: true, existing: 'thread' },
+  ])
+  assert.equal(loadConfig(f.home)?.defaultRepo, 'acme/app')
+  assert.equal(f.cliCalls('deploy').length, 2)
+  const { manifestHash } = await import('../lib/slack-cli.ts')
+  assert.equal(readFileSync(slackProject(f.home).manifestHash, 'utf8').trim(), manifestHash(['acme/app', 'acme/web']))
+  assert.ok(!r.stdout.includes('ターミナルで make setup'))
+})
+test('SU27 リポジトリを追加し、既存のボタンを重ねず deploy し直す', async (t) => {
+  const f = await fixture(t)
+  assert.equal((await f.setup(FULL_INPUT)).code, 0)
+  const r = await f.setup('acme/web\n\n\nthread\n\n')
+  assert.equal(r.code, 0, r.stderr + r.stdout)
+  assert.equal(loadConfig(f.home)?.repos.length, 2)
+  assert.equal(f.cliCalls('deploy').length, 2)
+  assert.equal(f.cliCalls('trigger create').length, 3)
+})
+test('SU28 報告の材料を見つけて設定し、無ければ案内する', async (t) => {
+  const f = await fixture(t)
+  const dir = join(f.claudeHome, 'config/orca-team-dispatch-task/auto/main')
+  mkdirSync(dir, { recursive: true })
+  const source = join(dir, 'report.json')
+  writeFileSync(source, readFileSync(join(import.meta.dirname, 'fixtures/auto-report.json')))
+  const r = await f.setup('\n#Issue-Intake\nacme/app\n\n\n\n\n\n\n08:30\ny\n')
+  assert.equal(r.code, 0, r.stderr + r.stdout)
+  assert.deepEqual(loadConfig(f.home)?.report, { channel: null, dailyAt: '08:30', source })
+  const db = openDb(homePaths(f.home).db)
+  assert.equal(db.prepare("SELECT value FROM meta WHERE key='report_asked'").get()?.value, '1')
+  db.close()
+  const empty = await fixture(t)
+  const skipped = await empty.setup(FULL_INPUT)
+  assert.equal(skipped.code, 0, skipped.stderr + skipped.stdout)
+  assert.ok(skipped.stdout.includes('--auto の報告の材料が見つかりません'))
 })

@@ -1,5 +1,5 @@
 import { isAllowedEvery } from '../automation.ts'
-import { findChannel, joinChannel, normalizeChannelName } from '../channels.ts'
+import { findChannel, joinChannel, normalizeChannelName, perCallClient } from '../channels.ts'
 import { parseFlags } from '../cli.ts'
 import { formRepos, loadConfig } from '../config.ts'
 import { getMeta, openDb } from '../db.ts'
@@ -7,6 +7,8 @@ import {
   APP_ID_PATTERN,
   CHANNEL_ID_PATTERN,
   COMMAND_DEADLINE_MS,
+  DAILY_AT_PATTERN,
+  DEFAULT_DAILY_AT,
   DEFAULT_EVERY_MINUTES,
   ERROR_MISSING_SCOPE,
   FORM_FEATURED_MANUAL,
@@ -16,6 +18,7 @@ import {
   formMetaKey,
   LABEL_WRITE_PERMISSIONS,
   labelsHashKey,
+  META_REPORT_ASKED,
   MSG_CONFIG_BROKEN,
   MSG_PUSH_REQUIRED,
   NODE_MIN_VERSION,
@@ -30,8 +33,8 @@ import { runOrca } from '../orca.ts'
 import { homePaths, intakeHome, pluginRoot } from '../paths.ts'
 import { inheritedGrants, permissionStatus } from '../permissions.ts'
 import { createPrompter } from '../prompt.ts'
+import { findReportSources } from '../report.ts'
 import { loadToken, maskSecrets } from '../secrets.ts'
-import { createSlackClient } from '../slack-api.ts'
 import {
   deployedApp,
   findSlackCli,
@@ -49,8 +52,8 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, rmSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type { RepoSetting } from '../config.ts'
 import type { Prompter } from '../prompt.ts'
-import type { SlackClient } from '../slack-api.ts'
 
 const STDIN = 0
 const STDOUT = 1
@@ -112,10 +115,6 @@ type Picked<T> = { ok: true; value: T } | { ok: false; code: number }
 
 // 本物のクライアントは channel_not_found や missing_scope で以後の呼び出しをすべて止める。
 // ウィザードは同じ入力で探し直す（findChannel も ID で見つからなければ名前で探す）ので、呼び出しごとに新しく作る
-const perCallClient = (token: string): SlackClient => ({
-  call: (method, params, until) => createSlackClient(token).call(method, params, until),
-  download: (url, maxBytes, until) => createSlackClient(token).download(url, maxBytes, until),
-})
 
 // 見つからなければ招待を案内し、Enter のあと同じ名前（既定値）で探し直す。
 // 手作業で作ったアプリは名前で探す権限（channels:read）を持たないので、チャンネル ID をそのまま使う（init が読めるか確かめる）
@@ -185,25 +184,51 @@ const pickAppId = (p: Prompter): Picked<string | null> => {
 }
 
 // 保存済みのリポジトリで init をやり直す。公開リポジトリなら、もう一度確かめる
-const reinit = async (p: Prompter, ghPath: string, repo: string, args: string[]): Promise<number> => {
-  const info = await repoInfo(createGh(ghPath), repo, deadline())
-  if (!info.ok) return fail(fill(SETUP_TEXT.repoFailed, { error: info.error }))
-  const visible = confirmPublic(p, info.info.visibility)
-  if (!visible.ok) return visible.code
-  return child(['init', ...args, ...(visible.value ? ['--allow-public'] : [])])
+
+const reinit = async (p: Prompter, ghPath: string, repos: readonly string[], args: string[]): Promise<number> => {
+  let allowPublic = false
+  for (const repo of repos) {
+    const info = await repoInfo(createGh(ghPath), repo, deadline())
+    if (!info.ok) return fail(fill(SETUP_TEXT.repoFailed, { error: info.error }))
+    const visible = confirmPublic(p, info.info.visibility)
+    if (!visible.ok) return visible.code
+    allowPublic ||= visible.value
+  }
+  return child(['init', ...args, ...(allowPublic ? ['--allow-public'] : [])])
 }
 
-type RepoChoice = { repo: string; every: number; allowPublic: boolean }
+type RepoChoice = {
+  repos: RepoSetting[]
+  added: RepoSetting[]
+  defaultRepo: string
+  every: number
+  allowPublic: boolean
+}
 // リポジトリは先に gh で確かめ、公開なら承認を取ってから間隔を聞く
-const pickRepo = async (p: Prompter, ghPath: string): Promise<Picked<RepoChoice>> => {
+
+const pickRepo = async (
+  p: Prompter,
+  ghPath: string,
+  base: readonly RepoSetting[] = [],
+  baseDefault?: string,
+  everyDefault = DEFAULT_EVERY_MINUTES,
+): Promise<Picked<RepoChoice>> => {
   const gh = createGh(ghPath)
-  let repo = ''
+  const repos = base.map((r) => ({ ...r }))
+  const added: RepoSetting[] = []
   let allowPublic = false
   for (;;) {
-    const answer = p.ask(SETUP_TEXT.askRepo)
+    const answer = p.ask(
+      base.length ? SETUP_TEXT.askAddRepo : repos.length ? SETUP_TEXT.askMoreRepo : SETUP_TEXT.askRepo,
+    )
     if (answer === null) return { ok: false, code: exhausted() }
+    if (!answer && repos.length) break
     if (!REPO_PATTERN.test(answer)) {
       say(SETUP_TEXT.badRepo)
+      continue
+    }
+    if (repos.some((r) => r.name.toLowerCase() === answer.toLowerCase())) {
+      say(SETUP_TEXT.duplicateRepo)
       continue
     }
     const info = await repoInfo(gh, answer, deadline())
@@ -214,15 +239,62 @@ const pickRepo = async (p: Prompter, ghPath: string): Promise<Picked<RepoChoice>
     if (!info.info.hasIssuesEnabled) return { ok: false, code: fail(SETUP_TEXT.noIssues) }
     if (!LABEL_WRITE_PERMISSIONS.includes(info.info.viewerPermission))
       return { ok: false, code: fail(MSG_PUSH_REQUIRED) }
-    const visible = confirmPublic(p, info.info.visibility)
-    if (!visible.ok) return visible
-    allowPublic = visible.value
-    repo = answer
-    break
+    if (!base.length) {
+      const visible = confirmPublic(p, info.info.visibility)
+      if (!visible.ok) return visible
+      allowPublic ||= visible.value
+    }
+    const setting: RepoSetting = { name: answer, form: true, existing: 'skip' }
+    repos.push(setting)
+    added.push(setting)
   }
-  const every = pickEvery(p, DEFAULT_EVERY_MINUTES)
-  return every.ok ? { ok: true, value: { repo, every: every.value, allowPublic } } : every
+  let defaultRepo = baseDefault ?? repos[0]?.name ?? ''
+  if (!base.length && repos.length > 1)
+    for (;;) {
+      const answer = p.ask(SETUP_TEXT.askDefaultRepo, defaultRepo)
+      if (answer === null) return { ok: false, code: exhausted() }
+      const found = repos.find((r) => r.name.toLowerCase() === answer.toLowerCase())
+      if (found) {
+        defaultRepo = found.name
+        break
+      }
+      say(SETUP_TEXT.badDefaultRepo)
+    }
+  for (const repo of added) {
+    if (repo.name !== defaultRepo)
+      for (;;) {
+        const answer = p.ask(fill(SETUP_TEXT.askShowInForm, { repo: repo.name }), 'y')
+        if (answer === null) return { ok: false, code: exhausted() }
+        if (['y', 'yes', 'n', 'no'].includes(answer.toLowerCase())) {
+          repo.form = ['y', 'yes'].includes(answer.toLowerCase())
+          break
+        }
+        say(fill(SETUP_TEXT.badChoice, { options: 'y / n' }))
+      }
+    for (;;) {
+      const answer = p.ask(fill(SETUP_TEXT.askExisting, { repo: repo.name }), 'skip')
+      if (answer === null) return { ok: false, code: exhausted() }
+      if (answer === 'thread' || answer === 'skip') {
+        repo.existing = answer
+        break
+      }
+      say(fill(SETUP_TEXT.badChoice, { options: 'thread / skip' }))
+    }
+  }
+  const every = pickEvery(p, everyDefault)
+  return every.ok ? { ok: true, value: { repos, added, defaultRepo, every: every.value, allowPublic } } : every
 }
+const repoArgs = (choice: RepoChoice): string[] => [
+  ...choice.repos.flatMap((r) => ['--repo', r.name]),
+  ...(choice.repos.length > 1 ? ['--default-repo', choice.defaultRepo] : []),
+  ...choice.added.flatMap((r) => [
+    '--existing',
+    `${r.name}=${r.existing}`,
+    ...(!r.form ? ['--hide-form', r.name] : []),
+  ]),
+  '--every',
+  String(choice.every),
+]
 
 const readMeta = (dbFile: string, key: string): string | null => {
   if (!existsSync(dbFile)) return null
@@ -246,14 +318,14 @@ const approve = (p: Prompter, home: string, accepted: string | null): number => 
   if (status === 'accepted') {
     // enable は Orca を呼ぶ前に承認を保存するので、承認済みでも有効化が失敗していることがある。
     // 指紋が一致しているので受け継ぐ許可も承認済み。聞き直さずに enable をやり直す（有効なものを有効にしても変わらない）
-    heading(8, SETUP_TEXT.stepPermissions, true)
-    heading(9, SETUP_TEXT.stepEnable)
+    heading(9, SETUP_TEXT.stepPermissions, true)
+    heading(10, SETUP_TEXT.stepEnable)
     const inherited = inheritedGrants()
     if (!inherited) return fail(SETUP_TEXT.noInherited)
     return child(['enable', ...(inherited.allow.length || inherited.dirs.length ? ['--accept-inherited'] : [])])
   }
   if (status === 'unsafe') {
-    heading(8, SETUP_TEXT.stepPermissions)
+    heading(9, SETUP_TEXT.stepPermissions)
     const shown = child(['permissions', '--show'])
     if (shown !== 0) return shown
     const ok = p.confirm(SETUP_TEXT.confirmPermissions)
@@ -261,8 +333,8 @@ const approve = (p: Prompter, home: string, accepted: string | null): number => 
     if (!ok) return fail(SETUP_TEXT.declined)
     const applied = child(['permissions', '--apply'])
     if (applied !== 0) return applied
-  } else heading(8, SETUP_TEXT.stepPermissions, true)
-  heading(9, SETUP_TEXT.stepEnable)
+  } else heading(9, SETUP_TEXT.stepPermissions, true)
+  heading(10, SETUP_TEXT.stepEnable)
   const inherited = inheritedGrants()
   if (!inherited) return fail(SETUP_TEXT.noInherited)
   if (inherited.allow.length === 0 && inherited.dirs.length === 0) return child(['enable'])
@@ -291,6 +363,18 @@ const wizard = async (): Promise<number> => {
   const hash = manifestHash(existing ? formRepos(existing) : [])
   let token = loadToken(paths.secrets)
   const manualApp = Boolean(token) && !app
+  const deploy = (expected: string, teamId: string | null): number => {
+    writeProject(project)
+    say(SETUP_TEXT.deploying)
+    rmSync(project.manifestHash, { force: true })
+    const code = runDeploy(ready.slackCli, project, teamId)
+    const hookRan = readDeployedHash(project) === expected
+    token = loadToken(paths.secrets)
+    if (!token && hookRan) return fail(SETUP_TEXT.noToken)
+    if (!hookRan || !token || code !== 0) return fail(fill(SETUP_TEXT.deployFailed, { code: String(code) }))
+    saveDeployedHash(project, expected)
+    return 0
+  }
   // プラグインを更新するとフックのパスが古くなるので、アプリがあれば毎回書き直す
   if (app) writeProject(project)
   if (manualApp) {
@@ -316,16 +400,8 @@ const wizard = async (): Promise<number> => {
         teamId = linked.teamId
       }
     }
-    say(SETUP_TEXT.deploying)
-    // 指紋はフックが最初に書く。消しておけば、deploy のあとに指紋があることが「フックまで進んだ」印になる
-    rmSync(project.manifestHash, { force: true })
-    const code = runDeploy(ready.slackCli, project, teamId)
-    const hookRan = readDeployedHash(project) === hash
-    // フックが保存したトークンを読み直す
-    token = loadToken(paths.secrets)
-    if (!token && hookRan) return fail(SETUP_TEXT.noToken)
-    if (!token || code !== 0) return fail(fill(SETUP_TEXT.deployFailed, { code: String(code) }))
-    saveDeployedHash(project, hash)
+    const deployed = deploy(hash, teamId)
+    if (deployed !== 0) return deployed
   }
   if (!token) return fail(SETUP_TEXT.noToken)
 
@@ -338,25 +414,37 @@ const wizard = async (): Promise<number> => {
     say(
       fill(SETUP_TEXT.currentConfig, {
         channel: existing.channel,
-        repo: existing.repos.map((r) => r.name).join('、'),
+        repos: existing.repos.map((r) => r.name).join('、'),
+        default: existing.defaultRepo,
         every: String(existing.everyMinutes),
       }),
     )
-    const every = pickEvery(p, existing.everyMinutes)
-    if (!every.ok) return every.code
+    const choice = await pickRepo(p, ready.ghPath, existing.repos, existing.defaultRepo, existing.everyMinutes)
+    if (!choice.ok) return choice.code
     // プラグインの更新でラベルが増えたときは、間隔が同じでも init でラベルを作り直す
     const labelsCurrent = existing.repos.every((r) => readMeta(paths.db, labelsHashKey(r.name)) === labelsHash())
-    if (every.value === existing.everyMinutes && labelsCurrent) heading(5, SETUP_TEXT.stepInit, true)
+    if (choice.value.added.length === 0 && choice.value.every === existing.everyMinutes && labelsCurrent)
+      heading(5, SETUP_TEXT.stepInit, true)
     else {
       heading(5, SETUP_TEXT.stepInit)
-      const code = await reinit(p, ready.ghPath, existing.defaultRepo, ['--every', String(every.value)])
+      const code = await reinit(
+        p,
+        ready.ghPath,
+        choice.value.repos.map((r) => r.name),
+        repoArgs(choice.value),
+      )
       if (code !== 0) return code
     }
   } else if (existing) {
     heading(3, SETUP_TEXT.stepChannel, true)
     heading(4, SETUP_TEXT.stepRepo, true)
     heading(5, SETUP_TEXT.stepInit)
-    const code = await reinit(p, ready.ghPath, existing.defaultRepo, [])
+    const code = await reinit(
+      p,
+      ready.ghPath,
+      existing.repos.map((r) => r.name),
+      [],
+    )
     if (code !== 0) return code
   } else {
     heading(3, SETUP_TEXT.stepChannel)
@@ -365,17 +453,14 @@ const wizard = async (): Promise<number> => {
     heading(4, SETUP_TEXT.stepRepo)
     const choice = await pickRepo(p, ready.ghPath)
     if (!choice.ok) return choice.code
-    const { repo, every, allowPublic } = choice.value
+
     heading(5, SETUP_TEXT.stepInit)
     const code = child([
       'init',
       '--channel',
       channel.value,
-      '--repo',
-      repo,
-      '--every',
-      String(every),
-      ...(allowPublic ? ['--allow-public'] : []),
+      ...repoArgs(choice.value),
+      ...(choice.value.allowPublic ? ['--allow-public'] : []),
     ])
     if (code !== 0) return code
   }
@@ -394,13 +479,66 @@ const wizard = async (): Promise<number> => {
     }
   }
 
-  // 7: 手作業のアプリには Slack CLI でボタンを作れないので、Workflow Builder を案内する
-  if (manualApp) {
-    heading(7, SETUP_TEXT.stepForm, true)
-    say(SETUP_TEXT.manualForm)
-  } else if (formDone(paths.db)) heading(7, SETUP_TEXT.stepForm, true)
+  const reportConfig = loadConfig(home)
+  if (!reportConfig) return fail(MSG_CONFIG_BROKEN)
+  if (reportConfig.report.source !== null || readMeta(paths.db, META_REPORT_ASKED))
+    heading(7, SETUP_TEXT.stepReport, true)
   else {
-    heading(7, SETUP_TEXT.stepForm)
+    heading(7, SETUP_TEXT.stepReport)
+    const sources = findReportSources()
+    if (!sources.length) say(SETUP_TEXT.reportNotFound)
+    else {
+      say(SETUP_TEXT.reportFound)
+      for (const [i, source] of sources.entries()) say(`  ${i + 1}. ${source}`)
+      for (;;) {
+        const answer = p.ask(SETUP_TEXT.askReportSource, '1')
+        if (answer === null) return exhausted()
+        const n = Number(answer)
+        if (!Number.isInteger(n) || n < 0 || n > sources.length) continue
+        if (n === 0) {
+          if (child(['report', '--source', 'none']) === 0) break
+          continue
+        }
+        const channel = p.ask(SETUP_TEXT.askReportChannel)
+        if (channel === null) return exhausted()
+        let dailyAt: string
+        for (;;) {
+          const answer = p.ask(SETUP_TEXT.askDailyAt, DEFAULT_DAILY_AT)
+          if (answer === null) return exhausted()
+          if (DAILY_AT_PATTERN.test(answer)) {
+            dailyAt = answer
+            break
+          }
+          say(SETUP_TEXT.badDailyAt)
+        }
+        if (
+          child([
+            'report',
+            '--source',
+            sources[n - 1] ?? '',
+            '--channel',
+            channel || 'default',
+            '--daily-at',
+            dailyAt,
+          ]) === 0
+        )
+          break
+      }
+    }
+  }
+  const formConfig = loadConfig(home)
+  if (!formConfig) return fail(MSG_CONFIG_BROKEN)
+  if (!manualApp && readDeployedHash(project) !== manifestHash(formRepos(formConfig))) {
+    const code = deploy(manifestHash(formRepos(formConfig)), deployedApp(project)?.teamId || formConfig.slack.teamId)
+    if (code !== 0) return code
+  }
+  // 8: 手作業のアプリには Slack CLI でボタンを作れないので、Workflow Builder を案内する
+  if (manualApp) {
+    heading(8, SETUP_TEXT.stepForm, true)
+    say(SETUP_TEXT.manualForm)
+  } else if (formDone(paths.db)) heading(8, SETUP_TEXT.stepForm, true)
+  else {
+    heading(8, SETUP_TEXT.stepForm)
     const code = child(['form'])
     if (code !== 0) return code
   }
