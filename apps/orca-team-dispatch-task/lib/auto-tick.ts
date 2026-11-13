@@ -1,15 +1,16 @@
+import { renderComment } from './auto-comment.ts'
 import { type AutoConfig, pickSources, readAutoConfig } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
-import { readGithub } from './auto-github.ts'
+import { github, readGithub } from './auto-github.ts'
 import { AUTO_FILES, archiveStatusDir, autoDir, autoNow } from './auto-paths.ts'
 import { orderQueue, syncIssues } from './auto-queue.ts'
 import { buildRequest, slugOf } from './auto-request.ts'
 import { type AutoState, type IssueState, readState, releaseLock, takeLock, writeState } from './auto-state.ts'
-import { resumeTransition, transition } from './auto-transition.ts'
+import { hasCommentMarker, resumeTransition, transition } from './auto-transition.ts'
 import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asObject, asString, get, type Json, type JsonObject } from './json.ts'
-import { receiptArray, runOrca } from './orca.ts'
+import { receiptArray, runOrca, userOwned } from './orca.ts'
 import { STATUS } from './status.ts'
 import { envCount, run, runNode } from './sys.ts'
 
@@ -52,10 +53,11 @@ const listedWorkers = (issue: IssueState): Json[] | null => {
   const id = asString(record?.run_id)
   const h = coordinator(issue)
   if (!id || !h) return existsSync(join(issue.statusDir, 'run.json')) ? null : []
-  return receiptArray(
+  const listed = receiptArray(
     runOrca(['orchestration', 'worker-list', '--run', id, '--json'], { ORCA_TERMINAL_HANDLE: h }),
     'workers',
   )
+  return listed && listed.every((w) => Boolean(asString(get(w, 'dispatchId')))) ? listed : null
 }
 const unknownWorker = (workers: JsonObject, listed: Json[]): string | null => {
   const known = new Set(
@@ -138,7 +140,7 @@ const retireStart = (tick: Tick, issue: IssueState): boolean => {
   tick.save()
   return true
 }
-const start = (tick: Tick, issue: IssueState, args: string[], h: string, fresh: boolean): void => {
+const start = (tick: Tick, issue: IssueState, args: string[], h: string, fresh: boolean, exec = false): void => {
   if (tick.startUsed || tick.deadline - Date.now() < AUTO_START_RESERVE_MS) return
   tick.startUsed = true
   issue.startAttempt = { at: autoNow(), pid: process.pid, host: hostname() }
@@ -151,6 +153,12 @@ const start = (tick: Tick, issue: IssueState, args: string[], h: string, fresh: 
   const workers = workersOf(issue)
   if (result.rc === 0 && workers) {
     if (fresh) tick.dispatched++
+    if (exec) {
+      issue.startFailures = 0
+      issue.branch = branchOf(workers)
+      tick.save()
+      return
+    }
     started(tick, issue, workers)
     return
   }
@@ -332,6 +340,100 @@ const refill = (tick: Tick): void => {
     used += required
   }
 }
+const stopRoles = (tick: Tick, issue: IssueState): void => {
+  if (issue.startAttempt || !owns(tick, issue)) return
+  const workers = workersOf(issue)
+  if (!workers) return
+  const list = listedWorkers(issue)
+  if (!list || unknownWorker(workers, list)) {
+    error(tick, '停止を確かめられません: ' + issue.key)
+    return
+  }
+  const h = ensure(tick, issue)
+  if (!h) return
+  for (const [role, data] of Object.entries(asObject(workers.roles) ?? {})) {
+    const dispatch = asString(asObject(data)?.dispatch)
+    if (!dispatch || list.some((w) => get(w, 'dispatchId') === dispatch && userOwned(w))) continue
+    runNode(child('orca-stop.ts'), ['--status-dir', issue.statusDir, '--role', role], false, {
+      ORCA_TERMINAL_HANDLE: h,
+    })
+  }
+}
+const markFailure = (tick: Tick, issue: IssueState, reason: string): void => {
+  if (!issue.failReason) {
+    issue.pendingLabel = null
+    issue.failReason = reason
+    issue.cleanupPending = true
+    tick.save()
+    stopRoles(tick, issue)
+  }
+}
+const timedOut = (issue: IssueState): boolean =>
+  Boolean(
+    issue.startedAt &&
+      ['running', 'dispatching'].includes(issue.phase) &&
+      issue.pendingLabel?.event !== 'failed' &&
+      Date.parse(autoNow()) - Date.parse(issue.startedAt) > issue.limitMinutes * 60_000,
+  )
+const humanStop = (tick: Tick, issue: IssueState): void => {
+  issue.phase = 'stopped'
+  issue.pendingLabel = null
+  issue.failReason = null
+  issue.cleanupPending = true
+  issue.endedAt = autoNow()
+  tick.save()
+  stopRoles(tick, issue)
+}
+const progress = (tick: Tick, issue: IssueState): void => {
+  if (issue.pendingLabel || issue.failReason || issue.startAttempt || issue.cleanupPending || !owns(tick, issue)) return
+  const h = ensure(tick, issue)
+  if (!h) return
+  const waited = runNode(
+    child('orca-wait.ts'),
+    [
+      '--status-dir',
+      issue.statusDir,
+      '--max-waits',
+      '1',
+      '--timeout-ms',
+      '1000',
+      '--stall-after-min',
+      String(tick.config.limits.stallMinutes),
+      '--on-stall',
+      'ask',
+    ],
+    false,
+    { ORCA_TERMINAL_HANDLE: h, ORCA_WAITER_RETRY_TRIES: '0' },
+  )
+  if (waited.rc === 0) {
+    issue.phase = 'finishing'
+    issue.finishingSince = autoNow()
+    tick.save()
+  } else if (waited.rc === 5) markFailure(tick, issue, 'worker が失敗を報告しました。')
+  else if (waited.rc === 9 && !tick.startUsed) {
+    const next = ensure(tick, issue)
+    const checkout = tick.config.repos[issue.targets[0] ?? '']?.checkout
+    if (next && checkout)
+      start(tick, issue, ['--phase', 'exec', '--slug', issue.slug, '--repo-root', checkout], next, false, true)
+  } else if (waited.rc === 8 && !issue.stalledNotified) {
+    const body = renderComment({
+      event: 'stalled',
+      generation: issue.generation,
+      elapsedMinutes: Math.floor((Date.parse(autoNow()) - Date.parse(issue.startedAt ?? autoNow())) / 60_000),
+      limitMinutes: issue.limitMinutes,
+    }).body
+    const found = hasCommentMarker(issue, body.split('\n').at(-1) ?? '')
+    if (
+      found === true ||
+      (found === false &&
+        github(['issue', 'comment', String(issue.number), '--repo', issue.repo, '--body', body]).rc === 0)
+    ) {
+      issue.stalledNotified = true
+      tick.save()
+    }
+  } else if (![3, 8, 9].includes(waited.rc)) error(tick, '待機を進められません: ' + issue.key + ' rc=' + waited.rc)
+}
+
 export const runTick = (name: string): number => {
   const budget = envCount('ORCA_AUTO_BUDGET_MS', AUTO_TICK_BUDGET_MS)
   if (!takeLock(name, budget + 60_000)) return 1
@@ -360,13 +462,22 @@ export const runTick = (name: string): number => {
         .map((i) => i.key),
     )
     for (const issue of Object.values(state.issues))
-      if (issue.pendingLabel && !blocked.has(issue.key)) resumeTransition(issue, tick.save)
+      if (timedOut(issue)) markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
+    for (const issue of Object.values(state.issues))
+      if (issue.pendingLabel && !blocked.has(issue.key) && (!issue.failReason || issue.pendingLabel.event === 'failed'))
+        resumeTransition(issue, tick.save)
     const sources = pickSources(config)
-    syncIssues(
+    const synced = syncIssues(
       state,
       config.sources.filter((s) => sources.includes(s.repo)),
     )
     tick.save()
+    for (const key of synced.humanChanged) {
+      const issue = state.issues[key]
+      if (issue && !blocked.has(key)) humanStop(tick, issue)
+    }
+    for (const issue of Object.values(state.issues))
+      if (issue.phase === 'running' && !blocked.has(issue.key)) progress(tick, issue)
     for (const issue of Object.values(state.issues))
       if (issue.phase === 'dispatching' && !blocked.has(issue.key)) recover(tick, issue)
     refill(tick)
