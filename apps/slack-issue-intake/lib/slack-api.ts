@@ -293,3 +293,17 @@ export const userInfoName = async (
     if (typeof value === 'string' && value.trim()) return { ok: true, name: maskSecrets(value.trim()) }
   return { ok: true, name: null }
 }
+
+export const postMessage = async (
+  c: SlackClient,
+  channel: string,
+  text: string,
+  deadline: number,
+): Promise<{ ok: true; ts: string } | SlackFailure> => {
+  const r = await c.call(
+    'chat.postMessage',
+    { channel, text: maskSecrets(text), unfurl_links: 'false', unfurl_media: 'false' },
+    deadline,
+  )
+  return r.ok ? (asString(r.body.ts) ? { ok: true, ts: String(r.body.ts) } : failure('投稿の時刻がありません')) : r
+}

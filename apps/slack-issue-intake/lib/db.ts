@@ -415,3 +415,96 @@ export const saveUserName = (db: Db, userId: string, name: string, now: string):
     'INSERT INTO users VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,fetched_at=excluded.fetched_at',
   ).run(userId, maskSecrets(name), now)
 }
+
+export const writeMetaFenced = (
+  db: Db,
+  token: string,
+  now: string,
+  set: Record<string, string>,
+  remove: readonly string[] = [],
+): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return false
+    for (const [key, value] of Object.entries(set)) setMeta(db, key, value)
+    for (const key of remove) deleteMeta(db, key)
+    return true
+  })
+export type AdoptedRow = {
+  repo: string
+  issueNumber: number
+  channel: string
+  ts: string | null
+  labeled: boolean
+  title: string
+  url: string
+  createdAt: string
+  triedAt: string | null
+}
+const decodeAdopted = (r: Row): AdoptedRow => ({
+  repo: String(r.repo),
+  issueNumber: Number(r.issue_number),
+  channel: String(r.channel),
+  ts: nullable(r, 'ts'),
+  labeled: Boolean(r.labeled),
+  title: String(r.title),
+  url: String(r.url),
+  createdAt: String(r.created_at),
+  triedAt: nullable(r, 'tried_at'),
+})
+export const getAdopted = (db: Db, repo: string, issueNumber: number): AdoptedRow | null => {
+  const r = db.prepare('SELECT * FROM adopted WHERE repo=? AND issue_number=?').get(repo, issueNumber)
+  return r ? decodeAdopted(r) : null
+}
+const ADOPTED_ORDER = 'ORDER BY COALESCE(tried_at,created_at),created_at,repo,issue_number'
+export const pendingAdopted = (db: Db): AdoptedRow[] =>
+  db.prepare(`SELECT * FROM adopted WHERE ts IS NULL ${ADOPTED_ORDER}`).all().map(decodeAdopted)
+export const unlabeledAdopted = (db: Db): AdoptedRow[] =>
+  db.prepare(`SELECT * FROM adopted WHERE ts IS NOT NULL AND labeled=0 ${ADOPTED_ORDER}`).all().map(decodeAdopted)
+export const markAdoptedTried = (db: Db, token: string, repo: string, issueNumber: number, now: string): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return false
+    return (
+      db.prepare('UPDATE adopted SET tried_at=? WHERE repo=? AND issue_number=?').run(now, repo, issueNumber).changes >
+      0
+    )
+  })
+export const insertAdopted = (
+  db: Db,
+  token: string,
+  row: { repo: string; issueNumber: number; channel: string; title: string; url: string },
+  now: string,
+): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return false
+    db.prepare(
+      'INSERT OR IGNORE INTO adopted(repo,issue_number,channel,title,url,created_at) VALUES (?,?,?,?,?,?)',
+    ).run(row.repo, row.issueNumber, row.channel, maskSecrets(row.title), row.url, now)
+    return true
+  })
+export const recordAdopted = (
+  db: Db,
+  token: string,
+  repo: string,
+  issueNumber: number,
+  ts: string,
+  seed: IssueStatusRow,
+  now: string,
+): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return false
+    if (
+      db.prepare('UPDATE adopted SET ts=? WHERE repo=? AND issue_number=? AND ts IS NULL').run(ts, repo, issueNumber)
+        .changes
+    )
+      writeIssueStatus(db, seed, now, false)
+    return true
+  })
+export const markAdoptedLabeled = (db: Db, token: string, repo: string, issueNumber: number, now: string): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return false
+    return (
+      db
+        .prepare('UPDATE adopted SET labeled=1 WHERE repo=? AND issue_number=? AND ts IS NOT NULL')
+        .run(repo, issueNumber).changes > 0
+    )
+  })

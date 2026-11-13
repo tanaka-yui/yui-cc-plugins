@@ -470,3 +470,11 @@ export const SETUP_TEXT = {
   finished:
     'セットアップが終わりました。チャンネルの入力欄の所に出るボタン（{title}）のどれかから1件送り、数分後に node bin/slack-issue-intake.ts inspect --raw で受け付けたことを確かめてください',
 } as const
+
+export const ADOPT_MAX_PER_POLL = 5
+export const ADOPT_SWEEP_RESERVED = 1
+export const META_ADOPT_ROTATION = 'adopt_rotation'
+export const adoptCursorKey = (repo: string): string => `adopt_cursor:${repo}`
+export const adoptSweepKey = (repo: string): string => `adopt_sweep:${repo}`
+export const MSG_ADOPTED = '📌 この Issue をスレッドで管理します: {repo}#{number} {title}\n{url}\nステータス: {status}'
+export const ADOPTED_CLOSED_NOTE = '（閉じています）'

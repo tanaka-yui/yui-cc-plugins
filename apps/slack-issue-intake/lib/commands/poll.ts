@@ -1,3 +1,4 @@
+import { adoptExisting } from '../adopt.ts'
 import { parseFlags, parseNow } from '../cli.ts'
 import { migrateToRepos } from '../db.ts'
 import { ERROR_LEASE_LOST, POLL_DEADLINE_MS, POLL_LEASE_MS, STATUS_MIN_REMAINING_MS } from '../defaults.ts'
@@ -30,11 +31,11 @@ export const run = async (argv: string[]): Promise<void> => {
     agentWork = 0,
     partial = false,
     errors: string[] = [],
-    counts = { inserted: 0, rejected: 0, answered: 0, timedOut: 0, driven: 0, notified: 0 },
+    counts = { inserted: 0, rejected: 0, answered: 0, timedOut: 0, driven: 0, notified: 0, adopted: 0 },
     reason = '',
   ): void => {
     console.log(
-      `result=${result}${reason ? ` reason=${reason}` : ''} agent_work=${agentWork} inserted=${counts.inserted} rejected=${counts.rejected} answered=${counts.answered} timed_out=${counts.timedOut} driven=${counts.driven} errors=${errors.length} partial=${partial} notified=${counts.notified}`,
+      `result=${result}${reason ? ` reason=${reason}` : ''} agent_work=${agentWork} inserted=${counts.inserted} rejected=${counts.rejected} answered=${counts.answered} timed_out=${counts.timedOut} driven=${counts.driven} errors=${errors.length} partial=${partial} notified=${counts.notified} adopted=${counts.adopted}`,
     )
     for (const e of errors) console.error(maskSecrets(e))
     writeJson(homePaths(home).pollStatus, {
@@ -81,13 +82,18 @@ export const run = async (argv: string[]): Promise<void> => {
         !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
           ? await statusSync(ctx).catch((e: Error) => ({ notified: 0, errors: [String(e?.message ?? e)] }))
           : { notified: 0, errors: [] }
-      const errors = [...report.errors, ...status.errors]
+      const adopted =
+        !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
+          ? await adoptExisting(ctx).catch((e: Error) => ({ adopted: 0, errors: [String(e?.message ?? e)] }))
+          : { adopted: 0, errors: [] }
+      const errors = [...report.errors, ...status.errors, ...adopted.errors]
       const work = agentWorkCount(rt.db)
       const code = report.fatal ? 3 : work ? 0 : 1
       finish(report.fatal ? 'error' : work ? 'work' : 'idle', code, work, report.partial || errors.length > 0, errors, {
         ...report,
         driven: report.driven.length,
         notified: status.notified,
+        adopted: adopted.adopted,
       })
     } finally {
       releaseLease(rt.db, lease.token)

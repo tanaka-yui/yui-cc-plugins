@@ -1,6 +1,6 @@
 import { asArray, asObject, asString, get, parseJson } from '../../lib/json.ts'
 
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { setTimeout } from 'node:timers/promises'
 
 import type { JsonObject } from '../../lib/json.ts'
@@ -80,6 +80,19 @@ else if (cmd === 'label create') {
   writeFileSync(state, JSON.stringify(all))
   if (process.env.FAKE_GH_CREATE === 'lost') fail()
   console.log(html_url)
+} else if (cmd === 'issue edit') {
+  if (
+    process.env.FAKE_GH_EDIT === 'fail' ||
+    process.env.FAKE_GH_EDIT_FAIL_REPO?.toLowerCase() === value('--repo').toLowerCase()
+  )
+    fail()
+  const all = issues()
+  const issue = all.find((i) => repoOf(i) === value('--repo').toLowerCase() && i.number === Number(args[2])) ?? fail()
+  const labels = asArray(issue.labels) ?? []
+  if (!labels.some((l) => get(l, 'name') === value('--add-label'))) labels.push({ name: value('--add-label') })
+  issue.labels = labels
+  issue.updated_at = new Date().toISOString()
+  writeFileSync(state, JSON.stringify(all))
 } else if (args[0] === 'api' && args[1]?.startsWith('repos/')) {
   if (process.env.FAKE_GH_API_FAIL_PATH && args[1].includes(process.env.FAKE_GH_API_FAIL_PATH)) fail()
   const [path = '', query] = args[1].split('?')
@@ -90,6 +103,16 @@ else if (cmd === 'label create') {
   const per = Number(params.get('per_page'))
   const since = params.get('since')
   const after = (iso: string): boolean => !since || Date.parse(iso) >= Date.parse(since)
+  if (process.env.FAKE_GH_TOUCH && params.get('sort') === 'updated' && !existsSync(`${state}.touched`)) {
+    const [atPage, number] = process.env.FAKE_GH_TOUCH.split(':').map(Number)
+    if (page === atPage) {
+      const all = issues()
+      const item = all.find((i) => repoOf(i) === repo && i.number === number)
+      if (item) item.updated_at = new Date().toISOString()
+      writeFileSync(state, JSON.stringify(all))
+      writeFileSync(`${state}.touched`, '')
+    }
+  }
   // Issue のコメント（GitHub は id の昇順で返し、since は更新日時で絞る）
   const comments = path.match(/\/issues\/(\d+)\/comments$/)
   if (comments) {
@@ -102,13 +125,18 @@ else if (cmd === 'label create') {
       .filter((c) => after(String(c.updated_at ?? c.created_at)))
       .sort((a, b) => Number(a.id) - Number(b.id))
     output(list.slice((page - 1) * per, page * per))
+  } else if (path.split('/').length === 5 && Number.isInteger(Number(path.split('/').at(-1)))) {
+    const n = Number(path.split('/').at(-1))
+    const item = issues().find((i) => repoOf(i) === repo && i.number === n) ?? fail()
+    output(item)
   } else {
     const label = params.get('labels')
     const byUpdated = params.get('sort') === 'updated'
     const key = byUpdated ? 'updated_at' : 'created_at'
     const all = issues()
       .filter((i) => repoOf(i) === repo)
-      .filter((i) => (asArray(i.labels) ?? []).some((l) => asString(get(l, 'name')) === label))
+      .filter((i) => !label || (asArray(i.labels) ?? []).some((l) => asString(get(l, 'name')) === label))
+      .filter((i) => params.get('state') !== 'open' || i.state !== 'closed')
       .filter((i) => !byUpdated || after(String(i.updated_at)))
       .sort((a, b) => String(b[key]).localeCompare(String(a[key])))
     if (params.get('direction') === 'asc') all.reverse()
