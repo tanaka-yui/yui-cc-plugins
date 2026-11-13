@@ -73,7 +73,7 @@ chmod 500 "$LD"   # state を書けなくする
 out=$(run fetch --limit 1 --batch 1 2>&1); rc=$?
 chmod 700 "$LD"
 [[ "$rc" -ne 0 ]] \
-  && grep -q -- '--remove-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- '--remove-label In\ progress' "$GH_STUB_DIR/calls.log" \
   && ok "IF5 state を書けなければ claim を取り消す" || fail "IF5 (rc=$rc)"
 teardown
 
@@ -100,7 +100,7 @@ jq '.issues["11"] = {slug:"issue-11-y",status:"claimed"}' "$SF" > "$LD/s" && mv 
 out=$(run reconcile 2>/dev/null)
 [[ "$(jq -r '.action' <<<"$out")" == ok ]] \
   && [[ "$(jq -r '.issues | length' "$SF")" -eq 0 ]] \
-  && grep -q -- '--remove-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- '--remove-label In\ progress' "$GH_STUB_DIR/calls.log" \
   && ok "IF7 痕跡が無ければ release して state から消す" || fail "IF7 ($out)"
 teardown
 
@@ -113,14 +113,14 @@ out=$(run reconcile 2>/dev/null)
   && ok "IF8 dispatched が残っていれば abort" || fail "IF8 ($out)"
 teardown
 
-# IF9: ensure-labels は 3 ラベルを冪等に作る。既にあるものは作り直さない。
+# IF9: ensure-labels はステータスラベル 8 つを冪等に作る。既にあるものは作り直さない。
 setup; acquire
-jq -nc '[{name:"dispatch/in-progress"}]' > "$GH_STUB_DIR/label_list"
+jq -nc '[{name:"In progress"}]' > "$GH_STUB_DIR/label_list"
 : > "$GH_STUB_DIR/label_create"
 run ensure-labels >/dev/null 2>&1; rc=$?
 created=$(grep -c 'label create' "$GH_STUB_DIR/calls.log")
-[[ "$rc" -eq 0 && "$created" -eq 2 ]] \
-  && grep -q 'orca-team-dispatch-task' "$GH_STUB_DIR/calls.log" \
+[[ "$rc" -eq 0 && "$created" -eq 7 ]] \
+  && ! grep -qF 'label create In\ progress' "$GH_STUB_DIR/calls.log" \
   && ok "IF9 足りないラベルだけ作る" || fail "IF9 (rc=$rc created=$created)"
 teardown
 
@@ -140,7 +140,7 @@ out=$(run fetch --issue 21 --limit 5 --batch 1 2>/dev/null); rc=$?
   && [[ "$(jq -r '.[0].number' <<<"$out")" == 21 ]] \
   && [[ "$(jq -r '.[0].slug' <<<"$out")" == issue-21-* ]] \
   && ! grep -q 'issue list' "$GH_STUB_DIR/calls.log" \
-  && grep -q -- '--add-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- '--add-label In\ progress' "$GH_STUB_DIR/calls.log" \
   && ok "IF11 単件は検索せずに claim する" || fail "IF11 (rc=$rc out=$out)"
 teardown
 
@@ -152,7 +152,7 @@ chmod 500 "$LD"
 run fetch --issue 22 --limit 1 --batch 1 >/dev/null 2>&1; rc=$?
 chmod 700 "$LD"
 [[ "$rc" -ne 0 ]] \
-  && grep -q -- '--remove-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- '--remove-label In\ progress' "$GH_STUB_DIR/calls.log" \
   && ok "IF12 単件でも claim の補償が働く" || fail "IF12 (rc=$rc)"
 teardown
 
@@ -163,7 +163,7 @@ jq -nc '{number:23,title:"already",body:"b",url:"u23",labels:[]}' > "$GH_STUB_DI
 : > "$GH_STUB_DIR/issue_edit"
 out=$(run fetch --issue 23 --limit 1 --batch 1 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == '[]' ]] \
-  && ! grep -q -- '--add-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && ! grep -qF -- '--add-label In\ progress' "$GH_STUB_DIR/calls.log" \
   && ok "IF13 state に載っている issue は claim し直さない" || fail "IF13 (rc=$rc out=$out)"
 teardown
 
@@ -189,5 +189,52 @@ setup; acquire; printf 'broken\n' > "$SF"
 out=$(run init --config-json '{}' --filter-json '{}' 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *'failed to update state'* && "$(cat "$SF")" == broken ]] \
   && ok "IF16 壊れた state を上書きしない" || fail "IF16 (rc=$rc out=$out)"
+teardown
+# IF17: ★ **大文字小文字だけ違うラベルを作り直さない。**GitHub のラベル名は大文字小文字を区別しないので、
+#       `ready` があるリポジトリで `Ready` を作ろうとすると失敗し、claim まで進めなくなる。
+setup; acquire
+jq -nc '[{name:"ready"},{name:"done"}]' > "$GH_STUB_DIR/label_list"
+: > "$GH_STUB_DIR/label_create"
+run ensure-labels >/dev/null 2>&1; rc=$?
+created=$(grep -c 'label create' "$GH_STUB_DIR/calls.log")
+[[ "$rc" -eq 0 && "$created" -eq 6 ]] \
+  && ! grep -qE 'label create (Ready|Done) ' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- '--color' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- '--description' "$GH_STUB_DIR/calls.log" \
+  && ok "IF17 大文字小文字だけ違うラベルは作り直さず、色と説明を付けて作る" || fail "IF17 (rc=$rc created=$created)"
+teardown
+
+# IF18: ★ **検索はステータスラベル 7 つと古い dispatch の 3 つを除外する。**古いラベルを外すと、
+#       3.10 までに done / failed になった issue をもう一度拾う。Ready は人が「やる」と決めた印なので除外しない。
+setup; acquire; init
+jq -nc '[]' > "$GH_STUB_DIR/issue_list"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$GH_STUB_DIR/issue_list.args"\n' > "$GH_STUB_DIR/issue_list.hook"
+chmod +x "$GH_STUB_DIR/issue_list.hook"
+run fetch --limit 1 --batch 1 >/dev/null 2>&1
+search=$(grep -A1 -x -- '--search' "$GH_STUB_DIR/issue_list.args" | tail -1)
+[[ "$search" == *'-label:"In progress"'* && "$search" == *'-label:"Backlog"'* \
+   && "$search" == *'-label:"dispatch/done"'* && "$search" != *'-label:"Ready"'* ]] \
+  && ok "IF18 検索はステータスラベルと古い dispatch を除外し、Ready は除外しない" || fail "IF18 ($search)"
+teardown
+
+# IF19: ★ **Ready の付いた issue は claim で Ready を外し、claim を戻すときは Ready も戻す。**
+#       1 つの issue にステータスラベルは 1 つ。戻さないと、人が「やる」と決めた印が消えたままになる。
+setup; acquire; init
+jq -nc '[{number:31,title:"ready one",body:"b",url:"u31",labels:[{name:"Ready"}]}]' > "$GH_STUB_DIR/issue_list"
+: > "$GH_STUB_DIR/issue_edit"
+chmod 500 "$LD"
+run fetch --limit 1 --batch 1 >/dev/null 2>&1
+chmod 700 "$LD"
+undo_ok=0
+grep -qF -- 'issue edit 31 --add-label In\ progress --remove-label Ready' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- 'issue edit 31 --remove-label In\ progress --add-label Ready' "$GH_STUB_DIR/calls.log" && undo_ok=1
+: > "$GH_STUB_DIR/calls.log"
+out=$(run fetch --limit 1 --batch 1 2>/dev/null)
+recorded=$(jq -r '.issues["31"].ready' "$SF")
+: > "$GH_STUB_DIR/calls.log"
+run release --issue 31 >/dev/null 2>&1
+[[ "$undo_ok" -eq 1 && "$recorded" == true ]] \
+  && grep -qF -- 'issue edit 31 --remove-label In\ progress --add-label Ready' "$GH_STUB_DIR/calls.log" \
+  && ok "IF19 claim で Ready を外し、取り消しと release で戻す" || fail "IF19 (undo=$undo_ok ready=$recorded $out)"
 teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

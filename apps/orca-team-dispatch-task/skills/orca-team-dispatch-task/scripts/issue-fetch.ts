@@ -4,6 +4,7 @@
 //   worktree_path の実在確認、Orca 用ラベルの説明、単件指定の fetch、TypeScript 移植。
 import { readJson, writeAtomic } from '../../../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../../../lib/json.ts'
+import { ISSUE_EXCLUDED_LABELS, STATUS, STATUS_LABELS, searchExclusion } from '../../../lib/status.ts'
 import { nowIso, nowSeconds, run, which } from '../../../lib/sys.ts'
 
 import { existsSync, mkdirSync, renameSync, rmdirSync, rmSync, statSync } from 'node:fs'
@@ -12,7 +13,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 
 // 移植元の理由（skills/orca-team-dispatch-task/scripts/issue-fetch.sh）:
 // ★ **移植元: `apps/cmux-team-dispatch-task/skills/cmux-team-dispatch-task/scripts/issue-fetch.sh`**
-//   上流から変えたのは次の 6 点である。元のロック・claim・fetch の失敗処理は保っている
+//   上流から変えたのは次の 7 点である。元のロック・claim・fetch の失敗処理は保っている
 //   （lock の in-flight grace / takeover mutex / claim の補償 / fetch の窓拡張と
 //   exhaustion 判定は、失敗様式ごと持ち込む価値があるのでそのまま）。
 //
@@ -24,6 +25,9 @@ import { dirname, isAbsolute, join } from 'node:path'
 //     5. `fetch --issue <N>` を足した（単件指定。検索を通さず、claim と補償は共通経路へ
 //        合流させる）。`--issue` の flag 自体は上流にもある（mark-dispatched などが使う）
 //     6. TypeScript へ移した（2026-09 の P2）
+//     7. `dispatch/*` のラベルを slack-issue-intake と共通のステータスラベル（lib/status.ts）にした（3.11）。
+//        claim は `In progress` を付け、Ready があれば同じ呼び出しで外して state の `ready` に記録する。
+//        claim を戻す経路（補償・reconcile・release）は `ready` なら Ready を付け直す。検索は古い 3 つも除外する
 //
 //   **上流が動いたらこの一覧との差分を人が見て判断する。**自動追従はしない。
 // ★ **単件指定 (`--issue <N>`) は検索を通さない。**ラベルや assignee で絞る意味が
@@ -38,6 +42,17 @@ import { dirname, isAbsolute, join } from 'node:path'
 //   `worktree_path` が実在するかを見る。**列挙できないことを「不在」と読まない** —
 //   workers.json が読めなければ上の行が既に痕跡として立っている。
 const MAX_WINDOW = 1000
+// claim を戻す gh の引数。claim で Ready を外していれば付け直す（1 つの issue にステータスラベルは 1 つ）
+const unclaimArgs = (number: string, ready: boolean): string[] => [
+  'issue',
+  'edit',
+  number,
+  '--remove-label',
+  STATUS.inProgress,
+  ...(ready ? ['--add-label', STATUS.ready] : []),
+]
+const hasReady = (issue: Json): boolean =>
+  array(get(issue, 'labels')).some((l) => string(get(l, 'name')).toLowerCase() === STATUS.ready.toLowerCase())
 const LOCK_INFLIGHT_GRACE_SEC = 60
 const TAKEOVER_MUTEX_GRACE_SEC = 120
 let ownerGeneration = ''
@@ -314,7 +329,7 @@ const fetchIssues = (paths: Paths, options: Options): number => {
     }
     limit = 1
   } else {
-    let search = '-label:dispatch/in-progress -label:dispatch/done -label:dispatch/failed'
+    let search = searchExclusion(ISSUE_EXCLUDED_LABELS)
     const assigneeFlags: string[] = []
     if (options.assignee === 'none') search += ' no:assignee'
     else if (options.assignee !== '') assigneeFlags.push('--assignee', options.assignee)
@@ -365,7 +380,10 @@ const fetchIssues = (paths: Paths, options: Options): number => {
     if (tasks.length >= limit) break
     const number = issueNumber(get(candidate, 'number'))
     const title = string(get(candidate, 'title'))
-    if (gh('issue', 'edit', number, '--add-label', 'dispatch/in-progress').rc !== 0) {
+    const ready = hasReady(candidate)
+    const claim = ['issue', 'edit', number, '--add-label', STATUS.inProgress]
+    if (ready) claim.push('--remove-label', STATUS.ready)
+    if (gh(...claim).rc !== 0) {
       note('warn', `issue #${number} の claim に失敗したため除外します`)
       continue
     }
@@ -373,12 +391,12 @@ const fetchIssues = (paths: Paths, options: Options): number => {
     const recorded = stateWriteSoft(paths, (state) => {
       state.issues = {
         ...stateIssues(state),
-        [number]: { slug, status: 'claimed', batch: options.batch, claimed_at: nowIso() },
+        [number]: { slug, status: 'claimed', batch: options.batch, claimed_at: nowIso(), ready },
       }
       return true
     })
     if (!recorded) {
-      if (gh('issue', 'edit', number, '--remove-label', 'dispatch/in-progress').rc !== 0) {
+      if (gh(...unclaimArgs(number, ready)).rc !== 0) {
         fatal(`issue #${number}: state 記録と claim 補償の両方に失敗しました`)
       }
       note('warn', `issue #${number} の state 記録に失敗したため claim を取り消しました`)
@@ -438,7 +456,7 @@ const reconcile = (paths: Paths): number => {
     if (evidence.length > 0) {
       action = 'abort'
       reasons.push(`issue #${number} (${slug}) は生存の痕跡があります (${evidence.join(', ')})`)
-    } else if (which('gh') === null || gh('issue', 'edit', number, '--remove-label', 'dispatch/in-progress').rc !== 0) {
+    } else if (which('gh') === null || gh(...unclaimArgs(number, get(issue, 'ready') === true)).rc !== 0) {
       action = 'abort'
       reasons.push(`issue #${number} (${slug}) のラベル除去に失敗しました`)
     } else {
@@ -558,11 +576,12 @@ const main = (argv: string[]): number => {
         return true
       })
       return 0
-    case 'release':
+    case 'release': {
       requireOwner(paths)
       if (options.issue === '') fatal('--issue is required')
       if (which('gh') === null) fatal('gh is not installed; state is preserved')
-      if (gh('issue', 'edit', options.issue, '--remove-label', 'dispatch/in-progress').rc !== 0) {
+      const recorded = get(stateIssues(readJson(paths.stateFile)), options.issue)
+      if (gh(...unclaimArgs(options.issue, get(recorded, 'ready') === true)).rc !== 0) {
         fatal(`issue #${options.issue} のラベル除去に失敗したため state は保持します`)
       }
       stateWrite(paths, (state) => {
@@ -572,6 +591,7 @@ const main = (argv: string[]): number => {
         return true
       })
       return 0
+    }
     case 'reconcile':
       return reconcile(paths)
     case 'ensure-labels': {
@@ -579,11 +599,12 @@ const main = (argv: string[]): number => {
       if (which('gh') === null) fatal('gh is not installed')
       const listed = gh('label', 'list', '--limit', '200', '--json', 'name')
       if (listed.rc !== 0) fatal('gh label list failed')
-      const existing = array(parseJson(listed.stdout))
-      for (const label of ['dispatch/in-progress', 'dispatch/done', 'dispatch/failed']) {
-        if (!existing.some((entry) => get(entry, 'name') === label)) {
-          if (gh('label', 'create', label, '--description', 'orca-team-dispatch-task issue mode').rc !== 0)
-            fatal(`ラベル '${label}' の作成に失敗しました`)
+      // GitHub のラベル名は大文字小文字を区別しない。`ready` があるリポジトリで `Ready` は作れない
+      const existing = new Set(array(parseJson(listed.stdout)).map((entry) => string(get(entry, 'name')).toLowerCase()))
+      for (const label of STATUS_LABELS) {
+        if (!existing.has(label.name.toLowerCase())) {
+          if (gh('label', 'create', label.name, '--color', label.color, '--description', label.description).rc !== 0)
+            fatal(`ラベル '${label.name}' の作成に失敗しました`)
         }
       }
       return 0

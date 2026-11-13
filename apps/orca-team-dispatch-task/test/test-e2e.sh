@@ -239,7 +239,7 @@ IBIN="$ORCA_STUB_DIR/ibin"; mkdir -p "$IBIN"
 chmod +x "$IBIN/gh"; export GH_STUB_DIR; E2E_OLD_PATH="$PATH"; PATH="$IBIN:$PATH"; export PATH
 export LOOP_SESSION_ID=e2e-issue DISPATCH_DIR="$R/.dispatch" LOOP_REPO_ROOT="$R"
 : > "$GH_STUB_DIR/issue_edit"; : > "$GH_STUB_DIR/issue_close"
-jq -nc '[{name:"dispatch/in-progress"}]' > "$GH_STUB_DIR/label_list"
+jq -nc '[{name:"In progress"}]' > "$GH_STUB_DIR/label_list"
 jq -nc '[{number:42,title:"Fix the thing",body:"please",url:"u42",labels:[]}]' > "$GH_STUB_DIR/issue_list"
 
 IFS_SH="$P/skills/orca-team-dispatch-task/scripts/issue-fetch.ts"
@@ -250,7 +250,7 @@ node "$IFS_SH" --state-file "$ISTATE" ensure-labels >/dev/null 2>&1
 CLAIM=$(node "$IFS_SH" --state-file "$ISTATE" fetch --limit 1 --batch 1 2>/dev/null)
 ISLUG=$(jq -r '.[0].slug' <<<"$CLAIM")
 [[ "$(jq -r '.[0].number' <<<"$CLAIM")" == 42 && "$ISLUG" == issue-42-* ]] \
-  && grep -q -- '--add-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- '--add-label In\ progress' "$GH_STUB_DIR/calls.log" \
   && ok "E22 issue を claim して slug を割り当てる" || fail "E22 ($CLAIM)"
 
 # claim した slug の worktree を用意し、成果を commit しておく

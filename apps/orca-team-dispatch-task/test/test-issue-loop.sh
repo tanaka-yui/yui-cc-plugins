@@ -76,7 +76,7 @@ slug=$(sed -n 's/^slug=//p' <<<"$out"); req=$(sed -n 's/^request_file=//p' <<<"$
 [[ "$rc" -eq 0 && "$slug" == issue-12-fix-it-now && -f "$req" && "$(cat "$req")" == $'Fix it now\n\nthe body' \
    && "$(jq -r '.issues["12"].status' "$SF")" == claimed \
    && "$(jq -c '[.config, .filter]' "$SF")" == '[{"concurrency":1},{"issue":"named"}]' ]] \
-  && grep -q -- 'issue edit 12 --add-label dispatch/in-progress' "$GH_STUB_DIR/calls.log" \
+  && grep -qF -- 'issue edit 12 --add-label In\ progress' "$GH_STUB_DIR/calls.log" \
   && ok "IL6 claim は依頼ファイルと slug を返す" || fail "IL6 (rc=$rc out=$out)"
 [[ -n "$req" ]] && rm -rf "$(dirname "$req")"; teardown
 
