@@ -3,7 +3,7 @@ import { renderComment } from './auto-comment.ts'
 import { type AutoConfig, pickSources, readAutoConfig } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, prStatus, readGithub, viewIssue } from './auto-github.ts'
-import { hostsOf, LOCAL_HOST } from './auto-hosts.ts'
+import { envArgs, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
 import {
   AUTO_FILES,
   AUTO_JUDGE_LEASE_MS,
@@ -27,7 +27,7 @@ import { hasCommentMarker, resumeTransition, transition } from './auto-transitio
 import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asObject, asString, get, type Json, type JsonObject } from './json.ts'
-import { receiptArray } from './orca.ts'
+import { receiptArray, receiptOk } from './orca.ts'
 import { fetchBranch } from './remote-branch.ts'
 import { STATUS } from './status.ts'
 import { envCount, runNode as runProcessNode } from './sys.ts'
@@ -35,6 +35,8 @@ import { envCount, runNode as runProcessNode } from './sys.ts'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statfsSync } from 'node:fs'
 import { freemem, hostname } from 'node:os'
 import { join, resolve } from 'node:path'
+
+import type { HostConfig } from './auto-hosts.ts'
 
 export const AUTO_START_RESERVE_MS = 60_000
 export const AUTO_START_MAX_FAILURES = 3
@@ -53,6 +55,7 @@ type Tick = {
   finished: number
   startUsed: boolean
   deferred: Set<string>
+  reachable: Map<string, boolean>
 }
 const error = (tick: Tick, message: string): void => {
   tick.errors++
@@ -229,36 +232,57 @@ const recover = (tick: Tick, issue: IssueState): void => {
     started(tick, issue, workers)
   }
 }
-const capacity = (tick: Tick, log = true): { used: number; readable: boolean } => {
+const reachable = (tick: Tick, host: string): boolean => {
+  if (host === LOCAL_HOST) return true
+  const cached = tick.reachable.get(host)
+  if (cached !== undefined) return cached
+  const response = runOrca(['status', ...envArgs(host), '--json'])
+  const result = receiptOk(response) && get(response.json, 'result', 'runtime', 'reachable') === true
+  tick.reachable.set(host, result)
+  return result
+}
+const capacityOf = (
+  tick: Tick,
+  host: HostConfig,
+  log = true,
+): { used: number; readable: boolean; reachable: boolean } => {
   const active = Object.values(tick.state.issues).filter((i) => ACTIVE.includes(i.phase))
-  const reserved = active.reduce((n, i) => n + i.worktrees, 0)
+  const reserved = active.filter((i) => (i.host ?? LOCAL_HOST) === host.id).reduce((n, i) => n + i.worktrees, 0)
+  if (!reachable(tick, host.id)) return { used: reserved, readable: false, reachable: false }
   const owned = new Set(
     active.flatMap((i) =>
-      Object.values(asObject(workersOf(i)?.roles) ?? {})
-        .map((r) => asString(asObject(r)?.worktree_path))
-        .filter(Boolean),
+      Object.values(asObject(workersOf(i)?.roles) ?? {}).flatMap((r) => {
+        const path = asString(get(r, 'worktree_path'))
+        return path ? [hostKey(asString(get(r, 'environment')) ?? LOCAL_HOST, path)] : []
+      }),
     ),
   )
-  const response = runOrca(['worktree', 'list', '--limit', String(AUTO_WORKTREE_LIST_LIMIT), '--json'])
+  const response = runOrca([
+    'worktree',
+    'list',
+    ...envArgs(host.id),
+    '--limit',
+    String(AUTO_WORKTREE_LIST_LIMIT),
+    '--json',
+  ])
   const list = receiptArray(response, 'worktrees')
   if (!list || get(response.json, 'result', 'truncated') === true) {
     error(tick, 'worktree の一覧を読めないため補充しません')
-    return { used: reserved, readable: false }
+    return { used: reserved, readable: false, reachable: true }
   }
   const orphans = list.filter(
-    (w) => asString(get(w, 'displayName'))?.startsWith('auto-') && !owned.has(asString(get(w, 'path'))),
+    (w) =>
+      asString(get(w, 'displayName'))?.startsWith('auto-') &&
+      !owned.has(hostKey(host.id, asString(get(w, 'path')) ?? '')),
   )
   for (const w of orphans)
     if (log) console.log(`持ち主のいない worktree: ${asString(get(w, 'displayName'))} ${asString(get(w, 'path'))}`)
-  return { used: reserved + orphans.length, readable: true }
+  return { used: reserved + orphans.length, readable: true, reachable: true }
 }
 const refill = (tick: Tick): void => {
   if (!canAutoCall('補充')) return
-  const available = capacity(tick)
-  if (!available.readable) return
-  let used = available.used
-  const host = hostsOf(tick.config)[0]
-  if (!host) return
+  const capacities = hostsOf(tick.config).map((host) => ({ host, ...capacityOf(tick, host) }))
+  if (!capacities.some((c) => c.readable && c.reachable)) return
   const required = roleNames(tick.config.roles.review_mode, tick.config.roles.phase_b).length
   const sources = new Set(pickSources(tick.config))
   for (const issue of orderQueue(
@@ -274,13 +298,21 @@ const refill = (tick: Tick): void => {
     ),
   )) {
     if (tick.startUsed || !canAutoCall('補充の起動', AUTO_START_RESERVE_MS)) break
-    if (used + required > tick.config.lanes) {
-      console.log(`レーンが足りません: lanes=${tick.config.lanes} 使用中=${used} 1 件の worktree=${required}`)
+    const target = issue.targets[0] ?? ''
+    const repo = tick.config.repos[target]
+    if (!repo) continue
+    let candidates = capacities.filter(
+      (c) => c.reachable && c.readable && c.host.repos[target] && c.used + required <= c.host.lanes,
+    )
+    if (!candidates.length) {
+      if (capacities.some((c) => c.reachable && c.readable && c.used + required <= c.host.lanes)) {
+        console.log(`この Issue を入れられるマシンがありません: ${issue.key}`)
+        continue
+      }
+      for (const c of capacities.filter((c) => c.reachable && c.readable))
+        console.log(`レーンが足りません: lanes=${c.host.lanes} 使用中=${c.used} 1 件の worktree=${required}`)
       break
     }
-    const repo = tick.config.repos[issue.targets[0] ?? '']
-    const hostRepo = host.repos[issue.targets[0] ?? '']
-    if (!repo || !hostRepo) continue
     let freeDisk = 0
     try {
       const stats = statfsSync(repo.checkout)
@@ -290,12 +322,26 @@ const refill = (tick: Tick): void => {
       continue
     }
     if (
-      Number(process.env.ORCA_AUTO_FREE_MEMORY_MB ?? freemem() / 1024 / 1024) < tick.config.minFreeMemoryMb ||
-      Number(process.env.ORCA_AUTO_FREE_DISK_MB ?? freeDisk) < tick.config.minFreeDiskMb
+      candidates.some((c) => c.host.id === LOCAL_HOST) &&
+      (Number(process.env.ORCA_AUTO_FREE_MEMORY_MB ?? freemem() / 1024 / 1024) < tick.config.minFreeMemoryMb ||
+        Number(process.env.ORCA_AUTO_FREE_DISK_MB ?? freeDisk) < tick.config.minFreeDiskMb)
     ) {
       console.log('空きメモリまたはディスクが足りません')
-      break
+      candidates = candidates.filter((c) => c.host.id !== LOCAL_HOST)
     }
+    const verified = candidates.filter((c) => c.host.repos[target]?.verified === true)
+    if (verified.length) candidates = verified
+    const chosen = candidates.sort(
+      (a, b) =>
+        (b.host.lanes - b.used) / b.host.lanes - (a.host.lanes - a.used) / a.host.lanes ||
+        Number(b.host.id === LOCAL_HOST) - Number(a.host.id === LOCAL_HOST),
+    )[0]
+    if (!chosen) continue
+    const host = chosen.host
+    const hostRepo = host.repos[target]
+    if (!hostRepo) continue
+    if (!hostRepo.verified && !issue.reason.includes('確認が通っていないマシンで実装'))
+      issue.reason += '（確認が通っていないマシンで実装）'
     const status = run('git', ['-C', repo.checkout, 'status', '--porcelain'])
     if (status.rc !== 0 || status.stdout.trim()) {
       console.log(`未コミットの変更があるため補充しません: ${repo.checkout}`)
@@ -307,7 +353,6 @@ const refill = (tick: Tick): void => {
       console.log(`status dir が残っています: ${statusDir}`)
       continue
     }
-    const target = issue.targets[0] ?? ''
     const defaultBranch = asString(
       get(readGithub(['repo', 'view', '--json', 'defaultBranchRef', target]), 'defaultBranchRef', 'name'),
     )
@@ -374,7 +419,7 @@ const refill = (tick: Tick): void => {
       h,
       true,
     )
-    used += required
+    chosen.used += required
   }
 }
 const stopRoles = (tick: Tick, issue: IssueState): void => {
@@ -688,7 +733,8 @@ const finish = (tick: Tick, issue: IssueState): void => {
   if (result?.envFailure) reasons.push(`環境が原因: ${result.envFailure}`)
   if (issue.decisions.length) reasons.push('AI が判断した点があります。')
   if (status.checks === 'fail') reasons.push('CI が失敗しました。')
-  if (!options.verified) reasons.push('確認できないリポジトリです。')
+  if (hostsOf(tick.config).find((h) => h.id === (issue.host ?? LOCAL_HOST))?.repos[repo]?.verified !== true)
+    reasons.push('確認できないリポジトリです。')
   if (options.infra) reasons.push('インフラの変更は確認が必要です。')
   if (status.state === 'CLOSED') reasons.push('PR が閉じられています。')
   if (reasons.length) {
@@ -778,6 +824,7 @@ export const runTick = (name: string): number => {
       finished: 0,
       startUsed: false,
       deferred: new Set(),
+      reachable: new Map(),
     }
     const blocked = new Set(
       Object.values(state.issues)
@@ -838,7 +885,7 @@ export const runTick = (name: string): number => {
     for (const issue of Object.values(state.issues))
       if (issue.phase === 'dispatching' && !blocked.has(issue.key)) recover(tick, issue)
     refill(tick)
-    const used = capacity(tick, false).used
+    const used = hostsOf(config).reduce((sum, host) => sum + capacityOf(tick, host, false).used, 0)
     if (
       !writeAtomic(join(autoDir(name), AUTO_FILES.report), JSON.stringify(buildReport(config, state, used, autoNow())))
     )

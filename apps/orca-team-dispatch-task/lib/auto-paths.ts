@@ -87,13 +87,15 @@ export const autoRun = (command: string, args: string[], cwd?: string): ProcResu
   return result
 }
 export const autoOrca = (args: string[], env?: Record<string, string>): OrcaResult => {
-  const reading = [
-    'terminal show',
-    'orchestration run-current',
-    'orchestration worker-list',
-    'orchestration worker-show',
-    'worktree list',
-  ].includes(args.slice(0, 2).join(' '))
+  const reading =
+    args[0] === 'status' ||
+    [
+      'terminal show',
+      'orchestration run-current',
+      'orchestration worker-list',
+      'orchestration worker-show',
+      'worktree list',
+    ].includes(args.slice(0, 2).join(' '))
   const stage = `Orca ${args.slice(0, 2).join(' ')}`
   if (!(reading ? readAllowed(stage) : canAutoCall(stage)))
     return { rc: 1, json: null, stdout: '', stderr: 'timed out' }
