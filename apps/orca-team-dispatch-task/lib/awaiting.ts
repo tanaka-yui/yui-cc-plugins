@@ -32,7 +32,7 @@ export const workerLastChange = (statusDir: string): number => {
   const rolesDir = join(statusDir, 'roles')
   try {
     for (const role of readdirSync(rolesDir)) {
-      for (const name of ['status.json', 'result.md', 'completion.json', 'awaiting-user.json'])
+      for (const name of ['status.json', 'result.md', 'completion.json', 'awaiting-user.json', 'heartbeat.json'])
         newer(join(rolesDir, role, name))
     }
   } catch {
@@ -46,6 +46,7 @@ export const workerLastChange = (statusDir: string): number => {
   }
   const workers = readJson(join(statusDir, 'workers.json'))
   for (const role of Object.values(asObject(get(workers, 'roles')) ?? {})) {
+    if (asString(get(role, 'environment'))) continue
     const worktree = asString(get(role, 'worktree_path')) ?? ''
     if (worktree === '' || !existsSync(worktree)) continue
     const last = run('git', ['-C', worktree, 'log', '-1', '--format=%ct'])

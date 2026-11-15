@@ -31,6 +31,14 @@ export type AutoResult = {
   envFailure: string | null
 }
 const strings = (value: Json | undefined): boolean => Array.isArray(value) && value.every((v) => typeof v === 'string')
+export type PlanResult = { decisions: string[]; review: { unresolved: string[]; declined: string[] } }
+export const readPlanResult = (path: string): PlanResult | null => {
+  const result = asObject(readJson(path))
+  const review = asObject(result?.review)
+  return result && strings(result.decisions) && review && strings(review.unresolved) && strings(review.declined)
+    ? (result as PlanResult)
+    : null
+}
 export const readAutoResult = (path: string): AutoResult | null => {
   const result = asObject(readJson(path))
   const verify = asObject(result?.verify)

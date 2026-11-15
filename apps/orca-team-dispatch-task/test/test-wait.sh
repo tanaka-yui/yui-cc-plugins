@@ -1668,4 +1668,99 @@ out=$(w 1 2>&1); rc=$?
    && "$(jq -r '.deliveryId' "$SD/foreign-batch-run_other.json" 2>/dev/null)" == d_other && "$out" != *'does not know'* ]] \
   && ok "WT155 別の Run の batch を混ぜず、別名で残す" || fail "WT155 (rc=$rc out=$out)"; teardown
 
+# WT157-168: mail envelopes, idempotent acceptance, heartbeat and remote completion.
+mail_setup() {
+ setup
+ MR=$(mktemp -d); MO=$(mktemp -d)
+ git -C "$MO" init -q --bare
+ git -C "$MR" init -q -b main
+ echo seed > "$MR/file"; git -C "$MR" add file
+ git -C "$MR" -c user.email=t@e -c user.name=t commit -qm seed
+ git -C "$MR" remote add origin "$MO"; git -C "$MR" push -q origin main
+ MH=$(git -C "$MR" rev-parse HEAD); MN=0123456789abcdef
+ jq --arg r "$MR" '.repo_root=$r' "$SD/run.json" > "$SD/r"; mv "$SD/r" "$SD/run.json"
+ jq '.transport="mail" | .integration_role="design" | .roles.design.branch="main"' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+ echo '{"ok":true,"result":{"message":{"id":"msg_r"}}}' > "$ORCA_STUB_DIR/orchestration_send"
+ ENVELOPE=$(jq -nc --arg n "$MN" --arg h "$MH" '{version:1,nonce:$n,branch:"main",head:$h,files:{"result.md":"mail result"}}')
+}
+mail_teardown() { rm -rf "$MR" "$MO"; teardown; }
+mail_message() {
+ jq -nc --arg b "${2:-$ENVELOPE}" --arg t "${1:-merge_ready}" --arg n "$MN" --arg o "${3:-succeeded}" \
+ '{ok:true,result:{runId:"run_x",deliveryId:"mail_batch",messages:[{id:"mail_m",type:$t,subject:(if $t=="merge_ready" then "merge_ready: "+$n else "heartbeat: progress" end),body:$b,payload:{taskId:"task_x",dispatchId:"ctx_x",outcome:$o}}]}}' > "$ORCA_STUB_DIR/orchestration_check"
+}
+mail_setup; mail_message; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$(cat "$SD/roles/design/result.md" 2>/dev/null)" == 'mail result' && "$(jq -r .phase "$SD/roles/design/completion.json" 2>/dev/null)" == accepted ]] && grep -q 'completion-accepted:' "$ORCA_STUB_DIR/calls.log" && ok WT157 || fail "WT157 $rc $out"
+w 1 >/dev/null 2>&1
+[[ "$(grep -c 'orchestration send .*completion-accepted:' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] && ok WT161 || fail WT161
+mail_teardown
+for bad in json branch push; do
+ mail_setup
+ case "$bad" in json) ENVELOPE=broken ;; branch) ENVELOPE=$(jq '.branch="other"' <<<"$ENVELOPE") ;; push) ENVELOPE=$(jq '.head=("b"*40)' <<<"$ENVELOPE") ;; esac
+ mail_message; out=$(w 1 2>&1); rc=$?
+ [[ "$rc" -eq 3 ]] && grep -q 'completion-remediation:' "$ORCA_STUB_DIR/calls.log" && grep -q -- '--ack mail_batch' "$ORCA_STUB_DIR/calls.log" && ok "WT158-160 $bad" || fail "WT158-160 $bad $rc $out"
+ mail_teardown
+done
+mail_setup; mail_message; echo 1 > "$ORCA_STUB_DIR/orchestration_send.rc"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 4 && "$(jq -r .phase "$SD/roles/design/completion.json" 2>/dev/null)" == accepting ]] && ! grep -q -- '--ack mail_batch' "$ORCA_STUB_DIR/calls.log" && ok 'WT161b uncertain acceptance is held' || fail "WT161b first $rc $out"
+echo '{"ok":true,"result":{"messages":[{"id":"msg_r","subject":"completion-accepted: 0123456789abcdef"}]}}' > "$ORCA_STUB_DIR/orchestration_inbox"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$(jq -r .phase "$SD/roles/design/completion.json")" == accepted && "$(grep -c 'orchestration send' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] && ok WT161b || fail "WT161b replay $rc $out"
+mail_teardown
+for inbox in absent unreadable; do
+ mail_setup; mail_message
+ printf '{"nonce":"%s","phase":"accepting","head":"%s"}' "$MN" "$MH" > "$SD/roles/design/completion.json"
+ echo '{"ok":true,"result":{"messages":[]}}' > "$ORCA_STUB_DIR/orchestration_inbox"
+ [[ "$inbox" == unreadable ]] && echo 1 > "$ORCA_STUB_DIR/orchestration_inbox.rc"
+ out=$(w 1 2>&1); rc=$?
+ if [[ "$inbox" == absent ]]; then
+  [[ "$rc" -eq 3 && "$(jq -r .phase "$SD/roles/design/completion.json")" == accepted && "$(grep -c 'orchestration send' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] && ok WT161c || fail "WT161c $rc $out"
+ else
+  [[ "$rc" -eq 4 && "$(jq -r .phase "$SD/roles/design/completion.json")" == accepting ]] && ! grep -q 'orchestration send' "$ORCA_STUB_DIR/calls.log" && ok WT161d || fail "WT161d $rc $out"
+ fi
+ mail_teardown
+done
+mail_setup; mail_message
+mkdir "$SD/roles/design/completion.json"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 4 ]] && ! grep -qE 'orchestration send|--ack mail_batch' "$ORCA_STUB_DIR/calls.log" && ok 'WT161 write failure' || fail "WT161 write failure $rc $out"
+mail_teardown
+mail_setup; mail_message status '-'; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && -f "$SD/roles/design/heartbeat.json" && "$out" == *'design heartbeat: progress'* ]] && ok WT162 || fail "WT162 $rc $out"; mail_teardown
+for env in env-1 local; do
+ mail_setup
+ git -C "$MR" fetch -q origin main:remote-result
+ git -C "$MR" push -q origin remote-result
+ git -C "$MR" branch -D remote-result >/dev/null
+ jq --arg e "$env" '.roles.design.branch="remote-result" | .roles.design.environment=(if $e=="local" then null else $e end)' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+ mail_message worker_done; out=$(w 1 2>&1); rc=$?
+ [[ "$rc" -eq 0 && "$(jq -r .status "$SD/roles/design/status.json")" == done ]] && ok "WT163 $env status" || fail "WT163 $env status $rc $out"
+ git -C "$MR" show-ref --verify --quiet refs/heads/remote-result; brc=$?
+ [[ "$env" == env-1 && "$brc" -eq 0 || "$env" == local && "$brc" -ne 0 ]] && ok "WT163 $env fetch" || fail "WT163 $env fetch"
+ mail_teardown
+done
+mail_setup
+jq --arg p "$MR" '.roles.design.environment="env-1" | .roles.design.worktree_path=$p' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+node --input-type=module -e "import { utimesSync } from 'node:fs'; for(const p of ['run.json','workers.json','roles/design/status.json'])utimesSync('$SD/'+p,1,1)"
+last=$(node --input-type=module -e "import { workerLastChange } from '$P/lib/awaiting.ts'; console.log(workerLastChange('$SD'))")
+[[ "$last" -eq 1 ]] && ok WT164 || fail "WT164 $last"
+mail_teardown
+for body in valid broken; do
+ mail_setup; [[ "$body" == broken ]] && ENVELOPE=broken
+ mail_message worker_done "$ENVELOPE" failed; out=$(w 1 2>&1); rc=$?
+ [[ "$rc" -eq 5 && "$(jq -r .status "$SD/roles/design/status.json")" == error ]] && ok "WT167 $body status" || fail "WT167 $body $rc $out"
+ [[ "$body" == valid && -f "$SD/roles/design/result.md" || "$body" == broken && ! -f "$SD/roles/design/result.md" ]] && ok "WT167 $body artifacts" || fail "WT167 $body artifacts"
+ mail_teardown
+done
+for result in missing invalid valid; do
+ mail_setup; jq '.integration_role="exec"' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+ ENVELOPE=$(jq '.files["plan.md"]="full plan"' <<<"$ENVELOPE")
+ [[ "$result" == invalid ]] && ENVELOPE=$(jq '.files["plan-result.json"]="{}"' <<<"$ENVELOPE")
+ [[ "$result" == valid ]] && ENVELOPE=$(jq '.files["plan-result.json"]="{\"decisions\":[],\"review\":{\"unresolved\":[],\"declined\":[]}}"' <<<"$ENVELOPE")
+ mail_message; out=$(w 1 2>&1); rc=$?
+ if [[ "$result" == valid ]]; then grep -q 'completion-accepted:' "$ORCA_STUB_DIR/calls.log" && [[ -f "$SD/plan-result.json" ]] && ok "WT168 $result" || fail "WT168 $result $rc $out"
+ else [[ "$out" == *'plan-result.json is missing or invalid'* ]] && grep -q 'completion-remediation:' "$ORCA_STUB_DIR/calls.log" && ok "WT168 $result" || fail "WT168 $result $rc $out"; fi
+ mail_teardown
+done
+
 echo "---"; echo "failures: $fails"; exit "$fails"

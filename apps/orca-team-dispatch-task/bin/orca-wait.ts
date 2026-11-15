@@ -6,12 +6,15 @@
 // --timeout-ms は 1 回の check --wait の窓の長さ。待機全体の上限は --max-waits × --timeout-ms
 //   （既定 288 × 5 分 = 24 時間）で、窓が明けても何も無ければ黙って次の窓を待つ
 // ★ cursor は ack だけで進む。batch を全件処理できなければ ack しない。
+import { readPlanResult } from '../lib/auto-request.ts'
 import { awaitingSince, fileMtime, workerLastChange } from '../lib/awaiting.ts'
 import { die, log } from '../lib/cli.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
+import { materialize, parseEnvelope } from '../lib/mail-artifacts.ts'
 import { orcaBin, receiptOk, runOrca, workerState, workerStateClass, workerTerminal } from '../lib/orca.ts'
+import { fetchBranch, remoteHead } from '../lib/remote-branch.ts'
 import { envCount, nowSeconds, runNode, sleepSeconds } from '../lib/sys.ts'
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -448,6 +451,11 @@ const verifyRole = (statusDir: string, role: string): string => {
     const integrationRole = integrationRoleOf(statusDir)
     if (integrationRole !== 'design') {
       if (!nonempty(join(statusDir, 'plan.md'))) return 'plan.md is missing or empty'
+      if (
+        get(read(statusDir, 'workers.json'), 'transport') === 'mail' &&
+        !readPlanResult(join(statusDir, 'plan-result.json'))
+      )
+        return 'plan-result.json is missing or invalid'
     } else if (!nonempty(join(roleDir, 'result.md'))) return 'result.md is missing or empty'
   } else if (role === 'design_review' || role === 'exec_review') {
     const prefix = role === 'exec_review' ? 'code' : 'plan'
@@ -475,25 +483,31 @@ const verifyRole = (statusDir: string, role: string): string => {
 // 移植元の理由（bin/orca-wait.sh）:
 // ★ **相 4a / 4b。**受理も差し戻しも **同じ active な Dispatch** へ返す。別の宛先へ送ると
 //   worker は待ち続ける。
-const replyCompletion = (state: State, dispatch: string, nonce: string, accepted: boolean, body: string): boolean => {
+const replyCompletion = (
+  state: State,
+  dispatch: string,
+  nonce: string,
+  accepted: boolean,
+  body: string,
+  mail = false,
+): boolean | string => {
   const subject = `${accepted ? 'completion-accepted' : 'completion-remediation'}: ${nonce}`
-  return (
-    runOrca([
-      'orchestration',
-      'send',
-      '--to',
-      `dispatch:${dispatch}`,
-      '--type',
-      'status',
-      '--subject',
-      subject,
-      '--body',
-      body,
-      '--from',
-      state.expected.parent,
-      '--json',
-    ]).rc === 0
-  )
+  const sent = runOrca([
+    'orchestration',
+    'send',
+    '--to',
+    `dispatch:${dispatch}`,
+    '--type',
+    'status',
+    '--subject',
+    subject,
+    '--body',
+    body,
+    '--from',
+    state.expected.parent,
+    '--json',
+  ])
+  return mail ? (receiptOk(sent) ? string(get(sent.json, 'result', 'message', 'id')) : '') : sent.rc === 0
 }
 // ★ 配送と起床は別の事実。起床の失敗で配送や batch の結末を覆さない。
 // 移植元の理由（bin/orca-wait.sh）:
@@ -695,6 +709,80 @@ const inspectBatch = (state: State): void => {
   log(NAME, `  cat ${join(state.statusDirs[0] ?? '', PENDING)}`)
   log(NAME, `  ${orcaBin()} orchestration inbox --terminal run:${state.expected.run} --limit 20 --full --json`)
 }
+const mailOffer = (state: State, entry: Entry, nonce: string, body: string): 0 | 2 => {
+  const workers = read(entry.statusDir, 'workers.json')
+  const branch = string(get(workers, 'roles', entry.role, 'branch'))
+  const integration = integrationRoleOf(entry.statusDir) === entry.role
+  const planOnly = entry.role === 'design' && !integration
+  const completionFile = `roles/${entry.role}/completion.json`
+  const completion = read(entry.statusDir, completionFile)
+  const accepting = string(get(completion, 'nonce')) === nonce && get(completion, 'phase') === 'accepting'
+  let head = string(get(completion, 'head'))
+  if (accepting) {
+    const inbox = runOrca([
+      'orchestration',
+      'inbox',
+      '--terminal',
+      `dispatch:${entry.dispatch}`,
+      '--limit',
+      '100',
+      '--json',
+    ])
+    const messages = receiptOk(inbox) ? array(get(inbox.json, 'result', 'messages')) : null
+    const found = messages?.find((m) => get(m, 'subject') === `completion-accepted: ${nonce}`)
+    if (found) {
+      return write(entry.statusDir, completionFile, {
+        nonce,
+        phase: 'accepted',
+        head,
+        message_id: string(get(found, 'id')),
+      })
+        ? 0
+        : 2
+    }
+    if (!messages || messages.length >= 100) return 2
+  } else {
+    const envelope = parseEnvelope(body)
+    let reason = ''
+    if ('error' in envelope) reason = envelope.error
+    else if (envelope.nonce !== nonce) reason = 'the envelope nonce does not match the subject'
+    else if (envelope.branch !== branch)
+      reason = `the envelope names branch ${envelope.branch}, but this role works on ${branch}`
+    else {
+      head = envelope.head
+      reason = materialize(entry.statusDir, entry.role, envelope, integration, planOnly)
+      if (
+        !reason &&
+        integration &&
+        remoteHead(string(get(read(entry.statusDir, 'run.json'), 'repo_root')), branch) !== head
+      )
+        reason = `${branch} is not pushed to origin at ${head}`
+      if (!reason) reason = verifyRole(entry.statusDir, entry.role)
+    }
+    if (reason) {
+      if (!write(entry.statusDir, completionFile, { nonce, phase: 'remediated' })) return 2
+      if (!replyCompletion(state, entry.dispatch, nonce, false, reason, true)) return 2
+      log(NAME, `sent ${entry.role} back for remediation (dispatch ${entry.dispatch}): ${reason}`)
+      wakeRole(entry.statusDir, entry.role)
+      return 0
+    }
+    if (!write(entry.statusDir, completionFile, { nonce, phase: 'accepting', head })) return 2
+  }
+  const id = replyCompletion(state, entry.dispatch, nonce, true, 'the work is accepted; finish and report', true)
+  if (typeof id !== 'string' || !id) {
+    log(
+      NAME,
+      `the acceptance for dispatch ${entry.dispatch} could not be confirmed; it is not sent again until the worker's inbox shows whether it arrived`,
+    )
+    return 2
+  }
+  write(entry.statusDir, completionFile, { nonce, phase: 'accepted', head, message_id: id })
+  log(NAME, `accepted ${entry.role} (dispatch ${entry.dispatch})`)
+  if (reviewState(entry.statusDir, entry.role) === 'unreviewed')
+    log(NAME, `WARNING: ${entry.role} produced no review verdict; its work is accepted UNREVIEWED`)
+  wakeRole(entry.statusDir, entry.role)
+  return 0
+}
 const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
   let result = pendingBatch(state)
   if (result !== null) {
@@ -762,6 +850,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
     }
   }
   const settled = new Map<number, string>()
+  const settledBodies = new Map<number, string>()
   for (const rawMessage of messages) {
     const message = object(rawMessage)
     const type = string(message.type)
@@ -780,6 +869,15 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
           (dispatchId !== '' && entry.dispatch === dispatchId) ||
           (from !== '' && string(get(read(entry.statusDir, 'workers.json'), 'roles', entry.role, 'terminal')) === from),
       )
+      if (
+        sender &&
+        string(message.subject).startsWith('heartbeat:') &&
+        get(read(sender.statusDir, 'workers.json'), 'transport') === 'mail'
+      ) {
+        write(sender.statusDir, `roles/${sender.role}/heartbeat.json`, { at: nowSeconds() })
+        log(NAME, `${sender.role} heartbeat: ${string(message.subject).slice('heartbeat:'.length).trim()}`)
+        continue
+      }
       const who =
         sender === undefined ? `terminal ${from || 'unknown'}` : `${sender.role} (dispatch ${sender.dispatch})`
       log(NAME, `${who} sent a status note (${string(message.id) || 'no id'}); the wait goes on:`)
@@ -909,6 +1007,11 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
         )
         continue
       }
+      if (get(read(entry.statusDir, 'workers.json'), 'transport') === 'mail') {
+        const offered = mailOffer(state, entry, nonce, string(message.body))
+        if (offered !== 0) return offered
+        continue
+      }
       const reason = verifyRole(entry.statusDir, entry.role)
       if (reason === '') {
         if (!replyCompletion(state, dispatch, nonce, true, 'the work is accepted; finish and report')) {
@@ -990,6 +1093,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       return 1
     }
     settled.set(index, outcome)
+    settledBodies.set(index, string(message.body))
   }
   for (const [index, outcome] of settled) {
     const entry = state.expected.entries[index]
@@ -1003,8 +1107,40 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       log(NAME, `not recording dispatch '${entry.dispatch}': it was replaced while this batch was read`)
       continue
     }
+    const mail = get(read(entry.statusDir, 'workers.json'), 'transport') === 'mail'
+    if (mail) {
+      if (outcome === 'failed') {
+        const envelope = parseEnvelope(settledBodies.get(index) ?? '')
+        if (!('error' in envelope)) {
+          const integration = integrationRoleOf(entry.statusDir) === entry.role
+          const reason = materialize(
+            entry.statusDir,
+            entry.role,
+            envelope,
+            integration,
+            entry.role === 'design' && !integration,
+          )
+          if (reason) log(NAME, reason)
+        }
+      }
+      if (
+        !write(entry.statusDir, `roles/${entry.role}/status.json`, {
+          status: outcome === 'succeeded' ? 'done' : 'error',
+        })
+      )
+        return 2
+    }
     const settledEntry = settleEntry(entry, outcome)
     if (settledEntry !== 0) return settledEntry
+    if (mail && outcome === 'succeeded' && integrationRoleOf(entry.statusDir) === entry.role) {
+      const role = get(read(entry.statusDir, 'workers.json'), 'roles', entry.role)
+      const branch = string(get(role, 'branch'))
+      if (
+        string(get(role, 'environment')) &&
+        !fetchBranch(string(get(read(entry.statusDir, 'run.json'), 'repo_root')), branch)
+      )
+        log(NAME, `could not fetch ${branch} from origin; finishing tries again`)
+    }
   }
   const ack = runOrca([
     'orchestration',
