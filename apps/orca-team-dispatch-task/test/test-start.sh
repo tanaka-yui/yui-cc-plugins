@@ -1557,4 +1557,55 @@ out=$(exec_phase --phase-b off 2>&1); rc=$?
 [[ "$rc" -eq 2 ]] && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" && ok ST129 || fail "ST129 (rc=$rc) $out"; teardown
 
 
+# ST130-137: mail workers create their worktree on the selected host.
+mail_fixture() {
+  echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_x","runId":"run_x","effects":[{"kind":"worktree","id":"remote_wt"},{"kind":"terminal","role":"agent","id":"term_w"}]}}' > "$ORCA_STUB_DIR/orchestration_worker-start"
+  printf '{"ok":true,"result":{"worktrees":[{"id":"remote_wt","path":"%s","branch":"refs/heads/orca/mail"}]}}\n' "$WT" > "$ORCA_STUB_DIR/worktree_list"
+}
+mail_start() { start --transport mail --host-repo id:R --base-branch origin/main --worker-orca orca "$@"; }
+setup; mail_fixture; out=$(mail_start --on env-1 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] && ! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
+  && grep -q 'worker-start --task task_x --on env-1 --worktree new-top-level --repo id:R --name s --base-branch origin/main --setup skip' "$ORCA_STUB_DIR/calls.log" \
+  && grep -q 'worktree list --environment env-1' "$ORCA_STUB_DIR/calls.log" \
+  && ok ST130 || fail "ST130 (rc=$rc) $out"
+jq -e '.transport=="mail" and .environment=="env-1" and .host_repo=="id:R" and .worker_orca=="orca" and .base_branch=="origin/main" and .roles.design.environment=="env-1" and .roles.design.branch=="orca/mail" and .roles.design.terminal=="term_w" and .roles.design.worktree_terminals==["term_w"]' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 && ok ST131 || fail ST131
+l=$(spec); [[ "$l" == *"$MARK"* && "$l" != *"$P"* && "$l" != *'.dispatch/'* && "$l" != *'/Applications/Orca.app'* ]] && ok ST132 || fail ST132
+teardown
+setup; mail_fixture
+OTHER=$(mktemp -d); git -C "$OTHER" init -q -b other; echo other > "$OTHER/file"; git -C "$OTHER" add file; git -C "$OTHER" -c user.email=t@e -c user.name=t commit -qm other
+before=$(git -C "$OTHER" rev-parse HEAD)
+printf '{"ok":true,"result":{"worktrees":[{"id":"remote_wt","path":"%s","branch":"refs/heads/orca/mail"}]}}\n' "$OTHER" > "$ORCA_STUB_DIR/worktree_list"
+out=$(mail_start --on env-1 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$(git -C "$OTHER" rev-parse HEAD)" == "$before" && -z "$(git -C "$OTHER" status --porcelain)" ]] && ok ST131b || fail "ST131b $out"
+rm -rf "$OTHER"; teardown
+setup; mail_fixture; out=$(mail_start 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] && ! grep -qE 'worktree create|worktree list --environment|terminal list|terminal close' "$ORCA_STUB_DIR/calls.log" && ok ST133 || fail "ST133 $out"; teardown
+setup; mail_fixture; echo '{"ok":true,"result":{"worktrees":[]}}' > "$ORCA_STUB_DIR/worktree_list"
+out=$(mail_start --on env-1 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'Resources are KEPT.'* ]] && jq -e '.roles.design.start_incomplete==true and .roles.design.worktree_id=="remote_wt" and .roles.design.dispatch=="ctx_x"' "$R/.dispatch/s/workers.json" >/dev/null && ok ST134 || fail "ST134 $out"; teardown
+for arg in '--on env-1' '--host-repo id:R' '--base-branch origin/main' '--worker-orca orca' '--transport bogus' '--transport mail'; do
+ setup; out=$(start $arg 2>&1); rc=$?
+ [[ "$rc" -eq 2 && ! -e "$R/.dispatch/s" ]] && ok "ST135 $arg" || fail "ST135 $arg $out"; teardown
+done
+setup; mail_fixture; mail_start --on env-1 --phase-b on >/dev/null 2>&1
+printf '{"status":"done"}' > "$R/.dispatch/s/roles/design/status.json"; echo PLAN_MAIL_FULL > "$R/.dispatch/s/plan.md"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(node "$P/bin/orca-start.ts" --slug s --repo-root "$R" --phase exec 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$(spec)" == *PLAN_MAIL_FULL* ]] && grep -q -- '--on env-1' "$ORCA_STUB_DIR/calls.log" && ok ST136 || fail "ST136 $out"
+for phase in '--phase exec' '--resume'; do
+ node "$P/bin/orca-start.ts" --slug s --repo-root "$R" $phase --transport mail >/dev/null 2>&1; rc=$?
+ [[ "$rc" -eq 2 ]] && ok "ST136 $phase flags" || fail "ST136 $phase flags $rc"
+done
+teardown
+setup; mail_fixture
+cat > "$ORCA_STUB_DIR/orchestration_worker-start.hook" <<'HOOK'
+#!/bin/bash
+n=0; [[ -f "$ORCA_STUB_DIR/mail-count" ]] && n=$(cat "$ORCA_STUB_DIR/mail-count"); n=$((n+1)); echo "$n" > "$ORCA_STUB_DIR/mail-count"
+printf '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_mail_%s","effects":[{"kind":"worktree","id":"remote_wt"},{"kind":"terminal","role":"agent","id":"term_w"}]}}' "$n" > "$ORCA_STUB_DIR/orchestration_worker-start"
+HOOK
+chmod +x "$ORCA_STUB_DIR/orchestration_worker-start.hook"
+out=$(mail_start --review-mode on --on env-1 2>&1); rc=$?
+l=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)
+[[ "$rc" -eq 0 && "$l" == *'dispatch:ctx_mail_1'* ]] && ok ST137 || fail "ST137 $out"; teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

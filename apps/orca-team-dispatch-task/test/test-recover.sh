@@ -691,4 +691,13 @@ out=$(rec 2>&1); rc=$?
   && [[ "$(did_)" == ctx_old && "$(gen)" -eq 1 ]] \
   && ok "RC51 別の Run の置き換えを記録しない" || fail "RC51 (rc=$rc) $out"
 teardown
+# RC52 remote roles must not be adopted, restarted, or nudged.
+for action in '' '--adopt' '--restart'; do
+ setup; owe; show failed
+ jq '.roles.design.environment="env-1" | .roles.design.start_incomplete=true' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+ out=$(rec --role design $action 2>&1); rc=$?
+ [[ "$rc" -eq 1 && "$out" == *'a role on a paired server is not replaced'* ]] && ! grep -qE 'worker-start|orchestration send|worker-stop' "$ORCA_STUB_DIR/calls.log" && ok "RC52 $action" || fail "RC52 $action $out"
+ teardown
+done
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

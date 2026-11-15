@@ -440,6 +440,11 @@ const main = (argv: string[]): number => {
       log(NAME, `${name}: stopped by the user; not recovering it`)
       continue
     }
+    if (asString(record.environment)) {
+      log(NAME, `${name}: a role on a paired server is not replaced by orca-recover; inspect it in Orca`)
+      rc = 1
+      continue
+    }
     // worker-start 中の中断なら、置き換えを発行済みか分からない。旧 nonce を戻さず、確認を求める
     const parked = join(roleDir, `completion.superseded-${role.dispatch}.json`)
     if (existsSync(parked)) {

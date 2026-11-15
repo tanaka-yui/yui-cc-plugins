@@ -115,5 +115,11 @@ wake --role design >/dev/null 2>&1; rc=$?
   && ok "WK11 古い印の役は起こす" || fail "WK11 (rc=$rc)"
 teardown
 
+setup
+jq '.roles.design.environment="env-1"' "$WF" > "$WF.tmp"; mv "$WF.tmp" "$WF"
+wake --role design >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && grep -q 'terminal send --environment env-1' "$ORCA_STUB_DIR/calls.log" && ok WK12 || fail "WK12 $rc"
+teardown
+
 echo "---"; [[ "$fails" -eq 0 ]] && echo "test-wake: ALL PASS" || echo "test-wake: $fails FAILED"
 exit $(( fails > 0 ))

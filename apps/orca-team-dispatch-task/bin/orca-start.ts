@@ -10,6 +10,7 @@ import { validToggle } from '../lib/config.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
+import { renderMailSpec } from '../lib/mail-spec.ts'
 import { failureDetail, orcaBin, receiptOk, runOrca, terminalHandles, workerTerminal } from '../lib/orca.ts'
 import { envCount, run, runNode, sleepSeconds, which } from '../lib/sys.ts'
 import { trustBlocked, trustHint } from '../lib/trust.ts'
@@ -26,6 +27,8 @@ import {
 } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import type { MailRole } from '../lib/mail-spec.ts'
 
 const NAME = 'orca-start'
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -591,7 +594,172 @@ const incompleteStart = (statusDir: string, slug: string, role: string, dispatch
 // ★ **reviewer が起きなければ design を起こさない。**依頼先の無いレビュー要求で
 //   design が待ち続けるより、1 件も起こさないほうが片付けが簡単である。
 //   逆に design が失敗しても reviewer の資源は消さない（Task 成立後は削除しない / O19）。
+const launchMailRole = (context: Context, role: string): boolean => {
+  const workersFile = join(context.statusDir, 'workers.json')
+  const workers = readJson(workersFile)
+  const environment = asString(get(workers, 'environment'))
+  const roleDir = join(context.statusDir, 'roles', role)
+  const reviewerRole = role === 'design' ? 'design_review' : 'exec_review'
+  const spec = renderMailSpec({
+    slug: context.slug,
+    role: role as MailRole,
+    orcaBin: string(get(workers, 'worker_orca')),
+    request: readFileSync(join(context.statusDir, 'request.md'), 'utf8'),
+    plan: role === 'exec' ? readFileSync(join(context.statusDir, 'plan.md'), 'utf8') : null,
+    baseBranch: string(get(workers, 'base_branch')),
+    integration: get(workers, 'integration_role') === role,
+    planOnly: role === 'design' && context.phaseB === 'on',
+    reviewer:
+      context.reviewMode === 'on' && (role === 'design' || role === 'exec')
+        ? asString(get(workers, 'roles', reviewerRole, 'dispatch'))
+        : null,
+    reviewOf: role === 'design_review' ? 'plan' : role === 'exec_review' ? 'code' : null,
+    reviewRounds: REVIEW_ROUND_STEP,
+  })
+  const agent = string(get(context.config, 'roles', role, 'agent'))
+  const model = string(get(context.config, 'roles', role, 'model'))
+  const effort = string(get(context.config, 'roles', role, 'effort'))
+  if (!agent) {
+    log(NAME, `role '${role}' has no agent resolved`)
+    return false
+  }
+  if (!write(`status-${role}`, join(roleDir, 'status.json'), '{"status":"starting"}')) return false
+  const created = runOrca([
+    'orchestration',
+    'task-create',
+    '--spec',
+    spec,
+    '--task-title',
+    `${context.slug}/${role}`,
+    '--run',
+    context.run,
+    '--from',
+    context.parent,
+    '--json',
+  ])
+  const task = string(get(created.json, 'result', 'task', 'id'))
+  const taskRun = string(get(created.json, 'result', 'task', 'run_id'))
+  if (created.rc !== 0 || !task || (taskRun && taskRun !== context.run)) {
+    log(
+      NAME,
+      `task-create did not create a usable task for ${role} in Run ${context.run} (task=${task || 'none'} run=${taskRun || 'none'} rc=${created.rc}). Resources are KEPT.`,
+    )
+    return false
+  }
+  if (!roleUpdate(`workers-after-task-${role}`, workersFile, role, { task, environment })) return false
+  const name = role === 'design' ? context.slug : `${context.slug}-${role.replaceAll('_', '-')}`
+  const args = [
+    'orchestration',
+    'worker-start',
+    '--task',
+    task,
+    ...(environment ? ['--on', environment] : []),
+    '--worktree',
+    'new-top-level',
+    '--repo',
+    string(get(workers, 'host_repo')),
+    '--name',
+    name,
+    '--base-branch',
+    string(get(workers, 'base_branch')),
+    '--setup',
+    context.setup,
+    '--agent',
+    agent,
+  ]
+  if (model) {
+    args.push('--model', model)
+    if (effort) args.push('--effort', effort)
+  }
+  const started = runOrca([...args, '--run', context.run, '--from', context.parent, '--json'])
+  const dispatch = string(get(started.json, 'result', 'dispatchId'))
+  const dispatchRun = string(get(started.json, 'result', 'runId'))
+  if (dispatch && dispatchRun && dispatchRun !== context.run) {
+    log(
+      NAME,
+      `worker-start put the ${role} dispatch ${dispatch} in Run ${dispatchRun}, not in Run ${context.run}; it is NOT recorded. Resources are KEPT.`,
+    )
+    log(NAME, `stop it with: ${orcaBin()} orchestration worker-stop --dispatch ${dispatch} --json`)
+    return false
+  }
+  const effects = asArray(get(started.json, 'result', 'effects')) ?? []
+  const worktreeId = string(
+    get(
+      effects.find((e) => get(e, 'kind') === 'worktree'),
+      'id',
+    ),
+  )
+  let terminal = string(
+    get(
+      effects.find((e) => get(e, 'kind') === 'terminal' && get(e, 'role') === 'agent'),
+      'id',
+    ),
+  )
+  const incomplete = (): false => {
+    if (dispatch)
+      roleUpdate(`workers-orphan-dispatch-${role}`, workersFile, role, {
+        task,
+        dispatch,
+        terminal,
+        environment,
+        worktree_id: worktreeId,
+        start_incomplete: true,
+        worktree_terminals: terminal ? [terminal] : null,
+      })
+    return false
+  }
+  if (started.rc !== 0 || get(started.json, 'result', 'state') !== 'ready' || !dispatch || !terminal || !worktreeId) {
+    if (dispatch && !terminal) {
+      const shown = runOrca(['orchestration', 'worker-show', '--dispatch', dispatch, '--json'])
+      if (receiptOk(shown)) terminal = workerTerminal(shown.json)
+    }
+    log(
+      NAME,
+      `worker-start did not report ready with usable resources for ${role} (rc=${started.rc}). Resources are KEPT.`,
+    )
+    return incomplete()
+  }
+  const listed = runOrca([
+    'worktree',
+    'list',
+    ...(environment ? ['--environment', environment] : []),
+    '--limit',
+    '1000',
+    '--json',
+  ])
+  const row = receiptOk(listed)
+    ? asArray(get(listed.json, 'result', 'worktrees'))?.find((w) => get(w, 'id') === worktreeId)
+    : null
+  const path = string(get(row, 'path'))
+  const branch = string(get(row, 'branch')).replace(/^refs\/heads\//, '')
+  if (!path || !branch) {
+    log(
+      NAME,
+      `the ${role} worktree ${worktreeId} is not in the worktree list; the start is recorded as incomplete. Resources are KEPT.`,
+    )
+    return incomplete()
+  }
+  if (
+    !roleUpdate(`workers-after-dispatch-${role}`, workersFile, role, {
+      task,
+      dispatch,
+      terminal,
+      environment,
+      worktree_id: worktreeId,
+      worktree_path: path,
+      branch,
+      worktree_created_by_this_run: true,
+      worktree_terminals: [terminal],
+    })
+  ) {
+    log(NAME, `the ${role} worker started but could not be recorded. Resources are KEPT.`)
+    return false
+  }
+  return true
+}
 const launchRole = (context: Context, role: string): boolean => {
+  if (get(readJson(join(context.statusDir, 'workers.json')), 'transport') === 'mail')
+    return launchMailRole(context, role)
   const name = role === 'design' ? context.slug : `${context.slug}-${role.replaceAll('_', '-')}`
   const title = `${context.slug}/${role}`
   const roleDir = join(context.statusDir, 'roles', role)
@@ -1040,6 +1208,7 @@ const main = (argv: string[]): number => {
   let phase = 'design'
   let resume = false
   let unattended = false
+  const mailFlags: Record<string, string> = {}
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]
     if (flag === '--resume') {
@@ -1052,6 +1221,11 @@ const main = (argv: string[]): number => {
     }
     if (
       [
+        '--transport',
+        '--on',
+        '--host-repo',
+        '--base-branch',
+        '--worker-orca',
         '--request-file',
         '--slug',
         '--objective',
@@ -1070,6 +1244,8 @@ const main = (argv: string[]): number => {
     ) {
       if (i + 1 >= argv.length) die(NAME, `${flag} requires a value`)
       const value = argv[++i] ?? ''
+      if (['--transport', '--on', '--host-repo', '--base-branch', '--worker-orca'].includes(flag ?? ''))
+        mailFlags[flag ?? ''] = value
       if (flag === '--request-file') requestFile = value
       if (flag === '--slug') slug = value
       if (flag === '--objective') objective = value
@@ -1095,6 +1271,17 @@ const main = (argv: string[]): number => {
       die(NAME, '--resume uses the recorded request and Run; do not pass --request-file or --run')
   }
   const continuing = phase === 'exec' || resume
+  if (continuing && Object.keys(mailFlags).length)
+    die(NAME, '--transport and its flags are fixed when the dispatch starts; the recorded values are kept')
+  if (
+    Object.keys(mailFlags).length &&
+    (mailFlags['--transport'] !== 'mail' ||
+      ['--host-repo', '--base-branch', '--worker-orca'].some((f) => !mailFlags[f]))
+  )
+    die(
+      NAME,
+      '--transport mail requires --host-repo, --base-branch and --worker-orca; its flags require --transport mail',
+    )
   if (continuing && integration !== '')
     die(NAME, '--integration is fixed when the dispatch starts; the recorded value is kept')
   if (continuing) {
@@ -1344,6 +1531,15 @@ const main = (argv: string[]): number => {
       integration_role: string(config.integration_role) || 'design',
       integration: config.integration ?? null,
       ask_via: ask,
+      ...(mailFlags['--transport'] === 'mail'
+        ? {
+            transport: 'mail',
+            environment: mailFlags['--on'] || null,
+            host_repo: mailFlags['--host-repo'],
+            base_branch: mailFlags['--base-branch'],
+            worker_orca: mailFlags['--worker-orca'],
+          }
+        : {}),
       ...(reviewOverride !== null ? { review_mode: reviewOverride } : {}),
       ...(phaseOverride !== null ? { phase_b: phaseOverride } : {}),
       roles,

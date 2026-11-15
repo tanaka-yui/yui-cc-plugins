@@ -91,7 +91,18 @@ const main = (argv: string[]): number => {
       return 1
     }
   }
-  const typed = runOrca(['terminal', 'send', '--terminal', terminal, '--text', text, '--enter', '--json'])
+  const environment = asString(get(workers, 'roles', role, 'environment'))
+  const typed = runOrca([
+    'terminal',
+    'send',
+    ...(environment ? ['--environment', environment] : []),
+    '--terminal',
+    terminal,
+    '--text',
+    text,
+    '--enter',
+    '--json',
+  ])
   // ★ rc だけでは足りない。**receipt の ok を確かめる**（rc 0 かつ ok:false の応答形が在る）
   if (!receiptOk(typed)) {
     log(NAME, `could not type into the terminal of role '${role}' (rc=${typed.rc})`)
