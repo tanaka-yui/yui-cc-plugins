@@ -869,13 +869,16 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
           (dispatchId !== '' && entry.dispatch === dispatchId) ||
           (from !== '' && string(get(read(entry.statusDir, 'workers.json'), 'roles', entry.role, 'terminal')) === from),
       )
+      const heartbeatSender = dispatchId
+        ? state.expected.entries.find((entry) => entry.dispatch === dispatchId)
+        : sender
       if (
-        sender &&
+        heartbeatSender &&
         string(message.subject).startsWith('heartbeat:') &&
-        get(read(sender.statusDir, 'workers.json'), 'transport') === 'mail'
+        get(read(heartbeatSender.statusDir, 'workers.json'), 'transport') === 'mail'
       ) {
-        write(sender.statusDir, `roles/${sender.role}/heartbeat.json`, { at: nowSeconds() })
-        log(NAME, `${sender.role} heartbeat: ${string(message.subject).slice('heartbeat:'.length).trim()}`)
+        write(heartbeatSender.statusDir, `roles/${heartbeatSender.role}/heartbeat.json`, { at: nowSeconds() })
+        log(NAME, `${heartbeatSender.role} heartbeat: ${string(message.subject).slice('heartbeat:'.length).trim()}`)
         continue
       }
       const who =

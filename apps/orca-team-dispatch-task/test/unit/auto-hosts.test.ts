@@ -54,6 +54,7 @@ test('HC3 invalid host settings fail closed', () => {
       [{ ...h, id: '' }],
       [{ ...h, orcaBin: '' }],
       [{ ...h, repos: { missing: { selector: 'id:R' } } }],
+      [{ ...h, repos: { constructor: { selector: 'id:R' } } }],
       [{ ...h, repos: { 'acme/app': { selector: '' } } }],
       [{ ...h, repos: { 'acme/app': { selector: 'id:R', verified: 'yes' } } }],
       [{ ...h, repos: { 'acme/app': { selector: 'id:R', verified: null } } }],

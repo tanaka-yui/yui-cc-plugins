@@ -218,3 +218,55 @@ test('AU76b acknowledged but unrecorded worker blocks resume and resource cleanu
     f.cleanup()
   }
 })
+
+for (const observation of ['unrecorded', 'partial'])
+  test(`AU99 ${observation} remote inventory prevents requeueing or resuming an incomplete startup`, () => {
+    const f = runtimeFixture()
+    try {
+      const issue = f.track()
+      const sd = join(f.checkout, '.dispatch', slugOf(issue.key))
+      f.put(f.configFile, {
+        ...f.raw,
+        hosts: [
+          {
+            id: 'env-1',
+            name: 'Mac M2max',
+            lanes: 1,
+            orcaBin: 'orca',
+            repos: { 'acme/app': { selector: 'id:R', verified: true } },
+          },
+        ],
+      })
+      f.respond('status', { ok: true, result: { runtime: { reachable: true } } }, f.orca)
+      writeFileSync(
+        join(f.children, 'orca-start.ts.sh'),
+        `mkdir -p '${sd}'\nprintf '%s' '${JSON.stringify({ run_id: 'run_1', parent_handle: 'term_auto', repo_root: f.checkout })}' > '${sd}/run.json'\n`,
+      )
+      const remote =
+        observation === 'partial'
+          ? { ok: true, result: { workers: [], partialHostErrors: [{ environmentId: 'env-1' }] } }
+          : {
+              ok: true,
+              result: {
+                workers: [{ dispatchId: 'unrecorded', resource: null, projection: { liveness: { verdict: 'live' } } }],
+              },
+            }
+      f.hook(
+        'orchestration_worker-list',
+        `case " $* " in *" --include-remote "*) printf '%s' '${JSON.stringify(remote)}' > '${f.orca}/orchestration_worker-list';; *) printf '%s' '{"ok":true,"result":{"workers":[]}}' > '${f.orca}/orchestration_worker-list';; esac`,
+        f.orca,
+      )
+      f.childRc('orca-start', 1)
+      f.cli('tick')
+      assert.equal(readState('main').issues[issue.key]?.phase, 'dispatching', observation)
+      const before = f.childCalls()
+      f.cli('tick')
+      assert.equal(f.childCalls(), before, observation)
+      assert.ok(f.calls(f.orca).includes('--include-remote'))
+      assert.ok(!f.calls(f.orca).includes('terminal close'))
+      assert.ok(!f.calls(f.orca).includes('worktree rm'))
+      assert.ok(existsSync(sd))
+    } finally {
+      f.cleanup()
+    }
+  })

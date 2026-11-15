@@ -26,7 +26,7 @@ import { type AutoState, type IssueState, readState, releaseLock, takeLock, writ
 import { hasCommentMarker, resumeTransition, transition } from './auto-transition.ts'
 import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
-import { asObject, asString, get, type Json, type JsonObject } from './json.ts'
+import { asArray, asObject, asString, get, type Json, type JsonObject } from './json.ts'
 import { receiptArray, receiptOk } from './orca.ts'
 import { fetchBranch } from './remote-branch.ts'
 import { STATUS } from './status.ts'
@@ -74,10 +74,19 @@ const listedWorkers = (issue: IssueState): Json[] | null => {
   const id = asString(record?.run_id)
   const h = coordinator(issue)
   if (!id || !h) return existsSync(join(issue.statusDir, 'run.json')) ? null : []
-  const listed = receiptArray(
-    runOrca(['orchestration', 'worker-list', '--run', id, '--json'], { ORCA_TERMINAL_HANDLE: h }),
-    'workers',
+  const remote = !!issue.host && issue.host !== LOCAL_HOST
+  const response = runOrca(
+    ['orchestration', 'worker-list', '--run', id, ...(remote ? ['--include-remote'] : []), '--json'],
+    { ORCA_TERMINAL_HANDLE: h },
   )
+  if (
+    remote &&
+    (asArray(get(response.json, 'result', 'partialHostErrors')) ?? []).some(
+      (e) => get(e, 'environmentId') === issue.host,
+    )
+  )
+    return null
+  const listed = receiptArray(response, 'workers')
   return listed?.every((w) => Boolean(asString(get(w, 'dispatchId')))) ? listed : null
 }
 const owns = (tick: Tick, issue: IssueState): boolean => {

@@ -46,7 +46,7 @@ export const parseHosts = (
       const r = asObject(v)
       const selector = asString(r?.selector)
       const verified = r?.verified === undefined ? false : r.verified
-      if (!repos[repo] || !selector || typeof verified !== 'boolean') return { ok: false }
+      if (!Object.hasOwn(repos, repo) || !selector || typeof verified !== 'boolean') return { ok: false }
       hostRepos[repo] = { selector, verified }
     }
     seen.add(id)

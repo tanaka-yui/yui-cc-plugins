@@ -1763,4 +1763,21 @@ for result in missing invalid valid; do
  mail_teardown
 done
 
+# WT169: mail heartbeat attribution trusts payload identity before the terminal display name.
+for identity in payload fallback unknown; do
+ mail_setup
+ mkdir -p "$SD/roles/exec"
+ echo '{"status":"executing"}' > "$SD/roles/exec/status.json"
+ jq '.roles.exec={task:"task_y",dispatch:"ctx_y",terminal:"term_other",branch:"exec",environment:"env-1"}' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+ mail_message status '-'
+ jq --arg identity "$identity" '.result.messages[0].from_handle="term_w" | .result.messages[0].payload=(if $identity=="fallback" then null elif $identity=="payload" then {taskId:"task_y",dispatchId:"ctx_y"} else {taskId:"task_z",dispatchId:"ctx_unknown"} end)' "$ORCA_STUB_DIR/orchestration_check" > "$SD/m"; mv "$SD/m" "$ORCA_STUB_DIR/orchestration_check"
+ out=$(w 1 2>&1); rc=$?
+ case "$identity" in
+  payload) [[ "$rc" -eq 3 && -f "$SD/roles/exec/heartbeat.json" && ! -e "$SD/roles/design/heartbeat.json" ]] && ok 'WT169 payload priority' || fail "WT169 payload $rc $out" ;;
+  fallback) [[ "$rc" -eq 3 && -f "$SD/roles/design/heartbeat.json" && ! -e "$SD/roles/exec/heartbeat.json" ]] && ok 'WT169 handle fallback' || fail "WT169 fallback $rc $out" ;;
+  unknown) [[ "$rc" -eq 3 && ! -e "$SD/roles/design/heartbeat.json" && ! -e "$SD/roles/exec/heartbeat.json" ]] && ok 'WT169 unknown payload is not attributed' || fail "WT169 unknown $rc $out" ;;
+ esac
+ mail_teardown
+done
+
 echo "---"; echo "failures: $fails"; exit "$fails"
