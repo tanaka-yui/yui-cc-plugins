@@ -1,3 +1,4 @@
+import { parseHosts } from './auto-hosts.ts'
 import { AUTO_FILES, autoDir } from './auto-paths.ts'
 import { OPUS_MODEL } from './config.ts'
 import { readJson } from './fs.ts'
@@ -6,6 +7,8 @@ import { asArray, asObject, asString, type Json } from './json.ts'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
+import type { HostConfig } from './auto-hosts.ts'
+
 export type AutoConfig = {
   version: 1
   name: string
@@ -13,6 +16,7 @@ export type AutoConfig = {
   intakeConfig: string
   sources: Array<{ repo: string; related: string[]; pick: string }>
   repos: Record<string, { checkout: string; verify: string[]; infra: boolean; verified: boolean; ci: boolean }>
+  hosts: HostConfig[] | null
   lanes: number
   roles: { review_mode: 'on' | 'off'; phase_b: 'on' | 'off' }
   limits: { defaultMinutes: number; maxMinutes: number; stallMinutes: number }
@@ -63,6 +67,8 @@ export const readAutoConfig = (name: string): AutoConfig | null => {
       return null
     sources.push({ repo, related, pick })
   }
+  const hosts = parseHosts(input.hosts, repos)
+  if (!hosts.ok) return null
   const rawRoles = asObject(input.roles)
   const review_mode = rawRoles?.review_mode ?? 'off'
   const phase_b = rawRoles?.phase_b ?? 'off'
@@ -74,6 +80,7 @@ export const readAutoConfig = (name: string): AutoConfig | null => {
     name,
     sources,
     repos,
+    hosts: hosts.hosts,
     intakeConfig:
       input.intakeConfig === undefined
         ? join(homedir(), '.slack-issue-intake/config.json')

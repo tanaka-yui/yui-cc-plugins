@@ -22,6 +22,22 @@ test('SS1 state roundtrip; SS2 corrupt state fails closed', () => {
   assert.throws(() => readState('main'))
   rmSync(join(sd, 'state.json'))
 })
+test('SS3 legacy issues normalize missing host fields and reject invalid values', () => {
+  const entry = { key: 'acme/app#1', phase: 'running', generation: 1, targets: [], prs: [] }
+  const put = (issue: Record<string, string | number | string[] | null>) =>
+    writeFileSync(
+      join(sd, 'state.json'),
+      JSON.stringify({ version: 1, judgingSince: null, issues: { 'acme/app#1': issue } }),
+    )
+  put(entry)
+  assert.equal(readState('main').issues['acme/app#1']?.host, null)
+  assert.equal(readState('main').issues['acme/app#1']?.hostUnreachableSince, null)
+  for (const key of ['host', 'hostUnreachableSince']) {
+    put({ ...entry, [key]: 1 })
+    assert.throws(() => readState('main'), /acme\/app#1/)
+  }
+  rmSync(join(sd, 'state.json'))
+})
 test('AU12/AU15 live local lock is never stolen even after expiry', () => {
   writeFileSync(
     lock,

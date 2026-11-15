@@ -37,6 +37,8 @@ export type IssueState = {
   slug: string
   statusDir: string
   branch: string
+  host: string | null
+  hostUnreachableSince: string | null
   coordinator: string | null
   worktrees: number
   startedAt: string | null
@@ -100,6 +102,11 @@ export const readState = (name: string): AutoState => {
       !Array.isArray(issue.prs)
     )
       throw new Error(`状態ファイルが壊れています: ${key}`)
+    for (const field of ['host', 'hostUnreachableSince']) {
+      if (issue[field] === undefined) issue[field] = null
+      else if (issue[field] !== null && typeof issue[field] !== 'string')
+        throw new Error(`状態ファイルが壊れています: ${key}`)
+    }
   }
   return value as AutoState
 }
