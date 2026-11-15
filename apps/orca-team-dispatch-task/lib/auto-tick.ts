@@ -21,17 +21,18 @@ import {
 } from './auto-paths.ts'
 import { orderQueue, syncIssues } from './auto-queue.ts'
 import { buildReport } from './auto-report.ts'
-import { buildRequest, readAutoResult, slugOf } from './auto-request.ts'
+import { buildRequest, readAutoResult, readPlanResult, slugOf } from './auto-request.ts'
 import { type AutoState, type IssueState, readState, releaseLock, takeLock, writeState } from './auto-state.ts'
 import { hasCommentMarker, resumeTransition, transition } from './auto-transition.ts'
 import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asObject, asString, get, type Json, type JsonObject } from './json.ts'
 import { receiptArray } from './orca.ts'
+import { fetchBranch } from './remote-branch.ts'
 import { STATUS } from './status.ts'
 import { envCount, runNode as runProcessNode } from './sys.ts'
 
-import { existsSync, mkdirSync, readFileSync, statfsSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statfsSync } from 'node:fs'
 import { freemem, hostname } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -488,6 +489,7 @@ const clean = (tick: Tick, issue: IssueState): void => {
     join(autoDir(tick.name), AUTO_FILES.archive),
     issue.generation,
     merged,
+    issue.prevBranch,
   )
   for (const reason of result.reasons) console.log(reason)
   if (result.ok) {
@@ -580,15 +582,33 @@ const finish = (tick: Tick, issue: IssueState): void => {
   const options = tick.config.repos[repo]
   if (!options) return
   const result = readAutoResult(join(issue.statusDir, 'auto-result.json'))
+  const workers = workersOf(issue)
+  const needsPlanResult = workers?.transport === 'mail' && workers.integration_role === 'exec'
+  const planResult = needsPlanResult ? readPlanResult(join(issue.statusDir, 'plan-result.json')) : null
+  const planDecisions = planResult
+    ? [
+        ...planResult.decisions.map((s) => `計画で決めた点: ${s}`),
+        ...planResult.review.unresolved.map((s) => `計画の未解消の指摘: ${s}`),
+        ...planResult.review.declined.map((s) => `計画で採らなかった指摘: ${s}`),
+      ]
+    : []
   issue.decisions = result
     ? [
+        ...planDecisions,
         ...result.decisions,
         ...result.review.unresolved.map((s) => `未解消の指摘: ${s}`),
         ...result.review.declined.map((s) => `採らなかった指摘: ${s}`),
       ]
-    : []
+    : planDecisions
   tick.save()
   if (!issue.prs.length) {
+    const integration = get(workers, 'roles', asString(workers?.integration_role) ?? '')
+    const branch = asString(get(integration, 'branch')) ?? issue.branch
+    if (asString(get(integration, 'environment')) && !fetchBranch(options.checkout, branch)) {
+      if (Date.parse(autoNow()) - Date.parse(issue.finishingSince) >= AUTO_PR_RETRY_MINUTES * 60_000)
+        needsReview(tick, issue, `${branch} が origin にありません`)
+      return
+    }
     const created = runNode(child('orca-pr.ts'), ['--status-dir', issue.statusDir, '--repo', repo])
     const pr =
       created.rc === 0
@@ -633,6 +653,36 @@ const finish = (tick: Tick, issue: IssueState): void => {
     return
   }
   const reasons: string[] = []
+  if (needsPlanResult && !planResult) reasons.push('計画の結果の報告が読めないため確認してください。')
+  for (const [role, prefix, label] of [
+    ['design_review', 'plan', '計画'],
+    ['exec_review', 'code', 'コード'],
+  ] as const) {
+    if (!asString(get(workers, 'roles', role, 'dispatch'))) continue
+    let name: string | undefined
+    try {
+      name = readdirSync(join(issue.statusDir, 'review'))
+        .filter((n) => new RegExp(`^${prefix}-round-[1-9][0-9]*-findings\\.md$`).test(n))
+        .sort((a, b) => Number(a.split('-')[2]) - Number(b.split('-')[2]))
+        .at(-1)
+    } catch {
+      /* レビューの結果がまだ無い */
+    }
+    if (!name) {
+      reasons.push(`${label}のレビューの結果がありません。`)
+      continue
+    }
+    let verdict = ''
+    try {
+      verdict =
+        [
+          ...readFileSync(join(issue.statusDir, 'review', name), 'utf8').matchAll(/^VERDICT: (approved|needs_work)$/gm),
+        ].at(-1)?.[1] ?? ''
+    } catch {
+      /* 読めない結果を承認しない */
+    }
+    if (verdict !== 'approved') reasons.push(`${label}のレビューが承認で終わっていません。`)
+  }
   if (!result) reasons.push('結果の報告が読めないため確認してください。')
   if (result && !result.verify.passed) reasons.push('確認コマンドが通っていません。')
   if (result?.envFailure) reasons.push(`環境が原因: ${result.envFailure}`)

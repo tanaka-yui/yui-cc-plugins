@@ -2,7 +2,7 @@ import { readState, writeState } from '../../lib/auto-state.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
@@ -199,5 +199,143 @@ test('a human label change immediately after merge never resurrects the merged b
     assert.equal(f.git('--git-dir', join(f.dir, 'origin.git'), 'branch', '--list', issue.branch), '')
   } finally {
     f.cleanup()
+  }
+})
+
+test('AU86/87/86b fetch only remote integration branches before PR creation, retry missing branches for 30 minutes', () => {
+  for (const mode of ['remote', 'missing', 'local']) {
+    const f = runtimeFixture()
+    try {
+      const i = f.track('finishing')
+      f.result(i)
+      if (mode !== 'local') {
+        const s = readState('main')
+        const current = s.issues[i.key]
+        assert.ok(current)
+        current.host = 'env-1'
+        writeState('main', s)
+        f.put(join(i.statusDir, 'workers.json'), {
+          transport: 'mail',
+          integration_branch: 'main',
+          integration_role: 'design',
+          roles: {
+            design: {
+              dispatch: 'ctx_design',
+              branch: i.branch,
+              environment: 'env-1',
+              worktree_path: '/remote/worktree',
+            },
+          },
+        })
+        f.respond('status', { ok: true, result: { runtime: { reachable: true } } }, f.orca)
+        if (mode === 'remote') f.git('-C', f.checkout, 'push', 'origin', i.branch)
+        f.git('-C', f.checkout, 'branch', '-D', i.branch)
+      } else
+        f.put(join(i.statusDir, 'workers.json'), {
+          transport: 'mail',
+          integration_branch: 'main',
+          integration_role: 'design',
+          roles: { design: { dispatch: 'ctx_design', branch: i.branch } },
+        })
+      f.cli('tick')
+      assert.equal(f.childCalls().includes('orca-pr.ts'), mode !== 'missing')
+      if (mode === 'remote')
+        assert.equal(f.git('-C', f.checkout, 'rev-parse', i.branch), f.git('-C', f.checkout, 'rev-parse', 'main'))
+      if (mode === 'missing') {
+        process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+        f.cli('tick')
+        assert.equal(readState('main').issues[i.key]?.phase, 'review')
+        assert.ok(f.calls().includes('origin'))
+        assert.ok(!f.childCalls().includes('orca-pr.ts'))
+      }
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+test('AU89 failed remote work without an origin branch never claims a successful push', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track('running')
+    const s = readState('main')
+    const current = s.issues[i.key]
+    assert.ok(current)
+    current.host = 'env-1'
+    current.failReason = '実装が失敗しました'
+    writeState('main', s)
+    f.put(join(i.statusDir, 'workers.json'), {
+      transport: 'mail',
+      integration_branch: 'main',
+      integration_role: 'design',
+      roles: { design: { dispatch: 'ctx_design', branch: i.branch, environment: 'env-1' } },
+    })
+    f.respond('status', { ok: true, result: { runtime: { reachable: true } } }, f.orca)
+    f.respond(
+      'orchestration_worker-list',
+      {
+        ok: true,
+        result: {
+          workers: [{ dispatchId: 'ctx_design', resource: null, projection: { liveness: { verdict: 'exited' } } }],
+        },
+      },
+      f.orca,
+    )
+    f.cli('tick')
+    const comments = readFileSync(join(f.dir, 'comments.jsonl'), 'utf8')
+    assert.ok(!comments.includes('push 済み'))
+    assert.equal(readState('main').issues[i.key]?.phase, 'failed')
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU94-94e planning reviews and structured decisions independently prevent automatic merge', () => {
+  for (const mode of ['needs_work', 'missing-review', 'approved', 'declined', 'decision', 'missing-result']) {
+    const f = runtimeFixture()
+    try {
+      const i = f.track('finishing')
+      f.result(i)
+      mkdirSync(join(i.statusDir, 'review'), { recursive: true })
+      f.put(join(i.statusDir, 'workers.json'), {
+        transport: 'mail',
+        integration_branch: 'main',
+        integration_role: 'exec',
+        roles: {
+          exec: { dispatch: 'ctx_design', branch: i.branch },
+          design_review: { dispatch: 'ctx_plan' },
+          exec_review: { dispatch: 'ctx_code' },
+        },
+      })
+      writeFileSync(join(i.statusDir, 'review/code-round-1-findings.md'), 'VERDICT: approved\n')
+      if (mode !== 'missing-review') {
+        writeFileSync(join(i.statusDir, 'review/plan-round-1-findings.md'), 'VERDICT: needs_work\n')
+        if (mode !== 'needs_work')
+          writeFileSync(join(i.statusDir, 'review/plan-round-2-findings.md'), 'VERDICT: approved\n')
+      }
+      if (mode !== 'missing-result')
+        f.put(join(i.statusDir, 'plan-result.json'), {
+          decisions: mode === 'decision' ? ['計画の判断'] : [],
+          review: { unresolved: [], declined: mode === 'declined' ? ['採用しない理由'] : [] },
+        })
+      f.cli('tick')
+      const expected = mode === 'approved' ? 'done' : 'review'
+      assert.equal(readState('main').issues[i.key]?.phase, expected, mode)
+      assert.equal(f.calls().includes('pr merge'), mode === 'approved', mode)
+      if (mode !== 'approved') {
+        const comments = readFileSync(join(f.dir, 'comments.jsonl'), 'utf8')
+        const text =
+          mode === 'needs_work'
+            ? '計画のレビューが承認で終わっていません'
+            : mode === 'missing-review'
+              ? '計画のレビューの結果がありません'
+              : mode === 'declined'
+                ? '計画で採らなかった指摘:'
+                : mode === 'decision'
+                  ? '計画で決めた点:'
+                  : '計画の結果の報告が読めない'
+        assert.ok(comments.includes(text), mode)
+      }
+    } finally {
+      f.cleanup()
+    }
   }
 })

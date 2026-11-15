@@ -1,9 +1,9 @@
-import { autoCleanup, confirmStopped } from '../../lib/auto-cleanup.ts'
+import { autoCleanup, confirmStopped, pushBranches } from '../../lib/auto-cleanup.ts'
 import { autoDir } from '../../lib/auto-paths.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
@@ -371,5 +371,221 @@ test('AU58e settled user-owned role is kept while other released roles are remov
     assert.ok(f.git('-C', f.checkout, 'branch', '--list', f.issue.branch))
   } finally {
     f.cleanup()
+  }
+})
+
+const remoteSetup = (role = 'design') => {
+  const f = setup()
+  mkdirSync(join(f.issue.statusDir, 'roles', role), { recursive: true })
+  const roles = {
+    [role]: {
+      dispatch: 'ctx_design',
+      environment: 'env-1',
+      branch: f.issue.branch,
+      worktree_path: join(f.children, 'worktree'),
+    },
+  }
+  f.put(join(f.issue.statusDir, 'workers.json'), {
+    transport: 'mail',
+    integration_branch: 'main',
+    integration_role: 'design',
+    roles,
+  })
+  const base = f.git('-C', f.checkout, 'rev-parse', 'main')
+  f.respond(
+    'orchestration_worker-list',
+    {
+      ok: true,
+      result: {
+        workers: [
+          {
+            dispatchId: 'ctx_design',
+            resource: null,
+            terminalState: 'retained',
+            projection: { liveness: { verdict: 'exited' } },
+          },
+        ],
+      },
+    },
+    f.orca,
+  )
+  const remoteRow = (head: string | null) =>
+    f.respond(
+      'worktree_list',
+      {
+        ok: true,
+        result: {
+          worktrees: [
+            { displayName: f.issue.slug, path: join(f.children, 'worktree'), ...(head === null ? {} : { head }) },
+          ],
+          truncated: false,
+        },
+      },
+      f.orca,
+    )
+  remoteRow(base)
+  const uniqueCommit = () => {
+    f.git('-C', f.checkout, 'checkout', '-b', 'scratch')
+    writeFileSync(join(f.checkout, 'unique'), 'unique')
+    f.git('-C', f.checkout, 'add', 'unique')
+    f.git('-C', f.checkout, 'commit', '-m', 'unique')
+    const sha = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+    f.git('-C', f.checkout, 'checkout', 'main')
+    return sha
+  }
+  return { ...f, base, remoteRow, uniqueCommit }
+}
+test('AU88/88b/88c absent remote integration branch is a failure, local and review roles retain legacy behavior', () => {
+  for (const role of ['design', 'design_review', 'local']) {
+    const f = remoteSetup(role === 'local' ? 'design' : role)
+    try {
+      f.git('-C', f.checkout, 'branch', '-D', f.issue.branch)
+      if (role === 'local')
+        f.put(join(f.issue.statusDir, 'workers.json'), {
+          integration_branch: 'main',
+          integration_role: 'design',
+          roles: { design: { branch: f.issue.branch } },
+        })
+      const result = pushBranches(f.issue.statusDir, f.checkout, null)
+      assert.equal(result.pushed, role !== 'design')
+      if (role === 'design') assert.ok(result.reasons.join().includes('origin にもこの Mac にもありません'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+test('AU90/91 remote worktree deletion is scoped to its environment, including identical local paths', () => {
+  for (const present of [true, false]) {
+    const f = remoteSetup()
+    try {
+      f.git('-C', f.checkout, 'push', 'origin', f.issue.branch)
+      if (!present)
+        f.hook(
+          'worktree_list',
+          `case " $* " in *" --environment env-1 "*) printf '%s' '{"ok":true,"result":{"worktrees":[],"truncated":false}}' > '${f.orca}/worktree_list';; esac`,
+          f.orca,
+        )
+      const result = f.clean()
+      assert.equal(result.ok, true, result.reasons.join())
+      const calls = f.calls(f.orca)
+      assert.ok(calls.includes('worktree list --environment env-1'))
+      assert.equal(calls.includes('worktree rm --environment env-1'), present)
+      if (!present) assert.ok(result.reasons.join().includes('遠くの worktree はもうありません'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+test('AU92/92b/92d remote HEAD must be saved, including failure without acceptance and headless inventory fallback', () => {
+  for (const mode of ['unsaved', 'saved', 'headless']) {
+    const f = remoteSetup()
+    try {
+      const sha = f.uniqueCommit()
+      if (mode !== 'unsaved') f.git('-C', f.checkout, 'push', 'origin', `scratch:refs/heads/${f.issue.branch}`)
+      else f.git('-C', f.checkout, 'push', 'origin', f.issue.branch)
+      f.remoteRow(mode === 'headless' ? null : sha)
+      if (mode === 'headless') f.put(join(f.issue.statusDir, 'roles/design/completion.json'), { head: sha })
+      const result = f.clean()
+      assert.equal(result.ok, mode !== 'unsaved', result.reasons.join())
+      assert.equal(f.calls(f.orca).includes('worktree rm'), mode !== 'unsaved')
+      if (mode === 'unsaved') assert.ok(result.reasons.join().includes('保存を証明できない'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+test('AU92c already removed remote worktrees do not block retry after their branches disappear', () => {
+  const f = remoteSetup()
+  try {
+    f.git('-C', f.checkout, 'branch', '-D', f.issue.branch)
+    f.respond('worktree_list', { ok: true, result: { worktrees: [], truncated: false } }, f.orca)
+    const result = f.clean()
+    assert.equal(result.ok, true, result.reasons.join())
+    assert.ok(!existsSync(f.issue.statusDir))
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU92e reviewer roles may be deleted only when their HEAD is saved', () => {
+  for (const saved of [true, false]) {
+    const f = remoteSetup('design_review')
+    try {
+      f.remoteRow(saved ? f.base : f.uniqueCommit())
+      const result = f.clean()
+      assert.equal(result.ok, saved, result.reasons.join())
+      assert.equal(f.calls(f.orca).includes('worktree rm'), saved)
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+test('AU92f merged integration worktrees retain commits made after the accepted HEAD', () => {
+  for (const same of [true, false]) {
+    const f = remoteSetup()
+    try {
+      const sha = f.uniqueCommit()
+      f.remoteRow(sha)
+      f.put(join(f.issue.statusDir, 'roles/design/completion.json'), { head: same ? sha : f.base })
+      const result = f.clean(true)
+      assert.equal(result.ok, same, result.reasons.join())
+      assert.equal(f.calls(f.orca).includes('worktree rm'), same)
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+test('AU92g/92h previous-generation origin branch is evidence for a reset role without new commits', () => {
+  for (const role of ['design', 'design_review'])
+    for (const previous of [true, false]) {
+      const f = remoteSetup(role)
+      try {
+        const sha = f.uniqueCommit()
+        f.git('-C', f.checkout, 'push', 'origin', 'scratch:previous')
+        f.git('-C', f.checkout, 'branch', '-D', f.issue.branch)
+        f.remoteRow(sha)
+        const result = autoCleanup(f.issue.statusDir, f.checkout, f.archive, 2, false, previous ? 'previous' : null)
+        assert.equal(result.ok, previous, result.reasons.join())
+        assert.equal(f.calls(f.orca).includes('worktree rm'), previous)
+      } finally {
+        f.cleanup()
+      }
+    }
+})
+test('AU93 remote stop evidence uses exited liveness and rejects partial host errors', () => {
+  for (const verdict of ['exited', 'live', 'unverifiable', 'partial']) {
+    const f = remoteSetup()
+    try {
+      const row = {
+        dispatchId: 'ctx_design',
+        resource: null,
+        terminalState: 'retained',
+        projection: { liveness: { verdict } },
+      }
+      f.respond(
+        'orchestration_worker-list',
+        {
+          ok: true,
+          result: {
+            workers: [row],
+            ...(verdict === 'partial' ? { partialHostErrors: [{ environmentId: 'env-1' }] } : {}),
+          },
+        },
+        f.orca,
+      )
+      f.respond('orchestration_worker-show', { ok: true, result: { worker: { state: 'active' } } }, f.orca)
+      if (verdict === 'live')
+        f.hook(
+          'orchestration_worker-stop',
+          `printf '%s' '${JSON.stringify({ ok: true, result: { workers: [{ ...row, projection: { liveness: { verdict: 'exited' } } }] } })}' > '${f.orca}/orchestration_worker-list'`,
+          f.orca,
+        )
+      const result = confirmStopped(f.issue.statusDir)
+      assert.equal(result.stopped, verdict === 'exited' || verdict === 'live', result.reasons.join())
+      assert.ok(f.calls(f.orca).includes('--include-remote'))
+      if (verdict === 'partial' || verdict === 'exited') assert.ok(!f.calls(f.orca).includes('worker-stop'))
+      if (verdict === 'live') assert.ok(f.calls(f.orca).includes('worker-stop'))
+    } finally {
+      f.cleanup()
+    }
   }
 })
