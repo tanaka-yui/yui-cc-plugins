@@ -108,7 +108,7 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
         .join('\n')
       break
     case 'stalled':
-      body = `**作業が進んでいません**\n\n経過時間: ${input.elapsedMinutes} 分 / 上限時間: ${input.limitMinutes} 分`
+      body = `**作業が進んでいません**${input.reason ? `\n\n理由: ${clean(input.reason)}` : ''}\n\n経過時間: ${input.elapsedMinutes} 分 / 上限時間: ${input.limitMinutes} 分`
       break
   }
   return { status, body: `${body}\n\n<!-- orca-auto:${status}:${generation}:${event} -->` }

@@ -56,6 +56,7 @@ type Tick = {
   startUsed: boolean
   deferred: Set<string>
   reachable: Map<string, boolean>
+  unreachable: Set<string>
 }
 const error = (tick: Tick, message: string): void => {
   tick.errors++
@@ -455,6 +456,25 @@ const humanStop = (tick: Tick, issue: IssueState): void => {
   tick.save()
   stopRoles(tick, issue)
 }
+const notifyStalled = (tick: Tick, issue: IssueState, reason?: string): void => {
+  if (issue.stalledNotified || !canAutoCall('停滞の通知')) return
+  const body = renderComment({
+    event: 'stalled',
+    generation: issue.generation,
+    reason,
+    elapsedMinutes: Math.floor((Date.parse(autoNow()) - Date.parse(issue.startedAt ?? autoNow())) / 60_000),
+    limitMinutes: issue.limitMinutes,
+  }).body
+  const found = hasCommentMarker(issue, body.split('\n').at(-1) ?? '')
+  if (
+    found === true ||
+    (found === false &&
+      github(['issue', 'comment', String(issue.number), '--repo', issue.repo, '--body', body]).rc === 0)
+  ) {
+    issue.stalledNotified = true
+    tick.save()
+  }
+}
 const progress = (tick: Tick, issue: IssueState): void => {
   if (!canAutoCall('進み')) return
   if (issue.pendingLabel || issue.failReason || issue.startAttempt || issue.cleanupPending || !owns(tick, issue)) return
@@ -495,21 +515,7 @@ const progress = (tick: Tick, issue: IssueState): void => {
     if (next && checkout)
       start(tick, issue, ['--phase', 'exec', '--slug', issue.slug, '--repo-root', checkout], next, false, true)
   } else if (waited.rc === 8 && !issue.stalledNotified) {
-    const body = renderComment({
-      event: 'stalled',
-      generation: issue.generation,
-      elapsedMinutes: Math.floor((Date.parse(autoNow()) - Date.parse(issue.startedAt ?? autoNow())) / 60_000),
-      limitMinutes: issue.limitMinutes,
-    }).body
-    const found = hasCommentMarker(issue, body.split('\n').at(-1) ?? '')
-    if (
-      found === true ||
-      (found === false &&
-        github(['issue', 'comment', String(issue.number), '--repo', issue.repo, '--body', body]).rc === 0)
-    ) {
-      issue.stalledNotified = true
-      tick.save()
-    }
+    notifyStalled(tick, issue)
   } else if (![3, 8, 9].includes(waited.rc)) error(tick, `待機を進められません: ${issue.key} rc=${waited.rc}`)
 }
 
@@ -825,14 +831,36 @@ export const runTick = (name: string): number => {
       startUsed: false,
       deferred: new Set(),
       reachable: new Map(),
+      unreachable: new Set(),
     }
     const blocked = new Set(
       Object.values(state.issues)
         .filter((i) => held(tick, i))
         .map((i) => i.key),
     )
+    for (const issue of Object.values(state.issues)) {
+      if (!ACTIVE.includes(issue.phase) || !issue.host || issue.host === LOCAL_HOST) continue
+      if (!reachable(tick, issue.host)) {
+        tick.unreachable.add(issue.key)
+        blocked.add(issue.key)
+        if (!issue.hostUnreachableSince) {
+          issue.hostUnreachableSince = autoNow()
+          tick.save()
+        }
+        if (issue.startedAt && Date.parse(autoNow()) - Date.parse(issue.startedAt) > issue.limitMinutes * 60_000)
+          notifyStalled(
+            tick,
+            issue,
+            `${hostsOf(config).find((h) => h.id === issue.host)?.name ?? issue.host} につながりません`,
+          )
+      } else if (issue.hostUnreachableSince !== null) {
+        issue.hostUnreachableSince = null
+        tick.save()
+      }
+    }
     for (const issue of Object.values(state.issues))
       if (
+        !tick.unreachable.has(issue.key) &&
         (issue.phase !== 'running' ||
           issue.pendingLabel ||
           issue.failReason ||

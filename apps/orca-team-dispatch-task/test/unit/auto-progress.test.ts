@@ -1,4 +1,5 @@
-import { readState } from '../../lib/auto-state.ts'
+import { autoDir } from '../../lib/auto-paths.ts'
+import { readState, writeState } from '../../lib/auto-state.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
 import assert from 'node:assert/strict'
@@ -206,6 +207,145 @@ test('malformed worker-list evidence cannot authorize stopping a potentially use
     process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
     f.cli('tick')
     assert.ok(!f.childCalls().includes('orca-stop.ts'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+const remoteIssue = (f: ReturnType<typeof runtimeFixture>) => {
+  const i = f.track('running')
+  const s = readState('main')
+  const current = s.issues[i.key]
+  assert.ok(current)
+  current.host = 'env-1'
+  writeState('main', s)
+  f.put(join(i.statusDir, 'workers.json'), {
+    transport: 'mail',
+    integration_branch: 'main',
+    integration_role: 'design',
+    roles: {
+      design: { dispatch: 'ctx_design', environment: 'env-1', branch: i.branch, worktree_path: '/remote/worktree' },
+    },
+  })
+  f.put(f.configFile, {
+    ...f.raw,
+    hosts: [
+      {
+        id: 'local',
+        name: 'This Mac',
+        lanes: 1,
+        orcaBin: 'orca',
+        repos: { 'acme/app': { selector: `path:${f.checkout}`, verified: true } },
+      },
+      {
+        id: 'env-1',
+        name: 'Mac M2max',
+        lanes: 2,
+        orcaBin: 'orca',
+        repos: { 'acme/app': { selector: 'id:R', verified: true } },
+      },
+    ],
+  })
+  f.respond('status', { ok: true, result: { runtime: { reachable: false } } }, f.orca)
+  return i
+}
+test('AU95 unreachable host keeps its issue and resources while another host progresses', () => {
+  const f = runtimeFixture()
+  try {
+    const remote = remoteIssue(f)
+    const local = f.track('running', 8)
+    f.childRc('orca-wait', 0)
+    f.cli('tick')
+    const s = readState('main')
+    assert.equal(s.issues[remote.key]?.phase, 'running')
+    assert.ok(s.issues[remote.key]?.hostUnreachableSince)
+    assert.equal(s.issues[local.key]?.phase, 'finishing')
+    assert.ok(!f.childCalls().includes(remote.statusDir))
+    assert.ok(f.childCalls().includes(local.statusDir))
+    assert.ok(!f.calls(f.orca).includes('worker-stop'))
+    assert.equal(f.calls(f.orca).split('status --environment env-1').length - 1, 1)
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU96 unreachable timed-out host emits one stalled comment without failing or stopping', () => {
+  const f = runtimeFixture()
+  try {
+    const i = remoteIssue(f)
+    process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+    f.cli('tick')
+    f.cli('tick')
+    const current = readState('main').issues[i.key]
+    assert.equal(current?.phase, 'running')
+    assert.equal(current?.stalledNotified, true)
+    const comments = readFileSync(join(f.dir, 'comments.jsonl'), 'utf8')
+    assert.ok(comments.includes('Mac M2max につながりません'))
+    assert.equal(comments.split('orca-auto:in-progress:1:stalled').length - 1, 1)
+    assert.ok(!f.calls(f.orca).includes('worker-stop'))
+    assert.ok(!f.childCalls().includes('orca-wait.ts'))
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU97 restored host clears unreachable state and resumes normal timeout handling', () => {
+  const f = runtimeFixture()
+  try {
+    const i = remoteIssue(f)
+    f.cli('tick')
+    assert.ok(readState('main').issues[i.key]?.hostUnreachableSince)
+    f.respond('status', { ok: true, result: { runtime: { reachable: true } } }, f.orca)
+    f.respond(
+      'orchestration_worker-list',
+      {
+        ok: true,
+        result: {
+          workers: [{ dispatchId: 'ctx_design', resource: null, projection: { liveness: { verdict: 'exited' } } }],
+        },
+      },
+      f.orca,
+    )
+    process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+    f.cli('tick')
+    const current = readState('main').issues[i.key]
+    assert.equal(current?.hostUnreachableSince, null)
+    assert.equal(current?.phase, 'failed')
+    assert.ok(f.childCalls().includes('orca-wait.ts'))
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU98 host status reads obey call caps and leave a report within the tick budget', () => {
+  const f = runtimeFixture()
+  try {
+    remoteIssue(f)
+    process.env.ORCA_AUTO_BUDGET_MS = '3000'
+    process.env.ORCA_AUTO_CALL_CAP_MS = '1000'
+    f.hook('status', "trap '' TERM\nexec >/dev/null 2>&1\nsleep 10", f.orca)
+    const started = Date.now()
+    f.cli('tick')
+    assert.ok(Date.now() - started < 5000)
+    assert.ok(existsSync(join(autoDir('main'), 'report.json')))
+    assert.ok(!f.childCalls().includes('orca-wait.ts'))
+  } finally {
+    for (const key of ['ORCA_AUTO_BUDGET_MS', 'ORCA_AUTO_CALL_CAP_MS']) Reflect.deleteProperty(process.env, key)
+    f.cleanup()
+  }
+})
+
+test('AU96b an unreachable finishing issue also reports its elapsed limit without finalizing', () => {
+  const f = runtimeFixture()
+  try {
+    const i = remoteIssue(f)
+    const s = readState('main')
+    const issue = s.issues[i.key]
+    assert.ok(issue)
+    issue.phase = 'finishing'
+    writeState('main', s)
+    process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'finishing')
+    assert.equal(readState('main').issues[i.key]?.stalledNotified, true)
+    assert.ok(!f.childCalls().includes('orca-pr.ts'))
   } finally {
     f.cleanup()
   }

@@ -61,3 +61,15 @@ test('shared managed and category labels', () => {
   ])
   assert.equal(FEATURE_LABEL, 'feature')
 })
+
+test('AC4 stalled reasons are included without changing the shared marker', () => {
+  const result = renderComment({
+    event: 'stalled',
+    generation: 1,
+    reason: 'Mac M2max につながりません',
+    elapsedMinutes: 61,
+    limitMinutes: 60,
+  })
+  assert.ok(result.body.includes('理由: Mac M2max につながりません'))
+  assert.ok(result.body.endsWith('<!-- orca-auto:in-progress:1:stalled -->'))
+})
