@@ -1,3 +1,4 @@
+import { hostsOf } from '../../lib/auto-hosts.ts'
 import { buildReport } from '../../lib/auto-report.ts'
 import { readState, writeState } from '../../lib/auto-state.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
@@ -22,7 +23,9 @@ test('RP1-3 report preserves the shared contract, excludes judging and orders qu
     const j = { ...i, key: 'acme/app#10', number: 10, phase: 'judging' as const }
     s.issues[j.key] = j
     writeState('main', s)
-    const r = buildReport(f.config(), s, 3, '2026-11-13T05:30:00Z')
+    const host = hostsOf(f.config())[0]
+    assert.ok(host)
+    const r = buildReport(f.config(), s, [{ host, used: 3, reachable: true }], '2026-11-13T05:30:00Z')
     assert.deepEqual(
       Object.keys(r).sort(),
       ['version', 'name', 'updatedAt', 'everyMinutes', 'running', 'queue', 'hosts'].sort(),
@@ -35,6 +38,45 @@ test('RP1-3 report preserves the shared contract, excludes judging and orders qu
       ['acme/app#9', 'acme/app#8'],
     )
     assert.deepEqual(r.hosts, [{ name: hostname(), used: 3, max: 1, reachable: true }])
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('RP4-6 reports every host capacity and maps running issues to their host names without changing contract keys', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track('running')
+    const state = readState('main')
+    const issue = state.issues[i.key]
+    assert.ok(issue)
+    issue.host = 'env-1'
+    const local = hostsOf(f.config())[0]
+    assert.ok(local)
+    const remote = { id: 'env-1', name: 'Mac M2max', lanes: 4, orcaBin: 'orca', repos: {} }
+    const report = buildReport(
+      f.config(),
+      state,
+      [
+        { host: local, used: 1, reachable: true },
+        { host: remote, used: 2, reachable: false },
+      ],
+      '2026-11-13T05:30:00Z',
+    )
+    assert.deepEqual(report.hosts, [
+      { name: hostname(), used: 1, max: 1, reachable: true },
+      { name: 'Mac M2max', used: 2, max: 4, reachable: false },
+    ])
+    assert.equal(report.running[0]?.host, 'Mac M2max')
+    assert.deepEqual(
+      Object.keys(report).sort(),
+      ['version', 'name', 'updatedAt', 'everyMinutes', 'running', 'queue', 'hosts'].sort(),
+    )
+    assert.deepEqual(Object.keys(report.hosts[0] ?? {}).sort(), ['name', 'used', 'max', 'reachable'].sort())
+    assert.deepEqual(
+      Object.keys(report.running[0] ?? {}).sort(),
+      ['issue', 'title', 'host', 'startedAt', 'limitMinutes'].sort(),
+    )
   } finally {
     f.cleanup()
   }

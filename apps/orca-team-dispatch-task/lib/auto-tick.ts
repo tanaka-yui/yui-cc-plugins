@@ -913,9 +913,9 @@ export const runTick = (name: string): number => {
     for (const issue of Object.values(state.issues))
       if (issue.phase === 'dispatching' && !blocked.has(issue.key)) recover(tick, issue)
     refill(tick)
-    const used = hostsOf(config).reduce((sum, host) => sum + capacityOf(tick, host, false).used, 0)
+    const hosts = hostsOf(config).map((host) => ({ host, ...capacityOf(tick, host, false) }))
     if (
-      !writeAtomic(join(autoDir(name), AUTO_FILES.report), JSON.stringify(buildReport(config, state, used, autoNow())))
+      !writeAtomic(join(autoDir(name), AUTO_FILES.report), JSON.stringify(buildReport(config, state, hosts, autoNow())))
     )
       throw new Error('報告を書けません')
     tick.errors += autoCallErrors()
