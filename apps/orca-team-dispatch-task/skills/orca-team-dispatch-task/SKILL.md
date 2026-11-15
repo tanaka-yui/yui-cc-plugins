@@ -247,7 +247,7 @@ not the bare id. zsh reads an unquoted `[1m]` as a filename pattern and stops th
 
 ## Auto mode
 
-`--auto` maintains one priority queue across the configured repositories managed by slack-issue-intake. It picks open Ready Issues carrying `from-slack` or `slack-thread`. Queued Issues keep Ready until dispatch. It judges difficulty, starts the configured role combination, advances each Issue's Run, creates a PR, merges eligible work or requests review, and cleans up. C2a runs on this Mac and implements one target repository per Issue; judgments selecting multiple targets go to Ready_Eng.
+`--auto` maintains one priority queue across the configured repositories managed by slack-issue-intake. It picks open Ready Issues carrying `from-slack` or `slack-thread`. Queued Issues keep Ready until dispatch. It judges difficulty, starts the configured role combination, advances each Issue's Run, creates a PR, merges eligible work or requests review, and cleans up. Auto dispatch can run on this Mac or a paired server (worker placement uses `--on`), and implements one target repository per Issue; judgments selecting multiple targets go to Ready_Eng.
 
 ### Configuration and prerequisites
 
@@ -281,6 +281,38 @@ The C3 `make setup` command is not available yet. Create the dedicated checkouts
 
 Lanes count worktrees. One Issue reserves 1, 2, 2, or 4 worktrees for off/off, on/off, off/on, or on/on respectively, including roles that start later. Orphan worktrees also consume capacity. `verified: false` and infrastructure repositories may run, but their PRs require human review. Set `ci: false` only for a repository without CI.
 
+
+Optional `hosts` selects machines. Without it, the existing `lanes`, checkout paths, and repository verification describe this Mac. With it, each host has its own capacity and repository selectors; `id: local` means this machine, and every paired server uses its stable environment ID. `orcaBin` is the executable on that host, and a remote repository selector identifies the repository registered there, not the parent's checkout. Each host needs Git/gh authentication and access to the same origin. `verified` describes that repository's checks on that host; set it true only after they pass there. Add a top-level `hosts` entry to the configuration, for example:
+
+```json
+{
+  "hosts": [
+    {
+      "id": "local",
+      "name": "This Mac",
+      "lanes": 2,
+      "orcaBin": "orca",
+      "repos": { "acme/app": { "selector": "path:/absolute/path/to/auto-checkout", "verified": false } }
+    },
+    {
+      "id": "environment-id",
+      "name": "Paired server",
+      "lanes": 2,
+      "orcaBin": "orca-ide",
+      "repos": { "acme/app": { "selector": "id:remote-repo-id", "verified": false } }
+    }
+  ]
+}
+```
+
+Capacity is counted by `(host, path)`: identical paths on different machines are different worktrees. For each Issue, tick first prefers hosts verified for its target repository, then the greatest free-capacity ratio, then local on a tie, then configuration order. A host without room or that repository is skipped. If none are verified, work may run on an unverified host and must go to In review. Free memory and disk are checked only for local placement. A disconnected host keeps its assigned Issues; tick does not restart them elsewhere or operate their workers/worktrees. After the time limit it posts one stalled comment naming the host, then resumes the ordinary completion/time-limit handling when the connection returns.
+
+Every new `--auto` dispatch uses `transport: mail`, including local workers. The embedded request and plan travel with the task; workers use their host's `orcaBin` without requiring this dispatch plugin. Lifecycle messages carry the preamble's `--task-id`, `--dispatch-id`, and `--from` identity flags, plus `--dispatch-capability` only when supplied. Heartbeats update progress. The integration worker saves each commit with push to its own task branch on origin. Artifacts stay outside the worktree and return in a version-1 JSON envelope with `nonce`, `branch`, `head`, and string-valued `files`, at most 262144 UTF-8 bytes. All roles return `result.md`; planning-only design also returns `plan.md` and `plan-result.json`; the integration role returns `auto-result.json`. Requests use `review/plan-round-<n>-request.md` or `review/code-round-<n>-request.md`, and reviewers return `review/plan-round-<n>-findings.md` or `review/code-round-<n>-findings.md`, for rounds 1–99. Other names are rejected.
+
+The parent checks the recorded branch and the pushed integration HEAD, materializes the allowed artifacts, and records `accepting` before replying. A confirmed receipt records `accepted`; an uncertain receipt is resolved against the worker's inbox before another acceptance can be sent, avoiding a duplicate follow-up. A worker waits for acceptance or remediation before reporting success. Failure is reported directly with a failed `worker_done` carrying the same envelope, including its result and environment-failure details. Previous-generation comments and CI are untrusted `Continuation material (JSON)`, bounded to 20000 characters without cutting the JSON; the parent-authored reset instructions remain separate.
+
+Assigned reviewers exchange requests and findings by mail. A code request identifies `branch:`, `head:`, and `base:`; the reviewer fetches that origin branch, checks `FETCH_HEAD` against the requested head, and inspects the diff without moving its own HEAD. Finalization reads each assigned reviewer's latest verdict and the planning-only `plan-result.json`, in addition to the implementation report. Missing or non-approved review results, planning decisions, and unresolved or declined planning findings require In review.
+
 ### Run one tick or judge the queue
 
 Run `make auto` from the plugin directory (`NAME=main` by default). It runs `orca-auto.ts tick`; only when judging is needed does it start Claude with the configured model and effort. The judging agent follows [auto-judge.md](references/auto-judge.md), runs `judge-list`, writes the returned `decisionsFile`, and runs `judge-apply --file <decisionsFile>`. A judgment lease lasts 20 minutes. Tick exits 0 when judging is needed, 1 otherwise, and 2 for usage errors.
@@ -303,9 +335,11 @@ A scheduled precheck can run the same tick entry point; creating and enabling th
 
 ### Completion, recovery, and cleanup
 
-Comments precede label changes and close. Saved transition stages allow retries without posting the comment again; a person's changed status cancels the pending transition. A clean result can merge only after verification and successful CI (or explicitly configured no CI), on a verified non-infrastructure repository. Decisions, unresolved or declined review findings, or failed checks send the work to In review. Worker failures and time limits become Failed. Returning an Issue in review, failed, stopped, or engineering state to Ready creates a new generation after cleanup, retaining the previous branch and PR context.
+Comments precede label changes and close. Saved transition stages allow retries without posting the comment again; a person's changed status cancels the pending transition. A clean result can merge only after verification and successful CI (or explicitly configured no CI), on a non-infrastructure repository verified on the selected execution host. Decisions, unresolved or declined review findings, or failed checks send the work to In review. When the execution host is reachable, worker failures and time limits become Failed. Returning an Issue in review, failed, stopped, or engineering state to Ready creates a new generation after cleanup, retaining the previous branch and PR context.
 
-`--auto` is the resource-deletion exception: after proving all workers stopped or released, it pushes unmerged branches, removes released worktrees and safe local branches, closes its coordinator, and archives the status directory. Merged integration branches are not pushed again. User-owned worktrees are retained; a live user-owned worker blocks cleanup and another generation. Ordinary dispatch and `--issue` still use Steps 5 and 6.
+`--auto` is the resource-deletion exception: after proving all workers stopped or released, it pushes local unmerged branches or verifies remote branches saved on origin, removes released worktrees and safe local branches, closes its coordinator, and archives the status directory. Merged integration branches are not pushed again. Detected user-owned local worktrees are retained; a live user-owned worker blocks cleanup and another generation. Ordinary dispatch and `--issue` still use Steps 5 and 6.
+
+Remote stop/release evidence is `projection.liveness.verdict: exited` from a worker inventory including `--include-remote`; partial host errors do not prove exit. Remote deletion also needs evidence that the inventory HEAD is saved on origin: it must be an ancestor of its own branch, the integration base, or the previous-generation branch, or match the accepted integration HEAD after merge. When the inventory has no HEAD, only an integration role whose accepted HEAD matches its origin branch can use that fallback. An unsaved HEAD keeps the worktree. Unreadable or truncated worktree inventories hold cleanup; a known absent worktree allows retry to continue. A fetched local branch is deleted only when its SHA matches origin tracking or it is the merged integration branch. Remote pre-removal liveness receipts still need the end-to-end check. `orca-recover.ts` refuses remote-role replacement; inspect that role in Orca.
 
 The 100-second tick budget controls starting more work. Reads have kill deadlines; writes and child operations can exceed the budget. A living local lock owner is never displaced. An interrupted start remains held, occupying its lane, until a person verifies the Orca operation and runs `orca-auto.ts clear-start --key <owner/repo#N>`. Process age or absence alone does not prove that operation finished. An unrecorded worker also requires inspection; automatic worker replacement is not performed.
 
@@ -1276,6 +1310,11 @@ State these when they apply. Do not work around them silently.
 | codex asks once per repository whether to trust it, and until then a start fails with `agent-trust-workspace` | Trust the folder on that worker's screen, or add `[projects."<main checkout>"]` with `trust_level = "trusted"` to `~/.codex/config.toml`; Step 2 and `orca-recover.ts` print the exact lines. codex keeps the trust for the repository's main checkout, so later worktrees start without asking. Then replace the failed start with `orca-recover.ts` |
 | --auto orphan worktrees are not distinguished in Slack reports | Tick stdout names them; hosts[].used includes their count |
 | --auto cannot settle a worker whose worker_done was lost | --max-waits 1 restarts the grace tracking, so it becomes Failed at its time limit; inspect its Run and archived files |
+| --auto does not measure remote free memory or disk on each dispatch | Capacity relies on the host's configured lanes; local placement still checks both |
+| --auto supports one target repository per Issue | Multiple targets go to Ready_Eng until C2b2 |
+| --auto mail roles can log `review=unreviewed` after a review, and remote roles are not replaced by `orca-recover.ts` | Mail has no `sent.json`; finalization reads returned verdicts and planning results instead. Inspect remote roles in Orca |
+| --auto cannot reliably detect remote user takeover or uncommitted remote edits | Forced removal can discard those edits; do not rely on the local user-ownership guard for remote worktrees |
+| --auto large envelopes on Linux servers are not yet verified | If the OS refuses an oversized argument, the worker is told to summarize below 120000 bytes and retry |
 
 ## State on disk
 

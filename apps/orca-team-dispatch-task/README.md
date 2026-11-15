@@ -9,7 +9,7 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 承認されたものだけを行う。
 
 `--auto` は複数リポジトリのReadyを1本のキューにまとめ、判定・dispatch・PRのmergeまたは確認依頼まで進める。
-`make auto` で1回まわし、report.jsonをSlack側へ渡す。C2aはこのMac・1件1対象リポジトリ。
+`make auto` で1回まわし、report.jsonをSlack側へ渡す。このMacとペアリング済みサーバーへ空き・確認結果で振り分け、メールとoriginへのpushで成果を受け渡す。対象は1件1リポジトリ。
 このモードだけは停止・解放とpushを確認してから資源を片付ける。使い方はskillのAuto modeを参照。
 
 ## 範囲と制限

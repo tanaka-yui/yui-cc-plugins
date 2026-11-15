@@ -630,6 +630,14 @@ if [[ "${DOC_LANG_REGRESSION:-}" != 1 ]]; then
   fi
 fi
 
+# SK37: Auto mode describes paired-server mail/push handoff on both documentation surfaces.
+auto_en=$(awk '/^## Auto mode$/{s=1;next} s&&/^## /{exit} s' "$S")
+auto_ja=$(awk '/^## Auto モード$/{s=1;next} s&&/^## /{exit} s' "$G")
+miss=""
+for word in 'paired server' '--on' 'mail' 'push'; do grep -Fq -- "$word" <<<"$auto_en" || miss="$miss [en:$word]"; done
+for word in 'ペアリング' '--on' 'メール' 'push'; do grep -Fq -- "$word" <<<"$auto_ja" || miss="$miss [ja:$word]"; done
+[[ -z "$miss" ]] && ok 'SK37 Auto multihost handoff' || fail "SK37 $miss"
+
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"

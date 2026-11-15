@@ -59,6 +59,7 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   batch を読み直すたびに同じ所で止まった。件名と本文を表示して既読にし、待ち続ける。送り主は payload の dispatchId か
   `from_handle` と workers.json の terminal で引く。`_orcaLifecycleRejection` を持つ status（Orca の拒否通知）は
   今までどおり拒否の分岐が受け持つ。回帰は `test-wait.sh` の WT4e と WT147-149
+- C2b のmail受理は、このfollowUpを二度起こさないため `accepting` → `accepted` の2段で親が記録する。返事の前にaccepting、okかつmessage.idが返ればaccepted。送信結果が不明なら同じ受理をすぐ再送せず、workerのdispatch inboxに同じnonceの受理があるかを確認する。読めない・100件で全件と言えないときは保留する。WT161b〜dが送信失敗・送る前の中断・inbox不明を固定する。
 - **Orca は終わった dispatch に `status` / `dispatch` / `handoff` が届くと、followUpOf の新しい dispatch を作って同じ
   worktree に worker を起動し直す**（Orca 1.4.246 の orchestration.send。`bUe` が対象 type）。2026-11-03 の logi-app で、
   pending-batch.json を読み直した待機が merge_ready にもう一度 completion-accepted を送り、worker_done を送り終えた役に
@@ -472,7 +473,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 
 ## --auto の要点
 
-- C2a は1台のMac・1 Issueで実装対象1リポジトリ。拾う元は複数、キューは優先度→Ready時刻→key。管理の印は `from-slack` / `slack-thread`。intakeの一覧を正本にし、`--issue` の検索はautoの拾う元ではReadyも除く。`make setup`（C3）はまだ無い。
+- C2b は親1台からこのMacとペアリング済みサーバーへ振り分ける。1 Issueで実装対象1リポジトリ。拾う元は複数、キューは優先度→Ready時刻→key。管理の印は `from-slack` / `slack-thread`。intakeの一覧を正本にし、`--issue` の検索はautoの拾う元ではReadyも除く。`make setup`（C3）はまだ無い。
 - 入口 `bin/orca-auto.ts`、tick本体 `lib/auto-tick.ts`。tickは同期・人の変更・失敗の仕上げ・review/finishing・進み・補充を1歩ずつ行い、report.jsonを書く。判定が必要で20分のリースが無いときだけexit 0。`make auto` はそのときだけ設定のmodel/effortでClaudeを起こす。判定の指示は英語 `references/auto-judge.md` と完全な日本語訳。
 - 2026-11-13、Orca 1.4.257のspike/probe: Issueごとに専用のまとめ役端末とRunを持つ。1つのRunに全Issueを載せると、未決着や知らないdispatchのメールが他のIssueを止める。外のプロセスから本物のhandleで操作できる。端末のシェルに指示文を打ち込まない。
 - 呼び出し元の識別（F6）: Orca端末内から別handleの `--from` を使うと `consumer_fenced`。Runを操作する呼び出しと子のstart/waitには、必ずそのIssueの `ORCA_TERMINAL_HANDLE` を付ける。autoの停止/解放も同じhandleを使う。続きのstartは毎回 `ensureCoordinator` を通す。`run-use` で引き継いだhandleをrun.jsonと状態に記録する。
@@ -495,3 +496,17 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - テスト専用の差し替え: ORCA_AUTO_BIN_DIR / ORCA_AUTO_NOW / ORCA_AUTO_BUDGET_MS / ORCA_AUTO_LOCK_WAIT_MS / ORCA_AUTO_LOCK_TEST_PAUSE_MS / ORCA_AUTO_CALL_CAP_MS / ORCA_AUTO_FREE_MEMORY_MB / ORCA_AUTO_FREE_DISK_MB。通常利用の設定項目ではない。
 - 回帰: AU1〜7（closed/staleが計画AU3b、run-use失敗後closeがAU6b）、AC1〜3、CF1〜6、SS1/2、AU12〜15c、QU1〜4、AU16〜22g、AU23〜29e、ST125〜129、RQ1〜9（RQ3b/5b/6bを含む）、AU30〜39b、AU40〜47（AU42b）、AU50〜59m（AU50b/51b/55b/57b、AU58b〜g、AU59b〜m）、AU60〜62、RP1〜3、AU70〜77（AU76b〜e）、IF22/23、SK34〜36。test-auto.shはnodeのstub統合テストも呼び、最後にrun-allが単体テストも走らせる。
 - レビュー回帰: `auto-progress.test.ts` のC1-1（完了を先に読む）、C1-2（決着済みreviewerへ通知しない）、C2-1（dispatchの決着でrelease）。`auto-cleanup.test.ts` のC1-2（superseded/follow_ups・未記録の系統・userOwned・解放中の出現）。AU59d/AU59jとAU59iもliveなworkerにstopを打つところまで確かめる。
+
+- C2bの設定: `hosts` が無ければ従来のlocal1台（hostname・lanes・orcaBin・path:checkout・verified）。指定時はホスト別のlanesとrepo selector/verifiedを正本にする。空配列・重複ID・不正なselector等を拒否し、旧stateのhost/hostUnreachableSinceはnullに補う。世代を上げたら再配置する。HC1〜5、SS3。
+- C2bの配置: 予約と孤立worktreeは `(host, path)` で数える。同じ絶対パスが2台にあることはspikeで確認済み。確認済み候補→空きの割合→local→設定順。localのメモリ/ディスク不足で後続の遠隔候補まで止めない。statusはcall cap対象で、到達可否はtick内で1台1回。mergeのverifiedも実行先の値。AU80〜85b（AU84bを含む）。
+- mail起動（A2-1）: `task-create --spec` でTaskとRunを検査してから `worker-start --task ... --on ... --worktree new-top-level --repo <host selector> --base-branch origin/<default>`。task無しdispatchは待機が扱えないので、--spec-file直起動にはしない。receiptのeffectsからworktree/terminalを取り、環境別listでpath/branchを得る。親からremote pathへgit/isDirをしない。transport/environment/host_repo/base_branch/worker_orcaはworkers.jsonに固定し、resume/execは記録を使う。ST130〜137（ST131b）、MS1〜10。
+- mailの指示文（A2-6）: 親のplugin/status dirのパスを埋めず、request/plan全文と実行先orcaBinを運ぶ。sendにはpreambleのtask-id/dispatch-id/from（示されたときだけcapability）、checkにはterminalとpeek。遠隔のfrom_handleは「送り主 on サーバー」になるので表示名で決着を引かない。確認コマンドの実行は通常の道具を使えるが、受け渡しではplugin scriptsに頼らない。MS6〜8。
+- 封筒（A3-1/2/8）: UTF-8で262144 bytes以下、version1・nonce16〜64桁hex・head40〜64桁hex・string-valued files。全役result.md、planOnly designのplan.md/plan-result.json、integrationのauto-result.json、designの `review/plan-round-<n>-request.md`、execの `review/code-round-<n>-request.md`、design_reviewの `review/plan-round-<n>-findings.md`、exec_reviewの `review/code-round-<n>-findings.md` だけ許す（nは1〜99）。名前を全件検査してからwriteAtomic。branchは記録と一致、integration headはoriginと一致しなければ差し戻す。plan-resultはdecisionsとreview.unresolved/declinedの文字列配列を必須にする。MA1〜6、WT157〜161/168。
+- mailの失敗（A3-6）: worker_done failedの本文が封筒なら成果を書き出し、done/errorのstatusを親が書いてからsettleする。succeededのintegrationはenvironmentがあるときだけfetchBranch。localはworktreeがcheckout中なので、local branchへのfetchはgitが拒む（実測）。仕上げのPR前も同じく遠隔だけfetchし、無ければ30分再試行してIn review。WT163/163b/167、AU86/86b/87/89。
+- 遠隔の保存と削除（A5-2〜4）: 親は遠隔の未pushコミットをpushできない。成果branchをfetchできないだけで成功と言わず、一覧が「既に無い」か、そのHEADがbase/prevBranchに保存済みの場合だけ未保存無しと読む。削除は役の種類やmerge済みというだけで許さず、一覧HEADが自分/base/prevBranchのorigin上の祖先、またはmergeしたintegrationの受理HEADと一致する証拠を要する。HEAD無しはintegrationのcompletion HEADとorigin一致だけを代替にする。ローカルにfetchしたbranch-Dもorigin trackingと同SHAかmerge済みintegrationだけ。AU88〜92h。
+- 遠隔の停止（A5-3）は `worker-list --include-remote` の `projection.liveness.verdict === exited` を暫定の証拠にする。resource:null/terminalState:retainedは停止後にも返るため、localのGONE_STATESでは進めなかった。partialHostErrorsに対象environmentがあれば何もしない。rm前にexitedになるかはTask 11で未確認（U3）。遠隔での人の操作・未コミット変更は親から見えずforce rmで消えうるので、保護できるとは書かない。AU93、AU90/91/92e/92f。orca-recoverは遠隔役をadopt/restart/nudgeしない（RC52）、wakeはenvironmentを付ける（WK12）。
+- 仕上げ（A5-6）は全レビュー役の最大roundの最後のVERDICTを親が読む。計画のreviewが未承認・未着でもexecの報告だけでmergeしない。phase_bの計画の判断・未解消・不採用はplan-result.jsonで引き継ぎ、計画の理由と実装の理由を合算してIn reviewに回す。コードレビューはorigin上のbranch/head/baseを渡してfetch後のFETCH_HEADを照合し、reviewer自身のHEADを動かさない（A2-7）。AU94〜94e、MS9/10、WT168。mailにsent.jsonは無いためreview-stateのunreviewedはログだけで、autoはここで読む成果を使う。
+- 切断中（A7）: activeなIssueはheldの直後に接続を確認し、hostUnreachableSinceを保存してblockedに入れる。待機・停止・回復・仕上げ・後片付けと最初のtimeoutを飛ばし、再配置しない。上限超過でstalledを1回だけ通知（finishingも含む）。復帰で時刻をnullにして既存の処理へ戻す。AU95〜98/96b、AC4。reportはhost別used/max/reachableとIssueのhost表示名を返し、共有fixtureのキーは変えない（RP4〜6）。
+- 続きの材料（A9-2）: resetの2行と、PR参照/コメント/CIのContinuationMaterialを分離してJSONで囲む。20,000字の上限はJSON.stringifyで測り、最長コメントをsuffix込みで収まる最大長へ二分探索する。surrogate pairは割らない。収まらなければchecksを先にpopし、それからコメントを外すため有限回で終わる。超過分だけ削ってsuffixを足す案は毎回suffix分超過して止まらなかったので採らない。RQ8/9/11/12/12b、AU60〜62。
+- 実機確認の範囲: 2026-11-15のspikeはMac間のmail、remote selector、effects/list、pushを前提にしたもの。今回の実装はstubと一時bare originで検証し、実機にworker/worktree/端末を作っていない。--taskでの遠隔start、役間の遠隔mail、rm前のexited、遠隔dispatch inbox、status heartbeatのpayload、codex push、Linuxの大きい引数等（U1〜16）はTask 11で確認する。大きい引数の失敗時は120000 bytes未満へ縮める。peekで古いメールが戻るときは可能なら30秒待つが、待てなくても待機を打ち切らない。
+- C2b回帰の追加: HC1〜5、SS3、MS1〜10、ST130〜137、RC52、WK12、MA1〜6、WT157〜168、AU80〜98、AC4、RP4〜6、RQ10〜12b、SK37（SK38は既存SK26）。既存file transportのbash期待値・共有fixturesは変えない。
