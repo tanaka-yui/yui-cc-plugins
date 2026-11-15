@@ -157,3 +157,48 @@ test('D25 an uncertain start holds its lane and all resource operations', () => 
     f.cleanup()
   }
 })
+
+test('AU80 default local dispatch uses portable mail transport and records its host', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track()
+    f.cli('tick')
+    const calls = f.childCalls()
+    for (const text of [
+      '"--transport","mail"',
+      '"--base-branch","origin/main"',
+      '"--worker-orca"',
+      `"--host-repo","path:${f.checkout}"`,
+    ])
+      assert.ok(calls.includes(text), text)
+    assert.ok(!calls.includes('"--on"'))
+    assert.equal(readState('main').issues[i.key]?.host, 'local')
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU81 configured remote host is passed to orca-start and saved before dispatch', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track()
+    f.put(f.configFile, {
+      ...f.raw,
+      hosts: [
+        {
+          id: 'env-1',
+          name: 'Mac M2max',
+          lanes: 1,
+          orcaBin: 'orca-ide',
+          repos: { 'acme/app': { selector: 'id:R', verified: true } },
+        },
+      ],
+    })
+    f.respond('status', { ok: true, result: { runtime: { reachable: true } } }, f.orca)
+    f.cli('tick')
+    for (const text of ['"--on","env-1"', '"--host-repo","id:R"', '"--worker-orca","orca-ide"'])
+      assert.ok(f.childCalls().includes(text), text)
+    assert.equal(readState('main').issues[i.key]?.host, 'env-1')
+  } finally {
+    f.cleanup()
+  }
+})

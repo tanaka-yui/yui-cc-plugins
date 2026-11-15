@@ -3,6 +3,7 @@ import { renderComment } from './auto-comment.ts'
 import { type AutoConfig, pickSources, readAutoConfig } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, prStatus, readGithub, viewIssue } from './auto-github.ts'
+import { hostsOf, LOCAL_HOST } from './auto-hosts.ts'
 import {
   AUTO_FILES,
   AUTO_JUDGE_LEASE_MS,
@@ -255,6 +256,8 @@ const refill = (tick: Tick): void => {
   const available = capacity(tick)
   if (!available.readable) return
   let used = available.used
+  const host = hostsOf(tick.config)[0]
+  if (!host) return
   const required = roleNames(tick.config.roles.review_mode, tick.config.roles.phase_b).length
   const sources = new Set(pickSources(tick.config))
   for (const issue of orderQueue(
@@ -275,7 +278,8 @@ const refill = (tick: Tick): void => {
       break
     }
     const repo = tick.config.repos[issue.targets[0] ?? '']
-    if (!repo) continue
+    const hostRepo = host.repos[issue.targets[0] ?? '']
+    if (!repo || !hostRepo) continue
     let freeDisk = 0
     try {
       const stats = statfsSync(repo.checkout)
@@ -326,7 +330,6 @@ const refill = (tick: Tick): void => {
           detail.body,
           repo,
           tick.config.roles,
-          join(statusDir, 'auto-result.json'),
           continuationOf(issue, issue.endedAt ?? issue.updatedAt),
         ),
       )
@@ -334,12 +337,21 @@ const refill = (tick: Tick): void => {
       throw new Error('依頼文を書けません')
     const h = openCoordinator(repo.checkout, slug)
     if (!h) continue
-    Object.assign(issue, { phase: 'dispatching', slug, statusDir, coordinator: h, worktrees: required })
+    Object.assign(issue, { phase: 'dispatching', slug, statusDir, coordinator: h, worktrees: required, host: host.id })
     tick.save()
     start(
       tick,
       issue,
       [
+        '--transport',
+        'mail',
+        '--base-branch',
+        `origin/${defaultBranch}`,
+        '--worker-orca',
+        host.orcaBin,
+        '--host-repo',
+        hostRepo.selector,
+        ...(host.id === LOCAL_HOST ? [] : ['--on', host.id]),
         '--request-file',
         request,
         '--slug',

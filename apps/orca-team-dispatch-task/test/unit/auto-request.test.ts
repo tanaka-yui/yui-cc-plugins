@@ -43,14 +43,13 @@ test('RQ5-6b worker request includes verification and obligations even in plan-o
         'reporter text',
         { ...repo, infra: true, verify: ['npm test', 'npm run lint'] },
         roles,
-        '/tmp/auto-result.json',
         null,
       )
       assert.equal(out.split('\n')[0], 'acme/app#42 題')
       for (const text of [
         'npm test',
         'npm run lint',
-        '/tmp/auto-result.json',
+        'auto-result.json',
         'sudo',
         'plan',
         'apply',
@@ -88,6 +87,25 @@ test('RQ7 result schema fails closed for missing fields and wrong nested types',
     }
     f.put(file, { ...result, verify: { passed: true, ran: [3] } })
     assert.equal(readAutoResult(file), null)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('RQ10 request permits task-branch push and reports artifacts in the envelope without parent paths', () => {
+  const f = fixture()
+  try {
+    f.respond('issue_list', [{ number: 42, title: '題', labels: [], updatedAt: '2026-01-01' }])
+    const s = readState('main')
+    syncIssues(s, f.config().sources)
+    const issue = s.issues['acme/app#42']
+    const repo = f.config().repos['acme/app']
+    assert.ok(issue && repo)
+    const request = buildRequest(issue, 'body', repo, f.config().roles, null)
+    for (const word of ['auto-result.json', '"decisions"', '"verify"', 'envelope'])
+      assert.ok(request.includes(word), word)
+    assert.ok(!request.includes('do not push'))
+    assert.ok(!request.includes('.dispatch'))
   } finally {
     f.cleanup()
   }
