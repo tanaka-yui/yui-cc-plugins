@@ -311,7 +311,8 @@ const refill = (tick: Tick): void => {
     const target = issue.targets[0] ?? ''
     const repo = tick.config.repos[target]
     if (!repo) continue
-    let candidates = capacities.filter(
+    const verified = capacities.filter((c) => c.host.repos[target]?.verified === true)
+    let candidates = (verified.length ? verified : capacities).filter(
       (c) => c.reachable && c.readable && c.host.repos[target] && c.used + required <= c.host.lanes,
     )
     if (!candidates.length) {
@@ -339,8 +340,6 @@ const refill = (tick: Tick): void => {
       console.log('空きメモリまたはディスクが足りません')
       candidates = candidates.filter((c) => c.host.id !== LOCAL_HOST)
     }
-    const verified = candidates.filter((c) => c.host.repos[target]?.verified === true)
-    if (verified.length) candidates = verified
     const chosen = candidates.sort(
       (a, b) =>
         (b.host.lanes - b.used) / b.host.lanes - (a.host.lanes - a.used) / a.host.lanes ||
@@ -350,8 +349,6 @@ const refill = (tick: Tick): void => {
     const host = chosen.host
     const hostRepo = host.repos[target]
     if (!hostRepo) continue
-    if (!hostRepo.verified && !issue.reason.includes('確認が通っていないマシンで実装'))
-      issue.reason += '（確認が通っていないマシンで実装）'
     const status = run('git', ['-C', repo.checkout, 'status', '--porcelain'])
     if (status.rc !== 0 || status.stdout.trim()) {
       console.log(`未コミットの変更があるため補充しません: ${repo.checkout}`)
@@ -393,6 +390,8 @@ const refill = (tick: Tick): void => {
       throw new Error('依頼文を書けません')
     const h = openCoordinator(repo.checkout, slug)
     if (!h) continue
+    if (!hostRepo.verified && !issue.reason.includes('確認が通っていないマシンで実装'))
+      issue.reason += '（確認が通っていないマシンで実装）'
     Object.assign(issue, { phase: 'dispatching', slug, statusDir, coordinator: h, worktrees: required, host: host.id })
     tick.save()
     start(

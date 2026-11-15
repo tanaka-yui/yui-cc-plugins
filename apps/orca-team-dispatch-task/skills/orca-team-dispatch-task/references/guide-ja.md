@@ -286,7 +286,7 @@ C3の `make setup` はまだ無い。専用checkoutと設定は手で用意し�
 }
 ```
 
-使用数は `(host, path)` の組で数え、異なるマシンの同じパスを別のworktreeとして扱う。Issueごとに対象リポジトリの確認済みマシンを優先し、次に空きの割合、同じならlocal、その次に設定順で選ぶ。空きや対象リポジトリの無いマシンは飛ばす。全候補が未確認なら実行できるが、必ず In review に回す。空きメモリとディスクの確認はlocalへ入れるときだけ行う。つながらないマシンのIssueは割り当てを保ち、別マシンでやり直さず、そのworker/worktreeも操作しない。上限時間を超えたらマシン名入りのstalledコメントを1回だけ書き、接続が戻ったら従来の完了・上限時間の処理へ戻る。
+使用数は `(host, path)` の組で数え、異なるマシンの同じパスを別のworktreeとして扱う。Issueごとに、空きを調べる前に、設定の全マシンについて対象リポジトリの確認済みマシンがあるか調べる。1台でもあれば確認済みだけに振り分け、今使えるものが無ければそのIssueを待たせ、別リポジトリのIssueは進める。候補の中では空きの割合、同じならlocal、その次に設定順で選ぶ。空きや対象リポジトリの無いマシンは飛ばす。設定のどのマシンでも未確認の場合だけ未確認のマシンで実行でき、必ず In review に回す。空きメモリとディスクの確認はlocalへ入れるときだけ行う。つながらないマシンのIssueは割り当てを保ち、別マシンでやり直さず、そのworker/worktreeも操作しない。上限時間を超えたらマシン名入りのstalledコメントを1回だけ書き、接続が戻ったら従来の完了・上限時間の処理へ戻る。
 
 新しい `--auto` のdispatchはlocalも含め `transport: mail` を使い、`--on` で選んだマシンともメールで受け渡す。依頼文と計画はtask本文に埋め込み、workerはこのオーケストレーションのプラグインを必要とせず、そのマシンの `orcaBin` を使う。lifecycleのメールにはpreambleの `--task-id`、`--dispatch-id`、`--from` を付け、`--dispatch-capability` が示されていればそれも付ける。heartbeatで進みを更新し、integrationの役はコミットごとに自分のtask branchをoriginへpushする。成果はworktree外に置き、version 1のJSON封筒の `nonce`、`branch`、`head`、値が文字列の `files` で返す。上限はUTF-8で262144バイト。全役が `result.md`、計画だけのdesignはさらに `plan.md` と `plan-result.json`、integrationの役は `auto-result.json` を返す。依頼は `review/plan-round-<n>-request.md` または `review/code-round-<n>-request.md`、レビュー役は `review/plan-round-<n>-findings.md` または `review/code-round-<n>-findings.md` を使い、ラウンドは1〜99。それ以外の名前は拒否する。
 

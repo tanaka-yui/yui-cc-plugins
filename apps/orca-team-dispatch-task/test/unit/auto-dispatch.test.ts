@@ -1,4 +1,5 @@
 import { autoDir } from '../../lib/auto-paths.ts'
+import { slugOf } from '../../lib/auto-request.ts'
 import { readState, writeState } from '../../lib/auto-state.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
@@ -382,6 +383,87 @@ test('AU84b finishing uses the selected host verification instead of the parent 
     f.cli('tick')
     assert.equal(readState('main').issues[i.key]?.phase, 'review')
     assert.ok(!f.calls().includes('pr merge'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+for (const mode of ['full', 'unreachable', 'unreadable', 'memory'])
+  test(`AU100/F1 ${mode} verified host never falls back to an unverified host or blocks another repository`, () => {
+    const f = runtimeFixture()
+    try {
+      const first = f.track()
+      const second = f.track('queued', 8)
+      const other = f.raw.repos['other/api'].checkout
+      f.git('clone', join(f.dir, 'origin.git'), other)
+      const state = readState('main')
+      const a = state.issues[first.key]
+      const b = state.issues[second.key]
+      assert.ok(a && b)
+      a.priority = 'critical'
+      b.priority = 'low'
+      b.targets = ['other/api']
+      writeState('main', state)
+      f.put(f.configFile, {
+        ...f.raw,
+        hosts: [
+          {
+            id: 'local',
+            name: 'This Mac',
+            lanes: 2,
+            orcaBin: 'orca',
+            repos: {
+              'acme/app': { selector: `path:${f.checkout}`, verified: mode === 'memory' },
+              'other/api': { selector: `path:${other}`, verified: mode !== 'memory' },
+            },
+          },
+          {
+            id: 'env-1',
+            name: 'Mac M2max',
+            lanes: 1,
+            orcaBin: 'orca',
+            repos: {
+              'acme/app': { selector: 'id:R', verified: mode !== 'memory' },
+              'other/api': { selector: 'id:OTHER', verified: mode === 'memory' },
+            },
+          },
+        ],
+      })
+      f.respond('status', { ok: true, result: { runtime: { reachable: mode !== 'unreachable' } } }, f.orca)
+      const remoteRows = mode === 'full' ? [{ displayName: 'auto-full', path: '/remote/full' }] : []
+      f.hook(
+        'worktree_list',
+        `case " $* " in *" --environment env-1 "*) printf '%s' '${JSON.stringify({ ok: true, result: { worktrees: remoteRows, truncated: false } })}' > '${f.orca}/worktree_list'; echo '${mode === 'unreadable' ? 1 : 0}' > '${f.orca}/worktree_list.rc';; *) printf '%s' '{"ok":true,"result":{"worktrees":[],"truncated":false}}' > '${f.orca}/worktree_list'; echo 0 > '${f.orca}/worktree_list.rc';; esac`,
+        f.orca,
+      )
+      if (mode === 'memory') process.env.ORCA_AUTO_FREE_MEMORY_MB = '0'
+      f.cli('tick')
+      const after = readState('main')
+      assert.equal(after.issues[first.key]?.phase, 'queued', mode)
+      assert.equal(after.issues[first.key]?.host, null, mode)
+      assert.equal(after.issues[second.key]?.phase, 'running', mode)
+      assert.equal(after.issues[second.key]?.host, mode === 'memory' ? 'env-1' : 'local', mode)
+      assert.equal(f.childCalls().split('orca-start.ts ').length - 1, 1)
+      assert.ok(f.childCalls().includes(other))
+    } finally {
+      f.cleanup()
+    }
+  })
+
+test('AU101/F2 skipped unverified placement never changes the saved judgment reason', () => {
+  const f = runtimeFixture()
+  try {
+    const first = f.track()
+    const second = f.track('queued', 8)
+    multihost(f, 3, 2, false, false)
+    const original = readState('main').issues[first.key]?.reason
+    mkdirSync(join(f.checkout, '.dispatch', slugOf(first.key)), { recursive: true })
+    f.cli('tick')
+    const after = readState('main')
+    assert.equal(after.issues[first.key]?.phase, 'queued')
+    assert.equal(after.issues[first.key]?.reason, original)
+    assert.equal(after.issues[second.key]?.phase, 'running')
+    assert.ok(after.issues[second.key]?.reason.includes('確認が通っていないマシンで実装'))
   } finally {
     f.cleanup()
   }
