@@ -13,6 +13,7 @@ import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
 import { materialize, parseEnvelope } from '../lib/mail-artifacts.ts'
+import { MAIL_ENVELOPE_MAX_BYTES } from '../lib/mail-spec.ts'
 import { repoTargets, roleWorktrees } from '../lib/multi-repo.ts'
 import {
   dispatchSettled,
@@ -788,9 +789,14 @@ const mailOffer = (state: State, entry: Entry, nonce: string, body: string): 0 |
     const envelope = parseEnvelope(body)
     let reason = ''
     if (!targets.length) reason = `the dispatch record lists no repository for ${entry.role}`
+    else if (
+      !multi &&
+      Buffer.byteLength(body, 'utf8') <= MAIL_ENVELOPE_MAX_BYTES &&
+      get(parseJson(body), 'version') === 2
+    )
+      reason = 'envelope must be a version 1 object'
     else if ('error' in envelope) reason = envelope.error
     else if (envelope.nonce !== nonce) reason = 'the envelope nonce does not match the subject'
-    else if (!multi && envelope.version !== 1) reason = 'envelope must be a version 1 object'
     else if (multi && envelope.version !== 2)
       reason = `this dispatch spans ${targets.length} repositories; send a version 2 envelope with heads for ${targets.map((t) => t.repo).join(', ')}`
     else if (!multi && envelope.heads[0]?.branch !== branch)

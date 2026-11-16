@@ -1891,6 +1891,19 @@ mail_setup; mail_message; out=$(w 1 2>&1); rc=$?
 mail_teardown
 
 
+# WT176b: 1 対象では不正な版 2 も従来と同じ理由で差し戻す。
+for shape in valid malformed nonce; do
+ mail_setup
+ body=$(jq '.version=2 | .heads=[{repo:"acme/api",branch:.branch,head:.head}]' <<<"$ENVELOPE")
+ [[ "$shape" == malformed ]] && body=$(jq '.heads=[]' <<<"$body")
+ [[ "$shape" == nonce ]] && body=$(jq '.nonce="fedcba9876543210"' <<<"$body")
+ mail_message merge_ready "$body"; out=$(w 1 2>&1); rc=$?
+ [[ "$rc" -eq 3 && "$out" == *'envelope must be a version 1 object'* ]] \
+  && grep -q 'completion-remediation:' "$ORCA_STUB_DIR/calls.log" \
+  && ok "WT176b $shape" || fail "WT176b $shape rc=$rc $out"
+ mail_teardown
+done
+
 # WT177: 主が古くても 2 つ目の local worktree の編集と commit が停滞の時計を戻す。
 multi_setup
 jq '.roles.design.worktree_path=""' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
