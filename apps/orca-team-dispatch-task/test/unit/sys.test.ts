@@ -1,4 +1,4 @@
-import { envCount, nowIso, nowSeconds, run, runNode, sleepSeconds, which } from '../../lib/sys.ts'
+import { envCount, nowIso, nowSeconds, parseVmStat, run, runNode, sleepSeconds, which } from '../../lib/sys.ts'
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -109,4 +109,19 @@ test('runNode passes explicit environment to its child', () => {
   const script = join(dir, 'env.ts')
   writeFileSync(script, 'process.stdout.write(process.env.AUTO_TEST_ENV)')
   assert.equal(runNode(script, [], false, { AUTO_TEST_ENV: 'passed' }).stdout, 'passed')
+})
+
+test('SY20 parseVmStat counts free, speculative and inactive pages as available memory', () => {
+  const sample = [
+    'Mach Virtual Memory Statistics: (page size of 16384 bytes)',
+    'Pages free:                                    55193.',
+    'Pages active:                                3934644.',
+    'Pages inactive:                              4017761.',
+    'Pages speculative:                              4960.',
+    'Pages wired down:                             315318.',
+    'Pages purgeable:                                7888.',
+  ].join('\n')
+  assert.equal(parseVmStat(sample), ((55193 + 4960 + 4017761) * 16384) / 1024 / 1024)
+  assert.equal(parseVmStat('Pages free: 10.\nPages inactive: 0.\nPages speculative: 0.'), null)
+  assert.equal(parseVmStat(''), null)
 })

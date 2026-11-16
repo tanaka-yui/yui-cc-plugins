@@ -1,6 +1,7 @@
 // OS との境界の共通部品。bash の `cmd args 2>/dev/null`・`command -v`・`sleep`・`date` の置き換え。
 import { spawnSync } from 'node:child_process'
 import { accessSync, constants } from 'node:fs'
+import { freemem } from 'node:os'
 import { delimiter, join } from 'node:path'
 
 export type ProcResult = { rc: number; stdout: string; stderr: string }
@@ -72,4 +73,22 @@ export const nowIso = (): string => new Date().toISOString().replace(/\.\d{3}Z$/
 export const envCount = (name: string, fallback: number): number => {
   const value = process.env[name] ?? ''
   return /^\d+$/.test(value) ? Number(value) : fallback
+}
+
+// ★ macOS の os.freemem() は「Pages free」だけを数え、OS がすぐ返せる inactive と speculative を含まない。
+//   128 GB の Mac でも 1 GB を切ることがあり、--auto の空きメモリの検査がいつも落ちた（2026-11-16 の実機）。
+//   macOS では vm_stat の free + speculative + inactive を空きとして読む。読めなければ os.freemem() に戻す
+export const parseVmStat = (text: string): number | null => {
+  const pageSize = Number(/page size of (\d+) bytes/.exec(text)?.[1])
+  const pages = (name: string): number => Number(new RegExp(`^Pages ${name}:\\s+(\\d+)\\.`, 'm').exec(text)?.[1])
+  const total = pages('free') + pages('speculative') + pages('inactive')
+  return Number.isFinite(pageSize) && pageSize > 0 && Number.isFinite(total) ? (total * pageSize) / 1024 / 1024 : null
+}
+export const availableMemoryMb = (): number => {
+  if (process.platform === 'darwin') {
+    const result = run('vm_stat', [])
+    const parsed = result.rc === 0 ? parseVmStat(result.stdout) : null
+    if (parsed !== null) return parsed
+  }
+  return freemem() / 1024 / 1024
 }

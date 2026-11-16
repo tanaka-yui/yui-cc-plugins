@@ -30,10 +30,10 @@ import { asArray, asObject, asString, get, type Json, type JsonObject } from './
 import { receiptArray, receiptOk } from './orca.ts'
 import { fetchBranch } from './remote-branch.ts'
 import { STATUS } from './status.ts'
-import { envCount, runNode as runProcessNode } from './sys.ts'
+import { availableMemoryMb, envCount, runNode as runProcessNode } from './sys.ts'
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statfsSync } from 'node:fs'
-import { freemem, hostname } from 'node:os'
+import { hostname } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import type { HostConfig } from './auto-hosts.ts'
@@ -334,7 +334,7 @@ const refill = (tick: Tick): void => {
     }
     if (
       candidates.some((c) => c.host.id === LOCAL_HOST) &&
-      (Number(process.env.ORCA_AUTO_FREE_MEMORY_MB ?? freemem() / 1024 / 1024) < tick.config.minFreeMemoryMb ||
+      (Number(process.env.ORCA_AUTO_FREE_MEMORY_MB ?? availableMemoryMb()) < tick.config.minFreeMemoryMb ||
         Number(process.env.ORCA_AUTO_FREE_DISK_MB ?? freeDisk) < tick.config.minFreeDiskMb)
     ) {
       console.log('空きメモリまたはディスクが足りません')
