@@ -134,7 +134,11 @@ or silence permits abandoning the wait. If older unread mail makes checks return
 wait 30 seconds between checks when your environment permits it; otherwise keep checking.
 On remediation, fix the stated problem and repeat step 5 with a new nonce.
 
-7. After acceptance, send completion exactly once:
+7. Never send worker_done while mail is unread: --peek leaves mail unread, and Orca restarts a
+finished worker for its unread mail. Immediately before any worker_done below, mark your mail
+read once without --peek:
+${orca} orchestration check --terminal <handle> --json
+After acceptance, send completion exactly once:
 ${orca} orchestration send --type worker_done --outcome succeeded <ids> --subject "<short status>" --body "<one line>" --json
 If the work itself fails, do not send merge_ready. Put the reason in result.md${input.integration ? ' and the relevant auto-result.json fields, including envFailure for environment problems' : ''}, make an envelope as in step 5, and send:
 ${orca} orchestration send --type worker_done --outcome failed <ids> --subject "<short reason>" --body "$(cat <envelope file>)" --json

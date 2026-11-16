@@ -51,8 +51,13 @@ test('MS5/6/7 completion uses preamble identity, terminal peeks, and failure env
     .split('\n')
     .filter((l) => /orchestration send --type (status|merge_ready|worker_done)/.test(l)))
     assert.ok(line.includes('<ids>'), line)
-  for (const line of spec.split('\n').filter((l) => l.includes('orchestration check')))
-    assert.ok(line.includes('--terminal <handle>') && line.includes('--peek'), line)
+  // worker_done の直前に既読にする 1 行（MS11）だけが --peek を持たない
+  const checks = spec.split('\n').filter((l) => l.includes('orchestration check'))
+  for (const line of checks) assert.ok(line.includes('--terminal <handle>'), line)
+  assert.deepEqual(
+    checks.filter((l) => !l.includes('--peek')),
+    ["'orca' orchestration check --terminal <handle> --json"],
+  )
   const reviewer = renderMailSpec(input({ role: 'exec_review', reviewOf: 'code', integration: false }))
   for (const text of ['review-verdict: code', 'VERDICT: ', 'abort-reviewer:']) assert.ok(reviewer.includes(text), text)
 })
@@ -76,4 +81,18 @@ test('MS10 only planning-only design produces structured planning decisions', ()
   assert.ok(spec.includes('{"decisions":[],"review":{"unresolved":[],"declined":[]}}'))
   assert.ok(!renderMailSpec(input()).includes('plan-result.json'))
   assert.ok(!renderMailSpec(input({ role: 'exec' })).includes('plan-result.json'))
+})
+// 2026-11-16 の実機: --peek で読んだ受理の返事を未読のまま worker_done を送ると、Orca が followUp の dispatch を作り
+// 同じ端末で worker を起こし直した。worker_done の前に --peek の無い check で既読にさせる
+test('MS11 every role reads its mail without --peek before worker_done', () => {
+  for (const spec of [
+    renderMailSpec(input()),
+    renderMailSpec(input({ role: 'exec_review', reviewOf: 'code', integration: false })),
+  ]) {
+    const consume = spec.indexOf('orchestration check --terminal <handle> --json')
+    assert.ok(consume > 0)
+    assert.ok(consume < spec.indexOf('--type worker_done --outcome succeeded'))
+    assert.ok(consume < spec.indexOf('--type worker_done --outcome failed'))
+    assert.ok(spec.includes('Never send worker_done while mail is unread'))
+  }
 })
