@@ -1,0 +1,15 @@
+{
+  "id": "fixture",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "b042d65c-c634-42bf-9c25-f872b3ed87b8::/Users/yui/orca/workspaces/orca-auto-e2e/receipt-probe",
+      "repoId": "b042d65c-c634-42bf-9c25-f872b3ed87b8",
+      "path": "/Users/yui/orca/workspaces/orca-auto-e2e/receipt-probe",
+      "head": "a05325c4a3f5045b9913d06b6290f98ccdff2a07",
+      "branch": "refs/heads/tanaka-yui/receipt-probe",
+      "displayName": "receipt-probe",
+      "baseRef": "refs/remotes/origin/main"
+    }
+  }
+}

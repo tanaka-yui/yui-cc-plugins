@@ -10,8 +10,9 @@
 ## 前提の確かめ（2026-11-17、Orca 1.4.257）
 
 - 1 つの worker が、自分の worktree の外にある 2 つ目の worktree に書き、commit し、push できる。このMac の codex と claude、
-  Mac M2max の codex（`worker-start --on`）で確かめた。Orca は codex を `danger-full-access`（sandbox なし）で起こすので、
-  codex の `writable_roots` の設定は要らない。
+  Mac M2max の codex（`worker-start --on`）で確かめた。このMac の codex のセッションの記録では、Orca は codex を
+  `danger-full-access`（sandbox なし）で起こしていた（M2max のセッションの記録は読んでいないが、`writable_roots` を足さずに通った）。
+  **この機能は、Orca が codex を sandbox なしで起こすことに頼る。**Orca がこれを変えたら、2 つ目の worktree に書けなくなりうる。
 - 親は遠くのマシンにも `worktree create --environment <名前> --repo <selector>` で worktree を作れる（親が遠くの git を打たずに済む）。
 - merge 済みの PR の `headRefOid` は、merge のあとの push でも head branch の削除でも動かない。
 
@@ -27,6 +28,7 @@
 
 ## 私が決めたこと（直してよい）
 
+- `targets` に同じリポジトリが重なっていたら、判定の適用で重複を除く。
 - 1 つ目のリポジトリ（`targets[0]`）を「主」とする。status dir、まとめ役の端末、`run.json` は主のリポジトリの checkout に置く（今と同じ場所）。
 - 各役の 1 つ目の worktree は今と同じく `worker-start` が作る。2 つ目は、親がその役を起こす前に `worktree create`（遠くなら `--environment`）で
   同じマシンに作り、記録してから worker に渡す。worker への指示文は、リポジトリごとの worktree の path・branch・base を並べる。
@@ -35,7 +37,7 @@
 - worker の完了の封筒（mail の merge_ready / worker_done）は、リポジトリごとの `{repo, branch, head}` の一覧を運べる版を足す。1 リポジトリは
   今の版 1 のまま受け付ける。親はリポジトリごとに branch と origin の head を照合する。
 - PR はリポジトリごとに 1 つ作り、作れていないものだけを作り直す。CI はリポジトリごとの `ci` の設定でその PR を見る。merge はすべての PR が
-  merge できる状態になってから、`targets` の順に行う。すべて merge できたら今と同じ `ai-merged` と Done。
+  merge できる状態（CI・レビュー・衝突なし）になってから、`targets` の順に行う。すべて merge できたら今と同じ `ai-merged` と Done。
 - 前の世代の PR を閉じる処理（`handoverPrs`）は、リポジトリを照合して閉じる（今の `prs[0]` との比較だと別のリポジトリの今の PR を閉じうる）。
 - 空きの数え方は「役の数 × リポジトリの数」。空きのディスクと checkout の dirty の確かめ、既定の branch の取得は、全リポジトリについて行う。
 - 後片付けは (役, リポジトリ) ごとに行う。保存済みの証明（origin の祖先・受理した head）はそのリポジトリの checkout で見る。人が操作した

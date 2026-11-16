@@ -13,7 +13,7 @@
 ## 前提の確かめ（設計の「前提の確かめ」の要約）
 
 - worker は自分の worktree の外の 2 つ目の worktree に書き、commit し、push できる（このMac の codex・claude、M2max の codex）。Orca は codex を `danger-full-access` で起こす。
-- 親は `orca worktree create --name <n> --repo <selector> --base-branch <ref> --setup <run|skip> --json`（遠くなら `--environment <id>`）で worktree を作れる。receipt の `result.worktree` に `id`（`<repo id>::<path>`）・`path`・`branch`（`refs/heads/...`）がある。
+- 親は `orca worktree create --name <n> --repo <selector> --base-branch <ref> --setup <run|skip> --json`（遠くなら `--environment <id>`）で worktree を作れる。receipt の `result.worktree` に `id`（`<repo id>::<path>`）・`path`・`branch`（`refs/heads/...`）・`head`・`displayName`（= `--name`）がある。2026-11-17 に `--no-parent` 付きで、このMac と `--environment "Mac M2max"` の両方で同じ形を確かめた。削った実物を `test/fixtures/orca-worktree-create.json` に置いた（stub はこれをもとに答える）。
 
 ## Global Constraints
 
@@ -87,7 +87,7 @@
 ```ts
 export type RepoTarget = { repo: string; checkout: string; hostRepo: string; baseBranch: string; integrationBranch: string }
 export type RoleWorktree = { repo: string; checkout: string; worktreeId: string; worktreePath: string; branch: string; primary: boolean }
-// repos が無ければ、run.json の repo_root と最上位の値から 1 件（repo は integration-result の repo か ''）を返す
+// repos が無ければ、run.json の repo_root と最上位の値から 1 件を返す。そのときの repo は常に ''（integration-result などは読まない）
 export const repoTargets = (workers: JsonObject | null, repoRoot: string): RepoTarget[]
 // 主（roles[role] の値）を先頭に、extra を repos の順に返す。path の無い組は返さない
 export const roleWorktrees = (workers: JsonObject | null, repoRoot: string, role: string): RoleWorktree[]
@@ -120,7 +120,7 @@ export const resultFileOf = (statusDir: string, repo: string | null): string
 
 - [ ] **Step 1: 失敗するテストを書く**
   - `multi-repo.test.ts`:
-    - MR1 `repoTargets` は `repos` が無い記録で 1 件（`checkout` = repoRoot、`hostRepo` = 最上位の `host_repo`、`baseBranch` = `base_branch`、`integrationBranch` = `integration_branch`）。
+    - MR1 `repoTargets` は `repos` が無い記録で 1 件（`repo` = `''`、`checkout` = repoRoot、`hostRepo` = 最上位の `host_repo`、`baseBranch` = `base_branch`、`integrationBranch` = `integration_branch`）。`integration-result.json` に `repo` があっても `repo` は `''` のまま。
     - MR2 `repos` が 2 件の記録で 2 件を順に返す。
     - MR3 `roleWorktrees(workers, root, 'design')` は主を先頭（`primary: true`）に、`extra['acme/web']` を 2 番目（`checkout` は `repos` の `acme/web` の checkout）に返す。`extra` に `repos` に無いリポジトリがあれば返さない。
     - MR4 `readReposFile` は 2 件の正しい JSON を返し、1 件・3 件・重複・空の値・JSON でないものは null。
@@ -134,6 +134,8 @@ export const resultFileOf = (statusDir: string, repo: string | null): string
     - ST141 `--transport mail --repos-file F`（2 件）で、`workers.json` に `repos` が F の順で入り、最上位の値と `run.json` の `repo_root` が `repos[0]` と一致する。
     - ST142 各役について、`worker-start` より前に `worktree create --name <役の名前> --repo <repos[1].host_repo> --base-branch <repos[1].base_branch> --setup <setup> --json` が 1 回呼ばれ（`--on` のあるときは `--environment <id>` 付き）、receipt の id・path・branch（`refs/heads/` を外す）が `roles[<role>].extra['<repos[1].repo>']` に入る。
     - ST143 2 つ目の `worktree create` が失敗したら、その役の `task-create` と `worker-start` を呼ばず、exit は今の「起動できない」と同じ、作れた worktree（前の役のもの）は記録に残る。
+    - ST143b 2 つ目の worktree を作れたあと記録を書けなかった（`roleUpdate` の失敗を stub で起こす）ときは、その役を起こさず、作った worktree の id と path を消すコマンドとともに log に出す（Resources are KEPT）。
+    - ST143c `--resume` で、`extra['<repos[1].repo>']` が既に記録された役は `worktree create` を呼ばずに記録を使い、記録の無い役だけ作る（ST143 の途中で止まった dispatch の続き）。
     - ST144 `--repos-file` を `--transport mail` 無しで渡すと使用法の誤り。`--resume` / `--phase exec` で渡すと今の `--transport` と同じく拒む（記録の値を使う）。`--phase exec` は記録の `repos` から exec・exec_review の 2 つ目の worktree を作る。
     - ST145 `--repos-file` 無しの mail の起動は、`worktree create` を呼ばず、`workers.json` に `repos` も `extra` も書かない（ST130〜137 の期待値のまま）。
 
@@ -144,7 +146,7 @@ export const resultFileOf = (statusDir: string, repo: string | null): string
 - [ ] **Step 3: 実装する**
   - `lib/multi-repo.ts` に上の 4 関数。`readReposFile` は 2 件ちょうど（設計の上限）。
   - `orca-start.ts`: `--repos-file` を `mailFlags` と同じ扱いの値として受け、`readReposFile` で読む（null なら die）。`repos[0]` の `checkout` / `host_repo` / `base_branch` が `--repo-root` / `--host-repo` / `--base-branch` と違えば die。`integration_branch` は各 checkout の HEAD の branch（今の主の決め方と同じ）。`workers.json` の初期化で `repos` を書く。
-  - `launchMailRole`: `repos` が 2 件のとき、`task-create` の前に `repos[1]` の worktree を `worktree create`（名前は主と同じ `name`、`--setup context.setup`、`--no-parent`、遠くなら `--environment <environment>`）で作り、`roleUpdate` で `extra` に書いてから指示文を作る。`renderMailSpec` に `extraRepos` を渡す。
+  - `launchMailRole`: `extra` に既に記録があればそれを使う（`--resume`。ST143c）。記録が無く `repos` が 2 件のとき、`task-create` の前に `repos[1]` の worktree を `worktree create`（名前は主と同じ `name`、`--setup context.setup`、`--no-parent`、遠くなら `--environment <environment>`）で作り、`roleUpdate` で `extra` に書いてから指示文を作る。`renderMailSpec` に `extraRepos` を渡す。
   - `mail-spec.ts`: `extraRepos` が空でないときだけ、(1) 作業の段落に「This task spans N repositories」と、リポジトリごとの path・branch・base の一覧、(2) 手順 1・3 を各 worktree に `git -C <path>` で行うこと、(3) code review の依頼の 4 行の組、(4) reviewer の fetch と照合をリポジトリごとの自分の worktree で行うこと、(5) 手順 5 の封筒を版 2 の `heads`（全リポジトリ。主を先頭）にすること、を足す。空なら今の文のまま。
 
 - [ ] **Step 4: 走らせて通るのを見る**
@@ -217,11 +219,13 @@ export const resultFileOf = (statusDir: string, repo: string | null): string
   - `auto-judge.test.ts`:
     - AU25/AU26 の期待値を変える（**計画からのずれではなく設計どおり。result.md に書く**）: `targets: ['acme/app', 'other/api']` は `queued`（Ready_Eng にしない）。
     - AU103 3 つの targets は Ready_Eng で、理由に「3 つ以上のリポジトリ」を含む。
+    - AU103b 同じリポジトリを 2 回含む targets（`['acme/app', 'acme/app']`）は、判定の適用で重複を除いて 1 件として扱う（2 つ目の worktree を作らない）。
   - `auto-state.test.ts` / `auto-queue.test.ts`:
     - AU104 `branches` / `prevBranches` の無い旧い状態は `{}` で読み、文字列でない値の状態は不正として拒む。
     - AU104b 新しい世代では `prevBranches` に前の `branches`（空なら前の `prevBranches`）を引き継ぎ、`branches` を `{}` にする（今の `prevBranch` と同じ規則）。
   - `auto-dispatch.test.ts`（fixture の `acme/app` と `other/api` の 2 つを targets に持つ Issue）:
-    - AU105 両方のリポジトリを `verified` で持つマシンだけを候補にする。片方しか持たないマシンには置かず、どのマシンも両方を持たなければ「この Issue を入れられるマシンがありません」。
+    - AU105 両方のリポジトリを `verified` で持つマシンがあれば、それだけを候補にする。片方しか持たない（`hosts[].repos` に無い）マシンには置かない。どのマシンも両方を持たなければ「この Issue を入れられるマシンがありません」。
+    - AU105b 両方を `verified` で持つマシンが無いときは、両方を `hosts[].repos` に持つマシンを候補にし、今の 1 リポジトリと同じく理由に「（確認が通っていないマシンで実装）」を足す（仕上げで「確認できないリポジトリです。」になり AI は merge しない）。
     - AU106 必要な worktree は「役の数 × 2」で数え、`issue.worktrees` と `chosen.used` に入る。`capacityOf` は `roles[*].extra[*].worktree_path` も持ち主のある worktree として数える（持ち主のいない worktree に数えない）。
     - AU107 どちらかの checkout が dirty なら補充しない。既定 branch の取得と `fetch`・`checkout -B` を両方の checkout で行う。
     - AU108 起動の引数に `--repos-file <path>` が入り、その JSON の 2 件が targets の順・それぞれの `checkout`・`host_repo`（そのマシンの selector）・`base_branch`（`origin/<その既定>`）を持つ。`--repo-root` と `--host-repo` と `--base-branch` は 1 件目の値。
@@ -235,12 +239,12 @@ export const resultFileOf = (statusDir: string, repo: string | null): string
 
 - [ ] **Step 2: 走らせて失敗を見る**
   Run: `node --test test/unit/auto-judge.test.ts test/unit/auto-state.test.ts test/unit/auto-queue.test.ts test/unit/auto-dispatch.test.ts test/unit/auto-request.test.ts test/unit/auto-continuation.test.ts; bash test/test-wait.sh < /dev/null`
-  Expected: AU25/AU26（新しい期待値）、AU103〜AU108、AU110、RQ13、WT177 が失敗。AU109 は通る。
+  Expected: AU25/AU26（新しい期待値）、AU103〜AU108（AU103b・AU105b を含む）、AU110、RQ13、WT177 が失敗。AU109 は通る。
 
 - [ ] **Step 3: 実装する**
-  - `orca-auto.ts`: `targets.length > 1` を `targets.length > 2` に、理由の文を「（3 つ以上のリポジトリの Issue は自動実行の対象外です）」に。
+  - `orca-auto.ts`: 判定を適用する前に targets の重複を除く（順は最初の出現のまま）。`targets.length > 1` を `targets.length > 2` に、理由の文を「（3 つ以上のリポジトリの Issue は自動実行の対象外です）」に。
   - `auto-state.ts` / `auto-queue.ts`: 2 つの鍵の型・検査・既定・世代の引き継ぎ。
-  - `refill`: 全 targets の `repos` 設定があること、候補のマシンが全 targets を持ち（verified の絞り込みも全 targets）、全 checkout の空きディスク・dirty・既定 branch を確かめる。status dir・まとめ役は 1 件目の checkout。2 件のときだけ `--repos-file` を書いて渡す。`required` は役の数 × targets の数。
+  - `refill`: 全 targets の `repos` 設定があること、候補のマシンが全 targets を持ち（verified の絞り込みは全 targets が verified のマシン。無ければ全 targets を持つマシンにして未確認の印を付ける。AU105b）、全 checkout の空きディスク・dirty・既定 branch を確かめる。status dir・まとめ役は 1 件目の checkout。2 件のときだけ `--repos-file` を書いて渡す。`required` は役の数 × targets の数。
   - `capacityOf` の `owned` に `extra` の path を足す（環境は役の `environment`）。
   - `branchOf` を使う所（started のコメントと `issue.branch` の記録）で、2 件のときは `branches` に `roleWorktrees(workers, root, integration_role)` のリポジトリ → branch を入れる。`issue.branch` は主の branch のまま。
   - `buildRequest` の第 3 引数を配列に、`continuationOf` は `prevBranches` が 2 件以上ならリポジトリごとの指示。
@@ -278,6 +282,7 @@ export const resultFileOf = (statusDir: string, repo: string | null): string
     - AU111 PR が無ければ、targets の順にリポジトリごとに `orca-pr.ts --repo <r>` を呼び、`issue.prs` を targets の順で 2 件にする。1 件だけ作れたら、作れた分を保存して次の tick で残りだけを作る。
     - AU112 どちらかの PR の checks が pending なら待つ。`ci: true` のリポジトリの PR だけ「CI が始まりません」の判定に入れる。
     - AU113 両方が merge できる状態なら、targets の順に `gh pr merge` を打ち、両方の成功で `ai-merged`（`prs` 2 件）と Done。
+    - AU113b 最初の merge の前に、全 PR の `mergeable`（`gh pr view --json mergeable`）を読む。どれかが `CONFLICTING` なら 1 つも merge せず、理由「<repo>#<n> が衝突しています。」で In review。`UNKNOWN` なら merge せずに次の tick で読み直す。
     - AU114 1 つ目の merge が通り 2 つ目が失敗したら、`partial-merge` のコメント（`mergedPrs` に 1 つ目、`unmergedPrs` に 2 つ目と理由「merge できませんでした」）で In review。1 つ目が失敗したら今と同じ「PR を merge できませんでした。」の needs-review。
     - AU115 既に MERGED の PR は merge し直さない。片方が CLOSED なら理由「PR が閉じられています。」で In review（今の文）。
     - AU116 `確認できないリポジトリです。` と `インフラの変更は確認が必要です。` は、どちらかのリポジトリが当てはまれば理由に入る。
@@ -290,7 +295,7 @@ export const resultFileOf = (statusDir: string, repo: string | null): string
 
 - [ ] **Step 3: 実装する**
   - `orca-pr.ts`: `workers.json` に `repos` があれば、`--repo` と一致する組の `checkout` を root、`roleWorktrees` のその組の branch を branch、`integrationBranch` を base、`resultFileOf(statusDir, repo)` を結果ファイルにする。`repos` が無ければ今のまま。
-  - `finish`: `repoTargets` の順に PR を作る（`issue.prs` に無いリポジトリだけ）。状態は全 PR を読み、merge は targets の順。`partial-merge` は `transition(issue, 'partial-merge', { mergedPrs, unmergedPrs }, STATUS.inProgress, STATUS.inReview, false, 'review', tick.save)`。
+  - `finish`: `repoTargets` の順に PR を作る（`issue.prs` に無いリポジトリだけ）。状態は全 PR を読み、merge の前に全 PR の `mergeable` を読む（AU113b）。merge は targets の順で、既に MERGED の PR は飛ばす。`partial-merge` は `transition(issue, 'partial-merge', { mergedPrs, unmergedPrs }, STATUS.inProgress, STATUS.inReview, false, 'review', tick.save)`。
   - `handoverPrs`: 前の PR と同じリポジトリの今の PR を探す。無ければ閉じずに理由へ。
   - `auto-comment.ts`: `branches` の表示。
 
@@ -320,7 +325,7 @@ export const resultFileOf = (statusDir: string, repo: string | null): string
     - AU119 遠くの役の 2 つ目の worktree の保存の証明は、そのリポジトリの checkout と `completion.json` の `heads[<repo>]` で見る。証明できなければその worktree を残し、記録を退避しない。
     - AU120 `mergedRepos: ['other/api']` のとき、`other/api` の成果の branch は merge 済みとして消し、`acme/app` の branch は origin と同じ SHA のときだけ消す（それ以外は「保存を証明できないためブランチを残しました」）。
     - AU121 全役の主と 2 つ目の worktree を `worktree rm`（遠くは `--environment`）し、全部消えたら status dir を退避する。人が操作した端末の役は、その役の両リポジトリの worktree を残す。
-    - AU122 1 リポジトリの記録は今の期待値のまま（AU58*・AU88〜93・AU102/102b・C1-2）。呼び出しの形が変わる既存のテストは、引数の書き換えだけで期待値を変えない。
+    - AU122 1 リポジトリの記録（PR が作られて `integration-result.json` に `repo` がある状態を含む）で `mergedRepos: ['']` を渡すと、成果の branch を merge 済みとして消す。そのほかは今の期待値のまま（AU58*・AU88〜93・AU102/102b・C1-2）。呼び出しの形が変わる既存のテストは、引数の書き換えだけで期待値を変えない。
   - `auto-progress.test.ts`:
     - AU123 2 リポジトリの Issue の失敗の仕上げは、両リポジトリの branch を push してから、failed のコメントに `branches` 2 件と「push 済み」を書く。片方の push が失敗したら「push できていません」。
 
@@ -330,7 +335,7 @@ export const resultFileOf = (statusDir: string, repo: string | null): string
 
 - [ ] **Step 3: 実装する**
   - `pushBranches` / `autoCleanup` を `roleWorktrees` の組ごとに回す。`kept` は役の単位のまま（1 つの役の端末が全リポジトリの worktree を使うので、人が操作した役は全リポジトリを残す）。
-  - `clean`: PR の状態を読み、MERGED の PR のリポジトリを `mergedRepos` に（1 リポジトリは今の `prs.every(MERGED)` と同じ結果になるよう `['']`）。`finishFailure` は `pushBranches` の結果と `branches` をコメントへ。
+  - `clean`: PR の状態を読み、MERGED の PR のリポジトリを `mergedRepos` に。1 リポジトリ（`repos` の無い記録）は `repoTargets` の `repo` が常に `''` なので、今の `prs.every(MERGED)` が真なら `['']`、偽なら `[]` を渡す。`finishFailure` は `pushBranches` の結果と `branches` をコメントへ。
 
 - [ ] **Step 4: 走らせて通るのを見る**
   Run: 上と同じコマンド。続けて `bash test/run-all.sh < /dev/null`。
