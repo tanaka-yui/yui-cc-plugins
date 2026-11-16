@@ -3,6 +3,7 @@ import { envArgs, LOCAL_HOST } from './auto-hosts.ts'
 import { AUTO_WORKTREE_LIST_LIMIT, archiveStatusDir, autoRun as run, autoOrca as runOrca } from './auto-paths.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject } from './json.ts'
+import { repoTargets, roleWorktrees } from './multi-repo.ts'
 import {
   dispatchSettled,
   GONE_STATES,
@@ -69,41 +70,52 @@ const ahead = (checkout: string, branch: string, base: string): boolean => {
 export type RemoteRow = { present: boolean; head: string }
 export const pushBranches = (
   statusDir: string,
-  checkout: string,
-  skip: string | null,
+  skipRepos: string[],
   remote: Record<string, RemoteRow> = {},
-  prevBranch: string | null = null,
+  prevBranches: Record<string, string> = {},
 ): { pushed: boolean; reasons: string[] } => {
   const workers = readWorkers(statusDir)
-  if (!workers && existsSync(join(statusDir, 'workers.json')))
+  const root = asString(get(readJson(join(statusDir, 'run.json')), 'repo_root')) ?? ''
+  const targets = repoTargets(workers, root)
+  if ((!workers && existsSync(join(statusDir, 'workers.json'))) || !targets.length)
     return { pushed: false, reasons: ['worker の記録を読めません'] }
-  const base = asString(workers?.integration_branch) ?? ''
+  const integration = roleWorktrees(workers, root, asString(workers?.integration_role) ?? '')
   const reasons: string[] = []
   const seen = new Set<string>()
   for (const [role, data] of Object.entries(rolesOf(workers))) {
-    const branch = asString(get(data, 'branch'))
     const environment = asString(get(data, 'environment'))
     if (environment && role !== workers?.integration_role) continue
-    if (!branch || branch === skip || seen.has(branch)) continue
-    seen.add(branch)
-    if (environment) {
+    for (const w of roleWorktrees(workers, root, role)) {
+      const branch = w.branch
+      const key = `${w.repo}\t${branch}`
       if (
-        fetchBranch(checkout, branch) ||
-        remote[role]?.present === false ||
-        savedOnOrigin(checkout, remote[role]?.head ?? '', [base, prevBranch])
+        !branch ||
+        (skipRepos.includes(w.repo) && branch === integration.find((i) => i.repo === w.repo)?.branch) ||
+        seen.has(key)
       )
         continue
-      reasons.push(`${branch} は origin にもこの Mac にもありません`)
-      continue
+      seen.add(key)
+      const base = targets.find((t) => t.repo === w.repo)?.integrationBranch ?? ''
+      const previous = prevBranches[w.repo] ?? null
+      if (environment) {
+        if (
+          fetchBranch(w.checkout, branch) ||
+          remote[`${role}\t${w.repo}`]?.present === false ||
+          savedOnOrigin(w.checkout, remote[`${role}\t${w.repo}`]?.head ?? '', [base, previous])
+        )
+          continue
+        reasons.push(`${branch} は origin にもこの Mac にもありません`)
+        continue
+      }
+      const found = existsBranch(w.checkout, branch)
+      if (found.rc !== 0) {
+        if (found.rc !== 1 || found.stderr) reasons.push(`ブランチを読めません: ${branch}`)
+        continue
+      }
+      if (!ahead(w.checkout, branch, base)) continue
+      if (git(w.checkout, 'push', 'origin', `refs/heads/${branch}:refs/heads/${branch}`).rc !== 0)
+        reasons.push(`push できません: ${branch}`)
     }
-    const found = existsBranch(checkout, branch)
-    if (found.rc !== 0) {
-      if (found.rc !== 1 || found.stderr) reasons.push(`ブランチを読めません: ${branch}`)
-      continue
-    }
-    if (!ahead(checkout, branch, base)) continue
-    if (git(checkout, 'push', 'origin', `refs/heads/${branch}:refs/heads/${branch}`).rc !== 0)
-      reasons.push(`push できません: ${branch}`)
   }
   return { pushed: reasons.length === 0, reasons }
 }
@@ -216,16 +228,20 @@ export const confirmStopped = (statusDir: string): { stopped: boolean; kept: str
 }
 export const autoCleanup = (
   statusDir: string,
-  checkout: string,
   archiveDir: string,
   generation: number,
-  merged: boolean,
-  prevBranch: string | null = null,
+  mergedRepos: string[],
+  prevBranches: Record<string, string> = {},
 ): { ok: boolean; pushed: boolean; reasons: string[] } => {
+  const workers = readWorkers(statusDir)
+  const root = asString(get(readJson(join(statusDir, 'run.json')), 'repo_root')) ?? ''
+  const targets = repoTargets(workers, root)
+  if ((!workers && existsSync(join(statusDir, 'workers.json'))) || !targets.length)
+    return { ok: false, pushed: false, reasons: ['worker の記録を読めません'] }
   const stopped = confirmStopped(statusDir)
   if (!stopped.stopped) return { ok: false, pushed: false, reasons: stopped.reasons }
-  const workers = readWorkers(statusDir)
-  const integration = asString(get(workers, 'roles', asString(workers?.integration_role) ?? '', 'branch'))
+  const integrationRole = asString(workers?.integration_role) ?? ''
+  const integration = roleWorktrees(workers, root, integrationRole)
   const roles = Object.entries(rolesOf(workers))
   const lists = new Map<string, Json[]>()
   const remote: Record<string, RemoteRow> = {}
@@ -246,10 +262,12 @@ export const autoCleanup = (
         return { ok: false, pushed: false, reasons: [`worktree の一覧を読めません: ${environment}`] }
       lists.set(environment, rows)
     }
-    const row = lists.get(environment)?.find((w) => get(w, 'path') === get(data, 'worktree_path'))
-    remote[role] = { present: !!row, head: asString(get(row, 'head')) ?? '' }
+    for (const w of roleWorktrees(workers, root, role)) {
+      const row = lists.get(environment)?.find((r) => get(r, 'path') === w.worktreePath)
+      remote[`${role}\t${w.repo}`] = { present: !!row, head: asString(get(row, 'head')) ?? '' }
+    }
   }
-  const pushed = pushBranches(statusDir, checkout, merged ? integration : null, remote, prevBranch)
+  const pushed = pushBranches(statusDir, mergedRepos, remote, prevBranches)
   if (!pushed.pushed) return { ok: false, ...pushed }
   const reasons = [...stopped.reasons, ...pushed.reasons]
   const kept = new Set(stopped.kept.map((line) => line.split(' ', 1)[0]))
@@ -264,55 +282,62 @@ export const autoCleanup = (
   for (const [role, data] of roles) {
     if (kept.has(role)) continue
     const environment = asString(get(data, 'environment'))
-    const path = asString(get(data, 'worktree_path'))
-    const branch = asString(get(data, 'branch'))
-    const row = path ? lists.get(environment ?? LOCAL_HOST)?.find((w) => get(w, 'path') === path) : null
-    if (environment && path && !row) reasons.push(`遠くの worktree はもうありません: ${environment} ${path}`)
-    if (path && row) {
-      if (environment) {
-        const head = asString(get(row, 'head')) ?? ''
-        const acceptedHead = asString(get(readJson(join(statusDir, 'roles', role, 'completion.json')), 'head')) ?? ''
-        const isIntegration = role === workers?.integration_role
-        const saved = head
-          ? savedOnOrigin(checkout, head, [branch, asString(workers?.integration_branch), prevBranch]) ||
-            (isIntegration && merged && head === acceptedHead)
-          : isIntegration && !!acceptedHead && !!branch && remoteHead(checkout, branch) === acceptedHead
-        if (!saved) {
+    for (const w of roleWorktrees(workers, root, role)) {
+      const path = w.worktreePath
+      const branch = w.branch
+      const base = targets.find((t) => t.repo === w.repo)?.integrationBranch ?? ''
+      const previous = prevBranches[w.repo] ?? null
+      const merged = mergedRepos.includes(w.repo)
+      const row = path ? lists.get(environment ?? LOCAL_HOST)?.find((r) => get(r, 'path') === path) : null
+      if (environment && path && !row) reasons.push(`遠くの worktree はもうありません: ${environment} ${path}`)
+      if (path && row) {
+        if (environment) {
+          const head = asString(get(row, 'head')) ?? ''
+          const completion = readJson(join(statusDir, 'roles', role, 'completion.json'))
+          const acceptedHead =
+            asString(get(completion, 'heads', w.repo)) ?? (w.primary ? (asString(get(completion, 'head')) ?? '') : '')
+          const isIntegration = role === integrationRole
+          const saved = head
+            ? savedOnOrigin(w.checkout, head, [branch, base, previous]) ||
+              (isIntegration && merged && head === acceptedHead)
+            : isIntegration && !!acceptedHead && !!branch && remoteHead(w.checkout, branch) === acceptedHead
+          if (!saved) {
+            ok = false
+            reasons.push(`保存を証明できないため遠くの worktree を残しました: ${environment} ${path}`)
+            continue
+          }
+        }
+        const removed = runOrca([
+          'worktree',
+          'rm',
+          ...envArgs(environment ?? LOCAL_HOST),
+          '--worktree',
+          `path:${path}`,
+          '--force',
+          '--delete-branch',
+          '--json',
+        ])
+        if (!receiptOk(removed)) {
           ok = false
-          reasons.push(`保存を証明できないため遠くの worktree を残しました: ${environment} ${path}`)
+          reasons.push(`worktree を消せません: ${path}`)
           continue
         }
       }
-      const removed = runOrca([
-        'worktree',
-        'rm',
-        ...envArgs(environment ?? LOCAL_HOST),
-        '--worktree',
-        `path:${path}`,
-        '--force',
-        '--delete-branch',
-        '--json',
-      ])
-      if (!receiptOk(removed)) {
-        ok = false
-        reasons.push(`worktree を消せません: ${path}`)
-        continue
-      }
+      if (!branch || existsBranch(w.checkout, branch).rc !== 0) continue
+      const local = git(w.checkout, 'rev-parse', '--verify', `refs/heads/${branch}`)
+      const remoteRef = git(w.checkout, 'rev-parse', '--verify', `refs/remotes/origin/${branch}`)
+      const same = local.rc === 0 && remoteRef.rc === 0 && local.stdout.trim() === remoteRef.stdout.trim()
+      const safe =
+        same ||
+        (merged && branch === integration.find((i) => i.repo === w.repo)?.branch) ||
+        (!environment && !ahead(w.checkout, branch, base))
+      if (safe) {
+        if (git(w.checkout, 'branch', '-D', branch).rc !== 0) {
+          ok = false
+          reasons.push(`ブランチを消せません: ${branch}`)
+        }
+      } else reasons.push(`保存を証明できないためブランチを残しました: ${branch}`)
     }
-    if (!branch || existsBranch(checkout, branch).rc !== 0) continue
-    const local = git(checkout, 'rev-parse', '--verify', `refs/heads/${branch}`)
-    const remoteRef = git(checkout, 'rev-parse', '--verify', `refs/remotes/origin/${branch}`)
-    const same = local.rc === 0 && remoteRef.rc === 0 && local.stdout.trim() === remoteRef.stdout.trim()
-    const safe =
-      same ||
-      (merged && branch === integration) ||
-      (!environment && !ahead(checkout, branch, asString(workers?.integration_branch) ?? ''))
-    if (safe) {
-      if (git(checkout, 'branch', '-D', branch).rc !== 0) {
-        ok = false
-        reasons.push(`ブランチを消せません: ${branch}`)
-      }
-    } else reasons.push(`保存を証明できないためブランチを残しました: ${branch}`)
   }
   if (!ok) return { ok: false, pushed: true, reasons }
   closeCoordinator(statusDir)

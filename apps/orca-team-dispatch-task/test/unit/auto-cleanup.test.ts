@@ -1,5 +1,8 @@
 import { autoCleanup, confirmStopped, pushBranches } from '../../lib/auto-cleanup.ts'
 import { autoDir } from '../../lib/auto-paths.ts'
+import { prevBranchesOf } from '../../lib/auto-tick.ts'
+import { readJson } from '../../lib/fs.ts'
+import { asObject, get } from '../../lib/json.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
 import assert from 'node:assert/strict'
@@ -27,7 +30,7 @@ const setup = () => {
     ...f,
     issue,
     archive,
-    clean: (merged = false) => autoCleanup(issue.statusDir, f.checkout, archive, 1, merged),
+    clean: (merged = false) => autoCleanup(issue.statusDir, archive, 1, merged ? [''] : []),
   }
 }
 for (const field of ['follow_ups', 'superseded'])
@@ -446,7 +449,7 @@ test('AU88/88b/88c absent remote integration branch is a failure, local and revi
           integration_role: 'design',
           roles: { design: { branch: f.issue.branch } },
         })
-      const result = pushBranches(f.issue.statusDir, f.checkout, null)
+      const result = pushBranches(f.issue.statusDir, [])
       assert.equal(result.pushed, role !== 'design')
       if (role === 'design') assert.ok(result.reasons.join().includes('origin にもこの Mac にもありません'))
     } finally {
@@ -543,7 +546,7 @@ test('AU92g/92h previous-generation origin branch is evidence for a reset role w
         f.git('-C', f.checkout, 'push', 'origin', 'scratch:previous')
         f.git('-C', f.checkout, 'branch', '-D', f.issue.branch)
         f.remoteRow(sha)
-        const result = autoCleanup(f.issue.statusDir, f.checkout, f.archive, 2, false, previous ? 'previous' : null)
+        const result = autoCleanup(f.issue.statusDir, f.archive, 2, [], previous ? { '': 'previous' } : {})
         assert.equal(result.ok, previous, result.reasons.join())
         assert.equal(f.calls(f.orca).includes('worktree rm'), previous)
       } finally {
@@ -655,6 +658,332 @@ test('AU102b an unsettled dispatch without a bound resource is not proof of stop
     f.respond('orchestration_worker-show', { ok: true, result: { worker: { state: 'active' } } }, f.orca)
     assert.equal(f.clean().ok, false)
     assert.ok(!f.calls(f.orca).includes('worktree rm'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+const multiCleanup = (remote = false) => {
+  const f = runtimeFixture()
+  const issue = f.trackMulti('running')
+  const archive = join(autoDir('main'), 'archive')
+  const workers = asObject(readJson(join(issue.statusDir, 'workers.json')))
+  const role = asObject(get(workers, 'roles', 'design'))
+  assert.ok(workers && role)
+  if (remote) {
+    role.environment = 'env-1'
+    f.put(join(issue.statusDir, 'workers.json'), workers)
+    f.respond(
+      'orchestration_worker-list',
+      {
+        ok: true,
+        result: {
+          workers: [{ dispatchId: 'ctx_design', resource: null, projection: { liveness: { verdict: 'exited' } } }],
+        },
+      },
+      f.orca,
+    )
+  }
+  const inventory = (heads: Record<string, string> = {}) =>
+    f.respond(
+      'worktree_list',
+      {
+        ok: true,
+        result: {
+          worktrees: [
+            {
+              displayName: issue.slug,
+              path: join(f.children, 'worktree'),
+              head: heads['other/api'] ?? f.git('-C', f.second(), 'rev-parse', 'main'),
+            },
+            {
+              displayName: `${issue.slug}-extra`,
+              path: join(f.children, 'worktree2'),
+              head: heads['acme/app'] ?? f.git('-C', f.checkout, 'rev-parse', 'main'),
+            },
+          ],
+          truncated: false,
+        },
+      },
+      f.orca,
+    )
+  inventory()
+  const commit = (checkout: string, branch: string): string => {
+    f.git('-C', checkout, 'checkout', branch)
+    writeFileSync(join(checkout, 'unique'), `unique ${checkout}`)
+    f.git('-C', checkout, 'add', 'unique')
+    f.git('-C', checkout, 'commit', '-m', 'unique')
+    const head = f.git('-C', checkout, 'rev-parse', 'HEAD')
+    f.git('-C', checkout, 'checkout', 'main')
+    return head
+  }
+  const clean = (merged: string[] = []) => autoCleanup(issue.statusDir, archive, 1, merged)
+  return { ...f, issue, archive, workers, role, inventory, commit, clean }
+}
+
+test('AU118 identical branch names in different repositories are both pushed from their own checkouts', () => {
+  const f = multiCleanup()
+  try {
+    const branch = f.issue.branch
+    f.git('-C', f.checkout, 'branch', '-m', f.issue.branches['acme/app'] ?? '', branch)
+    const extra = asObject(get(f.role, 'extra', 'acme/app'))
+    assert.ok(extra)
+    extra.branch = branch
+    f.put(join(f.issue.statusDir, 'workers.json'), f.workers)
+    const primary = f.commit(f.second(), branch)
+    const secondary = f.commit(f.checkout, branch)
+    assert.equal(pushBranches(f.issue.statusDir, []).pushed, true)
+    assert.ok(f.git('-C', f.second(), 'ls-remote', '--heads', 'origin', branch).startsWith(primary))
+    assert.ok(f.git('-C', f.checkout, 'ls-remote', '--heads', 'origin', branch).startsWith(secondary))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU118b malformed repository records block push and deletion', () => {
+  const f = multiCleanup()
+  try {
+    f.workers.repos = []
+    f.put(join(f.issue.statusDir, 'workers.json'), f.workers)
+    assert.deepEqual(pushBranches(f.issue.statusDir, []), { pushed: false, reasons: ['worker の記録を読めません'] })
+    assert.deepEqual(f.clean(), { ok: false, pushed: false, reasons: ['worker の記録を読めません'] })
+    assert.ok(!f.calls(f.orca).includes('worktree rm'))
+    assert.ok(existsSync(f.issue.statusDir))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU119 remote preservation uses each repository checkout and accepted head, without a secondary legacy fallback', () => {
+  const f = multiCleanup(true)
+  try {
+    const branch = f.issue.branches['acme/app'] ?? ''
+    const head = f.commit(f.checkout, branch)
+    f.git('-C', f.checkout, 'push', 'origin', branch)
+    f.inventory({ 'acme/app': head })
+    assert.equal(f.clean().ok, true)
+    assert.equal((f.calls(f.orca).match(/worktree rm --environment env-1/g) ?? []).length, 2)
+  } finally {
+    f.cleanup()
+  }
+  for (const accepted of [true, false]) {
+    const f = multiCleanup(true)
+    try {
+      f.git('-C', f.second(), 'branch', 'scratch-primary')
+      f.git('-C', f.checkout, 'branch', 'scratch-secondary')
+      const primary = f.commit(f.second(), 'scratch-primary')
+      let secondary = f.commit(f.checkout, 'scratch-secondary')
+      if (!accepted) {
+        f.git('-C', f.checkout, 'fetch', f.second(), 'scratch-primary')
+        secondary = primary
+      }
+      f.inventory({ 'other/api': primary, 'acme/app': secondary })
+      mkdirSync(join(f.issue.statusDir, 'roles/design'), { recursive: true })
+      f.put(join(f.issue.statusDir, 'roles/design/completion.json'), {
+        head: primary,
+        heads: { 'other/api': primary, ...(accepted ? { 'acme/app': secondary } : {}) },
+      })
+      const result = f.clean(['other/api', 'acme/app'])
+      assert.equal(result.ok, accepted, result.reasons.join())
+      assert.equal(existsSync(f.issue.statusDir), !accepted)
+      assert.equal(f.calls(f.orca).includes(`path:${join(f.children, 'worktree2')}`), accepted)
+      if (!accepted)
+        assert.ok(result.reasons.some((r) => r.includes('保存を証明できないため遠くの worktree を残しました')))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU120 partial merge deletes only the merged integration branch without recreating it on origin', () => {
+  for (const diverged of [false, true]) {
+    const f = multiCleanup()
+    try {
+      f.commit(f.second(), f.issue.branch)
+      const extra = f.issue.branches['acme/app'] ?? ''
+      f.commit(f.checkout, extra)
+      if (diverged)
+        f.hook('worktree_rm', `git -C '${f.checkout}' update-ref 'refs/remotes/origin/${extra}' origin/main`, f.orca)
+      const result = f.clean(['other/api'])
+      assert.equal(result.ok, true, result.reasons.join())
+      assert.equal(f.git('-C', f.second(), 'branch', '--list', f.issue.branch), '')
+      assert.equal(f.git('-C', f.second(), 'ls-remote', '--heads', 'origin', f.issue.branch), '')
+      assert.equal(Boolean(f.git('-C', f.checkout, 'branch', '--list', extra)), diverged)
+      assert.equal(
+        result.reasons.some((r) => r.includes('保存を証明できないためブランチを残しました')),
+        diverged,
+      )
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU121 every role worktree is removed on its host while a human-owned role keeps both repositories', () => {
+  for (const mode of ['local', 'remote', 'human']) {
+    const f = multiCleanup(mode === 'remote')
+    try {
+      const roles = asObject(f.workers.roles)
+      assert.ok(roles)
+      roles.exec_review = {
+        dispatch: 'ctx_review',
+        branch: 'review',
+        worktree_path: '/review-primary',
+        ...(mode === 'remote' ? { environment: 'env-1' } : {}),
+        extra: { 'acme/app': { worktree_path: '/review-extra', branch: 'review' } },
+      }
+      f.put(join(f.issue.statusDir, 'workers.json'), f.workers)
+      for (const checkout of [f.second(), f.checkout]) f.git('-C', checkout, 'branch', 'review')
+      f.respond(
+        'orchestration_worker-list',
+        {
+          ok: true,
+          result: {
+            workers:
+              mode === 'remote'
+                ? [
+                    { dispatchId: 'ctx_design', resource: null, projection: { liveness: { verdict: 'exited' } } },
+                    { dispatchId: 'ctx_review', resource: null, projection: { liveness: { verdict: 'exited' } } },
+                  ]
+                : [
+                    row(mode === 'human' ? 'retained' : 'released', mode === 'human' ? 'user_owned' : 'agent_owned'),
+                    { dispatchId: 'ctx_review', resource: { releaseState: 'released' } },
+                  ],
+          },
+        },
+        f.orca,
+      )
+      f.respond('orchestration_worker-show', { ok: true, result: { worker: { state: 'succeeded' } } }, f.orca)
+      f.respond(
+        'worktree_list',
+        {
+          ok: true,
+          result: {
+            worktrees: [
+              { path: join(f.children, 'worktree'), head: f.git('-C', f.second(), 'rev-parse', 'main') },
+              { path: join(f.children, 'worktree2'), head: f.git('-C', f.checkout, 'rev-parse', 'main') },
+              { path: '/review-primary', head: f.git('-C', f.second(), 'rev-parse', 'main') },
+              { path: '/review-extra', head: f.git('-C', f.checkout, 'rev-parse', 'main') },
+            ],
+            truncated: false,
+          },
+        },
+        f.orca,
+      )
+      const result = f.clean()
+      assert.equal(result.ok, true, result.reasons.join())
+      const calls = f.calls(f.orca)
+      assert.equal((calls.match(/worktree rm /g) ?? []).length, mode === 'human' ? 2 : 4)
+      if (mode === 'remote') assert.equal((calls.match(/worktree rm --environment env-1 /g) ?? []).length, 4)
+      if (mode === 'human') {
+        assert.ok(!calls.includes(`path:${join(f.children, 'worktree')}`))
+        assert.ok(!calls.includes(`path:${join(f.children, 'worktree2')}`))
+      }
+      assert.ok(!existsSync(f.issue.statusDir))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU121b an extra-only remote start never removes the identically named local path', () => {
+  const f = multiCleanup(true)
+  try {
+    const roles = asObject(f.workers.roles)
+    assert.ok(roles)
+    roles.design = {
+      environment: 'env-1',
+      extra: { 'acme/app': { worktree_path: '/same', branch: f.issue.branches['acme/app'] ?? '' } },
+    }
+    f.put(join(f.issue.statusDir, 'workers.json'), f.workers)
+    f.respond('orchestration_worker-list', { ok: true, result: { workers: [] } }, f.orca)
+    f.respond(
+      'worktree_list',
+      {
+        ok: true,
+        result: {
+          worktrees: [{ path: '/same', head: f.git('-C', f.checkout, 'rev-parse', 'main') }],
+          truncated: false,
+        },
+      },
+      f.orca,
+    )
+    const result = f.clean()
+    assert.equal(result.ok, true, result.reasons.join())
+    assert.ok(f.calls(f.orca).includes('worktree rm --environment env-1 --worktree path:/same'))
+    assert.ok(!f.calls(f.orca).includes('worktree rm --worktree path:/same'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU122 legacy PR metadata never changes the unnamed repository used to skip merged branch pushes', () => {
+  const f = setup()
+  try {
+    f.git('-C', f.checkout, 'checkout', f.issue.branch)
+    writeFileSync(join(f.checkout, 'unique'), 'unique')
+    f.git('-C', f.checkout, 'add', 'unique')
+    f.git('-C', f.checkout, 'commit', '-m', 'unique')
+    f.git('-C', f.checkout, 'checkout', 'main')
+    f.put(join(f.issue.statusDir, 'integration-result.json'), {
+      repo: 'acme/app',
+      pr_url: 'https://github.com/acme/app/pull/1',
+    })
+    assert.equal(f.clean(true).ok, true)
+    assert.equal(f.git('-C', f.checkout, 'ls-remote', '--heads', 'origin', f.issue.branch), '')
+    assert.equal(f.git('-C', f.checkout, 'branch', '--list', f.issue.branch), '')
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU122b cleanup continuation evidence preserves repository identity across target changes', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.track()
+    const cases = [
+      { targets: ['acme/app'], prevTargets: [], prevBranches: {}, multi: false, want: { '': 'user/legacy' } },
+      {
+        targets: ['acme/app'],
+        prevTargets: ['other/api'],
+        prevBranches: { 'other/api': 'user/a' },
+        multi: false,
+        want: { '': 'user/legacy' },
+      },
+      {
+        targets: ['acme/app'],
+        prevTargets: ['other/api', 'acme/app'],
+        prevBranches: { 'other/api': 'user/a', 'acme/app': 'user/b' },
+        multi: false,
+        want: { '': 'user/b' },
+      },
+      {
+        targets: ['acme/app'],
+        prevTargets: ['other/api', 'acme/app'],
+        prevBranches: { 'other/api': 'user/a' },
+        multi: false,
+        want: {},
+      },
+      {
+        targets: ['other/api', 'acme/app'],
+        prevTargets: ['acme/app'],
+        prevBranches: { 'acme/app': 'user/b' },
+        multi: true,
+        want: { 'acme/app': 'user/b' },
+      },
+      { targets: ['other/api', 'acme/app'], prevTargets: [], prevBranches: {}, multi: true, want: {} },
+      {
+        targets: ['other/api', 'acme/app'],
+        prevTargets: ['other/api', 'third/web'],
+        prevBranches: { 'other/api': 'user/a', 'third/web': 'user/c' },
+        multi: true,
+        want: { 'other/api': 'user/a' },
+      },
+    ]
+    for (const c of cases) {
+      Object.assign(issue, c, { prevBranch: 'user/legacy' })
+      assert.deepEqual(prevBranchesOf(issue, c.multi), c.want)
+    }
   } finally {
     f.cleanup()
   }

@@ -595,6 +595,19 @@ const progress = (tick: Tick, issue: IssueState): void => {
 
 const AUTO_CI_APPEAR_MINUTES = 30
 const AUTO_PR_RETRY_MINUTES = 30
+export const prevBranchesOf = (issue: IssueState, multi: boolean): Record<string, string> => {
+  if (!multi) {
+    const branch = issue.prevTargets.length <= 1 ? issue.prevBranch : issue.prevBranches[issue.targets[0] ?? '']
+    return branch ? { '': branch } : {}
+  }
+  return Object.fromEntries(
+    issue.targets.flatMap((repo) => {
+      const branch = issue.prevBranches[repo]
+      return branch ? [[repo, branch]] : []
+    }),
+  )
+}
+
 const clean = (tick: Tick, issue: IssueState): void => {
   if (!canAutoCall('後片付け')) return
   if (!issue.cleanupPending || issue.failReason || issue.pendingLabel || issue.startAttempt || !owns(tick, issue))
@@ -602,19 +615,24 @@ const clean = (tick: Tick, issue: IssueState): void => {
   const checkout = tick.config.repos[issue.targets[0] ?? '']?.checkout
   if (!checkout) return
   if (existsSync(join(issue.statusDir, 'run.json')) && !ensure(tick, issue)) return
-  let merged = issue.phase === 'done'
-  if (!merged && issue.prs.length) {
+  const targets = repoTargets(workersOf(issue), checkout)
+  const multi = targets.length > 1
+  let mergedRepos = issue.phase === 'done' ? targets.map((t) => t.repo) : []
+  if (issue.phase !== 'done' && issue.prs.length) {
     const statuses = issue.prs.map((p) => prStatus(p.repo, p.number))
     if (statuses.some((s) => s === null)) return
-    merged = statuses.every((s) => s?.state === 'MERGED')
+    mergedRepos = multi
+      ? issue.prs.filter((_, i) => statuses[i]?.state === 'MERGED').map((p) => p.repo)
+      : statuses.every((s) => s?.state === 'MERGED')
+        ? ['']
+        : []
   }
   const result = autoCleanup(
     issue.statusDir,
-    checkout,
     join(autoDir(tick.name), AUTO_FILES.archive),
     issue.generation,
-    merged,
-    issue.prevBranch,
+    mergedRepos,
+    prevBranchesOf(issue, multi),
   )
   for (const reason of result.reasons) console.log(reason)
   if (result.ok) {
@@ -638,7 +656,8 @@ const finishFailure = (tick: Tick, issue: IssueState): void => {
     for (const reason of stopped.reasons) error(tick, reason)
     return
   }
-  const pushed = pushBranches(issue.statusDir, checkout, null)
+  const pushed = pushBranches(issue.statusDir, [])
+  const multi = repoTargets(workersOf(issue), checkout).length > 1
   const result = readAutoResult(join(issue.statusDir, 'auto-result.json'))
   const reason = issue.failReason + (result?.envFailure ? ` 環境が原因: ${result.envFailure}` : '')
   const view = viewIssue(issue.repo, issue.number)
@@ -648,7 +667,18 @@ const finishFailure = (tick: Tick, issue: IssueState): void => {
     transition(
       issue,
       'failed',
-      { reason, branch: issue.branch, pushed: pushed.pushed },
+      {
+        reason,
+        branch: issue.branch,
+        pushed: pushed.pushed,
+        ...(multi
+          ? {
+              branches: issue.targets.flatMap((repo) =>
+                issue.branches[repo] ? [{ repo, branch: issue.branches[repo] ?? '' }] : [],
+              ),
+            }
+          : {}),
+      },
       from,
       STATUS.failed,
       false,

@@ -350,3 +350,44 @@ test('AU96b an unreachable finishing issue also reports its elapsed limit withou
     f.cleanup()
   }
 })
+
+test('AU123 failure pushes both repository branches before commenting, and reports any failed push', () => {
+  for (const failPush of [false, true]) {
+    const f = runtimeFixture()
+    try {
+      const i = f.trackMulti('running')
+      f.liveWorker()
+      const primary = f.second()
+      const secondary = f.checkout
+      const extra = i.branches['acme/app'] ?? ''
+      for (const [checkout, branch] of [
+        [primary, i.branch],
+        [secondary, extra],
+      ]) {
+        assert.ok(checkout && branch)
+        f.git('-C', checkout, 'checkout', branch)
+        writeFileSync(join(checkout, 'change'), `change ${checkout}`)
+        f.git('-C', checkout, 'add', 'change')
+        f.git('-C', checkout, 'commit', '-m', 'change')
+        f.git('-C', checkout, 'checkout', 'main')
+      }
+      if (failPush) f.git('-C', secondary, 'remote', 'set-url', 'origin', join(f.dir, 'missing'))
+      const oldHook = readFileSync(join(f.gh, 'issue_comment.hook'), 'utf8')
+      f.hook(
+        'issue_comment',
+        `git -C '${primary}' ls-remote --heads origin '${i.branch}' > '${f.dir}/primary-at-comment' 2>/dev/null\ngit -C '${secondary}' ls-remote --heads origin '${extra}' > '${f.dir}/secondary-at-comment' 2>/dev/null\n${oldHook}`,
+      )
+      process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+      f.cli('tick')
+      const current = readState('main').issues[i.key]
+      assert.equal(current?.phase, 'failed')
+      const body = readFileSync(join(f.dir, 'comments.jsonl'), 'utf8')
+      assert.ok(body.includes('other/api') && body.includes('acme/app'), body)
+      assert.ok(body.includes(failPush ? 'push できていません' : 'push 済み'), body)
+      assert.ok(readFileSync(join(f.dir, 'primary-at-comment'), 'utf8').includes(i.branch))
+      assert.equal(Boolean(readFileSync(join(f.dir, 'secondary-at-comment'), 'utf8').trim()), !failPush)
+    } finally {
+      f.cleanup()
+    }
+  }
+})
