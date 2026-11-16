@@ -75,6 +75,9 @@ role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → pr
 | `setup` | `skip` — repository の setup hook を走らせずに worktree を作る | `run` — 走らせる。**setup が失敗した worktree では worker を起こさない** |
 | `design_mode` | `direct` — `design` は依頼を受けてそのまま取りかかる | `plan` — 最初の編集より前に手順を決めて記録する。`brainstorm` — `superpowers:brainstorming` skill から始め、`ask_via` に従い、自分の端末かあなた経由で人と依頼を詰め、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装する |
 | `ask_via` | `terminal` — `brainstorm` の design は質問と、書いた spec のレビュー依頼を自分の端末で行い、そこで答えを待つ。レビューが上限に達した役も同じように尋ねる | `parent` — `orchestration ask` で尋ね、待機が終了コード 6 で抜けてあなたが質問を取り次ぐ。**既定が以前の挙動でない唯一の設定**: `terminal` はこれらの文書が一貫して書いてきた挙動である |
+| `cleanup` | `end` — タスクの端末・worktree・記録は、Step 5 が提示して Step 6 で尋ねるまで残る。成果を pull request で届けたタスクは成果が merge されていないので、Step 5 はその worktree と記録を提示しない | `pr_created` — Step 4 でタスクの pull request を作った直後に、そのタスクを尋ねずに片付ける。`pr_merged` — 後の dispatch か `--issue` の実行の始めに、pull request が merge されたタスクを尋ねずに片付ける |
+
+**`cleanup` が働くのは pull request で届けた成果だけ**で、Step 5 の条件のうち、PR が記録されて origin のブランチと手元のブランチが一致するタスクを merge 済みとみなす点だけを変えて判定する。`integration=merge` で始めた dispatch は設定にかかわらず `end` を記録し、`--auto` は `cleanup` を見ない（自分の pull request の直後に既に片付けている）。値は dispatch の開始時に `workers.json` に記録するので、あとで設定を変えても前の dispatch の片付け方は変わらず、この設定より前に記録された dispatch は `end` として扱う。未コミットの変更がある checkout、再利用した worktree、記録と一致しない端末など、Step 5 のほかの条件で残すものは残す。ユーザーが操作した端末はその worktree も残す（worktree を消すとその端末を尋ねずに閉じるため）。タスクの何かが残るときは、その dispatch 記録も残す。残したものは理由とともに 1 行ずつ表示する。
 
 **`phase_b` が「どのブランチに成果が載るか」を決める** — off なら `design`、on なら `exec`。
 merge も pull request も記録されたその 1 つの値を読むので、どちらのブランチを取るかで
@@ -219,8 +222,9 @@ reviewer は何も作らない。両方に取りかかり方を言うと、誰�
 
 ### 保存せずに 1 回だけ試す
 
-Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` を受け取る。これらはその 1 コールに
+Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` を受け取る。これらはその 1 コールに
 限り両方の層より強く、**何も書かない**ので、保存する前に model を試せる。
+`--cleanup` は dispatch の開始時に決まり、`--resume` と `--phase exec` は受け取らない。
 
 **角括弧を含む model id は引用符で囲む。**ここでも S4 でも、裸の id ではなく `--model 'claude-opus-5-5[1m]'`
 と書く。zsh は引用符なしの `[1m]` をファイル名のパターンとして読み、スクリプトが動く前に
@@ -318,7 +322,7 @@ node "$PLUGIN/bin/orca-auto.ts" status
 
 ラベルの変更とcloseの前にコメントを書く。保存した遷移の段からやり直すため、コメントを再投稿せずに続けられる。人がステータスを変えたら残る遷移を中止する。確認コマンドとCIが成功（またはCI無しを明示）し、選んだ実行先で確認済みかつインフラではないリポジトリの明確な結果だけをmergeする。判断した点、未解消・不採用の指摘、検査の失敗があれば In review。実行先につながるとき、workerの失敗や上限時間超過は Failed。確認待ち・失敗・人の操作で停止・エンジニア対応になったIssueをReadyに戻すと、後片付け完了後に新世代となり、前のブランチとPRの材料を引き継ぐ。
 
-`--auto` は資源を消す例外。全workerの停止・解放を確認してからlocalの未mergeブランチをpushするか遠隔のブランチがoriginに保存済みと確かめ、解放済みのworktreeと安全なローカルブランチを消し、まとめ役の端末を閉じ、status dirを退避する。merge済みのintegration branchは再pushしない。人の操作を検出したlocalのworktreeは残し、そのworkerが動いていれば後片付けと次世代を保留する。通常のdispatchと `--issue` は引き続きStep 5と6を使う。
+`--auto` は資源を消す例外。全workerの停止・解放を確認してからlocalの未mergeブランチをpushするか遠隔のブランチがoriginに保存済みと確かめ、解放済みのworktreeと安全なローカルブランチを消し、まとめ役の端末を閉じ、status dirを退避する。merge済みのintegration branchは再pushしない。人の操作を検出したlocalのworktreeは残し、そのworkerが動いていれば後片付けと次世代を保留する。通常のdispatchと `--issue` は引き続きStep 5と6と、設定の `cleanup` を使う。
 
 遠隔の停止・解放の証拠は、`--include-remote` を含むworker一覧の `projection.liveness.verdict: exited`。マシンの部分エラーを停止の証拠にはしない。遠隔を消すには一覧のHEADがoriginに保存済みという証拠も必要で、自分のブランチ・integrationのbase・前世代のブランチの祖先であるか、merge後の受理したintegration HEADと一致すること。一覧にHEADが無い場合の代替はintegrationの役だけで、受理したHEADとoriginのブランチが同じときに限る。未保存のHEADならworktreeを残す。worktreeの一覧が読めない・省略されていれば後片付けを保留し、既に無いと分かるworktreeは再試行を進められる。fetchしたローカルブランチはorigin trackingと同じSHAか、merge済みintegration branchのときだけ消す。削除前の遠隔livenessの実機確認はまだ必要。`orca-recover.ts` は遠隔役の置き換えを拒むので、Orcaでその役を調べる。
 
@@ -335,7 +339,7 @@ tickの100秒の予算は、次の仕事を始めるかを決める目安。読�
 
 **1 件の issue は 1 コールで最後まで運ばれる。**それが `bin/orca-issue.ts` である。dispatch し、
 待ち、merge し、ラベルを遷移させ、issue を close する。**資源は 1 つも消さない** — 手書きの
-dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。
+dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。 設定の `cleanup` も手書きの dispatch と同じく効く: `pr_created` なら I3 のパス 3 が pull request を作れた issue ごとに片付け、`pr_merged` なら I0 が、前の実行で pull request が merge された issue を片付ける。
 
 | 性質 | この版 |
 |---|---|
@@ -360,6 +364,15 @@ state file（`<repo root>/.dispatch-issue/state.json`）の隣に lock を取り
 拒む。exit 1 は確認のどれかが通らなかったか lock が生きていたことを表し、何も取っていない。lock の
 取得は安定した session id を要求する。環境が持っていなければ `LOOP_SESSION_ID` を export する。
 **どの終了経路でも lock を解放する** — 想定していなかった経路も含めて。
+
+lock を取ったら、前の実行が `cleanup=pr_merged` で残したものを、Step 1 と同じ呼び出しで片付ける:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-cleanup.ts" sweep
+```
+
+何も尋ねず、何が見つかっても exit 0 で終わる（2 は呼び出しの誤りだけ）ので、実行を止めることはない。表示されたことを 1 行で報告する。
 
 ### I1a. 単件を指定されたとき
 
@@ -482,6 +495,14 @@ exit 1 はその issue を運べなかったことを意味する。ラベルは
 おり、**その資源は意図して残されている。**次の issue へ進む — 1 件の失敗は他の件について
 何も言っていない。
 
+`integration` が `pr` で、その issue のパス 3 が exit 0 だったら、パス 1 がその issue に表示した `status_dir` を `SD` に入れて、`cleanup` のモードを当てる。Step 4 の同じ呼び出しと同じに動く:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the status_dir pass 1 printed for this issue}"
+node "$PLUGIN/bin/orca-cleanup.ts" auto --status-dir "$SD"
+```
+
 ### I4. バッチの間
 
 issue ごとに何が起きたかを報告し、次のバッチを claim する。バッチ上限に達したとき、`fetch` が
@@ -492,10 +513,7 @@ issue ごとに何が起きたかを報告し、次のバッチを claim する�
 node "$PLUGIN/bin/orca-issue-loop.ts" release
 ```
 
-そのうえで、実行が生んだすべての `status_dir` について Step 5 へ進む。`orca-cleanup.ts plan` は
-Run ごとに 1 回、その `run_id` を印字したすべての `status_dir` を渡して呼ぶ — `plan` は Run の
-混じった一覧を拒む。片付けは手書きの dispatch と同じである — 判定し、ユーザーが承認し、承認された
-ものだけを消す。
+そのうえで、実行が生んだ `status_dir` のうち残っているものすべてについて Step 5 へ進む（パス 3 の `auto` は片付けたものを消す）。`orca-cleanup.ts plan` は Run ごとに 1 回、その `run_id` を印字した残りの `status_dir` をすべて渡して呼ぶ — `plan` は Run の混じった一覧を拒む。片付けは手書きの dispatch と同じである — 判定し、ユーザーが承認し、承認されたものだけを消す。
 
 ## Step 1: 依頼を書き出す
 
@@ -523,6 +541,15 @@ printf 'request_file=%s\n' "$REQ"
 
 表示された `request_file` path を file-write tool へ渡す。shell 変数は tool call を跨がないため、
 Step 2 を別 call で実行するときは、その正確な path を `REQ` へ設定する。
+
+**続けて、dispatch ごとに 1 回、前の dispatch が残したものを片付ける。**前の dispatch が `cleanup=pr_merged` で記録したタスクを、その pull request が merge されていればここで片付ける。ほかのものには触らない:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-cleanup.ts" sweep
+```
+
+それぞれの pull request の状態を `gh` で読み、`MERGED` のものだけを、Step 4 の `auto` と同じ規則で片付ける。open や closed の pull request、`gh` が読めないもの（`could not read <url>; left as is`）、Step 5 のほかの条件で残すものは、そのまま残す。何も尋ねず、何が見つかっても exit 0 で終わる（2 は呼び出しの誤りだけ）ので、この dispatch を止めることはない。何を消して何を残したかをユーザーに 1 行で伝え、Step 1b へ進む。
 
 ## Step 1b: 各タスクの取りかかり方を尋ねる
 
@@ -652,7 +679,9 @@ findings が欠落しても誰も気づかない。
 
 先にユーザーへ伝える。worker が終わると、この skill はメッセージを acknowledge する前に
 その端末を retain する。ここでは何も解放しない。端末、worktree、dispatch 記録はいずれも、
-Step 5 が削除してよいものを判定し、Step 6 がユーザーへ尋ねるまで残る。保持は意図的である。
+Step 5 が削除してよいものを判定し、Step 6 がユーザーへ尋ねるまで残る。ただし dispatch が
+`cleanup=pr_created` か `cleanup=pr_merged` を記録していれば、pull request が保存済みのタスクは、
+Step 4 の `auto` か後の dispatch の `sweep` が尋ねずに片付ける（Configuration を参照）。保持は意図的である。
 後段の stage が同じセッションへ review の指摘を送り返すためである。
 
 1 回の呼び出しで全タスクを待つ。タスクは 1 つの Run と 1 つの親 mailbox を共有するので、
@@ -1055,6 +1084,16 @@ repository で worker に remote を解決させたところ、personal fork へ
 中に pull request を作った**。issue はそこに無いので `Closes` 行は何もせず、その fork の
 pull request が完了の証拠として受理された。
 
+**`orca-pr.ts` が exit 0 で終わったら、そのタスクの `cleanup` のモードを当てる。**dispatch が `cleanup=pr_created` を記録していなければ何もしない:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+node "$PLUGIN/bin/orca-cleanup.ts" auto --status-dir "$SD"
+```
+
+`pr_created` のときは、この Run の残っているタスク全部を渡して Step 5 と同じように片付けを判定し（ほかのタスクの worker を、誰も記録していない worker と取り違えないため）、このタスクに提示されたものだけを、端末の release → worktree の削除 → 記録の削除 の順に実行する。動くのは、pull request が記録され、origin のブランチが手元のブランチと一致するときだけで、そうでなければ何も実行せずに理由を表示する。ユーザーが操作した端末はその worktree も残し、何かを残すタスクは dispatch 記録も残す。exit 0 は片付けたか何もすることが無かったこと、exit 1 はどれかの操作が失敗したこと（出力が名指しする）、exit 2 は呼び出しの誤り。表示された行をタスクごとに報告する。消したタスクには `status_dir` がもう無いので、Step 5 に渡さない。
+
 ## Step 5: ユーザーへ正確な片付けコマンドを渡す
 
 この step は何も削除しない。削除してよいものを判定し、実際の値を埋めたコマンドを表示する。
@@ -1065,10 +1104,7 @@ placeholder を見せない。実行してよいかは Step 6 がユーザーへ
 分類する。worker の端末を閉じる release は Step 6 が尋ねるアクションの 1 つであり、ユーザーが判断して
 いる間、worker のセッションはそのまま残る。
 
-Run 全体について 1 回だけ、**すべての** タスクの正確な `status_dir` を渡して実行する。Orca は Run 全体を
-報告するため、渡し漏れたタスクは誰も記録していない保持中の worker に見え、全タスクの片付けを止めて
-しまう。作り物の handle、dispatch、worktree id を代入してはならない。計画はそれらを dispatch 記録から
-読む。
+Run 全体について 1 回だけ、status dir が残っているタスクだけの正確な `status_dir` を、すべて渡して実行する。`auto`（Step 4 と I3）は片付けたタスクの status dir を消し、消えたものを渡すと計画全体が止まる。この Run のどのタスクにも status dir が残っていなければ、Step 5 と Step 6 を飛ばし、`auto` が全部片付けたと伝える。Orca は Run 全体を報告するため、渡し漏れたタスクは誰も記録していない保持中の worker に見え、全タスクの片付けを止めてしまう。作り物の handle、dispatch、worktree id を代入してはならない。計画はそれらを dispatch 記録から読む。
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
@@ -1148,6 +1184,8 @@ TypeScript のファイルを直接実行するので、Node 22.18 以上が要�
 判定は Step 5 が済ませた。この step は尋ねて実行する。独自の判定は一切行わない。`run` が実行するのは
 計画にある提示だけであり、計画に無いものは実行しない。**worker の端末を release するのはここである。**
 セッションを閉じることはユーザーが承認するアクションの 1 つであって、判定の副作用ではない。
+例外はユーザーが選んだ設定の `cleanup` で、`pr_created` か `pr_merged` なら、`auto`（Step 4 と I3）と
+`sweep`（Step 1 と I0）が、pull request が保存済みのタスクの端末を尋ねずに release する。
 
 [C6] 尋ね方と実行:
 
@@ -1220,7 +1258,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 
 | 制限 | ユーザーがすること |
 |---|---|
-| 片付けが勝手に走ることはない | Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る |
+| 片付けが勝手に走るのは `cleanup=pr_created` か `cleanup=pr_merged` のときの、pull request が記録され origin のブランチが一致するタスクだけ | それ以外は Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る。`end` では成果が merge されていないので、Step 5 は pull request のタスクの worktree と記録を提示しない |
 | 回復は自動では走らない。いつ走らせるかは人が決める | `orca-recover.ts`（Step 3）が役ごとに判断し、`--dry-run` を外して実行したときだけ動く。`$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
 | worker が人へ尋ねるのは `design_mode` がそう指示したときと、レビューが上限に達したときだけで、誰かが答えるまで待つ | `direct` と `plan` では代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する。`brainstorm` で `ask_via=terminal` なら自分の端末で尋ねてそこで待つので、その端末で答える。`ask_via=parent` なら `orchestration ask` を使い、待機が終了コード 6 で質問と `reply` コマンドを出す。worker が再開するのはそのコマンドを実行したときだけである |
@@ -1246,6 +1284,8 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | Orca は、働いている worker を `start_unknown` と言い続けることがある | 2026-09-24 に観測: Orca は codex の worker のターン開始を観測できず、その worker が働き続けている間もこの state のままだった。待機はそれを待ち続け、死んでいれば停滞（終了コード 8）として知らせる。そうした worker を起こすために端末へ入力するものは無い — 死んだ worker はシェルを残していることがある — ので、worker 自身の待ちに頼る。起動が終わらなかった役なら、`orca-recover.ts` が画面を見せ、`--adopt` か `--restart` を選ぶ（Step 3） |
 | 3.10.16 までの `--phase exec` や `--resume` が起動した dispatch は、別の Run に在ることがある | 2026-11-10 に観測: 同じ端末から 2 つの Run を起動すると、`exec` と `exec_review` があとで起動した Run に作られ、記録した Run の待機には何も届かず、もう一方の Run の待機は知らない dispatch のメールで止まった。`$ORCA_BIN orchestration worker-show --dispatch <id> --json` の `result.dispatch.runId` が Run を示す。`orca-recover.ts` はそうした役を拒否し、両方の Run を名指しする。止めるかはユーザーと決める。今の版は起動のたびに Run を名指しする |
 | codex は repository ごとに 1 回、信頼するかを尋ね、それまで起動は `agent-trust-workspace` で失敗する | その worker の画面でフォルダを信頼するか、`trust_level = "trusted"` を持つ `[projects."<本体の checkout>"]` を `~/.codex/config.toml` に足す。Step 2 と `orca-recover.ts` が正確な行を出す。codex はその信頼を repository の本体の checkout に記録するので、以後の worktree は尋ねられずに起動する。そのあと `orca-recover.ts` で失敗した起動を置き換える |
+| head ブランチが origin から消えた pull request は `pr_merged` でも片付かない | 手元のブランチを origin のものと比べるので、merge のときに head ブランチを消すリポジトリ（GitHub の設定か `gh pr merge --delete-branch`）では、そのタスクが残る。worktree は `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` で、`.dispatch/<slug>` は手で消す |
+| `pr_created` と `pr_merged` では、何かを残すタスクは dispatch 記録も残し、あとで Step 5 もそれらを提示しない | ユーザーが操作した端末は、worktree を消すとその端末を尋ねずに閉じるので worktree ごと残す。未コミットの変更がある worktree など、Step 5 が残すものも同じく残る。Step 5 は pull request のタスクの worktree と記録を提示しないので、確かめたら worktree を `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` で、`.dispatch/<slug>` を手で消す |
 | --autoの持ち主のいないworktreeはSlackの定期報告で区別できない | tickのstdoutが名指しし、hosts[].usedには数として含まれる |
 | --autoはworker_doneを失った役を決着できない | --max-waits 1では猶予の時計が毎回初期化されるため、上限時間でFailedになる。Runと退避した記録を調べる |
 | --autoはdispatchごとに遠隔の空きメモリやディスクを測らない | マシンの設定のlanesに頼る。localへ入れるときは両方を確認する |
@@ -1265,11 +1305,10 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 `brainstorm` の design が書いたときは `spec.md` / `plan.md` がある。
 1 つの Run のタスクは `run.json` に同じ `run_id` を持ち、`workers.json` にそれぞれの worktree を
 持つ。`workers.json` の `roles` map は役ごとに 1 entry を持つので、後段の stage が何も動かさずに
-役を増やせる。
+役を増やせる。`workers.json` には、dispatch を始めたときの `cleanup` のモードも記録する。
 
 `orca-recover.ts` が置き換えた役は、置き換えた dispatch を `superseded` に並べる。最新の起動が
 ready にならなかった役には `start_incomplete` の印が付く。終わった役に Orca が起こした followUp の dispatch は、その役の `follow_ups` に並ぶ。
 
-Step 5 はその隣に `.dispatch/cleanup-<run_id>.json` を書く。Step 6 の `run` が
-実行するのは、この計画にある提示だけである。手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は
+Step 5 はその隣に `.dispatch/cleanup-<run_id>.json` を書き、`auto` と `sweep` も判定するときに同じファイルを書く。Step 6 の `run` が実行するのは、この計画にある提示だけである。手で再開・片付けするために必要なものはすべてここにある。`.dispatch/` は
 repository の `info/exclude` に加えるため、ユーザーの `git status` には現れない。

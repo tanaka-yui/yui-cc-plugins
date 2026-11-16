@@ -638,6 +638,33 @@ for word in 'paired server' '--on' 'mail' 'push'; do grep -Fq -- "$word" <<<"$au
 for word in 'ペアリング' '--on' 'メール' 'push'; do grep -Fq -- "$word" <<<"$auto_ja" || miss="$miss [ja:$word]"; done
 [[ -z "$miss" ]] && ok 'SK37 Auto multihost handoff' || fail "SK37 $miss"
 
+# SK38: 後片付けのモード（cleanup）を両文書が同じ形で書く。Configuration の表の行、Step 1 の末尾と I0 の sweep、
+#       Step 4 と I3 の PR のあとの auto、Step 5 は残っている status dir だけ、--auto は対象外。SKILL.md に日本語が無いことは SK10 が見る
+bad=""
+for f in "$S" "$G"; do
+  b=$(basename "$f")
+  grep -qE '^\| `cleanup` \|.*`end`.*`pr_created`.*`pr_merged`' "$f" || bad="$bad [table:$b]"
+  step1=$(awk '/^## Step 1: /{s=1} /^## Step 1b: /{s=0} s' "$f")
+  grep -qF 'node "$PLUGIN/bin/orca-cleanup.ts" sweep' <<<"$step1" || bad="$bad [step1-sweep:$b]"
+  i0=$(awk '/^### I0\. /{s=1; print; next} s && /^##/{exit} s' "$f")
+  grep -qF 'node "$PLUGIN/bin/orca-cleanup.ts" sweep' <<<"$i0" || bad="$bad [i0-sweep:$b]"
+  step4=$(awk '/^## Step 4: /{s=1} /^## Step 5: /{s=0} s' "$f")
+  pr=$(grep -nF 'node "$PLUGIN/bin/orca-pr.ts" --status-dir "$SD"' <<<"$step4" | head -1 | cut -d: -f1)
+  au=$(grep -nF 'node "$PLUGIN/bin/orca-cleanup.ts" auto --status-dir "$SD"' <<<"$step4" | head -1 | cut -d: -f1)
+  [[ -n "$pr" && -n "$au" && "$au" -gt "$pr" ]] || bad="$bad [step4-auto:$b]"
+  i3=$(awk '/^### I3\. /{s=1; print; next} s && /^##/{exit} s' "$f")
+  fin=$(grep -nF -- '--phase finish' <<<"$i3" | head -1 | cut -d: -f1)
+  au3=$(grep -nF 'node "$PLUGIN/bin/orca-cleanup.ts" auto --status-dir "$SD"' <<<"$i3" | head -1 | cut -d: -f1)
+  [[ -n "$fin" && -n "$au3" && "$au3" -gt "$fin" ]] || bad="$bad [i3-auto:$b]"
+done
+step5_s=$(awk '/^## Step 5: /{s=1} /^## Step 6: /{s=0} s' "$S")
+step5_g=$(awk '/^## Step 5: /{s=1} /^## Step 6: /{s=0} s' "$G")
+grep -qF 'every task that still has one' <<<"$step5_s" || bad="$bad [step5-remaining:SKILL]"
+grep -qF 'status dir が残っているタスクだけ' <<<"$step5_g" || bad="$bad [step5-remaining:guide]"
+grep -qF '`--auto` ignores `cleanup`' "$S" || bad="$bad [auto-excluded:SKILL]"
+grep -qF '`--auto` は `cleanup` を見ない' "$G" || bad="$bad [auto-excluded:guide]"
+[[ -z "$bad" ]] && ok "SK38 後片付けのモードを両文書が同じ形で書く" || fail "SK38:$bad"
+
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"

@@ -19,7 +19,7 @@ Orca の worktree で N タスクを worker に並列実行させるプラグイ
 端末起動を依頼する。端末自体は Orca が作る）/ `bin/orca-wait.ts`（`worker_done` を待つ。
 成功 0 / 失敗 5）/ `bin/orca-wake.ts`（役の端末へ 1 行入力してアイドルな worker を起こす）/
 `bin/orca-stop.ts`（役の停止と停滞の時計の数え直し）/ `bin/orca-merge.ts`（成果を親ブランチへ。
-**資源は消さない**）/ `bin/orca-cleanup.ts`（Step 5 の判定 `plan` と Step 6 の実行 `run`）/
+**資源は消さない**）/ `bin/orca-cleanup.ts`（Step 5 の判定 `plan`、Step 6 の実行 `run`、後片付けのモードの `auto` / `sweep`）/
 `skills/.../scripts/report-status.ts`（worker が status を書く口）/
 `skills/.../scripts/config-resolve.ts` と `config-edit.ts`（設定の入口）。設定の定義は `lib/config.ts`。
 SKILL.md の block が読む状態は `bin/orca-state.ts`（wait-stamp / design-status / integration / mailbox /
@@ -130,6 +130,23 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   提示せず、run の読み直しでも保持として worktree へ進む（判定は `lib/orca.ts` の `userOwned`）。**失敗が止めるのは
   依存する手順だけ** — 端末の失敗はその役の worktree と記録を、worktree の失敗は記録を止め、ほかの役の端末と
   worktree は続ける。回帰は `test/test-cleanup.sh` の CL31-CL36 と `test/test-docs.sh` の SK28
+
+- **後片付けのモード `cleanup`（end / pr_created / pr_merged）。**PR のタスクは
+  integration-result.json が merged:false なので、従来の Step 5 は worktree と記録を提示しなかった。
+  `--pr-saved` は (1) integration が pr で pr_url があること、(2) integration_role の branch の
+  手元の SHA と `git ls-remote origin` の SHA の一致を確認し、そのタスクを保存済みとして判定する。
+  plan には同じ Run の残っている status dir を全部渡す（欠けると [C7] が記録に無い retained と読み、Run ごと止まる）。
+  保存済みのタスクでも、ユーザーが操作した端末（user_owned / user_takeover）の worktree は提示せず、
+  何かが残るタスクの記録も提示しない。worktree を消すとその端末を尋ねずに閉じ、Orca はその worker を
+  retained と言い続けるので、記録を消すと次の plan が ghost と読むためである。
+  run も、release の読み直しでユーザーの保持が分かった役の worktree と記録は実行しない（plan のあとの
+  操作は従来の release が ok を返す経路。CL33）。計画の pr_saved は信じず、readPlan で提示の種類に
+  かかわらず 2 条件を確かめ直す。removeRecord は (1) と [C5] だけを再確認する（worktree rm が branch を
+  消しうる。[C4]）。auto / sweep は pr_saved と判定したタスクにだけ承認を出す（plan は merged と無関係に
+  端末の release を提示するため）。head branch を merge で消すリポジトリでは pr_merged が何も片付けない。
+  PR の headRefOid と比べる代案は未確認で、採用していない。回帰は test-config.sh の CF53〜54、
+  test-start.sh の ST138〜140、test-cleanup.sh の CL40〜CL52（CL40b/c・CL41b・CL43b〜f・CL44b〜d・
+  CL46b・CL47b・CL48b/c を含む）、test-docs.sh の SK38。
 
 - **SKILL.md の bash block に判定を書かない。**置いてよいのはコメント、ガード `: "${VAR:?...}"`、入口の
   呼び出し（`node "$PLUGIN/..."` / `"$ORCA_BIN" ...` / `gh repo view`）だけ。block の間で shell 変数を運ばせ
@@ -375,7 +392,8 @@ test-wake.sh の WK9、test-start.sh の ST104-106、test-cleanup.sh の CL8c、
 - **merge が通って初めて片付けの話になる。**逆にすると worktree を消してから merge に
   失敗し、成果が消える（回帰は `test-issue.sh` の IS3 / IS4）
 - **`orca-issue.ts` は資源を消さない**（IS6）。無人で走る側が消すと失敗の証拠がその場で
-  失われる。片付けは Step 5 の判定と Step 6 の承認を経る
+  失われる。片付けは Step 5 の判定と Step 6 の承認を経る。ただし設定 `cleanup` が `pr_created` なら
+  I3 の `auto`、`pr_merged` なら後の実行の I0 の `sweep` が、保存済みの PR タスクを尋ねずに片付ける
 - **`.dispatch-issue/` を `info/exclude` へ入れる。**入れないと state file と lock で親が
   常に dirty になり、merge の dirty ガードが必ず発火して 1 件も merge できない（実測）。
   **除外するか否かの判定は両辺を `pwd -P` で揃えてから比べる。**`--state-file` 側だけ解決すると
@@ -466,8 +484,8 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
   `test-docs.sh` の SK4 が `exec_review` / `merge_ready` の語を SKILL.md から締め出して
   「未実装の宣言」を防いでいる
 - **N タスクを 1 つの Run で並列に dispatch できる**（既定上限 4）。worker のセッションは
-  `worker-retain` で最後まで保持し、解放は Step 6 の承認後だけ。片付けが勝手に走ることは
-  ない — Step 5 が削除してよいものを判定し、Step 6 が尋ねて、承認されたものだけを実行する。
+  `worker-retain` で最後まで保持し、解放は Step 6 の承認後だけ（設定 `cleanup` が `pr_created` / `pr_merged` の、PR を作ったタスクを除く。上記）。
+  片付けが勝手に走ることはない（同じ例外を除く）— Step 5 が削除してよいものを判定し、Step 6 が尋ねて、承認されたものだけを実行する。
   **自動の回復は持たない**（設計 spec 18-1 の裁定）。回復はユーザーが `bin/orca-recover.ts` を
   走らせたときだけ行う（上記）。テストは `make test`。
 

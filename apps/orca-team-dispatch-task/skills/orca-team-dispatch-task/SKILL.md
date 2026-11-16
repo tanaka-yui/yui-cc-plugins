@@ -89,6 +89,9 @@ they existed**.
 | `setup` | `skip` — the worktree is created without running the repository's setup hooks | `run` — they run, and **a worker is never started on a worktree whose setup failed** |
 | `design_mode` | `direct` — `design` is given the request and gets on with it | `plan` — it must decide and record an approach before the first edit. `brainstorm` — it starts with the `superpowers:brainstorming` skill and works the request through with a person (in its own terminal or through you, as `ask_via` says), writes the agreed design to `spec.md`, then plans with `superpowers:writing-plans` into `plan.md`; with `phase_b=off` it then builds with `superpowers:subagent-driven-development` |
 | `ask_via` | `terminal` — a `brainstorm` design asks its questions, and its request to review the written spec, in its own terminal and waits there for the answer; a role whose review reaches the round limit asks the same way | `parent` — it asks through `orchestration ask`, and the wait exits 6 so that you relay the question. **The one default that is not the old behaviour**: `terminal` is what these documents always described |
+| `cleanup` | `end` — a task's terminal, worktree and record stay until Step 5 offers them and Step 6 asks; Step 5 never offers the worktree or record of a task whose work came home as a pull request, because that work is not merged | `pr_created` — right after Step 4 opens a task's pull request, that task is cleaned up without asking. `pr_merged` — at the start of a later dispatch or `--issue` run, every task whose pull request has merged is cleaned up without asking |
+
+**`cleanup` acts only on work that came home as a pull request.** It applies Step 5's checks with one change: a recorded pull request whose branch on origin matches the local branch counts as merged. A dispatch started with `integration=merge` records `end` whatever is configured, and `--auto` ignores `cleanup`: it already cleans up right after its own pull request. The value is recorded in `workers.json` when the dispatch starts, so changing the setting later does not change how an earlier dispatch is cleaned up, and a dispatch recorded before this setting existed counts as `end`. Whatever Step 5's other checks keep — an uncommitted checkout, a reused worktree, or a terminal that no longer matches — stays. A terminal the user has operated keeps its worktree too, because removing the worktree would close that terminal without asking. When anything of a task stays, its dispatch record stays with it. Each kept item is printed with its reason.
 
 **`phase_b` decides which branch carries the work** — `design` when off, `exec` when on.
 Both merging and opening a pull request read that one recorded value, so they cannot
@@ -238,8 +241,9 @@ inventing its own version of it.
 
 ### Trying one dispatch without saving
 
-Step 2 accepts `--agent`, `--model`, `--effort` and `--design-mode`. They outrank both layers
+Step 2 accepts `--agent`, `--model`, `--effort`, `--design-mode` and `--cleanup`. They outrank both layers
 for that one call and write nothing, so a model can be tried before it is saved.
+`--cleanup` is fixed when the dispatch starts: `--resume` and `--phase exec` refuse it.
 
 **Quote a model id that contains brackets**, here and in S4: write `--model 'claude-opus-5-5[1m]'`,
 not the bare id. zsh reads an unquoted `[1m]` as a filename pattern and stops the whole call with
@@ -337,7 +341,7 @@ A scheduled precheck can run the same tick entry point; creating and enabling th
 
 Comments precede label changes and close. Saved transition stages allow retries without posting the comment again; a person's changed status cancels the pending transition. A clean result can merge only after verification and successful CI (or explicitly configured no CI), on a non-infrastructure repository verified on the selected execution host. Decisions, unresolved or declined review findings, or failed checks send the work to In review. When the execution host is reachable, worker failures and time limits become Failed. Returning an Issue in review, failed, stopped, or engineering state to Ready creates a new generation after cleanup, retaining the previous branch and PR context.
 
-`--auto` is the resource-deletion exception: after proving all workers stopped or released, it pushes local unmerged branches or verifies remote branches saved on origin, removes released worktrees and safe local branches, closes its coordinator, and archives the status directory. Merged integration branches are not pushed again. Detected user-owned local worktrees are retained; a live user-owned worker blocks cleanup and another generation. Ordinary dispatch and `--issue` still use Steps 5 and 6.
+`--auto` is the resource-deletion exception: after proving all workers stopped or released, it pushes local unmerged branches or verifies remote branches saved on origin, removes released worktrees and safe local branches, closes its coordinator, and archives the status directory. Merged integration branches are not pushed again. Detected user-owned local worktrees are retained; a live user-owned worker blocks cleanup and another generation. Ordinary dispatch and `--issue` still use Steps 5 and 6, and the `cleanup` setting.
 
 Remote stop/release evidence is `projection.liveness.verdict: exited` from a worker inventory including `--include-remote`; partial host errors do not prove exit. Remote deletion also needs evidence that the inventory HEAD is saved on origin: it must be an ancestor of its own branch, the integration base, or the previous-generation branch, or match the accepted integration HEAD after merge. When the inventory has no HEAD, only an integration role whose accepted HEAD matches its origin branch can use that fallback. An unsaved HEAD keeps the worktree. Unreadable or truncated worktree inventories hold cleanup; a known absent worktree allows retry to continue. A fetched local branch is deleted only when its SHA matches origin tracking or it is the merged integration branch. Remote pre-removal liveness receipts still need the end-to-end check. `orca-recover.ts` refuses remote-role replacement; inspect that role in Orca.
 
@@ -354,7 +358,7 @@ issues in batches until it runs out or hits the batch limit.
 
 **One issue is carried end to end by one call**, and `bin/orca-issue.ts` is that call. It
 dispatches, waits, merges, moves the labels and closes the issue. **It removes nothing** —
-Step 5 decides and Step 6 asks, exactly as for a hand-written dispatch.
+Step 5 decides and Step 6 asks, exactly as for a hand-written dispatch. The `cleanup` setting applies as it does to a hand-written dispatch: under `pr_created`, pass 3 of I3 cleans up each issue whose pull request opened, and under `pr_merged`, I0 cleans up the issues of earlier runs whose pull request has merged.
 
 | Property | This version |
 |---|---|
@@ -380,6 +384,15 @@ every merge refuses a dirty checkout. Exit 1 means a check failed or the lock is
 taken. Taking the lock needs a stable session id; export `LOOP_SESSION_ID` if the environment does
 not already provide one. **Release the lock on every exit path**, including the ones you did
 not plan for.
+
+Once the lock is taken, clean up what earlier runs left under `cleanup=pr_merged`, with the same call as Step 1:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-cleanup.ts" sweep
+```
+
+It never asks and exits 0 whatever it finds (2 only for a wrong call), so it cannot stop the run. Report what it printed in one line.
 
 ### I1a. One named issue
 
@@ -503,6 +516,14 @@ Exit 1 means that issue was not carried; its labels are already moved to `Failed
 and **its resources are kept on purpose**. Carry on with the next issue — one issue failing
 says nothing about the others.
 
+When `integration` is `pr` and an issue's pass 3 exited 0, apply its `cleanup` mode, with `SD` set to the `status_dir` pass 1 printed for that issue. It works as the same call in Step 4 does:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the status_dir pass 1 printed for this issue}"
+node "$PLUGIN/bin/orca-cleanup.ts" auto --status-dir "$SD"
+```
+
 ### I4. Between batches
 
 Report what happened per issue, then claim the next batch. Stop when the batch limit is
@@ -513,10 +534,7 @@ reached, when `fetch` finds nothing, or on exit 3 or 4. **Release the lock at th
 node "$PLUGIN/bin/orca-issue-loop.ts" release
 ```
 
-Then go to Step 5 for every `status_dir` the run produced, calling `orca-cleanup.ts plan` once
-per Run with every `status_dir` that printed that `run_id` — `plan` refuses a list that mixes
-Runs. Cleanup is the same as for a hand-written dispatch: it decides, the user approves, and
-only what they approve is removed.
+Then go to Step 5 for every `status_dir` the run produced that still exists (pass 3's `auto` removes the ones it cleans up), calling `orca-cleanup.ts plan` once per Run with every remaining `status_dir` that printed that `run_id` — `plan` refuses a list that mixes Runs. Cleanup is the same as for a hand-written dispatch: it decides, the user approves, and only what they approve is removed.
 
 ## Step 1: Write the request down
 
@@ -545,6 +563,15 @@ printf 'request_file=%s\n' "$REQ"
 
 Give the file-write tool the printed `request_file` path. Shell variables do not cross tool
 calls, so set `REQ` to that exact printed path before running Step 2.
+
+**Then, once per dispatch, clean up what earlier dispatches left.** A task an earlier dispatch recorded with `cleanup=pr_merged` is cleaned up here once its pull request has merged; nothing else is touched:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-cleanup.ts" sweep
+```
+
+It reads each such pull request's state with `gh` and cleans up only a `MERGED` one, by the same rules as `auto` in Step 4. An open or closed pull request, one `gh` cannot read (`could not read <url>; left as is`), and anything Step 5's other checks would keep are left as they are. It never asks and exits 0 whatever it finds (2 only for a wrong call), so it cannot stop this dispatch. Tell the user in one line what it removed and what it left, then go on to Step 1b.
 
 ## Step 1b: Ask how each task starts
 
@@ -683,7 +710,10 @@ You do not run anything extra for this: the wait below does it while it waits.
 
 Tell the user first: when a worker finishes, this skill retains its terminal before it
 acknowledges the message. Nothing is released here. The terminal, the worktree and the
-dispatch record all survive until Step 5 decides what may go and Step 6 asks the user.
+dispatch record all survive until Step 5 decides what may go and Step 6 asks the user, unless
+the dispatch recorded `cleanup=pr_created` or `cleanup=pr_merged`: then `auto` in Step 4,
+or a later dispatch's `sweep`, cleans up a task whose pull request is saved without asking
+(see Configuration).
 Retention is deliberate — a later stage sends review feedback back to the same session.
 
 One call waits for every task at once: the tasks share one Run and one parent mailbox, so a
@@ -1098,6 +1128,16 @@ to resolve its own remote in a three-remote repository pushed to a personal fork
 the pull request inside that fork, where the issue does not exist, so its `Closes` line did
 nothing and the fork's pull request was accepted as proof of completion.
 
+**When `orca-pr.ts` exits 0, apply the task's `cleanup` mode.** It does nothing unless the dispatch recorded `cleanup=pr_created`:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+: "${SD:?set SD to the exact status_dir printed in Step 2}"
+node "$PLUGIN/bin/orca-cleanup.ts" auto --status-dir "$SD"
+```
+
+Under `pr_created` it plans the cleanup the way Step 5 does, with every remaining task of this Run (so the other tasks' workers are not mistaken for ones nobody recorded), and runs only what is offered for this task: its terminal release, then its worktree removal, then its record removal. It acts only when the pull request is recorded and the branch on origin matches the local one; otherwise it runs nothing and prints why. A terminal the user has operated keeps its worktree, and a task that keeps anything keeps its dispatch record. Exit 0 means it cleaned up or had nothing to do, exit 1 means an action failed and the output names it, and exit 2 is a wrong call. Report the printed lines per task. A task it removed has no `status_dir` any more, so leave it out of Step 5.
+
 ## Step 5: Give the user the exact cleanup commands
 
 **This step removes nothing.** It decides what may go and prints the commands with real
@@ -1109,10 +1149,7 @@ read-only — and classifies from those answers. The release that closes the wor
 is one of the actions Step 6 asks about, so the worker's session is still there while the user
 is deciding.
 
-Run it once for the whole Run, with **every** task's exact `status_dir`. Orca reports the whole
-Run, so a task left out looks like a retained worker nobody recorded and stops the cleanup of
-every task. Never substitute a made-up handle, dispatch, or worktree id: the plan reads them
-from the dispatch records.
+Run it once for the whole Run, with the exact `status_dir` of every task that still has one. `auto` (Step 4 and I3) removes the status dir of each task it cleans up, and passing a removed one stops the whole plan; when no task of this Run has one left, skip Step 5 and Step 6 and say that `auto` already cleaned everything up. Orca reports the whole Run, so a task left out looks like a retained worker nobody recorded and stops the cleanup of every task. Never substitute a made-up handle, dispatch, or worktree id: the plan reads them from the dispatch records.
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
@@ -1201,7 +1238,9 @@ Say these things to the user in plain language:
 Step 5 decided. This step asks and executes. It derives no decision of its own: `run` executes
 only an offer the plan holds, and nothing the plan does not hold. **This is where the worker's
 terminal is released**, so closing the session is one of the actions the user approves, never a
-side effect of deciding.
+side effect of deciding. The exception is the `cleanup` setting the user chose: under
+`pr_created` or `pr_merged`, `auto` (Step 4 and I3) and `sweep` (Step 1 and I0) release the
+terminal of a task whose pull request is saved, without asking.
 
 [C6] The ask and the run:
 
@@ -1282,7 +1321,7 @@ State these when they apply. Do not work around them silently.
 
 | Limitation | What the user does |
 |---|---|
-| Cleanup never runs on its own | Answer the Step 6 question; only what you approve is removed, and anything you decline stays |
+| Cleanup runs on its own only under `cleanup=pr_created` or `cleanup=pr_merged`, for a task whose pull request is recorded and whose branch on origin matches | Otherwise answer the Step 6 question; only what you approve is removed, and anything you decline stays. Under `end`, Step 5 never offers the worktree or record of a pull request task, because its work is not merged |
 | Recovery is never automatic; you decide when to run it | `orca-recover.ts` (Step 3) decides per role and acts only when you run it without `--dry-run`. Inspect with `$ORCA_BIN orchestration task-list --run <run_id> --json` and `$ORCA_BIN orchestration worker-show --dispatch <id> --json`, then clean up as in Step 5 and Step 6 |
 | If a worker stops without reporting, waiting times out for the whole set | Same inspection; the state is on disk under `.dispatch/<slug>/`, one directory per task |
 | A worker asks a person only when its `design_mode` told it to or its review reached the round limit, and it waits until someone answers | Under `direct` and `plan` it is told to fail with a reason in `result.md` instead; read it and dispatch again. Under `brainstorm` with `ask_via=terminal` it asks in its own terminal and waits there: answer it in that terminal. With `ask_via=parent` it uses `orchestration ask`, the wait exits 6 with the question and the `reply` command, and the worker resumes only once you run that command |
@@ -1308,6 +1347,8 @@ State these when they apply. Do not work around them silently.
 | Orca can keep reporting a working worker as `start_unknown` | Measured 2026-09-24: Orca could not observe the start of a codex worker's turn and kept that state while the worker went on working. The wait keeps waiting on it and reports a dead one as a stall (exit 8). Nothing types into such a worker to wake it — a dead one may have left a bare shell — so it relies on its own waits. For a start that did not complete, `orca-recover.ts` shows its screen and you choose `--adopt` or `--restart` (Step 3) |
 | A dispatch started by 3.10.16 or earlier with `--phase exec` or `--resume` may sit in another Run | Measured 2026-11-10: with two Runs started from the same terminal, `exec` and `exec_review` were created in the Run started last, so the recorded Run's wait never heard from them and the other Run's wait stopped on mail from a dispatch it did not know. `$ORCA_BIN orchestration worker-show --dispatch <id> --json` shows the Run as `result.dispatch.runId`. `orca-recover.ts` refuses such a role and names both Runs; decide with the user whether to stop it. Current versions name the Run on every start |
 | codex asks once per repository whether to trust it, and until then a start fails with `agent-trust-workspace` | Trust the folder on that worker's screen, or add `[projects."<main checkout>"]` with `trust_level = "trusted"` to `~/.codex/config.toml`; Step 2 and `orca-recover.ts` print the exact lines. codex keeps the trust for the repository's main checkout, so later worktrees start without asking. Then replace the failed start with `orca-recover.ts` |
+| `pr_merged` cleans nothing up for a pull request whose branch is gone from origin | It compares the local branch with the one on origin, so a repository that deletes head branches on merge (GitHub's setting, or `gh pr merge --delete-branch`) leaves that task in place. Remove its worktree with `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` and its `.dispatch/<slug>` by hand |
+| Under `pr_created` and `pr_merged`, a task that keeps anything keeps its dispatch record, and Step 5 does not offer those later | A terminal the user has operated keeps its worktree, because removing the worktree would close that terminal without asking; a worktree with uncommitted changes, or anything else Step 5 keeps, stays the same way. Step 5 never offers a pull request task's worktree or record, so once you have looked, remove the worktree with `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` and the `.dispatch/<slug>` by hand |
 | --auto orphan worktrees are not distinguished in Slack reports | Tick stdout names them; hosts[].used includes their count |
 | --auto cannot settle a worker whose worker_done was lost | --max-waits 1 restarts the grace tracking, so it becomes Failed at its time limit; inspect its Run and archived files |
 | --auto does not measure remote free memory or disk on each dispatch | Capacity relies on the host's configured lanes; local placement still checks both |
@@ -1326,13 +1367,11 @@ the wait saw a role waiting on a person), and
 `roles/design/{status.json,result.md}`, plus `roles/<role>/stopped.json` for a role the user
 stopped, `roles/<role>/awaiting-user.json` when that role last asked in its terminal, and `spec.md` / `plan.md` when a `brainstorm` design wrote them. Tasks of one Run carry
 the same `run_id` in `run.json` and their own worktree in `workers.json`, whose `roles` map
-holds one entry per role so a later stage can add more without moving anything.
+holds one entry per role so a later stage can add more without moving anything. `workers.json` also records the `cleanup` mode the dispatch started with.
 
 A role that `orca-recover.ts` replaced lists the dispatches it replaced under `superseded`, and a
 role whose latest start did not become ready is marked `start_incomplete`. A follow-up dispatch Orca started for a finished role is listed under that role's `follow_ups`.
 
-Step 5 writes
-`.dispatch/cleanup-<run_id>.json` next to them: Step 6's `run` executes only the offers in that
-plan. Everything
+Step 5 writes `.dispatch/cleanup-<run_id>.json` next to them, and `auto` and `sweep` write the same file when they plan: Step 6's `run` executes only the offers in that plan. Everything
 needed to resume or clean up by hand is here. `.dispatch/` is added to the repository's
 `info/exclude`, so it never shows up in the user's `git status`.
