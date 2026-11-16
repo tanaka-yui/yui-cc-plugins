@@ -144,12 +144,26 @@ export const confirmStopped = (statusDir: string): { stopped: boolean; kept: str
   // ★ followUp に端末の持ち主が移った元の dispatch は、release が ownership_transferred の retained を返し続け、
   //   released にならない（2026-11-16 の実機）。決着した dispatch で、Orca が結びついた資源は無いと言う行も
   //   止まった証拠にする。端末を持つ followUp の行はこの関数で別に確かめる
-  const gone = (row: Json | undefined, data: Json | undefined): boolean =>
-    asString(get(data, 'environment'))
-      ? get(row, 'projection', 'liveness', 'verdict') === 'exited'
+  // ★ Orca 1.4.259 の `--include-remote` の遠隔の行は `server` の要約だけで projection を持たない（2026-11-17 の実機。
+  //   動作中も解放後も同じ形）。行に無ければ、実行先の `worker-show --environment` の liveness を読む
+  const remoteExited = (row: Json | undefined, environment: string): boolean => {
+    if (get(row, 'projection', 'liveness', 'verdict') === 'exited') return true
+    const dispatch = asString(get(row, 'dispatchId'))
+    if (!dispatch || get(row, 'projection')) return false
+    const shown = runOrca(
+      ['orchestration', 'worker-show', '--dispatch', dispatch, '--environment', environment, '--json'],
+      env,
+    )
+    return receiptOk(shown) && get(shown.json, 'result', 'projection', 'liveness', 'verdict') === 'exited'
+  }
+  const gone = (row: Json | undefined, data: Json | undefined): boolean => {
+    const environment = asString(get(data, 'environment'))
+    return environment
+      ? remoteExited(row, environment)
       : GONE_STATES.includes(releaseState(row)) ||
-        (dispatchSettled(asString(get(row, 'dispatchStatus')) ?? '') &&
-          get(row, 'projection', 'resource', 'state') === 'absent')
+          (dispatchSettled(asString(get(row, 'dispatchStatus')) ?? '') &&
+            get(row, 'projection', 'resource', 'state') === 'absent')
+  }
   const list = (): Json[] | null => {
     const response = runOrca(
       ['orchestration', 'worker-list', '--run', id, ...(environments.size ? ['--include-remote'] : []), '--json'],

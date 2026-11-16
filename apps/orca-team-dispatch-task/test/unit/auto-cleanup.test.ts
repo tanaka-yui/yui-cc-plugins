@@ -988,3 +988,57 @@ test('AU122b cleanup continuation evidence preserves repository identity across 
     f.cleanup()
   }
 })
+
+// 2026-11-17 の実機（Orca 1.4.259、Mac M2max）: 親の `worker-list --include-remote` の遠隔の行は `server` の要約だけで、
+// 動作中も解放後も projection を持たない。遠隔の解放は `worker-show --dispatch <id> --environment <env>` の
+// projection.liveness でしか読めない（遠隔の側では dispatch は別の Run に載るので `--run` では引けない）
+for (const remote of ['exited', 'live', 'unreachable'])
+  test(`AU124 a remote row without projection is stopped only when the remote worker-show says exited (${remote})`, () => {
+    const f = remoteSetup()
+    try {
+      const summary = {
+        dispatchId: 'ctx_design',
+        workerState: 'succeeded',
+        dispatchStatus: 'completed',
+        agentTerminalHandle: null,
+        terminalState: null,
+        resource: null,
+        server: { environmentId: 'env-1', name: 'Remote', asOf: '2026-11-16T23:30:13Z' },
+      }
+      f.respond('orchestration_worker-list', { ok: true, result: { workers: [summary] } }, f.orca)
+      const shown = (verdict: string | null) =>
+        JSON.stringify(
+          verdict === null
+            ? { ok: false, error: { code: 'environment_unreachable' } }
+            : {
+                ok: true,
+                result: {
+                  worker: { state: 'succeeded', stage: 'settled' },
+                  dispatch: { status: 'completed' },
+                  projection: { liveness: { verdict } },
+                },
+              },
+        )
+      const summaryShow = JSON.stringify({
+        ok: true,
+        result: {
+          worker: { state: 'succeeded', stage: 'server_record' },
+          dispatch: { status: 'completed' },
+          projection: null,
+        },
+      })
+      f.hook(
+        'orchestration_worker-show',
+        `case "$*" in
+*--environment\\ env-1*) printf '%s' '${shown(remote === 'unreachable' ? null : remote)}' ;;
+*) printf '%s' '${summaryShow}' ;;
+esac > '${f.orca}/orchestration_worker-show'`,
+        f.orca,
+      )
+      const result = confirmStopped(f.issue.statusDir)
+      assert.equal(result.stopped, remote === 'exited', result.reasons.join())
+      assert.match(f.calls(f.orca), /worker-show --dispatch ctx_design --environment env-1 /)
+    } finally {
+      f.cleanup()
+    }
+  })
