@@ -7,12 +7,14 @@ P="$(cd "$(dirname "$0")/.." && pwd)"
 CLEANUP="$P/bin/orca-cleanup.ts"
 fails=0; ok() { echo "PASS: $1"; }; fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 export ORCA_BIN="$P/test/lib/orca-stub.sh"
+BASE_PATH="$PATH"
 
 # --- stub の世界 -------------------------------------------------------------------------
 # Orca の状態は 1 件 1 ファイルで持ち、hook が呼び出しごとに応答を組み立てる。
 #   workers/<dispatch>        その worker の releaseState（terminalState も同じ値にする）
 #   workers/<dispatch>.reason retainedReason / .fail = release が失敗する
 #   workers/<dispatch>.owner  ownershipState（無ければ null）。user_owned = ユーザーが操作した端末
+#   workers/<dispatch>.after-owner  release のあとの ownershipState
 #   workers/<dispatch>.after  release のあとの状態「state [retainedReason]」（無ければ released）。
 #                             gone = 一覧から消える / listfail = 次の読み直し 1 回だけ一覧が読めない
 #   terminals/<handle>        その端末が居る worktree id（無ければ端末は閉じている）/ .stale = show が rc 0 の ok:false
@@ -91,6 +93,7 @@ case "$after" in
   *) read -r st rs <<<"$after"; printf '%s\n' "$st" > "$d/workers/$id"
      [[ -z "$rs" ]] || printf '%s\n' "$rs" > "$d/workers/$id.reason" ;;
 esac
+if [[ -f "$d/workers/$id.after-owner" ]]; then cp "$d/workers/$id.after-owner" "$d/workers/$id.owner"; fi
 HOOK
   cat > "$d/worktree_rm.hook" <<'HOOK'
 #!/usr/bin/env bash
@@ -105,6 +108,7 @@ fi
 if [[ -f "$d/flip-merged" ]]; then
   printf '%s\n' '{"merged":false}' > "$(cat "$d/flip-merged")/integration-result.json"
 fi
+if [[ -f "$d/drop-branch" ]]; then read -r repo branch < "$d/drop-branch"; git -C "$repo" branch -D "$branch" >/dev/null 2>&1; fi
 HOOK
   chmod +x "$d"/*.hook
 }
@@ -116,8 +120,20 @@ world() {
   PLAN_FILE="$REPO/.dispatch/cleanup-run_x.json"
   export ORCA_STUB_DIR="$T/orca"; mkdir -p "$ORCA_STUB_DIR"/{workers,terminals,lists,worktrees}
   : > "$ORCA_STUB_DIR/calls.log"; hooks
+  # gh は stub だけ。pr view は URL の最後の 1 語ごとに $GH_STUB_DIR/state-<語> の state を返し、無ければ rc 1
+  export GH_STUB_DIR="$T/gh"; mkdir -p "$GH_STUB_DIR" "$T/bin"; : > "$GH_STUB_DIR/calls.log"
+  { echo '#!/usr/bin/env bash'; printf 'exec %q "$@"\n' "$P/test/lib/gh-stub.sh"; } > "$T/bin/gh"; chmod +x "$T/bin/gh"
+  export PATH="$T/bin:$BASE_PATH"
+  cat > "$GH_STUB_DIR/pr_view.hook" <<'HOOK'
+#!/usr/bin/env bash
+d="$GH_STUB_DIR"; url=""; for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
+n="${url##*/}"; rm -f "$d/pr_view" "$d/pr_view.rc"
+if [[ -f "$d/state-$n" ]]; then printf '{"state":"%s"}\n' "$(cat "$d/state-$n")" > "$d/pr_view"
+else printf 'stub: no such pull request\n' > "$d/pr_view"; printf '1\n' > "$d/pr_view.rc"; fi
+HOOK
+  chmod +x "$GH_STUB_DIR/pr_view.hook"
 }
-teardown() { rm -rf "$T"; }
+teardown() { rm -rf "$T"; export PATH="$BASE_PATH"; }
 
 # task <slug> [merged] — design 役 1 つのタスク。merged の既定は true
 task() {
@@ -150,6 +166,29 @@ run() { OUT=$(node "$CLEANUP" run "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); 
 pj() { jq -c "$1" "$PLAN_FILE" 2>/dev/null; }                  # 計画ファイルへの問い合わせ
 mutations() { grep -E 'worker-release|worktree rm' "$ORCA_STUB_DIR/calls.log"; }
 sd() { printf '%s' "$REPO/.dispatch/$1"; }
+
+# gitrepo — REPO を git にして bare の origin を付ける（1 度だけ）。PR のタスクの branch はここへ push する
+gitrepo() {
+  [[ -d "$REPO/.git" ]] && return 0
+  git init -q --bare "$T/origin.git"
+  git -C "$REPO" init -q -b main .; printf 'seed\n' > "$REPO/README.md"; printf '.dispatch/\n' >> "$REPO/.git/info/exclude"
+  git -C "$REPO" add -A; git -C "$REPO" -c user.email=t@e -c user.name=t commit -q -m seed
+  git -C "$REPO" remote add origin "$T/origin.git"; git -C "$REPO" push -q origin main
+}
+# prtask <slug> [cleanup] — PR を作ったタスク。branch orca/<slug> を origin へ push し、PR の URL（.../pull/<slug>）を記録する
+prtask() {
+  task "$1" false; gitrepo
+  git -C "$REPO" branch "orca/$1" main; git -C "$REPO" push -q origin "orca/$1"
+  edit "$1" ".integration = \"pr\" | .integration_role = \"design\" | .integration_branch = \"main\" | .roles.design.branch = \"orca/$1\" | .cleanup = \"${2:-pr_created}\""
+  printf '{"merged":false,"integration":"pr","pr_url":"https://github.com/o/r/pull/%s","branch":"orca/%s","base":"main","repo":"o/r"}\n' \
+    "$1" "$1" > "$(sd "$1")/integration-result.json"
+}
+# unpushed <slug> — orca/<slug> に origin へ送っていないコミットを足す（PR のあとに worker が足したコミット）
+unpushed() {
+  git -C "$REPO" checkout -q "orca/$1"; printf 'x\n' >> "$REPO/README.md"
+  git -C "$REPO" -c user.email=t@e -c user.name=t commit -qam x; git -C "$REPO" checkout -q main
+}
+
 
 # CL1: 使用法の誤りは exit 2 で、Orca を 1 度も呼ばない
 world; task a; bad=""
@@ -770,5 +809,119 @@ unmerged=$(pj '[.tasks[0].kept[] | select(.kind == "record") | .reasons[]] | joi
    && "$unmerged" != *'already in'* ]] \
   && ok "CL15c 手で merge したブランチには記録の仕方を添え、offer はしない" || fail "CL15c (reasons=$reasons unmerged=$unmerged)"
 teardown
+
+# CL40: 保存済み PR だけを追加の入力で提示する。plan は変更しない
+world; prtask a
+plan --status-dir "$(sd a)"
+before="$(pj '[.tasks[0].offers.worktree, .tasks[0].offers.record, .tasks[0].pr_saved]')"
+plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+[[ "$before" == '[[],[],null]' && "$RC" -eq 0 && "$(pj '.tasks[0].offers.worktree | length')" == 1 \
+   && "$(pj '.tasks[0].offers.record[0].path')" == "\"$(sd a)\"" && "$(pj '.tasks[0].pr_saved')" == true && -z "$(mutations)" ]] \
+  && ok "CL40 保存済み PR を提示する" || fail "CL40 (rc=$RC out=$OUT err=$ERR)"
+teardown
+
+# CL40b: 人が操作した端末の worktree と記録は無人で消さない
+bad=""
+for how in owner takeover; do
+  world; prtask a; role a design_review
+  if [[ "$how" == owner ]]; then printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.owner"
+  else printf 'user_takeover\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.reason"; fi
+  plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+  [[ "$RC" -eq 0 && "$(pj '[.tasks[0].offers.worktree[].role]')" == '["design_review"]' \
+     && "$(pj '.tasks[0].offers.record | length')" == 0 \
+     && "$OUT" == *'the user operated the design terminal, so removing this worktree would close it without asking'* \
+     && "$OUT" == *'part of this task stays ('* && "$OUT" == *'design worktree'* ]] || bad="$bad [$how:$RC:$ERR]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL40b 人の端末と worktree と記録を残す" || fail "CL40b:$bad"
+
+world; prtask a; role a design_review; printf 'dirt\n' > "$T/wt/a-design_review/dirty.txt"
+plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '[.tasks[0].offers.worktree[].role]')" == '["design"]' \
+   && "$(pj '.tasks[0].offers.record | length')" == 0 \
+   && "$OUT" == *'part of this task stays (design_review worktree), so the record that points at it stays too'* ]] \
+  && ok "CL40c dirty な役があれば記録も残す" || fail "CL40c $OUT $ERR"
+teardown
+
+bad=""
+for how in unpushed deleted; do
+  world; prtask a
+  if [[ "$how" == unpushed ]]; then unpushed a; else git -C "$REPO" push -q origin --delete orca/a; fi
+  plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+  [[ "$RC" -eq 0 && "$(pj '[.tasks[0].offers.worktree, .tasks[0].offers.record, .tasks[0].pr_saved]')" == '[[],[],null]' \
+     && "$(pj '[.tasks[0].kept[] | select(.kind == "worktree" or .kind == "record") | .reasons | index("the branch has commits that are not on origin") != null]')" == '[true,true]' ]] \
+    || bad="$bad [$how:$RC:$ERR]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL41/CL41b origin 不一致と branch 削除は保存済みでない" || fail "CL41/CL41b:$bad"
+
+world; prtask a; printf '{"merged":false,"integration":"pr"}\n' > "$(sd a)/integration-result.json"
+plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '[.tasks[0].offers.worktree, .tasks[0].offers.record]')" == '[[],[]]' \
+   && "$(pj '.tasks[0].kept[] | select(.kind == "record") | .reasons')" == *'the pull request is not recorded'* \
+   && "$OUT" != *'orca-merge.ts'* ]] && ok "CL42 PR の記録が無ければ残す" || fail "CL42 $OUT $ERR"
+teardown
+
+world; prtask a; task b
+plan --status-dir "$(sd a)" --pr-saved "$(sd b)"; rc1=$RC; err1=$ERR
+plan --status-dir "$(sd a)" --pr-saved ''; rc2=$RC; err2=$ERR
+[[ "$rc1" -eq 2 && "$err1" == *'is not one of the --status-dir values'* \
+   && "$rc2" -eq 2 && "$err2" == *'--pr-saved must not be empty'* && ! -e "$PLAN_FILE" && ! -s "$ORCA_STUB_DIR/calls.log" ]] \
+  && ok "CL43 pr-saved の入力を検査する" || fail "CL43 (rc=$rc1/$rc2 err=$err1/$err2)"
+teardown
+
+world; prtask a; plan --status-dir "$(sd a)" --pr-saved "$(sd a)"; plan_rc=$RC; unpushed a
+run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record
+[[ "$plan_rc" -eq 0 && "$RC" -eq 1 && "$ERR" == *'could not read the cleanup plan'* && -d "$(sd a)" && -z "$(mutations)" ]] \
+  && ok "CL43b run は origin を確かめ直す" || fail "CL43b $RC $OUT $ERR"
+teardown
+
+world; prtask a; plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record
+[[ "$RC" -eq 0 && ! -e "$(sd a)" && "$(mutations | grep -c worker-release)" == 1 && "$(mutations | grep -c 'worktree rm')" == 1 \
+   && "$OUT" == *"removed: dispatch record $(sd a)"* ]] && ok "CL43c run が保存済みの計画を実行する" || fail "CL43c $RC $OUT $ERR"
+teardown
+
+bad=""
+for how in branch record; do
+  world; prtask a; plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+  if [[ "$how" == branch ]]; then printf '%s orca/a\n' "$REPO" > "$ORCA_STUB_DIR/drop-branch"
+  else printf '%s\n' "$(sd a)" > "$ORCA_STUB_DIR/flip-merged"; fi
+  run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record
+  if [[ "$how" == branch ]]; then [[ "$RC" -eq 0 && ! -e "$(sd a)" ]] || bad="$bad [branch:$RC:$OUT:$ERR]"
+  else [[ "$RC" -eq 1 && -d "$(sd a)" && "$OUT" == *"failed: dispatch record $(sd a): the pull request is not recorded"* ]] || bad="$bad [record:$RC:$OUT:$ERR]"; fi
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL43d 記録削除は PR の記録を再確認し、削除済み branch は見ない" || fail "CL43d:$bad"
+
+bad=""
+for how in owner takeover; do
+  world; prtask a; role a design_review; plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+  if [[ "$how" == owner ]]; then
+    printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.owner"
+    printf 'retained user_requested\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.after"
+  else printf 'retained user_takeover\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.after"; fi
+  run --plan "$PLAN_FILE" --approve a:terminal --approve a:worktree --approve a:record
+  [[ "$RC" -eq 0 && -d "$(sd a)" && "$(mutations | grep -c worker-release)" == 2 \
+     && "$(mutations | grep -cE 'id:wt_a-design( |$)')" == 0 && "$(mutations | grep -c 'id:wt_a-design_review')" == 1 \
+     && "$OUT" == *'not run: design worktree id:wt_a-design (the user took over the design terminal after the plan, so its worktree stays)'* \
+     && "$OUT" == *"not run: dispatch record $(sd a) (part of this task stays with the user (design terminal), so the record that points at it stays too)"* \
+     && "$OUT" == *'removed: design_review worktree id:wt_a-design_review'* && "$OUT" != *'failed:'* ]] || bad="$bad [$how:$RC:$OUT:$ERR]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL43e plan の後のユーザー操作も保護する" || fail "CL43e:$bad"
+
+bad=""
+for how in unpushed norecord; do
+  world; prtask a; printf 'dirt\n' > "$T/wt/a-design/dirty.txt"
+  plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+  [[ "$(pj '.tasks[0].pr_saved')" == true \
+     && "$(pj '.tasks[0].offers.worktree | length')" == 0 && "$(pj '.tasks[0].offers.terminal | length')" == 1 ]] || bad="$bad [plan:$how:$ERR]"
+  if [[ "$how" == unpushed ]]; then unpushed a; else printf '{"merged":false,"integration":"pr"}\n' > "$(sd a)/integration-result.json"; fi
+  run --plan "$PLAN_FILE" --approve a:terminal
+  [[ "$RC" -eq 1 && "$ERR" == *'could not read the cleanup plan'* && -z "$(mutations)" ]] || bad="$bad [$how:$RC:$OUT:$ERR]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL43f 端末だけを提示した計画も確かめ直す" || fail "CL43f:$bad"
 
 echo "---"; echo "failures: $fails"; exit "$fails"

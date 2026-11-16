@@ -1,6 +1,6 @@
 // 片付けの判定（Step 5 = plan）と、承認された片付けの実行（Step 6 = run）。
 //
-// Usage: node orca-cleanup.ts plan --status-dir <dir> [--status-dir <dir> ...]
+// Usage: node orca-cleanup.ts plan --status-dir <dir> [--status-dir <dir> ...] [--pr-saved <dir> ...]
 //        node orca-cleanup.ts run --plan <file> --approve <slug>:<terminal|worktree|record> [...]
 //
 // plan の exit: 0 = 計画を書いた（提示が 0 件でも）/ 1 = Run 全体を止めた（計画は書かない）/ 2 = 使用法の誤り
@@ -32,8 +32,11 @@ import { fileURLToPath } from 'node:url'
 
 const NAME = 'orca-cleanup'
 const USAGE =
-  'usage: orca-cleanup.ts plan --status-dir <dir> [--status-dir <dir> ...] | ' +
+  'usage: orca-cleanup.ts plan --status-dir <dir> [--status-dir <dir> ...] [--pr-saved <dir> ...] | ' +
   'run --plan <file> --approve <slug>:<terminal|worktree|record> [--approve ...]'
+
+// ★ origin を読めなかったときと同じに扱う
+const REMOTE_TIMEOUT_MS = 30_000
 
 const MISSING = 'required cleanup state is missing; do not close or remove anything'
 const UNREADABLE = 'could not read the release state; do not close anything'
@@ -48,10 +51,17 @@ type RecordOffer = { path: string }
 type Offers = { terminal: TerminalOffer[]; worktree: WorktreeOffer[]; record: RecordOffer[] }
 type Kept = { kind: Kind; role: string | null; reasons: string[] }
 type Stopped = { reasons: string[]; reported: Json[]; inspect: string[][] }
-type TaskPlan = { slug: string; status_dir: string; stopped: Stopped | null; offers: Offers; kept: Kept[] }
+type TaskPlan = {
+  slug: string
+  status_dir: string
+  stopped: Stopped | null
+  offers: Offers
+  kept: Kept[]
+  pr_saved?: boolean
+}
 type CleanupPlan = { run_id: string; tasks: TaskPlan[] }
 type Sink = { offers: Offers; kept: Kept[]; stopped: Stopped }
-type Step = { kind: Kind; role: string | null; label: string; act: () => { ok: boolean; line: string } }
+type Step = { kind: Kind; role: string | null; label: string; act: () => { ok: boolean; line: string; held?: boolean } }
 
 const isKind = (value: string): value is Kind => value === 'terminal' || value === 'worktree' || value === 'record'
 const terminalArgv = (dispatch: string): string[] => [
@@ -90,6 +100,44 @@ const recordRefusal = (dir: string): string | null => {
   }
 }
 
+// ★ PR の成果は、URL の記録と手元 / origin の branch の一致で保存済みと証明する
+const prUrlOf = (dir: string): string => {
+  const result = readJson(join(dir, 'integration-result.json'))
+  return get(result, 'integration') === 'pr' ? (asString(get(result, 'pr_url')) ?? '') : ''
+}
+
+const branchOnOrigin = (dir: string, workers: JsonObject): boolean => {
+  const role = asString(workers.integration_role) ?? ''
+  const branch = asString(get(workers, 'roles', role, 'branch')) ?? ''
+  const repo = asString(get(readJson(join(dir, 'run.json')), 'repo_root')) ?? ''
+  if (role === '' || branch === '' || repo === '') return false
+  const ref = `refs/heads/${branch}`
+  const local = spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', ref], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+  })
+  if (local.status !== 0 || local.stdout.trim() === '') return false
+  const remote = spawnSync('git', ['-C', repo, 'ls-remote', 'origin', ref], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    timeout: REMOTE_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
+  })
+  if (remote.status !== 0) return false
+  const match = remote.stdout
+    .split('\n')
+    .map((line) => line.split('\t'))
+    .find(([, name]) => name === ref)
+  return match?.[0] === local.stdout.trim()
+}
+
+const prSavedReasons = (dir: string, workers: JsonObject): string[] => {
+  const reasons: string[] = []
+  if (prUrlOf(dir) === '') reasons.push('the pull request is not recorded')
+  if (!branchOnOrigin(dir, workers)) reasons.push('the branch has commits that are not on origin')
+  return reasons
+}
+
 // [C3] 破壊的なので、全条件が実際に成り立つときだけ提示する。成り立たない理由は全部挙げる
 const worktreeReasons = (
   record: Json,
@@ -97,6 +145,7 @@ const worktreeReasons = (
   worktreePath: string,
   merged: boolean,
   identity: boolean,
+  notSaved: string[],
 ): string[] => {
   const owned = get(record, 'worktree_created_by_this_run') === true
   const recorded = asArray(get(record, 'worktree_terminals'))
@@ -113,7 +162,7 @@ const worktreeReasons = (
     accounted = listed.every((entry) => recorded.includes(get(entry, 'handle') ?? null)) ? 'yes' : 'no'
   }
   const reasons: string[] = []
-  if (!merged) reasons.push('the work is not merged yet')
+  if (!merged) reasons.push('the work is not merged yet', ...notSaved)
   if (!owned) reasons.push('this dispatch reused an existing worktree; it is not ours to remove')
   if (!inspected) reasons.push('the worker checkout could not be inspected')
   if (dirty) reasons.push('the worker checkout has uncommitted changes')
@@ -123,7 +172,13 @@ const worktreeReasons = (
   return reasons
 }
 
-const planRole = (role: string, record: Json, listed: Json[], merged: boolean, sink: Sink): void => {
+const planRole = (
+  role: string,
+  record: Json,
+  listed: Json[],
+  sink: Sink,
+  rules: { merged: boolean; notSaved: string[]; unattended: boolean },
+): void => {
   const dispatch = asString(get(record, 'dispatch')) ?? ''
   const terminal = asString(get(record, 'terminal')) ?? ''
   const worktreeId = asString(get(record, 'worktree_id')) ?? ''
@@ -192,7 +247,14 @@ const planRole = (role: string, record: Json, listed: Json[], merged: boolean, s
   } else {
     sink.offers.terminal.push({ role, dispatch, argv: terminalArgv(dispatch) })
   }
-  const reasons = worktreeReasons(record, worktreeId, worktreePath, merged, identity)
+  const reasons = worktreeReasons(record, worktreeId, worktreePath, rules.merged, identity, rules.notSaved)
+  if (
+    rules.unattended &&
+    !gone &&
+    (userOwned(worker) || get(worker, 'resource', 'retainedReason') === 'user_takeover')
+  ) {
+    reasons.push(`the user operated the ${role} terminal, so removing this worktree would close it without asking`)
+  }
   if (reasons.length === 0) {
     sink.offers.worktree.push({ role, worktree_id: worktreeId, argv: worktreeArgv(worktreeId) })
   } else {
@@ -254,8 +316,11 @@ const mergedByHand = (dir: string, workers: JsonObject): string => {
   return `${branch} is already in ${base}; if it was merged by hand, record it with: node ${merge} --status-dir ${dir}`
 }
 
-const planTask = (dir: string, workers: JsonObject, listed: Json[]): TaskPlan => {
-  const merged = get(readJson(join(dir, 'integration-result.json')), 'merged') === true
+const planTask = (dir: string, workers: JsonObject, listed: Json[], prSaved: boolean): TaskPlan => {
+  const integrated = get(readJson(join(dir, 'integration-result.json')), 'merged') === true
+  const notSaved = prSaved && !integrated ? prSavedReasons(dir, workers) : []
+  const saved = prSaved && !integrated && notSaved.length === 0
+  const merged = integrated || saved
   // ★ 役を全部走査する。レビューモードでは 1 タスクに複数の役（端末と worktree）が居る
   const roles = Object.entries(asObject(workers.roles) ?? {}).filter(
     ([, record]) => (asString(get(record, 'dispatch')) ?? '') !== '',
@@ -264,7 +329,7 @@ const planTask = (dir: string, workers: JsonObject, listed: Json[]): TaskPlan =>
   if (roles.length === 0) sink.stopped.reasons.push(MISSING)
   let held = false
   for (const [role, record] of roles) {
-    planRole(role, record, listed, merged, sink)
+    planRole(role, record, listed, sink, { merged, notSaved, unattended: saved })
     held = planSuperseded(role, record, listed, sink) || held
   }
   const refusal = recordRefusal(dir)
@@ -272,22 +337,50 @@ const planTask = (dir: string, workers: JsonObject, listed: Json[]): TaskPlan =>
   if (refusal !== null) reasons.push(refusal)
   if (refusal === null && !merged) {
     reasons.push('the work is not merged yet, so this is the only copy of the request and result')
-    const hint = mergedByHand(dir, workers)
+    const hint = prSaved ? '' : mergedByHand(dir, workers)
     if (hint !== '') reasons.push(hint)
+    reasons.push(...notSaved)
   }
   if (refusal === null && held) {
     reasons.push(
       'Orca still holds a replaced attempt of this task, and this record is what tells a later Step 5 that it is ours',
     )
   }
+  if (saved) {
+    const parts: string[] = []
+    for (const [role, record] of roles) {
+      const worker = listed.find((entry) => get(entry, 'dispatchId') === get(record, 'dispatch'))
+      if (!sink.offers.terminal.some((offer) => offer.role === role) && !GONE_STATES.includes(releaseState(worker))) {
+        parts.push(`${role} terminal`)
+      }
+      if (!sink.offers.worktree.some((offer) => offer.role === role)) parts.push(`${role} worktree`)
+    }
+    if (parts.length > 0) {
+      reasons.push(`part of this task stays (${parts.join(', ')}), so the record that points at it stays too`)
+    }
+  }
   if (reasons.length === 0) sink.offers.record.push({ path: dir })
   else sink.kept.push({ kind: 'record', role: null, reasons })
   const slug = basename(dir)
   // ★ タスクの停止は「そのタスクの何も閉じない・消さない」。提示を全部取り下げる
   if (sink.stopped.reasons.length > 0) {
-    return { slug, status_dir: dir, stopped: sink.stopped, offers: emptyOffers(), kept: [] }
+    return {
+      slug,
+      status_dir: dir,
+      stopped: sink.stopped,
+      offers: emptyOffers(),
+      kept: [],
+      ...(saved ? { pr_saved: true } : {}),
+    }
   }
-  return { slug, status_dir: dir, stopped: null, offers: sink.offers, kept: sink.kept }
+  return {
+    slug,
+    status_dir: dir,
+    stopped: null,
+    offers: sink.offers,
+    kept: sink.kept,
+    ...(saved ? { pr_saved: true } : {}),
+  }
 }
 
 const keptLines = (item: Kept): string[] => {
@@ -322,7 +415,10 @@ const printPlan = (plan: CleanupPlan, file: string): void => {
 const planCommand = (args: string[]): number => {
   const { values } = parseFlags(NAME, {
     args,
-    options: { 'status-dir': { type: 'string', multiple: true } },
+    options: {
+      'status-dir': { type: 'string', multiple: true },
+      'pr-saved': { type: 'string', multiple: true },
+    },
     strict: true,
     allowPositionals: false,
   })
@@ -333,6 +429,13 @@ const planCommand = (args: string[]): number => {
   const slugs = dirs.map((dir) => basename(dir))
   const repeated = slugs.find((slug, index) => slugs.indexOf(slug) !== index)
   if (repeated !== undefined) return die(NAME, `two status dirs share the slug ${repeated}; pass each task once`)
+
+  const savedGiven = values['pr-saved'] ?? []
+  if (savedGiven.includes('')) return die(NAME, '--pr-saved must not be empty')
+  const prSaved = new Set(savedGiven.map((dir) => resolve(dir)))
+  for (const dir of prSaved) {
+    if (!dirs.includes(dir)) return die(NAME, `${dir} is not one of the --status-dir values`)
+  }
 
   // [C7] 前半。別の Run の dir が混じると既知の集合が広がり、本物の ghost を隠す。Orca を呼ぶ前に確かめる
   const first = dirs[0] ?? ''
@@ -384,7 +487,10 @@ const planCommand = (args: string[]): number => {
   // [C1]〜[C3] は Run 全体の 1 回の答えから、タスクごとに分類する
   const listed = receiptArray(runOrca(['orchestration', 'worker-list', '--run', run, '--json']), 'workers')
   if (listed === null) return stopRun([UNREADABLE])
-  const plan: CleanupPlan = { run_id: run, tasks: inputs.map(({ dir, workers }) => planTask(dir, workers, listed)) }
+  const plan: CleanupPlan = {
+    run_id: run,
+    tasks: inputs.map(({ dir, workers }) => planTask(dir, workers, listed, prSaved.has(dir))),
+  }
   // status dir は `<repo>/.dispatch/<slug>` なので、計画はその隣の `<repo>/.dispatch/cleanup-<run_id>.json` に置く
   const file = join(dirname(first), `cleanup-${run}.json`)
   if (!writeAtomic(file, `${JSON.stringify(plan, null, 2)}\n`)) {
@@ -468,6 +574,8 @@ const readPlan = (file: string): CleanupPlan | null => {
     }
     const workers = asObject(readJson(join(statusDir, 'workers.json')))
     if (workers === null) return null
+    const prSaved = get(item, 'pr_saved') === true
+    if (prSaved && prSavedReasons(statusDir, workers).length > 0) return null
     const roles = asObject(workers.roles)
     for (const offer of offers.terminal) {
       if (get(roles?.[offer.role], 'dispatch') !== offer.dispatch) return null
@@ -478,10 +586,14 @@ const readPlan = (file: string): CleanupPlan | null => {
         return null
       }
     }
-    if (offers.record.length > 0 && get(readJson(join(statusDir, 'integration-result.json')), 'merged') !== true) {
+    if (
+      offers.record.length > 0 &&
+      !prSaved &&
+      get(readJson(join(statusDir, 'integration-result.json')), 'merged') !== true
+    ) {
       return null
     }
-    plan.tasks.push({ slug, status_dir: statusDir, stopped, offers, kept })
+    plan.tasks.push({ slug, status_dir: statusDir, stopped, offers, kept, ...(prSaved ? { pr_saved: true } : {}) })
   }
   return plan
 }
@@ -492,7 +604,7 @@ const readPlan = (file: string): CleanupPlan | null => {
 //   その役の worktree へ進めてよいのは、閉じたと確かめられたときと、Orca が retained のまま保持した理由がユーザーの
 //   所有（ownershipState: user_owned。retainedReason は問わない）か user_takeover（spec 4-2）のときだけ。
 //   読み直せない・未確定・ほかの理由での保持は、その役の失敗として、その役の worktree とタスクの記録を止める
-const release = (run: string, offer: TerminalOffer): { ok: boolean; line: string } => {
+const release = (run: string, offer: TerminalOffer): { ok: boolean; line: string; held?: boolean } => {
   const label = `${offer.role} terminal`
   const result = runOrca(offer.argv)
   if (!receiptOk(result)) return { ok: false, line: `  failed: ${label}: ${failureDetail(result)}` }
@@ -511,12 +623,13 @@ const release = (run: string, offer: TerminalOffer): { ok: boolean; line: string
     if (userOwned(worker)) {
       return {
         ok: true,
+        held: true,
         line: `  kept: ${label}: the user owns it (ownershipState: user_owned, releaseState: retained, retainedReason: ${reason}), so Orca did not close it; removing its worktree closes it`,
       }
     }
     const kept = `Orca kept it (releaseState: retained, retainedReason: ${reason}); it was not closed`
     return reason === 'user_takeover'
-      ? { ok: true, line: `  kept: ${label}: ${kept}` }
+      ? { ok: true, held: true, line: `  kept: ${label}: ${kept}` }
       : { ok: false, line: `  failed: ${label}: ${kept}` }
   }
   return {
@@ -532,10 +645,13 @@ const removeWorktree = (label: string, offer: WorktreeOffer): { ok: boolean; lin
 }
 
 // 記録は依頼と結果の唯一の控え。消す直前に [C5] と同じ検査をもう一度行う
-const removeRecord = (label: string, offer: RecordOffer): { ok: boolean; line: string } => {
+const removeRecord = (label: string, offer: RecordOffer, prSaved: boolean): { ok: boolean; line: string } => {
   const refusal = recordRefusal(offer.path)
   if (refusal !== null) return { ok: false, line: `  failed: ${label}: ${refusal}` }
-  if (get(readJson(join(offer.path, 'integration-result.json')), 'merged') !== true) {
+  if (prSaved && prUrlOf(offer.path) === '') {
+    return { ok: false, line: `  failed: ${label}: the pull request is not recorded` }
+  }
+  if (!prSaved && get(readJson(join(offer.path, 'integration-result.json')), 'merged') !== true) {
     return { ok: false, line: `  failed: ${label}: the work is not merged yet` }
   }
   try {
@@ -562,7 +678,7 @@ const stepsOf = (run: string, task: TaskPlan): Step[] => [
   }),
   ...task.offers.record.map((offer): Step => {
     const label = `dispatch record ${offer.path}`
-    return { kind: 'record', role: null, label, act: () => removeRecord(label, offer) }
+    return { kind: 'record', role: null, label, act: () => removeRecord(label, offer, task.pr_saved === true) }
   }),
 ]
 
@@ -578,12 +694,25 @@ const blockedBy = (step: Step, failed: boolean, failedRoles: Set<string>): strin
   return null
 }
 
+// ★ 無人の片付けでは、plan のあとにユーザーへ渡った端末の worktree と記録も残す
+const heldBy = (step: Step, task: TaskPlan, heldRoles: Set<string>): string | null => {
+  if (task.pr_saved !== true) return null
+  if (step.kind === 'worktree' && step.role !== null && heldRoles.has(step.role)) {
+    return `the user took over the ${step.role} terminal after the plan, so its worktree stays`
+  }
+  if (step.kind === 'record' && heldRoles.size > 0) {
+    const parts = [...heldRoles].map((role) => `${role} terminal`)
+    return `part of this task stays with the user (${parts.join(', ')}), so the record that points at it stays too`
+  }
+  return null
+}
 const runTask = (run: string, task: TaskPlan, approved: Set<Kind>): { lines: string[]; failed: boolean } => {
   const lines = [task.slug]
   let failed = false
   const failedRoles = new Set<string>()
+  const heldRoles = new Set<string>()
   for (const step of stepsOf(run, task)) {
-    const blocker = blockedBy(step, failed, failedRoles)
+    const blocker = blockedBy(step, failed, failedRoles) ?? heldBy(step, task, heldRoles)
     if (!approved.has(step.kind)) {
       lines.push(`  kept: ${step.label} (not approved)`)
     } else if (blocker !== null) {
@@ -591,6 +720,7 @@ const runTask = (run: string, task: TaskPlan, approved: Set<Kind>): { lines: str
       lines.push(`  not run: ${step.label} (${blocker})`)
     } else {
       const outcome = step.act()
+      if (task.pr_saved === true && outcome.held === true && step.role !== null) heldRoles.add(step.role)
       if (!outcome.ok) {
         failed = true
         if (step.role !== null) failedRoles.add(step.role)
