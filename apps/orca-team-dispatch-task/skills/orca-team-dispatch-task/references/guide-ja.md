@@ -77,7 +77,7 @@ role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → pr
 | `ask_via` | `terminal` — `brainstorm` の design は質問と、書いた spec のレビュー依頼を自分の端末で行い、そこで答えを待つ。レビューが上限に達した役も同じように尋ねる | `parent` — `orchestration ask` で尋ね、待機が終了コード 6 で抜けてあなたが質問を取り次ぐ。**既定が以前の挙動でない唯一の設定**: `terminal` はこれらの文書が一貫して書いてきた挙動である |
 | `cleanup` | `end` — タスクの端末・worktree・記録は、Step 5 が提示して Step 6 で尋ねるまで残る。成果を pull request で届けたタスクは成果が merge されていないので、Step 5 はその worktree と記録を提示しない | `pr_created` — Step 4 でタスクの pull request を作った直後に、そのタスクを尋ねずに片付ける。`pr_merged` — 後の dispatch か `--issue` の実行の始めに、pull request が merge されたタスクを尋ねずに片付ける |
 
-**`cleanup` が働くのは pull request で届けた成果だけ**で、Step 5 の条件のうち、PR が記録されて origin のブランチと手元のブランチが一致するタスクを merge 済みとみなす点だけを変えて判定する。`integration=merge` で始めた dispatch は設定にかかわらず `end` を記録し、`--auto` は `cleanup` を見ない（自分の pull request の直後に既に片付けている）。値は dispatch の開始時に `workers.json` に記録するので、あとで設定を変えても前の dispatch の片付け方は変わらず、この設定より前に記録された dispatch は `end` として扱う。未コミットの変更がある checkout、再利用した worktree、記録と一致しない端末など、Step 5 のほかの条件で残すものは残す。ユーザーが操作した端末はその worktree も残す（worktree を消すとその端末を尋ねずに閉じるため）。タスクの何かが残るときは、その dispatch 記録も残す。残したものは理由とともに 1 行ずつ表示する。
+**`cleanup` が働くのは pull request で届けた成果だけ**で、Step 5 の条件のうち、PR が記録されて origin のブランチと手元のブランチが一致するタスクを merge 済みとみなす点だけを変えて判定する。`pr_merged` では、merge された pull request の head のコミット（`headRefOid`）が手元のブランチのコミットと同じタスクも merge 済みとみなすので、merge のときに head ブランチを消しても、そのタスクは残らない。`integration=merge` で始めた dispatch は設定にかかわらず `end` を記録し、`--auto` は `cleanup` を見ない（自分の pull request の直後に既に片付けている）。値は dispatch の開始時に `workers.json` に記録するので、あとで設定を変えても前の dispatch の片付け方は変わらず、この設定より前に記録された dispatch は `end` として扱う。未コミットの変更がある checkout、再利用した worktree、記録と一致しない端末など、Step 5 のほかの条件で残すものは残す。ユーザーが操作した端末はその worktree も残す（worktree を消すとその端末を尋ねずに閉じるため）。タスクの何かが残るときは、その dispatch 記録も残す。残したものは理由とともに 1 行ずつ表示する。
 
 **`phase_b` が「どのブランチに成果が載るか」を決める** — off なら `design`、on なら `exec`。
 merge も pull request も記録されたその 1 つの値を読むので、どちらのブランチを取るかで
@@ -549,7 +549,7 @@ Step 2 を別 call で実行するときは、その正確な path を `REQ` へ
 node "$PLUGIN/bin/orca-cleanup.ts" sweep
 ```
 
-それぞれの pull request の状態を `gh` で読み、`MERGED` のものだけを、Step 4 の `auto` と同じ規則で片付ける。open や closed の pull request、`gh` が読めないもの（`could not read <url>; left as is`）、Step 5 のほかの条件で残すものは、そのまま残す。何も尋ねず、何が見つかっても exit 0 で終わる（2 は呼び出しの誤りだけ）ので、この dispatch を止めることはない。何を消して何を残したかをユーザーに 1 行で伝え、Step 1b へ進む。
+それぞれの pull request の状態と head のコミットを `gh` で読み、`MERGED` のものだけを、Step 4 の `auto` と同じ規則に 1 つ足して片付ける: 手元のブランチが pull request の head のコミットにあれば、origin からブランチが消えていても保存済みとみなす。open や closed の pull request、`gh` が読めないもの（`could not read <url>; left as is`）、origin にも無く head のコミットとも違う手元のブランチ、Step 5 のほかの条件で残すものは、そのまま残す。何も尋ねず、何が見つかっても exit 0 で終わる（2 は呼び出しの誤りだけ）ので、この dispatch を止めることはない。何を消して何を残したかをユーザーに 1 行で伝え、Step 1b へ進む。
 
 ## Step 1b: 各タスクの取りかかり方を尋ねる
 
@@ -1258,7 +1258,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 
 | 制限 | ユーザーがすること |
 |---|---|
-| 片付けが勝手に走るのは `cleanup=pr_created` か `cleanup=pr_merged` のときの、pull request が記録され origin のブランチが一致するタスクだけ | それ以外は Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る。`end` では成果が merge されていないので、Step 5 は pull request のタスクの worktree と記録を提示しない |
+| 片付けが勝手に走るのは `cleanup=pr_created` か `cleanup=pr_merged` のときの、pull request が記録され origin のブランチが一致するタスク（`pr_merged` では、merge された pull request の head のコミットが手元のブランチのコミットと同じタスクも）だけ | それ以外は Step 6 の質問に答える。承認したものだけが削除され、断ったものは残る。`end` では成果が merge されていないので、Step 5 は pull request のタスクの worktree と記録を提示しない |
 | 回復は自動では走らない。いつ走らせるかは人が決める | `orca-recover.ts`（Step 3）が役ごとに判断し、`--dry-run` を外して実行したときだけ動く。`$ORCA_BIN orchestration task-list --run <run_id> --json` と `$ORCA_BIN orchestration worker-show --dispatch <id> --json` で調べ、Step 5 と Step 6 と同様に片付ける |
 | worker が報告せずに停止すると、組全体の待機が timeout する | 同じ inspection を行う。状態は `.dispatch/<slug>/` に、タスクごとに 1 ディレクトリある |
 | worker が人へ尋ねるのは `design_mode` がそう指示したときと、レビューが上限に達したときだけで、誰かが答えるまで待つ | `direct` と `plan` では代わりに `result.md` へ理由を書いて失敗として終了するよう指示してある。読んで再度 dispatch する。`brainstorm` で `ask_via=terminal` なら自分の端末で尋ねてそこで待つので、その端末で答える。`ask_via=parent` なら `orchestration ask` を使い、待機が終了コード 6 で質問と `reply` コマンドを出す。worker が再開するのはそのコマンドを実行したときだけである |
@@ -1284,7 +1284,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | Orca は、働いている worker を `start_unknown` と言い続けることがある | 2026-09-24 に観測: Orca は codex の worker のターン開始を観測できず、その worker が働き続けている間もこの state のままだった。待機はそれを待ち続け、死んでいれば停滞（終了コード 8）として知らせる。そうした worker を起こすために端末へ入力するものは無い — 死んだ worker はシェルを残していることがある — ので、worker 自身の待ちに頼る。起動が終わらなかった役なら、`orca-recover.ts` が画面を見せ、`--adopt` か `--restart` を選ぶ（Step 3） |
 | 3.10.16 までの `--phase exec` や `--resume` が起動した dispatch は、別の Run に在ることがある | 2026-11-10 に観測: 同じ端末から 2 つの Run を起動すると、`exec` と `exec_review` があとで起動した Run に作られ、記録した Run の待機には何も届かず、もう一方の Run の待機は知らない dispatch のメールで止まった。`$ORCA_BIN orchestration worker-show --dispatch <id> --json` の `result.dispatch.runId` が Run を示す。`orca-recover.ts` はそうした役を拒否し、両方の Run を名指しする。止めるかはユーザーと決める。今の版は起動のたびに Run を名指しする |
 | codex は repository ごとに 1 回、信頼するかを尋ね、それまで起動は `agent-trust-workspace` で失敗する | その worker の画面でフォルダを信頼するか、`trust_level = "trusted"` を持つ `[projects."<本体の checkout>"]` を `~/.codex/config.toml` に足す。Step 2 と `orca-recover.ts` が正確な行を出す。codex はその信頼を repository の本体の checkout に記録するので、以後の worktree は尋ねられずに起動する。そのあと `orca-recover.ts` で失敗した起動を置き換える |
-| head ブランチが origin から消えた pull request は `pr_merged` でも片付かない | 手元のブランチを origin のものと比べるので、merge のときに head ブランチを消すリポジトリ（GitHub の設定か `gh pr merge --delete-branch`）では、そのタスクが残る。worktree は `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` で、`.dispatch/<slug>` は手で消す |
+| 手元のブランチが origin にも pull request の head のコミットにも無いと、merge された pull request のタスクは `pr_merged` でも残る | head ブランチが origin から消えているとき（GitHub の設定か `gh pr merge --delete-branch`）、merge のあとに手元のブランチへコミットを足した場合、GitHub で足したコミット（Update branch や提案された変更）が手元のブランチに無い場合、`gh` が head のコミットを返さない場合にそうなる。ブランチを確かめてから、worktree は `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` で、`.dispatch/<slug>` は手で消す |
 | `pr_created` と `pr_merged` では、何かを残すタスクは dispatch 記録も残し、あとで Step 5 もそれらを提示しない | ユーザーが操作した端末は、worktree を消すとその端末を尋ねずに閉じるので worktree ごと残す。未コミットの変更がある worktree など、Step 5 が残すものも同じく残る。Step 5 は pull request のタスクの worktree と記録を提示しないので、確かめたら worktree を `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` で、`.dispatch/<slug>` を手で消す |
 | --autoの持ち主のいないworktreeはSlackの定期報告で区別できない | tickのstdoutが名指しし、hosts[].usedには数として含まれる |
 | --autoはworker_doneを失った役を決着できない | --max-waits 1では猶予の時計が毎回初期化されるため、上限時間でFailedになる。Runと退避した記録を調べる |

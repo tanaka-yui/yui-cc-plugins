@@ -143,10 +143,15 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   操作は従来の release が ok を返す経路。CL33）。計画の pr_saved は信じず、readPlan で提示の種類に
   かかわらず 2 条件を確かめ直す。removeRecord は (1) と [C5] だけを再確認する（worktree rm が branch を
   消しうる。[C4]）。auto / sweep は pr_saved と判定したタスクにだけ承認を出す（plan は merged と無関係に
-  端末の release を提示するため）。head branch を merge で消すリポジトリでは pr_merged が何も片付けない。
-  PR の headRefOid と比べる代案は未確認で、採用していない。回帰は test-config.sh の CF53〜54、
-  test-start.sh の ST138〜140、test-cleanup.sh の CL40〜CL52（CL40b/c・CL41b・CL43b〜f・CL44b〜d・
-  CL46b・CL47b・CL48b/c を含む）、test-docs.sh の SK38。
+  端末の release を提示するため）。sweep は `gh pr view --json state,headRefOid <url>` で読み、MERGED の PR では
+  (2) を「origin と一致、または手元の SHA が PR の headRefOid と一致」にする（merge で head branch を消す
+  リポジトリでも片付くように。merge された PR の head が手元と同じなら、手元の成果は全部 merge 済み）。
+  headRefOid が無い・40〜64 桁の小文字の hex でないときは origin だけで判定する。判定に使った head は計画の
+  `pr_head` に書き、readPlan は今の手元の SHA と比べ直す（plan のあとに手元の branch が動けば計画ごと拒む）。
+  `plan --pr-saved` と auto は head を読まず origin だけで判定する（PR を作った直後は head branch が origin にある）。
+  merge のあとの push で headRefOid が進むかは未確認（進むなら、一致は merge 済みの証明にならない）。
+  回帰は test-config.sh の CF53〜54、test-start.sh の ST138〜140、test-cleanup.sh の CL40〜CL57
+  （CL40b/c・CL41b・CL43b〜f・CL44b〜d・CL46b・CL47b・CL48b/c・CL53b/c を含む）、test-docs.sh の SK38。
 
 - **SKILL.md の bash block に判定を書かない。**置いてよいのはコメント、ガード `: "${VAR:?...}"`、入口の
   呼び出し（`node "$PLUGIN/..."` / `"$ORCA_BIN" ...` / `gh repo view`）だけ。block の間で shell 変数を運ばせ
