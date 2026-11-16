@@ -64,6 +64,7 @@ type TaskPlan = {
   offers: Offers
   kept: Kept[]
   pr_saved?: boolean
+  pr_head?: string
 }
 type CleanupPlan = { run_id: string; tasks: TaskPlan[] }
 type Built = { ok: true; plan: CleanupPlan; file: string } | { ok: false; lines: string[] }
@@ -107,24 +108,33 @@ const recordRefusal = (dir: string): string | null => {
   }
 }
 
-// ★ PR の成果は、URL の記録と手元 / origin の branch の一致で保存済みと証明する
+// ★ PR の成果は、URL の記録と、手元の branch が origin と一致すること（sweep が merge 済みの PR の head を
+//   渡したときは、その head と一致することでもよい）で保存済みと証明する
 const prUrlOf = (dir: string): string => {
   const result = readJson(join(dir, 'integration-result.json'))
   return get(result, 'integration') === 'pr' ? (asString(get(result, 'pr_url')) ?? '') : ''
 }
 
-const branchOnOrigin = (dir: string, workers: JsonObject): boolean => {
+// ★ lib/mail-artifacts.ts の head と同じ形。git も GitHub も小文字で返す。それ以外は head が無いのと同じ
+const COMMIT_OID = /^[0-9a-f]{40,64}$/
+const validHead = (value: string | null): string | null => (value !== null && COMMIT_OID.test(value) ? value : null)
+
+type LocalBranch = { repo: string; ref: string; sha: string }
+const localBranch = (dir: string, workers: JsonObject): LocalBranch | null => {
   const role = asString(workers.integration_role) ?? ''
   const branch = asString(get(workers, 'roles', role, 'branch')) ?? ''
   const repo = asString(get(readJson(join(dir, 'run.json')), 'repo_root')) ?? ''
-  if (role === '' || branch === '' || repo === '') return false
+  if (role === '' || branch === '' || repo === '') return null
   const ref = `refs/heads/${branch}`
   const local = spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', ref], {
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
   })
-  if (local.status !== 0 || local.stdout.trim() === '') return false
-  const remote = spawnSync('git', ['-C', repo, 'ls-remote', 'origin', ref], {
+  if (local.status !== 0 || local.stdout.trim() === '') return null
+  return { repo, ref, sha: local.stdout.trim() }
+}
+const branchOnOrigin = (local: LocalBranch): boolean => {
+  const remote = spawnSync('git', ['-C', local.repo, 'ls-remote', 'origin', local.ref], {
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     timeout: REMOTE_TIMEOUT_MS,
@@ -134,14 +144,23 @@ const branchOnOrigin = (dir: string, workers: JsonObject): boolean => {
   const match = remote.stdout
     .split('\n')
     .map((line) => line.split('\t'))
-    .find(([, name]) => name === ref)
-  return match?.[0] === local.stdout.trim()
+    .find(([, name]) => name === local.ref)
+  return match?.[0] === local.sha
 }
 
-const prSavedReasons = (dir: string, workers: JsonObject): string[] => {
+const prSavedReasons = (dir: string, workers: JsonObject, prHead: string | null): string[] => {
   const reasons: string[] = []
   if (prUrlOf(dir) === '') reasons.push('the pull request is not recorded')
-  if (!branchOnOrigin(dir, workers)) reasons.push('the branch has commits that are not on origin')
+  const local = localBranch(dir, workers)
+  const head = validHead(prHead)
+  // ★ merge された PR の head が手元と同じなら、手元の成果は全部 merge 済み（merge で origin の head branch が消えてもよい）
+  if (local === null || (local.sha !== head && !branchOnOrigin(local))) {
+    reasons.push(
+      head === null
+        ? 'the branch has commits that are not on origin'
+        : 'the branch matches neither origin nor the head of the merged pull request',
+    )
+  }
   return reasons
 }
 
@@ -323,10 +342,17 @@ const mergedByHand = (dir: string, workers: JsonObject): string => {
   return `${branch} is already in ${base}; if it was merged by hand, record it with: node ${merge} --status-dir ${dir}`
 }
 
-const planTask = (dir: string, workers: JsonObject, listed: Json[], prSaved: boolean): TaskPlan => {
+const planTask = (
+  dir: string,
+  workers: JsonObject,
+  listed: Json[],
+  prSaved: boolean,
+  prHead: string | null,
+): TaskPlan => {
   const integrated = get(readJson(join(dir, 'integration-result.json')), 'merged') === true
-  const notSaved = prSaved && !integrated ? prSavedReasons(dir, workers) : []
+  const notSaved = prSaved && !integrated ? prSavedReasons(dir, workers, prHead) : []
   const saved = prSaved && !integrated && notSaved.length === 0
+  const savedProof = saved ? { pr_saved: true, ...(prHead === null ? {} : { pr_head: prHead }) } : {}
   const merged = integrated || saved
   // ★ 役を全部走査する。レビューモードでは 1 タスクに複数の役（端末と worktree）が居る
   const roles = Object.entries(asObject(workers.roles) ?? {}).filter(
@@ -377,7 +403,7 @@ const planTask = (dir: string, workers: JsonObject, listed: Json[], prSaved: boo
       stopped: sink.stopped,
       offers: emptyOffers(),
       kept: [],
-      ...(saved ? { pr_saved: true } : {}),
+      ...savedProof,
     }
   }
   return {
@@ -386,7 +412,7 @@ const planTask = (dir: string, workers: JsonObject, listed: Json[], prSaved: boo
     stopped: null,
     offers: sink.offers,
     kept: sink.kept,
-    ...(saved ? { pr_saved: true } : {}),
+    ...savedProof,
   }
 }
 
@@ -419,7 +445,7 @@ const printPlan = (plan: CleanupPlan, file: string): void => {
   process.stdout.write(`${lines.join('\n')}\n`)
 }
 
-const buildPlan = (dirs: string[], prSaved: Set<string>): Built => {
+const buildPlan = (dirs: string[], prSaved: Set<string>, heads: Map<string, string> = new Map()): Built => {
   // [C7] 前半。別の Run の dir が混じると既知の集合が広がり、本物の ghost を隠す。Orca を呼ぶ前に確かめる
   const first = dirs[0] ?? ''
   const run = runOf(first)
@@ -476,7 +502,7 @@ const buildPlan = (dirs: string[], prSaved: Set<string>): Built => {
   if (listed === null) return { ok: false, lines: [UNREADABLE] }
   const plan: CleanupPlan = {
     run_id: run,
-    tasks: inputs.map(({ dir, workers }) => planTask(dir, workers, listed, prSaved.has(dir))),
+    tasks: inputs.map(({ dir, workers }) => planTask(dir, workers, listed, prSaved.has(dir), heads.get(dir) ?? null)),
   }
   // status dir は `<repo>/.dispatch/<slug>` なので、計画はその隣の `<repo>/.dispatch/cleanup-<run_id>.json` に置く
   const file = join(dirname(first), `cleanup-${run}.json`)
@@ -591,7 +617,7 @@ const readPlan = (file: string): CleanupPlan | null => {
     const workers = asObject(readJson(join(statusDir, 'workers.json')))
     if (workers === null) return null
     const prSaved = get(item, 'pr_saved') === true
-    if (prSaved && prSavedReasons(statusDir, workers).length > 0) return null
+    if (prSaved && prSavedReasons(statusDir, workers, asString(get(item, 'pr_head'))).length > 0) return null
     const roles = asObject(workers.roles)
     for (const offer of offers.terminal) {
       if (get(roles?.[offer.role], 'dispatch') !== offer.dispatch) return null
@@ -907,26 +933,31 @@ const sweepCommand = (args: string[]): number => {
   })
   const lines: string[] = []
   const targets = new Map<string, string[]>()
+  const heads = new Map<string, string>()
   for (const dir of candidates) {
     const url = prUrlOf(dir)
-    const result = spawnSync('gh', ['pr', 'view', '--json', 'state', url], {
+    const result = spawnSync('gh', ['pr', 'view', '--json', 'state,headRefOid', url], {
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
       timeout: GH_TIMEOUT_MS,
       killSignal: 'SIGKILL',
     })
-    const state = result.status === 0 ? asString(get(parseJson(result.stdout), 'state')) : null
+    const pr = result.status === 0 ? parseJson(result.stdout) : null
+    const state = asString(get(pr, 'state'))
     if (state === null) {
       lines.push(`could not read ${url}; left as is`)
     } else if (state === 'MERGED') {
       const run = runOf(dir)
       targets.set(run, [...(targets.get(run) ?? []), dir])
+      const head = validHead(asString(get(pr, 'headRefOid')))
+      if (head !== null) heads.set(dir, head)
     }
   }
   for (const [run, dirs] of targets) {
     const built = buildPlan(
       all.filter((dir) => runOf(dir) === run),
       new Set(dirs),
+      heads,
     )
     if (!built.ok) {
       lines.push(`Run ${run}: nothing was cleaned up`, ...built.lines.map((line) => `  ${line}`))

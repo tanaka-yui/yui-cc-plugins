@@ -22,6 +22,8 @@ BASE_PATH="$PATH"
 #   worktrees/<wt>.fail       worktree rm が失敗する
 #   list-retained.fail / list-all.fail  worker-list（--terminal-state retained 付き / 無し）が rc 7 の ok:false
 #   list-all.fail.once        次の worker-list（retained 無し）1 回だけ rc 7 の ok:false
+#   move-branch               「repo branch」。次の terminal show の前に、その branch へコミットを 1 つ足す（1 回だけ）。
+#                             planTask が保存済みと判定したあと、run の確かめ直しの前に手元の branch が動いた形
 hooks() {
   local d="$ORCA_STUB_DIR"
   cat > "$d/orchestration_worker-list.hook" <<'HOOK'
@@ -48,6 +50,11 @@ HOOK
   cat > "$d/terminal_show.hook" <<'HOOK'
 #!/usr/bin/env bash
 d="$ORCA_STUB_DIR"; out="$d/terminal_show"; h=""; prev=""
+if [[ -f "$d/move-branch" ]]; then
+  read -r repo branch < "$d/move-branch"; rm -f "$d/move-branch"
+  new=$(git -C "$repo" -c user.email=t@e -c user.name=t commit-tree -p "refs/heads/$branch" -m moved "refs/heads/$branch^{tree}") \
+    && git -C "$repo" update-ref "refs/heads/$branch" "$new"
+fi
 for a in "$@"; do [[ "$prev" == --terminal ]] && h="$a"; prev="$a"; done
 rm -f "$out.rc"
 if [[ -e "$d/terminals/$h.stale" ]]; then
@@ -120,7 +127,8 @@ world() {
   PLAN_FILE="$REPO/.dispatch/cleanup-run_x.json"
   export ORCA_STUB_DIR="$T/orca"; mkdir -p "$ORCA_STUB_DIR"/{workers,terminals,lists,worktrees}
   : > "$ORCA_STUB_DIR/calls.log"; hooks
-  # gh は stub だけ。pr view は URL の最後の 1 語ごとに $GH_STUB_DIR/state-<語> の state を返し、無ければ rc 1
+  # gh は stub だけ。pr view は URL の最後の 1 語ごとに $GH_STUB_DIR/state-<語> の state を返し、無ければ rc 1。
+  # $GH_STUB_DIR/head-<語> があれば、その中身（JSON の値のまま）を headRefOid として足す
   export GH_STUB_DIR="$T/gh"; mkdir -p "$GH_STUB_DIR" "$T/bin"; : > "$GH_STUB_DIR/calls.log"
   { echo '#!/usr/bin/env bash'; printf 'exec %q "$@"\n' "$P/test/lib/gh-stub.sh"; } > "$T/bin/gh"; chmod +x "$T/bin/gh"
   export PATH="$T/bin:$BASE_PATH"
@@ -128,7 +136,9 @@ world() {
 #!/usr/bin/env bash
 d="$GH_STUB_DIR"; url=""; for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
 n="${url##*/}"; rm -f "$d/pr_view" "$d/pr_view.rc"
-if [[ -f "$d/state-$n" ]]; then printf '{"state":"%s"}\n' "$(cat "$d/state-$n")" > "$d/pr_view"
+if [[ -f "$d/state-$n" ]]; then
+  head=""; [[ -f "$d/head-$n" ]] && head=",\"headRefOid\":$(cat "$d/head-$n")"
+  printf '{"state":"%s"%s}\n' "$(cat "$d/state-$n")" "$head" > "$d/pr_view"
 else printf 'stub: no such pull request\n' > "$d/pr_view"; printf '1\n' > "$d/pr_view.rc"; fi
 HOOK
   chmod +x "$GH_STUB_DIR/pr_view.hook"
@@ -192,6 +202,14 @@ unpushed() {
   git -C "$REPO" -c user.email=t@e -c user.name=t commit -qam x; git -C "$REPO" checkout -q main
 }
 
+# goneonmerge <slug> — merge のときに head branch が消えた形: PR は MERGED、origin の orca/<slug> は無く、手元には残る。
+#   手元の orca/<slug> の SHA を HEAD_SHA に入れる（headRefOid に使う）
+goneonmerge() {
+  HEAD_SHA=$(git -C "$REPO" rev-parse "orca/$1"); git -C "$REPO" push -q origin --delete "orca/$1"
+  printf 'MERGED\n' > "$GH_STUB_DIR/state-$1"
+}
+# prhead <slug> <JSON の値> — pr view の答えに headRefOid を足す（文字列は "\"<sha>\"" の形で渡す）
+prhead() { printf '%s\n' "$2" > "$GH_STUB_DIR/head-$1"; }
 
 # CL1: 使用法の誤りは exit 2 で、Orca を 1 度も呼ばない
 world; task a; bad=""
@@ -1012,20 +1030,24 @@ auto --status-dir "$(sd a)" --bogus; rc3=$RC
   && ok "CL47b auto の使用法を検査する" || fail "CL47b $rc1/$rc2/$rc3 $err1"
 teardown
 
-# CL48: MERGED の対象だけを片付け、同じ Run の OPEN は触らない
+# CL48: MERGED の対象だけを片付け、同じ Run の OPEN は触らない（gh はフラグを先に置く D6 の形。printf %q は , を \, と書く）
 world; prtask x pr_merged; prtask y pr_merged
 printf 'MERGED\n' > "$GH_STUB_DIR/state-x"; printf 'OPEN\n' > "$GH_STUB_DIR/state-y"
 sweep
 [[ "$RC" -eq 0 && ! -e "$(sd x)" && -d "$(sd y)" && "$(mutations | grep -cE 'ctx_x-design|wt_x-design')" == 2 \
-   && -z "$(mutations | grep -E 'ctx_y-|wt_y-')" && "$(ghcalls)" == 2 ]] && grep -q '^pr view --json state https://github.com/o/r/pull/x' "$GH_STUB_DIR/calls.log" \
+   && -z "$(mutations | grep -E 'ctx_y-|wt_y-')" && "$(ghcalls)" == 2 ]] && grep -q '^pr view --json state\\,headRefOid https://github.com/o/r/pull/x' "$GH_STUB_DIR/calls.log" \
   && ok "CL48 MERGED だけ片付ける" || fail "CL48 $RC $OUT $ERR"
 teardown
 
+# CL48b: gh が headRefOid を返さない（head-<語> が無い）とき、今までどおり origin だけで判定し、head branch が消えた PR は残す。
+#        head が手元と一致する形は CL53
 world; prtask x pr_merged; git -C "$REPO" push -q origin --delete orca/x; printf 'MERGED\n' > "$GH_STUB_DIR/state-x"
 sweep
 [[ "$RC" -eq 0 && -d "$(sd x)" && -z "$(mutations)" \
    && "$OUT" == *'x: the pull request is not proven saved, so nothing was cleaned up'* \
-   && "$OUT" == *'the branch has commits that are not on origin'* ]] && ok "CL48b head branch が無い PR は残す" || fail "CL48b $RC $OUT $ERR"
+   && "$OUT" == *'the branch has commits that are not on origin'* \
+   && "$OUT" != *'head of the merged pull request'* && "$(pj '.tasks[0].pr_head')" == null ]] \
+  && ok "CL48b headRefOid が返らず head branch が無い PR は残す" || fail "CL48b $RC $OUT $ERR"
 teardown
 
 world; prtask x pr_merged; role x design_review; printf 'MERGED\n' > "$GH_STUB_DIR/state-x"
@@ -1067,5 +1089,106 @@ out2=$(cd "$T" && node "$CLEANUP" sweep 2>/dev/null); rc2=$?
    && "$out2" == *'sweep: not inside a git repository; nothing to sweep'* && "$rc3" -eq 2 \
    && "$(ghcalls)" == 0 && ! -s "$ORCA_STUB_DIR/calls.log" ]] && ok "CL52 空の repo と git の外と使用法" || fail "CL52 $rc1/$rc2/$rc3 $out1 $out2"
 teardown
+
+# CL53: merge で head branch が origin から消えても、headRefOid が手元の branch と同じなら端末・worktree・記録を片付ける。
+#       計画には判定に使った head を pr_head として残す
+world; prtask x pr_merged; goneonmerge x; prhead x "\"$HEAD_SHA\""
+sweep
+[[ "$RC" -eq 0 && ! -e "$(sd x)" && "$(mutations | grep -c 'worker-release --dispatch ctx_x-design')" == 1 \
+   && "$(mutations | grep -c 'id:wt_x-design')" == 1 && "$OUT" == *"removed: dispatch record $(sd x)"* \
+   && "$(pj '.tasks[0].pr_saved')" == true && "$(pj '.tasks[0].pr_head')" == "\"$HEAD_SHA\"" ]] \
+   && grep -q '^pr view --json state\\,headRefOid https://github.com/o/r/pull/x' "$GH_STUB_DIR/calls.log" \
+  && ok "CL53 head branch が消えても headRefOid が手元と同じなら片付ける" || fail "CL53 $RC $OUT $ERR"
+teardown
+
+# CL53b: 同じ Run の 2 つの merge 済みの PR。head が手元と同じ x だけを片付け、merge のあとにコミットを足した y には触らない
+world; prtask x pr_merged; prtask y pr_merged
+goneonmerge x; prhead x "\"$HEAD_SHA\""; goneonmerge y; prhead y "\"$HEAD_SHA\""; unpushed y
+sweep
+[[ "$RC" -eq 0 && ! -e "$(sd x)" && -d "$(sd y)" && "$(mutations | grep -cE 'ctx_x-design|wt_x-design')" == 2 \
+   && -z "$(mutations | grep -E 'ctx_y-|wt_y-')" && "$OUT$ERR" != *'did not record'* && "$(ghcalls)" == 2 \
+   && "$OUT" == *'y: the pull request is not proven saved, so nothing was cleaned up'* ]] \
+  && ok "CL53b 同じ Run で head が一致するタスクだけを片付ける" || fail "CL53b $RC $OUT $ERR"
+teardown
+
+# CL53c: head の一致で保存済みにしたタスクでも、plan のあとにユーザーが操作した端末の worktree と記録は残す（CL48c と同じ形）
+world; prtask x pr_merged; role x design_review; goneonmerge x; prhead x "\"$HEAD_SHA\""
+printf 'retained user_takeover\n' > "$ORCA_STUB_DIR/workers/ctx_x-design.after"
+sweep
+[[ "$RC" -eq 0 && -d "$(sd x)" && "$(mutations | grep -cE 'id:wt_x-design( |$)')" == 0 \
+   && "$(mutations | grep -c 'id:wt_x-design_review')" == 1 \
+   && "$OUT" == *'not run: design worktree id:wt_x-design (the user took over the design terminal after the plan, so its worktree stays)'* \
+   && "$OUT" == *"not run: dispatch record $(sd x) (part of this task stays with the user (design terminal), so the record that points at it stays too)"* ]] \
+  && ok "CL53c head の一致でも plan 後のユーザー操作を保護する" || fail "CL53c $RC $OUT $ERR"
+teardown
+
+# CL54: head branch が消え、headRefOid が手元の branch と違うときは何も片付けず、理由を表示する。
+#   ahead     = merge のあとに手元へコミットを足した
+#   elsewhere = PR の head が手元の branch に無いコミット（GitHub で足されたコミットなど）
+#   nolocal   = 手元の branch が無い
+bad=""
+for how in ahead elsewhere nolocal; do
+  world; prtask x pr_merged; goneonmerge x
+  case "$how" in
+    ahead) prhead x "\"$HEAD_SHA\""; unpushed x ;;
+    elsewhere) prhead x '"1234567890abcdef1234567890abcdef12345678"' ;;
+    nolocal) prhead x "\"$HEAD_SHA\""; git -C "$REPO" branch -D orca/x >/dev/null ;;
+  esac
+  sweep
+  [[ "$RC" -eq 0 && -d "$(sd x)" && -z "$(mutations)" && "$(pj '.tasks[0].pr_saved')" == null \
+     && "$OUT" == *'x: the pull request is not proven saved, so nothing was cleaned up'* \
+     && "$OUT" == *'the branch matches neither origin nor the head of the merged pull request'* \
+     && "$OUT" != *'the branch has commits that are not on origin'* ]] || bad="$bad [$how:$RC:$OUT:$ERR]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL54 headRefOid が手元と違えば残して理由を言う" || fail "CL54:$bad"
+
+# CL55: headRefOid が 40〜64 桁の小文字の hex でなければ、無いのと同じく origin だけで判定する（今の振る舞いと文言のまま）。
+#       無い形は CL48b
+bad=""
+for how in empty short upper word null number; do
+  world; prtask x pr_merged; goneonmerge x
+  case "$how" in
+    empty) prhead x '""' ;;
+    short) prhead x "\"${HEAD_SHA:0:39}\"" ;;
+    upper) prhead x "\"$(tr 'a-f' 'A-F' <<<"$HEAD_SHA")\"" ;;
+    word) prhead x '"merged"' ;;
+    null) prhead x null ;;
+    number) prhead x 1234 ;;
+  esac
+  sweep
+  [[ "$RC" -eq 0 && -d "$(sd x)" && -z "$(mutations)" && "$(pj '.tasks[0].pr_head')" == null \
+     && "$OUT" == *'x: the pull request is not proven saved, so nothing was cleaned up'* \
+     && "$OUT" == *'the branch has commits that are not on origin'* && "$OUT" != *'head of the merged pull request'* ]] \
+    || bad="$bad [$how:$RC:$OUT:$ERR]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL55 不正な形の headRefOid は無いのと同じに扱う" || fail "CL55:$bad"
+
+# CL56: planTask が head の一致で保存済みと判定したあとに手元の branch が動けば、run の確かめ直し（readPlan）が計画ごと拒む。
+#       sweep は拒んだことを stdout に出して 0 で終わる
+world; prtask x pr_merged; goneonmerge x; prhead x "\"$HEAD_SHA\""
+printf '%s orca/x\n' "$REPO" > "$ORCA_STUB_DIR/move-branch"
+sweep
+[[ "$RC" -eq 0 && -d "$(sd x)" && -z "$(mutations)" && ! -e "$ORCA_STUB_DIR/move-branch" \
+   && "$(git -C "$REPO" rev-parse orca/x)" != "$HEAD_SHA" \
+   && "$(pj '.tasks[0].pr_saved')" == true && "$(pj '.tasks[0].pr_head')" == "\"$HEAD_SHA\"" \
+   && "$OUT" == *'could not read the cleanup plan '*'cleanup-run_x.json; nothing was run'* ]] \
+  && ok "CL56 plan のあとに手元の branch が動けば run の確かめ直しで拒む" || fail "CL56 $RC $OUT $ERR"
+teardown
+
+# CL57: 対象は sweep だけ。plan --pr-saved と auto は gh を読まず、pr_head を書かず、origin だけで判定する
+bad=""
+world; prtask a; plan --status-dir "$(sd a)" --pr-saved "$(sd a)"
+[[ "$RC" -eq 0 && "$(pj '.tasks[0].pr_saved')" == true && "$(pj '.tasks[0].pr_head')" == null && "$(ghcalls)" == 0 ]] \
+  || bad="$bad [plan:$RC:$ERR]"
+teardown
+world; prtask a; goneonmerge a; prhead a "\"$HEAD_SHA\""
+auto --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && -d "$(sd a)" && -z "$(mutations)" && "$(ghcalls)" == 0 \
+   && "$OUT" == *'a: the pull request is not proven saved, so nothing was cleaned up'* \
+   && "$OUT" == *'the branch has commits that are not on origin'* ]] || bad="$bad [auto:$RC:$OUT:$ERR]"
+teardown
+[[ -z "$bad" ]] && ok "CL57 plan --pr-saved と auto は head を読まない" || fail "CL57:$bad"
 
 echo "---"; echo "failures: $fails"; exit "$fails"
