@@ -40,6 +40,9 @@ export const integrationRole = (phaseB: string): Role => (phaseB === 'on' ? 'exe
 //   ask_via     … terminal（brainstorm の design は自分の端末で尋ね、ターンを終えて答えを待つ。parent は
 //                 `orchestration ask` で親に取り次がせる。レビューの上限の質問も同じ場所で尋ねる。
 //                 **既定だけ例外** — 設定より前のコードは parent だったが、文書が意図していた terminal を既定にする）
+//   cleanup     … end（PR のタスクも Step 5 が判定し Step 6 で尋ねる）。pr_created は PR 作成直後、
+//                 pr_merged は次の dispatch の始めに merge 済み PR のタスクを尋ねずに片付ける。
+//                 integration=merge と --transport mail（--auto）は orca-start.ts が end を記録する
 export const TOGGLES = {
   review_mode: { values: ['on', 'off'], fallback: 'off' },
   phase_b: { values: ['on', 'off'], fallback: 'off' },
@@ -47,9 +50,18 @@ export const TOGGLES = {
   setup: { values: ['skip', 'run'], fallback: 'skip' },
   design_mode: { values: ['direct', 'plan', 'brainstorm'], fallback: 'direct' },
   ask_via: { values: ['terminal', 'parent'], fallback: 'terminal' },
+  cleanup: { values: ['end', 'pr_created', 'pr_merged'], fallback: 'end' },
 } as const
 export type Toggle = keyof typeof TOGGLES
-export const TOGGLE_KEYS: Toggle[] = ['review_mode', 'phase_b', 'integration', 'setup', 'design_mode', 'ask_via']
+export const TOGGLE_KEYS: Toggle[] = [
+  'review_mode',
+  'phase_b',
+  'integration',
+  'setup',
+  'design_mode',
+  'ask_via',
+  'cleanup',
+]
 export const isToggle = (key: string): key is Toggle => TOGGLE_KEYS.some((toggle) => toggle === key)
 export const validToggle = (key: Toggle, value: string): boolean =>
   TOGGLES[key].values.some((allowed) => allowed === value)

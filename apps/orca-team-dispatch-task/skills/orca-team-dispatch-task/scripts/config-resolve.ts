@@ -3,7 +3,7 @@
 // Usage: node config-resolve.ts [--project-root <path>] [--review-mode <on|off>] [--phase-b <on|off>]
 //                               [--integration <merge|pr>] [--setup <skip|run>]
 //                               [--design-mode <direct|plan|brainstorm>]
-//                               [--ask-via <terminal|parent>]
+//                               [--ask-via <terminal|parent>] [--cleanup <end|pr_created|pr_merged>]
 //                               [--set <role>.<field>=<value>]...
 // Exit:  0 = 解決した / 1 = 設定が読めない / 2 = 使用法エラー
 // --project-root の既定は git rev-parse --show-toplevel（git の外なら exit 2）
@@ -92,6 +92,7 @@ const main = (argv: string[]): number => {
     '--setup': 'setup',
     '--design-mode': 'design_mode',
     '--ask-via': 'ask_via',
+    '--cleanup': 'cleanup',
   }
   const requirement: { [key in Toggle]: string } = {
     review_mode: 'on or off',
@@ -100,6 +101,7 @@ const main = (argv: string[]): number => {
     setup: 'skip or run',
     design_mode: 'direct, plan or brainstorm',
     ask_via: 'terminal or parent',
+    cleanup: 'end, pr_created or pr_merged',
   }
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index] ?? ''
@@ -256,6 +258,7 @@ const main = (argv: string[]): number => {
   const setup = resolveToggle('setup')
   const designMode = resolveToggle('design_mode')
   const askVia = resolveToggle('ask_via')
+  const cleanup = resolveToggle('cleanup')
 
   const roles: JsonObject = {}
   for (const role of roleNames(reviewMode, phaseB)) {
@@ -287,6 +290,7 @@ const main = (argv: string[]): number => {
     setup,
     design_mode: designMode,
     ask_via: askVia,
+    cleanup,
     roles,
   }
   process.stdout.write(`${JSON.stringify(resolved, null, 2)}\n`)

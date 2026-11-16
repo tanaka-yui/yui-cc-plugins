@@ -2,7 +2,7 @@
 // Usage: node orca-start.ts --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
 //        [--run <id>] [--agent <id>] [--model <id>] [--effort <level>]
 //        [--phase design|exec] [--design-mode direct|plan|brainstorm] [--ask-via terminal|parent]
-//        [--integration merge|pr] [--unattended] [--review-mode on|off] [--phase-b on|off]
+//        [--integration merge|pr] [--cleanup end|pr_created|pr_merged] [--unattended] [--review-mode on|off] [--phase-b on|off]
 //        node orca-start.ts --slug <s> --resume [--repo-root <p>] [--design-mode ...] [--ask-via ...]
 // Exit: 0 / 1 起動できなかった / 2 使用法
 import { die, log } from '../lib/cli.ts'
@@ -1205,6 +1205,7 @@ const main = (argv: string[]): number => {
   let reviewOverride: string | null = null
   let phaseOverride: string | null = null
   let integration = ''
+  let cleanup = ''
   let phase = 'design'
   let resume = false
   let unattended = false
@@ -1239,6 +1240,7 @@ const main = (argv: string[]): number => {
         '--review-mode',
         '--phase-b',
         '--integration',
+        '--cleanup',
         '--phase',
       ].includes(flag ?? '')
     ) {
@@ -1259,6 +1261,7 @@ const main = (argv: string[]): number => {
       if (flag === '--review-mode') reviewOverride = value
       if (flag === '--phase-b') phaseOverride = value
       if (flag === '--integration') integration = value
+      if (flag === '--cleanup') cleanup = value
       if (flag === '--phase') phase = value
     } else die(NAME, `unknown option: ${flag}`)
   }
@@ -1284,6 +1287,7 @@ const main = (argv: string[]): number => {
     )
   if (continuing && integration !== '')
     die(NAME, '--integration is fixed when the dispatch starts; the recorded value is kept')
+  if (continuing && cleanup !== '') die(NAME, '--cleanup is fixed when the dispatch starts; the recorded value is kept')
   if (continuing) {
     if (slug === '') die(NAME, '--slug is required')
   } else if (requestFile === '' || slug === '' || objective === '') {
@@ -1371,6 +1375,7 @@ const main = (argv: string[]): number => {
   if (designMode !== '') overrides.push('--design-mode', designMode)
   if (askVia !== '') overrides.push('--ask-via', askVia)
   if (integration !== '') overrides.push('--integration', integration)
+  if (cleanup !== '') overrides.push('--cleanup', cleanup)
   if (!readable(RESOLVER)) {
     log(NAME, `the config resolver is missing at ${RESOLVER}`)
     return 1
@@ -1530,6 +1535,11 @@ const main = (argv: string[]): number => {
       integration_branch: integrationBranch,
       integration_role: string(config.integration_role) || 'design',
       integration: config.integration ?? null,
+      // ★ PR の無い取り込みと --auto（mail）には後片付けのモードを効かせない
+      cleanup:
+        string(config.integration) === 'merge' || mailFlags['--transport'] === 'mail'
+          ? 'end'
+          : string(config.cleanup) || 'end',
       ask_via: ask,
       ...(mailFlags['--transport'] === 'mail'
         ? {

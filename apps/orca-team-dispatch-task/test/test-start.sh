@@ -1609,4 +1609,27 @@ l=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)
 # 2026-11-16 から、レビューのメールは親を通す（遠くの worker は --to 付きの send を拒まれる）。宛先は指示文に書かない
 [[ "$rc" -eq 0 && "$l" == *'review-request: plan round'* && "$l" != *'--to dispatch:'* ]] && ok ST137 || fail "ST137 $out"; teardown
 
+# ST138: cleanup は起動時に workers.json へ記録する。設定が pr_created なら pr_created、--cleanup が勝つ、何も無ければ end
+cl_config() { mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"; printf '{"cleanup":"%s"}\n' "$1" > "$ORCA_DISPATCH_CONFIG_HOME/config.json"; }
+cl_of() { jq -r '.cleanup // empty' "$R/.dispatch/s/workers.json" 2>/dev/null; }
+setup; cl_config pr_created; start --integration pr >/dev/null 2>&1; a=$(cl_of); teardown
+setup; cl_config pr_created; start --integration pr --cleanup pr_merged >/dev/null 2>&1; b=$(cl_of); teardown
+setup; start --integration pr >/dev/null 2>&1; c=$(cl_of); teardown
+[[ "$a" == pr_created && "$b" == pr_merged && "$c" == end ]] && ok "ST138 cleanup を記録する" || fail "ST138 (a=$a b=$b c=$c)"
+
+# ST139: merge の取り込みと --transport mail（--auto の起動）は、設定や --cleanup にかかわらず end を記録する
+setup; cl_config pr_merged; start --integration merge >/dev/null 2>&1; a=$(cl_of); teardown
+setup; start --integration merge --cleanup pr_created >/dev/null 2>&1; b=$(cl_of); teardown
+setup; cl_config pr_merged; mail_fixture; mail_start --integration pr --on env-1 >/dev/null 2>&1; c=$(cl_of); teardown
+[[ "$a" == end && "$b" == end && "$c" == end ]] && ok "ST139 merge と mail は end" || fail "ST139 (a=$a b=$b c=$c)"
+
+# ST140: 続きの起動（--phase exec / --resume）に --cleanup を渡すと使用法の誤り（--integration と同じ）。記録は変わらない
+setup; phase_b_on; start --integration pr --cleanup pr_created >/dev/null 2>&1; design_done
+e1=$(exec_phase --cleanup pr_merged 2>&1 >/dev/null); rc1=$?
+e2=$(node "$P/bin/orca-start.ts" --slug s --repo-root "$R" --resume --cleanup end 2>&1 >/dev/null); rc2=$?
+[[ "$rc1" -eq 2 && "$rc2" -eq 2 && "$e1" == *'--cleanup is fixed when the dispatch starts'* \
+   && "$e2" == *'--cleanup is fixed when the dispatch starts'* && "$(cl_of)" == pr_created ]] \
+  && ok "ST140 続きの起動は cleanup を受け取らない" || fail "ST140 (rc1=$rc1 rc2=$rc2 now=$(cl_of))"
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

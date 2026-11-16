@@ -518,4 +518,23 @@ node "$EDIT" --config "$G" --set ask_via=parent >/dev/null 2>&1
   && ok "CF52 config-edit が ask_via を扱う" || fail "CF52"
 teardown
 
+# CF53: cleanup は end / pr_created / pr_merged。config-edit で書け、config-resolve が解決する。何も無ければ end、1 回きりの上書きが勝つ
+setup
+cl_() { node "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -r '.cleanup'; }
+a=$(cl_)
+node "$EDIT" --layer global --set cleanup=pr_merged >/dev/null 2>&1
+b=$(cl_); c=$(cl_ --cleanup pr_created)
+[[ "$a" == end && "$b" == pr_merged && "$c" == pr_created && "$(jq -r '.cleanup' "$G")" == pr_merged ]] \
+  && ok "CF53 cleanup を書けて、解決できる" || fail "CF53 (a=$a b=$b c=$c)"
+teardown
+
+# CF54: 3 値以外は書かない（ファイルは変わらない）。不正な 1 回きりの上書きも使用法の誤り
+setup
+echo '{"cleanup":"pr_created"}' > "$G"; before=$(cat "$G")
+err=$(node "$EDIT" --layer global --set cleanup=later 2>&1 >/dev/null); rc=$?
+rerr=$(node "$RESOLVE" --project-root "$PR" --cleanup later 2>&1 >/dev/null); rrc=$?
+[[ "$rc" -eq 2 && "$err" == *'invalid value for cleanup: later'* && "$rrc" -eq 2 && "$rerr" == *'invalid --cleanup: later'* \
+   && "$(cat "$G")" == "$before" ]] && ok "CF54 不正な cleanup を拒む" || fail "CF54 (rc=$rc rrc=$rrc err=$err rerr=$rerr)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
