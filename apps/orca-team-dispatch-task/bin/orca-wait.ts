@@ -13,6 +13,7 @@ import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
 import { materialize, parseEnvelope } from '../lib/mail-artifacts.ts'
+import { repoTargets, roleWorktrees } from '../lib/multi-repo.ts'
 import {
   dispatchSettled,
   orcaBin,
@@ -742,14 +743,20 @@ const inspectBatch = (state: State): void => {
   log(NAME, `  ${orcaBin()} orchestration inbox --terminal run:${state.expected.run} --limit 20 --full --json`)
 }
 const mailOffer = (state: State, entry: Entry, nonce: string, body: string): 0 | 2 => {
-  const workers = read(entry.statusDir, 'workers.json')
+  const workers = asObject(read(entry.statusDir, 'workers.json'))
+  const repoRoot = string(get(read(entry.statusDir, 'run.json'), 'repo_root'))
+  const targets = repoTargets(workers, repoRoot)
+  const worktrees = roleWorktrees(workers, repoRoot, entry.role)
+  const multi = targets.length > 1
   const branch = string(get(workers, 'roles', entry.role, 'branch'))
   const integration = integrationRoleOf(entry.statusDir) === entry.role
   const planOnly = entry.role === 'design' && !integration
   const completionFile = `roles/${entry.role}/completion.json`
   const completion = read(entry.statusDir, completionFile)
-  const accepting = string(get(completion, 'nonce')) === nonce && get(completion, 'phase') === 'accepting'
+  const accepting =
+    targets.length > 0 && string(get(completion, 'nonce')) === nonce && get(completion, 'phase') === 'accepting'
   let head = string(get(completion, 'head'))
+  let heads = object(get(completion, 'heads'))
   if (accepting) {
     // ★ 遠くの dispatch の受信箱は --environment を付けないと、ok の空の一覧が返る（2026-11-16 の実機）
     const environment = string(get(workers, 'roles', entry.role, 'environment'))
@@ -770,6 +777,7 @@ const mailOffer = (state: State, entry: Entry, nonce: string, body: string): 0 |
         nonce,
         phase: 'accepted',
         head,
+        ...(multi ? { heads } : {}),
         message_id: string(get(found, 'id')),
       })
         ? 0
@@ -779,20 +787,45 @@ const mailOffer = (state: State, entry: Entry, nonce: string, body: string): 0 |
   } else {
     const envelope = parseEnvelope(body)
     let reason = ''
-    if ('error' in envelope) reason = envelope.error
+    if (!targets.length) reason = `the dispatch record lists no repository for ${entry.role}`
+    else if ('error' in envelope) reason = envelope.error
     else if (envelope.nonce !== nonce) reason = 'the envelope nonce does not match the subject'
-    else if (envelope.branch !== branch)
-      reason = `the envelope names branch ${envelope.branch}, but this role works on ${branch}`
+    else if (!multi && envelope.version !== 1) reason = 'envelope must be a version 1 object'
+    else if (multi && envelope.version !== 2)
+      reason = `this dispatch spans ${targets.length} repositories; send a version 2 envelope with heads for ${targets.map((t) => t.repo).join(', ')}`
+    else if (!multi && envelope.heads[0]?.branch !== branch)
+      reason = `the envelope names branch ${envelope.heads[0]?.branch}, but this role works on ${branch}`
     else {
-      head = envelope.head
-      reason = materialize(entry.statusDir, entry.role, envelope, integration, planOnly)
-      if (
-        !reason &&
-        integration &&
-        remoteHead(string(get(read(entry.statusDir, 'run.json'), 'repo_root')), branch) !== head
-      )
-        reason = `${branch} is not pushed to origin at ${head}`
-      if (!reason) reason = verifyRole(entry.statusDir, entry.role)
+      if (multi) {
+        if (
+          envelope.heads.length !== targets.length ||
+          envelope.heads.some((h) => !targets.some((t) => t.repo === h.repo))
+        )
+          reason = `the envelope heads name ${envelope.heads.map((h) => h.repo).join(', ')}, but this dispatch spans ${targets.map((t) => t.repo).join(', ')}`
+        for (const h of envelope.heads) {
+          if (reason) break
+          const recorded = worktrees.find((w) => w.repo === h.repo)?.branch ?? ''
+          if (h.branch !== recorded)
+            reason = `the envelope names branch ${h.branch} for ${h.repo}, but this role works on ${recorded}`
+        }
+      }
+      if (!reason) {
+        head = envelope.heads.find((h) => h.repo === (multi ? targets[0]?.repo : ''))?.head ?? ''
+        heads = Object.fromEntries(envelope.heads.map((h) => [h.repo, h.head]))
+        reason = materialize(entry.statusDir, entry.role, envelope, integration, planOnly)
+        if (!reason && integration) {
+          if (multi) {
+            for (const h of envelope.heads) {
+              const checkout = worktrees.find((w) => w.repo === h.repo)?.checkout ?? ''
+              if (remoteHead(checkout, h.branch) !== h.head) {
+                reason = `${h.branch} of ${h.repo} is not pushed to origin at ${h.head}`
+                break
+              }
+            }
+          } else if (remoteHead(repoRoot, branch) !== head) reason = `${branch} is not pushed to origin at ${head}`
+        }
+        if (!reason) reason = verifyRole(entry.statusDir, entry.role)
+      }
     }
     if (reason) {
       if (!write(entry.statusDir, completionFile, { nonce, phase: 'remediated' })) return 2
@@ -801,7 +834,8 @@ const mailOffer = (state: State, entry: Entry, nonce: string, body: string): 0 |
       wakeRole(entry.statusDir, entry.role)
       return 0
     }
-    if (!write(entry.statusDir, completionFile, { nonce, phase: 'accepting', head })) return 2
+    if (!write(entry.statusDir, completionFile, { nonce, phase: 'accepting', head, ...(multi ? { heads } : {}) }))
+      return 2
   }
   const id = replyCompletion(state, entry.dispatch, nonce, true, 'the work is accepted; finish and report', true)
   if (typeof id !== 'string' || !id) {
@@ -811,7 +845,13 @@ const mailOffer = (state: State, entry: Entry, nonce: string, body: string): 0 |
     )
     return 2
   }
-  write(entry.statusDir, completionFile, { nonce, phase: 'accepted', head, message_id: id })
+  write(entry.statusDir, completionFile, {
+    nonce,
+    phase: 'accepted',
+    head,
+    ...(multi ? { heads } : {}),
+    message_id: id,
+  })
   log(NAME, `accepted ${entry.role} (dispatch ${entry.dispatch})`)
   if (reviewState(entry.statusDir, entry.role) === 'unreviewed')
     log(NAME, `WARNING: ${entry.role} produced no review verdict; its work is accepted UNREVIEWED`)
@@ -1232,13 +1272,15 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
     const settledEntry = settleEntry(entry, outcome)
     if (settledEntry !== 0) return settledEntry
     if (mail && outcome === 'succeeded' && integrationRoleOf(entry.statusDir) === entry.role) {
-      const role = get(read(entry.statusDir, 'workers.json'), 'roles', entry.role)
-      const branch = string(get(role, 'branch'))
-      if (
-        string(get(role, 'environment')) &&
-        !fetchBranch(string(get(read(entry.statusDir, 'run.json'), 'repo_root')), branch)
-      )
-        log(NAME, `could not fetch ${branch} from origin; finishing tries again`)
+      const workers = asObject(read(entry.statusDir, 'workers.json'))
+      const role = get(workers, 'roles', entry.role)
+      if (string(get(role, 'environment'))) {
+        const root = string(get(read(entry.statusDir, 'run.json'), 'repo_root'))
+        for (const w of roleWorktrees(workers, root, entry.role)) {
+          if (!fetchBranch(w.checkout, w.branch))
+            log(NAME, `could not fetch ${w.branch} from origin; finishing tries again`)
+        }
+      }
     }
   }
   const ack = runOrca([

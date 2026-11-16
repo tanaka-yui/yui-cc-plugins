@@ -13,9 +13,13 @@ const good = {
   head: 'a'.repeat(40),
   files: { 'result.md': 'done' },
 }
-test('MA1 valid envelope is parsed and transport version is removed', () => {
-  const { version: _version, ...expected } = good
-  assert.deepEqual(parseEnvelope(JSON.stringify(good)), expected)
+test('MA1/MA9 legacy envelopes normalize to a single unnamed head', () => {
+  assert.deepEqual(parseEnvelope(JSON.stringify(good)), {
+    nonce: good.nonce,
+    version: 1,
+    heads: [{ repo: '', branch: 'user/task', head: 'a'.repeat(40) }],
+    files: { 'result.md': 'done' },
+  })
 })
 test('MA2 planning artifacts materialize at their designated parent paths', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mail-artifacts-'))
@@ -73,4 +77,32 @@ test('MA5/MA6 malformed or oversized envelopes fail closed', () => {
     assert.ok('error' in parseEnvelope(body))
   const over = parseEnvelope('x'.repeat(262145))
   assert.ok('error' in over && over.error.includes('262144'))
+})
+
+const heads = [
+  { repo: 'acme/api', branch: 'user/api', head: 'a'.repeat(40) },
+  { repo: 'acme/web', branch: 'user/web', head: 'b'.repeat(40) },
+]
+
+test('MA7 version 2 preserves both repository heads', () => {
+  assert.deepEqual(parseEnvelope(JSON.stringify({ ...good, version: 2, heads })), {
+    nonce: good.nonce,
+    version: 2,
+    heads,
+    files: { 'result.md': 'done' },
+  })
+})
+
+test('MA8 version 2 rejects missing, duplicate and malformed repository heads', () => {
+  for (const invalid of [
+    [],
+    [heads[0], heads[0]],
+    [{ ...heads[0], repo: '' }],
+    [{ ...heads[0], branch: '' }],
+    [{ ...heads[0], head: 'bad' }],
+    [null],
+  ]) {
+    const result = parseEnvelope(JSON.stringify({ ...good, version: 2, heads: invalid }))
+    assert.deepEqual(result, { error: 'envelope heads must name each repository once with its branch and head' })
+  }
 })

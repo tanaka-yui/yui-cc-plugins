@@ -1828,4 +1828,66 @@ for identity in payload fallback unknown; do
  mail_teardown
 done
 
+
+# WT172-176: 封筒の全リポジトリを照合し、受理した head を再開時にも保存する。
+multi_setup() {
+ mail_setup
+ MR2=$(mktemp -d); MO2=$(mktemp -d)
+ git -C "$MO2" init -q --bare
+ git -C "$MR2" init -q -b main
+ echo second > "$MR2/file"; git -C "$MR2" add file
+ git -C "$MR2" -c user.email=t@e -c user.name=t commit -qm second
+ git -C "$MR2" remote add origin "$MO2"; git -C "$MR2" push -q origin main
+ MH2=$(git -C "$MR2" rev-parse HEAD)
+ jq --arg r "$MR" --arg r2 "$MR2" '.repos=[{repo:"acme/api",checkout:$r,host_repo:("path:"+$r),base_branch:"origin/main",integration_branch:"main"},{repo:"acme/web",checkout:$r2,host_repo:("path:"+$r2),base_branch:"origin/main",integration_branch:"main"}] | .roles.design.worktree_path=$r | .roles.design.extra={"acme/web":{worktree_id:"wt2",worktree_path:$r2,branch:"main"}}' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+ ENVELOPE2=$(jq -nc --arg n "$MN" --arg h "$MH" --arg h2 "$MH2" '{version:2,nonce:$n,heads:[{repo:"acme/api",branch:"main",head:$h},{repo:"acme/web",branch:"main",head:$h2}],files:{"result.md":"multi result"}}')
+}
+multi_teardown() { rm -rf "$MR2" "$MO2"; mail_teardown; }
+multi_setup; mail_message merge_ready "$ENVELOPE2"; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 ]] && jq -e --arg h "$MH" --arg h2 "$MH2" '.phase=="accepted" and .head==$h and .heads=={"acme/api":$h,"acme/web":$h2}' "$SD/roles/design/completion.json" >/dev/null 2>&1 \
+ && ok WT172 || fail "WT172 rc=$rc $out"
+multi_teardown
+
+for inbox in found absent; do
+ multi_setup; mail_message merge_ready "$ENVELOPE2"
+ jq -n --arg n "$MN" --arg h "$MH" --arg h2 "$MH2" '{nonce:$n,phase:"accepting",head:$h,heads:{"acme/api":$h,"acme/web":$h2}}' > "$SD/roles/design/completion.json"
+ if [[ "$inbox" == found ]]; then
+  echo '{"ok":true,"result":{"messages":[{"id":"msg_r","subject":"completion-accepted: 0123456789abcdef"}]}}' > "$ORCA_STUB_DIR/orchestration_inbox"
+ else
+  echo '{"ok":true,"result":{"messages":[]}}' > "$ORCA_STUB_DIR/orchestration_inbox"
+ fi
+ out=$(w 1 2>&1); rc=$?
+ [[ "$rc" -eq 3 ]] && jq -e --arg h "$MH" --arg h2 "$MH2" '.phase=="accepted" and .heads=={"acme/api":$h,"acme/web":$h2}' "$SD/roles/design/completion.json" >/dev/null 2>&1 \
+  && ok "WT172b $inbox" || fail "WT172b $inbox rc=$rc $out"
+ multi_teardown
+done
+
+multi_setup; mail_message; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'version 2'* ]] && grep -q 'completion-remediation:' "$ORCA_STUB_DIR/calls.log" && grep -q -- '--ack mail_batch' "$ORCA_STUB_DIR/calls.log" \
+ && ok WT173 || fail "WT173 rc=$rc $out"
+multi_teardown
+
+multi_setup; bad=$(jq '.heads[1].head=("b"*40)' <<<"$ENVELOPE2"); mail_message merge_ready "$bad"; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 && "$out" == *'acme/web'* && "$out" == *'not pushed'* ]] && grep -q 'completion-remediation:' "$ORCA_STUB_DIR/calls.log" \
+ && ok WT174 || fail "WT174 rc=$rc $out"
+multi_teardown
+
+for env in env-1 local; do
+ multi_setup
+ for path in "$MR" "$MR2"; do
+  git -C "$path" push -q origin main:remote-result
+ done
+ jq --arg e "$env" '.roles.design.branch="remote-result" | .roles.design.extra["acme/web"].branch="remote-result" | .roles.design.environment=(if $e=="local" then null else $e end)' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+ mail_message worker_done; out=$(w 1 2>&1); rc=$?
+ fetched=0
+ for path in "$MR" "$MR2"; do git -C "$path" show-ref --verify --quiet refs/heads/remote-result && fetched=$((fetched+1)); done
+ [[ "$rc" -eq 0 && "$env" == env-1 && "$fetched" -eq 2 || "$rc" -eq 0 && "$env" == local && "$fetched" -eq 0 ]] \
+  && ok "WT175 $env" || fail "WT175 $env fetched=$fetched rc=$rc $out"
+ multi_teardown
+done
+mail_setup; mail_message; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 ]] && jq -e '.phase=="accepted" and has("heads")==false' "$SD/roles/design/completion.json" >/dev/null 2>&1 \
+ && ok WT176 || fail "WT176 rc=$rc $out"
+mail_teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
