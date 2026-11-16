@@ -3,16 +3,18 @@
 // Usage: node orca-cleanup.ts plan --status-dir <dir> [--status-dir <dir> ...] [--pr-saved <dir> ...]
 //        node orca-cleanup.ts run --plan <file> --approve <slug>:<terminal|worktree|record> [...]
 //        node orca-cleanup.ts auto --status-dir <dir>
+//        node orca-cleanup.ts sweep
 //
 // plan の exit: 0 = 計画を書いた（提示が 0 件でも）/ 1 = Run 全体を止めた（計画は書かない）/ 2 = 使用法の誤り
 // run の exit:  0 = 承認された操作を全部終えた / 1 = どれかが失敗した / 2 = 使用法の誤り
 // auto の exit: 0 = 片付けた・何もしなかった（Run 全体が止まったときも）/ 1 = 操作のどれかが失敗した / 2 = 使用法の誤り
+// sweep の exit: 0 = いつも（掃除の失敗で dispatch を止めない）/ 2 = 使用法の誤り
 //
 // ★ plan は Orca に読み取り（worker-list / terminal show / terminal list）しか打たない。
 //   判定の条件と止まる理由の文言は、SKILL.md の Step 5 にあった [C1]〜[C7] のブロックから移した。
 import { die, log, parseFlags } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
-import { asArray, asObject, asString, get, type Json, type JsonObject } from '../lib/json.ts'
+import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
 import {
   failureDetail,
   GONE_STATES,
@@ -35,10 +37,12 @@ import { fileURLToPath } from 'node:url'
 const NAME = 'orca-cleanup'
 const USAGE =
   'usage: orca-cleanup.ts plan --status-dir <dir> [--status-dir <dir> ...] [--pr-saved <dir> ...] | ' +
-  'run --plan <file> --approve <slug>:<terminal|worktree|record> [--approve ...] | auto --status-dir <dir>'
+  'run --plan <file> --approve <slug>:<terminal|worktree|record> [--approve ...] | auto --status-dir <dir> | sweep'
 
 // ★ origin を読めなかったときと同じに扱う
 const REMOTE_TIMEOUT_MS = 30_000
+// ★ gh の打ち切りも、読めなかったときと同じに扱う
+const GH_TIMEOUT_MS = 30_000
 
 const MISSING = 'required cleanup state is missing; do not close or remove anything'
 const UNREADABLE = 'could not read the release state; do not close anything'
@@ -876,11 +880,75 @@ const autoCommand = (args: string[]): number => {
   process.stdout.write(`${outcome.lines.join('\n')}\n`)
   return outcome.failed ? 1 : 0
 }
+const sweepCommand = (args: string[]): number => {
+  parseFlags(NAME, { args, options: {}, strict: true, allowPositionals: false })
+  const root = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+  })
+  if (root.status !== 0) {
+    process.stdout.write('sweep: not inside a git repository; nothing to sweep\n')
+    return 0
+  }
+  const dispatchDir = join(root.stdout.trim(), '.dispatch')
+  let all: string[] = []
+  try {
+    all = readdirSync(dispatchDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(dispatchDir, entry.name))
+      .filter((dir) => runOf(dir) !== '')
+      .sort()
+  } catch {
+    all = []
+  }
+  const candidates = all.filter((dir) => {
+    const workers = asObject(readJson(join(dir, 'workers.json')))
+    return workers !== null && workers.transport !== 'mail' && workers.cleanup === 'pr_merged' && prUrlOf(dir) !== ''
+  })
+  const lines: string[] = []
+  const targets = new Map<string, string[]>()
+  for (const dir of candidates) {
+    const url = prUrlOf(dir)
+    const result = spawnSync('gh', ['pr', 'view', '--json', 'state', url], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      timeout: GH_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    })
+    const state = result.status === 0 ? asString(get(parseJson(result.stdout), 'state')) : null
+    if (state === null) {
+      lines.push(`could not read ${url}; left as is`)
+    } else if (state === 'MERGED') {
+      const run = runOf(dir)
+      targets.set(run, [...(targets.get(run) ?? []), dir])
+    }
+  }
+  for (const [run, dirs] of targets) {
+    const built = buildPlan(
+      all.filter((dir) => runOf(dir) === run),
+      new Set(dirs),
+    )
+    if (!built.ok) {
+      lines.push(`Run ${run}: nothing was cleaned up`, ...built.lines.map((line) => `  ${line}`))
+      continue
+    }
+    lines.push(
+      ...cleanSaved(
+        built,
+        dirs.map((dir) => basename(dir)),
+      ).lines,
+    )
+  }
+  if (lines.length === 0) lines.push('sweep: nothing to clean up')
+  process.stdout.write(`${lines.join('\n')}\n`)
+  return 0
+}
 const main = (argv: string[]): number => {
   const [command, ...rest] = argv
   if (command === 'plan') return planCommand(rest)
   if (command === 'run') return runCommand(rest)
   if (command === 'auto') return autoCommand(rest)
+  if (command === 'sweep') return sweepCommand(rest)
   return die(NAME, USAGE)
 }
 

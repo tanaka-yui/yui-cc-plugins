@@ -164,6 +164,8 @@ plan() {
 }
 run() { OUT=$(node "$CLEANUP" run "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
 auto() { OUT=$(node "$CLEANUP" auto "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
+sweep() { OUT=$(cd "$REPO" && node "$CLEANUP" sweep 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
+ghcalls() { grep -c 'pr view' "$GH_STUB_DIR/calls.log"; }
 pj() { jq -c "$1" "$PLAN_FILE" 2>/dev/null; }                  # 計画ファイルへの問い合わせ
 mutations() { grep -E 'worker-release|worktree rm' "$ORCA_STUB_DIR/calls.log"; }
 sd() { printf '%s' "$REPO/.dispatch/$1"; }
@@ -1008,6 +1010,62 @@ auto --status-dir ''; rc2=$RC
 auto --status-dir "$(sd a)" --bogus; rc3=$RC
 [[ "$rc1" -eq 2 && "$err1" == *'auto needs --status-dir'* && "$rc2" -eq 2 && "$rc3" -eq 2 && ! -s "$ORCA_STUB_DIR/calls.log" ]] \
   && ok "CL47b auto の使用法を検査する" || fail "CL47b $rc1/$rc2/$rc3 $err1"
+teardown
+
+# CL48: MERGED の対象だけを片付け、同じ Run の OPEN は触らない
+world; prtask x pr_merged; prtask y pr_merged
+printf 'MERGED\n' > "$GH_STUB_DIR/state-x"; printf 'OPEN\n' > "$GH_STUB_DIR/state-y"
+sweep
+[[ "$RC" -eq 0 && ! -e "$(sd x)" && -d "$(sd y)" && "$(mutations | grep -cE 'ctx_x-design|wt_x-design')" == 2 \
+   && -z "$(mutations | grep -E 'ctx_y-|wt_y-')" && "$(ghcalls)" == 2 ]] && grep -q '^pr view --json state https://github.com/o/r/pull/x' "$GH_STUB_DIR/calls.log" \
+  && ok "CL48 MERGED だけ片付ける" || fail "CL48 $RC $OUT $ERR"
+teardown
+
+world; prtask x pr_merged; git -C "$REPO" push -q origin --delete orca/x; printf 'MERGED\n' > "$GH_STUB_DIR/state-x"
+sweep
+[[ "$RC" -eq 0 && -d "$(sd x)" && -z "$(mutations)" \
+   && "$OUT" == *'x: the pull request is not proven saved, so nothing was cleaned up'* \
+   && "$OUT" == *'the branch has commits that are not on origin'* ]] && ok "CL48b head branch が無い PR は残す" || fail "CL48b $RC $OUT $ERR"
+teardown
+
+world; prtask x pr_merged; role x design_review; printf 'MERGED\n' > "$GH_STUB_DIR/state-x"
+printf 'retained user_takeover\n' > "$ORCA_STUB_DIR/workers/ctx_x-design.after"
+sweep
+[[ "$RC" -eq 0 && -d "$(sd x)" && "$(mutations | grep -cE 'id:wt_x-design( |$)')" == 0 \
+   && "$(mutations | grep -c 'id:wt_x-design_review')" == 1 \
+   && "$OUT" == *'not run: design worktree id:wt_x-design (the user took over the design terminal after the plan, so its worktree stays)'* \
+   && "$OUT" == *"not run: dispatch record $(sd x) (part of this task stays with the user (design terminal), so the record that points at it stays too)"* ]] \
+  && ok "CL48c sweep も plan 後のユーザー操作を保護する" || fail "CL48c $RC $OUT $ERR"
+teardown
+
+world; prtask x pr_merged; prtask y pr_merged; printf 'CLOSED\n' > "$GH_STUB_DIR/state-x"
+sweep
+[[ "$RC" -eq 0 && -d "$(sd x)" && -d "$(sd y)" && -z "$(mutations)" \
+   && "$OUT" == *'could not read https://github.com/o/r/pull/y; left as is'* && "$OUT" != *'pull/x; left as is'* ]] \
+  && ok "CL49 CLOSED と gh の失敗は残す" || fail "CL49 $RC $OUT $ERR"
+teardown
+
+world; prtask a pr_merged; printf '{"merged":false,"integration":"pr"}\n' > "$(sd a)/integration-result.json"
+prtask b pr_merged; edit b 'del(.cleanup)'; prtask c end; prtask d pr_created
+for s in a b c d; do printf 'MERGED\n' > "$GH_STUB_DIR/state-$s"; done
+sweep
+[[ "$RC" -eq 0 && "$(ghcalls)" == 0 && -z "$(mutations)" && "$OUT" == *'sweep: nothing to clean up'* \
+   && -d "$(sd a)" && -d "$(sd b)" && -d "$(sd c)" && -d "$(sd d)" ]] \
+  && ok "CL50 候補が無ければ gh も Orca も呼ばない" || fail "CL50 $RC $OUT $ERR"
+teardown
+
+world; prtask x pr_merged; edit x '.transport = "mail"'; printf 'MERGED\n' > "$GH_STUB_DIR/state-x"
+sweep
+[[ "$RC" -eq 0 && "$(ghcalls)" == 0 && -d "$(sd x)" && -z "$(mutations)" ]] \
+  && ok "CL51 mail の記録を sweep しない" || fail "CL51 $RC $OUT $ERR"
+teardown
+
+world; gitrepo; rm -rf "$REPO/.dispatch"; sweep; rc1=$RC; out1=$OUT
+out2=$(cd "$T" && node "$CLEANUP" sweep 2>/dev/null); rc2=$?
+(cd "$REPO" && node "$CLEANUP" sweep --bogus) >/dev/null 2>&1; rc3=$?
+[[ "$rc1" -eq 0 && "$out1" == *'sweep: nothing to clean up'* && "$rc2" -eq 0 \
+   && "$out2" == *'sweep: not inside a git repository; nothing to sweep'* && "$rc3" -eq 2 \
+   && "$(ghcalls)" == 0 && ! -s "$ORCA_STUB_DIR/calls.log" ]] && ok "CL52 空の repo と git の外と使用法" || fail "CL52 $rc1/$rc2/$rc3 $out1 $out2"
 teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
