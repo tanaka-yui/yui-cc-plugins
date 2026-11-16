@@ -1723,7 +1723,7 @@ done
 # WT170: 2026-11-16 の実機。遠くの dispatch への send は relay の messageId を返し、受信箱は --environment を要る
 mail_setup; mail_message
 jq '.roles.design.environment="env-1"' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
-echo '{"ok":true,"result":{"queuedFor":"worker","messageId":"relay_r"}}' > "$ORCA_STUB_DIR/orchestration_send"
+echo '{"ok":true,"result":{"relay":{"messageId":"relay_r","dispatchId":"ctx_x","destination":"worker"}}}' > "$ORCA_STUB_DIR/orchestration_send"
 out=$(w 1 2>&1); rc=$?
 [[ "$rc" -eq 3 && "$(jq -r .phase "$SD/roles/design/completion.json" 2>/dev/null)" == accepted && "$(jq -r .message_id "$SD/roles/design/completion.json" 2>/dev/null)" == relay_r && "$(grep -c 'orchestration send' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] && ok 'WT170 remote relay receipt confirms acceptance' || fail "WT170 relay $rc $out"
 mail_teardown

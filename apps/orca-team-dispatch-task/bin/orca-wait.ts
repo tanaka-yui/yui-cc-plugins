@@ -507,11 +507,12 @@ const replyCompletion = (
     state.expected.parent,
     '--json',
   ])
-  // ★ 遠くの dispatch への send の返り値に `result.message.id` は無い（2026-11-16 の実機。届いた受理を「確かめられない」と
-  //   読んで 2 通送った）。spike 13 の記録は `{queuedFor, messageId: relay_*}`。その形を読むが、実機の生の返り値はまだ写していない
+  // ★ 遠くの dispatch への send は `result.message` を持たず、--full では `result.relay.messageId`（relay_*）を返す
+  //   （2026-11-16 の実機で届いた受理を「確かめられない」と読んで 2 通送った。形は Orca 1.4.257 の CLI の整形部で確かめた。
+  //   簡潔表示の `result.messageId` は runOrca が --full を付けるので来ない）
   return mail
     ? receiptOk(sent)
-      ? string(get(sent.json, 'result', 'message', 'id')) || string(get(sent.json, 'result', 'messageId'))
+      ? string(get(sent.json, 'result', 'message', 'id')) || string(get(sent.json, 'result', 'relay', 'messageId'))
       : ''
     : sent.rc === 0
 }
