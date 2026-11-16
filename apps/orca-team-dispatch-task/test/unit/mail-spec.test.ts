@@ -1,6 +1,7 @@
 import { renderMailSpec } from '../../lib/mail-spec.ts'
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 
 import type { MailSpecInput } from '../../lib/mail-spec.ts'
@@ -12,6 +13,8 @@ const input = (overrides: Partial<MailSpecInput> = {}): MailSpecInput => ({
   request: 'Entire request\n- node --test',
   plan: null,
   baseBranch: 'origin/main',
+  primaryRepo: '',
+  extraRepos: [],
   integration: true,
   planOnly: false,
   reviewer: null,
@@ -115,4 +118,75 @@ test('MS12 review mail goes through the coordinator without --to, and review-una
     reviewer.includes('orchestration send --type status <ids> --subject "review-verdict: code round <n>"'),
     'verdict via coordinator',
   )
+})
+
+const multi = {
+  primaryRepo: 'acme/api',
+  extraRepos: [{ repo: 'acme/web', worktreePath: '/work/web', branch: 'user/web', baseBranch: 'origin/develop' }],
+}
+
+test('MS13 every worktree is checked, pushed and included in a version 2 envelope', () => {
+  const spec = renderMailSpec(input({ ...multi, role: 'exec' }))
+  for (const part of [
+    'This task spans 2 repositories',
+    'acme/api',
+    '/work/web',
+    'user/web',
+    'origin/develop',
+    'git -C',
+    '"version":2',
+    'heads',
+  ]) {
+    assert.ok(spec.includes(part), part)
+  }
+  assert.ok(spec.includes("git -C '/work/web' push origin HEAD:refs/heads/user/web"))
+})
+
+test('MS14 code review requests identify each repository, head and base', () => {
+  const spec = renderMailSpec(input({ ...multi, role: 'exec', reviewer: 'ctx_r' }))
+  assert.ok(spec.includes('repo: acme/api\nbranch:'))
+  assert.ok(spec.includes('repo: acme/web\nbranch:'))
+  assert.ok(spec.includes('base: origin/develop'))
+})
+
+test('MS15 reviewer fetches each repository in its own worktree', () => {
+  const spec = renderMailSpec(input({ ...multi, role: 'exec_review', reviewOf: 'code', integration: false }))
+  for (const part of [
+    "git -C '/work/web' fetch origin +refs/heads/<branch>",
+    "git -C '/work/web' rev-parse FETCH_HEAD",
+    "git -C '/work/web' diff <base>...FETCH_HEAD",
+    "git -C '/work/web' worktree add --detach",
+  ]) {
+    assert.ok(spec.includes(part), part)
+  }
+})
+
+test('MS16 legacy instructions remain byte-for-byte identical for every role', () => {
+  const cases: Array<[Partial<MailSpecInput>, string]> = [
+    [{}, '28d98c97ee3f029987cac52e9a1f35c11705b7f90a133734d18994c9e531518d'],
+    [
+      { planOnly: true, integration: false, reviewer: 'ctx_r' },
+      'a72705b9d8e171aa8676d3cecfec59586f37a4d66bec78b0263044b5540c916f',
+    ],
+    [
+      { role: 'exec', plan: 'Entire plan', reviewer: 'ctx_r' },
+      'c608be35bb2e662087482dc2ab658ab1cd73f64e6466131a05169b38c4e37255',
+    ],
+    [
+      { role: 'design_review', reviewOf: 'plan', integration: false },
+      '2742f6d4ae1004b5f4782ea37b50788ce9af24129e5fc6fd78ef3bd453c28557',
+    ],
+    [
+      { role: 'exec_review', reviewOf: 'code', integration: false },
+      '547081e571075603e04f80ce2e96027eecf6ba8cb3c2ed8e5d4ffee547a5d496',
+    ],
+  ]
+  for (const [overrides, hash] of cases) {
+    assert.equal(
+      createHash('sha256')
+        .update(renderMailSpec(input(overrides)))
+        .digest('hex'),
+      hash,
+    )
+  }
 })

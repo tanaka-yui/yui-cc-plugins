@@ -1,6 +1,6 @@
 // worktree を用意し、worker を 1 つ起動してタスクを届ける。
 // Usage: node orca-start.ts --request-file <f> --slug <s> --objective <o> [--repo-root <p>]
-//        [--run <id>] [--agent <id>] [--model <id>] [--effort <level>]
+//        [--transport mail --repos-file <f>] [--run <id>] [--agent <id>] [--model <id>] [--effort <level>]
 //        [--phase design|exec] [--design-mode direct|plan|brainstorm] [--ask-via terminal|parent]
 //        [--integration merge|pr] [--cleanup end|pr_created|pr_merged] [--unattended] [--review-mode on|off] [--phase-b on|off]
 //        node orca-start.ts --slug <s> --resume [--repo-root <p>] [--design-mode ...] [--ask-via ...]
@@ -11,6 +11,7 @@ import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
 import { renderMailSpec } from '../lib/mail-spec.ts'
+import { readReposFile, repoTargets } from '../lib/multi-repo.ts'
 import { failureDetail, orcaBin, receiptOk, runOrca, terminalHandles, workerTerminal } from '../lib/orca.ts'
 import { envCount, run, runNode, sleepSeconds, which } from '../lib/sys.ts'
 import { trustBlocked, trustHint } from '../lib/trust.ts'
@@ -596,10 +597,71 @@ const incompleteStart = (statusDir: string, slug: string, role: string, dispatch
 //   逆に design が失敗しても reviewer の資源は消さない（Task 成立後は削除しない / O19）。
 const launchMailRole = (context: Context, role: string): boolean => {
   const workersFile = join(context.statusDir, 'workers.json')
-  const workers = readJson(workersFile)
+  const workers = asObject(readJson(workersFile))
   const environment = asString(get(workers, 'environment'))
   const roleDir = join(context.statusDir, 'roles', role)
   const reviewerRole = role === 'design' ? 'design_review' : 'exec_review'
+  const agent = string(get(context.config, 'roles', role, 'agent'))
+  const model = string(get(context.config, 'roles', role, 'model'))
+  const effort = string(get(context.config, 'roles', role, 'effort'))
+  if (!agent) {
+    log(NAME, `role '${role}' has no agent resolved`)
+    return false
+  }
+  const name = role === 'design' ? context.slug : `${context.slug}-${role.replaceAll('_', '-')}`
+  const targets = repoTargets(workers, context.repoRoot)
+  const extraRepos: Array<{ repo: string; worktreePath: string; branch: string; baseBranch: string }> = []
+  const secondary = targets[1]
+  if (secondary) {
+    let extra = object(get(workers, 'roles', role, 'extra', secondary.repo))
+    if (!string(extra.worktree_path) || !string(extra.branch)) {
+      const created = runOrca([
+        'worktree',
+        'create',
+        ...(environment ? ['--environment', environment] : []),
+        '--name',
+        name,
+        '--repo',
+        secondary.hostRepo,
+        '--base-branch',
+        secondary.baseBranch,
+        '--no-parent',
+        '--setup',
+        context.setup,
+        '--json',
+      ])
+      const worktreeId = string(get(created.json, 'result', 'worktree', 'id'))
+      const worktreePath = string(get(created.json, 'result', 'worktree', 'path'))
+      const branch = string(get(created.json, 'result', 'worktree', 'branch')).replace(/^refs\/heads\//, '')
+      if (!receiptOk(created) || !worktreeId || !worktreePath || !branch) {
+        log(NAME, `worktree create failed for ${role} (${secondary.repo}): ${failureDetail(created)}`)
+        return false
+      }
+      extra = { worktree_id: worktreeId, worktree_path: worktreePath, branch }
+      if (
+        !roleUpdate(`workers-extra-${role}`, workersFile, role, {
+          environment,
+          extra: { ...object(get(workers, 'roles', role, 'extra')), [secondary.repo]: extra },
+        })
+      ) {
+        log(
+          NAME,
+          `the ${role} worktree for ${secondary.repo} was created but could not be recorded (id=${shellQuote(worktreeId)} path=${shellQuote(worktreePath)}). Resources are KEPT.`,
+        )
+        log(
+          NAME,
+          `remove it with: ${shellQuote(orcaBin())} worktree rm${environment ? ` --environment ${shellQuote(environment)}` : ''} --worktree ${shellQuote(`id:${worktreeId}`)} --force --json`,
+        )
+        return false
+      }
+    }
+    extraRepos.push({
+      repo: secondary.repo,
+      worktreePath: string(extra.worktree_path),
+      branch: string(extra.branch),
+      baseBranch: secondary.baseBranch,
+    })
+  }
   const spec = renderMailSpec({
     slug: context.slug,
     role: role as MailRole,
@@ -607,6 +669,8 @@ const launchMailRole = (context: Context, role: string): boolean => {
     request: readFileSync(join(context.statusDir, 'request.md'), 'utf8'),
     plan: role === 'exec' ? readFileSync(join(context.statusDir, 'plan.md'), 'utf8') : null,
     baseBranch: string(get(workers, 'base_branch')),
+    primaryRepo: secondary ? (targets[0]?.repo ?? '') : '',
+    extraRepos,
     integration: get(workers, 'integration_role') === role,
     planOnly: role === 'design' && context.phaseB === 'on',
     reviewer:
@@ -616,13 +680,6 @@ const launchMailRole = (context: Context, role: string): boolean => {
     reviewOf: role === 'design_review' ? 'plan' : role === 'exec_review' ? 'code' : null,
     reviewRounds: REVIEW_ROUND_STEP,
   })
-  const agent = string(get(context.config, 'roles', role, 'agent'))
-  const model = string(get(context.config, 'roles', role, 'model'))
-  const effort = string(get(context.config, 'roles', role, 'effort'))
-  if (!agent) {
-    log(NAME, `role '${role}' has no agent resolved`)
-    return false
-  }
   if (!write(`status-${role}`, join(roleDir, 'status.json'), '{"status":"starting"}')) return false
   const created = runOrca([
     'orchestration',
@@ -647,7 +704,6 @@ const launchMailRole = (context: Context, role: string): boolean => {
     return false
   }
   if (!roleUpdate(`workers-after-task-${role}`, workersFile, role, { task, environment })) return false
-  const name = role === 'design' ? context.slug : `${context.slug}-${role.replaceAll('_', '-')}`
   const args = [
     'orchestration',
     'worker-start',
@@ -1223,6 +1279,7 @@ const main = (argv: string[]): number => {
     if (
       [
         '--transport',
+        '--repos-file',
         '--on',
         '--host-repo',
         '--base-branch',
@@ -1246,7 +1303,7 @@ const main = (argv: string[]): number => {
     ) {
       if (i + 1 >= argv.length) die(NAME, `${flag} requires a value`)
       const value = argv[++i] ?? ''
-      if (['--transport', '--on', '--host-repo', '--base-branch', '--worker-orca'].includes(flag ?? ''))
+      if (['--transport', '--on', '--host-repo', '--base-branch', '--worker-orca', '--repos-file'].includes(flag ?? ''))
         mailFlags[flag ?? ''] = value
       if (flag === '--request-file') requestFile = value
       if (flag === '--slug') slug = value
@@ -1302,6 +1359,17 @@ const main = (argv: string[]): number => {
     const found = run('git', ['rev-parse', '--show-toplevel'])
     if (found.rc !== 0) die(NAME, 'not in a git repo')
     repoRoot = found.stdout.trim()
+  }
+  const reposFile = mailFlags['--repos-file']
+  const repos = reposFile === undefined ? null : readReposFile(reposFile)
+  if (
+    reposFile !== undefined &&
+    (!repos ||
+      repos[0]?.checkout !== repoRoot ||
+      repos[0]?.host_repo !== mailFlags['--host-repo'] ||
+      repos[0]?.base_branch !== mailFlags['--base-branch'])
+  ) {
+    die(NAME, '--repos-file must name two repositories and match the primary checkout, host repo and base branch')
   }
   const hostPath = toHost(repoRoot)
   if (hostPath === null || hostPath === '') {
@@ -1362,6 +1430,16 @@ const main = (argv: string[]): number => {
   if (integrationBranch === '') {
     log(NAME, 'the parent checkout is in a detached HEAD; cannot fix a merge target')
     return 1
+  }
+
+  let extraIntegrationBranch = ''
+  if (repos?.[1]) {
+    const extraBranch = git(repos[1].checkout, 'symbolic-ref', '--short', 'HEAD')
+    extraIntegrationBranch = extraBranch.rc === 0 ? extraBranch.stdout.trim() : ''
+    if (!extraIntegrationBranch) {
+      log(NAME, `the checkout ${repos[1].checkout} is in a detached HEAD; cannot fix a merge target`)
+      return 1
+    }
   }
 
   const overrides: string[] = []
@@ -1548,6 +1626,14 @@ const main = (argv: string[]): number => {
             host_repo: mailFlags['--host-repo'],
             base_branch: mailFlags['--base-branch'],
             worker_orca: mailFlags['--worker-orca'],
+            ...(repos
+              ? {
+                  repos: repos.map((r, i) => ({
+                    ...r,
+                    integration_branch: i === 0 ? integrationBranch : extraIntegrationBranch,
+                  })),
+                }
+              : {}),
           }
         : {}),
       ...(reviewOverride !== null ? { review_mode: reviewOverride } : {}),

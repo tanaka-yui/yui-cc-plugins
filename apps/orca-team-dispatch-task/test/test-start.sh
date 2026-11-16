@@ -1632,4 +1632,90 @@ e2=$(node "$P/bin/orca-start.ts" --slug s --repo-root "$R" --resume --cleanup en
   && ok "ST140 続きの起動は cleanup を受け取らない" || fail "ST140 (rc1=$rc1 rc2=$rc2 now=$(cl_of))"
 teardown
 
+
+# ST141-145: 2 つ目の worktree を記録してから役を起こす。
+multi_fixture() {
+  mail_fixture
+  R2=$(mktemp -d); git -C "$R2" init -q -b develop
+  echo second > "$R2/file"; git -C "$R2" add file
+  git -C "$R2" -c user.email=t@e -c user.name=t commit -qm seed
+  REPOS=$(mktemp)
+  jq -n --arg r "$R" --arg r2 "$R2" '[{repo:"acme/api",checkout:$r,host_repo:"id:R",base_branch:"origin/main"},{repo:"acme/web",checkout:$r2,host_repo:("path:"+$r2),base_branch:"origin/develop"}]' > "$REPOS"
+  export MULTI_PATH="$R2" MULTI_RECEIPT="$P/test/fixtures/orca-worktree-create.json"
+  cat > "$ORCA_STUB_DIR/worktree_create.hook" <<'HOOK'
+#!/bin/bash
+n=0; [[ -f "$ORCA_STUB_DIR/multi-count" ]] && n=$(cat "$ORCA_STUB_DIR/multi-count")
+n=$((n+1)); echo "$n" > "$ORCA_STUB_DIR/multi-count"
+jq --arg p "$MULTI_PATH" --arg id "extra-$n" '.result.worktree.path=$p | .result.worktree.id=$id' "$MULTI_RECEIPT" > "$ORCA_STUB_DIR/worktree_create"
+if [[ -f "$ORCA_STUB_DIR/fail-extra-second" && "$n" -eq 2 ]]; then echo 1 > "$ORCA_STUB_DIR/worktree_create.rc"; fi
+HOOK
+  chmod +x "$ORCA_STUB_DIR/worktree_create.hook"
+}
+multi_start() { mail_start --repos-file "$REPOS" "$@"; }
+multi_teardown() { rm -rf "$R2" "$REPOS"; unset MULTI_PATH MULTI_RECEIPT; teardown; }
+multi_workers() {
+ cat > "$ORCA_STUB_DIR/orchestration_worker-start.hook" <<'HOOK'
+#!/bin/bash
+n=0; [[ -f "$ORCA_STUB_DIR/mail-count" ]] && n=$(cat "$ORCA_STUB_DIR/mail-count"); n=$((n+1)); echo "$n" > "$ORCA_STUB_DIR/mail-count"
+printf '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_mail_%s","effects":[{"kind":"worktree","id":"remote_wt"},{"kind":"terminal","role":"agent","id":"term_w"}]}}' "$n" > "$ORCA_STUB_DIR/orchestration_worker-start"
+HOOK
+ chmod +x "$ORCA_STUB_DIR/orchestration_worker-start.hook"
+}
+setup; multi_fixture; out=$(multi_start --on env-1 2>&1); rc=$?
+jq -e --arg r "$R" --arg r2 "$R2" '.repos[0].repo=="acme/api" and .repos[0].checkout==$r and .repos[0].integration_branch=="main" and .repos[1].checkout==$r2 and .repos[1].integration_branch=="develop" and .host_repo==.repos[0].host_repo and .base_branch==.repos[0].base_branch' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+ && jq -e --arg r "$R" '.repo_root==$r' "$R/.dispatch/s/run.json" >/dev/null 2>&1 && [[ "$rc" -eq 0 ]] && ok ST141 || fail "ST141 rc=$rc $out"
+l=$(grep -n 'worktree create' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1); w=$(grep -n 'orchestration worker-start' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
+[[ -n "$l" && -n "$w" && "$l" -lt "$w" ]] \
+ && grep -q "worktree create --environment env-1 --name s --repo path:$R2 --base-branch origin/develop --no-parent --setup skip --json" "$ORCA_STUB_DIR/calls.log" \
+ && jq -e --arg p "$R2" '.roles.design.extra["acme/web"]|.worktree_id=="extra-1" and .worktree_path==$p and .branch=="tanaka-yui/receipt-probe"' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+ && ok ST142 || fail "ST142 $out"
+multi_teardown
+
+setup; multi_fixture; multi_workers; touch "$ORCA_STUB_DIR/fail-extra-second"
+out=$(multi_start --review-mode on 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$(grep -c 'orchestration task-create' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+ && jq -e '.roles.design_review.extra["acme/web"].worktree_id=="extra-1"' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+ && ok ST143 || fail "ST143 rc=$rc $out"
+multi_teardown
+
+setup; multi_fixture
+out=$(ORCA_FAIL_WRITE_AT=workers-extra-design multi_start 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *KEPT* && "$out" == *extra-1* && "$out" == *"$R2"* && "$out" == *'worktree rm'* ]] \
+ && ! grep -qE 'task-create|worker-start' "$ORCA_STUB_DIR/calls.log" && ok ST143b || fail "ST143b rc=$rc $out"
+multi_teardown
+
+setup; multi_fixture; echo 1 > "$ORCA_STUB_DIR/orchestration_task-create.rc"
+multi_start >/dev/null 2>&1; rm "$ORCA_STUB_DIR/orchestration_task-create.rc"
+out=$(node "$P/bin/orca-start.ts" --slug s --repo-root "$R" --resume 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$(grep -c 'worktree create' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
+ && [[ "$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)" == *"$R2"* ]] && ok ST143c || fail "ST143c rc=$rc $out"
+multi_teardown
+
+setup; multi_fixture; echo 1 > "$ORCA_STUB_DIR/orchestration_task-create.rc"
+out=$(multi_start --on env-1 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] && jq -e '.roles.design.environment=="env-1" and .roles.design.extra["acme/web"].worktree_id=="extra-1"' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+ && ok ST143d || fail "ST143d rc=$rc $out"
+multi_teardown
+
+setup; multi_fixture
+for mode in '' '--resume' '--phase exec'; do
+ node "$P/bin/orca-start.ts" --slug s --repo-root "$R" $mode --repos-file "$REPOS" >/dev/null 2>&1; rc=$?
+ [[ "$rc" -eq 2 ]] && ok "ST144 $mode" || fail "ST144 $mode rc=$rc"
+done
+multi_workers; multi_start --review-mode on --phase-b on >/dev/null 2>&1
+printf '{"status":"done"}' > "$R/.dispatch/s/roles/design/status.json"; echo PLAN > "$R/.dispatch/s/plan.md"
+: > "$ORCA_STUB_DIR/calls.log"
+out=$(node "$P/bin/orca-start.ts" --slug s --repo-root "$R" --phase exec 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] && grep -q 'worktree create --name s-exec-review' "$ORCA_STUB_DIR/calls.log" \
+ && grep -q 'worktree create --name s-exec ' "$ORCA_STUB_DIR/calls.log" \
+ && jq -e '.roles.exec.extra["acme/web"].worktree_id!=null and .roles.exec_review.extra["acme/web"].worktree_id!=null' "$R/.dispatch/s/workers.json" >/dev/null 2>&1 \
+ && ok 'ST144 phase exec' || fail "ST144 phase exec rc=$rc $out"
+multi_teardown
+
+setup; mail_fixture; mail_start >/dev/null 2>&1
+! grep -q 'worktree create' "$ORCA_STUB_DIR/calls.log" \
+ && jq -e 'has("repos")==false and (.roles.design|has("extra")==false)' "$R/.dispatch/s/workers.json" >/dev/null \
+ && ok ST145 || fail ST145
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"
