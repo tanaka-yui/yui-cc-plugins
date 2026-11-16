@@ -149,7 +149,9 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   headRefOid が無い・40〜64 桁の小文字の hex でないときは origin だけで判定する。判定に使った head は計画の
   `pr_head` に書き、readPlan は今の手元の SHA と比べ直す（plan のあとに手元の branch が動けば計画ごと拒む）。
   `plan --pr-saved` と auto は head を読まず origin だけで判定する（PR を作った直後は head branch が origin にある）。
-  merge のあとの push で headRefOid が進むかは未確認（進むなら、一致は merge 済みの証明にならない）。
+  merge のあとの push で headRefOid は進まない（2026-11-17、gh 2.103.0、使い捨てリポジトリの PR を squash merge →
+  head branch へ 1 コミット push → head branch を削除。3 回読んでどの時点も `{"headRefOid":"<merge 時の head>","state":"MERGED"}`
+  のままで、origin の branch は push 後の SHA だった）。merge 済みの PR の headRefOid は merge の時点の head に固定される。
   回帰は test-config.sh の CF53〜54、test-start.sh の ST138〜140、test-cleanup.sh の CL40〜CL57
   （CL40b/c・CL41b・CL43b〜f・CL44b〜d・CL46b・CL47b・CL48b/c・CL53b/c を含む）、test-docs.sh の SK38。
 
