@@ -129,10 +129,15 @@ export const confirmStopped = (statusDir: string): { stopped: boolean; kept: str
       .filter((v): v is string => !!v),
   )
   let listError = 'worker の一覧を読めません'
+  // ★ followUp に端末の持ち主が移った元の dispatch は、release が ownership_transferred の retained を返し続け、
+  //   released にならない（2026-11-16 の実機）。決着した dispatch で、Orca が結びついた資源は無いと言う行も
+  //   止まった証拠にする。端末を持つ followUp の行はこの関数で別に確かめる
   const gone = (row: Json | undefined, data: Json | undefined): boolean =>
     asString(get(data, 'environment'))
       ? get(row, 'projection', 'liveness', 'verdict') === 'exited'
-      : GONE_STATES.includes(releaseState(row))
+      : GONE_STATES.includes(releaseState(row)) ||
+        (dispatchSettled(asString(get(row, 'dispatchStatus')) ?? '') &&
+          get(row, 'projection', 'resource', 'state') === 'absent')
   const list = (): Json[] | null => {
     const response = runOrca(
       ['orchestration', 'worker-list', '--run', id, ...(environments.size ? ['--include-remote'] : []), '--json'],

@@ -589,3 +589,73 @@ test('AU93 remote stop evidence uses exited liveness and rejects partial host er
     }
   }
 })
+
+// 2026-11-16 の実機: worker が受理の返事を --peek で読んだまま worker_done を送り、Orca が followUp を作った。
+// followUp を解放すると、元の dispatch の release は ownership_transferred で retained を返し続け、行は資源 absent のまま
+for (const followUp of ['released', 'retained'])
+  test(`AU102 settled dispatch without a bound resource is stopped once its follow-up is ${followUp}`, () => {
+    const f = setup()
+    try {
+      const file = join(f.issue.statusDir, 'workers.json')
+      const w = JSON.parse(readFileSync(file, 'utf8'))
+      w.roles.design.follow_ups = ['ctx_followup']
+      f.put(file, w)
+      const original = {
+        dispatchId: 'ctx_design',
+        workerState: 'succeeded',
+        dispatchStatus: 'completed',
+        terminalState: null,
+        resource: null,
+        projection: { resource: { state: 'absent', reason: 'not_materialized' } },
+      }
+      f.respond(
+        'orchestration_worker-list',
+        {
+          ok: true,
+          result: { workers: [original, { dispatchId: 'ctx_followup', resource: { releaseState: followUp } }] },
+        },
+        f.orca,
+      )
+      f.respond(
+        'orchestration_worker-show',
+        { ok: true, result: { worker: { state: 'succeeded' }, dispatch: { status: 'completed' } } },
+        f.orca,
+      )
+      f.respond(
+        'orchestration_worker-release',
+        { ok: true, result: { dispatchId: 'ctx_design', state: 'retained', reason: 'ownership_transferred' } },
+        f.orca,
+      )
+      assert.equal(f.clean().ok, followUp === 'released')
+      assert.equal(f.calls(f.orca).includes('worktree rm'), followUp === 'released')
+    } finally {
+      f.cleanup()
+    }
+  })
+test('AU102b an unsettled dispatch without a bound resource is not proof of stopping', () => {
+  const f = setup()
+  try {
+    f.respond(
+      'orchestration_worker-list',
+      {
+        ok: true,
+        result: {
+          workers: [
+            {
+              dispatchId: 'ctx_design',
+              dispatchStatus: 'dispatched',
+              resource: null,
+              projection: { resource: { state: 'absent' } },
+            },
+          ],
+        },
+      },
+      f.orca,
+    )
+    f.respond('orchestration_worker-show', { ok: true, result: { worker: { state: 'active' } } }, f.orca)
+    assert.equal(f.clean().ok, false)
+    assert.ok(!f.calls(f.orca).includes('worktree rm'))
+  } finally {
+    f.cleanup()
+  }
+})
