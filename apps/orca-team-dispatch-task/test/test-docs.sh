@@ -665,6 +665,32 @@ grep -qF '`--auto` ignores `cleanup`' "$S" || bad="$bad [auto-excluded:SKILL]"
 grep -qF '`--auto` は `cleanup` を見ない' "$G" || bad="$bad [auto-excluded:guide]"
 [[ -z "$bad" ]] && ok "SK38 後片付けのモードを両文書が同じ形で書く" || fail "SK38:$bad"
 
+# SK39: 複数リポジトリの能力と制限を英語の正本と日本語訳でそろえる。
+bad=""
+judge_en="$P/skills/orca-team-dispatch-task/references/auto-judge.md"
+judge_ja="$P/skills/orca-team-dispatch-task/references/auto-judge-ja.md"
+for word in 'two target repositories' 'three or more targets go to Ready_Eng' 'in the order of `targets`' 'partial-merge' 'on one machine'; do
+ grep -Fq -- "$word" "$S" || bad="$bad [skill:$word]"
+done
+for word in '2 つまで' '3 つ以上の対象は Ready_Eng' '`targets` の順' 'partial-merge' '同じ 1 台'; do
+ grep -Fq -- "$word" "$G" || bad="$bad [guide:$word]"
+done
+for word in 'three or more must go to engineering' 'dependency order'; do
+ grep -Fq -- "$word" "$judge_en" || bad="$bad [judge:$word]"
+done
+for word in '3 つ以上はエンジニアに回す' '依存の順'; do
+ grep -Fq -- "$word" "$judge_ja" || bad="$bad [judge-ja:$word]"
+done
+for f in "$S" "$judge_en"; do
+ grep -Fq 'until C2b2' "$f" && bad="$bad [stale:$f]"
+done
+for f in "$G" "$judge_ja"; do
+ grep -Fq 'C2b2まで' "$f" && bad="$bad [stale:$f]"
+done
+grep -Fq 'one target repository per Issue' "$S" && bad="$bad [old single-target:skill]"
+grep -Fq 'C2a supports one target repository' "$judge_en" && bad="$bad [old single-target:judge]"
+[[ -z "$bad" ]] && ok 'SK39 複数リポジトリ' || fail "SK39:$bad"
+
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"

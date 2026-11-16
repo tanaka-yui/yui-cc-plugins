@@ -9,7 +9,7 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 承認されたものだけを行う（設定 `cleanup` で、PR を作ったタスクを PR の作成直後か merge のあとに尋ねずに片付けることもできる）。
 
 `--auto` は複数リポジトリのReadyを1本のキューにまとめ、判定・dispatch・PRのmergeまたは確認依頼まで進める。
-`make auto` で1回まわし、report.jsonをSlack側へ渡す。このMacとペアリング済みサーバーへ空き・確認結果で振り分け、メールとoriginへのpushで成果を受け渡す。対象は1件1リポジトリ。
+`make auto` で1回まわし、report.jsonをSlack側へ渡す。このMacとペアリング済みサーバーへ空き・確認結果で振り分け、メールとoriginへのpushで成果を受け渡す。対象は1件2リポジトリまで（3つ以上はReady_Eng）。
 このモードだけは停止・解放とpushを確認してから資源を片付ける。使い方はskillのAuto modeを参照。
 
 ## 範囲と制限

@@ -232,7 +232,7 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 
 ## Auto モード
 
-`--auto` は slack-issue-intake が管理する設定済みリポジトリの優先度キューを1本にまとめる。開いた Ready の Issue のうち、`from-slack` または `slack-thread` を持つものを拾う。キュー内では Ready のままで、dispatch時に動かす。難易度の判定、設定した役の起動、IssueごとのRunの進行、PR作成、条件を満たす変更のmergeまたは確認依頼、後片付けを行う。このMacまたはペアリング済みサーバーへ振り分け（workerの配置は `--on` を使う）、実装対象はIssueごとに1リポジトリ。複数対象の判定は Ready_Eng に回す。
+`--auto` は slack-issue-intake が管理する設定済みリポジトリの優先度キューを1本にまとめる。開いた Ready の Issue のうち、`from-slack` または `slack-thread` を持つものを拾う。キュー内では Ready のままで、dispatch時に動かす。難易度の判定、設定した役の起動、IssueごとのRunの進行、PR作成、条件を満たす変更のmergeまたは確認依頼、後片付けを行う。このMacまたはペアリング済みサーバーへ振り分け（workerの配置は `--on` を使う）、実装対象は Issue ごとに 2 つまでで、両方を同じ 1 台で動かす。3 つ以上の対象は Ready_Eng に回す。
 
 ### 設定と前提
 
@@ -264,7 +264,7 @@ C3の `make setup` はまだ無い。専用checkoutと設定は手で用意し�
 }
 ```
 
-レーンはworktreeの数で数える。off/off、on/off、off/on、on/onはそれぞれ1件で1、2、2、4worktreeを予約し、後から起動する役も含む。持ち主のいないworktreeも使用数に入る。`verified: false` とインフラのリポジトリも実行するが、PRは人の確認が必要。`ci: false` はCIの無いリポジトリだけに設定する。
+レーンはworktreeの数で数える。off/off、on/off、off/on、on/onはそれぞれ1件で1、2、2、4worktreeを予約し、後から起動する役も含む。対象が 2 つの Issue はその倍を予約する。持ち主のいないworktreeも使用数に入る。`verified: false` とインフラのリポジトリも実行するが、PRは人の確認が必要。`ci: false` はCIの無いリポジトリだけに設定する。
 
 
 任意の `hosts` でマシンを選ぶ。無ければ従来の `lanes`、checkoutのパス、リポジトリの確認結果をこのMacの設定として読む。指定した場合は、マシンごとに並列数とリポジトリのselectorを持つ。`id: local` はこのマシン、ペアリング済みサーバーは変わらないenvironment IDで指定する。`orcaBin` はそのマシンの実行ファイル、遠隔のrepo selectorは親のcheckoutではなくそのマシンに登録したリポジトリを指す。各マシンにGit/ghの認証と同じoriginへのアクセスが必要。`verified` はそのマシンのそのリポジトリで確認が通ったことを表し、そこで通ってからtrueにする。例えば設定の最上位へ次の `hosts` を足す:
@@ -290,13 +290,25 @@ C3の `make setup` はまだ無い。専用checkoutと設定は手で用意し�
 }
 ```
 
-使用数は `(host, path)` の組で数え、異なるマシンの同じパスを別のworktreeとして扱う。Issueごとに、空きを調べる前に、設定の全マシンについて対象リポジトリの確認済みマシンがあるか調べる。1台でもあれば確認済みだけに振り分け、今使えるものが無ければそのIssueを待たせ、別リポジトリのIssueは進める。候補の中では空きの割合、同じならlocal、その次に設定順で選ぶ。空きや対象リポジトリの無いマシンは飛ばす。設定のどのマシンでも未確認の場合だけ未確認のマシンで実行でき、必ず In review に回す。空きメモリとディスクの確認はlocalへ入れるときだけ行う。つながらないマシンのIssueは割り当てを保ち、別マシンでやり直さず、そのworker/worktreeも操作しない。上限時間を超えたらマシン名入りのstalledコメントを1回だけ書き、接続が戻ったら従来の完了・上限時間の処理へ戻る。
+使用数は `(host, path)` の組で数え、異なるマシンの同じパスを別のworktreeとして扱う。Issueごとに、空きを調べる前に、設定の全マシンについて全対象リポジトリを確認済みのマシンがあるか調べる。1 台でもあればそのマシンだけに振り分け、今使えるものが無ければそのIssueを待たせ、別リポジトリのIssueは進める。候補の中では空きの割合、同じならlocal、その次に設定順で選ぶ。空きや対象リポジトリのどれかが無いマシンは飛ばす。全対象を確認済みのマシンが設定に無い場合だけ、全対象を持つ未確認のマシンで実行でき、必ず In review に回す。空きメモリとディスクの確認はlocalへ入れるときだけ行う。つながらないマシンのIssueは割り当てを保ち、別マシンでやり直さず、そのworker/worktreeも操作しない。上限時間を超えたらマシン名入りのstalledコメントを1回だけ書き、接続が戻ったら従来の完了・上限時間の処理へ戻る。
 
-新しい `--auto` のdispatchはlocalも含め `transport: mail` を使い、`--on` で選んだマシンともメールで受け渡す。依頼文と計画はtask本文に埋め込み、workerはこのオーケストレーションのプラグインを必要とせず、そのマシンの `orcaBin` を使う。lifecycleのメールにはpreambleの `--task-id`、`--dispatch-id`、`--from` を付け、`--dispatch-capability` が示されていればそれも付ける。heartbeatで進みを更新し、integrationの役はコミットごとに自分のtask branchをoriginへpushする。成果はworktree外に置き、version 1のJSON封筒の `nonce`、`branch`、`head`、値が文字列の `files` で返す。上限はUTF-8で262144バイト。全役が `result.md`、計画だけのdesignはさらに `plan.md` と `plan-result.json`、integrationの役は `auto-result.json` を返す。依頼は `review/plan-round-<n>-request.md` または `review/code-round-<n>-request.md`、レビュー役は `review/plan-round-<n>-findings.md` または `review/code-round-<n>-findings.md` を使い、ラウンドは1〜99。それ以外の名前は拒否する。
+新しい `--auto` のdispatchはlocalも含め `transport: mail` を使い、`--on` で選んだマシンともメールで受け渡す。依頼文と計画はtask本文に埋め込み、workerはこのオーケストレーションのプラグインを必要とせず、そのマシンの `orcaBin` を使う。lifecycleのメールにはpreambleの `--task-id`、`--dispatch-id`、`--from` を付け、`--dispatch-capability` が示されていればそれも付ける。heartbeatで進みを更新し、integrationの役はコミットごとに自分のtask branchをoriginへpushする。成果はworktree外に置く。1 対象の worker は version 1 のJSON封筒の `nonce`、`branch`、`head`、値が文字列の `files` で返す。上限はUTF-8で262144バイト。全役が `result.md`、計画だけのdesignはさらに `plan.md` と `plan-result.json`、integrationの役は `auto-result.json` を返す。依頼は `review/plan-round-<n>-request.md` または `review/code-round-<n>-request.md`、レビュー役は `review/plan-round-<n>-findings.md` または `review/code-round-<n>-findings.md` を使い、ラウンドは1〜99。それ以外の名前は拒否する。
 
 親は記録のブランチとpush済みintegration HEADを照合し、許す成果だけを書き出し、返事より先に `accepting` を記録する。配送を確認できたら `accepted` にし、配送が不明ならworkerのinboxを確かめてから再送の可否を決め、重複した受理がfollow-upを起こすのを防ぐ。workerは受理または差し戻しを待ってから成功を報告する。作業そのものの失敗は、結果と環境による失敗の詳細を含む同じ封筒をfailedの `worker_done` に載せて直接報告する。前世代のコメントとCIは信用しない `Continuation material (JSON)` に入れ、JSONを壊さず20000文字以内にする。親が組み立てたresetの手順は分けておく。
 
 割り当てたレビュー役とは、依頼とfindingsを親を通してメールで往復する。Orcaは遠くのworkerが別のdispatchへ宛てたsendを拒むので、workerは `--to` を付けずに送り、親の待機が依頼・判定・終了の知らせを対の役へ転送する。決着したdispatchへは転送せず、届けられない依頼には `review-unavailable:` を返し、転送したメールを記録してbatchを読み直しても二重に送らない。1回の転送ごとに次のtickを待つので、レビューありのIssueには長めの上限時間が要る。コードの依頼は `branch:`、`head:`、`base:` を持ち、レビュー役はそのoriginのブランチをfetchし、`FETCH_HEAD` と依頼のheadを照合し、自分のHEADを動かさず差分を読む。仕上げは実装結果だけでなく、全レビュー役の最後のverdictと、計画だけの段の `plan-result.json` も読む。結果が無い・承認で終わっていないレビュー、計画の判断・未解消・不採用の指摘があれば In review に回す。
+
+### 対象が 2 つのリポジトリ
+
+1 つの役が対象リポジトリごとに 1 つの worktree を持つ。親はその役を起こす前に、選んだマシンへ 2 つ目の worktree を作る。status dir と Run の記録は 1 つ目の対象の checkout に置く。
+
+両方の対象を確認済みのマシンがあれば、そのマシンだけを候補にする。無ければ両方を持つマシンで実行し、人の確認に回す。両方を同じ 1 台で動かし、worktree は役の数 × 2 を予約する。dirty の確認と既定 branch の用意は各 checkout で行い、local の配置では両方の空きディスクの最小値を使う。
+
+2 対象の worker は同じサイズ上限の版 2 の封筒を返し、`heads` にリポジトリごとの repo・branch・head を入れる。親は各 branch と、integration の各 push 済み head を照合してから受理する。コードレビューの依頼にはリポジトリごとの `repo:` / `branch:` / `head:` / `base:` の組を並べ、レビュー役はそれぞれを自分の worktree で調べる。1 対象と `repos` の無い記録は従来の手順を維持する。
+
+PR はリポジトリごとに 1 つ作り、まだ無い PR だけを再試行する。すべての PR が検査・レビュー・CI・衝突の確認を満たしてから、判定の `targets` の順（依存の順）で merge する。一部が merge 済みになったあとで失敗したら、merge 済みと未 merge の PR を並べた `partial-merge` コメントを書き、In review に回す。残りの merge は人が行う。
+
+後片付けは (役, リポジトリ) ごとに行う。merge 済みとして扱うのは、そのリポジトリの integration branch だけで、それ以外は各リポジトリの保存の確認に従う。人が操作したと検出された役は、両方の worktree を残す。
 
 ### 1回まわす、キューを判定する
 
@@ -1289,7 +1301,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | --autoの持ち主のいないworktreeはSlackの定期報告で区別できない | tickのstdoutが名指しし、hosts[].usedには数として含まれる |
 | --autoはworker_doneを失った役を決着できない | --max-waits 1では猶予の時計が毎回初期化されるため、上限時間でFailedになる。Runと退避した記録を調べる |
 | --autoはdispatchごとに遠隔の空きメモリやディスクを測らない | マシンの設定のlanesに頼る。localへ入れるときは両方を確認する |
-| --autoの実装対象はIssueごとに1リポジトリ | C2b2までは複数対象をReady_Engに回す |
+| --auto の実装対象は Issue ごとに 2 リポジトリまで、同じ 1 台で動かす | 3 つ以上の対象は Ready_Eng に回す。途中の merge 失敗は partial-merge コメントと In review にし、残りは人が merge する |
 | --autoのmailの役はレビュー後も `review=unreviewed` と出ることがあり、遠隔役は `orca-recover.ts` で置き換えない | メールには `sent.json` が無いため、仕上げは返されたverdictと計画の結果を読む。遠隔役はOrcaで調べる |
 | --autoは遠隔での人の操作や未コミットの変更を確実には検出できない | forceで消すとその変更は失われうる。localのuser-ownershipの保護を遠隔worktreeには期待しない |
 | --autoの大きな封筒はLinuxサーバーでは未確認 | OSが大きい引数を拒んだら、workerには120000バイト未満へ要約して再送するよう指示する |
