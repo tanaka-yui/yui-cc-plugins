@@ -13,7 +13,15 @@ import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
 import { materialize, parseEnvelope } from '../lib/mail-artifacts.ts'
-import { orcaBin, receiptOk, runOrca, workerState, workerStateClass, workerTerminal } from '../lib/orca.ts'
+import {
+  dispatchSettled,
+  orcaBin,
+  receiptOk,
+  runOrca,
+  workerState,
+  workerStateClass,
+  workerTerminal,
+} from '../lib/orca.ts'
 import { fetchBranch, remoteHead } from '../lib/remote-branch.ts'
 import { envCount, nowSeconds, runNode, sleepSeconds } from '../lib/sys.ts'
 
@@ -483,15 +491,10 @@ const verifyRole = (statusDir: string, role: string): string => {
 // 移植元の理由（bin/orca-wait.sh）:
 // ★ **相 4a / 4b。**受理も差し戻しも **同じ active な Dispatch** へ返す。別の宛先へ送ると
 //   worker は待ち続ける。
-const replyCompletion = (
-  state: State,
-  dispatch: string,
-  nonce: string,
-  accepted: boolean,
-  body: string,
-  mail = false,
-): boolean | string => {
-  const subject = `${accepted ? 'completion-accepted' : 'completion-remediation'}: ${nonce}`
+// 親から dispatch へ status を 1 通送り、確かめられた message id を返す（確かめられなければ ''）。
+// ★ 遠くの dispatch への send は `result.message` を持たず、--full では `result.relay.messageId`（relay_*）を返す
+//   （2026-11-16 の実機。届いた受理を「確かめられない」と読んで 2 通送った。親の手での転送で生の返り値を写した）
+const sendMail = (state: State, dispatch: string, subject: string, body: string): string => {
   const sent = runOrca([
     'orchestration',
     'send',
@@ -507,14 +510,36 @@ const replyCompletion = (
     state.expected.parent,
     '--json',
   ])
-  // ★ 遠くの dispatch への send は `result.message` を持たず、--full では `result.relay.messageId`（relay_*）を返す
-  //   （2026-11-16 の実機で届いた受理を「確かめられない」と読んで 2 通送った。形は Orca 1.4.257 の CLI の整形部で確かめた。
-  //   簡潔表示の `result.messageId` は runOrca が --full を付けるので来ない）
-  return mail
-    ? receiptOk(sent)
-      ? string(get(sent.json, 'result', 'message', 'id')) || string(get(sent.json, 'result', 'relay', 'messageId'))
-      : ''
-    : sent.rc === 0
+  return receiptOk(sent)
+    ? string(get(sent.json, 'result', 'message', 'id')) || string(get(sent.json, 'result', 'relay', 'messageId'))
+    : ''
+}
+const replyCompletion = (
+  state: State,
+  dispatch: string,
+  nonce: string,
+  accepted: boolean,
+  body: string,
+  mail = false,
+): boolean | string => {
+  const subject = `${accepted ? 'completion-accepted' : 'completion-remediation'}: ${nonce}`
+  if (mail) return sendMail(state, dispatch, subject, body)
+  const sent = runOrca([
+    'orchestration',
+    'send',
+    '--to',
+    `dispatch:${dispatch}`,
+    '--type',
+    'status',
+    '--subject',
+    subject,
+    '--body',
+    body,
+    '--from',
+    state.expected.parent,
+    '--json',
+  ])
+  return sent.rc === 0
 }
 // ★ 配送と起床は別の事実。起床の失敗で配送や batch の結末を覆さない。
 // 移植元の理由（bin/orca-wait.sh）:
@@ -793,6 +818,58 @@ const mailOffer = (state: State, entry: Entry, nonce: string, body: string): 0 |
   wakeRole(entry.statusDir, entry.role)
   return 0
 }
+// ★ 遠くの worker（federated dispatch）は `--to` 付きの send を「Federated Dispatch messages route to their Run home」で
+//   拒まれ、レビュー役へ直接送れない（2026-11-16 の実機。計画のレビューが付かず、レビュー役が待ち続けた）。mail の役は
+//   レビューのメールを --to 無しで親へ送り、ここが対の役へ転送する。送り主は payload.dispatchId だけで引く（遠くの
+//   from_handle は当てにならない）。決着した dispatch へは送らない — Orca が followUp の worker を起こす。届けられない
+//   依頼には review-unavailable を返す（依頼側は上限時間まで待たずに「レビューなし」で進む）。転送した message id は
+//   relayed.json に残し、batch を読み直しても二重に送らない。生きた相手への転送に失敗したときだけ batch を残す
+const REVIEW_RELAY = /^(review-request|review-verdict|abort-reviewer|review-skipped):/
+const REVIEW_PAIR: Record<string, string> = {
+  design: 'design_review',
+  design_review: 'design',
+  exec: 'exec_review',
+  exec_review: 'exec',
+}
+const relayReview = (state: State, sender: Entry, message: JsonObject): boolean => {
+  const id = string(message.id)
+  const subject = string(message.subject)
+  const file = `roles/${sender.role}/relayed.json`
+  const done = (array(read(sender.statusDir, file)) ?? []).map((v) => string(v))
+  if (id && done.includes(id)) return true
+  const target = string(
+    get(read(sender.statusDir, 'workers.json'), 'roles', REVIEW_PAIR[sender.role] ?? '', 'dispatch'),
+  )
+  let live = false
+  if (target) {
+    const shown = runOrca(['orchestration', 'worker-show', '--dispatch', target, '--json'])
+    if (!receiptOk(shown)) {
+      log(NAME, `cannot read dispatch ${target} to forward '${subject}'; the batch is not acknowledged`)
+      return false
+    }
+    live = !dispatchSettled(string(get(shown.json, 'result', 'dispatch', 'status')))
+  }
+  if (live) {
+    if (!sendMail(state, target, subject, string(message.body))) {
+      log(
+        NAME,
+        `could not forward '${subject}' from ${sender.role} to dispatch ${target}; the batch is not acknowledged`,
+      )
+      return false
+    }
+    log(NAME, `forwarded '${subject}' from ${sender.role} to dispatch ${target}`)
+  } else if (subject.startsWith('review-request:')) {
+    const unavailable = `review-unavailable: ${subject.slice('review-request:'.length).trim()}`
+    if (!sendMail(state, sender.dispatch, unavailable, 'the reviewer is not running; review was not delivered')) {
+      log(NAME, `could not tell ${sender.role} that review is unavailable; the batch is not acknowledged`)
+      return false
+    }
+    log(NAME, `no running reviewer for ${sender.role}; answered '${unavailable}'`)
+  } else log(NAME, `no running counterpart for ${sender.role}; '${subject}' was not forwarded`)
+  if (id === '') return true
+  mkdirSync(join(sender.statusDir, 'roles', sender.role), { recursive: true })
+  return write(sender.statusDir, file, [...done, id])
+}
 const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
   let result = pendingBatch(state)
   if (result !== null) {
@@ -889,6 +966,15 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
       ) {
         write(heartbeatSender.statusDir, `roles/${heartbeatSender.role}/heartbeat.json`, { at: nowSeconds() })
         log(NAME, `${heartbeatSender.role} heartbeat: ${string(message.subject).slice('heartbeat:'.length).trim()}`)
+        continue
+      }
+      const relaySender = dispatchId ? state.expected.entries.find((entry) => entry.dispatch === dispatchId) : undefined
+      if (
+        relaySender &&
+        REVIEW_RELAY.test(string(message.subject)) &&
+        get(read(relaySender.statusDir, 'workers.json'), 'transport') === 'mail'
+      ) {
+        if (!relayReview(state, relaySender, message)) return 2
         continue
       }
       const who =

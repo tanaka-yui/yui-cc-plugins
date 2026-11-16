@@ -34,7 +34,8 @@ ${planning ? 'PLAN ONLY. Do not implement anything and commit nothing. Write a c
   if (input.reviewer) files.push(`review/${prefix}-round-<n>-request.md`)
   if (input.reviewOf) files.push(`review/${input.reviewOf}-round-<n>-findings.md`)
   const review = input.reviewer
-    ? `Before finishing, obtain review from dispatch:${input.reviewer}.
+    ? `Before finishing, obtain review from your assigned reviewer. Review mail goes through your
+coordinator: omit --to, and the coordinator forwards it to the reviewer and back.
 For each round, put the full plan text (plan review) or the code change description (code
 review) in a request file. ${
         prefix === 'code'
@@ -46,18 +47,19 @@ Then describe the changes so the reviewer can inspect that exact commit.`
           : ''
       }
 Send the request:
-${orca} orchestration send --to dispatch:${input.reviewer} --type status --from <handle> --subject "review-request: ${prefix} round <n> reply-to dispatch:<your dispatch id>" --body "$(cat <request file>)" --json
-Wait using step 6 for review-verdict: ${prefix} round <n>. Ignore earlier rounds returned
+${orca} orchestration send --type status <ids> --subject "review-request: ${prefix} round <n>" --body "$(cat <request file>)" --json
+Wait using step 6 for review-verdict: ${prefix} round <n> or review-unavailable: ${prefix} round <n>. Ignore earlier rounds returned
 by --peek. Only the last VERDICT line exactly reading VERDICT: approved is approval.
 Revise on needs_work, up to ${input.reviewRounds} rounds. At the limit, stop revising and
 record every unresolved and declined finding with its reason in result.md${input.integration ? ' and auto-result.json review.unresolved / review.declined' : planning ? ' and plan-result.json review.unresolved / review.declined' : ''}.
-If sending fails, review was not delivered: record review unavailable in result.md${input.integration ? ' and review.unresolved in auto-result.json' : planning ? ' and review.unresolved in plan-result.json' : ''}, then continue.
+If sending fails or review-unavailable arrives, review was not delivered: record review unavailable in result.md${input.integration ? ' and review.unresolved in auto-result.json' : planning ? ' and review.unresolved in plan-result.json' : ''}, then continue.
 When review is finished, release the reviewer:
-${orca} orchestration send --to dispatch:${input.reviewer} --type status --from <handle> --subject "abort-reviewer: done" --body "the work is finished" --json`
+${orca} orchestration send --type status <ids> --subject "abort-reviewer: done" --body "the work is finished" --json`
     : input.reviewOf
       ? `Wait using step 6 for review-request: ${input.reviewOf} or abort-reviewer:.
 For each new round, read the request body. Ignore rounds you already answered, even when
---peek returns them again. The subject's reply-to dispatch:<id> is the requester's address.
+--peek returns them again. Review mail goes through your coordinator: omit --to, and the
+coordinator forwards it to the requester.
 ${
   input.reviewOf === 'code'
     ? `Read branch:, head:, and base: afresh each round. Run git fetch origin +refs/heads/<branch>,
@@ -69,7 +71,7 @@ it with git worktree remove --force <tmp> before finishing; keep your own HEAD u
     : 'Read the entire plan in the request body.'
 }
 Write concrete findings and end with VERDICT: approved or VERDICT: needs_work. Send:
-${orca} orchestration send --to dispatch:<requester dispatch id> --type status --from <handle> --subject "review-verdict: ${input.reviewOf} round <n>" --body "$(cat <findings file>)" --json
+${orca} orchestration send --type status <ids> --subject "review-verdict: ${input.reviewOf} round <n>" --body "$(cat <findings file>)" --json
 Keep waiting in this turn. On abort-reviewer:, include all findings and result.md in your
 envelope and proceed to step 5.`
       : ''

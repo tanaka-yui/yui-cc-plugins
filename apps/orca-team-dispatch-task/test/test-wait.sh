@@ -1734,6 +1734,40 @@ echo '{"ok":true,"result":{"messages":[{"id":"relay_r","subject":"completion-acc
 out=$(w 1 2>&1); rc=$?
 [[ "$rc" -eq 3 && "$(jq -r .phase "$SD/roles/design/completion.json")" == accepted ]] && grep -q 'orchestration inbox --environment env-1 ' "$ORCA_STUB_DIR/calls.log" && ! grep -q 'orchestration send' "$ORCA_STUB_DIR/calls.log" && ok 'WT170b remote inbox is read on its environment' || fail "WT170b $rc $out"
 mail_teardown
+# WT171: 遠くの worker は --to 付きの send を拒まれる（federated dispatch）。レビューのメールは親が相手へ転送する
+relay_setup() {
+ mail_setup
+ jq '.roles.design_review={agent:"codex",dispatch:"ctx_r",task:"task_r",terminal:"term_r"}' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+ echo '{"ok":true,"result":{"dispatch":{"status":"dispatched"},"worker":{"state":"active"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
+}
+relay_message() { # <subject> <dispatchId or empty>
+ jq -nc --arg s "$1" --arg d "$2" '{ok:true,result:{runId:"run_x",deliveryId:"mail_batch",messages:[{id:"mail_rr",type:"status",from_handle:"term_x",subject:$s,body:"round body",payload:(if $d=="" then null else {taskId:"task_x",dispatchId:$d} end)}]}}' > "$ORCA_STUB_DIR/orchestration_check"
+}
+relay_setup; relay_message 'review-request: plan round 1' ctx_x; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 ]] && grep -q 'orchestration send --to dispatch:ctx_r --type status --subject review-request:' "$ORCA_STUB_DIR/calls.log" && jq -e 'index("mail_rr")' "$SD/roles/design/relayed.json" >/dev/null 2>&1 && ok 'WT171 review request is forwarded to the reviewer' || fail "WT171 $rc $out"
+w 1 >/dev/null 2>&1
+[[ "$(grep -c 'send --to dispatch:ctx_r .*review-request:' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] && ok 'WT171 forwarded once across re-reads' || fail 'WT171 duplicate forward'
+mail_teardown
+relay_setup; relay_message 'review-verdict: plan round 1' ctx_r; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 ]] && grep -q 'orchestration send --to dispatch:ctx_x --type status --subject review-verdict:' "$ORCA_STUB_DIR/calls.log" && ok 'WT171b verdict is forwarded to the requester' || fail "WT171b $rc $out"
+mail_teardown
+relay_setup; relay_message 'review-request: plan round 1' ctx_x
+echo '{"ok":true,"result":{"dispatch":{"status":"completed"},"worker":{"state":"succeeded"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 ]] && ! grep -q 'send --to dispatch:ctx_r' "$ORCA_STUB_DIR/calls.log" && grep -q 'send --to dispatch:ctx_x --type status --subject review-unavailable:' "$ORCA_STUB_DIR/calls.log" && ok 'WT171c a finished reviewer gets nothing; the requester hears review-unavailable' || fail "WT171c $rc $out"
+mail_teardown
+relay_setup; relay_message 'abort-reviewer: done' ctx_x
+echo '{"ok":true,"result":{"dispatch":{"status":"completed"},"worker":{"state":"succeeded"}}}' > "$ORCA_STUB_DIR/orchestration_worker-show"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 ]] && ! grep -q 'orchestration send' "$ORCA_STUB_DIR/calls.log" && jq -e 'index("mail_rr")' "$SD/roles/design/relayed.json" >/dev/null 2>&1 && ok 'WT171d mail for a finished counterpart is recorded and dropped' || fail "WT171d $rc $out"
+mail_teardown
+relay_setup; relay_message 'review-request: plan round 1' ctx_x; echo 1 > "$ORCA_STUB_DIR/orchestration_send.rc"
+out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 4 && ! -f "$SD/roles/design/relayed.json" ]] && ! grep -q -- '--ack mail_batch' "$ORCA_STUB_DIR/calls.log" && ok 'WT171e a failed forward keeps the batch' || fail "WT171e $rc $out"
+mail_teardown
+relay_setup; relay_message 'review-request: plan round 1' ''; out=$(w 1 2>&1); rc=$?
+[[ "$rc" -eq 3 ]] && ! grep -q 'orchestration send' "$ORCA_STUB_DIR/calls.log" && ok 'WT171f without payload.dispatchId the message is only a note' || fail "WT171f $rc $out"
+mail_teardown
 mail_setup; mail_message
 mkdir "$SD/roles/design/completion.json"
 out=$(w 1 2>&1); rc=$?

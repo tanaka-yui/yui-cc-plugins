@@ -39,9 +39,7 @@ test('MS4 nonintegration roles receive no push step', () =>
 test('MS5/6/7 completion uses preamble identity, terminal peeks, and failure envelope', () => {
   const spec = renderMailSpec(input({ reviewer: 'ctx_r' }))
   for (const text of [
-    'dispatch:ctx_r',
     'review-request: plan',
-    'reply-to dispatch:',
     '--task-id <task id> --dispatch-id <dispatch id> --from <handle>',
     '--outcome failed',
     '--body "$(cat <envelope file>)"',
@@ -96,4 +94,25 @@ test('MS11 every role reads its mail without --peek before worker_done', () => {
     assert.ok(spec.includes('Never send worker_done while mail is unread'))
     assert.ok(spec.includes('If that check returns mail you have not acted on'))
   }
+})
+// 2026-11-16 の実機: 遠くの worker（federated dispatch）は --to を付けた send を「Federated Dispatch messages route to
+// their Run home」で拒まれ、レビュー役へ直接送れなかった。レビューのメールは --to 無しで親へ送り、親が相手へ転送する
+test('MS12 review mail goes through the coordinator without --to, and review-unavailable ends the wait', () => {
+  const requester = renderMailSpec(input({ role: 'design', planOnly: true, integration: false, reviewer: 'ctx_r' }))
+  const reviewer = renderMailSpec(input({ role: 'exec_review', reviewOf: 'code', integration: false }))
+  for (const spec of [requester, reviewer]) {
+    assert.ok(!spec.includes('--to dispatch:'), 'no direct worker-to-worker address')
+    assert.ok(!spec.includes('reply-to'))
+    assert.ok(spec.includes('omit --to'))
+  }
+  for (const text of [
+    'orchestration send --type status <ids> --subject "review-request: plan round <n>"',
+    'orchestration send --type status <ids> --subject "abort-reviewer: done"',
+    'review-unavailable: plan round <n>',
+  ])
+    assert.ok(requester.includes(text), text)
+  assert.ok(
+    reviewer.includes('orchestration send --type status <ids> --subject "review-verdict: code round <n>"'),
+    'verdict via coordinator',
+  )
 })

@@ -292,7 +292,7 @@ C3の `make setup` はまだ無い。専用checkoutと設定は手で用意し�
 
 親は記録のブランチとpush済みintegration HEADを照合し、許す成果だけを書き出し、返事より先に `accepting` を記録する。配送を確認できたら `accepted` にし、配送が不明ならworkerのinboxを確かめてから再送の可否を決め、重複した受理がfollow-upを起こすのを防ぐ。workerは受理または差し戻しを待ってから成功を報告する。作業そのものの失敗は、結果と環境による失敗の詳細を含む同じ封筒をfailedの `worker_done` に載せて直接報告する。前世代のコメントとCIは信用しない `Continuation material (JSON)` に入れ、JSONを壊さず20000文字以内にする。親が組み立てたresetの手順は分けておく。
 
-割り当てたレビュー役とは依頼とfindingsをメールで往復する。コードの依頼は `branch:`、`head:`、`base:` を持ち、レビュー役はそのoriginのブランチをfetchし、`FETCH_HEAD` と依頼のheadを照合し、自分のHEADを動かさず差分を読む。仕上げは実装結果だけでなく、全レビュー役の最後のverdictと、計画だけの段の `plan-result.json` も読む。結果が無い・承認で終わっていないレビュー、計画の判断・未解消・不採用の指摘があれば In review に回す。
+割り当てたレビュー役とは、依頼とfindingsを親を通してメールで往復する。Orcaは遠くのworkerが別のdispatchへ宛てたsendを拒むので、workerは `--to` を付けずに送り、親の待機が依頼・判定・終了の知らせを対の役へ転送する。決着したdispatchへは転送せず、届けられない依頼には `review-unavailable:` を返し、転送したメールを記録してbatchを読み直しても二重に送らない。1回の転送ごとに次のtickを待つので、レビューありのIssueには長めの上限時間が要る。コードの依頼は `branch:`、`head:`、`base:` を持ち、レビュー役はそのoriginのブランチをfetchし、`FETCH_HEAD` と依頼のheadを照合し、自分のHEADを動かさず差分を読む。仕上げは実装結果だけでなく、全レビュー役の最後のverdictと、計画だけの段の `plan-result.json` も読む。結果が無い・承認で終わっていないレビュー、計画の判断・未解消・不採用の指摘があれば In review に回す。
 
 ### 1回まわす、キューを判定する
 

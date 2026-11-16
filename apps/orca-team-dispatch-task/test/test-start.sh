@@ -1606,6 +1606,7 @@ HOOK
 chmod +x "$ORCA_STUB_DIR/orchestration_worker-start.hook"
 out=$(mail_start --review-mode on --on env-1 2>&1); rc=$?
 l=$(grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | tail -1)
-[[ "$rc" -eq 0 && "$l" == *'dispatch:ctx_mail_1'* ]] && ok ST137 || fail "ST137 $out"; teardown
+# 2026-11-16 から、レビューのメールは親を通す（遠くの worker は --to 付きの send を拒まれる）。宛先は指示文に書かない
+[[ "$rc" -eq 0 && "$l" == *'review-request: plan round'* && "$l" != *'--to dispatch:'* ]] && ok ST137 || fail "ST137 $out"; teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
