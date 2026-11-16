@@ -211,4 +211,50 @@ pr --repo o/r >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 ]] && ghlog | grep -q 'pr create' \
   && ok "PR16 pr の dispatch は PR を作る" || fail "PR16 (rc=$rc)"; teardown
 
+
+# PR17-19: --repo ごとに checkout・branch・base と結果ファイルを選ぶ。
+multi_pr_fixture() {
+ R2="$W/repo2"; REMOTE2="$W/remote2.git"
+ git init -q --bare -b develop "$REMOTE2"; git init -q -b develop "$R2"
+ echo second > "$R2/file"; git -C "$R2" add file
+ git -C "$R2" -c user.email=t@e -c user.name=t commit -qm seed
+ git -C "$R2" remote add origin "$REMOTE2"; git -C "$R2" push -q origin develop
+ git -C "$R2" checkout -qb work2
+ echo change > "$R2/change"; git -C "$R2" add change
+ git -C "$R2" -c user.email=t@e -c user.name=t commit -qm change
+ git -C "$R2" checkout -q develop
+ jq --arg r "$R" --arg r2 "$R2" '.repos=[{repo:"acme/api",checkout:$r,host_repo:("path:"+$r),base_branch:"origin/main",integration_branch:"main"},{repo:"acme/web",checkout:$r2,host_repo:("path:"+$r2),base_branch:"origin/develop",integration_branch:"develop"}] | .roles.design.extra={"acme/web":{worktree_id:"extra",worktree_path:$r2,branch:"work2"}}' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+ printf 'https://github.com/acme/web/pull/2\n' > "$GH_STUB_DIR/pr_create"
+}
+setup; multi_pr_fixture
+out=$(pr --repo acme/web 2>&1); rc=$?
+[[ "$rc" -eq 0 && ! -e "$SD/integration-result.json" ]] \
+ && jq -e '.repo=="acme/web" and .branch=="work2" and .base=="develop" and .pr_url=="https://github.com/acme/web/pull/2"' "$SD/integration-result.acme--web.json" >/dev/null 2>&1 \
+ && [[ "$(git --git-dir="$REMOTE2" rev-parse refs/heads/work2 2>/dev/null)" == "$(git -C "$R2" rev-parse work2)" ]] \
+ && grep -q 'pr create --repo acme/web --base develop --head work2' "$GH_STUB_DIR/calls.log" \
+ && ok PR17 || fail "PR17 rc=$rc $out"
+teardown
+
+for invalid in missing malformed; do
+ setup; multi_pr_fixture
+ repo=acme/missing
+ if [[ "$invalid" == malformed ]]; then jq '.repos=[]' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"; repo=acme/web; fi
+ out=$(pr --repo "$repo" 2>&1); rc=$?
+ [[ "$rc" -eq 1 && -z "$(find "$SD" -name 'integration-result*.json' -print)" && ! -s "$GH_STUB_DIR/calls.log" ]] \
+  && ok "PR18 $invalid" || fail "PR18 $invalid rc=$rc $out"
+ teardown
+done
+
+setup; multi_pr_fixture
+echo '{"pr_url":"https://github.com/acme/api/pull/1"}' > "$SD/integration-result.acme--api.json"
+out=$(pr --repo acme/web 2>&1); rc=$?
+[[ "$rc" -eq 0 && -s "$SD/integration-result.acme--web.json" ]] && grep -q 'pr create' "$GH_STUB_DIR/calls.log" \
+ && ok 'PR19 creates missing repository' || fail "PR19 create rc=$rc $out"
+: > "$GH_STUB_DIR/calls.log"
+out=$(pr --repo acme/web 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *'https://github.com/acme/web/pull/2'* && ! -s "$GH_STUB_DIR/calls.log" ]] \
+ && ok 'PR19 reuses repository result' || fail "PR19 reuse rc=$rc $out"
+teardown
+
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

@@ -4,7 +4,8 @@
 // ★ --repo は呼び出し側が決める。remote を自分で推測すると fork に成果を送る事故になる。
 import { die, log } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
-import { asArray, asString, get, parseJson } from '../lib/json.ts'
+import { asArray, asObject, asString, get, parseJson } from '../lib/json.ts'
+import { repoTargets, resultFileOf, roleWorktrees } from '../lib/multi-repo.ts'
 import { run, which } from '../lib/sys.ts'
 
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -33,8 +34,8 @@ const persist = (
     repo?: string
   },
 ): boolean => writeAtomic(file, `${JSON.stringify(valueToWrite)}\n`)
-const stop = (statusDir: string, reason: string): number => {
-  persist(join(statusDir, 'integration-result.json'), { merged: false, reason })
+const stop = (file: string, reason: string): number => {
+  persist(file, { merged: false, reason })
   log(NAME, reason)
   return 1
 }
@@ -112,46 +113,61 @@ const main = (argv: string[]): number => {
     die(NAME, `cannot read the dispatch state in ${statusDir}`)
   }
   if (which('gh') === null) die(NAME, 'gh is not installed')
-  const workers = readJson(workersFile)
+  const workers = asObject(readJson(workersFile))
   // ★ merge と決めた dispatch で PR を作らない。記録を汚さず止める。
   if (get(workers, 'integration') === 'merge') {
     log(NAME, 'this dispatch was started to merge; use orca-merge.ts instead')
     return 1
   }
-  const prior = value(join(statusDir, 'integration-result.json'), 'pr_url')
+  const repoRoot = value(runFile, 'repo_root')
+  const targets = repoTargets(workers, repoRoot)
+  if (!targets.length) {
+    log(NAME, 'the dispatch record lists no repository')
+    return 1
+  }
+  const multi = targets.length > 1
+  const selected = multi ? targets.find((t) => t.repo === repo) : targets[0]
+  if (!selected) {
+    log(NAME, `the dispatch record lists no repository for ${repo}`)
+    return 1
+  }
+  const integrationFile = resultFileOf(statusDir, multi ? repo : null)
+  const prior = value(integrationFile, 'pr_url')
   if (prior !== '') {
     log(NAME, 'a pull request is already recorded for this dispatch')
     process.stdout.write(`${prior}\n`)
     return 0
   }
-  const root = value(runFile, 'repo_root')
-  if (root === '') return stop(statusDir, 'no repository identity recorded')
+  const root = multi ? selected.checkout : repoRoot
+  if (root === '') return stop(integrationFile, 'no repository identity recorded')
   const role = value(workersFile, 'integration_role')
-  if (role === '') return stop(statusDir, 'no integration role recorded; refusing to guess')
-  const branch = asString(get(workers, 'roles', role, 'branch')) ?? ''
-  if (branch === '') return stop(statusDir, `no branch recorded for role '${role}'; refusing to guess`)
-  const base = value(workersFile, 'integration_branch')
-  if (base === '') return stop(statusDir, 'no base branch recorded; refusing to guess')
+  if (role === '') return stop(integrationFile, 'no integration role recorded; refusing to guess')
+  const branch = multi
+    ? (roleWorktrees(workers, repoRoot, role).find((w) => w.repo === repo)?.branch ?? '')
+    : (asString(get(workers, 'roles', role, 'branch')) ?? '')
+  if (branch === '') return stop(integrationFile, `no branch recorded for role '${role}'; refusing to guess`)
+  const base = multi ? selected.integrationBranch : value(workersFile, 'integration_branch')
+  if (base === '') return stop(integrationFile, 'no base branch recorded; refusing to guess')
   const status = value(join(statusDir, 'roles', role, 'status.json'), 'status')
-  if (status !== 'done') return stop(statusDir, `the worker status is '${status || 'missing'}', not done`)
+  if (status !== 'done') return stop(integrationFile, `the worker status is '${status || 'missing'}', not done`)
   const resultFile = join(statusDir, 'roles', role, 'result.md')
-  if (!nonempty(resultFile)) return stop(statusDir, 'result.md is missing or empty')
+  if (!nonempty(resultFile)) return stop(integrationFile, 'result.md is missing or empty')
   if (git(root, 'show-ref', '--quiet', `refs/heads/${branch}`).rc !== 0)
-    return stop(statusDir, `branch ${branch} does not exist`)
+    return stop(integrationFile, `branch ${branch} does not exist`)
   if (git(root, 'rev-parse', '--quiet', '--verify', `refs/heads/${base}`).rc === 0) {
     const count = git(root, 'rev-list', '--count', `refs/heads/${base}..refs/heads/${branch}`)
     if (count.rc !== 0 || count.stdout.trim() === '' || count.stdout.trim() === '0') {
-      return stop(statusDir, `branch ${branch} has no commits that ${base} does not already have`)
+      return stop(integrationFile, `branch ${branch} has no commits that ${base} does not already have`)
     }
   }
   if (git(root, 'ls-remote', '--exit-code', '--heads', remote, base).rc !== 0) {
     return stop(
-      statusDir,
+      integrationFile,
       `the base branch ${base} does not exist on ${remote}; push it first, or dispatch from a branch that is already there`,
     )
   }
   if (git(root, 'push', remote, `refs/heads/${branch}:refs/heads/${branch}`).rc !== 0) {
-    return stop(statusDir, `could not push ${branch} to ${remote}; no pull request was created`)
+    return stop(integrationFile, `could not push ${branch} to ${remote}; no pull request was created`)
   }
 
   const firstLine = textFile(join(statusDir, 'request.md')).split('\n')[0] ?? ''
@@ -167,7 +183,7 @@ const main = (argv: string[]): number => {
     writeFileSync(join(temporary, 'body.md'), body)
   } catch {
     if (temporary !== '') rmSync(temporary, { recursive: true, force: true })
-    return stop(statusDir, 'mktemp failed')
+    return stop(integrationFile, 'mktemp failed')
   }
   // ★ gh の stderr は成功時の警告を含む。URL は stdout だけから読み、重複 PR を防ぐ。
   const created = run('gh', [
@@ -193,12 +209,12 @@ const main = (argv: string[]): number => {
     url = asString(get(entries?.[0], 'url')) ?? ''
     if (url === '') {
       log(NAME, created.stdout.trimEnd())
-      return stop(statusDir, `gh pr create failed for ${branch}`)
+      return stop(integrationFile, `gh pr create failed for ${branch}`)
     }
     log(NAME, `a pull request for ${branch} already exists`)
   }
   const result = { merged: false, integration: 'pr', pr_url: url, branch, base, repo }
-  if (!persist(join(statusDir, 'integration-result.json'), result)) {
+  if (!persist(integrationFile, result)) {
     log(NAME, `the pull request was created at ${url} but the result could not be persisted`)
     return 1
   }

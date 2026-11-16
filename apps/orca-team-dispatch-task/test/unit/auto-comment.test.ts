@@ -73,3 +73,22 @@ test('AC4 stalled reasons are included without changing the shared marker', () =
   assert.ok(result.body.includes('理由: Mac M2max につながりません'))
   assert.ok(result.body.endsWith('<!-- orca-auto:in-progress:1:stalled -->'))
 })
+
+test('AC5 repository branches are listed for started and failed without changing legacy comments', () => {
+  const branches = [
+    { repo: 'acme/api', branch: 'user/a' },
+    { repo: 'acme/web', branch: 'user/b' },
+  ]
+  assert.ok(
+    renderComment({ event: 'started', generation: 1, branches }).body.includes(
+      'ブランチ: `user/a`（acme/api）、`user/b`（acme/web）',
+    ),
+  )
+  for (const pushed of [true, false]) {
+    assert.ok(
+      renderComment({ event: 'failed', generation: 1, branches, pushed }).body.includes(
+        `ブランチ: \`user/a\`（acme/api）、\`user/b\`（acme/web）${pushed ? '（push 済み）' : '（push できていません）'}`,
+      ),
+    )
+  }
+})

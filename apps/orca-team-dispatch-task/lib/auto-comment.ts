@@ -16,6 +16,7 @@ export type CommentInput = {
   reason?: string
   limitMinutes?: number
   branch?: string
+  branches?: Array<{ repo: string; branch: string }>
   prs?: Pr[]
   decisions?: string[]
   summary?: string
@@ -45,7 +46,11 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
   const { event, generation } = input
   const status = STATUS_LABELS.find((l) => l.name === statusOfEvent(event))?.slug ?? ''
   const prs = input.prs?.map(link).join(', ')
-  const branch = input.branch ? `ブランチ: \`${clean(input.branch)}\`` : ''
+  const branch = input.branches?.length
+    ? `ブランチ: ${input.branches.map((b) => `\`${clean(b.branch)}\`（${clean(b.repo)}）`).join('、')}`
+    : input.branch
+      ? `ブランチ: \`${clean(input.branch)}\``
+      : ''
   let body: string
   switch (event) {
     case 'judged':

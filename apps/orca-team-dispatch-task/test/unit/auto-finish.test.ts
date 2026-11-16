@@ -6,6 +6,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
+import type { JsonObject } from '../../lib/json.ts'
+
 const pr = { repo: 'acme/app', number: 101, url: 'https://github.com/acme/app/pull/101' }
 const check = (status = 'COMPLETED', conclusion = 'SUCCESS') => ({
   __typename: 'CheckRun',
@@ -334,6 +336,224 @@ test('AU94-94e planning reviews and structured decisions independently prevent a
                   : '計画の結果の報告が読めない'
         assert.ok(comments.includes(text), mode)
       }
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+const multiView = (repo: string, number: number, extra: JsonObject = {}): JsonObject => ({
+  number,
+  url: `https://github.com/${repo}/pull/${number}`,
+  state: 'OPEN',
+  mergedAt: null,
+  statusCheckRollup: [check()],
+  mergeable: 'MERGEABLE',
+  ...extra,
+})
+const multiFinish = () => {
+  const f = runtimeFixture()
+  const issue = f.trackMulti('finishing')
+  f.put(f.configFile, {
+    ...f.raw,
+    lanes: 2,
+    repos: { ...f.raw.repos, 'other/api': { ...f.raw.repos['other/api'], verified: true } },
+  })
+  f.result(issue)
+  f.prViews({ 'other/api': multiView('other/api', 201), 'acme/app': multiView('acme/app', 101) })
+  return { f, issue }
+}
+const commentsOf = (f: ReturnType<typeof runtimeFixture>): string => readFileSync(join(f.dir, 'comments.jsonl'), 'utf8')
+
+test('AU111 PR creation retries only the missing repository and saves target order', () => {
+  const { f, issue } = multiFinish()
+  try {
+    writeFileSync(join(f.children, 'orca-pr.ts.sh'), 'case "$*" in *"--repo acme/app"*) exit 1;; esac\n')
+    f.cli('tick')
+    assert.deepEqual(
+      readState('main').issues[issue.key]?.prs.map((p) => p.repo),
+      ['other/api'],
+    )
+    writeFileSync(join(f.children, 'orca-pr.ts.sh'), 'exit 0\n')
+    f.cli('tick')
+    assert.deepEqual(
+      readState('main').issues[issue.key]?.prs.map((p) => p.repo),
+      ['other/api', 'acme/app'],
+    )
+    const calls = f
+      .childCalls()
+      .split('\n')
+      .filter((l) => l.startsWith('orca-pr.ts'))
+    assert.equal(calls.filter((l) => l.includes('"--repo","other/api"')).length, 1)
+    assert.equal(calls.filter((l) => l.includes('"--repo","acme/app"')).length, 2)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU112 CI waits for pending and expected checks, while no-CI repositories may have none', () => {
+  for (const mode of ['pending', 'expected', 'no-ci']) {
+    const { f, issue } = multiFinish()
+    try {
+      f.prViews({
+        'other/api': multiView('other/api', 201, { statusCheckRollup: [] }),
+        'acme/app': multiView('acme/app', 101, {
+          statusCheckRollup: mode === 'pending' ? [check('IN_PROGRESS', '')] : mode === 'expected' ? [] : [check()],
+        }),
+      })
+      f.cli('tick')
+      if (mode === 'no-ci') assert.equal(readState('main').issues[issue.key]?.phase, 'done')
+      else {
+        assert.equal(readState('main').issues[issue.key]?.phase, 'finishing')
+        assert.ok(!f.calls().includes('pr merge'))
+        if (mode === 'expected') {
+          process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+          f.cli('tick')
+          assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+          assert.ok(commentsOf(f).includes('CI が始まりません'))
+        }
+      }
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU113 both PRs merge in targets order only after every mergeable read', () => {
+  const { f, issue } = multiFinish()
+  try {
+    f.cli('tick')
+    const calls = f.calls()
+    const a = calls.indexOf('pr merge 201 --repo other/api')
+    const b = calls.indexOf('pr merge 101 --repo acme/app')
+    assert.ok(a >= 0 && b > a, calls)
+    assert.ok(calls.lastIndexOf('--json mergeable') < a, calls)
+    assert.ok(calls.match(/pr view.*--repo other\/api.*--json mergeable/))
+    assert.ok(calls.match(/pr view.*--repo acme\/app.*--json mergeable/))
+    assert.equal(readState('main').issues[issue.key]?.phase, 'done')
+    assert.ok(commentsOf(f).includes('ai-merged'))
+    assert.ok(commentsOf(f).includes('other/api#201'))
+    assert.ok(commentsOf(f).includes('acme/app#101'))
+    assert.ok(calls.includes('issue close'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU113b conflicts block every merge and unresolved mergeability waits for another tick', () => {
+  for (const mergeable of ['CONFLICTING', 'UNKNOWN', '', 'future']) {
+    const { f, issue } = multiFinish()
+    try {
+      f.prViews({ 'other/api': multiView('other/api', 201), 'acme/app': multiView('acme/app', 101, { mergeable }) })
+      f.cli('tick')
+      assert.ok(!f.calls().includes('pr merge'))
+      assert.equal(readState('main').issues[issue.key]?.phase, mergeable === 'CONFLICTING' ? 'review' : 'finishing')
+      if (mergeable === 'CONFLICTING') assert.ok(commentsOf(f).includes('acme/app#101 が衝突しています。'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU114 merge failures distinguish no merge from a partial merge', () => {
+  for (const failed of ['other/api', 'acme/app']) {
+    const { f, issue } = multiFinish()
+    try {
+      f.mergeFails([failed])
+      f.cli('tick')
+      assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+      const body = commentsOf(f)
+      if (failed === 'other/api') {
+        assert.ok(body.includes('PR を merge できませんでした。'))
+        assert.ok(!body.includes('partial-merge'))
+        assert.ok(!f.calls().includes('pr merge 101 --repo acme/app'))
+      } else {
+        assert.ok(body.includes('partial-merge'))
+        assert.ok(body.includes('merge 済み: [other/api#201]'))
+        assert.ok(body.includes('merge できなかった PR: [acme/app#101]'))
+        assert.ok(!f.calls().includes('issue close'))
+      }
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU112b/AU115 already merged PRs do not wait on CI or merge twice', () => {
+  const { f, issue } = multiFinish()
+  try {
+    f.prViews({
+      'other/api': multiView('other/api', 201, {
+        state: 'MERGED',
+        mergedAt: '2026-11-13',
+        statusCheckRollup: [check('IN_PROGRESS', '')],
+      }),
+      'acme/app': multiView('acme/app', 101),
+    })
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'done')
+    assert.ok(!f.calls().includes('pr merge 201'))
+    assert.ok(f.calls().includes('pr merge 101'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU114b a premerged later target appears only in the merged list when the first merge fails', () => {
+  const { f, issue } = multiFinish()
+  try {
+    f.prViews({
+      'other/api': multiView('other/api', 201),
+      'acme/app': multiView('acme/app', 101, { state: 'MERGED', mergedAt: '2026-11-13' }),
+    })
+    f.mergeFails(['other/api'])
+    f.cli('tick')
+    const body = commentsOf(f)
+    assert.ok(body.includes('partial-merge'))
+    assert.ok(body.includes('merge 済み: [acme/app#101]'))
+    assert.ok(body.includes('merge できなかった PR: [other/api#201]'))
+    assert.ok(!body.includes('merge できなかった PR: [acme/app#101]'))
+    assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU115b closed PRs request review immediately even when their checks are pending', () => {
+  const { f, issue } = multiFinish()
+  try {
+    f.prViews({
+      'other/api': multiView('other/api', 201, { state: 'CLOSED', statusCheckRollup: [check('IN_PROGRESS', '')] }),
+      'acme/app': multiView('acme/app', 101),
+    })
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+    assert.ok(commentsOf(f).includes('PR が閉じられています。'))
+    assert.ok(!f.calls().includes('pr merge'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU116 any target requiring verification or infrastructure review prevents automatic merging', () => {
+  for (const mode of ['unverified', 'infra']) {
+    const { f, issue } = multiFinish()
+    try {
+      f.put(f.configFile, {
+        ...f.raw,
+        lanes: 2,
+        repos: {
+          ...f.raw.repos,
+          'other/api': { ...f.raw.repos['other/api'], verified: true },
+          'acme/app': { ...f.raw.repos['acme/app'], verified: mode !== 'unverified', infra: mode === 'infra' },
+        },
+      })
+      f.cli('tick')
+      assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+      assert.ok(
+        commentsOf(f).includes(mode === 'infra' ? 'インフラの変更は確認が必要です。' : '確認できないリポジトリです。'),
+      )
+      assert.ok(!f.calls().includes('pr merge'))
     } finally {
       f.cleanup()
     }

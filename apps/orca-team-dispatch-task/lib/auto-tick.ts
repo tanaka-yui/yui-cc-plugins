@@ -27,7 +27,7 @@ import { hasCommentMarker, resumeTransition, transition } from './auto-transitio
 import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject } from './json.ts'
-import { repoTargets, roleWorktrees } from './multi-repo.ts'
+import { repoTargets, resultFileOf, roleWorktrees } from './multi-repo.ts'
 import { receiptArray, receiptOk } from './orca.ts'
 import { fetchBranch } from './remote-branch.ts'
 import { STATUS } from './status.ts'
@@ -143,7 +143,18 @@ const started = (tick: Tick, issue: IssueState, workers: JsonObject): void => {
   transition(
     issue,
     'started',
-    { reason: issue.reason, limitMinutes: issue.limitMinutes, branch: issue.branch },
+    {
+      reason: issue.reason,
+      limitMinutes: issue.limitMinutes,
+      branch: issue.branch,
+      ...(repoTargets(workers, tick.config.repos[issue.targets[0] ?? '']?.checkout ?? '').length > 1
+        ? {
+            branches: issue.targets.flatMap((repo) =>
+              issue.branches[repo] ? [{ repo, branch: issue.branches[repo] ?? '' }] : [],
+            ),
+          }
+        : {}),
+    },
     STATUS.ready,
     STATUS.inProgress,
     false,
@@ -662,24 +673,30 @@ const needsReview = (tick: Tick, issue: IssueState, reason: string): void => {
   )
     tick.finished++
 }
-const handoverPrs = (issue: IssueState): boolean => {
-  if (!issue.prevBranch || issue.prevBranch === issue.branch) return true
-  const current = issue.prs[0]
-  if (!current) return true
+const handoverPrs = (issue: IssueState, multi: boolean): { ok: boolean; reasons: string[] } => {
+  const reasons: string[] = []
+  if (!multi && (!issue.prevBranch || issue.prevBranch === issue.branch)) return { ok: true, reasons }
+  if (!multi && !issue.prs[0]) return { ok: true, reasons }
   for (const previous of issue.prevPrs) {
-    if (previous.repo === current.repo && previous.number === current.number) continue
+    const current = multi ? issue.prs.find((p) => p.repo === previous.repo) : issue.prs[0]
+    if (previous.repo === current?.repo && previous.number === current.number) continue
     const status = prStatus(previous.repo, previous.number)
-    if (!status) return false
+    if (!status) return { ok: false, reasons }
     if (status.state !== 'OPEN') continue
+    if (!current) {
+      reasons.push(`前の世代の PR が残っています: ${previous.repo}#${previous.number}`)
+      continue
+    }
     const marker = `<!-- orca-auto:handover:${issue.generation}:${slugOf(issue.key)} -->`
     const posted = hasCommentMarker({ ...issue, repo: previous.repo, number: previous.number }, marker)
-    if (posted === null) return false
+    if (posted === null) return { ok: false, reasons }
     const body = `${current.repo}#${current.number} に引き継ぎました: ${current.url}\n\n${marker}`
     if (!posted && github(['pr', 'comment', String(previous.number), '--repo', previous.repo, '--body', body]).rc !== 0)
-      return false
-    if (github(['pr', 'close', String(previous.number), '--repo', previous.repo]).rc !== 0) return false
+      return { ok: false, reasons }
+    if (github(['pr', 'close', String(previous.number), '--repo', previous.repo]).rc !== 0)
+      return { ok: false, reasons }
   }
-  return true
+  return { ok: true, reasons }
 }
 const finish = (tick: Tick, issue: IssueState): void => {
   if (!canAutoCall('仕上げ')) return
@@ -697,6 +714,8 @@ const finish = (tick: Tick, issue: IssueState): void => {
   if (!options) return
   const result = readAutoResult(join(issue.statusDir, 'auto-result.json'))
   const workers = workersOf(issue)
+  const targets = repoTargets(workers, options.checkout)
+  const multi = targets.length > 1
   const needsPlanResult = workers?.transport === 'mail' && workers.integration_role === 'exec'
   const planResult = needsPlanResult ? readPlanResult(join(issue.statusDir, 'plan-result.json')) : null
   const planDecisions = planResult
@@ -715,7 +734,40 @@ const finish = (tick: Tick, issue: IssueState): void => {
       ]
     : planDecisions
   tick.save()
-  if (!issue.prs.length) {
+  if (multi) {
+    const role = asString(workers?.integration_role) ?? ''
+    const worktrees = roleWorktrees(workers, options.checkout, role)
+    for (const target of targets) {
+      if (issue.prs.some((p) => p.repo === target.repo)) continue
+      const branch = worktrees.find((w) => w.repo === target.repo)?.branch ?? ''
+      if (asString(get(workers, 'roles', role, 'environment')) && !fetchBranch(target.checkout, branch)) {
+        if (Date.parse(autoNow()) - Date.parse(issue.finishingSince) >= AUTO_PR_RETRY_MINUTES * 60_000)
+          needsReview(tick, issue, `${branch} が origin にありません`)
+        return
+      }
+      const created = runNode(child('orca-pr.ts'), ['--status-dir', issue.statusDir, '--repo', target.repo])
+      const pr =
+        created.rc === 0
+          ? asObject(readGithub(['pr', 'view', '--repo', target.repo, '--json', 'number,url', branch]))
+          : null
+      if (!pr || typeof pr.number !== 'number' || typeof pr.url !== 'string') {
+        if (Date.parse(autoNow()) - Date.parse(issue.finishingSince) >= AUTO_PR_RETRY_MINUTES * 60_000)
+          needsReview(
+            tick,
+            issue,
+            asString(get(readJson(resultFileOf(issue.statusDir, target.repo)), 'reason')) || 'PR を作れません',
+          )
+        return
+      }
+      issue.prs.push({ repo: target.repo, number: pr.number, url: pr.url })
+      issue.prs.sort(
+        (a, b) => targets.findIndex((t) => t.repo === a.repo) - targets.findIndex((t) => t.repo === b.repo),
+      )
+      tick.save()
+    }
+    issue.prs.sort((a, b) => targets.findIndex((t) => t.repo === a.repo) - targets.findIndex((t) => t.repo === b.repo))
+    tick.save()
+  } else if (!issue.prs.length) {
     const integration = get(workers, 'roles', asString(workers?.integration_role) ?? '')
     const branch = asString(get(integration, 'branch')) ?? issue.branch
     if (asString(get(integration, 'environment')) && !fetchBranch(options.checkout, branch)) {
@@ -739,12 +791,19 @@ const finish = (tick: Tick, issue: IssueState): void => {
     issue.prs = [{ repo, number: pr.number, url: pr.url }]
     tick.save()
   }
-  if (!handoverPrs(issue)) return
+  const handover = handoverPrs(issue, multi)
+  if (!handover.ok) return
+  if (multi && handover.reasons.length) {
+    needsReview(tick, issue, handover.reasons.join(' '))
+    return
+  }
   const pr = issue.prs[0]
   if (!pr) return
-  const status = prStatus(pr.repo, pr.number)
+  const statuses = (multi ? issue.prs : [pr]).map((p) => prStatus(p.repo, p.number))
+  if (statuses.some((s) => !s)) return
+  const status = statuses[0]
   if (!status) return
-  if (status.state === 'MERGED') {
+  if (multi ? statuses.every((s) => s?.state === 'MERGED') : status.state === 'MERGED') {
     if (
       transition(
         issue,
@@ -760,11 +819,26 @@ const finish = (tick: Tick, issue: IssueState): void => {
       tick.finished++
     return
   }
-  if (status.checks === 'pending') return
-  if (status.checks === 'none' && options.ci && status.state === 'OPEN') {
-    if (Date.parse(autoNow()) - Date.parse(issue.finishingSince) >= AUTO_CI_APPEAR_MINUTES * 60_000)
-      needsReview(tick, issue, 'CI が始まりません')
-    return
+  if (multi) {
+    if (!statuses.some((s) => s?.state === 'CLOSED')) {
+      if (statuses.some((s) => s?.state === 'OPEN' && s.checks === 'pending')) return
+      if (
+        statuses.some(
+          (s, i) => s?.state === 'OPEN' && s.checks === 'none' && tick.config.repos[issue.prs[i]?.repo ?? '']?.ci,
+        )
+      ) {
+        if (Date.parse(autoNow()) - Date.parse(issue.finishingSince) >= AUTO_CI_APPEAR_MINUTES * 60_000)
+          needsReview(tick, issue, 'CI が始まりません')
+        return
+      }
+    }
+  } else {
+    if (status.checks === 'pending') return
+    if (status.checks === 'none' && options.ci && status.state === 'OPEN') {
+      if (Date.parse(autoNow()) - Date.parse(issue.finishingSince) >= AUTO_CI_APPEAR_MINUTES * 60_000)
+        needsReview(tick, issue, 'CI が始まりません')
+      return
+    }
   }
   const reasons: string[] = []
   if (needsPlanResult && !planResult) reasons.push('計画の結果の報告が読めないため確認してください。')
@@ -801,30 +875,71 @@ const finish = (tick: Tick, issue: IssueState): void => {
   if (result && !result.verify.passed) reasons.push('確認コマンドが通っていません。')
   if (result?.envFailure) reasons.push(`環境が原因: ${result.envFailure}`)
   if (issue.decisions.length) reasons.push('AI が判断した点があります。')
-  if (status.checks === 'fail') reasons.push('CI が失敗しました。')
-  if (hostsOf(tick.config).find((h) => h.id === (issue.host ?? LOCAL_HOST))?.repos[repo]?.verified !== true)
+  if (multi ? statuses.some((s) => s?.state === 'OPEN' && s.checks === 'fail') : status.checks === 'fail')
+    reasons.push('CI が失敗しました。')
+  const host = hostsOf(tick.config).find((h) => h.id === (issue.host ?? LOCAL_HOST))
+  if (multi ? targets.some((t) => host?.repos[t.repo]?.verified !== true) : host?.repos[repo]?.verified !== true)
     reasons.push('確認できないリポジトリです。')
-  if (options.infra) reasons.push('インフラの変更は確認が必要です。')
-  if (status.state === 'CLOSED') reasons.push('PR が閉じられています。')
+  if (multi ? targets.some((t) => tick.config.repos[t.repo]?.infra) : options.infra)
+    reasons.push('インフラの変更は確認が必要です。')
+  if (multi ? statuses.some((s) => s?.state === 'CLOSED') : status.state === 'CLOSED')
+    reasons.push('PR が閉じられています。')
   if (reasons.length) {
     needsReview(tick, issue, reasons.join(' '))
     return
   }
-  const allowed = asObject(
-    readGithub(['repo', 'view', '--json', 'squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed', pr.repo]),
-  )
-  if (!allowed) return
-  const method =
-    allowed.squashMergeAllowed === true
-      ? '--squash'
-      : allowed.mergeCommitAllowed === true
-        ? '--merge'
-        : allowed.rebaseMergeAllowed === true
-          ? '--rebase'
-          : null
-  if (!method || github(['pr', 'merge', String(pr.number), '--repo', pr.repo, method]).rc !== 0) {
-    needsReview(tick, issue, 'PR を merge できませんでした。')
-    return
+  if (multi) {
+    const mergeability: Array<{ repo: string; number: number; value: string }> = []
+    for (const [i, p] of issue.prs.entries()) {
+      if (statuses[i]?.state !== 'OPEN') continue
+      const view = asObject(readGithub(['pr', 'view', String(p.number), '--repo', p.repo, '--json', 'mergeable']))
+      if (!view) return
+      mergeability.push({ repo: p.repo, number: p.number, value: asString(view.mergeable) ?? '' })
+    }
+    const conflicts = mergeability.filter((m) => m.value === 'CONFLICTING')
+    if (conflicts.length) {
+      needsReview(tick, issue, conflicts.map((m) => `${m.repo}#${m.number} が衝突しています。`).join(' '))
+      return
+    }
+    if (mergeability.some((m) => m.value !== 'MERGEABLE')) return
+  }
+  const mergedPrs = multi ? issue.prs.filter((_, i) => statuses[i]?.state === 'MERGED') : []
+  for (const pr of multi ? issue.prs.filter((_, i) => statuses[i]?.state === 'OPEN') : [issue.prs[0]]) {
+    if (!pr) continue
+    const allowed = asObject(
+      readGithub(['repo', 'view', '--json', 'squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed', pr.repo]),
+    )
+    if (!allowed) return
+    const method =
+      allowed.squashMergeAllowed === true
+        ? '--squash'
+        : allowed.mergeCommitAllowed === true
+          ? '--merge'
+          : allowed.rebaseMergeAllowed === true
+            ? '--rebase'
+            : null
+    if (!method || github(['pr', 'merge', String(pr.number), '--repo', pr.repo, method]).rc !== 0) {
+      if (multi && mergedPrs.length) {
+        const unmergedPrs = issue.prs
+          .filter((p) => !mergedPrs.some((m) => m.repo === p.repo && m.number === p.number))
+          .map((p) => ({ ...p, why: 'merge できませんでした' }))
+        if (
+          transition(
+            issue,
+            'partial-merge',
+            { mergedPrs, unmergedPrs },
+            STATUS.inProgress,
+            STATUS.inReview,
+            false,
+            'review',
+            tick.save,
+          )
+        )
+          tick.finished++
+      } else needsReview(tick, issue, 'PR を merge できませんでした。')
+      return
+    }
+    mergedPrs.push(pr)
   }
   if (
     transition(
@@ -860,6 +975,14 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
     return
   }
   if (!issue.prs.length) return
+  if (issue.targets.length > 1) {
+    if (issue.prs.length < issue.targets.length) return
+    for (const previous of issue.prevPrs) {
+      if (issue.prs.some((p) => p.repo === previous.repo)) continue
+      const status = prStatus(previous.repo, previous.number)
+      if (!status || status.state === 'OPEN') return
+    }
+  }
   const statuses = issue.prs.map((p) => prStatus(p.repo, p.number))
   if (
     statuses.every((s) => s?.state === 'MERGED') &&

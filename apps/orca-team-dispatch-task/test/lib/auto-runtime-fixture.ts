@@ -6,6 +6,8 @@ import { fixture } from './auto-fixture.ts'
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+
+import type { Json } from '../../lib/json.ts'
 export const runtimeFixture = () => {
   const f = fixture()
   const git = (...args: string[]) => {
@@ -235,6 +237,27 @@ printf 'worker-stop ORCA_TERMINAL_HANDLE=%s\\n' "$ORCA_TERMINAL_HANDLE" >> '${ch
     return issue
   }
 
+  const prViews = (map: Record<string, Json>): void => {
+    const views = join(f.dir, 'pr-views.json')
+    f.put(views, map)
+    const hook = join(f.dir, 'pr-views.cjs')
+    writeFileSync(
+      hook,
+      `const fs=require('fs');const args=process.argv.slice(2);const repo=args[args.indexOf('--repo')+1];const dir=process.env.GH_STUB_DIR;const value=JSON.parse(fs.readFileSync(${JSON.stringify(views)},'utf8'))[repo];if(value==null){fs.writeFileSync(dir+'/pr_view.rc','1')}else{fs.rmSync(dir+'/pr_view.rc',{force:true});fs.writeFileSync(dir+'/pr_view',JSON.stringify(value))}`,
+    )
+    f.hook('pr_view', `exec '${process.execPath}' '${hook}' "$@"`)
+  }
+  const mergeFails = (repos: string[]): void => {
+    const list = join(f.dir, 'merge-fails.json')
+    f.put(list, repos)
+    const hook = join(f.dir, 'merge-fails.cjs')
+    writeFileSync(
+      hook,
+      `const fs=require('fs');const args=process.argv.slice(2);const repo=args[args.indexOf('--repo')+1];const dir=process.env.GH_STUB_DIR;const failures=JSON.parse(fs.readFileSync(${JSON.stringify(list)},'utf8'));if(failures.includes(repo))fs.writeFileSync(dir+'/pr_merge.rc','1');else fs.rmSync(dir+'/pr_merge.rc',{force:true})`,
+    )
+    f.hook('pr_merge', `exec '${process.execPath}' '${hook}' "$@"`)
+  }
+
   const result = (i: IssueState, extra: object = {}) =>
     f.put(join(i.statusDir, 'auto-result.json'), {
       decisions: [],
@@ -244,5 +267,19 @@ printf 'worker-stop ORCA_TERMINAL_HANDLE=%s\\n' "$ORCA_TERMINAL_HANDLE" >> '${ch
       envFailure: null,
       ...extra,
     })
-  return { ...f, git, checkout, children, childCalls, childRc, liveWorker, track, second, trackMulti, result }
+  return {
+    ...f,
+    git,
+    checkout,
+    children,
+    childCalls,
+    childRc,
+    liveWorker,
+    track,
+    second,
+    trackMulti,
+    prViews,
+    mergeFails,
+    result,
+  }
 }

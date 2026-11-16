@@ -1,6 +1,7 @@
 import { continuationOf } from '../../lib/auto-github.ts'
 import { buildRequest } from '../../lib/auto-request.ts'
 import { readState, writeState } from '../../lib/auto-state.ts'
+import { asObject, type Json } from '../../lib/json.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
 import assert from 'node:assert/strict'
@@ -256,6 +257,112 @@ test('AU110/AU110b-e continuation resets only previous branches belonging to cur
       for (const text of c.yes) assert.ok(out.includes(text), `${text}: ${out}`)
       for (const text of c.no) assert.ok(!out.includes(text), `${text}: ${out}`)
     }
+  } finally {
+    f.cleanup()
+  }
+})
+
+const priorThird = { repo: 'third/web', number: 3, url: 'https://github.com/third/web/pull/3' }
+const continuationViews = (third: Json = { state: 'OPEN', mergedAt: null }, merged = false): Record<string, Json> => ({
+  'other/api': {
+    number: 201,
+    url: 'https://github.com/other/api/pull/201',
+    state: merged ? 'MERGED' : 'OPEN',
+    mergedAt: merged ? '2026-11-13' : null,
+    statusCheckRollup: [],
+    mergeable: 'MERGEABLE',
+  },
+  'acme/app': {
+    number: 101,
+    url: 'https://github.com/acme/app/pull/101',
+    state: merged ? 'MERGED' : 'OPEN',
+    mergedAt: merged ? '2026-11-13' : null,
+    statusCheckRollup: [],
+    mergeable: 'MERGEABLE',
+  },
+  'third/web':
+    third === null
+      ? null
+      : { number: 3, url: priorThird.url, statusCheckRollup: [], mergeable: 'MERGEABLE', ...asObject(third) },
+})
+const multiContinuation = () => {
+  const f = runtimeFixture()
+  const issue = f.trackMulti('finishing')
+  f.put(f.configFile, {
+    ...f.raw,
+    lanes: 2,
+    repos: {
+      ...f.raw.repos,
+      'other/api': { ...f.raw.repos['other/api'], verified: true },
+      'third/web': { ...f.raw.repos['other/api'], checkout: join(f.dir, 'checkout3') },
+    },
+  })
+  const state = readState('main')
+  const i = state.issues[issue.key]
+  assert.ok(i)
+  i.generation = 2
+  i.prevBranch = 'user/old'
+  i.prevPrs = [{ repo: 'other/api', number: 1, url: 'https://github.com/other/api/pull/1' }, priorThird]
+  writeState('main', state)
+  f.result(issue)
+  return { f, issue }
+}
+
+test('AU117 handover links only the current PR of the same repository and leaves unmatched prior PRs open', () => {
+  const { f, issue } = multiContinuation()
+  try {
+    f.prViews(continuationViews())
+    f.cli('tick')
+    const calls = f.calls()
+    assert.ok(calls.includes('pr comment 1 --repo other/api'))
+    assert.ok(calls.includes('other/api#201'))
+    assert.ok(calls.includes('pr close 1 --repo other/api'))
+    assert.ok(!calls.includes('pr close 3 --repo third/web'))
+    assert.ok(!calls.includes('pr close 201'))
+    assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+    assert.ok(readFileSync(join(f.dir, 'comments.jsonl'), 'utf8').includes('前の世代の PR が残っています: third/web#3'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU117b unmatched previous PRs prevent both AI and later human completion across ticks and archived records', () => {
+  const { f, issue } = multiContinuation()
+  try {
+    f.prViews(continuationViews({ state: 'OPEN', mergedAt: null }, true))
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+    f.prViews(continuationViews(null, true))
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+    assert.ok(!f.calls().includes('issue close'))
+    assert.ok(!readFileSync(join(f.dir, 'comments.jsonl'), 'utf8').includes('human-merged'))
+    f.prViews(continuationViews({ state: 'CLOSED', mergedAt: null }, true))
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'done')
+    assert.ok(f.calls().includes('issue close'))
+    assert.ok(readFileSync(join(f.dir, 'comments.jsonl'), 'utf8').includes('human-merged'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU117c one merged PR cannot complete an Issue with a second target lacking a PR', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.trackMulti('review')
+    const state = readState('main')
+    const i = state.issues[issue.key]
+    assert.ok(i)
+    i.prs = [{ repo: 'other/api', number: 201, url: 'https://github.com/other/api/pull/201' }]
+    writeState('main', state)
+    f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'In review' }] })
+    f.prViews(continuationViews(null, true))
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+    assert.ok(!f.calls().includes('issue close'))
   } finally {
     f.cleanup()
   }
