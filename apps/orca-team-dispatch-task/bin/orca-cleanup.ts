@@ -2,9 +2,11 @@
 //
 // Usage: node orca-cleanup.ts plan --status-dir <dir> [--status-dir <dir> ...] [--pr-saved <dir> ...]
 //        node orca-cleanup.ts run --plan <file> --approve <slug>:<terminal|worktree|record> [...]
+//        node orca-cleanup.ts auto --status-dir <dir>
 //
 // plan の exit: 0 = 計画を書いた（提示が 0 件でも）/ 1 = Run 全体を止めた（計画は書かない）/ 2 = 使用法の誤り
 // run の exit:  0 = 承認された操作を全部終えた / 1 = どれかが失敗した / 2 = 使用法の誤り
+// auto の exit: 0 = 片付けた・何もしなかった（Run 全体が止まったときも）/ 1 = 操作のどれかが失敗した / 2 = 使用法の誤り
 //
 // ★ plan は Orca に読み取り（worker-list / terminal show / terminal list）しか打たない。
 //   判定の条件と止まる理由の文言は、SKILL.md の Step 5 にあった [C1]〜[C7] のブロックから移した。
@@ -26,14 +28,14 @@ import {
 } from '../lib/orca.ts'
 
 import { spawnSync } from 'node:child_process'
-import { realpathSync, rmSync, statSync } from 'node:fs'
+import { readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const NAME = 'orca-cleanup'
 const USAGE =
   'usage: orca-cleanup.ts plan --status-dir <dir> [--status-dir <dir> ...] [--pr-saved <dir> ...] | ' +
-  'run --plan <file> --approve <slug>:<terminal|worktree|record> [--approve ...]'
+  'run --plan <file> --approve <slug>:<terminal|worktree|record> [--approve ...] | auto --status-dir <dir>'
 
 // ★ origin を読めなかったときと同じに扱う
 const REMOTE_TIMEOUT_MS = 30_000
@@ -60,6 +62,7 @@ type TaskPlan = {
   pr_saved?: boolean
 }
 type CleanupPlan = { run_id: string; tasks: TaskPlan[] }
+type Built = { ok: true; plan: CleanupPlan; file: string } | { ok: false; lines: string[] }
 type Sink = { offers: Offers; kept: Kept[]; stopped: Stopped }
 type Step = { kind: Kind; role: string | null; label: string; act: () => { ok: boolean; line: string; held?: boolean } }
 
@@ -412,6 +415,72 @@ const printPlan = (plan: CleanupPlan, file: string): void => {
   process.stdout.write(`${lines.join('\n')}\n`)
 }
 
+const buildPlan = (dirs: string[], prSaved: Set<string>): Built => {
+  // [C7] 前半。別の Run の dir が混じると既知の集合が広がり、本物の ghost を隠す。Orca を呼ぶ前に確かめる
+  const first = dirs[0] ?? ''
+  const run = runOf(first)
+  if (run === '') return { ok: false, lines: [MISSING] }
+  const foreign = dirs.find((dir) => runOf(dir) !== run)
+  if (foreign !== undefined) {
+    return { ok: false, lines: [`${foreign} does not belong to Run ${run}; do not close or remove anything`] }
+  }
+  const inputs: { dir: string; workers: JsonObject }[] = []
+  for (const dir of dirs) {
+    const workers = asObject(readJson(join(dir, 'workers.json')))
+    if (workers === null) return { ok: false, lines: [MISSING] }
+    inputs.push({ dir, workers })
+  }
+
+  // [C7] 後半。worker-retain は durable な例外を残す。記録に無い保持は他者のものか前回の自分たちのもの
+  // ★ 置き換えた試行（orca-recover の --retry-of）も記録のうちである。Orca がそれを retained のまま
+  //   持っていても、他者や前回の保持ではない
+  const known = new Set(
+    inputs.flatMap(({ workers }) =>
+      Object.values(asObject(workers.roles) ?? {})
+        .flatMap((record) => [
+          get(record, 'dispatch'),
+          ...(asArray(get(record, 'superseded')) ?? []),
+          ...(asArray(get(record, 'follow_ups')) ?? []),
+        ])
+        .map((id) => asString(id))
+        .filter((id) => id !== null),
+    ),
+  )
+  const retained = receiptArray(
+    runOrca(['orchestration', 'worker-list', '--run', run, '--terminal-state', 'retained', '--json']),
+    'workers',
+  )
+  if (retained === null)
+    return { ok: false, lines: ['could not list what Orca still holds for this Run; do not remove anything'] }
+  const ghosts = retained
+    .map((worker) => get(worker, 'dispatchId'))
+    .filter((id) => typeof id !== 'string' || !known.has(id))
+    .map((id) => (typeof id === 'string' ? id : JSON.stringify(id ?? null)))
+  if (ghosts.length > 0) {
+    return {
+      ok: false,
+      lines: [
+        'Orca still holds retained workers we did not record:',
+        ...ghosts,
+        'do not remove any worktree or dispatch record for this Run',
+      ],
+    }
+  }
+
+  // [C1]〜[C3] は Run 全体の 1 回の答えから、タスクごとに分類する
+  const listed = receiptArray(runOrca(['orchestration', 'worker-list', '--run', run, '--json']), 'workers')
+  if (listed === null) return { ok: false, lines: [UNREADABLE] }
+  const plan: CleanupPlan = {
+    run_id: run,
+    tasks: inputs.map(({ dir, workers }) => planTask(dir, workers, listed, prSaved.has(dir))),
+  }
+  // status dir は `<repo>/.dispatch/<slug>` なので、計画はその隣の `<repo>/.dispatch/cleanup-<run_id>.json` に置く
+  const file = join(dirname(first), `cleanup-${run}.json`)
+  if (!writeAtomic(file, `${JSON.stringify(plan, null, 2)}\n`)) {
+    return { ok: false, lines: [`could not write the cleanup plan to ${file}; do not close or remove anything`] }
+  }
+  return { ok: true, plan, file }
+}
 const planCommand = (args: string[]): number => {
   const { values } = parseFlags(NAME, {
     args,
@@ -437,66 +506,9 @@ const planCommand = (args: string[]): number => {
     if (!dirs.includes(dir)) return die(NAME, `${dir} is not one of the --status-dir values`)
   }
 
-  // [C7] 前半。別の Run の dir が混じると既知の集合が広がり、本物の ghost を隠す。Orca を呼ぶ前に確かめる
-  const first = dirs[0] ?? ''
-  const run = runOf(first)
-  if (run === '') return stopRun([MISSING])
-  const foreign = dirs.find((dir) => runOf(dir) !== run)
-  if (foreign !== undefined) {
-    return stopRun([`${foreign} does not belong to Run ${run}; do not close or remove anything`])
-  }
-  const inputs: { dir: string; workers: JsonObject }[] = []
-  for (const dir of dirs) {
-    const workers = asObject(readJson(join(dir, 'workers.json')))
-    if (workers === null) return stopRun([MISSING])
-    inputs.push({ dir, workers })
-  }
-
-  // [C7] 後半。worker-retain は durable な例外を残す。記録に無い保持は他者のものか前回の自分たちのもの
-  // ★ 置き換えた試行（orca-recover の --retry-of）も記録のうちである。Orca がそれを retained のまま
-  //   持っていても、他者や前回の保持ではない
-  const known = new Set(
-    inputs.flatMap(({ workers }) =>
-      Object.values(asObject(workers.roles) ?? {})
-        .flatMap((record) => [
-          get(record, 'dispatch'),
-          ...(asArray(get(record, 'superseded')) ?? []),
-          ...(asArray(get(record, 'follow_ups')) ?? []),
-        ])
-        .map((id) => asString(id))
-        .filter((id) => id !== null),
-    ),
-  )
-  const retained = receiptArray(
-    runOrca(['orchestration', 'worker-list', '--run', run, '--terminal-state', 'retained', '--json']),
-    'workers',
-  )
-  if (retained === null) return stopRun(['could not list what Orca still holds for this Run; do not remove anything'])
-  const ghosts = retained
-    .map((worker) => get(worker, 'dispatchId'))
-    .filter((id) => typeof id !== 'string' || !known.has(id))
-    .map((id) => (typeof id === 'string' ? id : JSON.stringify(id ?? null)))
-  if (ghosts.length > 0) {
-    return stopRun([
-      'Orca still holds retained workers we did not record:',
-      ...ghosts,
-      'do not remove any worktree or dispatch record for this Run',
-    ])
-  }
-
-  // [C1]〜[C3] は Run 全体の 1 回の答えから、タスクごとに分類する
-  const listed = receiptArray(runOrca(['orchestration', 'worker-list', '--run', run, '--json']), 'workers')
-  if (listed === null) return stopRun([UNREADABLE])
-  const plan: CleanupPlan = {
-    run_id: run,
-    tasks: inputs.map(({ dir, workers }) => planTask(dir, workers, listed, prSaved.has(dir))),
-  }
-  // status dir は `<repo>/.dispatch/<slug>` なので、計画はその隣の `<repo>/.dispatch/cleanup-<run_id>.json` に置く
-  const file = join(dirname(first), `cleanup-${run}.json`)
-  if (!writeAtomic(file, `${JSON.stringify(plan, null, 2)}\n`)) {
-    return stopRun([`could not write the cleanup plan to ${file}; do not close or remove anything`])
-  }
-  printPlan(plan, file)
+  const built = buildPlan(dirs, prSaved)
+  if (!built.ok) return stopRun(built.lines)
+  printPlan(built.plan, built.file)
   return 0
 }
 
@@ -738,6 +750,17 @@ const runTask = (run: string, task: TaskPlan, approved: Set<Kind>): { lines: str
   return { lines, failed }
 }
 
+const executePlan = (plan: CleanupPlan, approved: Map<string, Set<Kind>>): { lines: string[]; failed: boolean } => {
+  const lines: string[] = []
+  let failed = false
+  const tasks = [...plan.tasks].sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0))
+  for (const task of tasks) {
+    const outcome = runTask(plan.run_id, task, approved.get(task.slug) ?? new Set<Kind>())
+    lines.push(...outcome.lines)
+    failed = failed || outcome.failed
+  }
+  return { lines, failed }
+}
 const runCommand = (args: string[]): number => {
   const { values } = parseFlags(NAME, {
     args,
@@ -763,22 +786,101 @@ const runCommand = (args: string[]): number => {
     }
     approved.set(slug, (approved.get(slug) ?? new Set<Kind>()).add(kind))
   }
-  const lines: string[] = []
-  let failed = false
-  const tasks = [...plan.tasks].sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0))
-  for (const task of tasks) {
-    const outcome = runTask(plan.run_id, task, approved.get(task.slug) ?? new Set<Kind>())
-    lines.push(...outcome.lines)
-    failed = failed || outcome.failed
-  }
+  const { lines, failed } = executePlan(plan, approved)
   process.stdout.write(`${lines.join('\n')}\n`)
   return failed ? 1 : 0
 }
 
+// ★ 同じ Run の記録を全部渡し、ほかのタスクの worker を [C7] の ghost と取り違えない
+const sameRunDirs = (dispatchDir: string, run: string): string[] => {
+  try {
+    return readdirSync(dispatchDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(dispatchDir, entry.name))
+      .filter((dir) => runOf(dir) === run)
+      .sort()
+  } catch {
+    return []
+  }
+}
+
+// ★ 保存済みと判定した対象だけを承認し、実行前には run と同じ検査を通す
+const cleanSaved = (
+  built: { plan: CleanupPlan; file: string },
+  slugs: string[],
+): { lines: string[]; failed: boolean } => {
+  const lines: string[] = []
+  const approved = new Map<string, Set<Kind>>()
+  for (const task of built.plan.tasks.filter((item) => slugs.includes(item.slug))) {
+    if (task.stopped !== null) {
+      lines.push(`${task.slug}: Step 5 stopped this task, so nothing was cleaned up`)
+      lines.push(...task.stopped.reasons.map((reason) => `    - ${reason}`))
+      continue
+    }
+    if (task.pr_saved !== true) {
+      lines.push(`${task.slug}: the pull request is not proven saved, so nothing was cleaned up`)
+      lines.push(...task.kept.flatMap(keptLines))
+      continue
+    }
+    const kinds = (['terminal', 'worktree', 'record'] as const).filter((kind) => task.offers[kind].length > 0)
+    if (kinds.length === 0) {
+      lines.push(`${task.slug}: nothing to clean up`)
+      lines.push(...task.kept.flatMap(keptLines))
+      continue
+    }
+    approved.set(task.slug, new Set(kinds))
+  }
+  if (approved.size === 0) return { lines, failed: false }
+  const read = readPlan(built.file)
+  if (read === null) {
+    lines.push(`could not read the cleanup plan ${built.file}; nothing was run`)
+    return { lines, failed: true }
+  }
+  const selected: CleanupPlan = { run_id: read.run_id, tasks: read.tasks.filter((task) => approved.has(task.slug)) }
+  const outcome = executePlan(selected, approved)
+  return { lines: [...lines, ...outcome.lines], failed: outcome.failed }
+}
+
+const autoCommand = (args: string[]): number => {
+  const { values } = parseFlags(NAME, {
+    args,
+    options: { 'status-dir': { type: 'string' } },
+    strict: true,
+    allowPositionals: false,
+  })
+  if (values['status-dir'] === undefined) return die(NAME, `auto needs --status-dir <dir>\n${USAGE}`)
+  if (values['status-dir'] === '') return die(NAME, '--status-dir must not be empty')
+  const dir = resolve(values['status-dir'])
+  const slug = basename(dir)
+  const workers = asObject(readJson(join(dir, 'workers.json')))
+  if (get(workers, 'transport') === 'mail') {
+    process.stdout.write(`${slug} was started by --auto (transport: mail); nothing to do\n`)
+    return 0
+  }
+  const mode = asString(get(workers, 'cleanup')) ?? 'end'
+  if (mode !== 'pr_created') {
+    process.stdout.write(`cleanup mode is ${mode}; nothing to do\n`)
+    return 0
+  }
+  const run = runOf(dir)
+  if (run === '') {
+    process.stdout.write(`${MISSING}\nnothing was cleaned up for ${slug}\n`)
+    return 0
+  }
+  const built = buildPlan(sameRunDirs(dirname(dir), run), new Set([dir]))
+  if (!built.ok) {
+    process.stdout.write(`${[...built.lines, `nothing was cleaned up for ${slug}`].join('\n')}\n`)
+    return 0
+  }
+  const outcome = cleanSaved(built, [slug])
+  process.stdout.write(`${outcome.lines.join('\n')}\n`)
+  return outcome.failed ? 1 : 0
+}
 const main = (argv: string[]): number => {
   const [command, ...rest] = argv
   if (command === 'plan') return planCommand(rest)
   if (command === 'run') return runCommand(rest)
+  if (command === 'auto') return autoCommand(rest)
   return die(NAME, USAGE)
 }
 

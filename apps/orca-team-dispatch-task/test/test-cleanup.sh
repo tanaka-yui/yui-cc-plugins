@@ -163,6 +163,7 @@ plan() {
   local printed; printed=$(sed -n 's/^plan_file=//p' <<<"$OUT"); PLAN_FILE="${printed:-$PLAN_FILE}"
 }
 run() { OUT=$(node "$CLEANUP" run "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
+auto() { OUT=$(node "$CLEANUP" auto "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
 pj() { jq -c "$1" "$PLAN_FILE" 2>/dev/null; }                  # 計画ファイルへの問い合わせ
 mutations() { grep -E 'worker-release|worktree rm' "$ORCA_STUB_DIR/calls.log"; }
 sd() { printf '%s' "$REPO/.dispatch/$1"; }
@@ -923,5 +924,90 @@ for how in unpushed norecord; do
   teardown
 done
 [[ -z "$bad" ]] && ok "CL43f 端末だけを提示した計画も確かめ直す" || fail "CL43f:$bad"
+
+# CL44: 同じ Run の全記録を読み、対象だけを片付ける
+world; prtask a; task b false
+auto --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && ! -e "$(sd a)" && -d "$(sd b)" \
+   && "$(mutations | grep -c 'worker-release --dispatch ctx_a-design')" == 1 && "$(mutations | grep -c 'id:wt_a-design')" == 1 \
+   && -z "$(mutations | grep -E 'ctx_b-|wt_b-')" && "$OUT$ERR" != *'did not record'* \
+   && "$OUT" == *"removed: dispatch record $(sd a)"* && "$OUT" != *'b terminal'* ]] \
+  && ok "CL44 auto は対象だけ片付ける" || fail "CL44 $RC $OUT $ERR"
+teardown
+
+world; prtask a; task b false; printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.owner"
+auto --status-dir "$(sd a)"; bad=""
+[[ "$RC" -eq 0 && -d "$(sd a)" && -z "$(mutations)" && "$OUT" == *'the user owns the design terminal'* \
+   && "$OUT" == *'the user operated the design terminal, so removing this worktree would close it without asking'* \
+   && "$OUT" == *'a: nothing to clean up'* ]] || bad="[auto:$RC:$OUT:$ERR]"
+plan --status-dir "$(sd a)" --status-dir "$(sd b)"
+[[ "$RC" -eq 0 ]] || bad="$bad [plan:$RC:$ERR]"
+[[ -z "$bad" ]] && ok "CL44b 人の端末と記録が残り、次の plan も通る" || fail "CL44b:$bad"
+teardown
+
+world; prtask a; printf '{"merged":false,"reason":"gh pr create failed for orca/a"}\n' > "$(sd a)/integration-result.json"
+auto --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && -d "$(sd a)" && -z "$(mutations)" \
+   && "$OUT" == *'a: the pull request is not proven saved, so nothing was cleaned up'* && "$OUT" == *'the pull request is not recorded'* ]] \
+  && ok "CL44c 保存が証明できなければ端末にも触らない" || fail "CL44c $RC $OUT $ERR"
+teardown
+
+world; prtask a; role a design_review; task b false
+printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.after-owner"
+printf 'retained user_requested\n' > "$ORCA_STUB_DIR/workers/ctx_a-design.after"
+auto --status-dir "$(sd a)"; bad=""
+[[ "$RC" -eq 0 && -d "$(sd a)" && "$(mutations | grep -c worker-release)" == 2 \
+   && "$(mutations | grep -cE 'id:wt_a-design( |$)')" == 0 && "$(mutations | grep -c 'id:wt_a-design_review')" == 1 \
+   && -z "$(mutations | grep -E 'ctx_b-|wt_b-')" \
+   && "$OUT" == *'not run: design worktree id:wt_a-design (the user took over the design terminal after the plan, so its worktree stays)'* \
+   && "$OUT" == *"not run: dispatch record $(sd a) (part of this task stays with the user (design terminal), so the record that points at it stays too)"* ]] \
+  || bad="[auto:$RC:$OUT:$ERR]"
+plan --status-dir "$(sd a)" --status-dir "$(sd b)"
+[[ "$RC" -eq 0 ]] || bad="$bad [plan:$RC:$ERR]"
+[[ -z "$bad" ]] && ok "CL44d auto も plan 後のユーザー操作を保護する" || fail "CL44d:$bad"
+teardown
+
+bad=""
+for mode in end pr_merged absent; do
+  world; prtask a
+  if [[ "$mode" == absent ]]; then edit a 'del(.cleanup)'; expected=end; else edit a ".cleanup = \"$mode\""; expected="$mode"; fi
+  auto --status-dir "$(sd a)"
+  [[ "$RC" -eq 0 && "$OUT" == *"cleanup mode is $expected; nothing to do"* && ! -s "$ORCA_STUB_DIR/calls.log" && -d "$(sd a)" ]] \
+    || bad="$bad [$mode:$RC:$OUT:$ERR]"
+  teardown
+done
+[[ -z "$bad" ]] && ok "CL45 対象外の mode と旧記録は何もしない" || fail "CL45:$bad"
+
+world; prtask a; role a design_review; printf 'user_owned\n' > "$ORCA_STUB_DIR/workers/ctx_a-design_review.owner"
+auto --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && -d "$(sd a)" && "$(mutations | grep -c worker-release)" == 1 \
+   && "$(mutations | grep -cE 'id:wt_a-design( |$)')" == 1 && "$(mutations | grep -c 'id:wt_a-design_review')" == 0 \
+   && "$OUT" == *'kept: design_review terminal: the user owns the design_review terminal'* \
+   && "$OUT" == *'kept: design_review worktree: the user operated the design_review terminal'* \
+   && "$OUT" == *'kept: dispatch record: part of this task stays (design_review terminal, design_review worktree), so the record that points at it stays too'* ]] \
+  && ok "CL46 保持したものの理由を表示する" || fail "CL46 $RC $OUT $ERR"
+teardown
+
+world; prtask a; printf 'dirt\n' > "$T/wt/a-design/dirty.txt"
+auto --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && -d "$(sd a)" && "$(mutations | grep -c worker-release)" == 1 && "$(mutations | grep -c 'worktree rm')" == 0 \
+   && "$OUT" == *'kept: design worktree: the worker checkout has uncommitted changes'* \
+   && "$OUT" == *'kept: dispatch record: part of this task stays (design worktree), so the record that points at it stays too'* ]] \
+  && ok "CL46b dirty な worktree と記録は残す" || fail "CL46b $RC $OUT $ERR"
+teardown
+
+world; prtask a; edit a '.transport = "mail"'
+auto --status-dir "$(sd a)"
+[[ "$RC" -eq 0 && "$OUT" == *'a was started by --auto (transport: mail); nothing to do'* && ! -s "$ORCA_STUB_DIR/calls.log" && -d "$(sd a)" ]] \
+  && ok "CL47 mail の記録には触らない" || fail "CL47 $RC $OUT $ERR"
+teardown
+
+world; prtask a
+auto; rc1=$RC; err1=$ERR
+auto --status-dir ''; rc2=$RC
+auto --status-dir "$(sd a)" --bogus; rc3=$RC
+[[ "$rc1" -eq 2 && "$err1" == *'auto needs --status-dir'* && "$rc2" -eq 2 && "$rc3" -eq 2 && ! -s "$ORCA_STUB_DIR/calls.log" ]] \
+  && ok "CL47b auto の使用法を検査する" || fail "CL47b $rc1/$rc2/$rc3 $err1"
+teardown
 
 echo "---"; echo "failures: $fails"; exit "$fails"
