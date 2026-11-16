@@ -37,6 +37,9 @@ export type IssueState = {
   slug: string
   statusDir: string
   branch: string
+  branches: Record<string, string>
+  prevBranches: Record<string, string>
+  prevTargets: string[]
   host: string | null
   hostUnreachableSince: string | null
   coordinator: string | null
@@ -101,6 +104,17 @@ export const readState = (name: string): AutoState => {
       !Array.isArray(issue.targets) ||
       !Array.isArray(issue.prs)
     )
+      throw new Error(`状態ファイルが壊れています: ${key}`)
+    for (const field of ['branches', 'prevBranches']) {
+      if (issue[field] === undefined) issue[field] = {}
+      else {
+        const branches = asObject(issue[field])
+        if (!branches || Object.values(branches).some((v) => typeof v !== 'string'))
+          throw new Error(`状態ファイルが壊れています: ${key}`)
+      }
+    }
+    if (issue.prevTargets === undefined) issue.prevTargets = []
+    else if (!Array.isArray(issue.prevTargets) || issue.prevTargets.some((v) => typeof v !== 'string'))
       throw new Error(`状態ファイルが壊れています: ${key}`)
     for (const field of ['host', 'hostUnreachableSince']) {
       if (issue[field] === undefined) issue[field] = null

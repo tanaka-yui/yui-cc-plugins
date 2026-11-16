@@ -126,7 +126,7 @@ test('RQ11 continuation comments are carried only inside explicitly untrusted JS
     assert.ok(continuation)
     const repo = f.config().repos['acme/app']
     assert.ok(repo)
-    const request = buildRequest(issue, 'body', repo, f.config().roles, continuation)
+    const request = buildRequest(issue, 'body', [{ name: 'acme/app', options: repo }], f.config().roles, continuation)
     const [before, after] = request.split('Continuation material (JSON):\n')
     assert.ok(after)
     assert.ok(before?.includes('continuation material') && before.includes('untrusted'))
@@ -173,7 +173,7 @@ test('RQ12/12b continuation JSON stays within 20000 characters without breaking 
       assert.ok(JSON.stringify(continuation.material).length <= 20000, mode)
       const repo = f.config().repos['acme/app']
       assert.ok(repo)
-      const request = buildRequest(issue, 'body', repo, f.config().roles, continuation)
+      const request = buildRequest(issue, 'body', [{ name: 'acme/app', options: repo }], f.config().roles, continuation)
       const json = request.split('Continuation material (JSON):\n')[1]?.split('\n')[0]
       assert.ok(json)
       assert.doesNotThrow(() => JSON.parse(json))
@@ -185,5 +185,78 @@ test('RQ12/12b continuation JSON stays within 20000 characters without breaking 
     } finally {
       f.cleanup()
     }
+  }
+})
+
+test('AU110/AU110b-e continuation resets only previous branches belonging to current repositories', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.track()
+    const cases = [
+      {
+        targets: ['other/api', 'acme/app'],
+        prevTargets: ['other/api', 'acme/app'],
+        prevBranches: { 'other/api': 'user/a', 'acme/app': 'user/b' },
+        yes: ['For other/api:', 'For acme/app:'],
+        no: ['git reset --hard origin/user/primary'],
+      },
+      {
+        targets: ['other/api', 'acme/app'],
+        prevTargets: ['acme/app'],
+        prevBranches: { 'acme/app': 'user/previous' },
+        yes: ['For acme/app:'],
+        no: ['For other/api:', 'git reset --hard origin/user/primary'],
+      },
+      {
+        targets: ['acme/app'],
+        prevTargets: ['other/api', 'acme/app'],
+        prevBranches: { 'other/api': 'user/a', 'acme/app': 'user/b' },
+        yes: ['git reset --hard origin/user/b'],
+        no: ['user/a', 'user/primary'],
+      },
+      {
+        targets: ['other/api', 'acme/app'],
+        prevTargets: ['other/api', 'third/web'],
+        prevBranches: { 'other/api': 'user/a', 'third/web': 'user/c' },
+        yes: ['For other/api:'],
+        no: ['For third/web:', 'For acme/app:', 'user/c'],
+      },
+      {
+        targets: ['other/api', 'acme/app'],
+        prevTargets: ['other/api', 'acme/app'],
+        prevBranches: { 'other/api': 'user/a' },
+        yes: ['For other/api:'],
+        no: ['For acme/app:'],
+      },
+      {
+        targets: ['acme/app'],
+        prevTargets: ['other/api', 'acme/app'],
+        prevBranches: { 'other/api': 'user/a' },
+        yes: ['Respond to the comments'],
+        no: ['reset', 'user/a', 'user/primary'],
+      },
+      {
+        targets: ['other/api'],
+        prevTargets: ['other/api', 'acme/app'],
+        prevBranches: { 'other/api': 'user/a' },
+        yes: ['git reset --hard origin/user/a'],
+        no: ['user/primary'],
+      },
+      {
+        targets: ['other/api', 'acme/app'],
+        prevTargets: [],
+        prevBranches: {},
+        yes: ['Respond to the comments'],
+        no: ['reset', 'user/primary'],
+      },
+    ]
+    for (const c of cases) {
+      Object.assign(issue, c, { generation: 2, prevBranch: 'user/primary' })
+      const out = continuationOf(issue, '2026-01-01')?.instructions ?? ''
+      for (const text of c.yes) assert.ok(out.includes(text), `${text}: ${out}`)
+      for (const text of c.no) assert.ok(!out.includes(text), `${text}: ${out}`)
+    }
+  } finally {
+    f.cleanup()
   }
 })

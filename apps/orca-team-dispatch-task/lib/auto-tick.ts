@@ -27,6 +27,7 @@ import { hasCommentMarker, resumeTransition, transition } from './auto-transitio
 import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject } from './json.ts'
+import { repoTargets, roleWorktrees } from './multi-repo.ts'
 import { receiptArray, receiptOk } from './orca.ts'
 import { fetchBranch } from './remote-branch.ts'
 import { STATUS } from './status.ts'
@@ -67,6 +68,16 @@ const child = (name: string): string =>
 const workersOf = (issue: IssueState): JsonObject | null => asObject(readJson(join(issue.statusDir, 'workers.json')))
 const branchOf = (workers: JsonObject): string =>
   asString(get(workers, 'roles', asString(workers.integration_role) ?? '', 'branch')) ?? ''
+
+const branchesOf = (workers: JsonObject, checkout: string): Record<string, string> => {
+  if (repoTargets(workers, checkout).length <= 1) return {}
+  const role = asString(workers.integration_role) ?? 'design'
+  return Object.fromEntries(
+    roleWorktrees(workers, checkout, role)
+      .filter((w) => w.branch)
+      .map((w) => [w.repo, w.branch]),
+  )
+}
 const runRecord = (issue: IssueState) => asObject(readJson(join(issue.statusDir, 'run.json')))
 const coordinator = (issue: IssueState): string | null => asString(runRecord(issue)?.parent_handle) || issue.coordinator
 const listedWorkers = (issue: IssueState): Json[] | null => {
@@ -127,6 +138,7 @@ const started = (tick: Tick, issue: IssueState, workers: JsonObject): void => {
   issue.startedAt ??= autoNow()
   issue.startFailures = 0
   issue.branch = branchOf(workers)
+  issue.branches = branchesOf(workers, tick.config.repos[issue.targets[0] ?? '']?.checkout ?? '')
   tick.save()
   transition(
     issue,
@@ -182,6 +194,7 @@ const start = (tick: Tick, issue: IssueState, args: string[], h: string, fresh: 
     if (exec) {
       issue.startFailures = 0
       issue.branch = branchOf(workers)
+      issue.branches = branchesOf(workers, tick.config.repos[issue.targets[0] ?? '']?.checkout ?? '')
       tick.save()
       return
     }
@@ -262,8 +275,11 @@ const capacityOf = (
   const owned = new Set(
     active.flatMap((i) =>
       Object.values(asObject(workersOf(i)?.roles) ?? {}).flatMap((r) => {
-        const path = asString(get(r, 'worktree_path'))
-        return path ? [hostKey(asString(get(r, 'environment')) ?? LOCAL_HOST, path)] : []
+        const environment = asString(get(r, 'environment')) ?? LOCAL_HOST
+        return [r, ...Object.values(asObject(get(r, 'extra')) ?? {})].flatMap((w) => {
+          const path = asString(get(w, 'worktree_path'))
+          return path ? [hostKey(environment, path)] : []
+        })
       }),
     ),
   )
@@ -293,7 +309,7 @@ const refill = (tick: Tick): void => {
   if (!canAutoCall('補充')) return
   const capacities = hostsOf(tick.config).map((host) => ({ host, ...capacityOf(tick, host) }))
   if (!capacities.some((c) => c.readable && c.reachable)) return
-  const required = roleNames(tick.config.roles.review_mode, tick.config.roles.phase_b).length
+  const rolesPerRepo = roleNames(tick.config.roles.review_mode, tick.config.roles.phase_b).length
   const sources = new Set(pickSources(tick.config))
   for (const issue of orderQueue(
     Object.values(tick.state.issues).filter(
@@ -308,12 +324,20 @@ const refill = (tick: Tick): void => {
     ),
   )) {
     if (tick.startUsed || !canAutoCall('補充の起動', AUTO_START_RESERVE_MS)) break
-    const target = issue.targets[0] ?? ''
-    const repo = tick.config.repos[target]
-    if (!repo) continue
-    const verified = capacities.filter((c) => c.host.repos[target]?.verified === true)
+    const targets = issue.targets
+    const repos: Array<{ name: string; options: AutoConfig['repos'][string] }> = []
+    for (const name of targets) {
+      const options = tick.config.repos[name]
+      if (options) repos.push({ name, options })
+    }
+    const primary = repos[0]
+    if (!primary || repos.length !== targets.length) continue
+    const target = primary.name
+    const repo = primary.options
+    const required = rolesPerRepo * targets.length
+    const verified = capacities.filter((c) => targets.every((t) => c.host.repos[t]?.verified === true))
     let candidates = (verified.length ? verified : capacities).filter(
-      (c) => c.reachable && c.readable && c.host.repos[target] && c.used + required <= c.host.lanes,
+      (c) => c.reachable && c.readable && targets.every((t) => c.host.repos[t]) && c.used + required <= c.host.lanes,
     )
     if (!candidates.length) {
       if (capacities.some((c) => c.reachable && c.readable && c.used + required <= c.host.lanes)) {
@@ -324,14 +348,19 @@ const refill = (tick: Tick): void => {
         console.log(`レーンが足りません: lanes=${c.host.lanes} 使用中=${c.used} 1 件の worktree=${required}`)
       break
     }
-    let freeDisk = 0
-    try {
-      const stats = statfsSync(repo.checkout)
-      freeDisk = (stats.bavail * stats.bsize) / 1024 / 1024
-    } catch {
-      error(tick, `checkout を読めません: ${repo.checkout}`)
-      continue
+    let freeDisk = Number.POSITIVE_INFINITY
+    let unreadable = false
+    for (const r of repos) {
+      try {
+        const stats = statfsSync(r.options.checkout)
+        freeDisk = Math.min(freeDisk, (stats.bavail * stats.bsize) / 1024 / 1024)
+      } catch {
+        error(tick, `checkout を読めません: ${r.options.checkout}`)
+        unreadable = true
+        break
+      }
     }
+    if (unreadable) continue
     if (
       candidates.some((c) => c.host.id === LOCAL_HOST) &&
       (Number(process.env.ORCA_AUTO_FREE_MEMORY_MB ?? availableMemoryMb()) < tick.config.minFreeMemoryMb ||
@@ -349,9 +378,12 @@ const refill = (tick: Tick): void => {
     const host = chosen.host
     const hostRepo = host.repos[target]
     if (!hostRepo) continue
-    const status = run('git', ['-C', repo.checkout, 'status', '--porcelain'])
-    if (status.rc !== 0 || status.stdout.trim()) {
-      console.log(`未コミットの変更があるため補充しません: ${repo.checkout}`)
+    const dirty = repos.find((r) => {
+      const status = run('git', ['-C', r.options.checkout, 'status', '--porcelain'])
+      return status.rc !== 0 || status.stdout.trim()
+    })
+    if (dirty) {
+      console.log(`未コミットの変更があるため補充しません: ${dirty.options.checkout}`)
       continue
     }
     const slug = slugOf(issue.key)
@@ -360,17 +392,23 @@ const refill = (tick: Tick): void => {
       console.log(`status dir が残っています: ${statusDir}`)
       continue
     }
-    const defaultBranch = asString(
-      get(readGithub(['repo', 'view', '--json', 'defaultBranchRef', target]), 'defaultBranchRef', 'name'),
-    )
-    if (
-      !defaultBranch ||
-      run('git', ['-C', repo.checkout, 'fetch', 'origin', defaultBranch]).rc !== 0 ||
-      run('git', ['-C', repo.checkout, 'checkout', '-B', defaultBranch, `origin/${defaultBranch}`]).rc !== 0
-    ) {
-      error(tick, `default ブランチを用意できません: ${target}`)
-      continue
+    const defaults: Record<string, string> = {}
+    for (const r of repos) {
+      const branch = asString(
+        get(readGithub(['repo', 'view', '--json', 'defaultBranchRef', r.name]), 'defaultBranchRef', 'name'),
+      )
+      if (
+        !branch ||
+        run('git', ['-C', r.options.checkout, 'fetch', 'origin', branch]).rc !== 0 ||
+        run('git', ['-C', r.options.checkout, 'checkout', '-B', branch, `origin/${branch}`]).rc !== 0
+      ) {
+        error(tick, `default ブランチを用意できません: ${r.name}`)
+        break
+      }
+      defaults[r.name] = branch
     }
+    if (Object.keys(defaults).length !== targets.length) continue
+    const defaultBranch = defaults[target]
     const detail = asObject(readGithub(['issue', 'view', String(issue.number), '--repo', issue.repo, '--json', 'body']))
     if (typeof detail?.body !== 'string') continue
     mkdirSync(join(autoDir(tick.name), 'requests'), { recursive: true })
@@ -381,16 +419,32 @@ const refill = (tick: Tick): void => {
         buildRequest(
           issue,
           detail.body,
-          repo,
+          repos,
           tick.config.roles,
           continuationOf(issue, issue.endedAt ?? issue.updatedAt),
         ),
       )
     )
       throw new Error('依頼文を書けません')
+    const reposFile = join(autoDir(tick.name), 'requests', `${slug}-g${issue.generation}.repos.json`)
+    if (
+      targets.length === 2 &&
+      !writeAtomic(
+        reposFile,
+        JSON.stringify(
+          repos.map((r) => ({
+            repo: r.name,
+            checkout: r.options.checkout,
+            host_repo: host.repos[r.name]?.selector ?? '',
+            base_branch: `origin/${defaults[r.name]}`,
+          })),
+        ),
+      )
+    )
+      throw new Error('リポジトリの一覧を書けません')
     const h = openCoordinator(repo.checkout, slug)
     if (!h) continue
-    if (!hostRepo.verified && !issue.reason.includes('確認が通っていないマシンで実装'))
+    if (!targets.every((t) => host.repos[t]?.verified) && !issue.reason.includes('確認が通っていないマシンで実装'))
       issue.reason += '（確認が通っていないマシンで実装）'
     Object.assign(issue, { phase: 'dispatching', slug, statusDir, coordinator: h, worktrees: required, host: host.id })
     tick.save()
@@ -400,6 +454,7 @@ const refill = (tick: Tick): void => {
       [
         '--transport',
         'mail',
+        ...(targets.length === 2 ? ['--repos-file', reposFile] : []),
         '--base-branch',
         `origin/${defaultBranch}`,
         '--worker-orca',

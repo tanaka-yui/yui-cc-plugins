@@ -4,7 +4,7 @@ import { type IssueState, type Phase, readState, writeState } from '../../lib/au
 import { fixture } from './auto-fixture.ts'
 
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 export const runtimeFixture = () => {
   const f = fixture()
@@ -30,7 +30,7 @@ export const runtimeFixture = () => {
   for (const name of ['orca-start.ts', 'orca-wait.ts', 'orca-stop.ts', 'orca-pr.ts']) {
     const body =
       name === 'orca-start.ts'
-        ? `const sd=join(flag('--repo-root'),'.dispatch',flag('--slug'));mkdirSync(sd,{recursive:true});if(args.includes('--request-file'))copyFileSync(flag('--request-file'),join(sd,'request.md'));\nif(rc===null||rc===0){let w={run_id:'run_1',integration_branch:'main',integration_role:flag('--phase-b')==='on'?'exec':'design',roles:{design:{dispatch:'ctx_design',branch:'user/'+flag('--slug'),worktree_path:join(dir,'worktree')}}};if(args.includes('--phase')){w=JSON.parse(readFileSync(join(sd,'workers.json'),'utf8'));w.roles.exec={dispatch:'ctx_exec',branch:'user/'+flag('--slug')+'-exec',worktree_path:join(dir,'exec-worktree')}};if(args.includes('--transport')){w.transport='mail';w.environment=args.includes('--on')?flag('--on'):null;w.host_repo=flag('--host-repo');w.base_branch=flag('--base-branch');w.worker_orca=flag('--worker-orca')};if(w.transport==='mail'){for(const role of Object.values(w.roles))role.environment=w.environment};writeFileSync(join(sd,'workers.json'),JSON.stringify(w));writeFileSync(join(sd,'run.json'),JSON.stringify({run_id:'run_1',parent_handle:process.env.ORCA_TERMINAL_HANDLE,repo_root:flag('--repo-root')}));if(!w.environment)spawnSync('git',['-C',flag('--repo-root'),'branch',w.roles[w.integration_role]?.branch||w.roles.design.branch]);}\nprocess.exit(rc??0);`
+        ? `const sd=join(flag('--repo-root'),'.dispatch',flag('--slug'));mkdirSync(sd,{recursive:true});if(args.includes('--request-file'))copyFileSync(flag('--request-file'),join(sd,'request.md'));\nif(rc===null||rc===0){let w={run_id:'run_1',integration_branch:'main',integration_role:flag('--phase-b')==='on'?'exec':'design',roles:{design:{dispatch:'ctx_design',branch:'user/'+flag('--slug'),worktree_path:join(dir,'worktree')}}};if(args.includes('--phase')){w=JSON.parse(readFileSync(join(sd,'workers.json'),'utf8'));w.roles.exec={dispatch:'ctx_exec',branch:'user/'+flag('--slug')+'-exec',worktree_path:join(dir,'exec-worktree')}};if(args.includes('--transport')){w.transport='mail';w.environment=args.includes('--on')?flag('--on'):null;w.host_repo=flag('--host-repo');w.base_branch=flag('--base-branch');w.worker_orca=flag('--worker-orca')};if(w.transport==='mail'){for(const role of Object.values(w.roles))role.environment=w.environment};if(args.includes('--repos-file'))w.repos=JSON.parse(readFileSync(flag('--repos-file'),'utf8')).map(r=>({...r,integration_branch:'main'}));if(w.repos){for(const role of Object.values(w.roles))if(!role.extra)role.extra=Object.fromEntries(w.repos.slice(1).map(r=>[r.repo,{worktree_id:'wt_extra',worktree_path:join(dir,'worktree2'),branch:role.branch+'-2'}]))};writeFileSync(join(sd,'workers.json'),JSON.stringify(w));writeFileSync(join(sd,'run.json'),JSON.stringify({run_id:'run_1',parent_handle:process.env.ORCA_TERMINAL_HANDLE,repo_root:flag('--repo-root')}));if(!w.environment){spawnSync('git',['-C',flag('--repo-root'),'branch',w.roles[w.integration_role]?.branch||w.roles.design.branch]);if(w.repos)for(const r of w.repos.slice(1)){const extra=w.roles[w.integration_role]?.extra?.[r.repo]||w.roles.design.extra[r.repo];spawnSync('git',['-C',r.checkout,'branch',extra.branch])}}}\nprocess.exit(rc??0);`
         : name === 'orca-wait.ts'
           ? 'process.exit(rc??3);'
           : 'process.exit(rc??0);'
@@ -152,6 +152,89 @@ printf 'worker-stop ORCA_TERMINAL_HANDLE=%s\\n' "$ORCA_TERMINAL_HANDLE" >> '${ch
     writeState('main', s)
     return i
   }
+
+  const second = (): string => {
+    const checkout2 = f.raw.repos['other/api'].checkout
+    if (existsSync(join(checkout2, '.git'))) return checkout2
+    const origin2 = join(f.dir, 'origin2.git')
+    git('init', '--bare', '--initial-branch=main', origin2)
+    git('clone', origin2, checkout2)
+    git('-C', checkout2, 'config', 'user.email', 'test@example.invalid')
+    git('-C', checkout2, 'config', 'user.name', 'auto-test')
+    writeFileSync(join(checkout2, 'seed'), 'second seed')
+    git('-C', checkout2, 'add', 'seed')
+    git('-C', checkout2, 'commit', '-m', 'seed')
+    git('-C', checkout2, 'push', 'origin', 'main')
+    appendFileSync(join(checkout2, '.git/info/exclude'), '.dispatch/\n')
+    return checkout2
+  }
+  const trackMulti = (
+    phase: Phase = 'queued',
+    targets: [string, string] = ['other/api', 'acme/app'],
+    number = 7,
+  ): IssueState => {
+    second()
+    const issue = track('queued', number)
+    issue.targets = targets
+    if (phase !== 'queued') {
+      const root = targets[0] === 'acme/app' ? checkout : second()
+      Object.assign(issue, {
+        phase,
+        slug: slugOf(issue.key),
+        statusDir: join(root, '.dispatch', slugOf(issue.key)),
+        branch: `user/${slugOf(issue.key)}`,
+        coordinator: 'term_auto',
+        worktrees: 2,
+        startedAt: '2026-11-13T05:00:00Z',
+      })
+      issue.branches = { [targets[0]]: issue.branch, [targets[1]]: `${issue.branch}-2` }
+      mkdirSync(issue.statusDir, { recursive: true })
+      writeFileSync(join(issue.statusDir, 'request.md'), `${issue.key} ${issue.title}\n`)
+      f.put(join(issue.statusDir, 'run.json'), { run_id: 'run_1', parent_handle: 'term_auto', repo_root: root })
+      const repos = targets.map((repo) => {
+        const path = repo === 'acme/app' ? checkout : second()
+        return {
+          repo,
+          checkout: path,
+          host_repo: `path:${path}`,
+          base_branch: 'origin/main',
+          integration_branch: 'main',
+        }
+      })
+      f.put(join(issue.statusDir, 'workers.json'), {
+        run_id: 'run_1',
+        integration_branch: 'main',
+        integration_role: 'design',
+        repos,
+        roles: {
+          design: {
+            dispatch: 'ctx_design',
+            branch: issue.branch,
+            worktree_path: join(children, 'worktree'),
+            extra: {
+              [targets[1]]: {
+                worktree_id: 'wt_extra',
+                worktree_path: join(children, 'worktree2'),
+                branch: `${issue.branch}-2`,
+              },
+            },
+          },
+        },
+      })
+      for (const r of repos) git('-C', r.checkout, 'branch', issue.branches[r.repo] ?? '')
+      f.respond('issue_view', {
+        state: 'OPEN',
+        title: '題',
+        body: '本文',
+        labels: [{ name: phase === 'dispatching' ? 'Ready' : 'In progress' }],
+      })
+    }
+    const state = readState('main')
+    state.issues[issue.key] = issue
+    writeState('main', state)
+    return issue
+  }
+
   const result = (i: IssueState, extra: object = {}) =>
     f.put(join(i.statusDir, 'auto-result.json'), {
       decisions: [],
@@ -161,5 +244,5 @@ printf 'worker-stop ORCA_TERMINAL_HANDLE=%s\\n' "$ORCA_TERMINAL_HANDLE" >> '${ch
       envFailure: null,
       ...extra,
     })
-  return { ...f, git, checkout, children, childCalls, childRc, liveWorker, track, result }
+  return { ...f, git, checkout, children, childCalls, childRc, liveWorker, track, second, trackMulti, result }
 }

@@ -73,16 +73,48 @@ test('AU24 auto queues without comments or labels; AU27 invalid rows are rejecte
     f.cleanup()
   }
 })
-test('AU25/AU26 engineering transition comments before labeling', () => {
+test('AU25/AU26 two target repositories queue without engineering comments or labels', () => {
   const f = setup()
   try {
     const r = f.apply(f.decision({ targets: ['acme/app', 'other/api'] }))
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(readState('main').issues['acme/app#7']?.phase, 'queued')
+    assert.ok(!f.calls().includes('issue comment'))
+    assert.ok(!f.calls().includes('issue edit'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU103 three targets go to engineering with a comment before labeling', () => {
+  const f = setup()
+  try {
+    const raw = {
+      ...f.raw,
+      repos: { ...f.raw.repos, 'third/web': { ...f.raw.repos['other/api'], checkout: join(f.dir, 'checkout3') } },
+      sources: f.raw.sources.map((s, i) => (i === 0 ? { ...s, related: [...s.related, 'third/web'] } : s)),
+    }
+    f.put(f.configFile, raw)
+    const r = f.apply(f.decision({ targets: ['acme/app', 'other/api', 'third/web'] }))
     assert.equal(r.status, 0, r.stderr)
     const calls = f.calls()
     assert.ok(calls.indexOf('issue comment') < calls.indexOf('issue edit'))
     assert.ok(calls.includes('orca-auto:ready-eng:1:judged'))
     assert.equal(readState('main').issues['acme/app#7']?.phase, 'eng')
+    assert.ok(readState('main').issues['acme/app#7']?.reason.includes('3 つ以上のリポジトリ'))
     assert.ok(calls.includes('Ready_Eng'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU103b targets deduplicate in first occurrence order before routing', () => {
+  const f = setup()
+  try {
+    assert.equal(f.apply(f.decision({ targets: ['acme/app', 'acme/app'] })).status, 0)
+    const issue = readState('main').issues['acme/app#7']
+    assert.deepEqual(issue?.targets, ['acme/app'])
+    assert.equal(issue?.phase, 'queued')
   } finally {
     f.cleanup()
   }

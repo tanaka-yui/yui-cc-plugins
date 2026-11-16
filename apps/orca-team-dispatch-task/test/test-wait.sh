@@ -1890,4 +1890,17 @@ mail_setup; mail_message; out=$(w 1 2>&1); rc=$?
  && ok WT176 || fail "WT176 rc=$rc $out"
 mail_teardown
 
+
+# WT177: 主が古くても 2 つ目の local worktree の編集と commit が停滞の時計を戻す。
+multi_setup
+jq '.roles.design.worktree_path=""' "$SD/workers.json" > "$SD/w"; mv "$SD/w" "$SD/workers.json"
+node --input-type=module -e "import { utimesSync } from 'node:fs'; for(const p of ['run.json','workers.json','roles/design/status.json'])utimesSync('$SD/'+p,1,1)"
+echo change > "$MR2/changed"
+last=$(node --input-type=module -e "import { workerLastChange } from '$P/lib/awaiting.ts'; console.log(workerLastChange('$SD'))")
+[[ "$last" -gt 1 ]] && ok 'WT177 edits' || fail "WT177 edits $last"
+git -C "$MR2" add changed; git -C "$MR2" -c user.email=t@e -c user.name=t commit -qm change
+last=$(node --input-type=module -e "import { workerLastChange } from '$P/lib/awaiting.ts'; console.log(workerLastChange('$SD'))")
+[[ "$last" -gt 1 ]] && ok 'WT177 commits' || fail "WT177 commits $last"
+multi_teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

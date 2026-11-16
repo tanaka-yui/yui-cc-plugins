@@ -33,6 +33,9 @@ const makeIssue = (repo: string, row: ReadyIssue, pick: string): IssueState => (
   slug: '',
   statusDir: '',
   branch: '',
+  branches: {},
+  prevBranches: {},
+  prevTargets: [],
   host: null,
   hostUnreachableSince: null,
   coordinator: null,
@@ -91,7 +94,15 @@ export const syncIssues = (
         ['failed', 'stopped', 'eng', 'review'].includes(issue.phase)
       ) {
         const from = issue.phase
+        const hadBranches = Object.keys(issue.branches).length > 0 || issue.branch !== ''
         Object.assign(issue, {
+          prevTargets: hadBranches ? [...issue.targets] : issue.prevTargets,
+          prevBranches: hadBranches
+            ? Object.keys(issue.branches).length
+              ? { ...issue.branches }
+              : { [issue.targets[0] ?? '']: issue.branch }
+            : issue.prevBranches,
+          branches: {},
           prevBranch: issue.branch || issue.prevBranch,
           prevPrs: issue.prs.length ? issue.prs : issue.prevPrs,
           generation: issue.generation + 1,

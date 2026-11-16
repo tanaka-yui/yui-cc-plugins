@@ -108,3 +108,35 @@ test('AU15b reclaim rechecks token after another contender takes ownership', asy
   assert.equal(output.trim(), 'false')
   releaseLock('main')
 })
+
+test('AU104 legacy states normalize branch maps and previous targets; malformed values fail closed', () => {
+  const entry = { key: 'acme/app#1', phase: 'running', generation: 1, targets: [], prs: [] }
+  const put = (extra: object) =>
+    writeFileSync(
+      join(sd, 'state.json'),
+      JSON.stringify({
+        version: 1,
+        judgingSince: null,
+        issues: { 'acme/app#1': { ...entry, ...extra } },
+      }),
+    )
+  try {
+    put({})
+    const issue = readState('main').issues['acme/app#1']
+    assert.deepEqual(issue?.branches, {})
+    assert.deepEqual(issue?.prevBranches, {})
+    assert.deepEqual(issue?.prevTargets, [])
+    for (const key of ['branches', 'prevBranches']) {
+      for (const value of [[], null, 'branch', { 'acme/app': 1 }]) {
+        put({ [key]: value })
+        assert.throws(() => readState('main'), /状態ファイルが壊れています/)
+      }
+    }
+    for (const value of [null, {}, [1]]) {
+      put({ prevTargets: value })
+      assert.throws(() => readState('main'), /状態ファイルが壊れています/)
+    }
+  } finally {
+    rmSync(join(sd, 'state.json'), { force: true })
+  }
+})

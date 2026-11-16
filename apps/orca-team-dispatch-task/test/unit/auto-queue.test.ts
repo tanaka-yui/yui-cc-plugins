@@ -140,3 +140,55 @@ test('AU22e/AU22f/AU22g stopped generations retain history and cleanup tombstone
     f.cleanup()
   }
 })
+
+test('AU104b generations preserve repository identity even after partial starts and engineering-only generations', () => {
+  const f = fixture()
+  try {
+    const source = f.config().sources[0]
+    assert.ok(source)
+    const cases = [
+      {
+        targets: ['other/api', 'acme/app'],
+        branch: 'user/a',
+        branches: { 'other/api': 'user/a', 'acme/app': 'user/b' },
+        prevTargets: [],
+        prevBranches: {},
+        wantTargets: ['other/api', 'acme/app'],
+        want: { 'other/api': 'user/a', 'acme/app': 'user/b' },
+      },
+      {
+        targets: ['acme/app'],
+        branch: 'user/one',
+        branches: {},
+        prevTargets: [],
+        prevBranches: {},
+        wantTargets: ['acme/app'],
+        want: { 'acme/app': 'user/one' },
+      },
+      {
+        targets: ['acme/app'],
+        branch: '',
+        branches: {},
+        prevTargets: ['other/api', 'acme/app'],
+        prevBranches: { 'other/api': 'user/partial' },
+        wantTargets: ['other/api', 'acme/app'],
+        want: { 'other/api': 'user/partial' },
+      },
+    ]
+    for (const c of cases) {
+      const s = empty()
+      f.respond('issue_list', [{ number: 7, title: '題', labels: [], updatedAt: '2026-01-01' }])
+      syncIssues(s, [source])
+      const issue = s.issues['acme/app#7']
+      assert.ok(issue)
+      Object.assign(issue, c, { phase: 'eng' })
+      syncIssues(s, [source])
+      assert.equal(issue.generation, 2)
+      assert.deepEqual(issue.prevTargets, c.wantTargets)
+      assert.deepEqual(issue.prevBranches, c.want)
+      assert.deepEqual(issue.branches, {})
+    }
+  } finally {
+    f.cleanup()
+  }
+})

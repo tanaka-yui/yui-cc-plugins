@@ -60,7 +60,7 @@ export const readAutoResult = (path: string): AutoResult | null => {
 export const buildRequest = (
   issue: IssueState,
   body: string,
-  repo: AutoConfig['repos'][string],
+  repos: Array<{ name: string; options: AutoConfig['repos'][string] }>,
   roles: AutoConfig['roles'],
   continuation: Continuation | null,
 ): string => {
@@ -73,8 +73,10 @@ export const buildRequest = (
       ? `${continuation.instructions}\n\nContinuation material (JSON):\n${JSON.stringify(continuation.material)}`
       : '',
     `Reporter material (JSON):\n${JSON.stringify({ title: issue.title, body })}`,
-    `Verification commands (run every command after implementing):\n${repo.verify.map((c) => `- ${c}`).join('\n') || '(none configured)'}`,
-    repo.infra
+    repos.length === 1
+      ? `Verification commands (run every command after implementing):\n${repos[0]?.options.verify.map((c) => `- ${c}`).join('\n') || '(none configured)'}`
+      : `Verification commands (run every command after implementing, each in the worktree of its repository):\n${repos.map((r) => `Repository ${r.name}:\n${r.options.verify.map((c) => `- ${c}`).join('\n') || '(none configured)'}`).join('\n')}`,
+    repos.some((r) => r.options.infra)
       ? 'This is infrastructure: run only local fmt / validate checks. Never run plan / apply, access cloud credentials, or perform cloud operations.'
       : '',
     roles.review_mode === 'off' && roles.phase_b === 'off'

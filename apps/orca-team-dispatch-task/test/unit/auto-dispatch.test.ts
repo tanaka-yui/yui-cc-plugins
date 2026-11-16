@@ -1,6 +1,8 @@
 import { autoDir } from '../../lib/auto-paths.ts'
 import { slugOf } from '../../lib/auto-request.ts'
 import { readState, writeState } from '../../lib/auto-state.ts'
+import { readJson } from '../../lib/fs.ts'
+import { asArray, get, parseJson } from '../../lib/json.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
 import assert from 'node:assert/strict'
@@ -464,6 +466,226 @@ test('AU101/F2 skipped unverified placement never changes the saved judgment rea
     assert.equal(after.issues[first.key]?.reason, original)
     assert.equal(after.issues[second.key]?.phase, 'running')
     assert.ok(after.issues[second.key]?.reason.includes('確認が通っていないマシンで実装'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+const multiConfig = (f: ReturnType<typeof runtimeFixture>, lanes = 2) =>
+  f.put(f.configFile, {
+    ...f.raw,
+    lanes,
+    repos: { ...f.raw.repos, 'other/api': { ...f.raw.repos['other/api'], verified: true } },
+  })
+
+test('AU105 only hosts containing every target are candidates, even when another host has more lanes', () => {
+  for (const missing of [false, true]) {
+    const f = runtimeFixture()
+    try {
+      const issue = f.trackMulti('queued', ['acme/app', 'other/api'])
+      multihost(f, 2, 8)
+      if (missing) {
+        f.put(f.configFile, {
+          ...f.raw,
+          hosts: [
+            {
+              id: 'local',
+              name: 'This Mac',
+              lanes: 2,
+              orcaBin: 'orca',
+              repos: { 'other/api': { selector: 'id:api', verified: true } },
+            },
+            {
+              id: 'env-1',
+              name: 'Remote',
+              lanes: 8,
+              orcaBin: 'orca',
+              repos: { 'acme/app': { selector: 'id:app', verified: true } },
+            },
+          ],
+        })
+      }
+      const r = f.cli('tick')
+      if (missing) {
+        assert.ok(!f.childCalls().includes('orca-start.ts'))
+        assert.ok(r.stdout.includes('この Issue を入れられるマシンがありません'), r.stdout)
+      } else assert.equal(readState('main').issues[issue.key]?.host, 'local')
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU105b unverified placement requires both repositories and records the verification warning', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.trackMulti()
+    f.put(f.configFile, { ...f.raw, lanes: 2 })
+    const r = f.cli('tick')
+    assert.equal(r.status, 1, r.stderr)
+    assert.ok(readState('main').issues[issue.key]?.reason.includes('確認が通っていないマシンで実装'))
+    assert.equal(readState('main').issues[issue.key]?.worktrees, 2)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU106 lanes reserve roles times repositories, and recorded extras are owned', () => {
+  for (const roles of [
+    { review_mode: 'off', phase_b: 'off' },
+    { review_mode: 'on', phase_b: 'on' },
+  ] as const) {
+    const required = roles.review_mode === 'on' ? 8 : 2
+    for (const enough of [false, true]) {
+      const f = runtimeFixture()
+      try {
+        const issue = f.trackMulti()
+        f.put(f.configFile, { ...f.raw, roles, lanes: enough ? required : required - 1 })
+        const r = f.cli('tick')
+        if (enough) {
+          assert.equal(readState('main').issues[issue.key]?.worktrees, required)
+          const report = readJson(join(autoDir('main'), 'report.json'))
+          assert.equal(get(asArray(get(report, 'hosts'))?.[0], 'used'), required)
+        } else {
+          assert.ok(!f.childCalls().includes('orca-start.ts'))
+          assert.ok(r.stdout.includes('レーンが足りません'), r.stdout)
+        }
+      } finally {
+        f.cleanup()
+      }
+    }
+  }
+  const f = runtimeFixture()
+  try {
+    const issue = f.trackMulti('running')
+    multiConfig(f)
+    f.respond(
+      'worktree_list',
+      {
+        ok: true,
+        result: { worktrees: [{ displayName: issue.slug, path: join(f.children, 'worktree2') }], truncated: false },
+      },
+      f.orca,
+    )
+    const r = f.cli('tick')
+    assert.ok(!r.stdout.includes('持ち主のいない worktree'), r.stdout)
+    assert.equal(get(asArray(get(readJson(join(autoDir('main'), 'report.json')), 'hosts'))?.[0], 'used'), 2)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU106b extra-only failed starts retain environment ownership of identical paths', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.trackMulti('dispatching')
+    const s = readState('main')
+    const current = s.issues[issue.key]
+    assert.ok(current)
+    current.host = 'env-1'
+    writeState('main', s)
+    multihost(f, 3, 4)
+    f.put(join(issue.statusDir, 'workers.json'), {
+      repos: issue.targets.map((repo) => ({
+        repo,
+        checkout: f.raw.repos[repo === 'acme/app' ? 'acme/app' : 'other/api'].checkout,
+        host_repo: 'id:repo',
+        base_branch: 'origin/main',
+        integration_branch: 'main',
+      })),
+      integration_role: 'design',
+      roles: {
+        design: { environment: 'env-1', extra: { 'acme/app': { worktree_path: '/same', branch: 'user/extra' } } },
+      },
+    })
+    f.respond(
+      'worktree_list',
+      { ok: true, result: { worktrees: [{ displayName: issue.slug, path: '/same' }], truncated: false } },
+      f.orca,
+    )
+    f.liveWorker()
+    const r = f.cli('tick')
+    const hosts = asArray(get(readJson(join(autoDir('main'), 'report.json')), 'hosts')) ?? []
+    assert.equal(
+      get(
+        hosts.find((h) => get(h, 'name') === 'Mac M2max'),
+        'used',
+      ),
+      2,
+    )
+    assert.equal(
+      get(
+        hosts.find((h) => get(h, 'name') === 'This Mac'),
+        'used',
+      ),
+      1,
+    )
+    assert.ok(r.stdout.includes('持ち主のいない worktree'), r.stdout)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU107 any dirty checkout blocks dispatch and both default branches are prepared', () => {
+  for (const dirty of ['acme/app', 'other/api', 'none']) {
+    const f = runtimeFixture()
+    try {
+      f.trackMulti()
+      multiConfig(f)
+      const second = f.second()
+      for (const checkout of [f.checkout, second]) f.git('-C', checkout, 'checkout', '-b', 'user/parent')
+      if (dirty !== 'none') writeFileSync(join(dirty === 'acme/app' ? f.checkout : second, 'dirty'), 'dirt')
+      const r = f.cli('tick')
+      if (dirty !== 'none') {
+        assert.ok(!f.childCalls().includes('orca-start.ts'))
+        assert.ok(r.stdout.includes('未コミットの変更があるため補充しません'), r.stdout)
+      } else {
+        assert.ok(f.childCalls().includes('orca-start.ts'))
+        for (const checkout of [f.checkout, second])
+          assert.equal(f.git('-C', checkout, 'branch', '--show-current'), 'main')
+      }
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU108 repositories file and primary arguments preserve target order and both branch records', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.trackMulti()
+    multiConfig(f)
+    const r = f.cli('tick')
+    assert.equal(r.status, 1, r.stderr)
+    const match = f.childCalls().match(/orca-start\.ts (\[.*?\]) ORCA_TERMINAL_HANDLE=/)
+    const args = asArray(parseJson(match?.[1] ?? '')) ?? []
+    const file = args[args.indexOf('--repos-file') + 1]
+    assert.equal(typeof file, 'string')
+    if (typeof file !== 'string') throw new Error('repos-file is missing')
+    const repos = asArray(readJson(file))
+    assert.deepEqual(repos, [
+      { repo: 'other/api', checkout: f.second(), host_repo: `path:${f.second()}`, base_branch: 'origin/main' },
+      { repo: 'acme/app', checkout: f.checkout, host_repo: `path:${f.checkout}`, base_branch: 'origin/main' },
+    ])
+    assert.equal(args[args.indexOf('--repo-root') + 1], f.second())
+    assert.equal(args[args.indexOf('--host-repo') + 1], `path:${f.second()}`)
+    assert.equal(args[args.indexOf('--base-branch') + 1], 'origin/main')
+    assert.deepEqual(readState('main').issues[issue.key]?.branches, {
+      'other/api': `user/${slugOf(issue.key)}`,
+      'acme/app': `user/${slugOf(issue.key)}-2`,
+    })
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU109 legacy starts do not acquire a repos file', () => {
+  const f = runtimeFixture()
+  try {
+    f.track()
+    f.cli('tick')
+    assert.ok(f.childCalls().includes('orca-start.ts'))
+    assert.ok(!f.childCalls().includes('--repos-file'))
   } finally {
     f.cleanup()
   }

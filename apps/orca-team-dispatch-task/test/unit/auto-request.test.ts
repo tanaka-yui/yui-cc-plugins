@@ -41,7 +41,7 @@ test('RQ5-6b worker request includes verification and obligations even in plan-o
       const out = buildRequest(
         issue,
         'reporter text',
-        { ...repo, infra: true, verify: ['npm test', 'npm run lint'] },
+        [{ name: 'acme/app', options: { ...repo, infra: true, verify: ['npm test', 'npm run lint'] } }],
         roles,
         null,
       )
@@ -101,11 +101,38 @@ test('RQ10 request permits task-branch push and reports artifacts in the envelop
     const issue = s.issues['acme/app#42']
     const repo = f.config().repos['acme/app']
     assert.ok(issue && repo)
-    const request = buildRequest(issue, 'body', repo, f.config().roles, null)
+    const request = buildRequest(issue, 'body', [{ name: 'acme/app', options: repo }], f.config().roles, null)
     for (const word of ['auto-result.json', '"decisions"', '"verify"', 'envelope'])
       assert.ok(request.includes(word), word)
     assert.ok(!request.includes('do not push'))
     assert.ok(!request.includes('.dispatch'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('RQ13 multiple repository requests group verification and include infrastructure restrictions once', () => {
+  const f = fixture()
+  try {
+    f.respond('issue_list', [{ number: 42, title: '題', labels: [], updatedAt: '2026-01-01' }])
+    const state = readState('main')
+    syncIssues(state, f.config().sources)
+    const issue = state.issues['acme/app#42']
+    const repo = f.config().repos['acme/app']
+    const other = f.config().repos['other/api']
+    assert.ok(issue && repo && other)
+    const out = buildRequest(
+      issue,
+      'body',
+      [
+        { name: 'acme/app', options: { ...repo, verify: ['npm test'] } },
+        { name: 'other/api', options: { ...other, infra: true, verify: [] } },
+      ],
+      f.config().roles,
+      null,
+    )
+    assert.ok(out.includes('Repository acme/app:\n- npm test\nRepository other/api:\n(none configured)'))
+    assert.equal(out.split('This is infrastructure:').length - 1, 1)
   } finally {
     f.cleanup()
   }

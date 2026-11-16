@@ -5,6 +5,7 @@
 //   review-skipped の起床が、答えを待つ design の入力欄に 1 行を打ち込む経路が見つかった
 import { readJson } from './fs.ts'
 import { asObject, asString, get } from './json.ts'
+import { roleWorktrees } from './multi-repo.ts'
 import { run } from './sys.ts'
 
 import { existsSync, readdirSync, statSync } from 'node:fs'
@@ -44,17 +45,20 @@ export const workerLastChange = (statusDir: string): number => {
   } catch {
     /* review はまだ無い */
   }
-  const workers = readJson(join(statusDir, 'workers.json'))
-  for (const role of Object.values(asObject(get(workers, 'roles')) ?? {})) {
-    if (asString(get(role, 'environment'))) continue
-    const worktree = asString(get(role, 'worktree_path')) ?? ''
-    if (worktree === '' || !existsSync(worktree)) continue
-    const last = run('git', ['-C', worktree, 'log', '-1', '--format=%ct'])
-    latest = Math.max(latest, Number(last.stdout.trim()) || 0)
-    const changed = run('git', ['-C', worktree, 'status', '--porcelain'])
-    for (const line of changed.stdout.split('\n')) {
-      if (line.length < 4) continue
-      newer(join(worktree, line.slice(3)))
+  const workers = asObject(readJson(join(statusDir, 'workers.json')))
+  const root = asString(get(readJson(join(statusDir, 'run.json')), 'repo_root')) ?? ''
+  for (const [role, record] of Object.entries(asObject(get(workers, 'roles')) ?? {})) {
+    if (asString(get(record, 'environment'))) continue
+    for (const w of roleWorktrees(workers, root, role)) {
+      const worktree = w.worktreePath
+      if (worktree === '' || !existsSync(worktree)) continue
+      const last = run('git', ['-C', worktree, 'log', '-1', '--format=%ct'])
+      latest = Math.max(latest, Number(last.stdout.trim()) || 0)
+      const changed = run('git', ['-C', worktree, 'status', '--porcelain'])
+      for (const line of changed.stdout.split('\n')) {
+        if (line.length < 4) continue
+        newer(join(worktree, line.slice(3)))
+      }
     }
   }
   return latest

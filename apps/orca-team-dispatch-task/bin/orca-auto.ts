@@ -135,12 +135,13 @@ const main = (argv: string[]): number => {
         rejected = true
         continue
       }
-      issue.targets = targets as string[]
+      const uniqueTargets = [...new Set(targets.filter((t): t is string => typeof t === 'string'))]
+      issue.targets = uniqueTargets
       issue.limitMinutes = decision.limitMinutes
       issue.reason = decision.reason
       issue.updatedAt = autoNow()
       const feature = issue.category === FEATURE_LABEL && !issue.returnedFromEng
-      if (decision.route === 'eng' || targets.length > 1 || feature) {
+      if (decision.route === 'eng' || uniqueTargets.length > 2 || feature) {
         const current = viewIssue(issue.repo, issue.number)
         if (!current) {
           rejected = true
@@ -156,7 +157,7 @@ const main = (argv: string[]): number => {
           save()
           continue
         }
-        if (targets.length > 1) issue.reason += '（複数リポジトリの Issue は自動実行の対象外です）'
+        if (uniqueTargets.length > 2) issue.reason += '（3 つ以上のリポジトリの Issue は自動実行の対象外です）'
         if (feature) issue.reason += '（新機能の Issue はエンジニアが対応します）'
         transition(
           issue,
