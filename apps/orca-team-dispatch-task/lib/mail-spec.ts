@@ -138,6 +138,8 @@ On remediation, fix the stated problem and repeat step 5 with a new nonce.
 finished worker for its unread mail. Immediately before any worker_done below, mark your mail
 read once without --peek:
 ${orca} orchestration check --terminal <handle> --json
+If that check returns mail you have not acted on (for example a remediation for your current
+nonce), handle it first and do not send worker_done yet.
 After acceptance, send completion exactly once:
 ${orca} orchestration send --type worker_done --outcome succeeded <ids> --subject "<short status>" --body "<one line>" --json
 If the work itself fails, do not send merge_ready. Put the reason in result.md${input.integration ? ' and the relevant auto-result.json fields, including envFailure for environment problems' : ''}, make an envelope as in step 5, and send:

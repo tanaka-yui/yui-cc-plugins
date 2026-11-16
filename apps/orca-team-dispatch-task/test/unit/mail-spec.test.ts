@@ -94,5 +94,6 @@ test('MS11 every role reads its mail without --peek before worker_done', () => {
     assert.ok(consume < spec.indexOf('--type worker_done --outcome succeeded'))
     assert.ok(consume < spec.indexOf('--type worker_done --outcome failed'))
     assert.ok(spec.includes('Never send worker_done while mail is unread'))
+    assert.ok(spec.includes('If that check returns mail you have not acted on'))
   }
 })

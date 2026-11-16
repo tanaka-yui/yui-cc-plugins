@@ -507,8 +507,8 @@ const replyCompletion = (
     state.expected.parent,
     '--json',
   ])
-  // ★ 遠くの dispatch への send は `{queuedFor, messageId: relay_*}` を返す（2026-11-15 の spike 13、2026-11-16 の実機）。
-  //   message.id だけを読んでいた版は、届いた受理を「確かめられない」と読んで送り直した
+  // ★ 遠くの dispatch への send の返り値に `result.message.id` は無い（2026-11-16 の実機。届いた受理を「確かめられない」と
+  //   読んで 2 通送った）。spike 13 の記録は `{queuedFor, messageId: relay_*}`。その形を読むが、実機の生の返り値はまだ写していない
   return mail
     ? receiptOk(sent)
       ? string(get(sent.json, 'result', 'message', 'id')) || string(get(sent.json, 'result', 'messageId'))
