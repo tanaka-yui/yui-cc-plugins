@@ -626,6 +626,46 @@ test('AU106b extra-only failed starts retain environment ownership of identical 
   }
 })
 
+test('AU106c a two-repository lane shortage allows a queued single-repository Issue to start', () => {
+  for (const roles of [
+    { review_mode: 'off', phase_b: 'off' },
+    { review_mode: 'on', phase_b: 'on' },
+  ] as const) {
+    const f = runtimeFixture()
+    try {
+      const multi = f.trackMulti('queued', ['acme/app', 'other/api'], 7)
+      const single = f.track('queued', 8)
+      f.put(f.configFile, { ...f.raw, roles, lanes: roles.review_mode === 'on' ? 4 : 1 })
+      const r = f.cli('tick')
+      assert.ok(r.stdout.includes('レーンが足りません'), r.stdout)
+      const state = readState('main')
+      assert.equal(state.issues[multi.key]?.phase, 'queued')
+      assert.equal(state.issues[single.key]?.phase, 'running')
+      assert.equal(f.childCalls().split('orca-start.ts').length - 1, 1)
+      assert.ok(f.childCalls().includes(slugOf(single.key)))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU106d a single-repository lane shortage still stops queue scanning', () => {
+  const f = runtimeFixture()
+  try {
+    const first = f.track('queued', 7)
+    const second = f.track('queued', 8)
+    f.put(f.configFile, { ...f.raw, roles: { review_mode: 'on', phase_b: 'on' }, lanes: 3 })
+    const r = f.cli('tick')
+    assert.equal(r.stdout.split('レーンが足りません').length - 1, 1, r.stdout)
+    assert.ok(!f.childCalls().includes('orca-start.ts'))
+    const state = readState('main')
+    assert.equal(state.issues[first.key]?.phase, 'queued')
+    assert.equal(state.issues[second.key]?.phase, 'queued')
+  } finally {
+    f.cleanup()
+  }
+})
+
 test('AU107 any dirty checkout blocks dispatch and both default branches are prepared', () => {
   for (const dirty of ['acme/app', 'other/api', 'none']) {
     const f = runtimeFixture()

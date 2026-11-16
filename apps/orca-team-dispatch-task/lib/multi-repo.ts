@@ -1,6 +1,6 @@
+import { readJson } from './fs.ts'
 import { asArray, asObject, asString, get, type JsonObject } from './json.ts'
 
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export type RepoTarget = {
@@ -71,22 +71,18 @@ export const roleWorktrees = (workers: JsonObject | null, repoRoot: string, role
 }
 
 export const readReposFile = (path: string): ReposFileEntry[] | null => {
-  try {
-    const repos = asArray(JSON.parse(readFileSync(path, 'utf8')))
-    if (repos?.length !== 2) return null
-    const entries: ReposFileEntry[] = []
-    for (const value of repos) {
-      const repo = asString(get(value, 'repo'))
-      const checkout = asString(get(value, 'checkout'))
-      const host_repo = asString(get(value, 'host_repo'))
-      const base_branch = asString(get(value, 'base_branch'))
-      if (!repo || !checkout || !host_repo || !base_branch || entries.some((e) => e.repo === repo)) return null
-      entries.push({ repo, checkout, host_repo, base_branch })
-    }
-    return entries
-  } catch {
-    return null
+  const repos = asArray(readJson(path))
+  if (repos?.length !== 2) return null
+  const entries: ReposFileEntry[] = []
+  for (const value of repos) {
+    const repo = asString(get(value, 'repo'))
+    const checkout = asString(get(value, 'checkout'))
+    const host_repo = asString(get(value, 'host_repo'))
+    const base_branch = asString(get(value, 'base_branch'))
+    if (!repo || !checkout || !host_repo || !base_branch || entries.some((e) => e.repo === repo)) return null
+    entries.push({ repo, checkout, host_repo, base_branch })
   }
+  return entries
 }
 
 export const resultFileOf = (statusDir: string, repo: string | null): string =>

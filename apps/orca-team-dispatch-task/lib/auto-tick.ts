@@ -357,6 +357,11 @@ const refill = (tick: Tick): void => {
       }
       for (const c of capacities.filter((c) => c.reachable && c.readable))
         console.log(`レーンが足りません: lanes=${c.host.lanes} 使用中=${c.used} 1 件の worktree=${required}`)
+      if (
+        required > rolesPerRepo &&
+        capacities.some((c) => c.reachable && c.readable && c.used + rolesPerRepo <= c.host.lanes)
+      )
+        continue
       break
     }
     let freeDisk = Number.POSITIVE_INFINITY
