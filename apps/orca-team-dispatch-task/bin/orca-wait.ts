@@ -507,7 +507,13 @@ const replyCompletion = (
     state.expected.parent,
     '--json',
   ])
-  return mail ? (receiptOk(sent) ? string(get(sent.json, 'result', 'message', 'id')) : '') : sent.rc === 0
+  // ★ 遠くの dispatch への send は `{queuedFor, messageId: relay_*}` を返す（2026-11-15 の spike 13、2026-11-16 の実機）。
+  //   message.id だけを読んでいた版は、届いた受理を「確かめられない」と読んで送り直した
+  return mail
+    ? receiptOk(sent)
+      ? string(get(sent.json, 'result', 'message', 'id')) || string(get(sent.json, 'result', 'messageId'))
+      : ''
+    : sent.rc === 0
 }
 // ★ 配送と起床は別の事実。起床の失敗で配送や batch の結末を覆さない。
 // 移植元の理由（bin/orca-wait.sh）:
@@ -719,9 +725,12 @@ const mailOffer = (state: State, entry: Entry, nonce: string, body: string): 0 |
   const accepting = string(get(completion, 'nonce')) === nonce && get(completion, 'phase') === 'accepting'
   let head = string(get(completion, 'head'))
   if (accepting) {
+    // ★ 遠くの dispatch の受信箱は --environment を付けないと、ok の空の一覧が返る（2026-11-16 の実機）
+    const environment = string(get(workers, 'roles', entry.role, 'environment'))
     const inbox = runOrca([
       'orchestration',
       'inbox',
+      ...(environment ? ['--environment', environment] : []),
       '--terminal',
       `dispatch:${entry.dispatch}`,
       '--limit',
