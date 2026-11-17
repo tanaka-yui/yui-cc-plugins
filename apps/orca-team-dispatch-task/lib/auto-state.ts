@@ -8,6 +8,9 @@ import { existsSync, linkSync, mkdirSync, renameSync, rmdirSync, rmSync, writeFi
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 
+export const AUTO_LOCK_WAIT_MS = 120_000
+export const AUTO_LOCK_TTL_MS = 160_000
+
 export type Priority = 'critical' | 'high' | 'middle' | 'low'
 export type Phase =
   | 'judging'

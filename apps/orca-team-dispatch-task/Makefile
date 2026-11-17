@@ -23,7 +23,7 @@ NAME ?= main
 auto: ## --auto を1回まわす。判定が必要なときだけClaudeを起動 (NAME=main)
 	@rc=0; node bin/orca-auto.ts tick --name $(NAME) || rc=$$?; \
 	case $$rc in \
-	  0) claude --model "$$(node bin/orca-auto.ts judge-model --name $(NAME))" --effort "$$(node bin/orca-auto.ts judge-effort --name $(NAME))" "Follow $(CURDIR)/skills/orca-team-dispatch-task/references/auto-judge.md for --auto name $(NAME)." ;; \
+	  0) claude --model "$$(node bin/orca-auto.ts judge-model --name $(NAME))" --effort "$$(node bin/orca-auto.ts judge-effort --name $(NAME))" 'Run `node $(CURDIR)/bin/orca-auto.ts judge-doc --name $(NAME)` and follow the printed instructions exactly.' ;; \
 	  1) exit 0 ;; \
 	  *) exit $$rc ;; \
 	esac

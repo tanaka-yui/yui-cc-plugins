@@ -691,6 +691,15 @@ grep -Fq 'one target repository per Issue' "$S" && bad="$bad [old single-target:
 grep -Fq 'C2a supports one target repository' "$judge_en" && bad="$bad [old single-target:judge]"
 [[ -z "$bad" ]] && ok 'SK39 複数リポジトリ' || fail "SK39:$bad"
 
+# SK40: 判定の呼び方を judge-doc が渡す。
+bad=""
+[[ "$auto_recipe" == *"judge-doc --name main"* ]] || bad="$bad [auto judge-doc]"
+for f in "$judge_en" "$judge_ja"; do
+  grep -Fq '## Commands' "$f" || bad="$bad [commands:$f]"
+  grep -Fq 'node <plugin>/bin/orca-auto.ts' "$f" && bad="$bad [old command:$f]"
+done
+[[ -z "$bad" ]] && ok SK40 || fail "SK40:$bad"
+
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"

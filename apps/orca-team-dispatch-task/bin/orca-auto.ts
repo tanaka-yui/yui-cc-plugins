@@ -4,23 +4,47 @@ import { pickSources, readAutoConfig } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
 import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
 import { syncProjects } from '../lib/auto-project.ts'
-import { readState, releaseLock, takeLockWait, writeState } from '../lib/auto-state.ts'
+import {
+  AUTO_LOCK_TTL_MS,
+  AUTO_LOCK_WAIT_MS,
+  readState,
+  releaseLock,
+  takeLockWait,
+  writeState,
+} from '../lib/auto-state.ts'
 import { runTick } from '../lib/auto-tick.ts'
 import { transition } from '../lib/auto-transition.ts'
 import { die } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString } from '../lib/json.ts'
+import {
+  ENTRY_FILE,
+  judgeFingerprint,
+  judgeRulesProblems,
+  LAUNCHER_ENV,
+  launcherPaths,
+  pluginRoot,
+} from '../lib/setup-automation.ts'
 import { FEATURE_LABEL, STATUS } from '../lib/status.ts'
 import { envCount } from '../lib/sys.ts'
 
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-export const AUTO_LOCK_WAIT_MS = 120_000
-const LOCK_TTL_MS = 160_000
 const main = (argv: string[]): number => {
   const command = argv[0] ?? ''
-  if (!['tick', 'status', 'judge-list', 'judge-apply', 'judge-model', 'judge-effort', 'clear-start'].includes(command))
+  if (
+    ![
+      'tick',
+      'status',
+      'judge-doc',
+      'judge-list',
+      'judge-apply',
+      'judge-model',
+      'judge-effort',
+      'clear-start',
+    ].includes(command)
+  )
     die('orca-auto', 'command is required: judge-list / judge-apply / judge-model / judge-effort / clear-start')
   const flags = new Map<string, string>()
   for (let i = 1; i < argv.length; i += 2) {
@@ -34,7 +58,31 @@ const main = (argv: string[]): number => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) die('orca-auto', 'invalid name')
   if (command === 'judge-apply' && !flags.get('--file')) die('orca-auto', '--file is required')
   if (command === 'clear-start' && !flags.get('--key')) die('orca-auto', '--key is required')
-  if (command === 'tick') return runTick(name)
+  if (command === 'judge-doc') {
+    const prefix = process.env[LAUNCHER_ENV] ? launcherPaths().launcher : `node ${join(pluginRoot(), ENTRY_FILE)}`
+    console.log(readFileSync(join(pluginRoot(), 'skills/orca-team-dispatch-task/references/auto-judge.md'), 'utf8'))
+    console.log(
+      `## Commands\n\n- List: \`${prefix} judge-list --name ${name}\`\n- Apply: \`${prefix} judge-apply --name ${name} --file ${join(autoDir(name), AUTO_FILES.decisions)}\``,
+    )
+    return 0
+  }
+  if (command === 'tick') {
+    const config = process.env[LAUNCHER_ENV] ? readAutoConfig(name) : null
+    if (config) {
+      if (!config.automation?.acceptedFingerprint) {
+        console.log('判定の権限が承認されていません。make setup で有効にしてください')
+        return 1
+      }
+      if (
+        judgeRulesProblems(config, launcherPaths().launcher).length ||
+        judgeFingerprint(config) !== config.automation.acceptedFingerprint
+      ) {
+        console.log('判定の権限が承認したときと違います。make setup をやり直してください')
+        return 1
+      }
+    }
+    return runTick(name)
+  }
   if (command === 'status') {
     const state = readState(name)
     console.log(`${name}: ${Object.keys(state.issues).length} 件`)
@@ -53,7 +101,7 @@ const main = (argv: string[]): number => {
     console.log(command === 'judge-model' ? config.judge.model : config.judge.effort)
     return 0
   }
-  if (!takeLockWait(name, LOCK_TTL_MS, envCount('ORCA_AUTO_LOCK_WAIT_MS', AUTO_LOCK_WAIT_MS))) {
+  if (!takeLockWait(name, AUTO_LOCK_TTL_MS, envCount('ORCA_AUTO_LOCK_WAIT_MS', AUTO_LOCK_WAIT_MS))) {
     console.error('tick が動いている')
     return 3
   }
