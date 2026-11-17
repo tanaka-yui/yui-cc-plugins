@@ -1,5 +1,6 @@
-import { asArray, asObject, asString, parseJson } from './json.ts'
-import { MAX_BUFFER } from './sys.ts'
+import { asArray, asObject, asString, get, parseJson } from './json.ts'
+import { receiptOk, runOrca } from './orca.ts'
+import { envCount, MAX_BUFFER, sleepSeconds } from './sys.ts'
 
 import { spawnSync } from 'node:child_process'
 
@@ -114,6 +115,56 @@ export const parseVerifyOutput = (text: string): VerifyResult | null => {
     missingTools: (asArray(value.missingTools) ?? []).filter((t): t is string => typeof t === 'string' && t.length > 0),
     platform: asString(value.platform),
     tmpPath: asString(value.tmpPath) ?? parseVerifyTmp(text),
+  }
+}
+export const VERIFY_REMOTE_TIMEOUT_MS = 30 * 60 * 1000
+export const VERIFY_REMOTE_INTERVAL_MS = 5000
+export type RemoteVerify = { result: VerifyResult | null; timedOut: boolean; tmpPath: string | null }
+export const verifyRemote = (
+  id: string,
+  worktreeSelector: string,
+  commands: string[],
+  tools: string[],
+  onWait: (minutes: number) => void,
+): RemoteVerify => {
+  const created = runOrca([
+    'terminal',
+    'create',
+    '--environment',
+    id,
+    '--worktree',
+    worktreeSelector,
+    '--title',
+    'orca-auto-verify',
+    '--command',
+    verifyCommand(commands, tools),
+    '--json',
+  ])
+  const handle = receiptOk(created) ? asString(get(created.json, 'result', 'terminal', 'handle')) : null
+  if (!handle) return { result: null, timedOut: false, tmpPath: null }
+  let tmpPath: string | null = null
+  const start = Date.now()
+  let reported = 0
+  try {
+    for (;;) {
+      const read = runOrca(['terminal', 'read', '--environment', id, '--terminal', handle, '--limit', '400', '--json'])
+      const tail = receiptOk(read) ? asArray(get(read.json, 'result', 'terminal', 'tail')) : null
+      const text = tail?.filter((line): line is string => typeof line === 'string').join('') ?? ''
+      tmpPath = parseVerifyTmp(text) ?? tmpPath
+      const result = parseVerifyOutput(text)
+      if (result) return { result, timedOut: false, tmpPath: result.tmpPath ?? tmpPath }
+      const elapsed = Date.now() - start
+      if (elapsed >= envCount('ORCA_AUTO_VERIFY_TIMEOUT_MS', VERIFY_REMOTE_TIMEOUT_MS))
+        return { result: null, timedOut: true, tmpPath }
+      const minutes = Math.floor(elapsed / 60000)
+      if (minutes > reported) {
+        onWait(minutes)
+        reported = minutes
+      }
+      sleepSeconds(envCount('ORCA_AUTO_VERIFY_INTERVAL_MS', VERIFY_REMOTE_INTERVAL_MS) / 1000)
+    }
+  } finally {
+    runOrca(['terminal', 'close', '--environment', id, '--terminal', handle, '--json'])
   }
 }
 export const runVerifyLocal = (checkout: string, commands: string[], tools: string[]): VerifyResult => {

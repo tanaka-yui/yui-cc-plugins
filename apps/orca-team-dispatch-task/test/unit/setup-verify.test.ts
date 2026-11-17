@@ -1,8 +1,17 @@
-import { parseVerifyOutput, runVerifyLocal, VERIFY_BEGIN, VERIFY_END, verifyCommand } from '../../lib/setup-verify.ts'
+import {
+  parseVerifyOutput,
+  runVerifyLocal,
+  VERIFY_BEGIN,
+  VERIFY_END,
+  VERIFY_TMP,
+  verifyCommand,
+  verifyRemote,
+} from '../../lib/setup-verify.ts'
+import { fixture } from '../lib/auto-fixture.ts'
 
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -150,5 +159,103 @@ test('SV13 tool names are passed as arguments and never executed', () => {
     assert.equal(existsSync(join(dir, 'pwned')), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('SV5 remote verify passes the selector and environment and closes the terminal', () => {
+  const f = fixture()
+  process.env.ORCA_AUTO_VERIFY_INTERVAL_MS = '0'
+  try {
+    f.respond('terminal_create', { ok: true, result: { terminal: { handle: 't1' } } }, f.orca)
+    f.respond(
+      'terminal_read',
+      {
+        ok: true,
+        result: {
+          terminal: {
+            tail: [`${VERIFY_TMP}/tmp/x@@`, ...Array(2000).fill('noise'), marker('{"ok":true,"peakMemoryMb":512}')],
+          },
+        },
+      },
+      f.orca,
+    )
+    const waits: number[] = []
+    const r = verifyRemote('env-1', 'path:/remote/app', ['true'], [], (m) => waits.push(m))
+    assert.equal(r.result?.ok, true)
+    assert.equal(r.result?.peakMemoryMb, 512)
+    assert.equal(r.timedOut, false)
+    assert.equal(r.tmpPath, '/tmp/x')
+    assert.deepEqual(waits, [])
+    const calls = readFileSync(join(f.orca, 'argv.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => line.split('\x1f'))
+    for (const args of calls) assert.equal(args[args.indexOf('--environment') + 1], 'env-1')
+    assert.equal(calls[0]?.[calls[0].indexOf('--worktree') + 1], 'path:/remote/app')
+    assert.equal(calls[0]?.[calls[0].indexOf('--title') + 1], 'orca-auto-verify')
+    assert.ok(calls[0]?.includes(verifyCommand(['true'], [])))
+    assert.deepEqual(calls.at(-1)?.slice(0, 7), [
+      'terminal',
+      'close',
+      '--environment',
+      'env-1',
+      '--terminal',
+      't1',
+      '--json',
+    ])
+  } finally {
+    Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_INTERVAL_MS')
+    f.cleanup()
+  }
+})
+test('SV6 a marker split across tail rows is read', () => {
+  const f = fixture()
+  process.env.ORCA_AUTO_VERIFY_INTERVAL_MS = '0'
+  try {
+    f.respond('terminal_create', { ok: true, result: { terminal: { handle: 't1' } } }, f.orca)
+    const text = `${VERIFY_TMP}/tmp/x@@${marker('{"ok":true,"failed":null}')}`
+    f.respond(
+      'terminal_read',
+      { ok: true, result: { terminal: { tail: [text.slice(0, 10), text.slice(10, 56), text.slice(56)] } } },
+      f.orca,
+    )
+    assert.equal(verifyRemote('env-1', 'path:/remote/app', ['true'], [], () => {}).result?.ok, true)
+    assert.ok(f.calls(f.orca).includes('terminal close'))
+  } finally {
+    Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_INTERVAL_MS')
+    f.cleanup()
+  }
+})
+test('SV7 timeout closes the terminal and reports the temp path', () => {
+  const f = fixture()
+  process.env.ORCA_AUTO_VERIFY_TIMEOUT_MS = '50'
+  process.env.ORCA_AUTO_VERIFY_INTERVAL_MS = '10'
+  try {
+    f.respond('terminal_create', { ok: true, result: { terminal: { handle: 't1' } } }, f.orca)
+    f.respond('terminal_read', { ok: true, result: { terminal: { tail: [`${VERIFY_TMP}/tmp/x@@`] } } }, f.orca)
+    assert.deepEqual(
+      verifyRemote('env-1', 'path:/remote/app', ['true'], [], () => {}),
+      { result: null, timedOut: true, tmpPath: '/tmp/x' },
+    )
+    assert.ok(f.calls(f.orca).includes('terminal close'))
+  } finally {
+    Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_TIMEOUT_MS')
+    Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_INTERVAL_MS')
+    f.cleanup()
+  }
+})
+test('SV8 create failure returns without closing', () => {
+  const f = fixture()
+  process.env.ORCA_AUTO_VERIFY_INTERVAL_MS = '0'
+  try {
+    writeFileSync(join(f.orca, 'terminal_create.rc'), '1')
+    assert.deepEqual(
+      verifyRemote('env-1', 'path:/remote/app', ['true'], [], () => {}),
+      { result: null, timedOut: false, tmpPath: null },
+    )
+    assert.ok(!f.calls(f.orca).includes('terminal close'))
+  } finally {
+    Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_INTERVAL_MS')
+    f.cleanup()
   }
 })
