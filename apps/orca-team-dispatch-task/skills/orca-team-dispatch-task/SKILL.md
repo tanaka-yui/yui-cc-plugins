@@ -257,7 +257,13 @@ not the bare id. zsh reads an unquoted `[1m]` as a filename pattern and stops th
 
 Use a dedicated checkout for each implementation repository, already cloned and registered with Orca. Uncommitted changes prevent dispatch. The settings are in `~/.claude/config/orca-team-dispatch-task/auto/main/config.json` (or under `ORCA_DISPATCH_CONFIG_HOME`). The intake config's repository list is authoritative; `sources` selects its entries and supplies related implementation repositories.
 
-The C3 `make setup` command is not available yet. Create the dedicated checkouts and configuration manually; replace the absolute paths in this example:
+Run `make setup NAME=<name>` from the plugin directory in a human-operated terminal (default name: `main`). Do not run it through a Bash tool: non-terminal stdin exits 2 without writing files. The twelve stages cover prerequisites, intake sources, related checkouts, optional Projects, status labels, machines, human-entered verification commands, worktree capacity, review modes and interval, saving, automation registration, and permission approval.
+
+Answers are saved to `setup.json` after each stage; rerun to resume completed stages or, after finishing, use Enter to retain existing values. Verification runs only on this machine, in a temporary worktree; remote verification and automatic tool installation belong to C3b. Capacity recommendations use CPU, total memory, and free disk, and count worktrees rather than Issues.
+
+Setup registers `orca-auto-<name>` disabled, shows the exact judging permissions, then writes and enables only after approval. Existing automations keep their enabled state until approval. The stable launcher is `~/.claude/config/orca-team-dispatch-task/bin/orca-auto`; launcher tick stops when permissions are unapproved or differ from approval. Each run resolves the current installed plugin, with the setup checkout as fallback.
+
+Dedicated checkouts must already exist. Setup checks clean git roots and origins, registers the chosen workspaces, preserves existing Project options when adding missing statuses after confirmation, and refuses removal of machines, sources, or repository mappings used by active Issues. Stop GitHub's built-in Project workflows as instructed. For manual configuration, replace the absolute paths in this example:
 
 ```json
 {
@@ -333,7 +339,7 @@ Cleanup runs per (role, repository). Only a merged repository's integration bran
 
 ### Run one tick or judge the queue
 
-Run `make auto` from the plugin directory (`NAME=main` by default). It runs `orca-auto.ts tick`; only when judging is needed does it start Claude with the configured model and effort. The judging agent follows [auto-judge.md](references/auto-judge.md), runs `judge-list`, writes the returned `decisionsFile`, and runs `judge-apply --file <decisionsFile>`. A judgment lease lasts 20 minutes. Tick exits 0 when judging is needed, 1 otherwise, and 2 for usage errors.
+Run `make auto` from the plugin directory (`NAME=main` by default). It runs `orca-auto.ts tick`; only when judging is needed does it start Claude with the configured model and effort. The judging agent runs `orca-auto.ts judge-doc`, which prints [auto-judge.md](references/auto-judge.md) and the caller's `judge-list` and `judge-apply --file <decisionsFile>` commands under `## Commands`. It follows those instructions and writes only the returned `decisionsFile`. A judgment lease lasts 20 minutes. Tick exits 0 when judging is needed, 1 otherwise, and 2 for usage errors.
 
 To run the precheck directly:
 
@@ -349,7 +355,7 @@ To inspect state without changing it:
 node "$PLUGIN/bin/orca-auto.ts" status
 ```
 
-A scheduled precheck can run the same tick entry point; creating and enabling the automation belongs to C3. Each Issue has its own coordinator terminal and Run. Closing that terminal is handled on the next tick by creating a replacement and rebinding only that Issue's Run.
+`make setup` registers the scheduled precheck through the stable launcher and enables the automation after permission approval. Each Issue has its own coordinator terminal and Run. Closing that terminal is handled on the next tick by creating a replacement and rebinding only that Issue's Run.
 
 ### Completion, recovery, and cleanup
 

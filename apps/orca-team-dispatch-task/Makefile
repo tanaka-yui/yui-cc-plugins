@@ -27,3 +27,7 @@ auto: ## --auto を1回まわす。判定が必要なときだけClaudeを起動
 	  1) exit 0 ;; \
 	  *) exit $$rc ;; \
 	esac
+
+.PHONY: setup
+setup: ## --auto の設定から automation の有効化までを対話で済ませる (NAME=main)
+	@node bin/orca-auto.ts setup --name $(NAME)

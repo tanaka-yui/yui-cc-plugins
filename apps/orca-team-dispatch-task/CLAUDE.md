@@ -426,7 +426,7 @@ repository で子が remote を自分で解決し、**personal fork へ push し
 
 ## 範囲
 
-`--auto`（C2a）はこのMacで複数の拾う元を1本のキューにまとめ、tickでPR・merge・close・後片付けまで進める。make setup（C3）は未実装。
+`--auto`（C2a）はこのMacで複数の拾う元を1本のキューにまとめ、tickでPR・merge・close・後片付けまで進める。C3a（make setup）は実装済み。C3b は未実装。
 
 Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足した段階。PR 無し・ループ無し。
 
@@ -498,7 +498,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 
 ## --auto の要点
 
-- C2b は親1台からこのMacとペアリング済みサーバーへ振り分ける。1 Issueで実装対象2リポジトリまで、3つ以上はReady_Eng。拾う元は複数、キューは優先度→Ready時刻→key。管理の印は `from-slack` / `slack-thread`。intakeの一覧を正本にし、`--issue` の検索はautoの拾う元ではReadyも除く。`make setup`（C3）はまだ無い。
+- C2b は親1台からこのMacとペアリング済みサーバーへ振り分ける。1 Issueで実装対象2リポジトリまで、3つ以上はReady_Eng。拾う元は複数、キューは優先度→Ready時刻→key。管理の印は `from-slack` / `slack-thread`。intakeの一覧を正本にし、`--issue` の検索はautoの拾う元ではReadyも除く。C3a（`make setup`）は実装済み。C3b は未実装。
 - 入口 `bin/orca-auto.ts`、tick本体 `lib/auto-tick.ts`。tickは同期・人の変更・失敗の仕上げ・review/finishing・進み・補充を1歩ずつ行い、report.jsonを書く。判定が必要で20分のリースが無いときだけexit 0。`make auto` はそのときだけ設定のmodel/effortでClaudeを起こす。判定の指示は英語 `references/auto-judge.md` と完全な日本語訳。
 - 2026-11-13、Orca 1.4.257のspike/probe: Issueごとに専用のまとめ役端末とRunを持つ。1つのRunに全Issueを載せると、未決着や知らないdispatchのメールが他のIssueを止める。外のプロセスから本物のhandleで操作できる。端末のシェルに指示文を打ち込まない。
 - 呼び出し元の識別（F6）: Orca端末内から別handleの `--from` を使うと `consumer_fenced`。Runを操作する呼び出しと子のstart/waitには、必ずそのIssueの `ORCA_TERMINAL_HANDLE` を付ける。autoの停止/解放も同じhandleを使う。続きのstartは毎回 `ensureCoordinator` を通す。`run-use` で引き継いだhandleをrun.jsonと状態に記録する。
@@ -570,3 +570,14 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - 2026-11-17 の実機（このMac、gh 2.103.0、使い捨ての個人の Project `tanaka-yui/projects/1` を orca-auto-e2e につなぎ、Status にステータス 8 つと `Todo` を手で足した。review_mode/phase_b は off）: 初めて見る食い違い（ラベルがあと → Status をラベルに）、Status だけ（→ ラベル）、ラベルだけ（→ Status）、両方（ラベルが先なら Status に、Status が先ならラベルに。差は 2 秒）、`Todo`（何もしない・組も書き換えない）を 1 tick ずつで通した。Project で Ready にした #22 は、その tick でラベルが Ready になり（同じ tick の `syncIssues` には検索の遅れで出ず）、次の tick で拾われ、起動した tick の終わりに Status が In progress、PR を出した tick に In review、人が merge した次の tick に Done になった。mutation は成功し、tick をまたいだ読み直しは直前の REST のラベルの書き込みを返した。
 - 未確認: `INSUFFICIENT_SCOPES` の実物、mutation のエラーの形、同じ tick の中で REST の書き込みのすぐあとに GraphQL が古い値を返すか（`touched` で避けている）、Status の `updatedAt` がほかの出来事で動くか、organization の Project。
 - 回帰: AU125〜131（AU128b〜d、AU129b〜d、AU130b を含む）。
+
+### C3a: make setup
+
+- 人がターミナルで `make setup NAME=<name>` を実行する。12 段を auto-setup.ts が回し、prompt・draft・project・host・lanes・automation の lib に分ける。標準入力が端末でなければ書かず exit 2。AI に確認コマンドを推測させること、遠隔での確認、道具のインストール、swap の作成は C3b。
+- 各段の終わりに setup.json を atomic 保存する。入力終了は 2、失敗は 1、成功（有効化を断った場合も）は下書きを消して 0。config.json は保存の段で正規化した値を比較し、差と確認のあと tick と同じロック内で書く。実行中 Issue のマシン・拾う元・対象・マシンごとの対象の削除を断る。automation と有効化の段は同じロックで automation キーだけを更新する。
+- Enter は既存の値を保つ。手書きのマシン名・orcaBin・セレクタ・扱う組・省略した既定値も保つ。hosts の無い形からの切り替えとスペックの再測定は明示的に聞く。全体の並列数は下書きの lanes に保存する。全体の verified は checkout とコマンドが同じなら保ち、マシンの組はコマンドと置き場所が同じときだけ保つ。このマシンが扱わないリポジトリでも全体の verified は消さない。遠くの verified はこのマシンでの実行結果から決めない。
+- Project は active な gh アカウントの project scope を JSON で確かめ、Status の既存 id・名前・色・説明を保って不足分だけ確認後に足す。遠くは接続→置き場所→測定（スペック・orca・gh）と進み、端末を必ず閉じる。パスで足した遠隔 checkout も canonicalKey を照合し、不明なら人に聞く。swap 0 の注意は macOS では出さない。
+- ランチャーは configHome/bin/orca-auto と launch.mts。lib を import しない写しの定数を SU20 が照合する。installed_plugins.json の user scope の installPath を優先し、plugin-root.json に記録した checkout を次の候補にする。両方の入口ファイルがある候補だけを使う（古いインストール版には入口が無い）。argv のパス表記で設定の置き場所を子へ渡し、symlink の実体へ変えない。main の判定だけ realpath を使う。
+- automation は無効で新規登録し、既存 id は edit（削除済みなら再作成）、未記録の同名は人に確認する。有効化を断ったとき、新規なら無効のまま、既存なら状態を変えていない旨を出す。判定の許可は symlink と実体の両方のパスに対応。表示した rules と同じ値を書き、書いた後も settings.local.json と managed の defaultMode を検査する。問題が残れば指紋も保存せず有効化しない。
+- project 全体・user/managed の permissions の正規形を sha256 にし、承認を先に保存してから enable する。ランチャー経由の tick だけ未承認・指紋不一致・権限の問題で停止する。make auto は作業場所の設定を使わないので従来どおり。judge-doc は呼び方に合ったコマンドを渡す。precheck の期限は 300 秒（tick の 100 秒は次の処理を始める目安のため）。
+- テスト専用: ORCA_AUTO_TEST_STDIN、ORCA_AUTO_CLAUDE_HOME、ORCA_AUTO_PROBE_INTERVAL_MS。回帰は SU1〜SU33（SU5b・7b・9b・13b・16b/c・19b/c/d・21b・23b・25b・27b・28b・30b〜i・33b）、SK36・SK40・SK41。

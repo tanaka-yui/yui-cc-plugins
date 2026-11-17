@@ -589,15 +589,15 @@ for path in bin/orca-auto.ts lib/auto-config.ts lib/auto-state.ts lib/auto-repor
 done
 [[ -z "$bad" ]] && ok SK35 || fail "SK35:$bad"
 
-# SK36: no claim that the C3 setup command exists.
+# SK36: C3a の setup が実装されたことを両文書に記す。
 bad=""
 for f in "$S" "$G"; do
   setup_lines=$(grep -F 'make setup' "$f")
-  [[ -n "$setup_lines" ]] || bad="$bad [setup:$f]"
+  grep -Fq 'make setup NAME=' "$f" || bad="$bad [setup:$f]"
   if [[ "$f" == "$S" ]]; then
-    grep -Fv 'not available yet' <<<"$setup_lines" | grep -q . && bad="$bad [implemented:$f]"
+    grep -Fq 'not available yet' <<<"$setup_lines" && bad="$bad [implemented:$f]"
   else
-    grep -Fv 'まだ無い' <<<"$setup_lines" | grep -q . && bad="$bad [implemented:$f]"
+    grep -Fq 'まだ無い' <<<"$setup_lines" && bad="$bad [implemented:$f]"
   fi
 done
 [[ -z "$bad" ]] && ok SK36 || fail "SK36:$bad"
@@ -699,6 +699,17 @@ for f in "$judge_en" "$judge_ja"; do
   grep -Fq 'node <plugin>/bin/orca-auto.ts' "$f" && bad="$bad [old command:$f]"
 done
 [[ -z "$bad" ]] && ok SK40 || fail "SK40:$bad"
+
+# SK41: setup の入口と再開・ランチャー・判定の説明。
+bad=""
+setup_recipe=$(cd "$P" && make -n setup 2>/dev/null)
+[[ "$setup_recipe" == *"orca-auto.ts setup --name main"* ]] || bad="$bad [setup recipe]"
+for f in "$S" "$G"; do
+  for expected in 'make setup NAME=<name>' 'setup.json' 'config/orca-team-dispatch-task/bin/orca-auto' 'judge-doc'; do
+    grep -Fq "$expected" "$f" || bad="$bad [$expected:$f]"
+  done
+done
+[[ -z "$bad" ]] && ok SK41 || fail "SK41:$bad"
 
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \

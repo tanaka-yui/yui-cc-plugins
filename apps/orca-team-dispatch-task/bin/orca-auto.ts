@@ -4,6 +4,7 @@ import { pickSources, readAutoConfig } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
 import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
 import { syncProjects } from '../lib/auto-project.ts'
+import { runSetup } from '../lib/auto-setup.ts'
 import {
   AUTO_LOCK_TTL_MS,
   AUTO_LOCK_WAIT_MS,
@@ -25,16 +26,19 @@ import {
   launcherPaths,
   pluginRoot,
 } from '../lib/setup-automation.ts'
+import { createPrompter } from '../lib/setup-prompt.ts'
 import { FEATURE_LABEL, STATUS } from '../lib/status.ts'
 import { envCount } from '../lib/sys.ts'
 
-import { mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
+import { isatty } from 'node:tty'
 
 const main = (argv: string[]): number => {
   const command = argv[0] ?? ''
   if (
     ![
+      'setup',
       'tick',
       'status',
       'judge-doc',
@@ -58,6 +62,16 @@ const main = (argv: string[]): number => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) die('orca-auto', 'invalid name')
   if (command === 'judge-apply' && !flags.get('--file')) die('orca-auto', '--file is required')
   if (command === 'clear-start' && !flags.get('--key')) die('orca-auto', '--key is required')
+  if (command === 'setup') {
+    if (!isatty(0) && process.env.ORCA_AUTO_TEST_STDIN !== '1') {
+      console.error('ターミナルで make setup を実行してください')
+      return 2
+    }
+    const out = (text: string): void => {
+      writeSync(1, text)
+    }
+    return runSetup(name, createPrompter(0, out), out)
+  }
   if (command === 'judge-doc') {
     const prefix = process.env[LAUNCHER_ENV] ? launcherPaths().launcher : `node ${join(pluginRoot(), ENTRY_FILE)}`
     console.log(readFileSync(join(pluginRoot(), 'skills/orca-team-dispatch-task/references/auto-judge.md'), 'utf8'))

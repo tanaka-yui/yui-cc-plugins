@@ -238,7 +238,13 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 
 実装するリポジトリごとに専用checkoutをcloneし、Orcaに登録しておく。未コミットの変更があればdispatchしない。設定は `~/.claude/config/orca-team-dispatch-task/auto/main/config.json`（または `ORCA_DISPATCH_CONFIG_HOME` 配下）。intake設定のリポジトリ一覧を正本とし、`sources` でその項目と関連する実装リポジトリを選ぶ。
 
-C3の `make setup` はまだ無い。専用checkoutと設定は手で用意し、次の例の絶対パスを置き換える。
+人がプラグインのディレクトリのターミナルで `make setup NAME=<name>` を実行する（既定は `main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。12 段で、前提、拾う元、関連 checkout、任意の Project、ラベル、マシン、人が入力する確認コマンド、並列数、レビューモードと間隔、保存、automation 登録、権限の承認へ進む。
+
+各段の答えは `setup.json` に残し、中断したら再実行で済んだ段から再開する。完了後のやり直しは Enter で今の値を保つ。確認コマンドはこのマシンだけで一時 worktree を使って走らせる。遠くでの確認と道具の自動インストールは C3b。並列数の推奨は CPU・メモリの総量・空きディスクから求め、Issue 数ではなく worktree 数で数える。
+
+`orca-auto-<name>` を無効で登録し、判定の権限をそのまま見せ、承認後に書いて有効にする。既存 automation の有効・無効は承認するまで保つ。安定したランチャーは `~/.claude/config/orca-team-dispatch-task/bin/orca-auto`。ランチャー経由の tick は権限が未承認、または承認時と違えば止まる。実行のたびにインストール済みプラグインを解決し、setup した checkout を次の候補にする。
+
+専用 checkout は先に用意する。setup は git の一番上・origin・未コミットの変更を確かめ、作業場所を登録する。Project の既存選択肢を残し、不足分は確認後に足す。実行中の Issue が使うマシン・拾う元・リポジトリの組は外せない。案内に従い GitHub 組み込みの Project workflow を止める。手で設定する場合は、次の例の絶対パスを置き換える。
 
 ```json
 {
@@ -314,7 +320,7 @@ PR はリポジトリごとに 1 つ作り、まだ無い PR だけを再試行�
 
 ### 1回まわす、キューを判定する
 
-プラグインのディレクトリで `make auto` を実行する（既定は `NAME=main`）。`orca-auto.ts tick` を走らせ、判定が要るときだけ設定のmodelとeffortでClaudeを起動する。判定agentは [auto-judge-ja.md](auto-judge-ja.md) に従い、`judge-list` を実行し、返された `decisionsFile` に書いて `judge-apply --file <decisionsFile>` を実行する。判定リースは20分。tickは判定が必要ならexit 0、それ以外は1、使用法の誤りは2。
+プラグインのディレクトリで `make auto` を実行する（既定は `NAME=main`）。`orca-auto.ts tick` を走らせ、判定が要るときだけ設定のmodelとeffortでClaudeを起動する。判定 agent は `orca-auto.ts judge-doc` を実行し、[auto-judge-ja.md](auto-judge-ja.md) と同じ手順、呼び方に合った `judge-list`・`judge-apply --file <decisionsFile>` のコマンドを `## Commands` から受け取る。その指示に従い、返された `decisionsFile` だけに書く。判定リースは20分。tickは判定が必要ならexit 0、それ以外は1、使用法の誤りは2。
 
 precheckを直接実行する場合:
 
@@ -330,7 +336,7 @@ node "$PLUGIN/bin/orca-auto.ts" tick
 node "$PLUGIN/bin/orca-auto.ts" status
 ```
 
-定期precheckにも同じtick入口を使える。automationの作成と有効化はC3の範囲。Issueごとに専用のまとめ役の端末とRunを持ち、その端末が閉じられたら、次のtickで代わりを作り、そのIssueのRunだけを引き継ぐ。
+`make setup` が安定したランチャーを定期 precheck に登録し、権限の承認後に automation を有効にする。Issueごとに専用のまとめ役の端末とRunを持ち、その端末が閉じられたら、次のtickで代わりを作り、そのIssueのRunだけを引き継ぐ。
 
 ### 完了・回復・後片付け
 
