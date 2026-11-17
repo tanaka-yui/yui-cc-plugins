@@ -1,6 +1,6 @@
 import { autoRun as run } from './auto-paths.ts'
 import { asArray, asObject, asString, type Json, parseJson } from './json.ts'
-import { MANAGED_LABELS } from './status.ts'
+import { MANAGED_LABELS, STATUS_LABELS } from './status.ts'
 
 import type { IssueState, PrRef } from './auto-state.ts'
 
@@ -16,6 +16,31 @@ export const labelNames = (value: Json | undefined): string[] =>
     const name = typeof label === 'string' ? label : asString(asObject(label)?.name)
     return name ? [name] : []
   }) ?? []
+
+export const ensureStatusLabels = (repo: string): boolean => {
+  const result = github(['label', 'list', '--repo', repo, '--limit', '200', '--json', 'name'])
+  const labels = asArray(parseJson(result.stdout))
+  if (result.rc !== 0 || !labels) return false
+  const names = labelNames(labels).map((name) => name.toLowerCase())
+  for (const label of STATUS_LABELS) {
+    if (names.includes(label.name.toLowerCase())) continue
+    if (
+      github([
+        'label',
+        'create',
+        label.name,
+        '--repo',
+        repo,
+        '--color',
+        label.color,
+        '--description',
+        label.description,
+      ]).rc !== 0
+    )
+      return false
+  }
+  return true
+}
 export type ReadyIssue = { number: number; title: string; labels: string[]; updatedAt: string }
 export const listReadyManaged = (repo: string, pick: string): ReadyIssue[] | null => {
   const issues = new Map<number, ReadyIssue>()
