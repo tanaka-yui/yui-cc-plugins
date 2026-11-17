@@ -5,7 +5,7 @@ import { resumeTransition } from '../../lib/auto-transition.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
@@ -244,5 +244,77 @@ test('AU29b closed engineering candidates disappear; fresh features are forced t
     } finally {
       f.cleanup()
     }
+  }
+})
+
+test('AU131 judge-apply syncs the Project after applying decisions', () => {
+  const f = setup()
+  try {
+    f.put(f.configFile, {
+      ...f.raw,
+      sources: f.raw.sources.map((s) => (s.repo === 'acme/app' ? { ...s, project: { owner: 'acme', number: 3 } } : s)),
+    })
+    const state = readState('main')
+    state.projectSync['acme/app#7'] = { status: 'Ready', label: 'Ready' }
+    writeState('main', state)
+    const response = {
+      data: {
+        repositoryOwner: {
+          projectV2: {
+            id: 'PVT_1',
+            field: {
+              __typename: 'ProjectV2SingleSelectField',
+              id: 'PVTSSF_1',
+              options: [{ id: 'opt_ready-eng', name: 'Ready_Eng' }],
+            },
+            items: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  id: 'PVTI_7',
+                  isArchived: false,
+                  content: {
+                    __typename: 'Issue',
+                    number: 7,
+                    repository: { nameWithOwner: 'acme/app' },
+                    labels: { nodes: [{ name: 'from-slack' }, { name: 'Ready_Eng' }] },
+                    timelineItems: { nodes: [] },
+                  },
+                  status: {
+                    __typename: 'ProjectV2ItemFieldSingleSelectValue',
+                    name: 'Ready',
+                    optionId: 'opt_ready',
+                    updatedAt: '2026-11-17T01:55:41Z',
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }
+    const hook = join(f.dir, 'project-judge.cjs')
+    writeFileSync(
+      hook,
+      `const fs = require('node:fs'); const write = process.argv.some((a) => a.includes('updateProjectV2ItemFieldValue')); fs.writeFileSync(process.env.GH_STUB_DIR + '/api_graphql', JSON.stringify(write ? { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_7' } } } } : ${JSON.stringify(response)}));`,
+    )
+    f.hook('api_graphql', `exec '${process.execPath}' '${hook}' "$@"`)
+    const result = f.apply(f.decision({ route: 'eng' }))
+    assert.equal(result.status, 0, result.stderr)
+    const calls = f.calls().split('\n')
+    const read = calls.findIndex((s) => s.startsWith('api graphql'))
+    const edit = calls.findIndex((s) => s.startsWith('issue edit'))
+    assert.ok(edit >= 0 && read > edit)
+    assert.ok(calls.some((s) => s.includes('updateProjectV2ItemFieldValue') && s.includes('option=opt_ready-eng')))
+    assert.deepEqual(readState('main').projectSync['acme/app#7'], { status: 'Ready_Eng', label: 'Ready_Eng' })
+  } finally {
+    f.cleanup()
+  }
+  const absent = setup()
+  try {
+    assert.equal(absent.apply(absent.decision({ route: 'eng' })).status, 0)
+    assert.ok(!absent.calls().includes('api graphql'))
+  } finally {
+    absent.cleanup()
   }
 })

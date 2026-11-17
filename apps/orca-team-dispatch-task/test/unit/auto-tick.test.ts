@@ -270,3 +270,117 @@ for (const observation of ['unrecorded', 'partial'])
       f.cleanup()
     }
   })
+
+const projectPage = () => ({
+  data: {
+    repositoryOwner: {
+      projectV2: {
+        id: 'PVT_1',
+        field: {
+          __typename: 'ProjectV2SingleSelectField',
+          id: 'PVTSSF_1',
+          options: [
+            { id: 'opt_pending', name: 'Pending' },
+            { id: 'opt_ready', name: 'Ready' },
+          ],
+        },
+        items: {
+          pageInfo: { hasNextPage: false, endCursor: null },
+          nodes: [
+            {
+              id: 'PVTI_1',
+              isArchived: false,
+              content: {
+                __typename: 'Issue',
+                number: 1,
+                repository: { nameWithOwner: 'acme/app' },
+                labels: { nodes: [{ name: 'from-slack' }, { name: 'Ready' }] },
+                timelineItems: { nodes: [] },
+              },
+              status: {
+                __typename: 'ProjectV2ItemFieldSingleSelectValue',
+                name: 'Pending',
+                optionId: 'opt_pending',
+                updatedAt: '2026-11-17T01:55:41Z',
+              },
+            },
+          ],
+        },
+      },
+    },
+  },
+})
+const withProject = (f: ReturnType<typeof runtimeFixture>) =>
+  f.put(f.configFile, {
+    ...f.raw,
+    sources: f.raw.sources.map((s) => (s.repo === 'acme/app' ? { ...s, project: { owner: 'acme', number: 3 } } : s)),
+  })
+test('AU130 tick syncs the Project before and after the queue', () => {
+  const f = runtimeFixture()
+  try {
+    withProject(f)
+    const state = readState('main')
+    state.projectSync['acme/app#1'] = { status: 'Ready', label: 'Ready' }
+    writeState('main', state)
+    f.respond('api_graphql', projectPage())
+    const result = f.cli('tick')
+    assert.equal(result.status, 1, result.stderr)
+    const calls = f.calls().trim().split('\n')
+    const reads = calls.flatMap((s, i) => (s.startsWith('api graphql') ? [i] : []))
+    const lists = calls.flatMap((s, i) => (s.startsWith('issue list') ? [i] : []))
+    assert.equal(reads.length, 2)
+    assert.ok((reads[0] ?? Infinity) < (lists[0] ?? -1))
+    assert.ok((reads[1] ?? -1) > (lists.at(-1) ?? Infinity))
+    const edit = calls.findIndex((s) =>
+      s.startsWith('issue edit 1 --repo acme/app --add-label Pending --remove-label Ready'),
+    )
+    assert.ok(edit > (reads[0] ?? Infinity) && edit < (lists[0] ?? -1))
+    assert.ok(!f.calls().includes('updateProjectV2ItemFieldValue'))
+    assert.deepEqual(readState('main').projectSync['acme/app#1'], { status: 'Pending', label: 'Pending' })
+  } finally {
+    f.cleanup()
+  }
+  const absent = runtimeFixture()
+  try {
+    absent.cli('tick')
+    assert.ok(!absent.calls().includes('api graphql'))
+  } finally {
+    absent.cleanup()
+  }
+  const unreadable = runtimeFixture()
+  try {
+    withProject(unreadable)
+    unreadable.respond('api_graphql', {})
+    unreadable.put(join(unreadable.gh, 'api_graphql.rc'), 1)
+    const result = unreadable.cli('tick')
+    const lines = result.stdout.trim().split('\n')
+    assert.equal(lines.filter((s) => s.startsWith('Project を読めません: acme/3')).length, 1)
+    assert.match(lines.at(-1) ?? '', /^auto: judge=.*errors=0$/)
+  } finally {
+    unreadable.cleanup()
+  }
+})
+test('AU130b a Project read that exceeds the call cap is one line and not a tick error', () => {
+  const f = runtimeFixture()
+  const old = process.env.ORCA_AUTO_CALL_CAP_MS
+  try {
+    withProject(f)
+    process.env.ORCA_AUTO_CALL_CAP_MS = '1000'
+    f.hook('api_graphql', "trap '' TERM\nexec >/dev/null 2>&1\nsleep 10")
+    const result = f.cli('tick')
+    const lines = result.stdout.trim().split('\n')
+    assert.equal(lines.filter((s) => s === 'Project を読めません: acme/3: 期限までに読めませんでした').length, 1)
+    assert.equal(
+      f
+        .calls()
+        .split('\n')
+        .filter((s) => s.startsWith('api graphql')).length,
+      1,
+    )
+    assert.match(lines.at(-1) ?? '', /^auto: judge=.*errors=0$/)
+  } finally {
+    if (old === undefined) Reflect.deleteProperty(process.env, 'ORCA_AUTO_CALL_CAP_MS')
+    else process.env.ORCA_AUTO_CALL_CAP_MS = old
+    f.cleanup()
+  }
+})

@@ -264,7 +264,7 @@ The C3 `make setup` command is not available yet. Create the dedicated checkouts
   "version": 1,
   "name": "main",
   "intakeConfig": "/absolute/path/to/slack-issue-intake/config.json",
-  "sources": [{ "repo": "acme/app", "related": ["acme/app"], "pick": "Ready" }],
+  "sources": [{ "repo": "acme/app", "related": ["acme/app"], "pick": "Ready", "project": { "owner": "acme", "number": 3 } }],
   "repos": {
     "acme/app": {
       "checkout": "/absolute/path/to/auto-checkout",
@@ -285,6 +285,8 @@ The C3 `make setup` command is not available yet. Create the dedicated checkouts
 
 Lanes count worktrees. One Issue reserves 1, 2, 2, or 4 worktrees for off/off, on/off, off/on, or on/on respectively, including roles that start later. An Issue with two target repositories reserves twice that number. Orphan worktrees also consume capacity. `verified: false` and infrastructure repositories may run, but their PRs require human review. Set `ci: false` only for a repository without CI.
 
+
+A source may set `project` to one GitHub Project (`owner` is the user or organization login, `number` is the Project number). Tick then keeps the Project's Status and the Issues' status labels in step in both directions: early in each tick, again after the queue is refilled, and once at the end of `judge-apply`. When only one side changed since the last sync, the other side follows it; when both changed, the newer change wins, and the label wins within the same second. An Issue that the sync has just written is synced again on the next tick, not later in the same tick. Only managed Issues of that source's repository that are already on the Project are synced; archived items are ignored, and Issues are never added to a Project. A Status outside the eight status names, such as `Todo` or empty, is left alone, and removing every status label does not clear the Status. Issues with an unfinished label transition are skipped until it finishes. The Project needs a single-select `Status` field; add the eight status names as its options yourself. A missing option skips that Issue with one line in the tick output. gh needs the `project` scope (`gh auth refresh -s project`); without it, or when the Project cannot be read, tick prints one line and continues.
 
 Optional `hosts` selects machines. Without it, the existing `lanes`, checkout paths, and repository verification describe this Mac. With it, each host has its own capacity and repository selectors; `id: local` means this machine, and every paired server uses its stable environment ID. `orcaBin` is the executable on that host, and a remote repository selector identifies the repository registered there, not the parent's checkout. Each host needs Git/gh authentication and access to the same origin. `verified` describes that repository's checks on that host; set it true only after they pass there. Add a top-level `hosts` entry to the configuration, for example:
 

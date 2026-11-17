@@ -19,6 +19,7 @@ import {
   autoRun as run,
   autoOrca as runOrca,
 } from './auto-paths.ts'
+import { type ProjectSyncContext, syncProjects } from './auto-project.ts'
 import { orderQueue, syncIssues } from './auto-queue.ts'
 import { buildReport } from './auto-report.ts'
 import { buildRequest, readAutoResult, readPlanResult, slugOf } from './auto-request.ts'
@@ -1103,11 +1104,18 @@ export const runTick = (name: string): number => {
         if (issue.phase === 'stopped' && before !== 'stopped') stopRoles(tick, issue)
       }
     }
-    const sources = pickSources(config)
-    const synced = syncIssues(
+    const picked = pickSources(config)
+    const sources = config.sources.filter((s) => picked.includes(s.repo))
+    const projectSync: ProjectSyncContext = {
+      sources,
       state,
-      config.sources.filter((s) => sources.includes(s.repo)),
-    )
+      save: tick.save,
+      log: console.log,
+      failed: new Set(),
+      touched: new Set(),
+    }
+    syncProjects(projectSync)
+    const synced = syncIssues(state, sources)
     tick.save()
     for (const key of synced.unreadable) blocked.add(key)
     for (const key of synced.humanChanged) {
@@ -1134,6 +1142,7 @@ export const runTick = (name: string): number => {
     for (const issue of Object.values(state.issues))
       if (issue.phase === 'dispatching' && !blocked.has(issue.key)) recover(tick, issue)
     refill(tick)
+    syncProjects(projectSync)
     const hosts = hostsOf(config).map((host) => ({ host, ...capacityOf(tick, host, false) }))
     if (
       !writeAtomic(join(autoDir(name), AUTO_FILES.report), JSON.stringify(buildReport(config, state, hosts, autoNow())))

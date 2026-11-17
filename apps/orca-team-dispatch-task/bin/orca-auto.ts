@@ -1,8 +1,9 @@
 // --auto precheck and difficulty judgment. No runtime npm dependencies.
 
-import { readAutoConfig } from '../lib/auto-config.ts'
+import { pickSources, readAutoConfig } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
 import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
+import { syncProjects } from '../lib/auto-project.ts'
 import { readState, releaseLock, takeLockWait, writeState } from '../lib/auto-state.ts'
 import { runTick } from '../lib/auto-tick.ts'
 import { transition } from '../lib/auto-transition.ts'
@@ -176,6 +177,15 @@ const main = (argv: string[]): number => {
     }
     state.judgingSince = null
     save()
+    const sources = pickSources(config)
+    syncProjects({
+      sources: config.sources.filter((s) => sources.includes(s.repo)),
+      state,
+      save,
+      log: console.log,
+      failed: new Set(),
+      touched: new Set(),
+    })
     return rejected ? 1 : 0
   } finally {
     releaseLock(name)

@@ -245,7 +245,7 @@ C3の `make setup` はまだ無い。専用checkoutと設定は手で用意し�
   "version": 1,
   "name": "main",
   "intakeConfig": "/absolute/path/to/slack-issue-intake/config.json",
-  "sources": [{ "repo": "acme/app", "related": ["acme/app"], "pick": "Ready" }],
+  "sources": [{ "repo": "acme/app", "related": ["acme/app"], "pick": "Ready", "project": { "owner": "acme", "number": 3 } }],
   "repos": {
     "acme/app": {
       "checkout": "/absolute/path/to/auto-checkout",
@@ -266,6 +266,8 @@ C3の `make setup` はまだ無い。専用checkoutと設定は手で用意し�
 
 レーンはworktreeの数で数える。off/off、on/off、off/on、on/onはそれぞれ1件で1、2、2、4worktreeを予約し、後から起動する役も含む。対象が 2 つの Issue はその倍を予約する。持ち主のいないworktreeも使用数に入る。`verified: false` とインフラのリポジトリも実行するが、PRは人の確認が必要。`ci: false` はCIの無いリポジトリだけに設定する。
 
+
+拾う元には任意で `project` に GitHub Project を 1 つ登録できる（`owner` は個人か organization の login、`number` は Project の番号）。登録すると、tick は Project の Status と Issue のステータスラベルを両方向で揃える。揃えるのは tick の初めのほう、キューを補充したあと、`judge-apply` の終わりの 3 か所。前回の同期から片方だけが変わっていればもう片方をそれに合わせ、両方が変わっていれば新しいほうに合わせる（同じ秒ならラベル）。同期で書いた Issue は、同じ tick の中ではもう揃えず、次の tick で揃え直す。対象はその拾う元のリポジトリの管理している Issue のうち、すでに Project に入っているものだけ。archive された項目は見ず、Issue を Project に足すこともしない。Status がステータス 8 つのどれでもない（`Todo` や空）ときは何もせず、ステータスラベルを全部外しても Status は消さない。ラベルの遷移が途中の Issue は、終わるまで飛ばす。Project には単一選択の `Status` 欄が要り、ステータス 8 つの選択肢は自分で足す。選択肢が無いときはその Issue を飛ばし、tick の出力に 1 行書く。gh に `project` の権限が要る（`gh auth refresh -s project`）。権限が無い、または Project を読めないときは、tick は 1 行書いて続ける。
 
 任意の `hosts` でマシンを選ぶ。無ければ従来の `lanes`、checkoutのパス、リポジトリの確認結果をこのMacの設定として読む。指定した場合は、マシンごとに並列数とリポジトリのselectorを持つ。`id: local` はこのマシン、ペアリング済みサーバーは変わらないenvironment IDで指定する。`orcaBin` はそのマシンの実行ファイル、遠隔のrepo selectorは親のcheckoutではなくそのマシンに登録したリポジトリを指す。各マシンにGit/ghの認証と同じoriginへのアクセスが必要。`verified` はそのマシンのそのリポジトリで確認が通ったことを表し、そこで通ってからtrueにする。例えば設定の最上位へ次の `hosts` を足す:
 

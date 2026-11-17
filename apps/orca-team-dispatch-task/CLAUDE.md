@@ -560,3 +560,11 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - 実機で見つけて直したこと（テストを先に書いた）: (1) Orca 1.4.259 で遠隔の worker の行から projection が消え、後片付けが「worker が解放されていません」で永久に保留した（上の A5-3 の行、AU124）。(2) 1.4.259 の CLI が作った端末が生きたまま orphaned:true になり、まとめ役を毎 tick 作り直して古い端末を閉じずに残した（#19 で 14 個。上の F7 の行、AU2b/AU5b）。どちらも C2b2 ではなく Orca の版の変化で、1 リポジトリの Issue にも効く。
 - 実機で確かめられなかったこと: AI による targets の順の merge と partial-merge。確認済みのマシン（`verified: true`）に置いた #19 も、worker が「reset しなかった」「PR は作っていない」のような決めた点を書くので In review になった。決めた点が空になる Issue でないと AI の merge には届かない。partial-merge は 2 つ目の PR の merge だけを拒ませる必要があるが、ruleset は private のリポジトリでは GitHub Pro が要り、使えなかった。
 - 未確認: `mergeable` が MERGEABLE/CONFLICTING/UNKNOWN 以外のときは上限なしで次 tick に読み直す。2 つ目の worktree の最初の端末は記録も close もしないため、その端末の人の操作は役の userOwned で検出できない（rm では閉じられる）。同名 worktree、遠隔の checkout に残る task branch、codex の追加 repo の信頼設定も未確認。runtime_unavailable 後に現れた worktree は自動回収せず孤立として表示する。CLI は 1.4.259、作成 receipt の fixture は 1.4.257 で採取したもの。
+
+### C2c: Project の Status とラベルの同期
+
+- 同期は `lib/auto-project.ts`。tick は `syncIssues` の前と `refill` のあと、`judge-apply` は終わりに 1 回呼ぶ。`syncIssues` の前に置くのは、Project で動かした Status をラベルにしてから、続く `syncIssues` に人の変更として読ませるため。`--auto` がラベルを動かす箇所ごとに Status を書かず、tick の終わりにまとめて写す（箇所が多く、写し漏れが起きやすいため）。
+- 前回の組は状態ファイルの `projectSync`（`owner/repo#N` → `{ status, label }`）。書き込みが成功したときだけ書き直す。同じ tick の 2 回目は、1 回目に書いた・書けなかった・選択肢が無かった Issue に触らない（`touched`）。GitHub がまだ反映していない値を読んで人の変更を戻さないためと、1 行の知らせを 1 回にするため。
+- Project の読み取りは `autoReadUncounted`（`lib/auto-paths.ts`）で呼ぶ。tick の期限で kill するが、`readFailures` にも予算切れにも数えない（`autoRun` の読み取りにすると kill が `tick.errors` に入り、「Project が読めなくても tick のエラーにしない」に反するため）。mutation とラベルの書き込みは `github`（書き込み扱い）。予算が尽きたら行を書かずに同期を終え、`canAutoCall` の 1 行だけが残る。gh のスタブは `--` で始まる引数でしか鍵を切らないので、GraphQL は `--raw-field` / `--field` で呼ぶ（`-f` だと鍵が `api_graphql` にならない）。
+- 2026-11-17 に読み取りだけで確かめたこと: 固定した問い合わせは実物の Project で通る。番号違いは rc 1・stdout に `data` と `errors`（`NOT_FOUND`）・stderr に `gh: <message>`。owner が無いと rc 0 で `repositoryOwner: null`。未確認: `INSUFFICIENT_SCOPES` の実物、mutation の応答とエラーの形、GraphQL が直前の REST のラベルの書き込みをすぐ返すか、Status の `updatedAt` がほかの出来事で動くか。
+- 回帰: AU125〜131（AU128b〜d、AU129b〜d、AU130b を含む）。
