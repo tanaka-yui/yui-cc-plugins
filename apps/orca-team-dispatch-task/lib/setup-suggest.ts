@@ -1,0 +1,70 @@
+import { asArray, asObject, parseJson } from './json.ts'
+import { envCount, MAX_BUFFER } from './sys.ts'
+
+import { spawnSync } from 'node:child_process'
+
+import type { Json } from './json.ts'
+
+export type VerifySuggestion = { commands: string[]; tools: string[]; notes: string }
+export const SUGGEST_TIMEOUT_MS = 10 * 60 * 1000
+export const SUGGEST_TOOLS = 'Read,Glob,Grep'
+const SUGGEST_PROMPT = `You are preparing verification commands for an automated worker that implements GitHub issues in this repository.
+Read the repository in the current directory to learn how it is built, tested and linted. Look at CI definitions (.github/workflows), package.json, Makefile, go.mod, pyproject.toml, mise.toml, .tool-versions, compose files and README, and anything else that helps. Do not assume a language or framework.
+Do not modify any file.
+Propose shell commands that build, test and lint the project without side effects outside the working tree and without any human input. They run in order with /bin/sh from the root of a clean checkout of HEAD with no dependencies installed yet, so include install steps when needed. Also list the command-line tools those commands need (for example node, npm, go, docker).
+Answer with exactly one JSON object and nothing else: {"commands":["..."],"tools":["..."],"notes":"..."}. Write notes as one or two short sentences in Japanese.`
+export const suggestVerify = (
+  checkout: string,
+  judge: { model: string; effort: string },
+): VerifySuggestion | { error: string } => {
+  const r = spawnSync(
+    process.env.ORCA_AUTO_CLAUDE_BIN || 'claude',
+    [
+      '-p',
+      SUGGEST_PROMPT,
+      '--output-format',
+      'json',
+      '--model',
+      judge.model,
+      '--effort',
+      judge.effort,
+      '--tools',
+      SUGGEST_TOOLS,
+      '--allowedTools',
+      SUGGEST_TOOLS,
+      '--permission-mode',
+      'dontAsk',
+      '--strict-mcp-config',
+    ],
+    {
+      cwd: checkout,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      timeout: envCount('ORCA_AUTO_SUGGEST_TIMEOUT_MS', SUGGEST_TIMEOUT_MS),
+      killSignal: 'SIGKILL',
+      maxBuffer: MAX_BUFFER,
+    },
+  )
+  if (r.error) {
+    if ('code' in r.error && r.error.code === 'ETIMEDOUT') return { error: '時間内に終わりませんでした' }
+    return { error: `claude を起動できません: ${r.error.message}` }
+  }
+  if (r.status !== 0) return { error: `claude が失敗しました（終了コード ${r.status ?? '不明'}）` }
+  const outer = asObject(parseJson(r.stdout))
+  if (!outer || outer.is_error === true || typeof outer.result !== 'string') return { error: 'AI の答えを読めません' }
+  const start = outer.result.indexOf('{'),
+    end = outer.result.lastIndexOf('}')
+  const parsed = start >= 0 && end >= start ? parseJson(outer.result.slice(start, end + 1)) : null
+  if (parsed === null) return { error: 'AI の答えを読めません' }
+  const value = asObject(parsed)
+  const strings = (v: Json | undefined): v is string[] =>
+    asArray(v) !== null && (v as Json[]).every((s) => typeof s === 'string' && s.length > 0)
+  if (
+    !value ||
+    !strings(value.commands) ||
+    !strings(value.tools) ||
+    (value.notes !== undefined && typeof value.notes !== 'string')
+  )
+    return { error: 'AI の答えの形が違います' }
+  return { commands: value.commands, tools: value.tools, notes: value.notes ?? '' }
+}
