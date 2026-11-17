@@ -50,7 +50,7 @@ import {
   readStatusOptions,
 } from './setup-project.ts'
 import { suggestVerify } from './setup-suggest.ts'
-import { runVerifyLocal, verifyRemote } from './setup-verify.ts'
+import { runVerifyLocal, VERIFY_SCRIPT_FAILED, verifyRemote } from './setup-verify.ts'
 import { STATUS_LABELS } from './status.ts'
 import { envCount, run, runNode } from './sys.ts'
 
@@ -448,7 +448,11 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
         const memory = result.peakMemoryMb === null ? '最大メモリ 不明' : `最大メモリ ${result.peakMemoryMb} MB`
         const disk = result.diskGrowthMb === null ? 'ディスク 不明' : `ディスク +${result.diskGrowthMb} MB`
         say(`${where}: 通りました（${memory}、${disk}）`)
-      } else say(`${where}: ${result.failed ?? '確認'} が失敗しました`)
+      } else {
+        say(`${where}: ${result.failed ?? '確認'} が失敗しました`)
+        if (result.failed === VERIFY_SCRIPT_FAILED && result.tmpPath)
+          say(`一時ディレクトリが残っていれば消してください: ${result.tmpPath}`)
+      }
       if (result.missingTools.length) say(`${where}: 足りない道具: ${result.missingTools.join(', ')}`)
     }
     for (const [repo, r] of Object.entries(repos())) {

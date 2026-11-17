@@ -75,13 +75,21 @@ try {
   result.ok = false;
   if (!result.failed) result.failed = input.scriptFailed;
 } finally {
-  for (const tool of input.tools) {
-    if (spawnSync('/bin/sh', ['-c', 'command -v "$1" >/dev/null 2>&1', 'sh', tool]).status !== 0)
-      result.missingTools.push(tool);
+  for (const cleanup of [
+    ...input.tools.map((tool) => () => {
+      if (spawnSync('/bin/sh', ['-c', 'command -v "$1" >/dev/null 2>&1', 'sh', tool]).status !== 0)
+        result.missingTools.push(tool);
+    }),
+    () => { if (worktree) git('remove', '--force', worktree); },
+    () => { if (tmp) fs.rmSync(tmp, { recursive: true, force: true }); },
+    () => git('prune')
+  ]) {
+    try { cleanup(); } catch {
+      result.ok = false;
+      if (!result.failed) result.failed = input.scriptFailed;
+      if (tmp) console.error('一時ディレクトリが残っていれば消してください: ' + tmp);
+    }
   }
-  if (worktree) git('remove', '--force', worktree);
-  if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
-  git('prune');
 }
 console.log('@@orca-auto-verify:begin@@' + JSON.stringify(result) + '@@orca-auto-verify:end@@');
 `

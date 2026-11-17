@@ -1,8 +1,10 @@
 import {
   parseVerifyOutput,
+  parseVerifyTmp,
   runVerifyLocal,
   VERIFY_BEGIN,
   VERIFY_END,
+  VERIFY_SCRIPT_FAILED,
   VERIFY_TMP,
   verifyCommand,
   verifyRemote,
@@ -257,5 +259,62 @@ test('SV8 create failure returns without closing', () => {
   } finally {
     Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_INTERVAL_MS')
     f.cleanup()
+  }
+})
+
+test('SV14 cleanup exceptions still emit a result for local and remote verification', () => {
+  const dir = checkout()
+  const f = fixture()
+  const leftovers: string[] = []
+  const command = 'mkdir -p ro/sub && touch ro/sub/f && chmod 555 ro/sub && echo built'
+  process.env.ORCA_AUTO_VERIFY_TIMEOUT_MS = '100'
+  process.env.ORCA_AUTO_VERIFY_INTERVAL_MS = '0'
+  try {
+    const child = spawnSync('/bin/sh', ['-c', verifyCommand([command], [])], { cwd: dir, encoding: 'utf8' })
+    const path = parseVerifyTmp(child.stdout)
+    assert.ok(path)
+    leftovers.push(path)
+    const r = parseVerifyOutput(child.stdout)
+    assert.ok(r, child.stdout + child.stderr)
+    assert.equal(r.ok, false)
+    assert.equal(r.failed, VERIFY_SCRIPT_FAILED)
+    assert.equal(r.tmpPath, path)
+    assert.equal(existsSync(path), true)
+    assert.ok(child.stderr.includes(`一時ディレクトリが残っていれば消してください: ${path}`))
+    f.respond('terminal_create', { ok: true, result: { terminal: { handle: 't1' } } }, f.orca)
+    f.respond('terminal_read', { ok: true, result: { terminal: { tail: [child.stderr, child.stdout] } } }, f.orca)
+    const remote = verifyRemote('env-1', 'path:/remote/app', [command], [], () => {})
+    assert.equal(remote.timedOut, false)
+    assert.equal(remote.result?.failed, VERIFY_SCRIPT_FAILED)
+    assert.ok(f.calls(f.orca).includes('terminal close'))
+    const local = runVerifyLocal(dir, [command], [])
+    if (local.tmpPath) leftovers.push(local.tmpPath)
+    assert.equal(local.failed, VERIFY_SCRIPT_FAILED)
+    assert.equal(local.platform, process.platform)
+  } finally {
+    for (const path of leftovers) {
+      spawnSync('chmod', ['-R', 'u+w', path])
+      rmSync(path, { recursive: true, force: true })
+    }
+    Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_TIMEOUT_MS')
+    Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_INTERVAL_MS')
+    f.cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('SV15 an unexpected tool lookup exception also cleans up and emits a result', () => {
+  const dir = checkout()
+  let leftover: string | null = null
+  try {
+    const r = runVerifyLocal(dir, ['true'], ['bad\0tool'])
+    leftover = r.tmpPath
+    assert.equal(r.ok, false)
+    assert.equal(r.failed, VERIFY_SCRIPT_FAILED)
+    assert.equal(r.platform, process.platform)
+    clean(dir, r.tmpPath)
+  } finally {
+    if (leftover) rmSync(leftover, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true })
   }
 })

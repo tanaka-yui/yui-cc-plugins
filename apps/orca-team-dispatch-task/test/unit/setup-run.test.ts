@@ -7,7 +7,7 @@ import { readClaudeStubArgs, readClaudeStubPwd, writeClaudeStub } from '../lib/c
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 
 const gitRepo = (path: string, repo: string) => {
@@ -671,6 +671,37 @@ test('SU38 changing the remote selector drops verified and measure until checked
     })
     assert.ok(!f.calls(f.orca).includes('terminal create'))
   } finally {
+    f.cleanup()
+  }
+})
+
+test('SU39 cleanup failure reports the remaining temporary directory', () => {
+  const f = prepare()
+  let leftover: string | null = null
+  try {
+    const command = `mkdir -p ro/sub && touch ro/sub/f && chmod 555 ro/sub && echo built && pwd -P > '${join(f.dir, 'verify-worktree')}'`
+    const r = f.rerun({
+      'acme/app の確認コマンド 1': command,
+      'acme/app の確認コマンドをこのマシンで': 'y',
+      'other/api の確認コマンドを AI に': 'n',
+      'config.json を書きますか': 'y',
+    })
+    assert.equal(r.code, 0, r.output)
+    const hint = '一時ディレクトリが残っていれば消してください: '
+    leftover = dirname(readFileSync(join(f.dir, 'verify-worktree'), 'utf8').trim())
+    const reported = r.output.split(hint)[1]?.split('\n')[0]
+    assert.ok(reported, r.output)
+    assert.equal(realpathSync(reported), realpathSync(leftover))
+    assert.ok(existsSync(leftover))
+    assert.ok(r.output.includes('このマシン: 確認のスクリプト が失敗しました'), r.output)
+    assert.equal(f.config().repos['acme/app']?.verified, false)
+  } finally {
+    if (!leftover && existsSync(join(f.dir, 'verify-worktree')))
+      leftover = dirname(readFileSync(join(f.dir, 'verify-worktree'), 'utf8').trim())
+    if (leftover) {
+      spawnSync('chmod', ['-R', 'u+w', leftover])
+      rmSync(leftover, { recursive: true, force: true })
+    }
     f.cleanup()
   }
 })
