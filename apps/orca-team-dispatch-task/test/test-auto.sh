@@ -18,6 +18,10 @@ setup; out=$(coord openCoordinator "'/repo', 'auto-test'" 2>/dev/null)
 [[ "$out" == term_new ]] && grep -Fq 'terminal create --worktree path:/repo --title orca-auto:auto-test --json' "$ORCA_STUB_DIR/calls.log" && ok AU1 || fail AU1; teardown
 setup; out=$(coord ensureCoordinator "'$W/sd', '/repo', 'auto-test'" 2>/dev/null)
 [[ "$out" == term_c1 ]] && ! grep -q 'terminal create' "$ORCA_STUB_DIR/calls.log" && ok AU2 || fail AU2; teardown
+# 2026-11-17（Orca 1.4.259）: CLI で作った端末は生きたまま 20 秒ほどで orphaned:true になる。閉じた端末は connected:false
+setup; echo '{"ok":true,"result":{"terminal":{"handle":"term_c1","orphaned":true,"connected":true}}}' > "$ORCA_STUB_DIR/terminal_show"
+out=$(coord ensureCoordinator "'$W/sd', '/repo', 'auto-test'" 2>/dev/null)
+[[ "$out" == term_c1 ]] && ! grep -q 'terminal create' "$ORCA_STUB_DIR/calls.log" && ok AU2b || fail AU2b; teardown
 for variant in closed stale fenced null; do
   setup
   case "$variant" in
@@ -29,11 +33,12 @@ for variant in closed stale fenced null; do
   out=$(coord ensureCoordinator "'$W/sd', '/repo', 'auto-test'" 2>/dev/null)
   [[ "$out" == term_new ]] && grep -Fq 'orchestration run-use --id run_1 --from term_new' "$ORCA_STUB_DIR/calls.log" && ok "AU3-4 $variant" || fail "AU3-4 $variant"
   node -e "const r=require('$W/sd/run.json');process.exit(r.parent_handle==='term_new'&&r.run_id==='run_1'&&r.repo_root==='/repo'?0:1)" && ok AU5 || fail AU5
+  grep -Fq 'terminal close --terminal term_c1' "$ORCA_STUB_DIR/calls.log" && ok "AU5b $variant" || fail "AU5b $variant"
   teardown
 done
 setup; echo '{"ok":false}' > "$ORCA_STUB_DIR/terminal_show"; echo 1 > "$ORCA_STUB_DIR/orchestration_run-use.rc"
 out=$(coord ensureCoordinator "'$W/sd', '/repo', 'auto-test'" 2>/dev/null)
-[[ "$out" == null ]] && grep -Fq 'terminal close --terminal term_new' "$ORCA_STUB_DIR/calls.log" && ok AU6 || fail AU6; teardown
+[[ "$out" == null ]] && grep -Fq 'terminal close --terminal term_new' "$ORCA_STUB_DIR/calls.log" && ! grep -Fq 'terminal close --terminal term_c1' "$ORCA_STUB_DIR/calls.log" && ok AU6 || fail AU6; teardown
 setup
 for action in run-current run-use; do
   printf '#!/bin/sh\nprintf "%%s\\n" "$ORCA_TERMINAL_HANDLE" >> "$W/env.log"\n' > "$ORCA_STUB_DIR/orchestration_$action.hook"

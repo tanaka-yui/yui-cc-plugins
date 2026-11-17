@@ -28,10 +28,11 @@ export const ensureCoordinator = (statusDir: string, worktreePath: string, slug:
     ORCA_TERMINAL_HANDLE: handle,
   })
   if (terminal.stderr?.includes('timed out') || current.stderr?.includes('timed out')) return null
+  // ★ orphaned は生死の証拠にしない。Orca 1.4.259 で CLI が作った端末は、生きたまま 20 秒ほどで orphaned:true になる
+  //   （2026-11-17 の実機。これを閉じたと読んで毎 tick 作り直し、古い端末を 14 個残した）。閉じた端末は connected:false
   if (
     receiptOk(terminal) &&
     get(terminal.json, 'result', 'terminal', 'handle') === handle &&
-    get(terminal.json, 'result', 'terminal', 'orphaned') !== true &&
     get(terminal.json, 'result', 'terminal', 'connected') === true &&
     receiptOk(current) &&
     get(current.json, 'result', 'run', 'id') === run &&
@@ -43,7 +44,11 @@ export const ensureCoordinator = (statusDir: string, worktreePath: string, slug:
   const used = runOrca(['orchestration', 'run-use', '--id', run, '--from', next, '--json'], {
     ORCA_TERMINAL_HANDLE: next,
   })
-  if (receiptOk(used) && writeAtomic(file, JSON.stringify({ ...record, parent_handle: next }))) return next
+  if (receiptOk(used) && writeAtomic(file, JSON.stringify({ ...record, parent_handle: next }))) {
+    // 引き継いだあとの古い端末は誰も使わない。閉じていなければここで閉じる（閉じた端末への close は害が無い）
+    runOrca(['terminal', 'close', '--terminal', handle, '--json'])
+    return next
+  }
   runOrca(['terminal', 'close', '--terminal', next, '--json'])
   return null
 }
