@@ -76,6 +76,7 @@ export const SETUP_STEPS: ReadonlyArray<{ id: string; title: string }> = [
   { id: 'automation', title: 'automation の登録' },
   { id: 'enable', title: '有効化' },
 ]
+const CONFIG_RESOLVE_SCRIPT = 'skills/orca-team-dispatch-task/scripts/config-resolve.ts'
 const REPO_PATTERN = /^[^/\s]+\/[^/\s]+$/
 export const runSetup = (name: string, prompter: Prompter, out: (text: string) => void): number => {
   const noInput = new Error('入力が尽きました')
@@ -492,9 +493,7 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
   const roles = () => {
     const defaults =
       v.roles ??
-      asObject(
-        parseJson(runNode(join(pluginRoot(), 'bin/config-resolve.ts'), ['--project-root', autoDir(name)]).stdout),
-      )
+      asObject(parseJson(runNode(join(pluginRoot(), CONFIG_RESOLVE_SCRIPT), ['--project-root', autoDir(name)]).stdout))
     const toggle = (key: 'review_mode' | 'phase_b'): 'on' | 'off' => {
       for (;;) {
         const value = ask(key, defaults?.[key] === 'on' ? 'on' : 'off')

@@ -467,3 +467,17 @@ test('SU30k Enter preserves host priority order independently of discovery order
     f.cleanup()
   }
 })
+
+test('SU27c initial roles inherit the dispatch configuration', () => {
+  const f = prepare()
+  try {
+    f.put(join(f.dir, 'config/config.json'), { review_mode: 'on', phase_b: 'on' })
+    const result = f.fresh()
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    assert.deepEqual(f.config().roles, { review_mode: 'on', phase_b: 'on' })
+    assert.match(result.stdout, /review_mode \[on\]/)
+    assert.match(result.stdout, /phase_b \[on\]/)
+  } finally {
+    f.cleanup()
+  }
+})
