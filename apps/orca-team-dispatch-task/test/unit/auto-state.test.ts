@@ -140,3 +140,27 @@ test('AU104 legacy states normalize branch maps and previous targets; malformed 
     rmSync(join(sd, 'state.json'), { force: true })
   }
 })
+
+test('AU126 projectSync defaults and is validated', () => {
+  const file = join(sd, 'state.json')
+  const base = { version: 1, judgingSince: null, issues: {} }
+  try {
+    assert.deepEqual(readState('main').projectSync, {})
+    writeFileSync(file, JSON.stringify(base))
+    assert.deepEqual(readState('main').projectSync, {})
+    const projectSync = { 'acme/app#1': { status: 'Ready', label: '' } }
+    writeFileSync(file, JSON.stringify({ ...base, projectSync }))
+    assert.deepEqual(readState('main').projectSync, projectSync)
+    for (const invalid of [
+      [],
+      null,
+      { 'acme/app#1': { status: 1, label: '' } },
+      { 'acme/app#1': { status: 'Ready' } },
+    ]) {
+      writeFileSync(file, JSON.stringify({ ...base, projectSync: invalid }))
+      assert.throws(() => readState('main'), /状態ファイルが壊れています/)
+    }
+  } finally {
+    rmSync(file, { force: true })
+  }
+})

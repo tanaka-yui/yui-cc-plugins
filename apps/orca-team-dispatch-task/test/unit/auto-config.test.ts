@@ -56,3 +56,23 @@ test('CF6 malformed nested configuration fails closed', () => {
     assert.equal(readAutoConfig('main'), null)
   }
 })
+
+test('AU125 source project is optional and validated', () => {
+  save(fixture)
+  assert.equal(readAutoConfig('main')?.sources[0]?.project, null)
+  const project = { owner: 'acme', number: 3 }
+  save({ ...fixture, sources: [{ ...fixture.sources[0], project }] })
+  assert.deepEqual(readAutoConfig('main')?.sources[0]?.project, project)
+  for (const invalid of [
+    { owner: '', number: 3 },
+    { owner: 'acme', number: 0 },
+    { owner: 'acme', number: 1.5 },
+    { owner: 'acme' },
+    { owner: 3, number: 3 },
+    'acme/3',
+    null,
+  ]) {
+    save({ ...fixture, sources: [{ ...fixture.sources[0], project: invalid }] })
+    assert.equal(readAutoConfig('main'), null)
+  }
+})

@@ -70,10 +70,16 @@ export type IssueState = {
   failReason: string | null
   updatedAt: string
 }
-export type AutoState = { version: 1; judgingSince: string | null; issues: Record<string, IssueState> }
+export type ProjectPair = { status: string; label: string }
+export type AutoState = {
+  version: 1
+  judgingSince: string | null
+  issues: Record<string, IssueState>
+  projectSync: Record<string, ProjectPair>
+}
 export const readState = (name: string): AutoState => {
   const file = join(autoDir(name), AUTO_FILES.state)
-  if (!existsSync(file)) return { version: 1, judgingSince: null, issues: {} }
+  if (!existsSync(file)) return { version: 1, judgingSince: null, issues: {}, projectSync: {} }
   const value = asObject(readJson(file))
   const issues = asObject(value?.issues)
   if (
@@ -122,6 +128,16 @@ export const readState = (name: string): AutoState => {
         throw new Error(`状態ファイルが壊れています: ${key}`)
     }
   }
+  if (value.projectSync === undefined) value.projectSync = {}
+  const projectSync = asObject(value.projectSync)
+  if (
+    !projectSync ||
+    Object.values(projectSync).some((entry) => {
+      const pair = asObject(entry)
+      return !pair || typeof pair.status !== 'string' || typeof pair.label !== 'string'
+    })
+  )
+    throw new Error('状態ファイルが壊れています')
   return value as AutoState
 }
 export const writeState = (name: string, state: AutoState): void => {

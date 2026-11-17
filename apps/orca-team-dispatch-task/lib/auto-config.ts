@@ -9,12 +9,14 @@ import { isAbsolute, join } from 'node:path'
 
 import type { HostConfig } from './auto-hosts.ts'
 
+export type ProjectRef = { owner: string; number: number }
+
 export type AutoConfig = {
   version: 1
   name: string
   everyMinutes: number
   intakeConfig: string
-  sources: Array<{ repo: string; related: string[]; pick: string }>
+  sources: Array<{ repo: string; related: string[]; pick: string; project: ProjectRef | null }>
   repos: Record<string, { checkout: string; verify: string[]; infra: boolean; verified: boolean; ci: boolean }>
   hosts: HostConfig[] | null
   lanes: number
@@ -63,9 +65,27 @@ export const readAutoConfig = (name: string): AutoConfig | null => {
     const repo = asString(s?.repo)
     const related = strings(s?.related)
     const pick = s?.pick === undefined ? 'Ready' : asString(s.pick)
-    if (!repo || !/^[^/\s]+\/[^/\s]+$/.test(repo) || !related?.length || related.some((r) => !repos[r]) || !pick)
+    const project = s?.project === undefined ? null : asObject(s.project)
+    if (
+      !repo ||
+      !/^[^/\s]+\/[^/\s]+$/.test(repo) ||
+      !related?.length ||
+      related.some((r) => !repos[r]) ||
+      !pick ||
+      (s?.project !== undefined &&
+        (!project ||
+          !asString(project.owner) ||
+          typeof project.number !== 'number' ||
+          !Number.isInteger(project.number) ||
+          project.number < 1))
+    )
       return null
-    sources.push({ repo, related, pick })
+    sources.push({
+      repo,
+      related,
+      pick,
+      project: project ? { owner: project.owner as string, number: project.number as number } : null,
+    })
   }
   const hosts = parseHosts(input.hosts, repos)
   if (!hosts.ok) return null

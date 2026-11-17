@@ -6,7 +6,7 @@ import { test } from 'node:test'
 
 import type { AutoState, IssueState } from '../../lib/auto-state.ts'
 
-const empty = (): AutoState => ({ version: 1, judgingSince: null, issues: {} })
+const empty = (): AutoState => ({ version: 1, judgingSince: null, issues: {}, projectSync: {} })
 test('QU1-4 priority, age and stable key order', () => {
   const items = [
     { key: 'b', priority: 'middle', readyAt: '2026-02-01' },
