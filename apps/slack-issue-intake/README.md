@@ -137,6 +137,20 @@ make setup
 
 2段目で作るアプリは、通常の権限に加えて channels:read、groups:read、chat:write.public、channels:join、bookmarks:write を持ちます。チャンネル名の検索、フォームの内容の投稿、公開チャンネルへの参加、ボタンをおすすめワークフローにすること（workflows.featured.add）に使います。`make manifest` で、このマニフェストを表示できます。
 
+### ワークスペースが複数あるとき
+
+Slack のワークスペースごとに、名前を付けて `make setup` を実行します。
+
+```bash
+make setup NAME=<名前>
+```
+
+- 名前は英小文字・数字・`-` の 1〜32 文字で、先頭は英小文字か数字です。`slack-app` と、`-slack-app` で終わる名前は使えません。
+- 名前を付けたワークスペースのホームは `~/.slack-issue-intake-<名前>/`、Slack CLI のプロジェクトは `~/.slack-issue-intake-<名前>-slack-app/` です。トークン・設定・DB はワークスペースごとに分かれます。名前を付けないときは、今までどおり `~/.slack-issue-intake/` を使います。
+- automation はワークスペースごとに 1 つ、この PC にでき、名前は `slack-issue-intake-<名前>` です（名前なしは `slack-issue-intake`）。
+- ボタンの置き直しとマニフェストの表示も `make slack-form NAME=<名前>`・`make manifest NAME=<名前>` と同じ名前を付けます。CLI を直接呼ぶときは `node bin/slack-issue-intake.ts --name <名前> status` のように、`--name <名前>` をサブコマンドの前に置きます。
+- orca-team-dispatch-task の `--auto` で全部のワークスペースの Issue を処理するときは、その `make setup` の 2 段目（拾う元）で、ワークスペースごとのホームの config.json を全部選びます。
+
 ### 途中で止まったとき
 
 もう一度 `make setup` を実行します。済んだ段は飛ばし、止まった段から再開します。

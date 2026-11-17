@@ -98,3 +98,25 @@ test('MW6 make passes NAME before the subcommand and ignores NAME from the envir
   assert.match(plain, /slack-issue-intake\.ts' setup$/m)
   assert.ok(!plain.includes('--name'))
 })
+
+test('MW5 docs explain per-workspace setup and --name', () => {
+  const skill = readFileSync(join(root, 'skills/slack-issue-intake/SKILL.md'), 'utf8')
+  const guide = readFileSync(join(root, 'skills/slack-issue-intake/references/guide-ja.md'), 'utf8')
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+  for (const text of [
+    '--name <name>',
+    'make setup NAME=<name>',
+    '~/.slack-issue-intake-<name>/secrets.json',
+    '## Workspaces',
+  ])
+    assert.ok(skill.includes(text), text)
+  for (const text of [
+    '--name <名前>',
+    'make setup NAME=<名前>',
+    '~/.slack-issue-intake-<名前>/secrets.json',
+    '## ワークスペース',
+  ])
+    assert.ok(guide.includes(text), text)
+  for (const text of ['make setup NAME=<名前>', 'slack-issue-intake-<名前>', '--name <名前>'])
+    assert.ok(readme.includes(text), text)
+})
