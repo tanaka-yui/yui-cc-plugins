@@ -1,10 +1,11 @@
-import { envArgs, hostKey, hostsOf } from '../../lib/auto-hosts.ts'
+import { envArgs, hostKey, hostsOf, parseHosts } from '../../lib/auto-hosts.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import type { HostConfig } from '../../lib/auto-hosts.ts'
+import type { Json } from '../../lib/json.ts'
 
 test('HC1/HC2 defaults preserve C2a and explicit hosts keep configuration order', () => {
   const f = fixture()
@@ -22,7 +23,7 @@ test('HC1/HC2 defaults preserve C2a and explicit hosts keep configuration order'
         lanes: 3,
         orcaBin: 'orca-ide',
         spec: null,
-        repos: { 'acme/app': { selector: 'id:R', verified: true } },
+        repos: { 'acme/app': { selector: 'id:R', verified: true, measure: null } },
       },
     ]
     f.put(f.configFile, { ...f.raw, hosts })
@@ -105,6 +106,44 @@ test('SU1 hosts spec is optional and validated', () => {
       f.put(f.configFile, { ...f.raw, hosts: [{ ...host, spec: invalid }] })
       assert.throws(() => f.config())
     }
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('SV9 measure parses, defaults to null, and rejects bad shapes', () => {
+  const f = fixture()
+  try {
+    const measure = { peakMemoryMb: 900, diskGrowthMb: 0, measuredAt: '2026-11-17T00:00:00Z' }
+    const host = (value: Json) => [
+      {
+        id: 'env-1',
+        name: 'Server',
+        lanes: 1,
+        orcaBin: 'orca',
+        repos: { 'acme/app': { selector: 'id:R', verified: true, measure: value } },
+      },
+    ]
+    for (const value of [null, measure]) {
+      const r = parseHosts(host(value), f.config().repos)
+      assert.ok(r.ok)
+      assert.deepEqual(r.hosts?.[0]?.repos['acme/app']?.measure, value)
+    }
+    const absent = parseHosts(
+      [{ id: 'env-1', name: 'Server', lanes: 1, orcaBin: 'orca', repos: { 'acme/app': { selector: 'id:R' } } }],
+      f.config().repos,
+    )
+    assert.ok(absent.ok)
+    assert.equal(absent.hosts?.[0]?.repos['acme/app']?.measure, null)
+    for (const value of [
+      'x',
+      { ...measure, peakMemoryMb: 0 },
+      { ...measure, diskGrowthMb: -1 },
+      { ...measure, diskGrowthMb: 1.5 },
+      { ...measure, measuredAt: 'x' },
+      { ...measure, measuredAt: '' },
+    ])
+      assert.equal(parseHosts(host(value), f.config().repos).ok, false)
   } finally {
     f.cleanup()
   }

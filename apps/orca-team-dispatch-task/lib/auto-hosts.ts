@@ -15,13 +15,14 @@ export type HostSpec = {
   diskFreeMb: number
   measuredAt: string
 }
+export type RepoMeasure = { peakMemoryMb: number; diskGrowthMb: number; measuredAt: string }
 export type HostConfig = {
   spec: HostSpec | null
   id: string
   name: string
   lanes: number
   orcaBin: string
-  repos: Record<string, { selector: string; verified: boolean }>
+  repos: Record<string, { selector: string; verified: boolean; measure: RepoMeasure | null }>
 }
 export const parseHosts = (
   value: Json | undefined,
@@ -70,7 +71,19 @@ export const parseHosts = (
       const selector = asString(r?.selector)
       const verified = r?.verified === undefined ? false : r.verified
       if (!Object.hasOwn(repos, repo) || !selector || typeof verified !== 'boolean') return { ok: false }
-      hostRepos[repo] = { selector, verified }
+      const measure = r?.measure == null ? null : asObject(r.measure)
+      if (
+        r?.measure != null &&
+        (!measure ||
+          ['peakMemoryMb', 'diskGrowthMb'].some((key) => {
+            const n = measure[key]
+            return typeof n !== 'number' || !Number.isInteger(n) || n < (key === 'peakMemoryMb' ? 1 : 0)
+          }) ||
+          !asString(measure.measuredAt) ||
+          Number.isNaN(Date.parse(String(measure.measuredAt))))
+      )
+        return { ok: false }
+      hostRepos[repo] = { selector, verified, measure: measure as RepoMeasure | null }
     }
     seen.add(id)
     hosts.push({ id, name, lanes, orcaBin: bin, repos: hostRepos, spec: spec as HostSpec | null })
@@ -88,7 +101,7 @@ export const hostsOf = (config: AutoConfig): HostConfig[] =>
       repos: Object.fromEntries(
         Object.entries(config.repos).map(([repo, r]) => [
           repo,
-          { selector: `path:${r.checkout}`, verified: r.verified },
+          { selector: `path:${r.checkout}`, verified: r.verified, measure: null },
         ]),
       ),
     },

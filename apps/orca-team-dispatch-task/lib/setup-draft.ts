@@ -131,7 +131,17 @@ export const configJsonFromDraft = (draft: SetupDraft, base: JsonObject | null):
   }
   if (v.sources)
     next.sources = v.sources.map(({ project, ...source }) => ({ ...source, ...(project ? { project } : {}) }))
-  if (v.hosts) next.hosts = v.hosts.map(({ spec, ...host }) => ({ ...host, ...(spec ? { spec } : {}) }))
+  if (v.hosts)
+    next.hosts = v.hosts.map(({ spec, repos, ...host }) => ({
+      ...host,
+      repos: Object.fromEntries(
+        Object.entries(repos).map(([repo, { measure, ...pair }]) => [
+          repo,
+          { ...pair, ...(measure ? { measure } : {}) },
+        ]),
+      ),
+      ...(spec ? { spec } : {}),
+    }))
   return parseAutoConfig(next, draft.name) ? next : null
 }
 export const inUseConflicts = (state: AutoState, next: JsonObject): string[] => {

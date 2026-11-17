@@ -320,7 +320,7 @@ test('SU30f changed remote selector loses verification without reprobe', () => {
     f.put(f.configFile, { ...f.raw, hosts: [localHost(f), remoteHost] })
     const result = f.rerun({ 'Server の acme/app の checkout': '2', 'config.json を書きますか': 'y' })
     assert.equal(result.code, 0, result.output)
-    assert.deepEqual(f.config().hosts?.[1]?.repos['acme/app'], { selector: 'id:R2', verified: false })
+    assert.deepEqual(f.config().hosts?.[1]?.repos['acme/app'], { selector: 'id:R2', verified: false, measure: null })
     assert.ok(!f.calls(f.orca).includes('terminal create'))
   } finally {
     f.cleanup()

@@ -1,5 +1,6 @@
 import { parseAutoConfig } from '../../lib/auto-config.ts'
 import { readState } from '../../lib/auto-state.ts'
+import { asArray, asObject, get } from '../../lib/json.ts'
 import {
   configJsonFromDraft,
   draftFromConfig,
@@ -135,7 +136,7 @@ test('SU9 and SU9b active issues protect source, host, target and host repositor
         lanes: 1,
         orcaBin: 'orca',
         spec: null,
-        repos: { 'acme/app': { selector: 'id:R', verified: false } },
+        repos: { 'acme/app': { selector: 'id:R', verified: false, measure: null } },
       },
     ]
     const next = configJsonFromDraft(draft, f.raw)
@@ -152,6 +153,41 @@ test('SU9 and SU9b active issues protect source, host, target and host repositor
     issue.phase = 'done'
     assert.deepEqual(inUseConflicts(state, { ...next, sources: [], hosts: [], repos: {} }), [])
     assert.ok(readFileSync(f.configFile, 'utf8'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('SV11 measure survives draft and config round trips', () => {
+  const f = fixture()
+  try {
+    const measure = { peakMemoryMb: 900, diskGrowthMb: 0, measuredAt: '2026-11-17T00:00:00Z' }
+    const base = {
+      ...f.raw,
+      hosts: [
+        {
+          id: 'env-1',
+          name: 'Server',
+          lanes: 1,
+          orcaBin: 'orca',
+          repos: {
+            'acme/app': { selector: 'id:R', verified: true, measure },
+            'other/api': { selector: 'id:A', verified: false },
+          },
+        },
+      ],
+    }
+    f.put(f.configFile, base)
+    const draft = draftFromConfig(f.config())
+    const json = configJsonFromDraft(draft, base)
+    assert.ok(json)
+    assert.deepEqual(get(asArray(json.hosts)?.[0], 'repos', 'acme/app', 'measure'), measure)
+    const other = asObject(get(asArray(json.hosts)?.[0], 'repos', 'other/api'))
+    assert.ok(other)
+    assert.equal('measure' in other, false)
+    assert.deepEqual(parseAutoConfig(json, 'main'), f.config())
+    writeDraft(draft)
+    assert.deepEqual(readDraft('main'), draft)
   } finally {
     f.cleanup()
   }

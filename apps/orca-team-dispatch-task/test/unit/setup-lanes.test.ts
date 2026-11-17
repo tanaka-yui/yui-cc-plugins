@@ -3,6 +3,7 @@ import {
   SETUP_WORKTREE_MEMORY_MB as MEMORY,
   SETUP_RESERVE_MEMORY_MB as RESERVE,
   recommendLanes,
+  worktreeCost,
   worktreesPerIssue,
 } from '../../lib/setup-lanes.ts'
 
@@ -33,4 +34,27 @@ test('SU4 worktreesPerIssue counts all role combinations', () => {
     assert.equal(worktreesPerIssue({ review_mode, phase_b }, 1), count)
     assert.equal(worktreesPerIssue({ review_mode, phase_b }, 2), count * 2)
   }
+})
+
+test('SV10 worktree cost uses the measured maximum with margin and a memory floor', () => {
+  const measuredAt = '2026-11-17T00:00:00Z'
+  assert.deepEqual(worktreeCost([null]), { memoryMb: 4096, diskMb: 5120, source: 'default' })
+  const cost = worktreeCost([
+    { peakMemoryMb: 3000, diskGrowthMb: 700, measuredAt },
+    { peakMemoryMb: 1000, diskGrowthMb: 900, measuredAt },
+    null,
+  ])
+  assert.deepEqual(cost, { memoryMb: 6000, diskMb: 1800, source: 'measured' })
+  assert.deepEqual(worktreeCost([{ peakMemoryMb: 100, diskGrowthMb: 0, measuredAt }]), {
+    memoryMb: 4096,
+    diskMb: 1,
+    source: 'measured',
+  })
+  assert.equal(
+    recommendLanes(
+      { cpus: 12, memoryTotalMb: 32768, memoryFreeMb: 0, swapTotalMb: 0, diskFreeMb: 40518, measuredAt },
+      cost,
+    ),
+    4,
+  )
 })

@@ -327,6 +327,7 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
           const unchanged = base?.repos[repo]?.checkout === r.checkout
           host.repos[repo] = {
             selector: unchanged && old?.repos[repo] ? old.repos[repo].selector : `path:${r.checkout}`,
+            measure: old?.repos[repo]?.measure ?? null,
             verified:
               old?.repos[repo]?.verified ??
               (base?.hosts === null && unchanged ? (base.repos[repo]?.verified ?? false) : false),
@@ -388,7 +389,11 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
               say('checkout を一覧の番号か絶対パスで入力してください')
               continue
             }
-            host.repos[repo] = { selector, verified: old?.repos[repo]?.verified ?? false }
+            host.repos[repo] = {
+              selector,
+              verified: old?.repos[repo]?.verified ?? false,
+              measure: old?.repos[repo]?.measure ?? null,
+            }
             paths.set(selector, path)
             break
           }
@@ -449,6 +454,7 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
         const old = oldHosts.find((h) => h.id === host.id)?.repos[repo]
         const unchanged = sameCommands && old?.selector === pair.selector && (host.id !== LOCAL_HOST || sameRepo)
         pair.verified = unchanged ? (old?.verified ?? false) : false
+        pair.measure = unchanged ? (old?.measure ?? null) : null
         if (host.id === LOCAL_HOST) localUnchanged = unchanged
       }
       const local = v.hosts?.find((h) => h.id === LOCAL_HOST)?.repos[repo]
