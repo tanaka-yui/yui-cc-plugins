@@ -71,6 +71,9 @@ const timeout = (): number | undefined =>
     ? undefined
     : Math.max(1, Math.min(remainder(), envCount('ORCA_AUTO_CALL_CAP_MS', AUTO_CALL_CAP_MS)))
 const readAllowed = (stage: string): boolean => remainder() > 0 || skip(stage)
+export const autoReadUncounted = (command: string, args: string[]): ProcResult =>
+  run(command, args, undefined, timeout())
+
 export const autoRun = (command: string, args: string[], cwd?: string): ProcResult => {
   const action = command === 'git' ? (args[0] === '-C' ? args[2] : args[0]) : args[0]
   const gitRead =
