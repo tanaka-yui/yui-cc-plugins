@@ -175,6 +175,18 @@ test('SU18 checkout validation and SU19b verification keep the checkout clean', 
       assert.equal(git(path, 'worktree', 'list').split('\n').length, 1)
       assert.equal(git(path, 'status', '--porcelain'), '')
     }
+    // SU19e: 端末につないだまま走らせても、git などがページャを開いて止まらない
+    const pager = process.env.PAGER
+    process.env.PAGER = 'less'
+    try {
+      assert.deepEqual(runVerifyLocal(path, ['test "$GIT_PAGER" = cat && test "$PAGER" = cat']), {
+        ok: true,
+        failed: null,
+      })
+    } finally {
+      if (pager === undefined) Reflect.deleteProperty(process.env, 'PAGER')
+      else process.env.PAGER = pager
+    }
   } finally {
     f.cleanup()
   }

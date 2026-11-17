@@ -204,7 +204,12 @@ export const runVerifyLocal = (checkout: string, commands: string[]): { ok: bool
   try {
     if (git('worktree', 'add', '--detach', temporary, 'HEAD').rc !== 0) return { ok: false, failed: 'git worktree add' }
     for (const command of commands) {
-      const result = spawnSync('/bin/sh', ['-c', command], { cwd: temporary, stdio: ['ignore', 'inherit', 'inherit'] })
+      // 出力は端末につなぐので、git などがページャを開いて入力を待たないようにする
+      const result = spawnSync('/bin/sh', ['-c', command], {
+        cwd: temporary,
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: { ...process.env, GIT_PAGER: 'cat', PAGER: 'cat' },
+      })
       if (result.status !== 0) return { ok: false, failed: command }
     }
     return { ok: true, failed: null }
