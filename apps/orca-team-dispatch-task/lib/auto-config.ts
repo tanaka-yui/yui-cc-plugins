@@ -19,6 +19,7 @@ export type AutoConfig = {
   sources: Array<{ repo: string; related: string[]; pick: string; project: ProjectRef | null }>
   repos: Record<string, { checkout: string; verify: string[]; infra: boolean; verified: boolean; ci: boolean }>
   hosts: HostConfig[] | null
+  automation: { id: string; acceptedFingerprint: string | null } | null
   lanes: number
   roles: { review_mode: 'on' | 'off'; phase_b: 'on' | 'off' }
   limits: { defaultMinutes: number; maxMinutes: number; stallMinutes: number }
@@ -32,8 +33,10 @@ const strings = (value: Json | undefined): string[] | null =>
   Array.isArray(value) && value.every((v) => typeof v === 'string' && v.length > 0) ? (value as string[]) : null
 const boolean = (value: Json | undefined, fallback: boolean): boolean | null =>
   value === undefined ? fallback : typeof value === 'boolean' ? value : null
-export const readAutoConfig = (name: string): AutoConfig | null => {
-  const input = asObject(readJson(join(autoDir(name), AUTO_FILES.config)))
+export const readAutoConfig = (name: string): AutoConfig | null =>
+  parseAutoConfig(readJson(join(autoDir(name), AUTO_FILES.config)), name)
+export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | null => {
+  const input = asObject(value)
   if (!input || input.version !== 1 || input.name !== name) return null
   if (['roles', 'limits', 'judge'].some((key) => input[key] !== undefined && !asObject(input[key]))) return null
   const rawRepos = asObject(input.repos)
@@ -89,6 +92,14 @@ export const readAutoConfig = (name: string): AutoConfig | null => {
   }
   const hosts = parseHosts(input.hosts, repos)
   if (!hosts.ok) return null
+  const automation = input.automation == null ? null : asObject(input.automation)
+  if (
+    input.automation != null &&
+    (!automation ||
+      !asString(automation.id) ||
+      (automation.acceptedFingerprint != null && !asString(automation.acceptedFingerprint)))
+  )
+    return null
   const rawRoles = asObject(input.roles)
   const review_mode = rawRoles?.review_mode ?? 'off'
   const phase_b = rawRoles?.phase_b ?? 'off'
@@ -101,6 +112,9 @@ export const readAutoConfig = (name: string): AutoConfig | null => {
     sources,
     repos,
     hosts: hosts.hosts,
+    automation: automation
+      ? { id: automation.id as string, acceptedFingerprint: asString(automation.acceptedFingerprint) }
+      : null,
     intakeConfig:
       input.intakeConfig === undefined
         ? join(homedir(), '.slack-issue-intake/config.json')

@@ -76,3 +76,23 @@ test('AU125 source project is optional and validated', () => {
     assert.equal(readAutoConfig('main'), null)
   }
 })
+
+test('SU2 automation is optional and validated', () => {
+  for (const automation of [undefined, null]) {
+    save({ ...fixture, automation })
+    assert.equal(readAutoConfig('main')?.automation, null)
+  }
+  for (const acceptedFingerprint of [undefined, null, 'fingerprint']) {
+    save({ ...fixture, automation: { id: 'a1', acceptedFingerprint } })
+    assert.deepEqual(readAutoConfig('main')?.automation, { id: 'a1', acceptedFingerprint: acceptedFingerprint ?? null })
+  }
+  for (const automation of [
+    { id: '' },
+    { id: 'a1', acceptedFingerprint: '' },
+    { id: 'a1', acceptedFingerprint: 1 },
+    'bad',
+  ]) {
+    save({ ...fixture, automation })
+    assert.equal(readAutoConfig('main'), null)
+  }
+})

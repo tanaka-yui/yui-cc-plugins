@@ -7,7 +7,16 @@ import type { AutoConfig } from './auto-config.ts'
 import type { Json } from './json.ts'
 
 export const LOCAL_HOST = 'local'
+export type HostSpec = {
+  cpus: number
+  memoryTotalMb: number
+  memoryFreeMb: number
+  swapTotalMb: number
+  diskFreeMb: number
+  measuredAt: string
+}
 export type HostConfig = {
+  spec: HostSpec | null
   id: string
   name: string
   lanes: number
@@ -41,6 +50,20 @@ export const parseHosts = (
       !raw
     )
       return { ok: false }
+    const spec = h?.spec == null ? null : asObject(h.spec)
+    if (
+      h?.spec != null &&
+      (!spec ||
+        ['cpus', 'memoryTotalMb', 'memoryFreeMb', 'swapTotalMb', 'diskFreeMb'].some((key) => {
+          const n = spec[key]
+          return (
+            typeof n !== 'number' || !Number.isInteger(n) || n < (key === 'cpus' || key === 'memoryTotalMb' ? 1 : 0)
+          )
+        }) ||
+        !asString(spec.measuredAt) ||
+        Number.isNaN(Date.parse(String(spec.measuredAt))))
+    )
+      return { ok: false }
     const hostRepos: HostConfig['repos'] = {}
     for (const [repo, v] of Object.entries(raw)) {
       const r = asObject(v)
@@ -50,13 +73,14 @@ export const parseHosts = (
       hostRepos[repo] = { selector, verified }
     }
     seen.add(id)
-    hosts.push({ id, name, lanes, orcaBin: bin, repos: hostRepos })
+    hosts.push({ id, name, lanes, orcaBin: bin, repos: hostRepos, spec: spec as HostSpec | null })
   }
   return { ok: true, hosts }
 }
 export const hostsOf = (config: AutoConfig): HostConfig[] =>
   config.hosts ?? [
     {
+      spec: null,
       id: LOCAL_HOST,
       name: hostname(),
       lanes: config.lanes,

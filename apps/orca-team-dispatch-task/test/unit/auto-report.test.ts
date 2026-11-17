@@ -53,7 +53,7 @@ test('RP4-6 reports every host capacity and maps running issues to their host na
     issue.host = 'env-1'
     const local = hostsOf(f.config())[0]
     assert.ok(local)
-    const remote = { id: 'env-1', name: 'Mac M2max', lanes: 4, orcaBin: 'orca', repos: {} }
+    const remote = { id: 'env-1', name: 'Mac M2max', lanes: 4, orcaBin: 'orca', repos: {}, spec: null }
     const report = buildReport(
       f.config(),
       state,
