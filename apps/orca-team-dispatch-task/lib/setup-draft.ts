@@ -18,7 +18,7 @@ export type SetupDraft = {
   name: string
   done: string[]
   values: {
-    intakeConfig?: string
+    intakeConfigs?: string[]
     sources?: AutoConfig['sources']
     repos?: AutoConfig['repos']
     hosts?: HostConfig[]
@@ -33,11 +33,18 @@ const stringList = (value: Json | undefined): value is string[] =>
   Array.isArray(value) && value.every((v) => typeof v === 'string' && v.length > 0)
 const validValues = (value: JsonObject, name: string): boolean => {
   const seed = { version: 1, name, repos: {}, sources: [] }
-  for (const key of ['intakeConfig', 'roles', 'everyMinutes', 'lanes', 'automation']) {
+  if (value.intakeConfig !== undefined) {
+    if (value.intakeConfigs !== undefined) return false
+    const parsed = parseAutoConfig({ ...seed, intakeConfig: value.intakeConfig }, name)
+    if (!parsed) return false
+    value.intakeConfigs = parsed.intakeConfigs
+    delete value.intakeConfig
+  }
+  for (const key of ['intakeConfigs', 'roles', 'everyMinutes', 'lanes', 'automation']) {
     if (value[key] !== undefined) {
       const parsed = parseAutoConfig({ ...seed, [key]: value[key] }, name)
       if (!parsed) return false
-      value[key] = parsed[key as 'intakeConfig' | 'roles' | 'everyMinutes' | 'lanes' | 'automation']
+      value[key] = parsed[key as 'intakeConfigs' | 'roles' | 'everyMinutes' | 'lanes' | 'automation']
     }
   }
   if (value.automation !== undefined && value.automation === null) return false
@@ -111,7 +118,7 @@ export const draftFromConfig = (config: AutoConfig): SetupDraft => ({
   name: config.name,
   done: [],
   values: structuredClone({
-    intakeConfig: config.intakeConfig,
+    intakeConfigs: config.intakeConfigs,
     sources: config.sources,
     repos: config.repos,
     ...(config.hosts ? { hosts: config.hosts } : { lanes: config.lanes }),
@@ -125,7 +132,8 @@ export const configJsonFromDraft = (draft: SetupDraft, base: JsonObject | null):
   next.version = 1
   next.name = draft.name
   const v = draft.values
-  for (const key of ['intakeConfig', 'repos', 'roles', 'everyMinutes', 'lanes', 'automation'] as const) {
+  if (v.intakeConfigs !== undefined) delete next.intakeConfig
+  for (const key of ['intakeConfigs', 'repos', 'roles', 'everyMinutes', 'lanes', 'automation'] as const) {
     const value = v[key]
     if (value !== undefined) next[key] = structuredClone(value)
   }

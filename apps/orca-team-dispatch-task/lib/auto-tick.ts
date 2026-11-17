@@ -1,6 +1,6 @@
 import { autoCleanup, confirmStopped, pushBranches, unrecordedWorker } from './auto-cleanup.ts'
 import { renderComment } from './auto-comment.ts'
-import { type AutoConfig, pickSources, readAutoConfig } from './auto-config.ts'
+import { type AutoConfig, pickSources, readAutoConfig, readIntakeRepos } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, prStatus, readGithub, viewIssue } from './auto-github.ts'
 import { envArgs, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
@@ -1104,6 +1104,7 @@ export const runTick = (name: string): number => {
         if (issue.phase === 'stopped' && before !== 'stopped') stopRoles(tick, issue)
       }
     }
+    for (const path of readIntakeRepos(config).unreadable) error(tick, `intake の設定を読めません: ${path}`)
     const picked = pickSources(config)
     const sources = config.sources.filter((s) => picked.includes(s.repo))
     const projectSync: ProjectSyncContext = {

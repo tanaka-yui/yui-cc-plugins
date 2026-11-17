@@ -2,6 +2,7 @@ import { parseHosts } from './auto-hosts.ts'
 import { AUTO_FILES, autoDir } from './auto-paths.ts'
 import { OPUS_MODEL } from './config.ts'
 import { readJson } from './fs.ts'
+import { INTAKE_HOME_DIRNAME } from './intake-homes.ts'
 import { asArray, asObject, asString, type Json } from './json.ts'
 
 import { homedir } from 'node:os'
@@ -15,7 +16,7 @@ export type AutoConfig = {
   version: 1
   name: string
   everyMinutes: number
-  intakeConfig: string
+  intakeConfigs: string[]
   sources: Array<{ repo: string; related: string[]; pick: string; project: ProjectRef | null }>
   repos: Record<string, { checkout: string; verify: string[]; infra: boolean; verified: boolean; ci: boolean }>
   hosts: HostConfig[] | null
@@ -100,6 +101,14 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
       (automation.acceptedFingerprint != null && !asString(automation.acceptedFingerprint)))
   )
     return null
+  if (input.intakeConfigs !== undefined && input.intakeConfig !== undefined) return null
+  const intakeConfigs =
+    input.intakeConfigs !== undefined
+      ? strings(input.intakeConfigs)
+      : input.intakeConfig !== undefined
+        ? strings([input.intakeConfig])
+        : [join(homedir(), INTAKE_HOME_DIRNAME, 'config.json')]
+  if (!intakeConfigs?.length) return null
   const rawRoles = asObject(input.roles)
   const review_mode = rawRoles?.review_mode ?? 'off'
   const phase_b = rawRoles?.phase_b ?? 'off'
@@ -115,10 +124,7 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
     automation: automation
       ? { id: automation.id as string, acceptedFingerprint: asString(automation.acceptedFingerprint) }
       : null,
-    intakeConfig:
-      input.intakeConfig === undefined
-        ? join(homedir(), '.slack-issue-intake/config.json')
-        : (asString(input.intakeConfig) ?? ''),
+    intakeConfigs: [...new Set(intakeConfigs)],
     everyMinutes: count(input.everyMinutes, 5),
     lanes: count(input.lanes, 1),
     roles: { review_mode, phase_b },
@@ -135,7 +141,6 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
     minFreeDiskMb: count(input.minFreeDiskMb, 10240, 0),
   }
   if (
-    !result.intakeConfig ||
     !result.judge.model ||
     !result.judge.effort ||
     [
@@ -150,12 +155,23 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
     return null
   return result
 }
-export const pickSources = (config: AutoConfig): string[] => {
-  const intake = asArray(asObject(readJson(config.intakeConfig))?.repos)
-  return (
-    intake?.flatMap((r) => {
-      const name = asString(asObject(r)?.name)
-      return name && config.sources.some((s) => s.repo === name) ? [name] : []
-    }) ?? []
-  )
+export const intakeRepoNames = (path: string): string[] | null => {
+  const repos = asArray(asObject(readJson(path))?.repos)
+  if (!repos) return null
+  return repos.flatMap((row) => {
+    const name = asString(asObject(row)?.name)
+    return name && /^[^/\s]+\/[^/\s]+$/.test(name) ? [name] : []
+  })
 }
+export const readIntakeRepos = (config: AutoConfig): { repos: string[]; unreadable: string[] } => {
+  const repos = new Set<string>()
+  const unreadable: string[] = []
+  for (const path of config.intakeConfigs) {
+    const names = intakeRepoNames(path)
+    if (names === null) unreadable.push(path)
+    else for (const name of names) repos.add(name)
+  }
+  return { repos: [...repos], unreadable }
+}
+export const pickSources = (config: AutoConfig): string[] =>
+  readIntakeRepos(config).repos.filter((repo) => config.sources.some((source) => source.repo === repo))

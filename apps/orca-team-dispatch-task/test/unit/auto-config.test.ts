@@ -1,8 +1,8 @@
-import { pickSources, readAutoConfig } from '../../lib/auto-config.ts'
+import { intakeRepoNames, pickSources, readAutoConfig, readIntakeRepos } from '../../lib/auto-config.ts'
 
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 
@@ -95,4 +95,61 @@ test('SU2 automation is optional and validated', () => {
     save({ ...fixture, automation })
     assert.equal(readAutoConfig('main'), null)
   }
+})
+
+const { intakeConfig: _legacy, ...modern } = fixture
+const intakeOf = (extra: object): string[] | null => {
+  save({ ...modern, ...extra })
+  return readAutoConfig('main')?.intakeConfigs ?? null
+}
+test('MI1 intakeConfigs and the legacy intakeConfig', () => {
+  assert.deepEqual(intakeOf({ intakeConfigs: ['/a', '/b'] }), ['/a', '/b'])
+  assert.deepEqual(intakeOf({ intakeConfigs: ['/a', '/b', '/a'] }), ['/a', '/b'])
+  assert.deepEqual(intakeOf({ intakeConfig: '/a' }), ['/a'])
+  assert.deepEqual(intakeOf({}), [join(homedir(), '.slack-issue-intake', 'config.json')])
+  for (const extra of [
+    { intakeConfig: '/a', intakeConfigs: ['/a'] },
+    { intakeConfigs: [] },
+    { intakeConfigs: [''] },
+    { intakeConfigs: '/a' },
+    { intakeConfigs: [1] },
+    { intakeConfig: '' },
+    { intakeConfig: 1 },
+  ])
+    assert.equal(intakeOf(extra), null, JSON.stringify(extra))
+})
+const REPOS = ['acme/x', 'acme/y', 'acme/z']
+const multi = (intakeConfigs: string[], order = REPOS) => {
+  save({
+    version: 1,
+    name: 'main',
+    intakeConfigs,
+    sources: order.map((repo) => ({ repo, related: [repo] })),
+    repos: Object.fromEntries(REPOS.map((repo) => [repo, { checkout: '/tmp/auto-checkout' }])),
+  })
+  const c = readAutoConfig('main')
+  assert.ok(c)
+  return c
+}
+const intake = (file: string, value: object): string => {
+  const path = join(dir, file)
+  writeFileSync(path, JSON.stringify(value))
+  return path
+}
+test('MI2 sources are the union of intake repos in order', () => {
+  const a = intake('mi2-a.json', { repos: [{ name: 'acme/x' }, { name: 'acme/y' }] })
+  const b = intake('mi2-b.json', { repos: [{ name: 'acme/y' }, { name: 'acme/z' }] })
+  const c = multi([a, b], ['acme/z', 'acme/y', 'acme/x'])
+  assert.deepEqual(readIntakeRepos(c), { repos: ['acme/x', 'acme/y', 'acme/z'], unreadable: [] })
+  assert.deepEqual(pickSources(c), ['acme/x', 'acme/y', 'acme/z'])
+})
+test('MI3 an unreadable intake drops only its repos', () => {
+  const a = intake('mi3-a.json', { repos: [{ name: 'acme/x' }, { name: 'bad name' }] })
+  const broken = intake('mi3-broken.json', { repos: {} })
+  const missing = join(dir, 'mi3-missing.json')
+  const c = multi([a, missing, broken, missing])
+  assert.deepEqual(readIntakeRepos(c), { repos: ['acme/x'], unreadable: [missing, broken] })
+  assert.deepEqual(pickSources(c), ['acme/x'])
+  assert.deepEqual(intakeRepoNames(a), ['acme/x'])
+  assert.equal(intakeRepoNames(missing), null)
 })

@@ -255,9 +255,9 @@ not the bare id. zsh reads an unquoted `[1m]` as a filename pattern and stops th
 
 ### Configuration and prerequisites
 
-Use a dedicated checkout for each implementation repository, already cloned and registered with Orca. Uncommitted changes prevent dispatch. The settings are in `~/.claude/config/orca-team-dispatch-task/auto/main/config.json` (or under `ORCA_DISPATCH_CONFIG_HOME`). The intake config's repository list is authoritative; `sources` selects its entries and supplies related implementation repositories.
+Use a dedicated checkout for each implementation repository, already cloned and registered with Orca. Uncommitted changes prevent dispatch. The settings are in `~/.claude/config/orca-team-dispatch-task/auto/main/config.json` (or under `ORCA_DISPATCH_CONFIG_HOME`). `intakeConfigs` lists one or more slack-issue-intake `config.json` files, one per Slack workspace. Their repository lists, merged in order without duplicates, are authoritative; `sources` selects their entries and supplies related implementation repositories. The older single `intakeConfig` is still read as a one-entry list, and `make setup` rewrites it as `intakeConfigs`; setting both is invalid. An unreadable intake config drops only its repositories, and tick prints one line for it.
 
-Run `make setup NAME=<name>` from the plugin directory in a human-operated terminal (default name: `main`). Do not run it through a Bash tool: non-terminal stdin exits 2 without writing files. The twelve stages cover prerequisites, intake sources, related checkouts, optional Projects, status labels, machines, verification commands (optionally drafted by `claude -p` with read-only tools; a person confirms them), worktree capacity, review modes and interval, saving, automation registration, and permission approval.
+Run `make setup NAME=<name>` from the plugin directory in a human-operated terminal (default name: `main`). Do not run it through a Bash tool: non-terminal stdin exits 2 without writing files. The twelve stages cover prerequisites, intake sources, related checkouts, optional Projects, status labels, machines, verification commands (optionally drafted by `claude -p` with read-only tools; a person confirms them), worktree capacity, review modes and interval, saving, automation registration, and permission approval. The intake sources stage lists `~/.slack-issue-intake/config.json` and `~/.slack-issue-intake-<name>/config.json`, lets you choose several, and accepts other absolute paths.
 
 Answers are saved to `setup.json` after each stage; rerun to resume completed stages or, after finishing, use Enter to retain existing values. Verification runs in a temporary worktree cut from the checkout's `HEAD`, on this machine and, through an Orca terminal, on each remote machine that maps the repository; only a passing machine and repository pair becomes verified, and missing tools are listed but never installed. Capacity recommendations use CPU, total memory, and free disk; when peak memory and disk growth were measured during verification, they replace the per-worktree defaults with a safety margin. Recommendations count worktrees rather than Issues.
 
@@ -269,7 +269,7 @@ Dedicated checkouts must already exist. Setup checks clean git roots and origins
 {
   "version": 1,
   "name": "main",
-  "intakeConfig": "/absolute/path/to/slack-issue-intake/config.json",
+  "intakeConfigs": ["/absolute/path/to/slack-issue-intake/config.json"],
   "sources": [{ "repo": "acme/app", "related": ["acme/app"], "pick": "Ready", "project": { "owner": "acme", "number": 3 } }],
   "repos": {
     "acme/app": {

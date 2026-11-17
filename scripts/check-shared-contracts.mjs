@@ -32,6 +32,14 @@ const reportFixture = 'test/fixtures/auto-report.json'
 if (!readFileSync(join(intake, reportFixture)).equals(readFileSync(join(dispatch, reportFixture))))
   problems.push(`${reportFixture} の 2 つの写しが違います（slack-issue-intake と orca-team-dispatch-task）`)
 
+const intakeHomes = await import(join(dispatch, 'lib/intake-homes.ts'))
+for (const key of ['INTAKE_HOME_DIRNAME', 'INTAKE_NAME_RESERVED_SUFFIX'])
+  if (intakeLabels[key] !== intakeHomes[key])
+    problems.push(`${key} が違います（slack-issue-intake と orca-team-dispatch-task）`)
+const [p, q] = [intakeLabels.INTAKE_NAME_PATTERN, intakeHomes.INTAKE_NAME_PATTERN]
+if (!(p instanceof RegExp && q instanceof RegExp && p.source === q.source && p.flags === q.flags))
+  problems.push('INTAKE_NAME_PATTERN が違います（slack-issue-intake と orca-team-dispatch-task）')
+
 if (problems.length) {
   for (const p of problems) console.error(p)
   process.exit(1)

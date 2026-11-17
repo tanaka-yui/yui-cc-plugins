@@ -1,9 +1,10 @@
-import { parseAutoConfig, readAutoConfig } from './auto-config.ts'
+import { intakeRepoNames, parseAutoConfig, readAutoConfig } from './auto-config.ts'
 import { ensureStatusLabels, github } from './auto-github.ts'
 import { hostsOf, LOCAL_HOST } from './auto-hosts.ts'
 import { AUTO_FILES, autoDir, autoNow } from './auto-paths.ts'
 import { AUTO_LOCK_TTL_MS, AUTO_LOCK_WAIT_MS, readState, releaseLock, takeLockWait } from './auto-state.ts'
 import { readJson, writeAtomic } from './fs.ts'
+import { listIntakeConfigs } from './intake-homes.ts'
 import { asArray, asObject, asString, get, parseJson } from './json.ts'
 import { orcaBin, receiptArray, receiptOk, runOrca } from './orca.ts'
 import {
@@ -60,6 +61,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import type { AutoConfig } from './auto-config.ts'
 import type { HostConfig, RepoMeasure } from './auto-hosts.ts'
+import type { JsonObject } from './json.ts'
 import type { SetupDraft } from './setup-draft.ts'
 import type { Prompter } from './setup-prompt.ts'
 import type { VerifySuggestion } from './setup-suggest.ts'
@@ -166,18 +168,44 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
     if (!hostReachable(LOCAL_HOST)) fail(`orca に接続できません: ${orcaBin()}`)
   }
   const pickSources = () => {
-    let available: string[] = []
-    let path = v.intakeConfig ?? join(homedir(), '.slack-issue-intake/config.json')
+    let chosen: string[] = []
     for (;;) {
-      path = ask('intake の設定ファイル', path)
-      available =
-        asArray(get(readJson(path), 'repos'))?.flatMap((row) => {
-          const repo = asString(get(row, 'name'))
-          return repo && REPO_PATTERN.test(repo) ? [repo] : []
-        }) ?? []
-      if (available.length) break
-      say('intake の repos[].name を読めません')
+      const listed = [...new Set([...listIntakeConfigs(homedir()), ...(v.intakeConfigs ?? [])])]
+      chosen = []
+      if (listed.length) {
+        listed.forEach((path, i) => {
+          say(`  ${i + 1}. ${path}`)
+        })
+        const defaults = v.intakeConfigs ?? listed
+        chosen = choose(
+          'intake の設定ファイルの番号',
+          listed.length,
+          defaults.map((path) => String(listed.indexOf(path) + 1)).join(','),
+          true,
+        ).map((index) => listed[index] ?? fail('intake の設定ファイルがありません'))
+        const unreadable = chosen.filter((path) => !intakeRepoNames(path)?.length)
+        if (unreadable.length) {
+          for (const path of unreadable) say(`intake の repos[].name を読めません: ${path}`)
+          continue
+        }
+      }
+      for (;;) {
+        const path = ask('ほかの intake の設定ファイル（無ければ -）', '-')
+        if (path === '-') break
+        if (!isAbsolute(path)) {
+          say('絶対パスを入力してください')
+          continue
+        }
+        if (!intakeRepoNames(path)?.length) {
+          say(`intake の repos[].name を読めません: ${path}`)
+          continue
+        }
+        if (!chosen.includes(path)) chosen.push(path)
+      }
+      if (chosen.length) break
+      say('intake の設定ファイルを 1 つ以上選んでください')
     }
+    const available = [...new Set(chosen.flatMap((path) => intakeRepoNames(path) ?? []))]
     for (const source of v.sources ?? [])
       if (!available.includes(source.repo)) say(`${source.repo} は intake に無いため選べません`)
     available.forEach((repo, i) => {
@@ -199,7 +227,7 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
       } while (!pick)
       next.push({ repo, pick, related: old?.related ?? [repo], project: old?.project ?? null })
     }
-    v.intakeConfig = path
+    v.intakeConfigs = chosen
     v.sources = next
   }
   const pickRepos = () => {
@@ -586,11 +614,38 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
   const save = () => {
     const next = configJsonFromDraft(draft, asObject(readJson(configFile))) ?? fail('下書きから有効な設定を作れません')
     const parsed = parseAutoConfig(next, name)
-    if (isDeepStrictEqual(parsed, readAutoConfig(name))) {
-      say('変わる所はありません')
+    const previous = readAutoConfig(name)
+    if (isDeepStrictEqual(parsed, previous)) {
+      if (!Object.hasOwn(asObject(readJson(configFile)) ?? {}, 'intakeConfig')) {
+        say('変わる所はありません')
+        return
+      }
+      lock(() => {
+        const raw =
+          asObject(readJson(configFile)) ??
+          fail('config.json が setup の途中で変わりました。make setup をやり直してください')
+        const latest = parseAutoConfig(raw, name)
+        if (!latest || !isDeepStrictEqual(latest, previous))
+          fail('config.json が setup の途中で変わりました。make setup をやり直してください')
+        if (raw.intakeConfig === undefined) {
+          say('変わる所はありません')
+          return
+        }
+        const migrated: JsonObject = {}
+        for (const [key, value] of Object.entries(raw))
+          migrated[key === 'intakeConfig' ? 'intakeConfigs' : key] = key === 'intakeConfig' ? [value] : value
+        if (!isDeepStrictEqual(parseAutoConfig(migrated, name), previous)) fail('設定を書けません')
+        const conflicts = inUseConflicts(readState(name), migrated)
+        if (conflicts.length) {
+          conflicts.forEach(say)
+          fail('その Issue が終わってからやり直してください')
+        }
+        say('変わる所はありません（古い intakeConfig を intakeConfigs に書き換えます）')
+        if (!writeAtomic(configFile, `${JSON.stringify(migrated, null, 2)}\n`) || !readAutoConfig(name))
+          fail('設定を書けません')
+      })
       return
     }
-    const previous = readAutoConfig(name)
     if (!previous) say(JSON.stringify(next, null, 2))
     else
       for (const key of Object.keys(parsed ?? {}) as Array<keyof AutoConfig>)

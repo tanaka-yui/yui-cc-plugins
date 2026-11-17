@@ -236,9 +236,9 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 
 ### 設定と前提
 
-実装するリポジトリごとに専用checkoutをcloneし、Orcaに登録しておく。未コミットの変更があればdispatchしない。設定は `~/.claude/config/orca-team-dispatch-task/auto/main/config.json`（または `ORCA_DISPATCH_CONFIG_HOME` 配下）。intake設定のリポジトリ一覧を正本とし、`sources` でその項目と関連する実装リポジトリを選ぶ。
+実装するリポジトリごとに専用checkoutをcloneし、Orcaに登録しておく。未コミットの変更があればdispatchしない。設定は `~/.claude/config/orca-team-dispatch-task/auto/main/config.json`（または `ORCA_DISPATCH_CONFIG_HOME` 配下）。`intakeConfigs` に slack-issue-intake の `config.json` を 1 つ以上（Slack のワークスペースごとに 1 つ）並べる。それらのリポジトリ一覧を並び順に重複なくまとめたものを正本とし、`sources` でその項目と関連する実装リポジトリを選ぶ。古い 1 つの `intakeConfig` も 1 件の一覧として読み、`make setup` が `intakeConfigs` に書き換える。両方あれば設定ごと不正。読めない intake の設定はその分のリポジトリだけを外し、tick がそれを 1 行出す。
 
-人がプラグインのディレクトリのターミナルで `make setup NAME=<name>` を実行する（既定は `main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。12 段で、前提、拾う元、関連 checkout、任意の Project、ラベル、マシン、確認コマンド（`claude -p` に読み取りの道具だけで案を出させられる。決めるのは人）、並列数、レビューモードと間隔、保存、automation 登録、権限の承認へ進む。
+人がプラグインのディレクトリのターミナルで `make setup NAME=<name>` を実行する（既定は `main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。12 段で、前提、拾う元、関連 checkout、任意の Project、ラベル、マシン、確認コマンド（`claude -p` に読み取りの道具だけで案を出させられる。決めるのは人）、並列数、レビューモードと間隔、保存、automation 登録、権限の承認へ進む。拾う元の段は `~/.slack-issue-intake/config.json` と `~/.slack-issue-intake-<名前>/config.json` を並べて複数選ばせ、ほかの絶対パスも足せる。
 
 各段の答えは `setup.json` に残し、中断したら再実行で済んだ段から再開する。完了後のやり直しは Enter で今の値を保つ。確認コマンドは checkout の `HEAD` から切った一時 worktree で、このマシンと、そのリポジトリを扱う遠くのマシン（Orca の端末）で走らせ、通ったマシンとリポジトリの組だけを確認済みにする。足りない道具は並べるだけで入れない。並列数の推奨は CPU・メモリの総量・空きディスクから求め、確認で最大メモリとディスクの増え方を測れたときは、余裕を見込んだその値で 1 worktree 分の既定値を置き換える。推奨は Issue 数ではなく worktree 数で数える。
 
@@ -250,7 +250,7 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 {
   "version": 1,
   "name": "main",
-  "intakeConfig": "/absolute/path/to/slack-issue-intake/config.json",
+  "intakeConfigs": ["/absolute/path/to/slack-issue-intake/config.json"],
   "sources": [{ "repo": "acme/app", "related": ["acme/app"], "pick": "Ready", "project": { "owner": "acme", "number": 3 } }],
   "repos": {
     "acme/app": {

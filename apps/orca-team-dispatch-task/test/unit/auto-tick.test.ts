@@ -384,3 +384,27 @@ test('AU130b a Project read that exceeds the call cap is one line and not a tick
     f.cleanup()
   }
 })
+
+test('MI7 an unreadable intake prints one line, counts as a tick error, and the other intake keeps syncing', () => {
+  const f = runtimeFixture()
+  try {
+    const missing = join(f.dir, 'missing.json')
+    const { intakeConfig, ...rest } = f.raw
+    f.put(f.configFile, { ...rest, intakeConfigs: [intakeConfig, missing, missing] }) // 同じパスが 2 回でも 1 行・errors=1
+    const result = f.cli('tick')
+    const lines = result.stdout.trim().split('\n')
+    assert.deepEqual(
+      lines.filter((s) => s.startsWith('intake の設定を読めません: ')),
+      [`intake の設定を読めません: ${missing}`],
+    )
+    assert.match(lines.at(-1) ?? '', /^auto: judge=.*errors=1$/)
+    assert.ok(
+      f
+        .calls()
+        .split('\n')
+        .some((s) => s.startsWith('issue list') && s.includes('acme/app')),
+    )
+  } finally {
+    f.cleanup()
+  }
+})

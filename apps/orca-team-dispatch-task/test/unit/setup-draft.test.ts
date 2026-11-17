@@ -192,3 +192,22 @@ test('SV11 measure survives draft and config round trips', () => {
     f.cleanup()
   }
 })
+
+test('MI9 a legacy draft intakeConfig is read as intakeConfigs and a written config drops the legacy key', () => {
+  const f = fixture()
+  try {
+    const file = join(f.dir, 'config/auto/main/setup.json')
+    f.put(file, { version: 1, name: 'main', done: [], values: { intakeConfig: '/a' } })
+    const draft = readDraft('main')
+    assert.deepEqual(draft?.values.intakeConfigs, ['/a'])
+    assert.equal(draft ? 'intakeConfig' in draft.values : true, false)
+    f.put(file, { version: 1, name: 'main', done: [], values: { intakeConfig: '/a', intakeConfigs: ['/a'] } })
+    assert.equal(readDraft('main'), null)
+    const json = configJsonFromDraft(draftFromConfig(f.config()), f.raw)
+    assert.ok(json)
+    assert.deepEqual(json.intakeConfigs, [f.raw.intakeConfig])
+    assert.equal('intakeConfig' in json, false)
+  } finally {
+    f.cleanup()
+  }
+})

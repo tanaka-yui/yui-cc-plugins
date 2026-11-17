@@ -1,5 +1,6 @@
 import { autoDir } from '../../lib/auto-paths.ts'
 import { runSetup } from '../../lib/auto-setup.ts'
+import { releaseLock, takeLock } from '../../lib/auto-state.ts'
 import { VERIFY_BEGIN, VERIFY_END, VERIFY_TMP } from '../../lib/setup-verify.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 import { readClaudeStubArgs, readClaudeStubPwd, writeClaudeStub } from '../lib/claude-stub.ts'
@@ -23,6 +24,10 @@ const gitRepo = (path: string, repo: string) => {
 }
 const prepare = () => {
   const f = fixture()
+  const userHome = join(f.dir, 'home')
+  mkdirSync(userHome)
+  const oldHome = process.env.HOME
+  process.env.HOME = userHome
   for (const [repo, r] of Object.entries(f.raw.repos)) gitRepo(r.checkout, repo)
   const home = join(f.dir, 'claude')
   mkdirSync(home)
@@ -47,6 +52,7 @@ const prepare = () => {
     })
   const freshAnswers = () => [
     f.raw.intakeConfig,
+    '',
     '1',
     '',
     '',
@@ -92,9 +98,11 @@ const prepare = () => {
     Reflect.deleteProperty(process.env, 'ORCA_AUTO_CLAUDE_BIN')
     Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_TIMEOUT_MS')
     Reflect.deleteProperty(process.env, 'ORCA_AUTO_VERIFY_INTERVAL_MS')
+    if (oldHome === undefined) Reflect.deleteProperty(process.env, 'HOME')
+    else process.env.HOME = oldHome
     f.cleanup()
   }
-  return { ...f, home, invoke, freshAnswers, fresh, rerun, cleanup }
+  return { ...f, home, userHome, invoke, freshAnswers, fresh, rerun, cleanup }
 }
 const withoutAutomation = (value: ReturnType<ReturnType<typeof prepare>['config']>) => {
   const { automation: _automation, ...rest } = value
@@ -168,7 +176,7 @@ test('SU29 missing project scope records no project and explains recovery', () =
     rmSync(f.configFile)
     f.respond('auth_status', { hosts: { 'github.com': [{ active: true, state: 'success', scopes: 'repo' }] } })
     const answers = f.freshAnswers()
-    answers[5] = 'acme/3'
+    answers[6] = 'acme/3'
     const result = f.invoke(answers)
     assert.equal(result.status, 0, result.stdout + result.stderr)
     assert.equal(f.config().sources[0]?.project, null)
@@ -187,7 +195,7 @@ test('SU27b same-name automation requires consent', () => {
       f.orca,
     )
     const answers = f.freshAnswers()
-    answers[19] = 'n'
+    answers[20] = 'n'
     const result = f.invoke(answers)
     assert.equal(result.status, 1, result.stdout + result.stderr)
     assert.ok(!/automations (create|edit)/.test(f.calls(f.orca)))
@@ -230,7 +238,8 @@ test('SU30c legacy hand-written config preserves omitted defaults and unverified
     assert.deepEqual(withoutAutomation(f.config()), withoutAutomation(before))
     const after = JSON.parse(readFileSync(f.configFile, 'utf8'))
     delete after.automation
-    assert.deepEqual(after, raw)
+    const { intakeConfig, ...rest } = raw
+    assert.deepEqual(after, { ...rest, intakeConfigs: [intakeConfig] })
     assert.equal(existsSync(join(f.dir, 'verify.log')), false)
   } finally {
     f.cleanup()
@@ -387,12 +396,12 @@ test('SU31 EOF keeps finished steps and resumes at repositories', () => {
   const f = prepare()
   try {
     rmSync(f.configFile)
-    const result = f.invoke([f.raw.intakeConfig, '1', '', ''])
+    const result = f.invoke([f.raw.intakeConfig, '', '1', '', ''])
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.equal(existsSync(f.configFile), false)
     const draft = JSON.parse(readFileSync(join(autoDir('main'), 'setup.json'), 'utf8'))
     assert.deepEqual(draft.done, ['prereq', 'sources'])
-    const rest = f.freshAnswers().slice(3)
+    const rest = f.freshAnswers().slice(4)
     const again = f.invoke(rest)
     assert.equal(again.status, 0, again.stdout + again.stderr)
     assert.match(again.stdout, /\[1\/12\] 前提の確認 … 済み/)
@@ -702,6 +711,140 @@ test('SU39 cleanup failure reports the remaining temporary directory', () => {
       spawnSync('chmod', ['-R', 'u+w', leftover])
       rmSync(leftover, { recursive: true, force: true })
     }
+    f.cleanup()
+  }
+})
+
+type Draft = { done: string[]; values: { intakeConfigs?: string[]; sources?: Array<{ repo: string }> } }
+const draftOf = () => JSON.parse(readFileSync(join(autoDir('main'), 'setup.json'), 'utf8')) as Draft
+test('MI5 legacy intakeConfig migrates to intakeConfigs with Enter only and keeps every other key', () => {
+  const f = prepare()
+  try {
+    const before = JSON.parse(readFileSync(f.configFile, 'utf8')) // fixture の古い形（intakeConfig・省いた既定値）
+    const first = f.invoke(Array(100).fill(''))
+    assert.equal(first.status, 0, first.stdout + first.stderr)
+    assert.ok(first.stdout.includes(`  1. ${f.raw.intakeConfig}`), first.stdout) // 前に選んだ intake が並び、既定で選ばれる
+    assert.ok(first.stdout.includes('古い intakeConfig を intakeConfigs に書き換えます'), first.stdout)
+    assert.ok(!first.stdout.includes('書きますか'))
+    const after = JSON.parse(readFileSync(f.configFile, 'utf8'))
+    delete after.automation
+    const { intakeConfig, ...rest } = before
+    assert.deepEqual(after, { ...rest, intakeConfigs: [intakeConfig] }) // ほかのキー・省いた既定値・verify・verified はそのまま
+    assert.deepEqual(f.config().intakeConfigs, [f.raw.intakeConfig])
+    const text = readFileSync(f.configFile, 'utf8')
+    const second = f.invoke(Array(100).fill(''))
+    assert.equal(second.status, 0, second.stdout + second.stderr)
+    assert.match(second.stdout, /変わる所はありません/)
+    assert.ok(!second.stdout.includes('intakeConfig を intakeConfigs に書き換えます'))
+    assert.equal(readFileSync(f.configFile, 'utf8'), text) // 新しい形は、変わる所が無ければ書かない
+  } finally {
+    f.cleanup()
+  }
+})
+// import に releaseLock・takeLock（'../../lib/auto-state.ts'）を足す
+test('MI10 the key migration re-reads config.json under the lock and never overwrites a newer file', () => {
+  for (const variant of ['changed', 'migrated', 'removed'] as const) {
+    const f = prepare()
+    const oldWait = process.env.ORCA_AUTO_LOCK_WAIT_MS
+    try {
+      process.env.ORCA_AUTO_LOCK_WAIT_MS = '0' // ロックが取れなければ待たずに「もう一度待ちますか」を聞く
+      const legacy = JSON.parse(readFileSync(f.configFile, 'utf8'))
+      const { intakeConfig, ...rest } = legacy
+      const migrated = { ...rest, intakeConfigs: [intakeConfig] }
+      const changed = { ...legacy, automation: { id: 'other', acceptedFingerprint: 'fp' } } // 別の setup が automation を書いた（古いキーのまま）
+      assert.ok(takeLock('main', 60_000)) // tick が動いている形にする。保存の段が最初にロックを取ろうとする所で待たされる
+      let output = ''
+      const code = runSetup(
+        'main',
+        {
+          ask: (_question, fallback) => fallback ?? '',
+          confirm: (question) => {
+            if (!question.includes('tick が動いています')) return false
+            if (variant === 'changed') f.put(f.configFile, changed)
+            else if (variant === 'migrated')
+              f.put(f.configFile, migrated) // 別の setup が先に新しい形へ移した
+            else rmSync(f.configFile)
+            releaseLock('main')
+            return true
+          },
+        },
+        (text) => {
+          output += text
+        },
+      )
+      if (variant === 'changed') {
+        assert.equal(code, 1, output)
+        assert.ok(output.includes('config.json が setup の途中で変わりました'), output)
+        assert.deepEqual(JSON.parse(readFileSync(f.configFile, 'utf8')), changed) // 古い内容で上書きしない
+      } else if (variant === 'migrated') {
+        assert.equal(code, 0, output)
+        assert.ok(!output.includes('intakeConfig を intakeConfigs に書き換えます'), output)
+        const after = JSON.parse(readFileSync(f.configFile, 'utf8'))
+        delete after.automation
+        assert.deepEqual(after, migrated) // 書き戻さない
+      } else {
+        assert.equal(code, 1, output)
+        assert.ok(output.includes('config.json が setup の途中で変わりました'), output)
+        assert.equal(existsSync(f.configFile), false)
+      }
+    } finally {
+      releaseLock('main')
+      if (oldWait === undefined) Reflect.deleteProperty(process.env, 'ORCA_AUTO_LOCK_WAIT_MS')
+      else process.env.ORCA_AUTO_LOCK_WAIT_MS = oldWait
+      f.cleanup()
+    }
+  }
+})
+test('MI6 two intake homes are offered and their repos become candidates', () => {
+  const f = prepare()
+  try {
+    const ws1 = join(f.userHome, '.slack-issue-intake', 'config.json')
+    const ws2 = join(f.userHome, '.slack-issue-intake-ws2', 'config.json')
+    for (const [path, repo] of [
+      [ws1, 'acme/app'],
+      [ws2, 'other/api'],
+    ] as const) {
+      mkdirSync(dirname(path), { recursive: true })
+      f.put(path, { repos: [{ name: repo }] })
+    }
+    rmSync(f.configFile)
+    const result = f.invoke(['', '', '1,2', '', '']) // 番号は既定（全部）、ほかは無し、拾う元 1,2、拾う条件 2 つ、次の段で入力が尽きる
+    assert.equal(result.status, 2, result.stdout + result.stderr)
+    assert.ok(result.stdout.includes(`  1. ${ws1}`) && result.stdout.includes(`  2. ${ws2}`), result.stdout)
+    const draft = draftOf()
+    assert.deepEqual(draft.done, ['prereq', 'sources'])
+    assert.deepEqual(draft.values.intakeConfigs, [ws1, ws2])
+    assert.deepEqual(
+      draft.values.sources?.map((s) => s.repo),
+      ['acme/app', 'other/api'],
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+test('MI8 other intake paths are checked and at least one intake is required', () => {
+  const f = prepare()
+  try {
+    const ws1 = join(f.userHome, '.slack-issue-intake', 'config.json')
+    mkdirSync(dirname(ws1), { recursive: true })
+    f.put(ws1, { repos: [{ name: 'acme/app' }] })
+    rmSync(f.configFile)
+    const missing = join(f.dir, 'missing.json')
+    const result = f.invoke(['-', '', '1', 'relative.json', missing, f.raw.intakeConfig, '', '1,2', '', ''])
+    assert.equal(result.status, 2, result.stdout + result.stderr)
+    for (const text of [
+      'intake の設定ファイルを 1 つ以上選んでください',
+      '絶対パスを入力してください',
+      `intake の repos[].name を読めません: ${missing}`,
+    ])
+      assert.ok(result.stdout.includes(text), text)
+    const draft = draftOf()
+    assert.deepEqual(draft.values.intakeConfigs, [ws1, f.raw.intakeConfig])
+    assert.deepEqual(
+      draft.values.sources?.map((s) => s.repo),
+      ['acme/app', 'other/api'],
+    )
+  } finally {
     f.cleanup()
   }
 })
