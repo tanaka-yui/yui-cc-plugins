@@ -3,9 +3,8 @@ import { asArray, asObject, asString, get, parseJson } from './json.ts'
 import { receiptArray, receiptOk, runOrca } from './orca.ts'
 import { availableMemoryMb, envCount, run, sleepSeconds } from './sys.ts'
 
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync } from 'node:fs'
-import { availableParallelism, homedir, hostname, tmpdir, totalmem } from 'node:os'
+import { existsSync, readdirSync, readFileSync, realpathSync, statfsSync } from 'node:fs'
+import { availableParallelism, homedir, hostname, totalmem } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
 import type { HostSpec } from './auto-hosts.ts'
@@ -194,29 +193,4 @@ export const repoDefaults = (checkout: string): { infra: boolean; ci: boolean } 
   const infra = run('git', ['-C', checkout, 'ls-files', '--', '*.tf']).stdout.trim().length > 0
   const workflows = join(checkout, '.github/workflows')
   return { infra, ci: existsSync(workflows) && readdirSync(workflows).some((name) => /\.ya?ml$/.test(name)) }
-}
-export const runVerifyLocal = (checkout: string, commands: string[]): { ok: boolean; failed: string | null } => {
-  const git = (...args: string[]) => run('git', ['-C', checkout, ...args])
-  git('worktree', 'prune')
-  const temporary = mkdtempSync(join(tmpdir(), 'orca-auto-verify-'))
-  const ignore = () => {}
-  process.on('SIGINT', ignore)
-  try {
-    if (git('worktree', 'add', '--detach', temporary, 'HEAD').rc !== 0) return { ok: false, failed: 'git worktree add' }
-    for (const command of commands) {
-      // 出力は端末につなぐので、git などがページャを開いて入力を待たないようにする
-      const result = spawnSync('/bin/sh', ['-c', command], {
-        cwd: temporary,
-        stdio: ['ignore', 'inherit', 'inherit'],
-        env: { ...process.env, GIT_PAGER: 'cat', PAGER: 'cat' },
-      })
-      if (result.status !== 0) return { ok: false, failed: command }
-    }
-    return { ok: true, failed: null }
-  } finally {
-    git('worktree', 'remove', '--force', temporary)
-    rmSync(temporary, { recursive: true, force: true })
-    git('worktree', 'prune')
-    process.removeListener('SIGINT', ignore)
-  }
 }

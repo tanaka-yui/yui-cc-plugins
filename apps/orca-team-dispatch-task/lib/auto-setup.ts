@@ -39,7 +39,6 @@ import {
   measureLocal,
   probeRemote,
   repoDefaults,
-  runVerifyLocal,
   swapWarning,
 } from './setup-host.ts'
 import { recommendLanes, worktreesPerIssue } from './setup-lanes.ts'
@@ -50,6 +49,7 @@ import {
   PROJECT_STATUS_COLORS,
   readStatusOptions,
 } from './setup-project.ts'
+import { runVerifyLocal } from './setup-verify.ts'
 import { STATUS_LABELS } from './status.ts'
 import { envCount, run, runNode } from './sys.ts'
 
@@ -457,7 +457,7 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
         commands.length &&
         yes(`${repo} の確認コマンドをこのマシンで走らせて確かめますか`, !localUnchanged)
       ) {
-        const result = runVerifyLocal(r.checkout, commands)
+        const result = runVerifyLocal(r.checkout, commands, [])
         r.verified = result.ok
         if (local) local.verified = result.ok
         if (!result.ok) say(`${result.failed} が失敗しました`)
