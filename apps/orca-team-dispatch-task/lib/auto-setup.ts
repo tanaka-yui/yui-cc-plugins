@@ -41,7 +41,7 @@ import {
   repoDefaults,
   swapWarning,
 } from './setup-host.ts'
-import { recommendLanes, worktreesPerIssue } from './setup-lanes.ts'
+import { recommendLanes, worktreeCost, worktreesPerIssue } from './setup-lanes.ts'
 import {
   addStatusOptions,
   ghHasProjectScope,
@@ -49,7 +49,8 @@ import {
   PROJECT_STATUS_COLORS,
   readStatusOptions,
 } from './setup-project.ts'
-import { runVerifyLocal } from './setup-verify.ts'
+import { suggestVerify } from './setup-suggest.ts'
+import { runVerifyLocal, verifyRemote } from './setup-verify.ts'
 import { STATUS_LABELS } from './status.ts'
 import { envCount, run, runNode } from './sys.ts'
 
@@ -58,9 +59,11 @@ import { isAbsolute, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import type { AutoConfig } from './auto-config.ts'
-import type { HostConfig } from './auto-hosts.ts'
+import type { HostConfig, RepoMeasure } from './auto-hosts.ts'
 import type { SetupDraft } from './setup-draft.ts'
 import type { Prompter } from './setup-prompt.ts'
+import type { VerifySuggestion } from './setup-suggest.ts'
+import type { VerifyResult } from './setup-verify.ts'
 
 export const SETUP_STEPS: ReadonlyArray<{ id: string; title: string }> = [
   { id: 'prereq', title: '前提の確認' },
@@ -432,11 +435,40 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
   }
   const verify = () => {
     const oldHosts = base ? hostsOf(base) : []
+    const judge =
+      (base ?? parseAutoConfig({ version: 1, name, repos: {}, sources: [] }, name))?.judge ??
+      fail('判定の設定を読めません')
+    const listed = new Map<string, ReturnType<typeof listRemoteRepos>>()
+    const measureOf = (result: VerifyResult): RepoMeasure | null =>
+      result.ok && result.peakMemoryMb !== null
+        ? { peakMemoryMb: result.peakMemoryMb, diskGrowthMb: result.diskGrowthMb ?? 0, measuredAt: autoNow() }
+        : null
+    const report = (where: string, result: VerifyResult) => {
+      if (result.ok) {
+        const memory = result.peakMemoryMb === null ? '最大メモリ 不明' : `最大メモリ ${result.peakMemoryMb} MB`
+        const disk = result.diskGrowthMb === null ? 'ディスク 不明' : `ディスク +${result.diskGrowthMb} MB`
+        say(`${where}: 通りました（${memory}、${disk}）`)
+      } else say(`${where}: ${result.failed ?? '確認'} が失敗しました`)
+      if (result.missingTools.length) say(`${where}: 足りない道具: ${result.missingTools.join(', ')}`)
+    }
     for (const [repo, r] of Object.entries(repos())) {
       const previous = base?.repos[repo]
+      let suggestion: VerifySuggestion | null = null
+      if (yes(`${repo} の確認コマンドを AI に割り出させますか`, r.verify.length === 0)) {
+        say('AI に割り出させています…')
+        const result = suggestVerify(r.checkout, judge)
+        if ('error' in result) say(`AI の案を作れませんでした: ${result.error}`)
+        else {
+          suggestion = result
+          say(`AI の案: ${result.commands.join(' / ') || 'なし'}`)
+          say(`必要な道具: ${result.tools.join(', ') || 'なし'}`)
+          if (result.notes) say(`メモ: ${result.notes}`)
+        }
+      }
+      const defaultsCommands = suggestion?.commands.length ? suggestion.commands : r.verify
       const commands: string[] = []
       for (let i = 0; ; i++) {
-        const command = ask(`${repo} の確認コマンド ${i + 1}（終わりは -）`, r.verify[i] ?? '-')
+        const command = ask(`${repo} の確認コマンド ${i + 1}（終わりは -）`, defaultsCommands[i] ?? '-')
         if (command === '-') break
         if (command) commands.push(command)
       }
@@ -448,6 +480,7 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
       const sameRepo = sameCommands && previous?.checkout === r.checkout
       r.verified = sameRepo ? (previous?.verified ?? false) : false
       let localUnchanged = v.hosts ? false : sameRepo
+      const remote: Array<{ host: HostConfig; pair: HostConfig['repos'][string]; keep: boolean }> = []
       for (const host of v.hosts ?? []) {
         const pair = host.repos[repo]
         if (!pair) continue
@@ -456,17 +489,44 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
         pair.verified = unchanged ? (old?.verified ?? false) : false
         pair.measure = unchanged ? (old?.measure ?? null) : null
         if (host.id === LOCAL_HOST) localUnchanged = unchanged
+        else remote.push({ host, pair, keep: unchanged && old?.verified === true })
       }
-      const local = v.hosts?.find((h) => h.id === LOCAL_HOST)?.repos[repo]
+      const localHost = v.hosts?.find((h) => h.id === LOCAL_HOST)
+      const local = localHost?.repos[repo]
       if (
         (!v.hosts || local) &&
         commands.length &&
         yes(`${repo} の確認コマンドをこのマシンで走らせて確かめますか`, !localUnchanged)
       ) {
-        const result = runVerifyLocal(r.checkout, commands, [])
+        const result = runVerifyLocal(r.checkout, commands, suggestion?.tools ?? [])
         r.verified = result.ok
-        if (local) local.verified = result.ok
-        if (!result.ok) say(`${result.failed} が失敗しました`)
+        if (local) {
+          local.verified = result.ok
+          local.measure = measureOf(result)
+        }
+        report(localHost?.name ?? 'このマシン', result)
+      }
+      for (const { host, pair, keep } of remote) {
+        if (!commands.length || !yes(`${repo} を ${host.name} で走らせて確かめますか`, !keep)) continue
+        pair.verified = false
+        pair.measure = null
+        if (!listed.has(host.id)) listed.set(host.id, listRemoteRepos(host.id))
+        const row = listed.get(host.id)?.find((r) => `id:${r.id}` === pair.selector)
+        if (!row) {
+          say(`${host.name}: ${repo} の置き場所を Orca の一覧から読めないため確かめられませんでした`)
+          continue
+        }
+        const result = verifyRemote(host.id, `path:${row.path}`, commands, suggestion?.tools ?? [], (m) =>
+          say(`${host.name} で確認中（${m} 分）`),
+        )
+        if (result.result) {
+          pair.verified = result.result.ok
+          pair.measure = measureOf(result.result)
+          report(host.name, result.result)
+        } else if (result.timedOut) {
+          say(`${host.name}: 時間内に終わりませんでした`)
+          if (result.tmpPath) say(`一時ディレクトリが残っていれば消してください: ${result.tmpPath}`)
+        } else say(`${host.name}: 確認の端末を作れませんでした`)
       }
     }
   }
@@ -483,15 +543,24 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
       return
     }
     for (const host of v.hosts) {
-      if (host.spec)
+      const cost = worktreeCost(Object.values(host.repos).map((p) => p.measure))
+      if (host.spec) {
         say(
-          `${host.name}: 推奨 ${recommendLanes(host.spec)}（メモリ ${host.spec.memoryTotalMb} MB、ディスク ${host.spec.diskFreeMb} MB、CPU ${host.spec.cpus}）`,
+          `${host.name}: 推奨 ${recommendLanes(host.spec, cost)}（メモリ ${host.spec.memoryTotalMb} MB、ディスク ${host.spec.diskFreeMb} MB、CPU ${host.spec.cpus}）`,
         )
+        say(
+          `  1 worktree: メモリ ${cost.memoryMb} MB・ディスク ${cost.diskMb} MB（${cost.source === 'measured' ? '測った値' : '既定値'}）`,
+        )
+      }
       const old = base?.hosts?.find((h) => h.id === host.id)
       host.lanes = number(
         `${host.name} の並列数`,
         old?.lanes ??
-          (base?.hosts === null && host.id === LOCAL_HOST ? base.lanes : host.spec ? recommendLanes(host.spec) : 1),
+          (base?.hosts === null && host.id === LOCAL_HOST
+            ? base.lanes
+            : host.spec
+              ? recommendLanes(host.spec, cost)
+              : 1),
         valid,
       )
     }

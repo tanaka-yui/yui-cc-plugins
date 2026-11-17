@@ -426,7 +426,7 @@ repository で子が remote を自分で解決し、**personal fork へ push し
 
 ## 範囲
 
-`--auto`（C2a）はこのMacで複数の拾う元を1本のキューにまとめ、tickでPR・merge・close・後片付けまで進める。C3a（make setup）は実装済み。C3b は未実装。
+`--auto`（C2a）はこのMacで複数の拾う元を1本のキューにまとめ、tickでPR・merge・close・後片付けまで進める。C3a（make setup）は実装済み。C3b（make setup の遠くの確認・AI の案・測定）も実装済み。道具のインストール・sudo・swap はまだ無い。
 
 Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足した段階。PR 無し・ループ無し。
 
@@ -498,7 +498,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 
 ## --auto の要点
 
-- C2b は親1台からこのMacとペアリング済みサーバーへ振り分ける。1 Issueで実装対象2リポジトリまで、3つ以上はReady_Eng。拾う元は複数、キューは優先度→Ready時刻→key。管理の印は `from-slack` / `slack-thread`。intakeの一覧を正本にし、`--issue` の検索はautoの拾う元ではReadyも除く。C3a（`make setup`）は実装済み。C3b は未実装。
+- C2b は親1台からこのMacとペアリング済みサーバーへ振り分ける。1 Issueで実装対象2リポジトリまで、3つ以上はReady_Eng。拾う元は複数、キューは優先度→Ready時刻→key。管理の印は `from-slack` / `slack-thread`。intakeの一覧を正本にし、`--issue` の検索はautoの拾う元ではReadyも除く。C3a（`make setup`）は実装済み。C3b（make setup の遠くの確認・AI の案・測定）も実装済み。道具のインストール・sudo・swap はまだ無い。
 - 入口 `bin/orca-auto.ts`、tick本体 `lib/auto-tick.ts`。tickは同期・人の変更・失敗の仕上げ・review/finishing・進み・補充を1歩ずつ行い、report.jsonを書く。判定が必要で20分のリースが無いときだけexit 0。`make auto` はそのときだけ設定のmodel/effortでClaudeを起こす。判定の指示は英語 `references/auto-judge.md` と完全な日本語訳。
 - 2026-11-13、Orca 1.4.257のspike/probe: Issueごとに専用のまとめ役端末とRunを持つ。1つのRunに全Issueを載せると、未決着や知らないdispatchのメールが他のIssueを止める。外のプロセスから本物のhandleで操作できる。端末のシェルに指示文を打ち込まない。
 - 呼び出し元の識別（F6）: Orca端末内から別handleの `--from` を使うと `consumer_fenced`。Runを操作する呼び出しと子のstart/waitには、必ずそのIssueの `ORCA_TERMINAL_HANDLE` を付ける。autoの停止/解放も同じhandleを使う。続きのstartは毎回 `ensureCoordinator` を通す。`run-use` で引き継いだhandleをrun.jsonと状態に記録する。
@@ -573,7 +573,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 
 ### C3a: make setup
 
-- 人がターミナルで `make setup NAME=<name>` を実行する。12 段を auto-setup.ts が回し、prompt・draft・project・host・lanes・automation の lib に分ける。標準入力が端末でなければ書かず exit 2。AI に確認コマンドを推測させること、遠隔での確認、道具のインストール、swap の作成は C3b。
+- 人がターミナルで `make setup NAME=<name>` を実行する。12 段を auto-setup.ts が回し、prompt・draft・project・host・lanes・automation の lib に分ける。標準入力が端末でなければ書かず exit 2。AI の案・遠くの確認・測定は C3b（下の節）。道具のインストールと swap の作成はまだ無い。
 - 各段の終わりに setup.json を atomic 保存する。入力終了は 2、失敗は 1、成功（有効化を断った場合も）は下書きを消して 0。config.json は保存の段で正規化した値を比較し、差と確認のあと tick と同じロック内で書く。実行中 Issue のマシン・拾う元・対象・マシンごとの対象の削除を断る。automation と有効化の段は同じロックで automation キーだけを更新する。
 - Enter は既存の値を保つ。手書きのマシン名・orcaBin・セレクタ・扱う組・省略した既定値も保つ。hosts の無い形からの切り替えとスペックの再測定は明示的に聞く。全体の並列数は下書きの lanes に保存する。全体の verified は checkout とコマンドが同じなら保ち、マシンの組はコマンドと置き場所が同じときだけ保つ。このマシンが扱わないリポジトリでも全体の verified は消さない。遠くの verified はこのマシンでの実行結果から決めない。
 - Project は active な gh アカウントの project scope を JSON で確かめ、Status の既存 id・名前・色・説明を保って不足分だけ確認後に足す。遠くは接続→置き場所→測定（スペック・orca・gh）と進み、端末を必ず閉じる。パスで足した遠隔 checkout も canonicalKey を照合し、不明なら人に聞く。swap 0 の注意は macOS では出さない。
@@ -585,3 +585,13 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - 実機（2026-11-17、Orca 1.4.259、このMac＋M2max、orca-auto-e2e / -2、Project 1 と新規の Project 2）: 12 段を Orca の端末で最後まで通した。遠くの測定（probeCommand 2285 文字）は `--command` で切れずに動き、orcaBin も検出できた。Ctrl+C のあとの再実行は済んだ 6 段を飛ばした。新しい Project は既存の Todo・In Progress・Done を保ったまま 6 つ足した（`In Progress` は大文字小文字を無視して既存とみなし、C2c の同期も In Progress と In progress を揃えた）。`automations create` の receipt は `result.automation.id` で読め、`--precheck-timeout 300` と symlink の下の `--workspace path:` も受け付けた。ランチャー経由の tick は承認前に「判定の権限が承認されていません」で 1、承認後は判定が無ければ 1（Claude を起こさない）。Ready＋`from-slack` の Issue で precheck が 0 を返し、判定の Claude が許可の確認で止まらずに終わり、dispatch → PR → In review まで進んだ。
 - 実機で気づいた運用の注意: 拾うのは管理の印（`from-slack` / `slack-thread`）の付いた Issue だけ。新しい Project は組み込みの workflow が追加時に Status を Todo にするので、止めずに Ready の Issue を足すと同期がラベルを Todo へ戻す（setup の案内どおり止める）。推奨の並列数は CPU 数で頭打ちになり、このMac（18 コア、128 GB）では 18 と出る。
 - 実機で未確認: gh の `project` 権限が無いときの Project の段（INSUFFICIENT_SCOPES の実物も含む）、Windows の環境、新しいフォルダの作業場所でのフォルダの信頼の確認（今回は止まらなかったが、信頼済みかどうかは見ていない）。
+
+### C3b: make setup の遠くの確認
+
+- 確認は base64 で包んだ1本の node スクリプトを、このマシンでは spawnSync、遠くでは Orca の端末で実行する。一時ディレクトリの中に `worktree` と `time.txt` を置き、checkout の HEAD から detached worktree を作る。SIGINT はスクリプト自身と呼び出し元で無視し、実行中のコマンドが止まっても後片付けと結果の出力まで進む。コマンドの出力は `stdio: ['ignore', 2, 2]` で端末へ流し、stdout は目印だけにする。道具の名前はシェルの文に埋めず argv で渡す。
+- 遠くの確認は `--worktree path:<遠くの checkout>`（C3a の probe と同じ）。組の `id:` は repo の id で、worktree セレクタではない。段7で host ごとに一度一覧を読み、組に対応するパスがなければ確かめずに未確認にする。5秒おきに読んで30分で時間切れにし、作れた端末は必ず close する。時間切れでは残りうる一時ディレクトリの場所を表示する。
+- このマシンの確認の既定は C3a のまま。遠くの確認は、コマンドとセレクタが変わっておらず、前の設定で確認済みの組だけが既定 no。C3a の未確認の組は Enter で確かめる。全体の repos の verified はこのマシンの結果だけで決める。
+- `hosts[].repos[r].measure` は、通って最大メモリが読めたときだけ `{ peakMemoryMb, diskGrowthMb, measuredAt }` を持つ（ディスクが不明なら0）。引き継ぎは verified と同じ条件。`worktreeCost` は組の最大値の2倍で、メモリ4096 MB・ディスク1 MBが下限。測れなければ従来の定数を使う。hosts の無い形には measure を持たせず、config.json に null の measure は書かない。
+- AI の案は `claude -p` に `--tools Read,Glob,Grep` と `--allowedTools Read,Glob,Grep`、`--permission-mode dontAsk`、`--strict-mcp-config` を渡す。モデルと effort は judge の設定から読み、上限は10分。失敗は日本語で表示して手入力へ戻る。commands は人が確認して決め、tools はその回の確認にだけ渡して保存しない。
+- テスト専用: `ORCA_AUTO_CLAUDE_BIN`・`ORCA_AUTO_VERIFY_TIMEOUT_MS`・`ORCA_AUTO_VERIFY_INTERVAL_MS`・`ORCA_AUTO_SUGGEST_TIMEOUT_MS`。setup-run の prepare は Claude の実行先を存在しないパスにし、本物の claude を起こさない。回帰は SV1〜SV13・SG1〜SG4・SU34〜SU38（SU37b）。
+- 実機で未確認: 遠くの端末が対象 checkout・repo・HEAD を使うこと（U1）、確認コマンドの長さ（U2）、Linux の time と測定できない環境（U3）、claude の JSON（U4）・読み取りだけの制限と許可（U5）・PATH と入れ子の起動（U6）、長い確認の出力と目印（U7）、時間切れで close した後の子と一時ディレクトリ（U8）、Windows（U9）、checkout に応じた PATH の node や mise の版選択（U10）。実機確認は親が行う。
