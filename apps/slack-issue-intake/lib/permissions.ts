@@ -3,6 +3,7 @@ import {
   BYPASS_DISABLE_VALUE,
   CLAUDE_HOME_ENV,
   CLAUDE_SETTINGS_FILE,
+  INTAKE_SECRET_DENY_PATTERN,
   MANAGED_SETTINGS_BASENAME,
   MANAGED_SETTINGS_FILE,
   PROJECT_PERMISSION_MODE,
@@ -11,11 +12,11 @@ import {
   SETTINGS_FILE_MODE,
 } from './defaults.ts'
 import { asArray, asObject, parseJson } from './json.ts'
-import { claudeHome, homePaths } from './paths.ts'
+import { claudeHome, HOME_DIRNAME, homePaths, nameOfHome } from './paths.ts'
 
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import type { Json, JsonObject } from './json.ts'
 export type ProposedRules = {
@@ -152,6 +153,21 @@ export const permissionFingerprint = (home: string): string | null => {
   try {
     const project = settings(homePaths(home).projectSettings)
     const user = permissions(settings(join(claudeHome(), CLAUDE_SETTINGS_FILE)))
+    // 同じ親の別ホームが足す秘密ファイルの拒否だけを除く。自分の拒否と旧来の1ホームの指紋は保つ。
+    if (Array.isArray(user.deny)) {
+      const own = dirname(homePaths(home).secrets)
+      user.deny = user.deny.filter((rule) => {
+        const target = typeof rule === 'string' ? INTAKE_SECRET_DENY_PATTERN.exec(rule)?.[1] : undefined
+        if (!target) return true
+        const other = dirname(target)
+        return (
+          target !== homePaths(other).secrets ||
+          other === own ||
+          dirname(other) !== dirname(own) ||
+          (basename(other) !== HOME_DIRNAME && nameOfHome(other) === null)
+        )
+      })
+    }
     const m = managed()
     return createHash('sha256')
       .update(JSON.stringify(canonical({ project, user, managed: m ? permissions(m) : null })))

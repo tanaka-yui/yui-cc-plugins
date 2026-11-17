@@ -378,6 +378,7 @@ export const SLACK_APP_DIR_SUFFIX = '-slack-app'
 export const INTAKE_HOME_DIRNAME = '.slack-issue-intake'
 export const INTAKE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/
 export const INTAKE_NAME_RESERVED_SUFFIX = SLACK_APP_DIR_SUFFIX
+export const INTAKE_SECRET_DENY_PATTERN = /^(?:Read|Edit)\(\/(.+)\)$/
 export const MSG_NAME_RULE = '名前は英小文字・数字・- の 1〜32 文字で、先頭は英小文字か数字にしてください'
 export const MSG_NAME_RESERVED =
   'ホームのディレクトリ名が -slack-app で終わる名前（slack-app と …-slack-app）は使えません'

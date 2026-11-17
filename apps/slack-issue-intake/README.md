@@ -150,6 +150,7 @@ make setup NAME=<名前>
 - automation はワークスペースごとに 1 つ、この PC にでき、名前は `slack-issue-intake-<名前>` です（名前なしは `slack-issue-intake`）。
 - ボタンの置き直しとマニフェストの表示も `make slack-form NAME=<名前>`・`make manifest NAME=<名前>` と同じ名前を付けます。CLI を直接呼ぶときは `node bin/slack-issue-intake.ts --name <名前> status` のように、`--name <名前>` をサブコマンドの前に置きます。
 - orca-team-dispatch-task の `--auto` で全部のワークスペースの Issue を処理するときは、その `make setup` の 2 段目（拾う元）で、ワークスペースごとのホームの config.json を全部選びます。
+- `--auto` を使っている場合は、新しいワークスペースをそのキューに含めない場合も、ワークスペースを追加したあとに orca-team-dispatch-task の `make setup`（名前を付けていれば同じ `NAME`）をやり直し、12 段目で権限を承認し直してください。追加された秘密ファイルの拒否ルールで `--auto` の承認指紋が変わり、それまではランチャー経由の tick が止まります。
 
 ### 途中で止まったとき
 
@@ -442,7 +443,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
 
 Claude は run ごとの work.json と添付を読み、decisions.json だけに判断を書きます。送り先・タイトル・ラベルと副作用は CLI が管理します。投稿・返信・添付内の指示には従いません。
 project は dontAsk と disableBypassPermissionsMode、実行コマンドとファイルの限定 allow、外部操作の deny を持ちます。user には secrets.json の Read / Edit の deny を足します。token は0600、ホームは0700で保存し、外部文字列は保存・出力前に伏せます。
-enable は必要な設定、local 設定の不在、managed モード、秘密ファイルの deny を検査します。project 全体と user / managed の permissions 全体の指紋を保存し、poll は毎回検査と指紋の一致を確認します。allow だけでなく deny やモードの変化でも止まります。
+enable は必要な設定、local 設定の不在、managed モード、秘密ファイルの deny を検査します。project 全体と user / managed の permissions 全体の指紋を保存し、poll は毎回検査と指紋の一致を確認します。allow だけでなく deny やモードの変化でも止まります。ただし、同じ親ディレクトリにある別の有効な intake ホームの secrets.json に対する user の Read / Edit の deny は指紋から除きます。別ワークスペースの設定を足しても既存ホームの承認を保つためで、自分の秘密ファイルの deny の欠落は今までどおり停止します。
 hook と mod による承認は検査・指紋の対象外です。Orca が加える既定引数も読み取れないため、許可を広げる引数がないことが前提です。--dangerously-skip-permissions を拒む設定が実際に dontAsk を保つかは初回の動作確認で確かめます。
 
 ## テスト

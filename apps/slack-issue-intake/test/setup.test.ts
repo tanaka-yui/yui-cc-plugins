@@ -531,3 +531,21 @@ test('MW4 setup under a named home keeps every child, the deploy hook and the au
   assert.ok(r.stdout.includes('NAME=ws2'))
   assert.ok(r.stdout.includes('--name ws2'))
 })
+
+test('MW9 名前つきの setup のあとも既存ホームの承認と poll を保つ', async (t) => {
+  const f = await fixture(t)
+  const user = tempHome()
+  const env = { HOME: user, SLACK_ISSUE_INTAKE_HOME: '' }
+  const first = await f.setup(FULL_INPUT, env)
+  assert.equal(first.code, 0, first.stderr)
+  const original = loadConfig(join(user, '.slack-issue-intake'))?.acceptedPermissions
+  assert.ok(original)
+  const second = await f.setup(FULL_INPUT, env, ['--name', 'ws2', 'setup'])
+  assert.equal(second.code, 0, second.stderr)
+  const status = await f.setup('', env, ['status'])
+  assert.match(status.stdout, /^permissions=accepted$/m)
+  assert.equal(loadConfig(join(user, '.slack-issue-intake'))?.acceptedPermissions, original)
+  const poll = await f.setup('', env, ['poll'])
+  assert.doesNotMatch(poll.stdout, /^result=permissions\b/m)
+  assert.match(poll.stdout, /^result=idle\b/m)
+})
