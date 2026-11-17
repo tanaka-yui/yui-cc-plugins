@@ -13,6 +13,7 @@ import {
   fakeSlackCli,
   ghCalls,
   orcaCalls,
+  runCli,
   runCliAsync,
   slackCliCalls,
   startSlack,
@@ -20,7 +21,7 @@ import {
 } from './helpers.ts'
 
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 
@@ -91,7 +92,8 @@ const fixture = async (
     calls,
     cliCalls,
     status,
-    setup: (input: string, extra: Record<string, string> = {}) => runCliAsync(['setup'], { ...env, ...extra }, input),
+    setup: (input: string, extra: Record<string, string> = {}, args: string[] = ['setup']) =>
+      runCliAsync(args, { ...env, ...extra }, input),
   }
 }
 
@@ -480,4 +482,52 @@ test('SU28 報告の材料を見つけて設定し、無ければ案内する', 
   assert.equal(skipped.code, 0, skipped.stderr + skipped.stdout)
   assert.ok(skipped.stdout.includes('--auto の報告の材料が見つかりません'))
   assert.equal(loadConfig(empty.home)?.report.source, null)
+})
+
+test('MW3 --name before the subcommand selects the home; after it is left alone', () => {
+  const user = tempHome()
+  const base = { HOME: user, SLACK_ISSUE_INTAKE_HOME: '', SLACK_ISSUE_INTAKE_CLAUDE_HOME: tempHome() }
+  for (const args of [
+    ['--name', 'BAD', 'status'],
+    ['--name', 'slack-app', 'status'],
+    ['--name'],
+    ['--name=', 'status'],
+  ]) {
+    const r = runCli(args, base)
+    assert.equal(r.code, 2, args.join(' '))
+    assert.match(r.stderr, /^slack-issue-intake: /m)
+  }
+  assert.deepEqual(readdirSync(user), [])
+  const conflict = runCli(['--name', 'ws2', 'status'], { ...base, SLACK_ISSUE_INTAKE_HOME: tempHome() })
+  assert.equal(conflict.code, 2)
+  assert.match(conflict.stderr, /SLACK_ISSUE_INTAKE_HOME/)
+  const config = join(user, '.slack-issue-intake-ws2', 'config.json')
+  for (const args of [
+    ['--name', 'ws2', 'status'],
+    ['--name=ws2', 'status'],
+  ]) {
+    const r = runCli(args, base)
+    assert.equal(r.code, 0, r.stderr)
+    assert.ok(r.stdout.includes(`config=${config}\n`), r.stdout)
+  }
+  // 後ろの --name は status の引数のまま（status の parseArgs が断る。入口の衝突の検査は働かない）
+  const after = runCli(['status', '--name', 'ws2'], { ...base, SLACK_ISSUE_INTAKE_HOME: tempHome() })
+  assert.equal(after.code, 2)
+  assert.match(after.stderr, /^status: /m)
+})
+test('MW4 setup under a named home keeps every child, the deploy hook and the automation in that home', async (t) => {
+  const f = await fixture(t)
+  const user = tempHome()
+  const r = await f.setup(FULL_INPUT, { SLACK_ISSUE_INTAKE_HOME: '', HOME: user }, ['--name', 'ws2', 'setup'])
+  assert.equal(r.code, 0, r.stderr)
+  const named = join(user, '.slack-issue-intake-ws2')
+  assert.equal(loadToken(homePaths(named).secrets), 'xoxb-fake-deployed') // deploy フック（環境で届いたホーム）
+  assert.equal(loadConfig(named)?.channel, 'C0TARGET01') // init の子
+  assert.ok(existsSync(slackProject(named).hooks)) // <ホーム>-slack-app
+  assert.ok(!existsSync(join(user, '.slack-issue-intake')))
+  assert.ok(!existsSync(join(user, '.slack-issue-intake-slack-app')))
+  const create = orcaCalls(f.orca.log).find((c) => c[0] === 'automations' && c[1] === 'create')
+  assert.deepEqual(create?.slice(2, 4), ['--name', 'slack-issue-intake-ws2'])
+  assert.ok(r.stdout.includes('NAME=ws2'))
+  assert.ok(r.stdout.includes('--name ws2'))
 })

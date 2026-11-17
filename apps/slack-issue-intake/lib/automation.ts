@@ -5,9 +5,14 @@ import {
   AUTOMATION_PROVIDER,
   PRECHECK_TIMEOUT_SECONDS,
 } from './defaults.ts'
+import { nameOfHome } from './paths.ts'
 
 import type { Config } from './config.ts'
 import type { HomePaths } from './paths.ts'
+export const automationNameFor = (home: string): string => {
+  const name = nameOfHome(home)
+  return name === null ? AUTOMATION_NAME : `${AUTOMATION_NAME}-${name}`
+}
 export const cronFor = (everyMinutes: number): string =>
   everyMinutes === 60 ? '0 * * * *' : `*/${everyMinutes} * * * *`
 export const isAllowedEvery = (n: number): boolean => Number.isInteger(n) && ALLOWED_EVERY_MINUTES.includes(n)
@@ -32,7 +37,7 @@ export const createArgs = (config: Config, paths: HomePaths, home: string): stri
   'automations',
   'create',
   '--name',
-  AUTOMATION_NAME,
+  automationNameFor(home),
   '--trigger',
   cronFor(config.everyMinutes),
   '--provider',

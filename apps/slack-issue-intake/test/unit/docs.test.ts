@@ -13,6 +13,7 @@ import { renderGuide, renderTemplate } from '../../lib/guide.ts'
 import { HOME_ENV } from '../../lib/paths.ts'
 
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -85,4 +86,15 @@ test('DO6 README は複数リポジトリ・更新手順・report を含み、�
   }
   assert.equal(plugin.version, '0.5.0')
   assert.equal(market.plugins.find((p) => p.name === 'slack-issue-intake')?.version, '0.5.0')
+})
+
+test('MW6 make passes NAME before the subcommand and ignores NAME from the environment', () => {
+  const make = (args: string[], env: Record<string, string> = {}) =>
+    spawnSync('make', ['-n', ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, ...env } }).stdout
+  assert.match(make(['setup', 'NAME=ws2']), /slack-issue-intake\.ts' --name 'ws2' setup$/m)
+  assert.match(make(['manifest', 'NAME=ws2']), /slack-issue-intake\.ts' --name 'ws2' form --manifest$/m)
+  assert.match(make(['slack-form', 'NAME=ws2']), /slack-issue-intake\.ts' --name 'ws2' form$/m)
+  const plain = make(['setup'], { NAME: 'leak' })
+  assert.match(plain, /slack-issue-intake\.ts' setup$/m)
+  assert.ok(!plain.includes('--name'))
 })

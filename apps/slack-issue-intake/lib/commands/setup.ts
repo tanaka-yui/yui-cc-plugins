@@ -30,7 +30,7 @@ import {
 import { featureSteps, formTitles } from '../form.ts'
 import { createGh, findGhPath, ghAuthOk, labelsHash, repoInfo } from '../github.ts'
 import { runOrca } from '../orca.ts'
-import { homePaths, intakeHome, pluginRoot } from '../paths.ts'
+import { homePaths, intakeHome, nameOfHome, pluginRoot } from '../paths.ts'
 import { inheritedGrants, permissionStatus } from '../permissions.ts'
 import { createPrompter } from '../prompt.ts'
 import { findReportSources } from '../report.ts'
@@ -351,6 +351,8 @@ const wizard = async (): Promise<number> => {
   const p = createPrompter(STDIN, out)
   const home = intakeHome()
   const paths = homePaths(home)
+  const name = nameOfHome(home)
+  if (name !== null) say(fill(SETUP_TEXT.namedHome, { name, home }))
 
   heading(1, SETUP_TEXT.stepPrecheck)
   const ready = await precheck()

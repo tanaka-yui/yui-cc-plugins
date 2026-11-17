@@ -374,6 +374,15 @@ export const PROCESS_LOCALE = 'C'
 
 // Slack CLI 用のプロジェクト（ホームの隣に置く）とフック
 export const SLACK_APP_DIR_SUFFIX = '-slack-app'
+// orca-team-dispatch-task の lib/intake-homes.ts に写しがあり、scripts/check-shared-contracts.mjs が一致を確かめる
+export const INTAKE_HOME_DIRNAME = '.slack-issue-intake'
+export const INTAKE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/
+export const INTAKE_NAME_RESERVED_SUFFIX = SLACK_APP_DIR_SUFFIX
+export const MSG_NAME_RULE = '名前は英小文字・数字・- の 1〜32 文字で、先頭は英小文字か数字にしてください'
+export const MSG_NAME_RESERVED =
+  'ホームのディレクトリ名が -slack-app で終わる名前（slack-app と …-slack-app）は使えません'
+export const MSG_NAME_MISSING = '--name の後ろに名前を書いてください'
+export const MSG_NAME_HOME_CONFLICT = '--name と SLACK_ISSUE_INTAKE_HOME は一緒に使えません'
 // フォームの種類ごとのトリガー定義のファイル。<prefix><key>.json
 export const TRIGGER_DEF_PREFIX = 'form-trigger-'
 export const MANIFEST_HASH_FILE = 'manifest.sha256'
@@ -408,6 +417,8 @@ export const NODE_MIN_VERSION: readonly number[] = [24, 15]
 export const PROMPT_READ_CHUNK = 4096
 export const PROMPT_RETRY_MS = 50
 export const SETUP_TEXT = {
+  namedHome:
+    'ワークスペース {name} のホーム {home} を使います。案内に出る make のコマンドには NAME={name} を、node bin/slack-issue-intake.ts には --name {name} を付けてください',
   stepPrecheck: '事前の確認',
   stepApp: 'Slack アプリを作ってトークンを登録する',
   stepChannel: 'チャンネルを決める',

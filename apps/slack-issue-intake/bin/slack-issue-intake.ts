@@ -1,5 +1,6 @@
 import { die, log } from '../lib/cli.ts'
-import { LAUNCHER_VERSION, LAUNCHER_VERSION_ENV } from '../lib/defaults.ts'
+import { LAUNCHER_VERSION, LAUNCHER_VERSION_ENV, MSG_NAME_HOME_CONFLICT, MSG_NAME_MISSING } from '../lib/defaults.ts'
+import { HOME_ENV, homeForName, intakeNameProblem } from '../lib/paths.ts'
 import { maskSecrets } from '../lib/secrets.ts'
 
 type Command = { run: (argv: string[]) => Promise<void> | void }
@@ -31,7 +32,16 @@ const launched = process.env[LAUNCHER_VERSION_ENV]
 if (launched !== undefined && launched !== String(LAUNCHER_VERSION)) {
   log(NAME, 'ランチャーが古い版です。init を再実行してください')
 }
-const [command, ...rest] = process.argv.slice(2)
+const args = process.argv.slice(2)
+if (args[0] === '--name' || args[0]?.startsWith('--name=')) {
+  const option = args.shift()
+  const name = (option === '--name' ? args.shift() : option?.slice('--name='.length)) ?? die(NAME, MSG_NAME_MISSING)
+  const problem = intakeNameProblem(name)
+  if (problem !== null) die(NAME, problem)
+  if (process.env[HOME_ENV]) die(NAME, MSG_NAME_HOME_CONFLICT)
+  process.env[HOME_ENV] = homeForName(name)
+}
+const [command, ...rest] = args
 const load = command === undefined || !Object.hasOwn(COMMANDS, command) ? undefined : COMMANDS[command]
 if (load === undefined) {
   die(NAME, `使用法: ${NAME} <${Object.keys(COMMANDS).join('|')}> [options]`)
