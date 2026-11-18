@@ -1,3 +1,5 @@
+import { NEEDS_REVIEW_RULE } from './auto-request.ts'
+
 export type MailRole = 'design' | 'design_review' | 'exec' | 'exec_review'
 export type MailSpecInput = {
   slug: string
@@ -160,8 +162,9 @@ ${orca} orchestration send --type status <ids> --subject "heartbeat: <short note
 4. Make an artifact directory with mktemp -d outside the worktree. Write ${files.join('; ')} there.
 ${
   planning
-    ? `plan-result.json must have this shape: {"decisions":[],"review":{"unresolved":[],"declined":[]}}.
-List every planning decision and unresolved/declined review finding and reason in Japanese;
+    ? `plan-result.json must have this shape: {"decisions":[],"needsReview":[],"review":{"unresolved":[],"declined":[]}}.
+${NEEDS_REVIEW_RULE}
+List every planning decision, needsReview entry, and unresolved/declined review finding and reason in Japanese;
 use empty arrays when none, and never include secrets. Preserve the implementer's result
 and verification requirements in plan.md.`
     : ''

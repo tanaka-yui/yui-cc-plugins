@@ -79,7 +79,8 @@ test('MS9 code reviews name and verify the pushed head without moving reviewer H
 test('MS10 only planning-only design produces structured planning decisions', () => {
   const spec = renderMailSpec(input({ planOnly: true, integration: false }))
   assert.ok(spec.includes('plan-result.json'))
-  assert.ok(spec.includes('{"decisions":[],"review":{"unresolved":[],"declined":[]}}'))
+  assert.ok(spec.includes('needsReview lists only'))
+  assert.ok(spec.includes('{"decisions":[],"needsReview":[],"review":{"unresolved":[],"declined":[]}}'))
   assert.ok(!renderMailSpec(input()).includes('plan-result.json'))
   assert.ok(!renderMailSpec(input({ role: 'exec' })).includes('plan-result.json'))
 })
@@ -166,7 +167,7 @@ test('MS16 legacy instructions remain byte-for-byte identical for every role', (
     [{}, '28d98c97ee3f029987cac52e9a1f35c11705b7f90a133734d18994c9e531518d'],
     [
       { planOnly: true, integration: false, reviewer: 'ctx_r' },
-      'a72705b9d8e171aa8676d3cecfec59586f37a4d66bec78b0263044b5540c916f',
+      '4c0a889cb543a6cfe2ec83c670d3759414e75fdcba7d7922db6937ae6593caeb',
     ],
     [
       { role: 'exec', plan: 'Entire plan', reviewer: 'ctx_r' },

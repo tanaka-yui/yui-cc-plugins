@@ -1,5 +1,5 @@
 import { syncIssues } from '../../lib/auto-queue.ts'
-import { buildRequest, readAutoResult, slugOf } from '../../lib/auto-request.ts'
+import { buildRequest, readAutoResult, readPlanResult, slugOf } from '../../lib/auto-request.ts'
 import { readState } from '../../lib/auto-state.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 
@@ -133,6 +133,56 @@ test('RQ13 multiple repository requests group verification and include infrastru
     )
     assert.ok(out.includes('Repository acme/app:\n- npm test\nRepository other/api:\n(none configured)'))
     assert.equal(out.split('This is infrastructure:').length - 1, 1)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('RQ14 both result readers accept optional needsReview and reject malformed values', () => {
+  const f = fixture()
+  try {
+    const file = join(f.dir, 'result.json')
+    const plan = { decisions: ['記録'], review: { unresolved: [], declined: [] } }
+    const auto = { ...plan, summary: '要約', verify: { passed: true, ran: [] }, envFailure: null }
+    for (const [read, result] of [
+      [readPlanResult, plan],
+      [readAutoResult, auto],
+    ] as const) {
+      for (const valid of [result, { ...result, needsReview: ['確認'] }]) {
+        f.put(file, valid)
+        assert.deepEqual(read(file), valid)
+      }
+      for (const needsReview of [[3], 'x', null]) {
+        f.put(file, { ...result, needsReview })
+        assert.equal(read(file), null)
+      }
+    }
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('RQ15 implementation request separates review choices from recorded decisions', () => {
+  const f = fixture()
+  try {
+    f.respond('issue_list', [{ number: 42, title: '題', labels: [], updatedAt: '2026-01-01' }])
+    const state = readState('main')
+    syncIssues(state, f.config().sources)
+    const issue = state.issues['acme/app#42']
+    const repo = f.config().repos['acme/app']
+    assert.ok(issue && repo)
+    const out = buildRequest(issue, 'body', [{ name: 'acme/app', options: repo }], f.config().roles, null)
+    for (const text of [
+      '"needsReview":[]',
+      'needsReview lists only',
+      'security',
+      'public API',
+      'could not verify',
+      'do not stop an automatic merge',
+      'Write decisions, needsReview, summary and envFailure in Japanese',
+    ]) {
+      assert.ok(out.includes(text), text)
+    }
   } finally {
     f.cleanup()
   }
