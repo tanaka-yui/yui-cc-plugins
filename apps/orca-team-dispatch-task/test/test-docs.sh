@@ -711,6 +711,20 @@ for f in "$S" "$G"; do
 done
 [[ -z "$bad" ]] && ok SK41 || fail "SK41:$bad"
 
+# SK42: needsReview と取り次ぎの余裕を両文書と判定役の指示に書き、古い言い方を残さない。
+bad=""
+for word in 'needsReview' 'relay allowance' '`limits.maxMinutes`'; do grep -Fq -- "$word" "$S" || bad="$bad [skill:$word]"; done
+for word in 'needsReview' '取り次ぎの余裕' '`limits.maxMinutes`'; do grep -Fq -- "$word" "$G" || bad="$bad [guide:$word]"; done
+grep -Fq 'on top of `limitMinutes`' "$judge_en" || bad="$bad [judge:relay]"
+grep -Fq '`limitMinutes` の外に足す' "$judge_ja" || bad="$bad [judge-ja:relay]"
+for old in 'a reviewed Issue needs a longer time limit' 'planning decisions, and unresolved' 'Decisions, unresolved or declined review findings'; do
+  grep -Fq -- "$old" "$S" && bad="$bad [old skill:$old]"
+done
+for old in '長めの上限時間が要る' '計画の判断・未解消・不採用の指摘' '判断した点、未解消・不採用の指摘'; do
+  grep -Fq -- "$old" "$G" && bad="$bad [old guide:$old]"
+done
+[[ -z "$bad" ]] && ok 'SK42 needsReview と取り次ぎの余裕' || fail "SK42:$bad"
+
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"
