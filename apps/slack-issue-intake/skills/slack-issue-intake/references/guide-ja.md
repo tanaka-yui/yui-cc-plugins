@@ -10,7 +10,7 @@ Slack のフォームから GitHub Issue を作ります。precheck はモデル
 
 ```bash
 PLUGIN="${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT is not set}"
-node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
+node "$PLUGIN/bin/slack-issue-intake.ts" --name <名前> <subcommand> [options]
 ```
 
 ## 守ること
@@ -22,13 +22,17 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 
 ## ワークスペース
 
-Slack のワークスペースごとにホームがあります。名前なしは `~/.slack-issue-intake`、`make setup NAME=<名前>` で作ったものは `~/.slack-issue-intake-<名前>` です。サブコマンドを実行する前に、`config.json` か `secrets.json` があるホームを並べます（ファイルがあるかを見るだけです）。
+各ワークスペースは `make setup NAME=<名前>` で作る名前つきのホーム `~/.slack-issue-intake-<名前>` を持ちます。名前は必須で、CLI はいつもサブコマンドの前に `--name <名前>` を付けます。無ければ終了コード 2 で今ある名前を示します。最初のサブコマンドの前に、設定か秘密ファイルがある名前つきのホームを並べます（ファイルがあるかを見るだけです）。
 
 ```bash
-find "$HOME" -maxdepth 1 -type d \( -name .slack-issue-intake -o -name '.slack-issue-intake-*' \) -not -name '*-slack-app' -exec sh -c 'test -e "$1/config.json" || test -e "$1/secrets.json"' sh {} \; -print
+find "$HOME" -maxdepth 1 -type d -name '.slack-issue-intake-*' -not -name '*-slack-app' -exec sh -c 'test -e "$1/config.json" || test -e "$1/secrets.json"' sh {} \; -print
 ```
 
-2 つ以上あれば、どのワークスペースかをユーザーに聞きます。名前つきのホームは、それ 1 つだけでも必ずサブコマンドの前に `--name <名前>` を付けます（`node "$PLUGIN/bin/slack-issue-intake.ts" --name <名前> <subcommand> [options]`）。`~/.slack-issue-intake` のとき、または 1 つも無いときは付けません。サブコマンドの後ろの `--name` は受け付けません。`<ホーム>/bin/` のランチャーは自分のホームを知っているので、`--name` を渡しません。
+サブコマンドの前にいつもワークスペースを確かめます。1 つならどれを使うかをユーザーに伝え、2 つ以上ならどれかを聞き、無ければ `make setup NAME=<名前>` を勧めます。サブコマンドの後ろの `--name` は受け付けません。`<ホーム>/bin/` のランチャーは自分のホームを知っているので、`--name` を渡しません。
+
+設定・トークン・automation が無いと CLI が言ったら、表示されたホームとコマンド（`make setup NAME=<名前>`、トークン登録なら `--name <名前> set-token`）をそのまま伝えます。
+
+`test -d "$HOME/.slack-issue-intake"` で名前なしのホームがあれば、setup ではもう使わないこと、そのワークスペースは `make setup NAME=<名前>` で設定し直してから Orca の automation `slack-issue-intake` を止めること（それまではランチャーから動き続ける）、ディレクトリは消して構わないことを 1 行で伝えます。自分で消したり移したりしません。
 
 ## 依頼の振り分け
 
@@ -36,26 +40,26 @@ find "$HOME" -maxdepth 1 -type d \( -name .slack-issue-intake -o -name '.slack-i
 
 ## init
 
-ターミナルで、プラグインのディレクトリから `make setup` を実行するようユーザーに勧めます。対話式なので、エージェントのシェルでは動きません。make setup は Slack CLI でアプリを作り、続けてチャンネルの解決、リポジトリ一覧の確認、`init`、メンション先のグループの入力（**mention**）、定期報告の設定（**report**）、フォームのボタンの設置（**form**）、許可の承認、**enable** を自分で進めます。以下の手作業の手順は、Slack CLI を使えないとき、または make setup が自分では進められない段で止まったときだけ使います。
+ターミナルで、プラグインのディレクトリから `make setup NAME=<名前>` を実行するようユーザーに勧めます。対話式なので、エージェントのシェルでは動きません。make setup NAME=<名前> は Slack CLI でアプリを作り、続けてチャンネルの解決、リポジトリ一覧の確認、`init`、メンション先のグループの入力（**mention**）、定期報告の設定（**report**）、フォームのボタンの設置（**form**）、許可の承認、**enable** を自分で進めます。以下の手作業の手順は、Slack CLI を使えないとき、または make setup NAME=<名前> が自分では進められない段で止まったときだけ使います。
 
-別の Slack のワークスペースを足すときは `make setup NAME=<名前>` を勧めます（名前は英小文字・数字・`-` の 1〜32 文字で、先頭は英小文字か数字。`slack-app` と `-slack-app` で終わる名前は使えません）。NAME なしは `~/.slack-issue-intake` を設定します。`make slack-form` と `make manifest` にも同じ NAME を付けます。
+別の Slack のワークスペースを足すときは `make setup NAME=<名前>` を勧めます（名前は英小文字・数字・`-` の 1〜32 文字で、先頭は英小文字か数字。`slack-app` と `-slack-app` で終わる名前は使えません）。`NAME=` が無ければ make が今ある名前を並べて端末で聞き、読めなければ終了コード 2 で `NAME=` 付きのコマンドを示します。`make slack-form NAME=<名前>` と `make manifest NAME=<名前>` にも同じ NAME を付けます。
 
 1. guide を実行し、有料プラン、社内向けアプリ、招待、Workflow Builder を日本語で案内します。フォームは Workflow Builder で手で作ります。Slack の準備が済んだか尋ねます。アプリは配布しません。
 2. status が token=missing なら token の手順へ進みます。
-3. AskUserQuestion を1回出し、チャンネル ID、owner/name の一覧、既定の起票先、各リポジトリのフォームへの表示と既存 Issue の扱い（thread / skip）、間隔を聞きます。リポジトリの既定候補は `gh repo view --json nameWithOwner -q .nameWithOwner`。間隔の既定は5分、選択肢は 1、2、3、4、5、6、10、12、15、20、30、60 です。
+3. AskUserQuestion を1回出し、チャンネル ID、owner/name の一覧、既定の起票先、各リポジトリのフォームへの表示と Slack から作っていない Issue もスレッドを立てて管理するか（y なら thread、n なら skip）、間隔を聞きます。リポジトリの既定候補は `gh repo view --json nameWithOwner -q .nameWithOwner`。間隔の既定は5分、選択肢は 1、2、3、4、5、6、10、12、15、20、30、60 です。
 4. `init --channel ID --repo owner/name [--repo owner/name ...] --default-repo owner/name --existing owner/name=<thread|skip> [--hide-form owner/name] --every 分` を実行します。`--existing` と `--hide-form` はリポジトリごとに繰り返します。既定の起票先はフォームに常に表示され、`--hide-form` に渡しても効きません。automation は無効で登録されます。exit 2 は引数・トークン、1 は招待、gh 認証、公開、ラベル、Orca、送り先変更、処理中などの理由を案内します。公開リポジトリへの転記は説明して承認を得てから --allow-public で再実行します。リポジトリは追加できますが削除できません。既定は一覧の中から変更できます。チャンネルを変えるときはホームの退避と再設定が必要です。
 5. permissions --show の内容を示し、承認後に permissions --apply を実行して enable へ進みます。
 
 ## form
 
-1. make setup は 8 段目で form を実行します。ボタンを付け直すときだけ手で実行します。フォームはカテゴリ（バグ・要望・新機能）ごとに 3 つあります。それぞれ slack trigger create でワークフローのリンク（ショートカットのトリガー）を作り、slack trigger access で使える人を設定のチャンネルのメンバーに限ります。そのあと workflows.featured.add を 1 回呼んで、3 つをチャンネルのおすすめワークフローにします。メンバーには入力欄の所に 3 つのボタンが出ます。フォームごとに trigger.<key>= と url.<key>= を出し、続けて channel= と featured= を出します。再実行では記録済みのトリガーとおすすめを使い回します。make setup が作った Slack CLI のプロジェクトが必要です。
-   - 0.2 の 1 つのフォームのボタンが記録に残っていれば、新しい 3 つをおすすめにしたあとで古いボタンを外して消します。消せなくても新しいボタンは使え、次の実行でやり直します。ボタンがもう無い場合は、消えたものとして扱います。おすすめを画面で手でする必要があった場合は、古いボタンを残し、Slack の管理画面で 3 つを注目にしてから make slack-form をもう一度実行するよう伝えます。
-2. exit 1 のときは、出力された理由を説明します。トリガーを断られた場合は、Slack CLI がこのアプリのボタンを作れなかったことを伝え、guide の Workflow Builder の手順に戻ります。おすすめにできなかった場合は、表示された手順を伝えます。ブラウザで Slack の管理画面を開き、ワークフローの一覧から 3 つのフォームのワークフローそれぞれのアプリの詳細を開いて、右上のメニューから「おすすめアプリに追加」を選んでもらいます。それでも入力欄がボタンに変わらなければ、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で 3 つを選んで「注目」を押してもらいます。リンクを関連ページ（ブックマーク）に足すと押したときにブラウザが開くので、勧めません。exit 2 は、設定がない、Slack CLI がない、make setup で作ったアプリがない、deploy 済みのアプリが今のフォームの定義より古い（プラグインを更新した直後など）、のいずれかです。最後の場合は make setup をもう一度実行します。
+1. make setup NAME=<名前> は 8 段目で form を実行します。ボタンを付け直すときだけ手で実行します。フォームはカテゴリ（バグ・要望・新機能）ごとに 3 つあります。それぞれ slack trigger create でワークフローのリンク（ショートカットのトリガー）を作り、slack trigger access で使える人を設定のチャンネルのメンバーに限ります。そのあと workflows.featured.add を 1 回呼んで、3 つをチャンネルのおすすめワークフローにします。メンバーには入力欄の所に 3 つのボタンが出ます。フォームごとに trigger.<key>= と url.<key>= を出し、続けて channel= と featured= を出します。再実行では記録済みのトリガーとおすすめを使い回します。make setup NAME=<名前> が作った Slack CLI のプロジェクトが必要です。
+   - 0.2 の 1 つのフォームのボタンが記録に残っていれば、新しい 3 つをおすすめにしたあとで古いボタンを外して消します。消せなくても新しいボタンは使え、次の実行でやり直します。ボタンがもう無い場合は、消えたものとして扱います。おすすめを画面で手でする必要があった場合は、古いボタンを残し、3 つを注目にしてから make slack-form NAME=<名前> をもう一度実行するよう伝えます。
+2. exit 1 のときは、出力された理由を説明します。トリガーを断られた場合は、Slack CLI がこのアプリのボタンを作れなかったことを伝え、guide の Workflow Builder の手順に戻ります。おすすめにできなかった場合は、表示された手順を伝えます。まず表示された `https://slack.com/app_redirect?...` のリンク（Slack のアプリで直接開くなら `slack://channel` の行）で起票のチャンネルを開きます。チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で 3 つを選び、「注目」を押してもらいます。それでも入力欄がボタンに変わらないときだけ、ブラウザの Slack の管理画面（Admin →「Apps and workflows」→「Workflows」）で各ワークフローの詳細を開き、右上のメニューから「おすすめアプリに追加」を選んでもらいます。リンクを関連ページ（ブックマーク）に足すとブラウザが開くので勧めません。exit 2 は、設定がない、Slack CLI がない、`make setup NAME=<名前>` で作ったアプリがない、deploy 済みのアプリが今のフォームの定義より古い、のいずれかです。最後の場合は `make setup NAME=<名前>` をもう一度実行します。
 3. この方法の投稿はアプリ自身のボットが書くため、inspect では bot=yes と出ます。
 
 ## mention
 
-make setup は 6 段目でグループを聞き、一度答えたら（空の答えはメンションしないという意味）聞き直しません。変えるときは、Slack のユーザーグループ（`dev-member` や `@dev-member` のようなハンドル、表示名、S で始まる ID）をユーザーに聞いて `mention --group <値>` を実行します。メンションをやめるときは `mention --none` です。`mention=<ID>` か `mention=none` を出します。exit 1 は、`usergroups:read` の権限が無い（手作業で作ったアプリに多い。権限を足してアプリを入れ直すか、グループ ID を入力する）か、グループが見つからないことを示します。exit 2 は、設定が無いか引数の誤りです。
+make setup NAME=<名前> は 6 段目でグループを聞き、一度答えたら（空の答えはメンションしないという意味）聞き直しません。変えるときは、Slack のユーザーグループ（`dev-member` や `@dev-member` のようなハンドル、表示名、S で始まる ID）をユーザーに聞いて `mention --group <値>` を実行します。メンションをやめるときは `mention --none` です。`mention=<ID>` か `mention=none` を出します。exit 1 は、`usergroups:read` の権限が無い（手作業で作ったアプリに多い。権限を足してアプリを入れ直すか、グループ ID を入力する）か、グループが見つからないことを示します。exit 2 は、設定が無いか引数の誤りです。
 
 ## report
 

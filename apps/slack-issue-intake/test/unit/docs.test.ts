@@ -122,3 +122,21 @@ test('MW5 docs explain per-workspace setup and --name', () => {
   for (const text of ['make setup NAME=<名前>', 'slack-issue-intake-<名前>', '--name <名前>'])
     assert.ok(readme.includes(text), text)
 })
+
+test('DC1 README・SKILL・guide-ja の実行例は名前を付ける', () => {
+  for (const file of [
+    'README.md',
+    'skills/slack-issue-intake/SKILL.md',
+    'skills/slack-issue-intake/references/guide-ja.md',
+  ]) {
+    const text = readFileSync(join(root, file), 'utf8')
+    for (const m of text.matchAll(/bin\/slack-issue-intake\.ts"?[ \t]+(\S+)/g))
+      assert.equal(m[1], '--name', `${file}: ${m[0]}`)
+    assert.deepEqual(
+      [...text.matchAll(/make (?:setup|manifest|slack-form)\b(?! NAME=)/g)].map((m) => m[0]),
+      [],
+      file,
+    )
+    assert.ok(!text.includes('~/.slack-issue-intake/bin'), file)
+  }
+})

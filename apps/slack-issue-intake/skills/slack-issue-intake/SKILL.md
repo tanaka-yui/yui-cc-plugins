@@ -22,7 +22,7 @@ For each invocation, define the plugin path in the same shell command:
 
 ```bash
 PLUGIN="${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT is not set}"
-node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
+node "$PLUGIN/bin/slack-issue-intake.ts" --name <name> <subcommand> [options]
 ```
 
 ## Hard rules
@@ -38,19 +38,27 @@ node "$PLUGIN/bin/slack-issue-intake.ts" <subcommand> [options]
 
 ## Workspaces
 
-Each Slack workspace has its own intake home: `~/.slack-issue-intake` without a name, or
-`~/.slack-issue-intake-<name>` created by `make setup NAME=<name>`. Before running any subcommand, list the homes
-that hold a `config.json` or `secrets.json` (this only checks that the files exist):
+Each Slack workspace has a named home, `~/.slack-issue-intake-<name>`, created by `make setup NAME=<name>`.
+A name is required: always put `--name <name>` before the CLI subcommand. Without it, the CLI exits 2 and lists
+the existing names. Before the first subcommand, list named homes that hold a config or secrets file
+(this checks existence only):
 
 ```bash
-find "$HOME" -maxdepth 1 -type d \( -name .slack-issue-intake -o -name '.slack-issue-intake-*' \) -not -name '*-slack-app' -exec sh -c 'test -e "$1/config.json" || test -e "$1/secrets.json"' sh {} \; -print
+find "$HOME" -maxdepth 1 -type d -name '.slack-issue-intake-*' -not -name '*-slack-app' -exec sh -c 'test -e "$1/config.json" || test -e "$1/secrets.json"' sh {} \; -print
 ```
 
-If two or more are listed, ask the user which workspace to use. For a named home, always put `--name <name>`
-before the subcommand, even when it is the only home:
-`node "$PLUGIN/bin/slack-issue-intake.ts" --name <name> <subcommand> [options]`. For `~/.slack-issue-intake`, or
-when nothing is listed, omit `--name`. `--name` after the subcommand is not accepted, and the launcher in
-`<home>/bin/` already knows its home, so never pass `--name` to it.
+Confirm the workspace before every subcommand. If one home is listed, tell the user which one you will use.
+If two or more are listed, ask which workspace to use. If none are listed, recommend `make setup NAME=<name>`.
+`--name` after the subcommand is not accepted. The launcher in `<home>/bin/` already knows its home, so never
+pass `--name` to it.
+
+If the CLI reports missing config, token, or automation, relay the displayed home and exact command
+(`make setup NAME=<name>`, or `--name <name> set-token` for token registration).
+
+Check `test -d "$HOME/.slack-issue-intake"`. If the unnamed home exists, say in one line that it is no longer
+used for setup, that the workspace should be set up again with `make setup NAME=<name>` and its Orca automation
+`slack-issue-intake` stopped afterward (until then it keeps running through its launcher), and that the directory
+may be deleted. Do not delete or move it yourself.
 
 ## Dispatch
 
@@ -66,21 +74,22 @@ when nothing is listed, omit `--name`. `--name` after the subcommand is not acce
 
 ## init
 
-Recommend that the user run `make setup` in a terminal from the plugin directory; it is interactive and cannot run in
+Recommend that the user run `make setup NAME=<name>` in a terminal from the plugin directory; it is interactive and cannot run in
 the agent's shell. It creates the Slack app through the Slack CLI and then itself resolves the channel, checks the
 repositories, runs `init`, asks for the mention group (**mention**) and periodic report settings (**report**), places the form buttons (**form**), asks for the
-permission approval, and runs **enable**. Use the manual steps below only when the user cannot use the Slack CLI or `make setup` stopped on a step it
+permission approval, and runs **enable**. Use the manual steps below only when the user cannot use the Slack CLI or `make setup NAME=<name>` stopped on a step it
 cannot complete.
 
 For another Slack workspace, recommend `make setup NAME=<name>` (lowercase letters, digits, and `-`, 1 to 32
 characters, starting with a letter or digit; `slack-app` and names ending in `-slack-app` are not allowed). Without
-`NAME`, it sets up `~/.slack-issue-intake`. Use the same `NAME` for `make slack-form` and `make manifest`.
+`NAME=`, make lists existing names and asks in the terminal; if it cannot read an answer, it exits 2 and shows a
+command with `NAME=`. Use the same `NAME` for `make slack-form NAME=<name>` and `make manifest NAME=<name>`.
 
 1. Run `guide`. Explain the Slack app manifest, paid-plan requirement, invitation, and Workflow Builder setup in
    Japanese. The form is built by hand in Workflow Builder. Ask whether the Slack preparation is complete. The app
    must be internal and not distributed.
 2. Run `status`. If `token=missing`, follow **token** below.
-3. Ask in one AskUserQuestion round for the channel ID, repository list (`owner/name`), default repository, each repository's form visibility and existing-issue policy (`thread` or `skip`), and interval in minutes.
+3. Ask in one AskUserQuestion round for the channel ID, repository list (`owner/name`), default repository, each repository's form visibility and whether to also manage its issues that were not created from Slack (yes for `thread`, no for `skip`), and interval in minutes.
    The repository default is `gh repo view --json nameWithOwner -q .nameWithOwner` when available. Default interval
    is 5; valid choices are 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60.
 4. Run `init --channel <id> --repo <owner/name> [--repo <owner/name> ...] --default-repo <owner/name> --existing <owner/name>=<thread|skip> [--hide-form <owner/name>] --every <minutes>`. Repeat `--existing` and `--hide-form` per repository. The default repository is always shown in forms, so `--hide-form` has no effect on it. It registers a disabled automation. Exit 2 means
@@ -92,30 +101,31 @@ characters, starting with a letter or digit; `slack-app` and names ending in `-s
 
 ## form
 
-1. `make setup` runs `form` as its step 8. Run it by hand only to place the buttons again. There are three forms, one
+1. `make setup NAME=<name>` runs `form` as its step 8. Run it by hand only to place the buttons again. There are three forms, one
    per category (bug, request, feature). For each, it creates the workflow's shortcut trigger with
    `slack trigger create` and limits it to members of the configured channel with `slack trigger access`. Then it makes
    all three featured workflows of the channel with one `workflows.featured.add` call, so members see three buttons
    where the message field would be. It prints `trigger.<key>=` and `url.<key>=` for each form, then `channel=` and
    `featured=`. A rerun reuses the recorded triggers and featured state. It needs the Slack CLI project that
-   `make setup` created.
+   `make setup NAME=<name>` created.
    - If a 0.2 single-form button is still recorded, it removes that old button after the three new ones are featured.
      If deleting it fails, the new buttons still work and the next run retries; a button that no longer exists counts
      as removed. If featuring had to be done by hand, it keeps the old button and asks the user to rerun
-     `make slack-form` after featuring the three buttons in the Slack admin pages.
+     `make slack-form NAME=<name>` after featuring the three buttons.
 2. On exit 1, explain the printed reason. A refused trigger means the Slack CLI could not create it for this app;
-   fall back to the Workflow Builder steps from `guide`. If featuring failed, relay the printed steps: in the Slack
-   admin pages in a browser, open each of the three form workflows' app details from the workflow list and add them to
-   the featured apps from the top-right menu; if the buttons still do not replace the channel's message field, use the
-   channel's Workflows tab to feature the three workflows. Do not suggest adding the link as a channel bookmark;
-   Slack opens such a bookmark in the browser. Exit 2 means there is no setup, no Slack CLI, no app made by
-   `make setup`, or the deployed app is older than the current form definition (right after a plugin update); in that
-   case, run `make setup` again.
+   fall back to the Workflow Builder steps from `guide`. If featuring failed, relay the printed steps:
+   open the intake channel using the displayed `https://slack.com/app_redirect?...` link, or the `slack://channel`
+   line to open it directly in the Slack app. In the channel's Workflows tab, feature the three workflows.
+   Only if the buttons still do not replace the message field, open the Slack admin pages in a browser
+   (Admin, Apps and workflows, Workflows), open each workflow's details, and add it to featured apps from the
+   top-right menu. Do not suggest adding the link as a channel bookmark; Slack opens such a bookmark in the browser.
+   Exit 2 means there is no setup, no Slack CLI, no app made by `make setup NAME=<name>`, or the deployed app is
+   older than the current form definition (right after a plugin update); in that case, run `make setup NAME=<name>` again.
 3. Form posts from this path are written by the app's own bot, so `inspect` shows `bot=yes` for them.
 
 ## mention
 
-`make setup` asks for the group in step 6 and does not ask again once answered (an empty answer means no mention).
+`make setup NAME=<name>` asks for the group in step 6 and does not ask again once answered (an empty answer means no mention).
 To change it, ask the user for the Slack user group (handle such as `dev-member` or `@dev-member`, display name, or
 an ID starting with `S`) and run `mention --group <value>`; run `mention --none` to stop mentioning. It prints
 `mention=<ID>` or `mention=none`. Exit 1 explains a missing `usergroups:read` scope (common for hand-made apps: add the
