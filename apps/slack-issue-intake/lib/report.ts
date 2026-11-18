@@ -1,3 +1,4 @@
+import { repoSetting } from './config.ts'
 import { getMeta, writeMetaFenced } from './db.ts'
 import {
   ERROR_DEADLINE,
@@ -24,6 +25,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type { Config } from './config.ts'
 import type { DriveContext } from './drive.ts'
 import type { Json, JsonObject } from './json.ts'
 
@@ -69,6 +71,19 @@ export const readReport = (path: string): AutoReport | null => {
       return null
   }
   return o as AutoReport
+}
+// issue は owner/repo#番号（orca-team-dispatch-task の key）
+const issueRepo = (issue: string): string | null => {
+  const index = issue.lastIndexOf('#')
+  return index >= 1 ? issue.slice(0, index) : null
+}
+// ほかのワークスペースの Issue を報告に出さない。hosts は描くときに数を出さない
+export const scopeReport = (report: AutoReport, config: Config): AutoReport => {
+  const included = (row: { issue: string }): boolean => {
+    const repo = issueRepo(row.issue)
+    return repo !== null && repoSetting(config, repo) !== null
+  }
+  return { ...report, running: report.running.filter(included), queue: report.queue.filter(included) }
 }
 const pad = (n: number): string => String(n).padStart(2, '0')
 const time = (d: Date): string => `${pad(d.getHours())}:${pad(d.getMinutes())}`
