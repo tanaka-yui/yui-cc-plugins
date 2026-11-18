@@ -41,3 +41,15 @@ test('PR1b 改行で終わらない最後の行と、行をまたぐ日本語を
     closeSync(fd)
   }
 })
+
+test('NR12 1 バイトずつ読むと続きの答えを次の読み手に残す', () => {
+  const file = join(tempHome(), 'answers')
+  writeFileSync(file, 'ws2\n#Issue-Intake\n')
+  const fd = openSync(file, 'r')
+  try {
+    assert.equal(createPrompter(fd, () => undefined, 1).ask('Q'), 'ws2')
+    assert.equal(createPrompter(fd, () => undefined).ask('Q'), '#Issue-Intake')
+  } finally {
+    closeSync(fd)
+  }
+})

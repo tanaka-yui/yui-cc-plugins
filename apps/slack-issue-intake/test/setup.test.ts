@@ -15,13 +15,14 @@ import {
   orcaCalls,
   runCli,
   runCliAsync,
+  runLauncherAsync,
   slackCliCalls,
   startSlack,
   tempHome,
 } from './helpers.ts'
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 
@@ -62,6 +63,7 @@ const fixture = async (
   })
   t.after(() => server.close())
   const env: Record<string, string> = {
+    HOME: tempHome(),
     SLACK_ISSUE_INTAKE_HOME: home,
     SLACK_ISSUE_INTAKE_CLAUDE_HOME: claudeHome,
     SLACK_ISSUE_INTAKE_API_BASE: server.url,
@@ -92,6 +94,8 @@ const fixture = async (
     calls,
     cliCalls,
     status,
+    launch: (launcher: string, args: string[], extra: Record<string, string> = {}) =>
+      runLauncherAsync(launcher, args, { ...env, ...extra }),
     setup: (input: string, extra: Record<string, string> = {}, args: string[] = ['setup']) =>
       runCliAsync(args, { ...env, ...extra }, input),
   }
@@ -534,18 +538,62 @@ test('MW4 setup under a named home keeps every child, the deploy hook and the au
 
 test('MW9 名前つきの setup のあとも既存ホームの承認と poll を保つ', async (t) => {
   const f = await fixture(t)
-  const user = tempHome()
-  const env = { HOME: user, SLACK_ISSUE_INTAKE_HOME: '' }
-  const first = await f.setup(FULL_INPUT, env)
+  const user = realpathSync(tempHome())
+  const legacy = join(user, '.slack-issue-intake'),
+    named = join(user, '.slack-issue-intake-ws2')
+  const first = await f.setup(FULL_INPUT, { HOME: user, SLACK_ISSUE_INTAKE_HOME: legacy })
   assert.equal(first.code, 0, first.stderr)
-  const original = loadConfig(join(user, '.slack-issue-intake'))?.acceptedPermissions
+  const original = loadConfig(legacy)?.acceptedPermissions
   assert.ok(original)
-  const second = await f.setup(FULL_INPUT, env, ['--name', 'ws2', 'setup'])
+  const second = await f.setup(FULL_INPUT, { HOME: user, SLACK_ISSUE_INTAKE_HOME: '' }, ['--name', 'ws2', 'setup'])
   assert.equal(second.code, 0, second.stderr)
-  const status = await f.setup('', env, ['status'])
-  assert.match(status.stdout, /^permissions=accepted$/m)
-  assert.equal(loadConfig(join(user, '.slack-issue-intake'))?.acceptedPermissions, original)
-  const poll = await f.setup('', env, ['poll'])
-  assert.doesNotMatch(poll.stdout, /^result=permissions\b/m)
-  assert.match(poll.stdout, /^result=idle\b/m)
+  const env = { HOME: user, SLACK_ISSUE_INTAKE_HOME: '' }
+  for (const home of [legacy, named]) {
+    const status = await f.launch(homePaths(home).launcher, ['status'], env)
+    assert.equal(status.code, 0, status.stderr)
+    assert.ok(status.stdout.includes(`config=${homePaths(home).config}\n`))
+    assert.match(status.stdout, /^permissions=accepted$/m)
+    assert.match((await f.launch(homePaths(home).launcher, ['poll'], env)).stdout, /^result=idle\b/m)
+  }
+  assert.equal(loadConfig(legacy)?.acceptedPermissions, original)
+  const script = homePaths(legacy).launcherScript
+  writeFileSync(script, readFileSync(script, 'utf8').replace(/LAUNCHER_VERSION = \d+/, 'LAUNCHER_VERSION = 0'))
+  const old = await f.launch(homePaths(legacy).launcher, ['poll'], env)
+  assert.match(old.stdout, /^result=idle\b/m)
+  assert.match(old.stderr, /ランチャーが古い版です/)
+  assert.deepEqual(
+    orcaCalls(f.orca.log)
+      .filter((c) => c[1] === 'create')
+      .map((c) => c[3]),
+    ['slack-issue-intake', 'slack-issue-intake-ws2'],
+  )
+})
+
+test('NR7 名前の答えの続きは setup の質問が読む', async (t) => {
+  const f = await fixture(t)
+  const user = tempHome()
+  const r = await f.setup(`ws2\n${FULL_INPUT}`, { HOME: user, SLACK_ISSUE_INTAKE_HOME: '' }, [
+    '--ask-name=setup',
+    'setup',
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(loadConfig(join(user, '.slack-issue-intake-ws2'))?.channel, 'C0TARGET01')
+  assert.ok(
+    r.stderr.includes('ワークスペースの名前（英小文字・数字・-）') &&
+      !r.stdout.includes('ワークスペースの名前（英小文字・数字・-）'),
+  )
+})
+test('NR8 名前なしのホームは最初に 1 回知らせ、変更しない', async (t) => {
+  const f = await fixture(t)
+  const user = tempHome(),
+    legacy = join(user, '.slack-issue-intake')
+  mkdirSync(legacy)
+  writeFileSync(join(legacy, 'secrets.json'), '{}')
+  const r = await f.setup(FULL_INPUT, { HOME: user, SLACK_ISSUE_INTAKE_HOME: '' }, ['--name', 'ws2', 'setup'])
+  assert.equal(r.code, 0, r.stderr)
+  const notice = '名前なしのホーム（~/.slack-issue-intake）は使わなくなりました'
+  assert.equal(r.stdout.split(notice).length - 1, 1)
+  assert.ok(r.stdout.indexOf(notice) < r.stdout.indexOf('[1/10]'))
+  assert.deepEqual(readdirSync(legacy), ['secrets.json'])
+  assert.equal(readFileSync(join(legacy, 'secrets.json'), 'utf8'), '{}')
 })

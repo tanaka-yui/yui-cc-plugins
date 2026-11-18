@@ -531,3 +531,17 @@ export const REPORT_TEXT = {
   none: '（なし）',
   unreadable: '報告の材料を読めません: {path}',
 }
+
+export const CLI_COMMAND = 'node bin/slack-issue-intake.ts'
+export const NAME_PLACEHOLDER = '<名前>'
+export const ASK_NAME_OPTION = '--ask-name'
+export const MSG_NAME_REQUIRED = 'ワークスペースの名前がありません。サブコマンドの前に --name <名前> を付けてください'
+export const MSG_NAME_UNREAD =
+  'ワークスペースの名前を読めませんでした（端末で実行していないなど）。{command} のように NAME を付けて実行してください'
+export const MSG_NAME_LIST = '今あるワークスペース: {names}'
+export const MSG_NAME_LIST_EMPTY = '今あるワークスペースはありません'
+export const MSG_NAME_NONE = 'ワークスペースはまだありません。make setup NAME=<名前> で作ってください'
+export const MSG_NAME_EXAMPLE = '例: {command}'
+export const MSG_NAME_ASK = 'ワークスペースの名前（英小文字・数字・-）'
+export const MSG_LEGACY_HOME =
+  '名前なしのホーム（~/{dir}）は使わなくなりました。そのワークスペースは make setup NAME=<名前> で設定し直し、Orca の automation「{automation}」を止めてください（このディレクトリは消して構いません）'

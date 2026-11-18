@@ -4,12 +4,15 @@ import {
   INTAKE_HOME_DIRNAME,
   INTAKE_NAME_PATTERN,
   INTAKE_NAME_RESERVED_SUFFIX,
+  MSG_NAME_REQUIRED,
   MSG_NAME_RESERVED,
   MSG_NAME_RULE,
   RUNS_DIRNAME,
+  SLACK_APP_DIR_SUFFIX,
   WORK_FILE,
 } from './defaults.ts'
 
+import { readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 export const HOME_ENV = 'SLACK_ISSUE_INTAKE_HOME'
@@ -30,7 +33,11 @@ export const nameOfHome = (home: string): string | null => {
   return intakeNameProblem(name) === null ? name : null
 }
 export const CLAUDE_DIRNAME = '.claude'
-export const intakeHome = (): string => process.env[HOME_ENV] || homeForName(null)
+export const intakeHome = (): string => {
+  const home = process.env[HOME_ENV]
+  if (!home) throw new Error(MSG_NAME_REQUIRED)
+  return home
+}
 export const claudeHome = (): string => process.env[CLAUDE_HOME_ENV] || join(homedir(), CLAUDE_DIRNAME)
 export const pluginRoot = (): string => dirname(import.meta.dirname)
 export type HomePaths = {
@@ -69,4 +76,21 @@ export type RunPaths = { dir: string; workFile: string; decisionsFile: string; f
 export const runPaths = (runsDir: string, runId: string): RunPaths => {
   const dir = join(runsDir, runId)
   return { dir, workFile: join(dir, WORK_FILE), decisionsFile: join(dir, DECISIONS_FILE), filesDir: join(dir, 'files') }
+}
+
+export const listIntakeNames = (base: string): string[] => {
+  try {
+    return readdirSync(base, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => nameOfHome(entry.name))
+      .filter((name): name is string => name !== null)
+      .sort()
+  } catch {
+    return []
+  }
+}
+export const homeOfSlackProject = (dir: string): string | null => {
+  if (!basename(dir).endsWith(SLACK_APP_DIR_SUFFIX)) return null
+  const home = dir.slice(0, -SLACK_APP_DIR_SUFFIX.length)
+  return basename(home) === INTAKE_HOME_DIRNAME || nameOfHome(home) !== null ? home : null
 }

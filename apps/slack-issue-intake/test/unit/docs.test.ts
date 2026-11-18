@@ -95,8 +95,10 @@ test('MW6 make passes NAME before the subcommand and ignores NAME from the envir
   assert.match(make(['manifest', 'NAME=ws2']), /slack-issue-intake\.ts' --name 'ws2' form --manifest$/m)
   assert.match(make(['slack-form', 'NAME=ws2']), /slack-issue-intake\.ts' --name 'ws2' form$/m)
   const plain = make(['setup'], { NAME: 'leak' })
-  assert.match(plain, /slack-issue-intake\.ts' setup$/m)
-  assert.ok(!plain.includes('--name'))
+  assert.match(plain, /slack-issue-intake\.ts' --ask-name=setup setup$/m)
+  assert.ok(!plain.includes('leak'))
+  assert.match(make(['manifest']), /slack-issue-intake\.ts' --ask-name=manifest form --manifest$/m)
+  assert.match(make(['slack-form']), /slack-issue-intake\.ts' --ask-name=slack-form form$/m)
 })
 
 test('MW5 docs explain per-workspace setup and --name', () => {

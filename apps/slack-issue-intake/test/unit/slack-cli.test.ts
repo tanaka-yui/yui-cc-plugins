@@ -58,7 +58,11 @@ test('SC4 hooks.json は絶対パスのフックを書き、get-hooks の出力�
   assert.ok(deploy.includes(process.execPath))
   assert.ok(deploy.includes(join(pluginRoot(), 'bin', 'slack-issue-intake.ts')))
   assert.ok(deploy.includes('slack-hook deploy'))
-  assert.deepEqual(written, parseJson(runCli(['slack-hook', 'get-hooks'], {}).stdout))
+  assert.ok(!deploy.includes('--name'))
+  assert.deepEqual(
+    written,
+    parseJson(runCli(['slack-hook', 'get-hooks'], { SLACK_ISSUE_INTAKE_HOME: tempHome() }).stdout),
+  )
   assert.deepEqual(parseJson(readFileSync(p.config, 'utf8')), { manifest: { source: 'local' } })
   assert.equal(statSync(p.dir).mode & 0o777, 0o700)
 })

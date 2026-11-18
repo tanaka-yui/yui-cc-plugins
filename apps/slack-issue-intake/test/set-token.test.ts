@@ -20,7 +20,10 @@ test('ST-2 形が違えば保存しない', () => {
   assert.ok(!existsSync(join(home, 'secrets.json')))
 })
 test('ST-3 入力方式は排他的', () => {
-  assert.equal(runCli(['set-token', '--from-stdin', '--from-clipboard'], {}).code, 2)
+  assert.equal(
+    runCli(['set-token', '--from-stdin', '--from-clipboard'], { SLACK_ISSUE_INTAKE_HOME: tempHome() }).code,
+    2,
+  )
 })
 test('ST-4 未知のコマンドは使用法', () => {
   const r = runCli(['nope'], {})

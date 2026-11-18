@@ -47,6 +47,7 @@ import {
   slackProject,
   writeProject,
 } from '../slack-cli.ts'
+import { legacyHomeNotice } from '../workspace.ts'
 
 import { spawnSync } from 'node:child_process'
 import { existsSync, rmSync, writeSync } from 'node:fs'
@@ -353,6 +354,8 @@ const wizard = async (): Promise<number> => {
   const paths = homePaths(home)
   const name = nameOfHome(home)
   if (name !== null) say(fill(SETUP_TEXT.namedHome, { name, home }))
+  const legacy = legacyHomeNotice()
+  if (legacy !== null) say(legacy)
 
   heading(1, SETUP_TEXT.stepPrecheck)
   const ready = await precheck()

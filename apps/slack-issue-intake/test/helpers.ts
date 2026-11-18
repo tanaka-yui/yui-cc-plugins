@@ -6,9 +6,14 @@ import { DatabaseSync } from 'node:sqlite'
 export const tempHome = (): string => mkdtempSync(join(tmpdir(), 'sii-test-'))
 export type CliResult = { code: number; stdout: string; stderr: string; ms: number }
 const cli = resolve(import.meta.dirname, '../bin/slack-issue-intake.ts')
-export const runCli = (args: string[], env: Record<string, string>, input?: string): CliResult => {
+export const runCli = (args: string[], env: Record<string, string>, input?: string, cwd?: string): CliResult => {
   const start = Date.now()
-  const c = spawnSync(process.execPath, [cli, ...args], { env: { ...process.env, ...env }, input, encoding: 'utf8' })
+  const c = spawnSync(process.execPath, [cli, ...args], {
+    env: { ...process.env, ...env },
+    input,
+    cwd,
+    encoding: 'utf8',
+  })
   return { code: c.status ?? -1, stdout: c.stdout, stderr: c.stderr, ms: Date.now() - start }
 }
 // input を標準入力へ流し込んで閉じる（省略時は空）。対話の答えを模す。偽の Slack API を同じプロセスで動かすため非同期で待つ
@@ -336,3 +341,19 @@ export const seedLegacyDb = (
   for (const [key, value] of Object.entries(o.meta ?? {})) db.prepare('INSERT INTO meta VALUES (?,?)').run(key, value)
   db.close()
 }
+
+export const runLauncherAsync = (launcher: string, args: string[], env: Record<string, string>): Promise<CliResult> =>
+  new Promise((done) => {
+    const start = Date.now()
+    const c = spawn(launcher, args, { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] })
+    c.stdin.end()
+    let stdout = '',
+      stderr = ''
+    c.stdout.on('data', (b: Buffer) => {
+      stdout += b.toString()
+    })
+    c.stderr.on('data', (b: Buffer) => {
+      stderr += b.toString()
+    })
+    c.on('close', (code) => done({ code: code ?? -1, stdout, stderr, ms: Date.now() - start }))
+  })

@@ -19,7 +19,11 @@ const pause = (ms: number): void => {
 
 // 答えは fd から1行ずつ同期で読む（process.stdin は使わない）。
 // 読み残しは次の呼び出しへ持ち越す。日本語が読み取りの境目で割れないよう、バイトのまま貯めて行ごとに文字へ戻す
-export const createPrompter = (fd: number, out: (text: string) => void): Prompter => {
+export const createPrompter = (
+  fd: number,
+  out: (text: string) => void,
+  readBytes: number = PROMPT_READ_CHUNK,
+): Prompter => {
   let pending = Buffer.alloc(0)
   let ended = false
   const readLine = (): string | null => {
@@ -36,7 +40,7 @@ export const createPrompter = (fd: number, out: (text: string) => void): Prompte
         pending = Buffer.alloc(0)
         return rest.trim()
       }
-      const chunk = Buffer.alloc(PROMPT_READ_CHUNK)
+      const chunk = Buffer.alloc(readBytes)
       let read: number
       try {
         read = readSync(fd, chunk, 0, chunk.length, null)

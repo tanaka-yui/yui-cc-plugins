@@ -1,7 +1,21 @@
 import { die, log } from '../lib/cli.ts'
-import { LAUNCHER_VERSION, LAUNCHER_VERSION_ENV, MSG_NAME_HOME_CONFLICT, MSG_NAME_MISSING } from '../lib/defaults.ts'
-import { HOME_ENV, homeForName, intakeNameProblem } from '../lib/paths.ts'
+import {
+  ASK_NAME_OPTION,
+  LAUNCHER_VERSION,
+  LAUNCHER_VERSION_ENV,
+  MSG_NAME_HOME_CONFLICT,
+  MSG_NAME_MISSING,
+  MSG_NAME_REQUIRED,
+  MSG_NAME_UNREAD,
+  NAME_PLACEHOLDER,
+} from '../lib/defaults.ts'
+import { HOME_ENV, homeForName, homeOfSlackProject, intakeNameProblem, listIntakeNames } from '../lib/paths.ts'
+import { createPrompter } from '../lib/prompt.ts'
 import { maskSecrets } from '../lib/secrets.ts'
+import { askWorkspaceName, commandWithName, legacyHomeNotice, nameRequiredMessage } from '../lib/workspace.ts'
+
+import { homedir } from 'node:os'
+import { relative } from 'node:path'
 
 type Command = { run: (argv: string[]) => Promise<void> | void }
 
@@ -41,11 +55,61 @@ if (args[0] === '--name' || args[0]?.startsWith('--name=')) {
   if (process.env[HOME_ENV]) die(NAME, MSG_NAME_HOME_CONFLICT)
   process.env[HOME_ENV] = homeForName(name)
 }
+let askTarget: string | null = null
+if (args[0]?.startsWith(`${ASK_NAME_OPTION}=`)) {
+  askTarget = args.shift()?.slice(ASK_NAME_OPTION.length + 1) ?? ''
+  if (!askTarget) die(NAME, '使用法: --ask-name=<make の対象>')
+}
 const [command, ...rest] = args
 const load = command === undefined || !Object.hasOwn(COMMANDS, command) ? undefined : COMMANDS[command]
 if (load === undefined) {
   die(NAME, `使用法: ${NAME} <${Object.keys(COMMANDS).join('|')}> [options]`)
 } else {
+  if (!process.env[HOME_ENV] && command === 'slack-hook') {
+    const home = homeOfSlackProject(process.cwd())
+    if (home !== null) process.env[HOME_ENV] = home
+  }
+  if (!process.env[HOME_ENV]) {
+    const names = listIntakeNames(homedir())
+    if (askTarget !== null) {
+      const name = askWorkspaceName(
+        createPrompter(
+          0,
+          (text) => {
+            process.stderr.write(text)
+          },
+          1,
+        ),
+        names,
+        (text) => {
+          process.stderr.write(`${text}\n`)
+        },
+      )
+      if (name === null) {
+        const example = (n: string): string => `make ${askTarget} NAME=${n}`
+        die(
+          NAME,
+          nameRequiredMessage(
+            MSG_NAME_UNREAD.replace('{command}', example(NAME_PLACEHOLDER)),
+            example,
+            names,
+            legacyHomeNotice(),
+          ),
+        )
+      }
+      process.env[HOME_ENV] = homeForName(name)
+    } else {
+      die(
+        NAME,
+        nameRequiredMessage(
+          MSG_NAME_REQUIRED,
+          (n) => commandWithName(relative(process.cwd(), process.argv[1] ?? ''), [command ?? '', ...rest], n),
+          names,
+          legacyHomeNotice(),
+        ),
+      )
+    }
+  }
   try {
     await (await load()).run(rest)
   } catch (error) {

@@ -51,3 +51,35 @@ test('SH4 設定のリポジトリ一覧からマニフェストと deploy の�
   assert.equal(deploy.code, 0, deploy.stderr)
   assert.equal(readFileSync(slackProject(home).manifestHash, 'utf8').trim(), manifestHash(repos))
 })
+
+test('NR10 Slack CLI の cwd から名前つきと名前なしのホームを決める', async () => {
+  const { setupHome } = await import('./helpers.ts')
+  const { slackProject } = await import('../lib/slack-cli.ts')
+  const { mkdirSync, realpathSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const user = realpathSync(tempHome())
+  const named = join(user, '.slack-issue-intake-ws2'),
+    legacy = join(user, '.slack-issue-intake')
+  await setupHome(named, {
+    apiBase: 'http://127.0.0.1:1/api',
+    ghPath: '/fake/gh',
+    ghState: '/fake/state',
+    repos: ['acme/app', 'acme/web'].map((name) => ({ name, form: true, existing: 'skip' })),
+  })
+  for (const home of [named, legacy]) mkdirSync(slackProject(home).dir, { recursive: true })
+  const env = { HOME: user, SLACK_ISSUE_INTAKE_HOME: '' }
+  const manifest = runCli(['slack-hook', 'get-manifest'], env, undefined, slackProject(named).dir)
+  assert.equal(manifest.code, 0, manifest.stderr)
+  assert.ok(manifest.stdout.includes('acme/web'))
+  const deploy = runCli(
+    ['slack-hook', 'deploy'],
+    { ...env, SLACK_BOT_TOKEN: 'xoxb-legacy-1' },
+    undefined,
+    slackProject(legacy).dir,
+  )
+  assert.equal(deploy.code, 0, deploy.stderr)
+  assert.equal(loadToken(homePaths(legacy).secrets), 'xoxb-legacy-1')
+  const elsewhere = runCli(['slack-hook', 'get-hooks'], env, undefined, user)
+  assert.equal(elsewhere.code, 2)
+  assert.ok(elsewhere.stderr.includes('--name'))
+})
