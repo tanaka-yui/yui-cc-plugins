@@ -195,7 +195,8 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
   Adoption scans updates plus a rotating creation-order sweep, reserving one of five slots for the sweep.
   Pending posts and labels resume from the database, including closed issues; unreadable rows are retained.
   Each phase tries at most five rows and moves attempted rows to the back of the wait order.
-- Periodic reports show running issues, the queue, and host capacity. Poll runs reporting before adoption,
+- Periodic reports show only the running issues and queue of this home's repositories, plus each host's name and
+  reachability, never counts that reveal other workspaces' work. Poll runs reporting before adoption,
   updates one post only when its rendered content changes, and posts anew once daily. Stale data warns that
   `--auto` has stopped. `report_channel` keeps old message metadata from being used in a different channel.
 - To stop: `orca automations edit <id> --disabled`.

@@ -44,7 +44,7 @@ adoptExisting は走査・投稿・ラベルの三段です。走査中は GitHu
 
 ## 定期報告
 
---auto の report.json（両プラグインの test/fixtures/auto-report.json が同じ形の約束）を読み、ステータス通知のあと、既存 Issue の取り込みより先に postReport を呼びます。表示時刻・経過は材料の updatedAt。ハッシュが同じなら更新せず、普段は chat.update、1日1回は新規投稿します。report_channel と今のチャンネルを照合し、違えば新規投稿します。ts/channel/hash は同じ書き込みで保存し、report コマンドは投稿の meta を消しません。材料が間隔の3倍より古ければ停止の警告を表示します。
+--auto の report.json（両プラグインの test/fixtures/auto-report.json が同じ形の約束）を読み、ステータス通知のあと、既存 Issue の取り込みより先に postReport を呼びます。表示時刻・経過は材料の updatedAt。ハッシュが同じなら更新せず、普段は chat.update、1日1回は新規投稿します。report_channel と今のチャンネルを照合し、違えば新規投稿します。ts/channel/hash は同じ書き込みで保存し、report コマンドは投稿の meta を消しません。材料が間隔の3倍より古ければ停止の警告を表示します。報告はそのホームのリポジトリの Issue だけを出し（scopeReport が issue の最後の `#` より前を repoSetting で照合し、取り出せない issue は出さない。件数・番号・ハッシュは絞ったあとの文面から作る）、マシンは名前とつながるかだけを出します（ほかのワークスペースの作業が分かる数を出さない）。
 
 ## ステータスの通知
 
