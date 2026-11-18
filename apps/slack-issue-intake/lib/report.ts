@@ -112,8 +112,6 @@ export const renderReport = (report: AutoReport, now: Date): string => {
         .map((h) =>
           fill(h.reachable ? REPORT_TEXT.host : REPORT_TEXT.unreachable, {
             name: safe(h.name),
-            free: h.max - h.used,
-            max: h.max,
           }),
         )
         .join('・') || REPORT_TEXT.none),
