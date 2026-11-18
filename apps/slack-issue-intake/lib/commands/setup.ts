@@ -28,7 +28,7 @@ import {
   SETUP_TEXT,
   SLACK_APP_NAME,
 } from '../defaults.ts'
-import { featureSteps, formTitles } from '../form.ts'
+import { channelAppLink, channelLink, featureSteps, formTitles } from '../form.ts'
 import { createGh, findGhPath, ghAuthOk, labelsHash, repoInfo } from '../github.ts'
 import { runOrca } from '../orca.ts'
 import { homePaths, intakeHome, nameOfHome, pluginRoot } from '../paths.ts'
@@ -581,8 +581,11 @@ const wizard = async (): Promise<number> => {
   if (approved !== 0) return approved
   // ボットでは入力欄にボタンを出せなかったときは、7段目の出力が流れているので、画面での手順をもう一度示す
   if (readMeta(paths.db, FORM_META_FEATURED) === FORM_FEATURED_MANUAL)
-    say(fill(SETUP_TEXT.featureByHand, { steps: featureSteps() }))
+    say(fill(SETUP_TEXT.featureByHand, { steps: featureSteps(config.channel, config.slack.teamId || null) }))
   say(fill(SETUP_TEXT.finished, { title: formTitles(), inspect: cliCommand(home, 'inspect --raw') }))
+  say(fill(SETUP_TEXT.finishedLink, { link: channelLink(config.channel, config.slack.teamId || null) }))
+  if (config.slack.teamId)
+    say(fill(SETUP_TEXT.finishedAppLink, { link: channelAppLink(config.channel, config.slack.teamId) }))
   return 0
 }
 

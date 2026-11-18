@@ -10,7 +10,9 @@ import {
   MAX_FILES_PER_MESSAGE,
   PRIORITIES,
   SLACK_APP_NAME,
+  SLACK_APP_REDIRECT_URL,
   SLACK_BOT_SCOPES,
+  SLACK_CHANNEL_DEEP_LINK,
 } from './defaults.ts'
 import { REPO_SLOT, REPORTER_SLOT, renderKindMessage } from './form-message.ts'
 import { manifestObject } from './guide.ts'
@@ -120,8 +122,15 @@ export const triggerDefinition = (channel: string, kind: FormKind): JsonObject =
 
 // 3 つのボタンの題を「」で囲んで並べたもの（「バグを報告」「要望を送る」…）。画面での手順や完了の案内に使う
 export const formTitles = (): string => FORM_KINDS.map((k) => `「${k.title}」`).join('')
-export const featureSteps = (): string =>
-  FORM_FEATURE_STEPS.replaceAll('{title}', formTitles()).replaceAll('{app}', SLACK_APP_NAME)
+export const channelLink = (channel: string, teamId: string | null): string =>
+  `${SLACK_APP_REDIRECT_URL}?channel=${encodeURIComponent(channel)}${teamId ? `&team=${encodeURIComponent(teamId)}` : ''}`
+export const channelAppLink = (channel: string, teamId: string): string =>
+  `${SLACK_CHANNEL_DEEP_LINK}?team=${encodeURIComponent(teamId)}&id=${encodeURIComponent(channel)}`
+export const featureSteps = (channel: string, teamId: string | null): string =>
+  FORM_FEATURE_STEPS.replaceAll('{title}', formTitles())
+    .replaceAll('{app}', SLACK_APP_NAME)
+    .replace('{link}', channelLink(channel, teamId))
+    .replace('{appLink}', teamId ? `\n     Slack のアプリで開くなら: ${channelAppLink(channel, teamId)}` : '')
 
 // workflows.featured.add の引数。おすすめにしたワークフローは、チャンネルの入力欄の代わりにボタンとして出る
 // （リンクを関連ページに API で足すと、Slack は外部リンクとして扱いブラウザを開いてしまう）

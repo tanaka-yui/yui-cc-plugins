@@ -132,10 +132,17 @@ export const run = async (argv: string[]): Promise<void> => {
       if (featured.ok) featuredState = wanted
       else if (featured.error === ERROR_RESTRICTED_ACTION) {
         // 権限の問題なので再実行しても通らない。画面での手順を示し、setup が先へ進めるよう印を残す
-        console.error(MSG_FORM_FEATURE_BY_HAND.replace('{steps}', featureSteps()))
+        console.error(
+          MSG_FORM_FEATURE_BY_HAND.replace('{steps}', featureSteps(rt.config.channel, rt.config.slack.teamId || null)),
+        )
         featuredState = FORM_FEATURED_MANUAL
       } else
-        throw new Error(MSG_FORM_FEATURE_FAILED.replace('{error}', reason(featured)).replace('{steps}', featureSteps()))
+        throw new Error(
+          MSG_FORM_FEATURE_FAILED.replace('{error}', reason(featured)).replace(
+            '{steps}',
+            featureSteps(rt.config.channel, rt.config.slack.teamId || null),
+          ),
+        )
       setMeta(rt.db, FORM_META_FEATURED, featuredState)
     }
     // 0.2 の 1 つのボタンは、新しい 3 つを出したあとで外して消す。チャンネルからボタンが消える時間を作らない

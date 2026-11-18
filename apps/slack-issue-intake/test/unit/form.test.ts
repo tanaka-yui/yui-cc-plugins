@@ -9,8 +9,12 @@ import {
   SLACK_BOT_SCOPES,
 } from '../../lib/defaults.ts'
 import {
+  channelAppLink,
+  channelLink,
   featuredParams,
+  featureSteps,
   formManifestObject,
+  formTitles,
   renderFormManifest,
   renderWorkflowMessage,
   triggerDefinition,
@@ -154,4 +158,31 @@ test('FM6/FM7 複数リポジトリだけ任意の選択欄を作り、指紋へ
   assert.ok(!renderFormManifest(['acme/app']).includes('"name": "repo"'))
   assert.equal(manifestHash([]), manifestHash(['acme/app']))
   assert.notEqual(manifestHash([]), manifestHash(repos))
+})
+
+test('LK1 リンクはチーム ID の有無を扱い、チャンネルの側の手順を先にする', () => {
+  assert.equal(
+    channelLink('C0123456789', 'T0ACME001'),
+    'https://slack.com/app_redirect?channel=C0123456789&team=T0ACME001',
+  )
+  assert.equal(channelLink('C0123456789', null), 'https://slack.com/app_redirect?channel=C0123456789')
+  assert.equal(channelAppLink('C0123456789', 'T0ACME001'), 'slack://channel?team=T0ACME001&id=C0123456789')
+  assert.equal(channelLink('C&1', 'T 1'), 'https://slack.com/app_redirect?channel=C%261&team=T%201')
+  const steps = featureSteps('C0123456789', 'T0ACME001')
+  assert.ok(
+    steps.startsWith(
+      '\n  1. 起票のチャンネルを開きます: https://slack.com/app_redirect?channel=C0123456789&team=T0ACME001\n     Slack のアプリで開くなら: slack://channel?team=T0ACME001&id=C0123456789\n  2. ',
+    ),
+  )
+  assert.ok(steps.indexOf('ワークフローを目立たせる') < steps.indexOf('管理画面'))
+  for (const text of [
+    'おすすめアプリに追加',
+    formTitles(),
+    'アプリ Issue Intake',
+    'Admin →「Apps and workflows」→「Workflows」',
+  ])
+    assert.ok(steps.includes(text), text)
+  assert.ok(!steps.slice(steps.indexOf('管理画面')).includes('://'))
+  const noTeam = featureSteps('C0123456789', null)
+  assert.ok(!noTeam.includes('team=') && !noTeam.includes('slack://'))
 })
