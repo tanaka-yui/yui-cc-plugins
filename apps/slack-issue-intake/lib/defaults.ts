@@ -460,15 +460,15 @@ export const SETUP_TEXT = {
   channelFailed: 'チャンネルを探せません（{error}）',
   joinFailed: 'チャンネルに参加できません（{error}）。Slack で /invite @{app} を送ってから再実行してください',
   channelChosen: 'チャンネル: #{name}（{id}）',
-  askRepo: 'GitHub のリポジトリ（owner/name）',
-  askMoreRepo: 'ほかにも受け付けるリポジトリ（owner/name）。無ければ空のまま Enter',
-  askAddRepo: '足すリポジトリ（owner/name）。無ければ空のまま Enter',
-  duplicateRepo: 'そのリポジトリは入力済みです',
+  askRepo: 'GitHub のリポジトリ（owner/name。複数あるならカンマ区切り）',
+  askMoreRepo: 'ほかにも受け付けるリポジトリ（owner/name。複数あるならカンマ区切り）。終わりなら空のまま Enter',
+  askAddRepo: '足すリポジトリ（owner/name。複数あるならカンマ区切り）。無いか、終わりなら空のまま Enter',
+  needRepo: 'リポジトリを 1 つ以上入力してください',
+  duplicateRepo: '{repo} は入力済みです。飛ばします',
   askDefaultRepo: '既定の起票先（フォームでリポジトリを選ばなかったときの起票先）',
   badDefaultRepo: '入力したリポジトリのどれかを入力してください',
   askShowInForm: '{repo} をフォームのリポジトリの選択肢に出しますか（y/n）',
-  askExisting:
-    '{repo} の Issue のうち Slack から作っていないものを、スレッドを立てて管理する（thread）か、対象外にする（skip）か',
+  askExisting: '{repo} の Issue のうち Slack から作っていないものも、スレッドを立てて管理しますか（y/n）',
   badChoice: '{options} のどれかを入力してください',
   stepReport: '定期報告を決める（report）',
   reportFound: '--auto の報告の材料が見つかりました:',
@@ -477,12 +477,14 @@ export const SETUP_TEXT = {
   askDailyAt: '1 日 1 回、新しい投稿にする時刻（HH:MM）',
   badDailyAt: '00:00 から 23:59 の HH:MM で入力してください',
   reportNotFound: '--auto の報告の材料が見つかりません。--auto を setup したあとで、{report} で有効にできます',
-  badRepo: 'owner/name の形で入力してください',
-  repoFailed: 'リポジトリを確かめられません（{error}）',
+  badRepo: '{repo} は owner/name の形ではありません。飛ばします',
+  repoFailed: '{repo} を確かめられません（{error}）',
+  repoSkipped: '{repo} を確かめられません（{error}）。飛ばします',
+  repoStopped: '{repo}: {reason}',
   noIssues: 'リポジトリの Issues が無効です。GitHub の Settings で Issues を有効にしてから再実行してください',
   publicRepo:
-    '公開リポジトリです。Slack に送られた内容（本文・添付のリンク）が Issue として誰でも見られる形で公開されます',
-  confirmPublic: 'この公開リポジトリに起票しますか？',
+    '{repo} は公開リポジトリです。Slack に送られた内容（本文・添付のリンク）が Issue として誰でも見られる形で公開されます',
+  confirmPublic: '{repo} に起票しますか？',
   askEvery: '確認の間隔（分。60 の約数）',
   currentConfig:
     '今の設定: チャンネル {channel}、リポジトリ {repos}（既定の起票先 {default}）、確認の間隔 {every} 分。チャンネルは変えられません。リポジトリは足せますが、外せません。間隔を変えるなら新しい値を入力し、そのままなら Enter を押してください',
@@ -548,3 +550,5 @@ export const MSG_NO_CONFIG = '{home} に設定がありません。{setup} を�
 export const MSG_NO_TOKEN = '{home} にトークンがありません。{setup} を実行するか、{setToken} で登録してください'
 export const MSG_NO_AUTOMATION = '{home} の automation が登録されていません。{setup} を実行してください'
 export const MSG_DESTINATION_FIXED = '送り先は変更できません。{home} を退避してから設定し直してください'
+
+export const REPO_ANSWER_COMMAS = /[、，]/g

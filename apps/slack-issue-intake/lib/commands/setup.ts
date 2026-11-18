@@ -1,6 +1,6 @@
 import { isAllowedEvery } from '../automation.ts'
 import { findChannel, joinChannel, normalizeChannelName, perCallClient } from '../channels.ts'
-import { parseFlags } from '../cli.ts'
+import { csv, parseFlags } from '../cli.ts'
 import { formRepos, loadConfig } from '../config.ts'
 import { getMeta, openDb } from '../db.ts'
 import {
@@ -22,6 +22,7 @@ import {
   MSG_CONFIG_BROKEN,
   MSG_PUSH_REQUIRED,
   NODE_MIN_VERSION,
+  REPO_ANSWER_COMMAS,
   REPO_PATTERN,
   SETUP_STEPS,
   SETUP_TEXT,
@@ -153,10 +154,10 @@ const pickChannel = async (p: Prompter, token: string): Promise<Picked<string>> 
 }
 
 // 公開リポジトリは、内容が公開されることを示して y/N で確かめる
-const confirmPublic = (p: Prompter, visibility: string): Picked<boolean> => {
+const confirmPublic = (p: Prompter, visibility: string, repo: string): Picked<boolean> => {
   if (visibility !== 'PUBLIC') return { ok: true, value: false }
-  say(SETUP_TEXT.publicRepo)
-  const accepted = p.confirm(SETUP_TEXT.confirmPublic)
+  say(fill(SETUP_TEXT.publicRepo, { repo }))
+  const accepted = p.confirm(fill(SETUP_TEXT.confirmPublic, { repo }))
   if (accepted === null) return { ok: false, code: exhausted() }
   if (!accepted)
     return { ok: false, code: fail(fill(SETUP_TEXT.declined, { setup: makeCommand(intakeHome(), 'setup') })) }
@@ -192,8 +193,8 @@ const reinit = async (p: Prompter, ghPath: string, repos: readonly string[], arg
   let allowPublic = false
   for (const repo of repos) {
     const info = await repoInfo(createGh(ghPath), repo, deadline())
-    if (!info.ok) return fail(fill(SETUP_TEXT.repoFailed, { error: info.error }))
-    const visible = confirmPublic(p, info.info.visibility)
+    if (!info.ok) return fail(fill(SETUP_TEXT.repoFailed, { repo, error: info.error }))
+    const visible = confirmPublic(p, info.info.visibility, repo)
     if (!visible.ok) return visible.code
     allowPublic ||= visible.value
   }
@@ -225,31 +226,42 @@ const pickRepo = async (
       base.length ? SETUP_TEXT.askAddRepo : repos.length ? SETUP_TEXT.askMoreRepo : SETUP_TEXT.askRepo,
     )
     if (answer === null) return { ok: false, code: exhausted() }
-    if (!answer && repos.length) break
-    if (!REPO_PATTERN.test(answer)) {
-      say(SETUP_TEXT.badRepo)
+    const names = csv(answer.replace(REPO_ANSWER_COMMAS, ','))
+    if (!names.length) {
+      if (repos.length) break
+      say(SETUP_TEXT.needRepo)
       continue
     }
-    if (repos.some((r) => r.name.toLowerCase() === answer.toLowerCase())) {
-      say(SETUP_TEXT.duplicateRepo)
-      continue
+    const seen = new Set(repos.map((r) => r.name.toLowerCase()))
+    for (const name of names) {
+      if (!REPO_PATTERN.test(name)) {
+        say(fill(SETUP_TEXT.badRepo, { repo: name }))
+        continue
+      }
+      const key = name.toLowerCase()
+      if (seen.has(key)) {
+        say(fill(SETUP_TEXT.duplicateRepo, { repo: name }))
+        continue
+      }
+      seen.add(key)
+      const info = await repoInfo(gh, name, deadline())
+      if (!info.ok) {
+        say(fill(SETUP_TEXT.repoSkipped, { repo: name, error: info.error.trim() }))
+        continue
+      }
+      if (!info.info.hasIssuesEnabled)
+        return { ok: false, code: fail(fill(SETUP_TEXT.repoStopped, { repo: name, reason: SETUP_TEXT.noIssues })) }
+      if (!LABEL_WRITE_PERMISSIONS.includes(info.info.viewerPermission))
+        return { ok: false, code: fail(fill(SETUP_TEXT.repoStopped, { repo: name, reason: MSG_PUSH_REQUIRED })) }
+      if (!base.length) {
+        const visible = confirmPublic(p, info.info.visibility, name)
+        if (!visible.ok) return visible
+        allowPublic ||= visible.value
+      }
+      const setting: RepoSetting = { name, form: true, existing: 'skip' }
+      repos.push(setting)
+      added.push(setting)
     }
-    const info = await repoInfo(gh, answer, deadline())
-    if (!info.ok) {
-      say(fill(SETUP_TEXT.repoFailed, { error: info.error }))
-      continue
-    }
-    if (!info.info.hasIssuesEnabled) return { ok: false, code: fail(SETUP_TEXT.noIssues) }
-    if (!LABEL_WRITE_PERMISSIONS.includes(info.info.viewerPermission))
-      return { ok: false, code: fail(MSG_PUSH_REQUIRED) }
-    if (!base.length) {
-      const visible = confirmPublic(p, info.info.visibility)
-      if (!visible.ok) return visible
-      allowPublic ||= visible.value
-    }
-    const setting: RepoSetting = { name: answer, form: true, existing: 'skip' }
-    repos.push(setting)
-    added.push(setting)
   }
   let defaultRepo = baseDefault ?? repos[0]?.name ?? ''
   if (!base.length && repos.length > 1)
@@ -275,13 +287,14 @@ const pickRepo = async (
         say(fill(SETUP_TEXT.badChoice, { options: 'y / n' }))
       }
     for (;;) {
-      const answer = p.ask(fill(SETUP_TEXT.askExisting, { repo: repo.name }), 'skip')
+      const answer = p.ask(fill(SETUP_TEXT.askExisting, { repo: repo.name }), 'n')
       if (answer === null) return { ok: false, code: exhausted() }
-      if (answer === 'thread' || answer === 'skip') {
-        repo.existing = answer
+      const choice = answer.toLowerCase()
+      if (['y', 'yes', 'thread', 'n', 'no', 'skip'].includes(choice)) {
+        repo.existing = ['y', 'yes', 'thread'].includes(choice) ? 'thread' : 'skip'
         break
       }
-      say(fill(SETUP_TEXT.badChoice, { options: 'thread / skip' }))
+      say(fill(SETUP_TEXT.badChoice, { options: 'y / n' }))
     }
   }
   const every = pickEvery(p, everyDefault)

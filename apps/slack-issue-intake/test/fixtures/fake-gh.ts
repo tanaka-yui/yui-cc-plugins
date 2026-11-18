@@ -43,11 +43,17 @@ if (cmd === 'auth status') {
   if (process.env.FAKE_GH_AUTH === 'fail') fail()
 } else if (args[0] === 'api' && args[1] === 'user') output({ login })
 else if (cmd === 'repo view') {
-  if (process.env.FAKE_GH_REPO === 'missing') fail()
+  if (
+    process.env.FAKE_GH_REPO === 'missing' ||
+    (process.env.FAKE_GH_MISSING_REPOS ?? '').split(',').includes(args[2] ?? '')
+  )
+    fail()
   output({
     visibility: process.env.FAKE_GH_VISIBILITY ?? 'PRIVATE',
     viewerPermission: process.env.FAKE_GH_PERMISSION ?? 'WRITE',
-    hasIssuesEnabled: process.env.FAKE_GH_HAS_ISSUES !== 'false',
+    hasIssuesEnabled:
+      process.env.FAKE_GH_HAS_ISSUES !== 'false' &&
+      !(process.env.FAKE_GH_NO_ISSUES_REPOS ?? '').split(',').includes(args[2] ?? ''),
   })
 } else if (cmd === 'label list')
   output(

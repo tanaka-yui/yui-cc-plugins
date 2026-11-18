@@ -234,6 +234,7 @@ test('SU9 公開リポジトリは内容が公開されると示して確かめ�
   const r = await f.setup('\n#issue-intake\nacme/app\ny\n\n\n\n\ny\n', { FAKE_GH_VISIBILITY: 'PUBLIC' })
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /公開/)
+  assert.ok(r.stdout.includes('acme/app は公開リポジトリです'))
   assert.equal(loadConfig(f.home)?.defaultRepo, 'acme/app')
 })
 
@@ -599,4 +600,95 @@ test('NR8 名前なしのホームは最初に 1 回知らせ、変更しない'
   assert.ok(r.stdout.indexOf(notice) < r.stdout.indexOf('[1/10]'))
   assert.deepEqual(readdirSync(legacy), ['secrets.json'])
   assert.equal(readFileSync(join(legacy, 'secrets.json'), 'utf8'), '{}')
+})
+
+test('UX1 既存 Issue は y/n と従来の thread/skip を大文字小文字を区別せず受け付ける', async (t) => {
+  const f = await fixture(t)
+  const input = `${[
+    '',
+    '#Issue-Intake',
+    'acme/app, acme/web, acme/api',
+    '',
+    '',
+    'maybe',
+    'YES',
+    '',
+    'n',
+    '',
+    'Thread',
+    '',
+    '',
+    'y',
+  ].join('\n')}\n`
+  const r = await f.setup(input)
+  assert.equal(r.code, 0, r.stderr + r.stdout)
+  assert.deepEqual(
+    loadConfig(f.home)?.repos.map((r) => [r.name, r.existing]),
+    [
+      ['acme/app', 'thread'],
+      ['acme/web', 'skip'],
+      ['acme/api', 'thread'],
+    ],
+  )
+  assert.ok(r.stdout.includes('Slack から作っていないものも、スレッドを立てて管理しますか（y/n） [n]: '))
+  assert.ok(r.stdout.includes('y / n のどれかを入力してください'))
+})
+test('UX2 まとめ入力の誤り・重複・読めないリポジトリだけを名指しして飛ばす', async (t) => {
+  const f = await fixture(t)
+  const input = `${[
+    '',
+    '#Issue-Intake',
+    'acme/app, BAD, ACME/APP,, other/missing、acme/web',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    'y',
+  ].join('\n')}\n`
+  const r = await f.setup(input, { FAKE_GH_MISSING_REPOS: 'other/missing' })
+  assert.equal(r.code, 0, r.stderr + r.stdout)
+  assert.deepEqual(
+    loadConfig(f.home)?.repos.map((r) => r.name),
+    ['acme/app', 'acme/web'],
+  )
+  for (const text of [
+    'BAD は owner/name の形ではありません。飛ばします',
+    'ACME/APP は入力済みです。飛ばします',
+    'other/missing を確かめられません（',
+    '）。飛ばします',
+    'カンマ区切り',
+    '終わりなら空のまま Enter',
+  ])
+    assert.ok(r.stdout.includes(text), text)
+  const viewed = ghCalls(f.gh.log)
+    .filter((c) => c.argv[0] === 'repo' && c.argv[1] === 'view')
+    .map((c) => c.argv[2])
+  assert.deepEqual(viewed.slice(0, 3), ['acme/app', 'other/missing', 'acme/web'])
+  assert.ok(!viewed.includes('BAD') && !viewed.includes('ACME/APP'))
+})
+test('UX3 Issues 無効・push 権限不足なら対象リポジトリを示して止める', async (t) => {
+  for (const [extra, repos, want] of [
+    [{ FAKE_GH_NO_ISSUES_REPOS: 'acme/web' }, 'acme/app, acme/web', 'acme/web: リポジトリの Issues が無効です'],
+    [{ FAKE_GH_PERMISSION: 'READ' }, 'acme/app', 'acme/app: Issue に重複防止用のラベルを付けるため'],
+  ] as const) {
+    const f = await fixture(t)
+    const r = await f.setup(`${['', '#Issue-Intake', repos].join('\n')}\n`, extra)
+    assert.equal(r.code, 1, r.stderr + r.stdout)
+    assert.ok(r.stderr.includes(want), r.stderr)
+    assert.equal(loadConfig(f.home), null)
+  }
+})
+test('UX4 再実行で追加するときも複数のリポジトリを一度に入れられる', async (t) => {
+  const f = await fixture(t)
+  assert.equal((await f.setup(FULL_INPUT)).code, 0)
+  const r = await f.setup(`${['acme/web，acme/api', '', '', '', '', '', ''].join('\n')}\n`)
+  assert.equal(r.code, 0, r.stderr + r.stdout)
+  assert.deepEqual(
+    loadConfig(f.home)?.repos.map((r) => r.name),
+    ['acme/app', 'acme/web', 'acme/api'],
+  )
+  assert.ok(r.stdout.includes('無いか、終わりなら空のまま Enter'))
 })
