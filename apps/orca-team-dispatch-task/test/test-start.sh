@@ -1718,4 +1718,15 @@ setup; mail_fixture; mail_start >/dev/null 2>&1
  && ok ST145 || fail ST145
 teardown
 
+# ST146: -- で始まる目的の文を変えずに 1 語で渡す
+setup
+out=$(node "$P/bin/orca-start.ts" --request-file "$REQ" --slug s --objective '--fix: login fails' --repo-root "$R" 2>&1); rc=$?
+words=$(tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log")
+if [[ "$rc" -eq 0 ]] && grep -qxF -- '--objective=--fix: login fails' <<<"$words" && ! grep -qx -- '--objective' <<<"$words"; then
+  ok "ST146 -- で始まる目的の文を 1 語で渡す"
+else
+  fail "ST146 (rc=$rc out=$out)"
+fi
+teardown
+
 echo "---"; echo "failures: $fails"; exit "$fails"

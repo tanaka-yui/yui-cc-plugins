@@ -95,6 +95,9 @@ export const validEffort = (effort: string, agent: string): boolean => {
   return false
 }
 
+// レビューの上限の刻み。最初の上限であり、人が認めたときに増やす幅でもある。
+// --auto の取り次ぎの余裕（auto-config.ts の relayAllowance）もこの値を読む
+export const REVIEW_ROUND_STEP = 5
 // ★ `opus[1m]` の alias は provider によって Opus 5.5 より古い版を指すので、フルネームで固定する
 export const OPUS_MODEL = 'claude-opus-5-5[1m]'
 

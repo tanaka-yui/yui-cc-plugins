@@ -6,7 +6,7 @@
 //        node orca-start.ts --slug <s> --resume [--repo-root <p>] [--design-mode ...] [--ask-via ...]
 // Exit: 0 / 1 起動できなかった / 2 使用法
 import { die, log } from '../lib/cli.ts'
-import { validToggle } from '../lib/config.ts'
+import { REVIEW_ROUND_STEP, validToggle } from '../lib/config.ts'
 import { startIncomplete } from '../lib/dispatch.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject, parseJson } from '../lib/json.ts'
@@ -37,8 +37,6 @@ const PLUGIN = resolve(HERE, '..')
 const SCRIPTS = join(PLUGIN, 'skills', 'orca-team-dispatch-task', 'scripts')
 const RESOLVER = join(SCRIPTS, 'config-resolve.ts')
 const SENDER = join(HERE, 'orca-send.ts')
-// レビューの上限の刻み。最初の上限であり、人が認めたときに増やす幅でもある
-const REVIEW_ROUND_STEP = 5
 // `orchestration ask --wait` の 1 回の待ち時間（Orca の上限の 30 分）
 const ASK_WAIT_MS = 1_800_000
 const string = (value: Json | undefined): string => asString(value) ?? ''
@@ -1572,7 +1570,8 @@ const main = (argv: string[]): number => {
     runId = runIn
     if (!coordinates(runId, parent, 'passed with --run')) return 1
   } else {
-    const created = runOrca(['orchestration', 'run-create', '--objective', objective, '--from', parent, '--json'])
+    // Orca は -- で始まる値を別のフラグと読むため、文を変えず --flag=value の 1 語で渡す
+    const created = runOrca(['orchestration', 'run-create', `--objective=${objective}`, '--from', parent, '--json'])
     runId = string(get(created.json, 'result', 'run', 'id'))
     if (created.rc !== 0 || runId === '') {
       log(NAME, `run-create failed (rc=${created.rc})`)
