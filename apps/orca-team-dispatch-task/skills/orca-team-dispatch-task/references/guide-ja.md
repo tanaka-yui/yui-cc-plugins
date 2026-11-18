@@ -1306,7 +1306,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | codex は repository ごとに 1 回、信頼するかを尋ね、それまで起動は `agent-trust-workspace` で失敗する | その worker の画面でフォルダを信頼するか、`trust_level = "trusted"` を持つ `[projects."<本体の checkout>"]` を `~/.codex/config.toml` に足す。Step 2 と `orca-recover.ts` が正確な行を出す。codex はその信頼を repository の本体の checkout に記録するので、以後の worktree は尋ねられずに起動する。そのあと `orca-recover.ts` で失敗した起動を置き換える |
 | 手元のブランチが origin にも pull request の head のコミットにも無いと、merge された pull request のタスクは `pr_merged` でも残る | head ブランチが origin から消えているとき（GitHub の設定か `gh pr merge --delete-branch`）、merge のあとに手元のブランチへコミットを足した場合、GitHub で足したコミット（Update branch や提案された変更）が手元のブランチに無い場合、`gh` が head のコミットを返さない場合にそうなる。ブランチを確かめてから、worktree は `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` で、`.dispatch/<slug>` は手で消す |
 | `pr_created` と `pr_merged` では、何かを残すタスクは dispatch 記録も残し、あとで Step 5 もそれらを提示しない | ユーザーが操作した端末は、worktree を消すとその端末を尋ねずに閉じるので worktree ごと残す。未コミットの変更がある worktree など、Step 5 が残すものも同じく残る。Step 5 は pull request のタスクの worktree と記録を提示しないので、確かめたら worktree を `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` で、`.dispatch/<slug>` を手で消す |
-| --autoの持ち主のいないworktreeはSlackの定期報告で区別できない | tickのstdoutが名指しし、hosts[].usedには数として含まれる |
+| --autoの持ち主のいないworktreeはSlackの定期報告で区別できない | tickのstdoutが名指しし、report.jsonのhosts[].usedには数として含まれる。Slackの定期報告はマシンの名前とつながるかだけを出し、数は出さない |
 | --autoはworker_doneを失った役を決着できない | --max-waits 1では猶予の時計が毎回初期化されるため、上限時間でFailedになる。Runと退避した記録を調べる |
 | --autoはdispatchごとに遠隔の空きメモリやディスクを測らない | マシンの設定のlanesに頼る。localへ入れるときは両方を確認する |
 | --auto の実装対象は Issue ごとに 2 リポジトリまで、同じ 1 台で動かす | 3 つ以上の対象は Ready_Eng に回す。途中の merge 失敗は partial-merge コメントと In review にし、残りは人が merge する |
