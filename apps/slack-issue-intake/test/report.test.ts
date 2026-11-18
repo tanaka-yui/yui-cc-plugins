@@ -40,10 +40,7 @@ const fixture = async (t: { after: (fn: () => Promise<void>) => void }, repo = '
       report: { channel: null, dailyAt: '09:00', source },
     })),
   }
-  const material = (
-    at: string,
-    extra: { running?: JsonObject[]; queue?: JsonObject[]; hosts?: JsonObject[] } = {},
-  ) => {
+  const material = (at: string, extra: { running?: JsonObject[]; queue?: JsonObject[]; hosts?: JsonObject[] } = {}) => {
     const value = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures/auto-report.json'), 'utf8')) as JsonObject
     writeFileSync(
       source,
@@ -124,13 +121,24 @@ test('RP11 投稿にほかのリポジトリの Issue とマシンの数を出�
   const f = await fixture(t, 'OrgA/App')
   f.material('09:09', {
     running: [
-      { issue: 'orgB/web#7', title: '他社の障害', host: 'Mac M2max', startedAt: '2026-11-13T09:00:00Z', limitMinutes: 60 },
+      {
+        issue: 'orgB/web#7',
+        title: '他社の障害',
+        host: 'Mac M2max',
+        startedAt: '2026-11-13T09:00:00Z',
+        limitMinutes: 60,
+      },
     ],
     queue: [{ issue: 'orgB/web#8', title: '他社の要望', priority: 'critical' }],
   })
   assert.match((await f.poll('09:10')).stdout, /report=new/)
   const text = f.calls()[0]?.params.text ?? ''
-  for (const s of ['実行中 1件', 'orgA/app#42 ログインできない', 'キュー 1件', '1. [critical] orgA/app#51 決済が落ちる'])
+  for (const s of [
+    '実行中 1件',
+    'orgA/app#42 ログインできない',
+    'キュー 1件',
+    '1. [critical] orgA/app#51 決済が落ちる',
+  ])
     assert.ok(text.includes(s), s)
   assert.ok(text.endsWith('マシン: Mac M2max'))
   for (const s of ['orgB/web', '他社の障害', '他社の要望', '0/2']) assert.ok(!text.includes(s), s)

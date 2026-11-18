@@ -91,8 +91,20 @@ test('RP8 件数・キューの番号・ほか N件は絞ったあとの Issue �
   const report = readReport(path)
   assert.ok(report)
   report.running.push(
-    { issue: 'orgB/web#1', title: '他社の作業', host: 'Mac M2max', startedAt: '2026-11-13T05:00:00Z', limitMinutes: 60 },
-    { issue: 'orgA/app#43', title: '自社の作業', host: 'Mac M2max', startedAt: '2026-11-13T05:10:00Z', limitMinutes: 60 },
+    {
+      issue: 'orgB/web#1',
+      title: '他社の作業',
+      host: 'Mac M2max',
+      startedAt: '2026-11-13T05:00:00Z',
+      limitMinutes: 60,
+    },
+    {
+      issue: 'orgA/app#43',
+      title: '自社の作業',
+      host: 'Mac M2max',
+      startedAt: '2026-11-13T05:10:00Z',
+      limitMinutes: 60,
+    },
   )
   // 自分の 12 件（101〜112）にほかの 5 件（201〜205）を混ぜる。先頭はほかのリポジトリ
   report.queue = [201, 101, 102, 202, 103, 104, 203, 105, 106, 204, 107, 108, 109, 110, 205, 111, 112].map((n) => ({
@@ -108,7 +120,9 @@ test('RP8 件数・キューの番号・ほか N件は絞ったあとの Issue �
       '  • orgA/app#42 ログインできない … Mac M2max・35分 / 上限60分',
       '  • orgA/app#43 自社の作業 … Mac M2max・20分 / 上限60分',
       'キュー 12件',
-      ...[101, 102, 103, 104, 105, 106, 107, 108, 109, 110].map((n, i) => `  ${i + 1}. [middle] orgA/app#${n} 件名${n}`),
+      ...[101, 102, 103, 104, 105, 106, 107, 108, 109, 110].map(
+        (n, i) => `  ${i + 1}. [middle] orgA/app#${n} 件名${n}`,
+      ),
       '  ほか 2件',
       'マシン: Mac M2max',
     ].join('\n'),
@@ -128,8 +142,12 @@ test('RP9 # が無いなどリポジトリ名を取り出せない issue は、�
   )
   assert.equal(
     renderReport(scopeReport(report, home('orgA/app')), at),
-    ['📋 自動実行の状況（11/13 05:30）', '実行中 0件', 'キュー 1件', '  1. [critical] orgA/app#51 決済が落ちる', 'マシン: Mac M2max'].join(
-      '\n',
-    ),
+    [
+      '📋 自動実行の状況（11/13 05:30）',
+      '実行中 0件',
+      'キュー 1件',
+      '  1. [critical] orgA/app#51 決済が落ちる',
+      'マシン: Mac M2max',
+    ].join('\n'),
   )
 })
