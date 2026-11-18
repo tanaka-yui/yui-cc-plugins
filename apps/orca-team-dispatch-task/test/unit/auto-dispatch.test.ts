@@ -730,3 +730,27 @@ test('AU109 legacy starts do not acquire a repos file', () => {
     f.cleanup()
   }
 })
+
+test('AU138 dispatch freezes the relay allowance and explains the effective limit', () => {
+  for (const review_mode of ['on', 'off'] as const) {
+    const f = runtimeFixture()
+    try {
+      f.put(f.configFile, { ...f.raw, lanes: review_mode === 'on' ? 2 : 1, roles: { review_mode, phase_b: 'off' } })
+      const i = f.track()
+      f.cli('tick')
+      assert.equal(readState('main').issues[i.key]?.relayMinutes, review_mode === 'on' ? 55 : 0)
+      const comments = readFileSync(join(f.dir, 'comments.jsonl'), 'utf8')
+      assert.ok(
+        comments.includes(
+          review_mode === 'on' ? '上限時間: 115 分（見積もり 60 分 + 取り次ぎ 55 分）' : '上限時間: 60 分',
+        ),
+      )
+      if (review_mode === 'off') assert.ok(!comments.includes('取り次ぎ'))
+      f.put(f.configFile, { ...f.raw, everyMinutes: 10 })
+      f.cli('tick')
+      assert.equal(readState('main').issues[i.key]?.relayMinutes, review_mode === 'on' ? 55 : 0)
+    } finally {
+      f.cleanup()
+    }
+  }
+})

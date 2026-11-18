@@ -391,3 +391,54 @@ test('AU123 failure pushes both repository branches before commenting, and repor
     }
   }
 })
+
+test('AU139 timeout uses the frozen effective limit and includes the breakdown', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track('running')
+    const state = readState('main')
+    const issue = state.issues[i.key]
+    assert.ok(issue)
+    issue.relayMinutes = 55
+    writeState('main', state)
+    f.liveWorker()
+    process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'running')
+    assert.ok(!f.childCalls().includes('worker-stop'))
+    process.env.ORCA_AUTO_NOW = '2026-11-13T06:56:00Z'
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'failed')
+    assert.ok(
+      readFileSync(join(f.dir, 'comments.jsonl'), 'utf8').includes(
+        '上限時間（115 分）を超えました（見積もり 60 分 + 取り次ぎ 55 分）。',
+      ),
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU140 unreachable hosts wait for the effective limit before notifying once', () => {
+  const f = runtimeFixture()
+  try {
+    const i = remoteIssue(f)
+    const state = readState('main')
+    const issue = state.issues[i.key]
+    assert.ok(issue)
+    issue.relayMinutes = 55
+    writeState('main', state)
+    process.env.ORCA_AUTO_NOW = '2026-11-13T06:01:00Z'
+    f.cli('tick')
+    assert.ok(!existsSync(join(f.dir, 'comments.jsonl')))
+    process.env.ORCA_AUTO_NOW = '2026-11-13T06:56:00Z'
+    f.cli('tick')
+    f.cli('tick')
+    const comments = readFileSync(join(f.dir, 'comments.jsonl'), 'utf8').trim().split('\n')
+    assert.equal(comments.length, 1)
+    assert.ok(comments[0]?.includes('上限時間: 115 分（見積もり 60 分 + 取り次ぎ 55 分）'))
+    assert.equal(readState('main').issues[i.key]?.phase, 'running')
+  } finally {
+    f.cleanup()
+  }
+})

@@ -15,10 +15,12 @@ export type CommentInput = {
   generation: number
   reason?: string
   limitMinutes?: number
+  relayMinutes?: number
   branch?: string
   branches?: Array<{ repo: string; branch: string }>
   prs?: Pr[]
   decisions?: string[]
+  reviewPoints?: string[]
   summary?: string
   mergedPrs?: Pr[]
   unmergedPrs?: Array<Pr & { why: string }>
@@ -30,6 +32,10 @@ const clean = (text: string): string =>
     .replace(/[\r\n]+/g, ' ')
     .replaceAll('<!--', '＜!--')
     .replaceAll('-->', '--＞')
+export const limitBreakdown = (limitMinutes: number, relayMinutes = 0): string =>
+  relayMinutes > 0 ? `（見積もり ${limitMinutes} 分 + 取り次ぎ ${relayMinutes} 分）` : ''
+const list = (title: string, items?: string[]): string =>
+  items?.length ? `${title}:\n${items.map((d) => `- ${clean(d)}`).join('\n')}` : ''
 const link = (p: Pr): string => `[${clean(p.repo)}#${p.number}](${clean(p.url)})`
 export const statusOfEvent = (event: AutoEvent): string =>
   ({
@@ -58,7 +64,9 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
         '**Ready_Eng にしました**',
         '',
         input.reason ? `判定の理由: ${clean(input.reason)}` : '',
-        input.limitMinutes ? `推奨の上限時間: ${input.limitMinutes} 分` : '',
+        input.limitMinutes
+          ? `推奨の上限時間: ${input.limitMinutes + (input.relayMinutes ?? 0)} 分${limitBreakdown(input.limitMinutes, input.relayMinutes)}`
+          : '',
       ]
         .filter((line, i) => line !== '' || i === 1)
         .join('\n')
@@ -68,19 +76,23 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
         '**実装を始めました**',
         '',
         input.reason ? `判定の理由: ${clean(input.reason)}` : '',
-        input.limitMinutes ? `上限時間: ${input.limitMinutes} 分` : '',
+        input.limitMinutes
+          ? `上限時間: ${input.limitMinutes + (input.relayMinutes ?? 0)} 分${limitBreakdown(input.limitMinutes, input.relayMinutes)}`
+          : '',
         branch,
       ]
         .filter((line, i) => line !== '' || i === 1)
         .join('\n')
       break
     case 'needs-review': {
-      if (!input.reason && !input.decisions?.length) throw new Error('needs-review requires a reason or decisions')
+      if (!input.reason && !input.decisions?.length && !input.reviewPoints?.length)
+        throw new Error('needs-review requires a reason, review points or decisions')
       body = [
         '**確認をお願いします**',
         prs ? `PR: ${prs}` : '',
         input.reason ? `理由: ${clean(input.reason)}` : '',
-        input.decisions?.length ? `AI が決めた点:\n${input.decisions.map((d) => `- ${clean(d)}`).join('\n')}` : '',
+        list('確認してほしい点', input.reviewPoints),
+        list('AI が決めた点', input.decisions),
       ]
         .filter(Boolean)
         .join('\n\n')
@@ -113,8 +125,12 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
         .join('\n')
       break
     case 'stalled':
-      body = `**作業が進んでいません**${input.reason ? `\n\n理由: ${clean(input.reason)}` : ''}\n\n経過時間: ${input.elapsedMinutes} 分 / 上限時間: ${input.limitMinutes} 分`
+      body = `**作業が進んでいません**${input.reason ? `\n\n理由: ${clean(input.reason)}` : ''}\n\n経過時間: ${input.elapsedMinutes} 分 / 上限時間: ${(input.limitMinutes ?? 0) + (input.relayMinutes ?? 0)} 分${limitBreakdown(input.limitMinutes ?? 0, input.relayMinutes)}`
       break
+  }
+  if (event === 'ai-merged' || event === 'partial-merge') {
+    const decisions = list('AI が決めた点', input.decisions)
+    if (decisions) body += `\n\n${decisions}`
   }
   return { status, body: `${body}\n\n<!-- orca-auto:${status}:${generation}:${event} -->` }
 }

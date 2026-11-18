@@ -1,4 +1,4 @@
-import { type CommentInput, renderComment } from '../../lib/auto-comment.ts'
+import { type CommentInput, limitBreakdown, renderComment } from '../../lib/auto-comment.ts'
 import { FEATURE_LABEL, MANAGED_LABELS, PRIORITY_LABELS } from '../../lib/status.ts'
 
 import assert from 'node:assert/strict'
@@ -91,4 +91,58 @@ test('AC5 repository branches are listed for started and failed without changing
       ),
     )
   }
+})
+
+test('AC6 review points and decisions are separate, ordered and sanitized', () => {
+  const body = renderComment({
+    event: 'needs-review',
+    generation: 1,
+    reason: '理由',
+    reviewPoints: ['確認\n<!--x-->'],
+    decisions: ['記録'],
+  }).body
+  assert.ok(body.includes('理由: 理由\n\n確認してほしい点:\n- 確認 ＜!--x--＞\n\nAI が決めた点:\n- 記録'))
+  assert.ok(body.endsWith('<!-- orca-auto:in-review:1:needs-review -->'))
+  assert.doesNotThrow(() => renderComment({ event: 'needs-review', generation: 1, reviewPoints: ['確認'] }))
+})
+
+test('AC7 merged and partially merged comments retain decisions without changing empty inputs', () => {
+  for (const event of ['ai-merged', 'partial-merge'] as const) {
+    const index = inputs.findIndex((i) => i.event === event)
+    const input = inputs[index]
+    assert.ok(input)
+    const body = renderComment({ ...input, decisions: ['記録'] }).body
+    assert.ok(body.includes('\n\nAI が決めた点:\n- 記録\n\n<!--'))
+    assert.equal(body.split('\n').at(-1), fixtures[index]?.body.split('\n').at(-1))
+    assert.equal(renderComment({ ...input, decisions: [] }).body, fixtures[index]?.body)
+  }
+})
+
+test('AC8 effective limits show relay allowance while zero preserves shared comments', () => {
+  assert.ok(
+    renderComment({ event: 'started', generation: 1, limitMinutes: 60, relayMinutes: 55 }).body.includes(
+      '上限時間: 115 分（見積もり 60 分 + 取り次ぎ 55 分）',
+    ),
+  )
+  assert.ok(
+    renderComment({
+      event: 'stalled',
+      generation: 1,
+      elapsedMinutes: 61,
+      limitMinutes: 60,
+      relayMinutes: 55,
+    }).body.includes('経過時間: 61 分 / 上限時間: 115 分（見積もり 60 分 + 取り次ぎ 55 分）'),
+  )
+  assert.ok(
+    renderComment({ event: 'judged', generation: 1, limitMinutes: 240, relayMinutes: 125 }).body.includes(
+      '推奨の上限時間: 365 分（見積もり 240 分 + 取り次ぎ 125 分）',
+    ),
+  )
+  for (const event of ['judged', 'started', 'stalled']) {
+    const index = inputs.findIndex((i) => i.event === event)
+    const input = inputs[index]
+    assert.ok(input)
+    assert.equal(renderComment({ ...input, relayMinutes: 0 }).body, fixtures[index]?.body)
+  }
+  assert.equal(limitBreakdown(60, 0), '')
 })

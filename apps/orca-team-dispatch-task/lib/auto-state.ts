@@ -36,6 +36,7 @@ export type IssueState = {
   readyAt: string
   targets: string[]
   limitMinutes: number
+  relayMinutes: number
   reason: string
   slug: string
   statusDir: string
@@ -53,6 +54,7 @@ export type IssueState = {
   startAttempt: { at: string; pid: number; host: string } | null
   prs: PrRef[]
   decisions: string[]
+  reviewPoints: string[]
   finishingSince: string | null
   cleanupPending: boolean
   returnedFromEng: boolean
@@ -80,6 +82,8 @@ export type AutoState = {
   issues: Record<string, IssueState>
   projectSync: Record<string, ProjectPair>
 }
+export const limitOf = (issue: Pick<IssueState, 'limitMinutes' | 'relayMinutes'>): number =>
+  issue.limitMinutes + issue.relayMinutes
 export const readState = (name: string): AutoState => {
   const file = join(autoDir(name), AUTO_FILES.state)
   if (!existsSync(file)) return { version: 1, judgingSince: null, issues: {}, projectSync: {} }
@@ -122,6 +126,12 @@ export const readState = (name: string): AutoState => {
           throw new Error(`状態ファイルが壊れています: ${key}`)
       }
     }
+    if (issue.relayMinutes === undefined) issue.relayMinutes = 0
+    else if (typeof issue.relayMinutes !== 'number' || !Number.isInteger(issue.relayMinutes) || issue.relayMinutes < 0)
+      throw new Error(`状態ファイルが壊れています: ${key}`)
+    if (issue.reviewPoints === undefined) issue.reviewPoints = []
+    else if (!Array.isArray(issue.reviewPoints) || issue.reviewPoints.some((v) => typeof v !== 'string'))
+      throw new Error(`状態ファイルが壊れています: ${key}`)
     if (issue.prevTargets === undefined) issue.prevTargets = []
     else if (!Array.isArray(issue.prevTargets) || issue.prevTargets.some((v) => typeof v !== 'string'))
       throw new Error(`状態ファイルが壊れています: ${key}`)

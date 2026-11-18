@@ -318,3 +318,36 @@ test('AU131 judge-apply syncs the Project after applying decisions', () => {
     absent.cleanup()
   }
 })
+
+test('AU141 engineering recommendation adds relay allowance outside the estimate cap', () => {
+  for (const review_mode of ['on', 'off'] as const) {
+    const f = setup()
+    try {
+      f.put(f.configFile, { ...f.raw, roles: { review_mode, phase_b: review_mode } })
+      const comments = join(f.dir, 'comment.txt')
+      const hook = join(f.dir, 'comment-hook.cjs')
+      writeFileSync(
+        hook,
+        "const fs=require('fs');const a=process.argv.slice(2);fs.writeFileSync(" +
+          JSON.stringify(comments) +
+          ",a[a.indexOf('--body')+1])",
+      )
+      f.hook('issue_comment', `exec '${process.execPath}' '${hook}' "$@"`)
+      assert.equal(f.apply(f.decision({ route: 'eng', limitMinutes: 241 })).status, 1)
+      const result = f.apply(f.decision({ route: 'eng', limitMinutes: 240 }))
+      assert.equal(result.status, 0, result.stderr)
+      const body = readFileSync(comments, 'utf8')
+      assert.ok(
+        body.includes(
+          review_mode === 'on'
+            ? '推奨の上限時間: 365 分（見積もり 240 分 + 取り次ぎ 125 分）'
+            : '推奨の上限時間: 240 分',
+        ),
+      )
+      if (review_mode === 'off') assert.ok(!body.includes('取り次ぎ'))
+      assert.equal(readState('main').issues['acme/app#7']?.relayMinutes, 0)
+    } finally {
+      f.cleanup()
+    }
+  }
+})

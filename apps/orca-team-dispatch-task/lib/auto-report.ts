@@ -1,11 +1,11 @@
 import { LOCAL_HOST } from './auto-hosts.ts'
 import { orderQueue } from './auto-queue.ts'
+import { type AutoState, limitOf } from './auto-state.ts'
 
 import { hostname } from 'node:os'
 
 import type { AutoConfig } from './auto-config.ts'
 import type { HostConfig } from './auto-hosts.ts'
-import type { AutoState } from './auto-state.ts'
 
 export type AutoReport = {
   version: 1
@@ -34,7 +34,7 @@ export const buildReport = (
       title: i.title,
       host: hosts.find((h) => h.host.id === (i.host ?? LOCAL_HOST))?.host.name ?? hostname(),
       startedAt: i.startedAt,
-      limitMinutes: i.limitMinutes,
+      limitMinutes: limitOf(i),
     })),
   queue: orderQueue(Object.values(state.issues).filter((i) => i.phase === 'queued')).map((i) => ({
     issue: i.key,

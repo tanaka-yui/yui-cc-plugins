@@ -192,3 +192,24 @@ test('AU104b generations preserve repository identity even after partial starts 
     f.cleanup()
   }
 })
+
+test('AU138b a new generation clears relay allowance and previous review points', () => {
+  const f = fixture()
+  try {
+    const state = empty()
+    const source = f.config().sources[0]
+    assert.ok(source)
+    f.respond('issue_list', [{ number: 7, title: '題', labels: [], updatedAt: '2026-01-01' }])
+    syncIssues(state, [source])
+    const issue = state.issues['acme/app#7']
+    assert.ok(issue)
+    Object.assign(issue, { phase: 'review', relayMinutes: 125, reviewPoints: ['前の確認'], decisions: ['前の記録'] })
+    syncIssues(state, [source])
+    assert.equal(issue.generation, 2)
+    assert.equal(issue.relayMinutes, 0)
+    assert.deepEqual(issue.reviewPoints, [])
+    assert.deepEqual(issue.decisions, [])
+  } finally {
+    f.cleanup()
+  }
+})

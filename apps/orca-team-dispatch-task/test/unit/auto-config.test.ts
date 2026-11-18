@@ -1,4 +1,4 @@
-import { intakeRepoNames, pickSources, readAutoConfig, readIntakeRepos } from '../../lib/auto-config.ts'
+import { intakeRepoNames, pickSources, readAutoConfig, readIntakeRepos, relayAllowance } from '../../lib/auto-config.ts'
 
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -152,4 +152,16 @@ test('MI3 an unreadable intake drops only its repos', () => {
   assert.deepEqual(pickSources(c), ['acme/x'])
   assert.deepEqual(intakeRepoNames(a), ['acme/x'])
   assert.equal(intakeRepoNames(missing), null)
+})
+
+test('AU137 relay allowance covers bounded review exchanges and stage handoffs', () => {
+  for (const [review_mode, phase_b, everyMinutes, expected] of [
+    ['off', 'off', 5, 0],
+    ['on', 'off', 5, 55],
+    ['off', 'on', 5, 15],
+    ['on', 'on', 5, 125],
+    ['on', 'on', 1, 25],
+    ['on', 'off', 10, 110],
+  ] as const)
+    assert.equal(relayAllowance({ review_mode, phase_b }, everyMinutes), expected)
 })

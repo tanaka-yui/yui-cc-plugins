@@ -1,6 +1,6 @@
 import { autoCleanup, confirmStopped, pushBranches, unrecordedWorker } from './auto-cleanup.ts'
-import { renderComment } from './auto-comment.ts'
-import { type AutoConfig, pickSources, readAutoConfig, readIntakeRepos } from './auto-config.ts'
+import { limitBreakdown, renderComment } from './auto-comment.ts'
+import { type AutoConfig, pickSources, readAutoConfig, readIntakeRepos, relayAllowance } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, prStatus, readGithub, viewIssue } from './auto-github.ts'
 import { envArgs, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
@@ -23,7 +23,7 @@ import { type ProjectSyncContext, syncProjects } from './auto-project.ts'
 import { orderQueue, syncIssues } from './auto-queue.ts'
 import { buildReport } from './auto-report.ts'
 import { buildRequest, readAutoResult, readPlanResult, slugOf } from './auto-request.ts'
-import { type AutoState, type IssueState, readState, releaseLock, takeLock, writeState } from './auto-state.ts'
+import { type AutoState, type IssueState, limitOf, readState, releaseLock, takeLock, writeState } from './auto-state.ts'
 import { hasCommentMarker, resumeTransition, transition } from './auto-transition.ts'
 import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
@@ -147,6 +147,7 @@ const started = (tick: Tick, issue: IssueState, workers: JsonObject): void => {
     {
       reason: issue.reason,
       limitMinutes: issue.limitMinutes,
+      relayMinutes: issue.relayMinutes,
       branch: issue.branch,
       ...(repoTargets(workers, tick.config.repos[issue.targets[0] ?? '']?.checkout ?? '').length > 1
         ? {
@@ -463,7 +464,15 @@ const refill = (tick: Tick): void => {
     if (!h) continue
     if (!targets.every((t) => host.repos[t]?.verified) && !issue.reason.includes('確認が通っていないマシンで実装'))
       issue.reason += '（確認が通っていないマシンで実装）'
-    Object.assign(issue, { phase: 'dispatching', slug, statusDir, coordinator: h, worktrees: required, host: host.id })
+    Object.assign(issue, {
+      phase: 'dispatching',
+      slug,
+      statusDir,
+      coordinator: h,
+      worktrees: required,
+      host: host.id,
+      relayMinutes: relayAllowance(tick.config.roles, tick.config.everyMinutes),
+    })
     tick.save()
     start(
       tick,
@@ -519,12 +528,14 @@ const markFailure = (tick: Tick, issue: IssueState, reason: string): void => {
     stopRoles(tick, issue)
   }
 }
+const overLimit = (issue: IssueState): string =>
+  `上限時間（${limitOf(issue)} 分）を超えました${limitBreakdown(issue.limitMinutes, issue.relayMinutes)}。`
 const timedOut = (issue: IssueState): boolean =>
   Boolean(
     issue.startedAt &&
       ['running', 'dispatching'].includes(issue.phase) &&
       issue.pendingLabel?.event !== 'failed' &&
-      Date.parse(autoNow()) - Date.parse(issue.startedAt) > issue.limitMinutes * 60_000,
+      Date.parse(autoNow()) - Date.parse(issue.startedAt) > limitOf(issue) * 60_000,
   )
 const humanStop = (tick: Tick, issue: IssueState): void => {
   if (!canAutoCall('人の変更')) return
@@ -544,6 +555,7 @@ const notifyStalled = (tick: Tick, issue: IssueState, reason?: string): void => 
     reason,
     elapsedMinutes: Math.floor((Date.parse(autoNow()) - Date.parse(issue.startedAt ?? autoNow())) / 60_000),
     limitMinutes: issue.limitMinutes,
+    relayMinutes: issue.relayMinutes,
   }).body
   const found = hasCommentMarker(issue, body.split('\n').at(-1) ?? '')
   if (
@@ -586,7 +598,7 @@ const progress = (tick: Tick, issue: IssueState): void => {
     finishFailure(tick, issue)
     clean(tick, issue)
   } else if (timedOut(issue)) {
-    markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
+    markFailure(tick, issue, overLimit(issue))
     finishFailure(tick, issue)
     clean(tick, issue)
   } else if (waited.rc === 9 && !tick.startUsed) {
@@ -699,7 +711,7 @@ const needsReview = (tick: Tick, issue: IssueState, reason: string): void => {
     transition(
       issue,
       'needs-review',
-      { reason, prs: issue.prs, decisions: issue.decisions },
+      { reason, prs: issue.prs, decisions: issue.decisions, reviewPoints: issue.reviewPoints },
       STATUS.inProgress,
       STATUS.inReview,
       false,
@@ -754,21 +766,30 @@ const finish = (tick: Tick, issue: IssueState): void => {
   const multi = targets.length > 1
   const needsPlanResult = workers?.transport === 'mail' && workers.integration_role === 'exec'
   const planResult = needsPlanResult ? readPlanResult(join(issue.statusDir, 'plan-result.json')) : null
-  const planDecisions = planResult
-    ? [
-        ...planResult.decisions.map((s) => `計画で決めた点: ${s}`),
-        ...planResult.review.unresolved.map((s) => `計画の未解消の指摘: ${s}`),
-        ...planResult.review.declined.map((s) => `計画で採らなかった指摘: ${s}`),
-      ]
-    : []
-  issue.decisions = result
-    ? [
-        ...planDecisions,
-        ...result.decisions,
-        ...result.review.unresolved.map((s) => `未解消の指摘: ${s}`),
-        ...result.review.declined.map((s) => `採らなかった指摘: ${s}`),
-      ]
-    : planDecisions
+  const planLegacy = planResult !== null && planResult.needsReview === undefined
+  const resultLegacy = result !== null && result.needsReview === undefined
+  issue.decisions = [
+    ...(planResult && !planLegacy ? planResult.decisions.map((s) => `計画で決めた点: ${s}`) : []),
+    ...(result && !resultLegacy ? result.decisions : []),
+  ]
+  issue.reviewPoints = [
+    ...(planResult
+      ? [
+          ...(planLegacy
+            ? planResult.decisions.map((s) => `計画で決めた点: ${s}`)
+            : (planResult.needsReview ?? []).map((s) => `計画で確認が要る点: ${s}`)),
+          ...planResult.review.unresolved.map((s) => `計画の未解消の指摘: ${s}`),
+          ...planResult.review.declined.map((s) => `計画で採らなかった指摘: ${s}`),
+        ]
+      : []),
+    ...(result
+      ? [
+          ...(resultLegacy ? result.decisions : (result.needsReview ?? [])),
+          ...result.review.unresolved.map((s) => `未解消の指摘: ${s}`),
+          ...result.review.declined.map((s) => `採らなかった指摘: ${s}`),
+        ]
+      : []),
+  ]
   tick.save()
   if (multi) {
     const role = asString(workers?.integration_role) ?? ''
@@ -844,7 +865,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
       transition(
         issue,
         'ai-merged',
-        { prs: issue.prs, summary: result?.summary },
+        { prs: issue.prs, summary: result?.summary, decisions: issue.decisions },
         STATUS.inProgress,
         STATUS.done,
         true,
@@ -910,7 +931,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
   if (!result) reasons.push('結果の報告が読めないため確認してください。')
   if (result && !result.verify.passed) reasons.push('確認コマンドが通っていません。')
   if (result?.envFailure) reasons.push(`環境が原因: ${result.envFailure}`)
-  if (issue.decisions.length) reasons.push('AI が判断した点があります。')
+  if (issue.reviewPoints.length) reasons.push('人の確認が要る点があります。')
   if (multi ? statuses.some((s) => s?.state === 'OPEN' && s.checks === 'fail') : status.checks === 'fail')
     reasons.push('CI が失敗しました。')
   const host = hostsOf(tick.config).find((h) => h.id === (issue.host ?? LOCAL_HOST))
@@ -963,7 +984,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
           transition(
             issue,
             'partial-merge',
-            { mergedPrs, unmergedPrs },
+            { mergedPrs, unmergedPrs, decisions: issue.decisions },
             STATUS.inProgress,
             STATUS.inReview,
             false,
@@ -981,7 +1002,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
     transition(
       issue,
       'ai-merged',
-      { prs: issue.prs, summary: result?.summary },
+      { prs: issue.prs, summary: result?.summary, decisions: issue.decisions },
       STATUS.inProgress,
       STATUS.done,
       true,
@@ -1069,7 +1090,7 @@ export const runTick = (name: string): number => {
           issue.hostUnreachableSince = autoNow()
           tick.save()
         }
-        if (issue.startedAt && Date.parse(autoNow()) - Date.parse(issue.startedAt) > issue.limitMinutes * 60_000)
+        if (issue.startedAt && Date.parse(autoNow()) - Date.parse(issue.startedAt) > limitOf(issue) * 60_000)
           notifyStalled(
             tick,
             issue,
@@ -1091,7 +1112,7 @@ export const runTick = (name: string): number => {
         timedOut(issue) &&
         canAutoCall('上限時間')
       )
-        markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
+        markFailure(tick, issue, overLimit(issue))
     for (const issue of Object.values(state.issues)) {
       if (
         issue.pendingLabel &&
@@ -1135,7 +1156,7 @@ export const runTick = (name: string): number => {
       if (issue.phase !== 'running' || blocked.has(issue.key)) continue
       progress(tick, issue)
       if (!issue.failReason && timedOut(issue) && canAutoCall('上限時間')) {
-        markFailure(tick, issue, `上限時間（${issue.limitMinutes} 分）を超えました。`)
+        markFailure(tick, issue, overLimit(issue))
         finishFailure(tick, issue)
         clean(tick, issue)
       }

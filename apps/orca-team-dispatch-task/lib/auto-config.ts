@@ -1,6 +1,6 @@
 import { parseHosts } from './auto-hosts.ts'
 import { AUTO_FILES, autoDir } from './auto-paths.ts'
-import { OPUS_MODEL } from './config.ts'
+import { OPUS_MODEL, REVIEW_ROUND_STEP, roleNames } from './config.ts'
 import { readJson } from './fs.ts'
 import { INTAKE_HOME_DIRNAME } from './intake-homes.ts'
 import { asArray, asObject, asString, type Json } from './json.ts'
@@ -175,3 +175,18 @@ export const readIntakeRepos = (config: AutoConfig): { repos: string[]; unreadab
 }
 export const pickSources = (config: AutoConfig): string[] =>
   readIntakeRepos(config).repos.filter((repo) => config.sources.some((source) => source.repo === repo))
+
+// レビューのメールは 1 通ごとに次の tick を待つ。1 ラウンドは依頼と判定の 2 回
+export const AUTO_RELAY_HOPS_PER_ROUND = 2
+// 終了の転送・受理・worker_done は、依頼側の受理・worker_done より 1 回多い
+export const AUTO_RELAY_REVIEW_END_HOPS = 1
+// 計画の段の受理・worker_done と、1 tick に 1 つだけ起こせる exec の待ち
+export const AUTO_RELAY_STAGE_HOPS = 3
+export const relayAllowance = (roles: AutoConfig['roles'], everyMinutes: number): number => {
+  const names = roleNames(roles.review_mode, roles.phase_b)
+  const reviewed = names.filter((r) => r === 'design_review' || r === 'exec_review').length
+  const hops =
+    reviewed * (AUTO_RELAY_HOPS_PER_ROUND * REVIEW_ROUND_STEP + AUTO_RELAY_REVIEW_END_HOPS) +
+    (names.includes('exec') ? AUTO_RELAY_STAGE_HOPS : 0)
+  return hops * everyMinutes
+}

@@ -81,3 +81,21 @@ test('RP4-6 reports every host capacity and maps running issues to their host na
     f.cleanup()
   }
 })
+
+test('RP7 report uses the effective limit with unchanged contract keys', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track('running')
+    const state = readState('main')
+    const issue = state.issues[i.key]
+    assert.ok(issue)
+    issue.relayMinutes = 55
+    const host = hostsOf(f.config())[0]
+    assert.ok(host)
+    const report = buildReport(f.config(), state, [{ host, used: 1, reachable: true }], '2026-11-13T06:01:00Z')
+    assert.equal(report.running[0]?.limitMinutes, 115)
+    assert.deepEqual(Object.keys(report.running[0] ?? {}), ['issue', 'title', 'host', 'startedAt', 'limitMinutes'])
+  } finally {
+    f.cleanup()
+  }
+})

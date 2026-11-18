@@ -559,3 +559,126 @@ test('AU116 any target requiring verification or infrastructure review prevents 
     }
   }
 })
+
+const decodedCommentsOf = (f: ReturnType<typeof runtimeFixture>): string =>
+  commentsOf(f)
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as string)
+    .join('\n')
+
+test('AU132 new decisions are recorded after an automatic merge', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track('finishing')
+    f.result(i, { decisions: ['テストを test/unit に置いた'], needsReview: [] })
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'done')
+    const comments = decodedCommentsOf(f)
+    assert.ok(comments.includes('AI が決めた点:'))
+    assert.ok(comments.includes('テストを test/unit に置いた'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU133 explicit review points block merging and keep decisions separate', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track('finishing')
+    f.result(i, { decisions: ['変数名を変えた'], needsReview: ['エラー時に 422 を返すと読んだ'] })
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'review')
+    assert.ok(!f.calls().includes('pr merge'))
+    const comments = decodedCommentsOf(f)
+    for (const text of [
+      '人の確認が要る点があります。',
+      '確認してほしい点:\n- エラー時に 422 を返すと読んだ',
+      'AI が決めた点:\n- 変数名を変えた',
+    ])
+      assert.ok(comments.includes(text), text)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU134 planning decisions are records and planning review points are blockers', () => {
+  for (const needsReview of [[], ['計画で読んだ点'], null]) {
+    const f = runtimeFixture()
+    try {
+      const i = f.track('finishing')
+      f.result(i, { needsReview: [] })
+      mkdirSync(join(i.statusDir, 'review'), { recursive: true })
+      f.put(join(i.statusDir, 'workers.json'), {
+        transport: 'mail',
+        integration_branch: 'main',
+        integration_role: 'exec',
+        roles: {
+          exec: { dispatch: 'ctx_design', branch: i.branch },
+          design_review: { dispatch: 'ctx_plan' },
+          exec_review: { dispatch: 'ctx_code' },
+        },
+      })
+      for (const kind of ['plan', 'code'])
+        writeFileSync(join(i.statusDir, 'review', `${kind}-round-1-findings.md`), 'VERDICT: approved\n')
+      f.put(join(i.statusDir, 'plan-result.json'), {
+        decisions: ['計画の判断'],
+        needsReview,
+        review: { unresolved: [], declined: [] },
+      })
+      f.cli('tick')
+      const merge = needsReview !== null && needsReview.length === 0
+      assert.equal(readState('main').issues[i.key]?.phase, merge ? 'done' : 'review')
+      assert.equal(f.calls().includes('pr merge'), merge)
+      assert.ok(
+        decodedCommentsOf(f).includes(
+          merge
+            ? '計画で決めた点: 計画の判断'
+            : needsReview === null
+              ? '計画の結果の報告が読めない'
+              : '計画で確認が要る点: 計画で読んだ点',
+        ),
+      )
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU135 unresolved and declined findings block merging in the new format', () => {
+  for (const review of [
+    { unresolved: ['未解消'], declined: [] },
+    { unresolved: [], declined: ['不採用'] },
+  ]) {
+    const f = runtimeFixture()
+    try {
+      const i = f.track('finishing')
+      f.result(i, { needsReview: [], review })
+      f.cli('tick')
+      assert.equal(readState('main').issues[i.key]?.phase, 'review')
+      assert.ok(!f.calls().includes('pr merge'))
+      assert.ok(
+        decodedCommentsOf(f).includes(
+          `確認してほしい点:\n- ${review.unresolved.length ? '未解消の指摘: 未解消' : '採らなかった指摘: 不採用'}`,
+        ),
+      )
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU136 partial merge comments retain new decisions', () => {
+  const { f, issue } = multiFinish()
+  try {
+    f.result(issue, { decisions: ['記録の判断'], needsReview: [] })
+    f.mergeFails(['acme/app'])
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'review')
+    const comments = decodedCommentsOf(f)
+    assert.ok(comments.includes('一部だけ merge しました'))
+    assert.ok(comments.includes('AI が決めた点:\n- 記録の判断'))
+  } finally {
+    f.cleanup()
+  }
+})

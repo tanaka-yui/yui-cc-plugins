@@ -164,3 +164,33 @@ test('AU126 projectSync defaults and is validated', () => {
     rmSync(file, { force: true })
   }
 })
+
+test('SS4 legacy review points default empty and invalid values fail closed', () => {
+  const file = join(sd, 'state.json')
+  const put = (extra: object) =>
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        judgingSince: null,
+        issues: {
+          'acme/app#1': { key: 'acme/app#1', phase: 'running', generation: 1, targets: [], prs: [], ...extra },
+        },
+      }),
+    )
+  try {
+    put({})
+    assert.deepEqual(readState('main').issues['acme/app#1']?.reviewPoints, [])
+    assert.equal(readState('main').issues['acme/app#1']?.relayMinutes, 0)
+    for (const relayMinutes of [-1, 1.5, '5']) {
+      put({ relayMinutes })
+      assert.throws(() => readState('main'), /acme\/app#1/)
+    }
+    for (const reviewPoints of [[1], 'x']) {
+      put({ reviewPoints })
+      assert.throws(() => readState('main'), /acme\/app#1/)
+    }
+  } finally {
+    rmSync(file, { force: true })
+  }
+})
