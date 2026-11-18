@@ -13,6 +13,7 @@ import {
   labelsHashKey,
   MSG_CONFIG_BROKEN,
   MSG_CONFIG_CHANGED,
+  MSG_DESTINATION_FIXED,
   MSG_PUSH_REQUIRED,
   REPO_PATTERN,
   SLACK_APP_NAME,
@@ -26,6 +27,7 @@ import { homePaths, intakeHome, pluginRoot } from '../paths.ts'
 import { loadToken, maskSecrets } from '../secrets.ts'
 import { authTest, createSlackClient, fetchLatest } from '../slack-api.ts'
 import { formatTs } from '../slack-text.ts'
+import { noTokenReason } from '../workspace.ts'
 
 import { chmodSync, copyFileSync, existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -33,7 +35,7 @@ import { join } from 'node:path'
 import type { Config } from '../config.ts'
 import type { HomePaths } from '../paths.ts'
 
-const destinationError = '送り先は変更できません。~/.slack-issue-intake を退避してから設定し直してください'
+const destinationError = (home: string): string => MSG_DESTINATION_FIXED.replace('{home}', home)
 const installLauncher = (paths: HomePaths): void => {
   ensurePrivateDir(paths.binDir)
   ensurePrivateDir(paths.runDir)
@@ -121,7 +123,7 @@ export const run = async (argv: string[]): Promise<void> => {
   )
     return die('init', '--repo を確認してください')
   if (base && (channel !== base.channel || base.repos.some((r) => !names.includes(r.name)))) {
-    console.error(destinationError)
+    console.error(destinationError(home))
     process.exitCode = 1
     return
   }
@@ -174,7 +176,7 @@ export const run = async (argv: string[]): Promise<void> => {
   }
   const token = loadToken(paths.secrets)
   if (!token) {
-    console.error('set-token を先に実行してください')
+    console.error(noTokenReason(home))
     process.exitCode = 2
     return
   }
@@ -199,7 +201,7 @@ export const run = async (argv: string[]): Promise<void> => {
     const slack = createSlackClient(token)
     const auth = await authTest(slack, deadline)
     if (!auth.ok) throw new Error(auth.error)
-    if (base && auth.info.teamId !== base.slack.teamId) throw new Error(destinationError)
+    if (base && auth.info.teamId !== base.slack.teamId) throw new Error(destinationError(home))
     const latest = await fetchLatest(slack, channel, 1, deadline)
     if (!latest.ok)
       throw new Error(
@@ -214,7 +216,7 @@ export const run = async (argv: string[]): Promise<void> => {
     if (!(await ghAuthOk(gh, deadline))) throw new Error('gh auth login を実行してください')
     const login = await viewerLogin(gh, deadline)
     if (!login) throw new Error('GitHub のログイン名が取れません')
-    if (base && login !== base.github.login) throw new Error(destinationError)
+    if (base && login !== base.github.login) throw new Error(destinationError(home))
     for (const repo of names) {
       const repository = await repoInfo(gh, repo, deadline)
       if (!repository.ok) throw new Error(repository.error)

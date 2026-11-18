@@ -8,6 +8,7 @@ import { homePaths, intakeHome } from '../paths.ts'
 import { loadToken, maskSecrets } from '../secrets.ts'
 import { createSlackClient, fetchLatest } from '../slack-api.ts'
 import { messageText } from '../slack-text.ts'
+import { noConfigReason, noTokenReason } from '../workspace.ts'
 export const run = async (argv: string[]): Promise<void> => {
   const { values } = parseFlags('inspect', {
     args: argv,
@@ -22,7 +23,7 @@ export const run = async (argv: string[]): Promise<void> => {
   const config = loadConfig(home)
   const token = loadToken(homePaths(home).secrets)
   if (!config || !token) {
-    console.error('init と set-token を先に実行してください')
+    console.error(!config ? noConfigReason(home) : noTokenReason(home))
     process.exitCode = 2
     return
   }

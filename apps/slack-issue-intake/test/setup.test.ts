@@ -106,6 +106,7 @@ test('SU1 質問に答えるだけで、アプリ・トークン・設定・ボ�
   const r = await f.setup(FULL_INPUT, { SLACK_BOT_TOKEN: 'xoxb-from-shell' })
   assert.equal(r.code, 0, r.stderr)
   assert.match(r.stdout, /\[1\/10\]/)
+  assert.ok(r.stdout.includes('--name <名前> inspect --raw'))
   assert.match(r.stdout, /\[10\/10\]/)
   const deploys = f.cliCalls('deploy')
   assert.equal(deploys.length, 1)
@@ -178,6 +179,8 @@ test('SU4 フックがトークンを受け取れなければ、set-token の手
   const r = await f.setup(FULL_INPUT, { FAKE_SLACK_CLI_NO_TOKEN: '1' })
   assert.equal(r.code, 1)
   assert.match(r.stderr, /set-token/)
+  assert.ok(r.stderr.includes('node bin/slack-issue-intake.ts --name <名前> set-token'))
+  assert.ok(r.stderr.includes('make setup NAME=<名前>'))
   assert.equal(loadConfig(f.home), null)
 })
 

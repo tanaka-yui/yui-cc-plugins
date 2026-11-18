@@ -57,7 +57,7 @@ test('LA1 インストール済みuser scopeを優先、無ければ記録した
   assert.equal(resolvePluginRoot(home, ch), installed)
 })
 test('GU1 ガイドはフォームと必要scope、前提を含む', () => {
-  const g = renderGuide()
+  const g = renderGuide('<名前>')
   for (const kind of FORM_KINDS) assert.ok(g.includes(renderTemplate(kind)), kind.key)
   for (const s of [
     'channels:history',

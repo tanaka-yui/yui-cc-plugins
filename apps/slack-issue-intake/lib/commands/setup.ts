@@ -47,7 +47,7 @@ import {
   slackProject,
   writeProject,
 } from '../slack-cli.ts'
-import { legacyHomeNotice } from '../workspace.ts'
+import { cliCommand, legacyHomeNotice, makeCommand } from '../workspace.ts'
 
 import { spawnSync } from 'node:child_process'
 import { existsSync, rmSync, writeSync } from 'node:fs'
@@ -74,7 +74,8 @@ const fail = (text: string, code = EXIT_FAILED): number => {
   writeSync(STDERR, `${maskSecrets(text)}\n`)
   return code
 }
-const exhausted = (): number => fail(`\n${SETUP_TEXT.noInput}`, EXIT_NO_INPUT)
+const exhausted = (): number =>
+  fail(`\n${fill(SETUP_TEXT.noInput, { setup: makeCommand(intakeHome(), 'setup') })}`, EXIT_NO_INPUT)
 const heading = (n: number, title: string, done = false): void =>
   say(`[${n}/${SETUP_STEPS}] ${title}${done ? ` … ${SETUP_TEXT.done}` : ''}`)
 const deadline = (): number => Date.now() + COMMAND_DEADLINE_MS
@@ -157,7 +158,8 @@ const confirmPublic = (p: Prompter, visibility: string): Picked<boolean> => {
   say(SETUP_TEXT.publicRepo)
   const accepted = p.confirm(SETUP_TEXT.confirmPublic)
   if (accepted === null) return { ok: false, code: exhausted() }
-  if (!accepted) return { ok: false, code: fail(SETUP_TEXT.declined) }
+  if (!accepted)
+    return { ok: false, code: fail(fill(SETUP_TEXT.declined, { setup: makeCommand(intakeHome(), 'setup') })) }
   return { ok: true, value: true }
 }
 
@@ -331,7 +333,7 @@ const approve = (p: Prompter, home: string, accepted: string | null): number => 
     if (shown !== 0) return shown
     const ok = p.confirm(SETUP_TEXT.confirmPermissions)
     if (ok === null) return exhausted()
-    if (!ok) return fail(SETUP_TEXT.declined)
+    if (!ok) return fail(fill(SETUP_TEXT.declined, { setup: makeCommand(intakeHome(), 'setup') }))
     const applied = child(['permissions', '--apply'])
     if (applied !== 0) return applied
   } else heading(9, SETUP_TEXT.stepPermissions, true)
@@ -344,7 +346,7 @@ const approve = (p: Prompter, home: string, accepted: string | null): number => 
   for (const dir of inherited.dirs) say(`  inherited-dir ${dir}`)
   const ok = p.confirm(SETUP_TEXT.confirmInherited)
   if (ok === null) return exhausted()
-  if (!ok) return fail(SETUP_TEXT.declined)
+  if (!ok) return fail(fill(SETUP_TEXT.declined, { setup: makeCommand(intakeHome(), 'setup') }))
   return child(['enable', '--accept-inherited'])
 }
 
@@ -375,7 +377,13 @@ const wizard = async (): Promise<number> => {
     const code = runDeploy(ready.slackCli, project, teamId)
     const hookRan = readDeployedHash(project) === expected
     token = loadToken(paths.secrets)
-    if (!token && hookRan) return fail(SETUP_TEXT.noToken)
+    if (!token && hookRan)
+      return fail(
+        fill(SETUP_TEXT.noToken, {
+          setup: makeCommand(intakeHome(), 'setup'),
+          setToken: cliCommand(intakeHome(), 'set-token'),
+        }),
+      )
     if (!hookRan || !token || code !== 0) return fail(fill(SETUP_TEXT.deployFailed, { code: String(code) }))
     saveDeployedHash(project, expected)
     return 0
@@ -408,7 +416,13 @@ const wizard = async (): Promise<number> => {
     const deployed = deploy(hash, teamId)
     if (deployed !== 0) return deployed
   }
-  if (!token) return fail(SETUP_TEXT.noToken)
+  if (!token)
+    return fail(
+      fill(SETUP_TEXT.noToken, {
+        setup: makeCommand(intakeHome(), 'setup'),
+        setToken: cliCommand(intakeHome(), 'set-token'),
+      }),
+    )
 
   // 3〜5: 設定と automation がそろっていれば、送り先は変えずに今の設定を見せ、間隔だけ聞き直す。
   // 間隔が変われば init で automation を書き換える。
@@ -491,7 +505,7 @@ const wizard = async (): Promise<number> => {
   else {
     heading(7, SETUP_TEXT.stepReport)
     const sources = findReportSources()
-    if (!sources.length) say(SETUP_TEXT.reportNotFound)
+    if (!sources.length) say(fill(SETUP_TEXT.reportNotFound, { report: cliCommand(home, 'report --source <path>') }))
     else {
       say(SETUP_TEXT.reportFound)
       for (const [i, source] of sources.entries()) say(`  ${i + 1}. ${source}`)
@@ -555,7 +569,7 @@ const wizard = async (): Promise<number> => {
   // ボットでは入力欄にボタンを出せなかったときは、7段目の出力が流れているので、画面での手順をもう一度示す
   if (readMeta(paths.db, FORM_META_FEATURED) === FORM_FEATURED_MANUAL)
     say(fill(SETUP_TEXT.featureByHand, { steps: featureSteps() }))
-  say(fill(SETUP_TEXT.finished, { title: formTitles() }))
+  say(fill(SETUP_TEXT.finished, { title: formTitles(), inspect: cliCommand(home, 'inspect --raw') }))
   return 0
 }
 

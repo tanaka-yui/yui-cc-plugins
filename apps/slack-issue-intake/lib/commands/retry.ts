@@ -4,6 +4,7 @@ import { getSubmission, openDb, transition } from '../db.ts'
 import { ADMIN_LEASE_MS } from '../defaults.ts'
 import { acquireLease, releaseLease } from '../lease.ts'
 import { homePaths, intakeHome } from '../paths.ts'
+import { noConfigReason } from '../workspace.ts'
 export const run = (argv: string[]): void => {
   const { values } = parseFlags('retry', { args: argv, options: { id: { type: 'string' }, now: { type: 'string' } } })
   const id = Number(values.id)
@@ -13,7 +14,7 @@ export const run = (argv: string[]): void => {
   }
   const home = intakeHome()
   if (!loadConfig(home)) {
-    console.error('init を先に実行してください')
+    console.error(noConfigReason(home))
     process.exitCode = 2
     return
   }

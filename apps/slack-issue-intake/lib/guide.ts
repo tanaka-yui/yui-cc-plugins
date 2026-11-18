@@ -1,4 +1,5 @@
 import {
+  CLI_COMMAND,
   FIELD_LABELS,
   FORM_KINDS,
   PRIORITIES,
@@ -41,9 +42,9 @@ const formSteps = (kind: FormKind): string =>
     `「チャンネルへメッセージを送信」のテンプレート:`,
     `\n~~~text\n${renderTemplate(kind)}\n~~~`,
   ].join('\n')
-const CLI = 'node bin/slack-issue-intake.ts'
-export const renderGuide =
-  (): string => `Slack CLI にログインしているなら、この手順の代わりに \`make setup\` を使えます。
+export const renderGuide = (name: string): string => {
+  const CLI = `${CLI_COMMAND} --name ${name}`
+  return `Slack CLI にログインしているなら、この手順の代わりに \`make setup NAME=${name}\` を使えます。
 1. https://api.slack.com/apps の Create New App → From a manifest で社内向けカスタムアプリを作り、ワークスペースにインストールします。配布しません。有料プランが必要です。
 \nマニフェスト:\n\`\`\`json\n${renderManifest()}\n\`\`\`
 2. アプリの設定の OAuth & Permissions を開き、Bot User OAuth Token（xoxb- で始まる文字列）をコピーします。続けて \`${CLI} set-token\` を実行します（skill で進めているときは Claude が実行します）。
@@ -59,3 +60,4 @@ export const renderGuide =
 8. \`${CLI} enable\` を実行します。受け継ぐ許可があれば内容を確認し、承認したときだけ \`--accept-inherited\` を付けます。
 Orca の Claude 起動引数へ --permission-mode や --allowedTools など許可を広げるものを入れないでください。
 最初の実行で bypass モードになっていないことを確認してください。bypass なら automation を無効にし、既定引数の --dangerously-skip-permissions を外してください。`
+}

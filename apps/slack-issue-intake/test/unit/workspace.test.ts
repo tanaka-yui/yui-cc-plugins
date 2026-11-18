@@ -6,8 +6,19 @@ import {
   MSG_NAME_RESERVED,
   MSG_NAME_RULE,
 } from '../../lib/defaults.ts'
-import { homeOfSlackProject, listIntakeNames } from '../../lib/paths.ts'
-import { askWorkspaceName, commandWithName, legacyHomeNotice, nameRequiredMessage } from '../../lib/workspace.ts'
+import { homeForName, homeOfSlackProject, listIntakeNames } from '../../lib/paths.ts'
+import {
+  askWorkspaceName,
+  cliCommand,
+  commandWithName,
+  hintName,
+  legacyHomeNotice,
+  makeCommand,
+  nameRequiredMessage,
+  noAutomationReason,
+  noConfigReason,
+  noTokenReason,
+} from '../../lib/workspace.ts'
 import { tempHome } from '../helpers.ts'
 
 import assert from 'node:assert/strict'
@@ -95,4 +106,22 @@ test('NR11 名前なしのホームがあるときだけ 1 行で知らせる', 
     if (previous === undefined) delete process.env.HOME
     else process.env.HOME = previous
   }
+})
+
+test('GD1 不足した設定の案内にはホームと名前付きコマンドを入れる', () => {
+  const named = homeForName('ws2')
+  assert.equal(hintName(named), 'ws2')
+  assert.equal(hintName('/tmp/x'), '<名前>')
+  assert.equal(hintName(homeForName(null)), '<名前>')
+  assert.equal(makeCommand(named, 'setup'), 'make setup NAME=ws2')
+  assert.equal(cliCommand(named, 'set-token'), 'node bin/slack-issue-intake.ts --name ws2 set-token')
+  assert.equal(noConfigReason(named), `${named} に設定がありません。make setup NAME=ws2 を実行してください`)
+  assert.equal(
+    noTokenReason(named),
+    `${named} にトークンがありません。make setup NAME=ws2 を実行するか、node bin/slack-issue-intake.ts --name ws2 set-token で登録してください`,
+  )
+  assert.equal(
+    noAutomationReason('/tmp/x'),
+    '/tmp/x の automation が登録されていません。make setup NAME=<名前> を実行してください',
+  )
 })

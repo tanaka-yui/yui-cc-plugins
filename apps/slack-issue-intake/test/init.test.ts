@@ -229,6 +229,7 @@ test('IN16 リポジトリは追加できるが削除とチャンネル変更は
   const before = loadConfig(f.home)
   const removed = await runCliAsync(['init', '--channel', CHANNEL, '--repo', 'acme/web', '--now', NOW], f.env)
   assert.equal(removed.code, 1, removed.stderr)
+  assert.ok(removed.stderr.includes(`送り先は変更できません。${f.home} を退避してから設定し直してください`))
   assert.deepEqual(loadConfig(f.home), before)
   assert.equal((await f.init(['--channel', 'C0OTHER001'])).code, 1)
 })

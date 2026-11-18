@@ -1,6 +1,7 @@
 import { shellQuote } from './automation.ts'
 import {
   AUTOMATION_NAME,
+  CLI_COMMAND,
   INTAKE_HOME_DIRNAME,
   MSG_LEGACY_HOME,
   MSG_NAME_ASK,
@@ -8,9 +9,12 @@ import {
   MSG_NAME_LIST,
   MSG_NAME_LIST_EMPTY,
   MSG_NAME_NONE,
+  MSG_NO_AUTOMATION,
+  MSG_NO_CONFIG,
+  MSG_NO_TOKEN,
   NAME_PLACEHOLDER,
 } from './defaults.ts'
-import { homeForName, intakeNameProblem } from './paths.ts'
+import { homeForName, intakeNameProblem, nameOfHome } from './paths.ts'
 
 import { existsSync } from 'node:fs'
 
@@ -60,3 +64,16 @@ export const askWorkspaceName = (p: Prompter, names: readonly string[], say: (te
     return name
   }
 }
+
+export const hintName = (home: string): string => nameOfHome(home) ?? NAME_PLACEHOLDER
+export const makeCommand = (home: string, target: string): string => `make ${target} NAME=${hintName(home)}`
+export const cliCommand = (home: string, subcommand: string): string =>
+  `${CLI_COMMAND} --name ${hintName(home)} ${subcommand}`
+export const noConfigReason = (home: string): string =>
+  MSG_NO_CONFIG.replace('{home}', home).replace('{setup}', makeCommand(home, 'setup'))
+export const noTokenReason = (home: string): string =>
+  MSG_NO_TOKEN.replace('{home}', home)
+    .replace('{setup}', makeCommand(home, 'setup'))
+    .replace('{setToken}', cliCommand(home, 'set-token'))
+export const noAutomationReason = (home: string): string =>
+  MSG_NO_AUTOMATION.replace('{home}', home).replace('{setup}', makeCommand(home, 'setup'))

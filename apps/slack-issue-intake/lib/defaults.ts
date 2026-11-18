@@ -117,9 +117,9 @@ export const TRIGGER_NOT_FOUND_PATTERN = /trigger[_ -]?not[_ -]?found|trigger\b.
 // 古いボタンを残すと案内した印。次に form を実行したら（人が画面で注目にしたあと）古いボタンを片付ける
 export const FORM_META_LEGACY_NOTIFIED = 'form_legacy_notified'
 export const MSG_FORM_LEGACY_KEPT =
-  '以前の 1 つのボタンは、新しい 3 つのボタンが入力欄の所に出るまで残します。画面で 3 つを注目にしたら、make slack-form をもう一度実行してください。古いボタンを外して消します'
+  '以前の 1 つのボタンは、新しい 3 つのボタンが入力欄の所に出るまで残します。画面で 3 つを注目にしたら、{slackForm} をもう一度実行してください。古いボタンを外して消します'
 export const MSG_FORM_STALE_MANIFEST =
-  'Slack に deploy 済みのアプリが、今のフォームの定義と違います（プラグインを更新した直後など）。先に make setup を実行して deploy し直してください'
+  'Slack に deploy 済みのアプリが、今のフォームの定義と違います（プラグインを更新した直後など）。先に {setup} を実行して deploy し直してください'
 export const MSG_FORM_LEGACY_DELETE_FAILED =
   '以前の 1 つのボタン（{trigger}）を消せませんでした（{error}）。新しい 3 つのボタンは使えます。次の実行でもう一度消します'
 // 画面でボタンを入力欄に出す手順。ボットのトークンでは workflows.featured.add が通らないことがあるので、form と setup の最後に示す
@@ -131,7 +131,7 @@ export const MSG_FORM_FEATURE_FAILED = 'ボタンをチャンネルの入力欄�
 export const MSG_FORM_REFUSED =
   'Slack CLI でフォームのボタンを作れませんでした（{error}）。フォームは README の「Workflow Builder で手で作る」の手順で作ってください'
 export const MSG_FORM_NO_CLI =
-  'Slack CLI が見つかりません。Slack CLI を入れて slack login してから make setup を実行するか、README の「Workflow Builder で手で作る」の手順で作ってください'
+  'Slack CLI が見つかりません。Slack CLI を入れて slack login してから {setup} を実行するか、README の「Workflow Builder で手で作る」の手順で作ってください'
 export const MSG_FORM_NO_APP =
   'make setup で作ったアプリが見つかりません。フォームは README の「Workflow Builder で手で作る」の手順で作ってください'
 export const CATEGORIES = ['バグ', '新機能', '要望'] as const
@@ -432,7 +432,7 @@ export const SETUP_TEXT = {
   stepPermissions: 'Claude に許す操作を承認する（permissions）',
   stepEnable: 'automation を有効にする（enable）',
   done: '済み',
-  noInput: '入力がありません。ターミナルで make setup を実行してください',
+  noInput: '入力がありません。ターミナルで {setup} を実行してください',
   nodeTooOld: 'Node {min} 以上が必要です（今は {current}）。Node を更新してから再実行してください',
   noGh: 'gh が見つかりません。GitHub CLI（https://cli.github.com）を入れてから再実行してください',
   ghLoggedOut: 'gh にログインしていません。gh auth login を実行してから再実行してください',
@@ -443,7 +443,7 @@ export const SETUP_TEXT = {
   deploying: 'Slack CLI でアプリを作成・更新します。ワークスペースを聞かれたら、使うワークスペースを選んでください',
   deployFailed: 'slack deploy に失敗しました（終了コード {code}）。上の出力を確かめてから再実行してください',
   noToken:
-    'トークンを受け取れませんでした。Slack のアプリの設定画面（OAuth & Permissions）で Bot User OAuth Token をコピーし、node bin/slack-issue-intake.ts set-token で登録してから、もう一度 make setup を実行してください',
+    'トークンを受け取れませんでした。Slack のアプリの設定画面（OAuth & Permissions）で Bot User OAuth Token をコピーし、{setToken} で登録してから、もう一度 {setup} を実行してください',
   askAppId:
     'すでにある Slack アプリを使うなら、そのアプリ ID（A で始まる。https://api.slack.com/apps の Basic Information にあります）。空のまま Enter で新しく作ります',
   badAppId: 'アプリ ID は A で始まる英大文字と数字です。新しく作るなら空のまま Enter を押してください',
@@ -476,8 +476,7 @@ export const SETUP_TEXT = {
   askReportChannel: '定期報告を投稿するチャンネル（名前か ID。空のまま Enter で起票のチャンネル）',
   askDailyAt: '1 日 1 回、新しい投稿にする時刻（HH:MM）',
   badDailyAt: '00:00 から 23:59 の HH:MM で入力してください',
-  reportNotFound:
-    '--auto の報告の材料が見つかりません。--auto を setup したあとで、node bin/slack-issue-intake.ts report --source <path> で有効にできます',
+  reportNotFound: '--auto の報告の材料が見つかりません。--auto を setup したあとで、{report} で有効にできます',
   badRepo: 'owner/name の形で入力してください',
   repoFailed: 'リポジトリを確かめられません（{error}）',
   noIssues: 'リポジトリの Issues が無効です。GitHub の Settings で Issues を有効にしてから再実行してください',
@@ -488,8 +487,7 @@ export const SETUP_TEXT = {
   currentConfig:
     '今の設定: チャンネル {channel}、リポジトリ {repos}（既定の起票先 {default}）、確認の間隔 {every} 分。チャンネルは変えられません。リポジトリは足せますが、外せません。間隔を変えるなら新しい値を入力し、そのままなら Enter を押してください',
   badEvery: '60 の約数（1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60）を入力してください',
-  declined:
-    '承認されなかったので、この段では何も変えずに止めました。もう一度 make setup を実行すると、ここから再開します',
+  declined: '承認されなかったので、この段では何も変えずに止めました。もう一度 {setup} を実行すると、ここから再開します',
   manualForm: 'フォームのボタンは作りません。README の「Workflow Builder で手で作る」の手順でフォームを作ってください',
   confirmPermissions: 'この内容で許可しますか？',
   inheritedHeader: '次の許可は、ユーザーや組織の設定から無人の Claude にも受け継がれます:',
@@ -497,7 +495,7 @@ export const SETUP_TEXT = {
   noInherited: '権限の設定を読めません。~/.claude/settings.json を確かめてから再実行してください',
   featureByHand: '入力欄の所のボタンは、画面で設定します（まだなら）: {steps}',
   finished:
-    'セットアップが終わりました。チャンネルの入力欄の所に出るボタン（{title}）のどれかから1件送り、数分後に node bin/slack-issue-intake.ts inspect --raw で受け付けたことを確かめてください',
+    'セットアップが終わりました。チャンネルの入力欄の所に出るボタン（{title}）のどれかから1件送り、数分後に {inspect} で受け付けたことを確かめてください',
 } as const
 
 export const ADOPT_MAX_PER_POLL = 5
@@ -545,3 +543,8 @@ export const MSG_NAME_EXAMPLE = '例: {command}'
 export const MSG_NAME_ASK = 'ワークスペースの名前（英小文字・数字・-）'
 export const MSG_LEGACY_HOME =
   '名前なしのホーム（~/{dir}）は使わなくなりました。そのワークスペースは make setup NAME=<名前> で設定し直し、Orca の automation「{automation}」を止めてください（このディレクトリは消して構いません）'
+
+export const MSG_NO_CONFIG = '{home} に設定がありません。{setup} を実行してください'
+export const MSG_NO_TOKEN = '{home} にトークンがありません。{setup} を実行するか、{setToken} で登録してください'
+export const MSG_NO_AUTOMATION = '{home} の automation が登録されていません。{setup} を実行してください'
+export const MSG_DESTINATION_FIXED = '送り先は変更できません。{home} を退避してから設定し直してください'

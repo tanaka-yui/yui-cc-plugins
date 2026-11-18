@@ -40,6 +40,7 @@ import {
   writeProject,
   writeTriggerDef,
 } from '../slack-cli.ts'
+import { makeCommand } from '../workspace.ts'
 
 import type { SlackFailure } from '../slack-api.ts'
 import type { FormKind } from '../types.ts'
@@ -67,7 +68,7 @@ export const run = async (argv: string[]): Promise<void> => {
   const project = slackProject(rt.home)
   const app = deployedApp(project)
   if (!bin || !app) {
-    console.error(!app ? MSG_FORM_NO_APP : MSG_FORM_NO_CLI)
+    console.error(!app ? MSG_FORM_NO_APP : MSG_FORM_NO_CLI.replace('{setup}', makeCommand(rt.home, 'setup')))
     rt.db.close()
     process.exitCode = 2
     return
@@ -76,7 +77,7 @@ export const run = async (argv: string[]): Promise<void> => {
   writeProject(project)
   // deploy 済みのアプリに今のワークフローが無いと、ボタンを作れない。Workflow Builder ではなく make setup へ案内する
   if (readDeployedHash(project) !== manifestHash(formRepos(rt.config))) {
-    console.error(MSG_FORM_STALE_MANIFEST)
+    console.error(MSG_FORM_STALE_MANIFEST.replace('{setup}', makeCommand(rt.home, 'setup')))
     rt.db.close()
     process.exitCode = 2
     return
@@ -142,7 +143,7 @@ export const run = async (argv: string[]): Promise<void> => {
     // 新しい 3 つを画面で注目にしてもらうまでは、古いボタンを残す（チャンネルからボタンが消えないように）
     // 1 回目は案内だけして印を残し、案内どおり再実行されたら片付ける
     if (legacy && featuredState === FORM_FEATURED_MANUAL && !getMeta(rt.db, FORM_META_LEGACY_NOTIFIED)) {
-      console.error(MSG_FORM_LEGACY_KEPT)
+      console.error(MSG_FORM_LEGACY_KEPT.replace('{slackForm}', makeCommand(rt.home, 'slack-form')))
       setMeta(rt.db, FORM_META_LEGACY_NOTIFIED, legacy)
     } else if (legacy) {
       guard()

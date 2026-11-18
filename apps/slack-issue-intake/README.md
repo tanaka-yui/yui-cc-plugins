@@ -237,7 +237,7 @@ deploy（2 段目）から 7 段目までの間、古いボタンは押しても
 
 Slack CLI が使えないとき、または `make setup` の途中でフォームやマニフェストが受け付けられなかったときの手順です。skill `/slack-issue-intake` から進めるか、`node bin/slack-issue-intake.ts guide` で次の案内を表示します。
 
-Slack CLI にログインしているなら、この手順の代わりに `make setup` を使えます。
+Slack CLI にログインしているなら、この手順の代わりに `make setup NAME=<名前>` を使えます。
 1. https://api.slack.com/apps の Create New App → From a manifest で社内向けカスタムアプリを作り、ワークスペースにインストールします。配布しません。有料プランが必要です。
 
 マニフェスト:
@@ -271,9 +271,9 @@ Slack CLI にログインしているなら、この手順の代わりに `make 
   }
 }
 ```
-2. アプリの設定の OAuth & Permissions を開き、Bot User OAuth Token（xoxb- で始まる文字列）をコピーします。続けて `node bin/slack-issue-intake.ts set-token` を実行します（skill で進めているときは Claude が実行します）。
+2. アプリの設定の OAuth & Permissions を開き、Bot User OAuth Token（xoxb- で始まる文字列）をコピーします。続けて `node bin/slack-issue-intake.ts --name <名前> set-token` を実行します（skill で進めているときは Claude が実行します）。
 「slack-issue-intake」という題の入力ウィンドウが開くので、⌘V で貼り付けて OK を押します。入力欄はパスワード用と同じで、貼った文字は見えません。「saved token=」で始まる行が出れば登録できています。
-トークンは Claude との会話やコマンドの引数に書かないでください。会話に貼るとモデルに送られて記録にも残り、引数に書くとシェルの履歴に残ります。ウィンドウが開かず fallback=clipboard と出たときは、トークンをコピーした状態で `node bin/slack-issue-intake.ts set-token --from-clipboard` を実行します。
+トークンは Claude との会話やコマンドの引数に書かないでください。会話に貼るとモデルに送られて記録にも残り、引数に書くとシェルの履歴に残ります。ウィンドウが開かず fallback=clipboard と出たときは、トークンをコピーした状態で `node bin/slack-issue-intake.ts --name <名前> set-token --from-clipboard` を実行します。
 3. 対象チャンネルで /invite @Issue Intake を実行します。
 4. Workflow Builder で、チャンネルのボタンから開始するワークフローを、次の3つ作ります。それぞれ「フォームで情報を収集」と「チャンネルへメッセージを送信」を追加し、テンプレートの {…} にフォームの変数を差し込みます。添付ファイルの変数も付けます。カテゴリはワークフローごとに決まっているので、フォームでは聞きません。
 
@@ -372,9 +372,9 @@ Slack CLI にログインしているなら、この手順の代わりに `make 
 
 公開したら、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で3つすべてを選び、「注目」を押します。メンバーには入力欄の所にボタンが出ます。
 5. チャンネル名 → 詳細の最下部からチャンネルIDを控えます。
-6. `node bin/slack-issue-intake.ts init --channel <ID> --repo <owner/name> --every 5` を実行します。automation は無効で登録されます。受け付けるリポジトリが 2 つ以上なら `--repo` を並べ、`--default-repo <owner/name>` で既定の起票先を決めます。Slack から作っていない Issue をスレッドで管理するリポジトリには `--existing <owner/name>=thread` を付けます。
-7. `node bin/slack-issue-intake.ts permissions --show` で内容を確認し、承認してから `node bin/slack-issue-intake.ts permissions --apply` を実行します。
-8. `node bin/slack-issue-intake.ts enable` を実行します。受け継ぐ許可があれば内容を確認し、承認したときだけ `--accept-inherited` を付けます。
+6. `node bin/slack-issue-intake.ts --name <名前> init --channel <ID> --repo <owner/name> --every 5` を実行します。automation は無効で登録されます。受け付けるリポジトリが 2 つ以上なら `--repo` を並べ、`--default-repo <owner/name>` で既定の起票先を決めます。Slack から作っていない Issue をスレッドで管理するリポジトリには `--existing <owner/name>=thread` を付けます。
+7. `node bin/slack-issue-intake.ts --name <名前> permissions --show` で内容を確認し、承認してから `node bin/slack-issue-intake.ts --name <名前> permissions --apply` を実行します。
+8. `node bin/slack-issue-intake.ts --name <名前> enable` を実行します。受け継ぐ許可があれば内容を確認し、承認したときだけ `--accept-inherited` を付けます。
 Orca の Claude 起動引数へ --permission-mode や --allowedTools など許可を広げるものを入れないでください。
 最初の実行で bypass モードになっていないことを確認してください。bypass なら automation を無効にし、既定引数の --dangerously-skip-permissions を外してください。
 

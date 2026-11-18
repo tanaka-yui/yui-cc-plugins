@@ -26,18 +26,18 @@ test('DO1 配布文書と生成するSlack設定が一致', () => {
 })
 test('DO4 READMEの案内はguideの出力そのもので、make setupとフォームの権限を載せる', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
-  assert.ok(readme.includes(renderGuide()))
+  assert.ok(readme.includes(renderGuide('<名前>')))
   assert.ok(readme.includes('make setup'))
   for (const scope of FORM_EXTRA_SCOPES) assert.ok(readme.includes(scope))
   const makefile = readFileSync(join(root, 'Makefile'), 'utf8')
   for (const target of ['setup', 'slack-form', 'manifest']) assert.match(makefile, new RegExp(`^${target}:`, 'm'))
-  assert.ok(!renderGuide().includes('form --manifest'))
+  assert.ok(!renderGuide('<名前>').includes('form --manifest'))
   for (const kind of FORM_KINDS) {
-    assert.ok(renderGuide().includes(kind.title), kind.title)
-    assert.ok(renderGuide().includes(renderTemplate(kind)), kind.key)
+    assert.ok(renderGuide('<名前>').includes(kind.title), kind.title)
+    assert.ok(renderGuide('<名前>').includes(renderTemplate(kind)), kind.key)
     // テンプレートは ``` を含むので、外側は ~~~ で囲む（入れ子の ``` で表示が崩れないように）
-    assert.ok(renderGuide().includes(`~~~text\n${renderTemplate(kind)}\n~~~`), kind.key)
-    for (const item of kind.items) assert.ok(renderGuide().includes(item.label), item.label)
+    assert.ok(renderGuide('<名前>').includes(`~~~text\n${renderTemplate(kind)}\n~~~`), kind.key)
+    for (const item of kind.items) assert.ok(renderGuide('<名前>').includes(item.label), item.label)
   }
 })
 test('DO2 手順書のplaceholderをprocedureがすべて置き換えられる', () => {

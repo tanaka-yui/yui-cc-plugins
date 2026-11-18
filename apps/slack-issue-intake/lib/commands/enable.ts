@@ -8,6 +8,7 @@ import { runOrca } from '../orca.ts'
 import { homePaths, intakeHome } from '../paths.ts'
 import { inheritedGrants, permissionFingerprint, safetyProblems } from '../permissions.ts'
 import { maskSecrets } from '../secrets.ts'
+import { noAutomationReason, noConfigReason } from '../workspace.ts'
 export const run = (argv: string[]): void => {
   const { values } = parseFlags('enable', {
     args: argv,
@@ -16,7 +17,7 @@ export const run = (argv: string[]): void => {
   const home = intakeHome()
   const config = loadConfig(home)
   if (!config?.orca.automationId) {
-    console.error('init で automation を登録してください')
+    console.error(!config ? noConfigReason(home) : noAutomationReason(home))
     process.exitCode = 2
     return
   }
