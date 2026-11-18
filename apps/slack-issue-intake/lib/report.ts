@@ -157,7 +157,8 @@ export const postReport = async (ctx: DriveContext): Promise<ReportResult> => {
   }
   const now = ctx.now()
   const channel = setting.channel ?? rt.config.channel
-  const text = renderReport(report, now)
+  // ハッシュも絞ったあとの文面から作るので、ほかのワークスペースの作業だけが変わった回は書き換えない
+  const text = renderReport(scopeReport(report, rt.config), now)
   const hash = createHash('sha256').update(text).digest('hex')
   const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
   const [hours = 0, minutes = 0] = setting.dailyAt.split(':').map(Number)
