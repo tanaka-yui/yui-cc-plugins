@@ -99,11 +99,14 @@ if (load === undefined) {
       }
       process.env[HOME_ENV] = homeForName(name)
     } else {
+      const exampleRest = rest.filter(
+        (arg, index) => arg !== '--name' && !arg.startsWith('--name=') && rest[index - 1] !== '--name',
+      )
       die(
         NAME,
         nameRequiredMessage(
           MSG_NAME_REQUIRED,
-          (n) => commandWithName(relative(process.cwd(), process.argv[1] ?? ''), [command ?? '', ...rest], n),
+          (n) => commandWithName(relative(process.cwd(), process.argv[1] ?? ''), [command ?? '', ...exampleRest], n),
           names,
           legacyHomeNotice(),
         ),

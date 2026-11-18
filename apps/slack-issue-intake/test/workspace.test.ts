@@ -17,6 +17,13 @@ test('NR5 名前なしでは候補と名前付きコマンドを示し、使用�
   for (const text of ['今あるワークスペース: acme', '--name acme inspect --raw'])
     assert.ok(r.stderr.includes(text), text)
   assert.deepEqual(readdirSync(user), ['.slack-issue-intake-acme'])
+  for (const suffix of [['--name', 'acme'], ['--name=acme']]) {
+    const misplaced = runCli(['status', ...suffix], env)
+    assert.equal(misplaced.code, 2)
+    assert.match(misplaced.stderr, /^例: node bin\/slack-issue-intake\.ts --name acme status$/m)
+    assert.ok(!misplaced.stderr.includes('status --name'))
+  }
+  assert.equal(runCli(['--name', 'acme', 'status'], env).code, 0)
   const legacy = tempHome()
   mkdirSync(join(legacy, '.slack-issue-intake'))
   const none = runCli(['status'], { ...env, HOME: legacy })
