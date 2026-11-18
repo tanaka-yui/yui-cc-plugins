@@ -1,6 +1,7 @@
 // slack-issue-intake と orca-team-dispatch-task が共有する約束の一致を確かめる（spec 5.1 / 5.4）。
 // プラグインは別々にインストールされるので、同じ定義を両方に写して持ち、ここで食い違いを見つける。
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
@@ -39,6 +40,33 @@ for (const key of ['INTAKE_HOME_DIRNAME', 'INTAKE_NAME_RESERVED_SUFFIX'])
 const [p, q] = [intakeLabels.INTAKE_NAME_PATTERN, intakeHomes.INTAKE_NAME_PATTERN]
 if (!(p instanceof RegExp && q instanceof RegExp && p.source === q.source && p.flags === q.flags))
   problems.push('INTAKE_NAME_PATTERN が違います（slack-issue-intake と orca-team-dispatch-task）')
+
+const intakePaths = await import(join(intake, 'lib/paths.ts'))
+const tmp = mkdtempSync(join(tmpdir(), 'intake-contract-'))
+try {
+  for (const name of [
+    '.slack-issue-intake',
+    '.slack-issue-intake-a',
+    '.slack-issue-intake-c',
+    '.slack-issue-intake-b-slack-app',
+    '.slack-issue-intake-slack-app',
+    '.slack-issue-intake-UP',
+    `.slack-issue-intake-${'x'.repeat(33)}`,
+    '.slack-issue-intakeX',
+  ]) {
+    mkdirSync(join(tmp, name))
+    writeFileSync(join(tmp, name, 'config.json'), '{}')
+  }
+  const expected = intakePaths
+    .listIntakeNames(tmp)
+    .map((name) => join(tmp, `${intakeLabels.INTAKE_HOME_DIRNAME}-${name}`, 'config.json'))
+  if (!isDeepStrictEqual(expected, intakeHomes.listIntakeConfigs(tmp)))
+    problems.push(
+      '名前つきのホームの選び方が違います（slack-issue-intake の listIntakeNames と orca-team-dispatch-task の listIntakeConfigs）',
+    )
+} finally {
+  rmSync(tmp, { recursive: true, force: true })
+}
 
 if (problems.length) {
   for (const p of problems) console.error(p)

@@ -798,7 +798,7 @@ test('MI10 the key migration re-reads config.json under the lock and never overw
 test('MI6 two intake homes are offered and their repos become candidates', () => {
   const f = prepare()
   try {
-    const ws1 = join(f.userHome, '.slack-issue-intake', 'config.json')
+    const ws1 = join(f.userHome, '.slack-issue-intake-ws1', 'config.json')
     const ws2 = join(f.userHome, '.slack-issue-intake-ws2', 'config.json')
     for (const [path, repo] of [
       [ws1, 'acme/app'],
@@ -825,7 +825,7 @@ test('MI6 two intake homes are offered and their repos become candidates', () =>
 test('MI8 other intake paths are checked and at least one intake is required', () => {
   const f = prepare()
   try {
-    const ws1 = join(f.userHome, '.slack-issue-intake', 'config.json')
+    const ws1 = join(f.userHome, '.slack-issue-intake-ws1', 'config.json')
     mkdirSync(dirname(ws1), { recursive: true })
     f.put(ws1, { repos: [{ name: 'acme/app' }] })
     rmSync(f.configFile)
@@ -844,6 +844,49 @@ test('MI8 other intake paths are checked and at least one intake is required', (
       draft.values.sources?.map((s) => s.repo),
       ['acme/app', 'other/api'],
     )
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('MI11 unnamed intake home is not offered for fresh setup', () => {
+  const f = prepare()
+  try {
+    const legacy = join(f.userHome, '.slack-issue-intake', 'config.json')
+    const ws2 = join(f.userHome, '.slack-issue-intake-ws2', 'config.json')
+    for (const [path, repo] of [
+      [legacy, 'acme/app'],
+      [ws2, 'other/api'],
+    ] as const) {
+      mkdirSync(dirname(path), { recursive: true })
+      f.put(path, { repos: [{ name: repo }] })
+    }
+    rmSync(f.configFile)
+    const result = f.invoke(['', '', '1', ''])
+    assert.equal(result.status, 2, result.stdout + result.stderr)
+    assert.ok(result.stdout.includes(`  1. ${ws2}`), result.stdout)
+    assert.ok(!result.stdout.includes(legacy), result.stdout)
+    assert.deepEqual(draftOf().values.intakeConfigs, [ws2])
+  } finally {
+    f.cleanup()
+  }
+})
+test('MI12 configured unnamed intake stays offered and selected with Enter', () => {
+  const f = prepare()
+  try {
+    const legacy = join(f.userHome, '.slack-issue-intake', 'config.json')
+    const ws2 = join(f.userHome, '.slack-issue-intake-ws2', 'config.json')
+    for (const path of [legacy, ws2]) {
+      mkdirSync(dirname(path), { recursive: true })
+      f.put(path, { repos: [{ name: 'acme/app' }] })
+    }
+    const configured = { ...f.raw, intakeConfigs: [legacy] }
+    Reflect.deleteProperty(configured, 'intakeConfig')
+    f.put(f.configFile, configured)
+    const result = f.invoke(['', '', '', ''])
+    assert.equal(result.status, 2, result.stdout + result.stderr)
+    assert.ok(result.stdout.includes(legacy) && result.stdout.includes(ws2), result.stdout)
+    assert.deepEqual(draftOf().values.intakeConfigs, [legacy])
   } finally {
     f.cleanup()
   }

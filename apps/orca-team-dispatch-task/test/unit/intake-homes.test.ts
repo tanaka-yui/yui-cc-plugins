@@ -26,7 +26,6 @@ test('MI4 intake homes are listed by the shared naming rule', () => {
       if (hasConfig) writeFileSync(join(tmp, name, 'config.json'), '{}')
     }
     assert.deepEqual(listIntakeConfigs(tmp), [
-      join(tmp, '.slack-issue-intake', 'config.json'),
       join(tmp, '.slack-issue-intake-b', 'config.json'),
       join(tmp, '.slack-issue-intake-ws2', 'config.json'),
     ])

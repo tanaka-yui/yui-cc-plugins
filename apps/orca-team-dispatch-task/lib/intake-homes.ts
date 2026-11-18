@@ -17,10 +17,9 @@ export const listIntakeConfigs = (home: string): string[] => {
   return names
     .filter(
       (name) =>
-        name === INTAKE_HOME_DIRNAME ||
-        (name.startsWith(prefix) &&
-          INTAKE_NAME_PATTERN.test(name.slice(prefix.length)) &&
-          !name.endsWith(INTAKE_NAME_RESERVED_SUFFIX)),
+        name.startsWith(prefix) &&
+        INTAKE_NAME_PATTERN.test(name.slice(prefix.length)) &&
+        !name.endsWith(INTAKE_NAME_RESERVED_SUFFIX),
     )
     .sort()
     .map((name) => join(home, name, 'config.json'))
