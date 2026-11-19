@@ -378,6 +378,8 @@ export const KNOWLEDGE_CLAUDE_ENV = 'SLACK_ISSUE_INTAKE_CLAUDE_BIN' // テスト
 export const KNOWLEDGE_CLAUDE_BIN = 'claude'
 export const KNOWLEDGE_GIT_BIN = 'git'
 export const KNOWLEDGE_TOOLS = 'Read,Glob,Grep'
+// 索引を作る claude -p が読む設定。clone の project / local の設定は読ませない
+export const KNOWLEDGE_SETTING_SOURCES = 'user'
 export const KNOWLEDGE_CLONE_TIMEOUT_MS = 300_000
 export const KNOWLEDGE_GIT_TIMEOUT_MS = 10_000
 export const KNOWLEDGE_CLAUDE_TIMEOUT_MS = 600_000

@@ -87,6 +87,14 @@ test('KN1 docs だけを写し、AI の索引から INDEX.md・index.json・meta
     '--strict-mcp-config',
   ])
     assert.ok(call?.argv.includes(arg), arg)
+  // clone の設定（hooks など）を読ませず、読み取りの許可は clone の中だけに絞る
+  const argv = call?.argv ?? []
+  assert.equal(argv[argv.indexOf('--setting-sources') + 1], 'user')
+  const allowed = argv[argv.indexOf('--allowedTools') + 1] ?? ''
+  // clone は消えているので realpath は取れない。macOS の /private の有無だけをそろえて比べる
+  const bare = (path: string): string => path.replace(/^\/private\//, '/')
+  assert.equal(bare(allowed.slice('Read(/'.length, -'/**)'.length)), bare(call?.cwd ?? ''))
+  assert.ok(allowed.startsWith('Read(//') && allowed.endsWith('/**)'), allowed)
   const clone = ghCalls(f.gh.log).find((c) => c.argv[0] === 'repo' && c.argv[1] === 'clone')
   assert.deepEqual(clone?.argv.slice(0, 3), ['repo', 'clone', 'acme/app'])
   assert.deepEqual(clone?.argv.slice(-3), ['--', '--depth', '1'])

@@ -39,13 +39,13 @@ Slack CLI の呼び先の差し替えは SLACK_ISSUE_INTAKE_SLACK_CLI（テス�
 「質問する」（FORM_KINDS の question、titled: false）は題と優先度の欄を持たない。parse は本文の先頭行を題にし、優先度は QUESTION_ISSUE_PRIORITY、fields.questionKind で質問を見分ける（それより前の行には無い）。投稿の形の種類別の分岐は form-message.ts・form.ts・guide.ts・parse.ts の titled だけ。
 状態: answer は asking→waiting を使い回し（decision.action で分岐）、close は driven の closing→終端 closed（Issue なし。statusSync などは issue_number の無い行を見ない）。返信なしの時間切れは sync が waiting から closed にして Claude を起こさない。mustClose は rounds が MAX_ANSWER_ROUNDS 以上。質問の mustCreate は常に false。
 質問からの create は validateDecisions が unsure・issueProposed・answered・title を確かめ、apply が fields をバグ・middle・決定の題に書き換えてから creating へ進める（ラベルを足さないので labels_hash は変わらない）。issueProposed は自分の投稿に MSG_ANSWER_PROPOSE があるかで決めるので、文言を変えると投稿済みの提案を見失う。
-sources は work.json の knowledge.files（collect が meta.json から写す）にあるものだけ。permalink は validateDecisions が knowledge.commit から作り、決定に links として残す。FAQ は drive が answer の投稿と状態の保存に成功したあとで足す（poll の再試行でも）。書けなくても結果は変えない。
-索引は lib/knowledge.ts。clone は config.ghPath の `gh repo clone <repo> <dir> -- --depth 1`（独自の timeout。createGh の30秒では足りない）、commit は git rev-parse、claude -p は orca-team-dispatch-task の lib/setup-suggest.ts を写した読み取りだけの形（import しない）。AI の文字列と写すドキュメントは maskSecrets を通す。docs/ は全部書けたあとにリネームで入れ替え、meta.json を最後に書き、faq.jsonl には触れない。リースは取らない（faq を書くのは apply / poll だけ）。setup の8段は全リポジトリに meta.json があれば済み、失敗しても止めない。form は始めに作り直し、setup からは --skip-knowledge で呼ぶ（二度作らない）。
+sources は work.json の knowledge.files（collect が meta.json から写す）にあるものだけ。permalink は validateDecisions が knowledge.commit から作り、決定に links として残す。FAQ は drive が answer の投稿と状態の保存に成功したあとで足す（poll の再試行でも）。足すのは sources のある回答だけ（根拠の無い回答とスレッドの文を次の回答の材料に混ぜない。QA3）。書けなくても結果は変えない。
+索引は lib/knowledge.ts。clone は config.ghPath の `gh repo clone <repo> <dir> -- --depth 1`（独自の timeout。createGh の30秒では足りない）、commit は git rev-parse、claude -p は orca-team-dispatch-task の lib/setup-suggest.ts を写した読み取りだけの形（import しない）だが、clone は信頼できない中身なので 2 つ絞る: `--setting-sources user`（clone の .claude/settings.json の hooks などを読ませない）と、`--allowedTools` を素の Read,Glob,Grep ではなく `Read(/<clone の realpath>/**)` だけにする（素の許可はホームの鍵など clone の外まで読ませ、要約に混ぜて Slack へ出しうる）。dontAsk で clone の中の Glob / Grep が通るかは実機で未確認（KN1）。AI の文字列と写すドキュメントは maskSecrets を通す。docs/ は全部書けたあとにリネームで入れ替え、meta.json を最後に書き、faq.jsonl には触れない。リースは取らない（faq を書くのは apply / poll だけ）。setup の8段は全リポジトリに meta.json があれば済み、失敗しても止めない。form は始めに作り直し、setup からは --skip-knowledge で呼ぶ（二度作らない）。
 無人の Claude に足した許可は `Read(/<home>/knowledge/**)` だけ（PM1）。許可の一覧が変わるので、更新した環境は setup の10段で承認し直すまで poll が permissions で止まる。
 
 ## 複数リポジトリと既存 Issue
 
-config の repos / defaultRepo は init だけが書き換えます。repo の正本は submissions.repo で、fields の JSON には持ちません。Issue は owner/repo#番号、DB の状態は (repo, issue_number) で区別します。formRepos は既定を常に含め、2件以上なら任意の repo 欄を出します。setup は11段で、7段が report、8段が knowledge、9段が form、10段が承認、11段が有効化です（「セットアップのウィザード」の冒頭の10段は0.6までの数）。
+config の repos / defaultRepo は init だけが書き換えます。repo の正本は submissions.repo で、fields の JSON には持ちません。Issue は owner/repo#番号、DB の状態は (repo, issue_number) で区別します。formRepos は既定を常に含め、2件以上なら任意の repo 欄を出します。setup は11段で、7段が report、8段が knowledge、9段が form、10段が承認、11段が有効化です。
 
 表・列は openDb、0.4 の行と meta の移行は migrateToRepos がリース下でフェンス付きで行います。呼ぶのは poll と init だけで、init は config 保存前に旧defaultRepoで移します。これで既定の変更が過去の Issue の行き先を変えません。
 

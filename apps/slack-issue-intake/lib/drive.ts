@@ -227,7 +227,8 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
           ? { state: 'closed', decision: null }
           : { state: 'rejected' },
   )
-  if (answer && !done.error && s.fields) {
+  // FAQ は根拠のドキュメントを示せた回答だけ残す（根拠の無い回答とスレッドの文を、次の回答の材料に混ぜない）
+  if (answer && answer.sources.length && !done.error && s.fields) {
     const question = s.transcript.filter((e) => e.from === 'human').at(-1)?.text ?? s.fields.body
     try {
       appendFaq(rt.home, {

@@ -149,6 +149,8 @@ test('QA3 根拠の無い回答は担当のグループへメンションし、�
   const text = f.posts().at(-1) ?? ''
   assert.ok(text.includes('<!subteam^S0DEV0001>'), text)
   assert.ok(text.includes(PROPOSE), text)
+  // 根拠の無い回答は FAQ に残さない（スレッドの文が次の回答の材料に紛れ込まないように）
+  assert.ok(!existsSync(join(f.knowledge, 'faq.jsonl')))
 })
 
 test('QA4 回答の上限に達した質問は close だけを受け、担当者にメンションして closed にする', async (t) => {
