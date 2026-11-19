@@ -35,6 +35,7 @@ const inputs: CommentInput[] = [
   { event: 'human-merged', generation: 1, prs: [pr('acme/app', 101)] },
   { event: 'failed', generation: 2, reason: '上限時間（60 分）を超えました。', branch: 'auto/issue-42', pushed: true },
   { event: 'stalled', generation: 1, elapsedMinutes: 45, limitMinutes: 60 },
+  { event: 'auto-ready', generation: 1, reason: '文言の誤字を直すだけの明確な修正です。', limitMinutes: 30 },
 ]
 const fixtures: Array<{ event: string; status: string; body: string }> = JSON.parse(
   readFileSync(new URL('../fixtures/orca-auto-comments.json', import.meta.url), 'utf8'),

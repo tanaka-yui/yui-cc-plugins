@@ -211,6 +211,7 @@ export const META_LABELS_HASH = 'labels_hash'
 // ステータスの通知（spec 5.3）。orca-team-dispatch-task がラベルを動かすときのコメントの event ごとの文言と、メンションするか。
 // {issue} は Issue の URL、{comment} はコメント本文を Slack の形にしたもの。template が null の event はふつうの変化として書く
 export const STATUS_EVENTS: Record<string, { mention: boolean; template: string | null }> = {
+  'auto-ready': { mention: false, template: 'AI が自動で対応できると判断して Ready にしました\n{issue}\n\n{comment}' },
   judged: { mention: true, template: 'エンジニアの対応が必要と判断しました（Ready_Eng）\n{issue}\n\n{comment}' },
   started: { mention: false, template: null },
   'needs-review': { mention: true, template: '確認をお願いします（In review）\n{issue}\n\n{comment}' },

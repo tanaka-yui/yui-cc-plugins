@@ -932,6 +932,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
   if (result && !result.verify.passed) reasons.push('確認コマンドが通っていません。')
   if (result?.envFailure) reasons.push(`環境が原因: ${result.envFailure}`)
   if (issue.reviewPoints.length) reasons.push('人の確認が要る点があります。')
+  if (issue.autoReady) reasons.push('AI が Backlog から Ready にした Issue なので、merge の前に人が確認します。')
   if (multi ? statuses.some((s) => s?.state === 'OPEN' && s.checks === 'fail') : status.checks === 'fail')
     reasons.push('CI が失敗しました。')
   const host = hostsOf(tick.config).find((h) => h.id === (issue.host ?? LOCAL_HOST))

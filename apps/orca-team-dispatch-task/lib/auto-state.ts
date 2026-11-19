@@ -58,6 +58,8 @@ export type IssueState = {
   finishingSince: string | null
   cleanupPending: boolean
   returnedFromEng: boolean
+  // この世代を Backlog から拾った（auto-ready）。人が Ready にしたら false。true の世代は AI が merge しない
+  autoReady: boolean
   endedAt: string | null
   checkedAt: string | null
   prevBranch: string | null
@@ -81,6 +83,8 @@ export type AutoState = {
   judgingSince: string | null
   issues: Record<string, IssueState>
   projectSync: Record<string, ProjectPair>
+  // 拾う元ごとに auto-ready を有効にした時刻。これより前に作られた Backlog の Issue は拾わない
+  autoReadySince?: Record<string, string>
 }
 export const limitOf = (issue: Pick<IssueState, 'limitMinutes' | 'relayMinutes'>): number =>
   issue.limitMinutes + issue.relayMinutes
@@ -135,11 +139,17 @@ export const readState = (name: string): AutoState => {
     if (issue.prevTargets === undefined) issue.prevTargets = []
     else if (!Array.isArray(issue.prevTargets) || issue.prevTargets.some((v) => typeof v !== 'string'))
       throw new Error(`状態ファイルが壊れています: ${key}`)
+    if (issue.autoReady === undefined) issue.autoReady = false
+    else if (typeof issue.autoReady !== 'boolean') throw new Error(`状態ファイルが壊れています: ${key}`)
     for (const field of ['host', 'hostUnreachableSince']) {
       if (issue[field] === undefined) issue[field] = null
       else if (issue[field] !== null && typeof issue[field] !== 'string')
         throw new Error(`状態ファイルが壊れています: ${key}`)
     }
+  }
+  if (value.autoReadySince !== undefined) {
+    const since = asObject(value.autoReadySince)
+    if (!since || Object.values(since).some((v) => typeof v !== 'string')) throw new Error('状態ファイルが壊れています')
   }
   if (value.projectSync === undefined) value.projectSync = {}
   const projectSync = asObject(value.projectSync)

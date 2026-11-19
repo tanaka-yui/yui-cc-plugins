@@ -148,6 +148,7 @@ const main = (argv: string[]): number => {
               labels: labelNames(detail.labels),
               category: issue.category,
               returnedFromEng: issue.returnedFromEng,
+              autoReady: issue.autoReady,
               related: config.sources.find((s) => s.repo === issue.repo)?.related ?? [],
             },
           ]
@@ -204,8 +205,10 @@ const main = (argv: string[]): number => {
       issue.reason = decision.reason
       issue.updatedAt = autoNow()
       const feature = issue.category === FEATURE_LABEL && !issue.returnedFromEng
-      if (decision.route === 'eng' || uniqueTargets.length > 2 || feature) {
-        const current = viewIssue(issue.repo, issue.number)
+      const toEng = decision.route === 'eng' || uniqueTargets.length > 2 || feature
+      // auto-ready の Issue は Backlog から動かすので、どちらの経路でも今のラベルを読む
+      const current = toEng || issue.autoReady ? viewIssue(issue.repo, issue.number) : null
+      if (toEng || issue.autoReady) {
         if (!current) {
           rejected = true
           continue
@@ -215,7 +218,12 @@ const main = (argv: string[]): number => {
           save()
           continue
         }
-        if (!current.labels.includes(STATUS.ready)) {
+        // 判定の間に人が Ready にしたら、人が「やる」と決めた通常の Issue として扱う
+        if (issue.autoReady && current.labels.includes(STATUS.ready)) issue.autoReady = false
+      }
+      const from = issue.autoReady ? STATUS.backlog : STATUS.ready
+      if (toEng) {
+        if (!current?.labels.includes(from)) {
           issue.phase = 'stopped'
           save()
           continue
@@ -230,10 +238,31 @@ const main = (argv: string[]): number => {
             limitMinutes: issue.limitMinutes,
             relayMinutes: relayAllowance(config.roles, config.everyMinutes),
           },
-          STATUS.ready,
+          from,
           STATUS.readyEng,
           false,
           'eng',
+          save,
+        )
+      } else if (issue.autoReady) {
+        if (!current?.labels.includes(STATUS.backlog)) {
+          issue.phase = 'stopped'
+          save()
+          continue
+        }
+        // コメント → ラベルの順に Backlog から Ready へ。終わると queued になり、途中で止まれば tick が続きをやる
+        transition(
+          issue,
+          'auto-ready',
+          {
+            reason: issue.reason,
+            limitMinutes: issue.limitMinutes,
+            relayMinutes: relayAllowance(config.roles, config.everyMinutes),
+          },
+          STATUS.backlog,
+          STATUS.ready,
+          false,
+          'queued',
           save,
         )
       } else {

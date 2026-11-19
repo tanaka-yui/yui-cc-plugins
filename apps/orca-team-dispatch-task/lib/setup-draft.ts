@@ -138,7 +138,11 @@ export const configJsonFromDraft = (draft: SetupDraft, base: JsonObject | null):
     if (value !== undefined) next[key] = structuredClone(value)
   }
   if (v.sources)
-    next.sources = v.sources.map(({ project, ...source }) => ({ ...source, ...(project ? { project } : {}) }))
+    next.sources = v.sources.map(({ project, autoReady, ...source }) => ({
+      ...source,
+      ...(project ? { project } : {}),
+      ...(autoReady ? { autoReady } : {}),
+    }))
   if (v.hosts)
     next.hosts = v.hosts.map(({ spec, repos, ...host }) => ({
       ...host,

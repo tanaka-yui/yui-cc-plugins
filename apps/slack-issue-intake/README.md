@@ -33,7 +33,7 @@ orca-team-dispatch-task の `--auto` が書く報告の材料から、実行中�
 | ラベル | 付ける人 | 意味 |
 |---|---|---|
 | Backlog | このプラグイン（起票時） | 起票直後。人の判断待ち |
-| Ready | 人 | やる。AI が拾う対象 |
+| Ready | 人（auto-ready なら AI） | やる。AI が拾う対象 |
 | Pending | 人 | 後回し |
 | Ready_Eng | AI | 重い・長い・新機能など。エンジニアが対応する |
 | In progress | AI | AI が実装中 |
@@ -45,6 +45,7 @@ orca-team-dispatch-task の `--auto` が書く報告の材料から、実行中�
 
 | 変化 | スレッドへの書き込み | メンション |
 |---|---|---|
+| Ready（auto-ready で AI が判定） | 自動で対応すると判断したことと判定の理由 | なし |
 | Ready_Eng（AI の判定） | エンジニアへの依頼と判定の理由 | あり |
 | In review（AI） | 確認の依頼、PR、AI が決めた点 | あり |
 | Done（AI が merge した） | 完了したこと、PR、変更の要約 | あり |
@@ -61,6 +62,7 @@ orca-team-dispatch-task の `--auto` が書く報告の材料から、実行中�
 - メンションするのは、`make setup NAME=<名前>` の 6 段目で入力したユーザーグループです。空のまま進めたときはメンションしません。あとから変えるときは `node bin/slack-issue-intake.ts --name <名前> mention --group <ハンドル>`（やめるときは `--none`）を実行します。
 - この機能を入れる前からある Issue は、最初に見たときに今の状態を記録するだけで、知らせません。Backlog も付けません。
 - ステータスラベルが 2 つ以上付いているときは、Done、Failed、In review、Ready_Eng、In progress、Pending、Ready、Backlog の順で先にあるものとみなします。
+- Backlog から Ready への判断も AI に任せるときは、orca-team-dispatch-task の `make setup NAME=<name>` の 2 段目（拾う元）で auto-ready を使います。有効にした後に起票された Issue だけが対象で、自動で対応できるものは Ready、難しいものは Ready_Eng になります。auto-ready で Ready になった Issue の PR は必ず In review で止まり、人が merge します。
 
 ## 仕組み
 

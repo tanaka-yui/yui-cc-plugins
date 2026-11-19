@@ -10,6 +10,7 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 
 `--auto` は複数リポジトリのReadyを1本のキューにまとめ、判定・dispatch・PRのmergeまたは確認依頼まで進める。
 `make auto` で1回まわし、report.jsonをSlack側へ渡す。このMacとペアリング済みサーバーへ空き・確認結果で振り分け、メールとoriginへのpushで成果を受け渡す。対象は1件2リポジトリまで（3つ以上はReady_Eng）。
+拾う元ごとに auto-ready（`autoReady`）を有効にすると、Backlog の Issue も判定し、自動で対応できるものを Ready に、難しいものを Ready_Eng にする。auto-ready で Ready にした Issue の PR は AI が merge せず、必ず人の確認に回す。
 このモードだけは停止・解放とpushを確認してから資源を片付ける。使い方はskillのAuto modeを参照。
 
 ## 範囲と制限

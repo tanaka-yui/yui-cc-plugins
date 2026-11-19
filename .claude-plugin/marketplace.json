@@ -153,7 +153,7 @@
       "name": "orca-team-dispatch-task",
       "description": "Orca の worktree で 1 つ以上のタスクを worker に並列実行させ、成果を親ブランチへ取り込む",
       "source": "./apps/orca-team-dispatch-task",
-      "version": "3.13.1",
+      "version": "3.14.0",
       "license": "MIT",
       "category": "terminal",
       "tags": [
@@ -180,7 +180,7 @@
       "name": "slack-issue-intake",
       "description": "Slack のフォーム投稿から GitHub Issue を起票する（Orca automation の precheck で、投稿があるときだけ Claude を起動）",
       "source": "./apps/slack-issue-intake",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "license": "MIT",
       "category": "productivity",
       "tags": [

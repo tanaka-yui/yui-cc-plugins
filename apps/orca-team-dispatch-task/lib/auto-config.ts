@@ -17,7 +17,13 @@ export type AutoConfig = {
   name: string
   everyMinutes: number
   intakeConfigs: string[]
-  sources: Array<{ repo: string; related: string[]; pick: string; project: ProjectRef | null }>
+  sources: Array<{
+    repo: string
+    related: string[]
+    pick: string
+    project: ProjectRef | null
+    autoReady: boolean
+  }>
   repos: Record<string, { checkout: string; verify: string[]; infra: boolean; verified: boolean; ci: boolean }>
   hosts: HostConfig[] | null
   automation: { id: string; acceptedFingerprint: string | null } | null
@@ -70,7 +76,10 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
     const related = strings(s?.related)
     const pick = s?.pick === undefined ? 'Ready' : asString(s.pick)
     const project = s?.project === undefined ? null : asObject(s.project)
+    const autoReady = boolean(s?.autoReady, false)
     if (
+      autoReady === null ||
+      (autoReady && pick !== 'Ready') ||
       !repo ||
       !/^[^/\s]+\/[^/\s]+$/.test(repo) ||
       !related?.length ||
@@ -89,6 +98,7 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
       related,
       pick,
       project: project ? { owner: project.owner as string, number: project.number as number } : null,
+      autoReady,
     })
   }
   const hosts = parseHosts(input.hosts, repos)

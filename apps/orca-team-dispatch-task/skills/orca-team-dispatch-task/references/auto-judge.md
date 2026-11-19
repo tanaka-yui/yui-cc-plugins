@@ -4,6 +4,8 @@
 
 Choose `auto` for a bounded, clear correction and `eng` for difficult work or work that would occupy a lane for a long time. New features normally go to engineering. Up to two target repositories may run automatically; three or more must go to engineering. Write `targets` in dependency order, putting repositories that must merge first before their dependents (for example, the API before its client). PRs merge in that order. Targets must be a nonempty subset of the Issue's `related` list. Set an integer `limitMinutes` between 1 and `limits.maxMinutes`; use `limits.defaultMinutes` as a starting point. Tick adds the waiting between roles (review mail relayed one tick at a time and the start of a separate implementation stage) on top of `limitMinutes`; do not include it in your estimate. Long estimates are a reason to choose engineering.
 
+`autoReady` means the Issue is still in Backlog: no person has decided to do it yet, and `auto` makes it Ready without a person. Choose `auto` for it only when the request is clearly a small, bounded correction and clearly wanted as written; when in doubt, choose `eng`. Its PR always waits for human review.
+
 `returnedFromEng` means a person moved the Issue back from engineering: prefer `auto` when feasible, including for a feature. Write a concrete, nonempty `reason` in Japanese. Never put credentials or other secrets in the result.
 
 Write a JSON array to the absolute `decisionsFile` returned by `judge-list`, with one object per Issue: `key`, `generation`, `route` (`auto` or `eng`), `targets`, `limitMinutes`, and `reason`. Copy the exact key and generation. Run the `judge-apply` command printed under `## Commands`.
