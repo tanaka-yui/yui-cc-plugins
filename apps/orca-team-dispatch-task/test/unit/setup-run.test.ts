@@ -11,6 +11,8 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 
+import type { SetupCommand } from '../../lib/auto-setup.ts'
+
 const gitRepo = (path: string, repo: string) => {
   mkdirSync(path, { recursive: true })
   for (const args of [
@@ -80,19 +82,27 @@ const prepare = () => {
     a[a.length - 1] = last
     return invoke(a)
   }
-  const rerun = (overrides: Record<string, string> = {}) => {
+  const rerun = (overrides: Record<string, string> = {}, only?: SetupCommand) => {
     let output = ''
+    const asked: string[] = []
     const code = runSetup(
       'main',
       {
-        ask: (q, fallback) => Object.entries(overrides).find(([key]) => q.includes(key))?.[1] ?? fallback ?? '',
-        confirm: (q) => Object.entries(overrides).find(([key]) => q.includes(key))?.[1] === 'y',
+        ask: (q, fallback) => {
+          asked.push(q)
+          return Object.entries(overrides).find(([key]) => q.includes(key))?.[1] ?? fallback ?? ''
+        },
+        confirm: (q) => {
+          asked.push(q)
+          return Object.entries(overrides).find(([key]) => q.includes(key))?.[1] === 'y'
+        },
       },
       (text) => {
         output += text
       },
+      only,
     )
-    return { code, output }
+    return { code, output, asked }
   }
   const cleanup = () => {
     Reflect.deleteProperty(process.env, 'ORCA_AUTO_CLAUDE_HOME')
@@ -888,6 +898,96 @@ test('MI12 configured unnamed intake stays offered and selected with Enter', () 
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.ok(result.stdout.includes(legacy) && result.stdout.includes(ws2), result.stdout)
     assert.deepEqual(draftOf().values.intakeConfigs, [legacy])
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU40 roles changes only review_mode and phase_b and leaves automation and draft alone', () => {
+  const f = prepare()
+  try {
+    const before = f.config()
+    const result = f.rerun({ review_mode: 'on', phase_b: 'on', 'config.json を書きますか': 'y' }, 'roles')
+    assert.equal(result.code, 0, result.output)
+    assert.deepEqual(f.config(), { ...before, roles: { review_mode: 'on', phase_b: 'on' } })
+    assert.deepEqual(
+      result.asked.map((q) => q.split(' ')[0]),
+      ['review_mode', 'phase_b', 'この内容で'],
+    )
+    assert.match(result.output, /1 件が使う worktree: 対象1つ=4、対象2つ=8/)
+    assert.equal(f.calls(f.orca), '')
+    assert.equal(existsSync(join(autoDir('main'), 'setup.json')), false)
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU40b roles with Enter only writes nothing', () => {
+  const f = prepare()
+  try {
+    const { intakeConfig, ...rest } = f.raw
+    f.put(f.configFile, { ...rest, intakeConfigs: [intakeConfig] })
+    const before = readFileSync(f.configFile, 'utf8')
+    const result = f.rerun({}, 'roles')
+    assert.equal(result.code, 0, result.output)
+    assert.match(result.output, /変わる所はありません/)
+    assert.equal(readFileSync(f.configFile, 'utf8'), before)
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU41 hosts asks only machines, checks and lanes, and a changed selector loses verification', () => {
+  const f = prepare()
+  try {
+    remoteResponses(f)
+    f.put(f.configFile, { ...f.raw, hosts: [localHost(f), remoteHost] })
+    const result = f.rerun(
+      {
+        'Server の acme/app の checkout': '2',
+        'acme/app を Server で走らせて確かめますか': 'n',
+        'config.json を書きますか': 'y',
+      },
+      'hosts',
+    )
+    assert.equal(result.code, 0, result.output)
+    assert.deepEqual(f.config().hosts?.[1]?.repos['acme/app'], { selector: 'id:R2', verified: false, measure: null })
+    assert.ok(!result.asked.some((q) => /intake|review_mode|判定の間隔/.test(q)), result.asked.join('\n'))
+    assert.ok(!f.calls(f.orca).includes('automations'))
+    assert.equal(existsSync(join(autoDir('main'), 'setup.json')), false)
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU42 hosts and roles refuse without config and during an unfinished setup', () => {
+  const f = prepare()
+  try {
+    const raw = readFileSync(f.configFile, 'utf8')
+    rmSync(f.configFile)
+    const missing = f.rerun({}, 'roles')
+    assert.equal(missing.code, 1)
+    assert.match(missing.output, /先に make setup main を最後まで実行してください/)
+    writeFileSync(f.configFile, raw)
+    const draft = `${JSON.stringify({ version: 1, name: 'main', done: ['prereq'], values: {} })}\n`
+    writeFileSync(join(autoDir('main'), 'setup.json'), draft)
+    const during = f.rerun({ review_mode: 'on' }, 'hosts')
+    assert.equal(during.code, 1)
+    assert.match(during.output, /make setup main が途中です/)
+    assert.equal(readFileSync(join(autoDir('main'), 'setup.json'), 'utf8'), draft)
+    assert.equal(readFileSync(f.configFile, 'utf8'), raw)
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU43 hosts and roles refuse non-tty stdin', () => {
+  const f = prepare()
+  try {
+    for (const command of ['hosts', 'roles']) {
+      const result = spawnSync(process.execPath, [join(f.plugin, 'bin/orca-auto.ts'), command, '--name', 'main'], {
+        input: '\n',
+        env: { ...process.env, ORCA_AUTO_TEST_STDIN: '' },
+        encoding: 'utf8',
+      })
+      assert.equal(result.status, 2, result.stdout + result.stderr)
+      assert.match(result.stderr, new RegExp(`make ${command}`))
+    }
   } finally {
     f.cleanup()
   }

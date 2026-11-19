@@ -28,6 +28,7 @@ import {
   inUseConflicts,
   readDraft,
   removeDraft,
+  SETUP_DRAFT_FILE,
   writeDraft,
 } from './setup-draft.ts'
 import {
@@ -55,6 +56,7 @@ import { runVerifyLocal, VERIFY_SCRIPT_FAILED, verifyRemote } from './setup-veri
 import { STATUS_LABELS } from './status.ts'
 import { envCount, run, runNode } from './sys.ts'
 
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -81,9 +83,29 @@ export const SETUP_STEPS: ReadonlyArray<{ id: string; title: string }> = [
   { id: 'automation', title: 'automation の登録' },
   { id: 'enable', title: '有効化' },
 ]
+// 設定を終えたあとで一部だけ変えるコマンド。保存の段を通るので、差の確認と実行中の Issue の検査は setup と同じ。
+// hosts は組の selector が変わると verified を落とす verify の段と、マシンごとの並列数の段まで回す
+export type SetupCommand = 'hosts' | 'roles'
+const COMMAND_STEPS: Record<SetupCommand, ReadonlyArray<{ id: string; title: string }>> = {
+  hosts: [
+    { id: 'hosts', title: 'マシン' },
+    { id: 'verify', title: 'リポジトリごとの確認' },
+    { id: 'lanes', title: '並列数' },
+    { id: 'save', title: '設定を保存する' },
+  ],
+  roles: [
+    { id: 'modes', title: 'レビューモード' },
+    { id: 'save', title: '設定を保存する' },
+  ],
+}
 const CONFIG_RESOLVE_SCRIPT = 'skills/orca-team-dispatch-task/scripts/config-resolve.ts'
 const REPO_PATTERN = /^[^/\s]+\/[^/\s]+$/
-export const runSetup = (name: string, prompter: Prompter, out: (text: string) => void): number => {
+export const runSetup = (
+  name: string,
+  prompter: Prompter,
+  out: (text: string) => void,
+  command?: SetupCommand,
+): number => {
   const noInput = new Error('入力が尽きました')
   const say = (text: string): void => {
     out(`${text}\n`)
@@ -131,8 +153,17 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
     }
   }
   const base = readAutoConfig(name)
+  // 一部だけのコマンドは config.json から始め、下書きを読みも書きもしない（途中の setup の下書きを混ぜない・消さない）
+  if (command && existsSync(join(autoDir(name), SETUP_DRAFT_FILE))) {
+    say(`make setup ${name} が途中です。先に最後まで実行してください`)
+    return 1
+  }
+  if (command && !base) {
+    say(`先に make setup ${name} を最後まで実行してください`)
+    return 1
+  }
   const draft: SetupDraft =
-    readDraft(name) ?? (base ? draftFromConfig(base) : { version: 1, name, done: [], values: {} })
+    (command ? null : readDraft(name)) ?? (base ? draftFromConfig(base) : { version: 1, name, done: [], values: {} })
   const v = draft.values
   const configFile = join(autoDir(name), AUTO_FILES.config)
   const repos = () => v.repos ?? fail('関連リポジトリがありません')
@@ -604,7 +635,7 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
       )
     }
   }
-  const roles = () => {
+  const modes = () => {
     const defaults =
       v.roles ??
       asObject(parseJson(runNode(join(pluginRoot(), CONFIG_RESOLVE_SCRIPT), ['--project-root', autoDir(name)]).stdout))
@@ -616,6 +647,9 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
       }
     }
     v.roles = { review_mode: toggle('review_mode'), phase_b: toggle('phase_b') }
+  }
+  const roles = () => {
+    modes()
     v.everyMinutes = number('判定の間隔（分）', v.everyMinutes ?? 5, isAllowedEvery)
   }
   const save = () => {
@@ -741,11 +775,25 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
     verify,
     lanes,
     roles,
+    modes: () => {
+      modes()
+      const r = v.roles ?? fail('レビューモードがありません')
+      say(`1 件が使う worktree: 対象1つ=${worktreesPerIssue(r, 1)}、対象2つ=${worktreesPerIssue(r, 2)}`)
+    },
     save,
     automation,
     enable,
   }
   try {
+    if (command) {
+      const steps = COMMAND_STEPS[command]
+      for (const [index, step] of steps.entries()) {
+        say(`[${index + 1}/${steps.length}] ${step.title}`)
+        actions[step.id]?.()
+      }
+      say(`config=${configFile}`)
+      return 0
+    }
     for (const [index, step] of SETUP_STEPS.entries()) {
       const done = draft.done.includes(step.id)
       say(`[${index + 1}/${SETUP_STEPS.length}] ${step.title}${done ? ' … 済み' : ''}`)

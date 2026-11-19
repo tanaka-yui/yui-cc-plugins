@@ -39,6 +39,8 @@ const main = (argv: string[]): number => {
   if (
     ![
       'setup',
+      'hosts',
+      'roles',
       'tick',
       'status',
       'judge-doc',
@@ -62,15 +64,15 @@ const main = (argv: string[]): number => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) die('orca-auto', 'invalid name')
   if (command === 'judge-apply' && !flags.get('--file')) die('orca-auto', '--file is required')
   if (command === 'clear-start' && !flags.get('--key')) die('orca-auto', '--key is required')
-  if (command === 'setup') {
+  if (command === 'setup' || command === 'hosts' || command === 'roles') {
     if (!isatty(0) && process.env.ORCA_AUTO_TEST_STDIN !== '1') {
-      console.error('ターミナルで make setup を実行してください')
+      console.error(`ターミナルで make ${command} を実行してください`)
       return 2
     }
     const out = (text: string): void => {
       writeSync(1, text)
     }
-    return runSetup(name, createPrompter(0, out), out)
+    return runSetup(name, createPrompter(0, out), out, command === 'setup' ? undefined : command)
   }
   if (command === 'judge-doc') {
     const prefix = process.env[LAUNCHER_ENV] ? launcherPaths().launcher : `node ${join(pluginRoot(), ENTRY_FILE)}`

@@ -593,7 +593,7 @@ done
 bad=""
 for f in "$S" "$G"; do
   setup_lines=$(grep -F 'make setup' "$f")
-  grep -Fq 'make setup NAME=' "$f" || bad="$bad [setup:$f]"
+  grep -Fq 'make setup ' "$f" || bad="$bad [setup:$f]"
   if [[ "$f" == "$S" ]]; then
     grep -Fq 'not available yet' <<<"$setup_lines" && bad="$bad [implemented:$f]"
   else
@@ -705,11 +705,24 @@ bad=""
 setup_recipe=$(cd "$P" && make -n setup 2>/dev/null)
 [[ "$setup_recipe" == *"orca-auto.ts setup --name main"* ]] || bad="$bad [setup recipe]"
 for f in "$S" "$G"; do
-  for expected in 'make setup NAME=<name>' 'setup.json' 'config/orca-team-dispatch-task/bin/orca-auto' 'judge-doc'; do
+  for expected in 'make setup <name>' 'setup.json' 'config/orca-team-dispatch-task/bin/orca-auto' 'judge-doc'; do
     grep -Fq "$expected" "$f" || bad="$bad [$expected:$f]"
   done
 done
 [[ -z "$bad" ]] && ok SK41 || fail "SK41:$bad"
+
+# SK43: setup のあとで一部だけ変える make hosts / make roles の入口と説明。名前は 2 語目で受ける。
+bad=""
+for target in hosts roles; do
+  recipe=$(cd "$P" && make -n "$target" 2>/dev/null)
+  [[ "$recipe" == *"orca-auto.ts $target --name main"* ]] || bad="$bad [$target recipe]"
+  recipe=$(cd "$P" && make -n "$target" work 2>/dev/null)
+  [[ "$recipe" == *"orca-auto.ts $target --name work"* ]] || bad="$bad [$target positional]"
+  for f in "$S" "$G"; do
+    grep -Fq "make $target <name>" "$f" || bad="$bad [$target:$f]"
+  done
+done
+[[ -z "$bad" ]] && ok SK43 || fail "SK43:$bad"
 
 # SK42: needsReview と取り次ぎの余裕を両文書と判定役の指示に書き、古い言い方を残さない。
 bad=""

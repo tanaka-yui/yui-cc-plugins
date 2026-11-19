@@ -238,9 +238,11 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 
 実装するリポジトリごとに専用checkoutをcloneし、Orcaに登録しておく。未コミットの変更があればdispatchしない。設定は `~/.claude/config/orca-team-dispatch-task/auto/main/config.json`（または `ORCA_DISPATCH_CONFIG_HOME` 配下）。`intakeConfigs` に slack-issue-intake の `config.json` を 1 つ以上（Slack のワークスペースごとに 1 つ）並べる。それらのリポジトリ一覧を並び順に重複なくまとめたものを正本とし、`sources` でその項目と関連する実装リポジトリを選ぶ。古い 1 つの `intakeConfig` も 1 件の一覧として読み、`make setup` が `intakeConfigs` に書き換える。両方あれば設定ごと不正。読めない intake の設定はその分のリポジトリだけを外し、tick がそれを 1 行出す。
 
-人がプラグインのディレクトリのターミナルで `make setup NAME=<name>` を実行する（既定は `main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。12 段で、前提、拾う元、関連 checkout、任意の Project、ラベル、マシン、確認コマンド（`claude -p` に読み取りの道具だけで案を出させられる。決めるのは人）、並列数、レビューモードと間隔、保存、automation 登録、権限の承認へ進む。拾う元の段は slack-issue-intake の名前つきのホームの `~/.slack-issue-intake-<名前>/config.json` を並べて複数選ばせ、ほかの絶対パスも足せる（名前なしの `~/.slack-issue-intake` は候補に出さないが、`intakeConfigs` にすでにあるパスは今までどおり並べて既定で選び、読む）。
+人がプラグインのディレクトリのターミナルで `make setup <name>` を実行する（既定は `main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。12 段で、前提、拾う元、関連 checkout、任意の Project、ラベル、マシン、確認コマンド（`claude -p` に読み取りの道具だけで案を出させられる。決めるのは人）、並列数、レビューモードと間隔、保存、automation 登録、権限の承認へ進む。拾う元の段は slack-issue-intake の名前つきのホームの `~/.slack-issue-intake-<名前>/config.json` を並べて複数選ばせ、ほかの絶対パスも足せる（名前なしの `~/.slack-issue-intake` は候補に出さないが、`intakeConfigs` にすでにあるパスは今までどおり並べて既定で選び、読む）。
 
 各段の答えは `setup.json` に残し、中断したら再実行で済んだ段から再開する。完了後のやり直しは Enter で今の値を保つ。確認コマンドは checkout の `HEAD` から切った一時 worktree で、このマシンと、そのリポジトリを扱う遠くのマシン（Orca の端末）で走らせ、通ったマシンとリポジトリの組だけを確認済みにする。足りない道具は並べるだけで入れない。並列数の推奨は CPU・メモリの総量・空きディスクから求め、確認で最大メモリとディスクの増え方を測れたときは、余裕を見込んだその値で 1 worktree 分の既定値を置き換える。推奨は Issue 数ではなく worktree 数で数える。
+
+setup を一度最後まで終えたあとは、同じく人が操作するターミナルで `make hosts <name>` を実行するとマシンだけを、`make roles <name>` を実行すると `review_mode` と `phase_b` だけを変えられる。`make hosts` はマシン・確認・並列数・保存の段を回す（checkout が変わった組は確認済みでなくなり、並列数はマシンごとに持つため）。`make roles` は 2 つを尋ねて保存する。どちらも `config.json` から始め、差を見せて確かめてから書き、実行中の Issue が使うマシンやリポジトリを外す変更は断り、automation には触らない。setup をまだ終えていないとき、`setup.json` に途中の setup が残っているときは実行しない。dispatch 済みの Issue は起動したときに記録したモードと worktree 数のまま進み、変更はそのあとに dispatch する Issue から効く。
 
 `orca-auto-<name>` を無効で登録し、判定の権限をそのまま見せ、承認後に書いて有効にする。既存 automation の有効・無効は承認するまで保つ。安定したランチャーは `~/.claude/config/orca-team-dispatch-task/bin/orca-auto`。ランチャー経由の tick は権限が未承認、または承認時と違えば止まる。実行のたびにインストール済みプラグインを解決し、setup した checkout を次の候補にする。
 
@@ -322,7 +324,7 @@ PR はリポジトリごとに 1 つ作り、まだ無い PR だけを再試行�
 
 ### 1回まわす、キューを判定する
 
-プラグインのディレクトリで `make auto` を実行する（既定は `NAME=main`）。`orca-auto.ts tick` を走らせ、判定が要るときだけ設定のmodelとeffortでClaudeを起動する。判定 agent は `orca-auto.ts judge-doc` を実行し、[auto-judge-ja.md](auto-judge-ja.md) と同じ手順、呼び方に合った `judge-list`・`judge-apply --file <decisionsFile>` のコマンドを `## Commands` から受け取る。その指示に従い、返された `decisionsFile` だけに書く。判定リースは20分。tickは判定が必要ならexit 0、それ以外は1、使用法の誤りは2。
+プラグインのディレクトリで `make auto` を実行する（`make auto <名前>`。名前を省くと `main`）。`orca-auto.ts tick` を走らせ、判定が要るときだけ設定のmodelとeffortでClaudeを起動する。判定 agent は `orca-auto.ts judge-doc` を実行し、[auto-judge-ja.md](auto-judge-ja.md) と同じ手順、呼び方に合った `judge-list`・`judge-apply --file <decisionsFile>` のコマンドを `## Commands` から受け取る。その指示に従い、返された `decisionsFile` だけに書く。判定リースは20分。tickは判定が必要ならexit 0、それ以外は1、使用法の誤りは2。
 
 precheckを直接実行する場合:
 
