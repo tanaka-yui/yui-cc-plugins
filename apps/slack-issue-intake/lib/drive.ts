@@ -1,3 +1,4 @@
+import { mentionPrefix } from './config.ts'
 import {
   confirmInflightDead,
   DRIVEN_STATES,
@@ -23,7 +24,13 @@ import {
   ERROR_STATE_CHANGED,
   labelsHashKey,
   MAX_ACTION_ATTEMPTS,
+  MAX_ANSWER_ROUNDS,
   MAX_TITLE_CHARS,
+  MSG_ANSWER_FOOTER,
+  MSG_ANSWER_NO_SOURCE,
+  MSG_ANSWER_PROPOSE,
+  MSG_ANSWER_SOURCES,
+  MSG_CLOSE_HANDOFF,
   MSG_CREATED,
   MSG_CREATED_TIMEOUT,
   MSG_FAILED,
@@ -37,6 +44,7 @@ import { writeAtomic } from './fs.ts'
 import { createIssue, findIssueByMarker, labelsHash } from './github.ts'
 import { buildIssueBody, issueLabels, issueMarker, neutralizeMentions } from './issue-body.ts'
 import { asString, get, parseJson } from './json.ts'
+import { appendFaq } from './knowledge.ts'
 import { renewLease } from './lease.ts'
 import { isAlive, selfIdentity } from './process.ts'
 import { maskSecrets } from './secrets.ts'
@@ -49,7 +57,7 @@ import { join } from 'node:path'
 
 import type { Submission, SubmissionPatch } from './db.ts'
 import type { Runtime } from './runtime.ts'
-import type { State } from './types.ts'
+import type { AnswerContent, State } from './types.ts'
 export type DriveContext = { rt: Runtime; token: string; ttlMs: number; now: () => Date; deadline: number }
 export type DriveOutcome = { id: number; from: State; to: State; error: string | null; stop: boolean }
 export const stopError = (error: string): boolean =>
@@ -189,9 +197,19 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
   if (!DRIVEN_STATES.includes(s.state)) return out()
   if (!countAttempt()) return changed()
   let text = ''
+  // 質問への回答は asking を通って waiting になる（ask と同じく、返信を待って次の回を数える）
+  const answer: AnswerContent | null = s.decision?.action === 'answer' ? s.decision : null
   if (s.state === 'asking') {
-    if (s.decision?.action !== 'ask') return fail('質問の決定内容がありません')
-    text = `${escapeMrkdwn(s.decision.message)}\n\n${MSG_QUESTION_FOOTER}`
+    if (answer) text = answerText(answer, mentionPrefix(rt.config))
+    else if (s.decision?.action === 'ask') text = `${escapeMrkdwn(s.decision.message)}\n\n${MSG_QUESTION_FOOTER}`
+    else return fail('質問の決定内容がありません')
+  } else if (s.state === 'closing') {
+    if (s.decision?.action !== 'close') return fail('締めの決定内容がありません')
+    // 回答の上限に達して閉じるときは、担当者にメンションして人へ渡す
+    text =
+      s.rounds >= MAX_ANSWER_ROUNDS
+        ? `${escapeMrkdwn(s.decision.message)}\n\n${mentionPrefix(rt.config)}${MSG_CLOSE_HANDOFF.replace('{n}', String(MAX_ANSWER_ROUNDS))}`
+        : escapeMrkdwn(s.decision.message)
   } else if (s.state === 'notifying') {
     if (!s.issueUrl) return fail('Issue URL がありません')
     text = (s.timedOutAt ? MSG_CREATED_TIMEOUT : MSG_CREATED).replace('{url}', s.issueUrl)
@@ -200,14 +218,43 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
   if (!renew()) return out(ERROR_LEASE_LOST, true)
   const result = await postThread(rt.slack, s.channel, s.ts, mention + text, ctx.deadline)
   if (!result.ok) return fail(result.error)
-  return success(
+  const done = success(
     s.state === 'asking'
       ? { state: 'waiting', rounds: s.rounds + 1, lastQuestionTs: result.ts, askedAt: now(), decision: null }
       : s.state === 'notifying'
         ? { state: 'created' }
-        : { state: 'rejected' },
+        : s.state === 'closing'
+          ? { state: 'closed', decision: null }
+          : { state: 'rejected' },
   )
+  if (answer && !done.error && s.fields) {
+    const question = s.transcript.filter((e) => e.from === 'human').at(-1)?.text ?? s.fields.body
+    try {
+      appendFaq(rt.home, {
+        at: now(),
+        repo,
+        questionKind: s.fields.questionKind ?? '',
+        question,
+        answer: answer.message,
+        sources: answer.sources,
+        permalink: s.permalink,
+      })
+    } catch {
+      // FAQ は回答の助けにすぎない。投稿は済んでいるので、書けなくても処理の結果は変えない
+    }
+  }
+  return done
 }
+// 回答の本文。根拠の permalink を並べ、根拠が無ければ担当者にメンションし、提案なら起票の案内を足す
+const answerText = (d: AnswerContent, groupMention: string): string =>
+  [
+    escapeMrkdwn(d.message),
+    d.links.length
+      ? MSG_ANSWER_SOURCES.replace('{links}', d.links.map((l) => `• ${l}`).join('\n'))
+      : `${groupMention}${MSG_ANSWER_NO_SOURCE}`,
+    ...(d.proposeIssue ? [MSG_ANSWER_PROPOSE] : []),
+    MSG_ANSWER_FOOTER,
+  ].join('\n\n')
 export const driveItem = async (ctx: DriveContext, s: Submission): Promise<DriveOutcome[]> => {
   const results: DriveOutcome[] = []
   let current = s

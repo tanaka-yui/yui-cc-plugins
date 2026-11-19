@@ -23,6 +23,7 @@ import {
   TRIGGER_NOT_FOUND_PATTERN,
 } from '../defaults.ts'
 import { featuredParams, featureSteps, renderFormManifest } from '../form.ts'
+import { buildRepos } from '../knowledge.ts'
 import { acquireLease, releaseLease, renewLease } from '../lease.ts'
 import { intakeHome } from '../paths.ts'
 import { openRuntime } from '../runtime.ts'
@@ -49,9 +50,13 @@ const reason = (f: SlackFailure): string => (f.detail ? `${f.error} ${f.detail}`
 
 // --manifest: フォーム付きのマニフェストを表示する。引数なし: init のあと、対象チャンネルにフォームのボタンを置く。
 // ボタンはチャンネルのおすすめワークフローにする（メンバーには入力欄の代わりにボタンが出る）。
-// 作ったリンクとおすすめにしたトリガーの ID は DB に残し、再実行しても重ねて作らない
+// 作ったリンクとおすすめにしたトリガーの ID は DB に残し、再実行しても重ねて作らない。
+// 始めに仕様の索引（knowledge）を作り直す（作れなくてもボタンは置く）。setup は自分の段で作るので --skip-knowledge を付ける
 export const run = async (argv: string[]): Promise<void> => {
-  const { values } = parseFlags('form', { args: argv, options: { manifest: { type: 'boolean' } } })
+  const { values } = parseFlags('form', {
+    args: argv,
+    options: { manifest: { type: 'boolean' }, 'skip-knowledge': { type: 'boolean' } },
+  })
   if (values.manifest) {
     const config = loadConfig(intakeHome())
     console.log(renderFormManifest(config ? formRepos(config) : []))
@@ -82,6 +87,15 @@ export const run = async (argv: string[]): Promise<void> => {
     process.exitCode = 2
     return
   }
+  // 索引は時間がかかるので、締め切りとリースを決める前に作る
+  if (!values['skip-knowledge'])
+    buildRepos(
+      rt.home,
+      rt.config.repos.map((r) => r.name),
+      rt.config.ghPath,
+      (line) => console.log(maskSecrets(line)),
+      (line) => console.error(maskSecrets(line)),
+    )
   const deadline = Date.now() + COMMAND_DEADLINE_MS
   const lease = acquireLease(rt.db, 'admin', null, new Date(), ADMIN_LEASE_MS)
   if (!lease.ok) {
@@ -145,9 +159,9 @@ export const run = async (argv: string[]): Promise<void> => {
         )
       setMeta(rt.db, FORM_META_FEATURED, featuredState)
     }
-    // 0.2 の 1 つのボタンは、新しい 3 つを出したあとで外して消す。チャンネルからボタンが消える時間を作らない
+    // 0.2 の 1 つのボタンは、新しいボタンを出したあとで外して消す。チャンネルからボタンが消える時間を作らない
     const legacy = getMeta(rt.db, FORM_META_TRIGGER_ID)
-    // 新しい 3 つを画面で注目にしてもらうまでは、古いボタンを残す（チャンネルからボタンが消えないように）
+    // 新しいボタンを画面で注目にしてもらうまでは、古いボタンを残す（チャンネルからボタンが消えないように）
     // 1 回目は案内だけして印を残し、案内どおり再実行されたら片付ける
     if (legacy && featuredState === FORM_FEATURED_MANUAL && !getMeta(rt.db, FORM_META_LEGACY_NOTIFIED)) {
       console.error(MSG_FORM_LEGACY_KEPT.replace('{slackForm}', makeCommand(rt.home, 'slack-form')))

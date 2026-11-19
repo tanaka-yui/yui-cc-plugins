@@ -53,6 +53,11 @@ test('DO2 手順書のplaceholderをprocedureがすべて置き換えられる',
     'DETAILS_MAX_CHARS',
     'UNRESOLVED_MAX_ITEMS',
     'UNRESOLVED_ITEM_MAX_CHARS',
+    'KNOWLEDGE_DIR',
+    'MAX_ANSWERS',
+    'ANSWER_MAX_CHARS',
+    'ANSWER_MAX_SOURCES',
+    'MAX_TITLE_CHARS',
   ])
   for (const m of procedure.matchAll(/{{([A-Z_]+)}}/g)) assert.ok(allowed.has(m[1] ?? ''))
 })
@@ -86,19 +91,25 @@ test('DO6 README は複数リポジトリ・更新手順・report を含み、�
   }
   assert.equal(plugin.version, '0.7.0')
   assert.equal(market.plugins.find((p) => p.name === 'slack-issue-intake')?.version, '0.7.0')
+  for (const text of ['### 0.7.0 以前からの更新', 'make knowledge <名前>', '### 質問する'])
+    assert.ok(readme.includes(text), text)
 })
 
-test('MW6 make passes NAME before the subcommand and ignores NAME from the environment', () => {
+test('MW6 make takes the name as the second word, keeps NAME= and ignores NAME from the environment', () => {
   const make = (args: string[], env: Record<string, string> = {}) =>
-    spawnSync('make', ['-n', ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, ...env } }).stdout
-  assert.match(make(['setup', 'NAME=ws2']), /slack-issue-intake\.ts' --name 'ws2' setup$/m)
-  assert.match(make(['manifest', 'NAME=ws2']), /slack-issue-intake\.ts' --name 'ws2' form --manifest$/m)
-  assert.match(make(['slack-form', 'NAME=ws2']), /slack-issue-intake\.ts' --name 'ws2' form$/m)
-  const plain = make(['setup'], { NAME: 'leak' })
+    spawnSync('make', ['-n', ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, ...env } })
+  assert.match(make(['setup', 'ws2']).stdout, /slack-issue-intake\.ts' --name 'ws2' setup$/m)
+  assert.match(make(['manifest', 'ws2']).stdout, /slack-issue-intake\.ts' --name 'ws2' form --manifest$/m)
+  assert.match(make(['slack-form', 'ws2']).stdout, /slack-issue-intake\.ts' --name 'ws2' form$/m)
+  assert.match(make(['knowledge', 'ws2']).stdout, /slack-issue-intake\.ts' --name 'ws2' knowledge$/m)
+  assert.match(make(['setup', 'NAME=ws2']).stdout, /slack-issue-intake\.ts' --name 'ws2' setup$/m)
+  assert.notEqual(make(['setup', 'a', 'b']).status, 0)
+  assert.notEqual(make(['setup', 'knowledge']).status, 0)
+  const plain = make(['setup'], { NAME: 'leak' }).stdout
   assert.match(plain, /slack-issue-intake\.ts' --ask-name=setup setup$/m)
   assert.ok(!plain.includes('leak'))
-  assert.match(make(['manifest']), /slack-issue-intake\.ts' --ask-name=manifest form --manifest$/m)
-  assert.match(make(['slack-form']), /slack-issue-intake\.ts' --ask-name=slack-form form$/m)
+  assert.match(make(['manifest']).stdout, /slack-issue-intake\.ts' --ask-name=manifest form --manifest$/m)
+  assert.match(make(['slack-form']).stdout, /slack-issue-intake\.ts' --ask-name=slack-form form$/m)
 })
 
 test('MW5 docs explain per-workspace setup and --name', () => {
@@ -107,19 +118,19 @@ test('MW5 docs explain per-workspace setup and --name', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
   for (const text of [
     '--name <name>',
-    'make setup NAME=<name>',
+    'make setup <name>',
     '~/.slack-issue-intake-<name>/secrets.json',
     '## Workspaces',
   ])
     assert.ok(skill.includes(text), text)
   for (const text of [
     '--name <名前>',
-    'make setup NAME=<名前>',
+    'make setup <名前>',
     '~/.slack-issue-intake-<名前>/secrets.json',
     '## ワークスペース',
   ])
     assert.ok(guide.includes(text), text)
-  for (const text of ['make setup NAME=<名前>', 'slack-issue-intake-<名前>', '--name <名前>'])
+  for (const text of ['make setup <名前>', 'slack-issue-intake-<名前>', '--name <名前>'])
     assert.ok(readme.includes(text), text)
 })
 
@@ -133,7 +144,7 @@ test('DC1 README・SKILL・guide-ja の実行例は名前を付ける', () => {
     for (const m of text.matchAll(/bin\/slack-issue-intake\.ts"?[ \t]+(\S+)/g))
       assert.equal(m[1], '--name', `${file}: ${m[0]}`)
     assert.deepEqual(
-      [...text.matchAll(/make (?:setup|manifest|slack-form)\b(?! NAME=)/g)].map((m) => m[0]),
+      [...text.matchAll(/make (?:setup|manifest|slack-form)\b(?! \S)/g)].map((m) => m[0]),
       [],
       file,
     )

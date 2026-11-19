@@ -5,8 +5,11 @@ import { asObject, get } from '../lib/json.ts'
 import { homePaths } from '../lib/paths.ts'
 import { BOT_ID, BOT_USER, CHANNEL, TEAM_ID, TEAM_URL } from './fixtures/slack-messages.ts'
 import {
+  claudeCalls,
+  fakeClaude,
   fakeGh,
   fakeSlackCli,
+  ghCalls,
   runCliAsync,
   seedSlackApp,
   setupHome,
@@ -16,11 +19,13 @@ import {
 } from './helpers.ts'
 
 import assert from 'node:assert/strict'
+import { existsSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { test } from 'node:test'
 
 import type { SlackReply, SlackRequest } from './helpers.ts'
 
-const IDS = ['Ft0FAKEBUG', 'Ft0FAKEREQ', 'Ft0FAKEFEA']
+const IDS = ['Ft0FAKEBUG', 'Ft0FAKEREQ', 'Ft0FAKEFEA', 'Ft0FAKEQUE']
 const JOINED = IDS.join(',')
 const LEGACY_ID = 'Ft0FAKEFOR'
 const shortcut = (id: string): string => `https://slack.com/shortcuts/${id}/abc123`
@@ -35,6 +40,7 @@ const fixture = async (
   const home = tempHome()
   const gh = fakeGh(tempHome())
   const cli = fakeSlackCli(tempHome())
+  const claude = fakeClaude(tempHome())
   if (seed) await seedSlackApp(home, TEAM_ID)
   const server = await startSlack(
     (r): SlackReply => handler(r) ?? (r.method === 'auth.test' ? auth() : { json: { ok: true } }),
@@ -43,6 +49,7 @@ const fixture = async (
   const env = {
     ...gh.env,
     ...cli.env,
+    ...claude.env,
     ...cliEnv,
     ...(await setupHome(home, { apiBase: server.url, ghPath: gh.ghPath, ghState: gh.state })),
   }
@@ -61,6 +68,8 @@ const fixture = async (
   const cliCalls = (sub: string) => slackCliCalls(cli.log).filter((c) => c.argv.slice(0, 2).join(' ') === sub)
   return {
     home,
+    gh,
+    claude,
     server,
     meta,
     seedMeta,
@@ -106,9 +115,9 @@ test('FO1 Slack CLI で 3 つのボタンを作ってチャンネルのメンバ
   assert.equal(f.meta(FORM_META_FEATURED), JOINED)
   const again = await f.form()
   assert.equal(again.code, 0, again.stderr)
-  assert.equal(f.cliCalls('trigger create').length, 3)
+  assert.equal(f.cliCalls('trigger create').length, IDS.length)
   assert.equal(f.calls('workflows.featured.add').length, 1)
-  assert.equal(f.cliCalls('trigger access').length, 6)
+  assert.equal(f.cliCalls('trigger access').length, IDS.length * 2)
   assert.equal(f.cliCalls('trigger delete').length, 0)
 })
 test('FO2 Slack CLI がボタンを作れなければ、Workflow Builder の手順へ案内して何も残さない', async (t) => {
@@ -141,7 +150,7 @@ test('FO3 おすすめにできなければ画面での手順を示し、再実�
   assert.equal(f.meta(FORM_META_FEATURED), null)
   const again = await f.form()
   assert.equal(again.code, 0, again.stderr)
-  assert.equal(f.cliCalls('trigger create').length, 3)
+  assert.equal(f.cliCalls('trigger create').length, IDS.length)
   assert.equal(f.meta(FORM_META_FEATURED), JOINED)
 })
 test('FO4 トークンのワークスペースが設定と違えば何も作らない', async (t) => {
@@ -201,7 +210,7 @@ test('FO6 ボットにおすすめにする権限が無ければ、管理画面�
   const again = await f.form()
   assert.equal(again.code, 0, again.stderr)
   assert.equal(f.calls('workflows.featured.add').length, 2)
-  assert.equal(f.cliCalls('trigger create').length, 3)
+  assert.equal(f.cliCalls('trigger create').length, IDS.length)
 })
 test('FO8 0.2 の 1 つのボタンは、新しい 3 つをおすすめにしたあとで外して消す', async (t) => {
   const f = await fixture(t)
@@ -277,4 +286,51 @@ test('FO12 deploy 済みのマニフェストが今のものと違えば、ボ�
   assert.equal(r.code, 2)
   assert.match(r.stderr, /make setup/)
   assert.equal(f.cliCalls('trigger create').length, 0)
+})
+
+test('FO10 始めに仕様の索引を作り直し、作れなくてもボタンは置く。--skip-knowledge では作らない', async (t) => {
+  const source = tempHome()
+  writeFileSync(join(source, 'README.md'), '# app\n')
+  const result = JSON.stringify({
+    overview: '概要',
+    topics: [],
+    glossary: [],
+    docs: [{ path: 'README.md', title: 'README', summary: '概要', topics: [] }],
+  })
+  const f = await fixture(t, { cliEnv: { FAKE_GH_CLONE_SOURCE: source, FAKE_CLAUDE_RESULT: result } })
+  const r = await f.form()
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /^knowledge repo=acme\/app files=1 commit=/m)
+  assert.ok(existsSync(join(f.home, 'knowledge', 'acme', 'app', 'docs', 'README.md')))
+  assert.equal(claudeCalls(f.claude.log).length, 1)
+  const skipped = await f.form(['--skip-knowledge'])
+  assert.equal(skipped.code, 0, skipped.stderr)
+  assert.equal(claudeCalls(f.claude.log).length, 1)
+  const broken = await fixture(t)
+  const failed = await broken.form()
+  assert.equal(failed.code, 0, failed.stderr)
+  assert.match(failed.stderr, /acme\/app の仕様の索引を作れませんでした/)
+  assert.ok(ghCalls(broken.gh.log).some((c) => c.argv.slice(0, 2).join(' ') === 'repo clone'))
+  assert.equal(broken.cliCalls('trigger create').length, IDS.length)
+})
+
+test('FO11 0.6 の 3 つのボタンが記録済みなら、質問のボタンだけを作り、4 つをおすすめにし直す', async (t) => {
+  const f = await fixture(t)
+  for (const [i, kind] of FORM_KINDS.slice(0, 3).entries()) {
+    f.seedMeta(formMetaKey(FORM_META_TRIGGER_ID, kind), IDS[i] ?? '')
+    f.seedMeta(formMetaKey(FORM_META_URL, kind), shortcut(IDS[i] ?? ''))
+  }
+  f.seedMeta(FORM_META_FEATURED, IDS.slice(0, 3).join(','))
+  const r = await f.form(['--skip-knowledge'])
+  assert.equal(r.code, 0, r.stderr)
+  const created = f.cliCalls('trigger create')
+  assert.deepEqual(
+    created.map((c) => get(c.triggerDef, 'workflow')),
+    ['#/workflows/issue_intake_question'],
+  )
+  assert.deepEqual(
+    f.calls('workflows.featured.add').map((c) => c.params),
+    [{ channel_id: CHANNEL, trigger_ids: JOINED }],
+  )
+  assert.equal(f.meta(FORM_META_FEATURED), JOINED)
 })

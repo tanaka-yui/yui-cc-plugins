@@ -32,6 +32,7 @@ export const proposedRules = (home: string): ProposedRules => {
         ...RUN_EXACT_SUBCOMMANDS.map((command) => `Bash(${paths.launcher} ${command})`),
         `Bash(${paths.launcher} ${APPLY_SUBCOMMAND} *)`,
         `Read(/${paths.runDir}/**)`,
+        `Read(/${paths.knowledgeDir}/**)`,
         `Write(/${paths.runsDir}/*/decisions.json)`,
         `Edit(/${paths.runsDir}/*/decisions.json)`,
       ],

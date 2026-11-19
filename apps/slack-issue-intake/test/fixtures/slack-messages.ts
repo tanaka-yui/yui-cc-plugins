@@ -32,7 +32,13 @@ const KIND_ITEMS: Record<string, ReadonlyArray<readonly [label: string, long: bo
     ['ソースコードのパス', false],
   ],
   新機能: [['仕様', true]],
+  質問: [
+    ['質問の種類', false],
+    ['本文', true],
+  ],
 }
+// 題と優先度の欄が無いカテゴリ
+const UNTITLED: readonly string[] = ['質問']
 export const kindText = (
   category: string,
   values: Record<string, string>,
@@ -40,9 +46,9 @@ export const kindText = (
 ): string =>
   [
     '[issue-intake]',
-    `*タイトル:* ${o.title ?? 'ログインできない'}`,
+    ...(UNTITLED.includes(category) ? [] : [`*タイトル:* ${o.title ?? 'ログインできない'}`]),
     `*カテゴリ:* ${category}`,
-    `*優先度:* ${o.priority ?? 'high'}`,
+    ...(UNTITLED.includes(category) ? [] : [`*優先度:* ${o.priority ?? 'high'}`]),
     ...(o.repo !== undefined ? [`*リポジトリ:* ${o.repo}`] : []),
     `*起票者:* ${o.reporter ?? `<@${REPORTER}>`}`,
     ...(KIND_ITEMS[category] ?? []).flatMap(([label, long]) =>

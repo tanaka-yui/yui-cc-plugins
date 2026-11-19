@@ -254,6 +254,24 @@ export const seedSubmission = async (
   db.close()
   return id
 }
+export const fakeClaude = (dir: string): { path: string; log: string; env: Record<string, string> } => {
+  const path = join(dir, 'claude')
+  const log = join(dir, 'claude.jsonl')
+  const q = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`
+  writeFileSync(
+    path,
+    `#!/bin/sh\nexec ${q(process.execPath)} ${q(join(import.meta.dirname, 'fixtures/fake-claude.ts'))} "$@"\n`,
+    { mode: 0o755 },
+  )
+  writeFileSync(log, '')
+  return { path, log, env: { SLACK_ISSUE_INTAKE_CLAUDE_BIN: path, FAKE_CLAUDE_LOG: log } }
+}
+export const claudeCalls = (log: string): Array<{ argv: string[]; cwd: string }> =>
+  readFileSync(log, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((s) => JSON.parse(s) as { argv: string[]; cwd: string })
 export const fakeOrca = (dir: string): { path: string; log: string; env: Record<string, string> } => {
   const path = join(dir, 'orca')
   const log = join(dir, 'orca.jsonl')

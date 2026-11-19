@@ -66,7 +66,7 @@ export const askWorkspaceName = (p: Prompter, names: readonly string[], say: (te
 }
 
 export const hintName = (home: string): string => nameOfHome(home) ?? NAME_PLACEHOLDER
-export const makeCommand = (home: string, target: string): string => `make ${target} NAME=${hintName(home)}`
+export const makeCommand = (home: string, target: string): string => `make ${target} ${hintName(home)}`
 export const cliCommand = (home: string, subcommand: string): string =>
   `${CLI_COMMAND} --name ${hintName(home)} ${subcommand}`
 export const noConfigReason = (home: string): string =>

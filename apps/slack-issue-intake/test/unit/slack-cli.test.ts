@@ -46,7 +46,7 @@ test('SC3 Slack CLI のプロジェクトはホームの隣に置き、ホーム
   assert.equal(p.hooks, '/x/.slack-issue-intake-slack-app/.slack/hooks.json')
   assert.deepEqual(
     FORM_KINDS.map((k) => triggerDefPath(p, k)),
-    ['bug', 'request', 'feature'].map((k) => `/x/.slack-issue-intake-slack-app/form-trigger-${k}.json`),
+    ['bug', 'request', 'feature', 'question'].map((k) => `/x/.slack-issue-intake-slack-app/form-trigger-${k}.json`),
   )
   assert.equal(p.manifestHash, '/x/.slack-issue-intake-slack-app/manifest.sha256')
 })

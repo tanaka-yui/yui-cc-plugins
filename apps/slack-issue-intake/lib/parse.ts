@@ -7,12 +7,14 @@ import {
   PROBLEM_INVALID,
   PROBLEM_MISSING,
   PROBLEM_REPO,
+  QUESTION_CATEGORY,
+  QUESTION_ISSUE_PRIORITY,
   SUBMISSION_MARKER,
   TITLE_ELLIPSIS,
 } from './defaults.ts'
 import { firstUserMention } from './slack-text.ts'
 
-import type { Category, FormKind, Priority, SubmissionFields } from './types.ts'
+import type { Category, FormKind, Priority, QuestionKind, SubmissionFields } from './types.ts'
 
 export type ParseResult =
   | { kind: 'not-submission' }
@@ -129,6 +131,8 @@ export const parseSubmission = (text: string, fallbackUserId: string | null, rep
   const repoValue = (header[FIELD_LABELS.repo] ?? '').normalize('NFKC').trim()
   const repo = repos.find((name) => name.toLowerCase() === repoValue.toLowerCase()) ?? null
   const reporterId = firstUserMention(header[FIELD_LABELS.reporter] ?? '') ?? fallbackUserId
+  // 題と優先度の欄が無い種類（質問）は、その 2 つを求めない。0.2 の「本文:」の形はどの種類でも題と優先度を持つ
+  const titled = formKindByCategory(category)?.titled ?? true
   const formKind = legacyBody === null ? formKindByCategory(category) : undefined
   const sections = (formKind?.items ?? []).map((item) => ({
     item,
@@ -136,9 +140,9 @@ export const parseSubmission = (text: string, fallbackUserId: string | null, rep
   }))
   const problems: string[] = []
   for (const [label, value, options] of [
-    [FIELD_LABELS.title, fullTitle, []],
+    ...(titled ? ([[FIELD_LABELS.title, fullTitle, []]] as const) : []),
     [FIELD_LABELS.category, category, CATEGORIES],
-    [FIELD_LABELS.priority, priority, PRIORITIES],
+    ...(titled ? ([[FIELD_LABELS.priority, priority, PRIORITIES]] as const) : []),
   ] as const) {
     if (!value) problems.push(PROBLEM_MISSING.replace('{label}', label))
     else if (options.length && !(options as readonly string[]).includes(value))
@@ -147,22 +151,37 @@ export const parseSubmission = (text: string, fallbackUserId: string | null, rep
   if (repoValue && !repo) problems.push(PROBLEM_REPO.replace('{options}', repos.join(' / ')))
   if (legacyBody !== null) {
     if (!legacyBody) problems.push(PROBLEM_MISSING.replace('{label}', FIELD_LABELS.body))
+    // 選択の項目（質問の種類）は 0.2 の形では書けないので、その種類の投稿としては読めない
+    if (!titled)
+      for (const item of formKindByCategory(category)?.items ?? [])
+        if (item.options) problems.push(PROBLEM_MISSING.replace('{label}', item.label))
   } else
     for (const s of sections)
       if (s.item.required && !s.value) problems.push(PROBLEM_MISSING.replace('{label}', s.item.label))
+      else if (s.value && s.item.options && !s.item.options.includes(s.value.normalize('NFKC').trim()))
+        problems.push(PROBLEM_INVALID.replace('{label}', s.item.label).replace('{options}', s.item.options.join(' / ')))
   if (problems.length) return { kind: 'invalid', problems, reporterId }
   const body = legacyBody ?? renderSections(sections.map((s) => ({ label: s.item.label, value: s.value })))
-  const chars = [...fullTitle]
+  // 題の無い種類は、複数行の項目（質問の本文）の先頭行を題にする
+  const title = titled
+    ? fullTitle
+    : ((sections.find((s) => s.item.long)?.value ?? '').split('\n').find((line) => line.trim()) ?? '').trim()
+  const chars = [...title]
+  const questionKind = sections
+    .find((s) => s.item.options)
+    ?.value.normalize('NFKC')
+    .trim()
   return {
     kind: 'ok',
     repo,
     fields: {
-      title: chars.length > MAX_TITLE_CHARS ? chars.slice(0, MAX_TITLE_CHARS - 1).join('') + TITLE_ELLIPSIS : fullTitle,
-      fullTitle,
+      title: chars.length > MAX_TITLE_CHARS ? chars.slice(0, MAX_TITLE_CHARS - 1).join('') + TITLE_ELLIPSIS : title,
+      fullTitle: title,
       category: category as Category,
-      priority: priority as Priority,
+      priority: titled ? (priority as Priority) : QUESTION_ISSUE_PRIORITY,
       body,
       reporterId,
+      ...(category === QUESTION_CATEGORY && questionKind ? { questionKind: questionKind as QuestionKind } : {}),
     },
   }
 }

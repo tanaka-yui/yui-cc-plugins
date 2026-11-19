@@ -5,12 +5,16 @@ import {
   ERROR_LEASE_LOST,
   ERROR_THREAD_NOT_FOUND,
   MAX_ACTION_ATTEMPTS,
+  MAX_ANSWER_ROUNDS,
   MAX_ITEMS_PER_RUN,
   MAX_QUESTION_ROUNDS,
+  MSG_ANSWER_PROPOSE,
+  QUESTION_KIND_KEYS,
 } from './defaults.ts'
 import { stopError } from './drive.ts'
 import { readJson } from './fs.ts'
 import { asArray, asObject, asString } from './json.ts'
+import { workKnowledge } from './knowledge.ts'
 import { maskSecrets } from './secrets.ts'
 import { fetchReplies, userInfoName } from './slack-api.ts'
 import { messageText } from './slack-text.ts'
@@ -20,9 +24,10 @@ import { join } from 'node:path'
 import type { WorkAttachment } from './attachments.ts'
 import type { Submission } from './db.ts'
 import type { DriveContext } from './drive.ts'
+import type { WorkKnowledge } from './knowledge.ts'
 import type { RunPaths } from './paths.ts'
 import type { SlackFailure } from './slack-api.ts'
-import type { Category, CategoryKey, Priority, TranscriptEntry } from './types.ts'
+import type { Category, CategoryKey, Priority, QuestionKindKey, TranscriptEntry } from './types.ts'
 export type WorkThreadEntry = {
   from: 'bot' | 'human'
   name: string | null
@@ -33,6 +38,11 @@ export type WorkItem = {
   id: number
   kind: 'new' | 'answered' | 'timed_out'
   mustCreate: boolean
+  // 質問のときだけ意味を持つ。roundsAsked / maxRounds は質問では回答した回数と回答の上限
+  mustClose: boolean
+  questionKind: QuestionKindKey | null
+  issueProposed: boolean
+  knowledge: WorkKnowledge | null
   roundsAsked: number
   maxRounds: number
   title: string
@@ -207,12 +217,18 @@ export const buildWork = async (
       index += e.files.length
       thread.push({ from: e.from, name: e.name, text: e.text, attachments })
     }
+    const questionKind = s.fields.questionKind
     result.work.items.push({
       id: s.id,
       kind: s.state as WorkItem['kind'],
-      mustCreate: s.state === 'timed_out' || s.rounds >= MAX_QUESTION_ROUNDS,
+      mustCreate: !questionKind && (s.state === 'timed_out' || s.rounds >= MAX_QUESTION_ROUNDS),
+      mustClose: Boolean(questionKind) && s.rounds >= MAX_ANSWER_ROUNDS,
+      questionKind: questionKind ? QUESTION_KIND_KEYS[questionKind] : null,
+      issueProposed:
+        Boolean(questionKind) && transcript.some((e) => e.from === 'bot' && e.text.includes(MSG_ANSWER_PROPOSE)),
+      knowledge: questionKind ? workKnowledge(rt.home, s.repo ?? rt.config.defaultRepo, ctx.now()) : null,
       roundsAsked: s.rounds,
-      maxRounds: MAX_QUESTION_ROUNDS,
+      maxRounds: questionKind ? MAX_ANSWER_ROUNDS : MAX_QUESTION_ROUNDS,
       title: s.fields.title,
       category: s.fields.category,
       categoryKey: CATEGORY_KEYS[s.fields.category],
@@ -235,7 +251,8 @@ export const readWork = (file: string): WorkFile | null => {
       typeof item.id !== 'number' ||
       !Number.isSafeInteger(item.id) ||
       !['new', 'answered', 'timed_out'].includes(asString(item.kind) ?? '') ||
-      typeof item.mustCreate !== 'boolean'
+      typeof item.mustCreate !== 'boolean' ||
+      typeof item.mustClose !== 'boolean'
     )
       return null
   }

@@ -1,7 +1,6 @@
 import {
   FIELD_LABELS,
   FORM_ATTACHMENTS_TITLE,
-  FORM_DESCRIPTION,
   FORM_EXTRA_SCOPES,
   FORM_FEATURE_STEPS,
   FORM_KINDS,
@@ -43,7 +42,7 @@ const inputParam = (name: string, type: string, title: string): JsonObject => ({
 // open_form で集め、send_message で添付ごと対象チャンネルへ投稿する。どちらも Slack 組み込みの関数
 export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObject => ({
   title: kind.title,
-  description: FORM_DESCRIPTION,
+  description: kind.description,
   input_parameters: {
     [INPUT.interactivity]: inputParam(INPUT.interactivity, 'slack#/types/interactivity', 'Interactivity'),
     [INPUT.channel]: inputParam(INPUT.channel, 'slack#/types/channel_id', 'Channel Id'),
@@ -59,8 +58,12 @@ export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObje
         interactivity: `{{inputs.${INPUT.interactivity}}}`,
         fields: {
           elements: [
-            { name: FIELD.title, title: FIELD_LABELS.title, type: 'string' },
-            { name: FIELD.priority, title: FIELD_LABELS.priority, type: 'string', enum: [...PRIORITIES] },
+            ...(kind.titled
+              ? [
+                  { name: FIELD.title, title: FIELD_LABELS.title, type: 'string' },
+                  { name: FIELD.priority, title: FIELD_LABELS.priority, type: 'string', enum: [...PRIORITIES] },
+                ]
+              : []),
             ...(repos.length >= FORM_REPO_FIELD_MIN_REPOS
               ? [{ name: REPO_SLOT, title: FIELD_LABELS.repo, type: 'string', enum: [...repos] }]
               : []),
@@ -68,6 +71,7 @@ export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObje
               name: item.name,
               title: item.label,
               type: 'string',
+              ...(item.options ? { enum: [...item.options] } : {}),
               ...(item.long ? { long: true } : {}),
             })),
             {
@@ -78,7 +82,10 @@ export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObje
               maxItems: MAX_FILES_PER_MESSAGE,
             },
           ],
-          required: [FIELD.title, FIELD.priority, ...kind.items.filter((i) => i.required).map((i) => i.name)],
+          required: [
+            ...(kind.titled ? [FIELD.title, FIELD.priority] : []),
+            ...kind.items.filter((i) => i.required).map((i) => i.name),
+          ],
         },
       },
     },
@@ -111,7 +118,7 @@ export const renderFormManifest = (repos: readonly string[]): string =>
 export const triggerDefinition = (channel: string, kind: FormKind): JsonObject => ({
   type: 'shortcut',
   name: kind.title,
-  description: FORM_DESCRIPTION,
+  description: kind.description,
   workflow: `#/workflows/${kind.workflowId}`,
   inputs: {
     [INPUT.interactivity]: { value: '{{data.interactivity}}' },
@@ -120,7 +127,7 @@ export const triggerDefinition = (channel: string, kind: FormKind): JsonObject =
   },
 })
 
-// 3 つのボタンの題を「」で囲んで並べたもの（「バグを報告」「要望を送る」…）。画面での手順や完了の案内に使う
+// ボタンの題を「」で囲んで並べたもの（「バグを報告」「要望を送る」…）。画面での手順や完了の案内に使う
 export const formTitles = (): string => FORM_KINDS.map((k) => `「${k.title}」`).join('')
 export const channelLink = (channel: string, teamId: string | null): string =>
   `${SLACK_APP_REDIRECT_URL}?channel=${encodeURIComponent(channel)}${teamId ? `&team=${encodeURIComponent(teamId)}` : ''}`
@@ -128,6 +135,7 @@ export const channelAppLink = (channel: string, teamId: string): string =>
   `${SLACK_CHANNEL_DEEP_LINK}?team=${encodeURIComponent(teamId)}&id=${encodeURIComponent(channel)}`
 export const featureSteps = (channel: string, teamId: string | null): string =>
   FORM_FEATURE_STEPS.replaceAll('{title}', formTitles())
+    .replaceAll('{count}', String(FORM_KINDS.length))
     .replaceAll('{app}', SLACK_APP_NAME)
     .replace('{link}', channelLink(channel, teamId))
     .replace('{appLink}', teamId ? `\n     Slack のアプリで開くなら: ${channelAppLink(channel, teamId)}` : '')

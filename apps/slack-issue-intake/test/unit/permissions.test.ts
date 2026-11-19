@@ -29,7 +29,9 @@ const setup = () => {
 }
 test('PM1/PM2 許可範囲をちょうど適用し、広い追加許可を拒否', () => {
   const { home, rules } = setup()
-  assert.equal(rules.project.allow.length, 6)
+  assert.equal(rules.project.allow.length, 7)
+  // 無人の Claude に読ませるのは run ディレクトリと仕様の索引だけ（生きたリポジトリは読ませない）
+  assert.ok(rules.project.allow.includes(`Read(/${home}/knowledge/**)`))
   assert.ok(rules.project.allow.includes(`Bash(${home}/bin/slack-issue-intake collect)`))
   assert.ok(!rules.project.allow.some((r) => r.includes('collect *')))
   assert.equal(rules.project.deny.length, 11)

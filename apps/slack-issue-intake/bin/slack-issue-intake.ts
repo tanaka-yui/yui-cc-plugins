@@ -30,6 +30,7 @@ const COMMANDS: Record<string, () => Promise<Command>> = {
   init: () => import('../lib/commands/init.ts'),
   guide: () => import('../lib/commands/guide.ts'),
   form: () => import('../lib/commands/form.ts'),
+  knowledge: () => import('../lib/commands/knowledge.ts'),
   mention: () => import('../lib/commands/mention.ts'),
   report: () => import('../lib/commands/report.ts'),
   apply: () => import('../lib/commands/apply.ts'),
@@ -86,7 +87,7 @@ if (load === undefined) {
         },
       )
       if (name === null) {
-        const example = (n: string): string => `make ${askTarget} NAME=${n}`
+        const example = (n: string): string => `make ${askTarget} ${n}`
         die(
           NAME,
           nameRequiredMessage(

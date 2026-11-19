@@ -34,17 +34,24 @@ export const renderTemplate = (kind: FormKind): string =>
 const formSteps = (kind: FormKind): string =>
   [
     `「${kind.title}」`,
-    `- ${FIELD_LABELS.title}: 短い回答、必須`,
-    `- ${FIELD_LABELS.priority}: リスト選択、必須（${PRIORITIES.join(' / ')}）`,
-    `- ${FIELD_LABELS.repo}: リスト選択、任意（受け付けるリポジトリが 2 つ以上のときだけ。選択肢は受け付けるリポジトリ。テンプレートの「${FIELD_LABELS.priority}」の行の次に「*${FIELD_LABELS.repo}:* {${FIELD_LABELS.repo}}」の行を足します）`,
-    ...kind.items.map((i) => `- ${i.label}: ${i.long ? '長い回答' : '短い回答'}、${i.required ? '必須' : '任意'}`),
+    ...(kind.titled
+      ? [
+          `- ${FIELD_LABELS.title}: 短い回答、必須`,
+          `- ${FIELD_LABELS.priority}: リスト選択、必須（${PRIORITIES.join(' / ')}）`,
+        ]
+      : []),
+    `- ${FIELD_LABELS.repo}: リスト選択、任意（受け付けるリポジトリが 2 つ以上のときだけ。選択肢は受け付けるリポジトリ。テンプレートの「${kind.titled ? FIELD_LABELS.priority : FIELD_LABELS.category}」の行の次に「*${FIELD_LABELS.repo}:* {${FIELD_LABELS.repo}}」の行を足します）`,
+    ...kind.items.map(
+      (i) =>
+        `- ${i.label}: ${i.options ? `リスト選択、${i.required ? '必須' : '任意'}（${i.options.join(' / ')}）` : `${i.long ? '長い回答' : '短い回答'}、${i.required ? '必須' : '任意'}`}`,
+    ),
     `- 添付ファイル: アップロード、任意、複数可。1ファイルだけなら任意のアップロードの質問を3つ並べます。`,
     `「チャンネルへメッセージを送信」のテンプレート:`,
     `\n~~~text\n${renderTemplate(kind)}\n~~~`,
   ].join('\n')
 export const renderGuide = (name: string): string => {
   const CLI = `${CLI_COMMAND} --name ${name}`
-  return `Slack CLI にログインしているなら、この手順の代わりに \`make setup NAME=${name}\` を使えます。
+  return `Slack CLI にログインしているなら、この手順の代わりに \`make setup ${name}\` を使えます。
 1. https://api.slack.com/apps の Create New App → From a manifest で社内向けカスタムアプリを作り、ワークスペースにインストールします。配布しません。有料プランが必要です。
 \nマニフェスト:\n\`\`\`json\n${renderManifest()}\n\`\`\`
 2. アプリの設定の OAuth & Permissions を開き、Bot User OAuth Token（xoxb- で始まる文字列）をコピーします。続けて \`${CLI} set-token\` を実行します（skill で進めているときは Claude が実行します）。
@@ -55,7 +62,7 @@ export const renderGuide = (name: string): string => {
 \n${FORM_KINDS.map(formSteps).join('\n\n')}
 \n公開したら、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で${FORM_KINDS.length}つすべてを選び、「注目」を押します。メンバーには入力欄の所にボタンが出ます。
 5. チャンネル名 → 詳細の最下部からチャンネルIDを控えます。
-6. \`${CLI} init --channel <ID> --repo <owner/name> --every 5\` を実行します。automation は無効で登録されます。受け付けるリポジトリが 2 つ以上なら \`--repo\` を並べ、\`--default-repo <owner/name>\` で既定の起票先を決めます。Slack から作っていない Issue をスレッドで管理するリポジトリには \`--existing <owner/name>=thread\` を付けます。
+6. \`${CLI} init --channel <ID> --repo <owner/name> --every 5\` を実行します。automation は無効で登録されます。受け付けるリポジトリが 2 つ以上なら \`--repo\` を並べ、\`--default-repo <owner/name>\` で既定の起票先を決めます。Slack から作っていない Issue をスレッドで管理するリポジトリには \`--existing <owner/name>=thread\` を付けます。続けて \`${CLI} knowledge\` で、「質問する」に答えるための仕様の索引を作ります（claude コマンドと git を使います）。
 7. \`${CLI} permissions --show\` で内容を確認し、承認してから \`${CLI} permissions --apply\` を実行します。
 8. \`${CLI} enable\` を実行します。受け継ぐ許可があれば内容を確認し、承認したときだけ \`--accept-inherited\` を付けます。
 Orca の Claude 起動引数へ --permission-mode や --allowedTools など許可を広げるものを入れないでください。

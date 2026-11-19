@@ -1,6 +1,7 @@
 import { asArray, asObject, asString, get, parseJson } from '../../lib/json.ts'
 
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { appendFileSync, cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { setTimeout } from 'node:timers/promises'
 
 import type { JsonObject } from '../../lib/json.ts'
@@ -55,6 +56,20 @@ else if (cmd === 'repo view') {
       process.env.FAKE_GH_HAS_ISSUES !== 'false' &&
       !(process.env.FAKE_GH_NO_ISSUES_REPOS ?? '').split(',').includes(args[2] ?? ''),
   })
+} else if (cmd === 'repo clone') {
+  // FAKE_GH_CLONE_SOURCE のディレクトリを写し、1 コミットの git リポジトリにする（無ければ失敗する）
+  const source = process.env.FAKE_GH_CLONE_SOURCE || fail()
+  const target = args[3] ?? fail()
+  cpSync(source, target, { recursive: true, verbatimSymlinks: true })
+  const git = (...a: string[]) =>
+    spawnSync(
+      'git',
+      ['-C', target, '-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...a],
+      { stdio: 'ignore' },
+    )
+  git('init', '-q')
+  git('add', '-A')
+  git('commit', '-qm', 'init')
 } else if (cmd === 'label list')
   output(
     (process.env.FAKE_GH_LABELS ?? '')

@@ -4,6 +4,7 @@ import {
   INTAKE_HOME_DIRNAME,
   INTAKE_NAME_PATTERN,
   INTAKE_NAME_RESERVED_SUFFIX,
+  KNOWLEDGE_DIRNAME,
   MSG_NAME_REQUIRED,
   MSG_NAME_RESERVED,
   MSG_NAME_RULE,
@@ -53,6 +54,7 @@ export type HomePaths = {
   runsDir: string
   projectSettings: string
   projectLocalSettings: string
+  knowledgeDir: string
 }
 export const homePaths = (home: string): HomePaths => {
   const runDir = join(home, 'run')
@@ -70,6 +72,7 @@ export const homePaths = (home: string): HomePaths => {
     runsDir: join(runDir, RUNS_DIRNAME),
     projectSettings: join(runDir, CLAUDE_DIRNAME, 'settings.json'),
     projectLocalSettings: join(runDir, CLAUDE_DIRNAME, 'settings.local.json'),
+    knowledgeDir: join(home, KNOWLEDGE_DIRNAME),
   }
 }
 export type RunPaths = { dir: string; workFile: string; decisionsFile: string; filesDir: string }

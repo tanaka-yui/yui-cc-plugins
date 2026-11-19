@@ -29,7 +29,7 @@ test('NR5 名前なしでは候補と名前付きコマンドを示し、使用�
   const none = runCli(['status'], { ...env, HOME: legacy })
   assert.equal(none.code, 2)
   for (const text of [
-    'make setup NAME=<名前> で作ってください',
+    'make setup <名前> で作ってください',
     '名前なしのホーム（~/.slack-issue-intake）は使わなくなりました',
   ])
     assert.ok(none.stderr.includes(text), text)
@@ -52,10 +52,7 @@ test('NR6 make の名前の質問は stderr に出し、stdout は manifest の 
   const unread = runCli(['--ask-name=manifest', 'form', '--manifest'], env, '')
   assert.equal(unread.code, 2)
   assert.equal(unread.stdout, '')
-  for (const text of [
-    'make manifest NAME=<名前> のように NAME を付けて実行してください',
-    '例: make manifest NAME=acme',
-  ])
+  for (const text of ['make manifest <名前> のように NAME を付けて実行してください', '例: make manifest acme'])
     assert.ok(unread.stderr.includes(text), text)
   const withEnv = runCli(
     ['--ask-name=manifest', 'form', '--manifest'],
@@ -71,7 +68,7 @@ test('GD2 不足した設定・トークン・automation はホームと実行�
   const user = tempHome(),
     home = join(user, '.slack-issue-intake-ws2')
   const env = { HOME: user, SLACK_ISSUE_INTAKE_HOME: '' }
-  const want = `${home} に設定がありません。make setup NAME=ws2 を実行してください`
+  const want = `${home} に設定がありません。make setup ws2 を実行してください`
   for (const args of [
     ['inspect'],
     ['retry', '--id', '1'],
@@ -89,7 +86,7 @@ test('GD2 不足した設定・トークン・automation はホームと実行�
   assert.equal(poll.code, 2)
   assert.match(poll.stdout, /^result=unconfigured\b/m)
   assert.ok(poll.stderr.includes(want))
-  assert.ok(readFileSync(join(home, 'poll-status.json'), 'utf8').includes('make setup NAME=ws2'))
+  assert.ok(readFileSync(join(home, 'poll-status.json'), 'utf8').includes('make setup ws2'))
   const init = runCli(['--name', 'ws2', 'init', '--channel', 'C0123456789', '--repo', 'acme/app'], env)
   assert.equal(init.code, 2)
   assert.ok(init.stderr.includes('node bin/slack-issue-intake.ts --name ws2 set-token'))
@@ -104,7 +101,7 @@ test('GD2 不足した設定・トークン・automation はホームと実行�
 })
 test('GD4 guide は指定した名前と、名前を読めないホームでは placeholder を入れる', () => {
   const r = runCli(['--name', 'ws2', 'guide'], { HOME: tempHome(), SLACK_ISSUE_INTAKE_HOME: '' })
-  for (const text of ['node bin/slack-issue-intake.ts --name ws2 set-token', '`make setup NAME=ws2`'])
+  for (const text of ['node bin/slack-issue-intake.ts --name ws2 set-token', '`make setup ws2`'])
     assert.ok(r.stdout.includes(text), text)
   assert.ok(runCli(['guide'], { SLACK_ISSUE_INTAKE_HOME: tempHome() }).stdout.includes('--name <名前> set-token'))
 })

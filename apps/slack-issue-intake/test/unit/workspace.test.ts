@@ -97,7 +97,7 @@ test('NR11 名前なしのホームがあるときだけ 1 行で知らせる', 
     const line = legacyHomeNotice() ?? ''
     for (const text of [
       '~/.slack-issue-intake）は使わなくなりました',
-      'make setup NAME=<名前>',
+      'make setup <名前>',
       'automation「slack-issue-intake」を止めて',
     ])
       assert.ok(line.includes(text), text)
@@ -113,15 +113,15 @@ test('GD1 不足した設定の案内にはホームと名前付きコマンド�
   assert.equal(hintName(named), 'ws2')
   assert.equal(hintName('/tmp/x'), '<名前>')
   assert.equal(hintName(homeForName(null)), '<名前>')
-  assert.equal(makeCommand(named, 'setup'), 'make setup NAME=ws2')
+  assert.equal(makeCommand(named, 'setup'), 'make setup ws2')
   assert.equal(cliCommand(named, 'set-token'), 'node bin/slack-issue-intake.ts --name ws2 set-token')
-  assert.equal(noConfigReason(named), `${named} に設定がありません。make setup NAME=ws2 を実行してください`)
+  assert.equal(noConfigReason(named), `${named} に設定がありません。make setup ws2 を実行してください`)
   assert.equal(
     noTokenReason(named),
-    `${named} にトークンがありません。make setup NAME=ws2 を実行するか、node bin/slack-issue-intake.ts --name ws2 set-token で登録してください`,
+    `${named} にトークンがありません。make setup ws2 を実行するか、node bin/slack-issue-intake.ts --name ws2 set-token で登録してください`,
   )
   assert.equal(
     noAutomationReason('/tmp/x'),
-    '/tmp/x の automation が登録されていません。make setup NAME=<名前> を実行してください',
+    '/tmp/x の automation が登録されていません。make setup <名前> を実行してください',
   )
 })

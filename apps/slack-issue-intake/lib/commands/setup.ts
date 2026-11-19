@@ -30,6 +30,7 @@ import {
 } from '../defaults.ts'
 import { channelAppLink, channelLink, featureSteps, formTitles } from '../form.ts'
 import { createGh, findGhPath, ghAuthOk, labelsHash, repoInfo } from '../github.ts'
+import { knowledgeDir, readKnowledgeMeta } from '../knowledge.ts'
 import { runOrca } from '../orca.ts'
 import { homePaths, intakeHome, nameOfHome, pluginRoot } from '../paths.ts'
 import { inheritedGrants, permissionStatus } from '../permissions.ts'
@@ -321,27 +322,27 @@ const readMeta = (dbFile: string, key: string): string | null => {
     db.close()
   }
 }
-// 3 つのボタンとおすすめがそろい、0.2 の古いボタンが残っていないときだけ済みにする（残っていれば form で片付ける）。
+// すべてのボタンとおすすめがそろい、0.2 の古いボタンが残っていないときだけ済みにする（残っていれば form で片付ける）。
 // 画面で注目にしてもらう印（manual）のときは、form が案内済みなので済みにする（人が注目にしたあと make slack-form で片付ける）
 const formDone = (dbFile: string): boolean =>
   FORM_KINDS.every((kind) => readMeta(dbFile, formMetaKey(FORM_META_TRIGGER_ID, kind))) &&
   Boolean(readMeta(dbFile, FORM_META_FEATURED)) &&
   (!readMeta(dbFile, FORM_META_TRIGGER_ID) || readMeta(dbFile, FORM_META_FEATURED) === FORM_FEATURED_MANUAL)
 
-// 8・9段目。permissionStatus で飛ばす段を決め、許可と受け継ぐ許可はどちらも内容を見せて y/N で確かめる
+// 10・11段目。permissionStatus で飛ばす段を決め、許可と受け継ぐ許可はどちらも内容を見せて y/N で確かめる
 const approve = (p: Prompter, home: string, accepted: string | null): number => {
   const status = permissionStatus(home, accepted)
   if (status === 'accepted') {
     // enable は Orca を呼ぶ前に承認を保存するので、承認済みでも有効化が失敗していることがある。
     // 指紋が一致しているので受け継ぐ許可も承認済み。聞き直さずに enable をやり直す（有効なものを有効にしても変わらない）
-    heading(9, SETUP_TEXT.stepPermissions, true)
-    heading(10, SETUP_TEXT.stepEnable)
+    heading(10, SETUP_TEXT.stepPermissions, true)
+    heading(11, SETUP_TEXT.stepEnable)
     const inherited = inheritedGrants()
     if (!inherited) return fail(SETUP_TEXT.noInherited)
     return child(['enable', ...(inherited.allow.length || inherited.dirs.length ? ['--accept-inherited'] : [])])
   }
   if (status === 'unsafe') {
-    heading(9, SETUP_TEXT.stepPermissions)
+    heading(10, SETUP_TEXT.stepPermissions)
     const shown = child(['permissions', '--show'])
     if (shown !== 0) return shown
     const ok = p.confirm(SETUP_TEXT.confirmPermissions)
@@ -349,8 +350,8 @@ const approve = (p: Prompter, home: string, accepted: string | null): number => 
     if (!ok) return fail(fill(SETUP_TEXT.declined, { setup: makeCommand(intakeHome(), 'setup') }))
     const applied = child(['permissions', '--apply'])
     if (applied !== 0) return applied
-  } else heading(9, SETUP_TEXT.stepPermissions, true)
-  heading(10, SETUP_TEXT.stepEnable)
+  } else heading(10, SETUP_TEXT.stepPermissions, true)
+  heading(11, SETUP_TEXT.stepEnable)
   const inherited = inheritedGrants()
   if (!inherited) return fail(SETUP_TEXT.noInherited)
   if (inherited.allow.length === 0 && inherited.dirs.length === 0) return child(['enable'])
@@ -560,18 +561,26 @@ const wizard = async (): Promise<number> => {
   }
   const formConfig = loadConfig(home)
   if (!formConfig) return fail(MSG_CONFIG_BROKEN)
+  // 8: 質問に答えるための仕様の索引。全リポジトリの索引があれば済み（作り直しは make slack-form と make knowledge）。
+  // 作れなくても止めない（そのリポジトリの質問には、ドキュメントに見つからなかったと答える）
+  if (formConfig.repos.every((r) => readKnowledgeMeta(knowledgeDir(home, r.name))))
+    heading(8, SETUP_TEXT.stepKnowledge, true)
+  else {
+    heading(8, SETUP_TEXT.stepKnowledge)
+    if (child(['knowledge']) !== 0) say(fill(SETUP_TEXT.knowledgeFailed, { knowledge: makeCommand(home, 'knowledge') }))
+  }
   if (!manualApp && readDeployedHash(project) !== manifestHash(formRepos(formConfig))) {
     const code = deploy(manifestHash(formRepos(formConfig)), deployedApp(project)?.teamId || formConfig.slack.teamId)
     if (code !== 0) return code
   }
-  // 8: 手作業のアプリには Slack CLI でボタンを作れないので、Workflow Builder を案内する
+  // 9: 手作業のアプリには Slack CLI でボタンを作れないので、Workflow Builder を案内する
   if (manualApp) {
-    heading(8, SETUP_TEXT.stepForm, true)
+    heading(9, SETUP_TEXT.stepForm, true)
     say(SETUP_TEXT.manualForm)
-  } else if (formDone(paths.db)) heading(8, SETUP_TEXT.stepForm, true)
+  } else if (formDone(paths.db)) heading(9, SETUP_TEXT.stepForm, true)
   else {
-    heading(8, SETUP_TEXT.stepForm)
-    const code = child(['form'])
+    heading(9, SETUP_TEXT.stepForm)
+    const code = child(['form', '--skip-knowledge'])
     if (code !== 0) return code
   }
 
@@ -579,7 +588,7 @@ const wizard = async (): Promise<number> => {
   if (!config) return fail(MSG_CONFIG_BROKEN)
   const approved = approve(p, home, config.acceptedPermissions)
   if (approved !== 0) return approved
-  // ボットでは入力欄にボタンを出せなかったときは、7段目の出力が流れているので、画面での手順をもう一度示す
+  // ボットでは入力欄にボタンを出せなかったときは、9段目の出力が流れているので、画面での手順をもう一度示す
   if (readMeta(paths.db, FORM_META_FEATURED) === FORM_FEATURED_MANUAL)
     say(fill(SETUP_TEXT.featureByHand, { steps: featureSteps(config.channel, config.slack.teamId || null) }))
   say(fill(SETUP_TEXT.finished, { title: formTitles(), inspect: cliCommand(home, 'inspect --raw') }))

@@ -31,7 +31,7 @@ import { test } from 'node:test'
 import type { Json } from '../../lib/json.ts'
 import type { FormKind } from '../../lib/types.ts'
 
-const WORKFLOW_IDS = ['issue_intake_bug', 'issue_intake_request', 'issue_intake_feature']
+const WORKFLOW_IDS = ['issue_intake_bug', 'issue_intake_request', 'issue_intake_feature', 'issue_intake_question']
 const workflowOf = (kind: FormKind): Json | undefined => get(formManifestObject([]), 'workflows', kind.workflowId)
 const step = (kind: FormKind, index: number): Json | undefined => asArray(get(workflowOf(kind), 'steps'))?.[index]
 const elements = (kind: FormKind): Json[] => asArray(get(step(kind, 0), 'inputs', 'fields', 'elements')) ?? []
@@ -79,8 +79,10 @@ test('FM2 3 つのフォームの項目と必須はカテゴリどおりで、Sl
     assert.equal(get(step(kind, 0), 'inputs', 'title'), kind.title)
     for (const e of elements(kind))
       assert.ok([...(asString(get(e, 'title')) ?? '')].length <= FORM_FIELD_TITLE_MAX_CHARS)
-    assert.equal(get(byName(kind, 'title'), 'title'), FIELD_LABELS.title)
-    assert.deepEqual(get(byName(kind, 'priority'), 'enum'), [...PRIORITIES])
+    if (kind.titled) {
+      assert.equal(get(byName(kind, 'title'), 'title'), FIELD_LABELS.title)
+      assert.deepEqual(get(byName(kind, 'priority'), 'enum'), [...PRIORITIES])
+    }
     assert.equal(byName(kind, 'category'), undefined)
     assert.equal(get(byName(kind, 'attachments'), 'items', 'type'), 'slack#/types/file_id')
     assert.equal(get(byName(kind, 'attachments'), 'maxItems'), MAX_FILES_PER_MESSAGE)
@@ -91,6 +93,7 @@ test('FM2 3 つのフォームの項目と必須はカテゴリどおりで、Sl
   assert.deepEqual(required('bug'), ['title', 'priority', 'symptom'])
   assert.deepEqual(required('request'), ['title', 'priority', 'current', 'ideal'])
   assert.deepEqual(required('feature'), ['title', 'priority', 'spec'])
+  assert.deepEqual(required('question'), ['question_kind', 'question_body'])
   assert.equal(get(byName(kindOf('bug'), 'error_log'), 'long'), true)
   assert.equal(get(byName(kindOf('bug'), 'screen_url'), 'long'), undefined)
   assert.deepEqual(
@@ -108,7 +111,7 @@ test('FM3 ワークフローの投稿は変数を埋めると解析器がその�
       .replace('{{inputs.user_id}}', REPORTER)
     const values: Record<string, string> = {}
     for (const item of kind.items) {
-      values[item.label] = `${item.label}の値`
+      values[item.label] = item.options?.[0] ?? `${item.label}の値`
       filled = filled.replace(`{{steps.0.fields.${item.name}}}`, values[item.label] ?? '')
     }
     assert.equal(filled, kindText(kind.category, values))
@@ -149,7 +152,7 @@ test('FM6/FM7 複数リポジトリだけ任意の選択欄を作り、指紋へ
     const steps = asArray(get(workflow, 'steps')) ?? []
     const fields = get(steps[0], 'inputs', 'fields')
     const elements = asArray(get(fields, 'elements')) ?? []
-    assert.deepEqual(elements[2], { name: 'repo', title: 'リポジトリ', type: 'string', enum: repos })
+    assert.deepEqual(elements[kind.titled ? 2 : 0], { name: 'repo', title: 'リポジトリ', type: 'string', enum: repos })
     assert.ok(!asArray(get(fields, 'required'))?.includes('repo'))
     assert.match(String(get(steps[1], 'inputs', 'message')), /\*リポジトリ:\* {{steps.0.fields.repo}}/)
     assert.equal(get(workflow, 'input_parameters', 'channel_id', 'is_required'), true)
@@ -185,4 +188,21 @@ test('LK1 リンクはチーム ID の有無を扱い、チャンネルの側の
   assert.ok(!steps.slice(steps.indexOf('管理画面')).includes('://'))
   const noTeam = featureSteps('C0123456789', null)
   assert.ok(!noTeam.includes('team=') && !noTeam.includes('slack://'))
+})
+
+test('FM8 「質問する」は題と優先度の欄を持たず、質問の種類を選ばせ、投稿にも題と優先度の行を置かない', () => {
+  const kind = kindOf('question')
+  assert.equal(kind.title, '質問する')
+  assert.equal(kind.category, '質問')
+  assert.deepEqual(
+    elements(kind).map((e) => get(e, 'name')),
+    ['question_kind', 'question_body', 'attachments'],
+  )
+  assert.deepEqual(get(byName(kind, 'question_kind'), 'enum'), ['仕様について', 'バグか仕様なのかわからない', 'その他'])
+  assert.equal(get(byName(kind, 'question_body'), 'long'), true)
+  assert.notEqual(get(workflowOf(kind), 'description'), get(workflowOf(kindOf('bug')), 'description'))
+  const message = renderWorkflowMessage(kind, true)
+  assert.ok(!message.includes('タイトル') && !message.includes('優先度'))
+  assert.match(message, /^\*カテゴリ:\* 質問\n\*リポジトリ:\* {{steps.0.fields.repo}}$/m)
+  assert.ok(featureSteps(CHANNEL, null).includes(`の ${FORM_KINDS.length} つを選び`))
 })

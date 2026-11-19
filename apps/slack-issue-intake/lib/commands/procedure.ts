@@ -1,8 +1,12 @@
 import { parseFlags } from '../cli.ts'
 import {
+  ANSWER_MAX_CHARS,
+  ANSWER_MAX_SOURCES,
   DECISIONS_FILE,
   DETAILS_MAX_CHARS,
+  MAX_ANSWER_ROUNDS,
   MAX_QUESTIONS_PER_ROUND,
+  MAX_TITLE_CHARS,
   QUESTION_MAX_CHARS,
   SUMMARY_MAX_CHARS,
   UNRESOLVED_ITEM_MAX_CHARS,
@@ -19,6 +23,7 @@ export const run = (argv: string[]): void => {
   const values: Record<string, string | number> = {
     LAUNCHER: paths.launcher,
     RUN_DIR: paths.runDir,
+    KNOWLEDGE_DIR: paths.knowledgeDir,
     WORK_FILE,
     DECISIONS_FILE,
     MAX_QUESTIONS: MAX_QUESTIONS_PER_ROUND,
@@ -27,6 +32,10 @@ export const run = (argv: string[]): void => {
     DETAILS_MAX_CHARS,
     UNRESOLVED_MAX_ITEMS,
     UNRESOLVED_ITEM_MAX_CHARS,
+    MAX_ANSWERS: MAX_ANSWER_ROUNDS,
+    ANSWER_MAX_CHARS,
+    ANSWER_MAX_SOURCES,
+    MAX_TITLE_CHARS,
   }
   const template = readFileSync(join(pluginRoot(), 'skills/slack-issue-intake/references/procedure.md'), 'utf8')
   console.log(template.replace(/{{([A-Z_]+)}}/g, (match, key: string) => String(values[key] ?? match)))

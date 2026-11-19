@@ -29,7 +29,7 @@ import type {
 } from './types.ts'
 export type Db = DatabaseSync
 export const AGENT_STATES: readonly State[] = ['new', 'answered', 'timed_out']
-export const DRIVEN_STATES: readonly State[] = ['asking', 'creating', 'notifying', 'rejecting']
+export const DRIVEN_STATES: readonly State[] = ['asking', 'creating', 'notifying', 'rejecting', 'closing']
 export const ALL_STATES: readonly State[] = [
   'new',
   'asking',
@@ -41,6 +41,8 @@ export const ALL_STATES: readonly State[] = [
   'created',
   'rejecting',
   'rejected',
+  'closing',
+  'closed',
   'failed',
 ]
 export type Submission = {

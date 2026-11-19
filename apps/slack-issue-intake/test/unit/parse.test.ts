@@ -47,7 +47,7 @@ test('PA6 読めない項目を順に挙げる', () => {
     reporterId: 'U012AB3CD',
     problems: [
       'タイトルがありません',
-      'カテゴリが「バグ / 新機能 / 要望」のどれでもありません',
+      'カテゴリが「バグ / 新機能 / 要望 / 質問」のどれでもありません',
       '優先度が「critical / high / middle / low」のどれでもありません',
       '本文がありません',
     ],
@@ -111,7 +111,9 @@ test('PA15 1 行に ```値``` と書かれた値も読む', () => {
 })
 test('PA16 カテゴリが不正で本文の行も無ければ、カテゴリの問題だけを挙げる', () => {
   const r = parseSubmission(kindText('バグ', { 事象: 'x' }).replace('*カテゴリ:* バグ', '*カテゴリ:* その他'), null, [])
-  assert.deepEqual(r.kind === 'invalid' && r.problems, ['カテゴリが「バグ / 新機能 / 要望」のどれでもありません'])
+  assert.deepEqual(r.kind === 'invalid' && r.problems, [
+    'カテゴリが「バグ / 新機能 / 要望 / 質問」のどれでもありません',
+  ])
 })
 test('PA17 値に ``` が混ざって枠が崩れても落ちず、次の項目名の行までを値にする', () => {
   const r = parseSubmission(kindText('バグ', { 事象: 'a', エラーログ: 'x ``` y\nz', 画面のURL: 'u' }), null, [])
@@ -156,4 +158,45 @@ test('PA22 空のリポジトリは既定、指定は正規化し、未登録は
   assert.deepEqual(invalid.kind === 'invalid' && invalid.problems, [
     'リポジトリは次のどれかにしてください: acme/app / acme/web',
   ])
+})
+
+test('PA23 質問は題と優先度なしで読み、本文の先頭行を題にし、優先度は middle、質問の種類を残す', () => {
+  const r = parseSubmission(
+    kindText('質問', { 質問の種類: 'バグか仕様なのかわからない', 本文: '\n請求書の締め日は？\n2行目' }),
+    null,
+    [],
+  )
+  assert.deepEqual(r, {
+    kind: 'ok',
+    repo: null,
+    fields: {
+      title: '請求書の締め日は？',
+      fullTitle: '請求書の締め日は？',
+      category: '質問',
+      priority: 'middle',
+      body: '質問の種類:\nバグか仕様なのかわからない\n\n本文:\n請求書の締め日は？\n2行目',
+      reporterId: 'U012AB3CD',
+      questionKind: 'バグか仕様なのかわからない',
+    },
+  })
+  const long = parseSubmission(kindText('質問', { 質問の種類: 'その他', 本文: 'あ'.repeat(300) }), null, [])
+  assert.ok(long.kind === 'ok' && long.fields.title === `${'あ'.repeat(255)}…`)
+  const flat = parseSubmission(
+    kindText('質問', { 質問の種類: '仕様について', 本文: 'x' }).replaceAll('*', ''),
+    null,
+    [],
+  )
+  assert.ok(flat.kind === 'ok' && flat.fields.questionKind === '仕様について')
+})
+test('PA24 質問の種類が選択肢に無い・行が無い・0.2 の形の質問は読めない', () => {
+  const bad = parseSubmission(kindText('質問', { 質問の種類: '雑談', 本文: 'x' }), null, [])
+  assert.deepEqual(bad.kind === 'invalid' && bad.problems, [
+    '質問の種類が「仕様について / バグか仕様なのかわからない / その他」のどれでもありません',
+  ])
+  const noKind = parseSubmission(kindText('質問', { 本文: 'x' }).replace(/\n\*質問の種類:\* \n/, '\n'), null, [])
+  assert.ok(noKind.kind === 'invalid' && noKind.problems.includes('質問の種類がありません'))
+  const legacy = parseSubmission(templateText({ category: '質問' }), null, [])
+  assert.ok(legacy.kind === 'invalid' && legacy.problems.includes('質問の種類がありません'))
+  const bug = parseSubmission(templateText(), null, [])
+  assert.ok(bug.kind === 'ok' && !('questionKind' in bug.fields))
 })

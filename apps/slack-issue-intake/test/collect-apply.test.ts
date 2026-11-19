@@ -177,6 +177,9 @@ test('CA9 procedureは値を埋めた許可コマンドと上限を表示', asyn
   assert.ok(!r.stdout.includes('{{'))
   assert.match(r.stdout, /apply --run <run id>/)
   assert.match(r.stdout, /at most 3 numbered questions/i)
+  assert.ok(r.stdout.includes(`${f.home}/knowledge`))
+  assert.match(r.stdout, /"action": "answer"/)
+  assert.match(r.stdout, /at most 3 answers/i)
 })
 test('CA10 同じrunを同時applyしても作成は1回', async (t) => {
   const f = await setup(t)

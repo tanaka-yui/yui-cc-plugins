@@ -104,7 +104,7 @@ test('DB4/DB5/DB6 状態とリースで比較更新し、位置と印を保存',
 })
 test('DB7 名前キャッシュの期限と全状態の件数', () => {
   const { db } = setup()
-  assert.equal(Object.keys(countByState(db)).length, 11)
+  assert.equal(Object.keys(countByState(db)).length, 13)
   saveUserName(db, 'U1', '山田', '2026-11-01T00:00:00.000Z')
   assert.equal(cachedUserName(db, 'U1', '2026-11-07T23:00:00.000Z'), '山田')
   assert.equal(cachedUserName(db, 'U1', '2026-11-08T01:00:00.000Z'), null)

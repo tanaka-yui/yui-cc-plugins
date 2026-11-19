@@ -188,13 +188,15 @@ export const sync = async (ctx: DriveContext): Promise<SyncReport> => {
     const human = replies.messages.some((m) => !m.bot_id && asString(m.user) && m.user !== rt.config.slack.botUserId)
     const timeout = !human && s.askedAt && Date.parse(s.askedAt) + ANSWER_TIMEOUT_HOURS * 3600000 <= ctx.now().getTime()
     if (human || timeout) {
+      // 返信の無いまま時間切れの質問は、Claude を起こさずに閉じる（起票はしない）
+      const timedOut = s.fields?.questionKind ? 'closed' : 'timed_out'
       if (
         !transition(
           rt.db,
           token,
           s.id,
           'waiting',
-          human ? { state: 'answered' } : { state: 'timed_out', timedOutAt: ctx.now().toISOString() },
+          human ? { state: 'answered' } : { state: timedOut, timedOutAt: ctx.now().toISOString() },
           ctx.now().toISOString(),
         )
       ) {
