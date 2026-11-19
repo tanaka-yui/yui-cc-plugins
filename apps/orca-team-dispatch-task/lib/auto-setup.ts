@@ -225,7 +225,14 @@ export const runSetup = (name: string, prompter: Prompter, out: (text: string) =
       do {
         pick = ask(`${repo} の拾う条件`, old?.pick ?? 'Ready')
       } while (!pick)
-      next.push({ repo, pick, related: old?.related ?? [repo], project: old?.project ?? null })
+      // auto-ready は Backlog を Ready へ上げるので、Ready を拾う元にだけ意味がある
+      const autoReady =
+        pick === 'Ready' &&
+        yes(
+          `${repo} で auto-ready を使いますか（Backlog の Issue を AI が判定し、自動で対応できるものを Ready にする。PR は人が確認してから merge）`,
+          old?.autoReady ?? false,
+        )
+      next.push({ repo, pick, related: old?.related ?? [repo], project: old?.project ?? null, autoReady })
     }
     v.intakeConfigs = chosen
     v.sources = next

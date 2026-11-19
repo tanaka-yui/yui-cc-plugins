@@ -56,6 +56,7 @@ const prepare = () => {
     '1',
     '',
     '',
+    '',
     f.raw.repos['acme/app'].checkout,
     '',
     '',
@@ -176,7 +177,7 @@ test('SU29 missing project scope records no project and explains recovery', () =
     rmSync(f.configFile)
     f.respond('auth_status', { hosts: { 'github.com': [{ active: true, state: 'success', scopes: 'repo' }] } })
     const answers = f.freshAnswers()
-    answers[6] = 'acme/3'
+    answers[7] = 'acme/3'
     const result = f.invoke(answers)
     assert.equal(result.status, 0, result.stdout + result.stderr)
     assert.equal(f.config().sources[0]?.project, null)
@@ -195,7 +196,7 @@ test('SU27b same-name automation requires consent', () => {
       f.orca,
     )
     const answers = f.freshAnswers()
-    answers[20] = 'n'
+    answers[21] = 'n'
     const result = f.invoke(answers)
     assert.equal(result.status, 1, result.stdout + result.stderr)
     assert.ok(!/automations (create|edit)/.test(f.calls(f.orca)))
@@ -396,12 +397,12 @@ test('SU31 EOF keeps finished steps and resumes at repositories', () => {
   const f = prepare()
   try {
     rmSync(f.configFile)
-    const result = f.invoke([f.raw.intakeConfig, '', '1', '', ''])
+    const result = f.invoke([f.raw.intakeConfig, '', '1', '', '', ''])
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.equal(existsSync(f.configFile), false)
     const draft = JSON.parse(readFileSync(join(autoDir('main'), 'setup.json'), 'utf8'))
     assert.deepEqual(draft.done, ['prereq', 'sources'])
-    const rest = f.freshAnswers().slice(4)
+    const rest = f.freshAnswers().slice(5)
     const again = f.invoke(rest)
     assert.equal(again.status, 0, again.stdout + again.stderr)
     assert.match(again.stdout, /\[1\/12\] 前提の確認 … 済み/)
@@ -808,7 +809,7 @@ test('MI6 two intake homes are offered and their repos become candidates', () =>
       f.put(path, { repos: [{ name: repo }] })
     }
     rmSync(f.configFile)
-    const result = f.invoke(['', '', '1,2', '', '']) // 番号は既定（全部）、ほかは無し、拾う元 1,2、拾う条件 2 つ、次の段で入力が尽きる
+    const result = f.invoke(['', '', '1,2', '', '', '', '']) // 番号は既定（全部）、ほかは無し、拾う元 1,2、拾う条件と auto-ready を 2 つずつ、次の段で入力が尽きる
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.ok(result.stdout.includes(`  1. ${ws1}`) && result.stdout.includes(`  2. ${ws2}`), result.stdout)
     const draft = draftOf()
@@ -830,7 +831,7 @@ test('MI8 other intake paths are checked and at least one intake is required', (
     f.put(ws1, { repos: [{ name: 'acme/app' }] })
     rmSync(f.configFile)
     const missing = join(f.dir, 'missing.json')
-    const result = f.invoke(['-', '', '1', 'relative.json', missing, f.raw.intakeConfig, '', '1,2', '', ''])
+    const result = f.invoke(['-', '', '1', 'relative.json', missing, f.raw.intakeConfig, '', '1,2', '', '', '', ''])
     assert.equal(result.status, 2, result.stdout + result.stderr)
     for (const text of [
       'intake の設定ファイルを 1 つ以上選んでください',
@@ -862,7 +863,7 @@ test('MI11 unnamed intake home is not offered for fresh setup', () => {
       f.put(path, { repos: [{ name: repo }] })
     }
     rmSync(f.configFile)
-    const result = f.invoke(['', '', '1', ''])
+    const result = f.invoke(['', '', '1', '', ''])
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.ok(result.stdout.includes(`  1. ${ws2}`), result.stdout)
     assert.ok(!result.stdout.includes(legacy), result.stdout)
@@ -883,7 +884,7 @@ test('MI12 configured unnamed intake stays offered and selected with Enter', () 
     const configured = { ...f.raw, intakeConfigs: [legacy] }
     Reflect.deleteProperty(configured, 'intakeConfig')
     f.put(f.configFile, configured)
-    const result = f.invoke(['', '', '', ''])
+    const result = f.invoke(['', '', '', '', ''])
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.ok(result.stdout.includes(legacy) && result.stdout.includes(ws2), result.stdout)
     assert.deepEqual(draftOf().values.intakeConfigs, [legacy])

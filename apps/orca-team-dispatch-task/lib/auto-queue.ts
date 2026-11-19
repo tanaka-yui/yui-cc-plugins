@@ -1,6 +1,6 @@
 import { listReadyManaged, type ReadyIssue, readyAtOf, viewIssue } from './auto-github.ts'
 import { autoNow, canAutoCall } from './auto-paths.ts'
-import { FEATURE_LABEL, PRIORITY_LABELS, STATUS } from './status.ts'
+import { FEATURE_LABEL, PRIORITY_LABELS, STATUS, STATUS_LABELS } from './status.ts'
 
 import type { AutoState, IssueState, Priority } from './auto-state.ts'
 
@@ -51,6 +51,7 @@ const makeIssue = (repo: string, row: ReadyIssue, pick: string): IssueState => (
   finishingSince: null,
   cleanupPending: false,
   returnedFromEng: false,
+  autoReady: false,
   endedAt: null,
   checkedAt: null,
   prevBranch: null,
@@ -61,7 +62,7 @@ const makeIssue = (repo: string, row: ReadyIssue, pick: string): IssueState => (
 })
 export const syncIssues = (
   state: AutoState,
-  sources: Array<{ repo: string; pick: string }>,
+  sources: Array<{ repo: string; pick: string; autoReady?: boolean }>,
 ): { added: string[]; dropped: string[]; humanChanged: string[]; unreadable: string[] } => {
   const result = {
     added: [] as string[],
@@ -123,6 +124,7 @@ export const syncIssues = (
           startedAt: null,
           finishingSince: null,
           returnedFromEng: from === 'eng',
+          autoReady: false,
           host: null,
           hostUnreachableSince: null,
           coordinator: null,
@@ -131,6 +133,45 @@ export const syncIssues = (
           updatedAt: now,
         })
       }
+    }
+  }
+  // auto-ready: 有効にした時刻より後に作られ、ステータスが Backlog だけの Issue を判定に回す。
+  // 状態に記録がある Issue（人が Backlog へ戻したものを含む）は拾い直さない
+  state.autoReadySince ??= {}
+  const since = state.autoReadySince
+  for (const source of sources) {
+    if (!source.autoReady) {
+      delete since[source.repo]
+      continue
+    }
+    if (!since[source.repo]) {
+      since[source.repo] = now
+      continue
+    }
+    if (failed.has(source.repo)) continue
+    if (!canAutoCall('同期')) {
+      result.unreadable.push(...Object.keys(state.issues))
+      return result
+    }
+    const rows = listReadyManaged(source.repo, STATUS.backlog)
+    if (!rows) {
+      failed.add(source.repo)
+      continue
+    }
+    for (const row of rows) {
+      const key = `${source.repo}#${row.number}`
+      const statuses = row.labels.filter((l) => STATUS_LABELS.some((s) => s.name === l))
+      if (
+        state.issues[key] ||
+        candidates.has(key) ||
+        statuses.length !== 1 ||
+        statuses[0] !== STATUS.backlog ||
+        !(Date.parse(row.createdAt) >= Date.parse(since[source.repo] ?? ''))
+      )
+        continue
+      candidates.set(key, row)
+      state.issues[key] = { ...makeIssue(source.repo, row, STATUS.backlog), autoReady: true }
+      result.added.push(key)
     }
   }
   for (const key of existing) {
@@ -144,7 +185,8 @@ export const syncIssues = (
       result.unreadable.push(key)
       continue
     }
-    const pick = sources.find((s) => s.repo === issue.repo)?.pick ?? STATUS.ready
+    const source = sources.find((s) => s.repo === issue.repo)
+    const pick = source?.pick ?? STATUS.ready
     const tombstone = ['done', 'failed', 'stopped', 'eng'].includes(issue.phase)
     if (
       tombstone &&
@@ -169,10 +211,21 @@ export const syncIssues = (
       if (view.state === 'CLOSED') {
         delete state.issues[key]
         result.dropped.push(key)
+      } else if (issue.autoReady && issue.phase === 'judging' && !view.labels.includes(pick)) {
+        // 判定待ちの Backlog。auto-ready を外したら何もせずに記録から外し、人が別のステータスにしたら止める
+        if (!source?.autoReady) {
+          delete state.issues[key]
+          result.dropped.push(key)
+        } else if (!view.labels.includes(STATUS.backlog)) {
+          issue.phase = 'stopped'
+          issue.updatedAt = now
+        }
       } else if (!view.labels.includes(pick)) {
         issue.phase = 'stopped'
         issue.updatedAt = now
       } else {
+        // 判定の前に人が Ready にした。人が「やる」と決めたので、通常の Issue として扱う
+        if (issue.autoReady && issue.phase === 'judging') issue.autoReady = false
         const row = candidates.get(key)
         if (row) {
           issue.title = row.title

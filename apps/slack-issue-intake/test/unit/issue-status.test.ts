@@ -17,6 +17,7 @@ const EXAMPLES = JSON.parse(readFileSync(join(import.meta.dirname, '../fixtures/
 const URL = 'https://github.com/acme/app/issues/42'
 const MENTION = '<!subteam^S0DEV0001> '
 const SLUG_TO_NAME: Record<string, string> = {
+  ready: 'Ready',
   'ready-eng': 'Ready_Eng',
   'in-progress': 'In progress',
   'in-review': 'In review',
@@ -31,7 +32,7 @@ test('IS1 currentStatus は大文字小文字を無視し、2つあれば優先�
   assert.equal(currentStatus(['bug']), null)
 })
 test('IS2 parseMarker は最終行だけを読み、形が違えば null', () => {
-  assert.equal(EXAMPLES.length, 8)
+  assert.equal(EXAMPLES.length, 9)
   for (const e of EXAMPLES) assert.equal(parseMarker(e.body)?.event, e.event, e.event)
   assert.deepEqual(parseMarker(EXAMPLES[6]?.body ?? ''), { slug: 'failed', generation: 2, event: 'failed' })
   assert.equal(parseMarker('<!-- orca-auto:done:1:ai-merged -->\nあとがき'), null)
@@ -66,7 +67,7 @@ test('IS5 renderStatusMessage は event ごとの文言とメンションを返�
   for (const e of EXAMPLES) {
     const to = SLUG_TO_NAME[e.status] ?? null
     const change: StatusChange = {
-      from: { status: e.event === 'stalled' ? to : 'Ready', state: 'open' },
+      from: { status: e.event === 'stalled' ? to : e.event === 'auto-ready' ? 'Backlog' : 'Ready', state: 'open' },
       to: { status: to, state: 'open' },
       marker: { event: e.event, body: e.body },
     }

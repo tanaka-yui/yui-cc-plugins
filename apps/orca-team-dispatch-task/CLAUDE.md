@@ -599,6 +599,15 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - 実機で未確認: Linux の time と測定できない環境（U3）、長い確認の出力と目印（U7）、時間切れで close した後の子と一時ディレクトリ（U8）、Windows（U9）、mise などで node の版を固定したリポジトリ（U10）、build のある実リポジトリでの measure と推奨値。
 - 遠くの確認の待機中に setup を Ctrl+C で終了すると、finally の close は走らず端末と確認が残りうる。このマシンの確認中の SIGINT とは扱いが異なるため、再実行の前に遠くの端末の確認が終わったかを確かめる。
 
+### auto-ready（2026-11-19）
+
+- **拾う元ごとの `autoReady`（既定 false、`pick` が Ready のときだけ）で、Backlog の判定も AI に任せる。**slack-issue-intake は起票時に Backlog を付け、Ready は人が付けていた。tick の `syncIssues` が Backlog の管理 Issue も一覧し、判定役が `auto` なら `auto-ready` の event でコメント → Backlog から Ready（`then: queued`）、`eng` なら Backlog から Ready_Eng にする。判定役を新しく作らず、既存の judge-list / judge-apply に `autoReady` の印を足した（判定の基準を 1 か所に保つため）。
+- **拾うのは、tick が有効を最初に見た時刻（状態の `autoReadySince[repo]`）より後に作られ、ステータスラベルが Backlog だけの Issue。**有効にした瞬間に溜まった Backlog を一斉に判定して Ready_Eng の通知を大量に出さないため。状態に記録がある Issue は拾い直さない（人が Ready_Eng や Ready から Backlog へ戻したものを AI が動かし直さない）。外すと時刻を消し、判定待ちの Backlog の Issue を記録から外す。
+- **auto-ready の世代は AI が merge しない**（仕上げの関門の理由に足す）。Backlog は人が「やる」と決める前の状態で、Slack の投稿だけでコードの変更から merge まで進むのを避けるため。判定の前に人が Ready にした・Ready から拾い直した世代は `autoReady: false` に戻り、通常どおり。
+- コメントのマーカーは `orca-auto:ready:<世代>:auto-ready`。共有の `test/fixtures/orca-auto-comments.json` の末尾に足し、slack-issue-intake の `STATUS_EVENTS` に文言（メンションなし）を足した。
+- setup の問いは拾う条件の直後（「auto-ready を使いますか」）。setup-run のテストは位置で答えを渡すので、拾う元 1 つにつき答えが 1 つ増えた。「有効にしますか」を含めると rerun の部分一致で答えが当たるので使わない。
+- 回帰: AR1〜8（`test/unit/auto-ready.test.ts`）、AC1 の auto-ready、slack-issue-intake の IS2 / IS5。
+
 ### 判断のメモ・取り次ぎの余裕・目的の文（2026-11-18）
 
 - **決めた点（decisions）だけでは In review に回さない。**実機（#19、C3b の #7）では worker が「reset しなかった」のような小さな選択まで決めた点に書き、ほとんどの Issue が In review になった。結果の形に `needsReview`（人の確認が要る点）を足し、In review の関門は状態の `reviewPoints`（needsReview・未解消/不採用の指摘・古い形の decisions）にした。`decisions` は記録で、needs-review・partial-merge・ai-merged のコメントの「AI が決めた点」に残す。`needsReview` のキーの有無はファイルごとに見て、無い結果（前の指示の worker）は決めた点も In review に回す。基準の文は `auto-request.ts` の `NEEDS_REVIEW_RULE` 1 つで、実装役と計画役（`mail-spec.ts`）が使う。状態の欄を `needsReview` にしないのは auto-tick.ts の関数名とぶつかるため。回帰は RQ14/15、MS10/16、AC6/7、SS4、AU132〜136。

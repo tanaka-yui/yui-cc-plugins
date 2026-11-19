@@ -41,7 +41,7 @@ export const ensureStatusLabels = (repo: string): boolean => {
   }
   return true
 }
-export type ReadyIssue = { number: number; title: string; labels: string[]; updatedAt: string }
+export type ReadyIssue = { number: number; title: string; labels: string[]; updatedAt: string; createdAt: string }
 export const listReadyManaged = (repo: string, pick: string): ReadyIssue[] | null => {
   const issues = new Map<number, ReadyIssue>()
   for (const managed of MANAGED_LABELS) {
@@ -60,7 +60,7 @@ export const listReadyManaged = (repo: string, pick: string): ReadyIssue[] | nul
         '--limit',
         String(AUTO_GITHUB_PAGE_SIZE),
         '--json',
-        'number,title,labels,updatedAt',
+        'number,title,labels,updatedAt,createdAt',
       ]),
     )
     if (!rows) return null
@@ -79,6 +79,7 @@ export const listReadyManaged = (repo: string, pick: string): ReadyIssue[] | nul
         title: issue.title,
         labels: labelNames(issue.labels),
         updatedAt: issue.updatedAt,
+        createdAt: typeof issue.createdAt === 'string' ? issue.createdAt : '',
       })
     }
   }

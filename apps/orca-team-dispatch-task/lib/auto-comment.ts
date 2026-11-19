@@ -1,6 +1,7 @@
 import { STATUS, STATUS_LABELS } from './status.ts'
 
 export type AutoEvent =
+  | 'auto-ready'
   | 'judged'
   | 'started'
   | 'needs-review'
@@ -39,6 +40,7 @@ const list = (title: string, items?: string[]): string =>
 const link = (p: Pr): string => `[${clean(p.repo)}#${p.number}](${clean(p.url)})`
 export const statusOfEvent = (event: AutoEvent): string =>
   ({
+    'auto-ready': STATUS.ready,
     judged: STATUS.readyEng,
     started: STATUS.inProgress,
     stalled: STATUS.inProgress,
@@ -59,6 +61,19 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
       : ''
   let body: string
   switch (event) {
+    case 'auto-ready':
+      body = [
+        '**Ready にしました**',
+        '',
+        'AI が自動で対応できると判断しました。PR は人が確認してから merge します。',
+        input.reason ? `判定の理由: ${clean(input.reason)}` : '',
+        input.limitMinutes
+          ? `推奨の上限時間: ${input.limitMinutes + (input.relayMinutes ?? 0)} 分${limitBreakdown(input.limitMinutes, input.relayMinutes)}`
+          : '',
+      ]
+        .filter((line, i) => line !== '' || i === 1)
+        .join('\n')
+      break
     case 'judged':
       body = [
         '**Ready_Eng にしました**',

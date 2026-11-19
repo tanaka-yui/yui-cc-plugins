@@ -275,6 +275,8 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 
 拾う元には任意で `project` に GitHub Project を 1 つ登録できる（`owner` は個人か organization の login、`number` は Project の番号）。登録すると、tick は Project の Status と Issue のステータスラベルを両方向で揃える。揃えるのは tick の初めのほう、キューを補充したあと、`judge-apply` の終わりの 3 か所。前回の同期から片方だけが変わっていればもう片方をそれに合わせ、両方が変わっていれば新しいほうに合わせる（同じ秒ならラベル）。同期で書いた Issue は、同じ tick の中ではもう揃えず、次の tick で揃え直す。対象はその拾う元のリポジトリの管理している Issue のうち、すでに Project に入っているものだけ。archive された項目は見ず、Issue を Project に足すこともしない。Status がステータス 8 つのどれでもない（`Todo` や空）ときは何もせず、ステータスラベルを全部外しても Status は消さない。ラベルの遷移が途中の Issue は、終わるまで飛ばす。Project には単一選択の `Status` 欄が要り、ステータス 8 つの選択肢は自分で足す。選択肢が無いときはその Issue を飛ばし、tick の出力に 1 行書く。gh に `project` の権限が要る（`gh auth refresh -s project`）。権限が無い、または Project を読めないときは、tick は 1 行書いて続ける。
 
+`pick` が `Ready` の拾う元は `autoReady: true`（auto-ready。`make setup` が拾う元ごとに尋ね、既定は no）を持てる。tick は、そのリポジトリの開いた管理 Issue のうち、ステータスラベルが Backlog だけで、auto-ready が有効になったのを tick が最初に見た時刻より後に作られたものも一覧する。それより前の Backlog の Issue と、状態にすでにある Issue は拾わない。判定役は Ready の Issue と同じように読み、`autoReady` の印が付く。`auto` はコメントしてから Backlog を Ready に変え（event `auto-ready`）、キューに入れる。`eng` は Backlog から Ready_Eng に変える。auto-ready の Issue の PR は必ず In review にし、AI は merge しない。判定が適用される前に人が Ready にすれば通常の Issue になり、人が別のステータスにすれば止まる。auto-ready を外すと、判定待ちの Backlog の Issue は記録から外れる。
+
 任意の `hosts` でマシンを選ぶ。無ければ従来の `lanes`、checkoutのパス、リポジトリの確認結果をこのMacの設定として読む。指定した場合は、マシンごとに並列数とリポジトリのselectorを持つ。`id: local` はこのマシン、ペアリング済みサーバーは変わらないenvironment IDで指定する。`orcaBin` はそのマシンの実行ファイル、遠隔のrepo selectorは親のcheckoutではなくそのマシンに登録したリポジトリを指す。各マシンにGit/ghの認証と同じoriginへのアクセスが必要。`verified` はそのマシンのそのリポジトリで確認が通ったことを表し、そこで通ってからtrueにする。例えば設定の最上位へ次の `hosts` を足す:
 
 ```json
