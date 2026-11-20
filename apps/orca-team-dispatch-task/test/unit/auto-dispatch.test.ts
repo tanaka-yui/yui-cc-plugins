@@ -754,3 +754,48 @@ test('AU138 dispatch freezes the relay allowance and explains the effective limi
     }
   }
 })
+
+test('AU153 an issue without bases starts from the default branch and records it', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.track()
+    assert.deepEqual(issue.bases, {})
+    f.cli('tick')
+    const args = f.childCalls()
+    assert.ok(args.includes('"--base-branch","origin/main"'), args)
+    assert.ok(f.calls().includes('repo view'), f.calls())
+    assert.equal(f.git('-C', f.checkout, 'branch', '--show-current'), 'main')
+    assert.deepEqual(readState('main').issues[issue.key]?.bases, { 'acme/app': 'main' })
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU154 a decided base starts from that branch without asking GitHub for the default', () => {
+  for (const base of ['main', 'develop']) {
+    const f = runtimeFixture()
+    try {
+      if (base === 'develop') {
+        f.git('-C', f.checkout, 'checkout', '-b', 'develop')
+        writeFileSync(join(f.checkout, 'dev'), 'dev')
+        f.git('-C', f.checkout, 'add', 'dev')
+        f.git('-C', f.checkout, 'commit', '-m', 'dev')
+        f.git('-C', f.checkout, 'push', 'origin', 'develop')
+        f.git('-C', f.checkout, 'checkout', 'main')
+      }
+      const issue = f.track()
+      const s = readState('main')
+      const current = s.issues[issue.key]
+      if (!current) throw new Error('issue')
+      current.bases = { 'acme/app': base }
+      writeState('main', s)
+      f.cli('tick')
+      assert.ok(f.childCalls().includes(`"--base-branch","origin/${base}"`), f.childCalls())
+      assert.ok(!f.calls().includes('repo view'), f.calls())
+      assert.equal(f.git('-C', f.checkout, 'branch', '--show-current'), base)
+      assert.deepEqual(readState('main').issues[issue.key]?.bases, { 'acme/app': base })
+    } finally {
+      f.cleanup()
+    }
+  }
+})

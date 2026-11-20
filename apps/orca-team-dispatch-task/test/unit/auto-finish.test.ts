@@ -682,3 +682,47 @@ test('AU136 partial merge comments retain new decisions', () => {
     f.cleanup()
   }
 })
+
+const mergeWithBase = (baseBranch: string | null, bases: Record<string, string | null>) => {
+  const f = runtimeFixture()
+  const i = f.track('finishing')
+  f.result(i)
+  f.put(f.configFile, {
+    ...f.raw,
+    repos: { ...f.raw.repos, 'acme/app': { ...f.raw.repos['acme/app'], baseBranch } },
+  })
+  const s = readState('main')
+  const current = s.issues[i.key]
+  if (!current) throw new Error('issue')
+  current.bases = bases
+  writeState('main', s)
+  f.cli('tick')
+  return { f, i }
+}
+
+test('AU155 a base other than the configured usual one goes to review even when everything passes', () => {
+  const { f, i } = mergeWithBase('develop', { 'acme/app': 'main' })
+  try {
+    assert.equal(readState('main').issues[i.key]?.phase, 'review')
+    assert.ok(decodedCommentsOf(f).includes('普段の向き先でない（main）への merge は人が確認します。'))
+    assert.ok(!f.calls().includes('pr merge'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU156 the usual base, a repo without baseBranch and an issue without bases still merge', () => {
+  for (const [baseBranch, bases] of [
+    ['develop', { 'acme/app': 'develop' }],
+    ['develop', {}],
+    [null, { 'acme/app': 'main' }],
+  ] as const) {
+    const { f, i } = mergeWithBase(baseBranch, bases)
+    try {
+      assert.equal(readState('main').issues[i.key]?.phase, 'done', JSON.stringify(bases))
+      assert.ok(f.calls().includes('pr merge 101 --repo acme/app --squash'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})

@@ -1,3 +1,4 @@
+import { restrictedBase } from './auto-base.ts'
 import { autoCleanup, confirmStopped, pushBranches, unrecordedWorker } from './auto-cleanup.ts'
 import { limitBreakdown, renderComment } from './auto-comment.ts'
 import { type AutoConfig, pickSources, readAutoConfig, readIntakeRepos, relayAllowance } from './auto-config.ts'
@@ -412,9 +413,9 @@ const refill = (tick: Tick): void => {
     }
     const defaults: Record<string, string> = {}
     for (const r of repos) {
-      const branch = asString(
-        get(readGithub(['repo', 'view', '--json', 'defaultBranchRef', r.name]), 'defaultBranchRef', 'name'),
-      )
+      const branch =
+        issue.bases[r.name] ??
+        asString(get(readGithub(['repo', 'view', '--json', 'defaultBranchRef', r.name]), 'defaultBranchRef', 'name'))
       if (
         !branch ||
         run('git', ['-C', r.options.checkout, 'fetch', 'origin', branch]).rc !== 0 ||
@@ -471,6 +472,7 @@ const refill = (tick: Tick): void => {
       coordinator: h,
       worktrees: required,
       host: host.id,
+      bases: { ...issue.bases, ...defaults },
       relayMinutes: relayAllowance(tick.config.roles, tick.config.everyMinutes),
     })
     tick.save()
@@ -942,6 +944,13 @@ const finish = (tick: Tick, issue: IssueState): void => {
     reasons.push('インフラの変更は確認が必要です。')
   if (multi ? statuses.some((s) => s?.state === 'CLOSED') : status.state === 'CLOSED')
     reasons.push('PR が閉じられています。')
+  for (const base of new Set(
+    (multi ? targets.map((t) => t.repo) : [repo]).flatMap((r) => {
+      const b = issue.bases[r]
+      return b && restrictedBase(r, b, tick.config.repos) ? [b] : []
+    }),
+  ))
+    reasons.push(`普段の向き先でない（${base}）への merge は人が確認します。`)
   if (reasons.length) {
     needsReview(tick, issue, reasons.join(' '))
     return
