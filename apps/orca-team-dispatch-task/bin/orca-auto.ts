@@ -233,6 +233,18 @@ const main = (argv: string[]): number => {
         save()
         continue
       }
+      // 向き先のラベルを待っている Issue は judge-list に出ない。同じ判定結果を書き直して再実行しても進めない
+      if (
+        awaitingBase(
+          issue,
+          current.labels,
+          config.sources.find((s) => s.repo === issue.repo)?.autoReady === true,
+          config.repos,
+        )
+      ) {
+        console.error(`向き先のラベルを待っているので飛ばしました: ${issue.key}`)
+        continue
+      }
       // エンジニアに回す Issue の向き先はエンジニアが決める
       const resolution = toEng ? null : resolveBases(current.labels, uniqueTargets, config.repos)
       if (resolution?.kind === 'judge' && !issue.baseAsked && typeof decision.base !== 'string') {

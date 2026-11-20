@@ -578,3 +578,35 @@ test('AU150 a decision without base is discarded when the base must be judged', 
     f.cleanup()
   }
 })
+
+test('AU152 re-applying the same ask decision leaves an asked issue waiting in Backlog', () => {
+  for (const autoReady of [true, false]) {
+    const f = setup()
+    try {
+      branched(f, autoReady)
+      if (autoReady) {
+        edit((i) => {
+          i.autoReady = true
+        })
+        view(f, ['Backlog'])
+      }
+      const file = join(f.dir, 'decisions.json')
+      f.put(file, f.decision({ base: 'ask' }))
+      assert.equal(f.cli('judge-apply', '--file', file).status, 0)
+      // 尋ねたあとは Backlog に居る（スタブの issue edit はラベルを書き換えないので、ここで合わせる）
+      view(f, ['Backlog'])
+      const before = f.calls()
+      const again = f.cli('judge-apply', '--file', file)
+      assert.equal(again.status, 0, again.stderr)
+      const after = f.calls().slice(before.length)
+      assert.ok(!after.includes('issue comment'))
+      assert.ok(!after.includes('issue edit'))
+      const issue = readState('main').issues['acme/app#7']
+      assert.equal(issue?.phase, 'judging')
+      assert.equal(issue?.baseAsked, true)
+      assert.deepEqual(issue?.bases, {})
+    } finally {
+      f.cleanup()
+    }
+  }
+})
