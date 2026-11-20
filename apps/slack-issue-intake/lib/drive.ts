@@ -175,7 +175,9 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
       if (!renew()) return out(ERROR_LEASE_LOST, true)
       const label = BASE_LABEL_PREFIX + fields.base
       const made = await ensureBaseLabel(rt.gh, repo, label, ctx.deadline)
-      if (made.stderr === ERROR_DEADLINE) return out(ERROR_DEADLINE, true)
+      // 呼び出しの途中で締め切りが来た（timeout で切られた）ときも、ラベルの失敗ではなく締め切りとして次の回へ回す。
+      // ラベル無しで起票へ進むと、起票者が選んだ向き先が理由も無く落ちる
+      if (made.stderr === ERROR_DEADLINE || Date.now() >= ctx.deadline) return out(ERROR_DEADLINE, true)
       if (made.code !== 0) {
         warning = maskSecrets(BASE_LABEL_FAILED.replace('{label}', label).replace('{error}', made.stderr))
         fields = withoutBase(fields)

@@ -134,3 +134,32 @@ test('IB11 向き先があれば base:<ブランチ> のラベルを足す', () 
   ])
   assert.ok(!issueLabels(p.fields, true).some((l) => l.startsWith('base:')))
 })
+test('IB12 起票者が選んだ向き先は本文の表にも残し、選ばなければ行を足さない', () => {
+  const db = openDb(join(tempHome(), 'db'))
+  const p = parseSubmission(templateText(), null, [])
+  assert.ok(p.kind === 'ok')
+  const id = insertSubmission(
+    db,
+    {
+      repo: 'acme/app',
+      channel: CHANNEL,
+      ts: '1712345678.000100',
+      permalink: 'https://acme.slack.com/archives/C0123456789/p1712345678000100',
+      raw: textMessage('1', 'x'),
+      fields: { ...p.fields, base: 'main' },
+      problems: [],
+      reporterId: p.fields.reporterId,
+      state: 'new',
+    },
+    NOW,
+  )
+  assert.ok(id)
+  const s = getSubmission(db, id)
+  assert.ok(s)
+  const content = { action: 'create', summary: '要約', details: '詳細', unresolved: [] } as const
+  const body = buildIssueBody(s, { ...content, unresolved: [] })
+  assert.ok(body.includes('| 優先度 | high |\n| 向き先 | main |\n'), body)
+  s.fields = p.fields
+  assert.ok(!buildIssueBody(s, { ...content, unresolved: [] }).includes('向き先'))
+  db.close()
+})

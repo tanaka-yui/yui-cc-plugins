@@ -85,12 +85,14 @@ export const buildIssueBody = (s: Submission, d: CreateContent): string => {
     ...fileLines.slice(0, listedCount),
     ...(files.length > listedCount ? [MORE_FILES_NOTE.replace('{n}', String(files.length - listedCount))] : []),
   ]
+  // 起票者が選んだ向き先。ラベルを作れずに付けられなかったときも、本文に残る
+  const baseRow = fields?.base ? `| ${t.base} | ${tableSafe(clean(fields.base, TITLE_IN_BODY_MAX_CHARS))} |\n` : ''
   const render = (): string =>
     [
       `## ${h.summary}\n\n${summary}`,
       `## ${h.details}\n\n${details}`,
       ...(unresolved ? [`## ${h.unresolved}\n\n${unresolved}`] : []),
-      `## ${h.info}\n\n| ${t.key} | ${t.value} |\n|---|---|\n| ${t.category} | ${fields?.category ?? ''} |\n| ${t.priority} | ${fields?.priority ?? ''} |\n| ${t.reporter} | ${tableSafe(clean(s.reporterName ?? UNKNOWN_REPORTER_NAME, TITLE_IN_BODY_MAX_CHARS))}${SLACK_REPORTER_SUFFIX} |\n| ${t.slack} | [${t.source}](${s.permalink}) |`,
+      `## ${h.info}\n\n| ${t.key} | ${t.value} |\n|---|---|\n| ${t.category} | ${fields?.category ?? ''} |\n| ${t.priority} | ${fields?.priority ?? ''} |\n${baseRow}| ${t.reporter} | ${tableSafe(clean(s.reporterName ?? UNKNOWN_REPORTER_NAME, TITLE_IN_BODY_MAX_CHARS))}${SLACK_REPORTER_SUFFIX} |\n| ${t.slack} | [${t.source}](${s.permalink}) |`,
       ...(listed().length ? [`## ${h.files}\n\n${listed().join('\n')}`] : []),
       `<details>\n<summary>${h.original}</summary>\n\n${fenced(`${title}\n\n${original}\n\n${thread}`)}\n\n</details>`,
       issueMarker(s.channel, s.ts),

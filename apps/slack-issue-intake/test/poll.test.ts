@@ -577,3 +577,32 @@ test('PO31 向き先のある投稿を受け付けて残し、起票の前に ba
   assert.ok(last && !last.argv.includes('base:main'))
   assert.ok(r.stderr.includes('base:main'), r.stderr)
 })
+
+test('PO32 締め切りで向き先のラベル作成が切れたら、失敗とみなしてラベル無しで起票へ進まない', async (t) => {
+  const f = await fixture(t)
+  const { parseSubmission } = await import('../lib/parse.ts')
+  const parsed = parseSubmission(templateText(), null, [])
+  assert.ok(parsed.kind === 'ok')
+  const db = openDb(homePaths(f.home).db)
+  setMeta(db, labelsHashKey('acme/app'), labelsHash())
+  db.close()
+  const id = await seedSubmission(f.home, {
+    ts: tsAt(1000),
+    state: 'creating',
+    decision: content,
+    fields: { ...parsed.fields, base: 'main' },
+    createStartedAt: NOW,
+    createLogin: 'intake-bot',
+  })
+  const r = await f.poll(NOW, ['--deadline-ms', '2500'], {
+    FAKE_GH_SLEEP_MS: '8000',
+    FAKE_GH_SLEEP_ON: 'label create',
+  })
+  const row = f.read(id)
+  assert.equal(row?.state, 'creating')
+  assert.equal(row?.inflight, null)
+  assert.ok(ghCalls(f.gh.log).some((c) => c.argv.slice(0, 2).join(' ') === 'label create'))
+  assert.ok(!ghCalls(f.gh.log).some((c) => c.argv.slice(0, 2).join(' ') === 'issue create'))
+  assert.ok(!r.stderr.includes('付けずに起票します'), r.stderr)
+  assert.equal(row?.fields?.base, 'main')
+})

@@ -54,8 +54,8 @@ adoptExisting は走査・投稿・ラベルの三段です。走査中は GitHu
 ## 向き先（base ラベル）
 
 repos[].branches が向き先の候補（setup の4段か init --branches だけが書く。無いリポジトリには鍵ごと無く、空配列は読めない設定）。formBranches はフォームの対象のうち候補が FORM_BASE_FIELD_MIN_BRANCHES（2）以上のリポジトリの候補を合わせたもので、空でなければ題のある種類（質問以外）に任意の「向き先」欄（BASE_ANY と候補）を出す。manifestHash と renderFormManifest は候補も受け取るので、setup・form・slack-hook のすべてで formBranches を渡す（渡し忘れると指紋が合わず deploy や form が止まる）。
-parseSubmission の 4 つ目の引数が選んだリポジトリ（null は既定）の候補を返し、BASE_ANY・空・候補外・質問の投稿は fields.base を持たない。apply は質問からの起票で base を外す（withoutBase）。起票は drive が findIssueByMarker と本文のあと、setInflight の前に `gh label create base:<b> --force`（色と説明は固定）を呼び、作れなければ base を外して起票し、DriveOutcome.warning を poll（errors）と apply（標準エラー）に出す。締め切りで呼べなかったときだけ起票せずに止める。base:* は LABEL_SPECS と labels_hash に入れない（orca-team-dispatch-task との約束。BASE_LABEL_PREFIX）。
-setup は追加したリポジトリ（フォームに出すもの）と、候補を持たない既定のリポジトリについて、`gh api repos/<r>/branches --paginate --jq .[].name` と `gh repo view <r> --json defaultBranchRef` で既定ブランチと BASE_BRANCH_CANDIDATES のうち在るものが2つ以上のときだけ聞く（fake-gh は FAKE_GH_BRANCHES と FAKE_GH_DEFAULT_BRANCH。パスを api の直後に置くのは fake-gh がそこで見分けるため）。聞かないときは入力の位置が変わらない。試験: CF6、IN19、SU29、FM9、PA25、IB11、PO31（PO30 は使用済み）、QA10。
+parseSubmission の 4 つ目の引数が選んだリポジトリ（null は既定）の候補を返し、BASE_ANY・空・候補外・質問の投稿は fields.base を持たない。apply は質問からの起票で base を外す（withoutBase）。起票は drive が findIssueByMarker と本文のあと、setInflight の前に `gh label create base:<b> --force`（色と説明は固定）を呼び、作れなければ base を外して起票し、DriveOutcome.warning を poll（errors）と apply（標準エラー）に出す。締め切りで呼べなかったとき、または呼び出しの途中で締め切りが来た（timeout で切られた）ときは、ラベルの失敗とみなさず、setInflight の前に起票せずに止める。選んだ向き先は本文の表に「向き先」の行（ISSUE_TABLE.base。選ばなければ行を足さない）としても書く。本文はラベルを作る前に作るので、ラベルを付けられなくても残る。orca-team-dispatch-task はこの行を読まない（約束はラベルだけ）。base:* は LABEL_SPECS と labels_hash に入れない（orca-team-dispatch-task との約束。BASE_LABEL_PREFIX）。
+setup は追加したリポジトリ（フォームに出すもの）と、候補を持たない既定のリポジトリについて、`gh api repos/<r>/branches --paginate --jq .[].name` と `gh repo view <r> --json defaultBranchRef` で既定ブランチと BASE_BRANCH_CANDIDATES のうち在るものが2つ以上のときだけ聞く（fake-gh は FAKE_GH_BRANCHES と FAKE_GH_DEFAULT_BRANCH。パスを api の直後に置くのは fake-gh がそこで見分けるため）。聞かないときは入力の位置が変わらない。試験: CF6、IN19、SU29、FM9、PA25、IB11、IB12、PO31（PO30 は使用済み）、PO32、QA10。
 
 ## 定期報告
 

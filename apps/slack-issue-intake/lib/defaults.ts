@@ -468,6 +468,7 @@ export const ISSUE_TABLE = {
   value: '内容',
   category: 'カテゴリ',
   priority: '優先度',
+  base: '向き先',
   reporter: '起票者',
   slack: 'Slack',
   source: '元の投稿',
