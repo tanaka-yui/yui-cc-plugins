@@ -1,9 +1,11 @@
 // --auto precheck and difficulty judgment. No runtime npm dependencies.
 
+import { applyFlow, baseLabels, candidatesOf, resolveBases } from '../lib/auto-base.ts'
 import { pickSources, readAutoConfig, relayAllowance } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
 import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
 import { syncProjects } from '../lib/auto-project.ts'
+import { awaitingBase } from '../lib/auto-queue.ts'
 import { runSetup } from '../lib/auto-setup.ts'
 import {
   AUTO_LOCK_TTL_MS,
@@ -14,7 +16,7 @@ import {
   writeState,
 } from '../lib/auto-state.ts'
 import { runTick } from '../lib/auto-tick.ts'
-import { transition } from '../lib/auto-transition.ts'
+import { notifyNeedsBase, transition } from '../lib/auto-transition.ts'
 import { die } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString } from '../lib/json.ts'
@@ -147,17 +149,27 @@ const main = (argv: string[]): number => {
             readGithub(['issue', 'view', String(issue.number), '--repo', issue.repo, '--json', 'body,labels']),
           )
           if (!detail || typeof detail.body !== 'string' || !Array.isArray(detail.labels)) return []
+          const labels = labelNames(detail.labels)
+          const source = config.sources.find((s) => s.repo === issue.repo)
+          if (awaitingBase(issue, labels, source?.autoReady === true, config.repos)) return []
+          const related = source?.related ?? []
           return [
             {
               key: issue.key,
               generation: issue.generation,
               title: issue.title,
               body: detail.body,
-              labels: labelNames(detail.labels),
+              labels,
               category: issue.category,
               returnedFromEng: issue.returnedFromEng,
               autoReady: issue.autoReady,
-              related: config.sources.find((s) => s.repo === issue.repo)?.related ?? [],
+              related,
+              // 対象はまだ決まっていないので、related 全体で向き先の候補と判定の要否を出す
+              base: {
+                labels: baseLabels(labels),
+                candidates: candidatesOf(related, config.repos),
+                needed: resolveBases(labels, related, config.repos).kind === 'judge',
+              },
             },
           ]
         })
@@ -208,30 +220,37 @@ const main = (argv: string[]): number => {
         continue
       }
       const uniqueTargets = [...new Set(targets.filter((t): t is string => typeof t === 'string'))]
+      const feature = issue.category === FEATURE_LABEL && !issue.returnedFromEng
+      const toEng = decision.route === 'eng' || uniqueTargets.length > 2 || feature
+      // 向き先を解くのにも、Backlog から動かすのにも今のラベルを読む
+      const current = viewIssue(issue.repo, issue.number)
+      if (!current) {
+        rejected = true
+        continue
+      }
+      if (current.state === 'CLOSED') {
+        delete state.issues[issue.key]
+        save()
+        continue
+      }
+      // エンジニアに回す Issue の向き先はエンジニアが決める
+      const resolution = toEng ? null : resolveBases(current.labels, uniqueTargets, config.repos)
+      if (resolution?.kind === 'judge' && !issue.baseAsked && typeof decision.base !== 'string') {
+        console.error(`判定を破棄しました: ${issue.key}（base がありません）`)
+        rejected = true
+        continue
+      }
       issue.targets = uniqueTargets
       issue.limitMinutes = decision.limitMinutes
       issue.reason = decision.reason
       issue.updatedAt = autoNow()
-      const feature = issue.category === FEATURE_LABEL && !issue.returnedFromEng
-      const toEng = decision.route === 'eng' || uniqueTargets.length > 2 || feature
-      // auto-ready の Issue は Backlog から動かすので、どちらの経路でも今のラベルを読む
-      const current = toEng || issue.autoReady ? viewIssue(issue.repo, issue.number) : null
-      if (toEng || issue.autoReady) {
-        if (!current) {
-          rejected = true
-          continue
-        }
-        if (current.state === 'CLOSED') {
-          delete state.issues[issue.key]
-          save()
-          continue
-        }
-        // 判定の間に人が Ready にしたら、人が「やる」と決めた通常の Issue として扱う
-        if (issue.autoReady && current.labels.includes(STATUS.ready)) issue.autoReady = false
-      }
-      const from = issue.autoReady ? STATUS.backlog : STATUS.ready
+      // 判定の間に人が Ready にしたら、人が「やる」と決めた通常の Issue として扱う
+      if (issue.autoReady && current.labels.includes(STATUS.ready)) issue.autoReady = false
+      // auto-ready の Issue と、向き先を尋ねたあと base ラベルが付いて拾い直した Issue は Backlog から動かす
+      const fromBacklog = issue.autoReady || (issue.baseAsked && current.labels.includes(STATUS.backlog))
+      const from = fromBacklog ? STATUS.backlog : STATUS.ready
       if (toEng) {
-        if (!current?.labels.includes(from)) {
+        if (!current.labels.includes(from)) {
           issue.phase = 'stopped'
           save()
           continue
@@ -252,12 +271,46 @@ const main = (argv: string[]): number => {
           'eng',
           save,
         )
-      } else if (issue.autoReady) {
-        if (!current?.labels.includes(STATUS.backlog)) {
-          issue.phase = 'stopped'
-          save()
-          continue
+        continue
+      }
+      if (fromBacklog && !current.labels.includes(STATUS.backlog)) {
+        issue.phase = 'stopped'
+        save()
+        continue
+      }
+      // ラベル → 尋ねたあとの既定 → 判定の流れの順に向き先を決める。同じ世代では二度尋ねない
+      const bases =
+        resolution?.kind === 'ok'
+          ? resolution.bases
+          : issue.baseAsked
+            ? Object.fromEntries(uniqueTargets.map((t) => [t, config.repos[t]?.baseBranch ?? null]))
+            : resolution?.kind === 'judge' && typeof decision.base === 'string' && decision.base !== 'ask'
+              ? applyFlow(decision.base, uniqueTargets, config.repos)
+              : null
+      if (!bases) {
+        const input = {
+          candidates: [
+            ...new Set([
+              ...candidatesOf(uniqueTargets, config.repos),
+              ...uniqueTargets.flatMap((t) => config.repos[t]?.baseBranch ?? []),
+            ]),
+          ],
+          fallback: config.repos[uniqueTargets[0] ?? '']?.baseBranch ?? '既定のブランチ',
         }
+        // 尋ねた印を先に残す。ラベルの遷移が途中で止まっても、tick が続きをやったあと待ちに入る
+        issue.baseAsked = true
+        save()
+        if (fromBacklog) {
+          // Backlog のまま判定した Issue はステータスを変えずにコメントだけ書く。書けなければ次の判定で尋ね直す
+          if (!notifyNeedsBase(issue, input, save)) {
+            issue.baseAsked = false
+            save()
+          }
+        } else transition(issue, 'needs-base', input, STATUS.ready, STATUS.backlog, false, 'judging', save)
+        continue
+      }
+      issue.bases = bases
+      if (fromBacklog) {
         // コメント → ラベルの順に Backlog から Ready へ。終わると queued になり、途中で止まれば tick が続きをやる
         transition(
           issue,

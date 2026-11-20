@@ -738,6 +738,16 @@ for old in '長めの上限時間が要る' '計画の判断・未解消・不�
 done
 [[ -z "$bad" ]] && ok 'SK42 needsReview と取り次ぎの余裕' || fail "SK42:$bad"
 
+# SK44: 判定役の指示が向き先の出力 base と、迷ったときの ask を英語の正本と日本語訳の両方で説明する。
+bad=""
+for word in '`base.needed`' '`base.candidates`' '`ask`' 'hotfix' '`base:*` label'; do
+  grep -Fq -- "$word" "$judge_en" || bad="$bad [judge:$word]"
+done
+for word in '`base.needed`' '`base.candidates`' '`ask`' 'hotfix' '`base:*` ラベル'; do
+  grep -Fq -- "$word" "$judge_ja" || bad="$bad [judge-ja:$word]"
+done
+[[ -z "$bad" ]] && ok 'SK44 判定の向き先' || fail "SK44:$bad"
+
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"

@@ -213,3 +213,36 @@ test('AU138b a new generation clears relay allowance and previous review points'
     f.cleanup()
   }
 })
+
+test('AU147 an asked issue waits in Backlog, rejoins judging from Ready, and stops on any other change', () => {
+  const f = fixture()
+  try {
+    const s = empty()
+    const source = f.config().sources[0]
+    assert.ok(source)
+    f.respond('issue_list', [{ number: 7, title: '題', labels: [], updatedAt: '2026-01-01' }])
+    syncIssues(s, [source])
+    f.respond('issue_list', [])
+    const issue = s.issues['acme/app#7']
+    assert.ok(issue)
+    Object.assign(issue, { baseAsked: true, targets: ['acme/app'] })
+    const view = (labels: string[], state = 'OPEN') =>
+      f.respond('issue_view', { state, title: '題', labels: labels.map((name) => ({ name })) })
+    view(['Backlog', 'base:main'])
+    assert.deepEqual(syncIssues(s, [source]).asked, { 'acme/app#7': ['Backlog', 'base:main'] })
+    assert.equal(issue.phase, 'judging')
+    view(['Ready'])
+    assert.deepEqual(syncIssues(s, [source]).asked, {})
+    assert.equal(issue.phase, 'judging')
+    assert.equal(issue.autoReady, false)
+    view(['Pending'])
+    syncIssues(s, [source])
+    assert.equal(issue.phase, 'stopped')
+    Object.assign(issue, { phase: 'judging' })
+    view(['Backlog'], 'CLOSED')
+    assert.deepEqual(syncIssues(s, [source]).dropped, ['acme/app#7'])
+    assert.equal(s.issues['acme/app#7'], undefined)
+  } finally {
+    f.cleanup()
+  }
+})

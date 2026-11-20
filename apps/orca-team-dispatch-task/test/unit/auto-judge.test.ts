@@ -5,9 +5,11 @@ import { resumeTransition } from '../../lib/auto-transition.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+
+import type { IssueState } from '../../lib/auto-state.ts'
 
 const setup = () => {
   const f = fixture()
@@ -349,5 +351,230 @@ test('AU141 engineering recommendation adds relay allowance outside the estimate
     } finally {
       f.cleanup()
     }
+  }
+})
+
+// acme/app の向き先を develop（普段）と main の 2 つにする。autoReady は acme/app を auto-ready の拾う元にする
+const branched = (f: ReturnType<typeof setup>, autoReady = false) =>
+  f.put(f.configFile, {
+    ...f.raw,
+    sources: f.raw.sources.map((s, i) => (i === 0 ? { ...s, autoReady } : s)),
+    repos: {
+      ...f.raw.repos,
+      'acme/app': { ...f.raw.repos['acme/app'], baseBranch: 'develop', branches: ['develop', 'main'] },
+    },
+  })
+const view = (f: ReturnType<typeof setup>, labels: string[]) =>
+  f.respond('issue_view', { state: 'OPEN', title: '題', body: '本文', labels: labels.map((name) => ({ name })) })
+const edit = (apply: (issue: IssueState) => void) => {
+  const s = readState('main')
+  const issue = s.issues['acme/app#7']
+  assert.ok(issue)
+  apply(issue)
+  writeState('main', s)
+}
+const commentFile = (f: ReturnType<typeof setup>) => {
+  const file = join(f.dir, 'comment.txt')
+  const hook = join(f.dir, 'comment-hook.cjs')
+  writeFileSync(
+    hook,
+    "const fs=require('fs');const a=process.argv.slice(2);fs.appendFileSync(" +
+      JSON.stringify(file) +
+      ",a[a.indexOf('--body')+1])",
+  )
+  f.hook('issue_comment', `exec '${process.execPath}' '${hook}' "$@"`)
+  return () => (existsSync(file) ? readFileSync(file, 'utf8') : '')
+}
+
+test('AU143 the judged base is applied per target; single-candidate targets use the default', () => {
+  const f = setup()
+  try {
+    assert.equal(f.apply().status, 0)
+    assert.deepEqual(readState('main').issues['acme/app#7']?.bases, { 'acme/app': null })
+  } finally {
+    f.cleanup()
+  }
+  const g = setup()
+  try {
+    branched(g)
+    const result = g.apply(g.decision({ base: 'main', targets: ['acme/app', 'other/api'] }))
+    assert.equal(result.status, 0, result.stderr)
+    const issue = readState('main').issues['acme/app#7']
+    assert.deepEqual(issue?.bases, { 'acme/app': 'main', 'other/api': null })
+    assert.equal(issue?.phase, 'queued')
+    assert.equal(issue?.baseAsked, false)
+    assert.ok(!g.calls().includes('issue comment'))
+  } finally {
+    g.cleanup()
+  }
+})
+
+test('AU144 ask (or an unknown base) moves a Ready issue back to Backlog with a needs-base comment', () => {
+  for (const base of ['ask', 'release/9']) {
+    const f = setup()
+    try {
+      branched(f)
+      const body = commentFile(f)
+      const result = f.apply(f.decision({ base }))
+      assert.equal(result.status, 0, result.stderr)
+      const calls = f.calls()
+      assert.ok(calls.indexOf('issue comment') < calls.indexOf('issue edit'))
+      assert.match(calls, /--add-label Backlog --remove-label Ready/)
+      assert.ok(body().includes('`base:develop` か `base:main`'))
+      assert.ok(body().includes('develop で進めます'))
+      assert.ok(body().includes('orca-auto:backlog:1:needs-base'))
+      const issue = readState('main').issues['acme/app#7']
+      assert.equal(issue?.baseAsked, true)
+      assert.equal(issue?.phase, 'judging')
+      assert.equal(issue?.pendingLabel, null)
+      assert.deepEqual(issue?.bases, {})
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU145 an auto-ready issue is asked in Backlog by comment only; a failed comment asks again later', () => {
+  const f = setup()
+  try {
+    branched(f, true)
+    edit((i) => {
+      i.autoReady = true
+    })
+    view(f, ['Backlog'])
+    const body = commentFile(f)
+    assert.equal(f.apply(f.decision({ base: 'ask' })).status, 0)
+    assert.ok(f.calls().includes('issue comment'))
+    assert.ok(!f.calls().includes('issue edit'))
+    assert.ok(body().includes('orca-auto:backlog:1:needs-base'))
+    const issue = readState('main').issues['acme/app#7']
+    assert.equal(issue?.baseAsked, true)
+    assert.equal(issue?.autoReady, true)
+    assert.equal(issue?.phase, 'judging')
+  } finally {
+    f.cleanup()
+  }
+  const g = setup()
+  try {
+    branched(g, true)
+    edit((i) => {
+      i.autoReady = true
+    })
+    view(g, ['Backlog'])
+    g.put(join(g.gh, 'issue_comment.rc'), 1)
+    g.apply(g.decision({ base: 'ask' }))
+    assert.equal(readState('main').issues['acme/app#7']?.baseAsked, false)
+  } finally {
+    g.cleanup()
+  }
+})
+
+test('AU146 an asked Backlog issue returns to judging only once a base label resolves', () => {
+  const f = setup()
+  try {
+    branched(f, true)
+    const listed = () => {
+      const r = f.cli('judge-list')
+      assert.equal(r.status, 0, r.stderr)
+      return JSON.parse(r.stdout).issues as Array<{
+        key: string
+        base: { labels: string[]; candidates: string[]; needed: boolean }
+      }>
+    }
+    const fresh = listed().find((i) => i.key === 'acme/app#7')
+    assert.deepEqual(fresh?.base, { labels: [], candidates: ['develop', 'main'], needed: true })
+    for (const autoReady of [true, false]) {
+      edit((i) => {
+        Object.assign(i, { autoReady, baseAsked: true, targets: ['acme/app'], phase: 'judging', pendingLabel: null })
+      })
+      view(f, ['Backlog'])
+      assert.ok(!listed().some((i) => i.key === 'acme/app#7'))
+      view(f, ['Backlog', 'base:nope'])
+      assert.ok(!listed().some((i) => i.key === 'acme/app#7'))
+      view(f, ['Backlog', 'base:develop'])
+      assert.deepEqual(listed().find((i) => i.key === 'acme/app#7')?.base, {
+        labels: ['develop'],
+        candidates: ['develop', 'main'],
+        needed: false,
+      })
+      // 拾い直しは Backlog から Ready へ進め、autoReady は尋ねる前の値のまま
+      const result = f.apply()
+      assert.equal(result.status, 0, result.stderr)
+      const issue = readState('main').issues['acme/app#7']
+      assert.deepEqual(issue?.bases, { 'acme/app': 'develop' })
+      assert.equal(issue?.phase, 'queued')
+      assert.equal(issue?.autoReady, autoReady)
+      assert.equal(f.calls().split('--add-label Ready --remove-label Backlog').length - 1, autoReady ? 1 : 2)
+    }
+  } finally {
+    f.cleanup()
+  }
+  // auto-ready でない拾う元では、ラベルが付いても人が Ready に戻すまで待つ
+  const g = setup()
+  try {
+    branched(g)
+    edit((i) => {
+      Object.assign(i, { baseAsked: true, targets: ['acme/app'] })
+    })
+    view(g, ['Backlog', 'base:develop'])
+    const r = g.cli('judge-list')
+    assert.ok(!JSON.parse(r.stdout).issues.some((i: { key: string }) => i.key === 'acme/app#7'))
+  } finally {
+    g.cleanup()
+  }
+})
+
+test('AU148 an asked issue moved back to Ready without a label proceeds on baseBranch without asking again', () => {
+  for (const base of ['ask', 'main', undefined]) {
+    const f = setup()
+    try {
+      branched(f)
+      edit((i) => {
+        Object.assign(i, { baseAsked: true, targets: ['acme/app'] })
+      })
+      const result = f.apply(f.decision({ base }))
+      assert.equal(result.status, 0, result.stderr)
+      const issue = readState('main').issues['acme/app#7']
+      assert.deepEqual(issue?.bases, { 'acme/app': 'develop' })
+      assert.equal(issue?.phase, 'queued')
+      assert.ok(!f.calls().includes('issue comment'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU149 engineering decisions need no base and never ask', () => {
+  const f = setup()
+  try {
+    branched(f)
+    const result = f.apply(f.decision({ route: 'eng' }))
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(readState('main').issues['acme/app#7']?.phase, 'eng')
+    assert.ok(!f.calls().includes('needs-base'))
+    assert.equal(readState('main').issues['acme/app#7']?.baseAsked, false)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU150 a decision without base is discarded when the base must be judged', () => {
+  const f = setup()
+  try {
+    branched(f)
+    for (const extra of [{}, { base: 3 }]) {
+      const result = f.apply(f.decision(extra))
+      assert.equal(result.status, 1)
+      assert.ok(result.stderr.includes('判定を破棄しました: acme/app#7'))
+      const issue = readState('main').issues['acme/app#7']
+      assert.equal(issue?.phase, 'judging')
+      assert.deepEqual(issue?.targets, [])
+    }
+    // 判定の間に base ラベルが付いたら、base が無くてもラベルの向き先で進める
+    view(f, ['Ready', 'base:main'])
+    assert.equal(f.apply().status, 0)
+    assert.deepEqual(readState('main').issues['acme/app#7']?.bases, { 'acme/app': 'main' })
+  } finally {
+    f.cleanup()
   }
 })

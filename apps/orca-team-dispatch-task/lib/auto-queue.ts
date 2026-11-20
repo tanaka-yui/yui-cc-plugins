@@ -1,3 +1,4 @@
+import { type RepoBranches, resolveBases } from './auto-base.ts'
 import { listReadyManaged, type ReadyIssue, readyAtOf, viewIssue } from './auto-github.ts'
 import { autoNow, canAutoCall } from './auto-paths.ts'
 import { FEATURE_LABEL, PRIORITY_LABELS, STATUS, STATUS_LABELS } from './status.ts'
@@ -52,6 +53,8 @@ const makeIssue = (repo: string, row: ReadyIssue, pick: string): IssueState => (
   cleanupPending: false,
   returnedFromEng: false,
   autoReady: false,
+  bases: {},
+  baseAsked: false,
   endedAt: null,
   checkedAt: null,
   prevBranch: null,
@@ -60,15 +63,35 @@ const makeIssue = (repo: string, row: ReadyIssue, pick: string): IssueState => (
   failReason: null,
   updatedAt: autoNow(),
 })
+// 向き先を尋ねて Backlog で待っている。auto-ready の拾う元で base ラベルが解けたら判定に戻す。
+// judge-list と tick の判定の起動とで同じ見方をする
+export const awaitingBase = (
+  issue: IssueState,
+  labels: string[],
+  sourceAutoReady: boolean,
+  repos: Record<string, RepoBranches>,
+): boolean =>
+  issue.baseAsked &&
+  issue.phase === 'judging' &&
+  labels.includes(STATUS.backlog) &&
+  !(sourceAutoReady && resolveBases(labels, issue.targets, repos).kind === 'ok')
 export const syncIssues = (
   state: AutoState,
   sources: Array<{ repo: string; pick: string; autoReady?: boolean }>,
-): { added: string[]; dropped: string[]; humanChanged: string[]; unreadable: string[] } => {
+): {
+  added: string[]
+  dropped: string[]
+  humanChanged: string[]
+  unreadable: string[]
+  // 向き先を尋ねて Backlog に居る Issue の今のラベル（awaitingBase で見る）
+  asked: Record<string, string[]>
+} => {
   const result = {
     added: [] as string[],
     dropped: [] as string[],
     humanChanged: [] as string[],
     unreadable: [] as string[],
+    asked: {} as Record<string, string[]>,
   }
   const existing = new Set(Object.keys(state.issues))
   const failed = new Set<string>()
@@ -125,6 +148,8 @@ export const syncIssues = (
           finishingSince: null,
           returnedFromEng: from === 'eng',
           autoReady: false,
+          bases: {},
+          baseAsked: false,
           host: null,
           hostUnreachableSince: null,
           coordinator: null,
@@ -211,15 +236,16 @@ export const syncIssues = (
       if (view.state === 'CLOSED') {
         delete state.issues[key]
         result.dropped.push(key)
-      } else if (issue.autoReady && issue.phase === 'judging' && !view.labels.includes(pick)) {
-        // 判定待ちの Backlog。auto-ready を外したら何もせずに記録から外し、人が別のステータスにしたら止める
-        if (!source?.autoReady) {
+      } else if ((issue.autoReady || issue.baseAsked) && issue.phase === 'judging' && !view.labels.includes(pick)) {
+        // 判定待ちの Backlog（auto-ready で拾った Issue と、向き先を尋ねて Backlog へ戻した Issue）。
+        // auto-ready を外したら auto-ready で拾った Issue は何もせずに記録から外し、人が別のステータスにしたら止める
+        if (issue.autoReady && !source?.autoReady) {
           delete state.issues[key]
           result.dropped.push(key)
         } else if (!view.labels.includes(STATUS.backlog)) {
           issue.phase = 'stopped'
           issue.updatedAt = now
-        }
+        } else if (issue.baseAsked) result.asked[key] = view.labels
       } else if (!view.labels.includes(pick)) {
         issue.phase = 'stopped'
         issue.updatedAt = now

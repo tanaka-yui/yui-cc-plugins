@@ -60,6 +60,10 @@ export type IssueState = {
   returnedFromEng: boolean
   // この世代を Backlog から拾った（auto-ready）。人が Ready にしたら false。true の世代は AI が merge しない
   autoReady: boolean
+  // 対象ごとの向き先ブランチ。null は既定のブランチ。判定でキューに入るときに決まる
+  bases: Record<string, string | null>
+  // この世代で向き先を尋ねた（needs-base）。同じ世代では二度尋ねない
+  baseAsked: boolean
   endedAt: string | null
   checkedAt: string | null
   prevBranch: string | null
@@ -141,6 +145,14 @@ export const readState = (name: string): AutoState => {
       throw new Error(`状態ファイルが壊れています: ${key}`)
     if (issue.autoReady === undefined) issue.autoReady = false
     else if (typeof issue.autoReady !== 'boolean') throw new Error(`状態ファイルが壊れています: ${key}`)
+    if (issue.bases === undefined) issue.bases = {}
+    else {
+      const bases = asObject(issue.bases)
+      if (!bases || Object.values(bases).some((v) => v !== null && typeof v !== 'string'))
+        throw new Error(`状態ファイルが壊れています: ${key}`)
+    }
+    if (issue.baseAsked === undefined) issue.baseAsked = false
+    else if (typeof issue.baseAsked !== 'boolean') throw new Error(`状態ファイルが壊れています: ${key}`)
     for (const field of ['host', 'hostUnreachableSince']) {
       if (issue[field] === undefined) issue[field] = null
       else if (issue[field] !== null && typeof issue[field] !== 'string')

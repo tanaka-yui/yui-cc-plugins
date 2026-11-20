@@ -125,3 +125,22 @@ export const transition = (
   save()
   return resumeTransition(issue, save, true)
 }
+// ステータスを変えずに needs-base のコメントだけ書く（Backlog のまま判定した auto-ready の Issue）。
+// 判定の CLI は tick の外で動くので、tick の呼び出し予算は見ない。同じ世代のマーカーがあれば書き直さない
+export const notifyNeedsBase = (
+  issue: IssueState,
+  input: Pick<CommentInput, 'candidates' | 'fallback'>,
+  save: () => void,
+): boolean => {
+  const body = renderComment({ ...input, event: 'needs-base', generation: issue.generation }).body
+  const found = hasCommentMarker(issue, body.split('\n').at(-1) ?? '')
+  if (
+    found === null ||
+    (found === false &&
+      github(['issue', 'comment', String(issue.number), '--repo', issue.repo, '--body', body]).rc !== 0)
+  )
+    return false
+  issue.updatedAt = autoNow()
+  save()
+  return true
+}

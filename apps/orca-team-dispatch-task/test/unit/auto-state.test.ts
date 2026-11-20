@@ -38,6 +38,25 @@ test('SS3 legacy issues normalize missing host fields and reject invalid values'
   }
   rmSync(join(sd, 'state.json'))
 })
+test('SS5 legacy issues gain empty bases and baseAsked false; wrong types fail closed', () => {
+  const entry = { key: 'acme/app#1', phase: 'judging', generation: 1, targets: [], prs: [] }
+  const put = (issue: object) =>
+    writeFileSync(
+      join(sd, 'state.json'),
+      JSON.stringify({ version: 1, judgingSince: null, issues: { 'acme/app#1': issue } }),
+    )
+  put(entry)
+  assert.deepEqual(readState('main').issues['acme/app#1']?.bases, {})
+  assert.equal(readState('main').issues['acme/app#1']?.baseAsked, false)
+  put({ ...entry, bases: { 'acme/app': 'main', 'other/api': null }, baseAsked: true })
+  assert.deepEqual(readState('main').issues['acme/app#1']?.bases, { 'acme/app': 'main', 'other/api': null })
+  assert.equal(readState('main').issues['acme/app#1']?.baseAsked, true)
+  for (const bad of [{ bases: [] }, { bases: { 'acme/app': 1 } }, { bases: 'main' }, { baseAsked: 'yes' }]) {
+    put({ ...entry, ...bad })
+    assert.throws(() => readState('main'), /acme\/app#1/)
+  }
+  rmSync(join(sd, 'state.json'))
+})
 test('AU12/AU15 live local lock is never stolen even after expiry', () => {
   writeFileSync(
     lock,

@@ -20,7 +20,7 @@ import {
   autoOrca as runOrca,
 } from './auto-paths.ts'
 import { type ProjectSyncContext, syncProjects } from './auto-project.ts'
-import { orderQueue, syncIssues } from './auto-queue.ts'
+import { awaitingBase, orderQueue, syncIssues } from './auto-queue.ts'
 import { buildReport } from './auto-report.ts'
 import { buildRequest, readAutoResult, readPlanResult, slugOf } from './auto-request.ts'
 import { type AutoState, type IssueState, limitOf, readState, releaseLock, takeLock, writeState } from './auto-state.ts'
@@ -1172,7 +1172,12 @@ export const runTick = (name: string): number => {
     )
       throw new Error('報告を書けません')
     tick.errors += autoCallErrors()
-    const judging = Object.values(state.issues).filter((i) => i.phase === 'judging' && !i.pendingLabel).length
+    // 向き先のラベルを待っている Issue では判定を起こさない（judge-list も出さない）
+    const judging = Object.values(state.issues).filter((i) => {
+      const asked = synced.asked[i.key]
+      const autoReady = sources.find((s) => s.repo === i.repo)?.autoReady === true
+      return i.phase === 'judging' && !i.pendingLabel && !(asked && awaitingBase(i, asked, autoReady, config.repos))
+    }).length
     console.log(`auto: judge=${judging} dispatched=${tick.dispatched} finished=${tick.finished} errors=${tick.errors}`)
     return judging > 0 &&
       (!state.judgingSince || Date.parse(autoNow()) - Date.parse(state.judgingSince) > AUTO_JUDGE_LEASE_MS)

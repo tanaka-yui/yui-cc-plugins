@@ -42,6 +42,22 @@ test('AU70/AU71 judge precheck exit follows the judgment lease', () => {
     }
   }
 })
+test('AU151 an issue waiting for a base label does not start the judge', () => {
+  const f = runtimeFixture()
+  try {
+    const i = lease(f, null)
+    const s = readState('main')
+    Object.assign(s.issues[i.key] ?? {}, { baseAsked: true, targets: ['acme/app'] })
+    writeState('main', s)
+    f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'Backlog' }] })
+    const r = f.cli('tick')
+    assert.equal(r.status, 1, r.stderr)
+    assert.ok(r.stdout.trim().split('\n').at(-1)?.startsWith('auto: judge=0'))
+    assert.equal(readState('main').issues[i.key]?.phase, 'judging')
+  } finally {
+    f.cleanup()
+  }
+})
 test('AU72 empty queue writes report, AU74 exhausted budget still writes report', () => {
   for (const budget of [undefined, '1']) {
     const f = runtimeFixture()
