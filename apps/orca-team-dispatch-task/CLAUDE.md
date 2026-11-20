@@ -23,7 +23,7 @@ Orca の worktree で N タスクを worker に並列実行させるプラグイ
 `skills/.../scripts/report-status.ts`（worker が status を書く口）/
 `skills/.../scripts/config-resolve.ts` と `config-edit.ts`（設定の入口）。設定の定義は `lib/config.ts`。
 SKILL.md の block が読む状態は `bin/orca-state.ts`（wait-stamp / design-status / integration / mailbox /
-accounts。読むだけ）、issue モードの実行の前後は `bin/orca-issue-loop.ts`（start / claim / reconcile /
+accounts / terminals。読むだけ）、issue モードの実行の前後は `bin/orca-issue-loop.ts`（start / claim / reconcile /
 release）が受け持つ。issue の state file の場所と除外は `lib/issue.ts`（`orca-issue.ts` と共有）。
 
 ## TypeScript（node）で書く部分
@@ -165,6 +165,17 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   **`${VAR:+--flag "$VAR"}` を書かない** — zsh は 1 語にし、入口は `unknown option` で落ちる（同日、Step 2 と
   I3。空の値は入口が「渡されていない」と同じに扱う）。回帰は `test-docs.sh` の SK26（判定を書かない）と
   SK27（各 block を bash と zsh で走らせ、入口に届く argv が一致する）
+
+## 端末へ飛ぶ表
+
+**Orca に端末や worktree を開くリンクは無い**（2026-11-20、Orca.app の `orca://` が扱うのは `pair` と
+`skills/share` だけ）。そこで飛び先は `orca terminal switch --terminal <handle>` のコマンドで示す。表は
+`lib/terminals.ts` の 1 箇所で作り、`orca-state.ts terminals`（Step 2 のあとと進捗の報告）・`orca-wait.ts`
+（質問の取り次ぎと端末で答えを待つ役の行）・`orca-auto.ts status` が使う。**handle はそれを発行したサーバーのもの**
+なので、workers.json の役に `environment` があれば `--environment` を付ける。端末が記録されていない役には
+コマンドを出さない（推測しない）。表は読むだけで Orca を呼ばない — switch はユーザーの見ている端末を変えるので、
+親が打つのはユーザーが頼んだときだけ。`report.json` は slack-issue-intake と共有の形なので表を足さない。
+回帰は `test-state.sh` の OS11、`test-wait.sh` の WT41c / WT114b、`test-auto.sh` の AU142、`test/unit/terminals.test.ts`。
 
 ## 設定層に runner レジストリが無い理由
 

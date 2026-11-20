@@ -459,6 +459,13 @@ question_msg() {   # $1=message id
     > "$ORCA_STUB_DIR/orchestration_check"
 }
 
+# WT41c: 質問した役の端末へ飛ぶコマンドを、取り次ぎの案内に添える（遠くの役は --environment 付き）
+setup; question_msg q1
+jq '.roles.design.environment = "m2max"' "$SD/workers.json" > "$SD/w.tmp" && mv "$SD/w.tmp" "$SD/workers.json"
+out=$(w 2>&1); rc=$?
+[[ "$rc" -eq 6 && "$out" == *"open design's terminal with: '$ORCA_BIN' terminal switch --terminal 'term_w' --environment 'm2max'"* ]] \
+  && ok "WT41c 質問した役の端末へ飛ぶコマンドを出す" || fail "WT41c (rc=$rc)"; teardown
+
 # WT41: ★ **`question` は詰まりではなく「人へ取り次げ」である。**worker は `ask` で
 #       ブロックしており、**親は `orchestration reply` で答えられる**。未知として扱って
 #       batch を止めると、答えれば進む dispatch が永久に止まる（実測で踏んだ）。
@@ -1179,6 +1186,13 @@ b=$(basename "$SD")
 n=$(grep -c "design of $b is waiting for an answer in its terminal term_w" <<<"$err")
 [[ "$rc" -eq 3 && "$n" -eq 1 && "$(jq -r '.last_human_at' "$SD/human.json" 2>/dev/null)" =~ ^[0-9]+$ ]] \
   && ok "WT114 端末で答えを待つ役は停滞ではない" || fail "WT114 (rc=$rc n=$n)"; teardown
+
+# WT114b: 端末で答えを待つ役には、その端末へ飛ぶ terminal switch のコマンドを添える
+setup; old "$SD/run.json" "$SD/roles/design/status.json"; marker
+err=$(ORCA_STALL_AFTER_SECONDS=$STALL node "$P/bin/orca-wait.ts" --status-dir "$SD" --max-waits 2 \
+        --timeout-ms 1 2>&1 >/dev/null); rc=$?
+[[ "$rc" -eq 3 && "$err" == *"open design's terminal with: '$ORCA_BIN' terminal switch --terminal 'term_w'"* ]] \
+  && ok "WT114b 答えを待つ端末へ飛ぶコマンドを出す" || fail "WT114b (rc=$rc)"; teardown
 
 # WT115: ★ 印のあとに子の書き込みがあれば印は古い。今までどおり停滞として知らせる
 setup; marker; old "$SD/run.json" "$SD/roles/design/awaiting-user.json"

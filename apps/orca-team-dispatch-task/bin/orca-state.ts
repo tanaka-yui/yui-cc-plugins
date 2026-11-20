@@ -6,6 +6,7 @@
 //        node orca-state.ts integration   --status-dir <d>   # Step 4: 起動時に記録した取り込み方
 //        node orca-state.ts mailbox       --status-dir <d>   # Step 3 の exit 1: 親端末の mailbox を覗く
 //        node orca-state.ts accounts                         # S1: Orca が持つアカウント
+//        node orca-state.ts terminals     --status-dir <d> [--status-dir <d> ...]  # 役ごとの端末へ飛ぶコマンドの表
 // Exit: 0 = 答えた / 1 = 読めなかった・記録が壊れていた（理由は stderr）/ 2 = 使用法の誤り
 //
 // ★ block は呼び出し側のシェル（mac も WSL も zsh）で走る。判定を block に書かず、ここに置く
@@ -14,13 +15,14 @@ import { validToggle } from '../lib/config.ts'
 import { readJson } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type JsonObject } from '../lib/json.ts'
 import { failureDetail, receiptOk, runOrca } from '../lib/orca.ts'
+import { issueOfSlug, terminalRows, terminalTable } from '../lib/terminals.ts'
 
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const NAME = 'orca-state'
 const USAGE =
-  'usage: orca-state.ts <wait-stamp|design-status|integration|mailbox> --status-dir <dir> | orca-state.ts accounts'
+  'usage: orca-state.ts <wait-stamp|design-status|integration|mailbox> --status-dir <dir> | orca-state.ts accounts | orca-state.ts terminals --status-dir <dir> [--status-dir <dir> ...]'
 
 const statusDirOf = (args: string[]): string => {
   const { values } = parseFlags(NAME, {
@@ -126,6 +128,25 @@ const accounts = (args: string[]): number => {
   return 0
 }
 
+// 役ごとの端末へ飛ぶ `terminal switch` の表。workers.json が読めないタスクは行を出さず、そのことを stderr に言う
+const terminals = (args: string[]): number => {
+  const { values } = parseFlags(NAME, {
+    args,
+    options: { 'status-dir': { type: 'string', multiple: true } },
+    strict: true,
+    allowPositionals: false,
+  })
+  const dirs = (values['status-dir'] ?? []).filter((dir) => dir !== '')
+  if (dirs.length === 0) return die(NAME, `--status-dir is required\n${USAGE}`)
+  const rows = dirs.flatMap((dir) => {
+    const found = terminalRows(dir, issueOfSlug(dir))
+    if (found.length === 0) log(NAME, `no role is recorded in ${join(dir, 'workers.json')}`)
+    return found
+  })
+  process.stdout.write(terminalTable(rows))
+  return 0
+}
+
 const main = (argv: string[]): number => {
   const [command, ...rest] = argv
   if (command === 'wait-stamp') return waitStamp(statusDirOf(rest))
@@ -133,6 +154,7 @@ const main = (argv: string[]): number => {
   if (command === 'integration') return integration(statusDirOf(rest))
   if (command === 'mailbox') return mailbox(statusDirOf(rest))
   if (command === 'accounts') return accounts(rest)
+  if (command === 'terminals') return terminals(rest)
   return die(NAME, USAGE)
 }
 

@@ -133,6 +133,25 @@ for c in wait-stamp design-status integration mailbox; do st "$c" --status-dir "
 [[ "$(find "$SD" -type f -exec cksum {} + | sort)" == "$before" ]] \
   && ok "OS9 読むだけで何も書かない" || fail "OS9"; teardown
 
+# OS11: terminals は記録された役ごとに terminal switch のコマンドを表で出す。端末の無い役は推測しない。
+#       手動の issue モードは .dispatch-issue/state.json の slug から Issue 番号を引く。何も書かない
+setup
+RR=$(mktemp -d); SD2="$RR/.dispatch/issue-12-fix-login"; mkdir -p "$SD2/roles/design" "$RR/.dispatch-issue"
+printf '{"issues":{"12":{"slug":"issue-12-fix-login","status":"claimed"}}}\n' > "$RR/.dispatch-issue/state.json"
+printf '{"roles":{"design":{"agent":"claude","model":"opus","terminal":"term_d"},"design_review":{"agent":"codex","model":"gpt-6.2-astra","terminal":"term_r","environment":"m2max"},"exec":{"agent":"codex"}}}\n' > "$SD2/workers.json"
+printf '{"status":"working"}\n' > "$SD2/roles/design/status.json"
+before=$(find "$RR" -type f -exec cksum {} + | sort)
+out=$(st terminals --status-dir "$SD2"); rc=$?
+bad=""
+[[ "$rc" -eq 0 ]] || bad="$bad [rc=$rc]"
+[[ "$out" == *"| issue-12-fix-login | #12 | design | claude / opus | working | \`'$ORCA_BIN' terminal switch --terminal 'term_d'\` |"* ]] || bad="$bad [design]"
+[[ "$out" == *"terminal switch --terminal 'term_r' --environment 'm2max'"* ]] || bad="$bad [remote]"
+[[ "$out" == *"| exec | codex | - |"*"端末の記録なし"* ]] || bad="$bad [no-terminal]"
+[[ "$(find "$RR" -type f -exec cksum {} + | sort)" == "$before" ]] || bad="$bad [wrote]"
+st terminals >/dev/null 2>&1; [[ $? -eq 2 ]] || bad="$bad [no-status-dir]"
+[[ -z "$bad" ]] && ok "OS11 terminals は役ごとの切り替えコマンドを表で出す" || fail "OS11:$bad"
+rm -rf "$RR"; teardown
+
 # OS10: zsh から呼んでも同じ結果になる（設計 3-5）
 if command -v zsh >/dev/null 2>&1; then
   setup; printf '{"status":"done"}\n' > "$SD/roles/design/status.json"

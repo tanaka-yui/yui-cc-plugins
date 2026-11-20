@@ -51,6 +51,14 @@ node --test "$P/test/unit/auto-state.test.ts" > /dev/null 2>&1 && ok "AU12-15 lo
 node --test "$P/test/unit/auto-queue.test.ts" > /dev/null 2>&1 && ok "AU16-22 queue tests" || fail "AU16-22 queue tests"
 node --test "$P/test/unit/auto-judge.test.ts" > /dev/null 2>&1 && ok "AU23-29 judge tests" || fail "AU23-29 judge tests"
 node --test "$P/test/unit/auto-dispatch.test.ts" > /dev/null 2>&1 && ok "AU30-39 dispatch tests" || fail "AU30-39 dispatch tests"
+# AU142: status は Issue ごとの役の端末へ飛ぶ terminal switch のコマンドを表で添える（status dir の無い Issue は行を出さない）
+setup
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME/auto/main" "$W/sd/roles/exec"
+printf '{"roles":{"exec":{"agent":"codex","model":"gpt-6.2-sol","terminal":"term_x","environment":"m2max"}}}' > "$W/sd/workers.json"
+printf '{"version":1,"judgingSince":null,"projectSync":{},"issues":{"o/r#5":{"key":"o/r#5","phase":"running","generation":1,"targets":[],"prs":[],"statusDir":"%s"},"o/r#6":{"key":"o/r#6","phase":"queued","generation":1,"targets":[],"prs":[],"statusDir":""}}}' "$W/sd" > "$ORCA_DISPATCH_CONFIG_HOME/auto/main/state.json"
+out=$(node "$P/bin/orca-auto.ts" status 2>&1); rc=$?
+[[ "$rc" -eq 0 && "$out" == *"| o/r#5 | exec | codex / gpt-6.2-sol |"*"terminal switch --terminal 'term_x' --environment 'm2max'"* && "$out" != *"| o/r#6 |"* ]] \
+  && ok AU142 || fail "AU142 (rc=$rc $out)"; teardown
 node --test "$P/test/unit/auto-progress.test.ts" > /dev/null 2>&1 && ok "AU40-47 progress tests" || fail "AU40-47 progress tests"
 node --test "$P/test/unit/auto-finish.test.ts" "$P/test/unit/auto-cleanup.test.ts" "$P/test/unit/auto-lifecycle.test.ts" > /dev/null 2>&1 && ok "AU50-59 finish and cleanup tests" || fail "AU50-59 finish and cleanup tests"
 node --test "$P/test/unit/auto-continuation.test.ts" > /dev/null 2>&1 && ok "AU60-62 continuation tests" || fail "AU60-62 continuation tests"

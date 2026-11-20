@@ -359,6 +359,11 @@ To inspect state without changing it:
 node "$PLUGIN/bin/orca-auto.ts" status
 ```
 
+`status` also prints a table with one row per role of every Issue that has started: the Issue key,
+the role, its agent and model, its state, and the `terminal switch` command that brings that
+role's terminal to the front in Orca (with `--environment` for a role on a paired server). Show
+the table to the user as printed, and run a `terminal switch` command only when the user asks.
+
 `make setup` registers the scheduled precheck through the stable launcher and enables the automation after permission approval. Each Issue has its own coordinator terminal and Run. Closing that terminal is handled on the next tick by creating a replacement and rebinding only that Issue's Run.
 
 ### Completion, recovery, and cleanup
@@ -806,7 +811,7 @@ unanswered completion. Workers that are still working are never typed into.
 | 0 | Every worker finished and reported success | Read each task's `$SD/roles/design/result.md`, tell the user, go to Step 4 for every task |
 | 5 | At least one worker reported failure | Read each `result.md`, tell the user which task failed and why, go to Step 4 only for the tasks that succeeded, and to Step 5 for all of them. **Do not merge a failed task** |
 | 3 | Still running | Report progress, then call it again with the same `--status-dir` set |
-| 6 | A worker asked a person through `orchestration ask` and is blocked on the answer — under `ask_via=parent`, or a worker that asked that way although it was not told to | Relay the question to the user verbatim, run the `reply` command the wait printed with their answer, then run the same wait again. Nothing failed; the worker resumes on the reply |
+| 6 | A worker asked a person through `orchestration ask` and is blocked on the answer — under `ask_via=parent`, or a worker that asked that way although it was not told to | Relay the question to the user verbatim with the `open <role>'s terminal with:` command the wait printed, run the `reply` command the wait printed with their answer, then run the same wait again. Nothing failed; the worker resumes on the reply |
 | 8 | A task has made no progress for two hours, and none of its roles is waiting on a person — through Orca's own observation or its `awaiting-user.json` | Nothing was stopped. Follow the stalled-task steps below: show the user what each role's terminal shows, ask once, run what they chose, then run the same wait again |
 | 9 | A stage ended: every worker that was started has settled, and each task on an `unstarted_role` line has no `exec` yet (`phase_b=on`) | Nothing failed and nothing is merged yet. Go to Step 3.5 for each task an `unstarted_role` line names, then run the same wait again with the same `--status-dir` set; it returns 0 or 5 once `exec` has settled. If Step 3.5 refuses because `exec` already has a dispatch, it was started meanwhile: run the wait again |
 | 4 | A worker stopped or failed, or an Orca call the wait depends on could not be verified | Inspect and tell the user; do not delete anything. The retention or the acknowledgement did not complete, so rerun the canonical wait; do not recover a batch by hand. If a worker was lost while its completion was still owed, see the recovery block below |
@@ -814,11 +819,31 @@ unanswered completion. Workers that are still working are never typed into.
 
 A worker under `ask_via=terminal` (a `brainstorm` design, or a role whose review reached the round limit) asks in its own terminal, so its questions never
 reach this wait. The wait logs `<role> of <slug> is waiting for an answer in its terminal
-<handle>` once per question; when you report progress on exit 3, tell the user which terminals
-are waiting for them. Nothing is typed into a worker that is waiting for an answer: every line
+<handle>` once per question, followed by `open <role>'s terminal with: <command>` when that
+terminal is recorded; when you report progress on exit 3, tell the user which terminals are
+waiting for them and give them that command. Nothing is typed into a worker that is waiting for an answer: every line
 typed into a worker goes through `orca-wake.ts`, which refuses while that worker's
 `awaiting-user.json` is the newest thing its task's workers wrote, so a message sent meanwhile,
 such as `review-skipped:`, waits in its mailbox until the worker reads it.
+
+**Show the user where every worker runs.** Once Step 2 has started every task, and each time
+you report progress on exit 3, 6 or 8, print one table of every role's terminal and show it to
+the user as printed:
+
+```bash
+# One --status-dir per task, in Step 2's order. Repeat the flag for every further task.
+node "$PLUGIN/bin/orca-state.ts" terminals --status-dir "<task 1 status_dir printed by Step 2>" \
+                                          --status-dir "<task 2 status_dir printed by Step 2>"
+```
+
+Each row is one role of one task: the task's slug, its issue number in issue mode, the role, its
+agent and model, its state (stopped, waiting for an answer in its terminal, or the status it last
+reported), and the `terminal switch` command that brings that role's terminal to the front in
+Orca, with `--environment` for a role on a paired server. A role whose terminal is not recorded
+gets no command; the table does not guess a handle. Orca has no link that opens a terminal, so
+this command is how the user jumps there. Run it only when the user asks you to switch: it
+changes the terminal the user is looking at. The table only reads; it writes nothing and calls
+nothing in Orca.
 
 On exit 6 nothing has gone wrong. A worker used `orchestration ask`, which blocks it until a
 person answers through this parent — so the answer is the only thing that moves it. Show the

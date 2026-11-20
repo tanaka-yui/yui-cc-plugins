@@ -26,6 +26,7 @@ import {
 } from '../lib/orca.ts'
 import { fetchBranch, remoteHead } from '../lib/remote-branch.ts'
 import { envCount, nowSeconds, runNode, sleepSeconds } from '../lib/sys.ts'
+import { switchCommand } from '../lib/terminals.ts'
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -299,12 +300,21 @@ const markHuman = (statusDir: string): void => {
   write(statusDir, 'human.json', { last_human_at: nowSeconds() })
 }
 // 端末で待っている役を、印ごとに 1 回だけ言う（exit 3 の進捗報告で、親がどの端末に答えるかを伝えられるように）
+// 役の端末へ飛ぶコマンドを 1 行で添える。端末が記録されていなければ何も言わない（handle を推測しない）
+const noteSwitch = (statusDir: string, role: string): void => {
+  const record = get(read(statusDir, 'workers.json'), 'roles', role)
+  const terminal = string(get(record, 'terminal'))
+  if (terminal === '') return
+  const environment = string(get(record, 'environment'))
+  log(NAME, `  open ${role}'s terminal with: ${switchCommand(terminal, environment)}`)
+}
 const noteAwaiting = (state: State, statusDir: string, asking: { role: string; at: number }): void => {
   const key = `${statusDir}|${asking.role}`
   if (state.awaitingSeen.get(key) === asking.at) return
   state.awaitingSeen.set(key, asking.at)
   const terminal = string(get(read(statusDir, 'workers.json'), 'roles', asking.role, 'terminal')) || 'none'
   log(NAME, `${asking.role} of ${basename(statusDir)} is waiting for an answer in its terminal ${terminal}`)
+  noteSwitch(statusDir, asking.role)
 }
 // 移植元の理由（bin/orca-wait.sh）:
 // ★ **停滞の判定は workers.json をその都度読む。**期待集合（TASKS）が読み直されるのは知らない
@@ -1112,6 +1122,7 @@ const drain = (state: State): 0 | 1 | 2 | 6 | 7 => {
         `  ${orcaBin()} orchestration reply --id ${id || '<message id>'} --body '<their answer>' --from ${state.expected.parent}`,
       )
       log(NAME, 'then run this wait again')
+      noteSwitch(entry.statusDir, entry.role)
       markHuman(entry.statusDir)
       return 6
     }

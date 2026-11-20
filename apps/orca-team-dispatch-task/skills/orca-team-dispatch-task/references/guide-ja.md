@@ -340,6 +340,10 @@ node "$PLUGIN/bin/orca-auto.ts" tick
 node "$PLUGIN/bin/orca-auto.ts" status
 ```
 
+`status` は、起動した Issue ごとに役 1 つを 1 行にした表も出す。Issue の key、役、agent と model、状態、
+Orca でその役の端末を前面に出す `terminal switch` コマンド（ペアリング済みサーバーの役には `--environment`
+付き）を並べる。表は出力されたとおりにユーザーへ見せ、`terminal switch` コマンドはユーザーが頼んだときだけ実行する。
+
 `make setup` が安定したランチャーを定期 precheck に登録し、権限の承認後に automation を有効にする。Issueごとに専用のまとめ役の端末とRunを持ち、その端末が閉じられたら、次のtickで代わりを作り、そのIssueのRunだけを引き継ぐ。
 
 ### 完了・回復・後片付け
@@ -772,18 +776,35 @@ dispatch を永久に止める**。同じ理由で、完了の返事を待った
 | 0 | すべての worker が成功を報告して完了 | 各タスクの `$SD/roles/design/result.md` を読み、ユーザーへ伝えて全タスクを Step 4 へ進める |
 | 5 | 1 件以上の worker が失敗を報告 | 各 `result.md` を読み、どのタスクがなぜ失敗したかを伝える。Step 4 へ進めるのは成功したタスクだけで、Step 5 は全タスクに行う。**失敗したタスクを merge しない** |
 | 3 | まだ実行中 | 進捗を報告してから、同じ `--status-dir` の組でもう一度呼ぶ |
-| 6 | worker が `orchestration ask` で人へ質問し、回答待ちでブロックしている — `ask_via=parent` のとき、または指示されていないのにその方法で尋ねた worker | 質問をそのままユーザーへ取り次ぎ、待機が出力した `reply` コマンドに回答を入れて実行し、同じ待機をもう一度走らせる。失敗ではない。worker は reply で再開する |
+| 6 | worker が `orchestration ask` で人へ質問し、回答待ちでブロックしている — `ask_via=parent` のとき、または指示されていないのにその方法で尋ねた worker | 質問を、待機が出力した `open <role>'s terminal with:` のコマンドと一緒にそのままユーザーへ取り次ぎ、待機が出力した `reply` コマンドに回答を入れて実行し、同じ待機をもう一度走らせる。失敗ではない。worker は reply で再開する |
 | 8 | あるタスクが 2 時間進んでおらず、そのどの役も人を待っていない（Orca 自身の観測でも `awaiting-user.json` でも） | 何も止めていない。下の停滞時の手順に従う: 各役の端末に何が出ているかをユーザーに見せ、1 回尋ね、選ばれたことを実行し、同じ待機をもう一度走らせる |
 | 9 | 段の終わり: 起動した worker が全員決着し、`unstarted_role` の行のタスクにはまだ `exec` が無い（`phase_b=on`） | 失敗ではなく、まだ何も merge していない。`unstarted_role` の行が名指しするタスクごとに Step 3.5 へ行き、そのあと同じ `--status-dir` の組で同じ待機をもう一度走らせる。`exec` が決着すれば 0 か 5 で返る。`exec` に既に dispatch が在るとして Step 3.5 が拒否したら、その間に起動されている: 待機をもう一度走らせる |
 | 4 | worker が停止・失敗した、または待機が依存する Orca 呼び出しを検証できない | 調べてユーザーへ伝える。何も削除しない。retention または acknowledgement が完了していないので canonical wait を再実行し、batch を手で復旧しない。完了を負ったまま worker が失われた場合は、下の回復の節を見る |
 | 1 | batch がこの版で扱えないメッセージを含む、または outcome が記録と矛盾する | acknowledge していない。手動 acknowledge はせず、下のとおり確認する |
 
 `ask_via=terminal` の worker（`brainstorm` の design と、レビューが上限に達した役）は自分の端末で尋ねるので、その質問がこの待機に届くことは無い。
-待機は質問ごとに 1 回、`<role> of <slug> is waiting for an answer in its terminal <handle>` を log に出す。
-終了コード 3 で進捗を報告するときは、どの端末がユーザーの答えを待っているかを伝える。答えを待っている
+待機は質問ごとに 1 回、`<role> of <slug> is waiting for an answer in its terminal <handle>` を log に出し、
+その端末が記録されていれば続けて `open <role>'s terminal with: <command>` を出す。
+終了コード 3 で進捗を報告するときは、どの端末がユーザーの答えを待っているかを伝え、そのコマンドを渡す。答えを待っている
 worker には何も打ち込まない — worker へ打ち込む行はすべて `orca-wake.ts` を通り、それはその worker の
 `awaiting-user.json` がタスクの worker が最後に書いたものである間は打つのを拒む。その間に送られたメッセージ
 （`review-skipped:` など）は、worker が読むまでメールボックスで待つ。
+
+**どの worker がどこで動いているかをユーザーに見せる。**Step 2 が全タスクを起動し終えたとき、および終了コード
+3・6・8 で進捗を報告するたびに、全役の端末の表を 1 つ出力し、出力されたとおりにユーザーへ見せる:
+
+```bash
+# One --status-dir per task, in Step 2's order. Repeat the flag for every further task.
+node "$PLUGIN/bin/orca-state.ts" terminals --status-dir "<task 1 status_dir printed by Step 2>" \
+                                          --status-dir "<task 2 status_dir printed by Step 2>"
+```
+
+1 行は 1 タスクの役 1 つである: タスクの slug、issue モードならその issue 番号、役、agent と model、状態
+（止めた、端末で答えを待っている、または最後に報告した status）、Orca でその役の端末を前面に出す
+`terminal switch` コマンド（ペアリング済みサーバーの役には `--environment` 付き）。端末が記録されていない役には
+コマンドを出さない。表は handle を推測しない。Orca には端末を開くリンクが無いので、ユーザーはこのコマンドで
+そこへ飛ぶ。実行するのはユーザーが切り替えを頼んだときだけにする: ユーザーが見ている端末を変えてしまうため。
+表は読むだけで、何も書かず、Orca へも何も打たない。
 
 終了コード 6 では何も壊れていない。worker が `orchestration ask` を使っており、人が
 この親を通して答えるまでブロックする — 動かせるのは回答だけである。出力された質問を

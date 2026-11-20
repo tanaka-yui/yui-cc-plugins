@@ -7,6 +7,7 @@ Orca の worktree で N タスクを worker に並列実行させ、成果を親
 複数タスクを 1 つの Orca Run にまとめて dispatch し（既定上限 4）、起動 → 全件の完了待ち →
 merge を行う。worker のセッションは完了後もその場で保持され、片付けは確認してから、
 承認されたものだけを行う（設定 `cleanup` で、PR を作ったタスクを PR の作成直後か merge のあとに尋ねずに片付けることもできる）。
+起動後と進捗の報告のたびに、タスク・役ごとの端末へ飛ぶ `orca terminal switch` コマンドを表で示す（`--auto` は `status` に出す）。
 
 `--auto` は複数リポジトリのReadyを1本のキューにまとめ、判定・dispatch・PRのmergeまたは確認依頼まで進める。
 `make auto` で1回まわし、report.jsonをSlack側へ渡す。このMacとペアリング済みサーバーへ空き・確認結果で振り分け、メールとoriginへのpushで成果を受け渡す。対象は1件2リポジトリまで（3つ以上はReady_Eng）。

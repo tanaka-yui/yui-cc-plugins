@@ -29,6 +29,7 @@ import {
 import { createPrompter } from '../lib/setup-prompt.ts'
 import { FEATURE_LABEL, STATUS } from '../lib/status.ts'
 import { envCount } from '../lib/sys.ts'
+import { terminalRows, terminalTable } from '../lib/terminals.ts'
 
 import { mkdirSync, readFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
@@ -106,6 +107,11 @@ const main = (argv: string[]): number => {
       console.log(
         `${issue.key}: ${issue.phase} / 世代 ${issue.generation}${issue.startAttempt ? ' / 起動の結果が不明（保留）' : ''}${issue.cleanupPending ? ' / 後片付け待ち' : ''}`,
       )
+    // 役ごとの端末へ飛ぶコマンド。status dir がまだ無い（起動前の）Issue は行を出さない
+    const rows = Object.values(state.issues).flatMap((issue) =>
+      issue.statusDir ? terminalRows(issue.statusDir, issue.key) : [],
+    )
+    if (rows.length > 0) process.stdout.write(`\n${terminalTable(rows)}`)
     return 0
   }
   const config = readAutoConfig(name)
