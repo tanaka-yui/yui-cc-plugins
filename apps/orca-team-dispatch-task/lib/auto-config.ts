@@ -206,6 +206,9 @@ export const readIntakeRepos = (config: AutoConfig): { repos: string[]; unreadab
   }
   return { repos: [...repos], unreadable }
 }
+// 拾う元の autoMerge。同じリポジトリの拾う元が複数あれば、ほかの設定と同じく最初のものを読む
+export const sourceAutoMerge = (config: Pick<AutoConfig, 'sources'>, repo: string): boolean =>
+  config.sources.find((s) => s.repo === repo)?.autoMerge === true
 export const pickSources = (config: AutoConfig): string[] =>
   readIntakeRepos(config).repos.filter((repo) => config.sources.some((source) => source.repo === repo))
 

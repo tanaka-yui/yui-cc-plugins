@@ -2,9 +2,16 @@ import { backMergeInput } from './auto-backmerge.ts'
 import { actualBases, restrictedBase } from './auto-base.ts'
 import { autoCleanup, confirmStopped, pushBranches, unrecordedWorker } from './auto-cleanup.ts'
 import { limitBreakdown, renderComment } from './auto-comment.ts'
-import { type AutoConfig, pickSources, readAutoConfig, readIntakeRepos, relayAllowance } from './auto-config.ts'
+import {
+  type AutoConfig,
+  pickSources,
+  readAutoConfig,
+  readIntakeRepos,
+  relayAllowance,
+  sourceAutoMerge,
+} from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
-import { continuationOf, github, prStatus, readGithub, viewIssue } from './auto-github.ts'
+import { continuationOf, github, type PrStatus, prStatus, readGithub, viewIssue } from './auto-github.ts'
 import { envArgs, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
 import {
   AUTO_FILES,
@@ -422,7 +429,8 @@ const refill = (tick: Tick): void => {
         run('git', ['-C', r.options.checkout, 'fetch', 'origin', branch]).rc !== 0 ||
         run('git', ['-C', r.options.checkout, 'checkout', '-B', branch, `origin/${branch}`]).rc !== 0
       ) {
-        error(tick, `default ブランチを用意できません: ${r.name}`)
+        // 決めた向き先なら名前を出す。既定ブランチの名前を GitHub から読めなかったときは名前が無い
+        error(tick, `${branch ? `向き先ブランチ（${branch}）` : 'default ブランチ'}を用意できません: ${r.name}`)
         break
       }
       defaults[r.name] = branch
@@ -441,7 +449,7 @@ const refill = (tick: Tick): void => {
           detail.body,
           repos,
           tick.config.roles,
-          continuationOf(issue, issue.endedAt ?? issue.updatedAt),
+          continuationOf(issue, issue.endedAt ?? issue.updatedAt, defaults),
         ),
       )
     )
@@ -614,6 +622,14 @@ const progress = (tick: Tick, issue: IssueState): void => {
   } else if (![3, 8, 9].includes(waited.rc)) error(tick, `待機を進められません: ${issue.key} rc=${waited.rc}`)
 }
 
+// PR ごとの実際の向き先（repo → ブランチ）。読めなかった PR は含めない
+const realBases = (prs: Array<{ repo: string }>, statuses: Array<PrStatus | null>): Record<string, string> =>
+  Object.fromEntries(
+    prs.flatMap((p, i) => {
+      const base = statuses[i]?.baseRefName
+      return base ? [[p.repo, base]] : []
+    }),
+  )
 const AUTO_CI_APPEAR_MINUTES = 30
 const AUTO_PR_RETRY_MINUTES = 30
 export const prevBranchesOf = (issue: IssueState, multi: boolean): Record<string, string> => {
@@ -864,7 +880,9 @@ const finish = (tick: Tick, issue: IssueState): void => {
   const status = statuses[0]
   if (!status) return
   if (multi ? statuses.every((s) => s?.state === 'MERGED') : status.state === 'MERGED') {
-    const back = issue.pendingLabel ? {} : backMergeInput(issue, targets, repo, tick.config.repos)
+    const back = issue.pendingLabel
+      ? {}
+      : backMergeInput(issue, targets, repo, tick.config.repos, realBases(multi ? issue.prs : [pr], statuses))
     if (!back) return
     if (
       transition(
@@ -938,7 +956,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
   if (result?.envFailure) reasons.push(`環境が原因: ${result.envFailure}`)
   if (issue.reviewPoints.length) reasons.push('人の確認が要る点があります。')
   // 拾う元の autoMerge が有効なら、auto-ready の Issue も他の条件がそろえば merge する（向き先の制限は下で効く）
-  if (issue.autoReady && !tick.config.sources.some((s) => s.repo === issue.repo && s.autoMerge))
+  if (issue.autoReady && !sourceAutoMerge(tick.config, issue.repo))
     reasons.push('AI が Backlog から Ready にした Issue なので、merge の前に人が確認します。')
   if (multi ? statuses.some((s) => s?.state === 'OPEN' && s.checks === 'fail') : status.checks === 'fail')
     reasons.push('CI が失敗しました。')
@@ -949,9 +967,16 @@ const finish = (tick: Tick, issue: IssueState): void => {
     reasons.push('インフラの変更は確認が必要です。')
   if (multi ? statuses.some((s) => s?.state === 'CLOSED') : status.state === 'CLOSED')
     reasons.push('PR が閉じられています。')
+  // 記録が無い Issue の向き先は run が実際に使ったものに揃える（戻しの PR と同じ解決）。読めなければ理由を足さない。
+  // PR の実際の向き先（人が付け替えた・前の世代の PR を拾った）が違えば、それも人に回し、制限はその向き先でも見る
+  const expected = actualBases(issue.bases, targets, repo)
+  const real = realBases(multi ? issue.prs : [pr], statuses)
+  for (const [r, b] of Object.entries(real)) {
+    const want = expected.find((e) => e.repo === r)?.base
+    if (want && want !== b) reasons.push(`${r} の PR の向き先（${b}）が決めた向き先（${want}）と違います。`)
+  }
   for (const base of new Set(
-    // 記録が無い Issue の向き先は run が実際に使ったものに揃える（戻しの PR と同じ解決）。読めなければ理由を足さない
-    actualBases(issue.bases, targets, repo).flatMap(({ repo: r, base: b }) =>
+    [...expected, ...Object.entries(real).map(([r, b]) => ({ repo: r, base: b }))].flatMap(({ repo: r, base: b }) =>
       b && restrictedBase(r, b, tick.config.repos) ? [b] : [],
     ),
   ))
@@ -1013,7 +1038,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
     }
     mergedPrs.push(pr)
   }
-  const back = issue.pendingLabel ? {} : backMergeInput(issue, targets, repo, tick.config.repos)
+  const back = issue.pendingLabel ? {} : backMergeInput(issue, targets, repo, tick.config.repos, real)
   if (!back) return
   if (
     transition(
@@ -1065,7 +1090,9 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
   const fromRun = repoTargets(workersOf(issue), tick.config.repos[repo]?.checkout ?? '')
   const targets =
     fromRun.length < 2 && issue.targets.length > 1 ? issue.targets.map((r) => ({ repo: r, baseBranch: '' })) : fromRun
-  const back = issue.pendingLabel ? {} : backMergeInput(issue, targets, repo, tick.config.repos)
+  const back = issue.pendingLabel
+    ? {}
+    : backMergeInput(issue, targets, repo, tick.config.repos, realBases(issue.prs, statuses))
   if (!back) return
   if (
     transition(

@@ -1,7 +1,7 @@
 // --auto precheck and difficulty judgment. No runtime npm dependencies.
 
-import { applyFlow, baseLabels, candidatesOf, resolveBases } from '../lib/auto-base.ts'
-import { pickSources, readAutoConfig, relayAllowance } from '../lib/auto-config.ts'
+import { applyFlow, baseLabels, candidatesOf, resolveBases, restrictedBase } from '../lib/auto-base.ts'
+import { pickSources, readAutoConfig, relayAllowance, sourceAutoMerge } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
 import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
 import { syncProjects } from '../lib/auto-project.ts'
@@ -169,6 +169,8 @@ const main = (argv: string[]): number => {
                 labels: baseLabels(labels),
                 candidates: candidatesOf(related, config.repos),
                 needed: resolveBases(labels, related, config.repos).kind === 'judge',
+                // 対象ごとの普段の向き先（baseBranch）。null は GitHub の既定ブランチ
+                usual: Object.fromEntries(related.map((r) => [r, config.repos[r]?.baseBranch ?? null])),
               },
             },
           ]
@@ -299,15 +301,36 @@ const main = (argv: string[]): number => {
             : resolution?.kind === 'judge' && typeof decision.base === 'string' && decision.base !== 'ask'
               ? applyFlow(decision.base, uniqueTargets, config.repos)
               : null
-      if (!bases) {
+      const candidates = [
+        ...new Set([
+          ...candidatesOf(uniqueTargets, config.repos),
+          ...uniqueTargets.flatMap((t) => config.repos[t]?.baseBranch ?? []),
+        ]),
+      ]
+      // 候補が 2 つ未満なら選びようがないので尋ねず、普段の向き先で進める（resolveBases が先に防ぐが念のため）
+      const decided =
+        bases ??
+        (candidates.length < 2
+          ? Object.fromEntries(uniqueTargets.map((t) => [t, config.repos[t]?.baseBranch ?? null]))
+          : null)
+      if (!decided) {
+        const source = config.sources.find((s) => s.repo === issue.repo)
+        const fallbackOf = (t: string): string => config.repos[t]?.baseBranch ?? '既定のブランチ'
+        const why =
+          resolution?.kind === 'ask'
+            ? resolution.why
+            : typeof decision.base === 'string' && decision.base !== 'ask'
+              ? `\`${decision.base}\` は候補にありません`
+              : ''
         const input = {
-          candidates: [
-            ...new Set([
-              ...candidatesOf(uniqueTargets, config.repos),
-              ...uniqueTargets.flatMap((t) => config.repos[t]?.baseBranch ?? []),
-            ]),
-          ],
-          fallback: config.repos[uniqueTargets[0] ?? '']?.baseBranch ?? '既定のブランチ',
+          candidates,
+          fallback: fallbackOf(uniqueTargets[0] ?? ''),
+          ...(uniqueTargets.length > 1
+            ? { fallbacks: uniqueTargets.map((t) => ({ repo: t, branch: fallbackOf(t) })) }
+            : {}),
+          ...(why ? { why } : {}),
+          pick: source?.pick ?? STATUS.ready,
+          autoReadySource: source?.autoReady === true,
         }
         // 尋ねた印を先に残す。ラベルの遷移が途中で止まっても、tick が続きをやったあと待ちに入る
         issue.baseAsked = true
@@ -321,7 +344,7 @@ const main = (argv: string[]): number => {
         } else transition(issue, 'needs-base', input, STATUS.ready, STATUS.backlog, false, 'judging', save)
         continue
       }
-      issue.bases = bases
+      issue.bases = decided
       if (fromBacklog) {
         // コメント → ラベルの順に Backlog から Ready へ。終わると queued になり、途中で止まれば tick が続きをやる
         transition(
@@ -331,8 +354,11 @@ const main = (argv: string[]): number => {
             reason: issue.reason,
             limitMinutes: issue.limitMinutes,
             relayMinutes: relayAllowance(config.roles, config.everyMinutes),
-            // 人が Ready にした Issue（向き先を尋ねて拾い直したもの）は元から AI が merge しうるので、人の確認待ちとは言わない
-            autoMerge: !issue.autoReady || config.sources.some((s) => s.repo === issue.repo && s.autoMerge),
+            // 人が Ready にした Issue（向き先を尋ねて拾い直したもの）は元から AI が merge しうるので、人の確認待ちとは言わない。
+            // 普段の向き先でない向き先（hotfix の main など）へは AI が merge しないので、その場合は人の確認待ちと言う
+            autoMerge:
+              (!issue.autoReady || sourceAutoMerge(config, issue.repo)) &&
+              !Object.entries(decided).some(([r, b]) => b !== null && restrictedBase(r, b, config.repos)),
           },
           STATUS.backlog,
           STATUS.ready,

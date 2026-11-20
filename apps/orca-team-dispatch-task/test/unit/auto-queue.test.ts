@@ -246,3 +246,34 @@ test('AU147 an asked issue waits in Backlog, rejoins judging from Ready, and sto
     f.cleanup()
   }
 })
+
+test('AU171 a new generation keeps the previous generation bases only when it had branches', () => {
+  const f = fixture()
+  try {
+    const s = empty()
+    f.respond('issue_list', [{ number: 7, title: '題', labels: [], updatedAt: '2026-01-01' }])
+    const source = f.config().sources[0]
+    assert.ok(source)
+    syncIssues(s, [source])
+    const issue = s.issues['acme/app#7']
+    assert.ok(issue)
+    assert.deepEqual(issue.prevBases, {})
+    Object.assign(issue, {
+      phase: 'review',
+      branch: 'auto/old',
+      targets: ['acme/app'],
+      bases: { 'acme/app': 'develop' },
+    })
+    syncIssues(s, [source])
+    assert.equal(issue.generation, 2)
+    assert.deepEqual(issue.prevBases, { 'acme/app': 'develop' })
+    assert.deepEqual(issue.bases, {})
+    // 枝を持たずに終わった世代（判定だけで止まったもの）は前の記録を消さない
+    Object.assign(issue, { phase: 'stopped', branch: '', bases: { 'acme/app': 'main' } })
+    syncIssues(s, [source])
+    assert.equal(issue.generation, 3)
+    assert.deepEqual(issue.prevBases, { 'acme/app': 'develop' })
+  } finally {
+    f.cleanup()
+  }
+})

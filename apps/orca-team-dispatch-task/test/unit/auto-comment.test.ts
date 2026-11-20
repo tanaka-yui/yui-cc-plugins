@@ -187,3 +187,30 @@ test('AC11 the auto-ready comment says AI may merge only when autoMerge is on', 
   assert.ok(merged.includes('条件がそろえば AI が merge します。'))
   assert.ok(!merged.includes('人が確認してから'))
 })
+
+test('AC12 needs-base says why, how a source picks the answer up, and the fallback per repository', () => {
+  const base: CommentInput = {
+    event: 'needs-base',
+    generation: 1,
+    candidates: ['main', 'develop'],
+    fallback: 'develop',
+  }
+  const manual = renderComment({ ...base, why: '`base:main` と `base:develop` が両方付いています', pick: 'Todo' }).body
+  assert.ok(
+    manual.startsWith('向き先のブランチを決められませんでした（`base:main` と `base:develop` が両方付いています）。'),
+  )
+  assert.ok(manual.includes('ラベルを付けたあと Todo に戻すと、その向き先で進めます。'), manual)
+  assert.ok(manual.includes('ラベルを付けずに Todo に戻すと develop で進めます。'), manual)
+  const auto = renderComment({ ...base, pick: 'Ready', autoReadySource: true }).body
+  assert.ok(auto.includes('ラベルを付けると、その向き先で自動で進めます。'), auto)
+  assert.ok(!auto.includes('ラベルを付けたあと'), auto)
+  const two = renderComment({
+    ...base,
+    pick: 'Ready',
+    fallbacks: [
+      { repo: 'acme/api', branch: 'develop' },
+      { repo: 'acme/web', branch: 'main' },
+    ],
+  }).body
+  assert.ok(two.includes('ラベルを付けずに Ready に戻すと acme/api は develop、acme/web は main で進めます。'), two)
+})

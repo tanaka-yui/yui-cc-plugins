@@ -367,3 +367,46 @@ test('AU117c one merged PR cannot complete an Issue with a second target lacking
     f.cleanup()
   }
 })
+
+test('AU172 a generation whose base changed starts fresh from the new base instead of the previous branch', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.track()
+    issue.generation = 2
+    issue.prevBranch = 'user/previous'
+    issue.prevTargets = ['acme/app']
+    issue.prevBranches = { 'acme/app': 'user/previous' }
+    issue.targets = ['acme/app']
+    f.respond('api', [])
+    f.respond('pr_checks', [])
+    issue.prevBases = { 'acme/app': 'develop' }
+    const changed = continuationOf(issue, '2026-11-13T04:00:00Z', { 'acme/app': 'main' })
+    assert.ok(changed)
+    assert.ok(!changed.instructions.includes('git reset'), changed.instructions)
+    assert.ok(changed.instructions.includes('changed from develop to main'), changed.instructions)
+    assert.ok(changed.instructions.includes('Respond to the comments'))
+    const same = continuationOf(issue, '2026-11-13T04:00:00Z', { 'acme/app': 'develop' })
+    assert.ok(same?.instructions.includes('git reset --hard origin/user/previous'))
+    // 前の世代の向き先の記録が無い（この版より前の）Issue は今までどおり続きから
+    issue.prevBases = {}
+    assert.ok(
+      continuationOf(issue, '2026-11-13T04:00:00Z', { 'acme/app': 'main' })?.instructions.includes(
+        'git reset --hard origin/user/previous',
+      ),
+    )
+    // 2 リポジトリでは、向き先の変わったリポジトリだけ続きをやめる
+    Object.assign(issue, {
+      targets: ['other/api', 'acme/app'],
+      prevTargets: ['other/api', 'acme/app'],
+      prevBranches: { 'other/api': 'user/a', 'acme/app': 'user/b' },
+      prevBases: { 'other/api': 'develop', 'acme/app': 'develop' },
+    })
+    const multi = continuationOf(issue, '2026-11-13T04:00:00Z', { 'other/api': 'main', 'acme/app': 'develop' })
+    assert.ok(multi)
+    assert.ok(!multi.instructions.includes('For other/api:'), multi.instructions)
+    assert.ok(multi.instructions.includes('For acme/app:'), multi.instructions)
+    assert.ok(multi.instructions.includes('The base of other/api changed from develop to main'), multi.instructions)
+  } finally {
+    f.cleanup()
+  }
+})

@@ -31,6 +31,12 @@ export type CommentInput = {
   // needs-base: 向き先の候補と、ラベル無しで Ready に戻されたときに進める向き先
   candidates?: string[]
   fallback?: string
+  // needs-base: 対象が 2 つのときのリポジトリごとの fallback、決められなかった理由、拾う元の pick と auto-ready か。
+  // 無ければ共有の fixture と同じ本文になる
+  fallbacks?: Array<{ repo: string; branch: string }>
+  why?: string
+  pick?: string
+  autoReadySource?: boolean
   // human-merged / ai-merged: 普段の向き先へ取り込む PR の結果（作れたもの・作れなかったもの）
   backPrs?: Array<{ repo: string; url: string }>
   backFailures?: Array<{ repo: string; why: string }>
@@ -156,7 +162,19 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
       break
     case 'needs-base': {
       const labels = (input.candidates ?? []).map((c) => `\`base:${clean(c)}\``)
-      body = `向き先のブランチを決められませんでした。${labels.join(' か ')} の${labels.length === 2 ? 'どちら' : 'いずれ'}かのラベルを付けてください。ラベルを付けずに Ready に戻すと ${clean(input.fallback ?? '')} で進めます。`
+      const pick = clean(input.pick ?? STATUS.ready)
+      // auto-ready の拾う元はラベルだけで拾い直す。そうでない拾う元は、人が pick に戻すまで待つ
+      const next =
+        input.autoReadySource === true
+          ? 'ラベルを付けると、その向き先で自動で進めます。'
+          : input.pick !== undefined
+            ? `ラベルを付けたあと ${pick} に戻すと、その向き先で進めます。`
+            : ''
+      const fallback =
+        input.fallbacks && input.fallbacks.length > 1
+          ? input.fallbacks.map((f) => `${clean(f.repo)} は ${clean(f.branch)}`).join('、')
+          : clean(input.fallback ?? '')
+      body = `向き先のブランチを決められませんでした${input.why ? `（${clean(input.why)}）` : ''}。${labels.join(' か ')} の${labels.length === 2 ? 'どちら' : 'いずれ'}かのラベルを付けてください。${next}ラベルを付けずに ${pick} に戻すと ${fallback} で進めます。`
       break
     }
   }

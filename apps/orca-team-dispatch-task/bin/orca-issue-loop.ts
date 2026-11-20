@@ -90,7 +90,11 @@ const claim = (options: Options): number => {
   const claimed = asArray(parseJson(fetched.stdout)) ?? []
   const issue = claimed[0]
   if (claimed.length !== 1 || issue === undefined) {
-    log(NAME, `issue #${options.issue} was not claimed; it is already recorded in ${options.stateFile}`)
+    // 飛ばした理由（向き先の違い・detached HEAD）は fetch が直前に [skip] の行で言っている
+    log(
+      NAME,
+      `issue #${options.issue} was not claimed; it is already recorded in ${options.stateFile}, or it was skipped (see the [skip] line above)`,
+    )
     return 1
   }
   const slug = asString(get(issue, 'slug')) ?? ''

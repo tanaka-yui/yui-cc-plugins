@@ -799,3 +799,21 @@ test('AU154 a decided base starts from that branch without asking GitHub for the
     }
   }
 })
+
+test('AU177 a decided base that cannot be fetched is named in the error and nothing starts', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.track()
+    const s = readState('main')
+    const current = s.issues[issue.key]
+    if (!current) throw new Error('issue')
+    current.bases = { 'acme/app': 'develop' }
+    writeState('main', s)
+    const r = f.cli('tick')
+    assert.ok(`${r.stdout}${r.stderr}`.includes('向き先ブランチ（develop）を用意できません: acme/app'), r.stderr)
+    assert.ok(!f.childCalls().includes('orca-start.ts'))
+    assert.equal(readState('main').issues[issue.key]?.phase, 'queued')
+  } finally {
+    f.cleanup()
+  }
+})

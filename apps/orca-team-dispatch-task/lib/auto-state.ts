@@ -64,6 +64,8 @@ export type IssueState = {
   bases: Record<string, string | null>
   // この世代で向き先を尋ねた（needs-base）。同じ世代では二度尋ねない
   baseAsked: boolean
+  // 前の世代が実際に使った向き先。向き先が変わったリポジトリは前の世代の枝から続けない
+  prevBases: Record<string, string | null>
   endedAt: string | null
   checkedAt: string | null
   prevBranch: string | null
@@ -145,11 +147,13 @@ export const readState = (name: string): AutoState => {
       throw new Error(`状態ファイルが壊れています: ${key}`)
     if (issue.autoReady === undefined) issue.autoReady = false
     else if (typeof issue.autoReady !== 'boolean') throw new Error(`状態ファイルが壊れています: ${key}`)
-    if (issue.bases === undefined) issue.bases = {}
-    else {
-      const bases = asObject(issue.bases)
-      if (!bases || Object.values(bases).some((v) => v !== null && typeof v !== 'string'))
-        throw new Error(`状態ファイルが壊れています: ${key}`)
+    for (const field of ['bases', 'prevBases']) {
+      if (issue[field] === undefined) issue[field] = {}
+      else {
+        const bases = asObject(issue[field])
+        if (!bases || Object.values(bases).some((v) => v !== null && typeof v !== 'string'))
+          throw new Error(`状態ファイルが壊れています: ${key}`)
+      }
     }
     if (issue.baseAsked === undefined) issue.baseAsked = false
     else if (typeof issue.baseAsked !== 'boolean') throw new Error(`状態ファイルが壊れています: ${key}`)

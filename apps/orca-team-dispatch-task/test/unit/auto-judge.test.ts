@@ -478,11 +478,12 @@ test('AU146 an asked Backlog issue returns to judging only once a base label res
       assert.equal(r.status, 0, r.stderr)
       return JSON.parse(r.stdout).issues as Array<{
         key: string
-        base: { labels: string[]; candidates: string[]; needed: boolean }
+        base: { labels: string[]; candidates: string[]; needed: boolean; usual: Record<string, string | null> }
       }>
     }
     const fresh = listed().find((i) => i.key === 'acme/app#7')
-    assert.deepEqual(fresh?.base, { labels: [], candidates: ['develop', 'main'], needed: true })
+    const usual = { 'acme/app': 'develop', 'other/api': null }
+    assert.deepEqual(fresh?.base, { labels: [], candidates: ['develop', 'main'], needed: true, usual })
     for (const autoReady of [true, false]) {
       edit((i) => {
         Object.assign(i, { autoReady, baseAsked: true, targets: ['acme/app'], phase: 'judging', pendingLabel: null })
@@ -496,6 +497,7 @@ test('AU146 an asked Backlog issue returns to judging only once a base label res
         labels: ['develop'],
         candidates: ['develop', 'main'],
         needed: false,
+        usual,
       })
       // 拾い直しは Backlog から Ready へ進め、autoReady は尋ねる前の値のまま
       const result = f.apply()
@@ -642,5 +644,114 @@ test('AU152 re-applying the same ask decision leaves an asked issue waiting in B
     } finally {
       f.cleanup()
     }
+  }
+})
+
+test('AU173 a base label is ignored when orca has no candidates: listed as not needed and queued without asking', () => {
+  const f = setup()
+  try {
+    view(f, ['Ready', 'base:main'])
+    const listed = JSON.parse(f.cli('judge-list').stdout).issues.find((i: { key: string }) => i.key === 'acme/app#7')
+    assert.equal(listed?.base.needed, false)
+    const result = f.apply()
+    assert.equal(result.status, 0, result.stderr)
+    const issue = readState('main').issues['acme/app#7']
+    assert.equal(issue?.phase, 'queued')
+    assert.deepEqual(issue?.bases, { 'acme/app': null })
+    assert.equal(issue?.baseAsked, false)
+    assert.ok(!f.calls().includes('issue comment'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU174 the needs-base comment gives the reason, the next step for the source, and a fallback per repository', () => {
+  // [auto-ready の拾う元か, ラベル, 対象, 含む文, 含まない文]
+  for (const [autoReady, labels, targets, says, not] of [
+    [
+      false,
+      ['Ready', 'base:main', 'base:develop'],
+      ['acme/app'],
+      [
+        '（`base:main` と `base:develop` が両方付いています）',
+        'ラベルを付けたあと Ready に戻すと、その向き先で進めます。',
+      ],
+      ['自動で進めます'],
+    ],
+    [true, ['Ready'], ['acme/app'], ['ラベルを付けると、その向き先で自動で進めます。'], ['ラベルを付けたあと']],
+    [
+      false,
+      ['Ready'],
+      ['acme/app', 'other/api'],
+      ['Ready に戻すと acme/app は develop、other/api は main で進めます。'],
+      [],
+    ],
+  ] as const) {
+    const f = setup()
+    try {
+      f.put(f.configFile, {
+        ...f.raw,
+        sources: f.raw.sources.map((s, i) => (i === 0 ? { ...s, autoReady } : s)),
+        repos: {
+          ...f.raw.repos,
+          'acme/app': { ...f.raw.repos['acme/app'], baseBranch: 'develop', branches: ['develop', 'main'] },
+          'other/api': { ...f.raw.repos['other/api'], baseBranch: 'main' },
+        },
+      })
+      view(f, [...labels])
+      const body = commentFile(f)
+      const result = f.apply(f.decision({ base: 'ask', targets: [...targets] }))
+      assert.equal(result.status, 0, result.stderr)
+      for (const text of says) assert.ok(body().includes(text), body())
+      for (const text of not) assert.ok(!body().includes(text), body())
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU175 the Ready comment never promises an AI merge into a restricted base', () => {
+  for (const [autoReady, autoMerge] of [
+    [false, false],
+    [true, true],
+  ] as const) {
+    const f = setup()
+    try {
+      f.put(f.configFile, {
+        ...f.raw,
+        sources: f.raw.sources.map((s, i) =>
+          i === 0 ? { ...s, autoReady: true, ...(autoMerge ? { autoMerge } : {}) } : s,
+        ),
+        repos: {
+          ...f.raw.repos,
+          'acme/app': { ...f.raw.repos['acme/app'], baseBranch: 'develop', branches: ['develop', 'main'] },
+        },
+      })
+      edit((i) => {
+        Object.assign(i, { autoReady, baseAsked: true, targets: ['acme/app'], phase: 'judging', pendingLabel: null })
+      })
+      view(f, ['Backlog', 'base:main'])
+      const body = commentFile(f)
+      const result = f.apply()
+      assert.equal(result.status, 0, result.stderr)
+      assert.deepEqual(readState('main').issues['acme/app#7']?.bases, { 'acme/app': 'main' })
+      assert.ok(body().includes('PR は人が確認してから merge します。'), body())
+      assert.ok(!body().includes('条件がそろえば AI が merge します。'), body())
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU176 judge-list names the usual base of each related repository', () => {
+  const f = setup()
+  try {
+    branched(f)
+    const r = f.cli('judge-list')
+    assert.equal(r.status, 0, r.stderr)
+    const issue = JSON.parse(r.stdout).issues.find((i: { key: string }) => i.key === 'acme/app#7')
+    assert.deepEqual(issue?.base.usual, { 'acme/app': 'develop', 'other/api': null })
+  } finally {
+    f.cleanup()
   }
 })

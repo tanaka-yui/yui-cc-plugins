@@ -116,6 +116,15 @@ out=$(node "$LOOP" start --repo-root "$R" --state-file "$alt" 2>/dev/null); rc=$
 [[ "$rc" -eq 0 && "$out" == "state_file=$alt" && -d "$W/elsewhere/loop.lock.d" && ! -e "$R/.dispatch-issue" ]] \
   && ok "IL11 --state-file を尊重する" || fail "IL11 (rc=$rc out=$out)"; teardown
 
+# IL13: 向き先のラベルが今のブランチと違う名指しの issue は、[skip] の理由と食い違わない文で止まる
+#       （「既に state に載っている」とだけ言うと、[skip] の行と矛盾する）
+setup; loop start >/dev/null 2>&1
+jq -nc '{number:12,title:"hotfix",body:"b",url:"u12",labels:[{name:"base:develop"}]}' > "$GH_STUB_DIR/issue_view"
+out=$(loop claim --issue 12 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$out" == *'[skip] issue #12 '* && "$out" == *'or it was skipped (see the [skip] line above)'* \
+   && "$(jq -r '.issues["12"] // "none"' "$SF")" == none ]] \
+  && ok "IL13 飛ばした issue の claim は [skip] を指して止まる" || fail "IL13 (rc=$rc out=$out)"; teardown
+
 # IL12: zsh から呼んでも同じ結果になる（設計 3-5。SKILL.md の I0〜I4 は呼び出し側のシェルで走る）
 if command -v zsh >/dev/null 2>&1; then
   setup

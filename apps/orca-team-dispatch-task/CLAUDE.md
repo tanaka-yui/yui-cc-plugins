@@ -643,3 +643,12 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - **`auto-ready` のコメントは `CommentInput.autoMerge` で文言を変える。**共有の `test/fixtures/orca-auto-comments.json` の例は autoMerge なしのまま変えず、autoMerge ありの例は足していない（AC11 が文言だけを確かめる）。`judge-apply` は `!issue.autoReady || 拾う元の autoMerge` を渡す。人が Ready にした Issue を向き先の質問のあと Backlog から拾い直して Ready にする場合、AI が merge しうるので「人が確認してから」とは書かない。
 - **setup の問いは auto-ready に yes と答えた直後**（`${repo} で autoMerge を使いますか`）。auto-ready を使わない拾う元には尋ねないので、位置で答えを渡す既存の setup-run のテストの答えは増えない。再実行では今の値が既定。
 - 回帰: AR9、AC11、AU164〜167、SU46、SK46。
+
+### 最終レビューの直し（2026-11-20、3.17.0 のまま）
+
+- **関門は PR の実際の向き先も見る。**`prStatus` が `baseRefName` を読む（stub に無ければ null で、記録した向き先だけで判断する）。決めた向き先と違う PR（人が GitHub で付け替えた・新しい世代が同じ枝名で前の世代の PR を拾った）は In review にし、`restrictedBase` は記録と実際の両方に効く。戻しの PR の `from` も実際の向き先が分かればそれ。`orca-pr.ts` の既存 PR の拾い方（head だけで探す）は変えていない（関門で止まるため。`--base` で絞ると作成の失敗になる）。
+- **向き先が変わった世代は前の枝から続けない。**状態の `prevBases`（世代が変わるとき、枝を持った世代の `bases` を写す。`prevBranches` と同じ条件）と、dispatch で決まった向き先を `continuationOf` が比べ、違うリポジトリは reset の指示を出さず、依頼文で新しい向き先から始めるよう言う。記録の無い（この版より前の）Issue は今までどおり続きから。前の枝と同じ名前の枝で新しい向き先から始めると、`orca-pr.ts` の push（force しない）が失敗して Failed になりうる（実機で未確認）。
+- **候補が 2 つ以上の対象が無ければ `base:*` ラベルを読まない**（`resolveBases`。spec 9 の「今と同じに動く」）。intake にだけ候補がある環境で、ラベル付きの Issue が答えようの無い質問で止まらないため。judge-apply も候補が 2 つ未満なら尋ねずに `baseBranch` で進める。
+- **`needs-base` のコメント**は `why`（ラベルが 2 つ・候補に無い・判定が候補外を返した）、拾う元の `pick` と `autoReadySource`（ラベルだけで拾い直すか、pick に戻すまで待つか）、2 対象の `fallbacks` を足した。どれも無ければ共有の fixture と同じ本文なので、fixture は変えていない。
+- `auto-ready` のコメントは決めた向き先が制限されていれば AI の merge を言わない。拾う元の `autoMerge` は `sourceAutoMerge`（最初の拾う元）で読む。judge-list の `base.usual` は関連リポジトリごとの `baseBranch`。
+- 回帰: AU168〜177、AB9 / AB10、AC12、IF26、IL13。

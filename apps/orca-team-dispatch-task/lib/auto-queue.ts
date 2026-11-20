@@ -55,6 +55,7 @@ const makeIssue = (repo: string, row: ReadyIssue, pick: string): IssueState => (
   autoReady: false,
   bases: {},
   baseAsked: false,
+  prevBases: {},
   endedAt: null,
   checkedAt: null,
   prevBranch: null,
@@ -129,6 +130,7 @@ export const syncIssues = (
               : { [issue.targets[0] ?? '']: issue.branch }
             : issue.prevBranches,
           branches: {},
+          prevBases: hadBranches ? { ...issue.bases } : issue.prevBases,
           prevBranch: issue.branch || issue.prevBranch,
           prevPrs: issue.prs.length ? issue.prs : issue.prevPrs,
           generation: issue.generation + 1,

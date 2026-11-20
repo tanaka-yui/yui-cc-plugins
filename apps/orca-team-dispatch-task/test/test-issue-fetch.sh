@@ -323,4 +323,17 @@ out=$(run fetch --limit 5 --batch 2 2>"$W/err"); rc=$?
   && grep -qF '[skip] issue #6 ' "$W/err" && grep -qF 'detached' "$W/err" \
   && ok "IF25 detached HEAD ではラベルの無い Issue だけ扱う" || fail "IF25 detached (rc=$rc out=$out $(cat "$W/err"))"
 teardown
+# IF26: ★ **名指し（--issue N）でも、向き先のラベルが今のブランチと違う Issue は claim しない。**
+#       検索を通らない単件の経路にも同じ判定が効くこと。[skip] で理由を言い、空で rc 0、ラベルには触らない。
+setup; acquire; init
+git -C "$W" init -q -b develop
+jq -nc '{number:41,title:"hotfix",body:"b",url:"u41",labels:[{name:"base:main"}]}' > "$GH_STUB_DIR/issue_view"
+: > "$GH_STUB_DIR/issue_edit"
+out=$(run fetch --issue 41 --limit 1 --batch 1 2>"$W/err"); rc=$?
+[[ "$rc" -eq 0 && "$out" == '[]' ]] \
+  && grep -qF '[skip] issue #41 は向き先が main なので、今のブランチ develop では扱いません' "$W/err" \
+  && ! grep -qF 'issue edit' "$GH_STUB_DIR/calls.log" \
+  && [[ "$(jq -r '.issues["41"] // "none"' "$SF")" == none ]] \
+  && ok "IF26 名指しの Issue も向き先が違えば claim しない" || fail "IF26 (rc=$rc out=$out $(cat "$W/err"))"
+teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

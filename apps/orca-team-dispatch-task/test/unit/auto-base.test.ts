@@ -67,3 +67,23 @@ test('AB8 applyFlow, needsChoice and candidatesOf', () => {
   assert.deepEqual(candidatesOf(['client', 'api'], two), ['main', 'develop'])
   assert.deepEqual(candidatesOf(['o/a'], { 'o/a': plain }), [])
 })
+
+test('AB9 base labels are ignored when no target has two or more candidates', () => {
+  assert.deepEqual(resolveBases(['base:main'], ['o/a'], { 'o/a': plain }), { kind: 'ok', bases: { 'o/a': null } })
+  assert.deepEqual(resolveBases(['base:main', 'base:develop'], ['client'], two), {
+    kind: 'ok',
+    bases: { client: 'main' },
+  })
+  assert.deepEqual(resolveBases(['base:release'], ['client'], two), { kind: 'ok', bases: { client: 'main' } })
+})
+
+test('AB10 the ask reason names the labels', () => {
+  assert.deepEqual(resolveBases(['base:main', 'base:develop'], ['api'], two), {
+    kind: 'ask',
+    why: '`base:main` と `base:develop` が両方付いています',
+  })
+  assert.deepEqual(resolveBases(['base:release'], ['api', 'client'], two), {
+    kind: 'ask',
+    why: '`base:release` は候補にありません',
+  })
+})

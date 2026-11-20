@@ -958,3 +958,84 @@ test('AU163 a back PR call that times out defers Done to the next tick instead o
     f.cleanup()
   }
 })
+
+// 仕上げの関門は、記録した向き先ではなく PR の実際の向き先（baseRefName）でも判断する
+const RESTRICTED_MAIN = '普段の向き先でない（main）への merge は人が確認します。'
+test('AU168 a PR whose real base differs from the recorded base goes to review and is never merged', () => {
+  for (const real of ['main', 'release/9']) {
+    const f = runtimeFixture()
+    const i = f.track('finishing')
+    f.result(i)
+    f.put(f.configFile, {
+      ...f.raw,
+      repos: { ...f.raw.repos, 'acme/app': { ...f.raw.repos['acme/app'], baseBranch: 'develop' } },
+    })
+    const s = readState('main')
+    const current = s.issues[i.key]
+    if (!current) throw new Error('issue')
+    current.bases = { 'acme/app': 'develop' }
+    writeState('main', s)
+    f.respond('pr_view', { ...pr, state: 'OPEN', mergedAt: null, statusCheckRollup: [check()], baseRefName: real })
+    try {
+      f.cli('tick')
+      assert.equal(readState('main').issues[i.key]?.phase, 'review', real)
+      const comments = decodedCommentsOf(f)
+      assert.ok(comments.includes(`acme/app の PR の向き先（${real}）が決めた向き先（develop）と違います。`), comments)
+      assert.equal(comments.includes(RESTRICTED_MAIN), real === 'main')
+      assert.ok(!f.calls().includes('pr merge'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU169 a human merge whose PR really targets a non-usual base opens the back PR from that base', () => {
+  const { f, i } = humanMergedBackMerge({ 'acme/app': 'develop' }, (x) => {
+    x.respond('pr_view', {
+      state: 'MERGED',
+      mergedAt: '2026-11-13T05:00:00Z',
+      statusCheckRollup: [],
+      baseRefName: 'main',
+    })
+    x.respond('pr_list', [])
+    writeFileSync(join(x.gh, 'pr_create'), `${backUrl}\n`)
+  })
+  try {
+    assert.equal(readState('main').issues[i.key]?.phase, 'done')
+    assert.ok(f.calls().includes('pr create --repo acme/app --base develop --head main'))
+    assert.ok(decodedCommentsOf(f).includes(`acme/app へ取り込む PR: ${backUrl}`))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU170 two repositories where only one base is restricted go to review once, without any merge', () => {
+  for (const real of [undefined, 'main']) {
+    const { f, issue } = multiFinish()
+    try {
+      const repos = Object.fromEntries(
+        ['acme/app', 'other/api'].map((r) => [
+          r,
+          { ...f.raw.repos[r as 'acme/app'], verified: true, baseBranch: 'develop' },
+        ]),
+      )
+      f.put(f.configFile, { ...f.raw, lanes: 2, repos })
+      const s = readState('main')
+      const current = s.issues[issue.key]
+      if (!current) throw new Error('issue')
+      current.bases = { 'other/api': real ? 'develop' : 'main', 'acme/app': 'develop' }
+      writeState('main', s)
+      f.prViews({
+        'other/api': multiView('other/api', 201, real ? { baseRefName: real } : {}),
+        'acme/app': multiView('acme/app', 101, real ? { baseRefName: 'develop' } : {}),
+      })
+      f.cli('tick')
+      assert.equal(readState('main').issues[issue.key]?.phase, 'review', String(real))
+      const comments = decodedCommentsOf(f)
+      assert.equal(comments.split(RESTRICTED_MAIN).length - 1, 1, comments)
+      assert.ok(!f.calls().includes('pr merge'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})

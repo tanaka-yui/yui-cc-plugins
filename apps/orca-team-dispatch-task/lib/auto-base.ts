@@ -40,16 +40,18 @@ export const applyFlow = (flow: string, targets: string[], repos: Repos): Record
       )
     : null
 
+// 候補が 2 つ以上の対象が無ければ、ラベルがあっても読まずに今までどおり進める（尋ねても選びようがない）
 export const resolveBases = (labels: string[], targets: string[], repos: Repos): BaseResolution => {
+  if (!needsChoice(targets, repos))
+    return { kind: 'ok', bases: Object.fromEntries(targets.map((t) => [t, repos[t]?.baseBranch ?? null])) }
   const names = baseLabels(labels)
-  if (names.length >= 2) return { kind: 'ask', why: `base ラベルが複数あります: ${names.join(', ')}` }
+  const quoted = names.map((name) => `\`${BASE_LABEL_PREFIX}${name}\``)
+  if (names.length >= 2)
+    return { kind: 'ask', why: `${quoted.join(' と ')} が${names.length === 2 ? '両方' : 'すべて'}付いています` }
   const [flow] = names
-  if (flow === undefined)
-    return needsChoice(targets, repos)
-      ? { kind: 'judge' }
-      : { kind: 'ok', bases: Object.fromEntries(targets.map((t) => [t, repos[t]?.baseBranch ?? null])) }
+  if (flow === undefined) return { kind: 'judge' }
   const bases = applyFlow(flow, targets, repos)
-  return bases ? { kind: 'ok', bases } : { kind: 'ask', why: `base:${flow} はどの対象の候補にもありません` }
+  return bases ? { kind: 'ok', bases } : { kind: 'ask', why: `${quoted[0]} は候補にありません` }
 }
 
 export const restrictedBase = (repo: string, base: string, repos: Repos): boolean => {

@@ -75,8 +75,11 @@ export const backMergeInput = (
   targets: Array<{ repo: string; baseBranch: string }>,
   repo: string,
   repos: AutoConfig['repos'],
+  // PR の実際の向き先（repo → ブランチ）。分かる対象は記録よりこちらを信じる
+  prBases: Record<string, string> = {},
 ): Pick<CommentInput, 'backPrs' | 'backFailures'> | null => {
-  const needed = actualBases(issue.bases, targets, repo).flatMap(({ repo: r, base }) => {
+  const needed = actualBases(issue.bases, targets, repo).flatMap(({ repo: r, base: recorded }) => {
+    const base = prBases[r] || recorded
     const to = repos[r]?.baseBranch
     return base && to && restrictedBase(r, base, repos) ? [{ repo: r, from: base, to }] : []
   })

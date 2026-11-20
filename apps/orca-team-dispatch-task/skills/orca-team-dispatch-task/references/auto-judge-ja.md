@@ -4,7 +4,7 @@
 
 範囲と結果が明確な修正は `auto`、難しい作業やレーンを長時間占有する作業は `eng` を選ぶ。新機能は原則エンジニアに回す。対象は 2 つまで自動で進め、3 つ以上はエンジニアに回す。`targets` は依存の順（先に merge するリポジトリを先、例えば API のあとにクライアント）に並べる。PR はその順で merge する。対象は Issue の `related` の空でない部分集合にする。`limitMinutes` は 1 以上 `limits.maxMinutes` 以下の整数にし、`limits.defaultMinutes` を出発点にする。役の間の待ち（1 tick ごとに取り次ぐレビューのメールと、実装の段を別に起こす待ち）は tick が `limitMinutes` の外に足すので、見積もりに含めない。長い見積もりはエンジニアに回す理由になる。
 
-各 Issue の `base` は PR の向き先ブランチの材料である。`labels` は `base:*` ラベルのブランチ名、`candidates` は関連リポジトリが向けられるブランチ、`needed` は選ぶ必要があるかを表す。`base.needed` が true で route が `auto` のときは、`base` に `base.candidates` のどれか、または人に `base:*` ラベルで選んでもらう `ask` を書く。本番の障害・緊急・hotfix なら本番側のブランチ（多くは `main`）、それ以外は普段の作業が入るブランチ（例えば `develop`）を選ぶ。Issue から選び方がはっきりしないときは `ask` を選ぶ。エンジニアに回す Issue には `base` は要らない。エンジニアが決める。
+各 Issue の `base` は PR の向き先ブランチの材料である。`labels` は `base:*` ラベルのブランチ名、`candidates` は関連リポジトリが向けられるブランチ、`usual` は関連リポジトリごとの普段の向き先（`baseBranch`。`null` は GitHub の既定ブランチ）、`needed` は選ぶ必要があるかを表す。`base.needed` が true で route が `auto` のときは、`base` に `base.candidates` のどれか、または人に `base:*` ラベルで選んでもらう `ask` を書く。本番の障害・緊急・hotfix なら本番側のブランチ（多くは `main`）、それ以外は普段の作業が入るブランチ（`base.usual`。例えば `develop`）を選ぶ。Issue から選び方がはっきりしないときは `ask` を選ぶ。エンジニアに回す Issue には `base` は要らない。エンジニアが決める。
 
 `autoReady` はその Issue がまだ Backlog にある印で、だれも「やる」と決めておらず、`auto` は人を通さずに Ready にする。依頼が明らかに小さく範囲の決まった修正で、書かれたとおりに求められていることが明らかなときだけ `auto` を選び、迷ったら `eng` を選ぶ。その PR は、拾う元の `autoMerge` が無効なら人の確認を待つ。有効なら、merge の条件がそろえば AI が merge しうる。
 
