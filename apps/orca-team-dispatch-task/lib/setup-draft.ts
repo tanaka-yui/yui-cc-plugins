@@ -78,7 +78,7 @@ const validValues = (value: JsonObject, name: string): boolean => {
       hosts.flatMap((h) =>
         Object.keys(asObject(get(h, 'repos')) ?? {}).map((repo) => [
           repo,
-          { checkout: '/', verify: [], infra: false, verified: false, ci: true },
+          { checkout: '/', verify: [], infra: false, verified: false, ci: true, baseBranch: null, branches: [] },
         ]),
       ),
     )
@@ -137,6 +137,15 @@ export const configJsonFromDraft = (draft: SetupDraft, base: JsonObject | null):
     const value = v[key]
     if (value !== undefined) next[key] = structuredClone(value)
   }
+  // 既定値（null / []）の向き先の欄は書かず、既存の設定ファイルを変えない。
+  const repos = asObject(next.repos)
+  if (repos)
+    for (const repo of Object.values(repos)) {
+      const row = asObject(repo)
+      if (!row) continue
+      if (row.baseBranch === null) delete row.baseBranch
+      if (Array.isArray(row.branches) && row.branches.length === 0) delete row.branches
+    }
   if (v.sources)
     next.sources = v.sources.map(({ project, autoReady, ...source }) => ({
       ...source,

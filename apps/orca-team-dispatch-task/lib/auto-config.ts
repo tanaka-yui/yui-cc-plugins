@@ -24,7 +24,18 @@ export type AutoConfig = {
     project: ProjectRef | null
     autoReady: boolean
   }>
-  repos: Record<string, { checkout: string; verify: string[]; infra: boolean; verified: boolean; ci: boolean }>
+  repos: Record<
+    string,
+    {
+      checkout: string
+      verify: string[]
+      infra: boolean
+      verified: boolean
+      ci: boolean
+      baseBranch: string | null
+      branches: string[]
+    }
+  >
   hosts: HostConfig[] | null
   automation: { id: string; acceptedFingerprint: string | null } | null
   lanes: number
@@ -57,6 +68,9 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
     const infra = boolean(r?.infra, false)
     const verified = boolean(r?.verified, false)
     const ci = boolean(r?.ci, true)
+    // null は未設定と同じ（下書きがそのまま書き戻せるように）。
+    const baseBranch = r?.baseBranch == null ? null : asString(r.baseBranch)
+    const branches = r?.branches === undefined ? [] : strings(r.branches)
     if (
       !/^[^/\s]+\/[^/\s]+$/.test(repo) ||
       !checkout ||
@@ -64,10 +78,13 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
       !verify ||
       infra === null ||
       verified === null ||
-      ci === null
+      ci === null ||
+      (r?.baseBranch != null && !baseBranch) ||
+      !branches ||
+      (branches.length > 0 && (!baseBranch || !branches.includes(baseBranch)))
     )
       return null
-    repos[repo] = { checkout, verify, infra, verified, ci }
+    repos[repo] = { checkout, verify, infra, verified, ci, baseBranch, branches }
   }
   const sources: AutoConfig['sources'] = []
   for (const value of rawSources) {

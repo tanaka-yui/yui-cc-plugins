@@ -1,4 +1,12 @@
-import { intakeRepoNames, pickSources, readAutoConfig, readIntakeRepos, relayAllowance } from '../../lib/auto-config.ts'
+import {
+  intakeRepoNames,
+  parseAutoConfig,
+  pickSources,
+  readAutoConfig,
+  readIntakeRepos,
+  relayAllowance,
+} from '../../lib/auto-config.ts'
+import { configJsonFromDraft, draftFromConfig } from '../../lib/setup-draft.ts'
 
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -164,4 +172,54 @@ test('AU137 relay allowance covers bounded review exchanges and stage handoffs',
     ['on', 'off', 10, 110],
   ] as const)
     assert.equal(relayAllowance({ review_mode, phase_b }, everyMinutes), expected)
+})
+
+test('CF7 baseBranch and branches are parsed and validated', () => {
+  const repo = (extra: object) => ({ ...fixture, repos: { 'acme/app': { checkout: '/tmp/auto-checkout', ...extra } } })
+  save(fixture)
+  assert.deepEqual(
+    {
+      b: readAutoConfig('main')?.repos['acme/app']?.baseBranch,
+      c: readAutoConfig('main')?.repos['acme/app']?.branches,
+    },
+    { b: null, c: [] },
+  )
+  save(repo({ baseBranch: 'develop', branches: ['develop', 'main'] }))
+  const ok = readAutoConfig('main')?.repos['acme/app']
+  assert.equal(ok?.baseBranch, 'develop')
+  assert.deepEqual(ok?.branches, ['develop', 'main'])
+  save(repo({ baseBranch: 'develop' }))
+  assert.deepEqual(readAutoConfig('main')?.repos['acme/app']?.branches, [])
+  for (const extra of [
+    { baseBranch: 'develop', branches: ['main'] },
+    { baseBranch: 'develop', branches: ['develop', ''] },
+    { baseBranch: 5 },
+    { baseBranch: '' },
+    { baseBranch: 'develop', branches: 'develop' },
+    { branches: ['main'] },
+  ]) {
+    save(repo(extra))
+    assert.equal(readAutoConfig('main'), null, JSON.stringify(extra))
+  }
+})
+
+test('CF7b the two fields survive the setup draft round trip and defaults stay unwritten', () => {
+  const withBranches = parseAutoConfig(
+    {
+      ...fixture,
+      repos: { 'acme/app': { checkout: '/tmp/auto-checkout', baseBranch: 'develop', branches: ['develop', 'main'] } },
+    },
+    'main',
+  )
+  assert.ok(withBranches)
+  const json = configJsonFromDraft(draftFromConfig(withBranches), null)
+  assert.ok(json)
+  assert.deepEqual(parseAutoConfig(json, 'main'), withBranches)
+  const defaults = parseAutoConfig(fixture, 'main')
+  assert.ok(defaults)
+  const plain = configJsonFromDraft(draftFromConfig(defaults), null)
+  assert.ok(plain)
+  assert.deepEqual(parseAutoConfig(plain, 'main'), defaults)
+  assert.equal(JSON.stringify(plain).includes('baseBranch'), false)
+  assert.equal(JSON.stringify(plain).includes('branches'), false)
 })

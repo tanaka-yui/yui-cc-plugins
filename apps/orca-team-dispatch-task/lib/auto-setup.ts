@@ -297,6 +297,8 @@ export const runSetup = (
         infra: previous?.infra ?? false,
         verified: previous?.verified ?? false,
         ci: previous?.ci ?? repoDefaults(checkout).ci,
+        baseBranch: previous?.baseBranch ?? null,
+        branches: previous?.branches ?? [],
       }
     }
     v.repos = next
