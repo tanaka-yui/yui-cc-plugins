@@ -147,10 +147,11 @@ export const configJsonFromDraft = (draft: SetupDraft, base: JsonObject | null):
       if (Array.isArray(row.branches) && row.branches.length === 0) delete row.branches
     }
   if (v.sources)
-    next.sources = v.sources.map(({ project, autoReady, ...source }) => ({
+    next.sources = v.sources.map(({ project, autoReady, autoMerge, ...source }) => ({
       ...source,
       ...(project ? { project } : {}),
       ...(autoReady ? { autoReady } : {}),
+      ...(autoMerge ? { autoMerge } : {}),
     }))
   if (v.hosts)
     next.hosts = v.hosts.map(({ spec, repos, ...host }) => ({

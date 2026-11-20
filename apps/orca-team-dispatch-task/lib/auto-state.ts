@@ -58,7 +58,7 @@ export type IssueState = {
   finishingSince: string | null
   cleanupPending: boolean
   returnedFromEng: boolean
-  // この世代を Backlog から拾った（auto-ready）。人が Ready にしたら false。true の世代は AI が merge しない
+  // この世代を Backlog から拾った（auto-ready）。人が Ready にしたら false。true の世代は、その拾う元の autoMerge が無効なら AI が merge しない
   autoReady: boolean
   // 対象ごとの向き先ブランチ。null は既定のブランチ。判定でキューに入るときに決まる
   bases: Record<string, string | null>

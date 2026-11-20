@@ -524,6 +524,40 @@ test('AU146 an asked Backlog issue returns to judging only once a base label res
   }
 })
 
+test('AU167 the Ready comment of a re-picked issue says whether AI may merge it', () => {
+  // [人が Ready にした Issue か, 拾う元の autoMerge, コメントが言う内容]
+  for (const [autoReady, autoMerge, says] of [
+    [false, false, '条件がそろえば AI が merge します。'],
+    [true, false, 'PR は人が確認してから merge します。'],
+    [true, true, '条件がそろえば AI が merge します。'],
+  ] as const) {
+    const f = setup()
+    try {
+      f.put(f.configFile, {
+        ...f.raw,
+        sources: f.raw.sources.map((s, i) =>
+          i === 0 ? { ...s, autoReady: true, ...(autoMerge ? { autoMerge } : {}) } : s,
+        ),
+        repos: {
+          ...f.raw.repos,
+          'acme/app': { ...f.raw.repos['acme/app'], baseBranch: 'develop', branches: ['develop', 'main'] },
+        },
+      })
+      edit((i) => {
+        Object.assign(i, { autoReady, baseAsked: true, targets: ['acme/app'], phase: 'judging', pendingLabel: null })
+      })
+      view(f, ['Backlog', 'base:develop'])
+      const body = commentFile(f)
+      const result = f.apply()
+      assert.equal(result.status, 0, result.stderr)
+      assert.ok(body().includes('orca-auto:ready:1:auto-ready'), body())
+      assert.ok(body().includes(says), body())
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
 test('AU148 an asked issue moved back to Ready without a label proceeds on baseBranch without asking again', () => {
   for (const base of ['ask', 'main', undefined]) {
     const f = setup()

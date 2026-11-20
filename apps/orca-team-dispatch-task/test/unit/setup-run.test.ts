@@ -1040,6 +1040,35 @@ test('SU44 asks the usual base and candidates when two or more branches exist, v
     f.cleanup()
   }
 })
+test('SU46 asks autoMerge only for a source that answered yes to auto-ready, defaulting to the current value', () => {
+  const f = prepare()
+  try {
+    // auto-ready を使わない（既定）なら autoMerge は尋ねない
+    const plain = f.rerun({ 書きますか: 'y' })
+    assert.equal(plain.code, 0, plain.output)
+    assert.ok(!plain.asked.some((q) => q.includes('autoMerge')))
+    assert.equal(f.config().sources[0]?.autoMerge, false)
+    // auto-ready を使うと答えたら autoMerge を尋ねる。答えが yes なら設定に残る
+    const on = f.rerun({ 'auto-ready を使います': 'y', 'autoMerge を使います': 'y', 書きますか: 'y' })
+    assert.equal(on.code, 0, on.output)
+    const autoReadyAt = on.asked.findIndex((q) => q.includes('auto-ready を使います'))
+    assert.ok(autoReadyAt >= 0 && on.asked[autoReadyAt + 1]?.includes('autoMerge を使います'), on.asked.join('\n'))
+    assert.equal(f.config().sources[0]?.autoReady, true)
+    assert.equal(f.config().sources[0]?.autoMerge, true)
+    // もう一度流すと、現在の値が既定になる
+    const again = f.rerun({ 書きますか: 'y' })
+    assert.equal(again.code, 0, again.output)
+    assert.equal(f.config().sources[0]?.autoMerge, true)
+    // auto-ready をやめたら autoMerge も残らない
+    const off = f.rerun({ 'auto-ready を使います': 'n', 書きますか: 'y' })
+    assert.equal(off.code, 0, off.output)
+    assert.ok(!off.asked.some((q) => q.includes('autoMerge')))
+    assert.equal(f.config().sources[0]?.autoReady, false)
+    assert.equal(f.config().sources[0]?.autoMerge, false)
+  } finally {
+    f.cleanup()
+  }
+})
 test('SU45 asks nothing and writes no base fields when fewer than two candidate branches exist', () => {
   const f = prepare()
   try {

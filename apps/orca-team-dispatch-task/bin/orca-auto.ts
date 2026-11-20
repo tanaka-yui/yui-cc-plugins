@@ -331,6 +331,8 @@ const main = (argv: string[]): number => {
             reason: issue.reason,
             limitMinutes: issue.limitMinutes,
             relayMinutes: relayAllowance(config.roles, config.everyMinutes),
+            // 人が Ready にした Issue（向き先を尋ねて拾い直したもの）は元から AI が merge しうるので、人の確認待ちとは言わない
+            autoMerge: !issue.autoReady || config.sources.some((s) => s.repo === issue.repo && s.autoMerge),
           },
           STATUS.backlog,
           STATUS.ready,

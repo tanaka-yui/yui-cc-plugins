@@ -700,6 +700,18 @@ for f in "$judge_en" "$judge_ja"; do
 done
 [[ -z "$bad" ]] && ok SK40 || fail "SK40:$bad"
 
+# SK46: autoReady の PR を人の確認に回す記述が、拾う元の autoMerge に触れている（英語の正本と日本語訳）。
+bad=""
+grep -Fq 'unless the source sets `autoMerge`' "$judge_en" || bad="$bad [judge:autoMerge]"
+grep -Fq 'always waits for human review' "$judge_en" && bad="$bad [judge:stale]"
+grep -Fq '拾う元の `autoMerge` が無効なら' "$judge_ja" || bad="$bad [judge-ja:autoMerge]"
+grep -Fq '必ず人の確認を待つ' "$judge_ja" && bad="$bad [judge-ja:stale]"
+grep -Fq 'unless the source also sets `autoMerge: true`' "$S" || bad="$bad [skill:autoMerge]"
+grep -Fq 'AI never merges it' "$S" && bad="$bad [skill:stale]"
+grep -Fq '拾う元が `autoMerge: true` も持つとき' "$G" || bad="$bad [guide:autoMerge]"
+grep -Fq 'does not lift the base restriction' "$S" || grep -Fq 'never lifts the base restriction' "$S" || bad="$bad [skill:base restriction]"
+[[ -z "$bad" ]] && ok 'SK46 autoMerge の記述' || fail "SK46:$bad"
+
 # SK41: setup の入口と再開・ランチャー・判定の説明。
 bad=""
 setup_recipe=$(cd "$P" && make -n setup 2>/dev/null)

@@ -250,3 +250,29 @@ test('AR8 an auto-ready issue is never merged by AI even when every check passes
     f.cleanup()
   }
 })
+
+test('AR9 config: autoMerge defaults false, needs autoReady, and is written only when true', () => {
+  const base = {
+    version: 1,
+    name: 'main',
+    repos: { 'acme/app': { checkout: '/x' } },
+    sources: [{ repo: 'acme/app', related: ['acme/app'] }],
+  }
+  const withSource = (extra: object) => ({ ...base, sources: [{ ...base.sources[0], ...extra }] })
+  assert.equal(parseAutoConfig(base, 'main')?.sources[0]?.autoMerge, false)
+  assert.equal(parseAutoConfig(withSource({ autoReady: true }), 'main')?.sources[0]?.autoMerge, false)
+  assert.equal(parseAutoConfig(withSource({ autoMerge: true }), 'main'), null)
+  assert.equal(parseAutoConfig(withSource({ autoReady: false, autoMerge: true }), 'main'), null)
+  assert.equal(parseAutoConfig(withSource({ autoReady: true, autoMerge: 'yes' }), 'main'), null)
+  const on = withSource({ autoReady: true, autoMerge: true })
+  assert.equal(parseAutoConfig(on, 'main')?.sources[0]?.autoMerge, true)
+  for (const [value, written] of [
+    [withSource({ autoReady: true }), undefined],
+    [on, true],
+  ] as const) {
+    const config = parseAutoConfig(value, 'main')
+    if (!config) throw new Error('config')
+    const json = configJsonFromDraft(draftFromConfig(config), null)
+    assert.equal((json?.sources as Array<Record<string, unknown>>)[0]?.autoMerge, written)
+  }
+})

@@ -743,6 +743,64 @@ test('AU156 the usual base, a repo without baseBranch and an issue without bases
   }
 })
 
+// AI が Backlog から Ready にした Issue（autoReady）。拾う元の autoMerge と向き先を変えて tick を 1 回回す
+const autoReadyFinish = (autoMerge: boolean, bases: Record<string, string | null>) => {
+  const f = runtimeFixture()
+  const i = f.track('finishing')
+  f.result(i)
+  f.put(f.configFile, {
+    ...f.raw,
+    sources: f.raw.sources.map((source, index) =>
+      index === 0 ? { ...source, autoReady: true, ...(autoMerge ? { autoMerge } : {}) } : source,
+    ),
+    repos: { ...f.raw.repos, 'acme/app': { ...f.raw.repos['acme/app'], baseBranch: 'develop' } },
+  })
+  const s = readState('main')
+  const current = s.issues[i.key]
+  if (!current) throw new Error('issue')
+  current.autoReady = true
+  current.bases = bases
+  writeState('main', s)
+  f.cli('tick')
+  return { f, i }
+}
+const AUTO_READY_REASON = 'AI が Backlog から Ready にした Issue なので、merge の前に人が確認します。'
+
+test('AU164 an auto-ready issue from an autoMerge source is merged by AI when every condition holds', () => {
+  const { f, i } = autoReadyFinish(true, { 'acme/app': 'develop' })
+  try {
+    assert.equal(readState('main').issues[i.key]?.phase, 'done')
+    assert.ok(f.calls().includes('pr merge 101 --repo acme/app --squash'))
+    assert.ok(!decodedCommentsOf(f).includes(AUTO_READY_REASON))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU165 autoMerge does not merge into a base other than the usual one', () => {
+  const { f, i } = autoReadyFinish(true, { 'acme/app': 'main' })
+  try {
+    assert.equal(readState('main').issues[i.key]?.phase, 'review')
+    const comments = decodedCommentsOf(f)
+    assert.ok(comments.includes('普段の向き先でない（main）への merge は人が確認します。'))
+    assert.ok(!comments.includes(AUTO_READY_REASON))
+    assert.ok(!f.calls().includes('pr merge'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU166 without autoMerge an auto-ready issue still stops at review with the auto-ready reason', () => {
+  const { f, i } = autoReadyFinish(false, { 'acme/app': 'develop' })
+  try {
+    assert.equal(readState('main').issues[i.key]?.phase, 'review')
+    assert.ok(decodedCommentsOf(f).includes(AUTO_READY_REASON))
+    assert.ok(!f.calls().includes('pr merge'))
+  } finally {
+    f.cleanup()
+  }
+})
+
 const backUrl = 'https://github.com/acme/app/pull/300'
 const humanMergedBackMerge = (
   bases: Record<string, string | null>,

@@ -262,10 +262,17 @@ export const runSetup = (
       const autoReady =
         pick === 'Ready' &&
         yes(
-          `${repo} で auto-ready を使いますか（Backlog の Issue を AI が判定し、自動で対応できるものを Ready にする。PR は人が確認してから merge）`,
+          `${repo} で auto-ready を使いますか（Backlog の Issue を AI が判定し、自動で対応できるものを Ready にする。PR は既定では人が確認してから merge）`,
           old?.autoReady ?? false,
         )
-      next.push({ repo, pick, related: old?.related ?? [repo], project: old?.project ?? null, autoReady })
+      // autoMerge は auto-ready を使う拾う元にだけ意味がある
+      const autoMerge =
+        autoReady &&
+        yes(
+          `${repo} で autoMerge を使いますか（auto-ready で Ready にした Issue も、条件がそろえば AI が merge する。普段の向き先以外へは merge しない）`,
+          old?.autoMerge ?? false,
+        )
+      next.push({ repo, pick, related: old?.related ?? [repo], project: old?.project ?? null, autoReady, autoMerge })
     }
     v.intakeConfigs = chosen
     v.sources = next

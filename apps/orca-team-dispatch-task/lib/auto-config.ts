@@ -23,6 +23,7 @@ export type AutoConfig = {
     pick: string
     project: ProjectRef | null
     autoReady: boolean
+    autoMerge: boolean
   }>
   repos: Record<
     string,
@@ -94,9 +95,13 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
     const pick = s?.pick === undefined ? 'Ready' : asString(s.pick)
     const project = s?.project === undefined ? null : asObject(s.project)
     const autoReady = boolean(s?.autoReady, false)
+    const autoMerge = boolean(s?.autoMerge, false)
     if (
       autoReady === null ||
+      autoMerge === null ||
       (autoReady && pick !== 'Ready') ||
+      // autoMerge は auto-ready の Issue を AI が merge してよいという設定なので、autoReady なしでは意味がない
+      (autoMerge && !autoReady) ||
       !repo ||
       !/^[^/\s]+\/[^/\s]+$/.test(repo) ||
       !related?.length ||
@@ -116,6 +121,7 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
       pick,
       project: project ? { owner: project.owner as string, number: project.number as number } : null,
       autoReady,
+      autoMerge,
     })
   }
   const hosts = parseHosts(input.hosts, repos)

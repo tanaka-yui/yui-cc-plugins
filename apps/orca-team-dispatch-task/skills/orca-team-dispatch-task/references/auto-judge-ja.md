@@ -6,7 +6,7 @@
 
 各 Issue の `base` は PR の向き先ブランチの材料である。`labels` は `base:*` ラベルのブランチ名、`candidates` は関連リポジトリが向けられるブランチ、`needed` は選ぶ必要があるかを表す。`base.needed` が true で route が `auto` のときは、`base` に `base.candidates` のどれか、または人に `base:*` ラベルで選んでもらう `ask` を書く。本番の障害・緊急・hotfix なら本番側のブランチ（多くは `main`）、それ以外は普段の作業が入るブランチ（例えば `develop`）を選ぶ。Issue から選び方がはっきりしないときは `ask` を選ぶ。エンジニアに回す Issue には `base` は要らない。エンジニアが決める。
 
-`autoReady` はその Issue がまだ Backlog にある印で、だれも「やる」と決めておらず、`auto` は人を通さずに Ready にする。依頼が明らかに小さく範囲の決まった修正で、書かれたとおりに求められていることが明らかなときだけ `auto` を選び、迷ったら `eng` を選ぶ。その PR は必ず人の確認を待つ。
+`autoReady` はその Issue がまだ Backlog にある印で、だれも「やる」と決めておらず、`auto` は人を通さずに Ready にする。依頼が明らかに小さく範囲の決まった修正で、書かれたとおりに求められていることが明らかなときだけ `auto` を選び、迷ったら `eng` を選ぶ。その PR は、拾う元の `autoMerge` が無効なら人の確認を待つ。有効なら、merge の条件がそろえば AI が merge しうる。
 
 `returnedFromEng` は人がエンジニア対応から Ready に戻した印で、新機能も含め、可能なら `auto` を選ぶ。具体的で空でない `reason` を日本語で書く。認証情報などの秘密を書かない。
 

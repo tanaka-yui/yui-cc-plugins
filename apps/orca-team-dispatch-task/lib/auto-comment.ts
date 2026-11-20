@@ -34,6 +34,8 @@ export type CommentInput = {
   // human-merged / ai-merged: 普段の向き先へ取り込む PR の結果（作れたもの・作れなかったもの）
   backPrs?: Array<{ repo: string; url: string }>
   backFailures?: Array<{ repo: string; why: string }>
+  // auto-ready: 条件がそろえば AI が merge する Issue か（人が確認してから merge する Issue か）
+  autoMerge?: boolean
 }
 const clean = (text: string): string =>
   text
@@ -73,7 +75,9 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
       body = [
         '**Ready にしました**',
         '',
-        'AI が自動で対応できると判断しました。PR は人が確認してから merge します。',
+        input.autoMerge
+          ? 'AI が自動で対応できると判断しました。条件がそろえば AI が merge します。'
+          : 'AI が自動で対応できると判断しました。PR は人が確認してから merge します。',
         input.reason ? `判定の理由: ${clean(input.reason)}` : '',
         input.limitMinutes
           ? `推奨の上限時間: ${input.limitMinutes + (input.relayMinutes ?? 0)} 分${limitBreakdown(input.limitMinutes, input.relayMinutes)}`

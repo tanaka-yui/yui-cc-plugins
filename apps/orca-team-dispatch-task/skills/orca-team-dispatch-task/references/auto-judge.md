@@ -6,7 +6,7 @@ Choose `auto` for a bounded, clear correction and `eng` for difficult work or wo
 
 Each Issue's `base` tells which branch its PRs target: `labels` lists the names from its `base:*` labels, `candidates` lists the branches its related repositories can target, and `needed` says whether you must choose. When `base.needed` is true and the route is `auto`, set `base` to one of `base.candidates`, or to `ask` so that a person chooses with a `base:*` label. Choose the production branch (usually `main`) for an outage, emergency, or hotfix in production; otherwise choose the branch where everyday work lands (for example `develop`). When the Issue does not make the choice clear, choose `ask`. Engineering Issues need no `base`; the engineers choose it.
 
-`autoReady` means the Issue is still in Backlog: no person has decided to do it yet, and `auto` makes it Ready without a person. Choose `auto` for it only when the request is clearly a small, bounded correction and clearly wanted as written; when in doubt, choose `eng`. Its PR always waits for human review.
+`autoReady` means the Issue is still in Backlog: no person has decided to do it yet, and `auto` makes it Ready without a person. Choose `auto` for it only when the request is clearly a small, bounded correction and clearly wanted as written; when in doubt, choose `eng`. Its PR waits for human review unless the source sets `autoMerge`, in which case AI may merge it once every merge condition holds.
 
 `returnedFromEng` means a person moved the Issue back from engineering: prefer `auto` when feasible, including for a feature. Write a concrete, nonempty `reason` in Japanese. Never put credentials or other secrets in the result.
 

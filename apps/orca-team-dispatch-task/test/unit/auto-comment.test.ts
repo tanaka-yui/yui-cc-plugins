@@ -179,3 +179,11 @@ test('AC10 戻しの PR と失敗は merged の本文に行を足し、無けれ
     assert.equal(body.match(/<!--/g)?.length, 1, event)
   }
 })
+
+test('AC11 the auto-ready comment says AI may merge only when autoMerge is on', () => {
+  const input = { event: 'auto-ready', generation: 1, limitMinutes: 30 } as const
+  assert.ok(renderComment(input).body.includes('PR は人が確認してから merge します。'))
+  const merged = renderComment({ ...input, autoMerge: true }).body
+  assert.ok(merged.includes('条件がそろえば AI が merge します。'))
+  assert.ok(!merged.includes('人が確認してから'))
+})

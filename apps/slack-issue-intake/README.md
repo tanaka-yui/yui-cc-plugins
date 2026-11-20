@@ -110,7 +110,7 @@ orca-team-dispatch-task の `--auto` が書く報告の材料から、実行中�
 - メンションするのは、`make setup <名前>` の 6 段目で入力したユーザーグループです。空のまま進めたときはメンションしません。あとから変えるときは `node bin/slack-issue-intake.ts --name <名前> mention --group <ハンドル>`（やめるときは `--none`）を実行します。
 - この機能を入れる前からある Issue は、最初に見たときに今の状態を記録するだけで、知らせません。Backlog も付けません。
 - ステータスラベルが 2 つ以上付いているときは、Done、Failed、In review、Ready_Eng、In progress、Pending、Ready、Backlog の順で先にあるものとみなします。
-- Backlog から Ready への判断も AI に任せるときは、orca-team-dispatch-task の `make setup NAME=<name>` の 2 段目（拾う元）で auto-ready を使います。有効にした後に起票された Issue だけが対象で、自動で対応できるものは Ready、難しいものは Ready_Eng になります。auto-ready で Ready になった Issue の PR は必ず In review で止まり、人が merge します。
+- Backlog から Ready への判断も AI に任せるときは、orca-team-dispatch-task の `make setup NAME=<name>` の 2 段目（拾う元）で auto-ready を使います。有効にした後に起票された Issue だけが対象で、自動で対応できるものは Ready、難しいものは Ready_Eng になります。auto-ready で Ready になった Issue の PR は、既定では In review で止まり、人が merge します。orca-team-dispatch-task の拾う元で `autoMerge` を有効にすると、ほかの条件がそろえば AI が merge します（普段の向き先以外へは merge しません）。
 
 ## 仕組み
 

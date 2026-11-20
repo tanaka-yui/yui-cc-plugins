@@ -615,7 +615,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 
 - **拾う元ごとの `autoReady`（既定 false、`pick` が Ready のときだけ）で、Backlog の判定も AI に任せる。**slack-issue-intake は起票時に Backlog を付け、Ready は人が付けていた。tick の `syncIssues` が Backlog の管理 Issue も一覧し、判定役が `auto` なら `auto-ready` の event でコメント → Backlog から Ready（`then: queued`）、`eng` なら Backlog から Ready_Eng にする。判定役を新しく作らず、既存の judge-list / judge-apply に `autoReady` の印を足した（判定の基準を 1 か所に保つため）。
 - **拾うのは、tick が有効を最初に見た時刻（状態の `autoReadySince[repo]`）より後に作られ、ステータスラベルが Backlog だけの Issue。**有効にした瞬間に溜まった Backlog を一斉に判定して Ready_Eng の通知を大量に出さないため。状態に記録がある Issue は拾い直さない（人が Ready_Eng や Ready から Backlog へ戻したものを AI が動かし直さない）。外すと時刻を消し、判定待ちの Backlog の Issue を記録から外す。
-- **auto-ready の世代は AI が merge しない**（仕上げの関門の理由に足す）。Backlog は人が「やる」と決める前の状態で、Slack の投稿だけでコードの変更から merge まで進むのを避けるため。判定の前に人が Ready にした・Ready から拾い直した世代は `autoReady: false` に戻り、通常どおり。
+- **auto-ready の世代は、拾う元の `autoMerge` が無効なら AI が merge しない**（仕上げの関門の理由に足す。`autoMerge` は 2026-11-20 に足した。下の「向き先」の節）。Backlog は人が「やる」と決める前の状態で、Slack の投稿だけでコードの変更から merge まで進むのを避けるため。判定の前に人が Ready にした・Ready から拾い直した世代は `autoReady: false` に戻り、通常どおり。
 - コメントのマーカーは `orca-auto:ready:<世代>:auto-ready`。共有の `test/fixtures/orca-auto-comments.json` の末尾に足し、slack-issue-intake の `STATUS_EVENTS` に文言（メンションなし）を足した。
 - setup の問いは拾う条件の直後（「auto-ready を使いますか」）。setup-run のテストは位置で答えを渡すので、拾う元 1 つにつき答えが 1 つ増えた。「有効にしますか」を含めると rerun の部分一致で答えが当たるので使わない。
 - 回帰: AR1〜8（`test/unit/auto-ready.test.ts`）、AC1 の auto-ready、slack-issue-intake の IS2 / IS5。
@@ -635,3 +635,11 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - **手動の dispatch。**取り込み先は親の checkout の今のブランチのまま（`orca-state.ts current-branch`）。Step 1b で示し、`--issue` は今のブランチと違う `base:*` ラベルの Issue・ラベルが 2 つ以上の Issue・detached HEAD を claim せず飛ばす。
 - **setup**（`pickBases`、`pickRepos` の終わり）。origin の `gh api` で一覧したブランチと既定ブランチから、既定ブランチ・`develop`・`main`・`master` のうち在るものを候補にし、2 つ以上のときだけ普段の向き先と候補を尋ねる（1 つ以下は尋ねず書かない。gh が失敗したときも今の値を保つ）。setup-run のテストは位置で答えを渡すので、尋ねるのは gh の stub が 2 つ以上返したときだけにしてある。gh の stub は最初の `--` までの語でキーを作るため、`gh api` は旗を先に置いて `api` の 1 語に当てる。
 - 回帰: AB1〜8（`auto-base.test.ts`）、CF7 / CF7b、AC9 / AC10、AU143〜163、SS5、SK44 / SK45、BM1〜5、IF24 / IF25、OS12、SU44 / SU45。slack-issue-intake 側は `needs-base` の通知と human-merged の `{comment}`（共有の fixture の一致は `scripts/check-shared-contracts.mjs`）。
+
+### 拾う元ごとの autoMerge（2026-11-20、3.17.0）
+
+- **拾う元ごとの `autoMerge`（既定 false）が true なら、auto-ready の Issue も他の条件がそろえば AI が merge する。**`autoReady` が false の拾う元に `autoMerge` を付けた設定は `parseAutoConfig` が拒む（`pick` が Ready でない `autoReady` と同じ扱い）。`configJsonFromDraft` は true のときだけ書く。関門は `lib/auto-tick.ts` の「AI が Backlog から Ready にした Issue なので」の理由を、`issue.repo` の拾う元が `autoMerge` なら付けない。
+- **向き先の制限（`restrictedBase`）はそのまま効く。**autoMerge でも `baseBranch` 以外へは merge しない。これが autoMerge を安全に開けられる前提なので、制限をゆるめる変更と同じ commit に入れない。
+- **`auto-ready` のコメントは `CommentInput.autoMerge` で文言を変える。**共有の `test/fixtures/orca-auto-comments.json` の例は autoMerge なしのまま変えず、autoMerge ありの例は足していない（AC11 が文言だけを確かめる）。`judge-apply` は `!issue.autoReady || 拾う元の autoMerge` を渡す。人が Ready にした Issue を向き先の質問のあと Backlog から拾い直して Ready にする場合、AI が merge しうるので「人が確認してから」とは書かない。
+- **setup の問いは auto-ready に yes と答えた直後**（`${repo} で autoMerge を使いますか`）。auto-ready を使わない拾う元には尋ねないので、位置で答えを渡す既存の setup-run のテストの答えは増えない。再実行では今の値が既定。
+- 回帰: AR9、AC11、AU164〜167、SU46、SK46。
