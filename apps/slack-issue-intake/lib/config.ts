@@ -1,4 +1,11 @@
-import { CHANNEL_ID_PATTERN, DAILY_AT_PATTERN, DEFAULT_DAILY_AT, REPO_PATTERN } from './defaults.ts'
+import {
+  BRANCH_PATTERN,
+  CHANNEL_ID_PATTERN,
+  DAILY_AT_PATTERN,
+  DEFAULT_DAILY_AT,
+  FORM_BASE_FIELD_MIN_BRANCHES,
+  REPO_PATTERN,
+} from './defaults.ts'
 import { readJson, writeJson } from './fs.ts'
 import { asObject, asString } from './json.ts'
 import { homePaths } from './paths.ts'
@@ -20,13 +27,32 @@ export type Config = {
   // ステータスの通知でメンションする Slack のユーザーグループ。asked が false なら setup で聞く（0.3 の config には無い）
   mention: Mention
 }
-export type RepoSetting = { name: string; form: boolean; existing: 'thread' | 'skip' }
+// branches は向き先の候補（setup か init --branches が書く。無いリポジトリには鍵ごと無い）
+export type RepoSetting = { name: string; form: boolean; existing: 'thread' | 'skip'; branches?: string[] }
 export type ReportSetting = { channel: string | null; dailyAt: string; source: string | null }
 export const DEFAULT_REPORT: ReportSetting = { channel: null, dailyAt: DEFAULT_DAILY_AT, source: null }
 export const formRepos = (config: Config): string[] =>
   config.repos.filter((r) => r.form || r.name === config.defaultRepo).map((r) => r.name)
 export const repoSetting = (config: Config, name: string): RepoSetting | null =>
   config.repos.find((r) => r.name.toLowerCase() === name.toLowerCase()) ?? null
+// 投稿の向き先を確かめる候補。リポジトリを選んでいない投稿（null）は既定の起票先の候補
+export const repoBranches = (config: Config, repo: string | null): string[] =>
+  repoSetting(config, repo ?? config.defaultRepo)?.branches ?? []
+// フォームの向き先の欄の選択肢（おまかせを除く）。候補が 2 つ以上あるフォームの対象のリポジトリの候補を合わせる。空なら欄を出さない
+export const formBranches = (config: Config): string[] => [
+  ...new Set(
+    formRepos(config).flatMap((name) => {
+      const branches = repoBranches(config, name)
+      return branches.length >= FORM_BASE_FIELD_MIN_BRANCHES ? branches : []
+    }),
+  ),
+]
+// 空でない・重複の無いブランチ名の配列か
+export const validBranches = (value: Json | readonly string[] | undefined): value is string[] =>
+  Array.isArray(value) &&
+  value.length > 0 &&
+  value.every((b) => typeof b === 'string' && BRANCH_PATTERN.test(b)) &&
+  new Set(value).size === value.length
 export type Mention = { asked: boolean; groupId: string | null; handle: string | null }
 const NOT_ASKED: Mention = { asked: false, groupId: null, handle: null }
 const readMention = (value: Json | undefined): Mention | null => {
@@ -62,10 +88,16 @@ export const loadConfig = (home: string): Config | null => {
         !REPO_PATTERN.test(r.name) ||
         typeof r.form !== 'boolean' ||
         (r.existing !== 'thread' && r.existing !== 'skip') ||
+        (r.branches !== undefined && !validBranches(r.branches)) ||
         repos.some((old) => old.name.toLowerCase() === String(r.name).toLowerCase())
       )
         return null
-      repos.push({ name: r.name, form: r.form, existing: r.existing })
+      repos.push({
+        name: r.name,
+        form: r.form,
+        existing: r.existing,
+        ...(validBranches(r.branches) ? { branches: [...r.branches] } : {}),
+      })
     }
   } else {
     if (typeof o.repo !== 'string' || !REPO_PATTERN.test(o.repo)) return null

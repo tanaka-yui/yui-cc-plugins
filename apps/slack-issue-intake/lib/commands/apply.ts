@@ -12,6 +12,7 @@ import {
 } from '../defaults.ts'
 import { driveItem } from '../drive.ts'
 import { readJson } from '../fs.ts'
+import { withoutBase } from '../issue-body.ts'
 import { claimApply, releaseLease, renewLease } from '../lease.ts'
 import { intakeHome, runPaths } from '../paths.ts'
 import { removeRun } from '../runs.ts'
@@ -72,13 +73,14 @@ export const run = async (argv: string[]): Promise<void> => {
           pending = true
           continue
         }
-        // 質問から起票するときは、バグ・優先度 middle・決定の題の Issue にする（ラベルと本文の表もこの値を使う）
+        // 質問から起票するときは、バグ・優先度 middle・決定の題の Issue にする（ラベルと本文の表もこの値を使う）。
+        // 向き先は持ち込まない（おまかせ）
         const title = d.action === 'create' && d.title ? [...d.title] : null
         const fields =
           title && s.fields
             ? {
                 fields: {
-                  ...s.fields,
+                  ...withoutBase(s.fields),
                   category: QUESTION_ISSUE_CATEGORY,
                   priority: QUESTION_ISSUE_PRIORITY,
                   fullTitle: title.join(''),
@@ -112,6 +114,7 @@ export const run = async (argv: string[]): Promise<void> => {
         const outcomes = changed ? await driveItem(ctx, changed) : []
         const updated = getSubmission(rt.db, s.id)
         const last = outcomes.at(-1)
+        for (const o of outcomes) if (o.warning) console.error(maskSecrets(o.warning))
         if (updated?.state === 'waiting') console.log(`${d.action === 'answer' ? 'answered' : 'asked'} id=${s.id}`)
         else if (updated?.state === 'created') console.log(`created id=${s.id} url=${updated.issueUrl}`)
         else if (updated?.state === 'closed') console.log(`closed id=${s.id}`)

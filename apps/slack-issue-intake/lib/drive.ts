@@ -13,6 +13,8 @@ import {
   transitionWithStatus,
 } from './db.ts'
 import {
+  BASE_LABEL_FAILED,
+  BASE_LABEL_PREFIX,
   CREATE_LOOKBACK_MINUTES,
   CREATE_SETTLE_MS,
   ERROR_CREATE_IN_FLIGHT,
@@ -41,8 +43,8 @@ import {
   TITLE_ELLIPSIS,
 } from './defaults.ts'
 import { writeAtomic } from './fs.ts'
-import { createIssue, findIssueByMarker, labelsHash } from './github.ts'
-import { buildIssueBody, issueLabels, issueMarker, neutralizeMentions } from './issue-body.ts'
+import { createIssue, ensureBaseLabel, findIssueByMarker, labelsHash } from './github.ts'
+import { buildIssueBody, issueLabels, issueMarker, neutralizeMentions, withoutBase } from './issue-body.ts'
 import { asString, get, parseJson } from './json.ts'
 import { appendFaq } from './knowledge.ts'
 import { renewLease } from './lease.ts'
@@ -59,7 +61,15 @@ import type { Submission, SubmissionPatch } from './db.ts'
 import type { Runtime } from './runtime.ts'
 import type { AnswerContent, State } from './types.ts'
 export type DriveContext = { rt: Runtime; token: string; ttlMs: number; now: () => Date; deadline: number }
-export type DriveOutcome = { id: number; from: State; to: State; error: string | null; stop: boolean }
+// warning は進め方を変えない知らせ（向き先のラベルを作れず、付けずに起票したなど）。poll と apply が出力する
+export type DriveOutcome = {
+  id: number
+  from: State
+  to: State
+  error: string | null
+  stop: boolean
+  warning?: string
+}
 export const stopError = (error: string): boolean =>
   [ERROR_RATELIMITED, ERROR_DEADLINE, ERROR_LEASE_LOST, ERROR_GH_ACCOUNT_CHANGED].includes(error) ||
   isFatalSlackError(error)
@@ -68,12 +78,14 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
   const repo = s.repo ?? rt.config.defaultRepo
   const now = () => ctx.now().toISOString()
   const renew = (): boolean => renewLease(rt.db, token, ctx.now(), ctx.ttlMs)
+  let warning: string | null = null
   const out = (error: string | null = null, stop = false): DriveOutcome => ({
     id: s.id,
     from: s.state,
     to: getSubmission(rt.db, s.id)?.state ?? s.state,
     error,
     stop,
+    ...(warning ? { warning } : {}),
   })
   const changed = (): DriveOutcome => out(renew() ? ERROR_STATE_CHANGED : ERROR_LEASE_LOST, !renew())
   const update = (patch: SubmissionPatch): boolean => transition(rt.db, token, s.id, s.state, patch, now())
@@ -157,6 +169,18 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
     } catch (error) {
       return fail(error instanceof Error ? error.message : String(error))
     }
+    // 向き先のラベルは無ければ作る（作り直しても害は無い）。作れなければ付けずに起票し、理由を知らせる（ラベルで受け付けを止めない）
+    let fields = s.fields
+    if (fields.base) {
+      if (!renew()) return out(ERROR_LEASE_LOST, true)
+      const label = BASE_LABEL_PREFIX + fields.base
+      const made = await ensureBaseLabel(rt.gh, repo, label, ctx.deadline)
+      if (made.stderr === ERROR_DEADLINE) return out(ERROR_DEADLINE, true)
+      if (made.code !== 0) {
+        warning = maskSecrets(BASE_LABEL_FAILED.replace('{label}', label).replace('{error}', made.stderr))
+        fields = withoutBase(fields)
+      }
+    }
     if (
       !setInflight(rt.db, token, s.id, { owner: selfIdentity(), child: null, at: now(), deadConfirmedAt: null }, now())
     )
@@ -180,7 +204,7 @@ export const driveOne = async (ctx: DriveContext, s: Submission): Promise<DriveO
               ? title.slice(0, MAX_TITLE_CHARS - 1).join('') + TITLE_ELLIPSIS
               : title.join(''),
           bodyFile: file,
-          labels: issueLabels(s.fields, backlog),
+          labels: issueLabels(fields, backlog),
         },
         ctx.deadline,
         (child) => setInflightChild(rt.db, s.id, process.pid, child),

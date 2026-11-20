@@ -1,4 +1,5 @@
 import {
+  BASE_ANY,
   CATEGORIES,
   FIELD_LABELS,
   FORM_KINDS,
@@ -28,6 +29,7 @@ const HEADER_LABELS: readonly string[] = [
   FIELD_LABELS.priority,
   FIELD_LABELS.reporter,
   FIELD_LABELS.repo,
+  FIELD_LABELS.base,
 ]
 
 export const formKindByCategory = (category: string): FormKind | undefined => {
@@ -121,7 +123,13 @@ const scan = (lines: string[]): Scan => {
   return { header, legacyBody: null, items }
 }
 
-export const parseSubmission = (text: string, fallbackUserId: string | null, repos: readonly string[]): ParseResult => {
+// branchesOf は選んだリポジトリ（null は既定の起票先）の向き先の候補を返す。候補に無い向き先はおまかせとみなす
+export const parseSubmission = (
+  text: string,
+  fallbackUserId: string | null,
+  repos: readonly string[],
+  branchesOf: (repo: string | null) => readonly string[] = () => [],
+): ParseResult => {
   const lines = text.trim().split(/\r?\n/)
   if (lines[0]?.normalize('NFKC').trim() !== SUBMISSION_MARKER) return { kind: 'not-submission' }
   const { header, legacyBody, items } = scan(lines)
@@ -133,6 +141,9 @@ export const parseSubmission = (text: string, fallbackUserId: string | null, rep
   const reporterId = firstUserMention(header[FIELD_LABELS.reporter] ?? '') ?? fallbackUserId
   // 題と優先度の欄が無い種類（質問）は、その 2 つを求めない。0.2 の「本文:」の形はどの種類でも題と優先度を持つ
   const titled = formKindByCategory(category)?.titled ?? true
+  // 向き先は題のある種類だけが持つ（質問は Issue を作らない）
+  const baseValue = (header[FIELD_LABELS.base] ?? '').normalize('NFKC').trim()
+  const base = titled && baseValue && baseValue !== BASE_ANY && branchesOf(repo).includes(baseValue) ? baseValue : null
   const formKind = legacyBody === null ? formKindByCategory(category) : undefined
   const sections = (formKind?.items ?? []).map((item) => ({
     item,
@@ -182,6 +193,7 @@ export const parseSubmission = (text: string, fallbackUserId: string | null, rep
       body,
       reporterId,
       ...(category === QUESTION_CATEGORY && questionKind ? { questionKind: questionKind as QuestionKind } : {}),
+      ...(base ? { base } : {}),
     },
   }
 }

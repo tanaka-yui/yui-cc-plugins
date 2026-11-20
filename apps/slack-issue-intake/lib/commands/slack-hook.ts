@@ -1,4 +1,4 @@
-import { formRepos, loadConfig } from '../config.ts'
+import { formBranches, formRepos, loadConfig } from '../config.ts'
 import { MSG_HOOK_NO_TOKEN, SLACK_HOOK_TOKEN_ENV } from '../defaults.ts'
 import { renderFormManifest } from '../form.ts'
 import { homePaths, intakeHome } from '../paths.ts'
@@ -9,15 +9,16 @@ import { hooksInterface, manifestHash, saveDeployedHash, slackProject } from '..
 export const run = (argv: string[]): void => {
   const config = loadConfig(intakeHome())
   const repos = config ? formRepos(config) : []
+  const branches = config ? formBranches(config) : []
   const [hook] = argv
   if (hook === 'get-hooks') {
     console.log(JSON.stringify(hooksInterface()))
   } else if (hook === 'get-manifest') {
-    console.log(renderFormManifest(repos))
+    console.log(renderFormManifest(repos, branches))
   } else if (hook === 'deploy') {
     // Slack CLI はアプリをマニフェストどおりに作ってインストールしたあとでこのフックを呼ぶ。
     // トークンを受け取れなくても、ここまで来ればアプリは今の版になっているので指紋を残す（set-token のあと deploy し直さない）
-    saveDeployedHash(slackProject(intakeHome()), manifestHash(repos))
+    saveDeployedHash(slackProject(intakeHome()), manifestHash(repos, branches))
     const token = process.env[SLACK_HOOK_TOKEN_ENV]
     if (token && isBotToken(token)) {
       saveToken(homePaths(intakeHome()).secrets, token)

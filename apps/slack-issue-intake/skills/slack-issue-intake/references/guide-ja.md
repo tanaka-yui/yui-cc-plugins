@@ -47,7 +47,7 @@ find "$HOME" -maxdepth 1 -type d -name '.slack-issue-intake-*' -not -name '*-sla
 1. guide を実行し、有料プラン、社内向けアプリ、招待、Workflow Builder を日本語で案内します。フォームは Workflow Builder で手で作ります。Slack の準備が済んだか尋ねます。アプリは配布しません。
 2. status が token=missing なら token の手順へ進みます。
 3. AskUserQuestion を1回出し、チャンネル ID、owner/name の一覧、既定の起票先、各リポジトリのフォームへの表示と Slack から作っていない Issue もスレッドを立てて管理するか（y なら thread、n なら skip）、間隔を聞きます。リポジトリの既定候補は `gh repo view --json nameWithOwner -q .nameWithOwner`。間隔の既定は5分、選択肢は 1、2、3、4、5、6、10、12、15、20、30、60 です。
-4. `init --channel ID --repo owner/name [--repo owner/name ...] --default-repo owner/name --existing owner/name=<thread|skip> [--hide-form owner/name] --every 分` を実行します。`--existing` と `--hide-form` はリポジトリごとに繰り返します。既定の起票先はフォームに常に表示され、`--hide-form` に渡しても効きません。automation は無効で登録されます。exit 2 は引数・トークン、1 は招待、gh 認証、公開、ラベル、Orca、送り先変更、処理中などの理由を案内します。公開リポジトリへの転記は説明して承認を得てから --allow-public で再実行します。リポジトリは追加できますが削除できません。既定は一覧の中から変更できます。チャンネルを変えるときはホームの退避と再設定が必要です。
+4. `init --channel ID --repo owner/name [--repo owner/name ...] --default-repo owner/name --existing owner/name=<thread|skip> [--hide-form owner/name] [--branches owner/name=ブランチ,ブランチ] --every 分` を実行します。`--existing`・`--hide-form`・`--branches` はリポジトリごとに繰り返します。既定の起票先はフォームに常に表示され、`--hide-form` に渡しても効きません。`--branches` は向き先の候補で、フォームの対象のどれかに 2 つ以上あれば、質問以外のフォームに任意の向き先の欄が付き、起票した Issue に `base:<ブランチ>` のラベルが付きます。automation は無効で登録されます。exit 2 は引数・トークン、1 は招待、gh 認証、公開、ラベル、Orca、送り先変更、処理中などの理由を案内します。公開リポジトリへの転記は説明して承認を得てから --allow-public で再実行します。リポジトリは追加できますが削除できません。既定は一覧の中から変更できます。チャンネルを変えるときはホームの退避と再設定が必要です。
 5. permissions --show の内容を示し、承認後に permissions --apply を実行して enable へ進みます。
 
 ## form

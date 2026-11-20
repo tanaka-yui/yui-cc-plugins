@@ -1,4 +1,5 @@
 import {
+  BASE_ANY,
   CLI_COMMAND,
   FIELD_LABELS,
   FORM_KINDS,
@@ -41,6 +42,11 @@ const formSteps = (kind: FormKind): string =>
         ]
       : []),
     `- ${FIELD_LABELS.repo}: リスト選択、任意（受け付けるリポジトリが 2 つ以上のときだけ。選択肢は受け付けるリポジトリ。テンプレートの「${kind.titled ? FIELD_LABELS.priority : FIELD_LABELS.category}」の行の次に「*${FIELD_LABELS.repo}:* {${FIELD_LABELS.repo}}」の行を足します）`,
+    ...(kind.titled
+      ? [
+          `- ${FIELD_LABELS.base}: リスト選択、任意（向き先の候補が 2 つ以上のリポジトリがあるときだけ。選択肢は ${BASE_ANY} と候補のブランチ。テンプレートの「${FIELD_LABELS.repo}」の行（無ければ「${FIELD_LABELS.priority}」の行）の次に「*${FIELD_LABELS.base}:* {${FIELD_LABELS.base}}」の行を足します）`,
+        ]
+      : []),
     ...kind.items.map(
       (i) =>
         `- ${i.label}: ${i.options ? `リスト選択、${i.required ? '必須' : '任意'}（${i.options.join(' / ')}）` : `${i.long ? '長い回答' : '短い回答'}、${i.required ? '必須' : '任意'}`}`,
@@ -62,7 +68,7 @@ export const renderGuide = (name: string): string => {
 \n${FORM_KINDS.map(formSteps).join('\n\n')}
 \n公開したら、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で${FORM_KINDS.length}つすべてを選び、「注目」を押します。メンバーには入力欄の所にボタンが出ます。
 5. チャンネル名 → 詳細の最下部からチャンネルIDを控えます。
-6. \`${CLI} init --channel <ID> --repo <owner/name> --every 5\` を実行します。automation は無効で登録されます。受け付けるリポジトリが 2 つ以上なら \`--repo\` を並べ、\`--default-repo <owner/name>\` で既定の起票先を決めます。Slack から作っていない Issue をスレッドで管理するリポジトリには \`--existing <owner/name>=thread\` を付けます。続けて \`${CLI} knowledge\` で、「質問する」に答えるための仕様の索引を作ります（claude コマンドと git を使います）。
+6. \`${CLI} init --channel <ID> --repo <owner/name> --every 5\` を実行します。automation は無効で登録されます。受け付けるリポジトリが 2 つ以上なら \`--repo\` を並べ、\`--default-repo <owner/name>\` で既定の起票先を決めます。Slack から作っていない Issue をスレッドで管理するリポジトリには \`--existing <owner/name>=thread\` を付けます。フォームで向き先（作業を始めるブランチ）を選ばせるなら \`--branches <owner/name>=develop,main\` を付けます。続けて \`${CLI} knowledge\` で、「質問する」に答えるための仕様の索引を作ります（claude コマンドと git を使います）。
 7. \`${CLI} permissions --show\` で内容を確認し、承認してから \`${CLI} permissions --apply\` を実行します。
 8. \`${CLI} enable\` を実行します。受け継ぐ許可があれば内容を確認し、承認したときだけ \`--accept-inherited\` を付けます。
 Orca の Claude 起動引数へ --permission-mode や --allowedTools など許可を広げるものを入れないでください。

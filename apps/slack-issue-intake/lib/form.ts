@@ -1,4 +1,5 @@
 import {
+  BASE_ANY,
   FIELD_LABELS,
   FORM_ATTACHMENTS_TITLE,
   FORM_EXTRA_SCOPES,
@@ -13,7 +14,7 @@ import {
   SLACK_BOT_SCOPES,
   SLACK_CHANNEL_DEEP_LINK,
 } from './defaults.ts'
-import { REPO_SLOT, REPORTER_SLOT, renderKindMessage } from './form-message.ts'
+import { BASE_SLOT, REPO_SLOT, REPORTER_SLOT, renderKindMessage } from './form-message.ts'
 import { manifestObject } from './guide.ts'
 import { asObject } from './json.ts'
 
@@ -25,8 +26,13 @@ const FIELD = { title: 'title', priority: 'priority', attachments: 'attachments'
 const INPUT = { interactivity: 'interactivity', channel: 'channel_id', user: 'user_id' }
 const FORM_STEP = '0'
 const fieldRef = (name: string): string => `{{steps.${FORM_STEP}.fields.${name}}}`
-export const renderWorkflowMessage = (kind: FormKind, withRepo: boolean): string =>
-  renderKindMessage(kind, (name) => (name === REPORTER_SLOT ? `<@{{inputs.${INPUT.user}}}>` : fieldRef(name)), withRepo)
+export const renderWorkflowMessage = (kind: FormKind, withRepo: boolean, withBase = false): string =>
+  renderKindMessage(
+    kind,
+    (name) => (name === REPORTER_SLOT ? `<@{{inputs.${INPUT.user}}}>` : fieldRef(name)),
+    withRepo,
+    withBase,
+  )
 
 // 入力は app settings が書き出す形（v1: 名前ごとに type と is_required）で書く。既存のアプリへの deploy では
 // Slack CLI がリモートのマニフェストを土台にマージし、_metadata を落として v1 として検証するため、
@@ -39,8 +45,13 @@ const inputParam = (name: string, type: string, title: string): JsonObject => ({
   is_required: true,
 })
 
-// open_form で集め、send_message で添付ごと対象チャンネルへ投稿する。どちらも Slack 組み込みの関数
-export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObject => ({
+// open_form で集め、send_message で添付ごと対象チャンネルへ投稿する。どちらも Slack 組み込みの関数。
+// branches は向き先の欄の選択肢（formBranches）。空なら欄を出さず、「質問する」には出さない
+export const formWorkflow = (
+  kind: FormKind,
+  repos: readonly string[],
+  branches: readonly string[] = [],
+): JsonObject => ({
   title: kind.title,
   description: kind.description,
   input_parameters: {
@@ -66,6 +77,9 @@ export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObje
               : []),
             ...(repos.length >= FORM_REPO_FIELD_MIN_REPOS
               ? [{ name: REPO_SLOT, title: FIELD_LABELS.repo, type: 'string', enum: [...repos] }]
+              : []),
+            ...(kind.titled && branches.length
+              ? [{ name: BASE_SLOT, title: FIELD_LABELS.base, type: 'string', enum: [BASE_ANY, ...branches] }]
               : []),
             ...kind.items.map((item) => ({
               name: item.name,
@@ -94,7 +108,7 @@ export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObje
       function_id: 'slack#/functions/send_message',
       inputs: {
         channel_id: `{{inputs.${INPUT.channel}}}`,
-        message: renderWorkflowMessage(kind, repos.length >= FORM_REPO_FIELD_MIN_REPOS),
+        message: renderWorkflowMessage(kind, repos.length >= FORM_REPO_FIELD_MIN_REPOS, branches.length > 0),
         files: fieldRef(FIELD.attachments),
       },
     },
@@ -102,17 +116,17 @@ export const formWorkflow = (kind: FormKind, repos: readonly string[]): JsonObje
 })
 
 // guide のマニフェストに、フォームのワークフローとボタン用の権限を足す。新規の作成も既存への deploy と同じ v1 で検証させるため _metadata は書かない。workflows を持つアプリは org_deploy_enabled が必須
-export const formManifestObject = (repos: readonly string[]): JsonObject => {
+export const formManifestObject = (repos: readonly string[], branches: readonly string[] = []): JsonObject => {
   const base = manifestObject()
   return {
     ...base,
     oauth_config: { scopes: { bot: [...SLACK_BOT_SCOPES, ...FORM_EXTRA_SCOPES] } },
     settings: { ...(asObject(base.settings) ?? {}), org_deploy_enabled: true },
-    workflows: Object.fromEntries(FORM_KINDS.map((kind) => [kind.workflowId, formWorkflow(kind, repos)])),
+    workflows: Object.fromEntries(FORM_KINDS.map((kind) => [kind.workflowId, formWorkflow(kind, repos, branches)])),
   }
 }
-export const renderFormManifest = (repos: readonly string[]): string =>
-  JSON.stringify(formManifestObject(repos), null, 2)
+export const renderFormManifest = (repos: readonly string[], branches: readonly string[] = []): string =>
+  JSON.stringify(formManifestObject(repos, branches), null, 2)
 
 // Slack CLI の trigger create --trigger-def に渡す定義。投稿先は押した場所によらず設定のチャンネルに固定する
 export const triggerDefinition = (channel: string, kind: FormKind): JsonObject => ({

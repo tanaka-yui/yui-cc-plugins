@@ -55,6 +55,7 @@ else if (cmd === 'repo view') {
     hasIssuesEnabled:
       process.env.FAKE_GH_HAS_ISSUES !== 'false' &&
       !(process.env.FAKE_GH_NO_ISSUES_REPOS ?? '').split(',').includes(args[2] ?? ''),
+    defaultBranchRef: { name: process.env.FAKE_GH_DEFAULT_BRANCH ?? 'main' },
   })
 } else if (cmd === 'repo clone') {
   // FAKE_GH_CLONE_SOURCE のディレクトリを写し、1 コミットの git リポジトリにする（無ければ失敗する）
@@ -114,6 +115,9 @@ else if (cmd === 'label create') {
   issue.labels = labels
   issue.updated_at = new Date().toISOString()
   writeFileSync(state, JSON.stringify(all))
+} else if (args[0] === 'api' && /^repos\/[^/]+\/[^/]+\/branches$/.test(args[1] ?? '')) {
+  // --paginate --jq '.[].name' の出力（1 行に 1 つ）。FAKE_GH_BRANCHES はカンマ区切り（無ければブランチなし）
+  for (const name of (process.env.FAKE_GH_BRANCHES ?? '').split(',').filter(Boolean)) console.log(name)
 } else if (args[0] === 'api' && args[1]?.startsWith('repos/')) {
   if (process.env.FAKE_GH_API_FAIL_PATH && args[1].includes(process.env.FAKE_GH_API_FAIL_PATH)) fail()
   const [path = '', query] = args[1].split('?')

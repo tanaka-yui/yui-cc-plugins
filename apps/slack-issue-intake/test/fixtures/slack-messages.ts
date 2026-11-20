@@ -42,7 +42,7 @@ const UNTITLED: readonly string[] = ['質問']
 export const kindText = (
   category: string,
   values: Record<string, string>,
-  o: { title?: string; priority?: string; reporter?: string; repo?: string } = {},
+  o: { title?: string; priority?: string; reporter?: string; repo?: string; base?: string } = {},
 ): string =>
   [
     '[issue-intake]',
@@ -50,6 +50,7 @@ export const kindText = (
     `*カテゴリ:* ${category}`,
     ...(UNTITLED.includes(category) ? [] : [`*優先度:* ${o.priority ?? 'high'}`]),
     ...(o.repo !== undefined ? [`*リポジトリ:* ${o.repo}`] : []),
+    ...(o.base !== undefined ? [`*向き先:* ${o.base}`] : []),
     `*起票者:* ${o.reporter ?? `<@${REPORTER}>`}`,
     ...(KIND_ITEMS[category] ?? []).flatMap(([label, long]) =>
       long ? ['', `*${label}:*`, '```', values[label] ?? '', '```'] : ['', `*${label}:* ${values[label] ?? ''}`],

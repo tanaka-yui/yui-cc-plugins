@@ -1,6 +1,6 @@
 import { fileRefsFromMessage, permalinkFileIds } from '../attachments.ts'
 import { parseFlags } from '../cli.ts'
-import { loadConfig } from '../config.ts'
+import { loadConfig, repoBranches } from '../config.ts'
 import { COMMAND_DEADLINE_MS, HISTORY_PAGE_LIMIT } from '../defaults.ts'
 import { asString } from '../json.ts'
 import { parseSubmission } from '../parse.ts'
@@ -41,6 +41,7 @@ export const run = async (argv: string[]): Promise<void> => {
       text,
       own ? null : asString(m.user),
       config.repos.map((r) => r.name),
+      (repo) => repoBranches(config, repo),
     )
     const f = parsed.kind === 'ok' ? parsed.fields : null
     const reporter =

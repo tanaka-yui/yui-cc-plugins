@@ -122,3 +122,15 @@ test('IB8 長い添付リンクが多数あっても本文全体の上限と最�
 })
 test('IB9 インラインコードの直後のメンションも無効にする', () =>
   assert.equal(neutralizeMentions('`x`@alice と `code`@org/team'), '`x`@\u200balice と `code`@\u200borg/team'))
+test('IB11 向き先があれば base:<ブランチ> のラベルを足す', () => {
+  const p = parseSubmission(templateText(), null, [])
+  assert.ok(p.kind === 'ok')
+  assert.deepEqual(issueLabels({ ...p.fields, base: 'main' }, true), [
+    'bug',
+    'priority: high',
+    'from-slack',
+    'base:main',
+    'Backlog',
+  ])
+  assert.ok(!issueLabels(p.fields, true).some((l) => l.startsWith('base:')))
+})

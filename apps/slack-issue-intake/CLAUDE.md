@@ -51,6 +51,12 @@ config の repos / defaultRepo は init だけが書き換えます。repo の�
 
 adoptExisting は走査・投稿・ラベルの三段です。走査中は GitHub に書かず、更新順の増分と作成順の1ページずつの見直しを行います。5件のうち見直しに1件を残し、先頭のリポジトリを交代します。投稿とラベルは adopted のDB行から各5回まで進め、tried_atで順番を回します。ts の無い行は閉じても404でも削除しません。ts と issue_status2 の最初の状態は同じフェンス付きトランザクションで残します。slack-thread は orca-team-dispatch-task との管理対象の約束です。
 
+## 向き先（base ラベル）
+
+repos[].branches が向き先の候補（setup の4段か init --branches だけが書く。無いリポジトリには鍵ごと無く、空配列は読めない設定）。formBranches はフォームの対象のうち候補が FORM_BASE_FIELD_MIN_BRANCHES（2）以上のリポジトリの候補を合わせたもので、空でなければ題のある種類（質問以外）に任意の「向き先」欄（BASE_ANY と候補）を出す。manifestHash と renderFormManifest は候補も受け取るので、setup・form・slack-hook のすべてで formBranches を渡す（渡し忘れると指紋が合わず deploy や form が止まる）。
+parseSubmission の 4 つ目の引数が選んだリポジトリ（null は既定）の候補を返し、BASE_ANY・空・候補外・質問の投稿は fields.base を持たない。apply は質問からの起票で base を外す（withoutBase）。起票は drive が findIssueByMarker と本文のあと、setInflight の前に `gh label create base:<b> --force`（色と説明は固定）を呼び、作れなければ base を外して起票し、DriveOutcome.warning を poll（errors）と apply（標準エラー）に出す。締め切りで呼べなかったときだけ起票せずに止める。base:* は LABEL_SPECS と labels_hash に入れない（orca-team-dispatch-task との約束。BASE_LABEL_PREFIX）。
+setup は追加したリポジトリ（フォームに出すもの）と、候補を持たない既定のリポジトリについて、`gh api repos/<r>/branches --paginate --jq .[].name` と `gh repo view <r> --json defaultBranchRef` で既定ブランチと BASE_BRANCH_CANDIDATES のうち在るものが2つ以上のときだけ聞く（fake-gh は FAKE_GH_BRANCHES と FAKE_GH_DEFAULT_BRANCH。パスを api の直後に置くのは fake-gh がそこで見分けるため）。聞かないときは入力の位置が変わらない。試験: CF6、IN19、SU29、FM9、PA25、IB11、PO31（PO30 は使用済み）、QA10。
+
 ## 定期報告
 
 --auto の report.json（両プラグインの test/fixtures/auto-report.json が同じ形の約束）を読み、ステータス通知のあと、既存 Issue の取り込みより先に postReport を呼びます。表示時刻・経過は材料の updatedAt。ハッシュが同じなら更新せず、普段は chat.update、1日1回は新規投稿します。report_channel と今のチャンネルを照合し、違えば新規投稿します。ts/channel/hash は同じ書き込みで保存し、report コマンドは投稿の meta を消しません。材料が間隔の3倍より古ければ停止の警告を表示します。報告はそのホームのリポジトリの Issue だけを出し（scopeReport が issue の最後の `#` より前を repoSetting で照合し、取り出せない issue は出さない。件数・番号・ハッシュは絞ったあとの文面から作る）、マシンは名前とつながるかだけを出します（ほかのワークスペースの作業が分かる数を出さない）。

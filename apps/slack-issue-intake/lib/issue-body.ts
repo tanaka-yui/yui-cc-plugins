@@ -1,4 +1,5 @@
 import {
+  BASE_LABEL_PREFIX,
   BOT_TRANSCRIPT_NAME,
   CATEGORY_KEYS,
   DETAILS_MAX_CHARS,
@@ -39,13 +40,16 @@ export const truncate = (text: string, max: number): string =>
     : max < TRUNCATED_NOTE.length
       ? text.slice(0, Math.max(0, max))
       : text.slice(0, max - TRUNCATED_NOTE.length) + TRUNCATED_NOTE
-// withStatus はステータスラベルがリポジトリにあると確かめたときだけ true にする（無いラベルを付けると作成に失敗する）
+// withStatus はステータスラベルがリポジトリにあると確かめたときだけ true にする（無いラベルを付けると作成に失敗する）。
+// 向き先のラベルは起票の直前に作る（drive）。作れなければ呼び出し側が base を外して渡す
 export const issueLabels = (fields: SubmissionFields, withStatus: boolean): string[] => [
   CATEGORY_KEYS[fields.category],
   PRIORITY_LABEL_PREFIX + fields.priority,
   SOURCE_LABEL,
+  ...(fields.base ? [BASE_LABEL_PREFIX + fields.base] : []),
   ...(withStatus ? [STATUS_BACKLOG] : []),
 ]
+export const withoutBase = ({ base: _base, ...rest }: SubmissionFields): SubmissionFields => rest
 export const lastLineIsMarker = (body: string, marker: string): boolean =>
   body
     .split(/\r?\n/)

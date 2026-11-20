@@ -1,6 +1,6 @@
 import { createArgs, editArgs, isAllowedEvery, repoAddArgs, shellQuote } from '../automation.ts'
 import { die, parseFlags, parseNow } from '../cli.ts'
-import { DEFAULT_REPORT, loadConfig, repoSetting, saveConfig } from '../config.ts'
+import { DEFAULT_REPORT, loadConfig, repoSetting, saveConfig, validBranches } from '../config.ts'
 import { getMeta, migrateToRepos, openDb, setMeta } from '../db.ts'
 import {
   ADMIN_LEASE_MS,
@@ -32,7 +32,7 @@ import { noTokenReason } from '../workspace.ts'
 import { chmodSync, copyFileSync, existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import type { Config } from '../config.ts'
+import type { Config, RepoSetting } from '../config.ts'
 import type { HomePaths } from '../paths.ts'
 
 const destinationError = (home: string): string => MSG_DESTINATION_FIXED.replace('{home}', home)
@@ -98,6 +98,7 @@ export const run = async (argv: string[]): Promise<void> => {
       'default-repo': { type: 'string' },
       existing: { type: 'string', multiple: true },
       'hide-form': { type: 'string', multiple: true },
+      branches: { type: 'string', multiple: true },
       every: { type: 'string' },
       'allow-public': { type: 'boolean' },
       'dry-run': { type: 'boolean' },
@@ -130,11 +131,15 @@ export const run = async (argv: string[]): Promise<void> => {
   const wantedDefault = values['default-repo'] ?? base?.defaultRepo ?? (names.length === 1 ? names[0] : null)
   const defaultRepo = names.find((name) => name.toLowerCase() === wantedDefault?.toLowerCase())
   if (!defaultRepo) return die('init', '--default-repo を一覧から指定してください')
-  const repos = names.map((name) => ({
-    name,
-    form: base ? (repoSetting(base, name)?.form ?? true) : true,
-    existing: base ? (repoSetting(base, name)?.existing ?? 'skip') : ('skip' as 'thread' | 'skip'),
-  }))
+  const repos: RepoSetting[] = names.map((name) => {
+    const old = base ? repoSetting(base, name) : null
+    return {
+      name,
+      form: old?.form ?? true,
+      existing: old?.existing ?? 'skip',
+      ...(old?.branches ? { branches: [...old.branches] } : {}),
+    }
+  })
   for (const input of values.existing ?? []) {
     const parts = input.split('=')
     const setting = repos.find((r) => r.name.toLowerCase() === parts[0]?.toLowerCase())
@@ -146,6 +151,18 @@ export const run = async (argv: string[]): Promise<void> => {
     const setting = repos.find((r) => r.name.toLowerCase() === name.toLowerCase())
     if (!setting) return die('init', '--hide-form のリポジトリを確認してください')
     setting.form = false
+  }
+  // 向き先の候補。<repo>=<b1>,<b2> をリポジトリごとに繰り返す
+  for (const input of values.branches ?? []) {
+    const at = input.indexOf('=')
+    const setting = repos.find((r) => r.name.toLowerCase() === input.slice(0, at).toLowerCase())
+    const branches = input
+      .slice(at + 1)
+      .split(',')
+      .map((b) => b.trim())
+    if (at < 0 || !setting || !validBranches(branches))
+      return die('init', '--branches <repo>=<branch>,<branch> を確認してください')
+    setting.branches = branches
   }
   const every = Number(values.every ?? base?.everyMinutes ?? DEFAULT_EVERY_MINUTES)
   if (!channel || !CHANNEL_ID_PATTERN.test(channel) || !isAllowedEvery(every))

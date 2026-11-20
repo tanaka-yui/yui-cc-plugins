@@ -282,3 +282,24 @@ test('IN18 旧設定の既定を変える前に、旧DBのリポジトリを固�
   assert.deepEqual([...trackedIssues(db, 'acme/web').keys()], ['acme/app#42'])
   db.close()
 })
+
+test('IN19 --branches で向き先の候補を設定し、再実行で消えず、ラベルの指紋は変えない', async (t) => {
+  const f = await setup(t)
+  const r = await f.init(['--repo', 'acme/web', '--default-repo', 'acme/app', '--branches', 'ACME/app=develop,main'])
+  assert.equal(r.code, 0, r.stderr)
+  assert.deepEqual(loadConfig(f.home)?.repos, [
+    { name: 'acme/app', form: true, existing: 'skip', branches: ['develop', 'main'] },
+    { name: 'acme/web', form: true, existing: 'skip' },
+  ])
+  const again = await f.init(['--repo', 'acme/web', '--every', '10'])
+  assert.equal(again.code, 0, again.stderr)
+  assert.deepEqual(loadConfig(f.home)?.repos[0]?.branches, ['develop', 'main'])
+  const db = openDb(homePaths(f.home).db)
+  assert.equal(getMeta(db, labelsHashKey('acme/app')), labelsHash())
+  db.close()
+  assert.ok(!ghCalls(f.gh.log).some((c) => c.argv.some((a) => a.startsWith('base:'))))
+  for (const bad of ['acme/missing=main', 'acme/app', 'acme/app=', 'acme/app=main,,develop', 'acme/app=main,main']) {
+    assert.equal((await f.init(['--repo', 'acme/web', '--branches', bad])).code, 2, bad)
+  }
+  assert.deepEqual(loadConfig(f.home)?.repos[0]?.branches, ['develop', 'main'])
+})

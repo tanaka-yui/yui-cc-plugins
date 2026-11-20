@@ -28,6 +28,8 @@ export type SubmissionFields = {
   reporterId: string | null
   // 質問のときだけ持つ（それ以外の投稿と、この項目より前に保存した行には無い）
   questionKind?: QuestionKind
+  // 向き先（作業を始めるブランチ）。選んだリポジトリの候補にあるときだけ持つ。質問には無い
+  base?: string
 }
 export type FileRef = {
   id: string

@@ -206,3 +206,47 @@ test('FM8 「質問する」は題と優先度の欄を持たず、質問の種�
   assert.match(message, /^\*カテゴリ:\* 質問\n\*リポジトリ:\* {{steps.0.fields.repo}}$/m)
   assert.ok(featureSteps(CHANNEL, null).includes(`の ${FORM_KINDS.length} つを選び`))
 })
+
+test('FM9 向き先の候補があれば「質問する」以外に任意の向き先の選択を出し、指紋へ反映する', () => {
+  const branches = ['develop', 'main']
+  const manifest = formManifestObject(['acme/app'], branches)
+  for (const kind of FORM_KINDS) {
+    const workflow = get(manifest, 'workflows', kind.workflowId)
+    const steps = asArray(get(workflow, 'steps')) ?? []
+    const fields = get(steps[0], 'inputs', 'fields')
+    const items = asArray(get(fields, 'elements')) ?? []
+    const base = items.find((e) => get(e, 'name') === 'base')
+    const message = String(get(steps[1], 'inputs', 'message'))
+    if (!kind.titled) {
+      assert.equal(base, undefined)
+      assert.ok(!message.includes(FIELD_LABELS.base))
+      continue
+    }
+    assert.deepEqual(base, { name: 'base', title: '向き先', type: 'string', enum: ['おまかせ', 'develop', 'main'] })
+    assert.equal(items.indexOf(base ?? null), 2)
+    assert.ok(!asArray(get(fields, 'required'))?.includes('base'))
+    assert.match(message, /\*優先度:\* {{steps.0.fields.priority}}\n\*向き先:\* {{steps.0.fields.base}}\n/)
+    // 埋めた投稿を解析器が読み、選んだ向き先を残す
+    const filled = message
+      .replace('{{steps.0.fields.title}}', 'ログインできない')
+      .replace('{{steps.0.fields.priority}}', 'high')
+      .replace('{{steps.0.fields.base}}', 'main')
+      .replace('{{inputs.user_id}}', REPORTER)
+      .replace(/{{steps\.0\.fields\.[a-z_]+}}/g, 'x')
+    const r = parseSubmission(filled, null, [], () => branches)
+    assert.ok(r.kind === 'ok' && r.fields.base === 'main', kind.key)
+  }
+  // 複数リポジトリなら、リポジトリの欄の次に置く
+  const both = formManifestObject(['acme/app', 'acme/web'], branches)
+  const bug = asArray(
+    get(asArray(get(both, 'workflows', 'issue_intake_bug', 'steps'))?.[0], 'inputs', 'fields', 'elements'),
+  )
+  assert.deepEqual(
+    bug?.slice(0, 4).map((e) => get(e, 'name')),
+    ['title', 'priority', 'repo', 'base'],
+  )
+  assert.equal(renderFormManifest([]), renderFormManifest([], []))
+  assert.equal(manifestHash(['acme/app']), manifestHash(['acme/app'], []))
+  assert.notEqual(manifestHash(['acme/app']), manifestHash(['acme/app'], branches))
+  assert.notEqual(manifestHash(['acme/app'], branches), manifestHash(['acme/app'], ['develop', 'main', 'release']))
+})

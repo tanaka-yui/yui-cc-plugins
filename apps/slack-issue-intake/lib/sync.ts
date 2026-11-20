@@ -1,3 +1,4 @@
+import { repoBranches } from './config.ts'
 import {
   AGENT_STATES,
   completeSlice,
@@ -117,6 +118,7 @@ export const sync = async (ctx: DriveContext): Promise<SyncReport> => {
           messageText(m).text,
           own ? null : asString(m.user),
           rt.config.repos.map((r) => r.name),
+          (repo) => repoBranches(rt.config, repo),
         )
         if (parsed.kind === 'not-submission') continue
         const id = insertSubmission(
@@ -209,6 +211,9 @@ export const sync = async (ctx: DriveContext): Promise<SyncReport> => {
   }
   if (!valid()) return report
   report.driven = await driveAll(ctx)
-  for (const d of report.driven) if (d.error) error(d.error)
+  for (const d of report.driven) {
+    if (d.error) error(d.error)
+    if (d.warning) error(d.warning)
+  }
   return report
 }

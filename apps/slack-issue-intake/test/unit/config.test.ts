@@ -1,4 +1,4 @@
-import { loadConfig, mentionPrefix, saveConfig } from '../../lib/config.ts'
+import { formBranches, loadConfig, mentionPrefix, saveConfig } from '../../lib/config.ts'
 import { homePaths } from '../../lib/paths.ts'
 import { tempHome } from '../helpers.ts'
 
@@ -63,5 +63,34 @@ test('CF5 不正なリポジトリ一覧と報告設定を受け付けない', (
   ]) {
     writeFileSync(homePaths(home).config, JSON.stringify({ ...base, ...patch }))
     assert.equal(loadConfig(home), null, JSON.stringify(patch))
+  }
+})
+test('CF6 repos の向き先の候補（branches）を読み書きし、空文字や文字列でない値は拒む', () => {
+  const home = tempHome()
+  const repos = [
+    { name: 'acme/app', form: true, existing: 'skip', branches: ['develop', 'main'] },
+    { name: 'acme/web', form: true, existing: 'skip' },
+  ]
+  const base = { ...V03, repos, defaultRepo: 'acme/app' }
+  writeFileSync(homePaths(home).config, JSON.stringify(base))
+  const c = loadConfig(home)
+  assert.ok(c)
+  assert.deepEqual(c.repos, repos)
+  assert.deepEqual(formBranches(c), ['develop', 'main'])
+  saveConfig(home, c)
+  assert.deepEqual(loadConfig(home)?.repos, repos)
+  // 候補が 1 つだけのリポジトリと、フォームに出さないリポジトリの候補は欄に使わない
+  const one = {
+    ...base,
+    repos: [
+      { ...repos[0], branches: ['main'] },
+      { ...repos[1], form: false, branches: ['a', 'b'] },
+    ],
+  }
+  writeFileSync(homePaths(home).config, JSON.stringify(one))
+  assert.deepEqual(formBranches(loadConfig(home) ?? assert.fail()), [])
+  for (const branches of [[], [''], ['main', 1], 'main', ['main', 'main'], ['has space']]) {
+    writeFileSync(homePaths(home).config, JSON.stringify({ ...base, repos: [{ ...repos[0], branches }] }))
+    assert.equal(loadConfig(home), null, JSON.stringify(branches))
   }
 })

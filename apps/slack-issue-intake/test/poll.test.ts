@@ -524,3 +524,56 @@ test('PO28/PO30 投稿のリポジトリを記録し、未登録は不備とし�
     ),
   )
 })
+
+test('PO31 向き先のある投稿を受け付けて残し、起票の前に base ラベルを作って付ける。作れなくても起票する', async (t) => {
+  const text = templateText().replace('優先度: high', '優先度: high\n向き先: main')
+  const f = await fixture(t, { messages: [textMessage(tsAt(3500), text)] })
+  const { loadConfig, saveConfig } = await import('../lib/config.ts')
+  const config = loadConfig(f.home)
+  assert.ok(config)
+  saveConfig(f.home, {
+    ...config,
+    repos: [{ name: 'acme/app', form: true, existing: 'skip', branches: ['develop', 'main'] }],
+  })
+  const db = openDb(homePaths(f.home).db)
+  setMeta(db, labelsHashKey('acme/app'), labelsHash())
+  db.close()
+  assert.match((await f.poll()).stdout, /inserted=1/)
+  const stored = openDb(homePaths(f.home).db)
+  const row = listByStates(stored, ALL_STATES)[0]
+  stored.close()
+  assert.equal(row?.fields?.base, 'main')
+  const fields = row?.fields ?? assert.fail()
+  const seed = {
+    state: 'creating' as const,
+    decision: content,
+    fields,
+    createStartedAt: NOW,
+    createLogin: 'intake-bot',
+  }
+  const id = await seedSubmission(f.home, { ts: tsAt(1000), ...seed })
+  // 1 回目の投稿は Claude を待つので、終了コードは 0（作業あり）
+  assert.equal((await f.poll()).code, 0)
+  assert.equal(f.read(id)?.state, 'created')
+  const calls = ghCalls(f.gh.log)
+  const label = calls.findIndex((c) => c.argv.slice(0, 3).join(' ') === 'label create base:main')
+  const create = calls.findIndex((c) => c.argv.slice(0, 2).join(' ') === 'issue create')
+  assert.ok(label >= 0 && label < create, JSON.stringify(calls.map((c) => c.argv.slice(0, 3))))
+  const labelArgv = calls[label]?.argv ?? []
+  assert.equal(labelArgv[labelArgv.indexOf('--repo') + 1], 'acme/app')
+  assert.ok(labelArgv.includes('--force'))
+  assert.ok(calls[create]?.argv.includes('base:main'))
+  assert.ok(calls[create]?.argv.includes('Backlog'))
+  const after = openDb(homePaths(f.home).db)
+  assert.equal(getMeta(after, labelsHashKey('acme/app')), labelsHash())
+  after.close()
+  // ラベルを作れなければ、付けずに起票して理由を残す
+  const failed = await seedSubmission(f.home, { ts: tsAt(900), ...seed })
+  const r = await f.poll(NOW, [], { FAKE_GH_LABEL_CREATE: 'fail' })
+  assert.equal(f.read(failed)?.state, 'created')
+  const last = ghCalls(f.gh.log)
+    .filter((c) => c.argv.slice(0, 2).join(' ') === 'issue create')
+    .at(-1)
+  assert.ok(last && !last.argv.includes('base:main'))
+  assert.ok(r.stderr.includes('base:main'), r.stderr)
+})

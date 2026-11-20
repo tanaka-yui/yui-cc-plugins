@@ -200,3 +200,37 @@ test('PA24 質問の種類が選択肢に無い・行が無い・0.2 の形の�
   const bug = parseSubmission(templateText(), null, [])
   assert.ok(bug.kind === 'ok' && !('questionKind' in bug.fields))
 })
+test('PA25 向き先は選んだリポジトリ（無ければ既定）の候補にあるときだけ残し、おまかせ・空・候補外は持たない', () => {
+  const repos = ['acme/app', 'acme/web']
+  const branchesOf = (repo: string | null): readonly string[] =>
+    (repo ?? 'acme/app') === 'acme/app' ? ['develop', 'main'] : []
+  const read = (base: string, o: { repo?: string; category?: string } = {}) =>
+    parseSubmission(
+      kindText(o.category ?? 'バグ', { 事象: 'x', 質問の種類: 'その他', 本文: 'x' }, { repo: o.repo, base }),
+      null,
+      repos,
+      branchesOf,
+    )
+  const main = read('main')
+  assert.ok(main.kind === 'ok' && main.fields.base === 'main')
+  const flat = parseSubmission(
+    templateText().replace('優先度: high', '優先度: high\n向き先: develop'),
+    null,
+    repos,
+    branchesOf,
+  )
+  assert.ok(flat.kind === 'ok' && flat.fields.base === 'develop')
+  for (const [base, o] of [
+    ['おまかせ', {}],
+    ['', {}],
+    ['release', {}],
+    ['main', { repo: 'acme/web' }],
+    ['main', { category: '質問' }],
+  ] as const) {
+    const r = read(base, o)
+    assert.ok(r.kind === 'ok' && !('base' in r.fields), `${base} ${JSON.stringify(o)}`)
+  }
+  // 候補を渡さない呼び出し（既存の形）は向き先を持たない
+  const none = parseSubmission(kindText('バグ', { 事象: 'x' }, { base: 'main' }), null, [])
+  assert.ok(none.kind === 'ok' && !('base' in none.fields))
+})

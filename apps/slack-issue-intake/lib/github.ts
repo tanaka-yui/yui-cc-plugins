@@ -1,4 +1,6 @@
 import {
+  BASE_LABEL_COLOR,
+  BASE_LABEL_DESCRIPTION,
   ERROR_DEADLINE,
   ERROR_GATE_REFUSED,
   ERROR_TIMEOUT,
@@ -149,6 +151,23 @@ export const ensureLabels = async (
   }
   return { ok: true, created }
 }
+// 向き先のラベル（base:<ブランチ>）を作る。--force で、既にあっても失敗にしない（色と説明は固定値に揃う）
+export const ensureBaseLabel = async (gh: Gh, repo: string, label: string, deadline: number): Promise<GhResult> =>
+  gh(
+    [
+      'label',
+      'create',
+      label,
+      '--repo',
+      repo,
+      '--force',
+      '--color',
+      BASE_LABEL_COLOR,
+      '--description',
+      BASE_LABEL_DESCRIPTION,
+    ],
+    deadline,
+  )
 export const labelsHash = (): string =>
   createHash('sha256')
     .update(LABEL_SPECS.map((l) => l.name).join('\n'))

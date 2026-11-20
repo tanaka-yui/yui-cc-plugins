@@ -1,16 +1,19 @@
 import { isAllowedEvery } from '../automation.ts'
 import { findChannel, joinChannel, normalizeChannelName, perCallClient } from '../channels.ts'
 import { csv, parseFlags } from '../cli.ts'
-import { formRepos, loadConfig } from '../config.ts'
+import { formBranches, formRepos, loadConfig } from '../config.ts'
 import { getMeta, openDb } from '../db.ts'
 import {
   APP_ID_PATTERN,
+  BASE_BRANCH_CANDIDATES,
+  BRANCHES_NONE,
   CHANNEL_ID_PATTERN,
   COMMAND_DEADLINE_MS,
   DAILY_AT_PATTERN,
   DEFAULT_DAILY_AT,
   DEFAULT_EVERY_MINUTES,
   ERROR_MISSING_SCOPE,
+  FORM_BASE_FIELD_MIN_BRANCHES,
   FORM_FEATURED_MANUAL,
   FORM_KINDS,
   FORM_META_FEATURED,
@@ -30,6 +33,7 @@ import {
 } from '../defaults.ts'
 import { channelAppLink, channelLink, featureSteps, formTitles } from '../form.ts'
 import { createGh, findGhPath, ghAuthOk, labelsHash, repoInfo } from '../github.ts'
+import { asString, get, parseJson } from '../json.ts'
 import { knowledgeDir, readKnowledgeMeta } from '../knowledge.ts'
 import { runOrca } from '../orca.ts'
 import { homePaths, intakeHome, nameOfHome, pluginRoot } from '../paths.ts'
@@ -56,6 +60,7 @@ import { existsSync, rmSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { RepoSetting } from '../config.ts'
+import type { Gh } from '../github.ts'
 import type { Prompter } from '../prompt.ts'
 
 const STDIN = 0
@@ -202,6 +207,37 @@ const reinit = async (p: Prompter, ghPath: string, repos: readonly string[], arg
   return child(['init', ...args, ...(allowPublic ? ['--allow-public'] : [])])
 }
 
+// origin の既定ブランチと develop / main / master のうち在るものが 2 つ以上なら、フォームの向き先の候補を聞く。
+// 一覧を読めない・見つかるのが 1 つ以下なら聞かない（null）。- なら候補を設定しない
+const pickBranches = async (p: Prompter, gh: Gh, repo: string): Promise<Picked<string[] | null>> => {
+  const listed = await gh(['api', `repos/${repo}/branches`, '--paginate', '--jq', '.[].name'], deadline())
+  const existing =
+    listed.code === 0
+      ? listed.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+      : []
+  if (existing.length < FORM_BASE_FIELD_MIN_BRANCHES) return { ok: true, value: null }
+  const view = await gh(['repo', 'view', repo, '--json', 'defaultBranchRef'], deadline())
+  const defaultBranch =
+    view.code === 0 ? asString(get(parseJson(view.stdout) ?? undefined, 'defaultBranchRef', 'name')) : null
+  const found = [...new Set([defaultBranch, ...BASE_BRANCH_CANDIDATES])].filter(
+    (name): name is string => !!name && existing.includes(name),
+  )
+  if (found.length < FORM_BASE_FIELD_MIN_BRANCHES) return { ok: true, value: null }
+  for (;;) {
+    const answer = p.ask(fill(SETUP_TEXT.askBranches, { repo }), found.join(','))
+    if (answer === null) return { ok: false, code: exhausted() }
+    if (answer === BRANCHES_NONE) return { ok: true, value: null }
+    const names = [...new Set(csv(answer.replace(REPO_ANSWER_COMMAS, ',')))]
+    const missing = names.filter((name) => !existing.includes(name))
+    if (missing.length) say(fill(SETUP_TEXT.missingBranches, { repo, names: missing.join(', ') }))
+    else if (names.length < FORM_BASE_FIELD_MIN_BRANCHES) say(SETUP_TEXT.fewBranches)
+    else return { ok: true, value: names }
+  }
+}
+
 type RepoChoice = {
   repos: RepoSetting[]
   added: RepoSetting[]
@@ -297,6 +333,18 @@ const pickRepo = async (
       }
       say(fill(SETUP_TEXT.badChoice, { options: 'y / n' }))
     }
+    if (repo.form || repo.name === defaultRepo) {
+      const branches = await pickBranches(p, gh, repo.name)
+      if (!branches.ok) return branches
+      if (branches.value) repo.branches = branches.value
+    }
+  }
+  // 再実行では、候補をまだ持たない既定のリポジトリも聞く（候補のあるリポジトリは聞き直さない。変えるなら init --branches）
+  const usual = repos.find((r) => r.name === defaultRepo)
+  if (usual && !added.includes(usual) && !usual.branches) {
+    const branches = await pickBranches(p, gh, usual.name)
+    if (!branches.ok) return branches
+    if (branches.value) usual.branches = branches.value
   }
   const every = pickEvery(p, everyDefault)
   return every.ok ? { ok: true, value: { repos, added, defaultRepo, every: every.value, allowPublic } } : every
@@ -309,6 +357,7 @@ const repoArgs = (choice: RepoChoice): string[] => [
     `${r.name}=${r.existing}`,
     ...(!r.form ? ['--hide-form', r.name] : []),
   ]),
+  ...choice.repos.flatMap((r) => (r.branches ? ['--branches', `${r.name}=${r.branches.join(',')}`] : [])),
   '--every',
   String(choice.every),
 ]
@@ -381,7 +430,7 @@ const wizard = async (): Promise<number> => {
   const project = slackProject(home)
   const app = deployedApp(project)
   const existing = loadConfig(home)
-  const hash = manifestHash(existing ? formRepos(existing) : [])
+  const hash = manifestHash(existing ? formRepos(existing) : [], existing ? formBranches(existing) : [])
   let token = loadToken(paths.secrets)
   const manualApp = Boolean(token) && !app
   const deploy = (expected: string, teamId: string | null): number => {
@@ -456,7 +505,9 @@ const wizard = async (): Promise<number> => {
     if (!choice.ok) return choice.code
     // プラグインの更新でラベルが増えたときは、間隔が同じでも init でラベルを作り直す
     const labelsCurrent = existing.repos.every((r) => readMeta(paths.db, labelsHashKey(r.name)) === labelsHash())
-    if (choice.value.added.length === 0 && choice.value.every === existing.everyMinutes && labelsCurrent)
+    // 候補を足したときも init で保存する
+    const reposKept = JSON.stringify(choice.value.repos) === JSON.stringify(existing.repos)
+    if (choice.value.added.length === 0 && reposKept && choice.value.every === existing.everyMinutes && labelsCurrent)
       heading(5, SETUP_TEXT.stepInit, true)
     else {
       heading(5, SETUP_TEXT.stepInit)
@@ -569,8 +620,9 @@ const wizard = async (): Promise<number> => {
     heading(8, SETUP_TEXT.stepKnowledge)
     if (child(['knowledge']) !== 0) say(fill(SETUP_TEXT.knowledgeFailed, { knowledge: makeCommand(home, 'knowledge') }))
   }
-  if (!manualApp && readDeployedHash(project) !== manifestHash(formRepos(formConfig))) {
-    const code = deploy(manifestHash(formRepos(formConfig)), deployedApp(project)?.teamId || formConfig.slack.teamId)
+  const formHash = manifestHash(formRepos(formConfig), formBranches(formConfig))
+  if (!manualApp && readDeployedHash(project) !== formHash) {
+    const code = deploy(formHash, deployedApp(project)?.teamId || formConfig.slack.teamId)
     if (code !== 0) return code
   }
   // 9: 手作業のアプリには Slack CLI でボタンを作れないので、Workflow Builder を案内する

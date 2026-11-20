@@ -1,5 +1,5 @@
 import { parseFlags } from '../cli.ts'
-import { formRepos, loadConfig } from '../config.ts'
+import { formBranches, formRepos, loadConfig } from '../config.ts'
 import { deleteMeta, getMeta, setMeta } from '../db.ts'
 import {
   ADMIN_LEASE_MS,
@@ -59,7 +59,7 @@ export const run = async (argv: string[]): Promise<void> => {
   })
   if (values.manifest) {
     const config = loadConfig(intakeHome())
-    console.log(renderFormManifest(config ? formRepos(config) : []))
+    console.log(renderFormManifest(config ? formRepos(config) : [], config ? formBranches(config) : []))
     return
   }
   const opened = openRuntime(intakeHome())
@@ -81,7 +81,7 @@ export const run = async (argv: string[]): Promise<void> => {
   // プラグインを更新するとフックのパスが古くなるので、Slack CLI を呼ぶ前に書き直す
   writeProject(project)
   // deploy 済みのアプリに今のワークフローが無いと、ボタンを作れない。Workflow Builder ではなく make setup へ案内する
-  if (readDeployedHash(project) !== manifestHash(formRepos(rt.config))) {
+  if (readDeployedHash(project) !== manifestHash(formRepos(rt.config), formBranches(rt.config))) {
     console.error(MSG_FORM_STALE_MANIFEST.replace('{setup}', makeCommand(rt.home, 'setup')))
     rt.db.close()
     process.exitCode = 2

@@ -726,3 +726,46 @@ test('SU28 8段で仕様の索引を作り、form では作り直さない。索
   assert.equal(failed.code, 0, failed.stderr)
   assert.match(failed.stdout, /仕様の索引を作れなかったリポジトリがあります。[^\n]*make knowledge /)
 })
+
+test('SU29 既定ブランチと develop / main / master が 2 つ以上あれば向き先の候補を聞き、1 つなら聞かない', async (t) => {
+  const BRANCHES = { FAKE_GH_BRANCHES: 'develop,feature-x,main' }
+  const f = await fixture(t)
+  // origin に無いブランチは聞き直し、空なら見つけた候補（既定ブランチが先）にする
+  const r = await f.setup('\n#Issue-Intake\nacme/app\n\n\nnope\n\n\n\ny\n', BRANCHES)
+  assert.equal(r.code, 0, r.stderr + r.stdout)
+  assert.ok(r.stdout.includes('acme/app の向き先の候補'))
+  assert.ok(r.stdout.includes('nope'))
+  assert.deepEqual(loadConfig(f.home)?.repos, [
+    { name: 'acme/app', form: true, existing: 'skip', branches: ['main', 'develop'] },
+  ])
+  const { manifestHash } = await import('../lib/slack-cli.ts')
+  assert.equal(
+    readFileSync(slackProject(f.home).manifestHash, 'utf8').trim(),
+    manifestHash(['acme/app'], ['main', 'develop']),
+  )
+  // 候補を持つリポジトリは再実行で聞き直さない
+  const deploys = f.cliCalls('deploy').length
+  const again = await f.setup('\n\n', BRANCHES)
+  assert.equal(again.code, 0, again.stderr + again.stdout)
+  assert.ok(!again.stdout.includes('向き先の候補'))
+  assert.equal(f.cliCalls('deploy').length, deploys)
+
+  // 見つかるのが 1 つなら聞かず、今までと同じ入力で通る
+  const single = await fixture(t)
+  const one = await single.setup(FULL_INPUT, { FAKE_GH_BRANCHES: 'main,feature-x' })
+  assert.equal(one.code, 0, one.stderr + one.stdout)
+  assert.ok(!one.stdout.includes('向き先の候補'))
+  assert.deepEqual(loadConfig(single.home)?.repos, [{ name: 'acme/app', form: true, existing: 'skip' }])
+  // 候補の無い既定のリポジトリは、再実行で 2 つ以上見つかれば聞き、init と deploy をやり直す
+  const before = single.cliCalls('deploy').length
+  const rerun = await single.setup('\nmain\ndevelop, main\n\n', BRANCHES)
+  assert.equal(rerun.code, 0, rerun.stderr + rerun.stdout)
+  assert.ok(rerun.stdout.includes('候補は 2 つ以上'))
+  assert.deepEqual(loadConfig(single.home)?.repos[0]?.branches, ['develop', 'main'])
+  assert.equal(single.cliCalls('deploy').length, before + 1)
+  // 欄を出さないなら -
+  const none = await fixture(t)
+  const dash = await none.setup('\n#Issue-Intake\nacme/app\n\n\n-\n\n\ny\n', BRANCHES)
+  assert.equal(dash.code, 0, dash.stderr + dash.stdout)
+  assert.deepEqual(loadConfig(none.home)?.repos, [{ name: 'acme/app', form: true, existing: 'skip' }])
+})

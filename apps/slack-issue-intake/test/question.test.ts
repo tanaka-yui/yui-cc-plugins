@@ -262,3 +262,22 @@ test('QA9 apply が投稿し損ねた回答と締めは poll が投稿し、回�
   assert.ok(f.posts().includes(`<@${REPORTER}> どういたしまして`))
   assert.equal(readFileSync(join(f.knowledge, 'faq.jsonl'), 'utf8').trim().split('\n').length, 1)
 })
+
+test('QA10 質問からの起票は向き先を持ち込まない（おまかせ）', async (t) => {
+  const f = await setup(t, {
+    thread: [
+      { ts: tsAt(800), user: BOT_USER, text: `バグのようです\n\n${PROPOSE}` },
+      { ts: tsAt(500), user: REPORTER, text: '起票してください' },
+    ],
+  })
+  const fields = { ...questionFields('バグか仕様なのかわからない'), base: 'main' }
+  const id = await f.seedQuestion('バグか仕様なのかわからない', { state: 'answered', rounds: 1, fields })
+  const c = await f.collect()
+  const r = await f.apply(c.id, c.paths.decisionsFile, [
+    { id, action: 'create', title: '締め日が月末にならない', summary: '要約', details: '詳細', unresolved: [] },
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(f.read(id)?.state, 'created')
+  assert.ok(f.read(id)?.fields && !('base' in (f.read(id)?.fields ?? {})))
+  assert.ok(!ghCalls(f.gh.log).some((x) => x.argv.some((a) => a.startsWith('base:'))))
+})

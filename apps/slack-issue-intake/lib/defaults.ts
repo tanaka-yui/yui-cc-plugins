@@ -77,6 +77,7 @@ export const SLACK_BOT_SCOPES: readonly string[] = [
 export const SUBMISSION_MARKER = '[issue-intake]'
 export const FIELD_LABELS = {
   repo: 'リポジトリ',
+  base: '向き先',
   title: 'タイトル',
   category: 'カテゴリ',
   priority: '優先度',
@@ -435,6 +436,21 @@ export const MSG_REJECTED =
   'フォームの内容を読み取れませんでした（{problems}）。ワークフローのメッセージのテンプレートを確認してください。'
 export const MSG_FAILED = 'Issue の作成に失敗しました。管理者が確認します。'
 export const FORM_REPO_FIELD_MIN_REPOS = 2
+// 向き先（作業を始めるブランチ）。候補がこの数以上のリポジトリがフォームの対象にあるときだけ、題のある種類に任意の欄を出す。
+// 選択肢は BASE_ANY と候補。BASE_ANY・空・選んだリポジトリの候補に無い値は向き先なし（ラベルを付けない）
+export const FORM_BASE_FIELD_MIN_BRANCHES = 2
+export const BASE_ANY = 'おまかせ'
+// 向き先のラベル（orca-team-dispatch-task との約束。ステータスラベルではないので LABEL_SPECS と labels_hash に入れない）。
+// 起票の直前に gh label create --force で作る（色と説明を固定し、作り直しても変わらないようにする）
+export const BASE_LABEL_PREFIX = 'base:'
+export const BASE_LABEL_COLOR = 'bfdadc'
+export const BASE_LABEL_DESCRIPTION = '作業を始めるブランチ（Slack のフォームの向き先）'
+export const BASE_LABEL_FAILED = '向き先のラベル {label} を作れなかったので、付けずに起票します（{error}）'
+// git のブランチ名として受け付ける形（空白・カンマ・git が禁じる記号を含まない）
+// setup が候補として探すブランチ（origin の既定ブランチに足す）と、候補を設定しないときの答え
+export const BASE_BRANCH_CANDIDATES: readonly string[] = ['develop', 'main', 'master']
+export const BRANCHES_NONE = '-'
+export const BRANCH_PATTERN = /^(?!-)[^\s,~^:?*[\\]+$/
 export const PROBLEM_REPO = 'リポジトリは次のどれかにしてください: {options}'
 export const PROBLEM_MISSING = '{label}がありません'
 export const PROBLEM_INVALID = '{label}が「{options}」のどれでもありません'
@@ -586,6 +602,9 @@ export const SETUP_TEXT = {
   badDefaultRepo: '入力したリポジトリのどれかを入力してください',
   askShowInForm: '{repo} をフォームのリポジトリの選択肢に出しますか（y/n）',
   askExisting: '{repo} の Issue のうち Slack から作っていないものも、スレッドを立てて管理しますか（y/n）',
+  askBranches: '{repo} の向き先の候補（フォームの「向き先」の選択肢。カンマ区切り。欄を出さないなら -）',
+  missingBranches: '{repo} に無いブランチです: {names}',
+  fewBranches: '候補は 2 つ以上にしてください（欄を出さないなら -）',
   badChoice: '{options} のどれかを入力してください',
   stepReport: '定期報告を決める（report）',
   reportFound: '--auto の報告の材料が見つかりました:',
