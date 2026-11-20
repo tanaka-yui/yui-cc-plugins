@@ -267,7 +267,7 @@ it. launch-workspace.sh receives --role design, --role design_review, --role exe
 --role exec_review together with the already-resolved runner/model/effort. Claude effort
 is low, medium, high, xhigh, or max; Codex effort is minimal, low, medium, high, or xhigh.
 Every engine has a built-in default model for all four roles, so a tuple that omits
-model still resolves; codex resolves to gpt-6-astra.
+model still resolves; codex resolves to gpt-6.2-astra.
 
 **First-run setup.** If runners.json is absent, ask whether to use the starter registry or
 build a custom registry. A runner record contains only name, command, and engine; write

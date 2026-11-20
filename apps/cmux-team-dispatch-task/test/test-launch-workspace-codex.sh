@@ -116,10 +116,10 @@ STATUS_REVIEW_REAL=$(cd "$TMP/status/review" && pwd -P)
 
 # codex は 4 ロールとも既定 model を持つ (config-lib.sh)。旧来の「codex は model を
 # 省略する」期待は、既定を入れた時点で偽になった
-assert_contains "$plan_runner" "--model 'gpt-6-astra'" 'MR1 plan uses the codex default model'
-assert_contains "$superpowers_runner" "--model 'gpt-6-astra'" 'MR2 superpowers uses the codex default model'
-assert_contains "$review_runner" "--model 'gpt-6-astra'" 'MR3 review uses the codex default model'
-assert_contains "$execute_runner" "--model 'gpt-6-astra'" 'MR4 execute uses the codex default model'
+assert_contains "$plan_runner" "--model 'gpt-6.2-astra'" 'MR1 plan uses the codex default model'
+assert_contains "$superpowers_runner" "--model 'gpt-6.2-astra'" 'MR2 superpowers uses the codex default model'
+assert_contains "$review_runner" "--model 'gpt-6.2-astra'" 'MR3 review uses the codex default model'
+assert_contains "$execute_runner" "--model 'gpt-6.2-astra'" 'MR4 execute uses the codex default model'
 assert_not_contains "$standby_runner" '--model' 'MR5 standby omits a codex default model'
 
 runner_for_flags() {

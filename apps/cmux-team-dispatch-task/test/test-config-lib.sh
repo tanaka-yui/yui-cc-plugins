@@ -94,7 +94,7 @@ fi
 [[ "$(dispatch_default_model exec claude)" == 'sonnet' ]] && ok 'CL8b' || bad 'CL8b'
 [[ "$(dispatch_default_model exec_review claude)" == 'opus[1m]' ]] && ok 'CL8c' || bad 'CL8c'
 for r in design design_review exec exec_review; do
-  [[ "$(dispatch_default_model "$r" codex)" == 'gpt-6-astra' ]] \
+  [[ "$(dispatch_default_model "$r" codex)" == 'gpt-6.2-astra' ]] \
     && ok "CL8d-$r: codex の既定 model" || bad "CL8d-$r"
 done
 [[ "$(dispatch_default_effort design)" == 'xhigh' ]] && ok 'CL8e' || bad 'CL8e'
@@ -108,7 +108,7 @@ dispatch_model_required design codex && bad 'CL9c: codex design は省略可の�
 dispatch_model_required exec codex && bad 'CL9d: codex exec は省略可のはず' || ok 'CL9d: codex exec は省略可'
 
 # CL10: 質問に出す候補。**allowlist ではない** — 候補外の値も dispatch_valid_model は通す
-[[ "$(dispatch_model_choices codex | head -1)" == 'gpt-6-astra' ]] \
+[[ "$(dispatch_model_choices codex | head -1)" == 'gpt-6.2-astra' ]] \
   && ok 'CL10a: codex の第一候補' || bad 'CL10a'
 [[ "$(dispatch_model_choices claude | tr '\n' ' ')" == *'opus[1m]'* ]] \
   && ok 'CL10b: claude の候補' || bad 'CL10b'

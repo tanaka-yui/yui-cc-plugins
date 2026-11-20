@@ -162,7 +162,7 @@ engine だけを書く。その後、通常モードでのみ review_mode を on
 4 ロールすべての runner に default を設定した初期 global config を config-edit.sh 1 回で書く。
 model / effort は書かず、組込み既定値に任せる。**model は聞かない** — どの engine も
 4 ロールぶんの既定 model を持つので、model が無くても最初の resolve は成功する
-（codex は gpt-6-astra に解決される）。--reset runners 由来の reset mode では
+（codex は gpt-6.2-astra に解決される）。--reset runners 由来の reset mode では
 runners.json だけを再生成し、review_mode を聞かず、project / global の両 config を
 変更しない。
 

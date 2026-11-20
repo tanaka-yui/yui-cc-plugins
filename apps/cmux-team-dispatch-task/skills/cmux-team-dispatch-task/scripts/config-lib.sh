@@ -67,7 +67,7 @@ dispatch_valid_effort() {
 # First-run が毎回モデルを尋ねる必要があった。
 dispatch_default_model() {
   case "$2" in
-    codex) printf 'gpt-6-astra\n'; return 0 ;;
+    codex) printf 'gpt-6.2-astra\n'; return 0 ;;
     claude) ;;
     *) printf '\n'; return 0 ;;
   esac
@@ -83,7 +83,7 @@ dispatch_default_model() {
 # ここを直さなくても設定できる状態を保つため。1 行 1 候補、先頭が既定。
 dispatch_model_choices() {
   case "$1" in
-    codex)  printf 'gpt-6-astra\n' ;;
+    codex)  printf 'gpt-6.2-astra\n' ;;
     claude) printf 'opus[1m]\nsonnet\n' ;;
     *) ;;
   esac
