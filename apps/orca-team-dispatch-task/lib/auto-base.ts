@@ -56,3 +56,16 @@ export const restrictedBase = (repo: string, base: string, repos: Repos): boolea
   const configured = repos[repo]?.baseBranch
   return Boolean(configured) && configured !== base
 }
+
+// merge の可否（auto-tick のゲート）と戻しの PR が同じ向き先で判断するための解決。
+// 記録が無い Issue（この版より前に起動）は、run が実際に使った向き先（run.json 由来の origin/<b>）で見る。
+// それも読めなければ base は空（制限なしとして扱う）。単一の対象は repo の名前で、2 つのときは対象ごとに返す。
+export const actualBases = (
+  recorded: Record<string, string | null>,
+  targets: Array<{ repo: string; baseBranch: string }>,
+  repo: string,
+): Array<{ repo: string; base: string }> =>
+  (targets.length > 1
+    ? targets.map((t) => ({ repo: t.repo, used: t.baseBranch }))
+    : [{ repo, used: targets[0]?.baseBranch ?? '' }]
+  ).map(({ repo: r, used }) => ({ repo: r, base: recorded[r] ?? used.replace(/^origin\//, '') }))

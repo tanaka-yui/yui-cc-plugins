@@ -1,4 +1,5 @@
-import { restrictedBase } from './auto-base.ts'
+import { backMergeInput } from './auto-backmerge.ts'
+import { actualBases, restrictedBase } from './auto-base.ts'
 import { autoCleanup, confirmStopped, pushBranches, unrecordedWorker } from './auto-cleanup.ts'
 import { limitBreakdown, renderComment } from './auto-comment.ts'
 import { type AutoConfig, pickSources, readAutoConfig, readIntakeRepos, relayAllowance } from './auto-config.ts'
@@ -863,11 +864,13 @@ const finish = (tick: Tick, issue: IssueState): void => {
   const status = statuses[0]
   if (!status) return
   if (multi ? statuses.every((s) => s?.state === 'MERGED') : status.state === 'MERGED') {
+    const back = issue.pendingLabel ? {} : backMergeInput(issue, targets, repo, tick.config.repos)
+    if (!back) return
     if (
       transition(
         issue,
         'ai-merged',
-        { prs: issue.prs, summary: result?.summary, decisions: issue.decisions },
+        { prs: issue.prs, summary: result?.summary, decisions: issue.decisions, ...back },
         STATUS.inProgress,
         STATUS.done,
         true,
@@ -945,15 +948,10 @@ const finish = (tick: Tick, issue: IssueState): void => {
   if (multi ? statuses.some((s) => s?.state === 'CLOSED') : status.state === 'CLOSED')
     reasons.push('PR が閉じられています。')
   for (const base of new Set(
-    // 記録が無い Issue（この版より前に起動）は、run が実際に使った向き先（run.json 由来の origin/<b>）で見る。
-    // それも読めなければ理由を足さない（従来どおり）。
-    (multi
-      ? targets.map((t) => [t.repo, t.baseBranch] as const)
-      : [[repo, targets[0]?.baseBranch ?? ''] as const]
-    ).flatMap(([r, used]) => {
-      const b = issue.bases[r] ?? used.replace(/^origin\//, '')
-      return b && restrictedBase(r, b, tick.config.repos) ? [b] : []
-    }),
+    // 記録が無い Issue の向き先は run が実際に使ったものに揃える（戻しの PR と同じ解決）。読めなければ理由を足さない
+    actualBases(issue.bases, targets, repo).flatMap(({ repo: r, base: b }) =>
+      b && restrictedBase(r, b, tick.config.repos) ? [b] : [],
+    ),
   ))
     reasons.push(`普段の向き先でない（${base}）への merge は人が確認します。`)
   if (reasons.length) {
@@ -1013,11 +1011,13 @@ const finish = (tick: Tick, issue: IssueState): void => {
     }
     mergedPrs.push(pr)
   }
+  const back = issue.pendingLabel ? {} : backMergeInput(issue, targets, repo, tick.config.repos)
+  if (!back) return
   if (
     transition(
       issue,
       'ai-merged',
-      { prs: issue.prs, summary: result?.summary, decisions: issue.decisions },
+      { prs: issue.prs, summary: result?.summary, decisions: issue.decisions, ...back },
       STATUS.inProgress,
       STATUS.done,
       true,
@@ -1056,9 +1056,22 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
     }
   }
   const statuses = issue.prs.map((p) => prStatus(p.repo, p.number))
+  if (!statuses.every((s) => s?.state === 'MERGED')) return
+  const repo = issue.targets[0] ?? ''
+  const targets = repoTargets(workersOf(issue), tick.config.repos[repo]?.checkout ?? '')
+  const back = issue.pendingLabel ? {} : backMergeInput(issue, targets, repo, tick.config.repos)
+  if (!back) return
   if (
-    statuses.every((s) => s?.state === 'MERGED') &&
-    transition(issue, 'human-merged', { prs: issue.prs }, STATUS.inReview, STATUS.done, true, 'done', tick.save)
+    transition(
+      issue,
+      'human-merged',
+      { prs: issue.prs, ...back },
+      STATUS.inReview,
+      STATUS.done,
+      true,
+      'done',
+      tick.save,
+    )
   )
     tick.finished++
 }

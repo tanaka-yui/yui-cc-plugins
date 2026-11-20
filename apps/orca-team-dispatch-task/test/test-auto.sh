@@ -60,7 +60,7 @@ out=$(node "$P/bin/orca-auto.ts" status 2>&1); rc=$?
 [[ "$rc" -eq 0 && "$out" == *"| o/r#5 | exec | codex / gpt-6.2-sol |"*"terminal switch --terminal 'term_x' --environment 'm2max'"* && "$out" != *"| o/r#6 |"* ]] \
   && ok AU142 || fail "AU142 (rc=$rc $out)"; teardown
 node --test "$P/test/unit/auto-progress.test.ts" > /dev/null 2>&1 && ok "AU40-47 progress tests" || fail "AU40-47 progress tests"
-node --test "$P/test/unit/auto-finish.test.ts" "$P/test/unit/auto-cleanup.test.ts" "$P/test/unit/auto-lifecycle.test.ts" > /dev/null 2>&1 && ok "AU50-59 finish and cleanup tests" || fail "AU50-59 finish and cleanup tests"
+node --test "$P/test/unit/auto-finish.test.ts" "$P/test/unit/auto-backmerge.test.ts" "$P/test/unit/auto-cleanup.test.ts" "$P/test/unit/auto-lifecycle.test.ts" > /dev/null 2>&1 && ok "AU50-59 finish and cleanup tests" || fail "AU50-59 finish and cleanup tests"
 node --test "$P/test/unit/auto-continuation.test.ts" > /dev/null 2>&1 && ok "AU60-62 continuation tests" || fail "AU60-62 continuation tests"
 node --test "$P/test/unit/auto-report.test.ts" "$P/test/unit/auto-tick.test.ts" > /dev/null 2>&1 && ok "AU70-77 tick and report tests" || fail "AU70-77 tick and report tests"
 echo "failures: $fails"; exit "$fails"

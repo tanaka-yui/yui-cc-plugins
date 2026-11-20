@@ -742,3 +742,100 @@ test('AU156 the usual base, a repo without baseBranch and an issue without bases
     }
   }
 })
+
+const backUrl = 'https://github.com/acme/app/pull/300'
+const humanMergedBackMerge = (
+  bases: Record<string, string | null>,
+  setup: (f: ReturnType<typeof runtimeFixture>) => void,
+) => {
+  const f = runtimeFixture()
+  const i = f.track('review')
+  f.put(f.configFile, {
+    ...f.raw,
+    repos: { ...f.raw.repos, 'acme/app': { ...f.raw.repos['acme/app'], baseBranch: 'develop' } },
+  })
+  const s = readState('main')
+  const current = s.issues[i.key]
+  if (!current) throw new Error('issue')
+  current.prs = [pr]
+  current.bases = bases
+  writeState('main', s)
+  f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'In review' }] })
+  f.respond('pr_view', { state: 'MERGED', mergedAt: '2026-11-13T05:00:00Z', statusCheckRollup: [] })
+  setup(f)
+  f.cli('tick')
+  return { f, i }
+}
+
+test('AU158 a human merge into a base other than the usual one opens a back PR and links it in the Done comment', () => {
+  const { f, i } = humanMergedBackMerge({ 'acme/app': 'main' }, (x) => {
+    x.respond('pr_list', [])
+    writeFileSync(join(x.gh, 'pr_create'), `${backUrl}\n`)
+  })
+  try {
+    assert.equal(readState('main').issues[i.key]?.phase, 'done')
+    const calls = f.calls()
+    assert.ok(calls.includes('pr create --repo acme/app --base develop --head main'))
+    assert.ok(!calls.includes('pr merge'))
+    assert.ok(calls.indexOf('pr create') < calls.indexOf('issue comment'))
+    const comments = decodedCommentsOf(f)
+    assert.ok(comments.includes('orca-auto:done:1:human-merged'))
+    assert.ok(comments.includes(`acme/app へ取り込む PR: ${backUrl}`))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU159 a failed back PR still moves the issue to Done and the comment says why', () => {
+  const { f, i } = humanMergedBackMerge({ 'acme/app': 'main' }, (x) => {
+    x.respond('pr_list', [])
+    x.hook('pr_create', "echo 'GraphQL: boom' >&2")
+    writeFileSync(join(x.gh, 'pr_create.rc'), '1')
+  })
+  try {
+    assert.equal(readState('main').issues[i.key]?.phase, 'done')
+    assert.ok(decodedCommentsOf(f).includes('acme/app へ取り込む PR を作れませんでした: GraphQL: boom'))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU160 an issue merged into the usual base never looks up or opens a back PR', () => {
+  for (const bases of [{ 'acme/app': 'develop' }, {}] as Array<Record<string, string | null>>) {
+    const { f, i } = humanMergedBackMerge(bases, () => undefined)
+    try {
+      assert.equal(readState('main').issues[i.key]?.phase, 'done', JSON.stringify(bases))
+      assert.ok(!f.calls().includes('pr list'))
+      assert.ok(!f.calls().includes('pr create'))
+      assert.ok(!decodedCommentsOf(f).includes('へ取り込む PR'))
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+test('AU161 a PR already merged while the run was finishing also gets the back PR, reusing an open one', () => {
+  const f = runtimeFixture()
+  const i = f.track('finishing')
+  f.result(i)
+  f.put(f.configFile, {
+    ...f.raw,
+    repos: { ...f.raw.repos, 'acme/app': { ...f.raw.repos['acme/app'], baseBranch: 'develop' } },
+  })
+  const s = readState('main')
+  const current = s.issues[i.key]
+  if (!current) throw new Error('issue')
+  current.prs = [pr]
+  current.bases = { 'acme/app': 'main' }
+  writeState('main', s)
+  f.respond('pr_view', { state: 'MERGED', mergedAt: '2026-11-13T05:00:00Z', statusCheckRollup: [] })
+  f.respond('pr_list', [{ url: backUrl }])
+  try {
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'done')
+    assert.ok(!f.calls().includes('pr create'))
+    assert.ok(decodedCommentsOf(f).includes(`acme/app へ取り込む PR: ${backUrl}`))
+  } finally {
+    f.cleanup()
+  }
+})
