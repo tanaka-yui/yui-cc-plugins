@@ -106,8 +106,8 @@ A field left unset in every layer takes its role's built-in default:
 | Role | `agent` | `model` | `effort` |
 |---|---|---|---|
 | `design` | `claude` | `claude-opus-5-5[1m]` | `max` |
-| `design_review` | `codex` | `gpt-6-astra` | `xhigh` |
-| `exec` | `codex` | `gpt-6.1-sol` | `high` |
+| `design_review` | `codex` | `gpt-6.2-astra` | `xhigh` |
+| `exec` | `codex` | `gpt-6.2-sol` | `high` |
 | `exec_review` | `claude` | `claude-opus-5-5[1m]` | `max` |
 
 **The default `model` and `effort` apply only while the role runs its default agent**, so a
