@@ -10,6 +10,7 @@ export type AutoEvent =
   | 'human-merged'
   | 'failed'
   | 'stalled'
+  | 'needs-base'
 type Pr = { repo: string; number: number; url: string }
 export type CommentInput = {
   event: AutoEvent
@@ -27,6 +28,12 @@ export type CommentInput = {
   unmergedPrs?: Array<Pr & { why: string }>
   elapsedMinutes?: number
   pushed?: boolean
+  // needs-base: 向き先の候補と、ラベル無しで Ready に戻されたときに進める向き先
+  candidates?: string[]
+  fallback?: string
+  // human-merged / ai-merged: 普段の向き先へ取り込む PR の結果（作れたもの・作れなかったもの）
+  backPrs?: Array<{ repo: string; url: string }>
+  backFailures?: Array<{ repo: string; why: string }>
 }
 const clean = (text: string): string =>
   text
@@ -44,6 +51,7 @@ export const statusOfEvent = (event: AutoEvent): string =>
     judged: STATUS.readyEng,
     started: STATUS.inProgress,
     stalled: STATUS.inProgress,
+    'needs-base': STATUS.backlog,
     'needs-review': STATUS.inReview,
     'partial-merge': STATUS.inReview,
     'ai-merged': STATUS.done,
@@ -142,6 +150,18 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
     case 'stalled':
       body = `**作業が進んでいません**${input.reason ? `\n\n理由: ${clean(input.reason)}` : ''}\n\n経過時間: ${input.elapsedMinutes} 分 / 上限時間: ${(input.limitMinutes ?? 0) + (input.relayMinutes ?? 0)} 分${limitBreakdown(input.limitMinutes ?? 0, input.relayMinutes)}`
       break
+    case 'needs-base': {
+      const labels = (input.candidates ?? []).map((c) => `\`base:${clean(c)}\``)
+      body = `向き先のブランチを決められませんでした。${labels.join(' か ')} の${labels.length === 2 ? 'どちら' : 'いずれ'}かのラベルを付けてください。ラベルを付けずに Ready に戻すと ${clean(input.fallback ?? '')} で進めます。`
+      break
+    }
+  }
+  if (event === 'ai-merged' || event === 'human-merged') {
+    const back = [
+      ...(input.backPrs ?? []).map((p) => `${clean(p.repo)} へ取り込む PR: ${clean(p.url)}`),
+      ...(input.backFailures ?? []).map((f) => `${clean(f.repo)} へ取り込む PR を作れませんでした: ${clean(f.why)}`),
+    ]
+    if (back.length) body += `\n\n${back.join('\n')}`
   }
   if (event === 'ai-merged' || event === 'partial-merge') {
     const decisions = list('AI が決めた点', input.decisions)

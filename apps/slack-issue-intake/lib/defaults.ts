@@ -255,11 +255,13 @@ export const STATUS_EVENTS: Record<string, { mention: boolean; template: string 
     template: '一部のリポジトリだけ merge できました。確認をお願いします（In review）\n{issue}\n\n{comment}',
   },
   'ai-merged': { mention: true, template: 'AI が修正を merge して完了にしました（Done）\n{issue}\n\n{comment}' },
-  'human-merged': { mention: false, template: 'PR が merge されたので完了にしました（Done）\n{issue}' },
+  'human-merged': { mention: false, template: 'PR が merge されたので完了にしました（Done）\n{issue}\n\n{comment}' },
   failed: { mention: true, template: 'AI の対応が失敗しました（Failed）\n{issue}\n\n{comment}' },
   stalled: { mention: true, template: 'AI の作業が進んでいません\n{issue}\n\n{comment}' },
+  'needs-base': { mention: true, template: '向き先のブランチを教えてください\n{issue}\n\n{comment}' },
 }
-export const STATUS_EVENT_STALLED = 'stalled'
+// ステータスが変わらなくても書く event（stalled はラベルが In progress のまま、needs-base は Backlog のまま）
+export const STATUS_EVENTS_WITHOUT_CHANGE: readonly string[] = ['stalled', 'needs-base']
 export const MSG_STATUS_DONE = '完了しました\n{issue}'
 export const MSG_STATUS_CHANGED = 'ステータスが {from} から {to} に変わりました\n{issue}'
 export const MSG_STATUS_REOPENED = 'Issue が開き直されました（{to}）\n{issue}'

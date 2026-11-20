@@ -43,5 +43,10 @@
     "event": "auto-ready",
     "status": "ready",
     "body": "**Ready にしました**\n\nAI が自動で対応できると判断しました。PR は人が確認してから merge します。\n判定の理由: 文言の誤字を直すだけの明確な修正です。\n推奨の上限時間: 30 分\n\n<!-- orca-auto:ready:1:auto-ready -->"
+  },
+  {
+    "event": "needs-base",
+    "status": "backlog",
+    "body": "向き先のブランチを決められませんでした。`base:main` か `base:develop` のどちらかのラベルを付けてください。ラベルを付けずに Ready に戻すと main で進めます。\n\n<!-- orca-auto:backlog:1:needs-base -->"
   }
 ]

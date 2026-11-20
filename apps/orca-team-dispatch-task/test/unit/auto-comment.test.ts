@@ -36,6 +36,7 @@ const inputs: CommentInput[] = [
   { event: 'failed', generation: 2, reason: '上限時間（60 分）を超えました。', branch: 'auto/issue-42', pushed: true },
   { event: 'stalled', generation: 1, elapsedMinutes: 45, limitMinutes: 60 },
   { event: 'auto-ready', generation: 1, reason: '文言の誤字を直すだけの明確な修正です。', limitMinutes: 30 },
+  { event: 'needs-base', generation: 1, candidates: ['main', 'develop'], fallback: 'main' },
 ]
 const fixtures: Array<{ event: string; status: string; body: string }> = JSON.parse(
   readFileSync(new URL('../fixtures/orca-auto-comments.json', import.meta.url), 'utf8'),
@@ -146,4 +147,35 @@ test('AC8 effective limits show relay allowance while zero preserves shared comm
     assert.equal(renderComment({ ...input, relayMinutes: 0 }).body, fixtures[index]?.body)
   }
   assert.equal(limitBreakdown(60, 0), '')
+})
+
+test('AC9 needs-base は Backlog のコメントで、マーカーの slug は backlog', () => {
+  const index = inputs.findIndex((i) => i.event === 'needs-base')
+  assert.equal(index, 9)
+  const result = renderComment({
+    event: 'needs-base',
+    generation: 3,
+    candidates: ['main', 'develop'],
+    fallback: 'main',
+  })
+  assert.equal(result.status, 'backlog')
+  assert.ok(result.body.endsWith('<!-- orca-auto:backlog:3:needs-base -->'))
+  assert.ok(result.body.includes('`base:main` か `base:develop` のどちらかのラベルを付けてください'))
+  assert.ok(result.body.includes('ラベルを付けずに Ready に戻すと main で進めます。'))
+})
+
+test('AC10 戻しの PR と失敗は merged の本文に行を足し、無ければ今と同じ本文', () => {
+  const backPrs = [{ repo: 'o/a', url: 'https://github.com/o/a/pull/9' }]
+  const backFailures = [{ repo: 'o/b', why: '差分がありません\n<!--x-->' }]
+  for (const event of ['human-merged', 'ai-merged'] as const) {
+    const index = inputs.findIndex((i) => i.event === event)
+    const input = inputs[index]
+    assert.ok(input)
+    assert.equal(renderComment({ ...input, backPrs: [], backFailures: [] }).body, fixtures[index]?.body)
+    const body = renderComment({ ...input, backPrs, backFailures }).body
+    assert.ok(body.includes('o/a へ取り込む PR: https://github.com/o/a/pull/9'), event)
+    assert.ok(body.includes('o/b へ取り込む PR を作れませんでした: 差分がありません ＜!--x--＞'), event)
+    assert.ok(body.endsWith(`<!-- orca-auto:done:1:${event} -->`), event)
+    assert.equal(body.match(/<!--/g)?.length, 1, event)
+  }
 })

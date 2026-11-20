@@ -189,6 +189,23 @@ test('ST5 ラベルが変わらず、新しい stalled のマーカーがあれ�
   assert.match(posts[0]?.text ?? '', /経過時間: 45 分/)
   assert.equal(f.row(42)?.lastCommentId, 11)
 })
+test('ST15 Backlog のまま needs-base のコメントが付けばメンション付きで 1 回だけ書き、同じコメントで二度書かない', async (t) => {
+  const f = await fixture(t)
+  f.mention('S0DEV0001')
+  f.setIssues([issue(42, ['Backlog'], 1)])
+  await f.poll()
+  const asked = [comment(10, body('needs-base'), 30)]
+  f.setIssues([issue(42, ['Backlog'], 30, { comments: asked })])
+  await f.poll()
+  f.setIssues([issue(42, ['Backlog'], 31, { comments: asked })])
+  await f.poll()
+  const posts = f.posts()
+  assert.equal(posts.length, 1)
+  assert.ok(posts[0]?.text.startsWith(GROUP))
+  assert.match(posts[0]?.text ?? '', /向き先のブランチを教えてください/)
+  assert.match(posts[0]?.text ?? '', /base:main/)
+  assert.equal(f.row(42)?.lastCommentId, 10)
+})
 test('ST6 thread_not_found なら記録を進めて次へ。ほかの失敗は STATUS_MAX_ATTEMPTS 回で諦める', async (t) => {
   const gone = await fixture(t, { post: () => ({ json: { ok: false, error: 'thread_not_found' } }) })
   gone.setIssues([issue(42, ['Ready'], 1)])

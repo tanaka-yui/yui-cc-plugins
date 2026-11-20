@@ -17,6 +17,7 @@ const EXAMPLES = JSON.parse(readFileSync(join(import.meta.dirname, '../fixtures/
 const URL = 'https://github.com/acme/app/issues/42'
 const MENTION = '<!subteam^S0DEV0001> '
 const SLUG_TO_NAME: Record<string, string> = {
+  backlog: 'Backlog',
   ready: 'Ready',
   'ready-eng': 'Ready_Eng',
   'in-progress': 'In progress',
@@ -32,7 +33,7 @@ test('IS1 currentStatus は大文字小文字を無視し、2つあれば優先�
   assert.equal(currentStatus(['bug']), null)
 })
 test('IS2 parseMarker は最終行だけを読み、形が違えば null', () => {
-  assert.equal(EXAMPLES.length, 9)
+  assert.equal(EXAMPLES.length, 10)
   for (const e of EXAMPLES) assert.equal(parseMarker(e.body)?.event, e.event, e.event)
   assert.deepEqual(parseMarker(EXAMPLES[6]?.body ?? ''), { slug: 'failed', generation: 2, event: 'failed' })
   assert.equal(parseMarker('<!-- orca-auto:done:1:ai-merged -->\nあとがき'), null)
@@ -67,7 +68,10 @@ test('IS5 renderStatusMessage は event ごとの文言とメンションを返�
   for (const e of EXAMPLES) {
     const to = SLUG_TO_NAME[e.status] ?? null
     const change: StatusChange = {
-      from: { status: e.event === 'stalled' ? to : e.event === 'auto-ready' ? 'Backlog' : 'Ready', state: 'open' },
+      from: {
+        status: e.event === 'stalled' || e.event === 'needs-base' ? to : e.event === 'auto-ready' ? 'Backlog' : 'Ready',
+        state: 'open',
+      },
       to: { status: to, state: 'open' },
       marker: { event: e.event, body: e.body },
     }
@@ -139,4 +143,16 @@ test('IS7 Done と閉じるが別の回に分かれても、完了は 1 回だ�
     renderStatusMessage({ from: { status: 'In review', state: 'closed' }, to: doneClosed, marker: null }, URL, MENTION),
     null,
   )
+})
+test('IS8 needs-base はステータスが Backlog のままでも、メンション付きで template を埋めた文を返す', () => {
+  const needsBase = EXAMPLES.find((e) => e.event === 'needs-base')
+  const backlog = { status: 'Backlog', state: 'open' }
+  const text = renderStatusMessage(
+    { from: backlog, to: backlog, marker: { event: 'needs-base', body: needsBase?.body ?? '' } },
+    URL,
+    MENTION,
+  )
+  assert.ok(text?.startsWith(`${MENTION}向き先のブランチを教えてください\n${URL}\n\n`))
+  assert.match(text ?? '', /base:main/)
+  assert.match(text ?? '', /ラベルを付けずに Ready に戻すと main で進めます/)
 })

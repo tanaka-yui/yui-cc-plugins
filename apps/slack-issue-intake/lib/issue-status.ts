@@ -5,8 +5,8 @@ import {
   MSG_STATUS_REOPENED,
   ORCA_MARKER_PATTERN,
   STATUS_COMMENT_MAX_CHARS,
-  STATUS_EVENT_STALLED,
   STATUS_EVENTS,
+  STATUS_EVENTS_WITHOUT_CHANGE,
   STATUS_LABELS,
   TRUSTED_ASSOCIATIONS,
 } from './defaults.ts'
@@ -69,7 +69,7 @@ export const renderStatusMessage = (change: StatusChange, issueUrl: string, ment
   const { from, to, marker } = change
   const changed = from.status !== to.status || from.state !== to.state
   const event = marker ? STATUS_EVENTS[marker.event] : undefined
-  if (marker && event?.template && (changed || marker.event === STATUS_EVENT_STALLED)) {
+  if (marker && event?.template && (changed || STATUS_EVENTS_WITHOUT_CHANGE.includes(marker.event))) {
     const comment = slackifyComment(marker.body)
     const text = fill(event.template, { issue: issueUrl, comment }).replace(/\n\n$/, '')
     return (event.mention ? mention : '') + text
