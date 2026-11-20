@@ -394,6 +394,7 @@ Step 5 decides and Step 6 asks, exactly as for a hand-written dispatch. The `cle
 | Integration | The configured `integration`, `merge` or `pr`, fixed for the run and never asked. With `pr`, I3 opens a pull request per issue instead of merging |
 | Driving | One batch at a time, waiting for it to finish before claiming the next |
 | Roles | Whatever `review_mode` resolves to, used for every issue in the run |
+| Base branch | The branch the parent checkout is on, which the parent never switches. An issue labeled `base:<branch>` is carried only when `<branch>` is that branch. `fetch` skips an issue whose `base:*` label names another branch, one with two or more `base:*` labels, and every one with a `base:*` label when the checkout is on no branch (a detached HEAD). Each skip prints a `[skip]` line giving the reason; report each in one line. A skipped issue is not claimed and its labels do not change. An issue with no `base:*` label is carried as before |
 | Labels | The status labels shared with slack-issue-intake: `In progress` on claim, `Done` or `Failed` at the end. The search never picks up an issue that already carries another status label or an old `dispatch/*` label; a named issue (`--issue <N>`) is carried whatever it carries. A claim replaces the issue's status labels with `In progress` and puts them back if the claim is undone; the end leaves only `Done` or `Failed` |
 
 ### I0. Preflight
@@ -438,7 +439,8 @@ node "$PLUGIN/bin/orca-issue-loop.ts" claim --issue "$NUM"
 
 It prints `slug=` and `request_file=`, a file holding the issue's title and body; pass 1 of I3 takes
 both. Exit 1 with `was not claimed` is not a failure to hide: it means the issue is already in the
-state file, from this run or an earlier one. Say which, and stop rather than claiming it twice.
+state file, from this run or an earlier one, or that its `base:*` label does not match the branch this
+checkout is on (a `[skip]` line gives the reason). Say which, and stop rather than claiming it twice.
 
 Then carry it with the I3 blocks, with `RUN` empty in pass 1, and release the lock with the I4
 block. **Skip I1 and I2** — there is no batch. `claim` runs `init` first because `fetch` needs the
@@ -608,6 +610,19 @@ It reads each such pull request's state and head commit with `gh` and cleans up 
 once, the way `cmux-team-dispatch-task` asks its Step 1c. A configured `design_mode` is the
 recommendation this question starts on, never a reason to skip it — how a task is best started
 differs task by task.
+
+Before asking anything, find out which branch the finished work comes home to. It is the branch
+this checkout is on, and **the parent never switches its checkout**:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-state.ts" current-branch
+```
+
+It prints `branch=<name>`. Tell the user the work comes home to `<name>`, and that to use a
+different branch they should switch their checkout and start again. Exit 1 means the checkout is on
+no branch (a detached HEAD): say so, ask the user to check out the branch the work should come
+home to, and stop.
 
 Read the configured values first; they are the `design_mode`, `integration` and `ask_via` fields of what this
 prints:

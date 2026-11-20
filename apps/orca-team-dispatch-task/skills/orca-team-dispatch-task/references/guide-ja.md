@@ -374,6 +374,7 @@ dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。 �
 | 統合 | 設定の `integration`（`merge` か `pr`）。その実行の間は固定で、尋ねない。`pr` なら I3 は merge の代わりに issue ごとに pull request を作る |
 | 駆動 | 1 バッチずつ。終わるまで待ってから次を claim する |
 | 役 | `review_mode` が解決したものを、その実行の全 issue で共通に使う |
+| 向き先 | 親の checkout が今いるブランチ。親はそれを切り替えない。`base:<branch>` ラベルの付いた issue は、`<branch>` がそのブランチのときだけ運ぶ。`fetch` は、`base:*` ラベルが別のブランチを指す issue、`base:*` ラベルが 2 つ以上ある issue、checkout がどのブランチにもいない（detached HEAD）ときの `base:*` ラベル付きの issue をすべて飛ばす。飛ばすたびに理由を書いた `[skip]` の行を出すので、それぞれ 1 行で報告する。飛ばした issue は claim せず、ラベルも変えない。`base:*` ラベルの無い issue はこれまでどおり運ぶ |
 | ラベル | slack-issue-intake と共通のステータスラベル。claim で `In progress`、終わりに `Done` か `Failed` を付ける。検索は、ほかのステータスラベルか古い `dispatch/*` が付いた issue を拾わない。名指しの issue（`--issue <N>`）は何が付いていても運ぶ。claim はその issue のステータスラベルを `In progress` に置き換え、claim を取り消したら元に戻す。終わったときに残るのは `Done` か `Failed` だけ |
 
 ### I0. 事前確認
@@ -417,7 +418,7 @@ node "$PLUGIN/bin/orca-issue-loop.ts" claim --issue "$NUM"
 
 `slug=` と `request_file=`（issue の title と body を書いたファイル）を表示する。I3 のパス 1 がその
 両方を受け取る。`was not claimed` を伴う exit 1 は隠すべき失敗ではない。**その issue が既に state file
-に載っている**ということであり、今回の実行のものか以前のものかを述べて、二重に claim せずに止まる。
+に載っている、または `base:*` ラベルがこの checkout の今のブランチと合わない（`[skip]` の行が理由を言う）**ということであり、どちらかを述べて、二重に claim せずに止まる。
 
 そのあとは I3 のブロックで運び（パス 1 の `RUN` は空にする）、I4 のブロックで lock を解放する。
 **I1 と I2 は飛ばす** — バッチが無いからである。`claim` が先に `init` を走らせるのは `fetch` が
@@ -585,6 +586,18 @@ node "$PLUGIN/bin/orca-cleanup.ts" sweep
 一度に扱う。`cmux-team-dispatch-task` の Step 1c と同じ尋ね方である。設定済みの `design_mode` は
 この質問が推奨として示す値であって、質問を省く理由ではない — 取りかかり方の適切さはタスクごとに
 異なる。
+
+何かを尋ねる前に、終わった作業がどのブランチへ戻るかを調べる。それはこの checkout が今いるブランチで、
+**親は checkout を切り替えない**:
+
+```bash
+: "${PLUGIN:?run the block at the top of this file first}"
+node "$PLUGIN/bin/orca-state.ts" current-branch
+```
+
+`branch=<name>` を表示する。作業は `<name>` へ戻ると利用者に伝え、別のブランチにしたいときは
+checkout を切り替えてからやり直すよう案内する。exit 1 は checkout がどのブランチにもいない（detached HEAD）
+ということである。そう伝え、作業を戻したいブランチを checkout するよう頼んで、止まる。
 
 まず設定値を読む。これが表示するものの `design_mode`・`integration`・`ask_via` がそれである:
 

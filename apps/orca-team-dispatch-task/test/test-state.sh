@@ -152,6 +152,27 @@ st terminals >/dev/null 2>&1; [[ $? -eq 2 ]] || bad="$bad [no-status-dir]"
 [[ -z "$bad" ]] && ok "OS11 terminals は役ごとの切り替えコマンドを表で出す" || fail "OS11:$bad"
 rm -rf "$RR"; teardown
 
+# OS12: current-branch は親の checkout の今のブランチを `branch=<name>` で出す。detached HEAD は exit 1 で理由を言う。何も書かない
+setup
+RR=$(mktemp -d); git -C "$RR" init -q -b feature/x
+before=$(find "$RR" -type f -exec cksum {} + | sort)
+out=$(st current-branch --repo-root "$RR" 2>/dev/null); rc=$?
+bad=""
+[[ "$rc" -eq 0 && "$out" == 'branch=feature/x' ]] || bad="$bad [branch rc=$rc out=$out]"
+out=$(cd "$RR" && node "$STATE_TS" current-branch 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == 'branch=feature/x' ]] || bad="$bad [cwd rc=$rc out=$out]"
+git -C "$RR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$RR" checkout -q --detach
+out=$(st current-branch --repo-root "$RR" 2>"$RR/../os12.err"); rc=$?
+[[ "$rc" -eq 1 && -z "$out" && -s "$RR/../os12.err" ]] || bad="$bad [detached rc=$rc out=$out]"
+rm -f "$RR/../os12.err"
+st current-branch --repo-root "$SD" >/dev/null 2>&1; [[ $? -eq 1 ]] || bad="$bad [no-repo]"
+st current-branch --bogus >/dev/null 2>&1; [[ $? -eq 2 ]] || bad="$bad [bad-flag]"
+[[ -z "$(git -C "$RR" status --porcelain)" ]] || bad="$bad [wrote]"
+[[ "$(find "$RR" -path "$RR/.git" -prune -o -type f -print | wc -l | tr -d ' ')" == 0 ]] || bad="$bad [files]"
+[[ -z "$bad" ]] && ok "OS12 current-branch は branch=<name> を出し、detached は exit 1" || fail "OS12:$bad"
+rm -rf "$RR"; teardown
+
 # OS10: zsh から呼んでも同じ結果になる（設計 3-5）
 if command -v zsh >/dev/null 2>&1; then
   setup; printf '{"status":"done"}\n' > "$SD/roles/design/status.json"

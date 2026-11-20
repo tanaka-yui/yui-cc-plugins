@@ -30,6 +30,13 @@ export const run = (command: string, args: string[], cwd?: string, timeoutMs?: n
   return { rc: child.status ?? 1, stdout: child.stdout ?? '', stderr }
 }
 
+// 親の checkout が今いるブランチ。detached HEAD や git の外では null（読めないことを別のブランチ名にしない）
+export const currentBranch = (repoRoot: string): string | null => {
+  const result = run('git', ['-C', repoRoot, 'symbolic-ref', '--short', 'HEAD'])
+  const branch = result.stdout.trim()
+  return result.rc === 0 && branch !== '' ? branch : null
+}
+
 // 別の入口（node で走る .ts）を子プロセスで呼ぶ。bash 版の `bash "$HERE/x.sh" ...` に当たる。
 // inherit は出力を受けずに親の stdout / stderr へそのまま流す（長く走る待機の log を溜めないため）
 export const runNode = (script: string, args: string[], inherit = false, env?: Record<string, string>): ProcResult => {

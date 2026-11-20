@@ -284,4 +284,43 @@ HOOK
   fi
   teardown
 done
+# IF24: ★ **向き先のラベルが今のブランチと違う Issue は claim しない。**claim すると、別のブランチ向けの作業を
+#       今のブランチへ取り込んでしまう。飛ばした Issue は claim の試行に数えない（数えると全部飛ばした run が rc 3 になる）。
+setup; acquire; init
+git -C "$W" init -q -b develop
+jq -nc '[{number:1,title:"to main",body:"b",url:"u1",labels:[{name:"base:main"}]},
+         {number:2,title:"to develop",body:"b",url:"u2",labels:[{name:"base:develop"}]},
+         {number:3,title:"unlabeled",body:"b",url:"u3",labels:[{name:"bug"}]}]' > "$GH_STUB_DIR/issue_list"
+out=$(run fetch --limit 5 --batch 1 2>"$W/err"); rc=$?
+claimed=$(jq -c '[.[].number]' <<<"$out" 2>/dev/null)
+[[ "$rc" -eq 0 && "$claimed" == '[2,3]' ]] \
+  && grep -qF '[skip] issue #1 は向き先が main なので、今のブランチ develop では扱いません' "$W/err" \
+  && ! grep -qF 'issue edit 1 ' "$GH_STUB_DIR/calls.log" \
+  && ok "IF24 向き先の違う Issue は claim せず [skip] を出し、一致とラベル無しは claim する" || fail "IF24 (rc=$rc claimed=$claimed $(cat "$W/err"))"
+# 全部飛ばしても claim の失敗ではない（rc 3 にしない）
+: > "$GH_STUB_DIR/calls.log"
+jq -nc '[{number:4,title:"to main",body:"b",url:"u4",labels:[{name:"base:main"}]}]' > "$GH_STUB_DIR/issue_list"
+out=$(run fetch --limit 5 --batch 2 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == '[]' ]] && ok "IF24 全部飛ばしたら空で rc 0（claim 失敗の rc 3 にしない）" || fail "IF24 (rc=$rc out=$out)"
+teardown
+
+# IF25: ★ **向きのラベルが 2 つ以上の Issue は claim しない**（どちらへ取り込むか決められない）。
+#       detached HEAD では、ラベルの無い Issue だけ今までどおり扱い、ラベルが付いた Issue は全部飛ばす。
+setup; acquire; init
+git -C "$W" init -q -b develop
+jq -nc '[{number:5,title:"both",body:"b",url:"u5",labels:[{name:"base:main"},{name:"base:develop"}]}]' > "$GH_STUB_DIR/issue_list"
+out=$(run fetch --limit 5 --batch 1 2>"$W/err"); rc=$?
+[[ "$rc" -eq 0 && "$out" == '[]' ]] \
+  && grep -qF '[skip] issue #5 ' "$W/err" && ! grep -qF 'issue edit 5 ' "$GH_STUB_DIR/calls.log" \
+  && ok "IF25 base ラベルが 2 つの Issue は claim しない" || fail "IF25 (rc=$rc out=$out $(cat "$W/err"))"
+git -C "$W" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$W" checkout -q --detach
+: > "$GH_STUB_DIR/calls.log"
+jq -nc '[{number:6,title:"to develop",body:"b",url:"u6",labels:[{name:"base:develop"}]},
+         {number:7,title:"unlabeled",body:"b",url:"u7",labels:[]}]' > "$GH_STUB_DIR/issue_list"
+out=$(run fetch --limit 5 --batch 2 2>"$W/err"); rc=$?
+[[ "$rc" -eq 0 && "$(jq -c '[.[].number]' <<<"$out")" == '[7]' ]] \
+  && grep -qF '[skip] issue #6 ' "$W/err" && grep -qF 'detached' "$W/err" \
+  && ok "IF25 detached HEAD ではラベルの無い Issue だけ扱う" || fail "IF25 detached (rc=$rc out=$out $(cat "$W/err"))"
+teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

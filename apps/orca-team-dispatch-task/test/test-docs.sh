@@ -748,6 +748,24 @@ for word in '`base.needed`' '`base.candidates`' '`ask`' 'hotfix' '`base:*` ラ�
 done
 [[ -z "$bad" ]] && ok 'SK44 判定の向き先' || fail "SK44:$bad"
 
+# SK45: 手動の dispatch は取り込み先（親の今のブランチ）を示し、checkout を切り替えない。issue モードは向き先の違う Issue を飛ばす。
+bad=""
+step1b_en=$(awk '/^## Step 1b/{f=1;next} /^## Step 2/{f=0} f' "$S")
+step1b_ja=$(awk '/^## Step 1b/{f=1;next} /^## Step 2/{f=0} f' "$G")
+for pair in "en:$step1b_en" "ja:$step1b_ja"; do
+  lang="${pair%%:*}"; body="${pair#*:}"
+  grep -Fq -- 'orca-state.ts" current-branch' <<<"$body" || bad="$bad [$lang:current-branch]"
+done
+grep -Fq -- 'never switches its checkout' <<<"$step1b_en" || bad="$bad [en:no-switch]"
+grep -Fq -- 'checkout を切り替えない' <<<"$step1b_ja" || bad="$bad [ja:no-switch]"
+grep -Fq -- 'switch their checkout and start again' <<<"$step1b_en" || bad="$bad [en:ask-user-switch]"
+grep -Fq -- 'checkout を切り替えてからやり直' <<<"$step1b_ja" || bad="$bad [ja:ask-user-switch]"
+issue_en=$(awk '/^## Issue mode/{f=1;next} /^### I0/{f=0} f' "$S")
+issue_ja=$(awk '/^## Issue モード/{f=1;next} /^### I0/{f=0} f' "$G")
+grep -Fq -- '`base:*` label' <<<"$issue_en" || bad="$bad [en:issue-base]"
+grep -Fq -- '`base:*` ラベル' <<<"$issue_ja" || bad="$bad [ja:issue-base]"
+[[ -z "$bad" ]] && ok 'SK45 手動の dispatch の取り込み先' || fail "SK45:$bad"
+
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"

@@ -7,6 +7,7 @@
 //        node orca-state.ts mailbox       --status-dir <d>   # Step 3 の exit 1: 親端末の mailbox を覗く
 //        node orca-state.ts accounts                         # S1: Orca が持つアカウント
 //        node orca-state.ts terminals     --status-dir <d> [--status-dir <d> ...]  # 役ごとの端末へ飛ぶコマンドの表
+//        node orca-state.ts current-branch [--repo-root <p>]  # Step 1b: 親の checkout が今いるブランチ（取り込み先）
 // Exit: 0 = 答えた / 1 = 読めなかった・記録が壊れていた（理由は stderr）/ 2 = 使用法の誤り
 //
 // ★ block は呼び出し側のシェル（mac も WSL も zsh）で走る。判定を block に書かず、ここに置く
@@ -15,6 +16,7 @@ import { validToggle } from '../lib/config.ts'
 import { readJson } from '../lib/fs.ts'
 import { asArray, asObject, asString, get, type JsonObject } from '../lib/json.ts'
 import { failureDetail, receiptOk, runOrca } from '../lib/orca.ts'
+import { currentBranch, run } from '../lib/sys.ts'
 import { issueOfSlug, terminalRows, terminalTable } from '../lib/terminals.ts'
 
 import { existsSync } from 'node:fs'
@@ -22,7 +24,7 @@ import { join } from 'node:path'
 
 const NAME = 'orca-state'
 const USAGE =
-  'usage: orca-state.ts <wait-stamp|design-status|integration|mailbox> --status-dir <dir> | orca-state.ts accounts | orca-state.ts terminals --status-dir <dir> [--status-dir <dir> ...]'
+  'usage: orca-state.ts <wait-stamp|design-status|integration|mailbox> --status-dir <dir> | orca-state.ts accounts | orca-state.ts terminals --status-dir <dir> [--status-dir <dir> ...] | orca-state.ts current-branch [--repo-root <dir>]'
 
 const statusDirOf = (args: string[]): string => {
   const { values } = parseFlags(NAME, {
@@ -147,6 +149,29 @@ const terminals = (args: string[]): number => {
   return 0
 }
 
+// 手動の dispatch の取り込み先は親の checkout が今いるブランチ。親は checkout を切り替えないので、Step 1b がそれを示す。
+// ★ **detached HEAD や git の外を、ブランチ名として答えない。**取り込み先が決まらないので exit 1 で理由を言う。何も書かない
+const currentBranchOf = (args: string[]): number => {
+  const { values } = parseFlags(NAME, {
+    args,
+    options: { 'repo-root': { type: 'string' } },
+    strict: true,
+    allowPositionals: false,
+  })
+  const root = values['repo-root'] || run('git', ['rev-parse', '--show-toplevel']).stdout.trim()
+  if (root === '') {
+    log(NAME, 'not inside a git repository; pass --repo-root')
+    return 1
+  }
+  const branch = currentBranch(root)
+  if (branch === null) {
+    log(NAME, `${root} has no current branch (detached HEAD or not a git repository)`)
+    return 1
+  }
+  process.stdout.write(`branch=${branch}\n`)
+  return 0
+}
+
 const main = (argv: string[]): number => {
   const [command, ...rest] = argv
   if (command === 'wait-stamp') return waitStamp(statusDirOf(rest))
@@ -155,6 +180,7 @@ const main = (argv: string[]): number => {
   if (command === 'mailbox') return mailbox(statusDirOf(rest))
   if (command === 'accounts') return accounts(rest)
   if (command === 'terminals') return terminals(rest)
+  if (command === 'current-branch') return currentBranchOf(rest)
   return die(NAME, USAGE)
 }
 

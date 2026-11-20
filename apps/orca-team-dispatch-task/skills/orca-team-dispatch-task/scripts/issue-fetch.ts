@@ -1,3 +1,4 @@
+import { baseLabels } from '../../../lib/auto-base.ts'
 import { configHome } from '../../../lib/config.ts'
 // GitHub issue 自動ループの issue 取得・claim・状態管理。
 // Usage: node issue-fetch.ts --state-file <path> <subcommand> [options]
@@ -12,7 +13,7 @@ import {
   STATUS_LABELS,
   searchExclusion,
 } from '../../../lib/status.ts'
-import { nowIso, nowSeconds, run, which } from '../../../lib/sys.ts'
+import { currentBranch, nowIso, nowSeconds, run, which } from '../../../lib/sys.ts'
 
 import { existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, rmSync, statSync } from 'node:fs'
 import { hostname } from 'node:os'
@@ -344,6 +345,24 @@ const autoOwnsReady = (): boolean => {
   if (result.rc !== 0 || !repo) fatal('cannot determine whether --auto owns Ready')
   return repos.includes((repo ?? '').toLowerCase())
 }
+// ★ **向き先のラベルが親の今のブランチと違う Issue は claim しない。**claim すると別のブランチ向けの作業を今のブランチへ
+//   取り込んでしまう。ラベルが 2 つ以上なら向き先が決まらないので同じく飛ばす。ラベルが無ければ今までどおり。
+//   detached HEAD で今のブランチが読めないときも、ラベルの付いた Issue は全部飛ばす（ラベルの無い Issue は今までどおり）。
+//   飛ばす判断は claim の前に済ませる — claim の試行に数えると、全部飛ばした run が「claim が 1 件も成立しない」(rc 3) で終わる。
+//   親の checkout は state の置き場所（`<repo root>/.dispatch-issue`）の 1 つ上。今のブランチは候補にラベルが付いたときだけ読む
+const baseMismatch = (candidate: Json, repoRoot: string, readBranch: () => string | null): string | null => {
+  const names = baseLabels(array(get(candidate, 'labels')).map((l) => string(get(l, 'name'))))
+  if (names.length === 0) return null
+  const number = issueNumber(get(candidate, 'number'))
+  const flow = names.join(', ')
+  if (names.length >= 2) return `issue #${number} は向き先が複数 (${flow}) なので、どのブランチにも取り込めません`
+  const current = readBranch()
+  if (current === null)
+    return `issue #${number} は向き先が ${flow} ですが、${repoRoot} は今のブランチを読めない (detached HEAD か git の外) ので扱いません`
+  return names[0] === current
+    ? null
+    : `issue #${number} は向き先が ${flow} なので、今のブランチ ${current} では扱いません`
+}
 const fetchIssues = (paths: Paths, options: Options): number => {
   requireOwner(paths)
   if (which('gh') === null) fatal('gh is not installed')
@@ -352,14 +371,33 @@ const fetchIssues = (paths: Paths, options: Options): number => {
   const existing = stateIssues(readJson(paths.stateFile))
   let candidates: Json[] = []
   let limit = options.limit
+  const repoRoot = dirname(paths.loopDir)
+  let branchRead = false
+  let branchValue: string | null = null
+  const readBranch = (): string | null => {
+    if (!branchRead) {
+      branchValue = currentBranch(repoRoot)
+      branchRead = true
+    }
+    return branchValue
+  }
+  // 窓を広げて取り直しても同じ Issue を数え直さないよう、理由は Issue 番号で持ち、最後に 1 回だけ言う
+  const skipped = new Map<string, string>()
+  const matchesBase = (candidate: Json): boolean => {
+    const reason = baseMismatch(candidate, repoRoot, readBranch)
+    if (reason !== null) skipped.set(issueNumber(get(candidate, 'number')), reason)
+    return reason === null
+  }
   // ★ 単件指定は検索を通さず、claim と state 書き込みの補償は共通経路に合流させる。
   if (options.issue !== '') {
     const viewed = gh('issue', 'view', options.issue, '--json', 'number,title,body,url,labels')
     if (viewed.rc !== 0) fatal(`gh issue view #${options.issue} failed`)
     const issue = parseJson(viewed.stdout)
-    if (issue !== null && !Object.hasOwn(existing, issueNumber(get(issue, 'number')))) candidates = [issue]
+    if (issue !== null && !Object.hasOwn(existing, issueNumber(get(issue, 'number'))) && matchesBase(issue))
+      candidates = [issue]
     if (candidates.length === 0) {
-      note('warn', `issue #${options.issue} は既に state に載っています`)
+      for (const reason of skipped.values()) note('skip', reason)
+      if (skipped.size === 0) note('warn', `issue #${options.issue} は既に state に載っています`)
       process.stdout.write('[]\n')
       return 0
     }
@@ -389,7 +427,9 @@ const fetchIssues = (paths: Paths, options: Options): number => {
       )
       if (listed.rc !== 0) fatal('gh issue list failed')
       const returned = array(parseJson(listed.stdout))
-      candidates = returned.filter((entry) => !Object.hasOwn(existing, issueNumber(get(entry, 'number'))))
+      candidates = returned
+        .filter((entry) => !Object.hasOwn(existing, issueNumber(get(entry, 'number'))))
+        .filter(matchesBase)
       if (returned.length < window || candidates.length > 0) {
         exhaustionKnown = true
         break
@@ -403,6 +443,7 @@ const fetchIssues = (paths: Paths, options: Options): number => {
       return 4
     }
   }
+  for (const reason of skipped.values()) note('skip', reason)
   if (candidates.length === 0) {
     process.stdout.write('[]\n')
     return 0
