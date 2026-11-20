@@ -48,10 +48,17 @@ test('SS5 legacy issues gain empty bases and baseAsked false; wrong types fail c
   put(entry)
   assert.deepEqual(readState('main').issues['acme/app#1']?.bases, {})
   assert.equal(readState('main').issues['acme/app#1']?.baseAsked, false)
+  assert.deepEqual(readState('main').issues['acme/app#1']?.prevBases, {})
   put({ ...entry, bases: { 'acme/app': 'main', 'other/api': null }, baseAsked: true })
   assert.deepEqual(readState('main').issues['acme/app#1']?.bases, { 'acme/app': 'main', 'other/api': null })
   assert.equal(readState('main').issues['acme/app#1']?.baseAsked, true)
-  for (const bad of [{ bases: [] }, { bases: { 'acme/app': 1 } }, { bases: 'main' }, { baseAsked: 'yes' }]) {
+  for (const bad of [
+    { bases: [] },
+    { bases: { 'acme/app': 1 } },
+    { bases: 'main' },
+    { baseAsked: 'yes' },
+    { prevBases: { 'acme/app': 1 } },
+  ]) {
     put({ ...entry, ...bad })
     assert.throws(() => readState('main'), /acme\/app#1/)
   }

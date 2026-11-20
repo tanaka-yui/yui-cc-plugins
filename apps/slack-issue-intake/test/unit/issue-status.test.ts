@@ -156,3 +156,18 @@ test('IS8 needs-base はステータスが Backlog のままでも、メンシ�
   assert.match(text ?? '', /base:main/)
   assert.match(text ?? '', /ラベルを付けずに Ready に戻すと main で進めます/)
 })
+
+test('IS9 needs-base の新しい文面（理由・拾う元ごとの次の手・リポジトリごとの fallback）もそのまま Slack へ渡す', () => {
+  const body =
+    '向き先のブランチを決められませんでした（`base:main` と `base:develop` が両方付いています）。`base:develop` か `base:main` のどちらかのラベルを付けてください。ラベルを付けたあと Ready に戻すと、その向き先で進めます。ラベルを付けずに Ready に戻すと acme/app は develop、other/api は main で進めます。\n\n<!-- orca-auto:backlog:1:needs-base -->'
+  const backlog = { status: 'Backlog', state: 'open' }
+  const text = renderStatusMessage({ from: backlog, to: backlog, marker: { event: 'needs-base', body } }, URL, MENTION)
+  assert.ok(text?.startsWith(`${MENTION}向き先のブランチを教えてください\n${URL}\n\n`))
+  for (const part of [
+    'が両方付いています',
+    'ラベルを付けたあと Ready に戻すと',
+    'acme/app は develop、other/api は main で進めます',
+  ])
+    assert.ok(text?.includes(part), text ?? '')
+  assert.ok(!text?.includes('orca-auto:'))
+})

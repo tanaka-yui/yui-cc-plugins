@@ -575,6 +575,8 @@ test('PO31 向き先のある投稿を受け付けて残し、起票の前に ba
     .filter((c) => c.argv.slice(0, 2).join(' ') === 'issue create')
     .at(-1)
   assert.ok(last && !last.argv.includes('base:main'))
+  // ラベルを付けられなくても、選んだ向き先は本文の表に残る
+  assert.ok(last?.body?.includes('| 向き先 | main |'), last?.body ?? '')
   assert.ok(r.stderr.includes('base:main'), r.stderr)
 })
 

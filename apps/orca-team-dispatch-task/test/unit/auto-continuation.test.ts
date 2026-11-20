@@ -410,3 +410,31 @@ test('AU172 a generation whose base changed starts fresh from the new base inste
     f.cleanup()
   }
 })
+
+test('AU178 a tick whose base changed from the previous generation writes a fresh-start request', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.track()
+    const s = readState('main')
+    const i = s.issues[issue.key]
+    assert.ok(i)
+    Object.assign(i, {
+      generation: 2,
+      prevBranch: 'user/previous',
+      prevTargets: ['acme/app'],
+      prevBranches: { 'acme/app': 'user/previous' },
+      prevBases: { 'acme/app': 'develop' },
+      prevPrs: [old],
+      endedAt: '2026-11-13T04:00:00Z',
+    })
+    writeState('main', s)
+    f.cli('tick')
+    const current = readState('main').issues[issue.key]
+    assert.ok(current)
+    const request = readFileSync(join(current.statusDir, 'request.md'), 'utf8')
+    assert.ok(!request.includes('git reset --hard'), request)
+    assert.ok(request.includes('The base of acme/app changed from develop to main'), request)
+  } finally {
+    f.cleanup()
+  }
+})

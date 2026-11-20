@@ -651,4 +651,4 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - **候補が 2 つ以上の対象が無ければ `base:*` ラベルを読まない**（`resolveBases`。spec 9 の「今と同じに動く」）。intake にだけ候補がある環境で、ラベル付きの Issue が答えようの無い質問で止まらないため。judge-apply も候補が 2 つ未満なら尋ねずに `baseBranch` で進める。
 - **`needs-base` のコメント**は `why`（ラベルが 2 つ・候補に無い・判定が候補外を返した）、拾う元の `pick` と `autoReadySource`（ラベルだけで拾い直すか、pick に戻すまで待つか）、2 対象の `fallbacks` を足した。どれも無ければ共有の fixture と同じ本文なので、fixture は変えていない。
 - `auto-ready` のコメントは決めた向き先が制限されていれば AI の merge を言わない。拾う元の `autoMerge` は `sourceAutoMerge`（最初の拾う元）で読む。judge-list の `base.usual` は関連リポジトリごとの `baseBranch`。
-- 回帰: AU168〜177、AB9 / AB10、AC12、IF26、IL13。
+- 回帰: AU168〜178、AB9 / AB10、AC12、SS5（prevBases）、IF26、IL13。
