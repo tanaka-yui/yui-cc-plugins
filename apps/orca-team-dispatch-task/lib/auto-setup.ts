@@ -99,6 +99,8 @@ const COMMAND_STEPS: Record<SetupCommand, ReadonlyArray<{ id: string; title: str
   ],
 }
 const CONFIG_RESOLVE_SCRIPT = 'skills/orca-team-dispatch-task/scripts/config-resolve.ts'
+// 向き先の候補として探す名前（既定ブランチに加えて）
+const BASE_CANDIDATES = ['develop', 'main', 'master']
 const REPO_PATTERN = /^[^/\s]+\/[^/\s]+$/
 export const runSetup = (
   name: string,
@@ -268,6 +270,40 @@ export const runSetup = (
     v.intakeConfigs = chosen
     v.sources = next
   }
+  // origin の既定ブランチと develop / main / master のうち在るものを候補にする。2 つ以上のときだけ尋ねる
+  const pickBases = (
+    repo: string,
+    previous: AutoConfig['repos'][string] | undefined,
+  ): Pick<AutoConfig['repos'][string], 'baseBranch' | 'branches'> => {
+    const kept = { baseBranch: previous?.baseBranch ?? null, branches: previous?.branches ?? [] }
+    const listed = github(['api', '--paginate', '--jq', '.[].name', `repos/${repo}/branches`])
+    if (listed.rc !== 0) return kept
+    const existing = listed.stdout.split('\n').map((line) => line.trim())
+    const defaultBranch = asString(
+      get(parseJson(github(['repo', 'view', '--json', 'defaultBranchRef', repo]).stdout), 'defaultBranchRef', 'name'),
+    )
+    const found = [...new Set([defaultBranch, ...BASE_CANDIDATES])].filter(
+      (name): name is string => !!name && existing.includes(name),
+    )
+    if (found.length < 2) return kept
+    const usual = found.includes('develop') ? 'develop' : (defaultBranch ?? found[0] ?? '')
+    for (;;) {
+      const baseBranch = ask(
+        `${repo} の普段の向き先ブランチ（PR の向き先と AI が merge してよい先）`,
+        previous?.baseBranch ?? usual,
+      ).trim()
+      const branches = ask(
+        `${repo} の向き先の候補（カンマ区切り）`,
+        (previous?.branches.length ? previous.branches : found).join(','),
+      )
+        .split(',')
+        .map((name) => name.trim())
+      if (!baseBranch || branches.some((name) => !name)) say('ブランチ名を空にはできません')
+      else if (new Set(branches).size !== branches.length) say('候補に重複があります')
+      else if (!branches.includes(baseBranch)) say('普段の向き先は候補に含めてください')
+      else return { baseBranch, branches }
+    }
+  }
   const pickRepos = () => {
     for (const source of sources()) {
       for (;;) {
@@ -297,8 +333,7 @@ export const runSetup = (
         infra: previous?.infra ?? false,
         verified: previous?.verified ?? false,
         ci: previous?.ci ?? repoDefaults(checkout).ci,
-        baseBranch: previous?.baseBranch ?? null,
-        branches: previous?.branches ?? [],
+        ...pickBases(repo, previous),
       }
     }
     v.repos = next

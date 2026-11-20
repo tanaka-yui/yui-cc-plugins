@@ -992,3 +992,66 @@ test('SU43 hosts and roles refuse non-tty stdin', () => {
     f.cleanup()
   }
 })
+const withBranches = (f: ReturnType<typeof prepare>, names: string[], defaultBranch: string) => {
+  writeFileSync(join(f.gh, 'api'), `${names.join('\n')}\n`)
+  f.respond('repo_view', { defaultBranchRef: { name: defaultBranch } })
+}
+const insertAfterCheckout = (f: ReturnType<typeof prepare>, extra: string[]) => {
+  const answers = f.freshAnswers()
+  answers.splice(answers.indexOf(f.raw.repos['acme/app'].checkout) + 1, 0, ...extra)
+  return answers
+}
+test('SU44 asks the usual base and candidates when two or more branches exist, validates, and shows current values on rerun', () => {
+  const f = prepare()
+  try {
+    withBranches(f, ['develop', 'main', 'feature/x'], 'main')
+    rmSync(f.configFile)
+    // 候補に無い向き先と重複した候補は弾かれて尋ね直される
+    const result = f.invoke(
+      insertAfterCheckout(f, ['staging', 'develop,main', 'develop', 'develop,develop', 'develop', 'develop,main']),
+    )
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    assert.match(result.stdout, /普段の向き先は候補に含めてください/)
+    assert.match(result.stdout, /候補に重複があります/)
+    assert.deepEqual(
+      [f.config().repos['acme/app']?.baseBranch, f.config().repos['acme/app']?.branches],
+      ['develop', ['develop', 'main']],
+    )
+    assert.ok(f.calls().includes('repos/acme/app/branches'))
+    const again = f.rerun({ 書きますか: 'y' })
+    assert.equal(again.code, 0, again.output)
+    assert.ok(again.asked.some((q) => q.includes('acme/app') && q.includes('普段の向き先')))
+    assert.deepEqual(
+      [f.config().repos['acme/app']?.baseBranch, f.config().repos['acme/app']?.branches],
+      ['develop', ['develop', 'main']],
+    )
+    const changed = f.rerun({ 書きますか: 'y', 普段の向き先: 'main', 向き先の候補: 'main,develop' })
+    assert.equal(changed.code, 0, changed.output)
+    assert.deepEqual(
+      [f.config().repos['acme/app']?.baseBranch, f.config().repos['acme/app']?.branches],
+      ['main', ['main', 'develop']],
+    )
+    assert.equal(f.rerun({ 書きますか: 'y' }).code, 0)
+    assert.deepEqual(
+      [f.config().repos['acme/app']?.baseBranch, f.config().repos['acme/app']?.branches],
+      ['main', ['main', 'develop']],
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU45 asks nothing and writes no base fields when fewer than two candidate branches exist', () => {
+  const f = prepare()
+  try {
+    withBranches(f, ['main', 'feature/x'], 'main')
+    const result = f.fresh()
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    assert.doesNotMatch(result.stdout, /普段の向き先/)
+    assert.equal(f.config().repos['acme/app']?.baseBranch, null)
+    assert.deepEqual(f.config().repos['acme/app']?.branches, [])
+    assert.ok(!readFileSync(f.configFile, 'utf8').includes('baseBranch'))
+    assert.ok(!f.rerun().asked.some((q) => q.includes('普段の向き先')))
+  } finally {
+    f.cleanup()
+  }
+})

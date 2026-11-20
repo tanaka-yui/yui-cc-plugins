@@ -260,7 +260,9 @@ setup を一度最後まで終えたあとは、同じく人が操作するタ�
       "verify": ["node --test"],
       "infra": false,
       "verified": false,
-      "ci": true
+      "ci": true,
+      "baseBranch": "develop",
+      "branches": ["develop", "main"]
     }
   },
   "lanes": 1,
@@ -278,6 +280,14 @@ setup を一度最後まで終えたあとは、同じく人が操作するタ�
 拾う元には任意で `project` に GitHub Project を 1 つ登録できる（`owner` は個人か organization の login、`number` は Project の番号）。登録すると、tick は Project の Status と Issue のステータスラベルを両方向で揃える。揃えるのは tick の初めのほう、キューを補充したあと、`judge-apply` の終わりの 3 か所。前回の同期から片方だけが変わっていればもう片方をそれに合わせ、両方が変わっていれば新しいほうに合わせる（同じ秒ならラベル）。同期で書いた Issue は、同じ tick の中ではもう揃えず、次の tick で揃え直す。対象はその拾う元のリポジトリの管理している Issue のうち、すでに Project に入っているものだけ。archive された項目は見ず、Issue を Project に足すこともしない。Status がステータス 8 つのどれでもない（`Todo` や空）ときは何もせず、ステータスラベルを全部外しても Status は消さない。ラベルの遷移が途中の Issue は、終わるまで飛ばす。Project には単一選択の `Status` 欄が要り、ステータス 8 つの選択肢は自分で足す。選択肢が無いときはその Issue を飛ばし、tick の出力に 1 行書く。gh に `project` の権限が要る（`gh auth refresh -s project`）。権限が無い、または Project を読めないときは、tick は 1 行書いて続ける。
 
 `pick` が `Ready` の拾う元は `autoReady: true`（auto-ready。`make setup` が拾う元ごとに尋ね、既定は no）を持てる。tick は、そのリポジトリの開いた管理 Issue のうち、ステータスラベルが Backlog だけで、auto-ready が有効になったのを tick が最初に見た時刻より後に作られたものも一覧する。それより前の Backlog の Issue と、状態にすでにある Issue は拾わない。判定役は Ready の Issue と同じように読み、`autoReady` の印が付く。`auto` はコメントしてから Backlog を Ready に変え（event `auto-ready`）、キューに入れる。`eng` は Backlog から Ready_Eng に変える。auto-ready の Issue の PR は必ず In review にし、AI は merge しない。判定が適用される前に人が Ready にすれば通常の Issue になり、人が別のステータスにすれば止まる。auto-ready を外すと、判定待ちの Backlog の Issue は記録から外れる。
+
+リポジトリごとに `baseBranch`（普段の向き先。PR の向き先であり、AI が merge してよい唯一のブランチ）と `branches`（向き先の候補。`baseBranch` を含める）を持てる。どちらも省略できる。省略すると候補は GitHub の既定ブランチ 1 つで、以下は何も働かない。`make setup` はリポジトリの段で、related だけのリポジトリも含めて 1 つずつ、origin に既定ブランチ・`develop`・`main`・`master` のうち 2 つ以上があるときだけこの 2 欄を尋ねる。普段の向き先（`develop` があれば `develop`、無ければ既定ブランチ）と候補（見つかったもの）を示し、普段の向き先が候補に入っていることを確かめる。再実行では今の値を既定として見せる。見つかったブランチが 2 つ未満なら何も尋ねず、2 欄も書かない。
+
+リポジトリの候補が 2 つ以上あると、Issue ごとに向き先を決める。順序は次のとおり。(1) 候補にあるブランチを指す `base:<branch>` ラベルが 1 つ付いていればそれを使う。(2) そうでなく、どの対象にも候補が 1 つしかなければ、その候補を使う。(3) それ以外は判定役が決める（判定の `base` は候補の名前か、根拠がはっきりしないときの `ask`。本番の障害・緊急・hotfix なら本番側のブランチ、それ以外は普段の向き先を指す）。`base:<branch>` ラベルはステータスラベルではない。ラベルは Issue に 1 つで、すべての対象に効く。対象ごとに、そのブランチがその対象の候補にあればそれを、無ければその対象の `baseBranch` を使う。`base:*` ラベルが 2 つ以上、またはどの対象の候補にも無いブランチは不明として扱い、尋ねる。判定役が Ready_Eng に回す Issue には尋ねない（エンジニアが決める）。決めた向き先は Issue の世代と一緒に記録し、世代が変わるまで保つ。dispatch は `origin/<branch>` から作業を始め、PR の向き先もそれになる。
+
+向き先が不明（`ask`）のとき、tick は候補のラベルと、ラベル無しで Ready に戻されたときに進める向き先を挙げた `needs-base` のコメントを書く。拾う元の `pick` のステータスから拾った Issue は Backlog に戻す。Backlog のまま判定した auto-ready の Issue は、コメントだけを書いて Backlog のままにする。ステータスが変わらなくても、この event は Slack でメンションする。待っている間はその Issue を判定に回さず、尋ねるのは 1 世代に 1 回だけである。人は 2 つの方法で答える。`base:<branch>` ラベルを付ける方法（auto-ready の Issue は再び判定に回り、auto-ready を有効にする前に作られた Issue でもそのラベルの向き先で進む。それ以外は pick のステータスに戻すと、その向き先で進む）と、ラベルを付けずに pick のステータスへ戻す方法（`baseBranch` で進む）である。拾い直した Issue の `autoReady` は、尋ねる前の値を保つ。
+
+リポジトリの `baseBranch` でない向き先への merge は、ほかの条件にかかわらず必ず In review にし、理由を記録する。設定を足した時点で動いていた Issue も、その run が使った向き先で判断する。AI が merge するのは `baseBranch` へだけで、`baseBranch` の無いリポジトリは今までどおりに動く。そうした PR が人によって merge されたのを tick が見つけたら、Done のコメントを書く前に、戻しの PR `<向き先> -> <baseBranch>` を開く（対象が 2 つの Issue ならリポジトリごとに 1 つ）。リンクは Done のコメントに載せる。戻しの PR を merge することはない。同じ向きで開いている PR があればそれを使い、ブランチに差が無ければ開かず、開けなかったときはその理由を Done のコメントに書いて Done は止めない。
 
 任意の `hosts` でマシンを選ぶ。無ければ従来の `lanes`、checkoutのパス、リポジトリの確認結果をこのMacの設定として読む。指定した場合は、マシンごとに並列数とリポジトリのselectorを持つ。`id: local` はこのマシン、ペアリング済みサーバーは変わらないenvironment IDで指定する。`orcaBin` はそのマシンの実行ファイル、遠隔のrepo selectorは親のcheckoutではなくそのマシンに登録したリポジトリを指す。各マシンにGit/ghの認証と同じoriginへのアクセスが必要。`verified` はそのマシンのそのリポジトリで確認が通ったことを表し、そこで通ってからtrueにする。例えば設定の最上位へ次の `hosts` を足す:
 
