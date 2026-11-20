@@ -945,8 +945,13 @@ const finish = (tick: Tick, issue: IssueState): void => {
   if (multi ? statuses.some((s) => s?.state === 'CLOSED') : status.state === 'CLOSED')
     reasons.push('PR が閉じられています。')
   for (const base of new Set(
-    (multi ? targets.map((t) => t.repo) : [repo]).flatMap((r) => {
-      const b = issue.bases[r]
+    // 記録が無い Issue（この版より前に起動）は、run が実際に使った向き先（run.json 由来の origin/<b>）で見る。
+    // それも読めなければ理由を足さない（従来どおり）。
+    (multi
+      ? targets.map((t) => [t.repo, t.baseBranch] as const)
+      : [[repo, targets[0]?.baseBranch ?? ''] as const]
+    ).flatMap(([r, used]) => {
+      const b = issue.bases[r] ?? used.replace(/^origin\//, '')
       return b && restrictedBase(r, b, tick.config.repos) ? [b] : []
     }),
   ))

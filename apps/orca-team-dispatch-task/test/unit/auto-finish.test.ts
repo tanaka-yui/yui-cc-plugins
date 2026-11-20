@@ -683,10 +683,14 @@ test('AU136 partial merge comments retain new decisions', () => {
   }
 })
 
-const mergeWithBase = (baseBranch: string | null, bases: Record<string, string | null>) => {
+const mergeWithBase = (baseBranch: string | null, bases: Record<string, string | null>, usedBase?: string) => {
   const f = runtimeFixture()
   const i = f.track('finishing')
   f.result(i)
+  if (usedBase) {
+    const file = join(i.statusDir, 'workers.json')
+    f.put(file, { ...JSON.parse(readFileSync(file, 'utf8')), base_branch: usedBase })
+  }
   f.put(f.configFile, {
     ...f.raw,
     repos: { ...f.raw.repos, 'acme/app': { ...f.raw.repos['acme/app'], baseBranch } },
@@ -711,11 +715,23 @@ test('AU155 a base other than the configured usual one goes to review even when 
   }
 })
 
+test('AU157 an issue without recorded bases is judged by the base its run actually used', () => {
+  const { f, i } = mergeWithBase('develop', {}, 'origin/main')
+  try {
+    assert.equal(readState('main').issues[i.key]?.phase, 'review')
+    assert.ok(decodedCommentsOf(f).includes('普段の向き先でない（main）への merge は人が確認します。'))
+    assert.ok(!f.calls().includes('pr merge'))
+  } finally {
+    f.cleanup()
+  }
+})
+
 test('AU156 the usual base, a repo without baseBranch and an issue without bases still merge', () => {
   for (const [baseBranch, bases] of [
     ['develop', { 'acme/app': 'develop' }],
     ['develop', {}],
     [null, { 'acme/app': 'main' }],
+    [null, {}],
   ] as const) {
     const { f, i } = mergeWithBase(baseBranch, bases)
     try {
