@@ -2,7 +2,7 @@ import { readState, writeState } from '../../lib/auto-state.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
@@ -835,6 +835,67 @@ test('AU161 a PR already merged while the run was finishing also gets the back P
     assert.equal(readState('main').issues[i.key]?.phase, 'done')
     assert.ok(!f.calls().includes('pr create'))
     assert.ok(decodedCommentsOf(f).includes(`acme/app へ取り込む PR: ${backUrl}`))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU162 a two-repo human merge opens a back PR per repository even after the status directory was archived', () => {
+  const f = runtimeFixture()
+  const issue = f.trackMulti('review')
+  const repos = Object.fromEntries(
+    ['acme/app', 'other/api'].map((r) => [
+      r,
+      { ...f.raw.repos[r as 'acme/app'], verified: true, baseBranch: 'develop' },
+    ]),
+  )
+  f.put(f.configFile, { ...f.raw, lanes: 2, repos })
+  const s = readState('main')
+  const current = s.issues[issue.key]
+  if (!current) throw new Error('issue')
+  current.prs = [
+    { repo: 'other/api', number: 201, url: 'https://github.com/other/api/pull/201' },
+    { repo: 'acme/app', number: 101, url: 'https://github.com/acme/app/pull/101' },
+  ]
+  current.bases = { 'other/api': 'main', 'acme/app': 'main' }
+  writeState('main', s)
+  rmSync(issue.statusDir, { recursive: true, force: true })
+  f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'In review' }] })
+  const merged = (repo: string, number: number) =>
+    multiView(repo, number, { state: 'MERGED', mergedAt: '2026-11-13T05:00:00Z' })
+  f.prViews({ 'other/api': merged('other/api', 201), 'acme/app': merged('acme/app', 101) })
+  f.respond('pr_list', [])
+  writeFileSync(join(f.gh, 'pr_create'), `${backUrl}\n`)
+  try {
+    f.cli('tick')
+    assert.equal(readState('main').issues[issue.key]?.phase, 'done')
+    const calls = f.calls()
+    assert.ok(calls.includes('pr create --repo other/api --base develop --head main'))
+    assert.ok(calls.includes('pr create --repo acme/app --base develop --head main'))
+    const comments = decodedCommentsOf(f)
+    assert.ok(comments.includes(`other/api へ取り込む PR: ${backUrl}`))
+    assert.ok(comments.includes(`acme/app へ取り込む PR: ${backUrl}`))
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU163 a back PR call that times out defers Done to the next tick instead of recording a failure', () => {
+  const { f, i } = humanMergedBackMerge({ 'acme/app': 'main' }, (x) => {
+    x.hook('pr_list', "echo 'timed out' >&2")
+    writeFileSync(join(x.gh, 'pr_list.rc'), '1')
+  })
+  try {
+    assert.equal(readState('main').issues[i.key]?.phase, 'review')
+    assert.ok(!f.calls().includes('issue comment'))
+    assert.ok(!f.calls().includes('pr create'))
+    rmSync(join(f.gh, 'pr_list.rc'))
+    f.respond('pr_list', [{ url: backUrl }])
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'done')
+    const comments = decodedCommentsOf(f)
+    assert.ok(comments.includes(`acme/app へ取り込む PR: ${backUrl}`))
+    assert.ok(!comments.includes('timed out'))
   } finally {
     f.cleanup()
   }

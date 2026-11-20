@@ -12,8 +12,11 @@ export type BackMerge =
   | { kind: 'existing'; url: string }
   | { kind: 'no-diff' }
   | { kind: 'error'; why: string }
+  // gh の呼び出しが予算で断られた・時間切れだった。失敗にせず次の tick でやり直す（list が先に開いた PR を見つける）
+  | { kind: 'deferred' }
 
 const NO_COMMITS = 'No commits between'
+const TIMED_OUT = 'timed out'
 const firstLine = (text: string): string =>
   text
     .split('\n')
@@ -36,6 +39,7 @@ export const openBackMerge = (repo: string, from: string, to: string, title: str
     '--json',
     'url',
   ])
+  if (listed.rc !== 0 && listed.stderr.includes(TIMED_OUT)) return { kind: 'deferred' }
   if (listed.rc !== 0) return { kind: 'error', why: firstLine(listed.stderr) || 'PR の一覧を読めません' }
   const existing = asString(asObject(asArray(parseJson(listed.stdout))?.[0])?.url)
   if (existing) return { kind: 'existing', url: existing }
@@ -57,6 +61,7 @@ export const openBackMerge = (repo: string, from: string, to: string, title: str
     const url = created.stdout.trim().split('\n').at(-1)?.trim() ?? ''
     return url ? { kind: 'opened', url } : { kind: 'error', why: 'PR の URL を読めません' }
   }
+  if (created.stderr.includes(TIMED_OUT)) return { kind: 'deferred' }
   const output = `${created.stderr}\n${created.stdout}`
   return output.includes(NO_COMMITS)
     ? { kind: 'no-diff' }
@@ -88,6 +93,7 @@ export const backMergeInput = (
       `${from} を ${to} へ取り込む（${issue.key}）`,
       `${issueUrl(issue)} と ${prUrl} の取り込み。`,
     )
+    if (result.kind === 'deferred') return null
     if (result.kind === 'opened' || result.kind === 'existing') backPrs.push({ repo: r, url: result.url })
     else backFailures.push({ repo: r, why: result.kind === 'no-diff' ? '差分がありません' : result.why })
   }

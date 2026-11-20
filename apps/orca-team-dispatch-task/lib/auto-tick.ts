@@ -1058,7 +1058,11 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
   const statuses = issue.prs.map((p) => prStatus(p.repo, p.number))
   if (!statuses.every((s) => s?.state === 'MERGED')) return
   const repo = issue.targets[0] ?? ''
-  const targets = repoTargets(workersOf(issue), tick.config.repos[repo]?.checkout ?? '')
+  // review に入った Issue は後片付けで状態ディレクトリが移されていることが多く、run の記録（workers.json）から
+  // 2 つ目の対象が読めない。そのときは状態の targets から対象を立てる（向き先は issue.bases から引く）
+  const fromRun = repoTargets(workersOf(issue), tick.config.repos[repo]?.checkout ?? '')
+  const targets =
+    fromRun.length < 2 && issue.targets.length > 1 ? issue.targets.map((r) => ({ repo: r, baseBranch: '' })) : fromRun
   const back = issue.pendingLabel ? {} : backMergeInput(issue, targets, repo, tick.config.repos)
   if (!back) return
   if (
