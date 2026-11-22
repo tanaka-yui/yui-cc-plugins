@@ -646,6 +646,7 @@ export const runSetup = (
   }
   const lanes = () => {
     say('並列数は worktree の数で数える（1 件が使う数）')
+    say('  左が review_mode（レビュー役を付けるか）、右が phase_b（計画役と実装役に分けるか）')
     for (const review_mode of ['off', 'on'] as const)
       for (const phase_b of ['off', 'on'] as const)
         say(

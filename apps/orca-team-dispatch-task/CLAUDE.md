@@ -601,7 +601,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 
 ### C3b: make setup の遠くの確認
 
-- 確認は base64 で包んだ1本の node スクリプトを、このマシンでは spawnSync、遠くでは Orca の端末で実行する。一時ディレクトリの中に `worktree` と `time.txt` を置き、checkout の HEAD から detached worktree を作る。確認スクリプト自身は SIGINT を無視し、このマシンの呼び出し元も実行中だけ無視する。確認中のコマンドが止まってもスクリプトは後片付けと結果の出力まで進む。後片付けの各段の例外も失敗の結果として必ず目印を返し、残りうる一時ディレクトリの場所を表示する。コマンドの出力は `stdio: ['ignore', 2, 2]` で端末へ流し、stdout は目印だけにする。道具の名前はシェルの文に埋めず argv で渡す。
+- 確認は base64 で包んだ1本の node スクリプトを、このマシンでは spawnSync、遠くでは Orca の端末で実行する。一時ディレクトリはホームの下の `~/.cache/orca-auto-verify/run-*`（`os.tmpdir()` は使わない。EC2 で /home だけを EBS にした構成では /tmp がルートのディスクで、並列数の推奨に使う空きディスク `statfs(homedir)` とも別になるため。SV16）で、その中に `worktree` と `time.txt` を置き、checkout の HEAD から detached worktree を作る。確認スクリプト自身は SIGINT を無視し、このマシンの呼び出し元も実行中だけ無視する。確認中のコマンドが止まってもスクリプトは後片付けと結果の出力まで進む。後片付けの各段の例外も失敗の結果として必ず目印を返し、残りうる一時ディレクトリの場所を表示する。コマンドの出力は `stdio: ['ignore', 2, 2]` で端末へ流し、stdout は目印だけにする。道具の名前はシェルの文に埋めず argv で渡す。
 - 遠くの確認は `--worktree path:<遠くの checkout>`（C3a の probe と同じ）。組の `id:` は repo の id で、worktree セレクタではない。段7で host ごとに一度一覧を読み、組に対応するパスがなければ確かめずに未確認にする。5秒おきに読んで30分で時間切れにし、作れた端末は必ず close する。時間切れでは残りうる一時ディレクトリの場所を表示する。
 - このマシンの確認の既定は C3a のまま。遠くの確認は、コマンドとセレクタが変わっておらず、前の設定で確認済みの組だけが既定 no。C3a の未確認の組は Enter で確かめる。全体の repos の verified はこのマシンの結果だけで決める。
 - `hosts[].repos[r].measure` は、通って最大メモリが読めたときだけ `{ peakMemoryMb, diskGrowthMb, measuredAt }` を持つ（ディスクが不明なら0）。引き継ぎは verified と同じ条件。`worktreeCost` は組の最大値の2倍で、メモリ4096 MB・ディスク1 MBが下限。測れなければ従来の定数を使う。hosts の無い形には measure を持たせず、config.json に null の measure は書かない。

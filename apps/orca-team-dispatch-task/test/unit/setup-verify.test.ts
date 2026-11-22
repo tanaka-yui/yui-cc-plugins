@@ -318,3 +318,21 @@ test('SV15 an unexpected tool lookup exception also cleans up and emits a result
     rmSync(dir, { recursive: true, force: true })
   }
 })
+test('SV16 the throwaway worktree is made under the home directory, not os.tmpdir()', () => {
+  const dir = checkout()
+  const home = mkdtempSync(join(tmpdir(), 'verify-home-'))
+  const saved = process.env.HOME
+  process.env.HOME = home
+  try {
+    const r = runVerifyLocal(dir, ['pwd > "$HOME/where"'], [])
+    assert.equal(r.ok, true)
+    assert.ok(r.tmpPath?.startsWith(join(home, '.cache', 'orca-auto-verify', 'run-')), String(r.tmpPath))
+    assert.equal(readFileSync(join(home, 'where'), 'utf8').trim(), join(r.tmpPath ?? '', 'worktree'))
+    clean(dir, r.tmpPath)
+  } finally {
+    if (saved === undefined) delete process.env.HOME
+    else process.env.HOME = saved
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})

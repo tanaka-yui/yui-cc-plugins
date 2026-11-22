@@ -19,6 +19,9 @@ export const VERIFY_END = '@@orca-auto-verify:end@@'
 export const VERIFY_TMP = '@@orca-auto-verify:tmp@@'
 export const VERIFY_SCRIPT_FAILED = '確認のスクリプト'
 
+// 確認の worktree はホームの下（~/.cache/orca-auto-verify/run-*）に作る。os.tmpdir() の /tmp はルートのディスクのことがあり
+// （EC2 で /home/ubuntu だけを EBS にした構成）、build がそちらを使ううえ、並列数の推奨に使う空きディスク（setup-host の
+// statfs(homedir)）とも別のディスクになるため
 const VERIFY_BODY = String.raw`
 process.on('SIGINT', () => {});
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
@@ -34,7 +37,9 @@ const disk = () => {
 };
 try {
   git('prune');
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orca-auto-verify-'));
+  const base = path.join(os.homedir(), '.cache', 'orca-auto-verify');
+  fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+  tmp = fs.mkdtempSync(path.join(base, 'run-'));
   result.tmpPath = tmp;
   console.log('@@orca-auto-verify:tmp@@' + tmp + '@@');
   worktree = path.join(tmp, 'worktree');
