@@ -1,7 +1,7 @@
 // --auto precheck and difficulty judgment. No runtime npm dependencies.
 
 import { applyFlow, baseLabels, candidatesOf, resolveBases, restrictedBase } from '../lib/auto-base.ts'
-import { pickSources, readAutoConfig, relayAllowance, sourceAutoMerge } from '../lib/auto-config.ts'
+import { intakeActiveRepos, pickSources, readAutoConfig, relayAllowance, sourceAutoMerge } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
 import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
 import { syncProjects } from '../lib/auto-project.ts'
@@ -365,6 +365,8 @@ const main = (argv: string[]): number => {
       state,
       save,
       log: console.log,
+      active: intakeActiveRepos(config),
+      statuses: new Map(),
       failed: new Set(),
       touched: new Set(),
     })

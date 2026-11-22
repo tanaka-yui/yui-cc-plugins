@@ -596,6 +596,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - 2026-11-17 に読み取りだけで確かめたこと: 固定した問い合わせは実物の Project で通る。番号違いは rc 1・stdout に `data` と `errors`（`NOT_FOUND`）・stderr に `gh: <message>`。owner が無いと rc 0 で `repositoryOwner: null`。
 - 2026-11-17 の実機（このMac、gh 2.103.0、使い捨ての個人の Project `tanaka-yui/projects/1` を orca-auto-e2e につなぎ、Status にステータス 8 つと `Todo` を手で足した。review_mode/phase_b は off）: 初めて見る食い違い（ラベルがあと → Status をラベルに）、Status だけ（→ ラベル）、ラベルだけ（→ Status）、両方（ラベルが先なら Status に、Status が先ならラベルに。差は 2 秒）、`Todo`（何もしない・組も書き換えない）を 1 tick ずつで通した。Project で Ready にした #22 は、その tick でラベルが Ready になり（同じ tick の `syncIssues` には検索の遅れで出ず）、次の tick で拾われ、起動した tick の終わりに Status が In progress、PR を出した tick に In review、人が merge した次の tick に Done になった。mutation は成功し、tick をまたいだ読み直しは直前の REST のラベルの書き込みを返した。
 - 未確認: `INSUFFICIENT_SCOPES` の実物、mutation のエラーの形、同じ tick の中で REST の書き込みのすぐあとに GraphQL が古い値を返すか（`touched` で避けている）、Status の `updatedAt` がほかの出来事で動くか、organization の Project。
+- **`active` のリポジトリ（intake の `existing` が `active`。`intakeActiveRepos`）は、管理の印の無い Issue も同期する**（`ProjectSyncContext.active`。照合は大文字小文字を無視）。それ以外は今までどおり印の付いた項目だけ。Status が `Todo` など 8 つのステータス名でないとき（`''`）は、**全 Project で**前回の組が無ければ組 `{ status: '', label }` を記録するだけ、ラベルが前回から動いて空でなければ Status をラベルに書き、それ以外は組が変わったときだけ記録する（以前は何もしなかった）。`ctx.statuses`（`owner/repo#N` → Status 名、ステータス名でなければ `''`）には読めた Project の項目を全部入れる（`touched` や飛ばした項目も。読めなかった Project の項目と、印が無く `active` でもない項目は入らない）。
 - 回帰: AU125〜131（AU128b〜d、AU129b〜d、AU130b を含む）。
 
 ### C3a: make auto-setup

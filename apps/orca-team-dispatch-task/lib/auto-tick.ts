@@ -4,6 +4,7 @@ import { autoCleanup, confirmStopped, pushBranches, unrecordedWorker } from './a
 import { limitBreakdown, renderComment } from './auto-comment.ts'
 import {
   type AutoConfig,
+  intakeActiveRepos,
   pickSources,
   readAutoConfig,
   readIntakeRepos,
@@ -1276,6 +1277,8 @@ export const runTick = (name: string): number => {
       state,
       save: tick.save,
       log: console.log,
+      active: intakeActiveRepos(config),
+      statuses: new Map(),
       failed: new Set(),
       touched: new Set(),
     }

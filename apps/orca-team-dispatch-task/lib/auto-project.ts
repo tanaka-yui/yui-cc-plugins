@@ -36,6 +36,10 @@ export type ProjectSyncContext = {
   state: AutoState
   save: () => void
   log: (line: string) => void
+  // 管理の印が無い Issue も同期するリポジトリ（intake の existing が active）。名前の大文字小文字は無視する
+  active: ReadonlySet<string>
+  // その tick で読めた Project の項目の `owner/repo#N` → Status。ステータス名でなければ ''。読めなかった Project の項目は入らない
+  statuses: Map<string, string>
   failed: Set<string>
   touched: Set<string>
 }
@@ -45,7 +49,11 @@ const seconds = (time: string): number => {
 }
 export const decideProjectSync = (prev: ProjectPair | undefined, item: ProjectItem): SyncDecision => {
   const { status, label } = item
-  if (!status) return { action: 'skip' }
+  // Todo など、ステータス名でない Status。ラベルが前回から動いたときだけ Status をラベルに揃える
+  if (!status)
+    return prev && label && prev.label !== label
+      ? { action: 'setStatus', pair: { status: label, label } }
+      : { action: 'record', pair: { status: '', label } }
   if (label === status) return { action: 'record', pair: { status, label } }
   const statusChanged = !prev || prev.status !== status
   const labelChanged = !prev || prev.label !== label
@@ -65,7 +73,7 @@ export const decideProjectSync = (prev: ProjectPair | undefined, item: ProjectIt
 const READ_QUERY = `query($owner:String!,$number:Int!,$after:String){ repositoryOwner(login:$owner){ ... on ProjectV2Owner { projectV2(number:$number){ id field(name:"Status"){ __typename ... on ProjectV2SingleSelectField { id options { id name } } } items(first:${AUTO_GITHUB_PAGE_SIZE}, after:$after){ pageInfo{hasNextPage endCursor} nodes{ id isArchived content{ __typename ... on Issue{ number repository{nameWithOwner} labels(first:${AUTO_PROJECT_LABEL_LIMIT}){nodes{name}} timelineItems(last:${AUTO_PROJECT_LABEL_LIMIT}, itemTypes:[LABELED_EVENT,UNLABELED_EVENT]){ nodes{ __typename ... on LabeledEvent{createdAt label{name}} ... on UnlabeledEvent{createdAt label{name}} } } } } status: fieldValueByName(name:"Status"){ __typename ... on ProjectV2ItemFieldSingleSelectValue{ name optionId updatedAt } } } } } } } }`
 const statusName = (name: string): string =>
   STATUS_LABELS.find((s) => s.name.toLowerCase() === name.toLowerCase())?.name ?? ''
-const projectItem = (node: Json, repos: string[]): ProjectItem | null => {
+const projectItem = (node: Json, repos: string[], active: ReadonlySet<string>): ProjectItem | null => {
   if (get(node, 'isArchived') === true) return null
   const content = get(node, 'content')
   const number = get(content, 'number')
@@ -73,7 +81,9 @@ const projectItem = (node: Json, repos: string[]): ProjectItem | null => {
   const repo = repos.find((r) => r.toLowerCase() === name?.toLowerCase())
   const itemId = asString(get(node, 'id'))
   const labels = labelNames(get(content, 'labels', 'nodes'))
-  if (!repo || !itemId || typeof number !== 'number' || !MANAGED_LABELS.some((l) => labels.includes(l))) return null
+  if (!repo || !itemId || typeof number !== 'number') return null
+  const managed = MANAGED_LABELS.some((l) => labels.includes(l))
+  if (!managed && ![...active].some((a) => a.toLowerCase() === repo.toLowerCase())) return null
   const label = STATUS_LABELS.find((s) => labels.includes(s.name))?.name ?? ''
   let labelAt = ''
   for (const event of asArray(get(content, 'timelineItems', 'nodes')) ?? []) {
@@ -93,7 +103,11 @@ const projectItem = (node: Json, repos: string[]): ProjectItem | null => {
     statusAt: asString(get(node, 'status', 'updatedAt')) ?? '',
   }
 }
-export const readProject = (ref: ProjectRef, repos: string[]): ProjectRead | ProjectReadError => {
+export const readProject = (
+  ref: ProjectRef,
+  repos: string[],
+  active: ReadonlySet<string> = new Set(),
+): ProjectRead | ProjectReadError => {
   const result: ProjectRead = { projectId: '', fieldId: '', options: {}, items: [] }
   let after: string | null = null
   const failure = (error: string): ProjectReadError => ({ error, outOfBudget: false })
@@ -145,7 +159,7 @@ export const readProject = (ref: ProjectRef, repos: string[]): ProjectRead | Pro
       if (name && id !== null && result.options[name] === undefined) result.options[name] = id
     }
     for (const node of asArray(get(project, 'items', 'nodes')) ?? []) {
-      const parsed = projectItem(node, repos)
+      const parsed = projectItem(node, repos, active)
       if (parsed) result.items.push(parsed)
     }
     if (get(project, 'items', 'pageInfo', 'hasNextPage') !== true) return result
@@ -169,13 +183,14 @@ export const syncProjects = (ctx: ProjectSyncContext): void => {
   for (const [key, group] of projects) {
     if (ctx.failed.has(key)) continue
     if (!canAutoCall('Project 同期')) return
-    const project = readProject(group.ref, group.repos)
+    const project = readProject(group.ref, group.repos, ctx.active)
     if ('error' in project) {
       if (project.outOfBudget) return
       ctx.log(`Project を読めません: ${key}: ${project.error}`)
       ctx.failed.add(key)
       continue
     }
+    for (const item of project.items) ctx.statuses.set(item.key, item.status)
     for (const item of project.items) {
       if (ctx.touched.has(item.key) || ctx.state.issues[item.key]?.pendingLabel) continue
       const decision = decideProjectSync(ctx.state.projectSync[item.key], item)

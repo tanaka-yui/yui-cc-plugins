@@ -51,7 +51,22 @@ test('AU127 decideProjectSync follows the table', () => {
     action: 'setStatus',
     pair: same('In review'),
   })
-  assert.deepEqual(decideProjectSync(ready, snapshot({ status: '' })), { action: 'skip' })
+  assert.deepEqual(decideProjectSync(ready, snapshot({ status: '', label: 'Ready' })), {
+    action: 'record',
+    pair: { status: '', label: 'Ready' },
+  })
+  assert.deepEqual(decideProjectSync(undefined, snapshot({ status: '', label: '' })), {
+    action: 'record',
+    pair: { status: '', label: '' },
+  })
+  assert.deepEqual(decideProjectSync({ status: '', label: '' }, snapshot({ status: '', label: 'Backlog' })), {
+    action: 'setStatus',
+    pair: same('Backlog'),
+  })
+  assert.deepEqual(decideProjectSync({ status: 'Ready', label: 'Ready' }, snapshot({ status: '', label: '' })), {
+    action: 'record',
+    pair: { status: '', label: '' },
+  })
   assert.deepEqual(decideProjectSync(ready, snapshot({ label: '' })), {
     action: 'record',
     pair: { status: 'Ready', label: '' },
@@ -345,6 +360,8 @@ const context = (f: ReturnType<typeof fixture>) => {
       saves++
     },
     log: (line) => lines.push(line),
+    active: new Set(),
+    statuses: new Map(),
     failed: new Set(),
     touched: new Set(),
   }
@@ -486,13 +503,14 @@ test('AU129 syncProjects writes labels and Status and records pairs', () => {
   const ignored = fixture()
   try {
     const { ctx, saves } = context(ignored)
-    ctx.state.projectSync['acme/app#1'] = { status: 'Ready', label: 'Ready' }
+    ctx.state.projectSync['acme/app#1'] = { status: '', label: 'Pending' }
     ignored.respond('api_graphql', page([item({ status: 'Todo', labels: ['from-slack', 'Pending'] })]))
     syncProjects(ctx)
-    assert.deepEqual(ctx.state.projectSync['acme/app#1'], { status: 'Ready', label: 'Ready' })
+    assert.deepEqual(ctx.state.projectSync['acme/app#1'], { status: '', label: 'Pending' })
     assert.equal(saves(), 0)
     assert.ok(!ignored.calls().includes('issue edit'))
     assert.ok(!ignored.calls().includes('updateProjectV2ItemFieldValue'))
+    assert.equal(ctx.statuses.get('acme/app#1'), '')
   } finally {
     ignored.cleanup()
   }
@@ -554,6 +572,87 @@ test('AU129 syncProjects writes labels and Status and records pairs', () => {
     } finally {
       f.cleanup()
     }
+  }
+})
+test('AU188 active のリポジトリでは印の無い Issue も同期し、Project の Ready をラベルにする', () => {
+  const f = fixture()
+  try {
+    const { ctx } = context(f)
+    ctx.active = new Set(['ACME/App'])
+    f.respond('api_graphql', page([item({ number: 30, labels: [], status: 'Ready' })]))
+    syncProjects(ctx)
+    assert.ok(f.calls().includes('issue edit 30 --repo acme/app --add-label Ready'))
+    assert.equal(ctx.statuses.get('acme/app#30'), 'Ready')
+    assert.deepEqual(ctx.state.projectSync['acme/app#30'], { status: 'Ready', label: 'Ready' })
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU189 active でないリポジトリでは印の無い Issue に触らず、statuses にも入れない', () => {
+  const f = fixture()
+  try {
+    const { ctx } = context(f)
+    f.respond('api_graphql', page([item({ number: 30, labels: [], status: 'Ready' })]))
+    syncProjects(ctx)
+    assert.ok(!f.calls().includes('issue edit'))
+    assert.ok(!f.calls().includes('updateProjectV2ItemFieldValue'))
+    assert.equal(ctx.statuses.has('acme/app#30'), false)
+    assert.deepEqual(ctx.state.projectSync, {})
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU189b statuses に読めた項目を全部入れる（touched・Status 名でないものも）', () => {
+  const f = fixture()
+  try {
+    const { ctx } = context(f)
+    ctx.touched.add('acme/app#1')
+    f.respond(
+      'api_graphql',
+      page([item({ number: 1, status: 'Done' }), item({ id: 'PVTI_2', number: 2, status: 'Todo' })]),
+    )
+    syncProjects(ctx)
+    assert.equal(ctx.statuses.get('acme/app#1'), 'Done')
+    assert.equal(ctx.statuses.get('acme/app#2'), '')
+    const failed = fixture()
+    try {
+      const other = context(failed)
+      failed.respond('api_graphql', {})
+      failed.put(join(failed.gh, 'api_graphql.rc'), 1)
+      syncProjects(other.ctx)
+      assert.equal(other.ctx.statuses.size, 0)
+    } finally {
+      failed.cleanup()
+    }
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU190 Todo の Issue はラベルが変わったときだけ Status を書く', () => {
+  const f = fixture()
+  try {
+    const { ctx } = context(f)
+    const writes = () =>
+      f
+        .calls()
+        .split('\n')
+        .filter((s) => s.includes('updateProjectV2ItemFieldValue')).length
+    const { pagesFile } = projectStub(f, [page([item({ status: 'Todo', labels: ['from-slack'] })])])
+    syncProjects(ctx)
+    assert.equal(writes(), 0)
+    assert.deepEqual(ctx.state.projectSync['acme/app#1'], { status: '', label: '' })
+    f.put(pagesFile, [page([item({ status: 'Todo', labels: ['from-slack', 'Backlog'] })])])
+    ctx.touched.clear()
+    syncProjects(ctx)
+    assert.equal(writes(), 1)
+    assert.ok(f.calls().includes('option=opt_backlog'))
+    assert.deepEqual(ctx.state.projectSync['acme/app#1'], { status: 'Backlog', label: 'Backlog' })
+    ctx.touched.clear()
+    syncProjects(ctx)
+    assert.equal(writes(), 1)
+    assert.ok(!f.calls().includes('issue edit'))
+  } finally {
+    f.cleanup()
   }
 })
 test('AU129b syncProjects stops writing when the budget runs out', () => {
