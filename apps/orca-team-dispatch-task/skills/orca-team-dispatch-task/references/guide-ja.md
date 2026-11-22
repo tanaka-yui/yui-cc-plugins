@@ -230,15 +230,32 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 と書く。zsh は引用符なしの `[1m]` をファイル名のパターンとして読み、スクリプトが動く前に
 `no matches found` で呼び出しごと止める。
 
+### 端末から設定し直す
+
+人がプラグインのディレクトリの端末で `make setup <name>` を実行して、これらの設定を変えられる（既定の名前は
+`main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。どの質問も今の値を
+既定として示し、Enter でそのまま残す。尋ねるのは 3 つ:
+
+1. 役ごとの agent・model・effort と、上のトグル。変わった値だけを、確認のあと `config-edit.ts` を 1 回呼んで
+   global 層に書く。`--auto` の checkout に project 層があれば名指しする（そこでは project 層が global 層より勝つ）。
+   トグルは手動の dispatch の既定で、`--auto` の `review_mode` と `phase_b` は `make roles <name>` の値を使う。
+2. `auto/<name>/config.json` の `--auto` の判定役の model と effort。そのファイルが無いとき、または
+   `make auto-setup <name>` が途中のときは飛ばす。tick のロックの中で書き、`judge` だけを置き換える。
+3. Orca に登録したこのマシンの git リポジトリごとに、Orca が新しい worktree を作るディレクトリ
+   （`orca project setup-update --worktree-base-path`）。空き容量と checkout と同じディスクかを示し、Orca から
+   読み直して確かめる。今ある worktree は動かない。Orca の既定に戻すことと遠くのマシンは Orca の設定画面で行う。
+
+`--auto` の設定そのものは `make auto-setup <name>`。
+
 ## Auto モード
 
 `--auto` は slack-issue-intake が管理する設定済みリポジトリの優先度キューを1本にまとめる。開いた Ready の Issue のうち、`from-slack` または `slack-thread` を持つものを拾う。キュー内では Ready のままで、dispatch時に動かす。難易度の判定、設定した役の起動、IssueごとのRunの進行、PR作成、条件を満たす変更のmergeまたは確認依頼、後片付けを行う。このMacまたはペアリング済みサーバーへ振り分け（workerの配置は `--on` を使う）、実装対象は Issue ごとに 2 つまでで、両方を同じ 1 台で動かす。3 つ以上の対象は Ready_Eng に回す。
 
 ### 設定と前提
 
-実装するリポジトリごとに専用checkoutをcloneし、Orcaに登録しておく。未コミットの変更があればdispatchしない。設定は `~/.claude/config/orca-team-dispatch-task/auto/main/config.json`（または `ORCA_DISPATCH_CONFIG_HOME` 配下）。`intakeConfigs` に slack-issue-intake の `config.json` を 1 つ以上（Slack のワークスペースごとに 1 つ）並べる。それらのリポジトリ一覧を並び順に重複なくまとめたものを正本とし、`sources` でその項目と関連する実装リポジトリを選ぶ。古い 1 つの `intakeConfig` も 1 件の一覧として読み、`make setup` が `intakeConfigs` に書き換える。両方あれば設定ごと不正。読めない intake の設定はその分のリポジトリだけを外し、tick がそれを 1 行出す。
+実装するリポジトリごとに専用checkoutをcloneし、Orcaに登録しておく。未コミットの変更があればdispatchしない。設定は `~/.claude/config/orca-team-dispatch-task/auto/main/config.json`（または `ORCA_DISPATCH_CONFIG_HOME` 配下）。`intakeConfigs` に slack-issue-intake の `config.json` を 1 つ以上（Slack のワークスペースごとに 1 つ）並べる。それらのリポジトリ一覧を並び順に重複なくまとめたものを正本とし、`sources` でその項目と関連する実装リポジトリを選ぶ。古い 1 つの `intakeConfig` も 1 件の一覧として読み、`make auto-setup` が `intakeConfigs` に書き換える。両方あれば設定ごと不正。読めない intake の設定はその分のリポジトリだけを外し、tick がそれを 1 行出す。
 
-人がプラグインのディレクトリのターミナルで `make setup <name>` を実行する（既定は `main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。12 段で、前提、拾う元、関連 checkout、任意の Project、ラベル、マシン、確認コマンド（`claude -p` に読み取りの道具だけで案を出させられる。決めるのは人）、並列数、レビューモードと間隔、保存、automation 登録、権限の承認へ進む。拾う元の段は slack-issue-intake の名前つきのホームの `~/.slack-issue-intake-<名前>/config.json` を並べて複数選ばせ、ほかの絶対パスも足せる（名前なしの `~/.slack-issue-intake` は候補に出さないが、`intakeConfigs` にすでにあるパスは今までどおり並べて既定で選び、読む）。
+人がプラグインのディレクトリのターミナルで `make auto-setup <name>` を実行する（既定は `main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。12 段で、前提、拾う元、関連 checkout、任意の Project、ラベル、マシン、確認コマンド（`claude -p` に読み取りの道具だけで案を出させられる。決めるのは人）、並列数、レビューモードと間隔、保存、automation 登録、権限の承認へ進む。拾う元の段は slack-issue-intake の名前つきのホームの `~/.slack-issue-intake-<名前>/config.json` を並べて複数選ばせ、ほかの絶対パスも足せる（名前なしの `~/.slack-issue-intake` は候補に出さないが、`intakeConfigs` にすでにあるパスは今までどおり並べて既定で選び、読む）。
 
 各段の答えは `setup.json` に残し、中断したら再実行で済んだ段から再開する。完了後のやり直しは Enter で今の値を保つ。確認コマンドは checkout の `HEAD` から切った一時 worktree で、このマシンと、そのリポジトリを扱う遠くのマシン（Orca の端末）で走らせ、通ったマシンとリポジトリの組だけを確認済みにする。足りない道具は並べるだけで入れない。並列数の推奨は CPU・メモリの総量・空きディスクから求め、確認で最大メモリとディスクの増え方を測れたときは、余裕を見込んだその値で 1 worktree 分の既定値を置き換える。推奨は Issue 数ではなく worktree 数で数える。
 
@@ -279,9 +296,9 @@ setup を一度最後まで終えたあとは、同じく人が操作するタ�
 
 拾う元には任意で `project` に GitHub Project を 1 つ登録できる（`owner` は個人か organization の login、`number` は Project の番号）。登録すると、tick は Project の Status と Issue のステータスラベルを両方向で揃える。揃えるのは tick の初めのほう、キューを補充したあと、`judge-apply` の終わりの 3 か所。前回の同期から片方だけが変わっていればもう片方をそれに合わせ、両方が変わっていれば新しいほうに合わせる（同じ秒ならラベル）。同期で書いた Issue は、同じ tick の中ではもう揃えず、次の tick で揃え直す。対象はその拾う元のリポジトリの管理している Issue のうち、すでに Project に入っているものだけ。archive された項目は見ず、Issue を Project に足すこともしない。Status がステータス 8 つのどれでもない（`Todo` や空）ときは何もせず、ステータスラベルを全部外しても Status は消さない。ラベルの遷移が途中の Issue は、終わるまで飛ばす。Project には単一選択の `Status` 欄が要り、ステータス 8 つの選択肢は自分で足す。選択肢が無いときはその Issue を飛ばし、tick の出力に 1 行書く。gh に `project` の権限が要る（`gh auth refresh -s project`）。権限が無い、または Project を読めないときは、tick は 1 行書いて続ける。
 
-`pick` が `Ready` の拾う元は `autoReady: true`（auto-ready。`make setup` が拾う元ごとに尋ね、既定は no）を持てる。tick は、そのリポジトリの開いた管理 Issue のうち、ステータスラベルが Backlog だけで、auto-ready が有効になったのを tick が最初に見た時刻より後に作られたものも一覧する。それより前の Backlog の Issue と、状態にすでにある Issue は拾わない。判定役は Ready の Issue と同じように読み、`autoReady` の印が付く。`auto` はコメントしてから Backlog を Ready に変え（event `auto-ready`）、キューに入れる。`eng` は Backlog から Ready_Eng に変える。auto-ready の Issue の PR は In review にし、AI は merge しない。ただし拾う元が `autoMerge: true` も持つときは別で（`make setup` が auto-ready に yes と答えた直後に尋ね、既定は no。`autoReady` なしでは意味がなく、`autoMerge` だけがある設定は拒む）、ほかの merge の条件がそろえば AI が merge し、`auto-ready` のコメントもそう書く（決めた向き先が `baseBranch` でなければ書かない）。`autoMerge` は後述の向き先の制限を外さない。`baseBranch` でない向き先への merge は In review のままになる。判定が適用される前に人が Ready にすれば通常の Issue になり、人が別のステータスにすれば止まる。auto-ready を外すと、判定待ちの Backlog の Issue は記録から外れる。
+`pick` が `Ready` の拾う元は `autoReady: true`（auto-ready。`make auto-setup` が拾う元ごとに尋ね、既定は no）を持てる。tick は、そのリポジトリの開いた管理 Issue のうち、ステータスラベルが Backlog だけで、auto-ready が有効になったのを tick が最初に見た時刻より後に作られたものも一覧する。それより前の Backlog の Issue と、状態にすでにある Issue は拾わない。判定役は Ready の Issue と同じように読み、`autoReady` の印が付く。`auto` はコメントしてから Backlog を Ready に変え（event `auto-ready`）、キューに入れる。`eng` は Backlog から Ready_Eng に変える。auto-ready の Issue の PR は In review にし、AI は merge しない。ただし拾う元が `autoMerge: true` も持つときは別で（`make auto-setup` が auto-ready に yes と答えた直後に尋ね、既定は no。`autoReady` なしでは意味がなく、`autoMerge` だけがある設定は拒む）、ほかの merge の条件がそろえば AI が merge し、`auto-ready` のコメントもそう書く（決めた向き先が `baseBranch` でなければ書かない）。`autoMerge` は後述の向き先の制限を外さない。`baseBranch` でない向き先への merge は In review のままになる。判定が適用される前に人が Ready にすれば通常の Issue になり、人が別のステータスにすれば止まる。auto-ready を外すと、判定待ちの Backlog の Issue は記録から外れる。
 
-リポジトリごとに `baseBranch`（普段の向き先。PR の向き先であり、AI が merge してよい唯一のブランチ）と `branches`（向き先の候補。`baseBranch` を含める）を持てる。どちらも省略できる。省略すると候補は GitHub の既定ブランチ 1 つで、以下は何も働かない。`make setup` はリポジトリの段で、related だけのリポジトリも含めて 1 つずつ、origin に既定ブランチ・`develop`・`main`・`master` のうち 2 つ以上があるときだけこの 2 欄を尋ねる。普段の向き先（`develop` があれば `develop`、無ければ既定ブランチ）と候補（見つかったもの）を示し、普段の向き先が候補に入っていることを確かめる。再実行では今の値を既定として見せる。見つかったブランチが 2 つ未満なら何も尋ねず、2 欄も書かない。
+リポジトリごとに `baseBranch`（普段の向き先。PR の向き先であり、AI が merge してよい唯一のブランチ）と `branches`（向き先の候補。`baseBranch` を含める）を持てる。どちらも省略できる。省略すると候補は GitHub の既定ブランチ 1 つで、以下は何も働かない。`make auto-setup` はリポジトリの段で、related だけのリポジトリも含めて 1 つずつ、origin に既定ブランチ・`develop`・`main`・`master` のうち 2 つ以上があるときだけこの 2 欄を尋ねる。普段の向き先（`develop` があれば `develop`、無ければ既定ブランチ）と候補（見つかったもの）を示し、普段の向き先が候補に入っていることを確かめる。再実行では今の値を既定として見せる。見つかったブランチが 2 つ未満なら何も尋ねず、2 欄も書かない。
 
 リポジトリの候補が 2 つ以上あると、Issue ごとに向き先を決める。順序は次のとおり。(1) 候補にあるブランチを指す `base:<branch>` ラベルが 1 つ付いていればそれを使う。(2) そうでなく、どの対象にも候補が 1 つしかなければ、その候補を使う。(3) それ以外は判定役が決める（判定の `base` は候補の名前か、根拠がはっきりしないときの `ask`。本番の障害・緊急・hotfix なら本番側のブランチ、それ以外は普段の向き先を指す）。`base:<branch>` ラベルはステータスラベルではない。ラベルは Issue に 1 つで、すべての対象に効く。対象ごとに、そのブランチがその対象の候補にあればそれを、無ければその対象の `baseBranch` を使う。`base:*` ラベルが 2 つ以上、またはどの対象の候補にも無いブランチは不明として扱い、尋ねる。候補が 2 つ以上の対象が 1 つも無ければ、`base:*` ラベルは読まず、どの対象も今までどおり `baseBranch`（無ければ既定ブランチ）を使う。判定役が Ready_Eng に回す Issue には尋ねない（エンジニアが決める）。決めた向き先は Issue の世代と一緒に記録し、世代が変わるまで保つ。dispatch は `origin/<branch>` から作業を始め、PR の向き先もそれになる。新しい世代が前の世代のブランチから続けるのは、向き先が変わっていないリポジトリだけである。向き先が変わったら、依頼文でそう伝え、新しい向き先から作業をやり直す。
 
@@ -354,7 +371,7 @@ node "$PLUGIN/bin/orca-auto.ts" status
 Orca でその役の端末を前面に出す `terminal switch` コマンド（ペアリング済みサーバーの役には `--environment`
 付き）を並べる。表は出力されたとおりにユーザーへ見せ、`terminal switch` コマンドはユーザーが頼んだときだけ実行する。
 
-`make setup` が安定したランチャーを定期 precheck に登録し、権限の承認後に automation を有効にする。Issueごとに専用のまとめ役の端末とRunを持ち、その端末が閉じられたら、次のtickで代わりを作り、そのIssueのRunだけを引き継ぐ。
+`make auto-setup` が安定したランチャーを定期 precheck に登録し、権限の承認後に automation を有効にする。Issueごとに専用のまとめ役の端末とRunを持ち、その端末が閉じられたら、次のtickで代わりを作り、そのIssueのRunだけを引き継ぐ。
 
 ### 完了・回復・後片付け
 

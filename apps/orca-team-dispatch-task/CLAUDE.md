@@ -437,7 +437,7 @@ repository で子が remote を自分で解決し、**personal fork へ push し
 
 ## 範囲
 
-`--auto`（C2a）はこのMacで複数の拾う元を1本のキューにまとめ、tickでPR・merge・close・後片付けまで進める。C3a（make setup）は実装済み。C3b（make setup の遠くの確認・AI の案・測定）も実装済み。道具のインストール・sudo・swap はまだ無い。
+`--auto`（C2a）はこのMacで複数の拾う元を1本のキューにまとめ、tickでPR・merge・close・後片付けまで進める。C3a（make auto-setup）は実装済み。C3b（make auto-setup の遠くの確認・AI の案・測定）も実装済み。道具のインストール・sudo・swap はまだ無い。
 
 Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足した段階。PR 無し・ループ無し。
 
@@ -509,7 +509,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 
 ## --auto の要点
 
-- C2b は親1台からこのMacとペアリング済みサーバーへ振り分ける。1 Issueで実装対象2リポジトリまで、3つ以上はReady_Eng。拾う元は複数、キューは優先度→Ready時刻→key。管理の印は `from-slack` / `slack-thread`。intakeの一覧を正本にし、`--issue` の検索はautoの拾う元ではReadyも除く。C3a（`make setup`）は実装済み。C3b（make setup の遠くの確認・AI の案・測定）も実装済み。道具のインストール・sudo・swap はまだ無い。
+- C2b は親1台からこのMacとペアリング済みサーバーへ振り分ける。1 Issueで実装対象2リポジトリまで、3つ以上はReady_Eng。拾う元は複数、キューは優先度→Ready時刻→key。管理の印は `from-slack` / `slack-thread`。intakeの一覧を正本にし、`--issue` の検索はautoの拾う元ではReadyも除く。C3a（`make auto-setup`）は実装済み。C3b（make auto-setup の遠くの確認・AI の案・測定）も実装済み。道具のインストール・sudo・swap はまだ無い。
 - 入口 `bin/orca-auto.ts`、tick本体 `lib/auto-tick.ts`。tickは同期・人の変更・失敗の仕上げ・review/finishing・進み・補充を1歩ずつ行い、report.jsonを書く。判定が必要で20分のリースが無いときだけexit 0。`make auto` はそのときだけ設定のmodel/effortでClaudeを起こす。判定の指示は英語 `references/auto-judge.md` と完全な日本語訳。
 - 2026-11-13、Orca 1.4.257のspike/probe: Issueごとに専用のまとめ役端末とRunを持つ。1つのRunに全Issueを載せると、未決着や知らないdispatchのメールが他のIssueを止める。外のプロセスから本物のhandleで操作できる。端末のシェルに指示文を打ち込まない。
 - 呼び出し元の識別（F6）: Orca端末内から別handleの `--from` を使うと `consumer_fenced`。Runを操作する呼び出しと子のstart/waitには、必ずそのIssueの `ORCA_TERMINAL_HANDLE` を付ける。autoの停止/解放も同じhandleを使う。続きのstartは毎回 `ensureCoordinator` を通す。`run-use` で引き継いだhandleをrun.jsonと状態に記録する。
@@ -582,9 +582,9 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - 未確認: `INSUFFICIENT_SCOPES` の実物、mutation のエラーの形、同じ tick の中で REST の書き込みのすぐあとに GraphQL が古い値を返すか（`touched` で避けている）、Status の `updatedAt` がほかの出来事で動くか、organization の Project。
 - 回帰: AU125〜131（AU128b〜d、AU129b〜d、AU130b を含む）。
 
-### C3a: make setup
+### C3a: make auto-setup
 
-- 人がターミナルで `make setup <name>` を実行する。12 段を auto-setup.ts が回し、prompt・draft・project・host・lanes・automation の lib に分ける。標準入力が端末でなければ書かず exit 2。AI の案・遠くの確認・測定は C3b（下の節）。道具のインストールと swap の作成はまだ無い。
+- 人がターミナルで `make auto-setup <name>` を実行する。12 段を auto-setup.ts が回し、prompt・draft・project・host・lanes・automation の lib に分ける。標準入力が端末でなければ書かず exit 2。AI の案・遠くの確認・測定は C3b（下の節）。道具のインストールと swap の作成はまだ無い。
 - 各段の終わりに setup.json を atomic 保存する。入力終了は 2、失敗は 1、成功（有効化を断った場合も）は下書きを消して 0。config.json は保存の段で正規化した値を比較し、差と確認のあと tick と同じロック内で書く。実行中 Issue のマシン・拾う元・対象・マシンごとの対象の削除を断る。automation と有効化の段は同じロックで automation キーだけを更新する。
 - Enter は既存の値を保つ。手書きのマシン名・orcaBin・セレクタ・扱う組・省略した既定値も保つ。hosts の無い形からの切り替えとスペックの再測定は明示的に聞く。全体の並列数は下書きの lanes に保存する。全体の verified は checkout とコマンドが同じなら保ち、マシンの組はコマンドと置き場所が同じときだけ保つ。このマシンが扱わないリポジトリでも全体の verified は消さない。遠くの verified はこのマシンでの実行結果から決めない。
 - Project は active な gh アカウントの project scope を JSON で確かめ、Status の既存 id・名前・色・説明を保って不足分だけ確認後に足す。遠くは接続→置き場所→測定（スペック・orca・gh）と進み、端末を必ず閉じる。パスで足した遠隔 checkout も canonicalKey を照合し、不明なら人に聞く。swap 0 の注意は macOS では出さない。
@@ -599,7 +599,15 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - 実機で未確認: gh の `project` 権限が無いときの Project の段（INSUFFICIENT_SCOPES の実物も含む）、Windows の環境、新しいフォルダの作業場所でのフォルダの信頼の確認（今回は止まらなかったが、信頼済みかどうかは見ていない）。
 - 拾う元の段は `~/.slack-issue-intake-<名前>`（名前の規則は slack-issue-intake と共通。`lib/intake-homes.ts` の写しを `scripts/check-shared-contracts.mjs` が定数と一覧の選び方で照合する）のうち `config.json` があるものを番号で並べて複数選ばせ、ほかの絶対パスも足せる。slack-issue-intake が名前を必須にしたので、名前なしの `~/.slack-issue-intake` は候補に出さない。ただし設定の `intakeConfigs` にすでにあるパスは、名前なしのものでも候補に足して既定で選び、tick も読む（ただのパス。MI12）。どちらのキーも無い設定の既定（名前なしのホームの config.json。MI1）は変えない。設定は `intakeConfigs`（重複したパスは読むときに 1 つにまとめる）。古い `intakeConfig` は 1 件の配列として読み、両方あれば不正。保存の段は、正規化した値が同じで config.json に古い `intakeConfig` があるときだけ、確かめずにロックの中でそのキーを同じ位置の `intakeConfigs` に置き換えて書く（ほかのキーはそのまま。Enter だけの再実行で移行させるため。`configJsonFromDraft` の結果は省いた既定値を書き足すので使わない）。このときはロックを取ってから config.json を読み直し、値が比べたときと違う・読めない・消えたなら書かずに止め、先に新しい形へ移っていれば書かない（ロックを待つ間に別の setup が書いたものを古い内容で上書きしないため。MI10）。値が変わるときは今までどおり差と確認のあとに書き、そのときも `intakeConfigs` だけ。新しい形で値が同じなら書かない。拾う元の候補は各 intake の `repos` の和（並び順・重複なし）。tick は読めない intake の分だけ候補から外し、`intake の設定を読めません: <パス>` を 1 回出して tick のエラーに数える。setup-run のテストは `HOME` を一時ディレクトリにして本物のホームを読まない。回帰は MI1〜MI12 と SU30c。
 
-### C3b: make setup の遠くの確認
+### make setup（普段の設定。2026-11-22、3.18.0）
+
+- **`make setup <名前>` は普段の設定を変える入口で、--auto の 12 段は `make auto-setup <名前>` に名前を変えた**（内部のサブコマンド `orca-auto.ts setup` はそのまま）。入口は `bin/orca-setup.ts`、本体は `lib/settings-setup.ts`。標準入力が端末でなければ書かず exit 2（auto-setup と同じく `ORCA_AUTO_TEST_STDIN` でだけ通す）。
+- 3 段: (1) 役ごとの agent / model / effort とトグル（TOGGLE_KEYS）。既定は global 層の値、無ければ `DEFAULT_TUPLES` / `TOGGLES` の fallback。agent を変えたときの model / effort の既定は「既定の agent なら DEFAULT_TUPLES、それ以外は MODEL_CHOICES / EFFORT_CHOICES の先頭」。変わった値だけを確認のあと `config-edit.ts --layer global --set ...` の 1 回で書く（JSON を自分で組み立てない）。(2) `auto/<名前>/config.json` の judge。setup.json があれば飛ばす（auto-setup の保存の段は始めに読んだ値と比べて止まるので、壊れはしないがやり直しになる）。tick のロックの中で読み直して judge だけを置き換える。(3) Orca の project setup（`hostId: local`・`kind: git`）の `worktreeBasePath` を `orca project setup-update --worktree-base-path` で変え、`project setups` を読み直して確かめる。
+- **作業場所はプラグインが持たない。**worktree を作るのは Orca（`worktree create` / `worker-start --worktree new-top-level`）なので、Orca のリポジトリごとの設定を変える。Orca の既定へ戻すことと遠くのマシンの setup は扱わない（CLI で null に戻せるか未確認）。
+- 未確認: setup-update の値で orca-start の `worktree create` と mail 起動の `worker-start` が実際にそこへ作るか（使い捨ての repo を Orca に登録して確かめるのは、Orca に repo rm が無いので見送った。実機の次の dispatch の worktree の path で確かめる）。
+- 回帰は `test/unit/orca-setup.test.ts` の SE1〜SE6、`test-docs.sh` の SK47。
+
+### C3b: make auto-setup の遠くの確認
 
 - 確認は base64 で包んだ1本の node スクリプトを、このマシンでは spawnSync、遠くでは Orca の端末で実行する。一時ディレクトリはホームの下の `~/.cache/orca-auto-verify/run-*`（`os.tmpdir()` は使わない。EC2 で /home だけを EBS にした構成では /tmp がルートのディスクで、並列数の推奨に使う空きディスク `statfs(homedir)` とも別になるため。SV16）で、その中に `worktree` と `time.txt` を置き、checkout の HEAD から detached worktree を作る。確認スクリプト自身は SIGINT を無視し、このマシンの呼び出し元も実行中だけ無視する。確認中のコマンドが止まってもスクリプトは後片付けと結果の出力まで進む。後片付けの各段の例外も失敗の結果として必ず目印を返し、残りうる一時ディレクトリの場所を表示する。コマンドの出力は `stdio: ['ignore', 2, 2]` で端末へ流し、stdout は目印だけにする。道具の名前はシェルの文に埋めず argv で渡す。
 - 遠くの確認は `--worktree path:<遠くの checkout>`（C3a の probe と同じ）。組の `id:` は repo の id で、worktree セレクタではない。段7で host ごとに一度一覧を読み、組に対応するパスがなければ確かめずに未確認にする。5秒おきに読んで30分で時間切れにし、作れた端末は必ず close する。時間切れでは残りうる一時ディレクトリの場所を表示する。

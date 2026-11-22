@@ -592,8 +592,8 @@ done
 # SK36: C3a の setup が実装されたことを両文書に記す。
 bad=""
 for f in "$S" "$G"; do
-  setup_lines=$(grep -F 'make setup' "$f")
-  grep -Fq 'make setup ' "$f" || bad="$bad [setup:$f]"
+  setup_lines=$(grep -F 'make auto-setup' "$f")
+  grep -Fq 'make auto-setup ' "$f" || bad="$bad [setup:$f]"
   if [[ "$f" == "$S" ]]; then
     grep -Fq 'not available yet' <<<"$setup_lines" && bad="$bad [implemented:$f]"
   else
@@ -714,10 +714,10 @@ grep -Fq 'does not lift the base restriction' "$S" || grep -Fq 'never lifts the 
 
 # SK41: setup の入口と再開・ランチャー・判定の説明。
 bad=""
-setup_recipe=$(cd "$P" && make -n setup 2>/dev/null)
+setup_recipe=$(cd "$P" && make -n auto-setup 2>/dev/null)
 [[ "$setup_recipe" == *"orca-auto.ts setup --name main"* ]] || bad="$bad [setup recipe]"
 for f in "$S" "$G"; do
-  for expected in 'make setup <name>' 'setup.json' 'config/orca-team-dispatch-task/bin/orca-auto' 'judge-doc'; do
+  for expected in 'make auto-setup <name>' 'setup.json' 'config/orca-team-dispatch-task/bin/orca-auto' 'judge-doc'; do
     grep -Fq "$expected" "$f" || bad="$bad [$expected:$f]"
   done
 done
@@ -777,6 +777,20 @@ issue_ja=$(awk '/^## Issue モード/{f=1;next} /^### I0/{f=0} f' "$G")
 grep -Fq -- '`base:*` label' <<<"$issue_en" || bad="$bad [en:issue-base]"
 grep -Fq -- '`base:*` ラベル' <<<"$issue_ja" || bad="$bad [ja:issue-base]"
 [[ -z "$bad" ]] && ok 'SK45 手動の dispatch の取り込み先' || fail "SK45:$bad"
+
+# SK47: make setup は普段の設定（bin/orca-setup.ts）、--auto の 12 段は make auto-setup。両文書に節がある。
+bad=""
+[[ "$(cd "$P" && make -n setup 2>/dev/null)" == *"orca-setup.ts --name main"* ]] || bad="$bad [setup recipe]"
+[[ "$(cd "$P" && make -n auto-setup 2>/dev/null)" == *"orca-auto.ts setup --name main"* ]] || bad="$bad [auto-setup recipe]"
+[[ -f "$P/bin/orca-setup.ts" ]] || bad="$bad [entry]"
+grep -Fq '### Changing settings from a terminal' "$S" || bad="$bad [en:section]"
+grep -Fq '### 端末から設定し直す' "$G" || bad="$bad [ja:section]"
+for f in "$S" "$G"; do
+  for expected in 'make setup <name>' 'make auto-setup <name>' '--worktree-base-path' 'make roles <name>'; do
+    grep -Fq -- "$expected" "$f" || bad="$bad [$expected:$(basename "$f")]"
+  done
+done
+[[ -z "$bad" ]] && ok 'SK47 make setup と make auto-setup' || fail "SK47:$bad"
 
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \

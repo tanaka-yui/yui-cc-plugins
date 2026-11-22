@@ -14,7 +14,9 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 リポジトリごとに `baseBranch`（普段の向き先）と `branches`（候補）を持てる。候補が 2 つ以上あると、`base:<branch>` ラベル→判定→（不明なら）`needs-base` で Backlog に戻して尋ねる、の順で Issue ごとの向き先を決め、普段の向き先以外への merge は必ず人に回し、merge 後は `<向き先> → <baseBranch>` の戻しの PR を作る（merge はしない）。
 拾う元ごとに auto-ready（`autoReady`）を有効にすると、Backlog の Issue も判定し、自動で対応できるものを Ready に、難しいものを Ready_Eng にする。auto-ready で Ready にした Issue の PR は、既定では AI が merge せず人の確認に回す。拾う元に `autoMerge` を有効にすると、ほかの条件がそろえば AI が merge する（普段の向き先以外へは merge しない）。
 このモードだけは停止・解放とpushを確認してから資源を片付ける。使い方はskillのAuto modeを参照。
-設定は `make setup <name>` で行い、終えたあとにマシンだけ・`review_mode` と `phase_b` だけを変えるときは `make hosts <name>` / `make roles <name>` を使う。
+設定は `make auto-setup <name>` で行い、終えたあとにマシンだけ・`review_mode` と `phase_b` だけを変えるときは `make hosts <name>` / `make roles <name>` を使う。
+
+worker の役ごとのモデル・取りかかり方などの既定・判定役のモデル・worktree を作る場所は、`make setup <name>` で設定し直せる（`--auto` を使わない手動の dispatch の設定もここ）。
 
 ## 範囲と制限
 

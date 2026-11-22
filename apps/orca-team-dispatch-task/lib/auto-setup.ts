@@ -157,11 +157,11 @@ export const runSetup = (
   const base = readAutoConfig(name)
   // 一部だけのコマンドは config.json から始め、下書きを読みも書きもしない（途中の setup の下書きを混ぜない・消さない）
   if (command && existsSync(join(autoDir(name), SETUP_DRAFT_FILE))) {
-    say(`make setup ${name} が途中です。先に最後まで実行してください`)
+    say(`make auto-setup ${name} が途中です。先に最後まで実行してください`)
     return 1
   }
   if (command && !base) {
-    say(`先に make setup ${name} を最後まで実行してください`)
+    say(`先に make auto-setup ${name} を最後まで実行してください`)
     return 1
   }
   const draft: SetupDraft =
@@ -709,10 +709,10 @@ export const runSetup = (
       lock(() => {
         const raw =
           asObject(readJson(configFile)) ??
-          fail('config.json が setup の途中で変わりました。make setup をやり直してください')
+          fail('config.json が setup の途中で変わりました。make auto-setup をやり直してください')
         const latest = parseAutoConfig(raw, name)
         if (!latest || !isDeepStrictEqual(latest, previous))
-          fail('config.json が setup の途中で変わりました。make setup をやり直してください')
+          fail('config.json が setup の途中で変わりました。make auto-setup をやり直してください')
         if (raw.intakeConfig === undefined) {
           say('変わる所はありません')
           return
@@ -799,7 +799,7 @@ export const runSetup = (
       const problems = judgeRulesProblems(config, launcher)
       if (problems.length) {
         problems.forEach(say)
-        fail('これらを直してから make setup をやり直してください')
+        fail('これらを直してから make auto-setup をやり直してください')
       }
       const fingerprint = judgeFingerprint(config) ?? fail('判定の権限の指紋を読めません')
       updateAutomation({ id: automation.id, acceptedFingerprint: fingerprint })
@@ -850,14 +850,14 @@ export const runSetup = (
     say(`config=${configFile}\nautomation=${v.automation?.id}\nlauncher=${launcherPaths().launcher}`)
     for (const source of sources().filter((s) => !s.project))
       say(
-        `${source.repo}: Project は登録していません。必要なら gh auth refresh -h github.com -s project のあと make setup をやり直してください`,
+        `${source.repo}: Project は登録していません。必要なら gh auth refresh -h github.com -s project のあと make auto-setup をやり直してください`,
       )
     say(
       enabled
         ? 'automation を有効にしました'
         : v.automationCreated
-          ? 'automation は無効のままです。make setup をやり直すと有効化の段まで進みます'
-          : 'automation の有効・無効は変えていません。権限が承認と違う（または未承認の）間は、ランチャー経由の tick が判定を始めません。make setup をやり直して承認してください',
+          ? 'automation は無効のままです。make auto-setup をやり直すと有効化の段まで進みます'
+          : 'automation の有効・無効は変えていません。権限が承認と違う（または未承認の）間は、ランチャー経由の tick が判定を始めません。make auto-setup をやり直して承認してください',
     )
     removeDraft(name)
     return 0

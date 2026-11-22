@@ -69,7 +69,7 @@ const main = (argv: string[]): number => {
   if (command === 'clear-start' && !flags.get('--key')) die('orca-auto', '--key is required')
   if (command === 'setup' || command === 'hosts' || command === 'roles') {
     if (!isatty(0) && process.env.ORCA_AUTO_TEST_STDIN !== '1') {
-      console.error(`ターミナルで make ${command} を実行してください`)
+      console.error(`ターミナルで make ${command === 'setup' ? 'auto-setup' : command} を実行してください`)
       return 2
     }
     const out = (text: string): void => {
@@ -89,14 +89,14 @@ const main = (argv: string[]): number => {
     const config = process.env[LAUNCHER_ENV] ? readAutoConfig(name) : null
     if (config) {
       if (!config.automation?.acceptedFingerprint) {
-        console.log('判定の権限が承認されていません。make setup で有効にしてください')
+        console.log('判定の権限が承認されていません。make auto-setup で有効にしてください')
         return 1
       }
       if (
         judgeRulesProblems(config, launcherPaths().launcher).length ||
         judgeFingerprint(config) !== config.automation.acceptedFingerprint
       ) {
-        console.log('判定の権限が承認したときと違います。make setup をやり直してください')
+        console.log('判定の権限が承認したときと違います。make auto-setup をやり直してください')
         return 1
       }
     }

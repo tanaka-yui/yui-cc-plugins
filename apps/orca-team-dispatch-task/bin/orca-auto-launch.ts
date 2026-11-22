@@ -48,7 +48,7 @@ const main = (): void => {
   const home = dirname(dirname(process.argv[1] ?? ''))
   const root = resolvePluginRoot(home, process.env[CLAUDE_HOME_ENV] || join(homedir(), '.claude'))
   if (!root) {
-    console.error('orca-team-dispatch-task プラグインが見つかりません。make setup をやり直してください')
+    console.error('orca-team-dispatch-task プラグインが見つかりません。make auto-setup をやり直してください')
     process.exitCode = 2
     return
   }

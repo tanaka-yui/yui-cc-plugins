@@ -963,13 +963,13 @@ test('SU42 hosts and roles refuse without config and during an unfinished setup'
     rmSync(f.configFile)
     const missing = f.rerun({}, 'roles')
     assert.equal(missing.code, 1)
-    assert.match(missing.output, /先に make setup main を最後まで実行してください/)
+    assert.match(missing.output, /先に make auto-setup main を最後まで実行してください/)
     writeFileSync(f.configFile, raw)
     const draft = `${JSON.stringify({ version: 1, name: 'main', done: ['prereq'], values: {} })}\n`
     writeFileSync(join(autoDir('main'), 'setup.json'), draft)
     const during = f.rerun({ review_mode: 'on' }, 'hosts')
     assert.equal(during.code, 1)
-    assert.match(during.output, /make setup main が途中です/)
+    assert.match(during.output, /make auto-setup main が途中です/)
     assert.equal(readFileSync(join(autoDir('main'), 'setup.json'), 'utf8'), draft)
     assert.equal(readFileSync(f.configFile, 'utf8'), raw)
   } finally {

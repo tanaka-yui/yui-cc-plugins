@@ -103,7 +103,7 @@ test('SU21 installed plugin wins, old plugin falls back, missing plugin fails', 
     rmSync(launcherPaths().pluginRootFile)
     result = f.run('judge-doc', '--name', 'main')
     assert.equal(result.status, 2)
-    assert.match(result.stderr, /make setup をやり直してください/)
+    assert.match(result.stderr, /make auto-setup をやり直してください/)
   } finally {
     f.cleanup()
   }
