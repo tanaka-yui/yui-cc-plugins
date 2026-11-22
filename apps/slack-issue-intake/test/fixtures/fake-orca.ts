@@ -14,6 +14,11 @@ else if (args[0] === 'automations') {
     result = { automation: { id: 'auto-1' } }
   } else if (args[1] === 'edit') {
     if (process.env.FAKE_ORCA_EDIT) fail('編集失敗')
+    // 本物の Orca は --json の失敗を stdout の JSON で返し、stderr には書かない
+    if (args[2] !== 'auto-1') {
+      console.log(JSON.stringify({ ok: false, error: { code: 'runtime_error', message: 'Automation not found.' } }))
+      process.exit(1)
+    }
     result = { automation: { id: args[2] } }
   } else if (args[1] === 'list')
     result = { automations: process.env.FAKE_ORCA_EDIT === 'gone' ? [] : [{ id: 'auto-1' }] }

@@ -1,4 +1,4 @@
-import { loadConfig } from '../lib/config.ts'
+import { loadConfig, saveConfig } from '../lib/config.ts'
 import { openDb, setMeta } from '../lib/db.ts'
 import { FORM_META_TRIGGER_ID, labelsHashKey, SETUP_STEPS } from '../lib/defaults.ts'
 import { asObject, get } from '../lib/json.ts'
@@ -768,4 +768,20 @@ test('SU29 既定ブランチと develop / main / master が 2 つ以上あれ�
   const dash = await none.setup('\n#Issue-Intake\nacme/app\n\n\n-\n\n\ny\n', BRANCHES)
   assert.equal(dash.code, 0, dash.stderr + dash.stdout)
   assert.deepEqual(loadConfig(none.home)?.repos, [{ name: 'acme/app', form: true, existing: 'skip' }])
+})
+
+test('SU30 設定の automation が Orca から消えていれば、変更が無くても 5 段で init をやり直して作り直す', async (t) => {
+  const f = await fixture(t)
+  assert.equal((await f.setup(FULL_INPUT)).code, 0)
+  const c = loadConfig(f.home)
+  assert.ok(c)
+  c.orca.automationId = 'auto-gone'
+  saveConfig(f.home, c)
+  const r = await f.setup('\n\n')
+  assert.equal(r.code, 0, r.stderr + r.stdout)
+  assert.ok(r.stdout.includes('Orca に automation auto-gone が見つからない'))
+  assert.equal(loadConfig(f.home)?.orca.automationId, 'auto-1')
+  assert.deepEqual(orcaCalls(f.orca.log).at(-1), ['automations', 'edit', 'auto-1', '--enabled', '--json'])
+  const again = await f.setup('\n\n')
+  assert.match(again.stdout, new RegExp(`\\[5/${SETUP_STEPS}\\] [^\\n]*済み`))
 })

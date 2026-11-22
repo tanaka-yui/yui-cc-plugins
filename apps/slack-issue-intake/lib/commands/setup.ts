@@ -33,7 +33,7 @@ import {
 } from '../defaults.ts'
 import { channelAppLink, channelLink, featureSteps, formTitles } from '../form.ts'
 import { createGh, findGhPath, ghAuthOk, labelsHash, repoInfo } from '../github.ts'
-import { asString, get, parseJson } from '../json.ts'
+import { asArray, asString, get, parseJson } from '../json.ts'
 import { knowledgeDir, readKnowledgeMeta } from '../knowledge.ts'
 import { runOrca } from '../orca.ts'
 import { homePaths, intakeHome, nameOfHome, pluginRoot } from '../paths.ts'
@@ -121,6 +121,13 @@ const precheck = async (): Promise<Ready> => {
 }
 
 type Picked<T> = { ok: true; value: T } | { ok: false; code: number }
+
+// 一覧を読めないときは消えたと決めない（init の作り直しと同じく、一覧に無いと分かったときだけ true）
+const orcaLacksAutomation = (id: string): boolean => {
+  const listed = runOrca(['automations', 'list'])
+  const items = asArray(get(listed.json ?? undefined, 'result', 'automations'))
+  return listed.ok && items !== null && !items.some((a) => get(a, 'id') === id)
+}
 
 // 本物のクライアントは channel_not_found や missing_scope で以後の呼び出しをすべて止める。
 // ウィザードは同じ入力で探し直す（findChannel も ID で見つからなければ名前で探す）ので、呼び出しごとに新しく作る
@@ -491,6 +498,8 @@ const wizard = async (): Promise<number> => {
   // 間隔が変われば init で automation を書き換える。
   // init が automation の登録で失敗すると設定だけが残るので、そのときは保存済みの値で init をやり直す
   if (existing?.orca.automationId) {
+    // Orca の入れ直しなどで automation が消えていれば、変更が無くても init で作り直す（消えた ID のまま有効化しない）
+    const automationGone = orcaLacksAutomation(existing.orca.automationId)
     heading(3, SETUP_TEXT.stepChannel, true)
     heading(4, SETUP_TEXT.stepRepo)
     say(
@@ -507,10 +516,17 @@ const wizard = async (): Promise<number> => {
     const labelsCurrent = existing.repos.every((r) => readMeta(paths.db, labelsHashKey(r.name)) === labelsHash())
     // 候補を足したときも init で保存する
     const reposKept = JSON.stringify(choice.value.repos) === JSON.stringify(existing.repos)
-    if (choice.value.added.length === 0 && reposKept && choice.value.every === existing.everyMinutes && labelsCurrent)
+    if (
+      choice.value.added.length === 0 &&
+      reposKept &&
+      choice.value.every === existing.everyMinutes &&
+      labelsCurrent &&
+      !automationGone
+    )
       heading(5, SETUP_TEXT.stepInit, true)
     else {
       heading(5, SETUP_TEXT.stepInit)
+      if (automationGone) say(fill(SETUP_TEXT.automationGone, { id: existing.orca.automationId }))
       const code = await reinit(
         p,
         ready.ghPath,

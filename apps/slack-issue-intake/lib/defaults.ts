@@ -625,6 +625,7 @@ export const SETUP_TEXT = {
   askEvery: '確認の間隔（分。60 の約数）',
   currentConfig:
     '今の設定: チャンネル {channel}、リポジトリ {repos}（既定の起票先 {default}）、確認の間隔 {every} 分。チャンネルは変えられません。リポジトリは足せますが、外せません。間隔を変えるなら新しい値を入力し、そのままなら Enter を押してください',
+  automationGone: 'Orca に automation {id} が見つからないので、init で作り直します',
   badEvery: '60 の約数（1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60）を入力してください',
   declined: '承認されなかったので、この段では何も変えずに止めました。もう一度 {setup} を実行すると、ここから再開します',
   manualForm: 'フォームのボタンは作りません。README の「Workflow Builder で手で作る」の手順でフォームを作ってください',

@@ -100,3 +100,14 @@ test('PG3–PG6 承認後のallow・deny・managed・localの変化で起動停�
     assert.equal(f.server.requests.length, n)
   }
 })
+test('EN5 Orca が automation を見つけられないときは、JSON で返った理由を出して止まる', async (t) => {
+  const f = await setup(t)
+  f.prepare()
+  const c = loadConfig(f.home)
+  assert.ok(c)
+  c.orca.automationId = 'auto-gone'
+  saveConfig(f.home, c)
+  const r = await f.cli(['enable', '--now', NOW])
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /Automation not found\./)
+})
