@@ -1,3 +1,4 @@
+import { AUTO_ISSUE_LIST_LIMIT, listReadyManaged, listUnlabeledThread } from '../../lib/auto-github.ts'
 import { orderQueue, priorityOf, syncIssues } from '../../lib/auto-queue.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 
@@ -34,6 +35,46 @@ test('AU16-19 managed issues from multiple repositories use distinct keys and de
     assert.match(f.calls(), /--label Ready --label slack-thread/)
     f.respond('issue_view', { state: 'CLOSED', labels: [], title: '題' })
     assert.deepEqual(syncIssues(s, f.config().sources).dropped.sort(), ['acme/app#7', 'other/api#7'])
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU187 lists are read up to the limit and a full list says so; listUnlabeledThread drops status-labelled rows', () => {
+  const f = fixture()
+  try {
+    const row = (number: number, labels: string[]) => ({
+      number,
+      title: `題${number}`,
+      labels: labels.map((name) => ({ name })),
+      updatedAt: '2026-01-01',
+      createdAt: '2026-01-01',
+    })
+    f.respond(
+      'issue_list',
+      Array.from({ length: AUTO_ISSUE_LIST_LIMIT }, (_, i) => row(i + 1, [])),
+    )
+    const lines: string[] = []
+    assert.equal(listReadyManaged('acme/app', 'Ready', (line) => lines.push(line))?.length, AUTO_ISSUE_LIST_LIMIT)
+    assert.match(f.calls(), new RegExp(`--limit ${AUTO_ISSUE_LIST_LIMIT}\\b`))
+    assert.equal(AUTO_ISSUE_LIST_LIMIT, 1000)
+    // 印ごとの一覧が 2 つあり、どちらも上限ちょうどなので 2 行
+    assert.deepEqual(lines, [
+      `acme/app の Ready の Issue が ${AUTO_ISSUE_LIST_LIMIT} 件を超えているかもしれません。超えた分は拾いません`,
+      `acme/app の Ready の Issue が ${AUTO_ISSUE_LIST_LIMIT} 件を超えているかもしれません。超えた分は拾いません`,
+    ])
+    f.respond('issue_list', [row(1, ['slack-thread']), row(2, ['Ready', 'slack-thread'])])
+    const short: string[] = []
+    assert.deepEqual(
+      listUnlabeledThread('acme/app', (line) => short.push(line))?.map((i) => i.number),
+      [1],
+    )
+    assert.deepEqual(short, [])
+    assert.match(f.calls(), /--label slack-thread/)
+    // スタブは引数をシェルの形に直して書くので、引用符の前に \ が付く
+    assert.match(f.calls(), /-label:\\"Backlog\\"/)
+    assert.match(f.calls(), /-label:\\"Ready\\"/)
+    f.put(`${f.gh}/issue_list.rc`, 1)
+    assert.equal(listUnlabeledThread('acme/app'), null)
   } finally {
     f.cleanup()
   }

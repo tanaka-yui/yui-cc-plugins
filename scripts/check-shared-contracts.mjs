@@ -37,6 +37,13 @@ const intakeHomes = await import(join(dispatch, 'lib/intake-homes.ts'))
 for (const key of ['INTAKE_HOME_DIRNAME', 'INTAKE_NAME_RESERVED_SUFFIX'])
   if (intakeLabels[key] !== intakeHomes[key])
     problems.push(`${key} が違います（slack-issue-intake と orca-team-dispatch-task）`)
+if (
+  intakeLabels.EXISTING_ACTIVE !== intakeHomes.INTAKE_EXISTING_ACTIVE ||
+  !intakeLabels.EXISTING_MODES.includes(intakeHomes.INTAKE_EXISTING_ACTIVE)
+)
+  problems.push(
+    'EXISTING_ACTIVE が違うか、intake の EXISTING_MODES にありません（slack-issue-intake と orca-team-dispatch-task）',
+  )
 const [p, q] = [intakeLabels.INTAKE_NAME_PATTERN, intakeHomes.INTAKE_NAME_PATTERN]
 if (!(p instanceof RegExp && q instanceof RegExp && p.source === q.source && p.flags === q.flags))
   problems.push('INTAKE_NAME_PATTERN が違います（slack-issue-intake と orca-team-dispatch-task）')

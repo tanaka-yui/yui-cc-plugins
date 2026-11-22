@@ -31,7 +31,9 @@ export const ISSUE_EXCLUDED_LABELS: readonly string[] = [
 // gh の検索式。空白を含む名前（In progress など）があるので、すべて引用符で囲む
 export const searchExclusion = (labels: readonly string[]): string => labels.map((name) => `-label:"${name}"`).join(' ')
 
-export const MANAGED_LABELS = ['from-slack', 'slack-thread'] as const
+// slack-thread は人が付けた Issue にも付く（intake の ADOPTED_LABEL）
+export const THREAD_LABEL = 'slack-thread'
+export const MANAGED_LABELS = ['from-slack', THREAD_LABEL] as const
 export const PRIORITY_LABELS = {
   critical: 'priority: critical',
   high: 'priority: high',

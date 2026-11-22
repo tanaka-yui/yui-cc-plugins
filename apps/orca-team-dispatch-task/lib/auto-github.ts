@@ -1,6 +1,6 @@
 import { autoRun as run } from './auto-paths.ts'
 import { asArray, asObject, asString, type Json, parseJson } from './json.ts'
-import { MANAGED_LABELS, STATUS_LABELS } from './status.ts'
+import { MANAGED_LABELS, STATUS_LABELS, searchExclusion, THREAD_LABEL } from './status.ts'
 
 import type { IssueState, PrRef } from './auto-state.ts'
 
@@ -42,10 +42,43 @@ export const ensureStatusLabels = (repo: string): boolean => {
   return true
 }
 export type ReadyIssue = { number: number; title: string; labels: string[]; updatedAt: string; createdAt: string }
-export const listReadyManaged = (repo: string, pick: string): ReadyIssue[] | null => {
+// 一覧を 1 回で読む件数の上限。gh の既定（30）や 100 では、人が増やした Issue の途中で切れる
+export const AUTO_ISSUE_LIST_LIMIT = 1000
+const ISSUE_LIST_FIELDS = 'number,title,labels,updatedAt,createdAt'
+// 一覧の行を読む。形が違う行が 1 つでもあれば全体を読めなかったことにする
+const readIssueRows = (value: Json | null): ReadyIssue[] | null => {
+  const rows = asArray(value)
+  if (!rows) return null
+  const issues: ReadyIssue[] = []
+  for (const row of rows) {
+    const issue = asObject(row)
+    if (
+      !issue ||
+      typeof issue.number !== 'number' ||
+      typeof issue.title !== 'string' ||
+      typeof issue.updatedAt !== 'string' ||
+      !Array.isArray(issue.labels)
+    )
+      return null
+    issues.push({
+      number: issue.number,
+      title: issue.title,
+      labels: labelNames(issue.labels),
+      updatedAt: issue.updatedAt,
+      createdAt: typeof issue.createdAt === 'string' ? issue.createdAt : '',
+    })
+  }
+  return issues
+}
+// 上限ちょうどの件数が返ったら、その先があるかもしれない。黙って切らず 1 行知らせる
+const warnIfTruncated = (count: number, repo: string, pick: string, log?: (line: string) => void) => {
+  if (count >= AUTO_ISSUE_LIST_LIMIT)
+    log?.(`${repo} の ${pick} の Issue が ${AUTO_ISSUE_LIST_LIMIT} 件を超えているかもしれません。超えた分は拾いません`)
+}
+export const listReadyManaged = (repo: string, pick: string, log?: (line: string) => void): ReadyIssue[] | null => {
   const issues = new Map<number, ReadyIssue>()
   for (const managed of MANAGED_LABELS) {
-    const rows = asArray(
+    const rows = readIssueRows(
       readGithub([
         'issue',
         'list',
@@ -58,32 +91,41 @@ export const listReadyManaged = (repo: string, pick: string): ReadyIssue[] | nul
         '--label',
         managed,
         '--limit',
-        String(AUTO_GITHUB_PAGE_SIZE),
+        String(AUTO_ISSUE_LIST_LIMIT),
         '--json',
-        'number,title,labels,updatedAt,createdAt',
+        ISSUE_LIST_FIELDS,
       ]),
     )
     if (!rows) return null
-    for (const row of rows) {
-      const issue = asObject(row)
-      if (
-        !issue ||
-        typeof issue.number !== 'number' ||
-        typeof issue.title !== 'string' ||
-        typeof issue.updatedAt !== 'string' ||
-        !Array.isArray(issue.labels)
-      )
-        return null
-      issues.set(issue.number, {
-        number: issue.number,
-        title: issue.title,
-        labels: labelNames(issue.labels),
-        updatedAt: issue.updatedAt,
-        createdAt: typeof issue.createdAt === 'string' ? issue.createdAt : '',
-      })
-    }
+    warnIfTruncated(rows.length, repo, pick, log)
+    for (const issue of rows) issues.set(issue.number, issue)
   }
   return [...issues.values()]
+}
+// slack-thread が付いていて、ステータスラベルが 1 つも無い open の Issue。
+// 検索は反映が遅れることがあるので、返った行のうちステータスラベルを持つものは捨てる
+export const listUnlabeledThread = (repo: string, log?: (line: string) => void): ReadyIssue[] | null => {
+  const rows = readIssueRows(
+    readGithub([
+      'issue',
+      'list',
+      '--repo',
+      repo,
+      '--state',
+      'open',
+      '--label',
+      THREAD_LABEL,
+      '--search',
+      searchExclusion(STATUS_LABELS.map((label) => label.name)),
+      '--limit',
+      String(AUTO_ISSUE_LIST_LIMIT),
+      '--json',
+      ISSUE_LIST_FIELDS,
+    ]),
+  )
+  if (!rows) return null
+  warnIfTruncated(rows.length, repo, THREAD_LABEL, log)
+  return rows.filter((issue) => !issue.labels.some((name) => STATUS_LABELS.some((label) => label.name === name)))
 }
 export const viewIssue = (
   repo: string,

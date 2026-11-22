@@ -1,4 +1,5 @@
 import {
+  intakeActiveRepos,
   intakeRepoNames,
   parseAutoConfig,
   pickSources,
@@ -160,6 +161,20 @@ test('MI3 an unreadable intake drops only its repos', () => {
   assert.deepEqual(pickSources(c), ['acme/x'])
   assert.deepEqual(intakeRepoNames(a), ['acme/x'])
   assert.equal(intakeRepoNames(missing), null)
+})
+
+test('AU186 intakeActiveRepos returns only active repositories and skips unreadable configs', () => {
+  const a = intake('au186-a.json', {
+    repos: [
+      { name: 'Acme/App', existing: 'active' },
+      { name: 'acme/web', existing: 'thread' },
+      { name: 'acme/api' },
+      { name: 'bad name', existing: 'active' },
+    ],
+  })
+  const broken = intake('au186-broken.json', { repos: {} })
+  const c = multi([a, join(dir, 'au186-missing.json'), broken])
+  assert.deepEqual(intakeActiveRepos(c), new Set(['Acme/App']))
 })
 
 test('AU137 relay allowance covers bounded review exchanges and stage handoffs', () => {

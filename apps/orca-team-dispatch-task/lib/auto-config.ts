@@ -2,7 +2,7 @@ import { parseHosts } from './auto-hosts.ts'
 import { AUTO_FILES, autoDir } from './auto-paths.ts'
 import { OPUS_MODEL, REVIEW_ROUND_STEP, roleNames } from './config.ts'
 import { readJson } from './fs.ts'
-import { INTAKE_HOME_DIRNAME } from './intake-homes.ts'
+import { INTAKE_EXISTING_ACTIVE, INTAKE_HOME_DIRNAME } from './intake-homes.ts'
 import { asArray, asObject, asString, type Json } from './json.ts'
 
 import { homedir } from 'node:os'
@@ -195,6 +195,17 @@ export const intakeRepoNames = (path: string): string[] | null => {
     const name = asString(asObject(row)?.name)
     return name && /^[^/\s]+\/[^/\s]+$/.test(name) ? [name] : []
   })
+}
+// intake の設定で existing が active のリポジトリ。読めない設定は飛ばす。名前は設定に書かれたまま
+export const intakeActiveRepos = (config: AutoConfig): Set<string> => {
+  const repos = new Set<string>()
+  for (const path of config.intakeConfigs)
+    for (const row of asArray(asObject(readJson(path))?.repos) ?? []) {
+      const entry = asObject(row)
+      const name = asString(entry?.name)
+      if (name && /^[^/\s]+\/[^/\s]+$/.test(name) && entry?.existing === INTAKE_EXISTING_ACTIVE) repos.add(name)
+    }
+  return repos
 }
 export const readIntakeRepos = (config: AutoConfig): { repos: string[]; unreadable: string[] } => {
   const repos = new Set<string>()
