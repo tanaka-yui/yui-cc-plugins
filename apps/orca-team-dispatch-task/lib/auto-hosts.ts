@@ -1,4 +1,4 @@
-import { asArray, asObject, asString } from './json.ts'
+import { asArray, asObject, asString, get } from './json.ts'
 import { orcaBin } from './orca.ts'
 
 import { hostname } from 'node:os'
@@ -106,5 +106,10 @@ export const hostsOf = (config: AutoConfig): HostConfig[] =>
       ),
     },
   ]
+// `orca diagnostics memory [--environment <id>] --json` の result.host.availableMemory（バイト）。端末を作らずに読める
+export const hostAvailableMemoryMb = (json: Json | null): number | null => {
+  const bytes = get(json, 'result', 'host', 'availableMemory')
+  return typeof bytes === 'number' && Number.isFinite(bytes) && bytes >= 0 ? Math.floor(bytes / 1024 / 1024) : null
+}
 export const envArgs = (host: string): string[] => (host === LOCAL_HOST ? [] : ['--environment', host])
 export const hostKey = (host: string, path: string): string => `${host}\t${path}`

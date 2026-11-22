@@ -63,6 +63,8 @@ const skip = (stage: string): false => {
   }
   return false
 }
+// 予算切れとして数えずに、残り時間だけを見る（始めたら途中で止められない処理の前に使う）
+export const hasAutoTime = (reserve: number): boolean => remainder() >= reserve
 export const canAutoCall = (stage: string, reserve = envCount('ORCA_AUTO_CALL_CAP_MS', AUTO_CALL_CAP_MS)): boolean =>
   remainder() >= reserve || skip(stage)
 export const autoCallErrors = (): number => readFailures + skipped.size
@@ -98,6 +100,7 @@ export const autoOrca = (args: string[], env?: Record<string, string>): OrcaResu
       'orchestration worker-list',
       'orchestration worker-show',
       'worktree list',
+      'diagnostics memory',
     ].includes(args.slice(0, 2).join(' '))
   const stage = `Orca ${args.slice(0, 2).join(' ')}`
   if (!(reading ? readAllowed(stage) : canAutoCall(stage)))

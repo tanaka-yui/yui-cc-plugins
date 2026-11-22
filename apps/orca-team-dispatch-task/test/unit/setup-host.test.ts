@@ -128,6 +128,7 @@ test('SU17 remote probe rejoins wrapped output and always closes a created termi
       .map((line) => line.split('\x1f'))
     assert.equal(calls.length, 3)
     for (const args of calls) assert.equal(args[args.indexOf('--environment') + 1], 'env-1')
+    assert.equal(calls[0]?.[calls[0].indexOf('--title') + 1], 'orca-auto-setup')
     assert.ok(f.calls(f.orca).includes('terminal close'))
     f.respond('terminal_read', { ok: true, result: { terminal: { tail: ['no json'] } } }, f.orca)
     assert.deepEqual(probeRemote('env-1', 'path:/checkout', now), {

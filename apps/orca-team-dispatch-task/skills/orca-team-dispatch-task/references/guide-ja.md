@@ -255,7 +255,7 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 
 実装するリポジトリごとに専用checkoutをcloneし、Orcaに登録しておく。未コミットの変更があればdispatchしない。設定は `~/.claude/config/orca-team-dispatch-task/auto/main/config.json`（または `ORCA_DISPATCH_CONFIG_HOME` 配下）。`intakeConfigs` に slack-issue-intake の `config.json` を 1 つ以上（Slack のワークスペースごとに 1 つ）並べる。それらのリポジトリ一覧を並び順に重複なくまとめたものを正本とし、`sources` でその項目と関連する実装リポジトリを選ぶ。古い 1 つの `intakeConfig` も 1 件の一覧として読み、`make auto-setup` が `intakeConfigs` に書き換える。両方あれば設定ごと不正。読めない intake の設定はその分のリポジトリだけを外し、tick がそれを 1 行出す。
 
-人がプラグインのディレクトリのターミナルで `make auto-setup <name>` を実行する（既定は `main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。12 段で、前提、拾う元、関連 checkout、任意の Project、ラベル、マシン、確認コマンド（`claude -p` に読み取りの道具だけで案を出させられる。決めるのは人）、並列数、レビューモードと間隔、保存、automation 登録、権限の承認へ進む。拾う元の段は slack-issue-intake の名前つきのホームの `~/.slack-issue-intake-<名前>/config.json` を並べて複数選ばせ、ほかの絶対パスも足せる（名前なしの `~/.slack-issue-intake` は候補に出さないが、`intakeConfigs` にすでにあるパスは今までどおり並べて既定で選び、読む）。
+人がプラグインのディレクトリのターミナルで `make auto-setup <name>` を実行する（既定は `main`）。Bash ツールからは実行しない。標準入力が端末でなければ、ファイルを書かず exit 2。12 段で、前提、拾う元、関連 checkout、任意の Project、ラベル、マシン、確認コマンド（`claude -p` に読み取りの道具だけで案を出させられる。決めるのは人）、並列数、レビューモードと間隔、保存、automation 登録、権限の承認へ進む。拾う元の段は slack-issue-intake の名前つきのホームの `~/.slack-issue-intake-<名前>/config.json` を並べて複数選ばせ、ほかの絶対パスも足せる（名前なしの `~/.slack-issue-intake` は候補に出さないが、`intakeConfigs` にすでにあるパスは今までどおり並べて既定で選び、読む）。マシンの段もカンマ区切りで複数の番号を受け付ける。初回は Orca が並べる全マシンを既定で選び、再実行では今の選択を保つ。
 
 各段の答えは `setup.json` に残し、中断したら再実行で済んだ段から再開する。完了後のやり直しは Enter で今の値を保つ。確認コマンドは checkout の `HEAD` から切った一時 worktree で、このマシンと、そのリポジトリを扱う遠くのマシン（Orca の端末）で走らせ、通ったマシンとリポジトリの組だけを確認済みにする。足りない道具は並べるだけで入れない。並列数の推奨は CPU・メモリの総量・空きディスクから求め、確認で最大メモリとディスクの増え方を測れたときは、余裕を見込んだその値で 1 worktree 分の既定値を置き換える。推奨は Issue 数ではなく worktree 数で数える。
 
@@ -329,7 +329,7 @@ setup を一度最後まで終えたあとは、同じく人が操作するタ�
 }
 ```
 
-使用数は `(host, path)` の組で数え、異なるマシンの同じパスを別のworktreeとして扱う。Issueごとに、空きを調べる前に、設定の全マシンについて全対象リポジトリを確認済みのマシンがあるか調べる。1 台でもあればそのマシンだけに振り分け、今使えるものが無ければそのIssueを待たせ、別リポジトリのIssueは進める。候補の中では空きの割合、同じならlocal、その次に設定順で選ぶ。空きや対象リポジトリのどれかが無いマシンは飛ばす。全対象を確認済みのマシンが設定に無い場合だけ、全対象を持つ未確認のマシンで実行でき、必ず In review に回す。空きメモリとディスクの確認はlocalへ入れるときだけ行う。つながらないマシンのIssueは割り当てを保ち、別マシンでやり直さず、そのworker/worktreeも操作しない。上限時間を超えたらマシン名入りのstalledコメントを1回だけ書き、接続が戻ったら従来の完了・上限時間の処理へ戻る。
+使用数は `(host, path)` の組で数え、異なるマシンの同じパスを別のworktreeとして扱う。Issueごとに、空きを調べる前に、設定の全マシンについて全対象リポジトリを確認済みのマシンがあるか調べる。1 台でもあればそのマシンだけに振り分け、今使えるものが無ければそのIssueを待たせ、別リポジトリのIssueは進める。候補の中では余力が最も大きいマシンを選ぶ。余力は、並列数の残り、空きメモリのうち `minFreeMemoryMb` を超える分に入る worktree の数、空きディスクのうち `minFreeDiskMb` を超える分に入る worktree の数の最小である（1 worktree 分は、そのマシンの対象リポジトリで測った最大メモリとディスクの増え方に余裕を見込んだ値。測っていなければ既定値。読めない値は数えない）。同じなら空きの割合、その次にlocal、その次に設定順で選ぶ。空きや対象リポジトリのどれかが無いマシンは飛ばす。全対象を確認済みのマシンが設定に無い場合だけ、全対象を持つ未確認のマシンで実行でき、必ず In review に回す。空きメモリは dispatch のときに候補の全マシンで読む（遠くは `orca diagnostics memory --environment <id>` で、tick ごとに 1 台 1 回）。`minFreeMemoryMb` を下回るマシンは飛ばし、メモリを読めない遠くのマシンはメモリを数えずに順位を付ける。localの空きディスクはdispatchのときに読む。遠くの空きディスクは 1 台につき 1 時間に 1 回まで測る。待っている Issue があった tick の終わりに、tick の残りが 60 秒以上あれば、測定が最も古い遠くのマシンを 1 台、そのマシンに Orca で開く短い端末（タイトル `orca-auto-disk`）で測り、結果を状態ファイルに残して次の tick から使う。測れなかったときは 1 時間後に測り直す。最後に測った空きディスクが `minFreeDiskMb` を下回る遠くのマシンは飛ばす。つながらないマシンのIssueは割り当てを保ち、別マシンでやり直さず、そのworker/worktreeも操作しない。上限時間を超えたらマシン名入りのstalledコメントを1回だけ書き、接続が戻ったら従来の完了・上限時間の処理へ戻る。
 
 新しい `--auto` のdispatchはlocalも含め `transport: mail` を使い、`--on` で選んだマシンともメールで受け渡す。依頼文と計画はtask本文に埋め込み、workerはこのオーケストレーションのプラグインを必要とせず、そのマシンの `orcaBin` を使う。lifecycleのメールにはpreambleの `--task-id`、`--dispatch-id`、`--from` を付け、`--dispatch-capability` が示されていればそれも付ける。heartbeatで進みを更新し、integrationの役はコミットごとに自分のtask branchをoriginへpushする。成果はworktree外に置く。1 対象の worker は version 1 のJSON封筒の `nonce`、`branch`、`head`、値が文字列の `files` で返す。上限はUTF-8で262144バイト。全役が `result.md`、計画だけのdesignはさらに `plan.md` と `plan-result.json`、integrationの役は `auto-result.json` を返す。依頼は `review/plan-round-<n>-request.md` または `review/code-round-<n>-request.md`、レビュー役は `review/plan-round-<n>-findings.md` または `review/code-round-<n>-findings.md` を使い、ラウンドは1〜99。それ以外の名前は拒否する。
 
@@ -1373,7 +1373,7 @@ node "$PLUGIN/bin/orca-cleanup.ts" run --plan "<plan_file printed by Step 5>" \
 | `pr_created` と `pr_merged` では、何かを残すタスクは dispatch 記録も残し、あとで Step 5 もそれらを提示しない | ユーザーが操作した端末は、worktree を消すとその端末を尋ねずに閉じるので worktree ごと残す。未コミットの変更がある worktree など、Step 5 が残すものも同じく残る。Step 5 は pull request のタスクの worktree と記録を提示しないので、確かめたら worktree を `$ORCA_BIN worktree rm --worktree "id:<worktree id>"` で、`.dispatch/<slug>` を手で消す |
 | --autoの持ち主のいないworktreeはSlackの定期報告で区別できない | tickのstdoutが名指しし、report.jsonのhosts[].usedには数として含まれる。Slackの定期報告はマシンの名前とつながるかだけを出し、数は出さない |
 | --autoはworker_doneを失った役を決着できない | --max-waits 1では猶予の時計が毎回初期化されるため、上限時間でFailedになる。Runと退避した記録を調べる |
-| --autoはdispatchごとに遠隔の空きメモリやディスクを測らない | マシンの設定のlanesに頼る。localへ入れるときは両方を確認する |
+| --autoは遠隔の空きディスクを1時間に1回までしか測らない | 測定の間は最後の値を使い、そのあと起動したworktreeの分は引かない。マシンのlanesが上限になる。起動時に質問するシェル（oh-my-zshの更新の確認など）は測定のコマンドの先頭を飲み込むので、質問が出なくなるまでそのマシンの測定は失敗する |
 | --auto の実装対象は Issue ごとに 2 リポジトリまで、同じ 1 台で動かす | 3 つ以上の対象は Ready_Eng に回す。途中の merge 失敗は partial-merge コメントと In review にし、残りは人が merge する |
 | --autoのmailの役はレビュー後も `review=unreviewed` と出ることがあり、遠隔役は `orca-recover.ts` で置き換えない | メールには `sent.json` が無いため、仕上げは返されたverdictと計画の結果を読む。遠隔役はOrcaで調べる |
 | --autoは遠隔での人の操作や未コミットの変更を確実には検出できない | forceで消すとその変更は失われうる。localのuser-ownershipの保護を遠隔worktreeには期待しない |

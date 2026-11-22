@@ -1,6 +1,6 @@
 import { envArgs, LOCAL_HOST, parseHosts } from './auto-hosts.ts'
 import { asArray, asObject, asString, get, parseJson } from './json.ts'
-import { receiptArray, receiptOk, runOrca } from './orca.ts'
+import { type OrcaResult, receiptArray, receiptOk, runOrca } from './orca.ts'
 import { availableMemoryMb, envCount, run, sleepSeconds } from './sys.ts'
 
 import { existsSync, readdirSync, readFileSync, realpathSync, statfsSync } from 'node:fs'
@@ -81,9 +81,15 @@ console.log('@@orca-auto-probe:begin@@'+JSON.stringify({platform,cpus:os.availab
 export const probeCommand = (): string =>
   `node -e "eval(Buffer.from('${Buffer.from(PROBE_SCRIPT).toString('base64')}','base64').toString('utf8'))"`
 export const PROBE_READ_ATTEMPTS = 30
-export const probeRemote = (id: string, worktreeSelector: string, now: string): RemoteProbe => {
+export const probeRemote = (
+  id: string,
+  worktreeSelector: string,
+  now: string,
+  title = 'orca-auto-setup',
+  orca: (args: string[]) => OrcaResult = runOrca,
+): RemoteProbe => {
   const empty: RemoteProbe = { spec: null, orcaBin: null, ghAuthOk: null, platform: null }
-  const created = runOrca([
+  const created = orca([
     'terminal',
     'create',
     '--environment',
@@ -91,7 +97,7 @@ export const probeRemote = (id: string, worktreeSelector: string, now: string): 
     '--worktree',
     worktreeSelector,
     '--title',
-    'orca-auto-setup',
+    title,
     '--command',
     probeCommand(),
     '--json',
@@ -100,17 +106,7 @@ export const probeRemote = (id: string, worktreeSelector: string, now: string): 
   if (!handle) return empty
   try {
     for (let attempt = 0; attempt < PROBE_READ_ATTEMPTS; attempt++) {
-      const result = runOrca([
-        'terminal',
-        'read',
-        '--environment',
-        id,
-        '--terminal',
-        handle,
-        '--limit',
-        '400',
-        '--json',
-      ])
+      const result = orca(['terminal', 'read', '--environment', id, '--terminal', handle, '--limit', '400', '--json'])
       const tail = receiptOk(result) ? asArray(get(result.json, 'result', 'terminal', 'tail')) : null
       const text = tail?.filter((line): line is string => typeof line === 'string').join('') ?? ''
       const start = text.indexOf(PROBE_BEGIN),
@@ -137,11 +133,14 @@ export const probeRemote = (id: string, worktreeSelector: string, now: string): 
     }
     return empty
   } finally {
-    runOrca(['terminal', 'close', '--environment', id, '--terminal', handle, '--json'])
+    orca(['terminal', 'close', '--environment', id, '--terminal', handle, '--json'])
   }
 }
-export const listRemoteRepos = (id: string): Array<{ id: string; path: string; repo: string | null }> | null => {
-  const rows = receiptArray(runOrca(['repo', 'list', ...envArgs(id), '--json']), 'repos')
+export const listRemoteRepos = (
+  id: string,
+  orca: (args: string[]) => OrcaResult = runOrca,
+): Array<{ id: string; path: string; repo: string | null }> | null => {
+  const rows = receiptArray(orca(['repo', 'list', ...envArgs(id), '--json']), 'repos')
   return (
     rows?.flatMap((row) => {
       const id = asString(get(row, 'id')),

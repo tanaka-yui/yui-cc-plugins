@@ -220,3 +220,26 @@ test('SS4 legacy review points default empty and invalid values fail closed', ()
     rmSync(file, { force: true })
   }
 })
+test('SS6 remote disk measurements are optional and invalid values fail closed', () => {
+  const base = { version: 1, judgingSince: null, issues: {} }
+  const put = (value: object) => writeFileSync(join(sd, 'state.json'), JSON.stringify({ ...base, ...value }))
+  put({})
+  assert.equal(readState('main').hostDisk, undefined)
+  const hostDisk = {
+    'env-1': { diskFreeMb: 2048, measuredAt: '2026-11-22T00:00:00Z' },
+    'env-2': { diskFreeMb: null, measuredAt: '2026-11-22T00:00:00Z' },
+  }
+  put({ hostDisk })
+  assert.deepEqual(readState('main').hostDisk, hostDisk)
+  for (const bad of [
+    [],
+    { 'env-1': { diskFreeMb: '1', measuredAt: '2026-11-22T00:00:00Z' } },
+    { 'env-1': { diskFreeMb: -1, measuredAt: '2026-11-22T00:00:00Z' } },
+    { 'env-1': { diskFreeMb: 1 } },
+    { 'env-1': { diskFreeMb: 1, measuredAt: 'never' } },
+  ]) {
+    put({ hostDisk: bad })
+    assert.throws(() => readState('main'), JSON.stringify(bad))
+  }
+  rmSync(join(sd, 'state.json'))
+})

@@ -1,4 +1,4 @@
-import { envArgs, hostKey, hostsOf, parseHosts } from '../../lib/auto-hosts.ts'
+import { envArgs, hostAvailableMemoryMb, hostKey, hostsOf, parseHosts } from '../../lib/auto-hosts.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 
 import assert from 'node:assert/strict'
@@ -147,4 +147,16 @@ test('SV9 measure parses, defaults to null, and rejects bad shapes', () => {
   } finally {
     f.cleanup()
   }
+})
+
+test('HC6 live available memory is read from the Orca diagnostics host block', () => {
+  const mib = 1024 * 1024
+  assert.equal(hostAvailableMemoryMb({ ok: true, result: { host: { availableMemory: 3 * mib + 5 } } }), 3)
+  for (const json of [
+    null,
+    { ok: true, result: {} },
+    { ok: true, result: { host: { availableMemory: 'x' } } },
+    { ok: true, result: { host: { availableMemory: -1 } } },
+  ] as Json[])
+    assert.equal(hostAvailableMemoryMb(json), null)
 })

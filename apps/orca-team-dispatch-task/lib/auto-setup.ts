@@ -403,8 +403,8 @@ export const runSetup = (
           const index = choices.findIndex((choice) => choice.id === host.id)
           return index >= 0 ? [String(index + 1)] : []
         })
-      : choices.flatMap((host, i) => (host.id === LOCAL_HOST ? [String(i + 1)] : []))
-    const selected = choose('使うマシンの番号', choices.length, defaults.join(',') || '1')
+      : choices.map((_, i) => String(i + 1))
+    const selected = choose('使うマシンの番号（カンマ区切りで複数可）', choices.length, defaults.join(',') || '1')
     const next: HostConfig[] = []
     const names = Object.keys(repos())
     for (const index of selected) {

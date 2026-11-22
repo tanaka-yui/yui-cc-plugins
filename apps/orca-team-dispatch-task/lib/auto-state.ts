@@ -91,6 +91,8 @@ export type AutoState = {
   projectSync: Record<string, ProjectPair>
   // 拾う元ごとに auto-ready を有効にした時刻。これより前に作られた Backlog の Issue は拾わない
   autoReadySince?: Record<string, string>
+  // 遠くのマシンごとの空きディスクの最後の測定。測れなかったときも diskFreeMb: null で時刻を残し、間隔まで測り直さない
+  hostDisk?: Record<string, { diskFreeMb: number | null; measuredAt: string }>
 }
 export const limitOf = (issue: Pick<IssueState, 'limitMinutes' | 'relayMinutes'>): number =>
   issue.limitMinutes + issue.relayMinutes
@@ -166,6 +168,23 @@ export const readState = (name: string): AutoState => {
   if (value.autoReadySince !== undefined) {
     const since = asObject(value.autoReadySince)
     if (!since || Object.values(since).some((v) => typeof v !== 'string')) throw new Error('状態ファイルが壊れています')
+  }
+  if (value.hostDisk !== undefined) {
+    const disks = asObject(value.hostDisk)
+    if (
+      !disks ||
+      Object.values(disks).some((entry) => {
+        const disk = asObject(entry)
+        const free = disk?.diskFreeMb
+        return (
+          !disk ||
+          (free !== null && (typeof free !== 'number' || !Number.isInteger(free) || free < 0)) ||
+          typeof disk.measuredAt !== 'string' ||
+          Number.isNaN(Date.parse(disk.measuredAt))
+        )
+      })
+    )
+      throw new Error('状態ファイルが壊れています')
   }
   if (value.projectSync === undefined) value.projectSync = {}
   const projectSync = asObject(value.projectSync)

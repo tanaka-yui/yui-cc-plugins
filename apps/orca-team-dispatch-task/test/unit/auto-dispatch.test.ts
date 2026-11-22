@@ -354,6 +354,194 @@ test('AU85b a local-only queue head cannot block a later remote-capable issue wh
   }
 })
 
+const liveMemory = (f: ReturnType<typeof runtimeFixture>, remoteMb: number | null) => {
+  if (remoteMb === null) {
+    f.respond('diagnostics_memory', { ok: false, error: { code: 'runtime_unavailable' } }, f.orca)
+    writeFileSync(join(f.orca, 'diagnostics_memory.rc'), '1')
+  } else
+    f.respond('diagnostics_memory', { ok: true, result: { host: { availableMemory: remoteMb * 1024 * 1024 } } }, f.orca)
+}
+const diagnosticsCalls = (f: ReturnType<typeof runtimeFixture>) =>
+  f
+    .calls(f.orca)
+    .split('\n')
+    .filter((line) => line.startsWith('diagnostics memory'))
+test('AU179 a remote host whose live free memory is below the minimum receives no worker', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track()
+    multihost(f)
+    liveMemory(f, 2048)
+    const r = f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.host, 'local')
+    assert.ok(r.stdout.includes('Mac M2max の空きメモリが足りません'), r.stdout)
+    assert.deepEqual(diagnosticsCalls(f), ['diagnostics memory --environment env-1 --json '])
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU180 the host with the most room by lanes and live memory wins over the free-lane ratio', () => {
+  for (const [localMb, remoteMb, expected] of [
+    [8192, 16384, 'env-1'],
+    [999999, 8192, 'local'],
+  ] as const) {
+    const f = runtimeFixture()
+    try {
+      const i = f.track()
+      multihost(f, 4, 4)
+      process.env.ORCA_AUTO_FREE_MEMORY_MB = String(localMb)
+      liveMemory(f, remoteMb)
+      f.cli('tick')
+      assert.equal(readState('main').issues[i.key]?.host, expected, `${localMb}/${remoteMb}`)
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+test('AU181 unreadable remote memory falls back to the remaining lanes', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track()
+    multihost(f)
+    liveMemory(f, null)
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.host, 'env-1')
+    assert.equal(diagnosticsCalls(f).length, 1)
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU182 a measured worktree cost on the host shrinks its memory room', () => {
+  for (const measured of [true, false]) {
+    const f = runtimeFixture()
+    try {
+      const i = f.track()
+      multihost(f, 3, 4)
+      if (measured) {
+        const config = JSON.parse(readFileSync(f.configFile, 'utf8'))
+        config.hosts[1].repos['acme/app'].measure = {
+          peakMemoryMb: 4096,
+          diskGrowthMb: 0,
+          measuredAt: '2026-11-17T00:00:00Z',
+        }
+        f.put(f.configFile, config)
+      }
+      liveMemory(f, 4096 + 8192 * 2)
+      f.cli('tick')
+      assert.equal(readState('main').issues[i.key]?.host, measured ? 'local' : 'env-1')
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+
+const NOW = '2026-11-13T05:30:00Z'
+const minutesBefore = (minutes: number) => new Date(Date.parse(NOW) - minutes * 60_000).toISOString()
+const remoteDisk = (f: ReturnType<typeof runtimeFixture>, entry: { diskFreeMb: number | null; measuredAt: string }) => {
+  const s = readState('main')
+  s.hostDisk = { 'env-1': entry }
+  writeState('main', s)
+}
+const diskProbeResponses = (f: ReturnType<typeof runtimeFixture>, diskFreeMb: number) => {
+  process.env.ORCA_AUTO_PROBE_INTERVAL_MS = '0'
+  f.respond(
+    'repo_list',
+    {
+      ok: true,
+      result: { repos: [{ id: 'R', path: '/remote/app', gitRemoteIdentity: { canonicalKey: 'github.com/acme/app' } }] },
+    },
+    f.orca,
+  )
+  const created = JSON.stringify({ ok: true, result: { terminal: { handle: 'term_disk' } } })
+  const coordinator = JSON.stringify({ ok: true, result: { terminal: { handle: 'term_auto' } } })
+  f.hook(
+    'terminal_create',
+    `case " $* " in *" --environment env-1 "*) printf '%s' '${created}' > '${f.orca}/terminal_create';; *) printf '%s' '${coordinator}' > '${f.orca}/terminal_create';; esac`,
+    f.orca,
+  )
+  const value = JSON.stringify({
+    platform: 'darwin',
+    cpus: 18,
+    memoryTotalMb: 131072,
+    memoryFreeMb: 65536,
+    swapTotalMb: 0,
+    diskFreeMb,
+    orcaBin: '/bin/orca',
+    ghAuthOk: true,
+  })
+  f.respond(
+    'terminal_read',
+    { ok: true, result: { terminal: { tail: [`@@orca-auto-probe:begin@@${value}@@orca-auto-probe:end@@`] } } },
+    f.orca,
+  )
+}
+const diskProbes = (f: ReturnType<typeof runtimeFixture>) =>
+  f
+    .calls(f.orca)
+    .split('\n')
+    .filter((line) => line.startsWith('terminal create --environment env-1'))
+test('AU183 a remote disk measurement older than the interval is retaken once at the end of refill', () => {
+  for (const [entry, probed] of [
+    [null, true],
+    [minutesBefore(30), false],
+    [minutesBefore(61), true],
+  ] as const) {
+    const f = runtimeFixture()
+    try {
+      f.track()
+      multihost(f)
+      if (entry) remoteDisk(f, { diskFreeMb: 99999, measuredAt: entry })
+      diskProbeResponses(f, 30000)
+      f.cli('tick')
+      const probes = diskProbes(f)
+      assert.equal(probes.length, probed ? 1 : 0, String(entry))
+      if (probed) {
+        assert.ok(probes[0]?.includes('--worktree path:/remote/app --title orca-auto-disk'), probes[0])
+        assert.ok(f.calls(f.orca).includes('terminal close --environment env-1 --terminal term_disk'))
+        assert.deepEqual(readState('main').hostDisk?.['env-1'], { diskFreeMb: 30000, measuredAt: NOW })
+      } else assert.deepEqual(readState('main').hostDisk?.['env-1']?.diskFreeMb, 99999)
+    } finally {
+      Reflect.deleteProperty(process.env, 'ORCA_AUTO_PROBE_INTERVAL_MS')
+      f.cleanup()
+    }
+  }
+})
+test('AU184 the measured remote disk excludes a host below the minimum and shrinks its room', () => {
+  for (const [diskFreeMb, expected] of [
+    [5000, 'local'],
+    [10240, 'local'],
+    [null, 'env-1'],
+  ] as const) {
+    const f = runtimeFixture()
+    try {
+      const i = f.track()
+      multihost(f, 1, 4)
+      remoteDisk(f, { diskFreeMb, measuredAt: minutesBefore(1) })
+      const r = f.cli('tick')
+      assert.equal(readState('main').issues[i.key]?.host, expected, String(diskFreeMb))
+      assert.equal(r.stdout.includes('Mac M2max の空きディスクが足りません'), diskFreeMb === 5000, r.stdout)
+    } finally {
+      f.cleanup()
+    }
+  }
+})
+test('AU185 no remote disk measurement starts without enough tick budget to close its terminal', () => {
+  const f = runtimeFixture()
+  try {
+    f.track()
+    multihost(f)
+    diskProbeResponses(f, 30000)
+    process.env.ORCA_AUTO_BUDGET_MS = '59000'
+    f.cli('tick')
+    assert.deepEqual(diskProbes(f), [])
+    assert.equal(readState('main').hostDisk, undefined)
+  } finally {
+    Reflect.deleteProperty(process.env, 'ORCA_AUTO_PROBE_INTERVAL_MS')
+    Reflect.deleteProperty(process.env, 'ORCA_AUTO_BUDGET_MS')
+    f.cleanup()
+  }
+})
+
 test('AU84b finishing uses the selected host verification instead of the parent checkout verification', () => {
   const f = runtimeFixture()
   try {

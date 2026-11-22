@@ -1084,3 +1084,28 @@ test('SU45 asks nothing and writes no base fields when fewer than two candidate 
     f.cleanup()
   }
 })
+test('SU47 the machine prompt says several numbers are allowed and first selects every listed machine', () => {
+  const f = prepare()
+  try {
+    remoteResponses(f)
+    f.put(f.configFile, f.raw)
+    const seen: Array<{ q: string; fallback: string | undefined }> = []
+    runSetup(
+      'main',
+      {
+        ask: (q, fallback) => {
+          if (q.includes('使うマシンの番号')) seen.push({ q, fallback })
+          return fallback ?? ''
+        },
+        confirm: (q) => q.includes('マシンの構成を変えますか'),
+      },
+      () => {},
+      'hosts',
+    )
+    assert.equal(seen.length, 1)
+    assert.ok(seen[0]?.q.includes('カンマ区切りで複数可'), seen[0]?.q)
+    assert.equal(seen[0]?.fallback, '1,2')
+  } finally {
+    f.cleanup()
+  }
+})

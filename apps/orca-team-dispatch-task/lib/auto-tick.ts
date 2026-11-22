@@ -12,8 +12,9 @@ import {
 } from './auto-config.ts'
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, type PrStatus, prStatus, readGithub, viewIssue } from './auto-github.ts'
-import { envArgs, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
+import { envArgs, hostAvailableMemoryMb, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
 import {
+  AUTO_CALL_CAP_MS,
   AUTO_FILES,
   AUTO_JUDGE_LEASE_MS,
   AUTO_TICK_BUDGET_MS,
@@ -25,6 +26,7 @@ import {
   beginAutoTick,
   canAutoCall,
   endAutoTick,
+  hasAutoTime,
   autoRun as run,
   autoOrca as runOrca,
 } from './auto-paths.ts'
@@ -38,8 +40,10 @@ import { roleNames } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString, get, type Json, type JsonObject } from './json.ts'
 import { repoTargets, resultFileOf, roleWorktrees } from './multi-repo.ts'
-import { receiptArray, receiptOk } from './orca.ts'
+import { runOrca as orcaWithin, receiptArray, receiptOk } from './orca.ts'
 import { fetchBranch } from './remote-branch.ts'
+import { listRemoteRepos, probeRemote } from './setup-host.ts'
+import { worktreeCost } from './setup-lanes.ts'
 import { STATUS } from './status.ts'
 import { availableMemoryMb, envCount, runNode as runProcessNode } from './sys.ts'
 
@@ -52,6 +56,10 @@ import type { HostConfig } from './auto-hosts.ts'
 export const AUTO_START_RESERVE_MS = 60_000
 export const AUTO_START_MAX_FAILURES = 3
 export const AUTO_CREATE_SETTLE_SECS = 20
+// 遠くの空きディスクは端末を作って測る（1 台 16 秒前後。2026-11-22、Mac M5max）ので、1 台 1 時間に 1 回まで
+export const AUTO_DISK_PROBE_INTERVAL_MS = 60 * 60_000
+// 測定は始めたら端末を閉じるまで止められない。読み取りの最大（setup-host の PROBE_READ_ATTEMPTS 回）と close が入る残り
+export const AUTO_DISK_PROBE_RESERVE_MS = 60_000
 const runNode = (script: string, args: string[], inherit = false, env?: Record<string, string>) =>
   canAutoCall('子の実行') ? runProcessNode(script, args, inherit, env) : { rc: 1, stdout: '', stderr: 'timed out' }
 const ACTIVE = ['dispatching', 'running', 'finishing']
@@ -333,7 +341,20 @@ const refill = (tick: Tick): void => {
   if (!capacities.some((c) => c.readable && c.reachable)) return
   const rolesPerRepo = roleNames(tick.config.roles.review_mode, tick.config.roles.phase_b).length
   const sources = new Set(pickSources(tick.config))
-  for (const issue of orderQueue(
+  // 今の空きメモリ（MB）。tick 内で 1 台 1 回だけ読む。遠くは Orca の diagnostics で、読めなければ null（並列数だけで数える）
+  const freeMemory = new Map<string, number | null>()
+  const freeMemoryOf = (host: HostConfig): number | null => {
+    if (!freeMemory.has(host.id)) {
+      if (host.id === LOCAL_HOST)
+        freeMemory.set(host.id, Number(process.env.ORCA_AUTO_FREE_MEMORY_MB ?? availableMemoryMb()))
+      else {
+        const response = runOrca(['diagnostics', 'memory', ...envArgs(host.id), '--json'])
+        freeMemory.set(host.id, receiptOk(response) ? hostAvailableMemoryMb(response.json) : null)
+      }
+    }
+    return freeMemory.get(host.id) ?? null
+  }
+  const queue = orderQueue(
     Object.values(tick.state.issues).filter(
       (i) =>
         i.phase === 'queued' &&
@@ -344,7 +365,8 @@ const refill = (tick: Tick): void => {
         !tick.deferred.has(i.key) &&
         sources.has(i.repo),
     ),
-  )) {
+  )
+  for (const issue of queue) {
     if (tick.startUsed || !canAutoCall('補充の起動', AUTO_START_RESERVE_MS)) break
     const targets = issue.targets
     const repos: Array<{ name: string; options: AutoConfig['repos'][string] }> = []
@@ -388,16 +410,49 @@ const refill = (tick: Tick): void => {
       }
     }
     if (unreadable) continue
+    const local = candidates.find((c) => c.host.id === LOCAL_HOST)
     if (
-      candidates.some((c) => c.host.id === LOCAL_HOST) &&
-      (Number(process.env.ORCA_AUTO_FREE_MEMORY_MB ?? availableMemoryMb()) < tick.config.minFreeMemoryMb ||
+      local &&
+      (Number(freeMemoryOf(local.host)) < tick.config.minFreeMemoryMb ||
         Number(process.env.ORCA_AUTO_FREE_DISK_MB ?? freeDisk) < tick.config.minFreeDiskMb)
     ) {
       console.log('空きメモリまたはディスクが足りません')
       candidates = candidates.filter((c) => c.host.id !== LOCAL_HOST)
     }
+    // 遠くのディスクは diagnostics に無いので、tick の終わりに間隔を空けて測った値（state の hostDisk）を使う
+    const freeDiskOf = (host: HostConfig): number | null =>
+      host.id === LOCAL_HOST
+        ? Number(process.env.ORCA_AUTO_FREE_DISK_MB ?? freeDisk)
+        : (tick.state.hostDisk?.[host.id]?.diskFreeMb ?? null)
+    candidates = candidates.filter((c) => {
+      if (c.host.id === LOCAL_HOST) return true
+      const memory = freeMemoryOf(c.host)
+      if (memory !== null && memory < tick.config.minFreeMemoryMb) {
+        console.log(`${c.host.name} の空きメモリが足りません`)
+        return false
+      }
+      const disk = freeDiskOf(c.host)
+      if (disk !== null && disk < tick.config.minFreeDiskMb) {
+        console.log(`${c.host.name} の空きディスクが足りません`)
+        return false
+      }
+      return true
+    })
+    // 余力 = 並列数の残り・今の空きメモリに入る worktree の数・空きディスクに入る worktree の数の最小。
+    // 1 worktree 分は setup で測った値（無ければ既定）。読めない値は数えない
+    const roomOf = (c: (typeof candidates)[number]): number => {
+      const cost = worktreeCost(targets.map((t) => c.host.repos[t]?.measure ?? null))
+      const memory = freeMemoryOf(c.host)
+      const disk = freeDiskOf(c.host)
+      return Math.min(
+        c.host.lanes - c.used,
+        memory === null ? Number.POSITIVE_INFINITY : Math.floor((memory - tick.config.minFreeMemoryMb) / cost.memoryMb),
+        disk === null ? Number.POSITIVE_INFINITY : Math.floor((disk - tick.config.minFreeDiskMb) / cost.diskMb),
+      )
+    }
     const chosen = candidates.sort(
       (a, b) =>
+        roomOf(b) - roomOf(a) ||
         (b.host.lanes - b.used) / b.host.lanes - (a.host.lanes - a.used) / a.host.lanes ||
         Number(b.host.id === LOCAL_HOST) - Number(a.host.id === LOCAL_HOST),
     )[0]
@@ -522,6 +577,33 @@ const refill = (tick: Tick): void => {
     )
     chosen.used += required
   }
+  if (queue.length) probeDisk(tick, capacities)
+}
+// 待っている Issue があるときだけ、測ってから間隔が過ぎた遠くのマシンを 1 台（最も古いもの）測る。結果は次の tick から使う。
+// 測定の端末は Orca が遠くのマシンに開いて閉じる。測れなかったときも時刻を残し、間隔まで測り直さない
+const probeDisk = (tick: Tick, capacities: Array<{ host: HostConfig; reachable: boolean }>): void => {
+  const now = autoNow()
+  const due = capacities
+    .filter((c) => c.host.id !== LOCAL_HOST && c.reachable)
+    .map((c) => ({ host: c.host, at: Date.parse(tick.state.hostDisk?.[c.host.id]?.measuredAt ?? '') || 0 }))
+    .filter((d) => Date.parse(now) - d.at >= AUTO_DISK_PROBE_INTERVAL_MS)
+    .sort((a, b) => a.at - b.at)[0]
+  if (!due || !hasAutoTime(AUTO_DISK_PROBE_RESERVE_MS)) return
+  const orca = (args: string[]) => orcaWithin(args, undefined, envCount('ORCA_AUTO_CALL_CAP_MS', AUTO_CALL_CAP_MS))
+  const host = due.host
+  let path: string | null = null
+  for (const r of Object.values(host.repos)) {
+    if (r.selector.startsWith('path:')) path = r.selector.slice('path:'.length)
+    else if (r.selector.startsWith('id:'))
+      path = listRemoteRepos(host.id, orca)?.find((row) => `id:${row.id}` === r.selector)?.path ?? null
+    if (path) break
+  }
+  const diskFreeMb = path
+    ? (probeRemote(host.id, `path:${path}`, now, 'orca-auto-disk', orca).spec?.diskFreeMb ?? null)
+    : null
+  if (diskFreeMb === null) console.log(`${host.name} の空きディスクを測れませんでした`)
+  tick.state.hostDisk = { ...tick.state.hostDisk, [host.id]: { diskFreeMb, measuredAt: now } }
+  tick.save()
 }
 const stopRoles = (tick: Tick, issue: IssueState): void => {
   if (!canAutoCall('停止')) return
