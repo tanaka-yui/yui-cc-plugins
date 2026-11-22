@@ -3,6 +3,7 @@ import {
   CHANNEL_ID_PATTERN,
   DAILY_AT_PATTERN,
   DEFAULT_DAILY_AT,
+  EXISTING_MODES,
   FORM_BASE_FIELD_MIN_BRANCHES,
   REPO_PATTERN,
 } from './defaults.ts'
@@ -28,7 +29,14 @@ export type Config = {
   mention: Mention
 }
 // branches は向き先の候補（setup か init --branches が書く。無いリポジトリには鍵ごと無い）
-export type RepoSetting = { name: string; form: boolean; existing: 'thread' | 'skip'; branches?: string[] }
+export type RepoSetting = {
+  name: string
+  form: boolean
+  existing: (typeof EXISTING_MODES)[number]
+  branches?: string[]
+}
+export const readExisting = (value: Json | undefined): RepoSetting['existing'] | null =>
+  EXISTING_MODES.find((mode) => mode === value) ?? null
 export type ReportSetting = { channel: string | null; dailyAt: string; source: string | null }
 export const DEFAULT_REPORT: ReportSetting = { channel: null, dailyAt: DEFAULT_DAILY_AT, source: null }
 export const formRepos = (config: Config): string[] =>
@@ -82,12 +90,13 @@ export const loadConfig = (home: string): Config | null => {
     if (!Array.isArray(o.repos) || o.repos.length === 0) return null
     for (const value of o.repos) {
       const r = asObject(value)
+      const existing = readExisting(r?.existing)
       if (
         !r ||
         typeof r.name !== 'string' ||
         !REPO_PATTERN.test(r.name) ||
         typeof r.form !== 'boolean' ||
-        (r.existing !== 'thread' && r.existing !== 'skip') ||
+        existing === null ||
         (r.branches !== undefined && !validBranches(r.branches)) ||
         repos.some((old) => old.name.toLowerCase() === String(r.name).toLowerCase())
       )
@@ -95,7 +104,7 @@ export const loadConfig = (home: string): Config | null => {
       repos.push({
         name: r.name,
         form: r.form,
-        existing: r.existing,
+        existing,
         ...(validBranches(r.branches) ? { branches: [...r.branches] } : {}),
       })
     }

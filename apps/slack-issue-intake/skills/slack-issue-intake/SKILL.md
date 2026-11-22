@@ -93,7 +93,7 @@ command with the name. Use the same name for `make slack-form <name>` and `make 
 3. Ask in one AskUserQuestion round for the channel ID, repository list (`owner/name`), default repository, each repository's form visibility and whether to also manage its issues that were not created from Slack (yes for `thread`, no for `skip`), and interval in minutes.
    The repository default is `gh repo view --json nameWithOwner -q .nameWithOwner` when available. Default interval
    is 5; valid choices are 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60.
-4. Run `init --channel <id> --repo <owner/name> [--repo <owner/name> ...] --default-repo <owner/name> --existing <owner/name>=<thread|skip> [--hide-form <owner/name>] [--branches <owner/name>=<branch>,<branch>] --every <minutes>`. Repeat `--existing`, `--hide-form` and `--branches` per repository. The default repository is always shown in forms, so `--hide-form` has no effect on it. `--branches` sets the base-branch candidates; when any form repository has two or more, the non-question forms get an optional base field and the created Issue gets a `base:<branch>` label. It registers a disabled automation. Exit 2 means
+4. Run `init --channel <id> --repo <owner/name> [--repo <owner/name> ...] --default-repo <owner/name> --existing <owner/name>=<thread|active|skip> [--hide-form <owner/name>] [--branches <owner/name>=<branch>,<branch>] --every <minutes>`. Repeat `--existing`, `--hide-form` and `--branches` per repository. The default repository is always shown in forms, so `--hide-form` has no effect on it. `--branches` sets the base-branch candidates; when any form repository has two or more, the non-question forms get an optional base field and the created Issue gets a `base:<branch>` label. It registers a disabled automation. Exit 2 means
    flags or token setup; exit 1 explains invitation, gh authentication, public repository, labels, Orca, changed
    destination, or a busy lease. For a public repository, explain that Slack content would become public and ask
    before retrying with `--allow-public`. Repositories can be added but cannot be removed; the default can change within the list. Changing the channel requires backing up the home and setting up again.
@@ -228,6 +228,9 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
   silently the first time they are seen. Failures show as `partial=true` without changing the exit code.
 - Existing-issue policy is per repository: `skip` ignores issues not created from Slack; `thread` creates a
   top-level management post and adds `slack-thread`. Old issues need a status label; newly created issues do not.
+  `active` ignores the start time and adopts issues that have any status label other than `Backlog`, plus issues a
+  human labeled `slack-thread` that have no database row; unlabeled and `Backlog`-only issues, `from-slack` issues
+  and pull requests are skipped. Set only one home to `active` for a given repository.
   Adoption scans updates plus a rotating creation-order sweep, reserving one of five slots for the sweep.
   Pending posts and labels resume from the database, including closed issues; unreadable rows are retained.
   Each phase tries at most five rows and moves attempted rows to the back of the wait order.

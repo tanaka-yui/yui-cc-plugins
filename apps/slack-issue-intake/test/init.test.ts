@@ -1,6 +1,6 @@
 import { loadConfig, saveConfig } from '../lib/config.ts'
 import { getIssueStatus, getMeta, openDb, trackedIssues } from '../lib/db.ts'
-import { LABEL_SPECS, labelsHashKey } from '../lib/defaults.ts'
+import { adoptAfterKey, LABEL_SPECS, labelsHashKey } from '../lib/defaults.ts'
 import { labelsHash } from '../lib/github.ts'
 import { acquireLease, readLease } from '../lib/lease.ts'
 import { homePaths } from '../lib/paths.ts'
@@ -302,4 +302,17 @@ test('IN19 --branches で向き先の候補を設定し、再実行で消えず�
     assert.equal((await f.init(['--repo', 'acme/web', '--branches', bad])).code, 2, bad)
   }
   assert.deepEqual(loadConfig(f.home)?.repos[0]?.branches, ['develop', 'main'])
+})
+test('IN20 --existing <repo>=active を受け付け、開始時刻は記録しない', async (t) => {
+  const f = await setup(t)
+  const r = await f.init(['--existing', 'acme/app=active'])
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(loadConfig(f.home)?.repos[0]?.existing, 'active')
+  const db = openDb(homePaths(f.home).db)
+  assert.equal(getMeta(db, adoptAfterKey('acme/app')), null)
+  db.close()
+  const bad = await f.init(['--existing', 'acme/app=all'])
+  assert.equal(bad.code, 2)
+  assert.ok(bad.stderr.includes('--existing <repo>=<thread|active|skip>'), bad.stderr)
+  assert.equal(loadConfig(f.home)?.repos[0]?.existing, 'active')
 })

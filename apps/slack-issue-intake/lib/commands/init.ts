@@ -1,6 +1,6 @@
 import { createArgs, editArgs, isAllowedEvery, repoAddArgs, shellQuote } from '../automation.ts'
 import { die, parseFlags, parseNow } from '../cli.ts'
-import { DEFAULT_REPORT, loadConfig, repoSetting, saveConfig, validBranches } from '../config.ts'
+import { DEFAULT_REPORT, loadConfig, readExisting, repoSetting, saveConfig, validBranches } from '../config.ts'
 import { getMeta, migrateToRepos, openDb, setMeta } from '../db.ts'
 import {
   ADMIN_LEASE_MS,
@@ -143,9 +143,10 @@ export const run = async (argv: string[]): Promise<void> => {
   for (const input of values.existing ?? []) {
     const parts = input.split('=')
     const setting = repos.find((r) => r.name.toLowerCase() === parts[0]?.toLowerCase())
-    if (!setting || parts.length !== 2 || (parts[1] !== 'thread' && parts[1] !== 'skip'))
-      return die('init', '--existing <repo>=<thread|skip> を確認してください')
-    setting.existing = parts[1]
+    const mode = readExisting(parts[1])
+    if (!setting || parts.length !== 2 || mode === null)
+      return die('init', '--existing <repo>=<thread|active|skip> を確認してください')
+    setting.existing = mode
   }
   for (const name of values['hide-form'] ?? []) {
     const setting = repos.find((r) => r.name.toLowerCase() === name.toLowerCase())

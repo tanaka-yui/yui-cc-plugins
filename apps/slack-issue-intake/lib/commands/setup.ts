@@ -13,6 +13,7 @@ import {
   DEFAULT_DAILY_AT,
   DEFAULT_EVERY_MINUTES,
   ERROR_MISSING_SCOPE,
+  EXISTING_ACTIVE,
   FORM_BASE_FIELD_MIN_BRANCHES,
   FORM_FEATURED_MANUAL,
   FORM_KINDS,
@@ -334,11 +335,15 @@ const pickRepo = async (
       const answer = p.ask(fill(SETUP_TEXT.askExisting, { repo: repo.name }), 'n')
       if (answer === null) return { ok: false, code: exhausted() }
       const choice = answer.toLowerCase()
-      if (['y', 'yes', 'thread', 'n', 'no', 'skip'].includes(choice)) {
-        repo.existing = ['y', 'yes', 'thread'].includes(choice) ? 'thread' : 'skip'
+      if (['y', 'yes', 'thread', 'active', 'n', 'no', 'skip'].includes(choice)) {
+        repo.existing = ['y', 'yes', 'thread'].includes(choice)
+          ? 'thread'
+          : choice === EXISTING_ACTIVE
+            ? EXISTING_ACTIVE
+            : 'skip'
         break
       }
-      say(fill(SETUP_TEXT.badChoice, { options: 'y / n' }))
+      say(fill(SETUP_TEXT.badChoice, { options: 'y / active / n' }))
     }
     if (repo.form || repo.name === defaultRepo) {
       const branches = await pickBranches(p, gh, repo.name)

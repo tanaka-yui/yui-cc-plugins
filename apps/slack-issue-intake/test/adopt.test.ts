@@ -143,6 +143,56 @@ test('AD3 skip と管理ラベル付きと PR は対象にしない', async (t) 
   await f.poll()
   assert.equal(f.top().length, 0)
 })
+const ACTIVE: RepoSetting = { name: 'acme/app', form: true, existing: 'active' }
+test('AD16 active は Backlog 以外のステータスの Issue を作られた時期を問わず取り込み、Backlog とステータス無しは取り込まない', async (t) => {
+  const f = await fixture(t, [ACTIVE], false)
+  f.setIssues([
+    issue(1, ['Ready']),
+    issue(2, ['In progress']),
+    issue(3, ['Backlog']),
+    issue(4),
+    issue(5, ['Backlog', 'Ready']),
+  ])
+  await f.poll()
+  assert.deepEqual(
+    f.rows().map((r) => r.issue_number),
+    [1, 2, 5],
+  )
+  assert.equal(f.top().length, 3)
+  assert.equal(f.meta('adopt_after:acme/app'), null)
+})
+test('AD17 active は人が付けた slack-thread の Issue を、DB に行が無ければ取り込み、行があれば飛ばす', async (t) => {
+  const f = await fixture(t, [ACTIVE, { name: 'acme/web', form: true, existing: 'thread' }])
+  f.setIssues([
+    issue(6, ['Backlog', 'slack-thread']),
+    issue(7, ['slack-thread']),
+    issue(8, ['Backlog', 'slack-thread'], 'acme/web'),
+  ])
+  await f.poll()
+  await f.poll()
+  assert.deepEqual(
+    f.rows().map((r) => [r.repo, r.issue_number]),
+    [
+      ['acme/app', 6],
+      ['acme/app', 7],
+    ],
+  )
+  assert.equal(f.top().length, 2)
+  await f.poll()
+  assert.equal(f.top().length, 2)
+})
+test('AD18 active でも from-slack と PR は取り込まない', async (t) => {
+  const f = await fixture(t, [ACTIVE], false)
+  f.setIssues([
+    issue(1, ['from-slack', 'Ready']),
+    issue(2, ['from-slack', 'slack-thread']),
+    { ...issue(3, ['Ready']), pull_request: {} },
+    { ...issue(4, ['slack-thread']), pull_request: {} },
+  ])
+  await f.poll()
+  assert.equal(f.top().length, 0)
+  assert.equal(f.rows().length, 0)
+})
 test('AD4 ts の無い予定行を一覧の対象外でも完成させる', async (t) => {
   const f = await fixture(t)
   f.seed('acme/app', 1)

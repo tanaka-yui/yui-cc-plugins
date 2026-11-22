@@ -638,8 +638,29 @@ test('UX1 既存 Issue は y/n と従来の thread/skip を大文字小文字を
       ['acme/api', 'thread'],
     ],
   )
-  assert.ok(r.stdout.includes('Slack から作っていないものも、スレッドを立てて管理しますか（y/n） [n]: '))
-  assert.ok(r.stdout.includes('y / n のどれかを入力してください'))
+  assert.ok(
+    r.stdout.includes(
+      'Slack から作っていないものも、スレッドを立てて管理しますか（y=新しい Issue とステータス付きの古い Issue / active=Backlog 以外のステータスの Issue と slack-thread を付けた Issue / n=しない） [n]: ',
+    ),
+  )
+  assert.ok(r.stdout.includes('y / active / n のどれかを入力してください'))
+})
+test('UX1b 既存 Issue の答え active は active になり、y は thread、n は skip のまま', async (t) => {
+  const f = await fixture(t)
+  const input = `${['', '#Issue-Intake', 'acme/app, acme/web, acme/api', '', '', 'Active', '', 'y', '', 'n', '', '', 'y'].join('\n')}\n`
+  const r = await f.setup(input)
+  assert.equal(r.code, 0, r.stderr + r.stdout)
+  assert.deepEqual(
+    loadConfig(f.home)?.repos.map((r) => [r.name, r.existing]),
+    [
+      ['acme/app', 'active'],
+      ['acme/web', 'thread'],
+      ['acme/api', 'skip'],
+    ],
+  )
+  const db = openDb(homePaths(f.home).db)
+  assert.equal(db.prepare("SELECT value FROM meta WHERE key='adopt_after:acme/app'").get()?.value, undefined)
+  db.close()
 })
 test('UX2 まとめ入力の誤り・重複・読めないリポジトリだけを名指しして飛ばす', async (t) => {
   const f = await fixture(t)

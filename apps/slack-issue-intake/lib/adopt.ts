@@ -21,11 +21,13 @@ import {
   adoptSweepKey,
   ERROR_DEADLINE,
   ERROR_LEASE_LOST,
+  EXISTING_ACTIVE,
   ISSUE_SCAN_PER_PAGE,
   META_ADOPT_ROTATION,
   MSG_ADOPTED,
   MSG_STATUS_NONE,
   SOURCE_LABEL,
+  STATUS_BACKLOG,
   STATUS_CURSOR_OVERLAP_SECONDS,
 } from './defaults.ts'
 import { stopError } from './drive.ts'
@@ -95,7 +97,8 @@ export const adoptExisting = async (ctx: DriveContext): Promise<AdoptReport> => 
     return ok
   }
   const seen = new Map<string, Issue>()
-  const repos = rt.config.repos.filter((r) => r.existing === 'thread')
+  const repos = rt.config.repos.filter((r) => r.existing === 'thread' || r.existing === EXISTING_ACTIVE)
+  const active = new Set(repos.filter((r) => r.existing === EXISTING_ACTIVE).map((r) => r.name))
   let inserted = 0
   if (repos.length) {
     const rotation = Number(getMeta(rt.db, META_ADOPT_ROTATION) ?? '0')
@@ -108,6 +111,7 @@ export const adoptExisting = async (ctx: DriveContext): Promise<AdoptReport> => 
       return report
     const after = new Map<string, string>()
     for (const repo of ordered) {
+      if (repo.existing === EXISTING_ACTIVE) continue
       const key = adoptAfterKey(repo.name)
       let at = getMeta(rt.db, key)
       if (!at) {
@@ -119,15 +123,16 @@ export const adoptExisting = async (ctx: DriveContext): Promise<AdoptReport> => 
     const consider = (repo: string, issue: Issue, limit: number): 'ok' | 'limit' | 'lost' => {
       seen.set(issueKey(repo, issue.number), issue)
       const labels = issue.labels.map((l) => l.toLowerCase())
-      if (
-        issue.pull ||
-        labels.includes(SOURCE_LABEL) ||
-        getAdopted(rt.db, repo, issue.number) ||
-        labels.includes(ADOPTED_LABEL)
-      )
-        return 'ok'
-      if (!(Date.parse(issue.createdAt) > Date.parse(after.get(repo) ?? '') || currentStatus(issue.labels) !== null))
-        return 'ok'
+      if (issue.pull || labels.includes(SOURCE_LABEL) || getAdopted(rt.db, repo, issue.number)) return 'ok'
+      if (active.has(repo)) {
+        // active: 人が付けた slack-thread は DB に行が無ければ取り込む。ステータス無しと Backlog は飛ばす（開始時刻は見ない）
+        const status = currentStatus(issue.labels)
+        if (!labels.includes(ADOPTED_LABEL) && (status === null || status === STATUS_BACKLOG)) return 'ok'
+      } else {
+        if (labels.includes(ADOPTED_LABEL)) return 'ok'
+        if (!(Date.parse(issue.createdAt) > Date.parse(after.get(repo) ?? '') || currentStatus(issue.labels) !== null))
+          return 'ok'
+      }
       if (inserted >= limit) return 'limit'
       if (
         !fenced(

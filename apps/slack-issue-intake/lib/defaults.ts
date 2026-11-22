@@ -225,6 +225,9 @@ export const FORM_KINDS: readonly FormKind[] = [
 ]
 export const SOURCE_LABEL = 'from-slack'
 export const ADOPTED_LABEL = 'slack-thread'
+// 既存 Issue の扱い。active は orca-team-dispatch-task が写しを持つ（scripts/check-shared-contracts.mjs が照合）
+export const EXISTING_MODES = ['skip', 'thread', 'active'] as const
+export const EXISTING_ACTIVE = 'active'
 export const DEFAULT_DAILY_AT = '09:00'
 export const DAILY_AT_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/
 export const labelsHashKey = (repo: string): string => `${META_LABELS_HASH}:${repo}`
@@ -602,7 +605,8 @@ export const SETUP_TEXT = {
   askDefaultRepo: '既定の起票先（フォームでリポジトリを選ばなかったときの起票先）',
   badDefaultRepo: '入力したリポジトリのどれかを入力してください',
   askShowInForm: '{repo} をフォームのリポジトリの選択肢に出しますか（y/n）',
-  askExisting: '{repo} の Issue のうち Slack から作っていないものも、スレッドを立てて管理しますか（y/n）',
+  askExisting:
+    '{repo} の Issue のうち Slack から作っていないものも、スレッドを立てて管理しますか（y=新しい Issue とステータス付きの古い Issue / active=Backlog 以外のステータスの Issue と slack-thread を付けた Issue / n=しない）',
   askBranches: '{repo} の向き先の候補（フォームの「向き先」の選択肢。カンマ区切り。欄を出さないなら -）',
   missingBranches: '{repo} に無いブランチです: {names}',
   fewBranches: '候補は 2 つ以上にしてください（欄を出さないなら -）',

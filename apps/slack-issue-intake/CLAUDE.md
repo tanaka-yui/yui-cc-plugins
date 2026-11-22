@@ -49,7 +49,7 @@ config の repos / defaultRepo は init だけが書き換えます。repo の�
 
 表・列は openDb、0.4 の行と meta の移行は migrateToRepos がリース下でフェンス付きで行います。呼ぶのは poll と init だけで、init は config 保存前に旧defaultRepoで移します。これで既定の変更が過去の Issue の行き先を変えません。
 
-adoptExisting は走査・投稿・ラベルの三段です。走査中は GitHub に書かず、更新順の増分と作成順の1ページずつの見直しを行います。5件のうち見直しに1件を残し、先頭のリポジトリを交代します。投稿とラベルは adopted のDB行から各5回まで進め、tried_atで順番を回します。ts の無い行は閉じても404でも削除しません。ts と issue_status2 の最初の状態は同じフェンス付きトランザクションで残します。slack-thread は orca-team-dispatch-task との管理対象の約束です。
+adoptExisting は走査・投稿・ラベルの三段です。走査中は GitHub に書かず、更新順の増分と作成順の1ページずつの見直しを行います。5件のうち見直しに1件を残し、先頭のリポジトリを交代します。投稿とラベルは adopted のDB行から各5回まで進め、tried_atで順番を回します。ts の無い行は閉じても404でも削除しません。ts と issue_status2 の最初の状態は同じフェンス付きトランザクションで残します。slack-thread は orca-team-dispatch-task との管理対象の約束です。existing は `skip | thread | active`（EXISTING_MODES）で、active は開始時刻（adopt_after）を使わず書かず、Backlog 以外のステータスを 1 つでも持つ Issue と DB に行の無い slack-thread 付きの Issue を取り込みます（thread の規則は変えない）。orca-team-dispatch-task は EXISTING_ACTIVE の写しを持ち、scripts/check-shared-contracts.mjs が照合します。
 
 ## 向き先（base ラベル）
 

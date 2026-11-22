@@ -69,6 +69,8 @@ Slack のワークフローのフォームから GitHub Issue を起票する Cl
 
 `--existing <repo>=thread` にしたリポジトリでは、Slack から作っていない Issue に管理用のトップレベル投稿を作り、`slack-thread` を付けます。既定の `skip` は対象外です。古い Issue はステータスラベルが付いたものだけ、設定後に作られたものはラベルなしでも管理します。フォームからの起票には `from-slack` が付きます。
 
+`--existing <repo>=active` にしたリポジトリでは、開始時刻に関係なく、`Backlog` 以外のステータスラベルが付いた Issue（`Backlog` と別のステータスが両方付いたものを含む）と、人が `slack-thread` を付けた Issue（DB に行が無いもの）を管理します。ステータスなしや `Backlog` だけの Issue、`from-slack` の Issue、PR は対象外です。Project で Ready にした手作りの Issue は、orca-team-dispatch-task の同期でステータスラベルが付いてから取り込まれます。1 つのリポジトリを `active` にするのは 1 つのホーム（intake）だけにしてください。setup の質問には `y`（thread）/ `active` / `n`（skip）で答えます。
+
 ### 定期報告
 
 orca-team-dispatch-task の `--auto` が書く報告の材料から、実行中の Issue、キュー、マシンを投稿します。報告はそのホームのリポジトリの Issue だけを出し、マシンは名前とつながるかだけを出します（ほかのワークスペースの作業が分かる数は出しません）。普段は同じ投稿を書き換え、ローカル時刻の既定09:00を過ぎた最初の poll で1日1回新しく投稿します。材料が間隔の3倍を超えて古くなると、`--auto` が止まっている旨を表示します。
