@@ -213,12 +213,12 @@ if grep -q 'do not proceed to Step 4' "$S" \
    && grep -q 'ORCA_TERMINAL_HANDLE' "$S" \
    && grep -q '手動統合で queue は解消されない' "$G" \
    && grep -q 'ORCA_TERMINAL_HANDLE' "$G" \
-   && awk '/^## Known limitations$/,/^## State on disk$/' "$S" | grep -q 'release_unknown' \
-   && awk '/^## 既知の制限$/,/^## ディスク上の状態$/' "$G" | grep -q 'release_unknown' \
+   && awk '/^## Known limitations$/,/^## State on disk$/' "$S" | grep -c >/dev/null 'release_unknown' \
+   && awk '/^## 既知の制限$/,/^## ディスク上の状態$/' "$G" | grep -c >/dev/null 'release_unknown' \
    && awk '/^## Known limitations$/,/^## State on disk$/' "$S" \
-      | grep -q 'stays unacknowledged and blocks its parent terminal' \
+      | grep -c >/dev/null 'stays unacknowledged and blocks its parent terminal' \
    && awk '/^## 既知の制限$/,/^## ディスク上の状態$/' "$G" \
-      | grep -q 'acknowledge されないまま親 terminal の queue を block' \
+      | grep -c >/dev/null 'acknowledge されないまま親 terminal の queue を block' \
    && ! grep -q 'A `release_unknown` batch' "$S" \
    && ! grep -q 'leave the original parent queue' "$S" \
    && ! grep -q '元の親 queue は blocked のまま' "$G"; then
@@ -247,8 +247,8 @@ grep -q '端末 → worktree → dispatch 記録 の順' "$G" || miss="$miss [or
 grep -q 'it counted only when `.ok == true`' "$S" || miss="$miss [receipt-gate]"
 grep -q 'there is nothing to approve' "$S" || miss="$miss [no-print-no-ask]"
 grep -q 'Never offer an action Step 5 declined to print' "$S" || miss="$miss [no-extra-option]"
-awk '/^## Step 6: /,/^## Known limitations$/' "$S" | grep -q -- '--force' || miss="$miss [no-force]"
-awk '/^## Step 6: /,/^## 既知の制限$/' "$G" | grep -q -- '--force' || miss="$miss [no-force-ja]"
+awk '/^## Step 6: /,/^## Known limitations$/' "$S" | grep -c >/dev/null -- '--force' || miss="$miss [no-force]"
+awk '/^## Step 6: /,/^## 既知の制限$/' "$G" | grep -c >/dev/null -- '--force' || miss="$miss [no-force-ja]"
 [[ -z "$miss" ]] && ok "SK12 Step 6 の実行規則" || fail "SK12:$miss"
 
 # SK14: N 並列の契約が両文書に明記されている
@@ -298,7 +298,7 @@ done
 
 # SK18: 親は設計しない（cmux 版の当初の思想）。宣言が description・本文・訳の全部にある
 bad=""
-sed -n '/^---$/,/^---$/p' "$S" | grep -q '親は設計しない' || bad="$bad [description]"
+sed -n '/^---$/,/^---$/p' "$S" | grep -c >/dev/null '親は設計しない' || bad="$bad [description]"
 grep -q '^\*\*No parent-side design\.\*\*' "$S" || bad="$bad [body:SKILL]"
 grep -q '^\*\*親は設計しない。\*\*' "$G" || bad="$bad [body:guide]"
 step1_s=$(sed -n '/^## Step 1: /,/^## Step 1b: /p' "$S")
@@ -318,7 +318,7 @@ done
 for f in "$S" "$G"; do
   grep -q 'INTEGRATION:?' "$f" || bad="$bad [guard:$(basename "$f")]"
   grep -q -- '--integration "\$INTEGRATION"' "$f" || bad="$bad [flag:$(basename "$f")]"
-  sed -n '/^## Step 4: /,/^## Step 5: /p' "$f" | grep -qF 'orca-state.ts" integration --status-dir "$SD"' \
+  sed -n '/^## Step 4: /,/^## Step 5: /p' "$f" | grep -cF >/dev/null 'orca-state.ts" integration --status-dir "$SD"' \
     || bad="$bad [step4-reads-record:$(basename "$f")]"
 done
 [[ -z "$bad" ]] && ok "SK19 取り込み方を毎回尋ねて記録する" || fail "SK19:$bad"
@@ -349,9 +349,9 @@ for f in "$S" "$G"; do
   b=$(basename "$f")
   grep -q -- '--on-stall report >> "\$SD/wait.log"' "$f" || bad="$bad [detached-report:$b]"
   grep -q 'unstarted_role' "$f" || bad="$bad [unstarted:$b]"
-  sed -n '/^## Step 3\.5: /,/^## Step 4: /p' "$f" | grep -q 'roles/design/stopped.json' \
+  sed -n '/^## Step 3\.5: /,/^## Step 4: /p' "$f" | grep -c >/dev/null 'roles/design/stopped.json' \
     || bad="$bad [3.5-stopped:$b]"
-  sed -n '/^## Step 3: /,/^### /p' "$f" | grep -q 'orca-pr.ts' || bad="$bad [manual-pr:$b]"
+  sed -n '/^## Step 3: /,/^### /p' "$f" | grep -c >/dev/null 'orca-pr.ts' || bad="$bad [manual-pr:$b]"
 done
 grep -q 'go to Step 3.5,$' "$S" && grep -q '^then run the same wait again' "$S" || bad="$bad [rerun:SKILL]"
 grep -q 'そのあと同じ待機をもう一度走らせて' "$G" || bad="$bad [rerun:guide]"
@@ -518,7 +518,7 @@ done
 bad=""
 for f in "$S" "$G"; do
   awk '/^```bash$/{b=1;next} /^```$/{b=0} b' "$f" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g" \
-    | grep -qE '[A-Za-z0-9._-]\[[0-9a-z]+\]' && bad="$bad [unquoted:$(basename "$f")]"
+    | grep -cE >/dev/null '[A-Za-z0-9._-]\[[0-9a-z]+\]' && bad="$bad [unquoted:$(basename "$f")]"
   grep -q "'claude-opus-5-5\[1m\]'" "$f" || bad="$bad [quoted-example:$(basename "$f")]"
   grep -q 'no matches found' "$f" || bad="$bad [why:$(basename "$f")]"
 done
@@ -536,7 +536,7 @@ grep -q 'merge のみ。PR は作らない' "$P/CLAUDE.md" && bad="$bad [merge-o
 bad=""
 for f in "$S" "$G"; do
   n=$(basename "$f")
-  sed -n '/^## Step 1b: /,/^## Step 2: /p' "$f" | grep -q 'ASK_VIA' || bad="$bad [step1b:$n]"
+  sed -n '/^## Step 1b: /,/^## Step 2: /p' "$f" | grep -c >/dev/null 'ASK_VIA' || bad="$bad [step1b:$n]"
   grep -q 'ASK_VIA:?' "$f" || bad="$bad [guard:$n]"
   grep -q -- '--ask-via "\$ASK_VIA"' "$f" || bad="$bad [flag:$n]"
   grep -q '^| `ask_via` |' "$f" || bad="$bad [config-row:$n]"

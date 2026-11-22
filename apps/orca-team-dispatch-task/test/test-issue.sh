@@ -356,7 +356,7 @@ grep -qxF '.dispatch-issue/' "$EXF" 2>/dev/null \
 teardown
 
 # IS24: ★ **無人の実行は停滞で止まって尋ねない。**尋ねる相手が居ないので、記録だけ残して待ち続ける
-tr -d ' \n' < "$P/bin/orca-issue.ts" | grep -q "'--on-stall','report'" \
+tr -d ' \n' < "$P/bin/orca-issue.ts" | grep -c >/dev/null "'--on-stall','report'" \
   && ok "IS24 --issue は停滞を記録して待ち続ける" || fail "IS24"
 
 # IS25: ★ **finish は記録した取り込み方を読む。**dispatch と finish の間には待機バッチが

@@ -792,7 +792,7 @@ jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dmr",count:1,messages:[
   {id:"mr",type:"merge_ready",subject:"merge_ready: n1",
    payload:({taskId:"task_r",dispatchId:"ctx_r"}|tojson),body:""}]}}' > "$ORCA_STUB_DIR/orchestration_check"
 w 1 >/dev/null 2>&1
-! tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" | grep -q '^completion-' \
+! tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" | grep -c >/dev/null '^completion-' \
   && grep -q -- '--ack dmr' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT83 止めた役の merge_ready に答えない" || fail "WT83"; teardown
 
@@ -804,7 +804,7 @@ jq -nc '{ok:true,result:{runId:"run_x",deliveryId:"dwd",count:1,messages:[
   > "$ORCA_STUB_DIR/orchestration_check"
 w 1 >/dev/null 2>&1
 grep -q 'worker_done|task_r|ctx_r|succeeded' "$SD/received.json" 2>/dev/null \
-  && ! grep 'worker-retain' "$ORCA_STUB_DIR/calls.log" | grep -q ctx_r \
+  && ! grep 'worker-retain' "$ORCA_STUB_DIR/calls.log" | grep -c >/dev/null ctx_r \
   && grep -q -- '--ack dwd' "$ORCA_STUB_DIR/calls.log" \
   && ok "WT83b 止めた役の receipt は記録し retain しない" || fail "WT83b"; teardown
 
@@ -1324,7 +1324,7 @@ out=$(w 2>&1); rc=$?
 [[ "$rc" -eq 0 && "$out" == *"dispatch_capability_invalid"* && "$out" == *"later batch"* ]] \
   && [[ "$(grep -c -- '--ack d1' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
   && [[ "$(grep -c -- '--ack d2' "$ORCA_STUB_DIR/calls.log")" -eq 1 ]] \
-  && ! grep -- '--peek' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--ack' \
+  && ! grep -- '--peek' "$ORCA_STUB_DIR/calls.log" | grep -c >/dev/null -- '--ack' \
   && [[ "$(jq -c 'sort' "$SD/received.json")" == '["worker_done|task_d|ctx_d|succeeded","worker_done|task_r|ctx_r|succeeded"]' ]] \
   && ok "WT124 後ろの batch に正常な worker_done があれば拒否通知で止めない" || fail "WT124 (rc=$rc out=$out)"; teardown
 

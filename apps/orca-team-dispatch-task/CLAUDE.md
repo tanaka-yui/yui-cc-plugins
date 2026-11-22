@@ -117,6 +117,10 @@ release）が受け持つ。issue の state file の場所と除外は `lib/issu
   `lib/dispatch.ts`（`startIncomplete`）
 - 入口は stdout をまとめて書き、`process.exitCode` で終える。`process.exit` は使用法の誤り
   （`die`）と `issue-fetch.ts` の `fatal` で使う — パイプへの書き込みが途中で切れうる
+- **bash のテストでパイプの右に `grep -q` を置かない。`grep -c >/dev/null` にする。**どのテストも `set -o pipefail` で、
+  `grep -q` は一致で先に終わるので、左の出力が 4096 バイトを超えると左が SIGPIPE（141）で落ち、パイプ全体が失敗になる。
+  2026-11-22、Step 1b の節が 4597 バイトになって SK31 が毎回落ち、SK10（複製で `failures: 1` を期待する）も巻き添えで落ちた。
+  `-c` は入力を最後まで読む（出力先が /dev/null でも GNU grep は早く終わらない）
 - 型検査と lint は `pnpm --filter @tanaka-yui/orca-team-dispatch-task check`。単体テストは
   `node --test 'test/unit/*.test.ts'`（**ディレクトリを渡すと node はそれをモジュールとして読んで
   失敗する**）で、`test/run-all.sh` が最後に走らせる

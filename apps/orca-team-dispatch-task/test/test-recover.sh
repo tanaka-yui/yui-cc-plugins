@@ -197,7 +197,7 @@ rl=$(grep -n 'worker-release' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1
 sl=$(grep -n 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
 [[ "$rc" -eq 0 && "$ws" == *'--retry-of ctx_old'* && "$ws" == *'--task task_x'* && "$ws" == *'--worktree id:wt_1'* \
    && -n "$rl" && "$rl" -lt "$sl" ]] \
-  && grep 'worker-release' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_old' \
+  && grep 'worker-release' "$ORCA_STUB_DIR/calls.log" | grep -c >/dev/null -- '--dispatch ctx_old' \
   && ! grep -q 'task-create' "$ORCA_STUB_DIR/calls.log" \
   && jq -e '.roles.design | .dispatch == "ctx_new" and .terminal == "term_new" and .generation == 2
             and .superseded == ["ctx_old"] and .worktree_terminals == ["term_old","term_new"]' \
@@ -287,7 +287,7 @@ echo '{"ok":true,"result":{"state":"ready","dispatchId":"ctx_new","effects":[{"k
 rec >/dev/null 2>&1; rc=$?
 ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
 [[ "$rc" -eq 0 && "$ws" == *'--retry-of ctx_retry'* ]] \
-  && grep 'worker-release' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_retry' \
+  && grep 'worker-release' "$ORCA_STUB_DIR/calls.log" | grep -c >/dev/null -- '--dispatch ctx_retry' \
   && jq -e '.roles.design | .dispatch == "ctx_new" and .terminal == "term_new" and .generation == 3
             and .superseded == ["ctx_old","ctx_retry"] and (has("start_incomplete") | not)' "$SD/workers.json" >/dev/null \
   && ok "RC25 次の回復は最新の試行を置き換える" || fail "RC25 (rc=$rc ws=$ws)"
@@ -320,7 +320,7 @@ show failed failed; retry_succeeds; : > "$ORCA_STUB_DIR/calls.log"
 out=$(rec 2>&1); second=$?
 ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
 [[ "$first" -eq 1 && "$second" -eq 0 && "$ws" == *'--retry-of ctx_retry'* && "$out" != *'reconciled locally'* ]] \
-  && grep 'worker-release' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_retry' \
+  && grep 'worker-release' "$ORCA_STUB_DIR/calls.log" | grep -c >/dev/null -- '--dispatch ctx_retry' \
   && [[ ! -f "$SD/roles/design/completion.json" ]] \
   && jq -e '.roles.design | .dispatch == "ctx_new" and .superseded == ["ctx_old","ctx_retry"]
             and (has("start_incomplete") | not)' "$SD/workers.json" >/dev/null \
@@ -369,7 +369,7 @@ out=$(rec 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *"'start_unknown'"* && "$out" == *'  | waiting for a review request'* \
    && "$out" == *'--role design --adopt'* && "$out" == *'--role design --restart'* && -z "$(acted)" \
    && "$(jq -c . "$SD/workers.json")" == "$before" ]] \
-  && grep 'terminal read' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--terminal term_u' \
+  && grep 'terminal read' "$ORCA_STUB_DIR/calls.log" | grep -c >/dev/null -- '--terminal term_u' \
   && ok "RC28 start_unknown は画面と 2 つの手段を見せて止まる" || fail "RC28 (rc=$rc out=$out)"
 teardown
 
@@ -448,7 +448,7 @@ sl=$(grep -n 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1 | cut -d: -f1)
 ws=$(grep 'worker-start' "$ORCA_STUB_DIR/calls.log" | head -1)
 [[ "$rc" -eq 0 && -n "$st" && -n "$sl" && "$st" -lt "$sl" && "$ws" == *'--retry-of ctx_old'* \
    && ! -e "$SD/roles/design/stopped.json" ]] \
-  && grep 'worker-stop' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_old' \
+  && grep 'worker-stop' "$ORCA_STUB_DIR/calls.log" | grep -c >/dev/null -- '--dispatch ctx_old' \
   && jq -e '.roles.design | .dispatch == "ctx_new" and .terminal == "term_new" and .generation == 2
             and .superseded == ["ctx_old"] and (has("start_incomplete") | not)' "$SD/workers.json" >/dev/null \
   && ok "RC33 --restart は止めてから置き換える" || fail "RC33 (rc=$rc out=$out)"
@@ -525,7 +525,7 @@ echo '{"ok":false,"result":{"state":"failed","dispatchId":"ctx_retry"}}' > "$ORC
 out=$(rec 2>&1); rc=$?
 [[ "$rc" -eq 1 && "$out" == *'ctx_retry'* && "$out" == *'trust_level = "trusted"'* \
    && "$out" == *'orca-recover.ts --status-dir'* ]] \
-  && grep 'worker-show' "$ORCA_STUB_DIR/calls.log" | grep -q -- '--dispatch ctx_retry' \
+  && grep 'worker-show' "$ORCA_STUB_DIR/calls.log" | grep -c >/dev/null -- '--dispatch ctx_retry' \
   && ok "RC39 置き換えが信頼で止まれば解き方を言う" || fail "RC39 (rc=$rc out=$out)"
 teardown
 

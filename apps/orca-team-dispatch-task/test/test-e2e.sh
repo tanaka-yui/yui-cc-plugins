@@ -42,7 +42,7 @@ OUT=$(node "$P/bin/orca-start.ts" --request-file "$REQ" --slug e2e --objective o
         --repo-root "$R" 2>&1); rc=$?
 SD=$(sed -n 's/^status_dir=//p' <<<"$OUT")
 [[ "$rc" -eq 0 && -n "$SD" ]] && ok "E1 start" || { fail "E1 start ($rc): $OUT"; SD="$R/.dispatch/e2e"; }
-grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | grep -q "$MARK" \
+grep 'orchestration task-create' "$ORCA_STUB_DIR/calls.log" | grep -c >/dev/null "$MARK" \
   && ok "E2 依頼が worker へ届く" || fail "E2 依頼が Task spec に無い"
 grep -q "$MARK" "$SD/request.md" 2>/dev/null && ok "E3 materialize" || fail "E3 materialize されない"
 # **launch が worker checkout を汚さない**
@@ -67,7 +67,7 @@ a=$(ack_lineno)
   && ok "E7 retain が ack より前・release しない" || fail "E7 順序 ($r/$a)"
 
 node "$P/bin/orca-merge.ts" --status-dir "$SD" >/dev/null 2>&1
-git -C "$R" show main:README.md | grep -q "$MARK" && ok "E8 成果が親ブランチへ" || fail "E8 merge されない"
+git -C "$R" show main:README.md | grep -c >/dev/null "$MARK" && ok "E8 成果が親ブランチへ" || fail "E8 merge されない"
 # **merge しても資源は消さない**（Stage 1 は片付けを自動化しない）
 [[ -d "$WT" ]] && git -C "$R" show-ref --quiet refs/heads/orca/e2e \
   && ok "E9 資源を消さない" || fail "E9 資源を消した"

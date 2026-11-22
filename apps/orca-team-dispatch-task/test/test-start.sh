@@ -356,7 +356,7 @@ teardown_wsl() { PATH="$OLDPATH"; export PATH; rm -rf "$STUBBIN"
 
 # ST28: **repo selector を host 形式で送る。**Linux path のままだと Orca は repo_not_found を返す
 setup_wsl; start >/dev/null 2>&1
-if grep -F 'worktree' "$ORCA_STUB_DIR/argv.log" | grep -qF 'path:\\wsl.localhost\Test'; then
+if grep -F 'worktree' "$ORCA_STUB_DIR/argv.log" | grep -cF >/dev/null 'path:\\wsl.localhost\Test'; then
   ok "ST28 repo selector を host path で送る"
 else
   fail "ST28 repo selector が Linux path のまま ($(grep -F worktree "$ORCA_STUB_DIR/argv.log" | head -1))"

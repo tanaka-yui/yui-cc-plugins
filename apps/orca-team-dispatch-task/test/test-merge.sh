@@ -23,7 +23,7 @@ setup() {
 teardown() { git -C "$R" worktree remove --force "$WT" >/dev/null 2>&1
              rm -rf "$R" "$(dirname "$WT")"; }
 m() { node "$P/bin/orca-merge.ts" --status-dir "$SD"; }
-in_main() { git -C "$R" show main:README.md 2>/dev/null | grep -q "$MARK"; }
+in_main() { git -C "$R" show main:README.md 2>/dev/null | grep -c >/dev/null "$MARK"; }
 
 setup; node "$P/bin/orca-merge.ts" --bogus >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "MG1 使用法エラー" || fail "MG1"; teardown

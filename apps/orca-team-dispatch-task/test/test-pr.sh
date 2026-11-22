@@ -202,13 +202,13 @@ teardown
 # PR15: ★ **merge と記録された dispatch で PR を作らない。**
 setup; jq -c '.integration = "merge"' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
 out=$(pr --repo o/r 2>&1); rc=$?
-[[ "$rc" -eq 1 && "$out" == *'orca-merge.ts'* ]] && ! ghlog | grep -q 'pr create' \
+[[ "$rc" -eq 1 && "$out" == *'orca-merge.ts'* ]] && ! ghlog | grep -c >/dev/null 'pr create' \
   && ok "PR15 merge の dispatch で PR を作らない" || fail "PR15 (rc=$rc out=$out)"; teardown
 
 # PR16: pr と記録されていれば今までどおり作る
 setup; jq -c '.integration = "pr"' "$SD/workers.json" > "$SD/w" && mv "$SD/w" "$SD/workers.json"
 pr --repo o/r >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 0 ]] && ghlog | grep -q 'pr create' \
+[[ "$rc" -eq 0 ]] && ghlog | grep -c >/dev/null 'pr create' \
   && ok "PR16 pr の dispatch は PR を作る" || fail "PR16 (rc=$rc)"; teardown
 
 

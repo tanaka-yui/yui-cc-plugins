@@ -176,7 +176,7 @@ if command -v zsh >/dev/null 2>&1; then
   setup
   out=$(zsh -c 'node "$1" --workers "$2" --to design_review --subject "review-plan: round 1" --body "x y"' \
           zsh "$P/bin/orca-send.ts" "$WF" 2>/dev/null); rc=$?
-  [[ "$rc" -eq 0 && "$out" == msg_1 ]] && tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" | grep -qxF 'x y' \
+  [[ "$rc" -eq 0 && "$out" == msg_1 ]] && tr '\037' '\n' < "$ORCA_STUB_DIR/argv.log" | grep -cxF >/dev/null 'x y' \
     && ok "SN17 zsh から呼んでも同じ結果" || fail "SN17 (rc=$rc out=$out)"
   teardown
 else

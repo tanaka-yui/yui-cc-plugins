@@ -49,8 +49,8 @@ ws=$(grep 'orchestration worker-stop' "$ORCA_STUB_DIR/calls.log" | head -1)
    && "$(jq -r '.by' "$SD/roles/design_review/stopped.json")" == user \
    && "$ws" == *'--dispatch ctx_r'* ]] \
   && ! grep -q 'terminal close' "$ORCA_STUB_DIR/calls.log" \
-  && argv | grep -qx 'review-skipped: stopped by the user' \
-  && argv | grep -qx 'dispatch:ctx_x' \
+  && argv | grep -cx >/dev/null 'review-skipped: stopped by the user' \
+  && argv | grep -cx >/dev/null 'dispatch:ctx_x' \
   && [[ "$(jq -r '.snoozed_at' "$SD/stall.json")" =~ ^[0-9]+$ ]] \
   && ok "SP2 reviewer を止めて依頼側を進ませる" || fail "SP2 (rc=$rc ws=$ws)"; teardown
 
@@ -84,9 +84,9 @@ st --snooze >/dev/null 2>&1; rc=$?
 #      来ない依頼を待ち続け、同じタスクがまた停滞として尋ねられる。review-skipped は送らない
 setup; st --role design >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 && -f "$SD/roles/design/stopped.json" ]] \
-  && argv | grep -qx 'abort-reviewer: stopped by the user' \
-  && argv | grep -qx 'dispatch:ctx_r' \
-  && ! argv | grep -q '^review-skipped:' \
+  && argv | grep -cx >/dev/null 'abort-reviewer: stopped by the user' \
+  && argv | grep -cx >/dev/null 'dispatch:ctx_r' \
+  && ! argv | grep -c >/dev/null '^review-skipped:' \
   && ok "SP7 作る役を止めたら reviewer を終わらせる" || fail "SP7 (rc=$rc)"; teardown
 
 # SP8: dispatch の記録が無い役は止められない（何を止めるか分からない）
@@ -100,7 +100,7 @@ setup; st --role exec >/dev/null 2>&1; rc=$?
 setup; echo '["worker_done|task_r|ctx_r|succeeded"]' > "$SD/received.json"
 st --role design_review >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 && ! -e "$SD/roles/design_review/stopped.json" && -z "$(stops)" ]] \
-  && argv | grep -qx 'review-skipped: stopped by the user' && argv | grep -qx 'dispatch:ctx_x' \
+  && argv | grep -cx >/dev/null 'review-skipped: stopped by the user' && argv | grep -cx >/dev/null 'dispatch:ctx_x' \
   && ok "SP9 決着済みの reviewer でも依頼側を進ませる" || fail "SP9 (rc=$rc)"; teardown
 
 # SP10: 依頼側も決着済みなら何も送らない（待っている者が居ない）
@@ -123,7 +123,7 @@ echo 1 > "$ORCA_STUB_DIR/orchestration_worker-stop.rc"
 err=$(st --role design_review 2>&1 >/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$(jq -r '.stopped_at' "$SD/roles/design_review/stopped.json")" == 1 \
    && "$err" == *"already stopped"* && -z "$(stops)" ]] \
-  && argv | grep -qx 'review-skipped: stopped by the user' \
+  && argv | grep -cx >/dev/null 'review-skipped: stopped by the user' \
   && ok "SP12 止めた役を止め直しても 0" || fail "SP12 (rc=$rc err=$err)"; teardown
 
 # SP13: exec を止めたら exec_review へ abort-reviewer（design の組と同じ）
@@ -136,7 +136,7 @@ echo '["worker_done|task_x|ctx_x|succeeded"]' > "$SD/received.json"
 released ctx_e
 st --role exec >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 && -f "$SD/roles/exec/stopped.json" ]] \
-  && argv | grep -qx 'abort-reviewer: stopped by the user' && argv | grep -qx 'dispatch:ctx_q' \
+  && argv | grep -cx >/dev/null 'abort-reviewer: stopped by the user' && argv | grep -cx >/dev/null 'dispatch:ctx_q' \
   && ok "SP13 exec を止めたら exec_review を終わらせる" || fail "SP13 (rc=$rc)"; teardown
 
 # SP14: ★ **Orca が決着済みと言う worker は release で閉じる。**worker_done は届いたが、親がまだ
@@ -203,7 +203,7 @@ st --role design_review >/dev/null 2>&1; rc=$?
 ws=$(grep 'orchestration worker-stop' "$ORCA_STUB_DIR/calls.log" | head -1)
 [[ "$rc" -eq 0 && "$ws" == *'--dispatch ctx_r'* && -f "$SD/roles/design_review/stopped.json" ]] \
   && ! grep -qE 'worker-release|terminal close' "$ORCA_STUB_DIR/calls.log" \
-  && argv | grep -qx 'review-skipped: stopped by the user' \
+  && argv | grep -cx >/dev/null 'review-skipped: stopped by the user' \
   && ok "SP19 start_unknown の worker も止める" || fail "SP19 (rc=$rc ws=$ws)"; teardown
 
 # SP20: ★ **reviewer を止めても、端末で答えを待つ design の入力欄には打たない。**review-skipped は届け、
@@ -211,8 +211,8 @@ ws=$(grep 'orchestration worker-stop' "$ORCA_STUB_DIR/calls.log" | head -1)
 setup; echo '{"ok":true,"result":{}}' > "$ORCA_STUB_DIR/terminal_send"
 echo '{"asked_at":1}' > "$SD/roles/design/awaiting-user.json"
 st --role design_review >/dev/null 2>&1; rc=$?
-[[ "$rc" -eq 0 ]] && argv | grep -qx 'review-skipped: stopped by the user' \
-  && ! argv | grep -qx 'term_w' \
+[[ "$rc" -eq 0 ]] && argv | grep -cx >/dev/null 'review-skipped: stopped by the user' \
+  && ! argv | grep -cx >/dev/null 'term_w' \
   && ok "SP20 答えを待つ design には打たない" || fail "SP20 (rc=$rc)"; teardown
 
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]
