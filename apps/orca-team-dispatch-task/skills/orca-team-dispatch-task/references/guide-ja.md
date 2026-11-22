@@ -351,7 +351,7 @@ PR はリポジトリごとに 1 つ作り、まだ無い PR だけを再試行�
 
 ### 1回まわす、キューを判定する
 
-プラグインのディレクトリで `make auto` を実行する（`make auto <名前>`。名前を省くと `main`）。`orca-auto.ts tick` を走らせ、判定が要るときだけ設定のmodelとeffortでClaudeを起動する。判定 agent は `orca-auto.ts judge-doc` を実行し、[auto-judge-ja.md](auto-judge-ja.md) と同じ手順、呼び方に合った `judge-list`・`judge-apply --file <decisionsFile>` のコマンドを `## Commands` から受け取る。その指示に従い、返された `decisionsFile` だけに書く。判定リースは20分。tickは判定が必要ならexit 0、それ以外は1、使用法の誤りは2。
+`make auto-setup` が登録する automation が `everyMinutes` ごとにこれを行う。precheck が安定したランチャーで `orca-auto.ts tick` を走らせ、tick が 0 で終わったときだけ、Orca が設定の model と effort で判定 agent を起動する。別のコマンドは無い。判定 agent は `orca-auto.ts judge-doc` を実行し、[auto-judge-ja.md](auto-judge-ja.md) と同じ手順、呼び方に合った `judge-list`・`judge-apply --file <decisionsFile>` のコマンドを `## Commands` から受け取る。その指示に従い、返された `decisionsFile` だけに書く。判定リースは20分。tickは判定が必要ならexit 0、それ以外は1、使用法の誤りは2。
 
 precheckを直接実行する場合:
 

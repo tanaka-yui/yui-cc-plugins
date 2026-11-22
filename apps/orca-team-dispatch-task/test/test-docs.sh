@@ -566,19 +566,20 @@ grep -qE 'after round 2|after two rounds' "$S" && bad="$bad [old:SKILL]"
 grep -qE 'round 2 で諦める|2 ラウンドで打ち切り' "$G" && bad="$bad [old:guide]"
 [[ -z "$bad" ]] && ok "SK33 レビューの上限の記述" || fail "SK33:$bad"
 
-# SK34: auto precheck forwards configured model and effort.
-auto_recipe=$(cd "$P" && make -n auto 2>/dev/null)
+# SK34: make auto は無い。automation が precheck で tick を回し、判定役を起こす（2026-11-22 に消した）。
+#       判定役の model / effort は automation の --extra-agent-args が渡す（setup-automation.test.ts）
 bad=""
-for expected in 'orca-auto.ts tick --name main' 'judge-model --name main' 'judge-effort --name main' '--effort'; do
-  [[ "$auto_recipe" == *"$expected"* ]] || bad="$bad [$expected]"
+grep -qE '^auto:' "$P/Makefile" && bad="$bad [makefile]"
+for f in "$S" "$G" "$P/README.md"; do
+  grep -qE 'make auto([^-]|$)' "$f" && bad="$bad [doc:$(basename "$f")]"
 done
-[[ -z "$bad" ]] && ok SK34 || fail "SK34:$bad"
+[[ -z "$bad" ]] && ok "SK34 make auto を案内しない" || fail "SK34:$bad"
 
 # SK35: auto mode names the implemented entry points and real judging references.
 bad=""
 for f in "$S" "$G"; do
   grep -q -- '--auto' "$f" || bad="$bad [auto:$f]"
-  for expected in 'orca-auto.ts tick' 'judge-list' 'judge-apply' 'make auto'; do
+  for expected in 'orca-auto.ts tick' 'judge-list' 'judge-apply' 'make auto-setup'; do
     grep -qF -- "$expected" "$f" || bad="$bad [$expected:$f]"
   done
 done
@@ -693,7 +694,6 @@ grep -Fq 'C2a supports one target repository' "$judge_en" && bad="$bad [old sing
 
 # SK40: 判定の呼び方を judge-doc が渡す。
 bad=""
-[[ "$auto_recipe" == *"judge-doc --name main"* ]] || bad="$bad [auto judge-doc]"
 for f in "$judge_en" "$judge_ja"; do
   grep -Fq '## Commands' "$f" || bad="$bad [commands:$f]"
   grep -Fq 'node <plugin>/bin/orca-auto.ts' "$f" && bad="$bad [old command:$f]"

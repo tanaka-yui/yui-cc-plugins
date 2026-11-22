@@ -437,7 +437,7 @@ test('AU182 a measured worktree cost on the host shrinks its memory room', () =>
 
 const NOW = '2026-11-13T05:30:00Z'
 const minutesBefore = (minutes: number) => new Date(Date.parse(NOW) - minutes * 60_000).toISOString()
-const remoteDisk = (f: ReturnType<typeof runtimeFixture>, entry: { diskFreeMb: number | null; measuredAt: string }) => {
+const remoteDisk = (entry: { diskFreeMb: number | null; measuredAt: string }) => {
   const s = readState('main')
   s.hostDisk = { 'env-1': entry }
   writeState('main', s)
@@ -490,7 +490,7 @@ test('AU183 a remote disk measurement older than the interval is retaken once at
     try {
       f.track()
       multihost(f)
-      if (entry) remoteDisk(f, { diskFreeMb: 99999, measuredAt: entry })
+      if (entry) remoteDisk({ diskFreeMb: 99999, measuredAt: entry })
       diskProbeResponses(f, 30000)
       f.cli('tick')
       const probes = diskProbes(f)
@@ -516,7 +516,7 @@ test('AU184 the measured remote disk excludes a host below the minimum and shrin
     try {
       const i = f.track()
       multihost(f, 1, 4)
-      remoteDisk(f, { diskFreeMb, measuredAt: minutesBefore(1) })
+      remoteDisk({ diskFreeMb, measuredAt: minutesBefore(1) })
       const r = f.cli('tick')
       assert.equal(readState('main').issues[i.key]?.host, expected, String(diskFreeMb))
       assert.equal(r.stdout.includes('Mac M2max の空きディスクが足りません'), diskFreeMb === 5000, r.stdout)

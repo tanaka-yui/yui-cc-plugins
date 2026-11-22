@@ -40,21 +40,11 @@ import { isatty } from 'node:tty'
 const main = (argv: string[]): number => {
   const command = argv[0] ?? ''
   if (
-    ![
-      'setup',
-      'hosts',
-      'roles',
-      'tick',
-      'status',
-      'judge-doc',
-      'judge-list',
-      'judge-apply',
-      'judge-model',
-      'judge-effort',
-      'clear-start',
-    ].includes(command)
+    !['setup', 'hosts', 'roles', 'tick', 'status', 'judge-doc', 'judge-list', 'judge-apply', 'clear-start'].includes(
+      command,
+    )
   )
-    die('orca-auto', 'command is required: judge-list / judge-apply / judge-model / judge-effort / clear-start')
+    die('orca-auto', 'command is required: judge-list / judge-apply / clear-start')
   const flags = new Map<string, string>()
   for (let i = 1; i < argv.length; i += 2) {
     const flag = argv[i] ?? ''
@@ -120,10 +110,6 @@ const main = (argv: string[]): number => {
   if (!config) {
     console.error('設定を読めません')
     return 1
-  }
-  if (command === 'judge-model' || command === 'judge-effort') {
-    console.log(command === 'judge-model' ? config.judge.model : config.judge.effort)
-    return 0
   }
   if (!takeLockWait(name, AUTO_LOCK_TTL_MS, envCount('ORCA_AUTO_LOCK_WAIT_MS', AUTO_LOCK_WAIT_MS))) {
     console.error('tick が動いている')

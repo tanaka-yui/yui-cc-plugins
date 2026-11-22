@@ -372,7 +372,7 @@ Cleanup runs per (role, repository). Only a merged repository's integration bran
 
 ### Run one tick or judge the queue
 
-Run `make auto` from the plugin directory (`make auto <name>`; the name defaults to `main`). It runs `orca-auto.ts tick`; only when judging is needed does it start Claude with the configured model and effort. The judging agent runs `orca-auto.ts judge-doc`, which prints [auto-judge.md](references/auto-judge.md) and the caller's `judge-list` and `judge-apply --file <decisionsFile>` commands under `## Commands`. It follows those instructions and writes only the returned `decisionsFile`. A judgment lease lasts 20 minutes. Tick exits 0 when judging is needed, 1 otherwise, and 2 for usage errors.
+The automation that `make auto-setup` registers does this every `everyMinutes`: its precheck runs `orca-auto.ts tick` through the stable launcher, and only when tick exits 0 does Orca start the judging agent with the configured model and effort. There is no separate command for it. The judging agent runs `orca-auto.ts judge-doc`, which prints [auto-judge.md](references/auto-judge.md) and the caller's `judge-list` and `judge-apply --file <decisionsFile>` commands under `## Commands`. It follows those instructions and writes only the returned `decisionsFile`. A judgment lease lasts 20 minutes. Tick exits 0 when judging is needed, 1 otherwise, and 2 for usage errors.
 
 To run the precheck directly:
 

@@ -10,7 +10,7 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 起動後と進捗の報告のたびに、タスク・役ごとの端末へ飛ぶ `orca terminal switch` コマンドを表で示す（`--auto` は `status` に出す）。
 
 `--auto` は複数リポジトリのReadyを1本のキューにまとめ、判定・dispatch・PRのmergeまたは確認依頼まで進める。
-`make auto` で1回まわし、report.jsonをSlack側へ渡す。このMacとペアリング済みサーバーへ空き・確認結果で振り分け、メールとoriginへのpushで成果を受け渡す。対象は1件2リポジトリまで（3つ以上はReady_Eng）。
+`make auto-setup` が登録する Orca の automation が定期的に回し、report.jsonをSlack側へ渡す。このMacとペアリング済みサーバーへ空き・確認結果で振り分け、メールとoriginへのpushで成果を受け渡す。対象は1件2リポジトリまで（3つ以上はReady_Eng）。
 リポジトリごとに `baseBranch`（普段の向き先）と `branches`（候補）を持てる。候補が 2 つ以上あると、`base:<branch>` ラベル→判定→（不明なら）`needs-base` で Backlog に戻して尋ねる、の順で Issue ごとの向き先を決め、普段の向き先以外への merge は必ず人に回し、merge 後は `<向き先> → <baseBranch>` の戻しの PR を作る（merge はしない）。
 拾う元ごとに auto-ready（`autoReady`）を有効にすると、Backlog の Issue も判定し、自動で対応できるものを Ready に、難しいものを Ready_Eng にする。auto-ready で Ready にした Issue の PR は、既定では AI が merge せず人の確認に回す。拾う元に `autoMerge` を有効にすると、ほかの条件がそろえば AI が merge する（普段の向き先以外へは merge しない）。
 このモードだけは停止・解放とpushを確認してから資源を片付ける。使い方はskillのAuto modeを参照。

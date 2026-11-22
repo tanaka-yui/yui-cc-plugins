@@ -20,7 +20,7 @@ test-unit: ## lib/ の単体テストだけを実行
 
 # 名前は 2 語目で受け取る（make auto-setup work）。省くと main。名前は make の目標ではないので何もしない規則を足す。
 # コマンドラインの NAME=<名前> も今までどおり効く（コマンドラインの変数はこのファイルの代入に勝つ）
-NAME_TARGETS := auto auto-setup setup hosts roles
+NAME_TARGETS := auto-setup setup hosts roles
 GOAL_NAME := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 ifneq ($(and $(GOAL_NAME),$(filter $(firstword $(MAKECMDGOALS)),$(NAME_TARGETS))),)
 ifneq ($(words $(GOAL_NAME)),1)
@@ -33,15 +33,6 @@ NAME := $(GOAL_NAME)
 $(eval $(GOAL_NAME):;@:)
 endif
 NAME ?= main
-.PHONY: auto
-auto: ## --auto を1回まわす。判定が必要なときだけClaudeを起動 (make auto <名前>。省くと main)
-	@rc=0; node bin/orca-auto.ts tick --name $(NAME) || rc=$$?; \
-	case $$rc in \
-	  0) claude --model "$$(node bin/orca-auto.ts judge-model --name $(NAME))" --effort "$$(node bin/orca-auto.ts judge-effort --name $(NAME))" 'Run `node $(CURDIR)/bin/orca-auto.ts judge-doc --name $(NAME)` and follow the printed instructions exactly.' ;; \
-	  1) exit 0 ;; \
-	  *) exit $$rc ;; \
-	esac
-
 .PHONY: setup
 setup: ## worker のモデル・取りかかり方などの既定・--auto の判定役のモデル・worktree を作る場所を設定し直す (make setup <名前>。名前は判定役の設定。省くと main)
 	@node bin/orca-setup.ts --name $(NAME)

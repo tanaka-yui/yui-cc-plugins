@@ -153,16 +153,12 @@ test('AU29 returned feature can queue; AU29b human status prevents engineering c
     f.cleanup()
   }
 })
-test('AU29c lock contention returns 3; AU29e effort is configurable', () => {
+test('AU29c lock contention returns 3', () => {
   const f = setup()
   try {
     assert.equal(takeLock('main', 10000), true)
     process.env.ORCA_AUTO_LOCK_WAIT_MS = '0'
     assert.equal(f.cli('judge-list').status, 3)
-    releaseLock('main')
-    assert.equal(f.cli('judge-effort').stdout.trim(), 'high')
-    f.put(f.configFile, { ...f.raw, judge: { model: 'custom', effort: 'low' } })
-    assert.equal(f.cli('judge-effort').stdout.trim(), 'low')
   } finally {
     Reflect.deleteProperty(process.env, 'ORCA_AUTO_LOCK_WAIT_MS')
     releaseLock('main')
