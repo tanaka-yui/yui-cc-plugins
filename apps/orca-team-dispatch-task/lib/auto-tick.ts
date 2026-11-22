@@ -32,7 +32,7 @@ import {
   autoOrca as runOrca,
 } from './auto-paths.ts'
 import { type ProjectSyncContext, syncProjects } from './auto-project.ts'
-import { awaitingBase, orderQueue, syncIssues } from './auto-queue.ts'
+import { awaitingBase, markUnlabeledBacklog, orderQueue, syncIssues } from './auto-queue.ts'
 import { buildReport } from './auto-report.ts'
 import { buildRequest, readAutoResult, readPlanResult, slugOf } from './auto-request.ts'
 import { type AutoState, type IssueState, limitOf, readState, releaseLock, takeLock, writeState } from './auto-state.ts'
@@ -1272,18 +1272,21 @@ export const runTick = (name: string): number => {
     for (const path of readIntakeRepos(config).unreadable) error(tick, `intake の設定を読めません: ${path}`)
     const picked = pickSources(config)
     const sources = config.sources.filter((s) => picked.includes(s.repo))
+    const active = intakeActiveRepos(config)
     const projectSync: ProjectSyncContext = {
       sources,
       state,
       save: tick.save,
       log: console.log,
-      active: intakeActiveRepos(config),
+      active,
       statuses: new Map(),
       failed: new Set(),
       touched: new Set(),
     }
     syncProjects(projectSync)
-    const synced = syncIssues(state, sources)
+    // Project の同期で Status を読んだあとに、ステータスの無い slack-thread の Issue へ Backlog を付ける
+    markUnlabeledBacklog(sources, active, projectSync, console.log)
+    const synced = syncIssues(state, sources, active, console.log)
     tick.save()
     for (const key of synced.unreadable) blocked.add(key)
     for (const key of synced.humanChanged) {

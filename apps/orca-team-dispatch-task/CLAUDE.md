@@ -590,14 +590,14 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 
 ### C2c: Project の Status とラベルの同期
 
-- 同期は `lib/auto-project.ts`。tick は `syncIssues` の前と `refill` のあと、`judge-apply` は終わりに 1 回呼ぶ。`syncIssues` の前に置くのは、Project で動かした Status をラベルにしてから、続く `syncIssues` に人の変更として読ませるため。`--auto` がラベルを動かす箇所ごとに Status を書かず、tick の終わりにまとめて写す（箇所が多く、写し漏れが起きやすいため）。
+- 同期は `lib/auto-project.ts`。tick は `syncIssues` の前と `refill` のあと、`judge-apply` は終わりに 1 回呼ぶ。`syncIssues` の前に置くのは、Project で動かした Status をラベルにしてから、続く `syncIssues` に人の変更として読ませるため。tick の 1 回目の同期と `syncIssues` の間で `markUnlabeledBacklog`（下の auto-ready の節）を呼ぶ。同期が読んだ `statuses` と `failed` を使うため。`judge-apply` は呼ばない。`--auto` がラベルを動かす箇所ごとに Status を書かず、tick の終わりにまとめて写す（箇所が多く、写し漏れが起きやすいため）。
 - 前回の組は状態ファイルの `projectSync`（`owner/repo#N` → `{ status, label }`）。書き込みが成功したときだけ書き直す。同じ tick の 2 回目は、1 回目に書いた・書けなかった・選択肢が無かった Issue に触らない（`touched`）。GitHub がまだ反映していない値を読んで人の変更を戻さないためと、1 行の知らせを 1 回にするため。
 - Project の読み取りは `autoReadUncounted`（`lib/auto-paths.ts`）で呼ぶ。tick の期限で kill するが、`readFailures` にも予算切れにも数えない（`autoRun` の読み取りにすると kill が `tick.errors` に入り、「Project が読めなくても tick のエラーにしない」に反するため）。mutation とラベルの書き込みは `github`（書き込み扱い）。予算が尽きたら行を書かずに同期を終え、`canAutoCall` の 1 行だけが残る。gh のスタブは `--` で始まる引数でしか鍵を切らないので、GraphQL は `--raw-field` / `--field` で呼ぶ（`-f` だと鍵が `api_graphql` にならない）。
 - 2026-11-17 に読み取りだけで確かめたこと: 固定した問い合わせは実物の Project で通る。番号違いは rc 1・stdout に `data` と `errors`（`NOT_FOUND`）・stderr に `gh: <message>`。owner が無いと rc 0 で `repositoryOwner: null`。
-- 2026-11-17 の実機（このMac、gh 2.103.0、使い捨ての個人の Project `tanaka-yui/projects/1` を orca-auto-e2e につなぎ、Status にステータス 8 つと `Todo` を手で足した。review_mode/phase_b は off）: 初めて見る食い違い（ラベルがあと → Status をラベルに）、Status だけ（→ ラベル）、ラベルだけ（→ Status）、両方（ラベルが先なら Status に、Status が先ならラベルに。差は 2 秒）、`Todo`（何もしない・組も書き換えない）を 1 tick ずつで通した。Project で Ready にした #22 は、その tick でラベルが Ready になり（同じ tick の `syncIssues` には検索の遅れで出ず）、次の tick で拾われ、起動した tick の終わりに Status が In progress、PR を出した tick に In review、人が merge した次の tick に Done になった。mutation は成功し、tick をまたいだ読み直しは直前の REST のラベルの書き込みを返した。
+- 2026-11-17 の実機（このMac、gh 2.103.0、使い捨ての個人の Project `tanaka-yui/projects/1` を orca-auto-e2e につなぎ、Status にステータス 8 つと `Todo` を手で足した。review_mode/phase_b は off）: 初めて見る食い違い（ラベルがあと → Status をラベルに）、Status だけ（→ ラベル）、ラベルだけ（→ Status）、両方（ラベルが先なら Status に、Status が先ならラベルに。差は 2 秒）、`Todo`（当時の動きで、何もしない・組も書き換えない。下の `active` の項で、ラベルが動けば Status を書くように変えた）を 1 tick ずつで通した。Project で Ready にした #22 は、その tick でラベルが Ready になり（同じ tick の `syncIssues` には検索の遅れで出ず）、次の tick で拾われ、起動した tick の終わりに Status が In progress、PR を出した tick に In review、人が merge した次の tick に Done になった。mutation は成功し、tick をまたいだ読み直しは直前の REST のラベルの書き込みを返した。
 - 未確認: `INSUFFICIENT_SCOPES` の実物、mutation のエラーの形、同じ tick の中で REST の書き込みのすぐあとに GraphQL が古い値を返すか（`touched` で避けている）、Status の `updatedAt` がほかの出来事で動くか、organization の Project。
 - **`active` のリポジトリ（intake の `existing` が `active`。`intakeActiveRepos`）は、管理の印の無い Issue も同期する**（`ProjectSyncContext.active`。照合は大文字小文字を無視）。それ以外は今までどおり印の付いた項目だけ。Status が `Todo` など 8 つのステータス名でないとき（`''`）は、**全 Project で**前回の組が無ければ組 `{ status: '', label }` を記録するだけ、ラベルが前回から動いて空でなければ Status をラベルに書き、それ以外は組が変わったときだけ記録する（以前は何もしなかった）。`ctx.statuses`（`owner/repo#N` → Status 名、ステータス名でなければ `''`）には読めた Project の項目を全部入れる（`touched` や飛ばした項目も。読めなかった Project の項目と、印が無く `active` でもない項目は入らない）。
-- 回帰: AU125〜131（AU128b〜d、AU129b〜d、AU130b を含む）。
+- 回帰: AU125〜131（AU128b〜d、AU129b〜d、AU130b を含む）、AU188〜190（AU189b を含む。`active` と `Todo`）、AR13（tick の中の順番）。
 
 ### C3a: make auto-setup
 
@@ -639,11 +639,15 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 ### auto-ready（2026-11-19）
 
 - **拾う元ごとの `autoReady`（既定 false、`pick` が Ready のときだけ）で、Backlog の判定も AI に任せる。**slack-issue-intake は起票時に Backlog を付け、Ready は人が付けていた。tick の `syncIssues` が Backlog の管理 Issue も一覧し、判定役が `auto` なら `auto-ready` の event でコメント → Backlog から Ready（`then: queued`）、`eng` なら Backlog から Ready_Eng にする。判定役を新しく作らず、既存の judge-list / judge-apply に `autoReady` の印を足した（判定の基準を 1 か所に保つため）。
-- **拾うのは、tick が有効を最初に見た時刻（状態の `autoReadySince[repo]`）より後に作られ、ステータスラベルが Backlog だけの Issue。**有効にした瞬間に溜まった Backlog を一斉に判定して Ready_Eng の通知を大量に出さないため。状態に記録がある Issue は拾い直さない（人が Ready_Eng や Ready から Backlog へ戻したものを AI が動かし直さない）。外すと時刻を消し、判定待ちの Backlog の Issue を記録から外す。
+- **拾うのは、tick が有効を最初に見た時刻（状態の `autoReadySince[repo]`）より後に作られ、ステータスラベルが Backlog だけの Issue。**有効にした瞬間に溜まった Backlog を一斉に判定して Ready_Eng の通知を大量に出さないため。状態に記録がある Issue は拾い直さない（人が Ready_Eng や Ready から Backlog へ戻したものを AI が動かし直さない）。外すと時刻を消し、判定待ちの Backlog の Issue を記録から外す。`active` のリポジトリでの例外は下の項（2026-11-23）。
 - **auto-ready の世代は、拾う元の `autoMerge` が無効なら AI が merge しない**（仕上げの関門の理由に足す。`autoMerge` は 2026-11-20 に足した。下の「向き先」の節）。Backlog は人が「やる」と決める前の状態で、Slack の投稿だけでコードの変更から merge まで進むのを避けるため。判定の前に人が Ready にした・Ready から拾い直した世代は `autoReady: false` に戻り、通常どおり。
 - コメントのマーカーは `orca-auto:ready:<世代>:auto-ready`。共有の `test/fixtures/orca-auto-comments.json` の末尾に足し、slack-issue-intake の `STATUS_EVENTS` に文言（メンションなし）を足した。
 - setup の問いは拾う条件の直後（「auto-ready を使いますか」）。setup-run のテストは位置で答えを渡すので、拾う元 1 つにつき答えが 1 つ増えた。「有効にしますか」を含めると rerun の部分一致で答えが当たるので使わない。
-- 回帰: AR1〜8（`test/unit/auto-ready.test.ts`）、AC1 の auto-ready、slack-issue-intake の IS2 / IS5。
+- **intake の `existing` が `active` のリポジトリでは、`slack-thread` の付いた古い Backlog とステータスの無い Issue も判定に回す（2026-11-23、3.21.0）。**設計は `docs/superpowers/specs/2026-11-21-auto-pick-unmanaged-issues-design.md`。`syncIssues` は Backlog の行を「`autoReadySince` より後に作られた」か「`active` で `slack-thread` を持つ」なら拾う（初回は時刻を記録するだけ・状態に記録がある Issue を拾い直さない・ステータスが Backlog だけ、は今までどおり）。`markUnlabeledBacklog`（`lib/auto-queue.ts`）は、`autoReady` で `active` の拾う元ごとに `listUnlabeledThread` を読み、`gh issue edit --add-label Backlog` を書く。拾う元に `project` があれば、その Project が `failed` に無く、`touched` に無く、`statuses` が無い（Project に載っていない）か `''`（`Todo` や空）の Issue だけ。付けた Issue は次の tick の Backlog の一覧で拾う（同じ tick の検索には遅れで出ない）。計画で決めたこと:
+  - 広げた動き（Project の同期を印の無い Issue へ・auto-ready を古い Backlog とステータスの無い Issue へ）は、`active` のリポジトリだけに効かせる。`thread` のリポジトリでは intake が古い Backlog の Issue にも `slack-thread` を付けるので、そこで広げると「人が印を付けていない Backlog を判定する」（設計の失敗条件）になる。
+  - ステータスの無い Issue は、Ready を直接付けずに Backlog を付けてから判定に回す。遷移・判定の適用・向き先の質問がステータス 1 つを前提にしているため。Slack にはその Issue の Backlog の知らせが 1 回出る。Project の上の Status がステータス名の Issue に付けないのは、付けたラベルを次の同期が Status へ書き戻し、人が In progress などにした Status を壊さないため。Project を読めなかった tick（予算切れで読まずに終えた tick は、`canAutoCall('auto-ready')` も尽きているので付けない）も同じ理由で付けない。
+  - intake が自動で取り込んだ（Backlog 以外だった）Issue を人が後で Backlog に戻すと、orca の状態に記録が無ければ auto-ready の判定に回る（印を付けたのが intake か人かを区別しない）。
+- 回帰: AR1〜8（`test/unit/auto-ready.test.ts`）、AR10〜13（`active`・`markUnlabeledBacklog`・tick の順番）、AC1 の auto-ready、slack-issue-intake の IS2 / IS5。
 
 ### 判断のメモ・取り次ぎの余裕・目的の文（2026-11-18）
 

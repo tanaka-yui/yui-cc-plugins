@@ -1,8 +1,10 @@
 import { type RepoBranches, resolveBases } from './auto-base.ts'
-import { listReadyManaged, type ReadyIssue, readyAtOf, viewIssue } from './auto-github.ts'
+import { github, listReadyManaged, listUnlabeledThread, type ReadyIssue, readyAtOf, viewIssue } from './auto-github.ts'
 import { autoNow, canAutoCall } from './auto-paths.ts'
-import { FEATURE_LABEL, PRIORITY_LABELS, STATUS, STATUS_LABELS } from './status.ts'
+import { FEATURE_LABEL, PRIORITY_LABELS, STATUS, STATUS_LABELS, THREAD_LABEL } from './status.ts'
 
+import type { ProjectRef } from './auto-config.ts'
+import type { ProjectSyncContext } from './auto-project.ts'
 import type { AutoState, IssueState, Priority } from './auto-state.ts'
 
 export const AUTO_TOMBSTONE_CHECK_HOURS = 24
@@ -76,9 +78,45 @@ export const awaitingBase = (
   issue.phase === 'judging' &&
   labels.includes(STATUS.backlog) &&
   !(sourceAutoReady && resolveBases(labels, issue.targets, repos).kind === 'ok')
+// intake の existing が active のリポジトリか。Project の同期と同じく大文字小文字を無視する
+const isActive = (active: ReadonlySet<string>, repo: string): boolean =>
+  [...active].some((name) => name.toLowerCase() === repo.toLowerCase())
+// active の auto-ready の拾う元で、slack-thread が付きステータスラベルの無い Issue に Backlog を付ける。
+// Project の上の Status がステータス名の Issue と、同じ tick で同期が触った Issue には付けない（付けると次の同期が
+// そのラベルを Status へ書き戻す）。その tick で Project を読めなかった拾う元では 1 つも付けない。
+// 付けた Issue は次の tick の Backlog の一覧で拾う（同じ tick では検索の遅れで出ない）
+export const markUnlabeledBacklog = (
+  sources: Array<{ repo: string; autoReady?: boolean; project: ProjectRef | null }>,
+  active: ReadonlySet<string>,
+  project: Pick<ProjectSyncContext, 'statuses' | 'failed' | 'touched'>,
+  log: (line: string) => void,
+): string[] => {
+  const marked: string[] = []
+  for (const source of sources) {
+    if (!source.autoReady || !isActive(active, source.repo)) continue
+    const projectKey = source.project ? `${source.project.owner}/${source.project.number}` : null
+    if (projectKey && project.failed.has(projectKey)) continue
+    if (!canAutoCall('auto-ready')) return marked
+    const rows = listUnlabeledThread(source.repo, log)
+    if (!rows) continue
+    for (const row of rows) {
+      const key = `${source.repo}#${row.number}`
+      // statuses に無い（Project に載っていない）か ''（Todo や空）なら付けてよい
+      const status = project.statuses.get(key)
+      if (projectKey && (project.touched.has(key) || (status !== undefined && status !== ''))) continue
+      if (!canAutoCall('auto-ready')) return marked
+      if (github(['issue', 'edit', String(row.number), '--repo', source.repo, '--add-label', STATUS.backlog]).rc === 0)
+        marked.push(key)
+      else log(`auto-ready で Backlog を付けられません: ${key}`)
+    }
+  }
+  return marked
+}
 export const syncIssues = (
   state: AutoState,
   sources: Array<{ repo: string; pick: string; autoReady?: boolean }>,
+  active: ReadonlySet<string> = new Set(),
+  log?: (line: string) => void,
 ): {
   added: string[]
   dropped: string[]
@@ -103,7 +141,7 @@ export const syncIssues = (
       result.unreadable.push(...Object.keys(state.issues))
       return result
     }
-    const rows = listReadyManaged(source.repo, source.pick)
+    const rows = listReadyManaged(source.repo, source.pick, log)
     if (!rows) {
       failed.add(source.repo)
       continue
@@ -163,6 +201,7 @@ export const syncIssues = (
     }
   }
   // auto-ready: 有効にした時刻より後に作られ、ステータスが Backlog だけの Issue を判定に回す。
+  // intake の existing が active のリポジトリでは、slack-thread の付いた Backlog だけの Issue も作られた時期を問わず回す。
   // 状態に記録がある Issue（人が Backlog へ戻したものを含む）は拾い直さない
   state.autoReadySince ??= {}
   const since = state.autoReadySince
@@ -180,7 +219,7 @@ export const syncIssues = (
       result.unreadable.push(...Object.keys(state.issues))
       return result
     }
-    const rows = listReadyManaged(source.repo, STATUS.backlog)
+    const rows = listReadyManaged(source.repo, STATUS.backlog, log)
     if (!rows) {
       failed.add(source.repo)
       continue
@@ -193,7 +232,10 @@ export const syncIssues = (
         candidates.has(key) ||
         statuses.length !== 1 ||
         statuses[0] !== STATUS.backlog ||
-        !(Date.parse(row.createdAt) >= Date.parse(since[source.repo] ?? ''))
+        !(
+          Date.parse(row.createdAt) >= Date.parse(since[source.repo] ?? '') ||
+          (isActive(active, source.repo) && row.labels.includes(THREAD_LABEL))
+        )
       )
         continue
       candidates.set(key, row)
