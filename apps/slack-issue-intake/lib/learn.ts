@@ -1,9 +1,11 @@
 import { repoSetting } from './config.ts'
 import { getMeta, writeMetaFenced } from './db.ts'
 import {
+  DAY_MS,
   ERROR_DEADLINE,
   ERROR_LEASE_LOST,
   LEARN_CANCEL_PATTERN,
+  LEARN_CANCEL_WINDOW_DAYS,
   LEARN_CANCELLABLE_KINDS,
   LEARN_CANCELS_FILE,
   LEARN_DIRECTIONS,
@@ -17,6 +19,7 @@ import {
   LEARN_URL_PREFIX,
   META_LEARN_LAST_ID,
   META_LEARN_POSTS,
+  STATUS_MIN_REMAINING_MS,
 } from './defaults.ts'
 import { readJson, writeJson } from './fs.ts'
 import { asArray, asObject, asString, parseJson } from './json.ts'
@@ -44,8 +47,9 @@ type NoticeItem = {
 }
 type Notice = { id: number; repo: string; at: string; items: NoticeItem[] }
 type Cancel = { noticeId: number; n: number; ruleId: string; at: string }
-// 投稿した知らせ。チャンネルは投稿したときのもの（報告先を変えても前のスレッドを読めるように）。after は読み終えた返信の ts
-type LearnPost = { id: number; channel: string; ts: string; after: string | null }
+// 投稿した知らせ。チャンネルは投稿したときのもの（報告先を変えても前のスレッドを読めるように）。after は読み終えた返信の ts。
+// acked は受け付けの返信を済ませた項目の番号（同じ項目への返信が重なっても受け付けは 1 回だけ）
+type LearnPost = { id: number; channel: string; ts: string; after: string | null; acked: number[] }
 export type LearnResult = { posted: number; cancelled: number; errors: string[] }
 
 const count = (value: Json | undefined): number | null =>
@@ -105,9 +109,13 @@ const parsePost = (value: Json): LearnPost | null => {
   const channel = asString(o?.channel)
   const ts = asString(o?.ts)
   const after = asString(o?.after)
+  const acked = (asArray(o?.acked) ?? []).flatMap((v) => {
+    const n = count(v)
+    return n === null ? [] : [n]
+  })
   return id === null || channel === null || ts === null || (after === null && o?.after !== null)
     ? null
-    : { id, channel, ts, after }
+    : { id, channel, ts, after, acked }
 }
 // meta は自分だけが書くので、読めなければ投稿の記録が無いものとして扱う
 const readPosts = (raw: string | null): LearnPost[] =>
@@ -188,6 +196,8 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
     }
     return true
   }
+  // 既存 Issue の取り込みの分の時間を残す。足りなければ errors に出さずに次の回へ回す
+  const short = (): boolean => ctx.deadline - Date.now() < STATUS_MIN_REMAINING_MS
   let posts = newest(readPosts(getMeta(rt.db, META_LEARN_POSTS)))
   const save = (set: Record<string, string> = {}): boolean => {
     if (!valid()) return false
@@ -208,26 +218,31 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
     .sort((a, b) => a.notice.id - b.notice.id)
     .slice(0, LEARN_POSTS_PER_POLL)
   for (const { notice, repo } of pending) {
+    if (short()) return result
     if (!valid()) return result
     const r = await postMessage(slack, channel, renderNotice(notice, repo), ctx.deadline, false)
     if (!r.ok) {
       result.errors.push(maskSecrets(r.error))
       break
     }
-    posts = newest([...posts, { id: notice.id, channel, ts: r.ts, after: null }])
+    posts = newest([...posts, { id: notice.id, channel, ts: r.ts, after: null, acked: [] }])
     if (!save({ [META_LEARN_LAST_ID]: String(notice.id) })) return result
     result.posted += 1
   }
 
-  // 取り消し: 新しい投稿から順にスレッドを読む。自分の投稿は読まない
+  // 取り消し: 新しい投稿から順にスレッドを読む。自分の投稿と、知らせが古い（または notices.json から消えた）投稿は読まない
   const byId = new Map(notices.map((notice) => [notice.id, notice]))
   const cancelsPath = join(rt.home, LEARN_CANCELS_FILE)
   const own = (m: JsonObject): boolean =>
     asString(m.user) === rt.config.slack.botUserId || asString(m.bot_id) === rt.config.slack.botId
-  const update = (post: LearnPost, after: string | null): void => {
-    posts = posts.map((p) => (p.id === post.id ? { ...p, after } : p))
+  const recent = (notice: Notice | undefined): boolean =>
+    notice !== undefined && ctx.now().getTime() - Date.parse(notice.at) <= LEARN_CANCEL_WINDOW_DAYS * DAY_MS
+  const update = (post: LearnPost, after: string | null, acked: number[]): void => {
+    posts = posts.map((p) => (p.id === post.id ? { ...p, after, acked } : p))
   }
   for (const post of [...posts].reverse()) {
+    if (!recent(byId.get(post.id))) continue
+    if (short()) return result
     if (!valid()) return result
     const r = await fetchReplies(slack, post.channel, post.ts, post.after, ctx.deadline)
     if (!r.ok) {
@@ -241,6 +256,7 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
       break
     }
     let after = post.after
+    const acked = [...post.acked]
     let stop = false
     for (const m of r.messages) {
       const n = own(m) ? null : cancelNumber(messageText(m).text)
@@ -258,15 +274,23 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
           const cancel: Cancel = { noticeId: post.id, n: item.n, ruleId: item.ruleId, at: ctx.now().toISOString() }
           writeJson(cancelsPath, { version: LEARN_FILE_VERSION, cancels: [...cancels, cancel] })
           result.cancelled += 1
+        }
+        // 依頼が前の回に書けていても、受け付けを返せていなければ返す。返せなければこの返信の手前で止め、次の回に読み直す
+        if (!acked.includes(item.n)) {
           if (!valid()) return result
           const ack = await postThread(slack, post.channel, post.ts, LEARN_TEXT.accepted, ctx.deadline)
-          if (!ack.ok) result.errors.push(maskSecrets(ack.error))
+          if (!ack.ok) {
+            result.errors.push(maskSecrets(ack.error))
+            stop = true
+            break
+          }
+          acked.push(item.n)
         }
       }
       after = String(m.ts)
     }
-    if (after !== post.after) {
-      update(post, after)
+    if (after !== post.after || acked.length !== post.acked.length) {
+      update(post, after, acked)
       if (!save()) return result
     }
     if (stop) break

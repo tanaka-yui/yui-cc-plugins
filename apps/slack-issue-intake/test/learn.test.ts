@@ -39,9 +39,19 @@ const fixture = async (t: { after: (fn: () => Promise<void>) => void }, withSour
   const threads: Record<string, JsonObject[]> = {}
   // 消された投稿の ts
   const gone = new Set<string>()
+  // failAcks: 失敗させる受け付けの返信の数。learnDelayMs: 学びの投稿の応答を遅らせる時間
+  const control = { failAcks: 0, learnDelayMs: 0 }
   let count = 0
   const slack = await startSlack((r): SlackReply => {
-    if (r.method === 'chat.postMessage') return { json: { ok: true, ts: `66.${++count}` } }
+    if (r.method === 'chat.postMessage' && r.params.thread_ts && control.failAcks > 0) {
+      control.failAcks -= 1
+      return { json: { ok: false, error: 'internal_error' } }
+    }
+    if (r.method === 'chat.postMessage')
+      return {
+        json: { ok: true, ts: `66.${++count}` },
+        delayMs: (r.params.text ?? '').startsWith(LEARN_MARK) ? control.learnDelayMs : 0,
+      }
     if (r.method === 'conversations.replies') {
       const ts = r.params.ts ?? ''
       if (gone.has(ts)) return { json: { ok: false, error: 'thread_not_found' } }
@@ -77,7 +87,8 @@ const fixture = async (t: { after: (fn: () => Promise<void>) => void }, withSour
     noticesFile,
     cancelsFile,
     writeNotices: (notices: Json[]) => writeFileSync(noticesFile, JSON.stringify({ version: 1, notices })),
-    poll: (at: string) => runCliAsync(['poll', '--now', `2026-11-13T${at}:00Z`], env),
+    control,
+    poll: (at: string, extra: string[] = []) => runCliAsync(['poll', '--now', `2026-11-13T${at}:00Z`, ...extra], env),
     learnPosts: () => posts().filter((r) => !r.params.thread_ts && (r.params.text ?? '').startsWith(LEARN_MARK)),
     threadPosts: () => posts().filter((r) => r.params.thread_ts),
     // 偽の Slack は chat.postMessage の順に 66.1, 66.2, … を返す
@@ -240,4 +251,59 @@ test('LE4 report.source が無い・notices.json が無いときは何もしな�
   }
   assert.equal(f.learnPosts().length, 0)
   assert.equal(existsSync(f.cancelsFile), false)
+})
+
+test('LE5 受け付けの返信に失敗したら、その返信を次の poll で読み直して受け付けを返す。依頼は 1 回だけ', async (t) => {
+  const f = await fixture(t)
+  f.writeNotices([firstNotice()])
+  await f.poll('09:05')
+  const [ts1 = ''] = f.learnPosts().map(f.tsOf)
+  f.threads[ts1] = [parent(ts1), reply('70.1', '取り消し 1'), reply('70.2', '取り消し 2')]
+  f.control.failAcks = 1
+  const second = await f.poll('09:10')
+  assert.match(second.stdout, /errors=1 .*learn=0\/1/, second.stderr)
+  assert.match(second.stderr, /internal_error/)
+  // 失敗した返信の手前で止めるので、同じスレッドの後ろの返信はまだ読まない
+  assert.equal((f.cancels().cancels as JsonObject[]).length, 1)
+  const third = await f.poll('09:15')
+  assert.match(third.stdout, /errors=0 .*learn=0\/1/, third.stderr)
+  assert.deepEqual(
+    (f.cancels().cancels as JsonObject[]).map((c) => [c.noticeId, c.n, c.ruleId]),
+    [
+      [1, 1, 'r1'],
+      [1, 2, 'r2'],
+    ],
+  )
+  // 失敗 1 回のあと、項目 1 と 2 に 1 回ずつ
+  assert.deepEqual(
+    f.threadPosts().map((r) => r.params.text),
+    [ACK, ACK, ACK],
+  )
+  f.threads[ts1]?.push(reply('70.3', '取り消し 1'))
+  const fourth = await f.poll('09:20')
+  assert.match(fourth.stdout, /errors=0 .*learn=0\/0/, fourth.stderr)
+  assert.equal(f.threadPosts().length, 3)
+})
+
+test('LE6 残りが取り込みの分を切ったら学びの投稿とスレッドの読み取りを errors に出さずにやめる。古い知らせのスレッドは読まない', async (t) => {
+  const f = await fixture(t)
+  f.writeNotices([
+    notice(1, 'acme/app', [item(1, 'new')]),
+    notice(2, 'acme/app', [item(1, 'new')]),
+    { ...notice(3, 'acme/app', [item(1, 'new')]), at: '2026-10-01T00:00:00Z' },
+  ])
+  f.control.learnDelayMs = 2500
+  // 予算 14 秒: 1 件目の投稿のあとは 10 秒以上残り、2 件目のあとは残らない
+  const first = await f.poll('09:05', ['--deadline-ms', '14000'])
+  assert.match(first.stdout, /errors=0 partial=false .*learn=2\/0/, first.stderr)
+  assert.equal(f.learnPosts().length, 2)
+  assert.equal(f.repliesOf('66.2').length + f.repliesOf('66.3').length, 0)
+  f.control.learnDelayMs = 0
+  const second = await f.poll('09:10')
+  assert.match(second.stdout, /errors=0 .*learn=1\/0/, second.stderr)
+  const [ts1 = '', ts2 = '', ts3 = ''] = f.learnPosts().map(f.tsOf)
+  assert.ok(f.repliesOf(ts1).length > 0)
+  assert.ok(f.repliesOf(ts2).length > 0)
+  // 3 番目の知らせは at が 14 日より前なので、取り消しを読まない
+  assert.equal(f.repliesOf(ts3).length, 0)
 })

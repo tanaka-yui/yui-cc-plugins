@@ -686,6 +686,9 @@ export const LEARN_FILE_VERSION = 1
 // 1 回の poll で投稿する知らせの数と、取り消しの返信を読む投稿の数（新しい方から）
 export const LEARN_POSTS_PER_POLL = 5
 export const LEARN_THREADS_MAX = 20
+// 取り消しの返信を読むのは、知らせの at からこの日数まで
+export const LEARN_CANCEL_WINDOW_DAYS = 14
+export const DAY_MS = 86_400_000
 export const META_LEARN_LAST_ID = 'learn_last_notice'
 // 投稿した知らせの id・チャンネル・ts と、読み終えた返信の ts（JSON の配列）
 export const META_LEARN_POSTS = 'learn_posts'
