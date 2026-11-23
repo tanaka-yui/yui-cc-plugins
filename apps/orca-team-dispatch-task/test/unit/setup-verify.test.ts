@@ -13,7 +13,7 @@ import { fixture } from '../lib/auto-fixture.ts'
 
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -320,7 +320,9 @@ test('SV15 an unexpected tool lookup exception also cleans up and emits a result
 })
 test('SV16 the throwaway worktree is made under the home directory, not os.tmpdir()', () => {
   const dir = checkout()
-  const home = mkdtempSync(join(tmpdir(), 'verify-home-'))
+  // macOS の os.tmpdir() は /var/folders/...（/private/var への symlink）を返し、シェルの pwd は実体のパスを出す。
+  // HOME を実体のパスにして、両者を同じ形で比べる
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'verify-home-')))
   const saved = process.env.HOME
   process.env.HOME = home
   try {
