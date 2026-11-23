@@ -3,7 +3,18 @@
 import { applyFlow, baseLabels, candidatesOf, resolveBases, restrictedBase } from '../lib/auto-base.ts'
 import { intakeActiveRepos, pickSources, readAutoConfig, relayAllowance, sourceAutoMerge } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
-import { endRecorder } from '../lib/auto-learn.ts'
+import {
+  applyLearn,
+  decisionRuleIds,
+  endRecorder,
+  type HistoryRow,
+  type LearnStore,
+  learnedFor,
+  readHistory,
+  readStore,
+  reflectionsOf,
+  shownOf,
+} from '../lib/auto-learn.ts'
 import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
 import { syncProjects } from '../lib/auto-project.ts'
 import { awaitingBase } from '../lib/auto-queue.ts'
@@ -20,7 +31,7 @@ import { runTick } from '../lib/auto-tick.ts'
 import { notifyNeedsBase, transition } from '../lib/auto-transition.ts'
 import { die } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
-import { asArray, asObject, asString } from '../lib/json.ts'
+import { asArray, asObject, asString, type Json } from '../lib/json.ts'
 import {
   ENTRY_FILE,
   judgeFingerprint,
@@ -109,6 +120,19 @@ const main = (argv: string[]): number => {
       issue.statusDir ? terminalRows(issue.statusDir, issue.key) : [],
     )
     if (rows.length > 0) process.stdout.write(`\n${terminalTable(rows)}`)
+    // 学びの有効な規則。読めなくても上の出力は残す
+    try {
+      const rules = readStore(name).rules.filter((rule) => rule.status === 'active')
+      if (rules.length > 0) {
+        console.log('\n学びの規則（有効なもの）:')
+        for (const rule of rules)
+          console.log(
+            `${rule.repo} ${rule.id} ${rule.direction} 様子見の残り ${rule.probationLeft} 根拠 ${rule.evidence.length} 件: ${rule.topic}`,
+          )
+      }
+    } catch (error) {
+      console.log(`学びの規則を読めません（${error instanceof Error ? error.message : String(error)}）`)
+    }
     return 0
   }
   const config = readAutoConfig(name)
@@ -134,6 +158,16 @@ const main = (argv: string[]): number => {
       return 0
     }
     if (command === 'judge-list') {
+      // 学びのデータが読めなくても判定は止めない。1 行出して、規則・事例・振り返りを空にする
+      let history: HistoryRow[] = []
+      let store: LearnStore = { rules: [], nextRule: 1, nextNotice: 1 }
+      try {
+        history = readHistory(name)
+        store = readStore(name)
+      } catch (error) {
+        history = []
+        console.error(`判定の学びを読めません（${error instanceof Error ? error.message : String(error)}）`)
+      }
       const issues = Object.values(state.issues)
         .filter((i) => i.phase === 'judging' && !i.pendingLabel)
         .flatMap((issue) => {
@@ -164,11 +198,18 @@ const main = (argv: string[]): number => {
                 // 対象ごとの普段の向き先（baseBranch）。null は GitHub の既定ブランチ
                 usual: Object.fromEntries(related.map((r) => [r, config.repos[r]?.baseBranch ?? null])),
               },
+              learned: learnedFor(store, history, issue.repo, issue.title, labels),
             },
           ]
         })
       const output = {
         issues,
+        // tick が AI を起こすかと同じリポジトリの一覧で数える
+        reflect: reflectionsOf(
+          store,
+          history,
+          config.sources.map((s) => s.repo),
+        ),
         checkouts: Object.fromEntries(Object.entries(config.repos).map(([r, c]) => [r, c.checkout])),
         limits: { defaultMinutes: config.limits.defaultMinutes, maxMinutes: config.limits.maxMinutes },
         decisionsFile: join(autoDir(name), AUTO_FILES.decisions),
@@ -181,11 +222,17 @@ const main = (argv: string[]): number => {
       console.log(JSON.stringify(output))
       return 0
     }
-    const rows = asArray(readJson(flags.get('--file') ?? ''))
-    if (!rows) {
-      console.error('判定結果は JSON の配列にしてください')
+    // 判定結果は今までの配列か、振り返りの案を添えた { decisions, learn }
+    const file = readJson(flags.get('--file') ?? '')
+    const body = asObject(file)
+    const rows = body ? asArray(body.decisions) : asArray(file)
+    const proposals: Json[] | null = body ? (body.learn === undefined ? [] : asArray(body.learn)) : []
+    if (!rows || !proposals) {
+      console.error('判定結果は JSON の配列か { "decisions": [...], "learn": [...] } にしてください')
       return 1
     }
+    // judge-list が見せた様子見の規則と振り返りの材料
+    const shown = shownOf(readJson(join(autoDir(name), AUTO_FILES.pending)))
     let rejected = false
     for (const row of rows) {
       const decision = asObject(row)
@@ -210,6 +257,14 @@ const main = (argv: string[]): number => {
         !decision.reason.trim()
       ) {
         console.error(`判定を破棄しました: ${key ?? 'key がありません'}`)
+        rejected = true
+        continue
+      }
+      // auto の行だけ、頼った auto 向きの規則を読む。eng の行の rules は使わない
+      const ruleIds =
+        decision.route === 'auto' ? decisionRuleIds(decision.rules, shown.rules(issue.key, issue.generation)) : []
+      if (typeof ruleIds === 'string') {
+        console.error(`判定を破棄しました: ${issue.key}（${ruleIds}）`)
         rejected = true
         continue
       }
@@ -255,7 +310,7 @@ const main = (argv: string[]): number => {
       issue.learn = {
         aiRoute: decision.route === 'eng' ? 'eng' : 'auto',
         forced: feature ? FORCED_FEATURE : uniqueTargets.length > 2 ? FORCED_TARGETS : '',
-        ruleIds: [],
+        ruleIds,
         recorded: false,
       }
       // 判定の間に人が Ready にしたら、人が「やる」と決めた通常の Issue として扱う
@@ -374,6 +429,12 @@ const main = (argv: string[]): number => {
         issue.phase = 'queued'
         save()
       }
+    }
+    // 見せた食い違いは案が無くても振り返り済みにする。学びが保存できなくても判定の結果は残す
+    try {
+      applyLearn(name, proposals, shown.reflect, autoNow(), console.error)
+    } catch (error) {
+      console.error(`判定の学びを保存できません（${error instanceof Error ? error.message : String(error)}）`)
     }
     state.judgingSince = null
     save()

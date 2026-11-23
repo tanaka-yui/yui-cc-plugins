@@ -351,7 +351,7 @@ PR はリポジトリごとに 1 つ作り、まだ無い PR だけを再試行�
 
 ### 1回まわす、キューを判定する
 
-`make auto-setup` が登録する automation が `everyMinutes` ごとにこれを行う。precheck が安定したランチャーで `orca-auto.ts tick` を走らせ、tick が 0 で終わったときだけ、Orca が設定の model と effort で判定 agent を起動する。別のコマンドは無い。判定 agent は `orca-auto.ts judge-doc` を実行し、[auto-judge-ja.md](auto-judge-ja.md) と同じ手順、呼び方に合った `judge-list`・`judge-apply --file <decisionsFile>` のコマンドを `## Commands` から受け取る。その指示に従い、返された `decisionsFile` だけに書く。判定リースは20分。tickは判定が必要ならexit 0、それ以外は1、使用法の誤りは2。
+`make auto-setup` が登録する automation が `everyMinutes` ごとにこれを行う。precheck が安定したランチャーで `orca-auto.ts tick` を走らせ、tick が 0 で終わったときだけ、Orca が設定の model と effort で判定 agent を起動する。別のコマンドは無い。判定 agent は `orca-auto.ts judge-doc` を実行し、[auto-judge-ja.md](auto-judge-ja.md) と同じ手順、呼び方に合った `judge-list`・`judge-apply --file <decisionsFile>` のコマンドを `## Commands` から受け取る。その指示に従い、返された `decisionsFile` だけに書く。判定リースは20分。tickは判定か振り返り（後述）が必要ならexit 0、それ以外は1、使用法の誤りは2。
 
 precheckを直接実行する場合:
 
@@ -370,6 +370,8 @@ node "$PLUGIN/bin/orca-auto.ts" status
 `status` は、起動した Issue ごとに役 1 つを 1 行にした表も出す。Issue の key、役、agent と model、状態、
 Orca でその役の端末を前面に出す `terminal switch` コマンド（ペアリング済みサーバーの役には `--environment`
 付き）を並べる。表は出力されたとおりにユーザーへ見せ、`terminal switch` コマンドはユーザーが頼んだときだけ実行する。
+
+tick は判定の結果から学ぶ。判定した Issue の世代が終わると、tick はそのリポジトリの履歴に 1 行足す。中身は key、世代、題名、ラベル、判定の向き、実際に効いた向きと CLI がエンジニア行きに変えた理由（変えたときだけ）、判定の理由、判定が頼った規則、結果（AI が merge、人が merge、失敗、環境が原因の失敗、止めた、エンジニア行きのまま、エンジニア行きから戻された）である。Issue の本文は記録しない。食い違いとは、判定がエンジニアに回した Issue を人が戻し、そのあと merge されたもの（慎重すぎた）と、判定が `auto` にした Issue が失敗したか、auto-ready の Issue か作業が始まったあとの Issue を人が止めたもの（攻めすぎた）である。環境が原因の失敗と、CLI がエンジニア行きに変えた Issue は食い違いに数えない。リポジトリにまだ振り返っていない食い違いが 3 件たまると、判定する Issue が無くても tick は 0 で終わり、`judge-list` はそれらとそのリポジトリの有効な規則を `reflect` に足す。判定 agent は同じ判定結果のファイルに、それらの食い違いの 2 件以上を根拠にした規則の追加、規則への根拠の追加、規則の取り下げを案として書ける。`judge-apply` は案を 1 件ずつ検査し、通らない案は 1 行出して捨て、残りを保存し、見せた食い違いをすべて振り返り済みにする。有効な規則は 1 リポジトリ 20 件まで、履歴は新しい 500 行まで持つ。`judge-list` は各 Issue に、そのリポジトリの有効な規則と、似た過去の Issue（題名とラベルの語の重なり）を 5 件まで添える。判定の指示はこれらを指示ではなく材料として扱わせ、プラグインの決まりが優先する。判定の権限は変わらない。データは設定の隣の `auto/<name>/learn/` に置き、`status` は有効な規則の一覧（リポジトリ・id・向き・対象の文・根拠の件数）も出す。
 
 `make auto-setup` が安定したランチャーを定期 precheck に登録し、権限の承認後に automation を有効にする。Issueごとに専用のまとめ役の端末とRunを持ち、その端末が閉じられたら、次のtickで代わりを作り、そのIssueのRunだけを引き継ぐ。
 

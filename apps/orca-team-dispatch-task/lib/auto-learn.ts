@@ -467,3 +467,267 @@ export const topicProblem = (topic: string): string => {
   if (TOPIC_URL_PREFIXES.some((prefix) => lower.includes(prefix))) return '対象の文に URL は使えません'
   return ''
 }
+
+// 振り返りが要るリポジトリ（まだ振り返っていない食い違いが LEARN_REFLECT_MIN 件以上）。
+// tick が AI を起こすかと、judge-list の reflect は、必ずこれを同じ引数で呼ぶ（食い違うと AI を起こしても何も無い）
+export const reflectDue = (rows: HistoryRow[], repos: string[]): string[] =>
+  [...new Set(repos)].filter((repo) => mismatchesOf(rows, repo).length >= LEARN_REFLECT_MIN)
+
+export type LearnedRule = { id: string; direction: Route; topic: string; probation: boolean }
+export type Learned = { rules: LearnedRule[]; cases: Array<{ title: string; route: Route; outcome: Outcome }> }
+export type Reflection = {
+  repo: string
+  mismatches: Mismatch[]
+  rules: Array<{ id: string; direction: Route; topic: string; evidence: string[] }>
+}
+
+// judge-list が Issue ごとに添える材料。様子見は auto 向きで残りがある規則だけ
+export const learnedFor = (
+  store: LearnStore,
+  rows: HistoryRow[],
+  repo: string,
+  title: string,
+  labels: string[],
+): Learned => ({
+  rules: activeRules(store, repo).map((rule) => ({
+    id: rule.id,
+    direction: rule.direction,
+    topic: rule.topic,
+    probation: rule.direction === 'auto' && rule.probationLeft > 0,
+  })),
+  cases: similarCases(rows, repo, title, labels),
+})
+
+export const reflectionsOf = (store: LearnStore, rows: HistoryRow[], repos: string[]): Reflection[] =>
+  reflectDue(rows, repos).map((repo) => ({
+    repo,
+    mismatches: mismatchesOf(rows, repo),
+    rules: activeRules(store, repo).map((rule) => ({
+      id: rule.id,
+      direction: rule.direction,
+      topic: rule.topic,
+      evidence: rule.evidence,
+    })),
+  }))
+
+// judge-list が残した judge/pending.json から、judge-apply が「見せたもの」を読む。
+// 無い・読めない部分は「何も見せていない」とみなす（judge-list を経ずに渡された判定結果も同じ）
+export type Shown = {
+  reflect: Array<{ repo: string; mismatches: Mismatch[] }>
+  rules: (key: string, generation: number) => LearnedRule[]
+}
+const MISMATCH_KINDS = ['cautious', 'aggressive'] as const
+const parseMismatch = (value: Json): Mismatch | null => {
+  const item = asObject(value)
+  if (item === null) return null
+  const id = asString(item.id)
+  const kind = MISMATCH_KINDS.find((entry) => entry === item.kind) ?? null
+  const key = asString(item.key)
+  const title = asString(item.title)
+  const labels = strings(item.labels)
+  const reason = asString(item.reason)
+  const result = outcome(item.outcome)
+  if (
+    id === null ||
+    kind === null ||
+    key === null ||
+    title === null ||
+    labels === null ||
+    reason === null ||
+    result === null
+  )
+    return null
+  return { id, kind, key, title, labels, reason, outcome: result }
+}
+const parseLearnedRule = (value: Json): LearnedRule | null => {
+  const item = asObject(value)
+  const id = asString(item?.id)
+  const direction = route(item?.direction)
+  const topic = asString(item?.topic)
+  if (item === null || id === null || direction === null || topic === null || typeof item.probation !== 'boolean')
+    return null
+  return { id, direction, topic, probation: item.probation }
+}
+const parseList = <T>(value: Json | undefined, parse: (item: Json) => T | null): T[] =>
+  (asArray(value) ?? []).flatMap((item) => {
+    const parsed = parse(item)
+    return parsed === null ? [] : [parsed]
+  })
+export const shownOf = (pending: Json | null): Shown => {
+  const root = asObject(pending ?? undefined)
+  const reflect = parseList(root?.reflect, (value) => {
+    const entry = asObject(value)
+    const repo = asString(entry?.repo)
+    return repo === null ? null : { repo, mismatches: parseList(entry?.mismatches, parseMismatch) }
+  })
+  const rules = new Map<string, LearnedRule[]>()
+  for (const value of asArray(root?.issues) ?? []) {
+    const issue = asObject(value)
+    const key = asString(issue?.key)
+    const generation = count(issue?.generation)
+    if (key !== null && generation !== null)
+      rules.set(`${key}@${generation}`, parseList(asObject(issue?.learned)?.rules, parseLearnedRule))
+  }
+  return { reflect, rules: (key, generation) => rules.get(`${key}@${generation}`) ?? [] }
+}
+
+// 判定の行の rules（auto にした理由で頼った auto 向きの規則の id）。受け付けられなければ理由の 1 行を返す。
+// 様子見の規則を見せたのに rules が無い行は断る（書き忘れで様子見を素通りさせないため）
+export const decisionRuleIds = (value: Json | undefined, shown: LearnedRule[]): string[] | string => {
+  if (value === undefined)
+    return shown.some((rule) => rule.probation) ? '様子見の規則を見せた Issue には rules が要ります' : []
+  const ids = strings(value)
+  if (ids === null) return 'rules は文字列の配列にしてください'
+  const unknown = ids.filter((id) => !shown.some((rule) => rule.id === id && rule.direction === 'auto'))
+  if (unknown.length > 0) return `rules にこの Issue に見せた auto 向きの規則でない id があります: ${unknown.join(' ')}`
+  return [...new Set(ids)]
+}
+
+// 振り返りの案。kind ごとに検査と保存をする。知らない kind は捨てる（kind は今後増える）
+type LearnContext = { store: LearnStore; material: Map<string, Set<string>>; at: string }
+type Accepted = { repo: string; item: Omit<NoticeItem, 'n'> }
+const WITHDRAWN_BY_REFLECTION = '振り返りで取り下げ'
+const ADD_EVIDENCE_MIN = 2
+const SUPPORT_EVIDENCE_MIN = 1
+
+// repo が振り返りの材料に出たリポジトリか。出ていればその食い違いの id を返す
+const materialOf = (proposal: JsonObject, context: LearnContext): { repo: string; ids: Set<string> } | string => {
+  const repo = asString(proposal.repo)
+  if (repo === null) return 'repo がありません'
+  const ids = context.material.get(repo)
+  return ids === undefined ? `${repo} は振り返りの材料にありません` : { repo, ids }
+}
+const evidenceOf = (value: Json | undefined, ids: Set<string>, min: number): string[] | string => {
+  const list = strings(value)
+  if (list === null) return 'evidence は文字列の配列にしてください'
+  const unique = [...new Set(list)]
+  if (unique.length < min) return `evidence は異なる食い違いを ${min} 件以上にしてください`
+  const unknown = unique.filter((id) => !ids.has(id))
+  return unknown.length > 0 ? `evidence に材料に無い食い違いがあります: ${unknown.join(' ')}` : unique
+}
+const ruleOf = (proposal: JsonObject, repo: string, context: LearnContext): Rule | string => {
+  const id = asString(proposal.ruleId)
+  const found = id === null ? undefined : activeRules(context.store, repo).find((rule) => rule.id === id)
+  return found ?? `ruleId が ${repo} の有効な規則ではありません`
+}
+
+const proposeAdd = (proposal: JsonObject, context: LearnContext): Accepted | string => {
+  const material = materialOf(proposal, context)
+  if (typeof material === 'string') return material
+  const direction = route(proposal.direction)
+  if (direction === null) return 'direction は auto か eng にしてください'
+  const topic = asString(proposal.topic)
+  if (topic === null) return 'topic がありません'
+  const problem = topicProblem(topic)
+  if (problem !== '') return problem
+  const evidence = evidenceOf(proposal.evidence, material.ids, ADD_EVIDENCE_MIN)
+  if (typeof evidence === 'string') return evidence
+  if (activeRules(context.store, material.repo).length >= LEARN_RULES_MAX)
+    return `${material.repo} の有効な規則が上限の ${LEARN_RULES_MAX} 件に達しています`
+  const rule: Rule = {
+    id: `r${context.store.nextRule}`,
+    repo: material.repo,
+    direction,
+    topic,
+    evidence,
+    createdAt: context.at,
+    probationLeft: direction === 'auto' ? LEARN_PROBATION : 0,
+    status: 'active',
+    withdrawnWhy: '',
+    global: null,
+  }
+  context.store.nextRule += 1
+  context.store.rules.push(rule)
+  return { repo: rule.repo, item: { kind: 'new', ruleId: rule.id, direction, text: topic, evidence, url: '' } }
+}
+
+const proposeSupport = (proposal: JsonObject, context: LearnContext): Accepted | string => {
+  const material = materialOf(proposal, context)
+  if (typeof material === 'string') return material
+  const rule = ruleOf(proposal, material.repo, context)
+  if (typeof rule === 'string') return rule
+  const evidence = evidenceOf(proposal.evidence, material.ids, SUPPORT_EVIDENCE_MIN)
+  if (typeof evidence === 'string') return evidence
+  rule.evidence = [...new Set([...rule.evidence, ...evidence])]
+  return {
+    repo: rule.repo,
+    item: {
+      kind: 'support',
+      ruleId: rule.id,
+      direction: rule.direction,
+      text: rule.topic,
+      evidence: rule.evidence,
+      url: '',
+    },
+  }
+}
+
+const proposeWithdraw = (proposal: JsonObject, context: LearnContext): Accepted | string => {
+  const material = materialOf(proposal, context)
+  if (typeof material === 'string') return material
+  const rule = ruleOf(proposal, material.repo, context)
+  if (typeof rule === 'string') return rule
+  rule.status = 'withdrawn'
+  rule.withdrawnWhy = WITHDRAWN_BY_REFLECTION
+  return {
+    repo: rule.repo,
+    item: { kind: 'withdrawn', ruleId: rule.id, direction: rule.direction, text: rule.topic, evidence: [], url: '' },
+  }
+}
+
+const PROPOSAL_KINDS = new Map<string, (proposal: JsonObject, context: LearnContext) => Accepted | string>([
+  ['add', proposeAdd],
+  ['support', proposeSupport],
+  ['withdraw', proposeWithdraw],
+])
+
+// 振り返りの案を 1 件ずつ検査して保存し、リポジトリごとに知らせを 1 つ足す。落ちた案は log に 1 行出して捨てる。
+// 最後に、見せた食い違いの行をすべて振り返り済みにする（案が無くても。同じ材料で毎回 AI を起こさないため）。
+// 材料にできるのは、見せた食い違いのうちまだ振り返り済みでないものだけ（やり直しの judge-apply で同じ案を二度入れない）
+export const applyLearn = (
+  name: string,
+  proposals: Json[],
+  shown: Array<{ repo: string; mismatches: Mismatch[] }>,
+  at: string,
+  log: (line: string) => void,
+): void => {
+  if (proposals.length === 0 && shown.length === 0) return
+  const rows = readHistory(name)
+  const store = readStore(name)
+  const open = new Set(rows.filter((row) => !row.reflected).map((row) => `${row.key}@${row.generation}`))
+  const material = new Map<string, Set<string>>()
+  for (const entry of shown) {
+    const ids = entry.mismatches.map((mismatch) => mismatch.id).filter((id) => open.has(id))
+    if (ids.length > 0) material.set(entry.repo, new Set([...(material.get(entry.repo) ?? []), ...ids]))
+  }
+  const context: LearnContext = { store, material, at }
+  const accepted = new Map<string, Omit<NoticeItem, 'n'>[]>()
+  for (const value of proposals) {
+    const proposal = asObject(value)
+    const kind = asString(proposal?.kind) ?? ''
+    const propose = PROPOSAL_KINDS.get(kind)
+    const result =
+      proposal === null
+        ? '案はオブジェクトにしてください'
+        : propose === undefined
+          ? `kind が add・support・withdraw のどれでもありません: ${kind}`
+          : propose(proposal, context)
+    if (typeof result === 'string') {
+      log(`学びの案を捨てました: ${kind || '-'} ${asString(proposal?.repo) ?? '-'}（${result}）`)
+      continue
+    }
+    accepted.set(result.repo, [...(accepted.get(result.repo) ?? []), result.item])
+  }
+  for (const [repo, items] of accepted) appendNotice(name, store, repo, items, at)
+  if (accepted.size > 0) writeStore(name, store)
+  const reflected = new Set(
+    shown.flatMap((entry) => entry.mismatches.map((mismatch) => `${entry.repo}\n${mismatch.id}`)),
+  )
+  let changed = false
+  for (const row of rows)
+    if (!row.reflected && reflected.has(`${row.repo}\n${row.key}@${row.generation}`)) {
+      row.reflected = true
+      changed = true
+    }
+  if (changed) writeHistory(name, rows)
+}

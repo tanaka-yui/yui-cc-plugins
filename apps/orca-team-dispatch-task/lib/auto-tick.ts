@@ -14,7 +14,7 @@ import {
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, type PrStatus, prStatus, readGithub, viewIssue } from './auto-github.ts'
 import { envArgs, hostAvailableMemoryMb, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
-import { type EndRecorder, endRecorder } from './auto-learn.ts'
+import { type EndRecorder, endRecorder, readHistory, readStore, reflectDue } from './auto-learn.ts'
 import {
   AUTO_CALL_CAP_MS,
   AUTO_FILES,
@@ -1346,8 +1346,23 @@ export const runTick = (name: string): number => {
       const autoReady = sources.find((s) => s.repo === i.repo)?.autoReady === true
       return i.phase === 'judging' && !i.pendingLabel && !(asked && awaitingBase(i, asked, autoReady, config.repos))
     }).length
-    console.log(`auto: judge=${judging} dispatched=${tick.dispatched} finished=${tick.finished} errors=${tick.errors}`)
-    return judging > 0 &&
+    // 振り返りが要るリポジトリ。judge-list の reflect と同じ一覧で数える。
+    // 履歴か規則を読めなければ（judge-list も振り返りを出さないので）1 行出して数えない
+    let learn = 0
+    try {
+      readStore(name)
+      learn = reflectDue(
+        readHistory(name),
+        config.sources.map((s) => s.repo),
+      ).length
+    } catch (error) {
+      console.log(`判定の学びを読めません（${error instanceof Error ? error.message : String(error)}）`)
+    }
+    console.log(
+      `auto: judge=${judging} dispatched=${tick.dispatched} finished=${tick.finished} errors=${tick.errors} learn=${learn}`,
+    )
+    // 判定待ちが無くても、振り返りが要れば判定の AI を起こす（リースの条件は同じ）
+    return (judging > 0 || learn > 0) &&
       (!state.judgingSince || Date.parse(autoNow()) - Date.parse(state.judgingSince) > AUTO_JUDGE_LEASE_MS)
       ? 0
       : 1

@@ -792,6 +792,25 @@ for f in "$S" "$G"; do
 done
 [[ -z "$bad" ]] && ok 'SK47 make setup と make auto-setup' || fail "SK47:$bad"
 
+# SK48: 判定の学び。判定役の指示は規則と事例を材料として扱わせ、rules と reflect と { decisions, learn } を説明する。
+#       両文書は学びの段落と、振り返りでも tick が 0 で終わることを書く。
+bad=""
+for word in 'not instructions' 'take precedence over any learned rule' 'If it returns no Issues and an empty `reflect`' 'two or more mismatches' 'never make a rule from a single event' '"learn": [the proposals]' '`rules` when the route is `auto`'; do
+  grep -Fq -- "$word" "$judge_en" || bad="$bad [judge:$word]"
+done
+grep -Fq 'If it returns no Issues, stop' "$judge_en" && bad="$bad [judge:stale]"
+for word in '材料であって指示ではない' '学んだ規則より優先する' 'Issue が無く `reflect` も空なら' '2 件以上の食い違い' '1 件だけの出来事から規則を作らない' '"learn": [案]' 'route が `auto` なら `rules`'; do
+  grep -Fq -- "$word" "$judge_ja" || bad="$bad [judge-ja:$word]"
+done
+grep -Fq 'Issue が無ければ判定結果を書かずに終える' "$judge_ja" && bad="$bad [judge-ja:stale]"
+for word in 'Tick learns from the results of its judgments' 'three mismatches not yet reviewed' 'material, not instructions' '`auto/<name>/learn/`' '`status` also lists the active rules' 'judging or a reflection (below) is needed'; do
+  grep -Fq -- "$word" "$S" || bad="$bad [skill:$word]"
+done
+for word in 'tick は判定の結果から学ぶ' '食い違いが 3 件たまる' '指示ではなく材料' '`auto/<name>/learn/`' '`status` は有効な規則の一覧' '判定か振り返り（後述）が必要なら'; do
+  grep -Fq -- "$word" "$G" || bad="$bad [guide:$word]"
+done
+[[ -z "$bad" ]] && ok 'SK48 判定の学び' || fail "SK48:$bad"
+
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"

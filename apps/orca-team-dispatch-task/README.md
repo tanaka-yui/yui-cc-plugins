@@ -14,6 +14,7 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 リポジトリごとに `baseBranch`（普段の向き先）と `branches`（候補）を持てる。候補が 2 つ以上あると、`base:<branch>` ラベル→判定→（不明なら）`needs-base` で Backlog に戻して尋ねる、の順で Issue ごとの向き先を決め、普段の向き先以外への merge は必ず人に回し、merge 後は `<向き先> → <baseBranch>` の戻しの PR を作る（merge はしない）。
 拾う元ごとに auto-ready（`autoReady`）を有効にすると、Backlog の Issue も判定し、自動で対応できるものを Ready に、難しいものを Ready_Eng にする。auto-ready で Ready にした Issue の PR は、既定では AI が merge せず人の確認に回す。拾う元に `autoMerge` を有効にすると、ほかの条件がそろえば AI が merge する（普段の向き先以外へは merge しない）。
 slack-issue-intake の `existing` を `active` にしたリポジトリでは、GitHub で手で作った Issue も intake が取り込んでから拾い、Project の同期も Slack の印の無い Issue まで揃え、auto-ready は人が `slack-thread` を付けた古い Backlog の Issue と、ステータスラベルの無い Issue（先に Backlog を付ける）も判定する。`active` では `slack-thread` を人の印と見るので、`thread` から `active` に切り替えると、`thread` のあいだに intake が `slack-thread` を付けた Issue（古い Backlog のものも含む）が判定に回る。AI に判定させたくない Issue は `slack-thread` を外すか、先に `autoReady` を切ること。1 つのリポジトリは 1 つの intake のホームだけで扱い、ホームごとに `thread` と `active` を混ぜないこと（`thread` と書いた設定が 1 つでもあれば、orca はそのリポジトリを `active` として扱わず、リポジトリ名を 1 行出す）。
+判定と結果は Issue の世代ごとに履歴へ残り、食い違いが 3 件たまったリポジトリは判定の AI が振り返って短い規則にする。規則と似た過去の事例は、次の判定の材料になる（データは `auto/<name>/learn/`、有効な規則は `status` に出る）。
 このモードだけは停止・解放とpushを確認してから資源を片付ける。使い方はskillのAuto modeを参照。
 設定は `make auto-setup <name>` で行い、終えたあとにマシンだけ・`review_mode` と `phase_b` だけを変えるときは `make hosts <name>` / `make roles <name>` を使う。
 

@@ -371,7 +371,7 @@ test('AU130 tick syncs the Project before and after the queue', () => {
     const result = unreadable.cli('tick')
     const lines = result.stdout.trim().split('\n')
     assert.equal(lines.filter((s) => s.startsWith('Project を読めません: acme/3')).length, 1)
-    assert.match(lines.at(-1) ?? '', /^auto: judge=.*errors=0$/)
+    assert.match(lines.at(-1) ?? '', /^auto: judge=.*errors=0 learn=0$/)
   } finally {
     unreadable.cleanup()
   }
@@ -393,7 +393,7 @@ test('AU130b a Project read that exceeds the call cap is one line and not a tick
         .filter((s) => s.startsWith('api graphql')).length,
       1,
     )
-    assert.match(lines.at(-1) ?? '', /^auto: judge=.*errors=0$/)
+    assert.match(lines.at(-1) ?? '', /^auto: judge=.*errors=0 learn=0$/)
   } finally {
     if (old === undefined) Reflect.deleteProperty(process.env, 'ORCA_AUTO_CALL_CAP_MS')
     else process.env.ORCA_AUTO_CALL_CAP_MS = old
@@ -413,7 +413,7 @@ test('MI7 an unreadable intake prints one line, counts as a tick error, and the 
       lines.filter((s) => s.startsWith('intake の設定を読めません: ')),
       [`intake の設定を読めません: ${missing}`],
     )
-    assert.match(lines.at(-1) ?? '', /^auto: judge=.*errors=1$/)
+    assert.match(lines.at(-1) ?? '', /^auto: judge=.*errors=1 learn=0$/)
     assert.ok(
       f
         .calls()
