@@ -4,6 +4,7 @@ import { autoNow, canAutoCall } from './auto-paths.ts'
 import { FEATURE_LABEL, PRIORITY_LABELS, STATUS, STATUS_LABELS, THREAD_LABEL } from './status.ts'
 
 import type { ProjectRef } from './auto-config.ts'
+import type { EndRecorder } from './auto-learn.ts'
 import type { ProjectSyncContext } from './auto-project.ts'
 import type { AutoState, IssueState, Priority } from './auto-state.ts'
 
@@ -64,6 +65,8 @@ const makeIssue = (repo: string, row: ReadyIssue, pick: string): IssueState => (
   prevPrs: [],
   pendingLabel: null,
   failReason: null,
+  failEnv: false,
+  learn: null,
   updatedAt: autoNow(),
 })
 // 向き先を尋ねて Backlog で待っている。auto-ready の拾う元で base ラベルが解けたら判定に戻す。
@@ -120,6 +123,8 @@ export const syncIssues = (
   sources: Array<{ repo: string; pick: string; autoReady?: boolean }>,
   active: ReadonlySet<string> = new Set(),
   log?: (line: string) => void,
+  // 世代が終わった Issue を履歴に残す口（tick が渡す）
+  onEnd?: EndRecorder,
 ): {
   added: string[]
   dropped: string[]
@@ -162,6 +167,9 @@ export const syncIssues = (
         ['failed', 'stopped', 'eng', 'review'].includes(issue.phase)
       ) {
         const from = issue.phase
+        // 世代を進める前に、今の世代の結果を残す。エンジニア行きを人が戻した・レビュー中に人が拾い直させた
+        if (from === 'eng') onEnd?.(issue, 'eng-returned', row.labels)
+        else if (from === 'review') onEnd?.(issue, 'stopped', row.labels)
         const hadBranches = Object.keys(issue.branches).length > 0 || issue.branch !== ''
         Object.assign(issue, {
           prevTargets: hadBranches ? [...issue.targets] : issue.prevTargets,
@@ -198,6 +206,8 @@ export const syncIssues = (
           coordinator: null,
           startAttempt: null,
           failReason: null,
+          failEnv: false,
+          learn: null,
           updatedAt: now,
         })
       }
@@ -276,26 +286,32 @@ export const syncIssues = (
     if (tombstone) {
       issue.checkedAt = now
       if (view.state === 'CLOSED' && !issue.cleanupPending) {
+        // ほかの墓標の結果は終わったときに書いてある
+        if (issue.phase === 'eng') onEnd?.(issue, 'eng-kept', view.labels)
         delete state.issues[key]
         result.dropped.push(key)
       }
     } else if (issue.phase === 'judging' || issue.phase === 'queued') {
       if (view.state === 'CLOSED') {
+        onEnd?.(issue, 'stopped', view.labels)
         delete state.issues[key]
         result.dropped.push(key)
       } else if ((issue.autoReady || issue.baseAsked) && issue.phase === 'judging' && !view.labels.includes(pick)) {
         // 判定待ちの Backlog（auto-ready で拾った Issue と、向き先を尋ねて Backlog へ戻した Issue）。
         // auto-ready を外したら auto-ready で拾った Issue は何もせずに記録から外し、人が別のステータスにしたら止める
         if (issue.autoReady && !source?.autoReady) {
+          onEnd?.(issue, 'stopped', view.labels)
           delete state.issues[key]
           result.dropped.push(key)
         } else if (!view.labels.includes(STATUS.backlog)) {
           issue.phase = 'stopped'
           issue.updatedAt = now
+          onEnd?.(issue, 'stopped', view.labels)
         } else if (issue.baseAsked) result.asked[key] = view.labels
       } else if (!view.labels.includes(pick)) {
         issue.phase = 'stopped'
         issue.updatedAt = now
+        onEnd?.(issue, 'stopped', view.labels)
       } else {
         // 判定の前に人が Ready にした。人が「やる」と決めたので、通常の Issue として扱う
         if (issue.autoReady && issue.phase === 'judging') issue.autoReady = false

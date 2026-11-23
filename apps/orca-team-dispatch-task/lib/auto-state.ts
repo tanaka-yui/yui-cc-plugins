@@ -1,3 +1,4 @@
+import { ROUTES } from './auto-learn.ts'
 import { AUTO_FILES, autoDir } from './auto-paths.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asObject, type Json } from './json.ts'
@@ -7,6 +8,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, linkSync, mkdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
+
+import type { Route } from './auto-learn.ts'
 
 export const AUTO_LOCK_WAIT_MS = 120_000
 export const AUTO_LOCK_TTL_MS = 160_000
@@ -81,6 +84,10 @@ export type IssueState = {
     then: Phase
   } | null
   failReason: string | null
+  // この世代の失敗が環境によるもの（worker の起動の失敗・結果の報告の envFailure・つながらないマシン）。新しい世代で false
+  failEnv: boolean
+  // この世代の判定（AI の向き・CLI が向きを変えた理由・頼った規則）と、履歴に書いたか。判定の前と新しい世代は null
+  learn: { aiRoute: Route; forced: string; ruleIds: string[]; recorded: boolean } | null
   updatedAt: string
 }
 export type ProjectPair = { status: string; label: string }
@@ -159,6 +166,21 @@ export const readState = (name: string): AutoState => {
     }
     if (issue.baseAsked === undefined) issue.baseAsked = false
     else if (typeof issue.baseAsked !== 'boolean') throw new Error(`状態ファイルが壊れています: ${key}`)
+    if (issue.failEnv === undefined) issue.failEnv = false
+    else if (typeof issue.failEnv !== 'boolean') throw new Error(`状態ファイルが壊れています: ${key}`)
+    if (issue.learn === undefined) issue.learn = null
+    else if (issue.learn !== null) {
+      const learn = asObject(issue.learn)
+      if (
+        !learn ||
+        !ROUTES.some((route) => route === learn.aiRoute) ||
+        typeof learn.forced !== 'string' ||
+        !Array.isArray(learn.ruleIds) ||
+        learn.ruleIds.some((v) => typeof v !== 'string') ||
+        typeof learn.recorded !== 'boolean'
+      )
+        throw new Error(`状態ファイルが壊れています: ${key}`)
+    }
     for (const field of ['host', 'hostUnreachableSince']) {
       if (issue[field] === undefined) issue[field] = null
       else if (issue[field] !== null && typeof issue[field] !== 'string')

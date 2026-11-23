@@ -14,6 +14,7 @@ import {
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, type PrStatus, prStatus, readGithub, viewIssue } from './auto-github.ts'
 import { envArgs, hostAvailableMemoryMb, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
+import { type EndRecorder, endRecorder } from './auto-learn.ts'
 import {
   AUTO_CALL_CAP_MS,
   AUTO_FILES,
@@ -69,6 +70,8 @@ type Tick = {
   config: AutoConfig
   state: AutoState
   save: () => void
+  // 世代の結果を履歴に残す口
+  onEnd: EndRecorder
   deadline: number
   errors: number
   dispatched: number
@@ -180,6 +183,7 @@ const started = (tick: Tick, issue: IssueState, workers: JsonObject): void => {
     false,
     'running',
     tick.save,
+    tick.onEnd,
   )
 }
 const retireStart = (tick: Tick, issue: IssueState): boolean => {
@@ -233,8 +237,10 @@ const start = (tick: Tick, issue: IssueState, args: string[], h: string, fresh: 
     return
   }
   issue.startFailures++
-  if (issue.startFailures >= AUTO_START_MAX_FAILURES)
+  if (issue.startFailures >= AUTO_START_MAX_FAILURES) {
     issue.failReason = `worker を起動できませんでした（${issue.startFailures} 回）。`
+    issue.failEnv = true
+  }
   tick.save()
   if (result.stderr) console.log(result.stderr.trim())
   if (!existsSync(join(issue.statusDir, 'workers.json'))) retireStart(tick, issue)
@@ -617,6 +623,8 @@ const markFailure = (tick: Tick, issue: IssueState, reason: string): void => {
   if (!issue.failReason) {
     issue.pendingLabel = null
     issue.failReason = reason
+    // つながらないマシンの上での失敗は環境が原因
+    if (issue.hostUnreachableSince !== null) issue.failEnv = true
     issue.cleanupPending = true
     tick.save()
     stopRoles(tick, issue)
@@ -631,13 +639,14 @@ const timedOut = (issue: IssueState): boolean =>
       issue.pendingLabel?.event !== 'failed' &&
       Date.parse(autoNow()) - Date.parse(issue.startedAt) > limitOf(issue) * 60_000,
   )
-const humanStop = (tick: Tick, issue: IssueState): void => {
+const humanStop = (tick: Tick, issue: IssueState, labels: string[] = []): void => {
   if (!canAutoCall('人の変更')) return
   issue.phase = 'stopped'
   issue.pendingLabel = null
   issue.failReason = null
   issue.cleanupPending = true
   issue.endedAt = autoNow()
+  tick.onEnd(issue, 'stopped', labels)
   tick.save()
   stopRoles(tick, issue)
 }
@@ -780,6 +789,8 @@ const finishFailure = (tick: Tick, issue: IssueState): void => {
   const multi = repoTargets(workersOf(issue), checkout).length > 1
   const result = readAutoResult(join(issue.statusDir, 'auto-result.json'))
   const reason = issue.failReason + (result?.envFailure ? ` 環境が原因: ${result.envFailure}` : '')
+  // 遷移の保存で一緒に残し、続きの tick で遷移が終わったときに読む
+  if (result?.envFailure) issue.failEnv = true
   const view = viewIssue(issue.repo, issue.number)
   if (!view) return
   const from = view.labels.includes(STATUS.inProgress) ? STATUS.inProgress : STATUS.ready
@@ -804,6 +815,7 @@ const finishFailure = (tick: Tick, issue: IssueState): void => {
       false,
       'failed',
       tick.save,
+      tick.onEnd,
     )
   )
     tick.finished++
@@ -819,6 +831,7 @@ const needsReview = (tick: Tick, issue: IssueState, reason: string): void => {
       false,
       'review',
       tick.save,
+      tick.onEnd,
     )
   )
     tick.finished++
@@ -854,7 +867,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
   const view = viewIssue(issue.repo, issue.number)
   if (!view) return
   if (view.state !== 'OPEN' || !view.labels.includes(STATUS.inProgress)) {
-    humanStop(tick, issue)
+    humanStop(tick, issue, view.labels)
     return
   }
   issue.finishingSince ??= autoNow()
@@ -977,6 +990,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
         true,
         'done',
         tick.save,
+        tick.onEnd,
       )
     )
       tick.finished++
@@ -1113,6 +1127,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
             false,
             'review',
             tick.save,
+            tick.onEnd,
           )
         )
           tick.finished++
@@ -1133,6 +1148,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
       true,
       'done',
       tick.save,
+      tick.onEnd,
     )
   )
     tick.finished++
@@ -1142,6 +1158,7 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
   const view = viewIssue(issue.repo, issue.number)
   if (!view) return
   if (view.state === 'CLOSED') {
+    tick.onEnd(issue, 'stopped', view.labels)
     if (issue.cleanupPending) {
       issue.phase = 'stopped'
       tick.save()
@@ -1153,6 +1170,7 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
   }
   if (!view.labels.includes(STATUS.inReview)) {
     issue.phase = 'stopped'
+    tick.onEnd(issue, 'stopped', view.labels)
     tick.save()
     return
   }
@@ -1187,6 +1205,7 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
       true,
       'done',
       tick.save,
+      tick.onEnd,
     )
   )
     tick.finished++
@@ -1211,6 +1230,7 @@ export const runTick = (name: string): number => {
       config,
       state,
       save: () => writeState(name, state),
+      onEnd: endRecorder(name),
       deadline,
       errors: 0,
       dispatched: 0,
@@ -1265,7 +1285,7 @@ export const runTick = (name: string): number => {
       ) {
         if (!canAutoCall('ラベル再試行')) break
         const before = issue.phase
-        resumeTransition(issue, tick.save)
+        resumeTransition(issue, tick.save, false, tick.onEnd)
         if (issue.phase === 'stopped' && before !== 'stopped') stopRoles(tick, issue)
       }
     }
@@ -1286,7 +1306,7 @@ export const runTick = (name: string): number => {
     syncProjects(projectSync)
     // Project の同期で Status を読んだあとに、ステータスの無い slack-thread の Issue へ Backlog を付ける
     markUnlabeledBacklog(sources, active, projectSync, console.log)
-    const synced = syncIssues(state, sources, active, console.log)
+    const synced = syncIssues(state, sources, active, console.log, tick.onEnd)
     tick.save()
     for (const key of synced.unreadable) blocked.add(key)
     for (const key of synced.humanChanged) {

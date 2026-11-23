@@ -1,9 +1,11 @@
-import { autoDir } from './auto-paths.ts'
+import { autoDir, autoNow } from './auto-paths.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString, type Json, type JsonObject } from './json.ts'
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+
+import type { IssueState } from './auto-state.ts'
 
 // 判定の学びのデータ（auto/<name>/learn/ の下）と、その上の純粋な計算。
 // 履歴・規則・知らせの 3 ファイルを読み書きし、食い違いの抽出・似た事例の選択・規則の文の検査をする。
@@ -25,7 +27,7 @@ export const LEARN_TOPIC_MAX = 80
 export const LEARN_NOTICES_MAX = 50
 
 const FILE_VERSION = 1
-const ROUTES = ['auto', 'eng'] as const
+export const ROUTES = ['auto', 'eng'] as const
 const OUTCOMES = ['merged-ai', 'merged-human', 'failed', 'failed-env', 'stopped', 'eng-kept', 'eng-returned'] as const
 const RULE_STATUSES = ['active', 'withdrawn'] as const
 const NOTICE_KINDS = ['new', 'support', 'withdrawn', 'graduated', 'global-issue', 'global-pr', 'global-hint'] as const
@@ -282,6 +284,52 @@ export const writeHistory = (name: string, rows: HistoryRow[]): void => {
   }
   writeLearnFile(name, LEARN_FILES.history, { rows: kept.reverse() })
 }
+
+// 判定のある世代の結果を履歴に 1 行足し、記録済みにする。判定が無い・記録済みなら何もしない。
+// 履歴を読めない・書けないときは 1 行出して false（tick を止めない）。状態の保存は呼び出し側の仕事
+export const recordOutcome = (
+  name: string,
+  issue: IssueState,
+  labels: string[],
+  result: Outcome,
+  at: string,
+): boolean => {
+  const learn = issue.learn
+  if (learn === null || learn.recorded) return false
+  const row: HistoryRow = {
+    key: issue.key,
+    repo: issue.repo,
+    generation: issue.generation,
+    title: issue.title,
+    labels,
+    aiRoute: learn.aiRoute,
+    route: issue.phase === 'eng' || result.startsWith('eng-') ? 'eng' : 'auto',
+    forced: learn.forced,
+    reason: issue.reason,
+    autoReady: issue.autoReady,
+    started: issue.startedAt !== null,
+    ruleIds: learn.ruleIds,
+    outcome: result,
+    at,
+    reflected: false,
+  }
+  try {
+    writeHistory(name, [...readHistory(name), row])
+  } catch (error) {
+    console.log(`判定の履歴を書けません: ${issue.key}（${error instanceof Error ? error.message : String(error)}）`)
+    return false
+  }
+  learn.recorded = true
+  return true
+}
+
+// 世代が終わった箇所から呼ぶ口。auto-queue / auto-transition は name を持たないので、これを引数で受ける
+export type EndRecorder = (issue: IssueState, outcome: Outcome, labels: string[]) => void
+export const endRecorder =
+  (name: string): EndRecorder =>
+  (issue, result, labels) => {
+    recordOutcome(name, issue, labels, result, autoNow())
+  }
 
 export const readStore = (name: string): LearnStore => {
   const value = readLearnFile(name, LEARN_FILES.rules)

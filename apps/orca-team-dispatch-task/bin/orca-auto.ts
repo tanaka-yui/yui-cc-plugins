@@ -3,6 +3,7 @@
 import { applyFlow, baseLabels, candidatesOf, resolveBases, restrictedBase } from '../lib/auto-base.ts'
 import { intakeActiveRepos, pickSources, readAutoConfig, relayAllowance, sourceAutoMerge } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
+import { endRecorder } from '../lib/auto-learn.ts'
 import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
 import { syncProjects } from '../lib/auto-project.ts'
 import { awaitingBase } from '../lib/auto-queue.ts'
@@ -36,6 +37,10 @@ import { terminalRows, terminalTable } from '../lib/terminals.ts'
 import { mkdirSync, readFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { isatty } from 'node:tty'
+
+// CLI が判定の向きを eng に変えた理由（判定の履歴の forced）
+const FORCED_FEATURE = '新機能'
+const FORCED_TARGETS = '3 リポジトリ以上'
 
 const main = (argv: string[]): number => {
   const command = argv[0] ?? ''
@@ -118,6 +123,7 @@ const main = (argv: string[]): number => {
   try {
     const state = readState(name)
     const save = () => writeState(name, state)
+    const onEnd = endRecorder(name)
     if (command === 'clear-start') {
       const issue = state.issues[flags.get('--key') ?? '']
       if (!issue?.startAttempt) return 1
@@ -217,6 +223,7 @@ const main = (argv: string[]): number => {
         continue
       }
       if (current.state === 'CLOSED') {
+        onEnd(issue, 'stopped', current.labels)
         delete state.issues[issue.key]
         save()
         continue
@@ -244,6 +251,14 @@ const main = (argv: string[]): number => {
       issue.limitMinutes = decision.limitMinutes
       issue.reason = decision.reason
       issue.updatedAt = autoNow()
+      // AI の向きと、AI が auto と言ったのに CLI が eng に変えた理由を、この世代の結果と一緒に履歴へ残す
+      issue.learn = {
+        aiRoute: decision.route === 'eng' ? 'eng' : 'auto',
+        forced:
+          decision.route === 'eng' ? '' : feature ? FORCED_FEATURE : uniqueTargets.length > 2 ? FORCED_TARGETS : '',
+        ruleIds: [],
+        recorded: false,
+      }
       // 判定の間に人が Ready にしたら、人が「やる」と決めた通常の Issue として扱う
       if (issue.autoReady && current.labels.includes(STATUS.ready)) issue.autoReady = false
       // auto-ready の Issue と、向き先を尋ねたあと base ラベルが付いて拾い直した Issue は Backlog から動かす
@@ -252,6 +267,7 @@ const main = (argv: string[]): number => {
       if (toEng) {
         if (!current.labels.includes(from)) {
           issue.phase = 'stopped'
+          onEnd(issue, 'stopped', current.labels)
           save()
           continue
         }
@@ -270,11 +286,13 @@ const main = (argv: string[]): number => {
           false,
           'eng',
           save,
+          onEnd,
         )
         continue
       }
       if (fromBacklog && !current.labels.includes(STATUS.backlog)) {
         issue.phase = 'stopped'
+        onEnd(issue, 'stopped', current.labels)
         save()
         continue
       }
@@ -327,7 +345,7 @@ const main = (argv: string[]): number => {
             issue.baseAsked = false
             save()
           }
-        } else transition(issue, 'needs-base', input, STATUS.ready, STATUS.backlog, false, 'judging', save)
+        } else transition(issue, 'needs-base', input, STATUS.ready, STATUS.backlog, false, 'judging', save, onEnd)
         continue
       }
       issue.bases = decided
@@ -351,6 +369,7 @@ const main = (argv: string[]): number => {
           false,
           'queued',
           save,
+          onEnd,
         )
       } else {
         issue.phase = 'queued'

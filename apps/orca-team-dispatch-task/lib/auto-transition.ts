@@ -7,13 +7,32 @@ import { STATUS_LABELS } from './status.ts'
 
 import { join } from 'node:path'
 
+import type { EndRecorder, Outcome } from './auto-learn.ts'
 import type { IssueState, Phase } from './auto-state.ts'
+
+// 終わると世代の結果が決まる遷移の結果。ほかの遷移は null
+const endingOf = (event: string, issue: IssueState): Outcome | null =>
+  event === 'ai-merged'
+    ? 'merged-ai'
+    : event === 'human-merged'
+      ? 'merged-human'
+      : event === 'failed'
+        ? issue.failEnv
+          ? 'failed-env'
+          : 'failed'
+        : null
 
 export const hasDispatch = (issue: IssueState): boolean =>
   Object.values(asObject(asObject(readJson(join(issue.statusDir, 'workers.json')))?.roles) ?? {}).some((role) =>
     Boolean(asString(asObject(role)?.dispatch)),
   )
-export const cancelTransition = (issue: IssueState, save: () => void): void => {
+// 人がステータスを変えた・閉じたので遷移をやめて止める。onEnd には世代の結果（stopped）を渡す
+export const cancelTransition = (
+  issue: IssueState,
+  save: () => void,
+  onEnd?: EndRecorder,
+  labels: string[] = [],
+): void => {
   issue.pendingLabel = null
   issue.failReason = null
   issue.phase = 'stopped'
@@ -22,6 +41,7 @@ export const cancelTransition = (issue: IssueState, save: () => void): void => {
     issue.endedAt = autoNow()
   }
   issue.updatedAt = autoNow()
+  onEnd?.(issue, 'stopped', labels)
   save()
 }
 export const hasCommentMarker = (issue: IssueState, marker: string): boolean | null => {
@@ -39,7 +59,7 @@ export const hasCommentMarker = (issue: IssueState, marker: string): boolean | n
     if (comments.length < AUTO_GITHUB_PAGE_SIZE) return false
   }
 }
-export const resumeTransition = (issue: IssueState, save: () => void, fresh = false): boolean => {
+export const resumeTransition = (issue: IssueState, save: () => void, fresh = false, onEnd?: EndRecorder): boolean => {
   const pending = issue.pendingLabel
   if (!pending) return false
   const view = viewIssue(issue.repo, issue.number)
@@ -47,7 +67,7 @@ export const resumeTransition = (issue: IssueState, save: () => void, fresh = fa
   const status = view.labels.filter((l) => STATUS_LABELS.some((s) => s.name === l))
   const only = (label: string) => status.length === 1 && status[0] === label
   const cancel = () => {
-    cancelTransition(issue, save)
+    cancelTransition(issue, save, onEnd, view.labels)
     return false
   }
   if (view.state === 'CLOSED' && !pending.close) return cancel()
@@ -98,6 +118,8 @@ export const resumeTransition = (issue: IssueState, save: () => void, fresh = fa
   if (issue.phase === 'failed') issue.failReason = null
   issue.pendingLabel = null
   issue.updatedAt = autoNow()
+  const ended = endingOf(pending.event, issue)
+  if (ended) onEnd?.(issue, ended, view.labels)
   save()
   return true
 }
@@ -110,20 +132,21 @@ export const transition = (
   close: boolean,
   then: Phase,
   save: () => void,
+  onEnd?: EndRecorder,
 ): boolean => {
   if (issue.pendingLabel) return false
   const view = viewIssue(issue.repo, issue.number)
   if (!view) return false
   const statuses = view.labels.filter((l) => STATUS_LABELS.some((s) => s.name === l))
   if (view.state !== 'OPEN' || statuses.length !== 1 || statuses[0] !== from) {
-    cancelTransition(issue, save)
+    cancelTransition(issue, save, onEnd, view.labels)
     return false
   }
   const body = renderComment({ ...input, event, generation: issue.generation }).body
   issue.pendingLabel = { event, from, to, close, body, commented: false, labeled: false, then }
   if (['review', 'done', 'failed', 'stopped'].includes(then)) issue.cleanupPending = true
   save()
-  return resumeTransition(issue, save, true)
+  return resumeTransition(issue, save, true, onEnd)
 }
 // ステータスを変えずに needs-base のコメントだけ書く（Backlog のまま判定した auto-ready の Issue）。
 // 判定の CLI は tick の外で動くので、tick の呼び出し予算は見ない。同じ世代のマーカーがあれば書き直さない
