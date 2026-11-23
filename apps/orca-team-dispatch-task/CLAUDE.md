@@ -684,7 +684,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - `auto-ready` のコメントは決めた向き先が制限されていれば AI の merge を言わない。拾う元の `autoMerge` は `sourceAutoMerge`（最初の拾う元）で読む。judge-list の `base.usual` は関連リポジトリごとの `baseBranch`。
 - 回帰: AU168〜178、AB9 / AB10、AC12、SS5（prevBases）、IF26、IL13。
 
-### 判定の学び（2026-11-23、3.21.0 のまま）
+### 判定の学び（2026-11-23、3.22.0）
 
 - **データと計算は `lib/auto-learn.ts` だけが持つ。**置き場所は `auto/<name>/learn/`（`history.json`・`rules.json`・`notices.json`）。履歴は世代が終わった箇所から `endRecorder` / `recordOutcome` で 1 行足す（AI は使わない）。
 - **振り返りの要否は `reflectDue(readHistory(name), config.sources の repo)` の 1 か所で決める。**tick の終了コード（`learn=` の数）と judge-list の `reflect` は必ず同じ引数で呼ぶ。ずれると、AI を起こしても何も無い起動が 20 分ごとに続く。
