@@ -69,6 +69,7 @@ const main = (argv: string[]): number => {
       'setup',
       'hosts',
       'roles',
+      'repos',
       'tick',
       'status',
       'judge-doc',
@@ -92,7 +93,7 @@ const main = (argv: string[]): number => {
   if (command === 'judge-apply' && !flags.get('--file')) die('orca-auto', '--file is required')
   if (command === 'clear-start' && !flags.get('--key')) die('orca-auto', '--key is required')
   if (command === 'learn-publish' && !flags.get('--rule')) die('orca-auto', '--rule is required')
-  if (command === 'setup' || command === 'hosts' || command === 'roles') {
+  if (command === 'setup' || command === 'hosts' || command === 'roles' || command === 'repos') {
     if (!isatty(0) && process.env.ORCA_AUTO_TEST_STDIN !== '1') {
       console.error(`ターミナルで make ${command === 'setup' ? 'auto-setup' : command} を実行してください`)
       return 2

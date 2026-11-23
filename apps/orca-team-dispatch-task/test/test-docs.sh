@@ -723,9 +723,9 @@ for f in "$S" "$G"; do
 done
 [[ -z "$bad" ]] && ok SK41 || fail "SK41:$bad"
 
-# SK43: setup のあとで一部だけ変える make hosts / make roles の入口と説明。名前は 2 語目で受ける。
+# SK43: setup のあとで一部だけ変える make hosts / make roles / make repos の入口と説明。名前は 2 語目で受ける。
 bad=""
-for target in hosts roles; do
+for target in hosts roles repos; do
   recipe=$(cd "$P" && make -n "$target" 2>/dev/null)
   [[ "$recipe" == *"orca-auto.ts $target --name main"* ]] || bad="$bad [$target recipe]"
   recipe=$(cd "$P" && make -n "$target" work 2>/dev/null)

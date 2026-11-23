@@ -85,9 +85,19 @@ export const SETUP_STEPS: ReadonlyArray<{ id: string; title: string }> = [
   { id: 'enable', title: '有効化' },
 ]
 // 設定を終えたあとで一部だけ変えるコマンド。保存の段を通るので、差の確認と実行中の Issue の検査は setup と同じ。
-// hosts は組の selector が変わると verified を落とす verify の段と、マシンごとの並列数の段まで回す
-export type SetupCommand = 'hosts' | 'roles'
+// hosts は組の selector が変わると verified を落とす verify の段と、マシンごとの並列数の段まで回す。
+// repos は関連リポジトリを変えてマシンの組・確認・並列数を決め直し、checkout が変わって判定の許可が要るので承認の段まで回す
+// （automation の登録内容は repos に依存しないので触らず、有効・無効も変えない）
+export type SetupCommand = 'hosts' | 'roles' | 'repos'
 const COMMAND_STEPS: Record<SetupCommand, ReadonlyArray<{ id: string; title: string }>> = {
+  repos: [
+    { id: 'repos', title: '関連リポジトリ' },
+    { id: 'hosts', title: 'マシン' },
+    { id: 'verify', title: 'リポジトリごとの確認' },
+    { id: 'lanes', title: '並列数' },
+    { id: 'save', title: '設定を保存する' },
+    { id: 'approve', title: '判定の権限の承認' },
+  ],
   hosts: [
     { id: 'hosts', title: 'マシン' },
     { id: 'verify', title: 'リポジトリごとの確認' },
@@ -797,8 +807,8 @@ export const runSetup = (
       acceptedFingerprint: config.automation?.id === id ? config.automation.acceptedFingerprint : null,
     })
   }
-  let enabled = false
-  const enable = () => {
+  // 判定の権限が承認済みか、ここで承認したら true。断ったら false
+  const approve = (question: string, redo: string): boolean => {
     const config = current(),
       launcher = launcherPaths().launcher,
       rules = judgeRules(config, launcher)
@@ -807,19 +817,26 @@ export const runSetup = (
       automation.acceptedFingerprint &&
       !judgeRulesProblems(config, launcher).length &&
       judgeFingerprint(config) === automation.acceptedFingerprint
-    if (approved) say('判定の権限は承認済みです')
-    else {
-      say(JSON.stringify(rules, null, 2))
-      if (!confirm('この権限を書いて automation を有効にしますか')) return
-      if (!applyJudgeRules(rules)) fail('判定の権限を書けません')
-      const problems = judgeRulesProblems(config, launcher)
-      if (problems.length) {
-        problems.forEach(say)
-        fail('これらを直してから make auto-setup をやり直してください')
-      }
-      const fingerprint = judgeFingerprint(config) ?? fail('判定の権限の指紋を読めません')
-      updateAutomation({ id: automation.id, acceptedFingerprint: fingerprint })
+    if (approved) {
+      say('判定の権限は承認済みです')
+      return true
     }
+    say(JSON.stringify(rules, null, 2))
+    if (!confirm(question)) return false
+    if (!applyJudgeRules(rules)) fail('判定の権限を書けません')
+    const problems = judgeRulesProblems(config, launcher)
+    if (problems.length) {
+      problems.forEach(say)
+      fail(`これらを直してから ${redo} をやり直してください`)
+    }
+    const fingerprint = judgeFingerprint(config) ?? fail('判定の権限の指紋を読めません')
+    updateAutomation({ id: automation.id, acceptedFingerprint: fingerprint })
+    return true
+  }
+  let enabled = false
+  const enable = () => {
+    if (!approve('この権限を書いて automation を有効にしますか', 'make auto-setup')) return
+    const automation = current().automation ?? fail('automation がありません')
     if (!receiptOk(runOrca(enableAutomationArgs(automation.id)))) fail('automation を有効にできません')
     enabled = true
   }
@@ -844,6 +861,12 @@ export const runSetup = (
     save,
     automation,
     enable,
+    approve: () => {
+      if (!approve('この権限を書きますか', `make repos ${name}`))
+        say(
+          `判定の権限は書いていません。承認するまで、ランチャー経由の tick は判定を始めません。make repos ${name} をやり直して承認してください`,
+        )
+    },
   }
   try {
     if (command) {

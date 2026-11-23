@@ -20,7 +20,7 @@ test-unit: ## lib/ の単体テストだけを実行
 
 # 名前は 2 語目で受け取る（make auto-setup work）。省くと main。名前は make の目標ではないので何もしない規則を足す。
 # コマンドラインの NAME=<名前> も今までどおり効く（コマンドラインの変数はこのファイルの代入に勝つ）
-NAME_TARGETS := auto-setup setup hosts roles
+NAME_TARGETS := auto-setup setup hosts roles repos
 GOAL_NAME := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 ifneq ($(and $(GOAL_NAME),$(filter $(firstword $(MAKECMDGOALS)),$(NAME_TARGETS))),)
 ifneq ($(words $(GOAL_NAME)),1)
@@ -48,3 +48,7 @@ hosts: ## --auto のマシン（接続端末）だけを変える。確認・並
 .PHONY: roles
 roles: ## --auto の review_mode / phase_b だけを on/off する (make roles <名前>。省くと main)
 	@node bin/orca-auto.ts roles --name $(NAME)
+
+.PHONY: repos
+repos: ## --auto の関連リポジトリ（実装の対象）を足す・外す。マシン・確認・並列数・保存・判定の権限の承認の段まで (make repos <名前>。省くと main)
+	@node bin/orca-auto.ts repos --name $(NAME)

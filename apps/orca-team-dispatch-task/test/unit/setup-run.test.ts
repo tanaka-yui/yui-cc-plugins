@@ -979,10 +979,10 @@ test('SU42 hosts and roles refuse without config and during an unfinished setup'
     f.cleanup()
   }
 })
-test('SU43 hosts and roles refuse non-tty stdin', () => {
+test('SU43 hosts, roles and repos refuse non-tty stdin', () => {
   const f = prepare()
   try {
-    for (const command of ['hosts', 'roles']) {
+    for (const command of ['hosts', 'roles', 'repos']) {
       const result = spawnSync(process.execPath, [join(f.plugin, 'bin/orca-auto.ts'), command, '--name', 'main'], {
         input: '\n',
         env: { ...process.env, ORCA_AUTO_TEST_STDIN: '' },
@@ -991,6 +991,86 @@ test('SU43 hosts and roles refuse non-tty stdin', () => {
       assert.equal(result.status, 2, result.stdout + result.stderr)
       assert.match(result.stderr, new RegExp(`make ${command}`))
     }
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU48 repos adds a related repository, registers it on the machine and approves the judge rules without enabling', () => {
+  const f = prepare()
+  try {
+    assert.equal(f.fresh().status, 0)
+    const fingerprint = f.config().automation?.acceptedFingerprint
+    const related = [...(f.config().sources[0]?.related ?? []), 'acme/web']
+    const checkout = join(f.dir, 'checkout3')
+    gitRepo(checkout, 'acme/web')
+    const callsBefore = f.calls(f.orca)
+    const result = f.rerun(
+      {
+        'acme/app の関連リポジトリ': related.join(','),
+        'acme/web のこのマシンの checkout': checkout,
+        'config.json を書きますか': 'y',
+        この権限を書きますか: 'y',
+      },
+      'repos',
+    )
+    assert.equal(result.code, 0, result.output)
+    const config = f.config()
+    assert.deepEqual(config.sources[0]?.related, related)
+    assert.equal(config.repos['acme/web']?.checkout, checkout)
+    assert.notEqual(config.automation?.acceptedFingerprint, fingerprint)
+    const rules = JSON.parse(readFileSync(join(autoDir('main'), '.claude/settings.json'), 'utf8'))
+    assert.ok(
+      rules.permissions.allow.some((rule: string) => rule.startsWith(`Read(/${checkout}`)),
+      JSON.stringify(rules),
+    )
+    assert.ok(
+      !result.asked.some((q) => /intake|拾う条件|Project|review_mode|判定の間隔/.test(q)),
+      result.asked.join('\n'),
+    )
+    const added = f.calls(f.orca).slice(callsBefore.length)
+    assert.ok(added.includes(checkout), added)
+    assert.ok(!added.includes('automations'), added)
+    assert.equal(existsSync(join(autoDir('main'), 'setup.json')), false)
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU49 repos declining the judge rules keeps the old approval and says ticks stop until approved', () => {
+  const f = prepare()
+  try {
+    assert.equal(f.fresh().status, 0)
+    const fingerprint = f.config().automation?.acceptedFingerprint
+    const related = [...(f.config().sources[0]?.related ?? []), 'acme/web']
+    const checkout = join(f.dir, 'checkout3')
+    gitRepo(checkout, 'acme/web')
+    const result = f.rerun(
+      {
+        'acme/app の関連リポジトリ': related.join(','),
+        'acme/web のこのマシンの checkout': checkout,
+        'config.json を書きますか': 'y',
+      },
+      'repos',
+    )
+    assert.equal(result.code, 0, result.output)
+    assert.equal(f.config().repos['acme/web']?.checkout, checkout)
+    assert.equal(f.config().automation?.acceptedFingerprint, fingerprint)
+    assert.match(result.output, /判定の権限は書いていません。.*make repos main をやり直して承認してください/)
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU50 repos with Enter only writes nothing and keeps the approval', () => {
+  const f = prepare()
+  try {
+    assert.equal(f.fresh().status, 0)
+    const before = readFileSync(f.configFile, 'utf8')
+    const callsBefore = f.calls(f.orca)
+    const result = f.rerun({}, 'repos')
+    assert.equal(result.code, 0, result.output)
+    assert.match(result.output, /変わる所はありません/)
+    assert.match(result.output, /判定の権限は承認済みです/)
+    assert.equal(readFileSync(f.configFile, 'utf8'), before)
+    assert.ok(!f.calls(f.orca).slice(callsBefore.length).includes('automations'))
   } finally {
     f.cleanup()
   }

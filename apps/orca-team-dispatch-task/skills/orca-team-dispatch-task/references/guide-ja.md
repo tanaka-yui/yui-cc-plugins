@@ -261,6 +261,8 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 
 setup を一度最後まで終えたあとは、同じく人が操作するターミナルで `make hosts <name>` を実行するとマシンだけを、`make roles <name>` を実行すると `review_mode` と `phase_b` だけを変えられる。`make hosts` はマシン・確認・並列数・保存の段を回す（checkout が変わった組は確認済みでなくなり、並列数はマシンごとに持つため）。`make roles` は 2 つを尋ねて保存する。どちらも `config.json` から始め、差を見せて確かめてから書き、実行中の Issue が使うマシンやリポジトリを外す変更は断り、automation には触らない。setup をまだ終えていないとき、`setup.json` に途中の setup が残っているときは実行しない。dispatch 済みの Issue は起動したときに記録したモードと worktree 数のまま進み、変更はそのあとに dispatch する Issue から効く。
 
+`make repos <name>` は、同じく人が操作するターミナルで、今の拾う元の関連リポジトリ（Issue を実装するリポジトリ）を足したり外したりする。関連リポジトリ・マシン・確認・並列数・保存の段を回し、そのあと判定の権限の承認の段を回す（判定はすべての checkout を読むので、許可が checkout とともに変わるため）。automation そのものと有効・無効は変えない。新しい許可を承認するまで、ランチャー経由の tick は判定を始めない。拾う元を足すのは今までどおり `make auto-setup <name>` で行う（intake の設定・Project・ラベルは拾う元の側の設定のため）。`make hosts` と同じく `config.json` から始め、実行中の Issue が使うリポジトリを外す変更は断り、setup をまだ終えていないとき・`setup.json` に途中の setup が残っているときは実行しない。
+
 `orca-auto-<name>` を無効で登録し、判定の権限をそのまま見せ、承認後に書いて有効にする。既存 automation の有効・無効は承認するまで保つ。安定したランチャーは `~/.claude/config/orca-team-dispatch-task/bin/orca-auto`。ランチャー経由の tick は権限が未承認、または承認時と違えば止まる。実行のたびにインストール済みプラグインを解決し、setup した checkout を次の候補にする。
 
 専用 checkout は先に用意する。setup は git の一番上・origin・未コミットの変更を確かめ、作業場所を登録する。Project の既存選択肢を残し、不足分は確認後に足す。実行中の Issue が使うマシン・拾う元・リポジトリの組は外せない。案内に従い GitHub 組み込みの Project workflow を止める。手で設定する場合は、次の例の絶対パスを置き換える。

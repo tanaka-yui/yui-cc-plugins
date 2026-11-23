@@ -16,7 +16,7 @@ merge を行う。worker のセッションは完了後もその場で保持さ�
 slack-issue-intake の `existing` を `active` にしたリポジトリでは、GitHub で手で作った Issue も intake が取り込んでから拾い、Project の同期も Slack の印の無い Issue まで揃え、auto-ready は人が `slack-thread` を付けた古い Backlog の Issue と、ステータスラベルの無い Issue（先に Backlog を付ける）も判定する。`active` では `slack-thread` を人の印と見るので、`thread` から `active` に切り替えると、`thread` のあいだに intake が `slack-thread` を付けた Issue（古い Backlog のものも含む）が判定に回る。AI に判定させたくない Issue は `slack-thread` を外すか、先に `autoReady` を切ること。1 つのリポジトリは 1 つの intake のホームだけで扱い、ホームごとに `thread` と `active` を混ぜないこと（`thread` と書いた設定が 1 つでもあれば、orca はそのリポジトリを `active` として扱わず、リポジトリ名を 1 行出す）。
 判定と結果は Issue の世代ごとに履歴へ残り、食い違いが異なる 3 件の Issue でたまったリポジトリは判定の AI が振り返って短い規則にする。規則と似た過去の事例は、次の判定の材料になる（データは `auto/<name>/learn/`、有効な規則は `status` に出る）。新しい規則は Slack（slack-issue-intake の学びの知らせ）のスレッドに「取り消し <番号>」と返信すれば、次の tick で取り下げる。`make auto-setup` で「はい」と答えた端末では、どのリポジトリでも成り立つ学びを yui-cc-plugins の改善の Issue（`judge-learning` のラベル付き）にする。AI が書いた題と本文は公開リポジトリに出るので、まず下書きとして Slack（slack-issue-intake の学びの知らせ。報告先のチャンネルを設定したときだけ全文を出す）と `status` に全文を出し、人が承認してから Issue を作る（Slack のスレッドに「公開 <番号>」、または `orca-auto.ts learn-publish --name <名前> --rule <規則の id>`）。その PR も AI が merge せず、人が merge する。
 このモードだけは停止・解放とpushを確認してから資源を片付ける。使い方はskillのAuto modeを参照。
-設定は `make auto-setup <name>` で行い、終えたあとにマシンだけ・`review_mode` と `phase_b` だけを変えるときは `make hosts <name>` / `make roles <name>` を使う。
+設定は `make auto-setup <name>` で行い、終えたあとにマシンだけ・`review_mode` と `phase_b` だけを変えるときは `make hosts <name>` / `make roles <name>` を使う。今の拾う元の関連リポジトリ（実装の対象）だけを足す・外すときは `make repos <name>` を使う（判定の権限の承認もやり直す）。
 
 worker の役ごとのモデル・取りかかり方などの既定・判定役のモデル・worktree を作る場所は、`make setup <name>` で設定し直せる（`--auto` を使わない手動の dispatch の設定もここ）。
 
