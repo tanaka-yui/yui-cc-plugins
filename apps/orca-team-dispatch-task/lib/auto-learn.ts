@@ -57,6 +57,8 @@ const BODY_LINE_BREAK = /\n/g
 export const LEARN_PUBLIC_REASON = '判定の理由は手元の記録に残しました（公開リポジトリには出せない内容を含むため）。'
 // 判定の理由を検査するときの、理由の行で文を指す言葉と、コメントで空白になる行の区切り
 const REASON_SUBJECT = '判定の理由'
+// 改善の Issue の題と本文を検査するときの、理由の行で文を指す言葉
+const GLOBAL_SUBJECT = '題か本文'
 const REASON_LINE_BREAK = /[\r\n]/g
 // 端末の learn-publish で公開したときの、承認した人の欄
 export const LEARN_TERMINAL_APPROVER = '端末の learn-publish'
@@ -1051,7 +1053,7 @@ export const globalProblems = (title: string, body: string, repos: string[], iss
     problems.push(`本文が ${LEARN_GLOBAL_BODY_MAX} 文字を超えています`)
   if (HIDDEN_CHARACTER.test(title) || HIDDEN_CHARACTER.test(body.replace(BODY_LINE_BREAK, '')))
     problems.push('題か本文に見えない文字か改行があります（制御文字・書式文字など。改行は本文の \\n だけ）')
-  return [...problems, ...leakProblems(`${title}\n${body}`, '題か本文', repos, issueRepo)]
+  return [...problems, ...leakProblems(`${title}\n${body}`, GLOBAL_SUBJECT, repos, issueRepo)]
 }
 
 // 公開リポジトリに出す文に、リポジトリの名前・# と数字の並び・URL が無いか（globalProblems と判定の理由で共有する）。
