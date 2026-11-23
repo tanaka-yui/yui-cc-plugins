@@ -52,7 +52,7 @@ const WORD_CHARACTER = /[A-Za-z0-9]/
 // この文字数以下で - も _ も含まない名前（app・io など）だけを語として見る。それ以外は部分一致で断る（漏らさない向き）
 const LEARN_GLOBAL_WORD_NAME_MAX = 4
 const NAME_JOINERS = ['-', '_']
-// 改善の Issue の本文に書かせるプラグインのパス。リポジトリ名の検査の前だけ文から取り除く
+// 改善の Issue の本文に書かせるプラグインのパス。リポジトリ名の一致がまるごとこの中にあるときは数えない
 const LEARN_GLOBAL_SAFE_PATHS = [
   'skills/orca-team-dispatch-task/references/auto-judge.md',
   'skills/orca-team-dispatch-task/references/auto-judge-ja.md',
@@ -860,16 +860,23 @@ export const globalCandidates = (store: LearnStore): GlobalCandidate[] =>
     evidenceCount: rule.evidence.length,
   }))
 
-// 名前が文に現れるか。短く - も _ も含まない名前は語として（前後が WORD_CHARACTER でない）、それ以外は部分一致で見る
-const containsName = (text: string, name: string): boolean => {
+type Span = { start: number; end: number }
+// text の中の needle の出現（重なりも含めて）すべての範囲
+const spansOf = (text: string, needle: string): Span[] => {
+  const spans: Span[] = []
+  for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1))
+    spans.push({ start: at, end: at + needle.length })
+  return spans
+}
+// 名前が、決まった文字列の範囲の外にも現れるか。短く - も _ も含まない名前は語として（前後が WORD_CHARACTER でない）、
+// それ以外は部分一致で見る。一致の範囲がまるごと 1 つの決まった文字列の範囲に入るときだけ数えない
+const containsName = (text: string, name: string, safe: Span[]): boolean => {
   const short = name.length <= LEARN_GLOBAL_WORD_NAME_MAX && !NAME_JOINERS.some((joiner) => name.includes(joiner))
-  if (!short) return text.includes(name)
-  for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + 1)) {
-    const before = text[at - 1] ?? ''
-    const after = text[at + name.length] ?? ''
-    if (!WORD_CHARACTER.test(before) && !WORD_CHARACTER.test(after)) return true
-  }
-  return false
+  return spansOf(text, name).some(
+    (match) =>
+      (!short || (!WORD_CHARACTER.test(text[match.start - 1] ?? '') && !WORD_CHARACTER.test(text[match.end] ?? ''))) &&
+      !safe.some((span) => span.start <= match.start && match.end <= span.end),
+  )
 }
 const fold = (text: string): string => text.normalize(TEXT_NORMALIZATION).toLowerCase()
 const namesOf = (repo: string): string[] => [repo, repo.slice(repo.indexOf('/') + 1)]
@@ -877,8 +884,9 @@ const namesOf = (repo: string): string[] => [repo, repo.slice(repo.indexOf('/') 
 // 公開リポジトリに出す題と本文として使えない理由（日本語の 1 行ずつ）。問題が無ければ空。
 // 文は NFKC で揃えてから見る（全角の綴りも捕まえる）。設定にあるリポジトリ名は owner/name の全体と / の後ろの名前を、
 // 大文字小文字を無視して見る。長い名前と - か _ を含む名前は部分一致、短い名前（app など）は語として断る。
-// リポジトリ名の検査の前だけ、本文に書かせるプラグインのパスと Issue を出す先（issueRepo）を文から取り除き、
-// issueRepo は断る名前からも外す。理由の行は掛かった名前を言う（手元の設定の名前で、ログに出すだけ）
+// 文は書き換えない。本文に書かせるプラグインのパスと Issue を出す先（issueRepo）の出現の範囲を先に求め、名前の一致が
+// まるごとその 1 つに入るときだけ数えない（くっつけた名前は数える）。issueRepo は断る名前からも外す。
+// 理由の行は掛かった名前を言う（手元の設定の名前で、ログに出すだけ）
 export const globalProblems = (title: string, body: string, repos: string[], issueRepo: string | null): string[] => {
   const problems: string[] = []
   if (title.trim() === '') problems.push('題が空です')
@@ -888,14 +896,12 @@ export const globalProblems = (title: string, body: string, repos: string[], iss
   else if (Array.from(body).length > LEARN_GLOBAL_BODY_MAX)
     problems.push(`本文が ${LEARN_GLOBAL_BODY_MAX} 文字を超えています`)
   const text = fold(`${title}\n${body}`)
-  // 長いものから取り除く（パスの中の短い名前を先に消さないため）。取り除いた跡は境目にする
   const safe = [...LEARN_GLOBAL_SAFE_PATHS, ...(issueRepo === null ? [] : namesOf(issueRepo))]
     .map(fold)
     .filter((entry) => entry !== '')
-    .sort((a, b) => b.length - a.length)
-  const named = safe.reduce((rest, entry) => rest.replaceAll(entry, ' '), text)
+  const safeSpans = safe.flatMap((entry) => spansOf(text, entry))
   const names = [...new Set(repos.flatMap(namesOf).map(fold))].filter((n) => n !== '' && !safe.includes(n))
-  const found = names.filter((n) => containsName(named, n))
+  const found = names.filter((n) => containsName(text, n, safeSpans))
   if (found.length > 0) problems.push(`題か本文に設定にあるリポジトリの名前があります: ${found.join(' ')}`)
   if (ISSUE_REFERENCE.test(text)) problems.push('題か本文に # と数字の並びがあります')
   if (TOPIC_URL_PREFIXES.some((prefix) => text.includes(prefix))) problems.push('題か本文に URL があります')

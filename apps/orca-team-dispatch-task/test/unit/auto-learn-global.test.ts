@@ -274,6 +274,18 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
       [],
     )
     assert.deepEqual(named(TITLE, `${BODY} Stop dispatching early.`, ['acme/dispatch']), hit('dispatch'))
+    // 決まった文字列にくっつけた非公開の名前は隠れない
+    const path = 'skills/orca-team-dispatch-task/references/auto-judge.md'
+    for (const [text, repo, issueRepo] of [
+      [`private-${path}`, 'acme/private-skills', null],
+      [`${path}foo`, 'acme/mdfoo', null],
+      [`${path}-notes`, 'acme/md-notes', null],
+      ['yui-cc-plugins-fork', 'acme/yui-cc-plugins-fork', LEARN_PLUGIN_REPO],
+      ['my-yui-cc-plugins', 'acme/my-yui-cc-plugins', LEARN_PLUGIN_REPO],
+    ] as const) {
+      const bare = repo.slice(repo.indexOf('/') + 1)
+      assert.deepEqual(named(TITLE, `${BODY} ${text}`, [repo, LEARN_PLUGIN_REPO], issueRepo), hit(bare), text)
+    }
     // Issue を出す先は、設定の拾う元にあっても名前を書いてよい
     const withPlugin = [APP, LEARN_PLUGIN_REPO]
     assert.deepEqual(named(TITLE, `${BODY} Change it in yui-cc-plugins.`, withPlugin, LEARN_PLUGIN_REPO), [])
