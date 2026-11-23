@@ -286,6 +286,19 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
       const bare = repo.slice(repo.indexOf('/') + 1)
       assert.deepEqual(named(TITLE, `${BODY} ${text}`, [repo, LEARN_PLUGIN_REPO], issueRepo), hit(bare), text)
     }
+    // 短い名前を決まった文字列にじかにくっつけても隠れない（決まった文字列の端も語の境目）。apply は今も通す
+    const glued = ['acme/app', LEARN_PLUGIN_REPO]
+    for (const entry of [
+      path,
+      'skills/orca-team-dispatch-task/references/auto-judge-ja.md',
+      LEARN_PLUGIN_REPO,
+      'yui-cc-plugins',
+    ]) {
+      for (const text of [`${entry}app`, `app${entry}`, `${entry}app${entry}`])
+        assert.deepEqual(named(TITLE, `${BODY} ${text}`, glued, LEARN_PLUGIN_REPO), hit('app'), text)
+      for (const text of [`${entry}apply`, `apply${entry}`, `${entry} apply`, `apply ${entry}`])
+        assert.deepEqual(named(TITLE, `${BODY} ${text}`, glued, LEARN_PLUGIN_REPO), [], text)
+    }
     // Issue を出す先は、設定の拾う元にあっても名前を書いてよい
     const withPlugin = [APP, LEARN_PLUGIN_REPO]
     assert.deepEqual(named(TITLE, `${BODY} Change it in yui-cc-plugins.`, withPlugin, LEARN_PLUGIN_REPO), [])

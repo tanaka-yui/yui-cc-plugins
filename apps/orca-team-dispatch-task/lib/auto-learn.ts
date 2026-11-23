@@ -868,13 +868,18 @@ const spansOf = (text: string, needle: string): Span[] => {
     spans.push({ start: at, end: at + needle.length })
   return spans
 }
-// 名前が、決まった文字列の範囲の外にも現れるか。短く - も _ も含まない名前は語として（前後が WORD_CHARACTER でない）、
-// それ以外は部分一致で見る。一致の範囲がまるごと 1 つの決まった文字列の範囲に入るときだけ数えない
+// 名前が、決まった文字列の範囲の外にも現れるか。短く - も _ も含まない名前は語として、それ以外は部分一致で見る。
+// 語の境目は、隣の文字が WORD_CHARACTER でない所（文の端も）と、決まった文字列の範囲の端（決まった文字列にじかに
+// くっつけた短い名前を隠さないため）。一致の範囲がまるごと 1 つの決まった文字列の範囲に入るときだけ数えない
 const containsName = (text: string, name: string, safe: Span[]): boolean => {
   const short = name.length <= LEARN_GLOBAL_WORD_NAME_MAX && !NAME_JOINERS.some((joiner) => name.includes(joiner))
+  const boundaryBefore = (at: number): boolean =>
+    !WORD_CHARACTER.test(text[at - 1] ?? '') || safe.some((span) => span.end === at)
+  const boundaryAfter = (at: number): boolean =>
+    !WORD_CHARACTER.test(text[at] ?? '') || safe.some((span) => span.start === at)
   return spansOf(text, name).some(
     (match) =>
-      (!short || (!WORD_CHARACTER.test(text[match.start - 1] ?? '') && !WORD_CHARACTER.test(text[match.end] ?? ''))) &&
+      (!short || (boundaryBefore(match.start) && boundaryAfter(match.end))) &&
       !safe.some((span) => span.start <= match.start && match.end <= span.end),
   )
 }
