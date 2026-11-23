@@ -202,6 +202,9 @@ test('LN4 topicProblem は空・81 文字・改行・バッククォート・URL
   assert.notEqual(topicProblem('`rm -rf`'), '')
   assert.notEqual(topicProblem('詳しくは http://example.com'), '')
   assert.notEqual(topicProblem('詳しくは HTTPS://example.com'), '')
+  // 制御文字（タブ・BEL・NEL）と行・段落の区切り文字も、後の判定の材料に入るので断る
+  for (const character of ['\t', '\u0007', '\u0085', '\u2028', '\u2029'])
+    assert.notEqual(topicProblem(`前${character}後`), '', JSON.stringify(character))
   assert.equal(topicProblem('あ'.repeat(LEARN_TOPIC_MAX)), '')
   assert.equal(topicProblem('文言だけの修正'), '')
 })

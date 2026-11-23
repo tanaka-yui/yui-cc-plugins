@@ -37,6 +37,8 @@ const NOTICE_KINDS = ['new', 'support', 'withdrawn', 'graduated', 'global-issue'
 const TOPIC_URL_PREFIXES = ['http://', 'https://']
 const TOPIC_BACKTICK = '`'
 const TOPIC_NEWLINE = /[\r\n]/
+// 制御文字（Unicode の Cc）と行・段落の区切り文字。規則の文は後の判定の材料に入るので通さない
+const TOPIC_CONTROL = /[\p{Cc}\u2028\u2029]/u
 // 題名の語に分けるときの、英数字の並びと、それ以外の文字（日本語など）の並び
 const ASCII_WORD = /[A-Za-z0-9]+/g
 const OTHER_WORD = /[\p{L}\p{N}]+/gu
@@ -462,6 +464,7 @@ export const topicProblem = (topic: string): string => {
   if (topic.trim() === '') return '対象の文が空です'
   if (Array.from(topic).length > LEARN_TOPIC_MAX) return `対象の文が ${LEARN_TOPIC_MAX} 文字を超えています`
   if (TOPIC_NEWLINE.test(topic)) return '対象の文に改行は使えません'
+  if (TOPIC_CONTROL.test(topic)) return '対象の文に制御文字や区切り文字は使えません'
   if (topic.includes(TOPIC_BACKTICK)) return '対象の文にバッククォートは使えません'
   const lower = topic.toLowerCase()
   if (TOPIC_URL_PREFIXES.some((prefix) => lower.includes(prefix))) return '対象の文に URL は使えません'
