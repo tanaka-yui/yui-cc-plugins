@@ -90,11 +90,18 @@ if (!isDeepStrictEqual([...intakeLabels.LEARN_NOTICE_KINDS], [...learn.NOTICE_KI
   problems.push('知らせの種類が違います（LEARN_NOTICE_KINDS と NOTICE_KINDS）')
 if (!isDeepStrictEqual([...intakeLabels.LEARN_REQUEST_ACTIONS], [...learn.REQUEST_ACTIONS]))
   problems.push('依頼の種類が違います（LEARN_REQUEST_ACTIONS と REQUEST_ACTIONS）')
-const fixtureActions = JSON.parse(readFileSync(join(dispatch, 'test/fixtures/learn-cancels.json'), 'utf8')).cancels.map(
-  (entry) => entry.action,
+// 公開の依頼だけが承認した人の Slack の id（user）を持つ
+const fixtureCancels = JSON.parse(readFileSync(join(dispatch, 'test/fixtures/learn-cancels.json'), 'utf8')).cancels
+if (
+  !isDeepStrictEqual(
+    fixtureCancels.map((entry) => [entry.action, typeof entry.user]),
+    [
+      ['cancel', 'undefined'],
+      ['publish', 'string'],
+    ],
+  )
 )
-if (!isDeepStrictEqual(fixtureActions, ['cancel', 'publish']))
-  problems.push('learn-cancels.json の fixture に取り消しと公開の依頼が 1 つずつありません')
+  problems.push('learn-cancels.json の fixture に、取り消しの依頼と user 付きの公開の依頼が 1 つずつありません')
 const learnTmp = mkdtempSync(join(tmpdir(), 'learn-contract-'))
 const previousHome = process.env.ORCA_DISPATCH_CONFIG_HOME
 try {

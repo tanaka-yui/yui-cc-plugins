@@ -318,7 +318,7 @@ test('LE7 global-draft の知らせは題と本文と公開の案内を出し、
   const f = await fixture(t)
   f.writeNotices([
     notice(1, 'acme/app', [
-      item(1, 'global-draft', { text: DRAFT_TITLE, body: 'First <!channel> & *more*.\n2. Second line.\u001b' }),
+      item(1, 'global-draft', { text: DRAFT_TITLE, body: 'First <!channel> & *more*.\n2. Second line.' }),
     ]),
   ])
   const first = await f.poll('09:05')
@@ -332,7 +332,7 @@ test('LE7 global-draft の知らせは題と本文と公開の案内を出し、
       '🧠 判定の学び（acme/app）',
       `1. ${DRAFT_TITLE}（公開の前の下書きです）`,
       '   │ First &lt;!channel&gt; &amp; *more*.',
-      '   │ 2. Second line. ',
+      '   │ 2. Second line.',
       DRAFT_HINT,
     ].join('\n'),
   )
@@ -342,7 +342,9 @@ test('LE7 global-draft の知らせは題と本文と公開の案内を出し、
   assert.match(second.stdout, /errors=0 .*learn=0\/1/, second.stderr)
   assert.deepEqual(f.cancels(), {
     version: 1,
-    cancels: [{ noticeId: 1, n: 1, ruleId: 'r1', at: '2026-11-13T09:10:00.000Z', action: 'publish' }],
+    cancels: [
+      { noticeId: 1, n: 1, ruleId: 'r1', at: '2026-11-13T09:10:00.000Z', action: 'publish', user: 'UHUMAN001' },
+    ],
   })
   assert.deepEqual(
     f.threadPosts().map((r) => [r.params.thread_ts, r.params.text]),
@@ -376,9 +378,10 @@ test('LE8 global-draft でない項目への「公開 1」は無視し、global-
     notice(2, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: 'Body.' })]),
     notice(3, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: long })]),
     notice(4, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: 'Token xoxb-123-abc here.' })]),
+    notice(5, 'acme/app', [item(1, 'global-draft', { text: 'Title xoxb-123-abc', body: 'Body.' })]),
   ])
   const first = await f.poll('09:05')
-  assert.match(first.stdout, /errors=0 .*learn=4\/0/, first.stderr)
+  assert.match(first.stdout, /errors=0 .*learn=5\/0/, first.stderr)
   const texts = f.learnPosts().map((r) => r.params.text ?? '')
   assert.ok(texts[1]?.endsWith(DRAFT_HINT), texts[1])
   // 長い本文は Slack の上限の内に省き、省いたことを見せる。実体参照の途中では切らない。公開の案内は出さない
@@ -395,8 +398,14 @@ test('LE8 global-draft でない項目への「公開 1」は無視し、global-
   assert.ok(!masked.includes('xoxb-123-abc'), masked)
   assert.ok(!masked.includes(DRAFT_HINT), masked)
   assert.ok(masked.endsWith('出さないなら「取り消し 1」と返信してください'), masked)
-  const [ts1 = '', ts2 = '', ts3 = '', ts4 = ''] = f.learnPosts().map(f.tsOf)
+  // 題を伏せた下書きも同じ（端末を使うよう案内する）
+  const maskedTitle = texts[4] ?? ''
+  assert.ok(!maskedTitle.includes('xoxb-123-abc'), maskedTitle)
+  assert.ok(!maskedTitle.includes(DRAFT_HINT), maskedTitle)
+  assert.ok(maskedTitle.includes('learn-publish'), maskedTitle)
+  const [ts1 = '', ts2 = '', ts3 = '', ts4 = '', ts5 = ''] = f.learnPosts().map(f.tsOf)
   f.threads[ts4] = [parent(ts4), reply('73.1', '公開 1')]
+  f.threads[ts5] = [parent(ts5), reply('74.1', '公開 1')]
   f.threads[ts1] = [parent(ts1), reply('70.1', '公開 1')]
   f.threads[ts2] = [parent(ts2), reply('71.1', '取り消し 1')]
   f.threads[ts3] = [parent(ts3), reply('72.1', '公開 1'), reply('72.2', '取り消し 1')]
@@ -416,5 +425,41 @@ test('LE8 global-draft でない項目への「公開 1」は無視し、global-
       [ts3, ACK],
       [ts2, ACK],
     ],
+  )
+})
+
+test('LE9 「公開 1」は人の返信だけ受け付けて承認した人の id を残し、ボット・連携の投稿は黙って無視する。取り消しは今までどおり', async (t) => {
+  const f = await fixture(t)
+  f.writeNotices([notice(1, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: 'Body.' })])])
+  await f.poll('09:05')
+  const [ts = ''] = f.learnPosts().map(f.tsOf)
+  f.threads[ts] = [
+    parent(ts),
+    { ts: '70.1', text: '公開 1', user: 'UOTHERBOT', bot_id: 'BOTHER01' },
+    { ts: '70.2', text: '公開 1', user: 'UAPP0001', subtype: 'bot_message' },
+    { ts: '70.3', text: '公開 1', bot_id: 'BOTHER02' },
+    { ts: '70.4', text: '公開 1', subtype: 'bot_message' },
+  ]
+  const second = await f.poll('09:10')
+  assert.match(second.stdout, /errors=0 .*learn=0\/0/, second.stderr)
+  assert.equal(existsSync(f.cancelsFile), false)
+  assert.equal(f.threadPosts().length, 0)
+  // 取り消しはボットの投稿でも今までどおり受け付ける（自分の投稿だけを除く）
+  f.threads[ts]?.push(
+    { ts: '70.5', text: '取り消し 1', user: 'UOTHERBOT', bot_id: 'BOTHER01' },
+    reply('70.6', '公開 1', 'UAPPROVER'),
+  )
+  const third = await f.poll('09:15')
+  assert.match(third.stdout, /errors=0 .*learn=0\/2/, third.stderr)
+  assert.deepEqual(
+    (f.cancels().cancels as JsonObject[]).map((c) => [c.action, c.user ?? null]),
+    [
+      ['cancel', null],
+      ['publish', 'UAPPROVER'],
+    ],
+  )
+  assert.deepEqual(
+    f.threadPosts().map((r) => r.params.text),
+    [ACK, PUBLISH_ACK],
   )
 })

@@ -13,7 +13,8 @@
       "n": 1,
       "ruleId": "r3",
       "at": "2026-11-23T01:05:00Z",
-      "action": "publish"
+      "action": "publish",
+      "user": "U0APPROVER"
     }
   ]
 }

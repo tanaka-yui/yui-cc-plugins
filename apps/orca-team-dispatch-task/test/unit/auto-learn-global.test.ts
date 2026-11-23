@@ -182,7 +182,8 @@ test('LN23 公開の依頼で publishGlobal が Ready・slack-thread・judge-lea
     proposeGlobal('main', config, { ruleId: 'r1', title: TITLE, body: BODY }, AT, log)
     proposeGlobal('main', config, { ruleId: 'r2', title: TITLE, body: BODY }, AT, log)
     proposeGlobal('main', config, { ruleId: 'r9', title: TITLE, body: BODY }, AT, log)
-    assert.equal(lines.length, 3, lines.join('\n'))
+    // 公開した 1 行と、捨てた案の 3 行
+    assert.equal(lines.length, 4, lines.join('\n'))
     lines.length = 0
     assert.equal(publishGlobal('main', config, 'r1', AT, log), false)
     assert.equal(publishGlobal('main', config, 'r2', AT, log), false)
@@ -259,6 +260,13 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
       [TITLE, `${BODY}\t`],
       [TITLE, `${BODY} \ue000`],
       [`${TITLE}\nsecond`, BODY],
+      // 題は 1 行。本文の行の区切りは \n だけ
+      [`${TITLE}\u2028second`, BODY],
+      [`${TITLE}\u2029second`, BODY],
+      [TITLE, `${BODY}\r\nSecond.`],
+      [TITLE, `${BODY}\u2028Second.`],
+      [TITLE, `${BODY}\u2029Second.`],
+      [TITLE, `${BODY}\u0085Second.`],
     ]
     for (const [title, body] of cases) {
       assert.ok(globalProblems(title, body, repos, LEARN_PLUGIN_REPO).length > 0, `${title} / ${body}`)
@@ -342,7 +350,7 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
     assert.equal(lines.length, 1, lines.join('\n'))
     assert.equal(ruleOf('r1')?.global, null)
     // 本文の改行は通る
-    assert.deepEqual(globalProblems(TITLE, `${BODY}\n\nSecond.\r\nThird.`, repos, LEARN_PLUGIN_REPO), [])
+    assert.deepEqual(globalProblems(TITLE, `${BODY}\n\nSecond.\nThird.`, repos, LEARN_PLUGIN_REPO), [])
     // 長さちょうどは通る
     assert.deepEqual(
       globalProblems('x'.repeat(LEARN_GLOBAL_TITLE_MAX), 'x'.repeat(LEARN_GLOBAL_BODY_MAX), repos, LEARN_PLUGIN_REPO),
@@ -410,12 +418,14 @@ const newNoticeOf = (ruleId: string): number => {
   writeStore('main', current)
   return notice.id
 }
+const APPROVER = 'UAPPROVER1'
 const request = (noticeId: number, ruleId: string, action?: 'cancel' | 'publish') => ({
   noticeId,
   n: 1,
   ruleId,
   at: AT,
   ...(action === undefined ? {} : { action }),
+  ...(action === 'publish' ? { user: APPROVER } : {}),
 })
 // fixture の intake の設定（intake.json）の親フォルダが intake のホーム
 const writeRequests = (f: ReturnType<typeof fixture>, requests: object[]): void =>
@@ -529,12 +539,14 @@ test('LN27 公開の依頼で publishGlobal が Issue を作り、下書きを�
     const ids = readNotices('main').map((notice) => notice.id)
     assert.equal(new Set(ids).size, ids.length)
     assert.equal(readStore('main').nextNotice, Math.max(...ids) + 1)
-    assert.deepEqual(lines, [])
+    // 公開した行は承認した人の Slack の id を言う。GitHub に送る題と本文には入れない
+    assert.deepEqual(lines, [`全体の学びの Issue を作りました: r1 ${LEARN_PLUGIN_REPO}#12（承認: ${APPROVER}）`])
+    assert.ok(!f.calls().includes(APPROVER), f.calls())
     // 同じ依頼を読み直しても何もしない
     assert.equal(applyCancels('main', config, [f.dir], AT, log), 0)
     assert.equal(issueCreates(f).length, 1)
     assert.equal(kinds().length, 5)
-    assert.deepEqual(lines, [])
+    assert.equal(lines.length, 1)
   } finally {
     quiet.mock.restore()
     f.cleanup()

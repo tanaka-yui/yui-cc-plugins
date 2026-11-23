@@ -49,9 +49,13 @@ export const LEARN_GLOBAL_TITLE_MAX = 80
 const ISSUE_REFERENCE = /#\d/
 // 公開リポジトリに出す文に入れない、表示では見えない・別の形に見える文字（制御文字・書式文字（ゼロ幅・向きの制御・
 // タグ文字）・私用・未割り当て）。Slack と status では空白になるか何も出ないので、人が読んで承認しても気づけない。
-// 本文の改行（\n と \r）だけは許す
-const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}]/u
-const BODY_LINE_BREAKS = /[\r\n]/g
+// 題は 1 行にし、本文の行の区切りは \n だけを許す（\r・U+0085 は制御文字、U+2028・U+2029 は行と段落の区切り）
+const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\u2028\u2029]/u
+const BODY_LINE_BREAK = /\n/g
+// 端末の learn-publish で公開したときの、承認した人の欄
+export const LEARN_TERMINAL_APPROVER = '端末の learn-publish'
+// 承認した人が記録されていない公開の依頼（手で書いた依頼など）
+const APPROVER_UNKNOWN = '記録なし'
 // 短い名前を語として見るときに、語の続きとみなす文字（これ以外の文字と文の端が境目。- と _ も境目）
 const WORD_CHARACTER = /[A-Za-z0-9]/
 // この文字数以下で - も _ も含まない名前（app・io など）だけを語として見る。それ以外は部分一致で断る（漏らさない向き）
@@ -944,8 +948,8 @@ export const globalProblems = (title: string, body: string, repos: string[], iss
   if (body.trim() === '') problems.push('本文が空です')
   else if (Array.from(body).length > LEARN_GLOBAL_BODY_MAX)
     problems.push(`本文が ${LEARN_GLOBAL_BODY_MAX} 文字を超えています`)
-  if (HIDDEN_CHARACTER.test(title) || HIDDEN_CHARACTER.test(body.replace(BODY_LINE_BREAKS, '')))
-    problems.push('題か本文に見えない文字（制御文字・書式文字など。改行は本文だけ）があります')
+  if (HIDDEN_CHARACTER.test(title) || HIDDEN_CHARACTER.test(body.replace(BODY_LINE_BREAK, '')))
+    problems.push('題か本文に見えない文字か改行があります（制御文字・書式文字など。改行は本文の \\n だけ）')
   const text = fold(`${title}\n${body}`)
   const safe = [...LEARN_GLOBAL_SAFE_PATHS, ...(issueRepo === null ? [] : namesOf(issueRepo))]
     .map(fold)
@@ -1020,13 +1024,15 @@ export const proposeGlobal = (
 // 人が承認した下書きを issueRepo に Issue として作る。下書きがあり、まだ Issue が無い規則だけ。
 // issueRepo が無い端末では作らずに下書きを残す。取り下げた規則の下書きは捨てる。設定が下書きのあとで変わっているかも
 // しれないので検査をもう一度掛け、落ちたら下書きを捨てて 1 行出す。作れなければ下書きを残して false
-// （次の依頼・次の tick でやり直せる）。tick からは tick の呼び出し予算の中で、learn-publish からは tick の外で gh を呼ぶ
+// （次の依頼・次の tick でやり直せる）。tick からは tick の呼び出し予算の中で、learn-publish からは tick の外で gh を呼ぶ。
+// approver は承認した人（Slack の user id か LEARN_TERMINAL_APPROVER）。公開した行に出すだけで、GitHub には送らない
 export const publishGlobal = (
   name: string,
   config: AutoConfig,
   ruleId: string,
   at: string,
   log: (line: string) => void,
+  approver: string = LEARN_TERMINAL_APPROVER,
 ): boolean => {
   const store = readStore(name)
   const rule = store.rules.find((entry) => entry.id === ruleId)
@@ -1101,6 +1107,7 @@ export const publishGlobal = (
   } finally {
     writeStore(name, store)
   }
+  log(`全体の学びの Issue を作りました: ${rule.id} ${rule.global.issue}（承認: ${approver || APPROVER_UNKNOWN}）`)
   return true
 }
 
@@ -1141,7 +1148,15 @@ export const notifyGlobalPrs = (name: string, state: AutoState, at: string): voi
 
 // learn-cancels.json の依頼の種類（slack-issue-intake の lib/defaults.ts の LEARN_REQUEST_ACTIONS と同じ）
 export const REQUEST_ACTIONS = ['cancel', 'publish'] as const
-type Cancel = { noticeId: number; n: number; ruleId: string; at: string; action: (typeof REQUEST_ACTIONS)[number] }
+// user は公開を承認した人の Slack の id（intake が公開の依頼だけに書く。無ければ ''）
+type Cancel = {
+  noticeId: number
+  n: number
+  ruleId: string
+  at: string
+  action: (typeof REQUEST_ACTIONS)[number]
+  user: string
+}
 
 const parseCancel = (value: Json): Cancel | null => {
   const entry = asObject(value)
@@ -1152,9 +1167,10 @@ const parseCancel = (value: Json): Cancel | null => {
   // 前の版の依頼には action が無い（取り消し）。あるのに知らない値なら読めない
   const action =
     entry?.action === undefined ? 'cancel' : (REQUEST_ACTIONS.find((item) => item === entry.action) ?? null)
-  return noticeId === null || n === null || ruleId === null || at === null || action === null
+  const user = entry?.user === undefined ? '' : asString(entry.user)
+  return noticeId === null || n === null || ruleId === null || at === null || action === null || user === null
     ? null
-    : { noticeId, n, ruleId, at, action }
+    : { noticeId, n, ruleId, at, action, user }
 }
 
 // ホームの learn-cancels.json の依頼。無ければ空。読めない・形が違うときは null
@@ -1197,7 +1213,8 @@ export const applyCancels = (
   const ruleById = (id: string): Rule | undefined => store.rules.find((rule) => rule.id === id)
   const withdraw = new Set<string>()
   const discard = new Set<string>()
-  const publish = new Set<string>()
+  // 公開する規則と、承認した人（最初の依頼のもの）
+  const publish = new Map<string, string>()
   for (const request of requests) {
     const item = items.get(`${request.noticeId}:${request.n}`)
     if (item === undefined || item.ruleId !== request.ruleId) continue
@@ -1205,7 +1222,8 @@ export const applyCancels = (
     if (request.action === 'cancel') (toDraft ? discard : withdraw).add(request.ruleId)
     else if (toDraft) {
       const draft = ruleById(request.ruleId)?.global?.draft
-      if (draft && draft.title === item.text && draft.body === item.body) publish.add(request.ruleId)
+      if (draft && draft.title === item.text && draft.body === item.body && !publish.has(request.ruleId))
+        publish.set(request.ruleId, request.user)
     }
   }
   let changed = false
@@ -1223,6 +1241,6 @@ export const applyCancels = (
     appendNotice(name, store, rule.repo, [ruleItem(rule, 'withdrawn', rule.topic, '', '')], at)
   }
   if (changed || targets.length > 0) writeStore(name, store)
-  for (const id of publish) if (!discard.has(id)) publishGlobal(name, config, id, at, log)
+  for (const [id, user] of publish) if (!discard.has(id)) publishGlobal(name, config, id, at, log, user)
   return targets.length
 }

@@ -9,9 +9,12 @@ import {
   LEARN_CANCELLABLE_KINDS,
   LEARN_CANCELS_FILE,
   LEARN_DIRECTIONS,
+  LEARN_DISPLAY_REPLACED,
   LEARN_DRAFT_BODY_SHOWN_MAX,
+  LEARN_DRAFT_BREAK,
   LEARN_EVIDENCE_PATTERN,
   LEARN_FILE_VERSION,
+  LEARN_HUMAN_SUBTYPES,
   LEARN_LINE_BREAK,
   LEARN_NOTICE_KINDS,
   LEARN_NOTICES_PATH,
@@ -54,7 +57,8 @@ type NoticeItem = {
 }
 type Notice = { id: number; repo: string; at: string; items: NoticeItem[] }
 type RequestAction = (typeof LEARN_REQUEST_ACTIONS)[number]
-type Cancel = { noticeId: number; n: number; ruleId: string; at: string; action: RequestAction }
+// user は公開を承認した人の Slack の id（公開の依頼だけに書く。無ければ ''）
+type Cancel = { noticeId: number; n: number; ruleId: string; at: string; action: RequestAction; user: string }
 // 投稿した知らせ。チャンネルは投稿したときのもの（報告先を変えても前のスレッドを読めるように）。after は読み終えた返信の ts。
 // acked / publishAcked は取り消し・公開の受け付けの返信を済ませた項目の番号（同じ項目への返信が重なっても受け付けは
 // それぞれ 1 回だけ）
@@ -121,9 +125,15 @@ const parseCancel = (value: Json): Cancel | null => {
   const ruleId = asString(o?.ruleId)
   const at = asString(o?.at)
   const action = o?.action === undefined ? 'cancel' : (LEARN_REQUEST_ACTIONS.find((a) => a === o.action) ?? null)
-  return noticeId === null || n === null || ruleId === null || at === null || action === null
+  const user = o?.user === undefined ? '' : asString(o.user)
+  return noticeId === null || n === null || ruleId === null || at === null || action === null || user === null
     ? null
-    : { noticeId, n, ruleId, at, action }
+    : { noticeId, n, ruleId, at, action, user }
+}
+// ファイルに書く形。取り消しの依頼は前の版のまま（user は公開の依頼だけに書く）
+const storedCancel = (cancel: Cancel): JsonObject => {
+  const { user, ...entry } = cancel
+  return cancel.action === 'publish' ? { ...entry, user } : entry
 }
 const parsePost = (value: Json): LearnPost | null => {
   const o = asObject(value)
@@ -210,11 +220,14 @@ const draftBody = (body: string): { lines: string[]; complete: boolean } => {
   }
   return { lines, complete: true }
 }
-// 本文に秘密の形の文字列があり、伏せて出したか（出した文と公開する文が違う）
-const masked = (body: string): boolean => maskSecrets(body) !== body
-// Slack の返信で公開を受け付ける項目: 下書きで、本文を省かず伏せずに、公開する文のとおりに見せたもの
+// 出した文が公開する文と違うか: 秘密の形の文字列を伏せた、または safe が文字を置き換えた（題は 1 行で、本文は \n だけを
+// 行の区切りとして許す）
+const altered = (text: string, breaks: RegExp | null): boolean =>
+  maskSecrets(text) !== text || LEARN_DISPLAY_REPLACED.test(breaks === null ? text : text.replace(breaks, ''))
+const draftAltered = (item: NoticeItem): boolean => altered(item.text, null) || altered(item.body, LEARN_DRAFT_BREAK)
+// Slack の返信で公開を受け付ける項目: 下書きで、題と本文を省かず伏せず置き換えずに、公開する文のとおりに見せたもの
 const publishable = (item: NoticeItem): boolean =>
-  item.kind === LEARN_PUBLISHABLE_KIND && draftBody(item.body).complete && !masked(item.body)
+  item.kind === LEARN_PUBLISHABLE_KIND && draftBody(item.body).complete && !draftAltered(item)
 const renderNotice = (notice: Notice, repo: string): string => {
   const lines = [fill(LEARN_TEXT.heading, { repo: safe(repo) })]
   let drafts = false
@@ -229,7 +242,7 @@ const renderNotice = (notice: Notice, repo: string): string => {
       lines.push(...shown.lines)
       drafts = true
       omitted ||= !shown.complete
-      hidden ||= masked(item.body)
+      hidden ||= draftAltered(item)
     }
   }
   if (omitted) lines.push(LEARN_TEXT.draftTooLongHint)
@@ -314,6 +327,12 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
   const cancelsPath = join(rt.home, LEARN_CANCELS_FILE)
   const own = (m: JsonObject): boolean =>
     asString(m.user) === rt.config.slack.botUserId || asString(m.bot_id) === rt.config.slack.botId
+  // 人が書いた投稿か: user の id があり、bot_id が無く、subtype が無いか人の返信の subtype（公開はこれだけが承認できる）
+  const person = (m: JsonObject): string | null => {
+    const user = asString(m.user)
+    const subtype = asString(m.subtype)
+    return user && m.bot_id === undefined && (subtype === null || LEARN_HUMAN_SUBTYPES.includes(subtype)) ? user : null
+  }
   const recent = (notice: Notice | undefined): boolean =>
     notice !== undefined && ctx.now().getTime() - Date.parse(notice.at) <= LEARN_CANCEL_WINDOW_DAYS * DAY_MS
   const update = (post: LearnPost, after: string | null, acked: number[], publishAcked: number[]): void => {
@@ -340,7 +359,10 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
     const acked = { cancel: [...post.acked], publish: [...post.publishAcked] }
     let stop = false
     for (const m of r.messages) {
-      const request = own(m) ? null : requestOf(messageText(m).text)
+      const parsed = own(m) ? null : requestOf(messageText(m).text)
+      // ボット・連携の投稿の公開の返信は、依頼も受け付けの返事も出さずに無視する
+      const approver = person(m)
+      const request = parsed?.action === 'publish' && approver === null ? null : parsed
       const item =
         request === null
           ? undefined
@@ -362,8 +384,9 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
             ruleId: item.ruleId,
             at: ctx.now().toISOString(),
             action: request.action,
+            user: request.action === 'publish' ? (approver ?? '') : '',
           }
-          writeJson(cancelsPath, { version: LEARN_FILE_VERSION, cancels: [...cancels, cancel] })
+          writeJson(cancelsPath, { version: LEARN_FILE_VERSION, cancels: [...cancels, cancel].map(storedCancel) })
           result.cancelled += 1
         }
         // 依頼が前の回に書けていても、受け付けを返せていなければ返す。返せなければこの返信の手前で止め、次の回に読み直す

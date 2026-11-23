@@ -254,6 +254,8 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
   request and acknowledged; orca files the Issue on its next tick. The cancel keyword on a draft is written as
   an `action: 'cancel'` request, and orca discards only the draft. A body too long for one post
   (`LEARN_DRAFT_BODY_SHOWN_MAX`) is shortened with a visible marker, and its draft cannot be approved from
-  Slack; neither can a draft whose body had a token-like string masked. The full text is in orca's `status`. Only the newest 20 threads are read,
+  Slack; neither can a draft whose title or body was masked or had characters replaced for display. Only a
+  person's post can approve (a `user` id, no `bot_id`, no bot subtype); a bot's publish reply is ignored
+  silently, and the request records the approver's user id. The full text is in orca's `status`. Only the newest 20 threads are read,
   Claude is never started, and the poll line gains `learn=<posted>/<requests>`.
 - To stop: `orca automations edit <id> --disabled`.

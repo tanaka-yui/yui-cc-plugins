@@ -713,8 +713,15 @@ export const LEARN_PUBLISH_PATTERN = /^公開\s*([0-9]+)$/
 // learn-cancels.json の依頼の種類（orca-team-dispatch-task の lib/auto-learn.ts の REQUEST_ACTIONS と同じ）。
 // 前の版の依頼には action が無く、取り消しとして読む
 export const LEARN_REQUEST_ACTIONS = ['cancel', 'publish'] as const
+// 公開の返信として受け付ける、人の投稿の subtype（subtype の無い投稿のほか、チャンネルにも出した返信だけ）。
+// bot_message などボット・連携の投稿は、公開を承認できない
+export const LEARN_HUMAN_SUBTYPES: readonly string[] = ['thread_broadcast']
 // 下書きの本文の行の区切り
 export const LEARN_LINE_BREAK = /\r\n|[\r\n\u2028\u2029]/
+// 公開できる下書きの本文の行の区切り（orca-team-dispatch-task の globalProblems が許すのも \n だけ）
+export const LEARN_DRAFT_BREAK = /\n/g
+// 知らせの文を出すときに空白へ置き換える文字（lib/learn.ts の safe と同じ）。題か本文にあれば、出した文と公開する文が違う
+export const LEARN_DISPLAY_REPLACED = /[\p{Cc}\u2028\u2029]/u
 // 1 つの知らせに出す下書きの本文の長さ（行の印・改行・エスケープのあとの文字数）。Slack の chat.postMessage は
 // text を 4,000 文字までにするよう勧めているので、見出し・題（80 文字）・案内の分を残す。超えたら省いて（省略）を付け、
 // Slack からは公開させない（読んでいない文を承認させないため。全文は orca-auto.ts status で読める）
@@ -735,7 +742,7 @@ export const LEARN_TEXT = {
   draftTooLongHint:
     '本文が長いので一部を省きました。省いた下書きは Slack からは公開できません。全文は orca-auto.ts status で読み、公開するなら orca-auto.ts learn-publish を使ってください。出さないなら「取り消し 1」と返信してください',
   draftMaskedHint:
-    '本文の一部を伏せて出しました。伏せた下書きは Slack からは公開できません。全文は orca-auto.ts status で読み、公開するなら orca-auto.ts learn-publish を使ってください。出さないなら「取り消し 1」と返信してください',
+    '題か本文の一部を伏せたり置き換えたりして出しました。この下書きは Slack からは公開できません。全文は orca-auto.ts status で読み、公開するなら orca-auto.ts learn-publish を使ってください。出さないなら「取り消し 1」と返信してください',
   publishAccepted: '公開を受け付けました。次の確認で Issue を作ります',
   newAuto: '今後は自動で進めます。最初の 3 件は人が確認します',
   newEng: '今後はエンジニアに回します',
