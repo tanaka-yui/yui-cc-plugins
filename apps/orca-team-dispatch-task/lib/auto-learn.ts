@@ -882,7 +882,12 @@ export const proposeGlobal = (
     log(`全体の学びの案を捨てました: ${proposal.ruleId}（全体の改善に出せる規則ではありません）`)
     return
   }
-  const repos = [...Object.keys(config.repos), ...config.sources.flatMap((source) => [source.repo, ...source.related])]
+  // 設定から外した・名前を変えたリポジトリの規則も候補に残るので、規則のリポジトリ名も断る
+  const repos = [
+    ...Object.keys(config.repos),
+    ...config.sources.flatMap((source) => [source.repo, ...source.related]),
+    ...store.rules.map((entry) => entry.repo),
+  ]
   const problems = globalProblems(proposal.title, proposal.body, repos)
   if (problems.length > 0) {
     log(`全体の学びの案を捨てました: ${rule.id}（${problems.join('。')}）`)

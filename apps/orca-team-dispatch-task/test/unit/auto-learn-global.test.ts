@@ -244,6 +244,15 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
       assert.equal(lines.length, 1, lines.join('\n'))
       assert.equal(ruleOf('r1')?.global, null)
     }
+    // 設定から外したリポジトリの規則でも、そのリポジトリ名は出さない
+    writeStore('main', store([rule('r1', { repo: 'gone/secret-repo' })]))
+    const lines: string[] = []
+    proposeGlobal('main', config, { ruleId: 'r1', title: TITLE, body: `${BODY} Seen in secret-repo.` }, AT, (line) => {
+      lines.push(line)
+    })
+    assert.equal(issueCreates(f).length, 0)
+    assert.equal(lines.length, 1, lines.join('\n'))
+    assert.equal(ruleOf('r1')?.global, null)
     // 長さちょうどは通る
     assert.deepEqual(globalProblems('x'.repeat(LEARN_GLOBAL_TITLE_MAX), 'x'.repeat(LEARN_GLOBAL_BODY_MAX), repos), [])
   } finally {
