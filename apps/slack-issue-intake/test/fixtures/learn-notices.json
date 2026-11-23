@@ -13,7 +13,8 @@
           "direction": "auto",
           "text": "文言だけの修正",
           "evidence": ["acme/app#1@1", "acme/app#2@1"],
-          "url": ""
+          "url": "",
+          "body": ""
         },
         {
           "n": 2,
@@ -22,7 +23,25 @@
           "direction": "eng",
           "text": "認証まわりの変更",
           "evidence": ["acme/app#3@1", "acme/app#4@1"],
-          "url": ""
+          "url": "",
+          "body": ""
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "repo": "acme/app",
+      "at": "2026-11-23T00:30:00Z",
+      "items": [
+        {
+          "n": 1,
+          "kind": "global-draft",
+          "ruleId": "r3",
+          "direction": "auto",
+          "text": "Treat copy-only fixes as automatic",
+          "evidence": [],
+          "url": "",
+          "body": "Two repositories learned that wording-only Issues merged cleanly (4 cases).\nIn skills/orca-team-dispatch-task/references/auto-judge.md, list copy-only fixes as bounded work."
         }
       ]
     }

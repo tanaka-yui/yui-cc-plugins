@@ -15,7 +15,7 @@ import type { AutoState, IssueState } from './auto-state.ts'
 // 履歴・規則・知らせの 3 ファイルを読み書きし、食い違いの抽出・似た事例の選択・規則の文の検査をする。
 export const LEARN_DIR = 'learn'
 export const LEARN_FILES = { history: 'history.json', rules: 'rules.json', notices: 'notices.json' } as const
-// Slack での取り消しの依頼。slack-issue-intake がホームに書き、orca は読むだけ（lib/defaults.ts の同名の定数と同じ値）
+// Slack での取り消しと公開の依頼。slack-issue-intake がホームに書き、orca は読むだけ（lib/defaults.ts の同名の定数と同じ値）
 export const LEARN_CANCELS_FILE = 'learn-cancels.json'
 // 振り返りを始めるのに要る、まだ振り返っていない食い違いの件数
 export const LEARN_REFLECT_MIN = 3
@@ -47,6 +47,11 @@ export const LEARN_GLOBAL_BODY_MAX = 2000
 export const LEARN_GLOBAL_TITLE_MAX = 80
 // 公開リポジトリに出す文に入れてはいけない Issue の番号の並び
 const ISSUE_REFERENCE = /#\d/
+// 公開リポジトリに出す文に入れない、表示では見えない・別の形に見える文字（制御文字・書式文字（ゼロ幅・向きの制御・
+// タグ文字）・私用・未割り当て）。Slack と status では空白になるか何も出ないので、人が読んで承認しても気づけない。
+// 本文の改行（\n と \r）だけは許す
+const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}]/u
+const BODY_LINE_BREAKS = /[\r\n]/g
 // 短い名前を語として見るときに、語の続きとみなす文字（これ以外の文字と文の端が境目。- と _ も境目）
 const WORD_CHARACTER = /[A-Za-z0-9]/
 // この文字数以下で - も _ も含まない名前（app・io など）だけを語として見る。それ以外は部分一致で断る（漏らさない向き）
@@ -66,7 +71,17 @@ const FILE_VERSION = 1
 export const ROUTES = ['auto', 'eng'] as const
 const OUTCOMES = ['merged-ai', 'merged-human', 'failed', 'failed-env', 'stopped', 'eng-kept', 'eng-returned'] as const
 const RULE_STATUSES = ['active', 'withdrawn'] as const
-const NOTICE_KINDS = ['new', 'support', 'withdrawn', 'graduated', 'global-issue', 'global-pr', 'global-hint'] as const
+// 知らせの項目の種類（slack-issue-intake の lib/defaults.ts の LEARN_NOTICE_KINDS と同じ）
+export const NOTICE_KINDS = [
+  'new',
+  'support',
+  'withdrawn',
+  'graduated',
+  'global-issue',
+  'global-pr',
+  'global-hint',
+  'global-draft',
+] as const
 // 規則の文に入れてはいけない文字列（小文字で比べる）
 const TOPIC_URL_PREFIXES = ['http://', 'https://']
 const TOPIC_BACKTICK = '`'
@@ -110,8 +125,10 @@ export type Rule = {
   probationLeft: number
   status: (typeof RULE_STATUSES)[number]
   withdrawnWhy: string
-  global: { issue: string; prNotified: boolean } | null
+  // 全体の改善の Issue。draft は人の承認を待っている題と本文（公開したら・捨てたら null）
+  global: { issue: string; prNotified: boolean; draft: GlobalDraft | null } | null
 }
+export type GlobalDraft = { title: string; body: string }
 export type NoticeKind = (typeof NOTICE_KINDS)[number]
 export type NoticeItem = {
   n: number
@@ -121,6 +138,8 @@ export type NoticeItem = {
   text: string
   evidence: string[]
   url: string
+  // global-draft だけ下書きの本文を入れ、ほかは ''
+  body: string
 }
 export type Notice = { id: number; repo: string; at: string; items: NoticeItem[] }
 export type Mismatch = {
@@ -236,7 +255,16 @@ const parseRule = (value: Json): Rule | null => {
     const entry = asObject(rule.global)
     const issue = asString(entry?.issue)
     if (entry === null || issue === null || typeof entry.prNotified !== 'boolean') return null
-    global = { issue, prNotified: entry.prNotified }
+    // 前の版のファイルには draft が無い。あれば null か題と本文の文字列
+    let draft: GlobalDraft | null = null
+    if (entry.draft !== undefined && entry.draft !== null) {
+      const value = asObject(entry.draft)
+      const title = asString(value?.title)
+      const body = asString(value?.body)
+      if (title === null || body === null) return null
+      draft = { title, body }
+    }
+    global = { issue, prNotified: entry.prNotified, draft }
   }
   return { id, repo, direction, topic, evidence, createdAt, probationLeft, status, withdrawnWhy, global }
 }
@@ -251,6 +279,8 @@ const parseNoticeItem = (value: Json): NoticeItem | null => {
   const text = asString(item.text)
   const evidence = strings(item.evidence)
   const url = asString(item.url)
+  // 前の版のファイルには body が無い
+  const body = item.body === undefined ? '' : asString(item.body)
   if (
     n === null ||
     kind === null ||
@@ -258,10 +288,11 @@ const parseNoticeItem = (value: Json): NoticeItem | null => {
     direction === null ||
     text === null ||
     evidence === null ||
-    url === null
+    url === null ||
+    body === null
   )
     return null
-  return { n, kind, ruleId, direction, text, evidence, url }
+  return { n, kind, ruleId, direction, text, evidence, url, body }
 }
 
 const parseNotice = (value: Json): Notice | null => {
@@ -510,6 +541,7 @@ export const settleRules = (name: string, row: HistoryRow, at: string): void => 
       text: rule.topic,
       evidence: [],
       url: '',
+      body: '',
     })
   }
   if (items.length > 0) appendNotice(name, store, row.repo, items, at)
@@ -730,7 +762,10 @@ const proposeAdd = (proposal: JsonObject, context: LearnContext): Accepted | str
   }
   context.store.nextRule += 1
   context.store.rules.push(rule)
-  return { repo: rule.repo, item: { kind: 'new', ruleId: rule.id, direction, text: topic, evidence, url: '' } }
+  return {
+    repo: rule.repo,
+    item: { kind: 'new', ruleId: rule.id, direction, text: topic, evidence, url: '', body: '' },
+  }
 }
 
 const proposeSupport = (proposal: JsonObject, context: LearnContext): Accepted | string => {
@@ -750,6 +785,7 @@ const proposeSupport = (proposal: JsonObject, context: LearnContext): Accepted |
       text: rule.topic,
       evidence: rule.evidence,
       url: '',
+      body: '',
     },
   }
 }
@@ -763,7 +799,15 @@ const proposeWithdraw = (proposal: JsonObject, context: LearnContext): Accepted 
   rule.withdrawnWhy = WITHDRAWN_BY_REFLECTION
   return {
     repo: rule.repo,
-    item: { kind: 'withdrawn', ruleId: rule.id, direction: rule.direction, text: rule.topic, evidence: [], url: '' },
+    item: {
+      kind: 'withdrawn',
+      ruleId: rule.id,
+      direction: rule.direction,
+      text: rule.topic,
+      evidence: [],
+      url: '',
+      body: '',
+    },
   }
 }
 
@@ -900,6 +944,8 @@ export const globalProblems = (title: string, body: string, repos: string[], iss
   if (body.trim() === '') problems.push('本文が空です')
   else if (Array.from(body).length > LEARN_GLOBAL_BODY_MAX)
     problems.push(`本文が ${LEARN_GLOBAL_BODY_MAX} 文字を超えています`)
+  if (HIDDEN_CHARACTER.test(title) || HIDDEN_CHARACTER.test(body.replace(BODY_LINE_BREAKS, '')))
+    problems.push('題か本文に見えない文字（制御文字・書式文字など。改行は本文だけ）があります')
   const text = fold(`${title}\n${body}`)
   const safe = [...LEARN_GLOBAL_SAFE_PATHS, ...(issueRepo === null ? [] : namesOf(issueRepo))]
     .map(fold)
@@ -913,9 +959,32 @@ export const globalProblems = (title: string, body: string, repos: string[], iss
   return problems
 }
 
+// 公開リポジトリに出す文として断るリポジトリ名。設定から外した・名前を変えたリポジトリの規則も候補に残るので、
+// 規則のファイルにある規則の repo も入れる
+const blockedRepos = (config: AutoConfig, store: LearnStore): string[] => [
+  ...Object.keys(config.repos),
+  ...config.sources.flatMap((source) => [source.repo, ...source.related]),
+  ...store.rules.map((entry) => entry.repo),
+]
+const ruleItem = (rule: Rule, kind: NoticeKind, text: string, url: string, body: string): Omit<NoticeItem, 'n'> => ({
+  kind,
+  ruleId: rule.id,
+  direction: rule.direction,
+  text,
+  evidence: [],
+  url,
+  body,
+})
+// 下書きを捨てる。規則は変えず、同じ規則を二度出さない
+const dropDraft = (rule: Rule): void => {
+  rule.global = { issue: '', prNotified: true, draft: null }
+}
+
 // 全体に効く学びの案を 1 件受ける。候補でない規則と、公開リポジトリに出せない題・本文は作らずに 1 行出す。
-// issueRepo が無ければ Issue を作らず「全体に効きそうな学び」として知らせるだけ。
-// 作れなかったときは規則を変えない（次の振り返りでまた出せる）。判定の CLI は tick の外で動くので、tick の呼び出し予算は見ない
+// issueRepo が無ければ「全体に効きそうな学び」として知らせるだけ。あれば Issue は作らずに下書きとして規則に残し、
+// 題と本文を知らせ（global-draft）に入れる。人が Slack か端末で全文を読んで承認してから publishGlobal が Issue にする
+// （AI の書いた文を、言葉の検査だけで公開リポジトリに出さないため）。ここでは gh を呼ばない。
+// 断ったときは規則を変えない（次の振り返りでまた出せる）
 export const proposeGlobal = (
   name: string,
   config: AutoConfig,
@@ -929,34 +998,62 @@ export const proposeGlobal = (
     log(`全体の学びの案を捨てました: ${proposal.ruleId}（全体の改善に出せる規則ではありません）`)
     return
   }
-  // 設定から外した・名前を変えたリポジトリの規則も候補に残るので、規則のリポジトリ名も断る
-  const repos = [
-    ...Object.keys(config.repos),
-    ...config.sources.flatMap((source) => [source.repo, ...source.related]),
-    ...store.rules.map((entry) => entry.repo),
-  ]
-  const problems = globalProblems(proposal.title, proposal.body, repos, config.learn.issueRepo)
+  const problems = globalProblems(proposal.title, proposal.body, blockedRepos(config, store), config.learn.issueRepo)
   if (problems.length > 0) {
     log(`全体の学びの案を捨てました: ${rule.id}（${problems.join('。')}）`)
     return
   }
+  const hint = config.learn.issueRepo === null
+  rule.global = hint
+    ? { issue: '', prNotified: true, draft: null }
+    : { issue: '', prNotified: false, draft: { title: proposal.title, body: proposal.body } }
+  const item = hint
+    ? ruleItem(rule, 'global-hint', proposal.title, '', '')
+    : ruleItem(rule, 'global-draft', proposal.title, '', proposal.body)
+  try {
+    appendNotice(name, store, rule.repo, [item], at)
+  } finally {
+    writeStore(name, store)
+  }
+}
+
+// 人が承認した下書きを issueRepo に Issue として作る。下書きがあり、まだ Issue が無い規則だけ。
+// issueRepo が無い端末では作らずに下書きを残す。取り下げた規則の下書きは捨てる。設定が下書きのあとで変わっているかも
+// しれないので検査をもう一度掛け、落ちたら下書きを捨てて 1 行出す。作れなければ下書きを残して false
+// （次の依頼・次の tick でやり直せる）。tick からは tick の呼び出し予算の中で、learn-publish からは tick の外で gh を呼ぶ
+export const publishGlobal = (
+  name: string,
+  config: AutoConfig,
+  ruleId: string,
+  at: string,
+  log: (line: string) => void,
+): boolean => {
+  const store = readStore(name)
+  const rule = store.rules.find((entry) => entry.id === ruleId)
+  const draft = rule?.global?.draft ?? null
+  if (rule === undefined || draft === null || rule.global?.issue !== '') {
+    log(`全体の学びの下書きがありません: ${ruleId}`)
+    return false
+  }
   const issueRepo = config.learn.issueRepo
-  const item = (kind: NoticeKind, url: string): Omit<NoticeItem, 'n'> => ({
-    kind,
-    ruleId: rule.id,
-    direction: rule.direction,
-    text: proposal.title,
-    evidence: [],
-    url,
-  })
   if (issueRepo === null) {
-    rule.global = { issue: '', prNotified: true }
-    try {
-      appendNotice(name, store, rule.repo, [item('global-hint', '')], at)
-    } finally {
-      writeStore(name, store)
-    }
-    return
+    log(
+      `全体の学びの Issue を作れません: ${rule.id}（改善の Issue を出す設定がありません。make auto-setup で有効にできます）`,
+    )
+    return false
+  }
+  if (rule.status !== 'active') {
+    dropDraft(rule)
+    writeStore(name, store)
+    log(`全体の学びの下書きを捨てました: ${rule.id}（規則が取り下げられています）`)
+    return false
+  }
+  const problems = globalProblems(draft.title, draft.body, blockedRepos(config, store), issueRepo)
+  if (problems.length > 0) {
+    dropDraft(rule)
+    writeStore(name, store)
+    log(`全体の学びの下書きを捨てました: ${rule.id}（${problems.join('。')}）`)
+    return false
   }
   const labels = [
     ...STATUS_LABELS,
@@ -965,7 +1062,7 @@ export const proposeGlobal = (
   ]
   if (!ensureLabels(issueRepo, labels)) {
     log(`全体の学びの Issue を作れません: ${rule.id}（${issueRepo} のラベルを揃えられません）`)
-    return
+    return false
   }
   const created = github([
     'issue',
@@ -973,9 +1070,9 @@ export const proposeGlobal = (
     '--repo',
     issueRepo,
     '--title',
-    proposal.title,
+    draft.title,
     '--body',
-    proposal.body,
+    draft.body,
     '--label',
     STATUS.ready,
     '--label',
@@ -985,17 +1082,26 @@ export const proposeGlobal = (
   ])
   const url = created.stdout.trim().split('\n').at(-1)?.trim() ?? ''
   const number = CREATED_ISSUE_NUMBER.exec(url)?.[1]
-  if (created.rc !== 0 || number === undefined) {
+  if (created.rc !== 0) {
     log(`全体の学びの Issue を作れません: ${rule.id}（${issueRepo} への gh issue create が失敗しました）`)
-    return
+    return false
+  }
+  // 作れたのに番号を読めないときは、Issue はもうあるので下書きを捨ててやり直さない（公開の依頼は残り続けるので、
+  // 下書きを残すと tick のたびに同じ Issue を作る）
+  if (number === undefined) {
+    dropDraft(rule)
+    writeStore(name, store)
+    log(`全体の学びの Issue を作りましたが番号を読めません: ${rule.id}（${issueRepo} を確かめてください）`)
+    return false
   }
   // Issue はもう作ったので、知らせを書けなくても規則には残す（同じ Issue を二度作らないため）
-  rule.global = { issue: `${issueRepo}#${number}`, prNotified: false }
+  rule.global = { issue: `${issueRepo}#${number}`, prNotified: false, draft: null }
   try {
-    appendNotice(name, store, rule.repo, [item('global-issue', url)], at)
+    appendNotice(name, store, rule.repo, [ruleItem(rule, 'global-issue', draft.title, url, '')], at)
   } finally {
     writeStore(name, store)
   }
+  return true
 }
 
 // 自分が作った改善の Issue の PR ができた（人の確認に回った）ら、規則ごとに 1 回だけ知らせる。
@@ -1015,7 +1121,17 @@ export const notifyGlobalPrs = (name: string, state: AutoState, at: string): voi
       name,
       store,
       rule.repo,
-      [{ kind: 'global-pr', ruleId: rule.id, direction: rule.direction, text: issue.title, evidence: [], url: pr.url }],
+      [
+        {
+          kind: 'global-pr',
+          ruleId: rule.id,
+          direction: rule.direction,
+          text: issue.title,
+          evidence: [],
+          url: pr.url,
+          body: '',
+        },
+      ],
       at,
     )
     changed = true
@@ -1023,7 +1139,9 @@ export const notifyGlobalPrs = (name: string, state: AutoState, at: string): voi
   if (changed) writeStore(name, store)
 }
 
-type Cancel = { noticeId: number; n: number; ruleId: string; at: string }
+// learn-cancels.json の依頼の種類（slack-issue-intake の lib/defaults.ts の LEARN_REQUEST_ACTIONS と同じ）
+export const REQUEST_ACTIONS = ['cancel', 'publish'] as const
+type Cancel = { noticeId: number; n: number; ruleId: string; at: string; action: (typeof REQUEST_ACTIONS)[number] }
 
 const parseCancel = (value: Json): Cancel | null => {
   const entry = asObject(value)
@@ -1031,7 +1149,12 @@ const parseCancel = (value: Json): Cancel | null => {
   const n = count(entry?.n)
   const ruleId = asString(entry?.ruleId)
   const at = asString(entry?.at)
-  return noticeId === null || n === null || ruleId === null || at === null ? null : { noticeId, n, ruleId, at }
+  // 前の版の依頼には action が無い（取り消し）。あるのに知らない値なら読めない
+  const action =
+    entry?.action === undefined ? 'cancel' : (REQUEST_ACTIONS.find((item) => item === entry.action) ?? null)
+  return noticeId === null || n === null || ruleId === null || at === null || action === null
+    ? null
+    : { noticeId, n, ruleId, at, action }
 }
 
 // ホームの learn-cancels.json の依頼。無ければ空。読めない・形が違うときは null
@@ -1045,30 +1168,61 @@ const readCancels = (home: string): Cancel[] | null => {
   return cancels.every((cancel) => cancel !== null) ? cancels : null
 }
 
-// 各ホームの取り消しの依頼を読み、有効な規則を取り下げて知らせ（withdrawn）を規則ごとに 1 つ足す。
-// 取り下げ済み・知らない id は何もしない（依頼は残り続けるので、何度読んでも同じ結果になる）。
+// 各ホームの依頼（取り消しと公開）を読んで反映する。依頼は残り続けるので、何度読んでも同じ結果にする。
+// 依頼が指す知らせの項目（noticeId・n・ruleId）を自分の notices.json で引き、見つからない依頼は何もしない
+// （古くて消えた知らせ・別の名前の知らせ。下書きへの取り消しを、下書きを捨てたあとに規則の取り消しと読み違えないため）。
+// - 下書き（global-draft）への取り消し: 規則は取り下げず、下書きだけを捨てる（知らせは足さない）。下書きが無ければ何もしない
+// - それ以外の項目への取り消し: 有効な規則を取り下げて、知らせ（withdrawn）を規則ごとに 1 つ足す
+// - 公開: 項目が global-draft で、その題と本文が今の下書きと同じときだけ publishGlobal を呼ぶ。同じ規則の下書きへの
+//   取り消しもあれば公開しない。下書きが無い・Issue が既にある依頼は黙って飛ばす
+// 取り下げと下書きの破棄を保存してから公開する（publishGlobal は規則を読み直して保存するので、先に読んだ規則で上書きしない）。
 // 読めないファイルは log に 1 行出して飛ばす。取り下げた規則の数を返す
-export const applyCancels = (name: string, homes: string[], at: string, log: (line: string) => void): number => {
-  const ruleIds = new Set<string>()
+export const applyCancels = (
+  name: string,
+  config: AutoConfig,
+  homes: string[],
+  at: string,
+  log: (line: string) => void,
+): number => {
+  const requests: Cancel[] = []
   for (const home of homes) {
     const cancels = readCancels(home)
     if (cancels === null) log(`学びの取り消しの依頼を読めません: ${join(home, LEARN_CANCELS_FILE)}`)
-    else for (const cancel of cancels) ruleIds.add(cancel.ruleId)
+    else requests.push(...cancels)
   }
-  if (ruleIds.size === 0) return 0
+  if (requests.length === 0) return 0
+  const items = new Map<string, NoticeItem>()
+  for (const notice of readNotices(name)) for (const item of notice.items) items.set(`${notice.id}:${item.n}`, item)
   const store = readStore(name)
-  const targets = store.rules.filter((rule) => rule.status === 'active' && ruleIds.has(rule.id))
+  const ruleById = (id: string): Rule | undefined => store.rules.find((rule) => rule.id === id)
+  const withdraw = new Set<string>()
+  const discard = new Set<string>()
+  const publish = new Set<string>()
+  for (const request of requests) {
+    const item = items.get(`${request.noticeId}:${request.n}`)
+    if (item === undefined || item.ruleId !== request.ruleId) continue
+    const toDraft = item.kind === 'global-draft'
+    if (request.action === 'cancel') (toDraft ? discard : withdraw).add(request.ruleId)
+    else if (toDraft) {
+      const draft = ruleById(request.ruleId)?.global?.draft
+      if (draft && draft.title === item.text && draft.body === item.body) publish.add(request.ruleId)
+    }
+  }
+  let changed = false
+  for (const id of discard) {
+    const rule = ruleById(id)
+    if (rule?.global?.draft) {
+      dropDraft(rule)
+      changed = true
+    }
+  }
+  const targets = store.rules.filter((rule) => rule.status === 'active' && withdraw.has(rule.id))
   for (const rule of targets) {
     rule.status = 'withdrawn'
     rule.withdrawnWhy = WITHDRAWN_BY_CANCEL
-    appendNotice(
-      name,
-      store,
-      rule.repo,
-      [{ kind: 'withdrawn', ruleId: rule.id, direction: rule.direction, text: rule.topic, evidence: [], url: '' }],
-      at,
-    )
+    appendNotice(name, store, rule.repo, [ruleItem(rule, 'withdrawn', rule.topic, '', '')], at)
   }
-  if (targets.length > 0) writeStore(name, store)
+  if (changed || targets.length > 0) writeStore(name, store)
+  for (const id of publish) if (!discard.has(id)) publishGlobal(name, config, id, at, log)
   return targets.length
 }

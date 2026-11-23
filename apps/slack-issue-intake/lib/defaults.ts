@@ -701,11 +701,24 @@ export const LEARN_NOTICE_KINDS = [
   'global-issue',
   'global-pr',
   'global-hint',
+  'global-draft',
 ] as const
 export const LEARN_DIRECTIONS = ['auto', 'eng'] as const
-export const LEARN_CANCELLABLE_KINDS: readonly string[] = ['new', 'support']
-// 返信の「取り消し <番号>」。数字は NFKC で全角を半角にしてから読む
+export const LEARN_CANCELLABLE_KINDS: readonly string[] = ['new', 'support', 'global-draft']
+// 公開を承認できる種類（全体の改善の Issue の下書き。公開リポジトリに出す前に人が全文を読む）
+export const LEARN_PUBLISHABLE_KIND = 'global-draft'
+// 返信の「取り消し <番号>」と「公開 <番号>」。数字は NFKC で全角を半角にしてから読む
 export const LEARN_CANCEL_PATTERN = /^取り消し\s*([0-9]+)$/
+export const LEARN_PUBLISH_PATTERN = /^公開\s*([0-9]+)$/
+// learn-cancels.json の依頼の種類（orca-team-dispatch-task の lib/auto-learn.ts の REQUEST_ACTIONS と同じ）。
+// 前の版の依頼には action が無く、取り消しとして読む
+export const LEARN_REQUEST_ACTIONS = ['cancel', 'publish'] as const
+// 下書きの本文の行の区切り
+export const LEARN_LINE_BREAK = /\r\n|[\r\n\u2028\u2029]/
+// 1 つの知らせに出す下書きの本文の長さ（行の印・改行・エスケープのあとの文字数）。Slack の chat.postMessage は
+// text を 4,000 文字までにするよう勧めているので、見出し・題（80 文字）・案内の分を残す。超えたら省いて（省略）を付け、
+// Slack からは公開させない（読んでいない文を承認させないため。全文は orca-auto.ts status で読める）
+export const LEARN_DRAFT_BODY_SHOWN_MAX = 3000
 // 根拠の食い違いの id（<owner>/<repo>#<番号>@<世代>）。表示は #<番号> だけにする
 export const LEARN_EVIDENCE_PATTERN = /^[^\s/#]+\/[^\s/#]+#([0-9]+)@[0-9]+$/
 export const LEARN_URL_PREFIX = 'https://github.com/'
@@ -715,6 +728,15 @@ export const LEARN_TEXT = {
   evidence: '   根拠: {evidence}',
   cancelHint: '取り消すときは、このスレッドに「取り消し 1」のように番号を返信してください',
   accepted: '取り消しを受け付けました。次の確認で反映します',
+  draftLine: '   │ {line}',
+  draftOmitted: '（省略）',
+  draftHint:
+    '公開してよければ、このスレッドに「公開 1」のように番号を返信してください。出さないなら「取り消し 1」と返信してください',
+  draftTooLongHint:
+    '本文が長いので一部を省きました。省いた下書きは Slack からは公開できません。全文は orca-auto.ts status で読み、公開するなら orca-auto.ts learn-publish を使ってください。出さないなら「取り消し 1」と返信してください',
+  draftMaskedHint:
+    '本文の一部を伏せて出しました。伏せた下書きは Slack からは公開できません。全文は orca-auto.ts status で読み、公開するなら orca-auto.ts learn-publish を使ってください。出さないなら「取り消し 1」と返信してください',
+  publishAccepted: '公開を受け付けました。次の確認で Issue を作ります',
   newAuto: '今後は自動で進めます。最初の 3 件は人が確認します',
   newEng: '今後はエンジニアに回します',
   support: '根拠が増えました',
@@ -723,6 +745,7 @@ export const LEARN_TEXT = {
   globalIssue: '全体の改善として Issue を作りました {url}',
   globalPr: '改善の PR ができました {url}',
   globalHint: '全体に効きそうな学びです',
+  globalDraft: '公開の前の下書きです',
   unreadable: '学びの知らせを読めません: {path}',
   cancelsUnreadable: '学びの取り消しの依頼を読めません: {path}',
 }

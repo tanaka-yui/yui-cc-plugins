@@ -1266,8 +1266,9 @@ export const runTick = (name: string): number => {
       reachable: new Map(),
       unreachable: new Set(),
     }
+    // Slack の取り消しと公開の依頼を反映する。公開は tick の呼び出し予算の中で gh を呼ぶ
     try {
-      applyCancels(name, config.intakeConfigs.map(dirname), autoNow(), console.log)
+      applyCancels(name, config, config.intakeConfigs.map(dirname), autoNow(), console.log)
     } catch (e) {
       console.log(`学びの取り消しを反映できません: ${e instanceof Error ? e.message : String(e)}`)
     }

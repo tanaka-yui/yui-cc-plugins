@@ -9,11 +9,16 @@ import {
   LEARN_CANCELLABLE_KINDS,
   LEARN_CANCELS_FILE,
   LEARN_DIRECTIONS,
+  LEARN_DRAFT_BODY_SHOWN_MAX,
   LEARN_EVIDENCE_PATTERN,
   LEARN_FILE_VERSION,
+  LEARN_LINE_BREAK,
   LEARN_NOTICE_KINDS,
   LEARN_NOTICES_PATH,
   LEARN_POSTS_PER_POLL,
+  LEARN_PUBLISH_PATTERN,
+  LEARN_PUBLISHABLE_KIND,
+  LEARN_REQUEST_ACTIONS,
   LEARN_TEXT,
   LEARN_THREADS_MAX,
   LEARN_URL_PREFIX,
@@ -44,12 +49,23 @@ type NoticeItem = {
   text: string
   evidence: string[]
   url: string
+  // global-draft だけ下書きの本文が入る
+  body: string
 }
 type Notice = { id: number; repo: string; at: string; items: NoticeItem[] }
-type Cancel = { noticeId: number; n: number; ruleId: string; at: string }
+type RequestAction = (typeof LEARN_REQUEST_ACTIONS)[number]
+type Cancel = { noticeId: number; n: number; ruleId: string; at: string; action: RequestAction }
 // 投稿した知らせ。チャンネルは投稿したときのもの（報告先を変えても前のスレッドを読めるように）。after は読み終えた返信の ts。
-// acked は受け付けの返信を済ませた項目の番号（同じ項目への返信が重なっても受け付けは 1 回だけ）
-type LearnPost = { id: number; channel: string; ts: string; after: string | null; acked: number[] }
+// acked / publishAcked は取り消し・公開の受け付けの返信を済ませた項目の番号（同じ項目への返信が重なっても受け付けは
+// それぞれ 1 回だけ）
+type LearnPost = {
+  id: number
+  channel: string
+  ts: string
+  after: string | null
+  acked: number[]
+  publishAcked: number[]
+}
 export type LearnResult = { posted: number; cancelled: number; errors: string[] }
 
 const count = (value: Json | undefined): number | null =>
@@ -67,15 +83,18 @@ const parseItem = (value: Json): NoticeItem | null => {
   const text = asString(o?.text)
   const evidence = strings(o?.evidence)
   const url = asString(o?.url)
+  // 前の版の知らせには body が無い
+  const body = o?.body === undefined ? '' : asString(o.body)
   return n === null ||
     kind === null ||
     direction === null ||
     ruleId === null ||
     text === null ||
     evidence === null ||
-    url === null
+    url === null ||
+    body === null
     ? null
-    : { n, kind, ruleId, direction, text, evidence, url }
+    : { n, kind, ruleId, direction, text, evidence, url, body }
 }
 const parseNotice = (value: Json): Notice | null => {
   const o = asObject(value)
@@ -101,7 +120,10 @@ const parseCancel = (value: Json): Cancel | null => {
   const n = count(o?.n)
   const ruleId = asString(o?.ruleId)
   const at = asString(o?.at)
-  return noticeId === null || n === null || ruleId === null || at === null ? null : { noticeId, n, ruleId, at }
+  const action = o?.action === undefined ? 'cancel' : (LEARN_REQUEST_ACTIONS.find((a) => a === o.action) ?? null)
+  return noticeId === null || n === null || ruleId === null || at === null || action === null
+    ? null
+    : { noticeId, n, ruleId, at, action }
 }
 const parsePost = (value: Json): LearnPost | null => {
   const o = asObject(value)
@@ -109,13 +131,14 @@ const parsePost = (value: Json): LearnPost | null => {
   const channel = asString(o?.channel)
   const ts = asString(o?.ts)
   const after = asString(o?.after)
-  const acked = (asArray(o?.acked) ?? []).flatMap((v) => {
-    const n = count(v)
-    return n === null ? [] : [n]
-  })
+  const numbers = (value: Json | undefined): number[] =>
+    (asArray(value) ?? []).flatMap((v) => {
+      const n = count(v)
+      return n === null ? [] : [n]
+    })
   return id === null || channel === null || ts === null || (after === null && o?.after !== null)
     ? null
-    : { id, channel, ts, after, acked }
+    : { id, channel, ts, after, acked: numbers(o?.acked), publishAcked: numbers(o?.publishAcked) }
 }
 // meta は自分だけが書くので、読めなければ投稿の記録が無いものとして扱う
 const readPosts = (raw: string | null): LearnPost[] =>
@@ -150,27 +173,83 @@ const kindLabel = (item: NoticeItem): string => {
       return fill(LEARN_TEXT.globalPr, { url }).trim()
     case 'global-hint':
       return LEARN_TEXT.globalHint
+    case 'global-draft':
+      return LEARN_TEXT.globalDraft
   }
 }
 const cancellable = (item: NoticeItem): boolean => LEARN_CANCELLABLE_KINDS.includes(item.kind)
+// 下書きの本文を 1 行ずつ固定の印を付けて出す（本文の行が知らせの行に見えないように）。印・改行・エスケープのあとの
+// 長さを LEARN_DRAFT_BODY_SHOWN_MAX に収め、収まらなければ（省略）を付けて complete を false にする。
+// 1 文字ずつエスケープして数えるので、実体参照（&amp; など）の途中では切らない
+const draftBody = (body: string): { lines: string[]; complete: boolean } => {
+  const prefix = fill(LEARN_TEXT.draftLine, { line: '' })
+  const rows = maskSecrets(body)
+    .split(LEARN_LINE_BREAK)
+    .map((line) => Array.from(line, (ch) => safe(ch)))
+  const full = rows.map((pieces) => prefix + pieces.join(''))
+  if (full.join('\n').length <= LEARN_DRAFT_BODY_SHOWN_MAX) return { lines: full, complete: true }
+  // （省略）の分を残して前から詰める
+  const budget = LEARN_DRAFT_BODY_SHOWN_MAX - LEARN_TEXT.draftOmitted.length
+  const lines: string[] = []
+  let used = 0
+  const omit = (line: string): { lines: string[]; complete: boolean } => ({
+    lines: [...lines, `${line}${LEARN_TEXT.draftOmitted}`],
+    complete: false,
+  })
+  for (const pieces of rows) {
+    const start = prefix.length + (lines.length > 0 ? 1 : 0)
+    if (used + start > budget) return omit(lines.pop() ?? '')
+    used += start
+    let line = prefix
+    for (const piece of pieces) {
+      if (used + piece.length > budget) return omit(line)
+      line += piece
+      used += piece.length
+    }
+    lines.push(line)
+  }
+  return { lines, complete: true }
+}
+// 本文に秘密の形の文字列があり、伏せて出したか（出した文と公開する文が違う）
+const masked = (body: string): boolean => maskSecrets(body) !== body
+// Slack の返信で公開を受け付ける項目: 下書きで、本文を省かず伏せずに、公開する文のとおりに見せたもの
+const publishable = (item: NoticeItem): boolean =>
+  item.kind === LEARN_PUBLISHABLE_KIND && draftBody(item.body).complete && !masked(item.body)
 const renderNotice = (notice: Notice, repo: string): string => {
   const lines = [fill(LEARN_TEXT.heading, { repo: safe(repo) })]
+  let drafts = false
+  let omitted = false
+  let hidden = false
   for (const item of notice.items) {
     lines.push(fill(LEARN_TEXT.item, { n: item.n, text: safe(item.text), kind: kindLabel(item) }))
     if (item.evidence.length)
       lines.push(fill(LEARN_TEXT.evidence, { evidence: item.evidence.map(evidenceLabel).join(' ') }))
+    if (item.kind === LEARN_PUBLISHABLE_KIND) {
+      const shown = draftBody(item.body)
+      lines.push(...shown.lines)
+      drafts = true
+      omitted ||= !shown.complete
+      hidden ||= masked(item.body)
+    }
   }
-  if (notice.items.some(cancellable)) lines.push(LEARN_TEXT.cancelHint)
+  if (omitted) lines.push(LEARN_TEXT.draftTooLongHint)
+  else if (hidden) lines.push(LEARN_TEXT.draftMaskedHint)
+  else if (drafts) lines.push(LEARN_TEXT.draftHint)
+  else if (notice.items.some(cancellable)) lines.push(LEARN_TEXT.cancelHint)
   return lines.join('\n')
 }
-// 前後の空白と全角の数字・空白を許す。合わなければ null
-const cancelNumber = (text: string): number | null => {
-  const m = text.normalize('NFKC').trim().match(LEARN_CANCEL_PATTERN)
-  return m ? Number(m[1]) : null
+// 返信の「取り消し <番号>」「公開 <番号>」。前後の空白と全角の数字・空白を許す。合わなければ null
+const requestOf = (text: string): { action: RequestAction; n: number } | null => {
+  const normalized = text.normalize('NFKC').trim()
+  const cancel = normalized.match(LEARN_CANCEL_PATTERN)
+  if (cancel) return { action: 'cancel', n: Number(cancel[1]) }
+  const publish = normalized.match(LEARN_PUBLISH_PATTERN)
+  return publish ? { action: 'publish', n: Number(publish[1]) } : null
 }
 
-// 報告の材料と同じフォルダの学びの知らせを、定期報告のチャンネルに投稿し、スレッドの「取り消し <番号>」を
-// ホームの learn-cancels.json に書く。orca-team-dispatch-task が次の tick で読んで規則を取り下げる。Claude は起こさない
+// 報告の材料と同じフォルダの学びの知らせを、定期報告のチャンネルに投稿し、スレッドの「取り消し <番号>」「公開 <番号>」を
+// ホームの learn-cancels.json に書く。orca-team-dispatch-task が次の tick で読んで、規則を取り下げる・下書きを捨てる・
+// 改善の Issue を作る。Claude は起こさない
 export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
   const { rt, token } = ctx
   const result: LearnResult = { posted: 0, cancelled: 0, errors: [] }
@@ -225,21 +304,23 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
       result.errors.push(maskSecrets(r.error))
       break
     }
-    posts = newest([...posts, { id: notice.id, channel, ts: r.ts, after: null, acked: [] }])
+    posts = newest([...posts, { id: notice.id, channel, ts: r.ts, after: null, acked: [], publishAcked: [] }])
     if (!save({ [META_LEARN_LAST_ID]: String(notice.id) })) return result
     result.posted += 1
   }
 
-  // 取り消し: 新しい投稿から順にスレッドを読む。自分の投稿と、知らせが古い（または notices.json から消えた）投稿は読まない
+  // 取り消しと公開: 新しい投稿から順にスレッドを読む。自分の投稿と、知らせが古い（または notices.json から消えた）投稿は読まない
   const byId = new Map(notices.map((notice) => [notice.id, notice]))
   const cancelsPath = join(rt.home, LEARN_CANCELS_FILE)
   const own = (m: JsonObject): boolean =>
     asString(m.user) === rt.config.slack.botUserId || asString(m.bot_id) === rt.config.slack.botId
   const recent = (notice: Notice | undefined): boolean =>
     notice !== undefined && ctx.now().getTime() - Date.parse(notice.at) <= LEARN_CANCEL_WINDOW_DAYS * DAY_MS
-  const update = (post: LearnPost, after: string | null, acked: number[]): void => {
-    posts = posts.map((p) => (p.id === post.id ? { ...p, after, acked } : p))
+  const update = (post: LearnPost, after: string | null, acked: number[], publishAcked: number[]): void => {
+    posts = posts.map((p) => (p.id === post.id ? { ...p, after, acked, publishAcked } : p))
   }
+  // 返信が指す項目。取り消しは取り消せる項目、公開は全文を見せた下書きだけ
+  const targets = { cancel: cancellable, publish: publishable }
   for (const post of [...posts].reverse()) {
     if (!recent(byId.get(post.id))) continue
     if (short()) return result
@@ -256,12 +337,15 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
       break
     }
     let after = post.after
-    const acked = [...post.acked]
+    const acked = { cancel: [...post.acked], publish: [...post.publishAcked] }
     let stop = false
     for (const m of r.messages) {
-      const n = own(m) ? null : cancelNumber(messageText(m).text)
-      const item = n === null ? undefined : byId.get(post.id)?.items.find((i) => i.n === n && cancellable(i))
-      if (item) {
+      const request = own(m) ? null : requestOf(messageText(m).text)
+      const item =
+        request === null
+          ? undefined
+          : byId.get(post.id)?.items.find((i) => i.n === request.n && targets[request.action](i))
+      if (request && item) {
         if (!valid()) return result
         const cancels = existsSync(cancelsPath) ? readVersioned(cancelsPath, 'cancels', parseCancel) : []
         // 読めないファイルは上書きしない。この返信から次の回に読み直す
@@ -270,27 +354,40 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
           stop = true
           break
         }
-        if (!cancels.some((c) => c.noticeId === post.id && c.n === item.n)) {
-          const cancel: Cancel = { noticeId: post.id, n: item.n, ruleId: item.ruleId, at: ctx.now().toISOString() }
+        // 同じ知らせ・番号・種類の依頼は 1 回だけ（cancelled は取り消しと公開を合わせた依頼の数）
+        if (!cancels.some((c) => c.noticeId === post.id && c.n === item.n && c.action === request.action)) {
+          const cancel: Cancel = {
+            noticeId: post.id,
+            n: item.n,
+            ruleId: item.ruleId,
+            at: ctx.now().toISOString(),
+            action: request.action,
+          }
           writeJson(cancelsPath, { version: LEARN_FILE_VERSION, cancels: [...cancels, cancel] })
           result.cancelled += 1
         }
         // 依頼が前の回に書けていても、受け付けを返せていなければ返す。返せなければこの返信の手前で止め、次の回に読み直す
-        if (!acked.includes(item.n)) {
+        const done = acked[request.action]
+        if (!done.includes(item.n)) {
           if (!valid()) return result
-          const ack = await postThread(slack, post.channel, post.ts, LEARN_TEXT.accepted, ctx.deadline)
+          const text = request.action === 'publish' ? LEARN_TEXT.publishAccepted : LEARN_TEXT.accepted
+          const ack = await postThread(slack, post.channel, post.ts, text, ctx.deadline)
           if (!ack.ok) {
             result.errors.push(maskSecrets(ack.error))
             stop = true
             break
           }
-          acked.push(item.n)
+          done.push(item.n)
         }
       }
       after = String(m.ts)
     }
-    if (after !== post.after || acked.length !== post.acked.length) {
-      update(post, after, acked)
+    if (
+      after !== post.after ||
+      acked.cancel.length !== post.acked.length ||
+      acked.publish.length !== post.publishAcked.length
+    ) {
+      update(post, after, acked.cancel, acked.publish)
       if (!save()) return result
     }
     if (stop) break

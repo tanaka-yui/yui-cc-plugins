@@ -112,7 +112,7 @@ test('LN1c 規則の保存と読み直し、有効な規則だけ取り出す', 
       rule('R1'),
       rule('R2', { status: 'withdrawn', withdrawnWhy: '取り消し' }),
       rule('R3', { repo: OTHER_REPO }),
-      rule('R4', { direction: 'eng', global: { issue: 'owner/repo#1', prNotified: false } }),
+      rule('R4', { direction: 'eng', global: { issue: 'owner/repo#1', prNotified: false, draft: null } }),
     ],
     nextRule: 5,
     nextNotice: 2,
@@ -220,6 +220,7 @@ test('LN5 appendNotice は項目に 1 からの番号を振り、id を進め、
       text,
       evidence: [key(1)],
       url: '',
+      body: '',
     })
     const first = appendNotice(NAME, store, REPO, [item('一つ目'), item('二つ目')], '2026-11-23T00:00:00Z')
     assert.equal(first.id, 1)

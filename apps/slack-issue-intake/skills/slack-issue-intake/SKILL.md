@@ -248,6 +248,12 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
   poll, none when periodic reports are off), with rule text and evidence shown without Slack markup. A thread
   reply of the cancel keyword plus an item number (`LEARN_CANCEL_PATTERN` in `lib/defaults.ts`) that points at a
   new-rule or more-evidence item is written to `learn-cancels.json` in the home and acknowledged in the thread;
-  orca withdraws the rule on its next tick. Only the newest 20 threads are read,
-  Claude is never started, and the poll line gains `learn=<posted>/<cancelled>`.
+  orca withdraws the rule on its next tick. An improvement-Issue draft (`global-draft`) is shown with its
+  title and full body, one prefixed line per body line, before anything is sent to the public repository.
+  A reply of the publish keyword plus its number (`LEARN_PUBLISH_PATTERN`) is written as an `action: 'publish'`
+  request and acknowledged; orca files the Issue on its next tick. The cancel keyword on a draft is written as
+  an `action: 'cancel'` request, and orca discards only the draft. A body too long for one post
+  (`LEARN_DRAFT_BODY_SHOWN_MAX`) is shortened with a visible marker, and its draft cannot be approved from
+  Slack; neither can a draft whose body had a token-like string masked. The full text is in orca's `status`. Only the newest 20 threads are read,
+  Claude is never started, and the poll line gains `learn=<posted>/<requests>`.
 - To stop: `orca automations edit <id> --disabled`.

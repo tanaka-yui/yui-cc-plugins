@@ -12,6 +12,7 @@ import {
   type LearnStore,
   learnedFor,
   proposeGlobal,
+  publishGlobal,
   readHistory,
   readStore,
   reflectionsOf,
@@ -51,6 +52,10 @@ import { mkdirSync, readFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { isatty } from 'node:tty'
 
+// 下書きの本文の行の区切りと、表示で効かせない制御文字
+const LINE_BREAK = /\r\n|[\r\n\u2028\u2029]/
+const CONTROL = /\p{Cc}/gu
+const plainLine = (text: string): string => text.replace(CONTROL, ' ')
 // AI の判定に関係なく CLI が eng に回す理由（判定の履歴の forced）
 const FORCED_FEATURE = '新機能'
 const FORCED_TARGETS = '3 リポジトリ以上'
@@ -58,16 +63,25 @@ const FORCED_TARGETS = '3 リポジトリ以上'
 const main = (argv: string[]): number => {
   const command = argv[0] ?? ''
   if (
-    !['setup', 'hosts', 'roles', 'tick', 'status', 'judge-doc', 'judge-list', 'judge-apply', 'clear-start'].includes(
-      command,
-    )
+    ![
+      'setup',
+      'hosts',
+      'roles',
+      'tick',
+      'status',
+      'judge-doc',
+      'judge-list',
+      'judge-apply',
+      'clear-start',
+      'learn-publish',
+    ].includes(command)
   )
-    die('orca-auto', 'command is required: judge-list / judge-apply / clear-start')
+    die('orca-auto', 'command is required: judge-list / judge-apply / clear-start / learn-publish')
   const flags = new Map<string, string>()
   for (let i = 1; i < argv.length; i += 2) {
     const flag = argv[i] ?? ''
     const value = argv[i + 1] ?? die('orca-auto', `${flag} requires a value`)
-    if (!['--name', '--file', '--key'].includes(flag) || value.startsWith('--'))
+    if (!['--name', '--file', '--key', '--rule'].includes(flag) || value.startsWith('--'))
       die('orca-auto', `invalid option: ${flag}`)
     flags.set(flag, value)
   }
@@ -75,6 +89,7 @@ const main = (argv: string[]): number => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) die('orca-auto', 'invalid name')
   if (command === 'judge-apply' && !flags.get('--file')) die('orca-auto', '--file is required')
   if (command === 'clear-start' && !flags.get('--key')) die('orca-auto', '--key is required')
+  if (command === 'learn-publish' && !flags.get('--rule')) die('orca-auto', '--rule is required')
   if (command === 'setup' || command === 'hosts' || command === 'roles') {
     if (!isatty(0) && process.env.ORCA_AUTO_TEST_STDIN !== '1') {
       console.error(`ターミナルで make ${command === 'setup' ? 'auto-setup' : command} を実行してください`)
@@ -127,10 +142,19 @@ const main = (argv: string[]): number => {
       const rules = readStore(name).rules.filter((rule) => rule.status === 'active')
       if (rules.length > 0) {
         console.log('\n学びの規則（有効なもの）:')
-        for (const rule of rules)
+        for (const rule of rules) {
           console.log(
             `${rule.repo} ${rule.id} ${rule.direction} 様子見の残り ${rule.probationLeft} 根拠 ${rule.evidence.length} 件: ${rule.topic}`,
           )
+          // 公開を待っている全体の改善の下書き。AI が書いた文なので、改行のほかの制御文字は効かせない
+          const draft = rule.global?.draft
+          if (draft) {
+            console.log(`  全体の改善の下書き（公開: orca-auto.ts learn-publish --name ${name} --rule ${rule.id}）`)
+            console.log(`  題: ${plainLine(draft.title)}`)
+            console.log('  本文:')
+            for (const line of draft.body.split(LINE_BREAK)) console.log(`    ${plainLine(line)}`)
+          }
+        }
       }
     } catch (error) {
       console.log(`学びの規則を読めません（${error instanceof Error ? error.message : String(error)}）`)
@@ -150,6 +174,10 @@ const main = (argv: string[]): number => {
     const state = readState(name)
     const save = () => writeState(name, state)
     const onEnd = endRecorder(name)
+    // 人が全体の改善の下書きを読んで公開する（判定の AI には許さない）。tick の外なので gh は予算なしで呼ぶ
+    if (command === 'learn-publish') {
+      return publishGlobal(name, config, flags.get('--rule') ?? '', autoNow(), console.error) ? 0 : 1
+    }
     if (command === 'clear-start') {
       const issue = state.issues[flags.get('--key') ?? '']
       if (!issue?.startAttempt) return 1

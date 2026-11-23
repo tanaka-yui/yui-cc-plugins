@@ -410,7 +410,16 @@ test('LN14 applyLearn は add・support・withdraw を保存して知らせを�
         repo: APP,
         at: AT,
         items: [
-          { n: 1, kind: 'new', ruleId: 'r3', direction: 'auto', text: '文言だけの修正', evidence: [m1, m2], url: '' },
+          {
+            n: 1,
+            kind: 'new',
+            ruleId: 'r3',
+            direction: 'auto',
+            text: '文言だけの修正',
+            evidence: [m1, m2],
+            url: '',
+            body: '',
+          },
           {
             n: 2,
             kind: 'new',
@@ -419,6 +428,7 @@ test('LN14 applyLearn は add・support・withdraw を保存して知らせを�
             text: '設定ファイルに触る修正',
             evidence: [m2, m3],
             url: '',
+            body: '',
           },
           {
             n: 3,
@@ -428,8 +438,18 @@ test('LN14 applyLearn は add・support・withdraw を保存して知らせを�
             text: '文言だけの修正',
             evidence: [...rule('r1').evidence, m4],
             url: '',
+            body: '',
           },
-          { n: 4, kind: 'withdrawn', ruleId: 'r2', direction: 'eng', text: '文言だけの修正', evidence: [], url: '' },
+          {
+            n: 4,
+            kind: 'withdrawn',
+            ruleId: 'r2',
+            direction: 'eng',
+            text: '文言だけの修正',
+            evidence: [],
+            url: '',
+            body: '',
+          },
         ],
       },
     ])

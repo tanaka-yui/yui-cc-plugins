@@ -12,6 +12,12 @@ import type { SlackReply, SlackRequest } from './helpers.ts'
 const REPORT_CHANNEL = 'C0REPORT01'
 const LEARN_MARK = '🧠'
 const ACK = '取り消しを受け付けました。次の確認で反映します'
+const PUBLISH_ACK = '公開を受け付けました。次の確認で Issue を作ります'
+const DRAFT_TITLE = 'Treat copy-only fixes as automatic'
+const DRAFT_HINT =
+  '公開してよければ、このスレッドに「公開 1」のように番号を返信してください。出さないなら「取り消し 1」と返信してください'
+// Slack の chat.postMessage の text の推奨の上限
+const SLACK_TEXT_MAX = 4000
 const fixtureNotices = (): JsonObject =>
   JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures/learn-notices.json'), 'utf8')) as JsonObject
 const firstNotice = (): Json => (fixtureNotices().notices as Json[])[0] ?? null
@@ -181,7 +187,7 @@ test('LE2 スレッドの「取り消し 1」で learn-cancels.json に依頼を
   assert.match(second.stdout, /errors=0 .*learn=0\/1/, second.stderr)
   assert.deepEqual(f.cancels(), {
     version: 1,
-    cancels: [{ noticeId: 1, n: 1, ruleId: 'r1', at: '2026-11-13T09:10:00.000Z' }],
+    cancels: [{ noticeId: 1, n: 1, ruleId: 'r1', at: '2026-11-13T09:10:00.000Z', action: 'cancel' }],
   })
   assert.deepEqual(
     f.threadPosts().map((r) => [r.params.channel, r.params.thread_ts, r.params.text]),
@@ -306,4 +312,109 @@ test('LE6 残りが取り込みの分を切ったら学びの投稿とスレッ�
   assert.ok(f.repliesOf(ts2).length > 0)
   // 3 番目の知らせは at が 14 日より前なので、取り消しを読まない
   assert.equal(f.repliesOf(ts3).length, 0)
+})
+
+test('LE7 global-draft の知らせは題と本文と公開の案内を出し、「公開 1」で action publish の依頼を 1 回だけ書いて受け付けを返す', async (t) => {
+  const f = await fixture(t)
+  f.writeNotices([
+    notice(1, 'acme/app', [
+      item(1, 'global-draft', { text: DRAFT_TITLE, body: 'First <!channel> & *more*.\n2. Second line.\u001b' }),
+    ]),
+  ])
+  const first = await f.poll('09:05')
+  assert.match(first.stdout, /errors=0 .*learn=1\/0/, first.stderr)
+  const post = f.learnPosts()[0]
+  assert.equal(post?.params.mrkdwn, 'false')
+  // 本文は 1 行ずつ固定の印を付けて出す（本文の行が知らせの行に見えないように）
+  assert.equal(
+    post?.params.text,
+    [
+      '🧠 判定の学び（acme/app）',
+      `1. ${DRAFT_TITLE}（公開の前の下書きです）`,
+      '   │ First &lt;!channel&gt; &amp; *more*.',
+      '   │ 2. Second line. ',
+      DRAFT_HINT,
+    ].join('\n'),
+  )
+  const [ts = ''] = f.learnPosts().map(f.tsOf)
+  f.threads[ts] = [parent(ts), reply('70.1', '公開 1'), reply('70.2', ' 公開　１ '), reply('70.3', '公開 2')]
+  const second = await f.poll('09:10')
+  assert.match(second.stdout, /errors=0 .*learn=0\/1/, second.stderr)
+  assert.deepEqual(f.cancels(), {
+    version: 1,
+    cancels: [{ noticeId: 1, n: 1, ruleId: 'r1', at: '2026-11-13T09:10:00.000Z', action: 'publish' }],
+  })
+  assert.deepEqual(
+    f.threadPosts().map((r) => [r.params.thread_ts, r.params.text]),
+    [[ts, PUBLISH_ACK]],
+  )
+  // 同じ項目への取り消しは別の依頼として書き、受け付けも別に返す
+  f.threads[ts]?.push(reply('70.4', '取り消し 1'), reply('70.5', '公開 1'), reply('70.6', '取り消し 1'))
+  const third = await f.poll('09:15')
+  assert.match(third.stdout, /errors=0 .*learn=0\/1/, third.stderr)
+  assert.deepEqual(
+    (f.cancels().cancels as JsonObject[]).map((c) => [c.noticeId, c.n, c.action]),
+    [
+      [1, 1, 'publish'],
+      [1, 1, 'cancel'],
+    ],
+  )
+  assert.deepEqual(
+    f.threadPosts().map((r) => r.params.text),
+    [PUBLISH_ACK, ACK],
+  )
+  const fourth = await f.poll('09:20')
+  assert.match(fourth.stdout, /errors=0 .*learn=0\/0/, fourth.stderr)
+  assert.equal(f.threadPosts().length, 2)
+})
+
+test('LE8 global-draft でない項目への「公開 1」は無視し、global-draft への「取り消し 1」は action cancel の依頼を書く。本文を省いた下書きは Slack から公開できない', async (t) => {
+  const f = await fixture(t)
+  const long = `${'&<'.repeat(700)}\n${'x'.repeat(1500)}TAIL`
+  f.writeNotices([
+    firstNotice(),
+    notice(2, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: 'Body.' })]),
+    notice(3, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: long })]),
+    notice(4, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: 'Token xoxb-123-abc here.' })]),
+  ])
+  const first = await f.poll('09:05')
+  assert.match(first.stdout, /errors=0 .*learn=4\/0/, first.stderr)
+  const texts = f.learnPosts().map((r) => r.params.text ?? '')
+  assert.ok(texts[1]?.endsWith(DRAFT_HINT), texts[1])
+  // 長い本文は Slack の上限の内に省き、省いたことを見せる。実体参照の途中では切らない。公開の案内は出さない
+  const shown = texts[2] ?? ''
+  assert.ok(shown.length <= SLACK_TEXT_MAX, String(shown.length))
+  assert.ok(shown.includes('（省略）'), shown)
+  assert.ok(!shown.includes('TAIL'))
+  assert.ok(!/&(?!amp;|lt;|gt;)/.test(shown), shown)
+  assert.ok(!shown.includes(DRAFT_HINT))
+  assert.ok(shown.endsWith('出さないなら「取り消し 1」と返信してください'), shown)
+  assert.ok(shown.includes('learn-publish'), shown)
+  // 秘密の形の文字列を伏せた下書きも、出した文と公開する文が違うので Slack からは公開させない
+  const masked = texts[3] ?? ''
+  assert.ok(!masked.includes('xoxb-123-abc'), masked)
+  assert.ok(!masked.includes(DRAFT_HINT), masked)
+  assert.ok(masked.endsWith('出さないなら「取り消し 1」と返信してください'), masked)
+  const [ts1 = '', ts2 = '', ts3 = '', ts4 = ''] = f.learnPosts().map(f.tsOf)
+  f.threads[ts4] = [parent(ts4), reply('73.1', '公開 1')]
+  f.threads[ts1] = [parent(ts1), reply('70.1', '公開 1')]
+  f.threads[ts2] = [parent(ts2), reply('71.1', '取り消し 1')]
+  f.threads[ts3] = [parent(ts3), reply('72.1', '公開 1'), reply('72.2', '取り消し 1')]
+  const second = await f.poll('09:10')
+  assert.match(second.stdout, /errors=0 .*learn=0\/2/, second.stderr)
+  // スレッドは新しい知らせから読む
+  assert.deepEqual(
+    (f.cancels().cancels as JsonObject[]).map((c) => [c.noticeId, c.n, c.ruleId, c.action]),
+    [
+      [3, 1, 'r1', 'cancel'],
+      [2, 1, 'r1', 'cancel'],
+    ],
+  )
+  assert.deepEqual(
+    f.threadPosts().map((r) => [r.params.thread_ts, r.params.text]),
+    [
+      [ts3, ACK],
+      [ts2, ACK],
+    ],
+  )
 })

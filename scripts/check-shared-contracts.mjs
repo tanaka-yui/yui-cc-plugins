@@ -85,6 +85,16 @@ try {
 const learn = await import(join(dispatch, 'lib/auto-learn.ts'))
 if (intakeLabels.LEARN_CANCELS_FILE !== learn.LEARN_CANCELS_FILE)
   problems.push('LEARN_CANCELS_FILE が違います（slack-issue-intake と orca-team-dispatch-task）')
+// 知らせの種類と依頼の種類（取り消し・公開）。fixture の依頼の action も、その中のものだけ
+if (!isDeepStrictEqual([...intakeLabels.LEARN_NOTICE_KINDS], [...learn.NOTICE_KINDS]))
+  problems.push('知らせの種類が違います（LEARN_NOTICE_KINDS と NOTICE_KINDS）')
+if (!isDeepStrictEqual([...intakeLabels.LEARN_REQUEST_ACTIONS], [...learn.REQUEST_ACTIONS]))
+  problems.push('依頼の種類が違います（LEARN_REQUEST_ACTIONS と REQUEST_ACTIONS）')
+const fixtureActions = JSON.parse(readFileSync(join(dispatch, 'test/fixtures/learn-cancels.json'), 'utf8')).cancels.map(
+  (entry) => entry.action,
+)
+if (!isDeepStrictEqual(fixtureActions, ['cancel', 'publish']))
+  problems.push('learn-cancels.json の fixture に取り消しと公開の依頼が 1 つずつありません')
 const learnTmp = mkdtempSync(join(tmpdir(), 'learn-contract-'))
 const previousHome = process.env.ORCA_DISPATCH_CONFIG_HOME
 try {
@@ -95,7 +105,13 @@ try {
     readFileSync(join(dispatch, 'test/fixtures/learn-notices.json')),
   )
   const notices = learn.readNotices('contract')
-  if (notices.length !== 1 || notices[0].items.length !== 2)
+  if (
+    notices.length !== 2 ||
+    notices[0].items.length !== 2 ||
+    notices[1].items.length !== 1 ||
+    notices[1].items[0].kind !== 'global-draft' ||
+    notices[1].items[0].body === ''
+  )
     problems.push('learn-notices.json を orca の readNotices で読めません')
 } catch (error) {
   problems.push(`learn-notices.json を orca の readNotices で読めません: ${error.message}`)
