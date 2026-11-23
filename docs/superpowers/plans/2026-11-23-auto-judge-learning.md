@@ -378,3 +378,55 @@ test('LN25 judge-learning の Issue は条件がそろっても AI が merge せ
 - [ ] **Step 3: 実装する**
 - [ ] **Step 4: 通ることを確かめる** — Run: `make test && pnpm --filter @tanaka-yui/orca-team-dispatch-task check && cd ../.. && pnpm check:doc-lang && node scripts/check-shared-contracts.mjs` / Expected: PASS。LN15（`judgeRules` と `judgeFingerprint` が変わらない）が通ったままであること。
 - [ ] **Step 5: Commit** — `git commit -m "feat(orca-team-dispatch-task): 全体に効く学びを yui-cc-plugins の改善の Issue にし、判定の基準を変える PR は人が merge する"`
+
+---
+
+### Task 8: 改善の Issue を公開する前に、人が Slack で全文を読んで承認する
+
+実行中に足したタスク。自動のセキュリティレビューが、Task 7 の「AI が書いた題と本文を、検査だけで公開リポジトリに出す」作りに、検査のすり抜けを 4 回続けて見つけた。4 回目の直しの担当が洗い出した残りの抜け道（語の一部の短い名前・owner だけ・区切り違い・一覧に無い名前・GitHub の表示で名前になる綴り・NFKC で揃わない文字・符号化）は、言葉の検査では塞げない。そこで、公開の前に人が全文を読んで承認する段を足す。検査（`globalProblems`）は残し、下書きを作るときと公開するときの両方で掛ける。
+
+**Files:**
+- Modify: `apps/orca-team-dispatch-task/lib/auto-learn.ts`（下書き・公開の依頼・公開）
+- Modify: `apps/orca-team-dispatch-task/bin/orca-auto.ts`（`status` に下書きを出す。人が使う `learn-publish`）
+- Modify: `apps/orca-team-dispatch-task/lib/auto-tick.ts`（公開の依頼を読む）
+- Modify: 両プラグインの `test/fixtures/learn-notices.json`・`learn-cancels.json`（同じ写し）、`scripts/check-shared-contracts.mjs`
+- Modify: `apps/slack-issue-intake/lib/learn.ts`・`lib/defaults.ts`（下書きの表示、「公開 <番号>」の返信）
+- Modify: 文書（orca: SKILL.md・guide-ja.md・`auto-judge.md`・`auto-judge-ja.md`・README・CLAUDE.md。intake: README・SKILL.md・guide-ja.md・CLAUDE.md）と、設計書 `docs/superpowers/specs/2026-11-23-auto-judge-learning-design.md` の 6 節（承認の段を足したことを書く）
+- Test: `apps/orca-team-dispatch-task/test/unit/auto-learn-global.test.ts`、`apps/slack-issue-intake/test/learn.test.ts`
+
+**Interfaces:**
+- Consumes: Task 5〜7（`proposeGlobal`・`applyCancels`・`globalProblems`・`appendNotice`・intake の `syncLearn`）。
+- Produces:
+  - `Rule.global` の形を `{ issue: string; prNotified: boolean; draft: { title: string; body: string } | null } | null` にする（保存済みのファイルに `draft` が無ければ null で読む）。
+  - 知らせの種類に `global-draft` を足す。`NoticeItem` に `body: string` を足す（`global-draft` だけ本文を入れ、ほかは `''`。保存済みの知らせに無ければ `''` で読む）。
+  - 取り消しの依頼のファイル（`learn-cancels.json`）の 1 件に `action: 'cancel' | 'publish'` を足す（無ければ `'cancel'` で読む）。ファイル名と定数は変えない。
+  - `proposeGlobal`: `issueRepo` が null でないとき、Issue を作らない。`globalProblems` を通った案を下書きとして残し（`rule.global = { issue: '', prNotified: false, draft: { title, body } }`）、知らせ `global-draft`（`text` は題、`body` は本文）を足す。`issueRepo` が null のときは今までどおり `global-hint`。
+  - `export const publishGlobal = (name: string, config: AutoConfig, ruleId: string, at: string, log: (line: string) => void): boolean` — 規則に下書きがあり、まだ Issue が無いときだけ動く。`globalProblems` をもう一度掛け（設定が変わっているかもしれないため）、通れば Task 7 の作り方（ラベルを確かめて `gh issue create --label Ready --label slack-thread --label judge-learning`）で Issue を作り、`rule.global = { issue: '<issueRepo>#<番号>', prNotified: false, draft: null }` にして知らせ `global-issue` を足す。作れなければ下書きを残して false（次の依頼・次の tick でやり直せる）。検査に落ちたら下書きを捨て（`{ issue: '', prNotified: true, draft: null }`）、1 行出す。
+  - `applyCancels`: `action === 'publish'` の依頼は、その `ruleId` に下書きがあれば `publishGlobal` を呼ぶ。下書きが無い・Issue が既にある依頼は黙って飛ばす（依頼は残り続けるので、何度読んでも同じ結果にする）。`action === 'cancel'` で、その規則に下書きがあれば、規則は取り下げずに下書きだけ捨てる（`{ issue: '', prNotified: true, draft: null }`。知らせは足さない）。下書きの無い規則への `cancel` は今までどおり規則を取り下げる。
+  - 人が端末で公開する道: `orca-auto learn-publish --name <名前> --rule <規則の id>`（`publishGlobal` を呼ぶ。判定の AI に許すコマンドには足さない。LN15 が通ったままであること）。`status` は下書きのある規則に題と本文を出す。
+  - intake（`lib/learn.ts`）:
+    - `global-draft` の項目は、番号・題・本文を出す（本文は `escapeMrkdwn` を掛け、装飾を無効にした投稿のまま）。その知らせの最後に `公開してよければ、このスレッドに「公開 1」のように番号を返信してください。出さないなら「取り消し 1」と返信してください` を付ける。
+    - 返信 `公開 <番号>`（前後の空白と全角数字を許す）は、その番号の項目が `global-draft` のときだけ、`learn-cancels.json` に `action: 'publish'` の依頼を足し（同じ `noticeId`・`n`・`action` は 1 回だけ）、`公開を受け付けました。次の確認で Issue を作ります` と返信する。`global-draft` の項目への `取り消し <番号>` は `action: 'cancel'` の依頼を足す（今の取り消しと同じ返事）。
+    - 受け付けの返事のやり直し（`acked`）は、`cancel` と `publish` を別々に数える。
+- `auto-judge.md`: 全体の改善の案は、すぐには公開されず、人が Slack で全文を読んで承認したあとに Issue になる、と書く。題と本文の書き方（一般化した規則と件数だけ）は変えない。
+
+- [ ] **Step 1: 失敗するテストを書く**
+
+```ts
+// orca（auto-learn-global.test.ts）
+test('LN26 proposeGlobal は issueRepo があっても Issue を作らず、下書きと global-draft の知らせ（題と本文）を残す', ...)
+// gh issue create が呼ばれない。rule.global.draft に題と本文。知らせの item.kind === 'global-draft'、item.body === 本文
+test('LN27 公開の依頼で publishGlobal が Issue を作り、下書きを消して global-issue の知らせを足す。同じ依頼を 2 回読んでも Issue は 1 つ', ...)
+test('LN28 公開のときにもう一度検査を掛け、落ちたら Issue を作らず下書きを捨てる。gh が失敗したら下書きを残す', ...)
+test('LN29 下書きへの取り消しは下書きだけを捨て、規則は有効のまま。下書きの無い規則への取り消しは今までどおり取り下げる', ...)
+test('LN30 learn-publish は下書きを公開し、judgeRules と judgeFingerprint は変わらない', ...)
+
+// intake（learn.test.ts）
+test('LE7 global-draft の知らせは題と本文と公開の案内を出し、「公開 1」で action publish の依頼を 1 回だけ書いて受け付けを返す', ...)
+test('LE8 global-draft でない項目への「公開 1」は無視し、global-draft への「取り消し 1」は action cancel の依頼を書く', ...)
+```
+
+- [ ] **Step 2: 失敗を確かめる** — Run: `node --test test/unit/auto-learn-global.test.ts`（orca）、`node --test test/learn.test.ts`（intake） / Expected: 新しいテストが FAIL
+- [ ] **Step 3: 実装する**（Task 7 の LN23 の「Issue を作る」期待は、下書き → 公開の 2 段に直す）
+- [ ] **Step 4: 通ることを確かめる** — Run: orca `make test` と check、intake `bash test/run-all.sh` と check、ルートで `node scripts/check-shared-contracts.mjs` と `pnpm check:doc-lang` / Expected: すべて PASS
+- [ ] **Step 5: Commit** — `git commit -m "feat(orca-team-dispatch-task,slack-issue-intake): 改善の Issue は人が Slack で全文を読んで承認してから公開する"`
