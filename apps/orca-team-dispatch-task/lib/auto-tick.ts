@@ -14,7 +14,7 @@ import {
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, type PrStatus, prStatus, readGithub, viewIssue } from './auto-github.ts'
 import { envArgs, hostAvailableMemoryMb, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
-import { type EndRecorder, endRecorder, readHistory, readStore, reflectDue } from './auto-learn.ts'
+import { type EndRecorder, endRecorder, onProbation, readHistory, readStore, reflectDue } from './auto-learn.ts'
 import {
   AUTO_CALL_CAP_MS,
   AUTO_FILES,
@@ -836,6 +836,18 @@ const needsReview = (tick: Tick, issue: IssueState, reason: string): void => {
   )
     tick.finished++
 }
+// 判定が頼った規則に様子見の途中のものがあるか。規則を読めなければ様子見を終えたと確かめられないので true
+const probationOf = (name: string, issue: IssueState): boolean => {
+  if (!issue.learn || issue.learn.ruleIds.length === 0) return false
+  try {
+    return onProbation(readStore(name), issue.learn.ruleIds)
+  } catch (cause) {
+    console.log(
+      `学びの規則を読めないので人の確認に回します: ${issue.key}（${cause instanceof Error ? cause.message : String(cause)}）`,
+    )
+    return true
+  }
+}
 const handoverPrs = (issue: IssueState, multi: boolean): { ok: boolean; reasons: string[] } => {
   const reasons: string[] = []
   if (!multi && (!issue.prevBranch || issue.prevBranch === issue.branch)) return { ok: true, reasons }
@@ -1055,6 +1067,7 @@ const finish = (tick: Tick, issue: IssueState): void => {
   // 拾う元の autoMerge が有効なら、auto-ready の Issue も他の条件がそろえば merge する（向き先の制限は下で効く）
   if (issue.autoReady && !sourceAutoMerge(tick.config, issue.repo))
     reasons.push('AI が Backlog から Ready にした Issue なので、merge の前に人が確認します。')
+  if (probationOf(tick.name, issue)) reasons.push('新しい学びで自動にした Issue なので、merge の前に人が確認します。')
   if (multi ? statuses.some((s) => s?.state === 'OPEN' && s.checks === 'fail') : status.checks === 'fail')
     reasons.push('CI が失敗しました。')
   const host = hostsOf(tick.config).find((h) => h.id === (issue.host ?? LOCAL_HOST))

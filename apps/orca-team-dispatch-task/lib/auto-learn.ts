@@ -333,6 +333,14 @@ export const recordOutcome = (
     return false
   }
   learn.recorded = true
+  // 行はもう書いたので、様子見の決着に失敗しても記録済みのままにする（行を二重に書かないため）
+  try {
+    settleRules(name, row, at)
+  } catch (error) {
+    console.log(
+      `様子見の規則を更新できません: ${issue.key}（${error instanceof Error ? error.message : String(error)}）`,
+    )
+  }
   return true
 }
 
@@ -427,6 +435,47 @@ export const mismatchesOf = (rows: HistoryRow[], repo: string): Mismatch[] => {
 
 export const activeRules = (store: LearnStore, repo: string): Rule[] =>
   store.rules.filter((rule) => rule.repo === repo && rule.status === 'active')
+
+const probationRules = (store: LearnStore, ruleIds: string[]): Rule[] =>
+  store.rules.filter((rule) => rule.status === 'active' && rule.probationLeft > 0 && ruleIds.includes(rule.id))
+
+// 判定が頼った規則のどれかが様子見の途中か（そうなら AI は merge せず人の確認に回す）
+export const onProbation = (store: LearnStore, ruleIds: string[]): boolean => probationRules(store, ruleIds).length > 0
+
+const WITHDRAWN_BY_PROBATION = '様子見の Issue が失敗または人が止めた'
+
+// 世代の結果で様子見の規則を決着させる。人が merge したら残りを 1 減らし、0 になったら様子見を終えたと知らせる。
+// 失敗したか、auto-ready か始まったあとの Issue を人が止めたら取り下げて知らせる。環境が原因の失敗などでは何もしない。
+// recordOutcome が 1 世代に 1 行しか書かないので、1 行につき 1 回だけ呼ばれる
+export const settleRules = (name: string, row: HistoryRow, at: string): void => {
+  if (row.ruleIds.length === 0) return
+  const merged = row.outcome === 'merged-human'
+  const failed = row.outcome === 'failed' || (row.outcome === 'stopped' && (row.autoReady || row.started))
+  if (!merged && !failed) return
+  const store = readStore(name)
+  const settling = probationRules(store, row.ruleIds)
+  if (settling.length === 0) return
+  const items: Omit<NoticeItem, 'n'>[] = []
+  for (const rule of settling) {
+    if (merged) {
+      rule.probationLeft -= 1
+      if (rule.probationLeft > 0) continue
+    } else {
+      rule.status = 'withdrawn'
+      rule.withdrawnWhy = WITHDRAWN_BY_PROBATION
+    }
+    items.push({
+      kind: merged ? 'graduated' : 'withdrawn',
+      ruleId: rule.id,
+      direction: rule.direction,
+      text: rule.topic,
+      evidence: [],
+      url: '',
+    })
+  }
+  if (items.length > 0) appendNotice(name, store, row.repo, items, at)
+  writeStore(name, store)
+}
 
 // 題名は英数字の並びと、それ以外の文字の 2 文字ずつ。ラベルは名前そのまま 1 語
 const wordsOf = (title: string, labels: string[]): Set<string> => {
