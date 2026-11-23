@@ -5,6 +5,7 @@ import {
   LEARN_CANCELS_FILE,
   LEARN_FILES,
   learnDir,
+  learnItemHash,
   readNotices,
   readStore,
   writeStore,
@@ -48,8 +49,11 @@ const rule = (id: string, overrides: Partial<Rule> = {}): Rule => ({
   global: null,
   ...overrides,
 })
-// 前の版の依頼（action が無い）。取り消しとして読む
-const cancel = (ruleId: string, noticeId = 1) => ({ noticeId, n: 1, ruleId, at: AT })
+// action の無い依頼は取り消しとして読む。hash は依頼が指す項目（知らせの 1 番目）の中身のハッシュ（項目が無ければ ''）
+const cancel = (ruleId: string, noticeId = 1, name = NAME) => {
+  const item = readNotices(name).find((notice) => notice.id === noticeId)?.items[0]
+  return { noticeId, n: 1, ruleId, at: AT, hash: item === undefined ? '' : learnItemHash(item) }
+}
 // 依頼は自分の notices.json にある項目を指すときだけ効くので、規則ごとに new の知らせを足して id を返す
 const noticeOf = (ruleId: string): number => {
   const store = readStore(NAME)
@@ -198,7 +202,10 @@ test('LN20 tick は intake の設定の隣の learn-cancels.json を読んで規
     )
     writeStore('main', store)
     // 設定の intakeConfig（intake.json）の親フォルダが intake のホーム
-    writeFileSync(join(f.dir, LEARN_CANCELS_FILE), JSON.stringify({ version: 1, cancels: [cancel('r1', notice.id)] }))
+    writeFileSync(
+      join(f.dir, LEARN_CANCELS_FILE),
+      JSON.stringify({ version: 1, cancels: [cancel('r1', notice.id, 'main')] }),
+    )
     f.cli('tick')
     assert.deepEqual(
       readStore('main').rules.map((entry) => entry.status),

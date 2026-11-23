@@ -6,7 +6,8 @@
       "n": 1,
       "ruleId": "r1",
       "at": "2026-11-23T01:00:00Z",
-      "action": "cancel"
+      "action": "cancel",
+      "hash": "3623e4ae646c63ff9fdd0d50671bdcf2e8ba1282dfcc5a0d77e8787539a2bd85"
     },
     {
       "noticeId": 2,
@@ -14,7 +15,8 @@
       "ruleId": "r3",
       "at": "2026-11-23T01:05:00Z",
       "action": "publish",
-      "user": "U0APPROVER"
+      "user": "U0APPROVER",
+      "hash": "9bfd93d116aeff5640a99d0d358a8473d25c62a6c6bbbf49755351bc6f50b865"
     }
   ]
 }

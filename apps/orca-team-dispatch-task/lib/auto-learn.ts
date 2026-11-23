@@ -5,6 +5,7 @@ import { readJson, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString, type Json, type JsonObject } from './json.ts'
 import { MANAGED_LABELS, STATUS, STATUS_LABELS, THREAD_LABEL } from './status.ts'
 
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -1146,9 +1147,17 @@ export const notifyGlobalPrs = (name: string, state: AutoState, at: string): voi
   if (changed) writeStore(name, store)
 }
 
+// 依頼が指す項目の中身のハッシュ（人が Slack で見た項目と、この名前の知らせの項目を突き合わせる）。
+// 決まった形は JSON.stringify([kind, ruleId, direction, text, body]) の sha256（16 進）。slack-issue-intake の
+// lib/learn-hash.ts の learnItemHash と同じ値になる（scripts/check-shared-contracts.mjs が fixture で確かめる）
+export const learnItemHash = (item: Pick<NoticeItem, 'kind' | 'ruleId' | 'direction' | 'text' | 'body'>): string =>
+  createHash('sha256')
+    .update(JSON.stringify([item.kind, item.ruleId, item.direction, item.text, item.body]))
+    .digest('hex')
 // learn-cancels.json の依頼の種類（slack-issue-intake の lib/defaults.ts の LEARN_REQUEST_ACTIONS と同じ）
 export const REQUEST_ACTIONS = ['cancel', 'publish'] as const
-// user は公開を承認した人の Slack の id（intake が公開の依頼だけに書く。無ければ ''）
+// user は公開を承認した人の Slack の id（intake が公開の依頼だけに書く。無ければ ''）。
+// hash は人が見た項目の learnItemHash（無ければ ''。前の版の依頼で、どの項目にも合わない）
 type Cancel = {
   noticeId: number
   n: number
@@ -1156,6 +1165,7 @@ type Cancel = {
   at: string
   action: (typeof REQUEST_ACTIONS)[number]
   user: string
+  hash: string
 }
 
 const parseCancel = (value: Json): Cancel | null => {
@@ -1168,9 +1178,16 @@ const parseCancel = (value: Json): Cancel | null => {
   const action =
     entry?.action === undefined ? 'cancel' : (REQUEST_ACTIONS.find((item) => item === entry.action) ?? null)
   const user = entry?.user === undefined ? '' : asString(entry.user)
-  return noticeId === null || n === null || ruleId === null || at === null || action === null || user === null
+  const hash = entry?.hash === undefined ? '' : asString(entry.hash)
+  return noticeId === null ||
+    n === null ||
+    ruleId === null ||
+    at === null ||
+    action === null ||
+    user === null ||
+    hash === null
     ? null
-    : { noticeId, n, ruleId, at, action, user }
+    : { noticeId, n, ruleId, at, action, user, hash }
 }
 
 // ホームの learn-cancels.json の依頼。無ければ空。読めない・形が違うときは null
@@ -1189,7 +1206,8 @@ const readCancels = (home: string): Cancel[] | null => {
 // （古くて消えた知らせ・別の名前の知らせ。下書きへの取り消しを、下書きを捨てたあとに規則の取り消しと読み違えないため）。
 // - 下書き（global-draft）への取り消し: 規則は取り下げず、下書きだけを捨てる（知らせは足さない）。下書きが無ければ何もしない
 // - それ以外の項目への取り消し: 有効な規則を取り下げて、知らせ（withdrawn）を規則ごとに 1 つ足す
-// - 公開: 項目が global-draft で、その題と本文が今の下書きと同じときだけ publishGlobal を呼ぶ。同じ規則の下書きへの
+// - どの依頼も、項目の中身のハッシュ（learnItemHash）が依頼の hash と同じときだけ効く
+// - 公開: 項目が global-draft で、今の下書きの題と本文も依頼の hash と合うときだけ publishGlobal を呼ぶ。同じ規則の下書きへの
 //   取り消しもあれば公開しない。下書きが無い・Issue が既にある依頼は黙って飛ばす
 // 取り下げと下書きの破棄を保存してから公開する（publishGlobal は規則を読み直して保存するので、先に読んだ規則で上書きしない）。
 // 読めないファイルは log に 1 行出して飛ばす。取り下げた規則の数を返す
@@ -1216,14 +1234,17 @@ export const applyCancels = (
   // 公開する規則と、承認した人（最初の依頼のもの）
   const publish = new Map<string, string>()
   for (const request of requests) {
+    // 人が見た項目（依頼の hash）と、この名前の知らせの項目が同じ中身のときだけ効く。番号と規則の id は名前ごと・
+    // learn/ を作り直すたびに繰り返すので、それだけでは別の名前の下書きや、人が見ていない項目を指しうる
     const item = items.get(`${request.noticeId}:${request.n}`)
-    if (item === undefined || item.ruleId !== request.ruleId) continue
+    if (item === undefined || item.ruleId !== request.ruleId || request.hash !== learnItemHash(item)) continue
     const toDraft = item.kind === 'global-draft'
     if (request.action === 'cancel') (toDraft ? discard : withdraw).add(request.ruleId)
     else if (toDraft) {
+      // 公開するのは、今の下書きが人の見た題と本文のままのときだけ
       const draft = ruleById(request.ruleId)?.global?.draft
-      if (draft && draft.title === item.text && draft.body === item.body && !publish.has(request.ruleId))
-        publish.set(request.ruleId, request.user)
+      const shown = draft && learnItemHash({ ...item, text: draft.title, body: draft.body }) === request.hash
+      if (shown && !publish.has(request.ruleId)) publish.set(request.ruleId, request.user)
     }
   }
   let changed = false

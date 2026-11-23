@@ -11,6 +11,7 @@ import {
   LEARN_LABEL,
   LEARN_PLUGIN_REPO,
   learnDir,
+  learnItemHash,
   proposeGlobal,
   publishGlobal,
   readNotices,
@@ -419,6 +420,14 @@ const newNoticeOf = (ruleId: string): number => {
   return notice.id
 }
 const APPROVER = 'UAPPROVER1'
+// 依頼が指す項目（知らせの 1 番目）の中身のハッシュ。intake が人に見せた項目から計算して依頼に書く値
+const hashOf = (noticeId: number): string => {
+  // 同じ id の知らせが 2 つあれば新しい方（orca も後ろの項目で引く）
+  const item = readNotices('main')
+    .filter((notice) => notice.id === noticeId)
+    .at(-1)?.items[0]
+  return item === undefined ? '' : learnItemHash(item)
+}
 const request = (noticeId: number, ruleId: string, action?: 'cancel' | 'publish') => ({
   noticeId,
   n: 1,
@@ -426,6 +435,7 @@ const request = (noticeId: number, ruleId: string, action?: 'cancel' | 'publish'
   at: AT,
   ...(action === undefined ? {} : { action }),
   ...(action === 'publish' ? { user: APPROVER } : {}),
+  hash: hashOf(noticeId),
 })
 // fixture の intake の設定（intake.json）の親フォルダが intake のホーム
 const writeRequests = (f: ReturnType<typeof fixture>, requests: object[]): void =>
@@ -710,6 +720,61 @@ test('LN30 learn-publish は下書きを公開し、judgeRules と judgeFingerpr
     assert.equal(judgeFingerprint(f.config()), before)
   } finally {
     Reflect.deleteProperty(process.env, CLAUDE_HOME_ENV)
+    f.cleanup()
+  }
+})
+
+test('LN31 依頼は指す項目のハッシュが合うときだけ効く。違うハッシュの公開・取り消しと、ハッシュの無い依頼は何もしない', () => {
+  const f = fixture()
+  const quiet = mock.method(console, 'log', () => {})
+  try {
+    f.respond('label_list', [])
+    respondText(f, 'issue_create', ISSUE_URL)
+    writeStore('main', store([rule('r1'), rule('r2')]))
+    const config = withLearn(f.config(), LEARN_PLUGIN_REPO)
+    const draft = draftOf(config, 'r1')
+    const r2 = newNoticeOf('r2')
+    const lines: string[] = []
+    const log = (line: string) => {
+      lines.push(line)
+    }
+    const unchanged = (label: string) => {
+      assert.equal(f.calls(), '', label)
+      assert.deepEqual(
+        ruleOf('r1')?.global,
+        { issue: '', prNotified: false, draft: { title: TITLE, body: BODY } },
+        label,
+      )
+      assert.equal(ruleOf('r2')?.status, 'active', label)
+    }
+    // 番号と規則の id は合うが、別の名前の知らせなど、人が見たのは違う中身（同じ id の別の下書き）
+    const other = learnItemHash({
+      kind: 'global-draft',
+      ruleId: 'r1',
+      direction: 'auto',
+      text: TITLE,
+      body: `${BODY} Another draft.`,
+    })
+    writeRequests(f, [
+      { ...request(draft, 'r1', 'publish'), hash: other },
+      { ...request(r2, 'r2'), hash: other },
+    ])
+    assert.equal(applyCancels('main', config, [f.dir], AT, log), 0)
+    unchanged('違うハッシュ')
+    // ハッシュの無い依頼（前の版の依頼）も何もしない
+    const bare = ({ hash: _hash, ...entry }: ReturnType<typeof request>) => entry
+    writeRequests(f, [bare(request(draft, 'r1', 'publish')), bare(request(r2, 'r2'))])
+    assert.equal(applyCancels('main', config, [f.dir], AT, log), 0)
+    unchanged('ハッシュ無し')
+    assert.deepEqual(lines, [])
+    // 合うハッシュなら効く
+    writeRequests(f, [request(draft, 'r1', 'publish'), request(r2, 'r2')])
+    assert.equal(applyCancels('main', config, [f.dir], AT, log), 1)
+    assert.equal(issueCreates(f).length, 1)
+    assert.equal(ruleOf('r1')?.global?.issue, `${LEARN_PLUGIN_REPO}#12`)
+    assert.equal(ruleOf('r2')?.status, 'withdrawn')
+  } finally {
+    quiet.mock.restore()
     f.cleanup()
   }
 })

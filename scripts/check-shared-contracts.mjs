@@ -102,6 +102,21 @@ if (
   )
 )
   problems.push('learn-cancels.json の fixture に、取り消しの依頼と user 付きの公開の依頼が 1 つずつありません')
+// 依頼の hash（人が見た項目の中身のハッシュ）を、両プラグインが fixture の項目から同じ値に計算する
+const intakeHash = await import(join(intake, 'lib/learn-hash.ts'))
+const fixtureNotices = JSON.parse(readFileSync(join(dispatch, 'test/fixtures/learn-notices.json'), 'utf8')).notices
+for (const entry of fixtureCancels) {
+  const target = fixtureNotices.find((notice) => notice.id === entry.noticeId)?.items.find((i) => i.n === entry.n)
+  if (!target) {
+    problems.push(`learn-cancels.json の依頼が指す項目が learn-notices.json にありません: ${entry.noticeId}:${entry.n}`)
+    continue
+  }
+  const hashes = [intakeHash.learnItemHash(target), learn.learnItemHash(target)]
+  if (hashes.some((hash) => hash !== entry.hash))
+    problems.push(
+      `依頼の hash が違います（${entry.noticeId}:${entry.n}。fixture ${entry.hash}・intake ${hashes[0]}・orca ${hashes[1]}）`,
+    )
+}
 const learnTmp = mkdtempSync(join(tmpdir(), 'learn-contract-'))
 const previousHome = process.env.ORCA_DISPATCH_CONFIG_HOME
 try {

@@ -1,3 +1,4 @@
+import { learnItemHash } from '../lib/learn-hash.ts'
 import { BOT_ID, BOT_USER } from './fixtures/slack-messages.ts'
 import { fakeGh, runCliAsync, setupHome, startSlack, tempHome } from './helpers.ts'
 
@@ -18,6 +19,8 @@ const DRAFT_HINT =
   '公開してよければ、このスレッドに「公開 1」のように番号を返信してください。出さないなら「取り消し 1」と返信してください'
 // Slack の chat.postMessage の text の推奨の上限
 const SLACK_TEXT_MAX = 4000
+// fixture の知らせ 1 の項目 1（r1）の learnItemHash。test/fixtures/learn-cancels.json に固定した値と同じ
+const FIXTURE_R1_HASH = '3623e4ae646c63ff9fdd0d50671bdcf2e8ba1282dfcc5a0d77e8787539a2bd85'
 const fixtureNotices = (): JsonObject =>
   JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures/learn-notices.json'), 'utf8')) as JsonObject
 const firstNotice = (): Json => (fixtureNotices().notices as Json[])[0] ?? null
@@ -187,7 +190,9 @@ test('LE2 スレッドの「取り消し 1」で learn-cancels.json に依頼を
   assert.match(second.stdout, /errors=0 .*learn=0\/1/, second.stderr)
   assert.deepEqual(f.cancels(), {
     version: 1,
-    cancels: [{ noticeId: 1, n: 1, ruleId: 'r1', at: '2026-11-13T09:10:00.000Z', action: 'cancel' }],
+    cancels: [
+      { noticeId: 1, n: 1, ruleId: 'r1', at: '2026-11-13T09:10:00.000Z', action: 'cancel', hash: FIXTURE_R1_HASH },
+    ],
   })
   assert.deepEqual(
     f.threadPosts().map((r) => [r.params.channel, r.params.thread_ts, r.params.text]),
@@ -316,11 +321,8 @@ test('LE6 残りが取り込みの分を切ったら学びの投稿とスレッ�
 
 test('LE7 global-draft の知らせは題と本文と公開の案内を出し、「公開 1」で action publish の依頼を 1 回だけ書いて受け付けを返す', async (t) => {
   const f = await fixture(t)
-  f.writeNotices([
-    notice(1, 'acme/app', [
-      item(1, 'global-draft', { text: DRAFT_TITLE, body: 'First <!channel> & *more*.\n2. Second line.' }),
-    ]),
-  ])
+  const draft = item(1, 'global-draft', { text: DRAFT_TITLE, body: 'First <!channel> & *more*.\n2. Second line.' })
+  f.writeNotices([notice(1, 'acme/app', [draft])])
   const first = await f.poll('09:05')
   assert.match(first.stdout, /errors=0 .*learn=1\/0/, first.stderr)
   const post = f.learnPosts()[0]
@@ -343,7 +345,21 @@ test('LE7 global-draft の知らせは題と本文と公開の案内を出し、
   assert.deepEqual(f.cancels(), {
     version: 1,
     cancels: [
-      { noticeId: 1, n: 1, ruleId: 'r1', at: '2026-11-13T09:10:00.000Z', action: 'publish', user: 'UHUMAN001' },
+      {
+        noticeId: 1,
+        n: 1,
+        ruleId: 'r1',
+        at: '2026-11-13T09:10:00.000Z',
+        action: 'publish',
+        user: 'UHUMAN001',
+        hash: learnItemHash({
+          kind: 'global-draft',
+          ruleId: 'r1',
+          direction: 'auto',
+          text: DRAFT_TITLE,
+          body: String(draft.body),
+        }),
+      },
     ],
   })
   assert.deepEqual(
@@ -461,5 +477,48 @@ test('LE9 「公開 1」は人の返信だけ受け付けて承認した人の i
   assert.deepEqual(
     f.threadPosts().map((r) => r.params.text),
     [ACK, PUBLISH_ACK],
+  )
+})
+
+test('LE10 スレッドの下の notices.json が入れ替わったら（同じ id の別の知らせ）、そのスレッドの公開も取り消しも受けない', async (t) => {
+  const f = await fixture(t)
+  f.writeNotices([notice(1, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: 'Shown draft.' })])])
+  await f.poll('09:05')
+  const [ts = ''] = f.learnPosts().map(f.tsOf)
+  // 報告の材料の場所を変えた・orca の learn/ を作り直したなどで、同じ id に人が見ていない下書きが来た
+  f.writeNotices([notice(1, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: 'Unseen draft.' })])])
+  f.threads[ts] = [parent(ts), reply('70.1', '公開 1'), reply('70.2', '取り消し 1')]
+  const second = await f.poll('09:10')
+  assert.match(second.stdout, /errors=0 .*learn=0\/0/, second.stderr)
+  assert.equal(existsSync(f.cancelsFile), false)
+  assert.equal(f.threadPosts().length, 0)
+  // 投稿したときの知らせに戻れば、また受ける
+  f.writeNotices([notice(1, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body: 'Shown draft.' })])])
+  const third = await f.poll('09:15')
+  assert.match(third.stdout, /errors=0 .*learn=0\/2/, third.stderr)
+  assert.deepEqual(
+    (f.cancels().cancels as JsonObject[]).map((c) => [c.action, c.hash]),
+    [
+      [
+        'publish',
+        learnItemHash({
+          kind: 'global-draft',
+          ruleId: 'r1',
+          direction: 'auto',
+          text: DRAFT_TITLE,
+          body: 'Shown draft.',
+        }),
+      ],
+      [
+        'cancel',
+        learnItemHash({
+          kind: 'global-draft',
+          ruleId: 'r1',
+          direction: 'auto',
+          text: DRAFT_TITLE,
+          body: 'Shown draft.',
+        }),
+      ],
+    ],
   )
 })

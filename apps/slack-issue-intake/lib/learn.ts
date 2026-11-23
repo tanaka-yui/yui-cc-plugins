@@ -31,6 +31,7 @@ import {
 } from './defaults.ts'
 import { readJson, writeJson } from './fs.ts'
 import { asArray, asObject, asString, parseJson } from './json.ts'
+import { learnItemHash, noticeFingerprint } from './learn-hash.ts'
 import { renewLease } from './lease.ts'
 import { maskSecrets } from './secrets.ts'
 import { createSlackClient, fetchReplies, postMessage, postThread } from './slack-api.ts'
@@ -57,11 +58,20 @@ type NoticeItem = {
 }
 type Notice = { id: number; repo: string; at: string; items: NoticeItem[] }
 type RequestAction = (typeof LEARN_REQUEST_ACTIONS)[number]
-// user は公開を承認した人の Slack の id（公開の依頼だけに書く。無ければ ''）
-type Cancel = { noticeId: number; n: number; ruleId: string; at: string; action: RequestAction; user: string }
+// user は公開を承認した人の Slack の id（公開の依頼だけに書く。無ければ ''）。hash は人が見た項目の learnItemHash
+// （orca は自分の知らせの項目と同じ中身のときだけ依頼を効かせる。前の版の依頼には無く、'' で読む）
+type Cancel = {
+  noticeId: number
+  n: number
+  ruleId: string
+  at: string
+  action: RequestAction
+  user: string
+  hash: string
+}
 // 投稿した知らせ。チャンネルは投稿したときのもの（報告先を変えても前のスレッドを読めるように）。after は読み終えた返信の ts。
 // acked / publishAcked は取り消し・公開の受け付けの返信を済ませた項目の番号（同じ項目への返信が重なっても受け付けは
-// それぞれ 1 回だけ）
+// それぞれ 1 回だけ）。fingerprint は投稿した知らせの noticeFingerprint（前の版の記録には無く、'' で読む。どの知らせにも合わない）
 type LearnPost = {
   id: number
   channel: string
@@ -69,6 +79,7 @@ type LearnPost = {
   after: string | null
   acked: number[]
   publishAcked: number[]
+  fingerprint: string
 }
 export type LearnResult = { posted: number; cancelled: number; errors: string[] }
 
@@ -126,14 +137,21 @@ const parseCancel = (value: Json): Cancel | null => {
   const at = asString(o?.at)
   const action = o?.action === undefined ? 'cancel' : (LEARN_REQUEST_ACTIONS.find((a) => a === o.action) ?? null)
   const user = o?.user === undefined ? '' : asString(o.user)
-  return noticeId === null || n === null || ruleId === null || at === null || action === null || user === null
+  const hash = o?.hash === undefined ? '' : asString(o.hash)
+  return noticeId === null ||
+    n === null ||
+    ruleId === null ||
+    at === null ||
+    action === null ||
+    user === null ||
+    hash === null
     ? null
-    : { noticeId, n, ruleId, at, action, user }
+    : { noticeId, n, ruleId, at, action, user, hash }
 }
-// ファイルに書く形。取り消しの依頼は前の版のまま（user は公開の依頼だけに書く）
+// ファイルに書く形。user は公開の依頼だけに、hash はある依頼だけに書く（前の版の依頼の形は変えない）
 const storedCancel = (cancel: Cancel): JsonObject => {
-  const { user, ...entry } = cancel
-  return cancel.action === 'publish' ? { ...entry, user } : entry
+  const { user, hash, ...entry } = cancel
+  return { ...entry, ...(cancel.action === 'publish' ? { user } : {}), ...(hash === '' ? {} : { hash }) }
 }
 const parsePost = (value: Json): LearnPost | null => {
   const o = asObject(value)
@@ -148,7 +166,15 @@ const parsePost = (value: Json): LearnPost | null => {
     })
   return id === null || channel === null || ts === null || (after === null && o?.after !== null)
     ? null
-    : { id, channel, ts, after, acked: numbers(o?.acked), publishAcked: numbers(o?.publishAcked) }
+    : {
+        id,
+        channel,
+        ts,
+        after,
+        acked: numbers(o?.acked),
+        publishAcked: numbers(o?.publishAcked),
+        fingerprint: asString(o?.fingerprint) ?? '',
+      }
 }
 // meta は自分だけが書くので、読めなければ投稿の記録が無いものとして扱う
 const readPosts = (raw: string | null): LearnPost[] =>
@@ -317,7 +343,16 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
       result.errors.push(maskSecrets(r.error))
       break
     }
-    posts = newest([...posts, { id: notice.id, channel, ts: r.ts, after: null, acked: [], publishAcked: [] }])
+    const post = {
+      id: notice.id,
+      channel,
+      ts: r.ts,
+      after: null,
+      acked: [],
+      publishAcked: [],
+      fingerprint: noticeFingerprint(notice),
+    }
+    posts = newest([...posts, post])
     if (!save({ [META_LEARN_LAST_ID]: String(notice.id) })) return result
     result.posted += 1
   }
@@ -341,7 +376,10 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
   // 返信が指す項目。取り消しは取り消せる項目、公開は全文を見せた下書きだけ
   const targets = { cancel: cancellable, publish: publishable }
   for (const post of [...posts].reverse()) {
-    if (!recent(byId.get(post.id))) continue
+    // 今の notices.json の同じ id の知らせが、投稿したものと違えば（報告の材料の場所を変えた・orca の learn/ を作り直した
+    // など）、そのスレッドの返信は人が見ていない知らせを指すので、取り消しも公開も受けない。前の版の記録も同じ
+    const current = byId.get(post.id)
+    if (!recent(current) || current === undefined || noticeFingerprint(current) !== post.fingerprint) continue
     if (short()) return result
     if (!valid()) return result
     const r = await fetchReplies(slack, post.channel, post.ts, post.after, ctx.deadline)
@@ -364,9 +402,7 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
       const approver = person(m)
       const request = parsed?.action === 'publish' && approver === null ? null : parsed
       const item =
-        request === null
-          ? undefined
-          : byId.get(post.id)?.items.find((i) => i.n === request.n && targets[request.action](i))
+        request === null ? undefined : current.items.find((i) => i.n === request.n && targets[request.action](i))
       if (request && item) {
         if (!valid()) return result
         const cancels = existsSync(cancelsPath) ? readVersioned(cancelsPath, 'cancels', parseCancel) : []
@@ -377,7 +413,12 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
           break
         }
         // 同じ知らせ・番号・種類の依頼は 1 回だけ（cancelled は取り消しと公開を合わせた依頼の数）
-        if (!cancels.some((c) => c.noticeId === post.id && c.n === item.n && c.action === request.action)) {
+        const hash = learnItemHash(item)
+        if (
+          !cancels.some(
+            (c) => c.noticeId === post.id && c.n === item.n && c.action === request.action && c.hash === hash,
+          )
+        ) {
           const cancel: Cancel = {
             noticeId: post.id,
             n: item.n,
@@ -385,6 +426,7 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
             at: ctx.now().toISOString(),
             action: request.action,
             user: request.action === 'publish' ? (approver ?? '') : '',
+            hash,
           }
           writeJson(cancelsPath, { version: LEARN_FILE_VERSION, cancels: [...cancels, cancel].map(storedCancel) })
           result.cancelled += 1
