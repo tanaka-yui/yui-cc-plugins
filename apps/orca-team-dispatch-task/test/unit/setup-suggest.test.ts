@@ -1,8 +1,8 @@
-import { suggestVerify } from '../../lib/setup-suggest.ts'
+import { suggestVerify, usesMise } from '../../lib/setup-suggest.ts'
 import { readClaudeStubArgs, readClaudeStubPwd, writeClaudeStub } from '../lib/claude-stub.ts'
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -99,6 +99,33 @@ test('SG4 timeout is an error', () => {
     const start = Date.now()
     assert.deepEqual(suggestVerify(f.dir, judge), { error: '時間内に終わりませんでした' })
     assert.ok(Date.now() - start < 3000)
+  } finally {
+    f.cleanup()
+  }
+})
+test('SG5 a mise repository is detected and the prompt asks for repository tasks run through mise', () => {
+  const f = fixture()
+  try {
+    assert.equal(usesMise(f.dir), false)
+    for (const file of ['mise.toml', '.mise.toml', '.tool-versions', 'mise/config.toml', '.config/mise.toml']) {
+      const path = join(f.dir, file)
+      mkdirSync(join(path, '..'), { recursive: true })
+      writeFileSync(path, '')
+      assert.equal(usesMise(f.dir), true, file)
+      rmSync(path)
+    }
+    f.stub(JSON.stringify({ result: '{"commands":["mise run test"],"tools":["mise"]}' }))
+    suggestVerify(f.dir, judge)
+    const plain = readClaudeStubArgs(f.dir)[1] ?? ''
+    assert.ok(plain.includes('do not invent checks CI does not run'), plain)
+    assert.ok(plain.includes('mise run <task>'), plain)
+    assert.ok(!plain.includes('This repository uses mise'), plain)
+    suggestVerify(f.dir, judge, true)
+    assert.ok(
+      readClaudeStubArgs(f.dir)[1]?.endsWith(
+        'This repository uses mise: run every command through mise run or mise exec --.',
+      ),
+    )
   } finally {
     f.cleanup()
   }
