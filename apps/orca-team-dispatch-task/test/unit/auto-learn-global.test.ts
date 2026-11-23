@@ -220,7 +220,7 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
     respondText(f, 'issue_create', ISSUE_URL)
     const config = withLearn(f.config(), LEARN_PLUGIN_REPO)
     const repos = [APP, API]
-    assert.deepEqual(globalProblems(TITLE, BODY, repos), [])
+    assert.deepEqual(globalProblems(TITLE, BODY, repos, LEARN_PLUGIN_REPO), [])
     const cases: Array<[string, string]> = [
       [TITLE, `${BODY} Seen in acme/app.`],
       ['app の修正', BODY],
@@ -237,7 +237,7 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
       [TITLE, 'x'.repeat(LEARN_GLOBAL_BODY_MAX + 1)],
     ]
     for (const [title, body] of cases) {
-      assert.ok(globalProblems(title, body, repos).length > 0, `${title} / ${body}`)
+      assert.ok(globalProblems(title, body, repos, LEARN_PLUGIN_REPO).length > 0, `${title} / ${body}`)
       writeStore('main', store([rule('r1')]))
       const lines: string[] = []
       proposeGlobal('main', config, { ruleId: 'r1', title, body }, AT, (line) => {
@@ -247,22 +247,42 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
       assert.equal(lines.length, 1, lines.join('\n'))
       assert.equal(ruleOf('r1')?.global, null)
     }
-    // リポジトリ名は語として見る。普通の英単語の一部や、本文に書かせる auto-judge.md のパスでは断らない
-    const short = ['acme/app', 'acme/io', 'acme/auto', 'acme/task', 'acme/orca', 'acme/dispatch']
-    const plain = `${BODY} Apply the ratio to automatic tasks; my-app stays as is.`
-    assert.ok(plain.includes('skills/orca-team-dispatch-task/references/auto-judge.md'))
-    assert.deepEqual(globalProblems(TITLE, plain, short), [])
-    // 掛かった名前を理由に書く
-    assert.deepEqual(globalProblems('Fix the app repository', BODY, short), [
-      '題か本文に設定にあるリポジトリの名前があります: app',
+    // 名前の見方。理由の行は掛かった名前を言う
+    const named = (title: string, body: string, names: string[], issueRepo: string | null = null): string[] =>
+      globalProblems(title, body, names, issueRepo)
+    const hit = (name: string): string[] => [`題か本文に設定にあるリポジトリの名前があります: ${name}`]
+    // 4 文字以下で - も _ も無い名前は語として見る（- と _ は境目）
+    assert.deepEqual(named(TITLE, `${BODY} Apply the ratio.`, ['acme/app', 'acme/io']), [])
+    assert.deepEqual(named(TITLE, `${BODY} Seen in my-app.`, ['acme/app']), hit('app'))
+    assert.deepEqual(named('app の修正', BODY, ['acme/app']), hit('app'))
+    assert.deepEqual(named('ＡＰＰ の修正', BODY, ['acme/app']), hit('app'))
+    assert.deepEqual(named(TITLE, `${BODY} Seen in acme/app.`, ['acme/app']), hit('acme/app app'))
+    // 長い名前と - か _ を含む名前は部分一致で断る（漏らさない向き）
+    for (const [text, names] of [
+      ['my-secret-repo', 'secret-repo'],
+      ['secret-repos', 'secret-repo'],
+      ['acme/secret-repo-server', 'acme/secret-repo secret-repo'],
     ])
-    assert.deepEqual(globalProblems(TITLE, `${BODY} Seen in acme/app.`, short), [
-      '題か本文に設定にあるリポジトリの名前があります: acme/app app',
-    ])
-    assert.deepEqual(globalProblems('ＡＰＰ の修正', BODY, short), [
-      '題か本文に設定にあるリポジトリの名前があります: app',
-    ])
-    assert.deepEqual(globalProblems(TITLE, `${BODY} ＃４１`, short), ['題か本文に # と数字の並びがあります'])
+      assert.deepEqual(named(TITLE, `${BODY} ${text}`, ['acme/secret-repo']), hit(names ?? ''), text)
+    assert.deepEqual(named(TITLE, `${BODY} billings`, ['acme/billing']), hit('billing'))
+    // 本文に書かせる auto-judge.md のパスの中だけなら断らない。パスの外なら断る
+    assert.ok(BODY.includes('skills/orca-team-dispatch-task/references/auto-judge.md'))
+    for (const repo of ['acme/dispatch', 'acme/task', 'acme/orca', 'acme/auto'])
+      assert.deepEqual(named(TITLE, BODY, [repo]), [], repo)
+    assert.deepEqual(
+      named(TITLE, `${BODY} Also skills/orca-team-dispatch-task/references/auto-judge-ja.md.`, ['acme/dispatch']),
+      [],
+    )
+    assert.deepEqual(named(TITLE, `${BODY} Stop dispatching early.`, ['acme/dispatch']), hit('dispatch'))
+    // Issue を出す先は、設定の拾う元にあっても名前を書いてよい
+    const withPlugin = [APP, LEARN_PLUGIN_REPO]
+    assert.deepEqual(named(TITLE, `${BODY} Change it in yui-cc-plugins.`, withPlugin, LEARN_PLUGIN_REPO), [])
+    assert.deepEqual(named(TITLE, `${BODY} Change it in yui-cc-plugins.`, withPlugin, null), hit('yui-cc-plugins'))
+    // #数字と URL は全角も断る
+    assert.deepEqual(named(TITLE, `${BODY} #41`, []), ['題か本文に # と数字の並びがあります'])
+    assert.deepEqual(named(TITLE, `${BODY} ＃４１`, []), ['題か本文に # と数字の並びがあります'])
+    assert.deepEqual(named(TITLE, `${BODY} https://example.com`, []), ['題か本文に URL があります'])
+    assert.deepEqual(named(TITLE, `${BODY} ｈｔｔｐｓ://example.com`, []), ['題か本文に URL があります'])
     // 設定から外したリポジトリの規則でも、そのリポジトリ名は出さない
     writeStore('main', store([rule('r1', { repo: 'gone/secret-repo' })]))
     const lines: string[] = []
@@ -273,7 +293,10 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
     assert.equal(lines.length, 1, lines.join('\n'))
     assert.equal(ruleOf('r1')?.global, null)
     // 長さちょうどは通る
-    assert.deepEqual(globalProblems('x'.repeat(LEARN_GLOBAL_TITLE_MAX), 'x'.repeat(LEARN_GLOBAL_BODY_MAX), repos), [])
+    assert.deepEqual(
+      globalProblems('x'.repeat(LEARN_GLOBAL_TITLE_MAX), 'x'.repeat(LEARN_GLOBAL_BODY_MAX), repos, LEARN_PLUGIN_REPO),
+      [],
+    )
   } finally {
     f.cleanup()
   }
