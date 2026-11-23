@@ -1,6 +1,8 @@
+import { BASE_LABEL_PREFIX } from './auto-base.ts'
 import { autoDir, autoNow } from './auto-paths.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString, type Json, type JsonObject } from './json.ts'
+import { MANAGED_LABELS, STATUS_LABELS } from './status.ts'
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -285,6 +287,15 @@ export const writeHistory = (name: string, rows: HistoryRow[]): void => {
   writeLearnFile(name, LEARN_FILES.history, { rows: kept.reverse() })
 }
 
+// 中身を表さないラベル（ステータス・管理の印・向き先）。似た事例がこれで一致しないよう、行に入れない
+const contentLabels = (labels: string[]): string[] =>
+  labels.filter(
+    (label) =>
+      !STATUS_LABELS.some((status) => status.name === label) &&
+      !MANAGED_LABELS.some((managed) => managed === label) &&
+      !label.toLowerCase().startsWith(BASE_LABEL_PREFIX),
+  )
+
 // 判定のある世代の結果を履歴に 1 行足し、記録済みにする。判定が無い・記録済みなら何もしない。
 // 履歴を読めない・書けないときは 1 行出して false（tick を止めない）。状態の保存は呼び出し側の仕事
 export const recordOutcome = (
@@ -301,7 +312,7 @@ export const recordOutcome = (
     repo: issue.repo,
     generation: issue.generation,
     title: issue.title,
-    labels,
+    labels: contentLabels(labels),
     aiRoute: learn.aiRoute,
     route: issue.phase === 'eng' || result.startsWith('eng-') ? 'eng' : 'auto',
     forced: learn.forced,

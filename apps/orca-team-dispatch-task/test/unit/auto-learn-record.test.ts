@@ -1,4 +1,4 @@
-import { LEARN_FILES, learnDir, readHistory, recordOutcome } from '../../lib/auto-learn.ts'
+import { endRecorder, LEARN_FILES, learnDir, readHistory, recordOutcome } from '../../lib/auto-learn.ts'
 import { syncIssues } from '../../lib/auto-queue.ts'
 import { readState, writeState } from '../../lib/auto-state.ts'
 import { fixture } from '../lib/auto-fixture.ts'
@@ -42,7 +42,9 @@ test('LN6 recordOutcome は判定のある世代を 1 回だけ履歴に書く',
 
     const learn = judged()
     Object.assign(issue, { learn, autoReady: true, startedAt: AT, reason: '明確な修正です' })
-    assert.equal(recordOutcome('main', issue, ['bug'], 'merged-ai', AT), true)
+    // ステータス・管理の印・向き先のラベルは中身を表さないので行に入れない
+    const labels = ['bug', 'Ready', 'In review', 'from-slack', 'slack-thread', 'base:develop', 'Base:main']
+    assert.equal(recordOutcome('main', issue, labels, 'merged-ai', AT), true)
     assert.equal(learn.recorded, true)
     assert.equal(recordOutcome('main', issue, ['bug'], 'merged-ai', AT), false)
     assert.deepEqual(readHistory('main'), [
@@ -119,7 +121,14 @@ test('LN7 judge-apply は AI の向きと強制の理由を残し、失敗は環
     recorded: false,
   })
   assert.deepEqual(decide('bug', 'auto', ['acme/app']), judged('auto'))
-  assert.deepEqual(decide('feature', 'eng', ['acme/app']), judged('eng'))
+  // AI の判定に関係なく CLI が eng に回す Issue は、AI が eng と言っても強制の理由を残す
+  assert.deepEqual(decide('feature', 'eng', ['acme/app']), {
+    aiRoute: 'eng',
+    forced: '新機能',
+    ruleIds: [],
+    recorded: false,
+  })
+  assert.deepEqual(decide('bug', 'eng', ['acme/app']), judged('eng'))
 
   // worker の起動の失敗は環境が原因
   {
@@ -170,7 +179,7 @@ test('LN8 エンジニア行きから拾い直すと eng-returned を、閉じ�
       const row = readHistory('main')[0]
       assert.equal(row?.route, 'eng')
       assert.equal(row?.aiRoute, 'eng')
-      assert.ok(row?.labels.includes('bug'))
+      assert.deepEqual(row?.labels, ['bug'])
     } finally {
       f.cleanup()
     }
@@ -245,7 +254,45 @@ test('LN9 人が merge した Issue は merged-human、AI が merge した Issue
       f.cli('tick')
       assert.equal(readState('main').issues[issue.key]?.phase, closed ? undefined : 'stopped')
       assert.deepEqual(outcomes(), ['acme/app#7@1:stopped'])
-      assert.deepEqual(readHistory('main')[0]?.labels, ['Pending'])
+      assert.deepEqual(readHistory('main')[0]?.labels, [])
+    } finally {
+      f.cleanup()
+    }
+  }
+  // 人がレビューから Ready に戻すのは作業の続きなので書かない（次の世代の結果が数える）
+  {
+    const f = runtimeFixture()
+    try {
+      const issue = f.track('review')
+      learnOn(issue.key, judged(), { cleanupPending: false, endedAt: '2026-11-13T05:00:00Z' })
+      f.respond('issue_list', [{ number: 7, title: '題', labels: [], updatedAt: '2026-11-13' }])
+      f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'Ready' }] })
+      f.cli('tick')
+      const state = readState('main').issues[issue.key]
+      assert.equal(state?.generation, 2)
+      assert.equal(state?.learn, null)
+      assert.deepEqual(outcomes(), [])
+    } finally {
+      f.cleanup()
+    }
+  }
+  // auto-ready を外して判定待ちの Issue が記録から外れるのは設定の変更なので書かない
+  {
+    const f = fixture()
+    try {
+      f.respond('issue_list', [{ number: 7, title: '題', labels: [], updatedAt: '2026-01-01' }])
+      const state = readState('main')
+      const source = f.config().sources[0]
+      assert.ok(source)
+      syncIssues(state, [source])
+      const issue = state.issues['acme/app#7']
+      assert.ok(issue)
+      Object.assign(issue, { autoReady: true, learn: judged() })
+      f.respond('issue_list', [])
+      f.respond('issue_view', { state: 'OPEN', title: '題', labels: [{ name: 'Backlog' }] })
+      syncIssues(state, [source], new Set(), undefined, endRecorder('main'))
+      assert.equal(state.issues['acme/app#7'], undefined)
+      assert.deepEqual(outcomes(), [])
     } finally {
       f.cleanup()
     }

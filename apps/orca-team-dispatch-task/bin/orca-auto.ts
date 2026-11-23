@@ -38,7 +38,7 @@ import { mkdirSync, readFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { isatty } from 'node:tty'
 
-// CLI が判定の向きを eng に変えた理由（判定の履歴の forced）
+// AI の判定に関係なく CLI が eng に回す理由（判定の履歴の forced）
 const FORCED_FEATURE = '新機能'
 const FORCED_TARGETS = '3 リポジトリ以上'
 
@@ -251,11 +251,10 @@ const main = (argv: string[]): number => {
       issue.limitMinutes = decision.limitMinutes
       issue.reason = decision.reason
       issue.updatedAt = autoNow()
-      // AI の向きと、AI が auto と言ったのに CLI が eng に変えた理由を、この世代の結果と一緒に履歴へ残す
+      // AI の向きと、AI の判定に関係なく CLI が eng に回す理由を、この世代の結果と一緒に履歴へ残す
       issue.learn = {
         aiRoute: decision.route === 'eng' ? 'eng' : 'auto',
-        forced:
-          decision.route === 'eng' ? '' : feature ? FORCED_FEATURE : uniqueTargets.length > 2 ? FORCED_TARGETS : '',
+        forced: feature ? FORCED_FEATURE : uniqueTargets.length > 2 ? FORCED_TARGETS : '',
         ruleIds: [],
         recorded: false,
       }

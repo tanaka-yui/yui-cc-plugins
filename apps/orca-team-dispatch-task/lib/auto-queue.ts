@@ -167,9 +167,9 @@ export const syncIssues = (
         ['failed', 'stopped', 'eng', 'review'].includes(issue.phase)
       ) {
         const from = issue.phase
-        // 世代を進める前に、今の世代の結果を残す。エンジニア行きを人が戻した・レビュー中に人が拾い直させた
+        // 世代を進める前に、エンジニア行きを人が戻したことを残す。レビューからの拾い直しは作業の続きなので書かない
+        // （次の世代の結果が数える）
         if (from === 'eng') onEnd?.(issue, 'eng-returned', row.labels)
-        else if (from === 'review') onEnd?.(issue, 'stopped', row.labels)
         const hadBranches = Object.keys(issue.branches).length > 0 || issue.branch !== ''
         Object.assign(issue, {
           prevTargets: hadBranches ? [...issue.targets] : issue.prevTargets,
@@ -300,7 +300,7 @@ export const syncIssues = (
         // 判定待ちの Backlog（auto-ready で拾った Issue と、向き先を尋ねて Backlog へ戻した Issue）。
         // auto-ready を外したら auto-ready で拾った Issue は何もせずに記録から外し、人が別のステータスにしたら止める
         if (issue.autoReady && !source?.autoReady) {
-          onEnd?.(issue, 'stopped', view.labels)
+          // 設定の変更で、判定の結果ではないので履歴に書かない
           delete state.issues[key]
           result.dropped.push(key)
         } else if (!view.labels.includes(STATUS.backlog)) {
