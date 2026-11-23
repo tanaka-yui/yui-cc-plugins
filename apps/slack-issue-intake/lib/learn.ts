@@ -71,7 +71,8 @@ type Cancel = {
 }
 // 投稿した知らせ。チャンネルは投稿したときのもの（報告先を変えても前のスレッドを読めるように）。after は読み終えた返信の ts。
 // acked / publishAcked は取り消し・公開の受け付けの返信を済ませた項目の番号（同じ項目への返信が重なっても受け付けは
-// それぞれ 1 回だけ）。fingerprint は投稿した知らせの noticeFingerprint（前の版の記録には無く、'' で読む。どの知らせにも合わない）
+// それぞれ 1 回だけ）。fingerprint は投稿した知らせの noticeFingerprint（前の版の記録には無く、'' で読む。どの知らせにも合わない）。
+// drafts は下書きの題と本文を出して投稿したか（report.channel が設定されていたか。前の版の記録には無く、false で読む）
 type LearnPost = {
   id: number
   channel: string
@@ -80,6 +81,7 @@ type LearnPost = {
   acked: number[]
   publishAcked: number[]
   fingerprint: string
+  drafts: boolean
 }
 export type LearnResult = { posted: number; cancelled: number; errors: string[] }
 
@@ -174,6 +176,7 @@ const parsePost = (value: Json): LearnPost | null => {
         acked: numbers(o?.acked),
         publishAcked: numbers(o?.publishAcked),
         fingerprint: asString(o?.fingerprint) ?? '',
+        drafts: o?.drafts === true,
       }
 }
 // meta は自分だけが書くので、読めなければ投稿の記録が無いものとして扱う
@@ -254,12 +257,17 @@ const draftAltered = (item: NoticeItem): boolean => altered(item.text, null) || 
 // Slack の返信で公開を受け付ける項目: 下書きで、題と本文を省かず伏せず置き換えずに、公開する文のとおりに見せたもの
 const publishable = (item: NoticeItem): boolean =>
   item.kind === LEARN_PUBLISHABLE_KIND && draftBody(item.body).complete && !draftAltered(item)
-const renderNotice = (notice: Notice, repo: string): string => {
+// showDrafts が false（report.channel が無い）なら、下書きは題と本文を出さずに決まった 1 行にし、案内も出さない
+const renderNotice = (notice: Notice, repo: string, showDrafts: boolean): string => {
   const lines = [fill(LEARN_TEXT.heading, { repo: safe(repo) })]
   let drafts = false
   let omitted = false
   let hidden = false
   for (const item of notice.items) {
+    if (item.kind === LEARN_PUBLISHABLE_KIND && !showDrafts) {
+      lines.push(fill(LEARN_TEXT.draftHidden, { n: item.n }))
+      continue
+    }
     lines.push(fill(LEARN_TEXT.item, { n: item.n, text: safe(item.text), kind: kindLabel(item) }))
     if (item.evidence.length)
       lines.push(fill(LEARN_TEXT.evidence, { evidence: item.evidence.map(evidenceLabel).join(' ') }))
@@ -274,7 +282,8 @@ const renderNotice = (notice: Notice, repo: string): string => {
   if (omitted) lines.push(LEARN_TEXT.draftTooLongHint)
   else if (hidden) lines.push(LEARN_TEXT.draftMaskedHint)
   else if (drafts) lines.push(LEARN_TEXT.draftHint)
-  else if (notice.items.some(cancellable)) lines.push(LEARN_TEXT.cancelHint)
+  else if (notice.items.some((item) => cancellable(item) && (showDrafts || item.kind !== LEARN_PUBLISHABLE_KIND)))
+    lines.push(LEARN_TEXT.cancelHint)
   return lines.join('\n')
 }
 // 返信の「取り消し <番号>」「公開 <番号>」。前後の空白と全角の数字・空白を許す。合わなければ null
@@ -328,6 +337,8 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
   // 投稿: そのホームのリポジトリの、まだ投稿していない知らせを id の小さい順に。失敗したら次の回に同じ id からやり直す
   const last = Number(getMeta(rt.db, META_LEARN_LAST_ID) ?? 0) || 0
   const channel = rt.config.report.channel ?? rt.config.channel
+  // 下書きの題と本文を出すのは、報告先のチャンネルを明示したときだけ（無ければフォームのチャンネルに落ちるため）
+  const showDrafts = rt.config.report.channel !== null
   const pending = notices
     .flatMap((notice) => {
       const setting = notice.id > last ? repoSetting(rt.config, notice.repo) : null
@@ -338,7 +349,7 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
   for (const { notice, repo } of pending) {
     if (short()) return result
     if (!valid()) return result
-    const r = await postMessage(slack, channel, renderNotice(notice, repo), ctx.deadline, false)
+    const r = await postMessage(slack, channel, renderNotice(notice, repo, showDrafts), ctx.deadline, false)
     if (!r.ok) {
       result.errors.push(maskSecrets(r.error))
       break
@@ -351,6 +362,7 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
       acked: [],
       publishAcked: [],
       fingerprint: noticeFingerprint(notice),
+      drafts: showDrafts,
     }
     posts = newest([...posts, post])
     if (!save({ [META_LEARN_LAST_ID]: String(notice.id) })) return result
@@ -373,8 +385,6 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
   const update = (post: LearnPost, after: string | null, acked: number[], publishAcked: number[]): void => {
     posts = posts.map((p) => (p.id === post.id ? { ...p, after, acked, publishAcked } : p))
   }
-  // 返信が指す項目。取り消しは取り消せる項目、公開は全文を見せた下書きだけ
-  const targets = { cancel: cancellable, publish: publishable }
   for (const post of [...posts].reverse()) {
     // 今の notices.json の同じ id の知らせが、投稿したものと違えば（報告の材料の場所を変えた・orca の learn/ を作り直した
     // など）、そのスレッドの返信は人が見ていない知らせを指すので、取り消しも公開も受けない。前の版の記録も同じ
@@ -392,6 +402,13 @@ export const syncLearn = async (ctx: DriveContext): Promise<LearnResult> => {
       }
       result.errors.push(maskSecrets(r.error))
       break
+    }
+    // 返信が指す項目。取り消しは取り消せる項目、公開は全文を見せた下書きだけ。下書きへの依頼は、題と本文を出して
+    // 投稿したスレッドで、今も報告先のチャンネルが設定されているときだけ受ける（見ていない下書きを承認・破棄させない）
+    const draftsOpen = post.drafts && rt.config.report.channel !== null
+    const targets = {
+      cancel: (i: NoticeItem): boolean => cancellable(i) && (draftsOpen || i.kind !== LEARN_PUBLISHABLE_KIND),
+      publish: (i: NoticeItem): boolean => draftsOpen && publishable(i),
     }
     let after = post.after
     const acked = { cancel: [...post.acked], publish: [...post.publishAcked] }

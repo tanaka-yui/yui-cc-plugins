@@ -1,5 +1,6 @@
+import { loadConfig, saveConfig } from '../lib/config.ts'
 import { learnItemHash } from '../lib/learn-hash.ts'
-import { BOT_ID, BOT_USER } from './fixtures/slack-messages.ts'
+import { BOT_ID, BOT_USER, CHANNEL } from './fixtures/slack-messages.ts'
 import { fakeGh, runCliAsync, setupHome, startSlack, tempHome } from './helpers.ts'
 
 import assert from 'node:assert/strict'
@@ -15,6 +16,8 @@ const LEARN_MARK = '🧠'
 const ACK = '取り消しを受け付けました。次の確認で反映します'
 const PUBLISH_ACK = '公開を受け付けました。次の確認で Issue を作ります'
 const DRAFT_TITLE = 'Treat copy-only fixes as automatic'
+const DRAFT_HIDDEN =
+  '公開の前の下書きがあります。報告先のチャンネルが設定されていないので、題と本文はここに出さず、このスレッドでは公開も取り消しもできません。orca-auto.ts status で全文を読み、公開するなら orca-auto.ts learn-publish を使ってください'
 const DRAFT_HINT =
   '公開してよければ、このスレッドに「公開 1」のように番号を返信してください。出さないなら「取り消し 1」と返信してください'
 // Slack の chat.postMessage の text の推奨の上限
@@ -41,7 +44,12 @@ const notice = (id: number, repo: string, items: JsonObject[]): JsonObject => ({
   items,
 })
 
-const fixture = async (t: { after: (fn: () => Promise<void>) => void }, withSource = true) => {
+// reportChannel: 設定の report.channel（null なら学びの知らせはフォームのチャンネルに落ちる）
+const fixture = async (
+  t: { after: (fn: () => Promise<void>) => void },
+  withSource = true,
+  reportChannel: string | null = REPORT_CHANNEL,
+) => {
   const home = tempHome()
   const gh = fakeGh(tempHome())
   const source = join(home, 'auto', 'report.json')
@@ -80,7 +88,7 @@ const fixture = async (t: { after: (fn: () => Promise<void>) => void }, withSour
       repos: [{ name: 'acme/app', form: true, existing: 'skip' }],
       defaultRepo: 'acme/app',
       cursor: String(Date.parse('2026-11-13T08:50:00Z') / 1000),
-      report: { channel: REPORT_CHANNEL, dailyAt: '09:00', source: withSource ? source : null },
+      report: { channel: reportChannel, dailyAt: '09:00', source: withSource ? source : null },
     })),
   }
   // 報告の材料は正しいものを置き、errors の数が学びの分だけになるようにする
@@ -520,5 +528,58 @@ test('LE10 スレッドの下の notices.json が入れ替わったら（同じ 
         }),
       ],
     ],
+  )
+})
+
+test('LE11 report.channel が無いときは、下書きの題と本文を出さずに決まった 1 行にし、そのスレッドの公開も取り消しも受けない（あとで report.channel を設定しても同じ）', async (t) => {
+  const f = await fixture(t, true, null)
+  const body = 'Private body of the draft.'
+  f.writeNotices([
+    notice(1, 'acme/app', [item(1, 'new'), item(2, 'global-draft', { text: DRAFT_TITLE, body })]),
+    notice(2, 'acme/app', [item(1, 'global-draft', { text: DRAFT_TITLE, body })]),
+  ])
+  const first = await f.poll('09:05')
+  assert.match(first.stdout, /errors=0 .*learn=2\/0/, first.stderr)
+  const posts = f.learnPosts()
+  // 投稿はフォームのチャンネルに落ちる
+  assert.deepEqual(
+    posts.map((r) => r.params.channel),
+    [CHANNEL, CHANNEL],
+  )
+  const hidden = `2. ${DRAFT_HIDDEN}`
+  assert.equal(
+    posts[0]?.params.text,
+    [
+      '🧠 判定の学び（acme/app）',
+      '1. 規則1（今後は自動で進めます。最初の 3 件は人が確認します）',
+      hidden,
+      '取り消すときは、このスレッドに「取り消し 1」のように番号を返信してください',
+    ].join('\n'),
+  )
+  assert.equal(posts[1]?.params.text, ['🧠 判定の学び（acme/app）', `1. ${DRAFT_HIDDEN}`].join('\n'))
+  for (const post of posts) {
+    assert.ok(!post.params.text?.includes(DRAFT_TITLE) && !post.params.text?.includes(body), post.params.text)
+  }
+  const [ts1 = '', ts2 = ''] = posts.map(f.tsOf)
+  f.threads[ts1] = [parent(ts1), reply('70.1', '公開 2'), reply('70.2', '取り消し 2'), reply('70.3', '取り消し 1')]
+  f.threads[ts2] = [parent(ts2), reply('71.1', '公開 1'), reply('71.2', '取り消し 1')]
+  const second = await f.poll('09:10')
+  assert.match(second.stdout, /errors=0 .*learn=0\/1/, second.stderr)
+  assert.deepEqual(
+    (f.cancels().cancels as JsonObject[]).map((c) => [c.noticeId, c.n, c.action]),
+    [[1, 1, 'cancel']],
+  )
+  // あとで報告先のチャンネルを設定しても、題と本文を出さずに投稿したスレッドの下書きへの依頼は受けない
+  const config = loadConfig(f.home)
+  assert.ok(config)
+  saveConfig(f.home, { ...config, report: { ...config.report, channel: REPORT_CHANNEL } })
+  f.threads[ts1]?.push(reply('70.4', '公開 2'), reply('70.5', '取り消し 2'))
+  f.threads[ts2]?.push(reply('71.3', '公開 1'), reply('71.4', '取り消し 1'))
+  const third = await f.poll('09:15')
+  assert.match(third.stdout, /errors=0 .*learn=0\/0/, third.stderr)
+  assert.equal((f.cancels().cancels as JsonObject[]).length, 1)
+  assert.deepEqual(
+    f.threadPosts().map((r) => r.params.text),
+    [ACK],
   )
 })

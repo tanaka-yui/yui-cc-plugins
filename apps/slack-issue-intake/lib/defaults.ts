@@ -753,6 +753,10 @@ export const LEARN_TEXT = {
   globalPr: '改善の PR ができました {url}',
   globalHint: '全体に効きそうな学びです',
   globalDraft: '公開の前の下書きです',
+  // 報告先のチャンネル（report.channel）が設定されていないときの下書きの行。投稿はフォームのチャンネルに落ちるので、
+  // AI が書いた題と本文（公開の前で、非公開の名前を含みうる）を出さず、返信の公開も取り消しも受けない
+  draftHidden:
+    '{n}. 公開の前の下書きがあります。報告先のチャンネルが設定されていないので、題と本文はここに出さず、このスレッドでは公開も取り消しもできません。orca-auto.ts status で全文を読み、公開するなら orca-auto.ts learn-publish を使ってください',
   unreadable: '学びの知らせを読めません: {path}',
   cancelsUnreadable: '学びの取り消しの依頼を読めません: {path}',
 }
