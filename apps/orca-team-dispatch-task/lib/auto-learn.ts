@@ -1,13 +1,15 @@
 import { BASE_LABEL_PREFIX } from './auto-base.ts'
+import { ensureLabels, github } from './auto-github.ts'
 import { autoDir, autoNow } from './auto-paths.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asArray, asObject, asString, type Json, type JsonObject } from './json.ts'
-import { MANAGED_LABELS, STATUS_LABELS } from './status.ts'
+import { MANAGED_LABELS, STATUS, STATUS_LABELS, THREAD_LABEL } from './status.ts'
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-import type { IssueState } from './auto-state.ts'
+import type { AutoConfig } from './auto-config.ts'
+import type { AutoState, IssueState } from './auto-state.ts'
 
 // 判定の学びのデータ（auto/<name>/learn/ の下）と、その上の純粋な計算。
 // 履歴・規則・知らせの 3 ファイルを読み書きし、食い違いの抽出・似た事例の選択・規則の文の検査をする。
@@ -29,6 +31,24 @@ export const LEARN_HISTORY_MAX = 500
 export const LEARN_TOPIC_MAX = 80
 // 端末に残す知らせの件数
 export const LEARN_NOTICES_MAX = 50
+// 全体に効く学びを改善の Issue として出す先（setup で「はい」と答えたときの値）
+export const LEARN_PLUGIN_REPO = 'tanaka-yui/yui-cc-plugins'
+// 判定の改善の Issue に付けるラベル。このラベルの Issue の PR は AI が merge しない
+export const LEARN_LABEL = 'judge-learning'
+const LEARN_LABEL_COLOR = '5319e7'
+const LEARN_LABEL_DESCRIPTION = '判定の学びから作った、判定の基準を直す改善'
+// slack-thread が無いときだけ作る（slack-issue-intake の lib/defaults.ts と同じ色と説明）
+const THREAD_LABEL_COLOR = '6f42c1'
+const THREAD_LABEL_DESCRIPTION = 'slack-issue-intake が Slack のスレッドで管理している Issue'
+// eng 向きの規則（様子見が無い）を全体の改善に出すのに要る根拠の件数
+export const LEARN_GLOBAL_ENG_EVIDENCE = 5
+// 改善の Issue の本文と題の文字数の上限
+export const LEARN_GLOBAL_BODY_MAX = 2000
+export const LEARN_GLOBAL_TITLE_MAX = 80
+// 公開リポジトリに出す文に入れてはいけない Issue の番号の並び
+const ISSUE_REFERENCE = /#\d/
+// gh issue create が出す Issue の URL の末尾の番号
+const CREATED_ISSUE_NUMBER = /\/issues\/(\d+)$/
 
 const FILE_VERSION = 1
 export const ROUTES = ['auto', 'eng'] as const
@@ -642,7 +662,8 @@ export const decisionRuleIds = (value: Json | undefined, shown: LearnedRule[]): 
   return [...new Set(ids)]
 }
 
-// 振り返りの案。kind ごとに検査と保存をする。知らない kind は捨てる（kind は今後増える）
+// 振り返りの案。kind ごとに検査と保存をする。知らない kind は捨てる（kind は今後増える）。
+// global の案は形だけ確かめて返し、呼び出し側が applyLearn の保存のあとで proposeGlobal に渡す
 type LearnContext = { store: LearnStore; material: Map<string, Set<string>>; at: string }
 type Accepted = { repo: string; item: Omit<NoticeItem, 'n'> }
 const WITHDRAWN_BY_REFLECTION = '振り返りで取り下げ'
@@ -749,8 +770,9 @@ export const applyLearn = (
   shown: Array<{ repo: string; mismatches: Mismatch[] }>,
   at: string,
   log: (line: string) => void,
-): void => {
-  if (proposals.length === 0 && shown.length === 0) return
+): GlobalProposal[] => {
+  const globals: GlobalProposal[] = []
+  if (proposals.length === 0 && shown.length === 0) return globals
   const rows = readHistory(name)
   const store = readStore(name)
   const open = new Set(rows.filter((row) => !row.reflected).map((row) => `${row.key}@${row.generation}`))
@@ -764,12 +786,19 @@ export const applyLearn = (
   for (const value of proposals) {
     const proposal = asObject(value)
     const kind = asString(proposal?.kind) ?? ''
+    if (proposal !== null && kind === GLOBAL_KIND) {
+      const parsed = globalProposalOf(proposal)
+      if (typeof parsed === 'string')
+        log(`学びの案を捨てました: ${kind} ${asString(proposal.ruleId) ?? '-'}（${parsed}）`)
+      else globals.push(parsed)
+      continue
+    }
     const propose = PROPOSAL_KINDS.get(kind)
     const result =
       proposal === null
         ? '案はオブジェクトにしてください'
         : propose === undefined
-          ? `kind が add・support・withdraw のどれでもありません: ${kind}`
+          ? `kind が add・support・withdraw・global のどれでもありません: ${kind}`
           : propose(proposal, context)
     if (typeof result === 'string') {
       log(`学びの案を捨てました: ${kind || '-'} ${asString(proposal?.repo) ?? '-'}（${result}）`)
@@ -789,6 +818,157 @@ export const applyLearn = (
       changed = true
     }
   if (changed) writeHistory(name, rows)
+  return globals
+}
+
+// 全体に効く学びの案（yui-cc-plugins の改善の Issue の題と本文）
+export type GlobalProposal = { ruleId: string; title: string; body: string }
+const GLOBAL_KIND = 'global'
+const globalProposalOf = (proposal: JsonObject): GlobalProposal | string => {
+  const ruleId = asString(proposal.ruleId)
+  const title = asString(proposal.title)
+  const body = asString(proposal.body)
+  return ruleId === null || title === null || body === null
+    ? 'ruleId・title・body を文字列にしてください'
+    : { ruleId, title, body }
+}
+
+export type GlobalCandidate = { ruleId: string; repo: string; direction: Route; topic: string; evidenceCount: number }
+// 全体の改善に出せる規則: 有効で、まだ出しておらず、auto 向きなら様子見を終え、eng 向きなら根拠が足りている
+const isGlobalCandidate = (rule: Rule): boolean =>
+  rule.status === 'active' &&
+  rule.global === null &&
+  (rule.direction === 'auto' ? rule.probationLeft === 0 : rule.evidence.length >= LEARN_GLOBAL_ENG_EVIDENCE)
+export const globalCandidates = (store: LearnStore): GlobalCandidate[] =>
+  store.rules.filter(isGlobalCandidate).map((rule) => ({
+    ruleId: rule.id,
+    repo: rule.repo,
+    direction: rule.direction,
+    topic: rule.topic,
+    evidenceCount: rule.evidence.length,
+  }))
+
+// 公開リポジトリに出す題と本文として使えない理由（日本語の 1 行ずつ）。問題が無ければ空。
+// 設定にあるリポジトリ名は owner/name の全体も / の後ろの名前も、大文字小文字を無視して部分にも含めない
+export const globalProblems = (title: string, body: string, repos: string[]): string[] => {
+  const problems: string[] = []
+  if (title.trim() === '') problems.push('題が空です')
+  else if (Array.from(title).length > LEARN_GLOBAL_TITLE_MAX)
+    problems.push(`題が ${LEARN_GLOBAL_TITLE_MAX} 文字を超えています`)
+  if (body.trim() === '') problems.push('本文が空です')
+  else if (Array.from(body).length > LEARN_GLOBAL_BODY_MAX)
+    problems.push(`本文が ${LEARN_GLOBAL_BODY_MAX} 文字を超えています`)
+  const text = `${title}\n${body}`.toLowerCase()
+  const names = repos.flatMap((repo) => [repo, repo.slice(repo.indexOf('/') + 1)]).map((n) => n.toLowerCase())
+  if (names.some((n) => n !== '' && text.includes(n))) problems.push('題か本文に設定にあるリポジトリの名前があります')
+  if (ISSUE_REFERENCE.test(text)) problems.push('題か本文に # と数字の並びがあります')
+  if (TOPIC_URL_PREFIXES.some((prefix) => text.includes(prefix))) problems.push('題か本文に URL があります')
+  return problems
+}
+
+// 全体に効く学びの案を 1 件受ける。候補でない規則と、公開リポジトリに出せない題・本文は作らずに 1 行出す。
+// issueRepo が無ければ Issue を作らず「全体に効きそうな学び」として知らせるだけ。
+// 作れなかったときは規則を変えない（次の振り返りでまた出せる）。判定の CLI は tick の外で動くので、tick の呼び出し予算は見ない
+export const proposeGlobal = (
+  name: string,
+  config: AutoConfig,
+  proposal: GlobalProposal,
+  at: string,
+  log: (line: string) => void,
+): void => {
+  const store = readStore(name)
+  const rule = store.rules.find((entry) => entry.id === proposal.ruleId)
+  if (rule === undefined || !isGlobalCandidate(rule)) {
+    log(`全体の学びの案を捨てました: ${proposal.ruleId}（全体の改善に出せる規則ではありません）`)
+    return
+  }
+  const repos = [...Object.keys(config.repos), ...config.sources.flatMap((source) => [source.repo, ...source.related])]
+  const problems = globalProblems(proposal.title, proposal.body, repos)
+  if (problems.length > 0) {
+    log(`全体の学びの案を捨てました: ${rule.id}（${problems.join('。')}）`)
+    return
+  }
+  const issueRepo = config.learn.issueRepo
+  const item = (kind: NoticeKind, url: string): Omit<NoticeItem, 'n'> => ({
+    kind,
+    ruleId: rule.id,
+    direction: rule.direction,
+    text: proposal.title,
+    evidence: [],
+    url,
+  })
+  if (issueRepo === null) {
+    rule.global = { issue: '', prNotified: true }
+    try {
+      appendNotice(name, store, rule.repo, [item('global-hint', '')], at)
+    } finally {
+      writeStore(name, store)
+    }
+    return
+  }
+  const labels = [
+    ...STATUS_LABELS,
+    { name: THREAD_LABEL, color: THREAD_LABEL_COLOR, description: THREAD_LABEL_DESCRIPTION },
+    { name: LEARN_LABEL, color: LEARN_LABEL_COLOR, description: LEARN_LABEL_DESCRIPTION },
+  ]
+  if (!ensureLabels(issueRepo, labels)) {
+    log(`全体の学びの Issue を作れません: ${rule.id}（${issueRepo} のラベルを揃えられません）`)
+    return
+  }
+  const created = github([
+    'issue',
+    'create',
+    '--repo',
+    issueRepo,
+    '--title',
+    proposal.title,
+    '--body',
+    proposal.body,
+    '--label',
+    STATUS.ready,
+    '--label',
+    THREAD_LABEL,
+    '--label',
+    LEARN_LABEL,
+  ])
+  const url = created.stdout.trim().split('\n').at(-1)?.trim() ?? ''
+  const number = CREATED_ISSUE_NUMBER.exec(url)?.[1]
+  if (created.rc !== 0 || number === undefined) {
+    log(`全体の学びの Issue を作れません: ${rule.id}（${issueRepo} への gh issue create が失敗しました）`)
+    return
+  }
+  // Issue はもう作ったので、知らせを書けなくても規則には残す（同じ Issue を二度作らないため）
+  rule.global = { issue: `${issueRepo}#${number}`, prNotified: false }
+  try {
+    appendNotice(name, store, rule.repo, [item('global-issue', url)], at)
+  } finally {
+    writeStore(name, store)
+  }
+}
+
+// 自分が作った改善の Issue の PR ができた（人の確認に回った）ら、規則ごとに 1 回だけ知らせる。
+// intake のステータスの知らせはホームのリポジトリしか見ないので頼らない。tick の終わりに呼ぶ
+export const notifyGlobalPrs = (name: string, state: AutoState, at: string): void => {
+  const store = readStore(name)
+  const issues = Object.values(state.issues)
+  let changed = false
+  for (const rule of store.rules) {
+    const global = rule.global
+    if (global === null || global.prNotified) continue
+    const issue = issues.find((entry) => entry.key.toLowerCase() === global.issue.toLowerCase())
+    const pr = issue?.phase === 'review' ? issue.prs[0] : undefined
+    if (issue === undefined || pr === undefined) continue
+    global.prNotified = true
+    appendNotice(
+      name,
+      store,
+      rule.repo,
+      [{ kind: 'global-pr', ruleId: rule.id, direction: rule.direction, text: issue.title, evidence: [], url: pr.url }],
+      at,
+    )
+    changed = true
+  }
+  if (changed) writeStore(name, store)
 }
 
 type Cancel = { noticeId: number; n: number; ruleId: string; at: string }

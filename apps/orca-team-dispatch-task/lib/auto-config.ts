@@ -45,6 +45,8 @@ export type AutoConfig = {
   judge: { model: string; effort: string }
   minFreeMemoryMb: number
   minFreeDiskMb: number
+  // 判定の学びのうち全体に効くものを改善の Issue として出す先。null なら出さない（知らせだけ）
+  learn: { issueRepo: string | null }
 }
 const count = (value: Json | undefined, fallback: number, min = 1): number =>
   value === undefined ? fallback : typeof value === 'number' && Number.isInteger(value) && value >= min ? value : NaN
@@ -52,12 +54,15 @@ const strings = (value: Json | undefined): string[] | null =>
   Array.isArray(value) && value.every((v) => typeof v === 'string' && v.length > 0) ? (value as string[]) : null
 const boolean = (value: Json | undefined, fallback: boolean): boolean | null =>
   value === undefined ? fallback : typeof value === 'boolean' ? value : null
+// owner/name の形のリポジトリ名
+const REPO_NAME = /^[^/\s]+\/[^/\s]+$/
 export const readAutoConfig = (name: string): AutoConfig | null =>
   parseAutoConfig(readJson(join(autoDir(name), AUTO_FILES.config)), name)
 export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | null => {
   const input = asObject(value)
   if (!input || input.version !== 1 || input.name !== name) return null
-  if (['roles', 'limits', 'judge'].some((key) => input[key] !== undefined && !asObject(input[key]))) return null
+  if (['roles', 'limits', 'judge', 'learn'].some((key) => input[key] !== undefined && !asObject(input[key])))
+    return null
   const rawRepos = asObject(input.repos)
   const rawSources = asArray(input.sources)
   if (!rawRepos || !rawSources) return null
@@ -148,6 +153,10 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
   if ((review_mode !== 'off' && review_mode !== 'on') || (phase_b !== 'off' && phase_b !== 'on')) return null
   const limits = asObject(input.limits)
   const judge = asObject(input.judge)
+  const learn = asObject(input.learn)
+  // null は未設定と同じ（下書きがそのまま書き戻せるように）
+  const issueRepo = learn?.issueRepo == null ? null : asString(learn.issueRepo)
+  if (learn?.issueRepo != null && (!issueRepo || !REPO_NAME.test(issueRepo))) return null
   const result: AutoConfig = {
     version: 1,
     name,
@@ -172,6 +181,7 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
     },
     minFreeMemoryMb: count(input.minFreeMemoryMb, 4096, 0),
     minFreeDiskMb: count(input.minFreeDiskMb, 10240, 0),
+    learn: { issueRepo },
   }
   if (
     !result.judge.model ||

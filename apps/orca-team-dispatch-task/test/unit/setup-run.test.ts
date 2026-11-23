@@ -1,3 +1,4 @@
+import { LEARN_PLUGIN_REPO } from '../../lib/auto-learn.ts'
 import { autoDir } from '../../lib/auto-paths.ts'
 import { runSetup } from '../../lib/auto-setup.ts'
 import { releaseLock, takeLock } from '../../lib/auto-state.ts'
@@ -57,6 +58,8 @@ const prepare = () => {
     '',
     '1',
     '',
+    '',
+    // 判定の学びを改善の Issue として出すか（既定は n）
     '',
     '',
     f.raw.repos['acme/app'].checkout,
@@ -187,7 +190,7 @@ test('SU29 missing project scope records no project and explains recovery', () =
     rmSync(f.configFile)
     f.respond('auth_status', { hosts: { 'github.com': [{ active: true, state: 'success', scopes: 'repo' }] } })
     const answers = f.freshAnswers()
-    answers[7] = 'acme/3'
+    answers[8] = 'acme/3'
     const result = f.invoke(answers)
     assert.equal(result.status, 0, result.stdout + result.stderr)
     assert.equal(f.config().sources[0]?.project, null)
@@ -206,7 +209,7 @@ test('SU27b same-name automation requires consent', () => {
       f.orca,
     )
     const answers = f.freshAnswers()
-    answers[21] = 'n'
+    answers[22] = 'n'
     const result = f.invoke(answers)
     assert.equal(result.status, 1, result.stdout + result.stderr)
     assert.ok(!/automations (create|edit)/.test(f.calls(f.orca)))
@@ -407,12 +410,12 @@ test('SU31 EOF keeps finished steps and resumes at repositories', () => {
   const f = prepare()
   try {
     rmSync(f.configFile)
-    const result = f.invoke([f.raw.intakeConfig, '', '1', '', '', ''])
+    const result = f.invoke([f.raw.intakeConfig, '', '1', '', '', '', ''])
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.equal(existsSync(f.configFile), false)
     const draft = JSON.parse(readFileSync(join(autoDir('main'), 'setup.json'), 'utf8'))
     assert.deepEqual(draft.done, ['prereq', 'sources'])
-    const rest = f.freshAnswers().slice(5)
+    const rest = f.freshAnswers().slice(6)
     const again = f.invoke(rest)
     assert.equal(again.status, 0, again.stdout + again.stderr)
     assert.match(again.stdout, /\[1\/12\] 前提の確認 … 済み/)
@@ -819,7 +822,7 @@ test('MI6 two intake homes are offered and their repos become candidates', () =>
       f.put(path, { repos: [{ name: repo }] })
     }
     rmSync(f.configFile)
-    const result = f.invoke(['', '', '1,2', '', '', '', '']) // 番号は既定（全部）、ほかは無し、拾う元 1,2、拾う条件と auto-ready を 2 つずつ、次の段で入力が尽きる
+    const result = f.invoke(['', '', '1,2', '', '', '', '', '']) // 番号は既定（全部）、ほかは無し、拾う元 1,2、拾う条件と auto-ready を 2 つずつ、学びの Issue、次の段で入力が尽きる
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.ok(result.stdout.includes(`  1. ${ws1}`) && result.stdout.includes(`  2. ${ws2}`), result.stdout)
     const draft = draftOf()
@@ -841,7 +844,7 @@ test('MI8 other intake paths are checked and at least one intake is required', (
     f.put(ws1, { repos: [{ name: 'acme/app' }] })
     rmSync(f.configFile)
     const missing = join(f.dir, 'missing.json')
-    const result = f.invoke(['-', '', '1', 'relative.json', missing, f.raw.intakeConfig, '', '1,2', '', '', '', ''])
+    const result = f.invoke(['-', '', '1', 'relative.json', missing, f.raw.intakeConfig, '', '1,2', '', '', '', '', ''])
     assert.equal(result.status, 2, result.stdout + result.stderr)
     for (const text of [
       'intake の設定ファイルを 1 つ以上選んでください',
@@ -873,7 +876,7 @@ test('MI11 unnamed intake home is not offered for fresh setup', () => {
       f.put(path, { repos: [{ name: repo }] })
     }
     rmSync(f.configFile)
-    const result = f.invoke(['', '', '1', '', ''])
+    const result = f.invoke(['', '', '1', '', '', ''])
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.ok(result.stdout.includes(`  1. ${ws2}`), result.stdout)
     assert.ok(!result.stdout.includes(legacy), result.stdout)
@@ -894,7 +897,7 @@ test('MI12 configured unnamed intake stays offered and selected with Enter', () 
     const configured = { ...f.raw, intakeConfigs: [legacy] }
     Reflect.deleteProperty(configured, 'intakeConfig')
     f.put(f.configFile, configured)
-    const result = f.invoke(['', '', '', '', ''])
+    const result = f.invoke(['', '', '', '', '', ''])
     assert.equal(result.status, 2, result.stdout + result.stderr)
     assert.ok(result.stdout.includes(legacy) && result.stdout.includes(ws2), result.stdout)
     assert.deepEqual(draftOf().values.intakeConfigs, [legacy])
@@ -1065,6 +1068,53 @@ test('SU46 asks autoMerge only for a source that answered yes to auto-ready, def
     assert.ok(!off.asked.some((q) => q.includes('autoMerge')))
     assert.equal(f.config().sources[0]?.autoReady, false)
     assert.equal(f.config().sources[0]?.autoMerge, false)
+  } finally {
+    f.cleanup()
+  }
+})
+test('LN21 setup の質問は権限があれば y を受け付けて issueRepo を残し、権限が無ければ断って null のまま、拾う元は変えない', () => {
+  const f = prepare()
+  try {
+    const question = '改善の Issue として出しますか'
+    // gh api repos/<repo> --jq .permissions.push の応答（スタブの鍵は api_repos/<owner>/<name>）
+    const permission = (value: string) => {
+      const path = join(f.gh, `api_repos/${LEARN_PLUGIN_REPO}`)
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, `${value}\n`)
+    }
+    const before = f.config().sources
+    // 既定は n。gh を読まない
+    const plain = f.rerun({ 書きますか: 'y' })
+    assert.equal(plain.code, 0, plain.output)
+    assert.ok(plain.asked.some((q) => q.includes(`判定の学びを、${LEARN_PLUGIN_REPO} の${question}（y/n）`)))
+    assert.ok(!f.calls().includes(`repos/${LEARN_PLUGIN_REPO}`))
+    assert.deepEqual(f.config().learn, { issueRepo: null })
+    // 権限が無ければ y でも断って null のまま
+    permission('false')
+    const denied = f.rerun({ [question]: 'y', 書きますか: 'y' })
+    assert.equal(denied.code, 0, denied.output)
+    assert.match(denied.output, /書き込む権限が無いので出せません/)
+    assert.deepEqual(f.config().learn, { issueRepo: null })
+    // 権限があれば y を受け付け、1 台だけにする注意を 1 行出す。拾う元は変えない
+    permission('true')
+    const on = f.rerun({ [question]: 'y', 書きますか: 'y' })
+    assert.equal(on.code, 0, on.output)
+    assert.ok(
+      on.output.includes(
+        `同じリポジトリを拾う --auto は 1 台だけにしてください。${LEARN_PLUGIN_REPO} を拾う元に入れた --auto が、改善の Issue を実装します`,
+      ),
+      on.output,
+    )
+    assert.deepEqual(f.config().learn, { issueRepo: LEARN_PLUGIN_REPO })
+    assert.deepEqual(f.config().sources, before)
+    // 再実行では今の値が既定
+    assert.equal(f.rerun({ 書きますか: 'y' }).code, 0)
+    assert.deepEqual(f.config().learn, { issueRepo: LEARN_PLUGIN_REPO })
+    // n にすると設定から消える
+    assert.equal(f.rerun({ [question]: 'n', 書きますか: 'y' }).code, 0)
+    assert.deepEqual(f.config().learn, { issueRepo: null })
+    assert.equal(Object.hasOwn(JSON.parse(readFileSync(f.configFile, 'utf8')), 'learn'), false)
+    assert.deepEqual(f.config().sources, before)
   } finally {
     f.cleanup()
   }

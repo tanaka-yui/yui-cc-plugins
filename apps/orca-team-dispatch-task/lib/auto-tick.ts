@@ -18,6 +18,8 @@ import {
   applyCancels,
   type EndRecorder,
   endRecorder,
+  LEARN_LABEL,
+  notifyGlobalPrs,
   onProbation,
   readHistory,
   readStore,
@@ -881,6 +883,7 @@ const handoverPrs = (issue: IssueState, multi: boolean): { ok: boolean; reasons:
   }
   return { ok: true, reasons }
 }
+const LEARN_GATE_REASON = '判定の基準を変える PR は人が merge します。'
 const finish = (tick: Tick, issue: IssueState): void => {
   if (!canAutoCall('仕上げ')) return
   if (issue.pendingLabel || issue.failReason || issue.startAttempt || !owns(tick, issue)) return
@@ -1076,6 +1079,8 @@ const finish = (tick: Tick, issue: IssueState): void => {
   if (issue.autoReady && !sourceAutoMerge(tick.config, issue.repo))
     reasons.push('AI が Backlog から Ready にした Issue なので、merge の前に人が確認します。')
   if (probationOf(tick.name, issue)) reasons.push('新しい学びで自動にした Issue なので、merge の前に人が確認します。')
+  // 判定の改善の Issue（判定の基準を変える PR）は AI が merge しない。ラベルはこの段の始めに読んだもの
+  if (view.labels.some((label) => label.toLowerCase() === LEARN_LABEL)) reasons.push(LEARN_GATE_REASON)
   if (multi ? statuses.some((s) => s?.state === 'OPEN' && s.checks === 'fail') : status.checks === 'fail')
     reasons.push('CI が失敗しました。')
   const host = hostsOf(tick.config).find((h) => h.id === (issue.host ?? LOCAL_HOST))
@@ -1360,6 +1365,12 @@ export const runTick = (name: string): number => {
       if (issue.phase === 'dispatching' && !blocked.has(issue.key)) recover(tick, issue)
     refill(tick)
     syncProjects(projectSync)
+    // 自分が作った判定の改善の Issue に PR ができたら知らせる。読めなくても tick は止めない
+    try {
+      notifyGlobalPrs(name, state, autoNow())
+    } catch (e) {
+      console.log(`判定の改善の PR を知らせられません: ${e instanceof Error ? e.message : String(e)}`)
+    }
     const hosts = hostsOf(config).map((host) => ({ host, ...capacityOf(tick, host, false) }))
     if (
       !writeAtomic(join(autoDir(name), AUTO_FILES.report), JSON.stringify(buildReport(config, state, hosts, autoNow())))

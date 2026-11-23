@@ -27,6 +27,7 @@ export type SetupDraft = {
     everyMinutes?: number
     automation?: NonNullable<AutoConfig['automation']>
     automationCreated?: boolean
+    learn?: AutoConfig['learn']
   }
 }
 const stringList = (value: Json | undefined): value is string[] =>
@@ -40,11 +41,11 @@ const validValues = (value: JsonObject, name: string): boolean => {
     value.intakeConfigs = parsed.intakeConfigs
     delete value.intakeConfig
   }
-  for (const key of ['intakeConfigs', 'roles', 'everyMinutes', 'lanes', 'automation']) {
+  for (const key of ['intakeConfigs', 'roles', 'everyMinutes', 'lanes', 'automation', 'learn']) {
     if (value[key] !== undefined) {
       const parsed = parseAutoConfig({ ...seed, [key]: value[key] }, name)
       if (!parsed) return false
-      value[key] = parsed[key as 'intakeConfigs' | 'roles' | 'everyMinutes' | 'lanes' | 'automation']
+      value[key] = parsed[key as 'intakeConfigs' | 'roles' | 'everyMinutes' | 'lanes' | 'automation' | 'learn']
     }
   }
   if (value.automation !== undefined && value.automation === null) return false
@@ -125,6 +126,7 @@ export const draftFromConfig = (config: AutoConfig): SetupDraft => ({
     roles: config.roles,
     everyMinutes: config.everyMinutes,
     ...(config.automation ? { automation: config.automation } : {}),
+    learn: config.learn,
   }),
 })
 export const configJsonFromDraft = (draft: SetupDraft, base: JsonObject | null): JsonObject | null => {
@@ -136,6 +138,11 @@ export const configJsonFromDraft = (draft: SetupDraft, base: JsonObject | null):
   for (const key of ['intakeConfigs', 'repos', 'roles', 'everyMinutes', 'lanes', 'automation'] as const) {
     const value = v[key]
     if (value !== undefined) next[key] = structuredClone(value)
+  }
+  // 改善の Issue を出さない（既定）ときは learn を書かない。y のあと n にしたら消す
+  if (v.learn !== undefined) {
+    if (v.learn.issueRepo === null) delete next.learn
+    else next.learn = structuredClone(v.learn)
   }
   // 既定値（null / []）の向き先の欄は書かず、既存の設定ファイルを変えない。
   const repos = asObject(next.repos)

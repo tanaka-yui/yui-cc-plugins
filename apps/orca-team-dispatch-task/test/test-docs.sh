@@ -811,6 +811,23 @@ for word in 'tick は判定の結果から学ぶ' '食い違いが 3 件たま�
 done
 [[ -z "$bad" ]] && ok 'SK48 判定の学び' || fail "SK48:$bad"
 
+# SK49: 全体に効く学び。判定役の指示は global の案の出し方と、公開リポジトリに出さない文を説明する。
+#       両文書は setup の質問・改善の Issue のラベル・AI が merge しない関門を書く。
+bad=""
+for word in '`global.candidates`' '"kind": "global"' 'holds in any repository' 'never write a repository name' 'skills/orca-team-dispatch-task/references/auto-judge.md' 'Candidates alone do not wake you'; do
+  grep -Fq -- "$word" "$judge_en" || bad="$bad [judge:$word]"
+done
+for word in '`global.candidates`' '"kind": "global"' 'どのリポジトリでも成り立つ判定の基準' 'リポジトリ名・Issue の番号・Issue の題名や本文・URL は書かない' 'skills/orca-team-dispatch-task/references/auto-judge.md' '候補だけではあなたは起こされない'; do
+  grep -Fq -- "$word" "$judge_ja" || bad="$bad [judge-ja:$word]"
+done
+for word in '`learn.issueRepo`' 'changes no source' 'only one `--auto` pick that repository' '`judge-learning`' 'a PR changing the judging criteria is merged by a person' 'Candidates alone do not wake the judging agent'; do
+  grep -Fq -- "$word" "$S" || bad="$bad [skill:$word]"
+done
+for word in '`learn.issueRepo`' '拾う元は変えない' '`--auto` は 1 台だけにする' '`judge-learning`' '判定の基準を変える PR は人が merge します' '候補だけでは判定 agent を起こさない'; do
+  grep -Fq -- "$word" "$G" || bad="$bad [guide:$word]"
+done
+[[ -z "$bad" ]] && ok 'SK49 全体に効く学び' || fail "SK49:$bad"
+
 APP_FILTER="${P#"$ROOT"/}"
 (cd "$ROOT" && node "$ROOT/scripts/check-doc-lang.mjs" "$APP_FILTER") >/dev/null 2>&1 \
   && ok "SK10 doc-lang" || fail "SK10 doc-lang"

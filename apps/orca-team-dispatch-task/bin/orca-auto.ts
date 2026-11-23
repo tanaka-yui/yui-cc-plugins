@@ -7,9 +7,11 @@ import {
   applyLearn,
   decisionRuleIds,
   endRecorder,
+  globalCandidates,
   type HistoryRow,
   type LearnStore,
   learnedFor,
+  proposeGlobal,
   readHistory,
   readStore,
   reflectionsOf,
@@ -210,6 +212,8 @@ const main = (argv: string[]): number => {
           history,
           config.sources.map((s) => s.repo),
         ),
+        // 全体の改善に出せる規則。enabled は改善の Issue を作るか（false なら知らせだけ）
+        global: { enabled: config.learn.issueRepo !== null, candidates: globalCandidates(store) },
         checkouts: Object.fromEntries(Object.entries(config.repos).map(([r, c]) => [r, c.checkout])),
         limits: { defaultMinutes: config.limits.defaultMinutes, maxMinutes: config.limits.maxMinutes },
         decisionsFile: join(autoDir(name), AUTO_FILES.decisions),
@@ -432,7 +436,9 @@ const main = (argv: string[]): number => {
     }
     // 見せた食い違いは案が無くても振り返り済みにする。学びが保存できなくても判定の結果は残す
     try {
-      applyLearn(name, proposals, shown.reflect, autoNow(), console.error)
+      // 全体の案は規則の保存のあとで受ける（applyLearn が規則のファイルを書き戻すため）
+      for (const proposal of applyLearn(name, proposals, shown.reflect, autoNow(), console.error))
+        proposeGlobal(name, config, proposal, autoNow(), console.error)
     } catch (error) {
       console.error(`判定の学びを保存できません（${error instanceof Error ? error.message : String(error)}）`)
     }

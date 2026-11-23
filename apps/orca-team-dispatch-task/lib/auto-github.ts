@@ -17,12 +17,14 @@ export const labelNames = (value: Json | undefined): string[] =>
     return name ? [name] : []
   }) ?? []
 
-export const ensureStatusLabels = (repo: string): boolean => {
+export type LabelSpec = { name: string; color: string; description: string }
+// 無いラベルだけを作る（名前は大文字小文字を無視して比べる）。一覧を読めない・作れなければ false
+export const ensureLabels = (repo: string, specs: ReadonlyArray<LabelSpec>): boolean => {
   const result = github(['label', 'list', '--repo', repo, '--limit', '200', '--json', 'name'])
   const labels = asArray(parseJson(result.stdout))
   if (result.rc !== 0 || !labels) return false
   const names = labelNames(labels).map((name) => name.toLowerCase())
-  for (const label of STATUS_LABELS) {
+  for (const label of specs) {
     if (names.includes(label.name.toLowerCase())) continue
     if (
       github([
@@ -41,6 +43,7 @@ export const ensureStatusLabels = (repo: string): boolean => {
   }
   return true
 }
+export const ensureStatusLabels = (repo: string): boolean => ensureLabels(repo, STATUS_LABELS)
 export type ReadyIssue = { number: number; title: string; labels: string[]; updatedAt: string; createdAt: string }
 // 一覧を 1 回で読む件数の上限。gh の既定（30）や 100 では、人が増やした Issue の途中で切れる
 export const AUTO_ISSUE_LIST_LIMIT = 1000

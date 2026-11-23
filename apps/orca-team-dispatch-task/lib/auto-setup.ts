@@ -1,6 +1,7 @@
 import { intakeRepoNames, parseAutoConfig, readAutoConfig } from './auto-config.ts'
 import { ensureStatusLabels, github } from './auto-github.ts'
 import { hostsOf, LOCAL_HOST } from './auto-hosts.ts'
+import { LEARN_PLUGIN_REPO } from './auto-learn.ts'
 import { AUTO_FILES, autoDir, autoNow } from './auto-paths.ts'
 import { AUTO_LOCK_TTL_MS, AUTO_LOCK_WAIT_MS, readState, releaseLock, takeLockWait } from './auto-state.ts'
 import { readJson, writeAtomic } from './fs.ts'
@@ -276,6 +277,21 @@ export const runSetup = (
     }
     v.intakeConfigs = chosen
     v.sources = next
+    pickLearn()
+  }
+  // 全体に効く判定の学びを改善の Issue として出すか。拾う元は変えない（実装するのは、そのリポジトリを拾う元に入れた --auto）
+  const pickLearn = () => {
+    let issueRepo: string | null = null
+    if (yes(`判定の学びを、${LEARN_PLUGIN_REPO} の改善の Issue として出しますか（y/n）`, v.learn?.issueRepo != null)) {
+      const push = github(['api', `repos/${LEARN_PLUGIN_REPO}`, '--jq', '.permissions.push'])
+      if (push.rc === 0 && push.stdout.trim() === 'true') {
+        issueRepo = LEARN_PLUGIN_REPO
+        say(
+          `同じリポジトリを拾う --auto は 1 台だけにしてください。${LEARN_PLUGIN_REPO} を拾う元に入れた --auto が、改善の Issue を実装します`,
+        )
+      } else say('書き込む権限が無いので出せません')
+    }
+    v.learn = { issueRepo }
   }
   // origin の既定ブランチと develop / main / master のうち在るものを候補にする。2 つ以上のときだけ尋ねる
   const pickBases = (
