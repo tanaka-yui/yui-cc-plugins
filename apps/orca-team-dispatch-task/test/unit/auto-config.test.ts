@@ -177,6 +177,26 @@ test('AU186 intakeActiveRepos returns only active repositories and skips unreada
   assert.deepEqual(intakeActiveRepos(c), new Set(['Acme/App']))
 })
 
+test('AU191 thread と書いた設定が 1 つでもあるリポジトリは、ほかが active と書いても active にせず 1 行知らせる', () => {
+  const a = intake('au191-a.json', {
+    repos: [
+      { name: 'Acme/App', existing: 'active' },
+      { name: 'acme/web', existing: 'active' },
+    ],
+  })
+  const b = intake('au191-b.json', { repos: [{ name: 'acme/app', existing: 'thread' }] })
+  const lines: string[] = []
+  assert.deepEqual(
+    intakeActiveRepos(multi([a, b]), (line) => lines.push(line)),
+    new Set(['acme/web']),
+  )
+  assert.deepEqual(lines, [
+    'Acme/App は intake の設定の中で active と thread が混ざっているため、active として扱いません',
+  ])
+  // 並びを逆にしても同じ
+  assert.deepEqual(intakeActiveRepos(multi([b, a])), new Set(['acme/web']))
+})
+
 test('AU137 relay allowance covers bounded review exchanges and stage handoffs', () => {
   for (const [review_mode, phase_b, everyMinutes, expected] of [
     ['off', 'off', 5, 0],

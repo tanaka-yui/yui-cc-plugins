@@ -71,9 +71,10 @@ const readIssueRows = (value: Json | null): ReadyIssue[] | null => {
   return issues
 }
 // 上限ちょうどの件数が返ったら、その先があるかもしれない。黙って切らず 1 行知らせる
-const warnIfTruncated = (count: number, repo: string, pick: string, log?: (line: string) => void) => {
+// which は上限に当たった一覧を指す印（どの印の一覧かが分かるようにする）
+const warnIfTruncated = (count: number, repo: string, which: string, log?: (line: string) => void) => {
   if (count >= AUTO_ISSUE_LIST_LIMIT)
-    log?.(`${repo} の ${pick} の Issue が ${AUTO_ISSUE_LIST_LIMIT} 件を超えているかもしれません。超えた分は拾いません`)
+    log?.(`${repo} の ${which} の Issue が ${AUTO_ISSUE_LIST_LIMIT} 件を超えているかもしれません。超えた分は拾いません`)
 }
 export const listReadyManaged = (repo: string, pick: string, log?: (line: string) => void): ReadyIssue[] | null => {
   const issues = new Map<number, ReadyIssue>()
@@ -97,7 +98,7 @@ export const listReadyManaged = (repo: string, pick: string, log?: (line: string
       ]),
     )
     if (!rows) return null
-    warnIfTruncated(rows.length, repo, pick, log)
+    warnIfTruncated(rows.length, repo, `${pick} と ${managed}`, log)
     for (const issue of rows) issues.set(issue.number, issue)
   }
   return [...issues.values()]
@@ -124,7 +125,7 @@ export const listUnlabeledThread = (repo: string, log?: (line: string) => void):
     ]),
   )
   if (!rows) return null
-  warnIfTruncated(rows.length, repo, THREAD_LABEL, log)
+  warnIfTruncated(rows.length, repo, `${THREAD_LABEL}（ステータスの無いもの）`, log)
   return rows.filter((issue) => !issue.labels.some((name) => STATUS_LABELS.some((label) => label.name === name)))
 }
 export const viewIssue = (

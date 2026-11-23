@@ -39,10 +39,11 @@ for (const key of ['INTAKE_HOME_DIRNAME', 'INTAKE_NAME_RESERVED_SUFFIX'])
     problems.push(`${key} が違います（slack-issue-intake と orca-team-dispatch-task）`)
 if (
   intakeLabels.EXISTING_ACTIVE !== intakeHomes.INTAKE_EXISTING_ACTIVE ||
-  !intakeLabels.EXISTING_MODES.includes(intakeHomes.INTAKE_EXISTING_ACTIVE)
+  !intakeLabels.EXISTING_MODES.includes(intakeHomes.INTAKE_EXISTING_ACTIVE) ||
+  !intakeLabels.EXISTING_MODES.includes(intakeHomes.INTAKE_EXISTING_THREAD)
 )
   problems.push(
-    'EXISTING_ACTIVE が違うか、intake の EXISTING_MODES にありません（slack-issue-intake と orca-team-dispatch-task）',
+    'EXISTING_ACTIVE が違うか、active / thread が intake の EXISTING_MODES にありません（slack-issue-intake と orca-team-dispatch-task）',
   )
 const [p, q] = [intakeLabels.INTAKE_NAME_PATTERN, intakeHomes.INTAKE_NAME_PATTERN]
 if (!(p instanceof RegExp && q instanceof RegExp && p.source === q.source && p.flags === q.flags))

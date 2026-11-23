@@ -329,6 +329,7 @@ test('AR12 markUnlabeledBacklog は Project の Status が無いか Todo の Iss
   ]
   const unlabeled = [3, 4, 5, 6].map((n) => row(n, ['slack-thread'], OLD))
   const context = () => ({
+    state: empty(),
     statuses: new Map([
       ['acme/app#3', ''],
       ['acme/app#4', 'In progress'],
@@ -398,6 +399,29 @@ test('AR12 markUnlabeledBacklog は Project の Status が無いか Todo の Iss
     )
   } finally {
     plain.cleanup()
+  }
+})
+
+test('AR14 markUnlabeledBacklog は orca がもう追っている Issue（state.issues にある）には Backlog を付けない', () => {
+  const f = fixture()
+  try {
+    const config = autoReadyConfig(f)
+    const state = empty()
+    // Ready で拾って追っている Issue 7 から、人がステータスラベルを全部外した。追っていない Issue 8 も同じ見た目
+    lists(f, [row(7, ['Ready'])], [])
+    syncIssues(state, config.sources, new Set(['acme/app']))
+    assert.ok(state.issues['acme/app#7'])
+    lists(f, [], [], [row(7, ['slack-thread'], OLD), row(8, ['slack-thread'], OLD)])
+    const marked = markUnlabeledBacklog(
+      config.sources.map((s) => ({ repo: s.repo, autoReady: s.autoReady, project: null })),
+      new Set(['acme/app']),
+      { state, statuses: new Map(), failed: new Set<string>(), touched: new Set<string>() },
+      () => {},
+    )
+    assert.deepEqual(marked, ['acme/app#8'])
+    assert.ok(!f.calls().includes('issue edit 7 '))
+  } finally {
+    f.cleanup()
   }
 })
 

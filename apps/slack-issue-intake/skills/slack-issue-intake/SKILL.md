@@ -90,7 +90,7 @@ command with the name. Use the same name for `make slack-form <name>` and `make 
    Japanese. The form is built by hand in Workflow Builder. Ask whether the Slack preparation is complete. The app
    must be internal and not distributed.
 2. Run `status`. If `token=missing`, follow **token** below.
-3. Ask in one AskUserQuestion round for the channel ID, repository list (`owner/name`), default repository, each repository's form visibility and whether to also manage its issues that were not created from Slack (yes for `thread`, no for `skip`), and interval in minutes.
+3. Ask in one AskUserQuestion round for the channel ID, repository list (`owner/name`), default repository, each repository's form visibility and whether to also manage its issues that were not created from Slack (`skip` ignores them, `thread` creates a management post for them, `active` also takes in Issues a person marked), and interval in minutes.
    The repository default is `gh repo view --json nameWithOwner -q .nameWithOwner` when available. Default interval
    is 5; valid choices are 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60.
 4. Run `init --channel <id> --repo <owner/name> [--repo <owner/name> ...] --default-repo <owner/name> --existing <owner/name>=<thread|active|skip> [--hide-form <owner/name>] [--branches <owner/name>=<branch>,<branch>] --every <minutes>`. Repeat `--existing`, `--hide-form` and `--branches` per repository. The default repository is always shown in forms, so `--hide-form` has no effect on it. `--branches` sets the base-branch candidates; when any form repository has two or more, the non-question forms get an optional base field and the created Issue gets a `base:<branch>` label. It registers a disabled automation. Exit 2 means
@@ -231,6 +231,11 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
   `active` ignores the start time and adopts issues that have any status label other than `Backlog`, plus issues a
   human labeled `slack-thread` that have no database row; unlabeled and `Backlog`-only issues, `from-slack` issues
   and pull requests are skipped. Set only one home to `active` for a given repository.
+  Switching a repository from `thread` to `active` makes every issue intake labeled `slack-thread` while in `thread`
+  mode (old `Backlog` ones included) count as marked by a person, so orca-team-dispatch-task's auto-ready judges them;
+  remove `slack-thread` from issues AI should not judge, or turn `autoReady` off first. `init` prints one warning line
+  when it sees the switch. Handle each repository in one home only and do not mix `thread` and `active` across homes:
+  orca ignores `active` for a repository that any intake config lists as `thread`.
   Adoption scans updates plus a rotating creation-order sweep, reserving one of five slots for the sweep.
   Pending posts and labels resume from the database, including closed issues; unreadable rows are retained.
   Each phase tries at most five rows and moves attempted rows to the back of the wait order.

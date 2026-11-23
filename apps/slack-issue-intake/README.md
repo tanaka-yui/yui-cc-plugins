@@ -69,7 +69,7 @@ Slack のワークフローのフォームから GitHub Issue を起票する Cl
 
 `--existing <repo>=thread` にしたリポジトリでは、Slack から作っていない Issue に管理用のトップレベル投稿を作り、`slack-thread` を付けます。既定の `skip` は対象外です。古い Issue はステータスラベルが付いたものだけ、設定後に作られたものはラベルなしでも管理します。フォームからの起票には `from-slack` が付きます。
 
-`--existing <repo>=active` にしたリポジトリでは、開始時刻に関係なく、`Backlog` 以外のステータスラベルが付いた Issue（`Backlog` と別のステータスが両方付いたものを含む）と、人が `slack-thread` を付けた Issue（DB に行が無いもの）を管理します。ステータスなしや `Backlog` だけの Issue、`from-slack` の Issue、PR は対象外です。Project で Ready にした手作りの Issue は、orca-team-dispatch-task の同期でステータスラベルが付いてから取り込まれます。1 つのリポジトリを `active` にするのは 1 つのホーム（intake）だけにしてください。setup の質問には `y`（thread）/ `active` / `n`（skip）で答えます。
+`--existing <repo>=active` にしたリポジトリでは、開始時刻に関係なく、`Backlog` 以外のステータスラベルが付いた Issue（`Backlog` と別のステータスが両方付いたものを含む）と、人が `slack-thread` を付けた Issue（DB に行が無いもの）を管理します。ステータスなしや `Backlog` だけの Issue、`from-slack` の Issue、PR は対象外です。Project で Ready にした手作りの Issue は、orca-team-dispatch-task の同期でステータスラベルが付いてから取り込まれます。1 つのリポジトリを `active` にするのは 1 つのホーム（intake）だけにしてください。thread から active に切り替えると、thread のあいだに intake が `slack-thread` を付けた Issue（古い Backlog のものも含む）が、人が付けた印として orca-team-dispatch-task の auto-ready の判定に回ります。AI に判定させたくない Issue は `slack-thread` を外すか、切り替える前に `autoReady` を切ってください。`init` は切り替えを見つけると警告を 1 行出します。1 つのリポジトリは 1 つのホームだけで扱い、ホームごとに thread と active を混ぜないでください。thread と書いた設定が 1 つでもあるリポジトリは、orca が active として扱いません。setup の質問には `y`（thread）/ `active` / `n`（skip）で答えます。
 
 ### 定期報告
 
@@ -472,7 +472,7 @@ Slack CLI にログインしているなら、この手順の代わりに `make 
 
 公開したら、チャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で4つすべてを選び、「注目」を押します。メンバーには入力欄の所にボタンが出ます。
 5. チャンネル名 → 詳細の最下部からチャンネルIDを控えます。
-6. `node bin/slack-issue-intake.ts --name <名前> init --channel <ID> --repo <owner/name> --every 5` を実行します。automation は無効で登録されます。受け付けるリポジトリが 2 つ以上なら `--repo` を並べ、`--default-repo <owner/name>` で既定の起票先を決めます。Slack から作っていない Issue をスレッドで管理するリポジトリには `--existing <owner/name>=thread` を付けます。フォームで向き先（作業を始めるブランチ）を選ばせるなら `--branches <owner/name>=develop,main` を付けます。続けて `node bin/slack-issue-intake.ts --name <名前> knowledge` で、「質問する」に答えるための仕様の索引を作ります（claude コマンドと git を使います）。
+6. `node bin/slack-issue-intake.ts --name <名前> init --channel <ID> --repo <owner/name> --every 5` を実行します。automation は無効で登録されます。受け付けるリポジトリが 2 つ以上なら `--repo` を並べ、`--default-repo <owner/name>` で既定の起票先を決めます。Slack から作っていない Issue の扱いはリポジトリごとに `--existing <owner/name>=<thread|active|skip>` で決めます（skip は対象外、thread は管理用の投稿を立てる、active は人が印を付けた Issue も取り込む。既定は skip）。フォームで向き先（作業を始めるブランチ）を選ばせるなら `--branches <owner/name>=develop,main` を付けます。続けて `node bin/slack-issue-intake.ts --name <名前> knowledge` で、「質問する」に答えるための仕様の索引を作ります（claude コマンドと git を使います）。
 7. `node bin/slack-issue-intake.ts --name <名前> permissions --show` で内容を確認し、承認してから `node bin/slack-issue-intake.ts --name <名前> permissions --apply` を実行します。
 8. `node bin/slack-issue-intake.ts --name <名前> enable` を実行します。受け継ぐ許可があれば内容を確認し、承認したときだけ `--accept-inherited` を付けます。
 Orca の Claude 起動引数へ --permission-mode や --allowedTools など許可を広げるものを入れないでください。

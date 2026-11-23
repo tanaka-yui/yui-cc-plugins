@@ -1272,7 +1272,7 @@ export const runTick = (name: string): number => {
     for (const path of readIntakeRepos(config).unreadable) error(tick, `intake の設定を読めません: ${path}`)
     const picked = pickSources(config)
     const sources = config.sources.filter((s) => picked.includes(s.repo))
-    const active = intakeActiveRepos(config)
+    const active = intakeActiveRepos(config, console.log)
     const projectSync: ProjectSyncContext = {
       sources,
       state,

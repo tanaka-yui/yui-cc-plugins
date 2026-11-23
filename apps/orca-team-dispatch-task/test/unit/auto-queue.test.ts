@@ -57,10 +57,10 @@ test('AU187 lists are read up to the limit and a full list says so; listUnlabele
     assert.equal(listReadyManaged('acme/app', 'Ready', (line) => lines.push(line))?.length, AUTO_ISSUE_LIST_LIMIT)
     assert.match(f.calls(), new RegExp(`--limit ${AUTO_ISSUE_LIST_LIMIT}\\b`))
     assert.equal(AUTO_ISSUE_LIST_LIMIT, 1000)
-    // 印ごとの一覧が 2 つあり、どちらも上限ちょうどなので 2 行
+    // 印ごとの一覧が 2 つあり、どちらも上限ちょうどなので 2 行。どの印の一覧かが行ごとに分かる
     assert.deepEqual(lines, [
-      `acme/app の Ready の Issue が ${AUTO_ISSUE_LIST_LIMIT} 件を超えているかもしれません。超えた分は拾いません`,
-      `acme/app の Ready の Issue が ${AUTO_ISSUE_LIST_LIMIT} 件を超えているかもしれません。超えた分は拾いません`,
+      `acme/app の Ready と from-slack の Issue が ${AUTO_ISSUE_LIST_LIMIT} 件を超えているかもしれません。超えた分は拾いません`,
+      `acme/app の Ready と slack-thread の Issue が ${AUTO_ISSUE_LIST_LIMIT} 件を超えているかもしれません。超えた分は拾いません`,
     ])
     f.respond('issue_list', [row(1, ['slack-thread']), row(2, ['Ready', 'slack-thread'])])
     const short: string[] = []

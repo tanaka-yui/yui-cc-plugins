@@ -83,12 +83,14 @@ const isActive = (active: ReadonlySet<string>, repo: string): boolean =>
   [...active].some((name) => name.toLowerCase() === repo.toLowerCase())
 // active の auto-ready の拾う元で、slack-thread が付きステータスラベルの無い Issue に Backlog を付ける。
 // Project の上の Status がステータス名の Issue と、同じ tick で同期が触った Issue には付けない（付けると次の同期が
-// そのラベルを Status へ書き戻す）。その tick で Project を読めなかった拾う元では 1 つも付けない。
+// そのラベルを Status へ書き戻す）。orca がもう追っている Issue（state.issues にある）にも付けない
+// （人が外した Backlog を付け直さず、止めた・捨てた Issue に印を残さない）。
+// その tick で Project を読めなかった拾う元では 1 つも付けない。
 // 付けた Issue は次の tick の Backlog の一覧で拾う（同じ tick では検索の遅れで出ない）
 export const markUnlabeledBacklog = (
   sources: Array<{ repo: string; autoReady?: boolean; project: ProjectRef | null }>,
   active: ReadonlySet<string>,
-  project: Pick<ProjectSyncContext, 'statuses' | 'failed' | 'touched'>,
+  project: Pick<ProjectSyncContext, 'state' | 'statuses' | 'failed' | 'touched'>,
   log: (line: string) => void,
 ): string[] => {
   const marked: string[] = []
@@ -101,6 +103,7 @@ export const markUnlabeledBacklog = (
     if (!rows) continue
     for (const row of rows) {
       const key = `${source.repo}#${row.number}`
+      if (project.state.issues[key]) continue
       // statuses に無い（Project に載っていない）か ''（Todo や空）なら付けてよい
       const status = project.statuses.get(key)
       if (projectKey && (project.touched.has(key) || (status !== undefined && status !== ''))) continue

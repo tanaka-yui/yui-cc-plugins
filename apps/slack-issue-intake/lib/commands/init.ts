@@ -15,6 +15,7 @@ import {
   MSG_CONFIG_CHANGED,
   MSG_DESTINATION_FIXED,
   MSG_PUSH_REQUIRED,
+  MSG_THREAD_TO_ACTIVE,
   REPO_PATTERN,
   SLACK_APP_NAME,
 } from '../defaults.ts'
@@ -273,6 +274,9 @@ export const run = async (argv: string[]): Promise<void> => {
     guard()
     installLauncher(paths)
     const registered = register(home, config, paths, guard)
+    for (const repo of repos)
+      if (repo.existing === 'active' && base && repoSetting(base, repo.name)?.existing === 'thread')
+        console.log(MSG_THREAD_TO_ACTIVE.replace('{repo}', repo.name))
     console.log(
       `config=${paths.config}\nlauncher=${paths.launcher}\nchannel=${channel}\nrepo=${names.join(',')}\ndefault_repo=${defaultRepo}\nevery=${every}m\nlabels_created=${created.join(',') || 'none'}\naccept_after=${getMeta(db, 'accept_after_ts')}\nworkspace=path:${paths.runDir}\n${registered}\nnext=permissions --show`,
     )

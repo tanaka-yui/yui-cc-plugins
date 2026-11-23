@@ -2,7 +2,7 @@ import { parseHosts } from './auto-hosts.ts'
 import { AUTO_FILES, autoDir } from './auto-paths.ts'
 import { OPUS_MODEL, REVIEW_ROUND_STEP, roleNames } from './config.ts'
 import { readJson } from './fs.ts'
-import { INTAKE_EXISTING_ACTIVE, INTAKE_HOME_DIRNAME } from './intake-homes.ts'
+import { INTAKE_EXISTING_ACTIVE, INTAKE_EXISTING_THREAD, INTAKE_HOME_DIRNAME } from './intake-homes.ts'
 import { asArray, asObject, asString, type Json } from './json.ts'
 
 import { homedir } from 'node:os'
@@ -196,15 +196,26 @@ export const intakeRepoNames = (path: string): string[] | null => {
     return name && /^[^/\s]+\/[^/\s]+$/.test(name) ? [name] : []
   })
 }
-// intake の設定で existing が active のリポジトリ。読めない設定は飛ばす。名前は設定に書かれたまま
-export const intakeActiveRepos = (config: AutoConfig): Set<string> => {
-  const repos = new Set<string>()
+// intake の設定で existing が active のリポジトリ。読めない設定は飛ばす。名前は設定に書かれたまま。
+// どれかの設定が同じリポジトリを thread にしていれば active にしない（thread の home が付けた slack-thread を
+// 人の印と取り違えるため）。そのときは log へリポジトリ名を 1 行出す
+export const intakeActiveRepos = (config: AutoConfig, log?: (line: string) => void): Set<string> => {
+  const active = new Map<string, string>()
+  const thread = new Set<string>()
   for (const path of config.intakeConfigs)
     for (const row of asArray(asObject(readJson(path))?.repos) ?? []) {
       const entry = asObject(row)
       const name = asString(entry?.name)
-      if (name && /^[^/\s]+\/[^/\s]+$/.test(name) && entry?.existing === INTAKE_EXISTING_ACTIVE) repos.add(name)
+      if (!name || !/^[^/\s]+\/[^/\s]+$/.test(name)) continue
+      if (entry?.existing === INTAKE_EXISTING_ACTIVE) active.set(name.toLowerCase(), name)
+      else if (entry?.existing === INTAKE_EXISTING_THREAD) thread.add(name.toLowerCase())
     }
+  const repos = new Set<string>()
+  for (const [key, name] of active) {
+    if (thread.has(key))
+      log?.(`${name} は intake の設定の中で active と thread が混ざっているため、active として扱いません`)
+    else repos.add(name)
+  }
   return repos
 }
 export const readIntakeRepos = (config: AutoConfig): { repos: string[]; unreadable: string[] } => {

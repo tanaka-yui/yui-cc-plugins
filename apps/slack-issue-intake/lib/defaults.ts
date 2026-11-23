@@ -489,6 +489,8 @@ export const MSG_BODY_OVERSIZE = 'Issue 本文を上限内に収められませ�
 export const MSG_PUSH_REQUIRED =
   'Issue に重複防止用のラベルを付けるため、リポジトリの push 権限（WRITE 以上）が必要です'
 export const MSG_CONFIG_BROKEN = '既存の設定を読めません。config.json を復元してから再実行してください'
+export const MSG_THREAD_TO_ACTIVE =
+  '注意: {repo} の既存 Issue の扱いが thread から active に変わりました。thread のあいだに intake が slack-thread を付けた Issue（古い Backlog も含む）は、人が付けたものとして orca-team-dispatch-task の auto-ready が判定します。AI に判定させたくない Issue は slack-thread を外すか、先に autoReady を切ってください。1 つのリポジトリは 1 つのホームだけで扱い、ホームごとに thread と active を混ぜないでください（混ざると orca は active として扱いません）'
 export const MSG_CONFIG_CHANGED = '待機中に設定が更新されました。init を再実行してください'
 export const MSG_TEST_CLOCK_ONLY = '--now は loopback API を使うテストでのみ指定できます'
 
