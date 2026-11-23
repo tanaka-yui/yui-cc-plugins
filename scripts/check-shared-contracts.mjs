@@ -33,6 +33,11 @@ const reportFixture = 'test/fixtures/auto-report.json'
 if (!readFileSync(join(intake, reportFixture)).equals(readFileSync(join(dispatch, reportFixture))))
   problems.push(`${reportFixture} の 2 つの写しが違います（slack-issue-intake と orca-team-dispatch-task）`)
 
+// 学びの知らせ（orca が書く）と取り消しの依頼（intake が書く）の形。fixture の写しと、ファイル名の定数を照合する
+for (const learnFixture of ['test/fixtures/learn-notices.json', 'test/fixtures/learn-cancels.json'])
+  if (!readFileSync(join(intake, learnFixture)).equals(readFileSync(join(dispatch, learnFixture))))
+    problems.push(`${learnFixture} の 2 つの写しが違います（slack-issue-intake と orca-team-dispatch-task）`)
+
 const intakeHomes = await import(join(dispatch, 'lib/intake-homes.ts'))
 for (const key of ['INTAKE_HOME_DIRNAME', 'INTAKE_NAME_RESERVED_SUFFIX'])
   if (intakeLabels[key] !== intakeHomes[key])
@@ -74,6 +79,30 @@ try {
     )
 } finally {
   rmSync(tmp, { recursive: true, force: true })
+}
+
+// orca の readNotices が、fixture の知らせを読める（intake はこの形のファイルを読む）
+const learn = await import(join(dispatch, 'lib/auto-learn.ts'))
+if (intakeLabels.LEARN_CANCELS_FILE !== learn.LEARN_CANCELS_FILE)
+  problems.push('LEARN_CANCELS_FILE が違います（slack-issue-intake と orca-team-dispatch-task）')
+const learnTmp = mkdtempSync(join(tmpdir(), 'learn-contract-'))
+const previousHome = process.env.ORCA_DISPATCH_CONFIG_HOME
+try {
+  process.env.ORCA_DISPATCH_CONFIG_HOME = learnTmp
+  mkdirSync(learn.learnDir('contract'), { recursive: true })
+  writeFileSync(
+    join(learn.learnDir('contract'), learn.LEARN_FILES.notices),
+    readFileSync(join(dispatch, 'test/fixtures/learn-notices.json')),
+  )
+  const notices = learn.readNotices('contract')
+  if (notices.length !== 1 || notices[0].items.length !== 2)
+    problems.push('learn-notices.json を orca の readNotices で読めません')
+} catch (error) {
+  problems.push(`learn-notices.json を orca の readNotices で読めません: ${error.message}`)
+} finally {
+  if (previousHome === undefined) delete process.env.ORCA_DISPATCH_CONFIG_HOME
+  else process.env.ORCA_DISPATCH_CONFIG_HOME = previousHome
+  rmSync(learnTmp, { recursive: true, force: true })
 }
 
 if (problems.length) {

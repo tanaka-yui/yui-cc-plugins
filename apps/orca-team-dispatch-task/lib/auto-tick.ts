@@ -14,7 +14,15 @@ import {
 import { ensureCoordinator, openCoordinator } from './auto-coordinator.ts'
 import { continuationOf, github, type PrStatus, prStatus, readGithub, viewIssue } from './auto-github.ts'
 import { envArgs, hostAvailableMemoryMb, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
-import { type EndRecorder, endRecorder, onProbation, readHistory, readStore, reflectDue } from './auto-learn.ts'
+import {
+  applyCancels,
+  type EndRecorder,
+  endRecorder,
+  onProbation,
+  readHistory,
+  readStore,
+  reflectDue,
+} from './auto-learn.ts'
 import {
   AUTO_CALL_CAP_MS,
   AUTO_FILES,
@@ -51,7 +59,7 @@ import { availableMemoryMb, envCount, runNode as runProcessNode } from './sys.ts
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statfsSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import type { HostConfig } from './auto-hosts.ts'
 
@@ -1252,6 +1260,11 @@ export const runTick = (name: string): number => {
       deferred: new Set(),
       reachable: new Map(),
       unreachable: new Set(),
+    }
+    try {
+      applyCancels(name, config.intakeConfigs.map(dirname), autoNow(), console.log)
+    } catch (e) {
+      console.log(`学びの取り消しを反映できません: ${e instanceof Error ? e.message : String(e)}`)
     }
     const blocked = new Set(
       Object.values(state.issues)

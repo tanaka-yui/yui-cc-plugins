@@ -13,6 +13,8 @@ import type { IssueState } from './auto-state.ts'
 // 履歴・規則・知らせの 3 ファイルを読み書きし、食い違いの抽出・似た事例の選択・規則の文の検査をする。
 export const LEARN_DIR = 'learn'
 export const LEARN_FILES = { history: 'history.json', rules: 'rules.json', notices: 'notices.json' } as const
+// Slack での取り消しの依頼。slack-issue-intake がホームに書き、orca は読むだけ（lib/defaults.ts の同名の定数と同じ値）
+export const LEARN_CANCELS_FILE = 'learn-cancels.json'
 // 振り返りを始めるのに要る、まだ振り返っていない食い違いの件数
 export const LEARN_REFLECT_MIN = 3
 // auto 向きの規則が持つ様子見の件数
@@ -447,6 +449,7 @@ export const onProbation = (store: LearnStore, ruleIds: string[]): boolean =>
   )
 
 const WITHDRAWN_BY_PROBATION = '様子見の Issue が失敗または人が止めた'
+const WITHDRAWN_BY_CANCEL = 'Slack で取り消し'
 
 // 世代の結果で様子見の規則を決着させる。人が merge したら残りを 1 減らし、0 になったら様子見を終えたと知らせる。
 // 失敗したか、auto-ready か始まったあとの Issue を人が止めたら取り下げて知らせる。環境が原因の失敗などでは何もしない。
@@ -786,4 +789,54 @@ export const applyLearn = (
       changed = true
     }
   if (changed) writeHistory(name, rows)
+}
+
+type Cancel = { noticeId: number; n: number; ruleId: string; at: string }
+
+const parseCancel = (value: Json): Cancel | null => {
+  const entry = asObject(value)
+  const noticeId = count(entry?.noticeId)
+  const n = count(entry?.n)
+  const ruleId = asString(entry?.ruleId)
+  const at = asString(entry?.at)
+  return noticeId === null || n === null || ruleId === null || at === null ? null : { noticeId, n, ruleId, at }
+}
+
+// ホームの learn-cancels.json の依頼。無ければ空。読めない・形が違うときは null
+const readCancels = (home: string): Cancel[] | null => {
+  const path = join(home, LEARN_CANCELS_FILE)
+  if (!existsSync(path)) return []
+  const value = asObject(readJson(path))
+  const list = value?.version === FILE_VERSION ? asArray(value.cancels) : null
+  if (list === null) return null
+  const cancels = list.map(parseCancel)
+  return cancels.every((cancel) => cancel !== null) ? cancels : null
+}
+
+// 各ホームの取り消しの依頼を読み、有効な規則を取り下げて知らせ（withdrawn）を規則ごとに 1 つ足す。
+// 取り下げ済み・知らない id は何もしない（依頼は残り続けるので、何度読んでも同じ結果になる）。
+// 読めないファイルは log に 1 行出して飛ばす。取り下げた規則の数を返す
+export const applyCancels = (name: string, homes: string[], at: string, log: (line: string) => void): number => {
+  const ruleIds = new Set<string>()
+  for (const home of homes) {
+    const cancels = readCancels(home)
+    if (cancels === null) log(`学びの取り消しの依頼を読めません: ${join(home, LEARN_CANCELS_FILE)}`)
+    else for (const cancel of cancels) ruleIds.add(cancel.ruleId)
+  }
+  if (ruleIds.size === 0) return 0
+  const store = readStore(name)
+  const targets = store.rules.filter((rule) => rule.status === 'active' && ruleIds.has(rule.id))
+  for (const rule of targets) {
+    rule.status = 'withdrawn'
+    rule.withdrawnWhy = WITHDRAWN_BY_CANCEL
+    appendNotice(
+      name,
+      store,
+      rule.repo,
+      [{ kind: 'withdrawn', ruleId: rule.id, direction: rule.direction, text: rule.topic, evidence: [], url: '' }],
+      at,
+    )
+  }
+  if (targets.length > 0) writeStore(name, store)
+  return targets.length
 }

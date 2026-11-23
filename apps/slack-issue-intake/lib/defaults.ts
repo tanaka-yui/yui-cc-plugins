@@ -512,6 +512,8 @@ export const PROCESS_LOCALE = 'C'
 export const SLACK_APP_DIR_SUFFIX = '-slack-app'
 // orca-team-dispatch-task の lib/intake-homes.ts に写しがあり、scripts/check-shared-contracts.mjs が一致を確かめる
 export const INTAKE_HOME_DIRNAME = '.slack-issue-intake'
+// 学びの取り消しの依頼をホームに書くファイル名。orca-team-dispatch-task の lib/auto-learn.ts の同名の定数と同じ値
+export const LEARN_CANCELS_FILE = 'learn-cancels.json'
 export const INTAKE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/
 export const INTAKE_NAME_RESERVED_SUFFIX = SLACK_APP_DIR_SUFFIX
 export const INTAKE_SECRET_DENY_PATTERN = /^(?:Read|Edit)\(\/(.+)\)$/

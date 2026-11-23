@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "notices": [
+    {
+      "id": 1,
+      "repo": "acme/app",
+      "at": "2026-11-23T00:00:00Z",
+      "items": [
+        {
+          "n": 1,
+          "kind": "new",
+          "ruleId": "r1",
+          "direction": "auto",
+          "text": "文言だけの修正",
+          "evidence": ["acme/app#1@1", "acme/app#2@1"],
+          "url": ""
+        },
+        {
+          "n": 2,
+          "kind": "new",
+          "ruleId": "r2",
+          "direction": "eng",
+          "text": "認証まわりの変更",
+          "evidence": ["acme/app#3@1", "acme/app#4@1"],
+          "url": ""
+        }
+      ]
+    }
+  ]
+}
