@@ -52,8 +52,7 @@ import {
   PROJECT_STATUS_COLORS,
   readStatusOptions,
 } from './setup-project.ts'
-import { suggestVerify } from './setup-suggest.ts'
-import { runVerifyLocal, VERIFY_SCRIPT_FAILED, verifyRemote } from './setup-verify.ts'
+import { suggestVerify, usesMise } from './setup-suggest.ts'
 import { STATUS_LABELS } from './status.ts'
 import { envCount, run, runNode } from './sys.ts'
 
@@ -63,12 +62,11 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import type { AutoConfig } from './auto-config.ts'
-import type { HostConfig, RepoMeasure } from './auto-hosts.ts'
+import type { HostConfig } from './auto-hosts.ts'
 import type { JsonObject } from './json.ts'
 import type { SetupDraft } from './setup-draft.ts'
 import type { Prompter } from './setup-prompt.ts'
 import type { VerifySuggestion } from './setup-suggest.ts'
-import type { VerifyResult } from './setup-verify.ts'
 
 export const SETUP_STEPS: ReadonlyArray<{ id: string; title: string }> = [
   { id: 'prereq', title: '前提の確認' },
@@ -630,34 +628,21 @@ export const runSetup = (
     if (!next.length) fail('使うマシンがありません')
     v.hosts = next
   }
+  // 確認コマンドは決めるだけで走らせない（走らせるのは実装のあとの worker）。確かめるのは checkout の置き場所だけで、
+  // 通ったマシンとリポジトリの組を verified にする。リポジトリごとの measure は前の値を、置き場所が同じときだけ残す
   const verify = () => {
     const oldHosts = base ? hostsOf(base) : []
     const judge =
       (base ?? parseAutoConfig({ version: 1, name, repos: {}, sources: [] }, name))?.judge ??
       fail('判定の設定を読めません')
     const listed = new Map<string, ReturnType<typeof listRemoteRepos>>()
-    const measureOf = (result: VerifyResult): RepoMeasure | null =>
-      result.ok && result.peakMemoryMb !== null
-        ? { peakMemoryMb: result.peakMemoryMb, diskGrowthMb: result.diskGrowthMb ?? 0, measuredAt: autoNow() }
-        : null
-    const report = (where: string, result: VerifyResult) => {
-      if (result.ok) {
-        const memory = result.peakMemoryMb === null ? '最大メモリ 不明' : `最大メモリ ${result.peakMemoryMb} MB`
-        const disk = result.diskGrowthMb === null ? 'ディスク 不明' : `ディスク +${result.diskGrowthMb} MB`
-        say(`${where}: 通りました（${memory}、${disk}）`)
-      } else {
-        say(`${where}: ${result.failed ?? '確認'} が失敗しました`)
-        if (result.failed === VERIFY_SCRIPT_FAILED && result.tmpPath)
-          say(`一時ディレクトリが残っていれば消してください: ${result.tmpPath}`)
-      }
-      if (result.missingTools.length) say(`${where}: 足りない道具: ${result.missingTools.join(', ')}`)
-    }
     for (const [repo, r] of Object.entries(repos())) {
       const previous = base?.repos[repo]
+      const mise = usesMise(r.checkout)
       let suggestion: VerifySuggestion | null = null
       if (yes(`${repo} の確認コマンドを AI に割り出させますか`, r.verify.length === 0)) {
         say('AI に割り出させています…')
-        const result = suggestVerify(r.checkout, judge)
+        const result = suggestVerify(r.checkout, judge, mise)
         if ('error' in result) say(`AI の案を作れませんでした: ${result.error}`)
         else {
           suggestion = result
@@ -666,6 +651,10 @@ export const runSetup = (
           if (result.notes) say(`メモ: ${result.notes}`)
         }
       }
+      if (mise)
+        say(
+          `${repo} は mise を使っています。確認コマンドは mise run <task> か mise exec -- <コマンド> で書いてください`,
+        )
       const defaultsCommands = suggestion?.commands.length ? suggestion.commands : r.verify
       const commands: string[] = []
       for (let i = 0; ; i++) {
@@ -677,57 +666,36 @@ export const runSetup = (
       const defaults = repoDefaults(r.checkout)
       r.infra = yes(`${repo} はインフラですか`, previous?.infra ?? defaults.infra)
       r.ci = yes(`${repo} に CI がありますか`, previous?.ci ?? defaults.ci)
-      const sameCommands = previous !== undefined && isDeepStrictEqual(previous.verify, commands)
-      const sameRepo = sameCommands && previous?.checkout === r.checkout
-      r.verified = sameRepo ? (previous?.verified ?? false) : false
-      let localUnchanged = v.hosts ? false : sameRepo
-      const remote: Array<{ host: HostConfig; pair: HostConfig['repos'][string]; keep: boolean }> = []
+      const problem = checkoutProblem(repo, r.checkout)
+      r.verified = problem === null
+      const localHost = v.hosts?.find((h) => h.id === LOCAL_HOST)
+      say(`${localHost?.name ?? 'このマシン'}: ${repo}: ${problem ?? `${r.checkout} を確かめました`}`)
       for (const host of v.hosts ?? []) {
         const pair = host.repos[repo]
         if (!pair) continue
         const old = oldHosts.find((h) => h.id === host.id)?.repos[repo]
-        const unchanged = sameCommands && old?.selector === pair.selector && (host.id !== LOCAL_HOST || sameRepo)
-        pair.verified = unchanged ? (old?.verified ?? false) : false
+        const unchanged =
+          old?.selector === pair.selector && (host.id !== LOCAL_HOST || previous?.checkout === r.checkout)
         pair.measure = unchanged ? (old?.measure ?? null) : null
-        if (host.id === LOCAL_HOST) localUnchanged = unchanged
-        else remote.push({ host, pair, keep: unchanged && old?.verified === true })
-      }
-      const localHost = v.hosts?.find((h) => h.id === LOCAL_HOST)
-      const local = localHost?.repos[repo]
-      if (
-        (!v.hosts || local) &&
-        commands.length &&
-        yes(`${repo} の確認コマンドをこのマシンで走らせて確かめますか`, !localUnchanged)
-      ) {
-        const result = runVerifyLocal(r.checkout, commands, suggestion?.tools ?? [])
-        r.verified = result.ok
-        if (local) {
-          local.verified = result.ok
-          local.measure = measureOf(result)
-        }
-        report(localHost?.name ?? 'このマシン', result)
-      }
-      for (const { host, pair, keep } of remote) {
-        if (!commands.length || !yes(`${repo} を ${host.name} で走らせて確かめますか`, !keep)) continue
-        pair.verified = false
-        pair.measure = null
-        if (!listed.has(host.id)) listed.set(host.id, listRemoteRepos(host.id))
-        const row = listed.get(host.id)?.find((r) => `id:${r.id}` === pair.selector)
-        if (!row) {
-          say(`${host.name}: ${repo} の置き場所を Orca の一覧から読めないため確かめられませんでした`)
+        if (host.id === LOCAL_HOST) {
+          pair.verified = r.verified
           continue
         }
-        const result = verifyRemote(host.id, `path:${row.path}`, commands, suggestion?.tools ?? [], (m) =>
-          say(`${host.name} で確認中（${m} 分）`),
+        if (!listed.has(host.id)) listed.set(host.id, listRemoteRepos(host.id))
+        const rows = listed.get(host.id)
+        const row = rows?.find((x) => pair.selector === `id:${x.id}` || pair.selector === `path:${x.path}`)
+        pair.verified = row?.repo?.toLowerCase() === repo.toLowerCase()
+        say(
+          `${host.name}: ${repo}: ${
+            pair.verified && row
+              ? `${row.path} を確かめました`
+              : !rows
+                ? 'リポジトリの一覧を読めないため確かめられませんでした'
+                : !row
+                  ? '置き場所が Orca の一覧にありません'
+                  : `${row.path} の origin が ${repo} だと確かめられません`
+          }`,
         )
-        if (result.result) {
-          pair.verified = result.result.ok
-          pair.measure = measureOf(result.result)
-          report(host.name, result.result)
-        } else if (result.timedOut) {
-          say(`${host.name}: 時間内に終わりませんでした`)
-          if (result.tmpPath) say(`一時ディレクトリが残っていれば消してください: ${result.tmpPath}`)
-        } else say(`${host.name}: 確認の端末を作れませんでした`)
       }
     }
   }

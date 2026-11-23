@@ -11,7 +11,6 @@ import {
   repoDefaults,
   swapWarning,
 } from '../../lib/setup-host.ts'
-import { runVerifyLocal } from '../../lib/setup-verify.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 
 import assert from 'node:assert/strict'
@@ -146,7 +145,7 @@ test('SU17 remote probe rejoins wrapped output and always closes a created termi
     f.cleanup()
   }
 })
-test('SU18 checkout validation and SU19b verification keep the checkout clean', () => {
+test('SU18 checkout validation and repository defaults', () => {
   const f = fixture()
   try {
     const path = f.raw.repos['acme/app'].checkout
@@ -168,31 +167,6 @@ test('SU18 checkout validation and SU19b verification keep the checkout clean', 
     git(path, 'add', 'main.tf', '.github/workflows/ci.yml')
     git(path, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'fixtures')
     assert.deepEqual(repoDefaults(path), { infra: true, ci: true })
-    for (const [commands, want] of [
-      [['touch generated', 'false'], { ok: false, failed: 'false' }],
-      [['touch generated', 'true'], { ok: true, failed: null }],
-    ] as const) {
-      const r = runVerifyLocal(path, [...commands], [])
-      assert.deepEqual({ ok: r.ok, failed: r.failed }, want)
-      assert.equal(git(path, 'worktree', 'list').split('\n').length, 1)
-      assert.equal(git(path, 'status', '--porcelain'), '')
-    }
-    // SU19e: 端末につないだまま走らせても、git などがページャを開いて止まらない
-    const pager = process.env.PAGER
-    process.env.PAGER = 'less'
-    try {
-      const r = runVerifyLocal(path, ['test "$GIT_PAGER" = cat && test "$PAGER" = cat'], [])
-      assert.deepEqual(
-        { ok: r.ok, failed: r.failed },
-        {
-          ok: true,
-          failed: null,
-        },
-      )
-    } finally {
-      if (pager === undefined) Reflect.deleteProperty(process.env, 'PAGER')
-      else process.env.PAGER = pager
-    }
   } finally {
     f.cleanup()
   }

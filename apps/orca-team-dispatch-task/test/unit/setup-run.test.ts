@@ -2,7 +2,6 @@ import { LEARN_PLUGIN_REPO } from '../../lib/auto-learn.ts'
 import { autoDir } from '../../lib/auto-paths.ts'
 import { runSetup } from '../../lib/auto-setup.ts'
 import { releaseLock, takeLock } from '../../lib/auto-state.ts'
-import { VERIFY_BEGIN, VERIFY_END, VERIFY_TMP } from '../../lib/setup-verify.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 import { readClaudeStubArgs, readClaudeStubPwd, writeClaudeStub } from '../lib/claude-stub.ts'
 
@@ -32,6 +31,9 @@ const prepare = () => {
   const oldHome = process.env.HOME
   process.env.HOME = userHome
   for (const [repo, r] of Object.entries(f.raw.repos)) gitRepo(r.checkout, repo)
+  // setup は checkout の置き場所が確かめられた組を verified にするので、置き場所のある fixture は確認済みで始める
+  f.raw.repos['other/api'].verified = true
+  f.put(f.configFile, f.raw)
   const home = join(f.dir, 'claude')
   mkdirSync(home)
   process.env.ORCA_AUTO_CLAUDE_HOME = home
@@ -68,7 +70,6 @@ const prepare = () => {
     '',
     'n',
     `echo ran >> '${join(f.dir, 'verify.log')}'`,
-    '',
     '',
     '',
     '',
@@ -150,7 +151,9 @@ test('SU27 fresh setup creates disabled automation then approves and enables; SU
     assert.equal(config.repos['acme/app']?.verified, true)
     assert.equal(config.automation?.id, 'a1')
     assert.equal(typeof config.automation?.acceptedFingerprint, 'string')
-    assert.equal(readFileSync(join(f.dir, 'verify.log'), 'utf8'), 'ran\n')
+    // 確認コマンドは保存するだけで走らせない
+    assert.deepEqual(config.repos['acme/app']?.verify, [`echo ran >> '${join(f.dir, 'verify.log')}'`])
+    assert.equal(existsSync(join(f.dir, 'verify.log')), false)
     assert.ok(f.calls(f.orca).includes('--disabled'))
     assert.ok(f.calls(f.orca).includes('automations edit a1 --enabled'))
     assert.equal(existsSync(join(autoDir('main'), 'setup.json')), false)
@@ -158,7 +161,7 @@ test('SU27 fresh setup creates disabled automation then approves and enables; SU
     const again = f.invoke(Array(100).fill(''))
     assert.equal(again.status, 0, again.stdout + again.stderr)
     assert.deepEqual(f.config(), config)
-    assert.equal(readFileSync(join(f.dir, 'verify.log'), 'utf8'), 'ran\n')
+    assert.equal(existsSync(join(f.dir, 'verify.log')), false)
     assert.ok(!f.calls(f.orca).includes('automations create'))
     assert.ok(f.calls(f.orca).includes('automations edit a1'))
   } finally {
@@ -214,7 +217,7 @@ test('SU27b same-name automation requires consent', () => {
       f.orca,
     )
     const answers = f.freshAnswers()
-    answers[22] = 'n'
+    answers[21] = 'n'
     const result = f.invoke(answers)
     assert.equal(result.status, 1, result.stdout + result.stderr)
     assert.ok(!/automations (create|edit)/.test(f.calls(f.orca)))
@@ -238,14 +241,18 @@ test('SU30b missing recorded automation is recreated', () => {
     f.cleanup()
   }
 })
-test('SU30c legacy hand-written config preserves omitted defaults and unverified commands', () => {
+test('SU30c legacy hand-written config preserves omitted defaults and commands without running them', () => {
   const f = prepare()
   try {
     f.put(f.configFile, {
       ...f.raw,
       repos: {
         ...f.raw.repos,
-        'other/api': { ...f.raw.repos['other/api'], verify: [`echo ran >> '${join(f.dir, 'verify.log')}'`] },
+        'other/api': {
+          ...f.raw.repos['other/api'],
+          verify: [`echo ran >> '${join(f.dir, 'verify.log')}'`],
+          verified: true,
+        },
       },
     })
     const before = f.config(),
@@ -271,7 +278,7 @@ const localHost = (f: ReturnType<typeof prepare>) => ({
   orcaBin: 'orca',
   repos: {
     'acme/app': { selector: `path:${f.raw.repos['acme/app'].checkout}`, verified: true },
-    'other/api': { selector: `path:${f.raw.repos['other/api'].checkout}`, verified: false },
+    'other/api': { selector: `path:${f.raw.repos['other/api'].checkout}`, verified: true },
   },
 })
 const remoteSpec = {
@@ -322,44 +329,40 @@ test('SU30d existing host name, spec absence, orcaBin and lanes survive Enter', 
     f.cleanup()
   }
 })
-test('SU30e changing checkout invalidates verification until commands pass', () => {
-  for (const run of ['n', 'y']) {
-    const f = prepare()
-    try {
-      assert.equal(f.fresh().status, 0)
-      const checkout = join(f.dir, 'checkout-b')
-      gitRepo(checkout, 'acme/app')
-      const result = f.rerun({
-        'acme/app のこのマシンの checkout': checkout,
-        走らせて確かめますか: run,
-        'config.json を書きますか': 'y',
-        有効にしますか: 'y',
-      })
-      assert.equal(result.code, 0, result.output)
-      assert.equal(f.config().repos['acme/app']?.checkout, checkout)
-      assert.equal(f.config().repos['acme/app']?.verified, run === 'y')
-      assert.equal(f.config().hosts?.[0]?.repos['acme/app']?.verified, run === 'y')
-      assert.equal(
-        readFileSync(join(f.dir, 'verify.log'), 'utf8').split('\n').filter(Boolean).length,
-        run === 'y' ? 2 : 1,
-      )
-    } finally {
-      f.cleanup()
-    }
+test('SU30e changing checkout is verified by its path without running the commands', () => {
+  const f = prepare()
+  try {
+    assert.equal(f.fresh().status, 0)
+    const checkout = join(f.dir, 'checkout-b')
+    gitRepo(checkout, 'acme/app')
+    const result = f.rerun({
+      'acme/app のこのマシンの checkout': checkout,
+      'config.json を書きますか': 'y',
+      有効にしますか: 'y',
+    })
+    assert.equal(result.code, 0, result.output)
+    assert.equal(f.config().repos['acme/app']?.checkout, checkout)
+    assert.equal(f.config().repos['acme/app']?.verified, true)
+    assert.equal(f.config().hosts?.[0]?.repos['acme/app']?.verified, true)
+    assert.match(result.output, new RegExp(`acme/app: ${checkout} を確かめました`))
+    assert.ok(!result.asked.some((q) => q.includes('走らせて')), result.asked.join('\n'))
+    assert.equal(existsSync(join(f.dir, 'verify.log')), false)
+  } finally {
+    f.cleanup()
   }
 })
-test('SU30f changed remote selector loses verification without reprobe', () => {
+test('SU30f changed remote selector is verified from the Orca list without a terminal', () => {
   const f = prepare()
   try {
     remoteResponses(f)
     f.put(f.configFile, { ...f.raw, hosts: [localHost(f), remoteHost] })
     const result = f.rerun({
       'Server の acme/app の checkout': '2',
-      'acme/app を Server で走らせて確かめますか': 'n',
       'config.json を書きますか': 'y',
     })
     assert.equal(result.code, 0, result.output)
-    assert.deepEqual(f.config().hosts?.[1]?.repos['acme/app'], { selector: 'id:R2', verified: false, measure: null })
+    assert.deepEqual(f.config().hosts?.[1]?.repos['acme/app'], { selector: 'id:R2', verified: true, measure: null })
+    assert.match(result.output, /Server: acme\/app: \/remote\/app2 を確かめました/)
     assert.ok(!f.calls(f.orca).includes('terminal create'))
   } finally {
     f.cleanup()
@@ -399,7 +402,7 @@ for (const withLocal of [false, true])
       remoteResponses(f)
       const local = {
         ...localHost(f),
-        repos: { 'other/api': { selector: `path:${f.raw.repos['other/api'].checkout}`, verified: false } },
+        repos: { 'other/api': { selector: `path:${f.raw.repos['other/api'].checkout}`, verified: true } },
       }
       f.put(f.configFile, { ...f.raw, hosts: [...(withLocal ? [local] : []), remoteHost] })
       const before = f.config()
@@ -534,17 +537,12 @@ test('SU34 AI suggestion becomes the default commands and is accepted with Enter
     const r = f.rerun({
       'acme/app の確認コマンドを AI に': 'y',
       'other/api の確認コマンドを AI に': 'n',
-      'acme/app の確認コマンドをこのマシンで': 'y',
       'config.json を書きますか': 'y',
     })
     assert.equal(r.code, 0, r.output)
     assert.deepEqual(f.config().repos['acme/app']?.verify, ['echo ok'])
     assert.equal(f.config().repos['acme/app']?.verified, true)
-    for (const text of [
-      'AI の案: echo ok',
-      'このマシン: 通りました',
-      'このマシン: 足りない道具: definitely-not-a-tool-xyz',
-    ])
+    for (const text of ['AI の案: echo ok', '必要な道具: sh, definitely-not-a-tool-xyz'])
       assert.ok(r.output.includes(text), r.output)
     const args = readClaudeStubArgs(f.dir)
     for (const [flag, value] of [
@@ -563,7 +561,6 @@ test('SU35 AI failure falls back to manual entry', () => {
   try {
     const r = f.rerun({
       'other/api の確認コマンド 1': 'echo typed',
-      'other/api の確認コマンドをこのマシンで': 'n',
       'config.json を書きますか': 'y',
     })
     assert.equal(r.code, 0, r.output)
@@ -573,163 +570,45 @@ test('SU35 AI failure falls back to manual entry', () => {
     f.cleanup()
   }
 })
-const remoteVerifyResponse = (f: ReturnType<typeof prepare>, kind = 'pass') => {
-  remoteResponses(f)
-  f.respond('terminal_create', { ok: true, result: { terminal: { handle: 't1' } } }, f.orca)
-  const result = {
-    ok: kind === 'pass',
-    failed: kind === 'pass' ? null : 'npm test',
-    exitCode: kind === 'pass' ? 0 : 1,
-    peakMemoryMb: 3000,
-    diskGrowthMb: 700,
-    missingTools: kind === 'pass' ? [] : ['npm'],
-    platform: 'darwin',
-  }
-  f.respond(
-    'terminal_read',
-    {
-      ok: true,
-      result: {
-        terminal: {
-          tail: [
-            `${VERIFY_TMP}/tmp/x@@`,
-            ...(kind === 'timeout' ? [] : [`${VERIFY_BEGIN}${JSON.stringify(result)}${VERIFY_END}`]),
-          ],
-        },
-      },
-    },
-    f.orca,
-  )
-}
 const measuredPair = {
   selector: 'id:R',
   verified: true,
   measure: { peakMemoryMb: 3000, diskGrowthMb: 700, measuredAt: '2026-11-13T05:30:00Z' },
 }
-for (const kind of ['pass', 'fail', 'timeout'])
-  test(`SU36 remote pair verification ${kind}`, () => {
-    const f = prepare()
-    try {
-      remoteVerifyResponse(f, kind)
-      f.put(f.configFile, { ...f.raw, hosts: [localHost(f), remoteHost] })
-      if (kind === 'timeout') {
-        process.env.ORCA_AUTO_VERIFY_TIMEOUT_MS = '50'
-        process.env.ORCA_AUTO_VERIFY_INTERVAL_MS = '10'
-      }
-      const r = f.rerun({ 'acme/app を Server で走らせて確かめますか': 'y', 'config.json を書きますか': 'y' })
-      assert.equal(r.code, 0, r.output)
-      const pair = f.config().hosts?.find((h) => h.id === 'env-1')?.repos['acme/app']
-      assert.deepEqual(pair, kind === 'pass' ? measuredPair : { selector: 'id:R', verified: false, measure: null })
-      if (kind === 'pass') {
-        assert.ok(r.output.includes('Server: 通りました（最大メモリ 3000 MB、ディスク +700 MB）'), r.output)
-        assert.ok(r.output.includes('1 worktree: メモリ 6000 MB・ディスク 1400 MB（測った値）'), r.output)
-      } else if (kind === 'fail') {
-        assert.ok(r.output.includes('Server: npm test が失敗しました'), r.output)
-        assert.ok(r.output.includes('Server: 足りない道具: npm'), r.output)
-      } else {
-        assert.ok(r.output.includes('Server: 時間内に終わりませんでした'), r.output)
-        assert.ok(r.output.includes('一時ディレクトリが残っていれば消してください: /tmp/x'), r.output)
-      }
-      const calls = readFileSync(join(f.orca, 'argv.log'), 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => line.split('\x1f'))
-      const create = calls.find((a) => a[0] === 'terminal' && a[1] === 'create')
-      assert.ok(create)
-      for (const [flag, value] of [
-        ['--environment', 'env-1'],
-        ['--worktree', 'path:/remote/app'],
-        ['--title', 'orca-auto-verify'],
-      ])
-        assert.equal(create[create.indexOf(flag ?? '') + 1], value)
-      assert.ok(calls.some((a) => a[0] === 'terminal' && a[1] === 'close' && a[a.indexOf('--terminal') + 1] === 't1'))
-    } finally {
-      f.cleanup()
-    }
-  })
-test('SU37 Enter rerun skips the remote check and keeps verified and measure', () => {
-  const f = prepare()
-  try {
-    remoteVerifyResponse(f)
-    f.put(f.configFile, { ...f.raw, hosts: [localHost(f), remoteHost] })
-    const r = f.rerun({ 'acme/app を Server で走らせて確かめますか': 'y', 'config.json を書きますか': 'y' })
-    assert.equal(r.code, 0, r.output)
-    assert.deepEqual(f.config().hosts?.find((h) => h.id === 'env-1')?.repos['acme/app'], measuredPair)
-    const before = withoutAutomation(f.config())
-    writeFileSync(join(f.orca, 'calls.log'), '')
-    const again = f.invoke(Array(100).fill(''))
-    assert.equal(again.status, 0, again.stdout + again.stderr)
-    assert.ok(!f.calls(f.orca).includes('terminal create'))
-    assert.deepEqual(withoutAutomation(f.config()), before)
-  } finally {
-    f.cleanup()
-  }
-})
-test('SU37b unverified C3a remote pair is checked with Enter', () => {
-  const f = prepare()
-  try {
-    remoteVerifyResponse(f)
-    f.put(f.configFile, {
-      ...f.raw,
-      hosts: [localHost(f), { ...remoteHost, repos: { 'acme/app': { selector: 'id:R', verified: false } } }],
-    })
-    const r = f.rerun({ 'config.json を書きますか': 'y' })
-    assert.equal(r.code, 0, r.output)
-    assert.ok(f.calls(f.orca).includes('terminal create'))
-    assert.deepEqual(f.config().hosts?.find((h) => h.id === 'env-1')?.repos['acme/app'], measuredPair)
-  } finally {
-    f.cleanup()
-  }
-})
-test('SU38 changing the remote selector drops verified and measure until checked again', () => {
+test('SU36 a remote pair is verified from the Orca list, keeps its measure and never opens a terminal', () => {
   const f = prepare()
   try {
     remoteResponses(f)
-    f.put(f.configFile, { ...f.raw, hosts: [localHost(f), { ...remoteHost, repos: { 'acme/app': measuredPair } }] })
-    const r = f.rerun({
-      'Server の acme/app の checkout': '2',
-      'acme/app を Server で走らせて確かめますか': 'n',
-      'config.json を書きますか': 'y',
+    f.put(f.configFile, {
+      ...f.raw,
+      hosts: [localHost(f), { ...remoteHost, repos: { 'acme/app': { ...measuredPair, verified: false } } }],
     })
+    const r = f.rerun({ 'config.json を書きますか': 'y' })
     assert.equal(r.code, 0, r.output)
-    assert.deepEqual(f.config().hosts?.find((h) => h.id === 'env-1')?.repos['acme/app'], {
-      selector: 'id:R2',
-      verified: false,
-      measure: null,
-    })
+    assert.deepEqual(f.config().hosts?.find((h) => h.id === 'env-1')?.repos['acme/app'], measuredPair)
+    assert.ok(r.output.includes('Server: acme/app: /remote/app を確かめました'), r.output)
+    assert.ok(r.output.includes('1 worktree: メモリ 6000 MB・ディスク 1400 MB（測った値）'), r.output)
     assert.ok(!f.calls(f.orca).includes('terminal create'))
   } finally {
     f.cleanup()
   }
 })
-
-test('SU39 cleanup failure reports the remaining temporary directory', () => {
+test('SU37 a remote pair whose origin Orca cannot tell is not verified', () => {
   const f = prepare()
-  let leftover: string | null = null
   try {
-    const command = `mkdir -p ro/sub && touch ro/sub/f && chmod 555 ro/sub && echo built && pwd -P > '${join(f.dir, 'verify-worktree')}'`
-    const r = f.rerun({
-      'acme/app の確認コマンド 1': command,
-      'acme/app の確認コマンドをこのマシンで': 'y',
-      'other/api の確認コマンドを AI に': 'n',
-      'config.json を書きますか': 'y',
-    })
+    remoteResponses(f)
+    f.hook(
+      'repo_list',
+      `case " $* " in *' --environment '*) printf '%s' '{"ok":true,"result":{"repos":[{"id":"R","path":"/remote/app"}]}}' > "$ORCA_STUB_DIR/repo_list" ;; *) printf '%s' '{"ok":true,"result":{"repos":[]}}' > "$ORCA_STUB_DIR/repo_list" ;; esac`,
+      f.orca,
+    )
+    f.put(f.configFile, { ...f.raw, hosts: [localHost(f), remoteHost] })
+    const r = f.rerun({ 'config.json を書きますか': 'y' }, 'hosts')
     assert.equal(r.code, 0, r.output)
-    const hint = '一時ディレクトリが残っていれば消してください: '
-    leftover = dirname(readFileSync(join(f.dir, 'verify-worktree'), 'utf8').trim())
-    const reported = r.output.split(hint)[1]?.split('\n')[0]
-    assert.ok(reported, r.output)
-    assert.equal(realpathSync(reported), realpathSync(leftover))
-    assert.ok(existsSync(leftover))
-    assert.ok(r.output.includes('このマシン: 確認のスクリプト が失敗しました'), r.output)
-    assert.equal(f.config().repos['acme/app']?.verified, false)
+    assert.equal(f.config().hosts?.find((h) => h.id === 'env-1')?.repos['acme/app']?.verified, false)
+    assert.ok(r.output.includes('Server: acme/app: /remote/app の origin が acme/app だと確かめられません'), r.output)
+    assert.ok(!f.calls(f.orca).includes('terminal create'))
   } finally {
-    if (!leftover && existsSync(join(f.dir, 'verify-worktree')))
-      leftover = dirname(readFileSync(join(f.dir, 'verify-worktree'), 'utf8').trim())
-    if (leftover) {
-      spawnSync('chmod', ['-R', 'u+w', leftover])
-      rmSync(leftover, { recursive: true, force: true })
-    }
     f.cleanup()
   }
 })
@@ -942,7 +821,7 @@ test('SU40b roles with Enter only writes nothing', () => {
     f.cleanup()
   }
 })
-test('SU41 hosts asks only machines, checks and lanes, and a changed selector loses verification', () => {
+test('SU41 hosts asks only machines, checks and lanes, and a changed selector is checked again by its path', () => {
   const f = prepare()
   try {
     remoteResponses(f)
@@ -950,13 +829,12 @@ test('SU41 hosts asks only machines, checks and lanes, and a changed selector lo
     const result = f.rerun(
       {
         'Server の acme/app の checkout': '2',
-        'acme/app を Server で走らせて確かめますか': 'n',
         'config.json を書きますか': 'y',
       },
       'hosts',
     )
     assert.equal(result.code, 0, result.output)
-    assert.deepEqual(f.config().hosts?.[1]?.repos['acme/app'], { selector: 'id:R2', verified: false, measure: null })
+    assert.deepEqual(f.config().hosts?.[1]?.repos['acme/app'], { selector: 'id:R2', verified: true, measure: null })
     assert.ok(!result.asked.some((q) => /intake|review_mode|判定の間隔/.test(q)), result.asked.join('\n'))
     assert.ok(!f.calls(f.orca).includes('automations'))
     assert.equal(existsSync(join(autoDir('main'), 'setup.json')), false)

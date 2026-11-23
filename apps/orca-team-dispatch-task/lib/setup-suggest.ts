@@ -2,6 +2,8 @@ import { asArray, asObject, parseJson } from './json.ts'
 import { envCount, MAX_BUFFER } from './sys.ts'
 
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
 import type { Json } from './json.ts'
 
@@ -12,16 +14,23 @@ const SUGGEST_PROMPT = `You are preparing verification commands for an automated
 Read the repository in the current directory to learn how it is built, tested and linted. Look at CI definitions (.github/workflows), package.json, Makefile, go.mod, pyproject.toml, mise.toml, .tool-versions, compose files and README, and anything else that helps. Do not assume a language or framework.
 Do not modify any file.
 Propose shell commands that build, test and lint the project without side effects outside the working tree and without any human input. They run in order with /bin/sh from the root of a clean checkout of HEAD with no dependencies installed yet, so include install steps when needed. Also list the command-line tools those commands need (for example node, npm, go, docker).
+Prefer the checks CI runs, and do not invent checks CI does not run. When the repository defines tasks (mise tasks, Makefile targets, package.json scripts), run those tasks instead of re-implementing their commands.
+When the repository pins its tools with mise (mise.toml, .mise.toml or .tool-versions), run every command through mise (mise run <task>, or mise exec -- <command> when no task fits) so the pinned versions are used, and list mise among the tools.
 Answer with exactly one JSON object and nothing else: {"commands":["..."],"tools":["..."],"notes":"..."}. Write notes as one or two short sentences in Japanese.`
+// mise が道具の版を固定するファイル。どれかが checkout の一番上にあれば mise を使うリポジトリとみなす
+const MISE_FILES = ['mise.toml', '.mise.toml', '.tool-versions', 'mise/config.toml', '.config/mise.toml']
+export const usesMise = (checkout: string): boolean => MISE_FILES.some((file) => existsSync(join(checkout, file)))
+const MISE_HINT = 'This repository uses mise: run every command through mise run or mise exec --.'
 export const suggestVerify = (
   checkout: string,
   judge: { model: string; effort: string },
+  mise = false,
 ): VerifySuggestion | { error: string } => {
   const r = spawnSync(
     process.env.ORCA_AUTO_CLAUDE_BIN || 'claude',
     [
       '-p',
-      SUGGEST_PROMPT,
+      mise ? `${SUGGEST_PROMPT}\n${MISE_HINT}` : SUGGEST_PROMPT,
       '--output-format',
       'json',
       '--model',
