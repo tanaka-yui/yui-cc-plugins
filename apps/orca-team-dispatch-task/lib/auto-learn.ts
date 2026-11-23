@@ -439,8 +439,12 @@ export const activeRules = (store: LearnStore, repo: string): Rule[] =>
 const probationRules = (store: LearnStore, ruleIds: string[]): Rule[] =>
   store.rules.filter((rule) => rule.status === 'active' && rule.probationLeft > 0 && ruleIds.includes(rule.id))
 
-// 判定が頼った規則のどれかが様子見の途中か（そうなら AI は merge せず人の確認に回す）
-export const onProbation = (store: LearnStore, ruleIds: string[]): boolean => probationRules(store, ruleIds).length > 0
+// 判定が頼った規則のどれかが、まだ確かめ終えていないか（そうなら AI は merge せず人の確認に回す）。
+// 様子見の途中・取り下げ済み（動いている間に誤りと分かった）・もう無い規則はどれも様子見を終えていないとみなす
+export const onProbation = (store: LearnStore, ruleIds: string[]): boolean =>
+  ruleIds.some(
+    (id) => !store.rules.some((rule) => rule.id === id && rule.status === 'active' && rule.probationLeft === 0),
+  )
 
 const WITHDRAWN_BY_PROBATION = '様子見の Issue が失敗または人が止めた'
 

@@ -62,7 +62,7 @@ const commentsOf = (f: ReturnType<typeof runtimeFixture>): string =>
     .join('\n')
 const breakRules = (): void => writeFileSync(join(learnDir('main'), LEARN_FILES.rules), '{ broken')
 
-test('LN16 様子見の規則に頼った Issue は条件がそろっても AI が merge せず、理由を付けて人の確認に回る。様子見を終えた規則なら merge する', () => {
+test('LN16 様子見の途中・取り下げ済み・もう無い規則に頼った Issue は条件がそろっても AI が merge せず、理由を付けて人の確認に回る。様子見を終えた規則なら merge する', () => {
   {
     const { f, i } = finishWith([rule('r1')])
     try {
@@ -74,12 +74,19 @@ test('LN16 様子見の規則に頼った Issue は条件がそろっても AI �
       f.cleanup()
     }
   }
-  // 様子見を終えた規則・取り下げた規則・eng 向きの規則では、ほかの条件がそろえば merge する
-  for (const done of [
-    rule('r1', { probationLeft: 0 }),
-    rule('r1', { status: 'withdrawn', withdrawnWhy: '振り返りで取り下げ' }),
-    rule('r1', { direction: 'eng', probationLeft: 0 }),
-  ]) {
+  // 取り下げた規則・もう無い規則も、様子見を終えていないので人の確認に回す
+  for (const rules of [[rule('r1', { status: 'withdrawn', withdrawnWhy: '振り返りで取り下げ' })], [rule('r2')]]) {
+    const { f, i } = finishWith(rules)
+    try {
+      assert.equal(readState('main').issues[i.key]?.phase, 'review', JSON.stringify(rules))
+      assert.ok(!f.calls().includes('pr merge'))
+      assert.ok(commentsOf(f).includes(PROBATION_REASON))
+    } finally {
+      f.cleanup()
+    }
+  }
+  // 様子見を終えた有効な規則では、ほかの条件がそろえば merge する
+  for (const done of [rule('r1', { probationLeft: 0 }), rule('r1', { direction: 'eng', probationLeft: 0 })]) {
     const { f, i } = finishWith([done])
     try {
       assert.equal(readState('main').issues[i.key]?.phase, 'done', JSON.stringify(done))
@@ -107,6 +114,38 @@ test('LN16 様子見の規則に頼った Issue は条件がそろっても AI �
     } finally {
       f.cleanup()
     }
+  }
+})
+
+test('LN16b 同じ様子見の規則に頼った 2 件のうち先の 1 件が失敗して規則を取り下げると、後の 1 件は条件がそろっても人の確認に回る', () => {
+  const f = runtimeFixture()
+  const log = mock.method(console, 'log', () => {})
+  try {
+    const i = f.track('finishing')
+    f.result(i)
+    const state = readState('main')
+    const second = state.issues[i.key]
+    assert.ok(second)
+    second.learn = { aiRoute: 'auto', forced: '', ruleIds: ['r1'], recorded: false }
+    writeState('main', state)
+    writeStore('main', store([rule('r1')]))
+    // 先の 1 件（同じ r1 に頼った別の Issue）が失敗で終わる
+    const first: IssueState = {
+      ...second,
+      key: `${APP}#8`,
+      number: 8,
+      learn: { aiRoute: 'auto', forced: '', ruleIds: ['r1'], recorded: false },
+    }
+    assert.equal(recordOutcome('main', first, ['bug'], 'failed', AT), true)
+    assert.equal(ruleOf('r1')?.status, 'withdrawn')
+    log.mock.restore()
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'review')
+    assert.ok(!f.calls().includes('pr merge'))
+    assert.ok(commentsOf(f).includes(PROBATION_REASON))
+  } finally {
+    log.mock.restore()
+    f.cleanup()
   }
 })
 
