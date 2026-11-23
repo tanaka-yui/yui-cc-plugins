@@ -50,5 +50,5 @@ roles: ## --auto の review_mode / phase_b だけを on/off する (make roles <
 	@node bin/orca-auto.ts roles --name $(NAME)
 
 .PHONY: repos
-repos: ## --auto の関連リポジトリ（実装の対象）を足す・外す。マシン・確認・並列数・保存・判定の権限の承認の段まで (make repos <名前>。省くと main)
+repos: ## --auto の Issue を実装するリポジトリを一覧から 1 件ずつ追加・変更・削除する。マシン・確認・並列数・保存・判定の権限の承認の段まで (make repos <名前>。省くと main)
 	@node bin/orca-auto.ts repos --name $(NAME)

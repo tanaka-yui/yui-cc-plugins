@@ -59,7 +59,7 @@ import { envCount, run, runNode } from './sys.ts'
 
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import type { AutoConfig } from './auto-config.ts'
@@ -73,7 +73,7 @@ import type { VerifyResult } from './setup-verify.ts'
 export const SETUP_STEPS: ReadonlyArray<{ id: string; title: string }> = [
   { id: 'prereq', title: '前提の確認' },
   { id: 'sources', title: '拾う元' },
-  { id: 'repos', title: '関連リポジトリ' },
+  { id: 'repos', title: '実装するリポジトリ' },
   { id: 'project', title: 'Project' },
   { id: 'labels', title: 'ステータスラベル' },
   { id: 'hosts', title: 'マシン' },
@@ -86,12 +86,12 @@ export const SETUP_STEPS: ReadonlyArray<{ id: string; title: string }> = [
 ]
 // 設定を終えたあとで一部だけ変えるコマンド。保存の段を通るので、差の確認と実行中の Issue の検査は setup と同じ。
 // hosts は組の selector が変わると verified を落とす verify の段と、マシンごとの並列数の段まで回す。
-// repos は関連リポジトリを変えてマシンの組・確認・並列数を決め直し、checkout が変わって判定の許可が要るので承認の段まで回す
+// repos は Issue を実装するリポジトリ（設定の related と repos）を 1 件ずつ足す・変える・外し、マシンの組・確認・並列数を決め直し、checkout が変わって判定の許可が要るので承認の段まで回す
 // （automation の登録内容は repos に依存しないので触らず、有効・無効も変えない）
 export type SetupCommand = 'hosts' | 'roles' | 'repos'
 const COMMAND_STEPS: Record<SetupCommand, ReadonlyArray<{ id: string; title: string }>> = {
   repos: [
-    { id: 'repos', title: '関連リポジトリ' },
+    { id: 'repos', title: '実装するリポジトリ' },
     { id: 'hosts', title: 'マシン' },
     { id: 'verify', title: 'リポジトリごとの確認' },
     { id: 'lanes', title: '並列数' },
@@ -179,7 +179,7 @@ export const runSetup = (
     (command ? null : readDraft(name)) ?? (base ? draftFromConfig(base) : { version: 1, name, done: [], values: {} })
   const v = draft.values
   const configFile = join(autoDir(name), AUTO_FILES.config)
-  const repos = () => v.repos ?? fail('関連リポジトリがありません')
+  const repos = () => v.repos ?? fail('実装するリポジトリがありません')
   const sources = () => v.sources ?? fail('拾う元がありません')
   const lock = <T>(action: () => T): T => {
     while (!takeLockWait(name, AUTO_LOCK_TTL_MS, envCount('ORCA_AUTO_LOCK_WAIT_MS', AUTO_LOCK_WAIT_MS))) {
@@ -337,10 +337,39 @@ export const runSetup = (
       else return { baseBranch, branches }
     }
   }
+  // 新しいリポジトリは、既にある checkout と同じ親ディレクトリにある同名のフォルダを、origin が一致すれば既定値にする
+  const guessCheckout = (repo: string): string | undefined =>
+    [...new Set(Object.values(v.repos ?? {}).map((r) => dirname(r.checkout)))]
+      .map((parent) => join(parent, basename(repo)))
+      .find((path) => checkoutProblem(repo, path) === null)
+  const askCheckout = (repo: string, previous?: string, progress = ''): string => {
+    const fallback = previous ?? guessCheckout(repo)
+    for (;;) {
+      const checkout = ask(`${progress}${repo} のこのマシンの checkout`, fallback)
+      const problem = checkoutProblem(repo, checkout)
+      if (!problem) return checkout
+      say(problem)
+    }
+  }
+  const repoEntry = (
+    repo: string,
+    checkout: string,
+    previous: AutoConfig['repos'][string] | undefined,
+  ): AutoConfig['repos'][string] => ({
+    checkout,
+    verify: previous?.verify ?? [],
+    infra: previous?.infra ?? false,
+    verified: previous?.verified ?? false,
+    ci: previous?.ci ?? repoDefaults(checkout).ci,
+    ...pickBases(repo, previous),
+  })
   const pickRepos = () => {
     for (const source of sources()) {
       for (;;) {
-        const names = ask(`${source.repo} の関連リポジトリ`, source.related.join(','))
+        const names = ask(
+          `${source.repo} の Issue を実装するリポジトリ（owner/name をカンマ区切り）`,
+          source.related.join(','),
+        )
           .split(',')
           .map((s) => s.trim())
         if (names.length && names.every((r) => REPO_PATTERN.test(r))) {
@@ -351,25 +380,57 @@ export const runSetup = (
       }
     }
     const next: AutoConfig['repos'] = {}
-    for (const repo of new Set(sources().flatMap((source) => source.related))) {
+    const names = [...new Set(sources().flatMap((source) => source.related))]
+    names.forEach((repo, i) => {
       const previous = v.repos?.[repo]
-      let checkout: string
-      for (;;) {
-        checkout = ask(`${repo} のこのマシンの checkout`, previous?.checkout)
-        const problem = checkoutProblem(repo, checkout)
-        if (!problem) break
-        say(problem)
-      }
-      next[repo] = {
-        checkout,
-        verify: previous?.verify ?? [],
-        infra: previous?.infra ?? false,
-        verified: previous?.verified ?? false,
-        ci: previous?.ci ?? repoDefaults(checkout).ci,
-        ...pickBases(repo, previous),
-      }
-    }
+      const progress = names.length > 1 ? `(${i + 1}/${names.length}) ` : ''
+      next[repo] = repoEntry(repo, askCheckout(repo, previous?.checkout, progress), previous)
+    })
     v.repos = next
+  }
+  // make repos: 実装するリポジトリを一覧から 1 件ずつ足す・変える・外す
+  const editRepos = () => {
+    const list = sources()
+    let source = list[0] ?? fail('拾う元がありません')
+    if (list.length > 1) {
+      list.forEach((s, i) => {
+        say(`  ${i + 1}. ${s.repo}`)
+      })
+      const [index = 0] = choose('どの拾う元の Issue のリポジトリを変えますか', list.length, '1')
+      source = list[index] ?? fail('拾う元がありません')
+    }
+    const next: AutoConfig['repos'] = { ...repos() }
+    for (;;) {
+      say(`${source.repo} の Issue を実装するリポジトリ:`)
+      source.related.forEach((repo, i) => {
+        say(`  ${i + 1}. ${repo}  ${next[repo]?.checkout ?? ''}`)
+      })
+      const op = ask('a=追加 / c=checkout の変更 / d=削除 / Enter=終わる', '').trim().toLowerCase()
+      if (op === '') break
+      if (op === 'a') {
+        const repo = ask('追加するリポジトリ（owner/name）').trim()
+        if (!REPO_PATTERN.test(repo)) say('owner/name の形で入力してください')
+        else if (source.related.includes(repo)) say(`${repo} はすでにあります`)
+        else {
+          // ほかの拾う元が同じリポジトリを使っていれば、その checkout をそのまま使う
+          const shared = next[repo]
+          next[repo] = shared ?? repoEntry(repo, askCheckout(repo), undefined)
+          source.related = [...source.related, repo]
+        }
+      } else if (op === 'c' || op === 'd') {
+        const [index = 0] = choose('番号', source.related.length, '1')
+        const repo = source.related[index] ?? fail('リポジトリがありません')
+        if (op === 'd') {
+          if (source.related.length === 1) say('1 つは残してください')
+          else source.related = source.related.filter((r) => r !== repo)
+        } else {
+          const previous = next[repo]
+          next[repo] = repoEntry(repo, askCheckout(repo, previous?.checkout), previous)
+        }
+      } else say('a・c・d のどれか、または Enter を入力してください')
+    }
+    const used = new Set(list.flatMap((s) => s.related))
+    v.repos = Object.fromEntries(Object.entries(next).filter(([repo]) => used.has(repo)))
   }
   const pickProject = () => {
     for (const source of sources()) {
@@ -843,7 +904,7 @@ export const runSetup = (
   const actions: Record<string, () => void> = {
     prereq,
     sources: pickSources,
-    repos: pickRepos,
+    repos: command === 'repos' ? editRepos : pickRepos,
     project: pickProject,
     labels: () => {
       for (const source of sources())

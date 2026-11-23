@@ -85,19 +85,24 @@ const prepare = () => {
     a[a.length - 1] = last
     return invoke(a)
   }
-  const rerun = (overrides: Record<string, string> = {}, only?: SetupCommand) => {
+  // 配列の答えは同じ問いに順に返し、尽きたら既定値に戻る（make repos の一覧の操作のように繰り返す問い）
+  const rerun = (overrides: Record<string, string | string[]> = {}, only?: SetupCommand) => {
     let output = ''
     const asked: string[] = []
+    const answer = (q: string): string | undefined => {
+      const value = Object.entries(overrides).find(([key]) => q.includes(key))?.[1]
+      return Array.isArray(value) ? value.shift() : value
+    }
     const code = runSetup(
       'main',
       {
         ask: (q, fallback) => {
           asked.push(q)
-          return Object.entries(overrides).find(([key]) => q.includes(key))?.[1] ?? fallback ?? ''
+          return answer(q) ?? fallback ?? ''
         },
         confirm: (q) => {
           asked.push(q)
-          return Object.entries(overrides).find(([key]) => q.includes(key))?.[1] === 'y'
+          return answer(q) === 'y'
         },
       },
       (text) => {
@@ -995,7 +1000,7 @@ test('SU43 hosts, roles and repos refuse non-tty stdin', () => {
     f.cleanup()
   }
 })
-test('SU48 repos adds a related repository, registers it on the machine and approves the judge rules without enabling', () => {
+test('SU48 repos adds a repository from the menu, registers it on the machine and approves the judge rules without enabling', () => {
   const f = prepare()
   try {
     assert.equal(f.fresh().status, 0)
@@ -1006,7 +1011,8 @@ test('SU48 repos adds a related repository, registers it on the machine and appr
     const callsBefore = f.calls(f.orca)
     const result = f.rerun(
       {
-        'acme/app の関連リポジトリ': related.join(','),
+        '=追加': ['a'],
+        追加するリポジトリ: 'acme/web',
         'acme/web のこのマシンの checkout': checkout,
         'config.json を書きますか': 'y',
         この権限を書きますか: 'y',
@@ -1040,12 +1046,12 @@ test('SU49 repos declining the judge rules keeps the old approval and says ticks
   try {
     assert.equal(f.fresh().status, 0)
     const fingerprint = f.config().automation?.acceptedFingerprint
-    const related = [...(f.config().sources[0]?.related ?? []), 'acme/web']
     const checkout = join(f.dir, 'checkout3')
     gitRepo(checkout, 'acme/web')
     const result = f.rerun(
       {
-        'acme/app の関連リポジトリ': related.join(','),
+        '=追加': ['a'],
+        追加するリポジトリ: 'acme/web',
         'acme/web のこのマシンの checkout': checkout,
         'config.json を書きますか': 'y',
       },
@@ -1055,6 +1061,75 @@ test('SU49 repos declining the judge rules keeps the old approval and says ticks
     assert.equal(f.config().repos['acme/web']?.checkout, checkout)
     assert.equal(f.config().automation?.acceptedFingerprint, fingerprint)
     assert.match(result.output, /判定の権限は書いていません。.*make repos main をやり直して承認してください/)
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU51 repos changes a checkout and removes a repository from the menu, keeping at least one', () => {
+  const f = prepare()
+  try {
+    f.put(f.configFile, { ...f.raw, automation: { id: 'a1', acceptedFingerprint: null } })
+    const moved = join(f.dir, 'checkout-moved')
+    gitRepo(moved, 'acme/app')
+    const result = f.rerun(
+      {
+        '拾う元の Issue のリポジトリ': '1',
+        '=追加': ['x', 'c', 'd', 'd'],
+        番号: ['1', '2', '1'],
+        'acme/app のこのマシンの checkout': moved,
+        'config.json を書きますか': 'y',
+      },
+      'repos',
+    )
+    assert.equal(result.code, 0, result.output)
+    assert.match(result.output, /a・c・d のどれか/)
+    assert.match(result.output, /1 つは残してください/)
+    const config = f.config()
+    assert.deepEqual(config.sources[0]?.related, ['acme/app'])
+    assert.equal(config.repos['acme/app']?.checkout, moved)
+    // ほかの拾う元が使うリポジトリは残る
+    assert.ok(config.repos['other/api'])
+    assert.match(result.output, /判定の権限は書いていません/)
+  } finally {
+    f.cleanup()
+  }
+})
+test('SU52 a new repository defaults to the same-named folder next to an existing checkout, and setup numbers the checkouts', () => {
+  const f = prepare()
+  try {
+    f.put(f.configFile, { ...f.raw, automation: { id: 'a1', acceptedFingerprint: null } })
+    const web = join(f.dir, 'web')
+    gitRepo(web, 'acme/web')
+    const added = f.rerun(
+      {
+        '拾う元の Issue のリポジトリ': '1',
+        '=追加': ['a'],
+        追加するリポジトリ: 'acme/web',
+        'config.json を書きますか': 'y',
+      },
+      'repos',
+    )
+    assert.equal(added.code, 0, added.output)
+    assert.equal(f.config().repos['acme/web']?.checkout, web)
+    // 同名のフォルダが別のリポジトリなら既定値にしない（Enter だけでは進めない）
+    gitRepo(join(f.dir, 'mobile'), 'acme/other')
+    const mobile = join(f.dir, 'mobile-app')
+    gitRepo(mobile, 'acme/mobile')
+    const wrong = f.rerun(
+      {
+        '拾う元の Issue のリポジトリ': '1',
+        '=追加': ['a'],
+        追加するリポジトリ: 'acme/mobile',
+        'acme/mobile のこのマシンの checkout': ['', mobile],
+      },
+      'repos',
+    )
+    assert.match(wrong.output, /checkout は絶対パスで入力してください/)
+    const setup = f.rerun({ 'config.json を書きますか': 'n' })
+    assert.ok(
+      setup.asked.some((q) => q.startsWith('(1/') && q.includes('のこのマシンの checkout')),
+      setup.asked.join('\n'),
+    )
   } finally {
     f.cleanup()
   }
