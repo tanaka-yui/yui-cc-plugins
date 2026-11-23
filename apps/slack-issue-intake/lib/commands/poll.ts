@@ -3,6 +3,7 @@ import { parseFlags, parseNow } from '../cli.ts'
 import { migrateToRepos } from '../db.ts'
 import { ERROR_LEASE_LOST, POLL_DEADLINE_MS, POLL_LEASE_MS, STATUS_MIN_REMAINING_MS } from '../defaults.ts'
 import { writeJson } from '../fs.ts'
+import { syncLearn } from '../learn.ts'
 import { acquireLease, releaseLease } from '../lease.ts'
 import { homePaths, intakeHome } from '../paths.ts'
 import { permissionFingerprint, safetyProblems } from '../permissions.ts'
@@ -35,9 +36,10 @@ export const run = async (argv: string[]): Promise<void> => {
     counts = { inserted: 0, rejected: 0, answered: 0, timedOut: 0, driven: 0, notified: 0, adopted: 0 },
     reason = '',
     reportPosted = 'off',
+    learned = { posted: 0, cancelled: 0 },
   ): void => {
     console.log(
-      `result=${result}${reason ? ` reason=${reason}` : ''} agent_work=${agentWork} inserted=${counts.inserted} rejected=${counts.rejected} answered=${counts.answered} timed_out=${counts.timedOut} driven=${counts.driven} errors=${errors.length} partial=${partial} notified=${counts.notified} adopted=${counts.adopted} report=${reportPosted}`,
+      `result=${result}${reason ? ` reason=${reason}` : ''} agent_work=${agentWork} inserted=${counts.inserted} rejected=${counts.rejected} answered=${counts.answered} timed_out=${counts.timedOut} driven=${counts.driven} errors=${errors.length} partial=${partial} notified=${counts.notified} adopted=${counts.adopted} report=${reportPosted} learn=${learned.posted}/${learned.cancelled}`,
     )
     for (const e of errors) console.error(maskSecrets(e))
     writeJson(homePaths(home).pollStatus, {
@@ -88,11 +90,16 @@ export const run = async (argv: string[]): Promise<void> => {
         !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
           ? await postReport(ctx).catch((e: Error) => ({ posted: 'failed', errors: [String(e?.message ?? e)] }))
           : { posted: 'off', errors: [] }
+      // 学びの知らせと取り消しも同じ条件で。失敗しても終了コードと agent_work は変えない
+      const learned =
+        !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
+          ? await syncLearn(ctx).catch((e: Error) => ({ posted: 0, cancelled: 0, errors: [String(e?.message ?? e)] }))
+          : { posted: 0, cancelled: 0, errors: [] }
       const adopted =
         !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
           ? await adoptExisting(ctx).catch((e: Error) => ({ adopted: 0, errors: [String(e?.message ?? e)] }))
           : { adopted: 0, errors: [] }
-      const errors = [...report.errors, ...status.errors, ...periodic.errors, ...adopted.errors]
+      const errors = [...report.errors, ...status.errors, ...periodic.errors, ...learned.errors, ...adopted.errors]
       const work = agentWorkCount(rt.db)
       const code = report.fatal ? 3 : work ? 0 : 1
       finish(
@@ -109,6 +116,7 @@ export const run = async (argv: string[]): Promise<void> => {
         },
         '',
         periodic.posted,
+        learned,
       )
     } finally {
       releaseLease(rt.db, lease.token)

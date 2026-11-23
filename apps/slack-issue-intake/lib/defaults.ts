@@ -680,6 +680,50 @@ export const REPORT_TEXT = {
   unreadable: '報告の材料を読めません: {path}',
 }
 
+// 判定の学びの知らせ。orca-team-dispatch-task が報告の材料（report.json）と同じフォルダの下に書く
+export const LEARN_NOTICES_PATH = 'learn/notices.json'
+export const LEARN_FILE_VERSION = 1
+// 1 回の poll で投稿する知らせの数と、取り消しの返信を読む投稿の数（新しい方から）
+export const LEARN_POSTS_PER_POLL = 5
+export const LEARN_THREADS_MAX = 20
+export const META_LEARN_LAST_ID = 'learn_last_notice'
+// 投稿した知らせの id・チャンネル・ts と、読み終えた返信の ts（JSON の配列）
+export const META_LEARN_POSTS = 'learn_posts'
+// 知らせの項目の種類（orca-team-dispatch-task の lib/auto-learn.ts の NOTICE_KINDS と同じ）と、取り消せる種類
+export const LEARN_NOTICE_KINDS = [
+  'new',
+  'support',
+  'withdrawn',
+  'graduated',
+  'global-issue',
+  'global-pr',
+  'global-hint',
+] as const
+export const LEARN_DIRECTIONS = ['auto', 'eng'] as const
+export const LEARN_CANCELLABLE_KINDS: readonly string[] = ['new', 'support']
+// 返信の「取り消し <番号>」。数字は NFKC で全角を半角にしてから読む
+export const LEARN_CANCEL_PATTERN = /^取り消し\s*([0-9]+)$/
+// 根拠の食い違いの id（<owner>/<repo>#<番号>@<世代>）。表示は #<番号> だけにする
+export const LEARN_EVIDENCE_PATTERN = /^[^\s/#]+\/[^\s/#]+#([0-9]+)@[0-9]+$/
+export const LEARN_URL_PREFIX = 'https://github.com/'
+export const LEARN_TEXT = {
+  heading: '🧠 判定の学び（{repo}）',
+  item: '{n}. {text}（{kind}）',
+  evidence: '   根拠: {evidence}',
+  cancelHint: '取り消すときは、このスレッドに「取り消し 1」のように番号を返信してください',
+  accepted: '取り消しを受け付けました。次の確認で反映します',
+  newAuto: '今後は自動で進めます。最初の 3 件は人が確認します',
+  newEng: '今後はエンジニアに回します',
+  support: '根拠が増えました',
+  withdrawn: '取り下げました',
+  graduated: '様子見を終えました',
+  globalIssue: '全体の改善として Issue を作りました {url}',
+  globalPr: '改善の PR ができました {url}',
+  globalHint: '全体に効きそうな学びです',
+  unreadable: '学びの知らせを読めません: {path}',
+  cancelsUnreadable: '学びの取り消しの依頼を読めません: {path}',
+}
+
 export const CLI_COMMAND = 'node bin/slack-issue-intake.ts'
 export const NAME_PLACEHOLDER = '<名前>'
 export const ASK_NAME_OPTION = '--ask-name'

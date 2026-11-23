@@ -61,6 +61,11 @@ setup は追加したリポジトリ（フォームに出すもの）と、候�
 
 --auto の report.json（両プラグインの test/fixtures/auto-report.json が同じ形の約束）を読み、ステータス通知のあと、既存 Issue の取り込みより先に postReport を呼びます。表示時刻・経過は材料の updatedAt。ハッシュが同じなら更新せず、普段は chat.update、1日1回は新規投稿します。report_channel と今のチャンネルを照合し、違えば新規投稿します。ts/channel/hash は同じ書き込みで保存し、report コマンドは投稿の meta を消しません。材料が間隔の3倍より古ければ停止の警告を表示します。報告はそのホームのリポジトリの Issue だけを出し（scopeReport が issue の最後の `#` より前を repoSetting で照合し、取り出せない issue は出さない。件数・番号・ハッシュは絞ったあとの文面から作る）、マシンは名前とつながるかだけを出します（ほかのワークスペースの作業が分かる数を出さない）。
 
+## 判定の学びの知らせ
+
+lib/learn.ts の syncLearn を、poll が postReport のすぐあとに同じ条件（致命エラー・リース喪失なし、残り STATUS_MIN_REMAINING_MS 以上）で呼びます。失敗は errors に足すだけで、終了コードと agent_work は変えず、Claude も起こしません。材料は report.source と同じフォルダの LEARN_NOTICES_PATH（orca-team-dispatch-task が書く。形は両プラグインの test/fixtures/learn-notices.json）で、無ければ何もしない、壊れていれば errors に 1 行です。そのホームのリポジトリ（repoSetting で照合）の知らせだけを、id が meta learn_last_notice より大きい順に 1 回 LEARN_POSTS_PER_POLL（5）件まで投稿し、1 件ごとに最後の id と learn_posts（id・チャンネル・ts・読み終えた返信の ts。新しい LEARN_THREADS_MAX 件）をフェンス付きで同じ書き込みに残します。投稿に失敗したらそこで止め、次の回に同じ id から続けます。文面は信じられない材料なので maskSecrets・escapeMrkdwn と制御文字の置き換えを通し、postMessage の markup=false（mrkdwn=false）で太字などを効かせません。根拠の食い違いの id（owner/repo#番号@世代）は #番号 だけを出し、url は https://github.com/ で始まるときだけ出します。
+取り消しは learn_posts のスレッドを新しい順に読み、自分のボットの投稿を除いた「取り消し <番号>」（NFKC で全角を直し、前後の空白を許す）が new か support の項目を指すときだけ、ホームの LEARN_CANCELS_FILE（形は test/fixtures/learn-cancels.json）に noticeId・n ごとに 1 回だけ足してスレッドに受け付けを返します。ファイルは poll のリースの下で読み・足し・writeJson で置き換え、読めなければ上書きせずに errors に出して、その返信から次の回に読み直します。読み終えた返信の ts は受け付けの返信の ts ではなく最後に読んだ返信の ts にします（読んだあと・受け付けの前に来た返信を飛ばさないため。自分の受け付けは次の回にボットの投稿として除く）。thread_not_found の投稿は learn_posts から外して諦めます。試験: LE1〜LE4。
+
 ## ステータスの通知
 
 poll は取り込み（sync）のあと、残りが STATUS_MIN_REMAINING_MS（10秒）以上あるときだけ lib/status-sync.ts の statusSync を呼びます。失敗は errors と partial に足すだけで、終了コードと agent_work は変えません（Claude を起こさない）。致命エラーやリース喪失のあとは呼びません。

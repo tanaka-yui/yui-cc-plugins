@@ -294,15 +294,23 @@ export const userInfoName = async (
   return { ok: true, name: null }
 }
 
+// markup を false にすると Slack の記法（太字など）を解さずに出す。信じられない文をそのまま見せるときに使う
 export const postMessage = async (
   c: SlackClient,
   channel: string,
   text: string,
   deadline: number,
+  markup = true,
 ): Promise<{ ok: true; ts: string } | SlackFailure> => {
   const r = await c.call(
     'chat.postMessage',
-    { channel, text: maskSecrets(text), unfurl_links: 'false', unfurl_media: 'false' },
+    {
+      channel,
+      text: maskSecrets(text),
+      unfurl_links: 'false',
+      unfurl_media: 'false',
+      ...(markup ? {} : { mrkdwn: 'false' }),
+    },
     deadline,
   )
   return r.ok ? (asString(r.body.ts) ? { ok: true, ts: String(r.body.ts) } : failure('投稿の時刻がありません')) : r
