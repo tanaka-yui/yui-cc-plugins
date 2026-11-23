@@ -5,6 +5,7 @@ import { intakeActiveRepos, pickSources, readAutoConfig, relayAllowance, sourceA
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
 import {
   applyLearn,
+  commentReason,
   decisionRuleIds,
   endRecorder,
   globalCandidates,
@@ -25,6 +26,7 @@ import { runSetup } from '../lib/auto-setup.ts'
 import {
   AUTO_LOCK_TTL_MS,
   AUTO_LOCK_WAIT_MS,
+  type IssueState,
   readState,
   releaseLock,
   takeLockWait,
@@ -265,6 +267,8 @@ const main = (argv: string[]): number => {
     }
     // judge-list が見せた様子見の規則と振り返りの材料
     const shown = shownOf(readJson(join(autoDir(name), AUTO_FILES.pending)))
+    // この判定結果で auto にした Issue（同じ判定結果の add の案で受けた auto 向きの規則で様子見に入れる）
+    const autoDecided: IssueState[] = []
     let rejected = false
     for (const row of rows) {
       const decision = asObject(row)
@@ -345,6 +349,7 @@ const main = (argv: string[]): number => {
         ruleIds,
         recorded: false,
       }
+      if (decision.route === 'auto') autoDecided.push(issue)
       // 判定の間に人が Ready にしたら、人が「やる」と決めた通常の Issue として扱う
       if (issue.autoReady && current.labels.includes(STATUS.ready)) issue.autoReady = false
       // auto-ready の Issue と、向き先を尋ねたあと base ラベルが付いて拾い直した Issue は Backlog から動かす
@@ -363,7 +368,7 @@ const main = (argv: string[]): number => {
           issue,
           'judged',
           {
-            reason: issue.reason,
+            reason: commentReason(name, config, issue, console.error),
             limitMinutes: issue.limitMinutes,
             relayMinutes: relayAllowance(config.roles, config.everyMinutes),
           },
@@ -441,7 +446,7 @@ const main = (argv: string[]): number => {
           issue,
           'auto-ready',
           {
-            reason: issue.reason,
+            reason: commentReason(name, config, issue, console.error),
             limitMinutes: issue.limitMinutes,
             relayMinutes: relayAllowance(config.roles, config.everyMinutes),
             // 人が Ready にした Issue（向き先を尋ねて拾い直したもの）は元から AI が merge しうるので、人の確認待ちとは言わない。
@@ -464,9 +469,22 @@ const main = (argv: string[]): number => {
     }
     // 見せた食い違いは案が無くても振り返り済みにする。学びが保存できなくても判定の結果は残す
     try {
+      const learned = applyLearn(name, proposals, shown.reflect, autoNow(), console.error)
+      // この回に作った auto 向きの規則は judge-list が見せていないので、判定の AI は rules に挙げられない。
+      // 同じ判定結果で auto にした同じリポジトリの Issue（まだ結果を書いていないもの）を、その規則の様子見に入れる
+      // （学びで広げた自動の範囲を、人が一度も見ないまま AI が merge しないため。判定と案のどちらが先に書かれていても同じ）
+      for (const { repo, id } of learned.autoRules)
+        for (const issue of autoDecided)
+          if (
+            issue.repo === repo &&
+            state.issues[issue.key] === issue &&
+            issue.learn &&
+            !issue.learn.recorded &&
+            !issue.learn.ruleIds.includes(id)
+          )
+            issue.learn.ruleIds.push(id)
       // 全体の案は規則の保存のあとで受ける（applyLearn が規則のファイルを書き戻すため）
-      for (const proposal of applyLearn(name, proposals, shown.reflect, autoNow(), console.error))
-        proposeGlobal(name, config, proposal, autoNow(), console.error)
+      for (const proposal of learned.globals) proposeGlobal(name, config, proposal, autoNow(), console.error)
     } catch (error) {
       console.error(`判定の学びを保存できません（${error instanceof Error ? error.message : String(error)}）`)
     }

@@ -230,3 +230,45 @@ test('LN17 人が merge すると残りが 1 減り、3 件目で graduated の�
     f.cleanup()
   }
 })
+
+test('LN33 レビュー中に閉じられた・In review から外された Issue は、PR がすべて merge 済みなら merged-human（様子見の残りが減る）、そうでなければ stopped（規則を取り下げる）と書く', () => {
+  const cases: Array<{ state: string; label: string; pr: string; want: Outcome }> = [
+    { state: 'CLOSED', label: 'In review', pr: 'MERGED', want: 'merged-human' },
+    { state: 'OPEN', label: 'Done', pr: 'MERGED', want: 'merged-human' },
+    { state: 'CLOSED', label: 'In review', pr: 'OPEN', want: 'stopped' },
+    { state: 'OPEN', label: 'Ready', pr: 'CLOSED', want: 'stopped' },
+  ]
+  for (const c of cases) {
+    const f = runtimeFixture()
+    try {
+      const i = f.track('review')
+      const state = readState('main')
+      const issue = state.issues[i.key]
+      assert.ok(issue)
+      issue.prs = [{ repo: APP, number: 101, url: 'https://github.com/acme/app/pull/101' }]
+      issue.learn = { aiRoute: 'auto', forced: '', ruleIds: ['r1'], recorded: false }
+      writeState('main', state)
+      writeStore('main', store([rule('r1')]))
+      f.respond('issue_view', { state: c.state, title: '題', labels: [{ name: c.label }] })
+      f.respond('pr_view', {
+        state: c.pr,
+        mergedAt: c.pr === 'MERGED' ? '2026-11-13T05:00:00Z' : null,
+        statusCheckRollup: [],
+      })
+      f.cli('tick')
+      const label = `${c.state} ${c.label} ${c.pr}`
+      assert.deepEqual(
+        readHistory('main').map((r) => r.outcome),
+        [c.want],
+        label,
+      )
+      assert.deepEqual(
+        [ruleOf('r1')?.status, ruleOf('r1')?.probationLeft],
+        c.want === 'merged-human' ? ['active', 2] : ['withdrawn', 3],
+        label,
+      )
+    } finally {
+      f.cleanup()
+    }
+  }
+})

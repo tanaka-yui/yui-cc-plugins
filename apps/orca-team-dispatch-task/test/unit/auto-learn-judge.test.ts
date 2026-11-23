@@ -3,7 +3,9 @@ import {
   applyLearn,
   type HistoryRow,
   LEARN_CASES_MAX,
+  LEARN_FILES,
   LEARN_RULES_MAX,
+  learnDir,
   mismatchesOf,
   readHistory,
   readNotices,
@@ -26,7 +28,7 @@ import { fixture } from '../lib/auto-fixture.ts'
 import { runtimeFixture } from '../lib/auto-runtime-fixture.ts'
 
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
@@ -70,6 +72,12 @@ const rule = (id: string, overrides: Partial<Rule> = {}): Rule => ({
 // 攻めすぎた（auto で失敗した）行。key の番号ごとに 1 件の食い違いになる
 const failedRows = (repo: string, numbers: number[]): HistoryRow[] =>
   numbers.map((n) => row({ key: `${repo}#${n}`, repo, title: `失敗した修正 ${n}`, outcome: 'failed' }))
+// 慎重すぎた（エンジニア行きを人が自動に戻し、次の世代が merge された）行。key の番号ごとに 1 件の食い違いになる
+const returnedRows = (repo: string, numbers: number[]): HistoryRow[] =>
+  numbers.flatMap((n) => [
+    row({ key: `${repo}#${n}`, repo, title: `戻した修正 ${n}`, aiRoute: 'eng', route: 'eng', outcome: 'eng-returned' }),
+    row({ key: `${repo}#${n}`, repo, generation: 2, title: `戻した修正 ${n}`, outcome: 'merged-human' }),
+  ])
 
 // acme/app#7 と other/api#7 を判定待ちにする（題名と GitHub のラベルは似た事例の材料）
 const judging = () => {
@@ -348,21 +356,26 @@ test('LN13 様子見の規則を見せた Issue を auto にして rules が無�
 test('LN14 applyLearn は add・support・withdraw を保存して知らせを足し、形の合わない案・材料に無い根拠・21 件目を捨て、見せた食い違いを振り返り済みにする', () => {
   const f = fixture()
   try {
-    writeHistory('main', [...failedRows(APP, [1, 2, 3, 4]), ...failedRows(API, [1, 2, 3])])
+    // auto 向きの根拠は慎重すぎた食い違い（m1・m2・m4）、eng 向きの根拠は攻めすぎた食い違い（m3・m5）だけ
+    writeHistory('main', [
+      ...returnedRows(APP, [11, 12, 14]),
+      ...failedRows(APP, [13, 15]),
+      ...failedRows(API, [1, 2, 3]),
+    ])
     writeStore('main', {
       rules: [rule('r1', { probationLeft: 3 }), rule('r2', { direction: 'eng' })],
       nextRule: 3,
       nextNotice: 4,
     })
     const shown = [{ repo: APP, mismatches: mismatchesOf(readHistory('main'), APP) }]
-    const [m1, m2, m3, m4] = shown[0]?.mismatches.map((m) => m.id) ?? []
-    assert.ok(m1 && m2 && m3 && m4)
+    const [m1, m2, m4, m3, m5] = shown[0]?.mismatches.map((m) => m.id) ?? []
+    assert.ok(m1 && m2 && m3 && m4 && m5)
     const lines: string[] = []
     applyLearn(
       'main',
       [
         { repo: APP, kind: 'add', direction: 'auto', topic: '文言だけの修正', evidence: [m1, m2] },
-        { repo: APP, kind: 'add', direction: 'eng', topic: '設定ファイルに触る修正', evidence: [m2, m3, m3] },
+        { repo: APP, kind: 'add', direction: 'eng', topic: '設定ファイルに触る修正', evidence: [m5, m3, m3] },
         { repo: APP, kind: 'add', direction: 'auto', topic: '改行の\nある文', evidence: [m1, m2] },
         { repo: APP, kind: 'add', direction: 'auto', topic: '根拠が 1 件', evidence: [m1] },
         { repo: APP, kind: 'add', direction: 'auto', topic: '同じ根拠を 2 回', evidence: [m1, m1] },
@@ -392,7 +405,7 @@ test('LN14 applyLearn は add・support・withdraw を保存して知らせを�
     )
     assert.deepEqual(
       store.rules.find((r) => r.id === 'r4'),
-      rule('r4', { direction: 'eng', topic: '設定ファイルに触る修正', evidence: [m2, m3] }),
+      rule('r4', { direction: 'eng', topic: '設定ファイルに触る修正', evidence: [m5, m3] }),
     )
     assert.deepEqual(store.rules.find((r) => r.id === 'r1')?.evidence, [...rule('r1').evidence, m4])
     assert.deepEqual(
@@ -426,7 +439,7 @@ test('LN14 applyLearn は add・support・withdraw を保存して知らせを�
             ruleId: 'r4',
             direction: 'eng',
             text: '設定ファイルに触る修正',
-            evidence: [m2, m3],
+            evidence: [m5, m3],
             url: '',
             body: '',
           },
@@ -516,7 +529,7 @@ test('LN15 judgeRules と judgeFingerprint は変わらない', () => {
     const ids = mismatchesOf(readHistory('main'), APP).map((m) => m.id)
     const result = f.apply({
       decisions: [f.decision({ rules: [] })],
-      learn: [{ repo: APP, kind: 'add', direction: 'auto', topic: '文言だけの修正', evidence: ids }],
+      learn: [{ repo: APP, kind: 'add', direction: 'eng', topic: '設定ファイルに触る修正', evidence: ids }],
     })
     assert.equal(result.status, 0, result.stderr)
     assert.equal(activeRules(readStore('main'), APP).length, 1)
@@ -555,6 +568,141 @@ test('LN15b status は有効な規則の一覧を出す', () => {
     assert.equal(broken.status, 0)
     assert.match(broken.stdout, /^main: 2 件/)
     assert.match(broken.stdout, /状態ファイルが壊れています/)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('LN32 notices.json が壊れていても、judge-apply は規則を保存して見せた食い違いを振り返り済みにし、1 行出して判定のリースを外す（次の tick は AI を起こさない）。知らせの id は使い回さない', () => {
+  const f = judging()
+  const last = (stdout: string) => stdout.trim().split('\n').at(-1) ?? ''
+  try {
+    writeHistory('main', failedRows(APP, [1, 2, 3]))
+    mkdirSync(learnDir('main'), { recursive: true })
+    writeFileSync(join(learnDir('main'), LEARN_FILES.notices), '{ broken')
+    assert.match(last(f.cli('tick').stdout), / learn=1$/)
+    assert.equal(f.cli('judge-list').status, 0)
+    const ids = mismatchesOf(readHistory('main'), APP).map((m) => m.id)
+    const result = f.apply({
+      decisions: [],
+      learn: [{ repo: APP, kind: 'add', direction: 'eng', topic: '設定ファイルに触る修正', evidence: ids.slice(0, 2) }],
+    })
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stderr, /学びの知らせを書けません。規則は保存しました/)
+    assert.ok(!result.stderr.includes('判定の学びを保存できません'), result.stderr)
+    assert.deepEqual(
+      activeRules(readStore('main'), APP).map((r) => r.id),
+      ['r1'],
+    )
+    assert.deepEqual(
+      readHistory('main').map((r) => r.reflected),
+      [true, true, true],
+    )
+    assert.equal(readState('main').judgingSince, null)
+    assert.match(last(f.cli('tick').stdout), / learn=0$/)
+    // 書けなかった知らせの id（1）は飛ばし、直したあとの次の知らせは 2 になる
+    assert.equal(readStore('main').nextNotice, 2)
+    rmSync(join(learnDir('main'), LEARN_FILES.notices))
+    writeHistory('main', [...readHistory('main'), ...failedRows(APP, [4, 5, 6])])
+    assert.equal(f.cli('judge-list').status, 0)
+    assert.equal(f.apply({ decisions: [], learn: [{ repo: APP, kind: 'withdraw', ruleId: 'r1' }] }).status, 0)
+    assert.deepEqual(
+      readNotices('main').map((n) => n.id),
+      [2],
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('LN34 振り返りは異なる 3 件の Issue の食い違いで起こし、add は異なる 2 件の Issue を、auto 向きは慎重すぎた・eng 向きは攻めすぎた食い違いだけを根拠にする', () => {
+  // 1 件の Issue が 3 世代続けて失敗しても振り返らない
+  const oneIssue = [1, 2, 3].map((generation) =>
+    row({ key: `${APP}#5`, generation, title: '同じ Issue', outcome: 'failed' }),
+  )
+  assert.deepEqual(reflectDue(oneIssue, [APP]), [])
+  assert.deepEqual(reflectDue([...oneIssue, ...failedRows(APP, [6])], [APP]), [])
+  assert.deepEqual(reflectDue([...oneIssue, ...failedRows(APP, [6, 7])], [APP]), [APP])
+  assert.deepEqual(reflectDue([...failedRows(APP, [6]), ...returnedRows(APP, [11, 12])], [APP]), [APP])
+
+  const f = fixture()
+  try {
+    writeHistory('main', [...oneIssue, ...failedRows(APP, [6]), ...returnedRows(APP, [11, 12])])
+    const shown = [{ repo: APP, mismatches: mismatchesOf(readHistory('main'), APP) }]
+    const [a51, a52, a53, a6, c11, c12] = shown[0]?.mismatches.map((m) => m.id) ?? []
+    assert.ok(a51 && a52 && a53 && a6 && c11 && c12)
+    const lines: string[] = []
+    applyLearn(
+      'main',
+      [
+        // 1 件の Issue の 2 世代
+        { repo: APP, kind: 'add', direction: 'eng', topic: '同じ Issue の失敗', evidence: [a51, a52] },
+        // auto 向きに攻めすぎた食い違い・eng 向きに慎重すぎた食い違い
+        { repo: APP, kind: 'add', direction: 'auto', topic: '失敗を根拠にした自動', evidence: [a51, a6] },
+        { repo: APP, kind: 'add', direction: 'eng', topic: '戻されたのにエンジニア', evidence: [c11, a6] },
+        { repo: APP, kind: 'add', direction: 'auto', topic: '文言だけの修正', evidence: [c11, c12] },
+        { repo: APP, kind: 'add', direction: 'eng', topic: '設定ファイルに触る修正', evidence: [a53, a6] },
+        { repo: APP, kind: 'support', ruleId: 'r1', evidence: [a6] },
+        { repo: APP, kind: 'support', ruleId: 'r2', evidence: [a51] },
+      ],
+      shown,
+      AT,
+      (line) => lines.push(line),
+    )
+    assert.equal(lines.length, 4, lines.join('\n'))
+    assert.match(lines[0] ?? '', /異なる Issue の食い違いを 2 件以上/)
+    assert.match(lines[1] ?? '', /auto 向きの根拠にならない食い違い/)
+    assert.match(lines[2] ?? '', /eng 向きの根拠にならない食い違い/)
+    assert.match(lines[3] ?? '', /auto 向きの根拠にならない食い違い/)
+    assert.deepEqual(
+      readStore('main').rules.map((r) => [r.id, r.direction, r.evidence]),
+      [
+        ['r1', 'auto', [c11, c12]],
+        ['r2', 'eng', [a53, a6, a51]],
+      ],
+    )
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('LN35 同じ判定結果の add で受けた auto 向きの規則は、その回に auto にした同じリポジトリの Issue の様子見に入る（判定と案の順に関係なく、exit 1 のやり直しでも）', () => {
+  const ruleIdsOf = (key: string) => readState('main').issues[key]?.learn?.ruleIds
+  for (const order of ['decisions-first', 'learn-first'] as const) {
+    const f = judging()
+    try {
+      writeHistory('main', returnedRows(APP, [1, 2, 3]))
+      assert.equal(f.cli('judge-list').status, 0)
+      const [c1, c2] = mismatchesOf(readHistory('main'), APP).map((m) => m.id)
+      assert.ok(c1 && c2)
+      const learn = [{ repo: APP, kind: 'add', direction: 'auto', topic: '文言だけの修正', evidence: [c1, c2] }]
+      const decisions = [f.decision({ rules: [] }), f.decision({ key: `${API}#7`, targets: [API], rules: [] })]
+      const result = f.apply(order === 'decisions-first' ? { decisions, learn } : { learn, decisions })
+      assert.equal(result.status, 0, result.stderr)
+      assert.deepEqual(ruleIdsOf(`${APP}#7`), ['r1'], order)
+      // 別のリポジトリの Issue は入れない
+      assert.deepEqual(ruleIdsOf(`${API}#7`), [], order)
+      assert.equal(readStore('main').rules[0]?.probationLeft, 3)
+    } finally {
+      f.cleanup()
+    }
+  }
+  // 1 回目で判定の行が断られ（exit 1）、案だけが通っても、やり直しの判定は同じ規則の様子見に入る。規則は 1 つだけ
+  const f = judging()
+  try {
+    writeHistory('main', returnedRows(APP, [1, 2, 3]))
+    assert.equal(f.cli('judge-list').status, 0)
+    const [c1, c2] = mismatchesOf(readHistory('main'), APP).map((m) => m.id)
+    assert.ok(c1 && c2)
+    const learn = [{ repo: APP, kind: 'add', direction: 'auto', topic: '文言だけの修正', evidence: [c1, c2] }]
+    const first = f.apply({ decisions: [f.decision({ rules: [], limitMinutes: 0 })], learn })
+    assert.equal(first.status, 1)
+    assert.equal(readState('main').issues[`${APP}#7`]?.phase, 'judging')
+    const retry = f.apply({ decisions: [f.decision({ rules: [] })], learn })
+    assert.equal(retry.status, 0, retry.stderr)
+    assert.deepEqual(ruleIdsOf(`${APP}#7`), ['r1'])
+    assert.equal(readStore('main').rules.length, 1)
+    assert.equal(readNotices('main').length, 1)
   } finally {
     f.cleanup()
   }

@@ -16,10 +16,12 @@ import { continuationOf, github, type PrStatus, prStatus, readGithub, viewIssue 
 import { envArgs, hostAvailableMemoryMb, hostKey, hostsOf, LOCAL_HOST } from './auto-hosts.ts'
 import {
   applyCancels,
+  commentReason,
   type EndRecorder,
   endRecorder,
   LEARN_LABEL,
   notifyGlobalPrs,
+  type Outcome,
   onProbation,
   readHistory,
   readStore,
@@ -176,7 +178,7 @@ const started = (tick: Tick, issue: IssueState, workers: JsonObject): void => {
     issue,
     'started',
     {
-      reason: issue.reason,
+      reason: commentReason(tick.name, tick.config, issue, console.log),
       limitMinutes: issue.limitMinutes,
       relayMinutes: issue.relayMinutes,
       branch: issue.branch,
@@ -1179,12 +1181,22 @@ const finish = (tick: Tick, issue: IssueState): void => {
   )
     tick.finished++
 }
+// レビュー中に閉じられた・In review から外された世代の結果。PR がすべて merge 済みなら人が merge した
+// （merge してから閉じる・Done に動かすのは普通の流れで、止めたと記録すると効いた様子見の規則を取り下げてしまう）。
+// PR が無い・1 つでも merge されていない・読めないなら人が止めた。結果を書かない世代では PR を読まない
+const reviewEnd = (issue: IssueState): Outcome =>
+  issue.learn !== null &&
+  !issue.learn.recorded &&
+  issue.prs.length > 0 &&
+  issue.prs.every((p) => prStatus(p.repo, p.number)?.state === 'MERGED')
+    ? 'merged-human'
+    : 'stopped'
 const watchReview = (tick: Tick, issue: IssueState): void => {
   if (!canAutoCall('レビューの監視')) return
   const view = viewIssue(issue.repo, issue.number)
   if (!view) return
   if (view.state === 'CLOSED') {
-    tick.onEnd(issue, 'stopped', view.labels)
+    tick.onEnd(issue, reviewEnd(issue), view.labels)
     if (issue.cleanupPending) {
       issue.phase = 'stopped'
       tick.save()
@@ -1196,7 +1208,7 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
   }
   if (!view.labels.includes(STATUS.inReview)) {
     issue.phase = 'stopped'
-    tick.onEnd(issue, 'stopped', view.labels)
+    tick.onEnd(issue, reviewEnd(issue), view.labels)
     tick.save()
     return
   }

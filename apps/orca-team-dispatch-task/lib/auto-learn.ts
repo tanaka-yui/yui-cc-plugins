@@ -53,6 +53,11 @@ const ISSUE_REFERENCE = /#\d/
 // 題は 1 行にし、本文の行の区切りは \n だけを許す（\r・U+0085 は制御文字、U+2028・U+2029 は行と段落の区切り）
 const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\u2028\u2029]/u
 const BODY_LINE_BREAK = /\n/g
+// 公開リポジトリ（learn.issueRepo）の Issue のコメントで、検査に落ちた判定の理由の代わりに出す文
+export const LEARN_PUBLIC_REASON = '判定の理由は手元の記録に残しました（公開リポジトリには出せない内容を含むため）。'
+// 判定の理由を検査するときの、理由の行で文を指す言葉と、コメントで空白になる行の区切り
+const REASON_SUBJECT = '判定の理由'
+const REASON_LINE_BREAK = /[\r\n]/g
 // 端末の learn-publish で公開したときの、承認した人の欄
 export const LEARN_TERMINAL_APPROVER = '端末の learn-publish'
 // 承認した人が記録されていない公開の依頼（手で書いた依頼など）
@@ -443,7 +448,25 @@ export const readNotices = (name: string): Notice[] => {
   return value === undefined ? [] : parseAll(value.notices, parseNotice, LEARN_FILES.notices)
 }
 
-// store.nextNotice を id にして進める。store の保存は呼び出し側（writeStore）の仕事
+// store.nextNotice を id にして進めた知らせ（まだ書かない）
+const numberNotice = (store: LearnStore, repo: string, items: Omit<NoticeItem, 'n'>[], at: string): Notice => {
+  const notice: Notice = {
+    id: store.nextNotice,
+    repo,
+    at,
+    items: items.map((item, index) => ({ ...item, n: index + 1 })),
+  }
+  store.nextNotice += 1
+  return notice
+}
+const writeNotices = (name: string, notices: Notice[]): void =>
+  writeLearnFile(name, LEARN_FILES.notices, { notices: [...readNotices(name), ...notices].slice(-LEARN_NOTICES_MAX) })
+const printNotice = (notice: Notice): void => {
+  for (const item of notice.items) console.log(`学び: ${notice.repo} [${item.kind}] ${item.text}`)
+}
+
+// store.nextNotice を id にして進める。store の保存は呼び出し側（writeStore）の仕事。
+// lib の中では使わない（知らせを規則より先に書くことになるため。saveStore を使う）
 export const appendNotice = (
   name: string,
   store: LearnStore,
@@ -451,17 +474,33 @@ export const appendNotice = (
   items: Omit<NoticeItem, 'n'>[],
   at: string,
 ): Notice => {
-  const notice: Notice = {
-    id: store.nextNotice,
-    repo,
-    at,
-    items: items.map((item, index) => ({ ...item, n: index + 1 })),
-  }
-  const notices = [...readNotices(name), notice].slice(-LEARN_NOTICES_MAX)
-  writeLearnFile(name, LEARN_FILES.notices, { notices })
-  store.nextNotice += 1
-  for (const item of notice.items) console.log(`学び: ${repo} [${item.kind}] ${item.text}`)
+  const notice = numberNotice(store, repo, items, at)
+  writeNotices(name, [notice])
+  printNotice(notice)
   return notice
+}
+
+// 知らせにする出来事（リポジトリと項目）
+type NoticeDraft = { repo: string; items: Omit<NoticeItem, 'n'>[] }
+// 規則を保存してから知らせを書く。知らせの id は保存の前に store.nextNotice から振る（保存した id を次の知らせが使い回さない）。
+// 規則の保存に失敗したら投げて知らせを書かない（保存していない変更を知らせない）。知らせを書けなくても保存した変更は
+// 失わず、log に 1 行出して続ける（壊れた notices.json で判定の AI が起き続けないため。飛んだ id は害が無い）
+const saveStore = (
+  name: string,
+  store: LearnStore,
+  drafts: NoticeDraft[],
+  at: string,
+  log: (line: string) => void,
+): void => {
+  const notices = drafts.map((draft) => numberNotice(store, draft.repo, draft.items, at))
+  writeStore(name, store)
+  if (notices.length === 0) return
+  for (const notice of notices) printNotice(notice)
+  try {
+    writeNotices(name, notices)
+  } catch (error) {
+    log(`学びの知らせを書けません。規則は保存しました（${error instanceof Error ? error.message : String(error)}）`)
+  }
 }
 
 const isMerged = (row: HistoryRow): boolean => row.outcome === 'merged-ai' || row.outcome === 'merged-human'
@@ -549,8 +588,7 @@ export const settleRules = (name: string, row: HistoryRow, at: string): void => 
       body: '',
     })
   }
-  if (items.length > 0) appendNotice(name, store, row.repo, items, at)
-  writeStore(name, store)
+  saveStore(name, store, items.length > 0 ? [{ repo: row.repo, items }] : [], at, console.log)
 }
 
 // 題名は英数字の並びと、それ以外の文字の 2 文字ずつ。ラベルは名前そのまま 1 語
@@ -596,10 +634,13 @@ export const topicProblem = (topic: string): string => {
   return ''
 }
 
-// 振り返りが要るリポジトリ（まだ振り返っていない食い違いが LEARN_REFLECT_MIN 件以上）。
+// 振り返りが要るリポジトリ（まだ振り返っていない食い違いが LEARN_REFLECT_MIN 件以上の異なる Issue から出ている。
+// 世代ではなく Issue の key で数える。やり直しで何度も失敗した 1 件の Issue だけで振り返りを起こさないため）。
 // tick が AI を起こすかと、judge-list の reflect は、必ずこれを同じ引数で呼ぶ（食い違うと AI を起こしても何も無い）
 export const reflectDue = (rows: HistoryRow[], repos: string[]): string[] =>
-  [...new Set(repos)].filter((repo) => mismatchesOf(rows, repo).length >= LEARN_REFLECT_MIN)
+  [...new Set(repos)].filter(
+    (repo) => new Set(mismatchesOf(rows, repo).map((mismatch) => mismatch.key)).size >= LEARN_REFLECT_MIN,
+  )
 
 export type LearnedRule = { id: string; direction: Route; topic: string; probation: boolean }
 export type Learned = { rules: LearnedRule[]; cases: Array<{ title: string; route: Route; outcome: Outcome }> }
@@ -713,26 +754,47 @@ export const decisionRuleIds = (value: Json | undefined, shown: LearnedRule[]): 
 
 // 振り返りの案。kind ごとに検査と保存をする。知らない kind は捨てる（kind は今後増える）。
 // global の案は形だけ確かめて返し、呼び出し側が applyLearn の保存のあとで proposeGlobal に渡す
-type LearnContext = { store: LearnStore; material: Map<string, Set<string>>; at: string }
-type Accepted = { repo: string; item: Omit<NoticeItem, 'n'> }
+// material はリポジトリごとの、材料にできる食い違い（id から食い違い）
+type LearnContext = { store: LearnStore; material: Map<string, Map<string, Mismatch>>; at: string }
+// item は知らせの項目（同じ案のやり直しで新しく作らなかったときは null）。autoRule は案で受けた auto 向きの規則の id
+// （judge-apply が、同じ判定結果で auto にした同じリポジトリの Issue を様子見に入れる）
+type Accepted = { repo: string; item: Omit<NoticeItem, 'n'> | null; autoRule: string | null }
 const WITHDRAWN_BY_REFLECTION = '振り返りで取り下げ'
+// 根拠に要る異なる Issue の数（世代ではなく Issue の key で数える。1 件だけの出来事で規則を作らないため）
 const ADD_EVIDENCE_MIN = 2
 const SUPPORT_EVIDENCE_MIN = 1
+// 規則の向きごとに根拠にできる食い違い。auto 向き（自動の範囲を広げる）は、人が自動に戻して merge された慎重すぎた
+// 食い違いだけ、eng 向きは攻めすぎた食い違いだけ
+const EVIDENCE_KIND: Record<Route, Mismatch['kind']> = { auto: 'cautious', eng: 'aggressive' }
 
-// repo が振り返りの材料に出たリポジトリか。出ていればその食い違いの id を返す
-const materialOf = (proposal: JsonObject, context: LearnContext): { repo: string; ids: Set<string> } | string => {
+// repo が振り返りの材料に出たリポジトリか。出ていればその食い違いを返す
+const materialOf = (
+  proposal: JsonObject,
+  context: LearnContext,
+): { repo: string; mismatches: Map<string, Mismatch> } | string => {
   const repo = asString(proposal.repo)
   if (repo === null) return 'repo がありません'
-  const ids = context.material.get(repo)
-  return ids === undefined ? `${repo} は振り返りの材料にありません` : { repo, ids }
+  const mismatches = context.material.get(repo)
+  return mismatches === undefined ? `${repo} は振り返りの材料にありません` : { repo, mismatches }
 }
-const evidenceOf = (value: Json | undefined, ids: Set<string>, min: number): string[] | string => {
+// 根拠の検査。材料にある食い違いで、規則の向きに合う種類のもので、異なる Issue が min 件以上
+const evidenceOf = (
+  value: Json | undefined,
+  mismatches: Map<string, Mismatch>,
+  direction: Route,
+  min: number,
+): string[] | string => {
   const list = strings(value)
   if (list === null) return 'evidence は文字列の配列にしてください'
   const unique = [...new Set(list)]
-  if (unique.length < min) return `evidence は異なる食い違いを ${min} 件以上にしてください`
-  const unknown = unique.filter((id) => !ids.has(id))
-  return unknown.length > 0 ? `evidence に材料に無い食い違いがあります: ${unknown.join(' ')}` : unique
+  const unknown = unique.filter((id) => !mismatches.has(id))
+  if (unknown.length > 0) return `evidence に材料に無い食い違いがあります: ${unknown.join(' ')}`
+  const kind = EVIDENCE_KIND[direction]
+  const other = unique.filter((id) => mismatches.get(id)?.kind !== kind)
+  if (other.length > 0)
+    return `evidence に ${direction} 向きの根拠にならない食い違いがあります（${direction} 向きは ${kind} だけ）: ${other.join(' ')}`
+  const issues = new Set(unique.map((id) => mismatches.get(id)?.key))
+  return issues.size < min ? `evidence は異なる Issue の食い違いを ${min} 件以上にしてください` : unique
 }
 const ruleOf = (proposal: JsonObject, repo: string, context: LearnContext): Rule | string => {
   const id = asString(proposal.ruleId)
@@ -740,7 +802,26 @@ const ruleOf = (proposal: JsonObject, repo: string, context: LearnContext): Rule
   return found ?? `ruleId が ${repo} の有効な規則ではありません`
 }
 
+// 同じ案で作った有効な規則（repo・向き・文・根拠の集まりが同じ）。exit 1 のあとのやり直しで同じ判定結果が来たとき、
+// 材料はもう振り返り済みなので案は通らないが、同じ回に auto にした Issue を様子見に入れるためにその規則の id が要る
+const sameRule = (proposal: JsonObject, store: LearnStore): Rule | undefined => {
+  const evidence = strings(proposal.evidence)
+  if (evidence === null) return undefined
+  const unique = new Set(evidence)
+  return store.rules.find(
+    (rule) =>
+      rule.status === 'active' &&
+      rule.repo === proposal.repo &&
+      rule.direction === proposal.direction &&
+      rule.topic === proposal.topic &&
+      rule.evidence.length === unique.size &&
+      rule.evidence.every((id) => unique.has(id)),
+  )
+}
+
 const proposeAdd = (proposal: JsonObject, context: LearnContext): Accepted | string => {
+  const same = sameRule(proposal, context.store)
+  if (same !== undefined) return { repo: same.repo, item: null, autoRule: same.direction === 'auto' ? same.id : null }
   const material = materialOf(proposal, context)
   if (typeof material === 'string') return material
   const direction = route(proposal.direction)
@@ -749,7 +830,7 @@ const proposeAdd = (proposal: JsonObject, context: LearnContext): Accepted | str
   if (topic === null) return 'topic がありません'
   const problem = topicProblem(topic)
   if (problem !== '') return problem
-  const evidence = evidenceOf(proposal.evidence, material.ids, ADD_EVIDENCE_MIN)
+  const evidence = evidenceOf(proposal.evidence, material.mismatches, direction, ADD_EVIDENCE_MIN)
   if (typeof evidence === 'string') return evidence
   if (activeRules(context.store, material.repo).length >= LEARN_RULES_MAX)
     return `${material.repo} の有効な規則が上限の ${LEARN_RULES_MAX} 件に達しています`
@@ -770,6 +851,7 @@ const proposeAdd = (proposal: JsonObject, context: LearnContext): Accepted | str
   return {
     repo: rule.repo,
     item: { kind: 'new', ruleId: rule.id, direction, text: topic, evidence, url: '', body: '' },
+    autoRule: direction === 'auto' ? rule.id : null,
   }
 }
 
@@ -778,7 +860,7 @@ const proposeSupport = (proposal: JsonObject, context: LearnContext): Accepted |
   if (typeof material === 'string') return material
   const rule = ruleOf(proposal, material.repo, context)
   if (typeof rule === 'string') return rule
-  const evidence = evidenceOf(proposal.evidence, material.ids, SUPPORT_EVIDENCE_MIN)
+  const evidence = evidenceOf(proposal.evidence, material.mismatches, rule.direction, SUPPORT_EVIDENCE_MIN)
   if (typeof evidence === 'string') return evidence
   rule.evidence = [...new Set([...rule.evidence, ...evidence])]
   return {
@@ -792,6 +874,7 @@ const proposeSupport = (proposal: JsonObject, context: LearnContext): Accepted |
       url: '',
       body: '',
     },
+    autoRule: null,
   }
 }
 
@@ -813,6 +896,7 @@ const proposeWithdraw = (proposal: JsonObject, context: LearnContext): Accepted 
       url: '',
       body: '',
     },
+    autoRule: null,
   }
 }
 
@@ -822,25 +906,33 @@ const PROPOSAL_KINDS = new Map<string, (proposal: JsonObject, context: LearnCont
   ['withdraw', proposeWithdraw],
 ])
 
+// applyLearn の結果。globals は形を確かめた全体の案、autoRules は add の案で受けた auto 向きの規則（保存済み）
+export type LearnApplied = { globals: GlobalProposal[]; autoRules: Array<{ repo: string; id: string }> }
+
 // 振り返りの案を 1 件ずつ検査して保存し、リポジトリごとに知らせを 1 つ足す。落ちた案は log に 1 行出して捨てる。
-// 最後に、見せた食い違いの行をすべて振り返り済みにする（案が無くても。同じ材料で毎回 AI を起こさないため）。
-// 材料にできるのは、見せた食い違いのうちまだ振り返り済みでないものだけ（やり直しの judge-apply で同じ案を二度入れない）
+// 見せた食い違いの行をすべて振り返り済みにする（案が無くても。同じ材料で毎回 AI を起こさないため）。
+// 材料にできるのは、見せた食い違いのうちまだ振り返り済みでないものだけ（やり直しの judge-apply で同じ案を二度入れない）。
+// 書く順は 履歴（振り返り済み）→ 規則 → 知らせ。規則を保存できなければ投げる（振り返り済みにはなっているので、
+// 同じ材料で AI を起こし続けない）。知らせを書けなくても規則と振り返り済みは残し、1 行出すだけ
 export const applyLearn = (
   name: string,
   proposals: Json[],
   shown: Array<{ repo: string; mismatches: Mismatch[] }>,
   at: string,
   log: (line: string) => void,
-): GlobalProposal[] => {
-  const globals: GlobalProposal[] = []
-  if (proposals.length === 0 && shown.length === 0) return globals
+): LearnApplied => {
+  const applied: LearnApplied = { globals: [], autoRules: [] }
+  if (proposals.length === 0 && shown.length === 0) return applied
   const rows = readHistory(name)
   const store = readStore(name)
   const open = new Set(rows.filter((row) => !row.reflected).map((row) => `${row.key}@${row.generation}`))
-  const material = new Map<string, Set<string>>()
+  const material = new Map<string, Map<string, Mismatch>>()
   for (const entry of shown) {
-    const ids = entry.mismatches.map((mismatch) => mismatch.id).filter((id) => open.has(id))
-    if (ids.length > 0) material.set(entry.repo, new Set([...(material.get(entry.repo) ?? []), ...ids]))
+    const mismatches = entry.mismatches.filter((mismatch) => open.has(mismatch.id))
+    if (mismatches.length === 0) continue
+    const known = material.get(entry.repo) ?? new Map<string, Mismatch>()
+    for (const mismatch of mismatches) known.set(mismatch.id, mismatch)
+    material.set(entry.repo, known)
   }
   const context: LearnContext = { store, material, at }
   const accepted = new Map<string, Omit<NoticeItem, 'n'>[]>()
@@ -851,7 +943,7 @@ export const applyLearn = (
       const parsed = globalProposalOf(proposal)
       if (typeof parsed === 'string')
         log(`学びの案を捨てました: ${kind} ${asString(proposal.ruleId) ?? '-'}（${parsed}）`)
-      else globals.push(parsed)
+      else applied.globals.push(parsed)
       continue
     }
     const propose = PROPOSAL_KINDS.get(kind)
@@ -865,10 +957,10 @@ export const applyLearn = (
       log(`学びの案を捨てました: ${kind || '-'} ${asString(proposal?.repo) ?? '-'}（${result}）`)
       continue
     }
+    if (result.autoRule !== null) applied.autoRules.push({ repo: result.repo, id: result.autoRule })
+    if (result.item === null) continue
     accepted.set(result.repo, [...(accepted.get(result.repo) ?? []), result.item])
   }
-  for (const [repo, items] of accepted) appendNotice(name, store, repo, items, at)
-  if (accepted.size > 0) writeStore(name, store)
   const reflected = new Set(
     shown.flatMap((entry) => entry.mismatches.map((mismatch) => `${entry.repo}\n${mismatch.id}`)),
   )
@@ -879,7 +971,15 @@ export const applyLearn = (
       changed = true
     }
   if (changed) writeHistory(name, rows)
-  return globals
+  if (accepted.size > 0)
+    saveStore(
+      name,
+      store,
+      [...accepted].map(([repo, items]) => ({ repo, items })),
+      at,
+      log,
+    )
+  return applied
 }
 
 // 全体に効く学びの案（yui-cc-plugins の改善の Issue の題と本文）
@@ -951,16 +1051,23 @@ export const globalProblems = (title: string, body: string, repos: string[], iss
     problems.push(`本文が ${LEARN_GLOBAL_BODY_MAX} 文字を超えています`)
   if (HIDDEN_CHARACTER.test(title) || HIDDEN_CHARACTER.test(body.replace(BODY_LINE_BREAK, '')))
     problems.push('題か本文に見えない文字か改行があります（制御文字・書式文字など。改行は本文の \\n だけ）')
-  const text = fold(`${title}\n${body}`)
+  return [...problems, ...leakProblems(`${title}\n${body}`, '題か本文', repos, issueRepo)]
+}
+
+// 公開リポジトリに出す文に、リポジトリの名前・# と数字の並び・URL が無いか（globalProblems と判定の理由で共有する）。
+// subject は理由の行で文を指す言葉
+const leakProblems = (raw: string, subject: string, repos: string[], issueRepo: string | null): string[] => {
+  const problems: string[] = []
+  const text = fold(raw)
   const safe = [...LEARN_GLOBAL_SAFE_PATHS, ...(issueRepo === null ? [] : namesOf(issueRepo))]
     .map(fold)
     .filter((entry) => entry !== '')
   const safeSpans = safe.flatMap((entry) => spansOf(text, entry))
   const names = [...new Set(repos.flatMap(namesOf).map(fold))].filter((n) => n !== '' && !safe.includes(n))
   const found = names.filter((n) => containsName(text, n, safeSpans))
-  if (found.length > 0) problems.push(`題か本文に設定にあるリポジトリの名前があります: ${found.join(' ')}`)
-  if (ISSUE_REFERENCE.test(text)) problems.push('題か本文に # と数字の並びがあります')
-  if (TOPIC_URL_PREFIXES.some((prefix) => text.includes(prefix))) problems.push('題か本文に URL があります')
+  if (found.length > 0) problems.push(`${subject}に設定にあるリポジトリの名前があります: ${found.join(' ')}`)
+  if (ISSUE_REFERENCE.test(text)) problems.push(`${subject}に # と数字の並びがあります`)
+  if (TOPIC_URL_PREFIXES.some((prefix) => text.includes(prefix))) problems.push(`${subject}に URL があります`)
   return problems
 }
 
@@ -980,6 +1087,34 @@ const ruleItem = (rule: Rule, kind: NoticeKind, text: string, url: string, body:
   url,
   body,
 })
+// 判定の理由を Issue のコメントに出す形。learn.issueRepo（公開リポジトリ）の Issue では、判定の材料に非公開の
+// リポジトリの規則と食い違いも入るので、理由をリポジトリの名前・# と数字の並び・URL・見えない文字の検査に掛ける。
+// 落ちたら LEARN_PUBLIC_REASON に替えて log に 1 行出す。規則のファイルを読めなければ断る名前が揃わないので同じく替える。
+// 状態の reason は変えない（端末の status は元の文を出す）
+export const commentReason = (
+  name: string,
+  config: AutoConfig,
+  issue: Pick<IssueState, 'key' | 'repo' | 'reason'>,
+  log: (line: string) => void,
+): string => {
+  const issueRepo = config.learn.issueRepo
+  if (issueRepo === null || issue.repo.toLowerCase() !== issueRepo.toLowerCase()) return issue.reason
+  let problems: string[]
+  try {
+    problems = [
+      ...(HIDDEN_CHARACTER.test(issue.reason.replace(REASON_LINE_BREAK, ''))
+        ? [`${REASON_SUBJECT}に見えない文字があります`]
+        : []),
+      ...leakProblems(issue.reason, REASON_SUBJECT, blockedRepos(config, readStore(name)), issueRepo),
+    ]
+  } catch (error) {
+    problems = [error instanceof Error ? error.message : String(error)]
+  }
+  if (problems.length === 0) return issue.reason
+  log(`判定の理由を公開リポジトリの Issue に出しません: ${issue.key}（${problems.join('。')}）`)
+  return LEARN_PUBLIC_REASON
+}
+
 // 下書きを捨てる。規則は変えず、同じ規則を二度出さない
 const dropDraft = (rule: Rule): void => {
   rule.global = { issue: '', prNotified: true, draft: null }
@@ -1015,11 +1150,7 @@ export const proposeGlobal = (
   const item = hint
     ? ruleItem(rule, 'global-hint', proposal.title, '', '')
     : ruleItem(rule, 'global-draft', proposal.title, '', proposal.body)
-  try {
-    appendNotice(name, store, rule.repo, [item], at)
-  } finally {
-    writeStore(name, store)
-  }
+  saveStore(name, store, [{ repo: rule.repo, items: [item] }], at, log)
 }
 
 // 人が承認した下書きを issueRepo に Issue として作る。下書きがあり、まだ Issue が無い規則だけ。
@@ -1103,11 +1234,7 @@ export const publishGlobal = (
   }
   // Issue はもう作ったので、知らせを書けなくても規則には残す（同じ Issue を二度作らないため）
   rule.global = { issue: `${issueRepo}#${number}`, prNotified: false, draft: null }
-  try {
-    appendNotice(name, store, rule.repo, [ruleItem(rule, 'global-issue', draft.title, url, '')], at)
-  } finally {
-    writeStore(name, store)
-  }
+  saveStore(name, store, [{ repo: rule.repo, items: [ruleItem(rule, 'global-issue', draft.title, url, '')] }], at, log)
   log(`全体の学びの Issue を作りました: ${rule.id} ${rule.global.issue}（承認: ${approver || APPROVER_UNKNOWN}）`)
   return true
 }
@@ -1117,7 +1244,7 @@ export const publishGlobal = (
 export const notifyGlobalPrs = (name: string, state: AutoState, at: string): void => {
   const store = readStore(name)
   const issues = Object.values(state.issues)
-  let changed = false
+  const drafts: NoticeDraft[] = []
   for (const rule of store.rules) {
     const global = rule.global
     if (global === null || global.prNotified) continue
@@ -1125,11 +1252,9 @@ export const notifyGlobalPrs = (name: string, state: AutoState, at: string): voi
     const pr = issue?.phase === 'review' ? issue.prs[0] : undefined
     if (issue === undefined || pr === undefined) continue
     global.prNotified = true
-    appendNotice(
-      name,
-      store,
-      rule.repo,
-      [
+    drafts.push({
+      repo: rule.repo,
+      items: [
         {
           kind: 'global-pr',
           ruleId: rule.id,
@@ -1140,11 +1265,9 @@ export const notifyGlobalPrs = (name: string, state: AutoState, at: string): voi
           body: '',
         },
       ],
-      at,
-    )
-    changed = true
+    })
   }
-  if (changed) writeStore(name, store)
+  if (drafts.length > 0) saveStore(name, store, drafts, at, console.log)
 }
 
 // 依頼が指す項目の中身のハッシュ（人が Slack で見た項目と、この名前の知らせの項目を突き合わせる）。
@@ -1259,9 +1382,15 @@ export const applyCancels = (
   for (const rule of targets) {
     rule.status = 'withdrawn'
     rule.withdrawnWhy = WITHDRAWN_BY_CANCEL
-    appendNotice(name, store, rule.repo, [ruleItem(rule, 'withdrawn', rule.topic, '', '')], at)
   }
-  if (changed || targets.length > 0) writeStore(name, store)
+  if (changed || targets.length > 0)
+    saveStore(
+      name,
+      store,
+      targets.map((rule) => ({ repo: rule.repo, items: [ruleItem(rule, 'withdrawn', rule.topic, '', '')] })),
+      at,
+      log,
+    )
   for (const [id, user] of publish) if (!discard.has(id)) publishGlobal(name, config, id, at, log, user)
   return targets.length
 }

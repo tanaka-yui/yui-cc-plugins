@@ -2,6 +2,7 @@ import { parseAutoConfig } from '../../lib/auto-config.ts'
 import {
   appendNotice,
   applyCancels,
+  commentReason,
   globalProblems,
   LEARN_CANCELS_FILE,
   LEARN_FILES,
@@ -10,6 +11,7 @@ import {
   LEARN_GLOBAL_TITLE_MAX,
   LEARN_LABEL,
   LEARN_PLUGIN_REPO,
+  LEARN_PUBLIC_REASON,
   learnDir,
   learnItemHash,
   proposeGlobal,
@@ -776,5 +778,68 @@ test('LN31 依頼は指す項目のハッシュが合うときだけ効く。違
   } finally {
     quiet.mock.restore()
     f.cleanup()
+  }
+})
+
+test('LN36 learn.issueRepo の Issue のコメントには、リポジトリの名前・# と数字・URL・見えない文字を含む判定の理由を出さず、決まった文に替えて 1 行出す（状態の理由は元のまま）', () => {
+  const leaked = 'other/api の #12 と同じ直しで、手早く終わります'
+  // issueRepo を変えた設定で、判定待ちの acme/app#7 をエンジニア行きに判定し、書いたコメントと judge-apply の出力を返す
+  const judgeWith = (issueRepo: string) => {
+    const f = runtimeFixture()
+    try {
+      const i = f.track('queued')
+      const state = readState('main')
+      const issue = state.issues[i.key]
+      assert.ok(issue)
+      issue.phase = 'judging'
+      writeState('main', state)
+      f.put(f.configFile, { ...f.raw, learn: { issueRepo } })
+      const file = join(f.dir, 'decisions.json')
+      f.put(file, [{ key: i.key, generation: 1, route: 'eng', targets: [APP], limitMinutes: 60, reason: leaked }])
+      const result = f.cli('judge-apply', '--file', file)
+      assert.equal(result.status, 0, result.stderr)
+      return {
+        key: i.key,
+        stderr: result.stderr,
+        comments: readFileSync(join(f.dir, 'comments.jsonl'), 'utf8'),
+        reason: readState('main').issues[i.key]?.reason ?? '',
+      }
+    } finally {
+      f.cleanup()
+    }
+  }
+  // issueRepo でない Issue には今までどおり出す
+  assert.match(judgeWith(LEARN_PLUGIN_REPO).comments, /#12/)
+  const result = judgeWith(APP)
+  assert.ok(result.comments.includes(LEARN_PUBLIC_REASON), result.comments)
+  assert.ok(!result.comments.includes('#12') && !result.comments.includes('other/api'), result.comments)
+  assert.match(result.stderr, new RegExp(`判定の理由を公開リポジトリの Issue に出しません: ${result.key}（.*api`))
+  assert.ok(result.reason.startsWith(leaked))
+
+  // 検査の中身: 問題の無い理由はそのまま、URL・見えない文字・規則のファイルにだけある名前は替える。規則を読めなくても替える
+  const g = fixture()
+  const lines: string[] = []
+  const log = (line: string) => lines.push(line)
+  try {
+    const config = withLearn(g.config(), APP)
+    const of = (reason: string) => commentReason('main', config, { key: `${APP}#3`, repo: APP, reason }, log)
+    assert.equal(of('文言だけの小さな修正です'), '文言だけの小さな修正です')
+    assert.equal(lines.length, 0)
+    assert.equal(of('https://example.com を見て直します'), LEARN_PUBLIC_REASON)
+    assert.equal(of('小さな​修正です'), LEARN_PUBLIC_REASON)
+    writeStore('main', store([rule('r1', { repo: 'secret/hidden-repo' })]))
+    assert.equal(of('hidden-repo と同じ直しです'), LEARN_PUBLIC_REASON)
+    assert.equal(lines.length, 3)
+    writeFileSync(join(learnDir('main'), LEARN_FILES.rules), '{ broken')
+    assert.equal(of('文言だけの小さな修正です'), LEARN_PUBLIC_REASON)
+    assert.match(lines[3] ?? '', /状態ファイルが壊れています/)
+    // 大文字小文字の違う repo も公開リポジトリの Issue とみなす。別のリポジトリの Issue は検査しない
+    assert.equal(
+      commentReason('main', config, { key: 'Acme/App#3', repo: 'Acme/App', reason: '#1 と同じ' }, log),
+      LEARN_PUBLIC_REASON,
+    )
+    assert.equal(commentReason('main', config, { key: `${API}#3`, repo: API, reason: '#1 と同じ' }, log), '#1 と同じ')
+  } finally {
+    g.cleanup()
   }
 })
