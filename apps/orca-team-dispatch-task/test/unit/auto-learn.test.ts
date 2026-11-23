@@ -178,14 +178,20 @@ test('LN3 similarCases は語の重なりの多い順に 5 件までで、重な
   )
   assert.deepEqual(found[0], { title: 'ログイン画面のボタンの文言', route: 'eng', outcome: 'failed' })
   // 件数の上限と、同じ重なりでは新しい順
-  const many = Array.from({ length: 8 }, (_, index) => row({ title: 'login page', at: `2026-11-23T00:00:0${index}Z` }))
+  // 題名を 1 件ずつ変え（重なりはどれも「login」の 1 語）、入力は古い順に並べて、新しい順に返ることを確かめる
+  const many = Array.from({ length: 8 }, (_, index) =>
+    row({ title: `login ${String.fromCharCode(97 + index)}`, at: `2026-11-23T00:00:0${index}Z` }),
+  )
   const limited = similarCases(many, REPO, 'login', [])
   assert.equal(limited.length, 5)
-  assert.equal(similarCases(many, REPO, 'login', [], 2).length, 2)
-  const ordered = similarCases(many, REPO, 'login', [], 8)
   assert.deepEqual(
-    ordered.map((_, index) => many[7 - index]?.at),
-    many.toReversed().map((item) => item.at),
+    limited.map((item) => item.title),
+    ['login h', 'login g', 'login f', 'login e', 'login d'],
+  )
+  assert.equal(similarCases(many, REPO, 'login', [], 2).length, 2)
+  assert.deepEqual(
+    similarCases(many, REPO, 'login', [], 8).map((item) => item.title),
+    many.map((item) => item.title).toReversed(),
   )
 })
 
