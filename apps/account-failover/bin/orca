@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# プラグインのフォルダを読める側の Orca CLI を呼ぶ。引数はそのまま渡す。
+# WSL には `orca` が無い。PATH 上の `orca-ide` は Windows の Orca へ転送するだけで、フォルダを読む
+# コマンド（plugin install <dir> / types / test / validate / dev）は Orca が断る。
+# そのため WSL では Windows の orca.exe を直接呼ぶ。cwd は \\wsl.localhost\... として渡るので、
+# フォルダは `.` で指す（POSIX の絶対パスは Windows 側で解釈できない）。
+set -euo pipefail
+
+for bin in orca orca.exe; do
+  if command -v "${bin}" >/dev/null 2>&1; then
+    exec "${bin}" "$@"
+  fi
+done
+
+echo "orca CLI が見つかりません（PATH に orca も orca.exe もありません）。Orca をインストールしてから再実行してください。" >&2
+exit 127

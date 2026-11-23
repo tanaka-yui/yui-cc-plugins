@@ -7,6 +7,11 @@ set -euo pipefail
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN_KEY="local.account-failover"
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "account-failover は macOS 専用です。それ以外（WSL を含む）では worker が動かないので、インストールしません。" >&2
+  exit 1
+fi
+
 if ! command -v orca >/dev/null 2>&1; then
   echo "orca CLI が見つかりません。Orca をインストールしてから再実行してください。" >&2
   exit 1

@@ -16,6 +16,10 @@ Claude / Codex のセッションが利用上限（limit）で止まったら、
 | `make check` | `orca plugin types .` → `tsc --noEmit` → biome |
 | `make validate` | マニフェストの検証 |
 
+Make と `package.json` の script は、`orca` を直接呼ばず `bin/orca` を通す（`make install` だけは macOS 専用なので、`bin/install.sh` が `orca` を直接呼ぶ）。WSL には `orca` が無く、PATH 上の `orca-ide` は Windows の Orca へ転送するだけなので、フォルダを読むコマンド（`plugin install <dir>` / `types` / `test` / `validate` / `dev`）を Orca が断る。`bin/orca` は `orca` が無ければ Windows の `orca.exe` を直接呼ぶ。フォルダは `.` で渡す（WSL の cwd は `\\wsl.localhost\...` として渡るが、POSIX の絶対パスは Windows 側で解釈できない）。
+
+**対応は macOS だけ。** Windows / WSL / Linux には対応しない（2026-11-23 に決めた）。worker は Orca のホストで動く。WSL の構成ではホストは Windows なので、worker の `/bin/ps`・`/usr/sbin/lsof`・`process.kill`・`homedir()` は WSL の中のエージェントに届かない。Linux 版の Orca でも、`ps -E` が使えず、`lsof` の場所が違い、ペインに `/usr/bin/login` がいない。そのため `make install` は macOS 以外では止まる。WSL でできるのは `make test` / `make check` / `make validate` だけ。
+
 ## 流れ（`src/failover.ts`）
 
 1. `agent.status.changed` で working 以外になったペインの画面を `orca terminal read --screen` で読む。limit の文言が無ければ、ここで終わる（`src/limit-detect.ts`）。
