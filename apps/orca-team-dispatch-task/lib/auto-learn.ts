@@ -47,6 +47,10 @@ export const LEARN_GLOBAL_BODY_MAX = 2000
 export const LEARN_GLOBAL_TITLE_MAX = 80
 // 公開リポジトリに出す文に入れてはいけない Issue の番号の並び
 const ISSUE_REFERENCE = /#\d/
+// リポジトリ名を語として見るときに、名前の続きとみなす文字（これ以外の文字と文の端が境目）
+const NAME_CHARACTER = /[A-Za-z0-9_-]/
+// 全角の英数字や記号も同じ文字として比べる
+const TEXT_NORMALIZATION = 'NFKC'
 // gh issue create が出す Issue の URL の末尾の番号
 const CREATED_ISSUE_NUMBER = /\/issues\/(\d+)$/
 
@@ -848,8 +852,20 @@ export const globalCandidates = (store: LearnStore): GlobalCandidate[] =>
     evidenceCount: rule.evidence.length,
   }))
 
+// name が text の中に語として現れるか（前後の文字が NAME_CHARACTER でない。文の端も境目）
+const containsName = (text: string, name: string): boolean => {
+  for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + 1)) {
+    const before = text[at - 1] ?? ''
+    const after = text[at + name.length] ?? ''
+    if (!NAME_CHARACTER.test(before) && !NAME_CHARACTER.test(after)) return true
+  }
+  return false
+}
+
 // 公開リポジトリに出す題と本文として使えない理由（日本語の 1 行ずつ）。問題が無ければ空。
-// 設定にあるリポジトリ名は owner/name の全体も / の後ろの名前も、大文字小文字を無視して部分にも含めない
+// 文は NFKC で揃えてから見る（全角の綴りも捕まえる）。設定にあるリポジトリ名は owner/name の全体と / の後ろの名前を、
+// 大文字小文字を無視して語として見る（apply の中の app や auto-judge.md の中の auto は断らない）。
+// 理由の行は掛かった名前を言う（手元の設定の名前で、ログに出すだけ）
 export const globalProblems = (title: string, body: string, repos: string[]): string[] => {
   const problems: string[] = []
   if (title.trim() === '') problems.push('題が空です')
@@ -858,9 +874,16 @@ export const globalProblems = (title: string, body: string, repos: string[]): st
   if (body.trim() === '') problems.push('本文が空です')
   else if (Array.from(body).length > LEARN_GLOBAL_BODY_MAX)
     problems.push(`本文が ${LEARN_GLOBAL_BODY_MAX} 文字を超えています`)
-  const text = `${title}\n${body}`.toLowerCase()
-  const names = repos.flatMap((repo) => [repo, repo.slice(repo.indexOf('/') + 1)]).map((n) => n.toLowerCase())
-  if (names.some((n) => n !== '' && text.includes(n))) problems.push('題か本文に設定にあるリポジトリの名前があります')
+  const text = `${title}\n${body}`.normalize(TEXT_NORMALIZATION).toLowerCase()
+  const names = [
+    ...new Set(
+      repos
+        .flatMap((repo) => [repo, repo.slice(repo.indexOf('/') + 1)])
+        .map((n) => n.normalize(TEXT_NORMALIZATION).toLowerCase()),
+    ),
+  ]
+  const found = names.filter((n) => n !== '' && containsName(text, n))
+  if (found.length > 0) problems.push(`題か本文に設定にあるリポジトリの名前があります: ${found.join(' ')}`)
   if (ISSUE_REFERENCE.test(text)) problems.push('題か本文に # と数字の並びがあります')
   if (TOPIC_URL_PREFIXES.some((prefix) => text.includes(prefix))) problems.push('題か本文に URL があります')
   return problems

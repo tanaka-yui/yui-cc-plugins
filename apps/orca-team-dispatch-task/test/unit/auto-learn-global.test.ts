@@ -227,6 +227,9 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
       [TITLE, `${BODY} See #41.`],
       [TITLE, `${BODY} https://example.com`],
       ['ACME/APP wording', BODY],
+      ['ＡＰＰ の修正', BODY],
+      [TITLE, `${BODY} See ＃４１.`],
+      [TITLE, `${BODY} ｈｔｔｐｓ://example.com`],
       [TITLE, `${BODY} http://example.com`],
       ['', BODY],
       [TITLE, ''],
@@ -244,6 +247,22 @@ test('LN24 題か本文にリポジトリ名・#数字・URL があれば Issue 
       assert.equal(lines.length, 1, lines.join('\n'))
       assert.equal(ruleOf('r1')?.global, null)
     }
+    // リポジトリ名は語として見る。普通の英単語の一部や、本文に書かせる auto-judge.md のパスでは断らない
+    const short = ['acme/app', 'acme/io', 'acme/auto', 'acme/task', 'acme/orca', 'acme/dispatch']
+    const plain = `${BODY} Apply the ratio to automatic tasks; my-app stays as is.`
+    assert.ok(plain.includes('skills/orca-team-dispatch-task/references/auto-judge.md'))
+    assert.deepEqual(globalProblems(TITLE, plain, short), [])
+    // 掛かった名前を理由に書く
+    assert.deepEqual(globalProblems('Fix the app repository', BODY, short), [
+      '題か本文に設定にあるリポジトリの名前があります: app',
+    ])
+    assert.deepEqual(globalProblems(TITLE, `${BODY} Seen in acme/app.`, short), [
+      '題か本文に設定にあるリポジトリの名前があります: acme/app app',
+    ])
+    assert.deepEqual(globalProblems('ＡＰＰ の修正', BODY, short), [
+      '題か本文に設定にあるリポジトリの名前があります: app',
+    ])
+    assert.deepEqual(globalProblems(TITLE, `${BODY} ＃４１`, short), ['題か本文に # と数字の並びがあります'])
     // 設定から外したリポジトリの規則でも、そのリポジトリ名は出さない
     writeStore('main', store([rule('r1', { repo: 'gone/secret-repo' })]))
     const lines: string[] = []
