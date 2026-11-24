@@ -262,6 +262,7 @@ node bin/slack-issue-intake.ts --name <名前> inspect --raw
 | `Slack CLI でフォームのボタンを作れませんでした` | 括弧の中の理由を控え、「Workflow Builder で手で作る」でフォームを作ります |
 | `ボタンをチャンネルの入力欄に出せません` | ボタン自体はできています。起票のチャンネルは setup（または `make slack-form <名前>`）の最後に出るリンクで開けます。起票のチャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で「バグを報告」「要望を送る」「新機能を提案」「質問する」の 4 つを選び、「注目」を押します。入力欄の所に 4 つのボタンが出ないときは、ブラウザで Slack の管理画面を開き、Admin →「Apps and workflows」→「Workflows」で 4 つのそれぞれ（アプリ Issue Intake）の詳細を開いて、右上のメニューから「おすすめアプリに追加」を選びます |
 | `ボットにはボタンを入力欄に出す権限がありません（restricted_action）` | ボットのトークンでは入力欄にボタンを出せませんでした。setup はそのまま先へ進み、最後に同じ手順と起票のチャンネルへのリンクをもう一度表示します。起票のチャンネルの「ワークフロー」タブ →「ワークフローを目立たせる」で「バグを報告」「要望を送る」「新機能を提案」「質問する」の 4 つを選び、「注目」を押します。入力欄の所に 4 つのボタンが出ないときは、ブラウザで Slack の管理画面を開き、Admin →「Apps and workflows」→「Workflows」で 4 つのそれぞれ（アプリ Issue Intake）の詳細を開いて、右上のメニューから「おすすめアプリに追加」を選びます |
+| `登録されているトークンは使えません（account_inactive など）` | ボットを消した・作り直したあとに、古いトークンが残っています。今のアプリの OAuth & Permissions から Bot User OAuth Token をコピーし、`node bin/slack-issue-intake.ts --name <名前> set-token` で登録してから、もう一度 `make setup <名前>` を実行します。新しいボットは起票のチャンネルに招待しておきます |
 | `トークンのワークスペースが設定と違います` | 別のワークスペースのトークンが登録されています。このアプリのトークンで `node bin/slack-issue-intake.ts --name <名前> set-token` をやり直します |
 | `Slack に deploy 済みのアプリが、今のフォームの定義と違います` | プラグインを更新したあとに `make slack-form <名前>` だけを実行した場合です。`make setup <名前>` を実行して deploy し直してください。9 段目でボタンも置きます |
 | `以前の 1 つのボタンは、新しいボタンが入力欄の所に出るまで残します` | ボットでは新しいボタンをおすすめにできなかったので、0.2 のボタンを残しています。画面で新しいボタンをすべて注目にしてから `make slack-form <名前>` をもう一度実行すると、古いボタンを外して消します |
@@ -320,6 +321,28 @@ deploy（2 段目）から 7 段目までの間、古いボタンは押しても
 
 1. `slack trigger list --app deployed` で古いボタンの ID（`Ft…`）を調べ、`slack trigger delete --trigger-id <ID> --app deployed` で消します。Slack CLI のプロジェクトは `~/.slack-issue-intake-<名前>-slack-app/` にあります。このディレクトリで実行します。
 2. 古いチャンネルの「ワークフロー」タブで、4 つのワークフローそれぞれの 3 つのドットアイコン →「注目から外す」を選びます（トリガーを消していれば消えています）。
+
+### 別のマシン・作り直したボットからの引き継ぎ（relink）
+
+スレッドと Issue の結び付きは、ホームの `intake.db` にだけあります。次のときは、Slack にスレッドが残っていても、新しいホームはどの Issue がどのスレッドのものかを知りません。ステータスが変わってもスレッドに何も書かれず、poll は `notified=0` のままです。
+
+- 別のマシンで動かしていた intake を、`intake.db` を持ってこずに新しいマシンで `make setup <名前>` し直した
+- `intake.db` を消した・壊した
+
+`relink` は起票のチャンネルの履歴を読み、このプラグインが前に作ったスレッドを探して結び付け直します。
+
+- フォームのスレッド（ボットの返信に「Issue を作成しました: <URL>」がある）は、起票済み（`created`）の投稿として `submissions` に入れます
+- 既存 Issue の管理用の投稿（ボットの親の投稿に「この Issue をスレッドで管理します: …」がある）は、取り込み済みとして `adopted` に入れます。管理用の投稿を立て直したりラベルを付け直したりはしません
+- 見るのはボットの投稿（消したボットのものも含む）と、設定にあるリポジトリの Issue だけです。Issue の側に `from-slack`（フォームのスレッド）か `slack-thread`（管理用の投稿）が付いていなければ飛ばします。すでに結び付いている Issue と pull request も飛ばします。同じ Issue のスレッドが 2 つあれば古い方を使います
+- Slack と GitHub へは読むだけで、投稿もラベルの変更もしません。ステータスの前回の値は入れないので、次の poll が今の状態を記録します。過去の変化は通知せず、それより後の変化から通知します
+
+手順:
+
+1. ボットを作り直したなら、先に新しいトークンを `set-token` で登録し、新しいボットを起票のチャンネルに招待します（履歴を読むのに要ります）
+2. `~/.slack-issue-intake-<名前>/bin/slack-issue-intake relink` で候補を確かめます（何も書きません）。`結び付けます:` の行が入れるもの、`飛ばします:` の行が理由付きで入れないものです
+3. よければ `~/.slack-issue-intake-<名前>/bin/slack-issue-intake relink --apply` で書き込みます。poll と同じリースを取ってから書くので、poll の最中なら `処理中です` で止まります。少し待って実行し直してください。何度実行しても同じ行を重ねません
+
+遡る履歴は新しい方から 20,000 件まで（200 件 × 100 ページ）です。Slack の呼び出しの上限に当たったら、Retry-After の秒数だけ待ってから続けます。
 
 ## Slack CLI を使わないセットアップ
 
@@ -523,6 +546,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
 - `~/.slack-issue-intake-<名前>/bin/slack-issue-intake knowledge [--repo <owner/name>]`（`make knowledge <名前>`）: 「質問する」に答えるための仕様の索引だけを作り直す。ドキュメントを更新したあとに実行します。
 - `~/.slack-issue-intake-<名前>/bin/slack-issue-intake mention --group <ハンドル|表示名|ID>`: ステータスの通知でメンションするグループを変える。`--none` でメンションしない。
 - `~/.slack-issue-intake-<名前>/bin/slack-issue-intake report --source <path|none> --channel <ID|name|default> --daily-at HH:MM`: 定期報告を設定・変更します。材料の既定の場所は `~/.claude/config/orca-team-dispatch-task/auto/<名前>/report.json`。`none` で無効、`default` で起票のチャンネルへ送ります。
+- `~/.slack-issue-intake-<名前>/bin/slack-issue-intake relink [--apply]`: 前のホームや作り直す前のボットが作ったスレッドを、チャンネルの履歴から探して結び付け直す。`--apply` が無ければ候補を示すだけです（「別のマシン・作り直したボットからの引き継ぎ（relink）」）。
 - `~/.slack-issue-intake-<名前>/bin/slack-issue-intake set-token`: トークンを登録し直す。開いたウィンドウに貼り付けます（文字は伏せ字）。`--from-clipboard` はクリップボードから、`--from-stdin` は人がつないだパイプから読みます。
 - `~/.slack-issue-intake-<名前>/bin/slack-issue-intake permissions --show` → 承認して `~/.slack-issue-intake-<名前>/bin/slack-issue-intake permissions --apply` → `~/.slack-issue-intake-<名前>/bin/slack-issue-intake enable`。継承した allow / additionalDirectories があると明示承認が必要です。
 - 停止: `orca automations edit <id> --disabled`。

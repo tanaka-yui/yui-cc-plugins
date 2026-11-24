@@ -64,6 +64,13 @@ export const FATAL_SLACK_ERRORS: readonly string[] = [
   'channel_not_found',
   'missing_scope',
 ]
+// トークンそのものが使えないエラー（登録し直すまで何度試しても同じ）。setup はこれで止める
+export const SLACK_TOKEN_INVALID_ERRORS: readonly string[] = [
+  'invalid_auth',
+  'not_authed',
+  'token_revoked',
+  'account_inactive',
+]
 export const ERROR_DEADLINE = 'deadline'
 export const ERROR_RATELIMITED = 'ratelimited'
 export const ERROR_TIMEOUT = 'timeout'
@@ -594,6 +601,8 @@ export const SETUP_TEXT = {
   deployFailed: 'slack deploy に失敗しました（終了コード {code}）。上の出力を確かめてから再実行してください',
   noToken:
     'トークンを受け取れませんでした。Slack のアプリの設定画面（OAuth & Permissions）で Bot User OAuth Token をコピーし、{setToken} で登録してから、もう一度 {setup} を実行してください',
+  tokenInvalid:
+    '登録されているトークンは使えません（{error}）。ボットを消した・作り直したときに起きます。今のアプリの設定画面（OAuth & Permissions）で Bot User OAuth Token をコピーし、{setToken} で登録してから、もう一度 {setup} を実行してください',
   askAppId:
     'すでにある Slack アプリを使うなら、そのアプリ ID（A で始まる。https://api.slack.com/apps の Basic Information にあります）。空のまま Enter で新しく作ります',
   badAppId: 'アプリ ID は A で始まる英大文字と数字です。新しく作るなら空のまま Enter を押してください',
@@ -664,6 +673,30 @@ export const adoptCursorKey = (repo: string): string => `adopt_cursor:${repo}`
 export const adoptSweepKey = (repo: string): string => `adopt_sweep:${repo}`
 export const MSG_ADOPTED = '📌 この Issue をスレッドで管理します: {repo}#{number} {title}\n{url}\nステータス: {status}'
 export const ADOPTED_CLOSED_NOTE = '（閉じています）'
+// relink がスレッドを見分ける語。MSG_CREATED / MSG_CREATED_TIMEOUT と MSG_ADOPTED の固定部分（RL1 が一致を確かめる）。
+// 文言を変えるときは、前の版の投稿も見分けられるよう、ここは古い語のまま残す
+export const RELINK_CREATED_PHRASE = 'Issue を作成しました: '
+export const RELINK_ADOPTED_PHRASE = 'この Issue をスレッドで管理します: '
+// チャンネルの履歴を遡る上限（1 ページ HISTORY_PAGE_LIMIT 件）と、429 で Retry-After が無いときの待ち時間
+export const RELINK_HISTORY_MAX_PAGES = 100
+export const RELINK_RATELIMIT_WAIT_SECONDS = 30
+export const RELINK_TEXT = {
+  usage: '[--apply]',
+  scanned: '親の投稿 {parents} 件を読みました。結び付けの候補は {candidates} 件です',
+  link: '結び付けます: {kind} {repo}#{number} ← スレッド {ts}',
+  linked: '結び付けました: {kind} {repo}#{number} ← スレッド {ts}',
+  skip: '飛ばします: {repo}#{number}（{reason}）',
+  tracked: 'すでに結び付いています',
+  duplicate: '同じ Issue の別のスレッド {ts} を先に使います',
+  pull: 'pull request です',
+  noLabel: 'Issue に {label} が付いていません',
+  ghFailed: 'Issue を読めません（{error}）',
+  permalinkFailed: '投稿のリンクを読めません（{error}）',
+  dryRun: '何も書いていません。結び付けるには --apply を付けて実行してください',
+  done: '{linked} 件を結び付けました。ステータスは次の poll が今の状態を記録します（過去の変化は通知しません）',
+  busy: '処理中です。少し待ってから再実行してください',
+  leaseLost: 'リースを失いました。残りは書いていません。もう一度実行してください',
+} as const
 
 export const META_REPORT_ASKED = 'report_asked'
 export const REPORT_SOURCE_DIR = ['config', 'orca-team-dispatch-task', 'auto'] as const

@@ -510,3 +510,63 @@ export const markAdoptedLabeled = (db: Db, token: string, repo: string, issueNum
         .run(repo, issueNumber).changes > 0
     )
   })
+// relink: 前のホームや消えたボットが作ったスレッドとの結び付きを入れ直す。すでに追っている Issue
+// （submissions か ts のある adopted に行がある）と、同じ投稿の行があれば何もしない。issue_status2 は入れず、
+// 次の poll が最初に見たときに今の状態を記録する（通知しない）
+export type LinkResult = 'linked' | 'exists' | 'lease lost'
+export const isLinked = (db: Db, defaultRepo: string, repo: string, issueNumber: number): boolean =>
+  trackedIssues(db, defaultRepo).has(issueKey(repo, issueNumber)) ||
+  Boolean(db.prepare('SELECT 1 FROM adopted WHERE repo=? AND issue_number=?').get(repo, issueNumber))
+export const linkSubmission = (
+  db: Db,
+  token: string,
+  defaultRepo: string,
+  row: {
+    repo: string
+    channel: string
+    ts: string
+    permalink: string
+    raw: JsonObject
+    reporterId: string | null
+    issueUrl: string
+    issueNumber: number
+  },
+  now: string,
+): LinkResult =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return 'lease lost'
+    if (isLinked(db, defaultRepo, row.repo, row.issueNumber)) return 'exists'
+    const r = db
+      .prepare(
+        `INSERT OR IGNORE INTO submissions(repo,channel,ts,ts_micro,permalink,raw,fields,problems,reporter_id,files,state,rounds,transcript,attempts,issue_url,issue_number,created_at,updated_at) VALUES (?,?,?,?,?,?,NULL,'[]',?,'[]','created',0,'[]',0,?,?,?,?)`,
+      )
+      .run(
+        row.repo,
+        row.channel,
+        row.ts,
+        tsMicro(row.ts),
+        row.permalink,
+        maskSecrets(JSON.stringify(row.raw)),
+        row.reporterId,
+        row.issueUrl,
+        row.issueNumber,
+        now,
+        now,
+      )
+    return r.changes ? 'linked' : 'exists'
+  })
+export const linkAdopted = (
+  db: Db,
+  token: string,
+  defaultRepo: string,
+  row: { repo: string; issueNumber: number; channel: string; ts: string; title: string; url: string },
+  now: string,
+): LinkResult =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return 'lease lost'
+    if (isLinked(db, defaultRepo, row.repo, row.issueNumber)) return 'exists'
+    db.prepare(
+      'INSERT INTO adopted(repo,issue_number,channel,ts,labeled,title,url,created_at) VALUES (?,?,?,?,1,?,?,?)',
+    ).run(row.repo, row.issueNumber, row.channel, row.ts, maskSecrets(row.title), row.url, now)
+    return 'linked'
+  })

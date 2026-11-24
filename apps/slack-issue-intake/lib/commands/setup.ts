@@ -31,6 +31,7 @@ import {
   SETUP_STEPS,
   SETUP_TEXT,
   SLACK_APP_NAME,
+  SLACK_TOKEN_INVALID_ERRORS,
 } from '../defaults.ts'
 import { channelAppLink, channelLink, featureSteps, formTitles } from '../form.ts'
 import { createGh, findGhPath, ghAuthOk, labelsHash, repoInfo } from '../github.ts'
@@ -42,6 +43,7 @@ import { inheritedGrants, permissionStatus } from '../permissions.ts'
 import { createPrompter } from '../prompt.ts'
 import { findReportSources } from '../report.ts'
 import { loadToken, maskSecrets } from '../secrets.ts'
+import { authTest } from '../slack-api.ts'
 import {
   deployedApp,
   findSlackCli,
@@ -494,6 +496,17 @@ const wizard = async (): Promise<number> => {
   if (!token)
     return fail(
       fill(SETUP_TEXT.noToken, {
+        setup: makeCommand(intakeHome(), 'setup'),
+        setToken: cliCommand(intakeHome(), 'set-token'),
+      }),
+    )
+  // 2 段は「トークンがあり指紋が同じ」なら飛ばすので、ボットを消した・作り直したあとも古いトークンのまま進み、
+  // 後の段が同じ質問を繰り返していた（2026-11-24、account_inactive）。使えないトークンならここで止める
+  const auth = await authTest(perCallClient(token), deadline())
+  if (!auth.ok && SLACK_TOKEN_INVALID_ERRORS.includes(auth.error))
+    return fail(
+      fill(SETUP_TEXT.tokenInvalid, {
+        error: auth.error,
         setup: makeCommand(intakeHome(), 'setup'),
         setToken: cliCommand(intakeHome(), 'set-token'),
       }),

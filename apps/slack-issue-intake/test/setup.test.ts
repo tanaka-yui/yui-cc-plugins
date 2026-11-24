@@ -806,3 +806,20 @@ test('SU30 設定の automation が Orca から消えていれば、変更が無
   const again = await f.setup('\n\n')
   assert.match(again.stdout, new RegExp(`\\[5/${SETUP_STEPS}\\] [^\\n]*済み`))
 })
+
+test('SU31 登録済みのトークンが無効（ボットを消した・作り直した）なら、2 段のあとで set-token を示して止まり、質問を繰り返さない', async (t) => {
+  let inactive = false
+  const f = await fixture(t, (r) =>
+    inactive && r.method === 'auth.test' ? { json: { ok: false, error: 'account_inactive' } } : null,
+  )
+  assert.equal((await f.setup(FULL_INPUT)).code, 0)
+  inactive = true
+  const listed = f.calls('conversations.list').length
+  const r = await f.setup('\n\n\n\n\n\n\n\n')
+  assert.equal(r.code, 1, r.stdout)
+  assert.ok(r.stderr.includes('account_inactive'), r.stderr)
+  assert.ok(r.stderr.includes('set-token'), r.stderr)
+  assert.doesNotMatch(r.stdout, /\[3\//)
+  assert.equal(f.calls('conversations.list').length, listed)
+  assert.equal(f.cliCalls('deploy').length, 1)
+})
