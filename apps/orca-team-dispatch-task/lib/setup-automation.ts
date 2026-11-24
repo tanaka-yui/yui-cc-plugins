@@ -1,4 +1,4 @@
-import { AUTO_FILES, autoDir } from './auto-paths.ts'
+import { AUTO_FILES, autoDir, decisionsFile } from './auto-paths.ts'
 import { configHome } from './config.ts'
 import { readJson, writeAtomic } from './fs.ts'
 import { asObject } from './json.ts'
@@ -7,7 +7,7 @@ import { receiptArray, receiptOk, runOrca } from './orca.ts'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 
 import type { AutoConfig } from './auto-config.ts'
 import type { Json, JsonObject } from './json.ts'
@@ -134,9 +134,17 @@ const pathForms = (path: string): string[] => {
   const real = realPath(path)
   return real === path ? [path] : [path, real]
 }
+// まだ無いファイルの 2 つの表記。在る一番深い親を実体に直し、残りを付け直す（置き場所を作る前と後で規則が変わらない）
+const fileForms = (file: string): string[] => {
+  let base = dirname(file)
+  while (!existsSync(base) && dirname(base) !== base) base = dirname(base)
+  const real = join(realPath(base), relative(base, file))
+  return real === file ? [file] : [file, real]
+}
 export const judgeRules = (config: AutoConfig, launcher: string): JudgeRules => {
   const dir = autoDir(config.name),
-    file = join(dir, AUTO_FILES.decisions)
+    file = decisionsFile(config.name),
+    inside = file === join(dir, AUTO_FILES.decisions)
   return {
     file: join(dir, '.claude/settings.json'),
     allow: [
@@ -145,9 +153,11 @@ export const judgeRules = (config: AutoConfig, launcher: string): JudgeRules => 
       `Bash(${launcher} judge-apply --name ${config.name} --file ${file})`,
       ...pathForms(dir).map((path) => `Read(/${path}/**)`),
       ...Object.values(config.repos).flatMap((repo) => pathForms(repo.checkout).map((path) => `Read(/${path}/**)`)),
-      ...pathForms(dir).flatMap((path) => [
-        `Write(/${join(path, AUTO_FILES.decisions)})`,
-        `Edit(/${join(path, AUTO_FILES.decisions)})`,
+      // 作業場所の外に出した判定結果は、読む許可も要る（やり直しで読み直す）
+      ...(inside ? [] : fileForms(file).map((path) => `Read(/${path})`)),
+      ...(inside ? pathForms(dir).map((path) => join(path, AUTO_FILES.decisions)) : fileForms(file)).flatMap((path) => [
+        `Write(/${path})`,
+        `Edit(/${path})`,
       ]),
     ],
     deny: [...RUN_DENY_RULES],

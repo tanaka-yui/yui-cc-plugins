@@ -1,7 +1,9 @@
-import { envArgs, hostAvailableMemoryMb, hostKey, hostsOf, parseHosts } from '../../lib/auto-hosts.ts'
+import { envArgs, hostAvailableMemoryMb, hostKey, hostsOf, parseHosts, recordedOrcaBin } from '../../lib/auto-hosts.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { resolve } from 'node:path'
 import { test } from 'node:test'
 
 import type { HostConfig } from '../../lib/auto-hosts.ts'
@@ -159,4 +161,50 @@ test('HC6 live available memory is read from the Orca diagnostics host block', (
     { ok: true, result: { host: { availableMemory: -1 } } },
   ] as Json[])
     assert.equal(hostAvailableMemoryMb(json), null)
+})
+
+// 2026-11-24: Linux の Orca が automation の precheck を起こす環境には ORCA_BIN も ORCA_CLI_COMMAND も無く、
+// orcaBin() が macOS のアプリ同梱の path に落ちて、tick の orca の呼び出しが全部 ENOENT になった
+test('HC7 recorded orca binary of the local host is used only when the environment names none', () => {
+  const f = fixture()
+  try {
+    assert.equal(recordedOrcaBin(f.config(), {}), null)
+    const hosts: HostConfig[] = [
+      { id: 'env-1', name: 'Server', lanes: 3, orcaBin: 'remote-orca', repos: {}, spec: null },
+      { id: 'local', name: 'EC2', lanes: 2, orcaBin: '/usr/bin/orca-ide', repos: {}, spec: null },
+    ]
+    f.put(f.configFile, { ...f.raw, hosts })
+    assert.equal(recordedOrcaBin(f.config(), {}), '/usr/bin/orca-ide')
+    assert.equal(recordedOrcaBin(f.config(), { ORCA_BIN: '', ORCA_CLI_COMMAND: '' }), '/usr/bin/orca-ide')
+    assert.equal(recordedOrcaBin(f.config(), { ORCA_BIN: '/x/orca' }), null)
+    assert.equal(recordedOrcaBin(f.config(), { ORCA_CLI_COMMAND: 'orca-ide' }), null)
+    f.put(f.configFile, { ...f.raw, hosts: hosts.slice(0, 1) })
+    assert.equal(recordedOrcaBin(f.config(), {}), null)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('HC8 tick adopts the recorded orca binary and names a missing one instead of failing every call', () => {
+  const f = fixture()
+  try {
+    const tick = (env: Record<string, string>) => {
+      const base = { ...process.env, ...env }
+      for (const key of ['ORCA_BIN', 'ORCA_CLI_COMMAND']) if (!(key in env)) Reflect.deleteProperty(base, key)
+      return spawnSync(process.execPath, [resolve(import.meta.dirname, '../../bin/orca-auto.ts'), 'tick'], {
+        encoding: 'utf8',
+        env: base,
+      })
+    }
+    const host = { id: 'local', name: 'EC2', lanes: 2, orcaBin: '/nonexistent/recorded-orca', repos: {}, spec: null }
+    f.put(f.configFile, { ...f.raw, hosts: [host] })
+    const recorded = tick({})
+    assert.equal(recorded.status, 1)
+    assert.match(recorded.stdout, /orca が見つかりません: \/nonexistent\/recorded-orca/)
+    // 環境が名指しすれば、記録より環境が勝つ
+    const named = tick({ ORCA_BIN: '/nonexistent/env-orca' })
+    assert.match(named.stdout, /orca が見つかりません: \/nonexistent\/env-orca/)
+  } finally {
+    f.cleanup()
+  }
 })

@@ -3,7 +3,8 @@ import { type OrcaResult, runOrca } from './orca.ts'
 import { envCount, type ProcResult, run } from './sys.ts'
 
 import { cpSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { join, sep } from 'node:path'
 
 export const autoDir = (name: string): string => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) throw new Error('invalid auto name')
@@ -18,6 +19,15 @@ export const AUTO_FILES = {
   decisions: 'judge/decisions.json',
   archive: 'archive',
 } as const
+// 判定の AI が書く唯一のファイル。**`.claude` を含まない path に置く** — Claude Code は `.claude` の下を保護していて、
+// dontAsk では Edit の許可があっても書き込みを拒む（2026-11-24、Claude Code 2.1.331。Linux と macOS の両方で実測。
+// 作業場所が `.claude` の下でも、書き込み先が外なら通る）。既定の設定の置き場所は ~/.claude/config/... なので外へ出す
+export const decisionsFile = (name: string): string => {
+  const dir = autoDir(name)
+  return dir.split(sep).includes('.claude')
+    ? join(homedir(), '.orca-team-dispatch-task', 'auto', name, AUTO_FILES.decisions)
+    : join(dir, AUTO_FILES.decisions)
+}
 export const autoNow = (): string => process.env.ORCA_AUTO_NOW || new Date().toISOString()
 
 export const archiveStatusDir = (statusDir: string, archiveDir: string, name: string): boolean => {

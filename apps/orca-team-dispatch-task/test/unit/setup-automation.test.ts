@@ -1,5 +1,6 @@
 import * as launch from '../../bin/orca-auto-launch.ts'
-import { autoDir } from '../../lib/auto-paths.ts'
+import { readAutoConfig } from '../../lib/auto-config.ts'
+import { autoDir, decisionsFile } from '../../lib/auto-paths.ts'
 import {
   AUTO_PRECHECK_TIMEOUT_SECONDS,
   applyJudgeRules,
@@ -264,6 +265,45 @@ test('SU25 and SU25b launcher tick refuses missing approval or changed permissio
     assert.ok(f.calls().includes('issue list'))
     assert.ok(existsSync(f.configFile))
   } finally {
+    f.cleanup()
+  }
+})
+
+// 2026-11-24（Claude Code 2.1.331）: dontAsk は .claude の下への書き込みを、Edit の許可があっても拒む。
+// 既定の設定の置き場所は ~/.claude/config/... なので、判定結果のファイルだけを .claude の外に置く
+test('SU23c decisions file leaves a .claude config home, and the rules follow it', () => {
+  const f = prepare()
+  const oldHome = process.env.HOME
+  try {
+    assert.equal(decisionsFile('main'), join(autoDir('main'), 'judge/decisions.json'))
+    const home = join(f.dir, 'home')
+    process.env.HOME = home
+    process.env[CONFIG_HOME_ENV] = join(home, '.claude/config/orca-team-dispatch-task')
+    mkdirSync(autoDir('main'), { recursive: true })
+    f.put(join(autoDir('main'), 'config.json'), f.raw)
+    const config = readAutoConfig('main')
+    assert.ok(config)
+    const file = decisionsFile('main')
+    assert.equal(file, join(home, '.orca-team-dispatch-task/auto/main/judge/decisions.json'))
+    const launcher = launcherPaths().launcher
+    const rules = judgeRules(config, launcher)
+    const real = join(realpathSync(home), '.orca-team-dispatch-task/auto/main/judge/decisions.json')
+    const forms = real === file ? [file] : [file, real]
+    assert.ok(rules.allow.includes(`Bash(${launcher} judge-apply --name main --file ${file})`))
+    for (const form of forms)
+      for (const tool of ['Read', 'Write', 'Edit'])
+        assert.ok(rules.allow.includes(`${tool}(/${form})`), `${tool} ${form}`)
+    assert.ok(!rules.allow.some((entry) => /^(Write|Edit)\(/.test(entry) && entry.includes('/.claude/')))
+    // 判定の材料に出す path も同じ
+    f.put(join(autoDir('main'), 'state.json'), { version: 1, judgingSince: null, issues: {}, projectSync: {} })
+    const listed = spawnSync(process.execPath, [join(import.meta.dirname, '../../bin/orca-auto.ts'), 'judge-list'], {
+      encoding: 'utf8',
+    })
+    assert.equal(listed.status, 0, listed.stderr)
+    assert.equal(JSON.parse(listed.stdout).decisionsFile, file)
+    assert.ok(existsSync(join(home, '.orca-team-dispatch-task/auto/main/judge')))
+  } finally {
+    process.env.HOME = oldHome
     f.cleanup()
   }
 })

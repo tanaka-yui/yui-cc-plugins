@@ -90,6 +90,11 @@ export const parseHosts = (
   }
   return { ok: true, hosts }
 }
+// automation の precheck は Orca 本体が起こすので、端末と違って ORCA_BIN も ORCA_CLI_COMMAND も無いことがある
+// （2026-11-24、Linux の Orca 1.4.272。orcaBin() が macOS のアプリ同梱の path に落ち、tick の orca の呼び出しが全部
+// ENOENT になった）。環境がどちらも名指ししないときだけ、setup が記録したこのマシンの orca を返す
+export const recordedOrcaBin = (config: AutoConfig | null, env: Record<string, string | undefined>): string | null =>
+  env.ORCA_BIN || env.ORCA_CLI_COMMAND ? null : (config?.hosts?.find((h) => h.id === LOCAL_HOST)?.orcaBin ?? null)
 export const hostsOf = (config: AutoConfig): HostConfig[] =>
   config.hosts ?? [
     {

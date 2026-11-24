@@ -3,6 +3,7 @@
 import { applyFlow, baseLabels, candidatesOf, resolveBases, restrictedBase } from '../lib/auto-base.ts'
 import { intakeActiveRepos, pickSources, readAutoConfig, relayAllowance, sourceAutoMerge } from '../lib/auto-config.ts'
 import { labelNames, readGithub, viewIssue } from '../lib/auto-github.ts'
+import { recordedOrcaBin } from '../lib/auto-hosts.ts'
 import {
   applyLearn,
   commentReason,
@@ -19,7 +20,7 @@ import {
   reflectionsOf,
   shownOf,
 } from '../lib/auto-learn.ts'
-import { AUTO_FILES, autoDir, autoNow } from '../lib/auto-paths.ts'
+import { AUTO_FILES, autoDir, autoNow, decisionsFile } from '../lib/auto-paths.ts'
 import { syncProjects } from '../lib/auto-project.ts'
 import { awaitingBase } from '../lib/auto-queue.ts'
 import { runSetup } from '../lib/auto-setup.ts'
@@ -37,6 +38,7 @@ import { notifyNeedsBase, transition } from '../lib/auto-transition.ts'
 import { die } from '../lib/cli.ts'
 import { readJson, writeAtomic } from '../lib/fs.ts'
 import { asArray, asObject, asString, type Json } from '../lib/json.ts'
+import { orcaBin } from '../lib/orca.ts'
 import {
   ENTRY_FILE,
   judgeFingerprint,
@@ -50,8 +52,8 @@ import { FEATURE_LABEL, STATUS } from '../lib/status.ts'
 import { envCount } from '../lib/sys.ts'
 import { terminalRows, terminalTable } from '../lib/terminals.ts'
 
-import { mkdirSync, readFileSync, writeSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeSync } from 'node:fs'
+import { dirname, isAbsolute, join } from 'node:path'
 import { isatty } from 'node:tty'
 
 // 下書きの本文の行の区切りと、表示で効かせない制御文字
@@ -103,11 +105,14 @@ const main = (argv: string[]): number => {
     }
     return runSetup(name, createPrompter(0, out), out, command === 'setup' ? undefined : command)
   }
+  // 子プロセス（orca-start / orca-wait）にも届くよう、最初の orca の呼び出しより前に環境へ入れる
+  const recorded = recordedOrcaBin(readAutoConfig(name), process.env)
+  if (recorded) process.env.ORCA_BIN = recorded
   if (command === 'judge-doc') {
     const prefix = process.env[LAUNCHER_ENV] ? launcherPaths().launcher : `node ${join(pluginRoot(), ENTRY_FILE)}`
     console.log(readFileSync(join(pluginRoot(), 'skills/orca-team-dispatch-task/references/auto-judge.md'), 'utf8'))
     console.log(
-      `## Commands\n\n- List: \`${prefix} judge-list --name ${name}\`\n- Apply: \`${prefix} judge-apply --name ${name} --file ${join(autoDir(name), AUTO_FILES.decisions)}\``,
+      `## Commands\n\n- List: \`${prefix} judge-list --name ${name}\`\n- Apply: \`${prefix} judge-apply --name ${name} --file ${decisionsFile(name)}\``,
     )
     return 0
   }
@@ -125,6 +130,12 @@ const main = (argv: string[]): number => {
         console.log('判定の権限が承認したときと違います。make auto-setup をやり直してください')
         return 1
       }
+    }
+    // 見つからない orca は、どの呼び出しも「読めない」に化ける（worktree の一覧を読めない、など）。先に名指しで止める
+    const bin = orcaBin()
+    if (isAbsolute(bin) && !existsSync(bin)) {
+      console.log(`orca が見つかりません: ${bin}。ORCA_BIN か、設定の hosts のこのマシンの orcaBin を確かめてください`)
+      return 1
     }
     return runTick(name)
   }
@@ -247,11 +258,12 @@ const main = (argv: string[]): number => {
         global: { enabled: config.learn.issueRepo !== null, candidates: globalCandidates(store) },
         checkouts: Object.fromEntries(Object.entries(config.repos).map(([r, c]) => [r, c.checkout])),
         limits: { defaultMinutes: config.limits.defaultMinutes, maxMinutes: config.limits.maxMinutes },
-        decisionsFile: join(autoDir(name), AUTO_FILES.decisions),
+        decisionsFile: decisionsFile(name),
       }
       state.judgingSince = autoNow()
       save()
       mkdirSync(join(autoDir(name), 'judge'), { recursive: true })
+      mkdirSync(dirname(decisionsFile(name)), { recursive: true })
       if (!writeAtomic(join(autoDir(name), AUTO_FILES.pending), JSON.stringify(output)))
         throw new Error('判定の材料を書けません')
       console.log(JSON.stringify(output))
