@@ -79,6 +79,10 @@ AI が変えたとみなすのは、新しいコメントのうち信じられ�
 statusSync の例外は poll が errors に入れ、結果の行と終了コードは変えません。Slack に書いたあとでフェンス付きで行を保存します。thread_not_found なら諦めて記録を進め、ほかの失敗は STATUS_MAX_ATTEMPTS（5）回まで、その Issue で止めて次の回にやり直します。
 メンション先は config.mention（0.3 の config には無いので asked:false として読む）。書くのは mention サブコマンドだけで、init は base.mention を引き継ぎます。usergroups.list（usergroups:read）は mention でだけ呼び、poll では呼びません（poll では missing_scope が致命エラーになるため）。
 
+## 終わった回のタブ
+
+automation は `--fresh-session` なので、precheck を通った回ごとに Claude のタブが開き、Orca は終わっても残します。poll は取り込み・通知・既存 Issue の取り込みのあと、残りが STATUS_MIN_REMAINING_MS 以上あり、設定に orca.automationId があるときだけ lib/run-tabs.ts の closeFinishedRunTabs を呼びます。`automations runs --id` の `completed`（と RUN_LEASE_MS より古い `dispatch_failed`）の terminalPtyId を `terminal list` の ptyId と突き合わせ、直前 RUN_TAB_QUIET_MS（3分）に出力の無い端末だけを `terminal close` します。終わった回が無ければ端末は読みません。失敗は errors に足すだけで、終了コードと agent_work は変えません。Orca の呼び出しには残り時間を timeout として渡します。orca-team-dispatch-task の lib/auto-run-tabs.ts に同じ形の写しがあります。読むのは履歴の新しい 100 件（Orca の 1 ページの上限。skipped_precheck も数えるので 5 分おきで約 8 時間分）だけで、それより古い回のタブは対象にならない（導入前から残っているタブは手で閉じる）。試験: RT1、RT2、PO33〜PO35。実機での close は未確認です。
+
 ## 試験と秘密
 
 テスト専用の差し替えは SLACK_ISSUE_INTAKE_HOME、SLACK_ISSUE_INTAKE_API_BASE（loopback のみ）、SLACK_ISSUE_INTAKE_CLAUDE_HOME、SLACK_ISSUE_INTAKE_CLAUDE_BIN（索引を作る claude。fake-gh の repo clone は FAKE_GH_CLONE_SOURCE があるときだけ成功する）。Orca の呼び先には ORCA_BIN を使えます。本番の設定手順にテスト変数を使いません。

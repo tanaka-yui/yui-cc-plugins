@@ -526,6 +526,7 @@ Orca の Claude 起動引数へ --permission-mode や --allowedTools など許�
 - `~/.slack-issue-intake-<名前>/bin/slack-issue-intake set-token`: トークンを登録し直す。開いたウィンドウに貼り付けます（文字は伏せ字）。`--from-clipboard` はクリップボードから、`--from-stdin` は人がつないだパイプから読みます。
 - `~/.slack-issue-intake-<名前>/bin/slack-issue-intake permissions --show` → 承認して `~/.slack-issue-intake-<名前>/bin/slack-issue-intake permissions --apply` → `~/.slack-issue-intake-<名前>/bin/slack-issue-intake enable`。継承した allow / additionalDirectories があると明示承認が必要です。
 - 停止: `orca automations edit <id> --disabled`。
+- Orca は起動のたびに Claude のタブを新しく開いて残します。終わった回のタブは、次の poll が 3 分静かになってから閉じます（動作中の回と、人が開いた端末は閉じません）。回の結果は `orca automations runs --id <id>` で読めます。
 
 権限が変わると changed または unsafe で止まり、設定を直して enable をやり直します。`creating … inflight=` がある間は送り手の終了と待機時間を待ちます。印を消して作り直してはいけません。
 `poll` は仕事あり0、仕事なし・処理中・権限不備1、未設定2、Slack の致命エラー3です。45秒の予算を各外部呼び出しへ渡します。取り込みのあと10秒以上残っていれば、ステータスの通知を行います（出力の `notified=`）。通知の失敗は `partial=true` と errors に出ますが、終了コードは変えません。手動 Run now は precheck を通りません。collect は自分で同期します。

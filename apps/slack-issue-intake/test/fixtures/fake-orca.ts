@@ -22,6 +22,15 @@ else if (args[0] === 'automations') {
     result = { automation: { id: args[2] } }
   } else if (args[1] === 'list')
     result = { automations: process.env.FAKE_ORCA_EDIT === 'gone' ? [] : [{ id: 'auto-1' }] }
-  else fail('未対応の操作')
+  else if (args[1] === 'runs') {
+    if (process.env.FAKE_ORCA_RUNS === 'fail') fail('履歴失敗')
+    result = { runs: JSON.parse(process.env.FAKE_ORCA_RUNS ?? '[]') }
+  } else fail('未対応の操作')
+} else if (args[0] === 'terminal') {
+  if (args[1] === 'list') result = { terminals: JSON.parse(process.env.FAKE_ORCA_TERMINALS ?? '[]') }
+  else if (args[1] === 'close') {
+    if (process.env.FAKE_ORCA_CLOSE === 'fail') fail('閉じられない')
+    result = { closed: true }
+  } else fail('未対応の操作')
 } else fail('未対応の操作')
 console.log(JSON.stringify({ ok: true, result }))

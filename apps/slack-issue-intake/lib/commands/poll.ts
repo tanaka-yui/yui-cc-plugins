@@ -8,6 +8,7 @@ import { acquireLease, releaseLease } from '../lease.ts'
 import { homePaths, intakeHome } from '../paths.ts'
 import { permissionFingerprint, safetyProblems } from '../permissions.ts'
 import { postReport } from '../report.ts'
+import { closeFinishedRunTabs } from '../run-tabs.ts'
 import { openRuntime } from '../runtime.ts'
 import { maskSecrets } from '../secrets.ts'
 import { statusSync } from '../status-sync.ts'
@@ -99,7 +100,20 @@ export const run = async (argv: string[]): Promise<void> => {
         !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
           ? await adoptExisting(ctx).catch((e: Error) => ({ adopted: 0, errors: [String(e?.message ?? e)] }))
           : { adopted: 0, errors: [] }
-      const errors = [...report.errors, ...status.errors, ...periodic.errors, ...learned.errors, ...adopted.errors]
+      // 終わった回の Claude のタブを閉じる。失敗しても終了コードと agent_work は変えない
+      const automationId = rt.config.orca.automationId
+      const tabs =
+        automationId && !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
+          ? closeFinishedRunTabs(automationId, deadline)
+          : { closed: 0, errors: [] }
+      const errors = [
+        ...report.errors,
+        ...status.errors,
+        ...periodic.errors,
+        ...learned.errors,
+        ...adopted.errors,
+        ...tabs.errors,
+      ]
       const work = agentWorkCount(rt.db)
       const code = report.fatal ? 3 : work ? 0 : 1
       finish(

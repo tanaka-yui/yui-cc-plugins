@@ -48,6 +48,7 @@ import { type ProjectSyncContext, syncProjects } from './auto-project.ts'
 import { awaitingBase, markUnlabeledBacklog, orderQueue, syncIssues } from './auto-queue.ts'
 import { buildReport } from './auto-report.ts'
 import { buildRequest, readAutoResult, readPlanResult, slugOf } from './auto-request.ts'
+import { closeFinishedRunTabs } from './auto-run-tabs.ts'
 import { type AutoState, type IssueState, limitOf, readState, releaseLock, takeLock, writeState } from './auto-state.ts'
 import { hasCommentMarker, resumeTransition, transition } from './auto-transition.ts'
 import { roleNames } from './config.ts'
@@ -1407,6 +1408,11 @@ export const runTick = (name: string): number => {
       ).length
     } catch (error) {
       console.log(`判定の学びを読めません（${error instanceof Error ? error.message : String(error)}）`)
+    }
+    // 終わった回の判定役のタブを閉じる。閉じられなくても tick の結果は変えない
+    if (config.automation?.id) {
+      const closed = closeFinishedRunTabs(config.automation.id, console.log)
+      if (closed) console.log(`終わった回の判定役のタブを閉じました: ${closed}`)
     }
     console.log(
       `auto: judge=${judging} dispatched=${tick.dispatched} finished=${tick.finished} errors=${tick.errors} learn=${learn}`,

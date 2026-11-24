@@ -18,8 +18,13 @@ export const orcaArgv = (args: string[]): string[] => [...args, JSON_FLAG]
 
 // ★ 標準入力を渡さない（Global Constraints）。成功は exit 0 かつ Orca が ok: true と答えたときだけ。
 // --json の Orca は失敗も stdout の JSON（error.message）で返し stderr は空なので、そのときは JSON の理由を stderr に入れる
-export const runOrca = (args: string[]): OrcaResult => {
-  const child = spawnSync(orcaBin(), orcaArgv(args), { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
+// timeoutMs を渡すと、その時間で子を止める（poll の締め切りの中で呼ぶとき）
+export const runOrca = (args: string[], timeoutMs?: number): OrcaResult => {
+  const child = spawnSync(orcaBin(), orcaArgv(args), {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    ...(timeoutMs === undefined ? {} : { timeout: Math.max(1, timeoutMs), killSignal: 'SIGKILL' as const }),
+  })
   const json = parseJson(child.stdout ?? '')
   const reported = asString(get(json ?? undefined, 'error', 'message')) ?? ''
   const stderr = child.error === undefined ? child.stderr?.trim() || reported : child.error.message

@@ -202,6 +202,9 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
 
 ## Operations and limits
 
+- Orca opens a new Claude tab for every run that passes the precheck and leaves it open. Poll closes the tabs of
+  this automation's finished runs once they have been quiet for three minutes; it never closes a running session
+  or a terminal outside this automation's run history.
 - Nonzero precheck exits skip Claude startup. Manual Run now and `orca automations run` bypass precheck; collect
   synchronizes by itself.
 - Questions are limited to two rounds, three questions each, with a 72-hour answer timeout; remaining uncertainties

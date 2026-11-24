@@ -26,8 +26,10 @@ import {
 } from './fixtures/slack-messages.ts'
 import {
   fakeGh,
+  fakeOrca,
   ghCalls,
   historyHandler,
+  orcaCalls,
   repliesHandler,
   runCliAsync,
   seedIssues,
@@ -39,7 +41,7 @@ import {
 } from './helpers.ts'
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import type { SlackReply, SlackRequest } from './helpers.ts'
@@ -607,4 +609,66 @@ test('PO32 締め切りで向き先のラベル作成が切れたら、失敗と
   assert.ok(!ghCalls(f.gh.log).some((c) => c.argv.slice(0, 2).join(' ') === 'issue create'))
   assert.ok(!r.stderr.includes('付けずに起票します'), r.stderr)
   assert.equal(row?.fields?.base, 'main')
+})
+
+const withAutomation = (home: string): void => {
+  const path = homePaths(home).config
+  const config = JSON.parse(readFileSync(path, 'utf8'))
+  writeFileSync(path, JSON.stringify({ ...config, orca: { ...config.orca, automationId: 'auto-1' } }))
+}
+const RUNS = [
+  { status: 'completed', terminalPtyId: 'pty-done', startedAt: 1 },
+  { status: 'dispatching', terminalPtyId: null, startedAt: 1 },
+  { status: 'completed', terminalPtyId: 'pty-gone', startedAt: 1 },
+]
+const TERMINALS = [
+  { handle: 'term_done', ptyId: 'pty-done', lastOutputAt: 1 },
+  { handle: 'term_human', ptyId: 'pty-human', lastOutputAt: 1 },
+]
+test('PO33 終わった回の Claude のタブだけを閉じ、結果と終了コードは変えない', async (t) => {
+  const f = await fixture(t)
+  const orca = fakeOrca(tempHome())
+  withAutomation(f.home)
+  const r = await f.poll(NOW, [], {
+    ...orca.env,
+    FAKE_ORCA_RUNS: JSON.stringify(RUNS),
+    FAKE_ORCA_TERMINALS: JSON.stringify(TERMINALS),
+  })
+  assert.equal(r.code, 1, r.stderr)
+  assert.match(r.stdout, /result=idle .*errors=0 partial=false/)
+  const calls = orcaCalls(orca.log)
+  assert.deepEqual(calls[0]?.slice(0, 4), ['automations', 'runs', '--id', 'auto-1'])
+  assert.deepEqual(
+    calls.filter((c) => c[1] === 'close').map((c) => c.slice(0, 4)),
+    [['terminal', 'close', '--terminal', 'term_done']],
+  )
+})
+test('PO34 automation の無い設定と、終わった回の無い履歴では端末を読まない', async (t) => {
+  const f = await fixture(t)
+  const orca = fakeOrca(tempHome())
+  await f.poll(NOW, [], orca.env)
+  assert.deepEqual(orcaCalls(orca.log), [])
+  withAutomation(f.home)
+  await f.poll(NOW, [], { ...orca.env, FAKE_ORCA_RUNS: JSON.stringify([RUNS[1]]) })
+  assert.deepEqual(
+    orcaCalls(orca.log).map((c) => c.slice(0, 2).join(' ')),
+    ['automations runs'],
+  )
+})
+test('PO35 履歴を読めない・閉じられないときは errors に出すだけで、終了コードは変えない', async (t) => {
+  const f = await fixture(t)
+  const orca = fakeOrca(tempHome())
+  withAutomation(f.home)
+  const lost = await f.poll(NOW, [], { ...orca.env, FAKE_ORCA_RUNS: 'fail' })
+  assert.equal(lost.code, 1, lost.stderr)
+  assert.match(lost.stdout, /result=idle .*errors=1 partial=true/)
+  assert.match(lost.stderr, /automation の実行履歴を読めません/)
+  const stuck = await f.poll(NOW, [], {
+    ...orca.env,
+    FAKE_ORCA_RUNS: JSON.stringify(RUNS),
+    FAKE_ORCA_TERMINALS: JSON.stringify(TERMINALS),
+    FAKE_ORCA_CLOSE: 'fail',
+  })
+  assert.equal(stuck.code, 1, stuck.stderr)
+  assert.match(stuck.stderr, /終わった回のタブを閉じられません: term_done/)
 })

@@ -81,7 +81,7 @@ test('DO5 README は 8 つのステータスラベル名と usergroups:read と�
   assert.ok(readme.includes('### 0.3 からの更新'))
 })
 
-test('DO6 README は複数リポジトリ・更新手順・report を含み、版は 0.11.0', () => {
+test('DO6 README は複数リポジトリ・更新手順・report を含み、版は 0.12.0', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
   for (const text of ['slack-thread', '0.4 からの更新', 'report --source', '--hide-form'])
     assert.ok(readme.includes(text), text)
@@ -89,8 +89,8 @@ test('DO6 README は複数リポジトリ・更新手順・report を含み、�
   const market = JSON.parse(readFileSync(join(root, '../../.claude-plugin/marketplace.json'), 'utf8')) as {
     plugins: { name: string; version: string }[]
   }
-  assert.equal(plugin.version, '0.11.0')
-  assert.equal(market.plugins.find((p) => p.name === 'slack-issue-intake')?.version, '0.11.0')
+  assert.equal(plugin.version, '0.12.0')
+  assert.equal(market.plugins.find((p) => p.name === 'slack-issue-intake')?.version, '0.12.0')
   for (const text of [
     '### 0.7.0 以前からの更新',
     'make knowledge <名前>',

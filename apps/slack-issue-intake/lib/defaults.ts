@@ -9,6 +9,13 @@ export const DEFAULT_EVERY_MINUTES = 5
 // */N が時間の境界でも N 分おきになる値（60 の約数）だけを受け付ける。60 は毎時 0 分
 export const ALLOWED_EVERY_MINUTES: readonly number[] = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60]
 export const PRECHECK_TIMEOUT_SECONDS = 60
+// automation が起動のたびに開く Claude のタブを、終わった回の分だけ poll が閉じる（lib/run-tabs.ts）
+export const RUN_TAB_DONE_STATUS = 'completed'
+export const RUN_TAB_FAILED_STATUS = 'dispatch_failed'
+// 直前まで出力のあったタブは人が使っているかもしれないので、これだけ静かになってから閉じる
+export const RUN_TAB_QUIET_MS = 180_000
+export const RUN_TAB_RUNS_LIMIT = 100
+export const RUN_TAB_TERMINALS_LIMIT = 1000
 export const POLL_DEADLINE_MS = 45_000
 export const COMMAND_DEADLINE_MS = 600_000
 export const FETCH_TIMEOUT_MS = 15_000
