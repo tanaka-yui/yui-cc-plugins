@@ -14,6 +14,8 @@ export const RUN_TAB_DONE_STATUS = 'completed'
 export const RUN_TAB_FAILED_STATUS = 'dispatch_failed'
 // 直前まで出力のあったタブは人が使っているかもしれないので、これだけ静かになってから閉じる
 export const RUN_TAB_QUIET_MS = 180_000
+// precheck の環境には ORCA_BIN が無いので、Orca の端末で動いた collect / apply が見た orca の場所を meta に残す
+export const META_ORCA_BIN = 'orca_bin'
 export const RUN_TAB_RUNS_LIMIT = 100
 export const RUN_TAB_TERMINALS_LIMIT = 1000
 export const POLL_DEADLINE_MS = 45_000

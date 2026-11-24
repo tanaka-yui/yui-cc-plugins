@@ -14,6 +14,7 @@ import { driveItem } from '../drive.ts'
 import { readJson } from '../fs.ts'
 import { withoutBase } from '../issue-body.ts'
 import { claimApply, releaseLease, renewLease } from '../lease.ts'
+import { rememberOrcaBin } from '../orca.ts'
 import { intakeHome, runPaths } from '../paths.ts'
 import { removeRun } from '../runs.ts'
 import { openRuntime } from '../runtime.ts'
@@ -36,6 +37,7 @@ export const run = async (argv: string[]): Promise<void> => {
     return
   }
   const rt = opened.runtime
+  rememberOrcaBin(rt.db)
   try {
     const paths = runPaths(rt.paths.runsDir, runId)
     const work = readWork(paths.workFile)

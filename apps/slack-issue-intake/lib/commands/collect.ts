@@ -3,6 +3,7 @@ import { AGENT_STATES, getSubmission, listByStates } from '../db.ts'
 import { COMMAND_DEADLINE_MS, RUN_LEASE_MS } from '../defaults.ts'
 import { writeJson } from '../fs.ts'
 import { acquireLease, markCollected, releaseLease } from '../lease.ts'
+import { rememberOrcaBin } from '../orca.ts'
 import { intakeHome } from '../paths.ts'
 import { prepareRun, removeRun } from '../runs.ts'
 import { openRuntime } from '../runtime.ts'
@@ -23,6 +24,7 @@ export const run = async (argv: string[]): Promise<void> => {
     return
   }
   const rt = opened.runtime
+  rememberOrcaBin(rt.db)
   const runId = randomUUID()
   const lease = acquireLease(rt.db, 'run', runId, now(), RUN_LEASE_MS)
   if (!lease.ok) {

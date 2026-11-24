@@ -672,3 +672,22 @@ test('PO35 履歴を読めない・閉じられないときは errors に出す�
   assert.equal(stuck.code, 1, stuck.stderr)
   assert.match(stuck.stderr, /終わった回のタブを閉じられません: term_done/)
 })
+test('PO36 環境に orca の場所が無い poll は、collect が残した場所を使い、記録も無ければ呼ばない', async (t) => {
+  const f = await fixture(t)
+  const orca = fakeOrca(tempHome())
+  withAutomation(f.home)
+  const bare = { FAKE_ORCA_LOG: orca.log, ORCA_BIN: '', ORCA_CLI_COMMAND: '', FAKE_ORCA_RUNS: JSON.stringify(RUNS) }
+  const unknown = await f.poll(NOW, [], bare)
+  assert.match(unknown.stdout, /errors=0 partial=false/)
+  assert.deepEqual(orcaCalls(orca.log), [])
+  await runCliAsync(['collect', '--now', NOW], { ...f.env, ...orca.env })
+  const db = openDb(homePaths(f.home).db)
+  assert.equal(getMeta(db, 'orca_bin'), orca.path)
+  db.close()
+  const known = await f.poll(NOW, [], { ...bare, FAKE_ORCA_TERMINALS: JSON.stringify(TERMINALS) })
+  assert.match(known.stdout, /errors=0 partial=false/)
+  assert.deepEqual(
+    orcaCalls(orca.log).map((c) => c.slice(0, 2).join(' ')),
+    ['automations runs', 'terminal list', 'terminal close'],
+  )
+})

@@ -5,6 +5,7 @@ import { ERROR_LEASE_LOST, POLL_DEADLINE_MS, POLL_LEASE_MS, STATUS_MIN_REMAINING
 import { writeJson } from '../fs.ts'
 import { syncLearn } from '../learn.ts'
 import { acquireLease, releaseLease } from '../lease.ts'
+import { recalledOrcaBin } from '../orca.ts'
 import { homePaths, intakeHome } from '../paths.ts'
 import { permissionFingerprint, safetyProblems } from '../permissions.ts'
 import { postReport } from '../report.ts'
@@ -101,10 +102,12 @@ export const run = async (argv: string[]): Promise<void> => {
           ? await adoptExisting(ctx).catch((e: Error) => ({ adopted: 0, errors: [String(e?.message ?? e)] }))
           : { adopted: 0, errors: [] }
       // 終わった回の Claude のタブを閉じる。失敗しても終了コードと agent_work は変えない
+      // orca の場所が分からない間（環境にも記録にも無い）は呼ばない
       const automationId = rt.config.orca.automationId
+      const orca = automationId ? recalledOrcaBin(rt.db) : null
       const tabs =
-        automationId && !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
-          ? closeFinishedRunTabs(automationId, deadline)
+        automationId && orca && !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
+          ? closeFinishedRunTabs(automationId, orca, deadline)
           : { closed: 0, errors: [] }
       const errors = [
         ...report.errors,

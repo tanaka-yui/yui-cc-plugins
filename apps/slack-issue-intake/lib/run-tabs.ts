@@ -45,23 +45,28 @@ export const tabsToClose = (terminals: Json[], ptyIds: Set<string>, now: number)
 // 自分の automation の履歴にある端末だけが対象で、人が開いた端末と動作中の回には触れない
 export const closeFinishedRunTabs = (
   automationId: string,
+  bin: string,
   deadline: number,
   now = Date.now(),
 ): { closed: number; errors: string[] } => {
   const left = (): number => deadline - Date.now()
-  const runs = runOrca(['automations', 'runs', '--id', automationId, '--limit', String(RUN_TAB_RUNS_LIMIT)], left())
+  const runs = runOrca(
+    ['automations', 'runs', '--id', automationId, '--limit', String(RUN_TAB_RUNS_LIMIT)],
+    left(),
+    bin,
+  )
   const rows = runs.ok ? asArray(get(runs.json ?? undefined, 'result', 'runs')) : null
   if (!rows) return { closed: 0, errors: [`automation の実行履歴を読めません: ${runs.stderr}`] }
   const ptyIds = finishedPtyIds(rows, now)
   if (!ptyIds.size || left() <= 0) return { closed: 0, errors: [] }
-  const listed = runOrca(['terminal', 'list', '--limit', String(RUN_TAB_TERMINALS_LIMIT)], left())
+  const listed = runOrca(['terminal', 'list', '--limit', String(RUN_TAB_TERMINALS_LIMIT)], left(), bin)
   const terminals = listed.ok ? asArray(get(listed.json ?? undefined, 'result', 'terminals')) : null
   if (!terminals) return { closed: 0, errors: [`端末の一覧を読めません: ${listed.stderr}`] }
   let closed = 0
   const errors: string[] = []
   for (const handle of tabsToClose(terminals, ptyIds, now)) {
     if (left() <= 0) break
-    const result = runOrca(['terminal', 'close', '--terminal', handle], left())
+    const result = runOrca(['terminal', 'close', '--terminal', handle], left(), bin)
     if (result.ok) closed++
     else errors.push(`終わった回のタブを閉じられません: ${handle} ${result.stderr}`)
   }
