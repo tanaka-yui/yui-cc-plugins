@@ -33,6 +33,7 @@ const COMMANDS: Record<string, () => Promise<Command>> = {
   knowledge: () => import('../lib/commands/knowledge.ts'),
   mention: () => import('../lib/commands/mention.ts'),
   report: () => import('../lib/commands/report.ts'),
+  relink: () => import('../lib/commands/relink.ts'),
   apply: () => import('../lib/commands/apply.ts'),
   collect: () => import('../lib/commands/collect.ts'),
   procedure: () => import('../lib/commands/procedure.ts'),
