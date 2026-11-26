@@ -10,6 +10,7 @@ export type StatusOptions = {
 }
 export const PROJECT_STATUS_COLORS: Readonly<Record<string, string>> = {
   Done: 'GREEN',
+  Testing: 'ORANGE',
   Failed: 'RED',
   'In review': 'YELLOW',
   Ready_Eng: 'PURPLE',

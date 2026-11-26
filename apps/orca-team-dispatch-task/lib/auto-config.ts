@@ -47,6 +47,8 @@ export type AutoConfig = {
   minFreeDiskMb: number
   // 判定の学びのうち全体に効くものを改善の Issue として出す先。null なら出さない（知らせだけ）
   learn: { issueRepo: string | null }
+  // merge したら Issue を閉じるか。既定は閉じず、Testing のまま人の動作確認を待つ（Done にして閉じるのは人）
+  closeOnMerge: boolean
 }
 const count = (value: Json | undefined, fallback: number, min = 1): number =>
   value === undefined ? fallback : typeof value === 'number' && Number.isInteger(value) && value >= min ? value : NaN
@@ -157,6 +159,8 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
   // null は未設定と同じ（下書きがそのまま書き戻せるように）
   const issueRepo = learn?.issueRepo == null ? null : asString(learn.issueRepo)
   if (learn?.issueRepo != null && (!issueRepo || !REPO_NAME.test(issueRepo))) return null
+  const closeOnMerge = boolean(input.closeOnMerge, false)
+  if (closeOnMerge === null) return null
   const result: AutoConfig = {
     version: 1,
     name,
@@ -182,6 +186,7 @@ export const parseAutoConfig = (value: Json | null, name: string): AutoConfig | 
     minFreeMemoryMb: count(input.minFreeMemoryMb, 4096, 0),
     minFreeDiskMb: count(input.minFreeDiskMb, 10240, 0),
     learn: { issueRepo },
+    closeOnMerge,
   }
   if (
     !result.judge.model ||

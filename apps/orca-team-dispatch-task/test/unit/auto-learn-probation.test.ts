@@ -250,6 +250,11 @@ test('LN33 レビュー中に閉じられた・In review から外された Issu
       writeState('main', state)
       writeStore('main', store([rule('r1')]))
       f.respond('issue_view', { state: c.state, title: '題', labels: [{ name: c.label }] })
+      // GitHub が閉じた In review の Issue は、merge 済みなら開き直して Testing にする
+      f.hook(
+        'issue_reopen',
+        `printf '%s' '${JSON.stringify({ state: 'OPEN', title: '題', labels: [{ name: c.label }] })}' > '${f.gh}/issue_view'`,
+      )
       f.respond('pr_view', {
         state: c.pr,
         mergedAt: c.pr === 'MERGED' ? '2026-11-13T05:00:00Z' : null,

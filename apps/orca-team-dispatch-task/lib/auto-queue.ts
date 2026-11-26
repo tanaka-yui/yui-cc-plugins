@@ -164,23 +164,29 @@ export const syncIssues = (
       } else if (
         !issue.cleanupPending &&
         !issue.pendingLabel &&
-        ['failed', 'stopped', 'eng', 'review'].includes(issue.phase)
+        ['failed', 'stopped', 'eng', 'review', 'done'].includes(issue.phase)
       ) {
         const from = issue.phase
         // 世代を進める前に、エンジニア行きを人が戻したことを残す。レビューからの拾い直しは作業の続きなので書かない
         // （次の世代の結果が数える）
         if (from === 'eng') onEnd?.(issue, 'eng-returned', row.labels)
         const hadBranches = Object.keys(issue.branches).length > 0 || issue.branch !== ''
+        // 動作確認（Testing）から人が Ready に戻した Issue。成果はもう向き先に入っているので、前の枝から続けず
+        // 向き先から始める（squash merge のあとで枝を reset すると、同じ変更をもう一度 PR に出してしまう）。
+        // 確認で見つかったことは、merge した PR（prevPrs）と Issue のコメントを続きの材料として読む
+        const merged = from === 'done'
         Object.assign(issue, {
-          prevTargets: hadBranches ? [...issue.targets] : issue.prevTargets,
-          prevBranches: hadBranches
-            ? Object.keys(issue.branches).length
-              ? { ...issue.branches }
-              : { [issue.targets[0] ?? '']: issue.branch }
-            : issue.prevBranches,
+          prevTargets: merged ? [] : hadBranches ? [...issue.targets] : issue.prevTargets,
+          prevBranches: merged
+            ? {}
+            : hadBranches
+              ? Object.keys(issue.branches).length
+                ? { ...issue.branches }
+                : { [issue.targets[0] ?? '']: issue.branch }
+              : issue.prevBranches,
           branches: {},
-          prevBases: hadBranches ? { ...issue.bases } : issue.prevBases,
-          prevBranch: issue.branch || issue.prevBranch,
+          prevBases: merged ? {} : hadBranches ? { ...issue.bases } : issue.prevBases,
+          prevBranch: merged ? '' : issue.branch || issue.prevBranch,
           prevPrs: issue.prs.length ? issue.prs : issue.prevPrs,
           generation: issue.generation + 1,
           phase: 'judging',

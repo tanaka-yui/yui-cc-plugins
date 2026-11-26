@@ -15,7 +15,7 @@ const check = (status = 'COMPLETED', conclusion = 'SUCCESS') => ({
   status,
   conclusion,
 })
-test('AU50 auto merges, then comments, labels and closes; PR helper never receives --issue', () => {
+test('AU50 auto merges, then comments and labels Testing, keeping the issue open; PR helper never receives --issue', () => {
   const f = runtimeFixture()
   try {
     const i = f.track('finishing')
@@ -27,9 +27,26 @@ test('AU50 auto merges, then comments, labels and closes; PR helper never receiv
     assert.ok(c.includes('pr merge 101 --repo acme/app --squash'))
     assert.ok(c.indexOf('pr merge') < c.indexOf('issue comment'))
     assert.ok(c.indexOf('issue comment') < c.indexOf('issue edit'))
-    assert.ok(c.indexOf('issue edit') < c.indexOf('issue close'))
+    assert.ok(c.includes('--add-label Testing'))
+    assert.ok(!c.includes('issue close'))
+    assert.ok(commentsOf(f).includes('orca-auto:testing:1:ai-merged'))
     assert.ok(f.childCalls().includes('orca-pr.ts'))
     assert.ok(!f.childCalls().includes('"--issue"'))
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU50c closeOnMerge closes the issue after labeling Testing', () => {
+  const f = runtimeFixture()
+  try {
+    f.put(f.configFile, { ...f.raw, closeOnMerge: true })
+    const i = f.track('finishing')
+    f.result(i)
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key]?.phase, 'done')
+    const c = f.calls()
+    assert.ok(c.includes('--add-label Testing'))
+    assert.ok(c.indexOf('issue edit') < c.indexOf('issue close'))
   } finally {
     f.cleanup()
   }
@@ -149,7 +166,7 @@ test('AU55b PR creation retries, then reports integration-result reason after 30
     f.cleanup()
   }
 })
-test('AU57 human merge of the current generation PR closes the issue', () => {
+test('AU57 human merge of the current generation PR moves the issue to Testing and keeps it open', () => {
   const f = runtimeFixture()
   try {
     const i = f.track('review')
@@ -162,7 +179,79 @@ test('AU57 human merge of the current generation PR closes the issue', () => {
     f.respond('pr_view', { state: 'MERGED', mergedAt: '2026-11-13T05:00:00Z', statusCheckRollup: [] })
     f.cli('tick')
     assert.equal(readState('main').issues[i.key]?.phase, 'done')
-    assert.ok(f.calls().includes('orca-auto:done:1:human-merged'))
+    assert.ok(f.calls().includes('orca-auto:testing:1:human-merged'))
+    assert.ok(f.calls().includes('--add-label Testing'))
+    assert.ok(!f.calls().includes('issue close'))
+  } finally {
+    f.cleanup()
+  }
+})
+for (const closeOnMerge of [false, true])
+  test(`AU192 an issue GitHub closed when a person merged its PR still gets the Testing comment (closeOnMerge=${closeOnMerge})`, () => {
+    const f = runtimeFixture()
+    try {
+      if (closeOnMerge) f.put(f.configFile, { ...f.raw, closeOnMerge: true })
+      const i = f.track('review')
+      const s = readState('main')
+      const current = s.issues[i.key]
+      assert.ok(current)
+      current.prs = [pr]
+      writeState('main', s)
+      // PR の Closes #N で GitHub が Issue を閉じた。ラベルは In review のまま
+      f.respond('issue_view', { state: 'CLOSED', title: '題', labels: [{ name: 'In review' }] })
+      f.hook(
+        'issue_reopen',
+        `printf '%s' '${JSON.stringify({ state: 'OPEN', title: '題', labels: [{ name: 'In review' }] })}' > '${f.gh}/issue_view'`,
+      )
+      f.respond('pr_view', { state: 'MERGED', mergedAt: '2026-11-13T05:00:00Z', statusCheckRollup: [] })
+      f.cli('tick')
+      const after = readState('main').issues[i.key]
+      assert.equal(after?.phase, 'done')
+      const c = f.calls()
+      assert.ok(c.includes('orca-auto:testing:1:human-merged'), c)
+      assert.ok(c.includes('--add-label Testing'), c)
+      // 閉じない設定では開き直して確認を待ち、閉じる設定では閉じたまま
+      assert.equal(c.includes('issue reopen'), !closeOnMerge, c)
+      if (!closeOnMerge) assert.ok(c.indexOf('issue reopen') < c.indexOf('issue comment'), c)
+      assert.ok(!c.includes('issue close'), c)
+    } finally {
+      f.cleanup()
+    }
+  })
+test('AU193 a closed issue whose PR is not merged is still treated as a person stopping it', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track('review')
+    const s = readState('main')
+    const current = s.issues[i.key]
+    assert.ok(current)
+    current.prs = [pr]
+    writeState('main', s)
+    f.respond('issue_view', { state: 'CLOSED', title: '題', labels: [{ name: 'In review' }] })
+    f.respond('pr_view', { state: 'OPEN', mergedAt: null, statusCheckRollup: [] })
+    f.cli('tick')
+    assert.equal(readState('main').issues[i.key], undefined)
+    assert.ok(!f.calls().includes('issue comment'))
+    assert.ok(!f.calls().includes('issue reopen'))
+  } finally {
+    f.cleanup()
+  }
+})
+test('AU194 a status label missing on the repository is created and the transition retried', () => {
+  const f = runtimeFixture()
+  try {
+    const i = f.track('finishing')
+    f.result(i)
+    // 版を上げたあと setup をやり直していないリポジトリには Testing のラベルが無い
+    writeFileSync(join(f.gh, 'issue_edit.rc'), '1')
+    f.respond('label_list', [{ name: 'In progress' }])
+    // gh のスタブは最初の -- までの語で鍵を作るので、ラベル名まで鍵に入る
+    f.hook('label_create_Testing', `rm -f '${f.gh}/issue_edit.rc'`)
+    f.cli('tick')
+    const c = f.calls()
+    assert.ok(c.includes('label create Testing'), c)
+    assert.equal(readState('main').issues[i.key]?.phase, 'done', c)
+    assert.equal(readState('main').issues[i.key]?.pendingLabel, null)
   } finally {
     f.cleanup()
   }
@@ -434,7 +523,7 @@ test('AU113 both PRs merge in targets order only after every mergeable read', ()
     assert.ok(commentsOf(f).includes('ai-merged'))
     assert.ok(commentsOf(f).includes('other/api#201'))
     assert.ok(commentsOf(f).includes('acme/app#101'))
-    assert.ok(calls.includes('issue close'))
+    assert.ok(!calls.includes('issue close'))
   } finally {
     f.cleanup()
   }
@@ -825,7 +914,7 @@ const humanMergedBackMerge = (
   return { f, i }
 }
 
-test('AU158 a human merge into a base other than the usual one opens a back PR and links it in the Done comment', () => {
+test('AU158 a human merge into a base other than the usual one opens a back PR and links it in the Testing comment', () => {
   const { f, i } = humanMergedBackMerge({ 'acme/app': 'main' }, (x) => {
     x.respond('pr_list', [])
     writeFileSync(join(x.gh, 'pr_create'), `${backUrl}\n`)
@@ -837,14 +926,14 @@ test('AU158 a human merge into a base other than the usual one opens a back PR a
     assert.ok(!calls.includes('pr merge'))
     assert.ok(calls.indexOf('pr create') < calls.indexOf('issue comment'))
     const comments = decodedCommentsOf(f)
-    assert.ok(comments.includes('orca-auto:done:1:human-merged'))
+    assert.ok(comments.includes('orca-auto:testing:1:human-merged'))
     assert.ok(comments.includes(`acme/app へ取り込む PR: ${backUrl}`))
   } finally {
     f.cleanup()
   }
 })
 
-test('AU159 a failed back PR still moves the issue to Done and the comment says why', () => {
+test('AU159 a failed back PR still moves the issue to Testing and the comment says why', () => {
   const { f, i } = humanMergedBackMerge({ 'acme/app': 'main' }, (x) => {
     x.respond('pr_list', [])
     x.hook('pr_create', "echo 'GraphQL: boom' >&2")
@@ -938,7 +1027,7 @@ test('AU162 a two-repo human merge opens a back PR per repository even after the
   }
 })
 
-test('AU163 a back PR call that times out defers Done to the next tick instead of recording a failure', () => {
+test('AU163 a back PR call that times out defers Testing to the next tick instead of recording a failure', () => {
   const { f, i } = humanMergedBackMerge({ 'acme/app': 'main' }, (x) => {
     x.hook('pr_list', "echo 'timed out' >&2")
     writeFileSync(join(x.gh, 'pr_list.rc'), '1')

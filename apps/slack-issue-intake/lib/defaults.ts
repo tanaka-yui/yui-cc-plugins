@@ -252,6 +252,7 @@ export const adoptAfterKey = (repo: string): string => `adopt_after:${repo}`
 // slug は Issue のコメントのマーカー（<!-- orca-auto:<slug>:<generation>:<event> -->）に書く形
 export const STATUS_LABELS: ReadonlyArray<{ name: string; slug: string; color: string; description: string }> = [
   { name: 'Done', slug: 'done', color: '0e8a16', description: '完了' },
+  { name: 'Testing', slug: 'testing', color: 'd93f0b', description: 'merge 済み。人の動作確認待ち' },
   { name: 'Failed', slug: 'failed', color: 'b60205', description: 'AI が失敗した' },
   { name: 'In review', slug: 'in-review', color: 'fbca04', description: 'PR を出して人の判断待ち' },
   { name: 'Ready_Eng', slug: 'ready-eng', color: '5319e7', description: 'エンジニアが対応する' },
@@ -274,8 +275,15 @@ export const STATUS_EVENTS: Record<string, { mention: boolean; template: string 
     mention: true,
     template: '一部のリポジトリだけ merge できました。確認をお願いします（In review）\n{issue}\n\n{comment}',
   },
-  'ai-merged': { mention: true, template: 'AI が修正を merge して完了にしました（Done）\n{issue}\n\n{comment}' },
-  'human-merged': { mention: false, template: 'PR が merge されたので完了にしました（Done）\n{issue}\n\n{comment}' },
+  // merge のあとは人の動作確認を待つ（Testing）。確認を頼むので、どちらもメンションする
+  'ai-merged': {
+    mention: true,
+    template: 'AI が修正を merge しました。動作確認をお願いします（Testing）\n{issue}\n\n{comment}',
+  },
+  'human-merged': {
+    mention: true,
+    template: 'PR が merge されました。動作確認をお願いします（Testing）\n{issue}\n\n{comment}',
+  },
   failed: { mention: true, template: 'AI の対応が失敗しました（Failed）\n{issue}\n\n{comment}' },
   stalled: { mention: true, template: 'AI の作業が進んでいません\n{issue}\n\n{comment}' },
   'needs-base': { mention: true, template: '向き先のブランチを教えてください\n{issue}\n\n{comment}' },

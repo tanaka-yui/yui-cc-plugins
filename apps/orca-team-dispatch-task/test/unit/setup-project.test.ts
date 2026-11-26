@@ -78,7 +78,15 @@ test('SU11 Status field parsing and errors', () => {
   }
 })
 test('SU12 missing Status options compare case insensitively', () => {
-  assert.deepEqual(missingStatusOptions(current), ['Failed', 'In review', 'Ready_Eng', 'Pending', 'Ready', 'Backlog'])
+  assert.deepEqual(missingStatusOptions(current), [
+    'Testing',
+    'Failed',
+    'In review',
+    'Ready_Eng',
+    'Pending',
+    'Ready',
+    'Backlog',
+  ])
 })
 test('SU13 preserves existing options and verifies the mutation response', () => {
   const f = fixture()
@@ -130,7 +138,7 @@ test('SU14 labels create only missing names and surface failures', () => {
       .calls()
       .split('\n')
       .filter((line) => line.startsWith('label create'))
-    assert.equal(creates.length, 6)
+    assert.equal(creates.length, 7)
     assert.ok(creates.every((line) => line.includes('--repo acme/app')))
     assert.ok(creates.every((line) => !/^label create (Ready|Done) /.test(line)))
     writeFileSync(join(f.gh, 'label_create_Failed.rc'), '1')

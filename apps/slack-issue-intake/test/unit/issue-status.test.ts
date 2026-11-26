@@ -94,7 +94,9 @@ test('IS5 renderStatusMessage は event ごとの文言とメンションを返�
   assert.match(text ?? '', /エンジニアの対応が必要/)
   assert.match(text ?? '', /判定の理由: 対象リポジトリが 3 つあり/)
   assert.equal(renderStatusMessage({ ...noChange, marker: { event: 'judged', body: '' } }, URL, MENTION), null)
-  for (const event of ['human-merged', 'started']) assert.equal(STATUS_EVENTS[event]?.mention, false, event)
+  assert.equal(STATUS_EVENTS.started?.mention, false)
+  // merge したら人に動作確認を頼むので、AI が merge しても人が merge してもメンションする
+  for (const event of ['ai-merged', 'human-merged']) assert.equal(STATUS_EVENTS[event]?.mention, true, event)
   assert.equal(
     renderStatusMessage(
       {

@@ -21,13 +21,13 @@
   },
   {
     "event": "ai-merged",
-    "status": "done",
-    "body": "**merge して完了にしました**\n\nPR: [acme/app#102](https://github.com/acme/app/pull/102)\n変更の要約: ログイン画面でパスワードの空白を取り除くようにした。\n\n<!-- orca-auto:done:1:ai-merged -->"
+    "status": "testing",
+    "body": "**merge しました。動作確認をお願いします**\n\nPR: [acme/app#102](https://github.com/acme/app/pull/102)\n変更の要約: ログイン画面でパスワードの空白を取り除くようにした。\n確認が済んだら Done にしてください。\n\n<!-- orca-auto:testing:1:ai-merged -->"
   },
   {
     "event": "human-merged",
-    "status": "done",
-    "body": "PR [acme/app#101](https://github.com/acme/app/pull/101) が merge されたので Done にして閉じます。\n\n<!-- orca-auto:done:1:human-merged -->"
+    "status": "testing",
+    "body": "PR [acme/app#101](https://github.com/acme/app/pull/101) が merge されたので Testing にしました。動作確認をお願いします。確認が済んだら Done にしてください。\n\n<!-- orca-auto:testing:1:human-merged -->"
   },
   {
     "event": "failed",

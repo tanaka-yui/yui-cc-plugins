@@ -68,8 +68,8 @@ export const openBackMerge = (repo: string, from: string, to: string, title: str
     : { kind: 'error', why: firstLine(created.stderr) || firstLine(created.stdout) || 'PR を作れません' }
 }
 
-// merge を見つけた段で、普段の向き先でない対象ごとに戻しの PR を開き、Done のコメントの入力にする。
-// 呼び出しの予算が尽きたら null（Done へ進めず次の tick でやり直す）。作れなくても Done は止めない。
+// merge を見つけた段で、普段の向き先でない対象ごとに戻しの PR を開き、merge の知らせ（Testing）のコメントの入力にする。
+// 呼び出しの予算が尽きたら null（Testing へ進めず次の tick でやり直す）。作れなくても Testing は止めない。
 export const backMergeInput = (
   issue: IssueState,
   targets: Array<{ repo: string; baseBranch: string }>,

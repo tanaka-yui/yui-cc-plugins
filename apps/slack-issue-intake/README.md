@@ -97,7 +97,8 @@ orca-team-dispatch-task の `learn/` を作り直した、または `report.sour
 | Ready_Eng | AI | 重い・長い・新機能など。エンジニアが対応する |
 | In progress | AI | AI が実装中 |
 | In review | AI | PR を出して人の判断待ち |
-| Done | AI または人 | 完了。Issue を閉じる |
+| Testing | AI | merge 済み。人の動作確認待ち（Issue は既定では開いたまま） |
+| Done | 人 | 動作確認まで済んで完了。Issue を閉じる |
 | Failed | AI | AI が失敗した |
 
 確認の間隔ごとの poll で すべてのリポジトリの `from-slack` と `slack-thread` の Issue を読み、前回からステータスか開閉が変わったものだけを書き込みます。Claude は起動しません。
@@ -107,8 +108,8 @@ orca-team-dispatch-task の `learn/` を作り直した、または `report.sour
 | Ready（auto-ready で AI が判定） | 自動で対応すると判断したことと判定の理由 | なし |
 | Ready_Eng（AI の判定） | エンジニアへの依頼と判定の理由 | あり |
 | In review（AI） | 確認の依頼、PR、AI が決めた点 | あり |
-| Done（AI が merge した） | 完了したこと、PR、変更の要約 | あり |
-| Done（人が merge した PR を見て AI が閉じた） | 完了したこと、向き先が普段と違うときは戻しの PR のリンク | なし |
+| Testing（AI が merge した） | merge したことと動作確認の依頼、PR、変更の要約 | あり |
+| Testing（人が merge した PR を AI が見つけた） | merge されたことと動作確認の依頼、向き先が普段と違うときは戻しの PR のリンク | あり |
 | Done（人が変えた）、閉じた | 完了したこと | なし |
 | Failed | 失敗したことと理由 | あり |
 | 作業が進んでいない（AI のラベルは In progress のまま） | 経過時間と上限時間 | あり |
@@ -119,9 +120,10 @@ orca-team-dispatch-task の `learn/` を作り直した、または `report.sour
 - マーカーを信じるのは、書いた人がリポジトリのオーナー・メンバー・コラボレーター（または起票に使う gh のアカウント）で、マーカーのステータスが今のラベルと一致するときだけです。それ以外は人が変えたものとして扱い、コメントは転載しません。
 - orca-team-dispatch-task はコメントを書いてからラベルを動かします。ラベルが変わらないうちに合わないマーカーを読んだ回は、何も書かずに次の回へ回します。
 - Done を付けるのと閉じるのが別の回に分かれても、完了は 1 回だけ書きます。
+- merge のあとは Done ではなく Testing になり、動作確認を頼みます。確認が済んだら人が Done にして閉じます。Issue を merge と同時に閉じるかは orca-team-dispatch-task の設定（`--auto` は `closeOnMerge`、`--issue` は `close_on_merge`）で選べ、既定は閉じません。閉じる設定では Testing のまま閉じるので、あとで Done にしても完了は書きません（閉じた時点で完了とみなすため）。
 - メンションするのは、`make setup <名前>` の 6 段目で入力したユーザーグループです。空のまま進めたときはメンションしません。あとから変えるときは `node bin/slack-issue-intake.ts --name <名前> mention --group <ハンドル>`（やめるときは `--none`）を実行します。
 - この機能を入れる前からある Issue は、最初に見たときに今の状態を記録するだけで、知らせません。Backlog も付けません。
-- ステータスラベルが 2 つ以上付いているときは、Done、Failed、In review、Ready_Eng、In progress、Pending、Ready、Backlog の順で先にあるものとみなします。
+- ステータスラベルが 2 つ以上付いているときは、Done、Testing、Failed、In review、Ready_Eng、In progress、Pending、Ready、Backlog の順で先にあるものとみなします。
 - Backlog から Ready への判断も AI に任せるときは、orca-team-dispatch-task の `make setup NAME=<name>` の 2 段目（拾う元）で auto-ready を使います。有効にした後に起票された Issue だけが対象で、自動で対応できるものは Ready、難しいものは Ready_Eng になります。auto-ready で Ready になった Issue の PR は、既定では In review で止まり、人が merge します。orca-team-dispatch-task の拾う元で `autoMerge` を有効にすると、ほかの条件がそろえば AI が merge します（普段の向き先以外へは merge しません）。
 
 ## 仕組み
@@ -193,7 +195,7 @@ make setup <名前>
 | 2 | Slack アプリを作ってトークンを登録する | まず既存のアプリ ID を聞かれます。新しく作るなら空のまま Enter、作成済みのアプリを使うならその ID（A で始まる）を入力します。Slack CLI がワークスペースを聞いたら、使うものを選びます。アプリの作成（または更新）とインストールは自動です。トークンは Slack CLI から受け取って保存します |
 | 3 | チャンネルを決める | チャンネル名（`#issue-intake` の形でも可）か ID を入力します。公開チャンネルにはボットが自分で参加します。プライベートチャンネルは、Slack で `/invite @Issue Intake` を送ってから Enter を押します |
 | 4 | リポジトリと確認の間隔を決める | 受け付ける `owner/name` を入力します。複数あるならカンマで区切って一度に入れられ、2 回目以降の質問に空の Enter で終えます。形が違う・入力済み・gh で確かめられないリポジトリは名指しして飛ばし、ほかは登録します。Issues が無効・push 権限が無いときは、そのリポジトリを名指しして止まります。複数なら既定の起票先を選び、各リポジトリについてフォームに出すかと、Slack から作っていない Issue もスレッドを立てて管理するか（y/n。既定は n）を答えます。origin の既定ブランチと develop / main / master のうち 2 つ以上があるリポジトリでは、フォームの向き先の候補を聞きます（空のまま Enter で見つけたもの、欄を出さないなら `-`）。確認の間隔は分で、既定は5です。公開リポジトリは内容が公開されることを確認して y を答えます。再実行では今の設定を表示し、追加するリポジトリと間隔を聞きます。候補をまだ持たない既定の起票先の候補もここで聞きます |
-| 5 | 設定を保存して automation を登録する（init） | なし。automation は無効で登録されます。ステータスラベル 8 つも作ります |
+| 5 | 設定を保存して automation を登録する（init） | なし。automation は無効で登録されます。ステータスラベル 9 つも作ります |
 | 6 | 通知でメンションするグループを決める（mention） | Issue のステータスが変わったときにメンションする Slack のユーザーグループを入力します。`dev-member`、`@dev-member`、表示名、S で始まる ID のどれでもかまいません。空のまま Enter でメンションしません。見つからないときは、理由を表示して聞き直します |
 | 7 | 定期報告を決める（report） | `--auto` の材料が見つかれば番号・チャンネル・新規投稿の時刻を選びます。無ければ案内して飛ばします |
 | 8 | 質問に答えるための仕様の索引を作る（knowledge） | なし。全リポジトリの索引があれば済みにします。作れなくても先へ進みます（「仕様の索引」） |
@@ -293,6 +295,10 @@ deploy（2 段目）から 7 段目までの間、古いボタンは押しても
 3. 6 段目で、メンションするグループを聞きます。
 
 前からある `from-slack` の Issue には Backlog を付けません。最初の poll で今の状態を記録し、そのあとの変化から知らせます。手作業で作ったアプリは、アプリの設定画面で `usergroups:read` を足して入れ直してください（足さなくても、グループ ID を入力すれば使えます）。
+
+### 0.13 からの更新
+
+0.14.0 で、merge のあとのステータスに Testing が入りました（Done は人が動作確認してから付けます）。プラグインを更新したら `make setup <名前>` を実行します。5 段目で init をやり直し、Testing のラベルを作ります。それまでの起票には Backlog を付けません（ラベルの一覧が変わったため）。orca-team-dispatch-task の Project を使っているなら、Project の Status にも Testing の選択肢を足します（`make auto-setup` の Project の段が足します）。
 
 ### 0.4 からの更新
 

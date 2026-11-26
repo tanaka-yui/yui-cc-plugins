@@ -114,6 +114,8 @@ test('AU59e close retries without label/comment repetition, and yields to a rest
   for (const changed of [false, true]) {
     const f = runtimeFixture()
     try {
+      // 閉じるのは closeOnMerge のときだけ
+      f.put(f.configFile, { ...f.raw, closeOnMerge: true })
       const i = f.track('finishing')
       f.result(i)
       f.put(join(f.gh, 'issue_close.rc'), 1)

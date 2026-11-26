@@ -114,7 +114,7 @@ test('GH4 無いラベルだけ作り、権限が無ければ作らない', asyn
   delete process.env.FAKE_GH_LABELS
   assert.ok(b.ok && b.created.length === LABEL_SPECS.length - 1)
 })
-test('GH11 ensureLabels は既存のラベル名を大文字小文字を区別せずに比べ、ステータスラベル8つを作る', async () => {
+test('GH11 ensureLabels は既存のラベル名を大文字小文字を区別せずに比べ、ステータスラベル9つを作る', async () => {
   const fake = fakeGh(tempHome())
   Object.assign(process.env, fake.env)
   process.env.FAKE_GH_LABELS = [
@@ -137,11 +137,11 @@ test('GH11 ensureLabels は既存のラベル名を大文字小文字を区別�
     .map((c) => c.argv[2])
   assert.deepEqual(
     created.sort(),
-    ['Done', 'Failed', 'In progress', 'In review', 'Pending', 'Ready', 'Ready_Eng'].sort(),
+    ['Done', 'Testing', 'Failed', 'In progress', 'In review', 'Pending', 'Ready', 'Ready_Eng'].sort(),
   )
   assert.deepEqual(
     STATUS_LABELS.map((l) => l.name),
-    ['Done', 'Failed', 'In review', 'Ready_Eng', 'In progress', 'Pending', 'Ready', 'Backlog'],
+    ['Done', 'Testing', 'Failed', 'In review', 'Ready_Eng', 'In progress', 'Pending', 'Ready', 'Backlog'],
   )
   assert.match(labelsHash(), /^[0-9a-f]{64}$/)
 })

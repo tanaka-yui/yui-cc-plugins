@@ -43,6 +43,7 @@ export type CommentInput = {
   // auto-ready: 条件がそろえば AI が merge する Issue か（人が確認してから merge する Issue か）
   autoMerge?: boolean
 }
+const TESTING_NEXT = '確認が済んだら Done にしてください。'
 const clean = (text: string): string =>
   text
     .replace(/[\r\n]+/g, ' ')
@@ -62,8 +63,9 @@ export const statusOfEvent = (event: AutoEvent): string =>
     'needs-base': STATUS.backlog,
     'needs-review': STATUS.inReview,
     'partial-merge': STATUS.inReview,
-    'ai-merged': STATUS.done,
-    'human-merged': STATUS.done,
+    // merge したら人の動作確認を待つ。Done にするのは確認した人
+    'ai-merged': STATUS.testing,
+    'human-merged': STATUS.testing,
     failed: STATUS.failed,
   })[event]
 export const renderComment = (input: CommentInput): { status: string; body: string } => {
@@ -136,16 +138,17 @@ export const renderComment = (input: CommentInput): { status: string; body: stri
       break
     case 'ai-merged':
       body = [
-        '**merge して完了にしました**',
+        '**merge しました。動作確認をお願いします**',
         '',
         prs ? `PR: ${prs}` : '',
         input.summary ? `変更の要約: ${clean(input.summary)}` : '',
+        TESTING_NEXT,
       ]
         .filter((line, i) => line !== '' || i === 1)
         .join('\n')
       break
     case 'human-merged':
-      body = `PR ${prs} が merge されたので Done にして閉じます。`
+      body = `PR ${prs} が merge されたので Testing にしました。動作確認をお願いします。${TESTING_NEXT}`
       break
     case 'failed':
       body = [

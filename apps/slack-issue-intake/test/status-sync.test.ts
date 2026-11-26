@@ -133,14 +133,14 @@ test('ST2 judged のマーカー付きで Ready_Eng になれば、グループ�
     assert.match(post.text, /判定の理由: 対象リポジトリが 3 つあり/)
   }
 })
-test('ST3 ai-merged はメンションあり、human-merged はメンション無しで、どちらも完了を書く。Done 無しで閉じても完了を書く', async (t) => {
+test('ST3 ai-merged も human-merged もメンション付きで動作確認を頼み、Testing から人が Done にしたら完了を書く。Done 無しで閉じても完了を書く', async (t) => {
   const f = await fixture(t, { issues: [42, 43, 44] })
   f.mention('S0DEV0001')
   f.setIssues([issue(42, ['In review'], 1), issue(43, ['In review'], 1), issue(44, ['Ready'], 1)])
   await f.poll()
   f.setIssues([
-    issue(42, ['Done'], 3, { state: 'closed', comments: [comment(10, body('ai-merged'), 3)] }),
-    issue(43, ['Done'], 4, { state: 'closed', comments: [comment(11, body('human-merged'), 4)] }),
+    issue(42, ['Testing'], 3, { comments: [comment(10, body('ai-merged'), 3)] }),
+    issue(43, ['Testing'], 4, { comments: [comment(11, body('human-merged'), 4)] }),
     issue(44, ['Ready'], 5, { state: 'closed' }),
   ])
   const r = await f.poll()
@@ -148,12 +148,24 @@ test('ST3 ai-merged はメンションあり、human-merged はメンション�
   const byThread = new Map(f.posts().map((p) => [p.thread, p.text]))
   const ai = byThread.get(f.threads.get(42) ?? '') ?? ''
   assert.ok(ai.startsWith(GROUP))
-  assert.match(ai, /AI が修正を merge して完了にしました/)
+  assert.match(ai, /AI が修正を merge しました。動作確認をお願いします（Testing）/)
   assert.match(ai, /<https:\/\/github.com\/acme\/app\/pull\/102\|acme\/app#102>/)
   const human = byThread.get(f.threads.get(43) ?? '') ?? ''
-  assert.ok(!human.includes('<!subteam^'))
-  assert.match(human, /PR が merge されたので完了にしました/)
+  assert.ok(human.startsWith(GROUP))
+  assert.match(human, /PR が merge されました。動作確認をお願いします（Testing）/)
   assert.equal(byThread.get(f.threads.get(44) ?? ''), `完了しました\n${REPO_URL}44`)
+  // 動作確認のあと人が Done にして閉じたら、完了を 1 回だけ書く
+  f.setIssues([
+    issue(42, ['Done'], 6, { state: 'closed', comments: [comment(10, body('ai-merged'), 3)] }),
+    issue(43, ['Testing'], 4, { comments: [comment(11, body('human-merged'), 4)] }),
+    issue(44, ['Ready'], 5, { state: 'closed' }),
+  ])
+  await f.poll()
+  const done = f
+    .posts()
+    .filter((p) => p.thread === f.threads.get(42))
+    .map((p) => p.text)
+  assert.deepEqual(done.slice(1), [`完了しました\n${REPO_URL}42`])
 })
 test('ST4 信じられない人のマーカーや、ラベルと合わないマーカーは、人の変化として扱う', async (t) => {
   const f = await fixture(t, { issues: [42, 43] })

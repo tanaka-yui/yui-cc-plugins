@@ -28,6 +28,7 @@ export type SetupDraft = {
     automation?: NonNullable<AutoConfig['automation']>
     automationCreated?: boolean
     learn?: AutoConfig['learn']
+    closeOnMerge?: boolean
   }
 }
 const stringList = (value: Json | undefined): value is string[] =>
@@ -41,11 +42,12 @@ const validValues = (value: JsonObject, name: string): boolean => {
     value.intakeConfigs = parsed.intakeConfigs
     delete value.intakeConfig
   }
-  for (const key of ['intakeConfigs', 'roles', 'everyMinutes', 'lanes', 'automation', 'learn']) {
+  for (const key of ['intakeConfigs', 'roles', 'everyMinutes', 'lanes', 'automation', 'learn', 'closeOnMerge']) {
     if (value[key] !== undefined) {
       const parsed = parseAutoConfig({ ...seed, [key]: value[key] }, name)
       if (!parsed) return false
-      value[key] = parsed[key as 'intakeConfigs' | 'roles' | 'everyMinutes' | 'lanes' | 'automation' | 'learn']
+      value[key] =
+        parsed[key as 'intakeConfigs' | 'roles' | 'everyMinutes' | 'lanes' | 'automation' | 'learn' | 'closeOnMerge']
     }
   }
   if (value.automation !== undefined && value.automation === null) return false
@@ -127,6 +129,7 @@ export const draftFromConfig = (config: AutoConfig): SetupDraft => ({
     everyMinutes: config.everyMinutes,
     ...(config.automation ? { automation: config.automation } : {}),
     learn: config.learn,
+    closeOnMerge: config.closeOnMerge,
   }),
 })
 export const configJsonFromDraft = (draft: SetupDraft, base: JsonObject | null): JsonObject | null => {
@@ -143,6 +146,11 @@ export const configJsonFromDraft = (draft: SetupDraft, base: JsonObject | null):
   if (v.learn !== undefined) {
     if (v.learn.issueRepo === null) delete next.learn
     else next.learn = structuredClone(v.learn)
+  }
+  // 閉じない（既定）ときは closeOnMerge を書かない。y のあと n にしたら消す
+  if (v.closeOnMerge !== undefined) {
+    if (v.closeOnMerge) next.closeOnMerge = true
+    else delete next.closeOnMerge
   }
   // 既定値（null / []）の向き先の欄は書かず、既存の設定ファイルを変えない。
   const repos = asObject(next.repos)

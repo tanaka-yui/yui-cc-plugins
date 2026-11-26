@@ -82,17 +82,29 @@ ghlog() { cat "$GH_STUB_DIR/calls.log"; }
 ack_lines() { grep -E '^orchestration check ' "$ORCA_STUB_DIR/calls.log" | grep -c -- '--ack'; }
 ack_lineno() { grep -nE '^orchestration check ' "$ORCA_STUB_DIR/calls.log" | grep -- '--ack' | head -1 | cut -d: -f1; }
 
-# IS1: 成功経路。merge され、ラベルが遷移し、issue が close される。
+# IS1: 成功経路。merge され、ラベルが Testing に遷移し、issue は閉じずに人の動作確認を待つ。
 setup; worker_done succeeded done
 out=$(run_issue 2>&1); rc=$?
 [[ "$rc" -eq 0 ]] \
   && [[ "$(jq -r '.merged' "$R/.dispatch/issue-5-x/integration-result.json")" == true ]] \
   && [[ -n "$(git -C "$R" log --oneline)" ]] \
   && [[ -f "$R/WORK.md" ]] \
-  && grep -qF -- '--add-label Done' <(ghlog) \
-  && grep -q 'issue close 5' <(ghlog) \
+  && grep -qF -- '--add-label Testing' <(ghlog) \
+  && ! grep -qF -- '--add-label Done' <(ghlog) \
+  && ! grep -q 'issue close' <(ghlog) \
   && [[ "$(jq -r '.issues["5"].status' "$SF")" == done ]] \
-  && ok "IS1 merge → ラベル遷移 → close → state 終端" || fail "IS1 (rc=$rc) $out"
+  && ok "IS1 merge → Testing → 閉じない → state 終端" || fail "IS1 (rc=$rc) $out"
+teardown
+
+# IS1b: close_on_merge=on なら、Testing を付けたあと issue を閉じる。
+setup; worker_done succeeded done
+mkdir -p "$ORCA_DISPATCH_CONFIG_HOME"
+printf '%s\n' '{"close_on_merge":"on"}' > "$ORCA_DISPATCH_CONFIG_HOME/config.json"
+out=$(run_issue 2>&1); rc=$?
+[[ "$rc" -eq 0 ]] \
+  && grep -qF -- '--add-label Testing' <(ghlog) \
+  && grep -q 'issue close 5' <(ghlog) \
+  && ok "IS1b close_on_merge=on なら Testing のあとで閉じる" || fail "IS1b (rc=$rc) $out"
 teardown
 
 # IS2: ★ **終端ラベルを先に付け、in-progress はそのあとで外す。**間で落ちても issue には
@@ -105,7 +117,7 @@ setup; worker_done succeeded done
 run_issue >/dev/null 2>&1
 lines=$(grep 'label' <(ghlog))
 first=$(head -1 <<<"$lines")
-[[ "$first" == *'--add-label Done'* ]] \
+[[ "$first" == *'--add-label Testing'* ]] \
   && [[ "$(grep -nF -- '--remove-label In\ progress' <<<"$lines" | head -1 | cut -d: -f1)" -gt 1 ]] \
   && ! grep -qE -- '--add-label terminal( |$)' <<<"$lines" \
   && ok "IS2 終端ラベルが先、in-progress の除去はあと、terminal ラベルは付けない" \
@@ -180,7 +192,7 @@ teardown
 setup; worker_done succeeded done
 run_issue >/dev/null 2>&1
 l=$(ghlog)
-[[ "$(grep -cF -- '--add-label Done' <<<"$l")" -eq 1 ]] \
+[[ "$(grep -cF -- '--add-label Testing' <<<"$l")" -eq 1 ]] \
   && grep -qF -- '--remove-label Failed' <<<"$l" \
   && ok "IS9 反対の終端ラベルを外す" || fail "IS9 ($l)"
 teardown
@@ -220,7 +232,7 @@ out=$(node "$P/bin/orca-issue.ts" --state-file "$SF" --issue 5 --slug issue-5-x 
         --repo-root "$R" --phase finish 2>&1); rc=$?
 [[ "$rc" -eq 0 && -f "$R/WORK.md" ]] \
   && ! grep -q 'worker-start' "$ORCA_STUB_DIR/calls.log" \
-  && grep -q 'issue close 5' <(ghlog) \
+  && grep -qF -- '--add-label Testing' <(ghlog) \
   && [[ "$(jq -r '.issues["5"].status' "$SF")" == done ]] \
   && ok "IS12 finish phase は dispatch し直さず終端へ運ぶ" || fail "IS12 (rc=$rc) $out"
 teardown
@@ -296,14 +308,15 @@ teardown
 
 # IS19: ★ **pr のとき issue を close しない。**`Closes #N` を本文に入れてあるので、
 #       PR がマージされたときに GitHub が閉じる。先に閉じると PR が却下されても
-#       issue は閉じたままになる。
+#       issue は閉じたままになる。PR はまだ人の判断待ちなので、ラベルは Done ではなく In review。
 setup; pr_mode; worker_done succeeded done
 run_issue --repo o/r >/dev/null 2>&1
 [[ "$(jq -r '.issues["5"].status' "$SF")" == done ]] \
   && [[ "$(jq -r '.issues["5"].pr_url' "$SF")" == 'https://github.com/o/r/pull/7' ]] \
-  && grep -qF -- '--add-label Done' <(ghlog) \
+  && grep -qF -- '--add-label In\ review' <(ghlog) \
+  && ! grep -qF -- '--add-label Done' <(ghlog) \
   && ! grep -q 'issue close' <(ghlog) \
-  && ok "IS19 pr のとき issue を close しない" || fail "IS19 ($(ghlog))"
+  && ok "IS19 pr のとき issue を close せず In review にする" || fail "IS19 ($(ghlog))"
 teardown
 
 # IS20: PR が作れなければ Failed で資源を残す。
@@ -431,19 +444,20 @@ teardown
 setup; worker_done succeeded done
 run_issue >/dev/null 2>&1
 l=$(ghlog)
-add=$(grep -nF -- '--add-label Done' <<<"$l" | head -1 | cut -d: -f1)
+add=$(grep -nF -- '--add-label Testing' <<<"$l" | head -1 | cut -d: -f1)
 legacy=$(grep -nF -- '--remove-label dispatch/in-progress' <<<"$l" | head -1 | cut -d: -f1)
 current=$(grep -nF -- '--remove-label In\ progress' <<<"$l" | head -1 | cut -d: -f1)
 [[ -n "$add" && -n "$legacy" && -n "$current" && "$add" -lt "$legacy" && "$add" -lt "$current" ]] \
   && ok "IS31 終端では古い dispatch のラベルも外す" || fail "IS31 (add=$add legacy=$legacy current=$current)"
 teardown
 # IS32: ★ **終端では、ほかのステータスラベルも外す。**名指しの issue や、実行中に人が付けたラベルが残ると、
-#       Done と Backlog が並んで結末が読めない。
+#       Testing と Backlog が並んで結末が読めない。
 setup; worker_done succeeded done
 run_issue >/dev/null 2>&1
 l=$(ghlog)
-grep -qF -- '--remove-label Backlog' <<<"$l" && grep -qF -- '--remove-label Ready_Eng' <<<"$l" \
-  && ! grep -qF -- '--remove-label Done' <<<"$l" \
+grep -qF -- '--remove-label Backlog' <<<"$l" && grep -qF -- '--remove-label Done' <<<"$l" \
+  && grep -qF -- '--remove-label Ready_Eng' <<<"$l" \
+  && ! grep -qF -- '--remove-label Testing' <<<"$l" \
   && ok "IS32 終端ではほかのステータスラベルも外す" || fail "IS32 ($l)"
 teardown
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

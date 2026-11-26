@@ -1,5 +1,5 @@
 import { type AutoEvent, type CommentInput, renderComment } from './auto-comment.ts'
-import { AUTO_GITHUB_PAGE_SIZE, github, readGithub, viewIssue } from './auto-github.ts'
+import { AUTO_GITHUB_PAGE_SIZE, ensureLabels, github, readGithub, viewIssue } from './auto-github.ts'
 import { autoNow } from './auto-paths.ts'
 import { readJson } from './fs.ts'
 import { asArray, asObject, asString } from './json.ts'
@@ -70,9 +70,11 @@ export const resumeTransition = (issue: IssueState, save: () => void, fresh = fa
     cancelTransition(issue, save, onEnd, view.labels)
     return false
   }
-  if (view.state === 'CLOSED' && !pending.close) return cancel()
+  // 閉じる遷移（merge の知らせ）は、Issue が先に閉じていても続ける（PR の Closes #N で GitHub が閉じる）
+  const closedOk = view.state === 'OPEN' || pending.close
+  if (!closedOk) return cancel()
   if (!pending.commented) {
-    if (view.state === 'CLOSED' || !only(pending.from)) return cancel()
+    if (!only(pending.from)) return cancel()
     const marker = pending.body.split('\n').at(-1) ?? ''
     const found = fresh ? false : hasCommentMarker(issue, marker)
     if (found === null) return false
@@ -88,8 +90,8 @@ export const resumeTransition = (issue: IssueState, save: () => void, fresh = fa
     if (only(pending.to) && pending.from !== pending.to) {
       pending.labeled = true
       save()
-    } else if (only(pending.from) && view.state === 'OPEN') {
-      if (
+    } else if (only(pending.from)) {
+      const relabel = () =>
         github([
           'issue',
           'edit',
@@ -100,13 +102,14 @@ export const resumeTransition = (issue: IssueState, save: () => void, fresh = fa
           pending.to,
           '--remove-label',
           pending.from,
-        ]).rc !== 0
-      )
-        return false
+        ]).rc === 0
+      // 版を上げて増えたステータス（Testing など）は、setup をやり直すまでリポジトリに無い。無ければ作って 1 回だけ打ち直す
+      const spec = STATUS_LABELS.filter((l) => l.name === pending.to)
+      if (!relabel() && !(ensureLabels(issue.repo, spec) && relabel())) return false
       pending.labeled = true
       save()
     } else return cancel()
-  } else if (!only(pending.to) || (view.state === 'CLOSED' && !pending.close)) return cancel()
+  } else if (!only(pending.to)) return cancel()
   if (
     pending.close &&
     view.state !== 'CLOSED' &&
@@ -138,7 +141,8 @@ export const transition = (
   const view = viewIssue(issue.repo, issue.number)
   if (!view) return false
   const statuses = view.labels.filter((l) => STATUS_LABELS.some((s) => s.name === l))
-  if (view.state !== 'OPEN' || statuses.length !== 1 || statuses[0] !== from) {
+  // 閉じる遷移だけは閉じた Issue でも進める（resumeTransition と同じ）
+  if ((view.state !== 'OPEN' && !close) || statuses.length !== 1 || statuses[0] !== from) {
     cancelTransition(issue, save, onEnd, view.labels)
     return false
   }

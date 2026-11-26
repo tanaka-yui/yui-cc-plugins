@@ -21,6 +21,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN = resolve(HERE, '..')
 const SCRIPTS = join(PLUGIN, 'skills', 'orca-team-dispatch-task', 'scripts')
 const ISSUE_FETCH = join(SCRIPTS, 'issue-fetch.ts')
+const CONFIG_RESOLVE = join(SCRIPTS, 'config-resolve.ts')
 const string = (value: ReturnType<typeof get>): string => asString(value) ?? ''
 const git = (repo: string, ...args: string[]) => run('git', ['-C', repo, ...args])
 const readable = (file: string): boolean => {
@@ -126,10 +127,14 @@ const parse = (argv: string[]): Options => {
 // ★ ラベルを動かせなかったことを **state に嘘で上書きしない。**次の reconcile が
 //   痕跡を見て止まるほうが、静かに done にするより良い。
 // ほかのステータスラベル（反対の終端、名指しの issue に付いていたもの、実行中に人が付けたもの）も外す。
-// 1 つの issue にステータスラベルは 1 つ（spec 5.1）。ensure-labels が 8 つを作っているので 1 回の呼び出しで外せる
+// 1 つの issue にステータスラベルは 1 つ（spec 5.1）。ensure-labels が全部を作っているので 1 回の呼び出しで外せる
+//
+// ★ **merge したら Done ではなく Testing。**Done にするのは動作確認をした人である。PR を作っただけのときは
+//   まだ人の判断待ちなので In review（PR が merge されたら `Closes #N` で GitHub が閉じる）。
 const removeArgs = (labels: readonly string[]): string[] => labels.flatMap((name) => ['--remove-label', name])
-const labelTerminal = (issue: string, status: 'done' | 'failed'): boolean => {
-  const label = status === 'done' ? STATUS.done : STATUS.failed
+const TERMINAL_LABELS = { testing: STATUS.testing, review: STATUS.inReview, failed: STATUS.failed } as const
+const labelTerminal = (issue: string, status: keyof typeof TERMINAL_LABELS): boolean => {
+  const label = TERMINAL_LABELS[status]
   if (run('gh', ['issue', 'edit', issue, '--add-label', label]).rc !== 0) return false
   const others = STATUS_LABELS.map((l) => l.name).filter((name) => name !== label && name !== STATUS.inProgress)
   run('gh', ['issue', 'edit', issue, ...removeArgs(others)])
@@ -137,6 +142,9 @@ const labelTerminal = (issue: string, status: 'done' | 'failed'): boolean => {
   run('gh', ['issue', 'edit', issue, ...removeArgs(LEGACY_DISPATCH_LABELS)])
   return run('gh', ['issue', 'edit', issue, '--remove-label', STATUS.inProgress]).rc === 0
 }
+// 設定が読めなければ既定（閉じない）。閉じ損ねても人が閉じれば済むが、確認の前に閉じると元に戻す手間が要る
+const closeOnMerge = (repoRoot: string): boolean =>
+  asString(get(parseJson(runNode(CONFIG_RESOLVE, ['--project-root', repoRoot]).stdout), 'close_on_merge')) === 'on'
 const issueFetch = (options: Options, args: string[]) =>
   runNode(ISSUE_FETCH, ['--state-file', options.stateFile, ...args])
 const output = (options: Options, statusDir: string): void => {
@@ -329,7 +337,7 @@ const main = (argv: string[]): number => {
         `issue #${options.issue}: the work was not merged; the worktree and branch are kept`,
       )
   }
-  if (!labelTerminal(options.issue, 'done'))
+  if (!labelTerminal(options.issue, integration === 'pr' ? 'review' : 'testing'))
     return failOut(options, statusDir, `issue #${options.issue}: integrated, but the labels could not be moved`)
   if (integration === 'pr') {
     if (
@@ -352,16 +360,23 @@ const main = (argv: string[]): number => {
       `issue #${options.issue}: ${prUrl} is open. The issue closes when that merges. Resources are kept at ${statusDir}`,
     )
   } else {
-    if (run('gh', ['issue', 'close', options.issue, '--reason', 'completed']).rc !== 0) {
+    // 閉じるかは設定の close_on_merge（既定 off: Testing のまま人の動作確認を待ち、Done にして閉じるのは人）
+    const close = closeOnMerge(options.repoRoot)
+    if (close && run('gh', ['issue', 'close', options.issue, '--reason', 'completed']).rc !== 0) {
       log(NAME, `issue #${options.issue}: merged and labelled, but the issue could not be closed`)
     }
+    const message = close ? 'merged and closed' : 'merged; waiting for testing'
     if (
-      issueFetch(options, ['finalize', '--issue', options.issue, '--status', 'done', '--message', 'merged and closed'])
-        .rc !== 0
+      issueFetch(options, ['finalize', '--issue', options.issue, '--status', 'done', '--message', message]).rc !== 0
     ) {
       log(NAME, `issue #${options.issue}: merged, but the state file could not be updated`)
     }
-    log(NAME, `issue #${options.issue}: merged and closed. Resources are kept for the Step 5/6 cleanup at ${statusDir}`)
+    log(
+      NAME,
+      close
+        ? `issue #${options.issue}: merged and closed. Resources are kept for the Step 5/6 cleanup at ${statusDir}`
+        : `issue #${options.issue}: merged and labelled ${STATUS.testing}; move it to ${STATUS.done} after testing. Resources are kept for the Step 5/6 cleanup at ${statusDir}`,
+    )
   }
   output(options, statusDir)
   return 0

@@ -76,6 +76,7 @@ role tuple は `agent` / `model` / `effort` の 3 つを持ち、override → pr
 | `design_mode` | `direct` — `design` は依頼を受けてそのまま取りかかる | `plan` — 最初の編集より前に手順を決めて記録する。`brainstorm` — `superpowers:brainstorming` skill から始め、`ask_via` に従い、自分の端末かあなた経由で人と依頼を詰め、合意した設計を `spec.md` に書き、`superpowers:writing-plans` で `plan.md` に計画する。`phase_b=off` ならそのあと `superpowers:subagent-driven-development` で実装する |
 | `ask_via` | `terminal` — `brainstorm` の design は質問と、書いた spec のレビュー依頼を自分の端末で行い、そこで答えを待つ。レビューが上限に達した役も同じように尋ねる | `parent` — `orchestration ask` で尋ね、待機が終了コード 6 で抜けてあなたが質問を取り次ぐ。**既定が以前の挙動でない唯一の設定**: `terminal` はこれらの文書が一貫して書いてきた挙動である |
 | `cleanup` | `end` — タスクの端末・worktree・記録は、Step 5 が提示して Step 6 で尋ねるまで残る。成果を pull request で届けたタスクは成果が merge されていないので、Step 5 はその worktree と記録を提示しない | `pr_created` — Step 4 でタスクの pull request を作った直後に、そのタスクを尋ねずに片付ける。`pr_merged` — 後の dispatch か `--issue` の実行の始めに、pull request が merge されたタスクを尋ねずに片付ける |
+| `close_on_merge` | `off` — `--issue` の実行で成果を merge した issue に `Testing` を付け、開いたままにする。人が変更を動作確認してから `Done` にして閉じる。**これも前の挙動ではない**: 前は誰も確かめないうちに merge で `Done` にして閉じていた | `on` — `Testing` を付けて閉じる。`--auto` はこの設定を読まず、自分の `closeOnMerge` を読む |
 
 **`cleanup` が働くのは pull request で届けた成果だけ**で、Step 5 の条件のうち、PR が記録されて origin のブランチと手元のブランチが一致するタスクを merge 済みとみなす点だけを変えて判定する。`pr_merged` では、merge された pull request の head のコミット（`headRefOid`）が手元のブランチのコミットと同じタスクも merge 済みとみなすので、merge のときに head ブランチを消しても、そのタスクは残らない。`integration=merge` で始めた dispatch は設定にかかわらず `end` を記録し、`--auto` は `cleanup` を見ない（自分の pull request の直後に既に片付けている）。値は dispatch の開始時に `workers.json` に記録するので、あとで設定を変えても前の dispatch の片付け方は変わらず、この設定より前に記録された dispatch は `end` として扱う。未コミットの変更がある checkout、再利用した worktree、記録と一致しない端末など、Step 5 のほかの条件で残すものは残す。ユーザーが操作した端末はその worktree も残す（worktree を消すとその端末を尋ねずに閉じるため）。タスクの何かが残るときは、その dispatch 記録も残す。残したものは理由とともに 1 行ずつ表示する。
 
@@ -259,7 +260,7 @@ Step 2 は `--agent` / `--model` / `--effort` / `--design-mode` / `--cleanup` �
 
 各段の答えは `setup.json` に残し、中断したら再実行で済んだ段から再開する。完了後のやり直しは Enter で今の値を保つ。setup は確認コマンドを決めるだけで走らせない。走らせるのは実装のあとの worker で、通らなかった Issue は人の確認に回る。道具の版を mise で固定するリポジトリ（`mise.toml`・`.mise.toml`・`.tool-versions`）では、AI の案と問いが、そのリポジトリの task を `mise run` か `mise exec --` で走らせること、CI に無い検査を作らず CI と同じ検査を選ぶことを求める。確認の段が確かめるのは checkout の置き場所だけで、このマシンの checkout は origin がそのリポジトリの git の checkout の一番上であること、遠くの組はそのマシンの Orca のリポジトリの一覧に同じ origin で載っていることを見る。通った組を確認済みにする。並列数の推奨はマシンの段で測る CPU・メモリの総量・空きディスクから求め、前の版が測ったリポジトリごとの最大メモリとディスクの増え方は、組の置き場所が変わらない間は残し、余裕を見込んだその値で 1 worktree 分の既定値を置き換える。推奨は Issue 数ではなく worktree 数で数える。
 
-setup を一度最後まで終えたあとは、同じく人が操作するターミナルで `make hosts <name>` を実行するとマシンだけを、`make roles <name>` を実行すると `review_mode` と `phase_b` だけを変えられる。`make hosts` はマシン・確認・並列数・保存の段を回す（checkout が変わった組は置き場所を確かめ直し、並列数はマシンごとに持つため）。`make roles` は 2 つを尋ねて保存する。どちらも `config.json` から始め、差を見せて確かめてから書き、実行中の Issue が使うマシンやリポジトリを外す変更は断り、automation には触らない。setup をまだ終えていないとき、`setup.json` に途中の setup が残っているときは実行しない。dispatch 済みの Issue は起動したときに記録したモードと worktree 数のまま進み、変更はそのあとに dispatch する Issue から効く。
+setup を一度最後まで終えたあとは、同じく人が操作するターミナルで `make hosts <name>` を実行するとマシンだけを、`make roles <name>` を実行すると `review_mode` と `phase_b` と `closeOnMerge` だけを変えられる。`make hosts` はマシン・確認・並列数・保存の段を回す（checkout が変わった組は置き場所を確かめ直し、並列数はマシンごとに持つため）。`make roles` はその 3 つを尋ねて保存する。どちらも `config.json` から始め、差を見せて確かめてから書き、実行中の Issue が使うマシンやリポジトリを外す変更は断り、automation には触らない。setup をまだ終えていないとき、`setup.json` に途中の setup が残っているときは実行しない。dispatch 済みの Issue は起動したときに記録したモードと worktree 数のまま進み、変更はそのあとに dispatch する Issue から効く。
 
 `make repos <name>` は、同じく人が操作するターミナルで、今の拾う元の Issue を実装するリポジトリを変える。一覧を見せ、1 件ずつ追加（名前と checkout）・checkout の変更・削除を選ばせ、1 つは残させる。どの拾う元も使わなくなったリポジトリは設定から外れる。この段のあとに、マシン・確認・並列数・保存の段を回し、そのあと判定の権限の承認の段を回す（判定はすべての checkout を読むので、許可が checkout とともに変わるため）。automation そのものと有効・無効は変えない。新しい許可を承認するまで、ランチャー経由の tick は判定を始めない。拾う元を足すのは今までどおり `make auto-setup <name>` で行う（intake の設定・Project・ラベルは拾う元の側の設定のため）。`make hosts` と同じく `config.json` から始め、実行中の Issue が使うリポジトリを外す変更は断り、setup をまだ終えていないとき・`setup.json` に途中の setup が残っているときは実行しない。
 
@@ -296,9 +297,9 @@ setup を一度最後まで終えたあとは、同じく人が操作するタ�
 レーンはworktreeの数で数える。off/off、on/off、off/on、on/onはそれぞれ1件で1、2、2、4worktreeを予約し、後から起動する役も含む。対象が 2 つの Issue はその倍を予約する。持ち主のいないworktreeも使用数に入る。`verified: false` とインフラのリポジトリも実行するが、PRは人の確認が必要。`ci: false` はCIの無いリポジトリだけに設定する。
 
 
-拾う元には任意で `project` に GitHub Project を 1 つ登録できる（`owner` は個人か organization の login、`number` は Project の番号）。登録すると、tick は Project の Status と Issue のステータスラベルを両方向で揃える。揃えるのは tick の初めのほう、キューを補充したあと、`judge-apply` の終わりの 3 か所。前回の同期から片方だけが変わっていればもう片方をそれに合わせ、両方が変わっていれば新しいほうに合わせる（同じ秒ならラベル）。同期で書いた Issue は、同じ tick の中ではもう揃えず、次の tick で揃え直す。対象はその拾う元のリポジトリの Issue のうち、すでに Project に入っているものだけで、管理している Issue に加え、slack-issue-intake の `existing` の設定が `active` のリポジトリでは `from-slack` も `slack-thread` も無い Issue も揃える（手で作って Project で Ready にした Issue には Ready ラベルが付き、intake がそれを取り込み、その後の tick で拾う）。archive された項目は見ず、Issue を Project に足すこともしない。Status がステータス 8 つのどれでもない（`Todo` や空）ときは、前回の同期からステータスラベルが変わったときだけ Status をそのラベルにし、ラベルが変わっていなければ何もしない。ステータスラベルを全部外しても Status は消さない。ラベルの遷移が途中の Issue は、終わるまで飛ばす。Project には単一選択の `Status` 欄が要り、ステータス 8 つの選択肢は自分で足す。選択肢が無いときはその Issue を飛ばし、tick の出力に 1 行書く。gh に `project` の権限が要る（`gh auth refresh -s project`）。権限が無い、または Project を読めないときは、tick は 1 行書いて続ける。
+拾う元には任意で `project` に GitHub Project を 1 つ登録できる（`owner` は個人か organization の login、`number` は Project の番号）。登録すると、tick は Project の Status と Issue のステータスラベルを両方向で揃える。揃えるのは tick の初めのほう、キューを補充したあと、`judge-apply` の終わりの 3 か所。前回の同期から片方だけが変わっていればもう片方をそれに合わせ、両方が変わっていれば新しいほうに合わせる（同じ秒ならラベル）。同期で書いた Issue は、同じ tick の中ではもう揃えず、次の tick で揃え直す。対象はその拾う元のリポジトリの Issue のうち、すでに Project に入っているものだけで、管理している Issue に加え、slack-issue-intake の `existing` の設定が `active` のリポジトリでは `from-slack` も `slack-thread` も無い Issue も揃える（手で作って Project で Ready にした Issue には Ready ラベルが付き、intake がそれを取り込み、その後の tick で拾う）。archive された項目は見ず、Issue を Project に足すこともしない。Status がステータス 9 つのどれでもない（`Todo` や空）ときは、前回の同期からステータスラベルが変わったときだけ Status をそのラベルにし、ラベルが変わっていなければ何もしない。ステータスラベルを全部外しても Status は消さない。ラベルの遷移が途中の Issue は、終わるまで飛ばす。Project には単一選択の `Status` 欄が要り、ステータス 9 つの選択肢は自分で足す。選択肢が無いときはその Issue を飛ばし、tick の出力に 1 行書く。gh に `project` の権限が要る（`gh auth refresh -s project`）。権限が無い、または Project を読めないときは、tick は 1 行書いて続ける。
 
-`pick` が `Ready` の拾う元は `autoReady: true`（auto-ready。`make auto-setup` が拾う元ごとに尋ね、既定は no）を持てる。tick は、そのリポジトリの開いた管理 Issue のうち、ステータスラベルが Backlog だけで、auto-ready が有効になったのを tick が最初に見た時刻より後に作られたものも一覧する。それより前の Backlog の Issue は次に述べる場合を除いて拾わず、状態にすでにある Issue は拾い直さない（人が Backlog に戻した Issue を含む）。slack-issue-intake の `existing` の設定が `active` のリポジトリでは、`slack-thread` を持ち、ステータスラベルが Backlog だけの Issue も、作られた時期を問わず判定に回す。そのリポジトリの開いた `slack-thread` の Issue でステータスラベルが無いものは、先に Backlog を付け、次の tick から判定に回す。`active` のリポジトリでは `slack-thread` を人の印と見るので、`thread` から `active` に切り替えると、`thread` のあいだに intake が付けた Issue（古い Backlog のものも含む）が判定に回る。AI に判定させたくない Issue は `slack-thread` を外すか、先に `autoReady` を切ること。1 つのリポジトリは 1 つの intake のホームだけで扱い、ホームごとに `thread` と `active` を混ぜないこと。読める intake の設定のどれかが `thread` と書いていれば、そのリポジトリの `active` は無視し、リポジトリ名を 1 行出す。拾う元に `project` があるときは、Project の上の Status がステータス 8 つのどれかの Issue と、同じ tick で同期がすでに扱った Issue には付けず、その Project を読めなかった tick にはどの Issue にも付けない。判定役は Ready の Issue と同じように読み、`autoReady` の印が付く。`auto` はコメントしてから Backlog を Ready に変え（event `auto-ready`）、キューに入れる。`eng` は Backlog から Ready_Eng に変える。auto-ready の Issue の PR は In review にし、AI は merge しない。ただし拾う元が `autoMerge: true` も持つときは別で（`make auto-setup` が auto-ready に yes と答えた直後に尋ね、既定は no。`autoReady` なしでは意味がなく、`autoMerge` だけがある設定は拒む）、ほかの merge の条件がそろえば AI が merge し、`auto-ready` のコメントもそう書く（決めた向き先が `baseBranch` でなければ書かない）。`autoMerge` は後述の向き先の制限を外さない。`baseBranch` でない向き先への merge は In review のままになる。判定が適用される前に人が Ready にすれば通常の Issue になり、人が別のステータスにすれば止まる。auto-ready を外すと、判定待ちの Backlog の Issue は記録から外れる。
+`pick` が `Ready` の拾う元は `autoReady: true`（auto-ready。`make auto-setup` が拾う元ごとに尋ね、既定は no）を持てる。tick は、そのリポジトリの開いた管理 Issue のうち、ステータスラベルが Backlog だけで、auto-ready が有効になったのを tick が最初に見た時刻より後に作られたものも一覧する。それより前の Backlog の Issue は次に述べる場合を除いて拾わず、状態にすでにある Issue は拾い直さない（人が Backlog に戻した Issue を含む）。slack-issue-intake の `existing` の設定が `active` のリポジトリでは、`slack-thread` を持ち、ステータスラベルが Backlog だけの Issue も、作られた時期を問わず判定に回す。そのリポジトリの開いた `slack-thread` の Issue でステータスラベルが無いものは、先に Backlog を付け、次の tick から判定に回す。`active` のリポジトリでは `slack-thread` を人の印と見るので、`thread` から `active` に切り替えると、`thread` のあいだに intake が付けた Issue（古い Backlog のものも含む）が判定に回る。AI に判定させたくない Issue は `slack-thread` を外すか、先に `autoReady` を切ること。1 つのリポジトリは 1 つの intake のホームだけで扱い、ホームごとに `thread` と `active` を混ぜないこと。読める intake の設定のどれかが `thread` と書いていれば、そのリポジトリの `active` は無視し、リポジトリ名を 1 行出す。拾う元に `project` があるときは、Project の上の Status がステータス 9 つのどれかの Issue と、同じ tick で同期がすでに扱った Issue には付けず、その Project を読めなかった tick にはどの Issue にも付けない。判定役は Ready の Issue と同じように読み、`autoReady` の印が付く。`auto` はコメントしてから Backlog を Ready に変え（event `auto-ready`）、キューに入れる。`eng` は Backlog から Ready_Eng に変える。auto-ready の Issue の PR は In review にし、AI は merge しない。ただし拾う元が `autoMerge: true` も持つときは別で（`make auto-setup` が auto-ready に yes と答えた直後に尋ね、既定は no。`autoReady` なしでは意味がなく、`autoMerge` だけがある設定は拒む）、ほかの merge の条件がそろえば AI が merge し、`auto-ready` のコメントもそう書く（決めた向き先が `baseBranch` でなければ書かない）。`autoMerge` は後述の向き先の制限を外さない。`baseBranch` でない向き先への merge は In review のままになる。判定が適用される前に人が Ready にすれば通常の Issue になり、人が別のステータスにすれば止まる。auto-ready を外すと、判定待ちの Backlog の Issue は記録から外れる。
 
 リポジトリごとに `baseBranch`（普段の向き先。PR の向き先であり、AI が merge してよい唯一のブランチ）と `branches`（向き先の候補。`baseBranch` を含める）を持てる。どちらも省略できる。省略すると候補は GitHub の既定ブランチ 1 つで、以下は何も働かない。`make auto-setup` はリポジトリの段で、related だけのリポジトリも含めて 1 つずつ、origin に既定ブランチ・`develop`・`main`・`master` のうち 2 つ以上があるときだけこの 2 欄を尋ねる。普段の向き先（`develop` があれば `develop`、無ければ既定ブランチ）と候補（見つかったもの）を示し、普段の向き先が候補に入っていることを確かめる。再実行では今の値を既定として見せる。見つかったブランチが 2 つ未満なら何も尋ねず、2 欄も書かない。
 
@@ -306,7 +307,7 @@ setup を一度最後まで終えたあとは、同じく人が操作するタ�
 
 向き先が不明（`ask`）のとき、tick は `needs-base` のコメントを書く。コメントは、分かれば理由（例えば `base:*` ラベルが 2 つ付いている）を述べ、候補のラベルを挙げ、ラベルを付けたあとどうなるか（auto-ready の拾う元はひとりでに拾い直す。それ以外の拾う元は、人が pick のステータスに戻すまで待つ）を言い、ラベル無しで pick のステータスに戻されたときに進める向き先（対象が 2 つならリポジトリごと）を挙げる。拾う元の `pick` のステータスから拾った Issue は Backlog に戻す。Backlog のまま判定した auto-ready の Issue は、コメントだけを書いて Backlog のままにする。ステータスが変わらなくても、この event は Slack でメンションする。待っている間はその Issue を判定に回さず、尋ねるのは 1 世代に 1 回だけである。人は 2 つの方法で答える。`base:<branch>` ラベルを付ける方法（auto-ready の Issue は再び判定に回り、auto-ready を有効にする前に作られた Issue でもそのラベルの向き先で進む。それ以外は pick のステータスに戻すと、その向き先で進む）と、ラベルを付けずに pick のステータスへ戻す方法（`baseBranch` で進む）である。拾い直した Issue の `autoReady` は、尋ねる前の値を保つ。
 
-リポジトリの `baseBranch` でない向き先への merge は、ほかの条件にかかわらず必ず In review にし、理由を記録する。設定を足した時点で動いていた Issue も、その run が使った向き先で判断する。tick は GitHub で各 PR の実際の向き先も読む。決めた向き先と違う PR（人が付け替えた、前の世代の PR を拾い直したなど）は In review にし、制限は実際の向き先にも効く。AI が merge するのは `baseBranch` へだけで、`baseBranch` の無いリポジトリは今までどおりに動く。そうした PR が人によって merge されたのを tick が見つけたら、Done のコメントを書く前に、戻しの PR `<向き先> -> <baseBranch>` を開く（向き先は GitHub が PR の実際の向き先を返せばそれ。対象が 2 つの Issue ならリポジトリごとに 1 つ）。リンクは Done のコメントに載せる。戻しの PR を merge することはない。同じ向きで開いている PR があればそれを使い、ブランチに差が無ければ開かず、開けなかったときはその理由を Done のコメントに書いて Done は止めない。
+リポジトリの `baseBranch` でない向き先への merge は、ほかの条件にかかわらず必ず In review にし、理由を記録する。設定を足した時点で動いていた Issue も、その run が使った向き先で判断する。tick は GitHub で各 PR の実際の向き先も読む。決めた向き先と違う PR（人が付け替えた、前の世代の PR を拾い直したなど）は In review にし、制限は実際の向き先にも効く。AI が merge するのは `baseBranch` へだけで、`baseBranch` の無いリポジトリは今までどおりに動く。そうした PR が人によって merge されたのを tick が見つけたら、Testing のコメントを書く前に、戻しの PR `<向き先> -> <baseBranch>` を開く（向き先は GitHub が PR の実際の向き先を返せばそれ。対象が 2 つの Issue ならリポジトリごとに 1 つ）。リンクは Testing のコメントに載せる。戻しの PR を merge することはない。同じ向きで開いている PR があればそれを使い、ブランチに差が無ければ開かず、開けなかったときはその理由を Testing のコメントに書いて Testing は止めない。
 
 任意の `hosts` でマシンを選ぶ。無ければ従来の `lanes`、checkoutのパス、リポジトリの確認結果をこのMacの設定として読む。指定した場合は、マシンごとに並列数とリポジトリのselectorを持つ。`id: local` はこのマシン、ペアリング済みサーバーは変わらないenvironment IDで指定する。`orcaBin` はそのマシンの実行ファイル、遠隔のrepo selectorは親のcheckoutではなくそのマシンに登録したリポジトリを指す。各マシンにGit/ghの認証と同じoriginへのアクセスが必要。`verified` はそのマシンのそのリポジトリで確認が通ったことを表し、そこで通ってからtrueにする。例えば設定の最上位へ次の `hosts` を足す:
 
@@ -385,6 +386,8 @@ tick は判定の結果から学ぶ。判定した Issue の世代が終わる�
 
 ラベルの変更とcloseの前にコメントを書く。保存した遷移の段からやり直すため、コメントを再投稿せずに続けられる。人がステータスを変えたら残る遷移を中止する。確認コマンドとCIが成功（またはCI無しを明示）し、選んだ実行先で確認済みかつインフラではないリポジトリの明確な結果だけをmergeする。worker が `needsReview` に入れた点、未解消・不採用の指摘、検査の失敗があれば In review。`needsReview` には人が確かめるべき選択だけを入れる。別の読み方ならユーザーに見える動きが変わる Issue の読み方、Issue に無い動きの追加や削除、セキュリティ・データ・公開 API の互換・料金に関わる選択、確かめられなかった前提である。そのほかの選択は `decisions` に入れ、merge・一部の merge・In review のどれでも Issue のコメントに記録として残し、それだけでは merge を止めない。`needsReview` のキーが無い（前の指示で書かれた）結果は、今までどおり判断が 1 つでもあれば In review に回す。実行先につながるとき、workerの失敗や上限時間超過は Failed。確認待ち・失敗・人の操作で停止・エンジニア対応になったIssueをReadyに戻すと、後片付け完了後に新世代となり、前のブランチとPRの材料を引き継ぐ。
 
+AI が merge しても人が merge しても、Issue は `Done` ではなく `Testing` になり、動作確認を頼むコメントが付く（event は `ai-merged` か `human-merged`）。設定が `closeOnMerge: true` でなければ Issue は開いたまま。`make auto-setup` と `make roles` がレビューモードの段で尋ね、既定は no。人が変更を動作確認してから Issue を `Done` にする。In review の間に、人が `Closes #N` を持つ PR を merge して GitHub が Issue を閉じたときも、PR が全部 merge されていれば同じコメントと `Testing` を付ける。先に開き直し、`closeOnMerge` なら閉じたままにする。merge されていない PR のある閉じた Issue は、今までどおり人が止めたとみなす。`Testing` などのステータスラベルがリポジトリに無いとき（版を上げたあと setup をやり直していない）は、tick がラベルを作ってから付け直す。`Testing` の Issue を Ready に戻しても新世代になるが、merge 済みのブランチからではなく向き先から始め、merge した PR と Issue の新しいコメントを材料として読む。
+
 `--auto` は資源を消す例外。全workerの停止・解放を確認してからlocalの未mergeブランチをpushするか遠隔のブランチがoriginに保存済みと確かめ、解放済みのworktreeと安全なローカルブランチを消し、まとめ役の端末を閉じ、status dirを退避する。merge済みのintegration branchは再pushしない。人の操作を検出したlocalのworktreeは残し、そのworkerが動いていれば後片付けと次世代を保留する。通常のdispatchと `--issue` は引き続きStep 5と6と、設定の `cleanup` を使う。
 
 遠隔の停止・解放の証拠は、`--include-remote` を含むworker一覧の `projection.liveness.verdict: exited`。マシンの部分エラーを停止の証拠にはしない。遠隔を消すには一覧のHEADがoriginに保存済みという証拠も必要で、自分のブランチ・integrationのbase・前世代のブランチの祖先であるか、merge後の受理したintegration HEADと一致すること。一覧にHEADが無い場合の代替はintegrationの役だけで、受理したHEADとoriginのブランチが同じときに限る。未保存のHEADならworktreeを残す。worktreeの一覧が読めない・省略されていれば後片付けを保留し、既に無いと分かるworktreeは再試行を進められる。fetchしたローカルブランチはorigin trackingと同じSHAか、merge済みintegration branchのときだけ消す。削除前の遠隔livenessの実機確認はまだ必要。`orca-recover.ts` は遠隔役の置き換えを拒むので、Orcaでその役を調べる。
@@ -401,7 +404,7 @@ tickの100秒の予算は、次の仕事を始めるかを決める目安。読�
 尽きるかバッチ上限に達するまでバッチ単位で claim する。
 
 **1 件の issue は 1 コールで最後まで運ばれる。**それが `bin/orca-issue.ts` である。dispatch し、
-待ち、merge し、ラベルを遷移させ、issue を close する。**資源は 1 つも消さない** — 手書きの
+待ち、merge し、ラベルを遷移させる。issue を close するのは `close_on_merge=on` のときだけ。**資源は 1 つも消さない** — 手書きの
 dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。 設定の `cleanup` も手書きの dispatch と同じく効く: `pr_created` なら I3 のパス 3 が pull request を作れた issue ごとに片付け、`pr_merged` なら I0 が、前の実行で pull request が merge された issue を片付ける。
 
 | 性質 | この版 |
@@ -410,7 +413,7 @@ dispatch とまったく同じく、Step 5 が判定し Step 6 が尋ねる。 �
 | 駆動 | 1 バッチずつ。終わるまで待ってから次を claim する |
 | 役 | `review_mode` が解決したものを、その実行の全 issue で共通に使う |
 | 向き先 | 親の checkout が今いるブランチ。親はそれを切り替えない。`base:<branch>` ラベルの付いた issue は、`<branch>` がそのブランチのときだけ運ぶ。`fetch` は、`base:*` ラベルが別のブランチを指す issue、`base:*` ラベルが 2 つ以上ある issue、checkout がどのブランチにもいない（detached HEAD）ときの `base:*` ラベル付きの issue をすべて飛ばす。飛ばすたびに理由を書いた `[skip]` の行を出すので、それぞれ 1 行で報告する。飛ばした issue は claim せず、ラベルも変えない。`base:*` ラベルの無い issue はこれまでどおり運ぶ |
-| ラベル | slack-issue-intake と共通のステータスラベル。claim で `In progress`、終わりに `Done` か `Failed` を付ける。検索は、ほかのステータスラベルか古い `dispatch/*` が付いた issue を拾わない。名指しの issue（`--issue <N>`）は何が付いていても運ぶ。claim はその issue のステータスラベルを `In progress` に置き換え、claim を取り消したら元に戻す。終わったときに残るのは `Done` か `Failed` だけ |
+| ラベル | slack-issue-intake と共通のステータスラベル。claim で `In progress`、終わりに、merge したら `Testing`、pull request を作ったら `In review`、失敗なら `Failed` を付ける。動作確認した issue を `Done` にするのは人。検索は、ほかのステータスラベルか古い `dispatch/*` が付いた issue を拾わない。名指しの issue（`--issue <N>`）は何が付いていても運ぶ。claim はその issue のステータスラベルを `In progress` に置き換え、claim を取り消したら元に戻す。終わったときに残るのはその 1 つだけ |
 
 ### I0. 事前確認
 
@@ -533,7 +536,7 @@ exit code の読み方は Step 3 のとおりであり、背景で走らせる�
 exit 5 は**一部の失敗**であってバッチの失敗ではない。自身の `role=design` の行が
 `succeeded` だった issue についてパス 3 へ進む。
 
-パス 3、dispatch できた issue ごとに 1 回。統合し、ラベルを遷移させる:
+パス 3、dispatch できた issue ごとに 1 回。merge するか pull request を作り、ラベルを遷移させる:
 
 ```bash
 : "${PLUGIN:?run the block at the top of this file first}"
@@ -552,7 +555,7 @@ gh repo view --json nameWithOwner -q .nameWithOwner
 
 **pull request を作る実行は issue を close しない。**各 pull request の本文に
 `Closes #<N>` が入っているので、それがマージされたときに GitHub が閉じる。ここで閉じると、
-pull request が却下されても閉じたままになる。
+pull request が却下されても閉じたままになる。それまで issue には `In review` が付いている。
 
 
 exit 1 はその issue を運べなかったことを意味する。ラベルは既に `Failed` へ動いて

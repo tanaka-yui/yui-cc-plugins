@@ -1012,8 +1012,8 @@ const finish = (tick: Tick, issue: IssueState): void => {
         'ai-merged',
         { prs: issue.prs, summary: result?.summary, decisions: issue.decisions, ...back },
         STATUS.inProgress,
-        STATUS.done,
-        true,
+        STATUS.testing,
+        tick.config.closeOnMerge,
         'done',
         tick.save,
         tick.onEnd,
@@ -1173,8 +1173,8 @@ const finish = (tick: Tick, issue: IssueState): void => {
       'ai-merged',
       { prs: issue.prs, summary: result?.summary, decisions: issue.decisions, ...back },
       STATUS.inProgress,
-      STATUS.done,
-      true,
+      STATUS.testing,
+      tick.config.closeOnMerge,
       'done',
       tick.save,
       tick.onEnd,
@@ -1192,38 +1192,53 @@ const reviewEnd = (issue: IssueState): Outcome =>
   issue.prs.every((p) => prStatus(p.repo, p.number)?.state === 'MERGED')
     ? 'merged-human'
     : 'stopped'
+// 人が PR を merge し終えたか。merged は全 PR の状態、waiting は PR を読めなかった（次の tick で読み直す）、
+// open はまだ終えていない（PR が無い・足りない、merge されていない PR や開いた前の世代の PR がある）
+const humanMerge = (issue: IssueState): { merged: PrStatus[] } | 'waiting' | 'open' => {
+  if (!issue.prs.length) return 'open'
+  if (issue.targets.length > 1) {
+    if (issue.prs.length < issue.targets.length) return 'open'
+    for (const previous of issue.prevPrs) {
+      if (issue.prs.some((p) => p.repo === previous.repo)) continue
+      const status = prStatus(previous.repo, previous.number)
+      if (!status) return 'waiting'
+      if (status.state === 'OPEN') return 'open'
+    }
+  }
+  const statuses = issue.prs.map((p) => prStatus(p.repo, p.number))
+  const merged = statuses.flatMap((s) => (s?.state === 'MERGED' ? [s] : []))
+  if (merged.length === statuses.length) return { merged }
+  return statuses.some((s) => !s) ? 'waiting' : 'open'
+}
 const watchReview = (tick: Tick, issue: IssueState): void => {
   if (!canAutoCall('レビューの監視')) return
   const view = viewIssue(issue.repo, issue.number)
   if (!view) return
-  if (view.state === 'CLOSED') {
+  const closed = view.state === 'CLOSED'
+  const closedByPerson = () => {
     tick.onEnd(issue, reviewEnd(issue), view.labels)
-    if (issue.cleanupPending) {
-      issue.phase = 'stopped'
-      tick.save()
-    } else {
-      delete tick.state.issues[issue.key]
-      tick.save()
-    }
-    return
+    if (issue.cleanupPending) issue.phase = 'stopped'
+    else delete tick.state.issues[issue.key]
+    tick.save()
   }
   if (!view.labels.includes(STATUS.inReview)) {
-    issue.phase = 'stopped'
-    tick.onEnd(issue, reviewEnd(issue), view.labels)
-    tick.save()
+    if (closed) closedByPerson()
+    else {
+      issue.phase = 'stopped'
+      tick.onEnd(issue, reviewEnd(issue), view.labels)
+      tick.save()
+    }
     return
   }
-  if (!issue.prs.length) return
-  if (issue.targets.length > 1) {
-    if (issue.prs.length < issue.targets.length) return
-    for (const previous of issue.prevPrs) {
-      if (issue.prs.some((p) => p.repo === previous.repo)) continue
-      const status = prStatus(previous.repo, previous.number)
-      if (!status || status.state === 'OPEN') return
-    }
+  const state = humanMerge(issue)
+  // 閉じた Issue は、In review のまま PR が全部 merge されていれば（PR の Closes #N で GitHub が閉じた）merge の知らせへ進む。
+  // PR を読めなければ次の tick に読み直し、merge されていない PR があれば人が止めた
+  if (closed && state === 'open') {
+    closedByPerson()
+    return
   }
-  const statuses = issue.prs.map((p) => prStatus(p.repo, p.number))
-  if (!statuses.every((s) => s?.state === 'MERGED')) return
+  if (typeof state === 'string') return
+  const statuses = state.merged
   const repo = issue.targets[0] ?? ''
   // review に入った Issue は後片付けで状態ディレクトリが移されていることが多く、run の記録（workers.json）から
   // 2 つ目の対象が読めない。そのときは状態の targets から対象を立てる（向き先は issue.bases から引く）
@@ -1234,14 +1249,21 @@ const watchReview = (tick: Tick, issue: IssueState): void => {
     ? {}
     : backMergeInput(issue, targets, repo, tick.config.repos, realBases(issue.prs, statuses))
   if (!back) return
+  // 閉じない設定では、動作確認を待つ間 Issue を開いておく（Done にして閉じるのは確認した人）
+  if (
+    closed &&
+    !tick.config.closeOnMerge &&
+    github(['issue', 'reopen', String(issue.number), '--repo', issue.repo]).rc !== 0
+  )
+    return
   if (
     transition(
       issue,
       'human-merged',
       { prs: issue.prs, ...back },
       STATUS.inReview,
-      STATUS.done,
-      true,
+      STATUS.testing,
+      tick.config.closeOnMerge,
       'done',
       tick.save,
       tick.onEnd,

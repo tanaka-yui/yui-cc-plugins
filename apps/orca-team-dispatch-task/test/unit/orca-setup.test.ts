@@ -1,6 +1,6 @@
 // make setup（普段の設定。bin/orca-setup.ts / lib/settings-setup.ts）。SE1〜SE6
 import { autoDir } from '../../lib/auto-paths.ts'
-import { globalConfigFile, OPUS_MODEL } from '../../lib/config.ts'
+import { globalConfigFile, OPUS_MODEL, TOGGLE_KEYS } from '../../lib/config.ts'
 import { SETUP_DRAFT_FILE } from '../../lib/setup-draft.ts'
 import { fixture } from '../lib/auto-fixture.ts'
 
@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 const ENTER_WORKERS = Array(12).fill('')
-const ENTER_TOGGLES = Array(7).fill('')
+const ENTER_TOGGLES = Array(TOGGLE_KEYS.length).fill('')
 const prepare = () => {
   const f = fixture()
   const setups = (base: string | null) => ({
@@ -61,7 +61,7 @@ test('SE1 changes only what was answered and keeps unknown keys in the global la
       ...Array(9).fill(''),
       'maybe', // review_mode の値ではない
       'on',
-      ...Array(6).fill(''),
+      ...Array(7).fill(''),
       'y',
       '',
       'medium',

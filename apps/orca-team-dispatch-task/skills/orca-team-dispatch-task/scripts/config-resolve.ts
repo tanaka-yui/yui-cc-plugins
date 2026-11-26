@@ -4,6 +4,7 @@
 //                               [--integration <merge|pr>] [--setup <skip|run>]
 //                               [--design-mode <direct|plan|brainstorm>]
 //                               [--ask-via <terminal|parent>] [--cleanup <end|pr_created|pr_merged>]
+//                               [--close-on-merge <off|on>]
 //                               [--set <role>.<field>=<value>]...
 // Exit:  0 = 解決した / 1 = 設定が読めない / 2 = 使用法エラー
 // --project-root の既定は git rev-parse --show-toplevel（git の外なら exit 2）
@@ -93,6 +94,7 @@ const main = (argv: string[]): number => {
     '--design-mode': 'design_mode',
     '--ask-via': 'ask_via',
     '--cleanup': 'cleanup',
+    '--close-on-merge': 'close_on_merge',
   }
   const requirement: { [key in Toggle]: string } = {
     review_mode: 'on or off',
@@ -102,6 +104,7 @@ const main = (argv: string[]): number => {
     design_mode: 'direct, plan or brainstorm',
     ask_via: 'terminal or parent',
     cleanup: 'end, pr_created or pr_merged',
+    close_on_merge: 'off or on',
   }
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index] ?? ''
@@ -259,6 +262,7 @@ const main = (argv: string[]): number => {
   const designMode = resolveToggle('design_mode')
   const askVia = resolveToggle('ask_via')
   const cleanup = resolveToggle('cleanup')
+  const closeOnMerge = resolveToggle('close_on_merge')
 
   const roles: JsonObject = {}
   for (const role of roleNames(reviewMode, phaseB)) {
@@ -291,6 +295,7 @@ const main = (argv: string[]): number => {
     design_mode: designMode,
     ask_via: askVia,
     cleanup,
+    close_on_merge: closeOnMerge,
     roles,
   }
   process.stdout.write(`${JSON.stringify(resolved, null, 2)}\n`)

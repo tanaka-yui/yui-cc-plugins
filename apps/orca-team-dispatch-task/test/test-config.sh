@@ -537,4 +537,16 @@ rerr=$(node "$RESOLVE" --project-root "$PR" --cleanup later 2>&1 >/dev/null); rr
    && "$(cat "$G")" == "$before" ]] && ok "CF54 不正な cleanup を拒む" || fail "CF54 (rc=$rc rrc=$rrc err=$err rerr=$rerr)"
 teardown
 
+# CF55: close_on_merge は off / on。既定は off（merge しても閉じず、Testing のまま人の動作確認を待つ）。
+#       config-edit で書け、1 回きりの上書きが勝つ。2 値以外は拒む
+setup
+cm_() { node "$RESOLVE" --project-root "$PR" "$@" 2>/dev/null | jq -r '.close_on_merge'; }
+a=$(cm_)
+node "$EDIT" --layer global --set close_on_merge=on >/dev/null 2>&1
+b=$(cm_); c=$(cm_ --close-on-merge off)
+node "$RESOLVE" --project-root "$PR" --close-on-merge later >/dev/null 2>&1; rrc=$?
+[[ "$a" == off && "$b" == on && "$c" == off && "$(jq -r '.close_on_merge' "$G")" == on && "$rrc" -eq 2 ]] \
+  && ok "CF55 close_on_merge を書けて、解決できる" || fail "CF55 (a=$a b=$b c=$c rrc=$rrc)"
+teardown
+
 echo "failures: $fails"; [[ "$fails" -eq 0 ]]

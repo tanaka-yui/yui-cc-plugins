@@ -342,7 +342,9 @@ test('AU117b unmatched previous PRs prevent both AI and later human completion a
     f.prViews(continuationViews({ state: 'CLOSED', mergedAt: null }, true))
     f.cli('tick')
     assert.equal(readState('main').issues[issue.key]?.phase, 'done')
-    assert.ok(f.calls().includes('issue close'))
+    // merge のあとは Testing で、既定では閉じない
+    assert.ok(!f.calls().includes('issue close'))
+    assert.ok(f.calls().includes('--add-label Testing'))
     assert.ok(readFileSync(join(f.dir, 'comments.jsonl'), 'utf8').includes('human-merged'))
   } finally {
     f.cleanup()
@@ -434,6 +436,23 @@ test('AU178 a tick whose base changed from the previous generation writes a fres
     const request = readFileSync(join(current.statusDir, 'request.md'), 'utf8')
     assert.ok(!request.includes('git reset --hard'), request)
     assert.ok(request.includes('The base of acme/app changed from develop to main'), request)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('AU197 a generation after a merge has no branch to continue but still carries the comments as material', () => {
+  const f = runtimeFixture()
+  try {
+    const issue = f.track()
+    Object.assign(issue, { generation: 2, prevBranch: '', prevBranches: {}, prevTargets: [], prevPrs: [old] })
+    f.respond('api', [{ created_at: '2026-11-13T05:00:00Z', body: '動作確認で 500 になりました' }])
+    f.respond('pr_checks', [])
+    const text = continuationOf(issue, '2026-11-13T04:00:00Z')
+    assert.ok(text)
+    assert.ok(!text.instructions.includes('git reset'), text.instructions)
+    assert.ok(text.instructions.includes('Respond to the comments'), text.instructions)
+    assert.ok(JSON.stringify(text.material).includes('動作確認で 500 になりました'))
   } finally {
     f.cleanup()
   }

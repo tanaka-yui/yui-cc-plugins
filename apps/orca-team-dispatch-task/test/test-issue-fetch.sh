@@ -113,13 +113,13 @@ out=$(run reconcile 2>/dev/null)
   && ok "IF8 dispatched が残っていれば abort" || fail "IF8 ($out)"
 teardown
 
-# IF9: ensure-labels はステータスラベル 8 つを冪等に作る。既にあるものは作り直さない。
+# IF9: ensure-labels はステータスラベルを全部、冪等に作る。既にあるものは作り直さない。
 setup; acquire
 jq -nc '[{name:"In progress"}]' > "$GH_STUB_DIR/label_list"
 : > "$GH_STUB_DIR/label_create"
 run ensure-labels >/dev/null 2>&1; rc=$?
 created=$(grep -c 'label create' "$GH_STUB_DIR/calls.log")
-[[ "$rc" -eq 0 && "$created" -eq 7 ]] \
+[[ "$rc" -eq 0 && "$created" -eq 8 ]] \
   && ! grep -qF 'label create In\ progress' "$GH_STUB_DIR/calls.log" \
   && ok "IF9 足りないラベルだけ作る" || fail "IF9 (rc=$rc created=$created)"
 teardown
@@ -197,7 +197,7 @@ jq -nc '[{name:"ready"},{name:"done"}]' > "$GH_STUB_DIR/label_list"
 : > "$GH_STUB_DIR/label_create"
 run ensure-labels >/dev/null 2>&1; rc=$?
 created=$(grep -c 'label create' "$GH_STUB_DIR/calls.log")
-[[ "$rc" -eq 0 && "$created" -eq 6 ]] \
+[[ "$rc" -eq 0 && "$created" -eq 7 ]] \
   && ! grep -qE 'label create (Ready|Done) ' "$GH_STUB_DIR/calls.log" \
   && grep -qF -- '--color' "$GH_STUB_DIR/calls.log" \
   && grep -qF -- '--description' "$GH_STUB_DIR/calls.log" \

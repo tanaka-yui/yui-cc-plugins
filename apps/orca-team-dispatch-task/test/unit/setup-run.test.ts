@@ -76,6 +76,8 @@ const prepare = () => {
     '',
     '',
     '',
+    // merge したあと Issue を閉じるか（既定は n）
+    '',
     '',
     'y',
     'y',
@@ -217,7 +219,7 @@ test('SU27b same-name automation requires consent', () => {
       f.orca,
     )
     const answers = f.freshAnswers()
-    answers[21] = 'n'
+    answers[22] = 'n'
     const result = f.invoke(answers)
     assert.equal(result.status, 1, result.stdout + result.stderr)
     assert.ok(!/automations (create|edit)/.test(f.calls(f.orca)))
@@ -387,7 +389,7 @@ test('SU30g legacy lanes persist across an interrupted setup', () => {
     const draft = JSON.parse(readFileSync(join(autoDir('main'), 'setup.json'), 'utf8'))
     assert.equal(draft.values.lanes, 3)
     assert.ok(draft.done.includes('lanes'))
-    const result = f.invoke(['', '', '', 'y', ''])
+    const result = f.invoke(['', '', '', '', 'y', ''])
     assert.equal(result.status, 0, result.stdout + result.stderr)
     assert.equal(f.config().lanes, 3)
     assert.equal(f.config().hosts, null)
@@ -793,12 +795,15 @@ test('SU40 roles changes only review_mode and phase_b and leaves automation and 
   const f = prepare()
   try {
     const before = f.config()
-    const result = f.rerun({ review_mode: 'on', phase_b: 'on', 'config.json を書きますか': 'y' }, 'roles')
+    const result = f.rerun(
+      { review_mode: 'on', phase_b: 'on', closeOnMerge: 'y', 'config.json を書きますか': 'y' },
+      'roles',
+    )
     assert.equal(result.code, 0, result.output)
-    assert.deepEqual(f.config(), { ...before, roles: { review_mode: 'on', phase_b: 'on' } })
+    assert.deepEqual(f.config(), { ...before, roles: { review_mode: 'on', phase_b: 'on' }, closeOnMerge: true })
     assert.deepEqual(
       result.asked.map((q) => q.split(' ')[0]),
-      ['review_mode', 'phase_b', 'この内容で'],
+      ['review_mode', 'phase_b', 'closeOnMerge:', 'この内容で'],
     )
     assert.match(result.output, /1 件が使う worktree: 対象1つ=4、対象2つ=8/)
     assert.equal(f.calls(f.orca), '')

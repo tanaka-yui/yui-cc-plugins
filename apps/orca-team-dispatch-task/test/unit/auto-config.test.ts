@@ -258,3 +258,20 @@ test('CF7b the two fields survive the setup draft round trip and defaults stay u
   assert.equal(JSON.stringify(plain).includes('baseBranch'), false)
   assert.equal(JSON.stringify(plain).includes('branches'), false)
 })
+test('CF8 closeOnMerge defaults to keeping the issue open, rejects non-booleans and is written only when true', () => {
+  assert.equal(parseAutoConfig(fixture, 'main')?.closeOnMerge, false)
+  assert.equal(parseAutoConfig({ ...fixture, closeOnMerge: true }, 'main')?.closeOnMerge, true)
+  assert.equal(parseAutoConfig({ ...fixture, closeOnMerge: 'yes' }, 'main'), null)
+  const closing = parseAutoConfig({ ...fixture, closeOnMerge: true }, 'main')
+  assert.ok(closing)
+  const json = configJsonFromDraft(draftFromConfig(closing), null)
+  assert.ok(json)
+  assert.equal(json.closeOnMerge, true)
+  assert.deepEqual(parseAutoConfig(json, 'main'), closing)
+  const reopened = configJsonFromDraft(
+    { ...draftFromConfig(closing), values: { ...draftFromConfig(closing).values, closeOnMerge: false } },
+    json,
+  )
+  assert.ok(reopened)
+  assert.equal(Object.hasOwn(reopened, 'closeOnMerge'), false)
+})

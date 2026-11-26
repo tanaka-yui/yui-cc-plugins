@@ -318,3 +318,41 @@ test('AU171 a new generation keeps the previous generation bases only when it ha
     f.cleanup()
   }
 })
+
+test('AU196 a merged issue returned from Testing to Ready starts a new generation from its base, not from the merged branch', () => {
+  const f = fixture()
+  try {
+    const s = empty()
+    f.respond('issue_list', [{ number: 7, title: '題', labels: [], updatedAt: '2026-01-01' }])
+    const source = f.config().sources[0]
+    assert.ok(source)
+    syncIssues(s, [source])
+    const issue = s.issues['acme/app#7']
+    assert.ok(issue)
+    const merged = { repo: 'acme/app', number: 101, url: 'https://github.com/acme/app/pull/101' }
+    Object.assign(issue, {
+      phase: 'done',
+      targets: ['acme/app'],
+      branch: 'auto/merged',
+      branches: { 'acme/app': 'auto/merged' },
+      bases: { 'acme/app': 'main' },
+      prs: [merged],
+      prevBranch: 'auto/older',
+      prevBranches: { 'acme/app': 'auto/older' },
+      prevTargets: ['acme/app'],
+      endedAt: '2026-01-02',
+    })
+    syncIssues(s, [source])
+    assert.equal(issue.generation, 2)
+    assert.equal(issue.phase, 'judging')
+    // merge 済みの枝から続けると、squash merge のあとで同じ変更をもう一度出してしまう
+    assert.equal(issue.prevBranch, '')
+    assert.deepEqual(issue.prevBranches, {})
+    assert.deepEqual(issue.prevTargets, [])
+    assert.deepEqual(issue.prevBases, {})
+    // 動作確認で見つかったことは、merge した PR と Issue のコメントから続きの材料として読む
+    assert.deepEqual(issue.prevPrs, [merged])
+  } finally {
+    f.cleanup()
+  }
+})

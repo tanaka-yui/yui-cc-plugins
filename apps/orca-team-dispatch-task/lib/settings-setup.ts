@@ -49,6 +49,7 @@ const TOGGLE_HELP: { [key in Toggle]: string } = {
   design_mode: '取りかかり方（direct / plan / brainstorm）',
   ask_via: 'brainstorm の質問をどこで尋ねるか（worker の端末か親か）',
   cleanup: 'PR のタスクの後片付けの時機',
+  close_on_merge: '--issue で merge した issue を閉じるか（off なら Testing のまま人の動作確認を待つ）',
 }
 
 const noInput = Symbol('noInput')

@@ -222,7 +222,7 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
 - `skipped_precheck` entries accumulate in Orca history. Rare duplicate Slack replies after crashes are possible.
 - Every poll, after intake and only when at least 10 seconds of its budget remain, reads `from-slack` and `slack-thread` issues from all configured repositories and
   writes status label and open/closed changes to the original Slack thread without starting Claude. Labels:
-  Backlog, Ready, Ready_Eng, In progress, In review, Pending, Done, Failed (shared with orca-team-dispatch-task).
+  Backlog, Ready, Ready_Eng, In progress, In review, Testing, Pending, Done, Failed (shared with orca-team-dispatch-task). A merge moves an Issue to Testing, not Done, and the post asks the group to test it; a person moves it to Done after testing.
   A change counts as made by AI only when, among the new comments whose author is an owner, member, collaborator, or
   the intake gh account, the latest one ending with an `orca-auto` marker has a status equal to the current label;
   only then is the group mentioned (per event) and the comment relayed. The partner plugin writes the comment before

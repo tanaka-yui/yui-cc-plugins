@@ -285,15 +285,15 @@ IOUT=$(node "$P/bin/orca-issue.ts" --state-file "$ISTATE" --issue 42 --slug "$IS
   && [[ "$(jq -r '.merged' "$R/.dispatch/$ISLUG/integration-result.json")" == true ]] \
   && ok "E23 issue の成果が親へ merge される" || fail "E23 (rc=$irc) $IOUT"
 
-# 終端ラベルが先、in-progress の除去はあと。close は merge のあと。
+# 終端ラベル（merge したので Testing）が先、in-progress の除去はあと。既定（close_on_merge=off）では閉じない。
 # **`terminal` という名前のラベルは作らないし付けない**（実機で発見した誤り）。
 ghl=$(cat "$GH_STUB_DIR/calls.log")
 first_label=$(grep 'label' <<<"$ghl" | head -1)
-[[ "$first_label" == *'--add-label Done'* ]] \
+[[ "$first_label" == *'--add-label Testing'* ]] \
   && grep -qF -- '--remove-label In\ progress' <<<"$ghl" \
   && ! grep -qE -- '--add-label terminal( |$)' <<<"$ghl" \
-  && grep -q 'issue close 42' <<<"$ghl" \
-  && ok "E24 終端ラベルが先、close は merge のあと" || fail "E24 ($first_label)"
+  && ! grep -q 'issue close 42' <<<"$ghl" \
+  && ok "E24 終端ラベル（Testing）が先、既定では閉じない" || fail "E24 ($first_label)"
 
 [[ "$(jq -r '.issues["42"].status' "$ISTATE")" == done ]] \
   && ok "E25 state が終端 done に落ちる" || fail "E25"

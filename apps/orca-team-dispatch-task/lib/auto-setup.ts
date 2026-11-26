@@ -747,6 +747,10 @@ export const runSetup = (
       }
     }
     v.roles = { review_mode: toggle('review_mode'), phase_b: toggle('phase_b') }
+    v.closeOnMerge = yes(
+      'closeOnMerge: merge したあと Issue を閉じますか（閉じなければ Testing のまま開いておき、人が動作確認してから Done にする）',
+      v.closeOnMerge ?? false,
+    )
   }
   const roles = () => {
     modes()

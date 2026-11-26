@@ -599,7 +599,7 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - 2026-11-17 に読み取りだけで確かめたこと: 固定した問い合わせは実物の Project で通る。番号違いは rc 1・stdout に `data` と `errors`（`NOT_FOUND`）・stderr に `gh: <message>`。owner が無いと rc 0 で `repositoryOwner: null`。
 - 2026-11-17 の実機（このMac、gh 2.103.0、使い捨ての個人の Project `tanaka-yui/projects/1` を orca-auto-e2e につなぎ、Status にステータス 8 つと `Todo` を手で足した。review_mode/phase_b は off）: 初めて見る食い違い（ラベルがあと → Status をラベルに）、Status だけ（→ ラベル）、ラベルだけ（→ Status）、両方（ラベルが先なら Status に、Status が先ならラベルに。差は 2 秒）、`Todo`（当時の動きで、何もしない・組も書き換えない。下の `active` の項で、ラベルが動けば Status を書くように変えた）を 1 tick ずつで通した。Project で Ready にした #22 は、その tick でラベルが Ready になり（同じ tick の `syncIssues` には検索の遅れで出ず）、次の tick で拾われ、起動した tick の終わりに Status が In progress、PR を出した tick に In review、人が merge した次の tick に Done になった。mutation は成功し、tick をまたいだ読み直しは直前の REST のラベルの書き込みを返した。
 - 未確認: `INSUFFICIENT_SCOPES` の実物、mutation のエラーの形、同じ tick の中で REST の書き込みのすぐあとに GraphQL が古い値を返すか（`touched` で避けている）、Status の `updatedAt` がほかの出来事で動くか、organization の Project。
-- **`active` のリポジトリ（intake の `existing` が `active`。`intakeActiveRepos`）は、管理の印の無い Issue も同期する**（`ProjectSyncContext.active`。照合は大文字小文字を無視）。それ以外は今までどおり印の付いた項目だけ。Status が `Todo` など 8 つのステータス名でないとき（`''`）は、**全 Project で**前回の組が無ければ組 `{ status: '', label }` を記録するだけ、ラベルが前回から動いて空でなければ Status をラベルに書き、それ以外は組が変わったときだけ記録する（以前は何もしなかった）。`ctx.statuses`（`owner/repo#N` → Status 名、ステータス名でなければ `''`）には読めた Project の項目を全部入れる（`touched` や飛ばした項目も。読めなかった Project の項目と、印が無く `active` でもない項目は入らない）。
+- **`active` のリポジトリ（intake の `existing` が `active`。`intakeActiveRepos`）は、管理の印の無い Issue も同期する**（`ProjectSyncContext.active`。照合は大文字小文字を無視）。それ以外は今までどおり印の付いた項目だけ。Status が `Todo` など STATUS_LABELS のステータス名でないとき（`''`）は、**全 Project で**前回の組が無ければ組 `{ status: '', label }` を記録するだけ、ラベルが前回から動いて空でなければ Status をラベルに書き、それ以外は組が変わったときだけ記録する（以前は何もしなかった）。`ctx.statuses`（`owner/repo#N` → Status 名、ステータス名でなければ `''`）には読めた Project の項目を全部入れる（`touched` や飛ばした項目も。読めなかった Project の項目と、印が無く `active` でもない項目は入らない）。
 - 回帰: AU125〜131（AU128b〜d、AU129b〜d、AU130b を含む）、AU188〜190（AU189b を含む。`active` と `Todo`）、AR13（tick の中の順番）。
 
 ### C3a: make auto-setup
@@ -672,6 +672,15 @@ Stage A（1 タスク = 1 役）に **Stage B のレビューモード**を足�
 - **手動の dispatch。**取り込み先は親の checkout の今のブランチのまま（`orca-state.ts current-branch`）。Step 1b で示し、`--issue` は今のブランチと違う `base:*` ラベルの Issue・ラベルが 2 つ以上の Issue・detached HEAD を claim せず飛ばす。
 - **setup**（`pickBases`、`pickRepos` の終わり）。origin の `gh api` で一覧したブランチと既定ブランチから、既定ブランチ・`develop`・`main`・`master` のうち在るものを候補にし、2 つ以上のときだけ普段の向き先と候補を尋ねる（1 つ以下は尋ねず書かない。gh が失敗したときも今の値を保つ）。setup-run のテストは位置で答えを渡すので、尋ねるのは gh の stub が 2 つ以上返したときだけにしてある。gh の stub は最初の `--` までの語でキーを作るため、`gh api` は旗を先に置いて `api` の 1 語に当てる。
 - 回帰: AB1〜8（`auto-base.test.ts`）、CF7 / CF7b、AC9 / AC10、AU143〜163、SS5、SK44 / SK45、BM1〜5、IF24 / IF25、OS12、SU44 / SU45。slack-issue-intake 側は `needs-base` の通知と human-merged の `{comment}`（共有の fixture の一致は `scripts/check-shared-contracts.mjs`）。
+
+### merge のあとは Testing（2026-11-26、3.27.0）
+
+- **merge したら Done ではなく Testing。**ai-merged / human-merged の遷移先を `STATUS.testing` にした（`statusOfEvent` とコメントの文言も「動作確認をお願いします」）。Done にするのは確認した人。内部の phase は `'done'` のまま（後片付け・学びの記録・戻しの PR に触れないため）。ステータスラベルは 9 つになり、slack-issue-intake の写しと `check-shared-contracts.mjs` で揃える。共有の `orca-auto-comments.json` の ai-merged / human-merged の例も testing に変えた。
+- **閉じるかは設定。**`--auto` は設定の `closeOnMerge`（既定 false。true のときだけ config.json に書く。`make auto-setup` と `make roles` の modes の段で尋ねる。setup-run は位置で答えを渡すので freshAnswers に 1 つ足した）。`--issue` はトグル `close_on_merge`（既定 off）を `orca-issue.ts` が config-resolve で読む。**既定は設定より前の挙動ではない**（ask_via と同じ例外）— 確認の前に完了とみなさないことがこの変更の目的だから。`--issue` で PR を作ったときは Done ではなく In review（PR はまだ人の判断待ち）。
+- **閉じる遷移は閉じた Issue でも進む。**`transition` / `resumeTransition` は `close` のある遷移（merge の知らせだけ）なら CLOSED でも中止しない。人が `Closes #N` を持つ PR を merge して GitHub が先に閉じた In review の Issue は、`watchReview` が `humanMerge` で全 PR の merge を確かめてから、`closeOnMerge` でなければ `gh issue reopen` してから human-merged に進む。PR を読めなければ次の tick に回し、merge されていない PR があれば今までどおり人が止めたとみなす。
+- **ラベルが無ければ作って付け直す。**版を上げた直後のリポジトリには Testing が無く、`gh issue edit --add-label` が失敗して遷移が止まる。`resumeTransition` はラベルの付け替えに失敗したら、そのステータスだけ `ensureLabels` で作って 1 回だけ打ち直す（失敗したときだけ呼ぶので、普段の呼び出しは増えない）。
+- **Testing から Ready に戻した Issue も拾い直す**（`syncIssues` の拾い直しに `'done'` を足した）。成果はもう向き先に入っているので、前の枝・対象・向き先の記録を空にして向き先から始める（squash merge のあとで枝を reset すると同じ変更をもう一度出す）。`prevPrs` は残し、`continuationOf` は続ける枝が無くても `prevPrs` があればコメントと CI を材料にする。
+- 回帰: AC1 / AC10（文言とマーカー）、CF8（closeOnMerge）、SU40（make roles）、AU50 / AU50c / AU57 / AU113 / AU158（Testing と閉じるか）、AU192（GitHub が閉じた Issue）、AU193（merge されていない PR）、AU194（ラベルが無い）、AU196 / AU197（拾い直し）、IS1 / IS1b / IS19 / IS31 / IS32（`--issue`）、CF55（トグル）。
 
 ### 拾う元ごとの autoMerge（2026-11-20、3.17.0）
 

@@ -43,6 +43,10 @@ export const integrationRole = (phaseB: string): Role => (phaseB === 'on' ? 'exe
 //   cleanup     … end（PR のタスクも Step 5 が判定し Step 6 で尋ねる）。pr_created は PR 作成直後、
 //                 pr_merged は次の dispatch の始めに merge 済み PR のタスクを尋ねずに片付ける。
 //                 integration=merge と --transport mail（--auto）は orca-start.ts が end を記録する
+//   close_on_merge … off（--issue で merge した issue を閉じず、Testing のまま人の動作確認を待つ。Done にして閉じるのは
+//                 確認した人）。**既定は設定より前の挙動ではない** — 前は merge で Done にして閉じていたが、
+//                 確認の前に完了とみなさないことがこの設定の目的なので閉じないほうを既定にする。--auto は自分の設定の
+//                 closeOnMerge を読む
 export const TOGGLES = {
   review_mode: { values: ['on', 'off'], fallback: 'off' },
   phase_b: { values: ['on', 'off'], fallback: 'off' },
@@ -51,6 +55,7 @@ export const TOGGLES = {
   design_mode: { values: ['direct', 'plan', 'brainstorm'], fallback: 'direct' },
   ask_via: { values: ['terminal', 'parent'], fallback: 'terminal' },
   cleanup: { values: ['end', 'pr_created', 'pr_merged'], fallback: 'end' },
+  close_on_merge: { values: ['off', 'on'], fallback: 'off' },
 } as const
 export type Toggle = keyof typeof TOGGLES
 export const TOGGLE_KEYS: Toggle[] = [
@@ -61,6 +66,7 @@ export const TOGGLE_KEYS: Toggle[] = [
   'design_mode',
   'ask_via',
   'cleanup',
+  'close_on_merge',
 ]
 export const isToggle = (key: string): key is Toggle => TOGGLE_KEYS.some((toggle) => toggle === key)
 export const validToggle = (key: Toggle, value: string): boolean =>

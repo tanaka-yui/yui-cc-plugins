@@ -175,7 +175,7 @@ test('AC10 戻しの PR と失敗は merged の本文に行を足し、無けれ
     const body = renderComment({ ...input, backPrs, backFailures }).body
     assert.ok(body.includes('o/a へ取り込む PR: https://github.com/o/a/pull/9'), event)
     assert.ok(body.includes('o/b へ取り込む PR を作れませんでした: 差分がありません ＜!--x--＞'), event)
-    assert.ok(body.endsWith(`<!-- orca-auto:done:1:${event} -->`), event)
+    assert.ok(body.endsWith(`<!-- orca-auto:testing:1:${event} -->`), event)
     assert.equal(body.match(/<!--/g)?.length, 1, event)
   }
 })
