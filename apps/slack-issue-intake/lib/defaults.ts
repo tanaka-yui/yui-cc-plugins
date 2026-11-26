@@ -187,6 +187,9 @@ const screenItems = [
   { name: 'screen_url', label: L.screenUrl, long: false, required: false },
   { name: 'source_path', label: L.sourcePath, long: false, required: false },
 ] as const
+// 任意の複数行の項目の既定値。送る文面の型（send_message）は空の値を出し分けられず、空だと囲みの ``` だけが残るので、
+// フォームの既定値で埋める。解析器はこの値を空とみなす（消し忘れて本文の前に残った行も外す）
+export const EMPTY_LONG_VALUE = '記載なし'
 // ボタンの題は open_form の題の上限（FORM_TITLE_MAX_UNITS）に収める
 export const FORM_KINDS: readonly FormKind[] = [
   {

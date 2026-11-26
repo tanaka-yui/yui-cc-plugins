@@ -1,5 +1,6 @@
 import {
   BASE_ANY,
+  EMPTY_LONG_VALUE,
   FIELD_LABELS,
   FORM_ATTACHMENTS_TITLE,
   FORM_EXTRA_SCOPES,
@@ -87,6 +88,7 @@ export const formWorkflow = (
               type: 'string',
               ...(item.options ? { enum: [...item.options] } : {}),
               ...(item.long ? { long: true } : {}),
+              ...(item.long && !item.required ? { default: EMPTY_LONG_VALUE } : {}),
             })),
             {
               name: FIELD.attachments,

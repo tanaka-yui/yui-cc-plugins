@@ -234,3 +234,23 @@ test('PA25 向き先は選んだリポジトリ（無ければ既定）の候補
   const none = parseSubmission(kindText('バグ', { 事象: 'x' }, { base: 'main' }), null, [])
   assert.ok(none.kind === 'ok' && !('base' in none.fields))
 })
+test('PA26 任意の複数行の項目の「記載なし」は空とみなし、消し忘れて本文の前に残った「記載なし」の行も外す', () => {
+  const empty = parseSubmission(
+    kindText('バグ', { 事象: '落ちる', エラーログ: '記載なし', 対応策: ' 記載なし ' }),
+    null,
+    [],
+  )
+  assert.ok(empty.kind === 'ok')
+  assert.equal(empty.fields.body, '事象:\n落ちる')
+  const mixed = parseSubmission(
+    kindText('バグ', { 事象: '落ちる', エラーログ: '記載なし\nTypeError: x is undefined', 対応策: '' }),
+    null,
+    [],
+  )
+  assert.ok(mixed.kind === 'ok')
+  assert.equal(mixed.fields.body, '事象:\n落ちる\n\nエラーログ:\nTypeError: x is undefined')
+  // 必須の項目には既定値が無いので、人が書いた「記載なし」はそのまま残す
+  const typed = parseSubmission(kindText('バグ', { 事象: '記載なし' }), null, [])
+  assert.ok(typed.kind === 'ok')
+  assert.equal(typed.fields.body, '事象:\n記載なし')
+})

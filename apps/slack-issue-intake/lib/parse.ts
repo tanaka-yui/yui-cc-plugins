@@ -1,6 +1,7 @@
 import {
   BASE_ANY,
   CATEGORIES,
+  EMPTY_LONG_VALUE,
   FIELD_LABELS,
   FORM_KINDS,
   MAX_TITLE_CHARS,
@@ -56,6 +57,12 @@ const splitLabel = (line: string): { label: string; value: string } | null => {
       .replace(/^\**/, '')
       .trim(),
   }
+}
+// 任意の複数行の項目の既定値（EMPTY_LONG_VALUE）を空とみなす。入力欄に既定値が入った形なら、消し忘れて本文の前に
+// 残った「記載なし」の行も外す。必須の項目には既定値が無いので、人が書いた「記載なし」はそのまま残す
+const withoutEmptyDefault = (value: string): string => {
+  const [first = '', ...rest] = value.split('\n')
+  return first.normalize('NFKC').trim() === EMPTY_LONG_VALUE ? rest.join('\n').trim() : value
 }
 const trimBlankLines = (lines: string[]): string =>
   lines
@@ -145,10 +152,10 @@ export const parseSubmission = (
   const baseValue = (header[FIELD_LABELS.base] ?? '').normalize('NFKC').trim()
   const base = titled && baseValue && baseValue !== BASE_ANY && branchesOf(repo).includes(baseValue) ? baseValue : null
   const formKind = legacyBody === null ? formKindByCategory(category) : undefined
-  const sections = (formKind?.items ?? []).map((item) => ({
-    item,
-    value: trimBlankLines(items.get(item.label) ?? []),
-  }))
+  const sections = (formKind?.items ?? []).map((item) => {
+    const value = trimBlankLines(items.get(item.label) ?? [])
+    return { item, value: item.long && !item.required ? withoutEmptyDefault(value) : value }
+  })
   const problems: string[] = []
   for (const [label, value, options] of [
     ...(titled ? ([[FIELD_LABELS.title, fullTitle, []]] as const) : []),

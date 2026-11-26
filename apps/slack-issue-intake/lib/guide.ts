@@ -1,6 +1,7 @@
 import {
   BASE_ANY,
   CLI_COMMAND,
+  EMPTY_LONG_VALUE,
   FIELD_LABELS,
   FORM_KINDS,
   PRIORITIES,
@@ -49,7 +50,7 @@ const formSteps = (kind: FormKind): string =>
       : []),
     ...kind.items.map(
       (i) =>
-        `- ${i.label}: ${i.options ? `リスト選択、${i.required ? '必須' : '任意'}（${i.options.join(' / ')}）` : `${i.long ? '長い回答' : '短い回答'}、${i.required ? '必須' : '任意'}`}`,
+        `- ${i.label}: ${i.options ? `リスト選択、${i.required ? '必須' : '任意'}（${i.options.join(' / ')}）` : `${i.long ? '長い回答' : '短い回答'}、${i.required ? '必須' : '任意'}${i.long && !i.required ? `（既定値に「${EMPTY_LONG_VALUE}」を入れます）` : ''}`}`,
     ),
     `- 添付ファイル: アップロード、任意、複数可。1ファイルだけなら任意のアップロードの質問を3つ並べます。`,
     `「チャンネルへメッセージを送信」のテンプレート:`,

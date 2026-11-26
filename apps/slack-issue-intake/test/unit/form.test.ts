@@ -1,4 +1,5 @@
 import {
+  EMPTY_LONG_VALUE,
   FIELD_LABELS,
   FORM_EXTRA_SCOPES,
   FORM_FIELD_TITLE_MAX_CHARS,
@@ -249,4 +250,15 @@ test('FM9 向き先の候補があれば「質問する」以外に任意の向�
   assert.equal(manifestHash(['acme/app']), manifestHash(['acme/app'], []))
   assert.notEqual(manifestHash(['acme/app']), manifestHash(['acme/app'], branches))
   assert.notEqual(manifestHash(['acme/app'], branches), manifestHash(['acme/app'], ['develop', 'main', 'release']))
+})
+test('FM10 任意の複数行の項目だけ、未入力のときに出す「記載なし」を既定値にする', () => {
+  for (const kind of FORM_KINDS)
+    for (const item of kind.items)
+      assert.equal(
+        get(byName(kind, item.name), 'default'),
+        item.long && !item.required ? EMPTY_LONG_VALUE : undefined,
+        `${kind.key} ${item.name}`,
+      )
+  assert.equal(get(byName(kindOf('bug'), 'error_log'), 'default'), '記載なし')
+  assert.equal(get(byName(kindOf('bug'), 'symptom'), 'default'), undefined)
 })
