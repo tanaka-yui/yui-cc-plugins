@@ -229,6 +229,10 @@ value in chat. `--from-stdin` is available for a human-operated pipe, not for pu
   moving the label, so a newer marker that does not match an unchanged label is left for the next poll. Done and
   closing in separate polls produce one completion message. Issues that existed before this feature are recorded
   silently the first time they are seen. Failures show as `partial=true` without changing the exit code.
+- Every poll, under the same condition, also copies a person's reply that mentions the bot in the thread of an open
+  tracked Issue to that Issue as a comment, and replies in the thread with the comment URL, without starting Claude.
+  Replies without the mention, bot or integration posts, and replies from people of another workspace are not copied, and neither are replies older than the
+  first poll that saw the thread. Up to 20 threads are read per poll, the least recently read first.
 - Existing-issue policy is per repository: `skip` ignores issues not created from Slack; `thread` creates a
   top-level management post and adds `slack-thread`. Old issues need a status label; newly created issues do not.
   `active` ignores the start time and adopts issues that have any status label other than `Backlog`, plus issues a

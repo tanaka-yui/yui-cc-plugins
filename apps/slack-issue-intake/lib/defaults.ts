@@ -321,6 +321,22 @@ export const LABEL_SPECS: ReadonlyArray<{ name: string; color: string; descripti
 export const MAX_TITLE_CHARS = 256
 export const TITLE_ELLIPSIS = '…'
 export const ISSUE_MARKER_PREFIX = 'slack-issue-intake'
+// Slack のスレッドでボットにメンションした人の返信を Issue のコメントへ転記する（lib/reply-relay.ts）。
+// 印は転記したコメントの最終行。応答が届かずに書いたか分からないとき、次の回にこれを探して二重に書かない
+export const REPLY_MARKER_PREFIX = 'slack-issue-intake-reply'
+// 1 回の poll で返信を読むスレッドの数。しばらく読んでいないスレッドから順に読む（Slack の呼び出しを増やしすぎない）
+export const REPLY_RELAY_THREADS_PER_POLL = 20
+// 転記する本文の上限（GitHub のコメントの上限 65536 文字より十分小さく）
+export const REPLY_RELAY_MAX_CHARS = 10_000
+// 見出しに入れる投稿者名の上限
+export const REPLY_NAME_MAX_CHARS = 80
+export const REPLY_TEXT = {
+  heading: '**Slack のスレッドで {name} さんが書きました**（[元の投稿]({link})）',
+  files: '添付が {count} 件あります。元の投稿で見てください。',
+  unknownName: '（名前を読めない人）',
+  relayed: 'Issue に転記しました: {url}',
+  commentFailed: 'Issue にコメントを書けません',
+} as const
 export const QUESTION_MAX_CHARS = 2000
 export const SUMMARY_MAX_CHARS = 1000
 export const DETAILS_MAX_CHARS = 15_000

@@ -115,6 +115,26 @@ else if (cmd === 'label create') {
   issue.labels = labels
   issue.updated_at = new Date().toISOString()
   writeFileSync(state, JSON.stringify(all))
+} else if (cmd === 'issue comment') {
+  // コメントを足して URL を出す。FAKE_GH_COMMENT=fail は失敗、lost は書いてから失敗を返す（応答が届かなかった）
+  if (process.env.FAKE_GH_COMMENT === 'fail') fail()
+  const all = issues()
+  const issue = all.find((i) => repoOf(i) === value('--repo').toLowerCase() && i.number === Number(args[2])) ?? fail()
+  const list = asArray(issue.comments) ?? []
+  const id = 1000 + list.length
+  const html_url = `${String(issue.html_url)}#issuecomment-${id}`
+  list.push({
+    id,
+    body: value('--body'),
+    author_association: 'MEMBER',
+    user: { login },
+    created_at: new Date().toISOString(),
+    html_url,
+  })
+  issue.comments = list
+  writeFileSync(state, JSON.stringify(all))
+  if (process.env.FAKE_GH_COMMENT === 'lost') fail()
+  console.log(html_url)
 } else if (args[0] === 'api' && /^repos\/[^/]+\/[^/]+\/branches$/.test(args[1] ?? '')) {
   // --paginate --jq '.[].name' の出力（1 行に 1 つ）。FAKE_GH_BRANCHES はカンマ区切り（無ければブランチなし）
   for (const name of (process.env.FAKE_GH_BRANCHES ?? '').split(',').filter(Boolean)) console.log(name)

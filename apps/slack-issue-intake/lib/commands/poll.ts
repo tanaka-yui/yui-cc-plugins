@@ -8,6 +8,7 @@ import { acquireLease, releaseLease } from '../lease.ts'
 import { recalledOrcaBin } from '../orca.ts'
 import { homePaths, intakeHome } from '../paths.ts'
 import { permissionFingerprint, safetyProblems } from '../permissions.ts'
+import { relayReplies } from '../reply-relay.ts'
 import { postReport } from '../report.ts'
 import { closeFinishedRunTabs } from '../run-tabs.ts'
 import { openRuntime } from '../runtime.ts'
@@ -35,13 +36,13 @@ export const run = async (argv: string[]): Promise<void> => {
     agentWork = 0,
     partial = false,
     errors: string[] = [],
-    counts = { inserted: 0, rejected: 0, answered: 0, timedOut: 0, driven: 0, notified: 0, adopted: 0 },
+    counts = { inserted: 0, rejected: 0, answered: 0, timedOut: 0, driven: 0, notified: 0, adopted: 0, relayed: 0 },
     reason = '',
     reportPosted = 'off',
     learned = { posted: 0, cancelled: 0 },
   ): void => {
     console.log(
-      `result=${result}${reason ? ` reason=${reason}` : ''} agent_work=${agentWork} inserted=${counts.inserted} rejected=${counts.rejected} answered=${counts.answered} timed_out=${counts.timedOut} driven=${counts.driven} errors=${errors.length} partial=${partial} notified=${counts.notified} adopted=${counts.adopted} report=${reportPosted} learn=${learned.posted}/${learned.cancelled}`,
+      `result=${result}${reason ? ` reason=${reason}` : ''} agent_work=${agentWork} inserted=${counts.inserted} rejected=${counts.rejected} answered=${counts.answered} timed_out=${counts.timedOut} driven=${counts.driven} errors=${errors.length} partial=${partial} notified=${counts.notified} adopted=${counts.adopted} report=${reportPosted} learn=${learned.posted}/${learned.cancelled} relayed=${counts.relayed}`,
     )
     for (const e of errors) console.error(maskSecrets(e))
     writeJson(homePaths(home).pollStatus, {
@@ -97,6 +98,11 @@ export const run = async (argv: string[]): Promise<void> => {
         !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
           ? await syncLearn(ctx).catch((e: Error) => ({ posted: 0, cancelled: 0, errors: [String(e?.message ?? e)] }))
           : { posted: 0, cancelled: 0, errors: [] }
+      // スレッドでボットにメンションした返信を Issue へ転記する。失敗しても終了コードと agent_work は変えない
+      const relayed =
+        !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
+          ? await relayReplies(ctx).catch((e: Error) => ({ relayed: 0, errors: [String(e?.message ?? e)] }))
+          : { relayed: 0, errors: [] }
       const adopted =
         !report.fatal && !report.leaseLost && deadline - Date.now() >= STATUS_MIN_REMAINING_MS
           ? await adoptExisting(ctx).catch((e: Error) => ({ adopted: 0, errors: [String(e?.message ?? e)] }))
@@ -114,6 +120,7 @@ export const run = async (argv: string[]): Promise<void> => {
         ...status.errors,
         ...periodic.errors,
         ...learned.errors,
+        ...relayed.errors,
         ...adopted.errors,
         ...tabs.errors,
       ]
@@ -130,6 +137,7 @@ export const run = async (argv: string[]): Promise<void> => {
           driven: report.driven.length,
           notified: status.notified,
           adopted: adopted.adopted,
+          relayed: relayed.relayed,
         },
         '',
         periodic.posted,

@@ -141,7 +141,9 @@ export const openDb = (file: string): Db => {
     CREATE TABLE IF NOT EXISTS issue_status2(repo TEXT NOT NULL,issue_number INTEGER NOT NULL,status TEXT,state TEXT NOT NULL,
       last_comment_id INTEGER NOT NULL,seen_updated_at TEXT,attempts INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(repo,issue_number));
     CREATE TABLE IF NOT EXISTS adopted(repo TEXT NOT NULL,issue_number INTEGER NOT NULL,channel TEXT NOT NULL,ts TEXT,
-      labeled INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL,url TEXT NOT NULL,created_at TEXT NOT NULL,tried_at TEXT,PRIMARY KEY(repo,issue_number));`)
+      labeled INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL,url TEXT NOT NULL,created_at TEXT NOT NULL,tried_at TEXT,PRIMARY KEY(repo,issue_number));
+    CREATE TABLE IF NOT EXISTS reply_relay(repo TEXT NOT NULL,issue_number INTEGER NOT NULL,after_ts TEXT NOT NULL,pending_ts TEXT,
+      pending_at TEXT,attempts INTEGER NOT NULL,checked_at TEXT NOT NULL,gone INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(repo,issue_number));`)
   inTransaction(db, () => {
     if (
       !db
@@ -320,6 +322,51 @@ export const transitionWithStatus = (
     if (!leaseValid(db, token, now) || getSubmission(db, id)?.state !== from) return false
     patchUpdate(db, id, patch, now)
     writeIssueStatus(db, seed, now, false)
+    return true
+  })
+// 返信の転記の読み取り位置。after_ts までの返信は扱い終えた。pending_ts は書き始めた返信（書けたか分からない）
+export type ReplyRelayRow = {
+  repo: string
+  issueNumber: number
+  afterTs: string
+  pendingTs: string | null
+  pendingAt: string | null
+  attempts: number
+  checkedAt: string
+  gone: boolean
+}
+export const getReplyRelay = (db: Db, repo: string, issueNumber: number): ReplyRelayRow | null => {
+  const r = db.prepare('SELECT * FROM reply_relay WHERE repo=? AND issue_number=?').get(repo, issueNumber)
+  return r
+    ? {
+        repo: String(r.repo),
+        issueNumber: Number(r.issue_number),
+        afterTs: String(r.after_ts),
+        pendingTs: nullable(r, 'pending_ts'),
+        pendingAt: nullable(r, 'pending_at'),
+        attempts: Number(r.attempts),
+        checkedAt: String(r.checked_at),
+        gone: Number(r.gone) === 1,
+      }
+    : null
+}
+export const saveReplyRelay = (db: Db, token: string, row: ReplyRelayRow, now: string): boolean =>
+  inTransaction(db, () => {
+    if (!leaseValid(db, token, now)) return false
+    db.prepare(
+      `INSERT INTO reply_relay VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(repo,issue_number) DO UPDATE SET
+        after_ts=excluded.after_ts,pending_ts=excluded.pending_ts,pending_at=excluded.pending_at,
+        attempts=excluded.attempts,checked_at=excluded.checked_at,gone=excluded.gone`,
+    ).run(
+      row.repo,
+      row.issueNumber,
+      row.afterTs,
+      row.pendingTs,
+      row.pendingAt,
+      row.attempts,
+      row.checkedAt,
+      row.gone ? 1 : 0,
+    )
     return true
   })
 export const issueKey = (repo: string, number: number): string => `${repo}#${number}`
