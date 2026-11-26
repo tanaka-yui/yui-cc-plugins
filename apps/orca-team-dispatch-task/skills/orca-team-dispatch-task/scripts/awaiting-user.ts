@@ -9,8 +9,10 @@
 //   人を待っているとみなす
 // ★ status.json を流用しない。merge / pr / recover / Step 3.5 の起動判定が読んでおり、値を増やすと波及する
 // ★ 消す手順は持たない。答えのあとの書き込み（spec / plan / commit / status など）で自然に古くなる
+// ★ 書けたら Mac の通知も出す（lib/notify.ts）。codex の worker は自分で通知を出せないため。出せなくても 0 で返す
 import { die, log } from '../../../lib/cli.ts'
 import { writeAtomic } from '../../../lib/fs.ts'
+import { notifyAwaitingUser } from '../../../lib/notify.ts'
 import { nowSeconds } from '../../../lib/sys.ts'
 
 import { mkdirSync } from 'node:fs'
@@ -32,6 +34,7 @@ const main = (argv: string[]): number => {
     log(NAME, `failed to write ${file}`)
     return 1
   }
+  notifyAwaitingUser(roleDir)
   return 0
 }
 
